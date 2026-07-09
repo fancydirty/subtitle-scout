@@ -1,7 +1,12 @@
 import type { ScoutDb } from './db.js'
 
+// 双轨速率差是有意的：网络类错误快重试到好（阶梯 30s→5min，封顶 15min 防撞墙），
+// 内容类失败按天退避（字幕产出以天为单位）。
 export const CONTENT_BACKOFF_DAYS = [1, 2, 4, 8]
-export const errorBackoffMs = (attempt: number) => Math.min(attempt * 10 * 60_000, 6 * 3600_000)
+export const ERROR_BACKOFF_MS = [30_000, 60_000, 120_000, 300_000]
+export const errorBackoffMs = (attempt: number) => ERROR_BACKOFF_MS[attempt - 1] ?? 900_000
+/** Partial-success throttle (I6): back to wanted but not immediately claimable — avoids tight re-claim loop. */
+export const PARTIAL_RETRY_MS = 30_000
 
 const LEASE_DURATION_MS = 30 * 60_000 // 30 minutes
 
@@ -45,23 +50,29 @@ export interface Job {
 export class JobsRepo {
   constructor(private db: ScoutDb) {}
 
+  // I2: done job 的目标重新出现 missing（新集入库/字幕被删）时复活回 wanted；
+  //     failed/dormant/active 不动（各有自己的退避/唤醒通道）。
+  private static readonly UPSERT_CONFLICT_SQL = `
+           ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
+           DO UPDATE SET
+             updated_at = ?,
+             state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
+             attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
+             next_retry_at = CASE WHEN state = 'done' THEN NULL ELSE next_retry_at END`
+
   upsertWanted(ident: JobIdent, now: number): void {
     if (ident.kind === 'series_season') {
       this.db
         .prepare(
           `INSERT INTO jobs (kind, series_id, season, state, priority, attempt, created_at, updated_at)
-           VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)
-           ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
-           DO UPDATE SET updated_at = ?`
+           VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
         )
         .run(ident.seriesId, ident.season, now, now, now)
     } else {
       this.db
         .prepare(
           `INSERT INTO jobs (kind, movie_id, state, priority, attempt, created_at, updated_at)
-           VALUES ('movie', ?, 'wanted', 0, 0, ?, ?)
-           ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
-           DO UPDATE SET updated_at = ?`
+           VALUES ('movie', ?, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
         )
         .run(ident.movieId, now, now, now)
     }
@@ -147,7 +158,8 @@ export class JobsRepo {
     })()
   }
 
-  /** Partial success: attempt decrements (gradual escalation recovery), back to wanted for the remainder. */
+  /** Partial success: attempt decrements (gradual escalation recovery), back to wanted for the remainder.
+   *  I6: 带 5 分钟节流窗（PARTIAL_RETRY_MS），防止 partial → wanted → 立即重领的紧循环。 */
   completePartial(jobId: number, now: number): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
@@ -157,10 +169,10 @@ export class JobsRepo {
       const info = this.db
         .prepare(
           `UPDATE jobs
-           SET state = 'wanted', attempt = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
+           SET state = 'wanted', attempt = ?, next_retry_at = ?, lease_until = NULL, updated_at = ?
            WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
         )
-        .run(newAttempt, now, jobId)
+        .run(newAttempt, now + PARTIAL_RETRY_MS, now, jobId)
       return info.changes > 0
     })()
   }
@@ -239,6 +251,17 @@ export class JobsRepo {
       )
       .get(seriesId, season) as Job | undefined
     return job ?? null
+  }
+
+  findMovie(movieId: string): Job | null {
+    const job = this.db
+      .prepare(`SELECT * FROM jobs WHERE kind = 'movie' AND movie_id = ?`)
+      .get(movieId) as Job | undefined
+    return job ?? null
+  }
+
+  listByState(state: JobState): Job[] {
+    return this.db.prepare(`SELECT * FROM jobs WHERE state = ?`).all(state) as Job[]
   }
 
   get(id: number): Job | null {

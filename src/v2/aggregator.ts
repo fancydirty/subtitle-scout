@@ -1,5 +1,5 @@
 import type { LibraryRepo } from './libraryRepo.js'
-import type { JobsRepo, JobState } from './jobsRepo.js'
+import type { JobsRepo, JobState, JobIdent } from './jobsRepo.js'
 
 export interface AggregateResult {
   created: number
@@ -14,6 +14,12 @@ export interface AggregateResult {
  *
  * Idempotent: safe to run repeatedly — upserts are no-ops for existing jobs,
  * and retirement only affects wanted/failed jobs whose coverage disappeared.
+ *
+ * Revival channels:
+ * - done job whose season/movie re-appears missing → upsertWanted resets to wanted (I2, in JobsRepo).
+ * - dormant job whose targets' recheck window expired (or new episodes arrived) → wake with
+ *   priority 0 (I3). attempt is preserved: one failure re-dormants for another 30-day window —
+ *   "one bullet per recheck window" semantics.
  */
 export function aggregate(lib: LibraryRepo, jobs: JobsRepo, now: number): AggregateResult {
   let created = 0
@@ -29,13 +35,17 @@ export function aggregate(lib: LibraryRepo, jobs: JobsRepo, now: number): Aggreg
     const key = `${series_id}:${season}`
     missingSeasonsSet.add(key)
 
+    const ident: JobIdent = { kind: 'series_season', seriesId: series_id, season }
     const existing = jobs.find(series_id, season)
     if (!existing) {
-      jobs.upsertWanted({ kind: 'series_season', seriesId: series_id, season }, now)
+      jobs.upsertWanted(ident, now)
       created++
+    } else if (existing.state === 'dormant') {
+      // I3: recheck window expired (or new missing episodes) — give the dormant job one shot.
+      jobs.wake(ident, 0, now)
     } else {
-      // Touch updated_at for existing jobs (upsertWanted is idempotent)
-      jobs.upsertWanted({ kind: 'series_season', seriesId: series_id, season }, now)
+      // Touch updated_at; also revives done → wanted (I2)
+      jobs.upsertWanted(ident, now)
     }
   }
 
@@ -44,24 +54,24 @@ export function aggregate(lib: LibraryRepo, jobs: JobsRepo, now: number): Aggreg
   for (const movie of missingMovies) {
     missingMoviesSet.add(movie.id)
 
-    const existing = findMovieJob(jobs, movie.id)
+    const ident: JobIdent = { kind: 'movie', movieId: movie.id }
+    const existing = jobs.findMovie(movie.id)
     if (!existing) {
-      jobs.upsertWanted({ kind: 'movie', movieId: movie.id }, now)
+      jobs.upsertWanted(ident, now)
       created++
+    } else if (existing.state === 'dormant') {
+      jobs.wake(ident, 0, now)
     } else {
-      jobs.upsertWanted({ kind: 'movie', movieId: movie.id }, now)
+      jobs.upsertWanted(ident, now)
     }
   }
 
   // Cleanup: retire wanted/failed jobs whose targets are no longer missing
   // (satisfied externally, e.g., user manually placed subtitles)
-  const retirabaleStates: JobState[] = ['wanted', 'failed']
+  const retirableStates: JobState[] = ['wanted', 'failed']
 
-  // Get all wanted/failed jobs
-  for (const state of retirabaleStates) {
-    const jobsToCheck = getAllJobsByState(jobs, state)
-
-    for (const job of jobsToCheck) {
+  for (const state of retirableStates) {
+    for (const job of jobs.listByState(state)) {
       let shouldRetire = false
 
       if (job.kind === 'series_season' && job.series_id && job.season !== null) {
@@ -81,39 +91,4 @@ export function aggregate(lib: LibraryRepo, jobs: JobsRepo, now: number): Aggreg
   }
 
   return { created, retired }
-}
-
-/**
- * Helper: find a movie job by movie_id.
- * JobsRepo doesn't expose a findMovie method, so we scan via get after finding by identity.
- */
-function findMovieJob(jobs: JobsRepo, movieId: string): { id: number } | null {
-  // We need to query the DB to find movie jobs
-  // Since JobsRepo doesn't expose a generic query method, we work around this
-  // by using the db property (which is readonly but accessible)
-  const db = (jobs as any).db
-  const job = db
-    .prepare(`SELECT id FROM jobs WHERE kind = 'movie' AND movie_id = ?`)
-    .get(movieId) as { id: number } | undefined
-  return job ?? null
-}
-
-/**
- * Helper: get all jobs in a given state.
- */
-function getAllJobsByState(jobs: JobsRepo, state: JobState): Array<{
-  id: number
-  kind: 'series_season' | 'movie'
-  series_id: string | null
-  season: number | null
-  movie_id: string | null
-}> {
-  const db = (jobs as any).db
-  return db
-    .prepare(
-      `SELECT id, kind, series_id, season, movie_id
-       FROM jobs
-       WHERE state = ?`
-    )
-    .all(state) as any[]
 }

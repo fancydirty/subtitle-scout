@@ -219,6 +219,54 @@ describe('aggregator', () => {
     expect(jobs.countByState('wanted')).toBe(2)
   })
 
+  it('done job 复活（I2）：季重新出现 missing 后 aggregate 回 wanted', () => {
+    lib.upsertSeries({ id: 's1', name: 'Series A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1,
+      name: 'Ep1', path: '/tv/s1/e1.mkv', subStatus: 'missing',
+    })
+    aggregate(lib, jobs, now)
+    const job = jobs.claimNext(now)!
+    lib.markCovered('e1', '/tv/s1/e1.zh-Hans.srt', 'scout-download')
+    jobs.completeDone(job.id, now)
+    expect(jobs.get(job.id)!.state).toBe('done')
+
+    // 新集入库 missing → 同一 job 复活而非新建
+    lib.upsertEpisode({
+      id: 'e2', seriesId: 's1', season: 1, episode: 2,
+      name: 'Ep2', path: '/tv/s1/e2.mkv', subStatus: 'missing',
+    })
+    const result = aggregate(lib, jobs, now + 1000)
+    expect(result.created).toBe(0)
+    const revived = jobs.get(job.id)!
+    expect(revived.state).toBe('wanted')
+    expect(revived.attempt).toBe(0)
+    expect(revived.next_retry_at).toBeNull()
+  })
+
+  it('dormant 复活通道（I3）：集 recheck 到期后 aggregate wake 回 wanted，attempt 保留', () => {
+    lib.upsertSeries({ id: 's1', name: 'Series A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1,
+      name: 'Ep1', path: '/tv/s1/e1.mkv', subStatus: 'missing',
+    })
+    aggregate(lib, jobs, now)
+    // 攒一次 attempt 再休眠，验证 wake 保留 attempt（一个复查窗口一发子弹）
+    const job = jobs.claimNext(now)!
+    jobs.completeNoMatch(job.id, now)              // attempt=1, failed
+    jobs.forceState('s1', 1, 'dormant', now)
+    // 集被标 unavailable 且复查已到期
+    lib.markUnavailable('e1', '搜索穷尽', now - 1)
+
+    const result = aggregate(lib, jobs, now + 1000)
+    expect(result.created).toBe(0)
+    const woken = jobs.get(job.id)!
+    expect(woken.state).toBe('wanted')
+    expect(woken.priority).toBe(0)                 // 调和唤醒不是播放触发，不给高优
+    expect(woken.attempt).toBe(1)                  // attempt 保留：失败即再休眠
+    expect(woken.next_retry_at).toBeNull()
+  })
+
   it('retires movie job when movie becomes covered', () => {
     lib.upsertMovie({
       id: 'm1',

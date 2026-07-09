@@ -67,6 +67,22 @@ describe('媒体镜像', () => {
     })
   })
 
+  it('markCovered 传 null 路径（M7）：只改状态，不伪造 subtitles 行', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e1',
+      seriesId: 's1',
+      season: 1,
+      episode: 1,
+      name: '',
+      path: '/p/1.mkv',
+      subStatus: 'missing',
+    })
+    lib.markCovered('e1', null, 'preexisting')
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect((lib.db.prepare('select count(*) c from subtitles where item_id=?').get('e1') as any).c).toBe(0)
+  })
+
   it('unavailable 带复查时间，missingBySeason 不计入未到期的', () => {
     lib.upsertSeries({ id: 's1', name: 'A' })
     lib.upsertEpisode({

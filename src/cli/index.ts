@@ -18,7 +18,7 @@ import { planSearch } from '../agent/planSearch.js'
 import { rankCandidates } from '../agent/rankCandidates.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
-import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
+import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, applyConfidenceOverride, type PathMapping } from '../core/mediaContext.js'
 // import { Watcher } from '../daemon/watcher.js'  // v1 watcher — 保留文件但不再引用
 import { CHINESE_LANG_TAGS } from '../daemon/triggers.js'
 // import { PrefetchQueue } from '../daemon/queue.js'  // v1 queue — v2 不用
@@ -116,14 +116,6 @@ async function assemble(): Promise<Assembled> {
     } : {}),
   })
   return { makeDeps, withJournal, cacheRoot, llm, jf, mappings }
-}
-
-function applyConfidenceOverride(ctx: MediaContext) {
-  if (process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE) {
-    const v = Number(process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE)
-    if (Number.isFinite(v) && v >= 0 && v <= 1) ctx.preferences.auto_download_min_confidence = v
-    else console.error(`ignoring invalid AUTO_DOWNLOAD_MIN_CONFIDENCE: ${process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE}`)
-  }
 }
 
 function exitCodeFor(decision: PipelineResult['decision']): number {
@@ -262,8 +254,12 @@ async function cmdWatch() {
   const lib = new LibraryRepo(db)
   const runs = new RunsRepo(db)
 
-  // Create runEpisode closure
-  const runEpisode = makeRunEpisode({ ...await assemble(), jf, mappings, makeDeps, withJournal, cacheRoot }, lib)
+  // Create runEpisode closure（I5b: 根限定经 opts 传入）
+  const runEpisode = makeRunEpisode(
+    { makeDeps, withJournal, cacheRoot, llm, jf, mappings },
+    lib,
+    { mediaRoots: roots },
+  )
 
   // Construct DaemonDeps
   const skipChineseOrigin = (process.env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false'
@@ -287,6 +283,7 @@ async function cmdWatch() {
         jobs,
         runEpisode,
         now: () => Date.now(),
+        log,
       }))
     },
     getSessions: () => jf.getSessions(),

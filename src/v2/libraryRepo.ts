@@ -205,7 +205,9 @@ export class LibraryRepo {
       .all(timestamp) as Movie[]
   }
 
-  markCovered(itemId: string, subtitlePath: string, source: string, assrtSubId?: number): void {
+  /** M7: subtitlePath=null 表示只知道"已覆盖"但没有可信的字幕文件路径（如 already_exists）——
+   *  只改状态，不伪造 subtitles 行。 */
+  markCovered(itemId: string, subtitlePath: string | null, source: string, assrtSubId?: number): void {
     const now = Date.now()
 
     const markCoveredTransaction = this.db.transaction(() => {
@@ -230,13 +232,15 @@ export class LibraryRepo {
       }
 
       // Insert subtitle record (UNIQUE constraint handles duplicates)
-      this.db
-        .prepare(
-          `INSERT INTO subtitles (item_id, path, language, source, assrt_sub_id, created_at)
-           VALUES (?, ?, 'zh-Hans', ?, ?, ?)
-           ON CONFLICT(item_id, path) DO NOTHING`
-        )
-        .run(itemId, subtitlePath, source, assrtSubId ?? null, now)
+      if (subtitlePath !== null) {
+        this.db
+          .prepare(
+            `INSERT INTO subtitles (item_id, path, language, source, assrt_sub_id, created_at)
+             VALUES (?, ?, 'zh-Hans', ?, ?, ?)
+             ON CONFLICT(item_id, path) DO NOTHING`
+          )
+          .run(itemId, subtitlePath, source, assrtSubId ?? null, now)
+      }
     })
 
     markCoveredTransaction()

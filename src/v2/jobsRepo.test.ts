@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from './db.js'
-import { JobsRepo, CONTENT_BACKOFF_DAYS, errorBackoffMs } from './jobsRepo.js'
+import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS } from './jobsRepo.js'
 
 let repo: JobsRepo
 beforeEach(() => { repo = new JobsRepo(openDb(':memory:')) })
@@ -66,6 +66,57 @@ describe('jobs 状态机', () => {
     const row = repo.get(j.id)!
     expect(row.state).toBe('failed')
     expect(row.next_retry_at! - Date.now()).toBeLessThanOrEqual(errorBackoffMs(1) + 1000)
+  })
+  it('错误退避阶梯激进：第 1 次 30s 后可重领，第 5+ 次 15min 封顶', () => {
+    // 双轨速率差是有意的：网络类错误快重试到好，内容类失败按天退避
+    expect(ERROR_BACKOFF_MS).toEqual([30_000, 60_000, 120_000, 300_000])
+    expect(errorBackoffMs(5)).toBe(900_000)
+    expect(errorBackoffMs(99)).toBe(900_000)
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'ASSRT 500', t0)
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + 30_000)
+    expect(repo.claimNext(t0 + 29_000)).toBeNull()          // 30s 内不可领
+    expect(repo.claimNext(t0 + 30_000)?.id).toBe(j.id)      // 30s 后可重领
+    // 冲到第 5 次错误：封顶 15 分钟
+    for (let i = 2; i <= 5; i++) {
+      repo.completeError(j.id, 'ASSRT 500', t0)
+      if (i < 5) repo.forceClaim('s1', 4, t0)
+    }
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + 900_000)
+  })
+  it('部分成功节流（I6）：30s 内 claimNext 拿不到，窗口过后可领', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    repo.completePartial(j.id, now)
+    expect(repo.get(j.id)!.state).toBe('wanted')
+    expect(repo.claimNext(now)).toBeNull()                       // 立即重领被节流
+    expect(repo.claimNext(now + PARTIAL_RETRY_MS)?.id).toBe(j.id) // 窗口过后可领
+  })
+  it('done 复活（I2）：upsertWanted 对 done 行复位 wanted/attempt=0，failed/dormant 不动', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    repo.completeDone(j.id, now)
+    mkSeriesJob(now)                                     // 该季重新出现 missing → upsertWanted
+    const revived = repo.get(j.id)!
+    expect(revived.state).toBe('wanted')
+    expect(revived.attempt).toBe(0)
+    expect(revived.next_retry_at).toBeNull()
+    // failed 不动（保留退避计划）
+    const j2 = repo.claimNext(now)!
+    repo.completeNoMatch(j2.id, now)
+    mkSeriesJob(now)
+    const failedRow = repo.get(j2.id)!
+    expect(failedRow.state).toBe('failed')
+    expect(failedRow.attempt).toBe(1)
+    expect(failedRow.next_retry_at).not.toBeNull()
+    // dormant 不动（只有 wake 可以复活）
+    repo.forceState('s1', 4, 'dormant', now)
+    mkSeriesJob(now)
+    expect(repo.get(j2.id)!.state).toBe('dormant')
   })
   it('部分成功 attempt 减 1 而非清零（escalation 渐进恢复）', () => {
     const now = Date.now()
