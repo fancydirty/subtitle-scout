@@ -159,7 +159,7 @@ export class JobsRepo {
   }
 
   /** Partial success: attempt decrements (gradual escalation recovery), back to wanted for the remainder.
-   *  I6: 带 5 分钟节流窗（PARTIAL_RETRY_MS），防止 partial → wanted → 立即重领的紧循环。 */
+   *  I6: 带 30 秒节流窗（PARTIAL_RETRY_MS），防止 partial → wanted → 立即重领的紧循环。 */
   completePartial(jobId: number, now: number): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
