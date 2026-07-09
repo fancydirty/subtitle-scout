@@ -216,6 +216,25 @@ describe('scanLibrary', () => {
     expect(lib.getEpisode('e1')!.sub_status).toBe('unavailable')
   })
 
+  it('captures poster_tag: episode → series.poster_tag, movie → movies.poster_tag', async () => {
+    const pages = [
+      [epItem('e1', 1, 1, { SeriesPrimaryImageTag: 'series-ptag' })],
+      [movieItem({ ImageTags: { Primary: 'movie-ptag', Backdrop: 'x' } })],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 10,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+    })
+    expect((lib.db.prepare('select poster_tag from series where id=?').get('s1') as any).poster_tag).toBe('series-ptag')
+    expect(lib.getMovie('m1')!.poster_tag).toBe('movie-ptag')
+  })
+
   it('unavailable is overwritten when reality says covered', async () => {
     lib.upsertSeries({ id: 's1', name: 'Test' })
     lib.upsertEpisode({

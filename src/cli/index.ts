@@ -322,23 +322,26 @@ async function cmdWatch() {
     },
   }
 
-  // Dashboard (二期接 DB 后恢复)
-  // const dashPort = Number(process.env.DASHBOARD_PORT) || 0
-  // if (dashPort > 0) {
-  //   const distDir = join(new URL('../..', import.meta.url).pathname, 'web', 'dist')
-  //   const dashServer = await startDashboard({
-  //     cacheRoot,
-  //     port: dashPort,
-  //     token: process.env.DASHBOARD_TOKEN || undefined,
-  //     distDir,
-  //     getInFlight: () => [], // v2 二期接 DB 后恢复
-  //   })
-  //   if (dashServer.listening) {
-  //     console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
-  //   } else {
-  //     log('dashboard server failed to start (port conflict?), continuing without dashboard')
-  //   }
-  // }
+  // Dashboard v2（媒体库 API + 海报代理，读 v2 SQLite）
+  const dashPort = Number(process.env.DASHBOARD_PORT) || 0
+  if (dashPort > 0) {
+    const distDir = join(new URL('../..', import.meta.url).pathname, 'web', 'dist')
+    const dashServer = await startDashboard({
+      db,
+      port: dashPort,
+      token: process.env.DASHBOARD_TOKEN || undefined,
+      distDir,
+      jellyfin: {
+        baseUrl: requireEnv('JELLYFIN_URL'),
+        apiKey: requireEnv('JELLYFIN_API_KEY'),
+      },
+    })
+    if (dashServer.listening) {
+      console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
+    } else {
+      log('dashboard server failed to start (port conflict?), continuing without dashboard')
+    }
+  }
 
   console.log(`subtitle-scout v2 watching ${process.env.JELLYFIN_URL}`)
 

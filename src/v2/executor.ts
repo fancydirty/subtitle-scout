@@ -215,6 +215,19 @@ export function makeRunEpisode(
     const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
     const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)) : undefined
 
+    // 2b. Write chinese title back to library (仅当解析到 CJK 名时；失败静默不阻塞主流程)
+    if (chineseTitle) {
+      try {
+        if (item.Type === 'Episode' && item.SeriesId) {
+          lib.setSeriesChineseTitle(item.SeriesId, chineseTitle, Date.now())
+        } else if (item.Type === 'Movie') {
+          lib.setMovieChineseTitle(item.Id, chineseTitle, Date.now())
+        }
+      } catch {
+        /* 中文名回写失败不影响字幕主流程 */
+      }
+    }
+
     // 3. Build MediaContext + confidence override (I5a)
     const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
     applyConfidenceOverride(ctx)

@@ -126,4 +126,31 @@ describe('媒体镜像', () => {
       assrt_sub_id: 713052,
     })
   })
+
+  // chinese_title 回写 + 扫描不清空（task 2 依赖）
+  it('setSeriesChineseTitle 写回并记 checked_at，幂等', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.setSeriesChineseTitle('s1', '甲剧', 1000)
+    const row = lib.db.prepare('select chinese_title, chinese_title_checked_at from series where id=?').get('s1') as any
+    expect(row.chinese_title).toBe('甲剧')
+    expect(row.chinese_title_checked_at).toBe(1000)
+  })
+
+  it('upsertSeries 传 null chineseTitle 不清空已回写的中文名（scan 复扫不丢名）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.setSeriesChineseTitle('s1', '甲剧', 1000)
+    // 模拟后续 scan：只带 name/posterTag，chineseTitle 缺省为 null
+    lib.upsertSeries({ id: 's1', name: 'A', posterTag: 'ptag' })
+    const row = lib.db.prepare('select chinese_title, poster_tag from series where id=?').get('s1') as any
+    expect(row.chinese_title).toBe('甲剧')
+    expect(row.poster_tag).toBe('ptag')
+  })
+
+  it('setMovieChineseTitle 写回；upsertMovie 传 null 不清空', () => {
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/p', subStatus: 'missing' })
+    lib.setMovieChineseTitle('m1', '乙片', 2000)
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/p', subStatus: 'covered' })
+    expect(lib.getMovie('m1')!.chinese_title).toBe('乙片')
+    expect(lib.getMovie('m1')!.sub_status).toBe('covered')
+  })
 })

@@ -424,4 +424,38 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt')
     expect(jf.refreshItem).toHaveBeenCalledWith('e9') // I5d
   })
+
+  it('解析到中文名时写回 movies 行（task 2 回写）', async () => {
+    lib.upsertMovie({ id: 'm1', name: 'Test Movie', path: join(mediaRoot, 'movie', 'test.mkv'), subStatus: 'missing' })
+    const jf = {
+      getItem: vi.fn(async () => ({ Id: 'm1', Type: 'Movie', Name: 'Test Movie', Path: join(mediaRoot, 'movie', 'test.mkv') })),
+      getChineseTitle: vi.fn(async () => '测试电影'),
+      refreshItem: vi.fn(async () => {}),
+    }
+    runPipelineMock.mockResolvedValue({
+      decision: 'no_safe_match', journalPath: '/j.json',
+      stats: { durationMs: 1, llmCalls: 0, apiCalls: 0 },
+    })
+    const runEpisode = makeRunEpisode(mkAssembled(jf), lib, { mediaRoots: [mediaRoot] })
+    await runEpisode('m1', vi.fn())
+    expect(lib.getMovie('m1')!.chinese_title).toBe('测试电影')
+  })
+
+  it('解析到中文名时写回 series 行（episode → SeriesId）', async () => {
+    lib.upsertSeries({ id: 's1', name: 'Test Series' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: join(mediaRoot, 'movie', 'test.mkv'), subStatus: 'missing' })
+    const jf = {
+      getItem: vi.fn(async () => ({ Id: 'e1', Type: 'Episode', SeriesId: 's1', Name: 'E1', Path: join(mediaRoot, 'movie', 'test.mkv') })),
+      getChineseTitle: vi.fn(async () => '测试剧集'),
+      refreshItem: vi.fn(async () => {}),
+    }
+    runPipelineMock.mockResolvedValue({
+      decision: 'no_safe_match', journalPath: '/j.json',
+      stats: { durationMs: 1, llmCalls: 0, apiCalls: 0 },
+    })
+    const runEpisode = makeRunEpisode(mkAssembled(jf), lib, { mediaRoots: [mediaRoot] })
+    await runEpisode('e1', vi.fn())
+    const row = lib.db.prepare('select chinese_title from series where id=?').get('s1') as any
+    expect(row.chinese_title).toBe('测试剧集')
+  })
 })

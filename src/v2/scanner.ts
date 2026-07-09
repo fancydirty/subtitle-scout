@@ -100,6 +100,7 @@ export async function scanLibrary(
         lib.upsertSeries({
           id: item.SeriesId,
           name: item.SeriesName ?? item.SeriesId,
+          posterTag: item.SeriesPrimaryImageTag ?? null,
         })
 
         // Preserve unavailable only if reality still says missing
@@ -135,6 +136,7 @@ export async function scanLibrary(
           name: item.Name,
           path: item.Path ?? '',
           subStatus: statusToWrite,
+          posterTag: item.ImageTags?.Primary ?? null,
           year: item.ProductionYear ?? null,
           providerIds: item.ProviderIds
             ? JSON.stringify(item.ProviderIds)

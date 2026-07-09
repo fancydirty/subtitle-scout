@@ -31,6 +31,9 @@ export const JellyfinItemSchema = z.object({
   ProductionLocations: z.array(z.string()).nullish(),
   DateCreated: z.string().nullish(),
   Overview: z.string().nullish(),
+  // 海报代理用：Movie 取 ImageTags.Primary，Episode 取 SeriesPrimaryImageTag（Jellyfin 默认返回）
+  ImageTags: z.record(z.string(), z.string()).nullish(),
+  SeriesPrimaryImageTag: z.string().nullish(),
 }).passthrough()
 export type JellyfinItem = z.infer<typeof JellyfinItemSchema>
 
