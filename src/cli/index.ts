@@ -19,9 +19,9 @@ import { rankCandidates } from '../agent/rankCandidates.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
-import { Watcher } from '../daemon/watcher.js'
+// import { Watcher } from '../daemon/watcher.js'  // v1 watcher — 保留文件但不再引用
 import { CHINESE_LANG_TAGS } from '../daemon/triggers.js'
-import { PrefetchQueue } from '../daemon/queue.js'
+// import { PrefetchQueue } from '../daemon/queue.js'  // v1 queue — v2 不用
 import { scanOrphans } from '../files/orphanScanner.js'
 import { judgeOrphan } from '../agent/judgeOrphan.js'
 import { Ledger } from '../core/ledger.js'
@@ -36,6 +36,15 @@ import {
   checkJellyfin, checkAssrt, checkLlm, checkMediaRoots, checkPathMappings,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
+import { openDb } from '../v2/db.js'
+import { JobsRepo } from '../v2/jobsRepo.js'
+import { LibraryRepo } from '../v2/libraryRepo.js'
+import { RunsRepo } from '../v2/runsRepo.js'
+import { scanLibrary } from '../v2/scanner.js'
+import { aggregate } from '../v2/aggregator.js'
+import { executeJob, makeRunEpisode } from '../v2/executor.js'
+import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
+import type { MediaItem } from '../adapters/players/types.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -233,114 +242,113 @@ async function cmdRunItem(itemId: string) {
 
 async function cmdWatch() {
   const { makeDeps, withJournal, cacheRoot, llm, jf, mappings } = await assemble()
-  // 停机时中止在跑的 verify 轮询（否则 6×10s 阻塞会把优雅退出拖到 ~60s）
   const shutdown = new AbortController()
   const roots = mediaRoots(mappings)
   if (roots.length === 0) {
     console.log('[watch] no MEDIA_ROOTS/MEDIA_PATH_MAPPINGS configured — subtitle writes are not root-restricted; set MEDIA_ROOTS to harden')
   }
-  const pollSeconds = Number(process.env.POLL_INTERVAL_SECONDS) || 15
-  const ledger = new Ledger(join(cacheRoot, 'ledger.jsonl'))
+
   const fileLog = makeFileLogger(join(cacheRoot, 'logs'), Number(process.env.LOG_RETAIN_DAYS) || 30)
   const log = (msg: string) => {
     const line = `[watch ${new Date().toISOString()}] ${msg}`
     console.log(line)
     fileLog(msg)
   }
-  const queue = new PrefetchQueue(
-    join(cacheRoot, 'queue.json'),
-    undefined,
-    e => {
-      try { ledger.append({ ts: Date.now(), type: 'queue', ...e }) } catch { /* 观测不影响主流程 */ }
-    }
-  )
-  const watcher = new Watcher({
-    jellyfin: {
-      getSessions: () => jf.getSessions(),
-      getItem: id => jf.getItem(id),
-      refreshItem: id => jf.refreshItem(id),
-      getRecentItems: l => jf.getRecentItems(l),
-      getChineseTitle: item => jf.getChineseTitle(item),
+
+  // Open v2 database
+  const dbPath = join(cacheRoot, 'scout.db')
+  const db = openDb(dbPath)
+  const jobs = new JobsRepo(db)
+  const lib = new LibraryRepo(db)
+  const runs = new RunsRepo(db)
+
+  // Create runEpisode closure
+  const runEpisode = makeRunEpisode({ ...await assemble(), jf, mappings, makeDeps, withJournal, cacheRoot }, lib)
+
+  // Construct DaemonDeps
+  const skipChineseOrigin = (process.env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false'
+
+  const daemonDeps: DaemonDeps = {
+    lib,
+    jobs,
+    runs,
+    scan: async () => {
+      await scanLibrary(jf, lib, {
+        pageSize: 100,
+        fileExists: (p) => existsSync(p),
+        mappings,
+        skipChineseOrigin,
+      })
     },
-    runJob: async (ctx, outDir, itemId, opts) => {
-      applyConfidenceOverride(ctx)
-      const journalDir = join(cacheRoot, 'journals', `${itemId}-${Date.now()}`)
-      return withJournal(() => runPipeline(
-        makeDeps({ itemId, onCovered: async (ep) => { queue.remove(ep.itemId); await jf.refreshItem(ep.itemId).catch(() => {}) } }),
-        ctx, outDir, journalDir, opts))
+    aggregate: (now) => aggregate(lib, jobs, now),
+    executeJob: async (job) => {
+      await withJournal(() => executeJob(job, {
+        lib,
+        jobs,
+        runEpisode,
+        now: () => Date.now(),
+      }))
     },
-    verify: id => verifyChineseSubtitle(jf, id, shutdown.signal),
-    pathMappings: mappings,
-    pathExists: p => existsSync(p),
-    isWritable: dir => isDirWritable(dir),
-    treatPgsAsMissing: (process.env.TREAT_PGS_AS_MISSING ?? 'true') !== 'false',
-    cooldownMinutes: Number(process.env.ITEM_COOLDOWN_MINUTES) || 30,
-    mediaRoots: roots,
-    skipChineseOrigin: (process.env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false',
-    skipCacheMinutes: Number(process.env.SKIP_CACHE_MINUTES) || 5,
-    queue,
+    getSessions: () => jf.getSessions(),
+    episodeForSession: (item: MediaItem) => {
+      if (item.Type === 'Episode' && item.SeriesId && item.ParentIndexNumber !== undefined && item.ParentIndexNumber !== null) {
+        return {
+          kind: 'series_season' as const,
+          seriesId: item.SeriesId,
+          season: item.ParentIndexNumber,
+        }
+      }
+      if (item.Type === 'Movie' && item.Id) {
+        return {
+          kind: 'movie' as const,
+          movieId: item.Id,
+        }
+      }
+      return null
+    },
     log,
-    onRunComplete: r => {
-      try {
-        ledger.append({
-          ts: Date.now(),
-          type: 'run',
-          itemId: r.itemId,
-          name: r.name,
-          source: r.source,
-          decision: r.result.decision,
-          confidence: null,
-          subtitlePath: r.result.subtitlePath ?? null,
-          journalPath: r.result.journalPath,
-          llmProfile: llm.profileInfo(),
-          durationMs: r.result.stats?.durationMs ?? 0,
-          llmCalls: r.result.stats?.llmCalls ?? 0,
-          assrtCalls: r.result.stats?.apiCalls ?? 0,
-          error: r.result.decision === 'error' ? (r.result.errorMessage ?? null) : null,
-        })
-      } catch { /* 观测不影响主流程 */ }
+    now: () => Date.now(),
+    reconcileEveryMs: 15 * 60_000,   // 15 min
+    fullScanEveryMs: 6 * 3600_000,   // 6 hours (一期全量扫描，此字段预留)
+    concurrency: {
+      searching: 1,
+      downloading: 2,  // 一期由 executor 内部串行，此处预留
+      verifying: 2,    // 一期由 executor 内部串行，此处预留
     },
-    pruneJournals: () => pruneOldDirs(join(cacheRoot, 'journals'), Number(process.env.JOURNAL_RETAIN_DAYS) || 90),
-  })
-  const dashPort = Number(process.env.DASHBOARD_PORT) || 0
-  if (dashPort > 0) {
-    const distDir = join(new URL('../..', import.meta.url).pathname, 'web', 'dist')
-    const dashServer = await startDashboard({
-      cacheRoot,
-      port: dashPort,
-      token: process.env.DASHBOARD_TOKEN || undefined,
-      distDir,
-      getInFlight: () => watcher.inFlightItems(),
-    })
-    if (dashServer.listening) {
-      console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
-    } else {
-      log('dashboard server failed to start (port conflict?), continuing without dashboard')
-    }
   }
-  console.log(`subtitle-scout watching ${process.env.JELLYFIN_URL} every ${pollSeconds}s`)
-  let stopping = false
-  const stop = async () => {
-    if (stopping) process.exit(1)
-    stopping = true
-    shutdown.abort() // 唤醒在跑的 verify 轮询，别把退出拖到 60s
-    console.log('shutting down after in-flight jobs...')
-    while (watcher.busy()) await new Promise(r => setTimeout(r, 500))
-    process.exit(0)
+
+  // Dashboard (二期接 DB 后恢复)
+  // const dashPort = Number(process.env.DASHBOARD_PORT) || 0
+  // if (dashPort > 0) {
+  //   const distDir = join(new URL('../..', import.meta.url).pathname, 'web', 'dist')
+  //   const dashServer = await startDashboard({
+  //     cacheRoot,
+  //     port: dashPort,
+  //     token: process.env.DASHBOARD_TOKEN || undefined,
+  //     distDir,
+  //     getInFlight: () => [], // v2 二期接 DB 后恢复
+  //   })
+  //   if (dashServer.listening) {
+  //     console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
+  //   } else {
+  //     log('dashboard server failed to start (port conflict?), continuing without dashboard')
+  //   }
+  // }
+
+  console.log(`subtitle-scout v2 watching ${process.env.JELLYFIN_URL}`)
+
+  const daemon = new ScoutDaemon(daemonDeps)
+
+  const stop = () => {
+    log('received shutdown signal')
+    shutdown.abort()
   }
-  process.on('SIGINT', stop); process.on('SIGTERM', stop)
-  const arrivalsEvery = (Number(process.env.ARRIVALS_POLL_MINUTES) || 15) * 60_000
-  const consumeEvery = (Number(process.env.PREFETCH_INTERVAL_MINUTES) || 10) * 60_000
-  let lastArrivals = 0, lastConsume = 0
-  for (;;) {
-    if (!stopping) {
-      await watcher.tick()
-      const now = Date.now()
-      if (now - lastArrivals >= arrivalsEvery) { lastArrivals = now; await watcher.arrivalsTick() }
-      if (now - lastConsume >= consumeEvery) { lastConsume = now; await watcher.consumeTick() }
-    }
-    await new Promise(r => setTimeout(r, pollSeconds * 1000))
-  }
+
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+
+  await daemon.run(shutdown.signal)
+  process.exit(0)
 }
 
 async function cmdReport(since: string) {
@@ -354,8 +362,9 @@ async function cmdReport(since: string) {
     process.exit(2)
   }
   const { events, badLines } = ledger.read(sinceMs)
-  let queueNow = { pending: 0, dormant: 0 }
-  try { queueNow = new PrefetchQueue(join(cacheRoot, 'queue.json')).size() } catch { /* 无队列文件 */ }
+  // v2: queue 不再使用，报告暂时传空队列状态（二期接 DB 后恢复）
+  const queueNow = { pending: 0, dormant: 0 }
+  // try { queueNow = new PrefetchQueue(join(cacheRoot, 'queue.json')).size() } catch { /* 无队列文件 */ }
   process.stdout.write(formatReport(events, badLines, queueNow))
   process.exit(0)
 }
