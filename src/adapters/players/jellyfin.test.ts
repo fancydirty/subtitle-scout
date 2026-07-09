@@ -127,6 +127,21 @@ describe('getChineseTitle', () => {
     expect(sent.SearchInfo.MetadataLanguage).toBe('zh-CN')
     expect(sent.SearchInfo.ProviderIds).toEqual({ Tmdb: '937941' })
   })
+  it('falls back to zh-TW when zh-CN returns a non-CJK name (TMDB per-title data hole)', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse([{ Name: 'Love, Death & Robots', ProductionYear: 2019 }]))
+      .mockResolvedValueOnce(jsonResponse([{ Name: '\u611b x \u6b7b x \u6a5f\u5668\u4eba', ProductionYear: 2019 }]))
+    const jf = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await jf.getChineseTitle(movieItem())).toBe('\u611b x \u6b7b x \u6a5f\u5668\u4eba')
+    const second = JSON.parse((fetchImpl.mock.calls[1] as unknown as [string, RequestInit])[1].body as string)
+    expect(second.SearchInfo.MetadataLanguage).toBe('zh-TW')
+  })
+  it('returns null when both zh-CN and zh-TW yield non-CJK names', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse([{ Name: 'Love, Death & Robots', ProductionYear: 2019 }]))
+    const jf = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await jf.getChineseTitle(movieItem())).toBeNull()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
   it('returns null on empty results', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse([]))
     const jf = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
