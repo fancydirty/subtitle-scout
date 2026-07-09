@@ -254,6 +254,236 @@ describe('runPipeline', () => {
     expect(pickSeasonPack([mk(9, ['a.chs.srt'])])).toBeUndefined()   // no pack → undefined
   })
 
+  it('season sweep: maps 4 loose per-episode candidates to 4 episodes in one run', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      { id: 801, videoname: 'Show.S02E01.chs', native_name: '第1集', filelist: [{ f: 'Show.S02E01.chs.ass', url: 'http://dl/801' }] },
+      { id: 802, videoname: 'Show.S02E02.chs', native_name: '第2集', filelist: [{ f: 'Show.S02E02.chs.ass', url: 'http://dl/802' }] },
+      { id: 803, videoname: 'Show.S02E03.chs', native_name: '第3集', filelist: [{ f: 'Show.S02E03.chs.ass', url: 'http://dl/803' }] },
+      { id: 804, videoname: 'Show.S02E04.chs', native_name: '第4集', filelist: [{ f: 'Show.S02E04.chs.ass', url: 'http://dl/804' }] },
+    ]
+    const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+      { itemId: 'e3', seasonNumber: 2, episodeNumber: 3, episodeCode: 'S02E03', videoPath: join(outDir, 'Show.S02E03.mkv'), videoFilename: 'Show.S02E03.mkv', needsChinese: true },
+      { itemId: 'e4', seasonNumber: 2, episodeNumber: 4, episodeCode: 'S02E04', videoPath: join(outDir, 'Show.S02E04.mkv'), videoFilename: 'Show.S02E04.mkv', needsChinese: true },
+    ]
+    const covered: string[] = []
+    const llm = {
+      call: vi.fn(async () => ({
+        parsed: { assignments: [
+          { episode_code: 'S02E01', sub_id: 801, confidence: 0.95 },
+          { episode_code: 'S02E02', sub_id: 802, confidence: 0.95 },
+          { episode_code: 'S02E03', sub_id: 803, confidence: 0.95 },
+          { episode_code: 'S02E04', sub_id: 804, confidence: 0.95 },
+        ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+      })),
+    }
+    const detail = vi.fn(async (id: number) => {
+      const sub = looseCandidates.find(c => c.id === id)!
+      return AssrtDetailResponseSchema.parse({ status: 0, sub: { subs: [sub] } })
+    })
+    const deps = makeDeps({
+      assrt: { search, detail },
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E01', 'S02E02', 'S02E03', 'S02E04'])
+    expect(covered.sort()).toEqual(['S02E01', 'S02E02', 'S02E03', 'S02E04'])
+    expect(llm.call).toHaveBeenCalledTimes(1) // one LLM call maps the whole season
+    expect(detail).toHaveBeenCalledTimes(4)
+    expect(existsSync(join(outDir, 'Show.S02E01.zh-Hans.ass'))).toBe(true)
+    expect(existsSync(join(outDir, 'Show.S02E04.zh-Hans.ass'))).toBe(true)
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweep')).toBe(true)
+  })
+
+  it('season sweep: does NOT trigger when a whole-season pack is available (pack has priority)', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const packCandidate = seasonDetail.sub.subs[0]
+    const looseCandidates = [
+      packCandidate, // whole-season pack
+      { id: 801, videoname: 'Show.S02E01.chs', filelist: [{ f: 'Show.S02E01.chs.ass', url: 'http://dl/801' }] },
+    ]
+    const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+    ]
+    const llmSweep = vi.fn()
+    const deps = makeDeps({
+      assrt: { search, detail: vi.fn(async () => seasonDetail) },
+      llm: { call: llmSweep } as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(async () => ({
+          parsed: { pairs: [{ filelist_index: 0, episode_code: 'S02E01', confidence: 0.95, reason: 'x' }], unmapped_files: [], reasons: [] },
+          rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+        })),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    await runPipeline(deps, epCtx, outDir)
+    expect(llmSweep).not.toHaveBeenCalled() // pack path used, sweep skipped
+  })
+
+  it('season sweep: does NOT trigger when only 1 episode needs subs', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      { id: 801, videoname: 'Show.S02E01.chs', filelist: [{ f: 'Show.S02E01.chs.ass' }] },
+    ]
+    const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: false },
+    ]
+    const llmSweep = vi.fn()
+    const deps = makeDeps({
+      assrt: { search, detail: vi.fn(async () => detailResp) },
+      llm: { call: llmSweep } as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    await runPipeline(deps, epCtx, outDir)
+    expect(llmSweep).not.toHaveBeenCalled() // only 1 episode needs subs, no sweep
+  })
+
+  it('season sweep: filters out low-confidence assignments below auto_download_min_confidence', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      { id: 801, videoname: 'Show.S02E01.chs', filelist: [{ f: 'Show.S02E01.chs.ass', url: 'http://dl/801' }] },
+      { id: 802, videoname: 'Show.S02E02.maybe', filelist: [{ f: 'Show.S02E02.ass', url: 'http://dl/802' }] },
+      { id: 803, videoname: 'Show.S02E03.chs', filelist: [{ f: 'Show.S02E03.chs.ass', url: 'http://dl/803' }] },
+    ]
+    const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+      { itemId: 'e3', seasonNumber: 2, episodeNumber: 3, episodeCode: 'S02E03', videoPath: join(outDir, 'Show.S02E03.mkv'), videoFilename: 'Show.S02E03.mkv', needsChinese: true },
+    ]
+    const llm = {
+      call: vi.fn(async () => ({
+        parsed: { assignments: [
+          { episode_code: 'S02E01', sub_id: 801, confidence: 0.95 },
+          { episode_code: 'S02E02', sub_id: 802, confidence: 0.70 }, // below auto_download_min_confidence
+          { episode_code: 'S02E03', sub_id: 803, confidence: 0.90 },
+        ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+      })),
+    }
+    const detail = vi.fn(async (id: number) => {
+      const sub = looseCandidates.find(c => c.id === id)!
+      return AssrtDetailResponseSchema.parse({ status: 0, sub: { subs: [sub] } })
+    })
+    const deps = makeDeps({
+      assrt: { search, detail },
+      rank: vi.fn(async () => ({
+        parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], rejected: [] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      })) as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.length).toBe(2) // E01 and E03; E02 filtered out
+    expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E01', 'S02E03'])
+    expect(detail).toHaveBeenCalledTimes(2) // only high-confidence assignments resolve detail
+  })
+
+  it('season sweep: 0-coverage falls back to single-episode path; alias-harvest fallback stays reachable', async () => {
+    // Ordering guard: on a no_safe_match rank the alias-harvest fallback fires (rank phase),
+    // its fresh loose candidates then reach the season block where a sweep is attempted;
+    // when the sweep covers nothing it must fall through to the normal single-episode download.
+    // The two fallbacks must chain, never short-circuit each other.
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    // First-round candidate carries a CJK name so alias harvest actually calls the LLM.
+    const firstResp = AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: [
+      { id: 700, videoname: '流浪剧.Wandering.S02E01', native_name: '流浪剧', filelist: [{ f: 'x.srt' }] },
+    ] } })
+    const aliasCandidates = [
+      { id: 901, videoname: '流浪剧.S02E01', native_name: '流浪剧 第1集', filelist: [{ f: 'S02E01.chs.ass', url: 'http://dl/901' }] },
+      { id: 902, videoname: '流浪剧.S02E02', native_name: '流浪剧 第2集', filelist: [{ f: 'S02E02.chs.ass', url: 'http://dl/902' }] },
+    ]
+    const aliasResp = AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: aliasCandidates } })
+    const search = vi.fn()
+      .mockResolvedValueOnce(firstResp) // query 1
+      .mockResolvedValueOnce(firstResp) // query 2 (dedup)
+      .mockResolvedValueOnce(aliasResp) // alias-harvest search
+    const rank = vi.fn()
+      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, assrt_id: 901, file_index: 0, confidence: 0.9, reasons: ['alias match'], rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+    const llmCall = vi.fn(async (opts: { name: string }) => {
+      if (opts.name === 'extract_chinese_alias') {
+        return { parsed: { alias: '流浪剧', confidence: 0.95 }, rawText: '', retries: 0, durationMs: 1, prompt: '' }
+      }
+      // map_loose_episodes → no confident assignments → sweep covers nothing
+      return { parsed: { assignments: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: '' }
+    })
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+    ]
+    const detail = vi.fn(async (id: number) => {
+      const sub = aliasCandidates.find(c => c.id === id) ?? aliasCandidates[0]
+      return AssrtDetailResponseSchema.parse({ status: 0, sub: { subs: [sub] } })
+    })
+    const onCovered = vi.fn()
+    const testCtx = structuredClone(ctx)
+    testCtx.media = { ...testCtx.media, type: 'episode', season: 2, episode: 1 }
+    testCtx.media.alternative_titles = [] // upstream has no CJK title → alias harvest allowed
+    const deps = makeDeps({
+      plan: vi.fn(async () => ({ parsed: { queries: [{ q: 'Show S02', reason: 's' }, { q: 'Show 2020', reason: 'y' }] }, rawText: '', retries: 0, durationMs: 1, prompt: 'p' })),
+      rank: rank as unknown as PipelineDeps['rank'],
+      assrt: { search, detail },
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: { call: llmCall } as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered,
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const result = await runPipeline(deps, testCtx, outDir)
+    // alias-harvest fallback stayed reachable: three searches, two rank passes
+    expect(search).toHaveBeenCalledTimes(3)
+    expect(rank).toHaveBeenCalledTimes(2)
+    const calledNames = llmCall.mock.calls.map(c => (c[0] as { name: string }).name)
+    expect(calledNames).toContain('extract_chinese_alias')
+    expect(calledNames).toContain('map_loose_episodes') // sweep was attempted on the alias result
+    // sweep covered nothing → fell back to the single-episode download path
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweepStart')).toBe(true)
+    expect(onCovered).not.toHaveBeenCalled()
+    expect(result.coveredEpisodes).toBeUndefined()
+    expect(result.decision).toBe('download')
+    expect(existsSync(result.subtitlePath!)).toBe(true)
+  })
+
   it('cached-positive episode hit does NOT trigger season graduation (no enumerate)', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
