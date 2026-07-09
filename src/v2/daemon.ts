@@ -140,42 +140,30 @@ export class ScoutDaemon {
         const ident = episodeForSession(item)
         if (!ident) continue
 
-        // Check if this item is missing subtitle
-        let isMissing = false
+        // 播放触发判据：正在播放的**具体条目**只要在库且非 covered/embedded/ignored，
+        // 就无条件 wake+boost——包括 unavailable 且 recheck_after 在未来的（dormant/退避中）。
+        // recheck 门是给后台调和用的，对"用户正对着这集催"不适用。
+        const row =
+          ident.kind === 'movie' && ident.movieId
+            ? lib.getMovie(ident.movieId)
+            : lib.getEpisode(item.Id)
 
-        if (ident.kind === 'series_season' && ident.seriesId && ident.season !== undefined) {
-          const episode = lib.db
-            .prepare(
-              `SELECT sub_status, recheck_after FROM episodes
-               WHERE series_id = ? AND season = ?
-               LIMIT 1`
-            )
-            .get(ident.seriesId, ident.season) as
-            | { sub_status: string; recheck_after: number | null }
-            | undefined
-
-          if (
-            episode &&
-            (episode.sub_status === 'missing' ||
-              (episode.sub_status === 'unavailable' &&
-                (episode.recheck_after ?? 0) <= now()))
-          ) {
-            isMissing = true
-          }
-        } else if (ident.kind === 'movie' && ident.movieId) {
-          const movie = lib.getMovie(ident.movieId)
-          if (
-            movie &&
-            (movie.sub_status === 'missing' ||
-              (movie.sub_status === 'unavailable' && (movie.recheck_after ?? 0) <= now()))
-          ) {
-            isMissing = true
-          }
+        if (!row) continue // 不在库镜像里（未扫到/非媒体项）
+        if (
+          row.sub_status === 'covered' ||
+          row.sub_status === 'embedded' ||
+          row.sub_status === 'ignored'
+        ) {
+          continue // 已有中文字幕或不需要——不值得再试
         }
 
-        if (!isMissing) continue
+        // unavailable 的条目：recheck_after 拉回 now，否则 wake 了 job
+        // 但 executor 重derive targets 时 recheck 门会把这集挡在外面，白跑一轮。
+        if (row.sub_status === 'unavailable') {
+          lib.resetRecheck(row.id, now())
+        }
 
-        // Item is missing subtitle and currently playing
+        // Item lacks a Chinese subtitle and is currently playing
         // Try to wake (if dormant) and boost priority
         if (ident.kind === 'series_season' && ident.seriesId && ident.season !== undefined) {
           const woken = jobs.wake(

@@ -166,8 +166,9 @@ describe('ScoutDaemon', () => {
     expect(aggregate).toHaveBeenCalledOnce()
   })
 
-  it('pollSessions命中缺字幕条目时wake/boost', async () => {
-    // Setup: episode missing subtitle
+  it('pollSessions命中退避中的集（unavailable+未来recheck+dormant job）也能wake/boost', async () => {
+    // 真实态：内容性失败穷尽退避后——集 unavailable 且 recheck_after 在未来，job dormant。
+    // 播放触发存在的意义就是让用户能对着难找的剧手动催，判据不吃 recheck 门。
     lib.upsertSeries({ id: 's1', name: 'Series 1' })
     lib.upsertEpisode({
       id: 'e1',
@@ -178,8 +179,9 @@ describe('ScoutDaemon', () => {
       path: '/media/s1e1.mkv',
       subStatus: 'missing',
     })
+    lib.markUnavailable('e1', '搜索穷尽', now + 30 * 86_400_000) // recheck 在未来 30 天
 
-    // Create dormant job for this season
+    // Job dormant（退避穷尽）
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
     jobs.forceState('s1', 1, 'dormant', now)
 
@@ -197,10 +199,46 @@ describe('ScoutDaemon', () => {
     const daemon = new ScoutDaemon(makeDeps({ getSessions, episodeForSession }))
     await daemon.pollSessions()
 
-    // Job should be woken from dormant
+    // Job should be woken from dormant with priority 100
     const job = jobs.find('s1', 1)
     expect(job?.state).toBe('wanted')
     expect(job?.priority).toBe(100)
+
+    // 该集 recheck_after 应被拉回 now，让 executor 重derive 能纳入它
+    const ep = lib.getEpisode('e1')!
+    expect(ep.sub_status).toBe('unavailable')
+    expect(ep.recheck_after).toBeLessThanOrEqual(now)
+  })
+
+  it('pollSessions对covered条目不wake', async () => {
+    lib.upsertSeries({ id: 's1', name: 'Series 1' })
+    lib.upsertEpisode({
+      id: 'e1',
+      seriesId: 's1',
+      season: 1,
+      episode: 1,
+      name: 'Episode 1',
+      path: '/media/s1e1.mkv',
+      subStatus: 'covered',
+    })
+
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    jobs.forceState('s1', 1, 'dormant', now)
+
+    const getSessions = vi.fn(async () => [{
+      Id: 'session1',
+      NowPlayingItem: { Id: 'e1', Type: 'Episode', SeriesId: 's1', ParentIndexNumber: 1 },
+    }] as PlaybackSession[])
+
+    const episodeForSession = vi.fn(() => ({
+      kind: 'series_season' as const, seriesId: 's1', season: 1,
+    }))
+
+    const daemon = new ScoutDaemon(makeDeps({ getSessions, episodeForSession }))
+    await daemon.pollSessions()
+
+    // Covered episode should not trigger wake
+    expect(jobs.find('s1', 1)?.state).toBe('dormant')
   })
 
   it('pollSessions错误不影响后续运行', async () => {

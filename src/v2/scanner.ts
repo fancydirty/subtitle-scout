@@ -90,13 +90,12 @@ export async function scanLibrary(
           continue
         }
 
-        // Upsert series first (dedupe by id)
-        if (item.SeriesName) {
-          lib.upsertSeries({
-            id: item.SeriesId,
-            name: item.SeriesName,
-          })
-        }
+        // Upsert series first (dedupe by id)——只要有 SeriesId 就必须建 series 行，
+        // 否则刮削残缺（无 SeriesName）的 Episode 会触发 FK 违例卡死整轮 scan。
+        lib.upsertSeries({
+          id: item.SeriesId,
+          name: item.SeriesName ?? item.SeriesId,
+        })
 
         // Preserve unavailable only if reality still says missing
         // covered/embedded/ignored/missing are reality checks that overwrite unavailable

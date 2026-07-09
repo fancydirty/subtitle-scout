@@ -214,4 +214,20 @@ describe('scanLibrary', () => {
     expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('Episode without SeriesId'))
     consoleWarn.mockRestore()
   })
+
+  it('Episode 有 SeriesId 无 SeriesName：scan 不炸且 series 行存在（FK guard）', async () => {
+    const pages = [[epItem('e1', 1, 1, { SeriesName: undefined })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 10,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+    })
+    // series 行必须存在（name 用 SeriesId 兜底），episode 正常入库
+    expect(lib.db.prepare('select id, name from series where id=?').get('s1')).toMatchObject({ id: 's1', name: 's1' })
+    expect(lib.getEpisode('e1')).not.toBeNull()
+  })
 })

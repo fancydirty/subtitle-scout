@@ -246,6 +246,30 @@ export class LibraryRepo {
     markCoveredTransaction()
   }
 
+  /**
+   * 播放触发用：把 unavailable 条目的 recheck_after 拉回 now，
+   * 让 executor 重derive targets 时能纳入它（后台调和的 recheck 门对播放触发不适用）。
+   */
+  resetRecheck(itemId: string, now: number): void {
+    const episodeResult = this.db
+      .prepare(
+        `UPDATE episodes
+         SET recheck_after = ?, updated_at = ?
+         WHERE id = ? AND sub_status = 'unavailable'`
+      )
+      .run(now, now, itemId)
+
+    if (episodeResult.changes === 0) {
+      this.db
+        .prepare(
+          `UPDATE movies
+           SET recheck_after = ?, updated_at = ?
+           WHERE id = ? AND sub_status = 'unavailable'`
+        )
+        .run(now, now, itemId)
+    }
+  }
+
   markUnavailable(itemId: string, reason: string, recheckAfter: number): void {
     const now = Date.now()
 
