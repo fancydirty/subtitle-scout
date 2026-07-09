@@ -343,6 +343,23 @@ describe('adoptLocal step', () => {
     expect(deps.assrt.search).not.toHaveBeenCalled()
   })
 
+  it('judgeOrphan error degrades gracefully, continues to ASSRT (production robustness)', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'media-'))
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    writeFileSync(join(mediaDir, '乱名字幕.ass'), '[Script Info]\nTitle: orphan\n')
+    // Simulate judgeOrphan throwing (StructuredOutputError exhausted retries, schema parse failure, etc.)
+    const judge = vi.fn(async () => { throw new Error('StructuredOutputError: retries exhausted') })
+    const testCtx = structuredClone(ctx)
+    testCtx.media.path = join(mediaDir, 'The.Matrix.1999.1080p.BluRay.x264.mkv')
+    const deps = makeDeps({ adoption: adoptionDeps(mediaDir, judge) })
+    const result = await runPipeline(deps, testCtx, outDir)
+    // judgeOrphan failed but run continues → should reach ASSRT and produce normal decision
+    expect(result.decision).toBe('download') // golden path from makeDeps
+    expect(deps.assrt.search).toHaveBeenCalled() // fell through to search
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.steps.some((s: { name: string }) => s.name === 'judgeOrphanFailed')).toBe(true)
+  })
+
   it('returns stats with duration and call counts', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const result = await runPipeline(makeDeps(), ctx, outDir)

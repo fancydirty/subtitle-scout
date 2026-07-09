@@ -122,4 +122,18 @@ describe('M4 additions', () => {
     })
     expect(ok.file).toBe('x.ass')
   })
+  it('OrphanDecision allows "None" strings in rejection path (production case S04E12)', () => {
+    // LLM outputs {"adopt":false,"file":"None","language":"None"} when rejecting — should parse and normalize to null
+    const rejection = OrphanDecisionSchema.parse({
+      adopt: false, file: 'None', language: 'None', confidence: 1, reasons: ['not this video'],
+    })
+    expect(rejection.file).toBeNull()
+    expect(rejection.language).toBeNull()
+  })
+  it('OrphanDecision still enforces language enum when adopt=true', () => {
+    // Strictness preserved: adopt=true requires valid enum, "None" is rejected
+    expect(() => OrphanDecisionSchema.parse({
+      adopt: true, file: 'x.ass', language: 'None', confidence: 0.9, reasons: [],
+    })).toThrow()
+  })
 })
