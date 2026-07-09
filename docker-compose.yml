@@ -24,6 +24,7 @@ services:
       LLM_MODEL: ${LLM_MODEL}
       LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
       ASSRT_TOKEN: ${ASSRT_TOKEN}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
       # 关键：本容器挂载的媒体路径必须与 Jellyfin 看到的路径一致，
       # 不一致时用 MEDIA_PATH_MAPPINGS 映射（见 README「路径映射」）。
       MEDIA_PATH_MAPPINGS: ${MEDIA_PATH_MAPPINGS:-}

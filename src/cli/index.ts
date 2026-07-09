@@ -10,6 +10,7 @@ import { runPipeline, type PipelineDeps, type PipelineResult } from '../core/pip
 import type { Journal } from '../core/journal.js'
 import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
+import { TmdbClient, tmdbTitles } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { createLlmRuntime } from '../agent/runtime.js'
 import { ProfileStore } from '../agent/profile.js'
@@ -62,6 +63,8 @@ export interface Assembled {
   llm: { profileInfo: () => { mode: string; quirkId?: string } }
   jf: PlayerServer
   mappings: PathMapping[]
+  /** 有 TMDB_API_KEY 时可用；取全部中文标题变体（增益路径，无 key 则 null）。 */
+  tmdb: TmdbClient | null
 }
 
 async function assemble(): Promise<Assembled> {
@@ -91,6 +94,8 @@ async function assemble(): Promise<Assembled> {
     cacheDir: join(cacheRoot, 'assrt-responses'),
     onApiCall: r => journalStore.getStore()?.journal?.apiCall(r),
   })
+  // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第四把钥匙」）。缺 key → null，走 jellyfin fallback。
+  const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
   const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string) => void | Promise<void> }): PipelineDeps => ({
     journalReady: j => { const s = journalStore.getStore(); if (s) s.journal = j; j.step('llm_profile', llm.profileInfo()) },
     identify: c => identifyMedia(llm, c),
@@ -117,7 +122,7 @@ async function assemble(): Promise<Assembled> {
       },
     } : {}),
   })
-  return { makeDeps, withJournal, cacheRoot, llm, jf, mappings }
+  return { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb }
 }
 
 function exitCodeFor(decision: PipelineResult['decision']): number {
@@ -184,10 +189,11 @@ async function cmdRun(contextPath: string, outDir: string) {
 }
 
 async function cmdRunItem(itemId: string) {
-  const { makeDeps, withJournal, cacheRoot, llm, jf, mappings } = await assemble()
+  const { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb } = await assemble()
   const item = await jf.getItem(itemId)
   const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
-  const ctx = buildMediaContext(item, mappings, { chineseTitle })
+  const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)) : undefined
+  const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
   applyConfidenceOverride(ctx)
   const roots = mediaRoots(mappings)
   if (!isUnderRoots(mediaDir(ctx), roots)) {
@@ -235,7 +241,7 @@ async function cmdRunItem(itemId: string) {
 }
 
 async function cmdWatch() {
-  const { makeDeps, withJournal, cacheRoot, llm, jf, mappings } = await assemble()
+  const { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb } = await assemble()
   const shutdown = new AbortController()
   const roots = mediaRoots(mappings)
   if (roots.length === 0) {
@@ -258,7 +264,7 @@ async function cmdWatch() {
 
   // Create runEpisode closure（I5b: 根限定经 opts 传入）
   const runEpisode = makeRunEpisode(
-    { makeDeps, withJournal, cacheRoot, llm, jf, mappings },
+    { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb },
     lib,
     { mediaRoots: roots },
   )

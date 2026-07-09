@@ -40,7 +40,7 @@ docker compose -f docker-compose.bundle.yml restart subtitle-scout
 
 ## 三把钥匙：怎么拿
 
-subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服务器。
+subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服务器。另有第四把可选钥匙 TMDB（强烈推荐，见本节末尾）。
 
 ### 1. ASSRT Token
 
@@ -74,6 +74,29 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服�
 4. 点击"新建"，复制生成的 key，填入 `.env` 的 `JELLYFIN_API_KEY`
 
 填完 `JELLYFIN_URL` 后即可启动：Jellyfin 在同机 Docker 上就用 `http://host.docker.internal:8096`（开箱即通，Linux 也支持）；在别的机器上则用 `http://<Jellyfin主机IP>:8096`。
+
+### 第四把钥匙（可选但强烈推荐）：TMDB API Key
+
+不是必填，但**中文搜索召回率会因此质变**——强烈建议配上。
+
+**为什么值得**：字幕库按标题的**具体变体**分区索引，而同一部片的中文译名往往有好几个变体。以生产实例《爱，死亡和机器人》为例，它在各处的官方/民间译名分裂成：
+
+- 「爱，死亡和机器人」（官方译名，用「和」）
+- 「爱死亡与机器人」（用「与」）
+- 「爱、死亡 & 机器人」（用顿号 + &）
+
+「和」≠「与」，字幕站把它们分在不同的搜索分区里。只拿到一个变体，就只搜得到那一个分区的字幕；拿到**全部变体**，召回率立刻上一个台阶。TMDB 的 `/alternative_titles` 接口正好躺着一部片在 CN/TW/HK 区的全部译名变体——这是无 key 时的 Jellyfin 单译名 fallback 给不了的。
+
+> 没有 key 也能跑：程序会退回 Jellyfin 的单中文译名。TMDB 纯粹是增益路径，任何失败都静默降级、绝不阻塞主流程。
+
+**怎么申请**（免费）：
+
+1. 注册 / 登录 [themoviedb.org](https://www.themoviedb.org)
+2. 右上角头像 → **设置（Settings）**
+3. 左侧 **API** → 申请一个 **Developer** key
+4. 复制 key（v3 的 32 位 key 或 v4 的 Read Access Token 都支持，程序自动识别认证方式）
+
+**填哪**：`.env` 的 `TMDB_API_KEY`。填完重启 scout 即生效。
 
 ---
 
@@ -189,6 +212,7 @@ docker compose exec subtitle-scout npx tsx src/cli/index.ts report --since 7d
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `MEDIA_PATH_MAPPINGS` | Jellyfin 路径到本地路径映射，格式 `jellyfin前缀=本地前缀` | 空 |
+| `TMDB_API_KEY` | TMDB key（可选，强烈推荐）——取全部中文译名变体，中文召回质变；见「第四把钥匙」 | 空 |
 | `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔） | 空 |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `AUTO_DOWNLOAD_MIN_CONFIDENCE` | 自动下载置信度阈值（0-1） | `0.86` |
