@@ -1,0 +1,12 @@
+node_modules
+.git
+.env
+scratch
+fixtures
+docs
+worker
+scripts
+output
+*.log
+web/node_modules
+web/dist

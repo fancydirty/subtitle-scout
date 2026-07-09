@@ -1,0 +1,5 @@
+{ "status": 0, "sub": { "subs": [ { "id": 900900, "videoname": "Show S02 整季", "native_name": "剧 第二季",
+  "lang": { "desc": "简体" }, "subtype": "ass", "filelist": [
+  { "s": "40KB", "f": "Show.S02E01.chs.ass", "url": "http://file0.assrt.net/pack/900900/1" },
+  { "s": "41KB", "f": "Show.S02E02.chs.ass", "url": "http://file0.assrt.net/pack/900900/2" },
+  { "s": "42KB", "f": "Show.S02E03.chs.ass", "url": "http://file0.assrt.net/pack/900900/3" } ] } ] } }

@@ -1,0 +1,18 @@
+.serena/
+node_modules/
+.wrangler/
+.dev.vars
+scratch/
+.env
+.env.*
+!.env.example
+.superpowers/
+
+# 作者私有（不随公开仓；本地保留）
+deploy/
+worker/
+docs/superpowers/
+docs/cloudflare-worker.md
+docs/product-shape.md
+jellyfin-config/
+cache/

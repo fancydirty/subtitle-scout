@@ -1,0 +1,37 @@
+{
+  "name": "subtitle-scout",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fancydirty/subtitle-scout.git"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "cli": "tsx src/cli/index.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.5",
+    "adm-zip": "^0.5.18",
+    "ai": "^7.0.15",
+    "chardet": "^2.2.0",
+    "dotenv": "^17.4.2",
+    "iconv-lite": "^0.7.3",
+    "tsx": "^4.23.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.107.0"
+  }
+}

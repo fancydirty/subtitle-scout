@@ -1,0 +1,25 @@
+{
+  "request_id": "fixture-matrix-001",
+  "trigger": "manual_search",
+  "media": {
+    "type": "movie",
+    "path": "/media/Movies/The Matrix (1999)/The.Matrix.1999.1080p.BluRay.x264.mkv",
+    "filename": "The.Matrix.1999.1080p.BluRay.x264.mkv",
+    "title": "The Matrix",
+    "original_title": "The Matrix",
+    "year": 1999,
+    "season": null,
+    "episode": null,
+    "runtime_minutes": 136,
+    "provider_ids": { "imdb": "tt0133093", "tmdb": "603" },
+    "production_locations": ["US", "AU"],
+    "existing_subtitles": [{ "language": "eng", "format": "srt", "source": "external" }]
+  },
+  "preferences": {
+    "language": "zh-Hans",
+    "prefer_bilingual": true,
+    "allow_traditional": true,
+    "allow_machine_translated": false,
+    "auto_download_min_confidence": 0.86
+  }
+}

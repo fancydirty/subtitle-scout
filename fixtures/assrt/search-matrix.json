@@ -1,0 +1,704 @@
+{
+  "status": 0,
+  "sub": {
+    "subs": [
+      {
+        "videoname": "The.Matrix.1999.Remastered.1080p.BluRay.Remux.TrueHD.Atmos.7.1",
+        "release_site": "人人影视YYeTs",
+        "revision": 0,
+        "native_name": "黑客帝国 The Matrix (1999)",
+        "upload_time": "2026-04-08 05:12:00",
+        "lang": {
+          "desc": "简",
+          "langlist": {
+            "langchs": true
+          }
+        },
+        "id": 715078,
+        "subtype": "Subrip(srt)",
+        "size": 88753,
+        "vote_score": 0,
+        "filename": "The.Matrix.1999.Remastered.1080p.BluRay.Remux.TrueHD.Atmos.7.1.srt",
+        "filelist": {}
+      },
+      {
+        "videoname": "不知道",
+        "release_site": "人人影视YYeTs",
+        "revision": 0,
+        "native_name": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ",
+        "upload_time": "2025-06-30 00:07:36",
+        "lang": {
+          "desc": "英 简 双语",
+          "langlist": {
+            "langeng": true,
+            "langchs": true,
+            "langdou": true
+          }
+        },
+        "id": 710068,
+        "subtype": "SSA",
+        "size": 162623,
+        "vote_score": 0,
+        "filename": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.ass",
+        "filelist": {}
+      },
+      {
+        "videoname": "The Matrix (1999) [OPEN MATTE] [WEB-DL 1080p 10bit DD5.1 x265]",
+        "release_site": "个人",
+        "revision": 0,
+        "native_name": "黑客帝国",
+        "upload_time": "2023-03-04 17:42:10",
+        "lang": {
+          "desc": "双语",
+          "langlist": {
+            "langdou": true
+          }
+        },
+        "id": 662221,
+        "subtype": "SSA",
+        "size": 54887,
+        "vote_score": 0,
+        "filename": "The Matrix.1999.ass.zip",
+        "filelist": [
+          {
+            "s": "160KB",
+            "f": "The Matrix.1999.ass"
+          },
+          {
+            "s": "368B",
+            "f": "._The Matrix.1999.ass"
+          }
+        ]
+      },
+      {
+        "videoname": "The.Matrix.1999.RERIP.2160p.UHD.BluRay.x265.10bit.HDR.TrueHD.7.1.Atmos-IAMABLE",
+        "release_site": "个人",
+        "revision": 0,
+        "native_name": "黑客帝国",
+        "upload_time": "2023-03-04 17:35:07",
+        "lang": {
+          "desc": "",
+          "langlist": {}
+        },
+        "id": 662228,
+        "subtype": "SSA",
+        "size": 60806,
+        "vote_score": 100,
+        "filename": "The Matrix.1999.ass.zip",
+        "filelist": [
+          {
+            "s": "280KB",
+            "f": "The Matrix.1999.ass"
+          },
+          {
+            "s": "893B",
+            "f": "._The Matrix.1999.ass"
+          }
+        ]
+      },
+      {
+        "videoname": "不知道",
+        "release_site": "个人",
+        "revision": 0,
+        "native_name": "",
+        "upload_time": "2021-12-22 16:29:31",
+        "lang": {
+          "desc": "简",
+          "langlist": {
+            "langchs": true
+          }
+        },
+        "id": 645989,
+        "subtype": "Subrip(srt)",
+        "size": 92728,
+        "vote_score": 100,
+        "filename": "黑客帝国 1 - 3 The.Matrix.REMASTERED.1080p.BluRay.rar",
+        "filelist": [
+          {
+            "s": "121KB",
+            "f": "The.Matrix.1999.REMASTERED.1080p.BluRay.srt"
+          },
+          {
+            "s": "117KB",
+            "f": "The.Matrix.Reloaded.2003.REMASTERED.1080p.BluRay.srt"
+          },
+          {
+            "s": "101KB",
+            "f": "The.Matrix.Revolutions.2003.REMASTERED.1080p.BluRay.srt"
+          }
+        ]
+      },
+      {
+        "videoname": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ",
+        "release_site": "人人影视YYeTs",
+        "revision": 0,
+        "native_name": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ",
+        "upload_time": "2021-04-25 22:34:05",
+        "lang": {
+          "desc": "英 简 双语",
+          "langlist": {
+            "langeng": true,
+            "langchs": true,
+            "langdou": true
+          }
+        },
+        "id": 673114,
+        "subtype": "SSA",
+        "size": 54963,
+        "vote_score": 100,
+        "filename": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.zip",
+        "filelist": [
+          {
+            "s": "165KB",
+            "f": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.zh.ass"
+          }
+        ]
+      },
+      {
+        "videoname": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT",
+        "release_site": "CMCT",
+        "revision": 0,
+        "native_name": "黑客帝国.The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.简繁英双语字幕",
+        "upload_time": "2019-08-24 13:47:30",
+        "lang": {
+          "desc": "英 简 繁 双语",
+          "langlist": {
+            "langeng": true,
+            "langchs": true,
+            "langcht": true,
+            "langdou": true
+          }
+        },
+        "id": 654429,
+        "subtype": "SSA",
+        "size": 598595,
+        "vote_score": 10,
+        "filename": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.zip",
+        "filelist": [
+          {
+            "s": "244KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.简体&英文.ass"
+          },
+          {
+            "s": "218KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.简体&英文.srt"
+          },
+          {
+            "s": "92KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.简体.srt"
+          },
+          {
+            "s": "244KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.繁体&英文.ass"
+          },
+          {
+            "s": "218KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.繁体&英文.srt"
+          },
+          {
+            "s": "92KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.繁体.srt"
+          },
+          {
+            "s": "244KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.英文&简体.ass"
+          },
+          {
+            "s": "217KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.英文&简体.srt"
+          },
+          {
+            "s": "244KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.英文&繁体.ass"
+          },
+          {
+            "s": "217KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.英文&繁体.srt"
+          },
+          {
+            "s": "91KB",
+            "f": "The.Matrix.I.1999.BluRay.720p.x264.AC3.2Audios-CMCT.英文.srt"
+          }
+        ]
+      },
+      {
+        "videoname": "The.Matrix.1-3+The.Animatrix.BD.Bluray[蓝光字幕合集]黑客帝国.三部曲+动画.1999-2003.(简.繁.英.中英.评论音轨.导评字幕).from.TLF.MiniSD",
+        "release_site": "TLF",
+        "revision": 0,
+        "native_name": "The Matrix",
+        "upload_time": "2016-11-12 00:25:16",
+        "lang": {
+          "desc": "英 简 繁 双语",
+          "langlist": {
+            "langeng": true,
+            "langchs": true,
+            "langcht": true,
+            "langdou": true
+          }
+        },
+        "id": 606770,
+        "subtype": "Subrip(srt)",
+        "size": 3363479,
+        "vote_score": 7,
+        "filename": "[蓝光字幕合集]黑客帝国.三部曲+动画.1999-2003.(简.繁.英.中英.评论音轨.导评字幕).from.TLF.MiniSD.rar",
+        "filelist": [
+          {
+            "s": "7KB",
+            "f": "黑客动画版.The.Animatrix.2003.BDRip.x264.AAC.miniSD-TLF.mkv.mediainfo.txt"
+          },
+          {
+            "s": "63KB",
+            "f": "黑客动画版.The.Animatrix.2003.BDRip.x264.AAC.miniSD-TLF_track3_MUL_chs_eng.srt"
+          },
+          {
+            "s": "42KB",
+            "f": "黑客动画版.The.Animatrix.2003.BDRip.x264.AAC.miniSD-TLF_track4_chi_chs.srt"
+          },
+          {
+            "s": "42KB",
+            "f": "黑客动画版.The.Animatrix.2003.BDRip.x264.AAC.miniSD-TLF_track5_eng.srt"
+          },
+          {
+            "s": "28KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF.mkv.mediainfo.txt"
+          },
+          {
+            "s": "91KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track10_eng.srt"
+          },
+          {
+            "s": "93KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track11_eng_ENG-SDH.srt"
+          },
+          {
+            "s": "131KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track12_und_chs_eng.srt"
+          },
+          {
+            "s": "131KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track13_und_cht_eng.srt"
+          },
+          {
+            "s": "130KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track14_und_big5_eng.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track15_chi_Comm #1 - chs.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track16_chi_Comm #1 - cht.srt"
+          },
+          {
+            "s": "136KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track17_chi_Comm #1 - big5.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track18_chi_Comm #2 - chs.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track19_chi_Comm #2 - cht.srt"
+          },
+          {
+            "s": "135KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track20_chi_Comm #2 - big5.srt"
+          },
+          {
+            "s": "133KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track21_chi_Comm #3 - chs.srt"
+          },
+          {
+            "s": "133KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track22_chi_Comm #3 - cht.srt"
+          },
+          {
+            "s": "132KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track23_chi_Comm #3 - big5.srt"
+          },
+          {
+            "s": "30KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track24_chi_Comm #4 - chs.srt"
+          },
+          {
+            "s": "30KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track25_chi_Comm #4 - cht.srt"
+          },
+          {
+            "s": "30KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track26_chi_Comm #4 - big5.srt"
+          },
+          {
+            "s": "139KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track27_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - chs.srt"
+          },
+          {
+            "s": "139KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track28_chi_ [Written Commentary]纯文字评论（导演、制片人、主演）  - cht.srt"
+          },
+          {
+            "s": "138KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track29_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - big5.srt"
+          },
+          {
+            "s": "396KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track30_chi_[ASS] 纯文字评论 - 双显 - chs.ass"
+          },
+          {
+            "s": "396KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track31_chi_[ASS] 纯文字评论 - 双显 - cht.ass"
+          },
+          {
+            "s": "393KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track32_chi_[ASS] 纯文字评论 - 双显 - big5.ass"
+          },
+          {
+            "s": "92KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track7_chi_chs.srt"
+          },
+          {
+            "s": "92KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track8_chi_cht.srt"
+          },
+          {
+            "s": "92KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track9_chi_cht_big5.srt"
+          },
+          {
+            "s": "21KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF.mkv.mediainfo.txt"
+          },
+          {
+            "s": "128KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track10_und_chs_eng.srt"
+          },
+          {
+            "s": "128KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track11_und_cht_eng.srt"
+          },
+          {
+            "s": "127KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track12_und_big5_eng.srt"
+          },
+          {
+            "s": "148KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track13_chi_Comm #1 - chs.srt"
+          },
+          {
+            "s": "148KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track14_chi_Comm #1 - cht.srt"
+          },
+          {
+            "s": "147KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track15_chi_Comm #1 - big5.srt"
+          },
+          {
+            "s": "135KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track16_chi_Comm #2 - chs.srt"
+          },
+          {
+            "s": "135KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track17_chi_Comm #2 - cht.srt"
+          },
+          {
+            "s": "134KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track18_chi_Comm #2 - big5.srt"
+          },
+          {
+            "s": "156KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track19_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - chs.srt"
+          },
+          {
+            "s": "156KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track20_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - big5.srt"
+          },
+          {
+            "s": "155KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track21_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - big5.srt"
+          },
+          {
+            "s": "392KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track22_chi_[ASS] 纯文字评论 - 双显 - chs.ass"
+          },
+          {
+            "s": "392KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track23_chi_[ASS] 纯文字评论 - 双显 - cht.ass"
+          },
+          {
+            "s": "389KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track24_chi_[ASS] 纯文字评论 - 双显 - big5.ass"
+          },
+          {
+            "s": "82KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track5_chi_chs.srt"
+          },
+          {
+            "s": "82KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track6_chi_cht.srt"
+          },
+          {
+            "s": "81KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track7_chi_big5.srt"
+          },
+          {
+            "s": "91KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track8_eng.srt"
+          },
+          {
+            "s": "94KB",
+            "f": "黑客帝国2.重装上阵.The.Matrix.Reloaded.2003.RERiP.BD.3Audio.MiniSD-TLF_track9_eng_ENG-SDH.srt"
+          },
+          {
+            "s": "22KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF.mkv.mediainfo.txt"
+          },
+          {
+            "s": "120KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track10_und_chs_eng.srt"
+          },
+          {
+            "s": "120KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track11_und_cht_eng.srt"
+          },
+          {
+            "s": "119KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track12_und_big5_eng.srt"
+          },
+          {
+            "s": "132KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track13_chi_Comm #1 - chs.srt"
+          },
+          {
+            "s": "132KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track14_chi_Comm #1 - cht.srt"
+          },
+          {
+            "s": "130KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track15_chi_Comm #1 - big5.srt"
+          },
+          {
+            "s": "118KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track16_chi_Comm #2 - chs.srt"
+          },
+          {
+            "s": "118KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track17_chi_Comm #2 - cht.srt"
+          },
+          {
+            "s": "117KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track18_chi_Comm #2 - big5.srt"
+          },
+          {
+            "s": "131KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track19_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - chs.srt"
+          },
+          {
+            "s": "131KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track20_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - cht.srt"
+          },
+          {
+            "s": "129KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track21_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - big5.srt"
+          },
+          {
+            "s": "353KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track22_chi_[ASS] 纯文字评论 - 双显 - chs.ass"
+          },
+          {
+            "s": "353KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track23_chi_[ASS] 纯文字评论 - 双显 - cht.ass"
+          },
+          {
+            "s": "350KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track24_chi_[ASS] 纯文字评论 - 双显 - big5.ass"
+          },
+          {
+            "s": "84KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track5_chi_chs.srt"
+          },
+          {
+            "s": "84KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track6_chi_cht.srt"
+          },
+          {
+            "s": "83KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track7_chi_big5.srt"
+          },
+          {
+            "s": "78KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track8_eng.srt"
+          },
+          {
+            "s": "80KB",
+            "f": "黑客帝国3.矩阵革命.The.Matrix.Revolutions.2003.RERiP.BD.3Audio.MiniSD-TLF_track9_eng_ENG-SDH.srt"
+          }
+        ]
+      },
+      {
+        "videoname": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF.mkv",
+        "release_site": "个人",
+        "revision": 0,
+        "native_name": "The Matrix/The Matrix",
+        "upload_time": "2016-11-11 21:35:43",
+        "lang": {
+          "desc": "英 简 繁 双语",
+          "langlist": {
+            "langeng": true,
+            "langchs": true,
+            "langcht": true,
+            "langdou": true
+          }
+        },
+        "id": 606769,
+        "subtype": "Subrip(srt)",
+        "size": 1276954,
+        "vote_score": 0,
+        "filename": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_extracted_subtitles_eng_chi_common.zip",
+        "filelist": [
+          {
+            "s": "28KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF.mkv.mediainfo.txt"
+          },
+          {
+            "s": "91KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track10_eng.srt"
+          },
+          {
+            "s": "93KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track11_eng_ENG-SDH.srt"
+          },
+          {
+            "s": "131KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track12_und_chs_eng.srt"
+          },
+          {
+            "s": "131KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track13_und_cht_eng.srt"
+          },
+          {
+            "s": "130KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track14_und_big5_eng.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track15_chi_Comm #1 - chs.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track16_chi_Comm #1 - cht.srt"
+          },
+          {
+            "s": "136KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track17_chi_Comm #1 - big5.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track18_chi_Comm #2 - chs.srt"
+          },
+          {
+            "s": "137KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track19_chi_Comm #2 - cht.srt"
+          },
+          {
+            "s": "135KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track20_chi_Comm #2 - big5.srt"
+          },
+          {
+            "s": "133KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track21_chi_Comm #3 - chs.srt"
+          },
+          {
+            "s": "133KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track22_chi_Comm #3 - cht.srt"
+          },
+          {
+            "s": "132KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track23_chi_Comm #3 - big5.srt"
+          },
+          {
+            "s": "30KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track24_chi_Comm #4 - chs.srt"
+          },
+          {
+            "s": "30KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track25_chi_Comm #4 - cht.srt"
+          },
+          {
+            "s": "30KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track26_chi_Comm #4 - big5.srt"
+          },
+          {
+            "s": "139KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track27_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - chs.srt"
+          },
+          {
+            "s": "139KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track28_chi_ [Written Commentary]纯文字评论（导演、制片人、主演）  - cht.srt"
+          },
+          {
+            "s": "138KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track29_chi_[Written Commentary]纯文字评论（导演、制片人、主演）  - big5.srt"
+          },
+          {
+            "s": "396KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track30_chi_[ASS] 纯文字评论 - 双显 - chs.ass"
+          },
+          {
+            "s": "396KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track31_chi_[ASS] 纯文字评论 - 双显 - cht.ass"
+          },
+          {
+            "s": "393KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track32_chi_[ASS] 纯文字评论 - 双显 - big5.ass"
+          },
+          {
+            "s": "92KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track7_chi_chs.srt"
+          },
+          {
+            "s": "92KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track8_chi_cht.srt"
+          },
+          {
+            "s": "92KB",
+            "f": "黑客帝国.The.Matrix.1999.RERiP.BD.5Audio.MiniSD-TLF_track9_chi_cht_big5.srt"
+          }
+        ]
+      },
+      {
+        "videoname": "The Matrix",
+        "release_site": "个人",
+        "revision": 0,
+        "native_name": "黑客帝国/The.Matrix.1999.blu-ray.x264.720p.CHD/駭客任務/廿二世紀殺人網絡",
+        "upload_time": "2015-12-11 07:14:32",
+        "lang": {
+          "desc": "英 繁",
+          "langlist": {
+            "langcht": true,
+            "langeng": true
+          }
+        },
+        "id": 604000,
+        "subtype": "Subrip(srt)",
+        "size": 63947,
+        "vote_score": 16,
+        "filename": "The.Matrix.1999.blu-ray.x264.720p.CHD.zip",
+        "filelist": [
+          {
+            "s": "70KB",
+            "f": "The.Matrix.1999.blu-ray.x264.720p.CHD.cht.srt"
+          },
+          {
+            "s": "93KB",
+            "f": "The.Matrix.1999.blu-ray.x264.720p.CHD.eng.srt"
+          }
+        ]
+      }
+    ],
+    "keyword": "The.Matrix.1999.1080p.BluRay.x264",
+    "action": "search",
+    "result": "succeed"
+  }
+}

@@ -1,0 +1,72 @@
+[
+    {
+        "PlayState": {
+            "CanSeek": false,
+            "IsPaused": false,
+            "IsMuted": false,
+            "RepeatMode": "RepeatNone",
+            "PlaybackOrder": "Default"
+        },
+        "AdditionalUsers": [],
+        "Capabilities": {
+            "PlayableMediaTypes": [],
+            "SupportedCommands": [],
+            "SupportsMediaControl": false,
+            "SupportsPersistentIdentifier": true
+        },
+        "RemoteEndPoint": "192.0.2.1",
+        "PlayableMediaTypes": [],
+        "Id": "55d9118a2c02486a29c17d33be125d8c",
+        "UserId": "b89b7d10b7e645a8a0e8204e9877297c",
+        "UserName": "scout",
+        "Client": "scout-player",
+        "LastActivityDate": "2026-07-06T12:39:08.0381691Z",
+        "LastPlaybackCheckIn": "0001-01-01T00:00:00.0000000Z",
+        "DeviceName": "devbox",
+        "DeviceId": "scout-player-1",
+        "ApplicationVersion": "0.1",
+        "IsActive": true,
+        "SupportsMediaControl": false,
+        "SupportsRemoteControl": false,
+        "NowPlayingQueue": [],
+        "NowPlayingQueueFullItems": [],
+        "HasCustomDeviceName": false,
+        "ServerId": "f327d49bf1c44fdbbef3c324ba3614a2",
+        "SupportedCommands": []
+    },
+    {
+        "PlayState": {
+            "CanSeek": false,
+            "IsPaused": false,
+            "IsMuted": false,
+            "RepeatMode": "RepeatNone",
+            "PlaybackOrder": "Default"
+        },
+        "AdditionalUsers": [],
+        "Capabilities": {
+            "PlayableMediaTypes": [],
+            "SupportedCommands": [],
+            "SupportsMediaControl": false,
+            "SupportsPersistentIdentifier": true
+        },
+        "RemoteEndPoint": "192.0.2.1",
+        "PlayableMediaTypes": [],
+        "Id": "93daaa1b6f98519cff65d025a2666189",
+        "UserId": "b89b7d10b7e645a8a0e8204e9877297c",
+        "UserName": "scout",
+        "Client": "scout-setup",
+        "LastActivityDate": "2026-07-06T12:37:56.4103236Z",
+        "LastPlaybackCheckIn": "0001-01-01T00:00:00.0000000Z",
+        "DeviceName": "cli",
+        "DeviceId": "scout-setup-1",
+        "ApplicationVersion": "0.1",
+        "IsActive": true,
+        "SupportsMediaControl": false,
+        "SupportsRemoteControl": false,
+        "NowPlayingQueue": [],
+        "NowPlayingQueueFullItems": [],
+        "HasCustomDeviceName": false,
+        "ServerId": "f327d49bf1c44fdbbef3c324ba3614a2",
+        "SupportedCommands": []
+    }
+]

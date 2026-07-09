@@ -1,0 +1,55 @@
+# 全家桶：从零开始，Jellyfin + subtitle-scout 一起拉起。
+# 已有 Jellyfin 的用户请用 docker-compose.yml（独立版）。
+# 用法：cp .env.example .env 填好三把钥匙与 MEDIA_HOST_PATH，然后
+#   docker compose -f docker-compose.bundle.yml up -d
+# 注意：Jellyfin 首次运行需先完成初始向导（http://<主机>:8096）并生成 API key，
+# 填入 .env 的 JELLYFIN_API_KEY 后重启 scout：docker compose -f docker-compose.bundle.yml restart subtitle-scout
+services:
+  jellyfin:
+    image: ghcr.io/jellyfin/jellyfin:latest
+    container_name: scout-jellyfin
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "8096:8096"
+    volumes:
+      - ./jellyfin-config:/config
+      - ${MEDIA_HOST_PATH}/Movies:/media/movies
+      - ${MEDIA_HOST_PATH}/TV:/media/tv
+
+  subtitle-scout:
+    image: ghcr.io/fancydirty/subtitle-scout:latest
+    container_name: subtitle-scout
+    restart: unless-stopped
+    depends_on:
+      - jellyfin
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "${DASHBOARD_PORT:-8099}:${DASHBOARD_PORT:-8099}"
+    environment:
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
+      ASSRT_TOKEN: ${ASSRT_TOKEN}
+      MEDIA_ROOTS: /media
+      SUBTITLE_SCOUT_CACHE_DIR: /cache
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
+      TZ: ${TZ:-Asia/Shanghai}
+      DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+    volumes:
+      # 与 jellyfin 服务完全相同的挂载 → 路径天然一致，无需 MEDIA_PATH_MAPPINGS
+      - ${MEDIA_HOST_PATH}/Movies:/media/movies
+      - ${MEDIA_HOST_PATH}/TV:/media/tv
+      - ./cache:/cache

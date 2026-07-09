@@ -1,0 +1,46 @@
+{
+  "status": 0,
+  "sub": {
+    "subs": [
+      {
+        "release_site": "人人影视YYeTs",
+        "filename": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.zip",
+        "url": "http://file0.assrt.net/download/673114/The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.zip?_=1782985765&-=471e65e0f498dbab1c703f429072d1ac&api=1",
+        "down_count": 1510,
+        "view_count": 3866,
+        "producer": {
+          "producer": "",
+          "verifier": "",
+          "uploader": "",
+          "source": "原创翻译"
+        },
+        "title": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ",
+        "videoname": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ",
+        "revision": 0,
+        "native_name": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ",
+        "upload_time": "2021-04-25 22:34:05",
+        "lang": {
+          "langlist": {
+            "langdou": true,
+            "langeng": true,
+            "langchs": true
+          },
+          "desc": "英 简 双语"
+        },
+        "id": 673114,
+        "subtype": "SSA",
+        "vote_score": 100,
+        "size": 54963,
+        "filelist": [
+          {
+            "s": "165KB",
+            "f": "The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.zh.ass",
+            "url": "http://file0.assrt.net/onthefly/673114/-/1/The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.zh.ass?_=1782985765&-=4f223e62e331ee574d3e08e9efdce1e5&api=1"
+          }
+        ]
+      }
+    ],
+    "result": "succeed",
+    "action": "detail"
+  }
+}

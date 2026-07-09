@@ -1,0 +1,286 @@
+# subtitle-scout
+
+当你在 Jellyfin 里点开一部没有中文字幕的外语片，subtitle-scout 自动找到、验证并放好最合适的中文字幕。它不是又一个字幕下载器——它是一层带判断力的匹配智能：宁可不下，也不下错。
+
+**核心能力**：自动发现缺中文字幕的影片 → 搜索并用大模型挑最合适的 → 验证后放到位；支持剧集整季打包下载；自带监控页，全程留痕可查。
+
+---
+
+## 快速上手
+
+根据你的情况选择一条路：
+
+### A. 已有 Jellyfin（推荐）
+
+使用 `docker-compose.yml`（独立版），三步：
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入三把钥匙（见下一节）与 MEDIA_HOST_PATH
+docker compose up -d
+```
+
+### B. 从零开始
+
+使用 `docker-compose.bundle.yml`（全家桶），三步 + 一注意：
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入三把钥匙（见下一节）与 MEDIA_HOST_PATH
+docker compose -f docker-compose.bundle.yml up -d
+```
+
+**注意**：Jellyfin 首次运行需先完成初始向导（访问 `http://<主机IP>:8096`），然后在控制台生成 API 密钥，填入 `.env` 的 `JELLYFIN_API_KEY`，再重启 scout：
+
+```bash
+docker compose -f docker-compose.bundle.yml restart subtitle-scout
+```
+
+---
+
+## 三把钥匙：怎么拿
+
+subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服务器。
+
+### 1. ASSRT Token
+
+**获取步骤**：
+1. 注册 [assrt.net](https://assrt.net)
+2. 登录后进入"用户中心"
+3. 复制 API token，填入 `.env` 的 `ASSRT_TOKEN`
+
+**预期管理**：
+- **配额约 5 次/分钟**，程序已自动限速，无需操心
+- **ASSRT 对欧美剧集覆盖有限**："暂时没找到合适的字幕"是正常结果，不是故障
+
+### 2. 大模型 API Key
+
+**任意 OpenAI-compatible 端点均可**（DeepSeek、OpenAI、硅基流动等）。需要配置三件套：
+
+| 变量 | 说明 |
+|------|------|
+| `LLM_BASE_URL` | 如 `https://api.deepseek.com/v1` |
+| `LLM_API_KEY` | 对应端点的 API key |
+| `LLM_MODEL` | 模型名，如 `deepseek-chat` |
+
+**关键**：三项必须来自**同一个服务商**。模型能力影响匹配质量。
+
+### 3. Jellyfin API Key
+
+**获取步骤**：
+1. 打开 Jellyfin 控制台
+2. 进入"高级"设置
+3. 找到"API 密钥"
+4. 点击"新建"，复制生成的 key，填入 `.env` 的 `JELLYFIN_API_KEY`
+
+填完 `JELLYFIN_URL`（如 `http://<主机IP>:8096` 或 `http://host.docker.internal:8096`）后即可启动。
+
+---
+
+## 起完先体检：doctor
+
+启动后**先跑一遍 doctor**，确认接线正确：
+
+```bash
+# 独立版
+docker compose exec subtitle-scout npx tsx src/cli/index.ts doctor
+
+# 全家桶版
+docker compose -f docker-compose.bundle.yml exec subtitle-scout npx tsx src/cli/index.ts doctor
+```
+
+**示例输出**：
+
+```
+✓ jellyfin  Jellyfin 可达，当前 2 个会话
+✓ assrt  ASSRT token 有效，当前配额余量 180
+✓ llm  LLM 端点可用，最小对话成功
+✓ media-roots  2 个媒体根目录全部可写
+✓ path-mapping  抽查 15 个条目、8 个目录：映射一致且可写
+
+接线检查通过，可以起 watch 了。
+```
+
+如果某项显示 `✗`，按提示修复后重跑。
+
+### 路径映射：最常见的接线错误
+
+**规则**：scout 容器必须**以与 Jellyfin 相同的路径**挂载媒体目录。
+
+**示例**（两者路径一致，无需配置）：
+- Jellyfin 容器挂载：`/mnt/media/Movies:/media/movies`
+- scout 容器挂载：`/mnt/media/Movies:/media/movies`
+
+**不一致时的解决方案**：
+
+如果 Jellyfin 和 scout 的挂载路径不同（例如 Jellyfin 看到的是 `/data/movies`，scout 看到的是 `/media/movies`），需配置 `MEDIA_PATH_MAPPINGS`：
+
+```bash
+MEDIA_PATH_MAPPINGS=/data/movies=/media/movies
+```
+
+格式为 `jellyfin前缀=本地前缀`，多对映射用逗号分隔。
+
+**doctor 的 `path-mapping` 项就是查这个**——如果它显示 `✗`，八成是路径对不上。
+
+---
+
+## 监控页
+
+访问 `http://<主机IP>:8099`（端口可通过 `DASHBOARD_PORT` 自定义），查看每次运行的完整故事：
+
+- 认出哪部片 → 找到哪些字幕 → 挑最靠谱的 → 下好放到位
+- 每次决策全程留痕（选了谁、为什么、拒了谁），出问题可查
+
+**可选只读保护**：设置 `DASHBOARD_TOKEN` 后，访问需带 `?token=<值>` 参数。
+
+---
+
+## 它怎么工作
+
+四步白话：
+
+1. **发现缺字幕**：监听 Jellyfin 播放会话 + 定期扫描新入库条目，找到"正在播放且缺中文字幕"的影片
+2. **搜索候选**：调用 ASSRT API 搜索，大模型规划搜索词（原名 + 中文译名 + 年份等组合）
+3. **挑最靠谱**：大模型分析每个候选的元数据（上传者、文件名、时长匹配度等），打分并排序
+4. **验证写盘**：下载置信度最高的字幕，校验哈希，写到视频同目录，刷新 Jellyfin 让它可见
+
+每次决策全程留痕（选了谁、为什么、拒了谁），审计日志可在监控页或 `cache/journals/` 目录查看。
+
+---
+
+## CLI 命令一览
+
+| 命令 | 说明 |
+|------|------|
+| `doctor` | 检查接线（Jellyfin / ASSRT / LLM / 媒体根目录 / 路径映射） |
+| `watch` | 常驻监听模式（daemon），自动处理播放中 + 新入库条目 |
+| `run-item --item-id <id>` | 单发调试：手动处理某个 Jellyfin 条目 |
+| `run --context <json> --out <dir>` | 离线调试：从 JSON 文件加载上下文 |
+| `report [--since <24h\|7d\|ISO-date-UTC>]` | 统计报告（默认最近 24 小时） |
+
+**容器内执行示例**（独立版）：
+
+```bash
+docker compose exec subtitle-scout npx tsx src/cli/index.ts watch
+docker compose exec subtitle-scout npx tsx src/cli/index.ts report --since 7d
+```
+
+---
+
+## 环境变量参考
+
+完整列表见 `.env.example`，主要配置项：
+
+### 必填
+
+| 变量 | 说明 |
+|------|------|
+| `LLM_BASE_URL` | OpenAI-compatible 端点，如 `https://api.deepseek.com/v1` |
+| `LLM_API_KEY` | 对应端点的 API key |
+| `LLM_MODEL` | 模型名 |
+| `ASSRT_TOKEN` | [assrt.net](https://assrt.net) 用户中心获取 |
+| `JELLYFIN_URL` | Jellyfin 地址，如 `http://host.docker.internal:8096` |
+| `JELLYFIN_API_KEY` | Jellyfin 控制台 → API 密钥 → 新建 |
+| `MEDIA_HOST_PATH` | （仅 compose）宿主机媒体库根目录，如 `/mnt/media` |
+
+### 可选
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `MEDIA_PATH_MAPPINGS` | Jellyfin 路径到本地路径映射，格式 `jellyfin前缀=本地前缀` | 空 |
+| `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔） | 空 |
+| `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
+| `AUTO_DOWNLOAD_MIN_CONFIDENCE` | 自动下载置信度阈值（0-1） | `0.86` |
+| `POLL_INTERVAL_SECONDS` | watch 模式轮询间隔（秒） | `15` |
+| `ITEM_COOLDOWN_MINUTES` | 同一条目处理冷却期（分钟） | `30` |
+| `TREAT_PGS_AS_MISSING` | 图形字幕（PGS）视为缺字幕 | `true` |
+| `ADOPT_LOCAL_SUBTITLES` | 收编目录中不规范命名的本地字幕 | `true` |
+| `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
+| `SKIP_CACHE_MINUTES` | 已有字幕/不需要项的短期跳过缓存（分钟） | `5` |
+| `DASHBOARD_PORT` | 监控页端口 | `8099` |
+| `DASHBOARD_TOKEN` | 监控页访问 token（可选） | 空 |
+| `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
+| `JOURNAL_RETAIN_DAYS` | 审计日志目录保留天数 | `90` |
+| `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
+| `LLM_EXTRA_BODY` | （高级）强制注入请求体的 JSON，通常无需配置 | 空 |
+
+---
+
+## 适配 Emby / 其他媒体服务器
+
+**Emby**：与 Jellyfin API 同源，预计改动很小。欢迎贡献 PR。
+
+**其他媒体服务器**：参考 [`docs/adapting.md`](docs/adapting.md)，里面有：
+- 架构说明（`PlayerServer` 接口）
+- 六个方法的契约（`getSessions`、`getRecentItems`、`getItem`、`refreshItem`、`getChineseTitle`、`getSeasonEpisodes`）
+- **给 coding agent 的现成提示词**（整段复制粘贴给 Claude Code / Cursor，让它帮你写适配器）
+
+---
+
+## FAQ / 排障
+
+### Q: doctor 显示 `path-mapping` ✗，或"下载了但 Jellyfin 看不到"
+
+**症状**：doctor 输出类似"本容器内不存在：/data/movies"，或字幕已下载到本地但 Jellyfin 刷新后仍不可见。
+
+**原因**：scout 容器与 Jellyfin 容器的媒体挂载路径不一致。
+
+**解决**：
+1. 最佳方案：让两容器挂载**相同路径**（如都挂成 `/media/movies`）
+2. 无法一致时：配置 `MEDIA_PATH_MAPPINGS=jellyfin路径前缀=scout路径前缀`
+3. 修改后重跑 `doctor` 确认 ✓
+
+### Q: 挂载是只读的怎么办
+
+**症状**：doctor 显示"不可写"。
+
+**原因**：compose 挂载默认 `rw`，但某些网盘（WebDAV、只读 NFS）或宿主机目录权限限制导致容器内无法写入。
+
+**解决**：
+1. 检查 compose 挂载配置是否误加 `:ro`（只读标志），去掉
+2. 检查宿主机目录权限，确保容器用户（通常 UID 1000）有写权限
+3. 只读网盘无解——sidecar 字幕无法写入，考虑改用可写挂载
+
+### Q: "暂时没找到合适的字幕"是 bug 吗
+
+**不是**。这是保守设计：
+- ASSRT 对欧美剧集覆盖有限，小众片源缺字幕是常态
+- 大模型给出的置信度低于 `AUTO_DOWNLOAD_MIN_CONFIDENCE`（默认 0.86）时，拒绝下载
+- **宁可不下，也不下错**
+
+如果觉得过于保守，可调低 `AUTO_DOWNLOAD_MIN_CONFIDENCE`（范围 0-1）。
+
+### Q: 为什么国产片被跳过
+
+默认 `SKIP_CHINESE_ORIGIN=true`，中国大陆出品的影片（`ProductionLocations` 含 `CN`）会被跳过——它们通常不需要中文字幕。
+
+关掉此功能：设 `SKIP_CHINESE_ORIGIN=false`。
+
+### Q: 配额烧完了会怎样
+
+**ASSRT 配额耗尽**：搜索返回 429，程序会记日志并跳过该条目，进入冷却期（默认 30 分钟）。配额恢复后自动重试。
+
+**LLM 配额耗尽**：取决于你的 LLM 服务商返回的错误，通常会记录在审计日志，条目进冷却期。
+
+### Q: 怎么查某次运行的详细决策过程
+
+**方式 1**（推荐）：访问监控页 `http://<主机>:8099`，点击对应运行查看完整 4 步过程。
+
+**方式 2**：查看 `cache/journals/<itemId>-<timestamp>/decision.json`，包含：
+- 选了哪个字幕、为什么
+- 拒了哪些候选、原因
+- 每次 LLM / ASSRT API 调用的请求 / 响应
+
+### Q: 监控页访问不了
+
+**检查**：
+1. `DASHBOARD_PORT` 是否在 compose 的 `ports` 里正确映射
+2. 防火墙是否放行该端口
+3. 设了 `DASHBOARD_TOKEN` 但访问时没带 `?token=<值>` 参数
+
+---
+
+## License
+
+MIT
