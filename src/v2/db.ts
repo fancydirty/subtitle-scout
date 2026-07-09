@@ -49,6 +49,8 @@ CREATE TABLE jobs (
 );
 -- SQLite 的 UNIQUE 视 NULL 互不相等，必须用表达式唯一索引防止同剧同季重复建 job：
 CREATE UNIQUE INDEX jobs_identity ON jobs(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''));
+-- claimNext 派发热路径索引（state 过滤 + priority/created_at 排序）：
+CREATE INDEX jobs_claim ON jobs(state, priority DESC, created_at);
 CREATE TABLE runs (                 -- 替代 ledger.jsonl；journals 明细文件保留并引用
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER REFERENCES jobs(id),

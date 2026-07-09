@@ -5,6 +5,9 @@ export const errorBackoffMs = (attempt: number) => Math.min(attempt * 10 * 60_00
 
 const LEASE_DURATION_MS = 30 * 60_000 // 30 minutes
 
+// Active (non-rest) states — every complete* transition must originate here.
+const ACTIVE_STATES_SQL = `('searching', 'downloading', 'verifying')`
+
 export type JobKind = 'series_season' | 'movie'
 export type JobState = 'wanted' | 'searching' | 'downloading' | 'verifying' | 'done' | 'failed' | 'dormant'
 
@@ -42,8 +45,7 @@ export interface Job {
 export class JobsRepo {
   constructor(private db: ScoutDb) {}
 
-  upsertWanted(ident: JobIdent): void {
-    const now = Date.now()
+  upsertWanted(ident: JobIdent, now: number): void {
     if (ident.kind === 'series_season') {
       this.db
         .prepare(
@@ -65,7 +67,7 @@ export class JobsRepo {
     }
   }
 
-  claimNext(now: number, workerId: string): Job | null {
+  claimNext(now: number): Job | null {
     const leaseUntil = now + LEASE_DURATION_MS
     const job = this.db
       .prepare(
@@ -84,83 +86,97 @@ export class JobsRepo {
   }
 
   reapExpiredLeases(now: number): void {
+    // Active state with NULL lease is anomalous (should never happen) — reap it too.
     this.db
       .prepare(
         `UPDATE jobs
          SET state = 'wanted', attempt = attempt + 1, lease_until = NULL, updated_at = ?
-         WHERE state IN ('searching', 'downloading', 'verifying')
-         AND lease_until < ?`
+         WHERE state IN ${ACTIVE_STATES_SQL}
+         AND (lease_until < ? OR lease_until IS NULL)`
       )
       .run(now, now)
   }
 
-  completeNoMatch(jobId: number, now: number): void {
-    const job = this.get(jobId)
-    if (!job) return
+  /** Content failure (no_safe_match): exponential backoff 1/2/4/8 days, then dormant on the 5th failure. */
+  completeNoMatch(jobId: number, now: number): boolean {
+    return this.db.transaction(() => {
+      const job = this.get(jobId)
+      if (!job) return false
 
-    const newAttempt = job.attempt + 1
-    if (newAttempt >= CONTENT_BACKOFF_DAYS.length) {
-      // Transition to dormant after exhausting all backoff days
-      this.db
-        .prepare(
-          `UPDATE jobs
-           SET state = 'dormant', attempt = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
-           WHERE id = ?`
-        )
-        .run(newAttempt, now, jobId)
-    } else {
-      // Apply exponential backoff
+      const newAttempt = job.attempt + 1
+      if (newAttempt > CONTENT_BACKOFF_DAYS.length) {
+        // All backoff tiers exhausted — 5th content failure goes dormant.
+        const info = this.db
+          .prepare(
+            `UPDATE jobs
+             SET state = 'dormant', attempt = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
+             WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+          )
+          .run(newAttempt, now, jobId)
+        return info.changes > 0
+      }
       const backoffDays = CONTENT_BACKOFF_DAYS[newAttempt - 1]
       const nextRetryAt = now + backoffDays * 86_400_000
-      this.db
+      const info = this.db
         .prepare(
           `UPDATE jobs
            SET state = 'failed', attempt = ?, next_retry_at = ?, lease_until = NULL, updated_at = ?
-           WHERE id = ?`
+           WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
         )
         .run(newAttempt, nextRetryAt, now, jobId)
-    }
+      return info.changes > 0
+    })()
   }
 
-  completeError(jobId: number, error: string, now: number): void {
-    const job = this.get(jobId)
-    if (!job) return
+  /** Transient error (network/LLM/5xx): short backoff, separate track from content failures. */
+  completeError(jobId: number, error: string, now: number): boolean {
+    return this.db.transaction(() => {
+      const job = this.get(jobId)
+      if (!job) return false
 
-    const newAttempt = job.attempt + 1
-    const nextRetryAt = now + errorBackoffMs(newAttempt)
-    this.db
-      .prepare(
-        `UPDATE jobs
-         SET state = 'failed', attempt = ?, next_retry_at = ?, last_error = ?, lease_until = NULL, updated_at = ?
-         WHERE id = ?`
-      )
-      .run(newAttempt, nextRetryAt, error, now, jobId)
+      const newAttempt = job.attempt + 1
+      const nextRetryAt = now + errorBackoffMs(newAttempt)
+      const info = this.db
+        .prepare(
+          `UPDATE jobs
+           SET state = 'failed', attempt = ?, next_retry_at = ?, last_error = ?, lease_until = NULL, updated_at = ?
+           WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+        )
+        .run(newAttempt, nextRetryAt, error, now, jobId)
+      return info.changes > 0
+    })()
   }
 
-  completePartial(jobId: number, now: number): void {
-    const job = this.get(jobId)
-    if (!job) return
+  /** Partial success: attempt decrements (gradual escalation recovery), back to wanted for the remainder. */
+  completePartial(jobId: number, now: number): boolean {
+    return this.db.transaction(() => {
+      const job = this.get(jobId)
+      if (!job) return false
 
-    const newAttempt = Math.max(0, job.attempt - 1)
-    this.db
-      .prepare(
-        `UPDATE jobs
-         SET state = 'wanted', attempt = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
-         WHERE id = ?`
-      )
-      .run(newAttempt, now, jobId)
+      const newAttempt = Math.max(0, job.attempt - 1)
+      const info = this.db
+        .prepare(
+          `UPDATE jobs
+           SET state = 'wanted', attempt = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
+           WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+        )
+        .run(newAttempt, now, jobId)
+      return info.changes > 0
+    })()
   }
 
-  completeDone(jobId: number, now: number): void {
-    this.db
+  completeDone(jobId: number, now: number): boolean {
+    const info = this.db
       .prepare(
         `UPDATE jobs
          SET state = 'done', lease_until = NULL, updated_at = ?
-         WHERE id = ?`
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
       )
       .run(now, jobId)
+    return info.changes > 0
   }
 
+  /** Priority bump for existing (wanted/failed) jobs — does not change state. */
   boostPriority(ident: JobIdent, priority: number): void {
     if (ident.kind === 'series_season') {
       this.db
@@ -181,25 +197,26 @@ export class JobsRepo {
     }
   }
 
-  wake(ident: JobIdent, priority: number): void {
-    const now = Date.now()
+  /** Playback-triggered wake: only revives dormant jobs. For wanted/failed use boostPriority. */
+  wake(ident: JobIdent, priority: number, now: number): boolean {
     if (ident.kind === 'series_season') {
-      this.db
+      const info = this.db
         .prepare(
           `UPDATE jobs
            SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
-           WHERE kind = 'series_season' AND series_id = ? AND season = ?`
+           WHERE kind = 'series_season' AND series_id = ? AND season = ? AND state = 'dormant'`
         )
         .run(priority, now, ident.seriesId, ident.season)
-    } else {
-      this.db
-        .prepare(
-          `UPDATE jobs
-           SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
-           WHERE kind = 'movie' AND movie_id = ?`
-        )
-        .run(priority, now, ident.movieId)
+      return info.changes > 0
     }
+    const info = this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
+         WHERE kind = 'movie' AND movie_id = ? AND state = 'dormant'`
+      )
+      .run(priority, now, ident.movieId)
+    return info.changes > 0
   }
 
   find(seriesId: string, season: number): Job | null {
@@ -224,13 +241,10 @@ export class JobsRepo {
     return result.count
   }
 
-  // Test helpers
+  // ---- Test helpers (仅供测试) ----
 
-  /**
-   * Test helper: Force claim a job ignoring next_retry_at
-   */
-  forceClaim(seriesId: string, season: number): Job | null {
-    const now = Date.now()
+  /** Test helper: claim a specific series job ignoring state/next_retry_at gating. */
+  forceClaim(seriesId: string, season: number, now: number): Job | null {
     const leaseUntil = now + LEASE_DURATION_MS
     const job = this.db
       .prepare(
@@ -243,11 +257,8 @@ export class JobsRepo {
     return job ?? null
   }
 
-  /**
-   * Test helper: Force a job to a specific state
-   */
-  forceState(seriesId: string, season: number, state: JobState): void {
-    const now = Date.now()
+  /** Test helper: force a job to an arbitrary state, bypassing transition guards. */
+  forceState(seriesId: string, season: number, state: JobState, now: number): void {
     this.db
       .prepare(
         `UPDATE jobs
