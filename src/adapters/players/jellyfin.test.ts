@@ -86,6 +86,22 @@ describe('JellyfinClient', () => {
     expect(String(url)).toContain('includeItemTypes=Movie,Episode')
     expect(String(url)).toContain('limit=50')
   })
+  it('getItemsPage queries with startIndex and limit, sortOrder Ascending', async () => {
+    const { client, fetchImpl } = makeClient([itemsFixture])
+    await client.getItemsPage(100, 50)
+    expect(fetchImpl).toHaveBeenCalled()
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toContain('startIndex=100')
+    expect(String(url)).toContain('limit=50')
+    expect(String(url)).toContain('sortOrder=Ascending')
+    expect(String(url)).toContain('sortBy=DateCreated')
+  })
+  it('call sends AbortSignal timeout to prevent global hangs', async () => {
+    const { client, fetchImpl } = makeClient([sessionsFixture])
+    await client.getSessions()
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
 })
 
 function movieItem(overrides: Partial<JellyfinItem> = {}): JellyfinItem {

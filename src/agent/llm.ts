@@ -2,6 +2,8 @@ import { generateText, tool, type LanguageModel } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { z } from 'zod'
 
+export const LLM_TIMEOUT_MS = 120_000
+
 export interface LlmConfig {
   baseUrl: string
   apiKey: string
@@ -95,6 +97,7 @@ export async function callStructured<S extends z.ZodType>(
         // 4000 was exhausted by reasoning alone on a 10-candidate ranking
         // (textTokens:1, reasoningTokens:3999) — raised to 16000.
         maxOutputTokens: opts.maxOutputTokens ?? 16000,
+        abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       })
     } catch (e) {
       // provider 拒绝 tool_choice → 立即抛 ToolChoiceRejectionError（不重试）
@@ -166,6 +169,7 @@ export async function callPromptJson<S extends z.ZodType>(
       model: opts.model,
       prompt,
       maxOutputTokens: opts.maxOutputTokens ?? 16000,
+      abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     })
     try {
       const parsed = opts.schema.safeParse(extractJson(result.text))

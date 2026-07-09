@@ -157,6 +157,41 @@ describe('isToolChoiceRejection', () => {
   })
 })
 
+describe('AbortSignal timeout coverage', () => {
+  it('callStructured passes abortSignal to generateText', async () => {
+    let receivedSignal: AbortSignal | undefined
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        receivedSignal = (options as unknown as { abortSignal?: AbortSignal }).abortSignal
+        return {
+          finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+          usage: {
+            inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 10, text: undefined, reasoning: undefined },
+          },
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c1',
+              toolName: 'report',
+              input: JSON.stringify({ title: 'The Matrix', year: 1999 }),
+            },
+          ],
+          warnings: [],
+        }
+      },
+    })
+    await callStructured({
+      model,
+      name: 'report',
+      description: 'report result',
+      prompt: 'identify',
+      schema,
+    })
+    expect(receivedSignal).toBeInstanceOf(AbortSignal)
+  })
+})
+
 describe('callPromptJson', () => {
   function textModel(texts: string[]) {
     let i = 0

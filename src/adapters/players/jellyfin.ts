@@ -62,6 +62,7 @@ export interface JellyfinClientOpts {
 }
 
 const ITEM_FIELDS = 'Path,ProviderIds,MediaStreams,OriginalTitle,ProductionLocations,Overview,SeriesId'
+export const JELLYFIN_TIMEOUT_MS = 30_000
 
 export class JellyfinClient implements PlayerServer {
   private fetchImpl: typeof fetch
@@ -80,6 +81,7 @@ export class JellyfinClient implements PlayerServer {
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(JELLYFIN_TIMEOUT_MS),
       })
       const durationMs = Date.now() - t0
       this.opts.onApiCall?.({ endpoint: path, params: {}, status: res.status, durationMs })
@@ -115,6 +117,12 @@ export class JellyfinClient implements PlayerServer {
   async getRecentItems(limit: number): Promise<JellyfinItem[]> {
     const raw = await this.call('GET',
       `/Items?recursive=true&includeItemTypes=Movie,Episode&sortBy=DateCreated&sortOrder=Descending&limit=${limit}&fields=${ITEM_FIELDS},DateCreated`)
+    return JellyfinItemsResponseSchema.parse(raw).Items
+  }
+
+  async getItemsPage(startIndex: number, limit: number): Promise<JellyfinItem[]> {
+    const raw = await this.call('GET',
+      `/Items?recursive=true&includeItemTypes=Movie,Episode&sortBy=DateCreated&sortOrder=Ascending&startIndex=${startIndex}&limit=${limit}&fields=${ITEM_FIELDS},DateCreated`)
     return JellyfinItemsResponseSchema.parse(raw).Items
   }
 

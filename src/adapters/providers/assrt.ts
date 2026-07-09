@@ -10,6 +10,7 @@ const BASE = 'https://api.assrt.net/v1'
 const RESPONSE_CACHE_TTL_MS = 24 * 3600_000
 // 实测配额 5/min，留余量:15s 间隔 = 4/min
 export const DEFAULT_MIN_INTERVAL_MS = 15_000
+export const ASSRT_TIMEOUT_MS = 15_000
 
 export class AssrtApiError extends Error {
   constructor(public status: number, endpoint: string) {
@@ -63,7 +64,9 @@ export class AssrtClient {
       await this.limiter.wait()
       const t0 = Date.now()
       try {
-        const res = await this.fetchImpl(`${BASE}/${endpoint}?${qs}`)
+        const res = await this.fetchImpl(`${BASE}/${endpoint}?${qs}`, {
+          signal: AbortSignal.timeout(ASSRT_TIMEOUT_MS),
+        })
         const json = await res.json() as { status?: number }
         const status = typeof json.status === 'number' ? json.status : null
         this.opts.onApiCall?.({ endpoint, params, status, durationMs: Date.now() - t0 })

@@ -26,4 +26,10 @@ describe('downloadDirect', () => {
     await expect(downloadDirect('http://x/y.ass', { fetchImpl: fetchImpl as unknown as typeof fetch, retryDelayMs: 1 }))
       .rejects.toThrow(/empty/i)
   })
+  it('sends AbortSignal timeout to fetch inside retry loop', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('ok')))
+    await downloadDirect('http://x/y.ass', { fetchImpl: fetchImpl as unknown as typeof fetch })
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
 })
