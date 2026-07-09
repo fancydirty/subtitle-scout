@@ -73,20 +73,19 @@ export class LibraryRepo {
   }
 
   upsertSeries(params: SeriesParams): void {
-    const now = Date.now()
     this.db
       .prepare(
         `INSERT INTO series (id, name, chinese_title, poster_tag, year, provider_ids)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
-           chinese_title = excluded.chinese_title,
-           poster_tag = excluded.poster_tag,
+           chinese_title = COALESCE(excluded.chinese_title, chinese_title),
+           poster_tag = COALESCE(excluded.poster_tag, poster_tag),
            year = excluded.year,
            provider_ids = excluded.provider_ids
          WHERE name != excluded.name
-            OR chinese_title IS NOT excluded.chinese_title
-            OR poster_tag IS NOT excluded.poster_tag
+            OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
+            OR (excluded.poster_tag IS NOT NULL AND poster_tag IS NOT excluded.poster_tag)
             OR year IS NOT excluded.year
             OR provider_ids IS NOT excluded.provider_ids`
       )
@@ -143,16 +142,16 @@ export class LibraryRepo {
            name = excluded.name,
            path = excluded.path,
            sub_status = excluded.sub_status,
-           chinese_title = excluded.chinese_title,
-           poster_tag = excluded.poster_tag,
+           chinese_title = COALESCE(excluded.chinese_title, chinese_title),
+           poster_tag = COALESCE(excluded.poster_tag, poster_tag),
            year = excluded.year,
            provider_ids = excluded.provider_ids,
            updated_at = excluded.updated_at
          WHERE name != excluded.name
             OR path != excluded.path
             OR sub_status != excluded.sub_status
-            OR chinese_title IS NOT excluded.chinese_title
-            OR poster_tag IS NOT excluded.poster_tag
+            OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
+            OR (excluded.poster_tag IS NOT NULL AND poster_tag IS NOT excluded.poster_tag)
             OR year IS NOT excluded.year
             OR provider_ids IS NOT excluded.provider_ids`
       )
@@ -298,5 +297,27 @@ export class LibraryRepo {
         )
         .run(reason, recheckAfter, now, itemId)
     }
+  }
+
+  /** job 执行时解析到系列中文名后写回 series 行。仅当现值 IS NULL 或不同才写（幂等，失败静默由调用方兜）。 */
+  setSeriesChineseTitle(id: string, title: string, now: number): void {
+    this.db
+      .prepare(
+        `UPDATE series
+         SET chinese_title = ?, chinese_title_checked_at = ?
+         WHERE id = ? AND (chinese_title IS NULL OR chinese_title != ?)`
+      )
+      .run(title, now, id, title)
+  }
+
+  /** job 执行时解析到电影中文名后写回 movies 行。仅当现值 IS NULL 或不同才写。 */
+  setMovieChineseTitle(id: string, title: string, now: number): void {
+    this.db
+      .prepare(
+        `UPDATE movies
+         SET chinese_title = ?, updated_at = ?
+         WHERE id = ? AND (chinese_title IS NULL OR chinese_title != ?)`
+      )
+      .run(title, now, id, title)
   }
 }

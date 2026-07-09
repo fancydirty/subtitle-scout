@@ -3,51 +3,25 @@ import { createServer, type Server } from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { URL } from 'node:url'
-import { Ledger } from '../core/ledger.js'
-import { PrefetchQueue } from '../daemon/queue.js'
-import { buildSummary, buildRuns } from './api.js'
-import { buildRunStory } from './story.js'
+import type { ScoutDb } from '../v2/db.js'
+import { buildLibrary, buildSeriesDetail, buildRuns, proxyPoster } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
-import { queueStatusLabel } from './labels.js'
-import type { InFlightItemDTO, QueueDTO } from './types.js'
 
 export interface DashboardOpts {
-  cacheRoot: string
+  db: ScoutDb
   port: number
   token?: string
   distDir: string
-  getInFlight: () => InFlightItemDTO[]
+  /** Jellyfin 海报代理凭据——API key 只在后端持有，绝不出后端。 */
+  jellyfin: { baseUrl: string; apiKey: string }
+  /** 测试注入用；默认全局 fetch。 */
+  fetchImpl?: typeof fetch
 }
 
-const WINDOW_MS = 168 * 3600_000
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ico': 'image/x-icon', '.map': 'application/json',
-}
-
-function readStory(cacheRoot: string, id: string, now: number) {
-  const path = join(cacheRoot, 'journals', id, 'decision.json')
-  if (!existsSync(path)) return null
-  let journal: any
-  try { journal = JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
-  // 用 ledger 补 name/ts;缺失则回退
-  const { events } = new Ledger(join(cacheRoot, 'ledger.jsonl')).read(now - WINDOW_MS)
-  const ev = events.find(e => e.type === 'run' && e.journalPath.includes(`/journals/${id}/`)) as any
-  const ledger = ev ? { name: ev.name, decision: ev.decision, ts: ev.ts } : { name: '（较早记录）', decision: journal?.decision?.decision ?? 'error', ts: 0 }
-  try { return buildRunStory(journal, ledger) } catch { return null }
-}
-
-function buildQueue(cacheRoot: string): QueueDTO {
-  // PrefetchQueue 无导出 entries 的公开访问器;经 queue.json 直读
-  const file = join(cacheRoot, 'queue.json')
-  let entries: any[] = []
-  try { entries = JSON.parse(readFileSync(file, 'utf8')).entries ?? [] } catch { return { pending: [], dormant: [] } }
-  const map = (e: any) => ({ itemId: e.itemId, name: e.name, statusLabel: queueStatusLabel(e.state), nextRetryAt: e.nextRetryAt ?? null })
-  return {
-    pending: entries.filter(e => e.state === 'pending').map(map),
-    dormant: entries.filter(e => e.state === 'dormant').map(map),
-  }
 }
 
 function serveStatic(distDir: string, pathname: string): { status: number; body: Buffer; type: string } {
@@ -61,49 +35,45 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { cacheRoot, port, token, distDir, getInFlight } = opts
+  const { db, port, token, distDir, jellyfin } = opts
+  const fetchImpl = opts.fetchImpl ?? fetch
   const deps: RouterDeps = {
-    summary: () => {
-      const now = Date.now()
-      const { events } = new Ledger(join(cacheRoot, 'ledger.jsonl')).read(now - WINDOW_MS)
-      let qsize = { pending: 0, dormant: 0 }
-      try { qsize = new PrefetchQueue(join(cacheRoot, 'queue.json')).size() } catch { /* 无队列 */ }
-      return buildSummary(events, qsize, now)
-    },
-    runs: (limit) => {
-      const now = Date.now()
-      const { events } = new Ledger(join(cacheRoot, 'ledger.jsonl')).read(now - WINDOW_MS)
-      return { inFlight: getInFlight(), runs: buildRuns(events, limit) }
-    },
-    story: (id) => readStory(cacheRoot, id, Date.now()),
-    queue: () => buildQueue(cacheRoot),
+    library: () => buildLibrary(db),
+    series: (id) => buildSeriesDetail(db, id),
+    runs: (offset, limit) => buildRuns(db, offset, limit),
   }
 
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost')
       const rawPath = url.pathname   // 未解码
+      const reqToken = url.searchParams.get('token') ?? (req.headers['x-dashboard-token'] as string | undefined)
+
+      // 海报代理：/api/poster/:itemId?tag=——server 端取图流回，API key 不出后端。
+      const pm = rawPath.match(/^\/api\/poster\/([^/]+)$/)
+      if (pm) {
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        const itemId = decodeURIComponent(pm[1])
+        const tag = url.searchParams.get('tag') ?? undefined
+        const result = await proxyPoster(itemId, tag, { baseUrl: jellyfin.baseUrl, apiKey: jellyfin.apiKey, fetchImpl })
+        res.writeHead(result.status, { 'content-type': result.contentType, 'cache-control': result.cacheControl })
+        res.end(result.body ?? Buffer.from('not found'))
+        return
+      }
+
       if (rawPath.startsWith('/api/')) {
-        const reqToken = url.searchParams.get('token') ?? (req.headers['x-dashboard-token'] as string | undefined)
         const query: Record<string, string> = {}
         url.searchParams.forEach((v, k) => { query[k] = v })
-        // runs/:id 的 id 单独解码后检查合法性（%2f→/ 等路径穿越字符拒为 400）
-        const m = rawPath.match(/^\/api\/runs\/(.+)$/)
-        if (m) {
-          const decodedId = decodeURIComponent(m[1])
-          // 解码后包含 / 或 .. 视为路径穿越尝试，直接拒绝
-          if (decodedId.includes('/') || decodedId.includes('\\')) {
-            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-            res.end(JSON.stringify({ error: 'bad id' }))
-            return
-          }
-        }
-        const pathname = m ? `/api/runs/${decodeURIComponent(m[1])}` : rawPath
-        const result = handleApiRoute({ pathname, query, token: reqToken ?? undefined }, deps, token)
+        const result = handleApiRoute({ pathname: rawPath, query, token: reqToken ?? undefined }, deps, token)
         res.writeHead(result.status, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.json))
         return
       }
+
       const s = serveStatic(distDir, decodeURIComponent(url.pathname))
       res.writeHead(s.status, { 'content-type': s.type })
       res.end(s.body)

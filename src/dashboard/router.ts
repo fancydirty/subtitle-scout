@@ -1,16 +1,18 @@
 // src/dashboard/router.ts
-import type { SummaryDTO, RunsDTO, StoryDTO, QueueDTO } from './types.js'
+import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO } from './apiV2.js'
 
 export interface RouterDeps {
-  summary: () => SummaryDTO
-  runs: (limit: number) => RunsDTO
-  story: (id: string) => StoryDTO | null
-  queue: () => QueueDTO
+  library: () => LibraryItemDTO[]
+  series: (id: string) => SeriesDetailDTO | null
+  runs: (offset: number, limit: number) => RunHistoryDTO[]
 }
 export interface ApiResult { status: number; json: unknown }
 
-const JOURNAL_ID = /^[A-Za-z0-9._-]+$/   // 允许字符集；额外禁止 '..' 片段
-const isSafeId = (id: string) => JOURNAL_ID.test(id) && !id.includes('..')
+const SAFE_ID = /^[A-Za-z0-9._-]+$/   // 允许字符集；额外禁止 '..' 片段
+const isSafeId = (id: string) => SAFE_ID.test(id) && !id.includes('..')
+
+// v1 端点已随 ledger/queue 一并废弃——命中返回 410，别硬撑。
+const V1_GONE = { status: 410, json: { error: 'gone', detail: 'v1 endpoint retired; use /api/v2/*' } } as const
 
 /** 纯 API 路由。token 未配置则不校验;配置了则需精确匹配。id 非法 400,未命中 404。 */
 export function handleApiRoute(
@@ -21,18 +23,27 @@ export function handleApiRoute(
   if (configuredToken && req.token !== configuredToken) return { status: 401, json: { error: 'unauthorized' } }
 
   const { pathname } = req
-  if (pathname === '/api/summary') return { status: 200, json: deps.summary() }
-  if (pathname === '/api/queue') return { status: 200, json: deps.queue() }
-  if (pathname === '/api/runs') {
-    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 200)
-    return { status: 200, json: deps.runs(limit) }
-  }
-  const m = pathname.match(/^\/api\/runs\/([^/]+)$/)
-  if (m) {
-    const id = m[1]
+
+  // ---- v1 retired ----
+  if (pathname === '/api/summary' || pathname === '/api/queue') return V1_GONE
+  if (pathname === '/api/runs' || /^\/api\/runs\/[^/]+$/.test(pathname)) return V1_GONE
+
+  // ---- v2 ----
+  if (pathname === '/api/v2/library') return { status: 200, json: deps.library() }
+
+  const sm = pathname.match(/^\/api\/v2\/series\/([^/]+)$/)
+  if (sm) {
+    const id = sm[1]
     if (!isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
-    const story = deps.story(id)
-    return story ? { status: 200, json: story } : { status: 404, json: { error: 'not found' } }
+    const detail = deps.series(id)
+    return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
   }
+
+  if (pathname === '/api/v2/runs') {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200)
+    const offset = Math.max(Number(req.query.offset) || 0, 0)
+    return { status: 200, json: deps.runs(offset, limit) }
+  }
+
   return { status: 404, json: { error: 'not found' } }
 }
