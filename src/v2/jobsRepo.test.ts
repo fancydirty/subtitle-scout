@@ -38,6 +38,37 @@ describe('jobs 状态机', () => {
     const row = repo.find('s1', 4)!
     expect(row.state).toBe('wanted'); expect(row.attempt).toBe(1)
   })
+  it('reapAllActive：未过期租约也被无条件归位（启动回收，单实例前提）', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!                      // 租约刚发，远未过期
+    expect(j.state).toBe('searching')
+    expect(repo.reapAllActive(now)).toBe(1)
+    const row = repo.get(j.id)!
+    expect(row.state).toBe('wanted')
+    expect(row.attempt).toBe(1)
+    expect(row.lease_until).toBeNull()
+  })
+  it('reapAllActive：覆盖全部活跃态，静止态（wanted/failed/done/dormant）不动', () => {
+    const now = Date.now()
+    for (const s of ['a', 'b', 'c', 'w', 'f', 'd', 'z']) {
+      repo.upsertWanted({ kind: 'series_season', seriesId: s, season: 1 }, now)
+    }
+    repo.forceState('a', 1, 'searching', now)
+    repo.forceState('b', 1, 'downloading', now)
+    repo.forceState('c', 1, 'verifying', now)
+    // 'w' 留 wanted
+    repo.forceState('f', 1, 'failed', now)
+    repo.forceState('d', 1, 'done', now)
+    repo.forceState('z', 1, 'dormant', now)
+    expect(repo.reapAllActive(now)).toBe(3)
+    for (const s of ['a', 'b', 'c']) expect(repo.find(s, 1)!.state).toBe('wanted')
+    expect(repo.find('w', 1)!.state).toBe('wanted')
+    expect(repo.find('w', 1)!.attempt).toBe(0)          // 本就 wanted 的不被 attempt+1
+    expect(repo.find('f', 1)!.state).toBe('failed')
+    expect(repo.find('d', 1)!.state).toBe('done')
+    expect(repo.find('z', 1)!.state).toBe('dormant')
+  })
   it('内容性失败指数退避：四次分别落 1/2/4/8 天，第 5 次才 dormant', () => {
     const t0 = Date.now()
     mkSeriesJob(t0)

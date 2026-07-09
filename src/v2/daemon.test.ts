@@ -255,6 +255,39 @@ describe('ScoutDaemon', () => {
     expect(logs.some(l => l.includes('Sessions fetch failed'))).toBe(true)
   })
 
+  it('run启动即回收上个进程的活跃租约（未过期也回收）', async () => {
+    // 生产实案：部署重启瞬间在跑的 job 租约僵尸占 searching 槽最长 30 分钟。
+    // 模拟旧进程遗孤：claim 后"进程死了"，租约仍在 30min 窗口内未过期。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const orphan = jobs.claimNext(now)!
+    expect(orphan.state).toBe('searching')
+
+    const daemon = new ScoutDaemon(makeDeps())
+    const controller = new AbortController()
+    const runPromise = daemon.run(controller.signal)
+
+    await new Promise(r => setTimeout(r, 20))
+    controller.abort()
+    await runPromise
+
+    // 回收发生且被 log；attempt+1 证明走的是 reap 通道
+    // （之后 tick 可能已把它重新领走，所以断言 attempt 而非最终 state）
+    expect(logs.some(l => l.includes('boot: reaped 1'))).toBe(true)
+    expect(jobs.get(orphan.id)!.attempt).toBe(1)
+  })
+
+  it('run启动时无活跃租约则不打回收log', async () => {
+    const daemon = new ScoutDaemon(makeDeps())
+    const controller = new AbortController()
+    const runPromise = daemon.run(controller.signal)
+
+    await new Promise(r => setTimeout(r, 20))
+    controller.abort()
+    await runPromise
+
+    expect(logs.some(l => l.includes('boot: reaped'))).toBe(false)
+  })
+
   it('run循环：tick+pollSessions并发，signal退出', async () => {
     const executeJob = vi.fn(async () => {})
 

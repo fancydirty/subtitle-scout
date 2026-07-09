@@ -1,5 +1,5 @@
 import { dirname, basename } from 'node:path'
-import { isChineseOrigin, needsChineseSubtitle } from '../daemon/triggers.js'
+import { isChineseOrigin, usableChineseSubtitleStreams } from '../daemon/triggers.js'
 import { mapPath, type PathMapping } from '../core/mediaContext.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
@@ -40,10 +40,15 @@ export function classifyItem(
     return 'ignored'
   }
 
-  // 2. Has embedded Chinese subtitle → embedded
-  // needsChineseSubtitle returns true if it NEEDS (i.e., doesn't have)
-  // So if it returns false with treatPgsAsMissing=true, it means it has usable Chinese subs
-  if (!needsChineseSubtitle(item, true)) {
+  // 2. 中字轨按 IsExternal 分流：Jellyfin FullRefresh 会把盘上的外挂字幕收进
+  //    MediaStreams（IsExternal=true）——那是 sidecar（scout 战果或用户手动放置），
+  //    归 covered；只有 IsExternal 为 falsy 的才是真内嵌。两者都有时 covered 优先
+  //    （外挂展示价值更高）。
+  const zhTracks = usableChineseSubtitleStreams(item, true)
+  if (zhTracks.some(s => s.IsExternal === true)) {
+    return 'covered'
+  }
+  if (zhTracks.length > 0) {
     return 'embedded'
   }
 

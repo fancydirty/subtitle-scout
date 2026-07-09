@@ -108,6 +108,21 @@ export class JobsRepo {
       .run(now, now)
   }
 
+  /** 启动即回收：无条件把所有活跃态 job 归位 wanted，**不看租约是否过期**。
+   *  单实例前提——daemon 启动时旧进程必已死，任何还挂在 searching/downloading/verifying
+   *  的租约都是上个进程留下的遗孤（重启瞬间在跑的 job 租约仍未过期，最长可占 searching 槽
+   *  30 分钟拖停调度）。返回回收行数。 */
+  reapAllActive(now: number): number {
+    const info = this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'wanted', attempt = attempt + 1, lease_until = NULL, updated_at = ?
+         WHERE state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(now)
+    return info.changes
+  }
+
   /** Content failure (no_safe_match): exponential backoff 1/2/4/8 days, then dormant on the 5th failure. */
   completeNoMatch(jobId: number, now: number): boolean {
     return this.db.transaction(() => {

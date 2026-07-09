@@ -1,4 +1,4 @@
-import type { JellyfinItem } from '../adapters/players/jellyfin.js'
+import type { JellyfinItem, JellyfinMediaStream } from '../adapters/players/jellyfin.js'
 
 export const CHINESE_LANG_TAGS = /^(chi|zho|chs|cht|zh)([-_].*)?$/i
 const IMAGE_SUB_CODECS = /pgs|vobsub|dvdsub|dvbsub/i
@@ -13,12 +13,19 @@ export function isChineseOrigin(item: JellyfinItem): boolean {
   return (item.ProductionLocations ?? []).some(l => CHINESE_ORIGIN.test(l))
 }
 
-/** 判断是否缺可用中文字幕。treatPgsAsMissing=true 时图形字幕不算数。 */
-export function needsChineseSubtitle(item: JellyfinItem, treatPgsAsMissing: boolean): boolean {
+/** 可用中文字幕轨（treatPgsAsMissing=true 时排除图形字幕）。含内嵌与外挂，调用方按 IsExternal 自行区分。 */
+export function usableChineseSubtitleStreams(
+  item: JellyfinItem,
+  treatPgsAsMissing: boolean
+): JellyfinMediaStream[] {
   const subs = (item.MediaStreams ?? []).filter(s => s.Type === 'Subtitle')
   const chinese = subs.filter(s => s.Language && CHINESE_LANG_TAGS.test(s.Language))
-  const usable = treatPgsAsMissing
+  return treatPgsAsMissing
     ? chinese.filter(s => !s.Codec || !IMAGE_SUB_CODECS.test(s.Codec))
     : chinese
-  return usable.length === 0
+}
+
+/** 判断是否缺可用中文字幕（外挂内嵌都算"有"——语义是"需不需要处理"）。treatPgsAsMissing=true 时图形字幕不算数。 */
+export function needsChineseSubtitle(item: JellyfinItem, treatPgsAsMissing: boolean): boolean {
+  return usableChineseSubtitleStreams(item, treatPgsAsMissing).length === 0
 }
