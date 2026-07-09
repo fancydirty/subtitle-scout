@@ -127,8 +127,10 @@ export class JellyfinClient implements PlayerServer {
   }
 
   /**
-   * 用 Jellyfin 的 zh-CN RemoteSearch 取中文译名。失败/无 provider id/非 Movie|Series
-   * 一律静默返回 null——Jellyfin 刮削不可达即等价于此，绝不阻塞主流程。
+   * 用 Jellyfin RemoteSearch 取中文译名，语言阶梯 zh-CN → zh-TW：TMDB 的 zh-CN 翻译记录
+   * 逐片可能缺名（实案：Love, Death & Robots 的 zh-CN 返回英文名而 zh-TW 有繁体名——
+   * 生产语言矩阵实验证明参数端到端有效，坑在 TMDB 数据洞）。返回值必须含 CJK 字符，
+   * 英文结果视同没有。失败/无 provider id/非 Movie|Series 一律静默返回 null，绝不阻塞主流程。
    */
   async getChineseTitle(item: JellyfinItem): Promise<string | null> {
     // 剧集没有自己的 RemoteSearch 端点——解析到所属系列再查（系列名才是搜字幕的主键）
@@ -147,24 +149,28 @@ export class JellyfinClient implements PlayerServer {
     if (!endpoint) return null
     const providerIds = item.ProviderIds ?? {}
     if (Object.keys(providerIds).length === 0) return null
-    try {
-      const body = {
-        SearchInfo: {
-          Name: item.Name,
-          Year: item.ProductionYear ?? undefined,
-          ProviderIds: providerIds,
-          MetadataLanguage: 'zh-CN',
-        },
-        ItemId: item.Id,
+    const hasCjk = (s: string) => /[一-鿿]/.test(s)
+    for (const lang of ['zh-CN', 'zh-TW']) {
+      try {
+        const body = {
+          SearchInfo: {
+            Name: item.Name,
+            Year: item.ProductionYear ?? undefined,
+            ProviderIds: providerIds,
+            MetadataLanguage: lang,
+          },
+          ItemId: item.Id,
+        }
+        const raw = await this.call('POST', `/Items/RemoteSearch/${endpoint}`, body)
+        const results = JellyfinRemoteSearchSchema.parse(raw)
+        const name = results[0]?.Name?.trim()
+        if (name && hasCjk(name)) return name
+      } catch (e) {
+        this.opts.onApiCall?.({ endpoint: `/Items/RemoteSearch/${endpoint}`, params: {}, status: null, durationMs: 0, error: String(e) })
+        return null
       }
-      const raw = await this.call('POST', `/Items/RemoteSearch/${endpoint}`, body)
-      const results = JellyfinRemoteSearchSchema.parse(raw)
-      const name = results[0]?.Name?.trim()
-      return name && name.length > 0 ? name : null
-    } catch (e) {
-      this.opts.onApiCall?.({ endpoint: `/Items/RemoteSearch/${endpoint}`, params: {}, status: null, durationMs: 0, error: String(e) })
-      return null
     }
+    return null
   }
 
   /**
