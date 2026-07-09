@@ -185,3 +185,16 @@ export const SeasonMapSchema = z.object({
   reasons: z.array(z.string()).default([]),
 })
 export type SeasonMap = z.infer<typeof SeasonMapSchema>
+
+export const LooseEpisodesMapSchema = z.object({
+  assignments: z.array(z.object({
+    episode_code: z.string(),
+    sub_id: looseNumeric(z.number().int()),
+    confidence: z.preprocess(
+      v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
+      z.number().min(0).max(1),
+    ),
+  })).default([]),
+  reasons: z.array(z.string()).default([]),
+})
+export type LooseEpisodesMap = z.infer<typeof LooseEpisodesMapSchema>

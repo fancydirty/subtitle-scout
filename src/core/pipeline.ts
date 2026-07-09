@@ -18,6 +18,7 @@ import { filterGraphicOnly } from '../agent/rankCandidates.js'
 import { runSeasonPackGate } from './seasonPackGate.js'
 import type { SeasonEpisode } from './episode.js'
 import { harvestAlias, hasCjk } from '../agent/harvestAlias.js'
+import { mapLooseEpisodes } from '../agent/mapLooseEpisodes.js'
 
 type SearchResponse = z.infer<typeof AssrtSearchResponseSchema>
 type DetailResponse = z.infer<typeof AssrtDetailResponseSchema>
@@ -240,9 +241,12 @@ export async function runPipeline(
     // !cached 防止缓存命中路径误触发（否则每次命中都白调 enumerate、重复 detail、把单集缓存决策变异成季包）
     if (!cached && deps.seasonPack && ctx.media.type === 'episode') {
       const pack = pickSeasonPack(candidates)
-      const seasonEpisodes = pack ? await deps.seasonPack.enumerate(ctx) : []
+      // enumerate 当有 pack 或可能需要 sweep 时（≥2 候选）：候选数 < 2 不可能满足 shouldGraduate / sweep
+      const mayGraduate = candidates.length >= 2
+      const seasonEpisodes = (pack || mayGraduate) ? await deps.seasonPack.enumerate(ctx) : []
+      const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
       if (pack && shouldGraduate(ctx, pack, seasonEpisodes)) {
-        journal.step('seasonGraduate', { packId: pack.id, episodes: seasonEpisodes.length, needs: seasonEpisodes.filter(e => e.needsChinese).length })
+        journal.step('seasonGraduate', { packId: pack.id, episodes: seasonEpisodes.length, needs: needsCount })
         const detail = await deps.assrt.detail(pack.id)
         const packSub = detail.sub.subs.find(s => s.id === pack.id) ?? detail.sub.subs[0]
         if (packSub) {
@@ -278,6 +282,71 @@ export async function runPipeline(
           }
         }
         // 季模式 0 覆盖 → 落回单集路径（继续往下，不 return）
+      } else if (!pack && needsCount >= 2 && deps.llm) {
+        // 5b. season sweep: 无整季包但有散装候选 + ≥2集缺中字 → 一轮横扫全季
+        // 先横扫（只在有散装候选可映射时有意义）；0 覆盖则落回单集路径，
+        // 单集 rank 拒绝的场景由 rank 阶段的别名收割兜底接力（两者次序不互相短路）。
+        journal.step('seasonSweepStart', { candidates: candidates.length, needs: needsCount })
+        const mapResult = await mapLooseEpisodes(deps.llm, ctx, identity, candidates, seasonEpisodes)
+        journal.llmCall({ point: 'mapLooseEpisodes', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
+        const validAssignments = (mapResult.parsed.assignments ?? [])
+          .filter(a => a.sub_id != null && a.episode_code && a.confidence >= ctx.preferences.auto_download_min_confidence)
+        journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
+
+        if (validAssignments.length > 0) {
+          const coveredEpisodes: { episodeCode: string; subtitlePath: string }[] = []
+          const skipped: { episode: string; reason: string }[] = []
+          let apiCallsUsed = 0
+          const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
+
+          for (const assignment of validAssignments) {
+            if (apiCallsUsed >= budget) {
+              skipped.push({ episode: assignment.episode_code, reason: 'api call budget exhausted' })
+              continue
+            }
+            const epMeta = seasonEpisodes.find(e => e.episodeCode === assignment.episode_code)
+            if (!epMeta || !epMeta.needsChinese) {
+              skipped.push({ episode: assignment.episode_code, reason: 'episode not in need list or already covered' })
+              continue
+            }
+
+            try {
+              const detail = await deps.assrt.detail(assignment.sub_id!)
+              apiCallsUsed++
+              const sub = detail.sub.subs.find(s => s.id === assignment.sub_id) ?? detail.sub.subs[0]
+              if (!sub) {
+                skipped.push({ episode: assignment.episode_code, reason: 'detail response empty' })
+                continue
+              }
+
+              // 单集候选通常单文件；多文件时选含对应 episode code 的文件，选不出则用第一个字幕文件
+              const subtitleFiles = sub.filelist.filter(f => /\.(srt|ass|ssa)$/i.test(f.f))
+              let fileEntry = subtitleFiles.find(f => f.f.includes(assignment.episode_code))
+              if (!fileEntry && subtitleFiles.length > 0) fileEntry = subtitleFiles[0]
+              if (!fileEntry || !fileEntry.url) {
+                skipped.push({ episode: assignment.episode_code, reason: 'no download url' })
+                continue
+              }
+
+              const dl = await deps.download(fileEntry.url)
+              const written = await writeSubtitle({
+                artifact: dl.bytes, artifactFilename: fileEntry.f,
+                videoFilename: epMeta.videoFilename, langTag: ctx.preferences.language,
+                outDir: dirname(epMeta.videoPath),
+              })
+              coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path })
+              try { await deps.seasonPack.onCovered(epMeta, written.path) } catch { /* 观测/联动不影响主流程 */ }
+            } catch (e) {
+              skipped.push({ episode: assignment.episode_code, reason: String(e) })
+            }
+          }
+
+          journal.step('seasonSweep', { candidates: candidates.length, assigned: validAssignments.length, covered: coveredEpisodes.length, skipped })
+          if (coveredEpisodes.length > 0) {
+            return finish('download', { reasons: [`season sweep: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath })
+          }
+        }
+        // sweep 0 覆盖 → 落回单集路径
       }
     }
 
