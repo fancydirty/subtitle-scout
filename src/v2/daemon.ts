@@ -213,6 +213,14 @@ export class ScoutDaemon {
       return
     }
 
+    // Boot recovery: 单实例前提下，daemon 启动时旧进程必已死，所有活跃态租约都是遗孤，
+    // 无条件回收（不等租约过期——生产实案：重启瞬间在跑的 job 租约僵尸占 searching 槽
+    // 最长 30 分钟，调度停摆）。
+    const reaped = this.deps.jobs.reapAllActive(this.deps.now())
+    if (reaped > 0) {
+      this.deps.log(`boot: reaped ${reaped} orphaned active lease(s) from previous process`)
+    }
+
     signal.addEventListener(
       'abort',
       () => {
