@@ -123,6 +123,18 @@ export class JellyfinClient implements PlayerServer {
    * 一律静默返回 null——Jellyfin 刮削不可达即等价于此，绝不阻塞主流程。
    */
   async getChineseTitle(item: JellyfinItem): Promise<string | null> {
+    // 剧集没有自己的 RemoteSearch 端点——解析到所属系列再查（系列名才是搜字幕的主键）
+    if (item.Type === 'Episode' && item.SeriesId) {
+      try {
+        const series = await this.getItem(item.SeriesId)
+        if (series.Type !== 'Episode') {
+          return await this.getChineseTitle(series)
+        }
+        return null
+      } catch {
+        return null
+      }
+    }
     const endpoint = item.Type === 'Movie' ? 'Movie' : item.Type === 'Series' ? 'Series' : null
     if (!endpoint) return null
     const providerIds = item.ProviderIds ?? {}

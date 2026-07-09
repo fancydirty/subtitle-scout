@@ -140,6 +140,36 @@ describe('getChineseTitle', () => {
     const [url] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
     expect(String(url)).toContain('/Items/RemoteSearch/Series')
   })
+  it('resolves Episode → series Chinese title via SeriesId', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ Items: [{
+        Id: 'series-1', Type: 'Series', Name: 'Detectives These Days Are Crazy!',
+        ProviderIds: { Tmdb: '123' }
+      }] }))
+      .mockResolvedValueOnce(jsonResponse([{ Name: '最近的侦探真没用', ProductionYear: 2024 }]))
+    const jf = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    const episode = movieItem({ Type: 'Episode', SeriesId: 'series-1', ProviderIds: {} })
+    expect(await jf.getChineseTitle(episode)).toBe('最近的侦探真没用')
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const [getItemUrl] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(getItemUrl)).toContain('ids=series-1')
+    const [remoteSearchUrl, remoteSearchInit] = fetchImpl.mock.calls[1] as unknown as [string, RequestInit]
+    expect(String(remoteSearchUrl)).toContain('/Items/RemoteSearch/Series')
+    const sent = JSON.parse(remoteSearchInit.body as string)
+    expect(sent.SearchInfo.ProviderIds).toEqual({ Tmdb: '123' })
+  })
+  it('returns null when Episode has no SeriesId', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse([{ Name: 'x' }]))
+    const jf = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await jf.getChineseTitle(movieItem({ Type: 'Episode', SeriesId: undefined }))).toBeNull()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+  it('returns null when getItem fails for series (silent fallback)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({}, false, 500))
+    const jf = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await jf.getChineseTitle(movieItem({ Type: 'Episode', SeriesId: 'series-x' }))).toBeNull()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('getSeasonEpisodes', () => {
