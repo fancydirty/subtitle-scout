@@ -104,6 +104,68 @@ export function overallOk(results: DoctorResult[]): boolean {
   return results.every(r => r.ok || r.skip)
 }
 
+/** v2 数据库检查：能打开且 schema_version 匹配 → ✓；否则 → ✗ 带人话提示 */
+export function checkDatabase(open: () => { version: string }): DoctorResult {
+  const EXPECTED_VERSION = '1'  // 当前预期版本（与 v2/db.ts MIGRATIONS 数组长度对应）
+
+  try {
+    const { version } = open()
+    if (version === EXPECTED_VERSION) {
+      return { name: 'database', ok: true, detail: `数据库可用，schema 版本 ${version}` }
+    }
+
+    // 版本不匹配
+    const versionNum = parseInt(version, 10)
+    const expectedNum = parseInt(EXPECTED_VERSION, 10)
+
+    if (versionNum < expectedNum) {
+      return {
+        name: 'database',
+        ok: false,
+        detail: `数据库版本 ${version}（预期 ${EXPECTED_VERSION}）`,
+        hint: '数据库版本过旧，重启 watch 即可自动升级 schema。',
+      }
+    }
+
+    return {
+      name: 'database',
+      ok: false,
+      detail: `数据库版本 ${version}（预期 ${EXPECTED_VERSION}）`,
+      hint: 'CLI 版本过旧，请更新到最新版本。',
+    }
+  } catch (e) {
+    return {
+      name: 'database',
+      ok: false,
+      detail: `打开失败：${String(e)}`,
+      hint: '数据库文件损坏或权限不足。若确认无重要数据，可删除 scout.db 重新初始化。',
+    }
+  }
+}
+
+/** v2 卡住任务检查：过租 job 数 0 → ✓；>0 → ✗ 带人话提示 */
+export function checkStuckJobs(count: () => number): DoctorResult {
+  try {
+    const stuckCount = count()
+    if (stuckCount === 0) {
+      return { name: 'stuck-jobs', ok: true, detail: '无卡住任务' }
+    }
+    return {
+      name: 'stuck-jobs',
+      ok: false,
+      detail: `有 ${stuckCount} 个任务卡住（lease 过租）`,
+      hint: '重启会自动归位；若反复出现请保留日志提 issue。',
+    }
+  } catch (e) {
+    return {
+      name: 'stuck-jobs',
+      ok: false,
+      detail: `检查失败：${String(e)}`,
+      hint: '数据库查询出错，先检查 database 项。',
+    }
+  }
+}
+
 /** 给远端探测包一层超时——doctor 面对黑洞端点（连上但永不回包）不能挂死。
  *  finally 清理 setTimeout，避免残留计时器把进程吊着。 */
 export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {

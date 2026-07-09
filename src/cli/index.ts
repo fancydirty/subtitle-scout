@@ -34,6 +34,7 @@ import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
   checkJellyfin, checkAssrt, checkLlm, checkMediaRoots, checkPathMappings,
+  checkDatabase, checkStuckJobs,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
 import { openDb } from '../v2/db.js'
