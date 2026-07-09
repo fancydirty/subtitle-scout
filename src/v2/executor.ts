@@ -7,6 +7,7 @@ import type { Assembled } from '../cli/index.js'
 import {
   buildMediaContext, mediaDir, isDirWritable, isUnderRoots, applyConfidenceOverride,
 } from '../core/mediaContext.js'
+import { tmdbTitles } from '../adapters/providers/tmdb.js'
 import { runPipeline } from '../core/pipeline.js'
 import type { SeasonEpisode } from '../core/episode.js'
 import { join } from 'node:path'
@@ -204,17 +205,18 @@ export function makeRunEpisode(
   lib: LibraryRepo,
   opts: { mediaRoots: string[] }
 ): ExecutorDeps['runEpisode'] {
-  const { jf, mappings, makeDeps, withJournal, cacheRoot } = assembled
+  const { jf, mappings, makeDeps, withJournal, cacheRoot, tmdb } = assembled
 
   return async (episodeId, onCovered) => {
     // 1. Get item from Jellyfin
     const item = await jf.getItem(episodeId)
 
-    // 2. Get chinese title
+    // 2. Get chinese title (jellyfin fallback) + optional TMDB variants
     const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
+    const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)) : undefined
 
     // 3. Build MediaContext + confidence override (I5a)
-    const ctx = buildMediaContext(item, mappings, { chineseTitle })
+    const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
     applyConfidenceOverride(ctx)
 
     // 4a. I5b: root restriction — refuse writes outside media roots (security guard)

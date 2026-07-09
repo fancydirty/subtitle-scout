@@ -126,6 +126,26 @@ describe('buildMediaContext enrichment', () => {
     expect(ctx.media.overview).toBeNull()
     expect(ctx.media.alternative_titles).toEqual([])
   })
+  it('merges TMDB chineseTitles (official first) ahead of jellyfin fallback, deduped', () => {
+    const ctx = buildMediaContext(baseMovie(), [], {
+      chineseTitles: ['爱，死亡和机器人', '爱死亡与机器人'],
+      chineseTitle: '爱死亡与机器人', // 与变体重复 → 去重
+    })
+    expect(ctx.media.alternative_titles).toEqual([
+      '爱，死亡和机器人',
+      '爱死亡与机器人',
+    ])
+  })
+  it('drops chineseTitles equal to display/original title', () => {
+    const ctx = buildMediaContext(baseMovie(), [], {
+      chineseTitles: ['Shelby Oaks', '寻踪迷镇'],
+    })
+    expect(ctx.media.alternative_titles).toEqual(['寻踪迷镇'])
+  })
+  it('populates from chineseTitles alone (no jellyfin fallback)', () => {
+    const ctx = buildMediaContext(baseMovie(), [], { chineseTitles: ['寻踪迷镇'] })
+    expect(ctx.media.alternative_titles).toEqual(['寻踪迷镇'])
+  })
 })
 
 describe('isDirWritable', () => {

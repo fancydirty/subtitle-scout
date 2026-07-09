@@ -26,15 +26,17 @@ const TICKS_PER_MINUTE = 600_000_000
 export function buildMediaContext(
   item: JellyfinItem,
   mappings: PathMapping[],
-  enrichment: { chineseTitle?: string | null } = {},
+  enrichment: { chineseTitle?: string | null; chineseTitles?: string[] } = {},
 ): MediaContext {
   if (!item.Path) throw new Error(`jellyfin item ${item.Id} has no Path`)
   const path = mapPath(item.Path, mappings)
   const isEpisode = item.Type === 'Episode'
   const title = isEpisode ? (item.SeriesName ?? item.Name) : item.Name
-  const alternative_titles = [enrichment.chineseTitle]
+  // TMDB 变体（官方译名优先）在前、jellyfin 单译名 fallback 在后；去空、去与主/原名重复、去重。
+  const alternative_titles = [...(enrichment.chineseTitles ?? []), enrichment.chineseTitle]
     .filter((t): t is string =>
       !!t && t.trim().length > 0 && t !== title && t !== item.OriginalTitle)
+    .filter((t, i, arr) => arr.indexOf(t) === i)
   return MediaContextSchema.parse({
     request_id: `jf-${item.Id}-${Date.now()}`,
     trigger: 'playback_start',
