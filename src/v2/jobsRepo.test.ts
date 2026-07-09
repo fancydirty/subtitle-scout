@@ -119,4 +119,45 @@ describe('jobs 状态机', () => {
     const row = repo.find('s1', 4)!
     expect(row.state).toBe('searching'); expect(row.priority).toBe(0)
   })
+
+  describe('retire (聚合器清理语义)', () => {
+    it('retire wanted job → done', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      const j = repo.find('s1', 4)!
+      expect(repo.retire(j.id, now)).toBe(true)
+      expect(repo.get(j.id)!.state).toBe('done')
+    })
+    it('retire failed job → done', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      repo.forceState('s1', 4, 'failed', now)
+      const j = repo.find('s1', 4)!
+      expect(repo.retire(j.id, now)).toBe(true)
+      expect(repo.get(j.id)!.state).toBe('done')
+    })
+    it('retire 对 active 态无效 (返回 false，状态不变)', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      const j = repo.claimNext(now)!                     // state=searching
+      expect(repo.retire(j.id, now)).toBe(false)
+      expect(repo.get(j.id)!.state).toBe('searching')
+    })
+    it('retire 对 dormant 无效 (dormant 有自己的复活通道)', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      repo.forceState('s1', 4, 'dormant', now)
+      const j = repo.find('s1', 4)!
+      expect(repo.retire(j.id, now)).toBe(false)
+      expect(repo.get(j.id)!.state).toBe('dormant')
+    })
+    it('retire 对 done 幂等 (已退役则 false)', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      repo.forceState('s1', 4, 'done', now)
+      const j = repo.find('s1', 4)!
+      expect(repo.retire(j.id, now)).toBe(false)
+      expect(repo.get(j.id)!.state).toBe('done')
+    })
+  })
 })

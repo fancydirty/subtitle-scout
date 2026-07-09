@@ -176,6 +176,18 @@ export class JobsRepo {
     return info.changes > 0
   }
 
+  /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic). */
+  retire(jobId: number, now: number): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'done', updated_at = ?
+         WHERE id = ? AND state IN ('wanted', 'failed')`
+      )
+      .run(now, jobId)
+    return info.changes > 0
+  }
+
   /** Priority bump for existing (wanted/failed) jobs — does not change state. */
   boostPriority(ident: JobIdent, priority: number): void {
     if (ident.kind === 'series_season') {
