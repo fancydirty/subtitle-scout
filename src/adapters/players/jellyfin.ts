@@ -118,6 +118,12 @@ export class JellyfinClient implements PlayerServer {
     return JellyfinItemsResponseSchema.parse(raw).Items
   }
 
+  async getItemsPage(startIndex: number, limit: number): Promise<JellyfinItem[]> {
+    const raw = await this.call('GET',
+      `/Items?recursive=true&includeItemTypes=Movie,Episode&sortBy=DateCreated&sortOrder=Ascending&startIndex=${startIndex}&limit=${limit}&fields=${ITEM_FIELDS},DateCreated`)
+    return JellyfinItemsResponseSchema.parse(raw).Items
+  }
+
   /**
    * 用 Jellyfin 的 zh-CN RemoteSearch 取中文译名。失败/无 provider id/非 Movie|Series
    * 一律静默返回 null——Jellyfin 刮削不可达即等价于此，绝不阻塞主流程。

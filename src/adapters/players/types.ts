@@ -16,4 +16,5 @@ export interface PlayerServer {
   getRecentItems(limit: number): Promise<MediaItem[]>
   getChineseTitle(item: MediaItem): Promise<string | null>
   getSeasonEpisodes(item: MediaItem): Promise<SeasonEpisode[]>
+  getItemsPage(startIndex: number, limit: number): Promise<MediaItem[]>
 }
