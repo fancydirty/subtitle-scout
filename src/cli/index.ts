@@ -43,7 +43,7 @@ function requireEnv(name: string): string {
   return v
 }
 
-interface Assembled {
+export interface Assembled {
   makeDeps: (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string) => void | Promise<void> }) => PipelineDeps
   /** 每个 job 独立的 journal 上下文——并发任务的 apiCall/自愈事件不再串记到相邻 journal。
    *  所有 runPipeline 调用必须包在此内，否则 assrt/llm 回调取不到 journal 而丢事件。 */
