@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkJellyfin, checkAssrt, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout } from './doctor.js'
+import { checkJellyfin, checkAssrt, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs } from './doctor.js'
 
 describe('doctor 远端三项', () => {
   it('jellyfin 可达 → ok，带会话数', async () => {
@@ -119,5 +119,43 @@ describe('withTimeout', () => {
   })
   it('按时完成 → 原样返回结果', async () => {
     await expect(withTimeout(Promise.resolve('ok'), 1000, 'ASSRT')).resolves.toBe('ok')
+  })
+})
+
+describe('doctor v2 database checks', () => {
+  it('checkDatabase：可开且版本匹配 → ✓ 显示版本', () => {
+    const r = checkDatabase(() => ({ version: '1' }))
+    expect(r.ok).toBe(true)
+    expect(r.name).toBe('database')
+    expect(r.detail).toContain('1')
+  })
+  it('checkDatabase：打开抛错 → ✗ 人话 hint', () => {
+    const r = checkDatabase(() => { throw new Error('SQLITE_CANTOPEN') })
+    expect(r.ok).toBe(false)
+    expect(r.hint).toBeTruthy()
+  })
+  it('checkDatabase：版本不符（比预期旧）→ ✗ 提示', () => {
+    const r = checkDatabase(() => ({ version: '0' }))
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('0')
+    expect(r.hint).toBeTruthy()
+  })
+  it('checkDatabase：版本不符（比预期新）→ ✗ 提示旧版 CLI', () => {
+    const r = checkDatabase(() => ({ version: '999' }))
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('999')
+    expect(r.hint).toContain('CLI')
+  })
+  it('checkStuckJobs：0 个卡住 → ✓', () => {
+    const r = checkStuckJobs(() => 0)
+    expect(r.ok).toBe(true)
+    expect(r.name).toBe('stuck-jobs')
+  })
+  it('checkStuckJobs：>0 个卡住 → ✗ 带人话提示', () => {
+    const r = checkStuckJobs(() => 3)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('3')
+    expect(r.hint).toContain('重启')
+    expect(r.hint).toContain('issue')
   })
 })

@@ -427,6 +427,35 @@ async function cmdDoctor() {
   } else {
     results.push({ name: 'path-mapping', ok: true, skip: true, detail: 'Jellyfin 不可达，跳过（先修复 jellyfin 项）' })
   }
+
+  // v2 database checks (only if db file exists)
+  const dbPath = join(cacheRoot, 'scout.db')
+  if (existsSync(dbPath)) {
+    const { openDb } = await import('../v2/db.js')
+    const { JobsRepo } = await import('../v2/jobsRepo.js')
+
+    results.push(checkDatabase(() => {
+      const db = openDb(dbPath)
+      const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined
+      db.close()
+      return { version: row?.value ?? '0' }
+    }))
+
+    results.push(checkStuckJobs(() => {
+      const db = openDb(dbPath)
+      const now = Date.now()
+      const result = db.prepare(
+        `SELECT COUNT(*) as count FROM jobs
+         WHERE state IN ('searching', 'downloading', 'verifying')
+         AND (lease_until < ? OR lease_until IS NULL)`
+      ).get(now) as { count: number }
+      db.close()
+      return result.count
+    }))
+  } else {
+    results.push({ name: 'database', ok: true, skip: true, detail: '数据库尚未初始化，起一次 watch 即建' })
+    results.push({ name: 'stuck-jobs', ok: true, skip: true, detail: '数据库尚未初始化，起一次 watch 即建' })
+  }
   console.log(formatDoctorReport(results))
   if (!overallOk(results)) process.exit(1)
 }
