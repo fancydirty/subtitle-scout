@@ -100,3 +100,12 @@ describe('detail responses are never disk-cached (time-limited download urls)', 
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('AbortSignal timeout coverage', () => {
+  it('call sends AbortSignal to fetch inside retry loop', async () => {
+    const { client, fetchImpl } = makeClient([searchFixture])
+    await client.search('x')
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+})

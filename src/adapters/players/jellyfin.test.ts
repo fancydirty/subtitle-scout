@@ -96,6 +96,12 @@ describe('JellyfinClient', () => {
     expect(String(url)).toContain('sortOrder=Ascending')
     expect(String(url)).toContain('sortBy=DateCreated')
   })
+  it('call sends AbortSignal timeout to prevent global hangs', async () => {
+    const { client, fetchImpl } = makeClient([sessionsFixture])
+    await client.getSessions()
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
 })
 
 function movieItem(overrides: Partial<JellyfinItem> = {}): JellyfinItem {
