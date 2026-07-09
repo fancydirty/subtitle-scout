@@ -73,7 +73,7 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服�
 3. 找到"API 密钥"
 4. 点击"新建"，复制生成的 key，填入 `.env` 的 `JELLYFIN_API_KEY`
 
-填完 `JELLYFIN_URL`（如 `http://<主机IP>:8096` 或 `http://host.docker.internal:8096`）后即可启动。
+填完 `JELLYFIN_URL` 后即可启动：Jellyfin 在同机 Docker 上就用 `http://host.docker.internal:8096`（开箱即通，Linux 也支持）；在别的机器上则用 `http://<Jellyfin主机IP>:8096`。
 
 ---
 
@@ -219,6 +219,10 @@ docker compose exec subtitle-scout npx tsx src/cli/index.ts report --since 7d
 ---
 
 ## FAQ / 排障
+
+### Q: 刚 up 完就跑 doctor，jellyfin 项 ✗？
+
+Jellyfin 首次启动需要几秒到几十秒完成初始化（尤其全家桶首跑），等它就绪后重跑 doctor 即可。另外：`MEDIA_HOST_PATH` 下不存在的子目录（如还没建 TV/）会被 Docker 自动创建为空目录，属正常现象。
 
 ### Q: doctor 显示 `path-mapping` ✗，或"下载了但 Jellyfin 看不到"
 
