@@ -152,10 +152,15 @@ export const FinalDecisionSchema = z.object({
 })
 export type FinalDecision = z.infer<typeof FinalDecisionSchema>
 
+// Production case (S04E12): LLM rejection path outputs {"adopt":false,"file":"None","language":"None"}
+// — valid decision, but schema enum enforcement killed the run. Widen rejection path, keep adoption strict.
 export const OrphanDecisionSchema = z.object({
   adopt: z.boolean(),
-  file: z.string().nullish(),
-  language: z.enum(['zh-Hans', 'zh-Hant']).nullish(),
+  file: looseNullableString().optional(), // Allow "None"/"null" strings → null, or omitted entirely
+  language: z.preprocess(
+    v => (typeof v === 'string' && NULLISH_STRINGS.has(v.trim().toLowerCase()) ? null : v),
+    z.enum(['zh-Hans', 'zh-Hant']).nullish(),
+  ).optional(), // Allow "None"/"null" strings → null, or omitted entirely; enum enforced only when present & non-null
   confidence: z.preprocess(
     v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
     z.number().min(0).max(1),

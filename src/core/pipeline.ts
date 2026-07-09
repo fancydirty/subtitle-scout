@@ -100,31 +100,37 @@ export async function runPipeline(
     }
 
     // 2.5. adoptLocal（仅当无 positive 命中且注入了 adoption）
+    // 孤儿收编是优化路径不是关键路径——失败不应杀死整个 run，降级为"不收编"继续走搜索
     if (!cached && deps.adoption) {
       journal.step('scanOrphans')
       const orphans = deps.adoption.scan(dirname(ctx.media.path), ctx.media.filename)
       if (orphans.length > 0) {
         journal.step('judgeOrphan', { count: orphans.length })
-        const judged = await deps.adoption.judge(ctx, identity, orphans)
-        journal.llmCall({ point: 'judgeOrphan', prompt: judged.prompt, rawText: judged.rawText, parsed: judged.parsed, retries: judged.retries, durationMs: judged.durationMs })
-        const ogate = runOrphanGate(judged.parsed, orphans, ctx.preferences.auto_download_min_confidence)
-        journal.step('orphanGateResult', ogate)
-        if (ogate.ok && ogate.orphan) {
-          const written = await writeSubtitle({
-            artifact: deps.adoption.read(ogate.orphan.path),
-            artifactFilename: ogate.orphan.filename,
-            videoFilename: ctx.media.filename,
-            langTag: judged.parsed.language!,
-            outDir,
-          })
-          if (written.alreadyExists) {
-            return finish('already_exists', { reasons: ['subtitle already exists; adoption skipped'] })
+        try {
+          const judged = await deps.adoption.judge(ctx, identity, orphans)
+          journal.llmCall({ point: 'judgeOrphan', prompt: judged.prompt, rawText: judged.rawText, parsed: judged.parsed, retries: judged.retries, durationMs: judged.durationMs })
+          const ogate = runOrphanGate(judged.parsed, orphans, ctx.preferences.auto_download_min_confidence)
+          journal.step('orphanGateResult', ogate)
+          if (ogate.ok && ogate.orphan) {
+            const written = await writeSubtitle({
+              artifact: deps.adoption.read(ogate.orphan.path),
+              artifactFilename: ogate.orphan.filename,
+              videoFilename: ctx.media.filename,
+              langTag: judged.parsed.language!,
+              outDir,
+            })
+            if (written.alreadyExists) {
+              return finish('already_exists', { reasons: ['subtitle already exists; adoption skipped'] })
+            }
+            return finish('adopted_local', {
+              reasons: [`adopted local subtitle: ${ogate.orphan.filename}`, ...judged.parsed.reasons],
+              confidence: judged.parsed.confidence,
+              subtitlePath: written.path, bytes: written.bytes, encoding: written.encoding,
+            })
           }
-          return finish('adopted_local', {
-            reasons: [`adopted local subtitle: ${ogate.orphan.filename}`, ...judged.parsed.reasons],
-            confidence: judged.parsed.confidence,
-            subtitlePath: written.path, bytes: written.bytes, encoding: written.encoding,
-          })
+        } catch (e) {
+          // StructuredOutputError 或任何其他错误：降级为不收编，journal 记录，继续走搜索
+          journal.step('judgeOrphanFailed', { error: String(e), fallback: 'proceed without adoption' })
         }
       }
     }
