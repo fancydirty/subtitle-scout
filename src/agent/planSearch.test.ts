@@ -117,7 +117,7 @@ describe('LLM 自有中文名知识（爱死机实案）', () => {
     expect(get()).toContain('USE YOUR OWN KNOWLEDGE')
     expect(get()).toContain('爱，死亡和机器人')
     expect(get()).toContain('generate BOTH as separate queries')
-    expect(get()).toContain('not fan abbreviations')
+    expect(get()).toContain('Full names only')
   })
   it('电影策略同样带自有知识指示', async () => {
     const { rt, get } = capture()
