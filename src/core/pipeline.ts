@@ -6,6 +6,7 @@ import {
   type OrphanDecision, type SeasonMap,
 } from './schemas.js'
 import type { CallStructuredResult } from '../agent/llm.js'
+import type { LlmRuntime } from '../agent/runtime.js'
 import { Journal } from './journal.js'
 import { DecisionCache, cacheKeys, type CacheEntry } from './cache.js'
 import { runGate } from './gate.js'
@@ -16,6 +17,7 @@ import type { OrphanSubtitle } from '../files/orphanScanner.js'
 import { filterGraphicOnly } from '../agent/rankCandidates.js'
 import { runSeasonPackGate } from './seasonPackGate.js'
 import type { SeasonEpisode } from './episode.js'
+import { harvestAlias, hasCjk } from '../agent/harvestAlias.js'
 
 type SearchResponse = z.infer<typeof AssrtSearchResponseSchema>
 type DetailResponse = z.infer<typeof AssrtDetailResponseSchema>
@@ -33,6 +35,8 @@ export interface PipelineDeps {
   maxApiCallsPerJob: number
   /** journal 创建后回调，供调用方把 provider 的 onApiCall 等接入审计 */
   journalReady?: (journal: Journal) => void
+  /** LLM runtime，用于中文别名收割兜底（可选；未注入则跳过该步） */
+  llm?: LlmRuntime
   /** 本地孤儿字幕收编（可选；未注入则跳过该步） */
   adoption?: {
     scan: (dir: string, videoFilename: string) => OrphanSubtitle[]
@@ -159,6 +163,7 @@ export async function runPipeline(
         apiCalls++
         for (const s of resp.sub.subs) if (!byId.has(s.id)) byId.set(s.id, s)
       }
+
       const raw = [...byId.values()]
       candidates = filterGraphicOnly(raw)
       journal.step('candidateFilter', { raw: raw.length, kept: candidates.length })
@@ -174,6 +179,50 @@ export async function runPipeline(
       const rankResult = await deps.rank(ctx, identity, candidates)
       journal.llmCall({ point: 'rankCandidates', prompt: rankResult.prompt, rawText: rankResult.rawText, parsed: rankResult.parsed, retries: rankResult.retries, durationMs: rankResult.durationMs })
       rank = rankResult.parsed
+
+      // 中文别名收割兜底：仅当首轮 rank 无安全匹配 + 上游/识别均无 CJK 标题 + 配额余量够时触发。
+      // 收割别名 → 补一次搜索 → 仅对"新"候选单独走 candidateFilter+rank（首轮候选已被拒过，不混排）。
+      // 增益路径不是关键路径——任何失败静默降级为维持首轮结论。
+      const upstreamHasCjk = ctx.media.alternative_titles.some(hasCjk)
+        || hasCjk(ctx.media.title) || hasCjk(identity.canonical_title)
+      if (rank.decision === 'no_safe_match' && deps.llm && !upstreamHasCjk
+        && apiCalls < deps.maxApiCallsPerJob) {
+        try {
+          // 候选名：native_name||videoname 前 40 字符 × 最多 15 条（CJK 预筛在 harvestAlias 内，零 LLM 成本）
+          const candidateNames = candidates
+            .slice(0, 15)
+            .map(s => {
+              const name = (Array.isArray(s.native_name) ? s.native_name[0] : s.native_name) || s.videoname || ''
+              return name.slice(0, 40)
+            })
+            .filter(n => n.length > 0)
+          const alias = candidateNames.length > 0
+            ? await harvestAlias(deps.llm, identity.canonical_title, candidateNames)
+            : null
+          if (alias) {
+            journal.step('aliasHarvest', { alias })
+            const resp = await deps.assrt.search(alias)
+            apiCalls++
+            const fresh = resp.sub.subs.filter(s => !byId.has(s.id))
+            for (const s of fresh) byId.set(s.id, s)
+            const freshCandidates = filterGraphicOnly(fresh)
+            journal.step('aliasSearchMerged', { alias, added: fresh.length, kept: freshCandidates.length })
+            if (freshCandidates.length > 0) {
+              journal.step('rankCandidates', { count: freshCandidates.length, pass: 'aliasHarvest' })
+              const secondRank = await deps.rank(ctx, identity, freshCandidates)
+              journal.llmCall({ point: 'rankCandidates', prompt: secondRank.prompt, rawText: secondRank.rawText, parsed: secondRank.parsed, retries: secondRank.retries, durationMs: secondRank.durationMs })
+              if (secondRank.parsed.decision !== 'no_safe_match') {
+                rank = secondRank.parsed
+                candidates = freshCandidates
+              }
+            }
+          } else {
+            journal.step('aliasHarvest', { skipped: 'no confident alias extracted' })
+          }
+        } catch (e) {
+          journal.step('aliasHarvestFailed', { error: String(e) })
+        }
+      }
     }
 
     // 4. gate

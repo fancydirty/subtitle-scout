@@ -98,6 +98,7 @@ async function assemble(): Promise<Assembled> {
     rank: (c, id, cands) => rankCandidates(llm, c, id, cands),
     assrt: { search: q => assrt.search(q), detail: id => assrt.detail(id) },
     download: url => downloadDirect(url),
+    llm,
     cache: new DecisionCache(join(cacheRoot, 'decisions')),
     maxApiCallsPerJob: 4,
     adoption: (process.env.ADOPT_LOCAL_SUBTITLES ?? 'true') !== 'false' ? {
