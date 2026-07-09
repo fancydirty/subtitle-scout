@@ -25,7 +25,7 @@ const AliasExtractionSchema = z.object({
  * @returns 提取的中文别名，或 null 表示无可收割
  */
 export async function harvestAlias(
-  runtime: LlmRuntime,
+  runtime: Pick<LlmRuntime, 'call'>,
   originalTitle: string,
   candidateNames: string[],
 ): Promise<string | null> {
@@ -42,6 +42,7 @@ export async function harvestAlias(
     'Your task: identify and extract the FULL COMMON Chinese title (完整通用名，非缩写).',
     '',
     'Rules:',
+    '- Return ONLY the show title itself — strip season/episode markers (第X季/SxxExx), resolution, and release tags.',
     '- Return the COMPLETE Chinese name, not abbreviations (e.g., "爱，死亡与机器人" not "爱死机")',
     '- The title should be the commonly used form that would appear in a Chinese TV database',
     '- If candidates show multiple variations, pick the most complete/formal one',

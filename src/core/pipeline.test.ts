@@ -368,8 +368,11 @@ describe('adoptLocal step', () => {
     expect(result.stats.durationMs).toBeGreaterThanOrEqual(0)
   })
 
-  it('harvests Chinese alias from candidates when upstream gives no Chinese title', async () => {
-    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+  describe('alias harvest fallback', () => {
+    const twoQueryPlan = () => vi.fn(async () => ({
+      parsed: { queries: [{ q: 'LDR S04', reason: 'season' }, { q: 'LDR 2022', reason: 'year' }] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'plan prompt',
+    }))
     const firstSearchResp = AssrtSearchResponseSchema.parse({
       status: 0,
       sub: {
@@ -383,109 +386,128 @@ describe('adoptLocal step', () => {
       status: 0,
       sub: {
         subs: [
-          { id: 3, videoname: '爱，死亡与机器人 S03E01', filelist: [{ f: 's03e01.srt' }] },
+          { id: 3, videoname: '爱，死亡与机器人 第三季', filelist: [{ f: 's03e01.srt' }] },
           { id: 1, videoname: '爱、死亡与机器人.Love.Death.and.Robots.S04E01', filelist: [{ f: 's04e01-dup.srt' }] },
         ],
       },
     })
-    const search = vi.fn()
-      .mockResolvedValueOnce(firstSearchResp) // first query
-      .mockResolvedValueOnce(firstSearchResp) // second query (same results)
-      .mockResolvedValueOnce(aliasSearchResp) // alias search
-    const mockLlm = {
-      call: vi.fn(async (opts: { name: string }) => {
-        if (opts.name === 'extract_chinese_alias') {
-          return {
-            parsed: { alias: '爱，死亡与机器人', confidence: 0.95 },
-            rawText: '',
-            retries: 0,
-            durationMs: 1,
-            prompt: '',
-          }
-        }
-        throw new Error(`unexpected call: ${opts.name}`)
-      }),
-      profileInfo: () => ({ mode: 'test' }),
-    }
-    const testCtx = structuredClone(ctx)
-    testCtx.media.alternative_titles = [] // no Chinese title from upstream
-    const deps = makeDeps({
-      plan: vi.fn(async () => ({
-        parsed: { queries: [{ q: 'LDR S04', reason: 'season' }, { q: 'LDR 2022', reason: 'year' }] },
-        rawText: '',
-        retries: 0,
-        durationMs: 1,
-        prompt: 'plan prompt',
-      })),
-      rank: vi.fn(async () => ({
-        parsed: {
-          decision: 'download' as const,
-          assrt_id: 1,
-          file_index: 0,
-          confidence: 0.91,
-          reasons: ['matched'],
-          rejected: [],
-        },
-        rawText: '',
-        retries: 0,
-        durationMs: 1,
-        prompt: 'rank prompt',
-      })),
-      assrt: { search, detail: vi.fn(async () => detailResp) },
-      llm: mockLlm as any,
+    const aliasDetailResp = AssrtDetailResponseSchema.parse({
+      status: 0,
+      sub: {
+        subs: [{
+          id: 3, videoname: '爱，死亡与机器人 第三季',
+          filelist: [{ f: 's03e01.srt', url: 'http://file0.assrt.net/download/3/s03e01.srt' }],
+        }],
+      },
     })
-    const result = await runPipeline(deps, testCtx, outDir)
-    expect(result.decision).toBe('download')
-    // Should have called search 3 times: 2 initial queries + 1 alias query
-    expect(search).toHaveBeenCalledTimes(3)
-    expect(search).toHaveBeenNthCalledWith(3, '爱，死亡与机器人')
-    // Should have called LLM for alias extraction
-    expect(mockLlm.call).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'extract_chinese_alias' }),
-    )
-    // Check journal for alias harvesting steps
-    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
-    const harvestStep = journal.steps.find((s: { name: string }) => s.name === 'harvestAlias')
-    expect(harvestStep).toBeDefined()
-    const harvestedStep = journal.steps.find((s: { name: string }) => s.name === 'aliasHarvested')
-    expect(harvestedStep).toBeDefined()
-    expect(harvestedStep.data.alias).toBe('爱，死亡与机器人')
-    const mergedStep = journal.steps.find((s: { name: string }) => s.name === 'aliasSearchMerged')
-    expect(mergedStep).toBeDefined()
-    expect(mergedStep.data.added).toBe(1) // id 3 is new, id 1 is duplicate
-  })
+    const noSafeMatchRank = {
+      parsed: {
+        decision: 'no_safe_match' as const, assrt_id: null, file_index: null,
+        confidence: 0.3, reasons: ['no match among candidates'], rejected: [],
+      }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }
+    const mockHarvestLlm = (alias: string | null = '爱，死亡与机器人', confidence = 0.95) => ({
+      call: vi.fn(async () => ({
+        parsed: { alias, confidence }, rawText: '', retries: 0, durationMs: 1, prompt: '',
+      })),
+      profileInfo: () => ({ mode: 'test' }),
+    })
 
-  it('skips alias harvesting when upstream provides Chinese title', async () => {
-    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
-    const search = vi.fn(async () => searchResp)
-    const mockLlm = {
-      call: vi.fn(async () => ({ parsed: {}, rawText: '', retries: 0, durationMs: 1, prompt: '' })),
-      profileInfo: () => ({ mode: 'test' }),
-    }
-    const testCtx = structuredClone(ctx)
-    testCtx.media.alternative_titles = ['黑客帝国'] // Chinese title provided
-    const deps = makeDeps({
-      plan: vi.fn(async () => ({
-        parsed: { queries: [{ q: 'Matrix 1999', reason: 'year' }, { q: 'Matrix BluRay', reason: 'quality' }] },
-        rawText: '',
-        retries: 0,
-        durationMs: 1,
-        prompt: 'plan prompt',
-      })),
-      assrt: { search, detail: vi.fn(async () => detailResp) },
-      llm: mockLlm as any,
+    it('first rank rejects → harvest alias, third search, fresh rank pass wins', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const search = vi.fn()
+        .mockResolvedValueOnce(firstSearchResp) // query 1
+        .mockResolvedValueOnce(firstSearchResp) // query 2 (same results)
+        .mockResolvedValueOnce(aliasSearchResp) // alias search
+      const mockLlm = mockHarvestLlm()
+      const rank = vi.fn()
+        .mockResolvedValueOnce(noSafeMatchRank) // first pass rejects
+        .mockResolvedValueOnce({               // second pass on fresh candidates only
+          parsed: {
+            decision: 'download' as const, assrt_id: 3, file_index: 0,
+            confidence: 0.92, reasons: ['season pack under Chinese alias'], rejected: [],
+          }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+        })
+      const testCtx = structuredClone(ctx)
+      testCtx.media.alternative_titles = [] // upstream gives no Chinese title
+      const deps = makeDeps({
+        plan: twoQueryPlan(),
+        rank: rank as unknown as PipelineDeps['rank'],
+        assrt: { search, detail: vi.fn(async () => aliasDetailResp) },
+        llm: mockLlm as unknown as PipelineDeps['llm'],
+      })
+      const result = await runPipeline(deps, testCtx, outDir)
+      expect(result.decision).toBe('download')
+      // third search happens only after first rank rejected, with the harvested alias
+      expect(search).toHaveBeenCalledTimes(3)
+      expect(search).toHaveBeenNthCalledWith(3, '爱，死亡与机器人')
+      expect(mockLlm.call).toHaveBeenCalledWith(expect.objectContaining({ name: 'extract_chinese_alias' }))
+      // second rank pass sees ONLY fresh candidates (id 3), not the already-rejected first-round set
+      expect(rank).toHaveBeenCalledTimes(2)
+      const secondPassCands = rank.mock.calls[1][2] as { id: number }[]
+      expect(secondPassCands.map(c => c.id)).toEqual([3])
+      // journal records the harvest steps
+      const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+      const harvestStep = journal.steps.find((s: { name: string }) => s.name === 'aliasHarvest')
+      expect(harvestStep.data.alias).toBe('爱，死亡与机器人')
+      const mergedStep = journal.steps.find((s: { name: string }) => s.name === 'aliasSearchMerged')
+      expect(mergedStep.data.added).toBe(1) // id 3 is new, id 1 is a duplicate
     })
-    const result = await runPipeline(deps, testCtx, outDir)
-    expect(result.decision).toBe('download')
-    // Should only call search twice (for the first two queries), no alias search
-    expect(search).toHaveBeenCalledTimes(2)
-    // Should NOT have called LLM for alias extraction
-    expect(mockLlm.call).not.toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'extract_chinese_alias' }),
-    )
-    // Check journal - should NOT have alias harvesting steps
-    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
-    const harvestStep = journal.steps.find((s: { name: string }) => s.name === 'harvestAlias')
-    expect(harvestStep).toBeUndefined()
+
+    it('first rank succeeds → harvest never triggers (zero extra cost)', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const search = vi.fn(async () => searchResp)
+      const mockLlm = mockHarvestLlm()
+      const testCtx = structuredClone(ctx)
+      testCtx.media.alternative_titles = []
+      const deps = makeDeps({
+        plan: twoQueryPlan(),
+        assrt: { search, detail: vi.fn(async () => detailResp) },
+        llm: mockLlm as unknown as PipelineDeps['llm'],
+      })
+      const result = await runPipeline(deps, testCtx, outDir)
+      expect(result.decision).toBe('download') // golden-path rank from makeDeps
+      expect(search).toHaveBeenCalledTimes(2)  // no third search
+      expect(mockLlm.call).not.toHaveBeenCalled()
+      const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+      expect(journal.steps.some((s: { name: string }) => s.name === 'aliasHarvest')).toBe(false)
+    })
+
+    it('skips harvest when upstream provides a Chinese alternative title', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const search = vi.fn(async () => firstSearchResp)
+      const mockLlm = mockHarvestLlm()
+      const testCtx = structuredClone(ctx)
+      testCtx.media.alternative_titles = ['黑客帝国'] // upstream already has Chinese
+      const deps = makeDeps({
+        plan: twoQueryPlan(),
+        rank: vi.fn(async () => noSafeMatchRank),
+        assrt: { search, detail: vi.fn(async () => detailResp) },
+        llm: mockLlm as unknown as PipelineDeps['llm'],
+      })
+      const result = await runPipeline(deps, testCtx, outDir)
+      expect(result.decision).toBe('no_safe_match')
+      expect(search).toHaveBeenCalledTimes(2)
+      expect(mockLlm.call).not.toHaveBeenCalled()
+    })
+
+    it('skips harvest when the media title itself is Chinese (CJK-native guard)', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const search = vi.fn(async () => firstSearchResp)
+      const mockLlm = mockHarvestLlm()
+      const testCtx = structuredClone(ctx)
+      testCtx.media.alternative_titles = []
+      testCtx.media.title = '流浪地球' // CJK-native library — nothing to harvest
+      const deps = makeDeps({
+        plan: twoQueryPlan(),
+        rank: vi.fn(async () => noSafeMatchRank),
+        assrt: { search, detail: vi.fn(async () => detailResp) },
+        llm: mockLlm as unknown as PipelineDeps['llm'],
+      })
+      const result = await runPipeline(deps, testCtx, outDir)
+      expect(result.decision).toBe('no_safe_match')
+      expect(search).toHaveBeenCalledTimes(2)
+      expect(mockLlm.call).not.toHaveBeenCalled()
+    })
   })
 })
