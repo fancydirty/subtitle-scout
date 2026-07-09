@@ -16,6 +16,7 @@ import type { OrphanSubtitle } from '../files/orphanScanner.js'
 import { filterGraphicOnly } from '../agent/rankCandidates.js'
 import { runSeasonPackGate } from './seasonPackGate.js'
 import type { SeasonEpisode } from './episode.js'
+import { harvestAlias, hasCjk } from '../agent/harvestAlias.js'
 
 type SearchResponse = z.infer<typeof AssrtSearchResponseSchema>
 type DetailResponse = z.infer<typeof AssrtDetailResponseSchema>
@@ -33,6 +34,8 @@ export interface PipelineDeps {
   maxApiCallsPerJob: number
   /** journal 创建后回调，供调用方把 provider 的 onApiCall 等接入审计 */
   journalReady?: (journal: Journal) => void
+  /** LLM runtime for alias harvesting (optional; when absent, alias harvesting is skipped) */
+  llm?: { call: <S extends import('zod').ZodType>(opts: { name: string; description: string; prompt: string; schema: S }) => Promise<CallStructuredResult<import('zod').infer<S>>> }
   /** 本地孤儿字幕收编（可选；未注入则跳过该步） */
   adoption?: {
     scan: (dir: string, videoFilename: string) => OrphanSubtitle[]
@@ -159,6 +162,42 @@ export async function runPipeline(
         apiCalls++
         for (const s of resp.sub.subs) if (!byId.has(s.id)) byId.set(s.id, s)
       }
+
+      // 中文别名收割自举：当上游没给中文名且首轮候选含 CJK 名时，从候选名中提取中文别名并追加一次搜索
+      const hasChineseTitle = ctx.media.alternative_titles.some(hasCjk)
+      if (deps.llm && !hasChineseTitle && byId.size > 0 && apiCalls < deps.maxApiCallsPerJob) {
+        try {
+          // 提取候选名（native_name 或 videoname 的前 40 字符，最多 15 个）
+          const candidateNames = [...byId.values()]
+            .slice(0, 15)
+            .map(s => {
+              const name = (Array.isArray(s.native_name) ? s.native_name[0] : s.native_name) || s.videoname || ''
+              return name.slice(0, 40)
+            })
+            .filter(n => n.length > 0)
+
+          if (candidateNames.length > 0) {
+            journal.step('harvestAlias', { candidates: candidateNames.length })
+            const alias = await harvestAlias(deps.llm, identity.canonical_title, candidateNames)
+
+            if (alias) {
+              journal.step('aliasHarvested', { alias })
+              const beforeCount = byId.size
+              const resp = await deps.assrt.search(alias)
+              apiCalls++
+              for (const s of resp.sub.subs) if (!byId.has(s.id)) byId.set(s.id, s)
+              const added = byId.size - beforeCount
+              journal.step('aliasSearchMerged', { alias, added })
+            } else {
+              journal.step('aliasHarvestSkipped', { reason: 'no confident alias extracted' })
+            }
+          }
+        } catch (e) {
+          // 别名收割是增益路径不是关键路径——失败静默，journal 记录，继续
+          journal.step('aliasHarvestFailed', { error: String(e) })
+        }
+      }
+
       const raw = [...byId.values()]
       candidates = filterGraphicOnly(raw)
       journal.step('candidateFilter', { raw: raw.length, kept: candidates.length })
