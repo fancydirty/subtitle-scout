@@ -21,6 +21,8 @@ describe('TmdbClient.getOriginLanguage', () => {
     expect(await c404.getOriginLanguage('movie', '1')).toBeNull()
     const cEmpty = new TmdbClient({ apiKey: 'k', fetchImpl: (() => okJson({})) as never })
     expect(await cEmpty.getOriginLanguage('movie', '1')).toBeNull()
+    const cBlank = new TmdbClient({ apiKey: 'k', fetchImpl: (() => okJson({ original_language: '' })) as never })
+    expect(await cBlank.getOriginLanguage('movie', '1')).toBeNull()
     const cErr = new TmdbClient({ apiKey: 'k', fetchImpl: (() => Promise.reject(new Error('net'))) as never })
     expect(await cErr.getOriginLanguage('movie', '1')).toBeNull()
   })

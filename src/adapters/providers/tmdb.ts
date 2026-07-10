@@ -127,7 +127,7 @@ export class TmdbClient {
   async getOriginLanguage(mediaType: 'tv' | 'movie', tmdbId: string): Promise<string | null> {
     const d = await this.getJson(`/${mediaType}/${tmdbId}`)
     const lang = d?.original_language
-    return typeof lang === 'string' ? lang.toLowerCase() : null
+    return typeof lang === 'string' && lang ? lang.toLowerCase() : null
   }
 }
 
