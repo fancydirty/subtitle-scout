@@ -29,7 +29,7 @@ function makeDeps(overrides: Partial<PipelineDeps> = {}): PipelineDeps {
     rank: vi.fn(async () => ({
       parsed: {
         decision: 'download' as const, assrt_id: 673114, file_index: 0,
-        confidence: 0.91, reasons: ['exact match'], rejected: [],
+        confidence: 0.91, reasons: ['exact match'], identity_match: 'uncertain' as const, rejected: [],
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     })),
     assrt: {
@@ -73,7 +73,7 @@ describe('runPipeline', () => {
     const rank = vi.fn(async (_c: unknown, _id: unknown, cands: { id: number }[]) => ({
       parsed: {
         decision: 'download' as const, assrt_id: 673114, file_index: 0,
-        confidence: 0.91, reasons: ['union'], rejected: [],
+        confidence: 0.91, reasons: ['union'], identity_match: 'uncertain' as const, rejected: [],
         _seen: cands.map(c => c.id),
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
@@ -117,7 +117,7 @@ describe('runPipeline', () => {
       rank: vi.fn(async () => ({
         parsed: {
           decision: 'download' as const, assrt_id: 999999, file_index: null,
-          confidence: 0.99, reasons: ['hallucinated'], rejected: [],
+          confidence: 0.99, reasons: ['hallucinated'], identity_match: 'uncertain' as const, rejected: [],
         }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -131,7 +131,7 @@ describe('runPipeline', () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps({
       rank: vi.fn(async () => ({
-        parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['nothing safe'], rejected: [] },
+        parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['nothing safe'], identity_match: 'uncertain' as const, rejected: [] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -201,7 +201,7 @@ describe('runPipeline', () => {
     const packCandidate = seasonDetail.sub.subs[0]
     const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: [packCandidate] } }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, assrt_id: 900900, file_index: 0, confidence: 0.95, reasons: ['pack'], rejected: [] },
+      parsed: { decision: 'download' as const, assrt_id: 900900, file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -264,7 +264,7 @@ describe('runPipeline', () => {
     ]
     const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], rejected: [] },
+      parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -396,7 +396,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       assrt: { search, detail },
       rank: vi.fn(async () => ({
-        parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], rejected: [] },
+        parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })) as unknown as PipelineDeps['rank'],
       download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
@@ -435,8 +435,8 @@ describe('runPipeline', () => {
       .mockResolvedValueOnce(firstResp) // query 2 (dedup)
       .mockResolvedValueOnce(aliasResp) // alias-harvest search
     const rank = vi.fn()
-      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
-      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, assrt_id: 901, file_index: 0, confidence: 0.9, reasons: ['alias match'], rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, assrt_id: 901, file_index: 0, confidence: 0.9, reasons: ['alias match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
     const llmCall = vi.fn(async (opts: { name: string }) => {
       if (opts.name === 'extract_chinese_alias') {
         return { parsed: { alias: '流浪剧', confidence: 0.95 }, rawText: '', retries: 0, durationMs: 1, prompt: '' }
@@ -633,7 +633,7 @@ describe('adoptLocal step', () => {
     const noSafeMatchRank = {
       parsed: {
         decision: 'no_safe_match' as const, assrt_id: null, file_index: null,
-        confidence: 0.3, reasons: ['no match among candidates'], rejected: [],
+        confidence: 0.3, reasons: ['no match among candidates'], identity_match: 'uncertain' as const, rejected: [],
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }
     const mockHarvestLlm = (alias: string | null = '爱，死亡与机器人', confidence = 0.95) => ({
@@ -655,7 +655,7 @@ describe('adoptLocal step', () => {
         .mockResolvedValueOnce({               // second pass on fresh candidates only
           parsed: {
             decision: 'download' as const, assrt_id: 3, file_index: 0,
-            confidence: 0.92, reasons: ['season pack under Chinese alias'], rejected: [],
+            confidence: 0.92, reasons: ['season pack under Chinese alias'], identity_match: 'uncertain' as const, rejected: [],
           }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
         })
       const testCtx = structuredClone(ctx)

@@ -147,7 +147,7 @@ export async function runPipeline(
       journal.step('cacheHitPositive', cached)
       const detail = await deps.assrt.detail(cached.assrt_id)
       candidates = detail.sub.subs
-      rank = { decision: 'download', assrt_id: cached.assrt_id, file_index: cached.file_index, confidence: cached.confidence, reasons: ['cache hit'], rejected: [] }
+      rank = { decision: 'download', assrt_id: cached.assrt_id, file_index: cached.file_index, identity_match: 'confirmed', confidence: cached.confidence, reasons: ['cache hit'], rejected: [] }
     } else {
       journal.step('planSearch')
       const planResult = await deps.plan(ctx, identity)

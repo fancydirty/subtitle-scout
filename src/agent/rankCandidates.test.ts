@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { compactCandidates, filterGraphicOnly, isGraphicOnly, MAX_CANDIDATES, MAX_FILELIST_ENTRIES } from './rankCandidates.js'
+import { compactCandidates, filterGraphicOnly, isGraphicOnly, MAX_CANDIDATES, MAX_FILELIST_ENTRIES, rankCandidates } from './rankCandidates.js'
+import type { LlmRuntime } from './runtime.js'
+import type { MediaContext, MediaIdentity, RankDecision } from '../core/schemas.js'
 import type { AssrtSub } from '../core/schemas.js'
 
 function fakeSub(id: number, files: number): AssrtSub {
@@ -73,5 +75,53 @@ describe('filterGraphicOnly', () => {
     ]
     const out = filterGraphicOnly(cands)
     expect(out.map(c => c.id)).toEqual([1, 3])
+  })
+})
+
+
+describe('rankCandidates prompt', () => {
+  function capture(): { llm: LlmRuntime; prompt: () => string } {
+    let captured = ''
+    const llm: LlmRuntime = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async call(opts: any) {
+        captured = opts.prompt
+        const parsed: RankDecision = {
+          decision: 'download', assrt_id: 1, file_index: 0,
+          identity_match: 'confirmed', confidence: 0.9, reasons: ['x'], rejected: [],
+        }
+        return { parsed, rawText: '', retries: 0, durationMs: 1, prompt: opts.prompt } as any
+      },
+      profileInfo: () => ({ mode: 'test' }),
+    }
+    return { llm, prompt: () => captured }
+  }
+
+  const ctx = {
+    media: { filename: 'Show.S01E02.1080p.mkv' },
+    preferences: {
+      language: 'zh-Hans', prefer_bilingual: true, allow_traditional: true,
+      allow_machine_translated: false, auto_download_min_confidence: 0.86,
+    },
+  } as unknown as MediaContext
+  const identity = {
+    canonical_title: 'Show', original_title: null, year: 2020, type: 'episode',
+    season: 1, episode: 2, edition: null, confidence: 0.9, evidence: [],
+  } as unknown as MediaIdentity
+
+  it('instructs the LLM to emit a three-state identity_match verdict', async () => {
+    const { llm, prompt } = capture()
+    await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
+    const p = prompt()
+    expect(p).toMatch(/identity_match/)
+    expect(p).toMatch(/confirmed/)
+    expect(p).toMatch(/mismatch/)
+    expect(p).toMatch(/uncertain/)
+  })
+
+  it('encodes the M5b law: source/version differences must not downgrade identity', async () => {
+    const { llm, prompt } = capture()
+    await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
+    expect(prompt()).toMatch(/must not.*(lower|downgrade|change).*identity/i)
   })
 })

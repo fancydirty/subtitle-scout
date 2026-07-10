@@ -32,13 +32,30 @@ export function runGate(
     failures.push('episode media without resolved season/episode cannot be auto-downloaded')
   }
 
+  // 结构性硬校验优先，且身份判决绝不能越过它：LLM 说 confirmed 也不许下载幻觉出的 assrt_id。
   if (failures.length > 0) return { ok: false, decision: 'no_safe_match', failures }
 
-  if (rank.confidence < prefs.auto_download_min_confidence) {
-    return {
-      ok: false, decision: 'ask_user',
-      failures: [`confidence ${rank.confidence} below threshold ${prefs.auto_download_min_confidence}`],
-    }
+  // 身份三态判决取代标量置信分做主闸（M5b 法条：来源/分辨率/压制组/版本差异不改变身份）。
+  // confidence 降级为参考量，仅在 uncertain 兜底路径里仍起作用。
+  switch (rank.identity_match) {
+    case 'mismatch':
+      // 明确错作品/错季/错集——防串号铁律：错字幕比没字幕伤害大。
+      return {
+        ok: false, decision: 'no_safe_match',
+        failures: [`identity verdict: mismatch — candidate is a different work/season/episode`],
+      }
+    case 'confirmed':
+      // 同作品+正确季集（或整包覆盖目标集）：无视标量分直接放行。
+      return { ok: true, decision: 'download', failures: [], candidate }
+    case 'uncertain':
+    default:
+      // 信息不足——沿用旧标量门给拿不准的情形兜底。
+      if (rank.confidence < prefs.auto_download_min_confidence) {
+        return {
+          ok: false, decision: 'ask_user',
+          failures: [`identity uncertain and confidence ${rank.confidence} below threshold ${prefs.auto_download_min_confidence}`],
+        }
+      }
+      return { ok: true, decision: 'download', failures: [], candidate }
   }
-  return { ok: true, decision: 'download', failures: [], candidate }
 }

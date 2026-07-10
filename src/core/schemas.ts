@@ -80,10 +80,22 @@ export const SearchPlanSchema = z.object({
 })
 export type SearchPlan = z.infer<typeof SearchPlanSchema>
 
+// 身份三态判决：自动下载闸的核心。标量 confidence 仅作参考，判决驱动 gate。
+// fail-soft 铁律（judgeOrphan 教训）：模型漏字段或吐非法枚举值时，一律归一为 'uncertain'
+// 走旧标量门兜底，绝不因这一个字段炸掉整个 run。
+export const IDENTITY_MATCHES = ['confirmed', 'mismatch', 'uncertain'] as const
+export type IdentityMatch = (typeof IDENTITY_MATCHES)[number]
+export const IdentityMatchSchema: z.ZodType<IdentityMatch> = z.preprocess(
+  v => (typeof v === 'string' && (IDENTITY_MATCHES as readonly string[]).includes(v) ? v : 'uncertain'),
+  z.enum(IDENTITY_MATCHES).default('uncertain'),
+)
+
 export const RankDecisionSchema = z.object({
   decision: z.enum(['download', 'ask_user', 'no_safe_match']),
   assrt_id: looseNumeric(z.number().int()),
   file_index: looseNumeric(z.number().int()),
+  // 身份判决：confirmed=同作品/季/集，mismatch=错作品/季/集，uncertain=信息不足
+  identity_match: IdentityMatchSchema,
   confidence: z.preprocess(
     v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
     z.number().min(0).max(1),
