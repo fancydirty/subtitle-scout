@@ -18,6 +18,7 @@ export interface LibraryItemDTO {
   chineseTitle: string | null
   year: number | null
   posterTag: string | null
+  section: string
   coverage: CoverageDTO
   job: LibraryJobDTO | null
 }

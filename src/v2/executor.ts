@@ -19,10 +19,53 @@ export interface ExecutorDeps {
   runEpisode: (
     episodeId: string,
     onCovered: (coveredEpisodeId: string, subtitlePath: string) => void
-  ) => Promise<{ decision: string; journalPath?: string; detail?: string }>
+  ) => Promise<{
+    decision: string
+    journalPath?: string
+    /** 写盘字幕路径（供 markCovered 建 subtitles 行）；不进 runs.detail */
+    subtitlePath?: string
+    /** ask_user 门评置信度（人话摘要展示） */
+    confidence?: number | null
+    /** 自动下载门槛（与 confidence 配对展示） */
+    minConfidence?: number
+    /** 结论理由（错因取首条，人话化后入 detail） */
+    reasons?: string[]
+  }>
   now: () => number
   log: (msg: string) => void
 }
+
+const pad2 = (n: number): string => String(n).padStart(2, '0')
+
+/** 本轮命中的字幕人话摘要（不含路径，审计细节留 journal）。 */
+function coveredDetail(job: Job, coveredIds: Set<string>, lib: LibraryRepo): string {
+  if (job.kind === 'movie') return '字幕已就位'
+  const ids = [...coveredIds]
+  if (ids.length === 1) {
+    const ep = lib.getEpisode(ids[0])
+    if (ep) return `S${pad2(ep.season)}E${pad2(ep.episode)} 字幕已就位`
+  }
+  const season = job.season ?? 0
+  if (ids.length === 0) return `第 ${season} 季字幕已就位`
+  return `第 ${season} 季 ${ids.length} 集字幕已就位`
+}
+
+/** 门评置信度不足的人话摘要（有数字用数字）。 */
+function askUserDetail(confidence?: number | null, minConfidence?: number): string {
+  if (typeof confidence === 'number' && typeof minConfidence === 'number') {
+    return `找到候选但把握不足（置信 ${confidence.toFixed(2)} < ${minConfidence.toFixed(2)}），待人工确认`
+  }
+  return '找到候选但把握不足，待人工确认'
+}
+
+/** 错因清洗：取首行、剔除绝对路径 token（原文仍留 last_error/journal）。 */
+function briefCause(raw?: string): string {
+  if (!raw) return ''
+  return raw.split('\n')[0].replace(/\/\S+/g, '').replace(/\s+/g, ' ').trim()
+}
+
+const HUMAN_NO_MATCH = '没找到合适的中文字幕'
+const HUMAN_ASK_USER = '找到候选但把握不足，待人工确认'
 
 /** M8: pipeline decision → subtitles.source 映射 */
 const SOURCE_BY_DECISION: Record<string, string> = {
@@ -85,7 +128,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // 1. Re-derive targets (missing episodes/movie for this job)
     const targets = remainingTargets(job, lib, now())
     if (targets.length === 0) {
-      record(jobs.completeDone(job.id, now()), 'done', 'All targets already covered', null)
+      record(jobs.completeDone(job.id, now()), 'done', '字幕均已就位，无需处理', null)
       return
     }
 
@@ -103,7 +146,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 4. Run pipeline for representative
     const result = await runEpisode(representative.id, onCovered)
-    const { decision, detail } = result
+    const { decision } = result
+    const subtitlePath = result.subtitlePath ?? null
     const journalPath = result.journalPath ?? null
 
     // 5. Route based on decision and coverage
@@ -112,7 +156,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       record(
         jobs.completeDone(job.id, now()),
         decision,
-        detail ?? `All targets covered (${coveredIds.size} via callback)`,
+        coveredDetail(job, coveredIds, lib),
         journalPath
       )
       return
@@ -123,7 +167,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       record(
         jobs.completePartial(job.id, now()),
         'partial',
-        detail ?? `Partial coverage: ${coveredIds.size} of ${targets.length} targets`,
+        coveredDetail(job, coveredIds, lib),
         journalPath
       )
       return
@@ -131,23 +175,24 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 0 coverage: representative itself succeeded without season pack callback
     if (decision === 'download' || decision === 'already_exists' || decision === 'adopted_local') {
-      // M7: already_exists 无可信文件路径传 null；download/adopted 用 detail 携带的 subtitlePath，
+      // M7: already_exists 无可信文件路径传 null；download/adopted 用 subtitlePath，
       // 没有则只改状态。M8: source 按 decision 映射。
-      const subtitlePath = decision === 'already_exists' ? null : detail ?? null
-      lib.markCovered(representative.id, subtitlePath, SOURCE_BY_DECISION[decision])
+      const coverPath = decision === 'already_exists' ? null : subtitlePath
+      lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision])
+      coveredIds.add(representative.id) // 供人话摘要计数
 
       if (remainingTargets(job, lib, now()).length === 0) {
         record(
           jobs.completeDone(job.id, now()),
           decision,
-          detail ?? 'Representative covered, all done',
+          coveredDetail(job, coveredIds, lib),
           journalPath
         )
       } else {
         record(
           jobs.completePartial(job.id, now()),
           'partial',
-          detail ?? 'Representative covered, targets remaining',
+          coveredDetail(job, coveredIds, lib),
           journalPath
         )
       }
@@ -156,10 +201,12 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 0 coverage, content failure: no_safe_match / ask_user → content backoff track
     if (decision === 'no_safe_match' || decision === 'ask_user') {
-      const reason =
+      // 人话化：status_reason（tooltip）用简洁版，runs.detail 用带数字版
+      const humanReason = decision === 'no_safe_match' ? HUMAN_NO_MATCH : HUMAN_ASK_USER
+      const humanDetail =
         decision === 'no_safe_match'
-          ? 'No safe match found in search results'
-          : 'Manual review required'
+          ? HUMAN_NO_MATCH
+          : askUserDetail(result.confidence, result.minConfidence)
 
       const transitioned = jobs.completeNoMatch(job.id, now())
 
@@ -172,27 +219,34 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
             : finalJob.next_retry_at ?? now() + 86_400_000
 
         for (const target of targets) {
-          lib.markUnavailable(target.id, reason, recheckAfter)
+          lib.markUnavailable(target.id, humanReason, recheckAfter)
         }
       }
 
-      record(transitioned, decision, detail ?? reason, journalPath)
+      record(transitioned, decision, humanDetail, journalPath)
       return
     }
 
     // C1: 0 coverage, transient decisions (error / retry_later / unknown) → short-backoff error track.
     // 根因：pipeline 外层 catch 是 return finish('error') 而非 throw，瞬时错误若走内容轨
     // 会 5 次即 dormant 30 天。
+    const cause = briefCause(result.reasons?.[0])
     record(
-      jobs.completeError(job.id, detail ?? `pipeline decision: ${decision}`, now()),
+      jobs.completeError(job.id, result.reasons?.[0] ?? `pipeline decision: ${decision}`, now()),
       decision,
-      detail ?? `Transient outcome: ${decision}`,
+      cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
       journalPath
     )
   } catch (error) {
     // Exception handling: completeError with short backoff
     const errorMsg = error instanceof Error ? error.message : String(error)
-    record(jobs.completeError(job.id, errorMsg, now()), 'error', `Error: ${errorMsg}`, null)
+    const cause = briefCause(errorMsg)
+    record(
+      jobs.completeError(job.id, errorMsg, now()),
+      'error',
+      cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
+      null
+    )
   }
 }
 
@@ -267,11 +321,14 @@ export function makeRunEpisode(
       )
     )
 
-    // 7. Map PipelineResult to { decision, journalPath, detail }
+    // 7. Map PipelineResult to executor result shape（subtitlePath 供写盘，人话摘要在 executor 生成）
     return {
       decision: result.decision,
       journalPath: result.journalPath,
-      detail: result.subtitlePath ?? undefined,
+      subtitlePath: result.subtitlePath ?? undefined,
+      confidence: result.confidence ?? null,
+      minConfidence: ctx.preferences.auto_download_min_confidence,
+      reasons: result.reasons ?? [],
     }
   }
 }

@@ -4,14 +4,14 @@ import { App } from './App.js'
 import type { LibraryItemDTO } from './api/types.js'
 
 const item = (p: Partial<LibraryItemDTO> & Pick<LibraryItemDTO, 'id' | 'kind' | 'coverage'>): LibraryItemDTO =>
-  ({ name: 'n', chineseTitle: null, year: null, posterTag: null, job: null, ...p })
+  ({ name: 'n', chineseTitle: null, year: null, posterTag: null, section: '剧集', job: null, ...p })
 
 const LIBRARY: LibraryItemDTO[] = [
-  item({ id: 's1', kind: 'series', name: 'Series A', chineseTitle: '甲剧', year: 2021,
+  item({ id: 's1', kind: 'series', name: 'Series A', chineseTitle: '甲剧', year: 2021, section: '剧集',
     coverage: { covered: 12, missing: 0, embedded: 0, unavailable: 0 } }),                         // full
-  item({ id: 's2', kind: 'series', name: 'Series B', chineseTitle: '乙剧', year: 2024,
+  item({ id: 's2', kind: 'series', name: 'Series B', chineseTitle: '乙剧', year: 2024, section: '动漫',
     coverage: { covered: 3, missing: 5, embedded: 0, unavailable: 0 } }),                           // part → missing
-  item({ id: 's3', kind: 'series', name: 'Series C', chineseTitle: '丙剧', year: 2025,
+  item({ id: 's3', kind: 'series', name: 'Series C', chineseTitle: '丙剧', year: 2025, section: '电影',
     coverage: { covered: 1, missing: 8, embedded: 0, unavailable: 0 }, job: { state: 'searching', priority: 100 } }), // work
 ]
 
@@ -43,6 +43,19 @@ describe('App 海报墙冒烟', () => {
     fireEvent.click(screen.getByText('处理中'))
     await waitFor(() => expect(screen.getByText('丙剧')).toBeInTheDocument())
     expect(screen.queryByText('乙剧')).not.toBeInTheDocument()
+  })
+
+  it('海报墙按 section 分块，块序 剧集→动漫→电影，每块带计数标题', async () => {
+    vi.stubGlobal('fetch', mockFetch(LIBRARY))
+    render(<App />)
+
+    // 等库渲染出来
+    await screen.findByText('甲剧')
+    // 每块小节标题「<分区> · N 部」，且块序 剧集→动漫→电影
+    const heads = document.querySelectorAll('.section-head')
+    expect([...heads].map((h) => h.textContent?.replace(/\s+/g, ''))).toEqual([
+      '剧集·1部', '动漫·1部', '电影·1部',
+    ])
   })
 
   it('空库给引导文案', async () => {
