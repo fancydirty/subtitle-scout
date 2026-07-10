@@ -56,6 +56,10 @@ describe('runSearch', () => {
     ], () => {})
     expect(r.map(c => c.providerId)).toEqual(['alive-1'])
   })
+  it('zero adapters configured → fail-fast, never an "honest empty" result', async () => {
+    // 没配任何 provider key 时若输出 [] exit 0，pipeline 会写负缓存——整库静默毒化
+    await expect(runSearch(args, [], () => {})).rejects.toThrow(/no providers configured/)
+  })
 })
 
 describe('runResolve', () => {
@@ -67,5 +71,9 @@ describe('runResolve', () => {
   it('throws when no adapter owns the provider', async () => {
     await expect(runResolve({ provider: 'opensubtitles', providerId: '1', fileIndex: null }, [adapter('assrt')]))
       .rejects.toThrow(/no adapter/)
+  })
+  it('zero adapters configured → fail-fast with configuration error', async () => {
+    await expect(runResolve({ provider: 'assrt', providerId: '1', fileIndex: null }, []))
+      .rejects.toThrow(/no providers configured/)
   })
 })

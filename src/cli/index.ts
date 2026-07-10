@@ -99,9 +99,11 @@ async function assemble(): Promise<Assembled> {
     rank: (c, id, cands) => rankCandidates(llm, c, id, cands),
     providers: makeCliProviderPort({
       onEvent: e => {
+        const journal = journalStore.getStore()?.journal
         if (e.event === 'api_call') {
-          const journal = journalStore.getStore()?.journal
           journal?.apiCall({ endpoint: e.endpoint, params: { provider: e.provider }, status: e.status ?? 0, durationMs: e.durationMs, error: e.error })
+        } else if (e.event === 'provider_error') {
+          journal?.step('providerError', { provider: e.provider, message: e.message })
         }
       },
     }),
