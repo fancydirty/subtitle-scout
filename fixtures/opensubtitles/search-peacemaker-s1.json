@@ -1,0 +1,66 @@
+{
+  "total_pages": 1,
+  "total_count": 2,
+  "per_page": 50,
+  "page": 1,
+  "data": [
+    {
+      "id": "6324806",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "6324806",
+        "language": "zh-CN",
+        "download_count": 7302,
+        "hearing_impaired": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0.0,
+        "from_trusted": false,
+        "upload_date": "2022-02-18T08:20:12Z",
+        "release": "peacemaker.2022.s01e01.1080p.web.h264-cakes.chs",
+        "feature_details": {
+          "feature_id": 944572,
+          "feature_type": "Episode",
+          "year": 2022,
+          "title": "A Whole New Whirled",
+          "movie_name": "Peacemaker - S01E01",
+          "imdb_id": 14184232,
+          "season_number": 1,
+          "episode_number": 1,
+          "parent_imdb_id": 13146488
+        },
+        "files": [
+          {
+            "file_id": 7174766,
+            "cd_number": 1,
+            "file_name": "peacemaker.2022.s01e01.1080p.web.h264-cakes.chs.srt"
+          }
+        ]
+      }
+    },
+    {
+      "id": "6324807",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "6324807",
+        "language": "zh-CN",
+        "download_count": 3738,
+        "upload_date": "2022-02-18T08:21:00Z",
+        "release": "Peacemaker.2022.S01E02.Best.Friends.For.Never.1080p.HMAX.WEB-DL",
+        "feature_details": {
+          "feature_type": "Episode",
+          "season_number": 1,
+          "episode_number": 2,
+          "parent_imdb_id": 13146488
+        },
+        "files": [
+          {
+            "file_id": 7174767,
+            "cd_number": 1,
+            "file_name": "Peacemaker.S01E02.chs.srt"
+          }
+        ]
+      }
+    }
+  ]
+}
