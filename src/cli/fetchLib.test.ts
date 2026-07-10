@@ -43,6 +43,19 @@ describe('runSearch', () => {
     ], () => {})
     expect(r.length).toBe(1)
   })
+  it('ALL enabled adapters failing → rejects (transient outage must not read as "no subtitles")', async () => {
+    await expect(runSearch(args, [
+      adapter('a', { search: async () => { throw new Error('429 rate limited') } }),
+      adapter('b', { search: async () => { throw new Error('socket timeout') } }),
+    ], () => {})).rejects.toThrow(/all providers failed.*429 rate limited.*socket timeout/s)
+  })
+  it('one dead one alive → fail-soft, returns the survivor results', async () => {
+    const r = await runSearch(args, [
+      adapter('dead', { search: async () => { throw new Error('503') } }),
+      adapter('alive'),
+    ], () => {})
+    expect(r.map(c => c.providerId)).toEqual(['alive-1'])
+  })
 })
 
 describe('runResolve', () => {

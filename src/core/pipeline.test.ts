@@ -26,9 +26,12 @@ function mkCand(id: number, videoName: string, files: string[], nativeName: stri
   }
 }
 
+/** search 正常返回：候选 + 零 provider 故障 */
+const ok = (candidates: SubtitleCandidate[]) => ({ candidates, providerErrors: [] })
+
 function makeProviders(over: Partial<ProviderPort> = {}): ProviderPort {
   return {
-    search: vi.fn(async () => matrixCandidates),
+    search: vi.fn(async () => ok(matrixCandidates)),
     resolveDownload: vi.fn(async () => ({
       url: 'http://file0.assrt.net/onthefly/673114/x.ass',
       filename: 'The.Matrix.1999.RERIP.2160p.BluRay.x265.10bit.SDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ.zh.ass',
@@ -83,7 +86,7 @@ describe('runPipeline', () => {
       mkCand(673114, 'A', ['a.srt']),
       mkCand(800000, 'B', ['b.ass']),
     ]
-    const search = vi.fn(async () => portPool)
+    const search = vi.fn(async () => ok(portPool))
     const rank = vi.fn(async (_c: unknown, _id: unknown, cands: { providerId: string }[]) => ({
       parsed: {
         decision: 'download' as const, candidate_id: 'assrt:673114', file_index: 0,
@@ -128,7 +131,7 @@ describe('runPipeline', () => {
   it('graphic-only candidates yield no_safe_match with graphic reason', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps({
-      providers: makeProviders({ search: vi.fn(async () => [mkCand(900001, 'G', ['g.sup'])]) }),
+      providers: makeProviders({ search: vi.fn(async () => ok([mkCand(900001, 'G', ['g.sup'])])) }),
     })
     const result = await runPipeline(deps, ctx, outDir)
     expect(result.decision).toBe('no_safe_match')
@@ -191,6 +194,38 @@ describe('runPipeline', () => {
     expect(deps.providers.search).toHaveBeenCalledTimes(1) // 只有第一次
   })
 
+  it('zero candidates WITH provider errors → error decision, negative cache NOT poisoned', async () => {
+    // 瞬时源故障（429/5xx/超时）被 CLI fail-soft 成零候选时，绝不能当"确实没有"写 1 天负缓存
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const deps = makeDeps({
+      cache,
+      providers: makeProviders({
+        search: vi.fn(async () => ({ candidates: [], providerErrors: [{ provider: 'assrt', message: '429 rate limited' }] })),
+      }),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('error')
+    expect(result.reasons?.join(' ')).toMatch(/429 rate limited/)
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy() // 无负条目
+    expect(deps.rank).not.toHaveBeenCalled()
+    // 第二次跑不该被缓存短路：search 再次被调用
+    await runPipeline(deps, ctx, mkdtempSync(join(tmpdir(), 'out-')))
+    expect(deps.providers.search).toHaveBeenCalledTimes(2)
+  })
+
+  it('zero candidates with ZERO provider errors → honest negative cache still written', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const deps = makeDeps({
+      cache,
+      providers: makeProviders({ search: vi.fn(async () => ok([])) }),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('no_safe_match')
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toMatchObject({ kind: 'negative' })
+  })
+
   it('llm error surfaces as error decision with journal written', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps({ identify: vi.fn(async () => { throw new Error('LLM down') }) })
@@ -244,7 +279,7 @@ describe('runPipeline', () => {
     ]
     const covered: string[] = []
     const deps = makeDeps({
-      providers: makeProviders({ search: vi.fn(async () => [packCandidate]), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
       download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
       seasonPack: {
@@ -298,7 +333,7 @@ describe('runPipeline', () => {
       mkCand(803, 'Show.S02E03.chs', ['Show.S02E03.chs.ass'], '第3集'),
       mkCand(804, 'Show.S02E04.chs', ['Show.S02E04.chs.ass'], '第4集'),
     ]
-    const search = vi.fn(async () => looseCandidates)
+    const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
       parsed: { decision: 'download' as const, candidate_id: "assrt:801", file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
@@ -348,10 +383,10 @@ describe('runPipeline', () => {
   it('season sweep: does NOT trigger when a whole-season pack is available (pack has priority)', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const packCandidate = toCandidate(seasonDetail.sub.subs[0])
-    const search = vi.fn(async () => [
+    const search = vi.fn(async () => ok([
       packCandidate, // whole-season pack
       mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass']),
-    ])
+    ]))
     const seasonEps = [
       { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
       { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
@@ -376,7 +411,7 @@ describe('runPipeline', () => {
 
   it('season sweep: does NOT trigger when only 1 episode needs subs', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
-    const search = vi.fn(async () => [mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass'])])
+    const search = vi.fn(async () => ok([mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass'])]))
     const seasonEps = [
       { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
       { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: false },
@@ -403,7 +438,7 @@ describe('runPipeline', () => {
       mkCand(802, 'Show.S02E02.maybe', ['Show.S02E02.ass']),
       mkCand(803, 'Show.S02E03.chs', ['Show.S02E03.chs.ass']),
     ]
-    const search = vi.fn(async () => looseCandidates)
+    const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const seasonEps = [
       { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
@@ -455,8 +490,8 @@ describe('runPipeline', () => {
       mkCand(902, '流浪剧.S02E02', ['S02E02.chs.ass'], '流浪剧 第2集'),
     ]
     const search = vi.fn()
-      .mockResolvedValueOnce(firstRound) // main port call (both queries in one)
-      .mockResolvedValueOnce(aliasRound) // alias-harvest re-search
+      .mockResolvedValueOnce(ok(firstRound)) // main port call (both queries in one)
+      .mockResolvedValueOnce(ok(aliasRound)) // alias-harvest re-search
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn()
       .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
@@ -515,7 +550,7 @@ describe('runPipeline', () => {
       mkCand(802, 'Show.S02E02.chs', ['Show.S02E02.chs.ass'], '第2集'),
       mkCand(803, 'Show.S02E03.chs', ['Show.S02E03.chs.ass'], '第3集'),
     ]
-    const search = vi.fn(async () => looseCandidates)
+    const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
       parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no exact single-episode match for the representative episode'], identity_match: 'uncertain' as const, rejected: [] },
@@ -568,7 +603,7 @@ describe('runPipeline', () => {
       mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass'], '第1集'),
       mkCand(802, 'Show.S02E02.chs', ['Show.S02E02.chs.ass'], '第2集'),
     ]
-    const search = vi.fn(async () => looseCandidates)
+    const search = vi.fn(async () => ok(looseCandidates))
     const rank = vi.fn(async () => ({
       parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
@@ -606,7 +641,7 @@ describe('runPipeline', () => {
     // 首轮候选覆盖 E01（CJK nativeName 触发别名收割）；别名搜索带回 fresh 覆盖 E02
     const firstRound = [mkCand(700, '流浪剧.S02E01', ['Show.S02E01.chs.srt'], '流浪剧 第1集')]
     const aliasRound = [mkCand(902, '流浪剧.S02E02', ['Show.S02E02.chs.ass'], '流浪剧 第2集')]
-    const search = vi.fn().mockResolvedValueOnce(firstRound).mockResolvedValueOnce(aliasRound)
+    const search = vi.fn().mockResolvedValueOnce(ok(firstRound)).mockResolvedValueOnce(ok(aliasRound))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn()
       .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
@@ -801,8 +836,8 @@ describe('adoptLocal step', () => {
     it('first rank rejects → harvest alias, second port search, fresh rank pass wins', async () => {
       const outDir = mkdtempSync(join(tmpdir(), 'out-'))
       const search = vi.fn()
-        .mockResolvedValueOnce(firstRoundCands) // main port call (both queries)
-        .mockResolvedValueOnce(aliasRoundCands) // alias search
+        .mockResolvedValueOnce(ok(firstRoundCands)) // main port call (both queries)
+        .mockResolvedValueOnce(ok(aliasRoundCands)) // alias search
       const mockLlm = mockHarvestLlm()
       const rank = vi.fn()
         .mockResolvedValueOnce(noSafeMatchRank) // first pass rejects
@@ -843,7 +878,7 @@ describe('adoptLocal step', () => {
 
     it('first rank succeeds → harvest never triggers (zero extra cost)', async () => {
       const outDir = mkdtempSync(join(tmpdir(), 'out-'))
-      const search = vi.fn(async () => matrixCandidates)
+      const search = vi.fn(async () => ok(matrixCandidates))
       const mockLlm = mockHarvestLlm()
       const testCtx = structuredClone(ctx)
       testCtx.media.alternative_titles = []
@@ -862,7 +897,7 @@ describe('adoptLocal step', () => {
 
     it('skips harvest when upstream provides a Chinese alternative title', async () => {
       const outDir = mkdtempSync(join(tmpdir(), 'out-'))
-      const search = vi.fn(async () => firstRoundCands)
+      const search = vi.fn(async () => ok(firstRoundCands))
       const mockLlm = mockHarvestLlm()
       const testCtx = structuredClone(ctx)
       testCtx.media.alternative_titles = ['黑客帝国'] // upstream already has Chinese
@@ -880,7 +915,7 @@ describe('adoptLocal step', () => {
 
     it('skips harvest when the media title itself is Chinese (CJK-native guard)', async () => {
       const outDir = mkdtempSync(join(tmpdir(), 'out-'))
-      const search = vi.fn(async () => firstRoundCands)
+      const search = vi.fn(async () => ok(firstRoundCands))
       const mockLlm = mockHarvestLlm()
       const testCtx = structuredClone(ctx)
       testCtx.media.alternative_titles = []

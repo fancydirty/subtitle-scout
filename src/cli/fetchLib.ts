@@ -25,11 +25,18 @@ export async function runSearch(
   args: FetchArgs, adapters: FetchAdapter[], emit: (e: FetchEvent) => void, env: NodeJS.ProcessEnv = process.env,
 ): Promise<SubtitleCandidate[]> {
   const enabled = adapters.filter(a => a.enabled(args, env))
+  const failures: { provider: string; message: string }[] = []
   const results = await Promise.all(enabled.map(a =>
     a.search(args, emit).catch(e => {
       emit({ event: 'provider_error', provider: a.name, message: String(e) })
+      failures.push({ provider: a.name, message: String(e) })
       return [] as SubtitleCandidate[]
     })))
+  // 全部启用的 provider 都失败 ≠ "确实没有字幕"：整体抛错（CLI exit 1 → pipeline 'error'，不写负缓存）。
+  // 部分失败仍 fail-soft——活着的 provider 结果照常返回。
+  if (enabled.length > 0 && failures.length === enabled.length) {
+    throw new Error(`all providers failed: ${failures.map(f => `${f.provider}: ${f.message}`).join('; ')}`)
+  }
   const byKey = new Map<string, SubtitleCandidate>()
   for (const c of results.flat()) if (!byKey.has(candidateKey(c))) byKey.set(candidateKey(c), c)
   return [...byKey.values()]

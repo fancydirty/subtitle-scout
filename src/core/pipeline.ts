@@ -156,7 +156,7 @@ export async function runPipeline(
       // 统一的多查询搜索：CLI 内部做 multi-query + dedupe + gems
       const queries = planResult.parsed.queries.slice(0, 2)
       journal.step('providerSearch', { queries: queries.map(q => q.q) })
-      const searched = await deps.providers.search({
+      const { candidates: searched, providerErrors } = await deps.providers.search({
         queries: queries.map(q => q.q),
         imdb: ctx.media.provider_ids?.Imdb ?? ctx.media.provider_ids?.imdb,
         year: identity.year ?? ctx.media.year ?? undefined,
@@ -172,8 +172,16 @@ export async function runPipeline(
       }
 
       candidates = filterGraphicOnly(searched)
-      journal.step('candidateFilter', { raw: searched.length, kept: candidates.length })
+      journal.step('candidateFilter', { raw: searched.length, kept: candidates.length, providerErrors: providerErrors.length })
       if (candidates.length === 0) {
+        // 零候选 + provider 局部故障 ≠ "确实没有字幕"：判 error 且绝不写负缓存
+        // （否则瞬时 429/5xx/超时会被放大成 1 天的静默失配）
+        if (providerErrors.length > 0) {
+          return finish('error', {
+            reasons: ['zero candidates with provider failures — not cacheable',
+              ...providerErrors.map(e => `${e.provider}: ${e.message}`)],
+          })
+        }
         const reason = searched.length > 0
           ? '仅存图形字幕，本产品处理文本字幕'
           : 'no candidates from any search query'
@@ -206,7 +214,8 @@ export async function runPipeline(
             : null
           if (alias) {
             journal.step('aliasHarvest', { alias })
-            const freshSearched = await deps.providers.search({
+            // 增益路径：providerErrors 不改判——全灭时 search 直接 reject，落进本 catch 静默降级
+            const { candidates: freshSearched } = await deps.providers.search({
               queries: [alias],
               deep: false,
               filename: ctx.media.filename,
