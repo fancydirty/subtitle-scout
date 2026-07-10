@@ -2,9 +2,11 @@ import type { z } from 'zod'
 import { dirname } from 'node:path'
 import {
   type MediaContext, type MediaIdentity, type SearchPlan, type RankDecision,
-  type AssrtSub, AssrtSearchResponseSchema, AssrtDetailResponseSchema,
-  type OrphanDecision, type SeasonMap,
+  AssrtSearchResponseSchema, AssrtDetailResponseSchema,
+  type OrphanDecision, type SeasonMap, type SubtitleCandidate,
+  candidateKey, parseCandidateKey,
 } from './schemas.js'
+import { toCandidate } from '../adapters/providers/assrt.js'
 import type { CallStructuredResult } from '../agent/llm.js'
 import type { LlmRuntime } from '../agent/runtime.js'
 import { Journal } from './journal.js'
@@ -26,7 +28,7 @@ type DetailResponse = z.infer<typeof AssrtDetailResponseSchema>
 export interface PipelineDeps {
   identify: (ctx: MediaContext) => Promise<CallStructuredResult<MediaIdentity>>
   plan: (ctx: MediaContext, id: MediaIdentity) => Promise<CallStructuredResult<SearchPlan>>
-  rank: (ctx: MediaContext, id: MediaIdentity, cands: AssrtSub[]) => Promise<CallStructuredResult<RankDecision>>
+  rank: (ctx: MediaContext, id: MediaIdentity, cands: SubtitleCandidate[]) => Promise<CallStructuredResult<RankDecision>>
   assrt: {
     search: (q: string) => Promise<SearchResponse>
     detail: (id: number) => Promise<DetailResponse>
@@ -46,7 +48,7 @@ export interface PipelineDeps {
   }
   seasonPack?: {
     enumerate: (ctx: MediaContext) => Promise<SeasonEpisode[]>
-    map: (ctx: MediaContext, id: MediaIdentity, filelist: { f: string }[], eps: SeasonEpisode[]) => Promise<CallStructuredResult<SeasonMap>>
+    map: (ctx: MediaContext, id: MediaIdentity, filelist: { index: number; name: string }[], eps: SeasonEpisode[]) => Promise<CallStructuredResult<SeasonMap>>
     onCovered: (ep: SeasonEpisode, subtitlePath: string) => void | Promise<void>
   }
 }
@@ -73,11 +75,11 @@ export async function runPipeline(
   deps.journalReady?.(journal)
   const finish = (
     decision: PipelineResult['decision'],
-    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string }[] } = {},
+    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null } = {},
   ): PipelineResult => {
     const journalPath = journal.finish({
       request_id: ctx.request_id, decision,
-      confidence: extra.confidence ?? null, selected: null,
+      confidence: extra.confidence ?? null, selected: extra.selected ?? null,
       reasons: extra.reasons ?? [],
       verification: extra.subtitlePath
         ? { downloaded: true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
@@ -146,30 +148,38 @@ export async function runPipeline(
 
     // 3. search（缓存命中 positive 时跳过 plan/search/rank，直接用缓存的选择）
     let rank: RankDecision
-    let candidates: AssrtSub[]
+    let candidates: SubtitleCandidate[]
+    let cachedDetailResp: DetailResponse | undefined
     if (cached?.kind === 'positive') {
       journal.step('cacheHitPositive', cached)
-      const detail = await deps.assrt.detail(cached.assrt_id)
-      candidates = detail.sub.subs
-      rank = { decision: 'download', assrt_id: cached.assrt_id, file_index: cached.file_index, identity_match: 'confirmed', confidence: cached.confidence, reasons: ['cache hit'], rejected: [] }
+      const detail = await deps.assrt.detail(Number(cached.providerId))
+      cachedDetailResp = detail
+      const subs = detail.sub.subs.map(toCandidate)
+      candidates = subs
+      const cachedKey = candidateKey({ provider: cached.provider, providerId: cached.providerId })
+      rank = { decision: 'download', candidate_id: cachedKey, file_index: cached.fileIndex, identity_match: 'confirmed', confidence: cached.confidence, reasons: ['cache hit'], rejected: [] }
     } else {
       journal.step('planSearch')
       const planResult = await deps.plan(ctx, identity)
       journal.llmCall({ point: 'planSearch', prompt: planResult.prompt, rawText: planResult.rawText, parsed: planResult.parsed, retries: planResult.retries, durationMs: planResult.durationMs })
 
-      // 跑前 2 条查询，按 assrt id 并集去重（ASSRT 单条查询受上传时间偏置，并集提召回）
+      // 跑前 2 条查询，按 candidate key 并集去重（ASSRT 单条查询受上传时间偏置，并集提召回）
       const queries = planResult.parsed.queries.slice(0, 2)
-      const byId = new Map<number, AssrtSub>()
+      const byKey = new Map<string, SubtitleCandidate>()
       let apiCalls = 0
       for (const q of queries) {
         if (apiCalls >= deps.maxApiCallsPerJob) break
         journal.step('assrtSearch', { q: q.q })
         const resp = await deps.assrt.search(q.q)
         apiCalls++
-        for (const s of resp.sub.subs) if (!byId.has(s.id)) byId.set(s.id, s)
+        for (const s of resp.sub.subs) {
+          const c = toCandidate(s)
+          const key = candidateKey(c)
+          if (!byKey.has(key)) byKey.set(key, c)
+        }
       }
 
-      const raw = [...byId.values()]
+      const raw = [...byKey.values()]
       candidates = filterGraphicOnly(raw)
       journal.step('candidateFilter', { raw: raw.length, kept: candidates.length })
       if (candidates.length === 0) {
@@ -193,11 +203,11 @@ export async function runPipeline(
       if (rank.decision === 'no_safe_match' && deps.llm && !upstreamHasCjk
         && apiCalls < deps.maxApiCallsPerJob) {
         try {
-          // 候选名：native_name||videoname 前 40 字符 × 最多 15 条（CJK 预筛在 harvestAlias 内，零 LLM 成本）
+          // 候选名：nativeName||videoName 前 40 字符 × 最多 15 条（CJK 预筛在 harvestAlias 内，零 LLM 成本）
           const candidateNames = candidates
             .slice(0, 15)
             .map(s => {
-              const name = (Array.isArray(s.native_name) ? s.native_name[0] : s.native_name) || s.videoname || ''
+              const name = s.nativeName || s.videoName || ''
               return name.slice(0, 40)
             })
             .filter(n => n.length > 0)
@@ -208,10 +218,10 @@ export async function runPipeline(
             journal.step('aliasHarvest', { alias })
             const resp = await deps.assrt.search(alias)
             apiCalls++
-            const fresh = resp.sub.subs.filter(s => !byId.has(s.id))
-            for (const s of fresh) byId.set(s.id, s)
-            const freshCandidates = filterGraphicOnly(fresh)
-            journal.step('aliasSearchMerged', { alias, added: fresh.length, kept: freshCandidates.length })
+            const freshAssrt = resp.sub.subs.map(toCandidate).filter(c => !byKey.has(candidateKey(c)))
+            for (const c of freshAssrt) byKey.set(candidateKey(c), c)
+            const freshCandidates = filterGraphicOnly(freshAssrt)
+            journal.step('aliasSearchMerged', { alias, added: freshAssrt.length, kept: freshCandidates.length })
             if (freshCandidates.length > 0) {
               journal.step('rankCandidates', { count: freshCandidates.length, pass: 'aliasHarvest' })
               // 二轮 rank 仅喂 fresh（不与被拒的首轮候选混排——保留既有语义）
@@ -220,9 +230,12 @@ export async function runPipeline(
               if (secondRank.parsed.decision !== 'no_safe_match') {
                 rank = secondRank.parsed
                 // 候选并入去重：fresh 优先排前，保留首轮候选在后——季横扫需要全池，而非仅 fresh
-                const mergedPool = new Map<number, AssrtSub>()
-                for (const c of freshCandidates) mergedPool.set(c.id, c)
-                for (const c of candidates) if (!mergedPool.has(c.id)) mergedPool.set(c.id, c)
+                const mergedPool = new Map<string, SubtitleCandidate>()
+                for (const c of freshCandidates) mergedPool.set(candidateKey(c), c)
+                for (const c of candidates) {
+                  const key = candidateKey(c)
+                  if (!mergedPool.has(key)) mergedPool.set(key, c)
+                }
                 candidates = [...mergedPool.values()]
               }
             }
@@ -271,11 +284,11 @@ export async function runPipeline(
       const seasonEpisodes = (pack || mayGraduate) ? await deps.seasonPack.enumerate(ctx) : []
       const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
       if (pack && shouldGraduate(ctx, pack, seasonEpisodes)) {
-        journal.step('seasonGraduate', { packId: pack.id, episodes: seasonEpisodes.length, needs: needsCount })
-        const detail = await deps.assrt.detail(pack.id)
-        const packSub = detail.sub.subs.find(s => s.id === pack.id) ?? detail.sub.subs[0]
+        journal.step('seasonGraduate', { packId: pack.providerId, episodes: seasonEpisodes.length, needs: needsCount })
+        const detail = await deps.assrt.detail(Number(pack.providerId))
+        const packSub = detail.sub.subs.find(s => String(s.id) === pack.providerId) ?? detail.sub.subs[0]
         if (packSub) {
-          const mapResult = await deps.seasonPack.map(ctx, identity, packSub.filelist, seasonEpisodes)
+          const mapResult = await deps.seasonPack.map(ctx, identity, pack.fileList, seasonEpisodes)
           journal.llmCall({ point: 'mapSeasonPack', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
           const pairs = (mapResult.parsed.pairs ?? []).filter(p => p.filelist_index != null && p.confidence != null) as { filelist_index: number; episode_code: string; confidence: number; reason: string }[]
           const gateRes = runSeasonPackGate({ map: { pairs }, filelist: packSub.filelist, seasonEpisodes, minConfidence: ctx.preferences.auto_download_min_confidence })
@@ -320,14 +333,19 @@ export async function runPipeline(
 
     // 6. resolve download URL（detail 的时效 URL）
     journal.step('resolveDownloadUrl')
-    const detail = cached?.kind === 'positive'
-      ? { sub: { subs: candidates } }
-      : await deps.assrt.detail(rank.assrt_id!)
-    const sub = detail.sub.subs.find(s => s.id === rank.assrt_id) ?? detail.sub.subs[0]
+    const parsed = parseCandidateKey(rank.candidate_id!)
+    if (!parsed) return finish('error', { reasons: [`invalid candidate_id: ${rank.candidate_id}`] })
+
+    // Reuse cached detail response if available, otherwise call detail
+    const detail = cachedDetailResp ?? await deps.assrt.detail(Number(parsed.providerId))
+    const sub = detail.sub.subs.find(s => String(s.id) === parsed.providerId) ?? detail.sub.subs[0]
     if (!sub) return finish('error', { reasons: ['detail response contained no subs'] })
     const fileEntry = rank.file_index != null ? sub.filelist[rank.file_index] : undefined
     const url = fileEntry?.url ?? sub.url
     if (!url) return finish('error', { reasons: ['no download url in detail response'] })
+
+    const subLang = sub.lang?.desc ?? ctx.preferences.language
+    const subFormat = fileEntry?.f ? (fileEntry.f.match(/\.(srt|ass|ssa)$/i)?.[1] || 'srt') : (sub.filename?.match(/\.(srt|ass|ssa)$/i)?.[1] || 'srt')
 
     // 7. download + write
     journal.step('download', { url: url.slice(0, 80) })
@@ -346,12 +364,20 @@ export async function runPipeline(
 
     // 8. cache + finish
     if (!cached) {
-      deps.cache.put(keys, { kind: 'positive', assrt_id: rank.assrt_id!, file_index: rank.file_index ?? null, confidence: rank.confidence })
+      deps.cache.put(keys, { kind: 'positive', provider: parsed.provider, providerId: parsed.providerId, fileIndex: rank.file_index ?? null, confidence: rank.confidence })
+    }
+    const selected = {
+      provider: parsed.provider,
+      provider_id: parsed.providerId,
+      subtitle_name: artifactFilename,
+      language: subLang,
+      format: subFormat,
     }
     return finish('download', {
       reasons: rank.reasons, confidence: rank.confidence,
       subtitlePath: written.path, bytes: written.bytes, encoding: written.encoding,
       fromCache: cached?.kind === 'positive',
+      selected,
     })
   } catch (e) {
     journal.step('error', { message: String(e) })
@@ -366,7 +392,7 @@ export async function runPipeline(
  */
 async function runSeasonSweep(
   deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
-  candidates: AssrtSub[], seasonEpisodes: SeasonEpisode[],
+  candidates: SubtitleCandidate[], seasonEpisodes: SeasonEpisode[],
   journal: Journal, trigger: 'pre-gate' | 'post-gate',
 ): Promise<{ episodeCode: string; subtitlePath: string }[]> {
   const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
@@ -374,7 +400,7 @@ async function runSeasonSweep(
   const mapResult = await mapLooseEpisodes(deps.llm!, ctx, identity, candidates, seasonEpisodes)
   journal.llmCall({ point: 'mapLooseEpisodes', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
   const validAssignments = (mapResult.parsed.assignments ?? [])
-    .filter(a => a.sub_id != null && a.episode_code && a.confidence >= ctx.preferences.auto_download_min_confidence)
+    .filter(a => a.candidate_id && a.episode_code && a.confidence >= ctx.preferences.auto_download_min_confidence)
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
   if (validAssignments.length === 0) return []
 
@@ -395,9 +421,14 @@ async function runSeasonSweep(
     }
 
     try {
-      const detail = await deps.assrt.detail(assignment.sub_id!)
+      const parsed = parseCandidateKey(assignment.candidate_id)
+      if (!parsed) {
+        skipped.push({ episode: assignment.episode_code, reason: 'invalid candidate_id' })
+        continue
+      }
+      const detail = await deps.assrt.detail(Number(parsed.providerId))
       apiCallsUsed++
-      const sub = detail.sub.subs.find(s => s.id === assignment.sub_id) ?? detail.sub.subs[0]
+      const sub = detail.sub.subs.find(s => String(s.id) === parsed.providerId) ?? detail.sub.subs[0]
       if (!sub) {
         skipped.push({ episode: assignment.episode_code, reason: 'detail response empty' })
         continue
@@ -430,11 +461,11 @@ async function runSeasonSweep(
 }
 
 export function shouldGraduate(
-  ctx: MediaContext, candidate: AssrtSub | undefined, seasonEpisodes: SeasonEpisode[],
+  ctx: MediaContext, candidate: SubtitleCandidate | undefined, seasonEpisodes: SeasonEpisode[],
 ): boolean {
   if (ctx.media.type !== 'episode') return false
   if (!candidate) return false
-  const subFiles = candidate.filelist.filter(f => /\.(srt|ass|ssa)$/i.test(f.f))
+  const subFiles = candidate.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name))
   if (subFiles.length < 2) return false
   return seasonEpisodes.filter(e => e.needsChinese).length >= 2
 }
@@ -443,9 +474,9 @@ export function shouldGraduate(
  * 在全部候选里挑最"整季包"的一个：字幕文件数最多且 ≥2 的候选。
  * 独立于 rank 的选择——rank 偏好本集最精准匹配（常是单集候选），但升格要的是整季包。
  */
-export function pickSeasonPack(candidates: AssrtSub[]): AssrtSub | undefined {
+export function pickSeasonPack(candidates: SubtitleCandidate[]): SubtitleCandidate | undefined {
   return candidates
-    .map(c => ({ c, n: c.filelist.filter(f => /\.(srt|ass|ssa)$/i.test(f.f)).length }))
+    .map(c => ({ c, n: c.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name)).length }))
     .filter(x => x.n >= 2)
     .sort((a, b) => b.n - a.n)[0]?.c
 }

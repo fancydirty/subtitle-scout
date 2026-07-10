@@ -5,9 +5,9 @@ import type { CallStructuredResult } from './llm.js'
 
 export async function mapSeasonPack(
   llm: LlmRuntime, ctx: MediaContext, identity: MediaIdentity,
-  filelist: { f: string }[], seasonEpisodes: SeasonEpisode[],
+  filelist: { index: number; name: string }[], seasonEpisodes: SeasonEpisode[],
 ): Promise<CallStructuredResult<SeasonMap>> {
-  const files = filelist.map((e, i) => ({ index: i, filename: e.f }))
+  const files = filelist.map(e => ({ index: e.index, filename: e.name }))
   const episodes = seasonEpisodes
     .filter(e => e.needsChinese)
     .map(e => ({ episode_code: e.episodeCode, video: e.videoFilename }))

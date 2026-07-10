@@ -1,17 +1,18 @@
-import type { AssrtSub, MediaIdentity, MediaContext, RankDecision } from './schemas.js'
+import type { SubtitleCandidate, MediaIdentity, MediaContext, RankDecision } from './schemas.js'
+import { candidateKey } from './schemas.js'
 
 export interface GateResult {
   ok: boolean
   /** ok=false 时的降级 decision */
   decision: 'download' | 'ask_user' | 'no_safe_match'
   failures: string[]
-  candidate?: AssrtSub
+  candidate?: SubtitleCandidate
 }
 
 /** 纯代码硬校验 agent 的排序输出。任何一条不过就绝不落盘。 */
 export function runGate(
   rank: RankDecision,
-  candidates: AssrtSub[],
+  candidates: SubtitleCandidate[],
   identity: MediaIdentity,
   prefs: MediaContext['preferences'],
 ): GateResult {
@@ -19,12 +20,12 @@ export function runGate(
     return { ok: false, decision: rank.decision, failures: [] }
   }
   const failures: string[] = []
-  const candidate = candidates.find(c => c.id === rank.assrt_id)
-  if (!candidate) failures.push(`assrt_id ${rank.assrt_id} is not in this search's candidate set`)
+  const candidate = candidates.find(c => candidateKey(c) === rank.candidate_id)
+  if (!candidate) failures.push(`candidate_id ${rank.candidate_id} is not in this search's candidate set`)
 
-  if (candidate && candidate.filelist.length > 0) {
-    if (rank.file_index == null || rank.file_index < 0 || rank.file_index >= candidate.filelist.length) {
-      failures.push(`file_index ${rank.file_index} out of range for filelist of ${candidate.filelist.length}`)
+  if (candidate && candidate.fileList.length > 0) {
+    if (rank.file_index == null || rank.file_index < 0 || rank.file_index >= candidate.fileList.length) {
+      failures.push(`file_index ${rank.file_index} out of range for filelist of ${candidate.fileList.length}`)
     }
   }
 

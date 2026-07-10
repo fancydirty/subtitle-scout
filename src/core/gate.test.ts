@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { runGate } from './gate.js'
-import type { AssrtSub, MediaIdentity, RankDecision, MediaContext } from './schemas.js'
+import type { SubtitleCandidate, MediaIdentity, RankDecision, MediaContext } from './schemas.js'
 
 const identity: MediaIdentity = {
   canonical_title: 'The Matrix', original_title: null, year: 1999, type: 'movie',
@@ -10,13 +10,13 @@ const prefs: MediaContext['preferences'] = {
   language: 'zh-Hans', prefer_bilingual: true, allow_traditional: true,
   allow_machine_translated: false, auto_download_min_confidence: 0.86,
 }
-const candidates = [
-  { id: 673114, videoname: 'The.Matrix.1999', filelist: [{ f: 'a.zh.ass' }] },
-  { id: 606770, videoname: 'Matrix Trilogy', filelist: [{ f: 'animatrix.ass' }, { f: 'matrix1.ass' }] },
-] as unknown as AssrtSub[]
+const candidates: SubtitleCandidate[] = [
+  { provider: 'assrt', providerId: '673114', videoName: 'The.Matrix.1999', nativeName: null, language: 'zh', subtype: null, releaseSite: null, uploadDate: null, fileList: [{ index: 0, name: 'a.zh.ass' }] },
+  { provider: 'assrt', providerId: '606770', videoName: 'Matrix Trilogy', nativeName: null, language: 'zh', subtype: null, releaseSite: null, uploadDate: null, fileList: [{ index: 0, name: 'animatrix.ass' }, { index: 1, name: 'matrix1.ass' }] },
+]
 
 const base: RankDecision = {
-  decision: 'download', assrt_id: 673114, file_index: 0,
+  decision: 'download', candidate_id: 'assrt:673114', file_index: 0,
   identity_match: 'uncertain', confidence: 0.91, reasons: ['match'], rejected: [],
 }
 
@@ -25,11 +25,11 @@ describe('runGate', () => {
     const r = runGate(base, candidates, identity, prefs)
     expect(r.ok).toBe(true)
   })
-  it('rejects assrt_id not in candidate set', () => {
-    const r = runGate({ ...base, assrt_id: 999999 }, candidates, identity, prefs)
+  it('rejects candidate_id not in candidate set', () => {
+    const r = runGate({ ...base, candidate_id: 'assrt:999999' }, candidates, identity, prefs)
     expect(r.ok).toBe(false)
     expect(r.decision).toBe('no_safe_match')
-    expect(r.failures[0]).toMatch(/assrt_id/)
+    expect(r.failures[0]).toMatch(/candidate_id/)
   })
   it('rejects out-of-range file_index', () => {
     const r = runGate({ ...base, file_index: 5 }, candidates, identity, prefs)
@@ -42,7 +42,7 @@ describe('runGate', () => {
     expect(r.decision).toBe('ask_user')
   })
   it('passes through non-download decisions untouched', () => {
-    const r = runGate({ ...base, decision: 'no_safe_match', assrt_id: null, file_index: null }, candidates, identity, prefs)
+    const r = runGate({ ...base, decision: 'no_safe_match', candidate_id: null, file_index: null }, candidates, identity, prefs)
     expect(r.ok).toBe(false)
     expect(r.decision).toBe('no_safe_match')
     expect(r.failures).toEqual([])
@@ -54,7 +54,7 @@ describe('runGate — identity verdict', () => {
     const r = runGate({ ...base, identity_match: 'confirmed', confidence: 0.5 }, candidates, identity, prefs)
     expect(r.ok).toBe(true)
     expect(r.decision).toBe('download')
-    expect(r.candidate?.id).toBe(673114)
+    expect(r.candidate?.providerId).toBe('673114')
   })
   it('mismatch rejects to no_safe_match even when scalar confidence is very high', () => {
     const r = runGate({ ...base, identity_match: 'mismatch', confidence: 0.99 }, candidates, identity, prefs)
@@ -72,10 +72,10 @@ describe('runGate — identity verdict', () => {
     expect(r.ok).toBe(false)
     expect(r.decision).toBe('ask_user')
   })
-  it('confirmed still cannot bypass structural safety (hallucinated assrt_id)', () => {
-    const r = runGate({ ...base, identity_match: 'confirmed', assrt_id: 999999 }, candidates, identity, prefs)
+  it('confirmed still cannot bypass structural safety (hallucinated candidate_id)', () => {
+    const r = runGate({ ...base, identity_match: 'confirmed', candidate_id: 'assrt:999999' }, candidates, identity, prefs)
     expect(r.ok).toBe(false)
     expect(r.decision).toBe('no_safe_match')
-    expect(r.failures[0]).toMatch(/assrt_id/)
+    expect(r.failures[0]).toMatch(/candidate_id/)
   })
 })

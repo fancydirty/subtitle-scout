@@ -88,10 +88,10 @@ describe('LLM output coercion (MiMo returns numbers as strings)', () => {
   })
   it('RankDecision coerces assrt_id and file_index strings', () => {
     const r = RankDecisionSchema.parse({
-      decision: 'download', assrt_id: '673114', file_index: '0',
+      decision: 'download', candidate_id: 'assrt:673114', file_index: '0',
       confidence: '0.91', reasons: [], rejected: [],
     })
-    expect(r.assrt_id).toBe(673114)
+    expect(r.candidate_id).toBe('assrt:673114')
     expect(r.file_index).toBe(0)
     expect(r.confidence).toBe(0.91)
   })

@@ -92,7 +92,8 @@ export const IdentityMatchSchema: z.ZodType<IdentityMatch> = z.preprocess(
 
 export const RankDecisionSchema = z.object({
   decision: z.enum(['download', 'ask_user', 'no_safe_match']),
-  assrt_id: looseNumeric(z.number().int()),
+  /** "<provider>:<providerId>"，与 prompt 里 candidates[].id 完全一致 */
+  candidate_id: z.string().nullish(),
   file_index: looseNumeric(z.number().int()),
   // 身份判决：confirmed=同作品/季/集，mismatch=错作品/季/集，uncertain=信息不足
   identity_match: IdentityMatchSchema,
@@ -101,9 +102,9 @@ export const RankDecisionSchema = z.object({
     z.number().min(0).max(1),
   ),
   reasons: z.array(z.string()),
-  rejected: z.array(z.object({ assrt_id: z.number().int(), reason: z.string() })),
-}).refine(v => v.decision !== 'download' || v.assrt_id != null, {
-  message: 'assrt_id required when decision=download',
+  rejected: z.array(z.object({ candidate_id: z.string(), reason: z.string() })),
+}).refine(v => v.decision !== 'download' || (v.candidate_id != null && v.candidate_id !== ''), {
+  message: 'candidate_id required when decision=download',
 })
 export type RankDecision = z.infer<typeof RankDecisionSchema>
 
@@ -186,7 +187,8 @@ export const FinalDecisionSchema = z.object({
   decision: z.enum(['download', 'ask_user', 'no_safe_match', 'retry_later', 'already_exists', 'error', 'adopted_local']),
   confidence: z.number().nullish(),
   selected: z.object({
-    assrt_id: z.number(),
+    provider: z.string(),
+    provider_id: z.string(),
     subtitle_name: z.string(),
     language: z.string(),
     format: z.string(),
@@ -238,7 +240,7 @@ export type SeasonMap = z.infer<typeof SeasonMapSchema>
 export const LooseEpisodesMapSchema = z.object({
   assignments: z.array(z.object({
     episode_code: z.string(),
-    sub_id: looseNumeric(z.number().int()),
+    candidate_id: z.string(),
     confidence: z.preprocess(
       v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
       z.number().min(0).max(1),

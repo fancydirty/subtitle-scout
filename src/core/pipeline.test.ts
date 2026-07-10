@@ -28,7 +28,7 @@ function makeDeps(overrides: Partial<PipelineDeps> = {}): PipelineDeps {
     })),
     rank: vi.fn(async () => ({
       parsed: {
-        decision: 'download' as const, assrt_id: 673114, file_index: 0,
+        decision: 'download' as const, candidate_id: 'assrt:673114', file_index: 0,
         confidence: 0.91, reasons: ['exact match'], identity_match: 'uncertain' as const, rejected: [],
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     })),
@@ -70,11 +70,11 @@ describe('runPipeline', () => {
     const search = vi.fn()
       .mockResolvedValueOnce(searchA)
       .mockResolvedValueOnce(searchB)
-    const rank = vi.fn(async (_c: unknown, _id: unknown, cands: { id: number }[]) => ({
+    const rank = vi.fn(async (_c: unknown, _id: unknown, cands: { providerId: string }[]) => ({
       parsed: {
-        decision: 'download' as const, assrt_id: 673114, file_index: 0,
+        decision: 'download' as const, candidate_id: 'assrt:673114', file_index: 0,
         confidence: 0.91, reasons: ['union'], identity_match: 'uncertain' as const, rejected: [],
-        _seen: cands.map(c => c.id),
+        _seen: cands.map(c => c.providerId),
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const deps = makeDeps({
@@ -92,8 +92,8 @@ describe('runPipeline', () => {
     expect(search).toHaveBeenCalledTimes(2)
     expect(result.decision).toBe('download')
     const rankResult = await rank.mock.results[0].value as any
-    const seen = rankResult.parsed._seen as number[]
-    expect(seen.sort((a: number, b: number) => a - b)).toEqual([673114, 800000])
+    const seen = rankResult.parsed._seen as string[]
+    expect(seen.sort()).toEqual(['673114', '800000'])
   })
 
   it('graphic-only candidates yield no_safe_match with graphic reason', async () => {
@@ -116,7 +116,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       rank: vi.fn(async () => ({
         parsed: {
-          decision: 'download' as const, assrt_id: 999999, file_index: null,
+          decision: 'download' as const, candidate_id: "assrt:999999", file_index: null,
           confidence: 0.99, reasons: ['hallucinated'], identity_match: 'uncertain' as const, rejected: [],
         }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
@@ -131,7 +131,7 @@ describe('runPipeline', () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps({
       rank: vi.fn(async () => ({
-        parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['nothing safe'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['nothing safe'], identity_match: 'uncertain' as const, rejected: [] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -173,7 +173,7 @@ describe('runPipeline', () => {
     const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
     // 预置：title key 上有一个 positive 条目（模拟碰撞/污染）
     cache.put(['title:the matrix|1999|movie|S-|E-'],
-      { kind: 'positive', assrt_id: 606770, file_index: 0, confidence: 0.9 })
+      { kind: 'positive', provider: 'assrt', providerId: '606770', fileIndex: 0, confidence: 0.9 })
     // context 无 provider_ids → 只有 title key 可命中
     const bareCtx = structuredClone(ctx)
     bareCtx.media.provider_ids = {}
@@ -201,7 +201,7 @@ describe('runPipeline', () => {
     const packCandidate = seasonDetail.sub.subs[0]
     const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: [packCandidate] } }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, assrt_id: 900900, file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { decision: 'download' as const, candidate_id: "assrt:900900", file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -243,14 +243,18 @@ describe('runPipeline', () => {
   })
 
   it('pickSeasonPack chooses the fullest multi-file pack, not a single-episode candidate', () => {
-    const mk = (id: number, files: string[]): AssrtSub => ({ id, filelist: files.map(f => ({ f })) } as unknown as AssrtSub)
+    const mk = (id: number, files: string[]) => ({
+      provider: 'assrt' as const, providerId: String(id), videoName: null, nativeName: null,
+      language: null, subtype: null, releaseSite: null, uploadDate: null,
+      fileList: files.map((name, index) => ({ index, name })),
+    })
     const cands = [
       mk(1, ['Show.S03E12.chs.ass']),                                   // single episode
       mk(2, ['Show.S03E01.ass', 'Show.S03E02.ass', 'Show.S03E03.ass']), // 3-ep pack
       mk(3, ['Show.S03E01.ass', 'Show.S03E02.ass']),                    // 2-ep pack
       mk(4, ['cover.jpg']),                                             // no subs
     ]
-    expect(pickSeasonPack(cands)?.id).toBe(2)   // fullest pack wins, single-episode ignored
+    expect(pickSeasonPack(cands)?.providerId).toBe('2')   // fullest pack wins, single-episode ignored
     expect(pickSeasonPack([mk(9, ['a.chs.srt'])])).toBeUndefined()   // no pack → undefined
   })
 
@@ -264,7 +268,7 @@ describe('runPipeline', () => {
     ]
     const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { decision: 'download' as const, candidate_id: "assrt:801", file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -277,10 +281,10 @@ describe('runPipeline', () => {
     const llm = {
       call: vi.fn(async () => ({
         parsed: { assignments: [
-          { episode_code: 'S02E01', sub_id: 801, confidence: 0.95 },
-          { episode_code: 'S02E02', sub_id: 802, confidence: 0.95 },
-          { episode_code: 'S02E03', sub_id: 803, confidence: 0.95 },
-          { episode_code: 'S02E04', sub_id: 804, confidence: 0.95 },
+          { episode_code: 'S02E01', candidate_id: "assrt:801", confidence: 0.95 },
+          { episode_code: 'S02E02', candidate_id: "assrt:802", confidence: 0.95 },
+          { episode_code: 'S02E03', candidate_id: "assrt:803", confidence: 0.95 },
+          { episode_code: 'S02E04', candidate_id: "assrt:804", confidence: 0.95 },
         ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
       })),
     }
@@ -383,9 +387,9 @@ describe('runPipeline', () => {
     const llm = {
       call: vi.fn(async () => ({
         parsed: { assignments: [
-          { episode_code: 'S02E01', sub_id: 801, confidence: 0.95 },
-          { episode_code: 'S02E02', sub_id: 802, confidence: 0.70 }, // below auto_download_min_confidence
-          { episode_code: 'S02E03', sub_id: 803, confidence: 0.90 },
+          { episode_code: 'S02E01', candidate_id: "assrt:801", confidence: 0.95 },
+          { episode_code: 'S02E02', candidate_id: "assrt:802", confidence: 0.70 }, // below auto_download_min_confidence
+          { episode_code: 'S02E03', candidate_id: "assrt:803", confidence: 0.90 },
         ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
       })),
     }
@@ -396,7 +400,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       assrt: { search, detail },
       rank: vi.fn(async () => ({
-        parsed: { decision: 'download' as const, assrt_id: 801, file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { decision: 'download' as const, candidate_id: "assrt:801", file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })) as unknown as PipelineDeps['rank'],
       download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
@@ -435,8 +439,8 @@ describe('runPipeline', () => {
       .mockResolvedValueOnce(firstResp) // query 2 (dedup)
       .mockResolvedValueOnce(aliasResp) // alias-harvest search
     const rank = vi.fn()
-      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
-      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, assrt_id: 901, file_index: 0, confidence: 0.9, reasons: ['alias match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, candidate_id: "assrt:901", file_index: 0, confidence: 0.9, reasons: ['alias match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
     const llmCall = vi.fn(async (opts: { name: string }) => {
       if (opts.name === 'extract_chinese_alias') {
         return { parsed: { alias: '流浪剧', confidence: 0.95 }, rawText: '', retries: 0, durationMs: 1, prompt: '' }
@@ -496,7 +500,7 @@ describe('runPipeline', () => {
     ]
     const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.2, reasons: ['no exact single-episode match for the representative episode'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no exact single-episode match for the representative episode'], identity_match: 'uncertain' as const, rejected: [] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -507,9 +511,9 @@ describe('runPipeline', () => {
     const covered: string[] = []
     const llm = { call: vi.fn(async () => ({
       parsed: { assignments: [
-        { episode_code: 'S02E01', sub_id: 801, confidence: 0.95 },
-        { episode_code: 'S02E02', sub_id: 802, confidence: 0.95 },
-        { episode_code: 'S02E03', sub_id: 803, confidence: 0.95 },
+        { episode_code: 'S02E01', candidate_id: "assrt:801", confidence: 0.95 },
+        { episode_code: 'S02E02', candidate_id: "assrt:802", confidence: 0.95 },
+        { episode_code: 'S02E03', candidate_id: "assrt:803", confidence: 0.95 },
       ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
     })) }
     const detail = vi.fn(async (id: number) => {
@@ -552,7 +556,7 @@ describe('runPipeline', () => {
     ]
     const search = vi.fn(async () => AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: looseCandidates } }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -595,8 +599,8 @@ describe('runPipeline', () => {
     const aliasResp = AssrtSearchResponseSchema.parse({ status: 0, sub: { subs: aliasCandidates } })
     const search = vi.fn().mockResolvedValueOnce(firstResp).mockResolvedValueOnce(firstResp).mockResolvedValueOnce(aliasResp)
     const rank = vi.fn()
-      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, assrt_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
-      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, assrt_id: 902, file_index: 0, confidence: 0.9, reasons: ['alias match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, candidate_id: "assrt:902", file_index: 0, confidence: 0.9, reasons: ['alias match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
     const seasonEps = [
       { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
       { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
@@ -606,8 +610,8 @@ describe('runPipeline', () => {
       if (opts.name === 'extract_chinese_alias') return { parsed: { alias: '流浪剧', confidence: 0.95 }, rawText: '', retries: 0, durationMs: 1, prompt: '' }
       // map_loose_episodes：E01←首轮 700，E02←fresh 902。仅当池为并集时首轮 700 才可覆盖。
       return { parsed: { assignments: [
-        { episode_code: 'S02E01', sub_id: 700, confidence: 0.95 },
-        { episode_code: 'S02E02', sub_id: 902, confidence: 0.95 },
+        { episode_code: 'S02E01', candidate_id: "assrt:700", confidence: 0.95 },
+        { episode_code: 'S02E02', candidate_id: "assrt:902", confidence: 0.95 },
       ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: '' }
     })
     const allSubs = [firstResp.sub.subs[0], ...aliasCandidates]
@@ -634,11 +638,11 @@ describe('runPipeline', () => {
     expect(result.decision).toBe('download')
     // 二轮 rank 输入仅 fresh（902），不含被拒的首轮 700
     expect(rank).toHaveBeenCalledTimes(2)
-    expect((rank.mock.calls[1][2] as { id: number }[]).map(c => c.id)).toEqual([902])
+    expect((rank.mock.calls[1][2] as { providerId: string }[]).map(c => c.providerId)).toEqual(['902'])
     // 横扫池含首轮(700)+fresh(902)并集：map_loose_episodes 候选 prompt 两者都在
     const mapCall = llmCall.mock.calls.find(c => (c[0] as { name: string }).name === 'map_loose_episodes')!
-    expect((mapCall[0] as unknown as { prompt: string }).prompt).toContain('"sub_id":700')
-    expect((mapCall[0] as unknown as { prompt: string }).prompt).toContain('"sub_id":902')
+    expect((mapCall[0] as unknown as { prompt: string }).prompt).toContain('"candidate_id":"assrt:700"')
+    expect((mapCall[0] as unknown as { prompt: string }).prompt).toContain('"candidate_id":"assrt:902"')
     // 两集皆覆盖（首轮 E01 只能来自并集池里的 700）证明并入而非替换
     expect(covered.sort()).toEqual(['S02E01', 'S02E02'])
   })
@@ -652,7 +656,7 @@ describe('runPipeline', () => {
     }))
     const enumerate = vi.fn(async () => [])
     const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1, provider_ids: { imdb: 'tt999' } } }
-    cache.put(['id:imdb:tt999:S2:E1'], { kind: 'positive', assrt_id: 673114, file_index: 0, confidence: 0.95 })
+    cache.put(['id:imdb:tt999:S2:E1'], { kind: 'positive', provider: 'assrt', providerId: '673114', fileIndex: 0, confidence: 0.95 })
     const deps = makeDeps({ cache, identify, seasonPack: { enumerate, map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'] })
     const result = await runPipeline(deps, epCtx, outDir)
     expect(enumerate).not.toHaveBeenCalled()   // 缓存命中路径跳过季块（!cached 守卫）
@@ -791,7 +795,7 @@ describe('adoptLocal step', () => {
     })
     const noSafeMatchRank = {
       parsed: {
-        decision: 'no_safe_match' as const, assrt_id: null, file_index: null,
+        decision: 'no_safe_match' as const, candidate_id: null, file_index: null,
         confidence: 0.3, reasons: ['no match among candidates'], identity_match: 'uncertain' as const, rejected: [],
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }
@@ -813,7 +817,7 @@ describe('adoptLocal step', () => {
         .mockResolvedValueOnce(noSafeMatchRank) // first pass rejects
         .mockResolvedValueOnce({               // second pass on fresh candidates only
           parsed: {
-            decision: 'download' as const, assrt_id: 3, file_index: 0,
+            decision: 'download' as const, candidate_id: "assrt:3", file_index: 0,
             confidence: 0.92, reasons: ['season pack under Chinese alias'], identity_match: 'uncertain' as const, rejected: [],
           }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
         })
@@ -831,10 +835,10 @@ describe('adoptLocal step', () => {
       expect(search).toHaveBeenCalledTimes(3)
       expect(search).toHaveBeenNthCalledWith(3, '爱，死亡与机器人')
       expect(mockLlm.call).toHaveBeenCalledWith(expect.objectContaining({ name: 'extract_chinese_alias' }))
-      // second rank pass sees ONLY fresh candidates (id 3), not the already-rejected first-round set
+      // second rank pass sees ONLY fresh candidates (providerId 3), not the already-rejected first-round set
       expect(rank).toHaveBeenCalledTimes(2)
-      const secondPassCands = rank.mock.calls[1][2] as { id: number }[]
-      expect(secondPassCands.map(c => c.id)).toEqual([3])
+      const secondPassCands = rank.mock.calls[1][2] as { providerId: string }[]
+      expect(secondPassCands.map(c => c.providerId)).toEqual(['3'])
       // journal records the harvest steps
       const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
       const harvestStep = journal.steps.find((s: { name: string }) => s.name === 'aliasHarvest')
