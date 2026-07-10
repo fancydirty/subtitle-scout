@@ -41,6 +41,38 @@ describe('OpenSubtitlesClient.search', () => {
     expect(urls[0]).toContain('imdb_id=133093')
     expect(urls[0]).not.toContain('parent_imdb_id')
   })
+  it('defaults languages to zh-cn,zh-tw when empty array given', async () => {
+    const urls: string[] = []
+    const client = makeClient(((url: string) => { urls.push(String(url)); return okJson(fixture) }) as never)
+    await client.search({ query: 'Peacemaker', languages: [] })
+    expect(urls[0]).toContain('languages=zh-cn%2Czh-tw')
+  })
+})
+
+describe('OpenSubtitlesClient network retry', () => {
+  it('retries once on network error and succeeds on second attempt', async () => {
+    let n = 0
+    const client = makeClient(((_url: string) => {
+      n++
+      if (n === 1) return Promise.reject(new Error('ECONNRESET'))
+      return okJson(fixture)
+    }) as never, { networkRetryDelayMs: 0 })
+    const resp = await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(resp.data.length).toBe(2)
+    expect(n).toBe(2)
+  })
+  it('throws after two network failures (single retry only)', async () => {
+    let n = 0
+    const client = makeClient(((_url: string) => { n++; return Promise.reject(new Error('ECONNRESET')) }) as never, { networkRetryDelayMs: 0 })
+    await expect(client.search({ query: 'x', languages: ['zh-cn'] })).rejects.toThrow(/ECONNRESET/)
+    expect(n).toBe(2)
+  })
+  it('does not retry HTTP status errors (fail fast, assrt parity)', async () => {
+    let n = 0
+    const client = makeClient((() => { n++; return Promise.resolve(new Response('nope', { status: 502 })) }) as never, { networkRetryDelayMs: 0 })
+    await expect(client.resolveDownload(1)).rejects.toThrow(/502/)
+    expect(n).toBe(1)
+  })
 })
 
 describe('OpenSubtitlesClient.resolveDownload', () => {
@@ -57,7 +89,7 @@ describe('OpenSubtitlesClient.resolveDownload', () => {
     expect(r.link).toContain('/download/ABC')
     expect(r.remaining).toBe(99)
   })
-  it('logs in once and attaches Bearer when credentials given', async () => {
+  it('logs in once for concurrent calls and attaches Bearer when credentials given', async () => {
     const calls: string[] = []
     const client = makeClient(((url: string, init: RequestInit) => {
       calls.push(String(url))
@@ -65,13 +97,47 @@ describe('OpenSubtitlesClient.resolveDownload', () => {
       expect((init.headers as Record<string, string>).Authorization).toBe('Bearer JWT1')
       return okJson({ link: 'L', file_name: 'f.srt', remaining: 19, reset_time_utc: '' })
     }) as never, { username: 'u', password: 'p' })
-    await client.resolveDownload(1)
-    await client.resolveDownload(2)
+    await Promise.all([client.resolveDownload(1), client.resolveDownload(2)])
     expect(calls.filter(u => u.endsWith('/login')).length).toBe(1)
   })
   it('throws on non-2xx with endpoint in message', async () => {
     const client = makeClient((() => Promise.resolve(new Response('nope', { status: 502 }))) as never)
     await expect(client.resolveDownload(1)).rejects.toThrow(/download.*502|502.*download/)
+  })
+  it('re-logins and retries the request once on 401 (JWT expiry self-heal)', async () => {
+    const calls: string[] = []
+    let logins = 0
+    let downloads = 0
+    const client = makeClient(((url: string, init: RequestInit) => {
+      calls.push(String(url))
+      if (String(url).endsWith('/login')) {
+        logins++
+        return okJson({ token: `JWT${logins}`, base_url: 'api.opensubtitles.com', user: { allowed_downloads: 20, vip: false } })
+      }
+      downloads++
+      if (downloads === 1) return Promise.resolve(new Response('token expired', { status: 401 }))
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer JWT2')
+      return okJson({ link: 'L', file_name: 'f.srt', remaining: 19, reset_time_utc: '' })
+    }) as never, { username: 'u', password: 'p', networkRetryDelayMs: 0 })
+    const r = await client.resolveDownload(1)
+    expect(r.link).toBe('L')
+    expect(calls.filter(u => u.endsWith('/login')).length).toBe(2)
+    expect(downloads).toBe(2)
+  })
+  it('throws after second consecutive 401 (no infinite re-login loop)', async () => {
+    let logins = 0
+    let downloads = 0
+    const client = makeClient(((url: string) => {
+      if (String(url).endsWith('/login')) {
+        logins++
+        return okJson({ token: `JWT${logins}`, base_url: 'api.opensubtitles.com', user: { allowed_downloads: 20, vip: false } })
+      }
+      downloads++
+      return Promise.resolve(new Response('still expired', { status: 401 }))
+    }) as never, { username: 'u', password: 'p', networkRetryDelayMs: 0 })
+    await expect(client.resolveDownload(1)).rejects.toThrow(/401/)
+    expect(downloads).toBe(2)
+    expect(logins).toBe(2)
   })
 })
 
