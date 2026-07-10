@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import {
   AssrtSearchResponseSchema, AssrtDetailResponseSchema, AssrtQuotaResponseSchema,
+  type AssrtSub, type SubtitleCandidate,
 } from '../../core/schemas.js'
 import type { z } from 'zod'
 
@@ -90,5 +91,20 @@ export class AssrtClient {
   detail(id: number) {
     // detail 含时效下载 URL，绝不磁盘缓存（live e2e 实测：缓存的 URL 过期后下载 HTTP 492）
     return this.call('sub/detail', { id: String(id) }, AssrtDetailResponseSchema, false)
+  }
+}
+
+export function toCandidate(sub: AssrtSub): SubtitleCandidate {
+  const native = Array.isArray(sub.native_name) ? sub.native_name.join(' / ') : sub.native_name
+  return {
+    provider: 'assrt',
+    providerId: String(sub.id),
+    videoName: sub.videoname ?? sub.filename ?? null,
+    nativeName: native ?? null,
+    language: sub.lang?.desc ?? null,
+    subtype: sub.subtype ?? null,
+    releaseSite: sub.release_site ?? null,
+    uploadDate: null,
+    fileList: sub.filelist.map((f, i) => ({ index: i, name: f.f })),
   }
 }

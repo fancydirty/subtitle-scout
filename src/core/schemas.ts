@@ -143,6 +143,43 @@ export const AssrtQuotaResponseSchema = z.object({
   user: z.object({ quota: z.number() }).optional(),
 })
 
+// ---------- Provider-neutral candidate (multi-source) ----------
+export const PROVIDERS = ['assrt', 'opensubtitles'] as const
+export type ProviderName = (typeof PROVIDERS)[number]
+
+export const SubtitleFileSchema = z.object({
+  index: z.number().int(),
+  name: z.string(),
+})
+export type SubtitleFile = z.infer<typeof SubtitleFileSchema>
+
+export const SubtitleCandidateSchema = z.object({
+  provider: z.enum(PROVIDERS),
+  providerId: z.string(),
+  videoName: z.string().nullish(),
+  nativeName: z.string().nullish(),
+  /** provider 原始语言描述（assrt: lang.desc；opensubtitles: 'zh-CN' 等），仅供 LLM 参考 */
+  language: z.string().nullish(),
+  subtype: z.string().nullish(),
+  releaseSite: z.string().nullish(),
+  uploadDate: z.string().nullish(),
+  fileList: z.array(SubtitleFileSchema).default([]),
+})
+export type SubtitleCandidate = z.infer<typeof SubtitleCandidateSchema>
+
+export interface CandidateRef { provider: ProviderName; providerId: string; fileIndex: number | null }
+
+export function candidateKey(c: { provider: string; providerId: string }): string {
+  return `${c.provider}:${c.providerId}`
+}
+export function parseCandidateKey(key: string): { provider: ProviderName; providerId: string } | null {
+  const i = key.indexOf(':')
+  if (i <= 0) return null
+  const provider = key.slice(0, i)
+  if (!(PROVIDERS as readonly string[]).includes(provider)) return null
+  return { provider: provider as ProviderName, providerId: key.slice(i + 1) }
+}
+
 // ---------- 最终 decision ----------
 export const FinalDecisionSchema = z.object({
   request_id: z.string(),
