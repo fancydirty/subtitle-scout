@@ -109,3 +109,32 @@ describe('AbortSignal timeout coverage', () => {
     expect(init.signal).toBeInstanceOf(AbortSignal)
   })
 })
+
+describe('AssrtClient gems endpoints', () => {
+  it('similar() calls /sub/similar with id and parses like search', async () => {
+    const mockSimilarResponse = JSON.stringify({
+      status: 0,
+      sub: { subs: [{ id: 99, filelist: [] }] }
+    })
+    const { client, fetchImpl } = makeClient([mockSimilarResponse])
+    const r = await client.similar(673114)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const url = String((fetchImpl.mock.calls as any)[0][0])
+    expect(url).toContain('/sub/similar')
+    expect(url).toContain('id=673114')
+    expect(r.sub.subs[0].id).toBe(99)
+  })
+
+  it('searchByFilename() passes is_file=1 and the raw filename', async () => {
+    const { client, fetchImpl } = makeClient([searchFixture])
+    await client.searchByFilename('Peacemaker.S01E08.1080p.WEB.h264.mkv')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const url = String((fetchImpl.mock.calls as any)[0][0])
+    expect(url).toContain('is_file=1')
+    expect(url).toContain(encodeURIComponent('Peacemaker.S01E08.1080p.WEB.h264.mkv'))
+    expect(url).toContain('filelist=1')
+    expect(url).toContain('no_muxer=1')
+  })
+})

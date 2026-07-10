@@ -88,6 +88,14 @@ export class AssrtClient {
   search(q: string) {
     return this.call('sub/search', { q, filelist: '1', no_muxer: '1' }, AssrtSearchResponseSchema)
   }
+  /** ASSRT 白捡增益①：传命中 id 返最多 5 条相似字幕（免费召回扩展）。 */
+  similar(id: number) {
+    return this.call('sub/similar', { id: String(id) }, AssrtSearchResponseSchema)
+  }
+  /** ASSRT 白捡增益②：整文件名精确模式兜底查询。 */
+  searchByFilename(filename: string) {
+    return this.call('sub/search', { q: filename, is_file: '1', filelist: '1', no_muxer: '1' }, AssrtSearchResponseSchema)
+  }
   detail(id: number) {
     // detail 含时效下载 URL，绝不磁盘缓存（live e2e 实测：缓存的 URL 过期后下载 HTTP 492）
     return this.call('sub/detail', { id: String(id) }, AssrtDetailResponseSchema, false)
