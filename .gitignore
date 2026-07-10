@@ -16,3 +16,7 @@ docs/cloudflare-worker.md
 docs/product-shape.md
 jellyfin-config/
 cache/
+
+# 本地 e2e 测试栈（scripts/gen-mock-library.sh + docker-compose.local.yml）
+fixtures/media/
+cache-local/
