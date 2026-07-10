@@ -180,6 +180,32 @@ export class LibraryRepo {
     return row ?? null
   }
 
+  /** TMDB original_language 缓存读取；NULL=未解析过。 */
+  getSeriesOriginLang(seriesId: string): string | null {
+    const row = this.db.prepare('SELECT origin_lang FROM series WHERE id = ?').get(seriesId) as
+      | { origin_lang: string | null }
+      | undefined
+    return row?.origin_lang ?? null
+  }
+
+  /** TMDB original_language 缓存读取；NULL=未解析过。 */
+  getMovieOriginLang(movieId: string): string | null {
+    const row = this.db.prepare('SELECT origin_lang FROM movies WHERE id = ?').get(movieId) as
+      | { origin_lang: string | null }
+      | undefined
+    return row?.origin_lang ?? null
+  }
+
+  /** 解析到 TMDB original_language 后写回，之后不再回查。 */
+  setSeriesOriginLang(seriesId: string, lang: string): void {
+    this.db.prepare('UPDATE series SET origin_lang = ? WHERE id = ?').run(lang, seriesId)
+  }
+
+  /** 解析到 TMDB original_language 后写回，之后不再回查。 */
+  setMovieOriginLang(movieId: string, lang: string): void {
+    this.db.prepare('UPDATE movies SET origin_lang = ? WHERE id = ?').run(lang, movieId)
+  }
+
   missingBySeason(now?: number): MissingBySeason[] {
     const timestamp = now ?? Date.now()
     return this.db

@@ -153,4 +153,27 @@ describe('媒体镜像', () => {
     expect(lib.getMovie('m1')!.chinese_title).toBe('乙片')
     expect(lib.getMovie('m1')!.sub_status).toBe('covered')
   })
+
+  // origin_lang 缓存（task 2 依赖）
+  it('origin_lang: set + get for series and movie, null by default', () => {
+    lib.upsertSeries({ id: 's1', name: 'S', posterTag: null })
+    expect(lib.getSeriesOriginLang('s1')).toBeNull()
+    lib.setSeriesOriginLang('s1', 'zh')
+    expect(lib.getSeriesOriginLang('s1')).toBe('zh')
+
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing', posterTag: null, year: null, providerIds: null })
+    expect(lib.getMovieOriginLang('m1')).toBeNull()
+    lib.setMovieOriginLang('m1', 'ja')
+    expect(lib.getMovieOriginLang('m1')).toBe('ja')
+  })
+  it('getSeriesOriginLang / getMovieOriginLang return null for unknown ids', () => {
+    expect(lib.getSeriesOriginLang('nope')).toBeNull()
+    expect(lib.getMovieOriginLang('nope')).toBeNull()
+  })
+  it('upsertMovie does not clobber an existing origin_lang', () => {
+    lib.upsertMovie({ id: 'm2', name: 'M', path: '/m.mkv', subStatus: 'missing', posterTag: null, year: null, providerIds: null })
+    lib.setMovieOriginLang('m2', 'zh')
+    lib.upsertMovie({ id: 'm2', name: 'M2', path: '/m2.mkv', subStatus: 'covered', posterTag: null, year: 2020, providerIds: null })
+    expect(lib.getMovieOriginLang('m2')).toBe('zh')
+  })
 })

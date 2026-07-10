@@ -90,6 +90,12 @@ INSERT INTO blacklist_v2 (provider_ref, filename, reason, created_at)
 DROP TABLE blacklist;
 ALTER TABLE blacklist_v2 RENAME TO blacklist;
   `.trim(),
+  // v3: origin_lang——缓存 TMDB original_language，per 剧/片解析一次，避免重复回查
+  // origin_lang: NULL=未解析；ISO code(zh/ja/en…)=已解析、不再回查 TMDB
+  `
+ALTER TABLE movies ADD COLUMN origin_lang TEXT;
+ALTER TABLE series ADD COLUMN origin_lang TEXT;
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
