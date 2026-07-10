@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
-import { classifyItem, scanLibrary } from './scanner.js'
+import { classifyItem, scanLibrary, type OriginResolver } from './scanner.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 
@@ -122,6 +122,46 @@ describe('classifyItem', () => {
   it('skipChineseOrigin=false allows Chinese origin through', () => {
     const item = movieItem({ ProductionLocations: ['China'] })
     const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: false })
+    expect(status).toBe('missing')
+  })
+})
+
+describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
+  const mappings = [{ from: '/media', to: '/mnt/media' }]
+
+  it('zh origin → ignored before any other rule', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: 'zh' })
+    expect(status).toBe('ignored')
+  })
+
+  it('ja origin → NOT ignored (falls through to missing)', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: 'ja' })
+    expect(status).toBe('missing')
+  })
+
+  it('fallback: null origin + Chinese ProductionLocations (movie) → ignored', () => {
+    const item = movieItem({ ProductionLocations: ['China'] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    expect(status).toBe('ignored')
+  })
+
+  it('fallback: null origin + Han-only series title → ignored', () => {
+    const item = epItem('e1', 1, 1, { SeriesName: '三体' })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    expect(status).toBe('ignored')
+  })
+
+  it('fallback: null origin + kana series title → NOT ignored', () => {
+    const item = epItem('e1', 1, 1, { SeriesName: '進撃の巨人' })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    expect(status).toBe('missing')
+  })
+
+  it('skipChineseOrigin=false disables ALL origin skipping (zh still processed)', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: false, originLang: 'zh' })
     expect(status).toBe('missing')
   })
 })
@@ -293,5 +333,44 @@ describe('scanLibrary', () => {
     // series 行必须存在（name 用 SeriesId 兜底），episode 正常入库
     expect(lib.db.prepare('select id, name from series where id=?').get('s1')).toMatchObject({ id: 's1', name: 's1' })
     expect(lib.getEpisode('e1')).not.toBeNull()
+  })
+
+  it('caches series origin once and reads it for episodes', async () => {
+    let calls = 0
+    const resolver: OriginResolver = { originFor: async () => { calls++; return 'zh' } }
+    const pages = [
+      [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' }), epItem('e2', 1, 2, { SeriesId: 's9', SeriesName: 'Series 9' })],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(lib.getSeriesOriginLang('s9')).toBe('zh')
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+    expect(calls).toBe(1) // resolved once, second episode reads cache
+  })
+
+  it('movie origin resolved + cached + classified ignored', async () => {
+    const resolver: OriginResolver = { originFor: async () => 'zh' }
+    const pages = [[movieItem({ Id: 'm1' })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(lib.getMovieOriginLang('m1')).toBe('zh')
+    expect(lib.getMovie('m1')!.sub_status).toBe('ignored')
   })
 })

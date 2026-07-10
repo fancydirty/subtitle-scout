@@ -10,7 +10,7 @@ import { runPipeline, type PipelineDeps, type PipelineResult } from '../core/pip
 import type { Journal } from '../core/journal.js'
 import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
-import { TmdbClient, tmdbTitles } from '../adapters/providers/tmdb.js'
+import { TmdbClient, tmdbTitles, resolveTmdbRef } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { makeCliProviderPort } from '../core/providerPort.js'
 import { createLlmRuntime } from '../agent/runtime.js'
@@ -43,7 +43,7 @@ import { openDb } from '../v2/db.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
-import { scanLibrary } from '../v2/scanner.js'
+import { scanLibrary, type OriginResolver } from '../v2/scanner.js'
 import { aggregate } from '../v2/aggregator.js'
 import { executeJob, makeRunEpisode } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
@@ -277,6 +277,17 @@ async function cmdWatch() {
   // Construct DaemonDeps
   const skipChineseOrigin = (process.env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false'
 
+  // TMDB origin_lang 解析器：有 tmdb（TMDB_API_KEY 已配置）才接线，否则 undefined——
+  // scanLibrary 退化到 classifyItem 的 ProductionLocations/标题启发式兜底梯队。
+  const originResolver: OriginResolver | undefined = tmdb
+    ? {
+        originFor: async item => {
+          const ref = await resolveTmdbRef(item, id => jf.getItem(id))
+          return ref ? tmdb.getOriginLanguage(ref.mediaType, ref.tmdbId) : null
+        },
+      }
+    : undefined
+
   const daemonDeps: DaemonDeps = {
     lib,
     jobs,
@@ -287,6 +298,7 @@ async function cmdWatch() {
         fileExists: (p) => existsSync(p),
         mappings,
         skipChineseOrigin,
+        resolver: originResolver,
       })
     },
     aggregate: (now) => aggregate(lib, jobs, now),
