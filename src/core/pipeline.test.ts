@@ -389,6 +389,7 @@ describe('runPipeline', () => {
         parsed: { assignments: [
           { episode_code: 'S02E01', candidate_id: "assrt:801", confidence: 0.95 },
           { episode_code: 'S02E02', candidate_id: "assrt:802", confidence: 0.70 }, // below auto_download_min_confidence
+          { episode_code: 'S02E02', candidate_id: null, confidence: 0.99 },        // fail-soft null row → filter 剔除，不炸 sweep
           { episode_code: 'S02E03', candidate_id: "assrt:803", confidence: 0.90 },
         ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
       })),

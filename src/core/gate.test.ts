@@ -47,6 +47,31 @@ describe('runGate', () => {
     expect(r.decision).toBe('no_safe_match')
     expect(r.failures).toEqual([])
   })
+  it('self-heals a bare providerId (model dropped the provider prefix)', () => {
+    const r = runGate({ ...base, candidate_id: '673114' }, candidates, identity, prefs)
+    expect(r.ok).toBe(true)
+    expect(r.candidate?.providerId).toBe('673114')
+  })
+  it('bare providerId not present in the set still fails', () => {
+    const r = runGate({ ...base, candidate_id: '999999' }, candidates, identity, prefs)
+    expect(r.ok).toBe(false)
+    expect(r.decision).toBe('no_safe_match')
+    expect(r.failures[0]).toMatch(/candidate_id/)
+  })
+  it('empty fileList: tolerates file_index null or 0, rejects >0', () => {
+    const noFiles: SubtitleCandidate = {
+      provider: 'opensubtitles', providerId: '7174766', videoName: 'The.Matrix.1999',
+      nativeName: null, language: 'zh-CN', subtype: null, releaseSite: null, uploadDate: null,
+      fileList: [],
+    }
+    const pool = [...candidates, noFiles]
+    const pick = { ...base, candidate_id: 'opensubtitles:7174766' }
+    expect(runGate({ ...pick, file_index: null }, pool, identity, prefs).ok).toBe(true)
+    expect(runGate({ ...pick, file_index: 0 }, pool, identity, prefs).ok).toBe(true)
+    const r = runGate({ ...pick, file_index: 2 }, pool, identity, prefs)
+    expect(r.ok).toBe(false)
+    expect(r.failures[0]).toMatch(/file_index 2 given but candidate has no filelist/)
+  })
 })
 
 describe('runGate — identity verdict', () => {

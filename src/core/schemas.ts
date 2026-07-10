@@ -90,10 +90,20 @@ export const IdentityMatchSchema: z.ZodType<IdentityMatch> = z.preprocess(
   z.enum(IDENTITY_MATCHES).default('uncertain'),
 )
 
+// LLM 边界容错：模型（MiMo 教训同款）可能把 candidate_id 输出成 JSON number
+// （尤其 assrt 裸数字 id 的历史惯性）。数字确定性转字符串；空值归一为 null。
+function looseCandidateId(): z.ZodType<string | null | undefined> {
+  return z.preprocess(v => {
+    if (typeof v === 'number') return String(v)
+    if (typeof v === 'string' && NULLISH_STRINGS.has(v.trim().toLowerCase())) return null
+    return v
+  }, z.string().nullish())
+}
+
 export const RankDecisionSchema = z.object({
   decision: z.enum(['download', 'ask_user', 'no_safe_match']),
   /** "<provider>:<providerId>"，与 prompt 里 candidates[].id 完全一致 */
-  candidate_id: z.string().nullish(),
+  candidate_id: looseCandidateId(),
   file_index: looseNumeric(z.number().int()),
   // 身份判决：confirmed=同作品/季/集，mismatch=错作品/季/集，uncertain=信息不足
   identity_match: IdentityMatchSchema,
@@ -102,7 +112,10 @@ export const RankDecisionSchema = z.object({
     z.number().min(0).max(1),
   ),
   reasons: z.array(z.string()),
-  rejected: z.array(z.object({ candidate_id: z.string(), reason: z.string() })),
+  rejected: z.array(z.object({
+    candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()),
+    reason: z.string(),
+  })),
 }).refine(v => v.decision !== 'download' || (v.candidate_id != null && v.candidate_id !== ''), {
   message: 'candidate_id required when decision=download',
 })
@@ -240,7 +253,8 @@ export type SeasonMap = z.infer<typeof SeasonMapSchema>
 export const LooseEpisodesMapSchema = z.object({
   assignments: z.array(z.object({
     episode_code: z.string(),
-    candidate_id: z.string(),
+    // fail-soft：单行 candidate_id 缺失/为数字不炸整季 sweep——nullish 放行，下游 filter 剔除
+    candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()).nullish(),
     confidence: z.preprocess(
       v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
       z.number().min(0).max(1),

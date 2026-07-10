@@ -274,6 +274,9 @@ export async function runPipeline(
       }
       return finish(gate.decision, { reasons: gate.failures.length ? gate.failures : rank.reasons, confidence: rank.confidence })
     }
+    // gate 可能通过裸 providerId 自愈匹配（模型丢前缀）——归一化 candidate_id 为完整 key，
+    // 否则下游 parseCandidateKey 对裸 id 返 null、下载段炸 error
+    if (gate.candidate) rank = { ...rank, candidate_id: candidateKey(gate.candidate) }
 
     // 5.season 季包升格：仅 fresh-rank（非缓存命中）+ episode + 注入 seasonPack + 候选覆盖多集 + 该季≥2集缺中字
     // !cached 防止缓存命中路径误触发（否则每次命中都白调 enumerate、重复 detail、把单集缓存决策变异成季包）
@@ -400,7 +403,9 @@ async function runSeasonSweep(
   const mapResult = await mapLooseEpisodes(deps.llm!, ctx, identity, candidates, seasonEpisodes)
   journal.llmCall({ point: 'mapLooseEpisodes', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
   const validAssignments = (mapResult.parsed.assignments ?? [])
-    .filter(a => a.candidate_id && a.episode_code && a.confidence >= ctx.preferences.auto_download_min_confidence)
+    .filter((a): a is typeof a & { candidate_id: string } =>
+      a.candidate_id != null && a.candidate_id !== '' && !!a.episode_code
+      && a.confidence >= ctx.preferences.auto_download_min_confidence)
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
   if (validAssignments.length === 0) return []
 

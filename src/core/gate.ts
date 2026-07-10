@@ -20,12 +20,23 @@ export function runGate(
     return { ok: false, decision: rank.decision, failures: [] }
   }
   const failures: string[] = []
-  const candidate = candidates.find(c => candidateKey(c) === rank.candidate_id)
+  let candidate = candidates.find(c => candidateKey(c) === rank.candidate_id)
+  // LLM 自愈：模型偶尔丢 "provider:" 前缀只回裸 providerId——不含冒号时按 providerId 兜底匹配
+  if (!candidate && rank.candidate_id != null && !rank.candidate_id.includes(':')) {
+    candidate = candidates.find(c => c.providerId === rank.candidate_id)
+  }
   if (!candidate) failures.push(`candidate_id ${rank.candidate_id} is not in this search's candidate set`)
 
   if (candidate && candidate.fileList.length > 0) {
     if (rank.file_index == null || rank.file_index < 0 || rank.file_index >= candidate.fileList.length) {
       failures.push(`file_index ${rank.file_index} out of range for filelist of ${candidate.fileList.length}`)
+    }
+  }
+  // 空 filelist（如 opensubtitles 单文件候选）：file_index 必须 null 或 0（0 容忍模型习惯性填 0；
+  // 解析侧对空表忽略 fileIndex），>0 即指向不存在的文件——报 failure。
+  if (candidate && candidate.fileList.length === 0) {
+    if (rank.file_index != null && rank.file_index !== 0) {
+      failures.push(`file_index ${rank.file_index} given but candidate has no filelist`)
     }
   }
 
