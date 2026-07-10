@@ -62,6 +62,22 @@ describe('writeSubtitle', () => {
     expect(readFileSync(join(dir, 'Movie.zh-Hans.srt'), 'utf8')).toBe('existing')
   })
 
+  it('passes through an OpenSubtitles-style bare .srt (no zip) with correct naming, uppercase ext tolerated', async () => {
+    // OpenSubtitles 下载是裸 UTF-8 .srt 而非 zip——必须原样直通，不做 zip 解析
+    const dir = outDir()
+    const body = '1\n00:00:01,000 --> 00:00:02,000\n和平使者第一集\n'
+    const r = await writeSubtitle({
+      artifact: Buffer.from(body),
+      artifactFilename: 'Peacemaker.S01E01.chs.SRT',
+      videoFilename: 'Peacemaker.S01E01.2160p.WEB.mkv',
+      langTag: 'zh-Hans',
+      outDir: dir,
+    })
+    expect(r.path).toBe(join(dir, 'Peacemaker.S01E01.2160p.WEB.zh-Hans.srt'))
+    expect(readFileSync(r.path, 'utf8')).toBe(body)
+    expect(r.alreadyExists).toBe(false)
+  })
+
   it('throws UnsupportedArchiveError for rar', async () => {
     await expect(writeSubtitle({
       artifact: Buffer.from('Rar!\x1a\x07'), artifactFilename: 'pack.rar',

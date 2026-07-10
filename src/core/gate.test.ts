@@ -72,6 +72,16 @@ describe('runGate', () => {
     expect(r.ok).toBe(false)
     expect(r.failures[0]).toMatch(/file_index 2 given but candidate has no filelist/)
   })
+  it('bare providerId collision across providers fails with ambiguity message', () => {
+    const pool: SubtitleCandidate[] = [
+      { provider: 'assrt', providerId: '123', videoName: 'ASSRT Video', nativeName: null, language: null, subtype: null, releaseSite: null, uploadDate: null, fileList: [] },
+      { provider: 'opensubtitles', providerId: '123', videoName: 'OpenSubtitles Video', nativeName: null, language: null, subtype: null, releaseSite: null, uploadDate: null, fileList: [] },
+    ]
+    const r = runGate({ ...base, candidate_id: '123' }, pool, identity, prefs)
+    expect(r.ok).toBe(false)
+    expect(r.decision).toBe('no_safe_match')
+    expect(r.failures.join(' ')).toMatch(/ambiguous|multiple|collision/i)
+  })
 })
 
 describe('runGate — identity verdict', () => {

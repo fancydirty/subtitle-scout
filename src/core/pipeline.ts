@@ -1,12 +1,9 @@
-import type { z } from 'zod'
 import { dirname } from 'node:path'
 import {
   type MediaContext, type MediaIdentity, type SearchPlan, type RankDecision,
-  AssrtSearchResponseSchema, AssrtDetailResponseSchema,
   type OrphanDecision, type SeasonMap, type SubtitleCandidate,
   candidateKey, parseCandidateKey,
 } from './schemas.js'
-import { toCandidate } from '../adapters/providers/assrt.js'
 import type { CallStructuredResult } from '../agent/llm.js'
 import type { LlmRuntime } from '../agent/runtime.js'
 import { Journal } from './journal.js'
@@ -21,20 +18,16 @@ import { runSeasonPackGate } from './seasonPackGate.js'
 import type { SeasonEpisode } from './episode.js'
 import { harvestAlias, hasCjk } from '../agent/harvestAlias.js'
 import { mapLooseEpisodes } from '../agent/mapLooseEpisodes.js'
-
-type SearchResponse = z.infer<typeof AssrtSearchResponseSchema>
-type DetailResponse = z.infer<typeof AssrtDetailResponseSchema>
+import type { ProviderPort } from './providerPort.js'
 
 export interface PipelineDeps {
   identify: (ctx: MediaContext) => Promise<CallStructuredResult<MediaIdentity>>
   plan: (ctx: MediaContext, id: MediaIdentity) => Promise<CallStructuredResult<SearchPlan>>
   rank: (ctx: MediaContext, id: MediaIdentity, cands: SubtitleCandidate[]) => Promise<CallStructuredResult<RankDecision>>
-  assrt: {
-    search: (q: string) => Promise<SearchResponse>
-    detail: (id: number) => Promise<DetailResponse>
-  }
+  providers: ProviderPort
   download: (url: string) => Promise<DownloadResult>
   cache: DecisionCache
+  /** 现仅约束季横扫的按集 resolve 预算；搜索阶段的多查询/去重/gems 预算已下放 subtitle-fetch CLI 内部 */
   maxApiCallsPerJob: number
   /** journal 创建后回调，供调用方把 provider 的 onApiCall 等接入审计 */
   journalReady?: (journal: Journal) => void
@@ -149,41 +142,39 @@ export async function runPipeline(
     // 3. search（缓存命中 positive 时跳过 plan/search/rank，直接用缓存的选择）
     let rank: RankDecision
     let candidates: SubtitleCandidate[]
-    let cachedDetailResp: DetailResponse | undefined
     if (cached?.kind === 'positive') {
       journal.step('cacheHitPositive', cached)
-      const detail = await deps.assrt.detail(Number(cached.providerId))
-      cachedDetailResp = detail
-      const subs = detail.sub.subs.map(toCandidate)
-      candidates = subs
+      // 缓存命中：直接走 resolve→download，无需重构 detail response
       const cachedKey = candidateKey({ provider: cached.provider, providerId: cached.providerId })
       rank = { decision: 'download', candidate_id: cachedKey, file_index: cached.fileIndex, identity_match: 'confirmed', confidence: cached.confidence, reasons: ['cache hit'], rejected: [] }
+      candidates = []  // gate 不需要候选池（缓存命中路径），下游直接 resolve
     } else {
       journal.step('planSearch')
       const planResult = await deps.plan(ctx, identity)
       journal.llmCall({ point: 'planSearch', prompt: planResult.prompt, rawText: planResult.rawText, parsed: planResult.parsed, retries: planResult.retries, durationMs: planResult.durationMs })
 
-      // 跑前 2 条查询，按 candidate key 并集去重（ASSRT 单条查询受上传时间偏置，并集提召回）
+      // 统一的多查询搜索：CLI 内部做 multi-query + dedupe + gems
       const queries = planResult.parsed.queries.slice(0, 2)
+      journal.step('providerSearch', { queries: queries.map(q => q.q) })
+      const searched = await deps.providers.search({
+        queries: queries.map(q => q.q),
+        imdb: ctx.media.provider_ids?.Imdb ?? ctx.media.provider_ids?.imdb,
+        year: identity.year ?? ctx.media.year ?? undefined,
+        season: identity.season ?? ctx.media.season ?? undefined,
+        episode: identity.episode ?? ctx.media.episode ?? undefined,
+        filename: ctx.media.filename,
+        deep: false,
+      })
       const byKey = new Map<string, SubtitleCandidate>()
-      let apiCalls = 0
-      for (const q of queries) {
-        if (apiCalls >= deps.maxApiCallsPerJob) break
-        journal.step('assrtSearch', { q: q.q })
-        const resp = await deps.assrt.search(q.q)
-        apiCalls++
-        for (const s of resp.sub.subs) {
-          const c = toCandidate(s)
-          const key = candidateKey(c)
-          if (!byKey.has(key)) byKey.set(key, c)
-        }
+      for (const c of searched) {
+        const key = candidateKey(c)
+        if (!byKey.has(key)) byKey.set(key, c)
       }
 
-      const raw = [...byKey.values()]
-      candidates = filterGraphicOnly(raw)
-      journal.step('candidateFilter', { raw: raw.length, kept: candidates.length })
+      candidates = filterGraphicOnly(searched)
+      journal.step('candidateFilter', { raw: searched.length, kept: candidates.length })
       if (candidates.length === 0) {
-        const reason = raw.length > 0
+        const reason = searched.length > 0
           ? '仅存图形字幕，本产品处理文本字幕'
           : 'no candidates from any search query'
         deps.cache.put(keys, { kind: 'negative', reason })
@@ -195,13 +186,12 @@ export async function runPipeline(
       journal.llmCall({ point: 'rankCandidates', prompt: rankResult.prompt, rawText: rankResult.rawText, parsed: rankResult.parsed, retries: rankResult.retries, durationMs: rankResult.durationMs })
       rank = rankResult.parsed
 
-      // 中文别名收割兜底：仅当首轮 rank 无安全匹配 + 上游/识别均无 CJK 标题 + 配额余量够时触发。
+      // 中文别名收割兜底：仅当首轮 rank 无安全匹配 + 上游/识别均无 CJK 标题时触发。
       // 收割别名 → 补一次搜索 → 仅对"新"候选单独走 candidateFilter+rank（首轮候选已被拒过，不混排）。
       // 增益路径不是关键路径——任何失败静默降级为维持首轮结论。
       const upstreamHasCjk = ctx.media.alternative_titles.some(hasCjk)
         || hasCjk(ctx.media.title) || hasCjk(identity.canonical_title)
-      if (rank.decision === 'no_safe_match' && deps.llm && !upstreamHasCjk
-        && apiCalls < deps.maxApiCallsPerJob) {
+      if (rank.decision === 'no_safe_match' && deps.llm && !upstreamHasCjk) {
         try {
           // 候选名：nativeName||videoName 前 40 字符 × 最多 15 条（CJK 预筛在 harvestAlias 内，零 LLM 成本）
           const candidateNames = candidates
@@ -216,9 +206,12 @@ export async function runPipeline(
             : null
           if (alias) {
             journal.step('aliasHarvest', { alias })
-            const resp = await deps.assrt.search(alias)
-            apiCalls++
-            const freshAssrt = resp.sub.subs.map(toCandidate).filter(c => !byKey.has(candidateKey(c)))
+            const freshSearched = await deps.providers.search({
+              queries: [alias],
+              deep: false,
+              filename: ctx.media.filename,
+            })
+            const freshAssrt = freshSearched.filter(c => !byKey.has(candidateKey(c)))
             for (const c of freshAssrt) byKey.set(candidateKey(c), c)
             const freshCandidates = filterGraphicOnly(freshAssrt)
             journal.step('aliasSearchMerged', { alias, added: freshAssrt.length, kept: freshCandidates.length })
@@ -264,19 +257,25 @@ export async function runPipeline(
       }
     }
 
-    // 4. gate
-    journal.step('gate')
-    const gate = runGate(rank, candidates, identity, ctx.preferences)
-    journal.step('gateResult', gate)
-    if (!gate.ok) {
-      if (gate.decision === 'no_safe_match' && !cached) {
-        deps.cache.put(keys, { kind: 'negative', reason: gate.failures.join('; ') || 'agent declined' })
+    // 4. gate（缓存命中路径跳过——缓存条目是历史 gate 已放行的结论，且此时无候选池可校验）
+    let gateCandidate: SubtitleCandidate | undefined
+    if (!(cached?.kind === 'positive')) {
+      journal.step('gate')
+      const gate = runGate(rank, candidates, identity, ctx.preferences)
+      journal.step('gateResult', gate)
+      if (!gate.ok) {
+        if (gate.decision === 'no_safe_match' && !cached) {
+          deps.cache.put(keys, { kind: 'negative', reason: gate.failures.join('; ') || 'agent declined' })
+        }
+        return finish(gate.decision, { reasons: gate.failures.length ? gate.failures : rank.reasons, confidence: rank.confidence })
       }
-      return finish(gate.decision, { reasons: gate.failures.length ? gate.failures : rank.reasons, confidence: rank.confidence })
+      // gate 可能通过裸 providerId 自愈匹配（模型丢前缀）——归一化 candidate_id 为完整 key，
+      // 否则下游 parseCandidateKey 对裸 id 返 null、下载段炸 error
+      if (gate.candidate) {
+        rank = { ...rank, candidate_id: candidateKey(gate.candidate) }
+        gateCandidate = gate.candidate
+      }
     }
-    // gate 可能通过裸 providerId 自愈匹配（模型丢前缀）——归一化 candidate_id 为完整 key，
-    // 否则下游 parseCandidateKey 对裸 id 返 null、下载段炸 error
-    if (gate.candidate) rank = { ...rank, candidate_id: candidateKey(gate.candidate) }
 
     // 5.season 季包升格：仅 fresh-rank（非缓存命中）+ episode + 注入 seasonPack + 候选覆盖多集 + 该季≥2集缺中字
     // !cached 防止缓存命中路径误触发（否则每次命中都白调 enumerate、重复 detail、把单集缓存决策变异成季包）
@@ -288,38 +287,41 @@ export async function runPipeline(
       const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
       if (pack && shouldGraduate(ctx, pack, seasonEpisodes)) {
         journal.step('seasonGraduate', { packId: pack.providerId, episodes: seasonEpisodes.length, needs: needsCount })
-        const detail = await deps.assrt.detail(Number(pack.providerId))
-        const packSub = detail.sub.subs.find(s => String(s.id) === pack.providerId) ?? detail.sub.subs[0]
-        if (packSub) {
-          const mapResult = await deps.seasonPack.map(ctx, identity, pack.fileList, seasonEpisodes)
-          journal.llmCall({ point: 'mapSeasonPack', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
-          const pairs = (mapResult.parsed.pairs ?? []).filter(p => p.filelist_index != null && p.confidence != null) as { filelist_index: number; episode_code: string; confidence: number; reason: string }[]
-          const gateRes = runSeasonPackGate({ map: { pairs }, filelist: packSub.filelist, seasonEpisodes, minConfidence: ctx.preferences.auto_download_min_confidence })
-          journal.step('seasonPackGate', { commit: gateRes.commit.length, dropped: gateRes.dropped.length })
-          if (gateRes.commit.length > 0) {
-            const coveredEpisodes: { episodeCode: string; subtitlePath: string }[] = []
-            let consecutiveFails = 0
-            for (const item of gateRes.commit) {
-              if (consecutiveFails >= 3) { journal.step('seasonCircuitBreak', { after: coveredEpisodes.length }); break }
-              try {
-                const dl = await deps.download(item.downloadUrl)
-                const written = await writeSubtitle({
-                  artifact: dl.bytes, artifactFilename: item.filename,
-                  videoFilename: item.videoFilename, langTag: ctx.preferences.language,
-                  outDir: dirname(item.videoPath),
-                })
-                coveredEpisodes.push({ episodeCode: item.episodeCode, subtitlePath: written.path })
-                const epMeta = seasonEpisodes.find(e => e.episodeCode === item.episodeCode)!
-                try { await deps.seasonPack.onCovered(epMeta, written.path) } catch { /* 观测/联动不影响主流程 */ }
-                consecutiveFails = 0
-              } catch (e) {
-                consecutiveFails++
-                journal.step('seasonEpisodeFailed', { episode: item.episodeCode, message: String(e) })
-              }
+        const mapResult = await deps.seasonPack.map(ctx, identity, pack.fileList, seasonEpisodes)
+        journal.llmCall({ point: 'mapSeasonPack', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
+        const pairs = (mapResult.parsed.pairs ?? []).filter(p => p.filelist_index != null && p.confidence != null) as { filelist_index: number; episode_code: string; confidence: number; reason: string }[]
+        // 为 gate 构造伪 filelist：不带 URL（resolve 按需延迟到下载前）
+        const gateFilelist = pack.fileList.map(f => ({ f: f.name, url: 'pending' }))
+        const gateRes = runSeasonPackGate({ map: { pairs }, filelist: gateFilelist, seasonEpisodes, minConfidence: ctx.preferences.auto_download_min_confidence })
+        journal.step('seasonPackGate', { commit: gateRes.commit.length, dropped: gateRes.dropped.length })
+        if (gateRes.commit.length > 0) {
+          const coveredEpisodes: { episodeCode: string; subtitlePath: string }[] = []
+          let consecutiveFails = 0
+          for (const item of gateRes.commit) {
+            if (consecutiveFails >= 3) { journal.step('seasonCircuitBreak', { after: coveredEpisodes.length }); break }
+            try {
+              const resolved = await deps.providers.resolveDownload({
+                provider: pack.provider,
+                providerId: pack.providerId,
+                fileIndex: item.filelistIndex,
+              })
+              const dl = await deps.download(resolved.url)
+              const written = await writeSubtitle({
+                artifact: dl.bytes, artifactFilename: resolved.filename ?? item.filename,
+                videoFilename: item.videoFilename, langTag: ctx.preferences.language,
+                outDir: dirname(item.videoPath),
+              })
+              coveredEpisodes.push({ episodeCode: item.episodeCode, subtitlePath: written.path })
+              const epMeta = seasonEpisodes.find(e => e.episodeCode === item.episodeCode)!
+              try { await deps.seasonPack.onCovered(epMeta, written.path) } catch { /* 观测/联动不影响主流程 */ }
+              consecutiveFails = 0
+            } catch (e) {
+              consecutiveFails++
+              journal.step('seasonEpisodeFailed', { episode: item.episodeCode, message: String(e) })
             }
-            if (coveredEpisodes.length > 0) {
-              return finish('download', { reasons: [`season pack: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath })
-            }
+          }
+          if (coveredEpisodes.length > 0) {
+            return finish('download', { reasons: [`season pack: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath })
           }
         }
         // 季模式 0 覆盖 → 落回单集路径（继续往下，不 return）
@@ -334,31 +336,29 @@ export async function runPipeline(
       }
     }
 
-    // 6. resolve download URL（detail 的时效 URL）
+    // 6. resolve download URL
     journal.step('resolveDownloadUrl')
     const parsed = parseCandidateKey(rank.candidate_id!)
     if (!parsed) return finish('error', { reasons: [`invalid candidate_id: ${rank.candidate_id}`] })
 
-    // Reuse cached detail response if available, otherwise call detail
-    const detail = cachedDetailResp ?? await deps.assrt.detail(Number(parsed.providerId))
-    const sub = detail.sub.subs.find(s => String(s.id) === parsed.providerId) ?? detail.sub.subs[0]
-    if (!sub) return finish('error', { reasons: ['detail response contained no subs'] })
-    const fileEntry = rank.file_index != null ? sub.filelist[rank.file_index] : undefined
-    const url = fileEntry?.url ?? sub.url
-    if (!url) return finish('error', { reasons: ['no download url in detail response'] })
-
-    const subLang = sub.lang?.desc ?? ctx.preferences.language
-    const subFormat = fileEntry?.f ? (fileEntry.f.match(/\.(srt|ass|ssa)$/i)?.[1] || 'srt') : (sub.filename?.match(/\.(srt|ass|ssa)$/i)?.[1] || 'srt')
+    const resolved = await deps.providers.resolveDownload({
+      provider: parsed.provider,
+      providerId: parsed.providerId,
+      fileIndex: rank.file_index ?? null,
+    })
+    const candidate = gateCandidate ?? candidates.find(c => candidateKey(c) === rank.candidate_id)
+    const artifactFilename = resolved.filename
+      ?? (candidate?.fileList[rank.file_index ?? -1]?.name)
+      ?? 'subtitle.srt'
+    const subFormat = artifactFilename.match(/\.(srt|ass|ssa)$/i)?.[1] || 'srt'
 
     // 7. download + write
-    journal.step('download', { url: url.slice(0, 80) })
-    const dl = await deps.download(url)
-    const artifactFilename = fileEntry?.f ?? sub.filename ?? 'subtitle.srt'
+    journal.step('download', { url: resolved.url.slice(0, 80) })
+    const dl = await deps.download(resolved.url)
     journal.step('write')
     const written = await writeSubtitle({
       artifact: dl.bytes,
       artifactFilename,
-      selectFileName: fileEntry?.f,
       videoFilename: ctx.media.filename,
       langTag: ctx.preferences.language,
       outDir,
@@ -373,7 +373,7 @@ export async function runPipeline(
       provider: parsed.provider,
       provider_id: parsed.providerId,
       subtitle_name: artifactFilename,
-      language: subLang,
+      language: ctx.preferences.language,
       format: subFormat,
     }
     return finish('download', {
@@ -431,26 +431,30 @@ async function runSeasonSweep(
         skipped.push({ episode: assignment.episode_code, reason: 'invalid candidate_id' })
         continue
       }
-      const detail = await deps.assrt.detail(Number(parsed.providerId))
-      apiCallsUsed++
-      const sub = detail.sub.subs.find(s => String(s.id) === parsed.providerId) ?? detail.sub.subs[0]
-      if (!sub) {
-        skipped.push({ episode: assignment.episode_code, reason: 'detail response empty' })
+      const candidate = candidates.find(c => candidateKey(c) === assignment.candidate_id)
+      if (!candidate) {
+        skipped.push({ episode: assignment.episode_code, reason: 'candidate not in pool' })
         continue
       }
 
       // 单集候选通常单文件；多文件时选含对应 episode code 的文件，选不出则用第一个字幕文件
-      const subtitleFiles = sub.filelist.filter(f => /\.(srt|ass|ssa)$/i.test(f.f))
-      let fileEntry = subtitleFiles.find(f => f.f.includes(assignment.episode_code))
-      if (!fileEntry && subtitleFiles.length > 0) fileEntry = subtitleFiles[0]
-      if (!fileEntry || !fileEntry.url) {
-        skipped.push({ episode: assignment.episode_code, reason: 'no download url' })
-        continue
+      const subtitleFiles = candidate.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name))
+      let fileIndex: number | null = null
+      if (subtitleFiles.length > 0) {
+        const matched = subtitleFiles.find(f => f.name.includes(assignment.episode_code))
+        fileIndex = matched ? matched.index : subtitleFiles[0].index
       }
 
-      const dl = await deps.download(fileEntry.url)
+      const resolved = await deps.providers.resolveDownload({
+        provider: parsed.provider,
+        providerId: parsed.providerId,
+        fileIndex,
+      })
+      apiCallsUsed++
+
+      const dl = await deps.download(resolved.url)
       const written = await writeSubtitle({
-        artifact: dl.bytes, artifactFilename: fileEntry.f,
+        artifact: dl.bytes, artifactFilename: resolved.filename ?? candidate.fileList[fileIndex ?? 0]?.name ?? 'subtitle.srt',
         videoFilename: epMeta.videoFilename, langTag: ctx.preferences.language,
         outDir: dirname(epMeta.videoPath),
       })

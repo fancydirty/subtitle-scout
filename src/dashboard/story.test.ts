@@ -8,7 +8,7 @@ const baseJournal = (over: Record<string, unknown> = {}) => ({
     selected: { assrt_id: 1, subtitle_name: 'Foo.简体.ass', language: 'zh-Hans', format: 'ass' },
     reasons: [], verification: { downloaded: true, path: '/m/x.ass', bytes: 100, encoding: 'utf-8' } },
   steps: [ { name: 'identify', at: 't' }, { name: 'planSearch', at: 't' },
-    { name: 'assrtSearch', at: 't', data: { q: 'Foo' } }, { name: 'candidateFilter', at: 't', data: { raw: 5, kept: 3 } },
+    { name: 'providerSearch', at: 't', data: { queries: ['Foo'] } }, { name: 'candidateFilter', at: 't', data: { raw: 5, kept: 3 } },
     { name: 'rankCandidates', at: 't', data: { count: 3 } }, { name: 'gate', at: 't' },
     { name: 'download', at: 't' }, { name: 'write', at: 't' } ],
   llm_calls: [ { point: 'identify', prompt: 'P', rawText: 'R', parsed: { title: 'Foo' }, retries: 0, durationMs: 12 } ],
@@ -45,7 +45,7 @@ describe('buildRunStory', () => {
     const journal = baseJournal({
       decision: { request_id: 'r', decision: 'no_safe_match', confidence: null, selected: null, reasons: [], verification: null },
       steps: [ { name: 'identify', at: 't' }, { name: 'planSearch', at: 't' },
-        { name: 'assrtSearch', at: 't', data: { q: 'Foo' } }, { name: 'candidateFilter', at: 't', data: { raw: 0, kept: 0 } },
+        { name: 'providerSearch', at: 't', data: { queries: ['Foo'] } }, { name: 'candidateFilter', at: 't', data: { raw: 0, kept: 0 } },
         { name: 'gate', at: 't' } ],
     })
     const s = buildRunStory(journal, { name: 'Foo', decision: 'no_safe_match', ts: 1 } as any)
@@ -57,7 +57,7 @@ describe('buildRunStory', () => {
 
   it('exposes tier-2 raw pipeline steps + llm calls', () => {
     const s = buildRunStory(baseJournal(), ledgerEvent as any)
-    expect(s.raw.pipelineSteps.map(x => x.name)).toContain('assrtSearch')
+    expect(s.raw.pipelineSteps.map(x => x.name)).toContain('providerSearch')
     expect(s.raw.llmCalls[0]).toMatchObject({ point: 'identify', durationMs: 12 })
   })
 })

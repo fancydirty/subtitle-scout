@@ -12,6 +12,7 @@ import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { TmdbClient, tmdbTitles } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
+import { makeCliProviderPort } from '../core/providerPort.js'
 import { createLlmRuntime } from '../agent/runtime.js'
 import { ProfileStore } from '../agent/profile.js'
 import { identifyMedia } from '../agent/identifyMedia.js'
@@ -89,11 +90,6 @@ async function assemble(): Promise<Assembled> {
     model: requireEnv('LLM_MODEL'),
     extraBody,
   }, profileStore, undefined, info => journalStore.getStore()?.journal?.step('llm_profile_healed', info))
-  const assrt = new AssrtClient({
-    token: requireEnv('ASSRT_TOKEN'),
-    cacheDir: join(cacheRoot, 'assrt-responses'),
-    onApiCall: r => journalStore.getStore()?.journal?.apiCall(r),
-  })
   // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第四把钥匙」）。缺 key → null，走 jellyfin fallback。
   const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
   const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string) => void | Promise<void> }): PipelineDeps => ({
@@ -101,7 +97,14 @@ async function assemble(): Promise<Assembled> {
     identify: c => identifyMedia(llm, c),
     plan: (c, id) => planSearch(llm, c, id),
     rank: (c, id, cands) => rankCandidates(llm, c, id, cands),
-    assrt: { search: q => assrt.search(q), detail: id => assrt.detail(id) },
+    providers: makeCliProviderPort({
+      onEvent: e => {
+        if (e.event === 'api_call') {
+          const journal = journalStore.getStore()?.journal
+          journal?.apiCall({ endpoint: e.endpoint, params: { provider: e.provider }, status: e.status ?? 0, durationMs: e.durationMs, error: e.error })
+        }
+      },
+    }),
     download: url => downloadDirect(url),
     llm,
     cache: new DecisionCache(join(cacheRoot, 'decisions')),

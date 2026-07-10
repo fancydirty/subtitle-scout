@@ -21,11 +21,17 @@ export function runGate(
   }
   const failures: string[] = []
   let candidate = candidates.find(c => candidateKey(c) === rank.candidate_id)
-  // LLM 自愈：模型偶尔丢 "provider:" 前缀只回裸 providerId——不含冒号时按 providerId 兜底匹配
+  // LLM 自愈：模型偶尔丢 "provider:" 前缀只回裸 providerId——不含冒号时按 providerId 兜底匹配。
+  // 仅恰好一个候选命中才自愈；2+ 命中（跨 provider id 碰撞）视为找不到——fail closed。
   if (!candidate && rank.candidate_id != null && !rank.candidate_id.includes(':')) {
-    candidate = candidates.find(c => c.providerId === rank.candidate_id)
+    const matches = candidates.filter(c => c.providerId === rank.candidate_id)
+    if (matches.length === 1) {
+      candidate = matches[0]
+    } else if (matches.length > 1) {
+      failures.push(`candidate_id ${rank.candidate_id} is ambiguous: matches ${matches.length} candidates across providers (${matches.map(candidateKey).join(', ')})`)
+    }
   }
-  if (!candidate) failures.push(`candidate_id ${rank.candidate_id} is not in this search's candidate set`)
+  if (!candidate && failures.length === 0) failures.push(`candidate_id ${rank.candidate_id} is not in this search's candidate set`)
 
   if (candidate && candidate.fileList.length > 0) {
     if (rank.file_index == null || rank.file_index < 0 || rank.file_index >= candidate.fileList.length) {
