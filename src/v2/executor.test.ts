@@ -73,12 +73,12 @@ describe('executor', () => {
     const job = jobs.claimNext(now)!
 
     // Mock runEpisode: season pack covers all 3 episodes via onCovered callback
-    const runEpisode = vi.fn(async (episodeId: string, onCovered: (id: string, path: string) => void) => {
+    const runEpisode = vi.fn(async (episodeId: string, onCovered: (id: string, path: string, providerRef?: string) => void) => {
       expect(episodeId).toBe('e1')
-      // Simulate season pack covering all episodes
-      onCovered('e1', '/tv/s1e1.zh-Hans.srt')
-      onCovered('e2', '/tv/s1e2.zh-Hans.srt')
-      onCovered('e3', '/tv/s1e3.zh-Hans.srt')
+      // Simulate season pack covering all episodes (MS-P1: 季包路径携带 provider_ref)
+      onCovered('e1', '/tv/s1e1.zh-Hans.srt', 'assrt:900900')
+      onCovered('e2', '/tv/s1e2.zh-Hans.srt', 'assrt:900900')
+      onCovered('e3', '/tv/s1e3.zh-Hans.srt', 'assrt:900900')
       return { decision: 'download', journalPath: '/journals/test.json' }
     })
 
@@ -88,6 +88,13 @@ describe('executor', () => {
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
     expect(lib.getEpisode('e2')!.sub_status).toBe('covered')
     expect(lib.getEpisode('e3')!.sub_status).toBe('covered')
+
+    // MS-P1: 季包覆盖的每集 subtitles 行都带 provider_ref
+    for (const id of ['e1', 'e2', 'e3']) {
+      expect(lib.db.prepare('select provider_ref from subtitles where item_id=?').get(id)).toEqual({
+        provider_ref: 'assrt:900900',
+      })
+    }
 
     // Verify job is done
     const finalJob = jobs.get(job.id)!
@@ -320,6 +327,26 @@ describe('executor', () => {
     expect(finalJob.state).toBe('wanted')
   })
 
+  it('MS-P1: runEpisode 结果带 selected → markCovered 写 provider_ref="<provider>:<providerId>"', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'download',
+      journalPath: '/journals/test.json',
+      subtitlePath: '/tv/s1e1.zh-Hans.srt',
+      selected: { provider: 'opensubtitles', provider_id: '7174766' },
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.db.prepare('select * from subtitles where item_id=?').get('e1')).toMatchObject({
+      path: '/tv/s1e1.zh-Hans.srt',
+      provider_ref: 'opensubtitles:7174766',
+    })
+  })
+
   it('M7/M8: already_exists → 代表集 covered 但不伪造 subtitles 行', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
@@ -467,6 +494,7 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
       confidence: null,
       minConfidence: 0.5,
       reasons: [],
+      selected: null,
     })
     const [, ctx, outDir, , opts] = runPipelineMock.mock.calls[0]
     expect(ctx.preferences.auto_download_min_confidence).toBe(0.5) // I5a
@@ -487,12 +515,12 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     const runEpisode = makeRunEpisode(assembled, lib, { mediaRoots: [mediaRoot] })
     await runEpisode('m1', onCovered)
 
-    // 从 makeDeps 捕获 perRun.onCovered 适配器，模拟季包命中一集
+    // 从 makeDeps 捕获 perRun.onCovered 适配器，模拟季包命中一集（MS-P1: providerRef 透传）
     const perRun = vi.mocked(assembled.makeDeps).mock.calls[0][0]!
     const ep = { itemId: 'e9', seasonNumber: 1, episodeNumber: 9, episodeCode: 'S01E09', videoPath: '/v', videoFilename: 'v.mkv', needsChinese: true } satisfies SeasonEpisode
-    await perRun.onCovered(ep, '/subs/e9.srt')
+    await perRun.onCovered(ep, '/subs/e9.srt', 'assrt:900900')
 
-    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt')
+    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt', 'assrt:900900')
     expect(jf.refreshItem).toHaveBeenCalledWith('e9') // I5d
   })
 

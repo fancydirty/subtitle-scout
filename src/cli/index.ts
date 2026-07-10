@@ -12,6 +12,7 @@ import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { TmdbClient, tmdbTitles } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
+import { makeCliProviderPort } from '../core/providerPort.js'
 import { createLlmRuntime } from '../agent/runtime.js'
 import { ProfileStore } from '../agent/profile.js'
 import { identifyMedia } from '../agent/identifyMedia.js'
@@ -55,7 +56,7 @@ function requireEnv(name: string): string {
 }
 
 export interface Assembled {
-  makeDeps: (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string) => void | Promise<void> }) => PipelineDeps
+  makeDeps: (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string) => void | Promise<void> }) => PipelineDeps
   /** 每个 job 独立的 journal 上下文——并发任务的 apiCall/自愈事件不再串记到相邻 journal。
    *  所有 runPipeline 调用必须包在此内，否则 assrt/llm 回调取不到 journal 而丢事件。 */
   withJournal: <T>(fn: () => Promise<T>) => Promise<T>
@@ -89,19 +90,23 @@ async function assemble(): Promise<Assembled> {
     model: requireEnv('LLM_MODEL'),
     extraBody,
   }, profileStore, undefined, info => journalStore.getStore()?.journal?.step('llm_profile_healed', info))
-  const assrt = new AssrtClient({
-    token: requireEnv('ASSRT_TOKEN'),
-    cacheDir: join(cacheRoot, 'assrt-responses'),
-    onApiCall: r => journalStore.getStore()?.journal?.apiCall(r),
-  })
   // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第四把钥匙」）。缺 key → null，走 jellyfin fallback。
   const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
-  const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string) => void | Promise<void> }): PipelineDeps => ({
+  const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string) => void | Promise<void> }): PipelineDeps => ({
     journalReady: j => { const s = journalStore.getStore(); if (s) s.journal = j; j.step('llm_profile', llm.profileInfo()) },
     identify: c => identifyMedia(llm, c),
     plan: (c, id) => planSearch(llm, c, id),
     rank: (c, id, cands) => rankCandidates(llm, c, id, cands),
-    assrt: { search: q => assrt.search(q), detail: id => assrt.detail(id) },
+    providers: makeCliProviderPort({
+      onEvent: e => {
+        const journal = journalStore.getStore()?.journal
+        if (e.event === 'api_call') {
+          journal?.apiCall({ endpoint: e.endpoint, params: { provider: e.provider }, status: e.status ?? 0, durationMs: e.durationMs, error: e.error })
+        } else if (e.event === 'provider_error') {
+          journal?.step('providerError', { provider: e.provider, message: e.message })
+        }
+      },
+    }),
     download: url => downloadDirect(url),
     llm,
     cache: new DecisionCache(join(cacheRoot, 'decisions')),

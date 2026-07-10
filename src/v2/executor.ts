@@ -9,6 +9,7 @@ import {
 } from '../core/mediaContext.js'
 import { tmdbTitles } from '../adapters/providers/tmdb.js'
 import { runPipeline } from '../core/pipeline.js'
+import { candidateKey } from '../core/schemas.js'
 import type { SeasonEpisode } from '../core/episode.js'
 import { join } from 'node:path'
 
@@ -18,7 +19,7 @@ export interface ExecutorDeps {
   /** 跑一个代表集的完整判断链；onCovered 在每个被季包/单集命中的集写盘成功后回调 */
   runEpisode: (
     episodeId: string,
-    onCovered: (coveredEpisodeId: string, subtitlePath: string) => void
+    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void
   ) => Promise<{
     decision: string
     journalPath?: string
@@ -30,6 +31,8 @@ export interface ExecutorDeps {
     minConfidence?: number
     /** 结论理由（错因取首条，人话化后入 detail） */
     reasons?: string[]
+    /** 命中的候选来源（供 markCovered 建 provider_ref）；无来源可考（如 already_exists）为 null/undefined */
+    selected?: { provider: string; provider_id: string } | null
   }>
   now: () => number
   log: (msg: string) => void
@@ -137,8 +140,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 3. Track coverage via onCovered callback (season pack hits are downloads)
     const coveredIds = new Set<string>()
-    const onCovered = (episodeId: string, subtitlePath: string) => {
-      lib.markCovered(episodeId, subtitlePath, 'scout-download')
+    const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string) => {
+      lib.markCovered(episodeId, subtitlePath, 'scout-download', providerRef)
       if (targets.some(t => t.id === episodeId)) {
         coveredIds.add(episodeId)
       }
@@ -178,7 +181,10 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       // M7: already_exists 无可信文件路径传 null；download/adopted 用 subtitlePath，
       // 没有则只改状态。M8: source 按 decision 映射。
       const coverPath = decision === 'already_exists' ? null : subtitlePath
-      lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision])
+      const providerRef = result.selected
+        ? candidateKey({ provider: result.selected.provider, providerId: result.selected.provider_id })
+        : undefined
+      lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision], providerRef)
       coveredIds.add(representative.id) // 供人话摘要计数
 
       if (remainingTargets(job, lib, now()).length === 0) {
@@ -301,10 +307,10 @@ export function makeRunEpisode(
       )
     }
 
-    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path) → deps (ep.itemId, path)
+    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef) → deps (ep.itemId, path, providerRef)
     //    I5d: refresh Jellyfin item after each covered episode (v1 semantics)
-    const onCoveredAdapter = async (ep: SeasonEpisode, path: string) => {
-      onCovered(ep.itemId, path)
+    const onCoveredAdapter = async (ep: SeasonEpisode, path: string, providerRef?: string) => {
+      onCovered(ep.itemId, path, providerRef)
       await jf.refreshItem(ep.itemId).catch(() => {})
     }
 
@@ -329,6 +335,7 @@ export function makeRunEpisode(
       confidence: result.confidence ?? null,
       minConfidence: ctx.preferences.auto_download_min_confidence,
       reasons: result.reasons ?? [],
+      selected: result.selected ?? null,
     }
   }
 }

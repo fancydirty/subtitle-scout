@@ -3,6 +3,7 @@ node_modules
 .env
 scratch
 fixtures
+cache-local
 docs
 worker
 scripts

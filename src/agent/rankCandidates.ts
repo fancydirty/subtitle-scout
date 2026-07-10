@@ -1,6 +1,7 @@
 import type { LlmRuntime } from './runtime.js'
 import {
-  RankDecisionSchema, type MediaContext, type MediaIdentity, type AssrtSub, type RankDecision,
+  RankDecisionSchema, type MediaContext, type MediaIdentity, type SubtitleCandidate, type RankDecision,
+  candidateKey,
 } from '../core/schemas.js'
 import type { CallStructuredResult } from './llm.js'
 
@@ -17,8 +18,8 @@ const GRAPHIC_SUBTYPE = /pgs|vobsub|pgssub/i
  * - 孤立 .sub / 未知扩展 → 不剔（交 rank）；
  * - filelist 为空时仅当 subtype 明确图形才剔。subtype=None/缺失从不作为剔除依据。
  */
-export function isGraphicOnly(c: AssrtSub): boolean {
-  const names = c.filelist.map(f => f.f)
+export function isGraphicOnly(c: SubtitleCandidate): boolean {
+  const names = c.fileList.map(f => f.name)
   if (names.some(n => TEXT_SUB_EXT.test(n))) return false
   if (names.length > 0) {
     const hasSup = names.some(n => /\.sup$/i.test(n))
@@ -30,14 +31,15 @@ export function isGraphicOnly(c: AssrtSub): boolean {
 }
 
 /** 剔除仅图形字幕的候选，保序。 */
-export function filterGraphicOnly(candidates: AssrtSub[]): AssrtSub[] {
+export function filterGraphicOnly(candidates: SubtitleCandidate[]): SubtitleCandidate[] {
   return candidates.filter(c => !isGraphicOnly(c))
 }
 
-export function compactCandidates(candidates: AssrtSub[]): Array<{
-  id: number
+export function compactCandidates(candidates: SubtitleCandidate[]): Array<{
+  id: string
+  provider: string
   videoname: string | null | undefined
-  native_name: string | string[] | null | undefined
+  native_name: string | null | undefined
   lang: string | null | undefined
   subtype: string | null | undefined
   release_site: string | null | undefined
@@ -45,11 +47,16 @@ export function compactCandidates(candidates: AssrtSub[]): Array<{
   filelist_truncated?: number
 }> {
   return candidates.slice(0, MAX_CANDIDATES).map(c => {
-    const files = c.filelist.map(f => f.f)
+    const files = c.fileList.map(f => f.name)
     const shown = files.slice(0, MAX_FILELIST_ENTRIES)
     return {
-      id: c.id, videoname: c.videoname, native_name: c.native_name,
-      lang: c.lang?.desc, subtype: c.subtype, release_site: c.release_site,
+      id: candidateKey(c),
+      provider: c.provider,
+      videoname: c.videoName,
+      native_name: c.nativeName,
+      lang: c.language,
+      subtype: c.subtype,
+      release_site: c.releaseSite,
       filelist: shown,
       ...(files.length > shown.length ? { filelist_truncated: files.length - shown.length } : {}),
     }
@@ -57,11 +64,11 @@ export function compactCandidates(candidates: AssrtSub[]): Array<{
 }
 
 export async function rankCandidates(
-  llm: LlmRuntime, ctx: MediaContext, identity: MediaIdentity, candidates: AssrtSub[],
+  llm: LlmRuntime, ctx: MediaContext, identity: MediaIdentity, candidates: SubtitleCandidate[],
 ): Promise<CallStructuredResult<RankDecision>> {
   const compact = compactCandidates(candidates)
   const prompt = [
-    'Choose the best Chinese subtitle for this media from ASSRT candidates, or refuse.',
+    'Choose the best Chinese subtitle for this media from multi-source candidates (fields: id = "<provider>:<providerId>"), or refuse.',
     'A WRONG subtitle is worse than NO subtitle — but refusing a usable one is also a failure.',
     '',
     'FORMAT — which candidates are usable:',
@@ -98,6 +105,7 @@ export async function rankCandidates(
     '- When decision=no_safe_match, identity_match must be mismatch or uncertain — never confirmed.',
     '',
     'file_index is the 0-based index into the candidate\'s filelist array; null for non-pack candidates.',
+    'Report candidate_id as the candidate\'s id string EXACTLY as shown (e.g. "assrt:673114" or "opensubtitles:7174766").',
     'If the filelist was truncated (filelist_truncated present), only pick from the shown entries.',
     'List every seriously-considered-but-rejected candidate in rejected[] with a concrete reason.',
     '',

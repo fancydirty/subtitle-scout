@@ -1,5 +1,6 @@
 import { dirname } from 'node:path'
 import { mapPath, type PathMapping } from '../core/mediaContext.js'
+import { MIGRATIONS } from '../v2/db.js'
 
 export interface DoctorResult {
   name: string
@@ -106,7 +107,7 @@ export function overallOk(results: DoctorResult[]): boolean {
 
 /** v2 数据库检查：能打开且 schema_version 匹配 → ✓；否则 → ✗ 带人话提示 */
 export function checkDatabase(open: () => { version: string }): DoctorResult {
-  const EXPECTED_VERSION = '1'  // 当前预期版本（与 v2/db.ts MIGRATIONS 数组长度对应）
+  const EXPECTED_VERSION = String(MIGRATIONS.length)  // 与 v2/db.ts MIGRATIONS 数组长度对应，不再手动同步
 
   try {
     const { version } = open()

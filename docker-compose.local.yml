@@ -1,0 +1,52 @@
+# OrbStack 本地全链路测试栈：Jellyfin + 本地构建 scout + mock 媒体库。
+# 先跑 scripts/gen-mock-library.sh；首次起 Jellyfin 过设置向导拿 API key（可参考 scripts/dev-jellyfin.sh）。
+# 用法：
+#   scripts/gen-mock-library.sh
+#   cp .env.example .env   # 填三把钥匙（Jellyfin 的先留空，等向导后回填）
+#   docker compose -f docker-compose.local.yml up -d --build
+services:
+  jellyfin:
+    image: ghcr.io/jellyfin/jellyfin:latest
+    container_name: scout-jellyfin-local
+    restart: unless-stopped
+    ports:
+      - "8096:8096"
+    volumes:
+      - jellyfin-config-local:/config
+      - ./fixtures/media:/media:ro
+
+  subtitle-scout:
+    build: .
+    container_name: subtitle-scout-local
+    restart: unless-stopped
+    depends_on:
+      - jellyfin
+    ports:
+      - "8099:8099"
+    environment:
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
+      ASSRT_TOKEN: ${ASSRT_TOKEN}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
+      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
+      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
+      AUTO_DOWNLOAD_MIN_CONFIDENCE: ${AUTO_DOWNLOAD_MIN_CONFIDENCE:-0.86}
+      SUBTITLE_SCOUT_CACHE_DIR: /cache
+      MEDIA_PATH_MAPPINGS: /media=/media
+      MEDIA_ROOTS: /media
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
+      TZ: ${TZ:-Asia/Shanghai}
+      DASHBOARD_PORT: "8099"
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+    volumes:
+      # 可写：Jellyfin 只读挂载同一目录，sidecar 字幕要落盘到这里
+      - ./fixtures/media:/media
+      - ./cache-local:/cache
+
+volumes:
+  jellyfin-config-local:

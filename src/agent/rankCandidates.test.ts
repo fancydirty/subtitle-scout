@@ -1,15 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { compactCandidates, filterGraphicOnly, isGraphicOnly, MAX_CANDIDATES, MAX_FILELIST_ENTRIES, rankCandidates } from './rankCandidates.js'
 import type { LlmRuntime } from './runtime.js'
-import type { MediaContext, MediaIdentity, RankDecision } from '../core/schemas.js'
-import type { AssrtSub } from '../core/schemas.js'
+import type { MediaContext, MediaIdentity, RankDecision, SubtitleCandidate } from '../core/schemas.js'
 
-function fakeSub(id: number, files: number): AssrtSub {
+function fakeSub(id: number, files: number): SubtitleCandidate {
   return {
-    id, videoname: `v${id}`, native_name: null, release_site: null, subtype: null,
-    lang: { desc: '简', langlist: null }, filename: null, size: null,
-    filelist: Array.from({ length: files }, (_, i) => ({ f: `file${i}.ass` })),
-  } as unknown as AssrtSub
+    provider: 'assrt', providerId: String(id), videoName: `v${id}`, nativeName: null,
+    releaseSite: null, subtype: null, language: '简', uploadDate: null,
+    fileList: Array.from({ length: files }, (_, i) => ({ index: i, name: `file${i}.ass` })),
+  }
 }
 
 describe('compactCandidates', () => {
@@ -30,12 +29,12 @@ describe('compactCandidates', () => {
   })
 })
 
-function subWithFiles(id: number, files: string[], subtype: string | null = null): AssrtSub {
+function subWithFiles(id: number, files: string[], subtype: string | null = null): SubtitleCandidate {
   return {
-    id, videoname: `v${id}`, native_name: null, release_site: null, subtype,
-    lang: { desc: '简', langlist: null }, filename: null, size: null,
-    filelist: files.map(f => ({ f })),
-  } as unknown as AssrtSub
+    provider: 'assrt', providerId: String(id), videoName: `v${id}`, nativeName: null,
+    releaseSite: null, subtype, language: '简', uploadDate: null,
+    fileList: files.map((name, index) => ({ index, name })),
+  }
 }
 
 describe('isGraphicOnly', () => {
@@ -74,7 +73,7 @@ describe('filterGraphicOnly', () => {
       subWithFiles(3, ['c.ass']),
     ]
     const out = filterGraphicOnly(cands)
-    expect(out.map(c => c.id)).toEqual([1, 3])
+    expect(out.map(c => c.providerId)).toEqual(['1', '3'])
   })
 })
 
@@ -87,7 +86,7 @@ describe('rankCandidates prompt', () => {
       async call(opts: any) {
         captured = opts.prompt
         const parsed: RankDecision = {
-          decision: 'download', assrt_id: 1, file_index: 0,
+          decision: 'download', candidate_id: 'assrt:1', file_index: 0,
           identity_match: 'confirmed', confidence: 0.9, reasons: ['x'], rejected: [],
         }
         return { parsed, rawText: '', retries: 0, durationMs: 1, prompt: opts.prompt } as any
@@ -123,5 +122,11 @@ describe('rankCandidates prompt', () => {
     const { llm, prompt } = capture()
     await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
     expect(prompt()).toMatch(/must not.*(lower|downgrade|change).*identity/i)
+  })
+
+  it('includes candidate_id instruction in prompt', async () => {
+    const { llm, prompt } = capture()
+    await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
+    expect(prompt()).toMatch(/candidate_id.*EXACTLY/)
   })
 })

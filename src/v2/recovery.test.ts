@@ -184,7 +184,7 @@ describe('markCovered 事务原子性', () => {
     })
 
     // Mark covered in transaction
-    lib.markCovered('e1', '/media/tv/show/e1.zh-Hans.srt', 'scout-download', 713051)
+    lib.markCovered('e1', '/media/tv/show/e1.zh-Hans.srt', 'scout-download', 'assrt:713051')
 
     // Both should be written
     const episode = lib.getEpisode('e1')
@@ -193,7 +193,7 @@ describe('markCovered 事务原子性', () => {
     const subtitles = db.prepare('SELECT * FROM subtitles WHERE item_id = ?').all('e1')
     expect(subtitles).toHaveLength(1)
     expect((subtitles[0] as any).path).toBe('/media/tv/show/e1.zh-Hans.srt')
-    expect((subtitles[0] as any).assrt_sub_id).toBe(713051)
+    expect((subtitles[0] as any).provider_ref).toBe('assrt:713051')
   })
 })
 

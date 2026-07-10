@@ -1,16 +1,15 @@
 import type { LlmRuntime } from './runtime.js'
-import { LooseEpisodesMapSchema, type LooseEpisodesMap, type MediaContext, type MediaIdentity, type AssrtSub } from '../core/schemas.js'
+import { LooseEpisodesMapSchema, type LooseEpisodesMap, type MediaContext, type MediaIdentity, type SubtitleCandidate, candidateKey } from '../core/schemas.js'
 import type { SeasonEpisode } from '../core/episode.js'
 import type { CallStructuredResult } from './llm.js'
 
 export async function mapLooseEpisodes(
   llm: Pick<LlmRuntime, 'call'>, ctx: MediaContext, identity: MediaIdentity,
-  candidates: AssrtSub[], seasonEpisodes: SeasonEpisode[],
+  candidates: SubtitleCandidate[], seasonEpisodes: SeasonEpisode[],
 ): Promise<CallStructuredResult<LooseEpisodesMap>> {
   const candidateEntries = candidates.map(c => {
-    const nativeName = Array.isArray(c.native_name) ? c.native_name[0] : c.native_name
-    const firstFile = c.filelist.length > 0 ? c.filelist[0].f : ''
-    return { sub_id: c.id, native_name: nativeName || '', videoname: c.videoname || '', first_file: firstFile }
+    const firstFile = c.fileList.length > 0 ? c.fileList[0].name : ''
+    return { candidate_id: candidateKey(c), native_name: c.nativeName || '', videoname: c.videoName || '', first_file: firstFile }
   })
   const episodes = seasonEpisodes
     .filter(e => e.needsChinese)
@@ -27,6 +26,7 @@ export async function mapLooseEpisodes(
     '- Each episode can have AT MOST one candidate assigned. If multiple candidates claim the same episode, pick the most confident one (or skip both if unclear).',
     '- If confidence < 0.75, do NOT assign — it\'s safer to leave a gap than to map incorrectly.',
     '- Only emit assignments you are sure of. episode_code MUST be copied verbatim from the known list below (format SxxExx).',
+    '- Report candidate_id exactly as shown in the candidates list (e.g. "assrt:673114").',
     '',
     `series: ${identity.canonical_title} ${identity.year ?? ''}`.trim(),
     `known episodes still needing Chinese subs (assign ONLY to these): ${JSON.stringify(episodes)}`,

@@ -2,7 +2,8 @@ import Database from 'better-sqlite3'
 
 export type ScoutDb = Database.Database
 
-const MIGRATIONS: string[] = [
+// export：供 migration.provider-ref.test.ts 手工重放到指定版本用
+export const MIGRATIONS: string[] = [
   // v1: Complete schema from spec §1
   `
 CREATE TABLE series (
@@ -56,14 +57,15 @@ CREATE TABLE runs (                 -- 替代 ledger.jsonl；journals 明细文�
   job_id INTEGER REFERENCES jobs(id),
   started_at INTEGER NOT NULL, finished_at INTEGER,
   decision TEXT, detail TEXT,       -- detail=人话摘要（dashboard 直接用，不再啃 JSON）
-  journal_path TEXT, llm_calls INTEGER, assrt_calls INTEGER
+  journal_path TEXT, llm_calls INTEGER, assrt_calls INTEGER  -- assrt_calls：多源后计入全部 provider api 调用次数，列名沿用
 );
 CREATE TABLE subtitles (            -- 借鉴 Bazarr TableEpisodesSubtitles：一个视频可挂多个字幕文件
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   item_id TEXT NOT NULL,            -- episodes.id 或 movies.id
   path TEXT NOT NULL, language TEXT NOT NULL,   -- zh-Hans/zh-Hant
   source TEXT NOT NULL,             -- scout-download / adopted-local / preexisting
-  assrt_sub_id INTEGER, size INTEGER, created_at INTEGER NOT NULL,
+  assrt_sub_id INTEGER,             -- 多源后弃写，仅历史数据保留（见 provider_ref 迁移）
+  size INTEGER, created_at INTEGER NOT NULL,
   UNIQUE(item_id, path)
 );
 CREATE TABLE blacklist (            -- 借鉴 Bazarr：已确认坏/错的候选，rank 前硬过滤
@@ -72,6 +74,21 @@ CREATE TABLE blacklist (            -- 借鉴 Bazarr：已确认坏/错的候选
   PRIMARY KEY(assrt_sub_id, filename)
 );
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_reconcile_at 等
+  `.trim(),
+  // v2: provider-neutral 迁移 —— subtitles/blacklist 改用 provider_ref('<provider>:<providerId>')
+  // 寻址；旧 assrt_sub_id 列保留（SQLite 删列代价高，且不再写入，仅历史数据留存供追溯）。
+  `
+ALTER TABLE subtitles ADD COLUMN provider_ref TEXT;
+UPDATE subtitles SET provider_ref = 'assrt:' || assrt_sub_id WHERE assrt_sub_id IS NOT NULL;
+CREATE TABLE blacklist_v2 (
+  provider_ref TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '',
+  reason TEXT, created_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_ref, filename)
+);
+INSERT INTO blacklist_v2 (provider_ref, filename, reason, created_at)
+  SELECT 'assrt:' || assrt_sub_id, filename, reason, created_at FROM blacklist;
+DROP TABLE blacklist;
+ALTER TABLE blacklist_v2 RENAME TO blacklist;
   `.trim(),
 ]
 

@@ -90,9 +90,20 @@ export const IdentityMatchSchema: z.ZodType<IdentityMatch> = z.preprocess(
   z.enum(IDENTITY_MATCHES).default('uncertain'),
 )
 
+// LLM 边界容错：模型（MiMo 教训同款）可能把 candidate_id 输出成 JSON number
+// （尤其 assrt 裸数字 id 的历史惯性）。数字确定性转字符串；空值归一为 null。
+function looseCandidateId(): z.ZodType<string | null | undefined> {
+  return z.preprocess(v => {
+    if (typeof v === 'number') return String(v)
+    if (typeof v === 'string' && NULLISH_STRINGS.has(v.trim().toLowerCase())) return null
+    return v
+  }, z.string().nullish())
+}
+
 export const RankDecisionSchema = z.object({
   decision: z.enum(['download', 'ask_user', 'no_safe_match']),
-  assrt_id: looseNumeric(z.number().int()),
+  /** "<provider>:<providerId>"，与 prompt 里 candidates[].id 完全一致 */
+  candidate_id: looseCandidateId(),
   file_index: looseNumeric(z.number().int()),
   // 身份判决：confirmed=同作品/季/集，mismatch=错作品/季/集，uncertain=信息不足
   identity_match: IdentityMatchSchema,
@@ -101,9 +112,12 @@ export const RankDecisionSchema = z.object({
     z.number().min(0).max(1),
   ),
   reasons: z.array(z.string()),
-  rejected: z.array(z.object({ assrt_id: z.number().int(), reason: z.string() })),
-}).refine(v => v.decision !== 'download' || v.assrt_id != null, {
-  message: 'assrt_id required when decision=download',
+  rejected: z.array(z.object({
+    candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()),
+    reason: z.string(),
+  })),
+}).refine(v => v.decision !== 'download' || (v.candidate_id != null && v.candidate_id !== ''), {
+  message: 'candidate_id required when decision=download',
 })
 export type RankDecision = z.infer<typeof RankDecisionSchema>
 
@@ -143,13 +157,51 @@ export const AssrtQuotaResponseSchema = z.object({
   user: z.object({ quota: z.number() }).optional(),
 })
 
+// ---------- Provider-neutral candidate (multi-source) ----------
+export const PROVIDERS = ['assrt', 'opensubtitles'] as const
+export type ProviderName = (typeof PROVIDERS)[number]
+
+export const SubtitleFileSchema = z.object({
+  index: z.number().int(),
+  name: z.string(),
+})
+export type SubtitleFile = z.infer<typeof SubtitleFileSchema>
+
+export const SubtitleCandidateSchema = z.object({
+  provider: z.enum(PROVIDERS),
+  providerId: z.string(),
+  videoName: z.string().nullish(),
+  nativeName: z.string().nullish(),
+  /** provider 原始语言描述（assrt: lang.desc；opensubtitles: 'zh-CN' 等），仅供 LLM 参考 */
+  language: z.string().nullish(),
+  subtype: z.string().nullish(),
+  releaseSite: z.string().nullish(),
+  uploadDate: z.string().nullish(),
+  fileList: z.array(SubtitleFileSchema).default([]),
+})
+export type SubtitleCandidate = z.infer<typeof SubtitleCandidateSchema>
+
+export interface CandidateRef { provider: ProviderName; providerId: string; fileIndex: number | null }
+
+export function candidateKey(c: { provider: string; providerId: string }): string {
+  return `${c.provider}:${c.providerId}`
+}
+export function parseCandidateKey(key: string): { provider: ProviderName; providerId: string } | null {
+  const i = key.indexOf(':')
+  if (i <= 0 || i === key.length - 1) return null
+  const provider = key.slice(0, i)
+  if (!(PROVIDERS as readonly string[]).includes(provider)) return null
+  return { provider: provider as ProviderName, providerId: key.slice(i + 1) }
+}
+
 // ---------- 最终 decision ----------
 export const FinalDecisionSchema = z.object({
   request_id: z.string(),
   decision: z.enum(['download', 'ask_user', 'no_safe_match', 'retry_later', 'already_exists', 'error', 'adopted_local']),
   confidence: z.number().nullish(),
   selected: z.object({
-    assrt_id: z.number(),
+    provider: z.string(),
+    provider_id: z.string(),
     subtitle_name: z.string(),
     language: z.string(),
     format: z.string(),
@@ -201,7 +253,8 @@ export type SeasonMap = z.infer<typeof SeasonMapSchema>
 export const LooseEpisodesMapSchema = z.object({
   assignments: z.array(z.object({
     episode_code: z.string(),
-    sub_id: looseNumeric(z.number().int()),
+    // fail-soft：单行 candidate_id 缺失/为数字不炸整季 sweep——nullish 放行，下游 filter 剔除
+    candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()).nullish(),
     confidence: z.preprocess(
       v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
       z.number().min(0).max(1),

@@ -231,6 +231,25 @@ docker compose exec subtitle-scout npx tsx src/cli/index.ts report --since 7d
 
 ---
 
+## Local development
+
+想跑一遍完整链路又没有 NAS/真实媒体库？`docker-compose.local.yml` 在本机（OrbStack/Docker）拉起 Jellyfin + 本地构建的 scout + 一批几 KB 的假视频，全程不碰任何真实文件。
+
+```bash
+scripts/gen-mock-library.sh          # 生成 fixtures/media 下的 mock 媒体库
+cp .env.example .env                 # 填 LLM/ASSRT 等钥匙，Jellyfin 那两项先留空
+docker compose -f docker-compose.local.yml up -d --build
+```
+
+然后：
+1. 访问 `http://localhost:8096` 走 Jellyfin 初始向导，把 `/media/TV` 加成"节目"库、`/media/Movies` 加成"电影"库
+2. 控制台生成 API key，填入 `.env` 的 `JELLYFIN_API_KEY`，然后 `docker compose -f docker-compose.local.yml up -d subtitle-scout`（注意用 `up -d` 而不是 `restart`——`restart` 不会重载 `.env`）
+3. 监控页在 `http://localhost:8099`
+
+fixtures 里混了几个负例（内嵌中字的、国产片）方便验证跳过逻辑。`fixtures/media/` 已加入 `.gitignore`，不会被提交。
+
+---
+
 ## 适配 Emby / 其他媒体服务器
 
 **Emby**：与 Jellyfin API 同源，预计改动很小。欢迎贡献 PR。

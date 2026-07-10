@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import {
   MediaContextSchema, MediaIdentitySchema, SearchPlanSchema,
   RankDecisionSchema, AssrtSearchResponseSchema, AssrtDetailResponseSchema,
-  FinalDecisionSchema, OrphanDecisionSchema,
+  FinalDecisionSchema, OrphanDecisionSchema, LooseEpisodesMapSchema,
 } from './schemas.js'
 
 describe('MediaContextSchema', () => {
@@ -86,14 +86,42 @@ describe('LLM output coercion (MiMo returns numbers as strings)', () => {
       season: null, episode: null, edition: null, confidence: 0.9, evidence: [],
     })).toThrow()
   })
-  it('RankDecision coerces assrt_id and file_index strings', () => {
+  it('RankDecision coerces candidate_id numbers and file_index strings', () => {
     const r = RankDecisionSchema.parse({
-      decision: 'download', assrt_id: '673114', file_index: '0',
+      decision: 'download', candidate_id: 673114, file_index: '0',
       confidence: '0.91', reasons: [], rejected: [],
     })
-    expect(r.assrt_id).toBe(673114)
+    expect(r.candidate_id).toBe('673114') // JSON number → string（MiMo 同款边界事故防御）
     expect(r.file_index).toBe(0)
     expect(r.confidence).toBe(0.91)
+  })
+  it('RankDecision normalizes nullish-string candidate_id to null on non-download', () => {
+    const r = RankDecisionSchema.parse({
+      decision: 'no_safe_match', candidate_id: 'None', file_index: null,
+      confidence: 0.3, reasons: [], rejected: [],
+    })
+    expect(r.candidate_id).toBeNull()
+  })
+  it('RankDecision tolerates numeric candidate_id inside rejected[]', () => {
+    const r = RankDecisionSchema.parse({
+      decision: 'download', candidate_id: 'assrt:673114', file_index: 0,
+      confidence: 0.9, reasons: [], rejected: [{ candidate_id: 606770, reason: 'wrong cut' }],
+    })
+    expect(r.rejected[0].candidate_id).toBe('606770')
+  })
+  it('LooseEpisodesMap fail-soft: one bad candidate_id row does not kill the whole parse', () => {
+    const m = LooseEpisodesMapSchema.parse({
+      assignments: [
+        { episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 },
+        { episode_code: 'S02E02', candidate_id: null, confidence: 0.95 },
+        { episode_code: 'S02E03', candidate_id: 803, confidence: 0.95 },
+      ],
+      reasons: [],
+    })
+    expect(m.assignments).toHaveLength(3)
+    expect(m.assignments[0].candidate_id).toBe('assrt:801')
+    expect(m.assignments[1].candidate_id).toBeNull()   // 下游 filter 剔除，不炸整季
+    expect(m.assignments[2].candidate_id).toBe('803')  // 数字容忍
   })
 })
 

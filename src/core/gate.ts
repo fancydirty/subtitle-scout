@@ -1,17 +1,18 @@
-import type { AssrtSub, MediaIdentity, MediaContext, RankDecision } from './schemas.js'
+import type { SubtitleCandidate, MediaIdentity, MediaContext, RankDecision } from './schemas.js'
+import { candidateKey } from './schemas.js'
 
 export interface GateResult {
   ok: boolean
   /** ok=false 时的降级 decision */
   decision: 'download' | 'ask_user' | 'no_safe_match'
   failures: string[]
-  candidate?: AssrtSub
+  candidate?: SubtitleCandidate
 }
 
 /** 纯代码硬校验 agent 的排序输出。任何一条不过就绝不落盘。 */
 export function runGate(
   rank: RankDecision,
-  candidates: AssrtSub[],
+  candidates: SubtitleCandidate[],
   identity: MediaIdentity,
   prefs: MediaContext['preferences'],
 ): GateResult {
@@ -19,12 +20,29 @@ export function runGate(
     return { ok: false, decision: rank.decision, failures: [] }
   }
   const failures: string[] = []
-  const candidate = candidates.find(c => c.id === rank.assrt_id)
-  if (!candidate) failures.push(`assrt_id ${rank.assrt_id} is not in this search's candidate set`)
+  let candidate = candidates.find(c => candidateKey(c) === rank.candidate_id)
+  // LLM 自愈：模型偶尔丢 "provider:" 前缀只回裸 providerId——不含冒号时按 providerId 兜底匹配。
+  // 仅恰好一个候选命中才自愈；2+ 命中（跨 provider id 碰撞）视为找不到——fail closed。
+  if (!candidate && rank.candidate_id != null && !rank.candidate_id.includes(':')) {
+    const matches = candidates.filter(c => c.providerId === rank.candidate_id)
+    if (matches.length === 1) {
+      candidate = matches[0]
+    } else if (matches.length > 1) {
+      failures.push(`candidate_id ${rank.candidate_id} is ambiguous: matches ${matches.length} candidates across providers (${matches.map(candidateKey).join(', ')})`)
+    }
+  }
+  if (!candidate && failures.length === 0) failures.push(`candidate_id ${rank.candidate_id} is not in this search's candidate set`)
 
-  if (candidate && candidate.filelist.length > 0) {
-    if (rank.file_index == null || rank.file_index < 0 || rank.file_index >= candidate.filelist.length) {
-      failures.push(`file_index ${rank.file_index} out of range for filelist of ${candidate.filelist.length}`)
+  if (candidate && candidate.fileList.length > 0) {
+    if (rank.file_index == null || rank.file_index < 0 || rank.file_index >= candidate.fileList.length) {
+      failures.push(`file_index ${rank.file_index} out of range for filelist of ${candidate.fileList.length}`)
+    }
+  }
+  // 空 filelist（如 opensubtitles 单文件候选）：file_index 必须 null 或 0（0 容忍模型习惯性填 0；
+  // 解析侧对空表忽略 fileIndex），>0 即指向不存在的文件——报 failure。
+  if (candidate && candidate.fileList.length === 0) {
+    if (rank.file_index != null && rank.file_index !== 0) {
+      failures.push(`file_index ${rank.file_index} given but candidate has no filelist`)
     }
   }
 

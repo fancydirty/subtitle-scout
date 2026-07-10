@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import type { MediaIdentity } from './schemas.js'
+import type { MediaIdentity, ProviderName } from './schemas.js'
 
 export type CacheEntry =
-  | { kind: 'positive'; assrt_id: number; file_index: number | null; confidence: number }
+  | { kind: 'positive'; provider: ProviderName; providerId: string; fileIndex: number | null; confidence: number }
   | { kind: 'negative'; reason: string }
 
 interface StoredEntry { entry: CacheEntry; expiresAt: number }
@@ -36,6 +36,11 @@ export class DecisionCache {
     if (!existsSync(p)) return null
     const stored: StoredEntry = JSON.parse(readFileSync(p, 'utf8'))
     if (Date.now() > stored.expiresAt) return null
+    // Migrate legacy entries: assrt_id → provider/providerId
+    const e = stored.entry as CacheEntry & { assrt_id?: number; file_index?: number | null }
+    if (e.kind === 'positive' && e.assrt_id != null && (e as { providerId?: string }).providerId == null) {
+      stored.entry = { kind: 'positive', provider: 'assrt', providerId: String(e.assrt_id), fileIndex: e.file_index ?? null, confidence: e.confidence }
+    }
     return stored.entry
   }
 
