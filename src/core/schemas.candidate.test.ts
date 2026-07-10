@@ -16,4 +16,12 @@ describe('SubtitleCandidate', () => {
     expect(parseCandidateKey('garbage')).toBeNull()
     expect(parseCandidateKey('subhd:1')).toBeNull()
   })
+  it('parseCandidateKey rejects malformed keys', () => {
+    expect(parseCandidateKey('assrt:')).toBeNull() // 空 providerId
+    expect(parseCandidateKey('')).toBeNull()
+    expect(parseCandidateKey('assrt')).toBeNull() // 无冒号
+  })
+  it('parseCandidateKey splits on the FIRST colon: providerId may contain colons', () => {
+    expect(parseCandidateKey('assrt:123:456')).toEqual({ provider: 'assrt', providerId: '123:456' })
+  })
 })

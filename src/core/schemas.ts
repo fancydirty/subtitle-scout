@@ -174,7 +174,7 @@ export function candidateKey(c: { provider: string; providerId: string }): strin
 }
 export function parseCandidateKey(key: string): { provider: ProviderName; providerId: string } | null {
   const i = key.indexOf(':')
-  if (i <= 0) return null
+  if (i <= 0 || i === key.length - 1) return null
   const provider = key.slice(0, i)
   if (!(PROVIDERS as readonly string[]).includes(provider)) return null
   return { provider: provider as ProviderName, providerId: key.slice(i + 1) }

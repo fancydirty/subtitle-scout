@@ -104,7 +104,7 @@ export function toCandidate(sub: AssrtSub): SubtitleCandidate {
     language: sub.lang?.desc ?? null,
     subtype: sub.subtype ?? null,
     releaseSite: sub.release_site ?? null,
-    uploadDate: null,
+    uploadDate: null, // ASSRT 搜索响应不含上传日期
     fileList: sub.filelist.map((f, i) => ({ index: i, name: f.f })),
   }
 }
