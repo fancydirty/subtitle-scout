@@ -9,10 +9,12 @@
 ## Design Principles
 
 1. **One source at a time** — fully finish one provider (test + verify correct) before touching the next.
-2. **CLI-ify subtitle fetching** — agent uses subtitle tools with **zero mental burden**; tool internals handle anti-bot + DOM parsing + data cleaning, return clean structured data to agent as if "using a browser in the terminal" (inspired by OpenCLI's per-site pluggable adapter pattern).
+2. **Single aggregate CLI, two-level command** — NOT one CLI per site (that's dumb). One `subtitle-fetch` command that aggregates. Default invocation returns all sources that need NO browser anti-bot (fast). Only when the default returns nothing does the agent add `--deep` to invoke browser-mediated anti-bot sources. Agent mental burden = two steps max, like `git log` vs `git log --all`.
 3. **Local testing first (OrbStack)** — purpose is "破防拿到字幕" not "为资源拿字幕"; get anti-bot working locally before deploying to NAS.
 4. **Multimodal for captcha** — even simple digit captchas need multimodal vision model (we have company provider with no quota anxiety).
 5. **Provider abstraction precedes integration** — refactor away `AssrtSub` / `assrt_id`焊死 first, then integrate new sources into clean interface.
+6. **User-provided keys, we only offer the choice** — OpenSubtitles requires a user's own API key (we don't ship one; for testing we buy our own). Same principle as TMDB: recommend + support, don't provide the data source.
+7. **Language separation** — aggregate CLI is TS (shares `SubtitleCandidate`/schemas/llm.ts with main codebase). Anti-bot sidecar is Python (Camoufox's official binding is Python/Playwright, most mature), but it's an HTTP black box — language is fully transparent to agent and main program, which only ever call `/solve`. No language mixing on the agent decision path.
 
 ---
 
@@ -22,7 +24,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ subtitle-scout main (TS/Node)                           │
+│ subtitle-scout main (TS/Node, Vercel AI SDK)            │
 │  - Scheduler: jobs/runs state machine                   │
 │  - Provider abstraction: SubtitleCandidate interface    │
 │  - Existing LLM agents: planSearch / rankCandidates     │
@@ -30,21 +32,25 @@
              │ CLI invocation (子进程 spawn)
              ↓
 ┌─────────────────────────────────────────────────────────┐
-│ Per-Provider CLI Tools (独立可执行 TS 脚本)              │
-│  - subtitle-cli-opensubtitles                           │
-│  - subtitle-cli-zimuku (需破防)                         │
-│  - subtitle-cli-subf2m (需破防)                         │
-│  - subtitle-cli-assrt-gems (新端点，无需破防)           │
+│ subtitle-fetch  (单一聚合 CLI, TS)                       │
 │                                                          │
-│ 职责：query → [破防 sidecar] → parse DOM → 输出 JSON    │
-│ 输出格式：SubtitleCandidate[]（统一接口）               │
+│  默认 (无 --deep): 聚合无需破防的源，秒回               │
+│    ├─ ASSRT (search + gems: /similar, is_file)          │
+│    └─ OpenSubtitles (REST, 用户自备 key)                │
+│                                                          │
+│  --deep (默认空结果时才追加): 动用浏览器破防源          │
+│    ├─ zimuku   ─┐                                        │
+│    └─ subf2m   ─┴─→ 走 sidecar HTTP                     │
+│                                                          │
+│  内部按 provider adapter 分派；统一输出 SubtitleCandidate[] │
 └────────────┬────────────────────────────────────────────┘
-             │ HTTP (仅破防 CLI)
+             │ HTTP (仅 --deep 破防源)
              ↓
 ┌─────────────────────────────────────────────────────────┐
-│ Anti-Bot Sidecar (独立容器，OrbStack 本地测试)          │
+│ Anti-Bot Sidecar (独立容器 Python, OrbStack 本地测试)   │
 │  - Camoufox (headful Firefox + Xvfb)                    │
-│  - Vision LLM (多模态读验证码，替代 ddddocr)            │
+│  - 单浏览器实例 + 多标签页池 (共享指纹/cookie/session)  │
+│  - Vision LLM (多模态读数字验证码，替代 ddddocr)        │
 │  - FlareSolverr (可选前置，纯 CF 快路)                  │
 │  - 暴露 HTTP API: /solve {url,action} → {cookies,html}  │
 └─────────────────────────────────────────────────────────┘
@@ -55,11 +61,30 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
+### The Aggregate CLI Contract
+
+```bash
+# 默认：无需破防的源聚合，秒回
+subtitle-fetch --query "爱，死亡和机器人" --year 2022 --season 3 --imdb tt9561862 --format json
+# → [ ...ASSRT candidates, ...OpenSubtitles candidates ]  (JSON array to stdout)
+
+# 空结果时，agent 追加 --deep：动用浏览器破防源
+subtitle-fetch --query "爱，死亡和机器人" --year 2022 --season 3 --deep --format json
+# → [ ...zimuku candidates, ...subf2m candidates ]  (via sidecar)
+```
+
+Agent decision loop:
+1. Run `subtitle-fetch <args>` (no `--deep`) — cheap, no browser.
+2. If output is `[]` (or below quality threshold after rank), re-run with `--deep`.
+3. Feed merged candidates into existing `rankCandidates`.
+
+Internally the CLI holds a per-provider adapter registry (borrowing OpenCLI's pluggable-adapter shape, but as one binary not N binaries). `--deep` simply toggles which adapters are enabled.
+
 ### Provider Classification (by anti-bot need)
 
 | Provider | Anti-Bot? | Integration Phase | Notes |
 |----------|-----------|-------------------|-------|
-| **OpenSubtitles.com** | ❌ No (official REST API) | Phase 1 | Best for Western shows (Young Sheldon, True Detective, Peacemaker S1); IMDB exact match → skip LLM query planning; free 10 downloads/day/user, VIP 1000/day; env `OPENSUBTITLES_API_KEY`; /login → JWT, /search → /download (charged on download, not search) |
+| **OpenSubtitles.com** | ❌ No (official REST API) | Phase 1 | Best for Western shows (Young Sheldon, True Detective, Peacemaker S1); IMDB exact match → skip LLM query planning; **user-provided key** (`OPENSUBTITLES_API_KEY`, optional — provider disabled if absent, same model as TMDB); free 10 downloads/day/user, VIP 1000/day; /login → JWT, /search → /download (charged on download, not search). We buy our own key for testing. |
 | **ASSRT gems** | ❌ No (existing stable API) | Phase 1 | Two white-pickup endpoints: `/sub/similar` (pass hit id → 5 similar subs, free recall expansion), `is_file=1` (filename fallback query). No IMDB query capability confirmed. |
 | **zimuku** | ✅ Yes (yunsuo cloud-lock + digit captcha) | Phase 2 | Largest Chinese increment; Bazarr `zimuku.py` reference; domain drift (srtku.com / zimuku.org / zmk.pw) → must configurable `base_url`; digit captcha → vision LLM |
 | **subf2m.co** | ✅ Yes (CF + occasional captcha) | Phase 2 | Native IMDB search; less captcha than zimuku; Bazarr has impl |
@@ -68,9 +93,9 @@
 
 ### Responsibility Boundaries
 
-- **Sidecar**: ONLY "get the page" (execute JS, pass CF, solve captcha, return cookie + HTML). Zero subtitle business logic.
-- **Per-provider CLI**: Take query args → [call sidecar if needed] → parse HTML (fixed XPath/CSS selectors OR LLM-generated rules) → extract subtitle list → output `SubtitleCandidate[]` JSON to stdout. Agent reads stdout, zero internal knowledge of how sidecar works.
-- **Main program**: Invoke CLI as subprocess, parse JSON, feed into existing `rankCandidates` flow.
+- **Sidecar**: ONLY "get the page" (execute JS, pass CF, solve captcha, return cookie + HTML). Zero subtitle business logic. Python container, HTTP black box — its language never touches the agent path.
+- **Aggregate CLI (`subtitle-fetch`, TS)**: Parse args → dispatch to enabled provider adapters (default = no-anti-bot set; `--deep` = also anti-bot set) → each adapter [calls sidecar if needed] → parse HTML/JSON → merge into `SubtitleCandidate[]` → output JSON to stdout. Agent reads stdout, zero internal knowledge of how any provider or the sidecar works.
+- **Main program**: Invoke `subtitle-fetch` as subprocess (retry with `--deep` on empty), parse JSON, feed into existing `rankCandidates` flow.
 
 ---
 
@@ -239,7 +264,8 @@ class OpenSubtitlesAdapter implements ProviderAdapter {
 - **Browser:** Camoufox (Firefox-based anti-detect, compile-level fingerprint spoofing)
   - Install: fetch pre-built Camoufox binary for arm64 (check daijro/camoufox releases)
   - Xvfb for headful mode in headless container (`Xvfb :99 -screen 0 1920x1080x24`)
-  - Playwright or patchright-python to drive Camoufox
+  - Playwright-python (Camoufox's official binding) to drive browser
+  - **Concurrency model: single browser instance + tab pool (BrowserContext with multiple pages)** — NOT multiple browser instances. Tabs share fingerprint/cookie/session, lower RAM. Requests queue if all tabs busy.
 - **Captcha solver:** Vision LLM (Claude Haiku 4.5 multimodal for simple digit captchas)
   - API call to main program's LLM runtime (company provider, no quota anxiety)
   - Input: screenshot of captcha image element
@@ -272,44 +298,53 @@ class OpenSubtitlesAdapter implements ProviderAdapter {
 - `docker-compose.local.yml` adds `antibot` service, exposes port 9000
 - Main program env: `ANTIBOT_SIDECAR_URL=http://antibot:9000` (container network) or `http://localhost:9000` (host testing)
 
-#### Per-Provider CLI Tools
+#### The Aggregate CLI (Replaces Per-Provider CLIs)
 
-**Location:** `src/cli/subtitle-fetch/` (independent TS scripts, compiled to `dist/cli/subtitle-fetch/`)
+**Location:** `src/cli/subtitle-fetch.ts` (single entry point, compiled to `dist/cli/subtitle-fetch.js`)
 
-**Naming:** `subtitle-cli-{provider}.ts` → `node dist/cli/subtitle-fetch/subtitle-cli-zimuku.js --query "..." --format json`
-
-**Interface (all providers):**
+**Interface:**
 
 ```bash
-# Input: query args (vary by provider)
-node dist/cli/subtitle-fetch/subtitle-cli-zimuku.js \
-  --query "爱，死亡和机器人 第3季" \
-  --year 2022 \
-  --season 3 \
-  --format json
+# Default: aggregate NO-anti-bot sources (ASSRT + OpenSubtitles + ASSRT gems), instant
+subtitle-fetch --query "爱，死亡和机器人" --year 2022 --season 3 --imdb tt9561862 --format json
+# → [ ...ASSRT candidates, ...OpenSubtitles candidates, ...ASSRT gems ]
 
-# Output: JSON array of SubtitleCandidate to stdout
+# Empty result or below quality threshold → agent retries with --deep
+subtitle-fetch --query "..." --year 2022 --season 3 --deep --format json
+# → [ ...zimuku candidates (via sidecar), ...subf2m candidates (via sidecar) ]
+
+# Output: JSON array of SubtitleCandidate to stdout (all sources merged)
 [
-  {
-    "provider": "zimuku",
-    "providerId": "dl_token_abc123",
-    "videoName": "Love.Death.Robots.S03E01.1080p.WEB-DL",
-    "nativeName": "爱，死亡和机器人",
-    "language": "zh-Hans",
-    "fileList": [{"index": 0, "name": "ldr_s03e01.srt", "size": 12345}]
-  }
+  {"provider": "assrt", "providerId": "12345", ...},
+  {"provider": "opensubtitles", "providerId": "file_abc", ...},
+  {"provider": "zimuku", "providerId": "dl_token_xyz", ...}
 ]
 
 # Errors: JSON to stderr + exit code 1
-{"error": "Captcha solve failed", "details": "..."}
+{"error": "Captcha solve failed on zimuku", "details": "..."}
 ```
 
-**Implementation (zimuku example):**
+**Internal architecture (inspired by OpenCLI's pluggable adapters):**
 
 ```typescript
-// src/cli/subtitle-fetch/subtitle-cli-zimuku.ts
+// src/cli/subtitle-fetch.ts
 import { parseArgs } from 'node:util'
-import { chromium } from 'patchright' // or fetch if sidecar does all browser work
+import type { SubtitleCandidate } from '../core/schemas.js'
+
+// Provider adapter interface
+interface ProviderAdapter {
+  enabled(args: FetchArgs, deep: boolean): boolean  // is this adapter active for this invocation?
+  search(args: FetchArgs): Promise<SubtitleCandidate[]>
+}
+
+// Adapters registry
+const ADAPTERS: ProviderAdapter[] = [
+  assrtAdapter,           // enabled: !deep (default set)
+  assrtGemsAdapter,       // enabled: !deep
+  openSubtitlesAdapter,   // enabled: !deep && env.OPENSUBTITLES_API_KEY exists
+  zimukuAdapter,          // enabled: deep  (anti-bot set)
+  subf2mAdapter,          // enabled: deep
+]
 
 async function main() {
   const { values } = parseArgs({
@@ -317,61 +352,36 @@ async function main() {
       query: { type: 'string' },
       year: { type: 'string' },
       season: { type: 'string' },
+      imdb: { type: 'string' },
+      deep: { type: 'boolean', default: false },
       format: { type: 'string', default: 'json' },
     },
   })
 
-  const antibot = process.env.ANTIBOT_SIDECAR_URL || 'http://localhost:9000'
-  
-  // Step 1: Get search results page via sidecar
-  const searchUrl = `https://zimuku.org/search?q=${encodeURIComponent(values.query!)}`
-  const resp = await fetch(`${antibot}/solve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: searchUrl, action: 'get_html' }),
-  })
-  const { html, cookies } = await resp.json()
+  const args: FetchArgs = { query: values.query!, year: values.year, season: values.season, imdb: values.imdb }
+  const enabledAdapters = ADAPTERS.filter(a => a.enabled(args, values.deep!))
 
-  // Step 2: Parse HTML with cheerio (fixed selectors, learned from Bazarr zimuku.py)
-  const $ = cheerio.load(html)
-  const candidates: SubtitleCandidate[] = []
-  $('.search-result .item').each((i, el) => {
-    const title = $(el).find('.title').text().trim()
-    const downloadToken = $(el).find('a.download').attr('href')?.match(/dl=([^&]+)/)?.[1]
-    if (downloadToken) {
-      candidates.push({
-        provider: 'zimuku',
-        providerId: downloadToken,
-        videoName: title,
-        nativeName: null, // extract if available
-        language: 'zh-Hans', // infer from page
-        fileList: [{ index: 0, name: `${title}.srt` }],
-      })
-    }
-  })
+  // Fan-out: run all enabled adapters concurrently
+  const results = await Promise.all(enabledAdapters.map(a => a.search(args).catch(err => {
+    console.error(JSON.stringify({ provider: a.name, error: err.message }))
+    return []  // fail-soft: one provider's failure doesn't kill the whole CLI
+  })))
 
-  // Step 3: Output JSON
+  // Merge + output
+  const candidates = results.flat()
   console.log(JSON.stringify(candidates, null, 2))
 }
-
-main().catch(err => {
-  console.error(JSON.stringify({ error: err.message, stack: err.stack }))
-  process.exit(1)
-})
 ```
 
-**Captcha flow (if page requires):**
-1. CLI detects captcha presence (e.g. `$('.captcha-img').length > 0`)
-2. CLI calls sidecar `POST /solve { action: 'solve_captcha', selector: '.captcha-img' }`
-3. Sidecar: screenshot captcha element → send to vision LLM → return recognized text
-4. CLI: submit captcha text → retry page fetch
+**Anti-bot adapters (zimuku/subf2m)** internally call the sidecar HTTP `/solve` endpoint, same flow as the old per-provider CLI examples. Default adapters (ASSRT/OpenSubtitles) never touch the sidecar.
 
 #### Tasks (Phase 2, 严格顺序)
 
 1. **Build sidecar Dockerfile** (`deploy/antibot/Dockerfile`)
-   - Install Xvfb, Camoufox, patchright-python
+   - Python base, install Xvfb, Camoufox, Playwright-python
    - Expose Flask/FastAPI HTTP server on port 9000
-   - `/solve` endpoint: handle `get_html` (navigate + return HTML + cookies) and `solve_captcha` (screenshot → LLM → text)
+   - `/solve` endpoint: handle `get_html` (navigate in tab + return HTML + cookies) and `solve_captcha` (screenshot → LLM → text)
+   - Tab pool: pre-warm 2 tabs (BrowserContext), queue requests if busy
 
 2. **Test sidecar locally (OrbStack)**
    - `docker build -t subtitle-scout-antibot deploy/antibot`
@@ -379,24 +389,24 @@ main().catch(err => {
    - `curl -X POST http://localhost:9000/solve -d '{"url":"https://httpbin.org/html","action":"get_html"}'` → verify returns HTML
    - `curl -X POST http://localhost:9000/solve -d '{"url":"https://zimuku.org","action":"get_html"}'` → verify passes yunsuo (check HTML for actual content, not block page)
 
-3. **Build subtitle-cli-zimuku**
-   - Implement search flow (call sidecar → parse HTML → output JSON)
-   - Test standalone: `node dist/cli/subtitle-fetch/subtitle-cli-zimuku.js --query "爱，死亡和机器人" --format json` → verify JSON output
+3. **Extend aggregate CLI with zimuku adapter** (`src/cli/subtitle-fetch.ts`)
+   - Add `zimukuAdapter: ProviderAdapter` to registry, `enabled: (_, deep) => deep`
+   - Implement `zimukuAdapter.search()`: call sidecar → parse HTML (Bazarr zimuku.py selectors) → return `SubtitleCandidate[]`
+   - Test standalone: `subtitle-fetch --query "爱，死亡和机器人" --deep --format json` → verify zimuku candidates in output
 
 4. **Integrate zimuku into pipeline**
-   - Add `adapters/providers/zimuku.ts` wrapper that spawns CLI subprocess, parses JSON stdout
-   - Add to provider fan-out in `pipeline.ts`
-   - Test: run daemon on 1 Chinese show known to exist on zimuku, verify candidate appears in journal
+   - Modify `pipeline.ts` to invoke `subtitle-fetch --deep` on empty default result
+   - Test: run daemon on 1 Chinese show known to exist on zimuku, verify candidate appears in journal with `provider: "zimuku"`
 
-5. **Build subtitle-cli-subf2m** (same pattern as zimuku)
+5. **Extend aggregate CLI with subf2m adapter** (same pattern as zimuku)
 
 6. **Integrate subf2m into pipeline**
 
 7. **Phase 2 live test (OrbStack local)**
    - Pick 3 Chinese shows (at least one with captcha on zimuku)
-   - Run daemon, verify zimuku/subf2m candidates merge with ASSRT/OpenSubtitles
-   - Check sidecar logs: captcha solve success rate
-   - Check journals: all 4 providers firing, LLM `rankCandidates` picking best across sources
+   - Run daemon, verify default → `--deep` fallback flow working
+   - Check sidecar logs: tab reuse working, captcha solve success rate
+   - Check journals: all 4 providers firing (ASSRT, OpenSubtitles, zimuku, subf2m), LLM `rankCandidates` picking best across sources
 
 8. **Phase 2 sign-off**: User reviews multi-source results, confirms anti-bot working locally
 
@@ -443,15 +453,15 @@ main().catch(err => {
 
 ---
 
-## Open Questions for User
+## Design Decisions (User Confirmed)
 
-1. **OpenSubtitles VIP account**: Free tier = 10 downloads/day. For heavy use, should we budget for VIP ($3/month = 1000 downloads/day)? Or acceptable to exhaust free quota and fall back to other sources?
+1. **OpenSubtitles = user-provided key** — We only offer the choice (env `OPENSUBTITLES_API_KEY` optional, provider disabled if absent, same model as TMDB). For testing we buy our own. Free tier 10 downloads/day, VIP $3/month = 1000/day. User decides whether to pay.
 
-2. **Anti-bot provider quality bar**: If zimuku/subf2m produce >20% mismatch rate in Phase 2 testing, acceptable to ship Phase 1 only (OpenSubtitles + ASSRT gems) and backlog anti-bot indefinitely? Or is "拿到字幕" more important than accuracy (manual review workflow instead)?
+2. **Anti-bot provider quality bar** — If zimuku/subf2m produce >20% mismatch in Phase 2 testing, ship Phase 1 only (OpenSubtitles + ASSRT gems) and backlog anti-bot indefinitely. Quality gate stands.
 
-3. **CLI tool language**: Current spec uses TS (consistency with main codebase). Alternative: Python (Bazarr reference code directly portable, richer anti-bot ecosystem). Preference?
+3. **Language separation resolved** — Aggregate CLI is **TS** (shares `SubtitleCandidate`/schemas/llm.ts with main codebase, consistency). Anti-bot sidecar is **Python** (Camoufox's official binding, most mature) but it's an HTTP black box — language never touches agent path.
 
-4. **Sidecar resource limits**: Camoufox + Xvfb can be heavy (500MB+ RAM per instance). For OrbStack local testing, acceptable. For future NAS deployment, may need request queuing (max 2 concurrent browser instances). Address now or defer to NAS deployment phase?
+4. **Sidecar concurrency model clarified** — **Single browser instance + tab pool (BrowserContext with multiple pages)**, NOT multiple browser instances. Tabs share fingerprint/cookie/session, lower RAM. Requests queue if all tabs busy. Address resource limits at NAS deployment phase if needed (current spec: tab pool of 2 for OrbStack testing).
 
 ---
 
