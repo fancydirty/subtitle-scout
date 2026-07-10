@@ -267,7 +267,7 @@ export function makeRunEpisode(
 
     // 2. Get chinese title (jellyfin fallback) + optional TMDB variants
     const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
-    const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)) : undefined
+    const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)).catch(() => undefined) : undefined
 
     // 2b. Write chinese title back to library (仅当解析到 CJK 名时；失败静默不阻塞主流程)
     if (chineseTitle) {
