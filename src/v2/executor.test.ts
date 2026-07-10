@@ -56,7 +56,7 @@ describe('executor', () => {
     // Mock runEpisode: only e2 is representative (min episode number among missing)
     const runEpisode = vi.fn(async (episodeId: string) => {
       expect(episodeId).toBe('e2') // Should pick e2, not e1 (covered)
-      return { decision: 'download', journalPath: '/journals/test.json', detail: 'Downloaded successfully' }
+      return { decision: 'download', journalPath: '/journals/test.json' }
     })
 
     await executeJob(job, mkDeps(runEpisode))
@@ -79,7 +79,7 @@ describe('executor', () => {
       onCovered('e1', '/tv/s1e1.zh-Hans.srt')
       onCovered('e2', '/tv/s1e2.zh-Hans.srt')
       onCovered('e3', '/tv/s1e3.zh-Hans.srt')
-      return { decision: 'download', journalPath: '/journals/test.json', detail: 'Season pack downloaded' }
+      return { decision: 'download', journalPath: '/journals/test.json' }
     })
 
     await executeJob(job, mkDeps(runEpisode))
@@ -93,11 +93,11 @@ describe('executor', () => {
     const finalJob = jobs.get(job.id)!
     expect(finalJob.state).toBe('done')
 
-    // Verify runs record exists
+    // Verify runs record exists，detail 为人话摘要（季号 + 命中集数，无路径）
     const runRecords = runs.getByJobId(job.id)
     expect(runRecords.length).toBe(1)
     expect(runRecords[0].decision).toBe('download')
-    expect(runRecords[0].detail).toBe('Season pack downloaded')
+    expect(runRecords[0].detail).toBe('第 1 季 3 集字幕已就位')
   })
 
   it('部分覆盖：只 covered e1 → completePartial（job 回 wanted, attempt-1），已覆盖战果保留', async () => {
@@ -115,7 +115,7 @@ describe('executor', () => {
     const runEpisode = vi.fn(async (episodeId: string, onCovered: (id: string, path: string) => void) => {
       expect(episodeId).toBe('e1')
       onCovered('e1', '/tv/s1e1.zh-Hans.srt')
-      return { decision: 'download', journalPath: '/journals/test.json', detail: 'Partial coverage' }
+      return { decision: 'download', journalPath: '/journals/test.json' }
     })
 
     await executeJob(job2, mkDeps(runEpisode))
@@ -129,6 +129,8 @@ describe('executor', () => {
     const finalJob = jobs.get(job2.id)!
     expect(finalJob.state).toBe('wanted')
     expect(finalJob.attempt).toBe(0) // decremented from 1
+    // 部分覆盖单集 → runs.detail 人话摘要 SxxExx
+    expect(runs.getByJobId(job2.id)[0].detail).toBe('S01E01 字幕已就位')
   })
 
   it('全军覆没 no_safe_match → completeNoMatch + 未覆盖集标记 unavailable', async () => {
@@ -139,7 +141,7 @@ describe('executor', () => {
 
     // Mock runEpisode: no match found
     const runEpisode = vi.fn(async () => {
-      return { decision: 'no_safe_match', journalPath: '/journals/test.json', detail: 'No safe match found' }
+      return { decision: 'no_safe_match', journalPath: '/journals/test.json' }
     })
 
     await executeJob(job, mkDeps(runEpisode))
@@ -151,10 +153,34 @@ describe('executor', () => {
     expect(ep2.sub_status).toBe('unavailable')
     expect(ep1.recheck_after).toBeGreaterThan(now)
     expect(ep2.recheck_after).toBeGreaterThan(now)
+    // status_reason 人话化（修掉英文 tooltip）
+    expect(ep1.status_reason).toBe('没找到合适的中文字幕')
 
     // Verify job is failed (or dormant after multiple attempts)
     const finalJob = jobs.get(job.id)!
     expect(finalJob.state).toBe('failed')
+    // runs.detail 人话化
+    expect(runs.getByJobId(job.id)[0].detail).toBe('没找到合适的中文字幕')
+  })
+
+  it('ask_user → 人话 detail 带置信数字 + status_reason 人话化', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'ask_user',
+      journalPath: '/journals/test.json',
+      confidence: 0.82,
+      minConfidence: 0.86,
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    const ep1 = lib.getEpisode('e1')!
+    expect(ep1.sub_status).toBe('unavailable')
+    expect(ep1.status_reason).toBe('找到候选但把握不足，待人工确认')
+    expect(runs.getByJobId(job.id)[0].detail).toBe('找到候选但把握不足（置信 0.82 < 0.86），待人工确认')
   })
 
   it('runEpisode 抛错 → completeError，短退避', async () => {
@@ -174,6 +200,8 @@ describe('executor', () => {
     expect(finalJob.state).toBe('failed')
     expect(finalJob.last_error).toContain('ASSRT API timeout')
     expect(finalJob.next_retry_at).toBe(now + ERROR_BACKOFF_MS[0]) // short backoff (30s)
+    // runs.detail 人话化（错因保留但不裸露路径）
+    expect(runs.getByJobId(job.id)[0].detail).toBe('遇到临时错误，稍后自动重试：ASSRT API timeout')
   })
 
   it('C1: decision=error（pipeline 内部 catch 不 throw）→ completeError 短退避轨，不掉内容轨', async () => {
@@ -183,7 +211,7 @@ describe('executor', () => {
 
     const runEpisode = vi.fn(async () => {
       // pipeline.ts 外层 catch 是 return finish('error') 而不是 throw
-      return { decision: 'error', journalPath: '/journals/err.json', detail: 'LLM 502' }
+      return { decision: 'error', journalPath: '/journals/err.json', reasons: ['LLM 502'] }
     })
 
     await executeJob(job, mkDeps(runEpisode))
@@ -195,6 +223,8 @@ describe('executor', () => {
     expect(finalJob.last_error).toBe('LLM 502')
     // 集不被标 unavailable（这不是内容性结论）
     expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+    // runs.detail 人话化，携带简短错因
+    expect(runs.getByJobId(job.id)[0].detail).toBe('遇到临时错误，稍后自动重试：LLM 502')
   })
 
   it('C1: decision=retry_later 同走短退避轨', async () => {
@@ -221,7 +251,7 @@ describe('executor', () => {
 
     const runEpisode = vi.fn(async (_: string, onCovered: (id: string, path: string) => void) => {
       onCovered('e1', '/tv/s1e1.zh-Hans.srt')
-      return { decision: 'download', journalPath: '/journals/test.json', detail: 'covered all' }
+      return { decision: 'download', journalPath: '/journals/test.json' }
     })
 
     await executeJob(job, mkDeps(runEpisode))
@@ -245,7 +275,7 @@ describe('executor', () => {
     // Mock runEpisode: movie download
     const runEpisode = vi.fn(async (itemId: string) => {
       expect(itemId).toBe('m1')
-      return { decision: 'download', journalPath: '/journals/test.json', detail: '/movies/test.zh-Hans.srt' }
+      return { decision: 'download', journalPath: '/journals/test.json', subtitlePath: '/movies/test.zh-Hans.srt' }
     })
 
     await executeJob(job, mkDeps(runEpisode))
@@ -256,6 +286,8 @@ describe('executor', () => {
     // Verify job is done
     const finalJob = jobs.get(job.id)!
     expect(finalJob.state).toBe('done')
+    // 电影 detail 人话摘要
+    expect(runs.getByJobId(job.id)[0].detail).toBe('字幕已就位')
   })
 
   it('代表集自身被搞定但未走季包：download → markCovered(detail 路径, scout-download)', async () => {
@@ -267,8 +299,8 @@ describe('executor', () => {
     // Mock runEpisode: only representative episode covered (no season pack callback)
     const runEpisode = vi.fn(async (episodeId: string) => {
       expect(episodeId).toBe('e1')
-      // No onCovered callback, but decision is download with subtitlePath in detail
-      return { decision: 'download', journalPath: '/journals/test.json', detail: '/tv/s1e1.zh-Hans.srt' }
+      // No onCovered callback, but decision is download with subtitlePath
+      return { decision: 'download', journalPath: '/journals/test.json', subtitlePath: '/tv/s1e1.zh-Hans.srt' }
     })
 
     await executeJob(job, mkDeps(runEpisode))
@@ -314,7 +346,7 @@ describe('executor', () => {
     const runEpisode = vi.fn(async () => ({
       decision: 'adopted_local',
       journalPath: '/journals/test.json',
-      detail: '/tv/s1e1.zh-Hans.ass',
+      subtitlePath: '/tv/s1e1.zh-Hans.ass',
     }))
 
     await executeJob(job, mkDeps(runEpisode))
@@ -342,6 +374,38 @@ describe('executor', () => {
     // Verify job is done
     const finalJob = jobs.get(job.id)!
     expect(finalJob.state).toBe('done')
+  })
+
+  it('runs.detail 守卫：不裸露 /media 路径、不出现纯英文句', async () => {
+    // 覆盖各结局，收集 runs.detail 做整体断言
+    // download（单集代表）
+    mkEpisode('e1', 'sA', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 'sA', season: 1 }, now)
+    const jA = jobs.claimNext(now)!
+    await executeJob(jA, mkDeps(vi.fn(async () => ({
+      decision: 'download', journalPath: '/j.json', subtitlePath: '/media/tv/sA/e1.zh-Hans.srt',
+    }))))
+
+    // no_safe_match
+    mkEpisode('e2', 'sB', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 'sB', season: 1 }, now)
+    const jB = jobs.claimNext(now)!
+    await executeJob(jB, mkDeps(vi.fn(async () => ({ decision: 'no_safe_match', journalPath: '/j.json' }))))
+
+    // error（错因带路径，应被清洗）
+    mkEpisode('e3', 'sC', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 'sC', season: 1 }, now)
+    const jC = jobs.claimNext(now)!
+    await executeJob(jC, mkDeps(vi.fn(async () => ({
+      decision: 'error', journalPath: '/j.json', reasons: ['refused write to /media/tv/sC/e1'],
+    }))))
+
+    const details = runs.getByJobId(jA.id).concat(runs.getByJobId(jB.id), runs.getByJobId(jC.id))
+      .map(r => r.detail ?? '')
+    for (const d of details) {
+      expect(d).not.toMatch(/\/media/)          // 无裸路径前缀
+      expect(d).toMatch(/[一-鿿]/)      // 至少含中文（非纯英文句）
+    }
   })
 })
 
@@ -396,7 +460,14 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     const runEpisode = makeRunEpisode(mkAssembled(jf), lib, { mediaRoots: [mediaRoot] })
     const result = await runEpisode('m1', vi.fn())
 
-    expect(result).toEqual({ decision: 'download', journalPath: '/j.json', detail: '/subs/x.srt' })
+    expect(result).toEqual({
+      decision: 'download',
+      journalPath: '/j.json',
+      subtitlePath: '/subs/x.srt',
+      confidence: null,
+      minConfidence: 0.5,
+      reasons: [],
+    })
     const [, ctx, outDir, , opts] = runPipelineMock.mock.calls[0]
     expect(ctx.preferences.auto_download_min_confidence).toBe(0.5) // I5a
     expect(outDir).toBe(join(mediaRoot, 'movie'))

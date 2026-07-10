@@ -23,6 +23,8 @@ export interface LibraryItemDTO {
   chineseTitle: string | null
   year: number | null
   posterTag: string | null
+  /** 海报墙分区标签（剧集/动漫/电影/其他），按库目录结构零配置派生 */
+  section: string
   coverage: CoverageDTO
   job: LibraryJobDTO | null
 }
@@ -35,6 +37,7 @@ interface SeriesRow {
   poster_tag: string | null
 }
 interface MovieRow extends SeriesRow {
+  path: string
   sub_status: string
 }
 interface CoverageRow {
@@ -58,6 +61,58 @@ function addToCoverage(cov: CoverageDTO, status: string, n: number): void {
   else if (status === 'unavailable') cov.unavailable += n
 }
 
+// ---- Section 派生（海报墙分区，零配置按库目录结构分组）----
+
+/** 常见库目录名 → 人话分区标签。key 统一小写。 */
+const SECTION_LABELS: Record<string, string> = {
+  tv: '剧集', tvshows: '剧集', shows: '剧集', series: '剧集', drama: '剧集',
+  anime: '动漫', animation: '动漫', cartoon: '动漫',
+  movie: '电影', movies: '电影', film: '电影', films: '电影',
+}
+
+/** 首字母大写（未知目录名原样展示）。 */
+function titleCase(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
+}
+
+/** path 的目录段（去掉文件名），posix 风格，末尾空段丢弃。 */
+function dirSegments(path: string): string[] {
+  const segs = path.split('/')
+  segs.pop() // 去掉文件名
+  return segs
+}
+
+/**
+ * 库内所有 path 的最长公共祖先目录段数 = 媒体根深度。
+ * 任意用户按自己的库根自动对齐（如 /media 深度 2：['','media']）。
+ */
+export function commonRootDepth(paths: string[]): number {
+  const arrays = paths.filter(Boolean).map(dirSegments)
+  if (arrays.length === 0) return 0
+  const shortest = Math.min(...arrays.map((a) => a.length))
+  let k = 0
+  for (; k < shortest; k++) {
+    const seg = arrays[0][k]
+    if (!arrays.every((a) => a[k] === seg)) break
+  }
+  return k
+}
+
+/**
+ * 取 path 在媒体根下的一级目录名（rootDepth 处的段），映射为人话分区标签。
+ * 如 rootDepth=2、/media/tv/... → "tv" → "剧集"；未知目录名首字母大写原样展示。
+ */
+export function sectionOf(path: string, rootDepth: number): string {
+  if (!path) return '其他'
+  const segs = dirSegments(path)
+  // 媒体根下一级目录；越界（条目直接在根下）时回退到最末目录段
+  const raw = segs[rootDepth] ?? segs[segs.length - 1] ?? ''
+  const mapped = SECTION_LABELS[raw.toLowerCase()]
+  if (mapped) return mapped
+  return titleCase(raw) || '其他'
+}
+
+
 /** 库视图：series（按剧聚合集数）+ movies（单行），各带覆盖聚合与最新 job。 */
 export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
   const seriesRows = db
@@ -65,6 +120,13 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
       `SELECT id, name, chinese_title, year, poster_tag FROM series ORDER BY name ASC`
     )
     .all() as SeriesRow[]
+
+  // 每剧代表 path：取该剧任一集的 min(path)，用于派生分区
+  const seriesPathRows = db
+    .prepare(`SELECT series_id AS key, min(path) AS path FROM episodes GROUP BY series_id`)
+    .all() as { key: string; path: string }[]
+  const pathBySeriesId = new Map<string, string>()
+  for (const row of seriesPathRows) pathBySeriesId.set(row.key, row.path)
 
   // series 覆盖聚合：按 (series_id, sub_status) 计数
   const seriesCoverage = db
@@ -94,6 +156,16 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
   const jobBySeriesId = new Map<string, LibraryJobDTO>()
   for (const j of seriesJobs) jobBySeriesId.set(j.key, { state: j.state, priority: j.priority })
 
+  const movieRows = db
+    .prepare(
+      `SELECT id, name, chinese_title, year, poster_tag, path, sub_status FROM movies ORDER BY name ASC`
+    )
+    .all() as MovieRow[]
+
+  // 媒体根深度：series 代表 path + movie path 一起求最长公共祖先（零配置对齐用户库根）
+  const allPaths = [...pathBySeriesId.values(), ...movieRows.map((m) => m.path)]
+  const rootDepth = commonRootDepth(allPaths)
+
   const seriesItems: LibraryItemDTO[] = seriesRows.map((s) => ({
     id: s.id,
     kind: 'series',
@@ -101,15 +173,10 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     chineseTitle: s.chinese_title,
     year: s.year,
     posterTag: s.poster_tag,
+    section: sectionOf(pathBySeriesId.get(s.id) ?? '', rootDepth),
     coverage: coverageBySeriesId.get(s.id) ?? emptyCoverage(),
     job: jobBySeriesId.get(s.id) ?? null,
   }))
-
-  const movieRows = db
-    .prepare(
-      `SELECT id, name, chinese_title, year, poster_tag, sub_status FROM movies ORDER BY name ASC`
-    )
-    .all() as MovieRow[]
 
   const movieJobs = db
     .prepare(
@@ -132,6 +199,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
       chineseTitle: m.chinese_title,
       year: m.year,
       posterTag: m.poster_tag,
+      section: sectionOf(m.path, rootDepth),
       coverage,
       job: jobByMovieId.get(m.id) ?? null,
     }

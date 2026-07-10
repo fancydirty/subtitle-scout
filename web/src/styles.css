@@ -25,7 +25,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 .tab.history-link { color: var(--text-faint); }
 
 /* ---------- poster wall ---------- */
-.wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 20px; padding: 28px; }
+.sections { padding: 8px 28px 28px; }
+.wall-section { margin-top: 22px; }
+.wall-section:first-child { margin-top: 10px; }
+.section-head { font-size: 13.5px; font-weight: 600; color: var(--text); letter-spacing: -.01em; padding: 6px 2px 0; }
+.section-count { color: var(--text-faint); font-weight: 400; }
+.wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 20px; padding: 16px 0 0; }
 .card { cursor: pointer; }
 .card:focus-visible { outline: none; }
 .card:focus-visible .poster { outline: 2px solid rgba(45,212,191,.55); outline-offset: 2px; }

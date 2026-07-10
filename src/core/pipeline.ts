@@ -56,6 +56,10 @@ export interface PipelineResult {
   subtitlePath?: string
   journalPath: string
   fromCache?: boolean
+  /** 门评置信度（ask_user 展示用；不适用时 null） */
+  confidence?: number | null
+  /** 结论理由（人话摘要/错因取首条） */
+  reasons?: string[]
   stats: { durationMs: number; llmCalls: number; apiCalls: number }
   coveredEpisodes?: { episodeCode: string; subtitlePath: string }[]
 }
@@ -79,7 +83,7 @@ export async function runPipeline(
         ? { downloaded: true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
         : null,
     }, journalDir)
-    return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes }
+    return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, confidence: extra.confidence ?? null, reasons: extra.reasons ?? [], stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes }
   }
 
   try {

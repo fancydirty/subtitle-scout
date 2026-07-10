@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, proxyPoster } from './apiV2.js'
+import { buildLibrary, buildSeriesDetail, buildRuns, proxyPoster, sectionOf, commonRootDepth } from './apiV2.js'
 
 let db: ScoutDb
 let lib: LibraryRepo
@@ -40,15 +40,15 @@ beforeEach(() => {
   db = openDb(':memory:')
   lib = new LibraryRepo(db)
 
-  // Series A: 覆盖各态各一
+  // Series A: 覆盖各态各一（路径在 /media/tv 下）
   lib.upsertSeries({ id: 's1', name: 'Series A', chineseTitle: '甲剧', posterTag: 'ptag-s1', year: 2021 })
-  lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/p/e1', subStatus: 'covered' })
-  lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/p/e2', subStatus: 'missing' })
-  lib.upsertEpisode({ id: 'e3', seriesId: 's1', season: 1, episode: 3, name: 'E3', path: '/p/e3', subStatus: 'embedded' })
-  lib.upsertEpisode({ id: 'e4', seriesId: 's1', season: 2, episode: 1, name: 'E4', path: '/p/e4', subStatus: 'unavailable' })
+  lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/tv/Series A/S01/e1.mkv', subStatus: 'covered' })
+  lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/media/tv/Series A/S01/e2.mkv', subStatus: 'missing' })
+  lib.upsertEpisode({ id: 'e3', seriesId: 's1', season: 1, episode: 3, name: 'E3', path: '/media/tv/Series A/S01/e3.mkv', subStatus: 'embedded' })
+  lib.upsertEpisode({ id: 'e4', seriesId: 's1', season: 2, episode: 1, name: 'E4', path: '/media/tv/Series A/S02/e4.mkv', subStatus: 'unavailable' })
 
-  // Movie Z
-  lib.upsertMovie({ id: 'm1', name: 'Movie Z', path: '/mv/z', subStatus: 'missing', posterTag: 'ptag-m1', year: 2019 })
+  // Movie Z（路径在 /media/movies 下）
+  lib.upsertMovie({ id: 'm1', name: 'Movie Z', path: '/media/movies/Movie Z/z.mkv', subStatus: 'missing', posterTag: 'ptag-m1', year: 2019 })
 
   // Jobs: s1 season1 (searching, 100), movie m1 (wanted, 0)
   const seriesJobId = insertJob(db, { kind: 'series_season', seriesId: 's1', season: 1, state: 'searching', priority: 100 })
@@ -77,11 +77,45 @@ describe('buildLibrary', () => {
     expect(movie.job).toEqual({ state: 'wanted', priority: 0 })
   })
 
+  it('按库目录派生 section：tv→剧集、movies→电影', () => {
+    const lib2 = buildLibrary(db)
+    expect(lib2.find(x => x.id === 's1')!.section).toBe('剧集')
+    expect(lib2.find(x => x.id === 'm1')!.section).toBe('电影')
+  })
+
+  it('无集数的孤儿剧 section 回退为其他', () => {
+    lib.upsertSeries({ id: 's9', name: 'Orphan' })
+    const item = buildLibrary(db).find(x => x.id === 's9')!
+    expect(item.section).toBe('其他')
+  })
+
   it('无 job 的条目 job=null', () => {
     lib.upsertSeries({ id: 's9', name: 'Orphan' })
     const item = buildLibrary(db).find(x => x.id === 's9')!
     expect(item.job).toBeNull()
     expect(item.coverage).toEqual({ covered: 0, missing: 0, embedded: 0, unavailable: 0 })
+  })
+})
+
+describe('section 派生（纯函数）', () => {
+  it('三种路径在同一媒体根下派生出各自分区', () => {
+    const paths = [
+      '/media/tv/Peacemaker/S01/e1.mkv',
+      '/media/anime/Frieren/S01/e1.mkv',
+      '/media/movies/The Matrix (1999)/matrix.mkv',
+    ]
+    const depth = commonRootDepth(paths) // /media → ['', 'media'] = 2
+    expect(depth).toBe(2)
+    expect(sectionOf(paths[0], depth)).toBe('剧集')
+    expect(sectionOf(paths[1], depth)).toBe('动漫')
+    expect(sectionOf(paths[2], depth)).toBe('电影')
+  })
+
+  it('未知目录名首字母大写原样展示；空路径→其他', () => {
+    const paths = ['/srv/media/kids/Bluey/e1.mkv', '/srv/media/tv/Show/e1.mkv']
+    const depth = commonRootDepth(paths) // /srv/media → 3
+    expect(sectionOf('/srv/media/kids/Bluey/e1.mkv', depth)).toBe('Kids')
+    expect(sectionOf('', depth)).toBe('其他')
   })
 })
 
