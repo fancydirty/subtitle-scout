@@ -1,10 +1,62 @@
-// web/src/api/types.ts — 必须与 src/dashboard/types.ts 保持一致
-export type Tone = 'ok' | 'muted' | 'skip' | 'fail'
-export interface SummaryDTO { status: 'running'; todayReady: number; totalReady: number; queuePending: number; queueDormant: number; runsInWindow: number; windowHours: number }
-export interface InFlightItemDTO { itemId: string; name: string; source: string }
-export interface RunDTO { id: string; itemId: string; name: string; decision: string; outcomeLabel: string; tone: Tone; ts: number; clickable: boolean }
-export interface RunsDTO { inFlight: InFlightItemDTO[]; runs: RunDTO[] }
-export interface StoryStepDTO { title: string; detail: string; state: 'done' | 'fail' }
-export interface StoryDTO { name: string; decision: string; outcomeLabel: string; tone: Tone; ts: number; steps: StoryStepDTO[]; raw: { pipelineSteps: { name: string; at: string; data?: unknown }[]; llmCalls: { point: string; durationMs: number; prompt: string; parsed: unknown }[] } }
-export interface QueueItemDTO { itemId: string; name: string; statusLabel: string; nextRetryAt: number | null }
-export interface QueueDTO { pending: QueueItemDTO[]; dormant: QueueItemDTO[] }
+// web/src/api/types.ts：必须与 src/dashboard/apiV2.ts 的 DTO 保持一致
+export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored'
+
+export interface CoverageDTO {
+  covered: number
+  missing: number
+  embedded: number
+  unavailable: number
+}
+export interface LibraryJobDTO {
+  state: string
+  priority: number
+}
+export interface LibraryItemDTO {
+  id: string
+  kind: 'series' | 'movie'
+  name: string
+  chineseTitle: string | null
+  year: number | null
+  posterTag: string | null
+  coverage: CoverageDTO
+  job: LibraryJobDTO | null
+}
+
+export interface SeriesEpisodeDTO {
+  id: string
+  episode: number
+  name: string | null
+  subStatus: SubStatus
+  statusReason: string | null
+  recheckAfter: number | null
+}
+export interface SeriesSeasonDTO {
+  season: number
+  episodes: SeriesEpisodeDTO[]
+}
+export interface SeriesRunDTO {
+  startedAt: number
+  finishedAt: number | null
+  decision: string | null
+  detail: string | null
+  journalPath: string | null
+}
+export interface SeriesDetailDTO {
+  id: string
+  name: string
+  chineseTitle: string | null
+  year: number | null
+  posterTag: string | null
+  seasons: SeriesSeasonDTO[]
+  runs: SeriesRunDTO[]
+}
+
+export interface RunHistoryDTO {
+  id: number
+  jobId: number | null
+  startedAt: number
+  finishedAt: number | null
+  decision: string | null
+  detail: string | null
+  journalPath: string | null
+}
