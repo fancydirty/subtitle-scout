@@ -84,7 +84,7 @@ Internally the CLI holds a per-provider adapter registry (borrowing OpenCLI's pl
 
 | Provider | Anti-Bot? | Integration Phase | Notes |
 |----------|-----------|-------------------|-------|
-| **OpenSubtitles.com** | ❌ No (official REST API) | Phase 1 | Best for Western shows (Young Sheldon, True Detective, Peacemaker S1); IMDB exact match → skip LLM query planning; **user-provided key** (`OPENSUBTITLES_API_KEY`, optional — provider disabled if absent, same model as TMDB); free 10 downloads/day/user, VIP 1000/day; /login → JWT, /search → /download (charged on download, not search). We buy our own key for testing. |
+| **OpenSubtitles.com** | ❌ No (official REST API) | Phase 1 | Best for Western shows (Young Sheldon, True Detective, Peacemaker S1); IMDB exact match → skip LLM query planning; **user-provided key** (`OPENSUBTITLES_API_KEY`, optional — provider disabled if absent, same model as TMDB); free registered user **20 downloads/day** (live-verified 2026-07-10: `/login` returns `allowed_downloads: 20`), VIP 1000/day; /login → JWT, /search → /download (charged on download, not search). We buy our own key for testing. |
 | **ASSRT gems** | ❌ No (existing stable API) | Phase 1 | Two white-pickup endpoints: `/sub/similar` (pass hit id → 5 similar subs, free recall expansion), `is_file=1` (filename fallback query). No IMDB query capability confirmed. |
 | **zimuku** | ✅ Yes (yunsuo cloud-lock + digit captcha) | Phase 2 | Largest Chinese increment; Bazarr `zimuku.py` reference; domain drift (srtku.com / zimuku.org / zmk.pw) → must configurable `base_url`; digit captcha → vision LLM |
 | **subf2m.co** | ✅ Yes (CF + occasional captcha) | Phase 2 | Native IMDB search; less captcha than zimuku; Bazarr has impl |
@@ -462,7 +462,7 @@ async function main() {
 
 ## Design Decisions (User Confirmed)
 
-1. **OpenSubtitles = user-provided key** — We only offer the choice (env `OPENSUBTITLES_API_KEY` optional, provider disabled if absent, same model as TMDB). For testing we buy our own. Free tier 10 downloads/day, VIP $3/month = 1000/day. User decides whether to pay.
+1. **OpenSubtitles = user-provided key** — We only offer the choice (env `OPENSUBTITLES_API_KEY` optional, provider disabled if absent, same model as TMDB). For testing we buy our own. Free registered tier 20 downloads/day (live-verified), VIP $3/month = 1000/day. User decides whether to pay. Test account credentials installed in .env (`OPENSUBTITLES_USERNAME`/`OPENSUBTITLES_PASSWORD`); production login path live-verified 2026-07-10 (200 → JWT, `allowed_downloads: 20`, `base_url` unchanged for non-VIP).
 
 2. **Anti-bot provider quality bar** — If zimuku/subf2m produce >20% mismatch in Phase 2 testing, ship Phase 1 only (OpenSubtitles + ASSRT gems) and backlog anti-bot indefinitely. Quality gate stands.
 
