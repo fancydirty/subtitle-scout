@@ -229,8 +229,8 @@ class OpenSubtitlesAdapter implements ProviderAdapter {
      - Base URL: `https://api.opensubtitles.com/api/v1`
      - Headers (ALL requests): `Api-Key: <key>`, `User-Agent: subtitle-scout v<version>`
      - `POST /login` body `{username, password}` → `{token, base_url, user: {allowed_downloads, vip}}`. **Switch to returned `base_url` for all subsequent requests**; if `base_url == "vip-api.opensubtitles.com"`, JWT required on every request.
-     - `GET /subtitles?parent_imdb_id=<id>&season_number=<s>&episode_number=<e>&languages=zh-CN,zh-TW` (episodes) or `?imdb_id=<id>&languages=zh-CN,zh-TW` (movies). **No download quota consumed.** Response: `data[].attributes.files[].file_id`.
-     - `POST /download` body `{file_id}` (requires both `Api-Key` + `Authorization: Bearer <JWT>` unless dev_mode) → `{link, remaining, reset_time_utc}`. **Quota consumed here, NOT on actual file GET.** `link` is temporary (3h valid), GET it for the .srt ZIP.
+     - `GET /subtitles?parent_imdb_id=<id>&season_number=<s>&episode_number=<e>&languages=zh-cn,zh-tw` (episodes) or `?imdb_id=<id>&languages=zh-cn,zh-tw` (movies). **languages MUST be lowercase** (uppercase `zh-CN` → 301 redirect loop; live-verified 2026-07-10). Use `curl -L`-equivalent (follow redirects) regardless. **No download quota consumed.** Response: `data[].attributes.files[].file_id`.
+     - `POST /download` body `{file_id}` (requires both `Api-Key` + `Authorization: Bearer <JWT>` unless dev_mode) → `{link, remaining, reset_time_utc}`. **Quota consumed here, NOT on actual file GET.** `link` is temporary (3h valid); GET returns the **bare UTF-8 .srt directly — NOT a ZIP** (live-verified 2026-07-10; unlike ASSRT, no unzip step).
    - **Dev mode**: Set consumer to "Under Development" in https://www.opensubtitles.com/en/consumers → **100 downloads/day without user auth**. Production: user provides `OPENSUBTITLES_USERNAME` + `OPENSUBTITLES_PASSWORD` (env vars) for login, or skip provider if absent.
    - Env: `OPENSUBTITLES_API_KEY` (required for this provider), `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` (optional; if missing, disable download—search still works in dev_mode)
 
@@ -440,6 +440,7 @@ async function main() {
 **Phase 1 (provider abstraction):**
 - Zero regression: existing ASSRT flow produces identical downloads to pre-refactor
 - OpenSubtitles coverage: at least 50% of Western shows (Young Sheldon, True Detective, Peacemaker) get candidates
+  - **Pre-verified 2026-07-10 (live smoke test with real key, dev_mode):** Peacemaker S1 = 8 zh-CN subs covering E1–E7 (the ASSRT-zero show!); Young Sheldon S1 = 44; True Detective S1 = 26. Download chain end-to-end verified: `/download` without user auth in dev_mode → link → bare UTF-8 .srt with correct Simplified Chinese content. `remaining=99/100`, resets daily UTC midnight.
 - ASSRT gems recall: at least 10% of zero-result searches get candidates from `/sub/similar` or `is_file=1`
 
 **Phase 2 (anti-bot sources):**
