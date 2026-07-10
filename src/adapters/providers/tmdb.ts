@@ -122,6 +122,13 @@ export class TmdbClient {
 
     return out
   }
+
+  /** TMDB detail 端点的 original_language（movie/tv 通用，小写化）。失败静默返回 null（增益路径）。 */
+  async getOriginLanguage(mediaType: 'tv' | 'movie', tmdbId: string): Promise<string | null> {
+    const d = await this.getJson(`/${mediaType}/${tmdbId}`)
+    const lang = d?.original_language
+    return typeof lang === 'string' ? lang.toLowerCase() : null
+  }
 }
 
 /**

@@ -29,3 +29,16 @@ export function usableChineseSubtitleStreams(
 export function needsChineseSubtitle(item: JellyfinItem, treatPgsAsMissing: boolean): boolean {
   return usableChineseSubtitleStreams(item, treatPgsAsMissing).length === 0
 }
+
+/** TMDB original_language 判国产：'zh' 及历史别名 'cn'。ja/ko/en 等一律 false。 */
+export function isChineseLang(lang: string | null | undefined): boolean {
+  return lang === 'zh' || lang === 'cn'
+}
+
+const HAN = /[一-鿿]/
+const KANA = /[぀-ヿ]/
+const HANGUL = /[가-힯]/
+/** 兜底启发式：含汉字且无假名无谚文 → 视作中文（排除日番/韩剧）。无 TMDB 信号时用。 */
+export function looksChineseTitle(title: string | null | undefined): boolean {
+  return !!title && HAN.test(title) && !KANA.test(title) && !HANGUL.test(title)
+}

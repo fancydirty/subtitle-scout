@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { needsChineseSubtitle, isTriggerableType, isChineseOrigin, CHINESE_LANG_TAGS } from './triggers.js'
+import { needsChineseSubtitle, isTriggerableType, isChineseOrigin, CHINESE_LANG_TAGS, isChineseLang, looksChineseTitle } from './triggers.js'
 import { JellyfinItemsResponseSchema, type JellyfinItem } from '../adapters/players/jellyfin.js'
 
 const base = { Id: 'x', Name: 'M', Type: 'Movie', Path: '/m/x.mkv' } as JellyfinItem
@@ -54,5 +54,28 @@ describe('isChineseOrigin', () => {
     expect(isChineseOrigin({ ...base, ProductionLocations: ['United States of America'] })).toBe(false)
     expect(isChineseOrigin({ ...base, ProductionLocations: [] })).toBe(false)
     expect(isChineseOrigin({ ...base, ProductionLocations: undefined })).toBe(false)
+  })
+})
+
+describe('isChineseLang', () => {
+  it('true for zh/cn, false for others/nullish', () => {
+    expect(isChineseLang('zh')).toBe(true)
+    expect(isChineseLang('cn')).toBe(true)
+    expect(isChineseLang('ja')).toBe(false)
+    expect(isChineseLang('ko')).toBe(false)
+    expect(isChineseLang('en')).toBe(false)
+    expect(isChineseLang(null)).toBe(false)
+    expect(isChineseLang(undefined)).toBe(false)
+  })
+})
+describe('looksChineseTitle', () => {
+  it('Han-only → true; kana/hangul present → false', () => {
+    expect(looksChineseTitle('英雄')).toBe(true)
+    expect(looksChineseTitle('流浪地球')).toBe(true)
+    expect(looksChineseTitle('進撃の巨人')).toBe(false) // の is kana
+    expect(looksChineseTitle('오징어 게임')).toBe(false) // hangul
+    expect(looksChineseTitle('Peacemaker')).toBe(false) // no Han
+    expect(looksChineseTitle(null)).toBe(false)
+    expect(looksChineseTitle('')).toBe(false)
   })
 })
