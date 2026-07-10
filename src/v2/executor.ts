@@ -19,7 +19,7 @@ export interface ExecutorDeps {
   /** 跑一个代表集的完整判断链；onCovered 在每个被季包/单集命中的集写盘成功后回调 */
   runEpisode: (
     episodeId: string,
-    onCovered: (coveredEpisodeId: string, subtitlePath: string) => void
+    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void
   ) => Promise<{
     decision: string
     journalPath?: string
@@ -140,8 +140,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 3. Track coverage via onCovered callback (season pack hits are downloads)
     const coveredIds = new Set<string>()
-    const onCovered = (episodeId: string, subtitlePath: string) => {
-      lib.markCovered(episodeId, subtitlePath, 'scout-download')
+    const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string) => {
+      lib.markCovered(episodeId, subtitlePath, 'scout-download', providerRef)
       if (targets.some(t => t.id === episodeId)) {
         coveredIds.add(episodeId)
       }
@@ -307,10 +307,10 @@ export function makeRunEpisode(
       )
     }
 
-    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path) → deps (ep.itemId, path)
+    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef) → deps (ep.itemId, path, providerRef)
     //    I5d: refresh Jellyfin item after each covered episode (v1 semantics)
-    const onCoveredAdapter = async (ep: SeasonEpisode, path: string) => {
-      onCovered(ep.itemId, path)
+    const onCoveredAdapter = async (ep: SeasonEpisode, path: string, providerRef?: string) => {
+      onCovered(ep.itemId, path, providerRef)
       await jf.refreshItem(ep.itemId).catch(() => {})
     }
 

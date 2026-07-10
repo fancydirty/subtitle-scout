@@ -278,6 +278,7 @@ describe('runPipeline', () => {
       { itemId: 'e3', seasonNumber: 2, episodeNumber: 3, episodeCode: 'S02E03', videoPath: join(outDir, 'Show.S02E03.mkv'), videoFilename: 'Show.S02E03.mkv', needsChinese: false },
     ]
     const covered: string[] = []
+    const coveredRefs: (string | undefined)[] = []
     const deps = makeDeps({
       providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
@@ -290,7 +291,7 @@ describe('runPipeline', () => {
             { filelist_index: 1, episode_code: 'S02E02', confidence: 0.95, reason: 'x' },
           ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
         })),
-        onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+        onCovered: vi.fn(async (ep: { episodeCode: string }, _path: string, ref?: string) => { covered.push(ep.episodeCode); coveredRefs.push(ref) }),
       } as unknown as PipelineDeps['seasonPack'],
     })
     const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
@@ -298,6 +299,10 @@ describe('runPipeline', () => {
     expect(result.decision).toBe('download')
     expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E01', 'S02E02'])
     expect(covered.sort()).toEqual(['S02E01', 'S02E02'])
+    // MS-P1: 季包路径 onCovered 携带 provider-neutral 标识；result.selected 带 pack 来源
+    expect(coveredRefs).toEqual(['assrt:900900', 'assrt:900900'])
+    expect(result.coveredEpisodes?.every(c => c.providerRef === 'assrt:900900')).toBe(true)
+    expect(result.selected).toMatchObject({ provider: 'assrt', provider_id: '900900', language: 'zh-Hans', format: 'ass' })
     // 每集独立 resolve：fileIndex 对应 filelist 序号
     expect(resolveDownload).toHaveBeenCalledTimes(2)
     expect(resolveDownload).toHaveBeenCalledWith(expect.objectContaining({ provider: 'assrt', providerId: '900900', fileIndex: 0 }))
@@ -364,14 +369,16 @@ describe('runPipeline', () => {
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
         map: vi.fn(),
-        onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+        onCovered: vi.fn(async (ep: { episodeCode: string }, _path: string, ref?: string) => { covered.push(`${ep.episodeCode}=${ref}`) }),
       } as unknown as PipelineDeps['seasonPack'],
     })
     const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
     const result = await runPipeline(deps, epCtx, outDir)
     expect(result.decision).toBe('download')
     expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E01', 'S02E02', 'S02E03', 'S02E04'])
-    expect(covered.sort()).toEqual(['S02E01', 'S02E02', 'S02E03', 'S02E04'])
+    // MS-P1: 横扫路径 onCovered 携带各集命中候选的 provider-neutral 标识
+    expect(covered.sort()).toEqual(['S02E01=assrt:801', 'S02E02=assrt:802', 'S02E03=assrt:803', 'S02E04=assrt:804'])
+    expect(result.selected).toMatchObject({ provider: 'assrt', provider_id: '801' }) // 多集覆盖取首集作代表
     expect(llm.call).toHaveBeenCalledTimes(1) // one LLM call maps the whole season
     expect(resolveDownload).toHaveBeenCalledTimes(4)
     expect(existsSync(join(outDir, 'Show.S02E01.zh-Hans.ass'))).toBe(true)

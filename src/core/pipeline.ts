@@ -1,4 +1,4 @@
-import { dirname } from 'node:path'
+import { basename, dirname } from 'node:path'
 import {
   type MediaContext, type MediaIdentity, type SearchPlan, type RankDecision,
   type OrphanDecision, type SeasonMap, type SubtitleCandidate,
@@ -42,7 +42,8 @@ export interface PipelineDeps {
   seasonPack?: {
     enumerate: (ctx: MediaContext) => Promise<SeasonEpisode[]>
     map: (ctx: MediaContext, id: MediaIdentity, filelist: { index: number; name: string }[], eps: SeasonEpisode[]) => Promise<CallStructuredResult<SeasonMap>>
-    onCovered: (ep: SeasonEpisode, subtitlePath: string) => void | Promise<void>
+    /** providerRef: 命中候选的 provider-neutral 标识（candidateKey，如 "assrt:900900"）；供 v2 写 subtitles.provider_ref */
+    onCovered: (ep: SeasonEpisode, subtitlePath: string, providerRef?: string) => void | Promise<void>
   }
 }
 
@@ -56,9 +57,24 @@ export interface PipelineResult {
   /** 结论理由（人话摘要/错因取首条） */
   reasons?: string[]
   stats: { durationMs: number; llmCalls: number; apiCalls: number }
-  coveredEpisodes?: { episodeCode: string; subtitlePath: string }[]
+  coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]
   /** 命中的候选来源（provider-neutral）；供 v2 executor 建 subtitles.provider_ref。仅 download 决议有值 */
   selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null
+}
+
+/** 季包/横扫路径的 selected 摘要：多集覆盖取首集作代表（provider/provider_id 供 v2 建 provider_ref） */
+function seasonSelected(
+  providerRef: string | undefined, firstSubtitlePath: string, language: string,
+): PipelineResult['selected'] {
+  const parsed = providerRef ? parseCandidateKey(providerRef) : null
+  if (!parsed) return null
+  return {
+    provider: parsed.provider,
+    provider_id: parsed.providerId,
+    subtitle_name: basename(firstSubtitlePath),
+    language,
+    format: firstSubtitlePath.match(/\.(srt|ass|ssa)$/i)?.[1]?.toLowerCase() ?? 'srt',
+  }
 }
 
 export async function runPipeline(
@@ -70,7 +86,7 @@ export async function runPipeline(
   deps.journalReady?.(journal)
   const finish = (
     decision: PipelineResult['decision'],
-    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null } = {},
+    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null } = {},
   ): PipelineResult => {
     const journalPath = journal.finish({
       request_id: ctx.request_id, decision,
@@ -263,7 +279,7 @@ export async function runPipeline(
         sweepRan = true
         const covered = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'pre-gate')
         if (covered.length > 0) {
-          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath })
+          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language) })
         }
       }
     }
@@ -306,7 +322,8 @@ export async function runPipeline(
         const gateRes = runSeasonPackGate({ map: { pairs }, filelist: gateFilelist, seasonEpisodes, minConfidence: ctx.preferences.auto_download_min_confidence })
         journal.step('seasonPackGate', { commit: gateRes.commit.length, dropped: gateRes.dropped.length })
         if (gateRes.commit.length > 0) {
-          const coveredEpisodes: { episodeCode: string; subtitlePath: string }[] = []
+          const packRef = candidateKey(pack)
+          const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
           let consecutiveFails = 0
           for (const item of gateRes.commit) {
             if (consecutiveFails >= 3) { journal.step('seasonCircuitBreak', { after: coveredEpisodes.length }); break }
@@ -322,9 +339,9 @@ export async function runPipeline(
                 videoFilename: item.videoFilename, langTag: ctx.preferences.language,
                 outDir: dirname(item.videoPath),
               })
-              coveredEpisodes.push({ episodeCode: item.episodeCode, subtitlePath: written.path })
+              coveredEpisodes.push({ episodeCode: item.episodeCode, subtitlePath: written.path, providerRef: packRef })
               const epMeta = seasonEpisodes.find(e => e.episodeCode === item.episodeCode)!
-              try { await deps.seasonPack.onCovered(epMeta, written.path) } catch { /* 观测/联动不影响主流程 */ }
+              try { await deps.seasonPack.onCovered(epMeta, written.path, packRef) } catch { /* 观测/联动不影响主流程 */ }
               consecutiveFails = 0
             } catch (e) {
               consecutiveFails++
@@ -332,7 +349,7 @@ export async function runPipeline(
             }
           }
           if (coveredEpisodes.length > 0) {
-            return finish('download', { reasons: [`season pack: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath })
+            return finish('download', { reasons: [`season pack: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath, selected: seasonSelected(packRef, coveredEpisodes[0].subtitlePath, ctx.preferences.language) })
           }
         }
         // 季模式 0 覆盖 → 落回单集路径（继续往下，不 return）
@@ -341,7 +358,7 @@ export async function runPipeline(
         // gate 前若已横扫过（!sweepRan 守卫）则跳过，避免同一 job 内横扫跑两次。
         const covered = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'post-gate')
         if (covered.length > 0) {
-          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath })
+          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language) })
         }
         // sweep 0 覆盖 → 落回单集路径
       }
@@ -408,7 +425,7 @@ async function runSeasonSweep(
   deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
   candidates: SubtitleCandidate[], seasonEpisodes: SeasonEpisode[],
   journal: Journal, trigger: 'pre-gate' | 'post-gate',
-): Promise<{ episodeCode: string; subtitlePath: string }[]> {
+): Promise<{ episodeCode: string; subtitlePath: string; providerRef: string }[]> {
   const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
   journal.step('seasonSweepStart', { candidates: candidates.length, needs: needsCount, trigger })
   const mapResult = await mapLooseEpisodes(deps.llm!, ctx, identity, candidates, seasonEpisodes)
@@ -420,7 +437,7 @@ async function runSeasonSweep(
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
   if (validAssignments.length === 0) return []
 
-  const coveredEpisodes: { episodeCode: string; subtitlePath: string }[] = []
+  const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
   const skipped: { episode: string; reason: string }[] = []
   let apiCallsUsed = 0
   const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
@@ -469,8 +486,9 @@ async function runSeasonSweep(
         videoFilename: epMeta.videoFilename, langTag: ctx.preferences.language,
         outDir: dirname(epMeta.videoPath),
       })
-      coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path })
-      try { await deps.seasonPack!.onCovered(epMeta, written.path) } catch { /* 观测/联动不影响主流程 */ }
+      const providerRef = candidateKey(parsed) // == assignment.candidate_id（parseCandidateKey 已验证格式）
+      coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path, providerRef })
+      try { await deps.seasonPack!.onCovered(epMeta, written.path, providerRef) } catch { /* 观测/联动不影响主流程 */ }
     } catch (e) {
       skipped.push({ episode: assignment.episode_code, reason: String(e) })
     }
