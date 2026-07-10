@@ -214,11 +214,16 @@ export async function runPipeline(
             journal.step('aliasSearchMerged', { alias, added: fresh.length, kept: freshCandidates.length })
             if (freshCandidates.length > 0) {
               journal.step('rankCandidates', { count: freshCandidates.length, pass: 'aliasHarvest' })
+              // 二轮 rank 仅喂 fresh（不与被拒的首轮候选混排——保留既有语义）
               const secondRank = await deps.rank(ctx, identity, freshCandidates)
               journal.llmCall({ point: 'rankCandidates', prompt: secondRank.prompt, rawText: secondRank.rawText, parsed: secondRank.parsed, retries: secondRank.retries, durationMs: secondRank.durationMs })
               if (secondRank.parsed.decision !== 'no_safe_match') {
                 rank = secondRank.parsed
-                candidates = freshCandidates
+                // 候选并入去重：fresh 优先排前，保留首轮候选在后——季横扫需要全池，而非仅 fresh
+                const mergedPool = new Map<number, AssrtSub>()
+                for (const c of freshCandidates) mergedPool.set(c.id, c)
+                for (const c of candidates) if (!mergedPool.has(c.id)) mergedPool.set(c.id, c)
+                candidates = [...mergedPool.values()]
               }
             }
           } else {
@@ -226,6 +231,22 @@ export async function runPipeline(
           }
         } catch (e) {
           journal.step('aliasHarvestFailed', { error: String(e) })
+        }
+      }
+    }
+
+    // 5-pre. 季横扫前置：代表集 rank 被拒时 gate 会早退短路季横扫——而这正是横扫的头号目标场景
+    // （本集自己没候选，散装候选覆盖的是其他集）。故在 gate 早退之前先尝试横扫；覆盖 >0 直接 finish，
+    // 0 覆盖则照旧落回 gate 早退（no_safe_match/ask_user 语义不变）。sweepRan 供 gate 后分支去重防重跑。
+    let sweepRan = false
+    if (!cached && deps.seasonPack && deps.llm && ctx.media.type === 'episode'
+      && rank.decision !== 'download' && candidates.length > 0 && !pickSeasonPack(candidates)) {
+      const seasonEpisodes = await deps.seasonPack.enumerate(ctx)
+      if (seasonEpisodes.filter(e => e.needsChinese).length >= 2) {
+        sweepRan = true
+        const covered = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'pre-gate')
+        if (covered.length > 0) {
+          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath })
         }
       }
     }
@@ -286,69 +307,12 @@ export async function runPipeline(
           }
         }
         // 季模式 0 覆盖 → 落回单集路径（继续往下，不 return）
-      } else if (!pack && needsCount >= 2 && deps.llm) {
-        // 5b. season sweep: 无整季包但有散装候选 + ≥2集缺中字 → 一轮横扫全季
-        // 先横扫（只在有散装候选可映射时有意义）；0 覆盖则落回单集路径，
-        // 单集 rank 拒绝的场景由 rank 阶段的别名收割兜底接力（两者次序不互相短路）。
-        journal.step('seasonSweepStart', { candidates: candidates.length, needs: needsCount })
-        const mapResult = await mapLooseEpisodes(deps.llm, ctx, identity, candidates, seasonEpisodes)
-        journal.llmCall({ point: 'mapLooseEpisodes', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
-        const validAssignments = (mapResult.parsed.assignments ?? [])
-          .filter(a => a.sub_id != null && a.episode_code && a.confidence >= ctx.preferences.auto_download_min_confidence)
-        journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
-
-        if (validAssignments.length > 0) {
-          const coveredEpisodes: { episodeCode: string; subtitlePath: string }[] = []
-          const skipped: { episode: string; reason: string }[] = []
-          let apiCallsUsed = 0
-          const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
-
-          for (const assignment of validAssignments) {
-            if (apiCallsUsed >= budget) {
-              skipped.push({ episode: assignment.episode_code, reason: 'api call budget exhausted' })
-              continue
-            }
-            const epMeta = seasonEpisodes.find(e => e.episodeCode === assignment.episode_code)
-            if (!epMeta || !epMeta.needsChinese) {
-              skipped.push({ episode: assignment.episode_code, reason: 'episode not in need list or already covered' })
-              continue
-            }
-
-            try {
-              const detail = await deps.assrt.detail(assignment.sub_id!)
-              apiCallsUsed++
-              const sub = detail.sub.subs.find(s => s.id === assignment.sub_id) ?? detail.sub.subs[0]
-              if (!sub) {
-                skipped.push({ episode: assignment.episode_code, reason: 'detail response empty' })
-                continue
-              }
-
-              // 单集候选通常单文件；多文件时选含对应 episode code 的文件，选不出则用第一个字幕文件
-              const subtitleFiles = sub.filelist.filter(f => /\.(srt|ass|ssa)$/i.test(f.f))
-              let fileEntry = subtitleFiles.find(f => f.f.includes(assignment.episode_code))
-              if (!fileEntry && subtitleFiles.length > 0) fileEntry = subtitleFiles[0]
-              if (!fileEntry || !fileEntry.url) {
-                skipped.push({ episode: assignment.episode_code, reason: 'no download url' })
-                continue
-              }
-
-              const dl = await deps.download(fileEntry.url)
-              const written = await writeSubtitle({
-                artifact: dl.bytes, artifactFilename: fileEntry.f,
-                videoFilename: epMeta.videoFilename, langTag: ctx.preferences.language,
-                outDir: dirname(epMeta.videoPath),
-              })
-              coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path })
-              try { await deps.seasonPack.onCovered(epMeta, written.path) } catch { /* 观测/联动不影响主流程 */ }
-            } catch (e) {
-              skipped.push({ episode: assignment.episode_code, reason: String(e) })
-            }
-          }
-
-          journal.step('seasonSweep', { candidates: candidates.length, assigned: validAssignments.length, covered: coveredEpisodes.length, skipped })
-          if (coveredEpisodes.length > 0) {
-            return finish('download', { reasons: [`season sweep: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath })
-          }
+      } else if (!pack && needsCount >= 2 && deps.llm && !sweepRan) {
+        // 5b. season sweep: 无整季包但有散装候选 + ≥2集缺中字 → 一轮横扫全季（gate 通过路径）。
+        // gate 前若已横扫过（!sweepRan 守卫）则跳过，避免同一 job 内横扫跑两次。
+        const covered = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'post-gate')
+        if (covered.length > 0) {
+          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath })
         }
         // sweep 0 覆盖 → 落回单集路径
       }
@@ -393,6 +357,76 @@ export async function runPipeline(
     journal.step('error', { message: String(e) })
     return finish('error', { reasons: [String(e)] })
   }
+}
+
+/**
+ * 季横扫执行体：把散装候选映射到缺中字的集 → 逐集 detail→download→写盘→onCovered。
+ * pre-gate（代表集 rank 被拒）与 post-gate（gate 通过后）两个触发点共用；trigger 供审计区分。
+ * 覆盖 0 集时返回空数组，调用方据此决定落回 gate 早退 / 单集路径。
+ */
+async function runSeasonSweep(
+  deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
+  candidates: AssrtSub[], seasonEpisodes: SeasonEpisode[],
+  journal: Journal, trigger: 'pre-gate' | 'post-gate',
+): Promise<{ episodeCode: string; subtitlePath: string }[]> {
+  const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
+  journal.step('seasonSweepStart', { candidates: candidates.length, needs: needsCount, trigger })
+  const mapResult = await mapLooseEpisodes(deps.llm!, ctx, identity, candidates, seasonEpisodes)
+  journal.llmCall({ point: 'mapLooseEpisodes', prompt: mapResult.prompt, rawText: mapResult.rawText, parsed: mapResult.parsed, retries: mapResult.retries, durationMs: mapResult.durationMs })
+  const validAssignments = (mapResult.parsed.assignments ?? [])
+    .filter(a => a.sub_id != null && a.episode_code && a.confidence >= ctx.preferences.auto_download_min_confidence)
+  journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
+  if (validAssignments.length === 0) return []
+
+  const coveredEpisodes: { episodeCode: string; subtitlePath: string }[] = []
+  const skipped: { episode: string; reason: string }[] = []
+  let apiCallsUsed = 0
+  const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
+
+  for (const assignment of validAssignments) {
+    if (apiCallsUsed >= budget) {
+      skipped.push({ episode: assignment.episode_code, reason: 'api call budget exhausted' })
+      continue
+    }
+    const epMeta = seasonEpisodes.find(e => e.episodeCode === assignment.episode_code)
+    if (!epMeta || !epMeta.needsChinese) {
+      skipped.push({ episode: assignment.episode_code, reason: 'episode not in need list or already covered' })
+      continue
+    }
+
+    try {
+      const detail = await deps.assrt.detail(assignment.sub_id!)
+      apiCallsUsed++
+      const sub = detail.sub.subs.find(s => s.id === assignment.sub_id) ?? detail.sub.subs[0]
+      if (!sub) {
+        skipped.push({ episode: assignment.episode_code, reason: 'detail response empty' })
+        continue
+      }
+
+      // 单集候选通常单文件；多文件时选含对应 episode code 的文件，选不出则用第一个字幕文件
+      const subtitleFiles = sub.filelist.filter(f => /\.(srt|ass|ssa)$/i.test(f.f))
+      let fileEntry = subtitleFiles.find(f => f.f.includes(assignment.episode_code))
+      if (!fileEntry && subtitleFiles.length > 0) fileEntry = subtitleFiles[0]
+      if (!fileEntry || !fileEntry.url) {
+        skipped.push({ episode: assignment.episode_code, reason: 'no download url' })
+        continue
+      }
+
+      const dl = await deps.download(fileEntry.url)
+      const written = await writeSubtitle({
+        artifact: dl.bytes, artifactFilename: fileEntry.f,
+        videoFilename: epMeta.videoFilename, langTag: ctx.preferences.language,
+        outDir: dirname(epMeta.videoPath),
+      })
+      coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path })
+      try { await deps.seasonPack!.onCovered(epMeta, written.path) } catch { /* 观测/联动不影响主流程 */ }
+    } catch (e) {
+      skipped.push({ episode: assignment.episode_code, reason: String(e) })
+    }
+  }
+
+  journal.step('seasonSweep', { candidates: candidates.length, assigned: validAssignments.length, covered: coveredEpisodes.length, skipped, trigger })
+  return coveredEpisodes
 }
 
 export function shouldGraduate(
