@@ -223,10 +223,16 @@ class OpenSubtitlesAdapter implements ProviderAdapter {
 6. **Verify Phase 1 ASSRT-only**: Run full pipeline on 5 test shows, confirm downloads succeed, compare journals to pre-refactor baseline
 
 7. **Add OpenSubtitles adapter** (`adapters/providers/opensubtitles.ts`)
-   - Implement `OpenSubtitlesAdapter.search(imdbId?, title, year)` → `SubtitleCandidate[]`
+   - Implement `OpenSubtitlesAdapter.search(imdbId?, title, year, season?, episode?)` → `SubtitleCandidate[]`
    - Implement `OpenSubtitlesAdapter.resolveDownloadUrl(file_id)` → download link
-   - API: `POST /login` (api_key → JWT), `GET /subtitles` (query), `POST /download` (file_id → link + quota decrement)
-   - Env: `OPENSUBTITLES_API_KEY` (optional; if missing, skip this provider)
+   - **API detail (from official docs, verified 2026-07-10):**
+     - Base URL: `https://api.opensubtitles.com/api/v1`
+     - Headers (ALL requests): `Api-Key: <key>`, `User-Agent: subtitle-scout v<version>`
+     - `POST /login` body `{username, password}` → `{token, base_url, user: {allowed_downloads, vip}}`. **Switch to returned `base_url` for all subsequent requests**; if `base_url == "vip-api.opensubtitles.com"`, JWT required on every request.
+     - `GET /subtitles?parent_imdb_id=<id>&season_number=<s>&episode_number=<e>&languages=zh-CN,zh-TW` (episodes) or `?imdb_id=<id>&languages=zh-CN,zh-TW` (movies). **No download quota consumed.** Response: `data[].attributes.files[].file_id`.
+     - `POST /download` body `{file_id}` (requires both `Api-Key` + `Authorization: Bearer <JWT>` unless dev_mode) → `{link, remaining, reset_time_utc}`. **Quota consumed here, NOT on actual file GET.** `link` is temporary (3h valid), GET it for the .srt ZIP.
+   - **Dev mode**: Set consumer to "Under Development" in https://www.opensubtitles.com/en/consumers → **100 downloads/day without user auth**. Production: user provides `OPENSUBTITLES_USERNAME` + `OPENSUBTITLES_PASSWORD` (env vars) for login, or skip provider if absent.
+   - Env: `OPENSUBTITLES_API_KEY` (required for this provider), `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` (optional; if missing, disable download—search still works in dev_mode)
 
 8. **Update planSearch.ts**: Add provider dispatch logic
    - If `provider_ids.imdb` exists → OpenSubtitles IMDB exact query (skip LLM planning for this provider)
