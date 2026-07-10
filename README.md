@@ -243,7 +243,7 @@ docker compose -f docker-compose.local.yml up -d --build
 
 然后：
 1. 访问 `http://localhost:8096` 走 Jellyfin 初始向导，把 `/media/TV` 加成"节目"库、`/media/Movies` 加成"电影"库
-2. 控制台生成 API key，填入 `.env` 的 `JELLYFIN_API_KEY`，重启 scout：`docker compose -f docker-compose.local.yml restart subtitle-scout`
+2. 控制台生成 API key，填入 `.env` 的 `JELLYFIN_API_KEY`，然后 `docker compose -f docker-compose.local.yml up -d subtitle-scout`（注意用 `up -d` 而不是 `restart`——`restart` 不会重载 `.env`）
 3. 监控页在 `http://localhost:8099`
 
 fixtures 里混了几个负例（内嵌中字的、国产片）方便验证跳过逻辑。`fixtures/media/` 已加入 `.gitignore`，不会被提交。

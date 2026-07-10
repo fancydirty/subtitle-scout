@@ -2,6 +2,7 @@
 # 生成 mock 媒体库：1 秒黑屏微型真视频（ffprobe 可探测，Jellyfin 正常刮削）。
 # 用法: scripts/gen-mock-library.sh [outdir]   # 默认 fixtures/media
 set -euo pipefail
+command -v ffmpeg >/dev/null || { echo "ffmpeg not found — brew install ffmpeg / apt-get install ffmpeg" >&2; exit 1; }
 OUT="${1:-fixtures/media}"
 
 clip() {
@@ -11,6 +12,8 @@ clip() {
 clip_with_chi() {  # 内嵌 chi 字幕轨 → 测"已带中字跳过"负路径
   mkdir -p "$OUT/$(dirname "$1")"
   local SRT; SRT=$(mktemp /tmp/mock-XXXXXX.srt)
+  # RETURN 覆盖正常返回；EXIT 覆盖 ffmpeg 失败时 set -e 直接终止脚本的情况（此时 RETURN 不触发）
+  trap "rm -f '$SRT'" RETURN EXIT
   printf '1\n00:00:00,000 --> 00:00:01,000\n占位中文字幕\n' > "$SRT"
   ffmpeg -f lavfi -i color=black:s=320x240:d=1 -i "$SRT" \
     -map 0:v -map 1:s -c:v libx264 -pix_fmt yuv420p -c:s srt \
