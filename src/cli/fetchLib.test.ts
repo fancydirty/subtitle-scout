@@ -1,0 +1,58 @@
+import { describe, it, expect } from 'vitest'
+import { runSearch, runResolve, type FetchAdapter, type FetchArgs } from './fetchLib.js'
+import type { SubtitleCandidate } from '../core/schemas.js'
+
+const cand = (provider: 'assrt' | 'opensubtitles', id: string): SubtitleCandidate =>
+  ({ provider, providerId: id, videoName: null, nativeName: null, language: null,
+     subtype: null, releaseSite: null, uploadDate: null, fileList: [] })
+
+function adapter(name: string, opts: Partial<FetchAdapter> = {}): FetchAdapter {
+  return {
+    name,
+    enabled: () => true,
+    search: async () => [cand('assrt', `${name}-1`)],
+    resolve: async () => ({ url: `https://dl/${name}` }),
+    ...opts,
+  }
+}
+
+describe('runSearch', () => {
+  const args: FetchArgs = { queries: ['q1'], deep: false }
+  it('merges results from all enabled adapters', async () => {
+    const r = await runSearch(args, [adapter('a'), adapter('b')], () => {})
+    expect(r.map(c => c.providerId).sort()).toEqual(['a-1', 'b-1'])
+  })
+  it('skips disabled adapters', async () => {
+    const r = await runSearch(args, [adapter('a'), adapter('b', { enabled: () => false })], () => {})
+    expect(r.map(c => c.providerId)).toEqual(['a-1'])
+  })
+  it('fail-soft: one adapter throwing does not kill the run, emits provider_error', async () => {
+    const events: unknown[] = []
+    const r = await runSearch(args, [
+      adapter('boom', { search: async () => { throw new Error('cf block') } }),
+      adapter('ok'),
+    ], e => events.push(e))
+    expect(r.map(c => c.providerId)).toEqual(['ok-1'])
+    expect(events).toContainEqual(expect.objectContaining({ event: 'provider_error', provider: 'boom' }))
+  })
+  it('dedupes identical provider:providerId across adapters', async () => {
+    const dup = cand('assrt', 'same')
+    const r = await runSearch(args, [
+      adapter('a', { search: async () => [dup] }),
+      adapter('b', { search: async () => [dup] }),
+    ], () => {})
+    expect(r.length).toBe(1)
+  })
+})
+
+describe('runResolve', () => {
+  it('dispatches to the adapter owning the provider', async () => {
+    const r = await runResolve({ provider: 'assrt', providerId: '1', fileIndex: 0 },
+      [adapter('assrt'), adapter('opensubtitles')])
+    expect(r.url).toBe('https://dl/assrt')
+  })
+  it('throws when no adapter owns the provider', async () => {
+    await expect(runResolve({ provider: 'opensubtitles', providerId: '1', fileIndex: null }, [adapter('assrt')]))
+      .rejects.toThrow(/no adapter/)
+  })
+})
