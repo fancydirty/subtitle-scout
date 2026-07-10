@@ -320,6 +320,26 @@ describe('executor', () => {
     expect(finalJob.state).toBe('wanted')
   })
 
+  it('MS-P1: runEpisode 结果带 selected → markCovered 写 provider_ref="<provider>:<providerId>"', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'download',
+      journalPath: '/journals/test.json',
+      subtitlePath: '/tv/s1e1.zh-Hans.srt',
+      selected: { provider: 'opensubtitles', provider_id: '7174766' },
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.db.prepare('select * from subtitles where item_id=?').get('e1')).toMatchObject({
+      path: '/tv/s1e1.zh-Hans.srt',
+      provider_ref: 'opensubtitles:7174766',
+    })
+  })
+
   it('M7/M8: already_exists → 代表集 covered 但不伪造 subtitles 行', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
@@ -467,6 +487,7 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
       confidence: null,
       minConfidence: 0.5,
       reasons: [],
+      selected: null,
     })
     const [, ctx, outDir, , opts] = runPipelineMock.mock.calls[0]
     expect(ctx.preferences.auto_download_min_confidence).toBe(0.5) // I5a

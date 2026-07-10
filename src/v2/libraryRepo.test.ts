@@ -59,11 +59,11 @@ describe('媒体镜像', () => {
       path: '/p/1.mkv',
       subStatus: 'missing',
     })
-    lib.markCovered('e1', '/p/1.zh-Hans.srt', 'scout-download', 713051)
+    lib.markCovered('e1', '/p/1.zh-Hans.srt', 'scout-download', 'assrt:713051')
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
     expect(lib.db.prepare('select * from subtitles where item_id=?').get('e1')).toMatchObject({
       path: '/p/1.zh-Hans.srt',
-      assrt_sub_id: 713051,
+      provider_ref: 'assrt:713051',
     })
   })
 
@@ -119,11 +119,11 @@ describe('媒体镜像', () => {
       path: '/movies/test.mkv',
       subStatus: 'missing',
     })
-    lib.markCovered('m1', '/movies/test.zh-Hans.srt', 'scout-download', 713052)
+    lib.markCovered('m1', '/movies/test.zh-Hans.srt', 'scout-download', 'assrt:713052')
     expect(lib.getMovie('m1')!.sub_status).toBe('covered')
     expect(lib.db.prepare('select * from subtitles where item_id=?').get('m1')).toMatchObject({
       path: '/movies/test.zh-Hans.srt',
-      assrt_sub_id: 713052,
+      provider_ref: 'assrt:713052',
     })
   })
 

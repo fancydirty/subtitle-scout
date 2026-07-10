@@ -57,6 +57,8 @@ export interface PipelineResult {
   reasons?: string[]
   stats: { durationMs: number; llmCalls: number; apiCalls: number }
   coveredEpisodes?: { episodeCode: string; subtitlePath: string }[]
+  /** 命中的候选来源（provider-neutral）；供 v2 executor 建 subtitles.provider_ref。仅 download 决议有值 */
+  selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null
 }
 
 export async function runPipeline(
@@ -78,7 +80,7 @@ export async function runPipeline(
         ? { downloaded: true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
         : null,
     }, journalDir)
-    return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, confidence: extra.confidence ?? null, reasons: extra.reasons ?? [], stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes }
+    return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, confidence: extra.confidence ?? null, reasons: extra.reasons ?? [], stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes, selected: extra.selected ?? null }
   }
 
   try {

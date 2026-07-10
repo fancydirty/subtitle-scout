@@ -9,6 +9,7 @@ import {
 } from '../core/mediaContext.js'
 import { tmdbTitles } from '../adapters/providers/tmdb.js'
 import { runPipeline } from '../core/pipeline.js'
+import { candidateKey } from '../core/schemas.js'
 import type { SeasonEpisode } from '../core/episode.js'
 import { join } from 'node:path'
 
@@ -30,6 +31,8 @@ export interface ExecutorDeps {
     minConfidence?: number
     /** 结论理由（错因取首条，人话化后入 detail） */
     reasons?: string[]
+    /** 命中的候选来源（供 markCovered 建 provider_ref）；无来源可考（如 already_exists）为 null/undefined */
+    selected?: { provider: string; provider_id: string } | null
   }>
   now: () => number
   log: (msg: string) => void
@@ -178,7 +181,10 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       // M7: already_exists 无可信文件路径传 null；download/adopted 用 subtitlePath，
       // 没有则只改状态。M8: source 按 decision 映射。
       const coverPath = decision === 'already_exists' ? null : subtitlePath
-      lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision])
+      const providerRef = result.selected
+        ? candidateKey({ provider: result.selected.provider, providerId: result.selected.provider_id })
+        : undefined
+      lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision], providerRef)
       coveredIds.add(representative.id) // 供人话摘要计数
 
       if (remainingTargets(job, lib, now()).length === 0) {
@@ -329,6 +335,7 @@ export function makeRunEpisode(
       confidence: result.confidence ?? null,
       minConfidence: ctx.preferences.auto_download_min_confidence,
       reasons: result.reasons ?? [],
+      selected: result.selected ?? null,
     }
   }
 }

@@ -205,8 +205,10 @@ export class LibraryRepo {
   }
 
   /** M7: subtitlePath=null 表示只知道"已覆盖"但没有可信的字幕文件路径（如 already_exists）——
-   *  只改状态，不伪造 subtitles 行。 */
-  markCovered(itemId: string, subtitlePath: string | null, source: string, assrtSubId?: number): void {
+   *  只改状态，不伪造 subtitles 行。
+   *  providerRef: provider-neutral 候选标识，形如 "assrt:673114" / "opensubtitles:7174766"
+   *  （见 core/schemas.ts candidateKey）；无来源可考时传 undefined。 */
+  markCovered(itemId: string, subtitlePath: string | null, source: string, providerRef?: string): void {
     const now = Date.now()
 
     const markCoveredTransaction = this.db.transaction(() => {
@@ -234,11 +236,11 @@ export class LibraryRepo {
       if (subtitlePath !== null) {
         this.db
           .prepare(
-            `INSERT INTO subtitles (item_id, path, language, source, assrt_sub_id, created_at)
+            `INSERT INTO subtitles (item_id, path, language, source, provider_ref, created_at)
              VALUES (?, ?, 'zh-Hans', ?, ?, ?)
              ON CONFLICT(item_id, path) DO NOTHING`
           )
-          .run(itemId, subtitlePath, source, assrtSubId ?? null, now)
+          .run(itemId, subtitlePath, source, providerRef ?? null, now)
       }
     })
 
