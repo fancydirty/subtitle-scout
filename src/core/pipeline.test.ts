@@ -226,6 +226,49 @@ describe('runPipeline', () => {
     expect(cache.get('id:imdb:tt0133093:S-:E-')).toMatchObject({ kind: 'negative' })
   })
 
+  it('gate rejects an INCOMPLETE candidate set (one source 429, other returned mismatches) → retry_later, no negative cache', async () => {
+    // 一源瞬时 429 被 fail-soft 吞，另一源返回不匹配候选 → candidates>0 跳过零候选守卫，
+    // rank/gate 在残缺集上判 no_safe_match。绝不能写 1 天负缓存把它当"确实没有"。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const deps = makeDeps({
+      cache,
+      providers: makeProviders({
+        search: vi.fn(async () => ({
+          candidates: [mkCand(500, 'Some.Other.Movie', ['other.srt'])],
+          providerErrors: [{ provider: 'assrt', message: '429 rate limited' }],
+        })),
+      }),
+      rank: vi.fn(async () => ({
+        parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['none match'], identity_match: 'uncertain' as const, rejected: [] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      })),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('retry_later')                          // ① 不是 no_safe_match
+    expect(result.reasons?.join(' ')).toMatch(/assrt.*429/)
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()             // ② 无负条目
+    // ③ 第二次跑不被短路：重新搜索
+    await runPipeline(deps, ctx, mkdtempSync(join(tmpdir(), 'out-')))
+    expect(deps.providers.search).toHaveBeenCalledTimes(2)
+  })
+
+  it('gate rejects a COMPLETE candidate set (zero provider errors) → honest negative cache still written', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const deps = makeDeps({
+      providers: makeProviders({ search: vi.fn(async () => ok([mkCand(500, 'Some.Other.Movie', ['other.srt'])])) }),
+      cache,
+      rank: vi.fn(async () => ({
+        parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['none match'], identity_match: 'uncertain' as const, rejected: [] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      })),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('no_safe_match')
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toMatchObject({ kind: 'negative' })
+  })
+
   it('llm error surfaces as error decision with journal written', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps({ identify: vi.fn(async () => { throw new Error('LLM down') }) })

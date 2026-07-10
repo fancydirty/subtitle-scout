@@ -160,6 +160,9 @@ export async function runPipeline(
     // 3. search（缓存命中 positive 时跳过 plan/search/rank，直接用缓存的选择）
     let rank: RankDecision
     let candidates: SubtitleCandidate[]
+    // 提升到搜索块外：gate 判 no_safe_match 后的负缓存写入需要它——某源瞬时故障导致候选集残缺时
+    // 绝不能把"残缺集拒判"当成"确实没有"写 1 天负缓存（毒库回归）。
+    let searchProviderErrors: { provider: string; message: string }[] = []
     if (cached?.kind === 'positive') {
       journal.step('cacheHitPositive', cached)
       // 缓存命中：直接走 resolve→download，无需重构 detail response
@@ -183,6 +186,7 @@ export async function runPipeline(
         filename: ctx.media.filename,
         deep: false,
       })
+      searchProviderErrors = providerErrors
       const byKey = new Map<string, SubtitleCandidate>()
       for (const c of searched) {
         const key = candidateKey(c)
@@ -232,12 +236,14 @@ export async function runPipeline(
             : null
           if (alias) {
             journal.step('aliasHarvest', { alias })
-            // 增益路径：providerErrors 不改判——全灭时 search 直接 reject，落进本 catch 静默降级
-            const { candidates: freshSearched } = await deps.providers.search({
+            // 增益路径：全灭时 search 直接 reject，落进本 catch 静默降级维持首轮结论；
+            // 部分失败则并入 searchProviderErrors，一并进入下游 gate 的残缺集判定。
+            const { candidates: freshSearched, providerErrors: aliasErrors } = await deps.providers.search({
               queries: [alias],
               deep: false,
               filename: ctx.media.filename,
             })
+            if (aliasErrors.length > 0) searchProviderErrors = [...searchProviderErrors, ...aliasErrors]
             const freshAssrt = freshSearched.filter(c => !byKey.has(candidateKey(c)))
             for (const c of freshAssrt) byKey.set(candidateKey(c), c)
             const freshCandidates = filterGraphicOnly(freshAssrt)
@@ -291,6 +297,19 @@ export async function runPipeline(
       const gate = runGate(rank, candidates, identity, ctx.preferences)
       journal.step('gateResult', gate)
       if (!gate.ok) {
+        // 候选集残缺（某源瞬时故障 fail-soft 成 [] 但另一源有候选）时，gate 的 no_safe_match
+        // 不代表"确实没有"——降级为 retry_later（瞬时可重试）且绝不写负缓存，否则 24h 内该集被短路，
+        // 而当时很可能是抽风的那一源本有正确字幕。providerErrors 为空才走诚实负缓存。
+        if (gate.decision === 'no_safe_match' && searchProviderErrors.length > 0) {
+          journal.step('incompleteCandidateSet', { providerErrors: searchProviderErrors })
+          return finish('retry_later', {
+            reasons: [
+              'candidate set incomplete due to provider failure — not cacheable',
+              ...searchProviderErrors.map(e => `${e.provider} 搜索失败: ${e.message}`),
+            ],
+            confidence: rank.confidence,
+          })
+        }
         if (gate.decision === 'no_safe_match' && !cached) {
           deps.cache.put(keys, { kind: 'negative', reason: gate.failures.join('; ') || 'agent declined' })
         }
