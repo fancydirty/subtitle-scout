@@ -32,7 +32,14 @@ export interface DaemonDeps {
     downloading: number      // 默认 2（一期由 executor 内部串行，此处预留）
     verifying: number        // 默认 2（一期由 executor 内部串行，此处预留）
   }
+  /** 进程退出钩子（测试注入用，默认 process.exit）。tick 连续意外失败达阈值时调用，
+   *  nonzero 码交给外部编排（docker restart:unless-stopped 等）重启进程。 */
+  exit?: (code: number) => void
 }
+
+/** tick() 连续意外抛错（reap/meta读/dispatch 里未被内层 try/catch 覆盖的异常，如磁盘满）
+ *  达到这个次数后判定进程已不可自愈——调用 exit(1) fail-fast，而不是无声停摆着存活。 */
+export const MAX_CONSECUTIVE_TICK_FAILURES = 5
 
 /**
  * v2 daemon: 两条独立循环
@@ -41,20 +48,57 @@ export interface DaemonDeps {
  */
 export class ScoutDaemon {
   private inflight = new Set<Promise<void>>()
+  // 心跳续租用：本进程当前仍在跑的 job id 集合。每 tick 先为它们续租，
+  // reapExpiredLeases 才不会误判"合法长跑"为死亡租约、导致并发双派发（starvation 审计修正）。
+  private inflightJobIds = new Set<number>()
   private stopping = false
   // 部署重启瞬间：上个进程分钟前才写过 last_reconcile_at，纯时间门会让首次 scan 延迟
   // 最长 15 分钟，而 dispatch 每 15s 无条件跑——旧 wanted/failed job（含刚被
   // reapAllActive 复活的）会在扫描器套用新分类规则之前被派发。强制开机第一拍
   // 先 reconcile 一次，不管 last_reconcile_at 多新，堵死这个窗口。
   private bootReconcilePending = true
+  // tick() 连续意外失败计数——任何一次 tick 顺利跑完（tickInner 不抛）就清零；
+  // 达 MAX_CONSECUTIVE_TICK_FAILURES 时 fail-fast 退出进程（daemon.ts:249 审计修正）。
+  private consecutiveTickFailures = 0
 
   constructor(private deps: DaemonDeps) {}
 
   /**
    * 一拍：reap → (到点)reconcile → dispatch
+   * 隔离层：tickInner 里任何未被内层 try/catch 吸收的意外抛错（如磁盘满命中
+   * reapExpiredLeases/meta SELECT/dispatch 的 claimNext）都在这里兜住、记日志，
+   * 不让 tickLoop 的 promise reject——否则 Promise.all(...).catch(() => {}) 会
+   * 悄悄吞掉它，tick 永久停摆但进程存活不退出。连续失败达阈值则 fail-fast 退出，
+   * 交给外部编排（docker restart:unless-stopped）拉活。
    */
   async tick(): Promise<void> {
+    try {
+      await this.tickInner()
+      this.consecutiveTickFailures = 0
+    } catch (error) {
+      this.consecutiveTickFailures++
+      const msg = error instanceof Error ? error.message : String(error)
+      this.deps.log(
+        `tick error (unexpected, isolated): ${msg} [consecutive=${this.consecutiveTickFailures}]`
+      )
+      if (this.consecutiveTickFailures >= MAX_CONSECUTIVE_TICK_FAILURES) {
+        this.deps.log(
+          `tick failed ${this.consecutiveTickFailures} times consecutively — exiting for restart`
+        )
+        const exit = this.deps.exit ?? process.exit
+        exit(1)
+      }
+    }
+  }
+
+  private async tickInner(): Promise<void> {
     const { jobs, lib, scan, aggregate, executeJob, log, now, reconcileEveryMs } = this.deps
+
+    // 0. Heartbeat: 为本进程仍在跑的 job 续租，早于 reap 执行——防止合法长跑（如季包
+    //    多集下载合法跑超 30min 租约）被误判死亡回收、被 dispatch 并发重领（starvation 审计修正）。
+    for (const jobId of this.inflightJobIds) {
+      jobs.renewLease(jobId, now())
+    }
 
     // 1. Reap expired leases
     jobs.reapExpiredLeases(now())
@@ -125,7 +169,10 @@ export class ScoutDaemon {
         break
       }
 
-      // Fire-and-forget: don't await, but track in inflight set
+      // Fire-and-forget: don't await, but track in inflight set (promise + job id;
+      // job id feeds the heartbeat renewal above so this job's lease never expires
+      // out from under it while genuinely still running in this process).
+      this.inflightJobIds.add(job.id)
       const jobPromise = executeJob(job)
         .catch((error) => {
           const msg = error instanceof Error ? error.message : String(error)
@@ -133,6 +180,7 @@ export class ScoutDaemon {
         })
         .finally(() => {
           this.inflight.delete(jobPromise)
+          this.inflightJobIds.delete(job.id)
         })
 
       this.inflight.add(jobPromise)

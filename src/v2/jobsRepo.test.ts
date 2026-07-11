@@ -23,22 +23,24 @@ describe('jobs 状态机', () => {
     repo.upsertWanted({ kind: 'movie', movieId: 'm1' }, now); repo.boostPriority({ kind: 'movie', movieId: 'm1' }, 100)
     expect(repo.claimNext(now)?.movie_id).toBe('m1')
   })
-  it('过租 job 被 reap 归位 wanted 且 attempt+1', () => {
+  it('过租 job 被 reap 归位 wanted，attempt 不变（reap 不是内容性失败，不占内容退避梯名额）', () => {
+    // 审计修正：reap 曾经 attempt+1，与 completeNoMatch 的内容退避梯共用计数器，
+    // 会让"进程重启/租约抖动"错误地把 job 推向 30 天 dormant（见 jobsRepo.ts:119/:133 finding）。
     mkSeriesJob()
     const j = repo.claimNext(Date.now())!
     repo.reapExpiredLeases(Date.now() + 31 * 60_000)
     const again = repo.claimNext(Date.now() + 31 * 60_000)
-    expect(again?.id).toBe(j.id); expect(again?.attempt).toBe(1)
+    expect(again?.id).toBe(j.id); expect(again?.attempt).toBe(0)
   })
-  it('active 态无租约（异常）也被 reap 归位', () => {
+  it('active 态无租约（异常）也被 reap 归位，attempt 不变', () => {
     const now = Date.now()
     mkSeriesJob(now)
     repo.forceState('s1', 4, 'searching', now)         // lease_until 为 NULL 的异常 active 态
     repo.reapExpiredLeases(now)
     const row = repo.find('s1', 4)!
-    expect(row.state).toBe('wanted'); expect(row.attempt).toBe(1)
+    expect(row.state).toBe('wanted'); expect(row.attempt).toBe(0)
   })
-  it('reapAllActive：未过期租约也被无条件归位（启动回收，单实例前提）', () => {
+  it('reapAllActive：未过期租约也被无条件归位（启动回收，单实例前提），attempt 不变', () => {
     const now = Date.now()
     mkSeriesJob(now)
     const j = repo.claimNext(now)!                      // 租约刚发，远未过期
@@ -46,7 +48,7 @@ describe('jobs 状态机', () => {
     expect(repo.reapAllActive(now)).toBe(1)
     const row = repo.get(j.id)!
     expect(row.state).toBe('wanted')
-    expect(row.attempt).toBe(1)
+    expect(row.attempt).toBe(0)
     expect(row.lease_until).toBeNull()
   })
   it('reapAllActive：覆盖全部活跃态，静止态（wanted/failed/done/dormant）不动', () => {
@@ -63,11 +65,31 @@ describe('jobs 状态机', () => {
     repo.forceState('z', 1, 'dormant', now)
     expect(repo.reapAllActive(now)).toBe(3)
     for (const s of ['a', 'b', 'c']) expect(repo.find(s, 1)!.state).toBe('wanted')
+    expect(repo.find('a', 1)!.attempt).toBe(0)          // reap 不占内容退避梯名额
     expect(repo.find('w', 1)!.state).toBe('wanted')
     expect(repo.find('w', 1)!.attempt).toBe(0)          // 本就 wanted 的不被 attempt+1
     expect(repo.find('f', 1)!.state).toBe('failed')
     expect(repo.find('d', 1)!.state).toBe('done')
     expect(repo.find('z', 1)!.state).toBe('dormant')
+  })
+  it('心跳续租（renewLease）：仅对活跃态生效，续租后不会被 reapExpiredLeases 回收', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    // 快到期前续租
+    repo.renewLease(j.id, now + 29 * 60_000)
+    // 原 30min 大限已过，但续租后新租约还没到期——不该被 reap
+    repo.reapExpiredLeases(now + 31 * 60_000)
+    expect(repo.get(j.id)!.state).toBe('searching')
+  })
+  it('心跳续租对非活跃态（如 done）是 no-op', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    repo.completeDone(j.id, now)
+    repo.renewLease(j.id, now)
+    expect(repo.get(j.id)!.state).toBe('done')
+    expect(repo.get(j.id)!.lease_until).toBeNull()
   })
   it('内容性失败指数退避：四次分别落 1/2/4/8 天，第 5 次才 dormant', () => {
     const t0 = Date.now()
