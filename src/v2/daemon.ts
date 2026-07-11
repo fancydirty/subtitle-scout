@@ -41,6 +41,9 @@ export interface DaemonDeps {
  */
 export class ScoutDaemon {
   private inflight = new Set<Promise<void>>()
+  // 心跳续租用：本进程当前仍在跑的 job id 集合。每 tick 先为它们续租，
+  // reapExpiredLeases 才不会误判"合法长跑"为死亡租约、导致并发双派发（starvation 审计修正）。
+  private inflightJobIds = new Set<number>()
   private stopping = false
   // 部署重启瞬间：上个进程分钟前才写过 last_reconcile_at，纯时间门会让首次 scan 延迟
   // 最长 15 分钟，而 dispatch 每 15s 无条件跑——旧 wanted/failed job（含刚被
@@ -55,6 +58,12 @@ export class ScoutDaemon {
    */
   async tick(): Promise<void> {
     const { jobs, lib, scan, aggregate, executeJob, log, now, reconcileEveryMs } = this.deps
+
+    // 0. Heartbeat: 为本进程仍在跑的 job 续租，早于 reap 执行——防止合法长跑（如季包
+    //    多集下载合法跑超 30min 租约）被误判死亡回收、被 dispatch 并发重领（starvation 审计修正）。
+    for (const jobId of this.inflightJobIds) {
+      jobs.renewLease(jobId, now())
+    }
 
     // 1. Reap expired leases
     jobs.reapExpiredLeases(now())
@@ -125,7 +134,10 @@ export class ScoutDaemon {
         break
       }
 
-      // Fire-and-forget: don't await, but track in inflight set
+      // Fire-and-forget: don't await, but track in inflight set (promise + job id;
+      // job id feeds the heartbeat renewal above so this job's lease never expires
+      // out from under it while genuinely still running in this process).
+      this.inflightJobIds.add(job.id)
       const jobPromise = executeJob(job)
         .catch((error) => {
           const msg = error instanceof Error ? error.message : String(error)
@@ -133,6 +145,7 @@ export class ScoutDaemon {
         })
         .finally(() => {
           this.inflight.delete(jobPromise)
+          this.inflightJobIds.delete(job.id)
         })
 
       this.inflight.add(jobPromise)
