@@ -460,6 +460,9 @@ async function runSeasonSweep(
   const skipped: { episode: string; reason: string }[] = []
   let apiCallsUsed = 0
   const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
+  // 一个候选(即一个物理文件)最多覆盖一集：按 "candidate_id#fileIndex" 去重。真整季散装候选
+  // (每集各有独立文件、fileIndex 各不相同)不受影响；单文件候选被映射到多集时第 2+ 次必被拒。
+  const usedFiles = new Set<string>()
 
   for (const assignment of validAssignments) {
     if (apiCallsUsed >= budget) {
@@ -505,6 +508,13 @@ async function runSeasonSweep(
         }
         fileIndex = matched.index
       }
+
+      const fileKey = `${candidateKey(parsed)}#${fileIndex ?? 'default'}`
+      if (usedFiles.has(fileKey)) {
+        skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.candidate_id} file ${fileIndex ?? 'default'} already covers another episode — rejecting single-file fan-out across episodes` })
+        continue
+      }
+      usedFiles.add(fileKey)
 
       const resolved = await deps.providers.resolveDownload({
         provider: parsed.provider,
