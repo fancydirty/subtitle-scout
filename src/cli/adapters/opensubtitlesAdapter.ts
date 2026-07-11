@@ -1,9 +1,38 @@
 import type { OpenSubtitlesClient } from '../../adapters/providers/opensubtitles.js'
-import { osToCandidates } from '../../adapters/providers/opensubtitles.js'
-import type { FetchAdapter } from '../fetchLib.js'
+import { osToCandidates, OsQuotaExhaustedError } from '../../adapters/providers/opensubtitles.js'
+import type { FetchAdapter, FetchEvent } from '../fetchLib.js'
 
-/** 'tt13152020' → 13152020；无值时 undefined */
-const imdbDigits = (s: string | undefined) => s ? Number(s.replace(/^tt/, '')) : undefined
+/**
+ * 配额耗尽事件的契约（NDJSON provider_error 的扩展）：在标准 FetchEvent 的
+ * `{event:'provider_error', provider, message}` 之上附加 `code`/`resetAt`。
+ * fetchLib.ts 的 FetchEvent 联合类型本身没有声明这两个字段（改它是共享文件，不在本包改动范围内），
+ * 但 JSON.stringify 会原样带上这两个字段，序列化进 stderr 的 NDJSON 行——
+ * providerPort.ts 的 `JSON.parse(line)` 一样能读到，供后续工作按 code/resetAt 做退避消费。
+ * 这里只定义 + emit 契约，不接线消费端（executor.ts 不在本次改动范围）。
+ */
+interface OsQuotaExhaustedFetchEvent {
+  event: 'provider_error'
+  provider: 'opensubtitles'
+  message: string
+  code: 'quota_exhausted'
+  resetAt: string | null
+}
+const emitQuotaExhausted = (emit: (e: FetchEvent) => void, message: string, resetAt: string | null) => {
+  const e: OsQuotaExhaustedFetchEvent = { event: 'provider_error', provider: 'opensubtitles', message, code: 'quota_exhausted', resetAt }
+  emit(e)
+}
+
+/**
+ * 'tt13152020' → 13152020；无值时 undefined。
+ * 0（'tt0000000' 占位符，部分刮削器用它标记"未匹配"）和 NaN（畸形值，如误传整个 imdb URL）
+ * 一律视为"无 imdb"，退化到标题+season/episode 查询——否则会带着必然 0 命中的 imdb_id 查询提交，
+ * 而本该走的标题查询分支被跳过（`imdb != null` 对 0 和 NaN 都是 true）。
+ */
+const imdbDigits = (s: string | undefined): number | undefined => {
+  if (!s) return undefined
+  const n = Number(s.replace(/^tt/, ''))
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
 
 /**
  * OpenSubtitles FetchAdapter 工厂——从 subtitle-fetch.ts 的 buildAdapters() 闭包里抽出，供直接单测
@@ -30,9 +59,21 @@ export function makeOpenSubtitlesAdapter(
         : { query: args.queries[0], season: args.season, episode: args.episode, year: args.year, languages })
       return osToCandidates(resp)
     },
-    resolve: async (ref) => {
-      const r = await client.resolveDownload(Number(ref.providerId))
-      return { url: r.link, filename: r.file_name ?? undefined }
+    resolve: async (ref, emit) => {
+      try {
+        const r = await client.resolveDownload(Number(ref.providerId))
+        // 本次成功，但 remaining 已见底：提前 emit 一个信息性配额事件，让后续调用有机会按
+        // reset_time_utc 退避，而不是等到真的 406 了才发现（那时已经白跑了一整趟 LLM+search）。
+        if (r.remaining != null && r.remaining <= 0) {
+          emitQuotaExhausted(emit, `opensubtitles download quota exhausted after this call (resets ${r.reset_time_utc ?? 'unknown'})`, r.reset_time_utc ?? null)
+        }
+        return { url: r.link, filename: r.file_name ?? undefined }
+      } catch (e) {
+        if (e instanceof OsQuotaExhaustedError) {
+          emitQuotaExhausted(emit, e.message, e.resetAt)
+        }
+        throw e
+      }
     },
   }
 }

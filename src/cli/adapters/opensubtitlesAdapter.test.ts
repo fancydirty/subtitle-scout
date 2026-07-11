@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { makeOpenSubtitlesAdapter } from './opensubtitlesAdapter.js'
 import type { OpenSubtitlesClient, OsSearchResponse, OsSearchParams } from '../../adapters/providers/opensubtitles.js'
-import { OsSearchResponseSchema } from '../../adapters/providers/opensubtitles.js'
-import type { FetchArgs } from '../fetchLib.js'
+import { OsSearchResponseSchema, OsQuotaExhaustedError } from '../../adapters/providers/opensubtitles.js'
+import type { FetchArgs, FetchEvent } from '../fetchLib.js'
 
 type FakeOsClient = Pick<OpenSubtitlesClient, 'search' | 'resolveDownload'>
 
@@ -62,6 +62,32 @@ describe('makeOpenSubtitlesAdapter: search', () => {
     }))
     const call = search.mock.calls[0][0]
     expect(call.imdbId).toBeUndefined()
+  })
+
+  it('③b tt0000000 placeholder imdb falls back to title/season/episode query (not a doomed imdb_id=0 search)', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ imdb: 'tt0000000', queries: ['Peacemaker'], season: 1, episode: 1 }), () => {})
+
+    const call = search.mock.calls[0][0]
+    expect(call.imdbId).toBeUndefined()
+    expect(call.query).toBe('Peacemaker')
+    expect(call.season).toBe(1)
+    expect(call.episode).toBe(1)
+  })
+
+  it('③c malformed imdb string (NaN after strip) falls back to title/season/episode query', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ imdb: 'https://imdb.com/title/tt13152020', queries: ['Peacemaker'], season: 1, episode: 1 }), () => {})
+
+    const call = search.mock.calls[0][0]
+    expect(call.imdbId).toBeUndefined()
+    expect(call.query).toBe('Peacemaker')
   })
 
   it('④imdb with tt prefix is stripped to a number', async () => {
@@ -126,5 +152,56 @@ describe('makeOpenSubtitlesAdapter: resolve', () => {
     const r = await adapter.resolve({ provider: 'opensubtitles', providerId: '7174766', fileIndex: null }, () => {})
 
     expect(r).toEqual({ url: 'https://os.example/download/ABC', filename: undefined })
+  })
+
+  it('⑩resolve emits a provider_error with code=quota_exhausted + resetAt when resolveDownload throws OsQuotaExhaustedError, then rethrows', async () => {
+    const err = new OsQuotaExhaustedError('2026-07-12T00:00:00.000Z', 0)
+    const resolveDownload = vi.fn(async () => { throw err })
+    const client = fakeClient({ resolveDownload })
+    const adapter = makeOpenSubtitlesAdapter(client)
+    const events: FetchEvent[] = []
+
+    await expect(
+      adapter.resolve({ provider: 'opensubtitles', providerId: '1', fileIndex: null }, e => events.push(e)),
+    ).rejects.toBe(err)
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      event: 'provider_error', provider: 'opensubtitles',
+      code: 'quota_exhausted', resetAt: '2026-07-12T00:00:00.000Z',
+    })
+  })
+
+  it('⑪resolve emits an informational quota_exhausted event when the download itself succeeds but remaining<=0 (proactive: backs off the NEXT call)', async () => {
+    const resolveDownload = vi.fn(async () => ({
+      link: 'https://os.example/download/ABC', file_name: 'e1.srt',
+      remaining: 0, reset_time_utc: '2026-07-12T00:00:00.000Z',
+    }))
+    const client = fakeClient({ resolveDownload })
+    const adapter = makeOpenSubtitlesAdapter(client)
+    const events: FetchEvent[] = []
+
+    const r = await adapter.resolve({ provider: 'opensubtitles', providerId: '1', fileIndex: null }, e => events.push(e))
+
+    expect(r).toEqual({ url: 'https://os.example/download/ABC', filename: 'e1.srt' })
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      event: 'provider_error', provider: 'opensubtitles',
+      code: 'quota_exhausted', resetAt: '2026-07-12T00:00:00.000Z',
+    })
+  })
+
+  it('resolve does NOT emit a quota event when remaining is healthy (no false positives)', async () => {
+    const resolveDownload = vi.fn(async () => ({
+      link: 'https://os.example/download/ABC', file_name: 'e1.srt',
+      remaining: 19, reset_time_utc: '2026-07-12T00:00:00.000Z',
+    }))
+    const client = fakeClient({ resolveDownload })
+    const adapter = makeOpenSubtitlesAdapter(client)
+    const events: FetchEvent[] = []
+
+    await adapter.resolve({ provider: 'opensubtitles', providerId: '1', fileIndex: null }, e => events.push(e))
+
+    expect(events).toHaveLength(0)
   })
 })

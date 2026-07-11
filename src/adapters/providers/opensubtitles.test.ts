@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { OpenSubtitlesClient, osToCandidates, OsSearchResponseSchema } from './opensubtitles.js'
+import { OpenSubtitlesClient, osToCandidates, OsSearchResponseSchema, OsQuotaExhaustedError } from './opensubtitles.js'
 
 const fixture = JSON.parse(readFileSync('fixtures/opensubtitles/search-peacemaker-s1.json', 'utf8'))
 const okJson = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
@@ -138,6 +138,59 @@ describe('OpenSubtitlesClient.resolveDownload', () => {
     await expect(client.resolveDownload(1)).rejects.toThrow(/401/)
     expect(downloads).toBe(2)
     expect(logins).toBe(2)
+  })
+})
+
+describe('OpenSubtitlesClient.resolveDownload quota exhaustion', () => {
+  it('throws OsQuotaExhaustedError with resetAt/remaining when /download 406s with a quota body', async () => {
+    const client = makeClient((() => Promise.resolve(new Response(
+      JSON.stringify({ message: 'Not allowed download limit reached', remaining: 0, reset_time_utc: '2026-07-12T00:00:00.000Z' }),
+      { status: 406 },
+    ))) as never)
+    let caught: unknown
+    try { await client.resolveDownload(1) } catch (e) { caught = e }
+    expect(caught).toBeInstanceOf(OsQuotaExhaustedError)
+    expect((caught as OsQuotaExhaustedError).resetAt).toBe('2026-07-12T00:00:00.000Z')
+    expect((caught as OsQuotaExhaustedError).remaining).toBe(0)
+  })
+
+  it('a plain 502 (non-quota body) still throws the original HTTP error, not OsQuotaExhaustedError', async () => {
+    const client = makeClient((() => Promise.resolve(new Response('nope', { status: 502 }))) as never)
+    let caught: unknown
+    try { await client.resolveDownload(1) } catch (e) { caught = e }
+    expect(caught).not.toBeInstanceOf(OsQuotaExhaustedError)
+    expect(String(caught)).toMatch(/502/)
+  })
+})
+
+describe('OpenSubtitlesClient onApiCall accounting', () => {
+  it('emits exactly one onApiCall per HTTP request when schema.parse throws (no false success)', async () => {
+    const calls: { status: number | null; error?: string }[] = []
+    // 200 OK but body has no `link` field -> OsDownloadResponseSchema.parse throws.
+    // Zod failures are treated like network errors (retried once) -> 2 HTTP attempts total.
+    const client = makeClient((() => okJson({ file_name: 'no-link-field.srt' })) as never, {
+      onApiCall: r => calls.push({ status: r.status, error: r.error }),
+      networkRetryDelayMs: 0,
+    })
+    await expect(client.resolveDownload(1)).rejects.toThrow()
+    // exactly one onApiCall per attempt (2 attempts), never a false "success" entry
+    expect(calls.length).toBe(2)
+    for (const c of calls) expect(c.error).toBeDefined()
+  })
+})
+
+describe('AbortSignal timeout coverage', () => {
+  it('search request init carries an AbortSignal (matches assrt/tmdb clients)', async () => {
+    let captured: RequestInit | null = null
+    const client = makeClient(((_url: string, init: RequestInit) => { captured = init; return okJson(fixture) }) as never)
+    await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(captured!.signal).toBeInstanceOf(AbortSignal)
+  })
+  it('resolveDownload request init carries an AbortSignal', async () => {
+    let captured: RequestInit | null = null
+    const client = makeClient(((_url: string, init: RequestInit) => { captured = init; return okJson({ link: 'L', file_name: 'f.srt' }) }) as never)
+    await client.resolveDownload(1)
+    expect(captured!.signal).toBeInstanceOf(AbortSignal)
   })
 })
 
