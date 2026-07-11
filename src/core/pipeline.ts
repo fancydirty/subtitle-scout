@@ -469,12 +469,19 @@ async function runSeasonSweep(
   const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
   const skipped: { episode: string; reason: string }[] = []
   let apiCallsUsed = 0
+  let consecutiveFails = 0
   const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
   // 一个候选(即一个物理文件)最多覆盖一集：按 "candidate_id#fileIndex" 去重。真整季散装候选
   // (每集各有独立文件、fileIndex 各不相同)不受影响；单文件候选被映射到多集时第 2+ 次必被拒。
   const usedFiles = new Set<string>()
 
   for (const assignment of dedupedAssignments) {
+    // 与季包升格路径（line ~348）对齐的熔断：连续 3 次 resolve 失败视为源抖动/限流，
+    // 停止继续为剩余集打 API（而不是逐集都打一次直到自然耗尽预算）。
+    if (consecutiveFails >= 3) {
+      journal.step('seasonSweepCircuitBreak', { after: coveredEpisodes.length })
+      break
+    }
     if (apiCallsUsed >= budget) {
       skipped.push({ episode: assignment.episode_code, reason: 'api call budget exhausted' })
       continue
@@ -526,12 +533,15 @@ async function runSeasonSweep(
       }
       usedFiles.add(fileKey)
 
+      // 预算计数放在 resolve 调用之前：失败尝试也要算进 apiCallsUsed，否则 406/限流风暴下
+      // resolveDownload 全灭、预算守卫永不触发，整季逐集都会各打一次（budget 形同虚设）。
+      apiCallsUsed++
       const resolved = await deps.providers.resolveDownload({
         provider: parsed.provider,
         providerId: parsed.providerId,
         fileIndex,
       })
-      apiCallsUsed++
+      consecutiveFails = 0
 
       const dl = await deps.download(resolved.url)
       const written = await writeSubtitle({
@@ -543,6 +553,7 @@ async function runSeasonSweep(
       coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path, providerRef })
       try { await deps.seasonPack!.onCovered(epMeta, written.path, providerRef) } catch { /* 观测/联动不影响主流程 */ }
     } catch (e) {
+      consecutiveFails++
       skipped.push({ episode: assignment.episode_code, reason: String(e) })
     }
   }

@@ -571,6 +571,83 @@ describe('runPipeline', () => {
     expect(result.decision).toBe('download')
   })
 
+  it('season sweep: a resolve failure storm trips a consecutive-failure circuit breaker (budget guard alone does not bound it, since it only counted successes)', async () => {
+    // OS 406/quota 抖动场景：resolveDownload 对每个 assignment 都抛错。修复前 apiCallsUsed++
+    // 只在成功后才执行，budget 守卫永不触发——全季逐集都会各打一次 resolve，无视预算与失败风暴。
+    // 修复后：3 次连续失败即熔断（对齐季包升格路径的 consecutiveFails>=3 语义）。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [801, 802, 803, 804, 805].map(id =>
+      mkCand(id, `Show.S02E0${id - 800}.chs`, [`Show.S02E0${id - 800}.chs.srt`], `第${id - 800}集`))
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async () => { throw new Error('406 not acceptable') })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4, 5].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3, 4, 5].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `assrt:${800 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      maxApiCallsPerJob: 4,
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    // Circuit breaker trips after 3 consecutive failures — stops well short of all 5 assignments
+    expect(resolveDownload).toHaveBeenCalledTimes(3)
+    expect(result.decision).toBe('no_safe_match') // 0 coverage, falls back to gate early-return
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweepCircuitBreak')).toBe(true)
+  })
+
+  it('season sweep: failed resolveDownload attempts still consume the per-job API call budget', async () => {
+    // 预算守卫本身也要把失败尝试算进去——不能只在成功后才 apiCallsUsed++。用一个远小于熔断阈值(3)
+    // 的预算(2)来隔离验证:budget 守卫必须先于熔断触发生效。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [801, 802, 803].map(id =>
+      mkCand(id, `Show.S02E0${id - 800}.chs`, [`Show.S02E0${id - 800}.chs.srt`], `第${id - 800}集`))
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async () => { throw new Error('406 not acceptable') })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `assrt:${800 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      maxApiCallsPerJob: 2, // budget of 2 < circuit breaker threshold of 3 → budget guard must bind first
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    await runPipeline(deps, epCtx, outDir)
+    expect(resolveDownload).toHaveBeenCalledTimes(2) // budget of 2, all failed attempts still counted
+  })
+
   it('season sweep: does NOT trigger when a whole-season pack is available (pack has priority)', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const packCandidate = toCandidate(seasonDetail.sub.subs[0])
