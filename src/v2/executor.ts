@@ -5,13 +5,13 @@ import type { JobsRepo, Job } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import type { Assembled } from '../cli/index.js'
 import {
-  buildMediaContext, mediaDir, isDirWritable, isUnderRoots, applyConfidenceOverride,
+  buildMediaContext, isDirWritable, isUnderRoots, applyConfidenceOverride, mapPath,
 } from '../core/mediaContext.js'
 import { tmdbTitles } from '../adapters/providers/tmdb.js'
 import { runPipeline } from '../core/pipeline.js'
 import { candidateKey } from '../core/schemas.js'
 import type { SeasonEpisode } from '../core/episode.js'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 export interface ExecutorDeps {
   lib: LibraryRepo
@@ -282,6 +282,23 @@ export function makeRunEpisode(
     // 1. Get item from Jellyfin
     const item = await jf.getItem(episodeId)
 
+    // 1b. I5b + executor.ts:315 审计修正：root 限定 + 本地可写预检提到 Jellyfin
+    //     getChineseTitle / TMDB 调用之前——只读挂载/WebDAV 上每次注定失败的尝试
+    //     不该先烧掉这两处网络配额才发现写不了。dir 只依赖 item.Path，不需要
+    //     chineseTitle/tmdbTitles 那些 enrichment 字段，可以提前算好并复用。
+    if (!item.Path) throw new Error(`jellyfin item ${item.Id} has no Path`)
+    const dir = dirname(mapPath(item.Path, mappings))
+    if (!isUnderRoots(dir, opts.mediaRoots)) {
+      throw new Error(
+        `拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`
+      )
+    }
+    if (!isDirWritable(dir)) {
+      throw new Error(
+        `Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`
+      )
+    }
+
     // 2. Get chinese title (jellyfin fallback) + optional TMDB variants
     const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
     const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)).catch(() => undefined) : undefined
@@ -302,21 +319,7 @@ export function makeRunEpisode(
     // 3. Build MediaContext + confidence override (I5a)
     const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
     applyConfidenceOverride(ctx)
-
-    // 4a. I5b: root restriction — refuse writes outside media roots (security guard)
-    const dir = mediaDir(ctx)
-    if (!isUnderRoots(dir, opts.mediaRoots)) {
-      throw new Error(
-        `拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`
-      )
-    }
-
-    // 4b. Check mediaDir is writable (throw → executeJob calls completeError)
-    if (!isDirWritable(dir)) {
-      throw new Error(
-        `Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`
-      )
-    }
+    // ctx.media.path 与上面 1b 算出的 dir 是同一次 mapPath 计算，dir 已在网络调用前验过。
 
     // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef) → deps (ep.itemId, path, providerRef)
     //    I5d: refresh Jellyfin item after each covered episode (v1 semantics)
