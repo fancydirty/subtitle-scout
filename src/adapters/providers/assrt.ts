@@ -9,6 +9,8 @@ import type { z } from 'zod'
 
 const BASE = 'https://api.assrt.net/v1'
 const RESPONSE_CACHE_TTL_MS = 24 * 3600_000
+// detail 的签名 URL 数小时内有效；10min 短缓存让季包 N 集 resolve 只打一次真请求，同时防过期 URL 落盘长期复用
+const DETAIL_CACHE_TTL_MS = 10 * 60_000
 // 实测配额 5/min，留余量:15s 间隔 = 4/min
 export const DEFAULT_MIN_INTERVAL_MS = 15_000
 export const ASSRT_TIMEOUT_MS = 15_000
@@ -53,9 +55,10 @@ export class AssrtClient {
     return join(this.opts.cacheDir, `${key}.json`)
   }
 
-  private async call<T>(endpoint: string, params: Record<string, string>, schema: z.ZodType<T>, cacheable = true): Promise<T> {
+  /** cacheTtlMs：命中缓存的时间窗口；false 表示完全不缓存（读/写都跳过）。默认 24h。 */
+  private async call<T>(endpoint: string, params: Record<string, string>, schema: z.ZodType<T>, cacheTtlMs: number | false = RESPONSE_CACHE_TTL_MS): Promise<T> {
     const cacheFile = this.cachePath(endpoint, params)
-    if (cacheable && existsSync(cacheFile) && Date.now() - statSync(cacheFile).mtimeMs < RESPONSE_CACHE_TTL_MS) {
+    if (cacheTtlMs !== false && existsSync(cacheFile) && Date.now() - statSync(cacheFile).mtimeMs < cacheTtlMs) {
       return schema.parse(JSON.parse(readFileSync(cacheFile, 'utf8')))
     }
     const qs = new URLSearchParams({ token: this.opts.token, ...params })
@@ -72,7 +75,7 @@ export class AssrtClient {
         const status = typeof json.status === 'number' ? json.status : null
         this.opts.onApiCall?.({ endpoint, params, status, durationMs: Date.now() - t0 })
         if (status !== 0) throw new AssrtApiError(status ?? -1, endpoint)
-        if (cacheable) writeFileSync(cacheFile, JSON.stringify(json))
+        if (cacheTtlMs !== false) writeFileSync(cacheFile, JSON.stringify(json))
         return schema.parse(json)
       } catch (e) {
         if (e instanceof AssrtApiError) throw e
@@ -97,8 +100,8 @@ export class AssrtClient {
     return this.call('sub/search', { q: filename, is_file: '1', filelist: '1', no_muxer: '1' }, AssrtSearchResponseSchema)
   }
   detail(id: number) {
-    // detail 含时效下载 URL，绝不磁盘缓存（live e2e 实测：缓存的 URL 过期后下载 HTTP 492）
-    return this.call('sub/detail', { id: String(id) }, AssrtDetailResponseSchema, false)
+    // detail 的签名 URL 数小时内有效；10min 短缓存让季包 N 集 resolve 只打一次真请求，同时防过期 URL 落盘长期复用
+    return this.call('sub/detail', { id: String(id) }, AssrtDetailResponseSchema, DETAIL_CACHE_TTL_MS)
   }
 }
 

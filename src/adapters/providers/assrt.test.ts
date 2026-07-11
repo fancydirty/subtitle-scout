@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { readFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, mkdtempSync, readdirSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AssrtClient, MinIntervalLimiter } from './assrt.js'
@@ -92,10 +92,27 @@ describe('AssrtClient network retry', () => {
   })
 })
 
-describe('detail responses are never disk-cached (time-limited download urls)', () => {
-  it('two identical detail calls fetch twice', async () => {
+describe('detail 短 TTL 缓存（10min）——季包 N 集 resolve 只打一次真请求', () => {
+  it('TTL 内两次 detail(673114) → fetchImpl 只调用一次', async () => {
     const { client, fetchImpl } = makeClient([detailFixture, detailFixture])
     await client.detail(673114)
+    await client.detail(673114)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('缓存文件超过 10min → 重新请求', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'assrt-'))
+    const fetchImpl = vi.fn(async () => new Response(detailFixture))
+    const client = new AssrtClient({
+      token: 'test-token',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      limiter: new MinIntervalLimiter(0),
+      cacheDir,
+    })
+    await client.detail(673114)
+    const [cacheFile] = readdirSync(cacheDir)
+    const elevenMinAgo = new Date(Date.now() - 11 * 60_000)
+    utimesSync(join(cacheDir, cacheFile), elevenMinAgo, elevenMinAgo)
     await client.detail(673114)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
