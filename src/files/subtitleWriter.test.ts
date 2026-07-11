@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
@@ -7,6 +7,23 @@ import * as iconv from 'iconv-lite'
 import { writeSubtitle } from './subtitleWriter.js'
 
 const outDir = () => mkdtempSync(join(tmpdir(), 'subw-'))
+
+// 用于模拟"原子写入的最后一步（rename）崩溃"：真正的进程崩溃无法在测试里重现，
+// 但可以让 renameSync 在被调用一次后抛错，观察崩溃发生在 rename 之前 vs 之后的落盘状态。
+let renameShouldFailOnce = false
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      if (renameShouldFailOnce) {
+        renameShouldFailOnce = false
+        throw new Error('simulated crash before rename completed')
+      }
+      return actual.renameSync(...args)
+    },
+  }
+})
 
 describe('writeSubtitle', () => {
   it('writes a plain utf-8 srt with Jellyfin naming', async () => {
@@ -83,6 +100,35 @@ describe('writeSubtitle', () => {
       artifact: Buffer.from('Rar!\x1a\x07'), artifactFilename: 'pack.rar',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: outDir(),
     })).rejects.toThrow(/unsupported archive/i)
+  })
+
+  afterEach(() => { renameShouldFailOnce = false })
+
+  it('atomic write: a crash right before rename leaves only a temp artifact (no truncated file at the final sidecar path), and the retry writes a clean, complete file', async () => {
+    const dir = outDir()
+    const finalPath = join(dir, 'Movie.zh-Hans.srt')
+    const body = '1\n00:00:01,000 --> 00:00:02,000\nfull content\n'
+
+    renameShouldFailOnce = true
+    await expect(writeSubtitle({
+      artifact: Buffer.from(body), artifactFilename: 'sub.srt',
+      videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
+    })).rejects.toThrow(/simulated crash/)
+
+    // 崩溃发生在 rename 之前：final 路径绝不能出现半截文件
+    expect(existsSync(finalPath)).toBe(false)
+    // 但写入应已落到同目录的临时文件上（原子写的第一步）
+    const leftovers = readdirSync(dir).filter(f => f !== 'Movie.zh-Hans.srt')
+    expect(leftovers.length).toBeGreaterThan(0)
+
+    // 重试（下一次守护进程 tick）：不应被残留临时文件卡住，应产出完整正确的文件
+    const r = await writeSubtitle({
+      artifact: Buffer.from(body), artifactFilename: 'sub.srt',
+      videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
+    })
+    expect(r.alreadyExists).toBe(false)
+    expect(existsSync(finalPath)).toBe(true)
+    expect(readFileSync(finalPath, 'utf8')).toBe(body)
   })
 
   it('sanitizes path-traversal videoFilename and stays inside outDir', async () => {
