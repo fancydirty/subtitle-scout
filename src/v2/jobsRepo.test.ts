@@ -184,34 +184,98 @@ describe('jobs 状态机', () => {
     expect(repo.claimNext(now)).toBeNull()                       // 立即重领被节流
     expect(repo.claimNext(now + PARTIAL_RETRY_MS)?.id).toBe(j.id) // 窗口过后可领
   })
-  it('IMPORTANT-2: 配额停车（completeError 带有效 quotaResetAt）不占内容退避梯——attempt 不变，同 reap* 语义', () => {
-    // 根因：completeError 无条件 attempt+1，哪怕是配额停车（非内容性失败）。日常配额停车会
-    // 悄悄推高 attempt，后面一次真正的 no_safe_match 就会越级跳到 30 天 dormant，跳过 1/2/4/8 天梯。
+  it('IMPORTANT-2: 配额停车（completeError 带有效 quotaResetAt）不占瞬时错误梯——error_attempt 不变，同 reap* 语义', () => {
+    // 根因（历史，已由独立 error_attempt 列根治）：completeError 曾无条件把 attempt+1，
+    // 与内容轨共用一个计数器，配额停车会悄悄推高它，后面一次真正的 no_safe_match 就会
+    // 越级跳到 30 天 dormant。现在 completeError 只读写 error_attempt，配额停车同样不该
+    // 推高它——否则配额一天多次停车会误触发 give-up 阈值升级到每天一次。
     const t0 = Date.now()
     mkSeriesJob(t0)
     const j = repo.claimNext(t0)!
     expect(j.attempt).toBe(0)
+    expect(j.error_attempt).toBe(0)
     const resetAt = new Date(t0 + 3 * 3_600_000).toISOString()
     repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, resetAt)
     const row = repo.get(j.id)!
     expect(row.state).toBe('failed')
-    expect(row.attempt).toBe(0) // 配额停车：attempt 不变
+    expect(row.attempt).toBe(0) // 内容计数器：completeError 从不触碰
+    expect(row.error_attempt).toBe(0) // 配额停车：error_attempt 不变
     expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
   })
-  it('IMPORTANT-2: 普通瞬时错误（无 quotaResetAt，或 resetAt 无效/已过期）依旧 attempt+1，不受配额修复影响', () => {
+  it('双轨分流：completeError 只充 error_attempt，从不触碰内容计数器 attempt', () => {
     const t0 = Date.now()
     mkSeriesJob(t0)
     const j = repo.claimNext(t0)!
     repo.completeError(j.id, 'ASSRT 500', t0)
-    expect(repo.get(j.id)!.attempt).toBe(1)
+    const row = repo.get(j.id)!
+    expect(row.error_attempt).toBe(1)
+    expect(row.attempt).toBe(0) // 内容计数器纹丝不动——两条轨彻底独立
   })
-  it('IMPORTANT-2: resetAt 无效（过去时间）时不算配额停车——落回默认阶梯，attempt 照常+1', () => {
+  it('双轨分流：resetAt 无效（过去时间）时不算配额停车——落回默认阶梯，error_attempt 照常+1，attempt 仍不动', () => {
     const t0 = Date.now()
     mkSeriesJob(t0)
     const j = repo.claimNext(t0)!
     const pastResetAt = new Date(t0 - 60_000).toISOString()
     repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, pastResetAt)
-    expect(repo.get(j.id)!.attempt).toBe(1)
+    const row = repo.get(j.id)!
+    expect(row.error_attempt).toBe(1)
+    expect(row.attempt).toBe(0)
+  })
+  it('双轨分流：completeNoMatch 只充内容计数器 attempt，从不触碰 error_attempt', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeNoMatch(j.id, t0)
+    const row = repo.get(j.id)!
+    expect(row.attempt).toBe(1)
+    expect(row.error_attempt).toBe(0)
+  })
+  it('双轨分流：先攒瞬时错误再遇到内容失败——attempt 只算内容失败次数，不被瞬时错误历史污染（根治本次审计的核心 bug）', () => {
+    // 审计场景：一串瞬时错误（网络抖动）不该让紧接着的第一次真正 no_safe_match 就越级跳档。
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    let j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'timeout 1', t0)
+    j = repo.forceClaim('s1', 4, t0)!
+    repo.completeError(j.id, 'timeout 2', t0)
+    j = repo.forceClaim('s1', 4, t0)!
+    repo.completeError(j.id, 'timeout 3', t0)
+    expect(repo.get(j.id)!.error_attempt).toBe(3)
+    expect(repo.get(j.id)!.attempt).toBe(0) // 三次瞬时错误，内容计数器仍是 0
+
+    j = repo.forceClaim('s1', 4, t0)!
+    repo.completeNoMatch(j.id, t0) // 第一次真正的内容失败
+    const row = repo.get(j.id)!
+    expect(row.attempt).toBe(1) // 走 1 天梯的第一档，而不是被污染跳到更后面
+    expect(row.state).toBe('failed')
+    expect(row.next_retry_at).toBeGreaterThanOrEqual(t0 + 1 * 86_400_000 - 1000)
+    expect(row.next_retry_at).toBeLessThanOrEqual(t0 + 1 * 86_400_000 + 1000)
+  })
+  it('双轨分流：completePartial 只减内容计数器 attempt，从不触碰 error_attempt', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    let j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'timeout', t0) // error_attempt=1
+    j = repo.forceClaim('s1', 4, t0)!
+    repo.completeNoMatch(j.id, t0) // attempt=1
+    j = repo.forceClaim('s1', 4, t0)!
+    repo.completePartial(j.id, t0)
+    const row = repo.get(j.id)!
+    expect(row.attempt).toBe(0) // 1 - 1
+    expect(row.error_attempt).toBe(1) // completePartial 不碰瞬时错误计数器
+  })
+  it('done→wanted 复活（I2 扩展）：error_attempt 与 attempt 一并归零，成功即翻篇', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    let j = repo.claimNext(now)!
+    repo.completeError(j.id, 'timeout', now) // error_attempt=1，job 仍 failed
+    j = repo.forceClaim('s1', 4, now)!
+    repo.completeDone(j.id, now)
+    mkSeriesJob(now) // 该季重新出现 missing → upsertWanted 的 done→wanted 复活
+    const revived = repo.get(j.id)!
+    expect(revived.state).toBe('wanted')
+    expect(revived.attempt).toBe(0)
+    expect(revived.error_attempt).toBe(0)
   })
   it('IMPORTANT-1a: completePartial 携带有效 quotaResetAt 时按 resetAt+margin 排期，不走盲的 30 秒节流', () => {
     // 季包/季横扫中途撞配额耗尽、已有 ≥1 集覆盖时，剩余部分不该在配额重置前每 30 秒重打一次全链路。
