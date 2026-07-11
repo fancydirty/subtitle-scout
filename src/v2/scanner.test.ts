@@ -446,6 +446,47 @@ describe('scanLibrary', () => {
     expect(status).toBe('ignored')
   })
 
+  it('negative-cache: scanLibrary end-to-end — cached-unknown series origin still falls through to ProductionLocations heuristic (rule 1), episode stays ignored on both scans', async () => {
+    // 端到端回归：上面那条测试直接调 classifyItem(originLang: null)，绕过了 scanner.ts 里
+    // resolvedOriginForClassification 那次哨兵换算，测不出「scanner.ts 忘了换算、把裸的
+    // ORIGIN_UNKNOWN='unknown' 字符串传进 classifyItem」这种回归（'unknown' !== null，
+    // rule 1 的 `deps.originLang == null` 判断会直接失手，国产内容漏判 ignored）。
+    // 这里改为通过 scanLibrary 走完整路径：resolver 解不出结果（返回 null，被写成
+    // ORIGIN_UNKNOWN 哨兵缓存），条目自带 ProductionLocations=['China']，
+    // 断言落库的 sub_status 在首次扫描和缓存命中的第二次扫描都是 'ignored'。
+    const resolver: OriginResolver = { originFor: async () => null }
+    const zhLocationEpisode = () =>
+      epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9', ProductionLocations: ['China'] })
+
+    const pages1 = [[zhLocationEpisode()], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(lib.getSeriesOriginLang('s9')).toBe('unknown')
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+
+    // Second scan (cache hit path — resolver not consulted again, sentinel read from DB).
+    const pages2 = [[zhLocationEpisode()], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+  })
+
   it('negative-cache: unresolved movie origin is cached once, not re-resolved on a later scan', async () => {
     let calls = 0
     const resolver: OriginResolver = { originFor: async () => { calls++; return null } }
