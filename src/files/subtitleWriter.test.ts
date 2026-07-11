@@ -91,6 +91,50 @@ describe('writeSubtitle', () => {
     })
     expect(r.alreadyExists).toBe(true)
     expect(readFileSync(join(dir, 'Movie.zh-Hans.srt'), 'utf8')).toBe('existing')
+    // 无残留临时文件时，短路分支不应凭空创建任何文件
+    expect(readdirSync(dir)).toEqual(['Movie.zh-Hans.srt'])
+  })
+
+  it('sweeps a stale sibling .tmp orphan when the final path already exists, without touching the final file', async () => {
+    // 场景：某次写入在 rename 前崩溃（或最终路径被别的来源写入），留下这个 writer 自己
+    // 命名规则产生的 <finalPath>.tmp 垃圾文件。下一次调用命中 existsSync 短路分支时，
+    // 应清理这个孤儿临时文件，但绝不能碰最终文件本身的内容。
+    const dir = outDir()
+    const finalPath = join(dir, 'Movie.zh-Hans.srt')
+    const tmpPath = `${finalPath}.tmp`
+    writeFileSync(finalPath, 'existing final content')
+    writeFileSync(tmpPath, 'orphaned partial write')
+
+    const r = await writeSubtitle({
+      artifact: Buffer.from('new'), artifactFilename: 'sub.srt',
+      videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
+    })
+
+    expect(r.alreadyExists).toBe(true)
+    expect(readFileSync(finalPath, 'utf8')).toBe('existing final content')
+    expect(existsSync(tmpPath)).toBe(false)
+  })
+
+  it('never touches unrelated files or a differently-named sibling temp file while sweeping the orphan', async () => {
+    const dir = outDir()
+    const finalPath = join(dir, 'Movie.zh-Hans.srt')
+    const tmpPath = `${finalPath}.tmp`
+    const unrelatedFile = join(dir, 'notes.txt')
+    // 同前缀但不同 langTag 的另一部字幕临时文件——不是本次目标的孤儿，绝不能被清理
+    const otherTargetTmp = join(dir, 'Movie.zh-Hant.srt.tmp')
+    writeFileSync(finalPath, 'existing final content')
+    writeFileSync(tmpPath, 'orphaned partial write')
+    writeFileSync(unrelatedFile, 'unrelated')
+    writeFileSync(otherTargetTmp, 'not our orphan')
+
+    await writeSubtitle({
+      artifact: Buffer.from('new'), artifactFilename: 'sub.srt',
+      videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
+    })
+
+    expect(existsSync(tmpPath)).toBe(false)
+    expect(readFileSync(unrelatedFile, 'utf8')).toBe('unrelated')
+    expect(readFileSync(otherTargetTmp, 'utf8')).toBe('not our orphan')
   })
 
   it('passes through an OpenSubtitles-style bare .srt (no zip) with correct naming, uppercase ext tolerated', async () => {

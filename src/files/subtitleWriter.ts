@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'node:fs'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import AdmZip from 'adm-zip'
 import chardet from 'chardet'
@@ -85,14 +85,24 @@ export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSub
     throw new Error(`refusing to write outside outDir: ${resolvedOut}`)
   }
 
+  // 与下方原子写用的是同一套确定性命名（resolvedOut + '.tmp'），因此短路分支也能按
+  // 这个精确名字识别并清理"自己的"孤儿临时文件——不会误删任何不是这个命名模式产生的文件。
+  const tmpPath = `${resolvedOut}.tmp`
+
   if (existsSync(resolvedOut)) {
+    // 孤儿临时文件清理：上一次调用可能在 rename 前崩溃（或最终路径被其他来源写入），
+    // 留下这个 writer 自己产生的 <resolvedOut>.tmp 垃圾文件。功能上无害（下次重试的
+    // openSync('w') 会截断复用它），但会永久堆积在用户媒体目录旁——顺手清掉。
+    // 只删这一个确定路径，绝不碰最终文件本身或任何其他文件。
+    if (existsSync(tmpPath)) {
+      unlinkSync(tmpPath)
+    }
     return { path: resolvedOut, bytes: 0, encoding, alreadyExists: true }
   }
 
   // 原子写：先写同目录临时文件 + fsync，再 rename 到最终路径（同 fs 上 rename 是原子的）。
   // 这样任何时刻崩溃，最终路径要么不存在，要么是完整文件——不会出现被 existsSync 误判为
   // "已存在"从而永久跳过的半截字幕。
-  const tmpPath = `${resolvedOut}.tmp`
   const fd = openSync(tmpPath, 'w')
   try {
     writeAll(fd, data)
