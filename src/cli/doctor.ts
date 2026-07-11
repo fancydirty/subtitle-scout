@@ -36,6 +36,26 @@ export async function checkAssrt(assrt: { quota(): Promise<{ status: number; use
   }
 }
 
+/** OpenSubtitles 是可选 provider（BYO key）：未配置（os 为 null）→ skip，非失败。
+ *  已配置 → 用零成本探测（The Matrix 搜索，不耗下载配额）验证 key/网络可用。 */
+export async function checkOpenSubtitles(os: { search(): Promise<{ data: unknown[] }> } | null): Promise<DoctorResult> {
+  if (!os) {
+    return {
+      name: 'opensubtitles', ok: true, skip: true,
+      detail: '未配置(可选 provider)——设 OPENSUBTITLES_API_KEY 启用',
+    }
+  }
+  try {
+    const r = await os.search()
+    return { name: 'opensubtitles', ok: true, detail: `OpenSubtitles 可用，探测命中 ${r.data.length} 条` }
+  } catch (e) {
+    return {
+      name: 'opensubtitles', ok: false, detail: `搜索失败：${String(e)}`,
+      hint: '检查 OPENSUBTITLES_API_KEY。注册 opensubtitles.com 账号 → https://www.opensubtitles.com/en/consumers 建 API consumer。',
+    }
+  }
+}
+
 export async function checkLlm(minimalChat: () => Promise<string>): Promise<DoctorResult> {
   try {
     await minimalChat()

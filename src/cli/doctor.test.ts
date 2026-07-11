@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkJellyfin, checkAssrt, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs } from './doctor.js'
+import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs } from './doctor.js'
 
 describe('doctor 远端三项', () => {
   it('jellyfin 可达 → ok，带会话数', async () => {
@@ -31,6 +31,22 @@ describe('doctor 远端三项', () => {
   it('assrt 对象形式非 0 status → 失败', async () => {
     const r = await checkAssrt({ quota: async () => ({ status: 30900, user: { quota: 0 } }) })
     expect(r.ok).toBe(false)
+  })
+  it('opensubtitles 未配置(null client) → skip 而非失败，hint 提到环境变量', async () => {
+    const r = await checkOpenSubtitles(null)
+    expect(r.skip).toBe(true)
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('OPENSUBTITLES_API_KEY')
+  })
+  it('opensubtitles 已配置且搜索成功 → ok 带命中数', async () => {
+    const r = await checkOpenSubtitles({ search: async () => ({ data: [{}, {}] }) })
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('2')
+  })
+  it('opensubtitles 已配置但搜索失败 → 失败并给人话提示', async () => {
+    const r = await checkOpenSubtitles({ search: async () => { throw new Error('401 Unauthorized') } })
+    expect(r.ok).toBe(false)
+    expect(r.hint).toContain('OPENSUBTITLES_API_KEY')
   })
   it('llm 能对话 → ok', async () => {
     const r = await checkLlm(async () => 'ok')

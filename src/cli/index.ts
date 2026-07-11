@@ -10,6 +10,7 @@ import { runPipeline, type PipelineDeps, type PipelineResult } from '../core/pip
 import type { Journal } from '../core/journal.js'
 import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
+import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { TmdbClient, tmdbTitles, resolveTmdbRef } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { makeCliProviderPort } from '../core/providerPort.js'
@@ -35,7 +36,7 @@ import type { SeasonEpisode } from '../core/episode.js'
 import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
-  checkJellyfin, checkAssrt, checkLlm, checkMediaRoots, checkPathMappings,
+  checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings,
   checkDatabase, checkStuckJobs,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
@@ -426,6 +427,20 @@ async function cmdDoctor() {
   } else {
     const assrt = new AssrtClient({ token: assrtToken, cacheDir: join(cacheRoot, 'assrt-responses') })
     results.push(await checkAssrt({ quota: () => withTimeout(assrt.quota(), 10_000, 'ASSRT') }))
+  }
+
+  const osKey = process.env.OPENSUBTITLES_API_KEY
+  if (!osKey) {
+    results.push(await checkOpenSubtitles(null))
+  } else {
+    const os = new OpenSubtitlesClient({
+      apiKey: osKey, appUserAgent: 'subtitlescout v0.2.0',
+      username: process.env.OPENSUBTITLES_USERNAME, password: process.env.OPENSUBTITLES_PASSWORD,
+    })
+    // The Matrix：配额免费的探测目标，只验证 key/网络，不耗下载配额
+    results.push(await checkOpenSubtitles({
+      search: () => withTimeout(os.search({ imdbId: 133093, languages: ['zh-cn'] }), 10_000, 'OpenSubtitles'),
+    }))
   }
 
   const llmBase = process.env.LLM_BASE_URL
