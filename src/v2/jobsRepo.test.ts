@@ -184,6 +184,53 @@ describe('jobs 状态机', () => {
     expect(repo.claimNext(now)).toBeNull()                       // 立即重领被节流
     expect(repo.claimNext(now + PARTIAL_RETRY_MS)?.id).toBe(j.id) // 窗口过后可领
   })
+  it('IMPORTANT-2: 配额停车（completeError 带有效 quotaResetAt）不占内容退避梯——attempt 不变，同 reap* 语义', () => {
+    // 根因：completeError 无条件 attempt+1，哪怕是配额停车（非内容性失败）。日常配额停车会
+    // 悄悄推高 attempt，后面一次真正的 no_safe_match 就会越级跳到 30 天 dormant，跳过 1/2/4/8 天梯。
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    expect(j.attempt).toBe(0)
+    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString()
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, resetAt)
+    const row = repo.get(j.id)!
+    expect(row.state).toBe('failed')
+    expect(row.attempt).toBe(0) // 配额停车：attempt 不变
+    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
+  })
+  it('IMPORTANT-2: 普通瞬时错误（无 quotaResetAt，或 resetAt 无效/已过期）依旧 attempt+1，不受配额修复影响', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'ASSRT 500', t0)
+    expect(repo.get(j.id)!.attempt).toBe(1)
+  })
+  it('IMPORTANT-2: resetAt 无效（过去时间）时不算配额停车——落回默认阶梯，attempt 照常+1', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const pastResetAt = new Date(t0 - 60_000).toISOString()
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, pastResetAt)
+    expect(repo.get(j.id)!.attempt).toBe(1)
+  })
+  it('IMPORTANT-1a: completePartial 携带有效 quotaResetAt 时按 resetAt+margin 排期，不走盲的 30 秒节流', () => {
+    // 季包/季横扫中途撞配额耗尽、已有 ≥1 集覆盖时，剩余部分不该在配额重置前每 30 秒重打一次全链路。
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString()
+    repo.completePartial(j.id, t0, resetAt)
+    const row = repo.get(j.id)!
+    expect(row.state).toBe('wanted')
+    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
+  })
+  it('IMPORTANT-1a: completePartial 不传 quotaResetAt 时行为不变（盲的 30 秒节流）', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    repo.completePartial(j.id, now)
+    expect(repo.get(j.id)!.next_retry_at).toBe(now + PARTIAL_RETRY_MS)
+  })
   it('done 复活（I2）：upsertWanted 对 done 行复位 wanted/attempt=0，failed/dormant 不动', () => {
     const now = Date.now()
     mkSeriesJob(now)

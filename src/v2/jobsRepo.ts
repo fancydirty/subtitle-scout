@@ -187,14 +187,18 @@ export class JobsRepo {
   /** Transient error (network/LLM/5xx): short backoff, separate track from content failures.
    *  quotaResetAt: OS 配额耗尽（quota_exhausted）时携带的 provider reset 时间——有效（可解析且未来）
    *  时按 resetAt+margin 精确排期，而不是走盲的 ERROR_BACKOFF_MS 阶梯（否则会在配额重置前每
-   *  至多 15min 重打一次完整 identify+plan+search+/download，白烧 LLM/search 配额）。 */
+   *  至多 15min 重打一次完整 identify+plan+search+/download，白烧 LLM/search 配额）。
+   *  IMPORTANT-2: 配额停车不是内容性失败，不该占内容退避梯的名额——同 reapExpiredLeases/
+   *  reapAllActive 的 attempt 不变语义。否则日常配额停车会悄悄推高 attempt，后面一次真正的
+   *  no_safe_match 就会越级跳到 30 天 dormant，跳过 1/2/4/8 天梯。 */
   completeError(jobId: number, error: string, now: number, quotaResetAt?: string | null): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
       if (!job) return false
 
-      const newAttempt = job.attempt + 1
-      const nextRetryAt = quotaRetryAt(quotaResetAt, now) ?? now + errorBackoffMs(newAttempt)
+      const quotaRetry = quotaRetryAt(quotaResetAt, now)
+      const newAttempt = quotaRetry != null ? job.attempt : job.attempt + 1
+      const nextRetryAt = quotaRetry ?? now + errorBackoffMs(newAttempt)
       const info = this.db
         .prepare(
           `UPDATE jobs
@@ -207,20 +211,24 @@ export class JobsRepo {
   }
 
   /** Partial success: attempt decrements (gradual escalation recovery), back to wanted for the remainder.
-   *  I6: 带 30 秒节流窗（PARTIAL_RETRY_MS），防止 partial → wanted → 立即重领的紧循环。 */
-  completePartial(jobId: number, now: number): boolean {
+   *  I6: 带 30 秒节流窗（PARTIAL_RETRY_MS），防止 partial → wanted → 立即重领的紧循环。
+   *  quotaResetAt: 季包/季横扫中途撞配额耗尽时携带的 provider reset 时间（IMPORTANT-1a）——有效时
+   *  按 resetAt+margin 精确排期，而不是走盲的 30 秒节流，否则配额重置前每 30 秒重打一次覆盖剩余
+   *  集的全链路，白烧配额。 */
+  completePartial(jobId: number, now: number, quotaResetAt?: string | null): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
       if (!job) return false
 
       const newAttempt = Math.max(0, job.attempt - 1)
+      const nextRetryAt = quotaRetryAt(quotaResetAt, now) ?? now + PARTIAL_RETRY_MS
       const info = this.db
         .prepare(
           `UPDATE jobs
            SET state = 'wanted', attempt = ?, next_retry_at = ?, lease_until = NULL, updated_at = ?
            WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
         )
-        .run(newAttempt, now + PARTIAL_RETRY_MS, now, jobId)
+        .run(newAttempt, nextRetryAt, now, jobId)
       return info.changes > 0
     })()
   }

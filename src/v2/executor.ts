@@ -176,9 +176,11 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     }
 
     if (coveredIds.size >= 1) {
-      // Partial coverage: results already persisted in onCovered, job retries the remainder
+      // Partial coverage: results already persisted in onCovered, job retries the remainder.
+      // IMPORTANT-1a: quotaExhausted mid-sweep/pack → schedule the remainder at resetAt+margin,
+      // not the blind 30s partial throttle (the provider is globally out until reset).
       record(
-        jobs.completePartial(job.id, now()),
+        jobs.completePartial(job.id, now(), result.quotaExhausted?.resetAt),
         'partial',
         coveredDetail(job, coveredIds, lib),
         journalPath,
