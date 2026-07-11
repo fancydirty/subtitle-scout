@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from './db.js'
-import { JobsRepo, ERROR_BACKOFF_MS } from './jobsRepo.js'
+import { JobsRepo, ERROR_BACKOFF_MS, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import { executeJob, makeRunEpisode, type ExecutorDeps } from './executor.js'
@@ -238,6 +238,37 @@ describe('executor', () => {
     expect(finalJob.next_retry_at).toBe(now + ERROR_BACKOFF_MS[0]) // short backoff (30s)
     // runs.detail 人话化（错因保留但不裸露路径）
     expect(runs.getByJobId(job.id)[0].detail).toBe('遇到临时错误，稍后自动重试：ASSRT API timeout')
+  })
+
+  it('1b: error_attempt 跨过 ERROR_GIVEUP_THRESHOLD 时 warn 日志一次，退避变每天一次，state 仍 failed', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    // 先攒到刚好卡在阈值：error_attempt = ERROR_GIVEUP_THRESHOLD（尚未跨过，不该有日志）
+    let claimed = jobs.claimNext(now)!
+    for (let i = 0; i < ERROR_GIVEUP_THRESHOLD; i++) {
+      jobs.completeError(claimed.id, 'timeout', now)
+      claimed = jobs.forceClaim('s1', 1, now)!
+    }
+    expect(jobs.get(claimed.id)!.error_attempt).toBe(ERROR_GIVEUP_THRESHOLD)
+    expect(logs.some(l => l.includes('退避'))).toBe(false)
+
+    // 再一次瞬时错误：跨过阈值，触发一次性 warn 日志 + 退避升级为每天一次
+    const runEpisode = vi.fn(async () => {
+      throw new Error('ASSRT API timeout')
+    })
+    await executeJob(claimed, mkDeps(runEpisode))
+
+    const finalJob = jobs.get(claimed.id)!
+    expect(finalJob.state).toBe('failed') // 绝不转 dormant
+    expect(finalJob.error_attempt).toBe(ERROR_GIVEUP_THRESHOLD + 1)
+    expect(finalJob.next_retry_at).toBe(now + ERROR_BACKOFF_DAILY_MS)
+    expect(logs.some(l => l.includes(`job ${claimed.id}`) && l.includes('每天'))).toBe(true)
+
+    // 再次触发 completeError（已经在升级态）：不该重复打日志
+    const logsBefore = logs.length
+    const claimed2 = jobs.forceClaim('s1', 1, now)!
+    await executeJob(claimed2, mkDeps(vi.fn(async () => { throw new Error('ASSRT API timeout') })))
+    expect(logs.slice(logsBefore).some(l => l.includes('每天'))).toBe(false)
   })
 
   it('C1: decision=error（pipeline 内部 catch 不 throw）→ completeError 短退避轨，不掉内容轨', async () => {

@@ -1,7 +1,7 @@
 // TODO(二期): I5c verify（下载后 Jellyfin 可见性复验）在二期 verifying 阶段实现，
 // 见 docs/superpowers/plans/2026-07-09-v2-core.md Task 11 销项清单。
 import type { LibraryRepo, Episode, Movie } from './libraryRepo.js'
-import type { JobsRepo, Job } from './jobsRepo.js'
+import { ERROR_GIVEUP_THRESHOLD, type JobsRepo, type Job } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import type { Assembled } from '../cli/index.js'
 import {
@@ -135,6 +135,28 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     })
   }
 
+  /** 1b: completeError 的瞬时错误给-up 界——error_attempt 跨过 ERROR_GIVEUP_THRESHOLD 时
+   *  退避从 15min 封顶升级为每天一次（jobsRepo.errorBackoffMs 已经算好 next_retry_at；
+   *  这里只负责把这次"跨界"一次性记进日志，供人工/告警观测，不在每次仍处升级态的后续
+   *  调用里重复刷屏）。job.error_attempt 是本轮 completeError 之前的快照（claimNext 之后
+   *  只有这一次终结调用会改它），据此和调用后的最新值比较即可判断"刚好跨过"。 */
+  const completeErrorLogged = (
+    error: string,
+    quotaResetAt?: string | null
+  ): boolean => {
+    const before = job.error_attempt
+    const transitioned = jobs.completeError(job.id, error, now(), quotaResetAt)
+    if (transitioned && before <= ERROR_GIVEUP_THRESHOLD) {
+      const after = jobs.get(job.id)!
+      if (after.error_attempt > ERROR_GIVEUP_THRESHOLD) {
+        log(
+          `warn: job ${job.id} 瞬时错误连续 ${after.error_attempt} 次，退避升级为每天一次重试（仍保持 failed 可重试，不转 30 天休眠）`
+        )
+      }
+    }
+    return transitioned
+  }
+
   try {
     // 1. Re-derive targets (missing episodes/movie for this job)
     const targets = remainingTargets(job, lib, now())
@@ -256,7 +278,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // 而不是走这条轨盲的 ERROR_BACKOFF_MS 阶梯（否则会在配额重置前反复重打全链路白烧配额）。
     const cause = briefCause(result.reasons?.[0])
     record(
-      jobs.completeError(job.id, result.reasons?.[0] ?? `pipeline decision: ${decision}`, now(), result.quotaExhausted?.resetAt),
+      completeErrorLogged(result.reasons?.[0] ?? `pipeline decision: ${decision}`, result.quotaExhausted?.resetAt),
       decision,
       cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
       journalPath,
@@ -267,7 +289,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     const errorMsg = error instanceof Error ? error.message : String(error)
     const cause = briefCause(errorMsg)
     record(
-      jobs.completeError(job.id, errorMsg, now()),
+      completeErrorLogged(errorMsg),
       'error',
       cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
       null

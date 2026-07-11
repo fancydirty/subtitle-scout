@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from './db.js'
-import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS, QUOTA_RESET_MARGIN_MS } from './jobsRepo.js'
+import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS, QUOTA_RESET_MARGIN_MS, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
 
 let repo: JobsRepo
 beforeEach(() => { repo = new JobsRepo(openDb(':memory:')) })
@@ -124,7 +124,6 @@ describe('jobs 状态机', () => {
     // 双轨速率差是有意的：网络类错误快重试到好，内容类失败按天退避
     expect(ERROR_BACKOFF_MS).toEqual([30_000, 60_000, 120_000, 300_000])
     expect(errorBackoffMs(5)).toBe(900_000)
-    expect(errorBackoffMs(99)).toBe(900_000)
     const t0 = Date.now()
     mkSeriesJob(t0)
     const j = repo.claimNext(t0)!
@@ -138,6 +137,61 @@ describe('jobs 状态机', () => {
       if (i < 5) repo.forceClaim('s1', 4, t0)
     }
     expect(repo.get(j.id)!.next_retry_at).toBe(t0 + 900_000)
+  })
+  it('1b 瞬时给-up 界：error_attempt 超过 ERROR_GIVEUP_THRESHOLD 后阶梯升级为每天一次，不再永远撞 15min 封顶', () => {
+    // 根因：15min 封顶意味着无穷重试的瞬时错误会一天烧 96 次完整 identify+plan+search+/download
+    // 的 Jellyfin/TMDB/provider 调用。ERROR_GIVEUP_THRESHOLD=20（≈20 * 15min = 5h 的持续失败后）
+    // 升级为每天一次，仍保持 failed 可重试——绝不转 30 天 dormant（那是内容轨的专属结局）。
+    expect(errorBackoffMs(ERROR_GIVEUP_THRESHOLD)).toBe(900_000) // 恰好等于阈值：仍在短退避封顶
+    expect(errorBackoffMs(ERROR_GIVEUP_THRESHOLD + 1)).toBe(ERROR_BACKOFF_DAILY_MS) // 超过阈值：升级每天
+    expect(errorBackoffMs(99)).toBe(ERROR_BACKOFF_DAILY_MS)
+    expect(ERROR_BACKOFF_DAILY_MS).toBe(86_400_000)
+  })
+  it('1b: completeError 连续调用超过 ERROR_GIVEUP_THRESHOLD 次后 next_retry_at 变每天一次，state 仍是 failed（绝不 dormant）', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    let j = repo.claimNext(t0)!
+    for (let i = 0; i < ERROR_GIVEUP_THRESHOLD; i++) {
+      repo.completeError(j.id, 'timeout', t0)
+      j = repo.forceClaim('s1', 4, t0)!
+    }
+    expect(repo.get(j.id)!.error_attempt).toBe(ERROR_GIVEUP_THRESHOLD)
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + 900_000) // 恰好在阈值：仍是短退避封顶
+
+    // 再来一次，跨过阈值
+    repo.completeError(j.id, 'timeout', t0)
+    const row = repo.get(j.id)!
+    expect(row.error_attempt).toBe(ERROR_GIVEUP_THRESHOLD + 1)
+    expect(row.state).toBe('failed') // 绝不转 dormant——transient 永远保持可重试
+    expect(row.next_retry_at).toBe(t0 + ERROR_BACKOFF_DAILY_MS)
+
+    // 继续再来几十次，仍然是 failed + 每天一次，不会像内容轨一样有"第 N 次进 dormant"的悬崖
+    for (let i = 0; i < 30; i++) {
+      const claimed = repo.forceClaim('s1', 4, t0)!
+      repo.completeError(claimed.id, 'timeout', t0)
+    }
+    const finalRow = repo.get(j.id)!
+    expect(finalRow.state).toBe('failed')
+    expect(finalRow.next_retry_at).toBe(t0 + ERROR_BACKOFF_DAILY_MS)
+  })
+  it('1b: 给-up 升级后一旦 job 成功翻篇（done→wanted 复活），error_attempt 归零，回到 30s 起步', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    let j = repo.claimNext(t0)!
+    for (let i = 0; i <= ERROR_GIVEUP_THRESHOLD; i++) {
+      repo.completeError(j.id, 'timeout', t0)
+      j = repo.forceClaim('s1', 4, t0)!
+    }
+    expect(repo.get(j.id)!.error_attempt).toBeGreaterThan(ERROR_GIVEUP_THRESHOLD)
+
+    repo.completeDone(j.id, t0)
+    mkSeriesJob(t0) // 该季重新出现 missing → done→wanted 复活，两条计数器一并归零
+    expect(repo.get(j.id)!.error_attempt).toBe(0)
+
+    // 复活后第一次瞬时错误重新从 30s 起步，不再是每天一次
+    const revived = repo.claimNext(t0)!
+    repo.completeError(revived.id, 'timeout', t0)
+    expect(repo.get(revived.id)!.next_retry_at).toBe(t0 + 30_000)
   })
   it('配额耗尽退避（quota_exhausted resetAt）：next_retry_at 对齐 resetAt+margin，不走盲阶梯', () => {
     // 根因：OS 20/日配额耗尽后，若还是走 ERROR_BACKOFF_MS 封顶 15min 的阶梯，job 会在
