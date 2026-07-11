@@ -1,4 +1,5 @@
-import { basename, dirname } from 'node:path'
+import { basename, dirname, extname, join, resolve as resolvePath } from 'node:path'
+import { existsSync } from 'node:fs'
 import {
   type MediaContext, type MediaIdentity, type SearchPlan, type RankDecision,
   type OrphanDecision, type SeasonMap, type SubtitleCandidate,
@@ -387,15 +388,28 @@ export async function runPipeline(
     journal.step('resolveDownloadUrl')
     const parsed = parseCandidateKey(rank.candidate_id!)
     if (!parsed) return finish('error', { reasons: [`invalid candidate_id: ${rank.candidate_id}`] })
+    const candidate = gateCandidate ?? candidates.find(c => candidateKey(c) === rank.candidate_id)
+
+    // 崩溃恢复预检：若能从候选的静态元数据（无需先 resolve/download）推出确定的输出文件名
+    // 且它已经在磁盘上——说明这是"写盘成功但 DB 提交前崩溃"后的重跑，直接短路，绝不再打一次
+    // provider API + 下载全量字节只为发现已存在（同 subtitleWriter 的命名规则；zip 包内文件名
+    // 下载前不可知，跳过预检，走原有"下载后 writeSubtitle 自己发现已存在"路径）。
+    const knownName = candidate?.fileList[rank.file_index ?? -1]?.name
+    if (knownName && /\.(srt|ass|ssa)$/i.test(knownName)) {
+      const videoBase = basename(ctx.media.filename).replace(/\.[^.]+$/, '')
+      const predictedPath = resolvePath(join(outDir, `${videoBase}.${ctx.preferences.language}${extname(knownName).toLowerCase()}`))
+      if (existsSync(predictedPath)) {
+        return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten (pre-flight check, no re-download)'], subtitlePath: predictedPath })
+      }
+    }
 
     const resolved = await deps.providers.resolveDownload({
       provider: parsed.provider,
       providerId: parsed.providerId,
       fileIndex: rank.file_index ?? null,
     })
-    const candidate = gateCandidate ?? candidates.find(c => candidateKey(c) === rank.candidate_id)
     const artifactFilename = resolved.filename
-      ?? (candidate?.fileList[rank.file_index ?? -1]?.name)
+      ?? knownName
       ?? 'subtitle.srt'
     const subFormat = artifactFilename.match(/\.(srt|ass|ssa)$/i)?.[1] || 'srt'
 
@@ -410,7 +424,7 @@ export async function runPipeline(
       langTag: ctx.preferences.language,
       outDir,
     })
-    if (written.alreadyExists) return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten'] })
+    if (written.alreadyExists) return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten'], subtitlePath: written.path })
 
     // 8. cache + finish
     if (!cached) {

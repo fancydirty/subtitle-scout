@@ -80,6 +80,46 @@ describe('runPipeline', () => {
     expect(journal.decision.decision).toBe('download')
   })
 
+  it('already_exists: pre-existing on-disk subtitle short-circuits before resolve/download (crash-recovery replay), and carries the real path', async () => {
+    // 崩溃恢复场景：上一轮已把字幕写到磁盘，但 DB 提交前进程崩溃；job 被 reap 重派后整条流水线
+    // 重跑到这里。目标文件其实已经在磁盘上（文件名可从 candidate 的 fileList 静态推出，无需先
+    // resolve/download）——不该再打一次 provider API + 下一次载全量字节，全部作废只为发现已存在。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const preexistingPath = join(outDir, 'The.Matrix.1999.1080p.BluRay.x264.zh-Hans.ass')
+    writeFileSync(preexistingPath, '[Script Info]\nTitle: already on disk\n')
+    const deps = makeDeps()
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('already_exists')
+    expect(result.subtitlePath).toBe(preexistingPath) // 真实路径，不再是 undefined
+    expect(deps.providers.resolveDownload).not.toHaveBeenCalled()
+    expect(deps.download).not.toHaveBeenCalled()
+  })
+
+  it('already_exists: when the file only turns up already-written after a real download (not predictable up front), the result still carries the real path', async () => {
+    // 覆盖旧的"晚期"分支：无法从候选元数据预判文件名的场景（如 resolved.filename 与候选静态名不同）
+    // 仍要在实际下载后发现 alreadyExists 时把真实路径带回 result，而不是留 undefined。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    // 让本地候选池里的 fileList 名字与实际 resolveDownload 返回的 filename 不同（不可预判），
+    // 这样预检必然 miss，只能在真下载后由 writeSubtitle 的 existsSync 分支发现已存在。
+    const search = vi.fn(async () => ok([mkCand(900, 'Show', ['unrelated-name.txt'])]))
+    const preexistingPath = join(outDir, 'The.Matrix.1999.1080p.BluRay.x264.zh-Hans.ass')
+    writeFileSync(preexistingPath, '[Script Info]\nTitle: already on disk\n')
+    const deps = makeDeps({
+      providers: makeProviders({
+        search,
+        resolveDownload: vi.fn(async () => ({ url: 'http://file0.assrt.net/x.ass', filename: 'real-name.ass' })),
+      }),
+      rank: vi.fn(async () => ({
+        parsed: { decision: 'download' as const, candidate_id: 'assrt:900', file_index: 0, confidence: 0.91, reasons: ['x'], identity_match: 'uncertain' as const, rejected: [] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      })),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('already_exists')
+    expect(result.subtitlePath).toBe(preexistingPath)
+    expect(deps.providers.resolveDownload).toHaveBeenCalledTimes(1) // 预检 miss，仍会真的 resolve 一次
+  })
+
   it('sends the first two plan queries to the provider port in one call; rank sees the port pool', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const portPool = [
