@@ -692,6 +692,47 @@ describe('scanLibrary', () => {
     expect(calls).toBe(1) // failure memoized for the scan
     expect(lib.getSeriesOriginLang('s9')).toBeNull() // and still nothing cached
   })
+
+  it('cached series origin (zh) + THROWING resolver this scan → resolver not called, cached value still classifies ignored', async () => {
+    // 回归锚点：resolver 缓存命中路径必须完全绕开 resolver 调用，哪怕 resolver 本身这一轮
+    // 会抛错——命中缓存意味着"已有权威答案"，不该因为 resolver 这一刻恰好不可用就重新触发。
+    lib.upsertSeries({ id: 's9', name: 'Series 9', posterTag: null })
+    lib.setSeriesOriginLang('s9', 'zh')
+    let calls = 0
+    const throwingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: throwingResolver,
+    })
+    expect(calls).toBe(0) // cache hit — resolver never consulted despite being wired to throw
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+    expect(lib.getSeriesOriginLang('s9')).toBe('zh') // untouched
+  })
+
+  it('cached series origin (unknown sentinel) + THROWING resolver this scan → resolver not called, cached sentinel untouched', async () => {
+    lib.upsertSeries({ id: 's9', name: 'Series 9', posterTag: null })
+    lib.setSeriesOriginLang('s9', 'unknown')
+    let calls = 0
+    const throwingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9', ProductionLocations: ['United States'] })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: throwingResolver,
+    })
+    expect(calls).toBe(0) // cache hit (sentinel counts as cached) — resolver never consulted
+    expect(lib.getSeriesOriginLang('s9')).toBe('unknown') // untouched, still the sentinel
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // no China signal → normal fallback, not ignored
+  })
+
   it('resolver failure (series) logs a warning identifying the series, once per scan (not per episode)', async () => {
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const failingResolver: OriginResolver = { originFor: async () => { throw new Error('TMDB down') } }
