@@ -3,7 +3,7 @@ import { openDb } from './db.js'
 import { JobsRepo } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
-import { ScoutDaemon, type DaemonDeps } from './daemon.js'
+import { ScoutDaemon, type DaemonDeps, MAX_CONSECUTIVE_TICK_FAILURES } from './daemon.js'
 import type { Job } from './jobsRepo.js'
 import type { PlaybackSession } from '../adapters/players/types.js'
 
@@ -134,6 +134,59 @@ describe('ScoutDaemon', () => {
     const reaped = jobs.find('s1', 1)
     expect(reaped?.state).toBe('wanted')
     expect(reaped?.attempt).toBe(0)
+  })
+
+  it('tick 对意外抛错（如 reapExpiredLeases 命中满盘 SQLITE_FULL）保持隔离，不炸出 tick 之外', async () => {
+    // 审计修正：reap、meta SELECT、dispatch 里的 claimNext/countByState 都不在原有的
+    // scan+aggregate try/catch 覆盖范围内——任何一处意外抛错（如磁盘写满）会让整个
+    // tickLoop promise reject，Promise.all(...).catch(() => {}) 悄悄吞掉，tick 永久停摆，
+    // 进程却存活不退出（daemon.ts:249）。tick() 必须自己兜底、记日志、不向外抛。
+    const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases').mockImplementation(() => {
+      throw new Error('SQLITE_FULL: database or disk is full')
+    })
+
+    const daemon = new ScoutDaemon(makeDeps())
+    await expect(daemon.tick()).resolves.toBeUndefined()
+    expect(logs.some(l => l.includes('SQLITE_FULL'))).toBe(true)
+
+    reapSpy.mockRestore()
+  })
+
+  it('tick 连续失败达阈值后调用 exit(非零码)——防止磁盘满等故障下进程存活但永久停摆', async () => {
+    const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases').mockImplementation(() => {
+      throw new Error('boom')
+    })
+    const exit = vi.fn()
+    const daemon = new ScoutDaemon(makeDeps({ exit }))
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TICK_FAILURES - 1; i++) {
+      await daemon.tick()
+    }
+    expect(exit).not.toHaveBeenCalled()
+
+    await daemon.tick() // Nth consecutive failure
+    expect(exit).toHaveBeenCalledWith(1)
+
+    reapSpy.mockRestore()
+  })
+
+  it('tick 失败计数在中途恢复成功后重置——偶发抖动不该累积到 fail-fast 阈值', async () => {
+    const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases')
+    reapSpy.mockImplementation(() => { throw new Error('transient blip') })
+
+    const exit = vi.fn()
+    const daemon = new ScoutDaemon(makeDeps({ exit }))
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TICK_FAILURES - 1; i++) {
+      await daemon.tick()
+    }
+
+    reapSpy.mockRestore() // next tick succeeds, should reset the counter
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TICK_FAILURES - 1; i++) {
+      await daemon.tick()
+    }
+    expect(exit).not.toHaveBeenCalled() // never reached N consecutive failures
   })
 
   it('executeJob抛错不炸主循环', async () => {
