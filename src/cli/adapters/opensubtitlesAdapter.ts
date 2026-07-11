@@ -3,23 +3,13 @@ import { osToCandidates, OsQuotaExhaustedError } from '../../adapters/providers/
 import type { FetchAdapter, FetchEvent } from '../fetchLib.js'
 
 /**
- * 配额耗尽事件的契约（NDJSON provider_error 的扩展）：在标准 FetchEvent 的
- * `{event:'provider_error', provider, message}` 之上附加 `code`/`resetAt`。
- * fetchLib.ts 的 FetchEvent 联合类型本身没有声明这两个字段（改它是共享文件，不在本包改动范围内），
- * 但 JSON.stringify 会原样带上这两个字段，序列化进 stderr 的 NDJSON 行——
- * providerPort.ts 的 `JSON.parse(line)` 一样能读到，供后续工作按 code/resetAt 做退避消费。
- * 这里只定义 + emit 契约，不接线消费端（executor.ts 不在本次改动范围）。
+ * 配额耗尽事件：标准 FetchEvent 的 `provider_error` 成员上 `code`/`resetAt` 现已类型化
+ * （fetchLib.ts），JSON.stringify 序列化进 stderr 的 NDJSON 行——providerPort.ts 的
+ * `JSON.parse(line)` 读到后，若 code 是 quota_exhausted 会构造 ProviderQuotaExhaustedError
+ * 一路带 resetAt 传到 pipeline.ts → v2 executor，据此按重置时间精确退避（不再是盲的短退避阶梯）。
  */
-interface OsQuotaExhaustedFetchEvent {
-  event: 'provider_error'
-  provider: 'opensubtitles'
-  message: string
-  code: 'quota_exhausted'
-  resetAt: string | null
-}
 const emitQuotaExhausted = (emit: (e: FetchEvent) => void, message: string, resetAt: string | null) => {
-  const e: OsQuotaExhaustedFetchEvent = { event: 'provider_error', provider: 'opensubtitles', message, code: 'quota_exhausted', resetAt }
-  emit(e)
+  emit({ event: 'provider_error', provider: 'opensubtitles', message, code: 'quota_exhausted', resetAt })
 }
 
 /**

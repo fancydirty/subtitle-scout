@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from './db.js'
-import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS } from './jobsRepo.js'
+import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS, QUOTA_RESET_MARGIN_MS } from './jobsRepo.js'
 
 let repo: JobsRepo
 beforeEach(() => { repo = new JobsRepo(openDb(':memory:')) })
@@ -139,6 +139,42 @@ describe('jobs 状态机', () => {
     }
     expect(repo.get(j.id)!.next_retry_at).toBe(t0 + 900_000)
   })
+  it('配额耗尽退避（quota_exhausted resetAt）：next_retry_at 对齐 resetAt+margin，不走盲阶梯', () => {
+    // 根因：OS 20/日配额耗尽后，若还是走 ERROR_BACKOFF_MS 封顶 15min 的阶梯，job 会在
+    // 配额于 UTC 重置前一直每 15min 重打一次 identify+plan+search+/download，白烧 LLM/search 配额。
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString() // 3h 后重置
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, resetAt)
+    const row = repo.get(j.id)!
+    expect(row.state).toBe('failed')
+    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
+    // 远大于短退避阶梯封顶(15min)，证明确实没有走 ERROR_BACKOFF_MS
+    expect(row.next_retry_at!).toBeGreaterThan(t0 + 900_000)
+  })
+  it('配额 resetAt 缺失（undefined）→ 落回默认错误退避阶梯，行为与调用方不传第 4 参一致', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'network blip', t0, undefined)
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
+  })
+  it('配额 resetAt 是过去时间（已过期/时钟偏差）→ 落回默认阶梯，不把 job 判"未来"', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const pastResetAt = new Date(t0 - 60_000).toISOString()
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, pastResetAt)
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
+  })
+  it('配额 resetAt 是无法解析的乱码字符串 → 落回默认阶梯，job 不会被永久搁置', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, 'not-a-date')
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
+  })
   it('部分成功节流（I6）：30s 内 claimNext 拿不到，窗口过后可领', () => {
     const now = Date.now()
     mkSeriesJob(now)
@@ -147,6 +183,53 @@ describe('jobs 状态机', () => {
     expect(repo.get(j.id)!.state).toBe('wanted')
     expect(repo.claimNext(now)).toBeNull()                       // 立即重领被节流
     expect(repo.claimNext(now + PARTIAL_RETRY_MS)?.id).toBe(j.id) // 窗口过后可领
+  })
+  it('IMPORTANT-2: 配额停车（completeError 带有效 quotaResetAt）不占内容退避梯——attempt 不变，同 reap* 语义', () => {
+    // 根因：completeError 无条件 attempt+1，哪怕是配额停车（非内容性失败）。日常配额停车会
+    // 悄悄推高 attempt，后面一次真正的 no_safe_match 就会越级跳到 30 天 dormant，跳过 1/2/4/8 天梯。
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    expect(j.attempt).toBe(0)
+    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString()
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, resetAt)
+    const row = repo.get(j.id)!
+    expect(row.state).toBe('failed')
+    expect(row.attempt).toBe(0) // 配额停车：attempt 不变
+    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
+  })
+  it('IMPORTANT-2: 普通瞬时错误（无 quotaResetAt，或 resetAt 无效/已过期）依旧 attempt+1，不受配额修复影响', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'ASSRT 500', t0)
+    expect(repo.get(j.id)!.attempt).toBe(1)
+  })
+  it('IMPORTANT-2: resetAt 无效（过去时间）时不算配额停车——落回默认阶梯，attempt 照常+1', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const pastResetAt = new Date(t0 - 60_000).toISOString()
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, pastResetAt)
+    expect(repo.get(j.id)!.attempt).toBe(1)
+  })
+  it('IMPORTANT-1a: completePartial 携带有效 quotaResetAt 时按 resetAt+margin 排期，不走盲的 30 秒节流', () => {
+    // 季包/季横扫中途撞配额耗尽、已有 ≥1 集覆盖时，剩余部分不该在配额重置前每 30 秒重打一次全链路。
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString()
+    repo.completePartial(j.id, t0, resetAt)
+    const row = repo.get(j.id)!
+    expect(row.state).toBe('wanted')
+    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
+  })
+  it('IMPORTANT-1a: completePartial 不传 quotaResetAt 时行为不变（盲的 30 秒节流）', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    repo.completePartial(j.id, now)
+    expect(repo.get(j.id)!.next_retry_at).toBe(now + PARTIAL_RETRY_MS)
   })
   it('done 复活（I2）：upsertWanted 对 done 行复位 wanted/attempt=0，failed/dormant 不动', () => {
     const now = Date.now()
