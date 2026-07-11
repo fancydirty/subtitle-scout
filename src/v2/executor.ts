@@ -33,6 +33,8 @@ export interface ExecutorDeps {
     reasons?: string[]
     /** 命中的候选来源（供 markCovered 建 provider_ref）；无来源可考（如 already_exists）为 null/undefined */
     selected?: { provider: string; provider_id: string } | null
+    /** pipeline stats（llmCalls/apiCalls）→ runs.llm_calls/assrt_calls；异常路径（如 throw）拿不到，record() 落 null */
+    stats?: { llmCalls: number; apiCalls: number }
   }>
   now: () => number
   log: (msg: string) => void
@@ -110,7 +112,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     transitioned: boolean,
     decision: string,
     detail: string,
-    journalPath: string | null
+    journalPath: string | null,
+    stats: { llmCalls: number; apiCalls: number } | null = null
   ) => {
     let finalDetail = detail
     if (!transitioned) {
@@ -124,6 +127,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       decision,
       detail: finalDetail,
       journalPath,
+      llmCalls: stats?.llmCalls,
+      assrtCalls: stats?.apiCalls,
     })
   }
 
@@ -152,6 +157,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     const { decision } = result
     const subtitlePath = result.subtitlePath ?? null
     const journalPath = result.journalPath ?? null
+    const stats = result.stats ?? null
 
     // 5. Route based on decision and coverage
     if (remainingTargets(job, lib, now()).length === 0) {
@@ -160,7 +166,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
         jobs.completeDone(job.id, now()),
         decision,
         coveredDetail(job, coveredIds, lib),
-        journalPath
+        journalPath,
+        stats
       )
       return
     }
@@ -171,7 +178,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
         jobs.completePartial(job.id, now()),
         'partial',
         coveredDetail(job, coveredIds, lib),
-        journalPath
+        journalPath,
+        stats
       )
       return
     }
@@ -192,14 +200,16 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
           jobs.completeDone(job.id, now()),
           decision,
           coveredDetail(job, coveredIds, lib),
-          journalPath
+          journalPath,
+          stats
         )
       } else {
         record(
           jobs.completePartial(job.id, now()),
           'partial',
           coveredDetail(job, coveredIds, lib),
-          journalPath
+          journalPath,
+          stats
         )
       }
       return
@@ -229,7 +239,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
         }
       }
 
-      record(transitioned, decision, humanDetail, journalPath)
+      record(transitioned, decision, humanDetail, journalPath, stats)
       return
     }
 
@@ -241,7 +251,8 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       jobs.completeError(job.id, result.reasons?.[0] ?? `pipeline decision: ${decision}`, now()),
       decision,
       cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
-      journalPath
+      journalPath,
+      stats
     )
   } catch (error) {
     // Exception handling: completeError with short backoff
@@ -336,6 +347,7 @@ export function makeRunEpisode(
       minConfidence: ctx.preferences.auto_download_min_confidence,
       reasons: result.reasons ?? [],
       selected: result.selected ?? null,
+      stats: { llmCalls: result.stats.llmCalls, apiCalls: result.stats.apiCalls },
     }
   }
 }

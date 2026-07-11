@@ -2,6 +2,10 @@ import Database from 'better-sqlite3'
 
 export type ScoutDb = Database.Database
 
+// runs.llm_calls/assrt_calls：来自 pipeline stats（executor.ts 的 runs.insert 调用点）；
+// assrt_calls 现计全部 provider api 调用（列名历史沿用，非仅 ASSRT）。
+// （MIGRATIONS[0] DDL 字符串里同名列的旧注释保持不动——迁移日志按惯例不做原地编辑，纠正写在这里。）
+
 // export：供 migration.provider-ref.test.ts 手工重放到指定版本用
 export const MIGRATIONS: string[] = [
   // v1: Complete schema from spec §1

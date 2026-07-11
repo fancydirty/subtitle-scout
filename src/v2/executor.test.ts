@@ -385,6 +385,25 @@ describe('executor', () => {
     })
   })
 
+  it('runs.llm_calls/assrt_calls 落盘：取自 pipeline stub 返回的 stats', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'download',
+      journalPath: '/journals/test.json',
+      subtitlePath: '/tv/s1e1.zh-Hans.srt',
+      stats: { llmCalls: 3, apiCalls: 5 },
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    const run = runs.getByJobId(job.id)[0]
+    expect(run.llm_calls).toBe(3)
+    expect(run.assrt_calls).toBe(5)
+  })
+
   it('targets 为空时直接 completeDone', async () => {
     // Setup: all episodes already covered
     mkEpisode('e1', 's1', 1, 1, 'covered')
@@ -495,6 +514,7 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
       minConfidence: 0.5,
       reasons: [],
       selected: null,
+      stats: { llmCalls: 0, apiCalls: 0 },
     })
     const [, ctx, outDir, , opts] = runPipelineMock.mock.calls[0]
     expect(ctx.preferences.auto_download_min_confidence).toBe(0.5) // I5a
