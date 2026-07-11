@@ -524,6 +524,53 @@ describe('runPipeline', () => {
     expect(result.decision).toBe('download')
   })
 
+  it('season sweep: when two candidates map to the same episode, keeps the higher-confidence one (seasonPackGate bestByCode semantics), not first-written', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      mkCand(810, 'Show.S02E03.v1', ['Show.S02E03.v1.srt'], '第3集v1'),
+      mkCand(822, 'Show.S02E03.v2', ['Show.S02E03.v2.srt'], '第3集v2'),
+    ]
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e3', seasonNumber: 2, episodeNumber: 3, episodeCode: 'S02E03', videoPath: join(outDir, 'Show.S02E03.mkv'), videoFilename: 'Show.S02E03.mkv', needsChinese: true },
+    ]
+    const covered: { episodeCode: string; ref?: string }[] = []
+    const llm = { call: vi.fn(async () => ({
+      // Lower-confidence candidate listed FIRST — array order must not decide the winner.
+      parsed: { assignments: [
+        { episode_code: 'S02E03', candidate_id: 'assrt:810', confidence: 0.87 },
+        { episode_code: 'S02E03', candidate_id: 'assrt:822', confidence: 0.98 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }, _path: string, ref?: string) => { covered.push({ episodeCode: ep.episodeCode, ref }) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(covered).toEqual([{ episodeCode: 'S02E03', ref: 'assrt:822' }]) // higher confidence wins
+    // The lower-confidence loser is dropped before any network I/O — no wasted resolve call
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+    expect(resolveDownload).toHaveBeenCalledWith(expect.objectContaining({ providerId: '822' }))
+    expect(result.decision).toBe('download')
+  })
+
   it('season sweep: does NOT trigger when a whole-season pack is available (pack has priority)', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const packCandidate = toCandidate(seasonDetail.sub.subs[0])

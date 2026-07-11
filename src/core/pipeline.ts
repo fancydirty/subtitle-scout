@@ -456,6 +456,16 @@ async function runSeasonSweep(
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
   if (validAssignments.length === 0) return []
 
+  // 同一 episode_code 收到 2+ 候选时，按 seasonPackGate 的 bestByCode 语义只保留置信度最高的那个——
+  // 在任何 resolve/download 之前就丢弃劣者，既不产生质量倒退（保留低分覆盖），也不白打一次 API。
+  const bestByCode = new Map<string, typeof validAssignments[number]>()
+  for (const a of validAssignments) {
+    const prev = bestByCode.get(a.episode_code)
+    if (!prev || a.confidence > prev.confidence) bestByCode.set(a.episode_code, a)
+  }
+  const dedupedAssignments = [...bestByCode.values()]
+  journal.step('seasonSweepDedup', { before: validAssignments.length, after: dedupedAssignments.length })
+
   const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
   const skipped: { episode: string; reason: string }[] = []
   let apiCallsUsed = 0
@@ -464,7 +474,7 @@ async function runSeasonSweep(
   // (每集各有独立文件、fileIndex 各不相同)不受影响；单文件候选被映射到多集时第 2+ 次必被拒。
   const usedFiles = new Set<string>()
 
-  for (const assignment of validAssignments) {
+  for (const assignment of dedupedAssignments) {
     if (apiCallsUsed >= budget) {
       skipped.push({ episode: assignment.episode_code, reason: 'api call budget exhausted' })
       continue
