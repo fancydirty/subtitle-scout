@@ -1,4 +1,4 @@
-import { writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync, renameSync } from 'node:fs'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import AdmZip from 'adm-zip'
 import chardet from 'chardet'
@@ -78,6 +78,18 @@ export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSub
   if (existsSync(resolvedOut)) {
     return { path: resolvedOut, bytes: 0, encoding, alreadyExists: true }
   }
-  writeFileSync(resolvedOut, data)
+
+  // 原子写：先写同目录临时文件 + fsync，再 rename 到最终路径（同 fs 上 rename 是原子的）。
+  // 这样任何时刻崩溃，最终路径要么不存在，要么是完整文件——不会出现被 existsSync 误判为
+  // "已存在"从而永久跳过的半截字幕。
+  const tmpPath = `${resolvedOut}.tmp`
+  const fd = openSync(tmpPath, 'w')
+  try {
+    writeSync(fd, data)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(tmpPath, resolvedOut)
   return { path: resolvedOut, bytes: data.length, encoding, alreadyExists: false }
 }
