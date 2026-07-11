@@ -100,6 +100,14 @@ ALTER TABLE blacklist_v2 RENAME TO blacklist;
 ALTER TABLE movies ADD COLUMN origin_lang TEXT;
 ALTER TABLE series ADD COLUMN origin_lang TEXT;
   `.trim(),
+  // v4: error_attempt——双轨 attempt 审计修正。jobs.attempt 曾同时被 completeNoMatch
+  // （内容失败：1/2/4/8 天退避梯 + 第 5 次 dormant）和 completeError（瞬时错误：
+  // 30s..15min 短退避梯）充电，两条速率差异巨大的轨共用一个计数器会互相污染判据
+  // （见 jobsRepo.ts 顶部注释）。新增独立持久列只服务瞬时错误轨；attempt 之后只服务
+  // 内容轨。旧库存量 attempt 是内容失败历史，不能凭空过继给 error_attempt，回填默认 0。
+  `
+ALTER TABLE jobs ADD COLUMN error_attempt INTEGER NOT NULL DEFAULT 0;
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {

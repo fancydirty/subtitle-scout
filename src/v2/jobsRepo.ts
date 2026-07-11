@@ -51,6 +51,7 @@ export interface Job {
   priority: number
   target_episodes: string | null
   attempt: number
+  error_attempt: number
   next_retry_at: number | null
   lease_until: number | null
   last_error: string | null
