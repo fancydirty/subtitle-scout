@@ -62,26 +62,56 @@ export async function resolveTmdbRef(
   return null
 }
 
+/**
+ * TMDB 请求本身失败（网络拒绝、超时、非 2xx、非 JSON）——瞬时故障，调用方据此
+ * 决定"下次重试"而非"缓存无数据"。风格对齐 llm.ts 的 ToolChoiceRejectionError。
+ */
+export class TmdbRequestFailedError extends Error {
+  constructor(cause: unknown) {
+    super(`TMDB request failed: ${String(cause)}`)
+  }
+}
+
 export class TmdbClient {
   private fetchImpl: typeof fetch
   constructor(private opts: TmdbClientOpts) {
     this.fetchImpl = opts.fetchImpl ?? fetch
   }
 
-  // 任何失败（网络拒绝、超时、非 2xx、非 JSON）静默返回 null——TMDB 是增益路径，绝不阻塞主流程。
-  private async getJson(path: string): Promise<Record<string, unknown> | null> {
+  /**
+   * 严格版请求：区分"请求失败"和"查无此资源"。
+   * - 网络拒绝 / 超时 / 非 2xx（404 除外）/ 非 JSON → 抛 TmdbRequestFailedError（瞬时，可重试）；
+   * - 404 → 返回 null（TMDB 明确答复查无此 id——脏/过期 provider id 是永久态，属 no-data）。
+   * 需要静默吞错语义的调用方走 getJson。
+   */
+  private async getJsonStrict(path: string): Promise<Record<string, unknown> | null> {
     const v4 = isV4Token(this.opts.apiKey)
     const url = v4
       ? `${BASE}${path}`
       : `${BASE}${path}?api_key=${encodeURIComponent(this.opts.apiKey)}`
     const headers = v4 ? { Authorization: `Bearer ${this.opts.apiKey}` } : undefined
+    let res: Response
     try {
-      const res = await this.fetchImpl(url, {
+      res = await this.fetchImpl(url, {
         headers,
         signal: AbortSignal.timeout(TMDB_TIMEOUT_MS),
       })
-      if (!res.ok) return null
+    } catch (e) {
+      throw new TmdbRequestFailedError(e)
+    }
+    if (res.status === 404) return null
+    if (!res.ok) throw new TmdbRequestFailedError(`HTTP ${res.status}`)
+    try {
       return await res.json() as Record<string, unknown>
+    } catch (e) {
+      throw new TmdbRequestFailedError(e)
+    }
+  }
+
+  // 任何失败（网络拒绝、超时、非 2xx、非 JSON）静默返回 null——TMDB 是增益路径，绝不阻塞主流程。
+  private async getJson(path: string): Promise<Record<string, unknown> | null> {
+    try {
+      return await this.getJsonStrict(path)
     } catch {
       return null
     }
@@ -123,9 +153,16 @@ export class TmdbClient {
     return out
   }
 
-  /** TMDB detail 端点的 original_language（movie/tv 通用，小写化）。失败静默返回 null（增益路径）。 */
+  /**
+   * TMDB detail 端点的 original_language（movie/tv 通用，小写化）。
+   * 两类结果语义严格区分（scanner 的负缓存哨兵依赖这条契约）：
+   * - null = TMDB 明确答复但无可用 original_language（含 404 查无此 id）——真·no-data，可安全负缓存；
+   * - 抛 TmdbRequestFailedError = 请求本身失败（网络/超时/非 2xx/非 JSON）——瞬时故障，
+   *   调用方必须按"可重试"处理，绝不能当 no-data 缓存（否则一次 TMDB 故障会把故障窗口内
+   *   扫过的所有条目永久打成 unknown，权威 origin gate 从此失效）。
+   */
   async getOriginLanguage(mediaType: 'tv' | 'movie', tmdbId: string): Promise<string | null> {
-    const d = await this.getJson(`/${mediaType}/${tmdbId}`)
+    const d = await this.getJsonStrict(`/${mediaType}/${tmdbId}`)
     const lang = d?.original_language
     return typeof lang === 'string' && lang ? lang.toLowerCase() : null
   }

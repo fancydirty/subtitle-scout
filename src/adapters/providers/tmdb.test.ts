@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { TmdbClient, resolveTmdbRef } from './tmdb.js'
+import { TmdbClient, resolveTmdbRef, TmdbRequestFailedError } from './tmdb.js'
 
 interface RouteBodies {
   translations?: unknown
@@ -113,6 +113,48 @@ describe('TmdbClient.getChineseTitles', () => {
       alternativeTitles: { results: [] },
     })
     expect(await client.getChineseTitles('tv', '1')).toEqual(['中文名'])
+  })
+})
+
+describe('TmdbClient.getOriginLanguage', () => {
+  it('success → lowercased original_language', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ original_language: 'ZH' }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getOriginLanguage('tv', '1')).toBe('zh')
+  })
+
+  it('genuine no-data (200 response, no original_language field) → null', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getOriginLanguage('tv', '1')).toBeNull()
+  })
+
+  it('request failure (network throw) → rejects with TmdbRequestFailedError, NOT null', async () => {
+    // 验证的关键区分点：网络失败必须是可观察的拒绝，不能被吞成和"无数据"一样的 null，
+    // 否则 scanner.ts 没法区分"该缓存哨兵"还是"该重试"。
+    const fetchImpl = vi.fn(async () => { throw new Error('network down') })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getOriginLanguage('tv', '1')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('request failure (non-2xx status) → rejects with TmdbRequestFailedError, NOT null', async () => {
+    const fetchImpl = vi.fn(async () => new Response('server error', { status: 500 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getOriginLanguage('tv', '1')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('request failure (non-JSON body) → rejects with TmdbRequestFailedError, NOT null', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not json', { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getOriginLanguage('tv', '1')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('404 (id does not exist on TMDB) → null, genuine no-data — NOT a transient failure', async () => {
+    // 404 是"TMDB 明确答复：查无此 id"（脏/过期的 Tmdb provider id 是永久态），
+    // 归入 no-data 让上游缓存哨兵、收敛回查；若归入 failure 会让坏 id 每轮 scan 重试到永远。
+    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getOriginLanguage('tv', '1')).toBeNull()
   })
 })
 
