@@ -253,6 +253,33 @@ describe('runPipeline', () => {
     expect(deps.providers.search).toHaveBeenCalledTimes(2)
   })
 
+  it('gate produces ask_user on an INCOMPLETE candidate set (one source failed) → also downgrades to retry_later, not just no_safe_match', async () => {
+    // 与上一条对称：残缺集不只可能判 no_safe_match，也可能因低置信度落 ask_user——两者都可能是
+    // "抽风的那一源本有确认匹配"，同样不该在残缺集上直接冻结成 ask_user 等人工，应先重试。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const deps = makeDeps({
+      cache,
+      providers: makeProviders({
+        search: vi.fn(async () => ({
+          candidates: [mkCand(500, 'The Matrix maybe', ['x.srt'])],
+          providerErrors: [{ provider: 'opensubtitles', message: 'timeout' }],
+        })),
+      }),
+      rank: vi.fn(async () => ({
+        parsed: { decision: 'download' as const, candidate_id: 'assrt:500', file_index: 0, confidence: 0.6, reasons: ['uncertain'], identity_match: 'uncertain' as const, rejected: [] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      })),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('retry_later')                          // ① 不是 ask_user
+    expect(result.reasons?.join(' ')).toMatch(/opensubtitles.*timeout/)
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()             // ② 无负条目（ask_user 本就不写负缓存，但仍校验干净）
+    // ③ 第二次跑不被短路：重新搜索
+    await runPipeline(deps, ctx, mkdtempSync(join(tmpdir(), 'out-')))
+    expect(deps.providers.search).toHaveBeenCalledTimes(2)
+  })
+
   it('gate rejects a COMPLETE candidate set (zero provider errors) → honest negative cache still written', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))

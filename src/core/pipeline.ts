@@ -297,10 +297,10 @@ export async function runPipeline(
       const gate = runGate(rank, candidates, identity, ctx.preferences)
       journal.step('gateResult', gate)
       if (!gate.ok) {
-        // 候选集残缺（某源瞬时故障 fail-soft 成 [] 但另一源有候选）时，gate 的 no_safe_match
-        // 不代表"确实没有"——降级为 retry_later（瞬时可重试）且绝不写负缓存，否则 24h 内该集被短路，
-        // 而当时很可能是抽风的那一源本有正确字幕。providerErrors 为空才走诚实负缓存。
-        if (gate.decision === 'no_safe_match' && searchProviderErrors.length > 0) {
+        // 候选集残缺（某源瞬时故障 fail-soft 成 [] 但另一源有候选）时，gate 的 no_safe_match/ask_user
+        // 都不代表"确实没有安全匹配"——降级为 retry_later（瞬时可重试）且绝不写负缓存，否则该集被短路
+        // 或冻结成待人工确认，而当时很可能是抽风的那一源本有确认匹配。providerErrors 为空才走诚实结论。
+        if ((gate.decision === 'no_safe_match' || gate.decision === 'ask_user') && searchProviderErrors.length > 0) {
           journal.step('incompleteCandidateSet', { providerErrors: searchProviderErrors })
           return finish('retry_later', {
             reasons: [
