@@ -141,6 +141,21 @@ describe('OpenSubtitlesClient.resolveDownload', () => {
   })
 })
 
+describe('AbortSignal timeout coverage', () => {
+  it('search request init carries an AbortSignal (matches assrt/tmdb clients)', async () => {
+    let captured: RequestInit | null = null
+    const client = makeClient(((_url: string, init: RequestInit) => { captured = init; return okJson(fixture) }) as never)
+    await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(captured!.signal).toBeInstanceOf(AbortSignal)
+  })
+  it('resolveDownload request init carries an AbortSignal', async () => {
+    let captured: RequestInit | null = null
+    const client = makeClient(((_url: string, init: RequestInit) => { captured = init; return okJson({ link: 'L', file_name: 'f.srt' }) }) as never)
+    await client.resolveDownload(1)
+    expect(captured!.signal).toBeInstanceOf(AbortSignal)
+  })
+})
+
 describe('osToCandidates', () => {
   it('yields one candidate per file with providerId = file_id', () => {
     const cands = osToCandidates(OsSearchResponseSchema.parse(fixture))

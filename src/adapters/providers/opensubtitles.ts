@@ -3,6 +3,9 @@ import type { SubtitleCandidate } from '../../core/schemas.js'
 
 const BASE = 'https://api.opensubtitles.com/api/v1'
 const DEFAULT_LANGUAGES = ['zh-cn', 'zh-tw']
+// assrt/tmdb 客户端都用 15s（ASSRT_TIMEOUT_MS / TMDB_TIMEOUT_MS），OS 对齐同一个值——
+// 之前 OS 是仓库里唯一没设超时的 provider，卡住的端点会拖满 180s 子进程预算（providerPort.ts 的 timeoutMs）。
+export const OS_TIMEOUT_MS = 15_000
 
 export const OsSearchResponseSchema = z.object({
   total_count: z.number().default(0),
@@ -90,7 +93,7 @@ export class OpenSubtitlesClient {
       const t0 = Date.now()
       let status: number | null = null
       try {
-        const res = await this.fetchImpl(`${BASE}${endpoint}`, { ...makeInit(), redirect: 'follow' })
+        const res = await this.fetchImpl(`${BASE}${endpoint}`, { ...makeInit(), redirect: 'follow', signal: AbortSignal.timeout(OS_TIMEOUT_MS) })
         status = res.status
         if (!res.ok) throw new OsHttpError(endpoint, res.status)
         const body = await res.json()
