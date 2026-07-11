@@ -473,12 +473,21 @@ async function runSeasonSweep(
     }
 
     try {
-      const parsed = parseCandidateKey(assignment.candidate_id)
+      let parsed = parseCandidateKey(assignment.candidate_id)
+      let candidate = parsed ? candidates.find(c => candidateKey(c) === assignment.candidate_id) : undefined
+      // LLM 自愈：与单集 gate（core/gate.ts）对称——模型偶尔丢 "provider:" 前缀只回裸 providerId。
+      // 仅在候选池内恰好一个候选命中该裸 id 才自愈；0 或 2+ 命中（跨 provider id 碰撞）维持 fail-safe 跳过。
+      if (!parsed && !assignment.candidate_id.includes(':')) {
+        const matches = candidates.filter(c => c.providerId === assignment.candidate_id)
+        if (matches.length === 1) {
+          candidate = matches[0]
+          parsed = { provider: candidate.provider, providerId: candidate.providerId }
+        }
+      }
       if (!parsed) {
         skipped.push({ episode: assignment.episode_code, reason: 'invalid candidate_id' })
         continue
       }
-      const candidate = candidates.find(c => candidateKey(c) === assignment.candidate_id)
       if (!candidate) {
         skipped.push({ episode: assignment.episode_code, reason: 'candidate not in pool' })
         continue
