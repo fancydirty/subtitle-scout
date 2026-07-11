@@ -493,12 +493,17 @@ async function runSeasonSweep(
         continue
       }
 
-      // 单集候选通常单文件；多文件时选含对应 episode code 的文件，选不出则用第一个字幕文件
+      // 单集候选通常单文件；多文件时必须选中含对应 episode code 的文件——这是校验而非"选不出兜底
+      // 第一个"：写盘字幕永久标记该集覆盖，错配比不下载伤害大得多（防串号铁律，同单集 gate 语义）。
       const subtitleFiles = candidate.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name))
       let fileIndex: number | null = null
       if (subtitleFiles.length > 0) {
         const matched = subtitleFiles.find(f => f.name.includes(assignment.episode_code))
-        fileIndex = matched ? matched.index : subtitleFiles[0].index
+        if (!matched) {
+          skipped.push({ episode: assignment.episode_code, reason: `no filelist entry matches episode code ${assignment.episode_code} in candidate ${assignment.candidate_id} — refusing to fall back to an arbitrary file` })
+          continue
+        }
+        fileIndex = matched.index
       }
 
       const resolved = await deps.providers.resolveDownload({
