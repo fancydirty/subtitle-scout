@@ -15,6 +15,9 @@ let renameShouldFailOnce = false
 // 可靠触发，但可以让被 mock 的 writeSync 在第一次调用时故意只写 1 字节并如实返回该计数，
 // 观察调用方是否会用剩余字节循环补写（而不是像裸 writeFileSync 假设的那样一次写完）。
 let forceShortWriteOnce = false
+// 用于模拟 NAS/SMB 等文件系统上 unlink 因 EPERM/EACCES/EBUSY 失败：孤儿 .tmp 清理只是
+// best-effort，失败不应把"文件已存在"的良性短路变成整次调用的硬失败。
+let forceUnlinkThrowOnce = false
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
   return {
@@ -25,6 +28,13 @@ vi.mock('node:fs', async (importOriginal) => {
         throw new Error('simulated crash before rename completed')
       }
       return actual.renameSync(...args)
+    },
+    unlinkSync: (...args: Parameters<typeof actual.unlinkSync>) => {
+      if (forceUnlinkThrowOnce) {
+        forceUnlinkThrowOnce = false
+        throw Object.assign(new Error('simulated EBUSY on unlink'), { code: 'EBUSY' })
+      }
+      return actual.unlinkSync(...args)
     },
     writeSync: (...args: unknown[]) => {
       if (forceShortWriteOnce && Buffer.isBuffer(args[1])) {
@@ -137,6 +147,25 @@ describe('writeSubtitle', () => {
     expect(readFileSync(otherTargetTmp, 'utf8')).toBe('not our orphan')
   })
 
+  it('swallows a failing unlinkSync during orphan cleanup so the already-exists short-circuit still succeeds', async () => {
+    // 场景：孤儿 .tmp 清理命中一个会抛错的文件系统（NAS/SMB 上常见的 EPERM/EACCES/EBUSY）。
+    // 清理只是 best-effort，绝不能把"文件已存在"这一良性状态变成整次调用抛错。
+    const dir = outDir()
+    const finalPath = join(dir, 'Movie.zh-Hans.srt')
+    const tmpPath = `${finalPath}.tmp`
+    writeFileSync(finalPath, 'existing final content')
+    writeFileSync(tmpPath, 'orphaned partial write')
+
+    forceUnlinkThrowOnce = true
+    const r = await writeSubtitle({
+      artifact: Buffer.from('new'), artifactFilename: 'sub.srt',
+      videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
+    })
+
+    expect(r.alreadyExists).toBe(true)
+    expect(readFileSync(finalPath, 'utf8')).toBe('existing final content')
+  })
+
   it('passes through an OpenSubtitles-style bare .srt (no zip) with correct naming, uppercase ext tolerated', async () => {
     // OpenSubtitles 下载是裸 UTF-8 .srt 而非 zip——必须原样直通，不做 zip 解析
     const dir = outDir()
@@ -160,7 +189,11 @@ describe('writeSubtitle', () => {
     })).rejects.toThrow(/unsupported archive/i)
   })
 
-  afterEach(() => { renameShouldFailOnce = false; forceShortWriteOnce = false })
+  afterEach(() => {
+    renameShouldFailOnce = false
+    forceShortWriteOnce = false
+    forceUnlinkThrowOnce = false
+  })
 
   it('loops on a short writeSync so a partial kernel write never fsyncs+renames a truncated file', async () => {
     const dir = outDir()

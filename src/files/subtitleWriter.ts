@@ -94,8 +94,14 @@ export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSub
     // 留下这个 writer 自己产生的 <resolvedOut>.tmp 垃圾文件。功能上无害（下次重试的
     // openSync('w') 会截断复用它），但会永久堆积在用户媒体目录旁——顺手清掉。
     // 只删这一个确定路径，绝不碰最终文件本身或任何其他文件。
+    // 这是 best-effort 清理：某些文件系统（NAS/SMB 等）上 unlink 可能因 EPERM/EACCES/EBUSY
+    // 失败，绝不能让清理失败把这个良性的"已存在"短路变成整次调用的硬失败。
     if (existsSync(tmpPath)) {
-      unlinkSync(tmpPath)
+      try {
+        unlinkSync(tmpPath)
+      } catch {
+        // swallow: orphan cleanup is opportunistic, not load-bearing
+      }
     }
     return { path: resolvedOut, bytes: 0, encoding, alreadyExists: true }
   }
