@@ -221,15 +221,22 @@ export class JobsRepo {
     return info.changes > 0
   }
 
-  /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic). */
+  /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic).
+   *  A 'failed' job with a pending next_retry_at is mid content-backoff (1/2/4/8d
+   *  ladder) — its target can look momentarily "not missing" (e.g. unavailable with
+   *  a future recheck_after) without being externally satisfied. Retiring it here
+   *  flips it to 'done', and the next upsertWanted done→wanted revival resets
+   *  attempt to 0, silently defeating the ladder. Only retire once the backoff
+   *  window has actually elapsed (or there never was one). */
   retire(jobId: number, now: number): boolean {
     const info = this.db
       .prepare(
         `UPDATE jobs
          SET state = 'done', updated_at = ?
-         WHERE id = ? AND state IN ('wanted', 'failed')`
+         WHERE id = ? AND state IN ('wanted', 'failed')
+         AND (next_retry_at IS NULL OR next_retry_at <= ?)`
       )
-      .run(now, jobId)
+      .run(now, jobId, now)
     return info.changes > 0
   }
 
