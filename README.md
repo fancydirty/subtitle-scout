@@ -98,6 +98,20 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服�
 
 **填哪**：`.env` 的 `TMDB_API_KEY`。填完重启 scout 即生效。
 
+### OpenSubtitles（可选）：第二字幕源
+
+ASSRT 主打国产字幕站，欧美剧集/电影覆盖有限；OpenSubtitles 是 ASSRT 之外的第二数据源，专门补这块——同一部片，中文字幕这边常有 ASSRT 搜不到的补充。
+
+**怎么申请**（免费）：
+
+1. 注册 [opensubtitles.com](https://www.opensubtitles.com) 账号
+2. 进入 [API Consumers](https://www.opensubtitles.com/en/consumers) 建一个 API consumer（名字仅限字母数字）
+3. 复制生成的 key，填入 `.env` 的 `OPENSUBTITLES_API_KEY`
+
+**可选加成**：额外填 `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD`——登录后免费档 20 次下载/天；不填则走匿名档，5 次/天。创建 consumer 时勾选 "Under development" 可拿到 100 次下载/天，开发期很够用。
+
+> 搜索本身不耗配额，只有实际下载才扣；doctor 的探测请求（搜索《黑客帝国》）不会碰下载额度。没有 key 也能跑：这是纯增益的第二数据源，不配置就自动跳过，不阻塞主流程。
+
 ---
 
 ## 起完先体检：doctor
@@ -213,6 +227,8 @@ docker compose exec subtitle-scout npx tsx src/cli/index.ts report --since 7d
 |------|------|--------|
 | `MEDIA_PATH_MAPPINGS` | Jellyfin 路径到本地路径映射，格式 `jellyfin前缀=本地前缀` | 空 |
 | `TMDB_API_KEY` | TMDB key（可选，强烈推荐）——取全部中文译名变体，中文召回质变；见「第四把钥匙」 | 空 |
+| `OPENSUBTITLES_API_KEY` | OpenSubtitles key（可选）——ASSRT 之外的第二字幕源，欧美剧集补盲；见「OpenSubtitles」 | 空 |
+| `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` | OpenSubtitles 登录（可选）——免费档下载配额 5→20 次/天 | 空 |
 | `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔） | 空 |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `AUTO_DOWNLOAD_MIN_CONFIDENCE` | 自动下载置信度阈值（0-1） | `0.86` |
