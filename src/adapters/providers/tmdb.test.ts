@@ -200,6 +200,15 @@ describe('resolveTmdbRef', () => {
   })
 })
 
+describe('TmdbRequestFailedError', () => {
+  it('sets name and chains the original error via cause (preserves stack instead of stringifying)', () => {
+    const original = new Error('socket hang up')
+    const err = new TmdbRequestFailedError(original)
+    expect(err.name).toBe('TmdbRequestFailedError')
+    expect(err.cause).toBe(original)
+  })
+})
+
 describe('resolveTmdbRefStrict', () => {
   // 与 resolveTmdbRef 的核心区别只在 Episode 分支的 getItem 失败处理：
   // 其余分支（Movie/Series/无引用）行为完全一致，此处复用同样的用例做回归锚点。

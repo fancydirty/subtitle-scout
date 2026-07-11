@@ -94,10 +94,12 @@ export async function resolveTmdbRef(
 /**
  * TMDB 请求本身失败（网络拒绝、超时、非 2xx、非 JSON）——瞬时故障，调用方据此
  * 决定"下次重试"而非"缓存无数据"。风格对齐 llm.ts 的 ToolChoiceRejectionError。
+ * cause 链回原始错误（而非 String() 拍扁）以保留原始 stack，便于诊断真正的网络/HTTP 故障点。
  */
 export class TmdbRequestFailedError extends Error {
   constructor(cause: unknown) {
-    super(`TMDB request failed: ${String(cause)}`)
+    super(`TMDB request failed: ${String(cause)}`, { cause })
+    this.name = 'TmdbRequestFailedError'
   }
 }
 
