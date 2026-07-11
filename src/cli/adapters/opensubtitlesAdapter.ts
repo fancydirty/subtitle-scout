@@ -2,8 +2,17 @@ import type { OpenSubtitlesClient } from '../../adapters/providers/opensubtitles
 import { osToCandidates } from '../../adapters/providers/opensubtitles.js'
 import type { FetchAdapter } from '../fetchLib.js'
 
-/** 'tt13152020' → 13152020；无值时 undefined */
-const imdbDigits = (s: string | undefined) => s ? Number(s.replace(/^tt/, '')) : undefined
+/**
+ * 'tt13152020' → 13152020；无值时 undefined。
+ * 0（'tt0000000' 占位符，部分刮削器用它标记"未匹配"）和 NaN（畸形值，如误传整个 imdb URL）
+ * 一律视为"无 imdb"，退化到标题+season/episode 查询——否则会带着必然 0 命中的 imdb_id 查询提交，
+ * 而本该走的标题查询分支被跳过（`imdb != null` 对 0 和 NaN 都是 true）。
+ */
+const imdbDigits = (s: string | undefined): number | undefined => {
+  if (!s) return undefined
+  const n = Number(s.replace(/^tt/, ''))
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
 
 /**
  * OpenSubtitles FetchAdapter 工厂——从 subtitle-fetch.ts 的 buildAdapters() 闭包里抽出，供直接单测

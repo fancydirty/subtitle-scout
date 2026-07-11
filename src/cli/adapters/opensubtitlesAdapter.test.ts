@@ -64,6 +64,32 @@ describe('makeOpenSubtitlesAdapter: search', () => {
     expect(call.imdbId).toBeUndefined()
   })
 
+  it('③b tt0000000 placeholder imdb falls back to title/season/episode query (not a doomed imdb_id=0 search)', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ imdb: 'tt0000000', queries: ['Peacemaker'], season: 1, episode: 1 }), () => {})
+
+    const call = search.mock.calls[0][0]
+    expect(call.imdbId).toBeUndefined()
+    expect(call.query).toBe('Peacemaker')
+    expect(call.season).toBe(1)
+    expect(call.episode).toBe(1)
+  })
+
+  it('③c malformed imdb string (NaN after strip) falls back to title/season/episode query', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ imdb: 'https://imdb.com/title/tt13152020', queries: ['Peacemaker'], season: 1, episode: 1 }), () => {})
+
+    const call = search.mock.calls[0][0]
+    expect(call.imdbId).toBeUndefined()
+    expect(call.query).toBe('Peacemaker')
+  })
+
   it('④imdb with tt prefix is stripped to a number', async () => {
     const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
     const client = fakeClient({ search })
