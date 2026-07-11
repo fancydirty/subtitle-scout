@@ -65,7 +65,14 @@ export function makeCliProviderPort(opts: {
           else child.kill('SIGKILL')
         } catch { /* ESRCH：进程组已消亡，兜底直杀 */ child.kill('SIGKILL') }
       }
-      const timer = setTimeout(() => { killGroup(); reject(new Error(`subtitle-fetch timeout after ${timeoutMs}ms`)) }, timeoutMs)
+      const timer = setTimeout(() => {
+        killGroup()
+        // MINOR-1: 超时前若已经观察到 quota_exhausted 事件，优先用类型化错误 reject——否则调用方
+        // （pipeline.ts）拿到的是泛型超时 Error，没法按 resetAt 精确退避，只能当成普通瞬时故障。
+        reject(quotaExhausted
+          ? new ProviderQuotaExhaustedError(`subtitle-fetch timeout after ${timeoutMs}ms`, quotaExhausted.resetAt)
+          : new Error(`subtitle-fetch timeout after ${timeoutMs}ms`))
+      }, timeoutMs)
       child.stdout.on('data', (d: string) => { stdout += d })
       let stderrBuf = ''
       child.stderr.on('data', (d: string) => {

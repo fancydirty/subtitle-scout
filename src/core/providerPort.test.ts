@@ -71,6 +71,23 @@ describe('makeCliProviderPort', () => {
     await expect(port.resolveDownload({ provider: 'assrt', providerId: '1', fileIndex: null }))
       .rejects.not.toMatchObject({ code: 'quota_exhausted' })
   })
+  it('MINOR-1: a child that emits quota_exhausted then hangs times out with the typed ProviderQuotaExhaustedError, not a generic timeout Error', async () => {
+    // 根因：超时路径原样 reject 一个泛型 Error('subtitle-fetch timeout...')，哪怕 quota_exhausted
+    // provider_error 事件早已被观察到——调用方（pipeline.ts）就没法把这次超时按 resetAt 精确退避。
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const port = makeCliProviderPort({
+      command: ['sh', '-c',
+        `echo '{"event":"provider_error","provider":"opensubtitles","message":"quota exhausted","code":"quota_exhausted","resetAt":"${resetAt}"}' >&2; sleep 30`],
+      timeoutMs: 50,
+    })
+    await expect(port.search({ queries: ['q'], deep: false }))
+      .rejects.toMatchObject({ code: 'quota_exhausted', resetAt })
+  })
+  it('MINOR-1: a plain hang with no quota_exhausted event still times out with a generic Error', async () => {
+    const port = makeCliProviderPort({ command: ['sh', '-c', 'sleep 30'], timeoutMs: 50 })
+    await expect(port.search({ queries: ['q'], deep: false }))
+      .rejects.not.toMatchObject({ code: 'quota_exhausted' })
+  })
   it('multi-byte UTF-8 split across stdout chunks survives intact (no replacement chars)', async () => {
     const port = makeCliProviderPort({ command: ['node', 'fixtures/fetch-stub-split.mjs'] })
     const r = await port.search({ queries: ['q'], deep: false })
