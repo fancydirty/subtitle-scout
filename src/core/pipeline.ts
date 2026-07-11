@@ -119,14 +119,18 @@ export async function runPipeline(
   deps.journalReady?.(journal)
   const finish = (
     decision: PipelineResult['decision'],
-    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null } = {},
+    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null; downloaded?: boolean } = {},
   ): PipelineResult => {
     const journalPath = journal.finish({
       request_id: ctx.request_id, decision,
       confidence: extra.confidence ?? null, selected: extra.selected ?? null,
       reasons: extra.reasons ?? [],
+      // MINOR-A: downloaded defaults to true whenever a path is present (the historical behavior
+      // for the 'download'/'adopted_local' call sites), but already_exists call sites pass
+      // downloaded:false explicitly — nothing was newly downloaded/written this run there, even
+      // though we now also carry the real on-disk path for bookkeeping (IMPORTANT-3).
       verification: extra.subtitlePath
-        ? { downloaded: true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
+        ? { downloaded: extra.downloaded ?? true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
         : null,
     }, journalDir)
     return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, confidence: extra.confidence ?? null, reasons: extra.reasons ?? [], stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes, selected: extra.selected ?? null }
@@ -431,7 +435,9 @@ export async function runPipeline(
       const videoBase = basename(ctx.media.filename).replace(/\.[^.]+$/, '')
       const predictedPath = resolvePath(join(outDir, `${videoBase}.${ctx.preferences.language}${extname(knownName).toLowerCase()}`))
       if (existsSync(predictedPath)) {
-        return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten (pre-flight check, no re-download)'], subtitlePath: predictedPath })
+        // MINOR-A: nothing was downloaded this run (short-circuited before resolve/download) —
+        // don't let the journal claim otherwise just because a path is now attached.
+        return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten (pre-flight check, no re-download)'], subtitlePath: predictedPath, downloaded: false })
       }
     }
 
@@ -456,7 +462,11 @@ export async function runPipeline(
       langTag: ctx.preferences.language,
       outDir,
     })
-    if (written.alreadyExists) return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten'], subtitlePath: written.path })
+    if (written.alreadyExists) {
+      // MINOR-A: a network fetch did happen, but writeSubtitle discarded the bytes because the
+      // file was already on disk — nothing new was written this run, so downloaded stays false.
+      return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten'], subtitlePath: written.path, downloaded: false })
+    }
 
     // 8. cache + finish
     if (!cached) {
