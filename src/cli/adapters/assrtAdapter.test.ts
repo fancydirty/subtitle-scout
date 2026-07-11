@@ -74,6 +74,21 @@ describe('makeAssrtAdapter: search', () => {
     expect(results.map(c => c.providerId)).toEqual(['1'])
   })
 
+  it('④b similar 抛错 → 不再裸吞：emit 一个 provider_error，供上游残缺集判定使用', async () => {
+    // gems 扩召回失败若被裸吞，下游 incomplete-candidate-set 守卫（pipeline.ts:303）永远看不到
+    // 这个瞬时故障，可能把"残缺集拒判"当成"确实没有"写 1 天负缓存。
+    const search = vi.fn(async () => resp([mkSub(1)]))
+    const similar = vi.fn(async () => { throw new Error('gems down') })
+    const client = fakeClient({ search, similar })
+    const adapter = makeAssrtAdapter(client)
+    const events: unknown[] = []
+
+    const results = await adapter.search(args({ queries: ['q1'] }), e => events.push(e))
+
+    expect(results.map(c => c.providerId)).toEqual(['1']) // 主结果不受影响
+    expect(events).toContainEqual(expect.objectContaining({ event: 'provider_error', provider: 'assrt' }))
+  })
+
   it('⑤0 命中 + 有 filename → 调用 searchByFilename 兜底', async () => {
     const search = vi.fn(async () => resp([]))
     const searchByFilename = vi.fn(async () => resp([mkSub(9)]))

@@ -1,6 +1,6 @@
 import type { AssrtClient } from '../../adapters/providers/assrt.js'
 import { toCandidate } from '../../adapters/providers/assrt.js'
-import type { FetchAdapter } from '../fetchLib.js'
+import type { FetchAdapter, FetchEvent } from '../fetchLib.js'
 
 /**
  * ASSRT FetchAdapter 工厂——从 subtitle-fetch.ts 的 buildAdapters() 闭包里抽出，供直接单测
@@ -14,7 +14,7 @@ export function makeAssrtAdapter(
   return {
     name: 'assrt',
     enabled: () => true,
-    search: async (args) => {
+    search: async (args, emit?: (e: FetchEvent) => void) => {
       const byId = new Map<number, ReturnType<typeof toCandidate>>()
       for (const q of args.queries.slice(0, 2)) {
         const resp = await client.search(q)
@@ -26,7 +26,12 @@ export function makeAssrtAdapter(
         try {
           const sim = await client.similar(top)
           for (const s of sim.sub.subs) if (!byId.has(s.id)) byId.set(s.id, toCandidate(s))
-        } catch { /* gems 失败不影响主结果 */ }
+        } catch (e) {
+          // gems 失败不影响主结果（继续返回已有候选），但绝不能裸吞——上游的残缺候选集守卫
+          // （pipeline.ts 的 incomplete-candidate-set guard）需要这个信号，否则瞬时故障可能
+          // 被当成"确实没有"写进 1 天负缓存。
+          emit?.({ event: 'provider_error', provider: 'assrt', message: `similar() failed: ${String(e)}` })
+        }
       } else if (args.filename) {
         const byFile = await client.searchByFilename(args.filename)
         for (const s of byFile.sub.subs) byId.set(s.id, toCandidate(s))
