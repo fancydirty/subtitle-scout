@@ -1450,6 +1450,114 @@ describe('runPipeline', () => {
     expect(putSpy).not.toHaveBeenCalled() // 绝不负缓存
   })
 
+  it('season sweep: mixed-provider winners — OS quota exhaustion skips only OS-backed episodes, ASSRT-backed episodes still resolve and cover this run', async () => {
+    // Sweep winners can come from DIFFERENT providers (SubtitleCandidate.provider). A quota error on
+    // ONE provider (opensubtitles here) must not abandon episodes whose winning candidate is a
+    // different, healthy provider (assrt) — those would succeed right now. Pre-fix: the loop broke
+    // unconditionally on the first quota error regardless of which provider threw it, parking
+    // healthy-provider coverage until the OS daily reset for no reason.
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const osCand1: SubtitleCandidate = {
+      provider: 'opensubtitles', providerId: '901', videoName: 'Show.S02E01.chs', nativeName: null,
+      language: null, subtype: null, releaseSite: null, uploadDate: null, fileList: [],
+    }
+    const osCand4: SubtitleCandidate = {
+      provider: 'opensubtitles', providerId: '904', videoName: 'Show.S02E04.chs', nativeName: null,
+      language: null, subtype: null, releaseSite: null, uploadDate: null, fileList: [],
+    }
+    const assrtCand2 = mkCand(902, 'Show.S02E02.chs', ['Show.S02E02.chs.ass'])
+    const assrtCand3 = mkCand(903, 'Show.S02E03.chs', ['Show.S02E03.chs.ass'])
+    const search = vi.fn(async () => ok([osCand1, assrtCand2, assrtCand3, osCand4]))
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const resolveDownload = vi.fn(async (ref: { provider: string; providerId: string }) => {
+      if (ref.provider === 'opensubtitles') throw new ProviderQuotaExhaustedError('quota exhausted', resetAt)
+      return { url: `http://dl/${ref.providerId}` }
+    })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E01', candidate_id: 'opensubtitles:901', confidence: 0.95 },
+        { episode_code: 'S02E02', candidate_id: 'assrt:902', confidence: 0.95 },
+        { episode_code: 'S02E03', candidate_id: 'assrt:903', confidence: 0.95 },
+        { episode_code: 'S02E04', candidate_id: 'opensubtitles:904', confidence: 0.95 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国' // CJK-native → alias harvest skipped, isolate the sweep path
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    // ASSRT-backed episodes still covered this run — they're healthy, no reason to wait for the OS reset.
+    expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E02', 'S02E03'])
+    // quotaExhausted still attached even though other-provider resolves succeeded afterward — the
+    // remaining gap (S02E01, S02E04) is OS-winner episodes that must wait for resetAt, same as the
+    // executor's existing resetAt-based scheduling for a plain partial+quotaExhausted result.
+    expect(result.quotaExhausted).toEqual({ resetAt })
+    // 1 failed OS attempt (S02E01) + 2 successful ASSRT attempts (S02E02/03) = 3. The second OS
+    // assignment (S02E04) must be skipped once OS is known exhausted — never a 4th doomed resolve call.
+    expect(resolveDownload).toHaveBeenCalledTimes(3)
+  })
+
+  it('season sweep: all-OS-provider winners — quota exhaustion still stops remaining resolves and preserves partial coverage (single-provider behavior unchanged)', async () => {
+    // Regression guard: when every sweep winner shares the SAME (now-exhausted) provider, there is no
+    // healthy alternative to keep resolving — behavior must match the pre-fix single-provider case
+    // exactly (stop immediately, never attempt the remaining same-provider episodes).
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const osCands: SubtitleCandidate[] = [1, 2, 3, 4].map(n => ({
+      provider: 'opensubtitles', providerId: String(900 + n),
+      videoName: `Show.S02E0${n}.chs`, nativeName: null,
+      language: null, subtype: null, releaseSite: null, uploadDate: null, fileList: [],
+    }))
+    const search = vi.fn(async () => ok(osCands))
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const resolveDownload = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://dl/901' })
+      .mockRejectedValue(new ProviderQuotaExhaustedError('quota exhausted', resetAt))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3, 4].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `opensubtitles:${900 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode)).toEqual(['S02E01'])
+    expect(result.quotaExhausted).toEqual({ resetAt })
+    expect(resolveDownload).toHaveBeenCalledTimes(2)
+  })
+
   it('IMPORTANT-1a: season pack quota death mid-run after 1 covered episode → partial coverage + quotaExhausted preserved, no further resolve attempts', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const packCandidate = toCandidate(seasonDetail.sub.subs[0])

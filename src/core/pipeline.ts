@@ -528,9 +528,10 @@ export async function runPipeline(
  * 季横扫执行体：把散装候选映射到缺中字的集 → 逐集 detail→download→写盘→onCovered。
  * pre-gate（代表集 rank 被拒）与 post-gate（gate 通过后）两个触发点共用；trigger 供审计区分。
  * 覆盖 0 集时 covered 为空数组，调用方据此决定落回 gate 早退 / 单集路径。
- * IMPORTANT-1: quotaExhausted 非空时（撞见 ProviderQuotaExhaustedError）表示本轮提前止损——
- * 配额是全局的，循环已停手不再尝试剩余集；调用方必须把这个信号透传进 PipelineResult，
- * 且 0 覆盖时不能落回可能导致负缓存/盲退避的默认分支。
+ * IMPORTANT-1 (revised): quotaExhausted 非空时（撞见 ProviderQuotaExhaustedError）表示本轮至少
+ * 有一个 provider 耗尽——配额是按 provider 而非全局的，循环只跳过该 provider 剩余的 assignment，
+ * 仍会继续为其它（健康）provider 的 assignment 正常 resolve。调用方必须把 quotaExhausted 信号
+ * 透传进 PipelineResult（即便 covered 非空），且 0 覆盖时不能落回可能导致负缓存/盲退避的默认分支。
  */
 async function runSeasonSweep(
   deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
@@ -630,10 +631,13 @@ async function runSeasonSweep(
   // 一个候选(即一个物理文件)最多覆盖一集：按 "candidate_id#fileIndex" 去重。真整季散装候选
   // (每集各有独立文件、fileIndex 各不相同)不受影响；单文件候选被映射到多集时第 2+ 次必被拒。
   const usedFiles = new Set<string>()
-  // IMPORTANT-1: 配额是全局的——一旦撞见 ProviderQuotaExhaustedError，剩余集的 resolve/download
-  // 注定同样失败，立刻停手（不等熔断阈值），记下 resetAt 供调用方透传，而不是被下面的 catch
-  // 当成普通瞬时失败计入 skipped/consecutiveFails。
+  // IMPORTANT-1 (revised): 配额是按 provider 而非全局的——sweep 的逐集 winner 可能来自不同 provider
+  // （SubtitleCandidate.provider），撞见 ProviderQuotaExhaustedError 只说明"这一个 provider 这次耗尽了"，
+  // 不代表另一个健康 provider 的剩余集也注定失败。一旦某 provider 报过配额耗尽，记它的名字进
+  // exhaustedProviders，此后只跳过该 provider 的剩余 assignment（不再打注定失败的 resolve），
+  // 但继续为其它 provider 的 assignment 正常 resolve——不再无差别 break 整个循环。
   let quotaExhausted: { resetAt: string | null } | undefined
+  const exhaustedProviders = new Set<string>()
 
   for (const assignment of dedupedAssignments) {
     // 与季包升格路径对齐的熔断：连续 3 次 resolve 失败视为源抖动/限流，
@@ -653,6 +657,12 @@ async function runSeasonSweep(
     }
 
     const { candidate, parsedKey: parsed, fileIndex } = assignment
+    if (exhaustedProviders.has(parsed.provider)) {
+      // 该 provider 本轮已知配额耗尽——resolve 注定同样失败，跳过而不白打一次 API（不计入
+      // apiCallsUsed/consecutiveFails，语义同其它前置守卫式跳过，如预算耗尽/集不在需求列表）。
+      skipped.push({ episode: assignment.episode_code, reason: `provider ${parsed.provider} quota exhausted earlier this sweep — skipping remaining ${parsed.provider} assignments` })
+      continue
+    }
     const fileKey = `${candidateKey(parsed)}#${fileIndex ?? 'default'}`
     if (usedFiles.has(fileKey)) {
       skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.episode_code} file ${fileIndex ?? 'default'} already covers another episode — rejecting single-file fan-out across episodes` })
@@ -683,8 +693,12 @@ async function runSeasonSweep(
     } catch (e) {
       if (e instanceof ProviderQuotaExhaustedError) {
         quotaExhausted = { resetAt: e.resetAt }
-        journal.step('seasonSweepQuotaExhausted', { episode: assignment.episode_code, after: coveredEpisodes.length, resetAt: e.resetAt })
-        break
+        // 只标记这一个 provider 耗尽、继续横扫剩余（大概率不同 provider 的）assignment——不再
+        // break 整个循环。resolveDownload 调用点上方已经知道是哪个 provider 的请求触发了这次
+        // 错误（parsed.provider），无需类型化错误自带 provider 字段即可精确定位。
+        exhaustedProviders.add(parsed.provider)
+        journal.step('seasonSweepQuotaExhausted', { episode: assignment.episode_code, provider: parsed.provider, after: coveredEpisodes.length, resetAt: e.resetAt })
+        continue
       }
       consecutiveFails++
       skipped.push({ episode: assignment.episode_code, reason: String(e) })
