@@ -41,7 +41,7 @@ function movieItem(id: string, overrides: Partial<JellyfinItem> = {}): JellyfinI
 }
 
 describe('崩溃恢复', () => {
-  it('kill-mid-flight：claim 后模拟重启（新 JobsRepo 实例同一 db 文件）→ reapExpiredLeases → job 回 wanted attempt+1', () => {
+  it('kill-mid-flight：claim 后模拟重启（新 JobsRepo 实例同一 db 文件）→ reapExpiredLeases → job 回 wanted，attempt 不变', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     const now = Date.now()
 
@@ -68,10 +68,11 @@ describe('崩溃恢复', () => {
       // Reap expired leases (simulate time passing beyond lease)
       jobs2.reapExpiredLeases(now + 31 * 60_000)
 
-      // After reap: job is back to wanted with attempt incremented
+      // After reap: job is back to wanted; attempt unchanged — reap is not a
+      // content failure and must not consume a content-backoff-ladder slot.
       const afterReap = jobs2.find('s1', 1)
       expect(afterReap?.state).toBe('wanted')
-      expect(afterReap?.attempt).toBe(1)
+      expect(afterReap?.attempt).toBe(0)
       expect(afterReap?.lease_until).toBeNull()
 
       db2.close()

@@ -3,7 +3,7 @@ import { openDb } from './db.js'
 import { JobsRepo } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
-import { ScoutDaemon, type DaemonDeps } from './daemon.js'
+import { ScoutDaemon, type DaemonDeps, MAX_CONSECUTIVE_TICK_FAILURES } from './daemon.js'
 import type { Job } from './jobsRepo.js'
 import type { PlaybackSession } from '../adapters/players/types.js'
 
@@ -86,6 +86,37 @@ describe('ScoutDaemon', () => {
     expect(jobs.countByState('wanted')).toBe(2)
   })
 
+  it('长跑 job 未过 30min 租约不该被 reap 双派发（心跳续租）：tick 每 15s 续租 inflight job，reap 不动它，dispatch 不重领', async () => {
+    // 生产实案：季包 job 合法跑超 30min 租约（多集 resolveDownload/LLM），
+    // 若无心跳续租，下一 tick 的 reapExpiredLeases 会把它打回 wanted，
+    // dispatch 立刻重领同一 job，产生并发双跑（provider/LLM 配额翻倍、队头饿死）。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    let resolveJob: () => void = () => {}
+    const executeJob = vi.fn(() => new Promise<void>((resolve) => { resolveJob = resolve }))
+
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    // Tick 1: claims the job, executeJob starts and never resolves within this tick.
+    await daemon.tick()
+    expect(executeJob).toHaveBeenCalledTimes(1)
+    expect(jobs.countByState('searching')).toBe(1)
+
+    // Advance time past the 30-min lease — the job is still genuinely running
+    // in this same process (inflight), just slow.
+    now += 31 * 60_000
+
+    // Tick 2: heartbeat must renew the inflight job's lease before reap runs,
+    // so reapExpiredLeases must NOT touch it and dispatch must NOT re-claim it.
+    await daemon.tick()
+
+    expect(executeJob).toHaveBeenCalledTimes(1) // still only ran once — no double dispatch
+    expect(jobs.countByState('searching')).toBe(1) // original claim still holds
+    expect(jobs.countByState('wanted')).toBe(0) // not bounced back to wanted
+
+    resolveJob()
+  })
+
   it('过租job被reap后可再领取', async () => {
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 
@@ -98,10 +129,64 @@ describe('ScoutDaemon', () => {
     // Just call reap directly to test the reap logic
     jobs.reapExpiredLeases(now)
 
-    // Job should be back to wanted with attempt incremented
+    // Job should be back to wanted; attempt unchanged — reap is not a content
+    // failure and must not consume a content-backoff-ladder slot (audit fix).
     const reaped = jobs.find('s1', 1)
     expect(reaped?.state).toBe('wanted')
-    expect(reaped?.attempt).toBe(1)
+    expect(reaped?.attempt).toBe(0)
+  })
+
+  it('tick 对意外抛错（如 reapExpiredLeases 命中满盘 SQLITE_FULL）保持隔离，不炸出 tick 之外', async () => {
+    // 审计修正：reap、meta SELECT、dispatch 里的 claimNext/countByState 都不在原有的
+    // scan+aggregate try/catch 覆盖范围内——任何一处意外抛错（如磁盘写满）会让整个
+    // tickLoop promise reject，Promise.all(...).catch(() => {}) 悄悄吞掉，tick 永久停摆，
+    // 进程却存活不退出（daemon.ts:249）。tick() 必须自己兜底、记日志、不向外抛。
+    const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases').mockImplementation(() => {
+      throw new Error('SQLITE_FULL: database or disk is full')
+    })
+
+    const daemon = new ScoutDaemon(makeDeps())
+    await expect(daemon.tick()).resolves.toBeUndefined()
+    expect(logs.some(l => l.includes('SQLITE_FULL'))).toBe(true)
+
+    reapSpy.mockRestore()
+  })
+
+  it('tick 连续失败达阈值后调用 exit(非零码)——防止磁盘满等故障下进程存活但永久停摆', async () => {
+    const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases').mockImplementation(() => {
+      throw new Error('boom')
+    })
+    const exit = vi.fn()
+    const daemon = new ScoutDaemon(makeDeps({ exit }))
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TICK_FAILURES - 1; i++) {
+      await daemon.tick()
+    }
+    expect(exit).not.toHaveBeenCalled()
+
+    await daemon.tick() // Nth consecutive failure
+    expect(exit).toHaveBeenCalledWith(1)
+
+    reapSpy.mockRestore()
+  })
+
+  it('tick 失败计数在中途恢复成功后重置——偶发抖动不该累积到 fail-fast 阈值', async () => {
+    const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases')
+    reapSpy.mockImplementation(() => { throw new Error('transient blip') })
+
+    const exit = vi.fn()
+    const daemon = new ScoutDaemon(makeDeps({ exit }))
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TICK_FAILURES - 1; i++) {
+      await daemon.tick()
+    }
+
+    reapSpy.mockRestore() // next tick succeeds, should reset the counter
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TICK_FAILURES - 1; i++) {
+      await daemon.tick()
+    }
+    expect(exit).not.toHaveBeenCalled() // never reached N consecutive failures
   })
 
   it('executeJob抛错不炸主循环', async () => {
@@ -397,10 +482,9 @@ describe('ScoutDaemon', () => {
     controller.abort()
     await runPromise
 
-    // 回收发生且被 log；attempt+1 证明走的是 reap 通道
-    // （之后 tick 可能已把它重新领走，所以断言 attempt 而非最终 state）
+    // 回收发生且被 log（走的是 reap 通道；reap 不再 attempt+1——见审计修正，
+    // 之后 tick 可能已把它重新领走，故不再断言 attempt/state，只断言回收 log 触发）。
     expect(logs.some(l => l.includes('boot: reaped 1'))).toBe(true)
-    expect(jobs.get(orphan.id)!.attempt).toBe(1)
   })
 
   it('run启动时无活跃租约则不打回收log', async () => {

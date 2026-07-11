@@ -96,12 +96,28 @@ export class JobsRepo {
     return job ?? null
   }
 
-  reapExpiredLeases(now: number): void {
-    // Active state with NULL lease is anomalous (should never happen) — reap it too.
+  /** 心跳续租：daemon 每 tick 为本进程仍在跑的 job（inflight）续租，防止合法长跑
+   *  （如季包多集下载）被下一 tick 的 reapExpiredLeases 误判死亡回收、导致并发双派发。
+   *  只作用于仍处活跃态的行——job 若已被 complete* 收尾则是 no-op。 */
+  renewLease(jobId: number, now: number): void {
     this.db
       .prepare(
         `UPDATE jobs
-         SET state = 'wanted', attempt = attempt + 1, lease_until = NULL, updated_at = ?
+         SET lease_until = ?, updated_at = ?
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(now + LEASE_DURATION_MS, now, jobId)
+  }
+
+  reapExpiredLeases(now: number): void {
+    // Active state with NULL lease is anomalous (should never happen) — reap it too.
+    // NOTE: 不再 attempt+1——reap 只是"租约死了/异常态"，不是内容性失败，不该占内容退避梯
+    // 的名额（否则进程重启/租约抖动会把 job 错误地推向 30 天 dormant，见审计 jobsRepo.ts:119
+    // / :133 的 attempt 计数器混同问题）。
+    this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'wanted', lease_until = NULL, updated_at = ?
          WHERE state IN ${ACTIVE_STATES_SQL}
          AND (lease_until < ? OR lease_until IS NULL)`
       )
@@ -113,10 +129,12 @@ export class JobsRepo {
    *  的租约都是上个进程留下的遗孤（重启瞬间在跑的 job 租约仍未过期，最长可占 searching 槽
    *  30 分钟拖停调度）。返回回收行数。 */
   reapAllActive(now: number): number {
+    // NOTE: 不再 attempt+1——同 reapExpiredLeases 的理由：进程重启/崩溃回收的 job 不是
+    // 内容性失败，不该消耗内容退避梯的名额。
     const info = this.db
       .prepare(
         `UPDATE jobs
-         SET state = 'wanted', attempt = attempt + 1, lease_until = NULL, updated_at = ?
+         SET state = 'wanted', lease_until = NULL, updated_at = ?
          WHERE state IN ${ACTIVE_STATES_SQL}`
       )
       .run(now)
@@ -203,15 +221,22 @@ export class JobsRepo {
     return info.changes > 0
   }
 
-  /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic). */
+  /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic).
+   *  A 'failed' job with a pending next_retry_at is mid content-backoff (1/2/4/8d
+   *  ladder) — its target can look momentarily "not missing" (e.g. unavailable with
+   *  a future recheck_after) without being externally satisfied. Retiring it here
+   *  flips it to 'done', and the next upsertWanted done→wanted revival resets
+   *  attempt to 0, silently defeating the ladder. Only retire once the backoff
+   *  window has actually elapsed (or there never was one). */
   retire(jobId: number, now: number): boolean {
     const info = this.db
       .prepare(
         `UPDATE jobs
          SET state = 'done', updated_at = ?
-         WHERE id = ? AND state IN ('wanted', 'failed')`
+         WHERE id = ? AND state IN ('wanted', 'failed')
+         AND (next_retry_at IS NULL OR next_retry_at <= ?)`
       )
-      .run(now, jobId)
+      .run(now, jobId, now)
     return info.changes > 0
   }
 

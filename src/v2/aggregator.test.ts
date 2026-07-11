@@ -158,6 +158,32 @@ describe('aggregator', () => {
     expect(jobs.countByState('done')).toBe(1)
   })
 
+  it('不 retire mid content-backoff 的 failed job（next_retry_at 在未来）：内容退避梯必须扛过 aggregate 周期', () => {
+    // 审计修正：无 next_retry_at 守卫时，一次 no_safe_match 之后（该季仍 unavailable 但
+    // recheck_after 未到，missingBySeason 暂不把它算 missing）下一次 aggregate cleanup 会
+    // 把这个"仍在退避窗口内"的 failed job 误判为"外部已满足"直接 retire→done，随后
+    // upsertWanted 的 done→wanted 复活语义把 attempt 清零，1/2/4/8 天内容退避梯被架空。
+    lib.upsertSeries({ id: 's1', name: 'Series A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1,
+      name: 'Ep1', path: '/tv/s1/e1.mkv', subStatus: 'missing',
+    })
+    aggregate(lib, jobs, now)
+    const job = jobs.claimNext(now)!
+    jobs.completeNoMatch(job.id, now) // attempt=1, failed, next_retry_at = now+1d
+    lib.markUnavailable('e1', '搜索穷尽', now + 86_400_000) // recheck 明天，季暂不算 missing
+
+    // 立即 aggregate（如 15 分钟后的下一个 reconcile）：季不在 missingSeasonsSet 里，
+    // 但 job 仍在自己的退避窗口内——不该被当成"已满足"retire。
+    const result = aggregate(lib, jobs, now + 1000)
+
+    expect(result.retired).toBe(0)
+    const stillFailed = jobs.get(job.id)!
+    expect(stillFailed.state).toBe('failed')
+    expect(stillFailed.attempt).toBe(1)
+    expect(stillFailed.next_retry_at).not.toBeNull()
+  })
+
   it('does not retire dormant jobs (they have their own revival path)', () => {
     // Setup: create missing episode and job
     lib.upsertSeries({ id: 's1', name: 'Series A' })

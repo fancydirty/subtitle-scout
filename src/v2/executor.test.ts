@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from './db.js'
@@ -491,6 +491,26 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
 
     await expect(runEpisode('m1', vi.fn())).rejects.toThrow(/拒绝在媒体根目录之外写入/)
     expect(runPipelineMock).not.toHaveBeenCalled()
+  })
+
+  it('I5b: 目录不可写预检必须先于 Jellyfin/TMDB 网络调用——不为注定失败的写路径烧配额', async () => {
+    // 审计修正 (executor.ts:315)：原顺序是 getItem → getChineseTitle → tmdbTitles →
+    // (root 校验) → isDirWritable。只读挂载/WebDAV 上，每次注定失败的尝试都已经把
+    // Jellyfin getChineseTitle + TMDB 两次调用烧掉了才发现写不了。预检应提到这些调用之前。
+    const readOnlyDir = join(mediaRoot, 'readonly')
+    mkdirSync(readOnlyDir, { recursive: true })
+    chmodSync(readOnlyDir, 0o555) // 只读——isDirWritable 的真实试写探针必然失败
+
+    const jf = mkJf(join(readOnlyDir, 'test.mkv'))
+    const runEpisode = makeRunEpisode(mkAssembled(jf), lib, { mediaRoots: [mediaRoot] })
+
+    await expect(runEpisode('m1', vi.fn())).rejects.toThrow(/Media dir not writable/)
+
+    // 核心断言：precheck 先跑，Jellyfin/TMDB 侧调用一次都不该发生。
+    expect(jf.getChineseTitle).not.toHaveBeenCalled()
+    expect(runPipelineMock).not.toHaveBeenCalled()
+
+    chmodSync(readOnlyDir, 0o755) // 清理：避免只读目录残留干扰临时目录回收
   })
 
   it('I5a/e: ctx 应用置信度覆盖 + runPipeline 传 bypassNegativeCache', async () => {
