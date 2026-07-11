@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { runSearch, runResolve, providerErrorFields, type FetchAdapter, type FetchArgs, type FetchEvent } from './fetchLib.js'
+import { runSearch, runResolve, providerErrorFields, providerNoticeFields, type FetchAdapter, type FetchArgs, type FetchEvent } from './fetchLib.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 const cand = (provider: 'assrt' | 'opensubtitles', id: string): SubtitleCandidate =>
@@ -78,6 +78,23 @@ describe('providerErrorFields', () => {
   it('leaves code/resetAt undefined for a plain provider_error (no quota contract attached)', () => {
     const e: FetchEvent = { event: 'provider_error', provider: 'assrt', message: '503 upstream' }
     expect(providerErrorFields(e)).toEqual({ provider: 'assrt', message: '503 upstream', code: undefined, resetAt: undefined })
+  })
+})
+
+describe('providerNoticeFields', () => {
+  // provider_notice：非错误的信息性事件（如 OS 下载成功但配额已耗尽的提前预警）——
+  // journal 消费方（cli/index.ts）用它转发 code/resetAt，规则同 providerErrorFields。
+  it('forwards provider/message/code/resetAt from a provider_notice event', () => {
+    const e: FetchEvent = {
+      event: 'provider_notice', provider: 'opensubtitles',
+      message: 'opensubtitles download quota exhausted after this call (resets 2026-07-12T00:00:00.000Z)',
+      code: 'quota_exhausted', resetAt: '2026-07-12T00:00:00.000Z',
+    }
+    expect(providerNoticeFields(e)).toEqual({
+      provider: 'opensubtitles',
+      message: 'opensubtitles download quota exhausted after this call (resets 2026-07-12T00:00:00.000Z)',
+      code: 'quota_exhausted', resetAt: '2026-07-12T00:00:00.000Z',
+    })
   })
 })
 

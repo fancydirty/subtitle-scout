@@ -172,7 +172,7 @@ describe('makeOpenSubtitlesAdapter: resolve', () => {
     })
   })
 
-  it('⑪resolve emits an informational quota_exhausted event when the download itself succeeds but remaining<=0 (proactive: backs off the NEXT call)', async () => {
+  it('⑪resolve emits an informational provider_notice (NOT provider_error) when the download itself succeeds but remaining<=0 (proactive: backs off the NEXT call, journal must not read this as an error)', async () => {
     const resolveDownload = vi.fn(async () => ({
       link: 'https://os.example/download/ABC', file_name: 'e1.srt',
       remaining: 0, reset_time_utc: '2026-07-12T00:00:00.000Z',
@@ -186,9 +186,11 @@ describe('makeOpenSubtitlesAdapter: resolve', () => {
     expect(r).toEqual({ url: 'https://os.example/download/ABC', filename: 'e1.srt' })
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({
-      event: 'provider_error', provider: 'opensubtitles',
+      event: 'provider_notice', provider: 'opensubtitles',
       code: 'quota_exhausted', resetAt: '2026-07-12T00:00:00.000Z',
     })
+    // this download SUCCEEDED — the proactive notice must never be mistaken for an error event
+    expect(events[0].event).not.toBe('provider_error')
   })
 
   it('resolve does NOT emit a quota event when remaining is healthy (no false positives)', async () => {
