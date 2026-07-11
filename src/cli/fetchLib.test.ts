@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { runSearch, runResolve, type FetchAdapter, type FetchArgs } from './fetchLib.js'
+import { runSearch, runResolve, providerErrorFields, type FetchAdapter, type FetchArgs, type FetchEvent } from './fetchLib.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 const cand = (provider: 'assrt' | 'opensubtitles', id: string): SubtitleCandidate =>
@@ -59,6 +59,25 @@ describe('runSearch', () => {
   it('zero adapters configured → fail-fast, never an "honest empty" result', async () => {
     // 没配任何 provider key 时若输出 [] exit 0，pipeline 会写负缓存——整库静默毒化
     await expect(runSearch(args, [], () => {})).rejects.toThrow(/no providers configured/)
+  })
+})
+
+describe('providerErrorFields', () => {
+  // 供 cli/index.ts 的 journal step 消费：把 provider_error 事件上类型化的 code/resetAt
+  // 随 provider/message 一起转发，消费方不用各自 duck-type 读取未声明字段。
+  it('forwards code/resetAt from a quota_exhausted provider_error event', () => {
+    const e: FetchEvent = {
+      event: 'provider_error', provider: 'opensubtitles', message: 'quota exhausted',
+      code: 'quota_exhausted', resetAt: '2026-07-12T00:00:00.000Z',
+    }
+    expect(providerErrorFields(e)).toEqual({
+      provider: 'opensubtitles', message: 'quota exhausted',
+      code: 'quota_exhausted', resetAt: '2026-07-12T00:00:00.000Z',
+    })
+  })
+  it('leaves code/resetAt undefined for a plain provider_error (no quota contract attached)', () => {
+    const e: FetchEvent = { event: 'provider_error', provider: 'assrt', message: '503 upstream' }
+    expect(providerErrorFields(e)).toEqual({ provider: 'assrt', message: '503 upstream', code: undefined, resetAt: undefined })
   })
 })
 

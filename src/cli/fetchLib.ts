@@ -12,7 +12,17 @@ export interface FetchArgs {
 }
 export type FetchEvent =
   | { event: 'api_call'; provider: string; endpoint: string; status: number | null; durationMs: number; error?: string }
-  | { event: 'provider_error'; provider: string; message: string }
+  /** code/resetAt：OpenSubtitles 配额耗尽契约（见 adapters/providers/opensubtitles.ts 的
+   *  OsQuotaExhaustedError）。可选——大多数 provider_error 没有配额语义，只带 provider/message。 */
+  | { event: 'provider_error'; provider: string; message: string; code?: string; resetAt?: string | null }
+
+/** provider_error 事件 → 消费方（journal 等）载荷：把 code/resetAt 随 provider/message 一并转发，
+ *  避免各消费方各自 duck-type 读取 FetchEvent 上的可选字段。 */
+export function providerErrorFields(
+  e: Extract<FetchEvent, { event: 'provider_error' }>,
+): { provider: string; message: string; code?: string; resetAt?: string | null } {
+  return { provider: e.provider, message: e.message, code: e.code, resetAt: e.resetAt }
+}
 
 export interface FetchAdapter {
   name: string   // equals the ProviderName it emits
