@@ -15,11 +15,24 @@ export type FetchEvent =
   /** code/resetAt：OpenSubtitles 配额耗尽契约（见 adapters/providers/opensubtitles.ts 的
    *  OsQuotaExhaustedError）。可选——大多数 provider_error 没有配额语义，只带 provider/message。 */
   | { event: 'provider_error'; provider: string; message: string; code?: string; resetAt?: string | null }
+  /** 信息性事件，不是失败：本次调用成功了，只是响应体里带了值得留意的信号（如 OS 下载成功但
+   *  remaining<=0，提前预警下一次调用会撞配额）。journal/dashboard 消费方必须把它当成功路径的
+   *  旁注渲染，不能算作 provider_error——否则一次成功下载在日志里显示成一个错误步骤
+   *  （review finding：journal honesty）。同样带可选 code/resetAt，形状与 provider_error 对齐。 */
+  | { event: 'provider_notice'; provider: string; message: string; code?: string; resetAt?: string | null }
 
 /** provider_error 事件 → 消费方（journal 等）载荷：把 code/resetAt 随 provider/message 一并转发，
  *  避免各消费方各自 duck-type 读取 FetchEvent 上的可选字段。 */
 export function providerErrorFields(
   e: Extract<FetchEvent, { event: 'provider_error' }>,
+): { provider: string; message: string; code?: string; resetAt?: string | null } {
+  return { provider: e.provider, message: e.message, code: e.code, resetAt: e.resetAt }
+}
+
+/** provider_notice 事件 → 消费方载荷，字段规则同 providerErrorFields（见上）；
+ *  单独声明是为了让调用方按 event 分支各自持有类型化的 Extract，不必手写 duck-typing。 */
+export function providerNoticeFields(
+  e: Extract<FetchEvent, { event: 'provider_notice' }>,
 ): { provider: string; message: string; code?: string; resetAt?: string | null } {
   return { provider: e.provider, message: e.message, code: e.code, resetAt: e.resetAt }
 }

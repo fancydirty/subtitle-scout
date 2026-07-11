@@ -3,13 +3,24 @@ import { osToCandidates, OsQuotaExhaustedError } from '../../adapters/providers/
 import type { FetchAdapter, FetchEvent } from '../fetchLib.js'
 
 /**
- * 配额耗尽事件：标准 FetchEvent 的 `provider_error` 成员上 `code`/`resetAt` 现已类型化
- * （fetchLib.ts），JSON.stringify 序列化进 stderr 的 NDJSON 行——providerPort.ts 的
+ * 配额耗尽事件（真·失败路径专用）：标准 FetchEvent 的 `provider_error` 成员上 `code`/`resetAt`
+ * 现已类型化（fetchLib.ts），JSON.stringify 序列化进 stderr 的 NDJSON 行——providerPort.ts 的
  * `JSON.parse(line)` 读到后，若 code 是 quota_exhausted 会构造 ProviderQuotaExhaustedError
  * 一路带 resetAt 传到 pipeline.ts → v2 executor，据此按重置时间精确退避（不再是盲的短退避阶梯）。
+ * 只用于 resolveDownload 本身抛出 OsQuotaExhaustedError 的场景——这次调用真的失败了。
  */
 const emitQuotaExhausted = (emit: (e: FetchEvent) => void, message: string, resetAt: string | null) => {
   emit({ event: 'provider_error', provider: 'opensubtitles', message, code: 'quota_exhausted', resetAt })
+}
+
+/**
+ * 配额预警事件（成功路径专用，journal honesty review finding）：本次下载已经 SUCCEEDED，
+ * 只是响应体里 remaining<=0，提前告知"下一次调用会撞配额"。用 provider_notice 而不是
+ * provider_error——journal/dashboard 的读者不该把一次成功下载看成一个错误步骤。
+ * code/resetAt 语义与 emitQuotaExhausted 一致，供上游按 reset 时间退避用。
+ */
+const emitQuotaNotice = (emit: (e: FetchEvent) => void, message: string, resetAt: string | null) => {
+  emit({ event: 'provider_notice', provider: 'opensubtitles', message, code: 'quota_exhausted', resetAt })
 }
 
 /**
@@ -55,7 +66,7 @@ export function makeOpenSubtitlesAdapter(
         // 本次成功，但 remaining 已见底：提前 emit 一个信息性配额事件，让后续调用有机会按
         // reset_time_utc 退避，而不是等到真的 406 了才发现（那时已经白跑了一整趟 LLM+search）。
         if (r.remaining != null && r.remaining <= 0) {
-          emitQuotaExhausted(emit, `opensubtitles download quota exhausted after this call (resets ${r.reset_time_utc ?? 'unknown'})`, r.reset_time_utc ?? null)
+          emitQuotaNotice(emit, `opensubtitles download quota exhausted after this call (resets ${r.reset_time_utc ?? 'unknown'})`, r.reset_time_utc ?? null)
         }
         return { url: r.link, filename: r.file_name ?? undefined }
       } catch (e) {

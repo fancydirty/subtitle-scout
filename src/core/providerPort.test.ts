@@ -42,6 +42,28 @@ describe('makeCliProviderPort', () => {
     expect(r.providerErrors).toEqual([{ provider: 'opensubtitles', message: '503 upstream' }])
     expect(events).toContainEqual(expect.objectContaining({ event: 'provider_error', provider: 'opensubtitles' }))
   })
+  it('relays provider_notice events to onEvent WITHOUT adding them to providerErrors (negative-cache guard must stay error-only)', async () => {
+    const events: unknown[] = []
+    const port = makeCliProviderPort({
+      command: ['sh', '-c',
+        'echo \'{"event":"provider_notice","provider":"opensubtitles","message":"quota exhausted after this call","code":"quota_exhausted","resetAt":"2026-07-13T00:00:00.000Z"}\' >&2; echo "[]"'],
+      onEvent: e => events.push(e),
+    })
+    const r = await port.search({ queries: ['q'], deep: false })
+    expect(r.candidates).toEqual([])
+    // a provider_notice is informational, not a failure — it must NOT poison providerErrors
+    // (callers gate "no candidates + no providerErrors" as an honest empty result / negative-cache write)
+    expect(r.providerErrors).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ event: 'provider_notice', provider: 'opensubtitles' }))
+  })
+  it('a lone provider_notice event before nonzero exit does NOT trigger the typed ProviderQuotaExhaustedError path (that is reserved for provider_error)', async () => {
+    const port = makeCliProviderPort({
+      command: ['sh', '-c',
+        'echo \'{"event":"provider_notice","provider":"opensubtitles","message":"quota exhausted after this call","code":"quota_exhausted","resetAt":"2026-07-13T00:00:00.000Z"}\' >&2; echo \'{"error":"boom"}\' >&2; exit 1'],
+    })
+    await expect(port.resolveDownload({ provider: 'opensubtitles', providerId: '1', fileIndex: null }))
+      .rejects.not.toMatchObject({ code: 'quota_exhausted' })
+  })
   it('resolveDownload: a quota_exhausted provider_error before nonzero exit rejects with a typed ProviderQuotaExhaustedError carrying resetAt', async () => {
     const resetAt = '2026-07-13T00:00:00.000Z'
     const port = makeCliProviderPort({

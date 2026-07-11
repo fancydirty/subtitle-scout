@@ -14,7 +14,7 @@ import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { TmdbClient, tmdbTitles, resolveTmdbRef } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { makeCliProviderPort } from '../core/providerPort.js'
-import { providerErrorFields } from './fetchLib.js'
+import { providerErrorFields, providerNoticeFields } from './fetchLib.js'
 import { createLlmRuntime } from '../agent/runtime.js'
 import { ProfileStore } from '../agent/profile.js'
 import { identifyMedia } from '../agent/identifyMedia.js'
@@ -108,6 +108,11 @@ async function assemble(): Promise<Assembled> {
           // code/resetAt（如 OS quota_exhausted）随 message 一起入 journal，供人工排障时能看到
           // 重置时间——实际的重试调度消费在 v2 executor（见 pipeline.ts 的 ProviderQuotaExhaustedError 通路）。
           journal?.step('providerError', providerErrorFields(e))
+        } else if (e.event === 'provider_notice') {
+          // 信息性事件——本次调用其实成功了（review finding: journal honesty）。用独立的
+          // 'providerNotice' step 名记录，不能沿用 'providerError'，否则日志/dashboard 读者会把
+          // 一次成功下载误读成一个错误步骤。
+          journal?.step('providerNotice', providerNoticeFields(e))
         }
       },
     }),
