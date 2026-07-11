@@ -327,9 +327,14 @@ export async function runPipeline(
       const seasonEpisodes = await deps.seasonPack.enumerate(ctx)
       if (seasonEpisodes.filter(e => e.needsChinese).length >= 2) {
         sweepRan = true
-        const covered = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'pre-gate')
+        const { covered, quotaExhausted } = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'pre-gate')
         if (covered.length > 0) {
-          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language) })
+          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language), quotaExhausted })
+        }
+        // IMPORTANT-1b: 0 覆盖 + 配额耗尽 → 绝不落回下面的 gate 早退（rank 仍是非 download，gate
+        // 很可能判 no_safe_match 并写 1 天负缓存，把"配额耗尽"误判成"确实没有安全匹配"，resetAt 丢失）。
+        if (quotaExhausted) {
+          return finish('error', { reasons: ['season sweep: quota exhausted before any episode coverage'], quotaExhausted })
         }
       }
     }
@@ -388,6 +393,10 @@ export async function runPipeline(
           const packRef = candidateKey(pack)
           const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
           let consecutiveFails = 0
+          // IMPORTANT-1: 配额是全局的——一旦某集撞见 ProviderQuotaExhaustedError，剩余集的
+          // resolve/download 注定同样失败，立刻停手（不等到 consecutiveFails>=3 熔断），并把
+          // resetAt 记下来供 finish() 携带，而不是被下面的 catch 当成普通瞬时失败吞掉。
+          let packQuotaExhausted: { resetAt: string | null } | undefined
           for (const item of gateRes.commit) {
             if (consecutiveFails >= 3) { journal.step('seasonCircuitBreak', { after: coveredEpisodes.length }); break }
             try {
@@ -407,21 +416,35 @@ export async function runPipeline(
               try { await deps.seasonPack.onCovered(epMeta, written.path, packRef) } catch { /* 观测/联动不影响主流程 */ }
               consecutiveFails = 0
             } catch (e) {
+              if (e instanceof ProviderQuotaExhaustedError) {
+                packQuotaExhausted = { resetAt: e.resetAt }
+                journal.step('seasonEpisodeQuotaExhausted', { episode: item.episodeCode, after: coveredEpisodes.length, resetAt: e.resetAt })
+                break
+              }
               consecutiveFails++
               journal.step('seasonEpisodeFailed', { episode: item.episodeCode, message: String(e) })
             }
           }
           if (coveredEpisodes.length > 0) {
-            return finish('download', { reasons: [`season pack: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath, selected: seasonSelected(packRef, coveredEpisodes[0].subtitlePath, ctx.preferences.language) })
+            return finish('download', { reasons: [`season pack: covered ${coveredEpisodes.length} episodes`], confidence: rank.confidence, coveredEpisodes, subtitlePath: coveredEpisodes[0].subtitlePath, selected: seasonSelected(packRef, coveredEpisodes[0].subtitlePath, ctx.preferences.language), quotaExhausted: packQuotaExhausted })
+          }
+          // IMPORTANT-1b: 0 覆盖 + 配额耗尽 → 绝不落回单集路径（那会再打一次注定失败的 resolve，
+          // 且万一单集候选恰巧跳过 provider 调用就会静默吞掉这次配额信号）；直接把 resetAt 透传出去。
+          if (packQuotaExhausted) {
+            return finish('error', { reasons: ['season pack: quota exhausted before any episode coverage'], quotaExhausted: packQuotaExhausted })
           }
         }
         // 季模式 0 覆盖 → 落回单集路径（继续往下，不 return）
       } else if (!pack && needsCount >= 2 && deps.llm && !sweepRan) {
         // 5b. season sweep: 无整季包但有散装候选 + ≥2集缺中字 → 一轮横扫全季（gate 通过路径）。
         // gate 前若已横扫过（!sweepRan 守卫）则跳过，避免同一 job 内横扫跑两次。
-        const covered = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'post-gate')
+        const { covered, quotaExhausted } = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'post-gate')
         if (covered.length > 0) {
-          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language) })
+          return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], confidence: rank.confidence, coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language), quotaExhausted })
+        }
+        // IMPORTANT-1b: 0 覆盖 + 配额耗尽 → 不落回单集路径，直接透传 resetAt（同季包升格分支语义）
+        if (quotaExhausted) {
+          return finish('error', { reasons: ['season sweep: quota exhausted before any episode coverage'], quotaExhausted })
         }
         // sweep 0 覆盖 → 落回单集路径
       }
@@ -504,13 +527,19 @@ export async function runPipeline(
 /**
  * 季横扫执行体：把散装候选映射到缺中字的集 → 逐集 detail→download→写盘→onCovered。
  * pre-gate（代表集 rank 被拒）与 post-gate（gate 通过后）两个触发点共用；trigger 供审计区分。
- * 覆盖 0 集时返回空数组，调用方据此决定落回 gate 早退 / 单集路径。
+ * 覆盖 0 集时 covered 为空数组，调用方据此决定落回 gate 早退 / 单集路径。
+ * IMPORTANT-1: quotaExhausted 非空时（撞见 ProviderQuotaExhaustedError）表示本轮提前止损——
+ * 配额是全局的，循环已停手不再尝试剩余集；调用方必须把这个信号透传进 PipelineResult，
+ * 且 0 覆盖时不能落回可能导致负缓存/盲退避的默认分支。
  */
 async function runSeasonSweep(
   deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
   candidates: SubtitleCandidate[], seasonEpisodes: SeasonEpisode[],
   journal: Journal, trigger: 'pre-gate' | 'post-gate',
-): Promise<{ episodeCode: string; subtitlePath: string; providerRef: string }[]> {
+): Promise<{
+  covered: { episodeCode: string; subtitlePath: string; providerRef: string }[]
+  quotaExhausted?: { resetAt: string | null }
+}> {
   const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
   journal.step('seasonSweepStart', { candidates: candidates.length, needs: needsCount, trigger })
   const mapResult = await mapLooseEpisodes(deps.llm!, ctx, identity, candidates, seasonEpisodes)
@@ -520,7 +549,7 @@ async function runSeasonSweep(
       a.candidate_id != null && a.candidate_id !== '' && !!a.episode_code
       && a.confidence >= ctx.preferences.auto_download_min_confidence)
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
-  if (validAssignments.length === 0) return []
+  if (validAssignments.length === 0) return { covered: [] }
 
   const skipped: { episode: string; reason: string }[] = []
 
@@ -601,9 +630,13 @@ async function runSeasonSweep(
   // 一个候选(即一个物理文件)最多覆盖一集：按 "candidate_id#fileIndex" 去重。真整季散装候选
   // (每集各有独立文件、fileIndex 各不相同)不受影响；单文件候选被映射到多集时第 2+ 次必被拒。
   const usedFiles = new Set<string>()
+  // IMPORTANT-1: 配额是全局的——一旦撞见 ProviderQuotaExhaustedError，剩余集的 resolve/download
+  // 注定同样失败，立刻停手（不等熔断阈值），记下 resetAt 供调用方透传，而不是被下面的 catch
+  // 当成普通瞬时失败计入 skipped/consecutiveFails。
+  let quotaExhausted: { resetAt: string | null } | undefined
 
   for (const assignment of dedupedAssignments) {
-    // 与季包升格路径（line ~348）对齐的熔断：连续 3 次 resolve 失败视为源抖动/限流，
+    // 与季包升格路径对齐的熔断：连续 3 次 resolve 失败视为源抖动/限流，
     // 停止继续为剩余集打 API（而不是逐集都打一次直到自然耗尽预算）。
     if (consecutiveFails >= 3) {
       journal.step('seasonSweepCircuitBreak', { after: coveredEpisodes.length })
@@ -648,13 +681,18 @@ async function runSeasonSweep(
       coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path, providerRef })
       try { await deps.seasonPack!.onCovered(epMeta, written.path, providerRef) } catch { /* 观测/联动不影响主流程 */ }
     } catch (e) {
+      if (e instanceof ProviderQuotaExhaustedError) {
+        quotaExhausted = { resetAt: e.resetAt }
+        journal.step('seasonSweepQuotaExhausted', { episode: assignment.episode_code, after: coveredEpisodes.length, resetAt: e.resetAt })
+        break
+      }
       consecutiveFails++
       skipped.push({ episode: assignment.episode_code, reason: String(e) })
     }
   }
 
   journal.step('seasonSweep', { candidates: candidates.length, assigned: validAssignments.length, covered: coveredEpisodes.length, skipped, trigger })
-  return coveredEpisodes
+  return { covered: coveredEpisodes, quotaExhausted }
 }
 
 export function shouldGraduate(

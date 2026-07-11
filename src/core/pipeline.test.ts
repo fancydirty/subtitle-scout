@@ -1365,6 +1365,169 @@ describe('runPipeline', () => {
     expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweep')).toBe(false) // 0 valid → 无 seasonSweep
   })
 
+  it('IMPORTANT-1a: season sweep quota death mid-run after 1 covered episode → partial coverage + quotaExhausted preserved, no further resolve attempts', async () => {
+    // 修复前：per-episode catch 吞掉 ProviderQuotaExhaustedError，继续（或熔断阈值内）尝试剩余集，
+    // 且最终 finish('download', {coveredEpisodes}) 从不携带 quotaExhausted——executor 就会把这当
+    // 普通 partial 走 30s 节流，配额重置前反复重打全链路。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [801, 802, 803, 804].map(id =>
+      mkCand(id, `Show.S02E0${id - 800}.chs`, [`Show.S02E0${id - 800}.chs.ass`], `第${id - 800}集`))
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const resolveDownload = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://dl/801' })
+      .mockRejectedValue(new ProviderQuotaExhaustedError('quota exhausted', resetAt))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'download' as const, candidate_id: 'assrt:801', file_index: 0, confidence: 0.9, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3, 4].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `assrt:${800 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode)).toEqual(['S02E01'])
+    expect(result.quotaExhausted).toEqual({ resetAt })
+    // 1 次成功 + 1 次撞配额，随即停手——不再为 803/804 打注定失败的 resolve
+    expect(resolveDownload).toHaveBeenCalledTimes(2)
+  })
+
+  it('IMPORTANT-1b: pre-gate sweep quota death before any coverage → error decision carrying quotaExhausted, never falls through to gate negative-cache', async () => {
+    // 修复前：0 覆盖落回 gate 早退，rank 仍是 no_safe_match → 写 1 天负缓存，resetAt 丢失。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass'], '第1集'),
+      mkCand(802, 'Show.S02E02.chs', ['Show.S02E02.chs.ass'], '第2集'),
+    ]
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const resolveDownload = vi.fn(async () => { throw new ProviderQuotaExhaustedError('quota exhausted', resetAt) })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+    ]
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 },
+        { episode_code: 'S02E02', candidate_id: 'assrt:802', confidence: 0.95 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const putSpy = vi.spyOn(cache, 'put')
+    const deps = makeDeps({
+      cache,
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('error')
+    expect(result.quotaExhausted).toEqual({ resetAt })
+    // 撞到第一次配额就停手，不为 802 打第二次注定失败的 resolve
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+    expect(putSpy).not.toHaveBeenCalled() // 绝不负缓存
+  })
+
+  it('IMPORTANT-1a: season pack quota death mid-run after 1 covered episode → partial coverage + quotaExhausted preserved, no further resolve attempts', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const packCandidate = toCandidate(seasonDetail.sub.subs[0])
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const resolveDownload = vi.fn(async (ref: { fileIndex: number | null }) => {
+      if (ref.fileIndex === 0) return { url: 'http://file0.assrt.net/pack/900900/1' }
+      throw new ProviderQuotaExhaustedError('quota exhausted', resetAt)
+    })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'download' as const, candidate_id: 'assrt:900900', file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+      { itemId: 'e3', seasonNumber: 2, episodeNumber: 3, episodeCode: 'S02E03', videoPath: join(outDir, 'Show.S02E03.mkv'), videoFilename: 'Show.S02E03.mkv', needsChinese: true },
+    ]
+    const deps = makeDeps({
+      providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(async () => ({
+          parsed: { pairs: [
+            { filelist_index: 0, episode_code: 'S02E01', confidence: 0.95, reason: 'x' },
+            { filelist_index: 1, episode_code: 'S02E02', confidence: 0.95, reason: 'x' },
+            { filelist_index: 2, episode_code: 'S02E03', confidence: 0.95, reason: 'x' },
+          ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+        })),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode)).toEqual(['S02E01'])
+    expect(result.quotaExhausted).toEqual({ resetAt })
+    // 1 次成功 + 1 次撞配额，随即停手——不再为 E03 打注定失败的 resolve
+    expect(resolveDownload).toHaveBeenCalledTimes(2)
+  })
+
+  it('IMPORTANT-1b: season pack quota death before any coverage → error decision carrying quotaExhausted, not falling back to the single-episode path', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const packCandidate = toCandidate(seasonDetail.sub.subs[0])
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const resolveDownload = vi.fn(async () => { throw new ProviderQuotaExhaustedError('quota exhausted', resetAt) })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'download' as const, candidate_id: 'assrt:900900', file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+    ]
+    const deps = makeDeps({
+      providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(async () => ({
+          parsed: { pairs: [
+            { filelist_index: 0, episode_code: 'S02E01', confidence: 0.95, reason: 'x' },
+            { filelist_index: 1, episode_code: 'S02E02', confidence: 0.95, reason: 'x' },
+          ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+        })),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('error')
+    expect(result.quotaExhausted).toEqual({ resetAt })
+    // 撞到第一次配额就停手，绝不落回单集路径再打一次注定失败的 resolve
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+  })
+
   it('M-1: alias harvest merges fresh into the sweep pool; second-round rank input stays fresh-only', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     // 首轮候选覆盖 E01（CJK nativeName 触发别名收割）；别名搜索带回 fresh 覆盖 E02
