@@ -142,6 +142,13 @@ export async function scanLibrary(
   // 只试一次，避免退化回 O(集数) 的外部调用（每次 15s 超时的话 100 集就是 25 分钟）。
   // 故意不落库——下轮 scan 从零重试，这正是"瞬时失败不留永久状态"的要求。
   const failedSeriesOrigins = new Set<string>()
+  // scan 内熔断器：series 级记忆解决了"同一系列重复调用"的放大问题，但电影每部本轮只出现
+  // 一次、没有重复调用可省——TMDB/Jellyfin 大范围故障时，仍是每部未解析电影各付一次
+  // resolver 超时（15s/次）。用连续失败计数熔断：达到阈值后本轮剩余条目（不分电影/剧集）
+  // 直接跳过 resolver，视为失败处理；同样不落库，下轮 scan 从零重试。
+  const RESOLVER_CIRCUIT_BREAKER_THRESHOLD = 3
+  let consecutiveResolverFailures = 0
+  let resolverCircuitOpen = false
 
   while (true) {
     const items = await jf.getItemsPage(startIndex, opts.pageSize)
@@ -172,13 +179,26 @@ export async function scanLibrary(
         let cachedOriginLang = lib.getSeriesOriginLang(item.SeriesId)
         let originResolutionFailed = failedSeriesOrigins.has(item.SeriesId)
         if (cachedOriginLang == null && opts.resolver && !originResolutionFailed) {
-          try {
-            const resolved = await opts.resolver.originFor(item)
-            cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
-            lib.setSeriesOriginLang(item.SeriesId, cachedOriginLang)
-          } catch {
+          if (resolverCircuitOpen) {
+            // 熔断已开：本轮不再花时间等 resolver，直接按失败处理（不缓存，下轮重试）。
             originResolutionFailed = true
             failedSeriesOrigins.add(item.SeriesId)
+          } else {
+            try {
+              const resolved = await opts.resolver.originFor(item)
+              cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
+              lib.setSeriesOriginLang(item.SeriesId, cachedOriginLang)
+              consecutiveResolverFailures = 0
+            } catch (e) {
+              originResolutionFailed = true
+              failedSeriesOrigins.add(item.SeriesId)
+              console.warn(`origin resolution failed for series ${item.SeriesId} (${item.SeriesName ?? item.SeriesId}): degraded origin gate this scan (retry next scan) — ${e instanceof Error ? e.message : String(e)}`)
+              consecutiveResolverFailures++
+              if (consecutiveResolverFailures >= RESOLVER_CIRCUIT_BREAKER_THRESHOLD && !resolverCircuitOpen) {
+                resolverCircuitOpen = true
+                console.warn(`origin resolver: ${consecutiveResolverFailures} consecutive failures this scan — circuit breaker open, skipping resolver for remaining items (retry next scan)`)
+              }
+            }
           }
         }
 
@@ -220,12 +240,24 @@ export async function scanLibrary(
         let originLangToCache: string | null = null
         let originResolutionFailed = false
         if (cachedOriginLang == null && opts.resolver) {
-          try {
-            const resolved = await opts.resolver.originFor(item)
-            cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
-            originLangToCache = cachedOriginLang
-          } catch {
+          if (resolverCircuitOpen) {
+            // 熔断已开：跳过 resolver，按失败处理（不缓存，下轮重试）。
             originResolutionFailed = true
+          } else {
+            try {
+              const resolved = await opts.resolver.originFor(item)
+              cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
+              originLangToCache = cachedOriginLang
+              consecutiveResolverFailures = 0
+            } catch (e) {
+              originResolutionFailed = true
+              console.warn(`origin resolution failed for movie ${item.Id} (${item.Name}): degraded origin gate this scan (retry next scan) — ${e instanceof Error ? e.message : String(e)}`)
+              consecutiveResolverFailures++
+              if (consecutiveResolverFailures >= RESOLVER_CIRCUIT_BREAKER_THRESHOLD && !resolverCircuitOpen) {
+                resolverCircuitOpen = true
+                console.warn(`origin resolver: ${consecutiveResolverFailures} consecutive failures this scan — circuit breaker open, skipping resolver for remaining items (retry next scan)`)
+              }
+            }
           }
         }
 

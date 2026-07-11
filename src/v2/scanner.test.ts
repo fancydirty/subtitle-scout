@@ -692,6 +692,125 @@ describe('scanLibrary', () => {
     expect(calls).toBe(1) // failure memoized for the scan
     expect(lib.getSeriesOriginLang('s9')).toBeNull() // and still nothing cached
   })
+  it('resolver failure (series) logs a warning identifying the series, once per scan (not per episode)', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const failingResolver: OriginResolver = { originFor: async () => { throw new Error('TMDB down') } }
+    const pages = [
+      [
+        epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e2', 1, 2, { SeriesId: 's9', SeriesName: 'Series 9' }),
+      ],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    const originWarnings = consoleWarn.mock.calls.filter(c => String(c[0]).includes('s9'))
+    expect(originWarnings).toHaveLength(1) // logged once for the series, not once per episode
+    expect(String(originWarnings[0][0])).toContain('Series 9')
+    consoleWarn.mockRestore()
+  })
+
+  it('resolver failure (movie) logs a warning identifying the movie', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const failingResolver: OriginResolver = { originFor: async () => { throw new Error('TMDB down') } }
+    const pages = [[movieItem({ Id: 'm9', Name: 'Some Movie', ProductionLocations: [] })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('m9'))
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('Some Movie'))
+    consoleWarn.mockRestore()
+  })
+
+  it('resolver circuit breaker: N consecutive failures within a scan stop paying resolver cost per remaining movie; resets next scan', async () => {
+    // finding #4: movies 没有系列级 O(集数) 放大问题（每部电影本轮只出现一次），
+    // 但 TMDB 大范围故障时仍会让"每部未解析电影都各付一次 15s 超时"——用 scan 内熔断器
+    // 兜底：连续失败达到阈值后，本轮剩余条目（不分电影/剧集）直接跳过 resolver。
+    let calls = 0
+    const failingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages1 = [
+      [
+        movieItem({ Id: 'm1', ProductionLocations: [] }),
+        movieItem({ Id: 'm2', ProductionLocations: [] }),
+        movieItem({ Id: 'm3', ProductionLocations: [] }),
+        movieItem({ Id: 'm4', ProductionLocations: [] }),
+        movieItem({ Id: 'm5', ProductionLocations: [] }),
+      ],
+      [],
+    ]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(calls).toBe(3) // breaker opens on the 3rd consecutive failure; m4/m5 never pay the resolver's timeout
+    expect(lib.getMovie('m4')!.sub_status).toBe('missing')
+    expect(lib.getMovie('m5')!.sub_status).toBe('missing')
+    for (const id of ['m1', 'm2', 'm3', 'm4', 'm5']) expect(lib.getMovieOriginLang(id)).toBeNull()
+    consoleWarn.mockRestore()
+
+    // Next scan: breaker state must not leak across scans — a working resolver resolves every movie again.
+    calls = 0
+    const recoveredResolver: OriginResolver = { originFor: async () => { calls++; return 'zh' } }
+    const pages2 = [
+      [movieItem({ Id: 'm1', ProductionLocations: [] }), movieItem({ Id: 'm2', ProductionLocations: [] })],
+      [],
+    ]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: recoveredResolver,
+    })
+    expect(calls).toBe(2) // both resolved fresh — breaker did not carry over from the previous scan
+    expect(lib.getMovieOriginLang('m1')).toBe('zh')
+    expect(lib.getMovieOriginLang('m2')).toBe('zh')
+  })
+
+  it('resolver circuit breaker is scan-global: trips on series failures too, then also skips a movie later in the same scan', async () => {
+    let calls = 0
+    const failingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages = [
+      [
+        epItem('e1', 1, 1, { SeriesId: 's1', SeriesName: 'S1', ProductionLocations: [] }),
+        epItem('e2', 1, 1, { SeriesId: 's2', SeriesName: 'S2', ProductionLocations: [] }),
+        epItem('e3', 1, 1, { SeriesId: 's3', SeriesName: 'S3', ProductionLocations: [] }),
+        movieItem({ Id: 'm1', ProductionLocations: [] }),
+      ],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(calls).toBe(3) // breaker opened on the 3rd series failure; the movie afterward never calls resolver
+    expect(lib.getMovieOriginLang('m1')).toBeNull()
+    expect(lib.getMovie('m1')!.sub_status).toBe('missing')
+    consoleWarn.mockRestore()
+  })
+
   describe('production-shaped origin resolver wiring (resolveTmdbRefStrict + TmdbClient, mirrors cli/index.ts originFor)', () => {
     // 直接照抄 cli/index.ts 的 originFor 接线形状（resolveTmdbRefStrict + tmdb.getOriginLanguage），
     // 不能只在 tmdb.ts 单测里验证函数签名——审查发现的核心缺陷正是"生产接线没用上它"，
