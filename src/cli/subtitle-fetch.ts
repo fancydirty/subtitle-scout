@@ -2,9 +2,10 @@ import 'dotenv/config'
 import { parseArgs } from 'node:util'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { AssrtClient, toCandidate } from '../adapters/providers/assrt.js'
+import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient, osToCandidates } from '../adapters/providers/opensubtitles.js'
 import { runSearch, runResolve, type FetchAdapter, type FetchArgs, type FetchEvent } from './fetchLib.js'
+import { makeAssrtAdapter } from './adapters/assrtAdapter.js'
 import { parseCandidateKey, type CandidateRef } from '../core/schemas.js'
 
 const emit = (e: FetchEvent) => process.stderr.write(JSON.stringify(e) + '\n')
@@ -20,38 +21,7 @@ function buildAdapters(): FetchAdapter[] {
       cacheDir: join(cacheRoot, 'assrt-responses'),
       onApiCall: r => emit({ event: 'api_call', provider: 'assrt', ...r }),
     })
-    adapters.push({
-      name: 'assrt',
-      enabled: () => true,
-      search: async (args) => {
-        const byId = new Map<number, ReturnType<typeof toCandidate>>()
-        for (const q of args.queries.slice(0, 2)) {
-          const resp = await client.search(q)
-          for (const s of resp.sub.subs) if (!byId.has(s.id)) byId.set(s.id, toCandidate(s))
-        }
-        // gems: 有命中→similar 扩召回；零命中→整文件名兜底
-        if (byId.size > 0) {
-          const top = [...byId.keys()][0]
-          try {
-            const sim = await client.similar(top)
-            for (const s of sim.sub.subs) if (!byId.has(s.id)) byId.set(s.id, toCandidate(s))
-          } catch { /* gems 失败不影响主结果 */ }
-        } else if (args.filename) {
-          const byFile = await client.searchByFilename(args.filename)
-          for (const s of byFile.sub.subs) byId.set(s.id, toCandidate(s))
-        }
-        return [...byId.values()]
-      },
-      resolve: async (ref) => {
-        const detail = await client.detail(Number(ref.providerId))
-        const sub = detail.sub.subs.find(s => String(s.id) === ref.providerId) ?? detail.sub.subs[0]
-        if (!sub) throw new Error(`assrt detail ${ref.providerId} returned no subs`)
-        const entry = ref.fileIndex != null ? sub.filelist[ref.fileIndex] : undefined
-        const url = entry?.url ?? sub.url
-        if (!url) throw new Error(`assrt ${ref.providerId} has no download url`)
-        return { url, filename: entry?.f ?? sub.filename ?? undefined }
-      },
-    })
+    adapters.push(makeAssrtAdapter(client))
   }
 
   if (process.env.OPENSUBTITLES_API_KEY) {
