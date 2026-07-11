@@ -373,6 +373,110 @@ describe('scanLibrary', () => {
     expect(calls).toBe(1) // resolved once, second episode reads cache
   })
 
+  it('negative-cache: unresolved (null) series origin is cached once, not re-resolved per episode', async () => {
+    // 生产实案：TMDB 无法判定该剧 origin（无 provider id / 请求失败），resolver 每次都返回 null。
+    // 修复前：originLang 永远缓存不上（只在 resolved!=null 时写回），每集都会重新回查一次，
+    // 100 集的剧每轮 scan 就是 100 次 jf.getItem 调用，永不收敛。
+    let calls = 0
+    const resolver: OriginResolver = { originFor: async () => { calls++; return null } }
+    const pages = [
+      [
+        epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e2', 1, 2, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e3', 1, 3, { SeriesId: 's9', SeriesName: 'Series 9' }),
+      ],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1) // resolved-to-unknown once for the series, not once per episode
+  })
+
+  it('negative-cache: sentinel persists across scans — resolver not called again on a later scan', async () => {
+    let calls = 0
+    const resolver: OriginResolver = { originFor: async () => { calls++; return null } }
+
+    const pages1 = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1)
+
+    // Second scan (later reconcile cycle) — the negative cache from scan 1 must still hold.
+    const pages2 = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1) // still 1 — resolver was NOT called again on the second scan
+  })
+
+  it('negative-cache: cached-unknown series still falls through to fallback heuristics for classification (sentinel != resolved-zh)', () => {
+    // 缓存 sentinel 不能污染分类：classifyItem 必须继续把 unknown 当 null 处理，
+    // 否则 rule 1/1b 的兜底启发式会被"已解析但值是 unknown"误判为"已解析、跳过兜底"，
+    // 导致缓存写入后国产内容反而漏判（不再 ignored）。
+    const item = movieItem({ ProductionLocations: ['China'] })
+    const status = classifyItem(item, {
+      fileExists: () => false,
+      mappings: [{ from: '/media', to: '/mnt/media' }],
+      skipChineseOrigin: true,
+      originLang: null, // scanner.ts must pass null (not the raw 'unknown' sentinel) here
+    })
+    expect(status).toBe('ignored')
+  })
+
+  it('negative-cache: unresolved movie origin is cached once, not re-resolved on a later scan', async () => {
+    let calls = 0
+    const resolver: OriginResolver = { originFor: async () => { calls++; return null } }
+
+    const pages1 = [[movieItem({ Id: 'm9' })], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1)
+
+    const pages2 = [[movieItem({ Id: 'm9' })], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1) // still 1 — resolver was NOT called again on the second scan
+  })
+
   it('movie origin resolved + cached + classified ignored', async () => {
     const resolver: OriginResolver = { originFor: async () => 'zh' }
     const pages = [[movieItem({ Id: 'm1' })], []]
