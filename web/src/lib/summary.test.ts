@@ -3,7 +3,7 @@ import { libraryFacts, factLine } from './summary.js'
 import type { LibraryItemDTO } from '../api/types.js'
 
 const item = (p: Partial<LibraryItemDTO> & Pick<LibraryItemDTO, 'id' | 'kind' | 'coverage'>): LibraryItemDTO =>
-  ({ name: 'n', chineseTitle: null, year: null, posterTag: null, job: null, ...p })
+  ({ name: 'n', chineseTitle: null, year: null, posterTag: null, job: null, section: '剧集', ...p })
 
 describe('libraryFacts / factLine', () => {
   it('分类计数 + 缺字幕/处理中', () => {

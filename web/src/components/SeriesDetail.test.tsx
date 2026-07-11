@@ -21,7 +21,7 @@ const DETAIL: SeriesDetailDTO = {
 
 function fetchFor(job: LibraryItemDTO['job']) {
   const lib: LibraryItemDTO[] = [
-    { id: 's1', kind: 'series', name: DETAIL.name, chineseTitle: DETAIL.chineseTitle, year: 2019,
+    { id: 's1', kind: 'series', section: '剧集', name: DETAIL.name, chineseTitle: DETAIL.chineseTitle, year: 2019,
       posterTag: null, coverage: { covered: 1, missing: 1, embedded: 1, unavailable: 1, needsReview: 1 }, job },
   ]
   return vi.fn(async (url: string) => {
