@@ -147,8 +147,12 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
     expect(status).toBe('ignored')
   })
 
-  it('fallback: null origin + Han-only series title → ignored', () => {
-    const item = epItem('e1', 1, 1, { SeriesName: '三体' })
+  it('fallback: null origin + Han-only series title + no ProductionLocations signal → ignored', () => {
+    // ProductionLocations 显式置空（无权威信号）——与下面"有权威信号"的用例对照，
+    // 隔离测试标题启发式本身。（此用例此前误用 epItem 默认的
+    // ProductionLocations=['United States']，实际编码了 bug 本身：非国产地区却因
+    // 中文标题被 ignored；已改为显式无信号场景，真正的权威信号场景见下一条用例。）
+    const item = epItem('e1', 1, 1, { SeriesName: '三体', ProductionLocations: [] })
     const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
     expect(status).toBe('ignored')
   })
@@ -158,6 +162,18 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
     const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
     expect(status).toBe('missing')
   })
+
+  it('fallback: null origin + Han-only series title BUT ProductionLocations proves non-Chinese origin → NOT ignored (authoritative evidence outranks title heuristic)', () => {
+    // 生产实案：Jellyfin 库把《生活大爆炸》本地化命名为中文，但 ProductionLocations=['United States']
+    // 已经证明非国产。权威信号（ProductionLocations）必须否决粗糙的标题启发式（rule 1b）。
+    const item = epItem('e1', 1, 1, {
+      SeriesName: '生活大爆炸',
+      ProductionLocations: ['United States'],
+    })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    expect(status).toBe('missing')
+  })
+
 
   it('skipChineseOrigin=false disables ALL origin skipping (zh still processed)', () => {
     const item = movieItem({ ProductionLocations: [] })
@@ -355,6 +371,151 @@ describe('scanLibrary', () => {
     expect(lib.getSeriesOriginLang('s9')).toBe('zh')
     expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
     expect(calls).toBe(1) // resolved once, second episode reads cache
+  })
+
+  it('negative-cache: unresolved (null) series origin is cached once, not re-resolved per episode', async () => {
+    // 生产实案：TMDB 无法判定该剧 origin（无 provider id / 请求失败），resolver 每次都返回 null。
+    // 修复前：originLang 永远缓存不上（只在 resolved!=null 时写回），每集都会重新回查一次，
+    // 100 集的剧每轮 scan 就是 100 次 jf.getItem 调用，永不收敛。
+    let calls = 0
+    const resolver: OriginResolver = { originFor: async () => { calls++; return null } }
+    const pages = [
+      [
+        epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e2', 1, 2, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e3', 1, 3, { SeriesId: 's9', SeriesName: 'Series 9' }),
+      ],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1) // resolved-to-unknown once for the series, not once per episode
+  })
+
+  it('negative-cache: sentinel persists across scans — resolver not called again on a later scan', async () => {
+    let calls = 0
+    const resolver: OriginResolver = { originFor: async () => { calls++; return null } }
+
+    const pages1 = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1)
+
+    // Second scan (later reconcile cycle) — the negative cache from scan 1 must still hold.
+    const pages2 = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1) // still 1 — resolver was NOT called again on the second scan
+  })
+
+  it('negative-cache: cached-unknown series still falls through to fallback heuristics for classification (sentinel != resolved-zh)', () => {
+    // 缓存 sentinel 不能污染分类：classifyItem 必须继续把 unknown 当 null 处理，
+    // 否则 rule 1/1b 的兜底启发式会被"已解析但值是 unknown"误判为"已解析、跳过兜底"，
+    // 导致缓存写入后国产内容反而漏判（不再 ignored）。
+    const item = movieItem({ ProductionLocations: ['China'] })
+    const status = classifyItem(item, {
+      fileExists: () => false,
+      mappings: [{ from: '/media', to: '/mnt/media' }],
+      skipChineseOrigin: true,
+      originLang: null, // scanner.ts must pass null (not the raw 'unknown' sentinel) here
+    })
+    expect(status).toBe('ignored')
+  })
+
+  it('negative-cache: scanLibrary end-to-end — cached-unknown series origin still falls through to ProductionLocations heuristic (rule 1), episode stays ignored on both scans', async () => {
+    // 端到端回归：上面那条测试直接调 classifyItem(originLang: null)，绕过了 scanner.ts 里
+    // resolvedOriginForClassification 那次哨兵换算，测不出「scanner.ts 忘了换算、把裸的
+    // ORIGIN_UNKNOWN='unknown' 字符串传进 classifyItem」这种回归（'unknown' !== null，
+    // rule 1 的 `deps.originLang == null` 判断会直接失手，国产内容漏判 ignored）。
+    // 这里改为通过 scanLibrary 走完整路径：resolver 解不出结果（返回 null，被写成
+    // ORIGIN_UNKNOWN 哨兵缓存），条目自带 ProductionLocations=['China']，
+    // 断言落库的 sub_status 在首次扫描和缓存命中的第二次扫描都是 'ignored'。
+    const resolver: OriginResolver = { originFor: async () => null }
+    const zhLocationEpisode = () =>
+      epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9', ProductionLocations: ['China'] })
+
+    const pages1 = [[zhLocationEpisode()], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(lib.getSeriesOriginLang('s9')).toBe('unknown')
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+
+    // Second scan (cache hit path — resolver not consulted again, sentinel read from DB).
+    const pages2 = [[zhLocationEpisode()], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+  })
+
+  it('negative-cache: unresolved movie origin is cached once, not re-resolved on a later scan', async () => {
+    let calls = 0
+    const resolver: OriginResolver = { originFor: async () => { calls++; return null } }
+
+    const pages1 = [[movieItem({ Id: 'm9' })], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1)
+
+    const pages2 = [[movieItem({ Id: 'm9' })], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver,
+    })
+    expect(calls).toBe(1) // still 1 — resolver was NOT called again on the second scan
   })
 
   it('movie origin resolved + cached + classified ignored', async () => {

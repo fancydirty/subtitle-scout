@@ -44,10 +44,16 @@ export function classifyItem(
   if (deps.skipChineseOrigin && deps.originLang == null && isChineseOrigin(item)) {
     return 'ignored'
   }
-  // 1b. 兜底：无 TMDB 信号时，用剧集标题字符启发式（汉字且无假名无谚文，排除日番/韩剧）
+  // 1b. 兜底：无 TMDB 信号时，用剧集标题字符启发式（汉字且无假名无谚文，排除日番/韩剧）。
+  //     但若条目自带 ProductionLocations（权威信号）且已判定非国产（走到这里说明 rule 1
+  //     未命中），该权威证据必须否决这条粗糙的标题启发式——不能让"生活大爆炸"这类中文库名
+  //     的西方剧被误伤 ignored（用户永远收不到该剧的字幕，是本 gate 最差的失败模式）。
+  //     只有条目完全没有 ProductionLocations（无权威信号可用）时才允许标题启发式兜底。
+  const hasProductionLocationSignal = (item.ProductionLocations ?? []).length > 0
   if (
     deps.skipChineseOrigin &&
     deps.originLang == null &&
+    !hasProductionLocationSignal &&
     looksChineseTitle(item.SeriesName ?? item.OriginalTitle)
   ) {
     return 'ignored'
@@ -80,6 +86,23 @@ export function classifyItem(
 /** TMDB origin_lang 解析器：拿到就返回小写 language code，拿不到（无 TMDB/未匹配/请求失败）返回 null——增益路径，绝不阻塞主流程。 */
 export interface OriginResolver {
   originFor: (item: JellyfinItem) => Promise<string | null>
+}
+
+/**
+ * origin_lang 缓存里代表"resolver 已经问过一次、但没问出结果"的哨兵值。
+ *
+ * 权衡：不区分"这个系列 TMDB 永远查不到"和"这次刚好查不到、以后可能查到"——
+ * 一旦写入 'unknown' 就不再重试，直到有人手动清缓存（清空 origin_lang 列）。
+ * 换取的是把 O(集数) 的每轮重复回查收敛到 O(系列数) 一次；没有实现按时间间隔
+ * 过期重试（仓库目前没有可复用的"定期刷新"模式，避免为此新增基础设施）。
+ * 分类时必须把该哨兵值当 null 处理（见 classifyItem 调用处），否则会误伤
+ * rule 1 / rule 1b 的兜底启发式。
+ */
+const ORIGIN_UNKNOWN = 'unknown'
+
+/** 把 origin_lang 缓存读数换算成 classifyItem 能理解的值：哨兵 'unknown' 视同未解析（null）。 */
+function resolvedOriginForClassification(cached: string | null): string | null {
+  return cached === ORIGIN_UNKNOWN ? null : cached
 }
 
 export async function scanLibrary(
@@ -118,20 +141,21 @@ export async function scanLibrary(
         })
 
         // origin_lang：先读缓存，缺失且有 resolver 才回查一次并写回（同系列后续集直接命中缓存）。
-        let originLang = lib.getSeriesOriginLang(item.SeriesId)
-        if (originLang == null && opts.resolver) {
+        // 查不出结果（resolved==null）也要写回 ORIGIN_UNKNOWN 哨兵——否则每集都会重新回查
+        // TMDB/Jellyfin，100 集的剧就是每轮 scan 100 次外部调用，永不收敛（见 db.ts:97 "resolve
+        // once per series" 的不变式）。分类时把哨兵换算回 null，兜底启发式仍然逐轮生效。
+        let cachedOriginLang = lib.getSeriesOriginLang(item.SeriesId)
+        if (cachedOriginLang == null && opts.resolver) {
           const resolved = await opts.resolver.originFor(item)
-          if (resolved != null) {
-            lib.setSeriesOriginLang(item.SeriesId, resolved)
-            originLang = resolved
-          }
+          cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
+          lib.setSeriesOriginLang(item.SeriesId, cachedOriginLang)
         }
 
         const newStatus = classifyItem(item, {
           fileExists: opts.fileExists,
           mappings: opts.mappings,
           skipChineseOrigin: opts.skipChineseOrigin,
-          originLang,
+          originLang: resolvedOriginForClassification(cachedOriginLang),
         })
 
         // Preserve unavailable only if reality still says missing
@@ -157,21 +181,21 @@ export async function scanLibrary(
         // origin_lang：先读缓存，缺失且有 resolver 才回查一次；但 movies 行可能是本轮才新建
         // （不像 series 先于 episode 分类而存在），setMovieOriginLang 的 UPDATE 此刻会是空操作。
         // 解出来的值先只留在内存里参与分类，真正写回缓存推迟到 upsertMovie 之后（行必然已存在）。
-        let originLang = lib.getMovieOriginLang(item.Id)
-        let resolvedOriginLang: string | null = null
-        if (originLang == null && opts.resolver) {
+        // 查不出结果（resolved==null）也要缓存 ORIGIN_UNKNOWN 哨兵，避免同一部电影每轮 scan
+        // 都重新回查（root cause 与 series 分支一致，见上）。
+        let cachedOriginLang = lib.getMovieOriginLang(item.Id)
+        let originLangToCache: string | null = null
+        if (cachedOriginLang == null && opts.resolver) {
           const resolved = await opts.resolver.originFor(item)
-          if (resolved != null) {
-            originLang = resolved
-            resolvedOriginLang = resolved
-          }
+          cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
+          originLangToCache = cachedOriginLang
         }
 
         const newStatus = classifyItem(item, {
           fileExists: opts.fileExists,
           mappings: opts.mappings,
           skipChineseOrigin: opts.skipChineseOrigin,
-          originLang,
+          originLang: resolvedOriginForClassification(cachedOriginLang),
         })
 
         // Preserve unavailable only if reality still says missing
@@ -194,8 +218,8 @@ export async function scanLibrary(
             : null,
         })
 
-        if (resolvedOriginLang != null) {
-          lib.setMovieOriginLang(item.Id, resolvedOriginLang)
+        if (originLangToCache != null) {
+          lib.setMovieOriginLang(item.Id, originLangToCache)
         }
       }
     }
