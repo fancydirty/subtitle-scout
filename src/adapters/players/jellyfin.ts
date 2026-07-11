@@ -57,6 +57,18 @@ export const JellyfinRemoteSearchResultSchema = z.object({
 }).passthrough()
 export const JellyfinRemoteSearchSchema = z.array(JellyfinRemoteSearchResultSchema)
 
+/**
+ * getItem 查无该 id（Jellyfin /Items 对该 id 返回空 Items 数组）——这是永久态（脏/过期 id，
+ * 或条目已被删除），不是瞬时故障。与 call() 内网络拒绝/非 2xx 抛出的普通 Error 区分开，
+ * 让调用方（resolveTmdbRefStrict）能把"查无此系列"归入 no-data，"请求本身失败"归入可重试。
+ */
+export class JellyfinItemNotFoundError extends Error {
+  constructor(itemId: string) {
+    super(`jellyfin item not found: ${itemId}`)
+    this.name = 'JellyfinItemNotFoundError'
+  }
+}
+
 export interface JellyfinClientOpts {
   baseUrl: string
   apiKey: string
@@ -108,7 +120,7 @@ export class JellyfinClient implements PlayerServer {
     const raw = await this.call('GET', `/Items?ids=${encodeURIComponent(itemId)}&fields=${ITEM_FIELDS}`)
     const r = JellyfinItemsResponseSchema.parse(raw)
     const item = r.Items[0]
-    if (!item) throw new Error(`jellyfin item not found: ${itemId}`)
+    if (!item) throw new JellyfinItemNotFoundError(itemId)
     return item
   }
 

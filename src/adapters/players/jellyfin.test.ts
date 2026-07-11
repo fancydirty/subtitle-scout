@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { JellyfinClient, JellyfinSessionsSchema, JellyfinItemsResponseSchema, type JellyfinItem } from './jellyfin.js'
+import { JellyfinClient, JellyfinSessionsSchema, JellyfinItemsResponseSchema, JellyfinItemNotFoundError, type JellyfinItem } from './jellyfin.js'
 
 const sessionsFixture = readFileSync('fixtures/jellyfin/sessions-playing.json', 'utf8')
 const idleFixture = readFileSync('fixtures/jellyfin/sessions-idle.json', 'utf8')
@@ -61,6 +61,18 @@ describe('JellyfinClient', () => {
   it('getItem throws when item not found', async () => {
     const { client } = makeClient([JSON.stringify({ Items: [], TotalRecordCount: 0 })])
     await expect(client.getItem('nope')).rejects.toThrow(/not found/i)
+  })
+  it('getItem not-found error is a distinguishable JellyfinItemNotFoundError (not a generic Error)', async () => {
+    // resolveTmdbRefStrict (tmdb.ts) needs to tell "series genuinely does not exist" apart from
+    // "Jellyfin request itself failed" (network/5xx) — both currently throw from getItem, so the
+    // not-found case must be a distinguishable type, not just a message string.
+    const { client } = makeClient([JSON.stringify({ Items: [], TotalRecordCount: 0 })])
+    await expect(client.getItem('nope')).rejects.toBeInstanceOf(JellyfinItemNotFoundError)
+  })
+  it('getItem HTTP failure (transient) throws a plain Error, NOT JellyfinItemNotFoundError', async () => {
+    const fetchImpl = vi.fn(async () => new Response('server error', { status: 500 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf:8096', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getItem('anyid')).rejects.not.toBeInstanceOf(JellyfinItemNotFoundError)
   })
   it('refreshItem POSTs FullRefresh (bare refresh does not rescan external subs)', async () => {
     const { client, fetchImpl } = makeClient([''])
