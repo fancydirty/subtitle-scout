@@ -179,7 +179,11 @@ export async function runPipeline(
               outDir,
             })
             if (written.alreadyExists) {
-              return finish('already_exists', { reasons: ['subtitle already exists; adoption skipped'] })
+              // IMPORTANT-3: carry the real on-disk path, same as the other two already_exists
+              // sites (pre-flight + post-download) — downstream persistence keys off subtitlePath
+              // and would otherwise silently lose the subtitles-row bookkeeping for this orphan.
+              // downloaded:false: adoption was skipped, nothing new was written this run (MINOR-A).
+              return finish('already_exists', { reasons: ['subtitle already exists; adoption skipped'], subtitlePath: written.path, downloaded: false })
             }
             return finish('adopted_local', {
               reasons: [`adopted local subtitle: ${ogate.orphan.filename}`, ...judged.parsed.reasons],
