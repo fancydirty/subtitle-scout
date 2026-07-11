@@ -72,13 +72,22 @@ export class OsQuotaExhaustedError extends Error {
 }
 
 /** 从一个 HTTP 错误体里尽力识别"这是配额耗尽响应"：至少要有 remaining 或 reset_time_utc 字段，
- *  避免把无关的 502 网关错误页误判成配额响应。 */
+ *  避免把无关的 502 网关错误页误判成配额响应。
+ *
+ *  误判防护（review finding）：字段"存在"不等于"配额耗尽"——一个无关的 4xx（如限流/校验错误）
+ *  可能照样在响应体里回声 remaining 字段，且值健康（>0）。必须像成功路径（见
+ *  opensubtitlesAdapter.ts 的 `r.remaining <= 0` 判断）一样，只有 remaining<=0 才算耗尽；
+ *  remaining>0 一律不是配额响应，原样冒泡成普通 provider 错误。
+ *  唯一例外：remaining 字段整体缺失、但 reset_time_utc 还在——OpenSubtitles REST v1 里
+ *  reset_time_utc 只出现在 /download 配额响应中（其它错误形状不带这个字段），
+ *  所以它单独出现时仍是无歧义的配额信号，判定为耗尽（remaining 记为 null，未知）。 */
 function quotaInfoFromErrorBody(body: unknown): { resetAt: string | null; remaining: number | null } | null {
   if (body == null || typeof body !== 'object') return null
   const parsed = OsQuotaBodySchema.safeParse(body)
   if (!parsed.success) return null
   const { remaining, reset_time_utc } = parsed.data
   if (remaining == null && reset_time_utc == null) return null
+  if (remaining != null && remaining > 0) return null
   return { resetAt: reset_time_utc ?? null, remaining: remaining ?? null }
 }
 

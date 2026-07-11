@@ -161,6 +161,35 @@ describe('OpenSubtitlesClient.resolveDownload quota exhaustion', () => {
     expect(caught).not.toBeInstanceOf(OsQuotaExhaustedError)
     expect(String(caught)).toMatch(/502/)
   })
+
+  // Misclassification guard (review finding): the success path only treats the quota as exhausted
+  // when remaining<=0 (see opensubtitlesAdapter.ts). The error path must apply the same threshold —
+  // a 4xx that merely echoes a healthy `remaining` value is NOT a quota-exhaustion response.
+  it('a 4xx with remaining:15 (healthy quota) is an ordinary provider error, not OsQuotaExhaustedError', async () => {
+    const client = makeClient((() => Promise.resolve(new Response(
+      JSON.stringify({ message: 'some other 4xx', remaining: 15 }),
+      { status: 429 },
+    ))) as never)
+    let caught: unknown
+    try { await client.resolveDownload(1) } catch (e) { caught = e }
+    expect(caught).not.toBeInstanceOf(OsQuotaExhaustedError)
+    expect(String(caught)).toMatch(/429/)
+  })
+
+  // Pinning a deliberate decision: OpenSubtitles' /download quota-exceeded response is the ONLY
+  // place reset_time_utc appears at all, so its mere presence — even with `remaining` fully absent —
+  // is still an unambiguous quota signal (see quotaInfoFromErrorBody's doc comment).
+  it('406 with only reset_time_utc (no remaining field at all) is still classified as quota exhaustion', async () => {
+    const client = makeClient((() => Promise.resolve(new Response(
+      JSON.stringify({ message: 'Not allowed download limit reached', reset_time_utc: '2026-07-12T00:00:00.000Z' }),
+      { status: 406 },
+    ))) as never)
+    let caught: unknown
+    try { await client.resolveDownload(1) } catch (e) { caught = e }
+    expect(caught).toBeInstanceOf(OsQuotaExhaustedError)
+    expect((caught as OsQuotaExhaustedError).resetAt).toBe('2026-07-12T00:00:00.000Z')
+    expect((caught as OsQuotaExhaustedError).remaining).toBeNull()
+  })
 })
 
 describe('OpenSubtitlesClient onApiCall accounting', () => {
