@@ -7,6 +7,18 @@ export const ERROR_BACKOFF_MS = [30_000, 60_000, 120_000, 300_000]
 export const errorBackoffMs = (attempt: number) => ERROR_BACKOFF_MS[attempt - 1] ?? 900_000
 /** Partial-success throttle (I6): back to wanted but not immediately claimable — avoids tight re-claim loop. */
 export const PARTIAL_RETRY_MS = 30_000
+/** OS 配额耗尽 resetAt 之上的固定余量：吸收我们与 provider 之间的时钟偏差，避免恰好卡在
+ *  重置边界重领仍扑空。是个保守 margin，不是真随机 jitter。 */
+export const QUOTA_RESET_MARGIN_MS = 5 * 60_000
+
+/** resetAt 是否值得据其单独排期：能解析 + 严格晚于 now 才行；否则 null（调用方落回默认阶梯）。
+ *  过去时间/乱码字符串一律当作"没有可用的 resetAt"处理——不能让畸形 provider 数据把 job 卡死。 */
+function quotaRetryAt(resetAt: string | null | undefined, now: number): number | null {
+  if (!resetAt) return null
+  const parsed = Date.parse(resetAt)
+  if (Number.isNaN(parsed) || parsed <= now) return null
+  return parsed + QUOTA_RESET_MARGIN_MS
+}
 
 const LEASE_DURATION_MS = 30 * 60_000 // 30 minutes
 
@@ -172,14 +184,17 @@ export class JobsRepo {
     })()
   }
 
-  /** Transient error (network/LLM/5xx): short backoff, separate track from content failures. */
-  completeError(jobId: number, error: string, now: number): boolean {
+  /** Transient error (network/LLM/5xx): short backoff, separate track from content failures.
+   *  quotaResetAt: OS 配额耗尽（quota_exhausted）时携带的 provider reset 时间——有效（可解析且未来）
+   *  时按 resetAt+margin 精确排期，而不是走盲的 ERROR_BACKOFF_MS 阶梯（否则会在配额重置前每
+   *  至多 15min 重打一次完整 identify+plan+search+/download，白烧 LLM/search 配额）。 */
+  completeError(jobId: number, error: string, now: number, quotaResetAt?: string | null): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
       if (!job) return false
 
       const newAttempt = job.attempt + 1
-      const nextRetryAt = now + errorBackoffMs(newAttempt)
+      const nextRetryAt = quotaRetryAt(quotaResetAt, now) ?? now + errorBackoffMs(newAttempt)
       const info = this.db
         .prepare(
           `UPDATE jobs

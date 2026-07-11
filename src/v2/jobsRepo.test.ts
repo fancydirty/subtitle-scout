@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from './db.js'
-import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS } from './jobsRepo.js'
+import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS, QUOTA_RESET_MARGIN_MS } from './jobsRepo.js'
 
 let repo: JobsRepo
 beforeEach(() => { repo = new JobsRepo(openDb(':memory:')) })
@@ -138,6 +138,42 @@ describe('jobs 状态机', () => {
       if (i < 5) repo.forceClaim('s1', 4, t0)
     }
     expect(repo.get(j.id)!.next_retry_at).toBe(t0 + 900_000)
+  })
+  it('配额耗尽退避（quota_exhausted resetAt）：next_retry_at 对齐 resetAt+margin，不走盲阶梯', () => {
+    // 根因：OS 20/日配额耗尽后，若还是走 ERROR_BACKOFF_MS 封顶 15min 的阶梯，job 会在
+    // 配额于 UTC 重置前一直每 15min 重打一次 identify+plan+search+/download，白烧 LLM/search 配额。
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString() // 3h 后重置
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, resetAt)
+    const row = repo.get(j.id)!
+    expect(row.state).toBe('failed')
+    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
+    // 远大于短退避阶梯封顶(15min)，证明确实没有走 ERROR_BACKOFF_MS
+    expect(row.next_retry_at!).toBeGreaterThan(t0 + 900_000)
+  })
+  it('配额 resetAt 缺失（undefined）→ 落回默认错误退避阶梯，行为与调用方不传第 4 参一致', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'network blip', t0, undefined)
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
+  })
+  it('配额 resetAt 是过去时间（已过期/时钟偏差）→ 落回默认阶梯，不把 job 判"未来"', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    const pastResetAt = new Date(t0 - 60_000).toISOString()
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, pastResetAt)
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
+  })
+  it('配额 resetAt 是无法解析的乱码字符串 → 落回默认阶梯，job 不会被永久搁置', () => {
+    const t0 = Date.now()
+    mkSeriesJob(t0)
+    const j = repo.claimNext(t0)!
+    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, 'not-a-date')
+    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
   })
   it('部分成功节流（I6）：30s 内 claimNext 拿不到，窗口过后可领', () => {
     const now = Date.now()
