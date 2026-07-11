@@ -143,27 +143,113 @@ describe('ScoutDaemon', () => {
     expect(logs.some(l => l.includes('Scan failed'))).toBe(true)
   })
 
-  it('reconcile仅在到点时运行', async () => {
+  it('reconcile仅在到点时运行（稳态：boot 强制拍之后）', async () => {
     const scan = vi.fn(async () => {})
     const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
 
-    // Set last reconcile to 10 minutes ago (not yet time for 15-min interval)
-    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 10 * 60_000))
-
     const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, reconcileEveryMs: 15 * 60_000 }))
+
+    // Prime: consume the boot-forced reconcile (see 'boot: first tick reconciles...'
+    // tests) so this test can isolate the steady-state time-gate behavior below.
+    await daemon.tick()
+    scan.mockClear()
+    aggregate.mockClear()
+
+    // 9 minutes since the priming tick's reconcile — not yet due for the 15-min interval
+    now += 9 * 60_000
     await daemon.tick()
 
     // Should not scan/aggregate yet
     expect(scan).not.toHaveBeenCalled()
     expect(aggregate).not.toHaveBeenCalled()
 
-    // Advance past reconcile interval
-    now += 6 * 60_000
+    // Advance past reconcile interval (16 min since priming tick's reconcile)
+    now += 7 * 60_000
     await daemon.tick()
 
     // Now should scan/aggregate
     expect(scan).toHaveBeenCalledOnce()
     expect(aggregate).toHaveBeenCalledOnce()
+  })
+
+  it('boot: first tick reconciles BEFORE dispatching even when last_reconcile_at is recent', async () => {
+    const callOrder: string[] = []
+    const scan = vi.fn(async () => {
+      callOrder.push('scan')
+    })
+    const aggregate = vi.fn(() => {
+      callOrder.push('aggregate')
+      return { created: 0, retired: 0 }
+    })
+    const executeJob = vi.fn(async () => {
+      callOrder.push('dispatch')
+    })
+
+    // last_reconcile_at is recent (e.g. just written by a previous daemon process
+    // seconds ago on a rolling deploy) — the time gate alone would skip the scan.
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, executeJob }))
+    await daemon.tick()
+
+    // Scan/aggregate must run despite the recent last_reconcile_at, and must run
+    // before dispatch claims/executes jobs.
+    expect(scan).toHaveBeenCalledOnce()
+    expect(aggregate).toHaveBeenCalledOnce()
+    expect(callOrder).toEqual(['scan', 'aggregate', 'dispatch'])
+  })
+
+  it('boot reconcile happens only once (second tick respects the time gate again)', async () => {
+    const scan = vi.fn(async () => {})
+    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
+
+    // Recent last_reconcile_at — boot flag should force the first tick's scan anyway.
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+
+    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate }))
+    await daemon.tick()
+    expect(scan).toHaveBeenCalledOnce()
+
+    // Simulate another recent write to last_reconcile_at (e.g. some other process,
+    // or just the boot tick's own update) — the boot flag has been consumed, so
+    // the plain time gate takes back over and a still-recent timestamp skips scan.
+    lib.db
+      .prepare(
+        `INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      )
+      .run(String(now))
+
+    await daemon.tick()
+
+    // No additional scan/aggregate on the second tick.
+    expect(scan).toHaveBeenCalledOnce()
+    expect(aggregate).toHaveBeenCalledOnce()
+  })
+
+  it('boot reconcile retries next tick if the boot scan throws', async () => {
+    let scanCalls = 0
+    const scan = vi.fn(async () => {
+      scanCalls++
+      if (scanCalls === 1) throw new Error('boot scan failed')
+    })
+    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
+
+    // Recent last_reconcile_at: without the boot flag surviving the throw, the
+    // time gate alone would never retry the scan on tick 2.
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+
+    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate }))
+
+    await daemon.tick()
+    expect(scan).toHaveBeenCalledTimes(1)
+    expect(aggregate).not.toHaveBeenCalled() // skipped because scan threw
+
+    await daemon.tick()
+    expect(scan).toHaveBeenCalledTimes(2)
+    expect(aggregate).toHaveBeenCalledOnce() // second scan succeeded, aggregate ran
   })
 
   it('pollSessions命中退避中的集（unavailable+未来recheck+dormant job）也能wake/boost', async () => {

@@ -42,6 +42,11 @@ export interface DaemonDeps {
 export class ScoutDaemon {
   private inflight = new Set<Promise<void>>()
   private stopping = false
+  // 部署重启瞬间：上个进程分钟前才写过 last_reconcile_at，纯时间门会让首次 scan 延迟
+  // 最长 15 分钟，而 dispatch 每 15s 无条件跑——旧 wanted/failed job（含刚被
+  // reapAllActive 复活的）会在扫描器套用新分类规则之前被派发。强制开机第一拍
+  // 先 reconcile 一次，不管 last_reconcile_at 多新，堵死这个窗口。
+  private bootReconcilePending = true
 
   constructor(private deps: DaemonDeps) {}
 
@@ -62,8 +67,8 @@ export class ScoutDaemon {
     const lastReconcile = lastReconcileRow ? Number(lastReconcileRow.value) : 0
     const timeSinceReconcile = now() - lastReconcile
 
-    if (timeSinceReconcile >= reconcileEveryMs) {
-      // Time for reconcile
+    if (this.bootReconcilePending || timeSinceReconcile >= reconcileEveryMs) {
+      // Time for reconcile (or boot forces one regardless of the time gate)
       try {
         await scan()
         const result = aggregate(now())
@@ -78,6 +83,10 @@ export class ScoutDaemon {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value`
           )
           .run(String(now()))
+
+        // Boot reconcile satisfied — only clear on success, so a failed boot
+        // scan keeps retrying next tick instead of reopening the stale-gate window.
+        this.bootReconcilePending = false
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         log(`reconcile error (scan or aggregate failed): ${msg}`)
