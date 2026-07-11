@@ -8,11 +8,11 @@ const item = (p: Partial<LibraryItemDTO> & Pick<LibraryItemDTO, 'id' | 'kind' | 
 
 const LIBRARY: LibraryItemDTO[] = [
   item({ id: 's1', kind: 'series', name: 'Series A', chineseTitle: '甲剧', year: 2021, section: '剧集',
-    coverage: { covered: 12, missing: 0, embedded: 0, unavailable: 0 } }),                         // full
+    coverage: { covered: 12, missing: 0, embedded: 0, unavailable: 0, needsReview: 0 } }),                         // full
   item({ id: 's2', kind: 'series', name: 'Series B', chineseTitle: '乙剧', year: 2024, section: '动漫',
-    coverage: { covered: 3, missing: 5, embedded: 0, unavailable: 0 } }),                           // part → missing
+    coverage: { covered: 3, missing: 5, embedded: 0, unavailable: 0, needsReview: 0 } }),                           // part → missing
   item({ id: 's3', kind: 'series', name: 'Series C', chineseTitle: '丙剧', year: 2025, section: '电影',
-    coverage: { covered: 1, missing: 8, embedded: 0, unavailable: 0 }, job: { state: 'searching', priority: 100 } }), // work
+    coverage: { covered: 1, missing: 8, embedded: 0, unavailable: 0, needsReview: 0 }, job: { state: 'searching', priority: 100 } }), // work
 ]
 
 function mockFetch(body: unknown, ok = true) {

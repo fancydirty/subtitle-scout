@@ -108,6 +108,46 @@ ALTER TABLE series ADD COLUMN origin_lang TEXT;
   `
 ALTER TABLE jobs ADD COLUMN error_attempt INTEGER NOT NULL DEFAULT 0;
   `.trim(),
+  // v5: needs_review sub_status——ask_user 诚实记账修正。executor.ts 曾把 gate 'ask_user'
+  // （候选存在但置信不足）和 no_safe_match（穷尽未找到）一样映射成 unavailable——前端
+  // 展示"暂无"，掩盖了本可人工确认的候选。新增 sub_status='needs_review' 让这类结果
+  // 诚实区分。SQLite 不支持 ALTER 已有 CHECK 约束，标准作法：建新表（含扩容后的 CHECK）
+  // →显式列拷数据→删旧表→改名（12-step 摘要版）。episodes/movies 都要扩容；两表在此
+  // 之前的历次迁移里都没有额外索引/触发器，重建无需连带重建它们；episodes.series_id 的
+  // 外键无子表引用 episodes，重建期间不会有悬空引用风险。
+  `
+CREATE TABLE episodes_new (
+  id TEXT PRIMARY KEY,
+  series_id TEXT NOT NULL REFERENCES series(id),
+  season INTEGER NOT NULL, episode INTEGER NOT NULL,
+  name TEXT, path TEXT NOT NULL,
+  sub_status TEXT NOT NULL CHECK(sub_status IN
+    ('missing','covered','embedded','unavailable','ignored','needs_review')),
+  status_reason TEXT, recheck_after INTEGER,
+  updated_at INTEGER NOT NULL
+);
+INSERT INTO episodes_new
+  (id, series_id, season, episode, name, path, sub_status, status_reason, recheck_after, updated_at)
+  SELECT id, series_id, season, episode, name, path, sub_status, status_reason, recheck_after, updated_at
+  FROM episodes;
+DROP TABLE episodes;
+ALTER TABLE episodes_new RENAME TO episodes;
+
+CREATE TABLE movies_new (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_tag TEXT,
+  year INTEGER, path TEXT NOT NULL, provider_ids TEXT,
+  sub_status TEXT NOT NULL CHECK(sub_status IN
+    ('missing','covered','embedded','unavailable','ignored','needs_review')),
+  status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+  origin_lang TEXT
+);
+INSERT INTO movies_new
+  (id, name, chinese_title, poster_tag, year, path, provider_ids, sub_status, status_reason, recheck_after, updated_at, origin_lang)
+  SELECT id, name, chinese_title, poster_tag, year, path, provider_ids, sub_status, status_reason, recheck_after, updated_at, origin_lang
+  FROM movies;
+DROP TABLE movies;
+ALTER TABLE movies_new RENAME TO movies;
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {

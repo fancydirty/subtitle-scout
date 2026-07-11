@@ -140,10 +140,10 @@ describe('withTimeout', () => {
 
 describe('doctor v2 database checks', () => {
   it('checkDatabase：可开且版本匹配 → ✓ 显示版本', () => {
-    const r = checkDatabase(() => ({ version: '4' }))
+    const r = checkDatabase(() => ({ version: '5' }))
     expect(r.ok).toBe(true)
     expect(r.name).toBe('database')
-    expect(r.detail).toContain('4')
+    expect(r.detail).toContain('5')
   })
   it('checkDatabase：打开抛错 → ✗ 人话 hint', () => {
     const r = checkDatabase(() => { throw new Error('SQLITE_CANTOPEN') })

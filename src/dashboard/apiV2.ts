@@ -9,6 +9,8 @@ export interface CoverageDTO {
   missing: number
   embedded: number
   unavailable: number
+  /** task 2: ask_user 诚实记账——候选存在但置信不足，待人工确认（区别于穷尽未找到的 unavailable）。 */
+  needsReview: number
 }
 
 export interface LibraryJobDTO {
@@ -51,14 +53,15 @@ interface JobRow {
   priority: number
 }
 
-const emptyCoverage = (): CoverageDTO => ({ covered: 0, missing: 0, embedded: 0, unavailable: 0 })
+const emptyCoverage = (): CoverageDTO => ({ covered: 0, missing: 0, embedded: 0, unavailable: 0, needsReview: 0 })
 
-/** 把一条 sub_status 累加进覆盖桶（ignored 不入四桶，它不参与 scout）。 */
+/** 把一条 sub_status 累加进覆盖桶（ignored 不入桶，它不参与 scout）。 */
 function addToCoverage(cov: CoverageDTO, status: string, n: number): void {
   if (status === 'covered') cov.covered += n
   else if (status === 'missing') cov.missing += n
   else if (status === 'embedded') cov.embedded += n
   else if (status === 'unavailable') cov.unavailable += n
+  else if (status === 'needs_review') cov.needsReview += n
 }
 
 // ---- Section 派生（海报墙分区，零配置按库目录结构分组）----

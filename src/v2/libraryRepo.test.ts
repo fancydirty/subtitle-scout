@@ -98,6 +98,56 @@ describe('媒体镜像', () => {
     expect(lib.missingBySeason()).toEqual([])
   })
 
+  // needs_review（ask_user 诚实记账，task 2 依赖）
+  it('markNeedsReview 写 sub_status=needs_review + reason + recheck_after（同 markUnavailable 结构）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing',
+    })
+    const recheckAfter = Date.now() + 86_400_000
+    lib.markNeedsReview('e1', '找到候选但把握不足（置信 0.62 < 0.75），待人工确认', recheckAfter)
+    const ep = lib.getEpisode('e1')!
+    expect(ep.sub_status).toBe('needs_review')
+    expect(ep.status_reason).toBe('找到候选但把握不足（置信 0.62 < 0.75），待人工确认')
+    expect(ep.recheck_after).toBe(recheckAfter)
+  })
+
+  it('markNeedsReview 对 movie 也工作（episode 未命中时落回 movie）', () => {
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m', subStatus: 'missing' })
+    lib.markNeedsReview('m1', '候选把握不足', Date.now() + 1000)
+    expect(lib.getMovie('m1')!.sub_status).toBe('needs_review')
+  })
+
+  it('needs_review 带复查时间，missingBySeason 不计入未到期的；到期后计入（可重新进入 job 调和）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing',
+    })
+    lib.markNeedsReview('e1', '候选把握不足', Date.now() + 86_400_000)
+    expect(lib.missingBySeason()).toEqual([])
+
+    // 复查窗口已过——needs_review 和 unavailable 一样重新计入 missing，给下一轮 job 一个机会
+    lib.markNeedsReview('e1', '候选把握不足', Date.now() - 1)
+    expect(lib.missingBySeason()).toEqual([{ series_id: 's1', season: 1, missing: 1 }])
+  })
+
+  it('needs_review 电影同样计入 missingMovies（到期后）', () => {
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m', subStatus: 'missing' })
+    lib.markNeedsReview('m1', '候选把握不足', Date.now() - 1)
+    expect(lib.missingMovies().map(m => m.id)).toEqual(['m1'])
+  })
+
+  it('resetRecheck：播放触发把 needs_review 的 recheck_after 拉回 now（同 unavailable）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing',
+    })
+    lib.markNeedsReview('e1', '候选把握不足', Date.now() + 86_400_000)
+    const now = Date.now()
+    lib.resetRecheck('e1', now)
+    expect(lib.getEpisode('e1')!.recheck_after).toBe(now)
+  })
+
   // Movie同构用例
   it('upsertMovie 幂等且更新时间戳', () => {
     const movie = {

@@ -5,7 +5,7 @@ import type { SeriesEpisodeDTO } from '../api/types.js'
 const ep = (subStatus: SeriesEpisodeDTO['subStatus']): SeriesEpisodeDTO =>
   ({ id: 'x', episode: 1, name: null, subStatus, statusReason: null, recheckAfter: null })
 
-describe('episodeCellState 五态映射', () => {
+describe('episodeCellState 态映射', () => {
   it('covered → cov', () => expect(episodeCellState(ep('covered'), false)).toBe('cov'))
   it('embedded → emb', () => expect(episodeCellState(ep('embedded'), false)).toBe('emb'))
   it('ignored 视同 emb（不需处理）', () => expect(episodeCellState(ep('ignored'), false)).toBe('emb'))
@@ -17,6 +17,12 @@ describe('episodeCellState 五态映射', () => {
     expect(episodeCellState(ep('covered'), true)).toBe('cov')
     expect(episodeCellState(ep('embedded'), true)).toBe('emb')
   })
+  it('task 2: needs_review 无 job → review（找到候选待确认，视觉上须区别于 unav）', () => {
+    expect(episodeCellState(ep('needs_review'), false)).toBe('review')
+  })
+  it('task 2: job 活跃时 needs_review → work（同 missing/unavailable 的活跃语义）', () => {
+    expect(episodeCellState(ep('needs_review'), true)).toBe('work')
+  })
 })
 
 describe('cellLabel / isJobActive', () => {
@@ -24,6 +30,7 @@ describe('cellLabel / isJobActive', () => {
     expect(cellLabel('cov')).toBe('已补齐')
     expect(cellLabel('miss')).toBe('缺字幕')
     expect(cellLabel('unav')).toContain('复查')
+    expect(cellLabel('review')).toContain('确认')
   })
   it('isJobActive 仅三活跃态', () => {
     expect(isJobActive({ state: 'downloading' })).toBe(true)

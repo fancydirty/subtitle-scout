@@ -1,11 +1,13 @@
 // web/src/api/types.ts：必须与 src/dashboard/apiV2.ts 的 DTO 保持一致
-export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored'
+export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored' | 'needs_review'
 
 export interface CoverageDTO {
   covered: number
   missing: number
   embedded: number
   unavailable: number
+  /** task 2: ask_user 诚实记账——候选存在但置信不足，待人工确认（区别于穷尽未找到的 unavailable）。 */
+  needsReview: number
 }
 export interface LibraryJobDTO {
   state: string
