@@ -59,7 +59,7 @@ export interface OsClientOpts {
 }
 export interface OsSearchParams {
   imdbId?: number
-  parentImdbId?: number
+  parentImdbId?: number // series-level imdb only; no current caller sets this (opensubtitlesAdapter always has an item-level imdb) — kept for API completeness
   season?: number
   episode?: number
   query?: string

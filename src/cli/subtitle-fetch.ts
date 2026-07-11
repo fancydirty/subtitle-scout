@@ -3,13 +3,13 @@ import { parseArgs } from 'node:util'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { AssrtClient } from '../adapters/providers/assrt.js'
-import { OpenSubtitlesClient, osToCandidates } from '../adapters/providers/opensubtitles.js'
+import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { runSearch, runResolve, type FetchAdapter, type FetchArgs, type FetchEvent } from './fetchLib.js'
 import { makeAssrtAdapter } from './adapters/assrtAdapter.js'
+import { makeOpenSubtitlesAdapter } from './adapters/opensubtitlesAdapter.js'
 import { parseCandidateKey, type CandidateRef } from '../core/schemas.js'
 
 const emit = (e: FetchEvent) => process.stderr.write(JSON.stringify(e) + '\n')
-const imdbDigits = (s: string | undefined) => s ? Number(s.replace(/^tt/, '')) : undefined
 
 function buildAdapters(): FetchAdapter[] {
   const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
@@ -32,22 +32,7 @@ function buildAdapters(): FetchAdapter[] {
       password: process.env.OPENSUBTITLES_PASSWORD,
       onApiCall: r => emit({ event: 'api_call', provider: 'opensubtitles', ...r }),
     })
-    adapters.push({
-      name: 'opensubtitles',
-      enabled: () => true,
-      search: async (args) => {
-        const languages = args.languages ?? ['zh-cn', 'zh-tw']
-        const imdb = imdbDigits(args.imdb)
-        const resp = await client.search(args.season != null
-          ? { parentImdbId: imdb, season: args.season, episode: args.episode, query: imdb ? undefined : args.queries[0], year: args.year, languages }
-          : { imdbId: imdb, query: imdb ? undefined : args.queries[0], year: args.year, languages })
-        return osToCandidates(resp)
-      },
-      resolve: async (ref) => {
-        const r = await client.resolveDownload(Number(ref.providerId))
-        return { url: r.link, filename: r.file_name ?? undefined }
-      },
-    })
+    adapters.push(makeOpenSubtitlesAdapter(client))
   }
   return adapters
 }
