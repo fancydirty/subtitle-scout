@@ -11,6 +11,10 @@ const outDir = () => mkdtempSync(join(tmpdir(), 'subw-'))
 // 用于模拟"原子写入的最后一步（rename）崩溃"：真正的进程崩溃无法在测试里重现，
 // 但可以让 renameSync 在被调用一次后抛错，观察崩溃发生在 rename 之前 vs 之后的落盘状态。
 let renameShouldFailOnce = false
+// 用于模拟"raw writeSync 短写"：真正的短写（内核只接受部分字节）在测试环境里几乎无法
+// 可靠触发，但可以让被 mock 的 writeSync 在第一次调用时故意只写 1 字节并如实返回该计数，
+// 观察调用方是否会用剩余字节循环补写（而不是像裸 writeFileSync 假设的那样一次写完）。
+let forceShortWriteOnce = false
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
   return {
@@ -21,6 +25,16 @@ vi.mock('node:fs', async (importOriginal) => {
         throw new Error('simulated crash before rename completed')
       }
       return actual.renameSync(...args)
+    },
+    writeSync: (...args: unknown[]) => {
+      if (forceShortWriteOnce && Buffer.isBuffer(args[1])) {
+        forceShortWriteOnce = false
+        const [fd, buffer, offset, length] = args as [number, Buffer, number?, number?]
+        const fullLength = length ?? buffer.length - (offset ?? 0)
+        const shortLength = Math.min(1, fullLength)
+        return actual.writeSync(fd, buffer, offset ?? 0, shortLength)
+      }
+      return (actual.writeSync as (...a: unknown[]) => number)(...args)
     },
   }
 })
@@ -102,7 +116,22 @@ describe('writeSubtitle', () => {
     })).rejects.toThrow(/unsupported archive/i)
   })
 
-  afterEach(() => { renameShouldFailOnce = false })
+  afterEach(() => { renameShouldFailOnce = false; forceShortWriteOnce = false })
+
+  it('loops on a short writeSync so a partial kernel write never fsyncs+renames a truncated file', async () => {
+    const dir = outDir()
+    const body = '1\n00:00:01,000 --> 00:00:02,000\nfull content that is definitely longer than one byte\n'
+
+    forceShortWriteOnce = true
+    const r = await writeSubtitle({
+      artifact: Buffer.from(body), artifactFilename: 'sub.srt',
+      videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
+    })
+
+    expect(r.alreadyExists).toBe(false)
+    expect(r.bytes).toBe(Buffer.byteLength(body))
+    expect(readFileSync(r.path, 'utf8')).toBe(body)
+  })
 
   it('atomic write: a crash right before rename leaves only a temp artifact (no truncated file at the final sidecar path), and the retry writes a clean, complete file', async () => {
     const dir = outDir()

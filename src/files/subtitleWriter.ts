@@ -26,6 +26,16 @@ export interface WriteSubtitleResult {
   alreadyExists: boolean
 }
 
+// 裸 writeSync 不保证一次调用写完全部字节（内核可能短写），不像 writeFileSync 那样内部有循环。
+// 忽略其返回值直接 fsync+rename 会把半截数据当成"完整文件"落到最终路径——这正是原子写要防的那类故障。
+// 所以显式循环，用剩余字节数重试，直到全部写完。
+function writeAll(fd: number, buf: Buffer): void {
+  let written = 0
+  while (written < buf.length) {
+    written += writeSync(fd, buf, written, buf.length - written)
+  }
+}
+
 // gate 按 filelist 的 file_index 校验范围；这里按文件名解析 zip 条目，因为 zip 内部顺序 ≠ filelist 顺序。名字对不上则抛错（fail closed）。
 function pickFromZip(buf: Buffer, selectFileName?: string): { name: string; data: Buffer } {
   const zip = new AdmZip(buf)
@@ -85,7 +95,7 @@ export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSub
   const tmpPath = `${resolvedOut}.tmp`
   const fd = openSync(tmpPath, 'w')
   try {
-    writeSync(fd, data)
+    writeAll(fd, data)
     fsyncSync(fd)
   } finally {
     closeSync(fd)
