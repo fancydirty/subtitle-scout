@@ -2,7 +2,7 @@ import { basename, dirname, extname, join, resolve as resolvePath } from 'node:p
 import { existsSync } from 'node:fs'
 import {
   type MediaContext, type MediaIdentity, type SearchPlan, type RankDecision,
-  type OrphanDecision, type SeasonMap, type SubtitleCandidate,
+  type OrphanDecision, type SeasonMap, type SubtitleCandidate, type ProviderName,
   candidateKey, parseCandidateKey,
 } from './schemas.js'
 import type { CallStructuredResult } from '../agent/llm.js'
@@ -502,18 +502,79 @@ async function runSeasonSweep(
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
   if (validAssignments.length === 0) return []
 
-  // 同一 episode_code 收到 2+ 候选时，按 seasonPackGate 的 bestByCode 语义只保留置信度最高的那个——
-  // 在任何 resolve/download 之前就丢弃劣者，既不产生质量倒退（保留低分覆盖），也不白打一次 API。
-  const bestByCode = new Map<string, typeof validAssignments[number]>()
-  for (const a of validAssignments) {
+  const skipped: { episode: string; reason: string }[] = []
+
+  // 结构校验先于按 episode_code 择优（MINOR-B）：若顺序反过来——先按置信度 dedup 再校验——
+  // 一个高置信度但结构对不上的 assignment 会在 dedup 阶段挤掉本该通过校验的低置信度候选，
+  // 随后自己在校验环节被跳过：整集颗粒无收，而本可由那个"输给 dedup"的候选覆盖。
+  // 这里不做任何网络调用（resolve/download），纯本地校验，可以安全地在 dedup 之前跑一遍。
+  interface ValidatedAssignment {
+    episode_code: string
+    confidence: number
+    candidate: SubtitleCandidate
+    parsedKey: { provider: ProviderName; providerId: string }
+    fileIndex: number | null
+  }
+  const validatedAssignments: ValidatedAssignment[] = []
+  for (const assignment of validAssignments) {
+    let parsed = parseCandidateKey(assignment.candidate_id)
+    let candidate = parsed ? candidates.find(c => candidateKey(c) === assignment.candidate_id) : undefined
+    // LLM 自愈：与单集 gate（core/gate.ts）对称——模型偶尔丢 "provider:" 前缀只回裸 providerId。
+    // 仅在候选池内恰好一个候选命中该裸 id 才自愈；0 或 2+ 命中（跨 provider id 碰撞）维持 fail-safe 跳过。
+    if (!parsed && !assignment.candidate_id.includes(':')) {
+      const matches = candidates.filter(c => c.providerId === assignment.candidate_id)
+      if (matches.length === 1) {
+        candidate = matches[0]
+        parsed = { provider: candidate.provider, providerId: candidate.providerId }
+      }
+    }
+    if (!parsed) {
+      skipped.push({ episode: assignment.episode_code, reason: 'invalid candidate_id' })
+      continue
+    }
+    if (!candidate) {
+      skipped.push({ episode: assignment.episode_code, reason: 'candidate not in pool' })
+      continue
+    }
+
+    // 单集候选通常单文件；多文件时必须选中含对应 episode code 的文件——这是校验而非"选不出兜底
+    // 第一个"：写盘字幕永久标记该集覆盖，错配比不下载伤害大得多（防串号铁律，同单集 gate 语义）。
+    const subtitleFiles = candidate.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name))
+    let fileIndex: number | null = null
+    if (subtitleFiles.length > 0) {
+      const matched = subtitleFiles.find(f => matchesEpisodeCode(f.name, assignment.episode_code))
+      if (!matched) {
+        skipped.push({ episode: assignment.episode_code, reason: `no filelist entry matches episode code ${assignment.episode_code} in candidate ${assignment.candidate_id} — refusing to fall back to an arbitrary file` })
+        continue
+      }
+      fileIndex = matched.index
+    } else {
+      // OS 风格的散装候选没有 fileList（单文件 provider，见 adapters/providers/opensubtitles.ts
+      // osToCandidates——providerId=file_id，fileList 恒为 []）。这类候选之前完全跳过结构校验、
+      // 直接放行——一次 LLM 幻觉映射即可无验证写盘（防串号铁律的一个缺口）。回退校验
+      // candidate 级元数据（videoName/nativeName 常带发布名，通常含集号信号）；两者都没有可识别
+      // 信号时 fail-safe 跳过——错误写入是永久的，跳过只是这次不覆盖、下次还能再来。
+      const metaMatch = matchesEpisodeCode(candidate.videoName ?? '', assignment.episode_code)
+        || matchesEpisodeCode(candidate.nativeName ?? '', assignment.episode_code)
+      if (!metaMatch) {
+        skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.candidate_id} has an empty fileList and no recognizable episode signal in videoName/nativeName for ${assignment.episode_code} — refusing to write unverified` })
+        continue
+      }
+    }
+    validatedAssignments.push({ episode_code: assignment.episode_code, confidence: assignment.confidence, candidate, parsedKey: parsed, fileIndex })
+  }
+
+  // 同一 episode_code 收到 2+ 个"通过校验"的候选时，按 seasonPackGate 的 bestByCode 语义只保留
+  // 置信度最高的那个——在任何 resolve/download 之前就丢弃劣者，既不产生质量倒退，也不白打一次 API。
+  const bestByCode = new Map<string, ValidatedAssignment>()
+  for (const a of validatedAssignments) {
     const prev = bestByCode.get(a.episode_code)
     if (!prev || a.confidence > prev.confidence) bestByCode.set(a.episode_code, a)
   }
   const dedupedAssignments = [...bestByCode.values()]
-  journal.step('seasonSweepDedup', { before: validAssignments.length, after: dedupedAssignments.length })
+  journal.step('seasonSweepDedup', { before: validAssignments.length, validated: validatedAssignments.length, after: dedupedAssignments.length })
 
   const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
-  const skipped: { episode: string; reason: string }[] = []
   let apiCallsUsed = 0
   let consecutiveFails = 0
   const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
@@ -538,59 +599,15 @@ async function runSeasonSweep(
       continue
     }
 
+    const { candidate, parsedKey: parsed, fileIndex } = assignment
+    const fileKey = `${candidateKey(parsed)}#${fileIndex ?? 'default'}`
+    if (usedFiles.has(fileKey)) {
+      skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.episode_code} file ${fileIndex ?? 'default'} already covers another episode — rejecting single-file fan-out across episodes` })
+      continue
+    }
+    usedFiles.add(fileKey)
+
     try {
-      let parsed = parseCandidateKey(assignment.candidate_id)
-      let candidate = parsed ? candidates.find(c => candidateKey(c) === assignment.candidate_id) : undefined
-      // LLM 自愈：与单集 gate（core/gate.ts）对称——模型偶尔丢 "provider:" 前缀只回裸 providerId。
-      // 仅在候选池内恰好一个候选命中该裸 id 才自愈；0 或 2+ 命中（跨 provider id 碰撞）维持 fail-safe 跳过。
-      if (!parsed && !assignment.candidate_id.includes(':')) {
-        const matches = candidates.filter(c => c.providerId === assignment.candidate_id)
-        if (matches.length === 1) {
-          candidate = matches[0]
-          parsed = { provider: candidate.provider, providerId: candidate.providerId }
-        }
-      }
-      if (!parsed) {
-        skipped.push({ episode: assignment.episode_code, reason: 'invalid candidate_id' })
-        continue
-      }
-      if (!candidate) {
-        skipped.push({ episode: assignment.episode_code, reason: 'candidate not in pool' })
-        continue
-      }
-
-      // 单集候选通常单文件；多文件时必须选中含对应 episode code 的文件——这是校验而非"选不出兜底
-      // 第一个"：写盘字幕永久标记该集覆盖，错配比不下载伤害大得多（防串号铁律，同单集 gate 语义）。
-      const subtitleFiles = candidate.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name))
-      let fileIndex: number | null = null
-      if (subtitleFiles.length > 0) {
-        const matched = subtitleFiles.find(f => matchesEpisodeCode(f.name, assignment.episode_code))
-        if (!matched) {
-          skipped.push({ episode: assignment.episode_code, reason: `no filelist entry matches episode code ${assignment.episode_code} in candidate ${assignment.candidate_id} — refusing to fall back to an arbitrary file` })
-          continue
-        }
-        fileIndex = matched.index
-      } else {
-        // OS 风格的散装候选没有 fileList（单文件 provider，见 adapters/providers/opensubtitles.ts
-        // osToCandidates——providerId=file_id，fileList 恒为 []）。这类候选之前完全跳过结构校验、
-        // 直接放行——一次 LLM 幻觉映射即可无验证写盘（防串号铁律的一个缺口）。回退校验
-        // candidate 级元数据（videoName/nativeName 常带发布名，通常含集号信号）；两者都没有可识别
-        // 信号时 fail-safe 跳过——错误写入是永久的，跳过只是这次不覆盖、下次还能再来。
-        const metaMatch = matchesEpisodeCode(candidate.videoName ?? '', assignment.episode_code)
-          || matchesEpisodeCode(candidate.nativeName ?? '', assignment.episode_code)
-        if (!metaMatch) {
-          skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.candidate_id} has an empty fileList and no recognizable episode signal in videoName/nativeName for ${assignment.episode_code} — refusing to write unverified` })
-          continue
-        }
-      }
-
-      const fileKey = `${candidateKey(parsed)}#${fileIndex ?? 'default'}`
-      if (usedFiles.has(fileKey)) {
-        skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.candidate_id} file ${fileIndex ?? 'default'} already covers another episode — rejecting single-file fan-out across episodes` })
-        continue
-      }
-      usedFiles.add(fileKey)
-
       // 预算计数放在 resolve 调用之前：失败尝试也要算进 apiCallsUsed，否则 406/限流风暴下
       // resolveDownload 全灭、预算守卫永不触发，整季逐集都会各打一次（budget 形同虚设）。
       apiCallsUsed++
@@ -607,7 +624,7 @@ async function runSeasonSweep(
         videoFilename: epMeta.videoFilename, langTag: ctx.preferences.language,
         outDir: dirname(epMeta.videoPath),
       })
-      const providerRef = candidateKey(parsed) // == assignment.candidate_id（parseCandidateKey 已验证格式）
+      const providerRef = candidateKey(parsed)
       coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path, providerRef })
       try { await deps.seasonPack!.onCovered(epMeta, written.path, providerRef) } catch { /* 观测/联动不影响主流程 */ }
     } catch (e) {
