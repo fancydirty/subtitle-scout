@@ -147,8 +147,12 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
     expect(status).toBe('ignored')
   })
 
-  it('fallback: null origin + Han-only series title → ignored', () => {
-    const item = epItem('e1', 1, 1, { SeriesName: '三体' })
+  it('fallback: null origin + Han-only series title + no ProductionLocations signal → ignored', () => {
+    // ProductionLocations 显式置空（无权威信号）——与下面"有权威信号"的用例对照，
+    // 隔离测试标题启发式本身。（此用例此前误用 epItem 默认的
+    // ProductionLocations=['United States']，实际编码了 bug 本身：非国产地区却因
+    // 中文标题被 ignored；已改为显式无信号场景，真正的权威信号场景见下一条用例。）
+    const item = epItem('e1', 1, 1, { SeriesName: '三体', ProductionLocations: [] })
     const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
     expect(status).toBe('ignored')
   })
@@ -158,6 +162,18 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
     const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
     expect(status).toBe('missing')
   })
+
+  it('fallback: null origin + Han-only series title BUT ProductionLocations proves non-Chinese origin → NOT ignored (authoritative evidence outranks title heuristic)', () => {
+    // 生产实案：Jellyfin 库把《生活大爆炸》本地化命名为中文，但 ProductionLocations=['United States']
+    // 已经证明非国产。权威信号（ProductionLocations）必须否决粗糙的标题启发式（rule 1b）。
+    const item = epItem('e1', 1, 1, {
+      SeriesName: '生活大爆炸',
+      ProductionLocations: ['United States'],
+    })
+    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    expect(status).toBe('missing')
+  })
+
 
   it('skipChineseOrigin=false disables ALL origin skipping (zh still processed)', () => {
     const item = movieItem({ ProductionLocations: [] })

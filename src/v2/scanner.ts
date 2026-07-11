@@ -44,10 +44,16 @@ export function classifyItem(
   if (deps.skipChineseOrigin && deps.originLang == null && isChineseOrigin(item)) {
     return 'ignored'
   }
-  // 1b. 兜底：无 TMDB 信号时，用剧集标题字符启发式（汉字且无假名无谚文，排除日番/韩剧）
+  // 1b. 兜底：无 TMDB 信号时，用剧集标题字符启发式（汉字且无假名无谚文，排除日番/韩剧）。
+  //     但若条目自带 ProductionLocations（权威信号）且已判定非国产（走到这里说明 rule 1
+  //     未命中），该权威证据必须否决这条粗糙的标题启发式——不能让"生活大爆炸"这类中文库名
+  //     的西方剧被误伤 ignored（用户永远收不到该剧的字幕，是本 gate 最差的失败模式）。
+  //     只有条目完全没有 ProductionLocations（无权威信号可用）时才允许标题启发式兜底。
+  const hasProductionLocationSignal = (item.ProductionLocations ?? []).length > 0
   if (
     deps.skipChineseOrigin &&
     deps.originLang == null &&
+    !hasProductionLocationSignal &&
     looksChineseTitle(item.SeriesName ?? item.OriginalTitle)
   ) {
     return 'ignored'
