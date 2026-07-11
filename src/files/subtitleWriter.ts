@@ -32,7 +32,11 @@ export interface WriteSubtitleResult {
 function writeAll(fd: number, buf: Buffer): void {
   let written = 0
   while (written < buf.length) {
-    written += writeSync(fd, buf, written, buf.length - written)
+    const n = writeSync(fd, buf, written, buf.length - written)
+    // A 0-byte return without a thrown error is degenerate but technically legal for a raw
+    // write() syscall; looping with an unchanged `written` would spin forever, so bail loudly.
+    if (n === 0) throw new Error('writeSync wrote 0 bytes; aborting to avoid an infinite loop')
+    written += n
   }
 }
 

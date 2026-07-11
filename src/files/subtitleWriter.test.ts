@@ -15,6 +15,10 @@ let renameShouldFailOnce = false
 // 可靠触发，但可以让被 mock 的 writeSync 在第一次调用时故意只写 1 字节并如实返回该计数，
 // 观察调用方是否会用剩余字节循环补写（而不是像裸 writeFileSync 假设的那样一次写完）。
 let forceShortWriteOnce = false
+// 用于模拟"writeSync 返回 0"：内核在极端情况下可以对一次 write() 调用如实返回 0（写入 0
+// 字节）而不报错；如果调用方不做防护，会拿着不变的 written 计数原地死循环。让被 mock 的
+// writeSync 在第一次调用时强制返回 0，观察调用方是否会识别并抛错而不是空转。
+let forceZeroWriteOnce = false
 // 用于模拟 NAS/SMB 等文件系统上 unlink 因 EPERM/EACCES/EBUSY 失败：孤儿 .tmp 清理只是
 // best-effort，失败不应把"文件已存在"的良性短路变成整次调用的硬失败。
 let forceUnlinkThrowOnce = false
@@ -37,6 +41,11 @@ vi.mock('node:fs', async (importOriginal) => {
       return actual.unlinkSync(...args)
     },
     writeSync: (...args: unknown[]) => {
+      if (forceZeroWriteOnce && Buffer.isBuffer(args[1])) {
+        forceZeroWriteOnce = false
+        const [fd, buffer, offset] = args as [number, Buffer, number?, number?]
+        return actual.writeSync(fd, buffer, offset ?? 0, 0)
+      }
       if (forceShortWriteOnce && Buffer.isBuffer(args[1])) {
         forceShortWriteOnce = false
         const [fd, buffer, offset, length] = args as [number, Buffer, number?, number?]
@@ -192,6 +201,7 @@ describe('writeSubtitle', () => {
   afterEach(() => {
     renameShouldFailOnce = false
     forceShortWriteOnce = false
+    forceZeroWriteOnce = false
     forceUnlinkThrowOnce = false
   })
 
@@ -208,6 +218,17 @@ describe('writeSubtitle', () => {
     expect(r.alreadyExists).toBe(false)
     expect(r.bytes).toBe(Buffer.byteLength(body))
     expect(readFileSync(r.path, 'utf8')).toBe(body)
+  })
+
+  it('throws instead of spinning forever when writeSync reports 0 bytes written', async () => {
+    const dir = outDir()
+    const body = '1\n00:00:01,000 --> 00:00:02,000\nfull content that is definitely longer than one byte\n'
+
+    forceZeroWriteOnce = true
+    await expect(writeSubtitle({
+      artifact: Buffer.from(body), artifactFilename: 'sub.srt',
+      videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
+    })).rejects.toThrow(/wrote 0 bytes|zero bytes/i)
   })
 
   it('atomic write: a crash right before rename leaves only a temp artifact (no truncated file at the final sidecar path), and the retry writes a clean, complete file', async () => {
