@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from './db.js'
-import { JobsRepo, ERROR_BACKOFF_MS } from './jobsRepo.js'
+import { JobsRepo, ERROR_BACKOFF_MS, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import { executeJob, makeRunEpisode, type ExecutorDeps } from './executor.js'
@@ -199,7 +199,10 @@ describe('executor', () => {
     expect(runs.getByJobId(job.id)[0].detail).toBe('没找到合适的中文字幕')
   })
 
-  it('ask_user → 人话 detail 带置信数字 + status_reason 人话化', async () => {
+  it('task 2: ask_user → needs_review（诚实区分"找到候选待确认"与穷尽未找到的 unavailable），detail 带置信数字', async () => {
+    // 修正前：ask_user 和 no_safe_match 一样被 markUnavailable，前端展示"暂无"——
+    // 掩盖了本可人工确认的候选。ask_user 仍走内容轨的 completeNoMatch（job 状态机
+    // 语义不变，见同一 it 组的 no_safe_match 用例），只是集级 sub_status 诚实区分。
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
     const job = jobs.claimNext(now)!
@@ -214,9 +217,30 @@ describe('executor', () => {
     await executeJob(job, mkDeps(runEpisode))
 
     const ep1 = lib.getEpisode('e1')!
-    expect(ep1.sub_status).toBe('unavailable')
-    expect(ep1.status_reason).toBe('找到候选但把握不足，待人工确认')
+    expect(ep1.sub_status).toBe('needs_review')
+    // 集级 status_reason 用带数字的详细版（供未来"确认队列"功能展示具体把握程度）
+    expect(ep1.status_reason).toBe('找到候选但把握不足（置信 0.82 < 0.86），待人工确认')
+    expect(ep1.recheck_after).toBeGreaterThan(now)
     expect(runs.getByJobId(job.id)[0].detail).toBe('找到候选但把握不足（置信 0.82 < 0.86），待人工确认')
+    // job 状态机走内容轨，和 no_safe_match 一样（backoff/dormancy 语义不因 sub_status 改变而变）
+    expect(jobs.get(job.id)!.state).toBe('failed')
+    expect(jobs.get(job.id)!.attempt).toBe(1)
+  })
+
+  it('task 2: ask_user 复查到期后重新计入该季 remainingTargets（needs_review 可重新进入执行）', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    lib.markNeedsReview('e1', '找到候选但把握不足', now - 1) // 复查已到期
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async (episodeId: string) => {
+      expect(episodeId).toBe('e1') // needs_review 且复查已到期——仍被当作待处理目标
+      return { decision: 'download', journalPath: '/j.json', subtitlePath: '/tv/s1e1.zh-Hans.srt' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+    expect(runEpisode).toHaveBeenCalledTimes(1)
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
   })
 
   it('runEpisode 抛错 → completeError，短退避', async () => {
@@ -238,6 +262,37 @@ describe('executor', () => {
     expect(finalJob.next_retry_at).toBe(now + ERROR_BACKOFF_MS[0]) // short backoff (30s)
     // runs.detail 人话化（错因保留但不裸露路径）
     expect(runs.getByJobId(job.id)[0].detail).toBe('遇到临时错误，稍后自动重试：ASSRT API timeout')
+  })
+
+  it('1b: error_attempt 跨过 ERROR_GIVEUP_THRESHOLD 时 warn 日志一次，退避变每天一次，state 仍 failed', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    // 先攒到刚好卡在阈值：error_attempt = ERROR_GIVEUP_THRESHOLD（尚未跨过，不该有日志）
+    let claimed = jobs.claimNext(now)!
+    for (let i = 0; i < ERROR_GIVEUP_THRESHOLD; i++) {
+      jobs.completeError(claimed.id, 'timeout', now)
+      claimed = jobs.forceClaim('s1', 1, now)!
+    }
+    expect(jobs.get(claimed.id)!.error_attempt).toBe(ERROR_GIVEUP_THRESHOLD)
+    expect(logs.some(l => l.includes('退避'))).toBe(false)
+
+    // 再一次瞬时错误：跨过阈值，触发一次性 warn 日志 + 退避升级为每天一次
+    const runEpisode = vi.fn(async () => {
+      throw new Error('ASSRT API timeout')
+    })
+    await executeJob(claimed, mkDeps(runEpisode))
+
+    const finalJob = jobs.get(claimed.id)!
+    expect(finalJob.state).toBe('failed') // 绝不转 dormant
+    expect(finalJob.error_attempt).toBe(ERROR_GIVEUP_THRESHOLD + 1)
+    expect(finalJob.next_retry_at).toBe(now + ERROR_BACKOFF_DAILY_MS)
+    expect(logs.some(l => l.includes(`job ${claimed.id}`) && l.includes('每天'))).toBe(true)
+
+    // 再次触发 completeError（已经在升级态）：不该重复打日志
+    const logsBefore = logs.length
+    const claimed2 = jobs.forceClaim('s1', 1, now)!
+    await executeJob(claimed2, mkDeps(vi.fn(async () => { throw new Error('ASSRT API timeout') })))
+    expect(logs.slice(logsBefore).some(l => l.includes('每天'))).toBe(false)
   })
 
   it('C1: decision=error（pipeline 内部 catch 不 throw）→ completeError 短退避轨，不掉内容轨', async () => {

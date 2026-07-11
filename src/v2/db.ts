@@ -100,6 +100,54 @@ ALTER TABLE blacklist_v2 RENAME TO blacklist;
 ALTER TABLE movies ADD COLUMN origin_lang TEXT;
 ALTER TABLE series ADD COLUMN origin_lang TEXT;
   `.trim(),
+  // v4: error_attempt——双轨 attempt 审计修正。jobs.attempt 曾同时被 completeNoMatch
+  // （内容失败：1/2/4/8 天退避梯 + 第 5 次 dormant）和 completeError（瞬时错误：
+  // 30s..15min 短退避梯）充电，两条速率差异巨大的轨共用一个计数器会互相污染判据
+  // （见 jobsRepo.ts 顶部注释）。新增独立持久列只服务瞬时错误轨；attempt 之后只服务
+  // 内容轨。旧库存量 attempt 是内容失败历史，不能凭空过继给 error_attempt，回填默认 0。
+  `
+ALTER TABLE jobs ADD COLUMN error_attempt INTEGER NOT NULL DEFAULT 0;
+  `.trim(),
+  // v5: needs_review sub_status——ask_user 诚实记账修正。executor.ts 曾把 gate 'ask_user'
+  // （候选存在但置信不足）和 no_safe_match（穷尽未找到）一样映射成 unavailable——前端
+  // 展示"暂无"，掩盖了本可人工确认的候选。新增 sub_status='needs_review' 让这类结果
+  // 诚实区分。SQLite 不支持 ALTER 已有 CHECK 约束，标准作法：建新表（含扩容后的 CHECK）
+  // →显式列拷数据→删旧表→改名（12-step 摘要版）。episodes/movies 都要扩容；两表在此
+  // 之前的历次迁移里都没有额外索引/触发器，重建无需连带重建它们；episodes.series_id 的
+  // 外键无子表引用 episodes，重建期间不会有悬空引用风险。
+  `
+CREATE TABLE episodes_new (
+  id TEXT PRIMARY KEY,
+  series_id TEXT NOT NULL REFERENCES series(id),
+  season INTEGER NOT NULL, episode INTEGER NOT NULL,
+  name TEXT, path TEXT NOT NULL,
+  sub_status TEXT NOT NULL CHECK(sub_status IN
+    ('missing','covered','embedded','unavailable','ignored','needs_review')),
+  status_reason TEXT, recheck_after INTEGER,
+  updated_at INTEGER NOT NULL
+);
+INSERT INTO episodes_new
+  (id, series_id, season, episode, name, path, sub_status, status_reason, recheck_after, updated_at)
+  SELECT id, series_id, season, episode, name, path, sub_status, status_reason, recheck_after, updated_at
+  FROM episodes;
+DROP TABLE episodes;
+ALTER TABLE episodes_new RENAME TO episodes;
+
+CREATE TABLE movies_new (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_tag TEXT,
+  year INTEGER, path TEXT NOT NULL, provider_ids TEXT,
+  sub_status TEXT NOT NULL CHECK(sub_status IN
+    ('missing','covered','embedded','unavailable','ignored','needs_review')),
+  status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+  origin_lang TEXT
+);
+INSERT INTO movies_new
+  (id, name, chinese_title, poster_tag, year, path, provider_ids, sub_status, status_reason, recheck_after, updated_at, origin_lang)
+  SELECT id, name, chinese_title, poster_tag, year, path, provider_ids, sub_status, status_reason, recheck_after, updated_at, origin_lang
+  FROM movies;
+DROP TABLE movies;
+ALTER TABLE movies_new RENAME TO movies;
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
@@ -126,6 +174,41 @@ export function openDb(path: string): ScoutDb {
 
   // 执行未应用的迁移
   if (currentVersion < MIGRATIONS.length) {
+    // Pre-flight: v5 迁移会拿 episodes/movies 里的存量行原样拷进新建的 episodes_new/
+    // movies_new（同样声明 series_id → series(id) 外键），期间 foreign_keys 已被上面的
+    // pragma 打开——若库里蛰伏着孤儿行（比如 series 行曾被手工删除、或数据是在
+    // foreign_keys=OFF 时代写入的，从未被现有约束真正验证过），INSERT 会在建表迁移中途
+    // 撞上 FOREIGN KEY constraint failed。单事务迁移因此干净回滚回 currentVersion，
+    // 但守护进程接下来每次启动都会拿着这句晦涩报错反复炸，直到有人翻 SQL 手工揪出脏行。
+    // 这里在动手改表之前先体检一遍，把违例行（表名+rowid）摊开写进报错，一步到位可操作。
+    const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
+      table: string
+      rowid: number | string | null
+      parent: string
+      fkid: number
+    }>
+    if (violations.length > 0) {
+      const detail = violations
+        .map((v) => {
+          let idNote = ''
+          try {
+            const row = db.prepare(`SELECT id FROM "${v.table}" WHERE rowid = ?`).get(v.rowid) as
+              | { id: unknown }
+              | undefined
+            if (row?.id !== undefined) idNote = ` (id=${JSON.stringify(row.id)})`
+          } catch {
+            // 表没有 id 列或查询失败——rowid 已足够定位，静默降级
+          }
+          return `${v.table} rowid=${v.rowid ?? '?'}${idNote} → 缺失 ${v.parent} 的外键引用`
+        })
+        .join('; ')
+      const message =
+        `数据库存在外键违例，无法安全迁移（schema v${currentVersion} → v${MIGRATIONS.length}）：${detail}。` +
+        `请先手工修复（删除孤儿行或补全被引用的父行）后再重启 —— 迁移未执行，数据库仍停留在 v${currentVersion}。`
+      db.close() // 不留半开连接：修复者接下来大概率要用另一个连接直接改数据
+      throw new Error(message)
+    }
+
     const migrate = db.transaction(() => {
       for (let i = currentVersion; i < MIGRATIONS.length; i++) {
         db.exec(MIGRATIONS[i])

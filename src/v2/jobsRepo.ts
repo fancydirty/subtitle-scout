@@ -4,7 +4,16 @@ import type { ScoutDb } from './db.js'
 // 内容类失败按天退避（字幕产出以天为单位）。
 export const CONTENT_BACKOFF_DAYS = [1, 2, 4, 8]
 export const ERROR_BACKOFF_MS = [30_000, 60_000, 120_000, 300_000]
-export const errorBackoffMs = (attempt: number) => ERROR_BACKOFF_MS[attempt - 1] ?? 900_000
+/** 1b 瞬时错误给-up 界：15min 封顶意味着无穷重试的瞬时错误每天要打 96 次完整
+ *  identify+plan+search+/download，白烧 Jellyfin/TMDB/provider 调用。20 次 ≈ 20 * 15min = 5h
+ *  的持续失败后，判定"短期内不会自愈"，退避阶梯升级为每天一次——但只是慢下来，
+ *  绝不转 30 天 dormant（dormant 是内容轨在证实"搜索穷尽"后的专属结局；瞬时错误从来没有
+ *  证明内容不存在，必须永远保持 failed 可重试）。一旦job 翻篇成功（done→wanted 复活），
+ *  error_attempt 归零，重新从 30s 起步。 */
+export const ERROR_GIVEUP_THRESHOLD = 20
+export const ERROR_BACKOFF_DAILY_MS = 24 * 3_600_000
+export const errorBackoffMs = (attempt: number) =>
+  attempt > ERROR_GIVEUP_THRESHOLD ? ERROR_BACKOFF_DAILY_MS : (ERROR_BACKOFF_MS[attempt - 1] ?? 900_000)
 /** Partial-success throttle (I6): back to wanted but not immediately claimable — avoids tight re-claim loop. */
 export const PARTIAL_RETRY_MS = 30_000
 /** OS 配额耗尽 resetAt 之上的固定余量：吸收我们与 provider 之间的时钟偏差，避免恰好卡在
@@ -51,6 +60,7 @@ export interface Job {
   priority: number
   target_episodes: string | null
   attempt: number
+  error_attempt: number
   next_retry_at: number | null
   lease_until: number | null
   last_error: string | null
@@ -64,12 +74,17 @@ export class JobsRepo {
 
   // I2: done job 的目标重新出现 missing（新集入库/字幕被删）时复活回 wanted；
   //     failed/dormant/active 不动（各有自己的退避/唤醒通道）。
+  // 双轨 attempt 审计修正：error_attempt 与 attempt 同一套"done→wanted 才归零"语义——
+  // completeError/completeNoMatch/completePartial 本身都不重置对方或自己的计数器（各自
+  // 只增/减自己那条轨），归零统一发生在这里：job 彻底做完（done）后被下一轮复活，
+  // 才算翻篇重新开始，两条轨一起清零。
   private static readonly UPSERT_CONFLICT_SQL = `
            ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
            DO UPDATE SET
              updated_at = ?,
              state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
              attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
+             error_attempt = CASE WHEN state = 'done' THEN 0 ELSE error_attempt END,
              next_retry_at = CASE WHEN state = 'done' THEN NULL ELSE next_retry_at END`
 
   upsertWanted(ident: JobIdent, now: number): void {
@@ -153,7 +168,9 @@ export class JobsRepo {
     return info.changes
   }
 
-  /** Content failure (no_safe_match): exponential backoff 1/2/4/8 days, then dormant on the 5th failure. */
+  /** Content failure (no_safe_match): exponential backoff 1/2/4/8 days, then dormant on the 5th failure.
+   *  双轨 attempt 审计修正：只读写内容轨的 attempt 列，从不触碰 error_attempt——瞬时错误历史
+   *  不该被内容判据消费，也不该被内容失败清零（各自独立，统一在 done→wanted 复活时一起归零）。 */
   completeNoMatch(jobId: number, now: number): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
@@ -185,32 +202,37 @@ export class JobsRepo {
   }
 
   /** Transient error (network/LLM/5xx): short backoff, separate track from content failures.
+   *  双轨 attempt 审计修正：只读写 error_attempt，从不触碰内容轨的 attempt 列——两条速率
+   *  差异巨大的退避梯（30s..15min..升级为每天 vs 1/2/4/8 天+dormant）曾共用一个计数器，
+   *  一串瞬时错误会让下一次真正的 no_safe_match 越级跳档（见 db.ts v4 迁移注释）。
    *  quotaResetAt: OS 配额耗尽（quota_exhausted）时携带的 provider reset 时间——有效（可解析且未来）
    *  时按 resetAt+margin 精确排期，而不是走盲的 ERROR_BACKOFF_MS 阶梯（否则会在配额重置前每
    *  至多 15min 重打一次完整 identify+plan+search+/download，白烧 LLM/search 配额）。
-   *  IMPORTANT-2: 配额停车不是内容性失败，不该占内容退避梯的名额——同 reapExpiredLeases/
-   *  reapAllActive 的 attempt 不变语义。否则日常配额停车会悄悄推高 attempt，后面一次真正的
-   *  no_safe_match 就会越级跳到 30 天 dormant，跳过 1/2/4/8 天梯。 */
+   *  IMPORTANT-2: 配额停车不是瞬时错误的真实累积，不该推高 error_attempt——同 reapExpiredLeases/
+   *  reapAllActive 的"不是失败别充电"语义。否则日常配额停车会悄悄推高 error_attempt，
+   *  误触发 give-up 阈值升级到每天一次退避。 */
   completeError(jobId: number, error: string, now: number, quotaResetAt?: string | null): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
       if (!job) return false
 
       const quotaRetry = quotaRetryAt(quotaResetAt, now)
-      const newAttempt = quotaRetry != null ? job.attempt : job.attempt + 1
-      const nextRetryAt = quotaRetry ?? now + errorBackoffMs(newAttempt)
+      const newErrorAttempt = quotaRetry != null ? job.error_attempt : job.error_attempt + 1
+      const nextRetryAt = quotaRetry ?? now + errorBackoffMs(newErrorAttempt)
       const info = this.db
         .prepare(
           `UPDATE jobs
-           SET state = 'failed', attempt = ?, next_retry_at = ?, last_error = ?, lease_until = NULL, updated_at = ?
+           SET state = 'failed', error_attempt = ?, next_retry_at = ?, last_error = ?, lease_until = NULL, updated_at = ?
            WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
         )
-        .run(newAttempt, nextRetryAt, error, now, jobId)
+        .run(newErrorAttempt, nextRetryAt, error, now, jobId)
       return info.changes > 0
     })()
   }
 
   /** Partial success: attempt decrements (gradual escalation recovery), back to wanted for the remainder.
+   *  双轨 attempt 审计修正：只减内容轨的 attempt，从不触碰 error_attempt——部分覆盖是内容轨的
+   *  渐进恢复信号（验证过了这份候选是"可以往前走"的），与瞬时错误历史无关，不该替它归零。
    *  I6: 带 30 秒节流窗（PARTIAL_RETRY_MS），防止 partial → wanted → 立即重领的紧循环。
    *  quotaResetAt: 季包/季横扫中途撞配额耗尽时携带的 provider reset 时间（IMPORTANT-1a）——有效时
    *  按 resetAt+margin 精确排期，而不是走盲的 30 秒节流，否则配额重置前每 30 秒重打一次覆盖剩余

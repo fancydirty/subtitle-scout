@@ -46,6 +46,7 @@ beforeEach(() => {
   lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/media/tv/Series A/S01/e2.mkv', subStatus: 'missing' })
   lib.upsertEpisode({ id: 'e3', seriesId: 's1', season: 1, episode: 3, name: 'E3', path: '/media/tv/Series A/S01/e3.mkv', subStatus: 'embedded' })
   lib.upsertEpisode({ id: 'e4', seriesId: 's1', season: 2, episode: 1, name: 'E4', path: '/media/tv/Series A/S02/e4.mkv', subStatus: 'unavailable' })
+  lib.upsertEpisode({ id: 'e5', seriesId: 's1', season: 2, episode: 2, name: 'E5', path: '/media/tv/Series A/S02/e5.mkv', subStatus: 'needs_review' })
 
   // Movie Z（路径在 /media/movies 下）
   lib.upsertMovie({ id: 'm1', name: 'Movie Z', path: '/media/movies/Movie Z/z.mkv', subStatus: 'missing', posterTag: 'ptag-m1', year: 2019 })
@@ -68,12 +69,12 @@ describe('buildLibrary', () => {
     expect(series.chineseTitle).toBe('甲剧')
     expect(series.year).toBe(2021)
     expect(series.posterTag).toBe('ptag-s1')
-    expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 1, unavailable: 1 })
+    expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 1, unavailable: 1, needsReview: 1 })
     expect(series.job).toEqual({ state: 'searching', priority: 100 })
 
     const movie = lib2.find(x => x.id === 'm1')!
     expect(movie.kind).toBe('movie')
-    expect(movie.coverage).toEqual({ covered: 0, missing: 1, embedded: 0, unavailable: 0 })
+    expect(movie.coverage).toEqual({ covered: 0, missing: 1, embedded: 0, unavailable: 0, needsReview: 0 })
     expect(movie.job).toEqual({ state: 'wanted', priority: 0 })
   })
 
@@ -93,7 +94,7 @@ describe('buildLibrary', () => {
     lib.upsertSeries({ id: 's9', name: 'Orphan' })
     const item = buildLibrary(db).find(x => x.id === 's9')!
     expect(item.job).toBeNull()
-    expect(item.coverage).toEqual({ covered: 0, missing: 0, embedded: 0, unavailable: 0 })
+    expect(item.coverage).toEqual({ covered: 0, missing: 0, embedded: 0, unavailable: 0, needsReview: 0 })
   })
 })
 

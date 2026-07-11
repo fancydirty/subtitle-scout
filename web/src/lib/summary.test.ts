@@ -8,10 +8,10 @@ const item = (p: Partial<LibraryItemDTO> & Pick<LibraryItemDTO, 'id' | 'kind' | 
 describe('libraryFacts / factLine', () => {
   it('分类计数 + 缺字幕/处理中', () => {
     const items: LibraryItemDTO[] = [
-      item({ id: 'a', kind: 'series', coverage: { covered: 12, missing: 0, embedded: 0, unavailable: 0 } }), // full
-      item({ id: 'b', kind: 'series', coverage: { covered: 3, missing: 5, embedded: 0, unavailable: 0 } }), // part → missing
-      item({ id: 'c', kind: 'series', coverage: { covered: 0, missing: 4, embedded: 0, unavailable: 0 }, job: { state: 'searching', priority: 0 } }), // work
-      item({ id: 'd', kind: 'movie', coverage: { covered: 0, missing: 1, embedded: 0, unavailable: 0 } }), // none → missing
+      item({ id: 'a', kind: 'series', coverage: { covered: 12, missing: 0, embedded: 0, unavailable: 0, needsReview: 0 } }), // full
+      item({ id: 'b', kind: 'series', coverage: { covered: 3, missing: 5, embedded: 0, unavailable: 0, needsReview: 0 } }), // part → missing
+      item({ id: 'c', kind: 'series', coverage: { covered: 0, missing: 4, embedded: 0, unavailable: 0, needsReview: 0 }, job: { state: 'searching', priority: 0 } }), // work
+      item({ id: 'd', kind: 'movie', coverage: { covered: 0, missing: 1, embedded: 0, unavailable: 0, needsReview: 0 } }), // none → missing
     ]
     const f = libraryFacts(items)
     expect(f).toEqual({ series: 3, movies: 1, missing: 2, working: 1 })
@@ -19,5 +19,12 @@ describe('libraryFacts / factLine', () => {
   })
   it('只报存在的量', () => {
     expect(factLine({ series: 5, movies: 0, missing: 0, working: 0 })).toBe('5 部剧')
+  })
+  it('task 2: needsReview（review 徽章）计入缺字幕事实数字', () => {
+    const items: LibraryItemDTO[] = [
+      item({ id: 'a', kind: 'series', coverage: { covered: 0, missing: 0, embedded: 0, unavailable: 0, needsReview: 2 } }), // review → missing
+    ]
+    const f = libraryFacts(items)
+    expect(f).toEqual({ series: 1, movies: 0, missing: 1, working: 0 })
   })
 })

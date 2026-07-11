@@ -1,7 +1,7 @@
 // TODO(二期): I5c verify（下载后 Jellyfin 可见性复验）在二期 verifying 阶段实现，
 // 见 docs/superpowers/plans/2026-07-09-v2-core.md Task 11 销项清单。
 import type { LibraryRepo, Episode, Movie } from './libraryRepo.js'
-import type { JobsRepo, Job } from './jobsRepo.js'
+import { ERROR_GIVEUP_THRESHOLD, type JobsRepo, type Job } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import type { Assembled } from '../cli/index.js'
 import {
@@ -82,23 +82,27 @@ const SOURCE_BY_DECISION: Record<string, string> = {
   already_exists: 'preexisting',
 }
 
-/** 重derive 本 job 当前的 missing targets（含 unavailable 复查到期），按集号升序。 */
+/** 重derive 本 job 当前的 missing targets（含 unavailable/needs_review 复查到期），按集号升序。
+ *  needs_review（task 2: ask_user 诚实记账）复查到期后和 unavailable 一样重新参战——
+ *  一个更好的候选或更丰富的元数据到时候可能就能解出来，不该被永久搁置在"待确认"。 */
 function remainingTargets(job: Job, lib: LibraryRepo, now: number): (Episode | Movie)[] {
   if (job.kind === 'series_season') {
     return lib.db
       .prepare(
         `SELECT * FROM episodes
          WHERE series_id = ? AND season = ?
-         AND (sub_status = 'missing' OR (sub_status = 'unavailable' AND recheck_after <= ?))
+         AND (sub_status = 'missing'
+              OR (sub_status = 'unavailable' AND recheck_after <= ?)
+              OR (sub_status = 'needs_review' AND recheck_after <= ?))
          ORDER BY episode ASC`
       )
-      .all(job.series_id, job.season, now) as Episode[]
+      .all(job.series_id, job.season, now, now) as Episode[]
   }
   const movie = lib.getMovie(job.movie_id!)
   if (!movie) return []
   const stillMissing =
     movie.sub_status === 'missing' ||
-    (movie.sub_status === 'unavailable' && (movie.recheck_after ?? 0) <= now)
+    ((movie.sub_status === 'unavailable' || movie.sub_status === 'needs_review') && (movie.recheck_after ?? 0) <= now)
   return stillMissing ? [movie] : []
 }
 
@@ -133,6 +137,28 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       llmCalls: stats?.llmCalls,
       assrtCalls: stats?.apiCalls,
     })
+  }
+
+  /** 1b: completeError 的瞬时错误给-up 界——error_attempt 跨过 ERROR_GIVEUP_THRESHOLD 时
+   *  退避从 15min 封顶升级为每天一次（jobsRepo.errorBackoffMs 已经算好 next_retry_at；
+   *  这里只负责把这次"跨界"一次性记进日志，供人工/告警观测，不在每次仍处升级态的后续
+   *  调用里重复刷屏）。job.error_attempt 是本轮 completeError 之前的快照（claimNext 之后
+   *  只有这一次终结调用会改它），据此和调用后的最新值比较即可判断"刚好跨过"。 */
+  const completeErrorLogged = (
+    error: string,
+    quotaResetAt?: string | null
+  ): boolean => {
+    const before = job.error_attempt
+    const transitioned = jobs.completeError(job.id, error, now(), quotaResetAt)
+    if (transitioned && before <= ERROR_GIVEUP_THRESHOLD) {
+      const after = jobs.get(job.id)!
+      if (after.error_attempt > ERROR_GIVEUP_THRESHOLD) {
+        log(
+          `warn: job ${job.id} 瞬时错误连续 ${after.error_attempt} 次，退避升级为每天一次重试（仍保持 failed 可重试，不转 30 天休眠）`
+        )
+      }
+    }
+    return transitioned
   }
 
   try {
@@ -222,8 +248,13 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     }
 
     // 0 coverage, content failure: no_safe_match / ask_user → content backoff track
+    // task 2: 两者共享 job 状态机语义（同一条内容退避梯/dormancy 悬崖），但集级 sub_status
+    // 诚实分流——no_safe_match 是"搜索穷尽确认无"（unavailable），ask_user 是"找到候选但
+    // 置信不足，待人工确认"（needs_review）。此前两者都被 markUnavailable，前端一律展示
+    // "暂无"，掩盖了本可人工确认的候选（审计 executor.ts:219 finding）。
     if (decision === 'no_safe_match' || decision === 'ask_user') {
-      // 人话化：status_reason（tooltip）用简洁版，runs.detail 用带数字版
+      // 人话化：no_safe_match 的 status_reason/detail 用简洁版；ask_user 的 status_reason
+      // 也用带数字的详细版（不只是 runs.detail）——未来"确认队列"功能要按集展示具体把握程度。
       const humanReason = decision === 'no_safe_match' ? HUMAN_NO_MATCH : HUMAN_ASK_USER
       const humanDetail =
         decision === 'no_safe_match'
@@ -232,7 +263,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
       const transitioned = jobs.completeNoMatch(job.id, now())
 
-      // Mark targets unavailable with recheck tied to the job's own retry schedule
+      // Mark targets unavailable/needs_review with recheck tied to the job's own retry schedule
       if (transitioned) {
         const finalJob = jobs.get(job.id)!
         const recheckAfter =
@@ -241,7 +272,11 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
             : finalJob.next_retry_at ?? now() + 86_400_000
 
         for (const target of targets) {
-          lib.markUnavailable(target.id, humanReason, recheckAfter)
+          if (decision === 'ask_user') {
+            lib.markNeedsReview(target.id, humanDetail, recheckAfter)
+          } else {
+            lib.markUnavailable(target.id, humanReason, recheckAfter)
+          }
         }
       }
 
@@ -256,7 +291,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // 而不是走这条轨盲的 ERROR_BACKOFF_MS 阶梯（否则会在配额重置前反复重打全链路白烧配额）。
     const cause = briefCause(result.reasons?.[0])
     record(
-      jobs.completeError(job.id, result.reasons?.[0] ?? `pipeline decision: ${decision}`, now(), result.quotaExhausted?.resetAt),
+      completeErrorLogged(result.reasons?.[0] ?? `pipeline decision: ${decision}`, result.quotaExhausted?.resetAt),
       decision,
       cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
       journalPath,
@@ -267,7 +302,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     const errorMsg = error instanceof Error ? error.message : String(error)
     const cause = briefCause(errorMsg)
     record(
-      jobs.completeError(job.id, errorMsg, now()),
+      completeErrorLogged(errorMsg),
       'error',
       cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
       null
