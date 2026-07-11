@@ -189,9 +189,10 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 0 coverage: representative itself succeeded without season pack callback
     if (decision === 'download' || decision === 'already_exists' || decision === 'adopted_local') {
-      // M7: already_exists 无可信文件路径传 null；download/adopted 用 subtitlePath，
-      // 没有则只改状态。M8: source 按 decision 映射。
-      const coverPath = decision === 'already_exists' ? null : subtitlePath
+      // 84fd17a: pipeline 的 already_exists 决策（预检短路 or 下载后 existsSync）现在总是
+      // 携带真实磁盘路径，download/adopted_local 同样用 subtitlePath；没有路径（旧分支残留
+      // 兜底）则只改状态，绝不伪造 subtitles 行。M8: source 按 decision 映射。
+      const coverPath = subtitlePath
       const providerRef = result.selected
         ? candidateKey({ provider: result.selected.provider, providerId: result.selected.provider_id })
         : undefined

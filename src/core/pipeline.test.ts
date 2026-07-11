@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runPipeline, pickSeasonPack, type PipelineDeps } from './pipeline.js'
+import { runPipeline, pickSeasonPack, matchesEpisodeCode, type PipelineDeps } from './pipeline.js'
 import type { SubtitleCandidate } from './schemas.js'
 import { MediaContextSchema, AssrtSearchResponseSchema, AssrtDetailResponseSchema } from './schemas.js'
 import { toCandidate } from '../adapters/providers/assrt.js'
@@ -78,6 +78,57 @@ describe('runPipeline', () => {
     const journal = JSON.parse(readFileSync(join(outDir, 'decision.json'), 'utf8'))
     expect(journal.llm_calls.length).toBe(3)
     expect(journal.decision.decision).toBe('download')
+    // A real download+write happened this run — verification.downloaded must stay true (MINOR-A
+    // only tightens the already_exists sites; the actual download path is unaffected).
+    expect(journal.decision.verification.downloaded).toBe(true)
+  })
+
+  it('already_exists: pre-existing on-disk subtitle short-circuits before resolve/download (crash-recovery replay), and carries the real path', async () => {
+    // 崩溃恢复场景：上一轮已把字幕写到磁盘，但 DB 提交前进程崩溃；job 被 reap 重派后整条流水线
+    // 重跑到这里。目标文件其实已经在磁盘上（文件名可从 candidate 的 fileList 静态推出，无需先
+    // resolve/download）——不该再打一次 provider API + 下一次载全量字节，全部作废只为发现已存在。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const preexistingPath = join(outDir, 'The.Matrix.1999.1080p.BluRay.x264.zh-Hans.ass')
+    writeFileSync(preexistingPath, '[Script Info]\nTitle: already on disk\n')
+    const deps = makeDeps()
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('already_exists')
+    expect(result.subtitlePath).toBe(preexistingPath) // 真实路径，不再是 undefined
+    expect(deps.providers.resolveDownload).not.toHaveBeenCalled()
+    expect(deps.download).not.toHaveBeenCalled()
+    // MINOR-A: nothing was downloaded this run (pre-flight short-circuit before resolve/download) —
+    // the journal must not claim otherwise, even though a real path is now recorded.
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.decision.verification).toEqual({ downloaded: false, path: preexistingPath, bytes: null, encoding: null })
+  })
+
+  it('already_exists: when the file only turns up already-written after a real download (not predictable up front), the result still carries the real path', async () => {
+    // 覆盖旧的"晚期"分支：无法从候选元数据预判文件名的场景（如 resolved.filename 与候选静态名不同）
+    // 仍要在实际下载后发现 alreadyExists 时把真实路径带回 result，而不是留 undefined。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    // 让本地候选池里的 fileList 名字与实际 resolveDownload 返回的 filename 不同（不可预判），
+    // 这样预检必然 miss，只能在真下载后由 writeSubtitle 的 existsSync 分支发现已存在。
+    const search = vi.fn(async () => ok([mkCand(900, 'Show', ['unrelated-name.txt'])]))
+    const preexistingPath = join(outDir, 'The.Matrix.1999.1080p.BluRay.x264.zh-Hans.ass')
+    writeFileSync(preexistingPath, '[Script Info]\nTitle: already on disk\n')
+    const deps = makeDeps({
+      providers: makeProviders({
+        search,
+        resolveDownload: vi.fn(async () => ({ url: 'http://file0.assrt.net/x.ass', filename: 'real-name.ass' })),
+      }),
+      rank: vi.fn(async () => ({
+        parsed: { decision: 'download' as const, candidate_id: 'assrt:900', file_index: 0, confidence: 0.91, reasons: ['x'], identity_match: 'uncertain' as const, rejected: [] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      })),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('already_exists')
+    expect(result.subtitlePath).toBe(preexistingPath)
+    expect(deps.providers.resolveDownload).toHaveBeenCalledTimes(1) // 预检 miss，仍会真的 resolve 一次
+    // MINOR-A: a network fetch happened, but nothing new was written this run (writeSubtitle's
+    // existsSync short-circuit discarded the bytes) — downloaded must stay false, not true.
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.decision.verification).toEqual({ downloaded: false, path: preexistingPath, bytes: null, encoding: null })
   })
 
   it('sends the first two plan queries to the provider port in one call; rank sees the port pool', async () => {
@@ -253,6 +304,33 @@ describe('runPipeline', () => {
     expect(deps.providers.search).toHaveBeenCalledTimes(2)
   })
 
+  it('gate produces ask_user on an INCOMPLETE candidate set (one source failed) → also downgrades to retry_later, not just no_safe_match', async () => {
+    // 与上一条对称：残缺集不只可能判 no_safe_match，也可能因低置信度落 ask_user——两者都可能是
+    // "抽风的那一源本有确认匹配"，同样不该在残缺集上直接冻结成 ask_user 等人工，应先重试。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const deps = makeDeps({
+      cache,
+      providers: makeProviders({
+        search: vi.fn(async () => ({
+          candidates: [mkCand(500, 'The Matrix maybe', ['x.srt'])],
+          providerErrors: [{ provider: 'opensubtitles', message: 'timeout' }],
+        })),
+      }),
+      rank: vi.fn(async () => ({
+        parsed: { decision: 'download' as const, candidate_id: 'assrt:500', file_index: 0, confidence: 0.6, reasons: ['uncertain'], identity_match: 'uncertain' as const, rejected: [] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      })),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('retry_later')                          // ① 不是 ask_user
+    expect(result.reasons?.join(' ')).toMatch(/opensubtitles.*timeout/)
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()             // ② 无负条目（ask_user 本就不写负缓存，但仍校验干净）
+    // ③ 第二次跑不被短路：重新搜索
+    await runPipeline(deps, ctx, mkdtempSync(join(tmpdir(), 'out-')))
+    expect(deps.providers.search).toHaveBeenCalledTimes(2)
+  })
+
   it('gate rejects a COMPLETE candidate set (zero provider errors) → honest negative cache still written', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
@@ -400,6 +478,36 @@ describe('runPipeline', () => {
     expect(pickSeasonPack([mkCand(9, 'x', ['a.chs.srt'])])).toBeUndefined()   // no pack → undefined
   })
 
+  describe('matchesEpisodeCode (tolerant episode-code matcher)', () => {
+    it('matches exact-case canonical SxxEyy (parity with the old .includes() check)', () => {
+      expect(matchesEpisodeCode('Show.S02E05.chs.srt', 'S02E05')).toBe(true)
+    })
+    it('matches lowercase sxxeyy (IMPORTANT-2: coverage regression vs main)', () => {
+      expect(matchesEpisodeCode('show.s02e05.chs.srt', 'S02E05')).toBe(true)
+    })
+    it('matches the NxM convention (e.g. 2x05)', () => {
+      expect(matchesEpisodeCode('Show.2x05.srt', 'S02E05')).toBe(true)
+    })
+    it('rejects s02e050 as a false-positive match for S02E05 (digit-boundary guard)', () => {
+      expect(matchesEpisodeCode('Show.S02E050.srt', 'S02E05')).toBe(false)
+    })
+    it('rejects a genuinely different episode code', () => {
+      expect(matchesEpisodeCode('Show.S02E01.srt', 'S02E05')).toBe(false)
+    })
+    it('rejects 12x05 as a false-positive NxM match for season 2 (digit-boundary guard on the leading number too)', () => {
+      expect(matchesEpisodeCode('Show.12x05.srt', 'S02E05')).toBe(false)
+    })
+    it('declines bare E05 without a season — ambiguous in a candidate pool that can span multiple seasons', () => {
+      expect(matchesEpisodeCode('Show.E05.srt', 'S02E05')).toBe(false)
+    })
+    it('declines the CJK 第N集 form — season is unstated and numbering conventions vary too much to parse safely', () => {
+      expect(matchesEpisodeCode('第5集.srt', 'S02E05')).toBe(false)
+    })
+    it('returns false for empty/undefined-ish text without throwing', () => {
+      expect(matchesEpisodeCode('', 'S02E05')).toBe(false)
+    })
+  })
+
   it('season sweep: maps 4 loose per-episode candidates to 4 episodes in one run', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const looseCandidates = [
@@ -455,6 +563,460 @@ describe('runPipeline', () => {
     expect(existsSync(join(outDir, 'Show.S02E04.zh-Hans.ass'))).toBe(true)
     const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
     expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweep')).toBe(true)
+  })
+
+  it('season sweep: rejects a loose candidate whose fileList has no file matching the assigned episode (no unconditional first-file fallback)', async () => {
+    // 单文件候选(801)只有 E01 的字幕；LLM 幻觉把它映射到 E05（真实缺集）。修复前 line500 的
+    // .find() 找不到匹配文件时无条件回退 subtitleFiles[0]（E01 那个文件）——把 E01 的字幕当 E05
+    // 写盘、markCovered，永久污染 E05。修复后：找不到匹配文件必须跳过该 assignment，绝不下载/写盘。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.srt'], '第1集'),
+    ]
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e5', seasonNumber: 2, episodeNumber: 5, episodeCode: 'S02E05', videoPath: join(outDir, 'Show.S02E05.mkv'), videoFilename: 'Show.S02E05.mkv', needsChinese: true },
+    ]
+    const covered: string[] = []
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E05', candidate_id: 'assrt:801', confidence: 0.92 }, // hallucinated cross-episode map
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国' // CJK-native → alias harvest skipped, isolate the sweep path
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(covered).toEqual([]) // E05 must NOT be covered by E01's file
+    expect(resolveDownload).not.toHaveBeenCalled() // never even attempted to resolve the mismatched file
+    expect(existsSync(join(outDir, 'Show.S02E05.zh-Hans.srt'))).toBe(false)
+    expect(result.decision).toBe('no_safe_match') // 0-coverage sweep falls back to normal gate early-return
+  })
+
+  it('season sweep: IMPORTANT-2 regression check — a lowercase sxxeyy fileList name is a legitimate match, not skipped', async () => {
+    // 修复前 f.name.includes(assignment.episode_code) 大小写敏感：'S02E05' 不是 's02e05.chs.srt' 的子串，
+    // 常见的全小写命名会被误判为"无匹配文件"而跳过——这是相对 main 的覆盖率倒退，不是安全收益。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      mkCand(801, 'Show.S02E05.chs', ['show.s02e05.chs.srt'], '第5集'), // lowercase on disk, common release naming
+    ]
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e5', seasonNumber: 2, episodeNumber: 5, episodeCode: 'S02E05', videoPath: join(outDir, 'Show.S02E05.mkv'), videoFilename: 'Show.S02E05.mkv', needsChinese: true },
+    ]
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E05', candidate_id: 'assrt:801', confidence: 0.92 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode)).toEqual(['S02E05'])
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+    expect(existsSync(join(outDir, 'Show.S02E05.zh-Hans.srt'))).toBe(true)
+  })
+
+  it('season sweep: IMPORTANT-1 — an OS-style empty-fileList candidate whose videoName carries a matching episode signal is covered', async () => {
+    // OS loose candidates always have fileList:[] (opensubtitles.ts osToCandidates). 修复前，subtitleFiles.length===0
+    // 时整个校验被跳过、直接放行——一次 LLM 幻觉映射即可无验证写盘。修复后：空 fileList 必须回退校验
+    // candidate-level 元数据（videoName/nativeName）里是否有可识别的集号信号。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const osCandidate: SubtitleCandidate = {
+      provider: 'opensubtitles', providerId: '5001',
+      videoName: 'Show.S02E05.720p.WEB-DL.chs', nativeName: null,
+      language: null, subtype: null, releaseSite: null, uploadDate: null,
+      fileList: [], // OS 单文件 provider 的常态
+    }
+    const search = vi.fn(async () => ok([osCandidate]))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}`, filename: 'Show.S02E05.srt' }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e5', seasonNumber: 2, episodeNumber: 5, episodeCode: 'S02E05', videoPath: join(outDir, 'Show.S02E05.mkv'), videoFilename: 'Show.S02E05.mkv', needsChinese: true },
+    ]
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E05', candidate_id: 'opensubtitles:5001', confidence: 0.92 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode)).toEqual(['S02E05'])
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+  })
+
+  it('season sweep: IMPORTANT-1 — an OS-style empty-fileList candidate whose videoName signals a DIFFERENT episode is skipped, never written', async () => {
+    // 靶场景：assrt:801 的 fileList 为空(OS 候选)，LLM 幻觉把它映射到 S02E05，但其 videoName 明明白白
+    // 写的是 S02E01。修复前该分支完全不做结构校验，直接 resolve/download/写盘覆盖 E05——permanent 串号。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const osCandidate: SubtitleCandidate = {
+      provider: 'opensubtitles', providerId: '5001',
+      videoName: 'Show.S02E01.720p.WEB-DL.chs', nativeName: null, // 明确是 E01 的字幕
+      language: null, subtype: null, releaseSite: null, uploadDate: null,
+      fileList: [],
+    }
+    const search = vi.fn(async () => ok([osCandidate]))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e5', seasonNumber: 2, episodeNumber: 5, episodeCode: 'S02E05', videoPath: join(outDir, 'Show.S02E05.mkv'), videoFilename: 'Show.S02E05.mkv', needsChinese: true },
+    ]
+    const covered: string[] = []
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E05', candidate_id: 'opensubtitles:5001', confidence: 0.92 }, // hallucinated cross-episode map
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(covered).toEqual([]) // E05 must NOT be covered by E01's subtitle
+    expect(resolveDownload).not.toHaveBeenCalled() // never even attempted to resolve the mismatched candidate
+    expect(existsSync(join(outDir, 'Show.S02E05.zh-Hans.srt'))).toBe(false)
+    expect(result.decision).toBe('no_safe_match')
+  })
+
+  it('season sweep: IMPORTANT-1 — an OS-style empty-fileList candidate with no recognizable episode signal anywhere is skipped', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const osCandidate: SubtitleCandidate = {
+      provider: 'opensubtitles', providerId: '5002',
+      videoName: 'Show.Unknown.Release.720p.WEB-DL.chs', nativeName: null, // no SxxEyy/NxM signal at all
+      language: null, subtype: null, releaseSite: null, uploadDate: null,
+      fileList: [],
+    }
+    const search = vi.fn(async () => ok([osCandidate]))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e5', seasonNumber: 2, episodeNumber: 5, episodeCode: 'S02E05', videoPath: join(outDir, 'Show.S02E05.mkv'), videoFilename: 'Show.S02E05.mkv', needsChinese: true },
+    ]
+    const covered: string[] = []
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E05', candidate_id: 'opensubtitles:5002', confidence: 0.92 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(covered).toEqual([])
+    expect(resolveDownload).not.toHaveBeenCalled()
+    expect(result.decision).toBe('no_safe_match')
+  })
+
+  it('season sweep: one candidate mapped to N episodes covers at most one when it has no distinct per-episode file (rejects fan-out of a single file)', async () => {
+    // 候选 801 只有一个物理文件，但其文件名恰好同时含 S02E01 与 S02E02 两个 code 子串
+    // （如打包命名 "S02E01.S02E02.combo.srt"）。LLM 把同一个 candidate_id 映射到两集，
+    // 两次 .includes() 各自都"匹配"到——但其实是同一个 fileIndex。这就是 dimension 警告的
+    // 一集字幕串号覆盖全季：必须按 candidate_id+fileIndex 去重，同一文件只能覆盖一集。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      mkCand(801, 'Show.combo', ['Show.S02E01.S02E02.combo.srt'], '合集'),
+    ]
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+    ]
+    const covered: string[] = []
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 },
+        { episode_code: 'S02E02', candidate_id: 'assrt:801', confidence: 0.95 }, // same candidate, same file → fan-out
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    // Exactly one episode covered — the other rejected as a duplicate fan-out of the same file
+    expect(covered.length).toBe(1)
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+    expect(result.decision).toBe('download')
+  })
+
+  it('season sweep: when two candidates map to the same episode, keeps the higher-confidence one (seasonPackGate bestByCode semantics), not first-written', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      mkCand(810, 'Show.S02E03.v1', ['Show.S02E03.v1.srt'], '第3集v1'),
+      mkCand(822, 'Show.S02E03.v2', ['Show.S02E03.v2.srt'], '第3集v2'),
+    ]
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e3', seasonNumber: 2, episodeNumber: 3, episodeCode: 'S02E03', videoPath: join(outDir, 'Show.S02E03.mkv'), videoFilename: 'Show.S02E03.mkv', needsChinese: true },
+    ]
+    const covered: { episodeCode: string; ref?: string }[] = []
+    const llm = { call: vi.fn(async () => ({
+      // Lower-confidence candidate listed FIRST — array order must not decide the winner.
+      parsed: { assignments: [
+        { episode_code: 'S02E03', candidate_id: 'assrt:810', confidence: 0.87 },
+        { episode_code: 'S02E03', candidate_id: 'assrt:822', confidence: 0.98 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }, _path: string, ref?: string) => { covered.push({ episodeCode: ep.episodeCode, ref }) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(covered).toEqual([{ episodeCode: 'S02E03', ref: 'assrt:822' }]) // higher confidence wins
+    // The lower-confidence loser is dropped before any network I/O — no wasted resolve call
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+    expect(resolveDownload).toHaveBeenCalledWith(expect.objectContaining({ providerId: '822' }))
+    expect(result.decision).toBe('download')
+  })
+
+  it('season sweep: MINOR-B — a higher-confidence assignment that fails structural validation must not eclipse a valid lower-confidence rival for the same episode', async () => {
+    // dedup-then-validate 顺序问题：若 bestByCode 只按置信度先选（不看是否能通过结构校验），
+    // 高置信度但文件名对不上的那个会被选中、随后在校验环节被跳过——而本来能通过校验的低置信度
+    // 候选早就在 dedup 阶段被扔掉了，整集因此颗粒无收。修复后：先校验再按置信度择优，
+    // 只在"通过校验"的候选之间比置信度。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      // Higher confidence (0.97) but its only file does NOT carry the S02E05 signal — must fail validation.
+      mkCand(810, 'Show.mislabeled', ['Show.wrong.episode.file.srt'], '未知'),
+      // Lower confidence (0.88) but its file DOES carry the correct S02E05 signal — must pass validation.
+      mkCand(822, 'Show.S02E05.v2', ['Show.S02E05.chs.srt'], '第5集v2'),
+    ]
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e5', seasonNumber: 2, episodeNumber: 5, episodeCode: 'S02E05', videoPath: join(outDir, 'Show.S02E05.mkv'), videoFilename: 'Show.S02E05.mkv', needsChinese: true },
+    ]
+    const covered: { episodeCode: string; ref?: string }[] = []
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E05', candidate_id: 'assrt:810', confidence: 0.97 }, // wins naive dedup-by-confidence, fails validation
+        { episode_code: 'S02E05', candidate_id: 'assrt:822', confidence: 0.88 }, // would be discarded by naive dedup, but is the only valid one
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }, _path: string, ref?: string) => { covered.push({ episodeCode: ep.episodeCode, ref }) }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    // The valid lower-confidence rival must win coverage — not zero coverage for the episode.
+    expect(covered).toEqual([{ episodeCode: 'S02E05', ref: 'assrt:822' }])
+    expect(resolveDownload).toHaveBeenCalledTimes(1)
+    expect(resolveDownload).toHaveBeenCalledWith(expect.objectContaining({ providerId: '822' }))
+    expect(result.decision).toBe('download')
+  })
+
+  it('season sweep: a resolve failure storm trips a consecutive-failure circuit breaker (budget guard alone does not bound it, since it only counted successes)', async () => {
+    // OS 406/quota 抖动场景：resolveDownload 对每个 assignment 都抛错。修复前 apiCallsUsed++
+    // 只在成功后才执行，budget 守卫永不触发——全季逐集都会各打一次 resolve，无视预算与失败风暴。
+    // 修复后：3 次连续失败即熔断（对齐季包升格路径的 consecutiveFails>=3 语义）。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [801, 802, 803, 804, 805].map(id =>
+      mkCand(id, `Show.S02E0${id - 800}.chs`, [`Show.S02E0${id - 800}.chs.srt`], `第${id - 800}集`))
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async () => { throw new Error('406 not acceptable') })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4, 5].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3, 4, 5].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `assrt:${800 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      maxApiCallsPerJob: 4,
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    // Circuit breaker trips after 3 consecutive failures — stops well short of all 5 assignments
+    expect(resolveDownload).toHaveBeenCalledTimes(3)
+    expect(result.decision).toBe('no_safe_match') // 0 coverage, falls back to gate early-return
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweepCircuitBreak')).toBe(true)
+  })
+
+  it('season sweep: failed resolveDownload attempts still consume the per-job API call budget', async () => {
+    // 预算守卫本身也要把失败尝试算进去——不能只在成功后才 apiCallsUsed++。用一个远小于熔断阈值(3)
+    // 的预算(2)来隔离验证:budget 守卫必须先于熔断触发生效。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [801, 802, 803].map(id =>
+      mkCand(id, `Show.S02E0${id - 800}.chs`, [`Show.S02E0${id - 800}.chs.srt`], `第${id - 800}集`))
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async () => { throw new Error('406 not acceptable') })
+    const rank = vi.fn(async () => ({
+      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `assrt:${800 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      maxApiCallsPerJob: 2, // budget of 2 < circuit breaker threshold of 3 → budget guard must bind first
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    await runPipeline(deps, epCtx, outDir)
+    expect(resolveDownload).toHaveBeenCalledTimes(2) // budget of 2, all failed attempts still counted
   })
 
   it('season sweep: does NOT trigger when a whole-season pack is available (pack has priority)', async () => {
@@ -930,11 +1492,12 @@ describe('adoptLocal step', () => {
     expect(deps.providers.search).toHaveBeenCalled()
   })
 
-  it('adoption already_exists returns early without plan/provider calls', async () => {
+  it('adoption already_exists returns early without plan/provider calls, and carries the real path (IMPORTANT-3)', async () => {
     const mediaDir = mkdtempSync(join(tmpdir(), 'media-'))
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     // Pre-create the conforming-named subtitle in outDir
-    writeFileSync(join(outDir, 'The.Matrix.1999.1080p.BluRay.x264.zh-Hans.ass'), '[Script Info]\nTitle: already there\n')
+    const preexistingPath = join(outDir, 'The.Matrix.1999.1080p.BluRay.x264.zh-Hans.ass')
+    writeFileSync(preexistingPath, '[Script Info]\nTitle: already there\n')
     writeFileSync(join(mediaDir, '乱名字幕.ass'), '[Script Info]\nTitle: orphan\n')
     const judge = vi.fn(async () => ({
       parsed: { adopt: true, file: '乱名字幕.ass', language: 'zh-Hans' as const, confidence: 0.93, reasons: ['zh sample'] },
@@ -947,6 +1510,12 @@ describe('adoptLocal step', () => {
     expect(result.decision).toBe('already_exists')
     expect(deps.plan).not.toHaveBeenCalled()
     expect(deps.providers.search).not.toHaveBeenCalled()
+    // IMPORTANT-3: the other two already_exists sites carry the real path; this one must too —
+    // downstream persistence (coverPath = subtitlePath) would otherwise silently persist NULL here.
+    expect(result.subtitlePath).toBe(preexistingPath)
+    // MINOR-A: nothing was downloaded this run (adoption was skipped) — verification must say so.
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.decision.verification).toEqual({ downloaded: false, path: preexistingPath, bytes: null, encoding: null })
   })
 
   it('judgeOrphan error degrades gracefully, continues to provider search (production robustness)', async () => {

@@ -1,4 +1,4 @@
-import { writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'node:fs'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import AdmZip from 'adm-zip'
 import chardet from 'chardet'
@@ -24,6 +24,20 @@ export interface WriteSubtitleResult {
   bytes: number
   encoding: string | null
   alreadyExists: boolean
+}
+
+// 裸 writeSync 不保证一次调用写完全部字节（内核可能短写），不像 writeFileSync 那样内部有循环。
+// 忽略其返回值直接 fsync+rename 会把半截数据当成"完整文件"落到最终路径——这正是原子写要防的那类故障。
+// 所以显式循环，用剩余字节数重试，直到全部写完。
+function writeAll(fd: number, buf: Buffer): void {
+  let written = 0
+  while (written < buf.length) {
+    const n = writeSync(fd, buf, written, buf.length - written)
+    // A 0-byte return without a thrown error is degenerate but technically legal for a raw
+    // write() syscall; looping with an unchanged `written` would spin forever, so bail loudly.
+    if (n === 0) throw new Error('writeSync wrote 0 bytes; aborting to avoid an infinite loop')
+    written += n
+  }
 }
 
 // gate 按 filelist 的 file_index 校验范围；这里按文件名解析 zip 条目，因为 zip 内部顺序 ≠ filelist 顺序。名字对不上则抛错（fail closed）。
@@ -75,9 +89,37 @@ export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSub
     throw new Error(`refusing to write outside outDir: ${resolvedOut}`)
   }
 
+  // 与下方原子写用的是同一套确定性命名（resolvedOut + '.tmp'），因此短路分支也能按
+  // 这个精确名字识别并清理"自己的"孤儿临时文件——不会误删任何不是这个命名模式产生的文件。
+  const tmpPath = `${resolvedOut}.tmp`
+
   if (existsSync(resolvedOut)) {
+    // 孤儿临时文件清理：上一次调用可能在 rename 前崩溃（或最终路径被其他来源写入），
+    // 留下这个 writer 自己产生的 <resolvedOut>.tmp 垃圾文件。功能上无害（下次重试的
+    // openSync('w') 会截断复用它），但会永久堆积在用户媒体目录旁——顺手清掉。
+    // 只删这一个确定路径，绝不碰最终文件本身或任何其他文件。
+    // 这是 best-effort 清理：某些文件系统（NAS/SMB 等）上 unlink 可能因 EPERM/EACCES/EBUSY
+    // 失败，绝不能让清理失败把这个良性的"已存在"短路变成整次调用的硬失败。
+    if (existsSync(tmpPath)) {
+      try {
+        unlinkSync(tmpPath)
+      } catch {
+        // swallow: orphan cleanup is opportunistic, not load-bearing
+      }
+    }
     return { path: resolvedOut, bytes: 0, encoding, alreadyExists: true }
   }
-  writeFileSync(resolvedOut, data)
+
+  // 原子写：先写同目录临时文件 + fsync，再 rename 到最终路径（同 fs 上 rename 是原子的）。
+  // 这样任何时刻崩溃，最终路径要么不存在，要么是完整文件——不会出现被 existsSync 误判为
+  // "已存在"从而永久跳过的半截字幕。
+  const fd = openSync(tmpPath, 'w')
+  try {
+    writeAll(fd, data)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(tmpPath, resolvedOut)
   return { path: resolvedOut, bytes: data.length, encoding, alreadyExists: false }
 }

@@ -386,11 +386,36 @@ describe('executor', () => {
     })
   })
 
-  it('M7/M8: already_exists → 代表集 covered 但不伪造 subtitles 行', async () => {
+  it('M7/M8: already_exists 携带真实路径 → 代表集 covered + subtitles 行记录真实路径/source=preexisting/无 provider_ref', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
     const job = jobs.claimNext(now)!
 
+    // 84fd17a: pipeline 的 already_exists 决策（预检或下载后 existsSync 两条路径）
+    // 现在总是携带真实磁盘路径；selected 为 null（没有新的 resolve 发生）。
+    const runEpisode = vi.fn(async () => ({
+      decision: 'already_exists',
+      journalPath: '/journals/test.json',
+      subtitlePath: '/tv/s1e1.zh-Hans.srt',
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(lib.db.prepare('select * from subtitles where item_id=?').get('e1')).toMatchObject({
+      path: '/tv/s1e1.zh-Hans.srt',
+      source: 'preexisting',
+      provider_ref: null,
+    })
+    expect(jobs.get(job.id)!.state).toBe('done')
+  })
+
+  it('M7 fallback: already_exists 无路径（残留分支兜底）→ 仍不伪造 subtitles 行', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    // 若某个 pipeline 分支仍返回 already_exists 但没给出可信路径，绝不能伪造一行 subtitles。
     const runEpisode = vi.fn(async () => ({
       decision: 'already_exists',
       journalPath: '/journals/test.json',
@@ -399,7 +424,6 @@ describe('executor', () => {
     await executeJob(job, mkDeps(runEpisode))
 
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
-    // M7: null 路径 → 不插 subtitles 行
     expect((lib.db.prepare('select count(*) c from subtitles where item_id=?').get('e1') as any).c).toBe(0)
     expect(jobs.get(job.id)!.state).toBe('done')
   })

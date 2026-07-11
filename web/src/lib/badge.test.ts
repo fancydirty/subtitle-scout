@@ -16,11 +16,17 @@ describe('coverageBadge 覆盖矩阵五态', () => {
   it('部分补齐 → part 分数', () => {
     expect(coverageBadge(cov({ covered: 3, missing: 5 }), null)).toEqual({ kind: 'part', text: '3/8', pulse: false })
   })
-  it('一集未补 → none 暂无', () => {
-    expect(coverageBadge(cov({ missing: 5 }), null)).toEqual({ kind: 'none', text: '暂无', pulse: false })
+  it('全 missing（还没搜过）→ none 待搜索，区别于搜穷尽的暂无', () => {
+    expect(coverageBadge(cov({ missing: 5 }), null)).toEqual({ kind: 'none', text: '待搜索', pulse: false })
   })
-  it('全 unavailable → none 暂无', () => {
+  it('全 unavailable（搜穷尽）→ none 暂无', () => {
     expect(coverageBadge(cov({ unavailable: 3 }), null)).toEqual({ kind: 'none', text: '暂无', pulse: false })
+  })
+  it('missing + unavailable 混合（部分还没搜）→ none 待搜索', () => {
+    expect(coverageBadge(cov({ missing: 2, unavailable: 3 }), null)).toEqual({ kind: 'none', text: '待搜索', pulse: false })
+  })
+  it('queued job（wanted，未认领）不改变判定——仍按 coverage 出 待搜索', () => {
+    expect(coverageBadge(cov({ missing: 5 }), job('wanted'))).toEqual({ kind: 'none', text: '待搜索', pulse: false })
   })
   it('covered + unavailable 混合 → part 计入 scope', () => {
     expect(coverageBadge(cov({ covered: 2, unavailable: 1 }), null)).toEqual({ kind: 'part', text: '2/3', pulse: false })

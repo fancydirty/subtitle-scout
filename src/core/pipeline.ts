@@ -1,7 +1,8 @@
-import { basename, dirname } from 'node:path'
+import { basename, dirname, extname, join, resolve as resolvePath } from 'node:path'
+import { existsSync } from 'node:fs'
 import {
   type MediaContext, type MediaIdentity, type SearchPlan, type RankDecision,
-  type OrphanDecision, type SeasonMap, type SubtitleCandidate,
+  type OrphanDecision, type SeasonMap, type SubtitleCandidate, type ProviderName,
   candidateKey, parseCandidateKey,
 } from './schemas.js'
 import type { CallStructuredResult } from '../agent/llm.js'
@@ -65,6 +66,38 @@ export interface PipelineResult {
   quotaExhausted?: { resetAt: string | null }
 }
 
+/** 从形如 "S02E05" 的规范集号拆出 season/episode 数值。集号可超过两位（长篇动画如 One Piece E1050）。 */
+function parseCanonicalEpisodeCode(code: string): { season: number; episode: number } | null {
+  const m = /^S(\d{1,4})E(\d{1,4})$/i.exec(code.trim())
+  if (!m) return null
+  return { season: Number(m[1]), episode: Number(m[2]) }
+}
+
+/**
+ * 容错集号匹配：候选文件名/元数据里的集号写法五花八门——大小写不敏感的 SxxEyy，以及 NxM 记法
+ * （如 "2x05"）。原先 f.name.includes(assignment.episode_code) 是大小写敏感的精确子串匹配，会把
+ * 常见的全小写发布命名（"show.s02e05.chs.srt"）误判为"无匹配"而跳过——相对 main 的覆盖率倒退。
+ *
+ * 边界防护：用非数字前瞻/后顾包住整个数字序列，防止 "s02e05" 误配 "s02e050"（长集号截断出的假阳性），
+ * 也防止 NxM 记法里季号被吞进更大的数字（如目标季 2，误配 "12x05" 里的 "2x05" 子串）。
+ *
+ * 有意不支持的记法（收窄以控制误伤面，而非遗漏）：
+ * - 裸 "E05"（无季号）——候选池经常跨季，无季号时指代不明，认领错季的代价远大于漏检一个候选。
+ * - 中文"第N集"——分季语义不明确（"第5集"可能是第几季的第5集未说明），且"话/集/合集"等变体
+ *   混杂，数字边界不如 SxxEyy/NxM 可靠，误伤率评估下来高于收益。
+ */
+export function matchesEpisodeCode(text: string, episodeCode: string): boolean {
+  if (!text) return false
+  const parsed = parseCanonicalEpisodeCode(episodeCode)
+  if (!parsed) return false
+  const { season, episode } = parsed
+  const patterns = [
+    new RegExp(`(?<![0-9])s0*${season}e0*${episode}(?![0-9])`, 'i'), // SxxEyy（大小写不敏感，零填充不定）
+    new RegExp(`(?<![0-9])0*${season}x0*${episode}(?![0-9])`, 'i'),  // NxM，如 "2x05"
+  ]
+  return patterns.some(re => re.test(text))
+}
+
 /** 季包/横扫路径的 selected 摘要：多集覆盖取首集作代表（provider/provider_id 供 v2 建 provider_ref） */
 function seasonSelected(
   providerRef: string | undefined, firstSubtitlePath: string, language: string,
@@ -89,14 +122,18 @@ export async function runPipeline(
   deps.journalReady?.(journal)
   const finish = (
     decision: PipelineResult['decision'],
-    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null; quotaExhausted?: { resetAt: string | null } } = {},
+    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null; downloaded?: boolean; quotaExhausted?: { resetAt: string | null } } = {},
   ): PipelineResult => {
     const journalPath = journal.finish({
       request_id: ctx.request_id, decision,
       confidence: extra.confidence ?? null, selected: extra.selected ?? null,
       reasons: extra.reasons ?? [],
+      // MINOR-A: downloaded defaults to true whenever a path is present (the historical behavior
+      // for the 'download'/'adopted_local' call sites), but already_exists call sites pass
+      // downloaded:false explicitly — nothing was newly downloaded/written this run there, even
+      // though we now also carry the real on-disk path for bookkeeping (IMPORTANT-3).
       verification: extra.subtitlePath
-        ? { downloaded: true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
+        ? { downloaded: extra.downloaded ?? true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
         : null,
     }, journalDir)
     return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, confidence: extra.confidence ?? null, reasons: extra.reasons ?? [], stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes, selected: extra.selected ?? null, quotaExhausted: extra.quotaExhausted }
@@ -145,7 +182,11 @@ export async function runPipeline(
               outDir,
             })
             if (written.alreadyExists) {
-              return finish('already_exists', { reasons: ['subtitle already exists; adoption skipped'] })
+              // IMPORTANT-3: carry the real on-disk path, same as the other two already_exists
+              // sites (pre-flight + post-download) — downstream persistence keys off subtitlePath
+              // and would otherwise silently lose the subtitles-row bookkeeping for this orphan.
+              // downloaded:false: adoption was skipped, nothing new was written this run (MINOR-A).
+              return finish('already_exists', { reasons: ['subtitle already exists; adoption skipped'], subtitlePath: written.path, downloaded: false })
             }
             return finish('adopted_local', {
               reasons: [`adopted local subtitle: ${ogate.orphan.filename}`, ...judged.parsed.reasons],
@@ -300,10 +341,10 @@ export async function runPipeline(
       const gate = runGate(rank, candidates, identity, ctx.preferences)
       journal.step('gateResult', gate)
       if (!gate.ok) {
-        // 候选集残缺（某源瞬时故障 fail-soft 成 [] 但另一源有候选）时，gate 的 no_safe_match
-        // 不代表"确实没有"——降级为 retry_later（瞬时可重试）且绝不写负缓存，否则 24h 内该集被短路，
-        // 而当时很可能是抽风的那一源本有正确字幕。providerErrors 为空才走诚实负缓存。
-        if (gate.decision === 'no_safe_match' && searchProviderErrors.length > 0) {
+        // 候选集残缺（某源瞬时故障 fail-soft 成 [] 但另一源有候选）时，gate 的 no_safe_match/ask_user
+        // 都不代表"确实没有安全匹配"——降级为 retry_later（瞬时可重试）且绝不写负缓存，否则该集被短路
+        // 或冻结成待人工确认，而当时很可能是抽风的那一源本有确认匹配。providerErrors 为空才走诚实结论。
+        if ((gate.decision === 'no_safe_match' || gate.decision === 'ask_user') && searchProviderErrors.length > 0) {
           journal.step('incompleteCandidateSet', { providerErrors: searchProviderErrors })
           return finish('retry_later', {
             reasons: [
@@ -390,15 +431,30 @@ export async function runPipeline(
     journal.step('resolveDownloadUrl')
     const parsed = parseCandidateKey(rank.candidate_id!)
     if (!parsed) return finish('error', { reasons: [`invalid candidate_id: ${rank.candidate_id}`] })
+    const candidate = gateCandidate ?? candidates.find(c => candidateKey(c) === rank.candidate_id)
+
+    // 崩溃恢复预检：若能从候选的静态元数据（无需先 resolve/download）推出确定的输出文件名
+    // 且它已经在磁盘上——说明这是"写盘成功但 DB 提交前崩溃"后的重跑，直接短路，绝不再打一次
+    // provider API + 下载全量字节只为发现已存在（同 subtitleWriter 的命名规则；zip 包内文件名
+    // 下载前不可知，跳过预检，走原有"下载后 writeSubtitle 自己发现已存在"路径）。
+    const knownName = candidate?.fileList[rank.file_index ?? -1]?.name
+    if (knownName && /\.(srt|ass|ssa)$/i.test(knownName)) {
+      const videoBase = basename(ctx.media.filename).replace(/\.[^.]+$/, '')
+      const predictedPath = resolvePath(join(outDir, `${videoBase}.${ctx.preferences.language}${extname(knownName).toLowerCase()}`))
+      if (existsSync(predictedPath)) {
+        // MINOR-A: nothing was downloaded this run (short-circuited before resolve/download) —
+        // don't let the journal claim otherwise just because a path is now attached.
+        return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten (pre-flight check, no re-download)'], subtitlePath: predictedPath, downloaded: false })
+      }
+    }
 
     const resolved = await deps.providers.resolveDownload({
       provider: parsed.provider,
       providerId: parsed.providerId,
       fileIndex: rank.file_index ?? null,
     })
-    const candidate = gateCandidate ?? candidates.find(c => candidateKey(c) === rank.candidate_id)
     const artifactFilename = resolved.filename
-      ?? (candidate?.fileList[rank.file_index ?? -1]?.name)
+      ?? knownName
       ?? 'subtitle.srt'
     const subFormat = artifactFilename.match(/\.(srt|ass|ssa)$/i)?.[1] || 'srt'
 
@@ -413,7 +469,11 @@ export async function runPipeline(
       langTag: ctx.preferences.language,
       outDir,
     })
-    if (written.alreadyExists) return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten'] })
+    if (written.alreadyExists) {
+      // MINOR-A: a network fetch did happen, but writeSubtitle discarded the bytes because the
+      // file was already on disk — nothing new was written this run, so downloaded stays false.
+      return finish('already_exists', { reasons: ['subtitle file already exists; not overwritten'], subtitlePath: written.path, downloaded: false })
+    }
 
     // 8. cache + finish
     if (!cached) {
@@ -462,12 +522,93 @@ async function runSeasonSweep(
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
   if (validAssignments.length === 0) return []
 
-  const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
   const skipped: { episode: string; reason: string }[] = []
-  let apiCallsUsed = 0
-  const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
 
+  // 结构校验先于按 episode_code 择优（MINOR-B）：若顺序反过来——先按置信度 dedup 再校验——
+  // 一个高置信度但结构对不上的 assignment 会在 dedup 阶段挤掉本该通过校验的低置信度候选，
+  // 随后自己在校验环节被跳过：整集颗粒无收，而本可由那个"输给 dedup"的候选覆盖。
+  // 这里不做任何网络调用（resolve/download），纯本地校验，可以安全地在 dedup 之前跑一遍。
+  interface ValidatedAssignment {
+    episode_code: string
+    confidence: number
+    candidate: SubtitleCandidate
+    parsedKey: { provider: ProviderName; providerId: string }
+    fileIndex: number | null
+  }
+  const validatedAssignments: ValidatedAssignment[] = []
   for (const assignment of validAssignments) {
+    let parsed = parseCandidateKey(assignment.candidate_id)
+    let candidate = parsed ? candidates.find(c => candidateKey(c) === assignment.candidate_id) : undefined
+    // LLM 自愈：与单集 gate（core/gate.ts）对称——模型偶尔丢 "provider:" 前缀只回裸 providerId。
+    // 仅在候选池内恰好一个候选命中该裸 id 才自愈；0 或 2+ 命中（跨 provider id 碰撞）维持 fail-safe 跳过。
+    if (!parsed && !assignment.candidate_id.includes(':')) {
+      const matches = candidates.filter(c => c.providerId === assignment.candidate_id)
+      if (matches.length === 1) {
+        candidate = matches[0]
+        parsed = { provider: candidate.provider, providerId: candidate.providerId }
+      }
+    }
+    if (!parsed) {
+      skipped.push({ episode: assignment.episode_code, reason: 'invalid candidate_id' })
+      continue
+    }
+    if (!candidate) {
+      skipped.push({ episode: assignment.episode_code, reason: 'candidate not in pool' })
+      continue
+    }
+
+    // 单集候选通常单文件；多文件时必须选中含对应 episode code 的文件——这是校验而非"选不出兜底
+    // 第一个"：写盘字幕永久标记该集覆盖，错配比不下载伤害大得多（防串号铁律，同单集 gate 语义）。
+    const subtitleFiles = candidate.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name))
+    let fileIndex: number | null = null
+    if (subtitleFiles.length > 0) {
+      const matched = subtitleFiles.find(f => matchesEpisodeCode(f.name, assignment.episode_code))
+      if (!matched) {
+        skipped.push({ episode: assignment.episode_code, reason: `no filelist entry matches episode code ${assignment.episode_code} in candidate ${assignment.candidate_id} — refusing to fall back to an arbitrary file` })
+        continue
+      }
+      fileIndex = matched.index
+    } else {
+      // OS 风格的散装候选没有 fileList（单文件 provider，见 adapters/providers/opensubtitles.ts
+      // osToCandidates——providerId=file_id，fileList 恒为 []）。这类候选之前完全跳过结构校验、
+      // 直接放行——一次 LLM 幻觉映射即可无验证写盘（防串号铁律的一个缺口）。回退校验
+      // candidate 级元数据（videoName/nativeName 常带发布名，通常含集号信号）；两者都没有可识别
+      // 信号时 fail-safe 跳过——错误写入是永久的，跳过只是这次不覆盖、下次还能再来。
+      const metaMatch = matchesEpisodeCode(candidate.videoName ?? '', assignment.episode_code)
+        || matchesEpisodeCode(candidate.nativeName ?? '', assignment.episode_code)
+      if (!metaMatch) {
+        skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.candidate_id} has an empty fileList and no recognizable episode signal in videoName/nativeName for ${assignment.episode_code} — refusing to write unverified` })
+        continue
+      }
+    }
+    validatedAssignments.push({ episode_code: assignment.episode_code, confidence: assignment.confidence, candidate, parsedKey: parsed, fileIndex })
+  }
+
+  // 同一 episode_code 收到 2+ 个"通过校验"的候选时，按 seasonPackGate 的 bestByCode 语义只保留
+  // 置信度最高的那个——在任何 resolve/download 之前就丢弃劣者，既不产生质量倒退，也不白打一次 API。
+  const bestByCode = new Map<string, ValidatedAssignment>()
+  for (const a of validatedAssignments) {
+    const prev = bestByCode.get(a.episode_code)
+    if (!prev || a.confidence > prev.confidence) bestByCode.set(a.episode_code, a)
+  }
+  const dedupedAssignments = [...bestByCode.values()]
+  journal.step('seasonSweepDedup', { before: validAssignments.length, validated: validatedAssignments.length, after: dedupedAssignments.length })
+
+  const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
+  let apiCallsUsed = 0
+  let consecutiveFails = 0
+  const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
+  // 一个候选(即一个物理文件)最多覆盖一集：按 "candidate_id#fileIndex" 去重。真整季散装候选
+  // (每集各有独立文件、fileIndex 各不相同)不受影响；单文件候选被映射到多集时第 2+ 次必被拒。
+  const usedFiles = new Set<string>()
+
+  for (const assignment of dedupedAssignments) {
+    // 与季包升格路径（line ~348）对齐的熔断：连续 3 次 resolve 失败视为源抖动/限流，
+    // 停止继续为剩余集打 API（而不是逐集都打一次直到自然耗尽预算）。
+    if (consecutiveFails >= 3) {
+      journal.step('seasonSweepCircuitBreak', { after: coveredEpisodes.length })
+      break
+    }
     if (apiCallsUsed >= budget) {
       skipped.push({ episode: assignment.episode_code, reason: 'api call budget exhausted' })
       continue
@@ -478,41 +619,24 @@ async function runSeasonSweep(
       continue
     }
 
+    const { candidate, parsedKey: parsed, fileIndex } = assignment
+    const fileKey = `${candidateKey(parsed)}#${fileIndex ?? 'default'}`
+    if (usedFiles.has(fileKey)) {
+      skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.episode_code} file ${fileIndex ?? 'default'} already covers another episode — rejecting single-file fan-out across episodes` })
+      continue
+    }
+    usedFiles.add(fileKey)
+
     try {
-      let parsed = parseCandidateKey(assignment.candidate_id)
-      let candidate = parsed ? candidates.find(c => candidateKey(c) === assignment.candidate_id) : undefined
-      // LLM 自愈：与单集 gate（core/gate.ts）对称——模型偶尔丢 "provider:" 前缀只回裸 providerId。
-      // 仅在候选池内恰好一个候选命中该裸 id 才自愈；0 或 2+ 命中（跨 provider id 碰撞）维持 fail-safe 跳过。
-      if (!parsed && !assignment.candidate_id.includes(':')) {
-        const matches = candidates.filter(c => c.providerId === assignment.candidate_id)
-        if (matches.length === 1) {
-          candidate = matches[0]
-          parsed = { provider: candidate.provider, providerId: candidate.providerId }
-        }
-      }
-      if (!parsed) {
-        skipped.push({ episode: assignment.episode_code, reason: 'invalid candidate_id' })
-        continue
-      }
-      if (!candidate) {
-        skipped.push({ episode: assignment.episode_code, reason: 'candidate not in pool' })
-        continue
-      }
-
-      // 单集候选通常单文件；多文件时选含对应 episode code 的文件，选不出则用第一个字幕文件
-      const subtitleFiles = candidate.fileList.filter(f => /\.(srt|ass|ssa)$/i.test(f.name))
-      let fileIndex: number | null = null
-      if (subtitleFiles.length > 0) {
-        const matched = subtitleFiles.find(f => f.name.includes(assignment.episode_code))
-        fileIndex = matched ? matched.index : subtitleFiles[0].index
-      }
-
+      // 预算计数放在 resolve 调用之前：失败尝试也要算进 apiCallsUsed，否则 406/限流风暴下
+      // resolveDownload 全灭、预算守卫永不触发，整季逐集都会各打一次（budget 形同虚设）。
+      apiCallsUsed++
       const resolved = await deps.providers.resolveDownload({
         provider: parsed.provider,
         providerId: parsed.providerId,
         fileIndex,
       })
-      apiCallsUsed++
+      consecutiveFails = 0
 
       const dl = await deps.download(resolved.url)
       const written = await writeSubtitle({
@@ -520,10 +644,11 @@ async function runSeasonSweep(
         videoFilename: epMeta.videoFilename, langTag: ctx.preferences.language,
         outDir: dirname(epMeta.videoPath),
       })
-      const providerRef = candidateKey(parsed) // == assignment.candidate_id（parseCandidateKey 已验证格式）
+      const providerRef = candidateKey(parsed)
       coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: written.path, providerRef })
       try { await deps.seasonPack!.onCovered(epMeta, written.path, providerRef) } catch { /* 观测/联动不影响主流程 */ }
     } catch (e) {
+      consecutiveFails++
       skipped.push({ episode: assignment.episode_code, reason: String(e) })
     }
   }
