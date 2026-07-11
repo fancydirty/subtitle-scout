@@ -570,6 +570,18 @@ async function runSeasonSweep(
           continue
         }
         fileIndex = matched.index
+      } else {
+        // OS 风格的散装候选没有 fileList（单文件 provider，见 adapters/providers/opensubtitles.ts
+        // osToCandidates——providerId=file_id，fileList 恒为 []）。这类候选之前完全跳过结构校验、
+        // 直接放行——一次 LLM 幻觉映射即可无验证写盘（防串号铁律的一个缺口）。回退校验
+        // candidate 级元数据（videoName/nativeName 常带发布名，通常含集号信号）；两者都没有可识别
+        // 信号时 fail-safe 跳过——错误写入是永久的，跳过只是这次不覆盖、下次还能再来。
+        const metaMatch = matchesEpisodeCode(candidate.videoName ?? '', assignment.episode_code)
+          || matchesEpisodeCode(candidate.nativeName ?? '', assignment.episode_code)
+        if (!metaMatch) {
+          skipped.push({ episode: assignment.episode_code, reason: `candidate ${assignment.candidate_id} has an empty fileList and no recognizable episode signal in videoName/nativeName for ${assignment.episode_code} — refusing to write unverified` })
+          continue
+        }
       }
 
       const fileKey = `${candidateKey(parsed)}#${fileIndex ?? 'default'}`
