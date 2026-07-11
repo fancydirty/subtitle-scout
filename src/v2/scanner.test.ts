@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { classifyItem, scanLibrary, type OriginResolver } from './scanner.js'
-import type { JellyfinItem } from '../adapters/players/jellyfin.js'
+import { JellyfinItemNotFoundError, type JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
+import { TmdbClient, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
 
 let lib: LibraryRepo
 beforeEach(() => {
@@ -690,5 +691,78 @@ describe('scanLibrary', () => {
     })
     expect(calls).toBe(1) // failure memoized for the scan
     expect(lib.getSeriesOriginLang('s9')).toBeNull() // and still nothing cached
+  })
+  describe('production-shaped origin resolver wiring (resolveTmdbRefStrict + TmdbClient, mirrors cli/index.ts originFor)', () => {
+    // 直接照抄 cli/index.ts 的 originFor 接线形状（resolveTmdbRefStrict + tmdb.getOriginLanguage），
+    // 不能只在 tmdb.ts 单测里验证函数签名——审查发现的核心缺陷正是"生产接线没用上它"，
+    // 所以这里必须连着 scanLibrary 一起跑，才能锚住"接线正确"这件事本身。
+    function makeProductionResolver(
+      jfGetItem: (id: string) => Promise<JellyfinItem>,
+      tmdbFetchImpl: typeof fetch,
+    ): OriginResolver {
+      const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: tmdbFetchImpl })
+      return {
+        originFor: async item => {
+          const ref = await resolveTmdbRefStrict(item, jfGetItem)
+          return ref ? tmdb.getOriginLanguage(ref.mediaType, ref.tmdbId) : null
+        },
+      }
+    }
+
+    it('Jellyfin transient failure (episode→series getItem throws, not not-found) during scan: nothing cached, heuristic suppressed this scan, item re-resolves next scan', async () => {
+      const jfGetItem1 = vi.fn(async (): Promise<JellyfinItem> => { throw new Error('jellyfin GET /Items: HTTP 503') })
+      const resolver1 = makeProductionResolver(jfGetItem1, vi.fn() as unknown as typeof fetch)
+      const pages1 = [
+        [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: '怪奇物语', ProductionLocations: [] })],
+        [],
+      ]
+      const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
+      await scanLibrary(jf1, lib, {
+        pageSize: 50,
+        fileExists: () => false,
+        mappings,
+        skipChineseOrigin: true,
+        resolver: resolver1,
+      })
+      expect(lib.getSeriesOriginLang('s9')).toBeNull() // nothing cached — must retry, not sentinel
+      expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // CJK title heuristic suppressed during outage, NOT ignored
+
+      // Next scan: Jellyfin recovered; series genuinely has no Tmdb provider id → real no-data, safe to cache.
+      const jfGetItem2 = vi.fn(async (): Promise<JellyfinItem> => ({ Type: 'Series', ProviderIds: {} } as JellyfinItem))
+      const resolver2 = makeProductionResolver(jfGetItem2, vi.fn() as unknown as typeof fetch)
+      const pages2 = [
+        [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: '怪奇物语', ProductionLocations: [] })],
+        [],
+      ]
+      const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
+      await scanLibrary(jf2, lib, {
+        pageSize: 50,
+        fileExists: () => false,
+        mappings,
+        skipChineseOrigin: true,
+        resolver: resolver2,
+      })
+      expect(jfGetItem2).toHaveBeenCalled() // re-resolved — not short-circuited by a stale outage state
+      expect(lib.getSeriesOriginLang('s9')).toBe('unknown') // genuine no-data now cached
+    })
+
+    it('Jellyfin genuine not-found (series deleted) during scan: resolver returns null → sentinel cached, same as no-data', async () => {
+      const jfGetItem = vi.fn(async (): Promise<JellyfinItem> => { throw new JellyfinItemNotFoundError('s9') })
+      const resolver = makeProductionResolver(jfGetItem, vi.fn() as unknown as typeof fetch)
+      const pages = [
+        [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9', ProductionLocations: [] })],
+        [],
+      ]
+      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+      await scanLibrary(jf, lib, {
+        pageSize: 50,
+        fileExists: () => false,
+        mappings,
+        skipChineseOrigin: true,
+        resolver,
+      })
+      expect(lib.getSeriesOriginLang('s9')).toBe('unknown') // genuine no-data → sentinel cached, won't retry forever
+      expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+    })
   })
 })
