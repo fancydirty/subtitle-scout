@@ -97,8 +97,11 @@ export class OpenSubtitlesClient {
         status = res.status
         if (!res.ok) throw new OsHttpError(endpoint, res.status)
         const body = await res.json()
+        // schema.parse 必须先于 onApiCall(success)：否则解析失败会先记一次"成功"再在 catch 里记一次
+        // "失败"，同一个 HTTP 请求上报两次 api_call（其一是假成功）。
+        const parsed = schema.parse(body)
         this.opts.onApiCall?.({ endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0 })
-        return schema.parse(body)
+        return parsed
       } catch (e) {
         this.opts.onApiCall?.({ endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0, error: String(e) })
         if (e instanceof OsHttpError) {

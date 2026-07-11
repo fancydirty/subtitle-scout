@@ -141,6 +141,22 @@ describe('OpenSubtitlesClient.resolveDownload', () => {
   })
 })
 
+describe('OpenSubtitlesClient onApiCall accounting', () => {
+  it('emits exactly one onApiCall per HTTP request when schema.parse throws (no false success)', async () => {
+    const calls: { status: number | null; error?: string }[] = []
+    // 200 OK but body has no `link` field -> OsDownloadResponseSchema.parse throws.
+    // Zod failures are treated like network errors (retried once) -> 2 HTTP attempts total.
+    const client = makeClient((() => okJson({ file_name: 'no-link-field.srt' })) as never, {
+      onApiCall: r => calls.push({ status: r.status, error: r.error }),
+      networkRetryDelayMs: 0,
+    })
+    await expect(client.resolveDownload(1)).rejects.toThrow()
+    // exactly one onApiCall per attempt (2 attempts), never a false "success" entry
+    expect(calls.length).toBe(2)
+    for (const c of calls) expect(c.error).toBeDefined()
+  })
+})
+
 describe('AbortSignal timeout coverage', () => {
   it('search request init carries an AbortSignal (matches assrt/tmdb clients)', async () => {
     let captured: RequestInit | null = null
