@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { classifyItem, scanLibrary, type OriginResolver } from './scanner.js'
-import type { JellyfinItem } from '../adapters/players/jellyfin.js'
+import { JellyfinItemNotFoundError, type JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
+import { TmdbClient, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
 
 let lib: LibraryRepo
 beforeEach(() => {
@@ -173,7 +174,6 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
     const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
     expect(status).toBe('missing')
   })
-
 
   it('skipChineseOrigin=false disables ALL origin skipping (zh still processed)', () => {
     const item = movieItem({ ProductionLocations: [] })
@@ -533,5 +533,396 @@ describe('scanLibrary', () => {
     })
     expect(lib.getMovieOriginLang('m1')).toBe('zh')
     expect(lib.getMovie('m1')!.sub_status).toBe('ignored')
+  })
+
+  it('resolver FAILURE (series): nothing cached — origin re-resolved next scan, gate recovers', async () => {
+    // 核心缺陷回归：TMDB 一次故障绝不能把 ORIGIN_UNKNOWN 哨兵写进缓存——
+    // 否则该系列的权威 origin gate 被永久关闭（没有任何路径清 origin_lang）。
+    // 瞬时失败必须留空（下轮 scan 重试），与正向路径"解析成功才写缓存"对称。
+    let calls = 0
+    const failingResolver: OriginResolver = {
+      originFor: async () => { calls++; throw new Error('TMDB down') },
+    }
+
+    const pages1 = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(calls).toBe(1)
+    expect(lib.getSeriesOriginLang('s9')).toBeNull() // NOT the 'unknown' sentinel
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // scan 本身不炸，条目照常入库
+
+    // TMDB 恢复后的下一轮 scan：必须重新回查（缓存为空），权威 gate 立即生效。
+    const recoveredResolver: OriginResolver = { originFor: async () => { calls++; return 'zh' } }
+    const pages2 = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: recoveredResolver,
+    })
+    expect(calls).toBe(2) // re-resolved (a cached sentinel would have short-circuited this)
+    expect(lib.getSeriesOriginLang('s9')).toBe('zh')
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+  })
+
+  it('resolver FAILURE (movie): nothing cached — origin re-resolved next scan, gate recovers', async () => {
+    let calls = 0
+    const failingResolver: OriginResolver = {
+      originFor: async () => { calls++; throw new Error('TMDB down') },
+    }
+    const pages1 = [[movieItem({ Id: 'm9', ProductionLocations: [] })], []]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages1.shift() ?? []),
+    }
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(calls).toBe(1)
+    expect(lib.getMovieOriginLang('m9')).toBeNull() // NOT the 'unknown' sentinel
+    expect(lib.getMovie('m9')!.sub_status).toBe('missing')
+
+    const recoveredResolver: OriginResolver = { originFor: async () => { calls++; return 'zh' } }
+    const pages2 = [[movieItem({ Id: 'm9', ProductionLocations: [] })], []]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages2.shift() ?? []),
+    }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: recoveredResolver,
+    })
+    expect(calls).toBe(2)
+    expect(lib.getMovieOriginLang('m9')).toBe('zh')
+    expect(lib.getMovie('m9')!.sub_status).toBe('ignored')
+  })
+
+  it('resolver FAILURE + Chinese-looking localized title of a non-Chinese show → NOT ignored (title heuristic suppressed during outage)', async () => {
+    // 与"genuine no-data → 标题启发式兜底生效"的关键区别：no-data 时启发式是仅剩的最好信号，
+    // 而瞬时失败时我们明知下轮 scan 就有权威数据——绝不能凭粗糙的标题启发式先把
+    // 中文化命名的外国剧（无 ProductionLocations 刮削数据）打成 ignored。
+    const failingResolver: OriginResolver = {
+      originFor: async () => { throw new Error('TMDB down') },
+    }
+    const pages = [
+      [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: '怪奇物语', ProductionLocations: [] })],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // NOT ignored
+    expect(lib.getSeriesOriginLang('s9')).toBeNull()
+  })
+
+  it('resolver FAILURE + authoritative Chinese ProductionLocations → still ignored this scan (authoritative evidence unaffected by outage), origin NOT cached', async () => {
+    // ProductionLocations 是权威信号（合并规则：权威证据 outranks 标题启发式），
+    // TMDB 挂掉不影响它的效力——真国产条目在故障窗口内照样 ignored。
+    // 但 origin_lang 缓存仍必须留空，下轮 scan 重新问 TMDB。
+    const failingResolver: OriginResolver = {
+      originFor: async () => { throw new Error('TMDB down') },
+    }
+    const pages = [
+      [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9', ProductionLocations: ['China'] })],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+    expect(lib.getSeriesOriginLang('s9')).toBeNull()
+  })
+
+  it('resolver FAILURE memoized within a single scan — one attempt per series, not per episode', async () => {
+    // 故障窗口内不能退化回 O(集数) 的外部调用（resolver 每次 15s 超时的话，
+    // 100 集的剧一轮 scan 就挂 25 分钟）；同一系列本轮只试一次，下轮 scan 再重试。
+    let calls = 0
+    const failingResolver: OriginResolver = {
+      originFor: async () => { calls++; throw new Error('TMDB down') },
+    }
+    const pages = [
+      [
+        epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e2', 1, 2, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e3', 1, 3, { SeriesId: 's9', SeriesName: 'Series 9' }),
+      ],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = {
+      getItemsPage: vi.fn(async () => pages.shift() ?? []),
+    }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(calls).toBe(1) // failure memoized for the scan
+    expect(lib.getSeriesOriginLang('s9')).toBeNull() // and still nothing cached
+  })
+
+  it('cached series origin (zh) + THROWING resolver this scan → resolver not called, cached value still classifies ignored', async () => {
+    // 回归锚点：resolver 缓存命中路径必须完全绕开 resolver 调用，哪怕 resolver 本身这一轮
+    // 会抛错——命中缓存意味着"已有权威答案"，不该因为 resolver 这一刻恰好不可用就重新触发。
+    lib.upsertSeries({ id: 's9', name: 'Series 9', posterTag: null })
+    lib.setSeriesOriginLang('s9', 'zh')
+    let calls = 0
+    const throwingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: throwingResolver,
+    })
+    expect(calls).toBe(0) // cache hit — resolver never consulted despite being wired to throw
+    expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
+    expect(lib.getSeriesOriginLang('s9')).toBe('zh') // untouched
+  })
+
+  it('cached series origin (unknown sentinel) + THROWING resolver this scan → resolver not called, cached sentinel untouched', async () => {
+    lib.upsertSeries({ id: 's9', name: 'Series 9', posterTag: null })
+    lib.setSeriesOriginLang('s9', 'unknown')
+    let calls = 0
+    const throwingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages = [[epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9', ProductionLocations: ['United States'] })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: throwingResolver,
+    })
+    expect(calls).toBe(0) // cache hit (sentinel counts as cached) — resolver never consulted
+    expect(lib.getSeriesOriginLang('s9')).toBe('unknown') // untouched, still the sentinel
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // no China signal → normal fallback, not ignored
+  })
+
+  it('resolver failure (series) logs a warning identifying the series, once per scan (not per episode)', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const failingResolver: OriginResolver = { originFor: async () => { throw new Error('TMDB down') } }
+    const pages = [
+      [
+        epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9' }),
+        epItem('e2', 1, 2, { SeriesId: 's9', SeriesName: 'Series 9' }),
+      ],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    const originWarnings = consoleWarn.mock.calls.filter(c => String(c[0]).includes('s9'))
+    expect(originWarnings).toHaveLength(1) // logged once for the series, not once per episode
+    expect(String(originWarnings[0][0])).toContain('Series 9')
+    consoleWarn.mockRestore()
+  })
+
+  it('resolver failure (movie) logs a warning identifying the movie', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const failingResolver: OriginResolver = { originFor: async () => { throw new Error('TMDB down') } }
+    const pages = [[movieItem({ Id: 'm9', Name: 'Some Movie', ProductionLocations: [] })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('m9'))
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('Some Movie'))
+    consoleWarn.mockRestore()
+  })
+
+  it('resolver circuit breaker: N consecutive failures within a scan stop paying resolver cost per remaining movie; resets next scan', async () => {
+    // finding #4: movies 没有系列级 O(集数) 放大问题（每部电影本轮只出现一次），
+    // 但 TMDB 大范围故障时仍会让"每部未解析电影都各付一次 15s 超时"——用 scan 内熔断器
+    // 兜底：连续失败达到阈值后，本轮剩余条目（不分电影/剧集）直接跳过 resolver。
+    let calls = 0
+    const failingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages1 = [
+      [
+        movieItem({ Id: 'm1', ProductionLocations: [] }),
+        movieItem({ Id: 'm2', ProductionLocations: [] }),
+        movieItem({ Id: 'm3', ProductionLocations: [] }),
+        movieItem({ Id: 'm4', ProductionLocations: [] }),
+        movieItem({ Id: 'm5', ProductionLocations: [] }),
+      ],
+      [],
+    ]
+    const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await scanLibrary(jf1, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(calls).toBe(3) // breaker opens on the 3rd consecutive failure; m4/m5 never pay the resolver's timeout
+    expect(lib.getMovie('m4')!.sub_status).toBe('missing')
+    expect(lib.getMovie('m5')!.sub_status).toBe('missing')
+    for (const id of ['m1', 'm2', 'm3', 'm4', 'm5']) expect(lib.getMovieOriginLang(id)).toBeNull()
+    consoleWarn.mockRestore()
+
+    // Next scan: breaker state must not leak across scans — a working resolver resolves every movie again.
+    calls = 0
+    const recoveredResolver: OriginResolver = { originFor: async () => { calls++; return 'zh' } }
+    const pages2 = [
+      [movieItem({ Id: 'm1', ProductionLocations: [] }), movieItem({ Id: 'm2', ProductionLocations: [] })],
+      [],
+    ]
+    const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
+    await scanLibrary(jf2, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: recoveredResolver,
+    })
+    expect(calls).toBe(2) // both resolved fresh — breaker did not carry over from the previous scan
+    expect(lib.getMovieOriginLang('m1')).toBe('zh')
+    expect(lib.getMovieOriginLang('m2')).toBe('zh')
+  })
+
+  it('resolver circuit breaker is scan-global: trips on series failures too, then also skips a movie later in the same scan', async () => {
+    let calls = 0
+    const failingResolver: OriginResolver = { originFor: async () => { calls++; throw new Error('TMDB down') } }
+    const pages = [
+      [
+        epItem('e1', 1, 1, { SeriesId: 's1', SeriesName: 'S1', ProductionLocations: [] }),
+        epItem('e2', 1, 1, { SeriesId: 's2', SeriesName: 'S2', ProductionLocations: [] }),
+        epItem('e3', 1, 1, { SeriesId: 's3', SeriesName: 'S3', ProductionLocations: [] }),
+        movieItem({ Id: 'm1', ProductionLocations: [] }),
+      ],
+      [],
+    ]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await scanLibrary(jf, lib, {
+      pageSize: 50,
+      fileExists: () => false,
+      mappings,
+      skipChineseOrigin: true,
+      resolver: failingResolver,
+    })
+    expect(calls).toBe(3) // breaker opened on the 3rd series failure; the movie afterward never calls resolver
+    expect(lib.getMovieOriginLang('m1')).toBeNull()
+    expect(lib.getMovie('m1')!.sub_status).toBe('missing')
+    consoleWarn.mockRestore()
+  })
+
+  describe('production-shaped origin resolver wiring (resolveTmdbRefStrict + TmdbClient, mirrors cli/index.ts originFor)', () => {
+    // 直接照抄 cli/index.ts 的 originFor 接线形状（resolveTmdbRefStrict + tmdb.getOriginLanguage），
+    // 不能只在 tmdb.ts 单测里验证函数签名——审查发现的核心缺陷正是"生产接线没用上它"，
+    // 所以这里必须连着 scanLibrary 一起跑，才能锚住"接线正确"这件事本身。
+    function makeProductionResolver(
+      jfGetItem: (id: string) => Promise<JellyfinItem>,
+      tmdbFetchImpl: typeof fetch,
+    ): OriginResolver {
+      const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: tmdbFetchImpl })
+      return {
+        originFor: async item => {
+          const ref = await resolveTmdbRefStrict(item, jfGetItem)
+          return ref ? tmdb.getOriginLanguage(ref.mediaType, ref.tmdbId) : null
+        },
+      }
+    }
+
+    it('Jellyfin transient failure (episode→series getItem throws, not not-found) during scan: nothing cached, heuristic suppressed this scan, item re-resolves next scan', async () => {
+      const jfGetItem1 = vi.fn(async (): Promise<JellyfinItem> => { throw new Error('jellyfin GET /Items: HTTP 503') })
+      const resolver1 = makeProductionResolver(jfGetItem1, vi.fn() as unknown as typeof fetch)
+      const pages1 = [
+        [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: '怪奇物语', ProductionLocations: [] })],
+        [],
+      ]
+      const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
+      await scanLibrary(jf1, lib, {
+        pageSize: 50,
+        fileExists: () => false,
+        mappings,
+        skipChineseOrigin: true,
+        resolver: resolver1,
+      })
+      expect(lib.getSeriesOriginLang('s9')).toBeNull() // nothing cached — must retry, not sentinel
+      expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // CJK title heuristic suppressed during outage, NOT ignored
+
+      // Next scan: Jellyfin recovered; series genuinely has no Tmdb provider id → real no-data, safe to cache.
+      const jfGetItem2 = vi.fn(async (): Promise<JellyfinItem> => ({ Type: 'Series', ProviderIds: {} } as JellyfinItem))
+      const resolver2 = makeProductionResolver(jfGetItem2, vi.fn() as unknown as typeof fetch)
+      const pages2 = [
+        [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: '怪奇物语', ProductionLocations: [] })],
+        [],
+      ]
+      const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
+      await scanLibrary(jf2, lib, {
+        pageSize: 50,
+        fileExists: () => false,
+        mappings,
+        skipChineseOrigin: true,
+        resolver: resolver2,
+      })
+      expect(jfGetItem2).toHaveBeenCalled() // re-resolved — not short-circuited by a stale outage state
+      expect(lib.getSeriesOriginLang('s9')).toBe('unknown') // genuine no-data now cached
+    })
+
+    it('Jellyfin genuine not-found (series deleted) during scan: resolver returns null → sentinel cached, same as no-data', async () => {
+      const jfGetItem = vi.fn(async (): Promise<JellyfinItem> => { throw new JellyfinItemNotFoundError('s9') })
+      const resolver = makeProductionResolver(jfGetItem, vi.fn() as unknown as typeof fetch)
+      const pages = [
+        [epItem('e1', 1, 1, { SeriesId: 's9', SeriesName: 'Series 9', ProductionLocations: [] })],
+        [],
+      ]
+      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+      await scanLibrary(jf, lib, {
+        pageSize: 50,
+        fileExists: () => false,
+        mappings,
+        skipChineseOrigin: true,
+        resolver,
+      })
+      expect(lib.getSeriesOriginLang('s9')).toBe('unknown') // genuine no-data → sentinel cached, won't retry forever
+      expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+    })
   })
 })

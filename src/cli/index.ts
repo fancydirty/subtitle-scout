@@ -11,7 +11,7 @@ import type { Journal } from '../core/journal.js'
 import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
-import { TmdbClient, tmdbTitles, resolveTmdbRef } from '../adapters/providers/tmdb.js'
+import { TmdbClient, tmdbTitles, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { makeCliProviderPort } from '../core/providerPort.js'
 import { providerErrorFields } from './fetchLib.js'
@@ -283,10 +283,14 @@ async function cmdWatch() {
 
   // TMDB origin_lang 解析器：有 tmdb（TMDB_API_KEY 已配置）才接线，否则 undefined——
   // scanLibrary 退化到 classifyItem 的 ProductionLocations/标题启发式兜底梯队。
+  // 用 resolveTmdbRefStrict（而非 resolveTmdbRef）：Episode→series 回查若是 Jellyfin 请求
+  // 瞬时失败（网络/5xx），必须原样向上抛出，scanLibrary 才能按"本轮不解析"处理（不落
+  // ORIGIN_UNKNOWN 哨兵、标题启发式兜底也被压制）；resolveTmdbRef 的静默吞错语义只适合
+  // tmdbTitles 那类增益路径，接在这里会把 Jellyfin 抖动误判成"查无数据"并永久缓存。
   const originResolver: OriginResolver | undefined = tmdb
     ? {
         originFor: async item => {
-          const ref = await resolveTmdbRef(item, id => jf.getItem(id))
+          const ref = await resolveTmdbRefStrict(item, id => jf.getItem(id))
           return ref ? tmdb.getOriginLanguage(ref.mediaType, ref.tmdbId) : null
         },
       }
