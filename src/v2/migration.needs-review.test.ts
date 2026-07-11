@@ -115,4 +115,58 @@ describe('migration: needs_review sub_status（episodes/movies CHECK 约束扩�
     ).toThrow(/FOREIGN KEY constraint failed/)
     db.close()
   })
+
+  it('迁移前置体检：v3 存量库里蛰伏的孤儿 episode（series_id 指向已不存在的 series）在 v5 重建表之前就被清楚拦下，不是半途 FK 崩溃回滚', () => {
+    // 复现：老库在某次 foreign_keys=OFF 的会话里写入过一行 series_id 指向不存在 series
+    // 的 episode（比如直接用 sqlite3 CLI 改数据、或从旧备份 .dump 导回未逐条校验）——
+    // 声明的外键从未在写入时被真正验证过，数据静静地蛰伏着。之后升级到本次 needs_review
+    // 迁移（v5）：episodes 要被拷进新建的 episodes_new（同样声明该外键，且 openDb 已经把
+    // foreign_keys pragma 打开），INSERT INTO ... SELECT 撞见这行孤儿数据时会在建表迁移
+    // 中途抛 FOREIGN KEY constraint failed。修正前：单事务迁移虽然干净回滚回 v3，但守护
+    // 进程接下来每次启动都拿着这句晦涩报错反复炸，直到有人翻 SQL 手工揪出脏行。修正后：
+    // openDb 在动手迁移之前先 PRAGMA foreign_key_check 体检一遍，抛出指名表名/rowid 的
+    // 清楚报错，db 完全没进入迁移事务，原地留在 v3。
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'scout-mig-orphan-')), 'scout.db')
+
+    const raw = new Database(dbPath)
+    for (let i = 0; i < 3; i++) raw.exec(MIGRATIONS[i]) // 手工建到 v3（早于本次 needs_review 迁移）
+    raw.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '3')").run()
+
+    const now = Date.now()
+    // better-sqlite3 默认把 foreign_keys pragma 打开，所以要显式关掉才能塞进这行孤儿
+    // 数据——模拟它是在某次外键校验关闭的窗口期写入、从未被验证过的历史脏数据。
+    raw.pragma('foreign_keys = OFF')
+    raw
+      .prepare(
+        `INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+         VALUES ('e-orphan', 'no-such-series', 1, 1, 'E1', '/tv/e1.mkv', 'missing', ?)`
+      )
+      .run(now)
+    raw.close()
+
+    let caught: unknown
+    try {
+      openDb(dbPath)
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    const message = (caught as Error).message
+    expect(message).toMatch(/外键违例/)
+    expect(message).toMatch(/episodes/)
+    expect(message).toMatch(/e-orphan/)
+
+    // db 原地留在 v3——迁移完全没执行，不是跑到一半又回滚
+    const check = new Database(dbPath)
+    expect(check.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
+      value: '3',
+    })
+    // v4 加的 error_attempt 列不存在，证实迁移事务连开都没开
+    const jobsCols = (check.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map(
+      (c) => c.name
+    )
+    expect(jobsCols).not.toContain('error_attempt')
+    check.close()
+  })
 })

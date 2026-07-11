@@ -174,6 +174,41 @@ export function openDb(path: string): ScoutDb {
 
   // 执行未应用的迁移
   if (currentVersion < MIGRATIONS.length) {
+    // Pre-flight: v5 迁移会拿 episodes/movies 里的存量行原样拷进新建的 episodes_new/
+    // movies_new（同样声明 series_id → series(id) 外键），期间 foreign_keys 已被上面的
+    // pragma 打开——若库里蛰伏着孤儿行（比如 series 行曾被手工删除、或数据是在
+    // foreign_keys=OFF 时代写入的，从未被现有约束真正验证过），INSERT 会在建表迁移中途
+    // 撞上 FOREIGN KEY constraint failed。单事务迁移因此干净回滚回 currentVersion，
+    // 但守护进程接下来每次启动都会拿着这句晦涩报错反复炸，直到有人翻 SQL 手工揪出脏行。
+    // 这里在动手改表之前先体检一遍，把违例行（表名+rowid）摊开写进报错，一步到位可操作。
+    const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
+      table: string
+      rowid: number | string | null
+      parent: string
+      fkid: number
+    }>
+    if (violations.length > 0) {
+      const detail = violations
+        .map((v) => {
+          let idNote = ''
+          try {
+            const row = db.prepare(`SELECT id FROM "${v.table}" WHERE rowid = ?`).get(v.rowid) as
+              | { id: unknown }
+              | undefined
+            if (row?.id !== undefined) idNote = ` (id=${JSON.stringify(row.id)})`
+          } catch {
+            // 表没有 id 列或查询失败——rowid 已足够定位，静默降级
+          }
+          return `${v.table} rowid=${v.rowid ?? '?'}${idNote} → 缺失 ${v.parent} 的外键引用`
+        })
+        .join('; ')
+      const message =
+        `数据库存在外键违例，无法安全迁移（schema v${currentVersion} → v${MIGRATIONS.length}）：${detail}。` +
+        `请先手工修复（删除孤儿行或补全被引用的父行）后再重启 —— 迁移未执行，数据库仍停留在 v${currentVersion}。`
+      db.close() // 不留半开连接：修复者接下来大概率要用另一个连接直接改数据
+      throw new Error(message)
+    }
+
     const migrate = db.transaction(() => {
       for (let i = currentVersion; i < MIGRATIONS.length; i++) {
         db.exec(MIGRATIONS[i])
