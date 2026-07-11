@@ -35,6 +35,9 @@ export interface ExecutorDeps {
     selected?: { provider: string; provider_id: string } | null
     /** pipeline stats（llmCalls/apiCalls）→ runs.llm_calls/assrt_calls；异常路径（如 throw）拿不到，record() 落 null */
     stats?: { llmCalls: number; apiCalls: number }
+    /** 透传自 PipelineResult.quotaExhausted（OS 配额耗尽）：resetAt 有效时 jobsRepo.completeError
+     *  据此精确退避，而不是走盲的 ERROR_BACKOFF_MS 短退避阶梯（否则会在配额重置前反复重打全链路）。 */
+    quotaExhausted?: { resetAt: string | null } | null
   }>
   now: () => number
   log: (msg: string) => void
@@ -246,9 +249,11 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // C1: 0 coverage, transient decisions (error / retry_later / unknown) → short-backoff error track.
     // 根因：pipeline 外层 catch 是 return finish('error') 而非 throw，瞬时错误若走内容轨
     // 会 5 次即 dormant 30 天。
+    // quota_exhausted（OS 配额耗尽）+ resetAt 有效时，jobsRepo.completeError 按 resetAt 精确退避，
+    // 而不是走这条轨盲的 ERROR_BACKOFF_MS 阶梯（否则会在配额重置前反复重打全链路白烧配额）。
     const cause = briefCause(result.reasons?.[0])
     record(
-      jobs.completeError(job.id, result.reasons?.[0] ?? `pipeline decision: ${decision}`, now()),
+      jobs.completeError(job.id, result.reasons?.[0] ?? `pipeline decision: ${decision}`, now(), result.quotaExhausted?.resetAt),
       decision,
       cause ? `遇到临时错误，稍后自动重试：${cause}` : '遇到临时错误，稍后自动重试',
       journalPath,
@@ -351,6 +356,7 @@ export function makeRunEpisode(
       reasons: result.reasons ?? [],
       selected: result.selected ?? null,
       stats: { llmCalls: result.stats.llmCalls, apiCalls: result.stats.apiCalls },
+      quotaExhausted: result.quotaExhausted,
     }
   }
 }

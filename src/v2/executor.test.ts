@@ -249,6 +249,45 @@ describe('executor', () => {
     expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
   })
 
+  it('C1+quota: decision=error carrying quotaExhausted.resetAt → next_retry_at aligned to resetAt, not the short ladder', async () => {
+    // 复现 bug：OS 20/日配额耗尽后，若这里丢了 resetAt，job 会在配额重置前每至多 15min 重打一次
+    // 完整 identify+plan+search+/download，白烧 LLM/search 配额。
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    const resetAt = new Date(now + 3 * 3_600_000).toISOString()
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'error', journalPath: '/journals/quota.json',
+      reasons: ['opensubtitles download quota exhausted'],
+      quotaExhausted: { resetAt },
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    const finalJob = jobs.get(job.id)!
+    expect(finalJob.state).toBe('failed')
+    expect(finalJob.next_retry_at).toBeGreaterThan(now + ERROR_BACKOFF_MS[ERROR_BACKOFF_MS.length - 1])
+    expect(finalJob.next_retry_at).toBeGreaterThanOrEqual(Date.parse(resetAt))
+  })
+
+  it('C1+quota: quotaExhausted present but resetAt null (proactive signal, no reset time) → falls back to the short ladder', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'error', journalPath: '/journals/quota.json',
+      reasons: ['opensubtitles download quota exhausted'],
+      quotaExhausted: { resetAt: null },
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    const finalJob = jobs.get(job.id)!
+    expect(finalJob.next_retry_at).toBe(now + ERROR_BACKOFF_MS[0])
+  })
+
   it('I4: 租约被回收后 complete* 守卫失败 → warn 日志 + runs.detail 带弃置后缀', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
