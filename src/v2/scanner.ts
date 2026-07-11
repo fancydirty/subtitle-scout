@@ -34,6 +34,13 @@ export function classifyItem(
     mappings: PathMapping[]
     skipChineseOrigin: boolean
     originLang?: string | null
+    /**
+     * 本轮 origin resolver 请求瞬时失败（TMDB 故障，非"查无数据"）。
+     * 仅压制 rule 1b 的标题启发式：失败窗口内我们明知下轮 scan 就能拿到权威数据，
+     * 不能凭粗糙启发式先把中文化命名的外国剧打成 ignored。ProductionLocations（rule 1）
+     * 是权威证据，不受故障影响照常生效。
+     */
+    originResolutionFailed?: boolean
   }
 ): SubStatus {
   // 0. 国产（TMDB original_language=zh）→ ignored（先于一切，权威信号）
@@ -49,10 +56,13 @@ export function classifyItem(
   //     未命中），该权威证据必须否决这条粗糙的标题启发式——不能让"生活大爆炸"这类中文库名
   //     的西方剧被误伤 ignored（用户永远收不到该剧的字幕，是本 gate 最差的失败模式）。
   //     只有条目完全没有 ProductionLocations（无权威信号可用）时才允许标题启发式兜底。
+  //     resolver 瞬时失败（originResolutionFailed）同样压制本条：那不是"无数据"，
+  //     是"数据暂时拿不到"，下轮 scan 会重试权威信号，等它。
   const hasProductionLocationSignal = (item.ProductionLocations ?? []).length > 0
   if (
     deps.skipChineseOrigin &&
     deps.originLang == null &&
+    !deps.originResolutionFailed &&
     !hasProductionLocationSignal &&
     looksChineseTitle(item.SeriesName ?? item.OriginalTitle)
   ) {
@@ -83,18 +93,27 @@ export function classifyItem(
   return 'missing'
 }
 
-/** TMDB origin_lang 解析器：拿到就返回小写 language code，拿不到（无 TMDB/未匹配/请求失败）返回 null——增益路径，绝不阻塞主流程。 */
+/**
+ * TMDB origin_lang 解析器。三种结果语义严格区分：
+ * - 小写 language code：解析成功；
+ * - null：真·no-data（无 TMDB 引用 / TMDB 明确答复无此数据）——scanner 会负缓存哨兵，不再回查；
+ * - reject（抛错）：请求瞬时失败（网络/超时/TMDB 故障）——scanner 本轮按未解析处理、
+ *   不写任何缓存，下轮 scan 重试。绝不能把 reject 折叠成 null，否则一次 TMDB 故障
+ *   会把故障窗口扫过的全部条目永久打成 unknown（fire-and-forget 违例）。
+ */
 export interface OriginResolver {
   originFor: (item: JellyfinItem) => Promise<string | null>
 }
 
 /**
- * origin_lang 缓存里代表"resolver 已经问过一次、但没问出结果"的哨兵值。
+ * origin_lang 缓存里代表"resolver 已经问过一次、TMDB 明确答复无数据"的哨兵值。
  *
- * 权衡：不区分"这个系列 TMDB 永远查不到"和"这次刚好查不到、以后可能查到"——
- * 一旦写入 'unknown' 就不再重试，直到有人手动清缓存（清空 origin_lang 列）。
- * 换取的是把 O(集数) 的每轮重复回查收敛到 O(系列数) 一次；没有实现按时间间隔
- * 过期重试（仓库目前没有可复用的"定期刷新"模式，避免为此新增基础设施）。
+ * 只在真·no-data（resolver 返回 null：无 TMDB 引用 / 查无此 id / 无 original_language）
+ * 时写入——一旦写入就不再重试，直到有人手动清缓存（清空 origin_lang 列）。换取的是把
+ * O(集数) 的每轮重复回查收敛到 O(系列数) 一次；没有实现按时间间隔过期重试（仓库目前
+ * 没有可复用的"定期刷新"模式，避免为此新增基础设施）。
+ * resolver 抛错（请求瞬时失败）绝不写入本哨兵：那不是"无数据"而是"暂时拿不到"，
+ * 固化它会让一次 TMDB 故障永久关闭故障窗口内所有条目的权威 origin gate。
  * 分类时必须把该哨兵值当 null 处理（见 classifyItem 调用处），否则会误伤
  * rule 1 / rule 1b 的兜底启发式。
  */
@@ -119,6 +138,10 @@ export async function scanLibrary(
 ): Promise<void> {
   const now = opts.now ?? Date.now()
   let startIndex = 0
+  // resolver 瞬时失败的本轮记忆（只活到本次 scanLibrary 结束）：故障窗口内同一系列
+  // 只试一次，避免退化回 O(集数) 的外部调用（每次 15s 超时的话 100 集就是 25 分钟）。
+  // 故意不落库——下轮 scan 从零重试，这正是"瞬时失败不留永久状态"的要求。
+  const failedSeriesOrigins = new Set<string>()
 
   while (true) {
     const items = await jf.getItemsPage(startIndex, opts.pageSize)
@@ -141,14 +164,22 @@ export async function scanLibrary(
         })
 
         // origin_lang：先读缓存，缺失且有 resolver 才回查一次并写回（同系列后续集直接命中缓存）。
-        // 查不出结果（resolved==null）也要写回 ORIGIN_UNKNOWN 哨兵——否则每集都会重新回查
+        // 真·查无结果（resolved==null）才写回 ORIGIN_UNKNOWN 哨兵——否则每集都会重新回查
         // TMDB/Jellyfin，100 集的剧就是每轮 scan 100 次外部调用，永不收敛（见 db.ts:97 "resolve
         // once per series" 的不变式）。分类时把哨兵换算回 null，兜底启发式仍然逐轮生效。
+        // resolver 抛错（瞬时失败）则什么都不缓存：本轮记入 failedSeriesOrigins（同系列不再重试），
+        // 下轮 scan 重新回查——绝不能把一次 TMDB 故障固化成 unknown 哨兵（永久关闭权威 gate）。
         let cachedOriginLang = lib.getSeriesOriginLang(item.SeriesId)
-        if (cachedOriginLang == null && opts.resolver) {
-          const resolved = await opts.resolver.originFor(item)
-          cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
-          lib.setSeriesOriginLang(item.SeriesId, cachedOriginLang)
+        let originResolutionFailed = failedSeriesOrigins.has(item.SeriesId)
+        if (cachedOriginLang == null && opts.resolver && !originResolutionFailed) {
+          try {
+            const resolved = await opts.resolver.originFor(item)
+            cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
+            lib.setSeriesOriginLang(item.SeriesId, cachedOriginLang)
+          } catch {
+            originResolutionFailed = true
+            failedSeriesOrigins.add(item.SeriesId)
+          }
         }
 
         const newStatus = classifyItem(item, {
@@ -156,6 +187,7 @@ export async function scanLibrary(
           mappings: opts.mappings,
           skipChineseOrigin: opts.skipChineseOrigin,
           originLang: resolvedOriginForClassification(cachedOriginLang),
+          originResolutionFailed,
         })
 
         // Preserve unavailable only if reality still says missing
@@ -181,14 +213,20 @@ export async function scanLibrary(
         // origin_lang：先读缓存，缺失且有 resolver 才回查一次；但 movies 行可能是本轮才新建
         // （不像 series 先于 episode 分类而存在），setMovieOriginLang 的 UPDATE 此刻会是空操作。
         // 解出来的值先只留在内存里参与分类，真正写回缓存推迟到 upsertMovie 之后（行必然已存在）。
-        // 查不出结果（resolved==null）也要缓存 ORIGIN_UNKNOWN 哨兵，避免同一部电影每轮 scan
-        // 都重新回查（root cause 与 series 分支一致，见上）。
+        // 真·查无结果（resolved==null）才缓存 ORIGIN_UNKNOWN 哨兵，避免同一部电影每轮 scan
+        // 都重新回查（root cause 与 series 分支一致，见上）。resolver 抛错（瞬时失败）则
+        // 什么都不缓存，下轮 scan 重试（电影每轮只出现一次，无需本轮失败记忆）。
         let cachedOriginLang = lib.getMovieOriginLang(item.Id)
         let originLangToCache: string | null = null
+        let originResolutionFailed = false
         if (cachedOriginLang == null && opts.resolver) {
-          const resolved = await opts.resolver.originFor(item)
-          cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
-          originLangToCache = cachedOriginLang
+          try {
+            const resolved = await opts.resolver.originFor(item)
+            cachedOriginLang = resolved ?? ORIGIN_UNKNOWN
+            originLangToCache = cachedOriginLang
+          } catch {
+            originResolutionFailed = true
+          }
         }
 
         const newStatus = classifyItem(item, {
@@ -196,6 +234,7 @@ export async function scanLibrary(
           mappings: opts.mappings,
           skipChineseOrigin: opts.skipChineseOrigin,
           originLang: resolvedOriginForClassification(cachedOriginLang),
+          originResolutionFailed,
         })
 
         // Preserve unavailable only if reality still says missing
