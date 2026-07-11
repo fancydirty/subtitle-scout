@@ -90,9 +90,15 @@ export class ScoutDaemon {
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         log(`reconcile error (scan or aggregate failed): ${msg}`)
-        // Skip aggregate if scan failed, continue to dispatch
+        // Skip aggregate if scan failed. 稳态（boot 已成功后）中途 scan 抖动不停摆
+        // dispatch；boot 阶段则由下方守卫压制 dispatch。
       }
     }
+
+    // Boot: 首轮 reconcile 成功之前绝不 dispatch——整栈重启时 Jellyfin 未就绪、
+    // boot scan 连续抛错，若照常 dispatch，旧（未过新分类门的）job 会在每个 tick
+    // 被派发，等价于没堵 stale-gate 窗口。
+    if (this.bootReconcilePending) return
 
     // 3. Dispatch: claim jobs up to concurrency limit
     await this.dispatch()

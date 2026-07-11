@@ -120,17 +120,28 @@ describe('ScoutDaemon', () => {
     expect(logs.some(l => l.includes('Simulated error'))).toBe(true)
   })
 
-  it('scan抛错时跳过aggregate但继续dispatch', async () => {
+  it('scan抛错时跳过aggregate但继续dispatch（稳态：boot reconcile 已成功后）', async () => {
+    // 稳态语义：boot reconcile 成功之后，中途某轮 scan 抖动（Jellyfin 瞬时 5xx 等）
+    // 不应停摆 dispatch。boot 阶段的 scan 抛错则相反——见 'boot scan 抛错的 tick 不 dispatch'。
+    let scanCalls = 0
     const scan = vi.fn(async () => {
-      throw new Error('Scan failed')
+      scanCalls++
+      if (scanCalls > 1) throw new Error('Scan failed')
     })
     const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
     const executeJob = vi.fn(async () => {})
 
-    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', '0')`).run()
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-
     const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, executeJob }))
+
+    // Priming tick: boot reconcile 成功，消耗 boot 标志
+    await daemon.tick()
+    scan.mockClear()
+    aggregate.mockClear()
+    executeJob.mockClear()
+
+    // 稳态：到点 reconcile，scan 抛错
+    now += 16 * 60_000
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
     await daemon.tick()
 
     // Scan was attempted
@@ -250,6 +261,36 @@ describe('ScoutDaemon', () => {
     await daemon.tick()
     expect(scan).toHaveBeenCalledTimes(2)
     expect(aggregate).toHaveBeenCalledOnce() // second scan succeeded, aggregate ran
+  })
+
+  it('boot scan 抛错的 tick 不 dispatch；下一 tick scan 成功后才放行旧 job', async () => {
+    // 整栈重启实景：Jellyfin HTTP 未就绪 → scout 首 tick scan 必抛。此时库里还躺着
+    // 上个进程遗留的 stale wanted job（新分类规则尚未跑过）——boot reconcile 成功前
+    // 绝不能派发它，否则 boot 扫描失败窗口内旧（未过门）job 照样触发下载。
+    let scanCalls = 0
+    const scan = vi.fn(async () => {
+      scanCalls++
+      if (scanCalls === 1) throw new Error('jellyfin not ready')
+    })
+    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
+    const executeJob = vi.fn(async () => {})
+
+    // Recent last_reconcile_at（上个进程分钟前写的）+ 一个 stale wanted job
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, executeJob }))
+
+    // Tick 1: boot scan 抛错 → dispatch 必须被压制
+    await daemon.tick()
+    expect(scan).toHaveBeenCalledTimes(1)
+    expect(executeJob).not.toHaveBeenCalled()
+    expect(jobs.countByState('wanted')).toBe(1) // job 原地未被 claim
+
+    // Tick 2: scan 成功 → boot reconcile 完成 → dispatch 放行
+    await daemon.tick()
+    expect(scan).toHaveBeenCalledTimes(2)
+    expect(executeJob).toHaveBeenCalledOnce()
   })
 
   it('pollSessions命中退避中的集（unavailable+未来recheck+dormant job）也能wake/boost', async () => {
