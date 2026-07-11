@@ -27,6 +27,18 @@ const here = dirname(fileURLToPath(import.meta.url))
 /** 默认命令：npx tsx <repo>/src/cli/subtitle-fetch.ts（容器与本机同构，无编译步） */
 const DEFAULT_COMMAND = ['npx', 'tsx', resolve(here, '../cli/subtitle-fetch.ts')]
 
+/**
+ * subtitle-fetch 子进程退出非零前，若 stderr 里出现过 code:'quota_exhausted' 的 provider_error 事件——
+ * run() 用这个类型化错误代替裸 Error 去 reject，让调用方（pipeline.ts）能按 resetAt 精确退避，
+ * 而不是把"配额耗尽"和其它瞬时故障混为一谈都走盲的 ERROR_BACKOFF_MS 阶梯（v2/jobsRepo.ts）。
+ */
+export class ProviderQuotaExhaustedError extends Error {
+  readonly code = 'quota_exhausted' as const
+  constructor(message: string, public resetAt: string | null) {
+    super(message)
+  }
+}
+
 export function makeCliProviderPort(opts: {
   command?: string[]
   onEvent?: (e: FetchEvent) => void
@@ -45,6 +57,8 @@ export function makeCliProviderPort(opts: {
       child.stderr.setEncoding('utf8')
       let stdout = '', stderrTail = ''
       const providerErrors: { provider: string; message: string }[] = []
+      // 最后一次观察到的 quota_exhausted provider_error（若有）；进程以非零码退出时用它构造类型化错误。
+      let quotaExhausted: { resetAt: string | null } | null = null
       const killGroup = () => {
         try {
           if (child.pid != null) process.kill(-child.pid, 'SIGKILL')
@@ -66,6 +80,9 @@ export function makeCliProviderPort(opts: {
             if (parsed.event) {
               if (parsed.event === 'provider_error') {
                 providerErrors.push({ provider: String(parsed.provider), message: String(parsed.message) })
+                if (parsed.code === 'quota_exhausted') {
+                  quotaExhausted = { resetAt: typeof parsed.resetAt === 'string' ? parsed.resetAt : null }
+                }
               }
               opts.onEvent?.(parsed as FetchEvent)
             }
@@ -76,7 +93,9 @@ export function makeCliProviderPort(opts: {
       child.on('close', code => {
         clearTimeout(timer)
         if (code === 0) resolvePromise({ stdout, providerErrors })
-        else reject(new Error(`subtitle-fetch exit ${code}: ${stderrTail}`))
+        else reject(quotaExhausted
+          ? new ProviderQuotaExhaustedError(`subtitle-fetch exit ${code}: ${stderrTail}`, quotaExhausted.resetAt)
+          : new Error(`subtitle-fetch exit ${code}: ${stderrTail}`))
       })
     })
   }
