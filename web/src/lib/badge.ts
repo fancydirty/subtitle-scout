@@ -29,7 +29,11 @@ export function scoutScope(cov: CoverageDTO): number {
  * 1. job 在跑 → work：脉冲 + covered/scope 分数
  * 2. 无缺无未决且有中字（外挂或内嵌）→ full：teal 勾
  * 3. 已补到一部分 → part：分数
- * 4. 一集未补 → none：暂无
+ * 4. 一集未补：
+ *    - 还有 missing（未搜过，含新入库排队中的）→ none：待搜索
+ *    - 全是 unavailable（搜穷尽，会定期复查）→ none：暂无
+ *    二者 kind/filter 行为一致（都算"缺字幕"），仅文案区分，
+ *    避免用户把"还没搜"误读成"确认没有"。
  */
 export function coverageBadge(cov: CoverageDTO, job: LibraryJobDTO | null): Badge {
   const scope = scoutScope(cov)
@@ -40,6 +44,7 @@ export function coverageBadge(cov: CoverageDTO, job: LibraryJobDTO | null): Badg
   // 全覆盖：有实补集数时报 n/n（12/12），纯内嵌无 scout 战果则报 ✓。
   if (fullyHandled) return { kind: 'full', text: cov.covered > 0 ? `${cov.covered}/${scope}` : '✓', pulse: false }
   if (cov.covered > 0) return { kind: 'part', text: `${cov.covered}/${scope}`, pulse: false }
+  if (cov.missing > 0) return { kind: 'none', text: '待搜索', pulse: false }
   return { kind: 'none', text: '暂无', pulse: false }
 }
 
