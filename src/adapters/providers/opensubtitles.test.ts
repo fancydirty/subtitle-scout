@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { OpenSubtitlesClient, osToCandidates, OsSearchResponseSchema } from './opensubtitles.js'
+import { OpenSubtitlesClient, osToCandidates, OsSearchResponseSchema, OsQuotaExhaustedError } from './opensubtitles.js'
 
 const fixture = JSON.parse(readFileSync('fixtures/opensubtitles/search-peacemaker-s1.json', 'utf8'))
 const okJson = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
@@ -138,6 +138,28 @@ describe('OpenSubtitlesClient.resolveDownload', () => {
     await expect(client.resolveDownload(1)).rejects.toThrow(/401/)
     expect(downloads).toBe(2)
     expect(logins).toBe(2)
+  })
+})
+
+describe('OpenSubtitlesClient.resolveDownload quota exhaustion', () => {
+  it('throws OsQuotaExhaustedError with resetAt/remaining when /download 406s with a quota body', async () => {
+    const client = makeClient((() => Promise.resolve(new Response(
+      JSON.stringify({ message: 'Not allowed download limit reached', remaining: 0, reset_time_utc: '2026-07-12T00:00:00.000Z' }),
+      { status: 406 },
+    ))) as never)
+    let caught: unknown
+    try { await client.resolveDownload(1) } catch (e) { caught = e }
+    expect(caught).toBeInstanceOf(OsQuotaExhaustedError)
+    expect((caught as OsQuotaExhaustedError).resetAt).toBe('2026-07-12T00:00:00.000Z')
+    expect((caught as OsQuotaExhaustedError).remaining).toBe(0)
+  })
+
+  it('a plain 502 (non-quota body) still throws the original HTTP error, not OsQuotaExhaustedError', async () => {
+    const client = makeClient((() => Promise.resolve(new Response('nope', { status: 502 }))) as never)
+    let caught: unknown
+    try { await client.resolveDownload(1) } catch (e) { caught = e }
+    expect(caught).not.toBeInstanceOf(OsQuotaExhaustedError)
+    expect(String(caught)).toMatch(/502/)
   })
 })
 

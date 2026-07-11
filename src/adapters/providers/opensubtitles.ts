@@ -44,11 +44,42 @@ const OsLoginResponseSchema = z.object({
   user: z.object({ allowed_downloads: z.number().nullish(), vip: z.boolean().nullish() }).nullish(),
 })
 
-// HTTP 状态错误标记：区分于网络层错误（前者快失败，后者重试一次），仅内部使用
+// HTTP 状态错误标记：区分于网络层错误（前者快失败，后者重试一次），仅内部使用。
+// body：非 2xx 响应体（尽力 JSON 解析，拿不到就是 undefined）——resolveDownload 用它识别配额耗尽响应。
 class OsHttpError extends Error {
-  constructor(endpoint: string, public status: number) {
+  constructor(endpoint: string, public status: number, public body?: unknown) {
     super(`opensubtitles ${endpoint} HTTP ${status}`)
   }
+}
+
+// /download 配额耗尽响应体的宽松形状：remaining/reset_time_utc 存在即可判定，其余字段忽略。
+// 用来从一个已知是"错误"的 body 里尽力挖配额信息，不代表这是唯一合法形状。
+const OsQuotaBodySchema = z.object({
+  remaining: z.number().nullish(),
+  reset_time_utc: z.string().nullish(),
+}).passthrough()
+
+/**
+ * OpenSubtitles 下载配额耗尽（remaining<=0 或 /download 406 且响应体带配额字段）。
+ * code/resetAt 是给上游（executor 的后续消费者）按 reset 时间退避用的类型化契约——
+ * 本次改动只在 adapter 侧定义+抛出/emit 这个契约，不接线到 executor（见 opensubtitlesAdapter.ts）。
+ */
+export class OsQuotaExhaustedError extends Error {
+  readonly code = 'quota_exhausted' as const
+  constructor(public resetAt: string | null, public remaining: number | null) {
+    super(`opensubtitles download quota exhausted${resetAt ? ` (resets ${resetAt})` : ''}`)
+  }
+}
+
+/** 从一个 HTTP 错误体里尽力识别"这是配额耗尽响应"：至少要有 remaining 或 reset_time_utc 字段，
+ *  避免把无关的 502 网关错误页误判成配额响应。 */
+function quotaInfoFromErrorBody(body: unknown): { resetAt: string | null; remaining: number | null } | null {
+  if (body == null || typeof body !== 'object') return null
+  const parsed = OsQuotaBodySchema.safeParse(body)
+  if (!parsed.success) return null
+  const { remaining, reset_time_utc } = parsed.data
+  if (remaining == null && reset_time_utc == null) return null
+  return { resetAt: reset_time_utc ?? null, remaining: remaining ?? null }
 }
 
 export interface OsClientOpts {
@@ -95,7 +126,11 @@ export class OpenSubtitlesClient {
       try {
         const res = await this.fetchImpl(`${BASE}${endpoint}`, { ...makeInit(), redirect: 'follow', signal: AbortSignal.timeout(OS_TIMEOUT_MS) })
         status = res.status
-        if (!res.ok) throw new OsHttpError(endpoint, res.status)
+        if (!res.ok) {
+          // 尽力读错误体（配额耗尽响应带 remaining/reset_time_utc）；非 JSON 错误页（如网关 502 HTML）静默忽略。
+          const errBody = await res.json().catch(() => undefined)
+          throw new OsHttpError(endpoint, res.status, errBody)
+        }
         const body = await res.json()
         // schema.parse 必须先于 onApiCall(success)：否则解析失败会先记一次"成功"再在 catch 里记一次
         // "失败"，同一个 HTTP 请求上报两次 api_call（其一是假成功）。
@@ -144,12 +179,25 @@ export class OpenSubtitlesClient {
     return this.request(`/subtitles?${q}`, () => ({ method: 'GET', headers: this.headers() }), OsSearchResponseSchema, Object.fromEntries(q))
   }
 
-  /** 消耗配额的一步（quota 扣在这，不扣在 link GET）。dev_mode（无账号密码）免 JWT。 */
+  /**
+   * 消耗配额的一步（quota 扣在这，不扣在 link GET）。dev_mode（无账号密码）免 JWT。
+   * 配额耗尽（HTTP 406/4xx 且响应体带 remaining/reset_time_utc）转为类型化 OsQuotaExhaustedError，
+   * 而不是原样冒泡一个不带 reset 时间信息的 OsHttpError——调用方（opensubtitlesAdapter）据此
+   * emit 一个带 code/resetAt 的 provider_error 事件，供上游按 reset 时间退避（该消费逻辑是后续工作）。
+   */
   async resolveDownload(fileId: number): Promise<z.infer<typeof OsDownloadResponseSchema>> {
     await this.ensureLogin()
-    return this.request('/download',
-      () => ({ method: 'POST', headers: this.headers(true), body: JSON.stringify({ file_id: fileId }) }),
-      OsDownloadResponseSchema, { file_id: fileId })
+    try {
+      return await this.request('/download',
+        () => ({ method: 'POST', headers: this.headers(true), body: JSON.stringify({ file_id: fileId }) }),
+        OsDownloadResponseSchema, { file_id: fileId })
+    } catch (e) {
+      if (e instanceof OsHttpError) {
+        const quota = quotaInfoFromErrorBody(e.body)
+        if (quota) throw new OsQuotaExhaustedError(quota.resetAt, quota.remaining)
+      }
+      throw e
+    }
   }
 }
 
