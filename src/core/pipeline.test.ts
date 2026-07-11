@@ -6,7 +6,7 @@ import { runPipeline, pickSeasonPack, type PipelineDeps } from './pipeline.js'
 import type { SubtitleCandidate } from './schemas.js'
 import { MediaContextSchema, AssrtSearchResponseSchema, AssrtDetailResponseSchema } from './schemas.js'
 import { toCandidate } from '../adapters/providers/assrt.js'
-import type { ProviderPort } from './providerPort.js'
+import { ProviderQuotaExhaustedError, type ProviderPort } from './providerPort.js'
 import { DecisionCache } from './cache.js'
 import { scanOrphans } from '../files/orphanScanner.js'
 
@@ -275,6 +275,33 @@ describe('runPipeline', () => {
     const result = await runPipeline(deps, ctx, outDir)
     expect(result.decision).toBe('error')
     expect(existsSync(join(outDir, 'decision.json'))).toBe(true)
+  })
+
+  it('ProviderQuotaExhaustedError from resolveDownload surfaces as error decision carrying quotaExhausted.resetAt', async () => {
+    // 根因：resolveDownload 报 OS 配额耗尽时，若这个 resetAt 信息在 pipeline outer catch 丢了，
+    // 上游（v2 executor）就没法按重置时间精确退避，只能走盲的短退避阶梯白烧配额。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const resetAt = '2026-07-13T00:00:00.000Z'
+    const deps = makeDeps({
+      providers: makeProviders({
+        resolveDownload: vi.fn(async () => { throw new ProviderQuotaExhaustedError('quota exhausted', resetAt) }),
+      }),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('error')
+    expect(result.quotaExhausted).toEqual({ resetAt })
+  })
+
+  it('a plain (non-quota) resolveDownload error surfaces as error decision with quotaExhausted left undefined', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const deps = makeDeps({
+      providers: makeProviders({
+        resolveDownload: vi.fn(async () => { throw new Error('subtitle-fetch exit 1: network blip') }),
+      }),
+    })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('error')
+    expect(result.quotaExhausted).toBeUndefined()
   })
 
   it('does not fast-path a positive cache hit from a title-only key', async () => {

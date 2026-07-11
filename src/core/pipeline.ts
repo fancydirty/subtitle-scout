@@ -18,7 +18,7 @@ import { runSeasonPackGate } from './seasonPackGate.js'
 import type { SeasonEpisode } from './episode.js'
 import { harvestAlias, hasCjk } from '../agent/harvestAlias.js'
 import { mapLooseEpisodes } from '../agent/mapLooseEpisodes.js'
-import type { ProviderPort } from './providerPort.js'
+import { ProviderQuotaExhaustedError, type ProviderPort } from './providerPort.js'
 
 export interface PipelineDeps {
   identify: (ctx: MediaContext) => Promise<CallStructuredResult<MediaIdentity>>
@@ -60,6 +60,9 @@ export interface PipelineResult {
   coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]
   /** 命中的候选来源（provider-neutral）；供 v2 executor 建 subtitles.provider_ref。仅 download 决议有值 */
   selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null
+  /** 配额耗尽信号：仅当本次 error 是由 provider ProviderQuotaExhaustedError 导致时非空；resetAt 可能为
+   *  null（provider 没给出重置时间）。供 v2 executor 据此精确退避而非走默认 ERROR_BACKOFF_MS 阶梯。 */
+  quotaExhausted?: { resetAt: string | null }
 }
 
 /** 季包/横扫路径的 selected 摘要：多集覆盖取首集作代表（provider/provider_id 供 v2 建 provider_ref） */
@@ -86,7 +89,7 @@ export async function runPipeline(
   deps.journalReady?.(journal)
   const finish = (
     decision: PipelineResult['decision'],
-    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null } = {},
+    extra: { reasons?: string[]; confidence?: number | null; subtitlePath?: string; bytes?: number; encoding?: string | null; fromCache?: boolean; coveredEpisodes?: { episodeCode: string; subtitlePath: string; providerRef?: string }[]; selected?: { provider: string; provider_id: string; subtitle_name: string; language: string; format: string } | null; quotaExhausted?: { resetAt: string | null } } = {},
   ): PipelineResult => {
     const journalPath = journal.finish({
       request_id: ctx.request_id, decision,
@@ -96,7 +99,7 @@ export async function runPipeline(
         ? { downloaded: true, path: extra.subtitlePath, bytes: extra.bytes ?? null, encoding: extra.encoding ?? null }
         : null,
     }, journalDir)
-    return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, confidence: extra.confidence ?? null, reasons: extra.reasons ?? [], stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes, selected: extra.selected ?? null }
+    return { decision, subtitlePath: extra.subtitlePath, journalPath, fromCache: extra.fromCache, confidence: extra.confidence ?? null, reasons: extra.reasons ?? [], stats: { durationMs: Date.now() - t0, ...journal.counts() }, coveredEpisodes: extra.coveredEpisodes, selected: extra.selected ?? null, quotaExhausted: extra.quotaExhausted }
   }
 
   try {
@@ -431,7 +434,10 @@ export async function runPipeline(
     })
   } catch (e) {
     journal.step('error', { message: String(e) })
-    return finish('error', { reasons: [String(e)] })
+    // ProviderQuotaExhaustedError（见 providerPort.ts）：resetAt 透传进 PipelineResult 供 v2 executor
+    // 按重置时间精确退避，而不是把配额耗尽和其它瞬时故障混为一谈都走盲的短退避阶梯。
+    const quotaExhausted = e instanceof ProviderQuotaExhaustedError ? { resetAt: e.resetAt } : undefined
+    return finish('error', { reasons: [String(e)], quotaExhausted })
   }
 }
 
