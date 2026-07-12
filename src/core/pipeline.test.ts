@@ -1990,6 +1990,51 @@ describe('runPipeline', () => {
     expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()
   })
 
+  it('FINDING-2: season pack graduation loop is bounded by maxApiCallsPerJob (not just episode count)', async () => {
+    // 与队列试错/季横扫对齐：季包升格逐集 resolve 也要受同一份预算约束，而不是只靠
+    // seasonEpisodes 数量天然收尾——季很长时（数十集）无预算约束会无视预算打穿。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const packCandidate = mkCand(900900, 'Show.S02', [
+      'Show.S02E01.chs.ass', 'Show.S02E02.chs.ass', 'Show.S02E03.chs.ass', 'Show.S02E04.chs.ass', 'Show.S02E05.chs.ass',
+    ])
+    const resolveDownload = vi.fn(async (ref: { fileIndex: number | null }) => ({
+      url: `http://file0.assrt.net/pack/900900/${(ref.fileIndex ?? 0) + 1}`,
+    }))
+    const rank = vi.fn(async () => ({
+      parsed: { order: [{ candidate_id: 'assrt:900900', file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4, 5].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const deps = makeDeps({
+      maxApiCallsPerJob: 2, // 预算 2 < 5 个待覆盖集，也远小于熔断阈值 3——预算守卫必须先生效
+      providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
+      verify: makeVerify({ match: true, reason: 'ok' }),
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(async () => ({
+          parsed: { pairs: [
+            { filelist_index: 0, episode_code: 'S02E01', reason: 'x' },
+            { filelist_index: 1, episode_code: 'S02E02', reason: 'x' },
+            { filelist_index: 2, episode_code: 'S02E03', reason: 'x' },
+            { filelist_index: 3, episode_code: 'S02E04', reason: 'x' },
+            { filelist_index: 4, episode_code: 'S02E05', reason: 'x' },
+          ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+        })),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(resolveDownload).toHaveBeenCalledTimes(2) // 预算耗尽即停手，不打完全部 5 集
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.length).toBe(2)
+  })
+
   it('M-1: alias harvest merges fresh into the sweep pool; second-round rank input stays fresh-only', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     // 首轮候选覆盖 E01（CJK nativeName 触发别名收割）；别名搜索带回 fresh 覆盖 E02

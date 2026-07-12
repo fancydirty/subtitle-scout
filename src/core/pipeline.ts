@@ -603,9 +603,15 @@ export async function runPipeline(
             // resolve/download 注定同样失败，立刻停手（不等到 consecutiveFails>=3 熔断），并把
             // resetAt 记下来供 finish() 携带，而不是被下面的 catch 当成普通瞬时失败吞掉。
             let packQuotaExhausted: { resetAt: string | null } | undefined
+            // FINDING-2: 与队列试错/季横扫对齐，同一份 maxApiCallsPerJob 预算也约束季包升格逐集
+            // resolve——原先只靠 seasonEpisodes 数量天然收尾，季很长时（数十集）会无视预算打穿。
+            let apiCallsUsed = 0
+            const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
             for (const item of gateRes.commit) {
               if (consecutiveFails >= 3) { journal.step('seasonCircuitBreak', { after: coveredEpisodes.length }); break }
+              if (apiCallsUsed >= budget) { journal.step('seasonPackBudgetExhausted', { after: coveredEpisodes.length }); break }
               try {
+                apiCallsUsed++
                 const resolved = await deps.providers.resolveDownload({
                   provider: pack.provider,
                   providerId: pack.providerId,
