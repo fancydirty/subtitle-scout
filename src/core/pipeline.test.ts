@@ -140,12 +140,46 @@ describe('runPipeline', () => {
   })
 
   it('exhausts the queue and reports no_safe_match when verify rejects every candidate (sandbox still cleaned up)', async () => {
+    // 决定性内容结论回归钉子：每个候选都真正下载+体检+终审过，终审说都不是——这是诚实的
+    // "确实没有安全匹配"，负缓存正当写入（区别于下面 transient-error 场景绝不能写负缓存）。
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
     const verify = makeVerify({ match: false, reason: 'wrong episode' })
-    const deps = makeDeps({ verify })
+    const deps = makeDeps({ verify, cache })
     const result = await runPipeline(deps, ctx, outDir)
     expect(result.decision).toBe('no_safe_match')
     expect(existsSync(join(outDir, '.subtitle-staging', ctx.request_id))).toBe(false)
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toMatchObject({ kind: 'negative' })
+  })
+
+  it('mixed queue exhaustion (one transient resolveDownload error + one decisive verify-reject) forces retry_later, not poisoned', async () => {
+    // 混合场景：候选池里一个打不通（resolve 瞬时故障），另一个打通但终审拒绝（决定性内容结论）。
+    // 任何一个瞬时失败都要保守退避——不能因为"至少凑出一个决定性结论"就把整体判成诚实的
+    // "确实没有"而写负缓存。镜像 searchProviderErrors 守卫（约 pipeline.ts:540）的瞬时 vs
+    // 内容结论区分。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const rank = vi.fn(async () => ({
+      parsed: {
+        order: [
+          { candidate_id: 'assrt:673114', file_index: 0, identity_match: 'uncertain' as const, reason: 'first guess' },
+          { candidate_id: 'assrt:606770', file_index: 0, identity_match: 'uncertain' as const, reason: 'second guess' },
+        ], rejected: [], reasons: ['ordered'],
+      }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    let resolveCall = 0
+    const providers = makeProviders({
+      resolveDownload: vi.fn(async () => {
+        resolveCall++
+        if (resolveCall === 1) throw new Error('subtitle-fetch exit 1: network blip')
+        return { url: 'http://file0.assrt.net/onthefly/606770/x.ass', filename: 'second.ass' }
+      }),
+    })
+    const verify = makeVerify({ match: false, reason: 'wrong episode' })
+    const deps = makeDeps({ rank, providers, verify, cache })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('retry_later')
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()
   })
 
   it('already_exists: pre-existing on-disk subtitle short-circuits before resolve/download (crash-recovery replay), and carries the real path', async () => {
@@ -405,21 +439,32 @@ describe('runPipeline', () => {
     expect(result.quotaExhausted).toEqual({ resetAt })
   })
 
-  it('a plain (non-quota) resolveDownload error is fail-soft per-candidate: queue exhausts to no_safe_match, quotaExhausted left undefined', async () => {
+  it('a plain (non-quota) resolveDownload error is fail-soft per-candidate but forces retry_later at exhaustion, without poisoning the negative cache', async () => {
     // 行为变化（候选队列架构的直接后果，非误删覆盖）：旧单候选流水线里，resolveDownload 抛出的
-    // 任何非配额错误都会一路冒到最外层 catch，整个 run 判 error。新架构下每个候选的下载尝试
-    // 独立 try/catch（tryCandidateQueue）——非 ProviderQuotaExhaustedError 的瞬时失败只是"这个
-    // 候选试错失败，换下一个"，队列耗尽后才是终态；这里只有一个候选，试完即耗尽，因此终态是
-    // no_safe_match 而不是 error。唯一必须保留的安全属性没变：quotaExhausted 绝不会被误置。
+    // 任何非配额错误都会一路冒到最外层 catch，整个 run 判 error（不缓存，可安全重试）。新架构下
+    // 每个候选的下载尝试独立 try/catch（tryCandidateQueue）——非 ProviderQuotaExhaustedError 的
+    // 瞬时失败只是"这个候选试错失败，换下一个"，队列耗尽后才是终态；这里只有一个候选，试完即
+    // 耗尽。
+    //
+    // COVERAGE_LOST 修复：队列耗尽时若耗尽原因是瞬时故障（resolve/download 从未打通、没有真正
+    // 拿到内容评判），绝不能当成"确实没有安全匹配"写 1 天负缓存——否则下一次 run 会被负缓存
+    // 短路，永远等不到自愈重试。此处终态必须是 retry_later（镜像 searchProviderErrors 守卫，
+    // 约 pipeline.ts:540 的瞬时 vs 内容结论区分），且 quotaExhausted 依旧不被误置。
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
     const deps = makeDeps({
+      cache,
       providers: makeProviders({
         resolveDownload: vi.fn(async () => { throw new Error('subtitle-fetch exit 1: network blip') }),
       }),
     })
     const result = await runPipeline(deps, ctx, outDir)
-    expect(result.decision).toBe('no_safe_match')
+    expect(result.decision).toBe('retry_later')
     expect(result.quotaExhausted).toBeUndefined()
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()
+    // 第二次跑不该被负缓存短路：重新搜索而不是命中缓存直接判 no_safe_match
+    await runPipeline(deps, ctx, mkdtempSync(join(tmpdir(), 'out-')))
+    expect(deps.providers.search).toHaveBeenCalledTimes(2)
   })
 
   it('does not fast-path a positive cache hit from a title-only key', async () => {

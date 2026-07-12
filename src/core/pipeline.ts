@@ -652,6 +652,22 @@ export async function runPipeline(
       const { outcome, tried } = await tryCandidateQueue(deps, ctx, identity, gate.queue, outDir, stagingDir, journal)
       if (!outcome) {
         journal.step('candidateQueueExhausted', { tried })
+        // tried[].verdict 只会是 'structural-reject' / 'verify-reject'（决定性内容结论——候选
+        // 真下载下来经过结构体检/终审评判过）或 'error'（tryCandidateQueue 的 catch 分支——
+        // resolveDownload/download 阶段瞬时故障，从未真正拿到内容评判；'match'/'already-exists'
+        // 两种走的是上面的 outcome!=null 早退，不会出现在这里）。任何一个 'error' 都说明"没打
+        // 通"而非"打通了但确认不是"——绝不能把打不通误判成诚实的"确实没有安全匹配"而写负缓存
+        // （历史高频回归的瞬时 vs 内容结论铁律；镜像 searchProviderErrors 守卫，约 line 540）。
+        const transientErrors = tried.filter(t => t.verdict === 'error')
+        if (transientErrors.length > 0) {
+          journal.step('candidateQueueTransientFailure', { transientErrors })
+          return finish('retry_later', {
+            reasons: [
+              `candidate queue exhausted with transient failures — not cacheable: ${transientErrors.length}/${tried.length} candidate(s) errored before a content verdict`,
+              ...rank.reasons,
+            ],
+          })
+        }
         const reason = `queue exhausted: ${tried.length} candidate(s) tried, none verified as a match`
         deps.cache.put(keys, { kind: 'negative', reason })
         return finish('no_safe_match', { reasons: [reason, ...rank.reasons] })
