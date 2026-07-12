@@ -13,6 +13,10 @@ export interface RuntimeCallOpts<S extends z.ZodType> {
   prompt: string
   schema: S
   maxOutputTokens?: number
+  /** 透传给 llm.ts 的 callStructured/callPromptJson——见 agent/solveNumericCaptcha.ts。
+   *  defaultInternals() 的 callForcedTool/callPromptJson 已经 `...opts` 展开转发,这里只是
+   *  补上类型声明,让 TypeScript 承认这个字段合法(而不是悄悄允许多余属性透传)。 */
+  images?: Buffer[]
 }
 
 export interface LlmRuntime {

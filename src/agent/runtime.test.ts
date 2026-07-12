@@ -73,6 +73,17 @@ describe('createLlmRuntime', () => {
     )
   })
 
+  it('threads opts.images through to callForcedTool (multimodal captcha solving)', async () => {
+    const s = store()
+    const ints = internals()
+    const rt = await createLlmRuntime(cfg, s, ints)
+    const png = Buffer.from('fake-png-bytes')
+    await rt.call({ ...callOpts, images: [png] })
+    expect(ints.callForcedTool).toHaveBeenCalledWith(
+      cfg, undefined, expect.objectContaining({ images: [png] }),
+    )
+  })
+
   it('self-heals on genuine ToolChoiceRejectionError', async () => {
     const s = store()
     s.put(cfg.baseUrl, cfg.model, { mode: 'forced-tool', evidence: 'stale' })
