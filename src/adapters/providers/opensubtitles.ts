@@ -98,8 +98,31 @@ export interface OsClientOpts {
   password?: string
   fetchImpl?: typeof fetch
   networkRetryDelayMs?: number
-  onApiCall?: (r: { endpoint: string; params: Record<string, unknown>; status: number | null; durationMs: number; error?: string }) => void
+  onApiCall?: (r: { endpoint: string; params: Record<string, unknown>; status: number | null; durationMs: number; error?: string; droppedEntries?: number }) => void
 }
+
+/**
+ * 同款脆弱性审计（ASSRT /sub/similar 生产事故同形）：data[] 里单条 datum 缺 id（或其它必填字段）
+ * 会把整页搜索结果一起判死刑。逐条 safeParse：坏条目单独丢弃，好条目原样保留，交给外层
+ * schema.parse 走一遍正常解析。复用已导出的 OsSearchResponseSchema 校验单条（包一层最小响应壳），
+ * 不新增内部 per-item schema 导出。响应本身不可用（非对象/data 非数组）时原样放行，交给外层
+ * schema.parse 正常报错——HTTP 错误等真实故障必须继续失败。
+ */
+function filterMalformedOsData(json: unknown): { data: unknown; dropped: number } {
+  if (json == null || typeof json !== 'object') return { data: json, dropped: 0 }
+  const rawData = (json as { data?: unknown }).data
+  if (!Array.isArray(rawData)) return { data: json, dropped: 0 }
+  const valid: unknown[] = []
+  let dropped = 0
+  for (const item of rawData) {
+    const r = OsSearchResponseSchema.safeParse({ data: [item] })
+    if (r.success) valid.push(item)
+    else dropped++
+  }
+  if (dropped === 0) return { data: json, dropped: 0 }
+  return { data: { ...json, data: valid }, dropped }
+}
+
 export interface OsSearchParams {
   imdbId?: number
   parentImdbId?: number // series-level imdb only; no current caller sets this (opensubtitlesAdapter always has an item-level imdb) — kept for API completeness
@@ -141,10 +164,15 @@ export class OpenSubtitlesClient {
           throw new OsHttpError(endpoint, res.status, errBody)
         }
         const body = await res.json()
+        // search 端点响应同 ASSRT 一样逐条 fail-soft（见 filterMalformedOsData）；其它 schema
+        // （login/download）不含 data[] 页面结构，原样直通。
+        const { data: payload, dropped } = (schema as unknown) === OsSearchResponseSchema
+          ? filterMalformedOsData(body)
+          : { data: body as unknown, dropped: 0 }
         // schema.parse 必须先于 onApiCall(success)：否则解析失败会先记一次"成功"再在 catch 里记一次
         // "失败"，同一个 HTTP 请求上报两次 api_call（其一是假成功）。
-        const parsed = schema.parse(body)
-        this.opts.onApiCall?.({ endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0 })
+        const parsed = schema.parse(payload)
+        this.opts.onApiCall?.({ endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0, ...(dropped > 0 ? { droppedEntries: dropped } : {}) })
         return parsed
       } catch (e) {
         this.opts.onApiCall?.({ endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0, error: String(e) })

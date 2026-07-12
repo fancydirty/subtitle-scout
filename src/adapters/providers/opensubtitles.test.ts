@@ -49,6 +49,48 @@ describe('OpenSubtitlesClient.search', () => {
   })
 })
 
+describe('OpenSubtitlesClient.search fail-soft entry parsing (same-shaped fragility as ASSRT: one malformed datum must not fail the whole page)', () => {
+  const mixedData = {
+    total_count: 3,
+    data: [
+      { id: 'a1', attributes: { files: [{ file_id: 1 }] } },
+      { attributes: { files: [{ file_id: 2 }] } }, // 缺 id
+      { id: 'a3', attributes: { files: [{ file_id: 3 }] } },
+    ],
+  }
+  const allMalformed = {
+    total_count: 2,
+    data: [
+      { attributes: { files: [{ file_id: 1 }] } },
+      { attributes: { files: [{ file_id: 2 }] } },
+    ],
+  }
+
+  it('drops malformed data[] entries, keeps well-formed ones, does not throw', async () => {
+    const client = makeClient((() => okJson(mixedData)) as never)
+    const resp = await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(resp.data.map(d => d.id)).toEqual(['a1', 'a3'])
+  })
+
+  it('all entries malformed but response well-formed → empty list, no throw', async () => {
+    const client = makeClient((() => okJson(allMalformed)) as never)
+    const resp = await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(resp.data).toEqual([])
+  })
+
+  it('reports dropped-entry count via onApiCall (existing observability idiom)', async () => {
+    const calls: unknown[] = []
+    const client = makeClient((() => okJson(mixedData)) as never, { onApiCall: r => calls.push(r) })
+    await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(calls).toContainEqual(expect.objectContaining({ droppedEntries: 1 }))
+  })
+
+  it('genuinely broken response (HTTP error) still throws — unrelated failure mode untouched', async () => {
+    const client = makeClient((() => Promise.resolve(new Response('nope', { status: 502 }))) as never)
+    await expect(client.search({ query: 'x', languages: ['zh-cn'] })).rejects.toThrow(/502/)
+  })
+})
+
 describe('OpenSubtitlesClient network retry', () => {
   it('retries once on network error and succeeds on second attempt', async () => {
     let n = 0
