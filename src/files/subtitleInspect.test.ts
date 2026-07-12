@@ -74,3 +74,29 @@ describe('inspectSubtitle — ASS cue parsing', () => {
     expect(signals.cueCount).toBe(2)
   })
 })
+
+describe('inspectSubtitle — decodable / isHtml', () => {
+  it('flags an HTML error page masquerading as .srt', () => {
+    const html = '<!DOCTYPE html>\n<html><head><title>404 Not Found</title></head><body>gone</body></html>'
+    const signals = inspectSubtitle(stage('fake.srt', html))
+    expect(signals.isHtml).toBe(true)
+    expect(signals.cueCount).toBe(0)
+  })
+
+  it('flags an empty file as undecodable', () => {
+    const signals = inspectSubtitle(stage('blank.srt', ''))
+    expect(signals.decodable).toBe(false)
+  })
+
+  it('flags a file dominated by replacement characters as undecodable', () => {
+    const garbage = '�'.repeat(500)
+    const signals = inspectSubtitle(stage('garbled.srt', garbage))
+    expect(signals.decodable).toBe(false)
+  })
+
+  it('a normal SRT file is decodable and not HTML', () => {
+    const signals = inspectSubtitle(stage('ok.srt', SRT_SAMPLE))
+    expect(signals.decodable).toBe(true)
+    expect(signals.isHtml).toBe(false)
+  })
+})

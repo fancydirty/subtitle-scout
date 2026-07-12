@@ -16,6 +16,20 @@ export interface InspectSignals {
 
 interface Cue { startMs: number; endMs: number; text: string }
 
+function isLikelyUndecodable(text: string): boolean {
+  if (text.trim().length === 0) return true
+  const replacementCount = (text.match(/�/g) ?? []).length
+  if (replacementCount > 0 && replacementCount / text.length > 0.01) return true
+  // eslint-disable-next-line no-control-regex -- 故意扫描控制字节,这正是"解不出来"的信号
+  if (/[\x00-\x08\x0E-\x1F]/.test(text.slice(0, 2000))) return true
+  return false
+}
+
+function looksLikeHtml(text: string): boolean {
+  const head = text.trimStart().slice(0, 200).toLowerCase()
+  return head.startsWith('<!doctype html') || head.startsWith('<html') || /<title>|<body[ >]/.test(head)
+}
+
 const SRT_TIME = /(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})/
 
 function srtTimeToMs(h: string, m: string, s: string, ms: string): number {
@@ -83,10 +97,14 @@ function parseAssCues(text: string): { cues: Cue[]; title: string | null } {
   return { cues, title }
 }
 
-/** detectedScript/decodable/isHtml 在 Task 2.3/2.4 加入。这里先给一个占位判定,
- *  后续任务会替换。 */
+/** detectedScript 在 Task 2.4 加入。这里先给一个占位判定,后续任务会替换。 */
 export function inspectSubtitle(stagedPath: string): InspectSignals {
   const text = readFileSync(stagedPath, 'utf8')
+  const decodable = !isLikelyUndecodable(text)
+  const isHtml = looksLikeHtml(text)
+  if (!decodable || isHtml) {
+    return { decodable, isHtml, cueCount: 0, firstCueMs: null, lastCueMs: null, spanMs: null, detectedScript: 'unknown' }
+  }
   const ext = extname(stagedPath).toLowerCase()
   let cues: Cue[]
   let assTitle: string | null | undefined
@@ -100,7 +118,7 @@ export function inspectSubtitle(stagedPath: string): InspectSignals {
   const firstCueMs = cues.length > 0 ? Math.min(...cues.map(c => c.startMs)) : null
   const lastCueMs = cues.length > 0 ? Math.max(...cues.map(c => c.endMs)) : null
   return {
-    decodable: true, isHtml: false, cueCount: cues.length,
+    decodable, isHtml, cueCount: cues.length,
     firstCueMs, lastCueMs,
     spanMs: firstCueMs != null && lastCueMs != null ? lastCueMs - firstCueMs : null,
     detectedScript: 'unknown',
