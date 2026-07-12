@@ -393,20 +393,30 @@ function briefError(error: unknown): string {
 }
 
 /**
- * 顶层编排（崩溃幂等版）。步骤顺序（re-sequenced，见 Phase E 数据安全修复）：
- *  1. series 元数据（jf.getItem 活查 TMDB id/标题/年份）
- *  2. 镜像集路径 → mapPath 映射为本地路径 → scanDir（IMP#8）
+ * 顶层编排（崩溃幂等版）。步骤顺序（re-sequenced，见 Phase E 数据安全修复 + re-review #A
+ * post-refresh 崩溃恢复重排——GAP A）：
+ *  2. 镜像集路径 → mapPath 映射为本地路径 → scanDir（IMP#8）——只读镜像，不查 Jellyfin。
  *  3. 库根推导：scanDir 必须落在"已配置的根"（mediaRoots ∪ 映射后的 getVirtualFolders
  *     locations）里，按最长前缀取根；不在任何根之下 → park，零改动（CRIT#1）。
  *     目标虚拟库同时锁定（段感知匹配，MINOR#14）——刷新端点缺失也是配置缺陷，动手前就 park。
- *  4. mount 哨兵（库根非空+可写）
- *  5. Jellyfin 空闲等待——任何搬动（包括崩溃恢复回滚）之前（IMP#6）
+ *     getVirtualFolders 是库级配置查询，不依赖某个具体 series item 是否还在。
  *  6. 崩溃恢复（CRIT#4）：job.plan_ref 指向的 manifest 存在（无法解析的真损坏 → park）→
  *     a. 账本含 reveal 且新目录已在最终位置 且 build 目录无视频滞留（真 finalize 必然
  *        搬空 build；有滞留 = 外来目录占位 + 回滚未完成，绝不许伪装续走成功）→ 续走
- *        （forward-resume）：只补收尾（归档旧目录/刷新/镜像清理），绝不重搬；
+ *        （forward-resume）：只补收尾（归档旧目录/刷新/镜像清理），绝不重搬，且从不
+ *        调用 jf.getItem(seriesId)（re-review #A）；
  *     b. 否则回滚重放（replayRollback）+ 回滚标记 + GC build 残留，复用同一归档目录/账本
- *        （幂等：不另起时间戳）。
+ *        （幂等：不另起时间戳），落回步骤 1 走正常流程。
+ *  1. series 元数据（jf.getItem 活查 TMDB id/标题/年份）——re-review #A（GAP A）：排在步骤 6
+ *     的续走判定之后才调用，不再排最前。收尾阶段的 refreshLibrary 会让 Jellyfin 重新刮削
+ *     整个目标虚拟库，若进程恰好死在 refreshLibrary 之后（120s 空闲等待期间/验收分页途中），
+ *     旧 seriesId 对应的条目大概率已被裁掉（新目录下的内容被识别成新条目）——jf.getItem 若
+ *     仍排在续走判定之前，每次重跑都会在这一行抛 JellyfinItemNotFoundError，被上层 executor.ts
+ *     记成 'error' 走 30s→15min→daily 的无穷重试环，永远无法触达本该接管的续走路径（新树
+ *     已经亮相且带字幕，仅差收尾）——新树活着但镜像 ghost 常驻、旧季 job 永不退休。账本才是
+ *     崩溃恢复的真相源（source of truth），不是这一刻的 Jellyfin 活查。
+ *  4. mount 哨兵（库根非空+可写）
+ *  5. Jellyfin 空闲等待——任何搬动（包括崩溃恢复回滚）之前（IMP#6）
  *  7. 归档根解析（库根之外，IMP#9）+ 降级阶梯探测（abandon → park）
  *  8. 计划构建（TMDB 季表 + anime-lists 交叉验证 + 确定性闸门；任一不过 → park，IMP#11）
  *  9. 碰撞规划 + 最终目标目录预检（CRIT#3：搬动之前判定；已存在且无账可考 → park，
@@ -425,31 +435,30 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   const notes: string[] = []
   const park = (detail: string): RealignExecutionResult => ({ decision: 'park', detail })
 
-  // 1. series 元数据——统一走 jf.getItem(seriesId) 活查（series.provider_ids 镜像列是历史
-  //    空洞，从未被 scanner 写入，不能作为 TMDB id 的可信来源）。
-  const seriesItem = await deps.jf.getItem(seriesId)
-  const tmdbId = seriesItem.ProviderIds?.Tmdb
-  const seriesTitle = seriesItem.Name
-  const year = seriesItem.ProductionYear ?? null
-  if (!tmdbId || !seriesTitle || year == null) {
-    return { decision: 'error', detail: `series ${seriesId} 缺少 TMDB id/标题/年份，无法构建整理计划` }
-  }
-
-  // 2. 镜像集路径 → 本地路径（IMP#8：镜像存的是 Jellyfin 视角的 item.Path 原文）。
+  // 2. 镜像集路径 → 本地路径（IMP#8：镜像存的是 Jellyfin 视角的 item.Path 原文）。只读
+  //    镜像，不查 Jellyfin——必须先于步骤 1 的 jf.getItem（re-review #A，见函数顶部注释）。
   const paths = deps.lib.episodePathsForSeries(seriesId).map(p => mapPath(p, deps.mappings))
   const scanDir = mostCommonDir(paths)
 
   // 3. 库根推导（CRIT#1）：候选根 = 配置的本地媒体根 ∪ 映射后的 Jellyfin 虚拟库位置。
-  //    在任何搬动/哨兵之前完成——推导失败是配置/数据问题，零改动停车。
+  //    在任何搬动/哨兵之前完成——推导失败是配置/数据问题，零改动停车。getVirtualFolders
+  //    是库级配置查询，不依赖某个具体 series item 是否还在，可以安全地排在
+  //    jf.getItem(seriesId) 之前。
   const folders = await deps.jf.getVirtualFolders()
   const mappedLocations = folders.flatMap(f => f.locations.map(l => mapPath(l, deps.mappings)))
   const candidateRoots = [...new Set([...deps.mediaRoots, ...mappedLocations])]
 
-  // 6a'. 崩溃恢复指针（读账本不动盘）：plan_ref → manifest。续走判定要在 scanDir 推导
-  //      失败之前做——收尾崩溃重跑时镜像可能已被清空（scanDir 为 null 是合法现场）。
-  //      账本无法解析（撕裂级联之外的真损坏）是确定性缺陷：走 error 轨每天都会在同一行
-  //      上再抛一次（daily errorloop，自动回滚永久瘫痪）——park（dormant、可人工修复后
-  //      唤醒），此刻未动任何文件。
+  // 6a'. 崩溃恢复指针（读账本不动盘，也不查 Jellyfin 的 series item）：plan_ref → manifest。
+  //      re-review #A（GAP A）：必须排在步骤 1 的 jf.getItem(seriesId) 之前——收尾阶段的
+  //      refreshLibrary 会让 Jellyfin 重新刮削整个目标虚拟库，若进程恰好死在 refreshLibrary
+  //      之后（120s 空闲等待期间、或验收分页途中），旧 seriesId 对应的条目大概率已被裁掉
+  //      （新目录下的内容被识别成一个新条目）。jf.getItem 若排在续走判定之前，每次重跑都会
+  //      在那一行抛 JellyfinItemNotFoundError，被上层记成 'error' 走每日重试环，永远无法
+  //      触达下方本该接管的续走路径——账本才是崩溃恢复的真相源，续走路径（forwardResume）
+  //      本身也从不依赖 jf.getItem 的返回值。续走判定也要在 scanDir 推导失败之前做——收尾
+  //      崩溃重跑时镜像可能已被清空（scanDir 为 null 是合法现场）。账本无法解析（撕裂级联
+  //      之外的真损坏）是确定性缺陷：走 error 轨每天都会在同一行上再抛一次（daily
+  //      errorloop，自动回滚永久瘫痪）——park（dormant、可人工修复后唤醒），此刻未动任何文件。
   const resumeArchiveDir = job.plan_ref ? dirname(job.plan_ref) : null
   let resumeManifest: ManifestDoc | null = null
   try {
@@ -470,7 +479,9 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
     // 整季视频永久困在 .realign-build 里。只有 build 无视频滞留才许续走；否则落回下方
     // 回滚重放路径（回滚不净则 6c 停车），账本与现场都可恢复。
     if (countVideoFiles(revealEntry.from) === 0) {
-      // ---- 6a. 续走（forward-resume）：上次已亮相，绝不重搬，只补收尾 ----
+      // ---- 6a. 续走（forward-resume）：上次已亮相，绝不重搬，只补收尾——从不调用
+      // jf.getItem(seriesId)：post-refresh 崩溃后旧 series item 是否还在无关紧要
+      // （GAP A：这是修复 post-refresh 崩溃 errorloop 的关键，见函数顶部注释）----
       return forwardResume(job, deps, {
         seriesId, archiveDir: resumeArchiveDir, finalShowDir: revealEntry.to,
         scanDir, candidateRoots, folders,
@@ -504,6 +515,19 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   }
   if (targetFolder.enableRealtimeMonitor) {
     notes.push('该库开启了实时监控（enableRealtimeMonitor）——Jellyfin 可能在整理过程中自行扫描，已尽量以点前缀目录规避')
+  }
+
+  // 1. series 元数据——统一走 jf.getItem(seriesId) 活查（series.provider_ids 镜像列是历史
+  //    空洞，从未被 scanner 写入，不能作为 TMDB id 的可信来源）。走到这里说明本轮不是
+  //    forward-resume（否则上面已经 return 了）：旧 series item 理应仍然存在——
+  //    refreshLibrary 尚未发生（它只在步骤 14 收尾里调用，而收尾只会在 reveal 之后触发，
+  //    reveal 之后必然满足上面的续走判定），因此这里调用 jf.getItem 是安全的（GAP A）。
+  const seriesItem = await deps.jf.getItem(seriesId)
+  const tmdbId = seriesItem.ProviderIds?.Tmdb
+  const seriesTitle = seriesItem.Name
+  const year = seriesItem.ProductionYear ?? null
+  if (!tmdbId || !seriesTitle || year == null) {
+    return { decision: 'error', detail: `series ${seriesId} 缺少 TMDB id/标题/年份，无法构建整理计划` }
   }
 
   // 4. mount 哨兵：库根必须活着（非空+可写），SMB 掉挂载不能被误判成"空库"。

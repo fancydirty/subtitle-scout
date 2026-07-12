@@ -21,6 +21,7 @@ import { MediaContextSchema } from '../core/schemas.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
+import { JellyfinItemNotFoundError } from '../adapters/players/jellyfin.js'
 
 describe('mountAliveSentinel', () => {
   it('库根不存在 → 拒绝', () => {
@@ -978,6 +979,56 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
     expect(jf2.refreshLibrary).toHaveBeenCalledTimes(1)      // 收尾这次真做了
     expect(lib.getSeries('jf-series-1')).toBeNull()          // 镜像清理补齐
     // 依然只有一个归档目录（幂等）
+    expect(readdirSync(join(root, '.archive'))).toHaveLength(1)
+    db.close()
+  })
+
+  it('GAP A：post-refresh 崩溃（旧 series item 被 Jellyfin 裁掉）→ 重跑绝不在 jf.getItem 上 errorloop，必须走续走', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-crash-postrefresh-'))
+    const oldSeasonDir = mkFlatLibrary(root, 40)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkMirror(
+      Array.from({ length: 40 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
+    )
+
+    // 第一跑：亮相成功、refreshLibrary 真的被调用（现实中这一步会让 Jellyfin 开始重刮
+    // 目标虚拟库，旧 seriesId 对应的条目随时可能被裁掉）——但进程在 refreshLibrary 之后
+    // 的 120s 空闲等待期间"断电"：getScheduledTasks 第一次调用（搬动前 idleBefore）
+    // 照常返回，第二次调用（refreshLibrary 之后）直接抛错模拟崩溃。
+    const jf1 = mkJf({ locations: [libRoot], items: spyItems40(libRoot) })
+    let scheduledCalls = 0
+    jf1.getScheduledTasks = vi.fn(async () => {
+      scheduledCalls++
+      if (scheduledCalls > 1) throw new Error('simulated crash: process died mid idle-wait after refreshLibrary')
+      return [{ id: '1', name: 'scan', isRunning: false }]
+    })
+    const deps1 = mkDeps({ lib, jobsRepo, jf: jf1, libRoot })
+    const r1 = await executeRealign(job, deps1)
+    expect(r1.decision).toBe('error')
+    expect(countVideosRec(join(libRoot, SHOW_DIR))).toBe(40) // 新树已亮相，不回滚
+    expect(jf1.refreshLibrary).toHaveBeenCalledTimes(1)      // refreshLibrary 真的已经打过
+    expect(existsSync(oldSeasonDir)).toBe(false)             // 旧目录已归档（发生在 refreshLibrary 之前）
+
+    // 第二跑：daemon 重启后重新领到同一个 job。现实中 Jellyfin 此刻已经把旧 seriesId
+    // 对应的 series item 裁掉（新目录下内容被识别成新条目）——jf.getItem(旧 seriesId)
+    // 会抛 JellyfinItemNotFoundError。旧实现（step 1 排最前）会在这里让异常直接冒出去，
+    // 被上层 executor.ts 记成 error 走 30s→15min→daily 的无穷重试环，永远够不到下面
+    // 本该接管的续走路径。
+    const rerunJob = jobsRepo.get(job.id)!
+    expect(rerunJob.plan_ref).toMatch(/manifest\.jsonl$/)
+    const jf2 = mkJf({ locations: [libRoot], items: spyItems40(libRoot) })
+    jf2.getItem = vi.fn(async () => { throw new JellyfinItemNotFoundError('jf-series-1') })
+    const deps2 = mkDeps({ lib, jobsRepo, jf: jf2, libRoot })
+
+    const r2 = await executeRealign(rerunJob, deps2)
+
+    expect(r2.decision).toBe('realigned')      // 不是 error——没有在 jf.getItem 上 errorloop
+    expect(r2.detail).toMatch(/续走|恢复/)
+    expect(jf2.getItem).not.toHaveBeenCalled() // 关键：续走路径从不查旧 series item
+    expect(countVideosRec(join(libRoot, SHOW_DIR))).toBe(40) // 新树完整，一集没丢没重搬
+    expect(jf2.refreshLibrary).toHaveBeenCalledTimes(1)       // 收尾（归档旧目录+刷新）这次真做了
+    expect(lib.getSeries('jf-series-1')).toBeNull()           // 镜像清理补齐
+    // 依然只有一个归档目录（幂等，未另起时间戳）
     expect(readdirSync(join(root, '.archive'))).toHaveLength(1)
     db.close()
   })
