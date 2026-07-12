@@ -72,6 +72,44 @@ describe('jobs 状态机', () => {
     expect(repo.find('d', 1)!.state).toBe('done')
     expect(repo.find('z', 1)!.state).toBe('dormant')
   })
+  it('FIX-1: reapOrphaned 只回收 active 且不在调用方给出的 trackedIds 里的行，attempt 不变', () => {
+    // 派发饥饿审计修正：daemon 每 tick 该拿"本进程当前正跟踪"的 id 集合去核对——单实例
+    // 前提下，active 态但 id 不在这个集合里的行定义上就是孤儿（同 reapAllActive 的论证），
+    // 不必等 30min 租约到期。trackedIds 里的 id（真正 inflight）必须被放过。
+    const now = Date.now()
+    for (const s of ['tracked', 'orphan1', 'orphan2', 'idle']) {
+      repo.upsertWanted({ kind: 'series_season', seriesId: s, season: 1 }, now)
+    }
+    const tracked = repo.claimNext(now)! // 'tracked' — series 优先级/created_at 顺序决定先领到谁，逐个 claim 更明确
+    const orphan1 = repo.forceClaim('orphan1', 1, now)!
+    const orphan2 = repo.forceClaim('orphan2', 1, now)!
+    // 'idle' 留 wanted 不动
+
+    expect(tracked.lease_until).toBeGreaterThan(now) // 租约合法未过期
+    expect(orphan1.lease_until).toBeGreaterThan(now)
+
+    const reaped = repo.reapOrphaned([tracked.id], now)
+
+    const reapedIds = reaped.map(r => r.id).sort()
+    expect(reapedIds).toEqual([orphan1.id, orphan2.id].sort())
+
+    expect(repo.get(tracked.id)!.state).toBe('searching') // 被跟踪的不动
+    expect(repo.get(tracked.id)!.lease_until).toBe(tracked.lease_until)
+
+    expect(repo.get(orphan1.id)!.state).toBe('wanted') // 孤儿被回收
+    expect(repo.get(orphan1.id)!.lease_until).toBeNull()
+    expect(repo.get(orphan1.id)!.attempt).toBe(0) // reap 不占内容退避梯名额
+    expect(repo.get(orphan2.id)!.state).toBe('wanted')
+
+    expect(repo.find('idle', 1)!.state).toBe('wanted') // 静止态不受影响
+  })
+  it('FIX-1: reapOrphaned 在 trackedIds 为空时回收全部 active 行（同 reapAllActive 语义）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const j = repo.claimNext(now)!
+    expect(repo.reapOrphaned([], now).map(r => r.id)).toEqual([j.id])
+    expect(repo.get(j.id)!.state).toBe('wanted')
+  })
   it('心跳续租（renewLease）：仅对活跃态生效，续租后不会被 reapExpiredLeases 回收', () => {
     const now = Date.now()
     mkSeriesJob(now)
@@ -90,6 +128,17 @@ describe('jobs 状态机', () => {
     repo.renewLease(j.id, now)
     expect(repo.get(j.id)!.state).toBe('done')
     expect(repo.get(j.id)!.lease_until).toBeNull()
+  })
+  it('FIX-2: renewLease 返回新写入的 lease_until（no-op 时返回 null）——供 daemon 把值同步回它持有的 Job 对象引用', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    const renewed = repo.renewLease(j.id, now + 1000)
+    expect(renewed).toBe(repo.get(j.id)!.lease_until)
+    expect(renewed).toBeGreaterThan(j.lease_until!)
+
+    repo.completeDone(j.id, now)
+    expect(repo.renewLease(j.id, now)).toBeNull() // 非活跃态 no-op
   })
   it('内容性失败指数退避：四次分别落 1/2/4/8 天，第 5 次才 dormant', () => {
     const t0 = Date.now()

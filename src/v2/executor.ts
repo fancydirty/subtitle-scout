@@ -16,10 +16,14 @@ import { join, dirname } from 'node:path'
 export interface ExecutorDeps {
   lib: LibraryRepo
   jobs: JobsRepo
-  /** 跑一个代表集的完整判断链；onCovered 在每个被季包/单集命中的集写盘成功后回调 */
+  /** 跑一个代表集的完整判断链；onCovered 在每个被季包/单集命中的集写盘成功后回调。
+   *  FIX-4a: journalRef——executeJob 在调用前已把它写进 jobs.journal_ref（供死进程
+   *  倒查），makeRunEpisode 的真实实现据此复用同一个引用命名它实际落盘的 journal 目录，
+   *  避免 jobs.journal_ref 和真实 journal 目录各算各的、对不上号。 */
   runEpisode: (
     episodeId: string,
-    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void
+    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void,
+    journalRef?: string
   ) => Promise<{
     decision: string
     journalPath?: string
@@ -114,7 +118,24 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
   const startedAt = now()
   const runs = new RunsRepo(lib.db)
 
-  /** I4: complete* 守卫失败（stale lease 被 reap 重派）时可观测——warn 日志 + runs.detail 加后缀。 */
+  /** FIX-3（side-effect lease guard 审计修正）：本次 invocation 是否仍拥有这个 job 的
+   *  租约。job.lease_until 由 daemon 的心跳续租原地维护（FIX-2 daemon.ts 的
+   *  inflightJobs Map），跟着合法续租一起前进，所以长跑的季包 job 不会被误判——只有
+   *  这一行真的被 reap（lease_until→NULL）或被另一次 invocation 重新领走（lease_until
+   *  换成新值）时，DB 里的当前值才会和这里冻结的 job.lease_until 分道扬镳。
+   *  运行期副作用（onCovered 的 markCovered、代表集自身命中的 markCovered）在真正落盘
+   *  之前都要过这一关——过去只有最终的 complete* 转移被 record() 的 stale-lease 守卫
+   *  拦住，运行期写盘毫无阻拦地继续，白白写脏一个早已不属于自己的 job 的战果。 */
+  const ownsLease = (): boolean => {
+    const current = jobs.get(job.id)
+    return current !== null && current.lease_until === job.lease_until
+  }
+
+  /** I4: complete* 守卫失败（stale lease 被 reap 重派）时可观测——warn 日志 + runs.detail 加后缀。
+   *  FIX-4d（诊断准确性审计修正）：旧文案硬编码断言唯一因"租约已被回收重派"——生产实案
+   *  出现过真实观测是 state=wanted、lease=NULL，却也被这行日志一律套上同一个诊断，
+   *  掩盖了真实原因可能不是"被回收重派"（比如从未被正常 claim 过）。改为如实打印
+   *  observe 到的 state/lease_until，让日志描述现场而不是替它下结论。 */
   const record = (
     transitioned: boolean,
     decision: string,
@@ -124,7 +145,11 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
   ) => {
     let finalDetail = detail
     if (!transitioned) {
-      log(`warn: job ${job.id} 结果被弃置：租约已被回收重派`)
+      const observed = jobs.get(job.id)
+      const observedDesc = observed
+        ? `state=${observed.state} lease_until=${observed.lease_until ?? 'null'}`
+        : 'job 行已不存在'
+      log(`warn: job ${job.id} 结果被弃置：complete* 守卫未命中（观测 ${observedDesc}）`)
       finalDetail = `${detail} (stale-lease 弃置)`
     }
     runs.insert({
@@ -148,6 +173,12 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     error: string,
     quotaResetAt?: string | null
   ): boolean => {
+    // IMPORTANT-1（审计修正）：completeError 有两个调用点——try 块内容轨的瞬时错误
+    // 分支（已经过下面 5. 顶部的 ownsLease 大门）和 catch 块（runEpisode 抛异常，
+    // 完全绕开那道门直接落到这里）。守在这个两条路径唯一共用的 helper 里，一次覆盖
+    // 两处：租约已丢失就不再碰这一行，也不再充 error_attempt——由调用方的 record()
+    // 走既有的 stale-lease 弃置分支收尾（诊断照旧打印，只是不再误伤新 invocation）。
+    if (!ownsLease()) return false
     const before = job.error_attempt
     const transitioned = jobs.completeError(job.id, error, now(), quotaResetAt)
     if (transitioned && before <= ERROR_GIVEUP_THRESHOLD) {
@@ -175,6 +206,16 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // 3. Track coverage via onCovered callback (season pack hits are downloads)
     const coveredIds = new Set<string>()
     const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string) => {
+      // FIX-3: 租约已不属于本次 invocation——跳过写盘，不信任 detached invocation
+      // 的战果（管线本身继续跑，只是不让它的产出再落库；不尝试取消管线，见 out of scope）。
+      if (!ownsLease()) {
+        log(
+          `warn: job ${job.id} 跳过 onCovered 写盘（episode=${episodeId}）：` +
+          `租约已不属于本次 invocation（观测 lease_until=${jobs.get(job.id)?.lease_until ?? 'null'}，` +
+          `本次 invocation 持有 ${job.lease_until ?? 'null'}）`
+        )
+        return
+      }
       lib.markCovered(episodeId, subtitlePath, 'scout-download', providerRef)
       if (targets.some(t => t.id === episodeId)) {
         coveredIds.add(episodeId)
@@ -182,11 +223,36 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     }
 
     // 4. Run pipeline for representative
-    const result = await runEpisode(representative.id, onCovered)
+    // FIX-4a: 在真正跑 runEpisode（有网络/LLM 调用、可能撞上 lost async continuation
+    // 那类异常）之前，先把本次调用要用的 journal 引用落盘到 jobs.journal_ref——即便
+    // 这次调用之后进程"断线"，也已经留下"是哪次运行、对应哪个目标集"的证据。
+    const journalRef = `${representative.id}-${startedAt}`
+    jobs.setJournalRef(job.id, journalRef, now())
+    const result = await runEpisode(representative.id, onCovered, journalRef)
     const { decision } = result
     const subtitlePath = result.subtitlePath ?? null
     const journalPath = result.journalPath ?? null
     const stats = result.stats ?? null
+
+    // IMPORTANT-1（审计修正——guard coverage hole）：runEpisode 是本函数唯一的 await
+    // 点，期间足够长（FIX-1 之后孤儿回收窗口缩到 15s，比旧 30min 租约窗口容易撞得多）
+    // 可能让本次 invocation 的 job 被 reapOrphaned 回收、又被一次新 invocation 重新
+    // claim——DB 里当前那行 searching/downloading/verifying 早已不是"我们"的了。下面
+    // 所有分流分支共用的 complete*（completeDone/completePartial/completeNoMatch，
+    // 以及经 completeErrorLogged 的 completeError）只按 active-state 守卫，认不出
+    // "是不是我领的"，会把新 invocation 的战果错误地转移到 failed/done（state/attempt/
+    // error_attempt 全部覆盖，还会把新 invocation 自己的 lease_until 直接 NULL 掉，
+    // 导致新 invocation 自己的 ownsLease 也跟着翻假，静默丢弃它后续所有战果——见
+    // 审计 (c) 级联）；markUnavailable/markNeedsReview 更是完全没有守卫。在进入任何
+    // 分支之前，一次性用 ownsLease() 拦掉整段路由——租约已丢失就什么状态机/集状态都
+    // 不碰，只留一行 runs 记录（复用 record() 既有的 stale-lease 弃置分支，诊断信息
+    // 不丢）。这是覆盖全部分支的最窄卡口：其后每条分支要么直接依赖 ownsLease()==true
+    // 才能到达这里（onCovered/代表集 markCovered 的既有守卫因此永远命中 true 分支，
+    // 不是死代码——只是不再是唯一防线），要么经 completeErrorLogged 二次确认。
+    if (!ownsLease()) {
+      record(false, decision, '本次 invocation 已失去租约，结果整体弃置', journalPath, stats)
+      return
+    }
 
     // 5. Route based on decision and coverage
     if (remainingTargets(job, lib, now()).length === 0) {
@@ -220,12 +286,22 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       // 84fd17a: pipeline 的 already_exists 决策（预检短路 or 下载后 existsSync）现在总是
       // 携带真实磁盘路径，download/adopted_local 同样用 subtitlePath；没有路径（旧分支残留
       // 兜底）则只改状态，绝不伪造 subtitles 行。M8: source 按 decision 映射。
-      const coverPath = subtitlePath
-      const providerRef = result.selected
-        ? candidateKey({ provider: result.selected.provider, providerId: result.selected.provider_id })
-        : undefined
-      lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision], providerRef)
-      coveredIds.add(representative.id) // 供人话摘要计数
+      // FIX-3: 同 onCovered，落盘前先过一遍租约归属——租约已失效则跳过这一笔直接写盘，
+      // 让下面的 record() 走既有的 stale-lease 弃置分支收尾。
+      if (ownsLease()) {
+        const coverPath = subtitlePath
+        const providerRef = result.selected
+          ? candidateKey({ provider: result.selected.provider, providerId: result.selected.provider_id })
+          : undefined
+        lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision], providerRef)
+        coveredIds.add(representative.id) // 供人话摘要计数
+      } else {
+        log(
+          `warn: job ${job.id} 跳过代表集 markCovered 写盘（episode=${representative.id}）：` +
+          `租约已不属于本次 invocation（观测 lease_until=${jobs.get(job.id)?.lease_until ?? 'null'}，` +
+          `本次 invocation 持有 ${job.lease_until ?? 'null'}）`
+        )
+      }
 
       if (remainingTargets(job, lib, now()).length === 0) {
         record(
@@ -321,7 +397,7 @@ export function makeRunEpisode(
 ): ExecutorDeps['runEpisode'] {
   const { jf, mappings, makeDeps, withJournal, cacheRoot, tmdb } = assembled
 
-  return async (episodeId, onCovered) => {
+  return async (episodeId, onCovered, journalRef) => {
     // 1. Get item from Jellyfin
     const item = await jf.getItem(episodeId)
 
@@ -373,7 +449,11 @@ export function makeRunEpisode(
 
     // 6. Call runPipeline. I5e: bypassNegativeCache — v2 状态机拥有全部重试策略，
     //    管线自己的负缓存不许再叠一层门（正缓存保留）。
-    const journalDir = join(cacheRoot, 'journals', `${episodeId}-${Date.now()}`)
+    // FIX-4a: journalRef（若调用方传入，即 executeJob 落盘到 jobs.journal_ref 的同一个
+    //    引用）复用来命名这次实际落盘的 journal 目录，避免 jobs.journal_ref 记的引用和
+    //    磁盘上真实 journal 目录各算各的、事后对不上号。未传入（如旧调用方/直接单测
+    //    这个 closure）时落回原先自算的兜底，行为不变。
+    const journalDir = join(cacheRoot, 'journals', journalRef ?? `${episodeId}-${Date.now()}`)
     const result = await withJournal(() =>
       runPipeline(
         makeDeps({ itemId: episodeId, onCovered: onCoveredAdapter }),

@@ -123,17 +123,38 @@ export class JobsRepo {
     return job ?? null
   }
 
+  /** FIX-4a（observability 审计修正）：journal_ref 是 schema v1 就有的列，此前从未被
+   *  写过。executeJob 在真正跑 runEpisode（有网络/LLM 调用、可能撞上 lost async
+   *  continuation 那类异常）之前，把本次调用要用的 journal 引用先落盘——即便这次调用
+   *  之后进程"断线"、job 卡死，也能从这一行倒查是哪次运行、对应哪份 journal 明细，
+   *  不再是零证据。只在 active 态生效（no-op 保护，同 renewLease 语义：job 若已被
+   *  complete* 收尾，没有再写它的道理）。 */
+  setJournalRef(jobId: number, journalRef: string, now: number): void {
+    this.db
+      .prepare(
+        `UPDATE jobs SET journal_ref = ?, updated_at = ? WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(journalRef, now, jobId)
+  }
+
   /** 心跳续租：daemon 每 tick 为本进程仍在跑的 job（inflight）续租，防止合法长跑
    *  （如季包多集下载）被下一 tick 的 reapExpiredLeases 误判死亡回收、导致并发双派发。
-   *  只作用于仍处活跃态的行——job 若已被 complete* 收尾则是 no-op。 */
-  renewLease(jobId: number, now: number): void {
-    this.db
+   *  只作用于仍处活跃态的行——job 若已被 complete* 收尾则是 no-op。
+   *  FIX-2：返回新写入的 lease_until（no-op 时返回 null），供调用方把这个值同步
+   *  写回它自己持有的 Job 对象引用（daemon.inflightJobs 里的那个），让"这次调用是否
+   *  还拥有租约"的判据（executor.ts 的 FIX-3 ownsLease 检查）能跟着合法续租一起前进，
+   *  而不是永远比对 claim 那一刻的旧值——否则任何跑超一个 tick 间隔的长任务都会被
+   *  误判"租约已失效"。 */
+  renewLease(jobId: number, now: number): number | null {
+    const leaseUntil = now + LEASE_DURATION_MS
+    const info = this.db
       .prepare(
         `UPDATE jobs
          SET lease_until = ?, updated_at = ?
          WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
       )
-      .run(now + LEASE_DURATION_MS, now, jobId)
+      .run(leaseUntil, now, jobId)
+    return info.changes > 0 ? leaseUntil : null
   }
 
   reapExpiredLeases(now: number): void {
@@ -149,6 +170,35 @@ export class JobsRepo {
          AND (lease_until < ? OR lease_until IS NULL)`
       )
       .run(now, now)
+  }
+
+  /** FIX-1（派发饥饿审计修正）：单实例前提下，调用方（daemon tick）传入"本进程当前
+   *  正在跟踪（inflight）"的 job id 集合——任何 active 态但 id 不在这个集合里的行，
+   *  定义上就是孤儿（同 reapAllActive"旧进程遗孤"的论证，只是判据从"进程重启"换成
+   *  "跟踪集合缺失"），不必等 30min 租约到期即可回收，堵死生产实案：executeJob 的
+   *  promise 结算但其 continuation（.finally）从未被调度、导致 job 卡在 active 态且
+   *  不再被本进程跟踪，过去只能靠 reapExpiredLeases 在租约到期后（最长 30 分钟）自愈。
+   *  不 attempt+1——同 reapExpiredLeases/reapAllActive 的"reap 不是内容性失败"语义。
+   *  返回被回收行的回收前快照（state 仍是原 active 态），供调用方记一行 warn 日志。
+   *  MINOR（审计遗留）：这把单实例前提从"启动时一次性回收"升级成"每个 tick 都执行"——两个
+   *  daemon 实例共享同一个 DB 时会互相把对方的 inflight job 当孤儿回收，陷入持续互 reap；
+   *  真要支持多实例，落地判据得从"trackedIds 集合缺失"换成 jobs 表上的 pid/owner 列。 */
+  reapOrphaned(trackedIds: Iterable<number>, now: number): Job[] {
+    const excluded = [...trackedIds]
+    const placeholders = excluded.map(() => '?').join(',')
+    const notInClause = excluded.length > 0 ? `AND id NOT IN (${placeholders})` : ''
+    return this.db.transaction(() => {
+      const candidates = this.db
+        .prepare(`SELECT * FROM jobs WHERE state IN ${ACTIVE_STATES_SQL} ${notInClause}`)
+        .all(...excluded) as Job[]
+      if (candidates.length === 0) return []
+      const update = this.db.prepare(
+        `UPDATE jobs SET state = 'wanted', lease_until = NULL, updated_at = ?
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      for (const c of candidates) update.run(now, c.id)
+      return candidates
+    })()
   }
 
   /** 启动即回收：无条件把所有活跃态 job 归位 wanted，**不看租约是否过期**。

@@ -397,6 +397,84 @@ describe('executor', () => {
     expect(jobs.get(job.id)!.state).toBe('wanted')
   })
 
+  it('FIX-3: onCovered 侧写守卫——租约已不属于本次 invocation（真实 reap，lease_until 已变）时跳过写盘', async () => {
+    // 区别于上面的 I4：forceState 只改 state，不动 lease_until，onCovered 的 ownership
+    // 判据（lease_until 比对）测不出来。这里用真实 reap（reapAllActive）复现生产场景——
+    // detached invocation 的 pipeline 仍在跑，写盘副作用（onCovered→markCovered）本该
+    // 在"发现租约已不是自己的"那一刻就止血，而不是像过去那样只在最终 complete* 才拦。
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    jobs.reapAllActive(now) // 真实回收：state→wanted 且 lease_until→NULL，与 job.lease_until 分道扬镳
+
+    const runEpisode = vi.fn(async (_: string, onCovered: (id: string, path: string) => void) => {
+      onCovered('e1', '/tv/s1e1.zh-Hans.srt')
+      return { decision: 'download', journalPath: '/journals/test.json' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    // 写盘被跳过——不信任 detached invocation 的战果。
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+    expect((lib.db.prepare('select count(*) c from subtitles where item_id=?').get('e1') as any).c).toBe(0)
+    // 跳过本身被记了一笔（journal 记录，供事后复盘）。
+    expect(logs.some(l => l.includes(`job ${job.id}`) && l.includes('跳过'))).toBe(true)
+    // 既有的 complete* 守卫依旧照常触发（FIX-3 不取代它，只是更早止血）。
+    expect(logs.some(l => l.includes(`job ${job.id} 结果被弃置`))).toBe(true)
+  })
+
+  it('FIX-4d: stale-discard warn 打印观测到的实际 state/lease_until，而不是断言唯一因（避免误诊）', async () => {
+    // 生产实案：真实观测是 state=wanted、lease=NULL，却被日志一律断言成"租约已被回收
+    // 重派"——把结论写死成唯一原因，掩盖了真实情况可能是别的（例如从未被正常 claim
+    // 过、或别的路径把它拨回了 wanted）。改为如实打印观测到的 state/lease_until。
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    jobs.reapAllActive(now) // 真实观测现场：state→wanted，lease_until→NULL
+
+    const runEpisode = vi.fn(async () => ({ decision: 'download', journalPath: '/j.json' }))
+    await executeJob(job, mkDeps(runEpisode))
+
+    const warnLine = logs.find(l => l.includes(`job ${job.id} 结果被弃置`))
+    expect(warnLine).toBeDefined()
+    expect(warnLine).toContain('state=wanted')
+    expect(warnLine).toContain('lease_until=null')
+    // 不再断言唯一因——旧文案硬编码"租约已被回收重派"，即便真实原因是别的也照样打印。
+    expect(warnLine).not.toContain('租约已被回收重派')
+  })
+
+  it('FIX-3: 租约仍属于本次 invocation（fresh token）时 onCovered 照常写盘——不误伤正常路径', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async (_: string, onCovered: (id: string, path: string) => void) => {
+      onCovered('e1', '/tv/s1e1.zh-Hans.srt')
+      return { decision: 'download', journalPath: '/journals/test.json' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(jobs.get(job.id)!.state).toBe('done')
+  })
+
+  it('FIX-3: 代表集自身命中（无季包 onCovered）时，租约失效也跳过直接 markCovered 写盘', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    jobs.reapAllActive(now)
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'download', journalPath: '/journals/test.json', subtitlePath: '/tv/s1e1.zh-Hans.srt',
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+    expect((lib.db.prepare('select count(*) c from subtitles where item_id=?').get('e1') as any).c).toBe(0)
+  })
+
   it('movie job 同构', async () => {
     mkMovie('m1')
     jobs.upsertWanted({ kind: 'movie', movieId: 'm1' }, now)
@@ -536,6 +614,28 @@ describe('executor', () => {
     })
   })
 
+  it('FIX-4a: jobs.journal_ref 在跑 runEpisode 之前落盘——即便调用之后进程"断线"，也已有证据可倒查', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    expect(job.journal_ref).toBeNull() // schema v1 列，此前从未写过
+
+    let journalRefDuringRun: string | null = null
+    let journalRefArg: string | undefined
+    const runEpisode = vi.fn(async (_episodeId: string, _onCovered, journalRef?: string) => {
+      // 调用发生时（pipeline 真正跑之前）jobs.journal_ref 应该已经落盘。
+      journalRefDuringRun = jobs.get(job.id)!.journal_ref
+      journalRefArg = journalRef
+      return { decision: 'download', journalPath: '/j.json', subtitlePath: '/tv/s1e1.zh-Hans.srt' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(journalRefDuringRun).toBeTruthy()
+    expect(journalRefDuringRun).toContain('e1') // 引用含目标集 id，便于人工定位
+    expect(journalRefArg).toBe(journalRefDuringRun) // 传给 runEpisode 的和落盘的是同一个引用
+  })
+
   it('runs.llm_calls/assrt_calls 落盘：取自 pipeline stub 返回的 stats', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
@@ -603,6 +703,170 @@ describe('executor', () => {
       expect(d).not.toMatch(/\/media/)          // 无裸路径前缀
       expect(d).toMatch(/[一-鿿]/)      // 至少含中文（非纯英文句）
     }
+  })
+
+  // IMPORTANT-1（fix/lifecycle-forensics 审计——guard coverage hole）：detached invocation
+  // 的 job 被孤儿回收（reapOrphaned）后又被一次新 invocation 重新 claim——旧代码只在
+  // onCovered/代表集 markCovered 两处写盘拦了 ownsLease()，post-runEpisode 的最终分流
+  // （completeNoMatch/completeError/completeDone）和 markUnavailable/markNeedsReview
+  // 完全没守，会把新 invocation 仍在用的那一行错误转移（state/attempt/error_attempt/
+  // lease_until 全部覆盖）。下面每个场景都覆盖一条分流分支，并在收尾处证明"活着"的
+  // invocation #2 事后仍能正常收尾（其自身 lease_until 没被 stale invocation 的写盘捣毁，
+  // 否则它自己的 ownsLease 也会跟着翻假，静默丢弃它自己的战果——审计 (c) 级联）。
+  describe('IMPORTANT-1: detached invocation after reclaim — post-runEpisode 路由整段拦截', () => {
+    it('no_safe_match 分支：不充 attempt、不写 markUnavailable、新 claim 的行不受影响', async () => {
+      mkEpisode('e1', 's1', 1, 1)
+      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      const job1 = jobs.claimNext(now)! // invocation #1 的冻结 token
+
+      // invocation #1 的 continuation 还没跑到这里之前，job 被孤儿回收（reapOrphaned 空
+      // 跟踪集视角，同 daemon FIX-1）——不是进程重启，只是"这次调用已经没人跟踪了"。
+      jobs.reapOrphaned([], now)
+      expect(jobs.get(job1.id)!.state).toBe('wanted')
+
+      // 一个新 invocation 重新领走同一行——推进 now 保证 lease_until 数值不同，否则两次
+      // claim 巧合撞出同一个数字，ownsLease() 的比对测不出区别。
+      now += 1000
+      const job2 = jobs.claimNext(now)!
+      expect(job2.id).toBe(job1.id)
+      expect(job2.lease_until).not.toBe(job1.lease_until)
+
+      // invocation #1（stale）此刻才跑到 runEpisode 返回，结论是 no_safe_match。
+      const staleRunEpisode = vi.fn(async () => ({ decision: 'no_safe_match', journalPath: '/stale.json' }))
+      await executeJob(job1, mkDeps(staleRunEpisode))
+
+      // 新 claim 的行完全未被动。
+      const afterStale = jobs.get(job1.id)!
+      expect(afterStale.state).toBe('searching')
+      expect(afterStale.lease_until).toBe(job2.lease_until)
+      expect(afterStale.attempt).toBe(0) // 没有被内容轨误充值
+      expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // 没有 markUnavailable 写脏
+
+      // 诚实留痕：runs 表仍记一行，标注 stale-lease 弃置（观测信息不丢）。
+      const runRows = runs.getByJobId(job1.id)
+      expect(runRows.length).toBe(1)
+      expect(runRows[0].detail).toContain('(stale-lease 弃置)')
+
+      // invocation #2（活的那个）事后正常收尾——证明它自己的 lease_until 没被
+      // invocation #1 的迟到路由捣毁。
+      const liveRunEpisode = vi.fn(async (_id: string, onCovered: (id: string, path: string) => void) => {
+        onCovered('e1', '/tv/s1e1.zh-Hans.srt')
+        return { decision: 'download', journalPath: '/live.json' }
+      })
+      await executeJob(job2, mkDeps(liveRunEpisode))
+      expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+      expect(jobs.get(job2.id)!.state).toBe('done')
+    })
+
+    it('decision=error（内容轨瞬时错误分支）：不充 error_attempt、不 NULL 新 claim 的 lease', async () => {
+      mkEpisode('e1', 's1', 1, 1)
+      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      const job1 = jobs.claimNext(now)!
+      jobs.reapOrphaned([], now)
+      now += 1000
+      const job2 = jobs.claimNext(now)!
+
+      const staleRunEpisode = vi.fn(async () => ({
+        decision: 'error', journalPath: '/stale.json', reasons: ['LLM 502'],
+      }))
+      await executeJob(job1, mkDeps(staleRunEpisode))
+
+      const afterStale = jobs.get(job1.id)!
+      expect(afterStale.state).toBe('searching')
+      expect(afterStale.lease_until).toBe(job2.lease_until) // 没被 completeError NULL 掉
+      expect(afterStale.error_attempt).toBe(0)
+      expect(afterStale.last_error).toBeNull()
+
+      const liveRunEpisode = vi.fn(async (_id: string, onCovered: (id: string, path: string) => void) => {
+        onCovered('e1', '/tv/s1e1.zh-Hans.srt')
+        return { decision: 'download', journalPath: '/live.json' }
+      })
+      await executeJob(job2, mkDeps(liveRunEpisode))
+      expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+      expect(jobs.get(job2.id)!.state).toBe('done')
+    })
+
+    it('runEpisode 抛异常（catch 块，同一个 completeErrorLogged）：同样不充 error_attempt、不 NULL 新 claim 的 lease', async () => {
+      mkEpisode('e1', 's1', 1, 1)
+      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      const job1 = jobs.claimNext(now)!
+      jobs.reapOrphaned([], now)
+      now += 1000
+      const job2 = jobs.claimNext(now)!
+
+      const staleRunEpisode = vi.fn(async () => { throw new Error('ASSRT API timeout') })
+      await executeJob(job1, mkDeps(staleRunEpisode))
+
+      const afterStale = jobs.get(job1.id)!
+      expect(afterStale.state).toBe('searching')
+      expect(afterStale.lease_until).toBe(job2.lease_until)
+      expect(afterStale.error_attempt).toBe(0)
+      expect(afterStale.last_error).toBeNull() // jobs.completeError 从未被真正调用过
+
+      const runRows = runs.getByJobId(job1.id)
+      expect(runRows.length).toBe(1)
+      expect(runRows[0].detail).toContain('(stale-lease 弃置)')
+
+      const liveRunEpisode = vi.fn(async (_id: string, onCovered: (id: string, path: string) => void) => {
+        onCovered('e1', '/tv/s1e1.zh-Hans.srt')
+        return { decision: 'download', journalPath: '/live.json' }
+      })
+      await executeJob(job2, mkDeps(liveRunEpisode))
+      expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+      expect(jobs.get(job2.id)!.state).toBe('done')
+    })
+
+    it('全覆盖 completeDone 分支：invocation #2 抢先覆盖但尚未自己收尾时，stale invocation 迟到的路由不能提前把它拍成 done', async () => {
+      // 这一支必须真正交错：invocation #1 的 runEpisode 挂起不返回（detached 但"活着"），
+      // 期间 invocation #2 领到同一行、自己的 onCovered 已经落盘覆盖 e1，但还没走到它
+      // 自己的 complete* 收尾（仍是 searching）——这正是旧代码的窟窿：invocation #1 一旦
+      // 醒来发现 remainingTargets() 为空，会误判"我搞定的"，把仍在 active 态的这一行
+      // 提前拍成 done。
+      mkEpisode('e1', 's1', 1, 1)
+      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      const job1 = jobs.claimNext(now)!
+
+      type RunResult = { decision: string; journalPath?: string; subtitlePath?: string }
+      let resolveStale: (r: RunResult) => void = () => {}
+      const staleRunEpisode = vi.fn(
+        () => new Promise<RunResult>((resolve) => { resolveStale = resolve })
+      )
+      const stalePromise = executeJob(job1, mkDeps(staleRunEpisode))
+
+      // invocation #1 仍挂起未返回（detached 但"活着"）时，job 被孤儿回收+重新 claim。
+      jobs.reapOrphaned([], now)
+      now += 1000
+      const job2 = jobs.claimNext(now)!
+      expect(job2.lease_until).not.toBe(job1.lease_until)
+
+      let resolveLive: (r: RunResult) => void = () => {}
+      const liveRunEpisode = vi.fn(
+        (_id: string, onCovered: (id: string, path: string) => void) => {
+          onCovered('e1', '/tv/s1e1.zh-Hans.srt') // 同步落盘覆盖，但自己还没收尾
+          return new Promise<RunResult>((resolve) => { resolveLive = resolve })
+        }
+      )
+      const livePromise = executeJob(job2, mkDeps(liveRunEpisode))
+      await Promise.resolve() // 让 liveRunEpisode 的同步部分（onCovered）跑完
+
+      expect(lib.getEpisode('e1')!.sub_status).toBe('covered') // invocation #2 已覆盖
+      expect(jobs.get(job2.id)!.state).toBe('searching') // 但尚未收尾，仍是 active 态
+
+      // invocation #1（stale）现在才醒：它自己的 runEpisode 返回 download（它对季包已经
+      // 被 invocation #2 覆盖这件事一无所知）。
+      resolveStale({ decision: 'download', journalPath: '/stale.json' })
+      await stalePromise
+
+      // invocation #2 的行完全未被 stale invocation 的迟到路由提前收尾。
+      const afterStale = jobs.get(job2.id)!
+      expect(afterStale.state).toBe('searching')
+      expect(afterStale.lease_until).toBe(job2.lease_until)
+
+      // invocation #2 自己正常收尾。
+      resolveLive({ decision: 'download', journalPath: '/live.json' })
+      await livePromise
+      expect(jobs.get(job2.id)!.state).toBe('done')
+    })
   })
 })
 

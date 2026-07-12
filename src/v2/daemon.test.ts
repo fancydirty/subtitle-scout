@@ -67,6 +67,21 @@ describe('ScoutDaemon', () => {
     expect(claimedJob?.state).toBe('searching')
   })
 
+  it('FIX-4c: dispatch 为每次 claim 记一行 log——job id、series/kind、lease_until', async () => {
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 3 }, now)
+    const executeJob = vi.fn(async () => {})
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick()
+
+    const claimed = jobs.find('s1', 3)!
+    const claimLine = logs.find(l => l.includes('dispatch') && l.includes(`${claimed.id}`))
+    expect(claimLine).toBeDefined()
+    expect(claimLine).toContain('s1')
+    expect(claimLine).toContain('series_season')
+    expect(claimLine).toContain(String(claimed.lease_until))
+  })
+
   it('dispatch尊重searching并发上限', async () => {
     const executeJob = vi.fn(async () => {
       // Simulate job taking time (doesn't complete within tick)
@@ -116,6 +131,137 @@ describe('ScoutDaemon', () => {
     expect(jobs.countByState('wanted')).toBe(0) // not bounced back to wanted
 
     resolveJob()
+  })
+
+  it('FIX-1: active 但不在本进程 inflight 跟踪里的孤儿行——即便租约合法未过期，也在秒级被回收（不必等 30min 租约到期）', async () => {
+    // 生产实案复现：executeJob 的 promise 结算但其 continuation（.finally）从未被调度
+    // ——job 卡在 active 态、租约仍合法未过期，但本进程再也不"跟踪"它了。过去只能等
+    // 最长 30 分钟租约到期后 reapExpiredLeases 自愈，期间 searching 并发槽（默认=1）
+    // 被永久占用，队列彻底停摆且零 log/run 证据。这里绕过 daemon 直接 claimNext，
+    // 模拟"该 job 从未被本 daemon 实例的 dispatch()/inflight 跟踪过"。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const orphan = jobs.claimNext(now)!
+    expect(orphan.state).toBe('searching')
+    expect(orphan.lease_until).toBeGreaterThan(now) // 租约合法，远未过期
+
+    const executeJob = vi.fn(async () => {})
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick()
+
+    // 秒级回收 log 触发，命名了 job 和异常——不必等 30min 租约到期。
+    expect(logs.some(l => l.includes(`${orphan.id}`) && /孤儿|orphan/i.test(l))).toBe(true)
+    // 本例队列里只有这一个 job：回收腾出的槽位在同一 tick 内被 dispatch 合法重新领取
+    // （这次正常跟踪），派发槽没有被永久空置或双跑。
+    expect(executeJob).toHaveBeenCalledOnce()
+    expect(jobs.countByState('searching')).toBe(1)
+  })
+
+  it('FIX-1: 孤儿回收腾出的派发槽让另一个排队 job 得以领取（打破单槽饿死）', async () => {
+    // 更贴近 spec 原句的场景：孤儿被回收回 wanted 后，槽位让**另一个**排队 job 拿到——
+    // 而不是孤儿自己在同一 tick 内被重新领走。用优先级保证 claimNext 的选择确定性。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now) // 将成为孤儿
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's2', season: 1 }, now) // 排队中，优先级更高
+    jobs.boostPriority({ kind: 'series_season', seriesId: 's2', season: 1 }, 100)
+
+    // forceClaim（测试助手）：指名领取 s1，绕开 claimNext 的 priority 排序——s2 优先级更高，
+    // 若走 claimNext 反而会先领到 s2，测不出"孤儿腾出槽位给别的 job"这个点。
+    const orphan = jobs.forceClaim('s1', 1, now)! // 未被任何 daemon 跟踪
+    expect(orphan.series_id).toBe('s1')
+
+    const executeJob = vi.fn(async (_job: Job) => {})
+    const daemon = new ScoutDaemon(
+      makeDeps({ executeJob, concurrency: { searching: 1, downloading: 2, verifying: 2 } })
+    )
+
+    await daemon.tick()
+
+    // s1 孤儿被回收（未被跟踪）→ 唯一的 searching 槽让优先级更高、排队中的 s2 领到。
+    expect(executeJob).toHaveBeenCalledOnce()
+    const claimedJob = executeJob.mock.calls[0][0]
+    expect(claimedJob.series_id).toBe('s2')
+    // s1 本身回到 wanted、没有在同一 tick 内被抢回去，attempt 不变（reap 不占内容退避梯名额）。
+    expect(jobs.find('s1', 1)!.state).toBe('wanted')
+    expect(jobs.find('s1', 1)!.attempt).toBe(0)
+  })
+
+  it('FIX-1: 真正 inflight（daemon 自己 claim 且仍在跟踪）的 job 不被孤儿侦测误伤', async () => {
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    let resolveJob: () => void = () => {}
+    const executeJob = vi.fn(() => new Promise<void>((resolve) => { resolveJob = resolve }))
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    // Tick 1: daemon 自己 claim 并跟踪这个 job（inflight），executeJob 尚未完成。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+
+    // Tick 2: 孤儿侦测跑在 dispatch 之前——这个 job 仍在本进程的 inflight 跟踪集合里，
+    // 绝不能被当成孤儿回收。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+    expect(jobs.countByState('wanted')).toBe(0)
+    expect(executeJob).toHaveBeenCalledOnce() // 没有被误回收+重新派发
+
+    resolveJob()
+  })
+
+  it('FIX-1: 本 tick 刚被 dispatch 领走的 job 不会被同一 tick 的孤儿侦测误伤（顺序保证：侦测跑在 dispatch 之前）', async () => {
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const executeJob = vi.fn(() => new Promise<void>(() => {})) // 本 tick 内不会 settle
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick() // 孤儿侦测先跑（此时还没有任何 active 行）→ dispatch 才 claim+跟踪
+
+    expect(jobs.countByState('searching')).toBe(1) // 未被本 tick 自己的孤儿侦测回收
+    expect(jobs.countByState('wanted')).toBe(0)
+  })
+
+  it('FIX-2: reap+重领后，旧（detached）invocation 迟到的 finally 不驱逐新 invocation 的 inflight 追踪条目', async () => {
+    // 生产语境：inflight 跟踪曾是 Set<number>（按 job id 去重），两次 claim 共享同一个
+    // key——旧 invocation 的 .finally 一响就把新 invocation 的追踪条目也删了，新
+    // invocation（仍在合法跑）从此失去心跳续租，租约到期后被误判死亡回收（双跑/饿死）。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    let resolveFirst: () => void = () => {}
+    let callCount = 0
+    const executeJob = vi.fn(() => {
+      callCount++
+      if (callCount === 1) {
+        return new Promise<void>((resolve) => { resolveFirst = resolve })
+      }
+      return new Promise<void>(() => {}) // 第二次 invocation：本测试内也不 settle
+    })
+
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    // Tick 1：claim s1 → invocation #1 被跟踪（即将变成 detached）。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+
+    // 模拟：这一行在 invocation #1 仍"活着"（只是它的 continuation 还没运行）时被
+    // 别处回收——确定性复现用 reapAllActive（同 FIX-1 的孤儿回收在其他时序下的效果）。
+    jobs.reapAllActive(now)
+    expect(jobs.find('s1', 1)!.state).toBe('wanted')
+
+    // Tick 2：dispatch 重新领取 s1 给 invocation #2——同一个 job id，全新的 Job 对象/token。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+    expect(executeJob).toHaveBeenCalledTimes(2)
+
+    // 现在 invocation #1（stale）才结算——它的 .finally 绝不能驱逐 invocation #2 的追踪条目。
+    resolveFirst()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // 证明 invocation #2 仍被跟踪：把时钟拨过 30min 租约再 tick——心跳必须还在为它续租
+    // （id 仍在追踪集合里），reapExpiredLeases/FIX-1 孤儿侦测都不该碰它。
+    now += 31 * 60_000
+    await daemon.tick()
+
+    expect(jobs.countByState('searching')).toBe(1) // 仍被跟踪+续租，没被回收
+    expect(jobs.countByState('wanted')).toBe(0)
+    expect(executeJob).toHaveBeenCalledTimes(2) // 没有多出一次误派发/双跑
   })
 
   it('过租job被reap后可再领取', async () => {
@@ -204,6 +350,45 @@ describe('ScoutDaemon', () => {
 
     // Error should be logged
     expect(logs.some(l => l.includes('Simulated error'))).toBe(true)
+  })
+
+  it('FIX-4b: executeJob 抛错时除了记 log 还落一条 synthetic error run 行——crashed invocation 不再零证据', async () => {
+    // 过去 fire-and-forget 的 .catch 只记日志就完了；日志会轮转/丢失，runs 表才是
+    // 持久证据。任何 crashed invocation 都该在 runs 表留痕，哪怕 executeJob 本身
+    // 没机会（或没来得及）自己写一行。
+    const executeJob = vi.fn(async () => {
+      throw new Error('Simulated crash')
+    })
+
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick()
+
+    const job = jobs.find('s1', 1)!
+    const runRows = runs.getByJobId(job.id)
+    expect(runRows.length).toBe(1)
+    expect(runRows[0].decision).toBe('error')
+    expect(runRows[0].detail).toContain('Simulated crash')
+  })
+
+  it('FIX-4b: synthetic run 行落盘本身失败（fail-soft）——不能让记录动作反过来炸主循环', async () => {
+    const executeJob = vi.fn(async () => {
+      throw new Error('Simulated crash')
+    })
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    const runsSpy = vi.spyOn(runs, 'insert').mockImplementation(() => {
+      throw new Error('disk full while writing runs row')
+    })
+
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await expect(daemon.tick()).resolves.toBeUndefined()
+    // 原有的 error log 仍然要打出来——记录失败不该吞掉既有的可观测性
+    expect(logs.some(l => l.includes('Simulated crash'))).toBe(true)
+
+    runsSpy.mockRestore()
   })
 
   it('scan抛错时跳过aggregate但继续dispatch（稳态：boot reconcile 已成功后）', async () => {
@@ -491,6 +676,78 @@ describe('ScoutDaemon', () => {
     expect(runEpisode).toHaveBeenCalledTimes(1)
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
     expect(jobs.find('s1', 1)?.state).toBe('done')
+  })
+
+  it('IMPORTANT-2: 心跳续租写回（trackedJob.lease_until = renewed）是 ownsLease 跨 tick 存活的唯一支点——真实 executor 场景下 markCovered 必须落地', async () => {
+    // 生产语境：runEpisode 是真正的网络/LLM 调用，季包多集下载能合法跑超一个 tick
+    // 间隔（15s）甚至一次租约窗口（30min）。daemon.tick() 的心跳每拍为仍被跟踪的
+    // inflight job 续租，并把新 lease_until **原地写回** daemon 自己持有的那个 Job
+    // 对象（dispatch 时 claim 到的对象，和传给 executeJob 的是同一个引用）——
+    // executor.ts 的 ownsLease() 读的正是这同一个对象的 .lease_until。若心跳只续了
+    // DB 里的租约、却漏了这一行写回，executeJob 手里冻结的 job.lease_until 会永远
+    // 停在 claim 那一刻的旧值：下一次 ownsLease() 比对必然判定"租约已丢失"，把
+    // 这次货真价实、仍合法持有该行的 invocation 自己的 markCovered 静默丢弃——
+    // job 永远做不完，且零报错，只是安静地卡住。
+    lib.upsertSeries({ id: 's1', name: 'Series 1' })
+    lib.upsertEpisode({
+      id: 'e1',
+      seriesId: 's1',
+      season: 1,
+      episode: 1,
+      name: 'Episode 1',
+      path: '/media/s1e1.mkv',
+      subStatus: 'missing',
+    })
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    type RunResult = { decision: string; journalPath?: string; subtitlePath?: string }
+    let capturedOnCovered: ((id: string, path: string) => void) | undefined
+    let resolveRun: (r: RunResult) => void = () => {}
+    const runEpisode = vi.fn(
+      (_id: string, onCovered: (id: string, path: string) => void) => {
+        capturedOnCovered = onCovered
+        return new Promise<RunResult>((resolve) => { resolveRun = resolve })
+      }
+    )
+
+    let executeJobPromise: Promise<void> | undefined
+    const executeJob = (claimedJob: Job) => {
+      const p = realExecuteJob(claimedJob, {
+        lib, jobs, runEpisode, now: () => now, log: () => {},
+      } as ExecutorDeps)
+      executeJobPromise = p
+      return p
+    }
+
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    // Tick 1: dispatch claim 该 job，真实 executeJob 启动并卡在 await runEpisode(...)
+    // ——job 仍在跑，尚未产出任何决策。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+    expect(runEpisode).toHaveBeenCalledTimes(1)
+
+    // 时间推进跨过一次租约窗口——模拟真正跑得慢的长任务（多集季包）跨越了 tick 边界。
+    now += 31 * 60_000
+
+    // Tick 2: 心跳必须在这里为仍被跟踪的 job 续租、并把新 lease_until 写回同一个
+    // Job 对象引用——否则下面的 reapExpiredLeases 会把它当死租约回收（state→wanted），
+    // 之后 executeJob 结算时 ownsLease() 判定失败的原因会变成"state 已不是 active"，
+    // 而不是本测试要单独钉住的"lease_until 比对失配"；只要这一拍没把它错误回收，
+    // 就说明续租本身生效了——是否传导给 ownsLease() 则由最后的落盘断言验证。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1) // 没被误回收
+    expect(jobs.countByState('wanted')).toBe(0)
+
+    // runEpisode 终于返回：季包 onCovered 命中 e1，决策 download。
+    capturedOnCovered!('e1', '/tv/s1e1.zh-Hans.srt')
+    resolveRun({ decision: 'download', journalPath: '/j.json' })
+    await executeJobPromise
+
+    // 心跳续租若正常写回，ownsLease() 在这里应仍判定"我拥有"，markCovered 落地、
+    // job 收尾成 done——而不是被静默弃置成 stale-lease。
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(jobs.find('s1', 1)!.state).toBe('done')
   })
 
   it('pollSessions对covered条目不wake', async () => {
