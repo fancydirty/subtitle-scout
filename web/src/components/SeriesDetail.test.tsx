@@ -69,4 +69,21 @@ describe('SeriesDetail 集格子态映射', () => {
     expect(cell.getAttribute('title')).toContain('搜索穷尽')
     expect(cell.getAttribute('title')).toContain('复查')
   })
+
+  it('realigned 工作记录按成功语气展示（rd ok，非 rd no）', async () => {
+    const detailWithRealign: SeriesDetailDTO = {
+      ...DETAIL,
+      runs: [
+        { startedAt: Date.now(), finishedAt: Date.now(), decision: 'realigned', detail: '把 40 集平铺整理成 3 季，字幕已就位', journalPath: null },
+      ],
+    }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const body = url.includes('/api/v2/series/') ? detailWithRealign : []
+      return { ok: true, status: 200, json: async () => body } as unknown as Response
+    }))
+    render(<SeriesDetail id="s1" />)
+    await screen.findByText('爱，死亡和机器人')
+    const row = screen.getByText('把 40 集平铺整理成 3 季，字幕已就位')
+    expect(row.className).toBe('rd ok')
+  })
 })
