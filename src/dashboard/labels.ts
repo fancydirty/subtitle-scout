@@ -8,6 +8,7 @@ const DECISION_MAP: Record<string, { label: string; tone: Tone }> = {
   no_safe_match:  { label: '暂时没找到合适的中文字幕', tone: 'muted' },
   retry_later:    { label: '过阵子再试', tone: 'muted' },
   error:          { label: '出错，稍后重试', tone: 'fail' },
+  realigned:      { label: '把乱排布的剧集整理好了', tone: 'ok' },
 }
 
 /** 内部决策枚举 → 用户视角人话。未知枚举兜底为中性词，绝不泄漏原始枚举名。 */
