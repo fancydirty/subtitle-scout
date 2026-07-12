@@ -29,6 +29,15 @@ describe('parseAbsoluteEpisodeNumber', () => {
   it('合集文件（E01-02 范围记法）解不出单一集号——返回 null（隔离区，不猜）', () => {
     expect(parseAbsoluteEpisodeNumber('Show - 01-02.mkv')).toBeNull()
   })
+  it('E 前缀范围合集（E01-E02）→ null，不得误取首集 E01', () => {
+    expect(parseAbsoluteEpisodeNumber('Show E01-E02 1080p.mkv')).toBeNull()
+  })
+  it('E 前缀范围合集（E01-02 混合写法）→ null', () => {
+    expect(parseAbsoluteEpisodeNumber('Show E01-02.mkv')).toBeNull()
+  })
+  it('"E05 - 1080p"（集号后跟画质标记）不是范围合集——正常解析出 E05', () => {
+    expect(parseAbsoluteEpisodeNumber('Show E05 - 1080p.mkv')).toEqual({ absoluteEpisode: 5, matchedToken: 'E05' })
+  })
   it('无任何可识别集号标记——返回 null', () => {
     expect(parseAbsoluteEpisodeNumber('random_file.mkv')).toBeNull()
   })

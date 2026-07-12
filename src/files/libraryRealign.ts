@@ -10,6 +10,9 @@ const CJK_EPISODE_RE = /第\s*(\d{1,4})\s*[话話集]/
 const SXXEYY_RE = /S\d{1,4}E\d{1,4}/i
 const BRACKET_EPISODE_RE = /\[(\d{1,4})\]/
 const E_CODE_RE = /(?<![A-Za-z0-9])E(\d{1,4})(?!\d)/i
+// E 前缀范围合集：'E01-E02' / 'E01-02'——一个文件跨多集，取任何单集都是错的，判 null 进隔离区。
+// 尾部 (?![0-9A-Za-z]) 防误伤 "E05 - 1080p" 这类"集号 - 画质"写法（1080p 不是范围终点）。
+const E_RANGE_RE = /(?<![A-Za-z0-9])E\d{1,4}\s*-\s*E?\d{1,4}(?![0-9A-Za-z])/i
 
 /**
  * 从文件名解析绝对集号——只认三种确定性标记（CJK "第N话/第N集" > 方括号 [NN] > 裸 "E26"），
@@ -22,6 +25,7 @@ const E_CODE_RE = /(?<![A-Za-z0-9])E(\d{1,4})(?!\d)/i
  */
 export function parseAbsoluteEpisodeNumber(filename: string): EpisodeNumberMatch | null {
   if (SXXEYY_RE.test(filename)) return null
+  if (E_RANGE_RE.test(filename)) return null
   const cjk = CJK_EPISODE_RE.exec(filename)
   if (cjk) return { absoluteEpisode: Number(cjk[1]), matchedToken: cjk[0] }
   const bracket = BRACKET_EPISODE_RE.exec(filename)
