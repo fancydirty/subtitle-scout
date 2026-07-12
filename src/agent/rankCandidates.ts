@@ -65,9 +65,11 @@ export function neededEpisodeCodesFor(ctx: MediaContext, identity: MediaIdentity
 /**
  * 从一个候选的 filelist 里选出喂给 prompt 的条目。fileList.length <= MAX_FILELIST_ENTRIES 时原样
  * 返回，不截断。超限时：先用 matchesEpisodeCode 把文件名命中 neededEpisodeCodes 的条目无条件保留
- * （不占用"砍头"预算，也不管它们在原始 filelist 里排第几），剩余预算才按原顺序摘一份样本，供
- * LLM 参考同一个候选包里其它文件的命名风格/发布组信息。返回顺序按原始 index 排序（保持可读性，
- * 不代表下游依赖这个顺序——file_index 由每个条目自带的 i 值决定，见下方 prompt 措辞）。
+ * （不占用"砍头"预算，也不管它们在原始 filelist 里排第几；但这份"无条件保留"名单本身也封顶在
+ * MAX_FILELIST_ENTRIES——病态包（如大量同集号的重编码/多版本条目全部命中）不能靠"都是 needed"
+ * 绕过这个上限、把 prompt 打爆），剩余预算才按原顺序摘一份样本，供 LLM 参考同一个候选包里其它
+ * 文件的命名风格/发布组信息。返回顺序按原始 index 排序（保持可读性，不代表下游依赖这个顺序——
+ * file_index 由每个条目自带的 i 值决定，见下方 prompt 措辞）。
  */
 function selectFilelistEntries(
   fileList: SubtitleFile[], neededEpisodeCodes: string[],
@@ -76,7 +78,7 @@ function selectFilelistEntries(
     return { shown: fileList.map(f => ({ i: f.index, name: f.name })), truncated: 0 }
   }
   const needed = neededEpisodeCodes.length > 0
-    ? fileList.filter(f => neededEpisodeCodes.some(code => matchesEpisodeCode(f.name, code)))
+    ? fileList.filter(f => neededEpisodeCodes.some(code => matchesEpisodeCode(f.name, code))).slice(0, MAX_FILELIST_ENTRIES)
     : []
   const neededIndexes = new Set(needed.map(f => f.index))
   const rest = fileList.filter(f => !neededIndexes.has(f.index))
@@ -146,6 +148,8 @@ export async function rankCandidates(
     'matches THIS media. A trilogy pack whose files are other movies is a trap.',
     'Each filelist entry is { i, name } — file_index is the i value of the entry you pick (NOT its',
     'position in the shown array); null for non-pack candidates.',
+    'Worked example: filelist [{"i":2,"name":"a.srt"},{"i":41,"name":"Show.S03E05.srt"}] — the S03E05',
+    'pick is file_index: 41 (NOT 1), its position in this shown array.',
     'Report candidate_id as the candidate\'s id string EXACTLY as shown (e.g. "assrt:673114" or "opensubtitles:7174766").',
     'If the filelist was truncated (filelist_truncated present): entries whose filename matches the target',
     'season/episode are always included regardless of truncation, so file_index:null is NOT an acceptable',

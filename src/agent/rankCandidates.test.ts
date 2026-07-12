@@ -111,6 +111,19 @@ describe('compactCandidates relevance-aware selection (assrt:635301 repro)', () 
     const shownEntry = out[0].filelist.find(f => f.name.includes('S03E07'))
     expect(shownEntry).toBeDefined()
   })
+
+  it('caps the needed-entries selection itself at MAX_FILELIST_ENTRIES when >30 entries all match (pathological re-encode pack)', () => {
+    // every entry in this 40-file pack matches the needed code — the "always keep the needed
+    // ones" carve-out must not let the shown list blow past MAX_FILELIST_ENTRIES in this case.
+    const files = Array.from({ length: 40 }, (_, i) => ({ index: i, name: `Show.S01E01.re-encode.${i}.chs.ass` }))
+    const pack: SubtitleCandidate = {
+      provider: 'assrt', providerId: '1', videoName: 'Show.S01E01', nativeName: null,
+      releaseSite: null, subtype: null, language: '简', uploadDate: null, fileList: files,
+    }
+    const out = compactCandidates([pack], ['S01E01'])
+    expect(out[0].filelist.length).toBeLessThanOrEqual(MAX_FILELIST_ENTRIES)
+    expect(out[0].filelist_truncated).toBe(40 - out[0].filelist.length)
+  })
 })
 
 function subWithFiles(id: number, files: string[], subtype: string | null = null): SubtitleCandidate {
@@ -223,6 +236,17 @@ describe('rankCandidates prompt', () => {
     await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
     expect(prompt()).toMatch(/candidate_id.*EXACTLY/)
   })
+
+  // position-vs-i 混淆的 prompt 侧防线（gate.ts 的运行时兜底是最后一道，这里在源头减少
+  // 混淆发生的概率）：一个具体的、带真实数字的 worked example，直白地示范"pick 的是 i 值，
+  // 不是它在展示数组里排第几"，比抽象措辞更压得住模型把两者搞混的倾向。
+  it('gives a worked example distinguishing file_index (the i value) from shown-array position', async () => {
+    const { llm, prompt } = capture()
+    await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
+    const p = prompt()
+    expect(p).toContain('{"i":2,"name":"a.srt"},{"i":41,"name":"Show.S03E05.srt"}')
+    expect(p).toMatch(/file_index:\s*41\s*\(NOT 1\)/)
+  })
 })
 
 describe('rankCandidates end-to-end repro: assrt:635301 True Detective S3E5-E8 (production bug)', () => {
@@ -265,8 +289,16 @@ describe('rankCandidates end-to-end repro: assrt:635301 True Detective S3E5-E8 (
 
     const rankResult = await rankCandidates(llmThatReadsThePrompt(code), ctx, identity, [pack])
 
-    // 可见性断言：真实 filename 必须出现在喂给模型的 prompt 里（不是被截断藏起来）
-    expect(rankResult.prompt).toContain(code)
+    // 可见性断言：真实 filename 必须出现在喂给模型的 candidates[].filelist 里（不是被截断藏起来）。
+    // 不能直接对整个 prompt 做 toContain(code)——`media filename: True.Detective.S03E0${ep}.mkv`
+    // 那一行本身就带着这个集号，无论 filelist 截断有没有正确保留目标条目，这个断言都会通过，
+    // 测不出真正要防的回归。像 mock LLM 自己那样，先把 candidates JSON 从 prompt 里抠出来，
+    // 只在这份真正喂给模型的 filelist 里找这个集号。
+    const compactJson = /candidates: (\[.*\])$/s.exec(rankResult.prompt)?.[1]
+    expect(compactJson).toBeDefined()
+    const compact = JSON.parse(compactJson!) as Array<{ filelist: { i: number; name: string }[] }>
+    const shownNames = compact.flatMap(c => c.filelist.map(f => f.name))
+    expect(shownNames.some(name => name.includes(code))).toBe(true)
 
     const expectedIndex = pack.fileList.findIndex(f => f.name.includes(code))
     const gate = runGate(rankResult.parsed, [pack], identity)
