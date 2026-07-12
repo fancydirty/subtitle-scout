@@ -1,7 +1,8 @@
 // 开箱体检:解析已落盘到沙盒的 .srt/.ass,产出结构信号喂给 agent 终审。不合成任何数字——
 // 原始值(cue 数/时间轴跨度/检测到的文字体系)原样呈交,agent 像人一样推理,不是打分。
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { extname } from 'node:path'
+import { decodeToUtf8 } from './subtitleEncoding.js'
 
 export interface InspectSignals {
   decodable: boolean
@@ -12,6 +13,25 @@ export interface InspectSignals {
   spanMs: number | null
   detectedScript: 'zh-Hans' | 'zh-Hant' | 'zh-yue' | 'other' | 'unknown'
   assTitle?: string | null
+  assHeaderComment?: string
+}
+
+// 真实字幕文件几毫字节量级；超出即视为垃圾（损坏下载/伪装成字幕的大文件），
+// 在 statSync 阶段就 fail closed，绝不把整个文件读进内存。
+const MAX_INSPECT_BYTES = 16 * 1024 * 1024
+
+// 超限时诚实上报的失败形状——后续步骤据此不经 LLM 直接拒绝。
+const OVERSIZE_SIGNALS: InspectSignals = {
+  decodable: false, isHtml: false, cueCount: 0,
+  firstCueMs: null, lastCueMs: null, spanMs: null, detectedScript: 'unknown',
+}
+
+// prompt 喂给 agent 的自由文本字段（片名/字幕组头注释）截断上限：防止畸形/恶意文件
+// 塞进几 MB 的"Title"把 prompt 撑爆，也顺手掐掉可能的 prompt injection 载荷。
+const MAX_SIGNAL_TEXT_LEN = 200
+
+function truncateSignalText(s: string): string {
+  return s.length > MAX_SIGNAL_TEXT_LEN ? s.slice(0, MAX_SIGNAL_TEXT_LEN) : s
 }
 
 interface Cue { startMs: number; endMs: number; text: string }
@@ -60,10 +80,11 @@ function assTimeToMs(raw: string): number | null {
   return (Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000 + Number(m[4]) * 10
 }
 
-function parseAssCues(text: string): { cues: Cue[]; title: string | null } {
+function parseAssCues(text: string): { cues: Cue[]; title: string | null; headerComment: string | null } {
   const lines = text.split(/\r?\n/)
   const cues: Cue[] = []
   let title: string | null = null
+  const headerCommentLines: string[] = []
   let inScriptInfo = false
   let inEvents = false
   let textFieldIndex = -1
@@ -72,6 +93,12 @@ function parseAssCues(text: string): { cues: Cue[]; title: string | null } {
     if (/^\[Script Info\]/i.test(line)) { inScriptInfo = true; inEvents = false; continue }
     if (/^\[Events\]/i.test(line)) { inEvents = true; inScriptInfo = false; continue }
     if (/^\[/.test(line)) { inScriptInfo = false; inEvents = false; continue }
+    // 字幕组的自我署名/免责声明常以 `;` 注释行或 Comment: 字段藏在 [Script Info] 里
+    // （design L45 的"字幕组头注释原文"信号）——原文收下，交给 agent 判断，不做语义解析。
+    if (inScriptInfo && (line.startsWith(';') || /^Comment\s*:/i.test(line))) {
+      if (line.length > 0) headerCommentLines.push(line)
+      continue
+    }
     if (inScriptInfo && /^Title\s*:/i.test(line)) {
       title = line.slice(line.indexOf(':') + 1).trim() || null
       continue
@@ -94,7 +121,10 @@ function parseAssCues(text: string): { cues: Cue[]; title: string | null } {
       cues.push({ startMs, endMs, text: cueText })
     }
   }
-  return { cues, title }
+  const headerComment = headerCommentLines.length > 0
+    ? truncateSignalText(headerCommentLines.join(' '))
+    : null
+  return { cues, title: title != null ? truncateSignalText(title) : title, headerComment }
 }
 
 const SIMPLIFIED_ONLY = new Set('国说来时会为学过对现关开东车门问儿无与从这样后应变电动经济单卫华叶')
@@ -123,7 +153,15 @@ export function detectScript(cues: Cue[]): InspectSignals['detectedScript'] {
 }
 
 export function inspectSubtitle(stagedPath: string): InspectSignals {
-  const text = readFileSync(stagedPath, 'utf8')
+  // 大小护栏必须在读之前:多 GB 的垃圾/伪装文件会把整个文件读进一个字符串——
+  // 小的把内存占满,大的(>512MB)直接 ERR_STRING_TOO_LONG 崩掉整个守护进程。
+  if (statSync(stagedPath).size > MAX_INSPECT_BYTES) {
+    return { ...OVERSIZE_SIGNALS }
+  }
+  const raw = readFileSync(stagedPath)
+  // 与 subtitleWriter.ts 落盘时同一套 chardet+iconv 探测路径:ASSRT 等来源常见 GBK/GB18030,
+  // 朴素按 utf-8 解码会把合法中文变成乱码,体检误报 decodable:false。
+  const text = decodeToUtf8(raw).data.toString('utf8')
   const decodable = !isLikelyUndecodable(text)
   const isHtml = looksLikeHtml(text)
   if (!decodable || isHtml) {
@@ -132,20 +170,30 @@ export function inspectSubtitle(stagedPath: string): InspectSignals {
   const ext = extname(stagedPath).toLowerCase()
   let cues: Cue[]
   let assTitle: string | null | undefined
+  let assHeaderComment: string | undefined
   if (ext === '.ass' || ext === '.ssa') {
     const parsed = parseAssCues(text)
     cues = parsed.cues
     assTitle = parsed.title
+    assHeaderComment = parsed.headerComment ?? undefined
   } else {
     cues = parseSrtCues(text)
   }
-  const firstCueMs = cues.length > 0 ? Math.min(...cues.map(c => c.startMs)) : null
-  const lastCueMs = cues.length > 0 ? Math.max(...cues.map(c => c.endMs)) : null
+  // 单次遍历取 lo/hi,而不是 Math.min(...cues.map(...))——展开一个 ~13 万+元素的数组当
+  // 参数列表会在 V8 上撞 RangeError(Maximum call stack size exceeded),字幕组合集/长剧
+  // 全季合并的 cue 数轻松过这个坎。
+  let firstCueMs: number | null = null
+  let lastCueMs: number | null = null
+  for (const c of cues) {
+    if (firstCueMs === null || c.startMs < firstCueMs) firstCueMs = c.startMs
+    if (lastCueMs === null || c.endMs > lastCueMs) lastCueMs = c.endMs
+  }
   return {
     decodable, isHtml, cueCount: cues.length,
     firstCueMs, lastCueMs,
     spanMs: firstCueMs != null && lastCueMs != null ? lastCueMs - firstCueMs : null,
     detectedScript: detectScript(cues),
     ...(assTitle !== undefined ? { assTitle } : {}),
+    ...(assHeaderComment !== undefined ? { assHeaderComment } : {}),
   }
 }
