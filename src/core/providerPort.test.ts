@@ -1,7 +1,25 @@
 import { describe, it, expect } from 'vitest'
-import { makeCliProviderPort, ProviderQuotaExhaustedError } from './providerPort.js'
+import { pathToFileURL } from 'node:url'
+import { makeCliProviderPort, ProviderQuotaExhaustedError, resolveSubtitleFetchCommand } from './providerPort.js'
 
 const stub = ['node', 'fixtures/fetch-stub.mjs']
+
+describe('resolveSubtitleFetchCommand', () => {
+  it('dev mode (.ts module, e.g. tsx running src/core/providerPort.ts): spawns via npx tsx against the sibling .ts entry', () => {
+    const url = pathToFileURL('/repo/src/core/providerPort.ts').href
+    expect(resolveSubtitleFetchCommand(url)).toEqual(['npx', 'tsx', '/repo/src/cli/subtitle-fetch.ts'])
+  })
+  it('compiled mode (.js module, e.g. node running dist/core/providerPort.js): spawns plain node against the sibling .js entry', () => {
+    const url = pathToFileURL('/repo/dist/core/providerPort.js').href
+    expect(resolveSubtitleFetchCommand(url)).toEqual(['node', '/repo/dist/cli/subtitle-fetch.js'])
+  })
+  it('resolves the sibling relative to the module dir, not cwd — works regardless of where the process was launched from', () => {
+    const devUrl = pathToFileURL('/somewhere/else/src/core/providerPort.ts').href
+    expect(resolveSubtitleFetchCommand(devUrl)).toEqual(['npx', 'tsx', '/somewhere/else/src/cli/subtitle-fetch.ts'])
+    const distUrl = pathToFileURL('/somewhere/else/dist/core/providerPort.js').href
+    expect(resolveSubtitleFetchCommand(distUrl)).toEqual(['node', '/somewhere/else/dist/cli/subtitle-fetch.js'])
+  })
+})
 
 describe('makeCliProviderPort', () => {
   it('search: spawns CLI, parses stdout candidates, relays stderr api_call events', async () => {
