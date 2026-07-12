@@ -127,7 +127,7 @@ async function assemble(): Promise<Assembled> {
         }
       },
     }),
-    download: url => downloadDirect(url),
+    download: (url, headers) => downloadDirect(url, { headers }),
     llm,
     cache: new DecisionCache(join(cacheRoot, 'decisions')),
     maxApiCallsPerJob: 4,

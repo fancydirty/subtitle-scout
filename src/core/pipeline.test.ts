@@ -2676,3 +2676,29 @@ describe('adoptLocal step', () => {
     })
   })
 })
+
+describe('download header seam (zimuku archive downloads need browser headers)', () => {
+  it('passes resolved.headers through to deps.download when the provider port supplies them', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const headers = { 'User-Agent': 'test-agent', Referer: 'https://www.zimuku.org/' }
+    const download = vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' }))
+    const deps = makeDeps({
+      providers: makeProviders({
+        resolveDownload: vi.fn(async () => ({
+          url: 'https://static.zimuku.org/files/x.zip', filename: 'x.ass', headers,
+        })),
+      }),
+      download: download as unknown as PipelineDeps['download'],
+    })
+    await runPipeline(deps, ctx, outDir)
+    expect(download).toHaveBeenCalledWith('https://static.zimuku.org/files/x.zip', headers)
+  })
+
+  it('calls deps.download with undefined headers when the provider port does not supply them (existing assrt/OS behavior unchanged)', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const download = vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' }))
+    const deps = makeDeps({ download: download as unknown as PipelineDeps['download'] })
+    await runPipeline(deps, ctx, outDir)
+    expect(download).toHaveBeenCalledWith(expect.any(String), undefined)
+  })
+})
