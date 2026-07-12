@@ -147,13 +147,48 @@ describe('buildRealignPlan', () => {
     expect(result.quarantined).toHaveLength(0)
   })
 
-  it('解不出集号的文件进隔离区，不阻塞其余文件的整理', () => {
-    const files = [...mkFiles(3), { path: '/media/Show/Season 01/合集.mkv', filename: '合集 01-02.mkv', match: null }]
+  it('解不出集号的文件进隔离区，不阻塞其余文件的整理（覆盖率仍达标）', () => {
+    const files = [...mkFiles(9), { path: '/media/Show/Season 01/合集.mkv', filename: '合集 01-02.mkv', match: null }]
     const result = buildRealignPlan(files, { ...cfg, seasonTable: [{ seasonNumber: 1, episodeCount: 25, airDate: null }] })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error('unreachable')
-    expect(result.items).toHaveLength(3)
+    expect(result.items).toHaveLength(9) // 9/10 = 90% ≥ 80% 覆盖率闸门
     expect(result.quarantined.map(f => f.filename)).toEqual(['合集 01-02.mkv'])
+  })
+
+  it('可解析文件覆盖率 < 80% → 整剧拒绝（防半迁移库）', () => {
+    // 3 可解析 + 2 隔离 = 3/5 = 60% < 80%
+    const files = [
+      ...mkFiles(3),
+      { path: '/a.mkv', filename: 'a 合集 01-02.mkv', match: null },
+      { path: '/b.mkv', filename: 'random.mkv', match: null },
+    ]
+    const result = buildRealignPlan(files, { ...cfg, seasonTable: [{ seasonNumber: 1, episodeCount: 25, airDate: null }] })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.failures.some(f => f.includes('覆盖率') || f.includes('可解析'))).toBe(true)
+  })
+
+  it('单可解析文件的连续性空洞（大量文件里只有 1 个能解析）→ 覆盖率闸门拒绝', () => {
+    const files: ScannedVideoFile[] = [
+      { path: '/a.mkv', filename: 'a-E5.mkv', match: { absoluteEpisode: 5, matchedToken: 'E5' } },
+      { path: '/b.mkv', filename: 'b.mkv', match: null },
+      { path: '/c.mkv', filename: 'c.mkv', match: null },
+      { path: '/d.mkv', filename: 'd.mkv', match: null },
+    ]
+    const result = buildRealignPlan(files, { ...cfg, seasonTable: [{ seasonNumber: 1, episodeCount: 25, airDate: null }] })
+    expect(result.ok).toBe(false)
+  })
+
+  it('恰好 80% 覆盖率 → 通过（阈值边界，>= 而非 >）', () => {
+    // 8 可解析 + 2 隔离 = 8/10 = 80%
+    const files = [
+      ...mkFiles(8),
+      { path: '/a.mkv', filename: 'a.mkv', match: null },
+      { path: '/b.mkv', filename: 'b.mkv', match: null },
+    ]
+    const result = buildRealignPlan(files, { ...cfg, seasonTable: [{ seasonNumber: 1, episodeCount: 25, airDate: null }] })
+    expect(result.ok).toBe(true)
   })
 
   it('绝对集号超出 TMDB 累计上限 → 整剧放弃', () => {

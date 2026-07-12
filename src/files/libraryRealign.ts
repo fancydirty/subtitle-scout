@@ -132,15 +132,34 @@ export type RealignPlanResult =
   | { ok: false; failures: string[] }
 
 /**
- * 确定性闸门(全过才准动一个文件)：映射无重复目标；各季集数 ≤ TMDB 上限（超限的绝对集号
- * 在 absMap 里查不到，直接判失败）；集号集合合理连续。取不出集号的文件进隔离区（quarantined），
- * 不算失败，也不参与后续闸门检查。任一闸门不过 → 整剧不动（ok:false + 全部失败原因）。
+ * 最小覆盖率闸门：可解析文件数 / 总视频文件数低于此阈值 → 整剧拒绝。
+ * 半数以上文件解不出集号，说明这个目录压根不是"绝对编号平铺"形态（或命名太脏），
+ * 强行整理会把库整成半迁移状态。定 0.80 = 80% 必须可解析才准动手。
+ */
+export const MIN_PARSEABLE_COVERAGE = 0.80
+
+/**
+ * 确定性闸门(全过才准动一个文件)：可解析覆盖率 ≥ 阈值；映射无重复目标；各季集数 ≤ TMDB 上限
+ * （超限的绝对集号在 absMap 里查不到，直接判失败）；集号集合合理连续。取不出集号的文件进
+ * 隔离区（quarantined），不算失败，也不参与后续闸门检查。任一闸门不过 → 整剧不动
+ * （ok:false + 全部失败原因）。
  */
 export function buildRealignPlan(files: ScannedVideoFile[], config: RealignPlanConfig): RealignPlanResult {
   const quarantined = files.filter(f => f.match == null)
   const parseable = files.filter((f): f is ScannedVideoFile & { match: EpisodeNumberMatch } => f.match != null)
   if (parseable.length === 0) {
     return { ok: false, failures: ['没有任何文件能解析出绝对集号，整理放弃'] }
+  }
+  const coverage = parseable.length / files.length
+  if (coverage < MIN_PARSEABLE_COVERAGE) {
+    const pct = Math.round(coverage * 100)
+    return {
+      ok: false,
+      failures: [
+        `可解析文件覆盖率 ${pct}%（${parseable.length}/${files.length}）低于 ${Math.round(MIN_PARSEABLE_COVERAGE * 100)}% 阈值，` +
+          `疑似非"绝对编号平铺"形态或命名过脏，拒绝整理以防半迁移库`,
+      ],
+    }
   }
 
   const absMap = buildAbsoluteMap(config.seasonTable)
@@ -173,6 +192,9 @@ export function buildRealignPlan(files: ScannedVideoFile[], config: RealignPlanC
   }
   if (failures.length > 0) return { ok: false, failures }
 
+  // 连续性零容忍是产品决策（记录在案）：绝对编号平铺的库要么整套齐（1..N 连续），要么就
+  // 别碰——任何空洞既可能是真缺集，也可能是解析误判，两种情况下继续整理都可能错位改名。
+  // 宁可整剧拒绝让人工来看，也不做"跳过空洞继续"的聪明事。放宽此闸门须有明确产品变更。
   const absNumbers = items.map(i => i.absoluteEpisode).sort((a, b) => a - b)
   for (let i = 1; i < absNumbers.length; i++) {
     if (absNumbers[i] - absNumbers[i - 1] > 1) {
