@@ -123,6 +123,24 @@ function filterMalformedOsData(json: unknown): { data: unknown; dropped: number 
   return { data: { ...json, data: valid }, dropped }
 }
 
+/**
+ * CRITICAL fix（同 assrt.ts 同名审计）：droppedEntries>0 且过滤后 data[] 一条不剩，不是"内容结论"
+ * （真的查无搜索结果），是响应形状系统性坏了（provider schema drift 等）。之前被 fail-soft 悄悄
+ * 吞成"成功但空"——pipeline 把"零候选 + 零 providerErrors"当成诚实的"确实没有字幕"，写 1 天
+ * 负缓存。混合页（kept>=1）不受影响，继续 fail-soft：只丢坏条目，好条目照常返回。
+ */
+export class OsAllEntriesDroppedError extends Error {
+  constructor(public endpoint: string, public droppedCount: number) {
+    super(`opensubtitles ${endpoint}: all ${droppedCount} entries in data[] were malformed and dropped (provider schema drift?) — refusing to report this as an honest empty result`)
+  }
+}
+
+function assertNotAllOsEntriesDropped(endpoint: string, payload: unknown, dropped: number): void {
+  if (dropped === 0) return
+  const data = (payload as { data?: unknown[] } | null)?.data
+  if (!data || data.length === 0) throw new OsAllEntriesDroppedError(endpoint, dropped)
+}
+
 export interface OsSearchParams {
   imdbId?: number
   parentImdbId?: number // series-level imdb only; no current caller sets this (opensubtitlesAdapter always has an item-level imdb) — kept for API completeness
@@ -169,13 +187,25 @@ export class OpenSubtitlesClient {
         const { data: payload, dropped } = (schema as unknown) === OsSearchResponseSchema
           ? filterMalformedOsData(body)
           : { data: body as unknown, dropped: 0 }
+        // CRITICAL fix：全丢弃必须在 onApiCall(success) 之前抛错——同一条"schema.parse 必须先于
+        // onApiCall(success)"纪律（见下），避免同一个 HTTP 请求先记一次假成功再在 catch 里记一次失败。
+        assertNotAllOsEntriesDropped(endpoint, payload, dropped)
         // schema.parse 必须先于 onApiCall(success)：否则解析失败会先记一次"成功"再在 catch 里记一次
         // "失败"，同一个 HTTP 请求上报两次 api_call（其一是假成功）。
         const parsed = schema.parse(payload)
         this.opts.onApiCall?.({ endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0, ...(dropped > 0 ? { droppedEntries: dropped } : {}) })
         return parsed
       } catch (e) {
-        this.opts.onApiCall?.({ endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0, error: String(e) })
+        // droppedEntries 随错误一起上报（e instanceof 检查放在 onApiCall 里而不是分支之后：这条
+        // onApiCall 调用本身就是本次 HTTP 请求唯一的一条记录，全丢弃时不会再有另一条"成功"记录）。
+        this.opts.onApiCall?.({
+          endpoint: `os${endpoint}`, params, status, durationMs: Date.now() - t0, error: String(e),
+          ...(e instanceof OsAllEntriesDroppedError ? { droppedEntries: e.droppedCount } : {}),
+        })
+        if (e instanceof OsAllEntriesDroppedError) {
+          // AssrtAllEntriesDroppedError 同款处理：确定性地不可用，不是网络层瞬时故障——不重试。
+          throw e
+        }
         if (e instanceof OsHttpError) {
           if (e.status === 401 && this.token && allowAuthRetry) {
             // JWT 过期自愈：清 token 重登录，重试原请求一次
