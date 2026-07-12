@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { allocate, cleanup } from './stagingSandbox.js'
+import { allocate, cleanup, install } from './stagingSandbox.js'
 
 const mediaRoot = () => mkdtempSync(join(tmpdir(), 'stage-root-'))
 
@@ -53,5 +53,37 @@ describe('cleanup', () => {
   it('is a no-op (does not throw) when the directory was never allocated', () => {
     const root = mediaRoot()
     expect(() => cleanup('never-allocated', root)).not.toThrow()
+  })
+})
+
+describe('install', () => {
+  it('atomically renames the staged file to the final path', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.zh-Hans.srt')
+    writeFileSync(stagedPath, '1\n00:00:01,000 --> 00:00:02,000\nhi\n')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+    const result = await install(stagedPath, finalPath)
+    expect(result.path).toBe(finalPath)
+    expect(existsSync(finalPath)).toBe(true)
+    expect(existsSync(stagedPath)).toBe(false)
+  })
+
+  it('NFC-normalizes the final path before writing (Synology SMB NFD landmine)', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'x')
+    // NFD-decomposed "e-acute": ASCII 'e' + U+0301 COMBINING ACUTE ACCENT (2 code
+    // points), built via ́ escape rather than a precomposed literal char.
+    // Deviation from the plan's literal source text: pasting a precomposed
+    // character through the edit toolchain risks silent NFC re-normalization in
+    // transit, which would make the input already-NFC and defeat this test's
+    // purpose (asserting install() normalizes NFD input to NFC).
+    const nfdName = 'Café.zh-Hans.srt'
+    const finalPath = join(root, nfdName)
+    const result = await install(stagedPath, finalPath)
+    expect(result.path).toBe(finalPath.normalize('NFC'))
+    expect(result.path).not.toBe(finalPath) // input is NFD, output must be NFC, bytes differ
   })
 })

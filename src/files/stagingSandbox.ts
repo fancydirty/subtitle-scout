@@ -1,6 +1,6 @@
 // 字幕试错沙盒:候选下载到这里"打开看",agent 终审通过才原子安装进媒体目录。
 // 试错本身零风险——job 结束(无论成败)整个沙盒目录被删除,写错媒体库的唯一路径是 install()。
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 
 const STAGING_DIRNAME = '.subtitle-staging'
@@ -32,4 +32,12 @@ export function cleanup(jobId: string, mediaRootForVideo: string): void {
   } catch {
     // best-effort:清理失败不影响本次运行已产生的结论
   }
+}
+
+/** 原子安装:沙盒里胜出的文件 rename 进媒体目录。文件名一律 NFC 归一化(群晖 SMB 的
+ *  NFD/NFC 乱码坑)——finalPath 先 normalize('NFC') 再改名。 */
+export async function install(stagedPath: string, finalPath: string): Promise<{ path: string }> {
+  const normalizedFinal = finalPath.normalize('NFC')
+  renameSync(stagedPath, normalizedFinal)
+  return { path: normalizedFinal }
 }
