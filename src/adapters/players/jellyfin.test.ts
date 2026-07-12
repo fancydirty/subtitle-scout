@@ -257,3 +257,20 @@ describe('JellyfinClient.deleteItem', () => {
     await expect(client.deleteItem('item-1')).rejects.toThrow(/HTTP 404/)
   })
 })
+
+describe('JellyfinClient.getScheduledTasks', () => {
+  it('State=Running/Cancelling 映射为 isRunning=true，Idle 为 false', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { Id: 't1', Name: 'Scan Media Library', State: 'Running' },
+      { Id: 't2', Name: 'Refresh Guide', State: 'Idle' },
+      { Id: 't3', Name: 'Cleanup', State: 'Cancelling' },
+    ]), { status: 200 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    const tasks = await client.getScheduledTasks()
+    expect(tasks).toEqual([
+      { id: 't1', name: 'Scan Media Library', isRunning: true },
+      { id: 't2', name: 'Refresh Guide', isRunning: false },
+      { id: 't3', name: 'Cleanup', isRunning: true },
+    ])
+  })
+})

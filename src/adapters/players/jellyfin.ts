@@ -57,6 +57,11 @@ export const JellyfinRemoteSearchResultSchema = z.object({
 }).passthrough()
 export const JellyfinRemoteSearchSchema = z.array(JellyfinRemoteSearchResultSchema)
 
+export const JellyfinScheduledTaskSchema = z.object({
+  Id: z.string(), Name: z.string(), State: z.string(),
+}).passthrough()
+export const JellyfinScheduledTasksSchema = z.array(JellyfinScheduledTaskSchema)
+
 /**
  * getItem 查无该 id（Jellyfin /Items 对该 id 返回空 Items 数组）——这是永久态（脏/过期 id，
  * 或条目已被删除），不是瞬时故障。与 call() 内网络拒绝/非 2xx 抛出的普通 Error 区分开，
@@ -132,6 +137,13 @@ export class JellyfinClient implements PlayerServer {
   /** 整理执行完毕后清理刮削出的旧条目残留（realign 专用）。 */
   async deleteItem(itemId: string): Promise<void> {
     await this.call('DELETE', `/Items/${encodeURIComponent(itemId)}`)
+  }
+
+  /** Running/Cancelling 都算"占着扫描资源"——realign 编排等待时两者都不该被当作空闲。 */
+  async getScheduledTasks(): Promise<{ id: string; name: string; isRunning: boolean }[]> {
+    const raw = await this.call('GET', '/ScheduledTasks')
+    const tasks = JellyfinScheduledTasksSchema.parse(raw)
+    return tasks.map(t => ({ id: t.Id, name: t.Name, isRunning: t.State === 'Running' || t.State === 'Cancelling' }))
   }
 
   async getRecentItems(limit: number): Promise<JellyfinItem[]> {
