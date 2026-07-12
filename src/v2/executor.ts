@@ -469,7 +469,6 @@ export function makeRunEpisode(
       journalPath: result.journalPath,
       subtitlePath: result.subtitlePath ?? undefined,
       confidence: result.confidence ?? null,
-      minConfidence: ctx.preferences.auto_download_min_confidence,
       reasons: result.reasons ?? [],
       selected: result.selected ?? null,
       stats: { llmCalls: result.stats.llmCalls, apiCalls: result.stats.apiCalls },

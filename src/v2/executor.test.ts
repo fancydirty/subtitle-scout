@@ -928,8 +928,11 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     chmodSync(readOnlyDir, 0o755) // 清理：避免只读目录残留干扰临时目录回收
   })
 
-  it('I5a/e: ctx 应用置信度覆盖 + runPipeline 传 bypassNegativeCache', async () => {
-    process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE = '0.5'
+  it('I5e: runPipeline 传 bypassNegativeCache', async () => {
+    // I5a（ctx 应用 AUTO_DOWNLOAD_MIN_CONFIDENCE 环境变量置信度覆盖）已随
+    // applyConfidenceOverride() 一并删除（commit 6cdcdcd：判定链两态化后置信度阈值整条
+    // 拔除，MediaContextSchema.preferences 不再有 auto_download_min_confidence 字段）——
+    // 这里只保留仍然成立的 I5e 部分（bypassNegativeCache 透传）。
     const jf = mkJf(join(mediaRoot, 'movie', 'test.mkv'))
     runPipelineMock.mockResolvedValue({
       decision: 'download',
@@ -946,13 +949,12 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
       journalPath: '/j.json',
       subtitlePath: '/subs/x.srt',
       confidence: null,
-      minConfidence: 0.5,
       reasons: [],
       selected: null,
       stats: { llmCalls: 0, apiCalls: 0 },
     })
     const [, ctx, outDir, , opts] = runPipelineMock.mock.calls[0]
-    expect(ctx.preferences.auto_download_min_confidence).toBe(0.5) // I5a
+    expect(ctx.preferences).not.toHaveProperty('auto_download_min_confidence')
     expect(outDir).toBe(join(mediaRoot, 'movie'))
     expect(opts).toEqual({ bypassNegativeCache: true }) // I5e
   })
