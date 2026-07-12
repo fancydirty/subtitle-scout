@@ -21,6 +21,20 @@ export class AssrtApiError extends Error {
   }
 }
 
+/**
+ * CRITICAL fix（adversarial review finding）：droppedEntries>0 且过滤后 sub.subs 一条不剩，
+ * 不是"内容结论"（真的查无字幕/相似），是响应形状系统性坏了（provider schema drift 等）。
+ * 之前这种情况被 fail-soft 悄悄吞成一个"成功但空"的结果——pipeline 把"零候选 + 零
+ * providerErrors"当成诚实的"确实没有字幕"，写 1 天负缓存，把一次 provider 故障永久毒化成
+ * 假结论；对 similar() 而言还额外废掉了残缺候选集守卫的唯一信号（providerErrors 为空）。
+ * 混合页（kept>=1）不受影响，继续 fail-soft：只丢坏条目，好条目照常返回。
+ */
+export class AssrtAllEntriesDroppedError extends Error {
+  constructor(public endpoint: string, public droppedCount: number) {
+    super(`ASSRT ${endpoint}: all ${droppedCount} entries in sub.subs were malformed and dropped (provider schema drift?) — refusing to report this as an honest empty result`)
+  }
+}
+
 export class MinIntervalLimiter {
   private last = 0
   constructor(private intervalMs: number) {}
@@ -52,6 +66,13 @@ export interface AssrtClientOpts {
  * （包一层最小响应壳）而不是新导出内部 per-item schema——判定标准和真实 parse 完全一致。
  * json 结构本身不可用（非对象/无 sub/subs 非数组）时原样放行，交给外层 schema.parse 正常报错——
  * 那才是"响应本身不可用"，必须继续失败以保住残缺集守卫。
+ *
+ * MINOR-3 (envelope fragility, noted not fixed here)：上面这条"原样放行"分支依赖 dropped 计数
+ * 才能被下面的 assertNotAllSubsDropped 拦到——但 AssrtSearchResponseSchema 对 sub/sub.subs 都设了
+ * z.default()，所以 sub:null 或整个 sub 字段缺失这种"信封本身就坏了"的畸形响应，会被 schema 的
+ * 默认值悄悄吸收成合法的空数组（dropped 永远是 0，走不到全丢弃守卫），而不是抛错。这个残余风险
+ * 被本次 CRITICAL 修复（全丢弃必抛错）大幅缓解——真实生产事故形状（subs 数组内单条缺字段）已覆盖——
+ * 但没有消除：只要 schema 未来新增必填根字段，这条分支仍可能悄悄退化成假空结果。
  */
 function filterMalformedSubs(json: unknown): { data: unknown; dropped: number } {
   if (json == null || typeof json !== 'object') return { data: json, dropped: 0 }
@@ -68,6 +89,17 @@ function filterMalformedSubs(json: unknown): { data: unknown; dropped: number } 
   }
   if (dropped === 0) return { data: json, dropped: 0 }
   return { data: { ...json, sub: { ...sub, subs: valid } }, dropped }
+}
+
+/**
+ * CRITICAL fix 的守卫本体：dropped>0 且过滤后 sub.subs 一条不剩 → 抛 AssrtAllEntriesDroppedError。
+ * 供 call() 在 fresh fetch 和 cache-hit 两条路径上统一调用（IMPORTANT fix：cache-hit 路径之前
+ * 完全跳过了过滤/守卫，见 call() 里的用法）。dropped===0 时（包括根本没触发过滤的场景）直接放行。
+ */
+function assertNotAllSubsDropped(endpoint: string, payload: unknown, dropped: number): void {
+  if (dropped === 0) return
+  const subs = (payload as { sub?: { subs?: unknown[] } } | null)?.sub?.subs
+  if (!subs || subs.length === 0) throw new AssrtAllEntriesDroppedError(endpoint, dropped)
 }
 
 export class AssrtClient {
@@ -87,8 +119,19 @@ export class AssrtClient {
   /** cacheTtlMs：命中缓存的时间窗口；false 表示完全不缓存（读/写都跳过）。默认 24h。 */
   private async call<T>(endpoint: string, params: Record<string, string>, schema: z.ZodType<T>, cacheTtlMs: number | false = RESPONSE_CACHE_TTL_MS): Promise<T> {
     const cacheFile = this.cachePath(endpoint, params)
+    // search/similar/searchByFilename/detail 共用 AssrtSearchResponseSchema（这四个 endpoint 全部走
+    // 这一份 sub.subs 解析逻辑）——只对这类响应做逐条 fail-soft 过滤；quota 等其它 schema 不含
+    // subs，原样直通。算一次，fresh fetch 和 cache-hit 两条路径共用同一个判定。
+    const isSubsSchema = (schema as unknown) === AssrtSearchResponseSchema
     if (cacheTtlMs !== false && existsSync(cacheFile) && Date.now() - statSync(cacheFile).mtimeMs < cacheTtlMs) {
-      return schema.parse(JSON.parse(readFileSync(cacheFile, 'utf8')))
+      // IMPORTANT fix：cache-hit 之前是裸 schema.parse，绕过了过滤/全丢弃守卫——一个在写入时就已经
+      // 畸形的响应（或写入时 schema 还没这条防线）会在 TTL 内每次命中缓存都重新炸一次。现在 fresh
+      // fetch 和 cache-hit 走同一套 filterMalformedSubs + assertNotAllSubsDropped，行为对齐。
+      // 只在 status===0 时才会被写入缓存（见下方 fresh path），所以这里不需要再判 status。
+      const cachedJson = JSON.parse(readFileSync(cacheFile, 'utf8'))
+      const { data: payload, dropped } = isSubsSchema ? filterMalformedSubs(cachedJson) : { data: cachedJson, dropped: 0 }
+      assertNotAllSubsDropped(endpoint, payload, dropped)
+      return schema.parse(payload)
     }
     const qs = new URLSearchParams({ token: this.opts.token, ...params })
     // 网络层失败（fetch 拒绝、非 JSON）重试一次；API status 非 0 不重试
@@ -102,18 +145,21 @@ export class AssrtClient {
         })
         const json = await res.json() as { status?: number }
         const status = typeof json.status === 'number' ? json.status : null
-        // search/similar/searchByFilename/detail 共用 AssrtSearchResponseSchema（这四个 endpoint
-        // 全部走这一份 sub.subs 解析逻辑）——只对这类响应做逐条 fail-soft 过滤；quota 等其它
-        // schema 不含 subs，原样直通。
-        const { data: payload, dropped } = status === 0 && (schema as unknown) === AssrtSearchResponseSchema
+        const { data: payload, dropped } = status === 0 && isSubsSchema
           ? filterMalformedSubs(json)
           : { data: json as unknown, dropped: 0 }
         this.opts.onApiCall?.({ endpoint, params, status, durationMs: Date.now() - t0, ...(dropped > 0 ? { droppedEntries: dropped } : {}) })
         if (status !== 0) throw new AssrtApiError(status ?? -1, endpoint)
+        // CRITICAL fix：全丢弃必须在写缓存之前抛错——既不把这次故障当成功返回给调用方，
+        // 也不把一个"内容整体不可用"的响应写进磁盘缓存喂给下一次 cache-hit。
+        assertNotAllSubsDropped(endpoint, payload, dropped)
         if (cacheTtlMs !== false) writeFileSync(cacheFile, JSON.stringify(payload))
         return schema.parse(payload)
       } catch (e) {
-        if (e instanceof AssrtApiError) throw e
+        // AssrtAllEntriesDroppedError 和 AssrtApiError 同等对待：语义上是"这次调用的结果确定性地
+        // 不可用"，不是网络层瞬时故障——不重试（重试大概率拿到同一个 schema drift），直接冒泡，
+        // 让调用方（gems 的 similar() catch、runSearch 的 per-adapter catch）转成 provider_error。
+        if (e instanceof AssrtApiError || e instanceof AssrtAllEntriesDroppedError) throw e
         this.opts.onApiCall?.({ endpoint, params, status: null, durationMs: Date.now() - t0, error: String(e) })
         lastNetworkError = e
         if (attempt < 1) await new Promise(r => setTimeout(r, this.opts.networkRetryDelayMs ?? 2000))
