@@ -293,38 +293,6 @@ describe('aggregator', () => {
     expect(woken.next_retry_at).toBeNull()
   })
 
-  it('task 2: needs_review（ask_user 待确认）复查到期后 aggregate 重新纳入 missingBySeason，唤醒 dormant job', () => {
-    // 决策记录：needs_review 和 unavailable 一样接受"复查窗口"重新调和——一个更好的候选
-    // 或更丰富的元数据到时候可能就能解出来，不该被永久搁置在"待确认"。
-    lib.upsertSeries({ id: 's1', name: 'Series A' })
-    lib.upsertEpisode({
-      id: 'e1', seriesId: 's1', season: 1, episode: 1,
-      name: 'Ep1', path: '/tv/s1/e1.mkv', subStatus: 'missing',
-    })
-    aggregate(lib, jobs, now)
-    const job = jobs.claimNext(now)!
-    jobs.completeNoMatch(job.id, now)
-    jobs.forceState('s1', 1, 'dormant', now)
-    lib.markNeedsReview('e1', '找到候选但把握不足', now - 1) // 复查已到期
-
-    const result = aggregate(lib, jobs, now + 1000)
-    expect(result.created).toBe(0)
-    const woken = jobs.get(job.id)!
-    expect(woken.state).toBe('wanted')
-  })
-
-  it('task 2: needs_review 复查未到期时不计入 missingBySeason，job 不会被重复创建/唤醒', () => {
-    lib.upsertSeries({ id: 's1', name: 'Series A' })
-    lib.upsertEpisode({
-      id: 'e1', seriesId: 's1', season: 1, episode: 1,
-      name: 'Ep1', path: '/tv/s1/e1.mkv', subStatus: 'missing',
-    })
-    lib.markNeedsReview('e1', '找到候选但把握不足', now + 86_400_000) // 复查明天
-    const result = aggregate(lib, jobs, now)
-    expect(result.created).toBe(0)
-    expect(jobs.countByState('wanted')).toBe(0)
-  })
-
   it('retires movie job when movie becomes covered', () => {
     lib.upsertMovie({
       id: 'm1',

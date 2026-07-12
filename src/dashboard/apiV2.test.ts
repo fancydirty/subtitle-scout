@@ -46,7 +46,13 @@ beforeEach(() => {
   lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/media/tv/Series A/S01/e2.mkv', subStatus: 'missing' })
   lib.upsertEpisode({ id: 'e3', seriesId: 's1', season: 1, episode: 3, name: 'E3', path: '/media/tv/Series A/S01/e3.mkv', subStatus: 'embedded' })
   lib.upsertEpisode({ id: 'e4', seriesId: 's1', season: 2, episode: 1, name: 'E4', path: '/media/tv/Series A/S02/e4.mkv', subStatus: 'unavailable' })
-  lib.upsertEpisode({ id: 'e5', seriesId: 's1', season: 2, episode: 2, name: 'E5', path: '/media/tv/Series A/S02/e5.mkv', subStatus: 'needs_review' })
+  // needs_review 已从 v2/libraryRepo 的 SubStatus 类型中移除（Phase 6：human-review 判定链拔除），
+  // 但 CHECK 约束仍容忍这个历史枚举值（YAGNI，不整表重建）——直接写 SQL 模拟一条存量遗留行，
+  // 验证 apiV2 的覆盖计数在这种数据下仍不炸。
+  db.prepare(
+    `INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run('e5', 's1', 2, 2, 'E5', '/media/tv/Series A/S02/e5.mkv', 'needs_review', NOW)
 
   // Movie Z（路径在 /media/movies 下）
   lib.upsertMovie({ id: 'm1', name: 'Movie Z', path: '/media/movies/Movie Z/z.mkv', subStatus: 'missing', posterTag: 'ptag-m1', year: 2019 })
