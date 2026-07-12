@@ -1,13 +1,15 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   mountAliveSentinel, chooseRealignStrategy, archiveDirFor,
   planCollisions, invisibleBuildDir, assembleInvisibleTree, finalizeShowDir,
-  archiveOldDir,
+  archiveOldDir, buildRealignMediaContext, makeRealignRunEpisode,
 } from './realignExecutor.js'
 import type { RealignPlanItem } from '../files/libraryRealign.js'
+import type { Assembled } from '../cli/index.js'
+import { MediaContextSchema } from '../core/schemas.js'
 
 describe('mountAliveSentinel', () => {
   it('库根不存在 → 拒绝', () => {
@@ -167,5 +169,54 @@ describe('archiveOldDir', () => {
     expect(existsSync(join(archiveDir, 'Season 01', '合集 01-02.mkv'))).toBe(true)
     expect(existsSync(join(archiveDir, '.ignore'))).toBe(true)
     expect(finalPath).toBe(join(archiveDir, 'Season 01'))
+  })
+})
+
+describe('buildRealignMediaContext', () => {
+  it('字面构造 MediaContext：tmdbid 钉死、季集来自计划、trigger=library_scan', () => {
+    const item: RealignPlanItem = {
+      sourcePath: '/x.mkv', sourceFilename: 'x.mkv', absoluteEpisode: 26,
+      targetSeason: 2, targetEpisode: 1, targetRelPath: 'Show (2022) [tmdbid-120089]/Season 02/y.mkv',
+    }
+    const ctx = buildRealignMediaContext('间谍过家家', 2022, '120089', item, '/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
+    expect(() => MediaContextSchema.parse(ctx)).not.toThrow()
+    expect(ctx.media.type).toBe('episode')
+    expect(ctx.media.season).toBe(2)
+    expect(ctx.media.episode).toBe(1)
+    expect(ctx.media.provider_ids.tmdb).toBe('120089')
+    expect(ctx.media.path).toBe('/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
+    expect(ctx.media.filename).toBe('y.mkv')
+    expect(ctx.media.title).toBe('间谍过家家')
+    expect(ctx.media.year).toBe(2022)
+    expect(ctx.trigger).toBe('library_scan')
+  })
+})
+
+describe('makeRealignRunEpisode', () => {
+  it('接线 runPipeline：不经过 jf.getItem，直接用调用方构造好的 ctx，包 withJournal', async () => {
+    const runPipelineMock = vi.fn(async () => ({
+      decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 },
+    }))
+    const makeDeps = vi.fn(() => ({}) as never)
+    const withJournal = vi.fn((fn: () => Promise<unknown>) => fn())
+    const runEpisode = makeRealignRunEpisode(
+      { makeDeps, withJournal: withJournal as unknown as Assembled['withJournal'], cacheRoot: '/cache' },
+      { runPipelineImpl: runPipelineMock as never },
+    )
+    const ctx = MediaContextSchema.parse({
+      request_id: 'r1', trigger: 'library_scan',
+      media: { type: 'episode', path: '/x.mkv', filename: 'x.mkv', title: 'Show', season: 2, episode: 1, provider_ids: { tmdb: '1' } },
+      preferences: {},
+    })
+    const result = await runEpisode(ctx, '/lib/Show/Season 02', 'job-1')
+    expect(result.decision).toBe('download')
+    expect(runPipelineMock).toHaveBeenCalledTimes(1)
+    expect(withJournal).toHaveBeenCalledTimes(1)
+    // runPipeline(deps, ctx, outDir, journalDir, opts)：v2 状态机拥有全部重试策略，负缓存必须旁路
+    const call = runPipelineMock.mock.calls[0] as unknown[]
+    expect(call[1]).toBe(ctx)
+    expect(call[2]).toBe('/lib/Show/Season 02')
+    expect(String(call[3])).toContain('/cache/journals/realign-job-1-')
+    expect(call[4]).toEqual({ bypassNegativeCache: true })
   })
 })

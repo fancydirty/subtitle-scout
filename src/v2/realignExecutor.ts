@@ -3,6 +3,9 @@ import { join, dirname, basename } from 'node:path'
 import { isDirWritable } from '../core/mediaContext.js'
 import type { ProbeOutcome } from '../files/mountCapabilities.js'
 import { sanitizeTitleForFs, type RealignPlanItem } from '../files/libraryRealign.js'
+import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
+import { runPipeline, type PipelineResult } from '../core/pipeline.js'
+import type { Assembled } from '../cli/index.js'
 
 export interface MountSentinelResult { ok: boolean; reason?: string }
 
@@ -139,4 +142,55 @@ export function archiveOldDir(oldDir: string, archiveDir: string): string {
   const finalPath = join(archiveDir, basename(oldDir))
   renameSync(oldDir, finalPath)
   return finalPath
+}
+
+/**
+ * 字幕先行阶段的 MediaContext：此刻 Jellyfin 尚未刮新结构、镜像无条目，identify 所需的
+ * 身份/tmdbid/季集/视频路径全在整理计划里，字面构造即可，不需要 jf.getItem。
+ * trigger 用 'library_scan'（语义最贴近："库结构变化触发的搜索"，不是播放触发/手动搜索）。
+ */
+export function buildRealignMediaContext(
+  seriesTitle: string, year: number, tmdbId: string, item: RealignPlanItem, videoPath: string,
+): MediaContext {
+  return MediaContextSchema.parse({
+    request_id: `realign-${tmdbId}-S${item.targetSeason}E${item.targetEpisode}-${Date.now()}`,
+    trigger: 'library_scan',
+    media: {
+      type: 'episode',
+      path: videoPath,
+      filename: basename(videoPath),
+      title: seriesTitle,
+      original_title: null,
+      year,
+      season: item.targetSeason,
+      episode: item.targetEpisode,
+      runtime_minutes: null,
+      provider_ids: { tmdb: tmdbId },
+      production_locations: [],
+      alternative_titles: [],
+      overview: null,
+      existing_subtitles: [],
+    },
+    preferences: {},
+  })
+}
+
+/**
+ * runEpisode 接线（realign 版）：mirror makeRunEpisode 的尾段（调 runPipeline、包 journal），
+ * 但跳过 jf.getItem/getChineseTitle/refreshItem——那些依赖 Jellyfin 已经刮削出条目，此刻还
+ * 没有。调用方（executeRealign 顶层编排）已经把 MediaContext 构造好、root/可写预检已在
+ * mount 哨兵阶段做过，这里只负责"跑一次完整判断链"。runPipelineImpl 可注入（测试用，
+ * 默认走真实 core/pipeline.ts 的 runPipeline）。bypassNegativeCache 同 makeRunEpisode 的
+ * I5e 语义：v2 状态机拥有全部重试策略，管线自己的负缓存不许再叠一层门。
+ */
+export function makeRealignRunEpisode(
+  assembled: Pick<Assembled, 'makeDeps' | 'withJournal' | 'cacheRoot'>,
+  opts: { runPipelineImpl?: typeof runPipeline } = {},
+): (ctx: MediaContext, outDir: string, jobId: string) => Promise<PipelineResult> {
+  const { makeDeps, withJournal, cacheRoot } = assembled
+  const run = opts.runPipelineImpl ?? runPipeline
+  return async (ctx, outDir, jobId) => {
+    const journalDir = join(cacheRoot, 'journals', `realign-${jobId}-${Date.now()}`)
+    return withJournal(() => run(makeDeps(), ctx, outDir, journalDir, { bypassNegativeCache: true }))
+  }
 }
