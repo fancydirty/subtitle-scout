@@ -6,7 +6,6 @@ const DECISION_MAP: Record<string, { label: string; tone: Tone }> = {
   adopted_local:  { label: '整理好了本地已有的字幕', tone: 'ok' },
   already_exists: { label: '本来就有字幕，跳过', tone: 'skip' },
   no_safe_match:  { label: '暂时没找到合适的中文字幕', tone: 'muted' },
-  ask_user:       { label: '需要你确认一下', tone: 'muted' },
   retry_later:    { label: '过阵子再试', tone: 'muted' },
   error:          { label: '出错，稍后重试', tone: 'fail' },
 }

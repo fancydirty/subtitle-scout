@@ -31,7 +31,7 @@ export function formatReport(
   for (const [d, n] of byDecision) lines.push(`  ${d}: ${n}`)
   lines.push(`  来源: ${[...bySource].map(([s, n]) => `${s}=${n}`).join(' ')}`)
 
-  const failures = runs.filter(r => ['no_safe_match', 'ask_user', 'error'].includes(r.decision))
+  const failures = runs.filter(r => ['no_safe_match', 'error'].includes(r.decision))
   if (failures.length) {
     lines.push(`== 未成功明细 ==`)
     for (const f of failures) {
