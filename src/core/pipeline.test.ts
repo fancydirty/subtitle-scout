@@ -678,6 +678,56 @@ describe('runPipeline', () => {
     expect(existsSync(join(outDir, 'Show.S02E03.zh-Hans.ass'))).toBe(false)
   })
 
+  it('MINOR (finding 4): season pack graduation — an episode whose target file already exists on disk is onCovered(alreadyExisted=true), not conflated with a genuinely new install', async () => {
+    // v2 executor's onCovered handler used to hardcode subtitles.source='scout-download' for
+    // every episode a season-pack graduation covers, even when that episode's file was already
+    // sitting on disk (stageInspectVerifyInstall's findOnDiskNfc short-circuit — install() never
+    // called). Fix threads the outcome's alreadyExisted flag through onCovered's 4th arg so the
+    // executor can attribute source='preexisting' instead, same as the single-episode
+    // already_exists→'preexisting' mapping.
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const packCandidate = toCandidate(seasonDetail.sub.subs[0])
+    const resolveDownload = vi.fn(async (ref: { fileIndex: number | null }) => ({
+      url: `http://file0.assrt.net/pack/900900/${(ref.fileIndex ?? 0) + 1}`,
+    }))
+    const rank = vi.fn(async () => ({
+      parsed: { order: [{ candidate_id: "assrt:900900", file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+    ]
+    // Pre-write E01's target — its install must short-circuit (alreadyExisted=true); E02 has no
+    // pre-existing file and genuinely installs (alreadyExisted=false).
+    writeFileSync(join(outDir, 'Show.S02E01.zh-Hans.ass'), SAMPLE_ASS)
+    const onCoveredCalls: { episodeCode: string; alreadyExisted: unknown }[] = []
+    const deps = makeDeps({
+      providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(async () => ({
+          parsed: { pairs: [
+            { filelist_index: 0, episode_code: 'S02E01', confidence: 0.95, reason: 'x' },
+            { filelist_index: 1, episode_code: 'S02E02', confidence: 0.95, reason: 'x' },
+          ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+        })),
+        onCovered: vi.fn(async (ep: { episodeCode: string }, _path: string, _ref?: string, alreadyExisted?: boolean) => {
+          onCoveredCalls.push({ episodeCode: ep.episodeCode, alreadyExisted })
+        }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(onCoveredCalls.sort((a, b) => a.episodeCode.localeCompare(b.episodeCode))).toEqual([
+      { episodeCode: 'S02E01', alreadyExisted: true },
+      { episodeCode: 'S02E02', alreadyExisted: false },
+    ])
+  })
+
   it('does NOT graduate for a movie (enumerate never called)', async () => {
     const enumerate = vi.fn(async () => [])
     const deps = makeDeps({ seasonPack: { enumerate, map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'] })
@@ -781,6 +831,61 @@ describe('runPipeline', () => {
     expect(existsSync(join(outDir, 'Show.S02E04.zh-Hans.ass'))).toBe(true)
     const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
     expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweep')).toBe(true)
+  })
+
+  it('MINOR (finding 4): season sweep — an episode whose target file already exists on disk is onCovered(alreadyExisted=true), not conflated with a genuinely new install', async () => {
+    // Same fix as the season-pack graduation path (see the sibling test above): the sweep's
+    // stageInspectVerifyInstall can short-circuit an episode's install because the target file is
+    // already on disk (findOnDiskNfc hit) — that must not be reported to onCovered the same way
+    // as an episode scout genuinely just downloaded and wrote this run.
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [
+      mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass'], '第1集'),
+      mkCand(802, 'Show.S02E02.chs', ['Show.S02E02.chs.ass'], '第2集'),
+    ]
+    // Pre-write E01's target — the sweep's install for E01 must short-circuit as "already
+    // existed", while E02 is a genuine new install.
+    writeFileSync(join(outDir, 'Show.S02E01.zh-Hans.ass'), SAMPLE_ASS)
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [
+      { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+      { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+    ]
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [
+        { episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 },
+        { episode_code: 'S02E02', candidate_id: 'assrt:802', confidence: 0.95 },
+      ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const onCoveredCalls: { episodeCode: string; alreadyExisted: unknown }[] = []
+    const deps = makeDeps({
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(),
+        onCovered: vi.fn(async (ep: { episodeCode: string }, _path: string, _ref?: string, alreadyExisted?: boolean) => {
+          onCoveredCalls.push({ episodeCode: ep.episodeCode, alreadyExisted })
+        }),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国' // CJK-native → alias harvest skipped, isolate the sweep path
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(result.decision).toBe('download')
+    expect(onCoveredCalls.sort((a, b) => a.episodeCode.localeCompare(b.episodeCode))).toEqual([
+      { episodeCode: 'S02E01', alreadyExisted: true },
+      { episodeCode: 'S02E02', alreadyExisted: false },
+    ])
   })
 
   it('season sweep: rejects a loose candidate whose fileList has no file matching the assigned episode (no unconditional first-file fallback)', async () => {

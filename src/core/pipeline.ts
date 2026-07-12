@@ -58,8 +58,12 @@ export interface PipelineDeps {
   seasonPack?: {
     enumerate: (ctx: MediaContext) => Promise<SeasonEpisode[]>
     map: (ctx: MediaContext, id: MediaIdentity, filelist: { index: number; name: string }[], eps: SeasonEpisode[]) => Promise<CallStructuredResult<SeasonMap>>
-    /** providerRef: 命中候选的 provider-neutral 标识（candidateKey，如 "assrt:900900"）；供 v2 写 subtitles.provider_ref */
-    onCovered: (ep: SeasonEpisode, subtitlePath: string, providerRef?: string) => void | Promise<void>
+    /** providerRef: 命中候选的 provider-neutral 标识（candidateKey，如 "assrt:900900"）；供 v2 写 subtitles.provider_ref。
+     *  alreadyExisted: true 表示这一集的目标字幕文件在装机前已经在磁盘上（stageInspectVerifyInstall
+     *  的 findOnDiskNfc 命中）——本次 run 并没有真的写这个文件，调用方（v2 executor）据此把
+     *  subtitles.source 标成 'preexisting' 而不是 'scout-download'，与单集路径 already_exists→
+     *  'preexisting' 的映射保持一致（不然季横扫/季包覆盖会把"本来就有"误记成"这次抓的"）。 */
+    onCovered: (ep: SeasonEpisode, subtitlePath: string, providerRef?: string, alreadyExisted?: boolean) => void | Promise<void>
   }
   /** 字幕试错沙盒：候选下载进这里打开验，终审通过才原子安装进媒体目录。 */
   staging: {
@@ -683,7 +687,7 @@ export async function runPipeline(
                 }
                 coveredEpisodes.push({ episodeCode: item.episodeCode, subtitlePath: verdict.outcome.path, providerRef: packRef })
                 const epMeta = seasonEpisodes.find(e => e.episodeCode === item.episodeCode)!
-                try { await deps.seasonPack.onCovered(epMeta, verdict.outcome.path, packRef) } catch { /* 观测/联动不影响主流程 */ }
+                try { await deps.seasonPack.onCovered(epMeta, verdict.outcome.path, packRef, verdict.outcome.alreadyExisted) } catch { /* 观测/联动不影响主流程 */ }
                 consecutiveFails = 0
               } catch (e) {
                 if (e instanceof ProviderQuotaExhaustedError) {
@@ -1007,7 +1011,7 @@ async function runSeasonSweep(
       consecutiveFails = 0
       const providerRef = candidateKey(parsed)
       coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: verdict.outcome.path, providerRef })
-      try { await deps.seasonPack!.onCovered(epMeta, verdict.outcome.path, providerRef) } catch { /* 观测/联动不影响主流程 */ }
+      try { await deps.seasonPack!.onCovered(epMeta, verdict.outcome.path, providerRef, verdict.outcome.alreadyExisted) } catch { /* 观测/联动不影响主流程 */ }
     } catch (e) {
       if (e instanceof ProviderQuotaExhaustedError) {
         quotaExhausted = { resetAt: e.resetAt }

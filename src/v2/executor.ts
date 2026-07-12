@@ -22,7 +22,10 @@ export interface ExecutorDeps {
    *  避免 jobs.journal_ref 和真实 journal 目录各算各的、对不上号。 */
   runEpisode: (
     episodeId: string,
-    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void,
+    /** alreadyExisted: true 时这一集的字幕文件不是本轮季横扫/季包升格新写的（pipeline 的
+     *  findOnDiskNfc 在装机前就命中了磁盘上的既有文件）——executeJob 据此把 subtitles.source
+     *  记成 'preexisting' 而不是 'scout-download'（同单集 already_exists 的既有映射）。 */
+    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string, alreadyExisted?: boolean) => void,
     journalRef?: string
   ) => Promise<{
     decision: string
@@ -66,7 +69,8 @@ function briefCause(raw?: string): string {
 
 const HUMAN_NO_MATCH = '没找到合适的中文字幕'
 
-/** M8: pipeline decision → subtitles.source 映射 */
+/** M8: pipeline decision → subtitles.source 映射（代表集自身命中路径；季横扫/季包命中的每一集
+ *  走 onCovered，source 由 alreadyExisted 现算，见下方 onCovered 与 markCovered 调用点）。 */
 const SOURCE_BY_DECISION: Record<string, string> = {
   download: 'scout-download',
   adopted_local: 'adopted-local',
@@ -189,7 +193,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 3. Track coverage via onCovered callback (season pack hits are downloads)
     const coveredIds = new Set<string>()
-    const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string) => {
+    const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string, alreadyExisted?: boolean) => {
       // FIX-3: 租约已不属于本次 invocation——跳过写盘，不信任 detached invocation
       // 的战果（管线本身继续跑，只是不让它的产出再落库；不尝试取消管线，见 out of scope）。
       if (!ownsLease()) {
@@ -200,7 +204,10 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
         )
         return
       }
-      lib.markCovered(episodeId, subtitlePath, 'scout-download', providerRef)
+      // alreadyExisted: 这一集的字幕文件本来就在磁盘上，本轮季横扫/季包升格并没有真的写它
+      // （pipeline 的 findOnDiskNfc 装机前命中）——source 记 'preexisting'，不能算成
+      // 'scout-download'（同单集 already_exists→'preexisting' 的既有映射，SOURCE_BY_DECISION）。
+      lib.markCovered(episodeId, subtitlePath, alreadyExisted ? 'preexisting' : 'scout-download', providerRef)
       if (targets.some(t => t.id === episodeId)) {
         coveredIds.add(episodeId)
       }
@@ -405,10 +412,11 @@ export function makeRunEpisode(
     const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
     // ctx.media.path 与上面 1b 算出的 dir 是同一次 mapPath 计算，dir 已在网络调用前验过。
 
-    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef) → deps (ep.itemId, path, providerRef)
+    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef, alreadyExisted) →
+    //    deps (ep.itemId, path, providerRef, alreadyExisted)
     //    I5d: refresh Jellyfin item after each covered episode (v1 semantics)
-    const onCoveredAdapter = async (ep: SeasonEpisode, path: string, providerRef?: string) => {
-      onCovered(ep.itemId, path, providerRef)
+    const onCoveredAdapter = async (ep: SeasonEpisode, path: string, providerRef?: string, alreadyExisted?: boolean) => {
+      onCovered(ep.itemId, path, providerRef, alreadyExisted)
       await jf.refreshItem(ep.itemId).catch(() => {})
     }
 

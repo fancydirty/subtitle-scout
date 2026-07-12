@@ -107,6 +107,29 @@ describe('executor', () => {
     expect(runRecords[0].detail).toBe('第 1 季 3 集字幕已就位')
   })
 
+  it('M8/onCovered: 季包/横扫覆盖里某一集其实本来就在磁盘上（alreadyExisted=true）→ source=preexisting，不与真正新抓的那集混同', async () => {
+    // 单集 already_exists 决策早就映射到 source='preexisting'（见下面 M7/M8 用例）；这里补的是
+    // 季横扫/季包升格路径——pipeline 的 onCovered 现在带 alreadyExisted 这个第 4 个参数
+    // （findOnDiskNfc 装机前命中磁盘上的既有文件，本轮并没有真的写它），executeJob 的 onCovered
+    // 必须据此选 source，而不是不管三七二十一都记 'scout-download'。
+    mkEpisode('e1', 's1', 1, 1)
+    mkEpisode('e2', 's1', 1, 2)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async (episodeId: string, onCovered: (id: string, path: string, providerRef?: string, alreadyExisted?: boolean) => void) => {
+      expect(episodeId).toBe('e1')
+      onCovered('e1', '/tv/s1e1.zh-Hans.srt', 'assrt:900900', true)  // 本来就在磁盘上
+      onCovered('e2', '/tv/s1e2.zh-Hans.srt', 'assrt:900900', false) // 这次真的新写了
+      return { decision: 'download', journalPath: '/journals/test.json' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.db.prepare('select source from subtitles where item_id=?').get('e1')).toEqual({ source: 'preexisting' })
+    expect(lib.db.prepare('select source from subtitles where item_id=?').get('e2')).toEqual({ source: 'scout-download' })
+  })
+
   it('部分覆盖：只 covered e1 → completePartial（job 回 wanted, attempt-1），已覆盖战果保留', async () => {
     mkEpisode('e1', 's1', 1, 1)
     mkEpisode('e2', 's1', 1, 2)
@@ -935,13 +958,34 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     const runEpisode = makeRunEpisode(assembled, lib, { mediaRoots: [mediaRoot] })
     await runEpisode('m1', onCovered)
 
-    // 从 makeDeps 捕获 perRun.onCovered 适配器，模拟季包命中一集（MS-P1: providerRef 透传）
+    // 从 makeDeps 捕获 perRun.onCovered 适配器，模拟季包命中一集（MS-P1: providerRef 透传；
+    // 本条 alreadyExisted=false，即真的新写了这一集——下一条用例覆盖 alreadyExisted=true）
     const perRun = vi.mocked(assembled.makeDeps).mock.calls[0][0]!
     const ep = { itemId: 'e9', seasonNumber: 1, episodeNumber: 9, episodeCode: 'S01E09', videoPath: '/v', videoFilename: 'v.mkv', needsChinese: true } satisfies SeasonEpisode
-    await perRun.onCovered(ep, '/subs/e9.srt', 'assrt:900900')
+    await perRun.onCovered(ep, '/subs/e9.srt', 'assrt:900900', false)
 
-    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt', 'assrt:900900')
+    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt', 'assrt:900900', false)
     expect(jf.refreshItem).toHaveBeenCalledWith('e9') // I5d
+  })
+
+  it('I5d/M8: onCovered 适配层透传 alreadyExisted=true（季横扫/季包命中的这一集其实本来就在磁盘上）', async () => {
+    const jf = mkJf(join(mediaRoot, 'movie', 'test.mkv'))
+    const assembled = mkAssembled(jf)
+    runPipelineMock.mockResolvedValue({
+      decision: 'download',
+      journalPath: '/j.json',
+      stats: { durationMs: 1, llmCalls: 0, apiCalls: 0 },
+    })
+
+    const onCovered = vi.fn()
+    const runEpisode = makeRunEpisode(assembled, lib, { mediaRoots: [mediaRoot] })
+    await runEpisode('m1', onCovered)
+
+    const perRun = vi.mocked(assembled.makeDeps).mock.calls[0][0]!
+    const ep = { itemId: 'e9', seasonNumber: 1, episodeNumber: 9, episodeCode: 'S01E09', videoPath: '/v', videoFilename: 'v.mkv', needsChinese: true } satisfies SeasonEpisode
+    await perRun.onCovered(ep, '/subs/e9.srt', 'assrt:900900', true)
+
+    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt', 'assrt:900900', true)
   })
 
   it('解析到中文名时写回 movies 行（task 2 回写）', async () => {
