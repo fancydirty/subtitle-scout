@@ -202,6 +202,53 @@ describe('ScoutDaemon', () => {
     expect(jobs.countByState('wanted')).toBe(0)
   })
 
+  it('FIX-2: reap+重领后，旧（detached）invocation 迟到的 finally 不驱逐新 invocation 的 inflight 追踪条目', async () => {
+    // 生产语境：inflight 跟踪曾是 Set<number>（按 job id 去重），两次 claim 共享同一个
+    // key——旧 invocation 的 .finally 一响就把新 invocation 的追踪条目也删了，新
+    // invocation（仍在合法跑）从此失去心跳续租，租约到期后被误判死亡回收（双跑/饿死）。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    let resolveFirst: () => void = () => {}
+    let callCount = 0
+    const executeJob = vi.fn(() => {
+      callCount++
+      if (callCount === 1) {
+        return new Promise<void>((resolve) => { resolveFirst = resolve })
+      }
+      return new Promise<void>(() => {}) // 第二次 invocation：本测试内也不 settle
+    })
+
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    // Tick 1：claim s1 → invocation #1 被跟踪（即将变成 detached）。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+
+    // 模拟：这一行在 invocation #1 仍"活着"（只是它的 continuation 还没运行）时被
+    // 别处回收——确定性复现用 reapAllActive（同 FIX-1 的孤儿回收在其他时序下的效果）。
+    jobs.reapAllActive(now)
+    expect(jobs.find('s1', 1)!.state).toBe('wanted')
+
+    // Tick 2：dispatch 重新领取 s1 给 invocation #2——同一个 job id，全新的 Job 对象/token。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+    expect(executeJob).toHaveBeenCalledTimes(2)
+
+    // 现在 invocation #1（stale）才结算——它的 .finally 绝不能驱逐 invocation #2 的追踪条目。
+    resolveFirst()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // 证明 invocation #2 仍被跟踪：把时钟拨过 30min 租约再 tick——心跳必须还在为它续租
+    // （id 仍在追踪集合里），reapExpiredLeases/FIX-1 孤儿侦测都不该碰它。
+    now += 31 * 60_000
+    await daemon.tick()
+
+    expect(jobs.countByState('searching')).toBe(1) // 仍被跟踪+续租，没被回收
+    expect(jobs.countByState('wanted')).toBe(0)
+    expect(executeJob).toHaveBeenCalledTimes(2) // 没有多出一次误派发/双跑
+  })
+
   it('过租job被reap后可再领取', async () => {
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 

@@ -129,6 +129,17 @@ describe('jobs 状态机', () => {
     expect(repo.get(j.id)!.state).toBe('done')
     expect(repo.get(j.id)!.lease_until).toBeNull()
   })
+  it('FIX-2: renewLease 返回新写入的 lease_until（no-op 时返回 null）——供 daemon 把值同步回它持有的 Job 对象引用', () => {
+    const now = Date.now()
+    mkSeriesJob(now)
+    const j = repo.claimNext(now)!
+    const renewed = repo.renewLease(j.id, now + 1000)
+    expect(renewed).toBe(repo.get(j.id)!.lease_until)
+    expect(renewed).toBeGreaterThan(j.lease_until!)
+
+    repo.completeDone(j.id, now)
+    expect(repo.renewLease(j.id, now)).toBeNull() // 非活跃态 no-op
+  })
   it('内容性失败指数退避：四次分别落 1/2/4/8 天，第 5 次才 dormant', () => {
     const t0 = Date.now()
     mkSeriesJob(t0)

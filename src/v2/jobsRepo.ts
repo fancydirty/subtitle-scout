@@ -125,15 +125,22 @@ export class JobsRepo {
 
   /** 心跳续租：daemon 每 tick 为本进程仍在跑的 job（inflight）续租，防止合法长跑
    *  （如季包多集下载）被下一 tick 的 reapExpiredLeases 误判死亡回收、导致并发双派发。
-   *  只作用于仍处活跃态的行——job 若已被 complete* 收尾则是 no-op。 */
-  renewLease(jobId: number, now: number): void {
-    this.db
+   *  只作用于仍处活跃态的行——job 若已被 complete* 收尾则是 no-op。
+   *  FIX-2：返回新写入的 lease_until（no-op 时返回 null），供调用方把这个值同步
+   *  写回它自己持有的 Job 对象引用（daemon.inflightJobs 里的那个），让"这次调用是否
+   *  还拥有租约"的判据（executor.ts 的 FIX-3 ownsLease 检查）能跟着合法续租一起前进，
+   *  而不是永远比对 claim 那一刻的旧值——否则任何跑超一个 tick 间隔的长任务都会被
+   *  误判"租约已失效"。 */
+  renewLease(jobId: number, now: number): number | null {
+    const leaseUntil = now + LEASE_DURATION_MS
+    const info = this.db
       .prepare(
         `UPDATE jobs
          SET lease_until = ?, updated_at = ?
          WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
       )
-      .run(now + LEASE_DURATION_MS, now, jobId)
+      .run(leaseUntil, now, jobId)
+    return info.changes > 0 ? leaseUntil : null
   }
 
   reapExpiredLeases(now: number): void {

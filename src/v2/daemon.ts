@@ -48,9 +48,21 @@ export const MAX_CONSECUTIVE_TICK_FAILURES = 5
  */
 export class ScoutDaemon {
   private inflight = new Set<Promise<void>>()
-  // 心跳续租用：本进程当前仍在跑的 job id 集合。每 tick 先为它们续租，
-  // reapExpiredLeases 才不会误判"合法长跑"为死亡租约、导致并发双派发（starvation 审计修正）。
-  private inflightJobIds = new Set<number>()
+  // 心跳续租 + 派发身份追踪：本进程当前仍在跑的 job id → 那次 claim 拿到的 Job 对象
+  // 引用（FIX-2：invocation 身份令牌）。每 tick 先为里面的 id 续租，reapExpiredLeases
+  // 才不会误判"合法长跑"为死亡租约、导致并发双派发（starvation 审计修正）。
+  //
+  // 为什么值是 Job 对象而不是普通 number：同一个 job id 可能先后被两次 claim 领走
+  // （reap 后重领）——若只用 Set<number> 去重，两次 invocation 会共享同一个 key，
+  // 旧（detached）invocation 迟到的 .finally 一响就把新 invocation 的追踪条目也删了，
+  // 新 invocation 从此失去心跳续租（FIX-2 审计修正）。改存 Job 对象引用后：
+  //   1) 引用本身天然充当"这是哪一次 claim"的身份令牌——.finally 里用 === 比对，
+  //      只有"我领到的那个对象仍是 map 里当前记录的那个"才允许删除自己的条目。
+  //   2) 心跳续租每 tick 原地 mutate 这个共享对象的 lease_until（而不是替换成新对象），
+  //      executor.ts 侧的 job.lease_until 读到的永远是最新值——FIX-3 的 ownsLease
+  //      判据（jobs.get(id).lease_until === job.lease_until）才不会被"合法续租"
+  //      误判成"租约已被回收重派"。
+  private inflightJobs = new Map<number, Job>()
   private stopping = false
   // 部署重启瞬间：上个进程分钟前才写过 last_reconcile_at，纯时间门会让首次 scan 延迟
   // 最长 15 分钟，而 dispatch 每 15s 无条件跑——旧 wanted/failed job（含刚被
@@ -96,20 +108,22 @@ export class ScoutDaemon {
 
     // 0. Heartbeat: 为本进程仍在跑的 job 续租，早于 reap 执行——防止合法长跑（如季包
     //    多集下载合法跑超 30min 租约）被误判死亡回收、被 dispatch 并发重领（starvation 审计修正）。
-    for (const jobId of this.inflightJobIds) {
-      jobs.renewLease(jobId, now())
+    //    FIX-2: 续租成功后把新 lease_until 原地写回追踪的 Job 对象——见字段声明处注释。
+    for (const [jobId, trackedJob] of this.inflightJobs) {
+      const renewed = jobs.renewLease(jobId, now())
+      if (renewed !== null) trackedJob.lease_until = renewed
     }
 
     // 0b. FIX-1（派发饥饿审计修正）：单实例前提下，任何 active 态但 id 不在本进程
-    //     inflightJobIds 跟踪集合里的行，定义上就是孤儿（同 boot reapAllActive 的论证，
+    //     inflightJobs 跟踪集合里的行，定义上就是孤儿（同 boot reapAllActive 的论证，
     //     只是判据从"进程重启"换成"跟踪集合缺失"）——不必等 30min 租约到期即可回收。
     //     生产实案：executeJob 的 promise 结算但其 continuation（.finally）从未被调度，
     //     job 卡在 active 态且不再被跟踪，过去只能靠 reapExpiredLeases 在租约到期后
     //     （最长 30 分钟）自愈，期间 searching 并发槽被永久占用、零 log/run 证据。
-    //     Race-free 关键：这一步跑在 dispatch()（本 tick 唯一会新增 inflightJobIds 条目
+    //     Race-free 关键：这一步跑在 dispatch()（本 tick 唯一会新增 inflightJobs 条目
     //     的地方）之前——本 tick 刚被 dispatch 领走的行此刻根本还不存在于下面的查询结果
     //     里，不可能被误伤；真正 inflight 的行因为 id 在跟踪集合里，同样被天然排除。
-    const orphaned = jobs.reapOrphaned(this.inflightJobIds, now())
+    const orphaned = jobs.reapOrphaned(this.inflightJobs.keys(), now())
     for (const orphan of orphaned) {
       log(
         `warn: job ${orphan.id} (${orphan.kind} ${orphan.series_id ?? orphan.movie_id ?? '?'}) ` +
@@ -187,10 +201,12 @@ export class ScoutDaemon {
         break
       }
 
-      // Fire-and-forget: don't await, but track in inflight set (promise + job id;
-      // job id feeds the heartbeat renewal above so this job's lease never expires
-      // out from under it while genuinely still running in this process).
-      this.inflightJobIds.add(job.id)
+      // Fire-and-forget: don't await, but track in inflight set (promise + job id →
+      // Job object; the id feeds the heartbeat renewal above so this job's lease
+      // never expires out from under it while genuinely still running in this
+      // process). FIX-2: store the actual Job object (not just the id) — it doubles
+      // as this invocation's identity token, see field-declaration comment above.
+      this.inflightJobs.set(job.id, job)
       const jobPromise = executeJob(job)
         .catch((error) => {
           const msg = error instanceof Error ? error.message : String(error)
@@ -198,7 +214,13 @@ export class ScoutDaemon {
         })
         .finally(() => {
           this.inflight.delete(jobPromise)
-          this.inflightJobIds.delete(job.id)
+          // FIX-2: only evict if the map still holds *this* invocation's own Job
+          // object for this id — a stale/detached invocation's late .finally must
+          // never delete a newer invocation's entry (reap+re-claim while the old
+          // one is still "alive", i.e. its continuation just hasn't run yet).
+          if (this.inflightJobs.get(job.id) === job) {
+            this.inflightJobs.delete(job.id)
+          }
         })
 
       this.inflight.add(jobPromise)
