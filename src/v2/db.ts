@@ -148,6 +148,23 @@ INSERT INTO movies_new
 DROP TABLE movies;
 ALTER TABLE movies_new RENAME TO movies;
   `.trim(),
+  // v6: needs_review 全灭——ask_user 判定路径不复存在(agent 判断链两态化,拿不准的候选
+  // 走 staging 沙盒下载+体检+终审后必须二选一表态)。存量 needs_review 行复位为 missing
+  // + recheck_after=now,下一轮调和用新流程重跑它们,预期开箱验证通过直接转绿。CHECK 约束
+  // 里的 'needs_review' 枚举值有意保留容忍(YAGNI)——不再有代码写它,但不做又一次整表
+  // 重建只为收紧一个再没人写的枚举值。
+  `
+UPDATE episodes
+  SET sub_status = 'missing', status_reason = NULL,
+      recheck_after = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+      updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+  WHERE sub_status = 'needs_review';
+UPDATE movies
+  SET sub_status = 'missing', status_reason = NULL,
+      recheck_after = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+      updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+  WHERE sub_status = 'needs_review';
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
