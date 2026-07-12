@@ -15,11 +15,15 @@ const E_CODE_RE = /(?<![A-Za-z0-9])E(\d{1,4})(?!\d)/i
  * 从文件名解析绝对集号——只认三种确定性标记（CJK "第N话/第N集" > 方括号 [NN] > 裸 "E26"），
  * 取不出就返回 null，绝不猜（隔离区伺候）。已经是 SxxEyy 记法的文件不是"绝对编号平铺"问题
  * 的目标（本身已分季），直接判 null。合集/范围记法（"01-02"）三种模式都不命中，天然落入 null。
+ *
+ * CRITICAL：SxxEyy 守卫必须先于所有提取模式。否则 "Show S02E01 第1话.mkv" 会先被 CJK 模式
+ * 命中 → 当成 abs 1 → 四闸门全绿地把 S2 的第一集错误改名成 S1E01（带完美记分卡的错误改名）。
+ * 已含季集码即已分季，本函数一律拒绝，交回上层按正常分季路径处理。
  */
 export function parseAbsoluteEpisodeNumber(filename: string): EpisodeNumberMatch | null {
+  if (SXXEYY_RE.test(filename)) return null
   const cjk = CJK_EPISODE_RE.exec(filename)
   if (cjk) return { absoluteEpisode: Number(cjk[1]), matchedToken: cjk[0] }
-  if (SXXEYY_RE.test(filename)) return null
   const bracket = BRACKET_EPISODE_RE.exec(filename)
   if (bracket) return { absoluteEpisode: Number(bracket[1]), matchedToken: bracket[0] }
   const e = E_CODE_RE.exec(filename)

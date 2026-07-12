@@ -32,6 +32,12 @@ describe('parseAbsoluteEpisodeNumber', () => {
   it('无任何可识别集号标记——返回 null', () => {
     expect(parseAbsoluteEpisodeNumber('random_file.mkv')).toBeNull()
   })
+  it('季码+CJK 混合名——SxxEyy 守卫先于一切提取模式，拒绝解析（否则 S02E01 被当 abs 1 错误改名）', () => {
+    expect(parseAbsoluteEpisodeNumber('Show S02E01 第1话.mkv')).toBeNull()
+  })
+  it('季码+方括号混合名——同样先被 SxxEyy 守卫拦下', () => {
+    expect(parseAbsoluteEpisodeNumber('[Group] Show S02E01 [01][1080p].mkv')).toBeNull()
+  })
 })
 
 describe('scanVideoFiles', () => {
@@ -157,6 +163,17 @@ describe('buildRealignPlan', () => {
     const files: ScannedVideoFile[] = [{ path: '/a.mkv', filename: 'random.mkv', match: null }]
     const result = buildRealignPlan(files, cfg)
     expect(result.ok).toBe(false)
+  })
+
+  it('整目录 SxxEyy+第N话 混合命名 → 零可解析 → 计划失败（而非四闸门全绿地把 S2 错误改名成 S1）', () => {
+    const files: ScannedVideoFile[] = [1, 2, 3].map(n => {
+      const name = `Show S02E0${n} 第${n}话.mkv`
+      return { path: `/media/Show/${name}`, filename: name, match: parseAbsoluteEpisodeNumber(name) }
+    })
+    const result = buildRealignPlan(files, cfg)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.failures.some(f => f.includes('没有任何文件能解析出绝对集号'))).toBe(true)
   })
 })
 
