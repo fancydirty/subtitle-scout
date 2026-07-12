@@ -4,6 +4,7 @@ import {
   MediaContextSchema, MediaIdentitySchema, SearchPlanSchema,
   RankDecisionSchema, AssrtSearchResponseSchema, AssrtDetailResponseSchema,
   FinalDecisionSchema, OrphanDecisionSchema, LooseEpisodesMapSchema,
+  VerifyDecisionSchema,
 } from './schemas.js'
 
 describe('MediaContextSchema', () => {
@@ -163,5 +164,18 @@ describe('M4 additions', () => {
     expect(() => OrphanDecisionSchema.parse({
       adopt: true, file: 'x.ass', language: 'None', confidence: 0.9, reasons: [],
     })).toThrow()
+  })
+})
+
+describe('VerifyDecisionSchema', () => {
+  it('accepts {match, reason} with no confidence field', () => {
+    const d = VerifyDecisionSchema.parse({ match: true, reason: 'cue count and span line up with the episode runtime' })
+    expect(d.match).toBe(true)
+  })
+  it('rejects a missing reason', () => {
+    expect(() => VerifyDecisionSchema.parse({ match: false })).toThrow()
+  })
+  it('rejects a non-boolean match', () => {
+    expect(() => VerifyDecisionSchema.parse({ match: 'yes', reason: 'x' })).toThrow()
   })
 })

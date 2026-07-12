@@ -216,6 +216,13 @@ export const FinalDecisionSchema = z.object({
 })
 export type FinalDecision = z.infer<typeof FinalDecisionSchema>
 
+// ---------- 终审 agent 输出(staging 沙盒体检后的二选一表态) ----------
+export const VerifyDecisionSchema = z.object({
+  match: z.boolean(),
+  reason: z.string(),
+})
+export type VerifyDecision = z.infer<typeof VerifyDecisionSchema>
+
 // Production case (S04E12): LLM rejection path outputs {"adopt":false,"file":"None","language":"None"}
 // — valid decision, but schema enum enforcement killed the run. Widen rejection path, keep adoption strict.
 export const OrphanDecisionSchema = z.object({
