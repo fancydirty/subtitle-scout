@@ -173,6 +173,12 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     error: string,
     quotaResetAt?: string | null
   ): boolean => {
+    // IMPORTANT-1（审计修正）：completeError 有两个调用点——try 块内容轨的瞬时错误
+    // 分支（已经过下面 5. 顶部的 ownsLease 大门）和 catch 块（runEpisode 抛异常，
+    // 完全绕开那道门直接落到这里）。守在这个两条路径唯一共用的 helper 里，一次覆盖
+    // 两处：租约已丢失就不再碰这一行，也不再充 error_attempt——由调用方的 record()
+    // 走既有的 stale-lease 弃置分支收尾（诊断照旧打印，只是不再误伤新 invocation）。
+    if (!ownsLease()) return false
     const before = job.error_attempt
     const transitioned = jobs.completeError(job.id, error, now(), quotaResetAt)
     if (transitioned && before <= ERROR_GIVEUP_THRESHOLD) {
@@ -227,6 +233,26 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     const subtitlePath = result.subtitlePath ?? null
     const journalPath = result.journalPath ?? null
     const stats = result.stats ?? null
+
+    // IMPORTANT-1（审计修正——guard coverage hole）：runEpisode 是本函数唯一的 await
+    // 点，期间足够长（FIX-1 之后孤儿回收窗口缩到 15s，比旧 30min 租约窗口容易撞得多）
+    // 可能让本次 invocation 的 job 被 reapOrphaned 回收、又被一次新 invocation 重新
+    // claim——DB 里当前那行 searching/downloading/verifying 早已不是"我们"的了。下面
+    // 所有分流分支共用的 complete*（completeDone/completePartial/completeNoMatch，
+    // 以及经 completeErrorLogged 的 completeError）只按 active-state 守卫，认不出
+    // "是不是我领的"，会把新 invocation 的战果错误地转移到 failed/done（state/attempt/
+    // error_attempt 全部覆盖，还会把新 invocation 自己的 lease_until 直接 NULL 掉，
+    // 导致新 invocation 自己的 ownsLease 也跟着翻假，静默丢弃它后续所有战果——见
+    // 审计 (c) 级联）；markUnavailable/markNeedsReview 更是完全没有守卫。在进入任何
+    // 分支之前，一次性用 ownsLease() 拦掉整段路由——租约已丢失就什么状态机/集状态都
+    // 不碰，只留一行 runs 记录（复用 record() 既有的 stale-lease 弃置分支，诊断信息
+    // 不丢）。这是覆盖全部分支的最窄卡口：其后每条分支要么直接依赖 ownsLease()==true
+    // 才能到达这里（onCovered/代表集 markCovered 的既有守卫因此永远命中 true 分支，
+    // 不是死代码——只是不再是唯一防线），要么经 completeErrorLogged 二次确认。
+    if (!ownsLease()) {
+      record(false, decision, '本次 invocation 已失去租约，结果整体弃置', journalPath, stats)
+      return
+    }
 
     // 5. Route based on decision and coverage
     if (remainingTargets(job, lib, now()).length === 0) {
