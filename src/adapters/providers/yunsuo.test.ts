@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { detectChallenge, parseChallenge } from './yunsuo.js'
+import { detectChallenge, parseChallenge, solveYunsuoChallenge, ZimukuChallengeError } from './yunsuo.js'
 
 describe('detectChallenge', () => {
   it('detects the YunsuoAutoJump marker', () => {
@@ -36,5 +36,28 @@ describe('parseChallenge', () => {
   it('throws when the page has no form (unexpected challenge shape)', () => {
     expect(() => parseChallenge('<html><body>no form here</body></html>', 'https://www.zimuku.org'))
       .toThrow(/no <form/)
+  })
+})
+
+describe('solveYunsuoChallenge', () => {
+  const html = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
+
+  it('fetches the captcha image, calls solve, submits digits, and returns the security_session_verify cookie on first try', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('security_verify_img')) {
+        return new Response(Buffer.from('fake-png-bytes'))
+      }
+      expect(init?.method).toBe('POST')
+      const body = new URLSearchParams(init!.body as URLSearchParams)
+      expect(body.get('wzws_sessionid')).toBe('8f2c9a1b3e4d5f60')
+      expect(body.get('sec_code')).toBe('74504')
+      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=abc123; Path=/; HttpOnly' } })
+    })
+    const solve = vi.fn(async () => ({ digits: '74504' }))
+    const r = await solveYunsuoChallenge(
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html,
+    )
+    expect(r.cookie).toBe('security_session_verify=abc123')
+    expect(solve).toHaveBeenCalledTimes(1)
   })
 })

@@ -47,3 +47,50 @@ export function parseChallenge(html: string, baseUrl: string): YunsuoChallengeFo
 
   return { action, fields, captchaFieldName: captchaFieldMatch[1], imageUrl }
 }
+
+/** 挑战破解耗尽/仍被拦截:瞬时错误,不是"确实没有字幕"的内容结论——上游 fetchLib.runSearch 的
+ *  通用 catch 会把它转成 provider_error,pipeline.ts 的残缺候选集守卫据此拒写负缓存。 */
+export class ZimukuChallengeError extends Error {}
+
+function extractCookie(res: Response, name: string): string | null {
+  const raw = typeof res.headers.getSetCookie === 'function'
+    ? res.headers.getSetCookie()
+    : [res.headers.get('set-cookie') ?? '']
+  for (const line of raw) {
+    const m = line.match(new RegExp(`${name}=([^;]+)`))
+    if (m) return `${name}=${m[1]}`
+  }
+  return null
+}
+
+export interface SolveYunsuoChallengeDeps {
+  fetchImpl: typeof fetch
+  /** 验证码识别回调——生产接线用 solveNumericCaptcha(llm, png),与 LLM 解耦,测试注入假实现 */
+  solve: (imageBytes: Buffer) => Promise<{ digits: string }>
+}
+
+/**
+ * 有界重试破解云锁验证码:抓图→识别→提交,拿到 security_session_verify cookie 即成功返回;
+ * 提交被拒(cookie 没出现在响应里)则重刷验证码重试,最多 maxAttempts 次(默认 5,与设计文档
+ * 一致)。攻击性节流:失败重试之间等待 retryDelayMs(默认 2s),绝不无延迟重试风暴。
+ */
+export async function solveYunsuoChallenge(
+  deps: SolveYunsuoChallengeDeps, baseUrl: string, challengeHtml: string,
+  maxAttempts = 5, retryDelayMs = 2000,
+): Promise<{ cookie: string }> {
+  const form = parseChallenge(challengeHtml, baseUrl)
+  let lastError = ''
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const imgRes = await deps.fetchImpl(form.imageUrl)
+    const imgBytes = Buffer.from(await imgRes.arrayBuffer())
+    const { digits } = await deps.solve(imgBytes)
+    const body = new URLSearchParams({ ...form.fields, [form.captchaFieldName]: digits })
+    const res = await deps.fetchImpl(form.action, { method: 'POST', body })
+    const cookie = extractCookie(res, 'security_session_verify')
+    if (cookie) return { cookie }
+    lastError = `attempt ${attempt}: no security_session_verify cookie in response (wrong digits?)`
+    if (attempt < maxAttempts) await new Promise(r => setTimeout(r, retryDelayMs))
+  }
+  throw new ZimukuChallengeError(`yunsuo captcha solve exhausted after ${maxAttempts} attempts: ${lastError}`)
+}
+
