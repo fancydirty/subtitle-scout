@@ -515,3 +515,47 @@ describe('jobs 状态机', () => {
     })
   })
 })
+
+describe('realign job kind', () => {
+  it('upsertWanted({kind:"realign"}) 建 season=NULL 的 job，claimNext 能正常领取', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)
+    expect(job?.kind).toBe('realign')
+    expect(job?.series_id).toBe('s1')
+    expect(job?.season).toBeNull()
+  })
+
+  it('同剧重复 upsertWanted realign 幂等：只有一行', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    expect(repo.countByState('wanted')).toBe(1)
+  })
+
+  it('setPlanRef 写入 plan_ref，仅在 active 态生效（同 setJournalRef 语义）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.setPlanRef(job.id, '/archive/s1-123/manifest.json', now)
+    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-123/manifest.json')
+  })
+
+  it('setPlanRef 对非 active 态 job 是 no-op', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.completeDone(job.id, now)
+    repo.setPlanRef(job.id, '/should/not/write', now)
+    expect(repo.get(job.id)!.plan_ref).toBeNull()
+  })
+
+  it('retireAllForSeries：把该剧 wanted/failed 的 series_season job 退休为 done，active 态不动', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 2 }, now)
+    repo.claimNext(now) // season 1 或 2 变 searching（active，不该被 retire）
+    const retired = repo.retireAllForSeries('s1', now)
+    expect(retired).toBe(1)
+  })
+})
