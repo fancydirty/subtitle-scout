@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { pathToFileURL } from 'node:url'
 import { makeCliProviderPort, ProviderQuotaExhaustedError, resolveSubtitleFetchCommand } from './providerPort.js'
 
@@ -114,14 +114,36 @@ describe('makeCliProviderPort', () => {
   it('MINOR-1: a child that emits quota_exhausted then hangs times out with the typed ProviderQuotaExhaustedError, not a generic timeout Error', async () => {
     // 根因：超时路径原样 reject 一个泛型 Error('subtitle-fetch timeout...')，哪怕 quota_exhausted
     // provider_error 事件早已被观察到——调用方（pipeline.ts）就没法把这次超时按 resetAt 精确退避。
+    //
+    // 确定性说明：本用例要证明的是"事件先到、超时后到"这个顺序下的行为，不能靠指望真实 50ms
+    // 挂钟时间比子进程 spawn+echo+stderr 解析更慢来赌赢——满载并行跑全量测试时这个赌注偶尔会输
+    // （spawn/调度抖动可能反超 50ms），导致 quotaExhausted 还没落地超时就先触发，退化成泛型 Error。
+    // 改用显式同步点：用 onEvent 回调等到事件真正被 run() 内部观测到之后，再用 fake timer 精确
+    // 推进 timeoutMs——这样"事件先于超时"从概率赌注变成结构性保证，而不是放宽或跳过原本要证明的行为。
     const resetAt = '2026-07-13T00:00:00.000Z'
-    const port = makeCliProviderPort({
-      command: ['sh', '-c',
-        `echo '{"event":"provider_error","provider":"opensubtitles","message":"quota exhausted","code":"quota_exhausted","resetAt":"${resetAt}"}' >&2; sleep 30`],
-      timeoutMs: 50,
-    })
-    await expect(port.search({ queries: ['q'], deep: false }))
-      .rejects.toMatchObject({ code: 'quota_exhausted', resetAt })
+    let onQuotaEvent!: () => void
+    const quotaEventObserved = new Promise<void>(resolve => { onQuotaEvent = resolve })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const port = makeCliProviderPort({
+        command: ['sh', '-c',
+          `echo '{"event":"provider_error","provider":"opensubtitles","message":"quota exhausted","code":"quota_exhausted","resetAt":"${resetAt}"}' >&2; sleep 30`],
+        timeoutMs: 50,
+        onEvent: e => { if ((e as { event?: string }).event === 'provider_error') onQuotaEvent() },
+      })
+      const result = port.search({ queries: ['q'], deep: false })
+      // 断言（即 rejects 内部挂的 catch handler）必须在推进定时器、真正触发 reject 之前就挂上去——
+      // 否则 reject() 和 expect().rejects 之间存在几个 microtask 的窗口，Node 会先判定 result
+      // "unhandled"（PromiseRejectionHandledWarning），即使随后确实被处理也已经污染了测试输出。
+      const assertion = expect(result).rejects.toMatchObject({ code: 'quota_exhausted', resetAt })
+      // run() 里 quotaExhausted 在调用 onEvent 之前就已经赋值（见 providerPort.ts），所以此刻
+      // resolve 时内部状态必然已经就绪——推进定时器前不存在"事件还没被记录"的窗口。
+      await quotaEventObserved
+      await vi.advanceTimersByTimeAsync(50)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it('MINOR-1: a plain hang with no quota_exhausted event still times out with a generic Error', async () => {
     const port = makeCliProviderPort({ command: ['sh', '-c', 'sleep 30'], timeoutMs: 50 })
