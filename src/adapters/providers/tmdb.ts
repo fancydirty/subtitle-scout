@@ -204,16 +204,27 @@ export class TmdbClient {
    * 季表：season_number/episode_count/air_date，供绝对集号累计偏移映射用。
    * 过滤 season_number<=0（TMDB 用 0 表示特别篇，不参与正片累计编号）。
    * 语义同 getOriginLanguage：null=真·无数据（含404），抛 TmdbRequestFailedError=瞬时故障可重试。
+   * 权威数据形状异常一律按"可重试的请求失败"处理，绝不静默降级：
+   * - seasons 非数组（含缺字段）→ throw（否则裸 .filter 会抛 TypeError）；
+   * - 正片季缺 episode_count → throw（绝不 ??0，那会算出错误的累计表并静默错误改名）。
    */
   async getSeasonTable(tvId: string): Promise<SeasonTableEntry[] | null> {
     const d = await this.getJsonStrict(`/tv/${tvId}`)
     if (!d) return null
-    const seasons = d.seasons as Array<{ season_number?: number; episode_count?: number; air_date?: string | null }> | undefined
-    if (!seasons) return null
-    return seasons
+    const seasons = d.seasons
+    if (!Array.isArray(seasons)) {
+      throw new TmdbRequestFailedError(`TMDB /tv/${tvId} 响应缺少 seasons 数组`)
+    }
+    const rows = seasons as Array<{ season_number?: number; episode_count?: number; air_date?: string | null }>
+    return rows
       .filter((s): s is { season_number: number; episode_count?: number; air_date?: string | null } =>
         typeof s.season_number === 'number' && s.season_number > 0)
-      .map(s => ({ seasonNumber: s.season_number, episodeCount: s.episode_count ?? 0, airDate: s.air_date ?? null }))
+      .map(s => {
+        if (typeof s.episode_count !== 'number') {
+          throw new TmdbRequestFailedError(`TMDB /tv/${tvId} 第 ${s.season_number} 季缺少 episode_count`)
+        }
+        return { seasonNumber: s.season_number, episodeCount: s.episode_count, airDate: s.air_date ?? null }
+      })
       .sort((a, b) => a.seasonNumber - b.seasonNumber)
   }
 }

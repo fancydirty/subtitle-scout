@@ -305,4 +305,27 @@ describe('TmdbClient.getSeasonTable', () => {
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     await expect(client.getSeasonTable('120089')).rejects.toThrow(TmdbRequestFailedError)
   })
+
+  it('正片季缺 episode_count → 抛 TmdbRequestFailedError（权威数据异常即中止，绝不 ??0 静默算错累计表）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      seasons: [
+        { season_number: 1, episode_count: 25, air_date: null },
+        { season_number: 2, air_date: null }, // 缺 episode_count
+      ],
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getSeasonTable('120089')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('seasons 非数组 → 抛 TmdbRequestFailedError（而非裸 TypeError）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ seasons: 'oops' }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getSeasonTable('120089')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('响应体缺 seasons 字段 → 同样按数据形状异常抛 TmdbRequestFailedError', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ id: 120089 }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getSeasonTable('120089')).rejects.toThrow(TmdbRequestFailedError)
+  })
 })
