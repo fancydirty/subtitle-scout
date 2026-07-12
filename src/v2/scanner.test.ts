@@ -982,4 +982,125 @@ describe('scanLibrary', () => {
       expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
     })
   })
+
+  describe('scan-time sidecar adoption (disk-check arm bookkeeping)', () => {
+    // 生产实案：daemon 自己没记（崩溃的执行、或用户手放文件）——scanner 靠磁盘直接发现
+    // 中字 sidecar 并把状态从 missing 翻成 covered 时，此前不会建 subtitles 行，
+    // path/size/provenance 账目永久丢失。本组用例锚住修复：磁盘 arm 命中且该条目尚无
+    // subtitles 行时，scan 必须自己把这行账记上（source='preexisting'，语义同 pipeline
+    // 的 already_exists——盘上有文件，但不是这次运行写的）。
+
+    function subtitleRows(itemId: string) {
+      return lib.db.prepare('select * from subtitles where item_id = ?').all(itemId) as any[]
+    }
+
+    it('episode: disk sidecar with no subtitles row → scan covers AND inserts a row with the real path', async () => {
+      const sidecarPath = '/mnt/media/tv/Show/Season 1/Show.S01E01.zh-Hans.srt'
+      const pages = [[epItem('e1', 1, 1)], []]
+      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+      await scanLibrary(jf, lib, {
+        pageSize: 10,
+        fileExists: (p) => p === sidecarPath,
+        mappings,
+        skipChineseOrigin: true,
+      })
+      expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+      const rows = subtitleRows('e1')
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({
+        item_id: 'e1',
+        path: sidecarPath,
+        source: 'preexisting',
+        provider_ref: null,
+      })
+    })
+
+    it('episode: rescan does not duplicate the adopted row', async () => {
+      const sidecarPath = '/mnt/media/tv/Show/Season 1/Show.S01E01.zh-Hans.srt'
+      const fileExists = (p: string) => p === sidecarPath
+
+      const pages1 = [[epItem('e1', 1, 1)], []]
+      const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
+      await scanLibrary(jf1, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      expect(subtitleRows('e1')).toHaveLength(1)
+
+      const pages2 = [[epItem('e1', 1, 1)], []]
+      const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
+      await scanLibrary(jf2, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      expect(subtitleRows('e1')).toHaveLength(1) // still just the one row, not duplicated
+    })
+
+    it('episode: Jellyfin-stream-covered (no disk file) → no row invented', async () => {
+      const item = epItem('e1', 1, 1, {
+        MediaStreams: [
+          { Type: 'Subtitle', Language: 'zh-Hans', IsExternal: true, Codec: 'subrip' },
+        ] as any,
+      })
+      const pages = [[item], []]
+      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+      await scanLibrary(jf, lib, {
+        pageSize: 10,
+        fileExists: () => false, // no disk file — coverage comes only from MediaStreams
+        mappings,
+        skipChineseOrigin: true,
+      })
+      expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+      expect(subtitleRows('e1')).toHaveLength(0)
+    })
+
+    it('episode: already-tracked item (has a subtitles row) is not re-branded when the disk arm also matches', async () => {
+      // 已经走过正规 pipeline 记账（source='scout-download'）的条目，不该被 scan 的磁盘 arm
+      // 二次"认领"——即便磁盘 arm 这轮也命中（比如 Jellyfin 还没刷新 MediaStreams）。
+      lib.upsertSeries({ id: 's1', name: 'Test Series' })
+      lib.upsertEpisode({
+        id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'Episode 1',
+        path: '/media/tv/Show/Season 1/Show.S01E01.mkv', subStatus: 'covered',
+      })
+      lib.markCovered('e1', '/mnt/media/tv/Show/Season 1/Show.S01E01.zh-Hans.srt', 'scout-download', 'assrt:123')
+
+      const sidecarPath = '/mnt/media/tv/Show/Season 1/Show.S01E01.zh-Hans.srt'
+      const pages = [[epItem('e1', 1, 1)], []]
+      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+      await scanLibrary(jf, lib, {
+        pageSize: 10,
+        fileExists: (p) => p === sidecarPath,
+        mappings,
+        skipChineseOrigin: true,
+      })
+      const rows = subtitleRows('e1')
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ source: 'scout-download', provider_ref: 'assrt:123' })
+    })
+
+    it('movie: disk sidecar with no subtitles row → scan covers AND inserts a row with the real path', async () => {
+      const sidecarPath = '/mnt/media/movies/The Matrix (1999)/The.Matrix.1999.1080p.BluRay.x264.zh-Hans.srt'
+      const pages = [[movieItem({ Id: 'm1' })], []]
+      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+      await scanLibrary(jf, lib, {
+        pageSize: 10,
+        fileExists: (p) => p === sidecarPath,
+        mappings,
+        skipChineseOrigin: true,
+      })
+      expect(lib.getMovie('m1')!.sub_status).toBe('covered')
+      const rows = subtitleRows('m1')
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ item_id: 'm1', path: sidecarPath, source: 'preexisting', provider_ref: null })
+    })
+
+    it('movie: rescan does not duplicate the adopted row', async () => {
+      const sidecarPath = '/mnt/media/movies/The Matrix (1999)/The.Matrix.1999.1080p.BluRay.x264.zh-Hans.srt'
+      const fileExists = (p: string) => p === sidecarPath
+
+      const pages1 = [[movieItem({ Id: 'm1' })], []]
+      const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
+      await scanLibrary(jf1, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      expect(subtitleRows('m1')).toHaveLength(1)
+
+      const pages2 = [[movieItem({ Id: 'm1' })], []]
+      const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
+      await scanLibrary(jf2, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      expect(subtitleRows('m1')).toHaveLength(1)
+    })
+  })
 })
