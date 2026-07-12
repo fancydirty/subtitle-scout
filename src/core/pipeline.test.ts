@@ -9,6 +9,7 @@ import { toCandidate } from '../adapters/providers/assrt.js'
 import { ProviderQuotaExhaustedError, type ProviderPort } from './providerPort.js'
 import { DecisionCache } from './cache.js'
 import { scanOrphans } from '../files/orphanScanner.js'
+import { allocate, install, cleanup } from '../files/stagingSandbox.js'
 
 const ctx = MediaContextSchema.parse(JSON.parse(readFileSync('fixtures/contexts/matrix.json', 'utf8')))
 const searchResp = AssrtSearchResponseSchema.parse(JSON.parse(readFileSync('fixtures/assrt/search-matrix.json', 'utf8')))
@@ -40,6 +41,32 @@ function makeProviders(over: Partial<ProviderPort> = {}): ProviderPort {
   }
 }
 
+// 一份可解析出 2 条 cue 的最小 ASS/SRT 样本——新流程里每次成功下载都要过 inspectSubtitle 结构
+// 体检，旧夹具 '[Script Info]\nTitle: t\n'（零 cue）会被结构体检直接拒收，必须换成真实可解析
+// 内容。extension 决定解析器（.ass 走 parseAssCues，.srt 走 parseSrtCues），两份都要备着，因为
+// 测试里候选的 fileList 扩展名不全是同一种。
+const SAMPLE_ASS = [
+  '[Script Info]', 'Title: t', '', '[Events]',
+  'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  'Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,你好',
+  'Dialogue: 0,0:00:04.00,0:00:06.20,Default,,0,0,0,,再见',
+].join('\n')
+
+const SAMPLE_SRT = [
+  '1',
+  '00:00:01,000 --> 00:00:03,500',
+  '你好',
+  '',
+  '2',
+  '00:00:04,000 --> 00:00:06,200',
+  '再见',
+  '',
+].join('\n')
+
+function makeVerify(result: { match: boolean; reason: string } = { match: true, reason: 'looks right' }) {
+  return vi.fn(async () => ({ parsed: result, rawText: '', retries: 0, durationMs: 1, prompt: 'verify prompt' }))
+}
+
 function makeDeps(overrides: Partial<PipelineDeps> = {}): PipelineDeps {
   return {
     identify: vi.fn(async () => ({
@@ -55,20 +82,21 @@ function makeDeps(overrides: Partial<PipelineDeps> = {}): PipelineDeps {
     })),
     rank: vi.fn(async () => ({
       parsed: {
-        decision: 'download' as const, candidate_id: 'assrt:673114', file_index: 0,
-        confidence: 0.91, reasons: ['exact match'], identity_match: 'uncertain' as const, rejected: [],
+        order: [{ candidate_id: 'assrt:673114', file_index: 0, identity_match: 'uncertain' as const, reason: 'exact match' }], rejected: [], reasons: ['exact match'],
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     })),
+    verify: makeVerify(),
     providers: makeProviders(),
-    download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\nTitle: t\n'), contentType: 'text/plain' })),
+    download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
     cache: new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-'))),
     maxApiCallsPerJob: 4,
+    staging: { allocate, install, cleanup },
     ...overrides,
   }
 }
 
 describe('runPipeline', () => {
-  it('golden path: downloads, writes subtitle + decision.json, exit download', async () => {
+  it('golden path: downloads, verifies, installs subtitle + writes decision.json, exit download', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps()
     const result = await runPipeline(deps, ctx, outDir)
@@ -76,11 +104,48 @@ describe('runPipeline', () => {
     expect(existsSync(result.subtitlePath!)).toBe(true)
     expect(result.subtitlePath).toContain('The.Matrix.1999.1080p.BluRay.x264.zh-Hans')
     const journal = JSON.parse(readFileSync(join(outDir, 'decision.json'), 'utf8'))
-    expect(journal.llm_calls.length).toBe(3)
+    expect(journal.llm_calls.length).toBe(4) // identify, plan, rank, verify（新增一轮终审）
     expect(journal.decision.decision).toBe('download')
     // A real download+write happened this run — verification.downloaded must stay true (MINOR-A
     // only tightens the already_exists sites; the actual download path is unaffected).
     expect(journal.decision.verification.downloaded).toBe(true)
+    // 沙盒目录随 job 结束清空，试错垃圾零残留
+    expect(existsSync(join(outDir, '.subtitle-staging', ctx.request_id))).toBe(false)
+  })
+
+  it('tries the next candidate in the queue when the first fails structural inspection', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const rank = vi.fn(async () => ({
+      parsed: {
+        order: [
+          { candidate_id: 'assrt:673114', file_index: 0, identity_match: 'uncertain' as const, reason: 'first guess' },
+          { candidate_id: 'assrt:606770', file_index: 0, identity_match: 'uncertain' as const, reason: 'second guess' },
+        ], rejected: [], reasons: ['ordered'],
+      }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    let downloadCall = 0
+    const download = vi.fn(async () => {
+      downloadCall++
+      // 第一次下载返回 HTML 错误页（结构体检硬拒，不打 LLM）；第二次返回正常字幕
+      return downloadCall === 1
+        ? { bytes: Buffer.from('<!DOCTYPE html><html><body>404</body></html>'), contentType: 'text/html' }
+        : { bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' }
+    })
+    const verify = makeVerify({ match: true, reason: 'second candidate matches' })
+    const deps = makeDeps({ rank, download, verify })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('download')
+    expect(downloadCall).toBe(2)
+    expect(verify).toHaveBeenCalledTimes(1) // 第一个候选结构性拒绝，不触发终审；只有第二个触发
+  })
+
+  it('exhausts the queue and reports no_safe_match when verify rejects every candidate (sandbox still cleaned up)', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const verify = makeVerify({ match: false, reason: 'wrong episode' })
+    const deps = makeDeps({ verify })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('no_safe_match')
+    expect(existsSync(join(outDir, '.subtitle-staging', ctx.request_id))).toBe(false)
   })
 
   it('already_exists: pre-existing on-disk subtitle short-circuits before resolve/download (crash-recovery replay), and carries the real path', async () => {
@@ -117,7 +182,7 @@ describe('runPipeline', () => {
         resolveDownload: vi.fn(async () => ({ url: 'http://file0.assrt.net/x.ass', filename: 'real-name.ass' })),
       }),
       rank: vi.fn(async () => ({
-        parsed: { decision: 'download' as const, candidate_id: 'assrt:900', file_index: 0, confidence: 0.91, reasons: ['x'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { order: [{ candidate_id: 'assrt:900', file_index: 0, identity_match: 'uncertain' as const, reason: 'x' }], rejected: [], reasons: ['x'] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -140,8 +205,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(portPool))
     const rank = vi.fn(async (_c: unknown, _id: unknown, cands: { providerId: string }[]) => ({
       parsed: {
-        decision: 'download' as const, candidate_id: 'assrt:673114', file_index: 0,
-        confidence: 0.91, reasons: ['union'], identity_match: 'uncertain' as const, rejected: [],
+        order: [{ candidate_id: 'assrt:673114', file_index: 0, identity_match: 'uncertain' as const, reason: 'union' }], rejected: [], reasons: ['union'],
         _seen: cands.map(c => c.providerId),
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
@@ -196,8 +260,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       rank: vi.fn(async () => ({
         parsed: {
-          decision: 'download' as const, candidate_id: "assrt:999999", file_index: null,
-          confidence: 0.99, reasons: ['hallucinated'], identity_match: 'uncertain' as const, rejected: [],
+          order: [{ candidate_id: "assrt:999999", file_index: null, identity_match: 'uncertain' as const, reason: 'hallucinated' }], rejected: [], reasons: ['hallucinated'],
         }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -217,8 +280,7 @@ describe('runPipeline', () => {
       cache,
       rank: vi.fn(async () => ({
         parsed: {
-          decision: 'download' as const, candidate_id: '673114', file_index: 0,
-          confidence: 0.91, reasons: ['bare id from model'], identity_match: 'uncertain' as const, rejected: [],
+          order: [{ candidate_id: '673114', file_index: 0, identity_match: 'uncertain' as const, reason: 'bare id from model' }], rejected: [], reasons: ['bare id from model'],
         }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -234,7 +296,7 @@ describe('runPipeline', () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps({
       rank: vi.fn(async () => ({
-        parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['nothing safe'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { order: [], rejected: [], reasons: ['nothing safe'] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -291,7 +353,7 @@ describe('runPipeline', () => {
         })),
       }),
       rank: vi.fn(async () => ({
-        parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['none match'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { order: [], rejected: [], reasons: ['none match'] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -304,33 +366,6 @@ describe('runPipeline', () => {
     expect(deps.providers.search).toHaveBeenCalledTimes(2)
   })
 
-  it('gate produces ask_user on an INCOMPLETE candidate set (one source failed) → also downgrades to retry_later, not just no_safe_match', async () => {
-    // 与上一条对称：残缺集不只可能判 no_safe_match，也可能因低置信度落 ask_user——两者都可能是
-    // "抽风的那一源本有确认匹配"，同样不该在残缺集上直接冻结成 ask_user 等人工，应先重试。
-    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
-    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
-    const deps = makeDeps({
-      cache,
-      providers: makeProviders({
-        search: vi.fn(async () => ({
-          candidates: [mkCand(500, 'The Matrix maybe', ['x.srt'])],
-          providerErrors: [{ provider: 'opensubtitles', message: 'timeout' }],
-        })),
-      }),
-      rank: vi.fn(async () => ({
-        parsed: { decision: 'download' as const, candidate_id: 'assrt:500', file_index: 0, confidence: 0.6, reasons: ['uncertain'], identity_match: 'uncertain' as const, rejected: [] },
-        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
-      })),
-    })
-    const result = await runPipeline(deps, ctx, outDir)
-    expect(result.decision).toBe('retry_later')                          // ① 不是 ask_user
-    expect(result.reasons?.join(' ')).toMatch(/opensubtitles.*timeout/)
-    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()             // ② 无负条目（ask_user 本就不写负缓存，但仍校验干净）
-    // ③ 第二次跑不被短路：重新搜索
-    await runPipeline(deps, ctx, mkdtempSync(join(tmpdir(), 'out-')))
-    expect(deps.providers.search).toHaveBeenCalledTimes(2)
-  })
-
   it('gate rejects a COMPLETE candidate set (zero provider errors) → honest negative cache still written', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
@@ -338,7 +373,7 @@ describe('runPipeline', () => {
       providers: makeProviders({ search: vi.fn(async () => ok([mkCand(500, 'Some.Other.Movie', ['other.srt'])])) }),
       cache,
       rank: vi.fn(async () => ({
-        parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['none match'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { order: [], rejected: [], reasons: ['none match'] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })),
     })
@@ -370,7 +405,12 @@ describe('runPipeline', () => {
     expect(result.quotaExhausted).toEqual({ resetAt })
   })
 
-  it('a plain (non-quota) resolveDownload error surfaces as error decision with quotaExhausted left undefined', async () => {
+  it('a plain (non-quota) resolveDownload error is fail-soft per-candidate: queue exhausts to no_safe_match, quotaExhausted left undefined', async () => {
+    // 行为变化（候选队列架构的直接后果，非误删覆盖）：旧单候选流水线里，resolveDownload 抛出的
+    // 任何非配额错误都会一路冒到最外层 catch，整个 run 判 error。新架构下每个候选的下载尝试
+    // 独立 try/catch（tryCandidateQueue）——非 ProviderQuotaExhaustedError 的瞬时失败只是"这个
+    // 候选试错失败，换下一个"，队列耗尽后才是终态；这里只有一个候选，试完即耗尽，因此终态是
+    // no_safe_match 而不是 error。唯一必须保留的安全属性没变：quotaExhausted 绝不会被误置。
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const deps = makeDeps({
       providers: makeProviders({
@@ -378,7 +418,7 @@ describe('runPipeline', () => {
       }),
     })
     const result = await runPipeline(deps, ctx, outDir)
-    expect(result.decision).toBe('error')
+    expect(result.decision).toBe('no_safe_match')
     expect(result.quotaExhausted).toBeUndefined()
   })
 
@@ -417,7 +457,7 @@ describe('runPipeline', () => {
       url: `http://file0.assrt.net/pack/900900/${(ref.fileIndex ?? 0) + 1}`,
     }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, candidate_id: "assrt:900900", file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [{ candidate_id: "assrt:900900", file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -430,7 +470,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
         map: vi.fn(async () => ({
@@ -519,7 +559,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, candidate_id: "assrt:801", file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [{ candidate_id: "assrt:801", file_index: 0, identity_match: 'uncertain' as const, reason: 'loose' }], rejected: [], reasons: ['loose'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -542,7 +582,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -576,7 +616,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -592,7 +632,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -621,7 +661,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -636,7 +676,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_SRT), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -669,7 +709,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok([osCandidate]))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}`, filename: 'Show.S02E05.srt' }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -684,7 +724,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_SRT), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -715,7 +755,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok([osCandidate]))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -731,7 +771,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -761,7 +801,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok([osCandidate]))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -777,7 +817,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -807,7 +847,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -824,7 +864,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_SRT), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -843,7 +883,11 @@ describe('runPipeline', () => {
     expect(result.decision).toBe('download')
   })
 
-  it('season sweep: when two candidates map to the same episode, keeps the higher-confidence one (seasonPackGate bestByCode semantics), not first-written', async () => {
+  it('season sweep: when two candidates map to the same episode, keeps the first-occurrence one (confidence-based tie-break removed — order is the model\'s own preference expression), not both', async () => {
+    // 行为变化（非误删覆盖）：mapLooseEpisodes 的输出已在 Phase 4 删除 confidence 字段
+    // （LooseEpisodesMapSchema），dedup 语义从"比较数字择优"改为"先出现者胜出"——数组顺序本身
+    // 就是模型的偏好表达（它把更有把握的排前面），不再需要额外的置信度数字来打破平局
+    // （同 seasonPackGate 的 pairs[] 去重语义，见 pipeline.ts runSeasonSweep 的 bestByCode）。
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const looseCandidates = [
       mkCand(810, 'Show.S02E03.v1', ['Show.S02E03.v1.srt'], '第3集v1'),
@@ -852,7 +896,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -861,16 +905,16 @@ describe('runPipeline', () => {
     ]
     const covered: { episodeCode: string; ref?: string }[] = []
     const llm = { call: vi.fn(async () => ({
-      // Lower-confidence candidate listed FIRST — array order must not decide the winner.
+      // 模型把更有把握的那个排在前面——822 先出现，应该是最终胜出者。
       parsed: { assignments: [
-        { episode_code: 'S02E03', candidate_id: 'assrt:810', confidence: 0.87 },
-        { episode_code: 'S02E03', candidate_id: 'assrt:822', confidence: 0.98 },
+        { episode_code: 'S02E03', candidate_id: 'assrt:822' },
+        { episode_code: 'S02E03', candidate_id: 'assrt:810' },
       ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
     })) }
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_SRT), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -883,8 +927,8 @@ describe('runPipeline', () => {
     epCtx.media.title = '黑客帝国'
     epCtx.media.alternative_titles = []
     const result = await runPipeline(deps, epCtx, outDir)
-    expect(covered).toEqual([{ episodeCode: 'S02E03', ref: 'assrt:822' }]) // higher confidence wins
-    // The lower-confidence loser is dropped before any network I/O — no wasted resolve call
+    expect(covered).toEqual([{ episodeCode: 'S02E03', ref: 'assrt:822' }]) // first occurrence wins
+    // The second-occurrence loser is dropped before any network I/O — no wasted resolve call
     expect(resolveDownload).toHaveBeenCalledTimes(1)
     expect(resolveDownload).toHaveBeenCalledWith(expect.objectContaining({ providerId: '822' }))
     expect(result.decision).toBe('download')
@@ -905,7 +949,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -922,7 +966,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_SRT), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -952,7 +996,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async () => { throw new Error('406 not acceptable') })
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [1, 2, 3, 4, 5].map(n => ({
@@ -967,7 +1011,7 @@ describe('runPipeline', () => {
       maxApiCallsPerJob: 4,
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
     })
@@ -992,7 +1036,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async () => { throw new Error('406 not acceptable') })
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['rep episode not matched'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [1, 2, 3].map(n => ({
@@ -1007,7 +1051,7 @@ describe('runPipeline', () => {
       maxApiCallsPerJob: 2, // budget of 2 < circuit breaker threshold of 3 → budget guard must bind first
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
     })
@@ -1070,7 +1114,11 @@ describe('runPipeline', () => {
     expect(llmSweep).not.toHaveBeenCalled() // only 1 episode needs subs, no sweep
   })
 
-  it('season sweep: filters out low-confidence assignments below auto_download_min_confidence', async () => {
+  it('season sweep: fail-soft null candidate_id row is filtered out defensively, does not crash the sweep (confidence threshold removed — agent binary judgment replaces it)', async () => {
+    // 行为变化（非误删覆盖）：LooseEpisodesMapSchema 已在 Phase 4 删除 confidence 字段——判断链
+    // 两态化后，"拿不准"的候选不再靠数字阈值挡在门外，而是照样进候选队列，下载进沙盒、体检、
+    // agent 终审后才二选一表态（本用例默认 verify=match:true）。这里只保留仍然成立的部分：
+    // candidate_id 为 null 的行必须被 fail-soft 过滤掉，不能让整个 sweep 崩掉。
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const looseCandidates = [
       mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass']),
@@ -1087,20 +1135,20 @@ describe('runPipeline', () => {
     const llm = {
       call: vi.fn(async () => ({
         parsed: { assignments: [
-          { episode_code: 'S02E01', candidate_id: "assrt:801", confidence: 0.95 },
-          { episode_code: 'S02E02', candidate_id: "assrt:802", confidence: 0.70 }, // below auto_download_min_confidence
-          { episode_code: 'S02E02', candidate_id: null, confidence: 0.99 },        // fail-soft null row → filter 剔除，不炸 sweep
-          { episode_code: 'S02E03', candidate_id: "assrt:803", confidence: 0.90 },
+          { episode_code: 'S02E01', candidate_id: "assrt:801" },
+          { episode_code: 'S02E02', candidate_id: "assrt:802" },
+          { episode_code: 'S02E02', candidate_id: null },        // fail-soft null row → filter 剔除，不炸 sweep
+          { episode_code: 'S02E03', candidate_id: "assrt:803" },
         ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
       })),
     }
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: vi.fn(async () => ({
-        parsed: { decision: 'download' as const, candidate_id: "assrt:801", file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { order: [{ candidate_id: "assrt:801", file_index: 0, identity_match: 'uncertain' as const, reason: 'loose' }], rejected: [], reasons: ['loose'] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })) as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -1111,9 +1159,11 @@ describe('runPipeline', () => {
     const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
     const result = await runPipeline(deps, epCtx, outDir)
     expect(result.decision).toBe('download')
-    expect(result.coveredEpisodes?.length).toBe(2) // E01 and E03; E02 filtered out
-    expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E01', 'S02E03'])
-    expect(resolveDownload).toHaveBeenCalledTimes(2) // only high-confidence assignments resolve
+    // 三集皆覆盖：E01/E03 正常映射；E02 的合法候选(802)覆盖，null 那一行被 fail-soft 剔除、
+    // 没有让 sweep 崩掉，也没有重复覆盖 E02（先出现者胜出去重）。
+    expect(result.coveredEpisodes?.length).toBe(3)
+    expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E01', 'S02E02', 'S02E03'])
+    expect(resolveDownload).toHaveBeenCalledTimes(3)
   })
 
   it('season sweep: 裸 providerId 自愈——candidate_id 没有 provider 前缀但候选池内唯一命中时仍覆盖该集（gate 语义对齐）', async () => {
@@ -1140,10 +1190,10 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: vi.fn(async () => ({
-        parsed: { decision: 'download' as const, candidate_id: 'assrt:803', file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { order: [{ candidate_id: 'assrt:803', file_index: 0, identity_match: 'uncertain' as const, reason: 'loose' }], rejected: [], reasons: ['loose'] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })) as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -1187,10 +1237,10 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: vi.fn(async () => ({
-        parsed: { decision: 'download' as const, candidate_id: 'assrt:805', file_index: 0, confidence: 0.90, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+        parsed: { order: [{ candidate_id: 'assrt:805', file_index: 0, identity_match: 'uncertain' as const, reason: 'loose' }], rejected: [], reasons: ['loose'] },
         rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
       })) as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -1223,8 +1273,8 @@ describe('runPipeline', () => {
       .mockResolvedValueOnce(ok(aliasRound)) // alias-harvest re-search
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn()
-      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
-      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, candidate_id: "assrt:901", file_index: 0, confidence: 0.9, reasons: ['alias match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { order: [], rejected: [], reasons: ['no english match'] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { order: [{ candidate_id: "assrt:901", file_index: 0, identity_match: 'uncertain' as const, reason: 'alias match' }], rejected: [], reasons: ['alias match'] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
     const llmCall = vi.fn(async (opts: { name: string }) => {
       if (opts.name === 'extract_chinese_alias') {
         return { parsed: { alias: '流浪剧', confidence: 0.95 }, rawText: '', retries: 0, durationMs: 1, prompt: '' }
@@ -1244,7 +1294,7 @@ describe('runPipeline', () => {
       plan: vi.fn(async () => ({ parsed: { queries: [{ q: 'Show S02', reason: 's' }, { q: 'Show 2020', reason: 'y' }] }, rawText: '', retries: 0, durationMs: 1, prompt: 'p' })),
       rank: rank as unknown as PipelineDeps['rank'],
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: { call: llmCall } as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -1282,7 +1332,7 @@ describe('runPipeline', () => {
     const search = vi.fn(async () => ok(looseCandidates))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no exact single-episode match for the representative episode'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['no exact single-episode match for the representative episode'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -1301,7 +1351,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -1334,7 +1384,7 @@ describe('runPipeline', () => {
     ]
     const search = vi.fn(async () => ok(looseCandidates))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['no safe match'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -1378,7 +1428,7 @@ describe('runPipeline', () => {
       .mockResolvedValueOnce({ url: 'http://dl/801' })
       .mockRejectedValue(new ProviderQuotaExhaustedError('quota exhausted', resetAt))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, candidate_id: 'assrt:801', file_index: 0, confidence: 0.9, reasons: ['loose'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [{ candidate_id: 'assrt:801', file_index: 0, identity_match: 'uncertain' as const, reason: 'loose' }], rejected: [], reasons: ['loose'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [1, 2, 3, 4].map(n => ({
@@ -1392,7 +1442,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
     })
@@ -1416,7 +1466,7 @@ describe('runPipeline', () => {
     const resetAt = '2026-07-13T00:00:00.000Z'
     const resolveDownload = vi.fn(async () => { throw new ProviderQuotaExhaustedError('quota exhausted', resetAt) })
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['no safe match'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -1474,7 +1524,7 @@ describe('runPipeline', () => {
       return { url: `http://dl/${ref.providerId}` }
     })
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['no safe match'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [1, 2, 3, 4].map(n => ({
@@ -1492,7 +1542,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
     })
@@ -1529,7 +1579,7 @@ describe('runPipeline', () => {
       .mockResolvedValueOnce({ url: 'http://dl/901' })
       .mockRejectedValue(new ProviderQuotaExhaustedError('quota exhausted', resetAt))
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.2, reasons: ['no safe match'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [], rejected: [], reasons: ['no safe match'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [1, 2, 3, 4].map(n => ({
@@ -1543,7 +1593,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_SRT), contentType: 'text/plain' })),
       llm: llm as unknown as PipelineDeps['llm'],
       seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
     })
@@ -1567,7 +1617,7 @@ describe('runPipeline', () => {
       throw new ProviderQuotaExhaustedError('quota exhausted', resetAt)
     })
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, candidate_id: 'assrt:900900', file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [{ candidate_id: 'assrt:900900', file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -1578,7 +1628,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
         map: vi.fn(async () => ({
@@ -1606,7 +1656,7 @@ describe('runPipeline', () => {
     const resetAt = '2026-07-13T00:00:00.000Z'
     const resolveDownload = vi.fn(async () => { throw new ProviderQuotaExhaustedError('quota exhausted', resetAt) })
     const rank = vi.fn(async () => ({
-      parsed: { decision: 'download' as const, candidate_id: 'assrt:900900', file_index: 0, confidence: 0.95, reasons: ['pack'], identity_match: 'uncertain' as const, rejected: [] },
+      parsed: { order: [{ candidate_id: 'assrt:900900', file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
       rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }))
     const seasonEps = [
@@ -1616,7 +1666,7 @@ describe('runPipeline', () => {
     const deps = makeDeps({
       providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
       rank: rank as unknown as PipelineDeps['rank'],
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
         map: vi.fn(async () => ({
@@ -1644,8 +1694,8 @@ describe('runPipeline', () => {
     const search = vi.fn().mockResolvedValueOnce(ok(firstRound)).mockResolvedValueOnce(ok(aliasRound))
     const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
     const rank = vi.fn()
-      .mockResolvedValueOnce({ parsed: { decision: 'no_safe_match' as const, candidate_id: null, file_index: null, confidence: 0.3, reasons: ['no english match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
-      .mockResolvedValueOnce({ parsed: { decision: 'download' as const, candidate_id: "assrt:902", file_index: 0, confidence: 0.9, reasons: ['alias match'], identity_match: 'uncertain' as const, rejected: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { order: [], rejected: [], reasons: ['no english match'] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
+      .mockResolvedValueOnce({ parsed: { order: [{ candidate_id: "assrt:902", file_index: 0, identity_match: 'uncertain' as const, reason: 'alias match' }], rejected: [], reasons: ['alias match'] }, rawText: '', retries: 0, durationMs: 1, prompt: 'r' })
     const seasonEps = [
       { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
       { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
@@ -1663,7 +1713,11 @@ describe('runPipeline', () => {
       plan: vi.fn(async () => ({ parsed: { queries: [{ q: 'Show S02', reason: 's' }, { q: 'Show 2020', reason: 'y' }] }, rawText: '', retries: 0, durationMs: 1, prompt: 'p' })),
       rank: rank as unknown as PipelineDeps['rank'],
       providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
-      download: vi.fn(async () => ({ bytes: Buffer.from('[Script Info]\n'), contentType: 'text/plain' })),
+      // 700 的 fileList 是 .srt，902 的是 .ass——按 URL（携带 providerId）分别喂回匹配扩展名的
+      // 真实内容，否则任一方会被结构体检当错误格式拒收（SAMPLE_ASS 喂进 .srt 解析器解不出 cue）。
+      download: vi.fn(async (url: string) => ({
+        bytes: Buffer.from(url.includes('/700') ? SAMPLE_SRT : SAMPLE_ASS), contentType: 'text/plain',
+      })),
       llm: { call: llmCall } as unknown as PipelineDeps['llm'],
       seasonPack: {
         enumerate: vi.fn(async () => seasonEps),
@@ -1707,6 +1761,160 @@ describe('runPipeline', () => {
     expect(deps.providers.search).not.toHaveBeenCalled()
     expect(deps.providers.resolveDownload).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'assrt', providerId: '673114', fileIndex: 0 }))
+  })
+
+  describe('addendum B: NFC/NFD-normalized already-exists probing (Synology SMB hazard)', () => {
+    it('pre-flight check finds an NFD-encoded on-disk file for an NFC-normalized predicted name', async () => {
+      // 群晖等 SMB 存储可能把文件名按 NFD 落盘（macOS 客户端惯例）；预测文件名（来自 ctx.media.filename，
+      // 这里刻意含重音字符）是 NFC 形式。若只归一化预测侧、不归一化磁盘侧，existsSync(NFC 路径) 会
+      // 找不到磁盘上视觉上完全相同、字节上是 NFD 的文件——误判"不存在"，白白重下一次。
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const testCtx = structuredClone(ctx)
+      // NFC 预组合的 é（é，单个码点）——与下面磁盘上的 NFD 拼写视觉相同、字节不同。
+      testCtx.media.filename = 'Caf\u00E9.1999.mkv' // NFC precomposed \u00E9, explicit escape (avoid tool-chain re-normalization ambiguity)
+      // NFD 分解形式：ASCII 'e' + U+0301 COMBINING ACUTE ACCENT（两个码点）。
+      const nfdName = 'Cafe' + '\u0301' + '.1999.zh-Hans.ass' // NFD: ASCII 'e' + U+0301 COMBINING ACUTE ACCENT
+      const preexistingPath = join(outDir, nfdName)
+      writeFileSync(preexistingPath, '[Script Info]\nTitle: already on disk (NFD name)\n')
+      const deps = makeDeps()
+      const result = await runPipeline(deps, testCtx, outDir)
+      expect(result.decision).toBe('already_exists')
+      expect(result.subtitlePath).toBe(preexistingPath) // 磁盘上的真实（NFD）路径原样返回，不强行改写
+      expect(deps.providers.resolveDownload).not.toHaveBeenCalled()
+      expect(deps.download).not.toHaveBeenCalled()
+    })
+
+    it('post-download install-time check finds an NFD-encoded on-disk file too (not just the pre-flight static-filename path)', async () => {
+      // 与上一条对称：候选静态元数据无法预判文件名（预检必然 miss）时，唯一的探测点是下载+体检+
+      // 终审通过之后、install() 之前。同样必须双向 NFC 归一，否则会覆盖掉磁盘上已存在的 NFD 文件。
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const testCtx = structuredClone(ctx)
+      testCtx.media.filename = 'Caf\u00E9.1999.mkv' // NFC precomposed \u00E9, explicit escape (avoid tool-chain re-normalization ambiguity)
+      const nfdName = 'Cafe' + '\u0301' + '.1999.zh-Hans.ass' // NFD: ASCII 'e' + U+0301 COMBINING ACUTE ACCENT
+      const preexistingPath = join(outDir, nfdName)
+      writeFileSync(preexistingPath, '[Script Info]\nTitle: already on disk (NFD name)\n')
+      // fileList 名字与 resolveDownload 返回的 filename 不同（不可预判）——逼预检 miss，只能靠
+      // 下载后的 install-time 探测发现已存在。
+      const search = vi.fn(async () => ok([mkCand(900, 'Show', ['unrelated-name.txt'])]))
+      const deps = makeDeps({
+        providers: makeProviders({
+          search,
+          resolveDownload: vi.fn(async () => ({ url: 'http://file0.assrt.net/x.ass', filename: 'real-name.ass' })),
+        }),
+        rank: vi.fn(async () => ({
+          parsed: { order: [{ candidate_id: 'assrt:900', file_index: 0, identity_match: 'uncertain' as const, reason: 'x' }], rejected: [], reasons: ['x'] },
+          rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+        })),
+      })
+      const result = await runPipeline(deps, testCtx, outDir)
+      expect(result.decision).toBe('already_exists')
+      expect(result.subtitlePath).toBe(preexistingPath)
+      expect(deps.providers.resolveDownload).toHaveBeenCalledTimes(1) // 预检 miss，仍会真的 resolve 一次
+    })
+  })
+
+  describe('addendum C: season pack / season sweep route downloads through stage→inspect→verify→install too', () => {
+    it('season pack: one mapped episode fails structural inspection (HTML error page) — that episode is skipped, the other episode still covers normally, no crash', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const packCandidate = toCandidate(seasonDetail.sub.subs[0])
+      const resolveDownload = vi.fn(async (ref: { fileIndex: number | null }) => ({
+        url: `http://file0.assrt.net/pack/900900/${(ref.fileIndex ?? 0) + 1}`,
+      }))
+      const rank = vi.fn(async () => ({
+        parsed: { order: [{ candidate_id: 'assrt:900900', file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      }))
+      const seasonEps = [
+        { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+        { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+      ]
+      // fileIndex 0 (E01) downloads a real subtitle; fileIndex 1 (E02) downloads an HTML error page
+      // (structural reject — never reaches verify).
+      const download = vi.fn(async (url: string) => ({
+        bytes: Buffer.from(url.endsWith('/2') ? '<!DOCTYPE html><html><body>404</body></html>' : SAMPLE_ASS),
+        contentType: 'text/plain',
+      }))
+      const covered: string[] = []
+      const verify = makeVerify({ match: true, reason: 'looks right' })
+      const deps = makeDeps({
+        providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+        rank: rank as unknown as PipelineDeps['rank'],
+        download,
+        verify,
+        seasonPack: {
+          enumerate: vi.fn(async () => seasonEps),
+          map: vi.fn(async () => ({
+            parsed: { pairs: [
+              { filelist_index: 0, episode_code: 'S02E01', reason: 'x' },
+              { filelist_index: 1, episode_code: 'S02E02', reason: 'x' },
+            ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+          })),
+          onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+        } as unknown as PipelineDeps['seasonPack'],
+      })
+      const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+      const result = await runPipeline(deps, epCtx, outDir)
+      expect(result.decision).toBe('download')
+      expect(covered).toEqual(['S02E01']) // E02 structurally rejected, never covered
+      expect(result.coveredEpisodes?.map(c => c.episodeCode)).toEqual(['S02E01'])
+      // verify only called once — E02's HTML page never reaches the LLM terminal review
+      expect(verify).toHaveBeenCalledTimes(1)
+      expect(existsSync(join(outDir, 'Show.S02E01.zh-Hans.ass'))).toBe(true)
+      expect(existsSync(join(outDir, 'Show.S02E02.zh-Hans.ass'))).toBe(false)
+    })
+
+    it('season sweep: agent verify rejects one episode\'s downloaded content — that episode is skipped, the rest still cover normally', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const looseCandidates = [
+        mkCand(801, 'Show.S02E01.chs', ['Show.S02E01.chs.ass'], '第1集'),
+        mkCand(802, 'Show.S02E02.chs', ['Show.S02E02.chs.ass'], '第2集'),
+      ]
+      const search = vi.fn(async () => ok(looseCandidates))
+      const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+      const rank = vi.fn(async () => ({
+        parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      }))
+      const seasonEps = [
+        { itemId: 'e1', seasonNumber: 2, episodeNumber: 1, episodeCode: 'S02E01', videoPath: join(outDir, 'Show.S02E01.mkv'), videoFilename: 'Show.S02E01.mkv', needsChinese: true },
+        { itemId: 'e2', seasonNumber: 2, episodeNumber: 2, episodeCode: 'S02E02', videoPath: join(outDir, 'Show.S02E02.mkv'), videoFilename: 'Show.S02E02.mkv', needsChinese: true },
+      ]
+      const covered: string[] = []
+      const llm = { call: vi.fn(async () => ({
+        parsed: { assignments: [
+          { episode_code: 'S02E01', candidate_id: 'assrt:801' },
+          { episode_code: 'S02E02', candidate_id: 'assrt:802' },
+        ], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+      })) }
+      // agent 终审对 802 的下载内容判 match:false（第二次调用起拒收；第一次即 801 放行）
+      let verifyCall = 0
+      const verify = vi.fn(async () => {
+        verifyCall++
+        return { parsed: verifyCall === 1 ? { match: true, reason: 'ok' } : { match: false, reason: 'wrong show' }, rawText: '', retries: 0, durationMs: 1, prompt: 'verify prompt' }
+      })
+      const deps = makeDeps({
+        providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+        rank: rank as unknown as PipelineDeps['rank'],
+        download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
+        verify: verify as unknown as PipelineDeps['verify'],
+        llm: llm as unknown as PipelineDeps['llm'],
+        seasonPack: {
+          enumerate: vi.fn(async () => seasonEps),
+          map: vi.fn(),
+          onCovered: vi.fn(async (ep: { episodeCode: string }) => { covered.push(ep.episodeCode) }),
+        } as unknown as PipelineDeps['seasonPack'],
+      })
+      const epCtx = structuredClone(ctx)
+      epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+      epCtx.media.title = '黑客帝国'
+      epCtx.media.alternative_titles = []
+      const result = await runPipeline(deps, epCtx, outDir)
+      expect(result.decision).toBe('download')
+      expect(covered).toEqual(['S02E01']) // 802 被终审拒收，未覆盖
+      expect(verify).toHaveBeenCalledTimes(2)
+      expect(existsSync(join(outDir, 'Show.S02E01.zh-Hans.ass'))).toBe(true)
+      expect(existsSync(join(outDir, 'Show.S02E02.zh-Hans.ass'))).toBe(false)
+    })
   })
 })
 
@@ -1809,7 +2017,7 @@ describe('adoptLocal step', () => {
   it('returns stats with duration and call counts', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const result = await runPipeline(makeDeps(), ctx, outDir)
-    expect(result.stats.llmCalls).toBe(3)
+    expect(result.stats.llmCalls).toBe(4) // identify, plan, rank, verify（新增一轮终审）
     expect(result.stats.apiCalls).toBe(0) // mock port 不经过 onEvent→journal.apiCall
     expect(result.stats.durationMs).toBeGreaterThanOrEqual(0)
   })
@@ -1829,8 +2037,7 @@ describe('adoptLocal step', () => {
     ]
     const noSafeMatchRank = {
       parsed: {
-        decision: 'no_safe_match' as const, candidate_id: null, file_index: null,
-        confidence: 0.3, reasons: ['no match among candidates'], identity_match: 'uncertain' as const, rejected: [],
+        order: [], rejected: [], reasons: ['no match among candidates'],
       }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
     }
     const mockHarvestLlm = (alias: string | null = '爱，死亡与机器人', confidence = 0.95) => ({
@@ -1850,8 +2057,7 @@ describe('adoptLocal step', () => {
         .mockResolvedValueOnce(noSafeMatchRank) // first pass rejects
         .mockResolvedValueOnce({               // second pass on fresh candidates only
           parsed: {
-            decision: 'download' as const, candidate_id: "assrt:3", file_index: 0,
-            confidence: 0.92, reasons: ['season pack under Chinese alias'], identity_match: 'uncertain' as const, rejected: [],
+            order: [{ candidate_id: "assrt:3", file_index: 0, identity_match: 'uncertain' as const, reason: 'season pack under Chinese alias' }], rejected: [], reasons: ['season pack under Chinese alias'],
           }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
         })
       const testCtx = structuredClone(ctx)
@@ -1863,6 +2069,9 @@ describe('adoptLocal step', () => {
           search,
           resolveDownload: vi.fn(async () => ({ url: 'http://file0.assrt.net/download/3/s03e01.srt', filename: 's03e01.srt' })),
         }),
+        // winning candidate resolves to a .srt filename — default makeDeps() download mock is
+        // ASS-formatted (SAMPLE_ASS) and would fail structural inspection under a .srt parser.
+        download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_SRT), contentType: 'text/plain' })),
         llm: mockLlm as unknown as PipelineDeps['llm'],
       })
       const result = await runPipeline(deps, testCtx, outDir)
