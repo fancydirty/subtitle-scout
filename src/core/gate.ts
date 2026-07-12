@@ -34,6 +34,7 @@ export function runGate(
 
   const queue: GateQueueItem[] = []
   const failures: string[] = []
+  const seen = new Set<string>()
 
   for (const item of rank.order) {
     if (item.identity_match === 'mismatch') {
@@ -70,7 +71,16 @@ export function runGate(
       continue
     }
 
-    queue.push({ candidate, fileIndex: item.file_index ?? null, identityMatch: item.identity_match })
+    const resolvedFileIndex = item.file_index ?? null
+    // 配额保护：模型可能把同一候选写两次（字面重复行，或全 id + 裸 id 各写一次——
+    // 裸 id 自愈后指向同一候选）。按"解析后的候选身份 + fileIndex"去重，保留首次出现的
+    // 顺序/理由，防止 tryCandidateQueue 对同一候选重复下载+重复终审，白烧 OpenSubtitles
+    // 20/天配额。
+    const dedupeKey = `${candidateKey(candidate)}#${resolvedFileIndex}`
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+
+    queue.push({ candidate, fileIndex: resolvedFileIndex, identityMatch: item.identity_match })
   }
 
   if (queue.length === 0) {

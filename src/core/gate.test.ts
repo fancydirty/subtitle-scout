@@ -101,6 +101,20 @@ describe('runGate', () => {
     expect(r.failures.join(' ')).toMatch(/ambiguous/i)
   })
 
+  it('dedups the queue by resolved candidate identity + fileIndex, keeping first occurrence (quota protection: no double-download/double-verify)', () => {
+    const r = runGate(rankWith([
+      { candidate_id: 'assrt:673114', file_index: 0, identity_match: 'confirmed', reason: 'exact match' },
+      { candidate_id: 'assrt:673114', file_index: 0, identity_match: 'confirmed', reason: 'literal duplicate order row' },
+      { candidate_id: '673114', file_index: 0, identity_match: 'confirmed', reason: 'bare id self-heals to the same candidate' },
+      { candidate_id: 'assrt:606770', file_index: 0, identity_match: 'uncertain', reason: 'second, distinct candidate' },
+    ]), candidates, identity)
+    expect(r.ok).toBe(true)
+    expect(r.queue).toHaveLength(2)
+    expect(r.queue.map(q => q.candidate.providerId)).toEqual(['673114', '606770'])
+    // first-occurrence reason preserved, not overwritten by the later duplicate rows
+    expect(r.queue[0].identityMatch).toBe('confirmed')
+  })
+
   it('episode media without resolved season/episode fails closed regardless of order contents', () => {
     const epIdentity: MediaIdentity = { ...identity, type: 'episode', season: null, episode: 3 }
     const r = runGate(rankWith([{ candidate_id: 'assrt:673114', file_index: 0, identity_match: 'confirmed', reason: 'x' }]), candidates, epIdentity)
