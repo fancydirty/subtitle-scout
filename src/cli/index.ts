@@ -40,7 +40,7 @@ import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
   checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings,
-  checkDatabase, checkStuckJobs,
+  checkDatabase, checkStuckJobs, checkMountCapabilities,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
 import { openDb } from '../v2/db.js'
@@ -485,6 +485,11 @@ async function cmdDoctor() {
   }
 
   results.push(checkMediaRoots(roots, isDirWritable))
+
+  {
+    const { probeMountCapabilities } = await import('../files/mountCapabilities.js')
+    results.push(checkMountCapabilities(roots, probeMountCapabilities))
+  }
 
   if (jf && jellyfinResult.ok) {
     try {

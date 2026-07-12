@@ -1,6 +1,7 @@
 import { dirname } from 'node:path'
 import { mapPath, type PathMapping } from '../core/mediaContext.js'
 import { MIGRATIONS } from '../v2/db.js'
+import type { MountCapabilities } from '../files/mountCapabilities.js'
 
 export interface DoctorResult {
   name: string
@@ -195,4 +196,19 @@ export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise
     timer = setTimeout(() => reject(new Error(`${what} 在 ${ms / 1000}s 内无响应`)), ms)
   })
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
+}
+
+/** 挂载能力画像——纯信息性，不作为失败门槛（用户开机自见挂载能力，供 realign 降级阶梯参考）。 */
+export function checkMountCapabilities(
+  roots: string[],
+  probe: (dir: string) => MountCapabilities,
+): DoctorResult {
+  if (roots.length === 0) {
+    return { name: 'mount-capabilities', ok: true, skip: true, detail: 'MEDIA_ROOTS 未配置，跳过' }
+  }
+  const lines = roots.map(r => {
+    const c = probe(r)
+    return `${r}（硬链接: ${c.hardlink ? '支持' : '不支持'}, 大小写敏感: ${c.caseSensitive ? '是' : '否'}, 可写: ${c.writable ? '是' : '否'}）`
+  })
+  return { name: 'mount-capabilities', ok: true, detail: `挂载能力画像 — ${lines.join('；')}` }
 }

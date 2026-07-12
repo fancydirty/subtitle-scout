@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs } from './doctor.js'
+import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
 
 describe('doctor 远端三项', () => {
   it('jellyfin 可达 → ok，带会话数', async () => {
@@ -173,5 +173,26 @@ describe('doctor v2 database checks', () => {
     expect(r.detail).toContain('3')
     expect(r.hint).toContain('重启')
     expect(r.hint).toContain('issue')
+  })
+})
+
+describe('checkMountCapabilities', () => {
+  it('汇报每个根的挂载能力画像，信息性、恒 ok=true', () => {
+    const result = checkMountCapabilities(
+      ['/media/tv', '/media/movies'],
+      (dir) => ({ writable: true, hardlink: dir === '/media/tv', caseSensitive: true }),
+    )
+    expect(result.ok).toBe(true)
+    expect(result.skip).toBeFalsy()
+    expect(result.detail).toContain('/media/tv')
+    expect(result.detail).toContain('/media/movies')
+    expect(result.detail).toContain('硬链接: 支持')
+    expect(result.detail).toContain('硬链接: 不支持')
+  })
+
+  it('roots 为空时 skip', () => {
+    const result = checkMountCapabilities([], () => ({ writable: true, hardlink: true, caseSensitive: true }))
+    expect(result.skip).toBe(true)
+    expect(result.ok).toBe(true)
   })
 })
