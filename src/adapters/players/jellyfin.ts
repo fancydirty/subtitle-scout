@@ -163,6 +163,12 @@ export class JellyfinClient implements PlayerServer {
     }))
   }
 
+  /** 单库刷新——库(VirtualFolder)本身也是一个 Item，用同一 Refresh 端点、加 recursive=true
+   *  触发"只重扫这个库"而非全服务器扫描任务，把扫描时机全权交给 realign 编排掌控。 */
+  async refreshLibrary(libraryId: string): Promise<void> {
+    await this.call('POST', `/Items/${encodeURIComponent(libraryId)}/Refresh?metadataRefreshMode=FullRefresh&replaceAllMetadata=false&recursive=true`)
+  }
+
   async getRecentItems(limit: number): Promise<JellyfinItem[]> {
     const raw = await this.call('GET',
       `/Items?recursive=true&includeItemTypes=Movie,Episode&sortBy=DateCreated&sortOrder=Descending&limit=${limit}&fields=${ITEM_FIELDS},DateCreated`)

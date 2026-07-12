@@ -297,3 +297,15 @@ describe('JellyfinClient.getVirtualFolders', () => {
     expect((await client.getVirtualFolders())[0].enableRealtimeMonitor).toBe(false)
   })
 })
+
+describe('JellyfinClient.refreshLibrary', () => {
+  it('POST /Items/{libraryId}/Refresh，recursive=true + FullRefresh', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.refreshLibrary('lib-1')
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toContain('/Items/lib-1/Refresh')
+    expect(String(url)).toContain('recursive=true')
+    expect(init.method).toBe('POST')
+  })
+})
