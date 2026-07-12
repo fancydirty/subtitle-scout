@@ -423,6 +423,26 @@ describe('executor', () => {
     expect(logs.some(l => l.includes(`job ${job.id} 结果被弃置`))).toBe(true)
   })
 
+  it('FIX-4d: stale-discard warn 打印观测到的实际 state/lease_until，而不是断言唯一因（避免误诊）', async () => {
+    // 生产实案：真实观测是 state=wanted、lease=NULL，却被日志一律断言成"租约已被回收
+    // 重派"——把结论写死成唯一原因，掩盖了真实情况可能是别的（例如从未被正常 claim
+    // 过、或别的路径把它拨回了 wanted）。改为如实打印观测到的 state/lease_until。
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    jobs.reapAllActive(now) // 真实观测现场：state→wanted，lease_until→NULL
+
+    const runEpisode = vi.fn(async () => ({ decision: 'download', journalPath: '/j.json' }))
+    await executeJob(job, mkDeps(runEpisode))
+
+    const warnLine = logs.find(l => l.includes(`job ${job.id} 结果被弃置`))
+    expect(warnLine).toBeDefined()
+    expect(warnLine).toContain('state=wanted')
+    expect(warnLine).toContain('lease_until=null')
+    // 不再断言唯一因——旧文案硬编码"租约已被回收重派"，即便真实原因是别的也照样打印。
+    expect(warnLine).not.toContain('租约已被回收重派')
+  })
+
   it('FIX-3: 租约仍属于本次 invocation（fresh token）时 onCovered 照常写盘——不误伤正常路径', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
@@ -588,6 +608,28 @@ describe('executor', () => {
       path: '/tv/s1e1.zh-Hans.ass',
       source: 'adopted-local',
     })
+  })
+
+  it('FIX-4a: jobs.journal_ref 在跑 runEpisode 之前落盘——即便调用之后进程"断线"，也已有证据可倒查', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    expect(job.journal_ref).toBeNull() // schema v1 列，此前从未写过
+
+    let journalRefDuringRun: string | null = null
+    let journalRefArg: string | undefined
+    const runEpisode = vi.fn(async (_episodeId: string, _onCovered, journalRef?: string) => {
+      // 调用发生时（pipeline 真正跑之前）jobs.journal_ref 应该已经落盘。
+      journalRefDuringRun = jobs.get(job.id)!.journal_ref
+      journalRefArg = journalRef
+      return { decision: 'download', journalPath: '/j.json', subtitlePath: '/tv/s1e1.zh-Hans.srt' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(journalRefDuringRun).toBeTruthy()
+    expect(journalRefDuringRun).toContain('e1') // 引用含目标集 id，便于人工定位
+    expect(journalRefArg).toBe(journalRefDuringRun) // 传给 runEpisode 的和落盘的是同一个引用
   })
 
   it('runs.llm_calls/assrt_calls 落盘：取自 pipeline stub 返回的 stats', async () => {

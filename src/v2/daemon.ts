@@ -184,7 +184,7 @@ export class ScoutDaemon {
    * Dispatcher: claim wanted/failed jobs until searching concurrency limit reached
    */
   private async dispatch(): Promise<void> {
-    const { jobs, executeJob, log, now, concurrency } = this.deps
+    const { jobs, runs, executeJob, log, now, concurrency } = this.deps
 
     // Keep claiming while under concurrency limit
     while (true) {
@@ -201,6 +201,13 @@ export class ScoutDaemon {
         break
       }
 
+      // FIX-4c: 一行 log 记下每次 claim——job id、series/kind、lease_until，供人工
+      // 追查"这个 job 是什么时候被派出去的、原定租约到几点"。
+      log(
+        `dispatch: claimed job ${job.id} (${job.kind} ${job.series_id ?? job.movie_id ?? '?'}` +
+        `${job.kind === 'series_season' ? ` S${job.season}` : ''}) lease_until=${job.lease_until ?? 'null'}`
+      )
+
       // Fire-and-forget: don't await, but track in inflight set (promise + job id →
       // Job object; the id feeds the heartbeat renewal above so this job's lease
       // never expires out from under it while genuinely still running in this
@@ -211,6 +218,24 @@ export class ScoutDaemon {
         .catch((error) => {
           const msg = error instanceof Error ? error.message : String(error)
           log(`executeJob error for job ${job.id}: ${msg}`)
+          // FIX-4b: fire-and-forget 的 catch 过去只记日志——日志会轮转/丢失，runs 表
+          // 才是持久证据。补一条 synthetic error run 行，让每个 crashed invocation
+          // 都在 runs 表留痕，即便 executeJob 内部自己那次 record() 没机会跑到
+          // （比如异常发生在 executor.ts 的 try/catch 覆盖范围之外）。
+          // Fail-soft：记录动作本身绝不能再抛出去炸主循环。
+          try {
+            runs.insert({
+              jobId: job.id,
+              startedAt: now(),
+              finishedAt: now(),
+              decision: 'error',
+              detail: `daemon 捕获未处理异常（synthetic run 行，executeJob 本身未落 runs）：${msg}`,
+              journalPath: null,
+            })
+          } catch (recordError) {
+            const recordMsg = recordError instanceof Error ? recordError.message : String(recordError)
+            log(`warn: job ${job.id} synthetic error run 行落盘失败（fail-soft，忽略）：${recordMsg}`)
+          }
         })
         .finally(() => {
           this.inflight.delete(jobPromise)

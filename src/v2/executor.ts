@@ -16,10 +16,14 @@ import { join, dirname } from 'node:path'
 export interface ExecutorDeps {
   lib: LibraryRepo
   jobs: JobsRepo
-  /** 跑一个代表集的完整判断链；onCovered 在每个被季包/单集命中的集写盘成功后回调 */
+  /** 跑一个代表集的完整判断链；onCovered 在每个被季包/单集命中的集写盘成功后回调。
+   *  FIX-4a: journalRef——executeJob 在调用前已把它写进 jobs.journal_ref（供死进程
+   *  倒查），makeRunEpisode 的真实实现据此复用同一个引用命名它实际落盘的 journal 目录，
+   *  避免 jobs.journal_ref 和真实 journal 目录各算各的、对不上号。 */
   runEpisode: (
     episodeId: string,
-    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void
+    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void,
+    journalRef?: string
   ) => Promise<{
     decision: string
     journalPath?: string
@@ -127,7 +131,11 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     return current !== null && current.lease_until === job.lease_until
   }
 
-  /** I4: complete* 守卫失败（stale lease 被 reap 重派）时可观测——warn 日志 + runs.detail 加后缀。 */
+  /** I4: complete* 守卫失败（stale lease 被 reap 重派）时可观测——warn 日志 + runs.detail 加后缀。
+   *  FIX-4d（诊断准确性审计修正）：旧文案硬编码断言唯一因"租约已被回收重派"——生产实案
+   *  出现过真实观测是 state=wanted、lease=NULL，却也被这行日志一律套上同一个诊断，
+   *  掩盖了真实原因可能不是"被回收重派"（比如从未被正常 claim 过）。改为如实打印
+   *  observe 到的 state/lease_until，让日志描述现场而不是替它下结论。 */
   const record = (
     transitioned: boolean,
     decision: string,
@@ -137,7 +145,11 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
   ) => {
     let finalDetail = detail
     if (!transitioned) {
-      log(`warn: job ${job.id} 结果被弃置：租约已被回收重派`)
+      const observed = jobs.get(job.id)
+      const observedDesc = observed
+        ? `state=${observed.state} lease_until=${observed.lease_until ?? 'null'}`
+        : 'job 行已不存在'
+      log(`warn: job ${job.id} 结果被弃置：complete* 守卫未命中（观测 ${observedDesc}）`)
       finalDetail = `${detail} (stale-lease 弃置)`
     }
     runs.insert({
@@ -205,7 +217,12 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     }
 
     // 4. Run pipeline for representative
-    const result = await runEpisode(representative.id, onCovered)
+    // FIX-4a: 在真正跑 runEpisode（有网络/LLM 调用、可能撞上 lost async continuation
+    // 那类异常）之前，先把本次调用要用的 journal 引用落盘到 jobs.journal_ref——即便
+    // 这次调用之后进程"断线"，也已经留下"是哪次运行、对应哪个目标集"的证据。
+    const journalRef = `${representative.id}-${startedAt}`
+    jobs.setJournalRef(job.id, journalRef, now())
+    const result = await runEpisode(representative.id, onCovered, journalRef)
     const { decision } = result
     const subtitlePath = result.subtitlePath ?? null
     const journalPath = result.journalPath ?? null
@@ -354,7 +371,7 @@ export function makeRunEpisode(
 ): ExecutorDeps['runEpisode'] {
   const { jf, mappings, makeDeps, withJournal, cacheRoot, tmdb } = assembled
 
-  return async (episodeId, onCovered) => {
+  return async (episodeId, onCovered, journalRef) => {
     // 1. Get item from Jellyfin
     const item = await jf.getItem(episodeId)
 
@@ -406,7 +423,11 @@ export function makeRunEpisode(
 
     // 6. Call runPipeline. I5e: bypassNegativeCache — v2 状态机拥有全部重试策略，
     //    管线自己的负缓存不许再叠一层门（正缓存保留）。
-    const journalDir = join(cacheRoot, 'journals', `${episodeId}-${Date.now()}`)
+    // FIX-4a: journalRef（若调用方传入，即 executeJob 落盘到 jobs.journal_ref 的同一个
+    //    引用）复用来命名这次实际落盘的 journal 目录，避免 jobs.journal_ref 记的引用和
+    //    磁盘上真实 journal 目录各算各的、事后对不上号。未传入（如旧调用方/直接单测
+    //    这个 closure）时落回原先自算的兜底，行为不变。
+    const journalDir = join(cacheRoot, 'journals', journalRef ?? `${episodeId}-${Date.now()}`)
     const result = await withJournal(() =>
       runPipeline(
         makeDeps({ itemId: episodeId, onCovered: onCoveredAdapter }),

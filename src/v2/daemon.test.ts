@@ -67,6 +67,21 @@ describe('ScoutDaemon', () => {
     expect(claimedJob?.state).toBe('searching')
   })
 
+  it('FIX-4c: dispatch 为每次 claim 记一行 log——job id、series/kind、lease_until', async () => {
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 3 }, now)
+    const executeJob = vi.fn(async () => {})
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick()
+
+    const claimed = jobs.find('s1', 3)!
+    const claimLine = logs.find(l => l.includes('dispatch') && l.includes(`${claimed.id}`))
+    expect(claimLine).toBeDefined()
+    expect(claimLine).toContain('s1')
+    expect(claimLine).toContain('series_season')
+    expect(claimLine).toContain(String(claimed.lease_until))
+  })
+
   it('dispatch尊重searching并发上限', async () => {
     const executeJob = vi.fn(async () => {
       // Simulate job taking time (doesn't complete within tick)
@@ -335,6 +350,45 @@ describe('ScoutDaemon', () => {
 
     // Error should be logged
     expect(logs.some(l => l.includes('Simulated error'))).toBe(true)
+  })
+
+  it('FIX-4b: executeJob 抛错时除了记 log 还落一条 synthetic error run 行——crashed invocation 不再零证据', async () => {
+    // 过去 fire-and-forget 的 .catch 只记日志就完了；日志会轮转/丢失，runs 表才是
+    // 持久证据。任何 crashed invocation 都该在 runs 表留痕，哪怕 executeJob 本身
+    // 没机会（或没来得及）自己写一行。
+    const executeJob = vi.fn(async () => {
+      throw new Error('Simulated crash')
+    })
+
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick()
+
+    const job = jobs.find('s1', 1)!
+    const runRows = runs.getByJobId(job.id)
+    expect(runRows.length).toBe(1)
+    expect(runRows[0].decision).toBe('error')
+    expect(runRows[0].detail).toContain('Simulated crash')
+  })
+
+  it('FIX-4b: synthetic run 行落盘本身失败（fail-soft）——不能让记录动作反过来炸主循环', async () => {
+    const executeJob = vi.fn(async () => {
+      throw new Error('Simulated crash')
+    })
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    const runsSpy = vi.spyOn(runs, 'insert').mockImplementation(() => {
+      throw new Error('disk full while writing runs row')
+    })
+
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await expect(daemon.tick()).resolves.toBeUndefined()
+    // 原有的 error log 仍然要打出来——记录失败不该吞掉既有的可观测性
+    expect(logs.some(l => l.includes('Simulated crash'))).toBe(true)
+
+    runsSpy.mockRestore()
   })
 
   it('scan抛错时跳过aggregate但继续dispatch（稳态：boot reconcile 已成功后）', async () => {

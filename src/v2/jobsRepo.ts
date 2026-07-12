@@ -123,6 +123,20 @@ export class JobsRepo {
     return job ?? null
   }
 
+  /** FIX-4a（observability 审计修正）：journal_ref 是 schema v1 就有的列，此前从未被
+   *  写过。executeJob 在真正跑 runEpisode（有网络/LLM 调用、可能撞上 lost async
+   *  continuation 那类异常）之前，把本次调用要用的 journal 引用先落盘——即便这次调用
+   *  之后进程"断线"、job 卡死，也能从这一行倒查是哪次运行、对应哪份 journal 明细，
+   *  不再是零证据。只在 active 态生效（no-op 保护，同 renewLease 语义：job 若已被
+   *  complete* 收尾，没有再写它的道理）。 */
+  setJournalRef(jobId: number, journalRef: string, now: number): void {
+    this.db
+      .prepare(
+        `UPDATE jobs SET journal_ref = ?, updated_at = ? WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(journalRef, now, jobId)
+  }
+
   /** 心跳续租：daemon 每 tick 为本进程仍在跑的 job（inflight）续租，防止合法长跑
    *  （如季包多集下载）被下一 tick 的 reapExpiredLeases 误判死亡回收、导致并发双派发。
    *  只作用于仍处活跃态的行——job 若已被 complete* 收尾则是 no-op。
