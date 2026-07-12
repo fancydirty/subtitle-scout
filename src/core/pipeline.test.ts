@@ -10,6 +10,7 @@ import { ProviderQuotaExhaustedError, type ProviderPort } from './providerPort.j
 import { DecisionCache } from './cache.js'
 import { scanOrphans } from '../files/orphanScanner.js'
 import { allocate, install, cleanup, gcOrphans } from '../files/stagingSandbox.js'
+import type { Journal } from './journal.js'
 
 const ctx = MediaContextSchema.parse(JSON.parse(readFileSync('fixtures/contexts/matrix.json', 'utf8')))
 const searchResp = AssrtSearchResponseSchema.parse(JSON.parse(readFileSync('fixtures/assrt/search-matrix.json', 'utf8')))
@@ -240,6 +241,78 @@ describe('runPipeline', () => {
     const result = await runPipeline(deps, ctx, outDir)
     expect(result.decision).toBe('retry_later')
     expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()
+  })
+
+  describe('CRITICAL: candidate-queue budget must not be starved by search-phase api_calls', () => {
+    // The real bug (reproduced end-to-end against production wiring, not just mocks): in
+    // cli/index.ts, deps.providers.search() spawns the subtitle-fetch subprocess and its
+    // onEvent('api_call', ...) hook journals every provider hit (ASSRT query×2 + similar/gems +
+    // OS login+search — 4-5 events) SYNCHRONOUSLY, before search()'s own promise resolves (see
+    // providerPort.ts's stderr 'data' handler calling opts.onEvent ahead of the child 'close'
+    // event). Unit tests never caught this because a bare mocked `search` never touches the
+    // journal — journal.counts().apiCalls stayed 0 in every existing test, silently hiding the
+    // bug. These tests capture the journal via deps.journalReady (the same seam cli/index.ts
+    // uses via AsyncLocalStorage) and have the mocked search call journal.apiCall(...) directly,
+    // mirroring the real onEvent seam, to reproduce it faithfully.
+    it('search journaling 5 api_calls (production default maxApiCallsPerJob=4) no longer starves the queue — the candidate IS tried, installed, decision=download', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      let journalRef: Journal | undefined
+      const search = vi.fn(async () => {
+        // Pre-fix: journal.counts().apiCalls===5 here would make tryCandidateQueue's budget
+        // (maxApiCallsPerJob(4) - 5 = -1) negative before trying any candidate.
+        for (let i = 0; i < 5; i++) {
+          journalRef!.apiCall({ endpoint: `search-leg-${i}`, params: { provider: 'assrt' }, status: 200, durationMs: 5 })
+        }
+        return ok(matrixCandidates)
+      })
+      const deps = makeDeps({
+        journalReady: j => { journalRef = j },
+        providers: makeProviders({ search }),
+        maxApiCallsPerJob: 4, // production default (cli/index.ts assemble())
+      })
+      const result = await runPipeline(deps, ctx, outDir)
+      expect(deps.providers.resolveDownload).toHaveBeenCalled() // the flagship path actually tries
+      expect(result.decision).toBe('download')
+      expect(existsSync(result.subtitlePath!)).toBe(true)
+      const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+      expect(journal.steps.some((s: { name: string }) => s.name === 'candidateQueueBudgetExhausted')).toBe(false)
+    })
+
+    it('budget exhausted mid-queue with untried ranked candidates remaining → retry_later, negative cache NOT written', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+      const rank = vi.fn(async () => ({
+        parsed: {
+          order: [
+            { candidate_id: 'assrt:673114', file_index: 0, identity_match: 'uncertain' as const, reason: 'first guess' },
+            { candidate_id: 'assrt:606770', file_index: 0, identity_match: 'uncertain' as const, reason: 'second guess' },
+          ], rejected: [], reasons: ['ordered'],
+        }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+      }))
+      // First candidate is a genuine, decisive verify-reject (not transient) — proves it's the
+      // BUDGET, not a decisive verdict on every tried candidate, that stops the queue short.
+      const verify = makeVerify({ match: false, reason: 'wrong episode' })
+      const deps = makeDeps({ rank, verify, cache, maxApiCallsPerJob: 1 })
+      const result = await runPipeline(deps, ctx, outDir)
+      expect(deps.providers.resolveDownload).toHaveBeenCalledTimes(1) // only the 1st candidate tried
+      expect(result.decision).toBe('retry_later')
+      expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()
+    })
+
+    it('zero-tried budget starvation (maxApiCallsPerJob=0) → retry_later, negative cache NOT written', async () => {
+      const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+      const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+      const deps = makeDeps({ cache, maxApiCallsPerJob: 0 })
+      const result = await runPipeline(deps, ctx, outDir)
+      expect(deps.providers.resolveDownload).not.toHaveBeenCalled()
+      expect(result.decision).toBe('retry_later')
+      expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()
+    })
+
+    // Genuine full exhaustion (every ranked candidate tried, all decisively rejected, budget
+    // fine) → no_safe_match + negative cache STILL written — already pinned by the existing
+    // 'exhausts the queue and reports no_safe_match when verify rejects every candidate' test
+    // above; not duplicated here.
   })
 
   it('already_exists: pre-existing on-disk subtitle short-circuits before resolve/download (crash-recovery replay), and carries the real path', async () => {

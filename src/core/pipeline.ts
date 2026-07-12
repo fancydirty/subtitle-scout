@@ -33,7 +33,11 @@ export interface PipelineDeps {
   providers: ProviderPort
   download: (url: string) => Promise<DownloadResult>
   cache: DecisionCache
-  /** 现约束候选队列试错（每候选一次 resolve/download）与季横扫的按集 resolve 预算共用同一份治理。 */
+  /** 约束候选队列试错（每候选一次 resolve/download）、季横扫按集 resolve、季包升格逐集 resolve
+   *  共用同一份治理——三者共享一个从"下载阶段开始"起算的预算池（CRITICAL 修复，见 runPipeline
+   *  里 downloadPhaseApiCallsSnapshot 的注释）：search 阶段（plan/providerSearch/alias 收割补搜）
+   *  打的 api_call 绝不计入这份预算，只有下载阶段自己（sweep pre-gate/post-gate + season 升格 +
+   *  单集候选队列）消耗的 api_call 才会让预算见底。 */
   maxApiCallsPerJob: number
   /** 配置的媒体根目录列表（MEDIA_ROOTS / mapping.to）。用于把字幕试错沙盒钉在"包含目标视频的
    *  媒体根"一级而不是视频所在的深层目录——见 runPipeline 里 stagingRoot 的计算与注释
@@ -241,18 +245,35 @@ function candidateSlug(candidate: { provider: string; providerId: string }, file
  *  用尽全部候选仍无匹配返回 outcome=null。结构体检硬拒（不可解码/HTML 错误页/零 cue）不
  *  触发终审调用，直接试下一个。预算：每次尝试消耗一份 provider API 调用配额，用尽
  *  deps.maxApiCallsPerJob 时停止尝试剩余候选——终审 LLM 调用与候选下载共用同一份预算治理。
- *  撞见 ProviderQuotaExhaustedError 直接向上抛，交调用方按 resetAt 精确退避（同季横扫语义）。 */
+ *  撞见 ProviderQuotaExhaustedError 直接向上抛，交调用方按 resetAt 精确退避（同季横扫语义）。
+ *
+ *  CRITICAL 修复：budget 不再拿 journal.counts().apiCalls 的绝对值去减——那个计数是
+ *  job 全程累计的，search 阶段（plan/providerSearch/alias 收割补搜）在这里开始之前就已经
+ *  journal 过好几笔 api_call（ASSRT 查询×2 + similar/gems + OS 登录+搜索，生产默认
+ *  maxApiCallsPerJob=4 时这就已经 ≥4），若直接相减会让 budget≤0、循环在试第一个候选之前
+ *  就 break——tried=[] 让调用方误判成"确实没有安全匹配"写 1 天负缓存（旗舰下载路径静默
+ *  不试就投降、还顺手把缓存喂毒）。改为 apiCallsSnapshot 参数（downloadPhaseApiCallsSnapshot，
+ *  runPipeline 进入下载阶段那一刻的快照）——budget 只按"进入下载阶段之后新增的 api_call"
+ *  折算，search 阶段的计数被天然排除在外。 */
 async function tryCandidateQueue(
   deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
-  queue: GateQueueItem[], outDir: string, stagingDir: string, journal: Journal,
-): Promise<{ outcome: CandidateInstallOutcome | null; tried: { candidateId: string; verdict: string; transient: boolean }[] }> {
+  queue: GateQueueItem[], outDir: string, stagingDir: string, journal: Journal, apiCallsSnapshot: number,
+): Promise<{
+  outcome: CandidateInstallOutcome | null
+  tried: { candidateId: string; verdict: string; transient: boolean }[]
+  /** true：循环是被预算耗尽打断的（还有排好队的候选没试过）——调用方据此判 retry_later，
+   *  绝不能当"每个候选都真的试过、决定性拒绝"的诚实结论去写负缓存。 */
+  budgetExhausted: boolean
+}> {
   const tried: { candidateId: string; verdict: string; transient: boolean }[] = []
-  const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
+  const budget = deps.maxApiCallsPerJob - (journal.counts().apiCalls - apiCallsSnapshot)
   let apiCallsUsed = 0
+  let budgetExhausted = false
 
   for (const item of queue) {
     if (apiCallsUsed >= budget) {
-      journal.step('candidateQueueBudgetExhausted', { candidate: candidateKey(item.candidate) })
+      journal.step('candidateQueueBudgetExhausted', { candidate: candidateKey(item.candidate), tried: tried.length, remaining: queue.length - tried.length })
+      budgetExhausted = true
       break
     }
     const candidateId = candidateKey(item.candidate)
@@ -281,6 +302,7 @@ async function tryCandidateQueue(
           reason: verdict.outcome.reason, alreadyExisted: verdict.outcome.alreadyExisted,
         },
         tried,
+        budgetExhausted: false,
       }
     } catch (e) {
       if (e instanceof ProviderQuotaExhaustedError) throw e
@@ -288,7 +310,7 @@ async function tryCandidateQueue(
       tried.push({ candidateId, verdict: 'error', transient: true })
     }
   }
-  return { outcome: null, tried }
+  return { outcome: null, tried, budgetExhausted }
 }
 
 export async function runPipeline(
@@ -535,6 +557,16 @@ export async function runPipeline(
       journal.step('stagingRootFallback', { outDir, mediaRoots: deps.mediaRoots })
     }
     const stagingDir = deps.staging.allocate(ctx.request_id, stagingRoot)
+    // CRITICAL 修复：下载阶段（pre-gate/post-gate 季横扫 + 季包升格 + 单集候选队列，四个消费点
+    // 共享同一份治理）的 api_call 预算从这里"清零"起算——快照 search 阶段（plan/providerSearch/
+    // alias 收割补搜）已经 journal 掉的 api_call 数，后面每个消费点都拿 journal.counts().apiCalls
+    // 减去这个快照得到"进入下载阶段之后新增的调用数"，而不是直接拿 maxApiCallsPerJob 减
+    // journal 的绝对计数。生产接线里 search 阶段（ASSRT 查询×2 + similar/gems + OS 登录+搜索）
+    // 在这里之前就已经打了 4-5 个 api_call（cli/index.ts 的 onEvent('api_call') 钩子实时 journal），
+    // 默认 maxApiCallsPerJob=4 时，若不排除 search 的计数，下面任何一个消费点的预算在试第一个
+    // 候选之前就已经 ≤0——旗舰下载路径静默不试任何候选就投降，还把 0-tried 的耗尽误判成
+    // "确实没有安全匹配"写 1 天负缓存（详见 tryCandidateQueue/runSeasonSweep 的注释）。
+    const downloadPhaseApiCallsSnapshot = journal.counts().apiCalls
     try {
       // 5-pre. 季横扫前置：代表集 rank 排序为空（triage 全灭）时，gate 必然拒绝——这正是横扫的
       // 头号目标场景（本集自己没候选，散装候选覆盖的是其他集）。故在 gate 早退之前先尝试横扫；
@@ -545,7 +577,7 @@ export async function runPipeline(
         const seasonEpisodes = await deps.seasonPack.enumerate(ctx)
         if (seasonEpisodes.filter(e => e.needsChinese).length >= 2) {
           sweepRan = true
-          const { covered, quotaExhausted } = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'pre-gate', stagingDir)
+          const { covered, quotaExhausted, budgetExhausted } = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'pre-gate', stagingDir, downloadPhaseApiCallsSnapshot)
           if (covered.length > 0) {
             return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language), quotaExhausted })
           }
@@ -553,6 +585,12 @@ export async function runPipeline(
           // 必然判 no_safe_match 并写 1 天负缓存，把"配额耗尽"误判成"确实没有安全匹配"，resetAt 丢失）。
           if (quotaExhausted) {
             return finish('error', { reasons: ['season sweep: quota exhausted before any episode coverage'], quotaExhausted })
+          }
+          // CRITICAL 修复（part 2）：0 覆盖是预算耗尽（还有 assignment 没试过）造成的——绝不能
+          // 落回下面的 gate 早退（rank 仍是空队列，gate 必然判 no_safe_match 并写 1 天负缓存，
+          // 把"预算不够"误判成"确实没有安全匹配"）。是预算而非证据结束了这轮横扫。
+          if (budgetExhausted) {
+            return finish('retry_later', { reasons: ['season sweep: api call budget exhausted before covering any episode — not cacheable'] })
           }
         }
       }
@@ -605,11 +643,16 @@ export async function runPipeline(
             let packQuotaExhausted: { resetAt: string | null } | undefined
             // FINDING-2: 与队列试错/季横扫对齐，同一份 maxApiCallsPerJob 预算也约束季包升格逐集
             // resolve——原先只靠 seasonEpisodes 数量天然收尾，季很长时（数十集）会无视预算打穿。
+            // CRITICAL 修复：budget 按 downloadPhaseApiCallsSnapshot 折算增量（search 阶段的
+            // api_call 计数排除在外），语义同 tryCandidateQueue/runSeasonSweep。
             let apiCallsUsed = 0
-            const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
+            const budget = deps.maxApiCallsPerJob - (journal.counts().apiCalls - downloadPhaseApiCallsSnapshot)
+            // CRITICAL 修复（part 2）：预算耗尽打断循环时（还有 commit 项没试过）不是决定性结论——
+            // 见下面 packBudgetExhausted 用法。
+            let packBudgetExhausted = false
             for (const item of gateRes.commit) {
               if (consecutiveFails >= 3) { journal.step('seasonCircuitBreak', { after: coveredEpisodes.length }); break }
-              if (apiCallsUsed >= budget) { journal.step('seasonPackBudgetExhausted', { after: coveredEpisodes.length }); break }
+              if (apiCallsUsed >= budget) { journal.step('seasonPackBudgetExhausted', { after: coveredEpisodes.length }); packBudgetExhausted = true; break }
               try {
                 apiCallsUsed++
                 const resolved = await deps.providers.resolveDownload({
@@ -661,18 +704,30 @@ export async function runPipeline(
             if (packQuotaExhausted) {
               return finish('error', { reasons: ['season pack: quota exhausted before any episode coverage'], quotaExhausted: packQuotaExhausted })
             }
+            // CRITICAL 修复（part 2）：0 覆盖 + 预算耗尽（还有 commit 项没试过）→ 是预算而非证据
+            // 结束了这轮升格，绝不能落回单集路径再打一次同样会被预算卡住的 resolve，也绝不能被
+            // 上层误判成"确实没有安全匹配"。
+            if (packBudgetExhausted) {
+              return finish('retry_later', { reasons: ['season pack: api call budget exhausted before covering any episode — not cacheable'] })
+            }
           }
           // 季模式 0 覆盖 → 落回单集路径（继续往下，不 return）
         } else if (!pack && needsCount >= 2 && deps.llm && !sweepRan) {
           // 5b. season sweep: 无整季包但有散装候选 + ≥2集缺中字 → 一轮横扫全季（gate 通过路径）。
           // gate 前若已横扫过（!sweepRan 守卫）则跳过，避免同一 job 内横扫跑两次。
-          const { covered, quotaExhausted } = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'post-gate', stagingDir)
+          const { covered, quotaExhausted, budgetExhausted } = await runSeasonSweep(deps, ctx, identity, candidates, seasonEpisodes, journal, 'post-gate', stagingDir, downloadPhaseApiCallsSnapshot)
           if (covered.length > 0) {
             return finish('download', { reasons: [`season sweep: covered ${covered.length} episodes`], coveredEpisodes: covered, subtitlePath: covered[0].subtitlePath, selected: seasonSelected(covered[0].providerRef, covered[0].subtitlePath, ctx.preferences.language), quotaExhausted })
           }
           // IMPORTANT-1b: 0 覆盖 + 配额耗尽 → 不落回单集路径，直接透传 resetAt（同季包升格分支语义）
           if (quotaExhausted) {
             return finish('error', { reasons: ['season sweep: quota exhausted before any episode coverage'], quotaExhausted })
+          }
+          // CRITICAL 修复（part 2）：0 覆盖 + 预算耗尽 → 是预算而非证据结束了这轮横扫，不落回
+          // 单集路径（同季包升格分支语义；下面单集队列即便真的再试一次也共享同一份已耗尽的预算，
+          // 会立刻再次预算耗尽——不如直接在这里诚实报告 retry_later）。
+          if (budgetExhausted) {
+            return finish('retry_later', { reasons: ['season sweep: api call budget exhausted before covering any episode — not cacheable'] })
           }
           // sweep 0 覆盖 → 落回单集路径
         }
@@ -694,9 +749,20 @@ export async function runPipeline(
       }
 
       journal.step('candidateQueue', { size: gate.queue.length })
-      const { outcome, tried } = await tryCandidateQueue(deps, ctx, identity, gate.queue, outDir, stagingDir, journal)
+      const { outcome, tried, budgetExhausted } = await tryCandidateQueue(deps, ctx, identity, gate.queue, outDir, stagingDir, journal, downloadPhaseApiCallsSnapshot)
       if (!outcome) {
-        journal.step('candidateQueueExhausted', { tried })
+        journal.step('candidateQueueExhausted', { tried, budgetExhausted })
+        // CRITICAL 修复（part 2）：预算耗尽打断了循环（0 tried，或试过几个但还有排队候选没试过）——
+        // 是预算而非证据结束了这轮试错，绝不能当"每个候选都真的试过、决定性拒绝"的诚实结论去写
+        // 负缓存。budgetExhausted 时不看 tried[] 里的内容，直接 retry_later。
+        if (budgetExhausted) {
+          return finish('retry_later', {
+            reasons: [
+              `candidate queue budget exhausted: ${tried.length}/${gate.queue.length} candidate(s) tried before the per-job api-call budget ran out — not cacheable`,
+              ...rank.reasons,
+            ],
+          })
+        }
         // tried[].verdict 只会是 'structural-reject' / 'verify-reject'（候选真下载下来经过结构
         // 体检/终审评判过）或 'error'（tryCandidateQueue 的 catch 分支——resolveDownload/download
         // 阶段瞬时故障，从未真正拿到内容评判；'match'/'already-exists' 两种走的是上面的
@@ -717,6 +783,9 @@ export async function runPipeline(
             ],
           })
         }
+        // 到这里 tried.length === gate.queue.length（budgetExhausted=false 已排除预算截断）且
+        // 没有任何瞬时结果——每个排好队的候选都真的下载+体检+终审过，全部决定性拒绝，才是诚实的
+        // "确实没有安全匹配"，负缓存正当写入。
         const reason = `queue exhausted: ${tried.length} candidate(s) tried, none verified as a match`
         deps.cache.put(keys, { kind: 'negative', reason })
         return finish('no_safe_match', { reasons: [reason, ...rank.reasons] })
@@ -754,14 +823,19 @@ export async function runPipeline(
  * 有一个 provider 耗尽——配额是按 provider 而非全局的，循环只跳过该 provider 剩余的 assignment，
  * 仍会继续为其它（健康）provider 的 assignment 正常 resolve。调用方必须把 quotaExhausted 信号
  * 透传进 PipelineResult（即便 covered 非空），且 0 覆盖时不能落回可能导致负缓存/盲退避的默认分支。
+ * apiCallsSnapshot：runPipeline 进入下载阶段那一刻的 journal.counts().apiCalls 快照（CRITICAL
+ * 修复，见调用点注释）——预算按这份快照折算增量，search 阶段的 api_call 计数排除在外。
+ * budgetExhausted：0 覆盖 + 预算耗尽（还有 assignment 没试过）时为 true，调用方据此判 retry_later，
+ * 绝不能落回可能负缓存的 gate 早退/单集路径。
  */
 async function runSeasonSweep(
   deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
   candidates: SubtitleCandidate[], seasonEpisodes: SeasonEpisode[],
-  journal: Journal, trigger: 'pre-gate' | 'post-gate', stagingDir: string,
+  journal: Journal, trigger: 'pre-gate' | 'post-gate', stagingDir: string, apiCallsSnapshot: number,
 ): Promise<{
   covered: { episodeCode: string; subtitlePath: string; providerRef: string }[]
   quotaExhausted?: { resetAt: string | null }
+  budgetExhausted: boolean
 }> {
   const needsCount = seasonEpisodes.filter(e => e.needsChinese).length
   journal.step('seasonSweepStart', { candidates: candidates.length, needs: needsCount, trigger })
@@ -771,7 +845,7 @@ async function runSeasonSweep(
     .filter((a): a is typeof a & { candidate_id: string } =>
       a.candidate_id != null && a.candidate_id !== '' && !!a.episode_code)
   journal.step('seasonSweepFiltered', { valid: validAssignments.length, total: mapResult.parsed.assignments.length })
-  if (validAssignments.length === 0) return { covered: [] }
+  if (validAssignments.length === 0) return { covered: [], budgetExhausted: false }
 
   const skipped: { episode: string; reason: string }[] = []
 
@@ -846,7 +920,12 @@ async function runSeasonSweep(
   const coveredEpisodes: { episodeCode: string; subtitlePath: string; providerRef: string }[] = []
   let apiCallsUsed = 0
   let consecutiveFails = 0
-  const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
+  // CRITICAL 修复：budget 按 apiCallsSnapshot 折算增量（search 阶段的 api_call 计数排除在外），
+  // 语义同 tryCandidateQueue/季包升格循环。
+  const budget = deps.maxApiCallsPerJob - (journal.counts().apiCalls - apiCallsSnapshot)
+  // CRITICAL 修复（part 2）：任一 assignment 因预算耗尽被跳过时置 true——0 覆盖时调用方据此判
+  // retry_later，不当决定性结论去负缓存/落回 gate 早退。
+  let budgetExhausted = false
   // 一个候选(即一个物理文件)最多覆盖一集：按 "candidate_id#fileIndex" 去重。真整季散装候选
   // (每集各有独立文件、fileIndex 各不相同)不受影响；单文件候选被映射到多集时第 2+ 次必被拒。
   const usedFiles = new Set<string>()
@@ -867,6 +946,7 @@ async function runSeasonSweep(
     }
     if (apiCallsUsed >= budget) {
       skipped.push({ episode: assignment.episode_code, reason: 'api call budget exhausted' })
+      budgetExhausted = true
       continue
     }
     const epMeta = seasonEpisodes.find(e => e.episodeCode === assignment.episode_code)
@@ -945,7 +1025,7 @@ async function runSeasonSweep(
   }
 
   journal.step('seasonSweep', { candidates: candidates.length, assigned: validAssignments.length, covered: coveredEpisodes.length, skipped, trigger })
-  return { covered: coveredEpisodes, quotaExhausted }
+  return { covered: coveredEpisodes, quotaExhausted, budgetExhausted }
 }
 
 export function shouldGraduate(
