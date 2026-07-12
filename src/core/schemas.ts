@@ -50,7 +50,6 @@ export const MediaContextSchema = z.object({
     prefer_bilingual: z.boolean().default(true),
     allow_traditional: z.boolean().default(true),
     allow_machine_translated: z.boolean().default(false),
-    auto_download_min_confidence: z.number().min(0).max(1).default(0.86),
   }),
 })
 export type MediaContext = z.infer<typeof MediaContextSchema>
@@ -100,24 +99,26 @@ function looseCandidateId(): z.ZodType<string | null | undefined> {
   }, z.string().nullish())
 }
 
-export const RankDecisionSchema = z.object({
-  decision: z.enum(['download', 'ask_user', 'no_safe_match']),
+export const RankedCandidateSchema = z.object({
   /** "<provider>:<providerId>"，与 prompt 里 candidates[].id 完全一致 */
   candidate_id: looseCandidateId(),
   file_index: looseNumeric(z.number().int()),
-  // 身份判决：confirmed=同作品/季/集，mismatch=错作品/季/集，uncertain=信息不足
+  // 身份判决：confirmed=同作品/季/集，uncertain=信息不足。mismatch 理论上不会出现在
+  // order[] 里（prompt 要求丢进 rejected[]），但 schema 层不禁止——gate.ts 会防御性剔除。
   identity_match: IdentityMatchSchema,
-  confidence: z.preprocess(
-    v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-    z.number().min(0).max(1),
-  ),
-  reasons: z.array(z.string()),
+  reason: z.string(),
+})
+export type RankedCandidate = z.infer<typeof RankedCandidateSchema>
+
+export const RankDecisionSchema = z.object({
+  /** 按偏好排序的候选队列，最可能匹配的排最前。这是初筛，不是终局——每个留下的候选
+   *  之后都会被下载、打开、体检，写盘前还有一轮终审。 */
+  order: z.array(RankedCandidateSchema).default([]),
   rejected: z.array(z.object({
     candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()),
     reason: z.string(),
-  })),
-}).refine(v => v.decision !== 'download' || (v.candidate_id != null && v.candidate_id !== ''), {
-  message: 'candidate_id required when decision=download',
+  })).default([]),
+  reasons: z.array(z.string()).default([]),
 })
 export type RankDecision = z.infer<typeof RankDecisionSchema>
 
@@ -197,7 +198,9 @@ export function parseCandidateKey(key: string): { provider: ProviderName; provid
 // ---------- 最终 decision ----------
 export const FinalDecisionSchema = z.object({
   request_id: z.string(),
-  decision: z.enum(['download', 'ask_user', 'no_safe_match', 'retry_later', 'already_exists', 'error', 'adopted_local']),
+  decision: z.enum(['download', 'no_safe_match', 'retry_later', 'already_exists', 'error', 'adopted_local']),
+  // confidence 保留（nullish）仅为向后兼容历史 journal 文件的形状；判定链不再产出真实值，
+  // pipeline.ts 今后恒写 null。
   confidence: z.number().nullish(),
   selected: z.object({
     provider: z.string(),
