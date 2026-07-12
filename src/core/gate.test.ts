@@ -123,3 +123,76 @@ describe('runGate', () => {
     expect(r.queue).toEqual([])
   })
 })
+
+/**
+ * position-vs-i LLM 混淆兜底：MAX_FILELIST_ENTRIES 截断后，prompt 里的展示顺序（"第几条"）
+ * 和条目自带的 i 值可能不再一一对应（截断丢了中间条目）。模型偶尔会把展示顺序误当 i 值报出
+ * file_index——范围校验（63-68 行）拿不住这种"in-range 但错位"的越界，正常放行后下游按数组
+ * 下标定位（pipeline.ts 的 fileList[fileIndex]），静默装错成相邻的另一集。这里用完整（未经
+ * rank 精简/截断）fileList 反查目标集号，在 gate 层堵住。
+ */
+describe('runGate position-vs-i confusion backstop', () => {
+  const epIdentity: MediaIdentity = {
+    canonical_title: 'Show', original_title: null, year: 2020, type: 'episode',
+    season: 1, episode: 5, edition: null, confidence: 0.9, evidence: [],
+  }
+
+  // index MUST equal array position (see core/schemas.ts SubtitleFileSchema / adapters/providers/assrt.ts
+  // toCandidate) — this builder takes a sparse { position: name } map over a fixed-size array and fills
+  // every unspecified position with a noise entry, so every fixture respects that invariant by construction.
+  function packOfSize(size: number, named: Record<number, string>): SubtitleCandidate {
+    const fileList = Array.from({ length: size }, (_, i) => ({ index: i, name: named[i] ?? `Show.S01.noise.${i}.jpg` }))
+    return {
+      provider: 'assrt', providerId: '900001', videoName: 'Show.S01', nativeName: null,
+      language: '简', subtype: null, releaseSite: null, uploadDate: null, fileList,
+    }
+  }
+
+  it('(a) auto-remaps a position-confused file_index to the sole filename match for the target episode', () => {
+    // position 29 (0-based) in the array holds the ADJACENT wrong episode (E04); the real E05
+    // entry sits one further at index 30 — exactly the shape a truncation-shifted prompt produces.
+    const pack = packOfSize(31, { 29: 'Show.S01E04.chs.ass', 30: 'Show.S01E05.chs.ass' })
+    // LLM confused the shown position (29) with the true i value (30)
+    const r = runGate(rankWith([{ candidate_id: 'assrt:900001', file_index: 29, identity_match: 'confirmed', reason: 'x' }]), [pack], epIdentity)
+    expect(r.ok).toBe(true)
+    expect(r.decision).toBe('proceed')
+    expect(r.queue).toHaveLength(1)
+    expect(r.queue[0].fileIndex).toBe(30)
+    expect(r.queue[0].candidate.fileList[r.queue[0].fileIndex!].name).toBe('Show.S01E05.chs.ass')
+    // journal/failures note the remap even though the item still proceeds
+    expect(r.failures.join(' ')).toMatch(/auto-remapped/i)
+  })
+
+  it('(b) rejects the item when multiple entries match the target episode and the chosen index matches none of them', () => {
+    const pack = packOfSize(31, {
+      5: 'Show.S01E05.repack.chs.ass', 12: 'Show.S01E01.chs.ass', 30: 'Show.S01E05.chs.ass',
+    })
+    const r = runGate(rankWith([{ candidate_id: 'assrt:900001', file_index: 12, identity_match: 'confirmed', reason: 'x' }]), [pack], epIdentity)
+    expect(r.ok).toBe(false)
+    expect(r.decision).toBe('no_safe_match')
+    expect(r.queue).toEqual([])
+    expect(r.failures.join(' ')).toMatch(/rather than guessing/i)
+  })
+
+  it('(c) leaves a code-less candidate unaffected (no filename in the pack carries a parseable episode code)', () => {
+    const pack: SubtitleCandidate = {
+      provider: 'assrt', providerId: '900002', videoName: 'Show.S01', nativeName: null,
+      language: '简', subtype: null, releaseSite: null, uploadDate: null,
+      fileList: [{ index: 0, name: '简体.srt' }, { index: 1, name: '繁体.srt' }],
+    }
+    const r = runGate(rankWith([{ candidate_id: 'assrt:900002', file_index: 0, identity_match: 'confirmed', reason: 'x' }]), [pack], epIdentity)
+    expect(r.ok).toBe(true)
+    expect(r.queue).toHaveLength(1)
+    expect(r.queue[0].fileIndex).toBe(0)
+    expect(r.failures).toEqual([])
+  })
+
+  it('(d) regression pin: a null file_index against a multi-file pack is still rejected by the pre-existing range check, not silently healed', () => {
+    const pack = packOfSize(31, { 0: 'Show.S01E01.chs.ass', 30: 'Show.S01E05.chs.ass' })
+    const r = runGate(rankWith([{ candidate_id: 'assrt:900001', file_index: null, identity_match: 'confirmed', reason: 'x' }]), [pack], epIdentity)
+    expect(r.ok).toBe(false)
+    expect(r.decision).toBe('no_safe_match')
+    expect(r.queue).toEqual([])
+    expect(r.failures.join(' ')).toMatch(/out of range/i)
+  })
+})

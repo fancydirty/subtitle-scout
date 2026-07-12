@@ -165,6 +165,9 @@ export const AssrtQuotaResponseSchema = z.object({
 export const PROVIDERS = ['assrt', 'opensubtitles'] as const
 export type ProviderName = (typeof PROVIDERS)[number]
 
+// invariant: `index` MUST equal the entry's position within its containing SubtitleCandidate.fileList
+// array — downstream resolution (gate.ts's episode-code backstop, pipeline.ts's artifact filename
+// lookup) indexes fileList positionally (`fileList[fileIndex]`), never by scanning for `.index === n`.
 export const SubtitleFileSchema = z.object({
   index: z.number().int(),
   name: z.string(),
