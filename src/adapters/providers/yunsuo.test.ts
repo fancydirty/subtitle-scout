@@ -60,4 +60,36 @@ describe('solveYunsuoChallenge', () => {
     expect(r.cookie).toBe('security_session_verify=abc123')
     expect(solve).toHaveBeenCalledTimes(1)
   })
+
+  it('retries with a fresh captcha on a wrong-digits rejection, up to maxAttempts, then throws ZimukuChallengeError', async () => {
+    let submitCount = 0
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes('security_verify_img')) return new Response(Buffer.from('png'))
+      submitCount++
+      return new Response('rejected') // no set-cookie header → treated as wrong digits
+    })
+    const solve = vi.fn(async () => ({ digits: '00000' }))
+    await expect(
+      solveYunsuoChallenge({ fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 3, 1),
+    ).rejects.toThrow(ZimukuChallengeError)
+    expect(submitCount).toBe(3) // 有界:恰好 maxAttempts 次提交,不多不少
+  })
+
+  it('succeeds on the Nth attempt after N-1 rejections (a fresh captcha image is fetched on every retry)', async () => {
+    let imgFetches = 0
+    let submitCount = 0
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes('security_verify_img')) { imgFetches++; return new Response(Buffer.from('png')) }
+      submitCount++
+      if (submitCount < 3) return new Response('rejected')
+      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=xyz; Path=/' } })
+    })
+    const solve = vi.fn(async () => ({ digits: '11111' }))
+    const r = await solveYunsuoChallenge(
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 5, 1,
+    )
+    expect(r.cookie).toBe('security_session_verify=xyz')
+    expect(imgFetches).toBe(3)
+    expect(submitCount).toBe(3)
+  })
 })
