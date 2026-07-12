@@ -195,4 +195,30 @@ describe('checkMountCapabilities', () => {
     expect(result.skip).toBe(true)
     expect(result.ok).toBe(true)
   })
+
+  it('单个根的探针崩溃不许炸整个 doctor——该根报探测失败，其余根照常汇报', () => {
+    const result = checkMountCapabilities(
+      ['/media/dead', '/media/tv'],
+      (dir) => {
+        if (dir === '/media/dead') throw new Error('EIO: input/output error')
+        return { writable: true, hardlink: true, caseSensitive: true }
+      },
+    )
+    expect(result.ok).toBe(true) // 信息性检查，不作为失败门槛
+    expect(result.detail).toContain('/media/dead')
+    expect(result.detail).toContain('探测失败')
+    expect(result.detail).toContain('/media/tv')
+    expect(result.detail).toContain('硬链接: 支持')
+  })
+
+  it("探针结果 'unknown'（只读/未挂载，无法探测）→ 报 未知 而非假的 支持/不支持", () => {
+    const result = checkMountCapabilities(
+      ['/media/ro'],
+      () => ({ writable: false, hardlink: 'unknown', caseSensitive: 'unknown' }),
+    )
+    expect(result.detail).toContain('硬链接: 未知')
+    expect(result.detail).toContain('大小写敏感: 未知')
+    expect(result.detail).toContain('可写: 否')
+    expect(result.detail).not.toContain('不支持')
+  })
 })

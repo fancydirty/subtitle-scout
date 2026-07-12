@@ -198,7 +198,9 @@ export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
 }
 
-/** 挂载能力画像——纯信息性，不作为失败门槛（用户开机自见挂载能力，供 realign 降级阶梯参考）。 */
+/** 挂载能力画像——纯信息性，不作为失败门槛（用户开机自见挂载能力，供 realign 降级阶梯参考）。
+ *  单个根的探针崩溃只影响该根的一行（报"探测失败"），绝不炸整个 doctor；
+ *  'unknown'（只读/未挂载，没条件探）如实报"未知"，不假装探出了 支持/不支持。 */
 export function checkMountCapabilities(
   roots: string[],
   probe: (dir: string) => MountCapabilities,
@@ -206,9 +208,16 @@ export function checkMountCapabilities(
   if (roots.length === 0) {
     return { name: 'mount-capabilities', ok: true, skip: true, detail: 'MEDIA_ROOTS 未配置，跳过' }
   }
+  const fmtCap = (v: boolean | 'unknown', yes: string, no: string): string =>
+    v === 'unknown' ? '未知' : v ? yes : no
   const lines = roots.map(r => {
-    const c = probe(r)
-    return `${r}（硬链接: ${c.hardlink ? '支持' : '不支持'}, 大小写敏感: ${c.caseSensitive ? '是' : '否'}, 可写: ${c.writable ? '是' : '否'}）`
+    let c: MountCapabilities
+    try {
+      c = probe(r)
+    } catch (e) {
+      return `${r}（探测失败：${String(e)}）`
+    }
+    return `${r}（硬链接: ${fmtCap(c.hardlink, '支持', '不支持')}, 大小写敏感: ${fmtCap(c.caseSensitive, '是', '否')}, 可写: ${c.writable ? '是' : '否'}）`
   })
   return { name: 'mount-capabilities', ok: true, detail: `挂载能力画像 — ${lines.join('；')}` }
 }
