@@ -86,8 +86,8 @@ describe('rankCandidates prompt', () => {
       async call(opts: any) {
         captured = opts.prompt
         const parsed: RankDecision = {
-          decision: 'download', candidate_id: 'assrt:1', file_index: 0,
-          identity_match: 'confirmed', confidence: 0.9, reasons: ['x'], rejected: [],
+          order: [{ candidate_id: 'assrt:1', file_index: 0, identity_match: 'confirmed', reason: 'x' }],
+          rejected: [], reasons: ['ok'],
         }
         return { parsed, rawText: '', retries: 0, durationMs: 1, prompt: opts.prompt } as any
       },
@@ -98,24 +98,34 @@ describe('rankCandidates prompt', () => {
 
   const ctx = {
     media: { filename: 'Show.S01E02.1080p.mkv' },
-    preferences: {
-      language: 'zh-Hans', prefer_bilingual: true, allow_traditional: true,
-      allow_machine_translated: false, auto_download_min_confidence: 0.86,
-    },
+    preferences: { language: 'zh-Hans', prefer_bilingual: true, allow_traditional: true, allow_machine_translated: false },
   } as unknown as MediaContext
   const identity = {
     canonical_title: 'Show', original_title: null, year: 2020, type: 'episode',
     season: 1, episode: 2, edition: null, confidence: 0.9, evidence: [],
   } as unknown as MediaIdentity
 
-  it('instructs the LLM to emit a three-state identity_match verdict', async () => {
+  it('instructs the LLM to order candidates and emit per-item identity_match, not a single scalar decision', async () => {
     const { llm, prompt } = capture()
     await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
     const p = prompt()
+    expect(p).toMatch(/order/i)
     expect(p).toMatch(/identity_match/)
     expect(p).toMatch(/confirmed/)
     expect(p).toMatch(/mismatch/)
     expect(p).toMatch(/uncertain/)
+  })
+
+  it('instructs the LLM to keep uncertain candidates in order[] rather than refusing them', async () => {
+    const { llm, prompt } = capture()
+    await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
+    expect(prompt()).toMatch(/keep uncertain/i)
+  })
+
+  it('never asks for or mentions a confidence score', async () => {
+    const { llm, prompt } = capture()
+    await rankCandidates(llm, ctx, identity, [subWithFiles(1, ['a.chs.srt'])])
+    expect(prompt().toLowerCase()).not.toMatch(/decision threshold|confidence score/i)
   })
 
   it('encodes the M5b law: source/version differences must not downgrade identity', async () => {
