@@ -99,8 +99,9 @@ export function buildAbsoluteMap(seasonTable: SeasonTableEntry[]): Map<number, A
 /**
  * 剧名文件系统安全化：路径分隔符与 Windows 保留字符（/ \ : < > " | ? *）替换为空格并折叠。
  * 'Fate/Zero' 绝不能把 show 目录拆成两层，':' 等字符在 SMB/NTFS 挂载上直接建不出目录。
+ * （export：realignExecutor 的归档目录命名复用同一套安全化，避免两处口径漂移。）
  */
-function sanitizeTitleForFs(title: string): string {
+export function sanitizeTitleForFs(title: string): string {
   return title.replace(/[/\\:<>"|?*]/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
