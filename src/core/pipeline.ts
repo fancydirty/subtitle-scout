@@ -160,7 +160,13 @@ interface StageOutcome {
 
 type StageVerdict =
   | { ok: true; outcome: StageOutcome }
-  | { ok: false; verdict: 'structural-reject' | 'verify-reject' }
+  // FINDING-3: transient=true 仅当结构性拒绝是因为 isHtml——限流/人机挑战页返回 HTTP 200 + HTML
+  // 正文，download() 不会抛错（只在 !res.ok 才抛），所以这类"провider 其实没打通"的情况一路
+  // 解码到这里才现出原形。它不是"这份字幕内容确实不对"的决定性内容结论，语义上更接近
+  // resolve/download 阶段的瞬时错误——调用方（队列耗尽判断 + 季包/季横扫熔断计数）据此把它当
+  // 瞬时失败处理，而不是决定性拒绝（不可解码/零 cue 才是真正"打开看了、看不出字幕"的决定性
+  // 结论；verify match:false 恒非瞬时——那是终审判过的内容结论）。
+  | { ok: false; verdict: 'structural-reject' | 'verify-reject'; transient: boolean }
 
 /**
  * 沙盒试错的公共内核：写进沙盒子目录 → 结构体检 → （体检过关才）agent 终审 → 通过才装机。
@@ -182,8 +188,10 @@ async function stageInspectVerifyInstall(
   journal.step('candidateInspected', { candidate: label, signals })
 
   if (!signals.decodable || signals.isHtml || signals.cueCount === 0) {
-    journal.step('candidateRejectedStructural', { candidate: label })
-    return { ok: false, verdict: 'structural-reject' }
+    // FINDING-3: isHtml 单独拎出来当瞬时信号——不可解码/零 cue 是"这份候选打开看了，看不出字幕
+    // 内容"的决定性结论；isHtml 几乎总是限流/人机挑战页，而非"这份字幕就是不对"。
+    journal.step('candidateRejectedStructural', { candidate: label, isHtml: signals.isHtml })
+    return { ok: false, verdict: 'structural-reject', transient: signals.isHtml }
   }
 
   const verifyResult = await deps.verify(ctx, identity, candidate, signals)
@@ -191,7 +199,7 @@ async function stageInspectVerifyInstall(
 
   if (!verifyResult.parsed.match) {
     journal.step('candidateVerifyRejected', { candidate: label, reason: verifyResult.parsed.reason })
-    return { ok: false, verdict: 'verify-reject' }
+    return { ok: false, verdict: 'verify-reject', transient: false }
   }
 
   const finalName = basename(staged.path)
@@ -237,8 +245,8 @@ function candidateSlug(candidate: { provider: string; providerId: string }, file
 async function tryCandidateQueue(
   deps: PipelineDeps, ctx: MediaContext, identity: MediaIdentity,
   queue: GateQueueItem[], outDir: string, stagingDir: string, journal: Journal,
-): Promise<{ outcome: CandidateInstallOutcome | null; tried: { candidateId: string; verdict: string }[] }> {
-  const tried: { candidateId: string; verdict: string }[] = []
+): Promise<{ outcome: CandidateInstallOutcome | null; tried: { candidateId: string; verdict: string; transient: boolean }[] }> {
+  const tried: { candidateId: string; verdict: string; transient: boolean }[] = []
   const budget = deps.maxApiCallsPerJob - journal.counts().apiCalls
   let apiCallsUsed = 0
 
@@ -262,10 +270,10 @@ async function tryCandidateQueue(
         attemptDir, outDir, journal, candidateId,
       )
       if (!verdict.ok) {
-        tried.push({ candidateId, verdict: verdict.verdict })
+        tried.push({ candidateId, verdict: verdict.verdict, transient: verdict.transient })
         continue
       }
-      tried.push({ candidateId, verdict: verdict.outcome.alreadyExisted ? 'already-exists' : 'match' })
+      tried.push({ candidateId, verdict: verdict.outcome.alreadyExisted ? 'already-exists' : 'match', transient: false })
       return {
         outcome: {
           candidate: item.candidate, fileIndex: item.fileIndex,
@@ -277,7 +285,7 @@ async function tryCandidateQueue(
     } catch (e) {
       if (e instanceof ProviderQuotaExhaustedError) throw e
       journal.step('candidateAttemptFailed', { candidate: candidateId, error: String(e) })
-      tried.push({ candidateId, verdict: 'error' })
+      tried.push({ candidateId, verdict: 'error', transient: true })
     }
   }
   return { outcome: null, tried }
@@ -611,8 +619,17 @@ export async function runPipeline(
                   attemptDir, dirname(item.videoPath), journal, `${packRef}#${item.episodeCode}`,
                 )
                 if (!verdict.ok) {
-                  consecutiveFails++
-                  journal.step('seasonEpisodeRejected', { episode: item.episodeCode, verdict: verdict.verdict })
+                  // FINDING-4: 熔断器的意图是"停止继续打一个失灵的 provider"——决定性内容拒绝
+                  // （结构体检不可解码/零 cue、或终审 match:false）恰恰证明这一轮下载+体检+终审
+                  // 全部走通了，provider 是健康的，不该计入熔断计数（并重置，冲掉之前攒的瞬时
+                  // 失败苗头）。只有 transient=true（isHtml 限流页，FINDING-3 同一套判定）才算
+                  // 一次"没打通"，计入熔断。
+                  if (verdict.transient) {
+                    consecutiveFails++
+                  } else {
+                    consecutiveFails = 0
+                  }
+                  journal.step('seasonEpisodeRejected', { episode: item.episodeCode, verdict: verdict.verdict, transient: verdict.transient })
                   continue
                 }
                 coveredEpisodes.push({ episodeCode: item.episodeCode, subtitlePath: verdict.outcome.path, providerRef: packRef })
@@ -625,6 +642,7 @@ export async function runPipeline(
                   journal.step('seasonEpisodeQuotaExhausted', { episode: item.episodeCode, after: coveredEpisodes.length, resetAt: e.resetAt })
                   break
                 }
+                // resolve/download 阶段抛出的瞬时异常——provider 这次没打通，计入熔断。
                 consecutiveFails++
                 journal.step('seasonEpisodeFailed', { episode: item.episodeCode, message: String(e) })
               }
@@ -673,13 +691,17 @@ export async function runPipeline(
       const { outcome, tried } = await tryCandidateQueue(deps, ctx, identity, gate.queue, outDir, stagingDir, journal)
       if (!outcome) {
         journal.step('candidateQueueExhausted', { tried })
-        // tried[].verdict 只会是 'structural-reject' / 'verify-reject'（决定性内容结论——候选
-        // 真下载下来经过结构体检/终审评判过）或 'error'（tryCandidateQueue 的 catch 分支——
-        // resolveDownload/download 阶段瞬时故障，从未真正拿到内容评判；'match'/'already-exists'
-        // 两种走的是上面的 outcome!=null 早退，不会出现在这里）。任何一个 'error' 都说明"没打
-        // 通"而非"打通了但确认不是"——绝不能把打不通误判成诚实的"确实没有安全匹配"而写负缓存
-        // （历史高频回归的瞬时 vs 内容结论铁律；镜像 searchProviderErrors 守卫，约 line 540）。
-        const transientErrors = tried.filter(t => t.verdict === 'error')
+        // tried[].verdict 只会是 'structural-reject' / 'verify-reject'（候选真下载下来经过结构
+        // 体检/终审评判过）或 'error'（tryCandidateQueue 的 catch 分支——resolveDownload/download
+        // 阶段瞬时故障，从未真正拿到内容评判；'match'/'already-exists' 两种走的是上面的
+        // outcome!=null 早退，不会出现在这里）。'error' 之外，FINDING-3：isHtml 触发的
+        // structural-reject（tried[].transient===true）也当瞬时处理——HTTP 200 + HTML 正文的
+        // 限流/挑战页不会让 download() 抛错（只在 !res.ok 才抛），一路解码到结构体检才现形，
+        // 语义上是"没打通"而非"打通了但确认不是"。只有不可解码/零 cue 的结构拒绝、以及
+        // verify match:false 才是决定性内容结论。任何一个瞬时结果都说明整体不能诚实判定
+        // "确实没有安全匹配"——绝不能误判成诚实结论而写负缓存（历史高频回归的瞬时 vs 内容结论
+        // 铁律；镜像 searchProviderErrors 守卫，约 line 540）。
+        const transientErrors = tried.filter(t => t.transient)
         if (transientErrors.length > 0) {
           journal.step('candidateQueueTransientFailure', { transientErrors })
           return finish('retry_later', {
@@ -870,7 +892,10 @@ async function runSeasonSweep(
         providerId: parsed.providerId,
         fileIndex,
       })
-      consecutiveFails = 0
+      // FINDING-4: 不在这里提前把 consecutiveFails 清零——resolve 成功只说明"打通了"，不说明
+      // 这一集最终会是决定性内容拒绝还是瞬时失败；提前清零会让下面 download()/体检/终审阶段的
+      // 真实结果（尤其是紧跟着的瞬时下载失败）被"resolve 成功"这一步意外冲掉。清零改到确认
+      // 是"决定性结论"（内容拒绝或完整覆盖）之后才做，见下方。
 
       const dl = await deps.download(resolved.url)
       // addendum C: 横扫每集下载也要经过 stage→inspect→verify→install，不再直写媒体目录。
@@ -881,10 +906,19 @@ async function runSeasonSweep(
         attemptDir, dirname(epMeta.videoPath), journal, `${candidateKey(parsed)}#${assignment.episode_code}`,
       )
       if (!verdict.ok) {
-        consecutiveFails++
+        // FINDING-4（同季包升格路径语义）：决定性内容拒绝（不可解码/零 cue/终审 match:false）
+        // 证明这一轮下载+体检+终审全部走通、provider 健康——不计入熔断，且清零冲掉之前攒的
+        // 瞬时失败苗头。只有 transient=true（isHtml 限流页，FINDING-3 同一套判定）才算一次
+        // "没打通"，计入熔断。
+        if (verdict.transient) {
+          consecutiveFails++
+        } else {
+          consecutiveFails = 0
+        }
         skipped.push({ episode: assignment.episode_code, reason: `verify rejected: ${verdict.verdict}` })
         continue
       }
+      consecutiveFails = 0
       const providerRef = candidateKey(parsed)
       coveredEpisodes.push({ episodeCode: assignment.episode_code, subtitlePath: verdict.outcome.path, providerRef })
       try { await deps.seasonPack!.onCovered(epMeta, verdict.outcome.path, providerRef) } catch { /* 观测/联动不影响主流程 */ }
@@ -898,6 +932,7 @@ async function runSeasonSweep(
         journal.step('seasonSweepQuotaExhausted', { episode: assignment.episode_code, provider: parsed.provider, after: coveredEpisodes.length, resetAt: e.resetAt })
         continue
       }
+      // resolve/download 阶段抛出的瞬时异常——provider 这次没打通，计入熔断。
       consecutiveFails++
       skipped.push({ episode: assignment.episode_code, reason: String(e) })
     }

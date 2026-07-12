@@ -185,6 +185,33 @@ describe('runPipeline', () => {
     expect(cache.get('id:imdb:tt0133093:S-:E-')).toMatchObject({ kind: 'negative' })
   })
 
+  it('FINDING-3: every candidate structurally rejects as HTML (rate-limited/challenge page, HTTP 200) → retry_later, cache NOT poisoned', async () => {
+    // download() 只在 !res.ok 才抛错——一个限流/人机挑战的 provider 大概率照样回 HTTP 200，
+    // 正文却是一坨 HTML。这类候选解码后 isHtml=true，结构体检硬拒，从未走到终审。旧行为把它
+    // 和"真的打开看了、内容不是这个"一样计成决定性结论，全灭时误判成诚实的"确实没有安全匹配"
+    // 写负缓存——把一次限流误诊成"这剧真的没字幕"，永久压制后续重试。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const rank = vi.fn(async () => ({
+      parsed: {
+        order: [
+          { candidate_id: 'assrt:673114', file_index: 0, identity_match: 'uncertain' as const, reason: 'first guess' },
+          { candidate_id: 'assrt:606770', file_index: 0, identity_match: 'uncertain' as const, reason: 'second guess' },
+        ], rejected: [], reasons: ['ordered'],
+      }, rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const download = vi.fn(async () => ({
+      bytes: Buffer.from('<!DOCTYPE html><html><body>rate limited, please wait</body></html>'),
+      contentType: 'text/html',
+    }))
+    const verify = makeVerify()
+    const deps = makeDeps({ rank, download, verify, cache })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('retry_later')
+    expect(verify).not.toHaveBeenCalled() // isHtml 结构性硬拒，从未触发终审
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy() // 负缓存绝不能被这种情况污染
+  })
+
   it('mixed queue exhaustion (one transient resolveDownload error + one decisive verify-reject) forces retry_later, not poisoned', async () => {
     // 混合场景：候选池里一个打不通（resolve 瞬时故障），另一个打通但终审拒绝（决定性内容结论）。
     // 任何一个瞬时失败都要保守退避——不能因为"至少凑出一个决定性结论"就把整体判成诚实的
@@ -1141,6 +1168,103 @@ describe('runPipeline', () => {
     expect(resolveDownload).toHaveBeenCalledTimes(2) // budget of 2, all failed attempts still counted
   })
 
+  it('FINDING-4: season sweep — 3 consecutive verify-rejects do NOT trip the circuit breaker (later episodes still attempted)', async () => {
+    // 与季包升格路径对称：provider 健康(下载+体检+终审全走通)时的内容拒绝不该计入熔断。
+    // 前 3 集终审判 match:false，第 4/5 集判 true——熔断绝不能把内容拒绝计入，否则第 4/5 集
+    // 永远打不到。（注：sweep 原实现在每次 resolve 成功后就把 consecutiveFails 清零，所以这条
+    // 断言在修复前也成立；真正的失败先行测试是下面那条 post-resolve transient 风暴——见其注释。
+    // 这条留作行为守卫，锁死"内容拒绝不熔断"这个意图。）
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    // fileList 用 .ass 扩展名——须与下面 download() 喂回的 SAMPLE_ASS 内容匹配（结构体检按
+    // 扩展名选解析器，.srt 喂 ASS 内容会先被解析器判成零 cue，永远走不到终审）。
+    const looseCandidates = [801, 802, 803, 804, 805].map(id =>
+      mkCand(id, `Show.S02E0${id - 800}.chs`, [`Show.S02E0${id - 800}.chs.ass`], `第${id - 800}集`))
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const rank = vi.fn(async () => ({
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4, 5].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3, 4, 5].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `assrt:${800 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    // 提交顺序即 dedupedAssignments 顺序（E01..E05）：前 3 次终审判 false，第 4/5 次判 true。
+    let verifyCall = 0
+    const verify = vi.fn(async () => {
+      verifyCall++
+      return {
+        parsed: verifyCall <= 3 ? { match: false, reason: 'wrong episode' } : { match: true, reason: 'ok' },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'verify prompt',
+      }
+    })
+    const deps = makeDeps({
+      maxApiCallsPerJob: 10,
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
+      verify: verify as unknown as PipelineDeps['verify'],
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(resolveDownload).toHaveBeenCalledTimes(5) // all 5 assignments attempted — breaker never tripped
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode).sort()).toEqual(['S02E04', 'S02E05'])
+  })
+
+  it('FINDING-4: season sweep — a post-resolve transient (download throw) storm now trips the breaker (was masked by reset-after-successful-resolve)', async () => {
+    // 失败先行测试，坐实 sweep 修复的实质变化：把 consecutiveFails 的清零点从"resolve 成功后"
+    // 挪到"拿到决定性内容结论后"。原实现里每次 resolve 成功就清零，导致 resolve 通了但紧接着
+    // download() 抛错（限流/网络抖动的另一种表现）的风暴永远攒不满 3 次、熔断永不触发——一个
+    // 只能列表却下不动文件的病态 provider 会被逐集硬打到预算耗尽。修复后：resolve 成功不再清零，
+    // 连续 3 次 download 抛错即熔断。
+    // 原实现（reset-after-resolve）：5 集全打、不熔断 → resolveDownload 5 次、无 circuit-break step。
+    // 修复后：第 3 次后熔断 → resolveDownload 3 次、有 seasonSweepCircuitBreak step。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const looseCandidates = [801, 802, 803, 804, 805].map(id =>
+      mkCand(id, `Show.S02E0${id - 800}.chs`, [`Show.S02E0${id - 800}.chs.ass`], `第${id - 800}集`))
+    const search = vi.fn(async () => ok(looseCandidates))
+    const resolveDownload = vi.fn(async (ref: { providerId: string }) => ({ url: `http://dl/${ref.providerId}` }))
+    const download = vi.fn(async () => { throw new Error('connection reset by peer') }) // resolve 通、下载抛
+    const rank = vi.fn(async () => ({
+      parsed: { order: [], rejected: [], reasons: ['rep episode not matched'] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4, 5].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const llm = { call: vi.fn(async () => ({
+      parsed: { assignments: [1, 2, 3, 4, 5].map(n => ({ episode_code: `S02E0${n}`, candidate_id: `assrt:${800 + n}`, confidence: 0.95 })), reasons: [] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'sweep prompt',
+    })) }
+    const deps = makeDeps({
+      maxApiCallsPerJob: 10, // 预算宽松（>5），隔离验证是熔断而非预算守卫在收尾
+      providers: makeProviders({ search, resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: download as unknown as PipelineDeps['download'],
+      llm: llm as unknown as PipelineDeps['llm'],
+      seasonPack: { enumerate: vi.fn(async () => seasonEps), map: vi.fn(), onCovered: vi.fn() } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = structuredClone(ctx)
+    epCtx.media = { ...epCtx.media, type: 'episode', season: 2, episode: 1 }
+    epCtx.media.title = '黑客帝国'
+    epCtx.media.alternative_titles = []
+    const result = await runPipeline(deps, epCtx, outDir)
+    expect(resolveDownload).toHaveBeenCalledTimes(3) // 熔断在第 3 次后触发，E04/E05 不再打
+    const journal = JSON.parse(readFileSync(result.journalPath, 'utf8'))
+    expect(journal.steps.some((s: { name: string }) => s.name === 'seasonSweepCircuitBreak')).toBe(true)
+  })
+
   it('season sweep: does NOT trigger when a whole-season pack is available (pack has priority)', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'out-'))
     const packCandidate = toCandidate(seasonDetail.sub.subs[0])
@@ -1762,6 +1886,108 @@ describe('runPipeline', () => {
     expect(result.quotaExhausted).toEqual({ resetAt })
     // 撞到第一次配额就停手，绝不落回单集路径再打一次注定失败的 resolve
     expect(resolveDownload).toHaveBeenCalledTimes(1)
+  })
+
+  it('FINDING-4: season pack — 3 consecutive verify-rejects do NOT trip the circuit breaker (later episodes still attempted)', async () => {
+    // provider 健康：每一集都真下载+体检+终审过，终审对前 3 集判 match:false（决定性内容拒绝）。
+    // 旧行为把内容拒绝和瞬时故障一样计入 consecutiveFails，3 次即熔断——第 4/5 集永远打不到，
+    // 即便它们本可以正常覆盖。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const packCandidate = mkCand(900900, 'Show.S02', [
+      'Show.S02E01.chs.ass', 'Show.S02E02.chs.ass', 'Show.S02E03.chs.ass', 'Show.S02E04.chs.ass', 'Show.S02E05.chs.ass',
+    ])
+    const resolveDownload = vi.fn(async (ref: { fileIndex: number | null }) => ({
+      url: `http://file0.assrt.net/pack/900900/${(ref.fileIndex ?? 0) + 1}`,
+    }))
+    const rank = vi.fn(async () => ({
+      parsed: { order: [{ candidate_id: 'assrt:900900', file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4, 5].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    // 提交顺序即 pairs[] 顺序（E01..E05）：前 3 次终审判 false，第 4/5 次判 true。
+    let verifyCall = 0
+    const verify = vi.fn(async () => {
+      verifyCall++
+      return {
+        parsed: verifyCall <= 3 ? { match: false, reason: 'wrong episode' } : { match: true, reason: 'ok' },
+        rawText: '', retries: 0, durationMs: 1, prompt: 'verify prompt',
+      }
+    })
+    const deps = makeDeps({
+      maxApiCallsPerJob: 10,
+      providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      download: vi.fn(async () => ({ bytes: Buffer.from(SAMPLE_ASS), contentType: 'text/plain' })),
+      verify: verify as unknown as PipelineDeps['verify'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(async () => ({
+          parsed: { pairs: [
+            { filelist_index: 0, episode_code: 'S02E01', reason: 'x' },
+            { filelist_index: 1, episode_code: 'S02E02', reason: 'x' },
+            { filelist_index: 2, episode_code: 'S02E03', reason: 'x' },
+            { filelist_index: 3, episode_code: 'S02E04', reason: 'x' },
+            { filelist_index: 4, episode_code: 'S02E05', reason: 'x' },
+          ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+        })),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    // 全部 5 集都被尝试——若熔断误把内容拒绝计入，会在攒够 3 次拒绝后（E03）停手，E04/E05 永远打不到。
+    expect(resolveDownload).toHaveBeenCalledTimes(5)
+    expect(result.decision).toBe('download')
+    expect(result.coveredEpisodes?.map(c => c.episodeCode)).toEqual(['S02E04', 'S02E05'])
+  })
+
+  it('FINDING-4: season pack — 3 consecutive transient (resolve/download) failures DO trip the circuit breaker', async () => {
+    // 对照组：resolveDownload 每次都抛（非配额）异常——provider 真没打通，这才是熔断器该防的
+    // 场景。3 次连续失败即停手，落回单集路径（同样打不通）→ retry_later，绝不写负缓存。
+    const outDir = mkdtempSync(join(tmpdir(), 'out-'))
+    const packCandidate = mkCand(900900, 'Show.S02', [
+      'Show.S02E01.chs.ass', 'Show.S02E02.chs.ass', 'Show.S02E03.chs.ass', 'Show.S02E04.chs.ass', 'Show.S02E05.chs.ass',
+    ])
+    const resolveDownload = vi.fn(async () => { throw new Error('406 not acceptable') })
+    const rank = vi.fn(async () => ({
+      parsed: { order: [{ candidate_id: 'assrt:900900', file_index: 0, identity_match: 'uncertain' as const, reason: 'pack' }], rejected: [], reasons: ['pack'] },
+      rawText: '', retries: 0, durationMs: 1, prompt: 'rank prompt',
+    }))
+    const seasonEps = [1, 2, 3, 4, 5].map(n => ({
+      itemId: `e${n}`, seasonNumber: 2, episodeNumber: n, episodeCode: `S02E0${n}`,
+      videoPath: join(outDir, `Show.S02E0${n}.mkv`), videoFilename: `Show.S02E0${n}.mkv`, needsChinese: true,
+    }))
+    const cache = new DecisionCache(mkdtempSync(join(tmpdir(), 'pc-')))
+    const deps = makeDeps({
+      maxApiCallsPerJob: 10,
+      cache,
+      providers: makeProviders({ search: vi.fn(async () => ok([packCandidate])), resolveDownload: resolveDownload as unknown as ProviderPort['resolveDownload'] }),
+      rank: rank as unknown as PipelineDeps['rank'],
+      seasonPack: {
+        enumerate: vi.fn(async () => seasonEps),
+        map: vi.fn(async () => ({
+          parsed: { pairs: [
+            { filelist_index: 0, episode_code: 'S02E01', reason: 'x' },
+            { filelist_index: 1, episode_code: 'S02E02', reason: 'x' },
+            { filelist_index: 2, episode_code: 'S02E03', reason: 'x' },
+            { filelist_index: 3, episode_code: 'S02E04', reason: 'x' },
+            { filelist_index: 4, episode_code: 'S02E05', reason: 'x' },
+          ], unmapped_files: [], reasons: [] }, rawText: '', retries: 0, durationMs: 1, prompt: 'map prompt',
+        })),
+        onCovered: vi.fn(),
+      } as unknown as PipelineDeps['seasonPack'],
+    })
+    const epCtx = { ...ctx, media: { ...ctx.media, type: 'episode' as const, season: 2, episode: 1 } }
+    const result = await runPipeline(deps, epCtx, outDir)
+    // 3 次熔断 + 落回单集路径再打一次（同样失败）= 4 次总调用；不再往下打 E04/E05。
+    expect(resolveDownload).toHaveBeenCalledTimes(4)
+    expect(result.decision).toBe('retry_later')
+    // identify mock 保留默认返回值（season/episode: null）——cacheKeys 据此产出 "S-:E-"（同其它
+    // 未覆写 identify 的季包测试），不是 epCtx.media 上手写的 season/episode。
+    expect(cache.get('id:imdb:tt0133093:S-:E-')).toBeFalsy()
   })
 
   it('M-1: alias harvest merges fresh into the sweep pool; second-round rank input stays fresh-only', async () => {
