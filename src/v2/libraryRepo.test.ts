@@ -194,3 +194,38 @@ describe('媒体镜像', () => {
     expect(lib.getMovieOriginLang('m2')).toBe('zh')
   })
 })
+
+describe('realign 支持方法', () => {
+  it('getSeries 返回完整行，查无返回 null', () => {
+    lib.upsertSeries({ id: 's1', name: 'Spy x Family' })
+    expect(lib.getSeries('s1')?.name).toBe('Spy x Family')
+    expect(lib.getSeries('nope')).toBeNull()
+  })
+
+  it('countEpisodesInSeason 统计指定季集数', () => {
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/b', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'e3', seriesId: 's1', season: 2, episode: 1, name: 'E1', path: '/c', subStatus: 'missing' })
+    expect(lib.countEpisodesInSeason('s1', 1)).toBe(2)
+    expect(lib.countEpisodesInSeason('s1', 2)).toBe(1)
+    expect(lib.countEpisodesInSeason('s1', 3)).toBe(0)
+  })
+
+  it('episodePathsForSeries 返回该剧全部集路径（跨季）', () => {
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/Show/Season 01/a.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/media/Show/Season 01/b.mkv', subStatus: 'missing' })
+    expect(lib.episodePathsForSeries('s1').sort()).toEqual(['/media/Show/Season 01/a.mkv', '/media/Show/Season 01/b.mkv'])
+  })
+
+  it('deleteSeriesRows 删除该剧全部 episodes + subtitles + series 行', () => {
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a', subStatus: 'covered' })
+    lib.markCovered('e1', '/a.zh-Hans.srt', 'scout-download')
+    lib.deleteSeriesRows('s1')
+    expect(lib.getEpisode('e1')).toBeNull()
+    expect(lib.getSeries('s1')).toBeNull()
+    expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('e1')).toEqual({ c: 0 })
+  })
+})
