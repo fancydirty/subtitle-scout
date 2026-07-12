@@ -88,6 +88,28 @@ describe('realign manifest', () => {
     expect(doc.entries.map(e => e.from)).toEqual(['/a1', '/a2'])
   })
 
+  it('双撕裂级联（撕裂 entry 后重跑补封口、seal 本身又撕裂）：按截断处理返回完整前缀，不 brick 账本', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'manifest-torn-cascade-')), 'archive')
+    initManifest(dir, { seriesId: 's1', seriesTitle: 'Show', startedAt: 1 })
+    appendManifestEntry(dir, { op: 'rename', from: '/a1', to: '/b1', size: 1, mtimeMs: 1, reason: 'r1', ts: 1 })
+    // 崩溃 1：追加 entry 半途断电（无换行的半行）
+    appendFileSync(manifestPath(dir), '{"type":"entry","op":"rename","from":"/torn-half')
+    // 崩溃 2：重跑 appendLine 先补换行 + seal 封口，seal 本身又写到一半断电——
+    // 撕裂 entry 的后继不再是合法 seal，而是又一条撕裂尾行（级联）。
+    appendFileSync(manifestPath(dir), '\n{"type":"seal","ts":17')
+    const doc = readManifest(dir)!
+    expect(doc.entries.map(e => e.from)).toEqual(['/a1']) // 完整前缀全部读回，级联尾巴按截断忽略
+  })
+
+  it('撕裂行之后仍有能解析的行（撕裂/级联解释不了）→ 大声抛错，不静默吞账', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'manifest-torn-then-valid-')), 'archive')
+    initManifest(dir, { seriesId: 's1', seriesTitle: 'Show', startedAt: 1 })
+    appendFileSync(manifestPath(dir), '{"type":"entry","op":"rename","from":"/torn-half\n')
+    appendFileSync(manifestPath(dir), '{"type":"seal","ts":17\n') // 第二行也是坏行（不是合法 seal）
+    appendManifestEntry(dir, { op: 'rename', from: '/a1', to: '/b1', size: 1, mtimeMs: 1, reason: 'r1', ts: 1 })
+    expect(() => readManifest(dir)).toThrow(/损坏/) // 坏行之后还有合法行——真损坏，不是截断
+  })
+
   it('中间行损坏（不是末行撕裂能解释的）→ readManifest 抛错，不静默吞账', () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'manifest-corrupt-')), 'archive')
     initManifest(dir, { seriesId: 's1', seriesTitle: 'Show', startedAt: 1 })

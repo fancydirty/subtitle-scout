@@ -973,4 +973,28 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
     expect(jobsRepo.find('jf-series-1', 1)!.state).toBe('wanted')   // series_season job 未被退休
     db.close()
   })
+
+  it('崩溃恢复账本真损坏（撕裂解释不了）→ park（dormant 可恢复），不进 errorloop，零文件改动', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-manifest-corrupt-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
+    // plan_ref 指向一本中间行真损坏的账（损坏行之后还有合法行——撕裂级联解释不了的真损坏）
+    const archiveDir = archiveDirFor(root, 'Spy x Family', 1720000000000)
+    initManifest(archiveDir, { seriesId: 'jf-series-1', seriesTitle: 'Spy x Family', startedAt: 1720000000000 })
+    jobsRepo.setPlanRef(job.id, manifestPath(archiveDir), Date.now())
+    appendFileSync(manifestPath(archiveDir), 'GARBAGE-NOT-JSON\n')
+    appendManifestEntry(archiveDir, { op: 'rename', from: '/a', to: '/b', size: 1, mtimeMs: 1, reason: 'realign', ts: 1 })
+
+    const rerunJob = jobsRepo.get(job.id)!
+    const jf = mkJf({ locations: [libRoot] })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { tmdb: { getSeasonTable: vi.fn(async () => SEASONS_1x5) } })
+    const result = await executeRealign(rerunJob, deps)
+
+    expect(result.decision).toBe('park')            // 确定性损坏：error 轨只会日日空转
+    expect(result.detail).toContain('manifest.jsonl')
+    expect(countVideosRec(oldSeasonDir)).toBe(3)    // 零改动
+    expect(existsSync(join(libRoot, '.realign-build'))).toBe(false)
+    db.close()
+  })
 })

@@ -74,10 +74,12 @@ export function initManifest(archiveDir: string, header: ManifestHeader): void {
 }
 
 /**
- * 逐行解析 JSONL。撕裂行的两种合法形态：
+ * 逐行解析 JSONL。撕裂行的三种合法形态：
  *  1. 撕裂末行（追加半途断电、尚未续写）——忽略之，append-only 保证它之前每行完整；
- *  2. 撕裂后被封口的行（下一非空行是 seal 标记：崩溃后同一账本继续追加时补的封口）——同样忽略。
- * 其余解析失败是真损坏（撕裂解释不了），大声抛错。
+ *  2. 撕裂后被封口的行（下一非空行是 seal 标记：崩溃后同一账本继续追加时补的封口）——同样忽略；
+ *  3. 撕裂级联（撕裂行的后继全部也是撕裂尾行）：补封口写 seal 时又断电的产物——等同截断，
+ *     此前的完整账仍然有效（否则一次 crash-mid-seal 就把账本 brick 死，恢复路径永久瘫痪）。
+ * 只要坏行之后还有任何一行能解析（真数据在损坏之后），撕裂/级联都解释不了，大声抛错。
  * rollback 标记行把 entries 清零：标记之前的账已被逆序重放回原位，重跑不得再重放。
  */
 export function readManifest(archiveDir: string): ManifestDoc | null {
@@ -98,6 +100,7 @@ export function readManifest(archiveDir: string): ManifestDoc | null {
       if (rest.length === 0) break // 撕裂末行——之前的账全部完整，忽略这半行
       const next = parseLine(rest[0])
       if (next != null && next.type === 'seal') continue // 已封口的撕裂行——跳过，账本继续有效
+      if (rest.every(l => parseLine(l) == null)) break // 撕裂级联（crash-mid-seal）——按截断处理
       throw new Error(`manifest 第 ${i + 1} 行损坏（非末行且未封口，撕裂解释不了）：${path}`)
     }
     if (parsed.type === 'header') {

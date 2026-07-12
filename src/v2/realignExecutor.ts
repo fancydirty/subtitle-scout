@@ -11,6 +11,7 @@ import {
 } from '../files/libraryRealign.js'
 import {
   initManifest, appendManifestEntry, appendRollbackMarker, manifestPath, readManifest, replayRollback,
+  type ManifestDoc,
 } from '../files/realignManifest.js'
 import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
 import { runPipeline, type PipelineResult } from '../core/pipeline.js'
@@ -375,7 +376,7 @@ function briefError(error: unknown): string {
  *     目标虚拟库同时锁定（段感知匹配，MINOR#14）——刷新端点缺失也是配置缺陷，动手前就 park。
  *  4. mount 哨兵（库根非空+可写）
  *  5. Jellyfin 空闲等待——任何搬动（包括崩溃恢复回滚）之前（IMP#6）
- *  6. 崩溃恢复（CRIT#4）：job.plan_ref 指向的 manifest 存在 →
+ *  6. 崩溃恢复（CRIT#4）：job.plan_ref 指向的 manifest 存在（无法解析的真损坏 → park）→
  *     a. 账本含 reveal 且新目录已在最终位置 且 build 目录无视频滞留（真 finalize 必然
  *        搬空 build；有滞留 = 外来目录占位 + 回滚未完成，绝不许伪装续走成功）→ 续走
  *        （forward-resume）：只补收尾（归档旧目录/刷新/镜像清理），绝不重搬；
@@ -421,8 +422,19 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
 
   // 6a'. 崩溃恢复指针（读账本不动盘）：plan_ref → manifest。续走判定要在 scanDir 推导
   //      失败之前做——收尾崩溃重跑时镜像可能已被清空（scanDir 为 null 是合法现场）。
+  //      账本无法解析（撕裂级联之外的真损坏）是确定性缺陷：走 error 轨每天都会在同一行
+  //      上再抛一次（daily errorloop，自动回滚永久瘫痪）——park（dormant、可人工修复后
+  //      唤醒），此刻未动任何文件。
   const resumeArchiveDir = job.plan_ref ? dirname(job.plan_ref) : null
-  const resumeManifest = resumeArchiveDir ? readManifest(resumeArchiveDir) : null
+  let resumeManifest: ManifestDoc | null = null
+  try {
+    resumeManifest = resumeArchiveDir ? readManifest(resumeArchiveDir) : null
+  } catch (error) {
+    return park(
+      `崩溃恢复账本无法解析（${briefError(error)}）——确定性损坏，重试不会自愈；` +
+      `账本在 ${manifestPath(resumeArchiveDir!)}，需人工核查修复后唤醒`,
+    )
+  }
   const revealEntry = resumeManifest?.entries.find(e => e.reason === 'reveal')
 
   if (resumeArchiveDir && resumeManifest && revealEntry && existsSync(revealEntry.to)) {
