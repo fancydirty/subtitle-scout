@@ -106,7 +106,10 @@ export const RankedCandidateSchema = z.object({
   // 身份判决：confirmed=同作品/季/集，uncertain=信息不足。mismatch 理论上不会出现在
   // order[] 里（prompt 要求丢进 rejected[]），但 schema 层不禁止——gate.ts 会防御性剔除。
   identity_match: IdentityMatchSchema,
-  reason: z.string(),
+  // fail-soft 铁律（S04E12 同类教训）：reason 只是给人看的可观测性文本，不参与 gate 的
+  // 决策逻辑（GateQueueItem 根本不携带它）。单个 order 项漏了这个字段不该拖垮整份
+  // RankDecision（最多 15 项，一项缺字段就 retry_later 太贵）。
+  reason: z.string().default(''),
 })
 export type RankedCandidate = z.infer<typeof RankedCandidateSchema>
 

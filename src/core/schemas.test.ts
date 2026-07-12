@@ -188,6 +188,17 @@ describe('RankDecisionSchema — ordered candidate queue (no scalar decision/con
     })
     expect(r.order[0].identity_match).toBe('uncertain')
   })
+  it('fail-soft: an order item missing reason still parses, item retained (not the whole RankDecision)', () => {
+    const r = RankDecisionSchema.parse({
+      order: [
+        { candidate_id: 'assrt:1', file_index: null, identity_match: 'confirmed' },
+        { candidate_id: 'assrt:2', file_index: null, identity_match: 'uncertain', reason: 'has a reason' },
+      ],
+    })
+    expect(r.order).toHaveLength(2)
+    expect(r.order[0].candidate_id).toBe('assrt:1')
+    expect(r.order[1].reason).toBe('has a reason')
+  })
 })
 
 describe('MediaContextSchema — no confidence threshold preference', () => {
