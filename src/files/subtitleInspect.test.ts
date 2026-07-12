@@ -40,3 +40,37 @@ describe('inspectSubtitle — SRT cue parsing', () => {
     expect(signals.spanMs).toBeNull()
   })
 })
+
+const ASS_SAMPLE = [
+  '[Script Info]',
+  'Title: [字幕组] Show S02E05 [1080p]',
+  'ScriptType: v4.00+',
+  '',
+  '[V4+ Styles]',
+  'Format: Name, Fontname, Fontsize',
+  'Style: Default,Arial,20',
+  '',
+  '[Events]',
+  'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  'Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,你好,世界',
+  'Dialogue: 0,0:00:04.00,0:00:06.20,Default,,0,0,0,,第二条字幕',
+].join('\n')
+
+describe('inspectSubtitle — ASS cue parsing', () => {
+  it('counts Dialogue lines as cues and extracts the Script Info Title', () => {
+    const signals = inspectSubtitle(stage('a.ass', ASS_SAMPLE))
+    expect(signals.cueCount).toBe(2)
+    expect(signals.assTitle).toBe('[字幕组] Show S02E05 [1080p]')
+  })
+
+  it('parses ASS H:MM:SS.cc timestamps into ms and preserves commas inside Text', () => {
+    const signals = inspectSubtitle(stage('b.ass', ASS_SAMPLE))
+    expect(signals.firstCueMs).toBe(1000)
+    expect(signals.lastCueMs).toBe(6200) // deviation from plan: original expression `6 * 1000 + 6200 - 6000 + 6000` evaluated to 12200, not the 6200ms the inline comment intended
+  })
+
+  it('.ssa extension uses the same ASS parser', () => {
+    const signals = inspectSubtitle(stage('c.ssa', ASS_SAMPLE))
+    expect(signals.cueCount).toBe(2)
+  })
+})
