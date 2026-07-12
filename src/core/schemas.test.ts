@@ -137,6 +137,16 @@ describe('M4 additions', () => {
       adopt: true, file: 'x.ass', language: 'None', confidence: 0.9, reasons: [],
     })).toThrow()
   })
+  it('OrphanDecision parses without a confidence field (unread by orphanGate/judgeOrphan prompt — same fail-point class as S04E12)', () => {
+    const rejection = OrphanDecisionSchema.parse({
+      adopt: false, file: null, language: null, reasons: ['not this video'],
+    })
+    expect(rejection.confidence).toBeUndefined()
+    const adoption = OrphanDecisionSchema.parse({
+      adopt: true, file: 'x.ass', language: 'zh-Hans', reasons: ['chinese content'],
+    })
+    expect(adoption.confidence).toBeUndefined()
+  })
 })
 
 describe('VerifyDecisionSchema', () => {

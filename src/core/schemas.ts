@@ -238,10 +238,10 @@ export const OrphanDecisionSchema = z.object({
     v => (typeof v === 'string' && NULLISH_STRINGS.has(v.trim().toLowerCase()) ? null : v),
     z.enum(['zh-Hans', 'zh-Hant']).nullish(),
   ).optional(), // Allow "None"/"null" strings → null, or omitted entirely; enum enforced only when present & non-null
-  confidence: z.preprocess(
-    v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-    z.number().min(0).max(1),
-  ),
+  // fail-soft 铁律（S04E12 教训——同一字段类型，拒绝相邻路径不该因它炸掉整个 run）：
+  // 没有任何代码读取这个字段（orphanGate 忽略它，judgeOrphan 的 prompt 也没让模型给它），
+  // 却仍是个必填标量——用 looseNumeric 容忍缺失/非法值，不再强制模型必须给。
+  confidence: looseNumeric(z.number().min(0).max(1)),
   reasons: z.array(z.string()),
 }).refine(v => !v.adopt || (v.file != null && v.language != null), {
   message: 'file and language required when adopt=true',
