@@ -678,6 +678,78 @@ describe('ScoutDaemon', () => {
     expect(jobs.find('s1', 1)?.state).toBe('done')
   })
 
+  it('IMPORTANT-2: 心跳续租写回（trackedJob.lease_until = renewed）是 ownsLease 跨 tick 存活的唯一支点——真实 executor 场景下 markCovered 必须落地', async () => {
+    // 生产语境：runEpisode 是真正的网络/LLM 调用，季包多集下载能合法跑超一个 tick
+    // 间隔（15s）甚至一次租约窗口（30min）。daemon.tick() 的心跳每拍为仍被跟踪的
+    // inflight job 续租，并把新 lease_until **原地写回** daemon 自己持有的那个 Job
+    // 对象（dispatch 时 claim 到的对象，和传给 executeJob 的是同一个引用）——
+    // executor.ts 的 ownsLease() 读的正是这同一个对象的 .lease_until。若心跳只续了
+    // DB 里的租约、却漏了这一行写回，executeJob 手里冻结的 job.lease_until 会永远
+    // 停在 claim 那一刻的旧值：下一次 ownsLease() 比对必然判定"租约已丢失"，把
+    // 这次货真价实、仍合法持有该行的 invocation 自己的 markCovered 静默丢弃——
+    // job 永远做不完，且零报错，只是安静地卡住。
+    lib.upsertSeries({ id: 's1', name: 'Series 1' })
+    lib.upsertEpisode({
+      id: 'e1',
+      seriesId: 's1',
+      season: 1,
+      episode: 1,
+      name: 'Episode 1',
+      path: '/media/s1e1.mkv',
+      subStatus: 'missing',
+    })
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    type RunResult = { decision: string; journalPath?: string; subtitlePath?: string }
+    let capturedOnCovered: ((id: string, path: string) => void) | undefined
+    let resolveRun: (r: RunResult) => void = () => {}
+    const runEpisode = vi.fn(
+      (_id: string, onCovered: (id: string, path: string) => void) => {
+        capturedOnCovered = onCovered
+        return new Promise<RunResult>((resolve) => { resolveRun = resolve })
+      }
+    )
+
+    let executeJobPromise: Promise<void> | undefined
+    const executeJob = (claimedJob: Job) => {
+      const p = realExecuteJob(claimedJob, {
+        lib, jobs, runEpisode, now: () => now, log: () => {},
+      } as ExecutorDeps)
+      executeJobPromise = p
+      return p
+    }
+
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    // Tick 1: dispatch claim 该 job，真实 executeJob 启动并卡在 await runEpisode(...)
+    // ——job 仍在跑，尚未产出任何决策。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+    expect(runEpisode).toHaveBeenCalledTimes(1)
+
+    // 时间推进跨过一次租约窗口——模拟真正跑得慢的长任务（多集季包）跨越了 tick 边界。
+    now += 31 * 60_000
+
+    // Tick 2: 心跳必须在这里为仍被跟踪的 job 续租、并把新 lease_until 写回同一个
+    // Job 对象引用——否则下面的 reapExpiredLeases 会把它当死租约回收（state→wanted），
+    // 之后 executeJob 结算时 ownsLease() 判定失败的原因会变成"state 已不是 active"，
+    // 而不是本测试要单独钉住的"lease_until 比对失配"；只要这一拍没把它错误回收，
+    // 就说明续租本身生效了——是否传导给 ownsLease() 则由最后的落盘断言验证。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1) // 没被误回收
+    expect(jobs.countByState('wanted')).toBe(0)
+
+    // runEpisode 终于返回：季包 onCovered 命中 e1，决策 download。
+    capturedOnCovered!('e1', '/tv/s1e1.zh-Hans.srt')
+    resolveRun({ decision: 'download', journalPath: '/j.json' })
+    await executeJobPromise
+
+    // 心跳续租若正常写回，ownsLease() 在这里应仍判定"我拥有"，markCovered 落地、
+    // job 收尾成 done——而不是被静默弃置成 stale-lease。
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(jobs.find('s1', 1)!.state).toBe('done')
+  })
+
   it('pollSessions对covered条目不wake', async () => {
     lib.upsertSeries({ id: 's1', name: 'Series 1' })
     lib.upsertEpisode({
