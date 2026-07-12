@@ -249,10 +249,6 @@ export const SeasonMapSchema = z.object({
   pairs: z.array(z.object({
     filelist_index: looseNumeric(z.number().int()),
     episode_code: z.string(),
-    confidence: z.preprocess(
-      v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-      z.number().min(0).max(1),
-    ),
     reason: z.string(),
   })).default([]),
   unmapped_files: z.array(z.number().int()).default([]),
