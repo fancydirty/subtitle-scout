@@ -62,6 +62,11 @@ export const JellyfinScheduledTaskSchema = z.object({
 }).passthrough()
 export const JellyfinScheduledTasksSchema = z.array(JellyfinScheduledTaskSchema)
 
+export const JellyfinVirtualFolderSchema = z.object({
+  ItemId: z.string(), Name: z.string(), Locations: z.array(z.string()).default([]),
+  LibraryOptions: z.object({ EnableRealtimeMonitor: z.boolean().nullish() }).passthrough().nullish(),
+}).passthrough()
+
 /**
  * getItem 查无该 id（Jellyfin /Items 对该 id 返回空 Items 数组）——这是永久态（脏/过期 id，
  * 或条目已被删除），不是瞬时故障。与 call() 内网络拒绝/非 2xx 抛出的普通 Error 区分开，
@@ -144,6 +149,18 @@ export class JellyfinClient implements PlayerServer {
     const raw = await this.call('GET', '/ScheduledTasks')
     const tasks = JellyfinScheduledTasksSchema.parse(raw)
     return tasks.map(t => ({ id: t.Id, name: t.Name, isRunning: t.State === 'Running' || t.State === 'Cancelling' }))
+  }
+
+  /** 库清单——realign 编排靠 Locations 判断新目录归属哪个库（供 refreshLibrary 用）。
+   *  EnableRealtimeMonitor：本地盘用户可能开着 Jellyfin 实时监控（inotify）——若开启，
+   *  runs 里应注明（见 realignExecutor 顶层编排的日志）。 */
+  async getVirtualFolders(): Promise<{ id: string; name: string; locations: string[]; enableRealtimeMonitor: boolean }[]> {
+    const raw = await this.call('GET', '/Library/VirtualFolders')
+    const folders = z.array(JellyfinVirtualFolderSchema).parse(raw)
+    return folders.map(f => ({
+      id: f.ItemId, name: f.Name, locations: f.Locations,
+      enableRealtimeMonitor: f.LibraryOptions?.EnableRealtimeMonitor ?? false,
+    }))
   }
 
   async getRecentItems(limit: number): Promise<JellyfinItem[]> {

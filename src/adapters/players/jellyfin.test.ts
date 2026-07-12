@@ -274,3 +274,26 @@ describe('JellyfinClient.getScheduledTasks', () => {
     ])
   })
 })
+
+describe('JellyfinClient.getVirtualFolders', () => {
+  it('解析库 id/name/挂载路径/EnableRealtimeMonitor', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { ItemId: 'lib-1', Name: 'TV Shows', Locations: ['/media/tv'], LibraryOptions: { EnableRealtimeMonitor: true } },
+      { ItemId: 'lib-2', Name: 'Movies', Locations: ['/media/movies'], LibraryOptions: { EnableRealtimeMonitor: false } },
+    ]), { status: 200 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    const folders = await client.getVirtualFolders()
+    expect(folders).toEqual([
+      { id: 'lib-1', name: 'TV Shows', locations: ['/media/tv'], enableRealtimeMonitor: true },
+      { id: 'lib-2', name: 'Movies', locations: ['/media/movies'], enableRealtimeMonitor: false },
+    ])
+  })
+
+  it('LibraryOptions 缺失时 enableRealtimeMonitor 默认 false', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { ItemId: 'lib-1', Name: 'TV', Locations: ['/media/tv'] },
+    ]), { status: 200 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect((await client.getVirtualFolders())[0].enableRealtimeMonitor).toBe(false)
+  })
+})
