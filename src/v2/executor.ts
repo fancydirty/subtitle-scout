@@ -11,6 +11,7 @@ import { tmdbTitles } from '../adapters/providers/tmdb.js'
 import { runPipeline } from '../core/pipeline.js'
 import { candidateKey } from '../core/schemas.js'
 import type { SeasonEpisode } from '../core/episode.js'
+import { diagnoseSeason, extractStructuredRejections } from '../agent/diagnoseSeason.js'
 import { join, dirname } from 'node:path'
 
 export interface ExecutorDeps {
@@ -42,6 +43,12 @@ export interface ExecutorDeps {
      *  据此精确退避，而不是走盲的 ERROR_BACKOFF_MS 短退避阶梯（否则会在配额重置前反复重打全链路）。 */
     quotaExhausted?: { resetAt: string | null } | null
   }>
+  /** 季级诊断闭包（可选）：no_safe_match 分支在 attempt>=2 时调用，判定是否需要整理媒体资源。
+   *  未注入（测试等场景）时诊断钩子整体跳过，不影响既有 no_safe_match 行为。 */
+  diagnoseSeason?: (job: Job) => Promise<{ verdict: 'absolute_flat' | 'unknown'; reason: string }>
+  /** realign job 执行闭包（可选）：executeJob 遇到 kind==='realign' 时调用。未注入（生产总会
+   *  接线，仅测试可能省略）时判 completeError 短退避，而不是抛异常崩溃整个 tick。 */
+  executeRealign?: (job: Job) => Promise<{ decision: 'realigned' | 'error'; detail: string }>
   now: () => number
   log: (msg: string) => void
 }
@@ -102,6 +109,10 @@ function remainingTargets(job: Job, lib: LibraryRepo, now: number): (Episode | M
  * 剧级执行器：重derive targets → 跑代表集 → 按结果分流 → 写 runs
  */
 export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
+  if (job.kind === 'realign') {
+    await executeRealignBranch(job, deps)
+    return
+  }
   const { lib, jobs, runEpisode, now, log } = deps
   const startedAt = now()
   const runs = new RunsRepo(lib.db)
@@ -328,6 +339,19 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
         for (const target of targets) {
           lib.markUnavailable(target.id, HUMAN_NO_MATCH, recheckAfter)
         }
+        // 诊断钩子：只在 series_season job、且这已经是第 2 次及以上内容失败时触发——
+        // 单次失败太早下判断，容易把"这季字幕站确实稀缺"误判成排布问题。
+        if (job.kind === 'series_season' && finalJob.attempt >= 2 && deps.diagnoseSeason) {
+          try {
+            const verdict = await deps.diagnoseSeason(finalJob)
+            if (verdict.verdict === 'absolute_flat') {
+              jobs.upsertWanted({ kind: 'realign', seriesId: job.series_id! }, now())
+              log(`诊断：series ${job.series_id} season ${job.season} 判定绝对编号平铺（${verdict.reason}），已建 realign 任务`)
+            }
+          } catch (e) {
+            log(`warn: series ${job.series_id} season ${job.season} 诊断失败（不影响本次 no_safe_match 结论）：${String(e)}`)
+          }
+        }
       }
       record(transitioned, decision, HUMAN_NO_MATCH, journalPath, stats)
       return
@@ -449,3 +473,78 @@ export function makeRunEpisode(
     }
   }
 }
+
+/** realign job 的执行分支：租约/退避复用既有状态机（completeDone/completeError），
+ *  不新增状态转移。executeRealign 未注入时判 completeError（短退避重试，而不是让
+ *  executor 在生产接线不完整时直接崩溃整个 tick）。 */
+async function executeRealignBranch(job: Job, deps: ExecutorDeps): Promise<void> {
+  const { jobs, now, log } = deps
+  const runs = new RunsRepo(deps.lib.db)
+  const startedAt = now()
+  if (!deps.executeRealign) {
+    jobs.completeError(job.id, 'realign executor not wired', now())
+    runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'error', detail: '整理执行器未接线（内部配置错误）', journalPath: null })
+    return
+  }
+  try {
+    const result = await deps.executeRealign(job)
+    if (result.decision === 'realigned') {
+      const transitioned = jobs.completeDone(job.id, now())
+      runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'realigned', detail: result.detail, journalPath: null })
+      if (!transitioned) log(`warn: job ${job.id} realign 完成但 complete* 守卫未命中（stale lease）`)
+    } else {
+      const transitioned = jobs.completeError(job.id, result.detail, now())
+      runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'error', detail: result.detail, journalPath: null })
+      if (!transitioned) log(`warn: job ${job.id} realign 失败但 complete* 守卫未命中（stale lease）`)
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    jobs.completeError(job.id, msg, now())
+    runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'error', detail: `整理失败，稍后自动重试：${msg}`, journalPath: null })
+  }
+}
+
+/**
+ * 生产接线闭包：把 lib/jf/tmdb/runs/llm 组装成 `ExecutorDeps.diagnoseSeason` 的形状
+ * （mirror `makeRunEpisode` 的接线角色——真实实现在这里把一堆具体依赖粘合成
+ * executor.ts 只关心的那一个纯函数签名）。TMDB id 解析统一走 `jf.getItem(seriesId)`
+ * 活查（同 executor.ts 其它 TMDB 引用解析路径的既有做法，series.provider_ids 这一列
+ * 在 scanner.ts 的正常扫描路径里从未被写入，不能当可信来源）。任何一步拿不到数据
+ * （无 TMDB id / TMDB 查无该季）直接返回 unknown，不抛异常——诊断本身就该在信号不足时
+ * 诚实说"看不出"，调用方（executeJob 的 no_safe_match 分支）外面还包了一层 try/catch
+ * 兜底，但这里能自己 fail-soft 的就不麻烦外层。
+ */
+export function makeDiagnoseSeason(deps: {
+  lib: LibraryRepo
+  jf: Pick<import('../adapters/players/types.js').PlayerServer, 'getItem'>
+  tmdb: Pick<import('../adapters/providers/tmdb.js').TmdbClient, 'getSeasonTable'>
+  runs: RunsRepo
+  llm: import('../agent/runtime.js').LlmRuntime
+  readFile?: (path: string) => string
+}): (job: Job) => Promise<{ verdict: 'absolute_flat' | 'unknown'; reason: string }> {
+  return async (job) => {
+    const seriesId = job.series_id!
+    const season = job.season!
+    const seriesItem = await deps.jf.getItem(seriesId).catch(() => null)
+    const tmdbId = seriesItem?.ProviderIds?.Tmdb
+    if (!tmdbId) {
+      return { verdict: 'unknown', reason: '无法解析该剧的 TMDB id，跳过诊断' }
+    }
+    const seasonTable = await deps.tmdb.getSeasonTable(tmdbId).catch(() => null)
+    const tmdbSeason = seasonTable?.find(s => s.seasonNumber === season)
+    const shape = {
+      seriesId, season,
+      mirrorEpisodeCount: deps.lib.countEpisodesInSeason(seriesId, season),
+      tmdbEpisodeCount: tmdbSeason?.episodeCount ?? null,
+    }
+    const jobRuns = deps.runs.getByJobId(job.id)
+    const recentRuns = jobRuns.slice(0, 5).map(r => ({ decision: r.decision ?? '', detail: r.detail ?? '' }))
+    const latestJournalPath = jobRuns[0]?.journal_path ?? null
+    const structuredRejections = latestJournalPath
+      ? extractStructuredRejections(latestJournalPath, deps.readFile)
+      : []
+    const result = await diagnoseSeason(deps.llm, shape, recentRuns, structuredRejections)
+    return result.parsed
+  }
+}
+
