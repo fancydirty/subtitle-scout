@@ -4,7 +4,7 @@ import {
   MediaContextSchema, MediaIdentitySchema, SearchPlanSchema,
   RankDecisionSchema, AssrtSearchResponseSchema, AssrtDetailResponseSchema,
   FinalDecisionSchema, OrphanDecisionSchema, LooseEpisodesMapSchema,
-  VerifyDecisionSchema,
+  VerifyDecisionSchema, PROVIDERS, SubtitleCandidateSchema, parseCandidateKey,
 } from './schemas.js'
 
 describe('MediaContextSchema', () => {
@@ -228,5 +228,21 @@ describe('FinalDecisionSchema — ask_user removed', () => {
   it('still accepts confidence:null (kept for backward-compat with historical journal files)', () => {
     const d = FinalDecisionSchema.parse({ request_id: 'r', decision: 'no_safe_match', confidence: null, reasons: [] })
     expect(d.confidence).toBeNull()
+  })
+})
+
+describe('PROVIDERS registry', () => {
+  it('includes zimuku alongside assrt/opensubtitles', () => {
+    expect(PROVIDERS).toEqual(['assrt', 'opensubtitles', 'zimuku'])
+  })
+  it('SubtitleCandidateSchema accepts provider:"zimuku"', () => {
+    const c = SubtitleCandidateSchema.parse({
+      provider: 'zimuku', providerId: '58421', videoName: null, nativeName: null,
+      language: null, subtype: null, releaseSite: 'zimuku', uploadDate: null, fileList: [],
+    })
+    expect(c.provider).toBe('zimuku')
+  })
+  it('parseCandidateKey recognizes the zimuku: prefix', () => {
+    expect(parseCandidateKey('zimuku:58421')).toEqual({ provider: 'zimuku', providerId: '58421' })
   })
 })
