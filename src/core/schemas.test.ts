@@ -85,9 +85,9 @@ describe('LLM output coercion (MiMo returns numbers as strings)', () => {
   it('LooseEpisodesMap fail-soft: one bad candidate_id row does not kill the whole parse', () => {
     const m = LooseEpisodesMapSchema.parse({
       assignments: [
-        { episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 },
-        { episode_code: 'S02E02', candidate_id: null, confidence: 0.95 },
-        { episode_code: 'S02E03', candidate_id: 803, confidence: 0.95 },
+        { episode_code: 'S02E01', candidate_id: 'assrt:801' },
+        { episode_code: 'S02E02', candidate_id: null },
+        { episode_code: 'S02E03', candidate_id: 803 },
       ],
       reasons: [],
     })

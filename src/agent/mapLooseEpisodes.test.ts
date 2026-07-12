@@ -27,7 +27,7 @@ const mk = (id: number, native: string, file: string): SubtitleCandidate => ({
   fileList: [{ index: 0, name: file }],
 })
 
-type Assignment = { episode_code: string; candidate_id: string; confidence: number }
+type Assignment = { episode_code: string; candidate_id: string }
 function mockLlm(assignments: Assignment[]) {
   const call = vi.fn(async (_opts: { prompt: string }) => ({
     parsed: { assignments, reasons: [] },
@@ -45,9 +45,9 @@ describe('mapLooseEpisodes', () => {
     ]
     const eps = [ep(1), ep(2), ep(3), ep(9, false)] // E09 not needed → must be absent from prompt
     const { call, llm } = mockLlm([
-      { episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 },
-      { episode_code: 'S02E02', candidate_id: 'assrt:802', confidence: 0.95 },
-      { episode_code: 'S02E03', candidate_id: 'assrt:803', confidence: 0.95 },
+      { episode_code: 'S02E01', candidate_id: 'assrt:801' },
+      { episode_code: 'S02E02', candidate_id: 'assrt:802' },
+      { episode_code: 'S02E03', candidate_id: 'assrt:803' },
     ])
     const result = await mapLooseEpisodes(llm, ctx, identity, candidates, eps)
     // pass-through of the parsed mapping
@@ -61,15 +61,15 @@ describe('mapLooseEpisodes', () => {
     expect(prompt).not.toContain('S02E09') // needsChinese:false episode excluded
   })
 
-  it('instructs the model to skip low-confidence guesses (leave a gap, do not misassign)', async () => {
+  it('instructs the model to skip ambiguous guesses (leave a gap, do not misassign)', async () => {
     const candidates = [mk(801, '第1集', 'Show.S02E01.chs.ass'), mk(802, '模糊', 'Show.mystery.ass')]
     const eps = [ep(1), ep(2)]
-    // Model obeys the <0.75 rule: only the confident E01 comes back, E02 left unassigned.
-    const { call, llm } = mockLlm([{ episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 }])
+    const { call, llm } = mockLlm([{ episode_code: 'S02E01', candidate_id: 'assrt:801' }])
     const result = await mapLooseEpisodes(llm, ctx, identity, candidates, eps)
     expect(result.parsed.assignments).toHaveLength(1)
     expect(result.parsed.assignments.map(a => a.episode_code)).not.toContain('S02E02')
-    expect(call.mock.calls[0][0].prompt).toContain('confidence < 0.75')
+    expect(call.mock.calls[0][0].prompt).toMatch(/safer to leave a gap/i)
+    expect(call.mock.calls[0][0].prompt.toLowerCase()).not.toMatch(/confidence < 0\.75/)
   })
 
   it('instructs the model to assign at most one candidate per episode (double entry → pick one)', async () => {
@@ -79,8 +79,8 @@ describe('mapLooseEpisodes', () => {
       mk(811, '第一集', 'Show.S02E01.v2.cht.ass'),
     ]
     const eps = [ep(1), ep(2)]
-    // Model picks the single most-confident entry for E01, drops the duplicate.
-    const { call, llm } = mockLlm([{ episode_code: 'S02E01', candidate_id: 'assrt:811', confidence: 0.92 }])
+    // Model picks the single clearer entry for E01, drops the duplicate.
+    const { call, llm } = mockLlm([{ episode_code: 'S02E01', candidate_id: 'assrt:811' }])
     const result = await mapLooseEpisodes(llm, ctx, identity, candidates, eps)
     const forE01 = result.parsed.assignments.filter(a => a.episode_code === 'S02E01')
     expect(forE01).toHaveLength(1)

@@ -261,10 +261,6 @@ export const LooseEpisodesMapSchema = z.object({
     episode_code: z.string(),
     // fail-soft：单行 candidate_id 缺失/为数字不炸整季 sweep——nullish 放行，下游 filter 剔除
     candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()).nullish(),
-    confidence: z.preprocess(
-      v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-      z.number().min(0).max(1),
-    ),
   })).default([]),
   reasons: z.array(z.string()).default([]),
 })
