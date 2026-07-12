@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import {
   AssrtSearchResponseSchema, AssrtDetailResponseSchema, AssrtQuotaResponseSchema,
-  type AssrtSub, type SubtitleCandidate,
+  type AssrtSub, type SubtitleCandidate, type SubtitleFile,
 } from '../../core/schemas.js'
 import type { z } from 'zod'
 
@@ -186,8 +186,22 @@ export class AssrtClient {
   }
 }
 
+/** 保险丝：fileList 的 index 字段必须与数组下标一一对应（详见 schemas.ts 上 SubtitleFileSchema 的
+ *  invariant 注释）——下游 gate.ts / pipeline.ts 全是纯位置寻址（fileList[fileIndex]），不会按
+ *  .index 字段反查。当前 map((f, i) => ({ index: i, ... })) 的写法本身就保证这条不变式恒成立；这个
+ *  断言只是给未来的改动（比如中途插了一次 filter/sort）上一道保险丝，出问题当场炸，而不是留到
+ *  线上装错文件才被发现。 */
+function assertFileListIndexInvariant(fileList: SubtitleFile[]): void {
+  fileList.forEach((f, i) => {
+    if (f.index !== i) throw new Error(`assrt fileList index invariant violated: entry at array position ${i} has index=${f.index}`)
+  })
+}
+
 export function toCandidate(sub: AssrtSub): SubtitleCandidate {
   const native = Array.isArray(sub.native_name) ? sub.native_name.join(' / ') : sub.native_name
+  // 构造时点：index 就是 map 的数组下标 i，从源头保证 index === array position。
+  const fileList = sub.filelist.map((f, i) => ({ index: i, name: f.f }))
+  assertFileListIndexInvariant(fileList)
   return {
     provider: 'assrt',
     providerId: String(sub.id),
@@ -197,6 +211,6 @@ export function toCandidate(sub: AssrtSub): SubtitleCandidate {
     subtype: sub.subtype ?? null,
     releaseSite: sub.release_site ?? null,
     uploadDate: null, // ASSRT 搜索响应不含上传日期
-    fileList: sub.filelist.map((f, i) => ({ index: i, name: f.f })),
+    fileList,
   }
 }
