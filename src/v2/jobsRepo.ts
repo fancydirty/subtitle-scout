@@ -179,7 +179,10 @@ export class JobsRepo {
    *  promise 结算但其 continuation（.finally）从未被调度、导致 job 卡在 active 态且
    *  不再被本进程跟踪，过去只能靠 reapExpiredLeases 在租约到期后（最长 30 分钟）自愈。
    *  不 attempt+1——同 reapExpiredLeases/reapAllActive 的"reap 不是内容性失败"语义。
-   *  返回被回收行的回收前快照（state 仍是原 active 态），供调用方记一行 warn 日志。 */
+   *  返回被回收行的回收前快照（state 仍是原 active 态），供调用方记一行 warn 日志。
+   *  MINOR（审计遗留）：这把单实例前提从"启动时一次性回收"升级成"每个 tick 都执行"——两个
+   *  daemon 实例共享同一个 DB 时会互相把对方的 inflight job 当孤儿回收，陷入持续互 reap；
+   *  真要支持多实例，落地判据得从"trackedIds 集合缺失"换成 jobs 表上的 pid/owner 列。 */
   reapOrphaned(trackedIds: Iterable<number>, now: number): Job[] {
     const excluded = [...trackedIds]
     const placeholders = excluded.map(() => '?').join(',')
