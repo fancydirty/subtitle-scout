@@ -9,5 +9,6 @@ worker
 scripts
 output
 *.log
+dist
 web/node_modules
 web/dist

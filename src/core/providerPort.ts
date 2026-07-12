@@ -23,9 +23,24 @@ export interface ProviderPort {
 }
 
 const ResolveOutSchema = z.object({ url: z.string(), filename: z.string().optional() })
-const here = dirname(fileURLToPath(import.meta.url))
-/** 默认命令：npx tsx <repo>/src/cli/subtitle-fetch.ts（容器与本机同构，无编译步） */
-const DEFAULT_COMMAND = ['npx', 'tsx', resolve(here, '../cli/subtitle-fetch.ts')]
+
+/**
+ * 子进程入口按运行形态自动切换——不依赖环境变量或硬编码路径假设。
+ * 判据：本模块自身 import.meta.url 的扩展名。tsx/vitest 跑 src 时保留 .ts，
+ * `tsc` 编译到 dist 后是 .js；两条腿天然互斥，用同一份代码原地推断，不会和实际部署形态错位。
+ *   .ts → 开发态：npx tsx <repo>/src/cli/subtitle-fetch.ts
+ *   .js → 编译态：node <repo>/dist/cli/subtitle-fetch.js（同级 sibling，tsc rootDir/outDir 镜像 src 布局）
+ */
+export function resolveSubtitleFetchCommand(moduleUrl: string): string[] {
+  const modulePath = fileURLToPath(moduleUrl)
+  const moduleDir = dirname(modulePath)
+  if (modulePath.endsWith('.js')) {
+    return ['node', resolve(moduleDir, '../cli/subtitle-fetch.js')]
+  }
+  return ['npx', 'tsx', resolve(moduleDir, '../cli/subtitle-fetch.ts')]
+}
+
+const DEFAULT_COMMAND = resolveSubtitleFetchCommand(import.meta.url)
 
 /**
  * subtitle-fetch 子进程退出非零前，若 stderr 里出现过 code:'quota_exhausted' 的 provider_error 事件——
