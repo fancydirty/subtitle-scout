@@ -231,7 +231,6 @@ docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
 | `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` | OpenSubtitles 登录（可选）——免费档下载配额 5→20 次/天 | 空 |
 | `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔） | 空 |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
-| `AUTO_DOWNLOAD_MIN_CONFIDENCE` | 自动下载置信度阈值（0-1） | `0.86` |
 | `POLL_INTERVAL_SECONDS` | watch 模式轮询间隔（秒） | `15` |
 | `ITEM_COOLDOWN_MINUTES` | 同一条目处理冷却期（分钟） | `30` |
 | `TREAT_PGS_AS_MISSING` | 图形字幕（PGS）视为缺字幕 | `true` |
@@ -307,12 +306,16 @@ Jellyfin 首次启动需要几秒到几十秒完成初始化（尤其全家桶�
 
 ### Q: "暂时没找到合适的字幕"是 bug 吗
 
-**不是**。这是保守设计：
+**不是**。这是保守设计，且没有阈值可调——判断权完全交给大模型的理解力，不是分数：
 - ASSRT 对欧美剧集覆盖有限，小众片源缺字幕是常态
-- 大模型给出的置信度低于 `AUTO_DOWNLOAD_MIN_CONFIDENCE`（默认 0.86）时，拒绝下载
-- **宁可不下，也不下错**
+- 候选字幕先按可能性排序，每个都会被下载进一次性沙盒目录（不直接落媒体库）、结构性
+  体检（cue 数量级、时间轴跨度是否匹配片长、简繁判定、字幕组头信息、编码可解码性等），
+  再由大模型看着这些证据终审表态"是/不是这一集"——说不出"是"就按"不是"处理，弃了
+  换下一个候选；候选试完仍全部落空，才诚实报告"暂无"
+- **宁可不下，也不下错**——错写盘是永久污染，没有置信度数字，也没有"调低阈值多下载"
+  这类开关
 
-如果觉得过于保守，可调低 `AUTO_DOWNLOAD_MIN_CONFIDENCE`（范围 0-1）。
+想看某次运行具体拒了哪些候选、为什么，见下面"怎么查某次运行的详细决策过程"。
 
 ### Q: 为什么国产片被跳过
 

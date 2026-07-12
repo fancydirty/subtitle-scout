@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -846,10 +846,6 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     mediaRoot = mkdtempSync(join(tmpdir(), 'scout-media-'))
     cacheRoot = mkdtempSync(join(tmpdir(), 'scout-cache-'))
     mkdirSync(join(mediaRoot, 'movie'), { recursive: true })
-  })
-
-  afterEach(() => {
-    delete process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE
   })
 
   const mkAssembled = (jf: unknown): Assembled =>
