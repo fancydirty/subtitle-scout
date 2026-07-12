@@ -31,7 +31,7 @@ export interface PipelineDeps {
   /** staging 沙盒终审：候选下载+体检后，agent 对"是不是这份资源的字幕"二选一表态。 */
   verify: (ctx: MediaContext, id: MediaIdentity, candidate: SubtitleCandidate, signals: InspectSignals) => Promise<CallStructuredResult<VerifyDecision>>
   providers: ProviderPort
-  download: (url: string) => Promise<DownloadResult>
+  download: (url: string, headers?: Record<string, string>) => Promise<DownloadResult>
   cache: DecisionCache
   /** 约束候选队列试错（每候选一次 resolve/download）、季横扫按集 resolve、季包升格逐集 resolve
    *  共用同一份治理——三者共享一个从"下载阶段开始"起算的预算池（CRITICAL 修复，见 runPipeline
@@ -260,7 +260,7 @@ async function tryCandidateQueue(
       const resolved = await deps.providers.resolveDownload({
         provider: item.candidate.provider, providerId: item.candidate.providerId, fileIndex: item.fileIndex,
       })
-      const dl = await deps.download(resolved.url)
+      const dl = await deps.download(resolved.url, resolved.headers)
       const attemptDir = join(stagingDir, candidateSlug(item.candidate, item.fileIndex))
       const artifactFilename = resolved.filename ?? item.candidate.fileList[item.fileIndex ?? -1]?.name ?? 'subtitle.srt'
       const verdict = await stageInspectVerifyInstall(
@@ -393,7 +393,7 @@ export async function runPipeline(
       })
       const artifactFilename = resolved.filename ?? 'subtitle.srt'
       journal.step('download', { url: resolved.url.slice(0, 80) })
-      const dl = await deps.download(resolved.url)
+      const dl = await deps.download(resolved.url, resolved.headers)
       journal.step('write')
       const written = await writeSubtitle({
         artifact: dl.bytes, artifactFilename, videoFilename: ctx.media.filename,
@@ -637,7 +637,7 @@ export async function runPipeline(
                   providerId: pack.providerId,
                   fileIndex: item.filelistIndex,
                 })
-                const dl = await deps.download(resolved.url)
+                const dl = await deps.download(resolved.url, resolved.headers)
                 // addendum C: 季包每集下载也要经过 stage→inspect→verify→install，不再直写媒体目录。
                 const attemptDir = join(stagingDir, candidateSlug(pack, item.filelistIndex))
                 const verdict = await stageInspectVerifyInstall(
@@ -960,7 +960,7 @@ async function runSeasonSweep(
       // 真实结果（尤其是紧跟着的瞬时下载失败）被"resolve 成功"这一步意外冲掉。清零改到确认
       // 是"决定性结论"（内容拒绝或完整覆盖）之后才做，见下方。
 
-      const dl = await deps.download(resolved.url)
+      const dl = await deps.download(resolved.url, resolved.headers)
       // addendum C: 横扫每集下载也要经过 stage→inspect→verify→install，不再直写媒体目录。
       const attemptDir = join(stagingDir, candidateSlug(parsed, fileIndex))
       const artifactFilename = resolved.filename ?? candidate.fileList[fileIndex ?? 0]?.name ?? 'subtitle.srt'

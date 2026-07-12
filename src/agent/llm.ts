@@ -1,4 +1,4 @@
-import { generateText, tool, type LanguageModel } from 'ai'
+import { generateText, tool, type LanguageModel, type ModelMessage } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { z } from 'zod'
 
@@ -40,6 +40,9 @@ export interface CallStructuredOpts<S extends z.ZodType> {
   prompt: string
   schema: S
   maxOutputTokens?: number
+  /** 附加图片(如验证码 PNG 字节)供多模态模型识别；省略则走纯文本 prompt。目前仅
+   *  solveNumericCaptcha 使用。 */
+  images?: Buffer[]
 }
 
 export interface CallStructuredResult<T> {
@@ -63,9 +66,24 @@ function isRawToolChoiceApiError(e: unknown): boolean {
   return /tool[_ ]choice|thinking mode/i.test(String(e))
 }
 
+/** 有图片时把 prompt 包成单条 user message(text part + file parts),走多模态;无图片原样
+ *  返回字符串——generateText 的 prompt 参数本就接受 string | ModelMessage[] 两种形状(ai@7)。
+ *  用 {type:'file', data, mediaType} 而不是已弃用的 {type:'image', image}(实测 ai@7.0.15 对
+ *  后者打 deprecation warning)。 */
+function buildPrompt(text: string, images?: Buffer[]): string | ModelMessage[] {
+  if (!images || images.length === 0) return text
+  return [{
+    role: 'user',
+    content: [
+      { type: 'text', text },
+      ...images.map(image => ({ type: 'file' as const, data: image, mediaType: 'image/png' })),
+    ],
+  }]
+}
+
 /**
  * 强制单 tool 调用的结构化输出。绝不使用 response_format:json_schema——
- * MiMo 会静默忽略 schema（2026-07-06 实测）。
+ * MiMo 会静默忽略 schema(2026-07-06 实测)。
  */
 export async function callStructured<S extends z.ZodType>(
   opts: CallStructuredOpts<S>,
@@ -85,7 +103,7 @@ export async function callStructured<S extends z.ZodType>(
     try {
       result = await generateText({
         model: opts.model,
-        prompt,
+        prompt: buildPrompt(prompt, opts.images),
         tools: {
           [opts.name]: tool({
             description: opts.description,
@@ -167,7 +185,7 @@ export async function callPromptJson<S extends z.ZodType>(
       : `${basePrompt}\n\nYour previous answer failed validation:\n${lastError}\nOutput a corrected, complete JSON object.`
     const result = await generateText({
       model: opts.model,
-      prompt,
+      prompt: buildPrompt(prompt, opts.images),
       maxOutputTokens: opts.maxOutputTokens ?? 16000,
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     })

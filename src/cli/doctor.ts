@@ -57,6 +57,36 @@ export async function checkOpenSubtitles(os: { search(): Promise<{ data: unknown
   }
 }
 
+/** zimuku 是可选 provider(默认关闭——灰色站点,条款风险自担,见 .env.example)。
+ *  probe=null(ZIMUKU_ENABLED 未开)→ skip,非失败,规则同 checkOpenSubtitles。已启用时只探测
+ *  首页可达性:命中云锁"网站防火墙"中间页是预期健康状态而非失败——运行时自动破解,doctor 不
+ *  重复验证码破解链路(那是集成测试/实跑的职责)。 */
+export async function checkZimuku(
+  probe: { fetchHomepage(): Promise<{ ok: boolean; challenged: boolean }> } | null,
+): Promise<DoctorResult> {
+  if (!probe) {
+    return {
+      name: 'zimuku', ok: true, skip: true,
+      detail: '未配置(可选 provider,灰色站点条款风险自担)——设 ZIMUKU_ENABLED=true 启用',
+    }
+  }
+  try {
+    const r = await probe.fetchHomepage()
+    if (!r.ok) throw new Error('homepage did not return HTTP 200')
+    return {
+      name: 'zimuku', ok: true,
+      detail: r.challenged
+        ? 'zimuku.org 可达(命中云锁验证页,属预期——运行时会自动破解)'
+        : 'zimuku.org 可达,未触发验证页',
+    }
+  } catch (e) {
+    return {
+      name: 'zimuku', ok: false, detail: `连接失败:${String(e)}`,
+      hint: '检查网络能否直连 zimuku.org(灰色站点,部分网络环境可能被墙或限速);确认 ZIMUKU_ENABLED 拼写正确(区分大小写,值必须是字符串 "true")。',
+    }
+  }
+}
+
 export async function checkLlm(minimalChat: () => Promise<string>): Promise<DoctorResult> {
   try {
     await minimalChat()

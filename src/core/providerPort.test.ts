@@ -157,4 +157,16 @@ describe('makeCliProviderPort', () => {
     expect(r.candidates[0].nativeName).toBe('黑客帝国')
     expect(r.candidates[0].nativeName).not.toContain('�')
   })
+  it('resolveDownload: parses an optional headers field through from the CLI subprocess stdout JSON (zimuku archive download needs browser headers)', async () => {
+    const port = makeCliProviderPort({
+      command: ['sh', '-c', 'echo \'{"url":"https://dl.example/x.zip","filename":"x.zip","headers":{"User-Agent":"test-ua"}}\''],
+    })
+    const r = await port.resolveDownload({ provider: 'zimuku', providerId: '1', fileIndex: null })
+    expect(r.headers).toEqual({ 'User-Agent': 'test-ua' })
+  })
+  it('resolveDownload: headers stays undefined when the CLI does not emit it (assrt/opensubtitles unaffected)', async () => {
+    const port = makeCliProviderPort({ command: stub })
+    const r = await port.resolveDownload({ provider: 'assrt', providerId: '1', fileIndex: 2 })
+    expect(r.headers).toBeUndefined()
+  })
 })

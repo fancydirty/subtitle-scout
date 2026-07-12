@@ -34,4 +34,17 @@ describe('subtitle-fetch CLI exit paths (MINOR-2)', () => {
     const parsed = lastJsonLine(res.stderr) as { error: string }
     expect(parsed.error).toMatch(/no providers configured/)
   })
+
+  it('ZIMUKU_ENABLED=true without LLM_BASE_URL exits 1 with a clear config error (no network call attempted)', () => {
+    const res = spawnSync(tsxBin, [cliPath, '--query', 'test'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env, ASSRT_TOKEN: '', OPENSUBTITLES_API_KEY: '',
+        ZIMUKU_ENABLED: 'true', LLM_BASE_URL: '', LLM_API_KEY: '', LLM_MODEL: '',
+      },
+    })
+    expect(res.status).toBe(1)
+    const parsed = lastJsonLine(res.stderr) as { error: string }
+    expect(parsed.error).toMatch(/ZIMUKU_ENABLED=true requires LLM_BASE_URL/)
+  })
 })

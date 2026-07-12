@@ -111,6 +111,69 @@ describe('callStructured', () => {
   })
 })
 
+describe('callStructured with images (multimodal captcha solving)', () => {
+  it('sends the image as a file part alongside the text prompt when opts.images is provided', async () => {
+    let receivedPrompt: unknown
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        receivedPrompt = (options as { prompt: unknown }).prompt
+        return {
+          finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+          usage: {
+            inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 10, text: undefined, reasoning: undefined },
+          },
+          content: [
+            { type: 'tool-call', toolCallId: 'c1', toolName: 'report', input: JSON.stringify({ digits: '74504' }) },
+          ],
+          warnings: [],
+        }
+      },
+    })
+    const png = Buffer.from('fake-png-bytes')
+    const r = await callStructured({
+      model, name: 'report', description: 'd', prompt: 'read the digits',
+      schema: z.object({ digits: z.string() }), images: [png],
+    })
+    expect(r.parsed).toEqual({ digits: '74504' })
+    const messages = receivedPrompt as Array<{ role: string; content: Array<{ type: string; data?: unknown; mediaType?: string }> }>
+    expect(messages[0].role).toBe('user')
+    expect(messages[0].content[0]).toEqual({ type: 'text', text: 'read the digits' })
+    expect(messages[0].content[1].type).toBe('file')
+    expect(messages[0].content[1].mediaType).toBe('image/png')
+  })
+
+  it('falls back to a plain string prompt when opts.images is omitted (existing text-only callers unaffected)', async () => {
+    let receivedPrompt: unknown
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        receivedPrompt = (options as { prompt: unknown }).prompt
+        return {
+          finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+          usage: {
+            inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 10, text: undefined, reasoning: undefined },
+          },
+          content: [
+            { type: 'tool-call', toolCallId: 'c1', toolName: 'report', input: JSON.stringify({ title: 'x', year: 1 }) },
+          ],
+          warnings: [],
+        }
+      },
+    })
+    await callStructured({ model, name: 'report', description: 'd', prompt: 'identify', schema })
+    // PLAN NOTE: ai@7's generateText normalizes even a bare string prompt into a single
+    // user/text-part message *before* doGenerate ever sees it (verified experimentally —
+    // `typeof receivedPrompt` is 'object' here regardless of whether callStructured passes a
+    // string or an equivalent one-part message array to generateText). So `typeof === 'string'`
+    // can never be observed at this boundary — asserting it would make this test permanently
+    // un-passable. What's actually observable and what matters for "text-only callers
+    // unaffected" is that no file part gets appended when opts.images is omitted: the normalized
+    // shape here must be byte-identical to what generateText produces for a plain string prompt.
+    expect(receivedPrompt).toEqual([{ role: 'user', content: [{ type: 'text', text: 'identify' }] }])
+  })
+})
+
 describe('injectExtraBody', () => {
   it('merges extra fields into a JSON string body', async () => {
     const { injectExtraBody } = await import('./llm.js')
@@ -236,5 +299,32 @@ describe('callPromptJson', () => {
       name: 'report', description: 'd', prompt: 'p',
       schema: z.object({ ok: z.boolean() }),
     })).rejects.toThrow(StructuredOutputError)
+  })
+
+  it('sends the image as a file part when opts.images is provided (mode 3 fallback also supports multimodal)', async () => {
+    let receivedPrompt: unknown
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        receivedPrompt = (options as { prompt: unknown }).prompt
+        return {
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: {
+            inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 10, text: undefined, reasoning: undefined },
+          },
+          content: [{ type: 'text', text: '{"digits":"74504"}' }],
+          warnings: [],
+        }
+      },
+    })
+    const png = Buffer.from('fake-png-bytes')
+    const { callPromptJson } = await import('./llm.js')
+    const r = await callPromptJson({
+      model: model as never, name: 'report', description: 'd', prompt: 'read the digits',
+      schema: z.object({ digits: z.string() }), images: [png],
+    })
+    expect(r.parsed).toEqual({ digits: '74504' })
+    const messages = receivedPrompt as Array<{ content: Array<{ type: string }> }>
+    expect(messages[0].content.some(p => p.type === 'file')).toBe(true)
   })
 })

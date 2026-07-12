@@ -39,10 +39,11 @@ import type { SeasonEpisode } from '../core/episode.js'
 import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
-  checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings,
+  checkJellyfin, checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots, checkPathMappings,
   checkDatabase, checkStuckJobs, checkMountCapabilities,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
+import { detectChallenge } from '../adapters/providers/yunsuo.js'
 import { openDb } from '../v2/db.js'
 import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -136,7 +137,7 @@ async function assemble(): Promise<Assembled> {
         }
       },
     }),
-    download: url => downloadDirect(url),
+    download: (url, headers) => downloadDirect(url, { headers }),
     llm,
     cache: new DecisionCache(join(cacheRoot, 'decisions')),
     maxApiCallsPerJob: 4,
@@ -516,6 +517,19 @@ async function cmdDoctor() {
     // The Matrix：配额免费的探测目标，只验证 key/网络，不耗下载配额
     results.push(await checkOpenSubtitles({
       search: () => withTimeout(os.search({ imdbId: 133093, languages: ['zh-cn'] }), 10_000, 'OpenSubtitles'),
+    }))
+  }
+
+  const zimukuEnabled = process.env.ZIMUKU_ENABLED === 'true'
+  if (!zimukuEnabled) {
+    results.push(await checkZimuku(null))
+  } else {
+    results.push(await checkZimuku({
+      fetchHomepage: async () => {
+        const res = await withTimeout(fetch('https://www.zimuku.org/', { signal: AbortSignal.timeout(10_000) }), 10_000, 'zimuku')
+        const html = await res.text()
+        return { ok: res.ok, challenged: detectChallenge(html) }
+      },
     }))
   }
 

@@ -162,7 +162,7 @@ export const AssrtQuotaResponseSchema = z.object({
 })
 
 // ---------- Provider-neutral candidate (multi-source) ----------
-export const PROVIDERS = ['assrt', 'opensubtitles'] as const
+export const PROVIDERS = ['assrt', 'opensubtitles', 'zimuku'] as const
 export type ProviderName = (typeof PROVIDERS)[number]
 
 // invariant: `index` MUST equal the entry's position within its containing SubtitleCandidate.fileList

@@ -45,7 +45,7 @@ export interface FetchAdapter {
   name: string   // equals the ProviderName it emits
   enabled: (args: FetchArgs, env: NodeJS.ProcessEnv) => boolean
   search: (args: FetchArgs, emit: (e: FetchEvent) => void) => Promise<SubtitleCandidate[]>
-  resolve: (ref: CandidateRef, emit: (e: FetchEvent) => void) => Promise<{ url: string; filename?: string }>
+  resolve: (ref: CandidateRef, emit: (e: FetchEvent) => void) => Promise<{ url: string; filename?: string; headers?: Record<string, string> }>
 }
 
 export async function runSearch(
@@ -55,7 +55,7 @@ export async function runSearch(
   // 零 provider ≠ "诚实无结果"：配置缺失必须 fail-fast（CLI exit 1 → pipeline 'error'，不写负缓存）。
   // f0ab58b 删除了 assemble() 的 requireEnv 启动守卫后，这里是防"静默毒库"的唯一防线。
   if (enabled.length === 0) {
-    throw new Error('no providers configured — set ASSRT_TOKEN and/or OPENSUBTITLES_API_KEY')
+    throw new Error('no providers configured — set ASSRT_TOKEN, OPENSUBTITLES_API_KEY, and/or ZIMUKU_ENABLED=true')
   }
   const failures: { provider: string; message: string }[] = []
   const results = await Promise.all(enabled.map(a =>
@@ -76,9 +76,9 @@ export async function runSearch(
 
 export async function runResolve(
   ref: CandidateRef, adapters: FetchAdapter[], emit: (e: FetchEvent) => void = () => {},
-): Promise<{ url: string; filename?: string }> {
+): Promise<{ url: string; filename?: string; headers?: Record<string, string> }> {
   if (adapters.length === 0) {
-    throw new Error('no providers configured — set ASSRT_TOKEN and/or OPENSUBTITLES_API_KEY')
+    throw new Error('no providers configured — set ASSRT_TOKEN, OPENSUBTITLES_API_KEY, and/or ZIMUKU_ENABLED=true')
   }
   const adapter = adapters.find(a => a.name === ref.provider)
   if (!adapter) throw new Error(`no adapter for provider ${ref.provider}`)
