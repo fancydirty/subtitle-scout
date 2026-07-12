@@ -165,6 +165,49 @@ UPDATE movies
       updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
   WHERE sub_status = 'needs_review';
   `.trim(),
+  // v7: realign job kind + plan_ref——library realign 功能新增 job kind。SQLite 不支持
+  // ALTER 已有 CHECK 约束，标准作法同 v5(needs_review)：建新表(扩容 CHECK + 新列 plan_ref)
+  // → 显式列拷数据 → 删旧表 → 改名。与 v5 不同：jobs 表在此之前已有 jobs_identity/jobs_claim
+  // 两个索引（v1 DDL 里紧跟 CREATE TABLE jobs 建的），DROP TABLE 会连带丢掉它们，必须显式
+  // 重建，不能照抄 v5 注释"之前没有额外索引，重建无需连带重建"的结论。runs.job_id
+  // REFERENCES jobs(id) 是本表的子表——DROP TABLE jobs 期间 SQLite 只在对子表做 DML 时
+  // 检查外键，不会因父表被删而报错；INSERT INTO jobs_new ... SELECT ... FROM jobs 原样
+  // 拷贝全部 id，RENAME 完成后 runs.job_id 依然精确指向同一批 id，外键关系完整无损。
+  // realign job 语义：series_id 有值、season 恒 NULL、plan_ref 指向整理清单(manifest)路径
+  // （诊断创建时为 NULL，真正开始执行、manifest 落盘后由 jobsRepo.setPlanRef 回填——诊断
+  // 那一刻还没有清单可指）。jobs_identity 的表达式唯一索引 ifnull(season,-1) 天然让
+  // "同剧只能有一个 realign job"成立，不需要为此单独改索引定义。
+  `
+CREATE TABLE jobs_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK(kind IN ('series_season','movie','realign')),
+  series_id TEXT, season INTEGER,
+  movie_id TEXT,
+  plan_ref TEXT,
+  state TEXT NOT NULL CHECK(state IN
+    ('wanted','searching','downloading','verifying','done','failed','dormant')),
+  priority INTEGER NOT NULL DEFAULT 0,
+  target_episodes TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  error_attempt INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER,
+  lease_until INTEGER,
+  last_error TEXT, journal_ref TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+INSERT INTO jobs_new
+  (id, kind, series_id, season, movie_id, state, priority, target_episodes,
+   attempt, error_attempt, next_retry_at, lease_until, last_error, journal_ref,
+   created_at, updated_at)
+  SELECT id, kind, series_id, season, movie_id, state, priority, target_episodes,
+         attempt, error_attempt, next_retry_at, lease_until, last_error, journal_ref,
+         created_at, updated_at
+  FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_new RENAME TO jobs;
+CREATE UNIQUE INDEX jobs_identity ON jobs(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''));
+CREATE INDEX jobs_claim ON jobs(state, priority DESC, created_at);
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
@@ -174,7 +217,21 @@ export function openDb(path: string): ScoutDb {
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
   db.pragma('synchronous = NORMAL')
-  db.pragma('foreign_keys = ON')
+  // foreign_keys 故意先关掉、留到迁移跑完之后才打开（见下方 return 前的说明）——better-sqlite3
+  // 的连接默认就是 foreign_keys=ON（不是"不设置=关闭"，是"不设置=已经开着"，必须显式 OFF），
+  // v7 迁移重建 jobs 表时，runs.job_id REFERENCES jobs(id) 是真实声明的外键（不同于 v5 时的
+  // episodes/movies，那两张表在当时没有任何子表声明 REFERENCES 指向它们）。SQLite 的
+  // DROP TABLE 对声明了外键的父表会做隐式 DELETE 语义检查：哪怕马上 ALTER TABLE ... RENAME
+  // 把同名表换回来、数据/id 都原样复原，foreign_keys=ON（含 defer_foreign_keys=ON 声明的
+  // 延迟检查——实测过，同样在 COMMIT 时报错）仍然会判定引用失效而报 FOREIGN KEY constraint
+  // failed——延迟检查绑定的是"原表"这个 schema 对象的身份，不认"同名新表"。这是 SQLite 官方
+  // 文档"Making Other Kinds Of Table Schema Changes"12 步流程的明文要求：步骤 1 要求在自动
+  // 提交模式（不在事务内）下先 PRAGMA foreign_keys=OFF，重建完成后再 PRAGMA foreign_keys=ON
+  // （该 pragma 在事务中途切换是 no-op，必须在事务开始前完成）。迁移前的 PRAGMA
+  // foreign_key_check 体检不依赖这个开关（体检本身独立于开关状态），迁移涉及的
+  // INSERT ... SELECT 拷贝的数据完整性由体检已保证零违例，迁移后 return 前重新打开
+  // foreign_keys=ON 让 runtime DML 强校验照常生效。
+  db.pragma('foreign_keys = OFF')
 
   // 读取当前 schema 版本（meta 表不存在时为 0）
   let currentVersion = 0
@@ -192,12 +249,12 @@ export function openDb(path: string): ScoutDb {
   // 执行未应用的迁移
   if (currentVersion < MIGRATIONS.length) {
     // Pre-flight: v5 迁移会拿 episodes/movies 里的存量行原样拷进新建的 episodes_new/
-    // movies_new（同样声明 series_id → series(id) 外键），期间 foreign_keys 已被上面的
-    // pragma 打开——若库里蛰伏着孤儿行（比如 series 行曾被手工删除、或数据是在
-    // foreign_keys=OFF 时代写入的，从未被现有约束真正验证过），INSERT 会在建表迁移中途
-    // 撞上 FOREIGN KEY constraint failed。单事务迁移因此干净回滚回 currentVersion，
-    // 但守护进程接下来每次启动都会拿着这句晦涩报错反复炸，直到有人翻 SQL 手工揪出脏行。
-    // 这里在动手改表之前先体检一遍，把违例行（表名+rowid）摊开写进报错，一步到位可操作。
+    // movies_new（同样声明 series_id → series(id) 外键）——若库里蛰伏着孤儿行（比如 series
+    // 行曾被手工删除、或数据是在 foreign_keys=OFF 时代写入的，从未被真正验证过），拷贝
+    // 期间这行数据本身就是脏的，不修就永远是脏的（与本连接这一刻 foreign_keys 开关无关，
+    // 见上方 pragma 注释——迁移期间这个开关本就故意关着）。这里在动手改表之前先体检一遍，
+    // 把违例行（表名+rowid）摊开写进报错，一步到位可操作，避免守护进程日后拿一句晦涩的
+    // FOREIGN KEY constraint failed 反复重启也炸不出头绪。
     const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
       table: string
       rowid: number | string | null
@@ -237,6 +294,11 @@ export function openDb(path: string): ScoutDb {
     })
     migrate()
   }
+
+  // 迁移（如果跑了）已经全部提交——现在才打开运行期外键强校验，覆盖有迁移和无迁移两条
+  // 路径（无迁移路径同样需要它，只是从未被上面 if 分支覆盖到）。见顶部 pragma 注释：
+  // 提前打开会导致 v7 迁移的 DROP TABLE jobs（含 runs.job_id 的真实外键引用）无法完成。
+  db.pragma('foreign_keys = ON')
 
   return db
 }
