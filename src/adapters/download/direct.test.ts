@@ -32,4 +32,17 @@ describe('downloadDirect', () => {
     const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.signal).toBeInstanceOf(AbortSignal)
   })
+  it('forwards custom headers to fetchImpl when provided (zimuku archive download needs browser UA/Referer)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('ok')))
+    const headers = { 'User-Agent': 'test-ua', Referer: 'https://www.zimuku.org/' }
+    await downloadDirect('http://x/y.zip', { fetchImpl: fetchImpl as unknown as typeof fetch, headers })
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.headers).toEqual(headers)
+  })
+  it('omits headers from the fetch init when not provided (existing assrt/OS downloads unaffected)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('ok')))
+    await downloadDirect('http://x/y.ass', { fetchImpl: fetchImpl as unknown as typeof fetch })
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.headers).toBeUndefined()
+  })
 })
