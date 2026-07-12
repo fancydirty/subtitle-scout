@@ -118,6 +118,90 @@ describe('ScoutDaemon', () => {
     resolveJob()
   })
 
+  it('FIX-1: active 但不在本进程 inflight 跟踪里的孤儿行——即便租约合法未过期，也在秒级被回收（不必等 30min 租约到期）', async () => {
+    // 生产实案复现：executeJob 的 promise 结算但其 continuation（.finally）从未被调度
+    // ——job 卡在 active 态、租约仍合法未过期，但本进程再也不"跟踪"它了。过去只能等
+    // 最长 30 分钟租约到期后 reapExpiredLeases 自愈，期间 searching 并发槽（默认=1）
+    // 被永久占用，队列彻底停摆且零 log/run 证据。这里绕过 daemon 直接 claimNext，
+    // 模拟"该 job 从未被本 daemon 实例的 dispatch()/inflight 跟踪过"。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const orphan = jobs.claimNext(now)!
+    expect(orphan.state).toBe('searching')
+    expect(orphan.lease_until).toBeGreaterThan(now) // 租约合法，远未过期
+
+    const executeJob = vi.fn(async () => {})
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick()
+
+    // 秒级回收 log 触发，命名了 job 和异常——不必等 30min 租约到期。
+    expect(logs.some(l => l.includes(`${orphan.id}`) && /孤儿|orphan/i.test(l))).toBe(true)
+    // 本例队列里只有这一个 job：回收腾出的槽位在同一 tick 内被 dispatch 合法重新领取
+    // （这次正常跟踪），派发槽没有被永久空置或双跑。
+    expect(executeJob).toHaveBeenCalledOnce()
+    expect(jobs.countByState('searching')).toBe(1)
+  })
+
+  it('FIX-1: 孤儿回收腾出的派发槽让另一个排队 job 得以领取（打破单槽饿死）', async () => {
+    // 更贴近 spec 原句的场景：孤儿被回收回 wanted 后，槽位让**另一个**排队 job 拿到——
+    // 而不是孤儿自己在同一 tick 内被重新领走。用优先级保证 claimNext 的选择确定性。
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now) // 将成为孤儿
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's2', season: 1 }, now) // 排队中，优先级更高
+    jobs.boostPriority({ kind: 'series_season', seriesId: 's2', season: 1 }, 100)
+
+    // forceClaim（测试助手）：指名领取 s1，绕开 claimNext 的 priority 排序——s2 优先级更高，
+    // 若走 claimNext 反而会先领到 s2，测不出"孤儿腾出槽位给别的 job"这个点。
+    const orphan = jobs.forceClaim('s1', 1, now)! // 未被任何 daemon 跟踪
+    expect(orphan.series_id).toBe('s1')
+
+    const executeJob = vi.fn(async (_job: Job) => {})
+    const daemon = new ScoutDaemon(
+      makeDeps({ executeJob, concurrency: { searching: 1, downloading: 2, verifying: 2 } })
+    )
+
+    await daemon.tick()
+
+    // s1 孤儿被回收（未被跟踪）→ 唯一的 searching 槽让优先级更高、排队中的 s2 领到。
+    expect(executeJob).toHaveBeenCalledOnce()
+    const claimedJob = executeJob.mock.calls[0][0]
+    expect(claimedJob.series_id).toBe('s2')
+    // s1 本身回到 wanted、没有在同一 tick 内被抢回去，attempt 不变（reap 不占内容退避梯名额）。
+    expect(jobs.find('s1', 1)!.state).toBe('wanted')
+    expect(jobs.find('s1', 1)!.attempt).toBe(0)
+  })
+
+  it('FIX-1: 真正 inflight（daemon 自己 claim 且仍在跟踪）的 job 不被孤儿侦测误伤', async () => {
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+    let resolveJob: () => void = () => {}
+    const executeJob = vi.fn(() => new Promise<void>((resolve) => { resolveJob = resolve }))
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    // Tick 1: daemon 自己 claim 并跟踪这个 job（inflight），executeJob 尚未完成。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+
+    // Tick 2: 孤儿侦测跑在 dispatch 之前——这个 job 仍在本进程的 inflight 跟踪集合里，
+    // 绝不能被当成孤儿回收。
+    await daemon.tick()
+    expect(jobs.countByState('searching')).toBe(1)
+    expect(jobs.countByState('wanted')).toBe(0)
+    expect(executeJob).toHaveBeenCalledOnce() // 没有被误回收+重新派发
+
+    resolveJob()
+  })
+
+  it('FIX-1: 本 tick 刚被 dispatch 领走的 job 不会被同一 tick 的孤儿侦测误伤（顺序保证：侦测跑在 dispatch 之前）', async () => {
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const executeJob = vi.fn(() => new Promise<void>(() => {})) // 本 tick 内不会 settle
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick() // 孤儿侦测先跑（此时还没有任何 active 行）→ dispatch 才 claim+跟踪
+
+    expect(jobs.countByState('searching')).toBe(1) // 未被本 tick 自己的孤儿侦测回收
+    expect(jobs.countByState('wanted')).toBe(0)
+  })
+
   it('过租job被reap后可再领取', async () => {
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 

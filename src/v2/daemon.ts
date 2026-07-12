@@ -100,6 +100,24 @@ export class ScoutDaemon {
       jobs.renewLease(jobId, now())
     }
 
+    // 0b. FIX-1（派发饥饿审计修正）：单实例前提下，任何 active 态但 id 不在本进程
+    //     inflightJobIds 跟踪集合里的行，定义上就是孤儿（同 boot reapAllActive 的论证，
+    //     只是判据从"进程重启"换成"跟踪集合缺失"）——不必等 30min 租约到期即可回收。
+    //     生产实案：executeJob 的 promise 结算但其 continuation（.finally）从未被调度，
+    //     job 卡在 active 态且不再被跟踪，过去只能靠 reapExpiredLeases 在租约到期后
+    //     （最长 30 分钟）自愈，期间 searching 并发槽被永久占用、零 log/run 证据。
+    //     Race-free 关键：这一步跑在 dispatch()（本 tick 唯一会新增 inflightJobIds 条目
+    //     的地方）之前——本 tick 刚被 dispatch 领走的行此刻根本还不存在于下面的查询结果
+    //     里，不可能被误伤；真正 inflight 的行因为 id 在跟踪集合里，同样被天然排除。
+    const orphaned = jobs.reapOrphaned(this.inflightJobIds, now())
+    for (const orphan of orphaned) {
+      log(
+        `warn: job ${orphan.id} (${orphan.kind} ${orphan.series_id ?? orphan.movie_id ?? '?'}) ` +
+        `因派发饥饿孤儿被回收：state=${orphan.state} lease_until=${orphan.lease_until ?? 'null'} 但本进程未跟踪` +
+        `（疑似 lost async continuation：executeJob 的 promise 结算但 continuation 从未运行）`
+      )
+    }
+
     // 1. Reap expired leases
     jobs.reapExpiredLeases(now())
 

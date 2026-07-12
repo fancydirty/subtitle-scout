@@ -151,6 +151,32 @@ export class JobsRepo {
       .run(now, now)
   }
 
+  /** FIX-1（派发饥饿审计修正）：单实例前提下，调用方（daemon tick）传入"本进程当前
+   *  正在跟踪（inflight）"的 job id 集合——任何 active 态但 id 不在这个集合里的行，
+   *  定义上就是孤儿（同 reapAllActive"旧进程遗孤"的论证，只是判据从"进程重启"换成
+   *  "跟踪集合缺失"），不必等 30min 租约到期即可回收，堵死生产实案：executeJob 的
+   *  promise 结算但其 continuation（.finally）从未被调度、导致 job 卡在 active 态且
+   *  不再被本进程跟踪，过去只能靠 reapExpiredLeases 在租约到期后（最长 30 分钟）自愈。
+   *  不 attempt+1——同 reapExpiredLeases/reapAllActive 的"reap 不是内容性失败"语义。
+   *  返回被回收行的回收前快照（state 仍是原 active 态），供调用方记一行 warn 日志。 */
+  reapOrphaned(trackedIds: Iterable<number>, now: number): Job[] {
+    const excluded = [...trackedIds]
+    const placeholders = excluded.map(() => '?').join(',')
+    const notInClause = excluded.length > 0 ? `AND id NOT IN (${placeholders})` : ''
+    return this.db.transaction(() => {
+      const candidates = this.db
+        .prepare(`SELECT * FROM jobs WHERE state IN ${ACTIVE_STATES_SQL} ${notInClause}`)
+        .all(...excluded) as Job[]
+      if (candidates.length === 0) return []
+      const update = this.db.prepare(
+        `UPDATE jobs SET state = 'wanted', lease_until = NULL, updated_at = ?
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      for (const c of candidates) update.run(now, c.id)
+      return candidates
+    })()
+  }
+
   /** 启动即回收：无条件把所有活跃态 job 归位 wanted，**不看租约是否过期**。
    *  单实例前提——daemon 启动时旧进程必已死，任何还挂在 searching/downloading/verifying
    *  的租约都是上个进程留下的遗孤（重启瞬间在跑的 job 租约仍未过期，最长可占 searching 槽
