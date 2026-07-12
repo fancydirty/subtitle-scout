@@ -22,7 +22,7 @@ import { planSearch } from '../agent/planSearch.js'
 import { rankCandidates } from '../agent/rankCandidates.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
-import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, applyConfidenceOverride, type PathMapping } from '../core/mediaContext.js'
+import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
 // import { Watcher } from '../daemon/watcher.js'  // v1 watcher — 保留文件但不再引用
 import { CHINESE_LANG_TAGS } from '../daemon/triggers.js'
 // import { PrefetchQueue } from '../daemon/queue.js'  // v1 queue — v2 不用
@@ -183,7 +183,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 async function cmdRun(contextPath: string, outDir: string) {
   const ctx = MediaContextSchema.parse(JSON.parse(readFileSync(contextPath, 'utf8')))
-  applyConfidenceOverride(ctx)
   const { makeDeps, withJournal, cacheRoot, llm } = await assemble()
   const result = await withJournal(() => runPipeline(makeDeps(), ctx, outDir))
   console.log(JSON.stringify({ decision: result.decision, subtitle: result.subtitlePath ?? null, journal: result.journalPath, fromCache: result.fromCache ?? false }, null, 2))
@@ -215,7 +214,6 @@ async function cmdRunItem(itemId: string) {
   const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
   const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)) : undefined
   const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
-  applyConfidenceOverride(ctx)
   const roots = mediaRoots(mappings)
   if (!isUnderRoots(mediaDir(ctx), roots)) {
     console.error(`refusing write outside media roots: ${mediaDir(ctx)} — configure MEDIA_ROOTS / MEDIA_PATH_MAPPINGS`)

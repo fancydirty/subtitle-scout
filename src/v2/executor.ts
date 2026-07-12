@@ -5,7 +5,7 @@ import { ERROR_GIVEUP_THRESHOLD, type JobsRepo, type Job } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import type { Assembled } from '../cli/index.js'
 import {
-  buildMediaContext, isDirWritable, isUnderRoots, applyConfidenceOverride, mapPath,
+  buildMediaContext, isDirWritable, isUnderRoots, mapPath,
 } from '../core/mediaContext.js'
 import { tmdbTitles } from '../adapters/providers/tmdb.js'
 import { runPipeline } from '../core/pipeline.js'
@@ -435,9 +435,8 @@ export function makeRunEpisode(
       }
     }
 
-    // 3. Build MediaContext + confidence override (I5a)
+    // 3. Build MediaContext (I5a)
     const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
-    applyConfidenceOverride(ctx)
     // ctx.media.path 与上面 1b 算出的 dir 是同一次 mapPath 计算，dir 已在网络调用前验过。
 
     // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef) → deps (ep.itemId, path, providerRef)

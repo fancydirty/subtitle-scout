@@ -72,15 +72,6 @@ export function mediaDir(ctx: MediaContext): string {
   return dirname(ctx.media.path)
 }
 
-/** 环境变量 AUTO_DOWNLOAD_MIN_CONFIDENCE 覆盖 ctx 的自动下载置信度阈值（cli 与 v2 executor 共用）。 */
-export function applyConfidenceOverride(ctx: MediaContext): void {
-  if (process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE) {
-    const v = Number(process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE)
-    if (Number.isFinite(v) && v >= 0 && v <= 1) ctx.preferences.auto_download_min_confidence = v
-    else console.error(`ignoring invalid AUTO_DOWNLOAD_MIN_CONFIDENCE: ${process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE}`)
-  }
-}
-
 /** path 是否位于任一 root 之下（或恰为 root）。roots 为空 → 视为不限制，返回 true */
 export function isUnderRoots(path: string, roots: string[]): boolean {
   if (roots.length === 0) return true
