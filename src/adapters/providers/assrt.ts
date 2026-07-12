@@ -38,7 +38,36 @@ export interface AssrtClientOpts {
   limiter?: MinIntervalLimiter
   cacheDir: string
   networkRetryDelayMs?: number
-  onApiCall?: (r: { endpoint: string; params: Record<string, unknown>; status: number | null; durationMs: number; error?: string }) => void
+  onApiCall?: (r: { endpoint: string; params: Record<string, unknown>; status: number | null; durationMs: number; error?: string; droppedEntries?: number }) => void
+}
+
+/**
+ * 生产事故复现：ASSRT /sub/similar 响应里 sub.subs[2..4] 缺 id 字段——zod 要求 id:number，
+ * 单条非法就把整批 subs 一起判死刑（"Invalid input: expected number, received undefined" ×3），
+ * similar() 抛错 → adapter emit provider_error → pipeline 残缺集守卫判 retry_later → 死循环重试。
+ * 但主搜索/detail 明明拿到了好结果，不该因为混进几条坏数据就整批作废。
+ *
+ * 逐条 safeParse：坏条目（缺 id 或其它字段不合法）单独丢弃，好条目原样保留，交给外层
+ * schema.parse 走一遍正常解析/归一化。复用已导出的 AssrtSearchResponseSchema 校验单条
+ * （包一层最小响应壳）而不是新导出内部 per-item schema——判定标准和真实 parse 完全一致。
+ * json 结构本身不可用（非对象/无 sub/subs 非数组）时原样放行，交给外层 schema.parse 正常报错——
+ * 那才是"响应本身不可用"，必须继续失败以保住残缺集守卫。
+ */
+function filterMalformedSubs(json: unknown): { data: unknown; dropped: number } {
+  if (json == null || typeof json !== 'object') return { data: json, dropped: 0 }
+  const sub = (json as { sub?: unknown }).sub
+  if (sub == null || typeof sub !== 'object') return { data: json, dropped: 0 }
+  const rawSubs = (sub as { subs?: unknown }).subs
+  if (!Array.isArray(rawSubs)) return { data: json, dropped: 0 }
+  const valid: unknown[] = []
+  let dropped = 0
+  for (const item of rawSubs) {
+    const r = AssrtSearchResponseSchema.safeParse({ status: 0, sub: { subs: [item] } })
+    if (r.success) valid.push(item)
+    else dropped++
+  }
+  if (dropped === 0) return { data: json, dropped: 0 }
+  return { data: { ...json, sub: { ...sub, subs: valid } }, dropped }
 }
 
 export class AssrtClient {
@@ -73,10 +102,16 @@ export class AssrtClient {
         })
         const json = await res.json() as { status?: number }
         const status = typeof json.status === 'number' ? json.status : null
-        this.opts.onApiCall?.({ endpoint, params, status, durationMs: Date.now() - t0 })
+        // search/similar/searchByFilename/detail 共用 AssrtSearchResponseSchema（这四个 endpoint
+        // 全部走这一份 sub.subs 解析逻辑）——只对这类响应做逐条 fail-soft 过滤；quota 等其它
+        // schema 不含 subs，原样直通。
+        const { data: payload, dropped } = status === 0 && (schema as unknown) === AssrtSearchResponseSchema
+          ? filterMalformedSubs(json)
+          : { data: json as unknown, dropped: 0 }
+        this.opts.onApiCall?.({ endpoint, params, status, durationMs: Date.now() - t0, ...(dropped > 0 ? { droppedEntries: dropped } : {}) })
         if (status !== 0) throw new AssrtApiError(status ?? -1, endpoint)
-        if (cacheTtlMs !== false) writeFileSync(cacheFile, JSON.stringify(json))
-        return schema.parse(json)
+        if (cacheTtlMs !== false) writeFileSync(cacheFile, JSON.stringify(payload))
+        return schema.parse(payload)
       } catch (e) {
         if (e instanceof AssrtApiError) throw e
         this.opts.onApiCall?.({ endpoint, params, status: null, durationMs: Date.now() - t0, error: String(e) })

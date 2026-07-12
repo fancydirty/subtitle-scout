@@ -127,6 +127,90 @@ describe('AbortSignal timeout coverage', () => {
   })
 })
 
+describe('AssrtClient fail-soft entry parsing (production incident: ASSRT /sub/similar returned sub.subs[2..4] without id)', () => {
+  // 复现生产事故形状：好条目中间穿插缺 id 的条目（真实观测：索引 2..4 缺 id）
+  const mixedSubsResponse = JSON.stringify({
+    status: 0,
+    sub: {
+      subs: [
+        { id: 1, filelist: [] },
+        { id: 2, filelist: [] },
+        { filelist: [] }, // 缺 id — index 2
+        { filelist: [] }, // 缺 id — index 3
+        { filelist: [] }, // 缺 id — index 4
+        { id: 6, filelist: [] },
+      ],
+    },
+  })
+  const allMalformedResponse = JSON.stringify({
+    status: 0,
+    sub: { subs: [{ filelist: [] }, { filelist: [] }] },
+  })
+
+  it('similar() drops id-less entries, keeps well-formed ones, does not throw', async () => {
+    const { client } = makeClient([mixedSubsResponse])
+    const r = await client.similar(673114)
+    expect(r.sub.subs.map(s => s.id)).toEqual([1, 2, 6])
+  })
+
+  it('similar() with all entries malformed but response well-formed → empty list, no throw', async () => {
+    const { client } = makeClient([allMalformedResponse])
+    const r = await client.similar(673114)
+    expect(r.sub.subs).toEqual([])
+  })
+
+  it('similar() reports dropped-entry count via onApiCall (existing observability idiom)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(mixedSubsResponse))
+    const onApiCall = vi.fn()
+    const client = new AssrtClient({
+      token: 't',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      limiter: new MinIntervalLimiter(0),
+      cacheDir: mkdtempSync(join(tmpdir(), 'assrt-')),
+      onApiCall,
+    })
+    await client.similar(673114)
+    expect(onApiCall).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'sub/similar', droppedEntries: 3 }))
+  })
+
+  it('similar() does NOT report droppedEntries when nothing was dropped', async () => {
+    const fetchImpl = vi.fn(async () => new Response(searchFixture))
+    const onApiCall = vi.fn()
+    const client = new AssrtClient({
+      token: 't',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      limiter: new MinIntervalLimiter(0),
+      cacheDir: mkdtempSync(join(tmpdir(), 'assrt-')),
+      onApiCall,
+    })
+    await client.similar(673114)
+    expect(onApiCall).toHaveBeenCalledWith(expect.not.objectContaining({ droppedEntries: expect.anything() }))
+  })
+
+  it('search() also drops id-less entries (primary search must not fail worse than similar())', async () => {
+    const { client } = makeClient([mixedSubsResponse])
+    const r = await client.search('x')
+    expect(r.sub.subs.map(s => s.id)).toEqual([1, 2, 6])
+  })
+
+  it('searchByFilename() also drops id-less entries', async () => {
+    const { client } = makeClient([mixedSubsResponse])
+    const r = await client.searchByFilename('x.mkv')
+    expect(r.sub.subs.map(s => s.id)).toEqual([1, 2, 6])
+  })
+
+  it('detail() also drops id-less entries (season-pack resolve must not infinite-retry on one bad entry)', async () => {
+    const { client } = makeClient([mixedSubsResponse])
+    const r = await client.detail(673114)
+    expect(r.sub.subs.map(s => s.id)).toEqual([1, 2, 6])
+  })
+
+  it('genuinely broken response (status != 0) still throws — completeness guard stays intact', async () => {
+    const { client } = makeClient([JSON.stringify({ status: 30900, sub: { subs: [] } })])
+    await expect(client.similar(673114)).rejects.toThrow(/30900/)
+  })
+})
+
 describe('AssrtClient gems endpoints', () => {
   it('similar() calls /sub/similar with id and parses like search', async () => {
     const mockSimilarResponse = JSON.stringify({
