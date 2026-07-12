@@ -918,4 +918,59 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
     expect(readdirSync(join(root, '.archive'))).toHaveLength(1)
     db.close()
   })
+
+  it('CRIT 外来目录抢占 finalTarget + 回滚 EACCES 双故障：重跑绝不伪装"续走成功"——build 滞留视频否决续走', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-crash-foreign-resume-'))
+    const oldSeasonDir = mkFlatLibrary(root, 5)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkMirror(
+      [1, 2, 3, 4, 5].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)),
+    )
+    // 旧排布下的 series_season job——假成功会把它错误退休（retireAllForSeries）
+    jobsRepo.upsertWanted({ kind: 'series_season', seriesId: 'jf-series-1', season: 1 }, Date.now())
+
+    // —— 第一跑：字幕先行阶段（组装预检之后！）外来目录占住最终位置，亮相必然撞墙；
+    //    同时旧目录被锁死（0o555）→ 进程内回滚 EACCES 半途而废、无 rollback 标记——
+    //    正是审阅者端到端复现的双故障现场。
+    const foreign = join(libRoot, SHOW_DIR)
+    const runEpisode1 = vi.fn(async () => {
+      if (!existsSync(foreign)) {
+        mkdirSync(foreign, { recursive: true })
+        writeFileSync(join(foreign, 'somebody-elses.mkv'), 'foreign-content')
+        chmodSync(oldSeasonDir, 0o555)
+      }
+      return { decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 } }
+    })
+    const jf1 = mkJf({ locations: [libRoot] })
+    const deps1 = mkDeps({ lib, jobsRepo, jf: jf1, libRoot }, {
+      runEpisode: runEpisode1 as never, tmdb: { getSeasonTable: vi.fn(async () => SEASONS_1x5) },
+    })
+    const r1 = await executeRealign(job, deps1)
+    expect(r1.decision).toBe('error')
+    expect(r1.detail).toContain('回滚未完成')
+    expect(countVideosRec(join(libRoot, '.realign-build'))).toBe(5) // 5 集全部滞留 build
+
+    chmodSync(oldSeasonDir, 0o755) // 运维修复权限（或瞬时故障消失）
+
+    // —— 第二跑：账本有 reveal + finalTarget"存在"（其实是外来目录）——旧实现在此伪装续走
+    //    成功：归档空旧目录、删镜像行、退休全部 job，5 集从此隐身且永不自愈。修复后：
+    //    build 有滞留视频 → 否决续走，落回回滚路径归位 5 集，再被 CRIT#3 预检（外来目录
+    //    占位）确定性停车。
+    const rerunJob = jobsRepo.get(job.id)!
+    expect(rerunJob.plan_ref).toMatch(/manifest\.jsonl$/)
+    const jf2 = mkJf({ locations: [libRoot] })
+    const deps2 = mkDeps({ lib, jobsRepo, jf: jf2, libRoot }, {
+      tmdb: { getSeasonTable: vi.fn(async () => SEASONS_1x5) },
+    })
+    const r2 = await executeRealign(rerunJob, deps2)
+
+    expect(r2.decision).not.toBe('realigned')                       // 关键：绝不假成功
+    expect(r2.decision).toBe('park')                                // 外来占位 → 确定性停车
+    expect(countVideosRec(oldSeasonDir)).toBe(5)                    // 5 集已回滚归位（可见、可恢复）
+    expect(countVideosRec(join(libRoot, '.realign-build'))).toBe(0) // build 无滞留
+    expect(readFileSync(join(foreign, 'somebody-elses.mkv'), 'utf8')).toBe('foreign-content') // 外来文件原样
+    expect(lib.getSeries('jf-series-1')).not.toBeNull()             // 镜像行未删
+    expect(jobsRepo.find('jf-series-1', 1)!.state).toBe('wanted')   // series_season job 未被退休
+    db.close()
+  })
 })

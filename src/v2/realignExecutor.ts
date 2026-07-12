@@ -376,8 +376,9 @@ function briefError(error: unknown): string {
  *  4. mount 哨兵（库根非空+可写）
  *  5. Jellyfin 空闲等待——任何搬动（包括崩溃恢复回滚）之前（IMP#6）
  *  6. 崩溃恢复（CRIT#4）：job.plan_ref 指向的 manifest 存在 →
- *     a. 账本含 reveal 且新目录已在最终位置 → 续走（forward-resume）：只补收尾
- *        （归档旧目录/刷新/镜像清理），绝不重搬；
+ *     a. 账本含 reveal 且新目录已在最终位置 且 build 目录无视频滞留（真 finalize 必然
+ *        搬空 build；有滞留 = 外来目录占位 + 回滚未完成，绝不许伪装续走成功）→ 续走
+ *        （forward-resume）：只补收尾（归档旧目录/刷新/镜像清理），绝不重搬；
  *     b. 否则回滚重放（replayRollback）+ 回滚标记 + GC build 残留，复用同一归档目录/账本
  *        （幂等：不另起时间戳）。
  *  7. 归档根解析（库根之外，IMP#9）+ 降级阶梯探测（abandon → park）
@@ -425,11 +426,23 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   const revealEntry = resumeManifest?.entries.find(e => e.reason === 'reveal')
 
   if (resumeArchiveDir && resumeManifest && revealEntry && existsSync(revealEntry.to)) {
-    // ---- 6a. 续走（forward-resume）：上次已亮相，绝不重搬，只补收尾 ----
-    return forwardResume(job, deps, {
-      seriesId, archiveDir: resumeArchiveDir, finalShowDir: revealEntry.to,
-      scanDir, candidateRoots, folders,
-    })
+    // 续走资格闸（re-review #1）：真正成功的 finalize 是目录级 rename，必然把 build 目录
+    // 整个搬空——"reveal 记账 + revealEntry.to 存在"本身无法区分"我们的亮相真成功了"和
+    // "外来目录占住了 finalTarget 且进程内回滚失败（无 rollback 标记）"。build 里还躺着
+    // 视频 = 亮相从未发生：此时续走会伪造成功、归档空旧目录、清镜像退休 job，把用户的
+    // 整季视频永久困在 .realign-build 里。只有 build 无视频滞留才许续走；否则落回下方
+    // 回滚重放路径（回滚不净则 6c 停车），账本与现场都可恢复。
+    if (countVideoFiles(revealEntry.from) === 0) {
+      // ---- 6a. 续走（forward-resume）：上次已亮相，绝不重搬，只补收尾 ----
+      return forwardResume(job, deps, {
+        seriesId, archiveDir: resumeArchiveDir, finalShowDir: revealEntry.to,
+        scanDir, candidateRoots, folders,
+      })
+    }
+    deps.log(
+      `realign 恢复：账本有 reveal 且 ${revealEntry.to} 已存在，但 ${revealEntry.from} 仍滞留视频——` +
+      `判定外来目录占位 + 上次回滚未完成，拒绝续走，转入回滚路径`,
+    )
   }
 
   if (!scanDir) {
