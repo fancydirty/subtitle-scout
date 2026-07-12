@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'node:fs'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import AdmZip from 'adm-zip'
 import chardet from 'chardet'
 import * as iconv from 'iconv-lite'
+import { writeAll } from './fsUtil.js'
 
 const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
 
@@ -24,20 +25,6 @@ export interface WriteSubtitleResult {
   bytes: number
   encoding: string | null
   alreadyExists: boolean
-}
-
-// 裸 writeSync 不保证一次调用写完全部字节（内核可能短写），不像 writeFileSync 那样内部有循环。
-// 忽略其返回值直接 fsync+rename 会把半截数据当成"完整文件"落到最终路径——这正是原子写要防的那类故障。
-// 所以显式循环，用剩余字节数重试，直到全部写完。
-function writeAll(fd: number, buf: Buffer): void {
-  let written = 0
-  while (written < buf.length) {
-    const n = writeSync(fd, buf, written, buf.length - written)
-    // A 0-byte return without a thrown error is degenerate but technically legal for a raw
-    // write() syscall; looping with an unchanged `written` would spin forever, so bail loudly.
-    if (n === 0) throw new Error('writeSync wrote 0 bytes; aborting to avoid an infinite loop')
-    written += n
-  }
 }
 
 // gate 按 filelist 的 file_index 校验范围；这里按文件名解析 zip 条目，因为 zip 内部顺序 ≠ filelist 顺序。名字对不上则抛错（fail closed）。
