@@ -4,11 +4,11 @@
 <body>
 <script type="text/javascript">function YunsuoAutoJump(){ location.href = document.referrer; }</script>
 <div class="waf-challenge">
-  <form id="checkform" action="/aq_wzws_confirm.html" method="post">
-    <input type="hidden" name="wzws_sessionid" value="8f2c9a1b3e4d5f60" />
-    <input type="hidden" name="return_url" value="/detail/58421.html" />
-    <img src="/aq_wzws_security_verify_img?r=0.483920" alt="verify code" />
-    <input type="text" name="sec_code" maxlength="6" />
+  <form id="checkform" method="post" action='/aq_wzws_confirm.html'>
+    <input value="8f2c9a1b3e4d5f60" name="wzws_sessionid" type="hidden" />
+    <input type="hidden" value="/detail/58421.html" name="return_url" />
+    <img alt="verify code" src="/aq_wzws_security_verify_img?r=0.483920" />
+    <input maxlength="6" name="sec_code" />
     <button type="submit">提交验证</button>
   </form>
 </div>

@@ -7,6 +7,9 @@
  * body 含 "YunsuoAutoJump"(JS 跳转函数名)或 "security_verify_img"(验证码图片标记)。
  */
 
+import { findNextTag } from './htmlAttrs.js'
+import { jitteredDelayMs, type RandomFn } from './jitter.js'
+
 export function detectChallenge(html: string): boolean {
   return /YunsuoAutoJump|security_verify_img/.test(html)
 }
@@ -25,27 +28,46 @@ export interface YunsuoChallengeForm {
 /**
  * 解析挑战页的表单结构:不依赖具体字段名(真实云锁部署的字段名未经实地抓包确认),只依赖
  * 通用 HTML 表单形状——<form action=...>、<input type="hidden" name=... value=...>(原样透传的
- * token)、<input type="text" name=...>(验证码填空框)、<img src=...>(验证码图)。只要挑战页
- * 是标准表单,这份解析就适用,不绑定猜测的具体字段名。
+ * token)、<input type="text" name=...>(验证码填空框,type 也可以缺省——HTML5 规范里 <input>
+ * 不写 type 时默认就是 text)、<img src=...>(验证码图)。只要挑战页是标准表单,这份解析就适用,
+ * 不绑定猜测的具体字段名。
+ *
+ * 用 findNextTag 按标签属性名读值,而不是手搓"属性必须按这个顺序、必须是双引号"的正则——
+ * 对抗性评审发现原正则对 value-before-name、type 放在最后、单引号 action='...' 都会直接失配,
+ * 而手工构造的 fixture 只是恰好长成正则期望的样子。
  */
 export function parseChallenge(html: string, baseUrl: string): YunsuoChallengeForm {
-  const formMatch = html.match(/<form[^>]*action="([^"]+)"/)
-  if (!formMatch) throw new Error('yunsuo challenge page has no <form action=...> — unexpected challenge page shape')
-  const action = new URL(formMatch[1], baseUrl).toString()
+  const formTag = findNextTag(html, 'form')
+  if (!formTag?.attrs.action) {
+    throw new Error('yunsuo challenge page has no <form action=...> — unexpected challenge page shape')
+  }
+  const action = new URL(formTag.attrs.action, baseUrl).toString()
 
   const fields: Record<string, string> = {}
-  const hiddenRe = /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g
-  let m: RegExpExecArray | null
-  while ((m = hiddenRe.exec(html))) fields[m[1]] = m[2]
+  let captchaFieldName: string | null = null
+  let idx = 0
+  for (;;) {
+    const tag = findNextTag(html, 'input', idx)
+    if (!tag) break
+    idx = tag.end
+    const { type, name, value } = tag.attrs
+    if (type === 'hidden') {
+      if (name) fields[name] = value ?? ''
+    } else if (captchaFieldName === null && name && (type === undefined || type === 'text')) {
+      captchaFieldName = name
+    }
+  }
+  if (captchaFieldName === null) {
+    throw new Error('yunsuo challenge page has no captcha text <input> — unexpected challenge page shape')
+  }
 
-  const captchaFieldMatch = html.match(/<input[^>]*type="text"[^>]*name="([^"]+)"/)
-  if (!captchaFieldMatch) throw new Error('yunsuo challenge page has no captcha text <input> — unexpected challenge page shape')
+  const imgTag = findNextTag(html, 'img')
+  if (!imgTag?.attrs.src) {
+    throw new Error('yunsuo challenge page has no captcha <img src=...> — unexpected challenge page shape')
+  }
+  const imageUrl = new URL(imgTag.attrs.src, baseUrl).toString()
 
-  const imgMatch = html.match(/<img[^>]*src="([^"]+)"/)
-  if (!imgMatch) throw new Error('yunsuo challenge page has no captcha <img src=...> — unexpected challenge page shape')
-  const imageUrl = new URL(imgMatch[1], baseUrl).toString()
-
-  return { action, fields, captchaFieldName: captchaFieldMatch[1], imageUrl }
+  return { action, fields, captchaFieldName, imageUrl }
 }
 
 /** 挑战破解耗尽/仍被拦截:瞬时错误,不是"确实没有字幕"的内容结论——上游 fetchLib.runSearch 的
@@ -72,24 +94,44 @@ export interface SolveYunsuoChallengeDeps {
 /**
  * 有界重试破解云锁验证码:抓图→识别→提交,拿到 security_session_verify cookie 即成功返回;
  * 提交被拒(cookie 没出现在响应里)则重刷验证码重试,最多 maxAttempts 次(默认 5,与设计文档
- * 一致)。攻击性节流:失败重试之间等待 retryDelayMs(默认 2s),绝不无延迟重试风暴。
+ * 一致)。攻击性节流:失败重试之间等待 jitteredDelayMs(retryDelayMs, retryJitterRangeMs, rng)——
+ * 默认 jitterRangeMs=0 时就是恒定的 retryDelayMs(向后兼容/测试友好),生产调用方(zimuku.ts)
+ * 显式传入非零 jitterRangeMs 以获得随机化的重试节奏,绝不无延迟重试风暴。
+ *
+ * deps.solve() 本身也被算作"这次尝试失败"而不是让它的异常穿透:LLM 结构化输出校验失败会抛
+ * StructuredOutputError(schema 不匹配),这属于"这次验证码读数拿不到"的瞬时失败,应该跟"提交
+ * 被拒"走同一条重刷验证码的有界重试路径,而不是绕过重试直接把内部实现细节的错误类型甩给调用方。
  */
 export async function solveYunsuoChallenge(
   deps: SolveYunsuoChallengeDeps, baseUrl: string, challengeHtml: string,
-  maxAttempts = 5, retryDelayMs = 2000,
+  maxAttempts = 5, retryDelayMs = 2000, retryJitterRangeMs = 0, rng: RandomFn = Math.random,
 ): Promise<{ cookie: string }> {
   const form = parseChallenge(challengeHtml, baseUrl)
   let lastError = ''
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const imgRes = await deps.fetchImpl(form.imageUrl)
     const imgBytes = Buffer.from(await imgRes.arrayBuffer())
-    const { digits } = await deps.solve(imgBytes)
+
+    let digits: string
+    try {
+      const solved = await deps.solve(imgBytes)
+      digits = solved.digits
+    } catch (e) {
+      lastError = `attempt ${attempt}: solve() threw: ${e instanceof Error ? e.message : String(e)}`
+      if (attempt < maxAttempts) {
+        await new Promise(r => setTimeout(r, jitteredDelayMs(retryDelayMs, retryJitterRangeMs, rng)))
+      }
+      continue
+    }
+
     const body = new URLSearchParams({ ...form.fields, [form.captchaFieldName]: digits })
     const res = await deps.fetchImpl(form.action, { method: 'POST', body })
     const cookie = extractCookie(res, 'security_session_verify')
     if (cookie) return { cookie }
     lastError = `attempt ${attempt}: no security_session_verify cookie in response (wrong digits?)`
-    if (attempt < maxAttempts) await new Promise(r => setTimeout(r, retryDelayMs))
+    if (attempt < maxAttempts) {
+      await new Promise(r => setTimeout(r, jitteredDelayMs(retryDelayMs, retryJitterRangeMs, rng)))
+    }
   }
   throw new ZimukuChallengeError(`yunsuo captcha solve exhausted after ${maxAttempts} attempts: ${lastError}`)
 }
