@@ -1,11 +1,12 @@
 import { existsSync, readdirSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
-import { join, dirname, basename } from 'node:path'
+import { join, dirname, basename, sep } from 'node:path'
 import { isDirWritable } from '../core/mediaContext.js'
 import type { ProbeOutcome } from '../files/mountCapabilities.js'
 import { sanitizeTitleForFs, type RealignPlanItem } from '../files/libraryRealign.js'
 import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
 import { runPipeline, type PipelineResult } from '../core/pipeline.js'
 import type { Assembled } from '../cli/index.js'
+import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 
 export interface MountSentinelResult { ok: boolean; reason?: string }
 
@@ -193,4 +194,56 @@ export function makeRealignRunEpisode(
     const journalDir = join(cacheRoot, 'journals', `realign-${jobId}-${Date.now()}`)
     return withJournal(() => run(makeDeps(), ctx, outDir, journalDir, { bypassNegativeCache: true }))
   }
+}
+
+export interface ScheduledTaskLike { id: string; name: string; isRunning: boolean }
+
+/**
+ * 等 Jellyfin 扫描空闲（调研红线：扫描中挪文件=重复条目灾难）。轮询直到无任务在跑或超时。
+ * sleep/now 均可注入（测试用假时钟，不真等也不篡改全局 Date.now）。
+ */
+export async function waitForJellyfinIdle(
+  jf: { getScheduledTasks(): Promise<ScheduledTaskLike[]> },
+  opts: { pollMs: number; timeoutMs: number; sleep: (ms: number) => Promise<void>; now?: () => number },
+): Promise<boolean> {
+  const now = opts.now ?? Date.now
+  const deadline = now() + opts.timeoutMs
+  while (true) {
+    const tasks = await jf.getScheduledTasks()
+    if (!tasks.some(t => t.isRunning)) return true
+    if (now() >= deadline) return false
+    await opts.sleep(opts.pollMs)
+  }
+}
+
+/**
+ * 验收：按新目录路径前缀统计 Jellyfin 实际刮出的各季集数，与计划值比对。复用既有
+ * getItemsPage（已带 Path 字段），不需要新增端点——按 Path 是否落在新目录路径之下过滤
+ * （按路径段切割，"Show Extended" 不会蹭进 "Show" 的账），旧目录残留（尚未清理/尚未重刮）
+ * 天然被排除在统计之外。
+ */
+export async function verifyRealignedCounts(
+  jf: { getItemsPage(startIndex: number, limit: number): Promise<Pick<JellyfinItem, 'Type' | 'Path' | 'ParentIndexNumber'>[]> },
+  newShowDirPath: string, expectedCounts: Map<number, number>, opts: { pageSize: number },
+): Promise<{ ok: boolean; detail: string }> {
+  const prefix = newShowDirPath.endsWith(sep) ? newShowDirPath : newShowDirPath + sep
+  const actualCounts = new Map<number, number>()
+  let startIndex = 0
+  while (true) {
+    const items = await jf.getItemsPage(startIndex, opts.pageSize)
+    if (items.length === 0) break
+    for (const item of items) {
+      if (item.Type === 'Episode' && item.Path?.startsWith(prefix) && item.ParentIndexNumber != null) {
+        actualCounts.set(item.ParentIndexNumber, (actualCounts.get(item.ParentIndexNumber) ?? 0) + 1)
+      }
+    }
+    startIndex += opts.pageSize
+  }
+  for (const [season, expected] of expectedCounts) {
+    const actual = actualCounts.get(season) ?? 0
+    if (actual !== expected) {
+      return { ok: false, detail: `第 ${season} 季验收：Jellyfin 报告 ${actual} 集，计划 ${expected} 集，不一致` }
+    }
+  }
+  return { ok: true, detail: '各季集数与计划一致' }
 }
