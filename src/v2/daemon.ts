@@ -35,6 +35,9 @@ export interface DaemonDeps {
   /** 进程退出钩子（测试注入用，默认 process.exit）。tick 连续意外失败达阈值时调用，
    *  nonzero 码交给外部编排（docker restart:unless-stopped 等）重启进程。 */
   exit?: (code: number) => void
+  /** 沙盒孤儿 GC：daemon 启动时调用一次，镜像 jobs.reapAllActive 的"单实例前提，无条件
+   *  回收"语义——旧进程遗留的 .subtitle-staging/<jobId> 目录全部视为孤儿垃圾。 */
+  gcStaging?: () => number
 }
 
 /** tick() 连续意外抛错（reap/meta读/dispatch 里未被内层 try/catch 覆盖的异常，如磁盘满）
@@ -349,6 +352,10 @@ export class ScoutDaemon {
     const reaped = this.deps.jobs.reapAllActive(this.deps.now())
     if (reaped > 0) {
       this.deps.log(`boot: reaped ${reaped} orphaned active lease(s) from previous process`)
+    }
+    const stagingCleaned = this.deps.gcStaging?.() ?? 0
+    if (stagingCleaned > 0) {
+      this.deps.log(`boot: cleaned ${stagingCleaned} orphaned staging dir(s) from previous process`)
     }
 
     signal.addEventListener(

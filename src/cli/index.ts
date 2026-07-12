@@ -20,6 +20,8 @@ import { ProfileStore } from '../agent/profile.js'
 import { identifyMedia } from '../agent/identifyMedia.js'
 import { planSearch } from '../agent/planSearch.js'
 import { rankCandidates } from '../agent/rankCandidates.js'
+import { verifySubtitle } from '../agent/verifySubtitle.js'
+import { allocate, install, cleanup, gcOrphans } from '../files/stagingSandbox.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
@@ -99,6 +101,8 @@ async function assemble(): Promise<Assembled> {
     identify: c => identifyMedia(llm, c),
     plan: (c, id) => planSearch(llm, c, id),
     rank: (c, id, cands) => rankCandidates(llm, c, id, cands),
+    verify: (c, id, cand, signals) => verifySubtitle(llm, c, id, cand, signals),
+    staging: { allocate, install, cleanup },
     providers: makeCliProviderPort({
       onEvent: e => {
         const journal = journalStore.getStore()?.journal
@@ -320,6 +324,7 @@ async function cmdWatch() {
       })
     },
     aggregate: (now) => aggregate(lib, jobs, now),
+    gcStaging: () => gcOrphans(roots, new Set()),
     executeJob: async (job) => {
       await withJournal(() => executeJob(job, {
         lib,

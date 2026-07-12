@@ -827,6 +827,28 @@ describe('ScoutDaemon', () => {
     expect(logs.some(l => l.includes('boot: reaped'))).toBe(false)
   })
 
+  it('run启动时调用 gcStaging 并在清理数>0 时打日志', async () => {
+    const gcStaging = vi.fn(() => 2)
+    const daemon = new ScoutDaemon(makeDeps({ gcStaging }))
+    const controller = new AbortController()
+    const runPromise = daemon.run(controller.signal)
+    await new Promise(r => setTimeout(r, 20))
+    controller.abort()
+    await runPromise
+    expect(gcStaging).toHaveBeenCalledTimes(1)
+    expect(logs.some(l => l.includes('boot: cleaned 2 orphaned staging'))).toBe(true)
+  })
+
+  it('gcStaging 未注入或返回 0 时不打日志（不影响既有 reapAllActive 行为）', async () => {
+    const daemon = new ScoutDaemon(makeDeps())
+    const controller = new AbortController()
+    const runPromise = daemon.run(controller.signal)
+    await new Promise(r => setTimeout(r, 20))
+    controller.abort()
+    await runPromise
+    expect(logs.some(l => l.includes('boot: cleaned'))).toBe(false)
+  })
+
   it('run循环：tick+pollSessions并发，signal退出', async () => {
     const executeJob = vi.fn(async () => {})
 
