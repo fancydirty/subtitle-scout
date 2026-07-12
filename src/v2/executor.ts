@@ -46,8 +46,9 @@ export interface ExecutorDeps {
   /** 季级诊断闭包（可选）：no_safe_match 分支在 attempt>=2 时调用，判定是否需要整理媒体资源。
    *  未注入（测试等场景）时诊断钩子整体跳过，不影响既有 no_safe_match 行为。 */
   diagnoseSeason?: (job: Job) => Promise<{ verdict: 'absolute_flat' | 'unknown'; reason: string }>
-  /** realign job 执行闭包（可选）：executeJob 遇到 kind==='realign' 时调用。未注入（生产总会
-   *  接线，仅测试可能省略）时判 completeError 短退避，而不是抛异常崩溃整个 tick。 */
+  /** realign job 执行闭包（可选）：executeJob 遇到 kind==='realign' 时调用。未注入（生产
+   *  接线不完整/仅测试省略）时停车（park → dormant，不自动重试）而不是 completeError——
+   *  接线缺失不是瞬时故障，短退避重试只会陷入无穷 errorloop（D-review #3）。 */
   executeRealign?: (job: Job) => Promise<{ decision: 'realigned' | 'error'; detail: string }>
   now: () => number
   log: (msg: string) => void
@@ -475,15 +476,17 @@ export function makeRunEpisode(
 }
 
 /** realign job 的执行分支：租约/退避复用既有状态机（completeDone/completeError），
- *  不新增状态转移。executeRealign 未注入时判 completeError（短退避重试，而不是让
- *  executor 在生产接线不完整时直接崩溃整个 tick）。 */
+ *  不新增状态转移。executeRealign 未注入（D-review #3）时停车（park → dormant）而不是
+ *  completeError——接线缺失是配置性缺陷，不是瞬时故障，走 error 轨会陷入 30s→15min→daily
+ *  的无穷 errorloop（每轮都白记一条 runs）。dormant 不参与派发，接线修好后可 wake 唤醒。 */
 async function executeRealignBranch(job: Job, deps: ExecutorDeps): Promise<void> {
   const { jobs, now, log } = deps
   const runs = new RunsRepo(deps.lib.db)
   const startedAt = now()
   if (!deps.executeRealign) {
-    jobs.completeError(job.id, 'realign executor not wired', now())
-    runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'error', detail: '整理执行器未接线（内部配置错误）', journalPath: null })
+    jobs.park(job.id, 'realign executor not wired', now())
+    runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'error', detail: '整理执行器未接线，已停车（不自动重试；接线后重启或手动唤醒）', journalPath: null })
+    log(`warn: job ${job.id} realign 未接线，已停车（dormant，不自动重试）`)
     return
   }
   try {

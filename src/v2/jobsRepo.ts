@@ -346,6 +346,23 @@ export class JobsRepo {
     return info.changes > 0
   }
 
+  /** 停车（D-review #3）：active → dormant，一步到位、不走退避梯。与 completeError 的本质
+   *  区别：completeError 服务"会自愈的瞬时故障"（网络/LLM/5xx），30s→15min→daily 重试有
+   *  意义；park 服务"重试无意义的配置性缺陷"（如 executeRealign 未接线）——重试一万次也
+   *  不会自己长出接线，走 error 轨就是无穷 errorloop。dormant 不参与 claimNext 派发，但
+   *  保留 wake 唤醒通道（修好配置后可手动/播放唤醒），不是死刑是停车。
+   *  同 complete* 守卫语义：仅从 active 态出发，否则 no-op。 */
+  park(jobId: number, reason: string, now: number): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'dormant', last_error = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(reason, now, jobId)
+    return info.changes > 0
+  }
+
   /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic).
    *  A 'failed' job with a pending next_retry_at is mid content-backoff (1/2/4/8d
    *  ladder) — its target can look momentarily "not missing" (e.g. unavailable with

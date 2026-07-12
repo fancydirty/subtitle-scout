@@ -606,4 +606,40 @@ describe('realign job kind', () => {
     expect(revived.state).toBe('wanted')
     expect(revived.plan_ref).toBeNull()
   })
+
+  // D-review #3：executeRealign 未接线的 realign job 曾走 completeError → 30s→15min→daily
+  // 无穷 errorloop。park 提供"停车不重试"的诚实出口：active → dormant（不参与 claimNext，
+  // 唤醒通道 wake 仍可用）。
+  describe('park（停车：active → dormant，不重试）', () => {
+    it('active job 停车为 dormant，claimNext 不再派发（含一天后）', () => {
+      const now = Date.now()
+      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      const job = repo.claimNext(now)!
+      expect(repo.park(job.id, 'realign executor not wired', now)).toBe(true)
+      const parked = repo.get(job.id)!
+      expect(parked.state).toBe('dormant')
+      expect(parked.last_error).toBe('realign executor not wired')
+      expect(parked.lease_until).toBeNull()
+      expect(parked.next_retry_at).toBeNull()
+      expect(repo.claimNext(now + 25 * 3_600_000)).toBeNull()
+    })
+
+    it('对非 active 态是 no-op（同 complete* 守卫语义）', () => {
+      const now = Date.now()
+      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      const job = repo.claimNext(now)!
+      repo.completeDone(job.id, now)
+      expect(repo.park(job.id, 'x', now)).toBe(false)
+      expect(repo.get(job.id)!.state).toBe('done')
+    })
+
+    it('停车的 job 仍可被 wake 唤醒（不是死刑，是停车）', () => {
+      const now = Date.now()
+      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      const job = repo.claimNext(now)!
+      repo.park(job.id, 'not wired', now)
+      expect(repo.wake({ kind: 'realign', seriesId: 's1' }, 100, now)).toBe(true)
+      expect(repo.get(job.id)!.state).toBe('wanted')
+    })
+  })
 })

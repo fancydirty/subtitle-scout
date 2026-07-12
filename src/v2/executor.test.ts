@@ -1163,12 +1163,22 @@ describe('makeDiagnoseSeason（生产接线闭包：把 lib/jf/tmdb/runs/llm 组
 })
 
 describe('realign job 执行分流', () => {
-  it('job.kind==="realign" 且 executeRealign 未注入 → completeError 短退避', async () => {
+  // D-review #3：未接线曾走 completeError → failed → 30s 后又被 claimNext 领走 → 再
+  // completeError……30s→15min→daily 的无穷 errorloop。接线缺失不是瞬时故障，重试
+  // 一万次也不会自己长出 executeRealign——诚实的出口是停车（dormant，不参与派发）。
+  it('job.kind==="realign" 且 executeRealign 未注入 → 停车（单条 run，不可重领，无循环）', async () => {
     jobs.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
     const job = jobs.claimNext(now)!
     await executeJob(job, { lib, jobs, runEpisode: vi.fn(), now: () => now, log })
-    expect(jobs.get(job.id)!.state).toBe('failed')
-    expect(runs.getByJobId(job.id)[0].decision).toBe('error')
+    expect(jobs.get(job.id)!.state).toBe('dormant')
+    const runRows = runs.getByJobId(job.id)
+    expect(runRows).toHaveLength(1)
+    expect(runRows[0].decision).toBe('error')
+    expect(runRows[0].detail).toContain('未接线')
+    expect(runRows[0].detail).toContain('停车')
+    // 不可重试：一天后 claimNext 也捞不起来（dormant 不参与派发）
+    expect(jobs.claimNext(now + 25 * 3_600_000)).toBeNull()
+    expect(logs.some(l => l.includes('未接线') && l.includes('停车'))).toBe(true)
   })
 
   it('job.kind==="realign" + executeRealign 成功 → completeDone + runs 记人话', async () => {
