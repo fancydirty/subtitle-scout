@@ -19,10 +19,14 @@ export interface ProviderSearchResult {
 }
 export interface ProviderPort {
   search: (args: ProviderSearchArgs) => Promise<ProviderSearchResult>
-  resolveDownload: (ref: CandidateRef) => Promise<{ url: string; filename?: string }>
+  resolveDownload: (ref: CandidateRef) => Promise<{ url: string; filename?: string; headers?: Record<string, string> }>
 }
 
-const ResolveOutSchema = z.object({ url: z.string(), filename: z.string().optional() })
+const ResolveOutSchema = z.object({
+  url: z.string(),
+  filename: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+})
 
 /**
  * 子进程入口按运行形态自动切换——不依赖环境变量或硬编码路径假设。
