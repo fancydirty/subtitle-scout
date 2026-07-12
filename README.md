@@ -120,10 +120,10 @@ ASSRT 主打国产字幕站，欧美剧集/电影覆盖有限；OpenSubtitles �
 
 ```bash
 # 独立版
-docker compose exec subtitle-scout npx tsx src/cli/index.ts doctor
+docker compose exec subtitle-scout node dist/cli/index.js doctor
 
 # 全家桶版
-docker compose -f docker-compose.bundle.yml exec subtitle-scout npx tsx src/cli/index.ts doctor
+docker compose -f docker-compose.bundle.yml exec subtitle-scout node dist/cli/index.js doctor
 ```
 
 **示例输出**：
@@ -199,8 +199,8 @@ MEDIA_PATH_MAPPINGS=/data/movies=/media/movies
 **容器内执行示例**（独立版）：
 
 ```bash
-docker compose exec subtitle-scout npx tsx src/cli/index.ts watch
-docker compose exec subtitle-scout npx tsx src/cli/index.ts report --since 7d
+docker compose exec subtitle-scout node dist/cli/index.js watch
+docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
 ```
 
 ---
