@@ -237,7 +237,11 @@ export class LibraryRepo {
 
   /** scan 磁盘 arm 记账用：该 item 是否已有任意 subtitles 行。已经走过正规 pipeline 记账
    *  （scout-download/adopted-local/preexisting 任一来源）的条目不该被 scan 的磁盘 arm
-   *  二次"认领"——即便这轮磁盘 arm 也命中（比如 Jellyfin 还没刷新 MediaStreams）。 */
+   *  二次"认领"——即便这轮磁盘 arm 也命中（比如 Jellyfin 还没刷新 MediaStreams）。
+   *  已知取舍（accepted debt）：本 guard 只看"有没有任意行"，不比较路径——若既有行是
+   *  一条失效路径（文件已被移走/改名），磁盘上又冒出一个新路径的 sidecar，guard 仍会短路，
+   *  新 sidecar 不会被记账（旧行继续代表该 item 的字幕来源）。这是刻意的取舍，不在本次
+   *  修复范围内。 */
   hasSubtitleRecord(itemId: string): boolean {
     return (
       this.db.prepare('SELECT 1 FROM subtitles WHERE item_id = ? LIMIT 1').get(itemId) !== undefined
