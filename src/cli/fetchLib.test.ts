@@ -140,3 +140,22 @@ describe('runResolve', () => {
       .rejects.toThrow(/no providers configured/)
   })
 })
+
+describe('runResolve header pass-through (zimuku archive download needs browser headers)', () => {
+  it('forwards headers returned by the adapter unchanged', async () => {
+    const headers = { 'User-Agent': 'test-ua', Referer: 'https://www.zimuku.org/' }
+    const zimukuAdapter = adapter('zimuku', { resolve: async () => ({ url: 'https://dl/zimuku', headers }) })
+    const r = await runResolve({ provider: 'zimuku', providerId: '1', fileIndex: null }, [zimukuAdapter])
+    expect(r.headers).toEqual(headers)
+  })
+  it('headers stays undefined when the adapter does not return them (assrt/opensubtitles unaffected)', async () => {
+    const r = await runResolve({ provider: 'assrt', providerId: '1', fileIndex: 0 }, [adapter('assrt')])
+    expect(r.headers).toBeUndefined()
+  })
+})
+
+describe('"no providers configured" message mentions all three provider gates', () => {
+  it('mentions ZIMUKU_ENABLED alongside ASSRT_TOKEN/OPENSUBTITLES_API_KEY', async () => {
+    await expect(runSearch({ queries: ['q'], deep: false }, [], () => {})).rejects.toThrow(/ZIMUKU_ENABLED/)
+  })
+})
