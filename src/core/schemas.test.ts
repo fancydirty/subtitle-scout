@@ -175,6 +175,9 @@ describe('VerifyDecisionSchema', () => {
   it('rejects a missing reason', () => {
     expect(() => VerifyDecisionSchema.parse({ match: false })).toThrow()
   })
+  it('rejects an empty reason', () => {
+    expect(() => VerifyDecisionSchema.parse({ match: false, reason: '' })).toThrow()
+  })
   it('rejects a non-boolean match', () => {
     expect(() => VerifyDecisionSchema.parse({ match: 'yes', reason: 'x' })).toThrow()
   })

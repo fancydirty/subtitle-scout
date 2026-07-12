@@ -219,7 +219,7 @@ export type FinalDecision = z.infer<typeof FinalDecisionSchema>
 // ---------- 终审 agent 输出(staging 沙盒体检后的二选一表态) ----------
 export const VerifyDecisionSchema = z.object({
   match: z.boolean(),
-  reason: z.string(),
+  reason: z.string().min(1),
 })
 export type VerifyDecision = z.infer<typeof VerifyDecisionSchema>
 
