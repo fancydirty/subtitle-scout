@@ -397,6 +397,64 @@ describe('executor', () => {
     expect(jobs.get(job.id)!.state).toBe('wanted')
   })
 
+  it('FIX-3: onCovered 侧写守卫——租约已不属于本次 invocation（真实 reap，lease_until 已变）时跳过写盘', async () => {
+    // 区别于上面的 I4：forceState 只改 state，不动 lease_until，onCovered 的 ownership
+    // 判据（lease_until 比对）测不出来。这里用真实 reap（reapAllActive）复现生产场景——
+    // detached invocation 的 pipeline 仍在跑，写盘副作用（onCovered→markCovered）本该
+    // 在"发现租约已不是自己的"那一刻就止血，而不是像过去那样只在最终 complete* 才拦。
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    jobs.reapAllActive(now) // 真实回收：state→wanted 且 lease_until→NULL，与 job.lease_until 分道扬镳
+
+    const runEpisode = vi.fn(async (_: string, onCovered: (id: string, path: string) => void) => {
+      onCovered('e1', '/tv/s1e1.zh-Hans.srt')
+      return { decision: 'download', journalPath: '/journals/test.json' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    // 写盘被跳过——不信任 detached invocation 的战果。
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+    expect((lib.db.prepare('select count(*) c from subtitles where item_id=?').get('e1') as any).c).toBe(0)
+    // 跳过本身被记了一笔（journal 记录，供事后复盘）。
+    expect(logs.some(l => l.includes(`job ${job.id}`) && l.includes('跳过'))).toBe(true)
+    // 既有的 complete* 守卫依旧照常触发（FIX-3 不取代它，只是更早止血）。
+    expect(logs.some(l => l.includes(`job ${job.id} 结果被弃置`))).toBe(true)
+  })
+
+  it('FIX-3: 租约仍属于本次 invocation（fresh token）时 onCovered 照常写盘——不误伤正常路径', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async (_: string, onCovered: (id: string, path: string) => void) => {
+      onCovered('e1', '/tv/s1e1.zh-Hans.srt')
+      return { decision: 'download', journalPath: '/journals/test.json' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(jobs.get(job.id)!.state).toBe('done')
+  })
+
+  it('FIX-3: 代表集自身命中（无季包 onCovered）时，租约失效也跳过直接 markCovered 写盘', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+    jobs.reapAllActive(now)
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'download', journalPath: '/journals/test.json', subtitlePath: '/tv/s1e1.zh-Hans.srt',
+    }))
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+    expect((lib.db.prepare('select count(*) c from subtitles where item_id=?').get('e1') as any).c).toBe(0)
+  })
+
   it('movie job 同构', async () => {
     mkMovie('m1')
     jobs.upsertWanted({ kind: 'movie', movieId: 'm1' }, now)

@@ -114,6 +114,19 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
   const startedAt = now()
   const runs = new RunsRepo(lib.db)
 
+  /** FIX-3（side-effect lease guard 审计修正）：本次 invocation 是否仍拥有这个 job 的
+   *  租约。job.lease_until 由 daemon 的心跳续租原地维护（FIX-2 daemon.ts 的
+   *  inflightJobs Map），跟着合法续租一起前进，所以长跑的季包 job 不会被误判——只有
+   *  这一行真的被 reap（lease_until→NULL）或被另一次 invocation 重新领走（lease_until
+   *  换成新值）时，DB 里的当前值才会和这里冻结的 job.lease_until 分道扬镳。
+   *  运行期副作用（onCovered 的 markCovered、代表集自身命中的 markCovered）在真正落盘
+   *  之前都要过这一关——过去只有最终的 complete* 转移被 record() 的 stale-lease 守卫
+   *  拦住，运行期写盘毫无阻拦地继续，白白写脏一个早已不属于自己的 job 的战果。 */
+  const ownsLease = (): boolean => {
+    const current = jobs.get(job.id)
+    return current !== null && current.lease_until === job.lease_until
+  }
+
   /** I4: complete* 守卫失败（stale lease 被 reap 重派）时可观测——warn 日志 + runs.detail 加后缀。 */
   const record = (
     transitioned: boolean,
@@ -175,6 +188,16 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // 3. Track coverage via onCovered callback (season pack hits are downloads)
     const coveredIds = new Set<string>()
     const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string) => {
+      // FIX-3: 租约已不属于本次 invocation——跳过写盘，不信任 detached invocation
+      // 的战果（管线本身继续跑，只是不让它的产出再落库；不尝试取消管线，见 out of scope）。
+      if (!ownsLease()) {
+        log(
+          `warn: job ${job.id} 跳过 onCovered 写盘（episode=${episodeId}）：` +
+          `租约已不属于本次 invocation（观测 lease_until=${jobs.get(job.id)?.lease_until ?? 'null'}，` +
+          `本次 invocation 持有 ${job.lease_until ?? 'null'}）`
+        )
+        return
+      }
       lib.markCovered(episodeId, subtitlePath, 'scout-download', providerRef)
       if (targets.some(t => t.id === episodeId)) {
         coveredIds.add(episodeId)
@@ -220,12 +243,22 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       // 84fd17a: pipeline 的 already_exists 决策（预检短路 or 下载后 existsSync）现在总是
       // 携带真实磁盘路径，download/adopted_local 同样用 subtitlePath；没有路径（旧分支残留
       // 兜底）则只改状态，绝不伪造 subtitles 行。M8: source 按 decision 映射。
-      const coverPath = subtitlePath
-      const providerRef = result.selected
-        ? candidateKey({ provider: result.selected.provider, providerId: result.selected.provider_id })
-        : undefined
-      lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision], providerRef)
-      coveredIds.add(representative.id) // 供人话摘要计数
+      // FIX-3: 同 onCovered，落盘前先过一遍租约归属——租约已失效则跳过这一笔直接写盘，
+      // 让下面的 record() 走既有的 stale-lease 弃置分支收尾。
+      if (ownsLease()) {
+        const coverPath = subtitlePath
+        const providerRef = result.selected
+          ? candidateKey({ provider: result.selected.provider, providerId: result.selected.provider_id })
+          : undefined
+        lib.markCovered(representative.id, coverPath, SOURCE_BY_DECISION[decision], providerRef)
+        coveredIds.add(representative.id) // 供人话摘要计数
+      } else {
+        log(
+          `warn: job ${job.id} 跳过代表集 markCovered 写盘（episode=${representative.id}）：` +
+          `租约已不属于本次 invocation（观测 lease_until=${jobs.get(job.id)?.lease_until ?? 'null'}，` +
+          `本次 invocation 持有 ${job.lease_until ?? 'null'}）`
+        )
+      }
 
       if (remainingTargets(job, lib, now()).length === 0) {
         record(
