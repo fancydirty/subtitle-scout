@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs } from './doctor.js'
+import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs } from './doctor.js'
 
 describe('doctor 远端三项', () => {
   it('jellyfin 可达 → ok，带会话数', async () => {
@@ -56,6 +56,30 @@ describe('doctor 远端三项', () => {
     const r = await checkLlm(async () => { throw new Error('401 Unauthorized') })
     expect(r.ok).toBe(false)
     expect(r.hint).toMatch(/LLM_BASE_URL|LLM_API_KEY/)
+  })
+})
+
+describe('doctor zimuku (可选 provider,默认关闭)', () => {
+  it('未配置(probe=null) → skip 而非失败,hint 提到 ZIMUKU_ENABLED', async () => {
+    const r = await checkZimuku(null)
+    expect(r.skip).toBe(true)
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('ZIMUKU_ENABLED')
+  })
+  it('已启用且首页可达、未触发验证页 → ok', async () => {
+    const r = await checkZimuku({ fetchHomepage: async () => ({ ok: true, challenged: false }) })
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('未触发验证页')
+  })
+  it('已启用且命中云锁验证页 → 仍然 ok(挑战页是预期健康状态,不是失败)', async () => {
+    const r = await checkZimuku({ fetchHomepage: async () => ({ ok: true, challenged: true }) })
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('验证页')
+  })
+  it('首页不可达 → 失败并给人话提示', async () => {
+    const r = await checkZimuku({ fetchHomepage: async () => { throw new Error('ETIMEDOUT') } })
+    expect(r.ok).toBe(false)
+    expect(r.hint).toContain('zimuku.org')
   })
 })
 
