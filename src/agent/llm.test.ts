@@ -300,4 +300,31 @@ describe('callPromptJson', () => {
       schema: z.object({ ok: z.boolean() }),
     })).rejects.toThrow(StructuredOutputError)
   })
+
+  it('sends the image as a file part when opts.images is provided (mode 3 fallback also supports multimodal)', async () => {
+    let receivedPrompt: unknown
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        receivedPrompt = (options as { prompt: unknown }).prompt
+        return {
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: {
+            inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 10, text: undefined, reasoning: undefined },
+          },
+          content: [{ type: 'text', text: '{"digits":"74504"}' }],
+          warnings: [],
+        }
+      },
+    })
+    const png = Buffer.from('fake-png-bytes')
+    const { callPromptJson } = await import('./llm.js')
+    const r = await callPromptJson({
+      model: model as never, name: 'report', description: 'd', prompt: 'read the digits',
+      schema: z.object({ digits: z.string() }), images: [png],
+    })
+    expect(r.parsed).toEqual({ digits: '74504' })
+    const messages = receivedPrompt as Array<{ content: Array<{ type: string }> }>
+    expect(messages[0].content.some(p => p.type === 'file')).toBe(true)
+  })
 })

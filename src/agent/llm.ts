@@ -185,7 +185,7 @@ export async function callPromptJson<S extends z.ZodType>(
       : `${basePrompt}\n\nYour previous answer failed validation:\n${lastError}\nOutput a corrected, complete JSON object.`
     const result = await generateText({
       model: opts.model,
-      prompt,
+      prompt: buildPrompt(prompt, opts.images),
       maxOutputTokens: opts.maxOutputTokens ?? 16000,
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     })
