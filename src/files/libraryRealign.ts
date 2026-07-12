@@ -2,6 +2,7 @@ import { readdirSync } from 'node:fs'
 import { extname, basename, join } from 'node:path'
 import { formatEpisodeCode } from '../core/episode.js'
 import type { SeasonTableEntry } from '../adapters/providers/tmdb.js'
+import type { AnimeListsEntry } from '../adapters/providers/animeLists.js'
 
 export interface EpisodeNumberMatch { absoluteEpisode: number; matchedToken: string }
 
@@ -153,4 +154,65 @@ export function buildRealignPlan(files: ScannedVideoFile[], config: RealignPlanC
   if (failures.length > 0) return { ok: false, failures }
 
   return { ok: true, items, quarantined }
+}
+
+export interface CrossCheckResult { ok: boolean; reason?: string }
+
+/**
+ * 用 anime-lists 的季/偏移记录反推该季第一集对应的绝对集号（offset+1），核对我们自己算出的
+ * absoluteMap 在那个绝对集号上是否正好落在"该季第一集"（season 匹配且 episode===1）——
+ * 两源一致才算通过。无该剧任何映射记录时视为"无法交叉验证"，不是冲突，通过放行
+ * （动漫剧种交叉验证是佐证，不是必需前提；非动漫剧种走到这里 relevant 恒为空，天然放行）。
+ *
+ * 偏离 plan 原始代码之处：plan 草案里 `expected.episode` 误写成 `entry.tmdbEpisodeOffset + 1`
+ * 后再拿去比较 absoluteMap 值里的"季内集号"字段——这会让 offset 数值本身被错误地当成季内
+ * 集号比对，跑一遍就会发现连"一致"的验收用例都过不了（S2 offset=25 时找的是"season 2 内第
+ * 26 集"，但 season 2 只有 12 集，永远找不到，永远误判冲突）。改为按绝对集号查表 + 核对
+ * "落点必须是该季第一集"，语义才对得上函数注释与三条测试用例。
+ */
+export function crossCheckAnimeLists(
+  absoluteMap: Map<number, AbsoluteMapEntry>, animeListsEntries: AnimeListsEntry[], tmdbTvId: number,
+): CrossCheckResult {
+  const relevant = animeListsEntries.filter(
+    (e): e is AnimeListsEntry & { tmdbSeason: number; tmdbEpisodeOffset: number } =>
+      e.tmdbTvId === tmdbTvId && e.tmdbSeason != null && e.tmdbEpisodeOffset != null,
+  )
+  if (relevant.length === 0) return { ok: true }
+  for (const entry of relevant) {
+    const expectedAbs = entry.tmdbEpisodeOffset + 1
+    const found = absoluteMap.get(expectedAbs)
+    if (!found || found.season !== entry.tmdbSeason || found.episode !== 1) {
+      return {
+        ok: false,
+        reason: `anime-lists 记录第 ${entry.tmdbSeason} 季从 TMDB 集号偏移 ${entry.tmdbEpisodeOffset} 开始，` +
+          `但我们算出的 TMDB 累计表里找不到对应位置——两源冲突，放弃整理`,
+      }
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * 可选抽查：实际视频时长 vs TMDB 单集平均时长（episode_run_time），偏差超过 ±10% 才记为失败。
+ * getDurationSeconds 拿不到时长（ffprobe 未安装/探测失败）时该文件跳过，不计入 failures——
+ * 这是"业界没人做，我们白捡的便宜校验"，抽查性质，不该因为环境缺 ffprobe 就拦掉整理。
+ */
+export function checkRuntimeTolerance(
+  items: Pick<RealignPlanItem, 'sourcePath' | 'sourceFilename'>[],
+  expectedRuntimeMinutes: number,
+  getDurationSeconds: (path: string) => number | null,
+): string[] {
+  const failures: string[] = []
+  const expectedSeconds = expectedRuntimeMinutes * 60
+  for (const item of items) {
+    const actual = getDurationSeconds(item.sourcePath)
+    if (actual == null) continue
+    const diffRatio = Math.abs(actual - expectedSeconds) / expectedSeconds
+    if (diffRatio > 0.10) {
+      failures.push(
+        `文件 ${item.sourceFilename} 实际时长 ${Math.round(actual)}s 与 TMDB 单集时长 ${Math.round(expectedSeconds)}s 偏差超过 10%`,
+      )
+    }
+  }
+  return failures
 }

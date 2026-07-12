@@ -6,6 +6,8 @@ import { parseAbsoluteEpisodeNumber, scanVideoFiles } from './libraryRealign.js'
 import { buildAbsoluteMap, buildTargetShowDir, buildTargetSeasonDir, buildTargetFilename } from './libraryRealign.js'
 import { buildRealignPlan } from './libraryRealign.js'
 import type { ScannedVideoFile } from './libraryRealign.js'
+import { crossCheckAnimeLists, checkRuntimeTolerance } from './libraryRealign.js'
+import type { AnimeListsEntry } from '../adapters/providers/animeLists.js'
 import type { SeasonTableEntry } from '../adapters/providers/tmdb.js'
 
 describe('parseAbsoluteEpisodeNumber', () => {
@@ -155,5 +157,53 @@ describe('buildRealignPlan', () => {
     const files: ScannedVideoFile[] = [{ path: '/a.mkv', filename: 'random.mkv', match: null }]
     const result = buildRealignPlan(files, cfg)
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('crossCheckAnimeLists', () => {
+  const crossCheckTable: SeasonTableEntry[] = [
+    { seasonNumber: 1, episodeCount: 25, airDate: null },
+    { seasonNumber: 2, episodeCount: 12, airDate: null },
+  ]
+
+  it('anime-lists 记录与 TMDB 累计表一致 → 通过', () => {
+    const map = buildAbsoluteMap(crossCheckTable)
+    const entries: AnimeListsEntry[] = [
+      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 2, tmdbEpisodeOffset: 25 }, // S2 从 abs 26 开始 = offset 25
+    ]
+    expect(crossCheckAnimeLists(map, entries, 120089)).toEqual({ ok: true })
+  })
+
+  it('两源冲突（anime-lists 的 offset 在 TMDB 累计表里对不上）→ 放弃整理', () => {
+    const map = buildAbsoluteMap(crossCheckTable)
+    const entries: AnimeListsEntry[] = [
+      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 2, tmdbEpisodeOffset: 30 }, // 与 TMDB 累计的 25 对不上
+    ]
+    const result = crossCheckAnimeLists(map, entries, 120089)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('两源冲突')
+  })
+
+  it('anime-lists 无该剧映射记录 → 视为通过（无法交叉验证不等于冲突）', () => {
+    const map = buildAbsoluteMap(crossCheckTable)
+    expect(crossCheckAnimeLists(map, [], 120089).ok).toBe(true)
+  })
+})
+
+describe('checkRuntimeTolerance（可选 ffprobe 时长抽查）', () => {
+  it('实际时长在 TMDB 单集时长 ±10% 内 → 通过（空 failures）', () => {
+    const items = [{ sourcePath: '/a.mkv', sourceFilename: 'a.mkv', absoluteEpisode: 1, targetSeason: 1, targetEpisode: 1, targetRelPath: 'x' }]
+    const failures = checkRuntimeTolerance(items, 24, p => (p === '/a.mkv' ? 24 * 60 * 1.05 : null))
+    expect(failures).toEqual([])
+  })
+  it('偏差超过 10% → 记入 failures', () => {
+    const items = [{ sourcePath: '/a.mkv', sourceFilename: 'a.mkv', absoluteEpisode: 1, targetSeason: 1, targetEpisode: 1, targetRelPath: 'x' }]
+    const failures = checkRuntimeTolerance(items, 24, () => 5 * 60) // 5 分钟 vs 期望 24 分钟
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain('偏差超过')
+  })
+  it('ffprobe 拿不到时长（返回 null）→ 该文件跳过，不计入 failures（抽查而非硬闸）', () => {
+    const items = [{ sourcePath: '/a.mkv', sourceFilename: 'a.mkv', absoluteEpisode: 1, targetSeason: 1, targetEpisode: 1, targetRelPath: 'x' }]
+    expect(checkRuntimeTolerance(items, 24, () => null)).toEqual([])
   })
 })
