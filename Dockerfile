@@ -24,4 +24,4 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=web /web/dist ./web/dist
 ENV NODE_ENV=production
-CMD ["node", "dist/cli/index.js", "watch"]
+CMD ["node", "--enable-source-maps", "dist/cli/index.js", "watch"]
