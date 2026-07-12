@@ -367,13 +367,16 @@ export class JobsRepo {
 
   /** realign 完成后的镜像清理一环：该剧旧的 series_season job（按老的、即将被清空的季划分）
    *  不再有意义（新结构下季/集边界完全变了，调和循环会在下一轮 scan 后按新结构重新聚合出
-   *  正确的 job）——只退休 wanted/failed（静止态），active 态（理论上此刻不该有——realign
-   *  本身占着搜索槽，不会有同剧的 series_season job 正在跑）留给它自己的状态机走完，不强退。 */
+   *  正确的 job）——退休全部静止态：wanted/failed/dormant。dormant 必须包含（D-review #2）：
+   *  它是"对着旧的错误排布搜索穷尽"的判决，本函数的全部意义就是宣告这类判决作废；漏掉它，
+   *  realign 后这一季会被 30 天休眠卡死、永远不再重新搜索（聚合器 upsertWanted 对 dormant
+   *  不复活）。active 态（理论上此刻不该有——realign 本身占着搜索槽，不会有同剧的
+   *  series_season job 正在跑）留给它自己的状态机走完，不强退。 */
   retireAllForSeries(seriesId: string, now: number): number {
     const info = this.db
       .prepare(
         `UPDATE jobs SET state = 'done', updated_at = ?
-         WHERE kind = 'series_season' AND series_id = ? AND state IN ('wanted', 'failed')`
+         WHERE kind = 'series_season' AND series_id = ? AND state IN ('wanted', 'failed', 'dormant')`
       )
       .run(now, seriesId)
     return info.changes

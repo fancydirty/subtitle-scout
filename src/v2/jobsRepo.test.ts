@@ -559,6 +559,21 @@ describe('realign job kind', () => {
     expect(retired).toBe(1)
   })
 
+  // D-review #2：retireAllForSeries 的全部意义是"旧排布下的判决作废"——dormant 恰恰是
+  // "对着错误排布搜索穷尽"的判决，不退休它，realign 后这一季永远不会被重新搜索。
+  it('retireAllForSeries 连 dormant 一起退休，下一轮聚合能重建全新 wanted job', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    repo.forceState('s1', 1, 'dormant', now)               // 旧排布下搜索穷尽的休眠判决
+    expect(repo.retireAllForSeries('s1', now)).toBe(1)
+    expect(repo.find('s1', 1)!.state).toBe('done')
+    // realign 后新一轮 scan/aggregate 重新 upsert → done→wanted 复活，attempt 归零，重新可搜
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now + 1)
+    const revived = repo.find('s1', 1)!
+    expect(revived.state).toBe('wanted')
+    expect(revived.attempt).toBe(0)
+  })
+
   // D-review #1：UPSERT_CONFLICT_SQL 曾无条件 plan_ref = excluded.plan_ref——upsertWanted 的
   // INSERT 恒带 NULL，执行中/失败态 job 的崩溃恢复清单指针会被一次 re-upsert 直接抹掉。
   it('mid-execution re-upsert 不清洗 active job 的 plan_ref（崩溃恢复清单指针）', () => {
