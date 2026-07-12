@@ -34,6 +34,14 @@ let renameSyncOverride:
   | ((real: typeof import('node:fs').renameSync, from: string, to: string) => void)
   | null = null
 
+// Addendum A: install() fsyncs the parent directory fd after a successful rename (best-effort).
+// Same vi.mock pattern as renameSyncOverride above — openSync/fsyncSync/closeSync are individually
+// overridable so tests can observe the calls and simulate fsync failing without touching the real
+// rename/write behavior exercised by the rest of this suite.
+let openSyncOverride: ((real: typeof import('node:fs').openSync, path: string, flags: string) => number) | null = null
+let fsyncSyncOverride: ((real: typeof import('node:fs').fsyncSync, fd: number) => void) | null = null
+let closeSyncOverride: ((real: typeof import('node:fs').closeSync, fd: number) => void) | null = null
+
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
   return {
@@ -43,6 +51,24 @@ vi.mock('node:fs', async (importOriginal) => {
         return renameSyncOverride(actual.renameSync, args[0] as string, args[1] as string)
       }
       return actual.renameSync(...args)
+    },
+    openSync: (...args: Parameters<typeof actual.openSync>) => {
+      if (openSyncOverride) {
+        return openSyncOverride(actual.openSync, args[0] as string, args[1] as string)
+      }
+      return actual.openSync(...args)
+    },
+    fsyncSync: (...args: Parameters<typeof actual.fsyncSync>) => {
+      if (fsyncSyncOverride) {
+        return fsyncSyncOverride(actual.fsyncSync, args[0])
+      }
+      return actual.fsyncSync(...args)
+    },
+    closeSync: (...args: Parameters<typeof actual.closeSync>) => {
+      if (closeSyncOverride) {
+        return closeSyncOverride(actual.closeSync, args[0])
+      }
+      return actual.closeSync(...args)
     },
   }
 })
@@ -126,6 +152,105 @@ describe('install', () => {
     const result = await install(stagedPath, finalPath)
     expect(result.path).toBe(finalPath.normalize('NFC'))
     expect(result.path).not.toBe(finalPath) // input is NFD, output must be NFC, bytes differ
+  })
+})
+
+describe('install — parent-directory fsync (addendum A: 尽力 fsync 目录)', () => {
+  afterEach(() => {
+    openSyncOverride = null
+    fsyncSyncOverride = null
+    closeSyncOverride = null
+  })
+
+  it('opens, fsyncs, and closes the parent directory fd after a successful rename', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'x')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+
+    const openedPaths: string[] = []
+    let fsyncedFd: number | null = null
+    let closedFd: number | null = null
+    openSyncOverride = (real, path, flags) => {
+      openedPaths.push(path)
+      return real(path, flags)
+    }
+    fsyncSyncOverride = (real, fd) => {
+      fsyncedFd = fd
+      return real(fd)
+    }
+    closeSyncOverride = (real, fd) => {
+      closedFd = fd
+      return real(fd)
+    }
+
+    const result = await install(stagedPath, finalPath)
+
+    expect(result.path).toBe(finalPath)
+    expect(openedPaths).toContain(root) // dirname(finalPath) === root
+    expect(fsyncedFd).not.toBeNull()
+    expect(closedFd).toBe(fsyncedFd)
+  })
+
+  it('swallows a directory-fsync failure without failing the install (best-effort, e.g. platforms without dir-fd fsync support)', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'still installed')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+
+    fsyncSyncOverride = () => {
+      throw Object.assign(new Error('fsync not supported on directory fd'), { code: 'EINVAL' })
+    }
+
+    const result = await install(stagedPath, finalPath)
+
+    expect(result.path).toBe(finalPath)
+    expect(existsSync(finalPath)).toBe(true)
+    expect(readFileSync(finalPath, 'utf8')).toBe('still installed')
+  })
+
+  it('swallows an open-failure on the parent directory too (best-effort all the way through)', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'installed anyway')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+
+    openSyncOverride = () => {
+      throw Object.assign(new Error('cannot open directory'), { code: 'EACCES' })
+    }
+
+    const result = await install(stagedPath, finalPath)
+
+    expect(result.path).toBe(finalPath)
+    expect(existsSync(finalPath)).toBe(true)
+  })
+
+  it('also fsyncs the parent directory on the EXDEV copy+rename fallback path', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'cross-device content')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+
+    let renameCalls = 0
+    renameSyncOverride = (real, from, to) => {
+      renameCalls++
+      if (renameCalls === 1) throw Object.assign(new Error('cross-device'), { code: 'EXDEV' })
+      return real(from, to)
+    }
+    let fsyncedFd: number | null = null
+    fsyncSyncOverride = (real, fd) => {
+      fsyncedFd = fd
+      return real(fd)
+    }
+
+    const result = await install(stagedPath, finalPath)
+
+    expect(result.path).toBe(finalPath)
+    expect(fsyncedFd).not.toBeNull()
   })
 })
 

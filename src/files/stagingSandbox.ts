@@ -16,6 +16,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/** 尽力 fsync 目录:rename 落盘后目录 inode 本身(条目指针)也该 fsync 一次,防止断电场景下
+ *  目录项没跟着落盘、重启后 rename "消失"。部分平台/文件系统(Windows、部分 FUSE/SMB 挂载)不
+ *  支持对目录 fd 调 fsync——那类环境直接吞掉失败,不让这个尽力而为的加固步骤反噬本已成功的安装。 */
+function fsyncDirBestEffort(dir: string): void {
+  let fd: number | undefined
+  try {
+    fd = openSync(dir, 'r')
+    fsyncSync(fd)
+  } catch {
+    // best-effort：目录 fsync 不是所有平台/文件系统都支持，失败不影响已经成功的 rename
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        // best-effort
+      }
+    }
+  }
+}
+
 /** 跨设备兜底(理论上不该发生——沙盒与视频同根,见 allocate):拷到目标目录内点前缀
  *  临时名 → fsync → 同盘 rename。任何一步失败(写入/fsync/改名)都 best-effort 删掉这个
  *  临时文件再往外抛——否则它会永久留在媒体目录里,既不是试错沙盒的一部分(不会被 cleanup()
@@ -94,11 +115,13 @@ export async function install(
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
     try {
       renameSync(stagedPath, normalizedFinal)
+      fsyncDirBestEffort(dirname(normalizedFinal))
       return { path: normalizedFinal }
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
       if (code === 'EXDEV') {
         copyThenRenameSameDir(stagedPath, normalizedFinal)
+        fsyncDirBestEffort(dirname(normalizedFinal))
         return { path: normalizedFinal }
       }
       lastError = e
