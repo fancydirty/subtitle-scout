@@ -51,6 +51,15 @@
 6. 验收:API 查该剧各季集数=计划值;旧条目残留 → `.forcerescan` 重扫或按 item ID 删除;元数据串味 → 该剧 `FullRefresh&replaceAllMetadata=true`。
 7. 镜像收编新条目,realign job 落 done,runs 记人话("把 40 集平铺整理成 3 季,字幕已就位")。
 
+## 跨挂载可移植性(开源用户防线:不信协议名,只信实测行为)
+
+用户环境会是 NFS/本地 ext4/ZFS/mergerfs/rclone FUSE/named volume 任意一种。原则:**所有文件系统假设一律换成运行时探针**,探针不过走降级阶梯,阶梯到底诚实拒绝。
+
+- **能力探针**(计划期实测,按媒体根缓存):读写探针;**rename 原子性探针在真实涉及的两个路径之间做**(库根↔归档目录搬一个探针文件,EXDEV 即降级——mergerfs 跨 branch/rclone FUSE 当场现形);硬链接探针;大小写敏感性探针(碰撞检查按结果调口径)。探针结果并入 `doctor` 输出,用户开机自见挂载能力画像。
+- **不可见构建**:本地盘用户可能开着 Jellyfin 实时监控(inotify 在本地 fs 上是活的,SMB 上才没有)——新结构一律先在同 fs 的 `.realign-build/`(`.ignore` 保护)内**完整组装**(含字幕),最后一次**目录级原子 rename** 亮相。任何挂载上 Jellyfin 只能观测到"旧树消失/新树整体出现"两个瞬间,永无半成品。另通过 API 读库的 `EnableRealtimeMonitor`,开启时在 runs 注明。
+- **降级阶梯**:硬链接✗→rename;归档与库根跨设备→归档退至库根内(接受 `.ignore` 版本风险,runs 注明);rename 不原子(极端 FUSE)→该剧拒绝整理并在 dashboard 说明。宁不做,不做烂。
+- **测试矩阵诚实账**:OrbStack mock=本地 fs 族(含 inotify),NAS=CIFS 族,两族实测;NFS/FUSE 族靠探针+降级+单测模拟(EXDEV/EPERM/大小写不敏感)构造性覆盖,README 写明矩阵。
+
 ## 影响面与不做清单
 
 - **改动面**:新模块 `src/files/libraryRealign.ts`(计划/执行/回滚)+ `src/agent/diagnoseSeason.ts`(诊断)+ jobs 状态机加 `realign` kind + Jellyfin 客户端加 ScheduledTasks/单库 refresh/条目删除三个端点 + dashboard 呈现。现有找字幕流水零改动(它只是被在新结构上复用)。
