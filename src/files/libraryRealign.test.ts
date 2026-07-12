@@ -47,6 +47,15 @@ describe('parseAbsoluteEpisodeNumber', () => {
   it('季码+方括号混合名——同样先被 SxxEyy 守卫拦下', () => {
     expect(parseAbsoluteEpisodeNumber('[Group] Show S02E01 [01][1080p].mkv')).toBeNull()
   })
+  it('方括号年份（19xx/20xx）不是集号——跳过年份取第一个非年份数字方括号', () => {
+    expect(parseAbsoluteEpisodeNumber('[Group] Show [2023] [26].mkv')).toEqual({ absoluteEpisode: 26, matchedToken: '[26]' })
+    expect(parseAbsoluteEpisodeNumber('[Group] Show (1998) [1999].mkv')).toBeNull()
+  })
+  it('abs 0（第0话/E0/[0]——PV、总集篇占位）→ null 进隔离区，而非拿去查表触发全剧中止', () => {
+    expect(parseAbsoluteEpisodeNumber('Show 第0话.mkv')).toBeNull()
+    expect(parseAbsoluteEpisodeNumber('Show E0.mkv')).toBeNull()
+    expect(parseAbsoluteEpisodeNumber('[Group] Show [0].mkv')).toBeNull()
+  })
 })
 
 describe('scanVideoFiles', () => {
@@ -322,5 +331,10 @@ describe('checkRuntimeTolerance（可选 ffprobe 时长抽查）', () => {
   it('ffprobe 拿不到时长（返回 null）→ 该文件跳过，不计入 failures（抽查而非硬闸）', () => {
     const items = [{ sourcePath: '/a.mkv', sourceFilename: 'a.mkv', absoluteEpisode: 1, targetSeason: 1, targetEpisode: 1, targetRelPath: 'x' }]
     expect(checkRuntimeTolerance(items, 24, () => null)).toEqual([])
+  })
+  it('TMDB 单集时长 <= 0（episode_run_time 缺失/为0）→ 整个抽查跳过，不除零不误报', () => {
+    const items = [{ sourcePath: '/a.mkv', sourceFilename: 'a.mkv', absoluteEpisode: 1, targetSeason: 1, targetEpisode: 1, targetRelPath: 'x' }]
+    expect(checkRuntimeTolerance(items, 0, () => 24 * 60)).toEqual([])
+    expect(checkRuntimeTolerance(items, -5, () => 24 * 60)).toEqual([])
   })
 })

@@ -8,11 +8,26 @@ export interface EpisodeNumberMatch { absoluteEpisode: number; matchedToken: str
 
 const CJK_EPISODE_RE = /第\s*(\d{1,4})\s*[话話集]/
 const SXXEYY_RE = /S\d{1,4}E\d{1,4}/i
-const BRACKET_EPISODE_RE = /\[(\d{1,4})\]/
 const E_CODE_RE = /(?<![A-Za-z0-9])E(\d{1,4})(?!\d)/i
 // E 前缀范围合集：'E01-E02' / 'E01-02'——一个文件跨多集，取任何单集都是错的，判 null 进隔离区。
 // 尾部 (?![0-9A-Za-z]) 防误伤 "E05 - 1080p" 这类"集号 - 画质"写法（1080p 不是范围终点）。
 const E_RANGE_RE = /(?<![A-Za-z0-9])E\d{1,4}\s*-\s*E?\d{1,4}(?![0-9A-Za-z])/i
+
+// abs 0（第0话/E0/[0]：PV、总集篇等占位）不是正片集号——隔离而非全剧中止：
+// 若把 0 交给 absMap 查表，会以"超出 TMDB 累计上限"为由中止整剧，错误信息还误导排障。
+function toMatch(n: number, token: string): EpisodeNumberMatch | null {
+  return n >= 1 ? { absoluteEpisode: n, matchedToken: token } : null
+}
+
+// 方括号提取排除 19xx/20xx——那是年份标记（[2023]），不是集号；跳过年份取第一个数字方括号。
+function firstNonYearBracket(filename: string): { value: number; token: string } | null {
+  for (const m of filename.matchAll(/\[(\d{1,4})\]/g)) {
+    const n = Number(m[1])
+    if (n >= 1900 && n <= 2099) continue
+    return { value: n, token: m[0] }
+  }
+  return null
+}
 
 /**
  * 从文件名解析绝对集号——只认三种确定性标记（CJK "第N话/第N集" > 方括号 [NN] > 裸 "E26"），
@@ -27,11 +42,11 @@ export function parseAbsoluteEpisodeNumber(filename: string): EpisodeNumberMatch
   if (SXXEYY_RE.test(filename)) return null
   if (E_RANGE_RE.test(filename)) return null
   const cjk = CJK_EPISODE_RE.exec(filename)
-  if (cjk) return { absoluteEpisode: Number(cjk[1]), matchedToken: cjk[0] }
-  const bracket = BRACKET_EPISODE_RE.exec(filename)
-  if (bracket) return { absoluteEpisode: Number(bracket[1]), matchedToken: bracket[0] }
+  if (cjk) return toMatch(Number(cjk[1]), cjk[0])
+  const bracket = firstNonYearBracket(filename)
+  if (bracket) return toMatch(bracket.value, bracket.token)
   const e = E_CODE_RE.exec(filename)
-  if (e) return { absoluteEpisode: Number(e[1]), matchedToken: e[0] }
+  if (e) return toMatch(Number(e[1]), e[0])
   return null
 }
 
@@ -260,12 +275,15 @@ export function crossCheckAnimeLists(
  * 可选抽查：实际视频时长 vs TMDB 单集平均时长（episode_run_time），偏差超过 ±10% 才记为失败。
  * getDurationSeconds 拿不到时长（ffprobe 未安装/探测失败）时该文件跳过，不计入 failures——
  * 这是"业界没人做，我们白捡的便宜校验"，抽查性质，不该因为环境缺 ffprobe 就拦掉整理。
+ * TMDB 侧时长 <= 0（episode_run_time 缺失/为 0 的剧不少）→ 整个抽查跳过：没有可信基准，
+ * 硬算会除零/全量误报。
  */
 export function checkRuntimeTolerance(
   items: Pick<RealignPlanItem, 'sourcePath' | 'sourceFilename'>[],
   expectedRuntimeMinutes: number,
   getDurationSeconds: (path: string) => number | null,
 ): string[] {
+  if (expectedRuntimeMinutes <= 0) return []
   const failures: string[] = []
   const expectedSeconds = expectedRuntimeMinutes * 60
   for (const item of items) {
