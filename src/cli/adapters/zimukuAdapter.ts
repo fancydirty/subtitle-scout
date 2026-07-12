@@ -1,4 +1,4 @@
-import type { ZimukuClient, ZimukuSearchResult } from '../../adapters/providers/zimuku.js'
+import { ZIMUKU_HEADERS, type ZimukuClient, type ZimukuSearchResult } from '../../adapters/providers/zimuku.js'
 import type { SubtitleCandidate } from '../../core/schemas.js'
 import type { FetchAdapter } from '../fetchLib.js'
 
@@ -39,7 +39,7 @@ export function makeZimukuAdapter(
     },
     resolve: async (ref) => {
       const detail = await client.detail(ref.providerId)
-      return { url: detail.downloadUrl, filename: detail.filename }
+      return { url: detail.downloadUrl, filename: detail.filename, headers: ZIMUKU_HEADERS }
     },
   }
 }

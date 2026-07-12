@@ -39,3 +39,17 @@ describe('makeZimukuAdapter: search', () => {
     expect(results).toEqual([])
   })
 })
+
+describe('makeZimukuAdapter: resolve', () => {
+  it('resolves to the archive url + filename + browser headers (needed by downloadDirect for the archive GET)', async () => {
+    const detail = vi.fn(async () => ({ downloadUrl: 'https://static.zimuku.org/files/x.zip', filename: 'x.zip' }))
+    const adapter = makeZimukuAdapter(fakeClient({ detail }))
+
+    const r = await adapter.resolve({ provider: 'zimuku', providerId: '58421', fileIndex: null }, () => {})
+
+    expect(detail).toHaveBeenCalledWith('58421')
+    expect(r.url).toBe('https://static.zimuku.org/files/x.zip')
+    expect(r.filename).toBe('x.zip')
+    expect(r.headers).toMatchObject({ 'Accept-Language': 'zh-CN,zh;q=0.9' })
+  })
+})
