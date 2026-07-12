@@ -259,15 +259,12 @@ export async function scanLibrary(
           originResolutionFailed,
         })
 
-        // Preserve unavailable/needs_review only if reality still says missing
-        // covered/embedded/ignored/missing are reality checks that overwrite them
-        // But if reality says missing and DB says unavailable/needs_review, keep that status
-        // （needs_review：task 2 ask_user 诚实记账——候选待确认，磁盘上没冒出新字幕之前
-        // 不该被普通 rescan 抹回 missing，镜像 unavailable 的既有 preserve 逻辑）
+        // Preserve unavailable only if reality still says missing;
+        // covered/embedded/ignored/missing are reality checks that overwrite it.
         const existing = lib.getEpisode(item.Id)
         let statusToWrite = newStatus
 
-        if (newStatus === 'missing' && (existing?.sub_status === 'unavailable' || existing?.sub_status === 'needs_review')) {
+        if (newStatus === 'missing' && existing?.sub_status === 'unavailable') {
           statusToWrite = existing.sub_status
         }
 
@@ -328,11 +325,11 @@ export async function scanLibrary(
           originResolutionFailed,
         })
 
-        // Preserve unavailable/needs_review only if reality still says missing (mirrors episode branch above)
+        // Preserve unavailable only if reality still says missing (mirrors episode branch above)
         const existing = lib.getMovie(item.Id)
         let statusToWrite = newStatus
 
-        if (newStatus === 'missing' && (existing?.sub_status === 'unavailable' || existing?.sub_status === 'needs_review')) {
+        if (newStatus === 'missing' && existing?.sub_status === 'unavailable') {
           statusToWrite = existing.sub_status
         }
 

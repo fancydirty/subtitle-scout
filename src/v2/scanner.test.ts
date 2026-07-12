@@ -318,63 +318,6 @@ describe('scanLibrary', () => {
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
   })
 
-  it('needs_review status is preserved when reality still says missing (task 2: ask_user 诚实记账)', async () => {
-    // 镜像 unavailable 的 preserve 逻辑：needs_review（候选存在但置信不足）不该被普通 rescan
-    // 悄悄抹回 missing——它仍在等人工确认，磁盘上没冒出新字幕之前应该保持这个态。
-    lib.upsertSeries({ id: 's1', name: 'Test' })
-    lib.upsertEpisode({
-      id: 'e1',
-      seriesId: 's1',
-      season: 1,
-      episode: 1,
-      name: 'Ep1',
-      path: '/media/tv/ep1.mkv',
-      subStatus: 'missing',
-    })
-    lib.markNeedsReview('e1', '找到候选但把握不足', Date.now() + 86400000)
-    expect(lib.getEpisode('e1')!.sub_status).toBe('needs_review')
-
-    const pages = [[epItem('e1')], []]
-    const jf: Pick<PlayerServer, 'getItemsPage'> = {
-      getItemsPage: vi.fn(async () => pages.shift() ?? []),
-    }
-    await scanLibrary(jf, lib, {
-      pageSize: 10,
-      fileExists: () => false,
-      mappings,
-      skipChineseOrigin: true,
-    })
-    // Should remain needs_review, not overwritten by missing
-    expect(lib.getEpisode('e1')!.sub_status).toBe('needs_review')
-  })
-
-  it('needs_review is overwritten when reality says covered (a subtitle showed up on disk)', async () => {
-    lib.upsertSeries({ id: 's1', name: 'Test' })
-    lib.upsertEpisode({
-      id: 'e1',
-      seriesId: 's1',
-      season: 1,
-      episode: 1,
-      name: 'Ep1',
-      path: '/media/tv/ep1.mkv',
-      subStatus: 'missing',
-    })
-    lib.markNeedsReview('e1', '找到候选但把握不足', Date.now() + 86400000)
-
-    const pages = [[epItem('e1', 1, 1, { Path: '/media/tv/ep1.mkv' })], []]
-    const jf: Pick<PlayerServer, 'getItemsPage'> = {
-      getItemsPage: vi.fn(async () => pages.shift() ?? []),
-    }
-    await scanLibrary(jf, lib, {
-      pageSize: 10,
-      fileExists: (p) => p.includes('ep1') && p.includes('.zh-Hans.srt'),
-      mappings,
-      skipChineseOrigin: true,
-    })
-    // Reality wins: overwritten to covered
-    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
-  })
-
   it('Episode without SeriesId is skipped', async () => {
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const pages = [[epItem('e1', 1, 1, { SeriesId: undefined })], []]
@@ -1148,26 +1091,6 @@ describe('scanLibrary', () => {
       })
       expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
       expect(subtitleRows('e1')).toHaveLength(0)
-    })
-
-    it('MINOR: needs_review episode preserved when reality still says missing — adoption never fires, no subtitles row invented', async () => {
-      lib.upsertSeries({ id: 's1', name: 'Test' })
-      lib.upsertEpisode({
-        id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'Ep1',
-        path: '/media/tv/ep1.mkv', subStatus: 'missing',
-      })
-      lib.markNeedsReview('e1', '找到候选但把握不足', Date.now() + 86400000)
-
-      const pages = [[epItem('e1', 1, 1, { Path: '/media/tv/ep1.mkv' })], []]
-      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
-      await scanLibrary(jf, lib, {
-        pageSize: 10,
-        fileExists: () => false, // no disk sidecar — reality genuinely still says missing
-        mappings,
-        skipChineseOrigin: true,
-      })
-      expect(lib.getEpisode('e1')!.sub_status).toBe('needs_review') // preserved
-      expect(subtitleRows('e1')).toHaveLength(0) // adoption never fires — no diskSidecarPath, no row
     })
 
     it('IMPORTANT-2: disk sidecar matched via literal zh-Hant tag → adopted row carries language=zh-Hant (not hardcoded zh-Hans)', async () => {

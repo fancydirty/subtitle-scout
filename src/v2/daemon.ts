@@ -288,11 +288,9 @@ export class ScoutDaemon {
           continue // 已有中文字幕或不需要——不值得再试
         }
 
-        // unavailable/needs_review 的条目：recheck_after 拉回 now，否则 wake 了 job
-        // 但 executor 重derive targets 时 recheck 门会把这集挡在外面，白跑一轮（零 target
-        // 误判 done）。resetRecheck 本身两态都支持，这里的守卫必须跟着展宽，否则
-        // needs_review 是死代码——见 libraryRepo.resetRecheck 的 WHERE 子句。
-        if (row.sub_status === 'unavailable' || row.sub_status === 'needs_review') {
+        // unavailable 的条目：recheck_after 拉回 now，否则 wake 了 job 但 executor
+        // 重derive targets 时 recheck 门会把这集挡在外面，白跑一轮。
+        if (row.sub_status === 'unavailable') {
           lib.resetRecheck(row.id, now())
         }
 
