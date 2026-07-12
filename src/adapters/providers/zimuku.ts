@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 import { MinIntervalLimiter } from './assrt.js'
-import { detectChallenge, solveYunsuoChallenge } from './yunsuo.js'
+import { detectChallenge, solveYunsuoChallenge, ZimukuChallengeError } from './yunsuo.js'
 import type { ZimukuSessionStore } from './zimukuSession.js'
 
 export const ZIMUKU_BASE = 'https://www.zimuku.org'
@@ -96,7 +96,12 @@ export class ZimukuClient {
     const cached = this.opts.sessionStore.get()
     const html = await this.fetchPath(path, cached?.cookie)
     if (!detectChallenge(html)) return html
-    return this.solveAndRetry(path, html)
+    const retryHtml = await this.solveAndRetry(path, html)
+    if (detectChallenge(retryHtml)) {
+      this.opts.sessionStore.invalidate()
+      throw new ZimukuChallengeError(`still challenged after solving captcha for ${path} — cookie rejected immediately`)
+    }
+    return retryHtml
   }
 
   /** 命中挑战页后的破解+重试:先作废旧 cookie(响应驱动的失效检测,不按计时——设计文档),

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { parseSearchResults, parseDetailPage, ZIMUKU_BASE, ZimukuClient, type ZimukuClientOpts } from './zimuku.js'
 import { MinIntervalLimiter } from './assrt.js'
 import { ZimukuSessionStore } from './zimukuSession.js'
+import { ZimukuChallengeError } from './yunsuo.js'
 
 describe('parseSearchResults', () => {
   it('extracts id + title from every /detail/<id>.html anchor', () => {
@@ -124,5 +125,23 @@ describe('ZimukuClient', () => {
     })
     await c.search('x')
     expect(solve).not.toHaveBeenCalled()
+  })
+
+  it('invalidates the cookie and throws ZimukuChallengeError when still challenged immediately after solving', async () => {
+    const challengeHtml = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
+    const fetchImpl = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/search?q=')) return new Response(challengeHtml) // 每次都是挑战页——破解后仍被拦
+      if (u.includes('security_verify_img')) return new Response(Buffer.from('png'))
+      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=stillbad; Path=/' } })
+    })
+    const solve = vi.fn(async () => ({ digits: '74504' }))
+    const dir = mkdtempSync(join(tmpdir(), 'zimuku-client-'))
+    const sessionStore = new ZimukuSessionStore(dir)
+    const c = new ZimukuClient({
+      sessionStore, solve, fetchImpl: fetchImpl as unknown as typeof fetch, limiter: new MinIntervalLimiter(1),
+    })
+    await expect(c.search('x')).rejects.toThrow(ZimukuChallengeError)
+    expect(sessionStore.get()).toBeNull() // 失效的 cookie 没有残留在缓存里
   })
 })
