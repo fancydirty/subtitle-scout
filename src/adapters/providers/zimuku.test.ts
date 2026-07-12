@@ -84,4 +84,45 @@ describe('ZimukuClient', () => {
     await c.search('x')
     expect(waitSpy).toHaveBeenCalled()
   })
+
+  it('on first hitting the challenge page, solves it, caches the cookie, and retries the original request once', async () => {
+    const challengeHtml = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
+    const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
+    let searchCallCount = 0
+    const fetchImpl = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/search?q=')) {
+        searchCallCount++
+        return searchCallCount === 1 ? new Response(challengeHtml) : new Response(searchHtml)
+      }
+      if (u.includes('security_verify_img')) return new Response(Buffer.from('png'))
+      // captcha 表单提交
+      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=cached123; Path=/' } })
+    })
+    const solve = vi.fn(async () => ({ digits: '74504' }))
+    const sessionStore = new ZimukuSessionStore(mkdtempSync(join(tmpdir(), 'zimuku-client-')))
+    const c = new ZimukuClient({
+      sessionStore, solve, fetchImpl: fetchImpl as unknown as typeof fetch, limiter: new MinIntervalLimiter(1),
+    })
+    const results = await c.search('间谍过家家')
+    expect(results.length).toBe(2)
+    expect(searchCallCount).toBe(2) // 首次撞挑战页 + 破解后重试一次
+    expect(sessionStore.get()?.cookie).toBe('security_session_verify=cached123')
+  })
+
+  it('reuses a cached cookie without re-solving when the session store already has one and the site does not challenge', async () => {
+    const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      expect((init!.headers as Record<string, string>).Cookie).toBe('security_session_verify=warm456')
+      return new Response(searchHtml)
+    })
+    const solve = vi.fn()
+    const sessionStore = new ZimukuSessionStore(mkdtempSync(join(tmpdir(), 'zimuku-client-')))
+    sessionStore.put({ cookie: 'security_session_verify=warm456', capturedAt: Date.now() })
+    const c = new ZimukuClient({
+      sessionStore, solve, fetchImpl: fetchImpl as unknown as typeof fetch, limiter: new MinIntervalLimiter(1),
+    })
+    await c.search('x')
+    expect(solve).not.toHaveBeenCalled()
+  })
 })

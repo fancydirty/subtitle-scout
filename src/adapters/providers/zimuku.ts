@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 import { MinIntervalLimiter } from './assrt.js'
-import { detectChallenge } from './yunsuo.js'
+import { detectChallenge, solveYunsuoChallenge } from './yunsuo.js'
 import type { ZimukuSessionStore } from './zimukuSession.js'
 
 export const ZIMUKU_BASE = 'https://www.zimuku.org'
@@ -99,10 +99,19 @@ export class ZimukuClient {
     return this.solveAndRetry(path, html)
   }
 
-  // Task 13 will fill this in — for now the challenge branch is unreachable in tests
-  // because every fixture response used by this task's tests returns non-challenge HTML.
-  private async solveAndRetry(_path: string, _challengeHtml: string): Promise<string> {
-    throw new Error('not implemented yet — see Task 13')
+  /** 命中挑战页后的破解+重试:先作废旧 cookie(响应驱动的失效检测,不按计时——设计文档),
+   *  破解拿到新 cookie 后写盘缓存,再礼貌等待一次节流间隔,用新 cookie 重发原始请求恰好一次。 */
+  private async solveAndRetry(path: string, challengeHtml: string): Promise<string> {
+    // 命中挑战:缓存的 cookie(若有)已经失效——按响应失效检测,不按计时(设计文档)
+    this.opts.sessionStore.invalidate()
+    const { cookie } = await solveYunsuoChallenge(
+      { fetchImpl: this.fetchImpl, solve: this.opts.solve },
+      ZIMUKU_BASE, challengeHtml, this.opts.maxCaptchaAttempts ?? 5,
+    )
+    this.opts.sessionStore.put({ cookie, capturedAt: Date.now() })
+
+    await this.limiter.wait()
+    return this.fetchPath(path, cookie)
   }
 
   async search(query: string): Promise<ZimukuSearchResult[]> {
