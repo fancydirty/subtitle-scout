@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { isDirWritable } from '../core/mediaContext.js'
 import type { ProbeOutcome } from '../files/mountCapabilities.js'
 import { sanitizeTitleForFs, type RealignPlanItem } from '../files/libraryRealign.js'
@@ -123,4 +123,20 @@ export function finalizeShowDir(libRoot: string, showDirName: string): string {
   if (existsSync(to)) throw new Error(`目标目录已存在，拒绝覆盖：${to}`)
   renameSync(from, to)
   return to
+}
+
+/**
+ * 旧目录一次 rename 进归档（<share根>/.archive/<剧名>-<时间戳>/<oldDir 的 basename>）。
+ * 归档目录内放空 `.ignore` 双保险（调研结论：点前缀目录被 Jellyfin 各版本反复横跳，
+ * 不能只靠命名习惯）。永不删除——保留期交给用户（dashboard 显示占用，不自动清）。
+ */
+export function archiveOldDir(oldDir: string, archiveDir: string): string {
+  mkdirSync(archiveDir, { recursive: true })
+  const ignorePath = join(archiveDir, '.ignore')
+  if (!existsSync(ignorePath)) {
+    writeFileSync(ignorePath, 'subtitle-scout realign archive — permanent, never auto-cleaned by this tool\n')
+  }
+  const finalPath = join(archiveDir, basename(oldDir))
+  renameSync(oldDir, finalPath)
+  return finalPath
 }

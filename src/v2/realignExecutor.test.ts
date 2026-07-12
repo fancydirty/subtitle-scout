@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   mountAliveSentinel, chooseRealignStrategy, archiveDirFor,
   planCollisions, invisibleBuildDir, assembleInvisibleTree, finalizeShowDir,
+  archiveOldDir,
 } from './realignExecutor.js'
 import type { RealignPlanItem } from '../files/libraryRealign.js'
 
@@ -149,5 +150,22 @@ describe('不可见组装', () => {
     mkdirSync(join(root, '.realign-build', 'Show'), { recursive: true })
     mkdirSync(join(root, 'Show'), { recursive: true })
     expect(() => finalizeShowDir(root, 'Show')).toThrow(/已存在/)
+  })
+})
+
+describe('archiveOldDir', () => {
+  it('把旧目录残骸整体 rename 进归档目录，附 .ignore 双保险', () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-archive-'))
+    const oldDir = join(root, 'lib', 'Show', 'Season 01')
+    mkdirSync(oldDir, { recursive: true })
+    writeFileSync(join(oldDir, '合集 01-02.mkv'), 'quarantined') // 隔离文件残留
+    const archiveDir = join(root, 'archive', 'Show-123')
+
+    const finalPath = archiveOldDir(oldDir, archiveDir)
+
+    expect(existsSync(oldDir)).toBe(false)
+    expect(existsSync(join(archiveDir, 'Season 01', '合集 01-02.mkv'))).toBe(true)
+    expect(existsSync(join(archiveDir, '.ignore'))).toBe(true)
+    expect(finalPath).toBe(join(archiveDir, 'Season 01'))
   })
 })
