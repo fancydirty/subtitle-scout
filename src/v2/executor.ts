@@ -29,10 +29,6 @@ export interface ExecutorDeps {
     journalPath?: string
     /** 写盘字幕路径（供 markCovered 建 subtitles 行）；不进 runs.detail */
     subtitlePath?: string
-    /** ask_user 门评置信度（人话摘要展示） */
-    confidence?: number | null
-    /** 自动下载门槛（与 confidence 配对展示） */
-    minConfidence?: number
     /** 结论理由（错因取首条，人话化后入 detail） */
     reasons?: string[]
     /** 命中的候选来源（供 markCovered 建 provider_ref）；无来源可考（如 already_exists）为 null/undefined */
@@ -62,14 +58,6 @@ function coveredDetail(job: Job, coveredIds: Set<string>, lib: LibraryRepo): str
   return `第 ${season} 季 ${ids.length} 集字幕已就位`
 }
 
-/** 门评置信度不足的人话摘要（有数字用数字）。 */
-function askUserDetail(confidence?: number | null, minConfidence?: number): string {
-  if (typeof confidence === 'number' && typeof minConfidence === 'number') {
-    return `找到候选但把握不足（置信 ${confidence.toFixed(2)} < ${minConfidence.toFixed(2)}），待人工确认`
-  }
-  return '找到候选但把握不足，待人工确认'
-}
-
 /** 错因清洗：取首行、剔除绝对路径 token（原文仍留 last_error/journal）。 */
 function briefCause(raw?: string): string {
   if (!raw) return ''
@@ -77,7 +65,6 @@ function briefCause(raw?: string): string {
 }
 
 const HUMAN_NO_MATCH = '没找到合适的中文字幕'
-const HUMAN_ASK_USER = '找到候选但把握不足，待人工确认'
 
 /** M8: pipeline decision → subtitles.source 映射 */
 const SOURCE_BY_DECISION: Record<string, string> = {
@@ -86,9 +73,7 @@ const SOURCE_BY_DECISION: Record<string, string> = {
   already_exists: 'preexisting',
 }
 
-/** 重derive 本 job 当前的 missing targets（含 unavailable/needs_review 复查到期），按集号升序。
- *  needs_review（task 2: ask_user 诚实记账）复查到期后和 unavailable 一样重新参战——
- *  一个更好的候选或更丰富的元数据到时候可能就能解出来，不该被永久搁置在"待确认"。 */
+/** 重derive 本 job 当前的 missing targets（含 unavailable 复查到期），按集号升序。 */
 function remainingTargets(job: Job, lib: LibraryRepo, now: number): (Episode | Movie)[] {
   if (job.kind === 'series_season') {
     return lib.db
@@ -96,17 +81,16 @@ function remainingTargets(job: Job, lib: LibraryRepo, now: number): (Episode | M
         `SELECT * FROM episodes
          WHERE series_id = ? AND season = ?
          AND (sub_status = 'missing'
-              OR (sub_status = 'unavailable' AND recheck_after <= ?)
-              OR (sub_status = 'needs_review' AND recheck_after <= ?))
+              OR (sub_status = 'unavailable' AND recheck_after <= ?))
          ORDER BY episode ASC`
       )
-      .all(job.series_id, job.season, now, now) as Episode[]
+      .all(job.series_id, job.season, now) as Episode[]
   }
   const movie = lib.getMovie(job.movie_id!)
   if (!movie) return []
   const stillMissing =
     movie.sub_status === 'missing' ||
-    ((movie.sub_status === 'unavailable' || movie.sub_status === 'needs_review') && (movie.recheck_after ?? 0) <= now)
+    (movie.sub_status === 'unavailable' && (movie.recheck_after ?? 0) <= now)
   return stillMissing ? [movie] : []
 }
 
@@ -243,7 +227,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // "是不是我领的"，会把新 invocation 的战果错误地转移到 failed/done（state/attempt/
     // error_attempt 全部覆盖，还会把新 invocation 自己的 lease_until 直接 NULL 掉，
     // 导致新 invocation 自己的 ownsLease 也跟着翻假，静默丢弃它后续所有战果——见
-    // 审计 (c) 级联）；markUnavailable/markNeedsReview 更是完全没有守卫。在进入任何
+    // 审计 (c) 级联）；markUnavailable 更是完全没有守卫。在进入任何
     // 分支之前，一次性用 ownsLease() 拦掉整段路由——租约已丢失就什么状态机/集状态都
     // 不碰，只留一行 runs 记录（复用 record() 既有的 stale-lease 弃置分支，诊断信息
     // 不丢）。这是覆盖全部分支的最窄卡口：其后每条分支要么直接依赖 ownsLease()==true
@@ -323,40 +307,22 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       return
     }
 
-    // 0 coverage, content failure: no_safe_match / ask_user → content backoff track
-    // task 2: 两者共享 job 状态机语义（同一条内容退避梯/dormancy 悬崖），但集级 sub_status
-    // 诚实分流——no_safe_match 是"搜索穷尽确认无"（unavailable），ask_user 是"找到候选但
-    // 置信不足，待人工确认"（needs_review）。此前两者都被 markUnavailable，前端一律展示
-    // "暂无"，掩盖了本可人工确认的候选（审计 executor.ts:219 finding）。
-    if (decision === 'no_safe_match' || decision === 'ask_user') {
-      // 人话化：no_safe_match 的 status_reason/detail 用简洁版；ask_user 的 status_reason
-      // 也用带数字的详细版（不只是 runs.detail）——未来"确认队列"功能要按集展示具体把握程度。
-      const humanReason = decision === 'no_safe_match' ? HUMAN_NO_MATCH : HUMAN_ASK_USER
-      const humanDetail =
-        decision === 'no_safe_match'
-          ? HUMAN_NO_MATCH
-          : askUserDetail(result.confidence, result.minConfidence)
-
+    // 0 coverage, content failure: no_safe_match → content backoff track(唯一出口,
+    // ask_user/needs_review 已拔除——判断链只剩"是/不是"两态,拿不准的候选在 pipeline
+    // 内部已经走过 staging 沙盒体检+终审才能到这里)。
+    if (decision === 'no_safe_match') {
       const transitioned = jobs.completeNoMatch(job.id, now())
-
-      // Mark targets unavailable/needs_review with recheck tied to the job's own retry schedule
       if (transitioned) {
         const finalJob = jobs.get(job.id)!
         const recheckAfter =
           finalJob.state === 'dormant'
-            ? now() + 30 * 86_400_000 // 30 days if dormant
+            ? now() + 30 * 86_400_000
             : finalJob.next_retry_at ?? now() + 86_400_000
-
         for (const target of targets) {
-          if (decision === 'ask_user') {
-            lib.markNeedsReview(target.id, humanDetail, recheckAfter)
-          } else {
-            lib.markUnavailable(target.id, humanReason, recheckAfter)
-          }
+          lib.markUnavailable(target.id, HUMAN_NO_MATCH, recheckAfter)
         }
       }
-
-      record(transitioned, decision, humanDetail, journalPath, stats)
+      record(transitioned, decision, HUMAN_NO_MATCH, journalPath, stats)
       return
     }
 
@@ -468,7 +434,6 @@ export function makeRunEpisode(
       decision: result.decision,
       journalPath: result.journalPath,
       subtitlePath: result.subtitlePath ?? undefined,
-      confidence: result.confidence ?? null,
       reasons: result.reasons ?? [],
       selected: result.selected ?? null,
       stats: { llmCalls: result.stats.llmCalls, apiCalls: result.stats.apiCalls },

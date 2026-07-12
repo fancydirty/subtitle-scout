@@ -199,48 +199,16 @@ describe('executor', () => {
     expect(runs.getByJobId(job.id)[0].detail).toBe('没找到合适的中文字幕')
   })
 
-  it('task 2: ask_user → needs_review（诚实区分"找到候选待确认"与穷尽未找到的 unavailable），detail 带置信数字', async () => {
-    // 修正前：ask_user 和 no_safe_match 一样被 markUnavailable，前端展示"暂无"——
-    // 掩盖了本可人工确认的候选。ask_user 仍走内容轨的 completeNoMatch（job 状态机
-    // 语义不变，见同一 it 组的 no_safe_match 用例），只是集级 sub_status 诚实区分。
+  it('no_safe_match is the only content-failure outcome — no ask_user/needs_review branch left', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
     const job = jobs.claimNext(now)!
 
-    const runEpisode = vi.fn(async () => ({
-      decision: 'ask_user',
-      journalPath: '/journals/test.json',
-      confidence: 0.82,
-      minConfidence: 0.86,
-    }))
-
+    const runEpisode = vi.fn(async () => ({ decision: 'no_safe_match', reasons: ['没有安全匹配'] }))
     await executeJob(job, mkDeps(runEpisode))
 
     const ep1 = lib.getEpisode('e1')!
-    expect(ep1.sub_status).toBe('needs_review')
-    // 集级 status_reason 用带数字的详细版（供未来"确认队列"功能展示具体把握程度）
-    expect(ep1.status_reason).toBe('找到候选但把握不足（置信 0.82 < 0.86），待人工确认')
-    expect(ep1.recheck_after).toBeGreaterThan(now)
-    expect(runs.getByJobId(job.id)[0].detail).toBe('找到候选但把握不足（置信 0.82 < 0.86），待人工确认')
-    // job 状态机走内容轨，和 no_safe_match 一样（backoff/dormancy 语义不因 sub_status 改变而变）
-    expect(jobs.get(job.id)!.state).toBe('failed')
-    expect(jobs.get(job.id)!.attempt).toBe(1)
-  })
-
-  it('task 2: ask_user 复查到期后重新计入该季 remainingTargets（needs_review 可重新进入执行）', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    lib.markNeedsReview('e1', '找到候选但把握不足', now - 1) // 复查已到期
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    const job = jobs.claimNext(now)!
-
-    const runEpisode = vi.fn(async (episodeId: string) => {
-      expect(episodeId).toBe('e1') // needs_review 且复查已到期——仍被当作待处理目标
-      return { decision: 'download', journalPath: '/j.json', subtitlePath: '/tv/s1e1.zh-Hans.srt' }
-    })
-
-    await executeJob(job, mkDeps(runEpisode))
-    expect(runEpisode).toHaveBeenCalledTimes(1)
-    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(ep1.sub_status).toBe('unavailable') // no_safe_match 统一走 unavailable，没有第二条内容失败轨
   })
 
   it('runEpisode 抛错 → completeError，短退避', async () => {
@@ -708,7 +676,7 @@ describe('executor', () => {
   // IMPORTANT-1（fix/lifecycle-forensics 审计——guard coverage hole）：detached invocation
   // 的 job 被孤儿回收（reapOrphaned）后又被一次新 invocation 重新 claim——旧代码只在
   // onCovered/代表集 markCovered 两处写盘拦了 ownsLease()，post-runEpisode 的最终分流
-  // （completeNoMatch/completeError/completeDone）和 markUnavailable/markNeedsReview
+  // （completeNoMatch/completeError/completeDone）和 markUnavailable
   // 完全没守，会把新 invocation 仍在用的那一行错误转移（state/attempt/error_attempt/
   // lease_until 全部覆盖）。下面每个场景都覆盖一条分流分支，并在收尾处证明"活着"的
   // invocation #2 事后仍能正常收尾（其自身 lease_until 没被 stale invocation 的写盘捣毁，
@@ -948,7 +916,6 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
       decision: 'download',
       journalPath: '/j.json',
       subtitlePath: '/subs/x.srt',
-      confidence: null,
       reasons: [],
       selected: null,
       stats: { llmCalls: 0, apiCalls: 0 },
