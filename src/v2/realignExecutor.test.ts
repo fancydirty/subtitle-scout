@@ -826,6 +826,60 @@ describe('executeRealign（顶层编排，集成）', () => {
       db.close()
     }
   })
+
+  it('GAP C：scanDir 嵌套 Extras 视频（数量在阈值以下）→ 不 park，记进 notes，且随旧目录整棵归档不丢', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-nested-notes-'))
+    const oldSeasonDir = mkFlatLibrary(root, 5)
+    const libRoot = join(root, 'lib')
+    // scanVideoFiles 只扫顶层——嵌套 Extras 子目录里的视频文件整理计划从未检查过
+    const extrasDir = join(oldSeasonDir, 'Extras')
+    mkdirSync(extrasDir, { recursive: true })
+    writeFileSync(join(extrasDir, 'making-of.mkv'), 'behind-the-scenes')
+
+    const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3, 4, 5].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
+    const jf = mkJf({
+      locations: [libRoot],
+      items: [1, 2, 3, 4, 5].map(i => ({ Type: 'Episode', Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i}.mkv`), ParentIndexNumber: 1 })),
+    })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { tmdb: { getSeasonTable: vi.fn(async () => SEASONS_1x5) } })
+
+    const result = await executeRealign(job, deps)
+
+    expect(result.decision).toBe('realigned')          // 数量少（1 个）不 park，照常整理
+    expect(result.detail).toContain('making-of.mkv')    // 用户能在 runs 详情里看到嵌套文件被一并归档
+    // 嵌套文件没丢——随 scanDir 整棵子树一起进了归档（archiveOldDir 是目录级 rename）
+    const archiveDir = dirname(jobsRepo.get(job.id)!.plan_ref!)
+    const archivedExtra = join(archiveDir, basename(oldSeasonDir), 'Extras', 'making-of.mkv')
+    expect(existsSync(archivedExtra)).toBe(true)
+    expect(readFileSync(archivedExtra, 'utf8')).toBe('behind-the-scenes')
+    db.close()
+  })
+
+  it('GAP C：scanDir 嵌套视频文件数超过阈值（疑似整段并行内容被扫进同一目录）→ park，零改动', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-nested-park-'))
+    const oldSeasonDir = mkFlatLibrary(root, 5)
+    const libRoot = join(root, 'lib')
+    // 6 个嵌套视频文件——超过 NESTED_VIDEO_PARK_THRESHOLD（5），疑似整季被错误地扫进了
+    // scanDir 下的子目录。
+    const nestedDir = join(oldSeasonDir, 'Season 02')
+    mkdirSync(nestedDir, { recursive: true })
+    for (let i = 1; i <= 6; i++) writeFileSync(join(nestedDir, `Spy x Family S2E${i}.mkv`), `s2-${i}`)
+
+    const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3, 4, 5].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
+    const jf = mkJf({ locations: [libRoot] })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { tmdb: { getSeasonTable: vi.fn(async () => SEASONS_1x5) } })
+
+    const result = await executeRealign(job, deps)
+
+    expect(result.decision).toBe('park')
+    expect(result.detail).toContain('嵌套')
+    // 零改动：旧目录（含嵌套内容）原样保留，没建 build/归档，没落 manifest
+    expect(countVideosRec(oldSeasonDir)).toBe(5 + 6)
+    expect(existsSync(join(root, '.archive'))).toBe(false)
+    expect(existsSync(join(libRoot, '.realign-build'))).toBe(false)
+    expect(jobsRepo.get(job.id)!.plan_ref).toBeNull()
+    db.close()
+  })
 })
 
 /** 递归统计匹配文件数（sidecar 等非视频文件也要能数）。 */

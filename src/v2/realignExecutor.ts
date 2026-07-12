@@ -364,6 +364,24 @@ function countVideoFiles(dir: string): number {
   return n
 }
 
+/** 递归列出目录下所有视频文件的绝对路径（GAP C：scanVideoFiles 只扫顶层，见下方
+ *  step 8 的嵌套内容清点用途——跟顶层扫描结果做差集，找出计划从未检查过的嵌套文件）。 */
+function listVideoFilesRecursive(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  const out: string[] = []
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) out.push(...listVideoFilesRecursive(p))
+    else if (VIDEO_FILE_RE.test(e.name)) out.push(p)
+  }
+  return out
+}
+
+/** GAP C（re-review #3）阈值：嵌套（scanVideoFiles 扫不到的子目录）视频文件数超过此值才
+ *  park——数量少（零星 Extras/NCOP/making-of）时数据本就不会丢（archiveOldDir 是整棵子树
+ *  rename），只需 notes 告知；数量多则疑似整段并行内容被错误地扫进同一目录，零改动更安全。 */
+const NESTED_VIDEO_PARK_THRESHOLD = 5
+
 /** 段感知的"path 在 loc 之内"（MINOR#14：'/media/li' 不得吞并 '/media/lib'）。 */
 function underLocation(path: string, localLoc: string): boolean {
   return isUnderRoots(path, [localLoc])
@@ -544,6 +562,30 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
 
   // 8. 计划构建：扫描目录 → TMDB 季表 → anime-lists 交叉验证 → 确定性闸门（不过 → park）。
   const files = scanVideoFiles(scanDir)
+
+  // GAP C（re-review #3）：scanVideoFiles 只扫 scanDir 顶层，但步骤 14 的 archiveOldDir
+  // 会把 scanDir 整棵子树一并 rename 进归档——数据不会丢（目录级 rename，嵌套内容原样
+  // 跟着走），但 coverage/continuity 闸门（buildRealignPlan）从未看过这些文件，用户也无从
+  // 知晓库里"消失"的这批内容其实躺在归档目录下。动手之前先做一次递归清点，跟顶层扫描
+  // 结果做差集：数量在阈值以下（零星 Extras/NCOP/making-of）就记进 notes，随最终 detail
+  // 一起出现在 runs 详情里，照常整理（内容本就会跟着归档，不会丢）；超过阈值（疑似整段
+  // 并行剧集树被错误地扫进了同一目录，继续整理会把用户完全没打算动的内容一并卷入归档）
+  // 就直接 park，零改动，交人工核查（宁不做，不做烂）。
+  const topLevelPaths = new Set(files.map(f => f.path))
+  const nestedVideos = listVideoFilesRecursive(scanDir).filter(p => !topLevelPaths.has(p))
+  if (nestedVideos.length > NESTED_VIDEO_PARK_THRESHOLD) {
+    return park(
+      `${scanDir} 下嵌套子目录里有 ${nestedVideos.length} 个整理计划从未检查过的视频文件` +
+      `（超过 ${NESTED_VIDEO_PARK_THRESHOLD} 个阈值，疑似整段并行内容被扫进同一目录）——拒绝动任何文件，需人工核查`,
+    )
+  }
+  if (nestedVideos.length > 0) {
+    notes.push(
+      `归档旧目录时一并带走 ${nestedVideos.length} 个整理计划未检查的嵌套视频文件（如 Extras/specials）：` +
+      nestedVideos.map(p => basename(p)).join('、'),
+    )
+  }
+
   const seasonTable = await deps.tmdb.getSeasonTable(tmdbId)
   if (!seasonTable) return park(`TMDB 查无该剧季表（tmdbId=${tmdbId}）`)
 
