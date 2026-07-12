@@ -89,6 +89,23 @@ describe('buildAbsoluteMap', () => {
     const map = buildAbsoluteMap(table)
     expect(map.get(4)).toEqual({ season: 2, episode: 1 })
   })
+  it('入参含 season<=0（特别篇本不该到这里）→ throw（不变量检查）', () => {
+    const table: SeasonTableEntry[] = [
+      { seasonNumber: 0, episodeCount: 5, airDate: null },
+      { seasonNumber: 1, episodeCount: 3, airDate: null },
+    ]
+    expect(() => buildAbsoluteMap(table)).toThrow()
+  })
+  it('季号不连续（缺季 → 累计映射会整体错位）→ throw', () => {
+    const table: SeasonTableEntry[] = [
+      { seasonNumber: 1, episodeCount: 3, airDate: null },
+      { seasonNumber: 3, episodeCount: 2, airDate: null }, // 缺 season 2
+    ]
+    expect(() => buildAbsoluteMap(table)).toThrow()
+  })
+  it('空季表 → throw（无从累计）', () => {
+    expect(() => buildAbsoluteMap([])).toThrow()
+  })
 })
 
 describe('目标命名（Jellyfin {jellyfin} 绑定）', () => {

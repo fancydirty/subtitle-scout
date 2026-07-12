@@ -47,9 +47,29 @@ export function scanVideoFiles(dir: string, readdir: (d: string) => string[] = d
 
 export interface AbsoluteMapEntry { season: number; episode: number }
 
-/** TMDB 季表按季号排序后累计——abs 1..N 依次对应各季 1..episode_count。 */
+/**
+ * TMDB 季表按季号排序后累计——abs 1..N 依次对应各季 1..episode_count。
+ * 不变量检查（累计映射的正确性依赖它们，违反即抛，绝不静默算出错位的表）：
+ * 非空；每季 season>0（特别篇不该到这里）且 episodeCount>=0；排序后季号从 1 起严格连续
+ * （缺季会让缺口之后的所有绝对集号整体错位到错误的季）。
+ */
 export function buildAbsoluteMap(seasonTable: SeasonTableEntry[]): Map<number, AbsoluteMapEntry> {
+  if (seasonTable.length === 0) {
+    throw new Error('buildAbsoluteMap: 季表为空，无从累计绝对集号')
+  }
   const sorted = [...seasonTable].sort((a, b) => a.seasonNumber - b.seasonNumber)
+  for (let i = 0; i < sorted.length; i++) {
+    const s = sorted[i]
+    if (s.seasonNumber <= 0) {
+      throw new Error(`buildAbsoluteMap: 非法季号 ${s.seasonNumber}（特别篇/占位季不该参与累计）`)
+    }
+    if (s.episodeCount < 0) {
+      throw new Error(`buildAbsoluteMap: 第 ${s.seasonNumber} 季集数 ${s.episodeCount} 非法`)
+    }
+    if (s.seasonNumber !== i + 1) {
+      throw new Error(`buildAbsoluteMap: 季号不连续（期望第 ${i + 1} 季，实为第 ${s.seasonNumber} 季）——缺季会使累计映射整体错位`)
+    }
+  }
   const map = new Map<number, AbsoluteMapEntry>()
   let cursor = 1
   for (const s of sorted) {
