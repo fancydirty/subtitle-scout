@@ -497,6 +497,14 @@ async function executeRealignBranch(job: Job, deps: ExecutorDeps): Promise<void>
       const transitioned = jobs.completeDone(job.id, now())
       runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'realigned', detail: result.detail, journalPath: null })
       if (!transitioned) log(`warn: job ${job.id} realign 完成但 complete* 守卫未命中（stale lease）`)
+    } else if (result.decision === 'park') {
+      // IMP#11：确定性失败（计划闸门/挂载能力 abandon/库根推导失败等配置与数据缺陷）——
+      // 重试一万次也不会自己变好，走 error 轨只会陷入 30s→15min→daily 的无穷重试环，
+      // 每天空跑还可能反复触碰媒体目录。停车（dormant），修好后可手动/播放唤醒。
+      const transitioned = jobs.park(job.id, result.detail, now())
+      runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'error', detail: `已停车（确定性失败，不自动重试）：${result.detail}`, journalPath: null })
+      log(`warn: job ${job.id} realign 确定性失败，已停车（dormant）：${result.detail}`)
+      if (!transitioned) log(`warn: job ${job.id} realign 停车但守卫未命中（stale lease）`)
     } else {
       const transitioned = jobs.completeError(job.id, result.detail, now())
       runs.insert({ jobId: job.id, startedAt, finishedAt: now(), decision: 'error', detail: result.detail, journalPath: null })

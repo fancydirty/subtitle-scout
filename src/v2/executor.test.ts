@@ -1198,6 +1198,21 @@ describe('realign job 执行分流', () => {
     expect(jobs.get(job.id)!.state).toBe('failed')
   })
 
+  it('job.kind==="realign" + executeRealign 判 park（确定性失败）→ 停车 dormant，不进重试环', async () => {
+    jobs.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = jobs.claimNext(now)!
+    const executeRealign = vi.fn(async () => ({ decision: 'park' as const, detail: '整理计划构建失败：映射目标重复' }))
+    await executeJob(job, { lib, jobs, runEpisode: vi.fn(), now: () => now, log, executeRealign })
+    const after = jobs.get(job.id)!
+    expect(after.state).toBe('dormant')
+    expect(after.last_error).toContain('映射目标重复')
+    const runRows = runs.getByJobId(job.id)
+    expect(runRows).toHaveLength(1)
+    expect(runRows[0].detail).toContain('停车')
+    // 一天后也不可重领（dormant 不参与派发——不是 30s→daily 的瞬时错误重试环）
+    expect(jobs.claimNext(now + 25 * 3_600_000)).toBeNull()
+  })
+
   it('job.kind==="realign" + executeRealign 抛异常 → completeError（同 catch 路径）', async () => {
     jobs.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
     const job = jobs.claimNext(now)!
