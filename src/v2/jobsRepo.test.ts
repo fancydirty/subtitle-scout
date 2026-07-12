@@ -515,3 +515,131 @@ describe('jobs 状态机', () => {
     })
   })
 })
+
+describe('realign job kind', () => {
+  it('upsertWanted({kind:"realign"}) 建 season=NULL 的 job，claimNext 能正常领取', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)
+    expect(job?.kind).toBe('realign')
+    expect(job?.series_id).toBe('s1')
+    expect(job?.season).toBeNull()
+  })
+
+  it('同剧重复 upsertWanted realign 幂等：只有一行', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    expect(repo.countByState('wanted')).toBe(1)
+  })
+
+  it('setPlanRef 写入 plan_ref，仅在 active 态生效（同 setJournalRef 语义）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.setPlanRef(job.id, '/archive/s1-123/manifest.json', now)
+    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-123/manifest.json')
+  })
+
+  it('setPlanRef 对非 active 态 job 是 no-op', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.completeDone(job.id, now)
+    repo.setPlanRef(job.id, '/should/not/write', now)
+    expect(repo.get(job.id)!.plan_ref).toBeNull()
+  })
+
+  it('retireAllForSeries：把该剧 wanted/failed 的 series_season job 退休为 done，active 态不动', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 2 }, now)
+    repo.claimNext(now) // season 1 或 2 变 searching（active，不该被 retire）
+    const retired = repo.retireAllForSeries('s1', now)
+    expect(retired).toBe(1)
+  })
+
+  // D-review #2：retireAllForSeries 的全部意义是"旧排布下的判决作废"——dormant 恰恰是
+  // "对着错误排布搜索穷尽"的判决，不退休它，realign 后这一季永远不会被重新搜索。
+  it('retireAllForSeries 连 dormant 一起退休，下一轮聚合能重建全新 wanted job', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    repo.forceState('s1', 1, 'dormant', now)               // 旧排布下搜索穷尽的休眠判决
+    expect(repo.retireAllForSeries('s1', now)).toBe(1)
+    expect(repo.find('s1', 1)!.state).toBe('done')
+    // realign 后新一轮 scan/aggregate 重新 upsert → done→wanted 复活，attempt 归零，重新可搜
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now + 1)
+    const revived = repo.find('s1', 1)!
+    expect(revived.state).toBe('wanted')
+    expect(revived.attempt).toBe(0)
+  })
+
+  // D-review #1：UPSERT_CONFLICT_SQL 曾无条件 plan_ref = excluded.plan_ref——upsertWanted 的
+  // INSERT 恒带 NULL，执行中/失败态 job 的崩溃恢复清单指针会被一次 re-upsert 直接抹掉。
+  it('mid-execution re-upsert 不清洗 active job 的 plan_ref（崩溃恢复清单指针）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!                                  // searching（active）
+    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)   // 诊断钩子再次触发同剧 upsert
+    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-1/manifest.json')
+  })
+
+  it('failed 静止态 re-upsert 同样保留 plan_ref（中断整理的清单仍要用于恢复/回滚）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
+    repo.completeError(job.id, 'EXDEV', now)                          // → failed
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)
+    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-1/manifest.json')
+  })
+
+  it('done→wanted 复活时 plan_ref 重置（新一轮整理不该带上一轮的旧清单）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
+    repo.completeDone(job.id, now)                                    // → done（plan_ref 仍在）
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)   // done→wanted 复活
+    const revived = repo.get(job.id)!
+    expect(revived.state).toBe('wanted')
+    expect(revived.plan_ref).toBeNull()
+  })
+
+  // D-review #3：executeRealign 未接线的 realign job 曾走 completeError → 30s→15min→daily
+  // 无穷 errorloop。park 提供"停车不重试"的诚实出口：active → dormant（不参与 claimNext，
+  // 唤醒通道 wake 仍可用）。
+  describe('park（停车：active → dormant，不重试）', () => {
+    it('active job 停车为 dormant，claimNext 不再派发（含一天后）', () => {
+      const now = Date.now()
+      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      const job = repo.claimNext(now)!
+      expect(repo.park(job.id, 'realign executor not wired', now)).toBe(true)
+      const parked = repo.get(job.id)!
+      expect(parked.state).toBe('dormant')
+      expect(parked.last_error).toBe('realign executor not wired')
+      expect(parked.lease_until).toBeNull()
+      expect(parked.next_retry_at).toBeNull()
+      expect(repo.claimNext(now + 25 * 3_600_000)).toBeNull()
+    })
+
+    it('对非 active 态是 no-op（同 complete* 守卫语义）', () => {
+      const now = Date.now()
+      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      const job = repo.claimNext(now)!
+      repo.completeDone(job.id, now)
+      expect(repo.park(job.id, 'x', now)).toBe(false)
+      expect(repo.get(job.id)!.state).toBe('done')
+    })
+
+    it('停车的 job 仍可被 wake 唤醒（不是死刑，是停车）', () => {
+      const now = Date.now()
+      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      const job = repo.claimNext(now)!
+      repo.park(job.id, 'not wired', now)
+      expect(repo.wake({ kind: 'realign', seriesId: 's1' }, 100, now)).toBe(true)
+      expect(repo.get(job.id)!.state).toBe('wanted')
+    })
+  })
+})

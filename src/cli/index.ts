@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { parseArgs } from 'node:util'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { generateText } from 'ai'
@@ -15,7 +15,7 @@ import { TmdbClient, tmdbTitles, resolveTmdbRefStrict } from '../adapters/provid
 import { downloadDirect } from '../adapters/download/direct.js'
 import { makeCliProviderPort } from '../core/providerPort.js'
 import { providerErrorFields, providerNoticeFields } from './fetchLib.js'
-import { createLlmRuntime } from '../agent/runtime.js'
+import { createLlmRuntime, type LlmRuntime } from '../agent/runtime.js'
 import { ProfileStore } from '../agent/profile.js'
 import { identifyMedia } from '../agent/identifyMedia.js'
 import { planSearch } from '../agent/planSearch.js'
@@ -40,18 +40,21 @@ import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
   checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings,
-  checkDatabase, checkStuckJobs,
+  checkDatabase, checkStuckJobs, checkMountCapabilities,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
 import { openDb } from '../v2/db.js'
-import { JobsRepo } from '../v2/jobsRepo.js'
+import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { scanLibrary, type OriginResolver } from '../v2/scanner.js'
 import { aggregate } from '../v2/aggregator.js'
-import { executeJob, makeRunEpisode } from '../v2/executor.js'
+import { executeJob, makeRunEpisode, makeDiagnoseSeason } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import type { MediaItem } from '../adapters/players/types.js'
+import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
+import { executeRealign, makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
+import { replayRollback } from '../files/realignManifest.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -65,8 +68,14 @@ export interface Assembled {
    *  所有 runPipeline 调用必须包在此内，否则 assrt/llm 回调取不到 journal 而丢事件。 */
   withJournal: <T>(fn: () => Promise<T>) => Promise<T>
   cacheRoot: string
-  llm: { profileInfo: () => { mode: string; quirkId?: string } }
+  /** 底层对象本来就是 createLlmRuntime() 的产出，一直具备 .call()——之前只声明了 profileInfo()
+   *  给 ledger 写入代码用；makeDiagnoseSeason（realign 诊断闭包）需要 .call()，放宽成完整接口。 */
+  llm: LlmRuntime
   jf: PlayerServer
+  /** realign 编排需要 PlayerServer 之外的能力（ScheduledTasks/VirtualFolders/单库刷新/删条目）
+   *  ——与 jf 是同一个 JellyfinClient 实例，只是这里保留具体类型，不经过 PlayerServer 抽象
+   *  （realign 目前是 Jellyfin-专属能力，尚无跨播放器抽象需求，YAGNI）。 */
+  jellyfinClient: JellyfinClient
   mappings: PathMapping[]
   /** 有 TMDB_API_KEY 时可用；取全部中文标题变体（增益路径，无 key 则 null）。 */
   tmdb: TmdbClient | null
@@ -152,7 +161,7 @@ async function assemble(): Promise<Assembled> {
       },
     } : {}),
   })
-  return { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb }
+  return { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jf, mappings, tmdb }
 }
 
 function exitCodeFor(decision: PipelineResult['decision']): number {
@@ -269,7 +278,7 @@ async function cmdRunItem(itemId: string) {
 }
 
 async function cmdWatch() {
-  const { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb } = await assemble()
+  const { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb } = await assemble()
   const shutdown = new AbortController()
   const roots = mediaRoots(mappings)
   if (roots.length === 0) {
@@ -292,7 +301,7 @@ async function cmdWatch() {
 
   // Create runEpisode closure（I5b: 根限定经 opts 传入）
   const runEpisode = makeRunEpisode(
-    { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb },
+    { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb },
     lib,
     { mediaRoots: roots },
   )
@@ -315,6 +324,44 @@ async function cmdWatch() {
       }
     : undefined
 
+  // realign 执行闭包（Task 21 的 executeRealign 柯里化）：门在 tmdb 是否配置——计划构建需要
+  // TMDB 季表才有确定性闸门，没有 TMDB_API_KEY 时整个 realign 功能（诊断+执行）一起跳过，
+  // 行为回退到"只有内容退避梯，没有排布诊断"的现状，不报错、不阻塞正常找字幕流程。
+  const realignRunEpisode = makeRealignRunEpisode({ makeDeps, withJournal, cacheRoot })
+  const executeRealignClosure = tmdb
+    ? async (realignJob: Job) => {
+        const deps: RealignExecutorDeps = {
+          lib, jobs,
+          jf: {
+            getItem: (id) => jf.getItem(id),
+            getItemsPage: (start, limit) => jf.getItemsPage(start, limit),
+            getScheduledTasks: () => jellyfinClientForRealign.getScheduledTasks(),
+            getVirtualFolders: () => jellyfinClientForRealign.getVirtualFolders(),
+            refreshLibrary: (id) => jellyfinClientForRealign.refreshLibrary(id),
+            deleteItem: (id) => jellyfinClientForRealign.deleteItem(id),
+          },
+          tmdb: { getSeasonTable: (id) => tmdb.getSeasonTable(id) },
+          fetchAnimeLists: () => fetchAnimeListsTable(),
+          runEpisode: realignRunEpisode,
+          now: () => Date.now(),
+          log,
+          sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
+          getSize: (p) => { try { return statSync(p).size } catch { return null } },
+          // CRIT#1：与 makeRunEpisode 的 opts.mediaRoots 同源白名单；IMP#8：镜像/库/验收路径
+          // 全是 Jellyfin 视角，任何 fs 操作前都要经 MEDIA_PATH_MAPPINGS 映射到本地。
+          mediaRoots: roots,
+          mappings,
+        }
+        return executeRealign(realignJob, deps)
+      }
+    : undefined
+
+  // 诊断钩子（Task 14 的 makeDiagnoseSeason）：同样门在 tmdb 是否配置——诊断需要 TMDB
+  // 季表才有确定性主信号，没有 TMDB_API_KEY 时一并跳过。
+  const diagnoseSeasonClosure = tmdb
+    ? makeDiagnoseSeason({ lib, jf, tmdb, runs, llm })
+    : undefined
+
   const daemonDeps: DaemonDeps = {
     lib,
     jobs,
@@ -335,6 +382,8 @@ async function cmdWatch() {
         lib,
         jobs,
         runEpisode,
+        executeRealign: executeRealignClosure,
+        diagnoseSeason: diagnoseSeasonClosure,
         now: () => Date.now(),
         log,
       }))
@@ -486,6 +535,11 @@ async function cmdDoctor() {
 
   results.push(checkMediaRoots(roots, isDirWritable))
 
+  {
+    const { probeMountCapabilities } = await import('../files/mountCapabilities.js')
+    results.push(checkMountCapabilities(roots, probeMountCapabilities))
+  }
+
   if (jf && jellyfinResult.ok) {
     try {
       const items = await jf.getRecentItems(20)
@@ -529,6 +583,20 @@ async function cmdDoctor() {
   if (!overallOk(results)) process.exit(1)
 }
 
+/** 操作员回滚逃生舱：读 archiveDir 下的 write-ahead manifest，把整理搬动的文件逆序重放回
+ *  原位。幂等（replayRollback 自身对已回滚/源缺失/尺寸不符都会跳过而非报错），可安全重跑。 */
+async function cmdRealignRollback(archiveDir: string) {
+  const log = (msg: string) => console.log(msg)
+  try {
+    replayRollback(archiveDir, log)
+    console.log('回滚完成。')
+    process.exit(0)
+  } catch (e) {
+    console.error(`回滚失败：${e instanceof Error ? e.message : String(e)}`)
+    process.exit(1)
+  }
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -545,7 +613,8 @@ async function main() {
   if (cmd === 'watch') return cmdWatch()
   if (cmd === 'report') return cmdReport(values.since!)
   if (cmd === 'doctor') return cmdDoctor()
-  console.error('usage: subtitle-scout run --context <json> [--out <dir>] | run-item --item-id <id> | watch | report [--since <24h|7d|ISO-date-UTC>] | doctor')
+  if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
+  console.error('usage: subtitle-scout run --context <json> [--out <dir>] | run-item --item-id <id> | watch | report [--since <24h|7d|ISO-date-UTC>] | doctor | realign-rollback <archiveDir>')
   process.exit(2)
 }
 

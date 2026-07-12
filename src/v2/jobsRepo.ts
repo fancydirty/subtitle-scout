@@ -34,7 +34,7 @@ const LEASE_DURATION_MS = 30 * 60_000 // 30 minutes
 // Active (non-rest) states — every complete* transition must originate here.
 const ACTIVE_STATES_SQL = `('searching', 'downloading', 'verifying')`
 
-export type JobKind = 'series_season' | 'movie'
+export type JobKind = 'series_season' | 'movie' | 'realign'
 export type JobState = 'wanted' | 'searching' | 'downloading' | 'verifying' | 'done' | 'failed' | 'dormant'
 
 export interface JobIdentity {
@@ -48,7 +48,12 @@ export interface MovieJobIdentity {
   movieId: string
 }
 
-export type JobIdent = JobIdentity | MovieJobIdentity
+export interface RealignJobIdentity {
+  kind: 'realign'
+  seriesId: string
+}
+
+export type JobIdent = JobIdentity | MovieJobIdentity | RealignJobIdentity
 
 export interface Job {
   id: number
@@ -56,6 +61,7 @@ export interface Job {
   series_id: string | null
   season: number | null
   movie_id: string | null
+  plan_ref: string | null
   state: JobState
   priority: number
   target_episodes: string | null
@@ -78,10 +84,15 @@ export class JobsRepo {
   // completeError/completeNoMatch/completePartial 本身都不重置对方或自己的计数器（各自
   // 只增/减自己那条轨），归零统一发生在这里：job 彻底做完（done）后被下一轮复活，
   // 才算翻篇重新开始，两条轨一起清零。
+  // plan_ref（D-review #1）：upsertWanted 的 INSERT 恒带 NULL（清单在执行阶段才由 setPlanRef
+  // 回填），无条件 plan_ref = excluded.plan_ref 会让执行中/失败/休眠 job 的崩溃恢复清单指针
+  // 被一次 mid-execution re-upsert 直接抹掉——只有 done→wanted 复活（翻篇重来）才重置，
+  // 其余状态一律保留现值。
   private static readonly UPSERT_CONFLICT_SQL = `
            ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
            DO UPDATE SET
              updated_at = ?,
+             plan_ref = CASE WHEN state = 'done' THEN excluded.plan_ref ELSE jobs.plan_ref END,
              state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
              attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
              error_attempt = CASE WHEN state = 'done' THEN 0 ELSE error_attempt END,
@@ -95,13 +106,21 @@ export class JobsRepo {
            VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
         )
         .run(ident.seriesId, ident.season, now, now, now)
-    } else {
+    } else if (ident.kind === 'movie') {
       this.db
         .prepare(
           `INSERT INTO jobs (kind, movie_id, state, priority, attempt, created_at, updated_at)
            VALUES ('movie', ?, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
         )
         .run(ident.movieId, now, now, now)
+    } else {
+      // realign：season 恒 NULL；plan_ref 诊断创建时未知，留 NULL，真正执行时由 setPlanRef 回填。
+      this.db
+        .prepare(
+          `INSERT INTO jobs (kind, series_id, season, plan_ref, state, priority, attempt, created_at, updated_at)
+           VALUES ('realign', ?, NULL, NULL, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
+        )
+        .run(ident.seriesId, now, now, now)
     }
   }
 
@@ -135,6 +154,17 @@ export class JobsRepo {
         `UPDATE jobs SET journal_ref = ?, updated_at = ? WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
       )
       .run(journalRef, now, jobId)
+  }
+
+  /** 整理执行闭包在计划构建、manifest 落盘之后回填清单路径——诊断创建 job 那一刻还没有
+   *  清单可指（诊断只判断"是不是绝对编号平铺"，不构建计划）。同 setJournalRef 语义：
+   *  仅在 active 态生效，job 已被 complete* 收尾则是 no-op。 */
+  setPlanRef(jobId: number, planRef: string, now: number): void {
+    this.db
+      .prepare(
+        `UPDATE jobs SET plan_ref = ?, updated_at = ? WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(planRef, now, jobId)
   }
 
   /** 心跳续租：daemon 每 tick 为本进程仍在跑的 job（inflight）续租，防止合法长跑
@@ -316,6 +346,23 @@ export class JobsRepo {
     return info.changes > 0
   }
 
+  /** 停车（D-review #3）：active → dormant，一步到位、不走退避梯。与 completeError 的本质
+   *  区别：completeError 服务"会自愈的瞬时故障"（网络/LLM/5xx），30s→15min→daily 重试有
+   *  意义；park 服务"重试无意义的配置性缺陷"（如 executeRealign 未接线）——重试一万次也
+   *  不会自己长出接线，走 error 轨就是无穷 errorloop。dormant 不参与 claimNext 派发，但
+   *  保留 wake 唤醒通道（修好配置后可手动/播放唤醒），不是死刑是停车。
+   *  同 complete* 守卫语义：仅从 active 态出发，否则 no-op。 */
+  park(jobId: number, reason: string, now: number): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'dormant', last_error = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(reason, now, jobId)
+    return info.changes > 0
+  }
+
   /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic).
    *  A 'failed' job with a pending next_retry_at is mid content-backoff (1/2/4/8d
    *  ladder) — its target can look momentarily "not missing" (e.g. unavailable with
@@ -335,6 +382,23 @@ export class JobsRepo {
     return info.changes > 0
   }
 
+  /** realign 完成后的镜像清理一环：该剧旧的 series_season job（按老的、即将被清空的季划分）
+   *  不再有意义（新结构下季/集边界完全变了，调和循环会在下一轮 scan 后按新结构重新聚合出
+   *  正确的 job）——退休全部静止态：wanted/failed/dormant。dormant 必须包含（D-review #2）：
+   *  它是"对着旧的错误排布搜索穷尽"的判决，本函数的全部意义就是宣告这类判决作废；漏掉它，
+   *  realign 后这一季会被 30 天休眠卡死、永远不再重新搜索（聚合器 upsertWanted 对 dormant
+   *  不复活）。active 态（理论上此刻不该有——realign 本身占着搜索槽，不会有同剧的
+   *  series_season job 正在跑）留给它自己的状态机走完，不强退。 */
+  retireAllForSeries(seriesId: string, now: number): number {
+    const info = this.db
+      .prepare(
+        `UPDATE jobs SET state = 'done', updated_at = ?
+         WHERE kind = 'series_season' AND series_id = ? AND state IN ('wanted', 'failed', 'dormant')`
+      )
+      .run(now, seriesId)
+    return info.changes
+  }
+
   /** Priority bump for existing (wanted/failed) jobs — does not change state. */
   boostPriority(ident: JobIdent, priority: number): void {
     if (ident.kind === 'series_season') {
@@ -345,7 +409,7 @@ export class JobsRepo {
            WHERE kind = 'series_season' AND series_id = ? AND season = ?`
         )
         .run(priority, ident.seriesId, ident.season)
-    } else {
+    } else if (ident.kind === 'movie') {
       this.db
         .prepare(
           `UPDATE jobs
@@ -353,6 +417,18 @@ export class JobsRepo {
            WHERE kind = 'movie' AND movie_id = ?`
         )
         .run(priority, ident.movieId)
+    } else {
+      // realign：没有季维度，按 series_id 定位——同 upsertWanted/retireAllForSeries
+      // 已经确立的"realign 以剧为身份"语义。目前没有调用方会拿 realign 身份触发优先级
+      // 提升（realign 不是播放触发的），这里补全只是让三态联合类型保持穷尽可编译，
+      // 行为上与 series_season 分支对称。
+      this.db
+        .prepare(
+          `UPDATE jobs
+           SET priority = ?
+           WHERE kind = 'realign' AND series_id = ?`
+        )
+        .run(priority, ident.seriesId)
     }
   }
 
@@ -368,13 +444,25 @@ export class JobsRepo {
         .run(priority, now, ident.seriesId, ident.season)
       return info.changes > 0
     }
+    if (ident.kind === 'movie') {
+      const info = this.db
+        .prepare(
+          `UPDATE jobs
+           SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
+           WHERE kind = 'movie' AND movie_id = ? AND state = 'dormant'`
+        )
+        .run(priority, now, ident.movieId)
+      return info.changes > 0
+    }
+    // realign：同 boostPriority 的对称补全，按 series_id 定位，行为上不会被现有调用方
+    // 触发（realign 不是播放触发的），只为让穷尽检查通过。
     const info = this.db
       .prepare(
         `UPDATE jobs
          SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
-         WHERE kind = 'movie' AND movie_id = ? AND state = 'dormant'`
+         WHERE kind = 'realign' AND series_id = ? AND state = 'dormant'`
       )
-      .run(priority, now, ident.movieId)
+      .run(priority, now, ident.seriesId)
     return info.changes > 0
   }
 

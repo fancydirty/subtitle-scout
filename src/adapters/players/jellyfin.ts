@@ -57,6 +57,16 @@ export const JellyfinRemoteSearchResultSchema = z.object({
 }).passthrough()
 export const JellyfinRemoteSearchSchema = z.array(JellyfinRemoteSearchResultSchema)
 
+export const JellyfinScheduledTaskSchema = z.object({
+  Id: z.string(), Name: z.string(), State: z.string(),
+}).passthrough()
+export const JellyfinScheduledTasksSchema = z.array(JellyfinScheduledTaskSchema)
+
+export const JellyfinVirtualFolderSchema = z.object({
+  ItemId: z.string(), Name: z.string(), Locations: z.array(z.string()).default([]),
+  LibraryOptions: z.object({ EnableRealtimeMonitor: z.boolean().nullish() }).passthrough().nullish(),
+}).passthrough()
+
 /**
  * getItem 查无该 id（Jellyfin /Items 对该 id 返回空 Items 数组）——这是永久态（脏/过期 id，
  * 或条目已被删除），不是瞬时故障。与 call() 内网络拒绝/非 2xx 抛出的普通 Error 区分开，
@@ -85,7 +95,7 @@ export class JellyfinClient implements PlayerServer {
     this.fetchImpl = opts.fetchImpl ?? fetch
   }
 
-  private async call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+  private async call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
     const t0 = Date.now()
     const url = `${this.opts.baseUrl}${path}`
     try {
@@ -127,6 +137,36 @@ export class JellyfinClient implements PlayerServer {
   /** 必须 FullRefresh：裸 refresh 不重扫外部字幕文件（2026-07-06 实测） */
   async refreshItem(itemId: string): Promise<void> {
     await this.call('POST', `/Items/${encodeURIComponent(itemId)}/Refresh?metadataRefreshMode=FullRefresh&replaceAllMetadata=false`)
+  }
+
+  /** 整理执行完毕后清理刮削出的旧条目残留（realign 专用）。 */
+  async deleteItem(itemId: string): Promise<void> {
+    await this.call('DELETE', `/Items/${encodeURIComponent(itemId)}`)
+  }
+
+  /** Running/Cancelling 都算"占着扫描资源"——realign 编排等待时两者都不该被当作空闲。 */
+  async getScheduledTasks(): Promise<{ id: string; name: string; isRunning: boolean }[]> {
+    const raw = await this.call('GET', '/ScheduledTasks')
+    const tasks = JellyfinScheduledTasksSchema.parse(raw)
+    return tasks.map(t => ({ id: t.Id, name: t.Name, isRunning: t.State === 'Running' || t.State === 'Cancelling' }))
+  }
+
+  /** 库清单——realign 编排靠 Locations 判断新目录归属哪个库（供 refreshLibrary 用）。
+   *  EnableRealtimeMonitor：本地盘用户可能开着 Jellyfin 实时监控（inotify）——若开启，
+   *  runs 里应注明（见 realignExecutor 顶层编排的日志）。 */
+  async getVirtualFolders(): Promise<{ id: string; name: string; locations: string[]; enableRealtimeMonitor: boolean }[]> {
+    const raw = await this.call('GET', '/Library/VirtualFolders')
+    const folders = z.array(JellyfinVirtualFolderSchema).parse(raw)
+    return folders.map(f => ({
+      id: f.ItemId, name: f.Name, locations: f.Locations,
+      enableRealtimeMonitor: f.LibraryOptions?.EnableRealtimeMonitor ?? false,
+    }))
+  }
+
+  /** 单库刷新——库(VirtualFolder)本身也是一个 Item，用同一 Refresh 端点、加 recursive=true
+   *  触发"只重扫这个库"而非全服务器扫描任务，把扫描时机全权交给 realign 编排掌控。 */
+  async refreshLibrary(libraryId: string): Promise<void> {
+    await this.call('POST', `/Items/${encodeURIComponent(libraryId)}/Refresh?metadataRefreshMode=FullRefresh&replaceAllMetadata=false&recursive=true`)
   }
 
   async getRecentItems(limit: number): Promise<JellyfinItem[]> {

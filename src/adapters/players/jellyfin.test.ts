@@ -240,3 +240,72 @@ describe('getSeasonEpisodes', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })
+
+describe('JellyfinClient.deleteItem', () => {
+  it('DELETE /Items/{id}', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.deleteItem('item-1')
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toBe('http://jf/Items/item-1')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('非 2xx → 抛错（与其它端点一致）', async () => {
+    const fetchImpl = vi.fn(async () => new Response('nope', { status: 404 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.deleteItem('item-1')).rejects.toThrow(/HTTP 404/)
+  })
+})
+
+describe('JellyfinClient.getScheduledTasks', () => {
+  it('State=Running/Cancelling 映射为 isRunning=true，Idle 为 false', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { Id: 't1', Name: 'Scan Media Library', State: 'Running' },
+      { Id: 't2', Name: 'Refresh Guide', State: 'Idle' },
+      { Id: 't3', Name: 'Cleanup', State: 'Cancelling' },
+    ]), { status: 200 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    const tasks = await client.getScheduledTasks()
+    expect(tasks).toEqual([
+      { id: 't1', name: 'Scan Media Library', isRunning: true },
+      { id: 't2', name: 'Refresh Guide', isRunning: false },
+      { id: 't3', name: 'Cleanup', isRunning: true },
+    ])
+  })
+})
+
+describe('JellyfinClient.getVirtualFolders', () => {
+  it('解析库 id/name/挂载路径/EnableRealtimeMonitor', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { ItemId: 'lib-1', Name: 'TV Shows', Locations: ['/media/tv'], LibraryOptions: { EnableRealtimeMonitor: true } },
+      { ItemId: 'lib-2', Name: 'Movies', Locations: ['/media/movies'], LibraryOptions: { EnableRealtimeMonitor: false } },
+    ]), { status: 200 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    const folders = await client.getVirtualFolders()
+    expect(folders).toEqual([
+      { id: 'lib-1', name: 'TV Shows', locations: ['/media/tv'], enableRealtimeMonitor: true },
+      { id: 'lib-2', name: 'Movies', locations: ['/media/movies'], enableRealtimeMonitor: false },
+    ])
+  })
+
+  it('LibraryOptions 缺失时 enableRealtimeMonitor 默认 false', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { ItemId: 'lib-1', Name: 'TV', Locations: ['/media/tv'] },
+    ]), { status: 200 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect((await client.getVirtualFolders())[0].enableRealtimeMonitor).toBe(false)
+  })
+})
+
+describe('JellyfinClient.refreshLibrary', () => {
+  it('POST /Items/{libraryId}/Refresh，recursive=true + FullRefresh', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.refreshLibrary('lib-1')
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toContain('/Items/lib-1/Refresh')
+    expect(String(url)).toContain('recursive=true')
+    expect(init.method).toBe('POST')
+  })
+})

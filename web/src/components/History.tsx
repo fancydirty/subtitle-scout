@@ -46,7 +46,7 @@ export function History() {
         <>
           <div className="runs pad">
             {(data ?? []).map((r) => {
-              const ok = r.decision === 'download' || r.decision === 'partial'
+              const ok = r.decision === 'download' || r.decision === 'partial' || r.decision === 'realigned'
               return (
                 <div className="run" key={r.id}>
                   <div className="rt">{relTime(r.startedAt, now)}</div>

@@ -27,7 +27,7 @@ function DetailSkeleton() {
 }
 
 function RunRow({ run, now }: { run: SeriesRunDTO; now: number }) {
-  const ok = run.decision === 'download' || run.decision === 'partial'
+  const ok = run.decision === 'download' || run.decision === 'partial' || run.decision === 'realigned'
   return (
     <div className="run">
       <div className="rt">{relTime(run.startedAt, now)}</div>

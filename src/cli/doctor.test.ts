@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs } from './doctor.js'
+import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
 
 describe('doctor 远端三项', () => {
   it('jellyfin 可达 → ok，带会话数', async () => {
@@ -140,10 +140,10 @@ describe('withTimeout', () => {
 
 describe('doctor v2 database checks', () => {
   it('checkDatabase：可开且版本匹配 → ✓ 显示版本', () => {
-    const r = checkDatabase(() => ({ version: '6' }))
+    const r = checkDatabase(() => ({ version: '7' }))
     expect(r.ok).toBe(true)
     expect(r.name).toBe('database')
-    expect(r.detail).toContain('6')
+    expect(r.detail).toContain('7')
   })
   it('checkDatabase：打开抛错 → ✗ 人话 hint', () => {
     const r = checkDatabase(() => { throw new Error('SQLITE_CANTOPEN') })
@@ -173,5 +173,52 @@ describe('doctor v2 database checks', () => {
     expect(r.detail).toContain('3')
     expect(r.hint).toContain('重启')
     expect(r.hint).toContain('issue')
+  })
+})
+
+describe('checkMountCapabilities', () => {
+  it('汇报每个根的挂载能力画像，信息性、恒 ok=true', () => {
+    const result = checkMountCapabilities(
+      ['/media/tv', '/media/movies'],
+      (dir) => ({ writable: true, hardlink: dir === '/media/tv', caseSensitive: true }),
+    )
+    expect(result.ok).toBe(true)
+    expect(result.skip).toBeFalsy()
+    expect(result.detail).toContain('/media/tv')
+    expect(result.detail).toContain('/media/movies')
+    expect(result.detail).toContain('硬链接: 支持')
+    expect(result.detail).toContain('硬链接: 不支持')
+  })
+
+  it('roots 为空时 skip', () => {
+    const result = checkMountCapabilities([], () => ({ writable: true, hardlink: true, caseSensitive: true }))
+    expect(result.skip).toBe(true)
+    expect(result.ok).toBe(true)
+  })
+
+  it('单个根的探针崩溃不许炸整个 doctor——该根报探测失败，其余根照常汇报', () => {
+    const result = checkMountCapabilities(
+      ['/media/dead', '/media/tv'],
+      (dir) => {
+        if (dir === '/media/dead') throw new Error('EIO: input/output error')
+        return { writable: true, hardlink: true, caseSensitive: true }
+      },
+    )
+    expect(result.ok).toBe(true) // 信息性检查，不作为失败门槛
+    expect(result.detail).toContain('/media/dead')
+    expect(result.detail).toContain('探测失败')
+    expect(result.detail).toContain('/media/tv')
+    expect(result.detail).toContain('硬链接: 支持')
+  })
+
+  it("探针结果 'unknown'（只读/未挂载，无法探测）→ 报 未知 而非假的 支持/不支持", () => {
+    const result = checkMountCapabilities(
+      ['/media/ro'],
+      () => ({ writable: false, hardlink: 'unknown', caseSensitive: 'unknown' }),
+    )
+    expect(result.detail).toContain('硬链接: 未知')
+    expect(result.detail).toContain('大小写敏感: 未知')
+    expect(result.detail).toContain('可写: 否')
+    expect(result.detail).not.toContain('不支持')
   })
 })

@@ -65,6 +65,17 @@ export interface MissingBySeason {
   missing: number
 }
 
+export interface Series {
+  id: string
+  name: string
+  chinese_title: string | null
+  chinese_title_checked_at: number | null
+  poster_tag: string | null
+  year: number | null
+  provider_ids: string | null
+  origin_lang: string | null
+}
+
 export class LibraryRepo {
   readonly db: ScoutDb
 
@@ -178,6 +189,41 @@ export class LibraryRepo {
   getMovie(id: string): Movie | null {
     const row = this.db.prepare(`SELECT * FROM movies WHERE id = ?`).get(id) as Movie | undefined
     return row ?? null
+  }
+
+  getSeries(id: string): Series | null {
+    const row = this.db.prepare(`SELECT * FROM series WHERE id = ?`).get(id) as Series | undefined
+    return row ?? null
+  }
+
+  /** 该剧该季在镜像里的集数——diagnoseSeason 的主信号(镜像集数 vs TMDB)所需的"镜像集数"侧。 */
+  countEpisodesInSeason(seriesId: string, season: number): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as count FROM episodes WHERE series_id = ? AND season = ?`)
+      .get(seriesId, season) as { count: number }
+    return row.count
+  }
+
+  /** 该剧镜像里全部集的路径（跨季）——realignExecutor 据此推导出实际需要整理的磁盘目录
+   *  （绝对编号平铺库通常全部塞在同一个被误刮成"Season 01"的目录里）。 */
+  episodePathsForSeries(seriesId: string): string[] {
+    return (this.db.prepare(`SELECT path FROM episodes WHERE series_id = ?`).all(seriesId) as { path: string }[])
+      .map(r => r.path)
+  }
+
+  /** 镜像清理：realign 完成、Jellyfin 用新 SeriesId 重刮之后，旧 seriesId 下的
+   *  episodes/subtitles/series 行永远不会再被下一轮 scanLibrary 碰到（它只 upsert Jellyfin
+   *  当前报告的条目），是永久性的镜像鬼影，必须显式清除。subtitles 表未声明外键到
+   *  episodes(id)，但同属一份账目，一并清理保持镜像干净。 */
+  deleteSeriesRows(seriesId: string): void {
+    const tx = this.db.transaction(() => {
+      const episodeIds = this.db.prepare(`SELECT id FROM episodes WHERE series_id = ?`).all(seriesId) as { id: string }[]
+      const delSub = this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`)
+      for (const e of episodeIds) delSub.run(e.id)
+      this.db.prepare(`DELETE FROM episodes WHERE series_id = ?`).run(seriesId)
+      this.db.prepare(`DELETE FROM series WHERE id = ?`).run(seriesId)
+    })
+    tx()
   }
 
   /** TMDB original_language 缓存读取；NULL=未解析过。 */

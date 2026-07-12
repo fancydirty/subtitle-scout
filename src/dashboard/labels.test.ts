@@ -19,6 +19,12 @@ describe('decisionLabel', () => {
   })
 })
 
+describe('realigned 决策标签', () => {
+  it('realigned → 人话标签 + ok 语气', () => {
+    expect(decisionLabel('realigned')).toEqual({ label: '把乱排布的剧集整理好了', tone: 'ok' })
+  })
+})
+
 describe('queueStatusLabel', () => {
   it('maps queue states to plain language', () => {
     expect(queueStatusLabel('pending')).toBe('排队等待中')
