@@ -119,6 +119,17 @@ describe('目标命名（Jellyfin {jellyfin} 绑定）', () => {
     const name = buildTargetFilename('间谍过家家', 2022, 2, 1, 26, '[SubGroup] Spy x Family [26][1080p][CRC1234].mkv', '[26]')
     expect(name).toBe('间谍过家家 (2022) S02E01 - 026 - [[SubGroup] Spy x Family [1080p][CRC1234]].mkv')
   })
+  it('buildTargetShowDir：剧名文件系统安全化——Fate/Zero 不得注入路径分隔符', () => {
+    expect(buildTargetShowDir('Fate/Zero', 2011, '45782')).toBe('Fate Zero (2011) [tmdbid-45782]')
+  })
+  it('buildTargetShowDir：Windows 保留字符 \\ : < > " | ? * 全部替换', () => {
+    expect(buildTargetShowDir('A:B<C>D"E|F?G*H\\I', 2020, '1')).toBe('A B C D E F G H I (2020) [tmdbid-1]')
+  })
+  it('buildTargetFilename：剧名同样安全化，目标文件名不含路径分隔符', () => {
+    const name = buildTargetFilename('Fate/Zero', 2011, 1, 1, 1, 'FZ E01 1080p.mkv', 'E01')
+    expect(name.includes('/')).toBe(false)
+    expect(name).toBe('Fate Zero (2011) S01E01 - 001 - [FZ 1080p].mkv')
+  })
 })
 
 const seasonTable: SeasonTableEntry[] = [

@@ -81,9 +81,17 @@ export function buildAbsoluteMap(seasonTable: SeasonTableEntry[]): Map<number, A
   return map
 }
 
+/**
+ * 剧名文件系统安全化：路径分隔符与 Windows 保留字符（/ \ : < > " | ? *）替换为空格并折叠。
+ * 'Fate/Zero' 绝不能把 show 目录拆成两层，':' 等字符在 SMB/NTFS 挂载上直接建不出目录。
+ */
+function sanitizeTitleForFs(title: string): string {
+  return title.replace(/[/\\:<>"|?*]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
 /** Jellyfin 官方口径 + FileBot {jellyfin} 绑定：`剧名 (年份) [tmdbid-XXXX]` —— tmdbid 钉死刮削身份。 */
 export function buildTargetShowDir(seriesTitle: string, year: number, tmdbId: string): string {
-  return `${seriesTitle} (${year}) [tmdbid-${tmdbId}]`
+  return `${sanitizeTitleForFs(seriesTitle)} (${year}) [tmdbid-${tmdbId}]`
 }
 
 /** `Season NN` 全拼零填充。 */
@@ -107,7 +115,7 @@ export function buildTargetFilename(
   const abs3 = String(absoluteEpisode).padStart(3, '0')
   const code = formatEpisodeCode(seasonNumber, episodeNumber)
   const suffix = remainder ? ` - [${remainder}]` : ''
-  return `${seriesTitle} (${year}) ${code} - ${abs3}${suffix}${ext}`
+  return `${sanitizeTitleForFs(seriesTitle)} (${year}) ${code} - ${abs3}${suffix}${ext}`
 }
 
 export interface RealignPlanConfig {
