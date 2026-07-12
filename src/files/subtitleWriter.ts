@@ -1,9 +1,8 @@
 import { existsSync, mkdirSync, openSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'node:fs'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import AdmZip from 'adm-zip'
-import chardet from 'chardet'
-import * as iconv from 'iconv-lite'
 import { writeAll } from './fsUtil.js'
+import { decodeToUtf8 } from './subtitleEncoding.js'
 
 const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
 
@@ -57,13 +56,9 @@ export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSub
   }
 
   // 编码归一化：非 UTF-8 转 UTF-8，记录原编码
-  const detected = chardet.detect(data)
-  let encoding = detected ? String(detected).toLowerCase() : null
-  if (encoding && encoding !== 'utf-8' && encoding !== 'ascii' && iconv.encodingExists(encoding)) {
-    data = Buffer.from(iconv.decode(data, encoding), 'utf8')
-  } else if (encoding === 'ascii') {
-    encoding = 'utf-8' // ascii 是 utf-8 子集
-  }
+  const decoded = decodeToUtf8(data)
+  data = decoded.data
+  const encoding = decoded.encoding
 
   const videoBase = basename(input.videoFilename).replace(/\.[^.]+$/, '')
   const outName = `${videoBase}.${input.langTag}${extname(subtitleName).toLowerCase()}`
