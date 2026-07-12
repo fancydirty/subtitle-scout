@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { allocate, cleanup, install } from './stagingSandbox.js'
+import { allocate, cleanup, install, gcOrphans } from './stagingSandbox.js'
 
 const mediaRoot = () => mkdtempSync(join(tmpdir(), 'stage-root-'))
 
@@ -176,5 +176,44 @@ describe('install — retry and EXDEV fallback', () => {
     expect(result.path).toBe(finalPath)
     expect(existsSync(finalPath)).toBe(true)
     expect(readFileSync(finalPath, 'utf8')).toBe('cross-device content')
+  })
+})
+
+describe('gcOrphans', () => {
+  it('removes every staging dir not in activeJobIds, across multiple media roots', () => {
+    const root1 = mediaRoot()
+    const root2 = mediaRoot()
+    allocate('job-orphan-1', root1)
+    allocate('job-active', root1)
+    allocate('job-orphan-2', root2)
+
+    const cleaned = gcOrphans([root1, root2], new Set(['job-active']))
+
+    expect(cleaned).toBe(2)
+    expect(existsSync(join(root1, '.subtitle-staging', 'job-orphan-1'))).toBe(false)
+    expect(existsSync(join(root1, '.subtitle-staging', 'job-active'))).toBe(true)
+    expect(existsSync(join(root2, '.subtitle-staging', 'job-orphan-2'))).toBe(false)
+  })
+
+  it('is a no-op when a media root has no .subtitle-staging dir yet', () => {
+    const root = mediaRoot()
+    expect(() => gcOrphans([root], new Set())).not.toThrow()
+    expect(gcOrphans([root], new Set())).toBe(0)
+  })
+
+  it('does not treat the .ignore marker file as an orphan directory', () => {
+    const root = mediaRoot()
+    allocate('job-1', root) // 顺带创建 .ignore
+    gcOrphans([root], new Set())
+    expect(existsSync(join(root, '.subtitle-staging', '.ignore'))).toBe(true)
+  })
+
+  it('boot semantics: empty activeJobIds nukes everything (mirrors jobsRepo.reapAllActive)', () => {
+    const root = mediaRoot()
+    allocate('job-1', root)
+    allocate('job-2', root)
+    mkdirSync(join(root, '.subtitle-staging', 'job-3'), { recursive: true })
+    const cleaned = gcOrphans([root], new Set())
+    expect(cleaned).toBe(3)
   })
 })

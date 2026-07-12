@@ -3,6 +3,7 @@
 import {
   existsSync, mkdirSync, rmSync, writeFileSync, readFileSync,
   renameSync, openSync, writeSync, fsyncSync, closeSync,
+  readdirSync, statSync,
 } from 'node:fs'
 import { join, dirname } from 'node:path'
 
@@ -94,4 +95,34 @@ export async function install(stagedPath: string, finalPath: string): Promise<{ 
     }
   }
   throw lastError
+}
+
+/** 启动即回收(镜像 jobsRepo.reapAllActive 的"单实例前提,无条件回收"):删除每个
+ *  mediaRoot 下所有不在 activeJobIds 里的 .subtitle-staging/<jobId> 目录。daemon
+ *  启动时旧进程必已死,任何残留沙盒目录都是崩溃/被杀留下的试错垃圾——不看年龄,直接清。
+ *  返回清理的目录数。 */
+export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>): number {
+  let cleaned = 0
+  for (const root of mediaRoots) {
+    const stagingRoot = join(root, STAGING_DIRNAME)
+    if (!existsSync(stagingRoot)) continue
+    let entries: string[]
+    try {
+      entries = readdirSync(stagingRoot)
+    } catch {
+      continue // best-effort:目录列不出来(权限/挂载抖动)跳过这一根,下次启动再试
+    }
+    for (const name of entries) {
+      if (name === '.ignore' || activeJobIds.has(name)) continue
+      const full = join(stagingRoot, name)
+      try {
+        if (!statSync(full).isDirectory()) continue
+        rmSync(full, { recursive: true, force: true })
+        cleaned++
+      } catch {
+        // best-effort:单个目录清理失败不影响其它目录/其它根
+      }
+    }
+  }
+  return cleaned
 }
