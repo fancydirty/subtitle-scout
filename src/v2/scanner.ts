@@ -9,6 +9,22 @@ const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
 // Language tags that indicate Chinese subtitles (from triggers.ts CHINESE_LANG_TAGS pattern)
 const CHINESE_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho']
 
+export type SubtitleLanguage = 'zh-Hans' | 'zh-Hant'
+
+/** CHINESE_TAGS → subtitles.language（db.ts ~:69 的 zh-Hans/zh-Hant 二值域）映射。
+ *  cht 是繁体的明确信号 → zh-Hant；zh-Hant 同理原样映射。其余（zh-Hans/zh/chs/chi/zho）
+ *  落地简体：这些 tag 本身不携带简繁区分（zh/chi/zho 是泛中文标记，chs 明确简体），
+ *  与 core/schemas.ts:49 `language` 的默认值 zh-Hans 一致，是本仓库已有的兜底口径。 */
+const LANGUAGE_BY_TAG: Record<string, SubtitleLanguage> = {
+  'zh-Hans': 'zh-Hans',
+  'zh-Hant': 'zh-Hant',
+  zh: 'zh-Hans',
+  chs: 'zh-Hans',
+  cht: 'zh-Hant',
+  chi: 'zh-Hans',
+  zho: 'zh-Hans',
+}
+
 /** scan-time sidecar adoption 的 subtitles.source 取值：复用 executor.ts 里 pipeline
  *  already_exists 决策对应的 'preexisting'（而不是新增一个值）——语义完全等价：磁盘上有一份
  *  字幕文件，但不是"这次运行写的"，只是这次运行（scan 或 pipeline）第一次观测到它。
@@ -16,11 +32,12 @@ const CHINESE_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho']
  *  没有理由分裂出第二个近义值。 */
 const DISK_ADOPTION_SOURCE = 'preexisting'
 
-/** 找到即返回真实 sidecar 路径（供 scan 磁盘 arm 记账用其真实路径建 subtitles 行）；未找到为 null。 */
+/** 找到即返回真实 sidecar 路径 + 按匹配到的 tag 换算出的语言（供 scan 磁盘 arm 记账用其真实
+ *  路径/语言建 subtitles 行）；未找到为 null。 */
 function findExternalChineseSidecar(
   videoPath: string,
   fileExists: (path: string) => boolean
-): string | null {
+): { path: string; language: SubtitleLanguage } | null {
   const dir = dirname(videoPath)
   const videoBase = basename(videoPath).replace(/\.[^.]+$/, '')
 
@@ -28,7 +45,7 @@ function findExternalChineseSidecar(
     for (const ext of SUBTITLE_EXTS) {
       const sidecarPath = `${dir}/${videoBase}.${tag}${ext}`
       if (fileExists(sidecarPath)) {
-        return sidecarPath
+        return { path: sidecarPath, language: LANGUAGE_BY_TAG[tag] }
       }
     }
   }
@@ -42,6 +59,10 @@ export interface ClassifyResult {
    *  scanLibrary 借此在没有 subtitles 行时补上 path/provenance 记账——见事故复盘（崩溃的
    *  执行、或用户手放文件导致 daemon 自己没记下来）。 */
   diskSidecarPath: string | null
+  /** 与 diskSidecarPath 成对出现（同为 null 或同时有值）：按匹配到的 CHINESE_TAGS tag
+   *  换算出的语言（LANGUAGE_BY_TAG），供 scanLibrary 建 subtitles 行时如实标注简/繁，
+   *  而不是不分青红皂白硬编码 zh-Hans。 */
+  diskSidecarLanguage: SubtitleLanguage | null
 }
 
 export function classifyItemDetailed(
@@ -62,11 +83,11 @@ export function classifyItemDetailed(
 ): ClassifyResult {
   // 0. 国产（TMDB original_language=zh）→ ignored（先于一切，权威信号）
   if (deps.skipChineseOrigin && isChineseLang(deps.originLang)) {
-    return { status: 'ignored', diskSidecarPath: null }
+    return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
   }
   // 1. 兜底：无 TMDB 信号（originLang 未解析）时，用 ProductionLocations 猜国产
   if (deps.skipChineseOrigin && deps.originLang == null && isChineseOrigin(item)) {
-    return { status: 'ignored', diskSidecarPath: null }
+    return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
   }
   // 1b. 兜底：无 TMDB 信号时，用剧集标题字符启发式（汉字且无假名无谚文，排除日番/韩剧）。
   //     但若条目自带 ProductionLocations（权威信号）且已判定非国产（走到这里说明 rule 1
@@ -83,7 +104,7 @@ export function classifyItemDetailed(
     !hasProductionLocationSignal &&
     looksChineseTitle(item.SeriesName ?? item.OriginalTitle)
   ) {
-    return { status: 'ignored', diskSidecarPath: null }
+    return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
   }
 
   // 2. 中字轨按 IsExternal 分流：Jellyfin FullRefresh 会把盘上的外挂字幕收进
@@ -93,24 +114,24 @@ export function classifyItemDetailed(
   //    证据，不是 scanner 自己直接摸到磁盘发现的新文件（记账口径见 ClassifyResult 注释）。
   const zhTracks = usableChineseSubtitleStreams(item, true)
   if (zhTracks.some(s => s.IsExternal === true)) {
-    return { status: 'covered', diskSidecarPath: null }
+    return { status: 'covered', diskSidecarPath: null, diskSidecarLanguage: null }
   }
   if (zhTracks.length > 0) {
-    return { status: 'embedded', diskSidecarPath: null }
+    return { status: 'embedded', diskSidecarPath: null, diskSidecarLanguage: null }
   }
 
   // 3. Has external sidecar on disk → covered。diskSidecarPath 带真实路径，供 scanLibrary
   //    在该条目尚无 subtitles 行时补记账（scan-time adoption：daemon 自己没记下来的盘上文件）。
   if (item.Path) {
     const mappedPath = mapPath(item.Path, deps.mappings)
-    const sidecarPath = findExternalChineseSidecar(mappedPath, deps.fileExists)
-    if (sidecarPath) {
-      return { status: 'covered', diskSidecarPath: sidecarPath }
+    const sidecar = findExternalChineseSidecar(mappedPath, deps.fileExists)
+    if (sidecar) {
+      return { status: 'covered', diskSidecarPath: sidecar.path, diskSidecarLanguage: sidecar.language }
     }
   }
 
   // 4. Otherwise → missing
-  return { status: 'missing', diskSidecarPath: null }
+  return { status: 'missing', diskSidecarPath: null, diskSidecarLanguage: null }
 }
 
 /** 保留原始的纯状态签名给不关心磁盘 arm 记账细节的调用方（现有测试大量依赖此形状）。 */
@@ -230,7 +251,7 @@ export async function scanLibrary(
           }
         }
 
-        const { status: newStatus, diskSidecarPath } = classifyItemDetailed(item, {
+        const { status: newStatus, diskSidecarPath, diskSidecarLanguage } = classifyItemDetailed(item, {
           fileExists: opts.fileExists,
           mappings: opts.mappings,
           skipChineseOrigin: opts.skipChineseOrigin,
@@ -262,8 +283,10 @@ export async function scanLibrary(
 
         // scan-time sidecar adoption：磁盘 arm 直接发现的 sidecar，且该条目尚无 subtitles
         // 行时，把 path/provenance 记账补上——否则崩溃的执行/用户手放文件永久丢账（见事故复盘）。
+        // language 按匹配到的 CHINESE_TAGS tag 换算（diskSidecarLanguage），如实标注简/繁，
+        // 不再不分青红皂白硬编码 zh-Hans。
         if (diskSidecarPath && !lib.hasSubtitleRecord(item.Id)) {
-          lib.markCovered(item.Id, diskSidecarPath, DISK_ADOPTION_SOURCE)
+          lib.markCovered(item.Id, diskSidecarPath, DISK_ADOPTION_SOURCE, undefined, diskSidecarLanguage ?? 'zh-Hans')
         }
       } else if (item.Type === 'Movie') {
         // origin_lang：先读缓存，缺失且有 resolver 才回查一次；但 movies 行可能是本轮才新建
@@ -297,7 +320,7 @@ export async function scanLibrary(
           }
         }
 
-        const { status: newStatus, diskSidecarPath } = classifyItemDetailed(item, {
+        const { status: newStatus, diskSidecarPath, diskSidecarLanguage } = classifyItemDetailed(item, {
           fileExists: opts.fileExists,
           mappings: opts.mappings,
           skipChineseOrigin: opts.skipChineseOrigin,
@@ -325,9 +348,9 @@ export async function scanLibrary(
             : null,
         })
 
-        // scan-time sidecar adoption（mirrors episode branch above）
+        // scan-time sidecar adoption（mirrors episode branch above，含 language 换算）
         if (diskSidecarPath && !lib.hasSubtitleRecord(item.Id)) {
-          lib.markCovered(item.Id, diskSidecarPath, DISK_ADOPTION_SOURCE)
+          lib.markCovered(item.Id, diskSidecarPath, DISK_ADOPTION_SOURCE, undefined, diskSidecarLanguage ?? 'zh-Hans')
         }
 
         if (originLangToCache != null) {

@@ -251,8 +251,18 @@ export class LibraryRepo {
   /** M7: subtitlePath=null 表示只知道"已覆盖"但没有可信的字幕文件路径（如 already_exists）——
    *  只改状态，不伪造 subtitles 行。
    *  providerRef: provider-neutral 候选标识，形如 "assrt:673114" / "opensubtitles:7174766"
-   *  （见 core/schemas.ts candidateKey）；无来源可考时传 undefined。 */
-  markCovered(itemId: string, subtitlePath: string | null, source: string, providerRef?: string): void {
+   *  （见 core/schemas.ts candidateKey）；无来源可考时传 undefined。
+   *  language: subtitles.language 取值（db.ts ~:69 的 zh-Hans/zh-Hant 二值域），默认 'zh-Hans'
+   *  ——沿用历史行为，scout-download/adopted-local 等既有调用方（executor.ts）不传此参数，
+   *  行为完全不变。scan 磁盘 arm 领养（scanner.ts）会按匹配到的 CHINESE_TAGS tag 显式传入
+   *  真实语言，不再无论简繁一律硬编码 zh-Hans。 */
+  markCovered(
+    itemId: string,
+    subtitlePath: string | null,
+    source: string,
+    providerRef?: string,
+    language: string = 'zh-Hans'
+  ): void {
     const now = Date.now()
 
     const markCoveredTransaction = this.db.transaction(() => {
@@ -281,10 +291,10 @@ export class LibraryRepo {
         this.db
           .prepare(
             `INSERT INTO subtitles (item_id, path, language, source, provider_ref, created_at)
-             VALUES (?, ?, 'zh-Hans', ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(item_id, path) DO NOTHING`
           )
-          .run(itemId, subtitlePath, source, providerRef ?? null, now)
+          .run(itemId, subtitlePath, language, source, providerRef ?? null, now)
       }
     })
 

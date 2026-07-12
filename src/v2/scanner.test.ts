@@ -1012,6 +1012,7 @@ describe('scanLibrary', () => {
         path: sidecarPath,
         source: 'preexisting',
         provider_ref: null,
+        language: 'zh-Hans',
       })
     })
 
@@ -1169,6 +1170,47 @@ describe('scanLibrary', () => {
       expect(subtitleRows('e1')).toHaveLength(0) // adoption never fires — no diskSidecarPath, no row
     })
 
+    it('IMPORTANT-2: disk sidecar matched via literal zh-Hant tag → adopted row carries language=zh-Hant (not hardcoded zh-Hans)', async () => {
+      const sidecarPath = '/mnt/media/tv/Show/Season 1/Show.S01E01.zh-Hant.srt'
+      const pages = [[epItem('e1', 1, 1)], []]
+      const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+      await scanLibrary(jf, lib, {
+        pageSize: 10,
+        fileExists: (p) => p === sidecarPath,
+        mappings,
+        skipChineseOrigin: true,
+      })
+      const rows = subtitleRows('e1')
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ path: sidecarPath, language: 'zh-Hant' })
+    })
+
+    it('IMPORTANT-2: ambiguous ISO-ish tags are pinned — cht → zh-Hant, chs → zh-Hans', async () => {
+      // cht/chs 不是 db.ts 的 language 域值本身，需要 scanner.ts 的 LANGUAGE_BY_TAG 换算。
+      // 锚住该映射决策：cht 是繁体的明确信号 → zh-Hant；chs 是简体的明确信号 → zh-Hans。
+      const chtSidecar = '/mnt/media/tv/Show/Season 1/Show.S01E01.cht.srt'
+      const pages1 = [[epItem('e1', 1, 1)], []]
+      const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
+      await scanLibrary(jf1, lib, {
+        pageSize: 10,
+        fileExists: (p) => p === chtSidecar,
+        mappings,
+        skipChineseOrigin: true,
+      })
+      expect(subtitleRows('e1')[0]).toMatchObject({ path: chtSidecar, language: 'zh-Hant' })
+
+      const chsSidecar = '/mnt/media/tv/Show/Season 1/Show.S01E02.chs.srt'
+      const pages2 = [[epItem('e2', 1, 2)], []]
+      const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
+      await scanLibrary(jf2, lib, {
+        pageSize: 10,
+        fileExists: (p) => p === chsSidecar,
+        mappings,
+        skipChineseOrigin: true,
+      })
+      expect(subtitleRows('e2')[0]).toMatchObject({ path: chsSidecar, language: 'zh-Hans' })
+    })
+
     it('movie: disk sidecar with no subtitles row → scan covers AND inserts a row with the real path', async () => {
       const sidecarPath = '/mnt/media/movies/The Matrix (1999)/The.Matrix.1999.1080p.BluRay.x264.zh-Hans.srt'
       const pages = [[movieItem({ Id: 'm1' })], []]
@@ -1182,7 +1224,13 @@ describe('scanLibrary', () => {
       expect(lib.getMovie('m1')!.sub_status).toBe('covered')
       const rows = subtitleRows('m1')
       expect(rows).toHaveLength(1)
-      expect(rows[0]).toMatchObject({ item_id: 'm1', path: sidecarPath, source: 'preexisting', provider_ref: null })
+      expect(rows[0]).toMatchObject({
+        item_id: 'm1',
+        path: sidecarPath,
+        source: 'preexisting',
+        provider_ref: null,
+        language: 'zh-Hans',
+      })
     })
 
     it('movie: rescan does not duplicate the adopted row', async () => {
