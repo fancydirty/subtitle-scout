@@ -22,6 +22,7 @@ import type { SeasonEpisode } from './episode.js'
 import { harvestAlias, hasCjk } from '../agent/harvestAlias.js'
 import { mapLooseEpisodes } from '../agent/mapLooseEpisodes.js'
 import { ProviderQuotaExhaustedError, type ProviderPort } from './providerPort.js'
+import { containingRoot } from './mediaContext.js'
 
 export interface PipelineDeps {
   identify: (ctx: MediaContext) => Promise<CallStructuredResult<MediaIdentity>>
@@ -34,6 +35,12 @@ export interface PipelineDeps {
   cache: DecisionCache
   /** 现约束候选队列试错（每候选一次 resolve/download）与季横扫的按集 resolve 预算共用同一份治理。 */
   maxApiCallsPerJob: number
+  /** 配置的媒体根目录列表（MEDIA_ROOTS / mapping.to）。用于把字幕试错沙盒钉在"包含目标视频的
+   *  媒体根"一级而不是视频所在的深层目录——见 runPipeline 里 stagingRoot 的计算与注释
+   *  （FINDING-1：gcOrphans 按根非递归扫描，沙盒不挂在根一级就够不到）。可选；未注入或没有
+   *  任何根匹配 outDir 时退回 outDir 本身（沙盒与视频仍同一文件系统，只是不可被 gcOrphans
+   *  按根回收——裸 `cli run` 调试路径没有媒体根概念，这个退化是预期行为）。 */
+  mediaRoots?: string[]
   /** journal 创建后回调，供调用方把 provider 的 onApiCall 等接入审计 */
   journalReady?: (journal: Journal) => void
   /** LLM runtime，用于中文别名收割兜底（可选；未注入则跳过该步） */
@@ -505,7 +512,21 @@ export async function runPipeline(
     // 沙盒生命周期覆盖从这里到函数末尾的所有下载路径：季横扫（pre-gate/post-gate）、季包升格、
     // 单集候选队列——三者都要经过 stage→inspect→verify→install（addendum C）。job 结束（无论
     // 从哪条分支 return）都要清空沙盒，试错垃圾零残留。
-    const stagingDir = deps.staging.allocate(ctx.request_id, outDir)
+    //
+    // FINDING-1：沙盒必须挂在"包含该视频的媒体根"一级（<root>/.subtitle-staging/<jobId>），
+    // 不能是 outDir 本身——outDir 是视频所在的深层目录（如 .../Show/Season 01/），daemon 启动
+    // 时的 gcOrphans(roots, activeJobIds)（见 cli/index.ts gcStaging）只按配置的媒体根非递归
+    // 扫描 <root>/.subtitle-staging/，够不到埋在深层目录里的沙盒。硬杀（SIGKILL/OOM/断电）在
+    // allocate 和下面 finally 的 cleanup 之间发生时，那种沙盒就成了永久泄漏、gcOrphans 永远
+    // 回收不到。deps.mediaRoots 未注入（裸 `cli run` 调试路径没有媒体根概念）或没有任何根是
+    // outDir 的前缀时，退回 outDir 本身——不"正确"但安全：沙盒仍与视频同一文件系统，install()
+    // 的原子 rename 单跳前提不破，只是那次退化不再被 gcOrphans 按根回收（同 cli run 路径本来
+    // 就不受 gcOrphans 保护的现状一致）。
+    const stagingRoot = containingRoot(outDir, deps.mediaRoots ?? []) ?? outDir
+    if (stagingRoot === outDir && (deps.mediaRoots?.length ?? 0) > 0) {
+      journal.step('stagingRootFallback', { outDir, mediaRoots: deps.mediaRoots })
+    }
+    const stagingDir = deps.staging.allocate(ctx.request_id, stagingRoot)
     try {
       // 5-pre. 季横扫前置：代表集 rank 排序为空（triage 全灭）时，gate 必然拒绝——这正是横扫的
       // 头号目标场景（本集自己没候选，散装候选覆盖的是其他集）。故在 gate 早退之前先尝试横扫；
@@ -686,7 +707,7 @@ export async function runPipeline(
         selected,
       })
     } finally {
-      deps.staging.cleanup(ctx.request_id, outDir)
+      deps.staging.cleanup(ctx.request_id, stagingRoot)
     }
   } catch (e) {
     journal.step('error', { message: String(e) })

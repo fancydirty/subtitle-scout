@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, mkdtempSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildMediaContext, parsePathMappings, mapPath, mediaDir, isUnderRoots, isDirWritable } from './mediaContext.js'
+import { buildMediaContext, parsePathMappings, mapPath, mediaDir, isUnderRoots, containingRoot, isDirWritable } from './mediaContext.js'
 import { JellyfinItemsResponseSchema } from '../adapters/players/jellyfin.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 
@@ -96,6 +96,28 @@ describe('isUnderRoots', () => {
     expect(isUnderRoots('/mnt/media', roots)).toBe(true)
     expect(isUnderRoots('/etc', roots)).toBe(false)
     expect(isUnderRoots('/mnt/media-evil/x', roots)).toBe(false)
+  })
+})
+
+describe('containingRoot', () => {
+  it('returns the root that contains a deep path', () => {
+    const roots = ['/mnt/media']
+    expect(containingRoot('/mnt/media/Show/Season 01/x.mkv', roots)).toBe('/mnt/media')
+  })
+  it('returns the path itself when it equals a root exactly', () => {
+    expect(containingRoot('/mnt/media', ['/mnt/media'])).toBe('/mnt/media')
+  })
+  it('returns null when no root is a prefix (including sibling-prefix tricks)', () => {
+    expect(containingRoot('/etc/x', ['/mnt/media'])).toBeNull()
+    expect(containingRoot('/mnt/media-evil/x', ['/mnt/media'])).toBeNull()
+  })
+  it('returns null for an empty roots list', () => {
+    expect(containingRoot('/anywhere/x', [])).toBeNull()
+  })
+  it('picks the longest (most specific) matching root when roots are nested', () => {
+    const roots = ['/mnt/media', '/mnt/media/tv']
+    expect(containingRoot('/mnt/media/tv/Show/x.mkv', roots)).toBe('/mnt/media/tv')
+    expect(containingRoot('/mnt/media/movies/x.mkv', roots)).toBe('/mnt/media')
   })
 })
 

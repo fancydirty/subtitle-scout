@@ -67,7 +67,15 @@ function copyThenRenameSameDir(stagedPath: string, finalPath: string): void {
 
 /** 每 job 独立的沙盒目录:`<mediaRootForVideo>/.subtitle-staging/<jobId>/`。必须与目标视频
  *  同一文件系统——install() 的原子 rename 单跳不容跨设备。目录带点前缀 + 同级 `.ignore`
- *  标记文件,Jellyfin 双保险扫不到。jobId 由调用方保证同一时刻内唯一。 */
+ *  标记文件,Jellyfin 双保险扫不到。jobId 由调用方保证同一时刻内唯一。
+ *
+ *  mediaRootForVideo 必须是"包含该视频的媒体根"(配置里 MEDIA_ROOTS / mapping.to 的那一级),
+ *  不是视频所在的深层目录(如 .../Show/Season 01/)。gcOrphans 只在每个媒体根下非递归扫描
+ *  `<root>/.subtitle-staging/`,沙盒挂在深层目录就永远够不到——硬杀(SIGKILL/OOM/断电)在
+ *  allocate 与 cleanup 之间发生时会成为永久泄漏。install() 仍把最终文件 rename 进视频自己的
+ *  目录(同一挂载/文件系统,原子 rename 单跳不破),所以沙盒挂在根一级不影响装机。调用方
+ *  (core/pipeline.ts)用 containingRoot(videoDir, mediaRoots) 求这个根;没有根匹配时安全退回
+ *  视频目录本身(裸 cli run 调试路径无媒体根概念,那次退化不受 gcOrphans 保护是预期行为)。 */
 export function allocate(jobId: string, mediaRootForVideo: string): string {
   const root = join(mediaRootForVideo, STAGING_DIRNAME)
   const dir = join(root, jobId)
@@ -139,6 +147,11 @@ export async function install(
  *  mediaRoot 下所有不在 activeJobIds 里的 .subtitle-staging/<jobId> 条目——目录、
  *  文件、符号链接一视同仁,统统当垃圾清。daemon 启动时旧进程必已死,任何残留都是崩溃/
  *  被杀留下的试错垃圾——不看年龄,直接清。返回清理的条目数。
+ *
+ *  每个根下 NON-recursive 扫描:只看 `<root>/.subtitle-staging/` 的直接子条目。这与
+ *  allocate 的契约配套——沙盒必须由 allocate 挂在媒体根一级(见 allocate 文档),埋在深层
+ *  目录里的沙盒这里扫不到。保持非递归是有意的(最小正确改动):allocate 侧钉在根一级后,
+ *  沙盒本就都在直接子层,无需为了兜底更深层而付出全根递归遍历的代价。
  *
  *  用 lstatSync 而非 statSync:后者会跟随符号链接——断链目标不存在时 statSync 直接抛
  *  ENOENT,命中下面的 catch 被当成"清理失败"跳过,断链就永久堆在这里出不去。lstatSync

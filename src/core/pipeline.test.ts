@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPipeline, pickSeasonPack, matchesEpisodeCode, type PipelineDeps } from './pipeline.js'
@@ -9,7 +9,7 @@ import { toCandidate } from '../adapters/providers/assrt.js'
 import { ProviderQuotaExhaustedError, type ProviderPort } from './providerPort.js'
 import { DecisionCache } from './cache.js'
 import { scanOrphans } from '../files/orphanScanner.js'
-import { allocate, install, cleanup } from '../files/stagingSandbox.js'
+import { allocate, install, cleanup, gcOrphans } from '../files/stagingSandbox.js'
 
 const ctx = MediaContextSchema.parse(JSON.parse(readFileSync('fixtures/contexts/matrix.json', 'utf8')))
 const searchResp = AssrtSearchResponseSchema.parse(JSON.parse(readFileSync('fixtures/assrt/search-matrix.json', 'utf8')))
@@ -111,6 +111,39 @@ describe('runPipeline', () => {
     expect(journal.decision.verification.downloaded).toBe(true)
     // 沙盒目录随 job 结束清空，试错垃圾零残留
     expect(existsSync(join(outDir, '.subtitle-staging', ctx.request_id))).toBe(false)
+  })
+
+  it('FINDING-1: sandbox is allocated at the media-root level (not the deep video dir), install still lands next to the video, and a leftover sandbox is reachable by gcOrphans(root)', async () => {
+    // outDir 模拟一个电视剧的深层目录（root/Show/Season 01/），mediaRoots 里配的是顶层 root——
+    // 镜像真实生产接线（cli/index.ts mediaRoots(mappings) → deps.mediaRoots，daemon 启动的
+    // gcStaging 只按顶层 root 非递归扫 <root>/.subtitle-staging/）。
+    const root = mkdtempSync(join(tmpdir(), 'root-'))
+    const outDir = join(root, 'Show', 'Season 01')
+    mkdirSync(outDir, { recursive: true })
+    const allocateSpy = vi.fn((jobId: string, mediaRootForVideo: string) => allocate(jobId, mediaRootForVideo))
+    const cleanupSpy = vi.fn((jobId: string, mediaRootForVideo: string) => cleanup(jobId, mediaRootForVideo))
+    const deps = makeDeps({ mediaRoots: [root], staging: { allocate: allocateSpy, install, cleanup: cleanupSpy } })
+    const result = await runPipeline(deps, ctx, outDir)
+    expect(result.decision).toBe('download')
+    // 沙盒挂在 root 一级，不是深层的 Season 目录。
+    expect(allocateSpy).toHaveBeenCalledWith(ctx.request_id, root)
+    expect(cleanupSpy).toHaveBeenCalledWith(ctx.request_id, root)
+    expect(allocateSpy).not.toHaveBeenCalledWith(ctx.request_id, outDir)
+    // install() 仍然把最终文件落在视频自己的目录（root/Show/Season 01/），不是 root 本身。
+    expect(existsSync(result.subtitlePath!)).toBe(true)
+    expect(result.subtitlePath!.startsWith(outDir)).toBe(true)
+    // job 结束沙盒清空——root 一级和 outDir 一级都不该有残留。
+    expect(existsSync(join(root, '.subtitle-staging', ctx.request_id))).toBe(false)
+    expect(existsSync(join(outDir, '.subtitle-staging'))).toBe(false)
+
+    // 硬杀模拟：allocate 了沙盒但从未跑到 cleanup（进程被 SIGKILL/OOM/断电杀死）。按 root 一级
+    // 非递归扫描的 gcOrphans 必须能找到并回收它——这正是 FINDING-1 要修的泄漏场景。
+    const orphanJobId = 'crashed-job-1'
+    allocate(orphanJobId, root)
+    expect(existsSync(join(root, '.subtitle-staging', orphanJobId))).toBe(true)
+    const cleaned = gcOrphans([root], new Set())
+    expect(cleaned).toBeGreaterThanOrEqual(1)
+    expect(existsSync(join(root, '.subtitle-staging', orphanJobId))).toBe(false)
   })
 
   it('tries the next candidate in the queue when the first fails structural inspection', async () => {

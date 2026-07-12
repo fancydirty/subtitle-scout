@@ -82,6 +82,20 @@ export function isUnderRoots(path: string, roots: string[]): boolean {
   })
 }
 
+/** roots 里包含 path 的那一个根（最长前缀命中，避免嵌套配置时 /media 抢了 /media/tv 的活）。
+ *  一个都不包含（越出所有根，或 roots 为空）返回 null——调用方自行决定安全兜底，这里不替
+ *  调用方猜。供 stagingSandbox.allocate 的调用方判定"哪个媒体根装下了这段视频"：沙盒必须
+ *  挂在根一级而不是视频所在的深层目录（见 pipeline.ts runPipeline 里 stagingRoot 的注释——
+ *  gcOrphans 按根非递归扫描，沙盒不在根一级就永远不会被启动时的孤儿回收扫到）。 */
+export function containingRoot(path: string, roots: string[]): string | null {
+  const p = resolve(path)
+  const hits = roots
+    .map(r => resolve(r))
+    .filter(root => p === root || p.startsWith(root + sep))
+  if (hits.length === 0) return null
+  return hits.sort((a, b) => b.length - a.length)[0]
+}
+
 let writeProbeCounter = 0
 
 /**

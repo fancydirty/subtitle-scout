@@ -131,6 +131,11 @@ async function assemble(): Promise<Assembled> {
     llm,
     cache: new DecisionCache(join(cacheRoot, 'decisions')),
     maxApiCallsPerJob: 4,
+    // FINDING-1: 同一份 roots（mapping.to + MEDIA_ROOTS）喂给 pipeline，供它把试错沙盒钉在
+    // 媒体根一级——与 gcStaging()/isUnderRoots 校验用的是同一次 mediaRoots(mappings) 计算，
+    // 三处判定不会各算各的对不上号。裸 `cli run` 调试路径没有配置这些 env 时退化为 []（pipeline
+    // 内部再退回 outDir 本身，见 pipeline.ts stagingRoot 的注释）。
+    mediaRoots: mediaRoots(mappings),
     adoption: (process.env.ADOPT_LOCAL_SUBTITLES ?? 'true') !== 'false' ? {
       scan: (dir, video) => scanOrphans(dir, video),
       judge: (c, id, orphans) => judgeOrphan(llm, id, c.media.filename, orphans),
