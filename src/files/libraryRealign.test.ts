@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseAbsoluteEpisodeNumber, scanVideoFiles } from './libraryRealign.js'
 import { buildAbsoluteMap, buildTargetShowDir, buildTargetSeasonDir, buildTargetFilename } from './libraryRealign.js'
+import { buildRealignPlan } from './libraryRealign.js'
+import type { ScannedVideoFile } from './libraryRealign.js'
 import type { SeasonTableEntry } from '../adapters/providers/tmdb.js'
 
 describe('parseAbsoluteEpisodeNumber', () => {
@@ -82,5 +84,76 @@ describe('目标命名（Jellyfin {jellyfin} 绑定）', () => {
   it('buildTargetFilename 保留原画质/组名标记、原绝对集号入名', () => {
     const name = buildTargetFilename('间谍过家家', 2022, 2, 1, 26, '[SubGroup] Spy x Family [26][1080p][CRC1234].mkv', '[26]')
     expect(name).toBe('间谍过家家 (2022) S02E01 - 026 - [[SubGroup] Spy x Family [1080p][CRC1234]].mkv')
+  })
+})
+
+const seasonTable: SeasonTableEntry[] = [
+  { seasonNumber: 1, episodeCount: 25, airDate: null },
+  { seasonNumber: 2, episodeCount: 12, airDate: null },
+  { seasonNumber: 3, episodeCount: 3, airDate: null },
+]
+const cfg = { seriesTitle: '间谍过家家', year: 2022, tmdbId: '120089', seasonTable }
+
+function mkFiles(count: number): ScannedVideoFile[] {
+  return Array.from({ length: count }, (_, i) => {
+    const n = i + 1
+    return { path: `/media/Show/Season 01/Show - ${n}.mkv`, filename: `Show - E${n}.mkv`, match: { absoluteEpisode: n, matchedToken: `E${n}` } }
+  })
+}
+
+describe('buildRealignPlan', () => {
+  it('40 集绝对编号平铺 → 全部映射成功，S1×25/S2×12/S3×3', () => {
+    const result = buildRealignPlan(mkFiles(40), cfg)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.items).toHaveLength(40)
+    expect(result.items.filter(i => i.targetSeason === 1)).toHaveLength(25)
+    expect(result.items.filter(i => i.targetSeason === 2)).toHaveLength(12)
+    expect(result.items.filter(i => i.targetSeason === 3)).toHaveLength(3)
+    expect(result.quarantined).toHaveLength(0)
+  })
+
+  it('解不出集号的文件进隔离区，不阻塞其余文件的整理', () => {
+    const files = [...mkFiles(3), { path: '/media/Show/Season 01/合集.mkv', filename: '合集 01-02.mkv', match: null }]
+    const result = buildRealignPlan(files, { ...cfg, seasonTable: [{ seasonNumber: 1, episodeCount: 25, airDate: null }] })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.items).toHaveLength(3)
+    expect(result.quarantined.map(f => f.filename)).toEqual(['合集 01-02.mkv'])
+  })
+
+  it('绝对集号超出 TMDB 累计上限 → 整剧放弃', () => {
+    const result = buildRealignPlan(mkFiles(41), cfg) // 41 > 40 累计总数
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.failures.some(f => f.includes('超出'))).toBe(true)
+  })
+
+  it('映射目标重复（同一 SxxEyy 被两个文件抢占）→ 整剧放弃', () => {
+    const files: ScannedVideoFile[] = [
+      { path: '/a.mkv', filename: 'a-E1.mkv', match: { absoluteEpisode: 1, matchedToken: 'E1' } },
+      { path: '/b.mkv', filename: 'b-第1话.mkv', match: { absoluteEpisode: 1, matchedToken: '第1话' } },
+    ]
+    const result = buildRealignPlan(files, cfg)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.failures.some(f => f.includes('映射目标重复'))).toBe(true)
+  })
+
+  it('绝对集号不连续（疑似缺集）→ 整剧放弃', () => {
+    const files: ScannedVideoFile[] = [
+      { path: '/a.mkv', filename: 'a-E1.mkv', match: { absoluteEpisode: 1, matchedToken: 'E1' } },
+      { path: '/b.mkv', filename: 'b-E5.mkv', match: { absoluteEpisode: 5, matchedToken: 'E5' } },
+    ]
+    const result = buildRealignPlan(files, cfg)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.failures.some(f => f.includes('不连续'))).toBe(true)
+  })
+
+  it('全部文件都解不出集号 → 整剧放弃', () => {
+    const files: ScannedVideoFile[] = [{ path: '/a.mkv', filename: 'random.mkv', match: null }]
+    const result = buildRealignPlan(files, cfg)
+    expect(result.ok).toBe(false)
   })
 })

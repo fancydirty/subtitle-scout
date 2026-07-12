@@ -80,3 +80,77 @@ export function buildTargetFilename(
   const suffix = remainder ? ` - [${remainder}]` : ''
   return `${seriesTitle} (${year}) ${code} - ${abs3}${suffix}${ext}`
 }
+
+export interface RealignPlanConfig {
+  seriesTitle: string
+  year: number
+  tmdbId: string
+  seasonTable: SeasonTableEntry[]
+}
+
+export interface RealignPlanItem {
+  sourcePath: string
+  sourceFilename: string
+  absoluteEpisode: number
+  targetSeason: number
+  targetEpisode: number
+  /** showDir/seasonDir/filename 拼好的相对路径（相对于媒体根）。 */
+  targetRelPath: string
+}
+
+export type RealignPlanResult =
+  | { ok: true; items: RealignPlanItem[]; quarantined: ScannedVideoFile[] }
+  | { ok: false; failures: string[] }
+
+/**
+ * 确定性闸门(全过才准动一个文件)：映射无重复目标；各季集数 ≤ TMDB 上限（超限的绝对集号
+ * 在 absMap 里查不到，直接判失败）；集号集合合理连续。取不出集号的文件进隔离区（quarantined），
+ * 不算失败，也不参与后续闸门检查。任一闸门不过 → 整剧不动（ok:false + 全部失败原因）。
+ */
+export function buildRealignPlan(files: ScannedVideoFile[], config: RealignPlanConfig): RealignPlanResult {
+  const quarantined = files.filter(f => f.match == null)
+  const parseable = files.filter((f): f is ScannedVideoFile & { match: EpisodeNumberMatch } => f.match != null)
+  if (parseable.length === 0) {
+    return { ok: false, failures: ['没有任何文件能解析出绝对集号，整理放弃'] }
+  }
+
+  const absMap = buildAbsoluteMap(config.seasonTable)
+  const showDir = buildTargetShowDir(config.seriesTitle, config.year, config.tmdbId)
+  const failures: string[] = []
+  const targetSeen = new Map<string, string>()
+  const items: RealignPlanItem[] = []
+
+  for (const f of parseable) {
+    const mapped = absMap.get(f.match.absoluteEpisode)
+    if (!mapped) {
+      failures.push(`绝对集号 ${f.match.absoluteEpisode}（文件 ${f.filename}）超出 TMDB 累计集数上限`)
+      continue
+    }
+    const key = `S${mapped.season}E${mapped.episode}`
+    if (targetSeen.has(key)) {
+      failures.push(`映射目标重复：${key} 同时对应 ${targetSeen.get(key)} 和 ${f.filename}`)
+      continue
+    }
+    targetSeen.set(key, f.filename)
+    const filename = buildTargetFilename(
+      config.seriesTitle, config.year, mapped.season, mapped.episode,
+      f.match.absoluteEpisode, f.filename, f.match.matchedToken,
+    )
+    items.push({
+      sourcePath: f.path, sourceFilename: f.filename, absoluteEpisode: f.match.absoluteEpisode,
+      targetSeason: mapped.season, targetEpisode: mapped.episode,
+      targetRelPath: join(showDir, buildTargetSeasonDir(mapped.season), filename),
+    })
+  }
+  if (failures.length > 0) return { ok: false, failures }
+
+  const absNumbers = items.map(i => i.absoluteEpisode).sort((a, b) => a - b)
+  for (let i = 1; i < absNumbers.length; i++) {
+    if (absNumbers[i] - absNumbers[i - 1] > 1) {
+      failures.push(`绝对集号不连续：${absNumbers[i - 1]} 之后跳到 ${absNumbers[i]}，疑似缺集或误判，整理放弃`)
+    }
+  }
+  if (failures.length > 0) return { ok: false, failures }
+
+  return { ok: true, items, quarantined }
+}
