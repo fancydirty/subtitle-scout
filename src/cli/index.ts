@@ -103,7 +103,14 @@ async function assemble(): Promise<Assembled> {
       onEvent: e => {
         const journal = journalStore.getStore()?.journal
         if (e.event === 'api_call') {
-          journal?.apiCall({ endpoint: e.endpoint, params: { provider: e.provider }, status: e.status ?? 0, durationMs: e.durationMs, error: e.error })
+          // MINOR-1 review finding: droppedEntries（per-entry fail-soft 过滤丢弃的条目数）之前从未
+          // 转发到 journal——journal.apiCall 的 ApiCallRecord 没有专门字段，塞进 params（本就是
+          // Record<string, unknown>）里，不新增 journal.ts 的类型面。
+          journal?.apiCall({
+            endpoint: e.endpoint,
+            params: { provider: e.provider, ...(e.droppedEntries !== undefined ? { droppedEntries: e.droppedEntries } : {}) },
+            status: e.status ?? 0, durationMs: e.durationMs, error: e.error,
+          })
         } else if (e.event === 'provider_error') {
           // code/resetAt（如 OS quota_exhausted）随 message 一起入 journal，供人工排障时能看到
           // 重置时间——实际的重试调度消费在 v2 executor（见 pipeline.ts 的 ProviderQuotaExhaustedError 通路）。

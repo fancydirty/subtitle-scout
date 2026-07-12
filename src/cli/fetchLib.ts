@@ -11,7 +11,11 @@ export interface FetchArgs {
   deep: boolean
 }
 export type FetchEvent =
-  | { event: 'api_call'; provider: string; endpoint: string; status: number | null; durationMs: number; error?: string }
+  /** droppedEntries：per-entry fail-soft 过滤丢弃的条目数（见 adapters/providers/assrt.ts /
+   *  opensubtitles.ts 的 filterMalformedSubs / filterMalformedOsData）。可选——大多数 api_call
+   *  没有触发过滤。MINOR-1 review finding：这个字段之前只停在 provider client 的 onApiCall
+   *  回调形状上，从未声明到 FetchEvent，journal 消费方（cli/index.ts）读不到它。 */
+  | { event: 'api_call'; provider: string; endpoint: string; status: number | null; durationMs: number; error?: string; droppedEntries?: number }
   /** code/resetAt：OpenSubtitles 配额耗尽契约（见 adapters/providers/opensubtitles.ts 的
    *  OsQuotaExhaustedError）。可选——大多数 provider_error 没有配额语义，只带 provider/message。 */
   | { event: 'provider_error'; provider: string; message: string; code?: string; resetAt?: string | null }
