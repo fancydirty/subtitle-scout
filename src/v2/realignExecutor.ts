@@ -1,12 +1,22 @@
-import { existsSync, readdirSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
+import { existsSync, readdirSync, mkdirSync, writeFileSync, renameSync, rmdirSync } from 'node:fs'
 import { join, dirname, basename, sep } from 'node:path'
 import { isDirWritable } from '../core/mediaContext.js'
-import type { ProbeOutcome } from '../files/mountCapabilities.js'
-import { sanitizeTitleForFs, type RealignPlanItem } from '../files/libraryRealign.js'
+import { probeHardlink, probeRenameBetween, type ProbeOutcome } from '../files/mountCapabilities.js'
+import {
+  sanitizeTitleForFs, scanVideoFiles, buildRealignPlan, buildTargetShowDir,
+  crossCheckAnimeLists, checkRuntimeTolerance,
+  type RealignPlanItem, type RealignPlanConfig,
+} from '../files/libraryRealign.js'
+import { initManifest, appendManifestEntry, manifestPath } from '../files/realignManifest.js'
 import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
 import { runPipeline, type PipelineResult } from '../core/pipeline.js'
 import type { Assembled } from '../cli/index.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
+import type { PlayerServer } from '../adapters/players/types.js'
+import type { LibraryRepo } from './libraryRepo.js'
+import type { JobsRepo, Job } from './jobsRepo.js'
+import type { TmdbClient } from '../adapters/providers/tmdb.js'
+import type { AnimeListsEntry } from '../adapters/providers/animeLists.js'
 
 export interface MountSentinelResult { ok: boolean; reason?: string }
 
@@ -246,4 +256,195 @@ export async function verifyRealignedCounts(
     }
   }
   return { ok: true, detail: '各季集数与计划一致' }
+}
+
+export interface RealignJellyfinPort {
+  getItem(itemId: string): ReturnType<PlayerServer['getItem']>
+  getItemsPage(startIndex: number, limit: number): ReturnType<PlayerServer['getItemsPage']>
+  getScheduledTasks(): Promise<ScheduledTaskLike[]>
+  getVirtualFolders(): Promise<{ id: string; name: string; locations: string[]; enableRealtimeMonitor: boolean }[]>
+  refreshLibrary(libraryId: string): Promise<void>
+  deleteItem(itemId: string): Promise<void>
+}
+
+export interface RealignExecutorDeps {
+  lib: LibraryRepo
+  jobs: Pick<JobsRepo, 'setPlanRef' | 'retireAllForSeries'>
+  jf: RealignJellyfinPort
+  tmdb: Pick<TmdbClient, 'getSeasonTable'>
+  fetchAnimeLists: () => Promise<AnimeListsEntry[]>
+  runEpisode: (ctx: MediaContext, outDir: string, jobId: string) => Promise<PipelineResult>
+  now: () => number
+  log: (msg: string) => void
+  sleep: (ms: number) => Promise<void>
+  getSize: (path: string) => number | null
+  getDurationSeconds?: (path: string) => number | null
+  /** 挂载能力探测（可选注入，测试用假探针；默认走真实 mountCapabilities.ts 的
+   *  probeHardlink/probeRenameBetween）。返回值直接喂给 chooseRealignStrategy。 */
+  probeStrategy?: (libRoot: string, archiveDir: string) => RealignStrategy
+}
+
+export interface RealignExecutionResult { decision: 'realigned' | 'error'; detail: string }
+
+/** 多数出现次数的目录名（绝对编号平铺库通常全部集塞在同一个目录里）；空数组返回 null。 */
+function mostCommonDir(paths: string[]): string | null {
+  if (paths.length === 0) return null
+  const counts = new Map<string, number>()
+  for (const p of paths) {
+    const d = dirname(p)
+    counts.set(d, (counts.get(d) ?? 0) + 1)
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+}
+
+/** 默认策略探测：真实 probeHardlink + probeRenameBetween。probeRenameBetween 要求两侧目录都
+ *  存在（探针铁律：绝不创建媒体根），archiveDir 此刻尚未存在——但它不是媒体根，是 realign
+ *  自己的写路径（mount 哨兵已验过库根活着且可写），临时建出来探完即清（仅当本次新建且仍空），
+ *  任何早退路径都不留空壳归档目录。 */
+function probeStrategyDefault(libRoot: string, archiveDir: string): RealignStrategy {
+  const archiveExisted = existsSync(archiveDir)
+  mkdirSync(archiveDir, { recursive: true })
+  try {
+    return chooseRealignStrategy(
+      { writable: true, hardlink: probeHardlink(libRoot) },
+      probeRenameBetween(libRoot, archiveDir),
+    )
+  } finally {
+    if (!archiveExisted) {
+      try { rmdirSync(archiveDir) } catch { /* 非空/竞态——留着无害 */ }
+      try { rmdirSync(dirname(archiveDir)) } catch { /* .archive 里还有别的归档——保留 */ }
+    }
+  }
+}
+
+/**
+ * 顶层编排：mount 哨兵 → 降级阶梯 → 计划构建（TMDB 季表 + anime-lists 交叉验证 + 确定性
+ * 闸门）→ 碰撞规划 → write-ahead manifest（plan_ref 回填）→ 不可见组装 → 目录级原子亮相 →
+ * 字幕先行 → 归档旧目录 → Jellyfin 编排（等空闲/单库刷新/验收）→ 镜像清理 → 返回结果
+ * （由 executor.ts 的 executeRealignBranch 负责 completeDone/completeError）。任一步失败均
+ * 安全返回 decision:'error'，不留半成品（write-ahead manifest 已覆盖的可恢复中间态除外，
+ * 回滚由 realignManifest.replayRollback 逆序重放）。
+ */
+export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promise<RealignExecutionResult> {
+  const seriesId = job.series_id!
+  const now = deps.now()
+
+  // 1. series 元数据（标题/年份/tmdbId）——统一走 jf.getItem(seriesId)，不依赖本地镜像的
+  //    series.provider_ids（该列在 scanner.ts 的正常扫描路径里从未被写入，是历史空洞，
+  //    不能作为 TMDB id 的可信来源；这与 executor.ts/makeRunEpisode 解析 TMDB 引用一贯的
+  //    做法一致——永远向 Jellyfin 活查）。
+  const seriesItem = await deps.jf.getItem(seriesId)
+  const tmdbId = seriesItem.ProviderIds?.Tmdb
+  const seriesTitle = seriesItem.Name
+  const year = seriesItem.ProductionYear ?? null
+  if (!tmdbId || !seriesTitle || year == null) {
+    return { decision: 'error', detail: `series ${seriesId} 缺少 TMDB id/标题/年份，无法构建整理计划` }
+  }
+
+  // 2. 定位需要整理的磁盘目录：镜像里该剧全部集路径里出现次数最多的目录。
+  const paths = deps.lib.episodePathsForSeries(seriesId)
+  const scanDir = mostCommonDir(paths)
+  if (!scanDir) {
+    return { decision: 'error', detail: `series ${seriesId} 镜像里没有任何集路径，无法定位待整理目录` }
+  }
+  const derivedLibRoot = dirname(dirname(scanDir)) // scanDir 通常是 <libRoot>/<show>/<oldSeason>
+
+  // 3. mount 哨兵：库根必须活着（非空+可写），SMB 掉挂载不能被误判成"空库"。
+  const sentinel = mountAliveSentinel(derivedLibRoot)
+  if (!sentinel.ok) return { decision: 'error', detail: sentinel.reason! }
+
+  // 3b. 降级阶梯：探测硬链接支持 + 库根↔归档目录间 rename 原子性，决定是否可以安全整理。
+  //     archiveDir 提前算好，后面 write-ahead manifest 阶段复用同一个值（不重复计算）。
+  //     重要范围限定（本计划的 YAGNI 边界）：strategy==='hardlink' 时唯一的额外好处是继续
+  //     为旧文件做种（保留旧结构、新结构只是硬链接副本）——那是一条完全不同的归档/组装
+  //     代码路径（旧目录不能被 rename 挪空，必须原样保留）。本实现只走 rename 这一条执行
+  //     路径（现实里最常见的 CIFS `nounix` 挂载本就不支持硬链接，设计文档预期如此），
+  //     strategy==='hardlink' 时按同一条 rename 路径执行（安全，只是放弃额外的保种收益，
+  //     不放弃任何安全性——rename 单跳依然原子）。只有 strategy==='abandon'（硬链接不支持
+  //     且 rename 也不能证明原子）才真正拒绝整理。
+  const archiveDir = archiveDirFor(derivedLibRoot, seriesTitle, now)
+  const strategy = deps.probeStrategy
+    ? deps.probeStrategy(derivedLibRoot, archiveDir)
+    : probeStrategyDefault(derivedLibRoot, archiveDir)
+  if (strategy === 'abandon') {
+    return {
+      decision: 'error',
+      detail: `挂载能力不支持安全整理（硬链接不支持，且库根↔归档目录间 rename 非原子）：${derivedLibRoot} ↔ ${archiveDir}`,
+    }
+  }
+
+  // 4. 计划构建：扫描目录 → TMDB 季表 → anime-lists 交叉验证 → 确定性闸门。
+  const files = scanVideoFiles(scanDir)
+  const seasonTable = await deps.tmdb.getSeasonTable(tmdbId)
+  if (!seasonTable) return { decision: 'error', detail: `TMDB 查无该剧季表（tmdbId=${tmdbId}）` }
+
+  const animeListsEntries = await deps.fetchAnimeLists().catch(() => [] as AnimeListsEntry[])
+  const crossCheck = crossCheckAnimeLists(seasonTable, animeListsEntries, Number(tmdbId))
+  if (!crossCheck.ok) return { decision: 'error', detail: crossCheck.reason! }
+
+  const planConfig: RealignPlanConfig = { seriesTitle, year, tmdbId, seasonTable }
+  const planResult = buildRealignPlan(files, planConfig)
+  if (!planResult.ok) return { decision: 'error', detail: `整理计划构建失败：${planResult.failures.join('; ')}` }
+
+  if (deps.getDurationSeconds) {
+    const expectedRuntime = 24 // 保守默认值：TMDB /tv/{id} 的 episode_run_time 平均值，
+    // 精确值应在 step1 从 seriesItem 附带取得；此处为可选抽查闸门，取不到时以默认容差跳过。
+    const runtimeFailures = checkRuntimeTolerance(planResult.items, expectedRuntime, deps.getDurationSeconds)
+    if (runtimeFailures.length > 0) return { decision: 'error', detail: `时长抽查未通过：${runtimeFailures.join('; ')}` }
+  }
+
+  // 5. 碰撞规划：目标已存在——同尺寸跳过（幂等，崩溃恢复重跑场景），不同尺寸隔离（不覆盖、
+  //    不搬动，随旧目录残骸一并归档，manifest 之外零丢失）。
+  const collision = planCollisions(planResult.items, derivedLibRoot, deps.getSize)
+
+  // 6. write-ahead manifest + plan_ref 回填 + 不可见组装（archiveDir 已在 3b 算好，复用）。
+  //    plan_ref 必须在第一次搬动之前落到 jobs 行上——崩溃恢复要靠它找到 manifest。
+  initManifest(archiveDir, { seriesId, seriesTitle, startedAt: now })
+  deps.jobs.setPlanRef(job.id, manifestPath(archiveDir), deps.now())
+  const showDirName = buildTargetShowDir(seriesTitle, year, tmdbId)
+  assembleInvisibleTree(derivedLibRoot, showDirName, collision.toMove, (from, to) => {
+    appendManifestEntry(archiveDir, { op: 'rename', from, to, size: deps.getSize(from) ?? 0, mtimeMs: now, reason: 'realign', ts: deps.now() })
+  })
+
+  // 7. 目录级原子亮相。
+  const finalShowDir = finalizeShowDir(derivedLibRoot, showDirName)
+
+  // 8. 字幕先行：对本轮真实搬动的每个条目，构造 ctx 直调 runPipeline（抢在 Jellyfin 刮削前）。
+  for (const item of collision.toMove) {
+    const finalVideoPath = join(finalShowDir, item.targetRelPath.slice(showDirName.length + 1))
+    const ctx = buildRealignMediaContext(seriesTitle, year, tmdbId, item, finalVideoPath)
+    await deps.runEpisode(ctx, dirname(finalVideoPath), `${job.id}-${item.absoluteEpisode}`)
+  }
+
+  // 9. 旧目录归档（scanDir 此刻只剩隔离文件/nfo/海报——匹配的视频文件已在第 6 步搬空）。
+  archiveOldDir(scanDir, archiveDir)
+
+  // 10. Jellyfin 编排：确认无扫描在跑 → 单库刷新 → 再等空闲 → 验收。
+  const idleBefore = await waitForJellyfinIdle(deps.jf, { pollMs: 2000, timeoutMs: 60_000, sleep: deps.sleep })
+  if (!idleBefore) return { decision: 'error', detail: 'Jellyfin 扫描长时间未空闲，暂缓本次整理（下次重试）' }
+
+  const folders = await deps.jf.getVirtualFolders()
+  const targetFolder = folders.find(f => f.locations.some(loc => finalShowDir.startsWith(loc)))
+  if (!targetFolder) return { decision: 'error', detail: `找不到包含 ${finalShowDir} 的 Jellyfin 库` }
+  await deps.jf.refreshLibrary(targetFolder.id)
+  await waitForJellyfinIdle(deps.jf, { pollMs: 2000, timeoutMs: 120_000, sleep: deps.sleep })
+
+  const expectedCounts = new Map<number, number>()
+  for (const item of planResult.items) {
+    expectedCounts.set(item.targetSeason, (expectedCounts.get(item.targetSeason) ?? 0) + 1)
+  }
+  const verify = await verifyRealignedCounts(deps.jf, finalShowDir, expectedCounts, { pageSize: 100 })
+  if (!verify.ok) return { decision: 'error', detail: verify.detail }
+
+  // 11. 镜像清理：旧 seriesId 的行永远不会再被下一轮 scan 碰到，显式清除；该剧全部旧
+  //     series_season job（含 dormant——旧排布下的"搜索穷尽"判决一并作废）退休。
+  deps.lib.deleteSeriesRows(seriesId)
+  deps.jobs.retireAllForSeries(seriesId, deps.now())
+
+  const seasonSummary = [...expectedCounts.entries()].sort((a, b) => a[0] - b[0])
+    .map(([s, n]) => `第 ${s} 季 ${n} 集`).join('、')
+  return {
+    decision: 'realigned',
+    detail: `把 ${planResult.items.length} 集平铺整理成 ${expectedCounts.size} 季（${seasonSummary}），字幕已就位`,
+  }
 }

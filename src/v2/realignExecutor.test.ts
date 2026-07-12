@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -7,10 +7,14 @@ import {
   planCollisions, invisibleBuildDir, assembleInvisibleTree, finalizeShowDir,
   archiveOldDir, buildRealignMediaContext, makeRealignRunEpisode,
   waitForJellyfinIdle, verifyRealignedCounts,
+  executeRealign, type RealignExecutorDeps, type RealignJellyfinPort,
 } from './realignExecutor.js'
 import type { RealignPlanItem } from '../files/libraryRealign.js'
 import type { Assembled } from '../cli/index.js'
 import { MediaContextSchema } from '../core/schemas.js'
+import { openDb } from './db.js'
+import { LibraryRepo } from './libraryRepo.js'
+import { JobsRepo } from './jobsRepo.js'
 
 describe('mountAliveSentinel', () => {
   it('库根不存在 → 拒绝', () => {
@@ -314,5 +318,194 @@ describe('verifyRealignedCounts', () => {
     const result = await verifyRealignedCounts(jf, '/lib/Show', new Map([[1, 2]]), { pageSize: 1 })
     expect(result.ok).toBe(true)
     expect(jf.getItemsPage).toHaveBeenCalledTimes(3)
+  })
+})
+
+function mkFlatLibrary(root: string, count: number): string {
+  const dir = join(root, 'lib', 'Spy x Family', 'Season 01')
+  mkdirSync(dir, { recursive: true })
+  for (let i = 1; i <= count; i++) writeFileSync(join(dir, `Spy x Family E${i}.mkv`), `video-${i}`)
+  return dir
+}
+
+const statSize = (p: string): number | null => {
+  try { return statSync(p).size } catch { return null }
+}
+
+describe('executeRealign（顶层编排，集成）', () => {
+  it('40 集绝对编号平铺整理成功：不可见组装→字幕先行→归档→验收→镜像清理', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-e2e-'))
+    const oldSeasonDir = mkFlatLibrary(root, 40)
+    const libRoot = join(root, 'lib')
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertSeries({ id: 'jf-series-1', name: 'Spy x Family' })
+    for (let i = 1; i <= 40; i++) {
+      lib.upsertEpisode({
+        id: `jf-ep-${i}`, seriesId: 'jf-series-1', season: 1, episode: i, name: `E${i}`,
+        path: join(oldSeasonDir, `Spy x Family E${i}.mkv`), subStatus: 'missing',
+      })
+    }
+    // 旧排布下的 series_season 判决（dormant=搜索穷尽）——realign 成功后必须被 retire 作废
+    jobsRepo.upsertWanted({ kind: 'series_season', seriesId: 'jf-series-1', season: 1 }, Date.now())
+    jobsRepo.forceState('jf-series-1', 1, 'dormant', Date.now())
+    jobsRepo.upsertWanted({ kind: 'realign', seriesId: 'jf-series-1' }, Date.now())
+    const job = jobsRepo.claimNext(Date.now())!
+    expect(job.kind).toBe('realign') // dormant 的 series_season 不参与派发，领到的必是 realign
+
+    const jf: RealignJellyfinPort = {
+      getItem: vi.fn(async () => ({ Id: 'jf-series-1', Name: 'Spy x Family', Type: 'Series', ProductionYear: 2022, ProviderIds: { Tmdb: '120089' } }) as never),
+      getItemsPage: vi.fn(async (start: number) => start === 0
+        ? Array.from({ length: 40 }, (_, i) => {
+            const abs = i + 1
+            const season = abs <= 25 ? 1 : abs <= 37 ? 2 : 3
+            return { Type: 'Episode', Path: join(libRoot, 'Spy x Family (2022) [tmdbid-120089]', `Season 0${season}`, `f${abs}.mkv`), ParentIndexNumber: season }
+          }) as never
+        : []),
+      getScheduledTasks: vi.fn(async () => [{ id: '1', name: 'scan', isRunning: false }]),
+      getVirtualFolders: vi.fn(async () => [{ id: 'lib-1', name: 'TV', locations: [libRoot], enableRealtimeMonitor: false }]),
+      refreshLibrary: vi.fn(async () => {}),
+      deleteItem: vi.fn(async () => {}),
+    }
+
+    const runEpisode = vi.fn(async () => ({
+      decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 },
+    }))
+    const deps: RealignExecutorDeps = {
+      lib, jobs: jobsRepo,
+      jf,
+      tmdb: { getSeasonTable: vi.fn(async () => [
+        { seasonNumber: 1, episodeCount: 25, airDate: null },
+        { seasonNumber: 2, episodeCount: 12, airDate: null },
+        { seasonNumber: 3, episodeCount: 3, airDate: null },
+      ]) },
+      fetchAnimeLists: vi.fn(async () => []),
+      runEpisode,
+      now: () => Date.now(),
+      log: () => {},
+      sleep: async () => {},
+      getSize: statSize,
+    }
+
+    const result = await executeRealign(job, deps)
+
+    expect(result.decision).toBe('realigned')
+    expect(existsSync(oldSeasonDir)).toBe(false) // 旧目录已归档
+    expect(existsSync(join(libRoot, 'Spy x Family (2022) [tmdbid-120089]', 'Season 01'))).toBe(true)
+    expect(existsSync(join(libRoot, 'Spy x Family (2022) [tmdbid-120089]', 'Season 03'))).toBe(true)
+    expect(lib.getSeries('jf-series-1')).toBeNull() // 镜像清理：旧 seriesId 行已删
+    expect(runEpisode).toHaveBeenCalledTimes(40) // 40 集都跑过字幕先行
+    // plan_ref 语义：manifest 落盘后立即回填（崩溃恢复指针）
+    expect(jobsRepo.get(job.id)!.plan_ref).toMatch(/manifest\.json$/)
+    // 旧排布的 dormant 判决被作废（Part-1 修复的 retireAllForSeries 含 dormant）
+    expect(jobsRepo.find('jf-series-1', 1)!.state).toBe('done')
+    expect(result.detail).toContain('3 季')
+    db.close()
+  })
+
+  it('mount 哨兵不过（库根为空）→ 判 error，不动任何文件', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-empty-'))
+    const libRoot = join(root, 'lib')
+    mkdirSync(libRoot, { recursive: true }) // 空目录，模拟挂载掉线
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    // 镜像路径按常规三层 <libRoot>/<show>/<season>/<file> 记账——推导出的库根正是空的 libRoot
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: join(libRoot, 'Show', 'Season 01', 'a.mkv'), subStatus: 'missing' })
+    jobsRepo.upsertWanted({ kind: 'realign', seriesId: 's1' }, Date.now())
+    const job = jobsRepo.claimNext(Date.now())!
+
+    const deps: RealignExecutorDeps = {
+      lib, jobs: jobsRepo,
+      jf: {
+        getItem: vi.fn(async () => ({ Id: 's1', Name: 'Show', Type: 'Series', ProductionYear: 2020, ProviderIds: { Tmdb: '1' } }) as never),
+        getItemsPage: vi.fn(), getScheduledTasks: vi.fn(), getVirtualFolders: vi.fn(), refreshLibrary: vi.fn(), deleteItem: vi.fn(),
+      },
+      tmdb: { getSeasonTable: vi.fn() },
+      fetchAnimeLists: vi.fn(),
+      runEpisode: vi.fn(),
+      now: () => Date.now(), log: () => {}, sleep: async () => {},
+      getSize: () => null,
+    }
+    const result = await executeRealign(job, deps)
+    expect(result.decision).toBe('error')
+    expect(result.detail).toContain('为空')
+    db.close()
+  })
+
+  it('确定性闸门不过（映射目标重复）→ 判 error，旧目录原样保留', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-gatefail-'))
+    const oldSeasonDir = join(root, 'lib', 'Show', 'Season 01')
+    mkdirSync(oldSeasonDir, { recursive: true })
+    writeFileSync(join(oldSeasonDir, 'a-E1.mkv'), 'a')
+    writeFileSync(join(oldSeasonDir, 'b-第1话.mkv'), 'b') // 与 a 映射到同一 S1E1，触发重复闸门
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: join(oldSeasonDir, 'a-E1.mkv'), subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: join(oldSeasonDir, 'b-第1话.mkv'), subStatus: 'missing' })
+    jobsRepo.upsertWanted({ kind: 'realign', seriesId: 's1' }, Date.now())
+    const job = jobsRepo.claimNext(Date.now())!
+
+    const deps: RealignExecutorDeps = {
+      lib, jobs: jobsRepo,
+      jf: {
+        getItem: vi.fn(async () => ({ Id: 's1', Name: 'Show', Type: 'Series', ProductionYear: 2020, ProviderIds: { Tmdb: '1' } }) as never),
+        getItemsPage: vi.fn(), getScheduledTasks: vi.fn(), getVirtualFolders: vi.fn(), refreshLibrary: vi.fn(), deleteItem: vi.fn(),
+      },
+      tmdb: { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 25, airDate: null }]) },
+      fetchAnimeLists: vi.fn(async () => []),
+      runEpisode: vi.fn(),
+      now: () => Date.now(), log: () => {}, sleep: async () => {},
+      getSize: () => null,
+    }
+    const result = await executeRealign(job, deps)
+    expect(result.decision).toBe('error')
+    expect(result.detail).toContain('整理计划构建失败')
+    expect(existsSync(oldSeasonDir)).toBe(true) // 旧目录完全没动
+    expect(existsSync(join(oldSeasonDir, 'a-E1.mkv'))).toBe(true)
+    expect(existsSync(join(oldSeasonDir, 'b-第1话.mkv'))).toBe(true)
+    db.close()
+  })
+
+  it('挂载能力不支持安全整理（probeStrategy 注入 abandon）→ 判 error，不动任何文件', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-abandon-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    for (let i = 1; i <= 3; i++) {
+      lib.upsertEpisode({ id: `e${i}`, seriesId: 's1', season: 1, episode: i, name: `E${i}`, path: join(oldSeasonDir, `Spy x Family E${i}.mkv`), subStatus: 'missing' })
+    }
+    jobsRepo.upsertWanted({ kind: 'realign', seriesId: 's1' }, Date.now())
+    const job = jobsRepo.claimNext(Date.now())!
+
+    const deps: RealignExecutorDeps = {
+      lib, jobs: jobsRepo,
+      jf: {
+        getItem: vi.fn(async () => ({ Id: 's1', Name: 'Show', Type: 'Series', ProductionYear: 2020, ProviderIds: { Tmdb: '1' } }) as never),
+        getItemsPage: vi.fn(), getScheduledTasks: vi.fn(), getVirtualFolders: vi.fn(), refreshLibrary: vi.fn(), deleteItem: vi.fn(),
+      },
+      tmdb: { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 3, airDate: null }]) },
+      fetchAnimeLists: vi.fn(async () => []),
+      runEpisode: vi.fn(),
+      now: () => Date.now(), log: () => {}, sleep: async () => {},
+      getSize: () => null,
+      probeStrategy: () => 'abandon',
+    }
+    const result = await executeRealign(job, deps)
+    expect(result.decision).toBe('error')
+    expect(result.detail).toContain('挂载能力不支持')
+    expect(existsSync(oldSeasonDir)).toBe(true) // 探针拒绝，整理从未开始，旧目录纹丝不动
+    expect(existsSync(join(oldSeasonDir, 'Spy x Family E1.mkv'))).toBe(true)
+    db.close()
   })
 })

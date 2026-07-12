@@ -12,6 +12,7 @@ import { runPipeline } from '../core/pipeline.js'
 import { candidateKey } from '../core/schemas.js'
 import type { SeasonEpisode } from '../core/episode.js'
 import { diagnoseSeason, extractStructuredRejections } from '../agent/diagnoseSeason.js'
+import type { RealignExecutionResult } from './realignExecutor.js'
 import { join, dirname } from 'node:path'
 
 export interface ExecutorDeps {
@@ -46,10 +47,11 @@ export interface ExecutorDeps {
   /** 季级诊断闭包（可选）：no_safe_match 分支在 attempt>=2 时调用，判定是否需要整理媒体资源。
    *  未注入（测试等场景）时诊断钩子整体跳过，不影响既有 no_safe_match 行为。 */
   diagnoseSeason?: (job: Job) => Promise<{ verdict: 'absolute_flat' | 'unknown'; reason: string }>
-  /** realign job 执行闭包（可选）：executeJob 遇到 kind==='realign' 时调用。未注入（生产
+  /** realign job 执行闭包（可选）：executeJob 遇到 kind==='realign' 时调用——生产接线为
+   *  realignExecutor.executeRealign 的柯里化（见 RealignExecutionResult）。未注入（生产
    *  接线不完整/仅测试省略）时停车（park → dormant，不自动重试）而不是 completeError——
    *  接线缺失不是瞬时故障，短退避重试只会陷入无穷 errorloop（D-review #3）。 */
-  executeRealign?: (job: Job) => Promise<{ decision: 'realigned' | 'error'; detail: string }>
+  executeRealign?: (job: Job) => Promise<RealignExecutionResult>
   now: () => number
   log: (msg: string) => void
 }
