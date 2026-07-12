@@ -84,11 +84,15 @@ export class JobsRepo {
   // completeError/completeNoMatch/completePartial 本身都不重置对方或自己的计数器（各自
   // 只增/减自己那条轨），归零统一发生在这里：job 彻底做完（done）后被下一轮复活，
   // 才算翻篇重新开始，两条轨一起清零。
+  // plan_ref（D-review #1）：upsertWanted 的 INSERT 恒带 NULL（清单在执行阶段才由 setPlanRef
+  // 回填），无条件 plan_ref = excluded.plan_ref 会让执行中/失败/休眠 job 的崩溃恢复清单指针
+  // 被一次 mid-execution re-upsert 直接抹掉——只有 done→wanted 复活（翻篇重来）才重置，
+  // 其余状态一律保留现值。
   private static readonly UPSERT_CONFLICT_SQL = `
            ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
            DO UPDATE SET
              updated_at = ?,
-             plan_ref = excluded.plan_ref,
+             plan_ref = CASE WHEN state = 'done' THEN excluded.plan_ref ELSE jobs.plan_ref END,
              state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
              attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
              error_attempt = CASE WHEN state = 'done' THEN 0 ELSE error_attempt END,

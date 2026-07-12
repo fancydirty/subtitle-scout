@@ -558,4 +558,37 @@ describe('realign job kind', () => {
     const retired = repo.retireAllForSeries('s1', now)
     expect(retired).toBe(1)
   })
+
+  // D-review #1：UPSERT_CONFLICT_SQL 曾无条件 plan_ref = excluded.plan_ref——upsertWanted 的
+  // INSERT 恒带 NULL，执行中/失败态 job 的崩溃恢复清单指针会被一次 re-upsert 直接抹掉。
+  it('mid-execution re-upsert 不清洗 active job 的 plan_ref（崩溃恢复清单指针）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!                                  // searching（active）
+    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)   // 诊断钩子再次触发同剧 upsert
+    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-1/manifest.json')
+  })
+
+  it('failed 静止态 re-upsert 同样保留 plan_ref（中断整理的清单仍要用于恢复/回滚）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
+    repo.completeError(job.id, 'EXDEV', now)                          // → failed
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)
+    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-1/manifest.json')
+  })
+
+  it('done→wanted 复活时 plan_ref 重置（新一轮整理不该带上一轮的旧清单）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    const job = repo.claimNext(now)!
+    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
+    repo.completeDone(job.id, now)                                    // → done（plan_ref 仍在）
+    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)   // done→wanted 复活
+    const revived = repo.get(job.id)!
+    expect(revived.state).toBe('wanted')
+    expect(revived.plan_ref).toBeNull()
+  })
 })
