@@ -292,7 +292,15 @@ export function openDb(path: string): ScoutDb {
         )
       }
     })
-    migrate()
+    try {
+      migrate()
+    } catch (err) {
+      // D-review #4：迁移失败时事务已整体回滚（库仍停留在旧版本），但句柄不能泄漏——
+      // openDb 抛错后调用方拿不到 db，无从 close；残留的打开连接会占着 -wal/-shm 和
+      // 文件锁，妨碍修复者（同上方 FK 体检失败路径的 close 语义）。
+      db.close()
+      throw err
+    }
   }
 
   // 迁移（如果跑了）已经全部提交——现在才打开运行期外键强校验，覆盖有迁移和无迁移两条
