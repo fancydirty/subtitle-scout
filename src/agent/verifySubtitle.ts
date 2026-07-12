@@ -1,5 +1,7 @@
 import type { LlmRuntime } from './runtime.js'
-import { VerifyDecisionSchema, type MediaContext, type MediaIdentity, type SubtitleCandidate } from '../core/schemas.js'
+import {
+  VerifyDecisionSchema, type MediaContext, type MediaIdentity, type SubtitleCandidate, type VerifyDecision,
+} from '../core/schemas.js'
 import type { InspectSignals } from '../files/subtitleInspect.js'
 import type { CallStructuredResult } from './llm.js'
 
@@ -8,7 +10,7 @@ import type { CallStructuredResult } from './llm.js'
 export async function verifySubtitle(
   llm: LlmRuntime, ctx: MediaContext, identity: MediaIdentity,
   candidate: SubtitleCandidate, signals: InspectSignals,
-) {
+): Promise<CallStructuredResult<VerifyDecision>> {
   const prompt = [
     'You are about to install this subtitle file into the user\'s media library. Decide, like a human',
     'who just opened the file, whether it IS the subtitle for this exact movie/episode — not "plausible",',
@@ -30,16 +32,27 @@ export async function verifySubtitle(
     })}`,
     `structural inspection of the actual downloaded file: ${JSON.stringify(signals)}`,
     '',
+    'TRUST THE BYTES, NOT THE LABEL — this is the whole point of this check. The candidate metadata',
+    '(videoName / nativeName / releaseSite) is the uploader\'s CLAIM about what they uploaded: it can be',
+    'wrong, mislabeled, or swapped with an unrelated file. The structural inspection describes the actual',
+    'downloaded bytes — that is ground truth. When the two disagree, the file content wins, always.',
+    'A right-looking name (e.g. videoName spells out the exact target episode) sitting on top of',
+    'wrong-looking content — cueCount/spanMs implausible for the runtime, a detectedScript that makes no',
+    'sense for this release, or assTitle/assHeaderComment naming a different show — is NOT a match.',
+    'A convincing filename never overrides what is actually inside the file: report match=false whenever',
+    'the inspected content contradicts the claimed identity, no matter how correct the name looks.',
+    '',
     'Use the inspection signals as evidence, not a formula: cueCount in the low hundreds and spanMs',
     'roughly matching the target runtime are healthy signs for a normal episode/movie; a handful of cues,',
     'or a span wildly shorter than the runtime, suggests a partial or wrong file; an HTML error page',
     '(isHtml=true) or undecodable bytes (decodable=false) is never a real subtitle. detectedScript is a',
-    'hint about simplified/traditional/Cantonese, not a hard gate. assTitle, if present, often names the',
-    'release — cross-check it against the target. Judge the whole picture like a person would.',
+    'hint about simplified/traditional/Cantonese, not a hard gate. assTitle and assHeaderComment, when',
+    'present, often carry the release name or the 字幕组 (fansub group) signature/notes — a show name',
+    'there that does not match the target is a red flag. Judge the whole picture like a person would.',
   ].join('\n')
   return llm.call({
     name: 'report_verify_decision',
     description: 'Report whether the downloaded subtitle file is the one for this exact movie/episode',
     prompt, schema: VerifyDecisionSchema,
-  }) as Promise<CallStructuredResult<{ match: boolean; reason: string }>>
+  })
 }

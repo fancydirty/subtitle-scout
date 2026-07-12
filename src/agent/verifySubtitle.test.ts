@@ -37,7 +37,7 @@ const signals: InspectSignals = {
 }
 
 describe('verifySubtitle prompt', () => {
-  it('carries target identity, candidate metadata, and inspection signals into the prompt', async () => {
+  it('carries target identity, candidate metadata, and inspection signal VALUES into the prompt', async () => {
     const { llm, prompt } = capture()
     await verifySubtitle(llm, ctx, identity, candidate, signals)
     const p = prompt()
@@ -45,8 +45,11 @@ describe('verifySubtitle prompt', () => {
     expect(p).toContain('"episode":5')
     expect(p).toContain('assrt')
     expect(p).toContain('801')
-    expect(p).toContain('cueCount')
-    expect(p).toContain('zh-Hans')
+    // Assert actual signal VALUES reached the prompt (not just field names, which also
+    // appear in the surrounding prose) — pins that `signals` was actually serialized in.
+    expect(p).toContain('320') // signals.cueCount
+    expect(p).toContain(String(signals.spanMs))
+    expect(p).toContain('zh-Hans') // signals.detectedScript
   })
 
   it('never asks for or mentions a confidence score', async () => {
@@ -59,6 +62,27 @@ describe('verifySubtitle prompt', () => {
     const { llm, prompt } = capture()
     await verifySubtitle(llm, ctx, identity, candidate, signals)
     expect(prompt()).toMatch(/worse than no subtitle/i)
+  })
+
+  it('instructs fail-toward-false: cannot tell means match=false', async () => {
+    const { llm, prompt } = capture()
+    await verifySubtitle(llm, ctx, identity, candidate, signals)
+    expect(prompt()).toMatch(/cannot tell, that is match=false/i)
+  })
+
+  it('instructs that inspected file content is ground truth over candidate-claimed metadata', async () => {
+    const { llm, prompt } = capture()
+    await verifySubtitle(llm, ctx, identity, candidate, signals)
+    const p = prompt()
+    // Pins the product-critical instruction: candidate videoName/nativeName/releaseSite is an
+    // unverified uploader CLAIM, while inspection signals are the actual downloaded bytes — and
+    // when they conflict, a right-looking name over wrong-looking content is NOT a match.
+    expect(p).toMatch(/uploader's claim/i)
+    expect(p).toMatch(/right-looking name/i)
+    expect(p).toMatch(/wrong-looking content/i)
+    expect(p).toMatch(/is not a match/i)
+    // ordering: the "right-looking name ... wrong-looking content" framing must precede the verdict
+    expect(p.toLowerCase().indexOf('right-looking name')).toBeLessThan(p.toLowerCase().indexOf('is not a match'))
   })
 
   it('returns the parsed {match, reason} from the LLM call', async () => {
