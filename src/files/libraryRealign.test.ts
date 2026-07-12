@@ -177,33 +177,61 @@ describe('buildRealignPlan', () => {
   })
 })
 
-describe('crossCheckAnimeLists', () => {
+describe('crossCheckAnimeLists（真实 Fribb 语义：episode_offset = 季内 cour 偏移）', () => {
+  // 真实 TMDB 季表形状：SPY×FAMILY S1=25（两 cour：12+13）、S2=12
   const crossCheckTable: SeasonTableEntry[] = [
     { seasonNumber: 1, episodeCount: 25, airDate: null },
     { seasonNumber: 2, episodeCount: 12, airDate: null },
   ]
+  // 真实 Fribb 条目形状（live anime-list-full.json 实测）：季界条目无 offset 字段，mid-cour 条目才有
+  const spyFamilyEntries: AnimeListsEntry[] = [
+    { anidbId: 16947, tmdbTvId: 120089, tmdbSeason: 1, tmdbEpisodeOffset: null }, // S1 cour 1
+    { anidbId: 17061, tmdbTvId: 120089, tmdbSeason: 1, tmdbEpisodeOffset: 12 },   // S1 cour 2（Part II）
+    { anidbId: 17784, tmdbTvId: 120089, tmdbSeason: 2, tmdbEpisodeOffset: null }, // S2
+  ]
 
-  it('anime-lists 记录与 TMDB 累计表一致 → 通过', () => {
-    const map = buildAbsoluteMap(crossCheckTable)
-    const entries: AnimeListsEntry[] = [
-      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 2, tmdbEpisodeOffset: 25 }, // S2 从 abs 26 开始 = offset 25
-    ]
-    expect(crossCheckAnimeLists(map, entries, 120089)).toEqual({ ok: true })
+  it('旗舰验收：SPY×FAMILY 真实条目通过（cour 偏移 12 < S1 集数 25，不再假冲突）', () => {
+    expect(crossCheckAnimeLists(crossCheckTable, spyFamilyEntries, 120089)).toEqual({ ok: true })
   })
 
-  it('两源冲突（anime-lists 的 offset 在 TMDB 累计表里对不上）→ 放弃整理', () => {
-    const map = buildAbsoluteMap(crossCheckTable)
+  it('offset ≥ 该季 TMDB 集数（cour 起点落在季外）→ 两源冲突，放弃整理', () => {
     const entries: AnimeListsEntry[] = [
-      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 2, tmdbEpisodeOffset: 30 }, // 与 TMDB 累计的 25 对不上
+      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 2, tmdbEpisodeOffset: 12 }, // S2 只有 12 集
     ]
-    const result = crossCheckAnimeLists(map, entries, 120089)
+    const result = crossCheckAnimeLists(crossCheckTable, entries, 120089)
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('两源冲突')
   })
 
-  it('anime-lists 无该剧映射记录 → 视为通过（无法交叉验证不等于冲突）', () => {
-    const map = buildAbsoluteMap(crossCheckTable)
-    expect(crossCheckAnimeLists(map, [], 120089).ok).toBe(true)
+  it('anime-lists 引用了 TMDB 季表里不存在的季 → 两源冲突', () => {
+    const entries: AnimeListsEntry[] = [
+      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 5, tmdbEpisodeOffset: 3 },
+    ]
+    const result = crossCheckAnimeLists(crossCheckTable, entries, 120089)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('两源冲突')
+  })
+
+  it('S0 特别篇条目跳过，不参与校验', () => {
+    const entries: AnimeListsEntry[] = [
+      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 0, tmdbEpisodeOffset: 99 },
+    ]
+    expect(crossCheckAnimeLists(crossCheckTable, entries, 120089).ok).toBe(true)
+  })
+
+  it('无任何可校验条目（无该剧记录 / 全是无 offset 的季界条目）→ 中性通过', () => {
+    expect(crossCheckAnimeLists(crossCheckTable, [], 120089).ok).toBe(true)
+    const boundaryOnly: AnimeListsEntry[] = [
+      { anidbId: 16947, tmdbTvId: 120089, tmdbSeason: 1, tmdbEpisodeOffset: null },
+    ]
+    expect(crossCheckAnimeLists(crossCheckTable, boundaryOnly, 120089).ok).toBe(true)
+  })
+
+  it('其他剧的条目不参与本剧校验', () => {
+    const entries: AnimeListsEntry[] = [
+      { anidbId: 1, tmdbTvId: 999, tmdbSeason: 2, tmdbEpisodeOffset: 99 },
+    ]
+    expect(crossCheckAnimeLists(crossCheckTable, entries, 120089).ok).toBe(true)
   })
 })
 

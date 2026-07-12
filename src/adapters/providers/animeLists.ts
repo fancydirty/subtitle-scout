@@ -1,6 +1,9 @@
 // Fribb/anime-lists（https://github.com/Fribb/anime-lists）：社区维护的 AniDB↔TVDB↔TMDB 交叉映射表，
-// 免费无 key。entry.season.tmdb / entry.episode_offset.tmdb 给出该 AniDB 条目（通常一部动画的一个季/cour）
-// 在 TMDB 上对应的季号与集号偏移——用来交叉验证我们自己从 TMDB 季表算出的累计绝对编号映射。
+// 免费无 key。entry.season.tmdb 给出该 AniDB 条目对应的 TMDB 季号；entry.episode_offset.tmdb 是
+// "季内 cour 偏移"——只有 mid-cour 条目才携带（live JSON 实测 SPY×FAMILY：anidb 17061 / Part II →
+// season.tmdb=1, episode_offset.tmdb=12，即 S1 内从第 13 集开始），季界条目根本没有该字段。
+// 它不是"该季之前的累计集数"，不能直接对撞累计绝对编号映射——只能做季内一致性校验
+// （见 files/libraryRealign.ts crossCheckAnimeLists）。
 export const ANIME_LISTS_URL = 'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json'
 export const ANIME_LISTS_TIMEOUT_MS = 15_000
 

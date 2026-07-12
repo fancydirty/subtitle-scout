@@ -163,33 +163,39 @@ export function buildRealignPlan(files: ScannedVideoFile[], config: RealignPlanC
 export interface CrossCheckResult { ok: boolean; reason?: string }
 
 /**
- * 用 anime-lists 的季/偏移记录反推该季第一集对应的绝对集号（offset+1），核对我们自己算出的
- * absoluteMap 在那个绝对集号上是否正好落在"该季第一集"（season 匹配且 episode===1）——
- * 两源一致才算通过。无该剧任何映射记录时视为"无法交叉验证"，不是冲突，通过放行
- * （动漫剧种交叉验证是佐证，不是必需前提；非动漫剧种走到这里 relevant 恒为空，天然放行）。
- *
- * 偏离 plan 原始代码之处：plan 草案里 `expected.episode` 误写成 `entry.tmdbEpisodeOffset + 1`
- * 后再拿去比较 absoluteMap 值里的"季内集号"字段——这会让 offset 数值本身被错误地当成季内
- * 集号比对，跑一遍就会发现连"一致"的验收用例都过不了（S2 offset=25 时找的是"season 2 内第
- * 26 集"，但 season 2 只有 12 集，永远找不到，永远误判冲突）。改为按绝对集号查表 + 核对
- * "落点必须是该季第一集"，语义才对得上函数注释与三条测试用例。
+ * Fribb anime-lists 交叉验证——按真实数据语义（live anime-list-full.json 实测）：
+ * episode_offset.tmdb 是"季内 cour 偏移"，只有 mid-cour 条目才携带；季界条目根本没有该字段。
+ * 实测 SPY×FAMILY（tmdb tv 120089）：
+ *   anidb 16947（S1 cour 1）→ season.tmdb=1，无 episode_offset；
+ *   anidb 17061（S1 cour 2 / Part II）→ season.tmdb=1，episode_offset.tmdb=12（S1 内从第 13 集开始）；
+ *   anidb 17784（S2）→ season.tmdb=2，无 episode_offset。
+ * 它不是"该季之前的累计集数"，不能拿去对撞累计绝对编号映射——那样会把旗舰验收剧假判冲突。
+ * 可行的两源校验是"季内一致性"：带 offset 的条目，其季必须存在于 TMDB 季表，且
+ * offset < 该季 episode_count（cour 起点必须落在季内）。S0（特别篇）条目跳过；
+ * 无任何可校验条目 = 中性通过（无法交叉验证 ≠ 冲突；非动漫剧种 checkable 恒为空，天然放行）。
  */
 export function crossCheckAnimeLists(
-  absoluteMap: Map<number, AbsoluteMapEntry>, animeListsEntries: AnimeListsEntry[], tmdbTvId: number,
+  seasonTable: SeasonTableEntry[], animeListsEntries: AnimeListsEntry[], tmdbTvId: number,
 ): CrossCheckResult {
-  const relevant = animeListsEntries.filter(
+  const checkable = animeListsEntries.filter(
     (e): e is AnimeListsEntry & { tmdbSeason: number; tmdbEpisodeOffset: number } =>
-      e.tmdbTvId === tmdbTvId && e.tmdbSeason != null && e.tmdbEpisodeOffset != null,
+      e.tmdbTvId === tmdbTvId && e.tmdbSeason != null && e.tmdbEpisodeOffset != null && e.tmdbSeason > 0,
   )
-  if (relevant.length === 0) return { ok: true }
-  for (const entry of relevant) {
-    const expectedAbs = entry.tmdbEpisodeOffset + 1
-    const found = absoluteMap.get(expectedAbs)
-    if (!found || found.season !== entry.tmdbSeason || found.episode !== 1) {
+  if (checkable.length === 0) return { ok: true }
+  for (const entry of checkable) {
+    const season = seasonTable.find(s => s.seasonNumber === entry.tmdbSeason)
+    if (!season) {
       return {
         ok: false,
-        reason: `anime-lists 记录第 ${entry.tmdbSeason} 季从 TMDB 集号偏移 ${entry.tmdbEpisodeOffset} 开始，` +
-          `但我们算出的 TMDB 累计表里找不到对应位置——两源冲突，放弃整理`,
+        reason: `anime-lists（anidb ${entry.anidbId}）记录第 ${entry.tmdbSeason} 季存在 cour 偏移 ${entry.tmdbEpisodeOffset}，` +
+          `但 TMDB 季表里没有这一季——两源冲突，放弃整理`,
+      }
+    }
+    if (entry.tmdbEpisodeOffset >= season.episodeCount) {
+      return {
+        ok: false,
+        reason: `anime-lists（anidb ${entry.anidbId}）记录第 ${entry.tmdbSeason} 季内 cour 偏移 ${entry.tmdbEpisodeOffset}，` +
+          `不小于该季 TMDB 集数 ${season.episodeCount}（cour 起点落在季外）——两源冲突，放弃整理`,
       }
     }
   }
