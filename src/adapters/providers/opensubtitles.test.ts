@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { OpenSubtitlesClient, osToCandidates, OsSearchResponseSchema, OsQuotaExhaustedError } from './opensubtitles.js'
+import { OpenSubtitlesClient, osToCandidates, OsSearchResponseSchema, OsQuotaExhaustedError, OsAllEntriesDroppedError } from './opensubtitles.js'
 
 const fixture = JSON.parse(readFileSync('fixtures/opensubtitles/search-peacemaker-s1.json', 'utf8'))
 const okJson = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
@@ -46,6 +46,73 @@ describe('OpenSubtitlesClient.search', () => {
     const client = makeClient(((url: string) => { urls.push(String(url)); return okJson(fixture) }) as never)
     await client.search({ query: 'Peacemaker', languages: [] })
     expect(urls[0]).toContain('languages=zh-cn%2Czh-tw')
+  })
+})
+
+describe('OpenSubtitlesClient.search fail-soft entry parsing (same-shaped fragility as ASSRT: one malformed datum must not fail the whole page)', () => {
+  const mixedData = {
+    total_count: 3,
+    data: [
+      { id: 'a1', attributes: { files: [{ file_id: 1 }] } },
+      { attributes: { files: [{ file_id: 2 }] } }, // 缺 id
+      { id: 'a3', attributes: { files: [{ file_id: 3 }] } },
+    ],
+  }
+  const allMalformed = {
+    total_count: 2,
+    data: [
+      { attributes: { files: [{ file_id: 1 }] } },
+      { attributes: { files: [{ file_id: 2 }] } },
+    ],
+  }
+
+  it('drops malformed data[] entries, keeps well-formed ones, does not throw', async () => {
+    const client = makeClient((() => okJson(mixedData)) as never)
+    const resp = await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(resp.data.map(d => d.id)).toEqual(['a1', 'a3'])
+  })
+
+  it('ALL entries malformed (droppedEntries>0, kept===0) → throws, does NOT silently report empty (CRITICAL fix: a provider malfunction must never masquerade as "no candidates" and get negative-cached)', async () => {
+    const client = makeClient((() => okJson(allMalformed)) as never)
+    await expect(client.search({ query: 'x', languages: ['zh-cn'] })).rejects.toThrow(OsAllEntriesDroppedError)
+    await expect(client.search({ query: 'x', languages: ['zh-cn'] })).rejects.toThrow(/all 2 entries.*malformed/)
+  })
+
+  it('genuinely empty response (data: [], zero dropped) still returns empty WITHOUT throwing — that is an honest content conclusion, not a provider malfunction', async () => {
+    const client = makeClient((() => okJson({ total_count: 0, data: [] })) as never)
+    const resp = await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(resp.data).toEqual([])
+  })
+
+  // MINOR-2 (over-drop protection): id present + genuinely-loose-but-valid field shapes must NOT
+  // be mistaken for malformed entries by filterMalformedOsData — every field below is schema-valid
+  // per OsSearchResponseSchema's own nullish/passthrough/default semantics (see opensubtitles.ts).
+  it('quirky-but-schema-valid entries (language:null, feature_details:null, empty files[], unknown extra field) survive the filter — over-drop protection', async () => {
+    const quirkyData = {
+      total_count: 5,
+      data: [
+        { id: 'a1', attributes: { files: [{ file_id: 1 }], language: null } }, // language 显式 null（nullish）
+        { id: 'a2', attributes: { files: [{ file_id: 2 }], feature_details: null } }, // feature_details 显式 null（nullish）
+        { id: 'a3', attributes: { files: [] } }, // files 空数组——schema 允许（.default([])），非畸形
+        { id: 'a4', attributes: { files: [{ file_id: 4 }], some_future_field: 'unrecognized' } }, // passthrough：未知字段不该导致丢弃
+        { attributes: { files: [{ file_id: 5 }] } }, // 唯一真正畸形的一条——缺 id
+      ],
+    }
+    const client = makeClient((() => okJson(quirkyData)) as never)
+    const resp = await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(resp.data.map(d => d.id)).toEqual(['a1', 'a2', 'a3', 'a4'])
+  })
+
+  it('reports dropped-entry count via onApiCall (existing observability idiom)', async () => {
+    const calls: unknown[] = []
+    const client = makeClient((() => okJson(mixedData)) as never, { onApiCall: r => calls.push(r) })
+    await client.search({ query: 'x', languages: ['zh-cn'] })
+    expect(calls).toContainEqual(expect.objectContaining({ droppedEntries: 1 }))
+  })
+
+  it('genuinely broken response (HTTP error) still throws — unrelated failure mode untouched', async () => {
+    const client = makeClient((() => Promise.resolve(new Response('nope', { status: 502 }))) as never)
+    await expect(client.search({ query: 'x', languages: ['zh-cn'] })).rejects.toThrow(/502/)
   })
 })
 

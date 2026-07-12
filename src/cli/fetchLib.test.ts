@@ -62,6 +62,33 @@ describe('runSearch', () => {
   })
 })
 
+describe('FetchEvent api_call droppedEntries (MINOR-1: declared on the api_call variant so it can reach cli/index.ts\'s journal.apiCall, per-entry fail-soft observability)', () => {
+  const args: FetchArgs = { queries: ['q1'], deep: false }
+  it('an api_call event carrying droppedEntries type-checks and round-trips through runSearch\'s emit unchanged', async () => {
+    const events: FetchEvent[] = []
+    const withDrop = adapter('assrt', {
+      search: async (_args, emit) => {
+        emit?.({ event: 'api_call', provider: 'assrt', endpoint: 'sub/similar', status: 0, durationMs: 5, droppedEntries: 3 })
+        return [cand('assrt', 'x1')]
+      },
+    })
+    const r = await runSearch(args, [withDrop], e => events.push(e))
+    expect(r.map(c => c.providerId)).toEqual(['x1'])
+    expect(events).toContainEqual(expect.objectContaining({ event: 'api_call', endpoint: 'sub/similar', droppedEntries: 3 }))
+  })
+  it('an api_call event with no drops leaves droppedEntries undefined (optional field, not forced)', async () => {
+    const events: FetchEvent[] = []
+    const clean = adapter('assrt', {
+      search: async (_args, emit) => {
+        emit?.({ event: 'api_call', provider: 'assrt', endpoint: 'sub/search', status: 0, durationMs: 5 })
+        return [cand('assrt', 'x1')]
+      },
+    })
+    await runSearch(args, [clean], e => events.push(e))
+    expect(events).toContainEqual(expect.not.objectContaining({ droppedEntries: expect.anything() }))
+  })
+})
+
 describe('providerErrorFields', () => {
   // 供 cli/index.ts 的 journal step 消费：把 provider_error 事件上类型化的 code/resetAt
   // 随 provider/message 一起转发，消费方不用各自 duck-type 读取未声明字段。
