@@ -67,6 +67,23 @@ describe('媒体镜像', () => {
     })
   })
 
+  it('markCovered language 参数（IMPORTANT-2）：默认 zh-Hans（沿用历史行为），显式传入时按值写入', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '',
+      path: '/p/1.mkv', subStatus: 'missing',
+    })
+    lib.markCovered('e1', '/p/1.zh-Hans.srt', 'scout-download')
+    expect(lib.db.prepare('select language from subtitles where item_id=?').get('e1')).toEqual({ language: 'zh-Hans' })
+
+    lib.upsertEpisode({
+      id: 'e2', seriesId: 's1', season: 1, episode: 2, name: '',
+      path: '/p/2.mkv', subStatus: 'missing',
+    })
+    lib.markCovered('e2', '/p/2.zh-Hant.srt', 'preexisting', undefined, 'zh-Hant')
+    expect(lib.db.prepare('select language from subtitles where item_id=?').get('e2')).toEqual({ language: 'zh-Hant' })
+  })
+
   it('markCovered 传 null 路径（M7）：只改状态，不伪造 subtitles 行', () => {
     lib.upsertSeries({ id: 's1', name: 'A' })
     lib.upsertEpisode({

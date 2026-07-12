@@ -437,9 +437,12 @@ describe('executor', () => {
 
     // Verify e1 is covered with real subtitles row (M8: source=scout-download)
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    // IMPORTANT-2: executor 的 markCovered 调用不传 language 参数，必须仍落地默认值
+    // zh-Hans（executor path unchanged — 只有 scanner.ts 的磁盘 arm 领养会显式传入真实语言）。
     expect(lib.db.prepare('select * from subtitles where item_id=?').get('e1')).toMatchObject({
       path: '/tv/s1e1.zh-Hans.srt',
       source: 'scout-download',
+      language: 'zh-Hans',
     })
 
     // Verify e2 is still missing
@@ -490,6 +493,7 @@ describe('executor', () => {
       path: '/tv/s1e1.zh-Hans.srt',
       source: 'preexisting',
       provider_ref: null,
+      language: 'zh-Hans', // executor path unchanged (IMPORTANT-2)
     })
     expect(jobs.get(job.id)!.state).toBe('done')
   })

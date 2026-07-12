@@ -235,11 +235,34 @@ export class LibraryRepo {
       .all(timestamp, timestamp) as Movie[]
   }
 
+  /** scan 磁盘 arm 记账用：该 item 是否已有任意 subtitles 行。已经走过正规 pipeline 记账
+   *  （scout-download/adopted-local/preexisting 任一来源）的条目不该被 scan 的磁盘 arm
+   *  二次"认领"——即便这轮磁盘 arm 也命中（比如 Jellyfin 还没刷新 MediaStreams）。
+   *  已知取舍（accepted debt）：本 guard 只看"有没有任意行"，不比较路径——若既有行是
+   *  一条失效路径（文件已被移走/改名），磁盘上又冒出一个新路径的 sidecar，guard 仍会短路，
+   *  新 sidecar 不会被记账（旧行继续代表该 item 的字幕来源）。这是刻意的取舍，不在本次
+   *  修复范围内。 */
+  hasSubtitleRecord(itemId: string): boolean {
+    return (
+      this.db.prepare('SELECT 1 FROM subtitles WHERE item_id = ? LIMIT 1').get(itemId) !== undefined
+    )
+  }
+
   /** M7: subtitlePath=null 表示只知道"已覆盖"但没有可信的字幕文件路径（如 already_exists）——
    *  只改状态，不伪造 subtitles 行。
    *  providerRef: provider-neutral 候选标识，形如 "assrt:673114" / "opensubtitles:7174766"
-   *  （见 core/schemas.ts candidateKey）；无来源可考时传 undefined。 */
-  markCovered(itemId: string, subtitlePath: string | null, source: string, providerRef?: string): void {
+   *  （见 core/schemas.ts candidateKey）；无来源可考时传 undefined。
+   *  language: subtitles.language 取值（db.ts ~:69 的 zh-Hans/zh-Hant 二值域），默认 'zh-Hans'
+   *  ——沿用历史行为，scout-download/adopted-local 等既有调用方（executor.ts）不传此参数，
+   *  行为完全不变。scan 磁盘 arm 领养（scanner.ts）会按匹配到的 CHINESE_TAGS tag 显式传入
+   *  真实语言，不再无论简繁一律硬编码 zh-Hans。 */
+  markCovered(
+    itemId: string,
+    subtitlePath: string | null,
+    source: string,
+    providerRef?: string,
+    language: string = 'zh-Hans'
+  ): void {
     const now = Date.now()
 
     const markCoveredTransaction = this.db.transaction(() => {
@@ -268,10 +291,10 @@ export class LibraryRepo {
         this.db
           .prepare(
             `INSERT INTO subtitles (item_id, path, language, source, provider_ref, created_at)
-             VALUES (?, ?, 'zh-Hans', ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(item_id, path) DO NOTHING`
           )
-          .run(itemId, subtitlePath, source, providerRef ?? null, now)
+          .run(itemId, subtitlePath, language, source, providerRef ?? null, now)
       }
     })
 
