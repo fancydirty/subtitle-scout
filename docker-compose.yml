@@ -5,6 +5,10 @@ services:
     image: ghcr.io/fancydirty/subtitle-scout:latest
     container_name: subtitle-scout
     restart: unless-stopped
+    # 容器内 PID 1 是 npm（Dockerfile CMD），它不会 reap 被重新收养的孤儿进程——
+    # 每次字幕抓取子进程都可能留下 esbuild 僵尸（生产事故实录）。init:true 让 Docker
+    # 注入内置 tini 作真正的 PID 1，负责收割。
+    init: true
     logging:
       driver: json-file
       options:
