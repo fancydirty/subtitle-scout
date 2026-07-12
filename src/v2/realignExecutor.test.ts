@@ -78,6 +78,15 @@ describe('chooseRealignStrategy', () => {
     expect(chooseRealignStrategy({ writable: true, hardlink: false }, 'unknown')).toBe('abandon')
     expect(chooseRealignStrategy({ writable: true, hardlink: 'unknown' }, 'unknown')).toBe('abandon')
   })
+  // GAP B（re-review #2）：archiveOldDir（步骤 14）无条件用 renameSync 把旧目录整棵搬进
+  // 归档，与 strategy 是否探明支持硬链接无关——"支持硬链接"绝不能绕过 renameAtomic 检查，
+  // 否则在"硬链接可用但归档根跨设备"的环境下会在归档这一步 EXDEV。
+  it('GAP B：支持硬链接但 rename 不原子（跨设备归档根）→ abandon，绝不因硬链接放行', () => {
+    expect(chooseRealignStrategy({ writable: true, hardlink: true }, false)).toBe('abandon')
+  })
+  it('GAP B：支持硬链接但 rename 原子性 unknown → abandon，绝不因硬链接放行', () => {
+    expect(chooseRealignStrategy({ writable: true, hardlink: true }, 'unknown')).toBe('abandon')
+  })
 })
 
 describe('archiveDirFor', () => {

@@ -50,14 +50,21 @@ export type RealignStrategy = 'hardlink' | 'rename' | 'abandon'
  * 探针是三态的（mountCapabilities.ProbeOutcome）：'unknown'（没条件探）绝不能当探出来了——
  * hardlink unknown 只是不走硬链接优先分支（rename 探明原子仍可整理）；renameAtomic
  * unknown/false 一律 abandon（无法证明原子性的 rename 可能把文件复制到一半断电）。
+ * GAP B（re-review #2，one-line SHIP-blocking）：renameAtomic 的检查必须先于 hardlink 判断、
+ * 且对 hardlink 结果同样生效——'hardlink' 只是省了 assembleInvisibleTree/finalizeShowDir
+ * 那几跳 rename 的硬链接优化提示，实现里其实从未真正走硬链接路径（见 executeRealign 步骤 7b
+ * 注释：全程只走 rename 一条执行路径）；archiveOldDir（步骤 14）在任何 strategy 下都无条件
+ * 用 renameSync 把旧目录整棵搬进归档，若归档根跨设备（EXDEV）,这一步会失败/半途而废——
+ * 与 strategy 是否探明支持硬链接无关。因此 renameAtomic !== true 必须直接 abandon，绝不能
+ * 被"探明支持硬链接"绕过。
  */
 export function chooseRealignStrategy(
   caps: { writable: boolean; hardlink: ProbeOutcome }, renameAtomic: ProbeOutcome,
 ): RealignStrategy {
   if (!caps.writable) return 'abandon'
+  if (renameAtomic !== true) return 'abandon'
   if (caps.hardlink === true) return 'hardlink'
-  if (renameAtomic === true) return 'rename'
-  return 'abandon'
+  return 'rename'
 }
 
 /** 归档位置：<归档根>/.archive/<剧名>-<时间戳>/。归档根必须在媒体库根之外（Jellyfin 不看），
