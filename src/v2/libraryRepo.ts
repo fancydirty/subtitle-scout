@@ -1,6 +1,6 @@
 import type { ScoutDb } from './db.js'
 
-export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored' | 'needs_review'
+export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored'
 
 export interface SeriesParams {
   id: string
@@ -206,9 +206,7 @@ export class LibraryRepo {
     this.db.prepare('UPDATE movies SET origin_lang = ? WHERE id = ?').run(lang, movieId)
   }
 
-  /** needs_review（ask_user：候选存在但置信不足）复查到期后和 unavailable 一样重新计入
-   *  missing，让 aggregator 把它纳入下一轮 job——一个更好的候选或更丰富的元数据（比如
-   *  中文名回写后重新识别）到时候可能就能解出来。 */
+  /** unavailable 复查到期后重新计入 missing，让 aggregator 把它纳入下一轮 job。 */
   missingBySeason(now?: number): MissingBySeason[] {
     const timestamp = now ?? Date.now()
     return this.db
@@ -217,10 +215,9 @@ export class LibraryRepo {
          FROM episodes
          WHERE sub_status = 'missing'
             OR (sub_status = 'unavailable' AND recheck_after <= ?)
-            OR (sub_status = 'needs_review' AND recheck_after <= ?)
          GROUP BY series_id, season`
       )
-      .all(timestamp, timestamp) as MissingBySeason[]
+      .all(timestamp) as MissingBySeason[]
   }
 
   missingMovies(now?: number): Movie[] {
@@ -229,10 +226,9 @@ export class LibraryRepo {
       .prepare(
         `SELECT * FROM movies
          WHERE sub_status = 'missing'
-            OR (sub_status = 'unavailable' AND recheck_after <= ?)
-            OR (sub_status = 'needs_review' AND recheck_after <= ?)`
+            OR (sub_status = 'unavailable' AND recheck_after <= ?)`
       )
-      .all(timestamp, timestamp) as Movie[]
+      .all(timestamp) as Movie[]
   }
 
   /** scan 磁盘 arm 记账用：该 item 是否已有任意 subtitles 行。已经走过正规 pipeline 记账
@@ -302,7 +298,7 @@ export class LibraryRepo {
   }
 
   /**
-   * 播放触发用：把 unavailable/needs_review 条目的 recheck_after 拉回 now，
+   * 播放触发用：把 unavailable 条目的 recheck_after 拉回 now，
    * 让 executor 重derive targets 时能纳入它（后台调和的 recheck 门对播放触发不适用）。
    */
   resetRecheck(itemId: string, now: number): void {
@@ -310,7 +306,7 @@ export class LibraryRepo {
       .prepare(
         `UPDATE episodes
          SET recheck_after = ?, updated_at = ?
-         WHERE id = ? AND sub_status IN ('unavailable', 'needs_review')`
+         WHERE id = ? AND sub_status = 'unavailable'`
       )
       .run(now, now, itemId)
 
@@ -319,7 +315,7 @@ export class LibraryRepo {
         .prepare(
           `UPDATE movies
            SET recheck_after = ?, updated_at = ?
-           WHERE id = ? AND sub_status IN ('unavailable', 'needs_review')`
+           WHERE id = ? AND sub_status = 'unavailable'`
         )
         .run(now, now, itemId)
     }
@@ -346,37 +342,6 @@ export class LibraryRepo {
         .prepare(
           `UPDATE movies
            SET sub_status = 'unavailable',
-               status_reason = ?,
-               recheck_after = ?,
-               updated_at = ?
-           WHERE id = ?`
-        )
-        .run(reason, recheckAfter, now, itemId)
-    }
-  }
-
-  /** ask_user 诚实记账（task 2）：候选存在但置信不足，不同于 markUnavailable 的"穷尽未找到"——
-   *  结构与 markUnavailable 完全对称（reason + recheck_after），只是 sub_status 不同，
-   *  让前端能诚实区分"搜过没有"与"找到候选待确认"。 */
-  markNeedsReview(itemId: string, reason: string, recheckAfter: number): void {
-    const now = Date.now()
-
-    const episodeResult = this.db
-      .prepare(
-        `UPDATE episodes
-         SET sub_status = 'needs_review',
-             status_reason = ?,
-             recheck_after = ?,
-             updated_at = ?
-         WHERE id = ?`
-      )
-      .run(reason, recheckAfter, now, itemId)
-
-    if (episodeResult.changes === 0) {
-      this.db
-        .prepare(
-          `UPDATE movies
-           SET sub_status = 'needs_review',
                status_reason = ?,
                recheck_after = ?,
                updated_at = ?

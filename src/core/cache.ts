@@ -4,7 +4,9 @@ import { createHash } from 'node:crypto'
 import type { MediaIdentity, ProviderName } from './schemas.js'
 
 export type CacheEntry =
-  | { kind: 'positive'; provider: ProviderName; providerId: string; fileIndex: number | null; confidence: number }
+  // confidence: 历史遗留字段（迁移期兼容旧缓存条目/仪表盘消费方），判定链两态化后不再产出
+  // 真实置信度数值——新写入的 positive 条目一律不带这个字段。
+  | { kind: 'positive'; provider: ProviderName; providerId: string; fileIndex: number | null; confidence?: number }
   | { kind: 'negative'; reason: string }
 
 interface StoredEntry { entry: CacheEntry; expiresAt: number }

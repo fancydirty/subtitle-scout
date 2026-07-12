@@ -123,7 +123,7 @@ export class Watcher {
       // 结果联动队列
       if (['download', 'adopted_local', 'already_exists'].includes(result.decision)) {
         this.deps.queue.remove(itemId)
-      } else if (['no_safe_match', 'ask_user'].includes(result.decision) && source === 'queue') {
+      } else if (result.decision === 'no_safe_match' && source === 'queue') {
         this.deps.queue.recordFailure(itemId)
       }
 

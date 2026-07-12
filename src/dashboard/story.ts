@@ -53,23 +53,23 @@ export function buildRunStory(journal: JournalDoc, ledger: LedgerLike): StoryDTO
     out.push({ title: '去字幕站找了一圈', detail: kept != null ? `找到 ${kept} 个候选` : '找到一些候选', state: 'done' })
   }
 
-  // 3. 挑最靠谱
+  // 3. 下下来验一验（新流程：候选下到沙盒，打开看是不是这份资源，而不是单凭排序"挑一个"）
   if (success) {
-    out.push({ title: '挑了最靠谱的那份', detail: dec.selected ? `${lang} · 跟你的片子对得上` : '确认可用', state: 'done' })
+    out.push({ title: '下下来验了验是不是这份', detail: dec.selected ? `${lang} · 打开看了，确认是这份资源的字幕` : '确认可用', state: 'done' })
   } else {
     // 失败：若前一步已 fail 则第 3 步不再重复 fail，用中性收束
     const alreadyFailed = out.some(s => s.state === 'fail')
-    out.push({ title: '挑最靠谱的那份', detail: '没有一份能稳妥对上，为避免下错，这次先不放', state: alreadyFailed ? 'done' : 'fail' })
+    out.push({ title: '下下来验了验是不是这份', detail: '挨个试了试，没有一份能确认对上，为避免下错，这次先不放', state: alreadyFailed ? 'done' : 'fail' })
   }
 
-  // 4. 下好放到位
+  // 4. 确认没问题，装到位
   if (success) {
     const doneDetail = isSeason && coveredCount
       ? `${coveredCount} 集字幕全部就位，Jellyfin 里已经能看了`
       : dec.decision === 'already_exists' ? '本来就有字幕，这次不用动' : '字幕已就位，Jellyfin 里已经能看了'
-    out.push({ title: '下好并放到位', detail: doneDetail, state: 'done' })
+    out.push({ title: '确认没问题，装到位', detail: doneDetail, state: 'done' })
   } else {
-    out.push({ title: '下好并放到位', detail: '这次没有可放的字幕，过阵子会再帮你试', state: 'done' })
+    out.push({ title: '确认没问题，装到位', detail: '这次没有可放的字幕，过阵子会再帮你试', state: 'done' })
   }
 
   return {

@@ -5,7 +5,7 @@ import { ERROR_GIVEUP_THRESHOLD, type JobsRepo, type Job } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import type { Assembled } from '../cli/index.js'
 import {
-  buildMediaContext, isDirWritable, isUnderRoots, applyConfidenceOverride, mapPath,
+  buildMediaContext, isDirWritable, isUnderRoots, mapPath,
 } from '../core/mediaContext.js'
 import { tmdbTitles } from '../adapters/providers/tmdb.js'
 import { runPipeline } from '../core/pipeline.js'
@@ -22,17 +22,16 @@ export interface ExecutorDeps {
    *  避免 jobs.journal_ref 和真实 journal 目录各算各的、对不上号。 */
   runEpisode: (
     episodeId: string,
-    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string) => void,
+    /** alreadyExisted: true 时这一集的字幕文件不是本轮季横扫/季包升格新写的（pipeline 的
+     *  findOnDiskNfc 在装机前就命中了磁盘上的既有文件）——executeJob 据此把 subtitles.source
+     *  记成 'preexisting' 而不是 'scout-download'（同单集 already_exists 的既有映射）。 */
+    onCovered: (coveredEpisodeId: string, subtitlePath: string, providerRef?: string, alreadyExisted?: boolean) => void,
     journalRef?: string
   ) => Promise<{
     decision: string
     journalPath?: string
     /** 写盘字幕路径（供 markCovered 建 subtitles 行）；不进 runs.detail */
     subtitlePath?: string
-    /** ask_user 门评置信度（人话摘要展示） */
-    confidence?: number | null
-    /** 自动下载门槛（与 confidence 配对展示） */
-    minConfidence?: number
     /** 结论理由（错因取首条，人话化后入 detail） */
     reasons?: string[]
     /** 命中的候选来源（供 markCovered 建 provider_ref）；无来源可考（如 already_exists）为 null/undefined */
@@ -62,14 +61,6 @@ function coveredDetail(job: Job, coveredIds: Set<string>, lib: LibraryRepo): str
   return `第 ${season} 季 ${ids.length} 集字幕已就位`
 }
 
-/** 门评置信度不足的人话摘要（有数字用数字）。 */
-function askUserDetail(confidence?: number | null, minConfidence?: number): string {
-  if (typeof confidence === 'number' && typeof minConfidence === 'number') {
-    return `找到候选但把握不足（置信 ${confidence.toFixed(2)} < ${minConfidence.toFixed(2)}），待人工确认`
-  }
-  return '找到候选但把握不足，待人工确认'
-}
-
 /** 错因清洗：取首行、剔除绝对路径 token（原文仍留 last_error/journal）。 */
 function briefCause(raw?: string): string {
   if (!raw) return ''
@@ -77,18 +68,16 @@ function briefCause(raw?: string): string {
 }
 
 const HUMAN_NO_MATCH = '没找到合适的中文字幕'
-const HUMAN_ASK_USER = '找到候选但把握不足，待人工确认'
 
-/** M8: pipeline decision → subtitles.source 映射 */
+/** M8: pipeline decision → subtitles.source 映射（代表集自身命中路径；季横扫/季包命中的每一集
+ *  走 onCovered，source 由 alreadyExisted 现算，见下方 onCovered 与 markCovered 调用点）。 */
 const SOURCE_BY_DECISION: Record<string, string> = {
   download: 'scout-download',
   adopted_local: 'adopted-local',
   already_exists: 'preexisting',
 }
 
-/** 重derive 本 job 当前的 missing targets（含 unavailable/needs_review 复查到期），按集号升序。
- *  needs_review（task 2: ask_user 诚实记账）复查到期后和 unavailable 一样重新参战——
- *  一个更好的候选或更丰富的元数据到时候可能就能解出来，不该被永久搁置在"待确认"。 */
+/** 重derive 本 job 当前的 missing targets（含 unavailable 复查到期），按集号升序。 */
 function remainingTargets(job: Job, lib: LibraryRepo, now: number): (Episode | Movie)[] {
   if (job.kind === 'series_season') {
     return lib.db
@@ -96,17 +85,16 @@ function remainingTargets(job: Job, lib: LibraryRepo, now: number): (Episode | M
         `SELECT * FROM episodes
          WHERE series_id = ? AND season = ?
          AND (sub_status = 'missing'
-              OR (sub_status = 'unavailable' AND recheck_after <= ?)
-              OR (sub_status = 'needs_review' AND recheck_after <= ?))
+              OR (sub_status = 'unavailable' AND recheck_after <= ?))
          ORDER BY episode ASC`
       )
-      .all(job.series_id, job.season, now, now) as Episode[]
+      .all(job.series_id, job.season, now) as Episode[]
   }
   const movie = lib.getMovie(job.movie_id!)
   if (!movie) return []
   const stillMissing =
     movie.sub_status === 'missing' ||
-    ((movie.sub_status === 'unavailable' || movie.sub_status === 'needs_review') && (movie.recheck_after ?? 0) <= now)
+    (movie.sub_status === 'unavailable' && (movie.recheck_after ?? 0) <= now)
   return stillMissing ? [movie] : []
 }
 
@@ -205,7 +193,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
 
     // 3. Track coverage via onCovered callback (season pack hits are downloads)
     const coveredIds = new Set<string>()
-    const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string) => {
+    const onCovered = (episodeId: string, subtitlePath: string, providerRef?: string, alreadyExisted?: boolean) => {
       // FIX-3: 租约已不属于本次 invocation——跳过写盘，不信任 detached invocation
       // 的战果（管线本身继续跑，只是不让它的产出再落库；不尝试取消管线，见 out of scope）。
       if (!ownsLease()) {
@@ -216,7 +204,10 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
         )
         return
       }
-      lib.markCovered(episodeId, subtitlePath, 'scout-download', providerRef)
+      // alreadyExisted: 这一集的字幕文件本来就在磁盘上，本轮季横扫/季包升格并没有真的写它
+      // （pipeline 的 findOnDiskNfc 装机前命中）——source 记 'preexisting'，不能算成
+      // 'scout-download'（同单集 already_exists→'preexisting' 的既有映射，SOURCE_BY_DECISION）。
+      lib.markCovered(episodeId, subtitlePath, alreadyExisted ? 'preexisting' : 'scout-download', providerRef)
       if (targets.some(t => t.id === episodeId)) {
         coveredIds.add(episodeId)
       }
@@ -243,7 +234,7 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
     // "是不是我领的"，会把新 invocation 的战果错误地转移到 failed/done（state/attempt/
     // error_attempt 全部覆盖，还会把新 invocation 自己的 lease_until 直接 NULL 掉，
     // 导致新 invocation 自己的 ownsLease 也跟着翻假，静默丢弃它后续所有战果——见
-    // 审计 (c) 级联）；markUnavailable/markNeedsReview 更是完全没有守卫。在进入任何
+    // 审计 (c) 级联）；markUnavailable 更是完全没有守卫。在进入任何
     // 分支之前，一次性用 ownsLease() 拦掉整段路由——租约已丢失就什么状态机/集状态都
     // 不碰，只留一行 runs 记录（复用 record() 既有的 stale-lease 弃置分支，诊断信息
     // 不丢）。这是覆盖全部分支的最窄卡口：其后每条分支要么直接依赖 ownsLease()==true
@@ -323,40 +314,22 @@ export async function executeJob(job: Job, deps: ExecutorDeps): Promise<void> {
       return
     }
 
-    // 0 coverage, content failure: no_safe_match / ask_user → content backoff track
-    // task 2: 两者共享 job 状态机语义（同一条内容退避梯/dormancy 悬崖），但集级 sub_status
-    // 诚实分流——no_safe_match 是"搜索穷尽确认无"（unavailable），ask_user 是"找到候选但
-    // 置信不足，待人工确认"（needs_review）。此前两者都被 markUnavailable，前端一律展示
-    // "暂无"，掩盖了本可人工确认的候选（审计 executor.ts:219 finding）。
-    if (decision === 'no_safe_match' || decision === 'ask_user') {
-      // 人话化：no_safe_match 的 status_reason/detail 用简洁版；ask_user 的 status_reason
-      // 也用带数字的详细版（不只是 runs.detail）——未来"确认队列"功能要按集展示具体把握程度。
-      const humanReason = decision === 'no_safe_match' ? HUMAN_NO_MATCH : HUMAN_ASK_USER
-      const humanDetail =
-        decision === 'no_safe_match'
-          ? HUMAN_NO_MATCH
-          : askUserDetail(result.confidence, result.minConfidence)
-
+    // 0 coverage, content failure: no_safe_match → content backoff track(唯一出口,
+    // ask_user/needs_review 已拔除——判断链只剩"是/不是"两态,拿不准的候选在 pipeline
+    // 内部已经走过 staging 沙盒体检+终审才能到这里)。
+    if (decision === 'no_safe_match') {
       const transitioned = jobs.completeNoMatch(job.id, now())
-
-      // Mark targets unavailable/needs_review with recheck tied to the job's own retry schedule
       if (transitioned) {
         const finalJob = jobs.get(job.id)!
         const recheckAfter =
           finalJob.state === 'dormant'
-            ? now() + 30 * 86_400_000 // 30 days if dormant
+            ? now() + 30 * 86_400_000
             : finalJob.next_retry_at ?? now() + 86_400_000
-
         for (const target of targets) {
-          if (decision === 'ask_user') {
-            lib.markNeedsReview(target.id, humanDetail, recheckAfter)
-          } else {
-            lib.markUnavailable(target.id, humanReason, recheckAfter)
-          }
+          lib.markUnavailable(target.id, HUMAN_NO_MATCH, recheckAfter)
         }
       }
-
-      record(transitioned, decision, humanDetail, journalPath, stats)
+      record(transitioned, decision, HUMAN_NO_MATCH, journalPath, stats)
       return
     }
 
@@ -435,15 +408,15 @@ export function makeRunEpisode(
       }
     }
 
-    // 3. Build MediaContext + confidence override (I5a)
+    // 3. Build MediaContext (I5a)
     const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
-    applyConfidenceOverride(ctx)
     // ctx.media.path 与上面 1b 算出的 dir 是同一次 mapPath 计算，dir 已在网络调用前验过。
 
-    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef) → deps (ep.itemId, path, providerRef)
+    // 5. onCovered adapter: pipeline (ep: SeasonEpisode, path, providerRef, alreadyExisted) →
+    //    deps (ep.itemId, path, providerRef, alreadyExisted)
     //    I5d: refresh Jellyfin item after each covered episode (v1 semantics)
-    const onCoveredAdapter = async (ep: SeasonEpisode, path: string, providerRef?: string) => {
-      onCovered(ep.itemId, path, providerRef)
+    const onCoveredAdapter = async (ep: SeasonEpisode, path: string, providerRef?: string, alreadyExisted?: boolean) => {
+      onCovered(ep.itemId, path, providerRef, alreadyExisted)
       await jf.refreshItem(ep.itemId).catch(() => {})
     }
 
@@ -469,8 +442,6 @@ export function makeRunEpisode(
       decision: result.decision,
       journalPath: result.journalPath,
       subtitlePath: result.subtitlePath ?? undefined,
-      confidence: result.confidence ?? null,
-      minConfidence: ctx.preferences.auto_download_min_confidence,
       reasons: result.reasons ?? [],
       selected: result.selected ?? null,
       stats: { llmCalls: result.stats.llmCalls, apiCalls: result.stats.apiCalls },

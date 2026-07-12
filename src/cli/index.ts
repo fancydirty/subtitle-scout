@@ -20,9 +20,11 @@ import { ProfileStore } from '../agent/profile.js'
 import { identifyMedia } from '../agent/identifyMedia.js'
 import { planSearch } from '../agent/planSearch.js'
 import { rankCandidates } from '../agent/rankCandidates.js'
+import { verifySubtitle } from '../agent/verifySubtitle.js'
+import { allocate, install, cleanup, gcOrphans } from '../files/stagingSandbox.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
-import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, applyConfidenceOverride, type PathMapping } from '../core/mediaContext.js'
+import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
 // import { Watcher } from '../daemon/watcher.js'  // v1 watcher — 保留文件但不再引用
 import { CHINESE_LANG_TAGS } from '../daemon/triggers.js'
 // import { PrefetchQueue } from '../daemon/queue.js'  // v1 queue — v2 不用
@@ -58,7 +60,7 @@ function requireEnv(name: string): string {
 }
 
 export interface Assembled {
-  makeDeps: (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string) => void | Promise<void> }) => PipelineDeps
+  makeDeps: (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string, alreadyExisted?: boolean) => void | Promise<void> }) => PipelineDeps
   /** 每个 job 独立的 journal 上下文——并发任务的 apiCall/自愈事件不再串记到相邻 journal。
    *  所有 runPipeline 调用必须包在此内，否则 assrt/llm 回调取不到 journal 而丢事件。 */
   withJournal: <T>(fn: () => Promise<T>) => Promise<T>
@@ -94,11 +96,13 @@ async function assemble(): Promise<Assembled> {
   }, profileStore, undefined, info => journalStore.getStore()?.journal?.step('llm_profile_healed', info))
   // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第四把钥匙」）。缺 key → null，走 jellyfin fallback。
   const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
-  const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string) => void | Promise<void> }): PipelineDeps => ({
+  const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string, alreadyExisted?: boolean) => void | Promise<void> }): PipelineDeps => ({
     journalReady: j => { const s = journalStore.getStore(); if (s) s.journal = j; j.step('llm_profile', llm.profileInfo()) },
     identify: c => identifyMedia(llm, c),
     plan: (c, id) => planSearch(llm, c, id),
     rank: (c, id, cands) => rankCandidates(llm, c, id, cands),
+    verify: (c, id, cand, signals) => verifySubtitle(llm, c, id, cand, signals),
+    staging: { allocate, install, cleanup },
     providers: makeCliProviderPort({
       onEvent: e => {
         const journal = journalStore.getStore()?.journal
@@ -127,6 +131,11 @@ async function assemble(): Promise<Assembled> {
     llm,
     cache: new DecisionCache(join(cacheRoot, 'decisions')),
     maxApiCallsPerJob: 4,
+    // FINDING-1: 同一份 roots（mapping.to + MEDIA_ROOTS）喂给 pipeline，供它把试错沙盒钉在
+    // 媒体根一级——与 gcStaging()/isUnderRoots 校验用的是同一次 mediaRoots(mappings) 计算，
+    // 三处判定不会各算各的对不上号。裸 `cli run` 调试路径没有配置这些 env 时退化为 []（pipeline
+    // 内部再退回 outDir 本身，见 pipeline.ts stagingRoot 的注释）。
+    mediaRoots: mediaRoots(mappings),
     adoption: (process.env.ADOPT_LOCAL_SUBTITLES ?? 'true') !== 'false' ? {
       scan: (dir, video) => scanOrphans(dir, video),
       judge: (c, id, orphans) => judgeOrphan(llm, id, c.media.filename, orphans),
@@ -183,7 +192,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 async function cmdRun(contextPath: string, outDir: string) {
   const ctx = MediaContextSchema.parse(JSON.parse(readFileSync(contextPath, 'utf8')))
-  applyConfidenceOverride(ctx)
   const { makeDeps, withJournal, cacheRoot, llm } = await assemble()
   const result = await withJournal(() => runPipeline(makeDeps(), ctx, outDir))
   console.log(JSON.stringify({ decision: result.decision, subtitle: result.subtitlePath ?? null, journal: result.journalPath, fromCache: result.fromCache ?? false }, null, 2))
@@ -215,7 +223,6 @@ async function cmdRunItem(itemId: string) {
   const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
   const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)) : undefined
   const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
-  applyConfidenceOverride(ctx)
   const roots = mediaRoots(mappings)
   if (!isUnderRoots(mediaDir(ctx), roots)) {
     console.error(`refusing write outside media roots: ${mediaDir(ctx)} — configure MEDIA_ROOTS / MEDIA_PATH_MAPPINGS`)
@@ -322,6 +329,7 @@ async function cmdWatch() {
       })
     },
     aggregate: (now) => aggregate(lib, jobs, now),
+    gcStaging: () => gcOrphans(roots, new Set()),
     executeJob: async (job) => {
       await withJournal(() => executeJob(job, {
         lib,

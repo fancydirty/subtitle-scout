@@ -72,15 +72,6 @@ export function mediaDir(ctx: MediaContext): string {
   return dirname(ctx.media.path)
 }
 
-/** 环境变量 AUTO_DOWNLOAD_MIN_CONFIDENCE 覆盖 ctx 的自动下载置信度阈值（cli 与 v2 executor 共用）。 */
-export function applyConfidenceOverride(ctx: MediaContext): void {
-  if (process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE) {
-    const v = Number(process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE)
-    if (Number.isFinite(v) && v >= 0 && v <= 1) ctx.preferences.auto_download_min_confidence = v
-    else console.error(`ignoring invalid AUTO_DOWNLOAD_MIN_CONFIDENCE: ${process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE}`)
-  }
-}
-
 /** path 是否位于任一 root 之下（或恰为 root）。roots 为空 → 视为不限制，返回 true */
 export function isUnderRoots(path: string, roots: string[]): boolean {
   if (roots.length === 0) return true
@@ -89,6 +80,20 @@ export function isUnderRoots(path: string, roots: string[]): boolean {
     const root = resolve(r)
     return p === root || p.startsWith(root + sep)
   })
+}
+
+/** roots 里包含 path 的那一个根（最长前缀命中，避免嵌套配置时 /media 抢了 /media/tv 的活）。
+ *  一个都不包含（越出所有根，或 roots 为空）返回 null——调用方自行决定安全兜底，这里不替
+ *  调用方猜。供 stagingSandbox.allocate 的调用方判定"哪个媒体根装下了这段视频"：沙盒必须
+ *  挂在根一级而不是视频所在的深层目录（见 pipeline.ts runPipeline 里 stagingRoot 的注释——
+ *  gcOrphans 按根非递归扫描，沙盒不在根一级就永远不会被启动时的孤儿回收扫到）。 */
+export function containingRoot(path: string, roots: string[]): string | null {
+  const p = resolve(path)
+  const hits = roots
+    .map(r => resolve(r))
+    .filter(root => p === root || p.startsWith(root + sep))
+  if (hits.length === 0) return null
+  return hits.sort((a, b) => b.length - a.length)[0]
 }
 
 let writeProbeCounter = 0

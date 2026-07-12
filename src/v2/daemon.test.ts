@@ -608,76 +608,6 @@ describe('ScoutDaemon', () => {
     expect(ep.recheck_after).toBeLessThanOrEqual(now)
   })
 
-  it('pollSessions命中退避中的needs_review集（recheck未来+dormant job）也能wake/boost，下一tick实际把该集纳入target而非误判done', async () => {
-    // 复现审计发现：daemon.ts 的 resetRecheck 调用点只对 sub_status==='unavailable' 拉回
-    // recheck_after，needs_review 被漏放——尽管 resetRecheck 本身（libraryRepo.ts）早已支持
-    // 两者。播放触发 wake 了 dormant job，但 needs_review 集的 recheck_after 仍留在 30 天后，
-    // executor 重derive targets（remainingTargets）的 recheck 门照样把这集挡在外面：零
-    // target → job 误判 done（跑详情谎报"字幕均已就位"）→ 之后 recheck 自然到期时
-    // done→wanted 复活，把 attempt 和 error_attempt 一起清零——既破坏"每个 recheck 窗口只
-    // 打一枪"的节流，也让 needs_review 的播放强制重试静默失效。
-    lib.upsertSeries({ id: 's1', name: 'Series 1' })
-    lib.upsertEpisode({
-      id: 'e1',
-      seriesId: 's1',
-      season: 1,
-      episode: 1,
-      name: 'Episode 1',
-      path: '/media/s1e1.mkv',
-      subStatus: 'missing',
-    })
-    lib.markNeedsReview('e1', '找到候选但把握不足', now + 30 * 86_400_000) // recheck 在未来 30 天
-
-    // Job dormant（退避穷尽）
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    jobs.forceState('s1', 1, 'dormant', now)
-
-    const getSessions = vi.fn(async () => [{
-      Id: 'session1',
-      NowPlayingItem: { Id: 'e1', Type: 'Episode', SeriesId: 's1', ParentIndexNumber: 1 },
-    }] as PlaybackSession[])
-
-    const episodeForSession = vi.fn((item) =>
-      item.Type === 'Episode' && item.SeriesId === 's1' && item.ParentIndexNumber === 1
-        ? { kind: 'series_season' as const, seriesId: 's1', season: 1 }
-        : null
-    )
-
-    const daemon = new ScoutDaemon(makeDeps({ getSessions, episodeForSession }))
-    await daemon.pollSessions()
-
-    // Job should be woken from dormant with priority 100
-    const job = jobs.find('s1', 1)
-    expect(job?.state).toBe('wanted')
-    expect(job?.priority).toBe(100)
-
-    // needs_review 集的 recheck_after 也应被拉回 now，和 unavailable 同等对待
-    const ep = lib.getEpisode('e1')!
-    expect(ep.sub_status).toBe('needs_review')
-    expect(ep.recheck_after).toBeLessThanOrEqual(now)
-
-    // 端到端：下一 tick 真实 claim 到该 job 并跑真实 executor 时，remainingTargets 必须
-    // 把这集纳入（而非因 recheck 门未拉回而零 target 误判 done）
-    const runEpisode = vi.fn(async (
-      episodeId: string,
-      onCovered: (id: string, path: string, providerRef?: string) => void
-    ) => {
-      expect(episodeId).toBe('e1')
-      onCovered('e1', '/tv/s1e1.zh-Hans.srt')
-      return { decision: 'download', journalPath: '/j.json', subtitlePath: '/tv/s1e1.zh-Hans.srt' }
-    })
-
-    const executeJob = (claimedJob: Job) =>
-      realExecuteJob(claimedJob, { lib, jobs, runEpisode, now: () => now, log: () => {} } as ExecutorDeps)
-
-    const daemon2 = new ScoutDaemon(makeDeps({ executeJob }))
-    await daemon2.tick()
-
-    expect(runEpisode).toHaveBeenCalledTimes(1)
-    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
-    expect(jobs.find('s1', 1)?.state).toBe('done')
-  })
-
   it('IMPORTANT-2: 心跳续租写回（trackedJob.lease_until = renewed）是 ownsLease 跨 tick 存活的唯一支点——真实 executor 场景下 markCovered 必须落地', async () => {
     // 生产语境：runEpisode 是真正的网络/LLM 调用，季包多集下载能合法跑超一个 tick
     // 间隔（15s）甚至一次租约窗口（30min）。daemon.tick() 的心跳每拍为仍被跟踪的
@@ -825,6 +755,28 @@ describe('ScoutDaemon', () => {
     await runPromise
 
     expect(logs.some(l => l.includes('boot: reaped'))).toBe(false)
+  })
+
+  it('run启动时调用 gcStaging 并在清理数>0 时打日志', async () => {
+    const gcStaging = vi.fn(() => 2)
+    const daemon = new ScoutDaemon(makeDeps({ gcStaging }))
+    const controller = new AbortController()
+    const runPromise = daemon.run(controller.signal)
+    await new Promise(r => setTimeout(r, 20))
+    controller.abort()
+    await runPromise
+    expect(gcStaging).toHaveBeenCalledTimes(1)
+    expect(logs.some(l => l.includes('boot: cleaned 2 orphaned staging'))).toBe(true)
+  })
+
+  it('gcStaging 未注入或返回 0 时不打日志（不影响既有 reapAllActive 行为）', async () => {
+    const daemon = new ScoutDaemon(makeDeps())
+    const controller = new AbortController()
+    const runPromise = daemon.run(controller.signal)
+    await new Promise(r => setTimeout(r, 20))
+    controller.abort()
+    await runPromise
+    expect(logs.some(l => l.includes('boot: cleaned'))).toBe(false)
   })
 
   it('run循环：tick+pollSessions并发，signal退出', async () => {

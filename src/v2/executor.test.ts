@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -107,6 +107,29 @@ describe('executor', () => {
     expect(runRecords[0].detail).toBe('第 1 季 3 集字幕已就位')
   })
 
+  it('M8/onCovered: 季包/横扫覆盖里某一集其实本来就在磁盘上（alreadyExisted=true）→ source=preexisting，不与真正新抓的那集混同', async () => {
+    // 单集 already_exists 决策早就映射到 source='preexisting'（见下面 M7/M8 用例）；这里补的是
+    // 季横扫/季包升格路径——pipeline 的 onCovered 现在带 alreadyExisted 这个第 4 个参数
+    // （findOnDiskNfc 装机前命中磁盘上的既有文件，本轮并没有真的写它），executeJob 的 onCovered
+    // 必须据此选 source，而不是不管三七二十一都记 'scout-download'。
+    mkEpisode('e1', 's1', 1, 1)
+    mkEpisode('e2', 's1', 1, 2)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    const job = jobs.claimNext(now)!
+
+    const runEpisode = vi.fn(async (episodeId: string, onCovered: (id: string, path: string, providerRef?: string, alreadyExisted?: boolean) => void) => {
+      expect(episodeId).toBe('e1')
+      onCovered('e1', '/tv/s1e1.zh-Hans.srt', 'assrt:900900', true)  // 本来就在磁盘上
+      onCovered('e2', '/tv/s1e2.zh-Hans.srt', 'assrt:900900', false) // 这次真的新写了
+      return { decision: 'download', journalPath: '/journals/test.json' }
+    })
+
+    await executeJob(job, mkDeps(runEpisode))
+
+    expect(lib.db.prepare('select source from subtitles where item_id=?').get('e1')).toEqual({ source: 'preexisting' })
+    expect(lib.db.prepare('select source from subtitles where item_id=?').get('e2')).toEqual({ source: 'scout-download' })
+  })
+
   it('部分覆盖：只 covered e1 → completePartial（job 回 wanted, attempt-1），已覆盖战果保留', async () => {
     mkEpisode('e1', 's1', 1, 1)
     mkEpisode('e2', 's1', 1, 2)
@@ -199,48 +222,16 @@ describe('executor', () => {
     expect(runs.getByJobId(job.id)[0].detail).toBe('没找到合适的中文字幕')
   })
 
-  it('task 2: ask_user → needs_review（诚实区分"找到候选待确认"与穷尽未找到的 unavailable），detail 带置信数字', async () => {
-    // 修正前：ask_user 和 no_safe_match 一样被 markUnavailable，前端展示"暂无"——
-    // 掩盖了本可人工确认的候选。ask_user 仍走内容轨的 completeNoMatch（job 状态机
-    // 语义不变，见同一 it 组的 no_safe_match 用例），只是集级 sub_status 诚实区分。
+  it('no_safe_match is the only content-failure outcome — no ask_user/needs_review branch left', async () => {
     mkEpisode('e1', 's1', 1, 1)
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
     const job = jobs.claimNext(now)!
 
-    const runEpisode = vi.fn(async () => ({
-      decision: 'ask_user',
-      journalPath: '/journals/test.json',
-      confidence: 0.82,
-      minConfidence: 0.86,
-    }))
-
+    const runEpisode = vi.fn(async () => ({ decision: 'no_safe_match', reasons: ['没有安全匹配'] }))
     await executeJob(job, mkDeps(runEpisode))
 
     const ep1 = lib.getEpisode('e1')!
-    expect(ep1.sub_status).toBe('needs_review')
-    // 集级 status_reason 用带数字的详细版（供未来"确认队列"功能展示具体把握程度）
-    expect(ep1.status_reason).toBe('找到候选但把握不足（置信 0.82 < 0.86），待人工确认')
-    expect(ep1.recheck_after).toBeGreaterThan(now)
-    expect(runs.getByJobId(job.id)[0].detail).toBe('找到候选但把握不足（置信 0.82 < 0.86），待人工确认')
-    // job 状态机走内容轨，和 no_safe_match 一样（backoff/dormancy 语义不因 sub_status 改变而变）
-    expect(jobs.get(job.id)!.state).toBe('failed')
-    expect(jobs.get(job.id)!.attempt).toBe(1)
-  })
-
-  it('task 2: ask_user 复查到期后重新计入该季 remainingTargets（needs_review 可重新进入执行）', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    lib.markNeedsReview('e1', '找到候选但把握不足', now - 1) // 复查已到期
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    const job = jobs.claimNext(now)!
-
-    const runEpisode = vi.fn(async (episodeId: string) => {
-      expect(episodeId).toBe('e1') // needs_review 且复查已到期——仍被当作待处理目标
-      return { decision: 'download', journalPath: '/j.json', subtitlePath: '/tv/s1e1.zh-Hans.srt' }
-    })
-
-    await executeJob(job, mkDeps(runEpisode))
-    expect(runEpisode).toHaveBeenCalledTimes(1)
-    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(ep1.sub_status).toBe('unavailable') // no_safe_match 统一走 unavailable，没有第二条内容失败轨
   })
 
   it('runEpisode 抛错 → completeError，短退避', async () => {
@@ -708,7 +699,7 @@ describe('executor', () => {
   // IMPORTANT-1（fix/lifecycle-forensics 审计——guard coverage hole）：detached invocation
   // 的 job 被孤儿回收（reapOrphaned）后又被一次新 invocation 重新 claim——旧代码只在
   // onCovered/代表集 markCovered 两处写盘拦了 ownsLease()，post-runEpisode 的最终分流
-  // （completeNoMatch/completeError/completeDone）和 markUnavailable/markNeedsReview
+  // （completeNoMatch/completeError/completeDone）和 markUnavailable
   // 完全没守，会把新 invocation 仍在用的那一行错误转移（state/attempt/error_attempt/
   // lease_until 全部覆盖）。下面每个场景都覆盖一条分流分支，并在收尾处证明"活着"的
   // invocation #2 事后仍能正常收尾（其自身 lease_until 没被 stale invocation 的写盘捣毁，
@@ -880,10 +871,6 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     mkdirSync(join(mediaRoot, 'movie'), { recursive: true })
   })
 
-  afterEach(() => {
-    delete process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE
-  })
-
   const mkAssembled = (jf: unknown): Assembled =>
     ({
       makeDeps: vi.fn((perRun?: unknown) => ({ perRun })),
@@ -928,8 +915,11 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     chmodSync(readOnlyDir, 0o755) // 清理：避免只读目录残留干扰临时目录回收
   })
 
-  it('I5a/e: ctx 应用置信度覆盖 + runPipeline 传 bypassNegativeCache', async () => {
-    process.env.AUTO_DOWNLOAD_MIN_CONFIDENCE = '0.5'
+  it('I5e: runPipeline 传 bypassNegativeCache', async () => {
+    // I5a（ctx 应用 AUTO_DOWNLOAD_MIN_CONFIDENCE 环境变量置信度覆盖）已随
+    // applyConfidenceOverride() 一并删除（commit 6cdcdcd：判定链两态化后置信度阈值整条
+    // 拔除，MediaContextSchema.preferences 不再有 auto_download_min_confidence 字段）——
+    // 这里只保留仍然成立的 I5e 部分（bypassNegativeCache 透传）。
     const jf = mkJf(join(mediaRoot, 'movie', 'test.mkv'))
     runPipelineMock.mockResolvedValue({
       decision: 'download',
@@ -945,14 +935,12 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
       decision: 'download',
       journalPath: '/j.json',
       subtitlePath: '/subs/x.srt',
-      confidence: null,
-      minConfidence: 0.5,
       reasons: [],
       selected: null,
       stats: { llmCalls: 0, apiCalls: 0 },
     })
     const [, ctx, outDir, , opts] = runPipelineMock.mock.calls[0]
-    expect(ctx.preferences.auto_download_min_confidence).toBe(0.5) // I5a
+    expect(ctx.preferences).not.toHaveProperty('auto_download_min_confidence')
     expect(outDir).toBe(join(mediaRoot, 'movie'))
     expect(opts).toEqual({ bypassNegativeCache: true }) // I5e
   })
@@ -970,13 +958,34 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     const runEpisode = makeRunEpisode(assembled, lib, { mediaRoots: [mediaRoot] })
     await runEpisode('m1', onCovered)
 
-    // 从 makeDeps 捕获 perRun.onCovered 适配器，模拟季包命中一集（MS-P1: providerRef 透传）
+    // 从 makeDeps 捕获 perRun.onCovered 适配器，模拟季包命中一集（MS-P1: providerRef 透传；
+    // 本条 alreadyExisted=false，即真的新写了这一集——下一条用例覆盖 alreadyExisted=true）
     const perRun = vi.mocked(assembled.makeDeps).mock.calls[0][0]!
     const ep = { itemId: 'e9', seasonNumber: 1, episodeNumber: 9, episodeCode: 'S01E09', videoPath: '/v', videoFilename: 'v.mkv', needsChinese: true } satisfies SeasonEpisode
-    await perRun.onCovered(ep, '/subs/e9.srt', 'assrt:900900')
+    await perRun.onCovered(ep, '/subs/e9.srt', 'assrt:900900', false)
 
-    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt', 'assrt:900900')
+    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt', 'assrt:900900', false)
     expect(jf.refreshItem).toHaveBeenCalledWith('e9') // I5d
+  })
+
+  it('I5d/M8: onCovered 适配层透传 alreadyExisted=true（季横扫/季包命中的这一集其实本来就在磁盘上）', async () => {
+    const jf = mkJf(join(mediaRoot, 'movie', 'test.mkv'))
+    const assembled = mkAssembled(jf)
+    runPipelineMock.mockResolvedValue({
+      decision: 'download',
+      journalPath: '/j.json',
+      stats: { durationMs: 1, llmCalls: 0, apiCalls: 0 },
+    })
+
+    const onCovered = vi.fn()
+    const runEpisode = makeRunEpisode(assembled, lib, { mediaRoots: [mediaRoot] })
+    await runEpisode('m1', onCovered)
+
+    const perRun = vi.mocked(assembled.makeDeps).mock.calls[0][0]!
+    const ep = { itemId: 'e9', seasonNumber: 1, episodeNumber: 9, episodeCode: 'S01E09', videoPath: '/v', videoFilename: 'v.mkv', needsChinese: true } satisfies SeasonEpisode
+    await perRun.onCovered(ep, '/subs/e9.srt', 'assrt:900900', true)
+
+    expect(onCovered).toHaveBeenCalledWith('e9', '/subs/e9.srt', 'assrt:900900', true)
   })
 
   it('解析到中文名时写回 movies 行（task 2 回写）', async () => {

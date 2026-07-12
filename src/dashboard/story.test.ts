@@ -23,7 +23,7 @@ describe('buildRunStory', () => {
     expect(s.name).toBe('Foo (2020)')
     expect(s.outcomeLabel).toBe('已下好中文字幕')
     expect(s.steps).toHaveLength(4)
-    expect(s.steps.map(x => x.title)).toEqual(['认出这部片', '去字幕站找了一圈', '挑了最靠谱的那份', '下好并放到位'])
+    expect(s.steps.map(x => x.title)).toEqual(['认出这部片', '去字幕站找了一圈', '下下来验了验是不是这份', '确认没问题，装到位'])
     expect(s.steps.every(x => x.state === 'done')).toBe(true)
     expect(s.steps[3].detail).toContain('Jellyfin')
   })

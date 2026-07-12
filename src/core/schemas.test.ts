@@ -4,6 +4,7 @@ import {
   MediaContextSchema, MediaIdentitySchema, SearchPlanSchema,
   RankDecisionSchema, AssrtSearchResponseSchema, AssrtDetailResponseSchema,
   FinalDecisionSchema, OrphanDecisionSchema, LooseEpisodesMapSchema,
+  VerifyDecisionSchema,
 } from './schemas.js'
 
 describe('MediaContextSchema', () => {
@@ -38,11 +39,6 @@ describe('ASSRT response schemas', () => {
 })
 
 describe('agent output schemas', () => {
-  it('RankDecision requires assrt_id when decision=download', () => {
-    expect(() => RankDecisionSchema.parse({
-      decision: 'download', confidence: 0.9, reasons: ['x'], rejected: [],
-    })).toThrow()
-  })
   it('SearchPlan caps at 3 queries', () => {
     expect(() => SearchPlanSchema.parse({
       queries: [{ q: 'a', reason: 'r' }, { q: 'b', reason: 'r' }, { q: 'c', reason: 'r' }, { q: 'd', reason: 'r' }],
@@ -86,35 +82,12 @@ describe('LLM output coercion (MiMo returns numbers as strings)', () => {
       season: null, episode: null, edition: null, confidence: 0.9, evidence: [],
     })).toThrow()
   })
-  it('RankDecision coerces candidate_id numbers and file_index strings', () => {
-    const r = RankDecisionSchema.parse({
-      decision: 'download', candidate_id: 673114, file_index: '0',
-      confidence: '0.91', reasons: [], rejected: [],
-    })
-    expect(r.candidate_id).toBe('673114') // JSON number → string（MiMo 同款边界事故防御）
-    expect(r.file_index).toBe(0)
-    expect(r.confidence).toBe(0.91)
-  })
-  it('RankDecision normalizes nullish-string candidate_id to null on non-download', () => {
-    const r = RankDecisionSchema.parse({
-      decision: 'no_safe_match', candidate_id: 'None', file_index: null,
-      confidence: 0.3, reasons: [], rejected: [],
-    })
-    expect(r.candidate_id).toBeNull()
-  })
-  it('RankDecision tolerates numeric candidate_id inside rejected[]', () => {
-    const r = RankDecisionSchema.parse({
-      decision: 'download', candidate_id: 'assrt:673114', file_index: 0,
-      confidence: 0.9, reasons: [], rejected: [{ candidate_id: 606770, reason: 'wrong cut' }],
-    })
-    expect(r.rejected[0].candidate_id).toBe('606770')
-  })
   it('LooseEpisodesMap fail-soft: one bad candidate_id row does not kill the whole parse', () => {
     const m = LooseEpisodesMapSchema.parse({
       assignments: [
-        { episode_code: 'S02E01', candidate_id: 'assrt:801', confidence: 0.95 },
-        { episode_code: 'S02E02', candidate_id: null, confidence: 0.95 },
-        { episode_code: 'S02E03', candidate_id: 803, confidence: 0.95 },
+        { episode_code: 'S02E01', candidate_id: 'assrt:801' },
+        { episode_code: 'S02E02', candidate_id: null },
+        { episode_code: 'S02E03', candidate_id: 803 },
       ],
       reasons: [],
     })
@@ -163,5 +136,97 @@ describe('M4 additions', () => {
     expect(() => OrphanDecisionSchema.parse({
       adopt: true, file: 'x.ass', language: 'None', confidence: 0.9, reasons: [],
     })).toThrow()
+  })
+  it('OrphanDecision parses without a confidence field (unread by orphanGate/judgeOrphan prompt — same fail-point class as S04E12)', () => {
+    const rejection = OrphanDecisionSchema.parse({
+      adopt: false, file: null, language: null, reasons: ['not this video'],
+    })
+    expect(rejection.confidence).toBeUndefined()
+    const adoption = OrphanDecisionSchema.parse({
+      adopt: true, file: 'x.ass', language: 'zh-Hans', reasons: ['chinese content'],
+    })
+    expect(adoption.confidence).toBeUndefined()
+  })
+})
+
+describe('VerifyDecisionSchema', () => {
+  it('accepts {match, reason} with no confidence field', () => {
+    const d = VerifyDecisionSchema.parse({ match: true, reason: 'cue count and span line up with the episode runtime' })
+    expect(d.match).toBe(true)
+  })
+  it('rejects a missing reason', () => {
+    expect(() => VerifyDecisionSchema.parse({ match: false })).toThrow()
+  })
+  it('rejects an empty reason', () => {
+    expect(() => VerifyDecisionSchema.parse({ match: false, reason: '' })).toThrow()
+  })
+  it('rejects a non-boolean match', () => {
+    expect(() => VerifyDecisionSchema.parse({ match: 'yes', reason: 'x' })).toThrow()
+  })
+})
+
+describe('RankDecisionSchema — ordered candidate queue (no scalar decision/confidence)', () => {
+  it('accepts an ordered list of candidates with per-item identity_match and no top-level decision/confidence', () => {
+    const r = RankDecisionSchema.parse({
+      order: [
+        { candidate_id: 'assrt:673114', file_index: 0, identity_match: 'confirmed', reason: 'exact title+season+episode' },
+        { candidate_id: 'assrt:606770', file_index: null, identity_match: 'uncertain', reason: 'no season signal in name' },
+      ],
+      rejected: [{ candidate_id: 'assrt:999', reason: 'wrong film' }],
+      reasons: ['ordered by identity confidence'],
+    })
+    expect(r.order).toHaveLength(2)
+    expect(r.order[0].identity_match).toBe('confirmed')
+    expect('decision' in r).toBe(false)
+    expect('confidence' in r).toBe(false)
+  })
+  it('defaults order/rejected/reasons to empty arrays when omitted', () => {
+    const r = RankDecisionSchema.parse({})
+    expect(r.order).toEqual([])
+    expect(r.rejected).toEqual([])
+  })
+  it('coerces a numeric candidate_id and string file_index inside order[]', () => {
+    const r = RankDecisionSchema.parse({
+      order: [{ candidate_id: 673114, file_index: '0', identity_match: 'confirmed', reason: 'x' }],
+    })
+    expect(r.order[0].candidate_id).toBe('673114')
+    expect(r.order[0].file_index).toBe(0)
+  })
+  it('fail-soft: an invalid identity_match value normalizes to uncertain instead of throwing', () => {
+    const r = RankDecisionSchema.parse({
+      order: [{ candidate_id: 'assrt:1', file_index: null, identity_match: 'bogus', reason: 'x' }],
+    })
+    expect(r.order[0].identity_match).toBe('uncertain')
+  })
+  it('fail-soft: an order item missing reason still parses, item retained (not the whole RankDecision)', () => {
+    const r = RankDecisionSchema.parse({
+      order: [
+        { candidate_id: 'assrt:1', file_index: null, identity_match: 'confirmed' },
+        { candidate_id: 'assrt:2', file_index: null, identity_match: 'uncertain', reason: 'has a reason' },
+      ],
+    })
+    expect(r.order).toHaveLength(2)
+    expect(r.order[0].candidate_id).toBe('assrt:1')
+    expect(r.order[1].reason).toBe('has a reason')
+  })
+})
+
+describe('MediaContextSchema — no confidence threshold preference', () => {
+  it('preferences no longer accepts/needs auto_download_min_confidence', () => {
+    const raw = JSON.parse(readFileSync('fixtures/contexts/matrix.json', 'utf8'))
+    const ctx = MediaContextSchema.parse(raw)
+    expect('auto_download_min_confidence' in ctx.preferences).toBe(false)
+  })
+})
+
+describe('FinalDecisionSchema — ask_user removed', () => {
+  it('rejects decision=ask_user', () => {
+    expect(() => FinalDecisionSchema.parse({
+      request_id: 'r', decision: 'ask_user', reasons: [],
+    })).toThrow()
+  })
+  it('still accepts confidence:null (kept for backward-compat with historical journal files)', () => {
+    const d = FinalDecisionSchema.parse({ request_id: 'r', decision: 'no_safe_match', confidence: null, reasons: [] })
+    expect(d.confidence).toBeNull()
   })
 })

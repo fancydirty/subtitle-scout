@@ -1,79 +1,94 @@
-import type { SubtitleCandidate, MediaIdentity, MediaContext, RankDecision } from './schemas.js'
+import type { SubtitleCandidate, MediaIdentity, RankDecision, IdentityMatch } from './schemas.js'
 import { candidateKey } from './schemas.js'
+
+export interface GateQueueItem {
+  candidate: SubtitleCandidate
+  fileIndex: number | null
+  identityMatch: IdentityMatch
+}
 
 export interface GateResult {
   ok: boolean
-  /** ok=false 时的降级 decision */
-  decision: 'download' | 'ask_user' | 'no_safe_match'
+  /** ok=false 时的降级 decision；ok=true 时恒为 'proceed'——真正的下载/验证结论在
+   *  pipeline.ts 的候选队列循环里产生，gate 只负责把 rank.order 校验成安全可试的队列。 */
+  decision: 'proceed' | 'no_safe_match'
   failures: string[]
-  candidate?: SubtitleCandidate
+  queue: GateQueueItem[]
 }
 
-/** 纯代码硬校验 agent 的排序输出。任何一条不过就绝不落盘。 */
+/** 纯代码硬校验 agent 的排序输出，产出一份结构合法、按偏好排序的候选队列。身份判决
+ *  保留"是/不是"两态：mismatch 永不进队列（即便 LLM 违反 prompt 把它塞进 order[]，这里
+ *  也防御性剔除）；confirmed/uncertain 一视同仁排队待验——"拿不准"不是终态，是"还没看
+ *  仔细"，下游一律走 stage→inspect→verify 终审。单项结构失败（candidate_id 找不到/
+ *  file_index 越界）只丢弃那一项，不拖垮整个队列；全部候选都被丢弃才是 no_safe_match。 */
 export function runGate(
-  rank: RankDecision,
-  candidates: SubtitleCandidate[],
-  identity: MediaIdentity,
-  prefs: MediaContext['preferences'],
+  rank: RankDecision, candidates: SubtitleCandidate[], identity: MediaIdentity,
 ): GateResult {
-  if (rank.decision !== 'download') {
-    return { ok: false, decision: rank.decision, failures: [] }
-  }
-  const failures: string[] = []
-  let candidate = candidates.find(c => candidateKey(c) === rank.candidate_id)
-  // LLM 自愈：模型偶尔丢 "provider:" 前缀只回裸 providerId——不含冒号时按 providerId 兜底匹配。
-  // 仅恰好一个候选命中才自愈；2+ 命中（跨 provider id 碰撞）视为找不到——fail closed。
-  if (!candidate && rank.candidate_id != null && !rank.candidate_id.includes(':')) {
-    const matches = candidates.filter(c => c.providerId === rank.candidate_id)
-    if (matches.length === 1) {
-      candidate = matches[0]
-    } else if (matches.length > 1) {
-      failures.push(`candidate_id ${rank.candidate_id} is ambiguous: matches ${matches.length} candidates across providers (${matches.map(candidateKey).join(', ')})`)
-    }
-  }
-  if (!candidate && failures.length === 0) failures.push(`candidate_id ${rank.candidate_id} is not in this search's candidate set`)
-
-  if (candidate && candidate.fileList.length > 0) {
-    if (rank.file_index == null || rank.file_index < 0 || rank.file_index >= candidate.fileList.length) {
-      failures.push(`file_index ${rank.file_index} out of range for filelist of ${candidate.fileList.length}`)
-    }
-  }
-  // 空 filelist（如 opensubtitles 单文件候选）：file_index 必须 null 或 0（0 容忍模型习惯性填 0；
-  // 解析侧对空表忽略 fileIndex），>0 即指向不存在的文件——报 failure。
-  if (candidate && candidate.fileList.length === 0) {
-    if (rank.file_index != null && rank.file_index !== 0) {
-      failures.push(`file_index ${rank.file_index} given but candidate has no filelist`)
-    }
-  }
-
   if (identity.type === 'episode' && (identity.season == null || identity.episode == null)) {
-    failures.push('episode media without resolved season/episode cannot be auto-downloaded')
+    return {
+      ok: false, decision: 'no_safe_match',
+      failures: ['episode media without resolved season/episode cannot be auto-downloaded'],
+      queue: [],
+    }
   }
 
-  // 结构性硬校验优先，且身份判决绝不能越过它：LLM 说 confirmed 也不许下载幻觉出的 assrt_id。
-  if (failures.length > 0) return { ok: false, decision: 'no_safe_match', failures }
+  const queue: GateQueueItem[] = []
+  const failures: string[] = []
+  const seen = new Set<string>()
 
-  // 身份三态判决取代标量置信分做主闸（M5b 法条：来源/分辨率/压制组/版本差异不改变身份）。
-  // confidence 降级为参考量，仅在 uncertain 兜底路径里仍起作用。
-  switch (rank.identity_match) {
-    case 'mismatch':
-      // 明确错作品/错季/错集——防串号铁律：错字幕比没字幕伤害大。
-      return {
-        ok: false, decision: 'no_safe_match',
-        failures: [`identity verdict: mismatch — candidate is a different work/season/episode`],
+  for (const item of rank.order) {
+    if (item.identity_match === 'mismatch') {
+      failures.push(`candidate_id ${item.candidate_id} identity verdict mismatch — dropped defensively (rank should not have queued it)`)
+      continue
+    }
+
+    let candidate = candidates.find(c => candidateKey(c) === item.candidate_id)
+    // LLM 自愈：模型偶尔丢 "provider:" 前缀只回裸 providerId——不含冒号时按 providerId
+    // 兜底匹配。仅恰好一个候选命中才自愈；2+ 命中（跨 provider id 碰撞）视为找不到——
+    // fail closed（跳过这一项，不是整个队列）。
+    if (!candidate && item.candidate_id != null && !item.candidate_id.includes(':')) {
+      const matches = candidates.filter(c => c.providerId === item.candidate_id)
+      if (matches.length === 1) {
+        candidate = matches[0]
+      } else if (matches.length > 1) {
+        failures.push(`candidate_id ${item.candidate_id} is ambiguous: matches ${matches.length} candidates across providers (${matches.map(candidateKey).join(', ')})`)
+        continue
       }
-    case 'confirmed':
-      // 同作品+正确季集（或整包覆盖目标集）：无视标量分直接放行。
-      return { ok: true, decision: 'download', failures: [], candidate }
-    case 'uncertain':
-    default:
-      // 信息不足——沿用旧标量门给拿不准的情形兜底。
-      if (rank.confidence < prefs.auto_download_min_confidence) {
-        return {
-          ok: false, decision: 'ask_user',
-          failures: [`identity uncertain and confidence ${rank.confidence} below threshold ${prefs.auto_download_min_confidence}`],
-        }
+    }
+    if (!candidate) {
+      failures.push(`candidate_id ${item.candidate_id} is not in this search's candidate set`)
+      continue
+    }
+
+    if (candidate.fileList.length > 0) {
+      if (item.file_index == null || item.file_index < 0 || item.file_index >= candidate.fileList.length) {
+        failures.push(`file_index ${item.file_index} out of range for filelist of ${candidate.fileList.length} (candidate ${item.candidate_id})`)
+        continue
       }
-      return { ok: true, decision: 'download', failures: [], candidate }
+    }
+    if (candidate.fileList.length === 0 && item.file_index != null && item.file_index !== 0) {
+      failures.push(`file_index ${item.file_index} given but candidate ${item.candidate_id} has no filelist`)
+      continue
+    }
+
+    const resolvedFileIndex = item.file_index ?? null
+    // 配额保护：模型可能把同一候选写两次（字面重复行，或全 id + 裸 id 各写一次——
+    // 裸 id 自愈后指向同一候选）。按"解析后的候选身份 + fileIndex"去重，保留首次出现的
+    // 顺序/理由，防止 tryCandidateQueue 对同一候选重复下载+重复终审，白烧 OpenSubtitles
+    // 20/天配额。
+    const dedupeKey = `${candidateKey(candidate)}#${resolvedFileIndex}`
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+
+    queue.push({ candidate, fileIndex: resolvedFileIndex, identityMatch: item.identity_match })
   }
+
+  if (queue.length === 0) {
+    return {
+      ok: false, decision: 'no_safe_match',
+      failures: failures.length > 0 ? failures : ['rank produced no usable candidates'],
+      queue: [],
+    }
+  }
+  return { ok: true, decision: 'proceed', failures, queue }
 }

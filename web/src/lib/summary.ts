@@ -9,8 +9,7 @@ export interface LibraryFacts {
   working: number
 }
 
-/** 事实统计：缺字幕=徽章 part/none/review（review 是 task 2 的待确认态，仍算缺字幕）；
- *  处理中=徽章 work。 */
+/** 事实统计：缺字幕=徽章 part/none；处理中=徽章 work。 */
 export function libraryFacts(items: LibraryItemDTO[]): LibraryFacts {
   let series = 0
   let movies = 0
@@ -21,7 +20,7 @@ export function libraryFacts(items: LibraryItemDTO[]): LibraryFacts {
     else movies++
     const b = coverageBadge(it.coverage, it.job)
     if (b.kind === 'work') working++
-    else if (b.kind === 'part' || b.kind === 'none' || b.kind === 'review') missing++
+    else if (b.kind === 'part' || b.kind === 'none') missing++
   }
   return { series, movies, missing, working }
 }

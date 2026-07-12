@@ -50,7 +50,6 @@ export const MediaContextSchema = z.object({
     prefer_bilingual: z.boolean().default(true),
     allow_traditional: z.boolean().default(true),
     allow_machine_translated: z.boolean().default(false),
-    auto_download_min_confidence: z.number().min(0).max(1).default(0.86),
   }),
 })
 export type MediaContext = z.infer<typeof MediaContextSchema>
@@ -100,24 +99,29 @@ function looseCandidateId(): z.ZodType<string | null | undefined> {
   }, z.string().nullish())
 }
 
-export const RankDecisionSchema = z.object({
-  decision: z.enum(['download', 'ask_user', 'no_safe_match']),
+export const RankedCandidateSchema = z.object({
   /** "<provider>:<providerId>"，与 prompt 里 candidates[].id 完全一致 */
   candidate_id: looseCandidateId(),
   file_index: looseNumeric(z.number().int()),
-  // 身份判决：confirmed=同作品/季/集，mismatch=错作品/季/集，uncertain=信息不足
+  // 身份判决：confirmed=同作品/季/集，uncertain=信息不足。mismatch 理论上不会出现在
+  // order[] 里（prompt 要求丢进 rejected[]），但 schema 层不禁止——gate.ts 会防御性剔除。
   identity_match: IdentityMatchSchema,
-  confidence: z.preprocess(
-    v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-    z.number().min(0).max(1),
-  ),
-  reasons: z.array(z.string()),
+  // fail-soft 铁律（S04E12 同类教训）：reason 只是给人看的可观测性文本，不参与 gate 的
+  // 决策逻辑（GateQueueItem 根本不携带它）。单个 order 项漏了这个字段不该拖垮整份
+  // RankDecision（最多 15 项，一项缺字段就 retry_later 太贵）。
+  reason: z.string().default(''),
+})
+export type RankedCandidate = z.infer<typeof RankedCandidateSchema>
+
+export const RankDecisionSchema = z.object({
+  /** 按偏好排序的候选队列，最可能匹配的排最前。这是初筛，不是终局——每个留下的候选
+   *  之后都会被下载、打开、体检，写盘前还有一轮终审。 */
+  order: z.array(RankedCandidateSchema).default([]),
   rejected: z.array(z.object({
     candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()),
     reason: z.string(),
-  })),
-}).refine(v => v.decision !== 'download' || (v.candidate_id != null && v.candidate_id !== ''), {
-  message: 'candidate_id required when decision=download',
+  })).default([]),
+  reasons: z.array(z.string()).default([]),
 })
 export type RankDecision = z.infer<typeof RankDecisionSchema>
 
@@ -197,7 +201,9 @@ export function parseCandidateKey(key: string): { provider: ProviderName; provid
 // ---------- 最终 decision ----------
 export const FinalDecisionSchema = z.object({
   request_id: z.string(),
-  decision: z.enum(['download', 'ask_user', 'no_safe_match', 'retry_later', 'already_exists', 'error', 'adopted_local']),
+  decision: z.enum(['download', 'no_safe_match', 'retry_later', 'already_exists', 'error', 'adopted_local']),
+  // confidence 保留（nullish）仅为向后兼容历史 journal 文件的形状；判定链不再产出真实值，
+  // pipeline.ts 今后恒写 null。
   confidence: z.number().nullish(),
   selected: z.object({
     provider: z.string(),
@@ -216,6 +222,13 @@ export const FinalDecisionSchema = z.object({
 })
 export type FinalDecision = z.infer<typeof FinalDecisionSchema>
 
+// ---------- 终审 agent 输出(staging 沙盒体检后的二选一表态) ----------
+export const VerifyDecisionSchema = z.object({
+  match: z.boolean(),
+  reason: z.string().min(1),
+})
+export type VerifyDecision = z.infer<typeof VerifyDecisionSchema>
+
 // Production case (S04E12): LLM rejection path outputs {"adopt":false,"file":"None","language":"None"}
 // — valid decision, but schema enum enforcement killed the run. Widen rejection path, keep adoption strict.
 export const OrphanDecisionSchema = z.object({
@@ -225,10 +238,10 @@ export const OrphanDecisionSchema = z.object({
     v => (typeof v === 'string' && NULLISH_STRINGS.has(v.trim().toLowerCase()) ? null : v),
     z.enum(['zh-Hans', 'zh-Hant']).nullish(),
   ).optional(), // Allow "None"/"null" strings → null, or omitted entirely; enum enforced only when present & non-null
-  confidence: z.preprocess(
-    v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-    z.number().min(0).max(1),
-  ),
+  // fail-soft 铁律（S04E12 教训——同一字段类型，拒绝相邻路径不该因它炸掉整个 run）：
+  // 没有任何代码读取这个字段（orphanGate 忽略它，judgeOrphan 的 prompt 也没让模型给它），
+  // 却仍是个必填标量——用 looseNumeric 容忍缺失/非法值，不再强制模型必须给。
+  confidence: looseNumeric(z.number().min(0).max(1)),
   reasons: z.array(z.string()),
 }).refine(v => !v.adopt || (v.file != null && v.language != null), {
   message: 'file and language required when adopt=true',
@@ -239,10 +252,6 @@ export const SeasonMapSchema = z.object({
   pairs: z.array(z.object({
     filelist_index: looseNumeric(z.number().int()),
     episode_code: z.string(),
-    confidence: z.preprocess(
-      v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-      z.number().min(0).max(1),
-    ),
     reason: z.string(),
   })).default([]),
   unmapped_files: z.array(z.number().int()).default([]),
@@ -255,10 +264,6 @@ export const LooseEpisodesMapSchema = z.object({
     episode_code: z.string(),
     // fail-soft：单行 candidate_id 缺失/为数字不炸整季 sweep——nullish 放行，下游 filter 剔除
     candidate_id: z.preprocess(v => (typeof v === 'number' ? String(v) : v), z.string()).nullish(),
-    confidence: z.preprocess(
-      v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-      z.number().min(0).max(1),
-    ),
   })).default([]),
   reasons: z.array(z.string()).default([]),
 })

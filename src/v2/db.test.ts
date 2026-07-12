@@ -11,11 +11,11 @@ describe('db 基座', () => {
     expect(db.pragma('busy_timeout', { simple: true })).toBe(5000)
     const tables = db.prepare("select name from sqlite_master where type='table' order by name").all().map((r: any) => r.name)
     for (const t of ['series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta']) expect(tables).toContain(t)
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '5' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '6' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '5' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '6' })
   })
 })
