@@ -28,6 +28,8 @@ interface TmdbAltTitle {
 
 export interface TmdbRef { mediaType: 'tv' | 'movie'; tmdbId: string }
 
+export interface SeasonTableEntry { seasonNumber: number; episodeCount: number; airDate: string | null }
+
 interface ItemLike {
   Type?: string | null
   SeriesId?: string | null
@@ -196,6 +198,23 @@ export class TmdbClient {
     const d = await this.getJsonStrict(`/${mediaType}/${tmdbId}`)
     const lang = d?.original_language
     return typeof lang === 'string' && lang ? lang.toLowerCase() : null
+  }
+
+  /**
+   * 季表：season_number/episode_count/air_date，供绝对集号累计偏移映射用。
+   * 过滤 season_number<=0（TMDB 用 0 表示特别篇，不参与正片累计编号）。
+   * 语义同 getOriginLanguage：null=真·无数据（含404），抛 TmdbRequestFailedError=瞬时故障可重试。
+   */
+  async getSeasonTable(tvId: string): Promise<SeasonTableEntry[] | null> {
+    const d = await this.getJsonStrict(`/tv/${tvId}`)
+    if (!d) return null
+    const seasons = d.seasons as Array<{ season_number?: number; episode_count?: number; air_date?: string | null }> | undefined
+    if (!seasons) return null
+    return seasons
+      .filter((s): s is { season_number: number; episode_count?: number; air_date?: string | null } =>
+        typeof s.season_number === 'number' && s.season_number > 0)
+      .map(s => ({ seasonNumber: s.season_number, episodeCount: s.episode_count ?? 0, airDate: s.air_date ?? null }))
+      .sort((a, b) => a.seasonNumber - b.seasonNumber)
   }
 }
 

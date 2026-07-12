@@ -276,3 +276,33 @@ describe('resolveTmdbRef delegates to resolveTmdbRefStrict but stays fail-soft (
     expect(ref).toBeNull()
   })
 })
+
+describe('TmdbClient.getSeasonTable', () => {
+  it('解析 /tv/{id} 的 seasons 数组，过滤 season_number<=0（特别篇），按季号升序', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      seasons: [
+        { season_number: 0, episode_count: 5, air_date: null },
+        { season_number: 2, episode_count: 12, air_date: '2023-04-01' },
+        { season_number: 1, episode_count: 25, air_date: '2022-04-01' },
+      ],
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    const table = await client.getSeasonTable('120089')
+    expect(table).toEqual([
+      { seasonNumber: 1, episodeCount: 25, airDate: '2022-04-01' },
+      { seasonNumber: 2, episodeCount: 12, airDate: '2023-04-01' },
+    ])
+  })
+
+  it('404 → null（真·无数据）', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getSeasonTable('999999')).toBeNull()
+  })
+
+  it('网络故障 → 抛 TmdbRequestFailedError（瞬时，可重试，绝不当无数据）', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED') })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getSeasonTable('120089')).rejects.toThrow(TmdbRequestFailedError)
+  })
+})
