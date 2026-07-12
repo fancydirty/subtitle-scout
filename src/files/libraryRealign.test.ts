@@ -314,6 +314,17 @@ describe('crossCheckAnimeLists（真实 Fribb 语义：episode_offset = 季内 c
     ]
     expect(crossCheckAnimeLists(crossCheckTable, entries, 120089).ok).toBe(true)
   })
+
+  // D-review #6：负 offset（脏数据）曾静默通过（-1 >= episodeCount 恒 false）——cour 起点
+  // 不可能在季首之前，负值只能是坏映射，必须显式拒绝而不是当"通过"。
+  it('负的 episode_offset（非法数据）→ 拒绝整理', () => {
+    const entries: AnimeListsEntry[] = [
+      { anidbId: 1, tmdbTvId: 120089, tmdbSeason: 1, tmdbEpisodeOffset: -1 },
+    ]
+    const result = crossCheckAnimeLists(crossCheckTable, entries, 120089)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('为负')
+  })
 })
 
 describe('checkRuntimeTolerance（可选 ffprobe 时长抽查）', () => {

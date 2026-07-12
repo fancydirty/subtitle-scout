@@ -252,6 +252,15 @@ export function crossCheckAnimeLists(
   )
   if (checkable.length === 0) return { ok: true }
   for (const entry of checkable) {
+    // D-review #6：cour 起点不可能在季首之前——负 offset 只能是坏映射数据，显式拒绝。
+    // 之前它会静默滑过下面的 `offset >= episodeCount` 检查（负数恒小于集数）被当作"通过"。
+    if (entry.tmdbEpisodeOffset < 0) {
+      return {
+        ok: false,
+        reason: `anime-lists（anidb ${entry.anidbId}）记录第 ${entry.tmdbSeason} 季 cour 偏移为负（${entry.tmdbEpisodeOffset}）` +
+          `——非法映射数据，无法交叉验证，放弃整理`,
+      }
+    }
     const season = seasonTable.find(s => s.seasonNumber === entry.tmdbSeason)
     if (!season) {
       return {

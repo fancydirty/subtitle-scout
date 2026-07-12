@@ -541,6 +541,12 @@ export function makeDiagnoseSeason(deps: {
       tmdbEpisodeCount: tmdbSeason?.episodeCount ?? null,
     }
     const jobRuns = deps.runs.getByJobId(job.id)
+    // 佐证新鲜度（D-review #7，accepted-as-is 备忘）：诊断钩子在 executeJob 的 no_safe_match
+    // 分支里、record() 落盘本次 run 之前被调用——runs 表此刻还没有本次失败的行，所以
+    // recentRuns/最新 journal 固定滞后一轮（拿到的是上一次 no_safe_match 的拒绝理由）。
+    // 诊断只在 attempt>=2 触发，上一轮同样是对同一季的 no_safe_match，佐证方向一致，
+    // 滞后一轮不改变判决语义；换取的是不必把本次 journal 路径从 runEpisode 一路穿针
+    // 引线传进诊断闭包。若未来把诊断挪到 record() 之后，这条备忘随之作废。
     const recentRuns = jobRuns.slice(0, 5).map(r => ({ decision: r.decision ?? '', detail: r.detail ?? '' }))
     const latestJournalPath = jobRuns[0]?.journal_path ?? null
     const structuredRejections = latestJournalPath
