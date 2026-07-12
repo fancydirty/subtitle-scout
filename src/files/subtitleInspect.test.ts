@@ -100,3 +100,40 @@ describe('inspectSubtitle — decodable / isHtml', () => {
     expect(signals.isHtml).toBe(false)
   })
 })
+
+function srtWithLines(lines: string[]): string {
+  return lines.map((text, i) =>
+    `${i + 1}\n00:00:0${i}.000 --> 00:00:0${i + 1}.000\n${text}\n`
+  ).join('\n')
+}
+
+describe('inspectSubtitle — detectScript', () => {
+  it('detects simplified Chinese from sampled cue text', () => {
+    const lines = Array.from({ length: 12 }, () => '这是国说来时会为学过对现关开东车门问儿')
+    const signals = inspectSubtitle(stage('simp.srt', srtWithLines(lines)))
+    expect(signals.detectedScript).toBe('zh-Hans')
+  })
+
+  it('detects traditional Chinese from sampled cue text', () => {
+    const lines = Array.from({ length: 12 }, () => '這是國說來時會為學過對現關開東車門問兒')
+    const signals = inspectSubtitle(stage('trad.srt', srtWithLines(lines)))
+    expect(signals.detectedScript).toBe('zh-Hant')
+  })
+
+  it('detects Cantonese markers even mixed with traditional characters', () => {
+    const lines = Array.from({ length: 12 }, () => '佢哋唔係咁樣嘅嘢喺呢度')
+    const signals = inspectSubtitle(stage('yue.srt', srtWithLines(lines)))
+    expect(signals.detectedScript).toBe('zh-yue')
+  })
+
+  it('reports "other" for non-Han text', () => {
+    const lines = Array.from({ length: 12 }, () => 'Hello world, this is English text.')
+    const signals = inspectSubtitle(stage('eng.srt', srtWithLines(lines)))
+    expect(signals.detectedScript).toBe('other')
+  })
+
+  it('reports "unknown" when there are too few Han characters to judge', () => {
+    const signals = inspectSubtitle(stage('sparse.srt', srtWithLines(['你', '好'])))
+    expect(signals.detectedScript).toBe('unknown')
+  })
+})

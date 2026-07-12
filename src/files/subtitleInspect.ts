@@ -97,7 +97,31 @@ function parseAssCues(text: string): { cues: Cue[]; title: string | null } {
   return { cues, title }
 }
 
-/** detectedScript 在 Task 2.4 加入。这里先给一个占位判定,后续任务会替换。 */
+const SIMPLIFIED_ONLY = new Set('国说来时会为学过对现关开东车门问儿无与从这样后应变电动经济单卫华叶')
+const TRADITIONAL_ONLY = new Set('國說來時會為學過對現關開東車門問兒無與從這樣後應變電動經濟單衛華葉')
+const CANTONESE_MARKERS = new Set('嘅嘢喺咁佢哋唔冇啦喎')
+
+function stripTags(s: string): string {
+  return s.replace(/\{[^}]*\}/g, '').replace(/<[^>]*>/g, '')
+}
+
+/** 语言/简繁判定:采样多条 cue 拼接后判——单行简繁不可靠(design 明文要求)。是信号,
+ *  不是硬门槛:字数不够或简繁字都没出现时诚实报 unknown,让 agent 自己看正文判断。 */
+export function detectScript(cues: Cue[]): InspectSignals['detectedScript'] {
+  const sample = cues.slice(0, 50).map(c => stripTags(c.text)).join('')
+  const hanChars = [...sample].filter(ch => /\p{Script=Han}/u.test(ch))
+  if (hanChars.length < 10) return hanChars.length === 0 ? 'other' : 'unknown'
+  let simp = 0, trad = 0, yue = 0
+  for (const ch of hanChars) {
+    if (SIMPLIFIED_ONLY.has(ch)) simp++
+    if (TRADITIONAL_ONLY.has(ch)) trad++
+    if (CANTONESE_MARKERS.has(ch)) yue++
+  }
+  if (yue >= 3) return 'zh-yue'
+  if (simp === 0 && trad === 0) return 'unknown'
+  return simp >= trad ? 'zh-Hans' : 'zh-Hant'
+}
+
 export function inspectSubtitle(stagedPath: string): InspectSignals {
   const text = readFileSync(stagedPath, 'utf8')
   const decodable = !isLikelyUndecodable(text)
@@ -121,7 +145,7 @@ export function inspectSubtitle(stagedPath: string): InspectSignals {
     decodable, isHtml, cueCount: cues.length,
     firstCueMs, lastCueMs,
     spanMs: firstCueMs != null && lastCueMs != null ? lastCueMs - firstCueMs : null,
-    detectedScript: 'unknown',
+    detectedScript: detectScript(cues),
     ...(assTitle !== undefined ? { assTitle } : {}),
   }
 }
