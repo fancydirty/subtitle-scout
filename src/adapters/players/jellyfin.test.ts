@@ -240,3 +240,20 @@ describe('getSeasonEpisodes', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })
+
+describe('JellyfinClient.deleteItem', () => {
+  it('DELETE /Items/{id}', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.deleteItem('item-1')
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toBe('http://jf/Items/item-1')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('非 2xx → 抛错（与其它端点一致）', async () => {
+    const fetchImpl = vi.fn(async () => new Response('nope', { status: 404 }))
+    const client = new JellyfinClient({ baseUrl: 'http://jf', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.deleteItem('item-1')).rejects.toThrow(/HTTP 404/)
+  })
+})

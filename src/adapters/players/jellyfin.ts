@@ -85,7 +85,7 @@ export class JellyfinClient implements PlayerServer {
     this.fetchImpl = opts.fetchImpl ?? fetch
   }
 
-  private async call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+  private async call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
     const t0 = Date.now()
     const url = `${this.opts.baseUrl}${path}`
     try {
@@ -127,6 +127,11 @@ export class JellyfinClient implements PlayerServer {
   /** 必须 FullRefresh：裸 refresh 不重扫外部字幕文件（2026-07-06 实测） */
   async refreshItem(itemId: string): Promise<void> {
     await this.call('POST', `/Items/${encodeURIComponent(itemId)}/Refresh?metadataRefreshMode=FullRefresh&replaceAllMetadata=false`)
+  }
+
+  /** 整理执行完毕后清理刮削出的旧条目残留（realign 专用）。 */
+  async deleteItem(itemId: string): Promise<void> {
+    await this.call('DELETE', `/Items/${encodeURIComponent(itemId)}`)
   }
 
   async getRecentItems(limit: number): Promise<JellyfinItem[]> {
