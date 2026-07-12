@@ -8,7 +8,7 @@ import { ZimukuSessionStore } from './zimukuSession.js'
 import { ZimukuChallengeError } from './yunsuo.js'
 
 describe('parseSearchResults', () => {
-  it('extracts id + title from every /detail/<id>.html anchor', () => {
+  it('extracts id + title from every /detail/<id>.html anchor (fixture has varied attribute order and quote style)', () => {
     const html = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
     const results = parseSearchResults(html)
     expect(results).toEqual([
@@ -20,10 +20,41 @@ describe('parseSearchResults', () => {
   it('returns an empty array for a page with no results', () => {
     expect(parseSearchResults('<html><body>没有找到相关字幕</body></html>')).toEqual([])
   })
+
+  it('is attribute-order and quote agnostic: href-first, href-after-class, single-quoted href, extra attrs, title-attr decoy', () => {
+    const html = `
+      <a href="/detail/1.html">Href First</a>
+      <a class="title-link" href="/detail/2.html">Href After Class</a>
+      <a href='/detail/3.html'>Single Quoted Href</a>
+      <a class="x" href="/detail/4.html" title="精校版" data-track="search-result">Extra Attrs</a>
+      <a title="预告: </a> 佯攻收尾" href="/detail/5.html" class="y">Title Attr Decoy</a>
+    `
+    expect(parseSearchResults(html)).toEqual([
+      { id: '1', title: 'Href First' },
+      { id: '2', title: 'Href After Class' },
+      { id: '3', title: 'Single Quoted Href' },
+      { id: '4', title: 'Extra Attrs' },
+      { id: '5', title: 'Title Attr Decoy' },
+    ])
+  })
+
+  it('ignores unrelated <a> tags (nav/footer links) mixed in with real result anchors', () => {
+    const html = `
+      <a href="/">首页</a>
+      <a href="/detail/58421.html">间谍过家家</a>
+      <a href="/about">关于我们</a>
+    `
+    expect(parseSearchResults(html)).toEqual([{ id: '58421', title: '间谍过家家' }])
+  })
+
+  it('strips nested markup inside the anchor text (e.g. a wrapping <span>) when deriving the title', () => {
+    const html = '<a href="/detail/9.html"><span class="hl">间谍过家家</span></a>'
+    expect(parseSearchResults(html)).toEqual([{ id: '9', title: '间谍过家家' }])
+  })
 })
 
 describe('parseDetailPage', () => {
-  it('extracts the absolute download url and derives the filename from it', () => {
+  it('extracts the absolute download url and derives the filename from it (fixture has href before id="down")', () => {
     const html = readFileSync('fixtures/zimuku/detail-58421.html', 'utf8')
     const r = parseDetailPage(html, ZIMUKU_BASE)
     expect(r).toEqual({
@@ -36,7 +67,20 @@ describe('parseDetailPage', () => {
     expect(() => parseDetailPage('<html><body>no download link</body></html>', ZIMUKU_BASE))
       .toThrow(/id="down"/)
   })
+
+  it('is attribute-order and quote agnostic for the id="down" anchor: id-first, href-first, extra attrs, single-quoted', () => {
+    const cases = [
+      '<a id="down" href="https://static.zimuku.org/x.zip">下载</a>',
+      '<a href="https://static.zimuku.org/x.zip" id="down">下载</a>',
+      '<a class="btn" href="https://static.zimuku.org/x.zip" id="down" title="点击下载">下载</a>',
+      "<a id='down' href='https://static.zimuku.org/x.zip'>下载</a>",
+    ]
+    for (const html of cases) {
+      expect(parseDetailPage(html, ZIMUKU_BASE).downloadUrl).toBe('https://static.zimuku.org/x.zip')
+    }
+  })
 })
+
 
 describe('ZimukuClient', () => {
   function client(overrides: Partial<ZimukuClientOpts> = {}) {
@@ -143,5 +187,51 @@ describe('ZimukuClient', () => {
     })
     await expect(c.search('x')).rejects.toThrow(ZimukuChallengeError)
     expect(sessionStore.get()).toBeNull() // 失效的 cookie 没有残留在缓存里
+  })
+
+  it('without an explicit limiter override, defaults to a randomized 2-5s inter-request delay (RNG injectable)', async () => {
+    vi.useFakeTimers()
+    try {
+      const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
+      const fetchImpl = vi.fn(async () => new Response(searchHtml))
+      const dir = mkdtempSync(join(tmpdir(), 'zimuku-client-'))
+      const rng = () => 0 // 恒定取下限:每次目标恰好是 2000ms(可预测,便于断言边界)
+      const c = new ZimukuClient({
+        sessionStore: new ZimukuSessionStore(dir), solve: vi.fn(),
+        fetchImpl: fetchImpl as unknown as typeof fetch, rng,
+      })
+      await c.search('x') // 首次请求:没有节流历史,立即发出
+      let done = false
+      c.search('y').then(() => { done = true })
+      await vi.advanceTimersByTimeAsync(1999)
+      expect(done).toBe(false) // 还没到 2000ms 下限,不该提前放行
+      await vi.advanceTimersByTimeAsync(2)
+      expect(done).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('with a jittered rng draw above the floor, waits past 2000ms (not a fixed 2000ms floor)', async () => {
+    vi.useFakeTimers()
+    try {
+      const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
+      const fetchImpl = vi.fn(async () => new Response(searchHtml))
+      const dir = mkdtempSync(join(tmpdir(), 'zimuku-client-'))
+      const rng = () => 1 // 恒定取上限:每次目标是 2000 + 1*3000 = 5000ms
+      const c = new ZimukuClient({
+        sessionStore: new ZimukuSessionStore(dir), solve: vi.fn(),
+        fetchImpl: fetchImpl as unknown as typeof fetch, rng,
+      })
+      await c.search('x')
+      let done = false
+      c.search('y').then(() => { done = true })
+      await vi.advanceTimersByTimeAsync(2000) // 旧的固定 2000ms 楼层本会在这里放行——新实现不该
+      expect(done).toBe(false)
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(done).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
