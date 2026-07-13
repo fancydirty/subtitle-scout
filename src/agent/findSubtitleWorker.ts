@@ -100,6 +100,12 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
         prompt,
         abortSignal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       })
+      // Diagnostic only (stderr, not part of the return contract): the live-acceptance
+      // checklist (docs/design/2026-07-13-v3-live-acceptance-checklist.md, Step 6) asks a human
+      // to record the step count of each real run — this is the only place that number
+      // (result.steps.length, per the stepCountIs(500) test-phase ceiling) is ever observable,
+      // since runFindSubtitleTask's return type is deliberately just the decision.
+      console.error(`[find-subtitle-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
       return result.output
     } finally {
       // Try-error sandbox cleanup runs even on a thrown error — the staging dir never
