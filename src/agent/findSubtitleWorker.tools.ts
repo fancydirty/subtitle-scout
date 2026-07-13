@@ -1,11 +1,13 @@
 import { tool } from 'ai'
 import { z } from 'zod'
-import { join } from 'node:path'
+import { join, basename, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { runResolve, type FetchAdapter } from '../cli/fetchLib.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { writeSubtitle } from '../files/subtitleWriter.js'
 import { inspectSubtitle } from '../files/subtitleInspect.js'
+import { install } from '../files/stagingSandbox.js'
+import { isUnderRoots } from '../core/mediaContext.js'
 import { PROVIDERS } from '../core/schemas.js'
 
 export interface DownloadCandidateDeps {
@@ -46,6 +48,42 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       const signals = inspectSubtitle(written.path)
       deps.stagedFiles.set(stagedFileId, written.path)
       return { stagedFileId, bytes: written.bytes, encoding: written.encoding, signals }
+    },
+  })
+}
+
+export interface InstallSubtitleDeps {
+  stagedFiles: Map<string, string>
+  /** Fixed by the caller at task-construction time — dirname(task.videoPath). Never derived
+   *  from anything the agent supplies. */
+  outDir: string
+  /** The ONE sandbox root for this task — checked again here even though outDir is already
+   *  fixed (defense-in-depth, mirrors realignExecutor.ts's containingRoot/isUnderRoots use). */
+  mediaRoot: string
+  videoFilename: string
+}
+
+export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
+  return tool({
+    description:
+      'Atomically install a previously downloaded+inspected candidate (by stagedFileId) as ' +
+      'the final subtitle for this task\'s video. Only call this once you have decided, like ' +
+      'a person who opened the file, that this candidate really is the subtitle for this exact video.',
+    inputSchema: z.object({
+      stagedFileId: z.string(),
+      langTag: z.enum(['zh-Hans', 'zh-Hant']),
+    }),
+    execute: async ({ stagedFileId, langTag }) => {
+      const stagedPath = deps.stagedFiles.get(stagedFileId)
+      if (!stagedPath) return { error: `unknown stagedFileId: ${stagedFileId} — call download_candidate first` }
+      const videoBase = basename(deps.videoFilename).replace(/\.[^.]+$/, '')
+      const ext = extname(stagedPath)
+      const finalPath = join(deps.outDir, `${videoBase}.${langTag}${ext}`)
+      if (!isUnderRoots(finalPath, [deps.mediaRoot])) {
+        return { error: `refusing to install outside sandboxed media root: ${finalPath}` }
+      }
+      const result = await install(stagedPath, finalPath)
+      return { path: result.path }
     },
   })
 }

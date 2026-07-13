@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FetchAdapter } from '../cli/fetchLib.js'
-import { makeDownloadCandidateTool } from './findSubtitleWorker.tools.js'
+import { makeDownloadCandidateTool, makeInstallSubtitleTool } from './findSubtitleWorker.tools.js'
 import type { InspectSignals } from '../files/subtitleInspect.js'
 
 interface DownloadCandidateOutput {
@@ -11,6 +11,10 @@ interface DownloadCandidateOutput {
   bytes: number
   encoding: string | null
   signals: InspectSignals
+}
+
+interface InstallSubtitleOutput {
+  path: string | null
 }
 
 let sandboxDir: string
@@ -69,5 +73,47 @@ describe('download_candidate tool', () => {
     expect(readFileSync(secondPath, 'utf8')).toContain('second')
     expect(existsSync(firstPath)).toBe(true)
     expect(existsSync(secondPath)).toBe(true)
+  })
+})
+
+describe('install_subtitle tool', () => {
+  it('installs a staged file to the video directory with the given lang tag', async () => {
+    const videoDir = join(sandboxDir, 'media', 'Show')
+    mkdirSync(videoDir, { recursive: true })
+    const stagedPath = join(sandboxDir, '.staging', 'attempt1', 'staged.srt')
+    mkdirSync(join(sandboxDir, '.staging', 'attempt1'), { recursive: true })
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-1'
+    const stagedFiles = new Map([[stagedFileId, stagedPath]])
+
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles, outDir: videoDir, mediaRoot: join(sandboxDir, 'media'), videoFilename: 'Show.S01E01.mkv',
+    })
+    const out = await tool_.execute!({ stagedFileId, langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any) as InstallSubtitleOutput
+    expect(out.path).toBe(join(videoDir, 'Show.S01E01.zh-Hans.srt'))
+    expect(existsSync(out.path!)).toBe(true)
+  })
+
+  it('rejects an unknown stagedFileId', async () => {
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map(), outDir: sandboxDir, mediaRoot: sandboxDir, videoFilename: 'Show.S01E01.mkv',
+    })
+    const out = await tool_.execute!({ stagedFileId: 'nope', langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any)
+    expect(out).toEqual({ error: 'unknown stagedFileId: nope — call download_candidate first' })
+  })
+
+  it('sandbox: refuses to install outside the configured mediaRoot even if outDir were miswired', async () => {
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-escape'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      outDir: join(sandboxDir, 'outside'), // deliberately NOT under mediaRoot below
+      mediaRoot: join(sandboxDir, 'media'),
+      videoFilename: 'Show.S01E01.mkv',
+    })
+    const out = await tool_.execute!({ stagedFileId, langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any)
+    expect(out).toHaveProperty('error')
+    expect((out as { error: string }).error).toMatch(/refusing to install outside/)
   })
 })
