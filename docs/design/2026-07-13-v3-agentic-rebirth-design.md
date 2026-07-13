@@ -143,6 +143,14 @@
 
 **方法论印证**:离线全绿≠真能用;真站是唯一裁判;暴露问题是好事(能诊断能修=可 auto-research);沉淀=代码修复+真实化 mock+事故日志,不是给 skill 打分。
 
+**Matrix 真站冒烟测试 #1(2026-07-13,进击的巨人 S01E01,only-pack 锚点 cell,真 mimo-v2.5)**:**模型判断正确**——面对 only-pack fixture 里 2-cue/6 秒的荒谬合成字幕体(对应 24 分钟正片),模型正确拒绝安装并引用 skill 原文说明理由。但 finalize 阶段崩溃:no_safe_match 决策把四个仅装机字段(installedPath/installedLanguage/candidateProvider/candidateProviderId)整个**省略**,不发 null 也不发 "None" 字符串;coerce.ts 的 `nullableTolerant`/`coercibleNullableInt` 只拦截字符串哨兵,放过 `undefined`,`.nullable()` 拒绝 undefined→finalize 工具入参校验失败→execute() 从未跑→readFinalized() 报"从未调用 finalize"(误导——其实调用了)。**沉淀**:
+1. coerce.ts:两个 preprocess 都补上 `undefined→null`(新增 `isNullishOrOmitted`),解析后的输出永远是 `null`(不再是 `undefined`),下游决策对象保持统一;
+2. `findSubtitleWorker.eval.test.ts` 的 no-candidate finalize mock 改成像真模型一样**省略**四个字段,不再发 "None" 字符串;字符串哨兵路径仍由 `findSubtitleWorker.schemas.test.ts` 覆盖(两条路径都不能丢);
+3. `reasoningAgent.ts` 的 `readFinalized()` 现在能分辨"从未调用 finalize" vs "调用了但参数校验失败"(execute() 未跑),后者会带上截断到 ~500 字符的原始参数,方便诊断;
+4. only-pack 锚点 cell 的 `download.json` 从 2-cue 占位符换成 ~300 cue/22.5 分钟的合成但真实的字幕体(~37KB),与 24 分钟片长、filelist 声称的 ~40KB 量级一致;`cell.json` 的 note 已标注这是合成体,待补真录制。
+
+**一句话教训**:matrix 上线后的第一次真站运行,就在它本该拦截的那一类 bug(真模型参数形状)上把生产流程跑崩了——离线套件测不到,是因为所有 mock 一直发 "None" 字符串,从没有像真模型那样**省略**过字段。
+
 ## backlog 追加:国际化(工作流跑顺后)
 
 - **国际化(远期,OpenSubtitles 是钥匙)**:v1 为外国资源找中文字幕;工作流跑顺后**反向**——为中国资源找英文/他国字幕。OpenSubtitles 多语种覆盖使其触手可及(已接入,只需放开语言维度)。北极星不变(agent 判断归属),只是 target language 从"zh"泛化成参数。**先记 backlog,工作流+全量测试跑顺后再动。**
