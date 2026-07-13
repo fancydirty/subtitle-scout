@@ -6,10 +6,12 @@
 //     --title "Attack on Titan" [--original 進撃の巨人] [--season 1 --episode 1 --year 2013]
 //
 // Requires ASSRT_TOKEN in .env. Writes fixtures/v3-live/<type>/<form>/responses/*.json.
+// Re-running REPLACES the cell's responses/ wholesale (one invocation = one clean mint) — stale
+// recordings from earlier runs never survive, so re-record freely until the cell looks right.
 // You still hand-author cell.json's `expected` (the correct answer) — the recorder only captures
 // what the source returned; deciding which candidate is CORRECT is the human's job.
 import { parseArgs } from 'node:util'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import 'dotenv/config'
@@ -38,8 +40,36 @@ const type: ResourceType = rawType
 const form: SourceForm = rawForm
 const title: string = values.title
 
+/** At replay, an ambiguous path bucket (>=2 recordings for one method+path, none exact-matching
+ *  the model's query) makes makeReplayFetch throw — but that error does NOT surface as THREW in
+ *  the matrix runner: runSearch catches per-adapter errors into a provider_error event that
+ *  makeSearchSourceTool discards, so the model just sees zero candidates and honestly finalizes
+ *  no_safe_match. A fixture problem masquerading as a model-judgment failure — poison for the
+ *  auto-research loop. Warn LOUDLY at mint time instead, when the human can still fix it. */
+function warnAmbiguousPaths(responsesDir: string): void {
+  const byPath = new Map<string, string[]>()
+  for (const f of readdirSync(responsesDir).filter(f => f.endsWith('.json'))) {
+    const { signature } = JSON.parse(readFileSync(join(responsesDir, f), 'utf8')) as { signature: string }
+    // signature is "METHOD origin/path[?query][#bodytag]" — path bucket = up to the '?' or '#'
+    // (same rule makeReplayFetch uses to build its fallback buckets).
+    const path = signature.replace(/[?#].*$/, '')
+    const list = byPath.get(path) ?? []
+    list.push(f)
+    byPath.set(path, list)
+  }
+  for (const [path, files] of byPath) {
+    if (files.length > 1) {
+      console.error(`WARNING: AMBIGUOUS AT REPLAY: ${files.length} recordings share path ${path} — a model query that doesn't exactly match any recorded signature will throw (and surface as a silent zero-candidate no_safe_match in the matrix runner, not as THREW). Consider deleting all but one: ${files.join(', ')}`)
+    }
+  }
+}
+
 async function main() {
   const responsesDir = join(cellDir(type, form), 'responses')
+  // One invocation = one clean mint: wipe any previous recordings first, so a rerun never mixes
+  // fresh responses with stale residue (e.g. a detail/download recorded for a DIFFERENT top
+  // candidate on an earlier run, or partial files left behind by a mid-run crash).
+  rmSync(responsesDir, { recursive: true, force: true })
   mkdirSync(responsesDir, { recursive: true })
   const recording = makeRecordingFetch(responsesDir)
 
@@ -82,6 +112,7 @@ async function main() {
       const res = await recording(resolved.url, resolved.headers ? { headers: resolved.headers } : undefined)
       console.error(`recorded download → ${res.status}, ${res.headers.get('content-type')}`)
     }
+    warnAmbiguousPaths(responsesDir)
     console.error(`\nresponses written to ${responsesDir}`)
     console.error(`Next: hand-author ${cellDir(type, form)}/cell.json (task + the CORRECT expected answer), set the catalog entry seeded:true, run vitest.`)
   } finally {

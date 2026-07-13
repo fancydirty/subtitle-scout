@@ -17,7 +17,7 @@ import { makeAssrtAdapter } from '../src/cli/adapters/assrtAdapter.js'
 import { makeFindSubtitleWorker } from '../src/agent/findSubtitleWorker.js'
 import type { FindSubtitleTask } from '../src/agent/findSubtitleWorker.schemas.js'
 import { makeReplayFetch } from '../src/testing/replayFetch.js'
-import { CELL_CATALOG, loadCell, type CatalogEntry } from '../src/testing/liveMatrix.js'
+import { CELL_CATALOG, loadCell, RESOURCE_TYPES, SOURCE_FORMS, type CatalogEntry } from '../src/testing/liveMatrix.js'
 import type { LanguageModel } from 'ai'
 
 if (process.env.VITEST) throw new Error('matrix runner must not run under vitest — it hits a real LLM')
@@ -26,6 +26,16 @@ const { values } = parseArgs({ options: {
   all: { type: 'boolean' }, type: { type: 'string' }, form: { type: 'string' }, repeat: { type: 'string' },
 } })
 const repeat = values.repeat ? Number(values.repeat) : 1
+// Validate the axis filters up front: a typo'd --type/--form would otherwise be indistinguishable
+// from a legitimately-empty selection ("no seeded cells match") — fail with the specific complaint.
+if (values.type && !(RESOURCE_TYPES as readonly string[]).includes(values.type)) {
+  console.error(`unknown --type ${values.type}: expected ${RESOURCE_TYPES.join('|')}`)
+  process.exit(1)
+}
+if (values.form && !(SOURCE_FORMS as readonly string[]).includes(values.form)) {
+  console.error(`unknown --form ${values.form}: expected ${SOURCE_FORMS.join('|')}`)
+  process.exit(1)
+}
 
 function selected(): CatalogEntry[] {
   const seeded = CELL_CATALOG.filter(c => c.seeded)
@@ -53,7 +63,10 @@ async function runOne(entry: CatalogEntry, run: number, model: LanguageModel): P
     // Assert per expectation. installed → decision + right file present + language; else → decision only.
     let ok = decision.decision === cell.expected.decision
     if (ok && cell.expected.decision === 'installed') {
-      const want = join(mediaRoot, cell.expected.installedFilename!)
+      // NFC-normalize: install_subtitle NFC-normalizes the final path it returns, so a
+      // hand-typed NFD installedFilename in cell.json (easy on macOS) would silently fail
+      // byte-exact equality against a correct install.
+      const want = join(mediaRoot, cell.expected.installedFilename!).normalize('NFC')
       ok = decision.installedPath === want && existsSync(want) && decision.installedLanguage === cell.expected.installedLanguage
     }
     return { cell: id, run, ok, got: decision.decision, want: cell.expected.decision }
