@@ -3,7 +3,7 @@
 // parse through the real provider path and the pack's fileIndex flows end-to-end to an installed
 // file. It does NOT evaluate model judgment — that is scripts/run-live-matrix.ts (real model).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MockLanguageModelV4 } from 'ai/test'
@@ -93,5 +93,10 @@ describe('find-subtitle worker replay integration: anime/only-pack', () => {
     expect(decision.installedPath).toBe(join(showDir, cell.expected.installedFilename!))
     expect(existsSync(decision.installedPath!)).toBe(true)
     expect(decision.candidateProviderId).toBe(cell.expected.candidateProviderId)
+    // The installed filename derives from the VIDEO basename + langTag, so a wrong fileIndex would
+    // still produce the identical name — only content equality pins the right episode's bytes.
+    const downloadFixture = JSON.parse(readFileSync(join(cell.responsesDir, 'download.json'), 'utf8'))
+    expect(readFileSync(decision.installedPath!, 'utf8'))
+      .toBe(Buffer.from(downloadFixture.bodyBase64, 'base64').toString('utf8'))
   })
 })
