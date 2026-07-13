@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 
@@ -72,5 +72,25 @@ export function makeReplayFetch(dir: string): typeof fetch {
       `replayFetch: no recorded response for ${sig}` +
       (bucket ? ` (${bucket.length} recorded for this path — record the exact query)` : ' (path never recorded)'),
     )
+  }) as typeof fetch
+}
+
+/** Wraps a real `fetch`: every call is teed to `dir` as a RecordedResponse keyed by its
+ *  signature, then a fresh (unconsumed) Response is returned to the caller. Rate limiting is
+ *  the *client's* job (assrt's MinIntervalLimiter) — this shim is pure I/O capture. */
+export function makeRecordingFetch(dir: string, realFetch: typeof fetch = fetch): typeof fetch {
+  mkdirSync(dir, { recursive: true })
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
+    const method = init?.method ?? (typeof input === 'object' && 'method' in input ? (input as Request).method : 'GET')
+    const body = init?.body && typeof init.body === 'string' ? init.body : undefined
+    const res = await realFetch(input, init)
+    const buf = Buffer.from(await res.clone().arrayBuffer())
+    const headers: Record<string, string> = {}
+    res.headers.forEach((v, k) => { headers[k] = v })
+    const sig = requestSignature(method, url, body)
+    const record: RecordedResponse = { signature: sig, status: res.status, headers, bodyBase64: buf.toString('base64') }
+    writeFileSync(join(dir, `${requestSignature.hash(sig)}.json`), JSON.stringify(record, null, 2))
+    return res
   }) as typeof fetch
 }

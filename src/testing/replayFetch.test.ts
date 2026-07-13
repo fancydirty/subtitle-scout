@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { requestSignature, makeReplayFetch } from './replayFetch.js'
+import { requestSignature, makeReplayFetch, makeRecordingFetch } from './replayFetch.js'
 
 describe('requestSignature', () => {
   it('normalizes: drops token/api_key, sorts query, keeps method+path', () => {
@@ -57,5 +57,26 @@ describe('makeReplayFetch resolution', () => {
     const fetchImpl = makeReplayFetch(dir)
     await expect(fetchImpl('https://api.assrt.net/v1/sub/detail?token=T&id=999'))
       .rejects.toThrow(/no recorded response/i)
+  })
+})
+
+describe('makeRecordingFetch round-trip', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'record-')) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('records a real fetch to disk and replays it identically', async () => {
+    // Fake "real" fetch: returns a JSON body; recorder must persist it and hand back a
+    // still-readable Response (body not consumed by the tee).
+    const realFetch = (async () => new Response(JSON.stringify({ status: 0, sub: { subs: [{ id: 42 }] } }),
+      { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+    const recording = makeRecordingFetch(dir, realFetch)
+
+    const live = await recording('https://api.assrt.net/v1/sub/search?token=T&q=hi')
+    expect((await live.json()).sub.subs[0].id).toBe(42)   // caller still gets a usable body
+
+    const replay = makeReplayFetch(dir)
+    const played = await replay('https://api.assrt.net/v1/sub/search?token=DIFFERENT&q=hi')
+    expect((await played.json()).sub.subs[0].id).toBe(42)  // persisted + token-insensitive
   })
 })
