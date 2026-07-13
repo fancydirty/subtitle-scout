@@ -34,7 +34,7 @@ const LEASE_DURATION_MS = 30 * 60_000 // 30 minutes
 // Active (non-rest) states — every complete* transition must originate here.
 const ACTIVE_STATES_SQL = `('searching', 'downloading', 'verifying')`
 
-export type JobKind = 'series_season' | 'movie' | 'realign'
+export type JobKind = 'series_season' | 'movie' | 'realign' | 'worker_task'
 export type JobState = 'wanted' | 'searching' | 'downloading' | 'verifying' | 'done' | 'failed' | 'dormant'
 
 export interface JobIdentity {
@@ -55,6 +55,16 @@ export interface RealignJobIdentity {
 
 export type JobIdent = JobIdentity | MovieJobIdentity | RealignJobIdentity
 
+// worker_task 身份（v3 phase ④）：故意不并入 JobIdent 联合类型——upsertWanted 的
+// if/else-if/else 三分支穷尽窄化正好对应 JobIdent 现有的三个变体，塞入第 4 个变体而不
+// 重写那个 else 分支会让 worker_task 身份被静默路由进 realign 的 SQL 分支（写下 upsertWanted
+// 现有实现之后才看清这个风险）。upsertWorkerTask 用这个独立类型，走独立方法。
+export interface WorkerTaskIdentity {
+  seriesId: string | null
+  season: number | null
+  movieId: string | null
+}
+
 export interface Job {
   id: number
   kind: JobKind
@@ -62,6 +72,8 @@ export interface Job {
   season: number | null
   movie_id: string | null
   plan_ref: string | null
+  payload: string | null
+  parent_job_id: number | null
   state: JobState
   priority: number
   target_episodes: string | null
@@ -122,6 +134,34 @@ export class JobsRepo {
         )
         .run(ident.seriesId, now, now, now)
     }
+  }
+
+  /** 主代理派活(v3 phase ④/⑤)：写一行 worker_task job。复用 series_id/season/movie_id 三列做
+   *  身份 dedup——jobs_identity 的 (kind, series_id, season, movie_id) 四元组里 kind 本身已经
+   *  区分 worker_task 与 series_season/movie/realign，同一 identity 重复派发是幂等 upsert
+   *  （镜像 upsertWanted 的 done→wanted 复活语义：非 done 态只碰 updated_at，done 态整体刷新
+   *  payload/parent_job_id 并复活）。没有自然季/剧归属的任务（如 sibling-orchestrator 分片）
+   *  用合成 seriesId（如 'orchestrator-shard-<parentJobId>-<n>'），season/movieId 恒 null。
+   *  故意是独立方法而非塞进 upsertWanted：见上方 WorkerTaskIdentity 的注释。 */
+  upsertWorkerTask(
+    ident: WorkerTaskIdentity, payload: Record<string, unknown>, parentJobId: number | null, now: number,
+  ): void {
+    const payloadJson = JSON.stringify(payload)
+    this.db
+      .prepare(
+        `INSERT INTO jobs (kind, series_id, season, movie_id, payload, parent_job_id, state, priority, attempt, created_at, updated_at)
+         VALUES ('worker_task', ?, ?, ?, ?, ?, 'wanted', 0, 0, ?, ?)
+         ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
+         DO UPDATE SET
+           updated_at = ?,
+           payload = CASE WHEN state = 'done' THEN excluded.payload ELSE jobs.payload END,
+           parent_job_id = CASE WHEN state = 'done' THEN excluded.parent_job_id ELSE jobs.parent_job_id END,
+           state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
+           attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
+           error_attempt = CASE WHEN state = 'done' THEN 0 ELSE error_attempt END,
+           next_retry_at = CASE WHEN state = 'done' THEN NULL ELSE next_retry_at END`
+      )
+      .run(ident.seriesId, ident.season, ident.movieId, payloadJson, parentJobId, now, now, now)
   }
 
   claimNext(now: number): Job | null {

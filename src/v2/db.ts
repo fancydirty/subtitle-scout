@@ -208,6 +208,52 @@ ALTER TABLE jobs_new RENAME TO jobs;
 CREATE UNIQUE INDEX jobs_identity ON jobs(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''));
 CREATE INDEX jobs_claim ON jobs(state, priority DESC, created_at);
   `.trim(),
+  // v8: worker_task job kind + payload + parent_job_id——v3 主代理派活的通用载荷列。SQLite 不支持
+  // ALTER 已有 CHECK 约束，同 v5/v7 手法：建新表(扩容 CHECK + 新列)→显式列拷数据→删旧表→改名→
+  // 重建 jobs_identity/jobs_claim 索引(v7 注释已明文警告过：DROP TABLE 会连带丢掉它们，必须显式
+  // 重建)。worker_task 复用既有 series_id/season/movie_id 三列做身份 dedup(不是新identity 方案)：
+  // jobs_identity 是 (kind, series_id, season, movie_id) 四元组，kind 本身在元组里，worker_task
+  // 与同 series_id/season 的 series_season 行天然不冲突，天然获得"崩溃重启不重复派"的幂等 upsert
+  // (与 upsertWanted 完全同一套 ON CONFLICT DO UPDATE 语义)——无需为 worker_task 发明第二套身份/
+  // 局部唯一索引。没有自然季/剧归属的通用任务(如 100 溢出的 sibling orchestrator 分片)用合成
+  // series_id(如 'orchestrator-shard-<parentJobId>-<n>')+season/movie_id 恒 NULL，同样落在这
+  // 三列方案里。parent_job_id 自引用 jobs(id)：与 v7 迁移让 runs.job_id REFERENCES jobs(id) 安然
+  // 穿越 DROP+RENAME 是同一机制(SQLite 外键按表名而非 schema 对象身份解析，foreign_keys=OFF 覆盖
+  // 整个迁移窗口——db.ts openDb() 顶部已有说明，本迁移不需要额外处理)。
+  `
+CREATE TABLE jobs_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK(kind IN ('series_season','movie','realign','worker_task')),
+  series_id TEXT, season INTEGER,
+  movie_id TEXT,
+  plan_ref TEXT,
+  payload TEXT,
+  parent_job_id INTEGER REFERENCES jobs(id),
+  state TEXT NOT NULL CHECK(state IN
+    ('wanted','searching','downloading','verifying','done','failed','dormant')),
+  priority INTEGER NOT NULL DEFAULT 0,
+  target_episodes TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  error_attempt INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER,
+  lease_until INTEGER,
+  last_error TEXT, journal_ref TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+INSERT INTO jobs_new
+  (id, kind, series_id, season, movie_id, plan_ref, state, priority, target_episodes,
+   attempt, error_attempt, next_retry_at, lease_until, last_error, journal_ref,
+   created_at, updated_at)
+  SELECT id, kind, series_id, season, movie_id, plan_ref, state, priority, target_episodes,
+         attempt, error_attempt, next_retry_at, lease_until, last_error, journal_ref,
+         created_at, updated_at
+  FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_new RENAME TO jobs;
+CREATE UNIQUE INDEX jobs_identity ON jobs(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''));
+CREATE INDEX jobs_claim ON jobs(state, priority DESC, created_at);
+CREATE INDEX jobs_parent ON jobs(parent_job_id);
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
