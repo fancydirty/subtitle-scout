@@ -151,5 +151,37 @@ describe('startDashboard (v2)', () => {
       expect(res.status).toBe(500)
       expect((await res.json()).error).toMatch(/orchestrator blew up/)
     })
+
+    it('in-flight guard: a second POST while one reconcile-all pass is still running gets 409 instead of launching a second expensive scan+LLM pass — no in-flight guard means DASHBOARD_TOKEN-less deployments could be hammered into repeated full-repo scans', async () => {
+      let calls = 0
+      let releaseFirst: () => void = () => {}
+      const gate = new Promise<void>(resolve => { releaseFirst = resolve })
+      const reconcileAll = async () => {
+        calls++
+        await gate // blocks until the test explicitly releases it, simulating a long scan+LLM pass
+        return { dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' }
+      }
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+
+      // Fire the first POST and let it actually enter the handler (increment `calls`, flip the
+      // in-flight flag, and start blocking on `gate`) before firing the second.
+      const firstReq = fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      await new Promise(r => setTimeout(r, 20))
+
+      const secondRes = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(secondRes.status).toBe(409)
+      expect((await secondRes.json()).error).toMatch(/already running/i)
+      expect(calls).toBe(1) // the second POST never invoked reconcileAll at all
+
+      releaseFirst()
+      const firstRes = await firstReq
+      expect(firstRes.status).toBe(200)
+      expect(calls).toBe(1)
+
+      // Once the in-flight pass finishes, the guard releases and a later POST runs normally.
+      const thirdRes = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(thirdRes.status).toBe(200)
+      expect(calls).toBe(2)
+    })
   })
 })

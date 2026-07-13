@@ -48,6 +48,15 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     runs: (offset, limit) => buildRuns(db, offset, limit),
   }
 
+  // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
+  // expensive, and with no guard, repeated POSTs (e.g. an impatient user double-clicking, or a
+  // hostile actor when DASHBOARD_TOKEN is unset) each launch a fresh overlapping pass, multiplying
+  // scan/LLM cost with every extra request (a cheap DoS lever). A single boolean flag scoped to
+  // this server instance is enough — startDashboard runs once per daemon process, so this is
+  // effectively the "module-level flag" the review asked for, just closure-scoped instead of
+  // truly global (avoids leaking state across independent startDashboard calls in tests).
+  let reconcileInFlight = false
+
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost')
@@ -89,6 +98,15 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'reconcile-all not configured (TMDB_API_KEY missing?)' }))
           return
         }
+        // Overlap guard (no `await` between the check and the flip, so two requests racing in the
+        // same event-loop turn can't both slip through — only one process runs this callback at a
+        // time regardless).
+        if (reconcileInFlight) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'reconcile-all already running — try again once it finishes' }))
+          return
+        }
+        reconcileInFlight = true
         try {
           const result = await reconcileAll()
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -96,6 +114,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         } catch (e) {
           res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: String(e) }))
+        } finally {
+          reconcileInFlight = false
         }
         return
       }
