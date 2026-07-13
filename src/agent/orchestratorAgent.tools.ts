@@ -53,16 +53,18 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
   })
 }
 
-/** Deterministic pre-check the orchestrator MUST consult before dispatching a realign task —
- *  this is what makes "正常库零误触发" (zero false-trigger on an already-aligned library) a
- *  code-level property of the orchestrator's own dispatch decision, not just something
- *  executeRealign's internal gates catch after the fact (phase ⑥ leaves those unchanged as a
- *  second, independent layer of defense). Reuses mirrorExceedsSeasonTable — the exact same
- *  pure primary-signal check src/agent/diagnoseSeason.ts already uses to short-circuit to
- *  'unknown' without spending an LLM call when the signal doesn't hold — confirmed unchanged
- *  by reading diagnoseSeason.ts directly. A season with mirrorEpisodeCount <= tmdbEpisodeCount
- *  is NOT a realign candidate, full stop; the tool reports that fact rather than letting the
- *  model infer it from nothing. */
+/** Advisory inventory fact-check, NOT a code-level gate: the orchestrator's own instructions
+ *  (skill text + system prompt) tell it to consult this before dispatch_realign_task, but that
+ *  requirement is prompt-enforced only — dispatch_realign_task itself never reads
+ *  exceedsSeasonTable, so nothing in code stops a model that ignores its instructions from
+ *  dispatching a realign task on a hunch. The real code-level, zero-false-trigger
+ *  ("正常库零误触发") gate lives downstream in executeRealign (phase ⑥, unchanged) — that is the
+ *  safety net by design (the model decides dispatch; executeRealign is what actually must never
+ *  misfire on an aligned library), not this tool. Reuses mirrorExceedsSeasonTable — the exact
+ *  same pure primary-signal check src/agent/diagnoseSeason.ts already uses to short-circuit to
+ *  'unknown' without spending an LLM call when the signal doesn't hold — confirmed unchanged by
+ *  reading diagnoseSeason.ts directly. A season with mirrorEpisodeCount <= tmdbEpisodeCount is
+ *  reported as NOT a realign candidate; the tool reports that fact, it does not enforce it. */
 export function makeCheckSeriesLayoutTool(
   lib: Pick<LibraryRepo, 'countEpisodesInSeason'>,
   tmdb: Pick<TmdbClient, 'getSeasonTable'>,

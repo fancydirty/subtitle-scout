@@ -11,6 +11,11 @@ import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 
+// NOTE (advisory, phase ⑦): every field here is the model's OWN self-report of what it did this
+// pass, not a DB-derived count re-tallied from the jobs table after the fact — a model could in
+// principle mis-state these numbers (e.g. after a dispatch tool call errors) without anything in
+// this file catching the discrepancy. Accepted for phase ⑤/⑥; making this DB-authoritative is
+// out of scope here (tracked as a phase ⑦ note, not fixed by this file).
 export const OrchestratorDecisionSchema = z.object({
   dispatchedFindSubtitle: z.number().int(),
   dispatchedRealign: z.number().int(),
@@ -59,11 +64,13 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
     const tools = {
       read_doc: makeReadDocTool([ORCHESTRATOR_SKILL]),
       list_missing_coverage: makeListMissingCoverageTool(deps.lib, deps.now),
-      // Hard gate (spec: "正常库零误触发"): the orchestrator MUST call this before
-      // dispatch_realign_task — a season that does not exceed TMDB's episode count is never a
-      // realign candidate, and this tool reports that as a fact rather than letting the model
-      // infer it. executeRealign's own gates (unchanged, phase ⑥) are a second, independent
-      // layer of defense on top of this, not the only one.
+      // Advisory inventory fact-check at this layer, not a hard gate — the orchestrator's
+      // instructions (below + the skill doc) tell it to call this before dispatch_realign_task,
+      // but dispatch_realign_task never consults exceedsSeasonTable itself, so nothing here
+      // stops a model that ignores its instructions from dispatching anyway. The real
+      // code-level, zero-false-trigger ("正常库零误触发") gate is executeRealign downstream
+      // (phase ⑥) — that is the intended safety net: the model decides dispatch, executeRealign
+      // is what must never misfire on an already-aligned library.
       check_series_layout: makeCheckSeriesLayoutTool(deps.lib, deps.tmdb),
       dispatch_find_subtitle_task: makeDispatchFindSubtitleTaskTool(
         { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
