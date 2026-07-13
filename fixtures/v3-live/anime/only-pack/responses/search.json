@@ -1,0 +1,8 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/search?filelist=1&no_muxer=1&q=Attack%20on%20Titan",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "bodyBase64": "eyAic3RhdHVzIjogMCwgInN1YiI6IHsgInN1YnMiOiBbIHsKICAiaWQiOiA5MDA5MDAsCiAgInZpZGVvbmFtZSI6ICLpgLLmk4rnmoTlt6jkurogUzErUzIrUzMrT0FEMX44IOe5geS4reWtl+W5leWQiOmbhiIsCiAgIm5hdGl2ZV9uYW1lIjogIumAsuaTiueahOW3qOS6uiIsCiAgImxhbmciOiB7ICJkZXNjIjogIue5gSIgfSwKICAic3VidHlwZSI6ICJTdWJyaXAoc3J0KSIsCiAgInJlbGVhc2Vfc2l0ZSI6ICJWQ0ItU3R1ZGlvIiwKICAiZmlsZWxpc3QiOiBbCiAgICB7ICJzIjogIjQwS0IiLCAiZiI6ICJBdHRhY2sub24uVGl0YW4uUzAxRTAxLkJEcmlwLjEwODBwLue5geS9ky5zcnQiIH0sCiAgICB7ICJzIjogIjQxS0IiLCAiZiI6ICJBdHRhY2sub24uVGl0YW4uUzAxRTAyLkJEcmlwLjEwODBwLue5geS9ky5zcnQiIH0sCiAgICB7ICJzIjogIjQyS0IiLCAiZiI6ICJBdHRhY2sub24uVGl0YW4uUzAxRTAzLkJEcmlwLjEwODBwLue5geS9ky5zcnQiIH0KICBdCn0gXSB9IH0K"
+}

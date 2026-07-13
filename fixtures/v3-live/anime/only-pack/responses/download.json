@@ -1,0 +1,8 @@
+{
+  "signature": "GET http://file0.assrt.net/pack/900900/1",
+  "status": 200,
+  "headers": {
+    "content-type": "text/plain"
+  },
+  "bodyBase64": "MQowMDowMDowMSwwMDAgLS0+IDAwOjAwOjAzLDAwMArnuYHpq5TkuK3mloflrZfluZUg56ys77yR6KmxCgoyCjAwOjAwOjA0LDAwMCAtLT4gMDA6MDA6MDYsMDAwCuesrOS6jOWPpeWPsOipngo="
+}
