@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, proxyPoster } from './apiV2.js'
+import { buildLibrary, buildSeriesDetail, buildRuns, proxyPoster, type ReconcileAllResultDTO } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 
 export interface DashboardOpts {
@@ -16,6 +16,11 @@ export interface DashboardOpts {
   jellyfin: { baseUrl: string; apiKey: string }
   /** 测试注入用；默认全局 fetch。 */
   fetchImpl?: typeof fetch
+  /** v3 phase ⑦："全仓校验"触发器——POST /api/v2/reconcile-all 调它，跑一次机械预扫描
+   *  +一次编排器过（src/v2/reconcileAll.ts 的 runReconcileAll，cmdReconcileAll CLI 命令共用
+   *  同一个函数，不重复实现）。undefined（TMDB_API_KEY 未配置，或纯只读测试场景）时该端点
+   *  返回 503，而不是让请求悬空或让 startDashboard 强制要求这个回调。 */
+  reconcileAll?: () => Promise<ReconcileAllResultDTO>
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -35,13 +40,22 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, jellyfin } = opts
+  const { db, port, token, distDir, jellyfin, reconcileAll } = opts
   const fetchImpl = opts.fetchImpl ?? fetch
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
     series: (id) => buildSeriesDetail(db, id),
     runs: (offset, limit) => buildRuns(db, offset, limit),
   }
+
+  // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
+  // expensive, and with no guard, repeated POSTs (e.g. an impatient user double-clicking, or a
+  // hostile actor when DASHBOARD_TOKEN is unset) each launch a fresh overlapping pass, multiplying
+  // scan/LLM cost with every extra request (a cheap DoS lever). A single boolean flag scoped to
+  // this server instance is enough — startDashboard runs once per daemon process, so this is
+  // effectively the "module-level flag" the review asked for, just closure-scoped instead of
+  // truly global (avoids leaking state across independent startDashboard calls in tests).
+  let reconcileInFlight = false
 
   const server = createServer(async (req, res) => {
     try {
@@ -62,6 +76,47 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = await proxyPoster(itemId, tag, { baseUrl: jellyfin.baseUrl, apiKey: jellyfin.apiKey, fetchImpl })
         res.writeHead(result.status, { 'content-type': result.contentType, 'cache-control': result.cacheControl })
         res.end(result.body ?? Buffer.from('not found'))
+        return
+      }
+
+      // v3 phase ⑦："全仓校验"触发器——异步 + 只接受 POST，独立于下面纯同步的 handleApiRoute
+      // 分发（同 handleApiRoute 一样，token 校验放在方法/存在性检查之后没关系：两项都不泄露
+      // 除"这个端点存在"外的信息）。
+      if (rawPath === '/api/v2/reconcile-all') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        if (!reconcileAll) {
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'reconcile-all not configured (TMDB_API_KEY missing?)' }))
+          return
+        }
+        // Overlap guard (no `await` between the check and the flip, so two requests racing in the
+        // same event-loop turn can't both slip through — only one process runs this callback at a
+        // time regardless).
+        if (reconcileInFlight) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'reconcile-all already running — try again once it finishes' }))
+          return
+        }
+        reconcileInFlight = true
+        try {
+          const result = await reconcileAll()
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify(result))
+        } catch (e) {
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: String(e) }))
+        } finally {
+          reconcileInFlight = false
+        }
         return
       }
 

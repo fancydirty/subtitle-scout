@@ -40,11 +40,15 @@ function distWith(html: string): string {
 const posterFetch = (async (_url: string) =>
   new Response(Buffer.from('IMG'), { status: 200, headers: { 'content-type': 'image/png' } })) as unknown as typeof fetch
 
-async function start(distDir: string, token?: string, fetchImpl: typeof fetch = posterFetch): Promise<{ base: string }> {
+async function start(
+  distDir: string, token?: string, fetchImpl: typeof fetch = posterFetch,
+  reconcileAll?: () => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>,
+): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
     jellyfin: { baseUrl: 'http://jf.local', apiKey: 'SECRET' },
     fetchImpl,
+    reconcileAll,
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
@@ -103,5 +107,81 @@ describe('startDashboard (v2)', () => {
     expect((await fetch(`${base}/api/v2/library?token=s3cret`)).status).toBe(200)
     // poster 也受 token 保护
     expect((await fetch(`${base}/api/poster/item-1`)).status).toBe(401)
+  })
+
+  describe('POST /api/v2/reconcile-all (v3 phase ⑦)', () => {
+    it('invokes the injected reconcileAll callback and returns its result', async () => {
+      const reconcileAll = async () => ({
+        dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
+      })
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
+      })
+    })
+
+    it('returns 503 when reconcileAll is not configured (e.g. TMDB_API_KEY missing)', async () => {
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(res.status).toBe(503)
+    })
+
+    it('rejects non-POST methods with 405', async () => {
+      const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: '' })
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'GET' })
+      expect(res.status).toBe(405)
+    })
+
+    it('requires the configured token (401 without it, 200 with it)', async () => {
+      const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' })
+      const { base } = await start(distWith('<!doctype html>'), 's3cret', posterFetch, reconcileAll)
+      const unauthed = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(unauthed.status).toBe(401)
+      const authed = await fetch(`${base}/api/v2/reconcile-all?token=s3cret`, { method: 'POST' })
+      expect(authed.status).toBe(200)
+    })
+
+    it('returns 500 with the error message when reconcileAll throws', async () => {
+      const reconcileAll = async () => { throw new Error('orchestrator blew up') }
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(res.status).toBe(500)
+      expect((await res.json()).error).toMatch(/orchestrator blew up/)
+    })
+
+    it('in-flight guard: a second POST while one reconcile-all pass is still running gets 409 instead of launching a second expensive scan+LLM pass — no in-flight guard means DASHBOARD_TOKEN-less deployments could be hammered into repeated full-repo scans', async () => {
+      let calls = 0
+      let releaseFirst: () => void = () => {}
+      const gate = new Promise<void>(resolve => { releaseFirst = resolve })
+      const reconcileAll = async () => {
+        calls++
+        await gate // blocks until the test explicitly releases it, simulating a long scan+LLM pass
+        return { dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' }
+      }
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+
+      // Fire the first POST and let it actually enter the handler (increment `calls`, flip the
+      // in-flight flag, and start blocking on `gate`) before firing the second.
+      const firstReq = fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      await new Promise(r => setTimeout(r, 20))
+
+      const secondRes = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(secondRes.status).toBe(409)
+      expect((await secondRes.json()).error).toMatch(/already running/i)
+      expect(calls).toBe(1) // the second POST never invoked reconcileAll at all
+
+      releaseFirst()
+      const firstRes = await firstReq
+      expect(firstRes.status).toBe(200)
+      expect(calls).toBe(1)
+
+      // Once the in-flight pass finishes, the guard releases and a later POST runs normally.
+      const thirdRes = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(thirdRes.status).toBe(200)
+      expect(calls).toBe(2)
+    })
   })
 })

@@ -61,3 +61,11 @@ export interface RunHistoryDTO {
   detail: string | null
   journalPath: string | null
 }
+
+/** v3 phase ⑦："全仓校验"结果——POST /api/v2/reconcile-all 的响应体。 */
+export interface ReconcileAllResultDTO {
+  dispatchedFindSubtitle: number
+  dispatchedRealign: number
+  spawnedSiblings: number
+  summary: string
+}

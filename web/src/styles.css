@@ -24,6 +24,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 .tab:focus-visible, .brand:focus-visible { outline: 2px solid rgba(45,212,191,.55); outline-offset: 2px; }
 .tab.history-link { color: var(--text-faint); }
 
+/* ---------- reconcile-all button (v3 phase ⑦) ---------- */
+.reconcile { display: flex; align-items: center; gap: 10px; }
+.reconcile-msg { font-size: 12.5px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reconcile-msg.ok { color: var(--teal); }
+.reconcile-msg.err { color: var(--text-dim); }
+
 /* ---------- poster wall ---------- */
 .sections { padding: 8px 28px 28px; }
 .wall-section { margin-top: 22px; }
