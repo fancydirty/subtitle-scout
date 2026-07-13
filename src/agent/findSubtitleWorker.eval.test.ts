@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/provider'
 import type { FetchAdapter } from '../cli/fetchLib.js'
-import type { SubtitleCandidate } from '../core/schemas.js'
+import { candidateKey, type SubtitleCandidate } from '../core/schemas.js'
 import { makeFindSubtitleWorker } from './findSubtitleWorker.js'
 import type { FindSubtitleTask } from './findSubtitleWorker.schemas.js'
 
@@ -64,7 +64,13 @@ function finalStep(output: unknown) {
 }
 
 /** Generic scripted driver: search → (download → install)? → final, parameterized entirely by
- *  fixture data. See the module header note above — this proves plumbing, not judgment. */
+ *  fixture data. See the module header note above — this proves plumbing, not judgment.
+ *
+ *  Args are shaped the way the REAL model (mimo-v2.5, per live step-trace) emits them, NOT clean
+ *  typed args: download_candidate gets the COMPOSITE candidateKey `id` the agent is shown (e.g.
+ *  "assrt:1") — never a bare providerId — and a STRING-encoded fileIndex ("None" for null); the
+ *  no-candidate finalize emits the string "None" for its null fields. Feeding clean typed args here
+ *  is exactly what let the two param-flow bugs hide from the offline suite. */
 function scriptFixture(fixture: EvalFixture) {
   let call = 0
   return async (options: LanguageModelV4CallOptions) => {
@@ -73,10 +79,13 @@ function scriptFixture(fixture: EvalFixture) {
     if (fixture.chosenCandidate == null) {
       return finalStep({
         decision: fixture.expected.decision, reason: `no plausible candidate for ${fixture.name}`,
-        installedPath: null, installedLanguage: null, candidateProvider: null, candidateProviderId: null,
+        installedPath: 'None', installedLanguage: 'None', candidateProvider: 'None', candidateProviderId: 'None',
       })
     }
-    if (call === 2) return toolCallStep('c2', 'download_candidate', fixture.chosenCandidate)
+    if (call === 2) return toolCallStep('c2', 'download_candidate', {
+      candidateId: candidateKey(fixture.chosenCandidate),
+      fileIndex: fixture.chosenCandidate.fileIndex == null ? 'None' : String(fixture.chosenCandidate.fileIndex),
+    })
     if (call === 3) {
       const downloaded = findToolResultValue(options.prompt, 'download_candidate')
       return toolCallStep('c3', 'install_subtitle', { stagedFileId: downloaded.stagedFileId, langTag: 'zh-Hans' })
@@ -145,7 +154,10 @@ describe('find-subtitle worker offline eval: season-pack', () => {
         const got = findToolResultValue(options.prompt, 'get_candidate')
         const entry = (got.fileList as { index: number; name: string }[]).find(f => /S01E01/i.test(f.name))
         fileListVisibleToModel = entry != null
-        return toolCallStep('c3', 'download_candidate', { provider: pack.provider, providerId: pack.providerId, fileIndex: entry!.index })
+        // Real-model arg shape (the whole point of this fixture post-live-trace): the COMPOSITE
+        // candidateKey `id` the agent saw ("assrt:pack-1"), NOT a bare providerId — download_candidate
+        // must split it back — and a STRING-encoded fileIndex ("0"), which the coerced schema accepts.
+        return toolCallStep('c3', 'download_candidate', { candidateId: candidateKey(pack), fileIndex: String(entry!.index) })
       }
       if (call === 4) {
         const downloaded = findToolResultValue(options.prompt, 'download_candidate')

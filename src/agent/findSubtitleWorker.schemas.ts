@@ -1,15 +1,22 @@
 import { z } from 'zod'
+import { nullableTolerant } from './coerce.js'
 
 /** Terminal decision the find-subtitle worker's ToolLoopAgent reports by calling the `finalize`
  *  tool (this schema is that tool's inputSchema — see reasoningAgent.ts's finalize-tool mode).
- *  No confidence score anywhere (north star #1) — decision + a plain-language reason. */
+ *  No confidence score anywhere (north star #1) — decision + a plain-language reason.
+ *
+ *  The nullable fields use nullableTolerant (coerce.ts): on a retry_later / no_safe_match finalize
+ *  the real model string-encodes the "no value" fields as "None"/"null"/"" instead of JSON null.
+ *  installedLanguage is a nullable ENUM, so "None" would hard-fail validation of this (the finalize
+ *  tool's) inputSchema — captured never gets set and readFinalized() throws, killing the whole run.
+ *  Collapsing those sentinels to null fixes that AND keeps the string fields from storing "None". */
 export const FindSubtitleDecisionSchema = z.object({
   decision: z.enum(['installed', 'no_safe_match', 'retry_later']),
   reason: z.string().min(1),
-  installedPath: z.string().nullable(),
-  installedLanguage: z.enum(['zh-Hans', 'zh-Hant']).nullable(),
-  candidateProvider: z.string().nullable(),
-  candidateProviderId: z.string().nullable(),
+  installedPath: nullableTolerant(z.string()),
+  installedLanguage: nullableTolerant(z.enum(['zh-Hans', 'zh-Hant'])),
+  candidateProvider: nullableTolerant(z.string()),
+  candidateProviderId: nullableTolerant(z.string()),
 })
 export type FindSubtitleDecision = z.infer<typeof FindSubtitleDecisionSchema>
 

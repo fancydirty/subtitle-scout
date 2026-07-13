@@ -111,6 +111,30 @@ describe('search_source / list_candidates / get_candidate tools', () => {
     expect(store.count(out.result_set_id)).toBe(3)
   })
 
+  // Same string-encoding class as download_candidate.fileIndex: the real model string-encodes the
+  // numeric search args (season/episode/year) and the paging args (offset/limit/index). These schemas
+  // must coerce string-encoded integers so the very first tool call of a live run does not die on
+  // tool-arg validation. Empty-string sentinels on the OPTIONAL search fields must become undefined
+  // (NOT 0 — Number("") === 0, the trap).
+  it('search_source schema coerces string-encoded season/episode/year and drops empty-string optionals', () => {
+    const store = makeFileResultSetStore(dir)
+    const searchSource = makeSearchSourceTool({ adapters: [fakeAdapter([])], store })
+    const schema = searchSource.inputSchema as import('zod').ZodType
+    expect(schema.parse({ queries: ['x'], season: '1', episode: '2', year: '2020' }))
+      .toEqual({ queries: ['x'], season: 1, episode: 2, year: 2020 })
+    expect(schema.parse({ queries: ['x'], episode: '' })).toEqual({ queries: ['x'] })
+  })
+
+  it('list_candidates / get_candidate schemas coerce string-encoded offset/limit/index', () => {
+    const store = makeFileResultSetStore(dir)
+    const listSchema = makeListCandidatesTool(store).inputSchema as import('zod').ZodType
+    expect(listSchema.parse({ result_set_id: 'r', offset: '2', limit: '5' }))
+      .toEqual({ result_set_id: 'r', offset: 2, limit: 5 })
+    const getSchema = makeGetCandidateTool(store).inputSchema as import('zod').ZodType
+    expect(getSchema.parse({ result_set_id: 'r', index: '3' }))
+      .toEqual({ result_set_id: 'r', index: 3, detail: 'concise' })
+  })
+
   it('list_candidates pages through a result set by handle', async () => {
     const store = makeFileResultSetStore(dir)
     const id = store.create([fakeCandidate('1', 'A'), fakeCandidate('2', 'B'), fakeCandidate('3', 'C')])

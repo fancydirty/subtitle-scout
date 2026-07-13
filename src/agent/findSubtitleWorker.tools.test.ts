@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FetchAdapter } from '../cli/fetchLib.js'
+import type { CandidateRef } from '../core/schemas.js'
 import { makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool } from './findSubtitleWorker.tools.js'
 import type { InspectSignals } from '../files/subtitleInspect.js'
 
@@ -30,6 +31,21 @@ function fakeAdapter(url: string): FetchAdapter {
   }
 }
 
+/** Adapter that records the exact CandidateRef runResolve hands it — used to prove download_candidate
+ *  reconstructs a BARE providerId (the value the assrt adapter's `Number(ref.providerId)` needs) from
+ *  the COMPOSITE `id` the agent actually sees (candidateKey → "assrt:667241"). */
+function capturingAdapter(name: string, url: string, sink: { ref?: CandidateRef }): FetchAdapter {
+  return {
+    name,
+    enabled: () => true,
+    search: async () => [],
+    resolve: async (ref) => {
+      sink.ref = ref
+      return { url, filename: 'Show.S01E01.srt' }
+    },
+  }
+}
+
 describe('download_candidate tool', () => {
   it('resolves, downloads, stages, and inspects — returns a stagedFileId + signals, does not install', async () => {
     const fetchImpl = vi.fn(async () => new Response(Buffer.from(
@@ -43,7 +59,7 @@ describe('download_candidate tool', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { provider: 'assrt', providerId: '1', fileIndex: null },
+      { candidateId: 'assrt:1', fileIndex: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     expect(out.stagedFileId).toBeTruthy()
@@ -66,6 +82,83 @@ describe('download_candidate tool', () => {
     expect(tool_.description).toMatch(/pack|collection|filelist|file list/i)
   })
 
+  // BUG 1 (id format mismatch): the ONLY candidate identifier the agent ever sees is candidateKey(c)
+  // = the COMPOSITE "provider:providerId" ("assrt:667241") surfaced as `id` by search_source /
+  // list_candidates / get_candidate. The real model dutifully passes that whole composite back. The
+  // assrt adapter's resolve then does Number(ref.providerId) — Number("assrt:667241") is NaN and the
+  // download fails every time. download_candidate must accept the composite `candidateId` and split it
+  // back into {provider, providerId} so the CandidateRef reaching runResolve carries a BARE providerId.
+  it('accepts the composite candidateKey id the agent sees and resolves it to a bare providerId + matching provider', async () => {
+    const sink: { ref?: CandidateRef } = {}
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhi\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [capturingAdapter('assrt', 'http://file0.assrt.net/x.srt', sink)],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      videoFilename: 'Show.S01E01.mkv',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await tool_.execute!(
+      { candidateId: 'assrt:667241', fileIndex: 10 },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(sink.ref).toEqual({ provider: 'assrt', providerId: '667241', fileIndex: 10 })
+  })
+
+  it('parses the provider out of the composite id (not hardcoded assrt) so non-assrt candidates resolve too', async () => {
+    const sink: { ref?: CandidateRef } = {}
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhi\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [capturingAdapter('zimuku', 'http://file0.zimuku.net/x.srt', sink)],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      videoFilename: 'Show.S01E01.mkv',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await tool_.execute!(
+      { candidateId: 'zimuku:z-501', fileIndex: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(sink.ref).toEqual({ provider: 'zimuku', providerId: 'z-501', fileIndex: null })
+  })
+
+  it('returns a structured error (does not throw) for a malformed candidate id', async () => {
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      videoFilename: 'Show.S01E01.mkv',
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'not-a-real-key', fileIndex: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toHaveProperty('error')
+    expect((out as { error: string }).error).toMatch(/candidate id/i)
+  })
+
+  // BUG 2 (coercion): the real model serializes numeric args as STRINGS ("10", and even "None"/"null"
+  // for a null). The old `fileIndex: z.number().int().nullable()` rejected "10" outright, so tool-arg
+  // validation failed before execute ever ran. The schema must tolerate string-encoded numbers and the
+  // string sentinels the model emits for null.
+  it('fileIndex schema coerces string-encoded numbers and string null-sentinels', () => {
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      videoFilename: 'Show.S01E01.mkv',
+    })
+    const schema = tool_.inputSchema as import('zod').ZodType
+    const idx = (v: unknown) => (schema.parse({ candidateId: 'assrt:1', fileIndex: v }) as { fileIndex: number | null }).fileIndex
+    expect(idx(10)).toBe(10)
+    expect(idx('10')).toBe(10)
+    expect(idx(null)).toBeNull()
+    expect(idx('None')).toBeNull()
+    expect(idx('null')).toBeNull()
+    expect(idx('')).toBeNull()
+    expect(() => schema.parse({ candidateId: 'assrt:1', fileIndex: 'abc' })).toThrow()
+  })
+
   it('two downloads in the same task do not collide (each gets its own staging subdir)', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nfirst\n')))
@@ -78,8 +171,8 @@ describe('download_candidate tool', () => {
       videoFilename: 'Show.S01E01.mkv',
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    const first = await tool_.execute!({ provider: 'assrt', providerId: '1', fileIndex: null }, { toolCallId: 't1', messages: [] } as any) as DownloadCandidateOutput
-    const second = await tool_.execute!({ provider: 'assrt', providerId: '2', fileIndex: null }, { toolCallId: 't2', messages: [] } as any) as DownloadCandidateOutput
+    const first = await tool_.execute!({ candidateId: 'assrt:1', fileIndex: null }, { toolCallId: 't1', messages: [] } as any) as DownloadCandidateOutput
+    const second = await tool_.execute!({ candidateId: 'assrt:2', fileIndex: null }, { toolCallId: 't2', messages: [] } as any) as DownloadCandidateOutput
     expect(first.stagedFileId).not.toBe(second.stagedFileId)
     const firstPath = stagedFiles.get(first.stagedFileId)!
     const secondPath = stagedFiles.get(second.stagedFileId)!
@@ -150,5 +243,15 @@ describe('check_episode_code_safety tool', () => {
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({ safe: false, expectedCode: 'S01E05' })
+  })
+
+  // Same coercion class as download_candidate.fileIndex: the real model string-encodes season/episode
+  // ("1"/"5"). The old `z.number().int()` rejected those, killing the advisory check's tool-arg
+  // validation before execute ran. Schema must coerce string-encoded integers.
+  it('season/episode schema coerces string-encoded integers', () => {
+    const tool_ = makeCheckEpisodeCodeSafetyTool()
+    const schema = tool_.inputSchema as import('zod').ZodType
+    expect(schema.parse({ filename: 'x', season: '1', episode: '5' })).toEqual({ filename: 'x', season: 1, episode: 5 })
+    expect(schema.parse({ filename: 'x', season: 2, episode: 3 })).toEqual({ filename: 'x', season: 2, episode: 3 })
   })
 })

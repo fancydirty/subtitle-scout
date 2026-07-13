@@ -5,6 +5,7 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import { runSearch, type FetchAdapter } from '../cli/fetchLib.js'
 import { candidateKey, type SubtitleCandidate } from '../core/schemas.js'
+import { coercibleInt, coercibleOptionalInt } from './coerce.js'
 
 export interface ResultSetStore {
   create(items: unknown[]): string
@@ -124,9 +125,11 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
     inputSchema: z.object({
       queries: z.array(z.string()).min(1),
       imdb: z.string().optional(),
-      year: z.number().int().optional(),
-      season: z.number().int().optional(),
-      episode: z.number().int().optional(),
+      // Real models string-encode these ("2020"/"1"/"12") — coerce so this first-of-every-run tool
+      // call does not die on tool-arg validation; empty-string sentinels become undefined (not 0).
+      year: coercibleOptionalInt,
+      season: coercibleOptionalInt,
+      episode: coercibleOptionalInt,
       filename: z.string().optional(),
       languages: z.array(z.string()).optional(),
     }),
@@ -148,8 +151,9 @@ export function makeListCandidatesTool(store: ResultSetStore) {
     description: 'Page through a result set previously returned by search_source.',
     inputSchema: z.object({
       result_set_id: z.string(),
-      offset: z.number().int().min(0).default(0),
-      limit: z.number().int().min(1).max(50).default(10),
+      // Coerce string-encoded paging args the model emits ("0"/"10").
+      offset: coercibleInt.min(0).default(0),
+      limit: coercibleInt.min(1).max(50).default(10),
     }),
     execute: async ({ result_set_id, offset, limit }) => {
       // Mirrors get_candidate's fail-soft handling below and read_doc's (registry.ts) unknown-name
@@ -172,7 +176,8 @@ export function makeGetCandidateTool(store: ResultSetStore) {
     description: 'Fetch one candidate from a result set by index — concise summary or full detail.',
     inputSchema: z.object({
       result_set_id: z.string(),
-      index: z.number().int().min(0),
+      // Coerce a string-encoded index the model emits ("3").
+      index: coercibleInt.min(0),
       detail: z.enum(['concise', 'detailed']).default('concise'),
     }),
     execute: async ({ result_set_id, index, detail }) => {
