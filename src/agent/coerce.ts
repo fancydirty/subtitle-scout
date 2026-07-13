@@ -17,15 +17,28 @@ function isNullishSentinel(v: unknown): boolean {
   return typeof v === 'string' && NULLISH_SENTINELS.has(v.trim().toLowerCase())
 }
 
+/** True for any of the model's "no value" encodings: the string sentinels above, OR the field
+ *  being flat-out MISSING from the tool-call arguments (v === undefined). Proven live (v3 live
+ *  test matrix, 2026-07-13): on a no_safe_match finalize, real mimo-v2.5 doesn't send the four
+ *  installed-only fields as null or "None" — it OMITS the keys entirely, which parses as
+ *  `undefined`, not a string. `.nullable()` alone rejects `undefined` (only `.nullish()` /
+ *  `.optional()` do), so an omitted key failed validation before this fix. */
+function isNullishOrOmitted(v: unknown): boolean {
+  return v === undefined || isNullishSentinel(v)
+}
+
 /** Required integer, tolerant of string-encoded numbers (`"10"` → 10). Rejects non-numeric strings
  *  (`"abc"`) and non-integers (`"10.5"`), same as `z.number().int()` would. */
 export const coercibleInt = z.coerce.number().int()
 
-/** Integer-or-null, tolerant of string-encoded numbers AND the model's string null-sentinels
- *  (`"10"` → 10; `"None"`/`"null"`/`""` → null). Sentinels are mapped to null BEFORE z.coerce runs,
- *  so `"None"` collapses to null instead of coercing to NaN (`Number("None")`). */
+/** Integer-or-null, tolerant of string-encoded numbers, the model's string null-sentinels
+ *  (`"10"` → 10; `"None"`/`"null"`/`""` → null), AND an omitted key (`undefined` → null — the
+ *  real model drops a nullable field entirely rather than sending null/"None" for it; see
+ *  isNullishOrOmitted). Sentinels/omission are mapped to null BEFORE z.coerce runs, so `"None"`
+ *  collapses to null instead of coercing to NaN (`Number("None")`), and the parsed OUTPUT is
+ *  always `null` (never `undefined`) so downstream decision objects stay uniform. */
 export const coercibleNullableInt = z.preprocess(
-  (v) => (isNullishSentinel(v) ? null : v),
+  (v) => (isNullishOrOmitted(v) ? null : v),
   z.coerce.number().int().nullable(),
 )
 
@@ -38,11 +51,16 @@ export const coercibleOptionalInt = z.preprocess(
 )
 
 /** Wrap a schema for a nullable field so the model's string null-sentinels (`"None"`/`"null"`/`""`)
- *  collapse to JSON null before the inner schema validates — needed for nullable ENUMS (e.g. an
- *  installed-language enum), where `"None"` is neither a valid member nor null and would otherwise
- *  hard-fail validation. */
+ *  AND an omitted key (`undefined`) collapse to JSON null before the inner schema validates —
+ *  needed for nullable ENUMS (e.g. an installed-language enum), where `"None"` is neither a valid
+ *  member nor null and would otherwise hard-fail validation. The omitted-key case is the real one:
+ *  proven live (v3 live test matrix, 2026-07-13), on a no_safe_match finalize mimo-v2.5 doesn't
+ *  send these installed-only fields as null/"None" at all — it omits the keys, which parses as
+ *  `undefined` and would otherwise fail `.nullable()` (only `.nullish()`/`.optional()` accept
+ *  undefined). The parsed OUTPUT is always `null` here too (never `undefined`), so the finalize
+ *  tool never has to distinguish "sent null" from "omitted" downstream. */
 export function nullableTolerant<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.output<T> | null> {
-  return z.preprocess((v) => (isNullishSentinel(v) ? null : v), inner.nullable()) as unknown as z.ZodType<
+  return z.preprocess((v) => (isNullishOrOmitted(v) ? null : v), inner.nullable()) as unknown as z.ZodType<
     z.output<T> | null
   >
 }

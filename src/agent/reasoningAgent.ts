@@ -63,6 +63,16 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
 ): ReasoningAgentHandle<TOOLS, z.infer<SCHEMA>> {
   let captured: z.infer<SCHEMA> | undefined
   let didFinalize = false
+  // readFinalized() is called by the CALLER after agent.generate() resolves, with no arguments of
+  // its own (see findSubtitleWorker.ts) — this is the only seam through which it can learn WHY
+  // finalize never got captured. onStepEnd fires for every step, including the terminal one, so by
+  // the time generate() resolves this always holds the last step's tool calls. That matters
+  // because hasToolCall(FINALIZE_TOOL_NAME) below stops the loop the instant the model calls
+  // finalize — valid or not — so an INVALID finalize call (schema validation failed, execute()
+  // never ran) is always the last step's tool call whenever readFinalized() would otherwise throw
+  // the generic "never called finalize" message. Diagnosed live (v3 live test matrix, 2026-07-13):
+  // that generic message hid that finalize actually WAS attempted.
+  let lastStepToolCalls: ReadonlyArray<{ toolName: string; invalid?: boolean; input?: unknown }> = []
 
   const finalizeTool = tool({
     description: opts.finalizeDescription ??
@@ -92,6 +102,11 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
     stopWhen: [opts.stopWhen ?? stepCountIs(20), hasToolCall(FINALIZE_TOOL_NAME)],
     reasoning: opts.reasoning ?? 'high',
     telemetry: opts.telemetry,
+    // Diagnostic capture only — does not affect the loop's control flow or output. See the
+    // lastStepToolCalls declaration above for why this is the only reachable seam.
+    onStepEnd: (step: { toolCalls?: ReadonlyArray<{ toolName: string; invalid?: boolean; input?: unknown }> }) => {
+      lastStepToolCalls = step.toolCalls ?? []
+    },
   } as unknown as ToolLoopAgentSettings<never, TOOLS, DefaultRuntimeContext, never>
 
   const agent = new ToolLoopAgent(settings)
@@ -100,6 +115,29 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
     agent,
     readFinalized(): z.infer<SCHEMA> {
       if (!didFinalize) {
+        // Distinguish "finalize was never called" from "finalize WAS called but its arguments
+        // failed schema validation" (execute() only runs on valid args) — the second case reads
+        // as the first unless we look at the last step's raw tool calls, which is exactly the bug
+        // the v3 live test matrix caught: the real model omitted required finalize fields, and the
+        // old generic message here hid that finalize was actually attempted.
+        const invalidFinalizeCall = lastStepToolCalls.find(
+          (call) => call.toolName === FINALIZE_TOOL_NAME && call.invalid,
+        )
+        if (invalidFinalizeCall) {
+          let rawArgs: string
+          try {
+            rawArgs = JSON.stringify(invalidFinalizeCall.input)
+          } catch {
+            rawArgs = String(invalidFinalizeCall.input)
+          }
+          const truncated = rawArgs.length > 500 ? `${rawArgs.slice(0, 500)}…(truncated)` : rawArgs
+          throw new Error(
+            `reasoning agent DID call the finalize tool, but its arguments failed schema validation — ` +
+            `execute() never ran, so no structured decision was captured. (The loop still stopped: ` +
+            `hasToolCall('${FINALIZE_TOOL_NAME}') fires on the call's presence, not its validity.) ` +
+            `Raw finalize args: ${truncated}`,
+          )
+        }
         throw new Error(
           'reasoning agent finished without calling the finalize tool — no structured decision was ' +
           'produced. The model must call finalize({...}) exactly once as its terminal step (it may ' +
