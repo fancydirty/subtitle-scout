@@ -113,6 +113,7 @@
 - **子代理任务粒度**:待核——是否该以"季/一批集"为单位(而非单集)从根上拥抱合集包(见架构灵魂段)。
 - flaky:src/cli/subtitle-fetch.test.ts 5000ms 超时在并发下偶发(隔离跑过),提测试超时容差。
 - OS 级沙盒 jail(bubblewrap/Docker 单目录 bind-mount)作第三层,v1 只做代码+skill 两层。
+- **活文档漏防"候选胖"维度(合集包 fileList 内联撑上下文)**:句柄化防住了"候选多"(search_source 只返 top-N 摘要+句柄),但 summarizeCandidate(resultHandles.ts:104)把单个候选的 fileList **全量内联**进 top-N 摘要。合集包(S1+S2+S3+OAD,几十上百个长文件名条目)是本项目常态,几个包一叠加就抵消了防腐化努力。**修法**:top-N 摘要里单候选 fileList 只给 fileCount 或前几条+"还有 N 个";agent 要定位集号时用 get_candidate(id,'detailed') 按需拉那一个包的完整列表。把"多"和"胖"两维都句柄化。不阻塞正确性(只影响成本/腐化),工作流跑通后修。
 
 ## auto-research 迭代 skill:去分数化闭环(方法论已调研,待工作流跑顺后落地)
 
