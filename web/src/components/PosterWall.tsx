@@ -7,6 +7,7 @@ import type { LibraryItemDTO } from '../api/types.js'
 import { Brand } from './Brand.js'
 import { PosterCard } from './PosterCard.js'
 import { WallSkeleton, ErrorState, EmptyState } from './states.js'
+import { ReconcileButton } from './ReconcileButton.js'
 import { go } from '../lib/hashRoute.js'
 
 const TABS: { id: LibraryFilter; label: string }[] = [
@@ -56,6 +57,7 @@ export function PosterWall() {
       <div className="topbar">
         <Brand />
         <div className="fact">{facts ? factLine(facts) : ''}</div>
+        <ReconcileButton />
         <div className="tabs">
           {TABS.map((t) => (
             <div

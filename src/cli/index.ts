@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { generateText } from 'ai'
+import { generateText, type LanguageModel } from 'ai'
 import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
 import { runPipeline, type PipelineDeps, type PipelineResult } from '../core/pipeline.js'
 import type { Journal } from '../core/journal.js'
@@ -14,7 +14,7 @@ import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { TmdbClient, tmdbTitles, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { makeCliProviderPort } from '../core/providerPort.js'
-import { providerErrorFields, providerNoticeFields } from './fetchLib.js'
+import { providerErrorFields, providerNoticeFields, type FetchEvent } from './fetchLib.js'
 import { createLlmRuntime, type LlmRuntime } from '../agent/runtime.js'
 import { ProfileStore } from '../agent/profile.js'
 import { identifyMedia } from '../agent/identifyMedia.js'
@@ -56,6 +56,11 @@ import type { MediaItem } from '../adapters/players/types.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
 import { executeRealign, makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
 import { replayRollback } from '../files/realignManifest.js'
+import { runRealignWorkerTask } from '../v2/realignWorkerTask.js'
+import { runFindSubtitleWorkerTask, type FindSubtitleWorkerTaskDeps } from '../v2/findSubtitleWorkerTask.js'
+import { runReconcileAll, runOrchestrateWorkerTask } from '../v2/reconcileAll.js'
+import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
+import { buildAdapters } from './buildAdapters.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -80,6 +85,12 @@ export interface Assembled {
   mappings: PathMapping[]
   /** 有 TMDB_API_KEY 时可用；取全部中文标题变体（增益路径，无 key 则 null）。 */
   tmdb: TmdbClient | null
+  /** v3 phase ⑦：orchestrator/find-subtitle 两个新 ToolLoopAgent-based 子代理要的是一个真实
+   *  `LanguageModel`（ai@7 的 `agent.generate()` 接口），不是 `llm: LlmRuntime`（旧管线
+   *  callStructured 的强制单 tool 调用封装，二者接口完全不同、不能互换）。同一组 LLM_* env
+   *  var，走 llm.ts 的 makeModel() 单独建一个 LanguageModel 实例——两条路径（旧管线的
+   *  LlmRuntime、新 v3 子代理的 LanguageModel）各自持有自己的 provider 实例，互不干扰。 */
+  reasoningModel: LanguageModel
 }
 
 async function assemble(): Promise<Assembled> {
@@ -98,12 +109,19 @@ async function assemble(): Promise<Assembled> {
   // 并发任务（watch 下多播放会话并行）不再把 apiCall/自愈事件串记到相邻 journal。
   const journalStore = new AsyncLocalStorage<{ journal: Journal | null }>()
   const withJournal = <T>(fn: () => Promise<T>): Promise<T> => journalStore.run({ journal: null }, fn)
+  const llmBaseUrl = requireEnv('LLM_BASE_URL')
+  const llmApiKey = requireEnv('LLM_API_KEY')
+  const llmModelName = requireEnv('LLM_MODEL')
   const llm = await createLlmRuntime({
-    baseUrl: requireEnv('LLM_BASE_URL'),
-    apiKey: requireEnv('LLM_API_KEY'),
-    model: requireEnv('LLM_MODEL'),
+    baseUrl: llmBaseUrl,
+    apiKey: llmApiKey,
+    model: llmModelName,
     extraBody,
   }, profileStore, undefined, info => journalStore.getStore()?.journal?.step('llm_profile_healed', info))
+  // v3 phase ⑦：a real LanguageModel for the new ToolLoopAgent-based orchestrator/find-subtitle
+  // subagents — same LLM_* env, independent provider instance from `llm` above (see Assembled's
+  // reasoningModel field comment for why these can't be the same object).
+  const reasoningModel = makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModelName, extraBody })
   // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第四把钥匙」）。缺 key → null，走 jellyfin fallback。
   const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
   const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string, alreadyExisted?: boolean) => void | Promise<void> }): PipelineDeps => ({
@@ -162,7 +180,7 @@ async function assemble(): Promise<Assembled> {
       },
     } : {}),
   })
-  return { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jf, mappings, tmdb }
+  return { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jf, mappings, tmdb, reasoningModel }
 }
 
 function exitCodeFor(decision: PipelineResult['decision']): number {
@@ -278,8 +296,47 @@ async function cmdRunItem(itemId: string) {
   process.exit(exitCodeFor(result.decision))
 }
 
+/** on-demand "全仓校验" 触发器（v3 phase ⑦ Task 1）：跑一次机械预扫描（scanLibrary，未改动）
+ *  + 一次编排器过（makeOrchestratorAgent）。与 cmdWatch 内 daemon 每 15min 一次的机械
+ *  reconcile+aggregate（喂旧管线）相互独立、并存——这是新 v3 链路的手动触发入口。命令跑完
+ *  即退出，写下的 worker_task 行要等一个正在跑的 `watch` daemon 进程认领执行（本命令自己
+ *  从不认领任何行）。
+ *  TMDB_API_KEY 是硬性前置——不同于 cmdWatch 里 realign/diagnoseSeason 那种"没配置就静默
+ *  跳过"（那是给日常 watch 循环的容错，缺检测能力不该拦住找字幕主线）：orchestrator 的
+ *  check_series_layout 工具需要真实 TmdbClient 才能判断"季数是否超出 TMDB 季表"，手动触发的
+ *  全仓校验若因为缺 key 而悄悄只做一半，会让使用者误以为已经跑过完整校验——所以这里直接
+ *  报错退出，同 requireEnv 的硬依赖语义一致。 */
+async function cmdReconcileAll() {
+  const { jf, mappings, tmdb, reasoningModel, cacheRoot } = await assemble()
+  if (!tmdb) {
+    console.error('reconcile-all requires TMDB_API_KEY（orchestrator 的 check_series_layout 工具需要真实 TMDB 季表数据）— 请在 .env 里配置')
+    process.exit(2)
+  }
+  const dbPath = join(cacheRoot, 'scout.db')
+  const db = openDb(dbPath)
+  const jobs = new JobsRepo(db)
+  const lib = new LibraryRepo(db)
+  const skipChineseOrigin = (process.env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false'
+  const originResolver: OriginResolver = {
+    originFor: async item => {
+      const ref = await resolveTmdbRefStrict(item, id => jf.getItem(id))
+      return ref ? tmdb.getOriginLanguage(ref.mediaType, ref.tmdbId) : null
+    },
+  }
+  const decision = await runReconcileAll({
+    jf, lib, jobs, model: reasoningModel, tmdb, mappings, skipChineseOrigin, originResolver,
+    now: () => Date.now(), orchestratorJobId: null,
+  })
+  console.log(
+    `[reconcile-all] ${decision.summary} (dispatched ${decision.dispatchedFindSubtitle} find-subtitle, ` +
+    `${decision.dispatchedRealign} realign, spawned ${decision.spawnedSiblings} sibling orchestrators)`
+  )
+  db.close()
+  process.exit(0)
+}
+
 async function cmdWatch() {
-  const { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb } = await assemble()
+  const { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb, reasoningModel } = await assemble()
   const shutdown = new AbortController()
   const roots = mediaRoots(mappings)
   if (roots.length === 0) {
@@ -302,7 +359,7 @@ async function cmdWatch() {
 
   // Create runEpisode closure（I5b: 根限定经 opts 传入）
   const runEpisode = makeRunEpisode(
-    { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb },
+    { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb, reasoningModel },
     lib,
     { mediaRoots: roots },
   )
@@ -325,43 +382,109 @@ async function cmdWatch() {
       }
     : undefined
 
-  // realign 执行闭包（Task 21 的 executeRealign 柯里化）：门在 tmdb 是否配置——计划构建需要
+  // realign 执行依赖（Task 21 的 executeRealign 柯里化）：门在 tmdb 是否配置——计划构建需要
   // TMDB 季表才有确定性闸门，没有 TMDB_API_KEY 时整个 realign 功能（诊断+执行）一起跳过，
   // 行为回退到"只有内容退避梯，没有排布诊断"的现状，不报错、不阻塞正常找字幕流程。
+  // v3 phase ⑦：这份 deps 对象单独具名（不再只活在 executeRealignClosure 的闭包里）——
+  // cmdWatch claim 循环新增的 kind==='worker_task' 分支要把同一份 RealignExecutorDeps 转交给
+  // runRealignWorkerTask（phase ⑥，src/v2/realignWorkerTask.ts）复用，而不是重新拼一份。
   const realignRunEpisode = makeRealignRunEpisode({ makeDeps, withJournal, cacheRoot })
-  const executeRealignClosure = tmdb
-    ? async (realignJob: Job) => {
-        const deps: RealignExecutorDeps = {
-          lib, jobs,
-          jf: {
-            getItem: (id) => jf.getItem(id),
-            getItemsPage: (start, limit) => jf.getItemsPage(start, limit),
-            getScheduledTasks: () => jellyfinClientForRealign.getScheduledTasks(),
-            getVirtualFolders: () => jellyfinClientForRealign.getVirtualFolders(),
-            refreshLibrary: (id) => jellyfinClientForRealign.refreshLibrary(id),
-            deleteItem: (id) => jellyfinClientForRealign.deleteItem(id),
-          },
-          tmdb: { getSeasonTable: (id) => tmdb.getSeasonTable(id) },
-          fetchAnimeLists: () => fetchAnimeListsTable(),
-          runEpisode: realignRunEpisode,
-          now: () => Date.now(),
-          log,
-          sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
-          getSize: (p) => { try { return statSync(p).size } catch { return null } },
-          // CRIT#1：与 makeRunEpisode 的 opts.mediaRoots 同源白名单；IMP#8：镜像/库/验收路径
-          // 全是 Jellyfin 视角，任何 fs 操作前都要经 MEDIA_PATH_MAPPINGS 映射到本地。
-          mediaRoots: roots,
-          mappings,
-        }
-        return executeRealign(realignJob, deps)
+  const realignDeps: RealignExecutorDeps | undefined = tmdb
+    ? {
+        lib, jobs,
+        jf: {
+          getItem: (id) => jf.getItem(id),
+          getItemsPage: (start, limit) => jf.getItemsPage(start, limit),
+          getScheduledTasks: () => jellyfinClientForRealign.getScheduledTasks(),
+          getVirtualFolders: () => jellyfinClientForRealign.getVirtualFolders(),
+          refreshLibrary: (id) => jellyfinClientForRealign.refreshLibrary(id),
+          deleteItem: (id) => jellyfinClientForRealign.deleteItem(id),
+        },
+        tmdb: { getSeasonTable: (id) => tmdb.getSeasonTable(id) },
+        fetchAnimeLists: () => fetchAnimeListsTable(),
+        runEpisode: realignRunEpisode,
+        now: () => Date.now(),
+        log,
+        sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
+        getSize: (p) => { try { return statSync(p).size } catch { return null } },
+        // CRIT#1：与 makeRunEpisode 的 opts.mediaRoots 同源白名单；IMP#8：镜像/库/验收路径
+        // 全是 Jellyfin 视角，任何 fs 操作前都要经 MEDIA_PATH_MAPPINGS 映射到本地。
+        mediaRoots: roots,
+        mappings,
       }
     : undefined
+  const executeRealignClosure = realignDeps
+    ? (realignJob: Job) => executeRealign(realignJob, realignDeps)
+    : undefined
+
+  // find-subtitle worker 依赖（v3 phase ⑦）：mediaRoots 是"已配置的根"白名单（外层沙盒，同
+  // makeRunEpisode/realignDeps 那道门）；FindSubtitleTask.mediaRoot（每个 task 各自的季/影片
+  // 目录）才是 agent 自己受限的内层沙盒——两者不是同一个东西，见 findSubtitleWorkerTask.ts
+  // 的 FindSubtitleTaskMapperDeps 注释。adapters 每次 claim 现建（同旧管线每次子进程重建一次
+  // 的成本量级，非新增开销）。
+  const findSubtitleWorkerTaskDeps = {
+    lib, jf, tmdb, mappings, mediaRoots: roots,
+  }
+
+  // orchestrator 依赖（v3 phase ⑦）：sibling-orchestrator worker_task（taskType==='orchestrate'）
+  // 同样门在 tmdb——makeOrchestratorAgent 的 check_series_layout 工具需要真实 TmdbClient。
+  const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, model: reasoningModel, now: () => Date.now() } : undefined
 
   // 诊断钩子（Task 14 的 makeDiagnoseSeason）：同样门在 tmdb 是否配置——诊断需要 TMDB
   // 季表才有确定性主信号，没有 TMDB_API_KEY 时一并跳过。
   const diagnoseSeasonClosure = tmdb
     ? makeDiagnoseSeason({ lib, jf, tmdb, runs, llm })
     : undefined
+
+  // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
+  // 逐 job Journal（journalStore/withJournal 只服务 callStructured 老管线），api_call 量大信号
+  // 低，只把 error/notice 落一行 log；同 assemble() 里 makeCliProviderPort 的 onEvent 分流。
+  const emitProviderEvent = (e: FetchEvent) => {
+    if (e.event === 'provider_error') log(`find-subtitle worker: provider error (${e.provider}): ${e.message}`)
+    else if (e.event === 'provider_notice') log(`find-subtitle worker: provider notice (${e.provider}): ${e.message}`)
+  }
+
+  // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
+  // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）都已经自己把
+  // 抛出的异常兜进 completeError（worker-exhaustion 要求：find-subtitle worker 撞步数上限/超时/
+  // abort 是抛错，不是结构化 retry_later；一个抛错的 worker 必须让这个 job 失败退避，不能让
+  // daemon 崩）、并自己完成 job 的状态迁移——这里只负责路由，不重复业务逻辑。taskType===
+  // 'realign'/'orchestrate' 在 TMDB_API_KEY 未配置时停车（park）而不是 completeError：接线缺失
+  // 是配置缺陷不是瞬时故障，走 error 轨只会陷入无穷 errorloop（同 executeRealignBranch 的既有
+  // park-not-error 先例）。
+  const handleWorkerTask = async (job: Job): Promise<void> => {
+    let payload: { taskType?: unknown } = {}
+    try {
+      payload = JSON.parse(job.payload ?? '{}')
+    } catch {
+      jobs.completeError(job.id, `worker_task job ${job.id} has unparseable payload: ${job.payload}`, Date.now())
+      return
+    }
+    if (payload.taskType === 'find_subtitle') {
+      const runTask = makeFindSubtitleWorker({
+        model: reasoningModel,
+        adapters: await buildAdapters(emitProviderEvent),
+        cacheRoot,
+      })
+      await runFindSubtitleWorkerTask(job, { ...findSubtitleWorkerTaskDeps, runTask }, jobs, () => Date.now())
+    } else if (payload.taskType === 'realign') {
+      if (!realignDeps) {
+        jobs.park(job.id, 'realign executor not wired (TMDB_API_KEY missing)', Date.now())
+        log(`warn: job ${job.id} worker_task(realign) 未接线（缺 TMDB_API_KEY），已停车`)
+        return
+      }
+      await runRealignWorkerTask(job, realignDeps, jobs, () => Date.now())
+    } else if (payload.taskType === 'orchestrate') {
+      if (!orchestrateWorkerTaskDeps) {
+        jobs.park(job.id, 'orchestrator not wired (TMDB_API_KEY missing)', Date.now())
+        log(`warn: job ${job.id} worker_task(orchestrate) 未接线（缺 TMDB_API_KEY），已停车`)
+        return
+      }
+      await runOrchestrateWorkerTask(job, orchestrateWorkerTaskDeps, jobs)
+    } else {
+      jobs.completeError(job.id, `unknown worker_task taskType: ${String(payload.taskType)}`, Date.now())
+    }
+  }
 
   const daemonDeps: DaemonDeps = {
     lib,
@@ -379,6 +502,15 @@ async function cmdWatch() {
     aggregate: (now) => aggregate(lib, jobs, now),
     gcStaging: () => gcOrphans(roots, new Set()),
     executeJob: async (job) => {
+      // v3 phase ⑦: job.kind==='worker_task' is a THIRD, independent execution path off the
+      // same kind-agnostic claimNext() queue — routed by payload.taskType, never touching the
+      // OLD pipeline's executeJob (v2/executor.ts, still used unchanged for series_season/movie/
+      // realign below). This is what makes claimNext() genuinely serve the old pipeline, the new
+      // find-subtitle worker, and the realign wrapper off one queue, per the phase ⑦ design.
+      if (job.kind === 'worker_task') {
+        await handleWorkerTask(job)
+        return
+      }
       await withJournal(() => executeJob(job, {
         lib,
         jobs,
@@ -417,6 +549,17 @@ async function cmdWatch() {
     },
   }
 
+  // "全仓校验"触发器（v3 phase ⑦ Task 3）：与 cmdReconcileAll（独立 CLI 命令，自己开一份 db 连接）
+  // 共用同一个 runReconcileAll 函数，这里复用 watch 进程里已经打开的 db/lib/jobs/jf 实例，不
+  // 另起一个 SQLite 连接。同 realign/orchestrate worker_task 一样门在 tmdb——check_series_layout
+  // 工具需要真实 TmdbClient；未配置时 startDashboard 收到 undefined，端点返回 503（不是崩溃/悬空）。
+  const reconcileAllClosure = tmdb
+    ? () => runReconcileAll({
+        jf, lib, jobs, model: reasoningModel, tmdb, mappings, skipChineseOrigin, originResolver,
+        now: () => Date.now(), orchestratorJobId: null,
+      })
+    : undefined
+
   // Dashboard v2（媒体库 API + 海报代理，读 v2 SQLite）
   const dashPort = Number(process.env.DASHBOARD_PORT) || 0
   if (dashPort > 0) {
@@ -430,6 +573,7 @@ async function cmdWatch() {
         baseUrl: requireEnv('JELLYFIN_URL'),
         apiKey: requireEnv('JELLYFIN_API_KEY'),
       },
+      reconcileAll: reconcileAllClosure,
     })
     if (dashServer.listening) {
       console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
@@ -625,10 +769,11 @@ async function main() {
   if (cmd === 'run' && values.context) return cmdRun(values.context, values.out!)
   if (cmd === 'run-item' && values['item-id']) return cmdRunItem(values['item-id'])
   if (cmd === 'watch') return cmdWatch()
+  if (cmd === 'reconcile-all') return cmdReconcileAll()
   if (cmd === 'report') return cmdReport(values.since!)
   if (cmd === 'doctor') return cmdDoctor()
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
-  console.error('usage: subtitle-scout run --context <json> [--out <dir>] | run-item --item-id <id> | watch | report [--since <24h|7d|ISO-date-UTC>] | doctor | realign-rollback <archiveDir>')
+  console.error('usage: subtitle-scout run --context <json> [--out <dir>] | run-item --item-id <id> | watch | reconcile-all | report [--since <24h|7d|ISO-date-UTC>] | doctor | realign-rollback <archiveDir>')
   process.exit(2)
 }
 

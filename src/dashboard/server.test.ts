@@ -40,11 +40,15 @@ function distWith(html: string): string {
 const posterFetch = (async (_url: string) =>
   new Response(Buffer.from('IMG'), { status: 200, headers: { 'content-type': 'image/png' } })) as unknown as typeof fetch
 
-async function start(distDir: string, token?: string, fetchImpl: typeof fetch = posterFetch): Promise<{ base: string }> {
+async function start(
+  distDir: string, token?: string, fetchImpl: typeof fetch = posterFetch,
+  reconcileAll?: () => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>,
+): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
     jellyfin: { baseUrl: 'http://jf.local', apiKey: 'SECRET' },
     fetchImpl,
+    reconcileAll,
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
@@ -103,5 +107,49 @@ describe('startDashboard (v2)', () => {
     expect((await fetch(`${base}/api/v2/library?token=s3cret`)).status).toBe(200)
     // poster 也受 token 保护
     expect((await fetch(`${base}/api/poster/item-1`)).status).toBe(401)
+  })
+
+  describe('POST /api/v2/reconcile-all (v3 phase ⑦)', () => {
+    it('invokes the injected reconcileAll callback and returns its result', async () => {
+      const reconcileAll = async () => ({
+        dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
+      })
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
+      })
+    })
+
+    it('returns 503 when reconcileAll is not configured (e.g. TMDB_API_KEY missing)', async () => {
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(res.status).toBe(503)
+    })
+
+    it('rejects non-POST methods with 405', async () => {
+      const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: '' })
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'GET' })
+      expect(res.status).toBe(405)
+    })
+
+    it('requires the configured token (401 without it, 200 with it)', async () => {
+      const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' })
+      const { base } = await start(distWith('<!doctype html>'), 's3cret', posterFetch, reconcileAll)
+      const unauthed = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(unauthed.status).toBe(401)
+      const authed = await fetch(`${base}/api/v2/reconcile-all?token=s3cret`, { method: 'POST' })
+      expect(authed.status).toBe(200)
+    })
+
+    it('returns 500 with the error message when reconcileAll throws', async () => {
+      const reconcileAll = async () => { throw new Error('orchestrator blew up') }
+      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      expect(res.status).toBe(500)
+      expect((await res.json()).error).toMatch(/orchestrator blew up/)
+    })
   })
 })

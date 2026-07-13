@@ -358,6 +358,18 @@ export function buildRuns(db: ScoutDb, offset: number, limit: number): RunHistor
   }))
 }
 
+// ---- Reconcile-all (v3 phase ⑦ "全仓校验" 触发器) ----
+
+/** Structurally matches src/agent/orchestratorAgent.ts's OrchestratorDecision — declared as its
+ *  own DTO here (not imported from agent/) to keep this dashboard-facing layer decoupled from
+ *  agent internals, same boundary convention as every other *DTO in this file. */
+export interface ReconcileAllResultDTO {
+  dispatchedFindSubtitle: number
+  dispatchedRealign: number
+  spawnedSiblings: number
+  summary: string
+}
+
 // ---- Poster proxy (Jellyfin Primary 图代理) ----
 
 export interface PosterProxyDeps {
