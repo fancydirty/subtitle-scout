@@ -69,8 +69,13 @@ function finalStep(output: unknown) {
  *  Args are shaped the way the REAL model (mimo-v2.5, per live step-trace) emits them, NOT clean
  *  typed args: download_candidate gets the COMPOSITE candidateKey `id` the agent is shown (e.g.
  *  "assrt:1") — never a bare providerId — and a STRING-encoded fileIndex ("None" for null); the
- *  no-candidate finalize emits the string "None" for its null fields. Feeding clean typed args here
- *  is exactly what let the two param-flow bugs hide from the offline suite. */
+ *  no-candidate finalize OMITS its four installed-only fields entirely (installedPath/
+ *  installedLanguage/candidateProvider/candidateProviderId) rather than sending null or "None" —
+ *  proven live (v3 live test matrix, 2026-07-13, 3/3 real runs). Feeding clean typed args, or even
+ *  the "None"-string shape this mock used before, is exactly what let param-flow bugs (this one
+ *  included — see coerce.ts's isNullishOrOmitted) hide from the offline suite: the finalize tool's
+ *  inputSchema failed on the omitted keys (`.nullable()` doesn't accept `undefined`), execute()
+ *  never ran, and readFinalized() threw a misleading "never called finalize" error. */
 function scriptFixture(fixture: EvalFixture) {
   let call = 0
   return async (options: LanguageModelV4CallOptions) => {
@@ -79,7 +84,8 @@ function scriptFixture(fixture: EvalFixture) {
     if (fixture.chosenCandidate == null) {
       return finalStep({
         decision: fixture.expected.decision, reason: `no plausible candidate for ${fixture.name}`,
-        installedPath: 'None', installedLanguage: 'None', candidateProvider: 'None', candidateProviderId: 'None',
+        // installedPath/installedLanguage/candidateProvider/candidateProviderId: OMITTED, not
+        // null/"None" — this is the real-model arg shape, not a hypothetical.
       })
     }
     if (call === 2) return toolCallStep('c2', 'download_candidate', {
