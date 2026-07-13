@@ -1,0 +1,17 @@
+{
+  "name": "ongoing-series",
+  "jobId": "eval-ongoing-series",
+  "task": {
+    "videoFilename": "Running.Show.S05E12.mkv", "title": "Running Show", "originalTitle": null,
+    "year": 2021, "season": 5, "episode": 12, "alternativeTitles": ["长跑剧"], "overview": null,
+    "runtimeMinutes": 45, "providerIds": { "tmdb": "9999" }
+  },
+  "candidates": [
+    { "provider": "zimuku", "providerId": "z-501", "videoName": "Running.Show.S05E12.HDTV.x264-GROUP",
+      "nativeName": "长跑剧", "language": null, "subtype": null, "releaseSite": "zimuku", "uploadDate": null,
+      "fileList": [] }
+  ],
+  "chosenCandidate": { "provider": "zimuku", "providerId": "z-501", "fileIndex": null },
+  "downloadedSrt": "1\n00:00:02,000 --> 00:00:04,500\n第十二集台词\n",
+  "expected": { "decision": "installed", "installedFilename": "Running.Show.S05E12.zh-Hans.srt" }
+}

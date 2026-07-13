@@ -1,0 +1,19 @@
+{
+  "name": "old-movie",
+  "jobId": "eval-old-movie",
+  "task": {
+    "videoFilename": "Old.Classic.1987.mkv", "title": "Old Classic", "originalTitle": "Old Classic",
+    "year": 1987, "season": null, "episode": null, "alternativeTitles": ["经典老片"], "overview": null,
+    "runtimeMinutes": 118, "providerIds": { "imdb": "tt0000000" }
+  },
+  "candidates": [
+    { "provider": "assrt", "providerId": "9001", "videoName": "Some.Unrelated.Movie.1999.srt", "nativeName": null,
+      "language": "zh-CN", "subtype": null, "releaseSite": null, "uploadDate": null, "fileList": [] },
+    { "provider": "opensubtitles", "providerId": "9002", "videoName": "Old.Classic.1987.BluRay.x264",
+      "nativeName": "经典老片", "language": "zh-CN", "subtype": null, "releaseSite": null, "uploadDate": null,
+      "fileList": [] }
+  ],
+  "chosenCandidate": { "provider": "opensubtitles", "providerId": "9002", "fileIndex": null },
+  "downloadedSrt": "1\n00:00:05,000 --> 00:00:08,000\n经典台词\n",
+  "expected": { "decision": "installed", "installedFilename": "Old.Classic.1987.zh-Hans.srt" }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "old-series",
+  "jobId": "eval-old-series",
+  "task": {
+    "videoFilename": "Forgotten.Show.S02E03.mkv", "title": "Forgotten Show", "originalTitle": null,
+    "year": 2003, "season": 2, "episode": 3, "alternativeTitles": [], "overview": null,
+    "runtimeMinutes": 42, "providerIds": {}
+  },
+  "candidates": [
+    { "provider": "assrt", "providerId": "1", "videoName": "Completely.Different.Show.S01E01.srt", "nativeName": null,
+      "language": "zh-CN", "subtype": null, "releaseSite": null, "uploadDate": null, "fileList": [] }
+  ],
+  "chosenCandidate": null,
+  "downloadedSrt": null,
+  "expected": { "decision": "no_safe_match", "installedFilename": null }
+}
