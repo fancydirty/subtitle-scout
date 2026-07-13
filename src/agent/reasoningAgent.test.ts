@@ -103,6 +103,46 @@ describe('makeReasoningAgent (finalize-tool mode)', () => {
     expect(() => readFinalized()).toThrow(/finalize/)
   })
 
+  // Diagnosability regression guard (v3 live test matrix, 2026-07-13): the production bug wasn't
+  // "finalize never called" — it was "finalize called, but args failed schema validation, so
+  // execute() never ran and captured stayed unset". The OLD generic message ("finished without
+  // calling the finalize tool") was actively misleading for this case: it reads as if the model
+  // never tried, when it did. readFinalized() must now tell these two failure modes apart and
+  // surface the raw (invalid) args it saw.
+  it('readFinalized() reports that finalize WAS called but failed schema validation, including the raw args, when execute() never ran', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+        usage: {
+          inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: 3, text: undefined, reasoning: undefined },
+        },
+        // Missing the required 'reason' field — DecisionSchema requires it. Mirrors the real
+        // production bug: the model omitted/mis-shaped a finalize arg, tool-input schema
+        // validation failed BEFORE execute() ever ran, and hasToolCall('finalize') still stopped
+        // the loop (it fires on the call's presence, not its validity).
+        content: [
+          { type: 'tool-call' as const, toolCallId: 'f1', toolName: 'finalize', input: JSON.stringify({ verdict: 'match' }) },
+        ],
+        warnings: [],
+      }),
+    })
+    const { agent, readFinalized } = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
+    await agent.generate({ prompt: 'p' })
+    let thrown: Error | undefined
+    try {
+      readFinalized()
+    } catch (err) {
+      thrown = err as Error
+    }
+    expect(thrown).toBeDefined()
+    expect(thrown!.message).toMatch(/finalize/i)
+    // Must NOT read as "never called finalize" — it WAS called; the args were invalid.
+    expect(thrown!.message).toMatch(/failed schema validation/i)
+    // Raw args echoed back for diagnosis.
+    expect(thrown!.message).toContain('verdict')
+  })
+
   // Factory-boundary regression guard: proves reasoning:'high' becomes the model's `reasoning`
   // call option even when driven THROUGH makeReasoningAgent (not just generateText directly), so
   // it can't silently regress if the `?? 'high'` default is dropped or the settings cast eats it.
