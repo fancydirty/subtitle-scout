@@ -1,0 +1,17 @@
+{
+  "name": "messy-layout",
+  "jobId": "eval-messy-layout",
+  "task": {
+    "videoFilename": "Spy.Family.S01E26.mkv", "title": "Spy x Family", "originalTitle": "SPY×FAMILY",
+    "year": 2022, "season": 1, "episode": 26, "alternativeTitles": ["间谍过家家"], "overview": null,
+    "runtimeMinutes": 24, "providerIds": { "tmdb": "120089" }
+  },
+  "candidates": [
+    { "provider": "assrt", "providerId": "1", "videoName": "Spy.Family.S02E01.1080p", "nativeName": "间谍过家家",
+      "language": "zh-CN", "subtype": null, "releaseSite": null, "uploadDate": null,
+      "fileList": [{ "index": 0, "name": "Spy.Family.S02E01.srt" }] }
+  ],
+  "chosenCandidate": null,
+  "downloadedSrt": null,
+  "expected": { "decision": "no_safe_match", "installedFilename": null }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "new-release",
+  "jobId": "eval-new-release",
+  "task": {
+    "videoFilename": "Show.S01E01.mkv", "title": "Show", "originalTitle": null,
+    "year": 2026, "season": 1, "episode": 1, "alternativeTitles": [], "overview": null,
+    "runtimeMinutes": 24, "providerIds": {}
+  },
+  "candidates": [
+    { "provider": "assrt", "providerId": "1", "videoName": "Show.S01E01.1080p.WEB-DL", "nativeName": null,
+      "language": "zh-CN", "subtype": null, "releaseSite": null, "uploadDate": "2026-07-13",
+      "fileList": [{ "index": 0, "name": "Show.S01E01.srt" }] }
+  ],
+  "chosenCandidate": { "provider": "assrt", "providerId": "1", "fileIndex": null },
+  "downloadedSrt": "1\n00:00:01,000 --> 00:00:02,000\nhello\n\n2\n00:00:03,000 --> 00:00:05,000\nworld\n",
+  "expected": { "decision": "installed", "installedFilename": "Show.S01E01.zh-Hans.srt" }
+}

@@ -97,6 +97,7 @@
 - **数据安全(整理动用户文件)**:realign 的五重防线(闸门全过才动/原子 rename/先行清单可回滚/永不删除/空挂载哨兵)在 v3 里由整理子代理继承,不因 agent 化而放松。
 - **wrong-repo**:实现锁定 subtitle-scout。
 - **回归**:旧 pipeline 保留到新路径真站验收通过;每阶段双包绿(root+web)+ tsc。
+- **部署期冲突**:旧 extraBody thinking-disabled 逃生舱若还在算子配置里,可能与新 reasoning_effort:high 冲突;阶段⑧退役旧路径时一并清理算子配置。
 
 ## 测试与验收(北极星级硬门)
 
