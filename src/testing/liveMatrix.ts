@@ -1,0 +1,85 @@
+import { readdirSync, readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import type { FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
+
+/** Resource-type axis (test-matrix spec §两轴). Chinese-content types map to assrt as primary
+ *  provider; `western` may use opensubtitles. */
+export const RESOURCE_TYPES = ['anime', 'cdrama', 'western', 'movie'] as const
+export type ResourceType = typeof RESOURCE_TYPES[number]
+
+/** Source-return-form axis (spec §两轴) + the mandatory counter-example. `none` = the source
+ *  genuinely returns nothing usable → the worker must honestly finalize no_safe_match
+ *  ("不比 Bazarr 烂" floor). */
+export const SOURCE_FORMS = ['only-pack', 'only-single', 'mixed', 'season-pack', 'multi-version', 'none'] as const
+export type SourceForm = typeof SOURCE_FORMS[number]
+
+/** The expected correct outcome for a cell — asserted by both the in-suite replay test and the
+ *  out-of-band matrix runner. No confidence score (north star #1); we assert the *decision* and,
+ *  for `installed`, which candidate/file/language is correct. */
+export interface CellExpectation {
+  decision: 'installed' | 'no_safe_match' | 'retry_later'
+  /** installed only: the composite candidate the worker should have chosen. */
+  candidateProvider?: string
+  candidateProviderId?: string
+  /** installed only: the basename that must appear beside the video, and its language tag. */
+  installedFilename?: string
+  installedLanguage?: 'zh-Hans' | 'zh-Hant'
+}
+
+/** On-disk `cell.json`. `task` omits the three runtime-supplied fields (the runner/test fills
+ *  jobId/mediaRoot/videoPath), matching EvalFixture in findSubtitleWorker.eval.test.ts. */
+export interface CellFile {
+  task: Omit<FindSubtitleTask, 'jobId' | 'mediaRoot' | 'videoPath'>
+  expected: CellExpectation
+  note: string
+}
+
+export interface LoadedCell extends CellFile {
+  resourceType: ResourceType
+  sourceForm: SourceForm
+  dir: string
+  responsesDir: string
+  responseCount: number
+}
+
+/** One row in the matrix. `seeded` gates the in-suite test: only cells whose fixtures actually
+ *  exist are asserted; unseeded cells are the auto-research backlog (populate via the runbook). */
+export interface CatalogEntry {
+  resourceType: ResourceType
+  sourceForm: SourceForm
+  seeded: boolean
+  /** Human note: the concrete resource this cell represents. */
+  represents: string
+}
+
+/** The A-layer matrix. Seeded = fixtures present in this repo; the rest are the populate-me
+ *  backlog. Start with the anchor (anime/only-pack — the live-acceptance cell) and grow. */
+export const CELL_CATALOG: CatalogEntry[] = [
+  { resourceType: 'anime', sourceForm: 'only-pack', seeded: true, represents: 'Attack on Titan S01E01 — only a Complete-Series pack exists (live-acceptance cell)' },
+  { resourceType: 'anime', sourceForm: 'season-pack', seeded: false, represents: 'Attack on Titan — single-season pack, not full series' },
+  { resourceType: 'anime', sourceForm: 'only-single', seeded: false, represents: 'Scissor Seven — per-episode subtitles only' },
+  { resourceType: 'anime', sourceForm: 'mixed', seeded: false, represents: 'anime with both pack and single candidates' },
+  { resourceType: 'anime', sourceForm: 'multi-version', seeded: false, represents: 'same episode, 简/繁/日 versions' },
+  { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: false, represents: 'Nirvana in Fire — whole-series pack' },
+  { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: false, represents: '琅琊榜 — 简/繁 versions' },
+  { resourceType: 'western', sourceForm: 'only-single', seeded: false, represents: 'Peacemaker / Young Sheldon — per-episode' },
+  { resourceType: 'western', sourceForm: 'mixed', seeded: false, represents: 'Love Death & Robots — anthology' },
+  { resourceType: 'movie', sourceForm: 'multi-version', seeded: false, represents: 'Hero / Wandering Earth — 剪辑版/时长 variants' },
+  { resourceType: 'movie', sourceForm: 'none', seeded: false, represents: 'obscure film — no correct subtitle exists (counter-example floor)' },
+]
+
+const FIXTURE_ROOT = 'fixtures/v3-live'
+
+export function cellDir(resourceType: ResourceType, sourceForm: SourceForm): string {
+  return join(FIXTURE_ROOT, resourceType, sourceForm)
+}
+
+export function loadCell(resourceType: ResourceType, sourceForm: SourceForm): LoadedCell {
+  const dir = cellDir(resourceType, sourceForm)
+  const file = JSON.parse(readFileSync(join(dir, 'cell.json'), 'utf8')) as CellFile
+  const responsesDir = join(dir, 'responses')
+  const responseCount = existsSync(responsesDir)
+    ? readdirSync(responsesDir).filter(f => f.endsWith('.json')).length
+    : 0
+  return { ...file, resourceType, sourceForm, dir, responsesDir, responseCount }
+}
