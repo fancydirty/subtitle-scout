@@ -9,7 +9,8 @@ import { inspectSubtitle } from '../files/subtitleInspect.js'
 import { install } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
 import { formatEpisodeCode, matchesEpisodeCode } from '../core/episode.js'
-import { PROVIDERS } from '../core/schemas.js'
+import { parseCandidateKey } from '../core/schemas.js'
+import { coercibleInt, coercibleNullableInt } from './coerce.js'
 
 export interface DownloadCandidateDeps {
   adapters: FetchAdapter[]
@@ -30,16 +31,31 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
     description:
       'Resolve a candidate to a download URL, download it, unpack/decode it into your ' +
       'sandbox, and inspect its structural signals (cue count, time span, detected script). ' +
+      'candidateId is the candidate\'s `id` exactly as shown by search_source / list_candidates / ' +
+      'get_candidate (e.g. "assrt:667241") — pass it back whole. ' +
       'Use fileIndex to pull ONE file out of a season pack / collection: set it to the index ' +
       'of the entry in the candidate\'s fileList (seen via get_candidate) that names your ' +
       'target episode; pass fileIndex: null for a plain single-file candidate. ' +
       'Does NOT install it — call install_subtitle once you decide it is a match.',
     inputSchema: z.object({
-      provider: z.enum(PROVIDERS),
-      providerId: z.string(),
-      fileIndex: z.number().int().nullable(),
+      // The agent only ever sees ONE identifier per candidate — candidateKey(c) = the composite
+      // "provider:providerId" surfaced as `id` (resultHandles.ts). Accept that composite here and
+      // split it back into a BARE providerId + provider below, so the CandidateRef reaching runResolve
+      // carries the provider-native id the adapters' resolve() needs (assrt does Number(ref.providerId)).
+      candidateId: z.string(),
+      // Real models string-encode numbers ("10") and emit "None"/"null"/"" for a null — coerce them.
+      fileIndex: coercibleNullableInt,
     }),
-    execute: async ({ provider, providerId, fileIndex }) => {
+    execute: async ({ candidateId, fileIndex }) => {
+      const parsed = parseCandidateKey(candidateId)
+      if (!parsed) {
+        return {
+          error:
+            `unrecognized candidate id: ${candidateId} — pass the candidate's \`id\` exactly as shown ` +
+            `by search_source/list_candidates/get_candidate (e.g. "assrt:667241")`,
+        }
+      }
+      const { provider, providerId } = parsed
       const { url, filename, headers } = await runResolve({ provider, providerId, fileIndex }, deps.adapters)
       const { bytes, contentType } = await downloadDirect(url, { headers, fetchImpl: deps.fetchImpl })
       const artifactFilename = filename ?? (contentType?.includes('zip') ? 'download.zip' : 'download.srt')
@@ -104,8 +120,10 @@ export function makeCheckEpisodeCodeSafetyTool() {
       'true result does not mean accept.',
     inputSchema: z.object({
       filename: z.string(),
-      season: z.number().int(),
-      episode: z.number().int(),
+      // Real models string-encode these ("1"/"5") — coerce so the advisory check's tool-arg
+      // validation does not fail before execute runs.
+      season: coercibleInt,
+      episode: coercibleInt,
     }),
     execute: async ({ filename, season, episode }) => {
       const expectedCode = formatEpisodeCode(season, episode)
