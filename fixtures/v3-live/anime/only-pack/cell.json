@@ -1,0 +1,22 @@
+{
+  "task": {
+    "videoFilename": "Attack.on.Titan.S01E01.mkv",
+    "title": "Attack on Titan",
+    "originalTitle": "進撃の巨人",
+    "year": 2013,
+    "season": 1,
+    "episode": 1,
+    "alternativeTitles": ["進擊的巨人", "进击的巨人"],
+    "overview": null,
+    "runtimeMinutes": 24,
+    "providerIds": { "tmdb": "1429" }
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "900900",
+    "installedFilename": "Attack.on.Titan.S01E01.zh-Hant.srt",
+    "installedLanguage": "zh-Hant"
+  },
+  "note": "Only candidate is a S1+S2+S3+OAD complete-series pack; the worker must enter the pack's filelist and pick S01E01 by fileIndex. This is the cell the first live acceptance passed."
+}
