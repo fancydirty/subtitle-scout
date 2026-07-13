@@ -43,6 +43,43 @@ describe('makeFileResultSetStore', () => {
     expect(store.count(id1)).toBe(1)
     expect(store.count(id2)).toBe(2)
   })
+
+  // Lifecycle hooks: every search_source call leaves a <uuid>.json behind with no other cleanup
+  // path (the reviewer's leak finding). delete()/gc() are the hooks a future worker uses to reap
+  // finished jobs' result sets — not wired into anything yet, just proven here.
+  it('delete() removes a result set so it becomes unknown afterward', () => {
+    const store = makeFileResultSetStore(dir)
+    const id = store.create([{ a: 1 }])
+    store.delete(id)
+    expect(() => store.count(id)).toThrow(/unknown result set/)
+  })
+
+  it('delete() on an unknown id is a best-effort no-op, not a throw', () => {
+    const store = makeFileResultSetStore(dir)
+    expect(() => store.delete('does-not-exist')).not.toThrow()
+  })
+
+  it('gc() removes every result set not in activeIds and returns the count removed', () => {
+    const store = makeFileResultSetStore(dir)
+    const keep = store.create([{ a: 1 }])
+    const drop1 = store.create([{ a: 2 }])
+    const drop2 = store.create([{ a: 3 }])
+    const cleaned = store.gc(new Set([keep]))
+    expect(cleaned).toBe(2)
+    expect(store.count(keep)).toBe(1)
+    expect(() => store.count(drop1)).toThrow(/unknown result set/)
+    expect(() => store.count(drop2)).toThrow(/unknown result set/)
+  })
+
+  it('gc() with all ids active removes nothing', () => {
+    const store = makeFileResultSetStore(dir)
+    const id1 = store.create([{ a: 1 }])
+    const id2 = store.create([{ a: 2 }])
+    const cleaned = store.gc(new Set([id1, id2]))
+    expect(cleaned).toBe(0)
+    expect(store.count(id1)).toBe(1)
+    expect(store.count(id2)).toBe(1)
+  })
 })
 
 function fakeCandidate(providerId: string, videoName: string): SubtitleCandidate {

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, rmSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { tool } from 'ai'
@@ -11,6 +11,16 @@ export interface ResultSetStore {
   count(id: string): number
   list(id: string, offset: number, limit: number): unknown[]
   get(id: string, index: number): unknown | null
+  /** Delete a single result set's file. Best-effort, like stagingSandbox.cleanup — a delete
+   *  failure (permission/mount hiccup, or the id already being gone) must never throw and
+   *  block the caller. */
+  delete(id: string): void
+  /** GC every result set NOT in `activeIds` — mirrors stagingSandbox.gcOrphans's shape and
+   *  best-effort-per-entry semantics (one bad entry never blocks the rest). Returns the count
+   *  removed. Every search_source call leaves a `<uuid>.json` behind with no other cleanup path,
+   *  so a caller (a future phase ③ worker) needs this hook to reap finished jobs' result sets —
+   *  not wired into anything yet, this is just the lifecycle hook. */
+  gc(activeIds: Set<string>): number
 }
 
 /** File-backed handle store for search_source's full result sets (design: "写 DB/文件,只返回
@@ -44,6 +54,34 @@ export function makeFileResultSetStore(dir: string): ResultSetStore {
     get(id, index) {
       const items = read(id)
       return items[index] ?? null
+    },
+    delete(id) {
+      try {
+        rmSync(pathFor(id), { force: true })
+      } catch {
+        // best-effort: mirrors stagingSandbox.cleanup — a delete failure must never block the caller
+      }
+    },
+    gc(activeIds) {
+      let cleaned = 0
+      let entries: string[]
+      try {
+        entries = readdirSync(dir)
+      } catch {
+        return 0 // best-effort: dir listing failed (permission/mount hiccup) — nothing to clean this pass
+      }
+      for (const name of entries) {
+        if (!name.endsWith('.json')) continue // skip stray *.json.tmp from an interrupted create()
+        const id = name.slice(0, -'.json'.length)
+        if (activeIds.has(id)) continue
+        try {
+          rmSync(join(dir, name), { force: true })
+          cleaned++
+        } catch {
+          // best-effort: a single entry's cleanup failure must not block the rest (gcOrphans idiom)
+        }
+      }
+      return cleaned
     },
   }
 }
