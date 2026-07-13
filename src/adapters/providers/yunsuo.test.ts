@@ -1,7 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { detectChallenge, parseChallenge, solveYunsuoChallenge, ZimukuChallengeError } from './yunsuo.js'
+import {
+  detectChallenge, parseChallenge, solveYunsuoChallenge, ZimukuChallengeError,
+  type YunsuoChallenge, type YunsuoChallengeForm, type YunsuoChallengeRedirect,
+} from './yunsuo.js'
 import { StructuredOutputError } from '../../agent/llm.js'
+
+/** 窄化辅助:先确认 kind 再访问形状专属字段,比每处都写 if/throw 样板更省事。 */
+function asForm(c: YunsuoChallenge): YunsuoChallengeForm {
+  if (c.kind !== 'form') throw new Error(`expected 'form' challenge shape, got '${c.kind}'`)
+  return c
+}
+function asRedirect(c: YunsuoChallenge): YunsuoChallengeRedirect {
+  if (c.kind !== 'redirect') throw new Error(`expected 'redirect' challenge shape, got '${c.kind}'`)
+  return c
+}
 
 describe('detectChallenge', () => {
   it('detects the YunsuoAutoJump marker', () => {
@@ -15,28 +28,28 @@ describe('detectChallenge', () => {
   })
 })
 
-describe('parseChallenge', () => {
+describe('parseChallenge (form shape — synthetic fixture, kept for backward compat)', () => {
   const html = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
 
   it('extracts the absolute form action', () => {
-    const form = parseChallenge(html, 'https://www.zimuku.org')
+    const form = asForm(parseChallenge(html, 'https://www.zimuku.org'))
     expect(form.action).toBe('https://www.zimuku.org/aq_wzws_confirm.html')
   })
   it('extracts hidden fields verbatim', () => {
-    const form = parseChallenge(html, 'https://www.zimuku.org')
+    const form = asForm(parseChallenge(html, 'https://www.zimuku.org'))
     expect(form.fields).toEqual({ wzws_sessionid: '8f2c9a1b3e4d5f60', return_url: '/detail/58421.html' })
   })
   it('extracts the captcha text input name', () => {
-    const form = parseChallenge(html, 'https://www.zimuku.org')
+    const form = asForm(parseChallenge(html, 'https://www.zimuku.org'))
     expect(form.captchaFieldName).toBe('sec_code')
   })
   it('extracts the absolute captcha image url', () => {
-    const form = parseChallenge(html, 'https://www.zimuku.org')
+    const form = asForm(parseChallenge(html, 'https://www.zimuku.org'))
     expect(form.imageUrl).toBe('https://www.zimuku.org/aq_wzws_security_verify_img?r=0.483920')
   })
-  it('throws when the page has no form (unexpected challenge shape)', () => {
+  it('throws when the page has neither a <form> nor the redirect-challenge markers (unexpected challenge page shape)', () => {
     expect(() => parseChallenge('<html><body>no form here</body></html>', 'https://www.zimuku.org'))
-      .toThrow(/no <form/)
+      .toThrow(/unexpected challenge page shape/)
   })
 
   it('is attribute-order and quote agnostic: value-before-name, type-last, single-quoted action, missing explicit type', () => {
@@ -54,7 +67,7 @@ describe('parseChallenge', () => {
         <input maxlength="6" name="sec_code" />
       </form>
     `
-    const form = parseChallenge(html, 'https://www.zimuku.org')
+    const form = asForm(parseChallenge(html, 'https://www.zimuku.org'))
     expect(form.action).toBe('https://www.zimuku.org/confirm.html')
     expect(form.fields).toEqual({ wzws_sessionid: 'tok123', return_url: '/detail/1.html' })
     expect(form.captchaFieldName).toBe('sec_code')
@@ -69,12 +82,53 @@ describe('parseChallenge', () => {
         <img src="/verify_img" />
       </form>
     `
-    const form = parseChallenge(html, 'https://www.zimuku.org')
+    const form = asForm(parseChallenge(html, 'https://www.zimuku.org'))
     expect(form.captchaFieldName).toBe('sec_code')
   })
 })
 
-describe('solveYunsuoChallenge', () => {
+describe('parseChallenge (redirect shape — real zimuku.org JS-redirect challenge page, no <form>)', () => {
+  const html = readFileSync('fixtures/zimuku/real-challenge.html', 'utf8')
+
+  it('detects the redirect shape since the real page has no <form>', () => {
+    const challenge = parseChallenge(html, 'https://www.zimuku.org')
+    expect(challenge.kind).toBe('redirect')
+  })
+
+  it('extracts the GET-redirect submit URL prefix from the YunsuoAutoJump self.location + stringToHex(...) line', () => {
+    const challenge = asRedirect(parseChallenge(html, 'https://www.zimuku.org'))
+    expect(challenge.submitUrlPrefix).toBe('https://www.zimuku.org/?security_verify_img=')
+  })
+
+  it('hex-encodes baseUrl as the srcurl cookie value (stand-in for window.location.href)', () => {
+    const challenge = asRedirect(parseChallenge(html, 'https://www.zimuku.org'))
+    // stringToHex("https://www.zimuku.org") — each char -> 2-digit hex of its charCode
+    expect(challenge.srcurlCookieValue).toBe('68747470733a2f2f7777772e7a696d756b752e6f7267')
+  })
+
+  it('extracts the captcha image as a data: URI verbatim, without resolving it against baseUrl', () => {
+    const challenge = asRedirect(parseChallenge(html, 'https://www.zimuku.org'))
+    expect(challenge.imageUrl).toBe('data:image/bmp;base64,WVVOU1VPLUNBUFRDSEEtQllURVM=')
+  })
+
+  it('throws a redirect-specific error when id="intext" is present but the verifyimg img is missing', () => {
+    const html2 = `<html><body>
+      <script>self.location = "/?security_verify_img=" + stringToHex(text);</script>
+      <input id="intext" type="text">
+    </body></html>`
+    expect(() => parseChallenge(html2, 'https://www.zimuku.org')).toThrow(/class="verifyimg"/)
+  })
+
+  it('throws a redirect-specific error when intext + verifyimg are present but there is no self.location + stringToHex redirect line', () => {
+    const html2 = `<html><body>
+      <input id="intext" type="text">
+      <img class="verifyimg" src="data:image/bmp;base64,AAAA">
+    </body></html>`
+    expect(() => parseChallenge(html2, 'https://www.zimuku.org')).toThrow(/self\.location/)
+  })
+})
+
+describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backward compat)', () => {
   const html = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
 
   it('fetches the captcha image, calls solve, submits digits, and returns the security_session_verify cookie on first try', async () => {
@@ -207,5 +261,57 @@ describe('solveYunsuoChallenge', () => {
     // maxAttempts=2, retryDelayMs=5, jitterRangeMs 默认 0 → 恰好一次 5ms 定长延迟,不应明显超出
     expect(Date.now() - t0).toBeLessThan(200)
     expect(submitCount).toBe(2)
+  })
+})
+
+describe('solveYunsuoChallenge (redirect shape — real zimuku.org JS-redirect challenge page)', () => {
+  const html = readFileSync('fixtures/zimuku/real-challenge.html', 'utf8')
+
+  it('decodes the data: URI captcha image locally (no network fetch), GETs the hex-encoded submit URL with the srcurl cookie, and returns the security_session_verify cookie', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(String(url)).toBe('https://www.zimuku.org/?security_verify_img=3734353034')
+      expect(init?.method ?? 'GET').toBe('GET') // GET redirect, not a form POST
+      expect((init?.headers as Record<string, string> | undefined)?.Cookie)
+        .toBe('srcurl=68747470733a2f2f7777772e7a696d756b752e6f7267')
+      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=abc123; Path=/; HttpOnly' } })
+    })
+    const solve = vi.fn(async (imageBytes: Buffer) => {
+      expect(imageBytes.toString('utf8')).toBe('YUNSUO-CAPTCHA-BYTES') // decoded straight from the data: URI
+      return { digits: '74504' }
+    })
+    const r = await solveYunsuoChallenge(
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html,
+    )
+    expect(r.cookie).toBe('security_session_verify=abc123')
+    expect(fetchImpl).toHaveBeenCalledTimes(1) // 图片本地解码,唯一一次网络调用是提交 GET
+    expect(solve).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries (re-decoding the same embedded captcha) on a wrong-digits rejection, up to maxAttempts, then throws ZimukuChallengeError', async () => {
+    let submitCount = 0
+    const fetchImpl = vi.fn(async () => {
+      submitCount++
+      return new Response('rejected') // no set-cookie header → treated as wrong digits
+    })
+    const solve = vi.fn(async () => ({ digits: '00000' }))
+    await expect(
+      solveYunsuoChallenge({ fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 3, 1),
+    ).rejects.toThrow(ZimukuChallengeError)
+    expect(submitCount).toBe(3) // 有界:恰好 maxAttempts 次提交
+  })
+
+  it('succeeds on the Nth attempt after N-1 rejections', async () => {
+    let submitCount = 0
+    const fetchImpl = vi.fn(async () => {
+      submitCount++
+      if (submitCount < 3) return new Response('rejected')
+      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=xyz; Path=/' } })
+    })
+    const solve = vi.fn(async () => ({ digits: '11111' }))
+    const r = await solveYunsuoChallenge(
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 5, 1,
+    )
+    expect(r.cookie).toBe('security_session_verify=xyz')
+    expect(submitCount).toBe(3)
   })
 })

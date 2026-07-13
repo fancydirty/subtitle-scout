@@ -1,0 +1,29 @@
+<html><head>
+<script>
+function stringToHex(str) {
+  var val = "";
+  for (var i = 0; i < str.length; i++) {
+    val += str.charCodeAt(i).toString(16);
+  }
+  return val;
+}
+function YunsuoAutoJump() {
+  var text = document.getElementById("intext").value;
+  if (text == "") { alert('验证码不能为空'); }
+  else {
+    var curlocation = window.location.href;
+    if (-1 == curlocation.indexOf("security_verify_")) {
+      document.cookie = "srcurl=" + stringToHex(window.location.href) + ";path=/;";
+    }
+    self.location = "/?security_verify_img=" + stringToHex(text);
+  }
+}
+function EnterJump() {
+  if (window.event.keyCode == 13) { YunsuoAutoJump(); }
+}
+</script>
+</head>
+<body onkeypress="EnterJump()">
+<input id="intext" type="text" style="width: 100px; height: 28px;">
+<img class="verifyimg" alt="verify_img" src="data:image/bmp;base64,WVVOU1VPLUNBUFRDSEEtQllURVM=">
+</body></html>
