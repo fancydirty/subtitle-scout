@@ -5,17 +5,51 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { mirrorExceedsSeasonTable } from './diagnoseSeason.js'
 
+export interface MissingSeasonRow { kind: 'season'; seriesId: string; season: number; missing: number }
+export interface MissingMovieRow { kind: 'movie'; movieId: string; name: string }
+export type MissingCoverageRow = MissingSeasonRow | MissingMovieRow
+
+export interface MissingCoveragePage {
+  rows: MissingCoverageRow[]
+  total: number
+  offset: number
+  hasMore: boolean
+}
+
+const DEFAULT_MISSING_COVERAGE_LIMIT = 50
+const MAX_MISSING_COVERAGE_LIMIT = 200
+
+/** Paginated (mirrors resultHandles.ts's list_candidates(id, offset, limit) shape) — the 100-cap
+ *  on dispatch exists specifically to bound how much the orchestrator ingests per turn, and an
+ *  unbounded inline dump here would defeat that premise on a large-enough library even though
+ *  season-aggregation keeps the realistic common case small (5000 episodes -> ~200 season rows).
+ *  Seasons and movies are combined into one flat, offset-addressable list rather than paginated
+ *  separately, so a single (offset, limit) pair pages through the whole backlog. */
 export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'>, now: () => number) {
   return tool({
     description:
       'Read the mechanical pre-scan\'s living-doc: which series/seasons and movies are ' +
       'currently missing a Chinese subtitle. This is factual bookkeeping only — it does not ' +
-      'judge whether any particular subtitle is correct.',
-    inputSchema: z.object({}),
-    execute: async () => ({
-      missingSeasons: lib.missingBySeason(now()),
-      missingMovies: lib.missingMovies(now()).map(m => ({ id: m.id, name: m.name })),
+      'judge whether any particular subtitle is correct. Paginated: returns at most `limit` ' +
+      'rows per call (default 50, max 200) starting at `offset`. When `hasMore` is true, call ' +
+      'again with a higher `offset` to see the rest — do not assume one call returned the whole ' +
+      'backlog.',
+    inputSchema: z.object({
+      offset: z.number().int().min(0).default(0),
+      limit: z.number().int().min(1).max(MAX_MISSING_COVERAGE_LIMIT).default(DEFAULT_MISSING_COVERAGE_LIMIT),
     }),
+    execute: async ({ offset, limit }): Promise<MissingCoveragePage> => {
+      const seasonRows: MissingCoverageRow[] = lib.missingBySeason(now()).map(s => ({
+        kind: 'season', seriesId: s.series_id, season: s.season, missing: s.missing,
+      }))
+      const movieRows: MissingCoverageRow[] = lib.missingMovies(now()).map(m => ({
+        kind: 'movie', movieId: m.id, name: m.name,
+      }))
+      const all = [...seasonRows, ...movieRows]
+      const total = all.length
+      const rows = all.slice(offset, offset + limit)
+      return { rows, total, offset, hasMore: offset + rows.length < total }
+    },
   })
 }
 
