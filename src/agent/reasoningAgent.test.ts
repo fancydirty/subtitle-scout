@@ -10,41 +10,46 @@ const DecisionSchema = z.object({
   reason: z.string(),
 })
 
-describe('makeReasoningAgent', () => {
-  it('runs a tool-call step then produces schema-typed Output.object() on the final step', async () => {
+/** Terminal step the REAL model produces on the openai-compatible provider: a NATIVE tool_call
+ *  to `finalize` carrying the structured decision as its arguments — NOT an Output.object text
+ *  blob. This is the whole point of the finalize-tool fix, so every mock here scripts it. */
+function finalizeCall(toolCallId: string, decision: unknown) {
+  return {
+    finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+    usage: {
+      inputTokens: { total: 20, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 8, text: undefined, reasoning: undefined },
+    },
+    content: [{ type: 'tool-call' as const, toolCallId, toolName: 'finalize', input: JSON.stringify(decision) }],
+    warnings: [],
+  }
+}
+
+function toolCall(toolCallId: string, toolName: string, input: unknown) {
+  return {
+    finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+    usage: {
+      inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 5, text: undefined, reasoning: undefined },
+    },
+    content: [{ type: 'tool-call' as const, toolCallId, toolName, input: JSON.stringify(input) }],
+    warnings: [],
+  }
+}
+
+describe('makeReasoningAgent (finalize-tool mode)', () => {
+  it('runs a tool-call step then finalizes via the finalize tool, exposing the decision through readFinalized()', async () => {
     let call = 0
     const model = new MockLanguageModelV4({
       doGenerate: async () => {
         call++
-        if (call === 1) {
-          return {
-            finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-            usage: {
-              inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-              outputTokens: { total: 5, text: undefined, reasoning: undefined },
-            },
-            content: [
-              { type: 'tool-call', toolCallId: 'c1', toolName: 'peek', input: JSON.stringify({}) },
-            ],
-            warnings: [],
-          }
-        }
-        return {
-          finishReason: { unified: 'stop', raw: 'stop' },
-          usage: {
-            inputTokens: { total: 20, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-            outputTokens: { total: 8, text: undefined, reasoning: undefined },
-          },
-          content: [
-            { type: 'text', text: JSON.stringify({ verdict: 'match', reason: 'metadata lines up' }) },
-          ],
-          warnings: [],
-        }
+        if (call === 1) return toolCall('c1', 'peek', {})
+        return finalizeCall('f1', { verdict: 'match', reason: 'metadata lines up' })
       },
     })
 
     const peekCalls: unknown[] = []
-    const agent = makeReasoningAgent({
+    const { agent, readFinalized } = makeReasoningAgent({
       model,
       tools: {
         peek: tool({
@@ -66,47 +71,46 @@ describe('makeReasoningAgent', () => {
     })
 
     expect(peekCalls).toHaveLength(1)
-    expect(result.output).toEqual({ verdict: 'match', reason: 'metadata lines up' })
+    // Decision comes from the finalize tool's captured args, NOT result.output.
+    expect(readFinalized()).toEqual({ verdict: 'match', reason: 'metadata lines up' })
+    // Step 1 = peek, step 2 = finalize (hasToolCall('finalize') stops the loop here).
     expect(result.steps.length).toBe(2)
   })
 
-  it('defaults reasoning to "high" and stopWhen to stepCountIs(20) when not overridden', async () => {
+  it('finalizes on the very first step when the model calls finalize immediately', async () => {
     const model = new MockLanguageModelV4({
-      doGenerate: async () => ({
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-          outputTokens: { total: 3, text: undefined, reasoning: undefined },
-        },
-        content: [{ type: 'text', text: JSON.stringify({ verdict: 'no_match', reason: 'no evidence' }) }],
-        warnings: [],
-      }),
+      doGenerate: async () => finalizeCall('f1', { verdict: 'no_match', reason: 'no evidence' }),
     })
-    const agent = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
-    const result = await agent.generate({ prompt: 'p' })
-    expect(result.output).toEqual({ verdict: 'no_match', reason: 'no evidence' })
+    const { agent, readFinalized } = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
+    await agent.generate({ prompt: 'p' })
+    expect(readFinalized()).toEqual({ verdict: 'no_match', reason: 'no evidence' })
   })
 
-  // Factory-boundary regression guard: the two tests above (and the "over the wire" describe
-  // block below) only prove reasoning:'high' becomes reasoning_effort:'high' when generateText
-  // is called DIRECTLY — they never exercise makeReasoningAgent's `reasoning` field at all, so
-  // they'd stay green even if the `?? 'high'` default were deleted or the settings' `as unknown`
-  // cast silently dropped `reasoning` before it reached ToolLoopAgent. These tests close that
-  // gap by driving MockLanguageModelV4 THROUGH makeReasoningAgent and asserting on
-  // doGenerateCalls — the actual LanguageModelV4CallOptions the model received.
-  it('wires reasoning:"high" through to the model doGenerate call options by default (factory boundary)', async () => {
+  it('readFinalized() throws if the model ends the loop without ever calling finalize', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: async () => ({
-        finishReason: { unified: 'stop', raw: 'stop' },
+        finishReason: { unified: 'stop' as const, raw: 'stop' },
         usage: {
           inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
           outputTokens: { total: 3, text: undefined, reasoning: undefined },
         },
-        content: [{ type: 'text', text: JSON.stringify({ verdict: 'no_match', reason: 'no evidence' }) }],
+        content: [{ type: 'text' as const, text: 'I give up' }],
         warnings: [],
       }),
     })
-    const agent = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
+    const { agent, readFinalized } = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
+    await agent.generate({ prompt: 'p' })
+    expect(() => readFinalized()).toThrow(/finalize/)
+  })
+
+  // Factory-boundary regression guard: proves reasoning:'high' becomes the model's `reasoning`
+  // call option even when driven THROUGH makeReasoningAgent (not just generateText directly), so
+  // it can't silently regress if the `?? 'high'` default is dropped or the settings cast eats it.
+  it('wires reasoning:"high" through to the model doGenerate call options by default (factory boundary)', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => finalizeCall('f1', { verdict: 'no_match', reason: 'no evidence' }),
+    })
+    const { agent } = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
     await agent.generate({ prompt: 'p' })
     expect(model.doGenerateCalls).toHaveLength(1)
     expect(model.doGenerateCalls[0].reasoning).toBe('high')
@@ -114,20 +118,72 @@ describe('makeReasoningAgent', () => {
 
   it('wires an explicit reasoning override ("none") through to the model doGenerate call options', async () => {
     const model = new MockLanguageModelV4({
-      doGenerate: async () => ({
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-          outputTokens: { total: 3, text: undefined, reasoning: undefined },
-        },
-        content: [{ type: 'text', text: JSON.stringify({ verdict: 'no_match', reason: 'no evidence' }) }],
-        warnings: [],
-      }),
+      doGenerate: async () => finalizeCall('f1', { verdict: 'no_match', reason: 'no evidence' }),
     })
-    const agent = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema, reasoning: 'none' })
+    const { agent } = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema, reasoning: 'none' })
     await agent.generate({ prompt: 'p' })
     expect(model.doGenerateCalls).toHaveLength(1)
     expect(model.doGenerateCalls[0].reasoning).toBe('none')
+  })
+})
+
+// THE root-cause regression guard. The live failure (AI_NoObjectGeneratedError against real
+// mimo-v2.5) was caused by Output.object injecting `response_format:{type:'json_object'}` into
+// every request alongside `tools`, which confused the model into emitting a ReAct text blob
+// instead of native tool_calls. finalize-tool mode must send `tools` (including finalize) and
+// NEVER `response_format`. This drives makeReasoningAgent through the REAL openai-compatible
+// serializer with a spy fetch, exactly mirroring how the live probe proved the poison.
+describe('finalize-tool mode over the wire (@ai-sdk/openai-compatible)', () => {
+  it('sends `tools` (incl. finalize) but NEVER `response_format`, and keeps reasoning_effort:"high"', async () => {
+    const requestBodies: any[] = []
+    const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(init!.body as string))
+      return new Response(
+        JSON.stringify({
+          id: 'x', created: 0, model: 'm',
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: 'call_finalize_1',
+                type: 'function',
+                function: { name: 'finalize', arguments: JSON.stringify({ verdict: 'match', reason: 'metadata lines up' }) },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
+    const provider = createOpenAICompatible({
+      name: 'subtitle-scout-llm',
+      baseURL: 'https://example.invalid/v1',
+      apiKey: 'test-key',
+      fetch: fetchImpl as unknown as typeof fetch,
+    })
+
+    const { agent, readFinalized } = makeReasoningAgent({
+      model: provider('test-model'),
+      tools: {},
+      schema: DecisionSchema,
+      reasoning: 'high',
+    })
+    await agent.generate({ prompt: 'is this a match?' })
+
+    expect(requestBodies).toHaveLength(1)
+    const body = requestBodies[0]
+    // The poison: must be entirely absent.
+    expect(body.response_format).toBeUndefined()
+    // Native tool calling is the mechanism — the finalize tool must be advertised.
+    expect(Array.isArray(body.tools)).toBe(true)
+    expect(body.tools.some((t: any) => t?.function?.name === 'finalize')).toBe(true)
+    // reasoning stays on (reasoning_effort:high + native tools works on this model).
+    expect(body.reasoning_effort).toBe('high')
+    // Decision is read from the finalize tool call the model made natively.
+    expect(readFinalized()).toEqual({ verdict: 'match', reason: 'metadata lines up' })
   })
 })
 

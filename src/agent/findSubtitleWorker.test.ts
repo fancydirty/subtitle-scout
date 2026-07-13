@@ -57,14 +57,19 @@ function toolCallResult(toolCallId: string, toolName: string, input: unknown) {
   }
 }
 
-function finalTextResult(output: unknown) {
+/** The terminal step of a REAL find-subtitle run on the openai-compatible provider: a NATIVE
+ *  tool_call to `finalize` whose arguments ARE the FindSubtitleDecision. This is what the model
+ *  actually does now (finalize-tool mode, not an Output.object text blob) — the whole reason the
+ *  offline mock could not catch the live AI_NoObjectGeneratedError. hasToolCall('finalize') stops
+ *  the loop here; readFinalized() returns these args as the decision. */
+function finalizeResult(output: unknown) {
   return {
-    finishReason: { unified: 'stop' as const, raw: 'stop' },
+    finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
     usage: {
       inputTokens: { total: 20, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
       outputTokens: { total: 10, text: undefined, reasoning: undefined },
     },
-    content: [{ type: 'text' as const, text: JSON.stringify(output) }],
+    content: [{ type: 'tool-call' as const, toolCallId: 'finalize-1', toolName: 'finalize', input: JSON.stringify(output) }],
     warnings: [],
   }
 }
@@ -90,7 +95,7 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
           return toolCallResult('c3', 'install_subtitle', { stagedFileId: downloaded.stagedFileId, langTag: 'zh-Hans' })
         }
         const installed = findToolResultValue(options.prompt, 'install_subtitle')
-        return finalTextResult({
+        return finalizeResult({
           decision: 'installed', reason: 'release name and cue count match S01E01',
           installedPath: installed.path, installedLanguage: 'zh-Hans',
           candidateProvider: 'assrt', candidateProviderId: '1',

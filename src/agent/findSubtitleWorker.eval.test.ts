@@ -1,7 +1,7 @@
 // Offline eval harness for the find-subtitle worker across five task shapes (新片/在更剧/老片/
 // 老剧/乱排布). What this proves, and what it deliberately does NOT prove: it proves the
-// worker's PLUMBING (every tool wired correctly, the sandbox holds, Output.object produces the
-// right decision shape) across five differently-shaped tasks, using a fully deterministic
+// worker's PLUMBING (every tool wired correctly, the sandbox holds, the finalize tool produces
+// the right decision shape) across five differently-shaped tasks, using a fully deterministic
 // scripted mock model. It does NOT evaluate a real reasoning model's actual judgment quality —
 // that is what the manual live acceptance procedure (Task 7) is for. Conflating "the scaffolding
 // works" with "the model judges correctly" would misrepresent what an offline, mock-model test
@@ -51,11 +51,14 @@ function toolCallStep(toolCallId: string, toolName: string, input: unknown) {
     warnings: [],
   }
 }
+/** Terminal step: a NATIVE tool_call to `finalize` carrying the decision as its args — what the
+ *  real model does under finalize-tool mode (not an Output.object text blob). hasToolCall stops
+ *  the loop here; readFinalized() surfaces these args as the decision. */
 function finalStep(output: unknown) {
   return {
-    finishReason: { unified: 'stop' as const, raw: 'stop' },
+    finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
     usage: { inputTokens: { total: 20, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 10, text: undefined, reasoning: undefined } },
-    content: [{ type: 'text' as const, text: JSON.stringify(output) }],
+    content: [{ type: 'tool-call' as const, toolCallId: 'finalize-1', toolName: 'finalize', input: JSON.stringify(output) }],
     warnings: [],
   }
 }

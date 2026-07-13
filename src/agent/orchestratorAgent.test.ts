@@ -19,14 +19,18 @@ function toolCallResult(toolCallId: string, toolName: string, input: unknown) {
   }
 }
 
-function finalTextResult(output: unknown) {
+/** Terminal step of a REAL orchestrator pass on the openai-compatible provider: a NATIVE
+ *  tool_call to `finalize` whose arguments ARE the OrchestratorDecision (finalize-tool mode, not
+ *  an Output.object text blob — same root-cause fix as the find-subtitle worker). hasToolCall
+ *  ('finalize') stops the loop here; readFinalized() returns these args as the decision. */
+function finalizeResult(output: unknown) {
   return {
-    finishReason: { unified: 'stop' as const, raw: 'stop' },
+    finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
     usage: {
       inputTokens: { total: 20, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
       outputTokens: { total: 10, text: undefined, reasoning: undefined },
     },
-    content: [{ type: 'text' as const, text: JSON.stringify(output) }],
+    content: [{ type: 'tool-call' as const, toolCallId: 'finalize-1', toolName: 'finalize', input: JSON.stringify(output) }],
     warnings: [],
   }
 }
@@ -99,7 +103,7 @@ describe('makeOrchestratorAgent', () => {
             seriesId: null, season: null, movieId: 'm1', reason: 'missing movie',
           })
         }
-        return finalTextResult({
+        return finalizeResult({
           dispatchedFindSubtitle: 2, dispatchedRealign: 0, spawnedSiblings: 0,
           summary: 'dispatched 2 find-subtitle tasks',
         })
@@ -158,7 +162,7 @@ describe('makeOrchestratorAgent', () => {
           error:
             "dispatch cap (2) reached for this orchestrator — call spawn_sibling_orchestrator to hand off the rest instead of dispatching more directly",
         })
-        return finalTextResult({
+        return finalizeResult({
           dispatchedFindSubtitle: 2, dispatchedRealign: 0, spawnedSiblings: 0,
           summary: 'cap reached after 2 dispatches, handed off the rest',
         })
@@ -206,7 +210,7 @@ describe('makeOrchestratorAgent', () => {
             shardIndex: 0, remainingWorkSummary: 'series s3..s10 still need dispatch',
           })
         }
-        return finalTextResult({
+        return finalizeResult({
           dispatchedFindSubtitle: 2, dispatchedRealign: 0, spawnedSiblings: 1,
           summary: 'cap reached, spawned a sibling orchestrator for the remainder',
         })

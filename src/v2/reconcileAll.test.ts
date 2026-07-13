@@ -6,14 +6,17 @@ import { LibraryRepo } from './libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { runReconcileAll, runOrchestrateWorkerTask } from './reconcileAll.js'
 
-function finalTextResult(output: unknown) {
+/** Terminal step of a REAL orchestrator pass: a NATIVE tool_call to `finalize` carrying the
+ *  OrchestratorDecision as its args (finalize-tool mode, not an Output.object text blob).
+ *  hasToolCall('finalize') stops the loop; readFinalized() surfaces these args as the decision. */
+function finalizeResult(output: unknown) {
   return {
-    finishReason: { unified: 'stop' as const, raw: 'stop' },
+    finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
     usage: {
       inputTokens: { total: 20, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
       outputTokens: { total: 10, text: undefined, reasoning: undefined },
     },
-    content: [{ type: 'text' as const, text: JSON.stringify(output) }],
+    content: [{ type: 'tool-call' as const, toolCallId: 'finalize-1', toolName: 'finalize', input: JSON.stringify(output) }],
     warnings: [],
   }
 }
@@ -27,7 +30,7 @@ describe('runReconcileAll', () => {
     const db = openDb(':memory:')
     const jobs = new JobsRepo(db)
     const lib = new LibraryRepo(db)
-    const model = new MockLanguageModelV4({ doGenerate: async () => finalTextResult(EMPTY_DECISION) })
+    const model = new MockLanguageModelV4({ doGenerate: async () => finalizeResult(EMPTY_DECISION)})
 
     const jf = {
       getItemsPage: async (start: number) => (start === 0 ? [
@@ -69,7 +72,7 @@ describe('runOrchestrateWorkerTask', () => {
     jobs.upsertWorkerTask({ seriesId: 'orchestrator-shard-root-0', season: null, movieId: null }, { taskType: 'orchestrate' }, null, 1000)
     const job = jobs.claimNext(1000)!
 
-    const model = new MockLanguageModelV4({ doGenerate: async () => finalTextResult(EMPTY_DECISION) })
+    const model = new MockLanguageModelV4({ doGenerate: async () => finalizeResult(EMPTY_DECISION)})
 
     const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 1000, stepCap: 10 }, jobs)
 
