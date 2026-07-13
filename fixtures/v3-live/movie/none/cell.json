@@ -1,0 +1,18 @@
+{
+  "task": {
+    "videoFilename": "The.Chinese.Mayor.2015.1080p.WEB-DL.mkv",
+    "title": "The Chinese Mayor",
+    "originalTitle": "大同",
+    "year": 2015,
+    "season": null,
+    "episode": null,
+    "alternativeTitles": ["大同", "Datong"],
+    "overview": "Documentary following Datong mayor Geng Yanbo's radical demolition and reconstruction campaign.",
+    "runtimeMinutes": 86,
+    "providerIds": {}
+  },
+  "expected": {
+    "decision": "no_safe_match"
+  },
+  "note": "Counter-example floor cell (不比 Bazarr 烂 baseline): both recorded candidates are plausible-but-WRONG noise sharing the '大同' keyword with the real target — (1) id 712345, a 40-episode TV drama '大同天下' (a completely different work, not the 2015 Datong documentary), and (2) id 698765, a single-file sub for a DIFFERENT documentary 'The Chinese Lives of Uli Sigg' (2016) whose uploader's videoname happens to string-match on 'Chinese'. Neither is 《大同》/The Chinese Mayor (2015). The correct behavior is an honest no_safe_match with nothing installed — refusing tempting-but-wrong noise, not just an empty list (which would only test plumbing). No detail/download responses are recorded: the correct model path never calls resolve() on either candidate. If the model attempts to download either wrong candidate anyway, resolve() calls sub/detail against an unrecorded signature and replayFetch throws, surfacing an error to the model — acceptable friction, but the stronger signal is the model never attempting it. This cell also live-exercises the null/omitted-field finalize path (season/episode/providerIds all null-or-empty, expected has no candidateProvider/candidateProviderId/installedFilename/installedLanguage) — the finalize-undefined incident class that broke production."
+}
