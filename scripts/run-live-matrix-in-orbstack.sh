@@ -10,5 +10,6 @@ docker run --rm \
   --env-file .env \
   -v "$PWD":/app -w /app \
   -v "$PWD/matrix-scratch":/tmp/matrix-scratch \
+  -e TMPDIR=/tmp/matrix-scratch \
   node:22-slim \
   sh -lc 'npx --yes tsx scripts/run-live-matrix.ts "$@"' _ "$@"
