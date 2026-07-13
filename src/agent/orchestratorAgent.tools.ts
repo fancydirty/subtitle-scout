@@ -105,6 +105,29 @@ function capCheck(counter: DispatchCounter, cap: number): { error: string } | nu
   return null
 }
 
+/** A well-formed identity is exactly one of (seriesId + season, movieId null) XOR (movieId only,
+ *  seriesId/season both null). This matters beyond ordinary input hygiene: upsertWorkerTask's
+ *  identity tuple is (kind='worker_task', series_id, ifnull(season,-1), ifnull(movie_id,'')), and
+ *  dispatch_realign_task ALSO writes kind='worker_task' with season forced to null for the same
+ *  seriesId — so a find_subtitle dispatch with a null season for a series that already has (or
+ *  later gets) a pending realign task for that same series lands on the EXACT SAME identity row
+ *  as that realign task. Whichever of the two upserts second silently no-ops onto the other's
+ *  payload (upsertWorkerTask only overwrites payload/parent_job_id when the existing row's state
+ *  is 'done') rather than creating the distinct find-subtitle task the caller intended. Refusing
+ *  a null season up front prevents this identity collision from ever being possible. */
+function hasWellFormedFindSubtitleIdentity(v: { seriesId: string | null; season: number | null; movieId: string | null }): boolean {
+  const isSeriesSeason = v.seriesId !== null && v.season !== null && v.movieId === null
+  const isMovie = v.seriesId === null && v.season === null && v.movieId !== null
+  return isSeriesSeason || isMovie
+}
+
+const FIND_SUBTITLE_IDENTITY_ERROR =
+  'dispatch_find_subtitle_task requires exactly one well-formed identity: either (seriesId + ' +
+  'season) with movieId null, or movieId alone with seriesId and season both null. A null ' +
+  'season with a non-null seriesId is rejected because it collides with dispatch_realign_task\'s ' +
+  'worker_task identity for the same series (both would write kind=worker_task, series_id=X, ' +
+  'season=NULL).'
+
 export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: DispatchCounter) {
   const cap = deps.maxDispatchesPerOrchestrator ?? 100
   return tool({
@@ -112,7 +135,7 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
     inputSchema: z.object({
       seriesId: z.string().nullable(), season: z.number().int().nullable(), movieId: z.string().nullable(),
       reason: z.string(),
-    }),
+    }).refine(hasWellFormedFindSubtitleIdentity, { message: FIND_SUBTITLE_IDENTITY_ERROR }),
     execute: async ({ seriesId, season, movieId, reason }) => {
       const capped = capCheck(counter, cap)
       if (capped) return capped

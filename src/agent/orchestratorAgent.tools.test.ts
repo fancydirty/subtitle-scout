@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { asSchema } from 'ai'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
-import { makeListMissingCoverageTool, type MissingCoveragePage } from './orchestratorAgent.tools.js'
+import {
+  makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, type DispatchCounter,
+  type MissingCoveragePage,
+} from './orchestratorAgent.tools.js'
 
 const fakeOpts = { toolCallId: 't1', messages: [] } as any
 
@@ -68,5 +71,65 @@ describe('makeListMissingCoverageTool', () => {
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
     const result = await validate(listMissingCoverage.inputSchema, {})
     expect(result).toEqual({ success: true, value: { offset: 0, limit: 50 } })
+  })
+})
+
+describe('dispatch_find_subtitle_task identity validation', () => {
+  it('rejects a null season paired with a non-null seriesId (collides with dispatch_realign_task\'s worker_task identity for the same series)', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: 's1', season: null, movieId: null, reason: 'bad identity',
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(String((result.error as Error).message)).toMatch(/collides with dispatch_realign_task/)
+    }
+  })
+
+  it('rejects seriesId+season set together with a movieId', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: 's1', season: 1, movieId: 'm1', reason: 'bad identity',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects an all-null identity', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: null, season: null, movieId: null, reason: 'nothing to dispatch',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a well-formed series+season identity', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: 's1', season: 1, movieId: null, reason: 'missing season 1',
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('accepts a well-formed movie-only identity', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: null, season: null, movieId: 'm1', reason: 'missing movie',
+    })
+    expect(result.success).toBe(true)
   })
 })
