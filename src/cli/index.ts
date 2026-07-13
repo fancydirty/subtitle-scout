@@ -445,13 +445,17 @@ async function cmdWatch() {
   }
 
   // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
-  // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）都已经自己把
-  // 抛出的异常兜进 completeError（worker-exhaustion 要求：find-subtitle worker 撞步数上限/超时/
-  // abort 是抛错，不是结构化 retry_later；一个抛错的 worker 必须让这个 job 失败退避，不能让
-  // daemon 崩）、并自己完成 job 的状态迁移——这里只负责路由，不重复业务逻辑。taskType===
-  // 'realign'/'orchestrate' 在 TMDB_API_KEY 未配置时停车（park）而不是 completeError：接线缺失
-  // 是配置缺陷不是瞬时故障，走 error 轨只会陷入无穷 errorloop（同 executeRealignBranch 的既有
-  // park-not-error 先例）。
+  // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）在被调用之后，
+  // 自己都已经把抛出的异常兜进 completeError（worker-exhaustion 要求：find-subtitle worker 撞
+  // 步数上限/超时/abort 是抛错，不是结构化 retry_later；一个抛错的 worker 必须让这个 job 失败
+  // 退避，不能让 daemon 崩）、并自己完成 job 的状态迁移。但 find_subtitle 分支在调用
+  // runFindSubtitleWorkerTask 之前，还要先 await buildAdapters(...) + makeFindSubtitleWorker(...)
+  // 组装 runTask 闭包——这两步本身在它们各自的 try/catch 之外（只在 ZIMUKU_ENABLED=true 且缺
+  // LLM_BASE_URL 时抛，watch 场景下 LLM_* 已被 requireEnv'd 兜底，实际不会触发，但保留同样的
+  // 抛错-即-completeError 契约仍是必须的），因此这里把三个分支整体包进同一个 try/catch：
+  // 任何分支在完成路由之前抛出，都在这里兜底 completeError，而不是让异常逃出 handleWorkerTask
+  // 把 daemon 的 claim 循环带崩（daemon.dispatch 是最后一道网，这里的 try/catch 是它前面一道，
+  // 不依赖它兜底）。
   const handleWorkerTask = async (job: Job): Promise<void> => {
     let payload: { taskType?: unknown } = {}
     try {
@@ -460,29 +464,41 @@ async function cmdWatch() {
       jobs.completeError(job.id, `worker_task job ${job.id} has unparseable payload: ${job.payload}`, Date.now())
       return
     }
-    if (payload.taskType === 'find_subtitle') {
-      const runTask = makeFindSubtitleWorker({
-        model: reasoningModel,
-        adapters: await buildAdapters(emitProviderEvent),
-        cacheRoot,
-      })
-      await runFindSubtitleWorkerTask(job, { ...findSubtitleWorkerTaskDeps, runTask }, jobs, () => Date.now())
-    } else if (payload.taskType === 'realign') {
-      if (!realignDeps) {
-        jobs.park(job.id, 'realign executor not wired (TMDB_API_KEY missing)', Date.now())
-        log(`warn: job ${job.id} worker_task(realign) 未接线（缺 TMDB_API_KEY），已停车`)
-        return
+    try {
+      if (payload.taskType === 'find_subtitle') {
+        const runTask = makeFindSubtitleWorker({
+          model: reasoningModel,
+          adapters: await buildAdapters(emitProviderEvent),
+          cacheRoot,
+        })
+        await runFindSubtitleWorkerTask(job, { ...findSubtitleWorkerTaskDeps, runTask }, jobs, () => Date.now())
+      } else if (payload.taskType === 'realign') {
+        if (!realignDeps) {
+          jobs.park(job.id, 'realign executor not wired (TMDB_API_KEY missing)', Date.now())
+          log(`warn: job ${job.id} worker_task(realign) 未接线（缺 TMDB_API_KEY），已停车`)
+          return
+        }
+        await runRealignWorkerTask(job, realignDeps, jobs, () => Date.now())
+      } else if (payload.taskType === 'orchestrate') {
+        if (!orchestrateWorkerTaskDeps) {
+          jobs.park(job.id, 'orchestrator not wired (TMDB_API_KEY missing)', Date.now())
+          log(`warn: job ${job.id} worker_task(orchestrate) 未接线（缺 TMDB_API_KEY），已停车`)
+          return
+        }
+        await runOrchestrateWorkerTask(job, orchestrateWorkerTaskDeps, jobs)
+      } else {
+        jobs.completeError(job.id, `unknown worker_task taskType: ${String(payload.taskType)}`, Date.now())
       }
-      await runRealignWorkerTask(job, realignDeps, jobs, () => Date.now())
-    } else if (payload.taskType === 'orchestrate') {
-      if (!orchestrateWorkerTaskDeps) {
-        jobs.park(job.id, 'orchestrator not wired (TMDB_API_KEY missing)', Date.now())
-        log(`warn: job ${job.id} worker_task(orchestrate) 未接线（缺 TMDB_API_KEY），已停车`)
-        return
-      }
-      await runOrchestrateWorkerTask(job, orchestrateWorkerTaskDeps, jobs)
-    } else {
-      jobs.completeError(job.id, `unknown worker_task taskType: ${String(payload.taskType)}`, Date.now())
+    } catch (error) {
+      // Closes the phase ⑦ review's IMP#8 asymmetry: buildAdapters/makeFindSubtitleWorker assembly
+      // above sits outside runFindSubtitleWorkerTask's own try/catch (it hasn't been called yet),
+      // so a throw there previously left the job in 'searching' just like the realign wrapper bug
+      // (finding #1) did. A throw this late (after runXxxWorkerTask already routed to its own
+      // completeError/completeDone/park) can't happen — those calls never throw past their own
+      // try/catch — so this only ever fires for the assembly step itself.
+      const msg = error instanceof Error ? error.message : String(error)
+      jobs.completeError(job.id, msg, Date.now())
+      log(`warn: job ${job.id} worker_task(${String(payload.taskType)}) 组装阶段抛错，已失败退避: ${msg}`)
     }
   }
 

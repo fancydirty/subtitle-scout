@@ -120,7 +120,7 @@ describe('runRealignWorkerTask', () => {
 
     const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
 
-    expect(result.decision).toBe('realigned')
+    expect(result!.decision).toBe('realigned')
     expect(jobsRepo.get(job.id)!.state).toBe('done')
     db.close()
   })
@@ -133,7 +133,7 @@ describe('runRealignWorkerTask', () => {
 
     const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
 
-    expect(result.decision).toBe('park')
+    expect(result!.decision).toBe('park')
     expect(jobsRepo.get(job.id)!.state).toBe('dormant')
     db.close()
   })
@@ -150,10 +150,41 @@ describe('runRealignWorkerTask', () => {
 
     const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
 
-    expect(result.decision).toBe('error')
+    expect(result!.decision).toBe('error')
     const row = jobsRepo.get(job.id)!
     expect(row.state).toBe('failed')
     expect(row.next_retry_at).not.toBeNull()
+    db.close()
+  })
+
+  it('a thrown executeRealign (e.g. Jellyfin outage mid-call — getVirtualFolders rejects) fails the job via completeError with backoff, instead of leaving it stuck in searching with no backoff (the spin-loop bug: unlike runFindSubtitleWorkerTask/runOrchestrateWorkerTask, this wrapper previously had NO try/catch around executeRealign, so a throw propagated out, reapOrphaned would later flip the row back to wanted with error_attempt/next_retry_at untouched, and the very next claim would throw again — an unbounded, backoff-free spin loop that floods the runs table and monopolizes the realign concurrency slot for the whole outage)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-throw-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+      Array.from({ length: 3 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
+    )
+    const jf = mkJf({ locations: [libRoot] })
+    // Simulate a Jellyfin outage: getVirtualFolders (realignExecutor.ts step 3, called before any
+    // fs mutation) rejects instead of resolving — executeRealign has no top-level try/catch of its
+    // own around this call, so it genuinely throws out to the caller.
+    jf.getVirtualFolders = vi.fn(async () => { throw new Error('ECONNREFUSED: jellyfin unreachable') })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot })
+    const before = jobsRepo.get(job.id)!
+    expect(before.state).toBe('searching') // claimed, mid-flight
+
+    const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now()).catch(e => e)
+
+    // Must NOT throw out of the wrapper (that's the whole bug) — it must resolve, having routed
+    // the throw to completeError itself.
+    expect(result).not.toBeInstanceOf(Error)
+
+    const row = jobsRepo.get(job.id)!
+    expect(row.state).toBe('failed') // NOT left in 'searching', NOT bounced to 'wanted' with no backoff
+    expect(row.error_attempt).toBeGreaterThan(before.error_attempt) // error-track attempt incremented
+    expect(row.next_retry_at).not.toBeNull() // backoff scheduled — precludes the immediate-reclaim spin
+    expect(row.next_retry_at!).toBeGreaterThan(Date.now()) // genuinely in the future, not a no-op backoff
+    expect(row.last_error).toMatch(/ECONNREFUSED/)
     db.close()
   })
 })
