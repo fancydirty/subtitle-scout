@@ -107,6 +107,35 @@ describe('makeRecordingFetch round-trip', () => {
       .rejects.toThrow(/Request-object call form with a body is unsupported/)
   })
 
+  it('keys fixtures by URLSearchParams body — two payloads, two fixture files', async () => {
+    // Real call site: yunsuo.ts submitChallenge POSTs `new URLSearchParams(...)`. Dropping it
+    // from the signature would alias different captcha payloads to ONE fixture (silent overwrite).
+    const realFetch = (async () => new Response('{"ok":true}')) as typeof fetch
+    const recording = makeRecordingFetch(dir, realFetch)
+    await recording('https://x/api/captcha', { method: 'POST', body: new URLSearchParams({ code: '1111' }) })
+    await recording('https://x/api/captcha', { method: 'POST', body: new URLSearchParams({ code: '2222' }) })
+    expect(readdirSync(dir).filter(f => f.endsWith('.json'))).toHaveLength(2)
+  })
+
+  it('throws on body types with no deterministic text form instead of dropping them', async () => {
+    const realFetch = (async () => new Response('{}')) as typeof fetch
+    const recording = makeRecordingFetch(dir, realFetch)
+    await expect(recording('https://x/api/upload', { method: 'POST', body: new Blob(['x']) }))
+      .rejects.toThrow(/unsupported body type/)
+  })
+
+  it('round-trips a binary body losslessly through base64', async () => {
+    const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i))  // every byte value
+    const realFetch = (async () => new Response(bytes,
+      { status: 200, headers: { 'content-type': 'application/octet-stream' } })) as typeof fetch
+    const recording = makeRecordingFetch(dir, realFetch)
+    await recording('https://x/api/download?file=1')
+
+    const replay = makeReplayFetch(dir)
+    const res = await replay('https://x/api/download?file=1')
+    expect(Buffer.from(await res.arrayBuffer()).equals(bytes)).toBe(true)
+  })
+
   it('strips stale transport headers before persisting, keeping content-type', async () => {
     // Node fetch auto-decompresses but leaves content-encoding: gzip + the COMPRESSED
     // content-length on the Response; persisting them next to the decoded body would

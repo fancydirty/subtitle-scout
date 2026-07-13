@@ -36,9 +36,22 @@ requestSignature.pathOnly = (method: string, url: string): string => {
   return `${method.toUpperCase()} ${u.origin}${u.pathname}`
 }
 
+/** Signature-relevant text form of the request body. URLSearchParams is folded via its
+ *  canonical wire serialization (yunsuo captcha submits POST it); any other non-string body
+ *  (FormData/Blob/stream/ArrayBuffer) has no cheap deterministic text form, and silently
+ *  dropping it would alias different payloads to one fixture — so it fails loud. */
 function bodyOf(init: RequestInit | undefined): string | undefined {
   if (!init?.body) return undefined
-  return typeof init.body === 'string' ? init.body : undefined
+  if (typeof init.body === 'string') return init.body
+  if (init.body instanceof URLSearchParams) return init.body.toString()
+  throw new Error('replayFetch: unsupported body type — use a string or URLSearchParams')
+}
+
+/** Shared URL/method extraction for the string | URL | Request call forms. */
+function resolveUrlAndMethod(input: RequestInfo | URL, init: RequestInit | undefined): { url: string; method: string } {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
+  const method = init?.method ?? (typeof input === 'object' && 'method' in input ? (input as Request).method : 'GET')
+  return { url, method }
 }
 
 /** Reading a Request body is async+consuming, so the shim cannot fold it into the signature.
@@ -73,8 +86,7 @@ export function makeReplayFetch(dir: string): typeof fetch {
 
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     assertNoRequestBody(input, init)
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
-    const method = init?.method ?? (typeof input === 'object' && 'method' in input ? (input as Request).method : 'GET')
+    const { url, method } = resolveUrlAndMethod(input, init)
     const sig = requestSignature(method, url, bodyOf(init))
     const exact = bySig.get(sig)
     if (exact) return toResponse(exact)
@@ -87,21 +99,20 @@ export function makeReplayFetch(dir: string): typeof fetch {
   }) as typeof fetch
 }
 
-/** Wraps a real `fetch`: every call is teed to `dir` as a RecordedResponse keyed by its
- *  signature, then a fresh (unconsumed) Response is returned to the caller. Rate limiting is
- *  the *client's* job (assrt's MinIntervalLimiter) — this shim is pure I/O capture. */
 /** Headers describing the wire transport, not the payload. Node fetch auto-decompresses but
  *  still exposes content-encoding + the original COMPRESSED content-length; persisting them
  *  next to the decoded body would mislead any client that trusts them on replay. */
 const TRANSPORT_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-encoding'])
 
+/** Wraps a real `fetch`: every call is teed to `dir` as a RecordedResponse keyed by its
+ *  signature, then a fresh (unconsumed) Response is returned to the caller. Rate limiting is
+ *  the *client's* job (assrt's MinIntervalLimiter) — this shim is pure I/O capture. */
 export function makeRecordingFetch(dir: string, realFetch: typeof fetch = fetch): typeof fetch {
   mkdirSync(dir, { recursive: true })
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     assertNoRequestBody(input, init)
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
-    const method = init?.method ?? (typeof input === 'object' && 'method' in input ? (input as Request).method : 'GET')
-    const body = init?.body && typeof init.body === 'string' ? init.body : undefined
+    const { url, method } = resolveUrlAndMethod(input, init)
+    const body = bodyOf(init)
     const res = await realFetch(input, init)
     const buf = Buffer.from(await res.clone().arrayBuffer())
     const headers: Record<string, string> = {}
