@@ -130,6 +130,31 @@ describe('search_source / list_candidates / get_candidate tools', () => {
     expect(detailed).toEqual(candidate)
   })
 
+  // The real enabler for season-pack handling: before the agent can download ONE episode out of a
+  // pack by fileIndex, it must be able to SEE the pack's filelist entries (index + name) — otherwise
+  // it cannot pick a fileIndex it never saw. This locks in that both views surface every filelist
+  // entry with its positional index, for a candidate whose filelist spans many episodes.
+  it('get_candidate exposes a season pack\'s full filelist (index + name) so the agent can pick a fileIndex', async () => {
+    const store = makeFileResultSetStore(dir)
+    const pack: SubtitleCandidate = {
+      provider: 'assrt', providerId: 'pack-1', videoName: '進擊的巨人 S1+S2+S3+OAD 繁中合集',
+      nativeName: '進擊的巨人', language: 'zh-TW', subtype: null, releaseSite: null, uploadDate: null,
+      fileList: [
+        { index: 0, name: 'Attack.on.Titan.S01E01.BDrip.srt' },
+        { index: 1, name: 'Attack.on.Titan.S01E02.BDrip.srt' },
+        { index: 2, name: 'Attack.on.Titan.S01E03.BDrip.srt' },
+      ],
+    }
+    const id = store.create([pack])
+    const getCandidate = makeGetCandidateTool(store)
+    const detailed = await getCandidate.execute!({ result_set_id: id, index: 0, detail: 'detailed' }, { toolCallId: 't1', messages: [] } as any) as SubtitleCandidate
+    expect(detailed.fileList).toEqual(pack.fileList)
+    const concise = await getCandidate.execute!({ result_set_id: id, index: 0, detail: 'concise' }, { toolCallId: 't1', messages: [] } as any) as CandidateSummary
+    expect(concise.fileList).toEqual(pack.fileList)
+    // the S01E01 entry the agent would extract lives at fileIndex 0 — a real, pickable positional index
+    expect(concise.fileList.find(f => /S01E01/.test(f.name))?.index).toBe(0)
+  })
+
   it('get_candidate reports an error for an out-of-range index', async () => {
     const store = makeFileResultSetStore(dir)
     const id = store.create([fakeCandidate('1', 'A')])

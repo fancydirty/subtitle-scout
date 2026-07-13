@@ -90,6 +90,92 @@ function scriptFixture(fixture: EvalFixture) {
   }
 }
 
+// Season-pack extraction, end-to-end (offline). Distinct from the generic driver above because it
+// exercises the pack workflow the live acceptance exposed as missing: Chinese subtitles usually
+// arrive as a SEASON PACK / COMPLETE-SERIES collection, and the ONLY viable candidate here is such
+// a pack. To succeed, the model must (1) SEE the pack's filelist via get_candidate and (2) download
+// the target episode's entry by its fileIndex. This locks in that low-level capability — the pack's
+// fileIndex flows through download_candidate → runResolve → the adapter and installs the right file.
+// (The behavioral fix that makes a REAL model do this is the skill; a scripted mock can only prove
+// the plumbing carries a fileIndex the model picks — see the module header on plumbing vs judgment.)
+describe('find-subtitle worker offline eval: season-pack', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'scout-eval-season-pack-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  it('extracts the target episode from a season pack by fileIndex and installs it', async () => {
+    const fixture = loadFixture('season-pack')
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'Show')
+    mkdirSync(showDir, { recursive: true })
+    const videoPath = join(showDir, fixture.task.videoFilename)
+
+    const pack = fixture.candidates[0]
+    const targetIndex = fixture.chosenCandidate!.fileIndex!
+
+    // resolve HONORS fileIndex like the real assrt adapter (src/cli/adapters/assrtAdapter.ts): the
+    // download URL/filename come from the picked filelist entry. A null/wrong fileIndex would not
+    // name the target episode — so this test only passes if the model's pick actually flows through.
+    let resolvedFileIndex: number | null | undefined
+    const adapter: FetchAdapter = {
+      name: pack.provider, enabled: () => true,
+      search: async () => fixture.candidates,
+      resolve: async (ref) => {
+        resolvedFileIndex = ref.fileIndex
+        const entry = ref.fileIndex != null ? pack.fileList[ref.fileIndex] : undefined
+        if (!entry) throw new Error('season pack resolve requires a fileIndex naming a filelist entry')
+        return { url: `http://file0.assrt.net/${entry.index}.srt`, filename: entry.name }
+      },
+    }
+    const fetchImpl = async () => new Response(Buffer.from(fixture.downloadedSrt ?? ''))
+
+    // Scripted: search_source → get_candidate(detailed) → download_candidate(fileIndex) → install → final.
+    let call = 0
+    let fileListVisibleToModel = false
+    const doGenerate = async (options: LanguageModelV4CallOptions) => {
+      call++
+      if (call === 1) return toolCallStep('c1', 'search_source', { queries: [fixture.task.title] })
+      if (call === 2) {
+        const searched = findToolResultValue(options.prompt, 'search_source')
+        return toolCallStep('c2', 'get_candidate', { result_set_id: searched.result_set_id, index: 0, detail: 'detailed' })
+      }
+      if (call === 3) {
+        // Like a human scanning a zip's contents: the pack's filelist must be visible here, and the
+        // model reads the target episode's entry off it to choose the fileIndex to download.
+        const got = findToolResultValue(options.prompt, 'get_candidate')
+        const entry = (got.fileList as { index: number; name: string }[]).find(f => /S01E01/i.test(f.name))
+        fileListVisibleToModel = entry != null
+        return toolCallStep('c3', 'download_candidate', { provider: pack.provider, providerId: pack.providerId, fileIndex: entry!.index })
+      }
+      if (call === 4) {
+        const downloaded = findToolResultValue(options.prompt, 'download_candidate')
+        return toolCallStep('c4', 'install_subtitle', { stagedFileId: downloaded.stagedFileId, langTag: 'zh-Hant' })
+      }
+      const installed = findToolResultValue(options.prompt, 'install_subtitle')
+      return finalStep({
+        decision: 'installed', reason: 'season pack: picked the target episode out of the filelist by fileIndex',
+        installedPath: installed.path, installedLanguage: 'zh-Hant',
+        candidateProvider: pack.provider, candidateProviderId: pack.providerId,
+      })
+    }
+
+    const model = new MockLanguageModelV4({ doGenerate })
+    const runTask = makeFindSubtitleWorker({
+      model, adapters: [adapter], cacheRoot: join(root, 'cache'),
+      fetchImpl: fetchImpl as unknown as typeof fetch, stepCap: 10,
+    })
+
+    const task: FindSubtitleTask = { ...fixture.task, jobId: fixture.jobId, mediaRoot, videoPath }
+    const decision = await runTask(task)
+
+    expect(fileListVisibleToModel).toBe(true)          // the agent could SEE the pack's filelist
+    expect(resolvedFileIndex).toBe(targetIndex)        // the chosen fileIndex flowed through to resolve
+    expect(decision.decision).toBe('installed')
+    expect(decision.installedPath).toBe(join(showDir, fixture.expected.installedFilename!))
+    expect(existsSync(decision.installedPath!)).toBe(true)
+  })
+})
+
 describe.each(['new-release', 'ongoing-series', 'old-movie', 'old-series', 'messy-layout'])(
   'find-subtitle worker offline eval: %s',
   (scenario) => {
