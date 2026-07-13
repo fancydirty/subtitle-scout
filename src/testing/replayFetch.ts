@@ -22,7 +22,9 @@ export function requestSignature(method: string, url: string, body: string | und
   const params = [...u.searchParams.entries()]
     .filter(([k]) => !VOLATILE_PARAMS.has(k.toLowerCase()))
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  const query = params.map(([k, v]) => `${k}=${v}`).join('&')
+  // Re-encode when rebuilding: searchParams DECODES values, so a single param a="1&b=2"
+  // would otherwise alias the two-param query a=1&b=2 (real trigger: titles like "Law & Order").
+  const query = params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
   const bodyTag = body ? `#${createHash('sha1').update(body).digest('hex').slice(0, 12)}` : ''
   return `${method.toUpperCase()} ${u.origin}${u.pathname}${query ? `?${query}` : ''}${bodyTag}`
 }
@@ -37,6 +39,15 @@ requestSignature.pathOnly = (method: string, url: string): string => {
 function bodyOf(init: RequestInit | undefined): string | undefined {
   if (!init?.body) return undefined
   return typeof init.body === 'string' ? init.body : undefined
+}
+
+/** Reading a Request body is async+consuming, so the shim cannot fold it into the signature.
+ *  Silently ignoring it would overwrite fixtures (record) / degrade to path-bucket (replay),
+ *  so the Request-object-with-body call form fails loud in both wrappers. */
+function assertNoRequestBody(input: RequestInfo | URL, init: RequestInit | undefined): void {
+  if (input instanceof Request && input.body !== null && init?.body == null) {
+    throw new Error('replayFetch: Request-object call form with a body is unsupported — call fetch(url, init) instead')
+  }
 }
 
 /** A `typeof fetch` that answers from a `responses/` dir. Resolution order:
@@ -61,6 +72,7 @@ export function makeReplayFetch(dir: string): typeof fetch {
     new Response(Buffer.from(r.bodyBase64, 'base64'), { status: r.status, headers: r.headers })
 
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    assertNoRequestBody(input, init)
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
     const method = init?.method ?? (typeof input === 'object' && 'method' in input ? (input as Request).method : 'GET')
     const sig = requestSignature(method, url, bodyOf(init))
@@ -78,16 +90,22 @@ export function makeReplayFetch(dir: string): typeof fetch {
 /** Wraps a real `fetch`: every call is teed to `dir` as a RecordedResponse keyed by its
  *  signature, then a fresh (unconsumed) Response is returned to the caller. Rate limiting is
  *  the *client's* job (assrt's MinIntervalLimiter) — this shim is pure I/O capture. */
+/** Headers describing the wire transport, not the payload. Node fetch auto-decompresses but
+ *  still exposes content-encoding + the original COMPRESSED content-length; persisting them
+ *  next to the decoded body would mislead any client that trusts them on replay. */
+const TRANSPORT_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-encoding'])
+
 export function makeRecordingFetch(dir: string, realFetch: typeof fetch = fetch): typeof fetch {
   mkdirSync(dir, { recursive: true })
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    assertNoRequestBody(input, init)
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
     const method = init?.method ?? (typeof input === 'object' && 'method' in input ? (input as Request).method : 'GET')
     const body = init?.body && typeof init.body === 'string' ? init.body : undefined
     const res = await realFetch(input, init)
     const buf = Buffer.from(await res.clone().arrayBuffer())
     const headers: Record<string, string> = {}
-    res.headers.forEach((v, k) => { headers[k] = v })
+    res.headers.forEach((v, k) => { if (!TRANSPORT_HEADERS.has(k.toLowerCase())) headers[k] = v })
     const sig = requestSignature(method, url, body)
     const record: RecordedResponse = { signature: sig, status: res.status, headers, bodyBase64: buf.toString('base64') }
     writeFileSync(join(dir, `${requestSignature.hash(sig)}.json`), JSON.stringify(record, null, 2))

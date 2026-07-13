@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { requestSignature, makeReplayFetch, makeRecordingFetch } from './replayFetch.js'
@@ -18,6 +18,14 @@ describe('requestSignature', () => {
     const a = requestSignature('POST', 'https://x/api/download', JSON.stringify({ file_id: 1 }))
     const b = requestSignature('POST', 'https://x/api/download', JSON.stringify({ file_id: 2 }))
     expect(a).not.toBe(b)
+  })
+
+  it('re-encodes the rebuilt query so a value containing &/= cannot collide with two params', () => {
+    // Real trigger: free-text titles like "Law & Order" — a=1%26b%3D2 is ONE param a="1&b=2",
+    // which must not alias the TWO-param query a=1&b=2 after decode+rebuild.
+    const single = requestSignature('GET', 'https://x/api/search?a=1%26b%3D2', undefined)
+    const double = requestSignature('GET', 'https://x/api/search?a=1&b=2', undefined)
+    expect(single).not.toBe(double)
   })
 })
 
@@ -57,6 +65,16 @@ describe('makeReplayFetch resolution', () => {
     const fetchImpl = makeReplayFetch(dir)
     await expect(fetchImpl('https://api.assrt.net/v1/sub/detail?token=T&id=999'))
       .rejects.toThrow(/no recorded response/i)
+    await expect(fetchImpl('https://api.assrt.net/v1/sub/detail?token=T&id=999'))
+      .rejects.toThrow('(2 recorded for this path')
+  })
+
+  it('rejects the Request-object call form when the Request carries a body', async () => {
+    // Reading a Request body is async+consuming — the signature would silently drop it and
+    // degrade to path-bucket matching, so this call form must fail loud instead.
+    const fetchImpl = makeReplayFetch(dir)
+    await expect(fetchImpl(new Request('https://x/api/download', { method: 'POST', body: '{"file_id":1}' })))
+      .rejects.toThrow(/Request-object call form with a body is unsupported/)
   })
 })
 
@@ -78,5 +96,34 @@ describe('makeRecordingFetch round-trip', () => {
     const replay = makeReplayFetch(dir)
     const played = await replay('https://api.assrt.net/v1/sub/search?token=DIFFERENT&q=hi')
     expect((await played.json()).sub.subs[0].id).toBe(42)  // persisted + token-insensitive
+  })
+
+  it('rejects the Request-object call form when the Request carries a body', async () => {
+    // Same guard as replay: recording would key the fixture WITHOUT the body, silently
+    // overwriting fixtures for different payloads to the same path.
+    const realFetch = (async () => new Response('{}')) as typeof fetch
+    const recording = makeRecordingFetch(dir, realFetch)
+    await expect(recording(new Request('https://x/api/download', { method: 'POST', body: '{"file_id":1}' })))
+      .rejects.toThrow(/Request-object call form with a body is unsupported/)
+  })
+
+  it('strips stale transport headers before persisting, keeping content-type', async () => {
+    // Node fetch auto-decompresses but leaves content-encoding: gzip + the COMPRESSED
+    // content-length on the Response; persisting them next to the decoded body would
+    // mislead any client that trusts those headers on replay.
+    const realFetch = (async () => new Response('{"ok":true}', {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': '9999' },
+    })) as typeof fetch
+    const recording = makeRecordingFetch(dir, realFetch)
+    await recording('https://x/api/search?q=hi')
+
+    const [file] = readdirSync(dir).filter(f => f.endsWith('.json'))
+    const persisted = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { headers: Record<string, string> }
+    const keys = Object.keys(persisted.headers).map(k => k.toLowerCase())
+    expect(keys).toContain('content-type')
+    expect(keys).not.toContain('content-encoding')
+    expect(keys).not.toContain('content-length')
+    expect(keys).not.toContain('transfer-encoding')
   })
 })
