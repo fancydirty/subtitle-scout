@@ -100,4 +100,23 @@ describe('search_source / list_candidates / get_candidate tools', () => {
     const out = await getCandidate.execute!({ result_set_id: id, index: 9, detail: 'concise' }, { toolCallId: 't1', messages: [] } as any)
     expect(out).toEqual({ error: `no candidate at index 9 in result set ${id}` })
   })
+
+  // Regression guard: the store's underlying read() throws for an unknown result_set_id (see the
+  // "throws a clear error for an unknown result set id" test above), which used to propagate as an
+  // uncaught exception from these tools — asymmetric with the structured {error} the bad-index case
+  // above returns, and with read_doc's fail-soft unknown-name handling (skills/registry.ts). Both
+  // tools must catch it and report the same structured shape instead of throwing.
+  it('get_candidate reports a structured error (does not throw) for an unknown result_set_id', async () => {
+    const store = makeFileResultSetStore(dir)
+    const getCandidate = makeGetCandidateTool(store)
+    const out = await getCandidate.execute!({ result_set_id: 'does-not-exist', index: 0, detail: 'concise' }, { toolCallId: 't1', messages: [] } as any)
+    expect(out).toEqual({ error: expect.stringMatching(/unknown result set/) })
+  })
+
+  it('list_candidates reports a structured error (does not throw) for an unknown result_set_id', async () => {
+    const store = makeFileResultSetStore(dir)
+    const listCandidates = makeListCandidatesTool(store)
+    const out = await listCandidates.execute!({ result_set_id: 'does-not-exist', offset: 0, limit: 10 }, { toolCallId: 't1', messages: [] } as any)
+    expect(out).toEqual({ error: expect.stringMatching(/unknown result set/) })
+  })
 })

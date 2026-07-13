@@ -114,7 +114,16 @@ export function makeListCandidatesTool(store: ResultSetStore) {
       limit: z.number().int().min(1).max(50).default(10),
     }),
     execute: async ({ result_set_id, offset, limit }) => {
-      const items = store.list(result_set_id, offset, limit) as SubtitleCandidate[]
+      // Mirrors get_candidate's fail-soft handling below and read_doc's (registry.ts) unknown-name
+      // handling: an unknown result_set_id throws inside the store (read() at the top of this
+      // file), which would otherwise surface as an asymmetric "throws here, {error} there" split
+      // against get_candidate's bad-index path. Catch and return the same structured shape.
+      let items: SubtitleCandidate[]
+      try {
+        items = store.list(result_set_id, offset, limit) as SubtitleCandidate[]
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : `unknown result set: ${result_set_id}` }
+      }
       return { items: items.map(summarizeCandidate) }
     },
   })
@@ -129,7 +138,14 @@ export function makeGetCandidateTool(store: ResultSetStore) {
       detail: z.enum(['concise', 'detailed']).default('concise'),
     }),
     execute: async ({ result_set_id, index, detail }) => {
-      const item = store.get(result_set_id, index) as SubtitleCandidate | null
+      // Same fail-soft treatment as list_candidates above: an unknown result_set_id throws inside
+      // store.get→read; catch it so both the bad-id and bad-index cases return {error}, never throw.
+      let item: SubtitleCandidate | null
+      try {
+        item = store.get(result_set_id, index) as SubtitleCandidate | null
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : `unknown result set: ${result_set_id}` }
+      }
       if (!item) return { error: `no candidate at index ${index} in result set ${result_set_id}` }
       return detail === 'detailed' ? item : summarizeCandidate(item)
     },
