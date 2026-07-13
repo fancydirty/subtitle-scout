@@ -1,0 +1,159 @@
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { runRealignWorkerTask } from './realignWorkerTask.js'
+import type { RealignExecutorDeps, RealignJellyfinPort } from './realignExecutor.js'
+import { openDb } from './db.js'
+import { LibraryRepo } from './libraryRepo.js'
+import { JobsRepo } from './jobsRepo.js'
+
+// Mirrors realignExecutor.test.ts's SEASONS_1x5/statSize/mkFlatLibrary/mkJf/mkDeps helpers
+// (read in full before writing this file, per the phase ⑥ plan note) — trimmed to a 3-episode,
+// 1-season fixture since this file is only proving the claim→executeRealign→complete wiring,
+// not re-covering executeRealign's own business logic (already ~1100 lines of tests there).
+const SEASONS_1x3 = [{ seasonNumber: 1, episodeCount: 3, airDate: null }]
+const SHOW_DIR = 'Spy x Family (2022) [tmdbid-120089]'
+
+const statSize = (p: string): number | null => {
+  try {
+    return statSync(p).size
+  } catch {
+    return null
+  }
+}
+
+function mkFlatLibrary(root: string, count: number): string {
+  const dir = join(root, 'lib', 'Spy x Family', 'Season 01')
+  mkdirSync(dir, { recursive: true })
+  for (let i = 1; i <= count; i++) writeFileSync(join(dir, `Spy x Family E${i}.mkv`), `video-${i}`)
+  return dir
+}
+
+function mkJf(opts: {
+  locations: string[]
+  items?: { Type: string; Path: string; ParentIndexNumber: number }[]
+}): RealignJellyfinPort {
+  return {
+    getItem: vi.fn(async () => ({
+      Id: 'jf-series-1', Name: 'Spy x Family', Type: 'Series', ProductionYear: 2022, ProviderIds: { Tmdb: '120089' },
+    }) as never),
+    getItemsPage: vi.fn(async (start: number) => (start === 0 ? (opts.items ?? []) : []) as never),
+    getScheduledTasks: vi.fn(async () => [{ id: '1', name: 'scan', isRunning: false }]),
+    getVirtualFolders: vi.fn(async () => [
+      { id: 'lib-1', name: 'TV', locations: opts.locations, enableRealtimeMonitor: false },
+    ]),
+    refreshLibrary: vi.fn(async () => {}),
+    deleteItem: vi.fn(async () => {}),
+  }
+}
+
+/** Mirrors realignExecutor.test.ts's own mkMirror, but seeds a kind='worker_task' row via
+ *  upsertWorkerTask({taskType:'realign', reason}) instead of upsertWanted({kind:'realign'}) —
+ *  this is the exact shape src/agent/orchestratorAgent.tools.ts's makeDispatchRealignTaskTool
+ *  writes (phase ⑤, already merged): kind='worker_task', season=null, movieId=null, payload
+ *  {taskType:'realign', reason}. Proving runRealignWorkerTask consumes THIS row shape (not a
+ *  standalone kind='realign' identity) is the whole point of this test file. */
+function mkWorkerTaskMirror(paths: string[], opts: { seriesId?: string; title?: string } = {}) {
+  const seriesId = opts.seriesId ?? 'jf-series-1'
+  const db = openDb(':memory:')
+  const lib = new LibraryRepo(db)
+  const jobsRepo = new JobsRepo(db)
+  lib.upsertSeries({ id: seriesId, name: opts.title ?? 'Spy x Family' })
+  paths.forEach((p, i) => {
+    lib.upsertEpisode({
+      id: `jf-ep-${i + 1}`, seriesId, season: 1, episode: i + 1, name: `E${i + 1}`,
+      path: p, subStatus: 'missing',
+    })
+  })
+  jobsRepo.upsertWorkerTask(
+    { seriesId, season: null, movieId: null },
+    { taskType: 'realign', reason: 'mirror episode count exceeds TMDB season table' },
+    null,
+    Date.now(),
+  )
+  const job = jobsRepo.claimNext(Date.now())!
+  return { db, lib, jobsRepo, job, seriesId }
+}
+
+function mkDeps(
+  env: { lib: LibraryRepo; jobsRepo: JobsRepo; jf: RealignJellyfinPort; libRoot: string },
+  over: Partial<RealignExecutorDeps> = {},
+): RealignExecutorDeps {
+  return {
+    lib: env.lib, jobs: env.jobsRepo, jf: env.jf,
+    tmdb: { getSeasonTable: vi.fn(async () => SEASONS_1x3) },
+    fetchAnimeLists: vi.fn(async () => []),
+    runEpisode: vi.fn(async () => ({
+      decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 },
+    })),
+    now: () => Date.now(), log: () => {}, sleep: async () => {},
+    getSize: statSize,
+    mediaRoots: [env.libRoot],
+    mappings: [],
+    ...over,
+  }
+}
+
+describe('runRealignWorkerTask', () => {
+  it('claims a kind=worker_task row (payload.taskType=realign, the phase ⑤ dispatch shape) and completes it done on a successful realign', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-ok-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+      Array.from({ length: 3 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
+    )
+    expect(job.kind).toBe('worker_task')
+    expect(JSON.parse(job.payload!)).toEqual({
+      taskType: 'realign', reason: 'mirror episode count exceeds TMDB season table',
+    })
+
+    const jf = mkJf({
+      locations: [libRoot],
+      items: Array.from({ length: 3 }, (_, i) => ({
+        Type: 'Episode',
+        Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i + 1}.mkv`),
+        ParentIndexNumber: 1,
+      })),
+    })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot })
+
+    const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(result.decision).toBe('realigned')
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+    db.close()
+  })
+
+  it('parks the job (dormant) when executeRealign returns a park decision (e.g. empty mirror — no episode paths at all)', async () => {
+    const libRoot = mkdtempSync(join(tmpdir(), 'realign-worker-task-park-'))
+    const { db, lib, jobsRepo, job } = mkWorkerTaskMirror([]) // no episodes -> park before any fs write
+    const jf = mkJf({ locations: [libRoot] })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot })
+
+    const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(result.decision).toBe('park')
+    expect(jobsRepo.get(job.id)!.state).toBe('dormant')
+    db.close()
+  })
+
+  it('fails the job (retryable, next_retry_at set) when executeRealign returns an error decision (e.g. mount sentinel: empty library root)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-error-'))
+    const libRoot = join(root, 'lib')
+    mkdirSync(libRoot, { recursive: true }) // exists but EMPTY — mountAliveSentinel rejects a dead-looking mount
+    const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+      [join(libRoot, 'Show', 'Season 01', 'a.mkv')], { title: 'Show' },
+    )
+    const jf = mkJf({ locations: [libRoot] })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot })
+
+    const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(result.decision).toBe('error')
+    const row = jobsRepo.get(job.id)!
+    expect(row.state).toBe('failed')
+    expect(row.next_retry_at).not.toBeNull()
+    db.close()
+  })
+})
