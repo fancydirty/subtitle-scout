@@ -86,6 +86,49 @@ describe('makeReasoningAgent', () => {
     const result = await agent.generate({ prompt: 'p' })
     expect(result.output).toEqual({ verdict: 'no_match', reason: 'no evidence' })
   })
+
+  // Factory-boundary regression guard: the two tests above (and the "over the wire" describe
+  // block below) only prove reasoning:'high' becomes reasoning_effort:'high' when generateText
+  // is called DIRECTLY — they never exercise makeReasoningAgent's `reasoning` field at all, so
+  // they'd stay green even if the `?? 'high'` default were deleted or the settings' `as unknown`
+  // cast silently dropped `reasoning` before it reached ToolLoopAgent. These tests close that
+  // gap by driving MockLanguageModelV4 THROUGH makeReasoningAgent and asserting on
+  // doGenerateCalls — the actual LanguageModelV4CallOptions the model received.
+  it('wires reasoning:"high" through to the model doGenerate call options by default (factory boundary)', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: 3, text: undefined, reasoning: undefined },
+        },
+        content: [{ type: 'text', text: JSON.stringify({ verdict: 'no_match', reason: 'no evidence' }) }],
+        warnings: [],
+      }),
+    })
+    const agent = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
+    await agent.generate({ prompt: 'p' })
+    expect(model.doGenerateCalls).toHaveLength(1)
+    expect(model.doGenerateCalls[0].reasoning).toBe('high')
+  })
+
+  it('wires an explicit reasoning override ("none") through to the model doGenerate call options', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: 3, text: undefined, reasoning: undefined },
+        },
+        content: [{ type: 'text', text: JSON.stringify({ verdict: 'no_match', reason: 'no evidence' }) }],
+        warnings: [],
+      }),
+    })
+    const agent = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema, reasoning: 'none' })
+    await agent.generate({ prompt: 'p' })
+    expect(model.doGenerateCalls).toHaveLength(1)
+    expect(model.doGenerateCalls[0].reasoning).toBe('none')
+  })
 })
 
 describe('reasoning wiring over the wire (@ai-sdk/openai-compatible)', () => {
