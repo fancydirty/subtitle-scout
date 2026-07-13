@@ -113,3 +113,20 @@
 - **子代理任务粒度**:待核——是否该以"季/一批集"为单位(而非单集)从根上拥抱合集包(见架构灵魂段)。
 - flaky:src/cli/subtitle-fetch.test.ts 5000ms 超时在并发下偶发(隔离跑过),提测试超时容差。
 - OS 级沙盒 jail(bubblewrap/Docker 单目录 bind-mount)作第三层,v1 只做代码+skill 两层。
+
+## auto-research 迭代 skill:去分数化闭环(方法论已调研,待工作流跑顺后落地)
+
+**命名诚实**:"auto-research"非既有术语;最贴近=Anthropic 官方 **"Claude A/B 观察-精修-测试循环"**(本身去分数化,失败=大白话轶事,修法=措辞增量如 always→MUST)。学术对应:ACE(evolving playbook,增量 delta,警告 context collapse)、GEPA(反思式,自然语言>标量奖励)、MAST(质性失败分类学)、Hamel error-analysis(唯一的数=失败频率,只排优先级不做优化目标)。
+
+**用户框定(核心)**:砍掉"给 skill 打标量分"那层(苍白);信号=真实媒体项的具体成败+可诊断根因("进击的巨人这次装对没")。
+
+**推荐七步闭环**:
+1. 固定回归语料=按**现象**取名的媒体项(合集包唯一/绝对编号乱排/正常周更/老片/在更缺集/已解决必不回归),真 provider 跑,逐项记 found?downloaded?installed?对不对?+全 trace。
+2. 每失败一句质性根因(open coding),agent 可自反思起草但当证据非判决(ACE:烂 Reflector 会毒化 skill)。
+3. 泛化后再写规则(针对**现象**非剧名——剧名特异=过拟合,归 per-show 配置)。
+4. **两次才写规则**(一次=噪声两次=模式)+增量追加(一规则一 commit 带日期进 git);硬法条 MUST/NEVER 放稳定顶区,启发式积在下方。**严禁模型整篇自改 skill**(ACE context collapse:18282→122 token 崩)。
+5. **curator 门**:人(或未产生该失败的独立 agent)审 泛化性/是否与既有规则冲突/是否该落成代码(散文遵守率~70%,必不能破的落代码非散文)。
+6. 每落一条规则**全回归集复跑**(防新规则悄悄破坏旧能力——CPE 教训);**必须绕过负缓存**否则旧失败短路复跑白跑(本项目运维坑)。
+7. 定期剪枝:不触发的规则降 dormant/删,被无视的规则强化/上提/落代码。
+
+**过度工程(不做)**:GEPA/DSPy 自动优化(要海量廉价 rollout 我们没有)、embedding 去重(grep 够)、无人审的自动 landing、LLM-judge 打分器、在线每跑自适应。语料几十项、失败可逐一诊断→人审+git+增量的闭环就是对的尺寸。
