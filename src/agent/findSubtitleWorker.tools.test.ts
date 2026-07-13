@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FetchAdapter } from '../cli/fetchLib.js'
-import { makeDownloadCandidateTool, makeInstallSubtitleTool } from './findSubtitleWorker.tools.js'
+import { makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool } from './findSubtitleWorker.tools.js'
 import type { InspectSignals } from '../files/subtitleInspect.js'
 
 interface DownloadCandidateOutput {
@@ -115,5 +115,25 @@ describe('install_subtitle tool', () => {
     const out = await tool_.execute!({ stagedFileId, langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any)
     expect(out).toHaveProperty('error')
     expect((out as { error: string }).error).toMatch(/refusing to install outside/)
+  })
+})
+
+describe('check_episode_code_safety tool', () => {
+  it('reports safe:true when the filename matches the target episode code', async () => {
+    const tool_ = makeCheckEpisodeCodeSafetyTool()
+    const out = await tool_.execute!(
+      { filename: 'Show.S01E05.1080p.srt', season: 1, episode: 5 },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ safe: true, expectedCode: 'S01E05' })
+  })
+
+  it('reports safe:false when the filename names a different episode', async () => {
+    const tool_ = makeCheckEpisodeCodeSafetyTool()
+    const out = await tool_.execute!(
+      { filename: 'Show.S01E06.1080p.srt', season: 1, episode: 5 },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ safe: false, expectedCode: 'S01E05' })
   })
 })

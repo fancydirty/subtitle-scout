@@ -8,6 +8,7 @@ import { writeSubtitle } from '../files/subtitleWriter.js'
 import { inspectSubtitle } from '../files/subtitleInspect.js'
 import { install } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
+import { formatEpisodeCode, matchesEpisodeCode } from '../core/episode.js'
 import { PROVIDERS } from '../core/schemas.js'
 
 export interface DownloadCandidateDeps {
@@ -84,6 +85,28 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
       }
       const result = await install(stagedPath, finalPath)
       return { path: result.path }
+    },
+  })
+}
+
+/** Optional advisory check — NOT a mandatory gate (north star #2: deterministic checks never
+ *  get to be the "is this subtitle right" gatekeeper; they only do factual bookkeeping). The
+ *  agent may call this to sanity-check a filename against the season/episode it believes it is
+ *  looking for; it is one more piece of evidence, not a pass/fail door the agent must clear. */
+export function makeCheckEpisodeCodeSafetyTool() {
+  return tool({
+    description:
+      'Advisory check: does a filename\'s episode code match the given season/episode? This ' +
+      'is one signal among several, not a verdict — a false result does not mean reject, a ' +
+      'true result does not mean accept.',
+    inputSchema: z.object({
+      filename: z.string(),
+      season: z.number().int(),
+      episode: z.number().int(),
+    }),
+    execute: async ({ filename, season, episode }) => {
+      const expectedCode = formatEpisodeCode(season, episode)
+      return { safe: matchesEpisodeCode(filename, expectedCode), expectedCode }
     },
   })
 }
