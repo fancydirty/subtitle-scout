@@ -51,6 +51,21 @@ describe('download_candidate tool', () => {
     expect(out.signals.decodable).toBe(true)
   })
 
+  // Tool-visibility (not a gate): download_candidate's inputSchema has a `fileIndex` param but its
+  // description never explained what it is for — the model saw a bare `number|null` with no clue it
+  // is how you pull ONE episode's file out of a season pack / collection's filelist. The description
+  // is what the model reads, so the fileIndex workflow must be spelled out there.
+  it('description explains fileIndex for picking one file out of a pack/collection filelist', () => {
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      videoFilename: 'Show.S01E01.mkv',
+    })
+    expect(tool_.description).toMatch(/fileIndex/)
+    expect(tool_.description).toMatch(/pack|collection|filelist|file list/i)
+  })
+
   it('two downloads in the same task do not collide (each gets its own staging subdir)', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nfirst\n')))

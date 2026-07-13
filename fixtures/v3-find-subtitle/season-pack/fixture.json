@@ -1,0 +1,21 @@
+{
+  "name": "season-pack",
+  "jobId": "eval-season-pack",
+  "task": {
+    "videoFilename": "Attack.on.Titan.S01E01.mkv", "title": "Attack on Titan", "originalTitle": "進撃の巨人",
+    "year": 2013, "season": 1, "episode": 1, "alternativeTitles": ["進擊的巨人", "进击的巨人"], "overview": null,
+    "runtimeMinutes": 24, "providerIds": { "tmdb": "1429" }
+  },
+  "candidates": [
+    { "provider": "assrt", "providerId": "pack-1", "videoName": "進擊的巨人 S1+S2+S3+OAD1~8 繁中字幕合集",
+      "nativeName": "進擊的巨人", "language": "zh-TW", "subtype": null, "releaseSite": null, "uploadDate": null,
+      "fileList": [
+        { "index": 0, "name": "Attack.on.Titan.S01E01.BDrip.1080p.繁体.srt" },
+        { "index": 1, "name": "Attack.on.Titan.S01E02.BDrip.1080p.繁体.srt" },
+        { "index": 2, "name": "Attack.on.Titan.S01E03.BDrip.1080p.繁体.srt" }
+      ] }
+  ],
+  "chosenCandidate": { "provider": "assrt", "providerId": "pack-1", "fileIndex": 0 },
+  "downloadedSrt": "1\n00:00:01,000 --> 00:00:02,000\n第一集台词\n\n2\n00:00:03,000 --> 00:00:05,000\n第二句\n",
+  "expected": { "decision": "installed", "installedFilename": "Attack.on.Titan.S01E01.zh-Hant.srt" }
+}

@@ -30,6 +30,9 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
     description:
       'Resolve a candidate to a download URL, download it, unpack/decode it into your ' +
       'sandbox, and inspect its structural signals (cue count, time span, detected script). ' +
+      'Use fileIndex to pull ONE file out of a season pack / collection: set it to the index ' +
+      'of the entry in the candidate\'s fileList (seen via get_candidate) that names your ' +
+      'target episode; pass fileIndex: null for a plain single-file candidate. ' +
       'Does NOT install it — call install_subtitle once you decide it is a match.',
     inputSchema: z.object({
       provider: z.enum(PROVIDERS),
