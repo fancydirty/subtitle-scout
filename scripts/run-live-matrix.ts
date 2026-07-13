@@ -18,6 +18,7 @@ import { makeFindSubtitleWorker } from '../src/agent/findSubtitleWorker.js'
 import type { FindSubtitleTask } from '../src/agent/findSubtitleWorker.schemas.js'
 import { makeReplayFetch } from '../src/testing/replayFetch.js'
 import { CELL_CATALOG, loadCell, RESOURCE_TYPES, SOURCE_FORMS, type CatalogEntry } from '../src/testing/liveMatrix.js'
+import { makeToolCallTap } from '../src/testing/toolCallTap.js'
 import type { LanguageModel } from 'ai'
 
 if (process.env.VITEST) throw new Error('matrix runner must not run under vitest — it hits a real LLM')
@@ -43,12 +44,29 @@ function selected(): CatalogEntry[] {
   return seeded.filter(c => (!values.type || c.resourceType === values.type) && (!values.form || c.sourceForm === values.form))
 }
 
-interface CellResult { cell: string; run: number; ok: boolean; got: string; want: string; err?: string }
+interface CellResult {
+  cell: string; run: number; ok: boolean; got: string; want: string; err?: string
+  /** Diagnostic only — NEVER folded into `ok`/exit code. True iff the tool-call tap (see
+   *  src/testing/toolCallTap.ts) observed download_candidate or install_subtitle ANYWHERE in the
+   *  run's tool sequence. For a no_safe_match result this distinguishes a CLEAN refusal (never
+   *  touched a wrong candidate) from an ACQUISITION-ATTEMPTED one (grabbed a wrong candidate and
+   *  only failed into no_safe_match by friction downstream) — the latter is Bazarr-style
+   *  keyword-grabbing, the exact anti-pattern the project's north star forbids. */
+  acquisitionAttempted?: boolean
+  /** Full ordered tool-call sequence for this run, whatever the outcome (populated even on THREW,
+   *  since the tap observes tool calls as they happen, before any error). */
+  toolCalls?: string[]
+}
 
 async function runOne(entry: CatalogEntry, run: number, model: LanguageModel): Promise<CellResult> {
   const cell = loadCell(entry.resourceType, entry.sourceForm)
   const id = `${entry.resourceType}/${entry.sourceForm}`
   const root = mkdtempSync(join(tmpdir(), 'scout-matrix-'))
+  // Fresh tap per run — toolCalls must not leak across runs/cells sharing the one `model` instance
+  // built in main(). Declared outside the try so the THREW path below can still report whatever
+  // tool sequence the tap captured before the throw; the diagnostic value doesn't evaporate just
+  // because the run errored partway through.
+  const tap = makeToolCallTap(model)
   try {
     const mediaRoot = join(root, 'media', cell.task.title.replace(/[^\w.-]+/g, '_'))
     mkdirSync(mediaRoot, { recursive: true })
@@ -56,7 +74,7 @@ async function runOne(entry: CatalogEntry, run: number, model: LanguageModel): P
     const replay = makeReplayFetch(cell.responsesDir)
     const client = new AssrtClient({ token: 'replay', cacheDir: join(root, 'assrt-cache'), fetchImpl: replay, limiter: new MinIntervalLimiter(0) })
     const runTask = makeFindSubtitleWorker({
-      model, adapters: [makeAssrtAdapter(client)], cacheRoot: join(root, 'cache'), fetchImpl: replay, stepCap: 500,
+      model: tap.model, adapters: [makeAssrtAdapter(client)], cacheRoot: join(root, 'cache'), fetchImpl: replay, stepCap: 500,
     })
     const task: FindSubtitleTask = { ...cell.task, jobId: `matrix-${id.replace('/', '-')}-${run}`, mediaRoot, videoPath }
     const decision = await runTask(task)
@@ -69,12 +87,32 @@ async function runOne(entry: CatalogEntry, run: number, model: LanguageModel): P
       const want = join(mediaRoot, cell.expected.installedFilename!).normalize('NFC')
       ok = decision.installedPath === want && existsSync(want) && decision.installedLanguage === cell.expected.installedLanguage
     }
-    return { cell: id, run, ok, got: decision.decision, want: cell.expected.decision }
+    const acquisitionAttempted = tap.toolCalls.includes('download_candidate') || tap.toolCalls.includes('install_subtitle')
+    return { cell: id, run, ok, got: decision.decision, want: cell.expected.decision, acquisitionAttempted, toolCalls: tap.toolCalls }
   } catch (e) {
-    return { cell: id, run, ok: false, got: 'THREW', want: cell.expected.decision, err: String(e) }
+    const acquisitionAttempted = tap.toolCalls.includes('download_candidate') || tap.toolCalls.includes('install_subtitle')
+    return { cell: id, run, ok: false, got: 'THREW', want: cell.expected.decision, err: String(e), acquisitionAttempted, toolCalls: tap.toolCalls }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+}
+
+/** For a no_safe_match result (either got OR want it, so a mismatched expectation is still
+ *  labeled) — the refusal-quality signal that is the whole point of this tap. Never affects pass/
+ *  fail; purely for the human reading matrix output to spot Bazarr-style grab-then-refuse runs. */
+function refusalLabel(res: CellResult): string {
+  if (res.got !== 'no_safe_match' && res.want !== 'no_safe_match') return ''
+  return res.acquisitionAttempted
+    ? ' [refusal:ACQUISITION-ATTEMPTED — grabbed a wrong candidate, north-star smell]'
+    : ' [refusal:clean]'
+}
+
+/** Terse tool-sequence trace, only for successful installs (the no_safe_match labeling above is
+ *  the point of this tap; this is a lightweight bonus for the other interesting outcome). */
+function toolsLabel(res: CellResult): string {
+  if (res.got !== 'installed' || !res.toolCalls?.length) return ''
+  const seq = res.toolCalls.join('→')
+  return ` [tools:${seq.length > 120 ? `${seq.slice(0, 117)}...` : seq}]`
 }
 
 async function main() {
@@ -86,7 +124,7 @@ async function main() {
   for (const c of cells) for (let r = 1; r <= repeat; r++) {
     const res = await runOne(c, r, model)
     results.push(res)
-    console.error(`${res.ok ? 'PASS' : 'FAIL'} ${res.cell} run ${r}: got=${res.got} want=${res.want}${res.err ? ` err=${res.err.slice(0, 200)}` : ''}`)
+    console.error(`${res.ok ? 'PASS' : 'FAIL'} ${res.cell} run ${r}: got=${res.got} want=${res.want}${res.err ? ` err=${res.err.slice(0, 200)}` : ''}${refusalLabel(res)}${toolsLabel(res)}`)
   }
   const passed = results.filter(r => r.ok).length
   console.error(`\n=== ${passed}/${results.length} passed ===`)
