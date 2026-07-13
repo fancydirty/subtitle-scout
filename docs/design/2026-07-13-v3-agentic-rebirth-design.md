@@ -118,6 +118,8 @@
 
 **命名诚实**:"auto-research"非既有术语;最贴近=Anthropic 官方 **"Claude A/B 观察-精修-测试循环"**(本身去分数化,失败=大白话轶事,修法=措辞增量如 always→MUST)。学术对应:ACE(evolving playbook,增量 delta,警告 context collapse)、GEPA(反思式,自然语言>标量奖励)、MAST(质性失败分类学)、Hamel error-analysis(唯一的数=失败频率,只排优先级不做优化目标)。
 
+**★铁律·skill 修订权(用户 2026-07-13 明示,安全红线)★**:**skill 有且仅由我们(用户+主控 Claude)迭代。跑活的 vercel agent(主/子代理)绝无权修改任何 skill——它只"使用"skill 干活、只"产生"失败 trace 和自反思(自反思仅作证据,非判决)。我们是唯一的 curator。** 这不只是 ACE context-collapse 的技术防护,更是治理原则:法典的修订权握在人手,被治理者不改法。任何"让 agent 自改 skill"的口子=违背此铁律。
+
 **用户框定(核心)**:砍掉"给 skill 打标量分"那层(苍白);信号=真实媒体项的具体成败+可诊断根因("进击的巨人这次装对没")。
 
 **推荐七步闭环**:
