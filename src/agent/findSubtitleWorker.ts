@@ -85,7 +85,12 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       `provider ids: ${JSON.stringify(task.providerIds)}`,
     ].join('\n')
 
-    const agent = makeReasoningAgent({
+    // finalize-tool mode (NOT Output.object): the model reports its FindSubtitleDecision by
+    // calling the injected `finalize` tool as its terminal step, and readFinalized() returns those
+    // captured args. This avoids the response_format:json_object the openai-compatible provider
+    // would otherwise inject for Output.object — the poison that makes real mimo-v2.5 emit a ReAct
+    // text blob instead of native tool_calls (AI_NoObjectGeneratedError). See reasoningAgent.ts.
+    const { agent, readFinalized } = makeReasoningAgent({
       model: deps.model,
       tools,
       instructions,
@@ -106,7 +111,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // (result.steps.length, per the stepCountIs(500) test-phase ceiling) is ever observable,
       // since runFindSubtitleTask's return type is deliberately just the decision.
       console.error(`[find-subtitle-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
-      return result.output
+      return readFinalized()
     } finally {
       // Try-error sandbox cleanup runs even on a thrown error — the staging dir never
       // survives a run, matching stagingSandbox's own "job ends, sandbox is deleted" contract.

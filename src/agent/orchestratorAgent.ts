@@ -93,7 +93,12 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
       systemPromptSkillIndex([ORCHESTRATOR_SKILL]),
     ].join('\n')
 
-    const agent = makeReasoningAgent({
+    // finalize-tool mode (NOT Output.object): the orchestrator reports its OrchestratorDecision by
+    // calling the injected `finalize` tool as its terminal step. Same root-cause fix as the
+    // find-subtitle worker — on the openai-compatible provider Output.object injects
+    // response_format:json_object into every request, which confuses real mimo-v2.5 into a ReAct
+    // text blob instead of native tool_calls (AI_NoObjectGeneratedError). See reasoningAgent.ts.
+    const { agent, readFinalized } = makeReasoningAgent({
       model: deps.model,
       tools,
       instructions,
@@ -103,10 +108,10 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
       telemetry: { isEnabled: true },
     })
 
-    const result = await agent.generate({
+    await agent.generate({
       prompt: 'Read the living-doc and dispatch worker tasks for whatever needs work right now.',
       abortSignal: AbortSignal.timeout(180_000),
     })
-    return result.output
+    return readFinalized()
   }
 }

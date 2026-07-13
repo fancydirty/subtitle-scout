@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
-/** Terminal decision the find-subtitle worker's ToolLoopAgent reports via Output.object().
+/** Terminal decision the find-subtitle worker's ToolLoopAgent reports by calling the `finalize`
+ *  tool (this schema is that tool's inputSchema — see reasoningAgent.ts's finalize-tool mode).
  *  No confidence score anywhere (north star #1) — decision + a plain-language reason. */
 export const FindSubtitleDecisionSchema = z.object({
   decision: z.enum(['installed', 'no_safe_match', 'retry_later']),
