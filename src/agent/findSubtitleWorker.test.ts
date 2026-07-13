@@ -88,7 +88,9 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
           return toolCallResult('c1', 'search_source', { queries: ['Show'], languages: ['zh-Hans'] })
         }
         if (call === 2) {
-          return toolCallResult('c2', 'download_candidate', { provider: 'assrt', providerId: '1', fileIndex: null })
+          // Real-model arg shape (mimo-v2.5 live trace): the COMPOSITE candidateKey `id` the agent was
+          // shown ("assrt:1"), NOT a bare providerId, and a STRING-encoded null fileIndex ("None").
+          return toolCallResult('c2', 'download_candidate', { candidateId: 'assrt:1', fileIndex: 'None' })
         }
         if (call === 3) {
           const downloaded = findToolResultValue(options.prompt, 'download_candidate')
