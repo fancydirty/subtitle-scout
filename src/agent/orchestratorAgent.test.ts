@@ -61,6 +61,22 @@ beforeEach(() => {
 })
 
 describe('makeOrchestratorAgent', () => {
+  it('throws a descriptive error BEFORE the agent runs when orchestratorJobId does not reference an existing jobs row (was: silently dispatched zero rows behind a truthful-looking summary)', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new Error('model must never be called — validation must happen before agent.generate()')
+      },
+    })
+
+    const runPass = makeOrchestratorAgent({
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: 999999, stepCap: 10,
+    })
+
+    await expect(runPass()).rejects.toThrow(/orchestratorJobId=999999 does not reference an existing jobs row/)
+    // Confirm the failure is loud, not a silent no-op: nothing was dispatched.
+    expect(jobs.countByState('wanted')).toBe(0)
+  })
+
   it('reads the living-doc and dispatches worker_task rows with the right payload/parent_job_id', async () => {
     lib.upsertSeries({ id: 's1', name: 'Show' })
     lib.upsertEpisode({

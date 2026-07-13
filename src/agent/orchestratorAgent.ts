@@ -23,7 +23,7 @@ export interface OrchestratorAgentDeps {
   model: LanguageModel
   lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'countEpisodesInSeason'>
   tmdb: Pick<TmdbClient, 'getSeasonTable'>
-  jobs: Pick<JobsRepo, 'upsertWorkerTask'>
+  jobs: Pick<JobsRepo, 'upsertWorkerTask' | 'get'>
   now: () => number
   /** null for the root orchestrator (triggered directly, phase ⑦); set to the claiming job's
    *  own id when this run IS a sibling orchestrator claimed from the jobs table (phase ⑦'s
@@ -35,6 +35,24 @@ export interface OrchestratorAgentDeps {
 
 export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
   return async function runOrchestratorPass(): Promise<OrchestratorDecision> {
+    // IMPORTANT: validate BEFORE the agent ever runs. parent_job_id carries a real
+    // `REFERENCES jobs(id)` foreign key (foreign_keys=ON, src/v2/db.ts), so a non-existent
+    // orchestratorJobId would make every upsertWorkerTask call inside the dispatch tools throw —
+    // but the AI SDK's tool loop catches that throw, feeds it back to the model as a tool-error,
+    // and keeps going. Left unchecked, that produces a truthful-LOOKING OrchestratorDecision
+    // (e.g. dispatchedFindSubtitle: 1) while zero rows actually landed in the jobs table — a
+    // silent, false-success failure mode. Fail loud here instead: a bad id must never let the
+    // agent run at all. null is the root orchestrator's legitimate case and is allowed through.
+    if (deps.orchestratorJobId !== null && deps.jobs.get(deps.orchestratorJobId) === null) {
+      throw new Error(
+        `runOrchestratorPass: orchestratorJobId=${deps.orchestratorJobId} does not reference an ` +
+        'existing jobs row — refusing to run. Every dispatch this pass would carry that id as ' +
+        'parent_job_id, which would throw inside upsertWorkerTask (FK violation) on the first ' +
+        'dispatch attempt; that throw would otherwise be silently absorbed by the tool loop ' +
+        'instead of failing this pass.'
+      )
+    }
+
     const counter: DispatchCounter = { count: 0 }
     const dispatchDeps = { jobs: deps.jobs, now: deps.now, parentJobId: deps.orchestratorJobId }
 
