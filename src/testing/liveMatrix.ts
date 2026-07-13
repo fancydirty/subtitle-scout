@@ -65,7 +65,7 @@ export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'western', sourceForm: 'only-single', seeded: false, represents: 'Peacemaker / Young Sheldon — per-episode' },
   { resourceType: 'western', sourceForm: 'mixed', seeded: false, represents: 'Love Death & Robots — anthology' },
   { resourceType: 'movie', sourceForm: 'multi-version', seeded: false, represents: 'Hero / Wandering Earth — 剪辑版/时长 variants' },
-  { resourceType: 'movie', sourceForm: 'none', seeded: false, represents: 'obscure film — no correct subtitle exists (counter-example floor)' },
+  { resourceType: 'movie', sourceForm: 'none', seeded: true, represents: 'obscure film — no correct subtitle exists (counter-example floor)' },
 ]
 
 const FIXTURE_ROOT = 'fixtures/v3-live'
