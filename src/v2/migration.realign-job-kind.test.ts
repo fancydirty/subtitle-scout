@@ -99,6 +99,10 @@ describe('migration: realign job kind + plan_ref（jobs 表重建）', () => {
       season: 3,
       movie_id: 'm-ghost',
       plan_ref: null, // v7 新列：存量行回填 NULL
+      // v8（worker_task kind + payload + parent_job_id）已并入 MIGRATIONS——这条 v6→v7
+      // round-trip 现在也途经 openDb() 一路跑到最新版本，v8 的两个新列同样回填 NULL。
+      payload: null,
+      parent_job_id: null,
       state: 'failed',
       priority: 42,
       target_episodes: '[4,5,6]',
