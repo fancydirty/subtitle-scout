@@ -643,3 +643,53 @@ describe('realign job kind', () => {
     })
   })
 })
+
+describe('worker_task dispatch (v3 phase ④)', () => {
+  it('upsertWorkerTask writes a new wanted row with payload and parent_job_id', () => {
+    const now = Date.now()
+    repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    const job = repo.find('s1', 1)
+    // find() only looks at kind='series_season' — worker_task rows need a dedicated lookup;
+    // go through claimNext to prove the row is really there and claimable.
+    expect(job).toBeNull()
+    const claimed = repo.claimNext(now)
+    expect(claimed?.kind).toBe('worker_task')
+    expect(claimed?.series_id).toBe('s1')
+    expect(JSON.parse(claimed!.payload!)).toEqual({ taskType: 'find_subtitle' })
+    expect(claimed?.parent_job_id).toBeNull()
+  })
+
+  it('upsertWorkerTask is idempotent for the same identity while active (no duplicate row)', () => {
+    const now = Date.now()
+    repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', retry: true }, null, now)
+    expect(repo.countByState('wanted')).toBe(1)
+  })
+
+  it('upsertWorkerTask does not collide with an existing series_season job for the same series/season', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    expect(repo.countByState('wanted')).toBe(2)
+  })
+
+  it('records parent_job_id lineage for sibling-orchestrator style dispatch', () => {
+    const now = Date.now()
+    repo.upsertWorkerTask({ seriesId: 'orchestrator-shard-0', season: null, movieId: null }, { taskType: 'orchestrate' }, null, now)
+    const orchestratorJob = repo.claimNext(now)!
+    repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, orchestratorJob.id, now)
+    const dispatched = repo.get(orchestratorJob.id + 1)!
+    expect(dispatched.parent_job_id).toBe(orchestratorJob.id)
+  })
+
+  it('done→wanted revival refreshes payload/parent_job_id (mirrors upsertWanted semantics)', () => {
+    const now = Date.now()
+    repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    const job = repo.claimNext(now)!
+    repo.completeDone(job.id, now)
+    repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', round: 2 }, null, now)
+    const revived = repo.get(job.id)!
+    expect(revived.state).toBe('wanted')
+    expect(JSON.parse(revived.payload!)).toEqual({ taskType: 'find_subtitle', round: 2 })
+  })
+})
