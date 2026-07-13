@@ -133,3 +133,16 @@
 7. 定期剪枝:不触发的规则降 dormant/删,被无视的规则强化/上提/落代码。
 
 **过度工程(不做)**:GEPA/DSPy 自动优化(要海量廉价 rollout 我们没有)、embedding 去重(grep 够)、无人审的自动 landing、LLM-judge 打分器、在线每跑自适应。语料几十项、失败可逐一诊断→人审+git+增量的闭环就是对的尺寸。
+
+## auto-research 事故日志(真站验收挖出的根因,已沉淀,防复发)
+
+**首次真站验收(2026-07-13,进击的巨人 S01E01,真 mimo-v2.5+真 assrt):五次点火挖穿三层,第5次 installed 成功**(agent 从 Moozzi2 完整系列合集里定位第1集、看时长 25m40s+831 cue+ASS 标题「第１話」判断归属、7 步装上 79KB zh-Hans.ass)。挖出的三层根因(全部离线 1263 测试测不到,只有真站暴露):
+1. **Output.object 毒**(reasoningAgent):Output.object 让 openai-compatible 注入 response_format:json_object,mimo-v2.5 不支持→收到 tools+json_object 矛盾指令→吐 ReAct 文本非原生 tool_calls→NoObjectGeneratedError。**沉淀**:改 finalize-tool 模式(模型调 finalize 工具吐结构化决策,不发 response_format);加"请求不含 response_format"over-the-wire 回归守卫。
+2. **误诊为"不认合集包"**(打了两个 skill 补丁都没打中——agent 认知本就对)。**教训**:systematic-debugging 铁律救场——靠 step 追踪(onStepFinish 逐步录)看清 agent 真实行为,而非拍脑袋。skill 补丁不是万金油,先看证据。
+3. **参数流三连**(真 bug):(a) 候选 id 是复合 `assrt:667241`,agent 老实传回,resolve 里 Number() 得 NaN→改 parseCandidateKey 拆分;(b) 模型把 fileIndex 序列化成字符串 `"10"`/`"None"`→coerce.ts 容错(""/none/null→null 再转数字);(c) installedLanguage 枚举收 `"None"` 让 finalize 校验崩→readFinalized 崩(解释了"finalize 了却报没 finalize")。**沉淀**:coerce.ts 容错所有面向模型的数字/枚举参数;**离线 mock 改成像真模型那样传参(复合 id+字符串 fileIndex+"None" 哨兵)——这类 bug 以后离线就能拦**(还原修复 7 场景全红=真守卫)。
+
+**方法论印证**:离线全绿≠真能用;真站是唯一裁判;暴露问题是好事(能诊断能修=可 auto-research);沉淀=代码修复+真实化 mock+事故日志,不是给 skill 打分。
+
+## backlog 追加:国际化(工作流跑顺后)
+
+- **国际化(远期,OpenSubtitles 是钥匙)**:v1 为外国资源找中文字幕;工作流跑顺后**反向**——为中国资源找英文/他国字幕。OpenSubtitles 多语种覆盖使其触手可及(已接入,只需放开语言维度)。北极星不变(agent 判断归属),只是 target language 从"zh"泛化成参数。**先记 backlog,工作流+全量测试跑顺后再动。**
