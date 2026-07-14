@@ -16,8 +16,9 @@ import { scanVideoFiles, buildRealignPlan, type RealignPlanItem } from '../files
 import {
   initManifest, appendManifestEntry, manifestPath, readManifest,
 } from '../files/realignManifest.js'
-import type { Assembled } from '../cli/index.js'
 import { MediaContextSchema } from '../core/schemas.js'
+import { isUnderRoots } from '../core/mediaContext.js'
+import type { FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
@@ -225,35 +226,85 @@ describe('buildRealignMediaContext', () => {
     expect(ctx.media.title).toBe('间谍过家家')
     expect(ctx.media.year).toBe(2022)
     expect(ctx.trigger).toBe('library_scan')
+    // Wall ②：absoluteEpisode 挂在 MediaContext 之外的兄弟字段上（不进 zod 校验，
+    // 上面 MediaContextSchema.parse(ctx) 不因为多出这个键而抛错），makeRealignRunEpisode
+    // 建 FindSubtitleTask 时要用它。
+    expect(ctx.absoluteEpisode).toBe(26)
   })
 })
 
 describe('makeRealignRunEpisode', () => {
-  it('接线 runPipeline：不经过 jf.getItem，直接用调用方构造好的 ctx，包 withJournal', async () => {
-    const runPipelineMock = vi.fn(async () => ({
-      decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 },
-    }))
-    const makeDeps = vi.fn(() => ({}) as never)
-    const withJournal = vi.fn((fn: () => Promise<unknown>) => fn())
-    const runEpisode = makeRealignRunEpisode(
-      { makeDeps, withJournal: withJournal as unknown as Assembled['withJournal'], cacheRoot: '/cache' },
-      { runPipelineImpl: runPipelineMock as never },
+  const item: RealignPlanItem = {
+    sourcePath: '/src/y.mkv', sourceFilename: 'y.mkv', absoluteEpisode: 26,
+    targetSeason: 2, targetEpisode: 1, targetRelPath: 'Show (2022) [tmdbid-120089]/Season 02/y.mkv',
+  }
+
+  it('把 realign ctx 翻译成 FindSubtitleTask：videoPath 是 .realign-build 路径，mediaRoot 是库根（.realign-build 之前那一级，不是这一集自己的深层目录），季集/绝对集号/标题/tmdbId 都来自 ctx', async () => {
+    const ctx = buildRealignMediaContext(
+      '间谍过家家', 2022, '120089', item,
+      '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.mkv',
     )
-    const ctx = MediaContextSchema.parse({
-      request_id: 'r1', trigger: 'library_scan',
-      media: { type: 'episode', path: '/x.mkv', filename: 'x.mkv', title: 'Show', season: 2, episode: 1, provider_ids: { tmdb: '1' } },
-      preferences: {},
+    let capturedTask: FindSubtitleTask | undefined
+    const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
+      capturedTask = task
+      return {
+        decision: 'installed' as const, reason: 'ok', installedPath: '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.zh.srt',
+        installedLanguage: 'zh-Hans' as const, candidateProvider: 'assrt', candidateProviderId: '1',
+      }
     })
-    const result = await runEpisode(ctx, '/lib/Show/Season 02', 'job-1')
-    expect(result.decision).toBe('download')
-    expect(runPipelineMock).toHaveBeenCalledTimes(1)
-    expect(withJournal).toHaveBeenCalledTimes(1)
-    // runPipeline(deps, ctx, outDir, journalDir, opts)：v2 状态机拥有全部重试策略，负缓存必须旁路
-    const call = runPipelineMock.mock.calls[0] as unknown[]
-    expect(call[1]).toBe(ctx)
-    expect(call[2]).toBe('/lib/Show/Season 02')
-    expect(String(call[3])).toContain('/cache/journals/realign-job-1-')
-    expect(call[4]).toEqual({ bypassNegativeCache: true })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+
+    const result = await runEpisode(
+      ctx,
+      '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02',
+      'job-1-26',
+    )
+
+    expect(runFindSubtitleTask).toHaveBeenCalledTimes(1)
+    expect(capturedTask!.videoPath).toBe('/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
+    expect(capturedTask!.videoFilename).toBe('y.mkv')
+    expect(capturedTask!.mediaRoot).toBe('/lib/tv') // 库根，不是这一集的深层 outDir
+    expect(capturedTask!.jobId).toBe('job-1-26')
+    expect(capturedTask!.season).toBe(2)
+    expect(capturedTask!.episode).toBe(1)
+    expect(capturedTask!.absoluteEpisode).toBe(26)
+    expect(capturedTask!.title).toBe('间谍过家家')
+    expect(capturedTask!.year).toBe(2022)
+    expect(capturedTask!.providerIds.tmdb).toBe('120089')
+    expect(result).toEqual({
+      decision: 'installed', reason: 'ok',
+      installedPath: '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.zh.srt',
+      installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: '1',
+    })
+  })
+
+  it('mediaRoot 推导让 find-subtitle worker 自己的沙盒判定 isUnderRoots(dirname(videoPath), [mediaRoot]) 通过', async () => {
+    const ctx = buildRealignMediaContext(
+      'Show', 2020, '1', item,
+      '/media/tv/.realign-build/Show (2020) [tmdbid-1]/Season 02/y.mkv',
+    )
+    let capturedMediaRoot = ''
+    const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
+      capturedMediaRoot = task.mediaRoot
+      return {
+        decision: 'no_safe_match' as const, reason: 'x', installedPath: null,
+        installedLanguage: null, candidateProvider: null, candidateProviderId: null,
+      }
+    })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+
+    await runEpisode(ctx, '/media/tv/.realign-build/Show (2020) [tmdbid-1]/Season 02', 'job-2')
+
+    expect(isUnderRoots(dirname(ctx.media.path), [capturedMediaRoot])).toBe(true)
+  })
+
+  it('outDir 不含 .realign-build 段 → 抛错（mediaRoot 推导失败，绝不猜一个不安全的根）', async () => {
+    const ctx = buildRealignMediaContext('Show', 2020, '1', item, '/lib/tv/Show/Season 02/y.mkv')
+    const runFindSubtitleTask = vi.fn()
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+
+    await expect(runEpisode(ctx, '/lib/tv/Show/Season 02', 'job-3')).rejects.toThrow(/\.realign-build/)
+    expect(runFindSubtitleTask).not.toHaveBeenCalled()
   })
 })
 
@@ -1109,6 +1160,33 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
     expect(result.detail).toContain('manifest.jsonl')
     expect(countVideosRec(oldSeasonDir)).toBe(3)    // 零改动
     expect(existsSync(join(libRoot, '.realign-build'))).toBe(false)
+    db.close()
+  })
+
+  it('Wall ②：runEpisode（v3 find-subtitle worker 接线）抛错——非阻塞契约仍然成立，整理照常完成', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-subtitle-throw-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
+    const jf = mkJf({
+      locations: [libRoot],
+      items: [1, 2, 3].map(i => ({ Type: 'Episode', Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i}.mkv`), ParentIndexNumber: 1 })),
+    })
+    // runFindSubtitleTask（找字幕的 v3 worker）真实语义：一个 THROW（而非结构化 retry_later）
+    // 代表 step-cap/timeout/abort 一类的 worker-exhaustion——realign 顶层编排必须把它当成
+    // "这一集字幕先行没跑成"来吞掉，绝不能让它冒泡阻断整个整理流程（IMP#7 非阻塞契约）。
+    const runEpisode = makeRealignRunEpisode({
+      runFindSubtitleTask: vi.fn(async () => { throw new Error('find-subtitle worker exhausted (step cap)') }),
+    })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
+      runEpisode, tmdb: { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 3, airDate: null }]) },
+    })
+
+    const result = await executeRealign(job, deps)
+
+    expect(result.decision).toBe('realigned')             // 整理仍然完成——字幕先行失败绝不阻塞
+    expect(result.detail).toContain('字幕先行失败')
+    expect(countVideosRec(join(libRoot, SHOW_DIR))).toBe(3) // 三集都已就位（只是没字幕）
     db.close()
   })
 })
