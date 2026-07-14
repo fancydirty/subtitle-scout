@@ -1,0 +1,33 @@
+# Portable live-test runner — deploy on the SOFT ROUTER (or any host whose network reaches
+# assrt/mimo WITHOUT this dev Mac's fake-ip transparent proxy, which destroys sessions/sockets
+# under sustained load). See docs/design/2026-07-14-provider-proxy-hijack-root-cause.md.
+#
+# node_modules lives in a NAMED VOLUME (NOT bind-mounted) so native modules (better-sqlite3) are
+# built for the CONTAINER's arch — never carry a different-arch host's node_modules onto the router.
+#
+# One-time per repo sync (installs deps arch-correctly inside the container):
+#   docker compose -f docker-compose.test.yml run --rm test npm ci
+# Then run any out-of-band runner (network takes the router's clean path, not the Mac's proxy):
+#   docker compose -f docker-compose.test.yml run --rm test npx tsx scripts/run-orchestrator-matrix.ts --repeat 2
+#   docker compose -f docker-compose.test.yml run --rm test npx tsx scripts/run-live-matrix.ts --all
+#   docker compose -f docker-compose.test.yml run --rm test npx tsx scripts/record-provider-responses.ts --type anime --form season-pack --title "進撃の巨人" --original "Attack on Titan"
+services:
+  test:
+    image: node:22-slim
+    working_dir: /app
+    env_file: .env
+    environment:
+      TMPDIR: /tmp/matrix-scratch
+    volumes:
+      # Source (incl. scripts/, src/, fixtures/) from the synced repo checkout...
+      - .:/app
+      # ...but node_modules from a container-owned named volume (arch-correct `npm ci` in-container).
+      - scout-test-node-modules:/app/node_modules
+      # Scratch for the runners' mkdtemp/install targets (kept off the bind mount).
+      - scout-test-scratch:/tmp/matrix-scratch
+    # No long-running command: this service is invoked ad-hoc via `docker compose run` per the header.
+    entrypoint: []
+    command: ["node", "--version"]
+volumes:
+  scout-test-node-modules:
+  scout-test-scratch:
