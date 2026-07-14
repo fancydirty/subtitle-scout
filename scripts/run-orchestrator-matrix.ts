@@ -43,7 +43,12 @@ async function runShape(shape: BacklogShape, run: number, model: LanguageModel):
   const tap = makeToolCallTap(model)
   let threw: string | undefined
   try {
-    await makeOrchestratorAgent({ model: tap.model, lib, tmdb, jf, jobs, now: () => Date.now(), orchestratorJobId: null, stepCap: 500 })()
+    await makeOrchestratorAgent({
+      model: tap.model, lib, tmdb, jf, jobs, now: () => Date.now(), orchestratorJobId: null, stepCap: 500,
+      // Only override when the shape asks for it (e.g. over-cap-spillover) — every other shape
+      // keeps the agent's own default cap of 100.
+      ...(shape.capOverride !== undefined ? { maxDispatchesPerOrchestrator: shape.capOverride } : {}),
+    })()
   } catch (e) { threw = String(e) }
   const got = summarizeRows(jobs)
   const wantRealign = [...shape.expected.realignSeriesIds].sort()
@@ -53,8 +58,41 @@ async function runShape(shape: BacklogShape, run: number, model: LanguageModel):
   // not over-penalize extra finds), but realign is the hard gate.
   const realignOk = JSON.stringify(got.realign) === JSON.stringify(wantRealign)
   const findOk = wantFind.every(f => got.find.includes(f))
-  const ok = !threw && realignOk && findOk
-  console.error(`${ok ? 'PASS' : 'FAIL'} ${shape.name} run ${run}: realign got=${JSON.stringify(got.realign)} want=${JSON.stringify(wantRealign)}${realignOk ? '' : ' <REALIGN-GATE-LEAK>'} | find got=${JSON.stringify(got.find)} want_subset=${JSON.stringify(wantFind)}${findOk ? '' : ' <FIND-MISS>'}${threw ? ` THREW=${threw.slice(0, 160)}` : ''} | tools=${tap.toolCalls.join('->')}`)
+
+  // Safety-gate invariant, applies to EVERY shape that actually dispatches a realign (messy-realign,
+  // realign-and-find-same-series, and any future shape): check_series_layout must appear in
+  // tap.toolCalls BEFORE the first dispatch_realign_task — the model must confirm
+  // exceedsSeasonTable before a destructive realign, never dispatch one on a hunch (see the
+  // instructions in orchestratorAgent.ts). "same-series ordering" (realign before find for one
+  // series) is moot now that find is deferred to a later pass for realign-candidate series; this
+  // is the meaningful invariant that replaces it.
+  let realignGateOk = true
+  if (got.realign.length > 0) {
+    const firstLayoutCheckIdx = tap.toolCalls.indexOf('check_series_layout')
+    const firstRealignIdx = tap.toolCalls.indexOf('dispatch_realign_task')
+    realignGateOk = firstLayoutCheckIdx !== -1 && firstRealignIdx !== -1 && firstLayoutCheckIdx < firstRealignIdx
+  }
+
+  // Cap-spillover invariant, only for shapes that opt in via expected.expectSiblingSpawn
+  // (over-cap-spillover): the model must have called spawn_sibling_orchestrator once its dispatch
+  // budget was exhausted, and must never have dispatched more worker_task rows than that budget
+  // (capOverride, or the default 100 if unset) allowed.
+  let noSiblingSpawn = false
+  let capExceeded = false
+  if (shape.expected.expectSiblingSpawn) {
+    const dispatchedCount = got.find.length + got.realign.length
+    noSiblingSpawn = !tap.toolCalls.includes('spawn_sibling_orchestrator')
+    capExceeded = shape.capOverride !== undefined && dispatchedCount > shape.capOverride
+  }
+  const siblingSpawnOk = !noSiblingSpawn && !capExceeded
+
+  const ok = !threw && realignOk && findOk && realignGateOk && siblingSpawnOk
+  console.error(
+    `${ok ? 'PASS' : 'FAIL'} ${shape.name} run ${run}: realign got=${JSON.stringify(got.realign)} want=${JSON.stringify(wantRealign)}${realignOk ? '' : ' <REALIGN-GATE-LEAK>'}` +
+    ` | find got=${JSON.stringify(got.find)} want_subset=${JSON.stringify(wantFind)}${findOk ? '' : ' <FIND-MISS>'}` +
+    `${realignGateOk ? '' : ' <REALIGN-WITHOUT-LAYOUT-CHECK>'}${noSiblingSpawn ? ' <NO-SIBLING-SPAWN>' : ''}${capExceeded ? ' <CAP-EXCEEDED>' : ''}` +
+    `${threw ? ` THREW=${threw.slice(0, 160)}` : ''} | tools=${tap.toolCalls.join('->')}`
+  )
   return ok
 }
 

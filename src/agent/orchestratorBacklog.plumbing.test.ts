@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { MockLanguageModelV4 } from 'ai/test'
+import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/provider'
 import { openDb } from '../v2/db.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -29,6 +30,21 @@ function finalizeResult(output: unknown) {
     content: [{ type: 'tool-call' as const, toolCallId: 'finalize-1', toolName: 'finalize', input: JSON.stringify(output) }],
     warnings: [],
   }
+}
+
+/** Reads a prior tool call's JSON result out of a scripted step's own prompt history, keyed by
+ *  toolCallId. Copied from orchestratorAgent.test.ts:43-50 — same helper, same reason (this suite
+ *  also scripts multiple calls to the SAME tool with different toolCallIds). */
+function findToolResultValueById(prompt: LanguageModelV4Prompt, toolCallId: string): any {
+  for (const msg of prompt) {
+    if (msg.role !== 'tool') continue
+    for (const part of msg.content) {
+      if (part.type === 'tool-result' && part.toolCallId === toolCallId && part.output.type === 'json') {
+        return part.output.value
+      }
+    }
+  }
+  throw new Error(`no tool-result for toolCallId=${toolCallId} found in prompt history`)
 }
 
 /** A stable sort key for a worker_task identity triple, used only to compare two SETs of
@@ -145,5 +161,84 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
     expect(dispatchedAfter).toHaveLength(3)
     expect(sortedIdentities(dispatchedAfter.map(j => ({ seriesId: j.series_id, season: j.season, movieId: j.movie_id }))))
       .toEqual(sortedIdentities(shape.expected.findSubtitle))
+  })
+})
+
+// One series with 3 independent fully-missing seasons, none a realign candidate (mirror ==
+// tmdbEpisodeCount for every season) — a deterministic stand-in for the real-model matrix's
+// `over-cap-spillover` shape (src/testing/orchestratorBacklog.ts), used here only to prove the
+// TOOL-LEVEL cap deterministically and cheaply against a scripted model, driven through the same
+// seedBacklog/BacklogShape harness as the test above.
+const capShape: BacklogShape = {
+  name: 'plumbing-cap',
+  represents: 'one series with 3 independent fully-missing seasons — used only to exercise the ' +
+    'dispatch cap at a low, cheap-to-test override',
+  capOverride: 2,
+  series: [{
+    id: 'cap', tmdbId: '30',
+    seasons: [
+      { season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
+      { season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
+      { season: 3, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
+    ],
+  }],
+  movies: [],
+  expected: { findSubtitle: [], realignSeriesIds: [] },
+}
+
+describe('orchestrator dispatch cap (tool-level), driven through the backlog-shape harness', () => {
+  it('enforces maxDispatchesPerOrchestrator=2 over a seeded backlog with 3 dispatchable seasons: ' +
+     'only 2 worker_task rows land, and the 3rd dispatch_find_subtitle_task call gets the ' +
+     'cap-reached error back rather than a 3rd row', async () => {
+    const db = openDb(':memory:')
+    const jobs = new JobsRepo(db)
+    const lib = new LibraryRepo(db)
+    seedBacklog(lib, capShape)
+    const { tmdb, jf } = makeBacklogFakes(capShape)
+
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options: LanguageModelV4CallOptions) => {
+        call++
+        if (call === 1) {
+          return toolCallResult('c1', 'dispatch_find_subtitle_task', {
+            seriesId: 'cap', season: 1, movieId: null, reason: 'missing season 1',
+          })
+        }
+        if (call === 2) {
+          return toolCallResult('c2', 'dispatch_find_subtitle_task', {
+            seriesId: 'cap', season: 2, movieId: null, reason: 'missing season 2',
+          })
+        }
+        if (call === 3) {
+          return toolCallResult('c3', 'dispatch_find_subtitle_task', {
+            seriesId: 'cap', season: 3, movieId: null, reason: 'missing season 3',
+          })
+        }
+        // Step 4: the model has just seen c3's tool-result — assert it really is the
+        // cap-reached {error} object (not a silently-written 3rd row) before scripting the final
+        // summary response.
+        const c3Result = findToolResultValueById(options.prompt, 'c3')
+        expect(c3Result).toEqual({
+          error:
+            'dispatch cap (2) reached for this orchestrator — call spawn_sibling_orchestrator to hand off the rest instead of dispatching more directly',
+        })
+        return finalizeResult({
+          dispatchedFindSubtitle: 2, dispatchedRealign: 0, spawnedSiblings: 1,
+          summary: 'cap reached after 2 dispatches, handed off season 3 to a sibling',
+        })
+      },
+    })
+
+    const runPass = makeOrchestratorAgent({
+      model, lib, tmdb, jf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 20,
+      maxDispatchesPerOrchestrator: 2,
+    })
+    await runPass()
+
+    // Exactly 2 rows landed — the 3rd (season 3) was refused by the cap, not silently written anyway.
+    expect(jobs.countByState('wanted')).toBe(2)
+    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    expect(dispatched.map(j => j.season).sort()).toEqual([1, 2])
   })
 })

@@ -27,9 +27,19 @@ export interface BacklogShape {
   represents: string
   series: BacklogSeriesSpec[]
   movies: BacklogMovieSpec[]
+  /** Override for `maxDispatchesPerOrchestrator` when the real-model matrix runner (Phase 2) runs
+   *  this shape — undefined = the runner's default (100). Exists so a shape can cheaply exercise
+   *  the cap-reached escape valve (spawn_sibling_orchestrator) at a low, test-only cap instead of
+   *  needing a real 100-dispatch run against a live model just to reach the real cap. */
+  capOverride?: number
   expected: {
     findSubtitle: { seriesId: string | null; season: number | null; movieId: string | null }[]
     realignSeriesIds: string[]
+    /** when true, the real-model matrix runner additionally requires that the model called
+     *  spawn_sibling_orchestrator after exhausting this shape's dispatch budget (capOverride, or
+     *  the default 100 if capOverride is unset), and that no more worker_task rows landed than
+     *  that budget allowed. */
+    expectSiblingSpawn?: boolean
   }
 }
 

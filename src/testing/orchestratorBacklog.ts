@@ -72,4 +72,31 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
       realignSeriesIds: ['both'],
     },
   },
+  {
+    name: 'over-cap-spillover',
+    represents: 'a normal (non-realign) series with MORE independent dispatchable seasons than a ' +
+      'deliberately-low, test-only dispatch cap (capOverride: 2, vs the real 100) — the model ' +
+      'must hit the cap-reached escape valve (spawn_sibling_orchestrator) after 2 dispatches ' +
+      'instead of either silently truncating the backlog or dispatching past its own budget. ' +
+      'capOverride keeps this cheap to run against a real model instead of needing a real ' +
+      '100-dispatch run just to reach the cap.',
+    capOverride: 2,
+    series: [{
+      id: 'spill', tmdbId: '7',
+      seasons: [
+        { season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
+        { season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
+        { season: 3, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
+      ],
+    }],
+    movies: [],
+    expected: {
+      // Not asserting which specific finds landed (only 2 of the 3 seasons fit under the cap,
+      // and which 2 is the model's call) — the assertion for this shape is the cap+sibling-spawn
+      // invariant below, checked by the runner's expectSiblingSpawn path.
+      findSubtitle: [],
+      realignSeriesIds: [],
+      expectSiblingSpawn: true,
+    },
+  },
 ]
