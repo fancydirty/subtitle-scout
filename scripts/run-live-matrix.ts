@@ -81,16 +81,26 @@ async function runOne(entry: CatalogEntry, run: number, model: LanguageModel): P
     // Assert per expectation. installed → decision + right file present + language; else → decision only.
     let ok = decision.decision === cell.expected.decision
     if (ok && cell.expected.decision === 'installed') {
-      // NFC-normalize: install_subtitle NFC-normalizes the final path it returns, so a
-      // hand-typed NFD installedFilename in cell.json (easy on macOS) would silently fail
-      // byte-exact equality against a correct install.
-      const want = join(mediaRoot, cell.expected.installedFilename!).normalize('NFC')
       // 'zh-any' = either Simplified or Traditional is a correct install (coverage-first, no
       // 简/繁 ranking) — otherwise the language must match exactly.
-      const languageOk = cell.expected.installedLanguage === 'zh-any'
+      const anyZh = cell.expected.installedLanguage === 'zh-any'
+      const languageOk = anyZh
         ? decision.installedLanguage === 'zh-Hans' || decision.installedLanguage === 'zh-Hant'
         : decision.installedLanguage === cell.expected.installedLanguage
-      ok = decision.installedPath === want && existsSync(want) && languageOk
+      // The installed filename is `<video-base>.<langTag>.<ext>`, so on a zh-any cell the model's
+      // choice of Simplified vs Traditional changes the filename itself. Accept EITHER language
+      // variant of the expected name — that pins the correct EPISODE (the <video-base>) without
+      // over-pinning the language, so a coverage-correct 繁 install of a cell documented as 简 is
+      // not misreported as a judgment FAIL. NFC-normalize both sides: install_subtitle NFC-
+      // normalizes the path it returns, and a hand-typed NFD installedFilename (easy on macOS)
+      // would otherwise fail byte-exact equality against a correct install.
+      const expectedNames = anyZh
+        ? [cell.expected.installedFilename!.replace(/\.zh-Han[st]\./, '.zh-Hans.'),
+           cell.expected.installedFilename!.replace(/\.zh-Han[st]\./, '.zh-Hant.')]
+        : [cell.expected.installedFilename!]
+      const accepted = expectedNames.map(n => join(mediaRoot, n).normalize('NFC'))
+      const got = decision.installedPath?.normalize('NFC') ?? null
+      ok = got != null && accepted.includes(got) && existsSync(got) && languageOk
     }
     const acquisitionAttempted = tap.toolCalls.includes('download_candidate') || tap.toolCalls.includes('install_subtitle')
     return { cell: id, run, ok, got: decision.decision, want: cell.expected.decision, acquisitionAttempted, toolCalls: tap.toolCalls }
