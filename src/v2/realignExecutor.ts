@@ -14,8 +14,7 @@ import {
   type ManifestDoc,
 } from '../files/realignManifest.js'
 import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
-import { runPipeline, type PipelineResult } from '../core/pipeline.js'
-import type { Assembled } from '../cli/index.js'
+import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { LibraryRepo } from './libraryRepo.js'
@@ -177,10 +176,19 @@ export function archiveOldDir(oldDir: string, archiveDir: string): string {
  * 身份/tmdbid/季集/视频路径全在整理计划里，字面构造即可，不需要 jf.getItem。
  * trigger 用 'library_scan'（语义最贴近："库结构变化触发的搜索"，不是播放触发/手动搜索）。
  */
+export interface RealignMediaContext extends MediaContext {
+  /** 绝对集号（跨全剧连续编号，早在 buildRealignPlan 阶段已从 RealignPlanItem 算出）。
+   *  MediaContextSchema（core/schemas.ts，老管线遗留类型，未按 realign 特化）本身没有这个
+   *  字段——挂在 MediaContext 之外的兄弟属性上，不进 zod 校验，也不影响 MediaContextSchema.parse
+   *  仍把这个对象当合法 MediaContext 收（zod 默认 strip 未知键，不是 strict 模式）。
+   *  Wall ②（old-pipeline-retirement）：makeRealignRunEpisode 建 FindSubtitleTask 时需要它。 */
+  absoluteEpisode: number
+}
+
 export function buildRealignMediaContext(
   seriesTitle: string, year: number, tmdbId: string, item: RealignPlanItem, videoPath: string,
-): MediaContext {
-  return MediaContextSchema.parse({
+): RealignMediaContext {
+  const ctx = MediaContextSchema.parse({
     request_id: `realign-${tmdbId}-S${item.targetSeason}E${item.targetEpisode}-${Date.now()}`,
     trigger: 'library_scan',
     media: {
@@ -201,25 +209,74 @@ export function buildRealignMediaContext(
     },
     preferences: {},
   })
+  return { ...ctx, absoluteEpisode: item.absoluteEpisode }
+}
+
+const REALIGN_BUILD_SEGMENT = `${sep}.realign-build${sep}`
+
+/**
+ * FindSubtitleTask.mediaRoot 必须是"已配置的媒体库根"（libRoot，包含 .realign-build 的那一级），
+ * 不是这一集自己的深层 outDir（<libRoot>/.realign-build/<show>/Season NN/）——两个原因都是
+ * 安全/正确性问题，不是风格偏好：
+ *  1. makeFindSubtitleWorker 的沙盒判定是 isUnderRoots(dirname(videoPath), [mediaRoot])——用
+ *     libRoot（videoPath 的祖先目录）自然通过；
+ *  2. stagingSandbox.allocate(jobId, mediaRootForVideo) 把试错沙盒挂在
+ *     `<mediaRootForVideo>/.subtitle-staging/<jobId>/`，而 gcOrphans 只在每个"配置根"一级
+ *     非递归扫这个目录——挂在更深的 outDir 上，硬杀在 allocate/cleanup 之间发生就永远泄漏，
+ *     没有任何清扫路径够得到它。
+ * 字幕先行阶段视频还在 `<libRoot>/.realign-build/<targetRelPath>` 里（亮相之前），libRoot 就是
+ * `.realign-build` 这一段之前的路径——从 outDir 反着切出来，不需要改动 deps.runEpisode 的调用
+ * 签名（executeRealign 的调用点保持 (ctx, outDir, jobId) 不变，见下方 makeRealignRunEpisode）。
+ */
+function libRootFromRealignBuildDir(outDir: string): string {
+  const idx = outDir.indexOf(REALIGN_BUILD_SEGMENT)
+  if (idx === -1) {
+    throw new Error(`字幕先行 outDir 不含 .realign-build 段，无法推导库根（find-subtitle worker 的沙盒 mediaRoot 必需）：${outDir}`)
+  }
+  return outDir.slice(0, idx)
 }
 
 /**
- * runEpisode 接线（realign 版）：mirror makeRunEpisode 的尾段（调 runPipeline、包 journal），
- * 但跳过 jf.getItem/getChineseTitle/refreshItem——那些依赖 Jellyfin 已经刮削出条目，此刻还
- * 没有。调用方（executeRealign 顶层编排）已经把 MediaContext 构造好、root/可写预检已在
- * mount 哨兵阶段做过，这里只负责"跑一次完整判断链"。runPipelineImpl 可注入（测试用，
- * 默认走真实 core/pipeline.ts 的 runPipeline）。bypassNegativeCache 同 makeRunEpisode 的
- * I5e 语义：v2 状态机拥有全部重试策略，管线自己的负缓存不许再叠一层门。
+ * runEpisode 接线（realign 版，v3 old-pipeline-retirement Wall ②）：不再走旧 callStructured
+ * 管线（runPipeline），而是把 ctx 翻译成一个 FindSubtitleTask，直接跑 v3 的 find-subtitle worker
+ * （src/agent/findSubtitleWorker.ts 的 makeFindSubtitleWorker(...) 产出的 runFindSubtitleTask）。
+ * 那个 worker 自带沙盒（isUnderRoots）、staging、装机、清理，这里只负责字段映射，不复刻任何一层。
+ *
+ * mediaRoot 的选择是这次改动唯一微妙的地方——见 libRootFromRealignBuildDir 的注释：必须是
+ * libRoot，不是这一集自己的深层目录。
+ *
+ * withJournal/journalDir 不再需要：那是旧管线 callStructured 的 apiCall/自愈事件记账机制
+ * （assrt/llm 回调经 AsyncLocalStorage 取当前 journal 写入），find-subtitle worker 走自己的
+ * ToolLoopAgent + telemetry（stderr 打点 `[find-subtitle-worker] job ... finished in N step(s)`），
+ * 没有任何代码路径依赖这条 realign 调用链上的 journal——去掉是纯减负，不丢观测。
+ *
+ * 不再有"默认真实实现"可 import（老代码默认走模块顶层 import 的 runPipeline；find-subtitle
+ * worker 的构造需要 model/adapters/cacheRoot 这些运行时依赖，理应由调用方——cli/index.ts 的
+ * cmdWatch——组装，不该让这个纯字段映射的模块反过来引入 agent/llm 那一整套）。因此
+ * runFindSubtitleTask 是必需参数，不是可选的 opts 覆盖——调用方（生产走真实
+ * makeFindSubtitleWorker(...)，测试走假函数）永远显式传入，注入点同样清楚。
  */
 export function makeRealignRunEpisode(
-  assembled: Pick<Assembled, 'makeDeps' | 'withJournal' | 'cacheRoot'>,
-  opts: { runPipelineImpl?: typeof runPipeline } = {},
-): (ctx: MediaContext, outDir: string, jobId: string) => Promise<PipelineResult> {
-  const { makeDeps, withJournal, cacheRoot } = assembled
-  const run = opts.runPipelineImpl ?? runPipeline
+  deps: { runFindSubtitleTask: (task: FindSubtitleTask) => Promise<FindSubtitleDecision> },
+): (ctx: RealignMediaContext, outDir: string, jobId: string) => Promise<unknown> {
   return async (ctx, outDir, jobId) => {
-    const journalDir = join(cacheRoot, 'journals', `realign-${jobId}-${Date.now()}`)
-    return withJournal(() => run(makeDeps(), ctx, outDir, journalDir, { bypassNegativeCache: true }))
+    const task: FindSubtitleTask = {
+      jobId,
+      mediaRoot: libRootFromRealignBuildDir(outDir),
+      videoPath: ctx.media.path,
+      videoFilename: ctx.media.filename,
+      title: ctx.media.title,
+      originalTitle: ctx.media.original_title ?? null,
+      year: ctx.media.year ?? null,
+      season: ctx.media.season ?? null,
+      episode: ctx.media.episode ?? null,
+      absoluteEpisode: ctx.absoluteEpisode,
+      alternativeTitles: ctx.media.alternative_titles,
+      overview: ctx.media.overview ?? null,
+      runtimeMinutes: ctx.media.runtime_minutes ?? null,
+      providerIds: ctx.media.provider_ids,
+    }
+    return deps.runFindSubtitleTask(task)
   }
 }
 
@@ -294,7 +351,11 @@ export interface RealignExecutorDeps {
   jf: RealignJellyfinPort
   tmdb: Pick<TmdbClient, 'getSeasonTable'>
   fetchAnimeLists: () => Promise<AnimeListsEntry[]>
-  runEpisode: (ctx: MediaContext, outDir: string, jobId: string) => Promise<PipelineResult>
+  /** Wall ②（old-pipeline-retirement）：不再是 runPipeline 的 PipelineResult——现在是
+   *  makeRealignRunEpisode（v3 find-subtitle worker 接线）的返回值。调用方（executeRealign
+   *  步骤 12）本就丢弃返回值、只关心是否抛错（抛错被 catch 记录，不阻塞整理），因此这里放宽
+   *  成 Promise<unknown>，不为一个从不被读取的返回值杜撰假的 PipelineResult 形状。 */
+  runEpisode: (ctx: RealignMediaContext, outDir: string, jobId: string) => Promise<unknown>
   now: () => number
   log: (msg: string) => void
   sleep: (ms: number) => Promise<void>

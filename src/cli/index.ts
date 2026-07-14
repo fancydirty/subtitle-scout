@@ -382,13 +382,36 @@ async function cmdWatch() {
       }
     : undefined
 
+  // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
+  // 逐 job Journal（journalStore/withJournal 只服务 callStructured 老管线），api_call 量大信号
+  // 低，只把 error/notice 落一行 log；同 assemble() 里 makeCliProviderPort 的 onEvent 分流。
+  // 提到 realign 依赖块之前（Wall ②）：realign 的字幕先行现在也走这个 worker，组装它自己的
+  // adapters 需要同一个 emit 函数。
+  const emitProviderEvent = (e: FetchEvent) => {
+    if (e.event === 'provider_error') log(`find-subtitle worker: provider error (${e.provider}): ${e.message}`)
+    else if (e.event === 'provider_notice') log(`find-subtitle worker: provider notice (${e.provider}): ${e.message}`)
+  }
+
   // realign 执行依赖（Task 21 的 executeRealign 柯里化）：门在 tmdb 是否配置——计划构建需要
   // TMDB 季表才有确定性闸门，没有 TMDB_API_KEY 时整个 realign 功能（诊断+执行）一起跳过，
   // 行为回退到"只有内容退避梯，没有排布诊断"的现状，不报错、不阻塞正常找字幕流程。
   // v3 phase ⑦：这份 deps 对象单独具名（不再只活在 executeRealignClosure 的闭包里）——
   // cmdWatch claim 循环新增的 kind==='worker_task' 分支要把同一份 RealignExecutorDeps 转交给
   // runRealignWorkerTask（phase ⑥，src/v2/realignWorkerTask.ts）复用，而不是重新拼一份。
-  const realignRunEpisode = makeRealignRunEpisode({ makeDeps, withJournal, cacheRoot })
+  //
+  // Wall ②（old-pipeline-retirement phase 1）：字幕先行不再走 runPipeline/withJournal 老管线，
+  // 而是复用 v3 find-subtitle worker（同 handleWorkerTask 下 find_subtitle 分支一样的组装方式：
+  // makeModel 建好的 reasoningModel + buildAdapters(...) 建的 adapters + cacheRoot）。adapters
+  // 只在这里建一次（watch 进程生命周期内长驻）——不像 handleWorkerTask 那样每次 claim 重建：
+  // realign 的字幕先行是同一次 executeRealign 调用内对几十集的紧凑循环，没有"每次 claim"的
+  // 边界，重建 adapters 没有对应收益，只有多余开销（Zimuku session store 重新读盘等）。
+  const realignRunEpisode = makeRealignRunEpisode({
+    runFindSubtitleTask: makeFindSubtitleWorker({
+      model: reasoningModel,
+      adapters: await buildAdapters(emitProviderEvent),
+      cacheRoot,
+    }),
+  })
   const realignDeps: RealignExecutorDeps | undefined = tmdb
     ? {
         lib, jobs,
@@ -435,14 +458,6 @@ async function cmdWatch() {
   const diagnoseSeasonClosure = tmdb
     ? makeDiagnoseSeason({ lib, jf, tmdb, runs, llm })
     : undefined
-
-  // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
-  // 逐 job Journal（journalStore/withJournal 只服务 callStructured 老管线），api_call 量大信号
-  // 低，只把 error/notice 落一行 log；同 assemble() 里 makeCliProviderPort 的 onEvent 分流。
-  const emitProviderEvent = (e: FetchEvent) => {
-    if (e.event === 'provider_error') log(`find-subtitle worker: provider error (${e.provider}): ${e.message}`)
-    else if (e.event === 'provider_notice') log(`find-subtitle worker: provider notice (${e.provider}): ${e.message}`)
-  }
 
   // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
   // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）在被调用之后，
