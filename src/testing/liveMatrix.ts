@@ -56,15 +56,27 @@ export interface CatalogEntry {
 }
 
 /** The A-layer matrix. Seeded = fixtures present in this repo; the rest are the populate-me
- *  backlog. Start with the anchor (anime/only-pack — the live-acceptance cell) and grow. */
+ *  backlog. Start with the anchor (anime/only-pack — the live-acceptance cell) and grow.
+ *
+ *  INVARIANT — never seek a subtitle in the content's own audio language. This project's target
+ *  is CHINESE subtitles, so Chinese-audio content (cdrama / 国产剧) is OUT OF SCOPE: a Chinese
+ *  viewer watching a Chinese-audio show needs no Chinese subs, making "find a zh subtitle for a
+ *  cdrama" a void/meaningless cell. Valid resourceTypes for Chinese-subtitle-finding are therefore
+ *  only content whose audio is NOT Chinese: anime (JP), western (EN), movie (non-CN). `cdrama`
+ *  remains a defined ResourceType (see RESOURCE_TYPES above) and returns to CELL_CATALOG only
+ *  under a FUTURE "find English subs for international users" scenario — that is backlog, not
+ *  implemented now, and no cdrama cells should be seeded until it lands.
+ *
+ *  BACKLOG — assrt is a Chinese-subtitle source. Once English-subtitle / international-user
+ *  support lands (see above), assrt must be gated OUT of non-Chinese-subtitle requests even if
+ *  configured/available, or it will happily return Chinese subs for a request that wants English.
+ *  Not implemented; no provider/adapter code changed for this note. */
 export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'anime', sourceForm: 'only-pack', seeded: true, represents: 'Attack on Titan S01E01 — only a Complete-Series pack exists (live-acceptance cell)' },
   { resourceType: 'anime', sourceForm: 'season-pack', seeded: true, represents: 'Attack on Titan S02E01 — S1+S2 pack numbered by ABSOLUTE episode (26), no S02E01 substring anywhere' },
   { resourceType: 'anime', sourceForm: 'only-single', seeded: true, represents: 'Jujutsu Kaisen S03E01 (absolute ep. 48) — per-episode subtitles only, no season pack yet (Scissor Seven has zero assrt hits, substituted)' },
   { resourceType: 'anime', sourceForm: 'mixed', seeded: true, represents: 'Jujutsu Kaisen S02E05 — pack mislabeled "第3季" (invented season), target locatable only via absoluteEpisode (29)' },
   { resourceType: 'anime', sourceForm: 'multi-version', seeded: true, represents: 'Demon Slayer S01E01 — same episode, 简/繁/日 versions (any zh-* correct, 日 is not)' },
-  { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: true, represents: 'Journey to the West (1986 CCTV classic) — whole-series pack (琅琊榜/Nirvana in Fire has zero assrt hits, substituted)' },
-  { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: true, represents: 'F4 Thailand: Boys Over Flowers (流星花园 2021) S01E01 — separate 简/繁 season-pack uploads (琅琊榜 has zero assrt hits, substituted)' },
   { resourceType: 'western', sourceForm: 'only-single', seeded: true, represents: 'World War II with Tom Hanks S01E01 — genuine single-file upload, no pack (Peacemaker/Young Sheldon all turned out to be season packs, substituted)' },
   { resourceType: 'western', sourceForm: 'mixed', seeded: true, represents: 'Love, Death & Robots S03E01 — both a season pack AND standalone single-episode uploads exist' },
   { resourceType: 'movie', sourceForm: 'multi-version', seeded: true, represents: "Hero (英雄 2002) — Director's Cut (~103min) vs Bluray/theatrical (~93.5min), genuine runtime variants" },
