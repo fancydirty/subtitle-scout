@@ -3,7 +3,7 @@
   "jobId": "eval-messy-layout",
   "task": {
     "videoFilename": "Spy.Family.S01E26.mkv", "title": "Spy x Family", "originalTitle": "SPY×FAMILY",
-    "year": 2022, "season": 1, "episode": 26, "alternativeTitles": ["间谍过家家"], "overview": null,
+    "year": 2022, "season": 1, "episode": 26, "absoluteEpisode": null, "alternativeTitles": ["间谍过家家"], "overview": null,
     "runtimeMinutes": 24, "providerIds": { "tmdb": "120089" }
   },
   "candidates": [

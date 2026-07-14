@@ -3,7 +3,7 @@
   "jobId": "eval-new-release",
   "task": {
     "videoFilename": "Show.S01E01.mkv", "title": "Show", "originalTitle": null,
-    "year": 2026, "season": 1, "episode": 1, "alternativeTitles": [], "overview": null,
+    "year": 2026, "season": 1, "episode": 1, "absoluteEpisode": null, "alternativeTitles": [], "overview": null,
     "runtimeMinutes": 24, "providerIds": {}
   },
   "candidates": [

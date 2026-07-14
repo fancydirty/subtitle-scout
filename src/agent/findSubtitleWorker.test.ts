@@ -114,7 +114,7 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
 
     const task: FindSubtitleTask = {
       jobId: 'job-1', mediaRoot, videoPath, videoFilename: 'Show.S01E01.mkv',
-      title: 'Show', originalTitle: null, year: 2024, season: 1, episode: 1,
+      title: 'Show', originalTitle: null, year: 2024, season: 1, episode: 1, absoluteEpisode: null,
       alternativeTitles: [], overview: null, runtimeMinutes: 24, providerIds: {},
     }
 
@@ -136,7 +136,7 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     const task: FindSubtitleTask = {
       jobId: 'job-2', mediaRoot, videoPath: join(root, 'elsewhere', 'Show.S01E01.mkv'),
       videoFilename: 'Show.S01E01.mkv', title: 'Show', originalTitle: null, year: null,
-      season: 1, episode: 1, alternativeTitles: [], overview: null, runtimeMinutes: null, providerIds: {},
+      season: 1, episode: 1, absoluteEpisode: null, alternativeTitles: [], overview: null, runtimeMinutes: null, providerIds: {},
     }
     await expect(runTask(task)).rejects.toThrow(/escapes its own sandboxed mediaRoot/)
   })

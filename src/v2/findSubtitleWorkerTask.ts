@@ -115,6 +115,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
     year: ctx.media.year ?? null,
     season: ctx.media.season ?? null,
     episode: ctx.media.episode ?? null,
+    absoluteEpisode: null,
     alternativeTitles: ctx.media.alternative_titles,
     overview: ctx.media.overview ?? null,
     runtimeMinutes: ctx.media.runtime_minutes ?? null,
