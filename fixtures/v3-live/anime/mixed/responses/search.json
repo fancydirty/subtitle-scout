@@ -1,0 +1,8 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/search?filelist=1&no_muxer=1&q=Jujutsu%20Kaisen",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJzdWJzIjpbeyJpZCI6OTMwOTMwLCJ2aWRlb25hbWUiOiLlkpLmnK/lm57miJgg56ysM+Wto+WFqOmbhiBCRHJpcCDnroDkvZMiLCJuYXRpdmVfbmFtZSI6IuWRquihk+W7u+aIpiIsImxhbmciOnsiZGVzYyI6IueugCJ9LCJzdWJ0eXBlIjoiU3VicmlwKHNydCkiLCJyZWxlYXNlX3NpdGUiOiJNZWlqaS1SYXdzIiwiZmlsZWxpc3QiOlt7InMiOiIzOEtCIiwiZiI6Ikp1anV0c3UuS2Fpc2VuLjI4LkJEcmlwLueugOS9ky5zcnQifSx7InMiOiIzOUtCIiwiZiI6Ikp1anV0c3UuS2Fpc2VuLjI5LkJEcmlwLueugOS9ky5zcnQifSx7InMiOiIzOUtCIiwiZiI6Ikp1anV0c3UuS2Fpc2VuLjMwLkJEcmlwLueugOS9ky5zcnQifV19XX19"
+}
