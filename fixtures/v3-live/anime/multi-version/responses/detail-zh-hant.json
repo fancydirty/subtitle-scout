@@ -1,0 +1,8 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/detail?id=940941",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJzdWJzIjpbeyJpZCI6OTQwOTQxLCJ2aWRlb25hbWUiOiLprLzmu4XkuYvliIMg56ysMDHoqbEg57mB6auU5aSW5o6bIiwibmF0aXZlX25hbWUiOiLprLzmu4Xjga7liIMiLCJsYW5nIjp7ImRlc2MiOiLnuYEifSwic3VidHlwZSI6IlN1YnJpcChzcnQpIiwiZmlsZWxpc3QiOltdLCJmaWxlbmFtZSI6IkRlbW9uLlNsYXllci5TMDFFMDEu57mB6auULnNydCIsInVybCI6Imh0dHA6Ly9maWxlMC5hc3NydC5uZXQvc2luZ2xlLzk0MDk0MSJ9XX19"
+}
