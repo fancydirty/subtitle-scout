@@ -42,3 +42,21 @@ requires `appUserAgent`), confirmed by reading `src/adapters/providers/zimuku.ts
 ## Run log
 
 (append one dated entry per run: date, scenario, decision, step count, pass/fail)
+
+### 2026-07-14 — Gachiakuta S01E12 (anime, season-pack) — PASS
+
+- **Scenario:** real episode `Gachiakuta.S01E12.Something.Like.a.Curse.1080p.CR.WEB-DL.MULTi.AAC2.0.H.264-VARYG.mkv`
+  on the NAS anime library, genuinely missing a Chinese subtitle (siblings E01/E02/E06/E14/E20 already had
+  `.zh-Hans.srt` from earlier, E12 did not). Run on the soft router (clean network) in the node:22 test
+  container with the NAS bind-mounted; real assrt/mimo.
+- **Decision:** `installed`. The worker found a **complete S01 Netflix WEB-DL season pack** (`assrt:713246`),
+  went INTO the pack and located E12 (265 cues, ~22 min runtime — matches), detected `zh-Hans`, confirmed the
+  subtitle decodes and is structurally valid, and installed it as a sidecar
+  `Gachiakuta.S01E12...zh-Hans.srt` (17.5 KB) next to the video.
+- **Step count:** 5.
+- **Manual verification:** installed file is genuine, coherent Simplified Chinese with correct SRT timing
+  (opening line "即便在这种垃圾堆里 / 也还是会开花呢"; character name 戴尔蒙). `.subtitle-staging/<jobId>/`
+  confirmed GONE after the run (cleanup OK). No pre-existing zh sub was overwritten.
+- **Verdict: PASS.** The anti-Bazarr behavior proven live — a real episode missing a single-file sub was
+  covered by going into a season pack and extracting the right episode, not abandoned. This is the stage-3
+  hard gate; **v3 phase ⑧ (old-pipeline retirement) is unblocked.**
