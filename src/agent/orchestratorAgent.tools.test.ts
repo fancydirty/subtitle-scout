@@ -134,6 +134,58 @@ describe('dispatch_find_subtitle_task identity validation', () => {
     })
     expect(result.success).toBe(true)
   })
+
+  // Root cause under test (v3 live matrix, 2026-07-13): the real model naturally OMITS the other
+  // kind's field entirely rather than sending it as an explicit JSON null — a plain `.nullable()`
+  // rejects the omitted key (only `.nullish()`/`.optional()` accept `undefined`), so these
+  // tool-calls were rejected before execute() ever ran and zero worker_task rows landed. See
+  // orchestratorAgent.test.ts for the end-to-end regression that reproduces the live symptom.
+  it('accepts movieId OMITTED entirely for a series+season dispatch (real model natural shape) — normalizes to movieId:null', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: 'norm', season: 1, reason: 'x',
+    })
+    expect(result).toEqual({ success: true, value: { seriesId: 'norm', season: 1, movieId: null, reason: 'x' } })
+  })
+
+  it('accepts seriesId/season OMITTED entirely for a movie-only dispatch (real model natural shape) — normalizes to seriesId:null, season:null', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      movieId: 'mov', reason: 'x',
+    })
+    expect(result).toEqual({ success: true, value: { seriesId: null, season: null, movieId: 'mov', reason: 'x' } })
+  })
+
+  it('coerces a string-encoded season ("1") to the integer 1', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: 'norm', season: '1', movieId: null, reason: 'x',
+    })
+    expect(result).toEqual({ success: true, value: { seriesId: 'norm', season: 1, movieId: null, reason: 'x' } })
+  })
+
+  it('still rejects a genuinely-malformed identity (both seriesId+season AND movieId set) even after tolerant normalization', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+    )
+    const result = await validate(dispatchFindSubtitle.inputSchema, {
+      seriesId: 'norm', season: 1, movieId: 'mov', reason: 'x',
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(String((result.error as Error).message)).toMatch(/collides with dispatch_realign_task/)
+    }
+  })
 })
 
 describe('makeCheckSeriesLayoutTool', () => {

@@ -5,6 +5,7 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
+import { coercibleNullableInt, nullableTolerant } from './coerce.js'
 
 export interface MissingSeasonRow { kind: 'season'; seriesId: string; season: number; missing: number }
 export interface MissingMovieRow { kind: 'movie'; movieId: string; name: string }
@@ -149,8 +150,16 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
   const cap = deps.maxDispatchesPerOrchestrator ?? 100
   return tool({
     description: 'Dispatch a find-subtitle worker task for one series+season or one movie.',
+    // Tolerant of the real model's natural shape (proven live, v3 live matrix, 2026-07-13): it
+    // OMITS the other kind's field entirely (e.g. no `movieId` key at all when dispatching a
+    // series) rather than sending an explicit JSON null, and may send `season` as a string. Plain
+    // `.nullable()` rejects an omitted key (only `.nullish()`/`.optional()` accept `undefined`),
+    // so the tool-call failed validation before execute() ever ran and zero rows landed — same
+    // class of bug as the A-layer finalize-undefined fix. nullableTolerant/coercibleNullableInt
+    // normalize omitted-key/string-sentinel/string-number inputs to `null` (never `undefined`)
+    // before hasWellFormedFindSubtitleIdentity below ever sees them.
     inputSchema: z.object({
-      seriesId: z.string().nullable(), season: z.number().int().nullable(), movieId: z.string().nullable(),
+      seriesId: nullableTolerant(z.string()), season: coercibleNullableInt, movieId: nullableTolerant(z.string()),
       reason: z.string(),
     }).refine(hasWellFormedFindSubtitleIdentity, { message: FIND_SUBTITLE_IDENTITY_ERROR }),
     execute: async ({ seriesId, season, movieId, reason }) => {
