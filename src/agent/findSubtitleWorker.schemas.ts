@@ -35,6 +35,10 @@ export interface FindSubtitleTask {
   year: number | null
   season: number | null
   episode: number | null
+  /** Whole-series absolute episode number, system-computed from TMDB (see absoluteEpisodes.ts).
+   *  null for movies, or when it couldn't be reliably derived. A HINT for locating the right file
+   *  inside packs whose numbering differs from TMDB's — the worker still verifies belonging. */
+  absoluteEpisode: number | null
   alternativeTitles: string[]
   overview: string | null
   runtimeMinutes: number | null

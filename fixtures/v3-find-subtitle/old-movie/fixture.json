@@ -3,7 +3,7 @@
   "jobId": "eval-old-movie",
   "task": {
     "videoFilename": "Old.Classic.1987.mkv", "title": "Old Classic", "originalTitle": "Old Classic",
-    "year": 1987, "season": null, "episode": null, "alternativeTitles": ["经典老片"], "overview": null,
+    "year": 1987, "season": null, "episode": null, "absoluteEpisode": null, "alternativeTitles": ["经典老片"], "overview": null,
     "runtimeMinutes": 118, "providerIds": { "imdb": "tt0000000" }
   },
   "candidates": [

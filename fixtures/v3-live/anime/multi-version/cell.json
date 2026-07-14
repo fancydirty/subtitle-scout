@@ -1,0 +1,28 @@
+{
+  "task": {
+    "videoFilename": "Demon.Slayer.S01E01.mkv",
+    "title": "Demon Slayer: Kimetsu no Yaiba",
+    "originalTitle": "鬼滅の刃",
+    "year": 2019,
+    "season": 1,
+    "episode": 1,
+    "absoluteEpisode": 1,
+    "alternativeTitles": [
+      "鬼灭之刃",
+      "鬼滅之刃"
+    ],
+    "overview": null,
+    "runtimeMinutes": 24,
+    "providerIds": {
+      "tmdb": "85937"
+    }
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "940940",
+    "installedFilename": "Demon.Slayer.S01E01.zh-Hans.srt",
+    "installedLanguage": "zh-any"
+  },
+  "note": "Multi-version cell: a clean single-season show (season 1, episode 1 — absoluteEpisode is just the plain episode index, 1) where the correct episode exists as THREE separate single-file candidates: 简 (zh-Hans, id 940940), 繁 (zh-Hant, id 940941), and 日 (Japanese, id 940942). Installing EITHER Chinese version is coverage-correct — no 简/繁 ranking — while installing the Japanese one is WRONG (not Chinese-language coverage). This is the \"recognize Chinese, reject Japanese\" test. All three candidates' download bodies are recorded (not just the expected one) so a real model may freely download/inspect any/all of them before deciding, exactly as it would need to when actually distinguishing script by content.candidateProviderId/installedFilename here are documented against the 简 candidate, but the runner accepts EITHER 简/繁 filename variant for zh-any cells (it rewrites the .zh-Hans./.zh-Hant. token when matching), so a coverage-correct 繁 install of \"Demon.Slayer.S01E01.zh-Hant.srt\" also passes — the filename check pins the episode, not the script."
+}

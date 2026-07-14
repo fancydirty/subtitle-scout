@@ -3,7 +3,7 @@
   "jobId": "eval-ongoing-series",
   "task": {
     "videoFilename": "Running.Show.S05E12.mkv", "title": "Running Show", "originalTitle": null,
-    "year": 2021, "season": 5, "episode": 12, "alternativeTitles": ["长跑剧"], "overview": null,
+    "year": 2021, "season": 5, "episode": 12, "absoluteEpisode": null, "alternativeTitles": ["长跑剧"], "overview": null,
     "runtimeMinutes": 45, "providerIds": { "tmdb": "9999" }
   },
   "candidates": [

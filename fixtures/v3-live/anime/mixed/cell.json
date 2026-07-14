@@ -1,0 +1,29 @@
+{
+  "task": {
+    "videoFilename": "Jujutsu.Kaisen.S02E05.mkv",
+    "title": "Jujutsu Kaisen",
+    "originalTitle": "呪術廻戦",
+    "year": 2020,
+    "season": 2,
+    "episode": 5,
+    "absoluteEpisode": 29,
+    "alternativeTitles": [
+      "咒术回战",
+      "咒術迴戰",
+      "呪術廻戦"
+    ],
+    "overview": null,
+    "runtimeMinutes": 24,
+    "providerIds": {
+      "tmdb": "95479"
+    }
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "930930",
+    "installedFilename": "Jujutsu.Kaisen.S02E05.zh-Hans.srt",
+    "installedLanguage": "zh-any"
+  },
+  "note": "Invented-season cell. Jujutsu Kaisen S1 has 24 episodes, so S02E05 is whole-series absolute episode 29 (24+5) — the injected absoluteEpisode hint. The ONLY candidate is a pack whose own label claims \"第3季全集\" (season 3) — a season number that does NOT match the task's canonical season=2 (uploader sites frequently cut anime into 季/cours differently than TMDB's season boundaries; the label is not authoritative). The pack is nonetheless the correct resource: its filelist is numbered by ABSOLUTE episode (28/29/30), and the target genuinely is inside at fileIndex 1 (the \"29\" entry) — locatable ONLY by matching absoluteEpisode:29 against the filelist, never by trusting or rejecting the pack based on its \"第3季\" label. installedLanguage is zh-any per the coverage-first stance; this pack is 简 only, so a correct run resolves to zh-Hans."
+}

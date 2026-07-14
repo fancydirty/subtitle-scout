@@ -1,0 +1,8 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/similar?id=940940",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJzdWJzIjpbXX19"
+}

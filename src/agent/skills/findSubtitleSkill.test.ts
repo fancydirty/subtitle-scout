@@ -33,6 +33,28 @@ describe('FIND_SUBTITLE_SKILL', () => {
     expect(c).toMatch(/download_candidate/)
   })
 
+  // Absolute-episode locator: packs (esp. anime) often name files by whole-series absolute number
+  // instead of season+episode; the system now injects that number. The skill must teach using it to
+  // LOCATE the file — but as a verify-first HINT, never a deterministic "number matches -> install"
+  // gate (that would regress to Bazarr-style code matching, north star violation).
+  it('teaches using a provided absolute episode number to locate an episode in differently-numbered packs, as a verify-first hint', () => {
+    const c = FIND_SUBTITLE_SKILL.content
+    expect(c).toMatch(/absolute episode number/i)
+    expect(c).toMatch(/hint/i)                                   // it is a locator hint...
+    expect(c).toMatch(/still verify|verify its structural/i)     // ...belonging is STILL verified
+  })
+
+  // Coverage-first language (product decision): Simplified and Traditional are equally readable;
+  // ranking them is arrogant. Any correct-episode Chinese subtitle is a win; a non-Chinese track is
+  // NOT coverage. The skill must carry no 简-first (or 繁-first) preference.
+  it('teaches coverage-first language: Simplified and Traditional equally good, non-Chinese is not coverage', () => {
+    const c = FIND_SUBTITLE_SKILL.content
+    expect(c).toMatch(/simplified/i)
+    expect(c).toMatch(/traditional/i)
+    expect(c).toMatch(/equally good|do not rank|coverage/i)
+    expect(c).toMatch(/non-chinese/i)
+  })
+
   // north star: the season-pack teaching must NOT smuggle in a scoring/gating vocabulary. Rather
   // than a brittle absence check (the skill legitimately PROHIBITS confidence scores), assert the
   // existing prohibition survives the rewrite and that no positive threshold/score guidance appears.

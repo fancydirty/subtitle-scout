@@ -78,6 +78,9 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       `original title: ${task.originalTitle ?? 'unknown'}`,
       `year: ${task.year ?? 'unknown'}`,
       `season/episode: S${task.season ?? '-'} E${task.episode ?? '-'}`,
+      ...(task.absoluteEpisode != null
+        ? [`absolute episode number (across the whole series): ${task.absoluteEpisode}`]
+        : []),
       `filename: ${task.videoFilename}`,
       `alternative/native titles: ${task.alternativeTitles.length ? task.alternativeTitles.join(', ') : 'none'}`,
       `overview: ${task.overview ?? 'none'}`,

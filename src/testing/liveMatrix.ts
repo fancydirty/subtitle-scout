@@ -21,9 +21,12 @@ export interface CellExpectation {
   /** installed only: the composite candidate the worker should have chosen. */
   candidateProvider?: string
   candidateProviderId?: string
-  /** installed only: the basename that must appear beside the video, and its language tag. */
+  /** installed only: the basename that must appear beside the video, and its language tag.
+   *  'zh-any' means either Simplified or Traditional is a correct install — coverage-first,
+   *  no 简/繁 ranking between them; only used when the cell has no basis to prefer one over
+   *  the other (e.g. only one script is actually available, or both are equally valid). */
   installedFilename?: string
-  installedLanguage?: 'zh-Hans' | 'zh-Hant'
+  installedLanguage?: 'zh-Hans' | 'zh-Hant' | 'zh-any'
 }
 
 /** On-disk `cell.json`. `task` omits the three runtime-supplied fields (the runner/test fills
@@ -56,10 +59,10 @@ export interface CatalogEntry {
  *  backlog. Start with the anchor (anime/only-pack — the live-acceptance cell) and grow. */
 export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'anime', sourceForm: 'only-pack', seeded: true, represents: 'Attack on Titan S01E01 — only a Complete-Series pack exists (live-acceptance cell)' },
-  { resourceType: 'anime', sourceForm: 'season-pack', seeded: false, represents: 'Attack on Titan — single-season pack, not full series' },
+  { resourceType: 'anime', sourceForm: 'season-pack', seeded: true, represents: 'Attack on Titan S02E01 — S1+S2 pack numbered by ABSOLUTE episode (26), no S02E01 substring anywhere' },
   { resourceType: 'anime', sourceForm: 'only-single', seeded: false, represents: 'Scissor Seven — per-episode subtitles only' },
-  { resourceType: 'anime', sourceForm: 'mixed', seeded: false, represents: 'anime with both pack and single candidates' },
-  { resourceType: 'anime', sourceForm: 'multi-version', seeded: false, represents: 'same episode, 简/繁/日 versions' },
+  { resourceType: 'anime', sourceForm: 'mixed', seeded: true, represents: 'Jujutsu Kaisen S02E05 — pack mislabeled "第3季" (invented season), target locatable only via absoluteEpisode (29)' },
+  { resourceType: 'anime', sourceForm: 'multi-version', seeded: true, represents: 'Demon Slayer S01E01 — same episode, 简/繁/日 versions (any zh-* correct, 日 is not)' },
   { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: false, represents: 'Nirvana in Fire — whole-series pack' },
   { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: false, represents: '琅琊榜 — 简/繁 versions' },
   { resourceType: 'western', sourceForm: 'only-single', seeded: false, represents: 'Peacemaker / Young Sheldon — per-episode' },

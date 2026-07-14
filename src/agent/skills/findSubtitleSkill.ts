@@ -45,6 +45,23 @@ file out of the pack for you to inspect and install. A pack whose fileList clear
 your episode IS a match: go into it, do not skip it. For a plain single-file candidate (empty
 fileList, or one entry that is your episode) pass \`fileIndex: null\`.
 
+### When the pack numbers episodes differently than your file does
+
+Your task may include an "absolute episode number (across the whole series)" — a whole-series
+count the system computed for you (e.g. S02E01 of a show whose first season had 25 episodes is
+absolute episode 26). Fansub packs OFTEN name files by this absolute number (\`... 26 ...\`)
+instead of by season+episode (\`...S02E01...\`) — common for anime, and for resources that slice
+the series into seasons differently than your file does (a pack labeled "S3" for episodes your
+file counts another way). So when your \`...S02E01...\` name is nowhere in the fileList but the
+absolute number IS, that entry is very likely your episode: use the absolute number to LOCATE
+it, then download that fileIndex.
+
+The absolute number is a HINT for FINDING the file, never proof it belongs. After you download
+the located entry, STILL verify its structural signals match a normal episode of your runtime
+before installing — exactly as for any candidate. An entry located by absolute number that
+looks structurally wrong is still no match. And if no absolute number was provided (or it does
+not help), fall back to matching by name/metadata as usual — its absence is not a blocker.
+
 ## Workflow
 
 1. Read the task's media identity (title, alternative/native titles, year, season/episode,
@@ -78,6 +95,16 @@ fileList, or one entry that is your episode) pass \`fileIndex: null\`.
    retry_later is for transient failures (a provider errored, a download timed out) — not for
    "I am not confident," which is no_safe_match.
 
+## Language: coverage, not preference
+
+Your target is a CHINESE subtitle. Simplified (zh-Hans) and Traditional (zh-Hant) are equally
+good — a correct-episode subtitle in EITHER script is a success. Do not rank Simplified above
+Traditional or vice versa, do not hold out for one when the other is already in front of you,
+and do not spend judgment deciding between them: getting the episode covered is what matters.
+A non-Chinese subtitle (e.g. a Japanese or English track that happens to sit in the same pack)
+is NOT coverage — install a Chinese one, or finalize no_safe_match; never install a non-Chinese
+file just to "have something".
+
 ## Sandbox
 
 You only know about ONE media directory for this task. There is no other directory in your
@@ -89,7 +116,7 @@ export const FIND_SUBTITLE_SKILL: Skill = {
   descriptor: {
     name: 'find-subtitle-judgment',
     description:
-      'How to judge whether a downloaded candidate belongs to this exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract your episode from the season packs / complete-series collections that Chinese subtitles usually come as (read the fileList, download by fileIndex), and the search→compare→install workflow.',
+      'How to judge whether a downloaded candidate belongs to this exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract your episode from the season packs / complete-series collections that Chinese subtitles usually come as (read the fileList, download by fileIndex — including using a provided absolute episode number to locate an episode in packs numbered differently than your file), that Simplified and Traditional are equally good coverage, and the search→compare→install workflow.',
   },
   content: CONTENT,
 }

@@ -8,6 +8,7 @@ import { JobsRepo } from './jobsRepo.js'
 import { runFindSubtitleWorkerTask, type FindSubtitleWorkerTaskDeps } from './findSubtitleWorkerTask.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { FindSubtitleDecision, FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
+import { TmdbClient } from '../adapters/providers/tmdb.js'
 
 function mkJf(path: string, overrides: Partial<Pick<PlayerServer, 'getItem' | 'getChineseTitle'>> = {}) {
   return {
@@ -172,5 +173,79 @@ describe('runFindSubtitleWorkerTask', () => {
     const row = jobsRepo.get(job.id)!
     expect(row.state).toBe('failed')
     expect(row.last_error).toMatch(/拒绝在媒体根目录之外写入/)
+  })
+
+  // PLAN-BUG DISCIPLINE: the plan's test sketch said "media at S02E01 with provider_ids.tmdb
+  // set", assuming the EPISODE's own ProviderIds carries the series' Tmdb id. It doesn't —
+  // resolveTmdbRefStrict's own comment (tmdb.ts) says episode-level ProviderIds never has the
+  // series' Tmdb id; the mapper must round-trip through deps.jf.getItem(item.SeriesId) to read
+  // the SERIES item's ProviderIds.Tmdb (exactly what tmdbTitles already does via resolveTmdbRef).
+  // So this fixture's `jf.getItem` mock discriminates by id: the episode id returns the episode
+  // (S02E01, no ProviderIds), the series id ('s1') returns { ProviderIds: { Tmdb: '9999' } }.
+  it('computes absoluteEpisode from TMDB season-concat data when tmdb is configured', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'find-subtitle-worker-task-abs-'))
+    const showDir = join(root, 'Show', 'Season 02')
+    mkdirSync(showDir, { recursive: true })
+    const videoPath = join(showDir, 'Show.S02E01.mkv')
+    writeFileSync(videoPath, 'video')
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'jf-ep-2-1', seriesId: 's1', season: 2, episode: 1, name: 'E1', path: videoPath, subStatus: 'missing' })
+    jobsRepo.upsertWorkerTask({ seriesId: 's1', season: 2, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
+    const job = jobsRepo.claimNext(Date.now())!
+
+    const jf = {
+      getItem: vi.fn(async (id: string) => {
+        if (id === 'jf-ep-2-1') {
+          return {
+            Id: 'jf-ep-2-1', Name: 'E1', Type: 'Episode', Path: videoPath,
+            SeriesId: 's1', SeriesName: 'Show', ParentIndexNumber: 2, IndexNumber: 1,
+          } as never
+        }
+        return { Id: 's1', Name: 'Show', Type: 'Series', ProviderIds: { Tmdb: '9999' } } as never
+      }),
+      getChineseTitle: vi.fn(async () => null),
+    }
+
+    const fetchImpl = async (url: string | URL) => {
+      const u = String(url)
+      if (u.includes('/episode_groups')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
+      if (u.includes('/tv/9999')) {
+        return new Response(JSON.stringify({
+          seasons: [
+            { season_number: 1, episode_count: 25, air_date: null },
+            { season_number: 2, episode_count: 12, air_date: null },
+          ],
+        }), { status: 200 })
+      }
+      throw new Error(`unexpected TMDB fetch in test: ${u}`)
+    }
+    const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+
+    const runTask = vi.fn(async (_task: FindSubtitleTask) => decision())
+    const deps = baseDeps({ lib, jf, tmdb, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(runTask).toHaveBeenCalledTimes(1)
+    const task = runTask.mock.calls[0][0]
+    expect(task.season).toBe(2)
+    expect(task.episode).toBe(1)
+    expect(task.absoluteEpisode).toBe(26) // 25 (season 1) + episode 1 of season 2
+  })
+
+  it('absoluteEpisode is null when deps.tmdb is not configured', async () => {
+    const { videoPath, lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async (_task: FindSubtitleTask) => decision())
+    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath) // baseDeps defaults tmdb to null
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(runTask).toHaveBeenCalledTimes(1)
+    const task = runTask.mock.calls[0][0]
+    expect(task.absoluteEpisode).toBeNull()
   })
 })

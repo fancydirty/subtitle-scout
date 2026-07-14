@@ -1,0 +1,8 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/detail?id=930930",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJzdWJzIjpbeyJpZCI6OTMwOTMwLCJ2aWRlb25hbWUiOiLlkpLmnK/lm57miJgg56ysM+Wto+WFqOmbhiBCRHJpcCDnroDkvZMiLCJuYXRpdmVfbmFtZSI6IuWRquihk+W7u+aIpiIsImxhbmciOnsiZGVzYyI6IueugCJ9LCJzdWJ0eXBlIjoiU3VicmlwKHNydCkiLCJmaWxlbGlzdCI6W3sicyI6IjM4S0IiLCJmIjoiSnVqdXRzdS5LYWlzZW4uMjguQkRyaXAu566A5L2TLnNydCIsInVybCI6Imh0dHA6Ly9maWxlMC5hc3NydC5uZXQvcGFjay85MzA5MzAvMSJ9LHsicyI6IjM5S0IiLCJmIjoiSnVqdXRzdS5LYWlzZW4uMjkuQkRyaXAu566A5L2TLnNydCIsInVybCI6Imh0dHA6Ly9maWxlMC5hc3NydC5uZXQvcGFjay85MzA5MzAvMiJ9LHsicyI6IjM5S0IiLCJmIjoiSnVqdXRzdS5LYWlzZW4uMzAuQkRyaXAu566A5L2TLnNydCIsInVybCI6Imh0dHA6Ly9maWxlMC5hc3NydC5uZXQvcGFjay85MzA5MzAvMyJ9XX1dfX0="
+}

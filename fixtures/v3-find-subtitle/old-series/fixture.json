@@ -3,7 +3,7 @@
   "jobId": "eval-old-series",
   "task": {
     "videoFilename": "Forgotten.Show.S02E03.mkv", "title": "Forgotten Show", "originalTitle": null,
-    "year": 2003, "season": 2, "episode": 3, "alternativeTitles": [], "overview": null,
+    "year": 2003, "season": 2, "episode": 3, "absoluteEpisode": null, "alternativeTitles": [], "overview": null,
     "runtimeMinutes": 42, "providerIds": {}
   },
   "candidates": [

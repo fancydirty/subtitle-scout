@@ -119,6 +119,7 @@ async function main() {
     jobId: `live-accept-${Date.now()}`, mediaRoot, videoPath: values.video!, videoFilename: basename(values.video!),
     title: values.title!, originalTitle: null, year: values.year ? Number(values.year) : null,
     season: values.season ? Number(values.season) : null, episode: values.episode ? Number(values.episode) : null,
+    absoluteEpisode: null,
     alternativeTitles: [], overview: null, runtimeMinutes: null, providerIds: {},
   }
 

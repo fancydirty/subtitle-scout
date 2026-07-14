@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { RESOURCE_TYPES, SOURCE_FORMS, CELL_CATALOG, cellDir, loadCell } from './liveMatrix.js'
+import { RESOURCE_TYPES, SOURCE_FORMS, CELL_CATALOG, cellDir, loadCell, type CellExpectation } from './liveMatrix.js'
 import type { RecordedResponse } from './replayFetch.js'
 
 /** Structural gate for one recorded-response file; returns a human-readable problem or null.
@@ -34,6 +34,15 @@ describe('live matrix catalog', () => {
 
   it('cellDir maps to fixtures/v3-live/<type>/<form>', () => {
     expect(cellDir('anime', 'only-pack')).toMatch(/fixtures\/v3-live\/anime\/only-pack$/)
+  })
+
+  it('CellExpectation.installedLanguage accepts zh-any (coverage-first, no 简/繁 ranking)', () => {
+    const expected: CellExpectation = {
+      decision: 'installed',
+      installedFilename: 'Some.Show.S01E01.zh-Hans.srt',
+      installedLanguage: 'zh-any',
+    }
+    expect(expected.installedLanguage).toBe('zh-any')
   })
 
   it('every SEEDED cell loads with a task, expected answer, and a non-empty responses dir', () => {

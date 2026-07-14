@@ -3,7 +3,7 @@
   "jobId": "eval-season-pack",
   "task": {
     "videoFilename": "Attack.on.Titan.S01E01.mkv", "title": "Attack on Titan", "originalTitle": "進撃の巨人",
-    "year": 2013, "season": 1, "episode": 1, "alternativeTitles": ["進擊的巨人", "进击的巨人"], "overview": null,
+    "year": 2013, "season": 1, "episode": 1, "absoluteEpisode": null, "alternativeTitles": ["進擊的巨人", "进击的巨人"], "overview": null,
     "runtimeMinutes": 24, "providerIds": { "tmdb": "1429" }
   },
   "candidates": [

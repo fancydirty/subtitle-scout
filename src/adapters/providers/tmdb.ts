@@ -227,6 +227,27 @@ export class TmdbClient {
       })
       .sort((a, b) => a.seasonNumber - b.seasonNumber)
   }
+
+  /** 官方 TMDB 绝对编号 episode group，展平为 (season, episode) 序列；剧无 Absolute 型分组则返回
+   *  null。绝对编号分组的 type === 2。用 getJson（吞错）——分组缺失是正常情形而非故障。 */
+  async getAbsoluteOrder(tvId: string): Promise<{ season: number; episode: number }[] | null> {
+    const list = await this.getJson(`/tv/${tvId}/episode_groups`)
+    const results = Array.isArray(list?.results) ? (list!.results as Array<{ id?: string; type?: number }>) : []
+    const abs = results.find(g => g.type === 2 && typeof g.id === 'string')
+    if (!abs?.id) return null
+    const detail = await this.getJson(`/tv/episode_group/${abs.id}`)
+    const groups = Array.isArray(detail?.groups) ? (detail!.groups as Array<{ order?: number; episodes?: unknown[] }>) : []
+    const ordered: { season: number; episode: number }[] = []
+    for (const g of [...groups].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
+      const eps = Array.isArray(g.episodes) ? (g.episodes as Array<{ season_number?: number; episode_number?: number; order?: number }>) : []
+      for (const e of [...eps].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
+        if (typeof e.season_number === 'number' && typeof e.episode_number === 'number') {
+          ordered.push({ season: e.season_number, episode: e.episode_number })
+        }
+      }
+    }
+    return ordered.length > 0 ? ordered : null
+  }
 }
 
 /**
