@@ -188,6 +188,79 @@ describe('makeOrchestratorAgent', () => {
     expect(dispatched.map(j => j.series_id).sort()).toEqual(['s1', 's2'])
   })
 
+  it('dispatches a worker_task row when the real model OMITS movieId for a series+season dispatch (root cause: .nullable() rejects an omitted key, so the tool-call was rejected before execute() ever ran — regression for zero rows landing in the live matrix)', async () => {
+    lib.upsertSeries({ id: 's1', name: 'S' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/x/e1.mkv', subStatus: 'missing',
+    })
+
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        // movieId key is entirely ABSENT here — this is the real model's natural shape for a
+        // series dispatch, not a scripted `movieId: null`.
+        if (call === 1) {
+          return toolCallResult('c1', 'dispatch_find_subtitle_task', {
+            seriesId: 's1', season: 1, reason: 'missing s1',
+          })
+        }
+        return finalizeResult({
+          dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0,
+          summary: 'dispatched 1 find-subtitle task',
+        })
+      },
+    })
+
+    const runPass = makeOrchestratorAgent({
+      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+    })
+
+    await runPass()
+
+    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].series_id).toBe('s1')
+    expect(dispatched[0].season).toBe(1)
+    expect(dispatched[0].movie_id).toBeNull()
+    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', reason: 'missing s1' })
+  })
+
+  it('dispatches a worker_task row when the real model OMITS seriesId/season for a movie-only dispatch (same root cause, movie side)', async () => {
+    lib.upsertMovie({ id: 'm1', name: 'Movie', path: '/x/m1.mkv', subStatus: 'missing' })
+
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        // seriesId/season keys are entirely ABSENT — the real model's natural shape for a movie
+        // dispatch.
+        if (call === 1) {
+          return toolCallResult('c1', 'dispatch_find_subtitle_task', {
+            movieId: 'm1', reason: 'movie',
+          })
+        }
+        return finalizeResult({
+          dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0,
+          summary: 'dispatched 1 find-subtitle task',
+        })
+      },
+    })
+
+    const runPass = makeOrchestratorAgent({
+      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+    })
+
+    await runPass()
+
+    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].movie_id).toBe('m1')
+    expect(dispatched[0].series_id).toBeNull()
+    expect(dispatched[0].season).toBeNull()
+    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', reason: 'movie' })
+  })
+
   it('spawn_sibling_orchestrator does not count against the dispatch cap and records parent_job_id lineage', async () => {
     // orchestratorJobId must be a REAL existing jobs.id — parent_job_id carries a genuine
     // FOREIGN KEY REFERENCES jobs(id) constraint (confirmed in src/v2/db.ts, foreign_keys=ON),
