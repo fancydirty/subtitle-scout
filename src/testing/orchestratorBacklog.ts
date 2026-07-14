@@ -57,7 +57,7 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
   },
   {
     name: 'realign-and-find-same-series',
-    represents: 'one series where season 1 is a messy realign candidate and season 2 is a normal missing-episodes season — both a realign dispatch AND a find_subtitle dispatch for the same series',
+    represents: 'one series where season 1 is a messy realign candidate and season 2 is a normal missing-episodes season — a realign-candidate series gets a realign dispatch and NOTHING else this pass; its season-2 find is DEFERRED to a later pass (after realign restructures the layout and the rescan refreshes the living-doc), so dispatching find now would target files about to move',
     series: [{
       id: 'both', tmdbId: '6',
       seasons: [
@@ -67,7 +67,8 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
     }],
     movies: [],
     expected: {
-      findSubtitle: [{ seriesId: 'both', season: 2, movieId: null }],
+      // find DEFERRED — a realign-candidate series gets realign only this pass (see orchestratorSkill.ts step 2).
+      findSubtitle: [],
       realignSeriesIds: ['both'],
     },
   },
