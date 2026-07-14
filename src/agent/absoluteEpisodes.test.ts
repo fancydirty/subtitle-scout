@@ -77,6 +77,21 @@ describe('resolveAbsoluteEpisode', () => {
     const absolute = await resolveAbsoluteEpisode(2, 1, { getSeasonTable: async () => { throw new Error('tmdb down') }, getAbsoluteOrder: async () => null })
     expect(absolute).toBeNull()
   })
+  it('degrades to concat when getAbsoluteOrder THROWS but getSeasonTable succeeds (no fallback-denial)', async () => {
+    // 官方分组查询瞬时失败绝不能吞掉 concat 兜底——否则一次抖动会让本可算出的绝对集号退化成 null。
+    const absolute = await resolveAbsoluteEpisode(2, 1, {
+      getSeasonTable: async () => seasons,
+      getAbsoluteOrder: async () => { throw new Error('episode-group lookup blew up') },
+    })
+    expect(absolute).toBe(26)
+  })
+  it('returns null when BOTH lookups throw', async () => {
+    const absolute = await resolveAbsoluteEpisode(2, 1, {
+      getSeasonTable: async () => { throw new Error('tmdb down') },
+      getAbsoluteOrder: async () => { throw new Error('episode-group down') },
+    })
+    expect(absolute).toBeNull()
+  })
   it('returns null for a null season/episode (movies / unknown)', async () => {
     const absolute = await resolveAbsoluteEpisode(null, null, { getSeasonTable: async () => seasons, getAbsoluteOrder: async () => null })
     expect(absolute).toBeNull()

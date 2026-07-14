@@ -48,13 +48,14 @@ export async function resolveAbsoluteEpisode(
   season: number | null, episode: number | null, src: AbsoluteOrderSource, tvId = '',
 ): Promise<number | null> {
   if (season == null || episode == null) return null
+  // 官方分组查询与季表兜底必须各自独立包裹 try/catch：官方查询瞬时抛错绝不能连坐吞掉 concat 兜底，
+  // 否则 "concat fallback" 名不副实——一次抖动会把本可算出的绝对集号退化成 null（FALLBACK-DENIAL）。
+  let official: { season: number; episode: number }[] | null = null
+  try { official = await src.getAbsoluteOrder(tvId) } catch { official = null }
+  if (official && official.length > 0) return absoluteFor(buildFromAbsoluteOrder(official), season, episode)
   try {
-    const official = await src.getAbsoluteOrder(tvId)
-    if (official && official.length > 0) return absoluteFor(buildFromAbsoluteOrder(official), season, episode)
     const seasons = await src.getSeasonTable(tvId)
     if (!seasons) return null
     return absoluteFor(buildFromSeasonConcat(seasons), season, episode)
-  } catch {
-    return null
-  }
+  } catch { return null }
 }

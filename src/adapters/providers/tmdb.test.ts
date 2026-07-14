@@ -402,4 +402,78 @@ describe('TmdbClient.getAbsoluteOrder', () => {
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.getAbsoluteOrder('120089')).toBeNull()
   })
+
+  it('详情响应缺 groups 字段 → null（形状异常不裸崩，静默降级）', async () => {
+    const { client } = mkEpisodeGroupClient({
+      groupsList: { results: [{ id: 'abs123', type: 2 }] },
+      groupDetail: { id: 'abs123' }, // 无 groups 数组
+    })
+    expect(await client.getAbsoluteOrder('120089')).toBeNull()
+  })
+
+  it('某个 group 缺 episodes → 跳过该 group，仍返回其余 group 的集', async () => {
+    const { client } = mkEpisodeGroupClient({
+      groupsList: { results: [{ id: 'abs123', type: 2 }] },
+      groupDetail: {
+        groups: [
+          { order: 0 }, // 缺 episodes → 跳过
+          { order: 1, episodes: [{ season_number: 2, episode_number: 1, order: 0 }] },
+        ],
+      },
+    })
+    expect(await client.getAbsoluteOrder('120089')).toEqual([{ season: 2, episode: 1 }])
+  })
+
+  it('单条 episode 缺 season_number/episode_number → 跳过该条，保留合法条目', async () => {
+    const { client } = mkEpisodeGroupClient({
+      groupsList: { results: [{ id: 'abs123', type: 2 }] },
+      groupDetail: {
+        groups: [
+          {
+            order: 0,
+            episodes: [
+              { season_number: 1, episode_number: 1, order: 0 },
+              { episode_number: 2, order: 1 },              // 缺 season_number → 跳过
+              { season_number: 1, order: 2 },               // 缺 episode_number → 跳过
+              { season_number: 1, episode_number: 3, order: 3 },
+            ],
+          },
+        ],
+      },
+    })
+    expect(await client.getAbsoluteOrder('120089')).toEqual([
+      { season: 1, episode: 1 },
+      { season: 1, episode: 3 },
+    ])
+  })
+
+  it('多个 type===2 分组 → 取第一个', async () => {
+    const { client, fetchImpl } = mkEpisodeGroupClient({
+      groupsList: { results: [{ id: 'abs-first', type: 2 }, { id: 'abs-second', type: 2 }] },
+      groupDetail: { groups: [{ order: 0, episodes: [{ season_number: 1, episode_number: 1, order: 0 }] }] },
+    })
+    expect(await client.getAbsoluteOrder('120089')).toEqual([{ season: 1, episode: 1 }])
+    // 详情端点必须请求的是第一个分组 id，不是第二个。
+    const detailCall = fetchImpl.mock.calls.find(c => String(c[0]).includes('/episode_group/'))
+    expect(String(detailCall?.[0])).toContain('/episode_group/abs-first')
+    expect(String(detailCall?.[0])).not.toContain('abs-second')
+  })
+
+  it('groups 数组本身乱序（order 大的排前面）→ 展平序列仍按 group order 升序', async () => {
+    const { client } = mkEpisodeGroupClient({
+      groupsList: { results: [{ id: 'abs123', type: 2 }] },
+      groupDetail: {
+        groups: [
+          { order: 2, episodes: [{ season_number: 3, episode_number: 1, order: 0 }] },
+          { order: 1, episodes: [{ season_number: 2, episode_number: 1, order: 0 }] },
+          { order: 0, episodes: [{ season_number: 1, episode_number: 1, order: 0 }] },
+        ],
+      },
+    })
+    expect(await client.getAbsoluteOrder('120089')).toEqual([
+      { season: 1, episode: 1 },
+      { season: 2, episode: 1 },
+      { season: 3, episode: 1 },
+    ])
+  })
 })
