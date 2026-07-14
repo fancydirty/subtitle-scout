@@ -5,6 +5,12 @@
 # node_modules lives in a NAMED VOLUME (NOT bind-mounted) so native modules (better-sqlite3) are
 # built for the CONTAINER's arch — never carry a different-arch host's node_modules onto the router.
 #
+# The image is the FULL node:22 (not -slim) on purpose: better-sqlite3 has no prebuilt binary for
+# every node/glibc combo, so `npm ci` falls back to a node-gyp source build, which needs a C
+# toolchain (python3/make/g++). -slim lacks it and `npm ci` dies with "gyp ERR! not ok". The full
+# image ships the toolchain, so the one-time `npm ci` below just works. Same major (22) → the
+# compiled .node in the named volume is ABI-compatible across the two tags.
+#
 # One-time per repo sync (installs deps arch-correctly inside the container):
 #   docker compose -f docker-compose.test.yml run --rm test npm ci
 # Then run any out-of-band runner (network takes the router's clean path, not the Mac's proxy):
@@ -13,7 +19,7 @@
 #   docker compose -f docker-compose.test.yml run --rm test npx tsx scripts/record-provider-responses.ts --type anime --form season-pack --title "進撃の巨人" --original "Attack on Titan"
 services:
   test:
-    image: node:22-slim
+    image: node:22
     working_dir: /app
     env_file: .env
     environment:
