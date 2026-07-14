@@ -33,3 +33,9 @@ export function absoluteFor(table: AbsoluteEpisodeTable, season: number, episode
   const hit = table.entries.find(e => e.season === season && e.episode === episode)
   return hit ? hit.absolute : null
 }
+
+export function buildFromAbsoluteOrder(ordered: { season: number; episode: number }[]): AbsoluteEpisodeTable {
+  if (ordered.length === 0) return { ...EMPTY_UNRELIABLE, source: 'tmdb-episode-group' }
+  const entries = ordered.map((e, i) => ({ absolute: i + 1, season: e.season, episode: e.episode }))
+  return { entries, totalEpisodes: entries.length, source: 'tmdb-episode-group', reliable: true }
+}
