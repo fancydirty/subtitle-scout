@@ -1,0 +1,23 @@
+{
+  "task": {
+    "videoFilename": "Love.Death.and.Robots.S03E01.mkv",
+    "title": "Love, Death & Robots",
+    "originalTitle": null,
+    "year": 2022,
+    "season": 3,
+    "episode": 1,
+    "absoluteEpisode": null,
+    "alternativeTitles": ["爱，死亡和机器人", "LDR"],
+    "overview": "Anthology series — Three Robots: Exit Strategies.",
+    "runtimeMinutes": 15,
+    "providerIds": {}
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "678206",
+    "installedFilename": "Love.Death.and.Robots.S03E01.zh-Hans.ass",
+    "installedLanguage": "zh-Hans"
+  },
+  "note": "western/mixed: per the test-matrix design doc's own definition of 'mixed' (合集包+单集都有 — both a pack AND standalone single-episode uploads exist as candidates for the same target), Love Death & Robots S03E01 ('Three Robots: Exit Strategies') is a clean real match on assrt: the recorded search (q='Love Death and Robots S03E01') surfaces BOTH whole-season packs (assrt:678206 '...T4H', 9 files = S03E01..E09; assrt:678195 '...SMURF', 17 files; assrt:661405 mislabeled by episode title but also 9 files) AND standalone single-episode uploads of the exact same episode (assrt:678182 and assrt:695573, each itself a 9-file bundle of format/language variants of JUST E01 — .ass/.srt x 简/繁/英 combinations — not other episodes). This is an anthology series (each episode a self-contained story, no absoluteEpisode concept the way serialized anime has), which is why both a full-season pack and single-episode-only uploads coexist in the same fansub ecosystem — exactly the shape this cell needs. The pack (678206) is documented as the primary expected candidate (fileIndex 0 = the plain, single-format S03E01.ass entry — simplest deterministic target); the standalone single-episode candidates are recorded only via the search response (no detail/download captured for them, same convention as the movie/none counter-example cell for its wrong candidates) — a real run correctly finding E01 via one of the individual uploads instead would also be coverage-correct, but is not separately asserted here since no download fixture backs it. installedLanguage is zh-Hans (assrt's own lang tag for this pack is 英/简/双语)."
+}
