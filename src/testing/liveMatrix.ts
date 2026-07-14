@@ -64,7 +64,7 @@ export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'anime', sourceForm: 'mixed', seeded: true, represents: 'Jujutsu Kaisen S02E05 — pack mislabeled "第3季" (invented season), target locatable only via absoluteEpisode (29)' },
   { resourceType: 'anime', sourceForm: 'multi-version', seeded: true, represents: 'Demon Slayer S01E01 — same episode, 简/繁/日 versions (any zh-* correct, 日 is not)' },
   { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: true, represents: 'Journey to the West (1986 CCTV classic) — whole-series pack (琅琊榜/Nirvana in Fire has zero assrt hits, substituted)' },
-  { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: false, represents: '琅琊榜 — 简/繁 versions' },
+  { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: true, represents: 'F4 Thailand: Boys Over Flowers (流星花园 2021) S01E01 — separate 简/繁 season-pack uploads (琅琊榜 has zero assrt hits, substituted)' },
   { resourceType: 'western', sourceForm: 'only-single', seeded: false, represents: 'Peacemaker / Young Sheldon — per-episode' },
   { resourceType: 'western', sourceForm: 'mixed', seeded: false, represents: 'Love Death & Robots — anthology' },
   { resourceType: 'movie', sourceForm: 'multi-version', seeded: false, represents: 'Hero / Wandering Earth — 剪辑版/时长 variants' },

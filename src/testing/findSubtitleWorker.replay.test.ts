@@ -101,6 +101,76 @@ describe('find-subtitle worker replay integration: anime/only-pack', () => {
   })
 })
 
+describe('find-subtitle worker replay integration: cdrama/multi-version', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'scout-replay-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  it('installs S01E01 from the 简 (zh-Hans) season pack, one of two separate 简/繁 candidates', async () => {
+    const cell = loadCell('cdrama', 'multi-version')
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'F4 Thailand Boys Over Flowers (2021)')
+    mkdirSync(showDir, { recursive: true })
+    const videoPath = join(showDir, cell.task.videoFilename)
+
+    const replay = makeReplayFetch(cell.responsesDir)
+    const client = new AssrtClient({
+      token: 'replay', cacheDir: join(root, 'assrt-cache'),
+      fetchImpl: replay, limiter: new MinIntervalLimiter(0),
+    })
+    const adapters = [makeAssrtAdapter(client)]
+
+    // Unlike the anime/multi-version cell (three single-file candidates), here 简 and 繁 are each
+    // their own SEASON PACK (assrt:713168 简, assrt:713167 繁) recorded via search q="F4 Thailand",
+    // which returns 简 at index 0 — the scripted mock picks that one. Each pack's filelist mixes
+    // real entries with macOS "._" resource-fork sidecars that ALSO substring-match "S01E01", so
+    // the match must skip "._"-prefixed junk, not just grep the episode code.
+    let call = 0
+    const doGenerate = async (options: LanguageModelV4CallOptions) => {
+      call++
+      if (call === 1) return step('c1', 'search_source', { queries: [cell.task.title, cell.task.originalTitle] })
+      if (call === 2) {
+        const searched = toolResult(options.prompt, 'search_source')
+        return step('c2', 'get_candidate', { result_set_id: searched.result_set_id, index: 0, detail: 'detailed' })
+      }
+      if (call === 3) {
+        const got = toolResult(options.prompt, 'get_candidate')
+        const entry = (got.fileList as { index: number; name: string }[])
+          .find(f => /S01E01/i.test(f.name) && !f.name.startsWith('._'))!
+        return step('c3', 'download_candidate', { candidateId: `assrt:${cell.expected.candidateProviderId}`, fileIndex: String(entry.index) })
+      }
+      if (call === 4) {
+        const dl = toolResult(options.prompt, 'download_candidate')
+        return step('c4', 'install_subtitle', { stagedFileId: dl.stagedFileId, langTag: 'zh-Hans' })
+      }
+      const installed = toolResult(options.prompt, 'install_subtitle')
+      return step('finalize-1', 'finalize', {
+        decision: 'installed', reason: 'picked the 简 (Simplified) season pack, S01E01 by filename match',
+        installedPath: installed.path, installedLanguage: 'zh-Hans',
+        candidateProvider: cell.expected.candidateProvider, candidateProviderId: cell.expected.candidateProviderId,
+      })
+    }
+
+    const runTask = makeFindSubtitleWorker({
+      model: new MockLanguageModelV4({ doGenerate }),
+      adapters, cacheRoot: join(root, 'cache'),
+      fetchImpl: replay, stepCap: 12,
+    })
+
+    const task: FindSubtitleTask = { ...cell.task, jobId: 'replay-cdrama-multi-version', mediaRoot, videoPath }
+    const decision = await runTask(task)
+
+    expect(decision.decision).toBe('installed')
+    expect(decision.installedPath).toBe(join(showDir, cell.expected.installedFilename!))
+    expect(existsSync(decision.installedPath!)).toBe(true)
+    expect(decision.candidateProviderId).toBe(cell.expected.candidateProviderId)
+    expect(decision.installedLanguage).toBe('zh-Hans')
+    const downloadFixture = JSON.parse(readFileSync(join(cell.responsesDir, 'download-zh-hans.json'), 'utf8'))
+    expect(readFileSync(decision.installedPath!, 'utf8'))
+      .toBe(Buffer.from(downloadFixture.bodyBase64, 'base64').toString('utf8'))
+  })
+})
+
 describe('find-subtitle worker replay integration: cdrama/only-pack', () => {
   let root: string
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'scout-replay-')) })
