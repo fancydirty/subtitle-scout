@@ -428,7 +428,7 @@ async function cmdWatch() {
 
   // orchestrator 依赖（v3 phase ⑦）：sibling-orchestrator worker_task（taskType==='orchestrate'）
   // 同样门在 tmdb——makeOrchestratorAgent 的 check_series_layout 工具需要真实 TmdbClient。
-  const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, model: reasoningModel, now: () => Date.now() } : undefined
+  const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, jf, model: reasoningModel, now: () => Date.now() } : undefined
 
   // 诊断钩子（Task 14 的 makeDiagnoseSeason）：同样门在 tmdb 是否配置——诊断需要 TMDB
   // 季表才有确定性主信号，没有 TMDB_API_KEY 时一并跳过。

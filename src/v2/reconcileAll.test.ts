@@ -4,6 +4,7 @@ import { openDb } from './db.js'
 import { JobsRepo } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
+import type { PlayerServer } from '../adapters/players/types.js'
 import { runReconcileAll, runOrchestrateWorkerTask } from './reconcileAll.js'
 
 /** Terminal step of a REAL orchestrator pass: a NATIVE tool_call to `finalize` carrying the
@@ -22,6 +23,7 @@ function finalizeResult(output: unknown) {
 }
 
 const fakeTmdb: Pick<TmdbClient, 'getSeasonTable'> = { getSeasonTable: async () => null }
+const fakeJf: Pick<PlayerServer, 'getItem'> = { getItem: async () => null as never }
 
 const EMPTY_DECISION = { dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'nothing to do' }
 
@@ -36,6 +38,7 @@ describe('runReconcileAll', () => {
       getItemsPage: async (start: number) => (start === 0 ? [
         { Id: 'e1', Name: 'E1', Type: 'Episode', Path: '/lib/Show/S01/e1.mkv', SeriesId: 's1', SeriesName: 'Show', ParentIndexNumber: 1, IndexNumber: 1 },
       ] as never : []),
+      getItem: async () => null as never,
     }
 
     const decision = await runReconcileAll({
@@ -55,7 +58,7 @@ describe('runReconcileAll', () => {
     const model = new MockLanguageModelV4({
       doGenerate: async () => { throw new Error('model must never be called') },
     })
-    const jf = { getItemsPage: async () => [] as never }
+    const jf = { getItemsPage: async () => [] as never, getItem: async () => null as never }
 
     await expect(runReconcileAll({
       jf, lib, jobs, model, tmdb: fakeTmdb, mappings: [], skipChineseOrigin: true,
@@ -74,7 +77,7 @@ describe('runOrchestrateWorkerTask', () => {
 
     const model = new MockLanguageModelV4({ doGenerate: async () => finalizeResult(EMPTY_DECISION)})
 
-    const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 1000, stepCap: 10 }, jobs)
+    const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, jf: fakeJf, model, now: () => 1000, stepCap: 10 }, jobs)
 
     expect(decision).toEqual(EMPTY_DECISION)
     expect(jobs.get(job.id)!.state).toBe('done')
@@ -91,7 +94,7 @@ describe('runOrchestrateWorkerTask', () => {
       doGenerate: async () => { throw new Error('network exploded') },
     })
 
-    const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 1000, stepCap: 10 }, jobs)
+    const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, jf: fakeJf, model, now: () => 1000, stepCap: 10 }, jobs)
 
     expect(decision).toBeNull()
     const row = jobs.get(job.id)!

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
+import type { PlayerServer } from '../adapters/players/types.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 
 export interface MissingSeasonRow { kind: 'season'; seriesId: string; season: number; missing: number }
@@ -64,21 +65,37 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
  *  same pure primary-signal check src/agent/diagnoseSeason.ts already uses to short-circuit to
  *  'unknown' without spending an LLM call when the signal doesn't hold — confirmed unchanged by
  *  reading diagnoseSeason.ts directly. A season with mirrorEpisodeCount <= tmdbEpisodeCount is
- *  reported as NOT a realign candidate; the tool reports that fact, it does not enforce it. */
+ *  reported as NOT a realign candidate; the tool reports that fact, it does not enforce it.
+ *
+ *  tmdbId is resolved INTERNALLY via a live jf.getItem(seriesId) lookup, NOT taken as a
+ *  model-supplied input — the orchestrator model has no source for a series' tmdbId
+ *  (list_missing_coverage rows are {seriesId, season, missing} only), so a model-facing tmdbId
+ *  param was uncallable in practice (the model could only fabricate one, which silently always
+ *  resolved to exceedsSeasonTable:false). Same house convention as makeDiagnoseSeason
+ *  (src/v2/executor.ts:539-546): jf.getItem(seriesId).ProviderIds.Tmdb, NOT
+ *  lib.getSeries().provider_ids — that DB column is an unreliable historical mirror, never
+ *  written by scanner.ts's normal scan path. */
 export function makeCheckSeriesLayoutTool(
   lib: Pick<LibraryRepo, 'countEpisodesInSeason'>,
   tmdb: Pick<TmdbClient, 'getSeasonTable'>,
+  jf: Pick<PlayerServer, 'getItem'>,
 ) {
   return tool({
     description:
       'Deterministic check: does this series/season\'s mirror episode count exceed TMDB\'s ' +
       'recorded episode count for that season? Only a TRUE result is even a candidate for ' +
       'dispatch_realign_task — this is the same primary signal diagnoseSeason.ts already uses ' +
-      'to rule out realign candidates without spending an LLM call.',
-    inputSchema: z.object({ seriesId: z.string(), season: z.number().int(), tmdbId: z.string() }),
-    execute: async ({ seriesId, season, tmdbId }) => {
+      'to rule out realign candidates without spending an LLM call. Resolves the series\' TMDB ' +
+      'id internally via a live Jellyfin lookup — you only need to pass seriesId and season.',
+    inputSchema: z.object({ seriesId: z.string(), season: z.number().int() }),
+    execute: async ({ seriesId, season }) => {
       const mirrorEpisodeCount = lib.countEpisodesInSeason(seriesId, season)
-      const seasonTable = await tmdb.getSeasonTable(tmdbId)
+      const seriesItem = await jf.getItem(seriesId).catch(() => null)
+      const tmdbId = seriesItem?.ProviderIds?.Tmdb
+      if (!tmdbId) {
+        return { mirrorEpisodeCount, tmdbEpisodeCount: null, exceedsSeasonTable: false }
+      }
+      const seasonTable = await tmdb.getSeasonTable(tmdbId).catch(() => null)
       const tmdbEpisodeCount = seasonTable?.find(s => s.seasonNumber === season)?.episodeCount ?? null
       const exceedsSeasonTable = mirrorExceedsSeasonTable({ seriesId, season, mirrorEpisodeCount, tmdbEpisodeCount })
       return { mirrorEpisodeCount, tmdbEpisodeCount, exceedsSeasonTable }
