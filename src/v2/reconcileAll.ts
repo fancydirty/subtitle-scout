@@ -9,7 +9,7 @@ import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { PathMapping } from '../core/mediaContext.js'
 
 export interface ReconcileAllDeps {
-  jf: Pick<PlayerServer, 'getItemsPage'>
+  jf: Pick<PlayerServer, 'getItemsPage' | 'getItem'>
   /** Full LibraryRepo, not a Pick: scanLibrary (the mechanical pre-scan) needs its whole surface
    *  (upsertSeries/upsertEpisode/etc), while makeOrchestratorAgent below only reads the narrower
    *  Pick it declares — LibraryRepo satisfies both. */
@@ -46,6 +46,7 @@ export async function runReconcileAll(deps: ReconcileAllDeps): Promise<Orchestra
     model: deps.model,
     lib: deps.lib,
     tmdb: deps.tmdb,
+    jf: deps.jf,
     jobs: deps.jobs,
     now: deps.now,
     orchestratorJobId: deps.orchestratorJobId,
@@ -58,6 +59,7 @@ export async function runReconcileAll(deps: ReconcileAllDeps): Promise<Orchestra
 export interface OrchestrateWorkerTaskDeps {
   lib: OrchestratorAgentDeps['lib']
   tmdb: OrchestratorAgentDeps['tmdb']
+  jf: Pick<PlayerServer, 'getItem'>
   model: LanguageModel
   now: () => number
   stepCap?: number
@@ -76,7 +78,7 @@ export async function runOrchestrateWorkerTask(
 ): Promise<OrchestratorDecision | null> {
   try {
     const runPass = makeOrchestratorAgent({
-      model: deps.model, lib: deps.lib, tmdb: deps.tmdb, jobs, now: deps.now, orchestratorJobId: job.id,
+      model: deps.model, lib: deps.lib, tmdb: deps.tmdb, jf: deps.jf, jobs, now: deps.now, orchestratorJobId: job.id,
       stepCap: deps.stepCap, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator,
     })
     const decision = await runPass()

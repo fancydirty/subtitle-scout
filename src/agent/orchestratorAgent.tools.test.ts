@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { asSchema } from 'ai'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
+import type { TmdbClient } from '../adapters/providers/tmdb.js'
+import type { PlayerServer } from '../adapters/players/types.js'
 import {
-  makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, type DispatchCounter,
-  type MissingCoveragePage,
+  makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeCheckSeriesLayoutTool,
+  type DispatchCounter, type MissingCoveragePage,
 } from './orchestratorAgent.tools.js'
 
 const fakeOpts = { toolCallId: 't1', messages: [] } as any
@@ -131,5 +133,61 @@ describe('dispatch_find_subtitle_task identity validation', () => {
       seriesId: null, season: null, movieId: 'm1', reason: 'missing movie',
     })
     expect(result.success).toBe(true)
+  })
+})
+
+describe('makeCheckSeriesLayoutTool', () => {
+  // Root cause under test: the orchestrator model has NO source for a series' tmdbId
+  // (list_missing_coverage rows are {seriesId, season, missing} only) — the tool must resolve
+  // tmdbId itself via a live jf.getItem lookup (the house convention confirmed in
+  // makeDiagnoseSeason, src/v2/executor.ts:539-546), NOT take it as a model-supplied input.
+  it('resolves tmdbId internally via jf.getItem and reports exceedsSeasonTable:true when the mirror overshoots the TMDB season table', async () => {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = {
+      countEpisodesInSeason: (seriesId, season) => {
+        expect(seriesId).toBe('s1')
+        expect(season).toBe(2)
+        return 30
+      },
+    }
+    const tmdb: Pick<TmdbClient, 'getSeasonTable'> = {
+      getSeasonTable: async (tmdbId) => {
+        expect(tmdbId).toBe('1429')
+        return [{ seasonNumber: 2, episodeCount: 12, airDate: null }] as any
+      },
+    }
+    const jf: Pick<PlayerServer, 'getItem'> = {
+      getItem: async (itemId) => {
+        expect(itemId).toBe('s1')
+        return { ProviderIds: { Tmdb: '1429' } } as any
+      },
+    }
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+
+    const result = await checkSeriesLayout.execute!({ seriesId: 's1', season: 2 }, fakeOpts)
+
+    expect(result).toEqual({ mirrorEpisodeCount: 30, tmdbEpisodeCount: 12, exceedsSeasonTable: true })
+  })
+
+  it('gracefully reports exceedsSeasonTable:false (never throws) when jf.getItem has no resolvable Tmdb provider id', async () => {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = { countEpisodesInSeason: () => 30 }
+    const tmdb: Pick<TmdbClient, 'getSeasonTable'> = {
+      getSeasonTable: async () => { throw new Error('must never be called — no tmdbId to look up') },
+    }
+    const jf: Pick<PlayerServer, 'getItem'> = { getItem: async () => null as any }
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+
+    const result = await checkSeriesLayout.execute!({ seriesId: 's1', season: 2 }, fakeOpts)
+
+    expect(result).toEqual({ mirrorEpisodeCount: 30, tmdbEpisodeCount: null, exceedsSeasonTable: false })
+  })
+
+  it('no tmdbId param in the input schema (model cannot fabricate one) — seriesId/season alone validate', async () => {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = { countEpisodesInSeason: () => 0 }
+    const tmdb: Pick<TmdbClient, 'getSeasonTable'> = { getSeasonTable: async () => null }
+    const jf: Pick<PlayerServer, 'getItem'> = { getItem: async () => null as any }
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+
+    const result = await validate(checkSeriesLayout.inputSchema, { seriesId: 's1', season: 2 })
+    expect(result).toEqual({ success: true, value: { seriesId: 's1', season: 2 } })
   })
 })
