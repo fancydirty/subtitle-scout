@@ -59,7 +59,7 @@ export interface CatalogEntry {
  *  backlog. Start with the anchor (anime/only-pack — the live-acceptance cell) and grow. */
 export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'anime', sourceForm: 'only-pack', seeded: true, represents: 'Attack on Titan S01E01 — only a Complete-Series pack exists (live-acceptance cell)' },
-  { resourceType: 'anime', sourceForm: 'season-pack', seeded: false, represents: 'Attack on Titan — single-season pack, not full series' },
+  { resourceType: 'anime', sourceForm: 'season-pack', seeded: true, represents: 'Attack on Titan S02E01 — S1+S2 pack numbered by ABSOLUTE episode (26), no S02E01 substring anywhere' },
   { resourceType: 'anime', sourceForm: 'only-single', seeded: false, represents: 'Scissor Seven — per-episode subtitles only' },
   { resourceType: 'anime', sourceForm: 'mixed', seeded: false, represents: 'anime with both pack and single candidates' },
   { resourceType: 'anime', sourceForm: 'multi-version', seeded: false, represents: 'same episode, 简/繁/日 versions' },
