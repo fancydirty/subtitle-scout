@@ -100,3 +100,73 @@ describe('find-subtitle worker replay integration: anime/only-pack', () => {
       .toBe(Buffer.from(downloadFixture.bodyBase64, 'base64').toString('utf8'))
   })
 })
+
+describe('find-subtitle worker replay integration: cdrama/only-pack', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'scout-replay-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  it('installs episode 1 from the recorded 西游记(1986) complete-series pack via the real assrt adapter', async () => {
+    const cell = loadCell('cdrama', 'only-pack')
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'Journey to the West (1986)')
+    mkdirSync(showDir, { recursive: true })
+    const videoPath = join(showDir, cell.task.videoFilename)
+
+    const replay = makeReplayFetch(cell.responsesDir)
+    const client = new AssrtClient({
+      token: 'replay', cacheDir: join(root, 'assrt-cache'),
+      fetchImpl: replay, limiter: new MinIntervalLimiter(0),
+    })
+    const adapters = [makeAssrtAdapter(client)]
+
+    // Same scripted-mock shape as the anime/only-pack anchor test, but the pack here is numbered
+    // by plain "01.ass".."26.ass" (no SxxEyy substring at all) — matched by a leading "01." regex
+    // instead of an episode-code substring, proving the plumbing does not assume SxxEyy naming.
+    let call = 0
+    const doGenerate = async (options: LanguageModelV4CallOptions) => {
+      call++
+      if (call === 1) return step('c1', 'search_source', { queries: [cell.task.title, cell.task.originalTitle] })
+      if (call === 2) {
+        const searched = toolResult(options.prompt, 'search_source')
+        return step('c2', 'get_candidate', { result_set_id: searched.result_set_id, index: 0, detail: 'detailed' })
+      }
+      if (call === 3) {
+        const got = toolResult(options.prompt, 'get_candidate')
+        const entry = (got.fileList as { index: number; name: string }[]).find(f => /^01\.ass$/i.test(f.name))!
+        return step('c3', 'download_candidate', { candidateId: `assrt:${cell.expected.candidateProviderId}`, fileIndex: String(entry.index) })
+      }
+      if (call === 4) {
+        const dl = toolResult(options.prompt, 'download_candidate')
+        return step('c4', 'install_subtitle', { stagedFileId: dl.stagedFileId, langTag: cell.expected.installedLanguage })
+      }
+      const installed = toolResult(options.prompt, 'install_subtitle')
+      return step('finalize-1', 'finalize', {
+        decision: 'installed', reason: 'picked episode 1 (01.ass) out of the recorded whole-series pack filelist',
+        installedPath: installed.path, installedLanguage: cell.expected.installedLanguage,
+        candidateProvider: cell.expected.candidateProvider, candidateProviderId: cell.expected.candidateProviderId,
+      })
+    }
+
+    const runTask = makeFindSubtitleWorker({
+      model: new MockLanguageModelV4({ doGenerate }),
+      adapters, cacheRoot: join(root, 'cache'),
+      fetchImpl: replay, stepCap: 12,
+    })
+
+    const task: FindSubtitleTask = { ...cell.task, jobId: 'replay-cdrama-only-pack', mediaRoot, videoPath }
+    const decision = await runTask(task)
+
+    expect(decision.decision).toBe('installed')
+    expect(decision.installedPath).toBe(join(showDir, cell.expected.installedFilename!))
+    expect(existsSync(decision.installedPath!)).toBe(true)
+    expect(decision.candidateProviderId).toBe(cell.expected.candidateProviderId)
+    // installedFilename is derived from the video basename + langTag, not the source extension of
+    // the ACTUAL downloaded file — so this also pins that .ass (not .srt) survived writeSubtitle's
+    // extension-preserving path (src/files/subtitleWriter.ts's SUBTITLE_EXTS includes .ass/.ssa).
+    expect(decision.installedPath).toMatch(/\.ass$/)
+    const downloadFixture = JSON.parse(readFileSync(join(cell.responsesDir, 'download.json'), 'utf8'))
+    expect(readFileSync(decision.installedPath!, 'utf8'))
+      .toBe(Buffer.from(downloadFixture.bodyBase64, 'base64').toString('utf8'))
+  })
+})

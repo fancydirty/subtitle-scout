@@ -63,7 +63,7 @@ export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'anime', sourceForm: 'only-single', seeded: false, represents: 'Scissor Seven — per-episode subtitles only' },
   { resourceType: 'anime', sourceForm: 'mixed', seeded: true, represents: 'Jujutsu Kaisen S02E05 — pack mislabeled "第3季" (invented season), target locatable only via absoluteEpisode (29)' },
   { resourceType: 'anime', sourceForm: 'multi-version', seeded: true, represents: 'Demon Slayer S01E01 — same episode, 简/繁/日 versions (any zh-* correct, 日 is not)' },
-  { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: false, represents: 'Nirvana in Fire — whole-series pack' },
+  { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: true, represents: 'Journey to the West (1986 CCTV classic) — whole-series pack (琅琊榜/Nirvana in Fire has zero assrt hits, substituted)' },
   { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: false, represents: '琅琊榜 — 简/繁 versions' },
   { resourceType: 'western', sourceForm: 'only-single', seeded: false, represents: 'Peacemaker / Young Sheldon — per-episode' },
   { resourceType: 'western', sourceForm: 'mixed', seeded: false, represents: 'Love Death & Robots — anthology' },
