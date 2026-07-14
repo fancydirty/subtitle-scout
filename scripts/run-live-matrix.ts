@@ -85,7 +85,12 @@ async function runOne(entry: CatalogEntry, run: number, model: LanguageModel): P
       // hand-typed NFD installedFilename in cell.json (easy on macOS) would silently fail
       // byte-exact equality against a correct install.
       const want = join(mediaRoot, cell.expected.installedFilename!).normalize('NFC')
-      ok = decision.installedPath === want && existsSync(want) && decision.installedLanguage === cell.expected.installedLanguage
+      // 'zh-any' = either Simplified or Traditional is a correct install (coverage-first, no
+      // 简/繁 ranking) — otherwise the language must match exactly.
+      const languageOk = cell.expected.installedLanguage === 'zh-any'
+        ? decision.installedLanguage === 'zh-Hans' || decision.installedLanguage === 'zh-Hant'
+        : decision.installedLanguage === cell.expected.installedLanguage
+      ok = decision.installedPath === want && existsSync(want) && languageOk
     }
     const acquisitionAttempted = tap.toolCalls.includes('download_candidate') || tap.toolCalls.includes('install_subtitle')
     return { cell: id, run, ok, got: decision.decision, want: cell.expected.decision, acquisitionAttempted, toolCalls: tap.toolCalls }

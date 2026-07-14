@@ -21,9 +21,12 @@ export interface CellExpectation {
   /** installed only: the composite candidate the worker should have chosen. */
   candidateProvider?: string
   candidateProviderId?: string
-  /** installed only: the basename that must appear beside the video, and its language tag. */
+  /** installed only: the basename that must appear beside the video, and its language tag.
+   *  'zh-any' means either Simplified or Traditional is a correct install — coverage-first,
+   *  no 简/繁 ranking between them; only used when the cell has no basis to prefer one over
+   *  the other (e.g. only one script is actually available, or both are equally valid). */
   installedFilename?: string
-  installedLanguage?: 'zh-Hans' | 'zh-Hant'
+  installedLanguage?: 'zh-Hans' | 'zh-Hant' | 'zh-any'
 }
 
 /** On-disk `cell.json`. `task` omits the three runtime-supplied fields (the runner/test fills
