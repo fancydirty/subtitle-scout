@@ -3,6 +3,9 @@ import { z } from 'zod'
 import type { LlmRuntime } from './runtime.js'
 import type { CallStructuredResult } from './llm.js'
 import { REALIGN_PLAYBOOK } from './playbooks/realignPlaybook.js'
+// SeasonShape + mirrorExceedsSeasonTable were extracted to core/seasonShape.ts (shared with the v3
+// orchestrator) — see the old-pipeline retirement scope. Re-imported here for this module's own use.
+import { mirrorExceedsSeasonTable, type SeasonShape } from '../core/seasonShape.js'
 
 export const DiagnosisVerdictSchema = z.object({
   verdict: z.enum(['absolute_flat', 'unknown']),
@@ -10,20 +13,7 @@ export const DiagnosisVerdictSchema = z.object({
 })
 export type DiagnosisVerdict = z.infer<typeof DiagnosisVerdictSchema>
 
-export interface SeasonShape {
-  seriesId: string
-  season: number
-  mirrorEpisodeCount: number
-  tmdbEpisodeCount: number | null
-}
-
 export interface RecentRunSummary { decision: string; detail: string }
-
-/** 主信号（确定性）：镜像里该季集数是否超过 TMDB 该季 episode_count。tmdbEpisodeCount 未知
- *  （没查到季表）时没有确定性信号可用，一律 false，不猜。 */
-export function mirrorExceedsSeasonTable(shape: SeasonShape): boolean {
-  return shape.tmdbEpisodeCount != null && shape.mirrorEpisodeCount > shape.tmdbEpisodeCount
-}
 
 /**
  * 从 pipeline journal 落盘的 decision.json 里提取 rankCandidates 这次 LLM 调用的结构化

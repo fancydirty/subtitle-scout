@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scanVideoFiles, buildRealignPlan } from './libraryRealign.js'
-import { mirrorExceedsSeasonTable } from '../agent/diagnoseSeason.js'
+import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 import type { SeasonTableEntry } from '../adapters/providers/tmdb.js'
 
 function mkDir(...parts: string[]): string {

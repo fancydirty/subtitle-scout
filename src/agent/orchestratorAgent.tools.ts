@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import { mirrorExceedsSeasonTable } from './diagnoseSeason.js'
+import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 
 export interface MissingSeasonRow { kind: 'season'; seriesId: string; season: number; missing: number }
 export interface MissingMovieRow { kind: 'movie'; movieId: string; name: string }
