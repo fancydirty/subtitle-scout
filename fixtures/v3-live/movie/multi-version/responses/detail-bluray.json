@@ -1,0 +1,13 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/detail?id=403083",
+  "status": 200,
+  "headers": {
+    "access-control-allow-origin": "*",
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "date": "Tue, 14 Jul 2026 13:00:39 GMT",
+    "server": "nginx"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJhY3Rpb24iOiJkZXRhaWwiLCJyZXN1bHQiOiJzdWNjZWVkIiwic3VicyI6W3sic3VidHlwZSI6IlN1YnJpcChzcnQpIiwidm90ZV9zY29yZSI6NSwidGl0bGUiOiLoi7Hpm4QiLCJ2aWRlb25hbWUiOiJIZXJvIDIwMDIgQmx1cmF5IDEwODBwIERUU0hEIHgyNjQtQ0hEIiwiZmlsZW5hbWUiOiJIZXJvLjIwMDIuQmx1cmF5LjEwODBwLkRUU0hELngyNjQtQ0hELkNocy5zcnQiLCJmaWxlbGlzdCI6e30sIm5hdGl2ZV9uYW1lIjoi6Iux6ZuEIiwidXJsIjoiaHR0cDpcL1wvZmlsZTAuYXNzcnQubmV0XC9kb3dubG9hZFwvNDAzMDgzXC9IZXJvLjIwMDIuQmx1cmF5LjEwODBwLkRUU0hELngyNjQtQ0hELkNocy5zcnQ/Xz0xNzg0MDMzOTUxJi09MWFkNThhMGQ4NWE5Yzc1NjQzNjE5OWZlZDEyZmI5NTMmYXBpPTEiLCJpZCI6NDAzMDgzLCJkb3duX2NvdW50IjozNzE3LCJ2aWV3X2NvdW50IjoxMDkwOCwic2l6ZSI6MzcwOTIsInVwbG9hZF90aW1lIjoiMjAxNC0xMi0wNiAwNToxMDowOSJ9XX19Cg=="
+}

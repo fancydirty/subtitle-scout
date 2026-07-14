@@ -67,7 +67,7 @@ export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: true, represents: 'F4 Thailand: Boys Over Flowers (流星花园 2021) S01E01 — separate 简/繁 season-pack uploads (琅琊榜 has zero assrt hits, substituted)' },
   { resourceType: 'western', sourceForm: 'only-single', seeded: false, represents: 'Peacemaker / Young Sheldon — per-episode' },
   { resourceType: 'western', sourceForm: 'mixed', seeded: false, represents: 'Love Death & Robots — anthology' },
-  { resourceType: 'movie', sourceForm: 'multi-version', seeded: false, represents: 'Hero / Wandering Earth — 剪辑版/时长 variants' },
+  { resourceType: 'movie', sourceForm: 'multi-version', seeded: true, represents: "Hero (英雄 2002) — Director's Cut (~103min) vs Bluray/theatrical (~93.5min), genuine runtime variants" },
   { resourceType: 'movie', sourceForm: 'none', seeded: true, represents: 'obscure film — no correct subtitle exists (counter-example floor)' },
 ]
 

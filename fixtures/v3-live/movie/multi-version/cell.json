@@ -1,0 +1,23 @@
+{
+  "task": {
+    "videoFilename": "Hero.2002.DirectorsCut.mkv",
+    "title": "Hero",
+    "originalTitle": "英雄",
+    "year": 2002,
+    "season": null,
+    "episode": null,
+    "absoluteEpisode": null,
+    "alternativeTitles": ["英雄 导演剪切版", "Ying Xiong"],
+    "overview": null,
+    "runtimeMinutes": 103,
+    "providerIds": {}
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "307500",
+    "installedFilename": "Hero.2002.DirectorsCut.zh-Hans.srt",
+    "installedLanguage": "zh-Hans"
+  },
+  "note": "movie/multi-version: Hero (英雄, 2002) has two genuinely DIFFERENT-RUNTIME cuts on assrt, both simplified Chinese single-file subtitles — assrt:307500 ('英雄 导演剪切版'/Hero DirCut, HDDVD release, last cue at 01:43:02, ~103min) and assrt:403083 ('Hero 2002 Bluray 1080p DTSHD x264-CHD', last cue at 01:33:35, ~93.5min). Verified by actually downloading and eyeballing both bodies' timing, not just filenames: the two subtitle tracks start and end at meaningfully different timestamps (DirCut opens at 00:02:14 with an extra scene absent from the Bluray cut's 00:00:39 open), confirming real cut-length divergence, not a false title match. Unlike the cdrama/anime multi-version cells (script variants, either 简 or 繁 is coverage-correct), this is a RUNTIME/EDIT variant — only ONE candidate actually syncs against a given video file, so this cell tests whether the model discriminates by runtime/cut compatibility rather than installing whichever Hero(2002) hit it sees first. task.runtimeMinutes=103 pins the target to the Director's Cut (assrt:307500); installing the Bluray/theatrical candidate (403083, ~93.5min) instead would be a real desync, not an equally-valid alternative — this is the 'wrong cut, would not actually sync' failure mode the cell is meant to expose. Both files' raw bytes are GBK-encoded (not UTF-8) — the real pipeline's decodeToUtf8 (src/files/subtitleEncoding.ts) must transcode them; a naive UTF-8 read renders as mojibake, which is expected and not a fixture defect."
+}
