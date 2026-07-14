@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildFromSeasonConcat, absoluteFor, buildFromAbsoluteOrder } from './absoluteEpisodes.js'
+import { buildFromSeasonConcat, absoluteFor, buildFromAbsoluteOrder, resolveAbsoluteEpisode } from './absoluteEpisodes.js'
 
 describe('buildFromSeasonConcat', () => {
   it('assigns absolute numbers by concatenating seasons in order', () => {
@@ -58,5 +58,27 @@ describe('buildFromAbsoluteOrder', () => {
   })
   it('is unreliable when the ordered list is empty', () => {
     expect(buildFromAbsoluteOrder([]).reliable).toBe(false)
+  })
+})
+describe('resolveAbsoluteEpisode', () => {
+  const seasons = [{ seasonNumber: 1, episodeCount: 25 }, { seasonNumber: 2, episodeCount: 12 }]
+  it('prefers the official absolute group when present', async () => {
+    const absolute = await resolveAbsoluteEpisode(2, 1, {
+      getSeasonTable: async () => seasons,
+      getAbsoluteOrder: async () => [{ season: 1, episode: 1 }, { season: 2, episode: 1 }],
+    })
+    expect(absolute).toBe(2)
+  })
+  it('falls back to season concatenation when there is no official group', async () => {
+    const absolute = await resolveAbsoluteEpisode(2, 1, { getSeasonTable: async () => seasons, getAbsoluteOrder: async () => null })
+    expect(absolute).toBe(26)
+  })
+  it('returns null (never throws) when TMDB lookups fail', async () => {
+    const absolute = await resolveAbsoluteEpisode(2, 1, { getSeasonTable: async () => { throw new Error('tmdb down') }, getAbsoluteOrder: async () => null })
+    expect(absolute).toBeNull()
+  })
+  it('returns null for a null season/episode (movies / unknown)', async () => {
+    const absolute = await resolveAbsoluteEpisode(null, null, { getSeasonTable: async () => seasons, getAbsoluteOrder: async () => null })
+    expect(absolute).toBeNull()
   })
 })
