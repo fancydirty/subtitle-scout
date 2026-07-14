@@ -8,8 +8,7 @@ import type { FetchAdapter, FetchEvent } from './fetchLib.js'
 import { makeAssrtAdapter } from './adapters/assrtAdapter.js'
 import { makeOpenSubtitlesAdapter } from './adapters/opensubtitlesAdapter.js'
 import { makeZimukuAdapter } from './adapters/zimukuAdapter.js'
-import { createLlmRuntime } from '../agent/runtime.js'
-import { ProfileStore } from '../agent/profile.js'
+import { makeModel } from '../agent/llm.js'
 import { solveNumericCaptcha } from '../agent/solveNumericCaptcha.js'
 
 function requireEnvForZimuku(name: string): string {
@@ -49,17 +48,18 @@ export async function buildAdapters(emit: (e: FetchEvent) => void = () => {}): P
   }
 
   if (process.env.ZIMUKU_ENABLED === 'true') {
-    // 验证码破解需要多模态 LLM——子进程独立构建一份 LlmRuntime(继承父进程 env,含 LLM_* 变量;
-    // ProfileStore 磁盘缓存,冷启动只探测一次)。只在真的撞见挑战页时才会被调用,不是每次
-    // search/resolve 都要打一次 LLM。
-    const llm = await createLlmRuntime({
+    // 验证码破解需要多模态 LLM——一次朴素 generateText 调用(solveNumericCaptcha 内部自带
+    // fail-fast + 单次重试),不再走强制 tool-call 的 LlmRuntime/探测/档案磁盘缓存那一整套
+    // (v3 old-pipeline-retirement Wall ①:captcha 是 v3 唯一还挂在那个栈上的调用点)。只在真的
+    // 撞见挑战页时才会被调用,不是每次 search/resolve 都要打一次 LLM。
+    const model = makeModel({
       baseUrl: requireEnvForZimuku('LLM_BASE_URL'),
       apiKey: requireEnvForZimuku('LLM_API_KEY'),
       model: requireEnvForZimuku('LLM_MODEL'),
-    }, new ProfileStore(join(cacheRoot, 'llm-profiles')))
+    })
     const client = new ZimukuClient({
       sessionStore: new ZimukuSessionStore(join(cacheRoot, 'zimuku-session')),
-      solve: async png => (await solveNumericCaptcha(llm, png)).parsed,
+      solve: async png => solveNumericCaptcha(model, png),
       onApiCall: r => emit({ event: 'api_call', provider: 'zimuku', ...r }),
     })
     adapters.push(makeZimukuAdapter(client))

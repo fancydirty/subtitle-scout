@@ -22,8 +22,6 @@ import { AssrtClient } from '../src/adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../src/adapters/providers/opensubtitles.js'
 import { ZimukuClient } from '../src/adapters/providers/zimuku.js'
 import { ZimukuSessionStore } from '../src/adapters/providers/zimukuSession.js'
-import { createLlmRuntime } from '../src/agent/runtime.js'
-import { ProfileStore } from '../src/agent/profile.js'
 import { solveNumericCaptcha } from '../src/agent/solveNumericCaptcha.js'
 
 if (process.env.VITEST) {
@@ -63,9 +61,9 @@ function requireEnvForZimuku(name: string): string {
  * string }>` with no defaults; OsClientOpts (src/adapters/providers/opensubtitles.ts) requires
  * `appUserAgent: string` with no default. Verified by reading both interfaces directly. Wired
  * here with the same real construction subtitle-fetch.ts's buildAdapters() already uses in
- * production (ZimukuSessionStore + solveNumericCaptcha via a throwaway LlmRuntime for the
- * multimodal captcha-solve step — a narrow, self-contained utility, not the old forced-tool-call
- * judgment path this whole v3 phase replaces).
+ * production (ZimukuSessionStore + solveNumericCaptcha via a throwaway makeModel() LanguageModel
+ * for the multimodal captcha-solve step — a narrow, self-contained utility, not the old
+ * forced-tool-call judgment path this whole v3 phase replaces).
  */
 async function buildAdapters(cacheRoot: string): Promise<FetchAdapter[]> {
   const adapters: FetchAdapter[] = []
@@ -87,16 +85,16 @@ async function buildAdapters(cacheRoot: string): Promise<FetchAdapter[]> {
 
   if (process.env.ZIMUKU_ENABLED === 'true') {
     // Captcha solving needs a multimodal LLM call — reuses solveNumericCaptcha (a clean,
-    // narrow tool per the phase ③ reuse map) via a throwaway LlmRuntime, independent of the
-    // find-subtitle worker's own ToolLoopAgent/reasoning:'high' model above.
-    const llm = await createLlmRuntime({
+    // narrow tool per the phase ③ reuse map) via a throwaway makeModel() LanguageModel,
+    // independent of the find-subtitle worker's own ToolLoopAgent/reasoning:'high' model above.
+    const captchaModel = makeModel({
       baseUrl: requireEnvForZimuku('LLM_BASE_URL'),
       apiKey: requireEnvForZimuku('LLM_API_KEY'),
       model: requireEnvForZimuku('LLM_MODEL'),
-    }, new ProfileStore(join(cacheRoot, 'llm-profiles')))
+    })
     const client = new ZimukuClient({
       sessionStore: new ZimukuSessionStore(join(cacheRoot, 'zimuku-session')),
-      solve: async png => (await solveNumericCaptcha(llm, png)).parsed,
+      solve: async png => solveNumericCaptcha(captchaModel, png),
     })
     adapters.push(makeZimukuAdapter(client))
   }
