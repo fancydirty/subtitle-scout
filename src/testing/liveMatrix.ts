@@ -60,7 +60,7 @@ export interface CatalogEntry {
 export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'anime', sourceForm: 'only-pack', seeded: true, represents: 'Attack on Titan S01E01 — only a Complete-Series pack exists (live-acceptance cell)' },
   { resourceType: 'anime', sourceForm: 'season-pack', seeded: true, represents: 'Attack on Titan S02E01 — S1+S2 pack numbered by ABSOLUTE episode (26), no S02E01 substring anywhere' },
-  { resourceType: 'anime', sourceForm: 'only-single', seeded: false, represents: 'Scissor Seven — per-episode subtitles only' },
+  { resourceType: 'anime', sourceForm: 'only-single', seeded: true, represents: 'Jujutsu Kaisen S03E01 (absolute ep. 48) — per-episode subtitles only, no season pack yet (Scissor Seven has zero assrt hits, substituted)' },
   { resourceType: 'anime', sourceForm: 'mixed', seeded: true, represents: 'Jujutsu Kaisen S02E05 — pack mislabeled "第3季" (invented season), target locatable only via absoluteEpisode (29)' },
   { resourceType: 'anime', sourceForm: 'multi-version', seeded: true, represents: 'Demon Slayer S01E01 — same episode, 简/繁/日 versions (any zh-* correct, 日 is not)' },
   { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: true, represents: 'Journey to the West (1986 CCTV classic) — whole-series pack (琅琊榜/Nirvana in Fire has zero assrt hits, substituted)' },

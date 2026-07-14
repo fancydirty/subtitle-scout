@@ -1,0 +1,13 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/search?filelist=1&no_muxer=1&q=%E5%92%92%E6%9C%AF%E5%9B%9E%E6%88%98%20Jujutsu%20Kaisen%20S03E01%20(2026)%20WEB%E7%AE%80%E7%B9%81%E4%B8%AD%E6%96%87%E5%AD%97%E5%B9%95%20-%20%E8%B1%8C%E8%B1%86%E5%AD%97%E5%B9%95%E7%BB%84%26%E9%A3%8E%E4%B9%8B%E5%9C%A3%E6%AE%BF",
+  "status": 200,
+  "headers": {
+    "access-control-allow-origin": "*",
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "date": "Tue, 14 Jul 2026 12:55:46 GMT",
+    "server": "nginx"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJhY3Rpb24iOiJzZWFyY2giLCJrZXl3b3JkIjoi5ZKS5pyv5Zue5oiYIEp1anV0c3UgS2Fpc2VuIFMwM0UwMSAoMjAyNikgV0VC566A57mB5Lit5paH5a2X5bmVIC0g6LGM6LGG5a2X5bmV57uEJumjjuS5i+Wco+auvyIsInJlc3VsdCI6InN1Y2NlZWQiLCJzdWJzIjpbeyJzdWJ0eXBlIjoiU1NBIiwidm90ZV9zY29yZSI6MCwibGFuZyI6eyJkZXNjIjoi566AIOe5gSIsImxhbmdsaXN0Ijp7ImxhbmdjaHQiOnRydWUsImxhbmdjaHMiOnRydWV9fSwicmV2aXNpb24iOjAsImZpbGVsaXN0IjpbeyJzIjoiMjFLQiIsImYiOiJbQmVhblN1YiZGWlNEJkxvbGlIb3VzZV0gSnVqdXRzdSBLYWlzZW4gLSA0OCBbV2ViUmlwIDEwODBwIEhFVkMtMTBiaXQgQUFDIEFTU3gyXS5DSFMuYXNzIn0seyJzIjoiMjFLQiIsImYiOiJbQmVhblN1YiZGWlNEJkxvbGlIb3VzZV0gSnVqdXRzdSBLYWlzZW4gLSA0OCBbV2ViUmlwIDEwODBwIEhFVkMtMTBiaXQgQUFDIEFTU3gyXS5DSFQuYXNzIn1dLCJuYXRpdmVfbmFtZSI6IuWSkuacr+WbnuaImCDnrKzkuInlraMg5ZGq6KGT5bu75oimIOesrDPmnJ8gKDIwMjYpIFMwM0UwMSIsInVwbG9hZF90aW1lIjoiMjAyNi0wMS0xMCAwOTowMDozNiIsImZpbGVuYW1lIjoi5ZKS5pyv5Zue5oiYIEp1anV0c3UgS2Fpc2VuIFMwM0UwMSAoMjAyNikgV0VC566A57mB5Lit5paH5a2X5bmVIC0g6LGM6LGG5a2X5bmV57uEJumjjuS5i+Wco+auvy5yYXIiLCJpZCI6NzEzMjc1LCJzaXplIjoxNTUxOCwidmlkZW9uYW1lIjoi5ZKS5pyv5Zue5oiYIEp1anV0c3UgS2Fpc2VuIFMwM0UwMSAoMjAyNikgV0VC566A57mB5Lit5paH5a2X5bmVIC0g6LGM6LGG5a2X5bmV57uEJumjjuS5i+Wco+auvyJ9XX19Cg=="
+}

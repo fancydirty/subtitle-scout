@@ -1,0 +1,23 @@
+{
+  "task": {
+    "videoFilename": "Jujutsu.Kaisen.S03E01.mkv",
+    "title": "Jujutsu Kaisen",
+    "originalTitle": "呪術廻戦",
+    "year": 2026,
+    "season": 3,
+    "episode": 1,
+    "absoluteEpisode": 48,
+    "alternativeTitles": ["咒术回战", "咒術迴戰"],
+    "overview": null,
+    "runtimeMinutes": 24,
+    "providerIds": { "tmdb": "95479" }
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "713275",
+    "installedFilename": "Jujutsu.Kaisen.S03E01.zh-Hans.ass",
+    "installedLanguage": "zh-Hans"
+  },
+  "note": "anime/only-single: substituted for the runbook's suggested Scissor Seven/刺客伍六七 — confirmed via direct assrt search ('刺客伍六七' and 'Scissor Seven') that assrt has ZERO entries for that title (a Netflix-exclusive donghua whose official subtitles never needed fan-subbing/uploading), so it was skipped per the runbook's own escape hatch. Jujutsu Kaisen Season 3 (airing 2026, per the fansub group's continuous absolute numbering this is episode 48 — 24 (S1) + 23 (S2) + 1) has ONLY per-episode uploads (S03E01..S03E04, one assrt id per episode, each id itself a single subtitle submission bundling 2 files: a CHS and a CHT track) — confirmed no season-level pack exists yet for this still-airing season (a clean, unambiguous 4-result search, unlike SPY x FAMILY S3 which was tried first and rejected: that season already has a competing 26-file whole-series PACK alongside its per-episode uploads, which would not exercise the 'no pack exists' shape this cell needs). Only the CHS (fileIndex 0) file's download bytes are recorded; the CHT (fileIndex 1) sibling exists in the recorded detail filelist but its download body is not captured (only-single's test axis is pack-vs-no-pack, not script equivalence — that is multi-version's job — so installedLanguage is pinned to zh-Hans, not zh-any, matching what is actually replayable here). Same underlying show (Jujutsu Kaisen) as the already-seeded anime/mixed cell, but a different season/episode/id — reused deliberately since it was the cleanest confirmed only-single shape found within the recording budget."
+}
