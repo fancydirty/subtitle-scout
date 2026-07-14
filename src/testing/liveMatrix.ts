@@ -65,7 +65,7 @@ export const CELL_CATALOG: CatalogEntry[] = [
   { resourceType: 'anime', sourceForm: 'multi-version', seeded: true, represents: 'Demon Slayer S01E01 — same episode, 简/繁/日 versions (any zh-* correct, 日 is not)' },
   { resourceType: 'cdrama', sourceForm: 'only-pack', seeded: true, represents: 'Journey to the West (1986 CCTV classic) — whole-series pack (琅琊榜/Nirvana in Fire has zero assrt hits, substituted)' },
   { resourceType: 'cdrama', sourceForm: 'multi-version', seeded: true, represents: 'F4 Thailand: Boys Over Flowers (流星花园 2021) S01E01 — separate 简/繁 season-pack uploads (琅琊榜 has zero assrt hits, substituted)' },
-  { resourceType: 'western', sourceForm: 'only-single', seeded: false, represents: 'Peacemaker / Young Sheldon — per-episode' },
+  { resourceType: 'western', sourceForm: 'only-single', seeded: true, represents: 'World War II with Tom Hanks S01E01 — genuine single-file upload, no pack (Peacemaker/Young Sheldon all turned out to be season packs, substituted)' },
   { resourceType: 'western', sourceForm: 'mixed', seeded: false, represents: 'Love Death & Robots — anthology' },
   { resourceType: 'movie', sourceForm: 'multi-version', seeded: true, represents: "Hero (英雄 2002) — Director's Cut (~103min) vs Bluray/theatrical (~93.5min), genuine runtime variants" },
   { resourceType: 'movie', sourceForm: 'none', seeded: true, represents: 'obscure film — no correct subtitle exists (counter-example floor)' },

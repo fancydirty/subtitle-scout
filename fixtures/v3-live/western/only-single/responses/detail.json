@@ -1,0 +1,13 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/detail?id=730986",
+  "status": 200,
+  "headers": {
+    "access-control-allow-origin": "*",
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "date": "Tue, 14 Jul 2026 13:11:55 GMT",
+    "server": "nginx"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJhY3Rpb24iOiJkZXRhaWwiLCJyZXN1bHQiOiJzdWNjZWVkIiwic3VicyI6W3siaWQiOjczMDk4Niwic3VidHlwZSI6IlN1YnJpcChzcnQpIiwidm90ZV9zY29yZSI6MCwidXBsb2FkX3RpbWUiOiIyMDI2LTA3LTA5IDA2OjM2OjE5IiwidGl0bGUiOiLmsaTlp4bCt+axieWFi+aWr+iusuS6jOaImCBXb3JsZCBXYXIgSUkgd2l0aCBUb20gSGFua3MgKDIwMjYpIiwibGFuZyI6eyJkZXNjIjoi6IuxIOeugCDlj4zor60iLCJsYW5nbGlzdCI6eyJsYW5nZW5nIjp0cnVlLCJsYW5nY2hzIjp0cnVlLCJsYW5nZG91Ijp0cnVlfX0sInByb2R1Y2VyIjp7InVwbG9hZGVyIjoiIiwic291cmNlIjoi5Y6f5Yib57+76K+RIiwicHJvZHVjZXIiOiIiLCJ2ZXJpZmllciI6IiJ9LCJyZXZpc2lvbiI6MCwiZmlsZWxpc3QiOnt9LCJmaWxlbmFtZSI6IldvcmxkLldhci5JSS53aXRoLlRvbS5IYW5rcy5TMDFFMDEuMTA4MHAuV0VCLmgyNjQtRURJVEguc3J0IiwidXJsIjoiaHR0cDpcL1wvZmlsZTAuYXNzcnQubmV0XC9kb3dubG9hZFwvNzMwOTg2XC9Xb3JsZC5XYXIuSUkud2l0aC5Ub20uSGFua3MuUzAxRTAxLjEwODBwLldFQi5oMjY0LUVESVRILnNydD9fPTE3ODQwMzQ2NTEmLT1jNGE3OWY0YmYyNzUzMTY2YmE4ZTg3M2Q0ZGI4NTNmOCZhcGk9MSIsIm5hdGl2ZV9uYW1lIjoi5rGk5aeGwrfmsYnlhYvmlq/orrLkuozmiJggV29ybGQgV2FyIElJIHdpdGggVG9tIEhhbmtzICgyMDI2KSIsImRvd25fY291bnQiOjI3LCJ2aWV3X2NvdW50Ijo3MSwic2l6ZSI6OTM5MjksInZpZGVvbmFtZSI6IldvcmxkLldhci5JSS53aXRoLlRvbS5IYW5rcy5TMDFFMDEuMTA4MHAuV0VCLmgyNjQtRURJVEgifV19fQo="
+}

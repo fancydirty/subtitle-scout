@@ -1,0 +1,23 @@
+{
+  "task": {
+    "videoFilename": "World.War.II.with.Tom.Hanks.S01E01.mkv",
+    "title": "World War II with Tom Hanks",
+    "originalTitle": null,
+    "year": 2026,
+    "season": 1,
+    "episode": 1,
+    "absoluteEpisode": 1,
+    "alternativeTitles": ["汤姆·汉克斯讲二战"],
+    "overview": null,
+    "runtimeMinutes": 50,
+    "providerIds": {}
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "730986",
+    "installedFilename": "World.War.II.with.Tom.Hanks.S01E01.zh-Hans.srt",
+    "installedLanguage": "zh-Hans"
+  },
+  "note": "western/only-single: substituted for the runbook's suggested Young Sheldon/Peacemaker — both were tried and rejected. assrt genuinely HAS both shows, but every hit for them (and for several other mainstream scripted western TV searched during this recording session: Grey's Anatomy S22, The Pitt S02, Stranger Things S05, Walking Dead S09, 3 Body Problem S01) turned out to be a WHOLE-SEASON pack internally (filelist with many different S0xEyy entries), even when the candidate's own videoname looked like a single episode (an assrt cataloging quirk — the videoname is often just the pack's first/most-recent file, not a shape signal). 'World War II with Tom Hanks' (Apple TV+ documentary miniseries, 2026) is a genuine single-file-only upload (assrt:730986, filelist:{} — no fileIndex, a direct sub.url/sub.filename download, the same single-file shape as the movie/multi-version cell's two Hero candidates) with NO competing pack for this show at all: the search for its title returns exactly this one candidate. This is the cleanest confirmed only-single (per-episode/per-item, structurally incapable of being a pack since assrt stores it as a single physical file) shape found within the recording budget. installedLanguage is zh-Hans (the recorded file is 英/简/双语 per assrt's own lang tag — bilingual English+Simplified-Chinese in one file — so a correct run installs it tagged zh-Hans, there being no separate zh-Hant candidate for this item)."
+}

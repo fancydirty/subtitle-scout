@@ -1,0 +1,13 @@
+{
+  "signature": "GET https://api.assrt.net/v1/sub/search?filelist=1&no_muxer=1&q=World%20War%20II%20with%20Tom%20Hanks",
+  "status": 200,
+  "headers": {
+    "access-control-allow-origin": "*",
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "date": "Tue, 14 Jul 2026 13:11:27 GMT",
+    "server": "nginx"
+  },
+  "bodyBase64": "eyJzdGF0dXMiOjAsInN1YiI6eyJhY3Rpb24iOiJzZWFyY2giLCJrZXl3b3JkIjoiV29ybGQgV2FyIElJIHdpdGggVG9tIEhhbmtzIiwicmVzdWx0Ijoic3VjY2VlZCIsInN1YnMiOlt7InN1YnR5cGUiOiJTdWJyaXAoc3J0KSIsInZvdGVfc2NvcmUiOjAsImxhbmciOnsiZGVzYyI6IuiLsSDnroAg5Y+M6K+tIiwibGFuZ2xpc3QiOnsibGFuZ2VuZyI6dHJ1ZSwibGFuZ2NocyI6dHJ1ZSwibGFuZ2RvdSI6dHJ1ZX19LCJyZXZpc2lvbiI6MCwiZmlsZWxpc3QiOnt9LCJuYXRpdmVfbmFtZSI6IuaxpOWnhsK35rGJ5YWL5pav6K6y5LqM5oiYIFdvcmxkIFdhciBJSSB3aXRoIFRvbSBIYW5rcyAoMjAyNikiLCJ1cGxvYWRfdGltZSI6IjIwMjYtMDctMDkgMDY6MzY6MTkiLCJmaWxlbmFtZSI6IldvcmxkLldhci5JSS53aXRoLlRvbS5IYW5rcy5TMDFFMDEuMTA4MHAuV0VCLmgyNjQtRURJVEguc3J0IiwiaWQiOjczMDk4Niwic2l6ZSI6OTM5MjksInZpZGVvbmFtZSI6IldvcmxkLldhci5JSS53aXRoLlRvbS5IYW5rcy5TMDFFMDEuMTA4MHAuV0VCLmgyNjQtRURJVEgifV19fQo="
+}
