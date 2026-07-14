@@ -329,3 +329,77 @@ describe('TmdbClient.getSeasonTable', () => {
     await expect(client.getSeasonTable('120089')).rejects.toThrow(TmdbRequestFailedError)
   })
 })
+
+// 按 URL path 路由到 episode_groups 的两个端点（列表 + 详情）；status>=400 → 非 ok 响应。
+interface EpisodeGroupRoutes {
+  groupsList?: unknown
+  groupsListStatus?: number
+  groupDetail?: unknown
+  groupDetailStatus?: number
+}
+function routedEpisodeGroupFetch(routes: EpisodeGroupRoutes) {
+  return vi.fn(async (url: string | URL, _init?: RequestInit) => {
+    const u = String(url)
+    if (u.includes('/episode_group/')) {
+      const s = routes.groupDetailStatus ?? 200
+      return new Response(s >= 400 ? 'err' : JSON.stringify(routes.groupDetail ?? {}), { status: s })
+    }
+    if (u.includes('/episode_groups')) {
+      const s = routes.groupsListStatus ?? 200
+      return new Response(s >= 400 ? 'err' : JSON.stringify(routes.groupsList ?? {}), { status: s })
+    }
+    return new Response('not found', { status: 404 })
+  })
+}
+function mkEpisodeGroupClient(routes: EpisodeGroupRoutes, apiKey = 'a'.repeat(32)) {
+  const fetchImpl = routedEpisodeGroupFetch(routes)
+  const client = new TmdbClient({ apiKey, fetchImpl: fetchImpl as unknown as typeof fetch })
+  return { client, fetchImpl }
+}
+
+describe('TmdbClient.getAbsoluteOrder', () => {
+  it('type===2 (Absolute) 分组存在 → 展平为 (season, episode) 序列，按 group/episode order 排序', async () => {
+    const { client } = mkEpisodeGroupClient({
+      groupsList: { results: [{ id: 'abs123', type: 2 }, { id: 'other', type: 1 }] },
+      groupDetail: {
+        groups: [
+          {
+            order: 0,
+            episodes: [
+              { season_number: 1, episode_number: 2, order: 1 },
+              { season_number: 1, episode_number: 1, order: 0 },
+            ],
+          },
+          {
+            order: 1,
+            episodes: [{ season_number: 2, episode_number: 1, order: 0 }],
+          },
+        ],
+      },
+    })
+    const order = await client.getAbsoluteOrder('120089')
+    expect(order).toEqual([
+      { season: 1, episode: 1 },
+      { season: 1, episode: 2 },
+      { season: 2, episode: 1 },
+    ])
+  })
+
+  it('没有 type===2 分组 → null', async () => {
+    const { client } = mkEpisodeGroupClient({
+      groupsList: { results: [{ id: 'other', type: 1 }] },
+    })
+    expect(await client.getAbsoluteOrder('120089')).toBeNull()
+  })
+
+  it('episode_groups 列表为空 → null', async () => {
+    const { client } = mkEpisodeGroupClient({ groupsList: { results: [] } })
+    expect(await client.getAbsoluteOrder('120089')).toBeNull()
+  })
+
+  it('请求失败（网络拒绝）→ null（getJson 静默吞错，缺失分组是正常情形而非故障）', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('network down') })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getAbsoluteOrder('120089')).toBeNull()
+  })
+})
