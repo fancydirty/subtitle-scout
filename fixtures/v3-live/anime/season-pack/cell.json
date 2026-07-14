@@ -1,0 +1,28 @@
+{
+  "task": {
+    "videoFilename": "Attack.on.Titan.S02E01.mkv",
+    "title": "Attack on Titan",
+    "originalTitle": "進撃の巨人",
+    "year": 2013,
+    "season": 2,
+    "episode": 1,
+    "absoluteEpisode": 26,
+    "alternativeTitles": [
+      "進擊的巨人",
+      "进击的巨人"
+    ],
+    "overview": null,
+    "runtimeMinutes": 24,
+    "providerIds": {
+      "tmdb": "1429"
+    }
+  },
+  "expected": {
+    "decision": "installed",
+    "candidateProvider": "assrt",
+    "candidateProviderId": "910910",
+    "installedFilename": "Attack.on.Titan.S02E01.zh-Hant.srt",
+    "installedLanguage": "zh-any"
+  },
+  "note": "Absolute-numbering cell. Attack on Titan S1 had 25 episodes, so S02E01 is whole-series absolute episode 26 — the injected absoluteEpisode hint. The ONLY candidate is a S1+S2 BDrip pack whose filelist names episodes by ABSOLUTE number (Attack.on.Titan.26/27/28...srt) — there is NO \"S02E01\" substring anywhere in the pack's filenames. The model must use the injected absoluteEpisode:26 to locate fileIndex 0 (the \"26\" entry), not season/episode keyword-matching against the filename (which would find nothing, since the keyword never appears). installedFilename is derived from the VIDEO basename + langTag, so it reads \"S02E01\" regardless of the source file's absolute-numbered name. installedLanguage is zh-any per the coverage-first stance (no 简/繁 ranking) — this pack only has one language (繁) recorded, so a correct run resolves to zh-Hant, but the expectation is written as zh-any per the widened CellExpectation semantics."
+}
