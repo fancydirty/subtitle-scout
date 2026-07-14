@@ -3,10 +3,11 @@ import type { Job, JobsRepo } from './jobsRepo.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import { tmdbTitles } from '../adapters/providers/tmdb.js'
+import { tmdbTitles, resolveTmdbRef } from '../adapters/providers/tmdb.js'
 import { buildMediaContext, isDirWritable, isUnderRoots, mapPath, type PathMapping } from '../core/mediaContext.js'
 import { candidateKey } from '../core/schemas.js'
 import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
+import { resolveAbsoluteEpisode } from '../agent/absoluteEpisodes.js'
 
 export interface FindSubtitleWorkerTaskPayload { taskType: 'find_subtitle'; reason: string }
 
@@ -105,6 +106,15 @@ export async function mapWorkerTaskToFindSubtitleTask(
     : undefined
   const ctx = buildMediaContext(item, deps.mappings, { chineseTitle, chineseTitles })
 
+  // absoluteEpisode needs the SERIES' tmdb id, not the episode's own ProviderIds — an episode's
+  // ProviderIds never carries the series' Tmdb id (see resolveTmdbRefStrict's own comment above),
+  // so this round-trips through deps.jf.getItem(item.SeriesId) exactly like tmdbTitles/resolveTmdbRef
+  // above (a second, independent lookup — tmdbTitles doesn't expose the ref it resolved internally).
+  const tmdbRef = deps.tmdb ? await resolveTmdbRef(item, id => deps.jf.getItem(id)) : null
+  const absoluteEpisode = deps.tmdb && tmdbRef
+    ? await resolveAbsoluteEpisode(ctx.media.season ?? null, ctx.media.episode ?? null, deps.tmdb, tmdbRef.tmdbId)
+    : null
+
   const task: FindSubtitleTask = {
     jobId: String(job.id),
     mediaRoot: dir,
@@ -115,7 +125,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
     year: ctx.media.year ?? null,
     season: ctx.media.season ?? null,
     episode: ctx.media.episode ?? null,
-    absoluteEpisode: null,
+    absoluteEpisode,
     alternativeTitles: ctx.media.alternative_titles,
     overview: ctx.media.overview ?? null,
     runtimeMinutes: ctx.media.runtime_minutes ?? null,
