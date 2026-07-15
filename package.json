@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
+    "@ctrl/video-filename-parser": "^5.11.4",
     "adm-zip": "^0.5.18",
     "ai": "^7.0.15",
     "better-sqlite3": "^12.11.1",
