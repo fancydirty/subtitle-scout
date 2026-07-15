@@ -241,7 +241,6 @@ docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
 | `DASHBOARD_PORT` | 监控页端口 | `8099` |
 | `DASHBOARD_TOKEN` | 监控页访问 token（可选） | 空 |
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
-| `JOURNAL_RETAIN_DAYS` | 审计日志目录保留天数 | `90` |
 | `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
 | `LLM_EXTRA_BODY` | （高级）强制注入请求体的 JSON，通常无需配置 | 空 |
 
