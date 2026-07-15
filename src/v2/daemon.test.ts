@@ -7,6 +7,7 @@ import { ScoutDaemon, type DaemonDeps, MAX_CONSECUTIVE_TICK_FAILURES } from './d
 import type { Job } from './jobsRepo.js'
 import type { PlaybackSession } from '../adapters/players/types.js'
 import { executeJob as realExecuteJob, type ExecutorDeps } from './executor.js'
+import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 
 describe('ScoutDaemon', () => {
   let jobs: JobsRepo
@@ -562,6 +563,109 @@ describe('ScoutDaemon', () => {
     await daemon.tick()
     expect(scan).toHaveBeenCalledTimes(2)
     expect(executeJob).toHaveBeenCalledOnce()
+  })
+
+  describe('B2: self-scan + refresh-bridge gate', () => {
+    function fakeSelfScanResult(over: Partial<{
+      scanned: number
+      recognized: unknown[]
+      parked: unknown[]
+      newlyDiscovered: unknown[]
+      refreshedLibraries: string[]
+      orchestratorTriggered: boolean
+    }> = {}) {
+      return {
+        scan: { scanned: 1, recognized: [], parked: [], skippedKnown: 0, ...over },
+        newlyDiscovered: [],
+        refreshedLibraries: [],
+        orchestratorTriggered: false,
+        ...over,
+      } as never // loosely-shaped test double — daemon.ts only reads the fields it logs
+    }
+
+    it('deps.selfScan undefined → self-scan branch skipped entirely, no crash, no log line', async () => {
+      const daemon = new ScoutDaemon(makeDeps()) // no selfScan override
+      await daemon.tick()
+      expect(logs.some(l => l.includes('self-scan'))).toBe(false)
+    })
+
+    it('interval gate: tick before selfScanEveryMs elapsed → selfScan not invoked', async () => {
+      const selfScan = vi.fn(async () => fakeSelfScanResult())
+      const daemon = new ScoutDaemon(makeDeps({ selfScan, selfScanEveryMs: 15 * 60_000 }))
+
+      // Priming tick: no last_self_scan_at row yet → gate is open on the very first tick.
+      await daemon.tick()
+      expect(selfScan).toHaveBeenCalledOnce()
+      selfScan.mockClear()
+
+      // 9 minutes later — not yet due for the 15-min interval.
+      now += 9 * 60_000
+      await daemon.tick()
+      expect(selfScan).not.toHaveBeenCalled()
+    })
+
+    it('interval gate: tick after selfScanEveryMs elapsed → selfScan invoked', async () => {
+      const selfScan = vi.fn(async () => fakeSelfScanResult())
+      const daemon = new ScoutDaemon(makeDeps({ selfScan, selfScanEveryMs: 15 * 60_000 }))
+
+      await daemon.tick() // priming tick consumes the "no row yet" open gate
+      selfScan.mockClear()
+
+      now += 16 * 60_000
+      await daemon.tick()
+      expect(selfScan).toHaveBeenCalledOnce()
+    })
+
+    it('defaults selfScanEveryMs to SELF_SCAN_DEFAULT_INTERVAL_MS when not overridden', async () => {
+      const selfScan = vi.fn(async () => fakeSelfScanResult())
+      const daemon = new ScoutDaemon(makeDeps({ selfScan })) // no selfScanEveryMs override
+
+      await daemon.tick() // priming tick
+      selfScan.mockClear()
+
+      now += SELF_SCAN_DEFAULT_INTERVAL_MS - 1
+      await daemon.tick()
+      expect(selfScan).not.toHaveBeenCalled()
+
+      now += 2 // now >= SELF_SCAN_DEFAULT_INTERVAL_MS since the priming tick
+      await daemon.tick()
+      expect(selfScan).toHaveBeenCalledOnce()
+    })
+
+    it('self-scan error is isolated (logged, tick completes) and last_self_scan_at is NOT advanced — retried next gate-open tick', async () => {
+      let calls = 0
+      const selfScan = vi.fn(async () => {
+        calls++
+        if (calls === 1) throw new Error('jellyfin not ready for refreshLibrary')
+        return fakeSelfScanResult()
+      })
+      const daemon = new ScoutDaemon(makeDeps({ selfScan, selfScanEveryMs: 15 * 60_000 }))
+
+      await expect(daemon.tick()).resolves.toBeUndefined()
+      expect(selfScan).toHaveBeenCalledTimes(1)
+      expect(logs.some(l => l.includes('self-scan error') && l.includes('jellyfin not ready'))).toBe(true)
+
+      // Gate did NOT advance on failure — a tick one second later (still well inside the
+      // interval) must retry immediately, same "boot scan throws → retry next tick" semantics
+      // reconcile already has for last_reconcile_at.
+      now += 1_000
+      await daemon.tick()
+      expect(selfScan).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not block dispatch or the reconcile gate — self-scan is independent of bootReconcilePending', async () => {
+      const selfScan = vi.fn(async () => fakeSelfScanResult())
+      const scan = vi.fn(async () => { throw new Error('jellyfin not ready') }) // boot reconcile fails
+      const executeJob = vi.fn(async () => {})
+      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+
+      const daemon = new ScoutDaemon(makeDeps({ selfScan, scan, executeJob }))
+      await daemon.tick()
+
+      // self-scan still ran despite boot reconcile failing (and dispatch being suppressed).
+      expect(selfScan).toHaveBeenCalledOnce()
+      expect(executeJob).not.toHaveBeenCalled() // boot-reconcile-pending guard still holds
+    })
   })
 
   it('pollSessions命中退避中的集（unavailable+未来recheck+dormant job）也能wake/boost', async () => {

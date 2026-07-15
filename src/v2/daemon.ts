@@ -3,6 +3,8 @@ import type { JobsRepo, Job } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import type { AggregateResult } from './aggregator.js'
 import type { PlaybackSession, MediaItem } from '../adapters/players/types.js'
+import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
+import type { SelfScanTriggerResult } from '../daemon/selfScanTrigger.js'
 
 export interface DaemonDeps {
   lib: LibraryRepo
@@ -38,6 +40,17 @@ export interface DaemonDeps {
   /** 沙盒孤儿 GC：daemon 启动时调用一次，镜像 jobs.reapAllActive 的"单实例前提，无条件
    *  回收"语义——旧进程遗留的 .subtitle-staging/<jobId> 目录全部视为孤儿垃圾。 */
   gcStaging?: () => number
+  /** B2：一次 self-scan + refresh-bridge 判定（makeSelfScanTrigger 的返回值，
+   *  src/daemon/selfScanTrigger.ts）——B1 的周期文件系统扫描 + 差异检测，判定"有变化"时
+   *  对受影响的 Jellyfin 库调 refreshLibrary + 派发（至多）一个 v3 orchestrator worker_task。
+   *  undefined 时整个 self-scan 分支跳过（cmdWatch 缺 TMDB_API_KEY 时的降级——同
+   *  realign/orchestrate worker_task 一样门在 tmdb，见 cli/index.ts），daemon 主循环其余部分
+   *  不受影响。独立于 scan/aggregate（旧管线的机械 reconcile）的 reconcileEveryMs 时间门，
+   *  自己按 selfScanEveryMs 走一套同构的 meta 表时间戳门（见 tickInner）。 */
+  selfScan?: () => Promise<SelfScanTriggerResult>
+  /** self-scan 时间门的间隔——默认 SELF_SCAN_DEFAULT_INTERVAL_MS(15min)，cli/index.ts 由
+   *  SCAN_INTERVAL_MS 环境变量覆盖后传入。 */
+  selfScanEveryMs?: number
 }
 
 /** tick() 连续意外抛错（reap/meta读/dispatch 里未被内层 try/catch 覆盖的异常，如磁盘满）
@@ -171,6 +184,41 @@ export class ScoutDaemon {
         log(`reconcile error (scan or aggregate failed): ${msg}`)
         // Skip aggregate if scan failed. 稳态（boot 已成功后）中途 scan 抖动不停摆
         // dispatch；boot 阶段则由下方守卫压制 dispatch。
+      }
+    }
+
+    // 2b. B2: self-scan + refresh-bridge——独立于上面机械 scan/aggregate 的 reconcileEveryMs
+    //     时间门，自己按 selfScanEveryMs 走一套同构的 meta 表时间戳门（同 last_reconcile_at
+    //     的写法，只是 key 换成 last_self_scan_at）。deps.selfScan 未接线（cmdWatch 缺
+    //     TMDB_API_KEY）时整个分支跳过——不影响上面的 boot-reconcile 判定，也不受它阻塞：
+    //     self-scan 不依赖 Jellyfin 是否已就绪（getVirtualFolders/refreshLibrary 内部若因
+    //     Jellyfin 未起来而抛错，下面的 try/catch 会兜住、记日志、下次到点重试，同 reconcile
+    //     稳态中途抖动不停摆 dispatch 的语义）。
+    if (this.deps.selfScan) {
+      const lastSelfScanRow = lib.db
+        .prepare(`SELECT value FROM meta WHERE key = 'last_self_scan_at'`)
+        .get() as { value: string } | undefined
+      const lastSelfScan = lastSelfScanRow ? Number(lastSelfScanRow.value) : 0
+      const selfScanEveryMs = this.deps.selfScanEveryMs ?? SELF_SCAN_DEFAULT_INTERVAL_MS
+      if (now() - lastSelfScan >= selfScanEveryMs) {
+        try {
+          const result = await this.deps.selfScan()
+          log(
+            `self-scan: scanned=${result.scan.scanned} recognized=${result.scan.recognized.length} ` +
+            `parked=${result.scan.parked.length} newlyDiscovered=${result.newlyDiscovered.length} ` +
+            `orchestratorTriggered=${result.orchestratorTriggered}`
+          )
+          lib.db
+            .prepare(
+              `INSERT INTO meta (key, value) VALUES ('last_self_scan_at', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+            )
+            .run(String(now()))
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error)
+          log(`self-scan error (isolated, will retry next gate): ${msg}`)
+          // 不写 last_self_scan_at——下一个到点的 tick 重试，同 reconcile 的 boot-retry 语义。
+        }
       }
     }
 

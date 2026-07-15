@@ -62,6 +62,9 @@ import { runReconcileAll, runOrchestrateWorkerTask } from '../v2/reconcileAll.js
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from './buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
+import { recognize } from '../recognition/index.js'
+import { makeSelfScanTrigger, type SelfScanTriggerDeps } from '../daemon/selfScanTrigger.js'
+import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -467,6 +470,27 @@ async function cmdWatch() {
   // 同样门在 tmdb——makeOrchestratorAgent 的 check_series_layout 工具需要真实 TmdbClient。
   const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, jf, model: reasoningModel, now: () => Date.now() } : undefined
 
+  // B2 self-scan 触发依赖（周期文件系统扫描 + refresh-bridge，src/daemon/selfScanTrigger.ts）：
+  // 同样门在 tmdb——subsystem C 的 recognize() 需要真实 TmdbClient 才能把路径消歧到 TMDB id。
+  // getVirtualFolders/refreshLibrary 复用 jellyfinClientForRealign（同 realignDeps.jf 那一个
+  // 实例）——都是"库位置查询 + 单库刷新"这同一对 Jellyfin 能力，没有理由各自建一份。
+  const selfScanTriggerDeps: SelfScanTriggerDeps | undefined = tmdb
+    ? {
+        roots,
+        knownPaths: () => lib.knownPaths(),
+        recognize: (videoPath: string) => recognize(videoPath, tmdb),
+        log,
+        now: () => Date.now(),
+        getVirtualFolders: () => jellyfinClientForRealign.getVirtualFolders(),
+        refreshLibrary: (id: string) => jellyfinClientForRealign.refreshLibrary(id),
+        mappings,
+        jobs,
+      }
+    : undefined
+  if (!selfScanTriggerDeps) {
+    log('warn: self-scan 未接线（缺 TMDB_API_KEY），已跳过——daemon 其余部分不受影响')
+  }
+
   // 诊断钩子（Task 14 的 makeDiagnoseSeason）：同样门在 tmdb 是否配置——诊断需要 TMDB
   // 季表才有确定性主信号，没有 TMDB_API_KEY 时一并跳过。
   const diagnoseSeasonClosure = tmdb
@@ -593,6 +617,10 @@ async function cmdWatch() {
       downloading: 2,  // 一期由 executor 内部串行，此处预留
       verifying: 2,    // 一期由 executor 内部串行，此处预留
     },
+    // B2: selfScanTriggerDeps 未接线（缺 TMDB_API_KEY）时 undefined——daemon.ts 的 tickInner
+    // 整段 self-scan 分支静默跳过，同 realign/orchestrate worker_task 一样的降级语义。
+    selfScan: selfScanTriggerDeps ? makeSelfScanTrigger(selfScanTriggerDeps) : undefined,
+    selfScanEveryMs: Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
   }
 
   // "全仓校验"触发器（v3 phase ⑦ Task 3）：与 cmdReconcileAll（独立 CLI 命令，自己开一份 db 连接）
