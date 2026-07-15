@@ -2,9 +2,42 @@
 // not .md — see the phase ② header note above (tsconfig.build.json only compiles .ts, mirrors
 // src/agent/playbooks/realignPlaybook.ts). Loaded on demand via read_doc — the system prompt
 // only ever sees the name+description from the descriptor below.
+//
+// A5: the playbook is a factory parameterized by target language. The Chinese wording is the
+// canonical, live-acceptance-proven text (FIND_SUBTITLE_SKILL below) and must stay byte-identical
+// through refactors — findSubtitleSkill.test.ts locks it. Only two regions vary by language:
+// the pack-distribution intro (pack dominance is a Chinese-fansub-ecosystem fact; elsewhere
+// packs are merely common) and the "Language: coverage, not preference" section (the Hans/Hant
+// script equivalence guidance is Chinese-only and must not leak into other targets).
 import type { Skill } from './types.js'
+import { languageName } from '../languages.js'
 
-const CONTENT = `
+export function makeFindSubtitleSkill(targetLanguage: string): Skill {
+  const name = languageName(targetLanguage)
+  const isChinese = targetLanguage === 'zh'
+
+  const packIntro = isChinese
+    ? `Chinese subtitles are distributed as SEASON PACKS and COMPLETE-SERIES collections far more
+often than as single per-episode files.`
+    : `${name} subtitles are often distributed as SEASON PACKS and COMPLETE-SERIES collections,
+not only as single per-episode files.`
+
+  // Phrased article-free ("install one in X", not "install a X one") so any languageName()
+  // output — including bare-code fallbacks like 'xx' — reads grammatically.
+  const languageSection = isChinese
+    ? `Your target is a CHINESE subtitle. Simplified (zh-Hans) and Traditional (zh-Hant) are equally
+good — a correct-episode subtitle in EITHER script is a success. Do not rank Simplified above
+Traditional or vice versa, do not hold out for one when the other is already in front of you,
+and do not spend judgment deciding between them: getting the episode covered is what matters.
+A non-Chinese subtitle (e.g. a Japanese or English track that happens to sit in the same pack)
+is NOT coverage — install a Chinese one, or finalize no_safe_match; never install a non-Chinese
+file just to "have something".`
+    : `Your target language is ${name}: getting the episode covered in ${name} is what matters.
+A subtitle in any other language (even one that happens to sit in the same pack) is NOT
+coverage — install one in ${name}, or finalize no_safe_match; never install a wrong-language
+file just to "have something".`
+
+  const content = `
 # Find-Subtitle Judgment Playbook
 
 ## The one rule that overrides everything else
@@ -23,8 +56,7 @@ plain-language reason, never a number claiming certainty.
 
 ## Season packs and collections are NORMAL — internalize this before you judge anything
 
-Chinese subtitles are distributed as SEASON PACKS and COMPLETE-SERIES collections far more
-often than as single per-episode files. It is entirely normal for EVERY candidate a search
+${packIntro} It is entirely normal for EVERY candidate a search
 returns to be a pack — "進擊的巨人 S1+S2+S3+OAD 合集", a "[Fansub] Complete Series 繁中字幕"
 bundle, a multi-season or whole-show collection, sometimes with movies/OADs mixed in. A pack
 that spans this show's season is a GOOD candidate, NOT something to reject for being a pack.
@@ -97,13 +129,7 @@ not help), fall back to matching by name/metadata as usual — its absence is no
 
 ## Language: coverage, not preference
 
-Your target is a CHINESE subtitle. Simplified (zh-Hans) and Traditional (zh-Hant) are equally
-good — a correct-episode subtitle in EITHER script is a success. Do not rank Simplified above
-Traditional or vice versa, do not hold out for one when the other is already in front of you,
-and do not spend judgment deciding between them: getting the episode covered is what matters.
-A non-Chinese subtitle (e.g. a Japanese or English track that happens to sit in the same pack)
-is NOT coverage — install a Chinese one, or finalize no_safe_match; never install a non-Chinese
-file just to "have something".
+${languageSection}
 
 ## Sandbox
 
@@ -112,11 +138,17 @@ world — do not ask about, reference, or attempt to construct paths to any othe
 \`install_subtitle\` will refuse anything outside this task's directory regardless.
 `.trim()
 
-export const FIND_SUBTITLE_SKILL: Skill = {
-  descriptor: {
-    name: 'find-subtitle-judgment',
-    description:
-      'How to judge whether a downloaded candidate belongs to this exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract your episode from the season packs / complete-series collections that Chinese subtitles usually come as (read the fileList, download by fileIndex — including using a provided absolute episode number to locate an episode in packs numbered differently than your file), that Simplified and Traditional are equally good coverage, and the search→compare→install workflow.',
-  },
-  content: CONTENT,
+  return {
+    descriptor: {
+      name: 'find-subtitle-judgment',
+      description:
+        `How to judge whether a downloaded candidate belongs to this exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract your episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex — including using a provided absolute episode number to locate an episode in packs numbered differently than your file), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}, and the search→compare→install workflow.`,
+    },
+    content,
+  }
 }
+
+/** Canonical Chinese-target instance — the wording proven by live acceptance and pinned by
+ *  findSubtitleSkill.test.ts. The worker builds a per-task instance via makeFindSubtitleSkill
+ *  (findSubtitleWorker.ts); this const stays as the zh reference and the test anchor. */
+export const FIND_SUBTITLE_SKILL: Skill = makeFindSubtitleSkill('zh')

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FIND_SUBTITLE_SKILL } from './findSubtitleSkill.js'
+import { FIND_SUBTITLE_SKILL, makeFindSubtitleSkill } from './findSubtitleSkill.js'
 
 describe('FIND_SUBTITLE_SKILL', () => {
   it('is non-empty and states the north-star rules the agent must follow', () => {
@@ -63,5 +63,32 @@ describe('FIND_SUBTITLE_SKILL', () => {
     expect(c).toMatch(/numeric confidence score/i)
     // no "score >= N" / "threshold of" style deterministic gate language introduced
     expect(c).not.toMatch(/threshold|score\s*(>=|>|of\s+\d)/i)
+  })
+})
+
+// A5: the skill is a per-task factory parameterized by target language. The Chinese wording is
+// the canonical, live-acceptance-proven text — every test above pins it via FIND_SUBTITLE_SKILL,
+// so the factory's zh output must be byte-identical to it. Non-Chinese targets get the same
+// lessons with the target language named and WITHOUT the Chinese-only Hans/Hant script guidance.
+describe('makeFindSubtitleSkill (target-language parameterization)', () => {
+  it('zh output is byte-identical to the canonical FIND_SUBTITLE_SKILL', () => {
+    const zh = makeFindSubtitleSkill('zh')
+    expect(zh.content).toBe(FIND_SUBTITLE_SKILL.content)
+    expect(zh.descriptor).toEqual(FIND_SUBTITLE_SKILL.descriptor)
+  })
+
+  it('non-Chinese target: names the target language, drops all Chinese-specific script wording', () => {
+    const en = makeFindSubtitleSkill('en')
+    expect(en.descriptor.name).toBe('find-subtitle-judgment') // read_doc lookup name is stable
+    expect(en.content).toMatch(/target language is English/)
+    expect(en.content).toMatch(/NOT[\s\n]+coverage/i)
+    expect(en.content).not.toMatch(/simplified|traditional|zh-Hans|zh-Hant|non-chinese/i)
+    expect(en.descriptor.description).toMatch(/English subtitles/)
+    expect(en.descriptor.description).not.toMatch(/Simplified and Traditional/)
+  })
+
+  it('unknown language code falls back to the bare code in the wording', () => {
+    const xx = makeFindSubtitleSkill('xx')
+    expect(xx.content).toMatch(/target language is xx/)
   })
 })

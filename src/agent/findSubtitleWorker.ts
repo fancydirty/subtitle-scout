@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path'
 import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { languageName } from './languages.js'
-import { FIND_SUBTITLE_SKILL } from './skills/findSubtitleSkill.js'
+import { makeFindSubtitleSkill } from './skills/findSubtitleSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
 import {
   makeFileResultSetStore, makeSearchSourceTool, makeListCandidatesTool, makeGetCandidateTool,
@@ -46,9 +46,12 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const stagingDir = allocate(task.jobId, task.mediaRoot)
     const store = makeFileResultSetStore(join(deps.cacheRoot, 'result-sets', task.jobId))
     const stagedFiles = new Map<string, string>()
+    // A5: the judgment playbook is parameterized by the task's target language (Chinese keeps
+    // the canonical Hans/Hant-equivalence wording; other languages get language-neutral text).
+    const skill = makeFindSubtitleSkill(task.targetLanguage)
 
     const tools = {
-      read_doc: makeReadDocTool([FIND_SUBTITLE_SKILL]),
+      read_doc: makeReadDocTool([skill]),
       search_source: makeSearchSourceTool({ adapters: deps.adapters, store, targetLanguage: task.targetLanguage }),
       list_candidates: makeListCandidatesTool(store),
       get_candidate: makeGetCandidateTool(store),
@@ -69,7 +72,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       'any other directory or media item in existence — do not ask about or reference one.',
       '',
       'Available skill documents (call read_doc(name) to load the full text of one):',
-      systemPromptSkillIndex([FIND_SUBTITLE_SKILL]),
+      systemPromptSkillIndex([skill]),
     ].join('\n')
 
     const prompt = [
