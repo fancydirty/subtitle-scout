@@ -187,6 +187,97 @@ describe('resolveToTmdb — multi-hit disambiguation by exact year', () => {
   })
 })
 
+describe('resolveToTmdb — clean-title tiebreak (deterministic equality, not fuzzy scoring)', () => {
+  it('year narrows to MULTIPLE (TMDB already filtered server-side) → exactly one exact-name match adopts (live: Invasion 2021)', async () => {
+    // Real parked case: search tv 'Invasion' + first_air_date_year=2021 → TMDB filters
+    // server-side, so EVERY returned hit is 2021 and year-exact narrowing can never get below 2.
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      results: [
+        { id: 1, name: 'Invasion Planet Earth', first_air_date: '2021-05-01' },
+        { id: 2, name: 'Invasion', first_air_date: '2021-10-22' },
+      ],
+    }))
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const id = identity({ title: 'Invasion', year: 2021, season: 1, episode: 1, isTv: true })
+    const result = await resolveToTmdb(id, tmdb)
+    expect(result).toEqual({
+      tmdbId: '2', title: 'Invasion', isTv: true, season: 1, episode: 1, absoluteEpisode: null,
+    } satisfies Recognized)
+  })
+
+  it('no year at all, multiple hits → exactly one exact-name match adopts (live: Cassandra)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      results: [
+        { id: 10, name: 'Cassandra', first_air_date: '2025-02-06' },
+        { id: 11, name: "Cassandra French's Finishing School", first_air_date: '2023-07-13' },
+      ],
+    }))
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const id = identity({ title: 'Cassandra', season: 1, episode: 1, isTv: true })
+    const result = await resolveToTmdb(id, tmdb)
+    expect(result).toEqual({
+      tmdbId: '10', title: 'Cassandra', isTv: true, season: 1, episode: 1, absoluteEpisode: null,
+    } satisfies Recognized)
+  })
+
+  it('punctuation/case-insensitive canonical form: query "Tron Ares" matches hit "TRON: Ares" (live case)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      results: [
+        { id: 20, title: 'TRON: Ares', release_date: '2025-10-10' },
+        { id: 21, title: 'Tron Ares Fan Chronicles', release_date: '2025-01-01' },
+      ],
+    }))
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const id = identity({ title: 'Tron Ares', year: 2025, isTv: false })
+    const result = await resolveToTmdb(id, tmdb)
+    expect(result).toEqual({
+      tmdbId: '20', title: 'TRON: Ares', isTv: false, season: null, episode: null, absoluteEpisode: null,
+    } satisfies Recognized)
+  })
+
+  it('normalized query may match the hit originalTitle instead (CJK query vs original_name)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      results: [
+        { id: 30, title: 'Hero', original_title: '英雄', release_date: '2002-07-23' },
+        { id: 31, title: 'Hero Quest', original_title: 'Hero Quest', release_date: '2002-01-01' },
+      ],
+    }))
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const id = identity({ title: '英雄', year: 2002, isTv: false })
+    const result = await resolveToTmdb(id, tmdb)
+    expect(result).toEqual({
+      tmdbId: '30', title: 'Hero', isTv: false, season: null, episode: null, absoluteEpisode: null,
+    } satisfies Recognized)
+  })
+
+  it('TWO hits share the exact normalized name → still park ambiguous (equality can not pick between equals)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      results: [
+        { id: 40, name: 'Foo', first_air_date: '2010-01-01' },
+        { id: 41, name: 'FOO!', first_air_date: '2016-01-01' },
+        { id: 42, name: 'Foo Bar', first_air_date: '2020-01-01' },
+      ],
+    }))
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const id = identity({ title: 'Foo', isTv: true })
+    const result = await resolveToTmdb(id, tmdb)
+    expect(result).toEqual({ park: 'ambiguous' })
+  })
+
+  it('no hit matches the normalized query at all → park ambiguous, never guesses a closest hit', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      results: [
+        { id: 50, name: 'Foobar', first_air_date: '2010-01-01' },
+        { id: 51, name: 'Foo Baz', first_air_date: '2016-01-01' },
+      ],
+    }))
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const id = identity({ title: 'Foo', isTv: true })
+    const result = await resolveToTmdb(id, tmdb)
+    expect(result).toEqual({ park: 'ambiguous' })
+  })
+})
+
 describe('resolveToTmdb — zero hits', () => {
   it('zero hits with a year in play → retries once without the year, then adopts a resulting unique hit', async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {

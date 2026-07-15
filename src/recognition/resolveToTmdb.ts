@@ -29,17 +29,44 @@ export interface Recognized {
 
 export type ResolveResult = Recognized | Park
 
+/**
+ * Canonical clean-title form for the equality tiebreak below: lowercase, then strip every
+ * character that is not a letter or a number, Unicode-aware — `\p{L}` keeps CJK ideographs (and
+ * every other script) while punctuation, separators, and whitespace all vanish. So
+ * 'TRON: Ares' → 'tronares', 'The.Fantastic.Four.First.Steps' → 'thefantasticfourfirststeps',
+ * '英雄' → '英雄'. One deterministic canonical form, compared with `===`.
+ */
+function cleanTitle(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
 /** Picks exactly one hit to adopt, or null if the rules can't narrow further.
  *  (a) exactly one hit → that hit, unconditionally.
  *  (b) multiple hits + a known year → hits whose year matches exactly; adopt only if that narrows
  *      to exactly one.
- *  (c) anything else (zero hits, or still multiple after year-narrowing) → null, caller parks. */
-function pickUniqueHit(hits: TmdbSearchHit[], year: number | null): TmdbSearchHit | null {
+ *  (c) multiple hits → hits whose clean-title form (display title OR originalTitle) EQUALS the
+ *      query's clean-title form; adopt only if exactly one matches. This is Sonarr-style
+ *      clean-title EQUALITY on a deterministic canonical form — deliberately NOT a similarity
+ *      metric. Do not "improve" it into fuzzy scoring/edit distance/popularity ranking: equality
+ *      either holds or it doesn't, so the rule can never adopt a merely-closest hit, which is the
+ *      whole park-on-uncertainty guarantee. Needed because rule (b) is structurally unable to
+ *      narrow a year-filtered search (TMDB already applied the year server-side, so ALL hits
+ *      carry the same year — live case: 'Invasion' + 2021), and because query-vs-TMDB punctuation
+ *      drift ('Tron Ares' vs 'TRON: Ares') defeats raw string comparison.
+ *  (d) anything else (zero hits, or still multiple/zero matches after both rules) → null, parks. */
+function pickUniqueHit(hits: TmdbSearchHit[], year: number | null, queryTitle: string): TmdbSearchHit | null {
   if (hits.length === 1) return hits[0]
   if (hits.length === 0) return null
   if (year !== null) {
     const exact = hits.filter((h) => h.year === year)
     if (exact.length === 1) return exact[0]
+  }
+  const q = cleanTitle(queryTitle)
+  if (q.length > 0) {
+    const named = hits.filter(
+      (h) => cleanTitle(h.title) === q || (h.originalTitle !== null && cleanTitle(h.originalTitle) === q),
+    )
+    if (named.length === 1) return named[0]
   }
   return null
 }
@@ -80,7 +107,7 @@ export async function resolveToTmdb(identity: PathIdentity, tmdb: TmdbClient): P
     hits = await tmdb.search(mediaType, identity.title, undefined)
   }
 
-  const adopted = pickUniqueHit(hits, identity.year)
+  const adopted = pickUniqueHit(hits, identity.year, identity.title)
   if (!adopted) {
     return { park: hits.length === 0 ? 'no-match' : 'ambiguous' }
   }

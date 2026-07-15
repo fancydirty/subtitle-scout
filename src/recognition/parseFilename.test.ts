@@ -40,6 +40,39 @@ describe('parseFilename — standard TV', () => {
   })
 })
 
+describe('parseFilename — movie with quality-token digits (live NAS regression)', () => {
+  // The lib's anime absolute-episode pattern eats the '10' out of '10bit', returning an
+  // ABSOLUTE-ONLY tv parse (seasons empty) for what is plainly a movie — which downstream (C3)
+  // sends to /search/tv where it can never match. The wrapper must prefer the movie
+  // interpretation whenever the tv parse is absolute-only AND the movie parse independently
+  // recovered a finite year. Genuine anime absolute files stay safe: their movie-mode parse
+  // never yields a finite year (the bracketed fansub hash fails toYear's Number.isFinite guard).
+  it('Kraven: "10bit" digits must not become an absolute episode when a movie year is present', () => {
+    const r = parseFilename('Kraven the Hunter (2024) (2160p BluRay x265 10bit DV HDR r00t).mkv')
+    expect(r.title).toBe('Kraven the Hunter')
+    expect(r.year).toBe(2024)
+    expect(r.isTv).toBe(false)
+    expect(r.absoluteEpisode).toBeNull()
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+  })
+
+  it('Conjuring variant: same 10bit misread, movie year wins', () => {
+    const r = parseFilename('The Conjuring Last Rites (2025) (2160p BluRay x265 10bit DV HDR).mkv')
+    expect(r.title).toBe('The Conjuring Last Rites')
+    expect(r.year).toBe(2025)
+    expect(r.isTv).toBe(false)
+    expect(r.absoluteEpisode).toBeNull()
+  })
+
+  it('regression anchor: genuine anime absolute file (no finite movie year) keeps the TV-absolute path', () => {
+    const r = parseFilename('[SubGroup] My Hero Academia - 26 [ABCD1234].mkv')
+    expect(r.absoluteEpisode).toBe(26)
+    expect(r.isTv).toBe(true)
+    expect(r.year).toBeNull()
+  })
+})
+
 describe('parseFilename — movie', () => {
   it('title + year, no season/episode', () => {
     const r = parseFilename('Hero.2002.1080p.BluRay.mkv')

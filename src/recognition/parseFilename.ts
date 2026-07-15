@@ -40,6 +40,24 @@ function isYearMisreadAsSeasonEpisode(tv: ParsedShow, movie: ParsedFilename): bo
 }
 
 /**
+ * The lib's anime absolute-episode pattern can eat a digit run out of a QUALITY token — live NAS
+ * case: '10bit' in 'Kraven the Hunter (2024) (2160p BluRay x265 10bit DV HDR r00t).mkv' parses as
+ * absoluteEpisode 10 with an empty seasons list, flipping a movie into absolute-only TV (and
+ * downstream, C3 then searches /search/tv for a movie — a guaranteed no-match park). Deterministic
+ * guard in the same style as isYearMisreadAsSeasonEpisode above: when the TV parse is
+ * ABSOLUTE-ONLY (no season structure at all) AND the movie-mode parse independently recovered a
+ * finite `year`, prefer the movie interpretation. Genuine anime absolute files
+ * ('[Group] Title - 26 [ABCD1234].mkv') keep the TV-absolute path: their movie-mode parse never
+ * yields a finite year (the bracketed fansub hash lands in the lib's pass-the-popcorn `year` group
+ * and fails toYear's Number.isFinite guard), while real movies with quality-token digit noise
+ * virtually always carry a real year. Trade-off accepted knowingly: a year-carrying anime absolute
+ * file (rare — fansub releases don't usually embed the year) would be read as a movie.
+ */
+function isQualityTokenMisreadAsAbsolute(tv: ParsedShow, movie: ParsedFilename): boolean {
+  return tv.seasons.length === 0 && toYear(movie.year) !== null
+}
+
+/**
  * Thin wrapper around @ctrl/video-filename-parser's `filenameParse`. Pure string -> structure: no
  * path/dirname logic (that's C2's job) and no TMDB lookups (that's C3's).
  *
@@ -56,7 +74,7 @@ export function parseFilename(name: string): ParsedName {
   const movie = filenameParse(name, false)
   const tv = filenameParse(name, true)
 
-  if (isShowResult(tv) && !isYearMisreadAsSeasonEpisode(tv, movie)) {
+  if (isShowResult(tv) && !isYearMisreadAsSeasonEpisode(tv, movie) && !isQualityTokenMisreadAsAbsolute(tv, movie)) {
     // Anime absolute-episode patterns (e.g. "[Group] Title - 26 [hash].mkv") report the episode
     // number through the same `episodeNumbers` field as a normal S/E match, but leave `seasons`
     // empty — that emptiness is the library's only signal that a number is "absolute" (no season

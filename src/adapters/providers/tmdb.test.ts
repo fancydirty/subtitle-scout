@@ -490,7 +490,7 @@ describe('TmdbClient.search', () => {
     })
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     const hits = await client.search('tv', 'Spy x Family')
-    expect(hits).toEqual([{ id: 108964, title: 'Spy x Family', year: 2022 }])
+    expect(hits).toEqual([{ id: 108964, title: 'Spy x Family', originalTitle: 'SPY×FAMILY', year: 2022 }])
   })
 
   it('tv: year param maps to first_air_date_year (not "year")', async () => {
@@ -511,7 +511,7 @@ describe('TmdbClient.search', () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       seenUrl = String(url)
       return new Response(JSON.stringify({
-        results: [{ id: 603, title: 'The Matrix', release_date: '1999-03-30' }],
+        results: [{ id: 603, title: 'The Matrix', original_title: 'The Matrix', release_date: '1999-03-30' }],
       }), { status: 200 })
     })
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
@@ -520,7 +520,23 @@ describe('TmdbClient.search', () => {
     expect(u.pathname).toBe('/3/search/movie')
     expect(u.searchParams.get('year')).toBe('1999')
     expect(u.searchParams.has('first_air_date_year')).toBe(false)
-    expect(hits).toEqual([{ id: 603, title: 'The Matrix', year: 1999 }])
+    expect(hits).toEqual([{ id: 603, title: 'The Matrix', originalTitle: 'The Matrix', year: 1999 }])
+  })
+
+  it('movie originalTitle comes from original_title (CJK-origin film); missing/blank → null', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      results: [
+        { id: 9550, title: 'Hero', original_title: '英雄', release_date: '2002-07-23' },
+        { id: 9551, title: 'Hero 2', release_date: '2004-01-01' },
+        { id: 9552, title: 'Hero 3', original_title: '', release_date: '2006-01-01' },
+      ],
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.search('movie', 'Hero')).toEqual([
+      { id: 9550, title: 'Hero', originalTitle: '英雄', year: 2002 },
+      { id: 9551, title: 'Hero 2', originalTitle: null, year: 2004 },
+      { id: 9552, title: 'Hero 3', originalTitle: null, year: 2006 },
+    ])
   })
 
   it('multiple results preserved in order; missing/blank date → year null', async () => {
@@ -532,8 +548,8 @@ describe('TmdbClient.search', () => {
     }), { status: 200 }))
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.search('tv', 'Foo')).toEqual([
-      { id: 1, title: 'Foo', year: null },
-      { id: 2, title: 'Foo 2', year: 2010 },
+      { id: 1, title: 'Foo', originalTitle: null, year: null },
+      { id: 2, title: 'Foo 2', originalTitle: null, year: 2010 },
     ])
   })
 

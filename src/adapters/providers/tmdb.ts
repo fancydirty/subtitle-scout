@@ -31,8 +31,11 @@ export interface TmdbRef { mediaType: 'tv' | 'movie'; tmdbId: string }
 export interface SeasonTableEntry { seasonNumber: number; episodeCount: number; airDate: string | null }
 
 /** Normalized `/search/{tv,movie}` hit — id/title/year regardless of which endpoint answered
- *  (tv: name/first_air_date; movie: title/release_date — TMDB's own field-naming split). */
-export interface TmdbSearchHit { id: number; title: string; year: number | null }
+ *  (tv: name/first_air_date; movie: title/release_date — TMDB's own field-naming split).
+ *  originalTitle = tv original_name / movie original_title (the title in the work's own language,
+ *  e.g. a CJK name) — C3's clean-title tiebreak matches queries against it too, so a CJK query
+ *  can hit a work whose display title is localized. Missing/blank → null. */
+export interface TmdbSearchHit { id: number; title: string; originalTitle: string | null; year: number | null }
 
 interface ItemLike {
   Type?: string | null
@@ -308,9 +311,11 @@ export class TmdbClient {
         const title = mediaType === 'tv'
           ? (typeof r.name === 'string' ? r.name : '')
           : (typeof r.title === 'string' ? r.title : '')
+        const rawOriginal = mediaType === 'tv' ? r.original_name : r.original_title
+        const originalTitle = typeof rawOriginal === 'string' && rawOriginal ? rawOriginal : null
         const dateStr = mediaType === 'tv' ? r.first_air_date : r.release_date
         const year = typeof dateStr === 'string' && dateStr.length >= 4 ? Number(dateStr.slice(0, 4)) : null
-        return { id, title, year: Number.isFinite(year) ? year : null }
+        return { id, title, originalTitle, year: Number.isFinite(year) ? year : null }
       })
       .filter((h): h is TmdbSearchHit => h !== null)
   }
