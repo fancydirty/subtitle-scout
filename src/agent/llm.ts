@@ -87,12 +87,3 @@ export function makeModel(cfg: LlmConfig): LanguageModel {
   })
   return provider(cfg.model)
 }
-
-/** v3 old-pipeline-retirement Wave 3：旧强制 tool-call 栈（callStructured/callPromptJson，及其
- *  专属的 ToolChoiceRejectionError/isToolChoiceRejection/extractJson 同伙）已随 runtime.ts/
- *  probe.ts/profile.ts/quirks.ts 一并删除。这个类单独留下来，是因为
- *  src/adapters/providers/yunsuo.test.ts 仍把它当一个方便的"任意异常类型"样例用在验证码求解
- *  重试测试里——生产路径 solveNumericCaptcha.ts 早已不抛它（见其文件头 Wall ① 注释：v3 已经切到
- *  朴素 generateText + 本地 zod 校验，不走这条旧栈）。不是遗留死代码，是一个仍有真实测试消费者
- *  的独立导出，删除前需先改 yunsuo.test.ts。 */
-export class StructuredOutputError extends Error {}

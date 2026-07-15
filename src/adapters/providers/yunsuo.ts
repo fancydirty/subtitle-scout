@@ -223,8 +223,8 @@ async function submitChallenge(fetchImpl: typeof fetch, challenge: YunsuoChallen
  * 默认 jitterRangeMs=0 时就是恒定的 retryDelayMs(向后兼容/测试友好),生产调用方(zimuku.ts)
  * 显式传入非零 jitterRangeMs 以获得随机化的重试节奏,绝不无延迟重试风暴。
  *
- * deps.solve() 本身也被算作"这次尝试失败"而不是让它的异常穿透:LLM 结构化输出校验失败会抛
- * StructuredOutputError(schema 不匹配),这属于"这次验证码读数拿不到"的瞬时失败,应该跟"提交
+ * deps.solve() 本身也被算作"这次尝试失败"而不是让它的异常穿透:LLM 结构化输出校验失败会抛出
+ * schema 不匹配的异常,这属于"这次验证码读数拿不到"的瞬时失败,应该跟"提交
  * 被拒"走同一条重刷验证码的有界重试路径,而不是绕过重试直接把内部实现细节的错误类型甩给调用方。
  *
  * 两种挑战形状(见 parseChallenge)在这里透明地分派给 fetchCaptchaImage/submitChallenge——

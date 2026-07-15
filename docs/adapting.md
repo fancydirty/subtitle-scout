@@ -17,7 +17,7 @@ subtitle-scout 的核心管线（识别 → 搜索 → 排序 → 下载 → 写
 
 这个端口有 **六个方法**。实现一个新的适配器 = 实现这六个方法，让它们返回符合约定形状的数据。
 
-**重要**：daemon watch 模式实际只消费其中五个方法（`getSeasonEpisodes` 仅在整季升格的 CLI/管线路径使用），但适配器应实现全部六个方法以保证完整性。
+**重要**：daemon watch 模式常驻消费 `getSessions` / `getItem` / `getChineseTitle`。`getRecentItems` 目前只在 `doctor` 的路径映射探测里调用一次，不是常驻轮询——新入库发现现由 self-scan 的周期文件系统扫描承担，不再经这个方法。`getSeasonEpisodes` 目前没有生产调用方（整季场景已折叠进 find-subtitle worker 自己的工具调用），是为将来预留的接口位。适配器仍应实现全部方法以保证完整性。
 
 ---
 
@@ -27,12 +27,12 @@ subtitle-scout 的核心管线（识别 → 搜索 → 排序 → 下载 → 写
 
 | 方法 | 语义 | 被谁消费 / 何时触发 | 失败约定 |
 |------|------|---------------------|----------|
-| **`getSessions()`** | 获取当前所有播放会话（含正在播放的条目） | daemon watcher 15秒轮询驱动"正在播放"触发节拍 | **抛错**（轮询失败会记日志并跳过本轮） |
-| **`getRecentItems(limit: number)`** | 按 DateCreated 倒序返回最近入库的条目 | daemon arrivals 扫描（默认 300s 轮询）驱动新入库触发节拍 | **抛错**（arrivals 失败会记日志并跳过本轮） |
-| **`getItem(itemId: string)`** | 获取单条目完整详情（必须包含 Path、ProviderIds、MediaStreams、OriginalTitle、Overview 等字段） | watcher 处理流程中拉取完整元数据，构建 MediaContext | **抛错**（获取失败会导致该条目进冷却） |
-| **`refreshItem(itemId: string)`** | 让服务器重新扫描该条目（**重点：必须重扫外部字幕文件**） | 下载完字幕后调用，让服务器识别新写入的 sidecar 字幕文件 | **抛错**（refresh 失败会记日志但不影响台账） |
-| **`getChineseTitle(item: MediaItem)`** | 用服务器的元数据源（如 TMDb zh-CN）查询中文译名 | 构建 MediaContext 时调用，辅助字幕搜索精度 | **静默降级返回 null**（失败/无 provider id/非 Movie\|Series 均返回 null，绝不阻塞主流程） |
-| **`getSeasonEpisodes(item: MediaItem)`** | 枚举该剧该季全部集（SxxExx、路径、是否缺中字） | 整季打包下载路径（`run-item` / `watch` 内部触发），非 daemon 核心路径 | **静默降级返回 []**（无 SeriesId / 无季号 / 失败均返回 []） |
+| **`getSessions()`** | 获取当前所有播放会话（含正在播放的条目） | daemon watch 模式 15 秒轮询（`src/v2/daemon.ts` 的 pollSessions）：对"正在播放"的条目做优先级提升/唤醒 | **抛错**（轮询失败会记日志并跳过本轮） |
+| **`getRecentItems(limit: number)`** | 按 DateCreated 倒序返回最近入库的条目 | 目前只有 `doctor` 的路径映射探测调用一次（非常驻轮询）；新入库发现现由 self-scan 的周期文件系统扫描承担 | **抛错**（调用方按场景各自处理失败） |
+| **`getItem(itemId: string)`** | 获取单条目完整详情（必须包含 Path、ProviderIds、MediaStreams、OriginalTitle、Overview 等字段） | find-subtitle/realign worker、orchestrator、self-scan 等多处拉取完整元数据，构建 MediaContext | **抛错**（获取失败会导致该条目/任务失败退避） |
+| **`refreshItem(itemId: string)`** | 让服务器重新扫描该条目（**重点：必须重扫外部字幕文件**） | 契约仍需实现；当前 daemon 改走一个库级别的刷新方法（不在 PlayerServer 六个方法之列，只有 Jellyfin 实现直接用），`refreshItem` 本身暂无生产调用方 | **抛错**（refresh 失败会记日志但不影响台账） |
+| **`getChineseTitle(item: MediaItem)`** | 用服务器的元数据源（如 TMDb zh-CN）查询中文译名 | find-subtitle worker 构建任务上下文时调用，辅助字幕搜索精度 | **静默降级返回 null**（失败/无 provider id/非 Movie\|Series 均返回 null，绝不阻塞主流程） |
+| **`getSeasonEpisodes(item: MediaItem)`** | 枚举该剧该季全部集（SxxExx、路径、是否缺中字） | 目前没有生产调用方——整季场景已折叠进 find-subtitle worker 自己的工具调用，是为将来预留的接口位 | **静默降级返回 []**（无 SeriesId / 无季号 / 失败均返回 []） |
 
 ### 关键实测教训
 
@@ -144,7 +144,7 @@ Emby 与 Jellyfin API **同源**，主要差异：
 
 - **接口定义**: `src/adapters/players/types.ts`（PlayerServer 接口 + MediaItem / PlaybackSession 类型别名）
 - **参考实现**: `src/adapters/players/jellyfin.ts`（Jellyfin 实现，认证头、字段映射、zod 校验、ITEM_FIELDS、FullRefresh 实测注释等全在这里）
-- **消费者**: `src/daemon/watcher.ts`（WatcherDeps 展示了 daemon 如何调用这些方法）
+- **消费者**: `src/v2/daemon.ts`（daemon 的 session 轮询）、`src/cli/index.ts` 的 `cmdWatch`（find-subtitle/realign/self-scan 依赖组装）——展示了 daemon 如何调用这些方法
 
 ## 六个方法的契约
 
@@ -192,7 +192,7 @@ Emby 与 Jellyfin API **同源**，主要差异：
 3. **真机验证**（可选但强烈推荐）:
    - 配置你的服务器 URL / API Key 到 `.env`
    - 运行 `npm run cli -- doctor` 检查连接
-   - 运行 `npm run cli -- run-item --item-id <真实条目ID>` 单发验证（检查 refresh 是否真的让字幕可见）
+   - 运行 `npm run cli -- watch`，观察日志里针对一个真实条目的处理过程（检查 refresh 是否真的让字幕可见）
 
 ## 关键提醒
 
@@ -212,7 +212,7 @@ Emby 与 Jellyfin API **同源**，主要差异：
 - **Jellyfin 参考实现**: `src/adapters/players/jellyfin.ts`
 - **Jellyfin 测试**: `src/adapters/players/jellyfin.test.ts`
 - **Jellyfin fixtures**: `fixtures/jellyfin/sessions-playing.json`, `items-detail.json`, `item-after-refresh.json` 等
-- **Watcher 消费者**: `src/daemon/watcher.ts`（WatcherDeps 接口）
+- **daemon 消费者**: `src/v2/daemon.ts`（session 轮询）、`src/cli/index.ts` 的 `cmdWatch`
 - **核心类型**: `src/core/episode.ts`（SeasonEpisode）, `src/core/schemas.ts`（MediaContext）
 
 祝适配顺利！有问题欢迎提 issue 或 discussion。

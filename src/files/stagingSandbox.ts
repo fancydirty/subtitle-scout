@@ -74,8 +74,8 @@ function copyThenRenameSameDir(stagedPath: string, finalPath: string): void {
  *  `<root>/.subtitle-staging/`,沙盒挂在深层目录就永远够不到——硬杀(SIGKILL/OOM/断电)在
  *  allocate 与 cleanup 之间发生时会成为永久泄漏。install() 仍把最终文件 rename 进视频自己的
  *  目录(同一挂载/文件系统,原子 rename 单跳不破),所以沙盒挂在根一级不影响装机。调用方
- *  (core/pipeline.ts)用 containingRoot(videoDir, mediaRoots) 求这个根;没有根匹配时安全退回
- *  视频目录本身(裸 cli run 调试路径无媒体根概念,那次退化不受 gcOrphans 保护是预期行为)。 */
+ *  (如 v2/realignExecutor.ts)用 containingRoot(videoDir, mediaRoots) 求这个根;没有根匹配时
+ *  安全退回视频目录本身(无媒体根概念的退化路径不受 gcOrphans 保护是预期行为)。 */
 export function allocate(jobId: string, mediaRootForVideo: string): string {
   const root = join(mediaRootForVideo, STAGING_DIRNAME)
   const dir = join(root, jobId)

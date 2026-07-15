@@ -4,7 +4,12 @@ import {
   detectChallenge, parseChallenge, solveYunsuoChallenge, ZimukuChallengeError,
   type YunsuoChallenge, type YunsuoChallengeForm, type YunsuoChallengeRedirect,
 } from './yunsuo.js'
-import { StructuredOutputError } from '../../agent/llm.js'
+
+/** solve() 在生产路径里是 solveNumericCaptcha(朴素 generateText + 本地 zod 校验,v3 已不走强制
+ * JSON 工具调用栈),schema 校验失败时会抛出普通 Error。这里造一个独立的错误子类站在它的位置,只是
+ * 为了在断言里把"solve() 抛出的具体错误类型"和"solveYunsuoChallenge 包装后抛出的 ZimukuChallengeError"
+ * 区分开——验证的是类型不泄漏,而不是某个已退休的 LLM 运行时错误类。 */
+class MockSolveSchemaError extends Error {}
 
 /** 窄化辅助:先确认 kind 再访问形状专属字段,比每处都写 if/throw 样板更省事。 */
 function asForm(c: YunsuoChallenge): YunsuoChallengeForm {
@@ -182,7 +187,7 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
     expect(submitCount).toBe(3)
   })
 
-  it('when solve() throws (e.g. StructuredOutputError from a schema-failing LLM read), counts it as a failed attempt and re-rolls a fresh captcha — does not propagate the raw error', async () => {
+  it('when solve() throws (e.g. a schema-validation error from a schema-failing LLM read), counts it as a failed attempt and re-rolls a fresh captcha — does not propagate the raw error', async () => {
     let imgFetches = 0
     let submitCount = 0
     const fetchImpl = vi.fn(async (url: string) => {
@@ -193,7 +198,7 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
     let solveCalls = 0
     const solve = vi.fn(async () => {
       solveCalls++
-      if (solveCalls <= 2) throw new StructuredOutputError('mock LLM schema validation failed')
+      if (solveCalls <= 2) throw new MockSolveSchemaError('mock LLM schema validation failed')
       return { digits: '11111' }
     })
     const r = await solveYunsuoChallenge(
@@ -209,12 +214,12 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
       if (String(url).includes('security_verify_img')) return new Response(Buffer.from('png'))
       return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=xyz; Path=/' } })
     })
-    const solve = vi.fn(async () => { throw new StructuredOutputError('schema mismatch') })
+    const solve = vi.fn(async () => { throw new MockSolveSchemaError('schema mismatch') })
     const rejection = solveYunsuoChallenge(
       { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 3, 1,
     )
     await expect(rejection).rejects.toThrow(ZimukuChallengeError)
-    await expect(rejection).rejects.not.toThrow(StructuredOutputError)
+    await expect(rejection).rejects.not.toThrow(MockSolveSchemaError)
     expect(solve).toHaveBeenCalledTimes(3) // 有界:恰好 maxAttempts 次,不因为 solve 抛错就绕过上限
   })
 
