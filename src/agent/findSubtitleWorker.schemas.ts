@@ -43,4 +43,9 @@ export interface FindSubtitleTask {
   overview: string | null
   runtimeMinutes: number | null
   providerIds: Record<string, string>
+  /** BCP-47 primary language code for the subtitle to find, e.g. 'zh'/'en'. Interpolated into the
+   *  worker prompt via languageName() (see languages.ts). Every enum still hardcoded to zh-Hans/
+   *  zh-Hant (installedLanguage/langTag) is a LATER task — this field alone does not yet change
+   *  what language the worker can actually install. */
+  targetLanguage: string
 }

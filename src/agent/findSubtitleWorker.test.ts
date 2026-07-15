@@ -115,7 +115,7 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     const task: FindSubtitleTask = {
       jobId: 'job-1', mediaRoot, videoPath, videoFilename: 'Show.S01E01.mkv',
       title: 'Show', originalTitle: null, year: 2024, season: 1, episode: 1, absoluteEpisode: null,
-      alternativeTitles: [], overview: null, runtimeMinutes: 24, providerIds: {},
+      alternativeTitles: [], overview: null, runtimeMinutes: 24, providerIds: {}, targetLanguage: 'zh',
     }
 
     const decision = await runTask(task)
@@ -136,8 +136,48 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     const task: FindSubtitleTask = {
       jobId: 'job-2', mediaRoot, videoPath: join(root, 'elsewhere', 'Show.S01E01.mkv'),
       videoFilename: 'Show.S01E01.mkv', title: 'Show', originalTitle: null, year: null,
-      season: 1, episode: 1, absoluteEpisode: null, alternativeTitles: [], overview: null, runtimeMinutes: null, providerIds: {},
+      season: 1, episode: 1, absoluteEpisode: null, alternativeTitles: [], overview: null, runtimeMinutes: null,
+      providerIds: {}, targetLanguage: 'zh',
     }
     await expect(runTask(task)).rejects.toThrow(/escapes its own sandboxed mediaRoot/)
+  })
+
+  it('interpolates task.targetLanguage into the worker prompt as a human-readable language name', async () => {
+    const mediaRoot = join(root, 'media')
+    const videoPath = join(mediaRoot, 'Show', 'Show.S01E01.mkv')
+    mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+
+    let capturedPromptText = ''
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options: LanguageModelV4CallOptions) => {
+        const userMessage = options.prompt.find(m => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        // Terminal step: no candidates worth pursuing, so the loop ends after one call.
+        return {
+          finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+          usage: {
+            inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 5, text: undefined, reasoning: undefined },
+          },
+          content: [{
+            type: 'tool-call' as const, toolCallId: 'finalize-1', toolName: 'finalize',
+            input: JSON.stringify({ decision: 'no_safe_match', reason: 'nothing plausible' }),
+          }],
+          warnings: [],
+        }
+      },
+    })
+
+    const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
+    const task: FindSubtitleTask = {
+      jobId: 'job-3', mediaRoot, videoPath, videoFilename: 'Show.S01E01.mkv',
+      title: 'Show', originalTitle: null, year: 2024, season: 1, episode: 1, absoluteEpisode: null,
+      alternativeTitles: [], overview: null, runtimeMinutes: 24, providerIds: {}, targetLanguage: 'en',
+    }
+
+    await runTask(task)
+
+    expect(capturedPromptText).toContain('target subtitle language: English')
   })
 })

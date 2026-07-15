@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path'
 import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
+import { languageName } from './languages.js'
 import { FIND_SUBTITLE_SKILL } from './skills/findSubtitleSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
 import {
@@ -74,6 +75,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const prompt = [
       'Find and install a Chinese subtitle for this media item, or report why you could not.',
       '',
+      `target subtitle language: ${languageName(task.targetLanguage)}`,
       `title: ${task.title}`,
       `original title: ${task.originalTitle ?? 'unknown'}`,
       `year: ${task.year ?? 'unknown'}`,

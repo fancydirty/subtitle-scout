@@ -119,6 +119,8 @@ async function main() {
     season: values.season ? Number(values.season) : null, episode: values.episode ? Number(values.episode) : null,
     absoluteEpisode: null,
     alternativeTitles: [], overview: null, runtimeMinutes: null, providerIds: {},
+    // Hard default for now — config wiring (per-library/per-job target language) is a later task.
+    targetLanguage: 'zh',
   }
 
   const decision = await runTask(task)

@@ -130,6 +130,8 @@ export async function mapWorkerTaskToFindSubtitleTask(
     overview: ctx.media.overview ?? null,
     runtimeMinutes: ctx.media.runtime_minutes ?? null,
     providerIds: ctx.media.provider_ids,
+    // Hard default for now — config wiring (per-library/per-job target language) is a later task.
+    targetLanguage: 'zh',
   }
   return { task, targetItemId }
 }
