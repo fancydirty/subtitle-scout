@@ -170,6 +170,14 @@ describe('Watcher.tick', () => {
     expect(deps.runJob).not.toHaveBeenCalled()
   })
 
+  it('empty originSkipLanguages (SKIP_CHINESE_ORIGIN=false compat) processes Chinese-origin items — the gate keys on originSkipLanguages, not targetLanguages', async () => {
+    const zhItem = { ...cleanItem, ProductionLocations: ['China'] }
+    const deps = makeDeps({ targetLanguages: ['zh'], originSkipLanguages: [], jellyfin: { getSessions: vi.fn(async () => sessions), getItem: vi.fn(async () => zhItem), refreshItem: vi.fn(async () => {}), getRecentItems: vi.fn(async () => [cleanItem]), getChineseTitle: vi.fn(async () => null) } })
+    const w = new Watcher(deps)
+    await w.tick()
+    expect(deps.runJob).toHaveBeenCalled()
+  })
+
   it('skip-cache suppresses repeated getItem for has-subtitle items', async () => {
     const withZh = { ...cleanItem, MediaStreams: [{ Type: 'Subtitle', Language: 'zh-hans', Codec: 'subrip', IsExternal: true }] }
     const getItem = vi.fn(async () => withZh)

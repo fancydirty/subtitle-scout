@@ -23,6 +23,7 @@ import { OpenSubtitlesClient } from '../src/adapters/providers/opensubtitles.js'
 import { ZimukuClient } from '../src/adapters/providers/zimuku.js'
 import { ZimukuSessionStore } from '../src/adapters/providers/zimukuSession.js'
 import { solveNumericCaptcha } from '../src/agent/solveNumericCaptcha.js'
+import { resolveTargetLanguages } from '../src/cli/targetLanguages.js'
 
 if (process.env.VITEST) {
   throw new Error('live-accept-find-subtitle.ts must not run under vitest — it hits real network and a real LLM')
@@ -119,8 +120,9 @@ async function main() {
     season: values.season ? Number(values.season) : null, episode: values.episode ? Number(values.episode) : null,
     absoluteEpisode: null,
     alternativeTitles: [], overview: null, runtimeMinutes: null, providerIds: {},
-    // Hard default for now — config wiring (per-library/per-job target language) is a later task.
-    targetLanguage: 'zh',
+    // A4: same derivation as production (cli/index.ts) — TARGET_LANGUAGES' primary entry,
+    // default 'zh'; multi-language per-item tasking is future work.
+    targetLanguage: resolveTargetLanguages(process.env).targetLanguages[0],
   }
 
   const decision = await runTask(task)

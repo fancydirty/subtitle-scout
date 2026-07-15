@@ -111,6 +111,72 @@ describe('search_source / list_candidates / get_candidate tools', () => {
     expect(store.count(out.result_set_id)).toBe(3)
   })
 
+  // Spec-review fix #3 (A4): the model may simply omit `languages` on a search_source call — when
+  // it does, the dispatched FetchArgs must default to the TASK's target language (deps.targetLanguage,
+  // threaded from FindSubtitleTask by makeFindSubtitleWorker) so provider language gating (assrt is
+  // Chinese-only) works end-to-end for non-zh targets. runSearch's own ['zh'] fallback would
+  // otherwise keep assrt alive for an en-target task.
+  describe('search_source defaults omitted `languages` to the task target language', () => {
+    // Mirrors the real assrtAdapter gate: enabled iff some requested language looks Chinese.
+    function assrtLikeAdapter(log: { searched: boolean }): FetchAdapter {
+      return {
+        name: 'assrt',
+        enabled: (a) => (a.languages ?? []).some(l => /^zh/i.test(l)),
+        search: async () => { log.searched = true; return [fakeCandidate('9', 'X')] },
+        resolve: async () => { throw new Error('not used') },
+      }
+    }
+    function alwaysOnAdapter(results: SubtitleCandidate[]): FetchAdapter {
+      return { ...fakeAdapter(results), name: 'opensubtitles' }
+    }
+
+    it('en-target task + model omits languages → assrt excluded', async () => {
+      const store = makeFileResultSetStore(dir)
+      const log = { searched: false }
+      const searchSource = makeSearchSourceTool({
+        adapters: [assrtLikeAdapter(log), alwaysOnAdapter([fakeCandidate('1', 'A')])],
+        store, targetLanguage: 'en',
+      })
+      const out = await searchSource.execute!({ queries: ['q'] }, { toolCallId: 't1', messages: [] } as any) as { count: number }
+      expect(log.searched).toBe(false)
+      expect(out.count).toBe(1)
+    })
+
+    it('zh-target task + model omits languages → assrt included', async () => {
+      const store = makeFileResultSetStore(dir)
+      const log = { searched: false }
+      const searchSource = makeSearchSourceTool({
+        adapters: [assrtLikeAdapter(log), alwaysOnAdapter([fakeCandidate('1', 'A')])],
+        store, targetLanguage: 'zh',
+      })
+      const out = await searchSource.execute!({ queries: ['q'] }, { toolCallId: 't1', messages: [] } as any) as { count: number }
+      expect(log.searched).toBe(true)
+      expect(out.count).toBe(2)
+    })
+
+    it('model-passed languages win over the task default (explicit zh request on an en-target task still reaches assrt)', async () => {
+      const store = makeFileResultSetStore(dir)
+      const log = { searched: false }
+      const searchSource = makeSearchSourceTool({
+        adapters: [assrtLikeAdapter(log), alwaysOnAdapter([fakeCandidate('1', 'A')])],
+        store, targetLanguage: 'en',
+      })
+      await searchSource.execute!({ queries: ['q'], languages: ['zh-cn'] }, { toolCallId: 't1', messages: [] } as any)
+      expect(log.searched).toBe(true)
+    })
+
+    it('no targetLanguage configured (legacy callers) → behavior unchanged: runSearch\'s own zh fallback applies', async () => {
+      const store = makeFileResultSetStore(dir)
+      const log = { searched: false }
+      const searchSource = makeSearchSourceTool({
+        adapters: [assrtLikeAdapter(log), alwaysOnAdapter([fakeCandidate('1', 'A')])],
+        store,
+      })
+      await searchSource.execute!({ queries: ['q'] }, { toolCallId: 't1', messages: [] } as any)
+      expect(log.searched).toBe(true)
+    })
+  })
+
   // Same string-encoding class as download_candidate.fileIndex: the real model string-encodes the
   // numeric search args (season/episode/year) and the paging args (offset/limit/index). These schemas
   // must coerce string-encoded integers so the very first tool call of a live run does not die on

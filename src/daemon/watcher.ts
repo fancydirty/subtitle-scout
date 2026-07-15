@@ -32,14 +32,17 @@ export interface WatcherDeps {
   treatPgsAsMissing: boolean
   cooldownMinutes: number
   mediaRoots: string[]
-  /** A4: replaces the old standalone skipChineseOrigin boolean. This (old, zh-only) pipeline never
-   *  gained a per-language origin gate (out of A4 scope — see plan) — it still only ever checks
-   *  isChineseOrigin/needsChineseSubtitle. targetLanguages here is used ONLY to decide whether the
-   *  Chinese-origin-skip heuristic applies at all: 'zh' in the set → same behavior as the old
-   *  skipChineseOrigin:true default; 'zh' absent (e.g. SKIP_CHINESE_ORIGIN=false's resolved
-   *  targetLanguages, or a future non-zh-only config) → same behavior as skipChineseOrigin:false.
-   *  Defaults to `['zh']` when omitted, matching the old `?? true` default exactly. */
+  /** A4: target subtitle languages (coverage side of the split — see cli/targetLanguages.ts).
+   *  In this old, zh-only pipeline it serves only as the default for originSkipLanguages below
+   *  (needsChineseSubtitle stays hardcoded zh, out of A4 scope). Defaults to `['zh']`. */
   targetLanguages?: string[]
+  /** A4 spec-review fix #2: replaces the old standalone skipChineseOrigin boolean. This (old,
+   *  zh-only) pipeline never gained a per-language origin gate — it only ever checks
+   *  isChineseOrigin. originSkipLanguages decides whether that Chinese-origin-skip heuristic
+   *  applies at all: 'zh' in the set → same behavior as the old skipChineseOrigin:true default;
+   *  'zh' absent (the SKIP_CHINESE_ORIGIN=false compat path) → same as skipChineseOrigin:false.
+   *  Defaults to the effective targetLanguages (matching the old `?? true` default exactly). */
+  originSkipLanguages?: string[]
   skipCacheMinutes?: number
   queue: PrefetchQueue
   log: (msg: string) => void
@@ -102,7 +105,7 @@ export class Watcher {
         if (source === 'queue') this.deps.queue.remove(itemId)
       }
       if (!isTriggerableType(item.Type)) { skipItem(); return }
-      if ((this.deps.targetLanguages ?? ['zh']).includes('zh') && isChineseOrigin(item)) { skipItem(); return }
+      if ((this.deps.originSkipLanguages ?? this.deps.targetLanguages ?? ['zh']).includes('zh') && isChineseOrigin(item)) { skipItem(); return }
       if (!needsChineseSubtitle(item, this.deps.treatPgsAsMissing)) { skipItem(); return }
 
       const chineseTitle = await this.deps.jellyfin.getChineseTitle(item).catch(() => null)
@@ -194,7 +197,7 @@ export class Watcher {
       const fresh = items.filter(i => i.DateCreated && Date.parse(i.DateCreated) > wmTs)
       for (const item of fresh) {
         if (!isTriggerableType(item.Type)) continue
-        if ((this.deps.targetLanguages ?? ['zh']).includes('zh') && isChineseOrigin(item)) continue
+        if ((this.deps.originSkipLanguages ?? this.deps.targetLanguages ?? ['zh']).includes('zh') && isChineseOrigin(item)) continue
         if (!needsChineseSubtitle(item, this.deps.treatPgsAsMissing)) continue
         this.deps.queue.upsert(item.Id, item.Name)
         this.deps.log(`queued new arrival: ${item.Name}`)

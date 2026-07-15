@@ -120,9 +120,9 @@ describe('classifyItem', () => {
     expect(status).toBe('missing')
   })
 
-  it('empty targetLanguages (A4: the skipChineseOrigin=false equivalent) allows Chinese origin through', () => {
+  it('empty originSkipLanguages (A4: the skipChineseOrigin=false equivalent) allows Chinese origin through', () => {
     const item = movieItem({ ProductionLocations: ['China'] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, targetLanguages: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originSkipLanguages: [] })
     expect(status).toBe('missing')
   })
 })
@@ -175,9 +175,64 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
     expect(status).toBe('missing')
   })
 
-  it('empty targetLanguages (A4: the skipChineseOrigin=false equivalent) disables ALL origin skipping (zh still processed)', () => {
+  it('empty originSkipLanguages (A4: the skipChineseOrigin=false equivalent) disables ALL origin skipping (zh still processed)', () => {
     const item = movieItem({ ProductionLocations: [] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, targetLanguages: [], originLang: 'zh' })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originSkipLanguages: [], originLang: 'zh' })
+    expect(status).toBe('missing')
+  })
+})
+
+describe('classifyItem: originSkipLanguages vs targetLanguages split (spec-review fix #2 — the origin-skip opt-out must NOT weaken coverage detection)', () => {
+  const mappings = [{ from: '/media', to: '/mnt/media' }]
+
+  it('SKIP_CHINESE_ORIGIN=false equivalent (originSkipLanguages: [], targetLanguages default zh) + zh sidecar on disk → still covered (pre-A4 the flag never affected sidecar detection; classifying these missing would refetch already-subtitled items every cycle)', () => {
+    const item = movieItem({ Path: '/media/movies/Matrix/movie.mkv', ProductionLocations: ['China'] })
+    const fileExists = vi.fn((p: string) => p === '/mnt/media/movies/Matrix/movie.zh-Hans.srt')
+    const status = classifyItem(item, { fileExists, mappings, originSkipLanguages: [] })
+    expect(status).toBe('covered')
+  })
+
+  it('SKIP_CHINESE_ORIGIN=false equivalent + embedded zh stream → still embedded (rule 2 coverage detection keys on targetLanguages, not the origin-skip list)', () => {
+    const item = movieItem({
+      ProductionLocations: ['China'],
+      MediaStreams: [
+        { Type: 'Subtitle', Language: 'zh-Hans', IsExternal: false, Codec: 'ass' },
+      ] as any,
+    })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originSkipLanguages: [] })
+    expect(status).toBe('embedded')
+  })
+
+  it('SKIP_CHINESE_ORIGIN=false equivalent + cdrama (originLang=zh) → NOT ignored (the opt-out disables the origin gate)', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originSkipLanguages: [], originLang: 'zh' })
+    expect(status).toBe('missing')
+  })
+
+  it('originSkipLanguages omitted → defaults to the effective targetLanguages (existing callers unchanged)', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, targetLanguages: ['en'], originLang: 'en' })
+    expect(status).toBe('ignored')
+  })
+
+  it('split lists: origin gate keys on originSkipLanguages even when it differs from targetLanguages', () => {
+    // targetLanguages ['zh','en'] but origin-skip only ['en'] (SKIP_CHINESE_ORIGIN=false with
+    // TARGET_LANGUAGES=zh,en): a cdrama passes the gate, an English-origin item does not.
+    const cdrama = movieItem({ ProductionLocations: [] })
+    expect(classifyItem(cdrama, {
+      fileExists: () => false, mappings, targetLanguages: ['zh', 'en'], originSkipLanguages: ['en'], originLang: 'zh',
+    })).toBe('missing')
+    const western = movieItem({ ProductionLocations: [] })
+    expect(classifyItem(western, {
+      fileExists: () => false, mappings, targetLanguages: ['zh', 'en'], originSkipLanguages: ['en'], originLang: 'en',
+    })).toBe('ignored')
+  })
+
+  it('rules 1/1b heuristic fallbacks key on originSkipLanguages: zh in targets but NOT in origin-skip → ProductionLocations China heuristic does not fire', () => {
+    const item = movieItem({ ProductionLocations: ['China'] })
+    const status = classifyItem(item, {
+      fileExists: () => false, mappings, targetLanguages: ['zh'], originSkipLanguages: [], originLang: null,
+    })
     expect(status).toBe('missing')
   })
 })

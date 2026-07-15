@@ -111,6 +111,14 @@ export interface SearchSourceDeps {
   adapters: FetchAdapter[]
   store: ResultSetStore
   topN?: number
+  /** A4 (spec-review fix #3): the task's target subtitle language (FindSubtitleTask.targetLanguage,
+   *  threaded by makeFindSubtitleWorker). The model may simply omit the `languages` arg on a
+   *  search_source call — when it does, the dispatched FetchArgs defaults to [targetLanguage] so
+   *  provider language gating (assrt is Chinese-only — assrtAdapter.ts) works end-to-end for
+   *  non-zh targets. Optional: legacy callers without it fall through to runSearch's own ['zh']
+   *  enabled-check fallback (fetchLib.ts), preserving pre-A4 behavior. Model-passed `languages`
+   *  always win over this default. */
+  targetLanguage?: string
 }
 
 /** search_source: runs the existing multi-provider fan-out (runSearch — fetchLib.ts, unchanged)
@@ -134,7 +142,11 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
       languages: z.array(z.string()).optional(),
     }),
     execute: async (args) => {
-      const candidates = await runSearch({ ...args, deep: false }, deps.adapters, () => {})
+      // Model omitted `languages` → default to the task's target language (see SearchSourceDeps).
+      const languages = args.languages?.length
+        ? args.languages
+        : deps.targetLanguage ? [deps.targetLanguage] : undefined
+      const candidates = await runSearch({ ...args, languages, deep: false }, deps.adapters, () => {})
       const resultSetId = deps.store.create(candidates)
       const topN = deps.topN ?? 5
       return {

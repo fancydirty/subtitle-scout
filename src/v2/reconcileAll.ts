@@ -18,10 +18,14 @@ export interface ReconcileAllDeps {
   model: LanguageModel
   tmdb: OrchestratorAgentDeps['tmdb']
   mappings: PathMapping[]
-  /** A4: drives BOTH scanLibrary's origin-equality skip gate AND its disk-sidecar tag detection
-   *  (see scanner.ts's classifyItemDetailed) — threaded straight through, unchanged. Optional,
-   *  defaults to `['zh']` inside scanLibrary (historical single-target-language default). */
+  /** A4: target subtitle languages — drives scanLibrary's coverage detection (embedded/sidecar,
+   *  scanner.ts rules 2/3). Threaded straight through, unchanged. Optional, defaults to `['zh']`
+   *  inside scanLibrary (historical single-target-language default). */
   targetLanguages?: string[]
+  /** A4 spec-review fix #2: origin-audio languages that suppress an item (scanner.ts rule 0/1/1b).
+   *  Optional, defaults to the effective targetLanguages inside classifyItemDetailed — only the
+   *  SKIP_CHINESE_ORIGIN=false compat path passes a narrower set (see cli/targetLanguages.ts). */
+  originSkipLanguages?: string[]
   originResolver?: OriginResolver
   now: () => number
   /** null for the root pass (CLI `reconcile-all` / dashboard button, phase ⑦); a real jobs row
@@ -43,6 +47,7 @@ export async function runReconcileAll(deps: ReconcileAllDeps): Promise<Orchestra
     fileExists: p => existsSync(p),
     mappings: deps.mappings,
     targetLanguages: deps.targetLanguages,
+    originSkipLanguages: deps.originSkipLanguages,
     resolver: deps.originResolver,
   })
   const runOrchestratorPass = makeOrchestratorAgent({

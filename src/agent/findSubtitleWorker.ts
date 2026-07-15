@@ -49,7 +49,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
 
     const tools = {
       read_doc: makeReadDocTool([FIND_SUBTITLE_SKILL]),
-      search_source: makeSearchSourceTool({ adapters: deps.adapters, store }),
+      search_source: makeSearchSourceTool({ adapters: deps.adapters, store, targetLanguage: task.targetLanguage }),
       list_candidates: makeListCandidatesTool(store),
       get_candidate: makeGetCandidateTool(store),
       download_candidate: makeDownloadCandidateTool({

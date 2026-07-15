@@ -30,6 +30,13 @@ export interface FindSubtitleTaskMapperDeps {
    *  (this episode/movie's own containing directory) makeFindSubtitleWorker enforces on the agent
    *  itself ("each worker gets ONLY its series' media dir", phase ⑦ instructions). */
   mediaRoots: string[]
+  /** A4 (spec-review fix #1): the PRIMARY configured target subtitle language — cli/index.ts
+   *  wires `resolveTargetLanguages(process.env).targetLanguages[0]`. FindSubtitleTask.targetLanguage
+   *  is single-valued, so a multi-language TARGET_LANGUAGES config tasks only its first entry;
+   *  per-item multi-language tasking is future work (the per-item coverage model — one sub_status
+   *  per item — can't express "covered for zh but missing for en" yet). Optional/defaulted to
+   *  'zh' (the historical default) so existing tests/callers predating the config keep working. */
+  targetLanguage?: string
 }
 
 /** Representative missing episode for a series+season identity — same query remainingTargets()
@@ -130,8 +137,9 @@ export async function mapWorkerTaskToFindSubtitleTask(
     overview: ctx.media.overview ?? null,
     runtimeMinutes: ctx.media.runtime_minutes ?? null,
     providerIds: ctx.media.provider_ids,
-    // Hard default for now — config wiring (per-library/per-job target language) is a later task.
-    targetLanguage: 'zh',
+    // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
+    // multi-language per-item tasking is future work.
+    targetLanguage: deps.targetLanguage ?? 'zh',
   }
   return { task, targetItemId }
 }

@@ -93,32 +93,43 @@ export function classifyItemDetailed(
      */
     originResolutionFailed?: boolean
     /**
-     * A4 unification: ONE target-language set drives BOTH rule 0 的权威跳过门
-     * （`targetLanguages.includes(langOf(originLang))` → ignored）AND rule 3 的磁盘 sidecar
-     * tag 探测（tagsForLanguage 逐语言展开后 flatMap）——之前 A3 只喂了 rule 3，rule 0 单独
-     * 靠 skipChineseOrigin 布尔量，两个选项管着同一个"我们关心哪些语言"的问题，现在合一。
-     * 未传时默认 `['zh']`，与泛化前（skipChineseOrigin:true 是唯一出货配置）行为逐位一致。
+     * A4（spec-review fix #2 拆分后）：目标字幕语言集合——驱动"覆盖检测"，即 rule 2
+     * （内嵌/已收录字幕轨，中文专属实现）与 rule 3（磁盘 sidecar tag 探测，tagsForLanguage
+     * 逐语言展开后 flatMap）。未传时默认 `['zh']`，与泛化前行为逐位一致。
+     * 注意与 originSkipLanguages 是两个概念：这里回答"哪些语言的字幕算数"，
+     * originSkipLanguages 回答"哪些原声语言的条目整个不用管"。
      */
     targetLanguages?: string[]
+    /**
+     * 原声跳过语言集合——驱动 rule 0 的权威跳过门（`originSkipLanguages.includes(
+     * langOf(originLang))` → ignored）及其中文兜底启发式（rule 1/1b）。未传时默认取
+     * targetLanguages 的生效值（正常配置下两者相同）；只有 SKIP_CHINESE_ORIGIN=false
+     * 兼容路径会传一个去掉 zh 的子集——"别跳过国产内容"≠"zh 不是目标语言"，
+     * 该旗标从不影响 rule 2/3 的覆盖检测（否则已有中字的条目会被判 missing 反复重抓，
+     * 正是 A3 防的那个 bug）。见 cli/targetLanguages.ts 的 resolveTargetLanguages。
+     */
+    originSkipLanguages?: string[]
   }
 ): ClassifyResult {
   const targetLanguages = deps.targetLanguages ?? ['zh']
+  const originSkipLanguages = deps.originSkipLanguages ?? targetLanguages
 
-  // 0. 权威信号（TMDB original_language）→ ignored，先于一切：条目原始音轨语言本身就在我们
-  //    的目标字幕语言集合里，就不用为它找字幕（中文观众不需要国产剧的中文字幕；泛化后同理
+  // 0. 权威信号（TMDB original_language）→ ignored，先于一切：条目原始音轨语言本身就在
+  //    原声跳过集合里，就不用为它找字幕（中文观众不需要国产剧的中文字幕；泛化后同理
   //    ——英文字幕猎人不需要英语原声剧的英文字幕）。langOf() 把 originLang 折算到与
-  //    targetLanguages 同一套主语言码空间（agent/languages.ts）。原值缺失（null/未解析）时
-  //    不参与判断，交给下面 rule 1/1b 的中文兜底 或 rule 3/4 的正常流程。
-  if (deps.originLang != null && targetLanguages.includes(langOf(deps.originLang))) {
+  //    originSkipLanguages 同一套主语言码空间（agent/languages.ts）。原值缺失（null/未解析）
+  //    时不参与判断，交给下面 rule 1/1b 的中文兜底 或 rule 3/4 的正常流程。
+  if (deps.originLang != null && originSkipLanguages.includes(langOf(deps.originLang))) {
     return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
   }
 
   // 1/1b. 中文专属兜底启发式——刻意不泛化到其它语言（不发明"像法语标题""像韩语标题"这类
   //       per-language 启发式，那是错误的设计气味：ProductionLocations/标题这类信号的可靠度
-  //       和可得性因语言而异，中文有汉字这个廉价高信度信号，其它语言没有对等物）。只有 'zh'
-  //       在目标语言集合里时才跑这两条；其它目标语言完全依赖上面 rule 0 的权威 TMDB 信号——
+  //       和可得性因语言而异，中文有汉字这个廉价高信度信号，其它语言没有对等物）。作为
+  //       rule 0 权威门的兜底，这两条跟着 originSkipLanguages（不是 targetLanguages）走：
+  //       只有 'zh' 在原声跳过集合里时才跑；其它语言完全依赖上面 rule 0 的权威 TMDB 信号——
   //       TMDB 数据缺失时宁可放行（漏判成本是"多查一次白跑"，远低于"该查的没查"）。
-  if (targetLanguages.includes('zh')) {
+  if (originSkipLanguages.includes('zh')) {
     // 1. 兜底：无 TMDB 信号（originLang 未解析）时，用 ProductionLocations 猜国产
     if (deps.originLang == null && isChineseOrigin(item)) {
       return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
@@ -141,9 +152,11 @@ export function classifyItemDetailed(
     }
   }
 
-  // 2. 中字轨检测——同样中文专属，出 A4 scope（不动它的逻辑/位置，只加同一条 'zh' in
-  //    targetLanguages 门槛，与 rule 1/1b 一致）：非中文目标配置下，中文内嵌/外挂字幕轨不该
-  //    被误判成"覆盖了"一个跟中文无关的目标语言。按 IsExternal 分流：Jellyfin FullRefresh
+  // 2. 中字轨检测——同样中文专属，出 A4 scope（不动它的逻辑/位置，只加 'zh' in
+  //    targetLanguages 门槛）。注意：这是"覆盖检测"，跟的是 targetLanguages 而非
+  //    originSkipLanguages——SKIP_CHINESE_ORIGIN=false 只弱化跳过门，绝不该让已有中字的
+  //    条目被判 missing。非中文目标配置下，中文内嵌/外挂字幕轨不该被误判成"覆盖了"一个
+  //    跟中文无关的目标语言。按 IsExternal 分流：Jellyfin FullRefresh
   //    会把盘上的外挂字幕收进 MediaStreams（IsExternal=true）——那是 sidecar（scout 战果或
   //    用户手动放置），归 covered；只有 IsExternal 为 falsy 的才是真内嵌。两者都有时 covered
   //    优先（外挂展示价值更高）。diskSidecarPath 留 null——这条命中的是 Jellyfin 已经收录的
@@ -221,10 +234,12 @@ export async function scanLibrary(
     mappings: PathMapping[]
     resolver?: OriginResolver
     now?: number
-    /** A4 unification（见 classifyItemDetailed 同名参数注释）：驱动 rule 0 权威跳过门 +
-     *  rule 3 磁盘 sidecar 探测的同一个目标语言集合，透传给 classifyItemDetailed。未传时默认
-     *  `['zh']`，向后兼容——现有调用方不受影响。 */
+    /** A4（见 classifyItemDetailed 同名参数注释）：目标字幕语言集合（覆盖检测，rule 2/3），
+     *  透传给 classifyItemDetailed。未传时默认 `['zh']`，向后兼容——现有调用方不受影响。 */
     targetLanguages?: string[]
+    /** A4 spec-review fix #2（见 classifyItemDetailed 同名参数注释）：原声跳过语言集合
+     *  （rule 0/1/1b），透传。未传时默认取 targetLanguages 的生效值。 */
+    originSkipLanguages?: string[]
   }
 ): Promise<void> {
   const now = opts.now ?? Date.now()
@@ -299,6 +314,7 @@ export async function scanLibrary(
           originLang: resolvedOriginForClassification(cachedOriginLang),
           originResolutionFailed,
           targetLanguages: opts.targetLanguages,
+          originSkipLanguages: opts.originSkipLanguages,
         })
 
         // Preserve unavailable only if reality still says missing;
@@ -365,6 +381,7 @@ export async function scanLibrary(
           originLang: resolvedOriginForClassification(cachedOriginLang),
           originResolutionFailed,
           targetLanguages: opts.targetLanguages,
+          originSkipLanguages: opts.originSkipLanguages,
         })
 
         // Preserve unavailable only if reality still says missing (mirrors episode branch above)

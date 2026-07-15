@@ -92,9 +92,32 @@ describe('runFindSubtitleWorkerTask', () => {
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
     const row = lib.db.prepare('select language from subtitles where item_id=?').get('jf-ep-1') as { language: string }
-    // mapWorkerTaskToFindSubtitleTask still hardcodes targetLanguage: 'zh' pending a later task
-    // (config-driven target language) — the point here is the fallback source, not the value.
+    // deps.targetLanguage is unset here, so the mapper's own default ('zh') is what flows through
+    // — the point is the fallback source (task.targetLanguage), not the value.
     expect(row.language).toBe('zh')
+  })
+
+  // Spec-review fix #1 (A1's "A4 接配置"): the task's targetLanguage comes from configuration
+  // (deps.targetLanguage, wired from TARGET_LANGUAGES' primary entry in cli/index.ts), not a
+  // hardcoded 'zh'. With TARGET_LANGUAGES=en, dispatched workers must hunt English subtitles.
+  it('threads deps.targetLanguage into the constructed FindSubtitleTask (en config → en task)', async () => {
+    const { videoPath, lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async (_task: FindSubtitleTask) => decision({ installedPath: join(videoPath, '..', 'x.srt') }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask, targetLanguage: 'en' }, videoPath)
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(runTask.mock.calls[0][0].targetLanguage).toBe('en')
+  })
+
+  it('deps.targetLanguage omitted → task.targetLanguage defaults to zh (historical default)', async () => {
+    const { videoPath, lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async (_task: FindSubtitleTask) => decision({ installedPath: join(videoPath, '..', 'x.srt') }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(runTask.mock.calls[0][0].targetLanguage).toBe('zh')
   })
 
   it('movie identity: resolves the movie row (not an episode) and marks it covered', async () => {

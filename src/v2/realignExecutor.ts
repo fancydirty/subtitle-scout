@@ -257,7 +257,7 @@ function libRootFromRealignBuildDir(outDir: string): string {
  * makeFindSubtitleWorker(...)，测试走假函数）永远显式传入，注入点同样清楚。
  */
 export function makeRealignRunEpisode(
-  deps: { runFindSubtitleTask: (task: FindSubtitleTask) => Promise<FindSubtitleDecision> },
+  deps: { runFindSubtitleTask: (task: FindSubtitleTask) => Promise<FindSubtitleDecision>; targetLanguage?: string },
 ): (ctx: RealignMediaContext, outDir: string, jobId: string) => Promise<unknown> {
   return async (ctx, outDir, jobId) => {
     const task: FindSubtitleTask = {
@@ -275,8 +275,9 @@ export function makeRealignRunEpisode(
       overview: ctx.media.overview ?? null,
       runtimeMinutes: ctx.media.runtime_minutes ?? null,
       providerIds: ctx.media.provider_ids,
-      // Hard default for now — config wiring (per-library/per-job target language) is a later task.
-      targetLanguage: 'zh',
+      // A4: primary configured target language (TARGET_LANGUAGES[0], wired by cli/index.ts);
+      // multi-language per-item tasking is future work.
+      targetLanguage: deps.targetLanguage ?? 'zh',
     }
     return deps.runFindSubtitleTask(task)
   }

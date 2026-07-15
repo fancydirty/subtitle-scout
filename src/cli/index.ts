@@ -317,10 +317,11 @@ async function cmdReconcileAll() {
   const db = openDb(dbPath)
   const jobs = new JobsRepo(db)
   const lib = new LibraryRepo(db)
-  // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat
-  // — see targetLanguages.ts's resolveTargetLanguages for the exact mapping (locked by
-  // targetLanguages.test.ts).
-  const targetLanguages = resolveTargetLanguages(process.env)
+  // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
+  // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
+  // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
+  // exact mapping (locked by targetLanguages.test.ts).
+  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env)
   const originResolver: OriginResolver = {
     originFor: async item => {
       const ref = await resolveTmdbRefStrict(item, id => jf.getItem(id))
@@ -328,7 +329,7 @@ async function cmdReconcileAll() {
     },
   }
   const decision = await runReconcileAll({
-    jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originResolver,
+    jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originSkipLanguages, originResolver,
     now: () => Date.now(), orchestratorJobId: null,
   })
   console.log(
@@ -369,10 +370,11 @@ async function cmdWatch() {
   )
 
   // Construct DaemonDeps
-  // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat
-  // — see targetLanguages.ts's resolveTargetLanguages for the exact mapping (locked by
-  // targetLanguages.test.ts).
-  const targetLanguages = resolveTargetLanguages(process.env)
+  // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
+  // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
+  // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
+  // exact mapping (locked by targetLanguages.test.ts).
+  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env)
 
   // TMDB origin_lang 解析器：有 tmdb（TMDB_API_KEY 已配置）才接线，否则 undefined——
   // scanLibrary 退化到 classifyItem 的 ProductionLocations/标题启发式兜底梯队。
@@ -418,6 +420,9 @@ async function cmdWatch() {
       adapters: await buildAdapters(emitProviderEvent),
       cacheRoot,
     }),
+    // A4: the PRIMARY configured target language — FindSubtitleTask.targetLanguage is
+    // single-valued; multi-language per-item tasking is future work.
+    targetLanguage: targetLanguages[0],
   })
   const realignDeps: RealignExecutorDeps | undefined = tmdb
     ? {
@@ -453,7 +458,9 @@ async function cmdWatch() {
   // 的 FindSubtitleTaskMapperDeps 注释。adapters 每次 claim 现建（同旧管线每次子进程重建一次
   // 的成本量级，非新增开销）。
   const findSubtitleWorkerTaskDeps = {
-    lib, jf, tmdb, mappings, mediaRoots: roots,
+    // targetLanguage: A4, the PRIMARY configured target — same single-valued note as
+    // realignRunEpisode above.
+    lib, jf, tmdb, mappings, mediaRoots: roots, targetLanguage: targetLanguages[0],
   }
 
   // orchestrator 依赖（v3 phase ⑦）：sibling-orchestrator worker_task（taskType==='orchestrate'）
@@ -534,6 +541,7 @@ async function cmdWatch() {
         fileExists: (p) => existsSync(p),
         mappings,
         targetLanguages,
+        originSkipLanguages,
         resolver: originResolver,
       })
     },
@@ -593,7 +601,7 @@ async function cmdWatch() {
   // 工具需要真实 TmdbClient；未配置时 startDashboard 收到 undefined，端点返回 503（不是崩溃/悬空）。
   const reconcileAllClosure = tmdb
     ? () => runReconcileAll({
-        jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originResolver,
+        jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originSkipLanguages, originResolver,
         now: () => Date.now(), orchestratorJobId: null,
       })
     : undefined
