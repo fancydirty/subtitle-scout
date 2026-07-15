@@ -1,20 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { needsChineseSubtitle, isTriggerableType, isChineseOrigin, CHINESE_LANG_TAGS, isChineseLang, looksChineseTitle } from './triggers.js'
+import { needsChineseSubtitle, looksChineseTitle } from './triggers.js'
 import { JellyfinItemsResponseSchema, type JellyfinItem } from '../adapters/players/jellyfin.js'
 
 const base = { Id: 'x', Name: 'M', Type: 'Movie', Path: '/m/x.mkv' } as JellyfinItem
 const sub = (lang: string | undefined, codec = 'subrip', ext = true) =>
   ({ Type: 'Subtitle', Language: lang, Codec: codec, IsExternal: ext })
 
-describe('isTriggerableType', () => {
-  it('movie/episode yes, others no', () => {
-    expect(isTriggerableType('Movie')).toBe(true)
-    expect(isTriggerableType('Episode')).toBe(true)
-    expect(isTriggerableType('Audio')).toBe(false)
-    expect(isTriggerableType('Trailer')).toBe(false)
-  })
-})
+// 去 Jellyfin 化 T4：isTriggerableType / isChineseOrigin / isChineseLang 的三个 describe 块
+// 随各自唯一的生产调用方（daemon/watcher.ts、v2/scanner.ts）一起删除——见 triggers.ts 头部
+// 新增的说明注释。needsChineseSubtitle / looksChineseTitle 仍有生产调用方，覆盖照旧保留。
 
 describe('needsChineseSubtitle', () => {
   it('true when no subtitle streams at all', () => {
@@ -44,30 +39,6 @@ describe('needsChineseSubtitle', () => {
   })
 })
 
-describe('isChineseOrigin', () => {
-  it('detects mainland/HK/TW in various spellings', () => {
-    for (const loc of ['China', "People's Republic of China", 'Hong Kong', 'Taiwan', '中国', '中国大陆', '香港', '台湾']) {
-      expect(isChineseOrigin({ ...base, ProductionLocations: [loc] })).toBe(true)
-    }
-  })
-  it('false for foreign or missing metadata', () => {
-    expect(isChineseOrigin({ ...base, ProductionLocations: ['United States of America'] })).toBe(false)
-    expect(isChineseOrigin({ ...base, ProductionLocations: [] })).toBe(false)
-    expect(isChineseOrigin({ ...base, ProductionLocations: undefined })).toBe(false)
-  })
-})
-
-describe('isChineseLang', () => {
-  it('true for zh/cn, false for others/nullish', () => {
-    expect(isChineseLang('zh')).toBe(true)
-    expect(isChineseLang('cn')).toBe(true)
-    expect(isChineseLang('ja')).toBe(false)
-    expect(isChineseLang('ko')).toBe(false)
-    expect(isChineseLang('en')).toBe(false)
-    expect(isChineseLang(null)).toBe(false)
-    expect(isChineseLang(undefined)).toBe(false)
-  })
-})
 describe('looksChineseTitle', () => {
   it('Han-only → true; kana/hangul present → false', () => {
     expect(looksChineseTitle('英雄')).toBe(true)

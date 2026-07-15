@@ -6,14 +6,12 @@ import { join } from 'node:path'
 import { generateText, type LanguageModel } from 'ai'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
-import { TmdbClient, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
+import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { type FetchEvent } from './fetchLib.js'
 import { gcOrphans } from '../files/stagingSandbox.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import { parsePathMappings, isDirWritable, type PathMapping } from '../core/mediaContext.js'
-// import { Watcher } from '../daemon/watcher.js'  // v1 watcher — 保留文件但不再引用
-// import { PrefetchQueue } from '../daemon/queue.js'  // v1 queue — v2 不用
 import { Ledger } from '../core/ledger.js'
 import { parseSince, formatReport } from './report.js'
 import { makeFileLogger } from '../core/fileLogger.js'
@@ -29,10 +27,9 @@ import { openDb } from '../v2/db.js'
 import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
-import { scanLibrary, type OriginResolver } from '../v2/scanner.js'
+import { makeIngestPass } from '../v2/ingest.js'
 import { executeJob } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
-import type { MediaItem } from '../adapters/players/types.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
 import { executeRealign, makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
 import { replayRollback } from '../files/realignManifest.js'
@@ -43,8 +40,9 @@ import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from './buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
 import { recognize } from '../recognition/index.js'
-import { makeSelfScanTrigger, type SelfScanTriggerDeps } from '../daemon/selfScanTrigger.js'
+import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
+import { probeEmbeddedSubtitles } from '../files/streamProbe.js'
 import { routeLegacyJob, tombstoneLegacyJob } from './legacyJobRouting.js'
 
 function requireEnv(name: string): string {
@@ -96,20 +94,45 @@ function mediaRoots(mappings: PathMapping[]): string[] {
   return [...mappings.map(m => m.to), ...fromEnv]
 }
 
-/** on-demand "全仓校验" 触发器（v3 phase ⑦ Task 1）：跑一次机械预扫描（scanLibrary，未改动）
- *  + 一次编排器过（makeOrchestratorAgent）。与 cmdWatch 内 daemon 每 15min 一次的机械 scan
- *  （reconcile；W0-4 起 aggregate 已退休，不再喂旧管线）相互独立、并存——这是新 v3 链路的
- *  手动触发入口。命令跑完即退出，写下的 worker_task 行要等一个正在跑的 `watch` daemon
- *  进程认领执行（本命令自己从不认领任何行）。
+/** 去 Jellyfin 化 T4：cmdWatch 与 cmdReconcileAll 共用的摄取 pass 组装——recognize 预绑定 tmdb +
+ *  lib.findOverride（P6 认领消歧，消歧前查），probe 绑定 ffprobe 探针（files/streamProbe.ts）。
+ *  两个调用点各自决定 roots/targetLanguages/originSkipLanguages/log 的具体来源，其余接线逐字
+ *  相同，不重复两份。 */
+function buildIngestPass(opts: {
+  roots: string[]
+  lib: LibraryRepo
+  tmdb: TmdbClient
+  targetLanguages: string[]
+  originSkipLanguages: string[]
+  log: (msg: string) => void
+}): ReturnType<typeof makeIngestPass> {
+  return makeIngestPass({
+    roots: opts.roots,
+    lib: opts.lib,
+    tmdb: opts.tmdb,
+    recognize: (videoPath: string) => recognize(videoPath, opts.tmdb, { findOverride: (p) => opts.lib.findOverride(p) }),
+    probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
+    targetLanguages: opts.targetLanguages,
+    originSkipLanguages: opts.originSkipLanguages,
+    log: opts.log,
+  })
+}
+
+/** on-demand "全仓校验" 触发器（v3 phase ⑦ Task 1）：跑一次摄取 pass（去 Jellyfin 化 T4：
+ *  scanLibrary 机械预扫描 → v2/ingest.ts 的 makeIngestPass，见 reconcileAll.ts 的
+ *  ReconcileAllDeps.ingest 字段注释）+ 一次编排器过（makeOrchestratorAgent）。与 cmdWatch 内
+ *  daemon 每 15min 一次的 ingest 心跳相互独立、并存——这是新 v3 链路的手动触发入口。命令跑完
+ *  即退出，写下的 worker_task 行要等一个正在跑的 `watch` daemon 进程认领执行（本命令自己从不
+ *  认领任何行）。
  *  TMDB_API_KEY 是硬性前置——不同于 cmdWatch 里 realign 那种"没配置就静默
  *  跳过"（那是给日常 watch 循环的容错，缺检测能力不该拦住找字幕主线）：orchestrator 的
- *  check_series_layout 工具需要真实 TmdbClient 才能判断"季数是否超出 TMDB 季表"，手动触发的
- *  全仓校验若因为缺 key 而悄悄只做一半，会让使用者误以为已经跑过完整校验——所以这里直接
- *  报错退出，同 requireEnv 的硬依赖语义一致。 */
+ *  check_series_layout 工具需要真实 TmdbClient 才能判断"季数是否超出 TMDB 季表"，摄取层本身
+ *  也需要真实 TmdbClient 才能识别文件——手动触发的全仓校验若因为缺 key 而悄悄只做一半，
+ *  会让使用者误以为已经跑过完整校验——所以这里直接报错退出，同 requireEnv 的硬依赖语义一致。 */
 async function cmdReconcileAll() {
   const { jf, mappings, tmdb, reasoningModel, cacheRoot } = await assemble()
   if (!tmdb) {
-    console.error('reconcile-all requires TMDB_API_KEY（orchestrator 的 check_series_layout 工具需要真实 TMDB 季表数据）— 请在 .env 里配置')
+    console.error('reconcile-all requires TMDB_API_KEY（orchestrator 的 check_series_layout 工具与摄取层都需要真实 TMDB 数据）— 请在 .env 里配置')
     process.exit(2)
   }
   const dbPath = join(cacheRoot, 'scout.db')
@@ -121,14 +144,12 @@ async function cmdReconcileAll() {
   // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
   // exact mapping (locked by targetLanguages.test.ts).
   const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env)
-  const originResolver: OriginResolver = {
-    originFor: async item => {
-      const ref = await resolveTmdbRefStrict(item, id => jf.getItem(id))
-      return ref ? tmdb.getOriginLanguage(ref.mediaType, ref.tmdbId) : null
-    },
-  }
+  const ingest = buildIngestPass({
+    roots: mediaRoots(mappings), lib, tmdb, targetLanguages, originSkipLanguages,
+    log: (msg) => console.log(`[reconcile-all] ${msg}`),
+  })
   const decision = await runReconcileAll({
-    jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originSkipLanguages, originResolver,
+    ingest, lib, jobs, model: reasoningModel, tmdb, jf,
     now: () => Date.now(), orchestratorJobId: null,
   })
   console.log(
@@ -141,6 +162,14 @@ async function cmdReconcileAll() {
 
 async function cmdWatch() {
   const { cacheRoot, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb, reasoningModel } = await assemble()
+  // 去 Jellyfin 化 T4：TMDB_API_KEY 从"realign/orchestrate 才需要，缺了静默降级"升级成 watch
+  // 的硬性前置——v2/ingest.ts 的 makeIngestPass 不再有 Jellyfin fallback 世界，识别文件、
+  // 拉 origin_lang/poster 全靠真实 TmdbClient。requireEnv-style：缺 key 直接报错退出（exit 2），
+  // 不悄悄跑一个"什么都摄取不了"的 watch 进程。
+  if (!tmdb) {
+    console.error('missing required env var: TMDB_API_KEY（watch 现在依赖 v2/ingest.ts 直连 TMDB 识别文件——不再有 Jellyfin fallback 世界）')
+    process.exit(2)
+  }
   const shutdown = new AbortController()
   const roots = mediaRoots(mappings)
   if (roots.length === 0) {
@@ -167,21 +196,6 @@ async function cmdWatch() {
   // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
   // exact mapping (locked by targetLanguages.test.ts).
   const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env)
-
-  // TMDB origin_lang 解析器：有 tmdb（TMDB_API_KEY 已配置）才接线，否则 undefined——
-  // scanLibrary 退化到 classifyItem 的 ProductionLocations/标题启发式兜底梯队。
-  // 用 resolveTmdbRefStrict（而非 resolveTmdbRef）：Episode→series 回查若是 Jellyfin 请求
-  // 瞬时失败（网络/5xx），必须原样向上抛出，scanLibrary 才能按"本轮不解析"处理（不落
-  // ORIGIN_UNKNOWN 哨兵、标题启发式兜底也被压制）；resolveTmdbRef 的静默吞错语义只适合
-  // tmdbTitles 那类增益路径，接在这里会把 Jellyfin 抖动误判成"查无数据"并永久缓存。
-  const originResolver: OriginResolver | undefined = tmdb
-    ? {
-        originFor: async item => {
-          const ref = await resolveTmdbRefStrict(item, id => jf.getItem(id))
-          return ref ? tmdb.getOriginLanguage(ref.mediaType, ref.tmdbId) : null
-        },
-      }
-    : undefined
 
   // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
   // 逐 job Journal（老管线的 journalStore/withJournal 已随 Wave 2D 一并删除），api_call 量大信号
@@ -265,26 +279,12 @@ async function cmdWatch() {
   // 同样门在 tmdb——makeOrchestratorAgent 的 check_series_layout 工具需要真实 TmdbClient。
   const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, jf, model: reasoningModel, now: () => Date.now() } : undefined
 
-  // B2 self-scan 触发依赖（周期文件系统扫描 + refresh-bridge，src/daemon/selfScanTrigger.ts）：
-  // 同样门在 tmdb——subsystem C 的 recognize() 需要真实 TmdbClient 才能把路径消歧到 TMDB id。
-  // getVirtualFolders/refreshLibrary 复用 jellyfinClientForRealign（同 realignDeps.jf 那一个
-  // 实例）——都是"库位置查询 + 单库刷新"这同一对 Jellyfin 能力，没有理由各自建一份。
-  const selfScanTriggerDeps: SelfScanTriggerDeps | undefined = tmdb
-    ? {
-        roots,
-        knownPaths: () => lib.knownPaths(),
-        recognize: (videoPath: string) => recognize(videoPath, tmdb),
-        log,
-        now: () => Date.now(),
-        getVirtualFolders: () => jellyfinClientForRealign.getVirtualFolders(),
-        refreshLibrary: (id: string) => jellyfinClientForRealign.refreshLibrary(id),
-        mappings,
-        jobs,
-      }
-    : undefined
-  if (!selfScanTriggerDeps) {
-    log('warn: self-scan 未接线（缺 TMDB_API_KEY），已跳过——daemon 其余部分不受影响')
-  }
+  // 去 Jellyfin 化 T4：ingest 心跳依赖——v2/ingest.ts 的 makeIngestPass 顶替旧的机械 scan()
+  // + B2 self-scan refresh-bridge 两条独立分支。tmdb 在函数顶部已经 requireEnv 过，这里
+  // 不再需要"缺 key 就跳过"的降级三元分支。makeIngestTrigger（src/daemon/ingestTrigger.ts）
+  // 包一层：pass 本身报告 changed 时才 upsert 一个 orchestrate worker_task（identity 固定去重）。
+  const ingestPass = buildIngestPass({ roots, lib, tmdb, targetLanguages, originSkipLanguages, log })
+  const ingestTrigger = makeIngestTrigger({ ingest: ingestPass, jobs, now: () => Date.now(), log })
 
   // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
   // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）在被调用之后，
@@ -350,16 +350,7 @@ async function cmdWatch() {
     lib,
     jobs,
     runs,
-    scan: async () => {
-      await scanLibrary(jf, lib, {
-        pageSize: 100,
-        fileExists: (p) => existsSync(p),
-        mappings,
-        targetLanguages,
-        originSkipLanguages,
-        resolver: originResolver,
-      })
-    },
+    ingestTrigger,
     gcStaging: () => gcOrphans(roots, new Set()),
     executeJob: async (job) => {
       // v3 phase ⑦: job.kind==='worker_task' is a THIRD, independent execution path off the
@@ -392,39 +383,16 @@ async function cmdWatch() {
       }
       tombstoneLegacyJob(job, jobs, log, Date.now())
     },
-    getSessions: () => jf.getSessions(),
-    episodeForSession: (item: MediaItem) => {
-      if (item.Type === 'Episode' && item.SeriesId && item.ParentIndexNumber !== undefined && item.ParentIndexNumber !== null) {
-        return {
-          kind: 'series_season' as const,
-          seriesId: item.SeriesId,
-          season: item.ParentIndexNumber,
-        }
-      }
-      if (item.Type === 'Movie' && item.Id) {
-        return {
-          kind: 'movie' as const,
-          movieId: item.Id,
-        }
-      }
-      return null
-    },
     log,
     now: () => Date.now(),
-    // RECONCILE_EVERY_MS：机械 scan 的节拍旋钮（默认 15 min；W0-4 起 aggregate 已从这个
-    // 节拍摘线退休）。自研巡检（B2）的 Signal B 依赖 scan() 把 Jellyfin 摄取结果镜像进
-    // episodes/movies，所以真站验证/快速环境会把它调小；生产不设即维持原默认。
-    reconcileEveryMs: Number(process.env.RECONCILE_EVERY_MS) || 15 * 60_000,
-    fullScanEveryMs: 6 * 3600_000,   // 6 hours (一期全量扫描，此字段预留)
     concurrency: {
       searching: 1,
       downloading: 2,  // 一期由 executor 内部串行，此处预留
       verifying: 2,    // 一期由 executor 内部串行，此处预留
     },
-    // B2: selfScanTriggerDeps 未接线（缺 TMDB_API_KEY）时 undefined——daemon.ts 的 tickInner
-    // 整段 self-scan 分支静默跳过，同 realign/orchestrate worker_task 一样的降级语义。
-    selfScan: selfScanTriggerDeps ? makeSelfScanTrigger(selfScanTriggerDeps) : undefined,
-    selfScanEveryMs: Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
+    // ingest 心跳的时间门间隔——SCAN_INTERVAL_MS 环境变量沿用（原先驱动 B2 self-scan 的同一个
+    // 旋钮，语义现在直接就是 ingest 心跳的节拍，见 daemon.ts DaemonDeps.ingestEveryMs 注释）。
+    ingestEveryMs: Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
   }
 
   // "全仓校验"触发器（v3 phase ⑦ Task 3）：与 cmdReconcileAll（独立 CLI 命令，自己开一份 db 连接）
@@ -433,7 +401,7 @@ async function cmdWatch() {
   // 工具需要真实 TmdbClient；未配置时 startDashboard 收到 undefined，端点返回 503（不是崩溃/悬空）。
   const reconcileAllClosure = tmdb
     ? () => runReconcileAll({
-        jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originSkipLanguages, originResolver,
+        ingest: ingestPass, lib, jobs, model: reasoningModel, tmdb, jf,
         now: () => Date.now(), orchestratorJobId: null,
       })
     : undefined
@@ -487,9 +455,8 @@ async function cmdReport(since: string) {
     process.exit(2)
   }
   const { events, badLines } = ledger.read(sinceMs)
-  // v2: queue 不再使用，报告暂时传空队列状态（二期接 DB 后恢复）
+  // v2: queue 不再使用（去 Jellyfin 化 T4：daemon/queue.ts 本体已删），报告暂时传空队列状态。
   const queueNow = { pending: 0, dormant: 0 }
-  // try { queueNow = new PrefetchQueue(join(cacheRoot, 'queue.json')).size() } catch { /* 无队列文件 */ }
   process.stdout.write(formatReport(events, badLines, queueNow))
   process.exit(0)
 }

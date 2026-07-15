@@ -28,26 +28,28 @@ const fakeJf: Pick<PlayerServer, 'getItem'> = { getItem: async () => null as nev
 const EMPTY_DECISION = { dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'nothing to do' }
 
 describe('runReconcileAll', () => {
-  it('runs the mechanical pre-scan (scanLibrary) THEN one orchestrator pass, passing orchestratorJobId through unchanged (null for the root pass)', async () => {
+  it('runs the ingest pass THEN one orchestrator pass, passing orchestratorJobId through unchanged (null for the root pass)', async () => {
     const db = openDb(':memory:')
     const jobs = new JobsRepo(db)
     const lib = new LibraryRepo(db)
     const model = new MockLanguageModelV4({ doGenerate: async () => finalizeResult(EMPTY_DECISION)})
 
-    const jf = {
-      getItemsPage: async (start: number) => (start === 0 ? [
-        { Id: 'e1', Name: 'E1', Type: 'Episode', Path: '/lib/Show/S01/e1.mkv', SeriesId: 's1', SeriesName: 'Show', ParentIndexNumber: 1, IndexNumber: 1 },
-      ] as never : []),
-      getItem: async () => null as never,
+    let ingestCalled = false
+    const ingest = async () => {
+      ingestCalled = true
+      // Stand-in for a real v2/ingest.ts pass writing a row — runReconcileAll (去 Jellyfin 化 T4)
+      // only cares that deps.ingest() ran before the orchestrator pass, not its internal shape.
+      lib.upsertSeries({ id: 's1', name: 'Show' })
     }
 
     const decision = await runReconcileAll({
-      jf, lib, jobs, model, tmdb: fakeTmdb, mappings: [],
+      ingest, lib, jobs, model, tmdb: fakeTmdb, jf: fakeJf,
       now: () => 1000, orchestratorJobId: null, stepCap: 10,
     })
 
     expect(decision).toEqual(EMPTY_DECISION)
-    // scanLibrary really ran first — the episode it saw got mirrored into the library.
+    expect(ingestCalled).toBe(true)
+    // ingest really ran first — the row it wrote is visible in the library.
     expect(lib.getSeries('s1')).not.toBeNull()
   })
 
@@ -58,10 +60,9 @@ describe('runReconcileAll', () => {
     const model = new MockLanguageModelV4({
       doGenerate: async () => { throw new Error('model must never be called') },
     })
-    const jf = { getItemsPage: async () => [] as never, getItem: async () => null as never }
 
     await expect(runReconcileAll({
-      jf, lib, jobs, model, tmdb: fakeTmdb, mappings: [],
+      ingest: async () => {}, lib, jobs, model, tmdb: fakeTmdb, jf: fakeJf,
       now: () => 1000, orchestratorJobId: 999999, stepCap: 10,
     })).rejects.toThrow(/orchestratorJobId=999999 does not reference an existing jobs row/)
   })

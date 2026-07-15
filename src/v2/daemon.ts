@@ -1,31 +1,28 @@
 import type { LibraryRepo } from './libraryRepo.js'
 import type { JobsRepo, Job } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
-import type { PlaybackSession, MediaItem } from '../adapters/players/types.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
-import type { SelfScanTriggerResult } from '../daemon/selfScanTrigger.js'
+import type { IngestTriggerResult } from '../daemon/ingestTrigger.js'
 
 export interface DaemonDeps {
   lib: LibraryRepo
   jobs: JobsRepo
   runs: RunsRepo
-  /** 闭包：扫描 Jellyfin library → 镜像入 episodes/movies */
-  scan: () => Promise<void>
+  /** 去 Jellyfin 化 T4：唯一的周期重活分支——src/daemon/ingestTrigger.ts 的 makeIngestTrigger(...)
+   *  返回值，调用方（cli/index.ts cmdWatch）已经用 v2/ingest.ts 的 makeIngestPass 预绑定好
+   *  recognize/probe/tmdb。取代了旧的机械 scan()（镜像 Jellyfin library）+ B2 self-scan
+   *  refresh-bridge 两条分支——ingest 是"检测即摄取"的单步直写，不再需要分两条时间门。
+   *  非 optional：cmdWatch 现在把 TMDB_API_KEY 做成硬性前置（watch 依赖 ingest 层的真实
+   *  TmdbClient 才能识别文件），不再有"缺 key 时整个分支跳过"的降级世界。 */
+  ingestTrigger: () => Promise<IngestTriggerResult>
   /** 闭包：执行一个 job（fire-and-forget，daemon 不 await） */
   executeJob: (job: Job) => Promise<void>
-  /** 闭包：获取当前播放会话（已有 30s 超时保护） */
-  getSessions: () => Promise<PlaybackSession[]>
-  /** 闭包：从 MediaItem 解析剧集/电影 identity */
-  episodeForSession: (item: MediaItem) => {
-    kind: 'series_season' | 'movie'
-    seriesId?: string
-    season?: number
-    movieId?: string
-  } | null
   log: (msg: string) => void
   now: () => number
-  reconcileEveryMs: number   // 默认 15min
-  fullScanEveryMs: number    // 默认 6h（一期全量扫描，meta.last_full_scan_at 暂不用）
+  /** ingest 心跳的时间门间隔——默认 SELF_SCAN_DEFAULT_INTERVAL_MS(15min，沿用
+   *  daemon/selfScan.ts 已有的常量：该文件本身不在本次改动范围内，见 tickInner 注释）。
+   *  cli/index.ts 由 SCAN_INTERVAL_MS 环境变量覆盖后传入。 */
+  ingestEveryMs?: number
   concurrency: {
     searching: number        // 默认 1
     downloading: number      // 默认 2（一期由 executor 内部串行，此处预留）
@@ -37,18 +34,6 @@ export interface DaemonDeps {
   /** 沙盒孤儿 GC：daemon 启动时调用一次，镜像 jobs.reapAllActive 的"单实例前提，无条件
    *  回收"语义——旧进程遗留的 .subtitle-staging/<jobId> 目录全部视为孤儿垃圾。 */
   gcStaging?: () => number
-  /** B2：一次 self-scan + refresh-bridge 判定（makeSelfScanTrigger 的返回值，
-   *  src/daemon/selfScanTrigger.ts）——B1 的周期文件系统扫描 + 差异检测，判定"有变化"时
-   *  对受影响的 Jellyfin 库调 refreshLibrary + 派发（至多）一个 v3 orchestrator worker_task。
-   *  undefined 时整个 self-scan 分支跳过（cmdWatch 缺 TMDB_API_KEY 时的降级——同
-   *  realign/orchestrate worker_task 一样门在 tmdb，见 cli/index.ts），daemon 主循环其余部分
-   *  不受影响。独立于机械 scan（reconcile；W0-4 起 aggregate 已从这条时间门摘线退休，见
-   *  下方 tickInner 的注释）的 reconcileEveryMs 时间门，自己按 selfScanEveryMs 走一套同构的
-   *  meta 表时间戳门（见 tickInner）。 */
-  selfScan?: () => Promise<SelfScanTriggerResult>
-  /** self-scan 时间门的间隔——默认 SELF_SCAN_DEFAULT_INTERVAL_MS(15min)，cli/index.ts 由
-   *  SCAN_INTERVAL_MS 环境变量覆盖后传入。 */
-  selfScanEveryMs?: number
 }
 
 /** tick() 连续意外抛错（reap/meta读/dispatch 里未被内层 try/catch 覆盖的异常，如磁盘满）
@@ -56,9 +41,13 @@ export interface DaemonDeps {
 export const MAX_CONSECUTIVE_TICK_FAILURES = 5
 
 /**
- * v2 daemon: 两条独立循环
- * 1. tick (15s): reap → (到点)scan → dispatch（W0-4：aggregate 已退休，见 tickInner 注释）
- * 2. pollSessions (15s): 命中缺字幕条目 → wake/boost
+ * v2 daemon: 单条循环
+ * tick (15s): reap → (到点，且无 realign 冲突) ingest → dispatch
+ *
+ * 去 Jellyfin 化 T4：原先的第二条循环（pollSessions，15s，Jellyfin 播放会话轮询 + 缺字幕条目
+ * wake/boost）整体删除——用户根本不用 Jellyfin 播放（design 文档背景一节），这条播放优先级
+ * 机制服务的场景在本战役的产品坐标下语义已死。同期删除的还有机械 scan()（镜像 Jellyfin
+ * library）与 B2 self-scan refresh-bridge：两者折叠进下面 tickInner 的单条 ingest 心跳分支。
  */
 export class ScoutDaemon {
   private inflight = new Set<Promise<void>>()
@@ -78,11 +67,12 @@ export class ScoutDaemon {
   //      误判成"租约已被回收重派"。
   private inflightJobs = new Map<number, Job>()
   private stopping = false
-  // 部署重启瞬间：上个进程分钟前才写过 last_reconcile_at，纯时间门会让首次 scan 延迟
-  // 最长 15 分钟，而 dispatch 每 15s 无条件跑——旧 wanted/failed job（含刚被
-  // reapAllActive 复活的）会在扫描器套用新分类规则之前被派发。强制开机第一拍
-  // 先 reconcile 一次，不管 last_reconcile_at 多新，堵死这个窗口。
-  private bootReconcilePending = true
+  // 部署重启瞬间：上个进程分钟前才写过 last_ingest_at，纯时间门会让首次 ingest 延迟
+  // 最长一个 ingestEveryMs 周期，而 dispatch 每 15s 无条件跑——旧 wanted/failed job（含刚被
+  // reapAllActive 复活的）会在 ingest 套用新分类规则之前被派发。强制开机第一拍
+  // 先 ingest 一次，不管 last_ingest_at 多新，堵死这个窗口（旧 bootReconcilePending 的
+  // 语义原样搬到这里，只是改名字并只服务 ingest 这一条分支）。
+  private bootIngestPending = true
   // tick() 连续意外失败计数——任何一次 tick 顺利跑完（tickInner 不抛）就清零；
   // 达 MAX_CONSECUTIVE_TICK_FAILURES 时 fail-fast 退出进程（daemon.ts:249 审计修正）。
   private consecutiveTickFailures = 0
@@ -90,12 +80,11 @@ export class ScoutDaemon {
   constructor(private deps: DaemonDeps) {}
 
   /**
-   * 一拍：reap → (到点)reconcile → dispatch
+   * 一拍：reap → (到点)ingest → dispatch
    * 隔离层：tickInner 里任何未被内层 try/catch 吸收的意外抛错（如磁盘满命中
    * reapExpiredLeases/meta SELECT/dispatch 的 claimNext）都在这里兜住、记日志，
-   * 不让 tickLoop 的 promise reject——否则 Promise.all(...).catch(() => {}) 会
-   * 悄悄吞掉它，tick 永久停摆但进程存活不退出。连续失败达阈值则 fail-fast 退出，
-   * 交给外部编排（docker restart:unless-stopped）拉活。
+   * 不让 tickLoop 的 promise reject——否则会悄悄停摆但进程存活不退出。连续失败达阈值则
+   * fail-fast 退出，交给外部编排（docker restart:unless-stopped）拉活。
    */
   async tick(): Promise<void> {
     try {
@@ -118,7 +107,7 @@ export class ScoutDaemon {
   }
 
   private async tickInner(): Promise<void> {
-    const { jobs, lib, scan, executeJob, log, now, reconcileEveryMs } = this.deps
+    const { jobs, lib, log, now } = this.deps
 
     // 0. Heartbeat: 为本进程仍在跑的 job 续租，早于 reap 执行——防止合法长跑（如季包
     //    多集下载合法跑超 30min 租约）被误判死亡回收、被 dispatch 并发重领（starvation 审计修正）。
@@ -149,81 +138,53 @@ export class ScoutDaemon {
     // 1. Reap expired leases
     jobs.reapExpiredLeases(now())
 
-    // 2. Check if it's time for reconcile (scan——镜像 Jellyfin library 进 episodes/movies；
-    //    W0-4 切 feed：aggregate() 已摘线，机械 reconcile 只剩 scan 这一半——它喂的镜像仍是
-    //    v3 selfScanTrigger Signal B（下面 2b）和 orchestrator list_missing_coverage 的地基，
-    //    不能跟着 aggregate 一起走；aggregate 那半（missing→旧 kind job）连同它创建的 job
-    //    一起退休，v3 orchestrator 派活取代它)
-    const lastReconcileRow = lib.db
-      .prepare(`SELECT value FROM meta WHERE key = 'last_reconcile_at'`)
+    // 2. Ingest heartbeat（去 Jellyfin 化 T4：唯一的周期重活分支，取代了旧的机械 scan()
+    //    reconcile + B2 self-scan refresh-bridge 两条独立时间门）。
+    const lastIngestRow = lib.db
+      .prepare(`SELECT value FROM meta WHERE key = 'last_ingest_at'`)
       .get() as { value: string } | undefined
+    const lastIngest = lastIngestRow ? Number(lastIngestRow.value) : 0
+    const timeSinceIngest = now() - lastIngest
+    const ingestEveryMs = this.deps.ingestEveryMs ?? SELF_SCAN_DEFAULT_INTERVAL_MS
 
-    const lastReconcile = lastReconcileRow ? Number(lastReconcileRow.value) : 0
-    const timeSinceReconcile = now() - lastReconcile
-
-    if (this.bootReconcilePending || timeSinceReconcile >= reconcileEveryMs) {
-      // Time for reconcile (or boot forces one regardless of the time gate)
-      try {
-        await scan()
-        log('reconcile: scan ok')
-
-        // Update last_reconcile_at
-        lib.db
-          .prepare(
-            `INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-          )
-          .run(String(now()))
-
-        // Boot reconcile satisfied — only clear on success, so a failed boot
-        // scan keeps retrying next tick instead of reopening the stale-gate window.
-        this.bootReconcilePending = false
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error)
-        log(`reconcile error (scan failed): ${msg}`)
-        // 稳态（boot 已成功后）中途 scan 抖动不停摆 dispatch；boot 阶段则由下方守卫压制 dispatch。
-      }
-    }
-
-    // 2b. B2: self-scan + refresh-bridge——独立于上面机械 scan（W0-4 起 aggregate 已退休）的
-    //     reconcileEveryMs 时间门，自己按 selfScanEveryMs 走一套同构的 meta 表时间戳门（同 last_reconcile_at
-    //     的写法，只是 key 换成 last_self_scan_at）。deps.selfScan 未接线（cmdWatch 缺
-    //     TMDB_API_KEY）时整个分支跳过——不影响上面的 boot-reconcile 判定，也不受它阻塞：
-    //     self-scan 不依赖 Jellyfin 是否已就绪（getVirtualFolders/refreshLibrary 内部若因
-    //     Jellyfin 未起来而抛错，下面的 try/catch 会兜住、记日志、下次到点重试，同 reconcile
-    //     稳态中途抖动不停摆 dispatch 的语义）。
-    if (this.deps.selfScan) {
-      const lastSelfScanRow = lib.db
-        .prepare(`SELECT value FROM meta WHERE key = 'last_self_scan_at'`)
-        .get() as { value: string } | undefined
-      const lastSelfScan = lastSelfScanRow ? Number(lastSelfScanRow.value) : 0
-      const selfScanEveryMs = this.deps.selfScanEveryMs ?? SELF_SCAN_DEFAULT_INTERVAL_MS
-      if (now() - lastSelfScan >= selfScanEveryMs) {
+    if (this.bootIngestPending || timeSinceIngest >= ingestEveryMs) {
+      // D4（design §P3 "Ingest-vs-realign exclusion"）：ingest 的磁盘真相 walker 与 realign
+      // 的整理搬移在同一批路径上跑会互相踩脚——realign 正在搬的文件，中途状态对 walker
+      // 而言像是"路径变了"，可能被误判成新文件重新识别，或误判成真的消失而删行。开跑前
+      // 查一次：当下是否有一个 realign worker_task 正占着 searching 槽，有则整轮跳过。
+      // 反方向（realign 的执行等待 ingestLock 空闲）是 realign 自己的职责，T7 处理。
+      if (jobs.hasActiveRealignWorkerTask()) {
+        log('ingest: skipped this round — a realign worker_task is active (avoids walker/file-move race, design D4)')
+      } else {
         try {
-          const result = await this.deps.selfScan()
+          const result = await this.deps.ingestTrigger()
           log(
-            `self-scan: scanned=${result.scan.scanned} recognized=${result.scan.recognized.length} ` +
-            `parked=${result.scan.parked.length} newlyDiscovered=${result.newlyDiscovered.length} ` +
-            `ingestedNew=${result.ingestedNew.length} orchestratorTriggered=${result.orchestratorTriggered}`
+            `ingest: scanned=${result.ingest.scanned} upserted=${result.ingest.upserted} ` +
+            `parked=${result.ingest.parked} removed=${result.ingest.removed} ` +
+            `orchestratorTriggered=${result.orchestratorTriggered}`
           )
+
           lib.db
             .prepare(
-              `INSERT INTO meta (key, value) VALUES ('last_self_scan_at', ?)
+              `INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)
                ON CONFLICT(key) DO UPDATE SET value = excluded.value`
             )
             .run(String(now()))
+
+          // Boot ingest satisfied — only clear on success, so a failed boot pass keeps
+          // retrying next tick instead of reopening the stale-gate window.
+          this.bootIngestPending = false
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error)
-          log(`self-scan error (isolated, will retry next gate): ${msg}`)
-          // 不写 last_self_scan_at——下一个到点的 tick 重试，同 reconcile 的 boot-retry 语义。
+          log(`ingest error (isolated, will retry next gate): ${msg}`)
+          // 稳态（boot 已成功后）中途 ingest 抖动不停摆 dispatch；boot 阶段则由下方守卫压制 dispatch。
         }
       }
     }
 
-    // Boot: 首轮 reconcile 成功之前绝不 dispatch——整栈重启时 Jellyfin 未就绪、
-    // boot scan 连续抛错，若照常 dispatch，旧（未过新分类门的）job 会在每个 tick
-    // 被派发，等价于没堵 stale-gate 窗口。
-    if (this.bootReconcilePending) return
+    // Boot: 首轮 ingest 成功之前绝不 dispatch——整栈重启时，库里还躺着上个进程遗留的
+    // stale wanted job（新分类规则尚未跑过一轮 ingest），若照常 dispatch 会派发过时判断。
+    if (this.bootIngestPending) return
 
     // 3. Dispatch: claim jobs up to concurrency limit
     await this.dispatch()
@@ -302,86 +263,11 @@ export class ScoutDaemon {
   }
 
   /**
-   * 独立循环：轮询播放会话，命中缺字幕条目时 wake/boost
-   */
-  async pollSessions(): Promise<void> {
-    const { getSessions, episodeForSession, jobs, lib, log, now } = this.deps
-
-    try {
-      const sessions = await getSessions()
-
-      for (const session of sessions) {
-        const item = session.NowPlayingItem
-        if (!item) continue
-
-        const ident = episodeForSession(item)
-        if (!ident) continue
-
-        // 播放触发判据：正在播放的**具体条目**只要在库且非 covered/embedded/ignored，
-        // 就无条件 wake+boost——包括 unavailable 且 recheck_after 在未来的（dormant/退避中）。
-        // recheck 门是给后台调和用的，对"用户正对着这集催"不适用。
-        const row =
-          ident.kind === 'movie' && ident.movieId
-            ? lib.getMovie(ident.movieId)
-            : lib.getEpisode(item.Id)
-
-        if (!row) continue // 不在库镜像里（未扫到/非媒体项）
-        if (
-          row.sub_status === 'covered' ||
-          row.sub_status === 'embedded' ||
-          row.sub_status === 'ignored'
-        ) {
-          continue // 已有中文字幕或不需要——不值得再试
-        }
-
-        // unavailable 的条目：recheck_after 拉回 now，否则 wake 了 job 但 executor
-        // 重derive targets 时 recheck 门会把这集挡在外面，白跑一轮。
-        if (row.sub_status === 'unavailable') {
-          lib.resetRecheck(row.id, now())
-        }
-
-        // Item lacks a Chinese subtitle and is currently playing
-        // Try to wake (if dormant) and boost priority
-        if (ident.kind === 'series_season' && ident.seriesId && ident.season !== undefined) {
-          const woken = jobs.wake(
-            { kind: 'series_season', seriesId: ident.seriesId, season: ident.season },
-            100,
-            now()
-          )
-          if (woken) {
-            log(
-              `session poll: woke dormant job for ${ident.seriesId} S${ident.season} (now playing)`
-            )
-          }
-
-          // Also boost priority if it's already wanted/failed
-          jobs.boostPriority(
-            { kind: 'series_season', seriesId: ident.seriesId, season: ident.season },
-            100
-          )
-        } else if (ident.kind === 'movie' && ident.movieId) {
-          const woken = jobs.wake({ kind: 'movie', movieId: ident.movieId }, 100, now())
-          if (woken) {
-            log(`session poll: woke dormant job for movie ${ident.movieId} (now playing)`)
-          }
-
-          jobs.boostPriority({ kind: 'movie', movieId: ident.movieId }, 100)
-        }
-      }
-    } catch (error) {
-      // Sessions poll error should not crash the loop
-      const msg = error instanceof Error ? error.message : String(error)
-      this.deps.log(`session poll error (skipping this round): ${msg}`)
-    }
-  }
-
-  /**
-   * 主循环：两条独立 setTimeout 链，signal 中止时退出
+   * 主循环：单条 setTimeout 链，signal 中止时退出
    * 退出前等待 inflight 清空或 30s 超时
    */
   async run(signal: AbortSignal): Promise<void> {
     const TICK_INTERVAL_MS = 15_000
-    const POLL_INTERVAL_MS = 15_000
     const SHUTDOWN_TIMEOUT_MS = 30_000
 
     // Handle abort signal
@@ -410,7 +296,7 @@ export class ScoutDaemon {
       { once: true }
     )
 
-    // Two independent loops
+    // Single tick loop
     const tickLoop = async () => {
       while (!this.stopping) {
         await this.tick()
@@ -419,16 +305,7 @@ export class ScoutDaemon {
       }
     }
 
-    const pollLoop = async () => {
-      while (!this.stopping) {
-        await this.pollSessions()
-        if (this.stopping) break
-        await sleep(POLL_INTERVAL_MS, signal)
-      }
-    }
-
-    // Start both loops
-    Promise.all([tickLoop(), pollLoop()]).catch(() => {})
+    tickLoop().catch(() => {})
 
     // Wait for stop signal
     await new Promise<void>((resolve) => {

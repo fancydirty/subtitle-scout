@@ -1,32 +1,27 @@
-import { existsSync } from 'node:fs'
 import type { LanguageModel } from 'ai'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
-import { scanLibrary, type OriginResolver } from './scanner.js'
 import { makeOrchestratorAgent, type OrchestratorDecision, type OrchestratorAgentDeps } from '../agent/orchestratorAgent.js'
 import type { PlayerServer } from '../adapters/players/types.js'
-import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { PathMapping } from '../core/mediaContext.js'
 
 export interface ReconcileAllDeps {
-  jf: Pick<PlayerServer, 'getItemsPage' | 'getItem'>
-  /** Full LibraryRepo, not a Pick: scanLibrary (the mechanical pre-scan) needs its whole surface
-   *  (upsertSeries/upsertEpisode/etc), while makeOrchestratorAgent below only reads the narrower
-   *  Pick it declares — LibraryRepo satisfies both. */
+  /** 去 Jellyfin 化 T4：摄取 pass（v2/ingest.ts 的 makeIngestPass 预绑定结果，调用方
+   *  cli/index.ts 用同一份 buildIngestPass 帮手给 cmdWatch/cmdReconcileAll 各建一份）——
+   *  替换旧的 jf+scanLibrary 机械预扫描（`jf.getItemsPage` 那半 Pick、mappings/
+   *  targetLanguages/originSkipLanguages/originResolver 全部随之消失，摄取层自己持有这些）。
+   *  返回值类型对 runReconcileAll 不重要——这里只 await 它跑完一轮即可，故意用 Promise<unknown>
+   *  保持宽松，不强绑 IngestResult 的具体形状（reconcileAll.ts 不该反向依赖 ingest.ts 的返回
+   *  结构）。 */
+  ingest: () => Promise<unknown>
+  /** Full LibraryRepo, not a Pick: makeOrchestratorAgent below reads the narrower Pick it
+   *  declares — LibraryRepo satisfies it directly. */
   lib: LibraryRepo
   jobs: OrchestratorAgentDeps['jobs']
   model: LanguageModel
   tmdb: OrchestratorAgentDeps['tmdb']
-  mappings: PathMapping[]
-  /** A4: target subtitle languages — drives scanLibrary's coverage detection (embedded/sidecar,
-   *  scanner.ts rules 2/3). Threaded straight through, unchanged. Optional, defaults to `['zh']`
-   *  inside scanLibrary (historical single-target-language default). */
-  targetLanguages?: string[]
-  /** A4 spec-review fix #2: origin-audio languages that suppress an item (scanner.ts rule 0/1/1b).
-   *  Optional, defaults to the effective targetLanguages inside classifyItemDetailed — only the
-   *  SKIP_CHINESE_ORIGIN=false compat path passes a narrower set (see cli/targetLanguages.ts). */
-  originSkipLanguages?: string[]
-  originResolver?: OriginResolver
+  /** orchestrator 自己的 check_series_layout 等工具用（makeOrchestratorAgent 的既有依赖，
+   *  未随本次改动变化）——摄取层不再需要它，`getItemsPage` 那半 Pick 随 scanLibrary 一起消失。 */
+  jf: Pick<PlayerServer, 'getItem'>
   now: () => number
   /** null for the root pass (CLI `reconcile-all` / dashboard button, phase ⑦); a real jobs row
    *  id when this run IS a sibling orchestrator claimed off the jobs table (see
@@ -39,17 +34,10 @@ export interface ReconcileAllDeps {
 
 /** Shared body for both `cmdReconcileAll` (CLI, src/cli/index.ts) and the dashboard's
  *  POST /api/v2/reconcile-all endpoint (phase ⑦ Task 3's explicit "factor into a shared function,
- *  don't duplicate" requirement): mechanical pre-scan (scanLibrary, unchanged) then one
- *  orchestrator pass over the resulting living-doc. */
+ *  don't duplicate" requirement): one ingest pass (去 Jellyfin 化 T4: replaces the old mechanical
+ *  scanLibrary pre-scan) then one orchestrator pass over the resulting living-doc. */
 export async function runReconcileAll(deps: ReconcileAllDeps): Promise<OrchestratorDecision> {
-  await scanLibrary(deps.jf, deps.lib, {
-    pageSize: 100,
-    fileExists: p => existsSync(p),
-    mappings: deps.mappings,
-    targetLanguages: deps.targetLanguages,
-    originSkipLanguages: deps.originSkipLanguages,
-    resolver: deps.originResolver,
-  })
+  await deps.ingest()
   const runOrchestratorPass = makeOrchestratorAgent({
     model: deps.model,
     lib: deps.lib,

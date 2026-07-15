@@ -4,9 +4,15 @@ import { JobsRepo } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import { ScoutDaemon, type DaemonDeps, MAX_CONSECUTIVE_TICK_FAILURES } from './daemon.js'
-import type { Job } from './jobsRepo.js'
-import type { PlaybackSession } from '../adapters/players/types.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
+import type { IngestTriggerResult } from '../daemon/ingestTrigger.js'
+
+function fakeIngestTriggerResult(over: Partial<IngestTriggerResult['ingest']> = {}): IngestTriggerResult {
+  return {
+    ingest: { scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false, ...over },
+    orchestratorTriggered: false,
+  }
+}
 
 describe('ScoutDaemon', () => {
   let jobs: JobsRepo
@@ -28,33 +34,25 @@ describe('ScoutDaemon', () => {
     lib,
     jobs,
     runs,
-    scan: vi.fn(async () => {}),
+    ingestTrigger: vi.fn(async () => fakeIngestTriggerResult()),
     executeJob: vi.fn(async () => {}),
-    getSessions: vi.fn(async () => []),
-    episodeForSession: vi.fn(() => null),
     log: (msg) => logs.push(msg),
     now: () => now,
-    reconcileEveryMs: 15 * 60_000, // 15 min
-    fullScanEveryMs: 6 * 3600_000,  // 6 hours (not used in phase 1: scan = full scan)
     concurrency: { searching: 1, downloading: 2, verifying: 2 },
     ...overrides,
   })
 
-  it('tick序列：reap → scan → dispatch（W0-4：aggregate 已切线，不再是 reconcile 的一环）', async () => {
-    const scan = vi.fn(async () => {})
+  it('tick序列：reap → ingest → dispatch（去 Jellyfin 化 T4：机械 scan + B2 self-scan 折叠成单条 ingest 心跳）', async () => {
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
     const executeJob = vi.fn(async () => {})
 
-    // Mark last reconcile as long ago so reconcile will run
-    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', '0')`).run()
-
-    // Create a wanted job
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
     await daemon.tick()
 
-    // Should have called reap, scan
-    expect(scan).toHaveBeenCalledOnce()
+    // Should have called reap (implicitly, via jobsRepo calls below), ingest
+    expect(ingestTrigger).toHaveBeenCalledOnce()
 
     // Should have claimed and executed the job
     expect(executeJob).toHaveBeenCalledOnce()
@@ -166,7 +164,7 @@ describe('ScoutDaemon', () => {
     const orphan = jobs.forceClaim('s1', 1, now)! // 未被任何 daemon 跟踪
     expect(orphan.series_id).toBe('s1')
 
-    const executeJob = vi.fn(async (_job: Job) => {})
+    const executeJob = vi.fn(async (_job) => {})
     const daemon = new ScoutDaemon(
       makeDeps({ executeJob, concurrency: { searching: 1, downloading: 2, verifying: 2 } })
     )
@@ -282,9 +280,9 @@ describe('ScoutDaemon', () => {
 
   it('tick 对意外抛错（如 reapExpiredLeases 命中满盘 SQLITE_FULL）保持隔离，不炸出 tick 之外', async () => {
     // 审计修正：reap、meta SELECT、dispatch 里的 claimNext/countByState 都不在原有的
-    // scan try/catch 覆盖范围内——任何一处意外抛错（如磁盘写满）会让整个
-    // tickLoop promise reject，Promise.all(...).catch(() => {}) 悄悄吞掉，tick 永久停摆，
-    // 进程却存活不退出（daemon.ts:249）。tick() 必须自己兜底、记日志、不向外抛。
+    // try/catch 覆盖范围内——任何一处意外抛错（如磁盘写满）会让整个
+    // tickLoop promise reject，悄悄被吞掉，tick 永久停摆，进程却存活不退出。
+    // tick() 必须自己兜底、记日志、不向外抛。
     const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases').mockImplementation(() => {
       throw new Error('SQLITE_FULL: database or disk is full')
     })
@@ -388,366 +386,231 @@ describe('ScoutDaemon', () => {
     runsSpy.mockRestore()
   })
 
-  it('scan抛错但继续dispatch（稳态：boot reconcile 已成功后）', async () => {
-    // 稳态语义：boot reconcile 成功之后，中途某轮 scan 抖动（Jellyfin 瞬时 5xx 等）
-    // 不应停摆 dispatch。boot 阶段的 scan 抛错则相反——见 'boot scan 抛错的 tick 不 dispatch'。
-    // W0-4：aggregate 已切线，reconcile 现在只剩 scan 这一半——本用例只剩"scan 抛错不
-    // 停摆 dispatch"这一半断言仍然成立。
-    let scanCalls = 0
-    const scan = vi.fn(async () => {
-      scanCalls++
-      if (scanCalls > 1) throw new Error('Scan failed')
+  it('ingest 抛错但继续 dispatch（稳态：boot ingest 已成功后）', async () => {
+    // 稳态语义：boot ingest 成功之后，中途某轮 ingest 抖动（TMDB/文件系统瞬时故障等）
+    // 不应停摆 dispatch。boot 阶段的 ingest 抛错则相反——见 'boot ingest 抛错的 tick 不 dispatch'。
+    let ingestCalls = 0
+    const ingestTrigger = vi.fn(async () => {
+      ingestCalls++
+      if (ingestCalls > 1) throw new Error('Ingest failed')
+      return fakeIngestTriggerResult()
     })
     const executeJob = vi.fn(async () => {})
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
 
-    // Priming tick: boot reconcile 成功，消耗 boot 标志
+    // Priming tick: boot ingest 成功，消耗 boot 标志
     await daemon.tick()
-    scan.mockClear()
+    ingestTrigger.mockClear()
     executeJob.mockClear()
 
-    // 稳态：到点 reconcile，scan 抛错
+    // 稳态：到点 ingest，抛错
     now += 16 * 60_000
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
     await daemon.tick()
 
-    // Scan was attempted
-    expect(scan).toHaveBeenCalled()
+    // Ingest was attempted
+    expect(ingestTrigger).toHaveBeenCalled()
     // But dispatch should still run
     expect(executeJob).toHaveBeenCalled()
     // Error logged
-    expect(logs.some(l => l.includes('Scan failed'))).toBe(true)
+    expect(logs.some(l => l.includes('Ingest failed'))).toBe(true)
   })
 
-  it('reconcile仅在到点时运行（稳态：boot 强制拍之后）', async () => {
-    const scan = vi.fn(async () => {})
+  it('ingest仅在到点时运行（稳态：boot 强制拍之后）', async () => {
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, reconcileEveryMs: 15 * 60_000 }))
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, ingestEveryMs: 15 * 60_000 }))
 
-    // Prime: consume the boot-forced reconcile (see 'boot: first tick reconciles...'
+    // Prime: consume the boot-forced ingest (see 'boot: first tick ingests...'
     // tests) so this test can isolate the steady-state time-gate behavior below.
     await daemon.tick()
-    scan.mockClear()
+    ingestTrigger.mockClear()
 
-    // 9 minutes since the priming tick's reconcile — not yet due for the 15-min interval
+    // 9 minutes since the priming tick's ingest — not yet due for the 15-min interval
     now += 9 * 60_000
     await daemon.tick()
 
-    // Should not scan yet
-    expect(scan).not.toHaveBeenCalled()
+    // Should not ingest yet
+    expect(ingestTrigger).not.toHaveBeenCalled()
 
-    // Advance past reconcile interval (16 min since priming tick's reconcile)
+    // Advance past ingest interval (16 min since priming tick's ingest)
     now += 7 * 60_000
     await daemon.tick()
 
-    // Now should scan
-    expect(scan).toHaveBeenCalledOnce()
+    // Now should ingest
+    expect(ingestTrigger).toHaveBeenCalledOnce()
   })
 
-  it('boot: first tick reconciles BEFORE dispatching even when last_reconcile_at is recent', async () => {
+  it('defaults ingestEveryMs to SELF_SCAN_DEFAULT_INTERVAL_MS when not overridden (沿用 daemon/selfScan.ts 已有常量，见字段注释)', async () => {
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger })) // no ingestEveryMs override
+
+    await daemon.tick() // priming tick
+    ingestTrigger.mockClear()
+
+    now += SELF_SCAN_DEFAULT_INTERVAL_MS - 1
+    await daemon.tick()
+    expect(ingestTrigger).not.toHaveBeenCalled()
+
+    now += 2 // now >= SELF_SCAN_DEFAULT_INTERVAL_MS since the priming tick
+    await daemon.tick()
+    expect(ingestTrigger).toHaveBeenCalledOnce()
+  })
+
+  it('boot: first tick ingests BEFORE dispatching even when last_ingest_at is recent', async () => {
     const callOrder: string[] = []
-    const scan = vi.fn(async () => {
-      callOrder.push('scan')
+    const ingestTrigger = vi.fn(async () => {
+      callOrder.push('ingest')
+      return fakeIngestTriggerResult()
     })
     const executeJob = vi.fn(async () => {
       callOrder.push('dispatch')
     })
 
-    // last_reconcile_at is recent (e.g. just written by a previous daemon process
-    // seconds ago on a rolling deploy) — the time gate alone would skip the scan.
-    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+    // last_ingest_at is recent (e.g. just written by a previous daemon process
+    // seconds ago on a rolling deploy) — the time gate alone would skip the ingest.
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(now - 5_000))
 
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
     await daemon.tick()
 
-    // Scan must run despite the recent last_reconcile_at, and must run
+    // Ingest must run despite the recent last_ingest_at, and must run
     // before dispatch claims/executes jobs.
-    expect(scan).toHaveBeenCalledOnce()
-    expect(callOrder).toEqual(['scan', 'dispatch'])
+    expect(ingestTrigger).toHaveBeenCalledOnce()
+    expect(callOrder).toEqual(['ingest', 'dispatch'])
   })
 
-  it('boot reconcile happens only once (second tick respects the time gate again)', async () => {
-    const scan = vi.fn(async () => {})
+  it('boot ingest happens only once (second tick respects the time gate again)', async () => {
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
 
-    // Recent last_reconcile_at — boot flag should force the first tick's scan anyway.
-    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+    // Recent last_ingest_at — boot flag should force the first tick's ingest anyway.
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(now - 5_000))
 
-    const daemon = new ScoutDaemon(makeDeps({ scan }))
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger }))
     await daemon.tick()
-    expect(scan).toHaveBeenCalledOnce()
+    expect(ingestTrigger).toHaveBeenCalledOnce()
 
-    // Simulate another recent write to last_reconcile_at (e.g. some other process,
+    // Simulate another recent write to last_ingest_at (e.g. some other process,
     // or just the boot tick's own update) — the boot flag has been consumed, so
-    // the plain time gate takes back over and a still-recent timestamp skips scan.
+    // the plain time gate takes back over and a still-recent timestamp skips ingest.
     lib.db
       .prepare(
-        `INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)
+        `INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`
       )
       .run(String(now))
 
     await daemon.tick()
 
-    // No additional scan on the second tick.
-    expect(scan).toHaveBeenCalledOnce()
+    // No additional ingest on the second tick.
+    expect(ingestTrigger).toHaveBeenCalledOnce()
   })
 
-  it('boot reconcile retries next tick if the boot scan throws', async () => {
-    let scanCalls = 0
-    const scan = vi.fn(async () => {
-      scanCalls++
-      if (scanCalls === 1) throw new Error('boot scan failed')
+  it('boot ingest retries next tick if the boot pass throws', async () => {
+    let calls = 0
+    const ingestTrigger = vi.fn(async () => {
+      calls++
+      if (calls === 1) throw new Error('boot ingest failed')
+      return fakeIngestTriggerResult()
     })
 
-    // Recent last_reconcile_at: without the boot flag surviving the throw, the
-    // time gate alone would never retry the scan on tick 2.
-    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+    // Recent last_ingest_at: without the boot flag surviving the throw, the
+    // time gate alone would never retry the ingest on tick 2.
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(now - 5_000))
 
-    const daemon = new ScoutDaemon(makeDeps({ scan }))
-
-    await daemon.tick()
-    expect(scan).toHaveBeenCalledTimes(1)
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger }))
 
     await daemon.tick()
-    expect(scan).toHaveBeenCalledTimes(2)
+    expect(ingestTrigger).toHaveBeenCalledTimes(1)
+
+    await daemon.tick()
+    expect(ingestTrigger).toHaveBeenCalledTimes(2)
   })
 
-  it('boot scan 抛错的 tick 不 dispatch；下一 tick scan 成功后才放行旧 job', async () => {
-    // 整栈重启实景：Jellyfin HTTP 未就绪 → scout 首 tick scan 必抛。此时库里还躺着
-    // 上个进程遗留的 stale wanted job（新分类规则尚未跑过）——boot reconcile 成功前
-    // 绝不能派发它，否则 boot 扫描失败窗口内旧（未过门）job 照样触发下载。
-    let scanCalls = 0
-    const scan = vi.fn(async () => {
-      scanCalls++
-      if (scanCalls === 1) throw new Error('jellyfin not ready')
+  it('boot ingest 抛错的 tick 不 dispatch；下一 tick ingest 成功后才放行旧 job', async () => {
+    // 整栈重启实景：文件系统/TMDB 未就绪 → scout 首 tick ingest 必抛。此时库里还躺着
+    // 上个进程遗留的 stale wanted job（新分类规则尚未跑过）——boot ingest 成功前
+    // 绝不能派发它，否则 boot 失败窗口内旧（未过门）job 照样触发下载。
+    let ingestCalls = 0
+    const ingestTrigger = vi.fn(async () => {
+      ingestCalls++
+      if (ingestCalls === 1) throw new Error('tmdb not ready')
+      return fakeIngestTriggerResult()
     })
     const executeJob = vi.fn(async () => {})
 
-    // Recent last_reconcile_at（上个进程分钟前写的）+ 一个 stale wanted job
-    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
+    // Recent last_ingest_at（上个进程分钟前写的）+ 一个 stale wanted job
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(now - 5_000))
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
 
-    // Tick 1: boot scan 抛错 → dispatch 必须被压制
+    // Tick 1: boot ingest 抛错 → dispatch 必须被压制
     await daemon.tick()
-    expect(scan).toHaveBeenCalledTimes(1)
+    expect(ingestTrigger).toHaveBeenCalledTimes(1)
     expect(executeJob).not.toHaveBeenCalled()
     expect(jobs.countByState('wanted')).toBe(1) // job 原地未被 claim
 
-    // Tick 2: scan 成功 → boot reconcile 完成 → dispatch 放行
+    // Tick 2: ingest 成功 → boot 完成 → dispatch 放行
     await daemon.tick()
-    expect(scan).toHaveBeenCalledTimes(2)
+    expect(ingestTrigger).toHaveBeenCalledTimes(2)
     expect(executeJob).toHaveBeenCalledOnce()
   })
 
-  describe('B2: self-scan + refresh-bridge gate', () => {
-    function fakeSelfScanResult(over: Partial<{
-      scanned: number
-      recognized: unknown[]
-      parked: unknown[]
-      newlyDiscovered: unknown[]
-      refreshedLibraries: string[]
-      ingestedNew: unknown[]
-      orchestratorTriggered: boolean
-    }> = {}) {
-      return {
-        scan: { scanned: 1, recognized: [], parked: [], skippedKnown: 0, ...over },
-        newlyDiscovered: [],
-        refreshedLibraries: [],
-        ingestedNew: [],
-        orchestratorTriggered: false,
-        ...over,
-      } as never // loosely-shaped test double — daemon.ts only reads the fields it logs
-    }
-
-    it('deps.selfScan undefined → self-scan branch skipped entirely, no crash, no log line', async () => {
-      const daemon = new ScoutDaemon(makeDeps()) // no selfScan override
-      await daemon.tick()
-      expect(logs.some(l => l.includes('self-scan'))).toBe(false)
-    })
-
-    it('interval gate: tick before selfScanEveryMs elapsed → selfScan not invoked', async () => {
-      const selfScan = vi.fn(async () => fakeSelfScanResult())
-      const daemon = new ScoutDaemon(makeDeps({ selfScan, selfScanEveryMs: 15 * 60_000 }))
-
-      // Priming tick: no last_self_scan_at row yet → gate is open on the very first tick.
-      await daemon.tick()
-      expect(selfScan).toHaveBeenCalledOnce()
-      selfScan.mockClear()
-
-      // 9 minutes later — not yet due for the 15-min interval.
-      now += 9 * 60_000
-      await daemon.tick()
-      expect(selfScan).not.toHaveBeenCalled()
-    })
-
-    it('interval gate: tick after selfScanEveryMs elapsed → selfScan invoked', async () => {
-      const selfScan = vi.fn(async () => fakeSelfScanResult())
-      const daemon = new ScoutDaemon(makeDeps({ selfScan, selfScanEveryMs: 15 * 60_000 }))
-
-      await daemon.tick() // priming tick consumes the "no row yet" open gate
-      selfScan.mockClear()
-
-      now += 16 * 60_000
-      await daemon.tick()
-      expect(selfScan).toHaveBeenCalledOnce()
-    })
-
-    it('defaults selfScanEveryMs to SELF_SCAN_DEFAULT_INTERVAL_MS when not overridden', async () => {
-      const selfScan = vi.fn(async () => fakeSelfScanResult())
-      const daemon = new ScoutDaemon(makeDeps({ selfScan })) // no selfScanEveryMs override
-
-      await daemon.tick() // priming tick
-      selfScan.mockClear()
-
-      now += SELF_SCAN_DEFAULT_INTERVAL_MS - 1
-      await daemon.tick()
-      expect(selfScan).not.toHaveBeenCalled()
-
-      now += 2 // now >= SELF_SCAN_DEFAULT_INTERVAL_MS since the priming tick
-      await daemon.tick()
-      expect(selfScan).toHaveBeenCalledOnce()
-    })
-
-    it('self-scan error is isolated (logged, tick completes) and last_self_scan_at is NOT advanced — retried next gate-open tick', async () => {
-      let calls = 0
-      const selfScan = vi.fn(async () => {
-        calls++
-        if (calls === 1) throw new Error('jellyfin not ready for refreshLibrary')
-        return fakeSelfScanResult()
-      })
-      const daemon = new ScoutDaemon(makeDeps({ selfScan, selfScanEveryMs: 15 * 60_000 }))
-
-      await expect(daemon.tick()).resolves.toBeUndefined()
-      expect(selfScan).toHaveBeenCalledTimes(1)
-      expect(logs.some(l => l.includes('self-scan error') && l.includes('jellyfin not ready'))).toBe(true)
-
-      // Gate did NOT advance on failure — a tick one second later (still well inside the
-      // interval) must retry immediately, same "boot scan throws → retry next tick" semantics
-      // reconcile already has for last_reconcile_at.
-      now += 1_000
-      await daemon.tick()
-      expect(selfScan).toHaveBeenCalledTimes(2)
-    })
-
-    it('does not block dispatch or the reconcile gate — self-scan is independent of bootReconcilePending', async () => {
-      const selfScan = vi.fn(async () => fakeSelfScanResult())
-      const scan = vi.fn(async () => { throw new Error('jellyfin not ready') }) // boot reconcile fails
-      const executeJob = vi.fn(async () => {})
+  describe('D4: ingest-vs-realign exclusion（design §P3，ingest 磁盘真相 walker 与 realign 整理搬移在同一批路径上跑会互相踩脚）', () => {
+    it('一个正在跑的 realign worker_task 压制这一轮 ingest——即便是 boot 强制拍，也整轮跳过并留一行日志', async () => {
+      vi.spyOn(jobs, 'hasActiveRealignWorkerTask').mockReturnValue(true)
       jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+      const executeJob = vi.fn(async () => {})
+      const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
 
-      const daemon = new ScoutDaemon(makeDeps({ selfScan, scan, executeJob }))
       await daemon.tick()
 
-      // self-scan still ran despite boot reconcile failing (and dispatch being suppressed).
-      expect(selfScan).toHaveBeenCalledOnce()
-      expect(executeJob).not.toHaveBeenCalled() // boot-reconcile-pending guard still holds
-    })
-  })
-
-  it('pollSessions命中退避中的集（unavailable+未来recheck+dormant job）也能wake/boost', async () => {
-    // 真实态：内容性失败穷尽退避后——集 unavailable 且 recheck_after 在未来，job dormant。
-    // 播放触发存在的意义就是让用户能对着难找的剧手动催，判据不吃 recheck 门。
-    lib.upsertSeries({ id: 's1', name: 'Series 1' })
-    lib.upsertEpisode({
-      id: 'e1',
-      seriesId: 's1',
-      season: 1,
-      episode: 1,
-      name: 'Episode 1',
-      path: '/media/s1e1.mkv',
-      subStatus: 'missing',
-    })
-    lib.markUnavailable('e1', '搜索穷尽', now + 30 * 86_400_000) // recheck 在未来 30 天
-
-    // Job dormant（退避穷尽）
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    jobs.forceState('s1', 1, 'dormant', now)
-
-    const getSessions = vi.fn(async () => [{
-      Id: 'session1',
-      NowPlayingItem: { Id: 'e1', Type: 'Episode', SeriesId: 's1', ParentIndexNumber: 1 },
-    }] as PlaybackSession[])
-
-    const episodeForSession = vi.fn((item) =>
-      item.Type === 'Episode' && item.SeriesId === 's1' && item.ParentIndexNumber === 1
-        ? { kind: 'series_season' as const, seriesId: 's1', season: 1 }
-        : null
-    )
-
-    const daemon = new ScoutDaemon(makeDeps({ getSessions, episodeForSession }))
-    await daemon.pollSessions()
-
-    // Job should be woken from dormant with priority 100
-    const job = jobs.find('s1', 1)
-    expect(job?.state).toBe('wanted')
-    expect(job?.priority).toBe(100)
-
-    // 该集 recheck_after 应被拉回 now，让 executor 重derive 能纳入它
-    const ep = lib.getEpisode('e1')!
-    expect(ep.sub_status).toBe('unavailable')
-    expect(ep.recheck_after).toBeLessThanOrEqual(now)
-  })
-
-  // 退役T7 (Wave 2A)：原 IMPORTANT-2 用例（"心跳续租写回是 ownsLease 跨 tick 存活的唯一
-  // 支点——真实 executor 场景下 markCovered 必须落地"）已删除——它的 subject 是旧
-  // series_season/movie 执行内部专属的 ownsLease() 冻结令牌比对模式（executor.ts 的
-  // FIX-3），该模式随 Wave 2A 整体删除，今天 executor.ts 里已不存在这个函数。保留的
-  // executeRealignBranch（realign 分支）从不读 job.lease_until 做比对——它的 complete*
-  // 调用只按 DB 当前 active-state 做 WHERE 卡口，不依赖 daemon 心跳写回的是不是同一个
-  // 冻结对象引用，所以这条用例的断言在 realign 分支上不成立、也没有等价 subject 可换。
-  // daemon.ts 自身的心跳续租机制（inflightJobs 原地续租 + reapExpiredLeases 不误收）
-  // 仍由上面"长跑 job 未过 30min 租约不该被 reap 双派发"等用例（mock executeJob）覆盖，
-  // 不受影响；只是"心跳续租值传导到 executor 自己的租约比对"这一层因为 subject 消失
-  // 不再有对应测试。daemon.ts 本身的 FIX-3/ownsLease 注释未改动（不在本波次改动范围）。
-
-  it('pollSessions对covered条目不wake', async () => {
-    lib.upsertSeries({ id: 's1', name: 'Series 1' })
-    lib.upsertEpisode({
-      id: 'e1',
-      seriesId: 's1',
-      season: 1,
-      episode: 1,
-      name: 'Episode 1',
-      path: '/media/s1e1.mkv',
-      subStatus: 'covered',
+      expect(ingestTrigger).not.toHaveBeenCalled()
+      expect(logs.some(l => l.includes('realign') && /skip/i.test(l))).toBe(true)
+      // boot 从未成功过（ingest 从未跑）→ dispatch 依旧被压制，同 boot ingest 抛错的语义一致。
+      expect(executeJob).not.toHaveBeenCalled()
+      expect(jobs.countByState('wanted')).toBe(1)
     })
 
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    jobs.forceState('s1', 1, 'dormant', now)
+    it('稳态（boot 已成功）中 realign 压制本轮 ingest，但 dispatch 不受影响——照常派发其他 wanted job', async () => {
+      const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+      const executeJob = vi.fn(async () => {})
+      const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
 
-    const getSessions = vi.fn(async () => [{
-      Id: 'session1',
-      NowPlayingItem: { Id: 'e1', Type: 'Episode', SeriesId: 's1', ParentIndexNumber: 1 },
-    }] as PlaybackSession[])
+      await daemon.tick() // boot ingest 成功（此时无 realign 在跑），bootIngestPending 清零
+      ingestTrigger.mockClear()
+      executeJob.mockClear()
 
-    const episodeForSession = vi.fn(() => ({
-      kind: 'series_season' as const, seriesId: 's1', season: 1,
-    }))
+      vi.spyOn(jobs, 'hasActiveRealignWorkerTask').mockReturnValue(true)
+      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      now += 16 * 60_000 // 到点，若非 D4 压制本该触发 ingest
 
-    const daemon = new ScoutDaemon(makeDeps({ getSessions, episodeForSession }))
-    await daemon.pollSessions()
+      await daemon.tick()
 
-    // Covered episode should not trigger wake
-    expect(jobs.find('s1', 1)?.state).toBe('dormant')
-  })
-
-  it('pollSessions错误不影响后续运行', async () => {
-    const getSessions = vi.fn(async () => {
-      throw new Error('Sessions fetch failed')
+      expect(ingestTrigger).not.toHaveBeenCalled() // D4 压制了这一轮 ingest
+      expect(executeJob).toHaveBeenCalledOnce() // dispatch 照常认领 wanted job
+      expect(jobs.countByState('searching')).toBe(1)
     })
 
-    const daemon = new ScoutDaemon(makeDeps({ getSessions }))
+    it('realign 不再活跃后，ingest 在下一次到点/boot-forced 检查时恢复', async () => {
+      const spy = vi.spyOn(jobs, 'hasActiveRealignWorkerTask')
+      spy.mockReturnValue(true)
+      const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+      const daemon = new ScoutDaemon(makeDeps({ ingestTrigger }))
 
-    // Should not throw
-    await expect(daemon.pollSessions()).resolves.toBeUndefined()
+      await daemon.tick() // boot round 被 D4 压制
+      expect(ingestTrigger).not.toHaveBeenCalled()
 
-    // Error should be logged
-    expect(logs.some(l => l.includes('Sessions fetch failed'))).toBe(true)
+      spy.mockReturnValue(false)
+      await daemon.tick() // bootIngestPending 仍为 true（上轮从未成功）→ 强制再次尝试，这次放行
+
+      expect(ingestTrigger).toHaveBeenCalledOnce()
+    })
   })
 
   it('run启动即回收上个进程的活跃租约（未过期也回收）', async () => {
@@ -804,7 +667,7 @@ describe('ScoutDaemon', () => {
     expect(logs.some(l => l.includes('boot: cleaned'))).toBe(false)
   })
 
-  it('run循环：tick+pollSessions并发，signal退出', async () => {
+  it('run循环：单条 tick loop 运行，signal退出', async () => {
     const executeJob = vi.fn(async () => {})
 
     const daemon = new ScoutDaemon(makeDeps({ executeJob }))
