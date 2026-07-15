@@ -477,3 +477,123 @@ describe('TmdbClient.getAbsoluteOrder', () => {
     ])
   })
 })
+
+describe('TmdbClient.search', () => {
+  it('tv: hits normalized from name/first_air_date, hits /search/tv with URL-encoded query', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const u = new URL(String(url))
+      expect(u.pathname).toBe('/3/search/tv')
+      expect(u.searchParams.get('query')).toBe('Spy x Family')
+      return new Response(JSON.stringify({
+        results: [{ id: 108964, name: 'Spy x Family', original_name: 'SPY×FAMILY', first_air_date: '2022-04-09', original_language: 'ja' }],
+      }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    const hits = await client.search('tv', 'Spy x Family')
+    expect(hits).toEqual([{ id: 108964, title: 'Spy x Family', year: 2022 }])
+  })
+
+  it('tv: year param maps to first_air_date_year (not "year")', async () => {
+    let seenUrl = ''
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      seenUrl = String(url)
+      return new Response(JSON.stringify({ results: [] }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.search('tv', 'Show', 2016)
+    const u = new URL(seenUrl)
+    expect(u.searchParams.get('first_air_date_year')).toBe('2016')
+    expect(u.searchParams.has('year')).toBe(false)
+  })
+
+  it('movie: hits normalized from title/release_date, hits /search/movie; year param maps to "year"', async () => {
+    let seenUrl = ''
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      seenUrl = String(url)
+      return new Response(JSON.stringify({
+        results: [{ id: 603, title: 'The Matrix', release_date: '1999-03-30' }],
+      }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    const hits = await client.search('movie', 'The Matrix', 1999)
+    const u = new URL(seenUrl)
+    expect(u.pathname).toBe('/3/search/movie')
+    expect(u.searchParams.get('year')).toBe('1999')
+    expect(u.searchParams.has('first_air_date_year')).toBe(false)
+    expect(hits).toEqual([{ id: 603, title: 'The Matrix', year: 1999 }])
+  })
+
+  it('multiple results preserved in order; missing/blank date → year null', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      results: [
+        { id: 1, name: 'Foo', first_air_date: '' },
+        { id: 2, name: 'Foo 2', first_air_date: '2010-01-01' },
+      ],
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.search('tv', 'Foo')).toEqual([
+      { id: 1, title: 'Foo', year: null },
+      { id: 2, title: 'Foo 2', year: 2010 },
+    ])
+  })
+
+  it('empty results → []', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ results: [] }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.search('movie', 'Nonexistent')).toEqual([])
+  })
+
+  it('v4 JWT token → Authorization: Bearer header, no api_key query param', async () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.payload.sig'
+    let seenUrl = ''
+    let seenInit: RequestInit | undefined
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seenUrl = String(url)
+      seenInit = init
+      return new Response(JSON.stringify({ results: [] }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: jwt, fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.search('tv', 'Show')
+    expect(seenUrl).not.toContain('api_key')
+    expect(seenInit?.headers).toMatchObject({ Authorization: `Bearer ${jwt}` })
+  })
+
+  it('v3 hex key → api_key query param, no Authorization header', async () => {
+    const key = 'a'.repeat(32)
+    let seenUrl = ''
+    let seenInit: RequestInit | undefined
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seenUrl = String(url)
+      seenInit = init
+      return new Response(JSON.stringify({ results: [] }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: key, fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.search('movie', 'Show')
+    expect(new URL(seenUrl).searchParams.get('api_key')).toBe(key)
+    expect(seenInit?.headers).toBeUndefined()
+  })
+
+  it('request failure (network throw) → rejects with TmdbRequestFailedError', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('network down') })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.search('tv', 'Show')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('request failure (non-2xx status) → rejects with TmdbRequestFailedError', async () => {
+    const fetchImpl = vi.fn(async () => new Response('server error', { status: 500 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.search('tv', 'Show')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('request failure (non-JSON body) → rejects with TmdbRequestFailedError', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not json', { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.search('tv', 'Show')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('404 → treated as no data (empty array), not a failure', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.search('tv', 'Show')).toEqual([])
+  })
+})

@@ -30,6 +30,10 @@ export interface TmdbRef { mediaType: 'tv' | 'movie'; tmdbId: string }
 
 export interface SeasonTableEntry { seasonNumber: number; episodeCount: number; airDate: string | null }
 
+/** Normalized `/search/{tv,movie}` hit — id/title/year regardless of which endpoint answered
+ *  (tv: name/first_air_date; movie: title/release_date — TMDB's own field-naming split). */
+export interface TmdbSearchHit { id: number; title: string; year: number | null }
+
 interface ItemLike {
   Type?: string | null
   SeriesId?: string | null
@@ -247,6 +251,68 @@ export class TmdbClient {
       }
     }
     return ordered.length > 0 ? ordered : null
+  }
+
+  /**
+   * 与 getJsonStrict 同构的严格请求,但支持查询参数——search 端点必须带 query= 等参数,
+   * 与 getJsonStrict"path 不含问号"的既有假设冲突(它固定在 path 后拼 `?api_key=`),
+   * 故不复用/不改动它,独立实现,保证 getJsonStrict 及其现有调用方零变化。
+   * 失败语义同 getJsonStrict:404→null(真·无数据),其余失败→TmdbRequestFailedError(瞬时,可重试)。
+   */
+  private async getJsonStrictQuery(
+    path: string,
+    params: Record<string, string>,
+  ): Promise<Record<string, unknown> | null> {
+    const v4 = isV4Token(this.opts.apiKey)
+    const qs = new URLSearchParams(params)
+    if (!v4) qs.set('api_key', this.opts.apiKey)
+    const url = `${BASE}${path}?${qs.toString()}`
+    const headers = v4 ? { Authorization: `Bearer ${this.opts.apiKey}` } : undefined
+    let res: Response
+    try {
+      res = await this.fetchImpl(url, {
+        headers,
+        signal: AbortSignal.timeout(TMDB_TIMEOUT_MS),
+      })
+    } catch (e) {
+      throw new TmdbRequestFailedError(e)
+    }
+    if (res.status === 404) return null
+    if (!res.ok) throw new TmdbRequestFailedError(`HTTP ${res.status}`)
+    try {
+      return await res.json() as Record<string, unknown>
+    } catch (e) {
+      throw new TmdbRequestFailedError(e)
+    }
+  }
+
+  /**
+   * 标题搜索——C3(resolveToTmdb)消歧的唯一数据源。tv→/search/tv(取 name/first_air_date),
+   * movie→/search/movie(取 title/release_date;year 查询参数名两端点不同——tv 是
+   * first_air_date_year,movie 是 year,这是 TMDB 自己的 API 形状,不是本函数的选择)。
+   * 404 与"查无结果"同等对待,按空数组处理(TMDB search 端点正常不会 404,但形状收敛到
+   * 与 getJsonStrict 一致的"404=no-data"哲学,调用方不必分情况处理)。
+   */
+  async search(mediaType: 'tv' | 'movie', query: string, year?: number): Promise<TmdbSearchHit[]> {
+    const path = mediaType === 'tv' ? '/search/tv' : '/search/movie'
+    const params: Record<string, string> = { query }
+    if (year !== undefined) {
+      params[mediaType === 'tv' ? 'first_air_date_year' : 'year'] = String(year)
+    }
+    const d = await this.getJsonStrictQuery(path, params)
+    const results = Array.isArray(d?.results) ? (d!.results as Array<Record<string, unknown>>) : []
+    return results
+      .map((r): TmdbSearchHit | null => {
+        const id = r.id
+        if (typeof id !== 'number') return null
+        const title = mediaType === 'tv'
+          ? (typeof r.name === 'string' ? r.name : '')
+          : (typeof r.title === 'string' ? r.title : '')
+        const dateStr = mediaType === 'tv' ? r.first_air_date : r.release_date
+        const year = typeof dateStr === 'string' && dateStr.length >= 4 ? Number(dateStr.slice(0, 4)) : null
+        return { id, title, year: Number.isFinite(year) ? year : null }
+      })
+      .filter((h): h is TmdbSearchHit => h !== null)
   }
 }
 
