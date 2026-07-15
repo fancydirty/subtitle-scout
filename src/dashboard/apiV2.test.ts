@@ -29,6 +29,32 @@ function insertJob(
   return Number(info.lastInsertRowid)
 }
 
+/** v3 worker_task job: series_id/season/movie_id land in their own COLUMNS (upsertWorkerTask's
+ *  INSERT list, jobsRepo.ts) — payload only carries taskType/reason. Mirrors that shape here so
+ *  tests exercise apiV2's dual-source queries against the real column/payload split, not a
+ *  simplified stand-in. */
+function insertWorkerTaskJob(
+  db: ScoutDb,
+  fields: { seriesId?: string; season?: number | null; movieId?: string; taskType: string; state: string; priority: number },
+): number {
+  const info = db
+    .prepare(
+      `INSERT INTO jobs (kind, series_id, season, movie_id, payload, state, priority, created_at, updated_at)
+       VALUES ('worker_task', ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      fields.seriesId ?? null,
+      fields.season ?? null,
+      fields.movieId ?? null,
+      JSON.stringify({ taskType: fields.taskType, reason: 'test' }),
+      fields.state,
+      fields.priority,
+      NOW,
+      NOW,
+    )
+  return Number(info.lastInsertRowid)
+}
+
 function insertRun(db: ScoutDb, jobId: number, startedAt: number, decision: string, detail: string): void {
   db.prepare(
     `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path)
@@ -135,6 +161,60 @@ describe('buildSeriesDetail', () => {
 
   it('未找到返回 null', () => {
     expect(buildSeriesDetail(db, 'nope')).toBeNull()
+  })
+})
+
+// 退役 T2 (W0-3b)：双源过渡期——v3 worker_task job 也要驱动活动徽章/时间线，旧
+// kind='series_season'/'movie' 行照常工作（双源叠加，不是替换）。
+describe('活动/时间线双源兼容 worker_task（退役 T2）', () => {
+  it('series 活动：v3 find_subtitle worker_task 反映为该剧的 job 状态', () => {
+    lib.upsertSeries({ id: 's2', name: 'Series B' })
+    insertWorkerTaskJob(db, { seriesId: 's2', season: 1, taskType: 'find_subtitle', state: 'searching', priority: 50 })
+    const item = buildLibrary(db).find(x => x.id === 's2')!
+    expect(item.job).toEqual({ state: 'searching', priority: 50 })
+  })
+
+  it('series 活动：v3 realign worker_task 同样反映为该剧的 job 状态', () => {
+    lib.upsertSeries({ id: 's3', name: 'Series C' })
+    insertWorkerTaskJob(db, { seriesId: 's3', season: null, taskType: 'realign', state: 'wanted', priority: 10 })
+    const item = buildLibrary(db).find(x => x.id === 's3')!
+    expect(item.job).toEqual({ state: 'wanted', priority: 10 })
+  })
+
+  it('movie 活动：movie 目标 worker_task 走 movie_id 列（非 payload）反映为该片 job 状态', () => {
+    lib.upsertMovie({ id: 'm2', name: 'Movie Y', path: '/media/movies/Movie Y/y.mkv', subStatus: 'missing' })
+    insertWorkerTaskJob(db, { movieId: 'm2', taskType: 'find_subtitle', state: 'searching', priority: 20 })
+    const item = buildLibrary(db).find(x => x.id === 'm2')!
+    expect(item.job).toEqual({ state: 'searching', priority: 20 })
+  })
+
+  it('runs 时间线：worker_task job 上的 v3 runs 行出现在 buildSeriesDetail 里', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's1', season: 1, taskType: 'find_subtitle', state: 'wanted', priority: 5 })
+    insertRun(db, jobId, NOW, 'installed', '装好了')
+    const detail = buildSeriesDetail(db, 's1')!
+    expect(detail.runs.map(r => r.decision)).toContain('installed')
+  })
+
+  it('反例：orchestrate 类 worker_task 永不算作 series 活动，即使它是该 series_id 下最新的 job', () => {
+    // s1 在 beforeEach 里已有一条 state=searching/priority=100 的 series_season job。这里插入
+    // 一条 id 更大（更新）、taskType=orchestrate 的 worker_task——若过滤条件漏掉 taskType 排除，
+    // max(id) 会把它错当"最新 job"顶替上去。
+    insertWorkerTaskJob(db, { seriesId: 's1', season: null, taskType: 'orchestrate', state: 'wanted', priority: 999 })
+    const item = buildLibrary(db).find(x => x.id === 's1')!
+    expect(item.job).toEqual({ state: 'searching', priority: 100 })
+
+    // self-scan 触发器用的合成 series_id 也不该冒出一条幽灵库行
+    insertWorkerTaskJob(db, { seriesId: 'self-scan-trigger', season: null, taskType: 'orchestrate', state: 'wanted', priority: 1 })
+    expect(buildLibrary(db).find(x => x.id === 'self-scan-trigger')).toBeUndefined()
+  })
+
+  it('回归：旧 kind 行在双源变更后照常工作（叠加，不是替换）', () => {
+    const item = buildLibrary(db).find(x => x.id === 's1')!
+    expect(item.job).toEqual({ state: 'searching', priority: 100 })
+    const movie = buildLibrary(db).find(x => x.id === 'm1')!
+    expect(movie.job).toEqual({ state: 'wanted', priority: 0 })
+    const detail = buildSeriesDetail(db, 's1')!
+    expect(detail.runs.map(r => r.decision)).toEqual(['download', 'no_safe_match'])
   })
 })
 

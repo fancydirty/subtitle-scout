@@ -144,13 +144,23 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     addToCoverage(cov, row.sub_status, row.c)
   }
 
-  // series 的最新 job（跨季取 max(id)）
+  // series 的最新 job（跨季取 max(id)）。双源过渡期：旧 kind='series_season' 与 v3
+  // kind='worker_task'（payload.taskType 为 find_subtitle/realign）都算series活动；
+  // orchestrate 类 worker_task（含 self-scan 触发用的合成 series_id 'self-scan-trigger'）
+  // 是编排通道不是内容产出，故意排除，不当作库行徽章。series_id IS NOT NULL 顺带排掉
+  // movie 目标的 find_subtitle worker_task（其 series_id 恒为 NULL）。
   const seriesJobs = db
     .prepare(
       `SELECT j.series_id AS key, j.state, j.priority FROM jobs j
-       WHERE j.kind = 'series_season'
+       WHERE (j.kind = 'series_season'
+              OR (j.kind = 'worker_task'
+                  AND json_extract(j.payload,'$.taskType') IN ('find_subtitle','realign')))
+         AND j.series_id IS NOT NULL
          AND j.id = (SELECT max(id) FROM jobs j2
-                     WHERE j2.kind = 'series_season' AND j2.series_id = j.series_id)`
+                     WHERE (j2.kind = 'series_season'
+                            OR (j2.kind = 'worker_task'
+                                AND json_extract(j2.payload,'$.taskType') IN ('find_subtitle','realign')))
+                       AND j2.series_id = j.series_id)`
     )
     .all() as JobRow[]
   const jobBySeriesId = new Map<string, LibraryJobDTO>()
@@ -178,12 +188,22 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     job: jobBySeriesId.get(s.id) ?? null,
   }))
 
+  // movie 的最新 job：同理双源。makeDispatchFindSubtitleTaskTool → upsertWorkerTask 把
+  // movieId 写进 movie_id 列本身（不是只落 payload，见 jobsRepo.ts upsertWorkerTask 的
+  // INSERT 列表），故直接按列过滤，不需要 json_extract movieId。realign 无 movie 目标
+  // （dispatch_realign_task 恒 movieId:null），故这里只认 find_subtitle。
   const movieJobs = db
     .prepare(
       `SELECT j.movie_id AS key, j.state, j.priority FROM jobs j
-       WHERE j.kind = 'movie'
+       WHERE (j.kind = 'movie'
+              OR (j.kind = 'worker_task'
+                  AND json_extract(j.payload,'$.taskType') = 'find_subtitle'))
+         AND j.movie_id IS NOT NULL
          AND j.id = (SELECT max(id) FROM jobs j2
-                     WHERE j2.kind = 'movie' AND j2.movie_id = j.movie_id)`
+                     WHERE (j2.kind = 'movie'
+                            OR (j2.kind = 'worker_task'
+                                AND json_extract(j2.payload,'$.taskType') = 'find_subtitle'))
+                       AND j2.movie_id = j.movie_id)`
     )
     .all() as JobRow[]
   const jobByMovieId = new Map<string, LibraryJobDTO>()
@@ -289,11 +309,15 @@ export function buildSeriesDetail(db: ScoutDb, id: string): SeriesDetailDTO | nu
     })
   }
 
+  // 双源同 buildLibrary：v3 worker_task（find_subtitle/realign）runs 行也计入本剧时间线。
   const runRows = db
     .prepare(
       `SELECT r.started_at, r.finished_at, r.decision, r.detail, r.journal_path
        FROM runs r JOIN jobs j ON r.job_id = j.id
-       WHERE j.kind = 'series_season' AND j.series_id = ?
+       WHERE (j.kind = 'series_season'
+              OR (j.kind = 'worker_task'
+                  AND json_extract(j.payload,'$.taskType') IN ('find_subtitle','realign')))
+         AND j.series_id = ?
        ORDER BY r.id DESC`
     )
     .all(id) as RunDetailRow[]
