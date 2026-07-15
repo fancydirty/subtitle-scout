@@ -464,6 +464,11 @@ async function cmdWatch() {
     // targetLanguage: A4, the PRIMARY configured target — same single-valued note as
     // realignRunEpisode above.
     lib, jf, tmdb, mappings, mediaRoots: roots, targetLanguage: targetLanguages[0],
+    // 退役T1 (W0-3a): v3 worker_task runners previously wrote NOTHING to `runs` — only the old
+    // pipeline did — so the dashboard's run-history timeline went dark for v3-produced work.
+    // Threading the same RunsRepo instance cmdWatch already builds for the old pipeline gives
+    // both runners timeline parity ahead of the old pipeline's retirement.
+    runs,
   }
 
   // orchestrator 依赖（v3 phase ⑦）：sibling-orchestrator worker_task（taskType==='orchestrate'）
@@ -531,7 +536,9 @@ async function cmdWatch() {
           log(`warn: job ${job.id} worker_task(realign) 未接线（缺 TMDB_API_KEY），已停车`)
           return
         }
-        await runRealignWorkerTask(job, realignDeps, jobs, () => Date.now())
+        // 退役T1 (W0-3a): thread the same RunsRepo instance into the realign runner too — see
+        // the comment on findSubtitleWorkerTaskDeps above for the why.
+        await runRealignWorkerTask(job, { ...realignDeps, runs }, jobs, () => Date.now())
       } else if (payload.taskType === 'orchestrate') {
         if (!orchestrateWorkerTaskDeps) {
           jobs.park(job.id, 'orchestrator not wired (TMDB_API_KEY missing)', Date.now())

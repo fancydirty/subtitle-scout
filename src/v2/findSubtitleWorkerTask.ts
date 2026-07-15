@@ -1,6 +1,7 @@
 import { dirname } from 'node:path'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { LibraryRepo } from './libraryRepo.js'
+import type { RunsRepo } from './runsRepo.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { tmdbTitles, resolveTmdbRef } from '../adapters/providers/tmdb.js'
@@ -8,6 +9,14 @@ import { buildMediaContext, isDirWritable, isUnderRoots, mapPath, type PathMappi
 import { candidateKey } from '../core/schemas.js'
 import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
 import { resolveAbsoluteEpisode } from '../agent/absoluteEpisodes.js'
+
+/** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
+ *  trim/cap so a raw agent reason or thrown error message (which can run long) doesn't blow out
+ *  the timeline UI. */
+function capDetail(s: string, max = 200): string {
+  const trimmed = s.trim()
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed
+}
 
 export interface FindSubtitleWorkerTaskPayload { taskType: 'find_subtitle'; reason: string }
 
@@ -150,6 +159,12 @@ export interface FindSubtitleWorkerTaskDeps extends FindSubtitleTaskMapperDeps {
    *  own tests never need a real LanguageModel/ToolLoopAgent — findSubtitleWorker.test.ts already
    *  covers the agent loop itself in full. */
   runTask: (task: FindSubtitleTask) => Promise<FindSubtitleDecision>
+  /** 退役T1 (W0-3a): optional so existing callers/tests keep compiling without threading it —
+   *  when absent, runFindSubtitleWorkerTask silently skips writing a runs row (no throw). cmdWatch
+   *  (src/cli/index.ts) wires the real RunsRepo it already constructs for the old pipeline; the
+   *  v3 worker_task runners currently write NOTHING to `runs`, so the dashboard's run-history
+   *  timeline (which reads that table) goes dark once the old pipeline is retired without this. */
+  runs?: Pick<RunsRepo, 'insert'>
 }
 
 /** Claims-and-runs one worker_task row whose payload.taskType === 'find_subtitle' — the phase ③
@@ -170,10 +185,19 @@ export async function runFindSubtitleWorkerTask(
   jobs: Pick<JobsRepo, 'completeDone' | 'completeNoMatch' | 'completeError' | 'get'>,
   now: () => number,
 ): Promise<FindSubtitleDecision | null> {
+  const startedAt = now()
+  // 退役T1 (W0-3a): one runs row per terminal outcome, mirroring executor.ts's own record()
+  // shape (decision + human-readable detail, journalPath null — this runner has no journal).
+  const recordRun = (decision: string, detail: string): void => {
+    deps.runs?.insert({ jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null })
+  }
   try {
     const mapped = await mapWorkerTaskToFindSubtitleTask(job, deps, now())
     if (!mapped) {
-      // Idempotent no-op: target already covered by the time this row was claimed.
+      // Idempotent no-op: target already covered by the time this row was claimed. No worker
+      // decision exists here, so (per the campaign design doc's own done/no_safe_match/retry_later/
+      // error enumeration) this isn't one of the four runs-worthy terminal outcomes — nothing was
+      // actually produced.
       jobs.completeDone(job.id, now())
       return null
     }
@@ -193,8 +217,10 @@ export async function runFindSubtitleWorkerTask(
         decision.installedLanguage ?? task.targetLanguage,
       )
       jobs.completeDone(job.id, now())
+      recordRun('installed', decision.reason)
     } else if (decision.decision === 'retry_later') {
       jobs.completeError(job.id, decision.reason, now())
+      recordRun('retry_later', decision.reason)
     } else {
       // no_safe_match — same content-backoff bookkeeping as executor.ts's own no_safe_match branch.
       const transitioned = jobs.completeNoMatch(job.id, now())
@@ -204,11 +230,13 @@ export async function runFindSubtitleWorkerTask(
           finalJob.state === 'dormant' ? now() + 30 * 86_400_000 : finalJob.next_retry_at ?? now() + 86_400_000
         deps.lib.markUnavailable(targetItemId, decision.reason, recheckAfter)
       }
+      recordRun('no_safe_match', decision.reason)
     }
     return decision
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     jobs.completeError(job.id, msg, now())
+    recordRun('error', msg)
     return null
   }
 }

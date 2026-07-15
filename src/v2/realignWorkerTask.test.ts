@@ -2,11 +2,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runRealignWorkerTask } from './realignWorkerTask.js'
+import { runRealignWorkerTask, type RealignWorkerTaskDeps } from './realignWorkerTask.js'
 import type { RealignExecutorDeps, RealignJellyfinPort } from './realignExecutor.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
+import { RunsRepo } from './runsRepo.js'
 
 // Mirrors realignExecutor.test.ts's SEASONS_1x5/statSize/mkFlatLibrary/mkJf/mkDeps helpers
 // (read in full before writing this file, per the phase ⑥ plan note) — trimmed to a 3-episode,
@@ -78,8 +79,8 @@ function mkWorkerTaskMirror(paths: string[], opts: { seriesId?: string; title?: 
 
 function mkDeps(
   env: { lib: LibraryRepo; jobsRepo: JobsRepo; jf: RealignJellyfinPort; libRoot: string },
-  over: Partial<RealignExecutorDeps> = {},
-): RealignExecutorDeps {
+  over: Partial<RealignWorkerTaskDeps> = {},
+): RealignWorkerTaskDeps {
   return {
     lib: env.lib, jobs: env.jobsRepo, jf: env.jf,
     tmdb: { getSeasonTable: vi.fn(async () => SEASONS_1x3) },
@@ -186,5 +187,96 @@ describe('runRealignWorkerTask', () => {
     expect(row.next_retry_at!).toBeGreaterThan(Date.now()) // genuinely in the future, not a no-op backoff
     expect(row.last_error).toMatch(/ECONNREFUSED/)
     db.close()
+  })
+
+  // 退役T1 (W0-3a): v3 runner writes a `runs` row at each terminal outcome so the dashboard's
+  // run-history timeline (which reads the `runs` table) has parity with the old pipeline. `runs`
+  // is optional on the deps — the four tests above (which never pass `runs`) already prove the
+  // no-crash-when-absent case; these tests prove the row shape when it's present.
+  describe('runs row (timeline parity, 退役T1)', () => {
+    it('success: writes one runs row with decision "realign:done"', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-runs-ok-'))
+      const oldSeasonDir = mkFlatLibrary(root, 3)
+      const libRoot = join(root, 'lib')
+      const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+        Array.from({ length: 3 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
+      )
+      const jf = mkJf({
+        locations: [libRoot],
+        items: Array.from({ length: 3 }, (_, i) => ({
+          Type: 'Episode',
+          Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i + 1}.mkv`),
+          ParentIndexNumber: 1,
+        })),
+      })
+      const runs = new RunsRepo(db)
+      const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { runs })
+
+      const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(result!.decision).toBe('realigned')
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('realign:done')
+      expect(rows[0].journal_path).toBeNull()
+      db.close()
+    })
+
+    it('park: writes one runs row with decision "realign:parked"', async () => {
+      const libRoot = mkdtempSync(join(tmpdir(), 'realign-worker-task-runs-park-'))
+      const { db, lib, jobsRepo, job } = mkWorkerTaskMirror([])
+      const jf = mkJf({ locations: [libRoot] })
+      const runs = new RunsRepo(db)
+      const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { runs })
+
+      const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(result!.decision).toBe('park')
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('realign:parked')
+      db.close()
+    })
+
+    it('error: writes one runs row with decision "realign:error"', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-runs-error-'))
+      const libRoot = join(root, 'lib')
+      mkdirSync(libRoot, { recursive: true })
+      const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+        [join(libRoot, 'Show', 'Season 01', 'a.mkv')], { title: 'Show' },
+      )
+      const jf = mkJf({ locations: [libRoot] })
+      const runs = new RunsRepo(db)
+      const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { runs })
+
+      const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(result!.decision).toBe('error')
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('realign:error')
+      db.close()
+    })
+
+    it('thrown executeRealign: writes one runs row with decision "realign:error" and the thrown message as detail', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-runs-throw-'))
+      const oldSeasonDir = mkFlatLibrary(root, 3)
+      const libRoot = join(root, 'lib')
+      const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+        Array.from({ length: 3 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
+      )
+      const jf = mkJf({ locations: [libRoot] })
+      jf.getVirtualFolders = vi.fn(async () => { throw new Error('ECONNREFUSED: jellyfin unreachable') })
+      const runs = new RunsRepo(db)
+      const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { runs })
+
+      await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('realign:error')
+      expect(rows[0].detail).toContain('ECONNREFUSED')
+      db.close()
+    })
   })
 })

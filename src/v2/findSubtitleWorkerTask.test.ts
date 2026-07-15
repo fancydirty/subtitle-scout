@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
+import { RunsRepo } from './runsRepo.js'
 import { runFindSubtitleWorkerTask, type FindSubtitleWorkerTaskDeps } from './findSubtitleWorkerTask.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { FindSubtitleDecision, FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
@@ -289,5 +290,82 @@ describe('runFindSubtitleWorkerTask', () => {
     expect(runTask).toHaveBeenCalledTimes(1)
     const task = runTask.mock.calls[0][0]
     expect(task.absoluteEpisode).toBeNull()
+  })
+
+  // 退役T1 (W0-3a): v3 runner writes a `runs` row at each terminal outcome so the dashboard's
+  // run-history timeline (which reads the `runs` table) has parity with the old pipeline while
+  // it's still live. `runs` is optional on the deps — these tests both prove the row shape when
+  // present and prove the runner doesn't crash when it's absent (existing tests above already
+  // exercise the absent case implicitly since baseDeps never sets `runs`).
+  describe('runs row (timeline parity, 退役T1)', () => {
+    it('installed: writes one runs row with decision "installed" and a detail containing the worker reason', async () => {
+      const { videoPath, lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => decision({
+        installedPath: join(videoPath, '..', 'x.srt'), reason: 'best match: S01E01.zh.srt',
+      }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('installed')
+      expect(rows[0].detail).toContain('best match: S01E01.zh.srt')
+      expect(rows[0].journal_path).toBeNull()
+    })
+
+    it('no_safe_match: writes one runs row with decision "no_safe_match" and the worker reason as detail', async () => {
+      const { videoPath, lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => decision({ decision: 'no_safe_match', reason: '没有找到匹配的字幕' }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('no_safe_match')
+      expect(rows[0].detail).toContain('没有找到匹配的字幕')
+    })
+
+    it('retry_later: writes one runs row with decision "retry_later"', async () => {
+      const { videoPath, lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => decision({ decision: 'retry_later', reason: 'provider timed out' }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('retry_later')
+      expect(rows[0].detail).toContain('provider timed out')
+    })
+
+    it('worker-throw: writes one runs row with decision "error" and the thrown message as detail', async () => {
+      const { videoPath, lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => { throw new Error('step count limit exceeded') })
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('error')
+      expect(rows[0].detail).toContain('step count limit exceeded')
+    })
+
+    it('deps.runs omitted: does not crash and simply skips writing a runs row', async () => {
+      const { videoPath, lib, jobsRepo, job } = setup()
+      const runTask = vi.fn(async () => decision({ installedPath: join(videoPath, '..', 'x.srt') }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath) // no `runs` key at all
+
+      const result = await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(result?.decision).toBe('installed')
+      expect(jobsRepo.get(job.id)!.state).toBe('done')
+    })
   })
 })

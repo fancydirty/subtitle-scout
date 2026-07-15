@@ -1,7 +1,28 @@
 import { executeRealign, type RealignExecutorDeps, type RealignExecutionResult } from './realignExecutor.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
+import type { RunsRepo } from './runsRepo.js'
 
 export interface RealignWorkerTaskPayload { taskType: 'realign'; seriesId: string; reason: string }
+
+/** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
+ *  trim/cap so a raw detail/thrown error message (which can run long) doesn't blow out the
+ *  timeline UI. Mirrors findSubtitleWorkerTask.ts's own capDetail (kept file-local rather than
+ *  shared, matching this codebase's existing per-file small-helper idiom). */
+function capDetail(s: string, max = 200): string {
+  const trimmed = s.trim()
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed
+}
+
+/** 退役T1 (W0-3a): RealignExecutorDeps (realignExecutor.ts, safety-critical, not touched by this
+ *  campaign step) plus an optional `runs` sink this thin runner writes a timeline row to. Optional
+ *  so existing callers/tests keep compiling without threading it — when absent, this silently
+ *  skips writing a runs row (no throw). Extending rather than modifying RealignExecutorDeps: `deps`
+ *  is still structurally assignable to RealignExecutorDeps when passed into executeRealign below
+ *  (TS only excess-property-checks object literals, not variables), so this needs no change to
+ *  realignExecutor.ts itself. */
+export interface RealignWorkerTaskDeps extends RealignExecutorDeps {
+  runs?: Pick<RunsRepo, 'insert'>
+}
 
 /** Claims-and-runs one worker_task row whose payload.taskType === 'realign'. Called from the
  *  same claim-dispatch switch as the find-subtitle worker (phase ⑦) — job.kind === 'worker_task'
@@ -28,17 +49,33 @@ export interface RealignWorkerTaskPayload { taskType: 'realign'; seriesId: strin
  *  (runFindSubtitleWorkerTask, runOrchestrateWorkerTask), both of which already wrap their
  *  respective call in try/catch → completeError. */
 export async function runRealignWorkerTask(
-  job: Job, deps: RealignExecutorDeps, jobs: Pick<JobsRepo, 'completeDone' | 'completeError' | 'park'>, now: () => number,
+  job: Job, deps: RealignWorkerTaskDeps, jobs: Pick<JobsRepo, 'completeDone' | 'completeError' | 'park'>, now: () => number,
 ): Promise<RealignExecutionResult | null> {
+  const startedAt = now()
+  // 退役T1 (W0-3a): one runs row per terminal outcome, mirroring executor.ts's own
+  // executeRealignBranch shape (decision + human-readable detail, journalPath null — this runner
+  // has no journal). decision strings are prefixed 'realign:' to disambiguate from the
+  // find-subtitle worker's own decision vocabulary in the shared runs table/dashboard timeline.
+  const recordRun = (decision: string, detail: string): void => {
+    deps.runs?.insert({ jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null })
+  }
   try {
     const result = await executeRealign(job, deps)
-    if (result.decision === 'realigned') jobs.completeDone(job.id, now())
-    else if (result.decision === 'park') jobs.park(job.id, result.detail, now())
-    else jobs.completeError(job.id, result.detail, now())
+    if (result.decision === 'realigned') {
+      jobs.completeDone(job.id, now())
+      recordRun('realign:done', result.detail)
+    } else if (result.decision === 'park') {
+      jobs.park(job.id, result.detail, now())
+      recordRun('realign:parked', result.detail)
+    } else {
+      jobs.completeError(job.id, result.detail, now())
+      recordRun('realign:error', result.detail)
+    }
     return result
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     jobs.completeError(job.id, msg, now())
+    recordRun('realign:error', msg)
     return null
   }
 }
