@@ -250,6 +250,53 @@ describe('makeSelfScanTrigger', () => {
     expect(pendingOrchestrateJobs().length).toBe(0)
   })
 
+  it('post-realign resume: simultaneous path removals + additions still fire Signal B (aggregate-free resume path)', async () => {
+    // Locks the v3 replacement for aggregate's post-realign re-derivation (design doc W0-2):
+    // realignExecutor.retireAllForSeries retires every job for the realigned series, and — with
+    // aggregate() gone — nothing re-derives fresh series_season jobs except this trigger's
+    // Signal B. This exercises the REALIGN shape specifically: old paths vanish and new paths
+    // appear in the SAME pass (not pure growth like the tests above), which is exactly what
+    // happens once realign renames files and the mechanical scan() mirror updates
+    // episodes.path to match.
+    const preRealign = new Set(['/lib/Show/1.mkv', '/lib/Show/2.mkv'])
+    const postRealign = new Set([
+      '/lib/Show (2016) [tmdbid-1]/Season 01/S01E01.mkv',
+      '/lib/Show (2016) [tmdbid-1]/Season 01/S01E02.mkv',
+    ])
+    let known = preRealign
+    const refreshLibrary = vi.fn(async () => {})
+    const tick = makeSelfScanTrigger(makeDeps({
+      // selfScan's own walk never contributes a NEW on-disk discovery in this scenario — by
+      // the time each pass runs, the mirror already reflects that exact pass's knownPaths (the
+      // mechanical scan() mirror ran first), so every path the walker reports is already known
+      // and gets skipped. This isolates the assertions to Signal B alone, per the task's "keep
+      // the scenario minimal and deterministic" instruction — no fs is touched either way.
+      listVideoFiles: () => [...known],
+      knownPaths: () => known,
+      refreshLibrary,
+    }))
+
+    // Pass 1: process-start catch-up (see 'restart semantics' test below) fires on the
+    // pre-realign set since the snapshot starts empty — not what's under test here, so retire
+    // it to keep pass 2's assertions clean, per the existing tests' handling.
+    const first = await tick()
+    expect(first.orchestratorTriggered).toBe(true)
+    for (const j of pendingOrchestrateJobs()) jobs.retire(j.id, now)
+
+    // Realign happens between passes: retireAllForSeries has already run, files are renamed on
+    // disk, and the mechanical scan() mirror has updated episodes.path to the new locations —
+    // knownPaths() now reflects ONLY the new layout; the old paths are simultaneously gone.
+    known = postRealign
+
+    const second = await tick()
+    expect(second.ingestedNew.sort()).toEqual([...postRealign].sort())
+    expect(second.orchestratorTriggered).toBe(true)
+    expect(refreshLibrary).not.toHaveBeenCalled() // no Signal A — nothing newly discovered on disk
+    expect(pendingOrchestrateJobs().length).toBe(1)
+    const payload = JSON.parse(pendingOrchestrateJobs()[0].payload!)
+    expect(payload.taskType).toBe('orchestrate')
+  })
+
   it('restart semantics: fresh trigger instance + non-empty knownPaths → one catch-up enqueue on the first pass', async () => {
     // Process restart forgets the snapshot; the first pass sees every known path as
     // "newly known" and fires one catch-up orchestrate pass. Deliberate: anything ingested

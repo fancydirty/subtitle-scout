@@ -32,6 +32,16 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
  * inventory only — never dispatch find/realign worker_tasks directly from here, which is what
  * preserves the orchestrator's verified zero-false-trigger gate.
  *
+ * **Post-realign resume (v3 replacement for aggregate's re-derivation).** In the OLD pipeline,
+ * once realignExecutor.ts's `retireAllForSeries` retired every job for a restructured series, the
+ * next `aggregate()` pass re-derived fresh series_season jobs so subtitle searching resumed
+ * against the new layout. With `aggregate()` gone, Signal B carries that resume responsibility:
+ * realign renames files → the mechanical scan() mirror updates `episodes.path` → this signal's
+ * grow-diff sees the new paths appear (the vanished old paths are simply ignored, same as any
+ * other removal) → one orchestrate pass is enqueued → the orchestrator sees missing coverage on
+ * the realigned series and dispatches find_subtitle worker_tasks. See selfScanTrigger.test.ts's
+ * "post-realign resume" case for the REALIGN-shaped variant (simultaneous removals + additions).
+ *
  * "Awaiting" set (Signal A's memory): every path we already reacted to (recognized OR parked)
  * but that hasn't shown up in `knownPaths()` yet. selfScan.ts itself has NO memory (a parked
  * path is retried every pass, forever, by design — see its own doc comment) — without this set,
