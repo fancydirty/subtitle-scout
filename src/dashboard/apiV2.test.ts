@@ -238,8 +238,37 @@ describe('buildParked / claimParked（P6 park 救援）', () => {
     expect(result).toEqual({ ok: true })
 
     // 目录前缀命中，兄弟集也会命中（最长前缀匹配）
-    expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '12345', isTv: true })
-    expect(lib.findOverride('/media/tv/Unknown Show/S01/e1.mkv')).toEqual({ tmdbId: '12345', isTv: true })
+    expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null })
+    expect(lib.findOverride('/media/tv/Unknown Show/S01/e1.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null })
+  })
+
+  // P7 disambiguation 补丁：可选 season 入参。
+  it('claimParked：带 season 的认领原样写入 identify_overrides.season', () => {
+    lib.upsertParkedPath('/media/TV/High School D×D/Hero - 01.mkv', 'no-signal', NOW)
+
+    const result = claimParked(db, {
+      path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4,
+    })
+    expect(result).toEqual({ ok: true })
+    expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({
+      tmdbId: '24240', isTv: true, season: 4,
+    })
+  })
+
+  it('claimParked：拒绝非正整数 season（0/负数/小数）', () => {
+    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+    for (const bad of [0, -1, 1.5]) {
+      const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: bad })
+      expect(result).toEqual({ ok: false, error: expect.any(String) })
+    }
+    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toBeNull()
+  })
+
+  it('claimParked：season 省略/null 等价——不指定即为未知（原有行为）', () => {
+    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+    const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: null })
+    expect(result).toEqual({ ok: true })
+    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toEqual({ tmdbId: '1', isTv: true, season: null })
   })
 
   it('claimParked：认领不立即清 parked_paths——那一行等下一轮巡检 recognize 命中 override 后由摄取层自己清', () => {

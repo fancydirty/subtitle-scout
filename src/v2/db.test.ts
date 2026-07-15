@@ -43,6 +43,6 @@ describe('db 基座', () => {
     expect(parkedCols).toEqual(['path', 'park_reason', 'first_seen', 'last_attempt'])
 
     const overrideCols = (db.prepare('PRAGMA table_info(identify_overrides)').all() as { name: string }[]).map((c) => c.name)
-    expect(overrideCols).toEqual(['path_prefix', 'tmdb_id', 'is_tv', 'created_at'])
+    expect(overrideCols).toEqual(['path_prefix', 'tmdb_id', 'is_tv', 'season', 'created_at'])
   })
 })

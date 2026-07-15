@@ -336,6 +336,28 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // ——episodeId 形状就是身份）；折算不出（剧无编号表数据/集号越界/TMDB 双路失败）
               // → park 'absolute-episode-unresolved'（此时是真·"TMDB 说不出来"，不再是"没试过"）。
               if (resolvedEpisode === null && outcome.absoluteEpisode !== null) {
+                // P7 disambiguation 守卫（零误认红线）：outcome.viaOverrideLenient 标记的
+                // absoluteEpisode 来自 recognize() 的 claim-gated 宽松裸数字救援——认领只回答了
+                // "这是哪部剧"，没回答"这串裸数字在哪季"。单季剧下无所谓（绝对集号==季内集号，
+                // seasonEpisodeForAbsolute 的折算天然无歧义，照常往下走）；多季剧下这串数字可能
+                // 是整剧绝对集号，也可能是当前季/品牌子系列内部编号（真实撞过的例子：High School
+                // DxD 第四季副标题 'Hero'，文件名 'Hero - 01' 的 01 是 Hero 这一季的第 1 集，
+                // 不是全剧绝对第 1 集——当绝对集号折算会错算成 S1E01，一整行错季错集地装错字幕）。
+                // 拿不准就不动手：park 一个诚实的理由，让人类回到救援页把 season 一起补上
+                // （见 identify_overrides.season + recognize() 里"认领带 season → 直接无歧义"
+                // 的那条分支），而不是在这里替它猜。注意 getSeasonTable 本身已经过滤掉
+                // season_number<=0（特别篇不计入"有几季"），"多于一季"就是这里唯一要判的门槛；
+                // 拿不到季表（null/瞬时失败）时不在这里强行下判断——照常落到下面的
+                // seasonEpisodeForAbsolute，它自己会用同一套数据源纪律得出 null，最终仍然诚实地
+                // park('absolute-episode-unresolved')，不会把"查不到"误判成"能安全折算"。
+                if (outcome.viaOverrideLenient) {
+                  const seasonTable = await tmdb.getSeasonTable(tmdbId)
+                  if (seasonTable && seasonTable.length > 1) {
+                    lib.upsertParkedPath(path, 'override-ambiguous-numbering', nowMs)
+                    result.parked++
+                    continue
+                  }
+                }
                 const mapped = await seasonEpisodeForAbsolute(outcome.absoluteEpisode, tmdb, tmdbId)
                 if (mapped) {
                   resolvedSeason = mapped.season

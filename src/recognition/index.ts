@@ -14,6 +14,11 @@ export type { PathIdentity, Park, ParsedName, Recognized }
 export interface IdentifyOverrideLookup {
   tmdbId: string
   isTv: boolean
+  /** P7 disambiguation 补丁：认领时人类一并给出的季号（可选——旧调用方/未升级的 mock 不提供
+   *  时按未指定处理，等价于 null）。仅在 claim-gated 宽松裸数字救援分支（见下方 recognize()）
+   *  里读取：非 null → trailing number 是该季内集号，无歧义；null/未提供 → trailing number 只能
+   *  当"待折算"的绝对集号，标记 viaOverrideLenient 交给 ingest 层的多季歧义守卫处理。 */
+  season?: number | null
 }
 
 export interface RecognizeOpts {
@@ -78,6 +83,18 @@ function lenientTrailingEpisode(videoPath: string): number | null {
  * 提不到就还是 park，但换一个诚实的理由（'override-no-structure'，救援页能看出"已认领但没有
  * 集号信号"和"从未认领"的区别）。哲学：宽松解析只在人工认领已经明确背书的这一条分支里生效，
  * 无人值守路径（identity 非 park，或者 park 但没有命中 override）永远不触碰这条宽松规则。
+ *
+ * P7 真库闸门 disambiguation 补丁（零误认红线）：上面这条宽松规则本身藏着一个更深的坑——
+ * lenientTrailingEpisode 提出来的裸数字，认领只告诉了我们"这是哪部剧"（tmdbId），完全没告诉
+ * 我们这串数字是"整剧绝对集号"还是"当前季内集号"还是"品牌/子系列内部编号"（真实案例：
+ * High School DxD 的第四季副标题叫 'Hero'，文件名 'Hero - 01' 里的 01 是 Hero 这一季内的第 1
+ * 集，不是全剧绝对第 1 集——多季剧下这三种读法都说得通，猜错就是一整行错季错集的字幕安装，
+ * 撞上北极星红线"绝不误认"）。单季剧没有这个问题——绝对集号本来就等于季内集号，两种读法重合，
+ * 无歧义。两条出路，救援页认领时人类可以选：(a) 什么都不做，只给 tmdbId——裸数字下放给 ingest
+ * 层，标记 viaOverrideLenient=true，交给它的多季歧义守卫去 park（诚实地说"看不出这数字该怎么
+ * 归位"，而不是猜一个）；(b) 认领时把 season 也一起给——那这串数字就毫无疑问是"该季内第几集"，
+ * 在这里直接构造出完整的 (season, episode)，连 viaOverrideLenient 标记都不需要，因为已经没有
+ * 剩余的歧义可言。
  */
 export async function recognize(
   videoPath: string,
@@ -92,9 +109,22 @@ export async function recognize(
     if (!override.isTv) {
       return { tmdbId: override.tmdbId, title: '', isTv: false, season: null, episode: null, absoluteEpisode: null }
     }
-    const absoluteEpisode = lenientTrailingEpisode(videoPath)
-    if (absoluteEpisode === null) return { park: 'override-no-structure' }
-    return { tmdbId: override.tmdbId, title: '', isTv: true, season: null, episode: null, absoluteEpisode }
+    const trailingNumber = lenientTrailingEpisode(videoPath)
+    if (trailingNumber === null) return { park: 'override-no-structure' }
+    if (override.season != null) {
+      // 认领已经把季也一起给了：裸数字就是该季内集号，完全无歧义，不需要 viaOverrideLenient 标记
+      // （ingest 层的多季守卫只保护"season 未知"这一种情形，见上方函数头注释）。
+      return {
+        tmdbId: override.tmdbId, title: '', isTv: true,
+        season: override.season, episode: trailingNumber, absoluteEpisode: null,
+      }
+    }
+    // season 未指定：裸数字只能先当"待折算"的绝对集号，标记 viaOverrideLenient 供 ingest 层的
+    // 多季歧义守卫识别——单季剧下折算无歧义会照常成功；多季剧下会诚实地 park，而不是猜。
+    return {
+      tmdbId: override.tmdbId, title: '', isTv: true,
+      season: null, episode: null, absoluteEpisode: trailingNumber, viaOverrideLenient: true,
+    }
   }
 
   if (identity.embeddedTmdbId === null) {

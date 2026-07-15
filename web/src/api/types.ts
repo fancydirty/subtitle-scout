@@ -78,9 +78,11 @@ export interface ParkedItemDTO {
   lastAttempt: number
 }
 
-/** POST /api/parked/claim 请求体。 */
+/** POST /api/parked/claim 请求体。season 为 P7 disambiguation 补丁：多季剧下裸集号有歧义，
+ *  认领时可选一并给出季号（省略=未指定，走原有单季/绝对集号折算路径）。 */
 export interface ClaimParkedInput {
   path: string
   tmdbId: string
   isTv: boolean
+  season?: number
 }

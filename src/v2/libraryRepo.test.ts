@@ -289,7 +289,7 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
   describe('identify_overrides', () => {
     it('addOverride + findOverride：单条命中', () => {
       lib.addOverride('/media/anime/Show', '209867', true, 1000)
-      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true })
+      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true, season: null })
     })
 
     it('findOverride 无命中返回 null', () => {
@@ -300,14 +300,34 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
     it('findOverride 最长前缀匹配：两条嵌套前缀，更长者胜出', () => {
       lib.addOverride('/media/anime', '1', true, 1000)
       lib.addOverride('/media/anime/Show', '209867', true, 2000)
-      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true })
-      expect(lib.findOverride('/media/anime/Other/e1.mkv')).toEqual({ tmdbId: '1', isTv: true })
+      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true, season: null })
+      expect(lib.findOverride('/media/anime/Other/e1.mkv')).toEqual({ tmdbId: '1', isTv: true, season: null })
     })
 
     it('addOverride 对同一 path_prefix 幂等更新（PRIMARY KEY upsert）', () => {
       lib.addOverride('/media/x', '1', true, 1000)
       lib.addOverride('/media/x', '2', false, 2000)
-      expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '2', isTv: false })
+      expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '2', isTv: false, season: null })
+    })
+
+    // P7 disambiguation 补丁：认领时人类一并给出季号——见 db.ts identify_overrides 头注释、
+    // recognition/index.ts recognize() 的 claim-gated 宽松救援分支。
+    it('addOverride 带 season → findOverride 原样带回', () => {
+      lib.addOverride('/media/TV/High School D×D', '24240', true, 1000, 4)
+      expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({
+        tmdbId: '24240', isTv: true, season: 4,
+      })
+    })
+
+    it('addOverride 不传 season（省略实参）默认为 null，不是遗留 undefined', () => {
+      lib.addOverride('/media/anime/Show', '209867', true, 1000)
+      expect(lib.findOverride('/media/anime/Show/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true, season: null })
+    })
+
+    it('addOverride 幂等更新同样覆盖 season（重新认领可以补上此前没给的季号）', () => {
+      lib.addOverride('/media/x', '1', true, 1000)
+      lib.addOverride('/media/x', '1', true, 2000, 4)
+      expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '1', isTv: true, season: 4 })
     })
   })
 

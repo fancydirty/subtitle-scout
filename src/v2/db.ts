@@ -109,7 +109,13 @@ CREATE TABLE parked_paths (         -- 未识别文件的正式户口（不混�
 );
 CREATE TABLE identify_overrides (   -- P6 认领写入；识别层消歧前查（最长前缀匹配）
   path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL,
-  is_tv INTEGER NOT NULL, created_at INTEGER NOT NULL
+  is_tv INTEGER NOT NULL,
+  season INTEGER,                 -- P7 disambiguation 补丁：认领时人类一并给出的季号（可空=未指定）。
+                                   -- 仅 is_tv 时有意义——非空时 recognize() 的 claim-gated 宽松救援把
+                                   -- 路径末尾数字当"该季内集号"直接采信（无歧义）；为空时只能当绝对
+                                   -- 集号，多季剧下 ingest 层会 park('override-ambiguous-numbering')
+                                   -- 而不是瞎猜（见 src/v2/ingest.ts、src/recognition/index.ts）。
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_reconcile_at 等
   `.trim(),

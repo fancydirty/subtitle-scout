@@ -113,7 +113,36 @@ describe('startDashboard (v2)', () => {
       })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ ok: true })
-      expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true })
+      expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null })
+    })
+
+    // P7 disambiguation 补丁：可选 season 入参走完整 HTTP round-trip。
+    it('POST /api/parked/claim with a season carries it through to identify_overrides.season', async () => {
+      const lib = new LibraryRepo(db)
+      lib.upsertParkedPath('/media/TV/High School D×D/Hero - 01.mkv', 'no-signal', NOW)
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/parked/claim`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4 }),
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({ tmdbId: '24240', isTv: true, season: 4 })
+    })
+
+    it('POST /api/parked/claim rejects a non-positive-integer season (400)', async () => {
+      const lib = new LibraryRepo(db)
+      lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/parked/claim`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: 0 }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toEqual(expect.any(String))
+      expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toBeNull()
     })
 
     it('POST /api/parked/claim returns 400 on validation failure (e.g. unparked path)', async () => {

@@ -123,11 +123,15 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'invalid JSON body' }))
           return
         }
-        const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown }
+        const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown; season?: unknown }
+        // P7 disambiguation 补丁：season 未传/null → undefined/null（claimParked 视作"未指定"，
+        // 原有行为）；传了但不是 number（如字符串/布尔）→ NaN，claimParked 的
+        // Number.isInteger 校验会诚实拒绝，而不是静默丢弃一个格式错误的输入。
         const result = claimParked(db, {
           path: typeof b.path === 'string' ? b.path : '',
           tmdbId: typeof b.tmdbId === 'string' ? b.tmdbId : String(b.tmdbId ?? ''),
           isTv: Boolean(b.isTv),
+          season: typeof b.season === 'number' ? b.season : (b.season == null ? b.season as null | undefined : NaN),
         })
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result))

@@ -88,6 +88,9 @@ export interface ParkedPath {
 export interface IdentifyOverride {
   tmdbId: string
   isTv: boolean
+  /** P7 disambiguation 补丁：认领时人类一并给出的季号；未指定 = null（见 db.ts identify_overrides
+   *  头注释）。始终存在于返回形状里（不是可选键）——DB 行本身总有这一列，值域是 number | null。 */
+  season: number | null
 }
 
 export interface ProbeMemo {
@@ -481,18 +484,20 @@ export class LibraryRepo {
 
   // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----
 
-  /** P6 手工认领写入：ON CONFLICT 幂等更新（同一前缀重新认领覆盖旧值）。 */
-  addOverride(pathPrefix: string, tmdbId: string, isTv: boolean, now: number): void {
+  /** P6 手工认领写入：ON CONFLICT 幂等更新（同一前缀重新认领覆盖旧值）。P7：新增可选 season
+   *  形参（默认 null=未指定，向后兼容既有调用方）——认领时人类一并给出季号，见 db.ts 头注释。 */
+  addOverride(pathPrefix: string, tmdbId: string, isTv: boolean, now: number, season: number | null = null): void {
     this.db
       .prepare(
-        `INSERT INTO identify_overrides (path_prefix, tmdb_id, is_tv, created_at)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO identify_overrides (path_prefix, tmdb_id, is_tv, season, created_at)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(path_prefix) DO UPDATE SET
            tmdb_id = excluded.tmdb_id,
            is_tv = excluded.is_tv,
+           season = excluded.season,
            created_at = excluded.created_at`
       )
-      .run(pathPrefix, tmdbId, isTv ? 1 : 0, now)
+      .run(pathPrefix, tmdbId, isTv ? 1 : 0, season, now)
   }
 
   /** 最长前缀匹配：candidates = path 以 path_prefix 开头的全部 override 行，取 path_prefix
@@ -502,15 +507,15 @@ export class LibraryRepo {
    *  预期行数很小（几十到几百量级），全表扫描代价可忽略。 */
   findOverride(path: string): IdentifyOverride | null {
     const rows = this.db
-      .prepare(`SELECT path_prefix, tmdb_id, is_tv FROM identify_overrides`)
-      .all() as { path_prefix: string; tmdb_id: string; is_tv: number }[]
-    let best: { path_prefix: string; tmdb_id: string; is_tv: number } | null = null
+      .prepare(`SELECT path_prefix, tmdb_id, is_tv, season FROM identify_overrides`)
+      .all() as { path_prefix: string; tmdb_id: string; is_tv: number; season: number | null }[]
+    let best: { path_prefix: string; tmdb_id: string; is_tv: number; season: number | null } | null = null
     for (const row of rows) {
       if (!path.startsWith(row.path_prefix)) continue
       if (!best || row.path_prefix.length > best.path_prefix.length) best = row
     }
     if (!best) return null
-    return { tmdbId: best.tmdb_id, isTv: best.is_tv === 1 }
+    return { tmdbId: best.tmdb_id, isTv: best.is_tv === 1, season: best.season }
   }
 
   // ---- P2：ffprobe 探针记忆化（episodes/movies 共用列，见 db.ts P1 注释） ----

@@ -142,14 +142,15 @@ describe('recognize — identify_overrides consult (opts.findOverride)', () => {
 // 人工认领已经明确背书时才生效，无人值守路径（identity 非 park 或根本没有 override）永远不
 // 触发这条宽松规则。
 describe('recognize — Bug 1 fix: identify_overrides rescues a no-signal park (claim-gated lenient parsing)', () => {
-  it('no-signal park + TV override + a trailing episode number → Recognized via lenient extraction (absoluteEpisode, season/episode null)', async () => {
+  it('no-signal park + TV override (no season given) + a trailing episode number → Recognized via lenient extraction, marked viaOverrideLenient (season/episode null, ambiguous numbering left to ingest layer)', async () => {
     const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
     const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
     const path = '/media/TV/High School D×D/[The-Nut] High School DxD Hero - 01.mkv'
-    const findOverride = vi.fn(() => ({ tmdbId: '24240', isTv: true }))
+    const findOverride = vi.fn(() => ({ tmdbId: '24240', isTv: true, season: null }))
     const result = await recognize(path, tmdb, { findOverride })
     expect(result).toEqual({
       tmdbId: '24240', title: '', isTv: true, season: null, episode: null, absoluteEpisode: 1,
+      viaOverrideLenient: true,
     })
     expect(findOverride).toHaveBeenCalledWith(path)
     expect(fetchImpl).not.toHaveBeenCalled()
@@ -169,6 +170,28 @@ describe('recognize — Bug 1 fix: identify_overrides rescues a no-signal park (
     const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
     const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
     const findOverride = vi.fn(() => ({ tmdbId: '1', isTv: true }))
+    const result = await recognize('movies/aaa/bbb.mkv', tmdb, { findOverride })
+    expect(result).toEqual({ park: 'override-no-structure' })
+  })
+
+  // P7 disambiguation 补丁：认领时人类一并给出 season → 裸数字直接就是"该季内集号"，完全无歧义，
+  // 不需要 ingest 层的多季守卫（不带 viaOverrideLenient 标记）。
+  it('no-signal park + TV override WITH season → Recognized as an exact (season, episode) pair, no ambiguity marker (the live DxD case: Hero = season 4)', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const path = '/media/TV/High School D×D/[The-Nut] High School DxD Hero - 01.mkv'
+    const findOverride = vi.fn(() => ({ tmdbId: '24240', isTv: true, season: 4 }))
+    const result = await recognize(path, tmdb, { findOverride })
+    expect(result).toEqual({
+      tmdbId: '24240', title: '', isTv: true, season: 4, episode: 1, absoluteEpisode: null,
+    })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('no-signal park + TV override WITH season + a numberless name → still parks honestly (season alone is not an episode signal)', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const findOverride = vi.fn(() => ({ tmdbId: '1', isTv: true, season: 4 }))
     const result = await recognize('movies/aaa/bbb.mkv', tmdb, { findOverride })
     expect(result).toEqual({ park: 'override-no-structure' })
   })

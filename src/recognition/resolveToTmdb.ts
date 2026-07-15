@@ -25,6 +25,14 @@ export interface Recognized {
   season: number | null
   episode: number | null
   absoluteEpisode: number | null
+  /** P7 disambiguation 补丁：仅当这条 Recognized 来自 recognize() 的 claim-gated 宽松裸数字救援
+   *  分支（identify_overrides 命中一个 'no-signal' park，且认领本身没有指定 season）时为 true——
+   *  absoluteEpisode 此时是从路径末尾数字硬提取的，season 未知，多季剧下无法确定它到底是绝对
+   *  集号/季内集号/品牌内部编号。ingest.ts 用这个标记 gate 一次多季歧义守卫，只保护这一条claim
+   *  救援路径；identifyFromPath 自己结构化解析出的 absoluteEpisode（fansub 命名结构本身，如
+   *  '[Group] Title - 26 [hash]'）不带这个标记，走既有折算路径不受影响。见
+   *  src/recognition/index.ts recognize() 与 src/v2/ingest.ts 的对应注释。 */
+  viaOverrideLenient?: true
 }
 
 export type ResolveResult = Recognized | Park

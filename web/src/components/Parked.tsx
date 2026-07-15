@@ -20,13 +20,16 @@ type RowState =
 function ParkedRow({ path, parkReason, firstSeen }: { path: string; parkReason: string; firstSeen: number }) {
   const [tmdbId, setTmdbId] = useState('')
   const [isTv, setIsTv] = useState(true)
+  // P7 disambiguation 补丁：可选季号——多季剧下裸集号有歧义（override-ambiguous-numbering），
+  // 留空 = 未指定（原有行为）。只在提交时才转成 number，输入框本身存字符串，允许中途清空。
+  const [season, setSeason] = useState('')
   const [state, setState] = useState<RowState>({ kind: 'idle' })
   const now = Date.now()
 
   const claim = async () => {
     setState({ kind: 'submitting' })
     try {
-      await api.claimParked({ path, tmdbId, isTv })
+      await api.claimParked({ path, tmdbId, isTv, ...(season !== '' ? { season: Number(season) } : {}) })
       setState({ kind: 'claimed' })
     } catch (e) {
       setState({ kind: 'error', message: e instanceof Error ? e.message : String(e) })
@@ -59,6 +62,15 @@ function ParkedRow({ path, parkReason, firstSeen }: { path: string; parkReason: 
           />
           剧集（否则电影）
         </label>
+      </td>
+      <td>
+        <input
+          className="parked-input"
+          placeholder="季 (可选)"
+          value={season}
+          disabled={claimed || state.kind === 'submitting'}
+          onChange={(e) => setSeason(e.target.value)}
+        />
       </td>
       <td>
         {claimed ? (
@@ -107,6 +119,7 @@ export function Parked() {
               <th>挂起于</th>
               <th>TMDB id</th>
               <th>类型</th>
+              <th>季（可选）</th>
               <th>操作</th>
             </tr>
           </thead>

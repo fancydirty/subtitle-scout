@@ -428,19 +428,28 @@ export type ClaimParkedResult = { ok: true } | { ok: false; error: string }
  * 下一轮巡检 recognize() 命中这条 override、重新识别成功后，识别层自己调用 clearParkedPath
  * （T3 既有逻辑），parked_paths 这张表的"是否还挂着"由巡检的真实识别结果唯一决定，不由这个
  * 认领端点越权代劳——保持单一数据源。
+ *
+ * P7 disambiguation 补丁：可选 season 入参——多季剧下裸集号有歧义（见 ingest.ts 的
+ * override-ambiguous-numbering 守卫），认领时把季一起给上就能让 recognize() 直接构造出无歧义
+ * 的 (season, episode)，绕开那道守卫。省略/传 null = 未指定（原有行为，交给 ingest 层判断单季
+ * 剧可以无歧义折算、多季剧则诚实 park）。传了就必须是正整数——不接受 0/负数/小数，那些不是
+ * 合法的季号，静默接受只会把一个用户输入错误伪装成"认领成功"。
  */
 export function claimParked(
   db: ScoutDb,
-  input: { path: string; tmdbId: string; isTv: boolean }
+  input: { path: string; tmdbId: string; isTv: boolean; season?: number | null }
 ): ClaimParkedResult {
-  const { path, tmdbId, isTv } = input
+  const { path, tmdbId, isTv, season } = input
   if (!path) return { ok: false, error: 'path is required' }
   if (!/^\d+$/.test(tmdbId)) return { ok: false, error: 'tmdbId must be a numeric string' }
+  if (season !== undefined && season !== null && !(Number.isInteger(season) && season > 0)) {
+    return { ok: false, error: 'season must be a positive integer' }
+  }
 
   const lib = new LibraryRepo(db)
   const parked = lib.listParkedPaths().some((p) => p.path === path)
   if (!parked) return { ok: false, error: 'path is not currently parked' }
 
-  lib.addOverride(dirname(path), tmdbId, isTv, Date.now())
+  lib.addOverride(dirname(path), tmdbId, isTv, Date.now(), season ?? null)
   return { ok: true }
 }

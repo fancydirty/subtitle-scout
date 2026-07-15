@@ -283,6 +283,113 @@ describe('makeIngestPass — absolute-episode resolution (anime flat numbering)'
   })
 })
 
+// P7 disambiguation 补丁（零误认红线）：viaOverrideLenient 标记的 absoluteEpisode 来自
+// recognize() 的 claim-gated 宽松裸数字救援——认领只回答了"这是哪部剧"，没回答"这串裸数字在
+// 哪季"。多季剧下直接当绝对集号折算会静默错季（真实撞过的例子：High School DxD 第四季
+// 'Hero - 01' 被误当全剧绝对第 1 集，实际是 S4E01）。这条守卫只针对 viaOverrideLenient 生效
+// ——上面 describe 块里 identifyFromPath 自己结构化解析出的 absoluteEpisode（不带这个标记）
+// 走的还是老路径，两季数据一样能正常折算成功，见 209 行那条既有测试（回归覆盖）。
+describe('makeIngestPass — P7 disambiguation guard: claim-gated lenient absoluteEpisode (viaOverrideLenient)', () => {
+  it('multi-season series + lenient claim-rescued absoluteEpisode → parks override-ambiguous-numbering, never guesses a season', async () => {
+    const path = '/media/TV/High School D×D/[The-Nut] High School DxD Hero - 01.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({
+      tmdbId: '24240', season: null, episode: null, absoluteEpisode: 1, viaOverrideLenient: true,
+    }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      tmdb: fakeTmdb({
+        getSeasonTable: async () => [
+          { seasonNumber: 1, episodeCount: 12, airDate: null },
+          { seasonNumber: 2, episodeCount: 12, airDate: null },
+          { seasonNumber: 3, episodeCount: 12, airDate: null },
+          { seasonNumber: 4, episodeCount: 13, airDate: null },
+        ],
+      }),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    expect(result.parked).toBe(1)
+    expect(result.upserted).toBe(0)
+    expect(lib.listParkedPaths()[0].park_reason).toBe('override-ambiguous-numbering')
+    // 没有猜出任何一行——尤其没有静默写出错误的 S1E01（真实撞到的误认场景）。
+    expect(lib.getEpisode('tmdb:24240/s1e1')).toBeNull()
+  })
+
+  it('single-season series + lenient claim-rescued absoluteEpisode → unambiguous, resolves normally (absolute == season-local)', async () => {
+    const path = '/media/TV/Show/Show - 03.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({
+      tmdbId: '99', season: null, episode: null, absoluteEpisode: 3, viaOverrideLenient: true,
+    }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      tmdb: fakeTmdb({
+        getSeasonTable: async () => [{ seasonNumber: 1, episodeCount: 12, airDate: null }],
+      }),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    expect(result).toEqual({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true })
+    expect(lib.getEpisode('tmdb:99/s1e3')).not.toBeNull()
+  })
+
+  it('season table unavailable (null) + lenient claim-rescued absoluteEpisode → guard does not fire on unknown data, falls through to honest absolute-episode-unresolved park', async () => {
+    const path = '/media/TV/Show/Show - 03.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({
+      tmdbId: '99', season: null, episode: null, absoluteEpisode: 3, viaOverrideLenient: true,
+    }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      tmdb: fakeTmdb({ getSeasonTable: async () => null, getAbsoluteOrder: async () => null }),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    expect(result.parked).toBe(1)
+    expect(lib.listParkedPaths()[0].park_reason).toBe('absolute-episode-unresolved')
+  })
+
+  it('regression: multi-season series + PARSER-derived absoluteEpisode (no viaOverrideLenient) is unaffected by the guard — resolves normally', async () => {
+    const path = '/media/Anime/My Hero Academia/ep 26.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    // 没有 viaOverrideLenient：identifyFromPath 自己从 fansub 命名结构解析出的绝对集号
+    // （既有行为，见上面 209 行同款场景），守卫必须完全不介入。
+    const recognize = vi.fn(async () => tvResult({
+      tmdbId: '65930', title: 'My Hero Academia', season: null, episode: null, absoluteEpisode: 26,
+    }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      tmdb: fakeTmdb({
+        getSeasonTable: async () => [
+          { seasonNumber: 1, episodeCount: 25, airDate: null },
+          { seasonNumber: 2, episodeCount: 12, airDate: null },
+        ],
+      }),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    expect(result).toEqual({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true })
+    expect(lib.getEpisode('tmdb:65930/s2e1')).not.toBeNull()
+  })
+})
+
 describe('makeIngestPass — memo-hit cheap path', () => {
   it('probeMemo (mtime,size) matches current stat → recognize() and probe() are NOT called', async () => {
     const path = '/media/Show/Season 1/ep1.mkv'
