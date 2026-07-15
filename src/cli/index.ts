@@ -50,7 +50,7 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { scanLibrary, type OriginResolver } from '../v2/scanner.js'
 import { aggregate } from '../v2/aggregator.js'
-import { executeJob, makeRunEpisode, makeDiagnoseSeason } from '../v2/executor.js'
+import { executeJob, makeRunEpisode } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import type { MediaItem } from '../adapters/players/types.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
@@ -78,8 +78,9 @@ export interface Assembled {
    *  所有 runPipeline 调用必须包在此内，否则 assrt/llm 回调取不到 journal 而丢事件。 */
   withJournal: <T>(fn: () => Promise<T>) => Promise<T>
   cacheRoot: string
-  /** 底层对象本来就是 createLlmRuntime() 的产出，一直具备 .call()——之前只声明了 profileInfo()
-   *  给 ledger 写入代码用；makeDiagnoseSeason（realign 诊断闭包）需要 .call()，放宽成完整接口。 */
+  /** 底层对象本来就是 createLlmRuntime() 的产出，一直具备 .call()——旧管线的
+   *  identifyMedia/planSearch/rankCandidates/verifySubtitle/judgeOrphan/mapSeasonPack
+   *  都要用，声明成完整 LlmRuntime 接口而不只是给 ledger 写入代码用的 profileInfo()。 */
   llm: LlmRuntime
   jf: PlayerServer
   /** realign 编排需要 PlayerServer 之外的能力（ScheduledTasks/VirtualFolders/单库刷新/删条目）
@@ -305,7 +306,7 @@ async function cmdRunItem(itemId: string) {
  *  reconcile+aggregate（喂旧管线）相互独立、并存——这是新 v3 链路的手动触发入口。命令跑完
  *  即退出，写下的 worker_task 行要等一个正在跑的 `watch` daemon 进程认领执行（本命令自己
  *  从不认领任何行）。
- *  TMDB_API_KEY 是硬性前置——不同于 cmdWatch 里 realign/diagnoseSeason 那种"没配置就静默
+ *  TMDB_API_KEY 是硬性前置——不同于 cmdWatch 里 realign 那种"没配置就静默
  *  跳过"（那是给日常 watch 循环的容错，缺检测能力不该拦住找字幕主线）：orchestrator 的
  *  check_series_layout 工具需要真实 TmdbClient 才能判断"季数是否超出 TMDB 季表"，手动触发的
  *  全仓校验若因为缺 key 而悄悄只做一半，会让使用者误以为已经跑过完整校验——所以这里直接
@@ -496,12 +497,6 @@ async function cmdWatch() {
     log('warn: self-scan 未接线（缺 TMDB_API_KEY），已跳过——daemon 其余部分不受影响')
   }
 
-  // 诊断钩子（Task 14 的 makeDiagnoseSeason）：同样门在 tmdb 是否配置——诊断需要 TMDB
-  // 季表才有确定性主信号，没有 TMDB_API_KEY 时一并跳过。
-  const diagnoseSeasonClosure = tmdb
-    ? makeDiagnoseSeason({ lib, jf, tmdb, runs, llm })
-    : undefined
-
   // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
   // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）在被调用之后，
   // 自己都已经把抛出的异常兜进 completeError（worker-exhaustion 要求：find-subtitle worker 撞
@@ -593,7 +588,6 @@ async function cmdWatch() {
         jobs,
         runEpisode,
         executeRealign: executeRealignClosure,
-        diagnoseSeason: diagnoseSeasonClosure,
         now: () => Date.now(),
         log,
       }))

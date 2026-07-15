@@ -6,11 +6,10 @@ import { openDb } from './db.js'
 import { JobsRepo, ERROR_BACKOFF_MS, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
-import { executeJob, makeRunEpisode, makeDiagnoseSeason, type ExecutorDeps } from './executor.js'
+import { executeJob, makeRunEpisode, type ExecutorDeps } from './executor.js'
 import { runPipeline } from '../core/pipeline.js'
 import type { Assembled } from '../cli/index.js'
 import type { SeasonEpisode } from '../core/episode.js'
-import type { DiagnosisVerdict } from '../agent/diagnoseSeason.js'
 
 vi.mock('../core/pipeline.js', () => ({ runPipeline: vi.fn() }))
 const runPipelineMock = vi.mocked(runPipeline)
@@ -233,6 +232,32 @@ describe('executor', () => {
 
     const ep1 = lib.getEpisode('e1')!
     expect(ep1.sub_status).toBe('unavailable') // no_safe_match 统一走 unavailable，没有第二条内容失败轨
+  })
+
+  // 退役T3 (W0-1)：no_safe_match 分支曾在 attempt>=2 时调用 diagnoseSeason 诊断钩子、
+  // 命中 absolute_flat 就 upsertWanted 建 realign job（executor.ts 的旧 :345-357）。
+  // 该钩子已删除——realign 出生权整体移交 v3 orchestrator 的 check_series_layout
+  // + dispatch_realign_task（见 orchestratorAgent.tools.ts）。这条测试锁住：即使是第
+  // 2 次（含以上）内容失败，no_safe_match 分支也只走既有的退避/dormant 结论，绝不
+  // 再产生任何 realign upsert 副作用。
+  it('no_safe_match 第 2 次内容失败（attempt>=2）：正常走内容退避轨，不再产生 realign upsert 副作用', async () => {
+    mkEpisode('e1', 's1', 1, 1)
+    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    let job = jobs.claimNext(now)!
+    const runEpisode = vi.fn(async () => ({ decision: 'no_safe_match' as const, journalPath: '/j.json' }))
+    await executeJob(job, mkDeps(runEpisode)) // 第 1 次失败，attempt→1
+
+    // no_safe_match 把目标 episode 标 unavailable 且 recheck_after=now+1day（1/2/4/8 天退避梯
+    // 第一档）——不推进 now 的话，第二次 executeJob 调用时 remainingTargets() 会把这个还没到
+    // 复查时间的 episode 过滤掉，targets.length===0 直接 completeDone，根本走不到 no_safe_match
+    // 分支。推进 now 越过 1 天退避窗口，模拟真实的"第二次失败"。
+    now += 2 * 86_400_000
+    job = jobs.forceClaim('s1', 1, now)!
+    await executeJob(job, mkDeps(runEpisode)) // 第 2 次失败，attempt→2——旧 executor 曾在此触发诊断钩子
+
+    expect(jobs.get(job.id)!.state).toBe('failed') // 内容退避轨照常生效（未提前 dormant）
+    const realignJob = lib.db.prepare(`SELECT * FROM jobs WHERE kind='realign' AND series_id='s1'`).get()
+    expect(realignJob).toBeUndefined() // 出生权已移交 orchestrator，executor 自身绝不再建 realign job
   })
 
   it('runEpisode 抛错 → completeError，短退避', async () => {
@@ -1021,144 +1046,6 @@ describe('makeRunEpisode (Layer 2 接线)', () => {
     await runEpisode('e1', vi.fn())
     const row = lib.db.prepare('select chinese_title from series where id=?').get('s1') as any
     expect(row.chinese_title).toBe('测试剧集')
-  })
-})
-
-describe('realign 诊断钩子（no_safe_match 分支）', () => {
-  const mkDepsWithDiag = (
-    runEpisode: ExecutorDeps['runEpisode'],
-    diagnoseSeason: ((job: any) => Promise<DiagnosisVerdict>) | undefined,
-  ): ExecutorDeps => ({ lib, jobs, runEpisode, now: () => now, log, diagnoseSeason })
-
-  const runEpisodeNoMatch: ExecutorDeps['runEpisode'] = async () => ({ decision: 'no_safe_match', journalPath: '/j.json' })
-
-  it('attempt < 2（本次是第 1 次失败）不调用 diagnoseSeason', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    const job = jobs.claimNext(now)!
-    const diagnoseSeason = vi.fn()
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, diagnoseSeason))
-    expect(diagnoseSeason).not.toHaveBeenCalled()
-  })
-
-  it('attempt >= 2 + verdict=absolute_flat → upsertWanted 建 realign job', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    let job = jobs.claimNext(now)!
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, undefined)) // 第 1 次失败，attempt→1
-    // no_safe_match 把目标 episode 标 unavailable 且 recheck_after=now+1day（1/2/4/8 天退避梯
-    // 第一档）——不推进 now 的话，第二次 executeJob 调用时 remainingTargets() 会把这个还没到
-    // 复查时间的 episode 过滤掉，targets.length===0 直接 completeDone，根本走不到 no_safe_match
-    // 分支、诊断钩子更不会触发。推进 now 越过 1 天退避窗口，模拟真实的"第二次失败"。
-    now += 2 * 86_400_000
-    job = jobs.forceClaim('s1', 1, now)!
-    const diagnoseSeason = vi.fn(async () => ({ verdict: 'absolute_flat' as const, reason: '镜像集数远超 TMDB' }))
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, diagnoseSeason)) // 第 2 次失败，attempt→2，触发诊断
-    expect(diagnoseSeason).toHaveBeenCalledTimes(1)
-    const realignJob = lib.db.prepare(`SELECT * FROM jobs WHERE kind='realign' AND series_id='s1'`).get() as any
-    expect(realignJob).toBeDefined()
-    expect(realignJob.state).toBe('wanted')
-  })
-
-  it('attempt >= 2 + verdict=unknown → 不建 realign job（维持现状）', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    let job = jobs.claimNext(now)!
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, undefined))
-    now += 2 * 86_400_000 // 越过 1 天内容退避窗口，见上一个测试的注释
-    job = jobs.forceClaim('s1', 1, now)!
-    const diagnoseSeason = vi.fn(async () => ({ verdict: 'unknown' as const, reason: '没有确定性信号' }))
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, diagnoseSeason))
-    expect(diagnoseSeason).toHaveBeenCalledTimes(1)
-    const realignJob = lib.db.prepare(`SELECT * FROM jobs WHERE kind='realign' AND series_id='s1'`).get()
-    expect(realignJob).toBeUndefined()
-  })
-
-  it('diagnoseSeason 未注入（undefined）→ 静默跳过，不影响 no_safe_match 正常结论', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    let job = jobs.claimNext(now)!
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, undefined))
-    now += 2 * 86_400_000 // 越过 1 天内容退避窗口，见上面测试的注释
-    job = jobs.forceClaim('s1', 1, now)!
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, undefined)) // attempt→2，但没注入 diagnoseSeason
-    expect(jobs.get(job.id)!.state).toBe('failed') // 正常内容退避轨照常生效
-  })
-
-  it('diagnoseSeason 抛错 → fail-soft，不影响本次 no_safe_match 的 record()', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    let job = jobs.claimNext(now)!
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, undefined))
-    now += 2 * 86_400_000 // 越过 1 天内容退避窗口，见上面测试的注释
-    job = jobs.forceClaim('s1', 1, now)!
-    const diagnoseSeason = vi.fn(async () => { throw new Error('llm timeout') })
-    await executeJob(job, mkDepsWithDiag(runEpisodeNoMatch, diagnoseSeason))
-    const runRecords = runs.getByJobId(job.id)
-    expect(runRecords[0].decision).toBe('no_safe_match') // 诊断失败不污染本次结论
-  })
-})
-
-describe('makeDiagnoseSeason（生产接线闭包：把 lib/jf/tmdb/runs/llm 组装成 ExecutorDeps.diagnoseSeason 的形状）', () => {
-  it('组装 shape（镜像集数/TMDB 集数）+ recentRuns + structuredRejections，调用纯函数 diagnoseSeason，返回值解包 .parsed', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    mkEpisode('e2', 's1', 1, 2)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    const job = jobs.claimNext(now)!
-    runs.insert({ jobId: job.id, startedAt: now, finishedAt: now, decision: 'no_safe_match', detail: '没找到合适的中文字幕', journalPath: '/journals/j1.json' })
-
-    const jf = { getItem: vi.fn(async () => ({ Id: 's1', Type: 'Series', ProviderIds: { Tmdb: '120089' } }) as any) }
-    const tmdb = { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 25, airDate: null }]) }
-    const llmCall = vi.fn(async (_opts: { prompt: string }) => ({
-      parsed: { verdict: 'absolute_flat' as const, reason: '镜像 40 集远超 TMDB 25 集' },
-      rawText: '', retries: 0, durationMs: 0, prompt: '',
-    }))
-    const llm = { call: llmCall, profileInfo: () => ({ mode: 'forced-tool' }) }
-    const readFile = vi.fn(() => JSON.stringify({
-      llm_calls: [{ point: 'rankCandidates', parsed: { rejected: [{ candidate_id: 'a:1', reason: 'wrong season entirely' }] } }],
-    }))
-
-    // 模拟：镜像里这季实际有 40 集（countEpisodesInSeason 会数出真实值，这里为让测试聚焦
-    // "组装是否正确"而不是"真造 40 个 episode 行"，直接再插 38 个占位集把镜像集数堆到 40）。
-    for (let i = 3; i <= 40; i++) mkEpisode(`e${i}`, 's1', 1, i)
-
-    const diagnoseSeason = makeDiagnoseSeason({ lib, jf: jf as any, tmdb: tmdb as any, runs, llm: llm as any, readFile })
-    const finalJob = jobs.get(job.id)!
-    const verdict = await diagnoseSeason(finalJob)
-
-    expect(verdict).toEqual({ verdict: 'absolute_flat', reason: '镜像 40 集远超 TMDB 25 集' })
-    expect(jf.getItem).toHaveBeenCalledWith('s1')
-    expect(tmdb.getSeasonTable).toHaveBeenCalledWith('120089')
-    const prompt = llmCall.mock.calls[0][0].prompt
-    expect(prompt).toContain('40') // 镜像集数
-    expect(prompt).toContain('25') // TMDB 集数
-    expect(prompt).toContain('wrong season entirely') // 结构化拒绝理由
-  })
-
-  it('series 缺 TMDB id（jf.getItem 未带 ProviderIds.Tmdb）→ 返回 unknown，不抛异常（fail-soft）', async () => {
-    mkEpisode('e1', 's1', 1, 1)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    const job = jobs.claimNext(now)!
-    const jf = { getItem: vi.fn(async () => ({ Id: 's1', Type: 'Series', ProviderIds: {} }) as any) }
-    const tmdb = { getSeasonTable: vi.fn() }
-    const llm = { call: vi.fn(), profileInfo: () => ({ mode: 'forced-tool' }) }
-    const diagnoseSeason = makeDiagnoseSeason({ lib, jf: jf as any, tmdb: tmdb as any, runs, llm: llm as any })
-    const verdict = await diagnoseSeason(jobs.get(job.id)!)
-    expect(verdict.verdict).toBe('unknown')
-    expect(tmdb.getSeasonTable).not.toHaveBeenCalled()
-  })
-
-  it('TMDB 季表查无该季（该剧只有 1 季但 job.season=2）→ tmdbEpisodeCount=null，返回 unknown', async () => {
-    mkEpisode('e1', 's1', 2, 1)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 2 }, now)
-    const job = jobs.claimNext(now)!
-    const jf = { getItem: vi.fn(async () => ({ Id: 's1', Type: 'Series', ProviderIds: { Tmdb: '1' } }) as any) }
-    const tmdb = { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 10, airDate: null }]) } // 没有 season 2
-    const llm = { call: vi.fn(), profileInfo: () => ({ mode: 'forced-tool' }) }
-    const diagnoseSeason = makeDiagnoseSeason({ lib, jf: jf as any, tmdb: tmdb as any, runs, llm: llm as any })
-    const verdict = await diagnoseSeason(jobs.get(job.id)!)
-    expect(verdict.verdict).toBe('unknown')
-    expect(llm.call).not.toHaveBeenCalled()
   })
 })
 
