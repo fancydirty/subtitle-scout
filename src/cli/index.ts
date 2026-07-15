@@ -610,7 +610,10 @@ async function cmdWatch() {
     },
     log,
     now: () => Date.now(),
-    reconcileEveryMs: 15 * 60_000,   // 15 min
+    // RECONCILE_EVERY_MS：机械 scan+aggregate 的节拍旋钮（默认 15 min）。自研巡检（B2）的
+    // Signal B 依赖 scan() 把 Jellyfin 摄取结果镜像进 episodes/movies，所以真站验证/快速
+    // 环境会把它调小；生产不设即维持原默认。
+    reconcileEveryMs: Number(process.env.RECONCILE_EVERY_MS) || 15 * 60_000,
     fullScanEveryMs: 6 * 3600_000,   // 6 hours (一期全量扫描，此字段预留)
     concurrency: {
       searching: 1,
