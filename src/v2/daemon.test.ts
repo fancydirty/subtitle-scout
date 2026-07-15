@@ -30,7 +30,6 @@ describe('ScoutDaemon', () => {
     jobs,
     runs,
     scan: vi.fn(async () => {}),
-    aggregate: vi.fn(() => ({ created: 0, retired: 0 })),
     executeJob: vi.fn(async () => {}),
     getSessions: vi.fn(async () => []),
     episodeForSession: vi.fn(() => null),
@@ -42,9 +41,8 @@ describe('ScoutDaemon', () => {
     ...overrides,
   })
 
-  it('tick序列：reap → scan+aggregate → dispatch', async () => {
+  it('tick序列：reap → scan → dispatch（W0-4：aggregate 已切线，不再是 reconcile 的一环）', async () => {
     const scan = vi.fn(async () => {})
-    const aggregate = vi.fn(() => ({ created: 1, retired: 0 }))
     const executeJob = vi.fn(async () => {})
 
     // Mark last reconcile as long ago so reconcile will run
@@ -53,12 +51,11 @@ describe('ScoutDaemon', () => {
     // Create a wanted job
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
     await daemon.tick()
 
-    // Should have called reap, scan, aggregate
+    // Should have called reap, scan
     expect(scan).toHaveBeenCalledOnce()
-    expect(aggregate).toHaveBeenCalledOnce()
 
     // Should have claimed and executed the job
     expect(executeJob).toHaveBeenCalledOnce()
@@ -286,7 +283,7 @@ describe('ScoutDaemon', () => {
 
   it('tick 对意外抛错（如 reapExpiredLeases 命中满盘 SQLITE_FULL）保持隔离，不炸出 tick 之外', async () => {
     // 审计修正：reap、meta SELECT、dispatch 里的 claimNext/countByState 都不在原有的
-    // scan+aggregate try/catch 覆盖范围内——任何一处意外抛错（如磁盘写满）会让整个
+    // scan try/catch 覆盖范围内——任何一处意外抛错（如磁盘写满）会让整个
     // tickLoop promise reject，Promise.all(...).catch(() => {}) 悄悄吞掉，tick 永久停摆，
     // 进程却存活不退出（daemon.ts:249）。tick() 必须自己兜底、记日志、不向外抛。
     const reapSpy = vi.spyOn(jobs, 'reapExpiredLeases').mockImplementation(() => {
@@ -392,23 +389,23 @@ describe('ScoutDaemon', () => {
     runsSpy.mockRestore()
   })
 
-  it('scan抛错时跳过aggregate但继续dispatch（稳态：boot reconcile 已成功后）', async () => {
+  it('scan抛错但继续dispatch（稳态：boot reconcile 已成功后）', async () => {
     // 稳态语义：boot reconcile 成功之后，中途某轮 scan 抖动（Jellyfin 瞬时 5xx 等）
     // 不应停摆 dispatch。boot 阶段的 scan 抛错则相反——见 'boot scan 抛错的 tick 不 dispatch'。
+    // W0-4：aggregate 已切线，reconcile 现在只剩 scan 这一半——本用例只剩"scan 抛错不
+    // 停摆 dispatch"这一半断言仍然成立。
     let scanCalls = 0
     const scan = vi.fn(async () => {
       scanCalls++
       if (scanCalls > 1) throw new Error('Scan failed')
     })
-    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
     const executeJob = vi.fn(async () => {})
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
 
     // Priming tick: boot reconcile 成功，消耗 boot 标志
     await daemon.tick()
     scan.mockClear()
-    aggregate.mockClear()
     executeJob.mockClear()
 
     // 稳态：到点 reconcile，scan 抛错
@@ -418,8 +415,6 @@ describe('ScoutDaemon', () => {
 
     // Scan was attempted
     expect(scan).toHaveBeenCalled()
-    // Aggregate should be skipped due to scan error
-    expect(aggregate).not.toHaveBeenCalled()
     // But dispatch should still run
     expect(executeJob).toHaveBeenCalled()
     // Error logged
@@ -428,41 +423,33 @@ describe('ScoutDaemon', () => {
 
   it('reconcile仅在到点时运行（稳态：boot 强制拍之后）', async () => {
     const scan = vi.fn(async () => {})
-    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, reconcileEveryMs: 15 * 60_000 }))
+    const daemon = new ScoutDaemon(makeDeps({ scan, reconcileEveryMs: 15 * 60_000 }))
 
     // Prime: consume the boot-forced reconcile (see 'boot: first tick reconciles...'
     // tests) so this test can isolate the steady-state time-gate behavior below.
     await daemon.tick()
     scan.mockClear()
-    aggregate.mockClear()
 
     // 9 minutes since the priming tick's reconcile — not yet due for the 15-min interval
     now += 9 * 60_000
     await daemon.tick()
 
-    // Should not scan/aggregate yet
+    // Should not scan yet
     expect(scan).not.toHaveBeenCalled()
-    expect(aggregate).not.toHaveBeenCalled()
 
     // Advance past reconcile interval (16 min since priming tick's reconcile)
     now += 7 * 60_000
     await daemon.tick()
 
-    // Now should scan/aggregate
+    // Now should scan
     expect(scan).toHaveBeenCalledOnce()
-    expect(aggregate).toHaveBeenCalledOnce()
   })
 
   it('boot: first tick reconciles BEFORE dispatching even when last_reconcile_at is recent', async () => {
     const callOrder: string[] = []
     const scan = vi.fn(async () => {
       callOrder.push('scan')
-    })
-    const aggregate = vi.fn(() => {
-      callOrder.push('aggregate')
-      return { created: 0, retired: 0 }
     })
     const executeJob = vi.fn(async () => {
       callOrder.push('dispatch')
@@ -474,24 +461,22 @@ describe('ScoutDaemon', () => {
 
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
     await daemon.tick()
 
-    // Scan/aggregate must run despite the recent last_reconcile_at, and must run
+    // Scan must run despite the recent last_reconcile_at, and must run
     // before dispatch claims/executes jobs.
     expect(scan).toHaveBeenCalledOnce()
-    expect(aggregate).toHaveBeenCalledOnce()
-    expect(callOrder).toEqual(['scan', 'aggregate', 'dispatch'])
+    expect(callOrder).toEqual(['scan', 'dispatch'])
   })
 
   it('boot reconcile happens only once (second tick respects the time gate again)', async () => {
     const scan = vi.fn(async () => {})
-    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
 
     // Recent last_reconcile_at — boot flag should force the first tick's scan anyway.
     lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate }))
+    const daemon = new ScoutDaemon(makeDeps({ scan }))
     await daemon.tick()
     expect(scan).toHaveBeenCalledOnce()
 
@@ -507,9 +492,8 @@ describe('ScoutDaemon', () => {
 
     await daemon.tick()
 
-    // No additional scan/aggregate on the second tick.
+    // No additional scan on the second tick.
     expect(scan).toHaveBeenCalledOnce()
-    expect(aggregate).toHaveBeenCalledOnce()
   })
 
   it('boot reconcile retries next tick if the boot scan throws', async () => {
@@ -518,21 +502,18 @@ describe('ScoutDaemon', () => {
       scanCalls++
       if (scanCalls === 1) throw new Error('boot scan failed')
     })
-    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
 
     // Recent last_reconcile_at: without the boot flag surviving the throw, the
     // time gate alone would never retry the scan on tick 2.
     lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate }))
+    const daemon = new ScoutDaemon(makeDeps({ scan }))
 
     await daemon.tick()
     expect(scan).toHaveBeenCalledTimes(1)
-    expect(aggregate).not.toHaveBeenCalled() // skipped because scan threw
 
     await daemon.tick()
     expect(scan).toHaveBeenCalledTimes(2)
-    expect(aggregate).toHaveBeenCalledOnce() // second scan succeeded, aggregate ran
   })
 
   it('boot scan 抛错的 tick 不 dispatch；下一 tick scan 成功后才放行旧 job', async () => {
@@ -544,14 +525,13 @@ describe('ScoutDaemon', () => {
       scanCalls++
       if (scanCalls === 1) throw new Error('jellyfin not ready')
     })
-    const aggregate = vi.fn(() => ({ created: 0, retired: 0 }))
     const executeJob = vi.fn(async () => {})
 
     // Recent last_reconcile_at（上个进程分钟前写的）+ 一个 stale wanted job
     lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_reconcile_at', ?)`).run(String(now - 5_000))
     jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
 
-    const daemon = new ScoutDaemon(makeDeps({ scan, aggregate, executeJob }))
+    const daemon = new ScoutDaemon(makeDeps({ scan, executeJob }))
 
     // Tick 1: boot scan 抛错 → dispatch 必须被压制
     await daemon.tick()

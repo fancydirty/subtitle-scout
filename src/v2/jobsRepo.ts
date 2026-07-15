@@ -422,6 +422,29 @@ export class JobsRepo {
     return info.changes > 0
   }
 
+  /** W0-4 存量墓碑：cmdWatch 的 executeJob 闭包对旧 kind（series_season/movie）收到一个已经
+   *  被 claimNext 领走（state='searching'）的存量行时调用——旧管线的执行器不再接线，这一行
+   *  不是失败，是被 v3 orchestrator 的 list_missing_coverage 正常派活覆盖了同一个 series/movie
+   *  的缺口。语义上与 completeDone（active→done，清 lease_until）完全同构，之所以不直接复用
+   *  completeDone、另起一个名字，是让调用点和日后 grep 都能一眼认出"这是退休声明，不是真的
+   *  跑完产出了字幕判断"（没有 runs 行、没有 subtitles 行）。
+   *  与既有的单 id `retire()`（wanted/failed→done，聚合器清理语义）precondition 不同——那个
+   *  方法服务的是"job 还没被认领、目标已被外部满足"，这里服务的是"job 已被认领
+   *  （active/searching），但旧执行器已经死了，得体面收场"，两者状态前提不重叠，不能共用
+   *  同一个方法（那会让 retire() 意外接受本不该由它处理的态）。
+   *  DB 不迁移（W0-4 明确决定）：state 列 CHECK 约束没有专门的 'retired' 值，落回既有的
+   *  'done'——这也是为什么这个方法不新增状态机分支，只是 completeDone 的一个语义化外壳。 */
+  retireClaimed(jobId: number, now: number): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'done', lease_until = NULL, updated_at = ?
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      .run(now, jobId)
+    return info.changes > 0
+  }
+
   /** realign 完成后的镜像清理一环：该剧旧的 series_season job（按老的、即将被清空的季划分）
    *  不再有意义（新结构下季/集边界完全变了，调和循环会在下一轮 scan 后按新结构重新聚合出
    *  正确的 job）——退休全部静止态：wanted/failed/dormant。dormant 必须包含（D-review #2）：

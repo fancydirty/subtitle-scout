@@ -5,13 +5,12 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { generateText, type LanguageModel } from 'ai'
-import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
-import { runPipeline, type PipelineDeps, type PipelineResult } from '../core/pipeline.js'
+import type { PipelineDeps } from '../core/pipeline.js'
 import type { Journal } from '../core/journal.js'
 import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
-import { TmdbClient, tmdbTitles, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
+import { TmdbClient, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { makeCliProviderPort } from '../core/providerPort.js'
 import { providerErrorFields, providerNoticeFields, type FetchEvent } from './fetchLib.js'
@@ -24,9 +23,8 @@ import { verifySubtitle } from '../agent/verifySubtitle.js'
 import { allocate, install, cleanup, gcOrphans } from '../files/stagingSandbox.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
-import { buildMediaContext, mediaDir, parsePathMappings, isUnderRoots, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
+import { parsePathMappings, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
 // import { Watcher } from '../daemon/watcher.js'  // v1 watcher — 保留文件但不再引用
-import { CHINESE_LANG_TAGS } from '../daemon/triggers.js'
 // import { PrefetchQueue } from '../daemon/queue.js'  // v1 queue — v2 不用
 import { scanOrphans } from '../files/orphanScanner.js'
 import { judgeOrphan } from '../agent/judgeOrphan.js'
@@ -49,7 +47,6 @@ import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { scanLibrary, type OriginResolver } from '../v2/scanner.js'
-import { aggregate } from '../v2/aggregator.js'
 import { executeJob, makeRunEpisode } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import type { MediaItem } from '../adapters/players/types.js'
@@ -65,6 +62,7 @@ import { resolveTargetLanguages } from './targetLanguages.js'
 import { recognize } from '../recognition/index.js'
 import { makeSelfScanTrigger, type SelfScanTriggerDeps } from '../daemon/selfScanTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
+import { routeLegacyJob, tombstoneLegacyJob } from './legacyJobRouting.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -188,124 +186,16 @@ async function assemble(): Promise<Assembled> {
   return { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jf, mappings, tmdb, reasoningModel }
 }
 
-function exitCodeFor(decision: PipelineResult['decision']): number {
-  if (decision === 'download' || decision === 'already_exists') return 0
-  if (decision === 'error') return 2
-  return 1
-}
-
 function mediaRoots(mappings: PathMapping[]): string[] {
   const fromEnv = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
   return [...mappings.map(m => m.to), ...fromEnv]
 }
 
-/** refresh 后轮询等待中文外挂字幕流出现（FullRefresh 实测 ~3s 内可见，上限 60s）。
- *  signal 中止（停机）时立即返回，避免优雅退出被 6×10s 轮询拖住。 */
-async function verifyChineseSubtitle(jf: PlayerServer, itemId: string, signal?: AbortSignal): Promise<boolean> {
-  for (let i = 0; i < 6; i++) {
-    if (signal?.aborted) return false
-    const item = await jf.getItem(itemId)
-    const found = (item.MediaStreams ?? []).some(s =>
-      s.Type === 'Subtitle' && s.IsExternal && s.Language && CHINESE_LANG_TAGS.test(s.Language))
-    if (found) return true
-    if (i < 5) await sleep(10_000, signal)
-  }
-  return false
-}
-
-/** setTimeout 的可中止版：signal.abort() 时立即 resolve（不 reject——调用方按未命中处理）。 */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise(resolve => {
-    if (signal?.aborted) return resolve()
-    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve() }, ms)
-    const onAbort = () => { clearTimeout(timer); resolve() }
-    signal?.addEventListener('abort', onAbort, { once: true })
-  })
-}
-
-async function cmdRun(contextPath: string, outDir: string) {
-  const ctx = MediaContextSchema.parse(JSON.parse(readFileSync(contextPath, 'utf8')))
-  const { makeDeps, withJournal, cacheRoot, llm } = await assemble()
-  const result = await withJournal(() => runPipeline(makeDeps(), ctx, outDir))
-  console.log(JSON.stringify({ decision: result.decision, subtitle: result.subtitlePath ?? null, journal: result.journalPath, fromCache: result.fromCache ?? false }, null, 2))
-  try {
-    const ledger = new Ledger(join(cacheRoot, 'ledger.jsonl'))
-    ledger.append({
-      ts: Date.now(),
-      type: 'run',
-      itemId: '',
-      name: ctx.media.title,
-      source: 'cli',
-      decision: result.decision,
-      confidence: null,
-      subtitlePath: result.subtitlePath ?? null,
-      journalPath: result.journalPath,
-      llmProfile: llm.profileInfo(),
-      durationMs: result.stats.durationMs,
-      llmCalls: result.stats.llmCalls,
-      assrtCalls: result.stats.apiCalls,
-      error: null,
-    })
-  } catch { /* 观测不影响主流程 */ }
-  process.exit(exitCodeFor(result.decision))
-}
-
-async function cmdRunItem(itemId: string) {
-  const { makeDeps, withJournal, cacheRoot, llm, jf, mappings, tmdb } = await assemble()
-  const item = await jf.getItem(itemId)
-  const chineseTitle = await jf.getChineseTitle(item).catch(() => null)
-  const chineseTitles = tmdb ? await tmdbTitles(tmdb, item, id => jf.getItem(id)) : undefined
-  const ctx = buildMediaContext(item, mappings, { chineseTitle, chineseTitles })
-  const roots = mediaRoots(mappings)
-  if (!isUnderRoots(mediaDir(ctx), roots)) {
-    console.error(`refusing write outside media roots: ${mediaDir(ctx)} — configure MEDIA_ROOTS / MEDIA_PATH_MAPPINGS`)
-    process.exit(2)
-  }
-  if (!existsSync(mediaDir(ctx))) {
-    console.error(`media dir not accessible locally: ${mediaDir(ctx)} — check MEDIA_PATH_MAPPINGS`)
-    process.exit(2)
-  }
-  if (!isDirWritable(mediaDir(ctx))) {
-    console.error(`media dir not writable: ${mediaDir(ctx)} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`)
-    process.exit(2)
-  }
-  const journalDir = join(cacheRoot, 'journals', `${itemId}-${Date.now()}`)
-  const result = await withJournal(() => runPipeline(
-    makeDeps({ itemId, onCovered: async (ep) => { await jf.refreshItem(ep.itemId).catch(() => {}) } }),
-    ctx, mediaDir(ctx), journalDir))
-  let visible: boolean | undefined
-  if (result.decision === 'download') {
-    await jf.refreshItem(itemId)
-    visible = await verifyChineseSubtitle(jf, itemId)
-  }
-  console.log(JSON.stringify({ decision: result.decision, subtitle: result.subtitlePath ?? null, visibleInJellyfin: visible ?? null, journal: result.journalPath }, null, 2))
-  try {
-    const ledger = new Ledger(join(cacheRoot, 'ledger.jsonl'))
-    ledger.append({
-      ts: Date.now(),
-      type: 'run',
-      itemId,
-      name: ctx.media.title,
-      source: 'cli',
-      decision: result.decision,
-      confidence: null,
-      subtitlePath: result.subtitlePath ?? null,
-      journalPath: result.journalPath,
-      llmProfile: llm.profileInfo(),
-      durationMs: result.stats.durationMs,
-      llmCalls: result.stats.llmCalls,
-      assrtCalls: result.stats.apiCalls,
-      error: null,
-    })
-  } catch { /* 观测不影响主流程 */ }
-  process.exit(exitCodeFor(result.decision))
-}
-
 /** on-demand "全仓校验" 触发器（v3 phase ⑦ Task 1）：跑一次机械预扫描（scanLibrary，未改动）
- *  + 一次编排器过（makeOrchestratorAgent）。与 cmdWatch 内 daemon 每 15min 一次的机械
- *  reconcile+aggregate（喂旧管线）相互独立、并存——这是新 v3 链路的手动触发入口。命令跑完
- *  即退出，写下的 worker_task 行要等一个正在跑的 `watch` daemon 进程认领执行（本命令自己
- *  从不认领任何行）。
+ *  + 一次编排器过（makeOrchestratorAgent）。与 cmdWatch 内 daemon 每 15min 一次的机械 scan
+ *  （reconcile；W0-4 起 aggregate 已退休，不再喂旧管线）相互独立、并存——这是新 v3 链路的
+ *  手动触发入口。命令跑完即退出，写下的 worker_task 行要等一个正在跑的 `watch` daemon
+ *  进程认领执行（本命令自己从不认领任何行）。
  *  TMDB_API_KEY 是硬性前置——不同于 cmdWatch 里 realign 那种"没配置就静默
  *  跳过"（那是给日常 watch 循环的容错，缺检测能力不该拦住找字幕主线）：orchestrator 的
  *  check_series_layout 工具需要真实 TmdbClient 才能判断"季数是否超出 TMDB 季表"，手动触发的
@@ -571,26 +461,33 @@ async function cmdWatch() {
         resolver: originResolver,
       })
     },
-    aggregate: (now) => aggregate(lib, jobs, now),
     gcStaging: () => gcOrphans(roots, new Set()),
     executeJob: async (job) => {
       // v3 phase ⑦: job.kind==='worker_task' is a THIRD, independent execution path off the
       // same kind-agnostic claimNext() queue — routed by payload.taskType, never touching the
-      // OLD pipeline's executeJob (v2/executor.ts, still used unchanged for series_season/movie/
-      // realign below). This is what makes claimNext() genuinely serve the old pipeline, the new
-      // find-subtitle worker, and the realign wrapper off one queue, per the phase ⑦ design.
+      // OLD pipeline's executeJob (v2/executor.ts). This is what makes claimNext() genuinely
+      // serve the new find-subtitle worker and the realign wrapper off one queue.
       if (job.kind === 'worker_task') {
         await handleWorkerTask(job)
         return
       }
-      await withJournal(() => executeJob(job, {
-        lib,
-        jobs,
-        runEpisode,
-        executeRealign: executeRealignClosure,
-        now: () => Date.now(),
-        log,
-      }))
+      // W0-4 切 feed: kind==='realign' still routes to the OLD executor.ts's executeJob — its
+      // first line dispatches straight into executeRealignBranch (never touches the
+      // series_season/movie logic below it, never reads deps.runEpisode), and that branch's
+      // 5-layer-safety realignExecutor.ts call chain is kept machinery (not retired today).
+      // series_season/movie are the only two kinds actually retired here — see routeLegacyJob.
+      if (routeLegacyJob(job.kind) === 'execute-realign') {
+        await withJournal(() => executeJob(job, {
+          lib,
+          jobs,
+          runEpisode,
+          executeRealign: executeRealignClosure,
+          now: () => Date.now(),
+          log,
+        }))
+        return
+      }
+      tombstoneLegacyJob(job, jobs, log, Date.now())
     },
     getSessions: () => jf.getSessions(),
     episodeForSession: (item: MediaItem) => {
@@ -611,9 +508,9 @@ async function cmdWatch() {
     },
     log,
     now: () => Date.now(),
-    // RECONCILE_EVERY_MS：机械 scan+aggregate 的节拍旋钮（默认 15 min）。自研巡检（B2）的
-    // Signal B 依赖 scan() 把 Jellyfin 摄取结果镜像进 episodes/movies，所以真站验证/快速
-    // 环境会把它调小；生产不设即维持原默认。
+    // RECONCILE_EVERY_MS：机械 scan 的节拍旋钮（默认 15 min；W0-4 起 aggregate 已从这个
+    // 节拍摘线退休）。自研巡检（B2）的 Signal B 依赖 scan() 把 Jellyfin 摄取结果镜像进
+    // episodes/movies，所以真站验证/快速环境会把它调小；生产不设即维持原默认。
     reconcileEveryMs: Number(process.env.RECONCILE_EVERY_MS) || 15 * 60_000,
     fullScanEveryMs: 6 * 3600_000,   // 6 hours (一期全量扫描，此字段预留)
     concurrency: {
@@ -837,21 +734,16 @@ async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
-      context: { type: 'string' },
-      out: { type: 'string', default: './output' },
-      'item-id': { type: 'string' },
       since: { type: 'string', default: '24h' },
     },
   })
   const cmd = positionals[0]
-  if (cmd === 'run' && values.context) return cmdRun(values.context, values.out!)
-  if (cmd === 'run-item' && values['item-id']) return cmdRunItem(values['item-id'])
   if (cmd === 'watch') return cmdWatch()
   if (cmd === 'reconcile-all') return cmdReconcileAll()
   if (cmd === 'report') return cmdReport(values.since!)
   if (cmd === 'doctor') return cmdDoctor()
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
-  console.error('usage: subtitle-scout run --context <json> [--out <dir>] | run-item --item-id <id> | watch | reconcile-all | report [--since <24h|7d|ISO-date-UTC>] | doctor | realign-rollback <archiveDir>')
+  console.error('usage: subtitle-scout watch | reconcile-all | report [--since <24h|7d|ISO-date-UTC>] | doctor | realign-rollback <archiveDir>')
   process.exit(2)
 }
 

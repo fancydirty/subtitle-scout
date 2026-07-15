@@ -1,7 +1,6 @@
 import type { LibraryRepo } from './libraryRepo.js'
 import type { JobsRepo, Job } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
-import type { AggregateResult } from './aggregator.js'
 import type { PlaybackSession, MediaItem } from '../adapters/players/types.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import type { SelfScanTriggerResult } from '../daemon/selfScanTrigger.js'
@@ -12,8 +11,6 @@ export interface DaemonDeps {
   runs: RunsRepo
   /** 闭包：扫描 Jellyfin library → 镜像入 episodes/movies */
   scan: () => Promise<void>
-  /** 闭包：聚合 missing → jobs 表 */
-  aggregate: (now: number) => AggregateResult
   /** 闭包：执行一个 job（fire-and-forget，daemon 不 await） */
   executeJob: (job: Job) => Promise<void>
   /** 闭包：获取当前播放会话（已有 30s 超时保护） */
@@ -45,8 +42,9 @@ export interface DaemonDeps {
    *  对受影响的 Jellyfin 库调 refreshLibrary + 派发（至多）一个 v3 orchestrator worker_task。
    *  undefined 时整个 self-scan 分支跳过（cmdWatch 缺 TMDB_API_KEY 时的降级——同
    *  realign/orchestrate worker_task 一样门在 tmdb，见 cli/index.ts），daemon 主循环其余部分
-   *  不受影响。独立于 scan/aggregate（旧管线的机械 reconcile）的 reconcileEveryMs 时间门，
-   *  自己按 selfScanEveryMs 走一套同构的 meta 表时间戳门（见 tickInner）。 */
+   *  不受影响。独立于机械 scan（reconcile；W0-4 起 aggregate 已从这条时间门摘线退休，见
+   *  下方 tickInner 的注释）的 reconcileEveryMs 时间门，自己按 selfScanEveryMs 走一套同构的
+   *  meta 表时间戳门（见 tickInner）。 */
   selfScan?: () => Promise<SelfScanTriggerResult>
   /** self-scan 时间门的间隔——默认 SELF_SCAN_DEFAULT_INTERVAL_MS(15min)，cli/index.ts 由
    *  SCAN_INTERVAL_MS 环境变量覆盖后传入。 */
@@ -59,7 +57,7 @@ export const MAX_CONSECUTIVE_TICK_FAILURES = 5
 
 /**
  * v2 daemon: 两条独立循环
- * 1. tick (15s): reap → (到点)scan+aggregate → dispatch
+ * 1. tick (15s): reap → (到点)scan → dispatch（W0-4：aggregate 已退休，见 tickInner 注释）
  * 2. pollSessions (15s): 命中缺字幕条目 → wake/boost
  */
 export class ScoutDaemon {
@@ -120,7 +118,7 @@ export class ScoutDaemon {
   }
 
   private async tickInner(): Promise<void> {
-    const { jobs, lib, scan, aggregate, executeJob, log, now, reconcileEveryMs } = this.deps
+    const { jobs, lib, scan, executeJob, log, now, reconcileEveryMs } = this.deps
 
     // 0. Heartbeat: 为本进程仍在跑的 job 续租，早于 reap 执行——防止合法长跑（如季包
     //    多集下载合法跑超 30min 租约）被误判死亡回收、被 dispatch 并发重领（starvation 审计修正）。
@@ -151,7 +149,11 @@ export class ScoutDaemon {
     // 1. Reap expired leases
     jobs.reapExpiredLeases(now())
 
-    // 2. Check if it's time for reconcile (scan + aggregate)
+    // 2. Check if it's time for reconcile (scan——镜像 Jellyfin library 进 episodes/movies；
+    //    W0-4 切 feed：aggregate() 已摘线，机械 reconcile 只剩 scan 这一半——它喂的镜像仍是
+    //    v3 selfScanTrigger Signal B（下面 2b）和 orchestrator list_missing_coverage 的地基，
+    //    不能跟着 aggregate 一起走；aggregate 那半（missing→旧 kind job）连同它创建的 job
+    //    一起退休，v3 orchestrator 派活取代它)
     const lastReconcileRow = lib.db
       .prepare(`SELECT value FROM meta WHERE key = 'last_reconcile_at'`)
       .get() as { value: string } | undefined
@@ -163,10 +165,7 @@ export class ScoutDaemon {
       // Time for reconcile (or boot forces one regardless of the time gate)
       try {
         await scan()
-        const result = aggregate(now())
-        log(
-          `reconcile: scan ok, aggregate created=${result.created} retired=${result.retired}`
-        )
+        log('reconcile: scan ok')
 
         // Update last_reconcile_at
         lib.db
@@ -181,14 +180,13 @@ export class ScoutDaemon {
         this.bootReconcilePending = false
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        log(`reconcile error (scan or aggregate failed): ${msg}`)
-        // Skip aggregate if scan failed. 稳态（boot 已成功后）中途 scan 抖动不停摆
-        // dispatch；boot 阶段则由下方守卫压制 dispatch。
+        log(`reconcile error (scan failed): ${msg}`)
+        // 稳态（boot 已成功后）中途 scan 抖动不停摆 dispatch；boot 阶段则由下方守卫压制 dispatch。
       }
     }
 
-    // 2b. B2: self-scan + refresh-bridge——独立于上面机械 scan/aggregate 的 reconcileEveryMs
-    //     时间门，自己按 selfScanEveryMs 走一套同构的 meta 表时间戳门（同 last_reconcile_at
+    // 2b. B2: self-scan + refresh-bridge——独立于上面机械 scan（W0-4 起 aggregate 已退休）的
+    //     reconcileEveryMs 时间门，自己按 selfScanEveryMs 走一套同构的 meta 表时间戳门（同 last_reconcile_at
     //     的写法，只是 key 换成 last_self_scan_at）。deps.selfScan 未接线（cmdWatch 缺
     //     TMDB_API_KEY）时整个分支跳过——不影响上面的 boot-reconcile 判定，也不受它阻塞：
     //     self-scan 不依赖 Jellyfin 是否已就绪（getVirtualFolders/refreshLibrary 内部若因

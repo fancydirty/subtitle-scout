@@ -514,6 +514,34 @@ describe('jobs 状态机', () => {
       expect(repo.get(j.id)!.state).toBe('done')
     })
   })
+
+  describe('retireClaimed (W0-4 存量墓碑：旧 kind 已认领行退休)', () => {
+    it('retireClaimed 对 active(searching) job → done，清 lease_until', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      const j = repo.claimNext(now)! // state=searching, lease_until 已写
+      expect(j.lease_until).not.toBeNull()
+      expect(repo.retireClaimed(j.id, now)).toBe(true)
+      const after = repo.get(j.id)!
+      expect(after.state).toBe('done')
+      expect(after.lease_until).toBeNull()
+    })
+    it('retireClaimed 对 wanted 无效（precondition 与 retire() 互补，不重叠）', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      const j = repo.find('s1', 4)!
+      expect(repo.retireClaimed(j.id, now)).toBe(false)
+      expect(repo.get(j.id)!.state).toBe('wanted')
+    })
+    it('retireClaimed 对 done 幂等 (已退役则 false)', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      repo.forceState('s1', 4, 'done', now)
+      const j = repo.find('s1', 4)!
+      expect(repo.retireClaimed(j.id, now)).toBe(false)
+      expect(repo.get(j.id)!.state).toBe('done')
+    })
+  })
 })
 
 describe('realign job kind', () => {
