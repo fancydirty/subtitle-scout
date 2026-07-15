@@ -369,6 +369,26 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               const ownSeriesId = seriesId(tmdbId)
               const ownEpisodeId = episodeId(tmdbId, season, episode)
 
+              // P7 真库闸门 Bug 2 修复：own-id（tmdbId+season+episode）幂等性守卫——两个不同磁盘
+              // 路径识别到同一个 own-id 是真实会发生的情况（多质量重复下载、种子机硬链接残留、
+              // 改名前后两份没清理干净），但 episodes 表 path 列是单值，一行只能记一个 path。不
+              // 设防的话，两条路径会在每一轮互相"抢" path 列——每次都把对方刚写的 path 覆盖掉，
+              // findRowByPath 按字面 path 查，谁都找不到自己上一轮写的行，于是永远走不到 CHEAP
+              // PATH、永远当"新文件"重新识别+回写，upserted 计数在完全安静的库上也永远不收敛到
+              // 0（真幂等性泄漏）。规则：这个 own-id 已经有另一条不同 path 的行占着 → 我是本轮
+              // "迟到"的那条，不抢，park 'duplicate-content'（不是猜错，是诚实地报告"重复内容,
+              // 需要人工去重"）；先占住的那条完全不受影响，继续走它自己正常的 CHEAP PATH。谁先
+              // 谁后由 listVideoFiles 的遍历顺序 + 历史上谁先被摄取决定，不是本次修复要解决的
+              // "该留哪份"的判断——那是人的事，不是摄取层的事（YAGNI，同 C3/C4 的"拿不准就不动
+              // 手"哲学）。复用 priorEpisode 这次 DB 读，classify() 的 resolveStatusToWrite 下面
+              // 还要用它，不重复查询。
+              const priorEpisode = lib.getEpisode(ownEpisodeId)
+              if (priorEpisode && priorEpisode.path !== path) {
+                lib.upsertParkedPath(path, 'duplicate-content', nowMs)
+                result.parked++
+                continue
+              }
+
               const seriesExisted = lib.getSeries(ownSeriesId) !== null
               let posterPath: string | null = null
               let year: number | null = null
@@ -393,7 +413,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               const tracks = await deps.probe(path)
               const embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
 
-              const priorEpisode = lib.getEpisode(ownEpisodeId)
+              // priorEpisode 已经在上面的 own-id 幂等性守卫里查过一次，直接复用，不重复查询。
               const computed = classify({
                 title, originLang: origin.lang, originResolutionFailed: origin.failed,
                 embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists,
@@ -423,7 +443,21 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
               const ownMovieId = seriesId(tmdbId) // movies 复用同一构造器（ownIds.ts 头注释）
 
-              const movieExisted = lib.getMovie(ownMovieId) !== null
+              // P7 真库闸门 Bug 2 修复：own-id 幂等性守卫，同 TV 分支同名注释——movies 直接用
+              // tmdbId 当 own-id，同一部电影的两份重复文件（不同质量/硬链接残留）一样会在每一轮
+              // 互相抢 path 列，一样需要挡在这里。priorMovie 这次查询同时替代了原来的
+              // `movieExisted` 判定和下面 classify 前的 prior-状态查询（新电影场景下，原代码是在
+              // 占位插入*之后*才查 priorMovie，拿到的是刚写入的占位值 'missing'；这里提前到占位
+              // 插入*之前*查，拿到 null——resolveStatusToWrite 只特判 'unavailable'，'missing' 和
+              // null 在它眼里等价，行为不变，见下方 toWrite 那行）。
+              const priorMovie = lib.getMovie(ownMovieId)
+              if (priorMovie && priorMovie.path !== path) {
+                lib.upsertParkedPath(path, 'duplicate-content', nowMs)
+                result.parked++
+                continue
+              }
+
+              const movieExisted = priorMovie !== null
               let posterPath: string | null = null
               let year: number | null = null
               let chineseTitle: string | null = null
@@ -451,7 +485,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               const tracks = await deps.probe(path)
               const embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
 
-              const priorMovie = lib.getMovie(ownMovieId) // 占位插入后必然非 null
+              // priorMovie 已经在上面的 own-id 幂等性守卫里查过一次，直接复用，不重复查询。
               const computed = classify({
                 title, originLang: origin.lang, originResolutionFailed: origin.failed,
                 embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists,

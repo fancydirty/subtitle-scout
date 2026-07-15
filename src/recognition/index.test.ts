@@ -114,12 +114,62 @@ describe('recognize — identify_overrides consult (opts.findOverride)', () => {
     })
   })
 
-  it('path-level park (zero signal) short-circuits before override is ever consulted', async () => {
+  it('no-signal park + no override hit (findOverride returns null) → still parks no-signal (override IS consulted now, just misses)', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const findOverride = vi.fn(() => null)
+    const result = await recognize('movies/aaa/bbb.mkv', tmdb, { findOverride })
+    expect(result).toEqual({ park: 'no-signal' })
+    expect(findOverride).toHaveBeenCalledWith('movies/aaa/bbb.mkv')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('no-signal park + no opts at all (no findOverride passed) → unchanged existing behavior', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const result = await recognize('movies/aaa/bbb.mkv', tmdb)
+    expect(result).toEqual({ park: 'no-signal' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+// Bug 1（真库闸门发现）：identify_overrides 救不回 'no-signal' park —— identifyFromPath 找不到
+// 任何路径结构时 recognize() 过去直接短路返回 park，从不咨询覆盖表，人工认领永远够不着这一类
+// park（偏偏它最需要救援：能被机械层解析出结构的 park 早晚能等到更好的命名；真正解析不出
+// 任何结构的 fansub 命名，只有人工认领这一条出路）。修复：无论 identity 是否 park，都咨询
+// 一次 override；命中 + park 时，用"人工已明确认领"这个强信号，做仅限于此处的宽松解析
+// （absolute episode 的末尾数字提取），换取一个可用的 Recognized——philosophy：宽松解析只在
+// 人工认领已经明确背书时才生效，无人值守路径（identity 非 park 或根本没有 override）永远不
+// 触发这条宽松规则。
+describe('recognize — Bug 1 fix: identify_overrides rescues a no-signal park (claim-gated lenient parsing)', () => {
+  it('no-signal park + TV override + a trailing episode number → Recognized via lenient extraction (absoluteEpisode, season/episode null)', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const path = '/media/TV/High School D×D/[The-Nut] High School DxD Hero - 01.mkv'
+    const findOverride = vi.fn(() => ({ tmdbId: '24240', isTv: true }))
+    const result = await recognize(path, tmdb, { findOverride })
+    expect(result).toEqual({
+      tmdbId: '24240', title: '', isTv: true, season: null, episode: null, absoluteEpisode: 1,
+    })
+    expect(findOverride).toHaveBeenCalledWith(path)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('no-signal park + movie override + a structureless name → Recognized (movie needs no episode number at all)', async () => {
     const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
     const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
     const findOverride = vi.fn(() => ({ tmdbId: '1', isTv: false }))
     const result = await recognize('movies/aaa/bbb.mkv', tmdb, { findOverride })
-    expect(result).toEqual({ park: 'no-signal' })
-    expect(findOverride).not.toHaveBeenCalled()
+    expect(result).toEqual({
+      tmdbId: '1', title: '', isTv: false, season: null, episode: null, absoluteEpisode: null,
+    })
+  })
+
+  it('no-signal park + TV override + a genuinely numberless name → still parks, but honestly (override-no-structure)', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('should not be called') })
+    const tmdb = mkTmdb(fetchImpl as unknown as typeof fetch)
+    const findOverride = vi.fn(() => ({ tmdbId: '1', isTv: true }))
+    const result = await recognize('movies/aaa/bbb.mkv', tmdb, { findOverride })
+    expect(result).toEqual({ park: 'override-no-structure' })
   })
 })

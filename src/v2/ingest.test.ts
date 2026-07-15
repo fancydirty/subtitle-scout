@@ -430,6 +430,70 @@ describe('makeIngestPass — memo-hit cheap path', () => {
   })
 })
 
+// P7 真库闸门 Bug 2：两个不同磁盘路径识别到同一个 own-id（同 tmdbId+season/episode，movies 同 tmdbId）
+// ——重复内容（多质量版本、种子机硬链接残留常见）。episodes/movies 的 path 列是单值，一行只能记
+// 一个 path；不设防的话两条路径会在每一轮互相"抢" path 列——findRowByPath 按字面 path 查，谁都
+// 找不到自己上一轮写的行，于是永远走 FULL PATH、永远 upserted++，在完全安静的库上 upserted 计数
+// 永远不收敛到 0（真·幂等性泄漏，非 by-design：其余任何"每轮都会重跑"的既有行为——12 个 TMDB
+// 抖动重试、park 条目本身每轮重新尝试——都有各自的既有理由且不计入 upserted；这一类没有）。
+describe('makeIngestPass — idempotency: duplicate on-disk paths resolving to the same identity (Bug 2 fix)', () => {
+  it('two TV paths recognized to the same tmdbId/season/episode: first pass creates the row + parks the loser; subsequent passes on a quiet disk do NOT re-upsert either one', async () => {
+    const pathA = '/media/Show/Season 1/ep1-copyA.mkv'
+    const pathB = '/media/Show (dup)/Season 1/ep1-copyB.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathA, 5000, 111)
+    disk.setVideo(pathB, 5000, 222)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathA, pathB],
+      recognize, probe,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const r1 = await pass()
+    expect(r1.upserted).toBe(1)
+    expect(r1.parked).toBe(1)
+
+    const r2 = await pass()
+    expect(r2.upserted).toBe(0) // quiet disk — must NOT still be re-upserting
+    expect(r2.parked).toBe(1)
+
+    const r3 = await pass()
+    expect(r3.upserted).toBe(0)
+    expect(r3.parked).toBe(1)
+
+    const episode = lib.getEpisode('tmdb:1/s1e1')
+    expect(episode).not.toBeNull()
+    // exactly one of the two paths stably owns the row across all three passes — no ping-pong.
+    expect([pathA, pathB]).toContain(episode!.path)
+    const parkedPaths = lib.listParkedPaths().map((p) => p.path)
+    expect(parkedPaths).toHaveLength(1)
+    expect([pathA, pathB]).toContain(parkedPaths[0])
+    expect(parkedPaths[0]).not.toBe(episode!.path)
+  })
+
+  it('the losing duplicate path parks with an honest, distinct reason (duplicate-content)', async () => {
+    const pathA = '/media/Movies/Hero (2002).mkv'
+    const pathB = '/media/Movies (dup)/Hero (2002) [1080p].mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathA, 5000, 111)
+    disk.setVideo(pathB, 5000, 222)
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '603' }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathA, pathB], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const parked = lib.listParkedPaths()
+    expect(parked).toHaveLength(1)
+    expect(parked[0].park_reason).toBe('duplicate-content')
+    expect(lib.getMovie('tmdb:603')).not.toBeNull()
+  })
+})
+
 describe('makeIngestPass — probe contract (streamProbe.ts: null=unavailable, degrade to sidecar-only)', () => {
   it('probe() returns null → embedded rule never fires; sidecar still detected', async () => {
     const path = '/media/Show/Season 1/ep1.mkv'
