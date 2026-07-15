@@ -32,8 +32,9 @@ describe('ORCHESTRATOR_SKILL', () => {
     expect(c).toMatch(/EVERY series/)
     expect(c).toMatch(/before dispatching ANY find-subtitle task/i)
     expect(c).toMatch(/only way to know whether/i)
-    // movies are exempt (no seasons — a wasted call otherwise)
-    expect(c).toMatch(/movies?.*(no|never).*layout|layout.*(not|never).*movies?/i)
+    // movies are exempt (no seasons — a wasted call otherwise); [\s\S] because the sentence
+    // wraps across the const-module's hard line breaks
+    expect(c).toMatch(/movies?[\s\S]{0,80}(no|never)[\s\S]{0,80}layout/i)
   })
 
   it('carries no hardcoded target-language assumption (A-generalization)', () => {
