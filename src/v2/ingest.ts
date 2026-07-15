@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { looksChineseTitle } from '../daemon/triggers.js'
 import { tagsForLanguage, langOf } from '../agent/languages.js'
+import { seasonEpisodeForAbsolute } from '../agent/absoluteEpisodes.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { walkVideoFiles } from '../daemon/selfScan.js'
 import { seriesId, episodeId } from './ownIds.js'
@@ -315,11 +316,27 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             const title = outcome.title
 
             if (outcome.isTv) {
-              if (outcome.episode === null) {
+              let resolvedSeason = outcome.season
+              let resolvedEpisode = outcome.episode
+
+              // 绝对集号折算（番剧平铺编号：路径只给出整剧绝对集号，无季/集结构）：用
+              // agent/absoluteEpisodes.ts 的 TMDB 编号表（官方 Absolute 型 episode-group 优先，
+              // 季表 concat 兜底——find-subtitle worker 正向折算用的同一套权威表）做逆向查询。
+              // 折算命中 → 当普通集处理（行的 season/episode 就是折算出的对，绝对集号不另存
+              // ——episodeId 形状就是身份）；折算不出（剧无编号表数据/集号越界/TMDB 双路失败）
+              // → park 'absolute-episode-unresolved'（此时是真·"TMDB 说不出来"，不再是"没试过"）。
+              if (resolvedEpisode === null && outcome.absoluteEpisode !== null) {
+                const mapped = await seasonEpisodeForAbsolute(outcome.absoluteEpisode, tmdb, tmdbId)
+                if (mapped) {
+                  resolvedSeason = mapped.season
+                  resolvedEpisode = mapped.episode
+                }
+              }
+
+              if (resolvedEpisode === null) {
                 // 无法构造合法的 episodeId（tmdb:<id>/s<N>e<M> 要求具体集号）——absoluteEpisode
-                // 非 null 时是"只有绝对集号、缺季内集号"的番剧编号场景（旧世界靠 Jellyfin 自己的
-                // 刮削器把它折算成季/集，scanner.ts 从没见过这个问题）；absoluteEpisode 也是
-                // null 时是路径压根没给出任何集号信号。两种都不猜（"拿不准就不动手"），park——
+                // 非 null 时是折算失败的番剧编号场景（见上）；absoluteEpisode 也是 null 时是
+                // 路径压根没给出任何集号信号。两种都不猜（"拿不准就不动手"），park——
                 // 且刻意不清理 `existing`（若这条路径此前已经成功入库过一次）：一次识别遇挫
                 // 不该把之前的可用行也搭进去，宁可留一条现在暂时对不上的旧行，也不无端丢数据。
                 const reason = outcome.absoluteEpisode !== null ? 'absolute-episode-unresolved' : 'no-episode-number'
@@ -337,8 +354,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 lib.deleteMovieByPath(path)
               }
 
-              const season = outcome.season ?? 0
-              const episode = outcome.episode
+              const season = resolvedSeason ?? 0
+              const episode = resolvedEpisode
               const ownSeriesId = seriesId(tmdbId)
               const ownEpisodeId = episodeId(tmdbId, season, episode)
 

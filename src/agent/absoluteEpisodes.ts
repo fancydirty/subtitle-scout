@@ -34,6 +34,15 @@ export function absoluteFor(table: AbsoluteEpisodeTable, season: number, episode
   return hit ? hit.absolute : null
 }
 
+/** absoluteFor 的逆向查表：整剧绝对集号 → (season, episode)。同一张表、同一套 reliable 门，
+ *  只是查询方向相反——去 Jellyfin 化 P3 的摄取层用它把"路径只给出绝对集号"的番剧文件折算成
+ *  可构造 episodeId 的 (season, episode) 对。 */
+export function seasonEpisodeFor(table: AbsoluteEpisodeTable, absolute: number): { season: number; episode: number } | null {
+  if (!table.reliable) return null
+  const hit = table.entries.find(e => e.absolute === absolute)
+  return hit ? { season: hit.season, episode: hit.episode } : null
+}
+
 export function buildFromAbsoluteOrder(ordered: { season: number; episode: number }[]): AbsoluteEpisodeTable {
   if (ordered.length === 0) return { ...EMPTY_UNRELIABLE, source: 'tmdb-episode-group' }
   const entries = ordered.map((e, i) => ({ absolute: i + 1, season: e.season, episode: e.episode }))
@@ -57,5 +66,26 @@ export async function resolveAbsoluteEpisode(
     const seasons = await src.getSeasonTable(tvId)
     if (!seasons) return null
     return absoluteFor(buildFromSeasonConcat(seasons), season, episode)
+  } catch { return null }
+}
+
+/**
+ * resolveAbsoluteEpisode 的逆向版：绝对集号 → (season, episode)。数据源纪律逐字复刻正向实现
+ * （见上方 FALLBACK-DENIAL 注释）：官方 Absolute 型 episode-group 优先（独立 try/catch，瞬时
+ * 抛错绝不连坐 concat 兜底）；官方表存在但查不到该集号 → 直接 null，不再向 concat 级联（与
+ * 正向同一裁决——官方表就是该剧绝对编号的权威事实，编号超出它的范围时用 concat 猜一个别的
+ * 答案只会更错）；官方分组缺失/为空 → 季表 concat 兜底（独立 try/catch）；两路都不可用或
+ * 集号越界 → null（调用方按"折算不出来"处理，如摄取层 park）。
+ */
+export async function seasonEpisodeForAbsolute(
+  absolute: number, src: AbsoluteOrderSource, tvId: string,
+): Promise<{ season: number; episode: number } | null> {
+  let official: { season: number; episode: number }[] | null = null
+  try { official = await src.getAbsoluteOrder(tvId) } catch { official = null }
+  if (official && official.length > 0) return seasonEpisodeFor(buildFromAbsoluteOrder(official), absolute)
+  try {
+    const seasons = await src.getSeasonTable(tvId)
+    if (!seasons) return null
+    return seasonEpisodeFor(buildFromSeasonConcat(seasons), absolute)
   } catch { return null }
 }

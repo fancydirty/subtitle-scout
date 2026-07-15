@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { buildFromSeasonConcat, absoluteFor, buildFromAbsoluteOrder, resolveAbsoluteEpisode } from './absoluteEpisodes.js'
+import {
+  buildFromSeasonConcat, absoluteFor, buildFromAbsoluteOrder, resolveAbsoluteEpisode,
+  seasonEpisodeFor, seasonEpisodeForAbsolute,
+} from './absoluteEpisodes.js'
 
 describe('buildFromSeasonConcat', () => {
   it('assigns absolute numbers by concatenating seasons in order', () => {
@@ -95,5 +98,65 @@ describe('resolveAbsoluteEpisode', () => {
   it('returns null for a null season/episode (movies / unknown)', async () => {
     const absolute = await resolveAbsoluteEpisode(null, null, { getSeasonTable: async () => seasons, getAbsoluteOrder: async () => null })
     expect(absolute).toBeNull()
+  })
+})
+describe('seasonEpisodeFor (reverse table lookup)', () => {
+  it('returns the (season, episode) for an absolute number', () => {
+    const t = buildFromSeasonConcat([{ seasonNumber: 1, episodeCount: 25 }, { seasonNumber: 2, episodeCount: 12 }])
+    expect(seasonEpisodeFor(t, 26)).toEqual({ season: 2, episode: 1 })
+    expect(seasonEpisodeFor(t, 1)).toEqual({ season: 1, episode: 1 })
+  })
+  it('returns null for an out-of-range absolute number', () => {
+    const t = buildFromSeasonConcat([{ seasonNumber: 1, episodeCount: 25 }])
+    expect(seasonEpisodeFor(t, 26)).toBeNull()
+    expect(seasonEpisodeFor(t, 0)).toBeNull()
+  })
+  it('returns null on an unreliable table', () => {
+    expect(seasonEpisodeFor(buildFromSeasonConcat([]), 1)).toBeNull()
+  })
+})
+describe('seasonEpisodeForAbsolute', () => {
+  const seasons = [{ seasonNumber: 1, episodeCount: 25 }, { seasonNumber: 2, episodeCount: 12 }]
+  it('prefers the official absolute group when present (order may disagree with season concat)', async () => {
+    const resolved = await seasonEpisodeForAbsolute(2, {
+      getSeasonTable: async () => seasons,
+      // 官方顺序刻意与 concat 顺序不同：绝对 2 在官方表里直接跳到 S2E1（concat 会给 S1E2）——
+      // 断言命中的必须是官方表。
+      getAbsoluteOrder: async () => [{ season: 1, episode: 1 }, { season: 2, episode: 1 }],
+    }, '120089')
+    expect(resolved).toEqual({ season: 2, episode: 1 })
+  })
+  it('falls back to season concatenation when there is no official group', async () => {
+    const resolved = await seasonEpisodeForAbsolute(26, { getSeasonTable: async () => seasons, getAbsoluteOrder: async () => null }, '120089')
+    expect(resolved).toEqual({ season: 2, episode: 1 })
+  })
+  it('degrades to concat when getAbsoluteOrder THROWS but getSeasonTable succeeds (no fallback-denial — mirrors the forward direction)', async () => {
+    const resolved = await seasonEpisodeForAbsolute(26, {
+      getSeasonTable: async () => seasons,
+      getAbsoluteOrder: async () => { throw new Error('episode-group lookup blew up') },
+    }, '120089')
+    expect(resolved).toEqual({ season: 2, episode: 1 })
+  })
+  it('official group present but absolute out of ITS range → null, no cascade to concat (the official table is authoritative for the show)', async () => {
+    const resolved = await seasonEpisodeForAbsolute(3, {
+      getSeasonTable: async () => seasons, // concat 表能查到 3——若错误级联就会返回 S1E3
+      getAbsoluteOrder: async () => [{ season: 1, episode: 1 }, { season: 1, episode: 2 }],
+    }, '120089')
+    expect(resolved).toBeNull()
+  })
+  it('absolute out of range of the concat fallback too → null', async () => {
+    const resolved = await seasonEpisodeForAbsolute(1000, { getSeasonTable: async () => seasons, getAbsoluteOrder: async () => null }, '120089')
+    expect(resolved).toBeNull()
+  })
+  it('returns null (never throws) when BOTH lookups throw', async () => {
+    const resolved = await seasonEpisodeForAbsolute(26, {
+      getSeasonTable: async () => { throw new Error('tmdb down') },
+      getAbsoluteOrder: async () => { throw new Error('episode-group down') },
+    }, '120089')
+    expect(resolved).toBeNull()
+  })
+  it('returns null when the season table is genuinely absent (404 no-data)', async () => {
+    const resolved = await seasonEpisodeForAbsolute(26, { getSeasonTable: async () => null, getAbsoluteOrder: async () => null }, '120089')
+    expect(resolved).toBeNull()
   })
 })
