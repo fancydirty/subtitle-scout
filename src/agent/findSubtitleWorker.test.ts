@@ -178,6 +178,10 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
 
     await runTask(task)
 
+    // Both the header sentence and the field line carry the target language — and no trace of
+    // the pre-parameterization hardcoded 'Chinese' may remain anywhere in the prompt template.
+    expect(capturedPromptText).toContain('Find and install a subtitle in English')
     expect(capturedPromptText).toContain('target subtitle language: English')
+    expect(capturedPromptText).not.toContain('Chinese')
   })
 })

@@ -54,6 +54,16 @@ describe('live matrix catalog', () => {
     }
   })
 
+  // The on-disk cell.json fixtures predate FindSubtitleTask.targetLanguage — without a seam
+  // default, spreading a loaded task yields targetLanguage: undefined at runtime (the JSON cast
+  // hides it from tsc) and the worker prompt interpolates the string "undefined".
+  it("defaults task.targetLanguage to 'zh' for fixtures recorded before the field existed", () => {
+    for (const c of CELL_CATALOG.filter(x => x.seeded)) {
+      const loaded = loadCell(c.resourceType, c.sourceForm)
+      expect(loaded.task.targetLanguage).toBe('zh')
+    }
+  })
+
   it('every recorded response in every SEEDED cell is a structurally valid RecordedResponse', () => {
     const problems: string[] = []
     for (const c of CELL_CATALOG.filter(x => x.seeded)) {

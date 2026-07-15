@@ -28,7 +28,11 @@ interface EvalFixture {
 }
 
 function loadFixture(scenario: string): EvalFixture {
-  return JSON.parse(readFileSync(`fixtures/v3-find-subtitle/${scenario}/fixture.json`, 'utf8'))
+  const fixture = JSON.parse(readFileSync(`fixtures/v3-find-subtitle/${scenario}/fixture.json`, 'utf8')) as EvalFixture
+  // Seam default: fixture.json predates FindSubtitleTask.targetLanguage — same seam-default
+  // rationale as liveMatrix.ts's loadCell (the JSON cast hides the absent field from tsc).
+  if (fixture.task.targetLanguage == null) fixture.task.targetLanguage = 'zh'
+  return fixture
 }
 
 function findToolResultValue(prompt: LanguageModelV4Prompt, toolName: string): any {

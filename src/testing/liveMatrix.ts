@@ -92,6 +92,11 @@ export function cellDir(resourceType: ResourceType, sourceForm: SourceForm): str
 export function loadCell(resourceType: ResourceType, sourceForm: SourceForm): LoadedCell {
   const dir = cellDir(resourceType, sourceForm)
   const file = JSON.parse(readFileSync(join(dir, 'cell.json'), 'utf8')) as CellFile
+  // Seam default: on-disk cell.json fixtures predate FindSubtitleTask.targetLanguage, and the
+  // JSON cast hides the absent field from tsc — without this the worker prompt would interpolate
+  // the string "undefined". Defaulting here (not hand-editing every fixture) covers every
+  // consumer that spreads a loaded task (replay test, scripts/run-live-matrix.ts).
+  if (file.task.targetLanguage == null) file.task.targetLanguage = 'zh'
   const responsesDir = join(dir, 'responses')
   const responseCount = existsSync(responsesDir)
     ? readdirSync(responsesDir).filter(f => f.endsWith('.json')).length

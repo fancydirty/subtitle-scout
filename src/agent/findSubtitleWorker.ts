@@ -73,7 +73,9 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     ].join('\n')
 
     const prompt = [
-      'Find and install a Chinese subtitle for this media item, or report why you could not.',
+      // "a subtitle in X" rather than "a X subtitle": sidesteps the a/an article problem
+      // ("a English subtitle") no matter what languageName() returns.
+      `Find and install a subtitle in ${languageName(task.targetLanguage)} for this media item, or report why you could not.`,
       '',
       `target subtitle language: ${languageName(task.targetLanguage)}`,
       `title: ${task.title}`,
