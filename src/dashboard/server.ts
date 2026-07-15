@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, proxyPoster, type ReconcileAllResultDTO } from './apiV2.js'
+import { buildLibrary, buildSeriesDetail, buildRuns, type ReconcileAllResultDTO } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 
 export interface DashboardOpts {
@@ -12,10 +12,6 @@ export interface DashboardOpts {
   port: number
   token?: string
   distDir: string
-  /** Jellyfin 海报代理凭据——API key 只在后端持有，绝不出后端。 */
-  jellyfin: { baseUrl: string; apiKey: string }
-  /** 测试注入用；默认全局 fetch。 */
-  fetchImpl?: typeof fetch
   /** v3 phase ⑦："全仓校验"触发器——POST /api/v2/reconcile-all 调它，跑一次机械预扫描
    *  +一次编排器过（src/v2/reconcileAll.ts 的 runReconcileAll，cmdReconcileAll CLI 命令共用
    *  同一个函数，不重复实现）。undefined（TMDB_API_KEY 未配置，或纯只读测试场景）时该端点
@@ -40,8 +36,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, jellyfin, reconcileAll } = opts
-  const fetchImpl = opts.fetchImpl ?? fetch
+  const { db, port, token, distDir, reconcileAll } = opts
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
     series: (id) => buildSeriesDetail(db, id),
@@ -62,22 +57,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       const url = new URL(req.url ?? '/', 'http://localhost')
       const rawPath = url.pathname   // 未解码
       const reqToken = url.searchParams.get('token') ?? (req.headers['x-dashboard-token'] as string | undefined)
-
-      // 海报代理：/api/poster/:itemId?tag=——server 端取图流回，API key 不出后端。
-      const pm = rawPath.match(/^\/api\/poster\/([^/]+)$/)
-      if (pm) {
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
-          return
-        }
-        const itemId = decodeURIComponent(pm[1])
-        const tag = url.searchParams.get('tag') ?? undefined
-        const result = await proxyPoster(itemId, tag, { baseUrl: jellyfin.baseUrl, apiKey: jellyfin.apiKey, fetchImpl })
-        res.writeHead(result.status, { 'content-type': result.contentType, 'cache-control': result.cacheControl })
-        res.end(result.body ?? Buffer.from('not found'))
-        return
-      }
 
       // v3 phase ⑦："全仓校验"触发器——异步 + 只接受 POST，独立于下面纯同步的 handleApiRoute
       // 分发（同 handleApiRoute 一样，token 校验放在方法/存在性检查之后没关系：两项都不泄露

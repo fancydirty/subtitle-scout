@@ -10,10 +10,13 @@ export function withToken(path: string): string {
   return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(t)}`
 }
 
-/** 海报代理 URL。无 posterTag 时返回 null，让调用方渲染占位。 */
-export function posterUrl(itemId: string, posterTag: string | null): string | null {
-  if (!posterTag) return null
-  return withToken(`/api/poster/${encodeURIComponent(itemId)}?tag=${encodeURIComponent(posterTag)}`)
+/** TMDB 海报 CDN 前缀——公开、免 key，浏览器直连（决策 D3，见去 Jellyfin 化设计文档）。 */
+const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w400'
+
+/** 海报 URL：直接拼 TMDB CDN，不再经服务端代理。无 posterPath 时返回 null，让调用方渲染占位。 */
+export function posterUrl(posterPath: string | null): string | null {
+  if (!posterPath) return null
+  return `${TMDB_IMAGE_BASE}${posterPath}`
 }
 
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {

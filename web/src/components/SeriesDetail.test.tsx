@@ -4,7 +4,7 @@ import { SeriesDetail } from './SeriesDetail.js'
 import type { SeriesDetailDTO, LibraryItemDTO } from '../api/types.js'
 
 const DETAIL: SeriesDetailDTO = {
-  id: 's1', name: 'Love, Death & Robots', chineseTitle: '爱，死亡和机器人', year: 2019, posterTag: null,
+  id: 's1', name: 'Love, Death & Robots', chineseTitle: '爱，死亡和机器人', year: 2019, posterPath: null,
   seasons: [
     { season: 1, episodes: [
       { id: 'e1', episode: 1, name: null, subStatus: 'covered', statusReason: null, recheckAfter: null },
@@ -21,7 +21,7 @@ const DETAIL: SeriesDetailDTO = {
 function fetchFor(job: LibraryItemDTO['job']) {
   const lib: LibraryItemDTO[] = [
     { id: 's1', kind: 'series', section: '剧集', name: DETAIL.name, chineseTitle: DETAIL.chineseTitle, year: 2019,
-      posterTag: null, coverage: { covered: 1, missing: 1, embedded: 1, unavailable: 1 }, job },
+      posterPath: null, coverage: { covered: 1, missing: 1, embedded: 1, unavailable: 1 }, job },
   ]
   return vi.fn(async (url: string) => {
     const body = url.includes('/api/v2/series/') ? DETAIL : lib

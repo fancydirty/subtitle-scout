@@ -4,11 +4,11 @@ import { handleApiRoute, type RouterDeps } from './router.js'
 import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO } from './apiV2.js'
 
 const libItem: LibraryItemDTO = {
-  id: 's1', kind: 'series', name: 'A', chineseTitle: null, year: null, posterTag: null, section: '剧集',
+  id: 's1', kind: 'series', name: 'A', chineseTitle: null, year: null, posterPath: null, section: '剧集',
   coverage: { covered: 0, missing: 1, embedded: 0, unavailable: 0 }, job: null,
 }
 const seriesDetail: SeriesDetailDTO = {
-  id: 's1', name: 'A', chineseTitle: null, year: null, posterTag: null, seasons: [], runs: [],
+  id: 's1', name: 'A', chineseTitle: null, year: null, posterPath: null, seasons: [], runs: [],
 }
 const run: RunHistoryDTO = {
   id: 1, jobId: 1, startedAt: 1, finishedAt: 2, decision: 'download', detail: 'ok', journalPath: null,

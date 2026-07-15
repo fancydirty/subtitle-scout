@@ -1,5 +1,6 @@
 // src/dashboard/apiV2.ts
-// v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报代理经 stub-able fetch。
+// v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报直接暴露 TMDB
+// poster_path，前端自行拼 CDN URL（image.tmdb.org，公开、免 key）——不再经服务端代理。
 import type { ScoutDb } from '../v2/db.js'
 
 // ---- Library (海报墙) ----
@@ -22,7 +23,8 @@ export interface LibraryItemDTO {
   name: string
   chineseTitle: string | null
   year: number | null
-  posterTag: string | null
+  /** TMDB poster_path（如 '/abc.jpg'），前端拼 https://image.tmdb.org/t/p/w400 前缀；无海报为 null */
+  posterPath: string | null
   /** 海报墙分区标签（剧集/动漫/电影/其他），按库目录结构零配置派生 */
   section: string
   coverage: CoverageDTO
@@ -182,7 +184,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     name: s.name,
     chineseTitle: s.chinese_title,
     year: s.year,
-    posterTag: s.poster_path,
+    posterPath: s.poster_path,
     section: sectionOf(pathBySeriesId.get(s.id) ?? '', rootDepth),
     coverage: coverageBySeriesId.get(s.id) ?? emptyCoverage(),
     job: jobBySeriesId.get(s.id) ?? null,
@@ -218,7 +220,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
       name: m.name,
       chineseTitle: m.chinese_title,
       year: m.year,
-      posterTag: m.poster_path,
+      posterPath: m.poster_path,
       section: sectionOf(m.path, rootDepth),
       coverage,
       job: jobByMovieId.get(m.id) ?? null,
@@ -254,7 +256,7 @@ export interface SeriesDetailDTO {
   name: string
   chineseTitle: string | null
   year: number | null
-  posterTag: string | null
+  posterPath: string | null
   seasons: SeriesSeasonDTO[]
   runs: SeriesRunDTO[]
 }
@@ -335,7 +337,7 @@ export function buildSeriesDetail(db: ScoutDb, id: string): SeriesDetailDTO | nu
     name: series.name,
     chineseTitle: series.chinese_title,
     year: series.year,
-    posterTag: series.poster_path,
+    posterPath: series.poster_path,
     seasons,
     runs,
   }
@@ -392,54 +394,4 @@ export interface ReconcileAllResultDTO {
   dispatchedRealign: number
   spawnedSiblings: number
   summary: string
-}
-
-// ---- Poster proxy (Jellyfin Primary 图代理) ----
-
-export interface PosterProxyDeps {
-  baseUrl: string
-  apiKey: string
-  fetchImpl: typeof fetch
-}
-
-export interface PosterProxyResult {
-  status: number
-  contentType: string
-  cacheControl: string
-  body: Buffer | null
-}
-
-const POSTER_TIMEOUT_MS = 15_000
-
-/**
- * 代理 Jellyfin `/Items/{id}/Images/Primary`，带 API key 头（key 绝不出后端），
- * quality=90 & maxWidth=400。成功返回图片字节 + immutable 缓存头；上游非 2xx 或异常 → 404。
- */
-export async function proxyPoster(
-  itemId: string,
-  tag: string | undefined,
-  deps: PosterProxyDeps
-): Promise<PosterProxyResult> {
-  const params = new URLSearchParams({ quality: '90', maxWidth: '400' })
-  if (tag) params.set('tag', tag)
-  const url = `${deps.baseUrl}/Items/${encodeURIComponent(itemId)}/Images/Primary?${params.toString()}`
-  try {
-    const res = await deps.fetchImpl(url, {
-      headers: { 'X-Emby-Token': deps.apiKey },
-      signal: AbortSignal.timeout(POSTER_TIMEOUT_MS),
-    })
-    if (!res.ok) {
-      return { status: 404, contentType: 'text/plain; charset=utf-8', cacheControl: 'no-store', body: null }
-    }
-    const body = Buffer.from(await res.arrayBuffer())
-    const contentType = res.headers.get('content-type') ?? 'image/jpeg'
-    return {
-      status: 200,
-      contentType,
-      cacheControl: 'public, max-age=604800, immutable',
-      body,
-    }
-  } catch {
-    return { status: 404, contentType: 'text/plain; charset=utf-8', cacheControl: 'no-store', body: null }
-  }
 }

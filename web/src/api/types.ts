@@ -17,7 +17,7 @@ export interface LibraryItemDTO {
   name: string
   chineseTitle: string | null
   year: number | null
-  posterTag: string | null
+  posterPath: string | null
   section: string
   coverage: CoverageDTO
   job: LibraryJobDTO | null
@@ -47,7 +47,7 @@ export interface SeriesDetailDTO {
   name: string
   chineseTitle: string | null
   year: number | null
-  posterTag: string | null
+  posterPath: string | null
   seasons: SeriesSeasonDTO[]
   runs: SeriesRunDTO[]
 }

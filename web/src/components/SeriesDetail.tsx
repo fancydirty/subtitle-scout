@@ -62,7 +62,7 @@ export function SeriesDetail({ id }: { id: string }) {
         <div className="detail">
           <div>
             <div className="dposter">
-              <Poster id={data.id} tag={data.posterTag} name={data.chineseTitle ?? data.name} />
+              <Poster posterPath={data.posterPath} name={data.chineseTitle ?? data.name} />
             </div>
           </div>
           <div>

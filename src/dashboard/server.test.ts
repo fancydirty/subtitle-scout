@@ -37,17 +37,12 @@ function distWith(html: string): string {
   return dist
 }
 
-const posterFetch = (async (_url: string) =>
-  new Response(Buffer.from('IMG'), { status: 200, headers: { 'content-type': 'image/png' } })) as unknown as typeof fetch
-
 async function start(
-  distDir: string, token?: string, fetchImpl: typeof fetch = posterFetch,
+  distDir: string, token?: string,
   reconcileAll?: () => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>,
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
-    jellyfin: { baseUrl: 'http://jf.local', apiKey: 'SECRET' },
-    fetchImpl,
     reconcileAll,
   })
   const addr = server.address()
@@ -65,7 +60,7 @@ describe('startDashboard (v2)', () => {
     const { base } = await start(distWith('<!doctype html><title>scout</title>'))
     const lib = await (await fetch(`${base}/api/v2/library`)).json()
     const series = lib.find((x: any) => x.id === 's1')
-    expect(series).toMatchObject({ name: 'Series A', chineseTitle: '甲剧', posterTag: 'ptag' })
+    expect(series).toMatchObject({ name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag' })
     expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 0, unavailable: 0 })
     expect(series.job).toEqual({ state: 'searching', priority: 100 })
   })
@@ -77,19 +72,6 @@ describe('startDashboard (v2)', () => {
     const runs = await (await fetch(`${base}/api/v2/runs`)).json()
     expect(runs.length).toBe(1)
     expect(runs[0].decision).toBe('download')
-  })
-  it('proxies poster with immutable cache header, key stays server-side', async () => {
-    const { base } = await start(distWith('<!doctype html>'))
-    const res = await fetch(`${base}/api/poster/item-1?tag=abc`)
-    expect(res.status).toBe(200)
-    expect(res.headers.get('content-type')).toBe('image/png')
-    expect(res.headers.get('cache-control')).toContain('immutable')
-    expect(await res.text()).toBe('IMG')
-  })
-  it('poster 404 when upstream fails', async () => {
-    const failFetch = (async () => new Response('no', { status: 404 })) as unknown as typeof fetch
-    const { base } = await start(distWith('<!doctype html>'), undefined, failFetch)
-    expect((await fetch(`${base}/api/poster/item-1`)).status).toBe(404)
   })
   it('serves static index.html at /', async () => {
     const { base } = await start(distWith('<!doctype html><title>scout</title>'))
@@ -105,8 +87,6 @@ describe('startDashboard (v2)', () => {
     const { base } = await start(distWith('<!doctype html>'), 's3cret')
     expect((await fetch(`${base}/api/v2/library`)).status).toBe(401)
     expect((await fetch(`${base}/api/v2/library?token=s3cret`)).status).toBe(200)
-    // poster 也受 token 保护
-    expect((await fetch(`${base}/api/poster/item-1`)).status).toBe(401)
   })
 
   describe('POST /api/v2/reconcile-all (v3 phase ⑦)', () => {
@@ -114,7 +94,7 @@ describe('startDashboard (v2)', () => {
       const reconcileAll = async () => ({
         dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
       })
-      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
       const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({
@@ -130,14 +110,14 @@ describe('startDashboard (v2)', () => {
 
     it('rejects non-POST methods with 405', async () => {
       const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: '' })
-      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
       const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'GET' })
       expect(res.status).toBe(405)
     })
 
     it('requires the configured token (401 without it, 200 with it)', async () => {
       const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' })
-      const { base } = await start(distWith('<!doctype html>'), 's3cret', posterFetch, reconcileAll)
+      const { base } = await start(distWith('<!doctype html>'), 's3cret', reconcileAll)
       const unauthed = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
       expect(unauthed.status).toBe(401)
       const authed = await fetch(`${base}/api/v2/reconcile-all?token=s3cret`, { method: 'POST' })
@@ -146,7 +126,7 @@ describe('startDashboard (v2)', () => {
 
     it('returns 500 with the error message when reconcileAll throws', async () => {
       const reconcileAll = async () => { throw new Error('orchestrator blew up') }
-      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
       const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
       expect(res.status).toBe(500)
       expect((await res.json()).error).toMatch(/orchestrator blew up/)
@@ -161,7 +141,7 @@ describe('startDashboard (v2)', () => {
         await gate // blocks until the test explicitly releases it, simulating a long scan+LLM pass
         return { dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' }
       }
-      const { base } = await start(distWith('<!doctype html>'), undefined, posterFetch, reconcileAll)
+      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
 
       // Fire the first POST and let it actually enter the handler (increment `calls`, flip the
       // in-flight flag, and start blocking on `gate`) before firing the second.

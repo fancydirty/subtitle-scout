@@ -30,7 +30,7 @@ export function PosterCard({ item }: { item: LibraryItemDTO }) {
       onKeyDown={(e) => { if (e.key === 'Enter') open() }}
     >
       <div className="poster">
-        <Poster id={item.id} tag={item.posterTag} name={title} />
+        <Poster posterPath={item.posterPath} name={title} />
         {badge.text || badge.pulse ? (
           <div className={`badge ${badge.kind}`}>
             {badge.pulse && <span className="dot" />}

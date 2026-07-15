@@ -4,7 +4,7 @@ import { App } from './App.js'
 import type { LibraryItemDTO } from './api/types.js'
 
 const item = (p: Partial<LibraryItemDTO> & Pick<LibraryItemDTO, 'id' | 'kind' | 'coverage'>): LibraryItemDTO =>
-  ({ name: 'n', chineseTitle: null, year: null, posterTag: null, section: '剧集', job: null, ...p })
+  ({ name: 'n', chineseTitle: null, year: null, posterPath: null, section: '剧集', job: null, ...p })
 
 const LIBRARY: LibraryItemDTO[] = [
   item({ id: 's1', kind: 'series', name: 'Series A', chineseTitle: '甲剧', year: 2021, section: '剧集',

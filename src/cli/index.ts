@@ -411,7 +411,7 @@ async function cmdWatch() {
       })
     : undefined
 
-  // Dashboard v2（媒体库 API + 海报代理，读 v2 SQLite）
+  // Dashboard v2（媒体库 API，读 v2 SQLite；海报直出 TMDB CDN，不再走服务端代理）
   const dashPort = Number(process.env.DASHBOARD_PORT) || 0
   if (dashPort > 0) {
     const distDir = join(new URL('../..', import.meta.url).pathname, 'web', 'dist')
@@ -420,10 +420,6 @@ async function cmdWatch() {
       port: dashPort,
       token: process.env.DASHBOARD_TOKEN || undefined,
       distDir,
-      jellyfin: {
-        baseUrl: requireEnv('JELLYFIN_URL'),
-        apiKey: requireEnv('JELLYFIN_API_KEY'),
-      },
       reconcileAll: reconcileAllClosure,
     })
     if (dashServer.listening) {

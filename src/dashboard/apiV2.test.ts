@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, proxyPoster, sectionOf, commonRootDepth } from './apiV2.js'
+import { buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth } from './apiV2.js'
 
 let db: ScoutDb
 let lib: LibraryRepo
@@ -93,7 +93,7 @@ describe('buildLibrary', () => {
     expect(series.name).toBe('Series A')
     expect(series.chineseTitle).toBe('甲剧')
     expect(series.year).toBe(2021)
-    expect(series.posterTag).toBe('ptag-s1')
+    expect(series.posterPath).toBe('ptag-s1')
     expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 1, unavailable: 1 })
     expect(series.job).toEqual({ state: 'searching', priority: 100 })
 
@@ -226,43 +226,5 @@ describe('buildRuns', () => {
     const page = buildRuns(db, 1, 50)
     expect(page.length).toBe(1)
     expect(page[0].decision).toBe('no_safe_match')
-  })
-})
-
-describe('proxyPoster', () => {
-  it('转发 URL 带 tag 与 quality，成功回 immutable 头', async () => {
-    const calls: string[] = []
-    const headers: Record<string, string>[] = []
-    const fetchImpl = (async (url: string, init: RequestInit) => {
-      calls.push(String(url))
-      headers.push(init.headers as Record<string, string>)
-      return new Response(Buffer.from('IMG'), { status: 200, headers: { 'content-type': 'image/png' } })
-    }) as unknown as typeof fetch
-
-    const res = await proxyPoster('item-1', 'abc123', { baseUrl: 'http://jf.local', apiKey: 'SECRET', fetchImpl })
-    expect(res.status).toBe(200)
-    expect(res.contentType).toBe('image/png')
-    expect(res.cacheControl).toContain('immutable')
-    expect(res.body).not.toBeNull()
-    expect(calls[0]).toContain('/Items/item-1/Images/Primary')
-    expect(calls[0]).toContain('tag=abc123')
-    expect(calls[0]).toContain('quality=90')
-    expect(calls[0]).toContain('maxWidth=400')
-    // API key 走请求头，不出现在 URL 里
-    expect(calls[0]).not.toContain('SECRET')
-    expect(headers[0]['X-Emby-Token']).toBe('SECRET')
-  })
-
-  it('上游 404 → 404 且无 body', async () => {
-    const fetchImpl = (async () => new Response('nope', { status: 404 })) as unknown as typeof fetch
-    const res = await proxyPoster('item-1', undefined, { baseUrl: 'http://jf.local', apiKey: 'SECRET', fetchImpl })
-    expect(res.status).toBe(404)
-    expect(res.body).toBeNull()
-  })
-
-  it('上游异常 → 404', async () => {
-    const fetchImpl = (async () => { throw new Error('network') }) as unknown as typeof fetch
-    const res = await proxyPoster('item-1', 'x', { baseUrl: 'http://jf.local', apiKey: 'SECRET', fetchImpl })
-    expect(res.status).toBe(404)
   })
 })
