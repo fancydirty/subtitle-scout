@@ -21,4 +21,22 @@ describe('ORCHESTRATOR_SKILL', () => {
     expect(ORCHESTRATOR_SKILL.content).toMatch(/100/)
     expect(ORCHESTRATOR_SKILL.content).toMatch(/spawn_sibling_orchestrator/)
   })
+
+  // W0-5 live finding (2026-07-15): with a mixed backlog the model dispatched find-subtitle tasks
+  // WITHOUT ever consulting check_series_layout — the old wording only mandated the check before
+  // dispatch_realign_task, which is circular: nothing tells the model a series is suspect until it
+  // checks. The realign birth-right now lives ONLY in the orchestrator (executor diagnose hook
+  // removed, T3), so the layout sweep must be mandatory per backlog series, not suspicion-driven.
+  it('mandates a check_series_layout sweep for EVERY backlog series BEFORE any find-subtitle dispatch (realign birth-right discipline)', () => {
+    const c = ORCHESTRATOR_SKILL.content
+    expect(c).toMatch(/EVERY series/)
+    expect(c).toMatch(/before dispatching ANY find-subtitle task/i)
+    expect(c).toMatch(/only way to know whether/i)
+    // movies are exempt (no seasons — a wasted call otherwise)
+    expect(c).toMatch(/movies?.*(no|never).*layout|layout.*(not|never).*movies?/i)
+  })
+
+  it('carries no hardcoded target-language assumption (A-generalization)', () => {
+    expect(ORCHESTRATOR_SKILL.content).not.toMatch(/Chinese/i)
+  })
 })

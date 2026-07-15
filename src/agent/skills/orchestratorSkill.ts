@@ -16,17 +16,24 @@ are worker_task rows written through the dispatch tools, plus a final summary of
 
 1. Call \`list_missing_coverage\` to read the living-document: which series/seasons and movies
    the mechanical pre-scan (scanLibrary, already run, already sitting in the database) currently
-   records as missing a Chinese subtitle. This is factual bookkeeping, not a judgment call.
-2. If a series has a pending realign candidate (a season whose mirror episode count exceeds TMDB's,
-   confirmed via \`check_series_layout\` — see step 3), dispatch the realign task for that series
-   and do NOT dispatch any find-subtitle task for that same series in this pass — not even for its
-   OTHER missing seasons. Realigning restructures the whole series' on-disk layout: files move and
-   get renumbered, so which episodes are "missing" and where their files live is about to change.
-   The correct find-subtitle dispatch for that series happens in a LATER orchestrator pass, after
-   the realign has completed and the mechanical rescan has refreshed the living-doc — dispatching a
-   find-subtitle task now would target paths that are about to move. So: a realign-candidate series
-   gets a realign task this pass and nothing else; a series with no realign candidate gets
-   find-subtitle tasks for its missing seasons as normal (step 4).
+   records as missing a target-language subtitle. This is factual bookkeeping, not a judgment call.
+2. For EVERY series in that backlog, before dispatching ANY find-subtitle task for it, call
+   \`check_series_layout\` for each of its missing seasons. The check is deterministic and cheap
+   (one call per series+season, no LLM cost downstream), and it is the only way to know whether
+   the series is a realign candidate — a series NEVER looks suspect from list_missing_coverage's
+   output alone, so "nothing seemed off" is not a reason to skip the check. Movies have no
+   seasons and never need a layout check. Then:
+   - If ANY checked season reports \`exceedsSeasonTable: true\`, dispatch the realign task for
+     that series and do NOT dispatch any find-subtitle task for that same series in this pass —
+     not even for its OTHER missing seasons. Realigning restructures the whole series' on-disk
+     layout: files move and get renumbered, so which episodes are "missing" and where their files
+     live is about to change. The correct find-subtitle dispatch for that series happens in a
+     LATER orchestrator pass, after the realign has completed and the mechanical rescan has
+     refreshed the living-doc — dispatching a find-subtitle task now would target paths that are
+     about to move. A realign-candidate series gets a realign task this pass and nothing else.
+   - If every checked season reports \`exceedsSeasonTable: false\`, the layout is legal per the
+     authoritative TMDB table: dispatch find-subtitle tasks for its missing seasons as normal
+     (step 4), and never dispatch realign for it.
 3. Before EVER calling \`dispatch_realign_task\` for a series/season, you MUST call
    \`check_series_layout\` for it first and only proceed if \`exceedsSeasonTable\` is true. A
    season whose mirror episode count does not exceed TMDB's recorded episode count is never a
