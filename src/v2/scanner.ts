@@ -1,20 +1,21 @@
 import { dirname, basename } from 'node:path'
 import { isChineseOrigin, isChineseLang, looksChineseTitle, usableChineseSubtitleStreams } from '../daemon/triggers.js'
 import { mapPath, type PathMapping } from '../core/mediaContext.js'
+import { tagsForLanguage } from '../agent/languages.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { LibraryRepo, SubStatus } from './libraryRepo.js'
 
 const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
-// Language tags that indicate Chinese subtitles (from triggers.ts CHINESE_LANG_TAGS pattern)
-const CHINESE_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho']
 
-export type SubtitleLanguage = 'zh-Hans' | 'zh-Hant'
+export type SubtitleLanguage = string
 
-/** CHINESE_TAGS → subtitles.language（db.ts ~:69 的 zh-Hans/zh-Hant 二值域）映射。
- *  cht 是繁体的明确信号 → zh-Hant；zh-Hant 同理原样映射。其余（zh-Hans/zh/chs/chi/zho）
- *  落地简体：这些 tag 本身不携带简繁区分（zh/chi/zho 是泛中文标记，chs 明确简体），
- *  与 core/schemas.ts:49 `language` 的默认值 zh-Hans 一致，是本仓库已有的兜底口径。 */
+/** tag → subtitles.language 记账值。中文 tag 保留原有 zh-Hans/zh-Hant 二值域精修（db.ts ~:69）
+ *  ——cht 是繁体的明确信号 → zh-Hant；zh-Hant 同理原样映射；其余（zh-Hans/zh/chs/chi/zho）落地
+ *  简体（这些 tag 本身不携带简繁区分，chs 明确简体），与 core/schemas.ts:49 `language` 的默认值
+ *  zh-Hans 一致，是本仓库已有的兜底口径。非中文语言（en/ja/ko 等）的 tag 一律折回其 BCP-47
+ *  主语言码（eng→en 等）——没有登记在表里的 tag 直接原样返回，这对 tagsForLanguage() 兜底出的
+ *  `[code]`（比如未表列语言的裸 code tag）天然正确。 */
 const LANGUAGE_BY_TAG: Record<string, SubtitleLanguage> = {
   'zh-Hans': 'zh-Hans',
   'zh-Hant': 'zh-Hant',
@@ -23,6 +24,16 @@ const LANGUAGE_BY_TAG: Record<string, SubtitleLanguage> = {
   cht: 'zh-Hant',
   chi: 'zh-Hans',
   zho: 'zh-Hans',
+  en: 'en',
+  eng: 'en',
+  ja: 'ja',
+  jpn: 'ja',
+  ko: 'ko',
+  kor: 'ko',
+}
+
+function languageForTag(tag: string): SubtitleLanguage {
+  return LANGUAGE_BY_TAG[tag] ?? tag
 }
 
 /** scan-time sidecar adoption 的 subtitles.source 取值：复用 executor.ts 里 pipeline
@@ -33,19 +44,22 @@ const LANGUAGE_BY_TAG: Record<string, SubtitleLanguage> = {
 const DISK_ADOPTION_SOURCE = 'preexisting'
 
 /** 找到即返回真实 sidecar 路径 + 按匹配到的 tag 换算出的语言（供 scan 磁盘 arm 记账用其真实
- *  路径/语言建 subtitles 行）；未找到为 null。 */
-function findExternalChineseSidecar(
+ *  路径/语言建 subtitles 行）；未找到为 null。targetTags 是调用方按目标语言集合算好的 tag
+ *  并集（见 classifyItemDetailed rule 3），本函数不关心它们分别属于哪个语言——探测机制
+ *  （tag × ext 双层遍历、逐一 fileExists 探测）与泛化前完全一致。 */
+function findExternalSidecar(
   videoPath: string,
+  targetTags: string[],
   fileExists: (path: string) => boolean
 ): { path: string; language: SubtitleLanguage } | null {
   const dir = dirname(videoPath)
   const videoBase = basename(videoPath).replace(/\.[^.]+$/, '')
 
-  for (const tag of CHINESE_TAGS) {
+  for (const tag of targetTags) {
     for (const ext of SUBTITLE_EXTS) {
       const sidecarPath = `${dir}/${videoBase}.${tag}${ext}`
       if (fileExists(sidecarPath)) {
-        return { path: sidecarPath, language: LANGUAGE_BY_TAG[tag] }
+        return { path: sidecarPath, language: languageForTag(tag) }
       }
     }
   }
@@ -59,8 +73,8 @@ export interface ClassifyResult {
    *  scanLibrary 借此在没有 subtitles 行时补上 path/provenance 记账——见事故复盘（崩溃的
    *  执行、或用户手放文件导致 daemon 自己没记下来）。 */
   diskSidecarPath: string | null
-  /** 与 diskSidecarPath 成对出现（同为 null 或同时有值）：按匹配到的 CHINESE_TAGS tag
-   *  换算出的语言（LANGUAGE_BY_TAG），供 scanLibrary 建 subtitles 行时如实标注简/繁，
+  /** 与 diskSidecarPath 成对出现（同为 null 或同时有值）：按匹配到的 tag 换算出的语言
+   *  （languageForTag/LANGUAGE_BY_TAG），供 scanLibrary 建 subtitles 行时如实标注语言，
    *  而不是不分青红皂白硬编码 zh-Hans。 */
   diskSidecarLanguage: SubtitleLanguage | null
 }
@@ -79,6 +93,12 @@ export function classifyItemDetailed(
      * 是权威证据，不受故障影响照常生效。
      */
     originResolutionFailed?: boolean
+    /**
+     * rule 3（磁盘 sidecar 探测）用：目标字幕语言集合（BCP-47 主语言码），决定哪些 tag
+     * 算"覆盖"。未传时默认 `['zh']`，与泛化前行为逐位一致（向后兼容）。多语言时按并集探测
+     * （tagsForLanguage 逐语言展开后 flatMap）。
+     */
+    targetLanguages?: string[]
   }
 ): ClassifyResult {
   // 0. 国产（TMDB original_language=zh）→ ignored（先于一切，权威信号）
@@ -124,7 +144,8 @@ export function classifyItemDetailed(
   //    在该条目尚无 subtitles 行时补记账（scan-time adoption：daemon 自己没记下来的盘上文件）。
   if (item.Path) {
     const mappedPath = mapPath(item.Path, deps.mappings)
-    const sidecar = findExternalChineseSidecar(mappedPath, deps.fileExists)
+    const targetTags = (deps.targetLanguages ?? ['zh']).flatMap(tagsForLanguage)
+    const sidecar = findExternalSidecar(mappedPath, targetTags, deps.fileExists)
     if (sidecar) {
       return { status: 'covered', diskSidecarPath: sidecar.path, diskSidecarLanguage: sidecar.language }
     }
@@ -183,6 +204,9 @@ export async function scanLibrary(
     skipChineseOrigin: boolean
     resolver?: OriginResolver
     now?: number
+    /** rule 3（磁盘 sidecar 探测）的目标语言集合，透传给 classifyItemDetailed。未传时默认
+     *  `['zh']`，向后兼容——现有调用方不受影响。 */
+    targetLanguages?: string[]
   }
 ): Promise<void> {
   const now = opts.now ?? Date.now()
@@ -257,6 +281,7 @@ export async function scanLibrary(
           skipChineseOrigin: opts.skipChineseOrigin,
           originLang: resolvedOriginForClassification(cachedOriginLang),
           originResolutionFailed,
+          targetLanguages: opts.targetLanguages,
         })
 
         // Preserve unavailable only if reality still says missing;
@@ -323,6 +348,7 @@ export async function scanLibrary(
           skipChineseOrigin: opts.skipChineseOrigin,
           originLang: resolvedOriginForClassification(cachedOriginLang),
           originResolutionFailed,
+          targetLanguages: opts.targetLanguages,
         })
 
         // Preserve unavailable only if reality still says missing (mirrors episode branch above)

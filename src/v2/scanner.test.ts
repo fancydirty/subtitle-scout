@@ -1172,3 +1172,72 @@ describe('scanLibrary', () => {
     })
   })
 })
+
+describe('scanLibrary: targetLanguages (on-disk sidecar detection generalization)', () => {
+  const mappings = [{ from: '/media', to: '/mnt/media' }]
+
+  function subtitleRows(itemId: string) {
+    return lib.db.prepare('select * from subtitles where item_id = ?').all(itemId) as any[]
+  }
+
+  it('targetLanguages: ["en"] + .en.srt sidecar → covered, adopted row records language en (not zh)', async () => {
+    const sidecarPath = '/mnt/media/tv/Show/Season 1/Show.S01E01.en.srt'
+    const pages = [[epItem('e1', 1, 1)], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 10,
+      fileExists: (p) => p === sidecarPath,
+      mappings,
+      skipChineseOrigin: true,
+      targetLanguages: ['en'],
+    })
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    const rows = subtitleRows('e1')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ path: sidecarPath, source: 'preexisting', language: 'en' })
+  })
+
+  it('targetLanguages: ["zh", "en"] unions tags across languages — .en.srt is still detected as covered', async () => {
+    const sidecarPath = '/mnt/media/movies/The Matrix (1999)/The.Matrix.1999.1080p.BluRay.x264.en.srt'
+    const pages = [[movieItem({ Id: 'm1' })], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 10,
+      fileExists: (p) => p === sidecarPath,
+      mappings,
+      skipChineseOrigin: true,
+      targetLanguages: ['zh', 'en'],
+    })
+    expect(lib.getMovie('m1')!.sub_status).toBe('covered')
+    expect(subtitleRows('m1')[0]).toMatchObject({ path: sidecarPath, language: 'en' })
+  })
+
+  it('targetLanguages: ["en"] does NOT match a .zh-Hans.srt sidecar — target language actually gates detection', async () => {
+    const sidecarPath = '/mnt/media/tv/Show/Season 1/Show.S01E01.zh-Hans.srt'
+    const pages = [[epItem('e1', 1, 1)], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 10,
+      fileExists: (p) => p === sidecarPath,
+      mappings,
+      skipChineseOrigin: true,
+      targetLanguages: ['en'],
+    })
+    expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
+  })
+
+  it('backward compat: default opts (no targetLanguages) still detect .chs.srt as zh-Hans, exactly as before', async () => {
+    const sidecarPath = '/mnt/media/tv/Show/Season 1/Show.S01E01.chs.srt'
+    const pages = [[epItem('e1', 1, 1)], []]
+    const jf: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages.shift() ?? []) }
+    await scanLibrary(jf, lib, {
+      pageSize: 10,
+      fileExists: (p) => p === sidecarPath,
+      mappings,
+      skipChineseOrigin: true,
+      // targetLanguages omitted — must default to ['zh']
+    })
+    expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
+    expect(subtitleRows('e1')[0]).toMatchObject({ path: sidecarPath, language: 'zh-Hans' })
+  })
+})
