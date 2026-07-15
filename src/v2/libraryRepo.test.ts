@@ -232,6 +232,16 @@ describe('realign 支持方法', () => {
     expect(lib.episodePathsForSeries('s1').sort()).toEqual(['/media/Show/Season 01/a.mkv', '/media/Show/Season 01/b.mkv'])
   })
 
+  it('knownPaths 返回 episodes ∪ movies 的 path 全集（去重）', () => {
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/tv/a.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/tv/b.mkv', subStatus: 'missing' })
+    lib.upsertMovie({ id: 'm1', name: 'Movie', path: '/movies/c.mkv', subStatus: 'missing' })
+    // upsert 同一路径两次（比如重新识别后再次入库）不应在 Set 里产生重复条目
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/tv/a.mkv', subStatus: 'covered' })
+    expect(lib.knownPaths()).toEqual(new Set(['/tv/a.mkv', '/tv/b.mkv', '/movies/c.mkv']))
+  })
+
   it('deleteSeriesRows 删除该剧全部 episodes + subtitles + series 行', () => {
     lib.upsertSeries({ id: 's1', name: 'Show' })
     lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a', subStatus: 'covered' })

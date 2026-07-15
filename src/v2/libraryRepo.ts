@@ -226,6 +226,21 @@ export class LibraryRepo {
     tx()
   }
 
+  /** B1（self-hosted 周期扫描）已知路径全集：episodes ∪ movies 的 path 列，供 selfScan 与
+   *  磁盘现状做差集——库里已有路径不再重复 recognize()（该行本身就是"已识别过"的记忆）。
+   *  UNION 天然去重；两表 path 列 schema 上是 NOT NULL，这里的 IS NOT NULL 是防御性写法，
+   *  不依赖当前 schema 保证。返回 Set 而非数组：调用方要做的是 O(1) 成员判定，不是遍历。 */
+  knownPaths(): Set<string> {
+    const rows = this.db
+      .prepare(
+        `SELECT path FROM episodes WHERE path IS NOT NULL
+         UNION
+         SELECT path FROM movies WHERE path IS NOT NULL`
+      )
+      .all() as { path: string }[]
+    return new Set(rows.map(r => r.path))
+  }
+
   /** TMDB original_language 缓存读取；NULL=未解析过。 */
   getSeriesOriginLang(seriesId: string): string | null {
     const row = this.db.prepare('SELECT origin_lang FROM series WHERE id = ?').get(seriesId) as
