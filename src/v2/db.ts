@@ -66,7 +66,7 @@ CREATE TABLE runs (                 -- 替代 ledger.jsonl；journals 明细文�
 CREATE TABLE subtitles (            -- 借鉴 Bazarr TableEpisodesSubtitles：一个视频可挂多个字幕文件
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   item_id TEXT NOT NULL,            -- episodes.id 或 movies.id
-  path TEXT NOT NULL, language TEXT NOT NULL,   -- zh-Hans/zh-Hant
+  path TEXT NOT NULL, language TEXT NOT NULL,   -- any language tag, e.g. zh-Hans/zh-Hant/en (A2)
   source TEXT NOT NULL,             -- scout-download / adopted-local / preexisting
   assrt_sub_id INTEGER,             -- 多源后弃写，仅历史数据保留（见 provider_ref 迁移）
   size INTEGER, created_at INTEGER NOT NULL,

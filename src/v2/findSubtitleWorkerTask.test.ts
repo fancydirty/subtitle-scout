@@ -78,6 +78,25 @@ describe('runFindSubtitleWorkerTask', () => {
     expect(jobsRepo.get(job.id)!.state).toBe('done')
   })
 
+  // A2: markCovered's language fallback used to be a hardcoded 'zh-Hans' no matter the task's
+  // actual target language. It must now fall back to task.targetLanguage instead — a defensive
+  // last resort for the rare case the worker finalizes 'installed' without installedLanguage set.
+  it('markCovered records task.targetLanguage (not a hardcoded zh-Hans) when the decision omits installedLanguage', async () => {
+    const { videoPath, lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => decision({
+      installedPath: join(videoPath, '..', 'x.srt'), installedLanguage: null,
+      candidateProvider: 'assrt', candidateProviderId: '123',
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    const row = lib.db.prepare('select language from subtitles where item_id=?').get('jf-ep-1') as { language: string }
+    // mapWorkerTaskToFindSubtitleTask still hardcodes targetLanguage: 'zh' pending a later task
+    // (config-driven target language) — the point here is the fallback source, not the value.
+    expect(row.language).toBe('zh')
+  })
+
   it('movie identity: resolves the movie row (not an episode) and marks it covered', async () => {
     const root = mkdtempSync(join(tmpdir(), 'find-subtitle-worker-task-movie-'))
     const movieDir = join(root, 'Movie (2020)')

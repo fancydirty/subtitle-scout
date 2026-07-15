@@ -7,14 +7,19 @@ import { nullableTolerant } from './coerce.js'
  *
  *  The nullable fields use nullableTolerant (coerce.ts): on a retry_later / no_safe_match finalize
  *  the real model string-encodes the "no value" fields as "None"/"null"/"" instead of JSON null.
- *  installedLanguage is a nullable ENUM, so "None" would hard-fail validation of this (the finalize
- *  tool's) inputSchema — captured never gets set and readFinalized() throws, killing the whole run.
- *  Collapsing those sentinels to null fixes that AND keeps the string fields from storing "None". */
+ *  Without nullableTolerant, "None" would hard-fail validation of this (the finalize tool's)
+ *  inputSchema — captured never gets set and readFinalized() throws, killing the whole run.
+ *  Collapsing those sentinels to null fixes that AND keeps the string fields from storing "None".
+ *
+ *  installedLanguage was a zh-Hans/zh-Hant enum (locked to Chinese) — generalized (A2) to any
+ *  non-empty BCP-47-ish string so the worker can install a subtitle in any target language; for
+ *  Chinese targets the Hans/Hant refinement is still made by the agent from subtitleInspect's
+ *  detectedScript signal, this schema just no longer enforces it. */
 export const FindSubtitleDecisionSchema = z.object({
   decision: z.enum(['installed', 'no_safe_match', 'retry_later']),
   reason: z.string().min(1),
   installedPath: nullableTolerant(z.string()),
-  installedLanguage: nullableTolerant(z.enum(['zh-Hans', 'zh-Hant'])),
+  installedLanguage: nullableTolerant(z.string().min(1)),
   candidateProvider: nullableTolerant(z.string()),
   candidateProviderId: nullableTolerant(z.string()),
 })
@@ -44,8 +49,10 @@ export interface FindSubtitleTask {
   runtimeMinutes: number | null
   providerIds: Record<string, string>
   /** BCP-47 primary language code for the subtitle to find, e.g. 'zh'/'en'. Interpolated into the
-   *  worker prompt via languageName() (see languages.ts). Every enum still hardcoded to zh-Hans/
-   *  zh-Hant (installedLanguage/langTag) is a LATER task — this field alone does not yet change
-   *  what language the worker can actually install. */
+   *  worker prompt via languageName() (see languages.ts). installedLanguage/langTag (this schema,
+   *  the install_subtitle tool, subtitleWriter) are generalized (A2) to accept any language this
+   *  field names — download_candidate's provisional staging langTag also defaults from this field
+   *  (findSubtitleWorker.tools.ts), except for Chinese targets, which still stage as 'zh-Hans'
+   *  pending the agent's own Hans/Hant call via subtitleInspect's detectedScript at install time. */
   targetLanguage: string
 }

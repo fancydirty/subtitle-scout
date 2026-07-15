@@ -16,7 +16,10 @@ export interface WriteSubtitleInput {
   /** zip 包内要选的文件名（来自 ASSRT filelist[file_index].f）；非 zip 忽略 */
   selectFileName?: string
   videoFilename: string
-  langTag: 'zh-Hans' | 'zh-Hant'
+  /** Any language/script tag used in the Jellyfin sidecar filename (`<video>.<langTag>.<ext>`) —
+   *  historically only 'zh-Hans'/'zh-Hant', generalized (A2) since this writer never assumed
+   *  Chinese; it just embeds whatever tag the caller passes into the output filename. */
+  langTag: string
   outDir: string
 }
 export interface WriteSubtitleResult {

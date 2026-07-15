@@ -84,6 +84,19 @@ describe('媒体镜像', () => {
     expect(lib.db.prepare('select language from subtitles where item_id=?').get('e2')).toEqual({ language: 'zh-Hant' })
   })
 
+  // A2: language is a plain string, not a zh-Hans/zh-Hant enum — the find-subtitle worker's
+  // target-language generalization (installedLanguage/langTag) relies on markCovered recording
+  // whatever BCP-47 code it's given, e.g. 'en'.
+  it('markCovered language 参数接受任意语言字符串（如 en），不限于 zh-Hans/zh-Hant', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e3', seriesId: 's1', season: 1, episode: 3, name: '',
+      path: '/p/3.mkv', subStatus: 'missing',
+    })
+    lib.markCovered('e3', '/p/3.en.srt', 'scout-download', undefined, 'en')
+    expect(lib.db.prepare('select language from subtitles where item_id=?').get('e3')).toEqual({ language: 'en' })
+  })
+
   it('markCovered 传 null 路径（M7）：只改状态，不伪造 subtitles 行', () => {
     lib.upsertSeries({ id: 's1', name: 'A' })
     lib.upsertEpisode({

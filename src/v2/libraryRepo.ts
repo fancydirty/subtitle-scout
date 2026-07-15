@@ -294,10 +294,12 @@ export class LibraryRepo {
    *  只改状态，不伪造 subtitles 行。
    *  providerRef: provider-neutral 候选标识，形如 "assrt:673114" / "opensubtitles:7174766"
    *  （见 core/schemas.ts candidateKey）；无来源可考时传 undefined。
-   *  language: subtitles.language 取值（db.ts ~:69 的 zh-Hans/zh-Hant 二值域），默认 'zh-Hans'
-   *  ——沿用历史行为，scout-download/adopted-local 等既有调用方（executor.ts）不传此参数，
-   *  行为完全不变。scan 磁盘 arm 领养（scanner.ts）会按匹配到的 CHINESE_TAGS tag 显式传入
-   *  真实语言，不再无论简繁一律硬编码 zh-Hans。 */
+   *  language: subtitles.language 取值（db.ts ~:69，plain TEXT——历史上只出现过 zh-Hans/zh-Hant，
+   *  A2 起泛化为任意语言标签，如 'en'），默认 'zh-Hans'——沿用历史行为，scout-download/
+   *  adopted-local 等既有调用方（executor.ts）不传此参数，行为完全不变。find-subtitle worker
+   *  （findSubtitleWorkerTask.ts）显式传入 decision.installedLanguage ?? task.targetLanguage；
+   *  scan 磁盘 arm 领养（scanner.ts）会按匹配到的 CHINESE_TAGS tag 显式传入真实语言，不再无论
+   *  简繁一律硬编码 zh-Hans。 */
   markCovered(
     itemId: string,
     subtitlePath: string | null,

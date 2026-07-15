@@ -73,6 +73,22 @@ describe('writeSubtitle', () => {
     expect(r.encoding).toBe('utf-8')
   })
 
+  // A2: langTag was typed 'zh-Hans' | 'zh-Hant' — locked out any non-Chinese language at the type
+  // level even though the naming logic below never assumed Chinese. Widened to `string` so a
+  // caller can write e.g. an English subtitle with the same Jellyfin-naming convention.
+  it('accepts a non-Chinese langTag (e.g. "en") with the same Jellyfin naming convention', async () => {
+    const dir = outDir()
+    const r = await writeSubtitle({
+      artifact: Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhello\n'),
+      artifactFilename: 'sub.srt',
+      videoFilename: 'The.Matrix.1999.1080p.BluRay.x264.mkv',
+      langTag: 'en',
+      outDir: dir,
+    })
+    expect(r.path).toBe(join(dir, 'The.Matrix.1999.1080p.BluRay.x264.en.srt'))
+    expect(existsSync(r.path)).toBe(true)
+  })
+
   it('extracts the requested file from a zip by name', async () => {
     const zip = new AdmZip()
     zip.addFile('wrong.ass', Buffer.from('WRONG'))

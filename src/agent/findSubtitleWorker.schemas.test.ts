@@ -67,7 +67,7 @@ describe('FindSubtitleDecisionSchema', () => {
     }
   })
 
-  it('still accepts a real installedLanguage enum value and rejects a genuinely invalid one', () => {
+  it('still accepts a real Chinese-script installedLanguage value', () => {
     expect(
       FindSubtitleDecisionSchema.parse({
         decision: 'installed', reason: 'match',
@@ -75,11 +75,19 @@ describe('FindSubtitleDecisionSchema', () => {
         candidateProvider: 'assrt', candidateProviderId: '667241',
       }).installedLanguage,
     ).toBe('zh-Hant')
-    expect(() =>
+  })
+
+  // A2: installedLanguage was a two-value zh-Hans/zh-Hant enum, which rejected every non-Chinese
+  // installable language (e.g. an 'en' subtitle finalize would hard-fail this schema). Generalized
+  // to a plain non-empty string — Chinese Hans/Hant refinement is unaffected (still accepted above),
+  // but the domain is no longer locked to those two values.
+  it('accepts a non-Chinese installedLanguage value (the zh-Hans/zh-Hant enum lock is removed)', () => {
+    expect(
       FindSubtitleDecisionSchema.parse({
         decision: 'installed', reason: 'x',
-        installedPath: null, installedLanguage: 'en', candidateProvider: null, candidateProviderId: null,
-      }),
-    ).toThrow()
+        installedPath: '/media/Show/Show.S01E01.en.srt', installedLanguage: 'en',
+        candidateProvider: 'opensubtitles', candidateProviderId: '9999',
+      }).installedLanguage,
+    ).toBe('en')
   })
 })

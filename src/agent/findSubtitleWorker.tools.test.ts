@@ -159,6 +159,45 @@ describe('download_candidate tool', () => {
     expect(() => schema.parse({ candidateId: 'assrt:1', fileIndex: 'abc' })).toThrow()
   })
 
+  // A2: the staged file's provisional langTag used to be hardcoded 'zh-Hans' no matter what
+  // language the task actually wants. It must now flow from deps.targetLanguage — non-Chinese
+  // targets (e.g. 'en') get their own code directly; the final path/name is only a staging
+  // artifact, replaced by install_subtitle's own langTag once the agent decides.
+  it('stages the file with a langTag derived from deps.targetLanguage for a non-Chinese target', async () => {
+    const stagedFiles = new Map<string, string>()
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhello\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      videoFilename: 'Show.S01E01.mkv',
+      targetLanguage: 'en',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!({ candidateId: 'assrt:1', fileIndex: null }, { toolCallId: 't1', messages: [] } as any) as DownloadCandidateOutput
+    const stagedPath = stagedFiles.get(out.stagedFileId)!
+    expect(stagedPath.endsWith('.en.srt')).toBe(true)
+  })
+
+  // Chinese refinement (Hans vs Hant) is decided LATER, at install time, from
+  // subtitleInspect's detectedScript signal — this provisional staging default stays 'zh-Hans'
+  // for a Chinese target, unchanged from before A2.
+  it('still stages a Chinese target as zh-Hans (refinement happens later at install time)', async () => {
+    const stagedFiles = new Map<string, string>()
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhello\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      videoFilename: 'Show.S01E01.mkv',
+      targetLanguage: 'zh',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!({ candidateId: 'assrt:1', fileIndex: null }, { toolCallId: 't1', messages: [] } as any) as DownloadCandidateOutput
+    const stagedPath = stagedFiles.get(out.stagedFileId)!
+    expect(stagedPath.endsWith('.zh-Hans.srt')).toBe(true)
+  })
+
   it('two downloads in the same task do not collide (each gets its own staging subdir)', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nfirst\n')))
@@ -199,6 +238,35 @@ describe('install_subtitle tool', () => {
     })
     const out = await tool_.execute!({ stagedFileId, langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any) as InstallSubtitleOutput
     expect(out.path).toBe(join(videoDir, 'Show.S01E01.zh-Hans.srt'))
+    expect(existsSync(out.path!)).toBe(true)
+  })
+
+  // A2: langTag's inputSchema used to be a two-value zh-Hans/zh-Hant enum, which would hard-reject
+  // a real model's tool call to install an 'en' (or any non-Chinese) subtitle before execute ever
+  // ran. Generalized to any non-empty string.
+  it('inputSchema accepts any non-empty langTag string, not just zh-Hans/zh-Hant', () => {
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map(), outDir: sandboxDir, mediaRoot: sandboxDir, videoFilename: 'Show.S01E01.mkv',
+    })
+    const schema = tool_.inputSchema as import('zod').ZodType
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'en' })).toEqual({ stagedFileId: 'x', langTag: 'en' })
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'zh-Hans' })).toEqual({ stagedFileId: 'x', langTag: 'zh-Hans' })
+  })
+
+  it('installs a staged file with a non-Chinese lang tag (e.g. an English subtitle)', async () => {
+    const videoDir = join(sandboxDir, 'media', 'Show')
+    mkdirSync(videoDir, { recursive: true })
+    const stagedPath = join(sandboxDir, '.staging', 'attempt-en', 'staged.srt')
+    mkdirSync(join(sandboxDir, '.staging', 'attempt-en'), { recursive: true })
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-en'
+    const stagedFiles = new Map([[stagedFileId, stagedPath]])
+
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles, outDir: videoDir, mediaRoot: join(sandboxDir, 'media'), videoFilename: 'Show.S01E01.mkv',
+    })
+    const out = await tool_.execute!({ stagedFileId, langTag: 'en' }, { toolCallId: 't1', messages: [] } as any) as InstallSubtitleOutput
+    expect(out.path).toBe(join(videoDir, 'Show.S01E01.en.srt'))
     expect(existsSync(out.path!)).toBe(true)
   })
 

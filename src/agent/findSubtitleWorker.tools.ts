@@ -23,7 +23,21 @@ export interface DownloadCandidateDeps {
    *  agent — install_subtitle takes stagedFileId, not a path. */
   stagedFiles: Map<string, string>
   videoFilename: string
+  /** task.targetLanguage (BCP-47 primary code, e.g. 'zh'/'en') — drives the provisional langTag
+   *  this staging write uses (see execute below). Optional/defaulted to 'zh' only so existing
+   *  callers/tests that predate A2 keep working unchanged; makeFindSubtitleWorker always passes
+   *  it explicitly from the task. */
+  targetLanguage?: string
   fetchImpl?: typeof fetch
+}
+
+/** download_candidate's provisional staging langTag (A2): for a Chinese target the real Hans/Hant
+ *  call is made later by the agent at install_subtitle time, from subtitleInspect's detectedScript
+ *  signal — not here, before the file is even inspected — so this keeps the historical 'zh-Hans'
+ *  placeholder. Any other target language is used as-is; it's just a staging filename, replaced
+ *  wholesale by install_subtitle's own langTag once the agent decides. */
+function stagingLangTag(targetLanguage: string): string {
+  return targetLanguage === 'zh' ? 'zh-Hans' : targetLanguage
 }
 
 export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
@@ -63,7 +77,7 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       const attemptDir = join(deps.stagingDir, stagedFileId)
       const written = await writeSubtitle({
         artifact: bytes, artifactFilename, videoFilename: deps.videoFilename,
-        langTag: 'zh-Hans', outDir: attemptDir,
+        langTag: stagingLangTag(deps.targetLanguage ?? 'zh'), outDir: attemptDir,
       })
       const signals = inspectSubtitle(written.path)
       deps.stagedFiles.set(stagedFileId, written.path)
@@ -91,7 +105,10 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
       'a person who opened the file, that this candidate really is the subtitle for this exact video.',
     inputSchema: z.object({
       stagedFileId: z.string(),
-      langTag: z.enum(['zh-Hans', 'zh-Hant']),
+      // A2: any non-empty language tag, not just zh-Hans/zh-Hant — the agent picks this from
+      // task.targetLanguage (refined to Hans/Hant via subtitleInspect's detectedScript for
+      // Chinese targets), not from a fixed two-value domain.
+      langTag: z.string().min(1),
     }),
     execute: async ({ stagedFileId, langTag }) => {
       const stagedPath = deps.stagedFiles.get(stagedFileId)

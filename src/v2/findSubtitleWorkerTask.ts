@@ -177,9 +177,12 @@ export async function runFindSubtitleWorkerTask(
         decision.candidateProvider && decision.candidateProviderId
           ? candidateKey({ provider: decision.candidateProvider, providerId: decision.candidateProviderId })
           : undefined
+      // A2: fall back to the task's own target language, not a hardcoded 'zh-Hans' — the worker
+      // should always set installedLanguage on an 'installed' decision, this is only a defensive
+      // last resort, and a Chinese-only default would misrecord a non-Chinese task's language.
       deps.lib.markCovered(
         targetItemId, decision.installedPath, 'scout-download', providerRef,
-        decision.installedLanguage ?? 'zh-Hans',
+        decision.installedLanguage ?? task.targetLanguage,
       )
       jobs.completeDone(job.id, now())
     } else if (decision.decision === 'retry_later') {

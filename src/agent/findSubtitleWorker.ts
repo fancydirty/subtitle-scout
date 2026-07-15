@@ -54,7 +54,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       get_candidate: makeGetCandidateTool(store),
       download_candidate: makeDownloadCandidateTool({
         adapters: deps.adapters, stagingDir, stagedFiles,
-        videoFilename: task.videoFilename, fetchImpl: deps.fetchImpl,
+        videoFilename: task.videoFilename, targetLanguage: task.targetLanguage, fetchImpl: deps.fetchImpl,
       }),
       install_subtitle: makeInstallSubtitleTool({
         stagedFiles, outDir, mediaRoot: task.mediaRoot, videoFilename: task.videoFilename,
