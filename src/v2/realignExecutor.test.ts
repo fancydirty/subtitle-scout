@@ -479,7 +479,6 @@ function mkJf(opts: {
       { id: 'lib-1', name: 'TV', locations: opts.locations, enableRealtimeMonitor: opts.realtime ?? false },
     ]),
     refreshLibrary: vi.fn(async () => {}),
-    deleteItem: vi.fn(async () => {}),
   }
 }
 

@@ -32,6 +32,7 @@ import { executeJob } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
 import { executeRealign, makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
+import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
 import { replayRollback } from '../files/realignManifest.js'
 import { runRealignWorkerTask } from '../v2/realignWorkerTask.js'
 import { runFindSubtitleWorkerTask, type FindSubtitleWorkerTaskDeps } from '../v2/findSubtitleWorkerTask.js'
@@ -161,7 +162,10 @@ async function cmdReconcileAll() {
 }
 
 async function cmdWatch() {
-  const { cacheRoot, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb, reasoningModel } = await assemble()
+  // 去 Jellyfin 化 P5/Task 7：realign port 已切到库原生实现（makeRealignLibraryPort，下方），
+  // 不再需要 assemble() 的 jf/jellyfinClient 两个句柄——assemble() 本身的构造/requireEnv 不动
+  // （JELLYFIN_URL/JELLYFIN_API_KEY 退役是 P7 的范围，见 design §P7）。
+  const { cacheRoot, mappings, tmdb, reasoningModel } = await assemble()
   // 去 Jellyfin 化 T4：TMDB_API_KEY 从"realign/orchestrate 才需要，缺了静默降级"升级成 watch
   // 的硬性前置——v2/ingest.ts 的 makeIngestPass 不再有 Jellyfin fallback 世界，识别文件、
   // 拉 origin_lang/poster 全靠真实 TmdbClient。requireEnv-style：缺 key 直接报错退出（exit 2），
@@ -197,6 +201,12 @@ async function cmdWatch() {
   // exact mapping (locked by targetLanguages.test.ts).
   const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env)
 
+  // 去 Jellyfin 化 T4/T7：ingest 心跳依赖——v2/ingest.ts 的 makeIngestPass 顶替旧的机械 scan()
+  // + B2 self-scan refresh-bridge 两条独立分支。提前到这里构造（原先在 ingestTrigger 组装处，
+  // 见下方沿用注释）：realign port（下方 realignDeps）的 refreshLibrary 也要复用同一个 ingest
+  // pass 闭包——"整理搬完之后让库看见新结构"就是再踢一次这同一份摄取，不重新拼一份。
+  const ingestPass = buildIngestPass({ roots, lib, tmdb, targetLanguages, originSkipLanguages, log })
+
   // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
   // 逐 job Journal（老管线的 journalStore/withJournal 已随 Wave 2D 一并删除），api_call 量大信号
   // 低，只把 error/notice 落一行 log。
@@ -230,17 +240,14 @@ async function cmdWatch() {
     // single-valued; multi-language per-item tasking is future work.
     targetLanguage: targetLanguages[0],
   })
+  // 去 Jellyfin 化 P5/Task 7：port 的实现从 JellyfinClient 适配换成库原生实现
+  // （src/v2/realignLibraryPort.ts）——realignExecutor.ts 的 5 重安全层（restructuring/
+  // manifest/reveal/rollback + GAP-A 崩溃恢复纪律）零改动，只换这个 port 对象的构造方式。
+  // runIngest 复用上方已构造的 ingestPass 闭包（refreshLibrary 的库原生等价操作）。
   const realignDeps: RealignExecutorDeps | undefined = tmdb
     ? {
         lib, jobs,
-        jf: {
-          getItem: (id) => jf.getItem(id),
-          getItemsPage: (start, limit) => jf.getItemsPage(start, limit),
-          getScheduledTasks: () => jellyfinClientForRealign.getScheduledTasks(),
-          getVirtualFolders: () => jellyfinClientForRealign.getVirtualFolders(),
-          refreshLibrary: (id) => jellyfinClientForRealign.refreshLibrary(id),
-          deleteItem: (id) => jellyfinClientForRealign.deleteItem(id),
-        },
+        jf: makeRealignLibraryPort({ lib, roots, runIngest: ingestPass }),
         tmdb: { getSeasonTable: (id) => tmdb.getSeasonTable(id) },
         fetchAnimeLists: () => fetchAnimeListsTable(),
         runEpisode: realignRunEpisode,
@@ -250,7 +257,9 @@ async function cmdWatch() {
         getSize: (p) => { try { return statSync(p).size } catch { return null } },
         // CRIT#1：与 findSubtitleWorkerTaskDeps 的 mediaRoots 同源白名单（旧 makeRunEpisode
         // 的 opts.mediaRoots 已随退役T7/Wave 2A 删除，同源不变量转移到这里描述）；IMP#8：
-        // 镜像/库/验收路径全是 Jellyfin 视角，任何 fs 操作前都要经 MEDIA_PATH_MAPPINGS 映射到本地。
+        // 镜像/库/验收路径去 Jellyfin 化后已是本地路径（makeRealignLibraryPort 直接产出本地
+        // 路径），mappings 在库原生世界对这些路径退化为 identity（配置的 from 侧从不匹配
+        // 已经是本地形态的路径），仍原样传入以防将来有其余映射用途。
         mediaRoots: roots,
         mappings,
       }
@@ -284,11 +293,10 @@ async function cmdWatch() {
   // Jellyfin 化 P4 起不再需要 jf——tmdbId 直接从 seriesId 自身解析（src/v2/ownIds.ts）。
   const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, model: reasoningModel, now: () => Date.now() } : undefined
 
-  // 去 Jellyfin 化 T4：ingest 心跳依赖——v2/ingest.ts 的 makeIngestPass 顶替旧的机械 scan()
-  // + B2 self-scan refresh-bridge 两条独立分支。tmdb 在函数顶部已经 requireEnv 过，这里
-  // 不再需要"缺 key 就跳过"的降级三元分支。makeIngestTrigger（src/daemon/ingestTrigger.ts）
-  // 包一层：pass 本身报告 changed 时才 upsert 一个 orchestrate worker_task（identity 固定去重）。
-  const ingestPass = buildIngestPass({ roots, lib, tmdb, targetLanguages, originSkipLanguages, log })
+  // ingestPass 已在函数上方构造（realignDeps 的 refreshLibrary 也要复用它）。
+  // makeIngestTrigger（src/daemon/ingestTrigger.ts）包一层：pass 本身报告 changed 时才 upsert
+  // 一个 orchestrate worker_task（identity 固定去重）。tmdb 在函数顶部已经 requireEnv 过，
+  // 这里不再需要"缺 key 就跳过"的降级三元分支。
   const ingestTrigger = makeIngestTrigger({ ingest: ingestPass, jobs, now: () => Date.now(), log })
 
   // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask

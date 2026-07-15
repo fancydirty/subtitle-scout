@@ -345,7 +345,6 @@ export interface RealignJellyfinPort {
   getScheduledTasks(): Promise<ScheduledTaskLike[]>
   getVirtualFolders(): Promise<{ id: string; name: string; locations: string[]; enableRealtimeMonitor: boolean }[]>
   refreshLibrary(libraryId: string): Promise<void>
-  deleteItem(itemId: string): Promise<void>
 }
 
 export interface RealignExecutorDeps {
