@@ -159,3 +159,52 @@ describe('"no providers configured" message mentions all three provider gates', 
     await expect(runSearch({ queries: ['q'], deep: false }, [], () => {})).rejects.toThrow(/ZIMUKU_ENABLED/)
   })
 })
+
+describe('runSearch: A4 default-language plumbing for enabled() gating (a language-gated adapter — e.g. assrt — must not silently drop off a search that never specified languages)', () => {
+  // Mirrors the real assrtAdapter.ts gate (China-only source): enabled iff some requested
+  // language looks Chinese. This adapter double checks BOTH sides of the trace: what `enabled`
+  // actually saw AND whether it ended up included/excluded from the search.
+  function languageGatedAdapter(name: string, seenArgsLog: FetchArgs[]): FetchAdapter {
+    return {
+      name,
+      enabled: (a) => { seenArgsLog.push(a); return (a.languages ?? []).some(l => /^zh/i.test(l)) },
+      search: async () => [cand('assrt', `${name}-1`)],
+      resolve: async () => ({ url: `https://dl/${name}` }),
+    }
+  }
+
+  it('args.languages omitted entirely (no explicit target — the un-annotated old fetch path / model-omitted search_source call) → still resolves to a Chinese default, assrt-like adapter stays enabled', async () => {
+    const seen: FetchArgs[] = []
+    const adapter = languageGatedAdapter('assrt', seen)
+    const r = await runSearch({ queries: ['q1'], deep: false }, [adapter], () => {})
+    expect(r.map(c => c.providerId)).toEqual(['assrt-1'])
+    expect(seen[0]?.languages).toEqual(['zh'])
+  })
+
+  it('args.languages explicitly set to a non-Chinese target (e.g. [\'en\']) → NOT overridden, adapter correctly excluded', async () => {
+    const seen: FetchArgs[] = []
+    const adapter = languageGatedAdapter('assrt', seen)
+    await expect(runSearch({ queries: ['q1'], languages: ['en'], deep: false }, [adapter], () => {}))
+      .rejects.toThrow(/no providers configured/)
+    expect(seen[0]?.languages).toEqual(['en'])
+  })
+
+  it('args.languages explicitly set to a Chinese target → passed through unchanged (not clobbered by the default)', async () => {
+    const seen: FetchArgs[] = []
+    const adapter = languageGatedAdapter('assrt', seen)
+    await runSearch({ queries: ['q1'], languages: ['zh-cn'], deep: false }, [adapter], () => {})
+    expect(seen[0]?.languages).toEqual(['zh-cn'])
+  })
+
+  it('the default only affects the enabled() gate check — the args an adapter\'s own search() receives are untouched (an adapter\'s own internal language default, e.g. OpenSubtitles/Zimuku\'s zh-cn/zh-tw, must not be double-defaulted)', async () => {
+    let searchSawLanguages: string[] | undefined = ['sentinel-not-overwritten']
+    const adapter: FetchAdapter = {
+      name: 'os',
+      enabled: () => true,
+      search: async (a) => { searchSawLanguages = a.languages; return [cand('assrt', 'os-1')] },
+      resolve: async () => ({ url: 'https://dl/os' }),
+    }
+    await runSearch({ queries: ['q1'], deep: false }, [adapter], () => {})
+    expect(searchSawLanguages).toBeUndefined()
+  })
+})

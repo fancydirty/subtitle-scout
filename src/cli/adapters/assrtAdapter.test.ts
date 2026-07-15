@@ -24,6 +24,30 @@ function fakeClient(overrides: Partial<FakeAssrtClient> = {}): FakeAssrtClient {
 
 const args = (over: Partial<FetchArgs> = {}): FetchArgs => ({ queries: [], deep: false, ...over })
 
+describe('makeAssrtAdapter: enabled (A4 provider language gating — assrt is a China-only subtitle source)', () => {
+  const adapter = makeAssrtAdapter(fakeClient())
+
+  it('languages: [\'en\'] → disabled (assrt has nothing to offer a non-Chinese target)', () => {
+    expect(adapter.enabled(args({ languages: ['en'] }), process.env)).toBe(false)
+  })
+
+  it('languages: [\'zh-cn\'] → enabled', () => {
+    expect(adapter.enabled(args({ languages: ['zh-cn'] }), process.env)).toBe(true)
+  })
+
+  it('languages: [\'zh\'] → enabled', () => {
+    expect(adapter.enabled(args({ languages: ['zh'] }), process.env)).toBe(true)
+  })
+
+  it('languages containing zh alongside other targets → enabled (any match is enough)', () => {
+    expect(adapter.enabled(args({ languages: ['en', 'ja', 'zh'] }), process.env)).toBe(true)
+  })
+
+  it('languages: [] (explicitly empty, no targets at all) → disabled', () => {
+    expect(adapter.enabled(args({ languages: [] }), process.env)).toBe(false)
+  })
+})
+
 describe('makeAssrtAdapter: search', () => {
   it('①两条 query → 2 次 search 调用，结果按 id 去重', async () => {
     const search = vi.fn(async (q: string) =>

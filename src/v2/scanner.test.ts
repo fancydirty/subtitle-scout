@@ -46,7 +46,7 @@ describe('classifyItem', () => {
 
   it('Chinese origin → ignored', () => {
     const item = movieItem({ ProductionLocations: ['China', 'Hong Kong'] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists: () => false, mappings })
     expect(status).toBe('ignored')
   })
 
@@ -57,7 +57,7 @@ describe('classifyItem', () => {
         { Type: 'Subtitle', Language: 'zh-Hans', IsExternal: false, Codec: 'ass' },
       ] as any,
     })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists: () => false, mappings })
     expect(status).toBe('embedded')
   })
 
@@ -67,7 +67,7 @@ describe('classifyItem', () => {
         { Type: 'Subtitle', Language: 'chi', Codec: 'subrip' },
       ] as any,
     })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists: () => false, mappings })
     expect(status).toBe('embedded')
   })
 
@@ -81,7 +81,7 @@ describe('classifyItem', () => {
       ] as any,
     })
     // 不依赖 fileExists——MediaStreams 里的 IsExternal=true 本身就是外挂证据
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists: () => false, mappings })
     expect(status).toBe('covered')
   })
 
@@ -92,7 +92,7 @@ describe('classifyItem', () => {
         { Type: 'Subtitle', Language: 'zh-Hant', IsExternal: true, Codec: 'subrip' },
       ] as any,
     })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists: () => false, mappings })
     expect(status).toBe('covered')
   })
 
@@ -102,27 +102,27 @@ describe('classifyItem', () => {
         { Type: 'Subtitle', Language: 'zh-Hans', IsExternal: true, Codec: 'PGSSUB' },
       ] as any,
     })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists: () => false, mappings })
     expect(status).toBe('missing')
   })
 
   it('external sidecar on disk → covered', () => {
     const item = movieItem({ Path: '/media/movies/Matrix/movie.mkv' })
     const fileExists = vi.fn((p: string) => p === '/mnt/media/movies/Matrix/movie.zh-Hans.srt')
-    const status = classifyItem(item, { fileExists, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists, mappings })
     expect(status).toBe('covered')
     expect(fileExists).toHaveBeenCalled()
   })
 
   it('no Chinese subtitle → missing', () => {
     const item = movieItem()
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true })
+    const status = classifyItem(item, { fileExists: () => false, mappings })
     expect(status).toBe('missing')
   })
 
-  it('skipChineseOrigin=false allows Chinese origin through', () => {
+  it('empty targetLanguages (A4: the skipChineseOrigin=false equivalent) allows Chinese origin through', () => {
     const item = movieItem({ ProductionLocations: ['China'] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: false })
+    const status = classifyItem(item, { fileExists: () => false, mappings, targetLanguages: [] })
     expect(status).toBe('missing')
   })
 })
@@ -132,19 +132,19 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
 
   it('zh origin → ignored before any other rule', () => {
     const item = movieItem({ ProductionLocations: [] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: 'zh' })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: 'zh' })
     expect(status).toBe('ignored')
   })
 
   it('ja origin → NOT ignored (falls through to missing)', () => {
     const item = movieItem({ ProductionLocations: [] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: 'ja' })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: 'ja' })
     expect(status).toBe('missing')
   })
 
   it('fallback: null origin + Chinese ProductionLocations (movie) → ignored', () => {
     const item = movieItem({ ProductionLocations: ['China'] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: null })
     expect(status).toBe('ignored')
   })
 
@@ -154,13 +154,13 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
     // ProductionLocations=['United States']，实际编码了 bug 本身：非国产地区却因
     // 中文标题被 ignored；已改为显式无信号场景，真正的权威信号场景见下一条用例。）
     const item = epItem('e1', 1, 1, { SeriesName: '三体', ProductionLocations: [] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: null })
     expect(status).toBe('ignored')
   })
 
   it('fallback: null origin + kana series title → NOT ignored', () => {
     const item = epItem('e1', 1, 1, { SeriesName: '進撃の巨人' })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: null })
     expect(status).toBe('missing')
   })
 
@@ -171,14 +171,71 @@ describe('classifyItem: TMDB origin gate (rule 0/1/1b)', () => {
       SeriesName: '生活大爆炸',
       ProductionLocations: ['United States'],
     })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: true, originLang: null })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: null })
     expect(status).toBe('missing')
   })
 
-  it('skipChineseOrigin=false disables ALL origin skipping (zh still processed)', () => {
+  it('empty targetLanguages (A4: the skipChineseOrigin=false equivalent) disables ALL origin skipping (zh still processed)', () => {
     const item = movieItem({ ProductionLocations: [] })
-    const status = classifyItem(item, { fileExists: () => false, mappings, skipChineseOrigin: false, originLang: 'zh' })
+    const status = classifyItem(item, { fileExists: () => false, mappings, targetLanguages: [], originLang: 'zh' })
     expect(status).toBe('missing')
+  })
+})
+
+describe('classifyItem: A4 generalized targetLanguages (item-level "targetLanguages.includes(langOf(originLang))" gate)', () => {
+  const mappings = [{ from: '/media', to: '/mnt/media' }]
+
+  it('cdrama item (original_language=zh) + targetLanguages containing zh → ignored', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: 'zh', targetLanguages: ['zh'] })
+    expect(status).toBe('ignored')
+  })
+
+  it('same cdrama item + targetLanguages NOT containing zh → NOT ignored (an English-subtitle hunter cares whether the origin IS English, not Chinese)', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: 'zh', targetLanguages: ['en'] })
+    expect(status).toBe('missing')
+  })
+
+  it('English-origin item + targetLanguages=[\'en\'] → ignored (the gate generalizes past zh, not just "not zh")', () => {
+    const item = movieItem({ ProductionLocations: ['United States'] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: 'en', targetLanguages: ['en'] })
+    expect(status).toBe('ignored')
+  })
+
+  it('multi-target: origin matches one of several targetLanguages → ignored', () => {
+    const item = movieItem({ ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: 'ja', targetLanguages: ['zh', 'ja'] })
+    expect(status).toBe('ignored')
+  })
+
+  it('Chinese-only heuristic fallbacks (ProductionLocations) do NOT fire when targetLanguages lacks zh — no TMDB signal, Chinese ProductionLocations, target is English-only → NOT ignored', () => {
+    const item = movieItem({ ProductionLocations: ['China'] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: null, targetLanguages: ['en'] })
+    expect(status).toBe('missing')
+  })
+
+  it('Chinese-only heuristic fallbacks (Han-script title) do NOT fire when targetLanguages lacks zh — Chinese-looking title, no TMDB originLang, target is English-only → NOT ignored', () => {
+    const item = epItem('e1', 1, 1, { SeriesName: '三体', ProductionLocations: [] })
+    const status = classifyItem(item, { fileExists: () => false, mappings, originLang: null, targetLanguages: ['en'] })
+    expect(status).toBe('missing')
+  })
+
+  it('rule 2 (embedded Chinese subtitle detection) does NOT fire when targetLanguages lacks zh — a Chinese embedded track must not "cover" an unrelated English target', () => {
+    const item = movieItem({
+      MediaStreams: [
+        { Type: 'Subtitle', Language: 'zh-Hans', IsExternal: false, Codec: 'ass' },
+      ] as any,
+    })
+    const status = classifyItem(item, { fileExists: () => false, mappings, targetLanguages: ['en'] })
+    expect(status).toBe('missing')
+  })
+
+  it('rule 3 (disk sidecar) still runs for non-zh targets using their own tag set', () => {
+    const item = movieItem({ Path: '/media/movies/Matrix/movie.mkv' })
+    const fileExists = vi.fn((p: string) => p === '/mnt/media/movies/Matrix/movie.en.srt')
+    const status = classifyItem(item, { fileExists, mappings, targetLanguages: ['en'] })
+    expect(status).toBe('covered')
   })
 })
 
@@ -202,7 +259,6 @@ describe('scanLibrary', () => {
       pageSize: 2,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
     })
     expect(lib.db.prepare('select count(*) as c from episodes').get()).toMatchObject({ c: 2 })
     expect(lib.db.prepare('select count(*) as c from movies').get()).toMatchObject({ c: 1 })
@@ -220,7 +276,6 @@ describe('scanLibrary', () => {
       pageSize: 10,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
     })
     const snap1 = {
       episodes: lib.db.prepare('select id, sub_status from episodes order by id').all(),
@@ -235,7 +290,6 @@ describe('scanLibrary', () => {
       pageSize: 10,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
     })
     const snap2 = {
       episodes: lib.db.prepare('select id, sub_status from episodes order by id').all(),
@@ -266,7 +320,6 @@ describe('scanLibrary', () => {
       pageSize: 10,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
     })
     // Should remain unavailable, not overwritten by missing
     expect(lib.getEpisode('e1')!.sub_status).toBe('unavailable')
@@ -285,7 +338,6 @@ describe('scanLibrary', () => {
       pageSize: 10,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
     })
     expect((lib.db.prepare('select poster_tag from series where id=?').get('s1') as any).poster_tag).toBe('series-ptag')
     expect(lib.getMovie('m1')!.poster_tag).toBe('movie-ptag')
@@ -312,7 +364,6 @@ describe('scanLibrary', () => {
       pageSize: 10,
       fileExists: (p) => p.includes('ep1') && p.includes('.zh-Hans.srt'),
       mappings,
-      skipChineseOrigin: true,
     })
     // Should be overwritten to covered
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
@@ -328,7 +379,6 @@ describe('scanLibrary', () => {
       pageSize: 10,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
     })
     expect(lib.db.prepare('select count(*) as c from episodes').get()).toMatchObject({ c: 0 })
     expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('Episode without SeriesId'))
@@ -344,7 +394,6 @@ describe('scanLibrary', () => {
       pageSize: 10,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
     })
     // series 行必须存在（name 用 SeriesId 兜底），episode 正常入库
     expect(lib.db.prepare('select id, name from series where id=?').get('s1')).toMatchObject({ id: 's1', name: 's1' })
@@ -365,7 +414,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(lib.getSeriesOriginLang('s9')).toBe('zh')
@@ -394,7 +442,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(calls).toBe(1) // resolved-to-unknown once for the series, not once per episode
@@ -412,7 +459,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(calls).toBe(1)
@@ -426,7 +472,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(calls).toBe(1) // still 1 — resolver was NOT called again on the second scan
@@ -440,7 +485,6 @@ describe('scanLibrary', () => {
     const status = classifyItem(item, {
       fileExists: () => false,
       mappings: [{ from: '/media', to: '/mnt/media' }],
-      skipChineseOrigin: true,
       originLang: null, // scanner.ts must pass null (not the raw 'unknown' sentinel) here
     })
     expect(status).toBe('ignored')
@@ -466,7 +510,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(lib.getSeriesOriginLang('s9')).toBe('unknown')
@@ -481,7 +524,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
@@ -499,7 +541,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(calls).toBe(1)
@@ -512,7 +553,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(calls).toBe(1) // still 1 — resolver was NOT called again on the second scan
@@ -528,7 +568,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver,
     })
     expect(lib.getMovieOriginLang('m1')).toBe('zh')
@@ -552,7 +591,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(calls).toBe(1)
@@ -569,7 +607,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: recoveredResolver,
     })
     expect(calls).toBe(2) // re-resolved (a cached sentinel would have short-circuited this)
@@ -590,7 +627,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(calls).toBe(1)
@@ -606,7 +642,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: recoveredResolver,
     })
     expect(calls).toBe(2)
@@ -632,7 +667,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(lib.getEpisode('e1')!.sub_status).toBe('missing') // NOT ignored
@@ -657,7 +691,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
@@ -686,7 +719,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(calls).toBe(1) // failure memoized for the scan
@@ -706,7 +738,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: throwingResolver,
     })
     expect(calls).toBe(0) // cache hit — resolver never consulted despite being wired to throw
@@ -725,7 +756,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: throwingResolver,
     })
     expect(calls).toBe(0) // cache hit (sentinel counts as cached) — resolver never consulted
@@ -748,7 +778,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     const originWarnings = consoleWarn.mock.calls.filter(c => String(c[0]).includes('s9'))
@@ -766,7 +795,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('m9'))
@@ -796,7 +824,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(calls).toBe(3) // breaker opens on the 3rd consecutive failure; m4/m5 never pay the resolver's timeout
@@ -817,7 +844,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: recoveredResolver,
     })
     expect(calls).toBe(2) // both resolved fresh — breaker did not carry over from the previous scan
@@ -843,7 +869,6 @@ describe('scanLibrary', () => {
       pageSize: 50,
       fileExists: () => false,
       mappings,
-      skipChineseOrigin: true,
       resolver: failingResolver,
     })
     expect(calls).toBe(3) // breaker opened on the 3rd series failure; the movie afterward never calls resolver
@@ -881,7 +906,6 @@ describe('scanLibrary', () => {
         pageSize: 50,
         fileExists: () => false,
         mappings,
-        skipChineseOrigin: true,
         resolver: resolver1,
       })
       expect(lib.getSeriesOriginLang('s9')).toBeNull() // nothing cached — must retry, not sentinel
@@ -899,7 +923,6 @@ describe('scanLibrary', () => {
         pageSize: 50,
         fileExists: () => false,
         mappings,
-        skipChineseOrigin: true,
         resolver: resolver2,
       })
       expect(jfGetItem2).toHaveBeenCalled() // re-resolved — not short-circuited by a stale outage state
@@ -918,7 +941,6 @@ describe('scanLibrary', () => {
         pageSize: 50,
         fileExists: () => false,
         mappings,
-        skipChineseOrigin: true,
         resolver,
       })
       expect(lib.getSeriesOriginLang('s9')).toBe('unknown') // genuine no-data → sentinel cached, won't retry forever
@@ -945,7 +967,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === sidecarPath,
         mappings,
-        skipChineseOrigin: true,
       })
       expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
       const rows = subtitleRows('e1')
@@ -965,12 +986,12 @@ describe('scanLibrary', () => {
 
       const pages1 = [[epItem('e1', 1, 1)], []]
       const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
-      await scanLibrary(jf1, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      await scanLibrary(jf1, lib, { pageSize: 10, fileExists, mappings })
       expect(subtitleRows('e1')).toHaveLength(1)
 
       const pages2 = [[epItem('e1', 1, 1)], []]
       const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
-      await scanLibrary(jf2, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      await scanLibrary(jf2, lib, { pageSize: 10, fileExists, mappings })
       expect(subtitleRows('e1')).toHaveLength(1) // still just the one row, not duplicated
     })
 
@@ -986,7 +1007,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: () => false, // no disk file — coverage comes only from MediaStreams
         mappings,
-        skipChineseOrigin: true,
       })
       expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
       expect(subtitleRows('e1')).toHaveLength(0)
@@ -1013,7 +1033,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === sidecarPath,
         mappings,
-        skipChineseOrigin: true,
       })
       const rows = subtitleRows('e1')
       expect(rows).toHaveLength(1)
@@ -1040,7 +1059,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === diskSidecarPath,
         mappings,
-        skipChineseOrigin: true,
       })
       const rows = subtitleRows('e1')
       expect(rows).toHaveLength(1) // guard must block adoption despite the path mismatch
@@ -1065,7 +1083,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === diskSidecarPath,
         mappings,
-        skipChineseOrigin: true,
       })
       const rows = subtitleRows('m1')
       expect(rows).toHaveLength(1) // guard must block adoption despite the path mismatch
@@ -1087,7 +1104,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === sidecarPath,
         mappings,
-        skipChineseOrigin: true,
       })
       expect(lib.getEpisode('e1')!.sub_status).toBe('ignored')
       expect(subtitleRows('e1')).toHaveLength(0)
@@ -1101,7 +1117,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === sidecarPath,
         mappings,
-        skipChineseOrigin: true,
       })
       const rows = subtitleRows('e1')
       expect(rows).toHaveLength(1)
@@ -1118,7 +1133,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === chtSidecar,
         mappings,
-        skipChineseOrigin: true,
       })
       expect(subtitleRows('e1')[0]).toMatchObject({ path: chtSidecar, language: 'zh-Hant' })
 
@@ -1129,7 +1143,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === chsSidecar,
         mappings,
-        skipChineseOrigin: true,
       })
       expect(subtitleRows('e2')[0]).toMatchObject({ path: chsSidecar, language: 'zh-Hans' })
     })
@@ -1142,7 +1155,6 @@ describe('scanLibrary', () => {
         pageSize: 10,
         fileExists: (p) => p === sidecarPath,
         mappings,
-        skipChineseOrigin: true,
       })
       expect(lib.getMovie('m1')!.sub_status).toBe('covered')
       const rows = subtitleRows('m1')
@@ -1162,12 +1174,12 @@ describe('scanLibrary', () => {
 
       const pages1 = [[movieItem({ Id: 'm1' })], []]
       const jf1: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages1.shift() ?? []) }
-      await scanLibrary(jf1, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      await scanLibrary(jf1, lib, { pageSize: 10, fileExists, mappings })
       expect(subtitleRows('m1')).toHaveLength(1)
 
       const pages2 = [[movieItem({ Id: 'm1' })], []]
       const jf2: Pick<PlayerServer, 'getItemsPage'> = { getItemsPage: vi.fn(async () => pages2.shift() ?? []) }
-      await scanLibrary(jf2, lib, { pageSize: 10, fileExists, mappings, skipChineseOrigin: true })
+      await scanLibrary(jf2, lib, { pageSize: 10, fileExists, mappings })
       expect(subtitleRows('m1')).toHaveLength(1)
     })
   })
@@ -1188,7 +1200,6 @@ describe('scanLibrary: targetLanguages (on-disk sidecar detection generalization
       pageSize: 10,
       fileExists: (p) => p === sidecarPath,
       mappings,
-      skipChineseOrigin: true,
       targetLanguages: ['en'],
     })
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')
@@ -1205,7 +1216,6 @@ describe('scanLibrary: targetLanguages (on-disk sidecar detection generalization
       pageSize: 10,
       fileExists: (p) => p === sidecarPath,
       mappings,
-      skipChineseOrigin: true,
       targetLanguages: ['zh', 'en'],
     })
     expect(lib.getMovie('m1')!.sub_status).toBe('covered')
@@ -1220,7 +1230,6 @@ describe('scanLibrary: targetLanguages (on-disk sidecar detection generalization
       pageSize: 10,
       fileExists: (p) => p === sidecarPath,
       mappings,
-      skipChineseOrigin: true,
       targetLanguages: ['en'],
     })
     expect(lib.getEpisode('e1')!.sub_status).toBe('missing')
@@ -1234,7 +1243,6 @@ describe('scanLibrary: targetLanguages (on-disk sidecar detection generalization
       pageSize: 10,
       fileExists: (p) => p === sidecarPath,
       mappings,
-      skipChineseOrigin: true,
       // targetLanguages omitted — must default to ['zh']
     })
     expect(lib.getEpisode('e1')!.sub_status).toBe('covered')

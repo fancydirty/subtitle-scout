@@ -42,7 +42,7 @@ describe('runReconcileAll', () => {
     }
 
     const decision = await runReconcileAll({
-      jf, lib, jobs, model, tmdb: fakeTmdb, mappings: [], skipChineseOrigin: true,
+      jf, lib, jobs, model, tmdb: fakeTmdb, mappings: [],
       now: () => 1000, orchestratorJobId: null, stepCap: 10,
     })
 
@@ -61,7 +61,7 @@ describe('runReconcileAll', () => {
     const jf = { getItemsPage: async () => [] as never, getItem: async () => null as never }
 
     await expect(runReconcileAll({
-      jf, lib, jobs, model, tmdb: fakeTmdb, mappings: [], skipChineseOrigin: true,
+      jf, lib, jobs, model, tmdb: fakeTmdb, mappings: [],
       now: () => 1000, orchestratorJobId: 999999, stepCap: 10,
     })).rejects.toThrow(/orchestratorJobId=999999 does not reference an existing jobs row/)
   })

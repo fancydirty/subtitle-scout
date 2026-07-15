@@ -1,7 +1,7 @@
 import { dirname, basename } from 'node:path'
-import { isChineseOrigin, isChineseLang, looksChineseTitle, usableChineseSubtitleStreams } from '../daemon/triggers.js'
+import { isChineseOrigin, looksChineseTitle, usableChineseSubtitleStreams } from '../daemon/triggers.js'
 import { mapPath, type PathMapping } from '../core/mediaContext.js'
-import { tagsForLanguage } from '../agent/languages.js'
+import { tagsForLanguage, langOf } from '../agent/languages.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { LibraryRepo, SubStatus } from './libraryRepo.js'
@@ -84,7 +84,6 @@ export function classifyItemDetailed(
   deps: {
     fileExists: (path: string) => boolean
     mappings: PathMapping[]
-    skipChineseOrigin: boolean
     originLang?: string | null
     /**
      * 本轮 origin resolver 请求瞬时失败（TMDB 故障，非"查无数据"）。
@@ -94,57 +93,76 @@ export function classifyItemDetailed(
      */
     originResolutionFailed?: boolean
     /**
-     * rule 3（磁盘 sidecar 探测）用：目标字幕语言集合（BCP-47 主语言码），决定哪些 tag
-     * 算"覆盖"。未传时默认 `['zh']`，与泛化前行为逐位一致（向后兼容）。多语言时按并集探测
-     * （tagsForLanguage 逐语言展开后 flatMap）。
+     * A4 unification: ONE target-language set drives BOTH rule 0 的权威跳过门
+     * （`targetLanguages.includes(langOf(originLang))` → ignored）AND rule 3 的磁盘 sidecar
+     * tag 探测（tagsForLanguage 逐语言展开后 flatMap）——之前 A3 只喂了 rule 3，rule 0 单独
+     * 靠 skipChineseOrigin 布尔量，两个选项管着同一个"我们关心哪些语言"的问题，现在合一。
+     * 未传时默认 `['zh']`，与泛化前（skipChineseOrigin:true 是唯一出货配置）行为逐位一致。
      */
     targetLanguages?: string[]
   }
 ): ClassifyResult {
-  // 0. 国产（TMDB original_language=zh）→ ignored（先于一切，权威信号）
-  if (deps.skipChineseOrigin && isChineseLang(deps.originLang)) {
-    return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
-  }
-  // 1. 兜底：无 TMDB 信号（originLang 未解析）时，用 ProductionLocations 猜国产
-  if (deps.skipChineseOrigin && deps.originLang == null && isChineseOrigin(item)) {
-    return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
-  }
-  // 1b. 兜底：无 TMDB 信号时，用剧集标题字符启发式（汉字且无假名无谚文，排除日番/韩剧）。
-  //     但若条目自带 ProductionLocations（权威信号）且已判定非国产（走到这里说明 rule 1
-  //     未命中），该权威证据必须否决这条粗糙的标题启发式——不能让"生活大爆炸"这类中文库名
-  //     的西方剧被误伤 ignored（用户永远收不到该剧的字幕，是本 gate 最差的失败模式）。
-  //     只有条目完全没有 ProductionLocations（无权威信号可用）时才允许标题启发式兜底。
-  //     resolver 瞬时失败（originResolutionFailed）同样压制本条：那不是"无数据"，
-  //     是"数据暂时拿不到"，下轮 scan 会重试权威信号，等它。
-  const hasProductionLocationSignal = (item.ProductionLocations ?? []).length > 0
-  if (
-    deps.skipChineseOrigin &&
-    deps.originLang == null &&
-    !deps.originResolutionFailed &&
-    !hasProductionLocationSignal &&
-    looksChineseTitle(item.SeriesName ?? item.OriginalTitle)
-  ) {
+  const targetLanguages = deps.targetLanguages ?? ['zh']
+
+  // 0. 权威信号（TMDB original_language）→ ignored，先于一切：条目原始音轨语言本身就在我们
+  //    的目标字幕语言集合里，就不用为它找字幕（中文观众不需要国产剧的中文字幕；泛化后同理
+  //    ——英文字幕猎人不需要英语原声剧的英文字幕）。langOf() 把 originLang 折算到与
+  //    targetLanguages 同一套主语言码空间（agent/languages.ts）。原值缺失（null/未解析）时
+  //    不参与判断，交给下面 rule 1/1b 的中文兜底 或 rule 3/4 的正常流程。
+  if (deps.originLang != null && targetLanguages.includes(langOf(deps.originLang))) {
     return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
   }
 
-  // 2. 中字轨按 IsExternal 分流：Jellyfin FullRefresh 会把盘上的外挂字幕收进
-  //    MediaStreams（IsExternal=true）——那是 sidecar（scout 战果或用户手动放置），
-  //    归 covered；只有 IsExternal 为 falsy 的才是真内嵌。两者都有时 covered 优先
-  //    （外挂展示价值更高）。diskSidecarPath 留 null——这条命中的是 Jellyfin 已经收录的
-  //    证据，不是 scanner 自己直接摸到磁盘发现的新文件（记账口径见 ClassifyResult 注释）。
-  const zhTracks = usableChineseSubtitleStreams(item, true)
-  if (zhTracks.some(s => s.IsExternal === true)) {
-    return { status: 'covered', diskSidecarPath: null, diskSidecarLanguage: null }
+  // 1/1b. 中文专属兜底启发式——刻意不泛化到其它语言（不发明"像法语标题""像韩语标题"这类
+  //       per-language 启发式，那是错误的设计气味：ProductionLocations/标题这类信号的可靠度
+  //       和可得性因语言而异，中文有汉字这个廉价高信度信号，其它语言没有对等物）。只有 'zh'
+  //       在目标语言集合里时才跑这两条；其它目标语言完全依赖上面 rule 0 的权威 TMDB 信号——
+  //       TMDB 数据缺失时宁可放行（漏判成本是"多查一次白跑"，远低于"该查的没查"）。
+  if (targetLanguages.includes('zh')) {
+    // 1. 兜底：无 TMDB 信号（originLang 未解析）时，用 ProductionLocations 猜国产
+    if (deps.originLang == null && isChineseOrigin(item)) {
+      return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
+    }
+    // 1b. 兜底：无 TMDB 信号时，用剧集标题字符启发式（汉字且无假名无谚文，排除日番/韩剧）。
+    //     但若条目自带 ProductionLocations（权威信号）且已判定非国产（走到这里说明 rule 1
+    //     未命中），该权威证据必须否决这条粗糙的标题启发式——不能让"生活大爆炸"这类中文库名
+    //     的西方剧被误伤 ignored（用户永远收不到该剧的字幕，是本 gate 最差的失败模式）。
+    //     只有条目完全没有 ProductionLocations（无权威信号可用）时才允许标题启发式兜底。
+    //     resolver 瞬时失败（originResolutionFailed）同样压制本条：那不是"无数据"，
+    //     是"数据暂时拿不到"，下轮 scan 会重试权威信号，等它。
+    const hasProductionLocationSignal = (item.ProductionLocations ?? []).length > 0
+    if (
+      deps.originLang == null &&
+      !deps.originResolutionFailed &&
+      !hasProductionLocationSignal &&
+      looksChineseTitle(item.SeriesName ?? item.OriginalTitle)
+    ) {
+      return { status: 'ignored', diskSidecarPath: null, diskSidecarLanguage: null }
+    }
   }
-  if (zhTracks.length > 0) {
-    return { status: 'embedded', diskSidecarPath: null, diskSidecarLanguage: null }
+
+  // 2. 中字轨检测——同样中文专属，出 A4 scope（不动它的逻辑/位置，只加同一条 'zh' in
+  //    targetLanguages 门槛，与 rule 1/1b 一致）：非中文目标配置下，中文内嵌/外挂字幕轨不该
+  //    被误判成"覆盖了"一个跟中文无关的目标语言。按 IsExternal 分流：Jellyfin FullRefresh
+  //    会把盘上的外挂字幕收进 MediaStreams（IsExternal=true）——那是 sidecar（scout 战果或
+  //    用户手动放置），归 covered；只有 IsExternal 为 falsy 的才是真内嵌。两者都有时 covered
+  //    优先（外挂展示价值更高）。diskSidecarPath 留 null——这条命中的是 Jellyfin 已经收录的
+  //    证据，不是 scanner 自己直接摸到磁盘发现的新文件（记账口径见 ClassifyResult 注释）。
+  if (targetLanguages.includes('zh')) {
+    const zhTracks = usableChineseSubtitleStreams(item, true)
+    if (zhTracks.some(s => s.IsExternal === true)) {
+      return { status: 'covered', diskSidecarPath: null, diskSidecarLanguage: null }
+    }
+    if (zhTracks.length > 0) {
+      return { status: 'embedded', diskSidecarPath: null, diskSidecarLanguage: null }
+    }
   }
 
   // 3. Has external sidecar on disk → covered。diskSidecarPath 带真实路径，供 scanLibrary
   //    在该条目尚无 subtitles 行时补记账（scan-time adoption：daemon 自己没记下来的盘上文件）。
   if (item.Path) {
     const mappedPath = mapPath(item.Path, deps.mappings)
-    const targetTags = (deps.targetLanguages ?? ['zh']).flatMap(tagsForLanguage)
+    const targetTags = targetLanguages.flatMap(tagsForLanguage)
     const sidecar = findExternalSidecar(mappedPath, targetTags, deps.fileExists)
     if (sidecar) {
       return { status: 'covered', diskSidecarPath: sidecar.path, diskSidecarLanguage: sidecar.language }
@@ -201,10 +219,10 @@ export async function scanLibrary(
     pageSize: number
     fileExists: (path: string) => boolean
     mappings: PathMapping[]
-    skipChineseOrigin: boolean
     resolver?: OriginResolver
     now?: number
-    /** rule 3（磁盘 sidecar 探测）的目标语言集合，透传给 classifyItemDetailed。未传时默认
+    /** A4 unification（见 classifyItemDetailed 同名参数注释）：驱动 rule 0 权威跳过门 +
+     *  rule 3 磁盘 sidecar 探测的同一个目标语言集合，透传给 classifyItemDetailed。未传时默认
      *  `['zh']`，向后兼容——现有调用方不受影响。 */
     targetLanguages?: string[]
   }
@@ -278,7 +296,6 @@ export async function scanLibrary(
         const { status: newStatus, diskSidecarPath, diskSidecarLanguage } = classifyItemDetailed(item, {
           fileExists: opts.fileExists,
           mappings: opts.mappings,
-          skipChineseOrigin: opts.skipChineseOrigin,
           originLang: resolvedOriginForClassification(cachedOriginLang),
           originResolutionFailed,
           targetLanguages: opts.targetLanguages,
@@ -345,7 +362,6 @@ export async function scanLibrary(
         const { status: newStatus, diskSidecarPath, diskSidecarLanguage } = classifyItemDetailed(item, {
           fileExists: opts.fileExists,
           mappings: opts.mappings,
-          skipChineseOrigin: opts.skipChineseOrigin,
           originLang: resolvedOriginForClassification(cachedOriginLang),
           originResolutionFailed,
           targetLanguages: opts.targetLanguages,

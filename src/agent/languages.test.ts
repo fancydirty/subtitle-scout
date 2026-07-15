@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { languageName, tagsForLanguage } from './languages.js'
+import { languageName, tagsForLanguage, langOf } from './languages.js'
 
 describe('languageName', () => {
   it('resolves zh to Chinese', () => {
@@ -26,5 +26,36 @@ describe('tagsForLanguage', () => {
 
   it('falls back to [code] for an unregistered language', () => {
     expect(tagsForLanguage('fr')).toEqual(['fr'])
+  })
+})
+
+describe('langOf', () => {
+  it('normalizes bare zh', () => {
+    expect(langOf('zh')).toBe('zh')
+  })
+
+  it('normalizes the historical TMDB alias cn', () => {
+    expect(langOf('cn')).toBe('zh')
+  })
+
+  it('normalizes ISO 639-2 chi/zho and ISO 639-3 cmn', () => {
+    expect(langOf('chi')).toBe('zh')
+    expect(langOf('zho')).toBe('zh')
+    expect(langOf('cmn')).toBe('zh')
+  })
+
+  it('drops a region/script suffix before matching', () => {
+    expect(langOf('zh-CN')).toBe('zh')
+    expect(langOf('zh_TW')).toBe('zh')
+  })
+
+  it('passes through a plain non-Chinese code unchanged (lowercased)', () => {
+    expect(langOf('en')).toBe('en')
+    expect(langOf('JA')).toBe('ja')
+  })
+
+  it('returns empty string for null/undefined (never accidentally matches a real target)', () => {
+    expect(langOf(null)).toBe('')
+    expect(langOf(undefined)).toBe('')
   })
 })

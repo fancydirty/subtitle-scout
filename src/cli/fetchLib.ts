@@ -48,10 +48,23 @@ export interface FetchAdapter {
   resolve: (ref: CandidateRef, emit: (e: FetchEvent) => void) => Promise<{ url: string; filename?: string; headers?: Record<string, string> }>
 }
 
+/** A4: historical per-provider default when the caller doesn't specify languages — matches
+ *  FetchArgs.languages's own documented "adapters default ['zh-cn','zh-tw']" convention. Every
+ *  dispatch path that reaches runSearch (the old fetch path — pipeline.ts → providerPort.ts →
+ *  subtitle-fetch.ts subprocess; the v3 find-subtitle worker's search_source tool, whose
+ *  `languages` param the MODEL decides whether to pass; the standalone `subtitle-fetch` CLI
+ *  without --languages) can leave args.languages undefined. A language-gated adapter (assrt —
+ *  see assrtAdapter.ts, a China-only source) must not silently drop out of an un-annotated
+ *  search just because nobody happened to say "zh" out loud — used ONLY to compute which
+ *  adapters are `enabled` below, so it never overrides an adapter's own internal default for the
+ *  args its search() actually receives. */
+const DEFAULT_ENABLED_CHECK_LANGUAGES = ['zh']
+
 export async function runSearch(
   args: FetchArgs, adapters: FetchAdapter[], emit: (e: FetchEvent) => void, env: NodeJS.ProcessEnv = process.env,
 ): Promise<SubtitleCandidate[]> {
-  const enabled = adapters.filter(a => a.enabled(args, env))
+  const gateArgs = args.languages?.length ? args : { ...args, languages: DEFAULT_ENABLED_CHECK_LANGUAGES }
+  const enabled = adapters.filter(a => a.enabled(gateArgs, env))
   // 零 provider ≠ "诚实无结果"：配置缺失必须 fail-fast（CLI exit 1 → pipeline 'error'，不写负缓存）。
   // f0ab58b 删除了 assemble() 的 requireEnv 启动守卫后，这里是防"静默毒库"的唯一防线。
   if (enabled.length === 0) {

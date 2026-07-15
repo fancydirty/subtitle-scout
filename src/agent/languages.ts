@@ -33,3 +33,26 @@ const LANGUAGE_TAGS: Record<string, string[]> = {
 export function tagsForLanguage(code: string): string[] {
   return LANGUAGE_TAGS[code] ?? [code]
 }
+
+/** Chinese-language codes/aliases langOf() folds into 'zh' — kept in lockstep with
+ *  daemon/triggers.ts's isChineseLang (TMDB original_language: 'zh'/'cn') and CHINESE_LANG_TAGS
+ *  (embedded MediaStream Language field: chi/zho/chs/cht/zh) so the generalized same-audio-language
+ *  skip gate (v2/scanner.ts classifyItemDetailed rule 0) classifies exactly the same origin values
+ *  as Chinese that the pre-generalization code did. 'cmn' (ISO 639-3 Mandarin) is included for
+ *  robustness against origin signals that don't stick to TMDB's plain ISO-639-1 'zh' — it's not
+ *  currently produced by any resolver in this codebase, but normalizing it costs nothing. */
+const ZH_ORIGIN_CODES = new Set(['zh', 'cn', 'chi', 'zho', 'cmn'])
+
+/** Normalizes an origin-language value (TMDB original_language, or any similarly-shaped signal)
+ *  to a BCP-47-ish primary language code comparable against FindSubtitleTask.targetLanguage /
+ *  TARGET_LANGUAGES entries (scanner.ts's classifyItemDetailed rule 0: `targetLanguages.includes(
+ *  langOf(originLang))` → ignored). Case/region-insensitive — drops a `-XX`/`_XX` region or script
+ *  suffix before matching, so 'zh-CN', 'zh_TW', 'ZH' all normalize to 'zh'. Unknown codes fall back
+ *  to their lowercased primary subtag, which is already correct for the common case (origin
+ *  resolvers return plain ISO-639-1 codes like 'en'/'ja'/'ko'). Empty/nullish input returns ''
+ *  (never equals a real target language code, so it never matches by accident). */
+export function langOf(code: string | null | undefined): string {
+  if (!code) return ''
+  const primary = code.toLowerCase().split(/[-_]/)[0]
+  return ZH_ORIGIN_CODES.has(primary) ? 'zh' : primary
+}

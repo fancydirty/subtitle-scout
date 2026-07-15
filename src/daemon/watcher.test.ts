@@ -28,7 +28,7 @@ function makeDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     treatPgsAsMissing: true,
     cooldownMinutes: 30,
     mediaRoots: [],
-    skipChineseOrigin: true,
+    targetLanguages: ['zh'],
     skipCacheMinutes: 5,
     queue: new PrefetchQueue(join(mkdtempSync(join(tmpdir(), 'wq-')), 'q.json')),
     log: () => {},
@@ -164,7 +164,7 @@ describe('Watcher.tick', () => {
 
   it('skips Chinese-origin items when configured', async () => {
     const zhItem = { ...cleanItem, ProductionLocations: ['China'] }
-    const deps = makeDeps({ skipChineseOrigin: true, jellyfin: { getSessions: vi.fn(async () => sessions), getItem: vi.fn(async () => zhItem), refreshItem: vi.fn(async () => {}), getRecentItems: vi.fn(async () => [cleanItem]), getChineseTitle: vi.fn(async () => null) } })
+    const deps = makeDeps({ targetLanguages: ['zh'], jellyfin: { getSessions: vi.fn(async () => sessions), getItem: vi.fn(async () => zhItem), refreshItem: vi.fn(async () => {}), getRecentItems: vi.fn(async () => [cleanItem]), getChineseTitle: vi.fn(async () => null) } })
     const w = new Watcher(deps)
     await w.tick()
     expect(deps.runJob).not.toHaveBeenCalled()

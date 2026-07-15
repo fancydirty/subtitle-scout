@@ -2,6 +2,17 @@ import type { AssrtClient } from '../../adapters/providers/assrt.js'
 import { toCandidate } from '../../adapters/providers/assrt.js'
 import type { FetchAdapter, FetchEvent } from '../fetchLib.js'
 
+/** A4: assrt (assrt.net) is a China-only subtitle source — once target languages generalize past
+ *  zh, it must be excluded for a search that isn't after Chinese subtitles at all, and stay
+ *  included whenever zh is (still) one of the requested languages. Prefix match (no trailing `$`)
+ *  so region/script-suffixed forms match too — bare 'zh'/'cn' (TMDB original_language aliases,
+ *  daemon/triggers.ts's isChineseLang), ISO 639-2 'chi'/'zho', their zh-Hans/zh-Hant shorthands
+ *  'chs'/'cht', and anything prefixed with one of those (e.g. 'zh-cn'/'zh-tw' — FetchArgs.languages'
+ *  own documented adapter default). runSearch (fetchLib.ts) guarantees `args.languages` is never
+ *  undefined by the time `enabled` sees it (defaults to ['zh'] for the enabled-check only) — see
+ *  its own comment for why assrt must not silently drop off an un-language-annotated search. */
+const CHINESE_LANGUAGE_PREFIX = /^(zh|chi|zho|chs|cht|cn)/i
+
 /**
  * ASSRT FetchAdapter 工厂——从 subtitle-fetch.ts 的 buildAdapters() 闭包里抽出，供直接单测
  * （原逻辑内嵌在闭包里没有独立测试面；fetchLib 的编排测试只覆盖 runSearch/runResolve 的调度，
@@ -13,7 +24,7 @@ export function makeAssrtAdapter(
 ): FetchAdapter {
   return {
     name: 'assrt',
-    enabled: () => true,
+    enabled: (args) => (args.languages ?? []).some(l => CHINESE_LANGUAGE_PREFIX.test(l)),
     search: async (args, emit?: (e: FetchEvent) => void) => {
       const byId = new Map<number, ReturnType<typeof toCandidate>>()
       for (const q of args.queries.slice(0, 2)) {

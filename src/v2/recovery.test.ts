@@ -102,7 +102,7 @@ describe('双跑幂等', () => {
     } as unknown as PlayerServer
 
     // First run: scan + aggregate
-    await scanLibrary(jf, lib, { pageSize: 2, fileExists: () => false, skipChineseOrigin: true, mappings: [] })
+    await scanLibrary(jf, lib, { pageSize: 2, fileExists: () => false, mappings: [] })
     aggregate(lib, jobs, now)
 
     // Take snapshot 1
@@ -110,7 +110,7 @@ describe('双跑幂等', () => {
     const jobs1 = db.prepare('SELECT * FROM jobs ORDER BY id').all()
 
     // Second run: scan + aggregate (same fixture)
-    await scanLibrary(jf, lib, { pageSize: 2, fileExists: () => false, skipChineseOrigin: true, mappings: [] })
+    await scanLibrary(jf, lib, { pageSize: 2, fileExists: () => false, mappings: [] })
     aggregate(lib, jobs, now)
 
     // Take snapshot 2

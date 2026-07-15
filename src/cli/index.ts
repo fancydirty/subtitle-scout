@@ -61,6 +61,7 @@ import { runFindSubtitleWorkerTask, type FindSubtitleWorkerTaskDeps } from '../v
 import { runReconcileAll, runOrchestrateWorkerTask } from '../v2/reconcileAll.js'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from './buildAdapters.js'
+import { resolveTargetLanguages } from './targetLanguages.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -316,7 +317,10 @@ async function cmdReconcileAll() {
   const db = openDb(dbPath)
   const jobs = new JobsRepo(db)
   const lib = new LibraryRepo(db)
-  const skipChineseOrigin = (process.env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false'
+  // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat
+  // — see targetLanguages.ts's resolveTargetLanguages for the exact mapping (locked by
+  // targetLanguages.test.ts).
+  const targetLanguages = resolveTargetLanguages(process.env)
   const originResolver: OriginResolver = {
     originFor: async item => {
       const ref = await resolveTmdbRefStrict(item, id => jf.getItem(id))
@@ -324,7 +328,7 @@ async function cmdReconcileAll() {
     },
   }
   const decision = await runReconcileAll({
-    jf, lib, jobs, model: reasoningModel, tmdb, mappings, skipChineseOrigin, originResolver,
+    jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originResolver,
     now: () => Date.now(), orchestratorJobId: null,
   })
   console.log(
@@ -365,7 +369,10 @@ async function cmdWatch() {
   )
 
   // Construct DaemonDeps
-  const skipChineseOrigin = (process.env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false'
+  // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat
+  // — see targetLanguages.ts's resolveTargetLanguages for the exact mapping (locked by
+  // targetLanguages.test.ts).
+  const targetLanguages = resolveTargetLanguages(process.env)
 
   // TMDB origin_lang 解析器：有 tmdb（TMDB_API_KEY 已配置）才接线，否则 undefined——
   // scanLibrary 退化到 classifyItem 的 ProductionLocations/标题启发式兜底梯队。
@@ -526,7 +533,7 @@ async function cmdWatch() {
         pageSize: 100,
         fileExists: (p) => existsSync(p),
         mappings,
-        skipChineseOrigin,
+        targetLanguages,
         resolver: originResolver,
       })
     },
@@ -586,7 +593,7 @@ async function cmdWatch() {
   // 工具需要真实 TmdbClient；未配置时 startDashboard 收到 undefined，端点返回 503（不是崩溃/悬空）。
   const reconcileAllClosure = tmdb
     ? () => runReconcileAll({
-        jf, lib, jobs, model: reasoningModel, tmdb, mappings, skipChineseOrigin, originResolver,
+        jf, lib, jobs, model: reasoningModel, tmdb, mappings, targetLanguages, originResolver,
         now: () => Date.now(), orchestratorJobId: null,
       })
     : undefined
