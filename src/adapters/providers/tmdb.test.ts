@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { TmdbClient, resolveTmdbRef, resolveTmdbRefStrict, TmdbRequestFailedError } from './tmdb.js'
-import { JellyfinItemNotFoundError } from '../players/jellyfin.js'
+import { TmdbClient, TmdbRequestFailedError } from './tmdb.js'
 
 interface RouteBodies {
   translations?: unknown
@@ -159,121 +158,12 @@ describe('TmdbClient.getOriginLanguage', () => {
   })
 })
 
-describe('resolveTmdbRef', () => {
-  it('Movie → { movie, own Tmdb id }', async () => {
-    const ref = await resolveTmdbRef(
-      { Type: 'Movie', ProviderIds: { Tmdb: '603' } },
-      async () => { throw new Error('should not be called') },
-    )
-    expect(ref).toEqual({ mediaType: 'movie', tmdbId: '603' })
-  })
-
-  it('Series → { tv, own Tmdb id }', async () => {
-    const ref = await resolveTmdbRef(
-      { Type: 'Series', ProviderIds: { Tmdb: '86831' } },
-      async () => { throw new Error('should not be called') },
-    )
-    expect(ref).toEqual({ mediaType: 'tv', tmdbId: '86831' })
-  })
-
-  it('Episode → resolves series Tmdb id via getItem', async () => {
-    const getItem = vi.fn(async () => ({ Type: 'Series', ProviderIds: { Tmdb: '86831' } }))
-    const ref = await resolveTmdbRef(
-      { Type: 'Episode', SeriesId: 'series-1', ProviderIds: { Tmdb: '99999' } },
-      getItem,
-    )
-    expect(ref).toEqual({ mediaType: 'tv', tmdbId: '86831' })
-    expect(getItem).toHaveBeenCalledWith('series-1')
-  })
-
-  it('missing Tmdb id → null', async () => {
-    const ref = await resolveTmdbRef({ Type: 'Movie', ProviderIds: {} }, async () => ({}))
-    expect(ref).toBeNull()
-  })
-
-  it('Episode getItem failure → null (silent)', async () => {
-    const ref = await resolveTmdbRef(
-      { Type: 'Episode', SeriesId: 'series-1' },
-      async () => { throw new Error('jf down') },
-    )
-    expect(ref).toBeNull()
-  })
-})
-
 describe('TmdbRequestFailedError', () => {
   it('sets name and chains the original error via cause (preserves stack instead of stringifying)', () => {
     const original = new Error('socket hang up')
     const err = new TmdbRequestFailedError(original)
     expect(err.name).toBe('TmdbRequestFailedError')
     expect(err.cause).toBe(original)
-  })
-})
-
-describe('resolveTmdbRefStrict', () => {
-  // 与 resolveTmdbRef 的核心区别只在 Episode 分支的 getItem 失败处理：
-  // 其余分支（Movie/Series/无引用）行为完全一致，此处复用同样的用例做回归锚点。
-  it('Movie → { movie, own Tmdb id }', async () => {
-    const ref = await resolveTmdbRefStrict(
-      { Type: 'Movie', ProviderIds: { Tmdb: '603' } },
-      async () => { throw new Error('should not be called') },
-    )
-    expect(ref).toEqual({ mediaType: 'movie', tmdbId: '603' })
-  })
-
-  it('Series → { tv, own Tmdb id }', async () => {
-    const ref = await resolveTmdbRefStrict(
-      { Type: 'Series', ProviderIds: { Tmdb: '86831' } },
-      async () => { throw new Error('should not be called') },
-    )
-    expect(ref).toEqual({ mediaType: 'tv', tmdbId: '86831' })
-  })
-
-  it('Episode → resolves series Tmdb id via getItem', async () => {
-    const getItem = vi.fn(async () => ({ Type: 'Series', ProviderIds: { Tmdb: '86831' } }))
-    const ref = await resolveTmdbRefStrict(
-      { Type: 'Episode', SeriesId: 'series-1', ProviderIds: { Tmdb: '99999' } },
-      getItem,
-    )
-    expect(ref).toEqual({ mediaType: 'tv', tmdbId: '86831' })
-    expect(getItem).toHaveBeenCalledWith('series-1')
-  })
-
-  it('missing Tmdb id on resolved series → null (genuine no-data, not a failure)', async () => {
-    const ref = await resolveTmdbRefStrict(
-      { Type: 'Episode', SeriesId: 'series-1' },
-      async () => ({ Type: 'Series', ProviderIds: {} }),
-    )
-    expect(ref).toBeNull()
-  })
-
-  it('Episode → series genuinely not found on Jellyfin (JellyfinItemNotFoundError) → null, safe no-data', async () => {
-    // 脏/过期的 SeriesId（系列已从 Jellyfin 删除）是永久态——和"查无此 TMDB id"同级语义，
-    // 上游 scanner 应当安全负缓存，不必每轮重试一个永远不会恢复的引用。
-    const ref = await resolveTmdbRefStrict(
-      { Type: 'Episode', SeriesId: 'series-1' },
-      async () => { throw new JellyfinItemNotFoundError('series-1') },
-    )
-    expect(ref).toBeNull()
-  })
-
-  it('Episode → transient getItem failure (Jellyfin network/5xx) → REJECTS, does not collapse into null', async () => {
-    // 这是本次修复的核心区分点：生产接线（cli/index.ts originFor）必须能观察到这次拒绝，
-    // 才能让 scanner 按"瞬时失败"而非"查无数据"处理——否则一次 Jellyfin 抖动会让扫过的
-    // 条目被永久打上 unknown 哨兵，权威 origin gate 从此失效。
-    await expect(resolveTmdbRefStrict(
-      { Type: 'Episode', SeriesId: 'series-1' },
-      async () => { throw new Error('jellyfin GET /Items: HTTP 503') },
-    )).rejects.toThrow('jellyfin GET /Items: HTTP 503')
-  })
-})
-
-describe('resolveTmdbRef delegates to resolveTmdbRefStrict but stays fail-soft (enrichment path, tmdbTitles)', () => {
-  it('Episode → even a transient-shaped getItem failure still collapses to null (never throws)', async () => {
-    const ref = await resolveTmdbRef(
-      { Type: 'Episode', SeriesId: 'series-1' },
-      async () => { throw new Error('jellyfin GET /Items: HTTP 503') },
-    )
-    expect(ref).toBeNull()
   })
 })
 

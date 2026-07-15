@@ -39,12 +39,12 @@ function summarizeRows(jobs: JobsRepo): { find: string[]; realign: string[] } {
 async function runShape(shape: BacklogShape, run: number, model: LanguageModel): Promise<boolean> {
   const db = openDb(':memory:'); const jobs = new JobsRepo(db); const lib = new LibraryRepo(db)
   seedBacklog(lib, shape)
-  const { tmdb, jf } = makeBacklogFakes(shape)
+  const { tmdb } = makeBacklogFakes(shape)
   const tap = makeToolCallTap(model)
   let threw: string | undefined
   try {
     await makeOrchestratorAgent({
-      model: tap.model, lib, tmdb, jf, jobs, now: () => Date.now(), orchestratorJobId: null, stepCap: 500,
+      model: tap.model, lib, tmdb, jobs, now: () => Date.now(), orchestratorJobId: null, stepCap: 500,
       // Only override when the shape asks for it (e.g. over-cap-spillover) — every other shape
       // keeps the agent's own default cap of 100.
       ...(shape.capOverride !== undefined ? { maxDispatchesPerOrchestrator: shape.capOverride } : {}),

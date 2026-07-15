@@ -1,5 +1,3 @@
-import { JellyfinItemNotFoundError } from '../players/jellyfin.js'
-
 export const TMDB_TIMEOUT_MS = 15_000
 const BASE = 'https://api.themoviedb.org/3'
 
@@ -25,8 +23,6 @@ interface TmdbAltTitle {
   iso_3166_1?: string
   title?: string
 }
-
-export interface TmdbRef { mediaType: 'tv' | 'movie'; tmdbId: string }
 
 export interface SeasonTableEntry { seasonNumber: number; episodeCount: number; airDate: string | null }
 
@@ -57,69 +53,6 @@ export interface TmdbDetails {
   posterPath: string | null
   originalTitle: string | null
   year: number | null
-}
-
-interface ItemLike {
-  Type?: string | null
-  SeriesId?: string | null
-  ProviderIds?: Record<string, string> | null
-}
-
-/**
- * 严格版：从 Jellyfin item 解析 TMDB 引用。Movie→movie；Series→tv（用自身 Tmdb id）；
- * Episode→解析所属 series 的 Tmdb id（集级 ProviderIds 不含剧的 Tmdb，要回查 series）。
- *
- * Episode 分支 getItem(seriesId) 失败时两种结果严格区分（生产 originFor 接线依赖这条契约，
- * 见 cli/index.ts）：
- * - JellyfinItemNotFoundError（Jellyfin 明确答复查无此系列 id——脏/过期 SeriesId 是永久态）
- *   → 归入 no-data，返回 null，安全负缓存；
- * - 其余任何抛出（网络拒绝、超时、非 2xx——Jellyfin 请求瞬时失败）→ 原样向上抛出，调用方必须
- *   按"可重试"处理，绝不能当 no-data 缓存（否则一次 Jellyfin 抖动会把故障窗口内扫过的
- *   全部条目永久打成 unknown，权威 origin gate 从此失效）。
- * 需要静默吞错语义（TMDB 标题增益路径）的调用方走 resolveTmdbRef。
- */
-export async function resolveTmdbRefStrict(
-  item: ItemLike,
-  getItem: (id: string) => Promise<ItemLike>,
-): Promise<TmdbRef | null> {
-  const tmdbOf = (it: ItemLike) => it.ProviderIds?.Tmdb ?? null
-  if (item.Type === 'Movie') {
-    const id = tmdbOf(item)
-    return id ? { mediaType: 'movie', tmdbId: id } : null
-  }
-  if (item.Type === 'Series') {
-    const id = tmdbOf(item)
-    return id ? { mediaType: 'tv', tmdbId: id } : null
-  }
-  if (item.Type === 'Episode' && item.SeriesId) {
-    let series: ItemLike
-    try {
-      series = await getItem(item.SeriesId)
-    } catch (e) {
-      if (e instanceof JellyfinItemNotFoundError) return null
-      throw e
-    }
-    const id = tmdbOf(series)
-    return id ? { mediaType: 'tv', tmdbId: id } : null
-  }
-  return null
-}
-
-/**
- * 拿全部中文标题变体（tmdbTitles）这类增益路径用的宽松版：任何失败（含 Episode 回查系列时
- * Jellyfin 请求瞬时失败）一律静默折叠成 null——这里没有"下轮重试权威数据"的下游语义，
- * 折叠成 null 只是让 tmdbTitles 照常返回 undefined，不阻塞主流程。
- * 需要区分"瞬时失败"与"查无数据"的调用方（如 scanner 的 origin_lang 解析）走 resolveTmdbRefStrict。
- */
-export async function resolveTmdbRef(
-  item: ItemLike,
-  getItem: (id: string) => Promise<ItemLike>,
-): Promise<TmdbRef | null> {
-  try {
-    return await resolveTmdbRefStrict(item, getItem)
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -378,20 +311,4 @@ export class TmdbClient {
 
     return { overview, runtimeMinutes, posterPath, originalTitle, year: Number.isFinite(year) ? year : null }
   }
-}
-
-/**
- * 便捷接线：解析 item 的 TMDB 引用并取全部中文标题变体。
- * 无引用 / 无结果一律返回 undefined（保持 buildMediaContext 的 enrichment 语义不变）。
- * getChineseTitles 内部已静默吞错，此处不会抛。
- */
-export async function tmdbTitles(
-  client: TmdbClient,
-  item: ItemLike,
-  getItem: (id: string) => Promise<ItemLike>,
-): Promise<string[] | undefined> {
-  const ref = await resolveTmdbRef(item, getItem)
-  if (!ref) return undefined
-  const titles = await client.getChineseTitles(ref.mediaType, ref.tmdbId)
-  return titles.length ? titles : undefined
 }

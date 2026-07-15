@@ -70,7 +70,9 @@ export const JellyfinVirtualFolderSchema = z.object({
 /**
  * getItem 查无该 id（Jellyfin /Items 对该 id 返回空 Items 数组）——这是永久态（脏/过期 id，
  * 或条目已被删除），不是瞬时故障。与 call() 内网络拒绝/非 2xx 抛出的普通 Error 区分开，
- * 让调用方（resolveTmdbRefStrict）能把"查无此系列"归入 no-data，"请求本身失败"归入可重试。
+ * 让调用方（如 realignExecutor.ts）能把"查无此系列"归入 no-data，"请求本身失败"归入可重试。
+ * （去 Jellyfin 化 P4：tmdb.ts 的 resolveTmdbRefStrict 曾是本类的另一个消费方，随 findSubtitleWorkerTask
+ * 改读自有库行+own-id 一起退役；本类现存的消费方是 P5 尚未接手的 realign 一支。）
  */
 export class JellyfinItemNotFoundError extends Error {
   constructor(itemId: string) {

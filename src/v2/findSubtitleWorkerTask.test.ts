@@ -7,20 +7,9 @@ import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import { runFindSubtitleWorkerTask, type FindSubtitleWorkerTaskDeps } from './findSubtitleWorkerTask.js'
-import type { PlayerServer } from '../adapters/players/types.js'
 import type { FindSubtitleDecision, FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
 import { TmdbClient } from '../adapters/providers/tmdb.js'
-
-function mkJf(path: string, overrides: Partial<Pick<PlayerServer, 'getItem' | 'getChineseTitle'>> = {}) {
-  return {
-    getItem: vi.fn(async () => ({
-      Id: 'jf-ep-1', Name: 'E1', Type: 'Episode', Path: path,
-      SeriesId: 's1', SeriesName: 'Show', ParentIndexNumber: 1, IndexNumber: 1,
-    }) as never),
-    getChineseTitle: vi.fn(async () => null),
-    ...overrides,
-  }
-}
+import { seriesId, episodeId } from './ownIds.js'
 
 function decision(over: Partial<FindSubtitleDecision> = {}): FindSubtitleDecision {
   return {
@@ -29,6 +18,13 @@ function decision(over: Partial<FindSubtitleDecision> = {}): FindSubtitleDecisio
     ...over,
   }
 }
+
+// Own-id space (去 Jellyfin 化 P2): series/movies.id = 'tmdb:<TMDB id>'. Using a real tmdb id
+// ('1429') as the fixture's series/episode identity means the mapper's tmdbIdFromOwnId extraction
+// is exercised for real, not glossed over.
+const SHOW_TMDB_ID = '1429'
+const SHOW_SERIES_ID = seriesId(SHOW_TMDB_ID)
+const SHOW_EPISODE_ID = episodeId(SHOW_TMDB_ID, 1, 1)
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'find-subtitle-worker-task-'))
@@ -40,19 +36,20 @@ function setup() {
   const db = openDb(':memory:')
   const lib = new LibraryRepo(db)
   const jobsRepo = new JobsRepo(db)
-  lib.upsertSeries({ id: 's1', name: 'Show' })
-  lib.upsertEpisode({ id: 'jf-ep-1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: videoPath, subStatus: 'missing' })
-  jobsRepo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
+  lib.upsertSeries({ id: SHOW_SERIES_ID, name: 'Show' })
+  lib.upsertEpisode({
+    id: SHOW_EPISODE_ID, seriesId: SHOW_SERIES_ID, season: 1, episode: 1, name: 'E1',
+    path: videoPath, subStatus: 'missing',
+  })
+  jobsRepo.upsertWorkerTask({ seriesId: SHOW_SERIES_ID, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
   const job = jobsRepo.claimNext(Date.now())!
   return { root, videoPath, db, lib, jobsRepo, job }
 }
 
-function baseDeps(over: Partial<FindSubtitleWorkerTaskDeps> = {}, videoPath?: string): FindSubtitleWorkerTaskDeps {
+function baseDeps(over: Partial<FindSubtitleWorkerTaskDeps> = {}): FindSubtitleWorkerTaskDeps {
   return {
     lib: over.lib!,
-    jf: mkJf(videoPath ?? '/x'),
     tmdb: null,
-    mappings: [],
     mediaRoots: [],
     runTask: vi.fn(async () => decision()),
     ...over,
@@ -63,7 +60,7 @@ describe('runFindSubtitleWorkerTask', () => {
   it('installs: maps the worker_task row to a FindSubtitleTask, marks the episode covered, and completes the job done', async () => {
     const { videoPath, lib, jobsRepo, job } = setup()
     const runTask = vi.fn(async (_task: FindSubtitleTask) => decision({ installedPath: join(videoPath, '..', 'x.srt'), candidateProvider: 'assrt', candidateProviderId: '123' }))
-    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     const result = await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -75,7 +72,7 @@ describe('runFindSubtitleWorkerTask', () => {
     expect(task.season).toBe(1)
     expect(task.episode).toBe(1)
 
-    expect(lib.getEpisode('jf-ep-1')!.sub_status).toBe('covered')
+    expect(lib.getEpisode(SHOW_EPISODE_ID)!.sub_status).toBe('covered')
     expect(jobsRepo.get(job.id)!.state).toBe('done')
   })
 
@@ -88,11 +85,11 @@ describe('runFindSubtitleWorkerTask', () => {
       installedPath: join(videoPath, '..', 'x.srt'), installedLanguage: null,
       candidateProvider: 'assrt', candidateProviderId: '123',
     }))
-    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
-    const row = lib.db.prepare('select language from subtitles where item_id=?').get('jf-ep-1') as { language: string }
+    const row = lib.db.prepare('select language from subtitles where item_id=?').get(SHOW_EPISODE_ID) as { language: string }
     // deps.targetLanguage is unset here, so the mapper's own default ('zh') is what flows through
     // — the point is the fallback source (task.targetLanguage), not the value.
     expect(row.language).toBe('zh')
@@ -104,7 +101,7 @@ describe('runFindSubtitleWorkerTask', () => {
   it('threads deps.targetLanguage into the constructed FindSubtitleTask (en config → en task)', async () => {
     const { videoPath, lib, jobsRepo, job } = setup()
     const runTask = vi.fn(async (_task: FindSubtitleTask) => decision({ installedPath: join(videoPath, '..', 'x.srt') }))
-    const deps = baseDeps({ lib, mediaRoots: [], runTask, targetLanguage: 'en' }, videoPath)
+    const deps = baseDeps({ lib, mediaRoots: [], runTask, targetLanguage: 'en' })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -114,7 +111,7 @@ describe('runFindSubtitleWorkerTask', () => {
   it('deps.targetLanguage omitted → task.targetLanguage defaults to zh (historical default)', async () => {
     const { videoPath, lib, jobsRepo, job } = setup()
     const runTask = vi.fn(async (_task: FindSubtitleTask) => decision({ installedPath: join(videoPath, '..', 'x.srt') }))
-    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -131,26 +128,23 @@ describe('runFindSubtitleWorkerTask', () => {
     const db = openDb(':memory:')
     const lib = new LibraryRepo(db)
     const jobsRepo = new JobsRepo(db)
-    lib.upsertMovie({ id: 'jf-movie-1', name: 'Movie', path: videoPath, subStatus: 'missing' })
-    jobsRepo.upsertWorkerTask({ seriesId: null, season: null, movieId: 'jf-movie-1' }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
+    const movieId = seriesId('603')
+    lib.upsertMovie({ id: movieId, name: 'Movie', path: videoPath, subStatus: 'missing', year: 2020 })
+    jobsRepo.upsertWorkerTask({ seriesId: null, season: null, movieId }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
     const job = jobsRepo.claimNext(Date.now())!
 
-    const jf = {
-      getItem: vi.fn(async () => ({ Id: 'jf-movie-1', Name: 'Movie', Type: 'Movie', Path: videoPath, ProductionYear: 2020 }) as never),
-      getChineseTitle: vi.fn(async () => null),
-    }
     const runTask = vi.fn(async () => decision())
-    const deps = baseDeps({ lib, jf, mediaRoots: [], runTask })
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
-    expect(lib.getMovie('jf-movie-1')!.sub_status).toBe('covered')
+    expect(lib.getMovie(movieId)!.sub_status).toBe('covered')
     expect(jobsRepo.get(job.id)!.state).toBe('done')
   })
 
   it('idempotent no-op: if the target is already covered by claim time, completes the job done WITHOUT ever invoking the worker', async () => {
     const { lib, jobsRepo, job } = setup()
-    lib.markCovered('jf-ep-1', null, 'preexisting') // covered out-of-band before the worker claims this row
+    lib.markCovered(SHOW_EPISODE_ID, null, 'preexisting') // covered out-of-band before the worker claims this row
     const runTask = vi.fn(async () => decision())
     const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
@@ -162,37 +156,37 @@ describe('runFindSubtitleWorkerTask', () => {
   })
 
   it('retry_later: completes the job as a retryable error (short backoff), does not touch LibraryRepo coverage', async () => {
-    const { videoPath, lib, jobsRepo, job } = setup()
+    const { lib, jobsRepo, job } = setup()
     const runTask = vi.fn(async () => decision({ decision: 'retry_later', reason: 'provider timed out' }))
-    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
     const row = jobsRepo.get(job.id)!
     expect(row.state).toBe('failed')
     expect(row.last_error).toBe('provider timed out')
-    expect(lib.getEpisode('jf-ep-1')!.sub_status).toBe('missing') // untouched
+    expect(lib.getEpisode(SHOW_EPISODE_ID)!.sub_status).toBe('missing') // untouched
   })
 
   it('no_safe_match: completes the job via content-backoff and marks the episode unavailable with a recheck_after', async () => {
-    const { videoPath, lib, jobsRepo, job } = setup()
+    const { lib, jobsRepo, job } = setup()
     const runTask = vi.fn(async () => decision({ decision: 'no_safe_match', reason: '没有找到匹配的字幕' }))
-    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
     const row = jobsRepo.get(job.id)!
     expect(row.state).toBe('failed')
-    const ep = lib.getEpisode('jf-ep-1')!
+    const ep = lib.getEpisode(SHOW_EPISODE_ID)!
     expect(ep.sub_status).toBe('unavailable')
     expect(ep.status_reason).toBe('没有找到匹配的字幕')
     expect(ep.recheck_after).not.toBeNull()
   })
 
   it('worker-exhaustion: a thrown worker invocation (step-cap/timeout/abort) fails the job via completeError instead of propagating', async () => {
-    const { videoPath, lib, jobsRepo, job } = setup()
+    const { lib, jobsRepo, job } = setup()
     const runTask = vi.fn(async () => { throw new Error('step count limit exceeded') })
-    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath)
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     const result = await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -218,13 +212,10 @@ describe('runFindSubtitleWorkerTask', () => {
     expect(row.last_error).toMatch(/拒绝在媒体根目录之外写入/)
   })
 
-  // PLAN-BUG DISCIPLINE: the plan's test sketch said "media at S02E01 with provider_ids.tmdb
-  // set", assuming the EPISODE's own ProviderIds carries the series' Tmdb id. It doesn't —
-  // resolveTmdbRefStrict's own comment (tmdb.ts) says episode-level ProviderIds never has the
-  // series' Tmdb id; the mapper must round-trip through deps.jf.getItem(item.SeriesId) to read
-  // the SERIES item's ProviderIds.Tmdb (exactly what tmdbTitles already does via resolveTmdbRef).
-  // So this fixture's `jf.getItem` mock discriminates by id: the episode id returns the episode
-  // (S02E01, no ProviderIds), the series id ('s1') returns { ProviderIds: { Tmdb: '9999' } }.
+  // 去 Jellyfin 化 P4: absoluteEpisode's tmdbId now comes straight off the SERIES row's own id
+  // (tmdbIdFromOwnId(series.id)) — no more round-trip through a Jellyfin item lookup to read the
+  // series' ProviderIds.Tmdb. This fixture seeds the series id AS 'tmdb:9999' so that extraction
+  // resolves for real against a real TmdbClient (fetchImpl-backed, no live network).
   it('computes absoluteEpisode from TMDB season-concat data when tmdb is configured', async () => {
     const root = mkdtempSync(join(tmpdir(), 'find-subtitle-worker-task-abs-'))
     const showDir = join(root, 'Show', 'Season 02')
@@ -235,27 +226,17 @@ describe('runFindSubtitleWorkerTask', () => {
     const db = openDb(':memory:')
     const lib = new LibraryRepo(db)
     const jobsRepo = new JobsRepo(db)
-    lib.upsertSeries({ id: 's1', name: 'Show' })
-    lib.upsertEpisode({ id: 'jf-ep-2-1', seriesId: 's1', season: 2, episode: 1, name: 'E1', path: videoPath, subStatus: 'missing' })
-    jobsRepo.upsertWorkerTask({ seriesId: 's1', season: 2, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
+    const sId = seriesId('9999')
+    lib.upsertSeries({ id: sId, name: 'Show' })
+    lib.upsertEpisode({ id: episodeId('9999', 2, 1), seriesId: sId, season: 2, episode: 1, name: 'E1', path: videoPath, subStatus: 'missing' })
+    jobsRepo.upsertWorkerTask({ seriesId: sId, season: 2, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
     const job = jobsRepo.claimNext(Date.now())!
-
-    const jf = {
-      getItem: vi.fn(async (id: string) => {
-        if (id === 'jf-ep-2-1') {
-          return {
-            Id: 'jf-ep-2-1', Name: 'E1', Type: 'Episode', Path: videoPath,
-            SeriesId: 's1', SeriesName: 'Show', ParentIndexNumber: 2, IndexNumber: 1,
-          } as never
-        }
-        return { Id: 's1', Name: 'Show', Type: 'Series', ProviderIds: { Tmdb: '9999' } } as never
-      }),
-      getChineseTitle: vi.fn(async () => null),
-    }
 
     const fetchImpl = async (url: string | URL) => {
       const u = String(url)
       if (u.includes('/episode_groups')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
+      if (u.includes('/translations')) return new Response(JSON.stringify({ translations: [] }), { status: 200 })
+      if (u.includes('/alternative_titles')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
       if (u.includes('/tv/9999')) {
         return new Response(JSON.stringify({
           seasons: [
@@ -269,7 +250,7 @@ describe('runFindSubtitleWorkerTask', () => {
     const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
 
     const runTask = vi.fn(async (_task: FindSubtitleTask) => decision())
-    const deps = baseDeps({ lib, jf, tmdb, mediaRoots: [], runTask })
+    const deps = baseDeps({ lib, tmdb, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -281,9 +262,9 @@ describe('runFindSubtitleWorkerTask', () => {
   })
 
   it('absoluteEpisode is null when deps.tmdb is not configured', async () => {
-    const { videoPath, lib, jobsRepo, job } = setup()
+    const { lib, jobsRepo, job } = setup()
     const runTask = vi.fn(async (_task: FindSubtitleTask) => decision())
-    const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath) // baseDeps defaults tmdb to null
+    const deps = baseDeps({ lib, mediaRoots: [], runTask }) // baseDeps defaults tmdb to null
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -304,7 +285,7 @@ describe('runFindSubtitleWorkerTask', () => {
       const runTask = vi.fn(async () => decision({
         installedPath: join(videoPath, '..', 'x.srt'), reason: 'best match: S01E01.zh.srt',
       }))
-      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -316,10 +297,10 @@ describe('runFindSubtitleWorkerTask', () => {
     })
 
     it('no_safe_match: writes one runs row with decision "no_safe_match" and the worker reason as detail', async () => {
-      const { videoPath, lib, jobsRepo, job, db } = setup()
+      const { lib, jobsRepo, job, db } = setup()
       const runs = new RunsRepo(db)
       const runTask = vi.fn(async () => decision({ decision: 'no_safe_match', reason: '没有找到匹配的字幕' }))
-      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -330,10 +311,10 @@ describe('runFindSubtitleWorkerTask', () => {
     })
 
     it('retry_later: writes one runs row with decision "retry_later"', async () => {
-      const { videoPath, lib, jobsRepo, job, db } = setup()
+      const { lib, jobsRepo, job, db } = setup()
       const runs = new RunsRepo(db)
       const runTask = vi.fn(async () => decision({ decision: 'retry_later', reason: 'provider timed out' }))
-      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -344,10 +325,10 @@ describe('runFindSubtitleWorkerTask', () => {
     })
 
     it('worker-throw: writes one runs row with decision "error" and the thrown message as detail', async () => {
-      const { videoPath, lib, jobsRepo, job, db } = setup()
+      const { lib, jobsRepo, job, db } = setup()
       const runs = new RunsRepo(db)
       const runTask = vi.fn(async () => { throw new Error('step count limit exceeded') })
-      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs }, videoPath)
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
@@ -360,7 +341,7 @@ describe('runFindSubtitleWorkerTask', () => {
     it('deps.runs omitted: does not crash and simply skips writing a runs row', async () => {
       const { videoPath, lib, jobsRepo, job } = setup()
       const runTask = vi.fn(async () => decision({ installedPath: join(videoPath, '..', 'x.srt') }))
-      const deps = baseDeps({ lib, mediaRoots: [], runTask }, videoPath) // no `runs` key at all
+      const deps = baseDeps({ lib, mediaRoots: [], runTask }) // no `runs` key at all
 
       const result = await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 

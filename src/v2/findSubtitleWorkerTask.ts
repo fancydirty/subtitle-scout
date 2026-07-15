@@ -1,14 +1,13 @@
-import { dirname } from 'node:path'
+import { dirname, basename } from 'node:path'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { RunsRepo } from './runsRepo.js'
-import type { PlayerServer } from '../adapters/players/types.js'
-import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import { tmdbTitles, resolveTmdbRef } from '../adapters/providers/tmdb.js'
-import { buildMediaContext, isDirWritable, isUnderRoots, mapPath, type PathMapping } from '../core/mediaContext.js'
+import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
+import { isDirWritable, isUnderRoots } from '../core/mediaContext.js'
 import { candidateKey } from '../core/schemas.js'
 import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
 import { resolveAbsoluteEpisode } from '../agent/absoluteEpisodes.js'
+import { tmdbIdFromOwnId } from './ownIds.js'
 
 /** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
  *  trim/cap so a raw agent reason or thrown error message (which can run long) doesn't blow out
@@ -21,18 +20,21 @@ function capDetail(s: string, max = 200): string {
 export interface FindSubtitleWorkerTaskPayload { taskType: 'find_subtitle'; reason: string }
 
 /** Deps needed to turn a claimed `worker_task` row (payload.taskType==='find_subtitle') into a
- *  concrete FindSubtitleTask — mirrors makeRunEpisode's (src/v2/executor.ts) own Jellyfin-item →
- *  MediaContext assembly (root+writable pre-check, buildMediaContext) rather than re-deriving it,
- *  per the phase ⑦ plan note, but does NOT reuse runEpisode itself: that closure invokes the OLD
- *  callStructured pipeline end-to-end, which the find-subtitle worker (phase ③) replaces wholesale
- *  for this one task type. */
+ *  concrete FindSubtitleTask. 去 Jellyfin 化 P4: this used to round-trip through a live Jellyfin
+ *  item (deps.jf.getItem) and buildMediaContext (core/mediaContext.ts) to assemble the task; both
+ *  are gone. episodes.path/movies.path are ALREADY local filesystem paths (T3's ingest layer walks
+ *  the filesystem directly — no Jellyfin path remapping was ever needed for these rows, so no
+ *  mapPath() call here either), and every other field (title/original_title/year/chinese
+ *  titles/overview/runtime/provider_ids) comes straight off the series/movie library row plus a
+ *  live TmdbClient.getDetails/getChineseTitles enrichment call keyed by tmdbIdFromOwnId(row.id) —
+ *  see src/v2/ownIds.ts for why that extraction is a pure, zero-I/O string parse now that the row's
+ *  own id IS its TMDB identity. */
 export interface FindSubtitleTaskMapperDeps {
   lib: LibraryRepo
-  jf: Pick<PlayerServer, 'getItem' | 'getChineseTitle'>
-  /** null when TMDB_API_KEY isn't configured — chineseTitles enrichment is a gain-path, same
-   *  fallback semantics as makeRunEpisode/cmdRunItem's own `tmdb ? tmdbTitles(...) : undefined`. */
+  /** null when TMDB_API_KEY isn't configured — getDetails/getChineseTitles enrichment is a
+   *  gain-path: originalTitle/overview/runtimeMinutes/chinese alternative titles/absoluteEpisode
+   *  all degrade to null/[] rather than failing the mapping. */
   tmdb: TmdbClient | null
-  mappings: PathMapping[]
   /** CRIT#1 (mirrors makeRunEpisode's opts.mediaRoots / realignExecutor's deps.mediaRoots):
    *  configured MEDIA_ROOTS/MEDIA_PATH_MAPPINGS whitelist — the OUTER sandbox boundary an admin
    *  configures. Distinct from FindSubtitleTask.mediaRoot, the tighter INNER per-task sandbox
@@ -46,6 +48,47 @@ export interface FindSubtitleTaskMapperDeps {
    *  per item — can't express "covered for zh but missing for en" yet). Optional/defaulted to
    *  'zh' (the historical default) so existing tests/callers predating the config keep working. */
   targetLanguage?: string
+}
+
+/** Parses series/movies.provider_ids (JSON, written by T3's ingest layer as `{"tmdb":"<id>"}` —
+ *  see src/v2/ingest.ts) into the plain lowercase-keyed record FindSubtitleTask.providerIds
+ *  expects (same lowercase-key convention the old buildMediaContext used for Jellyfin ProviderIds).
+ *  NULL column / malformed JSON / non-object → {} (this field is prompt-display enrichment only,
+ *  never a control-flow input — see findSubtitleWorker.ts's own use of it). */
+function parseProviderIds(json: string | null): Record<string, string> {
+  if (!json) return {}
+  try {
+    const parsed: unknown = JSON.parse(json)
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Mirrors the old buildMediaContext's alternative_titles combination: TMDB's own official variants
+ *  (getChineseTitles, an ordered list) first, the DB-cached single chinese_title appended last as a
+ *  fallback source — de-duped and stripped of anything blank or equal to the primary title / TMDB
+ *  original title (no point surfacing a "variant" that's actually the title already shown). */
+function buildAlternativeTitles(
+  tmdbChineseTitles: string[], cachedChineseTitle: string | null, title: string, originalTitle: string | null,
+): string[] {
+  return [...tmdbChineseTitles, cachedChineseTitle]
+    .filter((t): t is string => !!t && t.trim().length > 0 && t !== title && t !== originalTitle)
+    .filter((t, i, arr) => arr.indexOf(t) === i)
+}
+
+/** Concurrent, gain-path TMDB enrichment for one (mediaType, tmdbId) — both calls silently degrade
+ *  (getDetails via .catch, getChineseTitles already swallows its own failures internally) so a TMDB
+ *  outage or a non-conforming id (tmdbId null) never fails the mapping, only impoverishes the task. */
+async function fetchTmdbEnrichment(
+  tmdb: TmdbClient | null, mediaType: 'tv' | 'movie', tmdbId: string | null,
+): Promise<{ details: TmdbDetails | null; chineseTitles: string[] }> {
+  if (!tmdb || !tmdbId) return { details: null, chineseTitles: [] }
+  const [details, chineseTitles] = await Promise.all([
+    tmdb.getDetails(mediaType, tmdbId).catch(() => null),
+    tmdb.getChineseTitles(mediaType, tmdbId).catch(() => []),
+  ])
+  return { details, chineseTitles }
 }
 
 /** Representative missing episode for a series+season identity — same query remainingTargets()
@@ -79,7 +122,8 @@ function representativeMovieId(lib: LibraryRepo, movieId: string, now: number): 
 
 export interface MappedFindSubtitleTask {
   task: FindSubtitleTask
-  /** Jellyfin item id to markCovered/markUnavailable once the worker decides — LibraryRepo's
+  /** Own library id (episodes.id or movies.id, 去 Jellyfin 化 P2's `tmdb:<id>[/s<N>e<M>]` id
+   *  space) to markCovered/markUnavailable once the worker decides — LibraryRepo's
    *  markCovered/markUnavailable try the episodes table then the movies table by this same id,
    *  so the caller doesn't need to know which table it lives in. */
   targetItemId: string
@@ -88,9 +132,9 @@ export interface MappedFindSubtitleTask {
 /** Maps a claimed worker_task row to a FindSubtitleTask, or null if there is nothing left to do
  *  (the target was already covered by the time this row got claimed — idempotent no-op, caller
  *  completes the job done without ever invoking the worker). Throws on a genuinely bad/unsafe
- *  wiring (missing Jellyfin Path, video dir outside the configured MEDIA_ROOTS, unwritable dir) —
- *  callers (runFindSubtitleWorkerTask below) must treat a throw here the same as a thrown worker
- *  invocation: completeError, never crash the daemon. */
+ *  wiring (library row vanished between claim and mapping, video dir outside the configured
+ *  MEDIA_ROOTS, unwritable dir) — callers (runFindSubtitleWorkerTask below) must treat a throw
+ *  here the same as a thrown worker invocation: completeError, never crash the daemon. */
 export async function mapWorkerTaskToFindSubtitleTask(
   job: Job, deps: FindSubtitleTaskMapperDeps, now: number,
 ): Promise<MappedFindSubtitleTask | null> {
@@ -106,9 +150,51 @@ export async function mapWorkerTaskToFindSubtitleTask(
   }
   if (!targetItemId) return null
 
-  const item = await deps.jf.getItem(targetItemId)
-  if (!item.Path) throw new Error(`jellyfin item ${item.Id} has no Path`)
-  const dir = dirname(mapPath(item.Path, deps.mappings))
+  if (job.movie_id) {
+    const movie = deps.lib.getMovie(targetItemId)
+    if (!movie) throw new Error(`movie row ${targetItemId} vanished between claim and mapping`)
+    const dir = dirname(movie.path)
+    if (!isUnderRoots(dir, deps.mediaRoots)) {
+      throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
+    }
+    if (!isDirWritable(dir)) {
+      throw new Error(`Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`)
+    }
+
+    const tmdbId = tmdbIdFromOwnId(movie.id)
+    const { details, chineseTitles } = await fetchTmdbEnrichment(deps.tmdb, 'movie', tmdbId)
+    const originalTitle = details?.originalTitle ?? null
+    const alternativeTitles = buildAlternativeTitles(chineseTitles, movie.chinese_title, movie.name, originalTitle)
+
+    const task: FindSubtitleTask = {
+      jobId: String(job.id),
+      mediaRoot: dir,
+      videoPath: movie.path,
+      videoFilename: basename(movie.path),
+      title: movie.name,
+      originalTitle,
+      year: movie.year ?? details?.year ?? null,
+      season: null,
+      episode: null,
+      // Movies have neither season nor episode — absoluteEpisode is meaningless for this branch.
+      absoluteEpisode: null,
+      alternativeTitles,
+      overview: details?.overview ?? null,
+      runtimeMinutes: details?.runtimeMinutes ?? null,
+      providerIds: parseProviderIds(movie.provider_ids),
+      // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
+      // multi-language per-item tasking is future work.
+      targetLanguage: deps.targetLanguage ?? 'zh',
+    }
+    return { task, targetItemId }
+  }
+
+  const episode = deps.lib.getEpisode(targetItemId)
+  if (!episode) throw new Error(`episode row ${targetItemId} vanished between claim and mapping`)
+  const series = deps.lib.getSeries(episode.series_id)
+  if (!series) throw new Error(`series row ${episode.series_id} not found for episode ${episode.id}`)
+
+  const dir = dirname(episode.path)
   if (!isUnderRoots(dir, deps.mediaRoots)) {
     throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
   }
@@ -116,36 +202,31 @@ export async function mapWorkerTaskToFindSubtitleTask(
     throw new Error(`Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`)
   }
 
-  const chineseTitle = await deps.jf.getChineseTitle(item).catch(() => null)
-  const chineseTitles = deps.tmdb
-    ? await tmdbTitles(deps.tmdb, item, id => deps.jf.getItem(id)).catch(() => undefined)
-    : undefined
-  const ctx = buildMediaContext(item, deps.mappings, { chineseTitle, chineseTitles })
-
-  // absoluteEpisode needs the SERIES' tmdb id, not the episode's own ProviderIds — an episode's
-  // ProviderIds never carries the series' Tmdb id (see resolveTmdbRefStrict's own comment above),
-  // so this round-trips through deps.jf.getItem(item.SeriesId) exactly like tmdbTitles/resolveTmdbRef
-  // above (a second, independent lookup — tmdbTitles doesn't expose the ref it resolved internally).
-  const tmdbRef = deps.tmdb ? await resolveTmdbRef(item, id => deps.jf.getItem(id)) : null
-  const absoluteEpisode = deps.tmdb && tmdbRef
-    ? await resolveAbsoluteEpisode(ctx.media.season ?? null, ctx.media.episode ?? null, deps.tmdb, tmdbRef.tmdbId)
+  // tmdbId comes from the SERIES row's own id (episodes never carry the series' tmdb id
+  // separately — the own id space nests episode ids under their series' id, see ownIds.ts).
+  const tmdbId = tmdbIdFromOwnId(series.id)
+  const { details, chineseTitles } = await fetchTmdbEnrichment(deps.tmdb, 'tv', tmdbId)
+  const originalTitle = details?.originalTitle ?? null
+  const alternativeTitles = buildAlternativeTitles(chineseTitles, series.chinese_title, series.name, originalTitle)
+  const absoluteEpisode = deps.tmdb && tmdbId
+    ? await resolveAbsoluteEpisode(episode.season, episode.episode, deps.tmdb, tmdbId)
     : null
 
   const task: FindSubtitleTask = {
     jobId: String(job.id),
     mediaRoot: dir,
-    videoPath: ctx.media.path,
-    videoFilename: ctx.media.filename,
-    title: ctx.media.title,
-    originalTitle: ctx.media.original_title ?? null,
-    year: ctx.media.year ?? null,
-    season: ctx.media.season ?? null,
-    episode: ctx.media.episode ?? null,
+    videoPath: episode.path,
+    videoFilename: basename(episode.path),
+    title: series.name,
+    originalTitle,
+    year: series.year ?? details?.year ?? null,
+    season: episode.season,
+    episode: episode.episode,
     absoluteEpisode,
-    alternativeTitles: ctx.media.alternative_titles,
-    overview: ctx.media.overview ?? null,
-    runtimeMinutes: ctx.media.runtime_minutes ?? null,
-    providerIds: ctx.media.provider_ids,
+    alternativeTitles,
+    overview: details?.overview ?? null,
+    runtimeMinutes: details?.runtimeMinutes ?? null,
+    providerIds: parseProviderIds(series.provider_ids),
     // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
     // multi-language per-item tasking is future work.
     targetLanguage: deps.targetLanguage ?? 'zh',

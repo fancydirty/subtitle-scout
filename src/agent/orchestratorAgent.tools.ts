@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { PlayerServer } from '../adapters/players/types.js'
+import { tmdbIdFromOwnId } from '../v2/ownIds.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 import { coercibleNullableInt, nullableTolerant } from './coerce.js'
 
@@ -68,18 +68,20 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
  *  reading diagnoseSeason.ts directly. A season with mirrorEpisodeCount <= tmdbEpisodeCount is
  *  reported as NOT a realign candidate; the tool reports that fact, it does not enforce it.
  *
- *  tmdbId is resolved INTERNALLY via a live jf.getItem(seriesId) lookup, NOT taken as a
+ *  tmdbId is resolved INTERNALLY via tmdbIdFromOwnId(seriesId) (src/v2/ownIds.ts), NOT taken as a
  *  model-supplied input — the orchestrator model has no source for a series' tmdbId
  *  (list_missing_coverage rows are {seriesId, season, missing} only), so a model-facing tmdbId
  *  param was uncallable in practice (the model could only fabricate one, which silently always
- *  resolved to exceedsSeasonTable:false). Same house convention as makeDiagnoseSeason
- *  (src/v2/executor.ts:539-546): jf.getItem(seriesId).ProviderIds.Tmdb, NOT
- *  lib.getSeries().provider_ids — that DB column is an unreliable historical mirror, never
- *  written by scanner.ts's normal scan path. */
+ *  resolved to exceedsSeasonTable:false). 去 Jellyfin 化 P4: the id IS the identity now
+ *  (series.id = 'tmdb:<TMDB id>', T2/ownIds.ts) — extracting it is a pure, zero-I/O string parse,
+ *  no more live jf.getItem(seriesId) round-trip to read ProviderIds.Tmdb. This also retires the
+ *  old "lib.getSeries().provider_ids is an unreliable historical mirror" caveat: T3's ingest layer
+ *  (design D5) now writes provider_ids on every row, but that column was never the primary source
+ *  of truth here anyway — the own id embedded in seriesId itself is, and always will be, since the
+ *  id space's whole point is that identity round-trips through the id with zero I/O. */
 export function makeCheckSeriesLayoutTool(
   lib: Pick<LibraryRepo, 'countEpisodesInSeason'>,
   tmdb: Pick<TmdbClient, 'getSeasonTable'>,
-  jf: Pick<PlayerServer, 'getItem'>,
 ) {
   return tool({
     description:
@@ -87,12 +89,11 @@ export function makeCheckSeriesLayoutTool(
       'recorded episode count for that season? Only a TRUE result is even a candidate for ' +
       'dispatch_realign_task — this is the same primary signal diagnoseSeason.ts already uses ' +
       'to rule out realign candidates without spending an LLM call. Resolves the series\' TMDB ' +
-      'id internally via a live Jellyfin lookup — you only need to pass seriesId and season.',
+      'id internally from seriesId itself — you only need to pass seriesId and season.',
     inputSchema: z.object({ seriesId: z.string(), season: z.number().int() }),
     execute: async ({ seriesId, season }) => {
       const mirrorEpisodeCount = lib.countEpisodesInSeason(seriesId, season)
-      const seriesItem = await jf.getItem(seriesId).catch(() => null)
-      const tmdbId = seriesItem?.ProviderIds?.Tmdb
+      const tmdbId = tmdbIdFromOwnId(seriesId)
       if (!tmdbId) {
         return { mirrorEpisodeCount, tmdbEpisodeCount: null, exceedsSeasonTable: false }
       }

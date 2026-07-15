@@ -12,24 +12,22 @@ const shape: BacklogShape = {
   represents: 'one absolute-numbering flat series + one normally-covered series + a missing movie',
   series: [
     {
-      id: 'messy',
-      tmdbId: '100',
+      id: 'tmdb:100',
       seasons: [{ season: 1, episodes: 40, missing: 3, tmdbEpisodeCount: 25 }],
     },
     {
-      id: 'normal',
-      tmdbId: '200',
+      id: 'tmdb:200',
       seasons: [{ season: 1, episodes: 12, missing: 2, tmdbEpisodeCount: 12 }],
     },
   ],
   movies: [{ id: 'mov', missing: true }],
   expected: {
     findSubtitle: [
-      { seriesId: 'messy', season: 1, movieId: null },
-      { seriesId: 'normal', season: 1, movieId: null },
+      { seriesId: 'tmdb:100', season: 1, movieId: null },
+      { seriesId: 'tmdb:200', season: 1, movieId: null },
       { seriesId: null, season: null, movieId: 'mov' },
     ],
-    realignSeriesIds: ['messy'],
+    realignSeriesIds: ['tmdb:100'],
   },
 }
 
@@ -40,28 +38,28 @@ describe('seedBacklog', () => {
 
     seedBacklog(lib, shape)
 
-    expect(lib.countEpisodesInSeason('messy', 1)).toBe(40)
-    expect(lib.countEpisodesInSeason('normal', 1)).toBe(12)
+    expect(lib.countEpisodesInSeason('tmdb:100', 1)).toBe(40)
+    expect(lib.countEpisodesInSeason('tmdb:200', 1)).toBe(12)
 
     const missing = lib.missingBySeason(0)
-    expect(missing.find(m => m.series_id === 'messy' && m.season === 1)?.missing).toBe(3)
-    expect(missing.find(m => m.series_id === 'normal' && m.season === 1)?.missing).toBe(2)
+    expect(missing.find(m => m.series_id === 'tmdb:100' && m.season === 1)?.missing).toBe(3)
+    expect(missing.find(m => m.series_id === 'tmdb:200' && m.season === 1)?.missing).toBe(2)
 
     expect(lib.missingMovies(0).map(m => m.id)).toEqual(['mov'])
   })
 
   it('makeBacklogFakes drives check_series_layout to the shape\'s intended mirror-vs-TMDB relationship', async () => {
-    const { tmdb, jf } = makeBacklogFakes(shape)
+    const { tmdb } = makeBacklogFakes(shape)
     const db = openDb(':memory:')
     const lib = new LibraryRepo(db)
     seedBacklog(lib, shape)
 
-    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
 
-    const messyResult = await checkSeriesLayout.execute!({ seriesId: 'messy', season: 1 }, fakeOpts)
+    const messyResult = await checkSeriesLayout.execute!({ seriesId: 'tmdb:100', season: 1 }, fakeOpts)
     expect(messyResult).toEqual({ mirrorEpisodeCount: 40, tmdbEpisodeCount: 25, exceedsSeasonTable: true })
 
-    const normalResult = await checkSeriesLayout.execute!({ seriesId: 'normal', season: 1 }, fakeOpts)
+    const normalResult = await checkSeriesLayout.execute!({ seriesId: 'tmdb:200', season: 1 }, fakeOpts)
     expect(normalResult).toEqual({ mirrorEpisodeCount: 12, tmdbEpisodeCount: 12, exceedsSeasonTable: false })
   })
 })

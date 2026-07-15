@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { asSchema } from 'ai'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { PlayerServer } from '../adapters/players/types.js'
 import {
   makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeCheckSeriesLayoutTool,
   type DispatchCounter, type MissingCoveragePage,
@@ -191,12 +190,13 @@ describe('dispatch_find_subtitle_task identity validation', () => {
 describe('makeCheckSeriesLayoutTool', () => {
   // Root cause under test: the orchestrator model has NO source for a series' tmdbId
   // (list_missing_coverage rows are {seriesId, season, missing} only) — the tool must resolve
-  // tmdbId itself via a live jf.getItem lookup (the house convention confirmed in
-  // makeDiagnoseSeason, src/v2/executor.ts:539-546), NOT take it as a model-supplied input.
-  it('resolves tmdbId internally via jf.getItem and reports exceedsSeasonTable:true when the mirror overshoots the TMDB season table', async () => {
+  // tmdbId itself, NOT take it as a model-supplied input. 去 Jellyfin 化 P4: this resolution is now
+  // a pure, zero-I/O string parse (tmdbIdFromOwnId, src/v2/ownIds.ts) off the seriesId itself
+  // (own-id space: series.id = 'tmdb:<TMDB id>') — no more live jf.getItem lookup.
+  it('resolves tmdbId internally from seriesId itself and reports exceedsSeasonTable:true when the mirror overshoots the TMDB season table', async () => {
     const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = {
       countEpisodesInSeason: (seriesId, season) => {
-        expect(seriesId).toBe('s1')
+        expect(seriesId).toBe('tmdb:1429')
         expect(season).toBe(2)
         return 30
       },
@@ -207,28 +207,21 @@ describe('makeCheckSeriesLayoutTool', () => {
         return [{ seasonNumber: 2, episodeCount: 12, airDate: null }] as any
       },
     }
-    const jf: Pick<PlayerServer, 'getItem'> = {
-      getItem: async (itemId) => {
-        expect(itemId).toBe('s1')
-        return { ProviderIds: { Tmdb: '1429' } } as any
-      },
-    }
-    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
 
-    const result = await checkSeriesLayout.execute!({ seriesId: 's1', season: 2 }, fakeOpts)
+    const result = await checkSeriesLayout.execute!({ seriesId: 'tmdb:1429', season: 2 }, fakeOpts)
 
     expect(result).toEqual({ mirrorEpisodeCount: 30, tmdbEpisodeCount: 12, exceedsSeasonTable: true })
   })
 
-  it('gracefully reports exceedsSeasonTable:false (never throws) when jf.getItem has no resolvable Tmdb provider id', async () => {
+  it('gracefully reports exceedsSeasonTable:false (never throws) when seriesId does not conform to the tmdb:<id> own-id shape', async () => {
     const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = { countEpisodesInSeason: () => 30 }
     const tmdb: Pick<TmdbClient, 'getSeasonTable'> = {
       getSeasonTable: async () => { throw new Error('must never be called — no tmdbId to look up') },
     }
-    const jf: Pick<PlayerServer, 'getItem'> = { getItem: async () => null as any }
-    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
 
-    const result = await checkSeriesLayout.execute!({ seriesId: 's1', season: 2 }, fakeOpts)
+    const result = await checkSeriesLayout.execute!({ seriesId: 'not-a-tmdb-id', season: 2 }, fakeOpts)
 
     expect(result).toEqual({ mirrorEpisodeCount: 30, tmdbEpisodeCount: null, exceedsSeasonTable: false })
   })
@@ -236,8 +229,7 @@ describe('makeCheckSeriesLayoutTool', () => {
   it('no tmdbId param in the input schema (model cannot fabricate one) — seriesId/season alone validate', async () => {
     const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = { countEpisodesInSeason: () => 0 }
     const tmdb: Pick<TmdbClient, 'getSeasonTable'> = { getSeasonTable: async () => null }
-    const jf: Pick<PlayerServer, 'getItem'> = { getItem: async () => null as any }
-    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
 
     const result = await validate(checkSeriesLayout.inputSchema, { seriesId: 's1', season: 2 })
     expect(result).toEqual({ success: true, value: { seriesId: 's1', season: 2 } })

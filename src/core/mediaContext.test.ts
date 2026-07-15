@@ -1,14 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, chmodSync, readdirSync } from 'node:fs'
+import { mkdtempSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildMediaContext, parsePathMappings, mapPath, mediaDir, isUnderRoots, containingRoot, isDirWritable } from './mediaContext.js'
-import { JellyfinItemsResponseSchema } from '../adapters/players/jellyfin.js'
-import type { JellyfinItem } from '../adapters/players/jellyfin.js'
-
-const item = JellyfinItemsResponseSchema.parse(
-  JSON.parse(readFileSync('fixtures/jellyfin/items-detail.json', 'utf8')),
-).Items[0]
+import { parsePathMappings, mapPath, isUnderRoots, containingRoot, isDirWritable } from './mediaContext.js'
 
 describe('parsePathMappings', () => {
   it('parses comma-separated pairs', () => {
@@ -30,59 +24,6 @@ describe('mapPath', () => {
     const m = [{ from: '/media', to: '/A' }, { from: '/media/movies', to: '/B' }]
     expect(mapPath('/media/movies/x.mkv', m)).toBe('/B/x.mkv')
     expect(mapPath('/media/tv/y.mkv', m)).toBe('/A/tv/y.mkv')
-  })
-})
-
-describe('buildMediaContext', () => {
-  it('maps the recorded movie item to a valid MediaContext', () => {
-    const ctx = buildMediaContext(item, [])
-    expect(ctx.media.title).toBe(item.Name)
-    expect(ctx.media.type).toBe('movie')
-    expect(ctx.media.path).toBe(item.Path)
-    expect(ctx.media.filename).toBe('The.Matrix.1999.1080p.BluRay.x264.mkv')
-    expect(ctx.media.year).toBe(1999)
-    expect(ctx.trigger).toBe('playback_start')
-    expect(ctx.request_id).toContain(item.Id)
-  })
-  it('applies path mapping', () => {
-    const ctx = buildMediaContext(item, [{ from: '/media', to: '/mnt/nas_media' }])
-    expect(ctx.media.path.startsWith('/mnt/nas_media')).toBe(true)
-  })
-  it('maps episode fields (series name as title)', () => {
-    const ep = { ...item, Type: 'Episode', SeriesName: 'Severance', ParentIndexNumber: 2, IndexNumber: 3 }
-    const ctx = buildMediaContext(ep, [])
-    expect(ctx.media.type).toBe('episode')
-    expect(ctx.media.season).toBe(2)
-    expect(ctx.media.episode).toBe(3)
-    expect(ctx.media.title).toBe('Severance')
-  })
-  it('lowercases provider id keys and converts runtime ticks to minutes', () => {
-    const withIds = { ...item, ProviderIds: { Imdb: 'tt0133093', Tmdb: '603' }, RunTimeTicks: 81_600_000_000 }
-    const ctx = buildMediaContext(withIds, [])
-    expect(ctx.media.provider_ids).toEqual({ imdb: 'tt0133093', tmdb: '603' })
-    expect(ctx.media.runtime_minutes).toBe(136)
-  })
-  it('collects existing subtitle streams with source external/embedded', () => {
-    const withSub = { ...item, MediaStreams: [
-      { Type: 'Subtitle', Language: 'eng', Codec: 'subrip', IsExternal: true },
-      { Type: 'Subtitle', Language: 'jpn', Codec: 'ass', IsExternal: false },
-      { Type: 'Audio', Language: 'eng', Codec: 'aac' },
-    ] }
-    const ctx = buildMediaContext(withSub, [])
-    expect(ctx.media.existing_subtitles).toEqual([
-      { language: 'eng', format: 'subrip', source: 'external' },
-      { language: 'jpn', format: 'ass', source: 'embedded' },
-    ])
-  })
-  it('throws on item without Path', () => {
-    expect(() => buildMediaContext({ ...item, Path: null }, [])).toThrow(/path/i)
-  })
-})
-
-describe('mediaDir', () => {
-  it('returns the directory of the mapped media path', () => {
-    const ctx = buildMediaContext(item, [])
-    expect(mediaDir(ctx)).toBe('/media/movies/The Matrix (1999)')
   })
 })
 
@@ -118,55 +59,6 @@ describe('containingRoot', () => {
     const roots = ['/mnt/media', '/mnt/media/tv']
     expect(containingRoot('/mnt/media/tv/Show/x.mkv', roots)).toBe('/mnt/media/tv')
     expect(containingRoot('/mnt/media/movies/x.mkv', roots)).toBe('/mnt/media')
-  })
-})
-
-function baseMovie(overrides: Partial<JellyfinItem> = {}): JellyfinItem {
-  return {
-    Id: 'm1', Name: 'Shelby Oaks', Type: 'Movie', Path: '/media/movies/Shelby Oaks (2024)/x.mkv',
-    ProductionYear: 2024, OriginalTitle: 'Shelby Oaks', Overview: 'A woman searches for her sister.',
-    ...overrides,
-  } as JellyfinItem
-}
-
-describe('buildMediaContext enrichment', () => {
-  it('sets overview from item.Overview and defaults alternative_titles to []', () => {
-    const ctx = buildMediaContext(baseMovie(), [])
-    expect(ctx.media.overview).toBe('A woman searches for her sister.')
-    expect(ctx.media.alternative_titles).toEqual([])
-  })
-  it('adds a distinct chinese title to alternative_titles', () => {
-    const ctx = buildMediaContext(baseMovie(), [], { chineseTitle: '寻踪迷镇' })
-    expect(ctx.media.alternative_titles).toEqual(['寻踪迷镇'])
-  })
-  it('drops a chinese title equal to the display or original title', () => {
-    const ctx = buildMediaContext(baseMovie(), [], { chineseTitle: 'Shelby Oaks' })
-    expect(ctx.media.alternative_titles).toEqual([])
-  })
-  it('tolerates missing Overview and null enrichment', () => {
-    const ctx = buildMediaContext(baseMovie({ Overview: null }), [], { chineseTitle: null })
-    expect(ctx.media.overview).toBeNull()
-    expect(ctx.media.alternative_titles).toEqual([])
-  })
-  it('merges TMDB chineseTitles (official first) ahead of jellyfin fallback, deduped', () => {
-    const ctx = buildMediaContext(baseMovie(), [], {
-      chineseTitles: ['爱，死亡和机器人', '爱死亡与机器人'],
-      chineseTitle: '爱死亡与机器人', // 与变体重复 → 去重
-    })
-    expect(ctx.media.alternative_titles).toEqual([
-      '爱，死亡和机器人',
-      '爱死亡与机器人',
-    ])
-  })
-  it('drops chineseTitles equal to display/original title', () => {
-    const ctx = buildMediaContext(baseMovie(), [], {
-      chineseTitles: ['Shelby Oaks', '寻踪迷镇'],
-    })
-    expect(ctx.media.alternative_titles).toEqual(['寻踪迷镇'])
-  })
-  it('populates from chineseTitles alone (no jellyfin fallback)', () => {
-    const ctx = buildMediaContext(baseMovie(), [], { chineseTitles: ['寻踪迷镇'] })
-    expect(ctx.media.alternative_titles).toEqual(['寻踪迷镇'])
   })
 })
 

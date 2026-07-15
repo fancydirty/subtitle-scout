@@ -130,7 +130,7 @@ function buildIngestPass(opts: {
  *  也需要真实 TmdbClient 才能识别文件——手动触发的全仓校验若因为缺 key 而悄悄只做一半，
  *  会让使用者误以为已经跑过完整校验——所以这里直接报错退出，同 requireEnv 的硬依赖语义一致。 */
 async function cmdReconcileAll() {
-  const { jf, mappings, tmdb, reasoningModel, cacheRoot } = await assemble()
+  const { mappings, tmdb, reasoningModel, cacheRoot } = await assemble()
   if (!tmdb) {
     console.error('reconcile-all requires TMDB_API_KEY（orchestrator 的 check_series_layout 工具与摄取层都需要真实 TMDB 数据）— 请在 .env 里配置')
     process.exit(2)
@@ -149,7 +149,7 @@ async function cmdReconcileAll() {
     log: (msg) => console.log(`[reconcile-all] ${msg}`),
   })
   const decision = await runReconcileAll({
-    ingest, lib, jobs, model: reasoningModel, tmdb, jf,
+    ingest, lib, jobs, model: reasoningModel, tmdb,
     now: () => Date.now(), orchestratorJobId: null,
   })
   console.log(
@@ -264,10 +264,14 @@ async function cmdWatch() {
   // 目录）才是 agent 自己受限的内层沙盒——两者不是同一个东西，见 findSubtitleWorkerTask.ts
   // 的 FindSubtitleTaskMapperDeps 注释。adapters 每次 claim 现建（同旧管线每次子进程重建一次
   // 的成本量级，非新增开销）。
+  // 去 Jellyfin 化 P4: findSubtitleWorkerTaskDeps no longer threads jf/mappings — episodes.path/
+  // movies.path are already local filesystem paths (T3's ingest layer walks the filesystem
+  // directly), so the mapper no longer needs a Jellyfin item lookup or MEDIA_PATH_MAPPINGS
+  // translation (see src/v2/findSubtitleWorkerTask.ts's FindSubtitleTaskMapperDeps doc comment).
   const findSubtitleWorkerTaskDeps = {
     // targetLanguage: A4, the PRIMARY configured target — same single-valued note as
     // realignRunEpisode above.
-    lib, jf, tmdb, mappings, mediaRoots: roots, targetLanguage: targetLanguages[0],
+    lib, tmdb, mediaRoots: roots, targetLanguage: targetLanguages[0],
     // 退役T1 (W0-3a): v3 worker_task runners previously wrote NOTHING to `runs` — only the old
     // pipeline did — so the dashboard's run-history timeline went dark for v3-produced work.
     // Threading the same RunsRepo instance cmdWatch already builds for the old pipeline gives
@@ -276,8 +280,9 @@ async function cmdWatch() {
   }
 
   // orchestrator 依赖（v3 phase ⑦）：sibling-orchestrator worker_task（taskType==='orchestrate'）
-  // 同样门在 tmdb——makeOrchestratorAgent 的 check_series_layout 工具需要真实 TmdbClient。
-  const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, jf, model: reasoningModel, now: () => Date.now() } : undefined
+  // 同样门在 tmdb——makeOrchestratorAgent 的 check_series_layout 工具需要真实 TmdbClient。去
+  // Jellyfin 化 P4 起不再需要 jf——tmdbId 直接从 seriesId 自身解析（src/v2/ownIds.ts）。
+  const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, model: reasoningModel, now: () => Date.now() } : undefined
 
   // 去 Jellyfin 化 T4：ingest 心跳依赖——v2/ingest.ts 的 makeIngestPass 顶替旧的机械 scan()
   // + B2 self-scan refresh-bridge 两条独立分支。tmdb 在函数顶部已经 requireEnv 过，这里
@@ -401,7 +406,7 @@ async function cmdWatch() {
   // 工具需要真实 TmdbClient；未配置时 startDashboard 收到 undefined，端点返回 503（不是崩溃/悬空）。
   const reconcileAllClosure = tmdb
     ? () => runReconcileAll({
-        ingest: ingestPass, lib, jobs, model: reasoningModel, tmdb, jf,
+        ingest: ingestPass, lib, jobs, model: reasoningModel, tmdb,
         now: () => Date.now(), orchestratorJobId: null,
       })
     : undefined

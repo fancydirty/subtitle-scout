@@ -10,7 +10,6 @@ import {
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { PlayerServer } from '../adapters/players/types.js'
 
 // NOTE (advisory, phase ⑦): every field here is the model's OWN self-report of what it did this
 // pass, not a DB-derived count re-tallied from the jobs table after the fact — a model could in
@@ -29,7 +28,6 @@ export interface OrchestratorAgentDeps {
   model: LanguageModel
   lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'countEpisodesInSeason'>
   tmdb: Pick<TmdbClient, 'getSeasonTable'>
-  jf: Pick<PlayerServer, 'getItem'>
   jobs: Pick<JobsRepo, 'upsertWorkerTask' | 'get'>
   now: () => number
   /** null for the root orchestrator (triggered directly, phase ⑦); set to the claiming job's
@@ -73,7 +71,7 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
       // code-level, zero-false-trigger ("正常库零误触发") gate is executeRealign downstream
       // (phase ⑥) — that is the intended safety net: the model decides dispatch, executeRealign
       // is what must never misfire on an already-aligned library.
-      check_series_layout: makeCheckSeriesLayoutTool(deps.lib, deps.tmdb, deps.jf),
+      check_series_layout: makeCheckSeriesLayoutTool(deps.lib, deps.tmdb),
       dispatch_find_subtitle_task: makeDispatchFindSubtitleTaskTool(
         { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
       ),

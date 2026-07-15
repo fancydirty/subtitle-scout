@@ -1,6 +1,6 @@
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { PlayerServer } from '../adapters/players/types.js'
+import { tmdbIdFromOwnId } from '../v2/ownIds.js'
 
 export interface BacklogSeasonSpec {
   season: number
@@ -12,9 +12,13 @@ export interface BacklogSeasonSpec {
   tmdbEpisodeCount: number | null
 }
 export interface BacklogSeriesSpec {
+  /** 去 Jellyfin 化 P2/P4: own-id space series id ('tmdb:<TMDB id>', see src/v2/ownIds.ts). The
+   *  TMDB id lives INSIDE this id (no separate tmdbId field any more) — makeCheckSeriesLayoutTool
+   *  extracts it via tmdbIdFromOwnId(id), a pure string parse with zero I/O. Build it with
+   *  ownIds.seriesId(tmdbId), e.g. seriesId('10') === 'tmdb:10'. A non-conforming id (not matching
+   *  the 'tmdb:<id>' shape) is a valid way to exercise the tool's graceful degraded path
+   *  (tmdbIdFromOwnId returns null → exceedsSeasonTable:false, never throws). */
   id: string
-  /** faked jf.getItem(id) returns { ProviderIds: { Tmdb: tmdbId } }; null = unresolvable. */
-  tmdbId: string | null
   seasons: BacklogSeasonSpec[]
 }
 export interface BacklogMovieSpec { id: string; missing: boolean }
@@ -63,28 +67,22 @@ export function seedBacklog(lib: LibraryRepo, shape: BacklogShape): void {
   }
 }
 
-/** Build tmdb/jf fakes so check_series_layout sees the shape's intended mirror-vs-TMDB relationship. */
+/** Build a tmdb fake so check_series_layout sees the shape's intended mirror-vs-TMDB relationship.
+ *  去 Jellyfin 化 P4: no more `jf` fake — the tool resolves tmdbId straight out of seriesId itself
+ *  (tmdbIdFromOwnId), so there's nothing left for a Jellyfin lookup to fake. */
 export function makeBacklogFakes(shape: BacklogShape): {
   tmdb: Pick<TmdbClient, 'getSeasonTable'>
-  jf: Pick<PlayerServer, 'getItem'>
 } {
   const seasonTableByTmdbId = new Map<string, { seasonNumber: number; episodeCount: number; airDate: null }[]>()
-  const tmdbIdBySeries = new Map<string, string | null>()
   for (const s of shape.series) {
-    tmdbIdBySeries.set(s.id, s.tmdbId)
-    if (s.tmdbId != null) {
-      seasonTableByTmdbId.set(s.tmdbId, s.seasons
+    const tmdbId = tmdbIdFromOwnId(s.id)
+    if (tmdbId != null) {
+      seasonTableByTmdbId.set(tmdbId, s.seasons
         .filter(se => se.tmdbEpisodeCount != null)
         .map(se => ({ seasonNumber: se.season, episodeCount: se.tmdbEpisodeCount!, airDate: null })))
     }
   }
   return {
     tmdb: { getSeasonTable: async (tmdbId: string) => seasonTableByTmdbId.get(tmdbId) ?? null },
-    jf: {
-      getItem: async (id: string) => {
-        const tmdbId = tmdbIdBySeries.get(id)
-        return (tmdbId != null ? { ProviderIds: { Tmdb: tmdbId } } : null) as any
-      },
-    },
   }
 }

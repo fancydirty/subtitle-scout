@@ -1,7 +1,5 @@
-import { basename, dirname, resolve, sep } from 'node:path'
+import { resolve, sep } from 'node:path'
 import { writeFileSync, unlinkSync } from 'node:fs'
-import { MediaContextSchema, type MediaContext } from './schemas.js'
-import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 
 export interface PathMapping { from: string; to: string }
 
@@ -19,57 +17,6 @@ export function mapPath(path: string, mappings: PathMapping[]): string {
   const hit = [...mappings].sort((a, b) => b.from.length - a.from.length)
     .find(m => path.startsWith(m.from))
   return hit ? hit.to + path.slice(hit.from.length) : path
-}
-
-const TICKS_PER_MINUTE = 600_000_000
-
-export function buildMediaContext(
-  item: JellyfinItem,
-  mappings: PathMapping[],
-  enrichment: { chineseTitle?: string | null; chineseTitles?: string[] } = {},
-): MediaContext {
-  if (!item.Path) throw new Error(`jellyfin item ${item.Id} has no Path`)
-  const path = mapPath(item.Path, mappings)
-  const isEpisode = item.Type === 'Episode'
-  const title = isEpisode ? (item.SeriesName ?? item.Name) : item.Name
-  // TMDB 变体（官方译名优先）在前、jellyfin 单译名 fallback 在后；去空、去与主/原名重复、去重。
-  const alternative_titles = [...(enrichment.chineseTitles ?? []), enrichment.chineseTitle]
-    .filter((t): t is string =>
-      !!t && t.trim().length > 0 && t !== title && t !== item.OriginalTitle)
-    .filter((t, i, arr) => arr.indexOf(t) === i)
-  return MediaContextSchema.parse({
-    request_id: `jf-${item.Id}-${Date.now()}`,
-    trigger: 'playback_start',
-    media: {
-      type: isEpisode ? 'episode' : 'movie',
-      path,
-      filename: basename(path),
-      title,
-      original_title: item.OriginalTitle ?? null,
-      year: item.ProductionYear ?? null,
-      season: item.ParentIndexNumber ?? null,
-      episode: item.IndexNumber ?? null,
-      runtime_minutes: item.RunTimeTicks ? Math.round(item.RunTimeTicks / TICKS_PER_MINUTE) : null,
-      provider_ids: Object.fromEntries(
-        Object.entries(item.ProviderIds ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
-      ),
-      production_locations: item.ProductionLocations ?? [],
-      alternative_titles,
-      overview: item.Overview ?? null,
-      existing_subtitles: (item.MediaStreams ?? [])
-        .filter(s => s.Type === 'Subtitle')
-        .map(s => ({
-          language: s.Language ?? 'und',
-          format: s.Codec ?? 'unknown',
-          source: s.IsExternal ? 'external' : 'embedded',
-        })),
-    },
-    preferences: {},
-  })
-}
-
-export function mediaDir(ctx: MediaContext): string {
-  return dirname(ctx.media.path)
 }
 
 /** path 是否位于任一 root 之下（或恰为 root）。roots 为空 → 视为不限制，返回 true */

@@ -10,36 +10,36 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
   {
     name: 'clean',
     represents: 'a fully-covered library — nothing to dispatch',
-    series: [{ id: 'ok', tmdbId: '1', seasons: [{ season: 1, episodes: 12, missing: 0, tmdbEpisodeCount: 12 }] }],
+    series: [{ id: 'tmdb:1', seasons: [{ season: 1, episodes: 12, missing: 0, tmdbEpisodeCount: 12 }] }],
     movies: [{ id: 'okmov', missing: false }],
     expected: { findSubtitle: [], realignSeriesIds: [] },
   },
   {
     name: 'normal-missing',
     represents: 'a normal series with a handful of missing episodes in one season — find_subtitle only',
-    series: [{ id: 'norm', tmdbId: '2', seasons: [{ season: 1, episodes: 12, missing: 3, tmdbEpisodeCount: 12 }] }],
+    series: [{ id: 'tmdb:2', seasons: [{ season: 1, episodes: 12, missing: 3, tmdbEpisodeCount: 12 }] }],
     movies: [],
-    expected: { findSubtitle: [{ seriesId: 'norm', season: 1, movieId: null }], realignSeriesIds: [] },
+    expected: { findSubtitle: [{ seriesId: 'tmdb:2', season: 1, movieId: null }], realignSeriesIds: [] },
   },
   {
     name: 'messy-realign',
     represents: 'an absolute-numbering flat series whose mirror overshoots the TMDB season table — realign, not find_subtitle',
-    series: [{ id: 'mess', tmdbId: '3', seasons: [{ season: 1, episodes: 40, missing: 3, tmdbEpisodeCount: 25 }] }],
+    series: [{ id: 'tmdb:3', seasons: [{ season: 1, episodes: 40, missing: 3, tmdbEpisodeCount: 25 }] }],
     movies: [],
-    expected: { findSubtitle: [], realignSeriesIds: ['mess'] },
+    expected: { findSubtitle: [], realignSeriesIds: ['tmdb:3'] },
   },
   {
     name: 'one-season',
     represents: 'a single season entirely missing (e.g. a freshly-added series) — find_subtitle only',
-    series: [{ id: 's', tmdbId: '4', seasons: [{ season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] }],
+    series: [{ id: 'tmdb:4', seasons: [{ season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] }],
     movies: [],
-    expected: { findSubtitle: [{ seriesId: 's', season: 2, movieId: null }], realignSeriesIds: [] },
+    expected: { findSubtitle: [{ seriesId: 'tmdb:4', season: 2, movieId: null }], realignSeriesIds: [] },
   },
   {
     name: 'mixed-partial-and-full',
     represents: 'one series with a fully-missing season, a partially-missing season, and a fully-covered season — find_subtitle for the two incomplete seasons only',
     series: [{
-      id: 'mix', tmdbId: '5',
+      id: 'tmdb:5',
       seasons: [
         { season: 1, episodes: 12, missing: 12, tmdbEpisodeCount: 12 },
         { season: 2, episodes: 12, missing: 2, tmdbEpisodeCount: 12 },
@@ -49,8 +49,8 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
     movies: [],
     expected: {
       findSubtitle: [
-        { seriesId: 'mix', season: 1, movieId: null },
-        { seriesId: 'mix', season: 2, movieId: null },
+        { seriesId: 'tmdb:5', season: 1, movieId: null },
+        { seriesId: 'tmdb:5', season: 2, movieId: null },
       ],
       realignSeriesIds: [],
     },
@@ -59,7 +59,7 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
     name: 'realign-and-find-same-series',
     represents: 'one series where season 1 is a messy realign candidate and season 2 is a normal missing-episodes season — a realign-candidate series gets a realign dispatch and NOTHING else this pass; its season-2 find is DEFERRED to a later pass (after realign restructures the layout and the rescan refreshes the living-doc), so dispatching find now would target files about to move',
     series: [{
-      id: 'both', tmdbId: '6',
+      id: 'tmdb:6',
       seasons: [
         { season: 1, episodes: 40, missing: 3, tmdbEpisodeCount: 25 },
         { season: 2, episodes: 12, missing: 4, tmdbEpisodeCount: 12 },
@@ -69,7 +69,7 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
     expected: {
       // find DEFERRED — a realign-candidate series gets realign only this pass (see orchestratorSkill.ts step 2).
       findSubtitle: [],
-      realignSeriesIds: ['both'],
+      realignSeriesIds: ['tmdb:6'],
     },
   },
   {
@@ -82,7 +82,7 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
       '100-dispatch run just to reach the cap.',
     capOverride: 2,
     series: [{
-      id: 'spill', tmdbId: '7',
+      id: 'tmdb:7',
       seasons: [
         { season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
         { season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },

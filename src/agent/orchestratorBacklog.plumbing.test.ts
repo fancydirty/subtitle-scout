@@ -62,14 +62,14 @@ const shape: BacklogShape = {
   name: 'plumbing-mixed',
   represents: 'two normal series each missing one season + a missing movie — deterministic dispatch plumbing check',
   series: [
-    { id: 'a', tmdbId: '10', seasons: [{ season: 1, episodes: 12, missing: 4, tmdbEpisodeCount: 12 }] },
-    { id: 'b', tmdbId: '20', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+    { id: 'tmdb:10', seasons: [{ season: 1, episodes: 12, missing: 4, tmdbEpisodeCount: 12 }] },
+    { id: 'tmdb:20', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
   ],
   movies: [{ id: 'm1', missing: true }],
   expected: {
     findSubtitle: [
-      { seriesId: 'a', season: 1, movieId: null },
-      { seriesId: 'b', season: 1, movieId: null },
+      { seriesId: 'tmdb:10', season: 1, movieId: null },
+      { seriesId: 'tmdb:20', season: 1, movieId: null },
       { seriesId: null, season: null, movieId: 'm1' },
     ],
     realignSeriesIds: [],
@@ -83,7 +83,7 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
     const jobs = new JobsRepo(db)
     const lib = new LibraryRepo(db)
     seedBacklog(lib, shape)
-    const { tmdb, jf } = makeBacklogFakes(shape)
+    const { tmdb } = makeBacklogFakes(shape)
 
     let call = 0
     const model1 = new MockLanguageModelV4({
@@ -91,12 +91,12 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
         call++
         if (call === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 'a', season: 1, movieId: null, reason: 'missing season 1 for a',
+            seriesId: 'tmdb:10', season: 1, movieId: null, reason: 'missing season 1 for a',
           })
         }
         if (call === 2) {
           return toolCallResult('c2', 'dispatch_find_subtitle_task', {
-            seriesId: 'b', season: 1, movieId: null, reason: 'missing season 1 for b',
+            seriesId: 'tmdb:20', season: 1, movieId: null, reason: 'missing season 1 for b',
           })
         }
         if (call === 3) {
@@ -112,7 +112,7 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
     })
 
     const runPass1 = makeOrchestratorAgent({
-      model: model1, lib, tmdb, jf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 20,
+      model: model1, lib, tmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 20,
     })
     const decision1 = await runPass1()
 
@@ -141,7 +141,7 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
         call2++
         if (call2 === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 'a', season: 1, movieId: null, reason: 're-dispatch same identity',
+            seriesId: 'tmdb:10', season: 1, movieId: null, reason: 're-dispatch same identity',
           })
         }
         return finalizeResult({
@@ -152,7 +152,7 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
     })
 
     const runPass2 = makeOrchestratorAgent({
-      model: model2, lib, tmdb, jf, jobs, now: () => 2000, orchestratorJobId: null, stepCap: 20,
+      model: model2, lib, tmdb, jobs, now: () => 2000, orchestratorJobId: null, stepCap: 20,
     })
     await runPass2()
 
@@ -175,7 +175,7 @@ const capShape: BacklogShape = {
     'dispatch cap at a low, cheap-to-test override',
   capOverride: 2,
   series: [{
-    id: 'cap', tmdbId: '30',
+    id: 'tmdb:30',
     seasons: [
       { season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
       { season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
@@ -194,7 +194,7 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
     const jobs = new JobsRepo(db)
     const lib = new LibraryRepo(db)
     seedBacklog(lib, capShape)
-    const { tmdb, jf } = makeBacklogFakes(capShape)
+    const { tmdb } = makeBacklogFakes(capShape)
 
     let call = 0
     const model = new MockLanguageModelV4({
@@ -202,17 +202,17 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
         call++
         if (call === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 'cap', season: 1, movieId: null, reason: 'missing season 1',
+            seriesId: 'tmdb:30', season: 1, movieId: null, reason: 'missing season 1',
           })
         }
         if (call === 2) {
           return toolCallResult('c2', 'dispatch_find_subtitle_task', {
-            seriesId: 'cap', season: 2, movieId: null, reason: 'missing season 2',
+            seriesId: 'tmdb:30', season: 2, movieId: null, reason: 'missing season 2',
           })
         }
         if (call === 3) {
           return toolCallResult('c3', 'dispatch_find_subtitle_task', {
-            seriesId: 'cap', season: 3, movieId: null, reason: 'missing season 3',
+            seriesId: 'tmdb:30', season: 3, movieId: null, reason: 'missing season 3',
           })
         }
         // Step 4: the model has just seen c3's tool-result — assert it really is the
@@ -231,7 +231,7 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
     })
 
     const runPass = makeOrchestratorAgent({
-      model, lib, tmdb, jf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 20,
+      model, lib, tmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 20,
       maxDispatchesPerOrchestrator: 2,
     })
     await runPass()

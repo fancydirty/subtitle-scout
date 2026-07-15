@@ -24,8 +24,8 @@ describe('ORCHESTRATOR_BACKLOG_SHAPES', () => {
       const db = openDb(':memory:')
       const lib = new LibraryRepo(db)
       seedBacklog(lib, shape)
-      const { tmdb, jf } = makeBacklogFakes(shape)
-      const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb, jf)
+      const { tmdb } = makeBacklogFakes(shape)
+      const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
 
       for (const series of shape.series) {
         const results = await Promise.all(

@@ -5,7 +5,6 @@ import { openDb } from '../v2/db.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { PlayerServer } from '../adapters/players/types.js'
 import { makeOrchestratorAgent } from './orchestratorAgent.js'
 
 function toolCallResult(toolCallId: string, toolName: string, input: unknown) {
@@ -56,11 +55,6 @@ const fakeTmdb: Pick<TmdbClient, 'getSeasonTable'> = {
   getSeasonTable: async () => null,
 }
 
-// check_series_layout's tmdbId resolution path is exercised directly in
-// orchestratorAgent.tools.test.ts — these orchestrator-loop tests never call that tool, so a
-// jf that never resolves a Tmdb id (and would thus never be asked to look one up) is sufficient.
-const fakeJf: Pick<PlayerServer, 'getItem'> = { getItem: async () => null as any }
-
 let jobs: JobsRepo
 let lib: LibraryRepo
 
@@ -79,7 +73,7 @@ describe('makeOrchestratorAgent', () => {
     })
 
     const runPass = makeOrchestratorAgent({
-      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: 999999, stepCap: 10,
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: 999999, stepCap: 10,
     })
 
     await expect(runPass()).rejects.toThrow(/orchestratorJobId=999999 does not reference an existing jobs row/)
@@ -117,7 +111,7 @@ describe('makeOrchestratorAgent', () => {
     })
 
     const runPass = makeOrchestratorAgent({
-      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
     })
 
     const decision = await runPass()
@@ -176,7 +170,7 @@ describe('makeOrchestratorAgent', () => {
     })
 
     const runPass = makeOrchestratorAgent({
-      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
       maxDispatchesPerOrchestrator: 2,
     })
 
@@ -213,7 +207,7 @@ describe('makeOrchestratorAgent', () => {
     })
 
     const runPass = makeOrchestratorAgent({
-      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
     })
 
     await runPass()
@@ -248,7 +242,7 @@ describe('makeOrchestratorAgent', () => {
     })
 
     const runPass = makeOrchestratorAgent({
-      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
     })
 
     await runPass()
@@ -297,7 +291,7 @@ describe('makeOrchestratorAgent', () => {
     })
 
     const runPass = makeOrchestratorAgent({
-      model, lib, tmdb: fakeTmdb, jf: fakeJf, jobs, now: () => 1000, orchestratorJobId: parentJob.id, stepCap: 10,
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: parentJob.id, stepCap: 10,
       maxDispatchesPerOrchestrator: 2,
     })
 

@@ -2,7 +2,6 @@ import type { LanguageModel } from 'ai'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import { makeOrchestratorAgent, type OrchestratorDecision, type OrchestratorAgentDeps } from '../agent/orchestratorAgent.js'
-import type { PlayerServer } from '../adapters/players/types.js'
 
 export interface ReconcileAllDeps {
   /** 去 Jellyfin 化 T4：摄取 pass（v2/ingest.ts 的 makeIngestPass 预绑定结果，调用方
@@ -19,9 +18,6 @@ export interface ReconcileAllDeps {
   jobs: OrchestratorAgentDeps['jobs']
   model: LanguageModel
   tmdb: OrchestratorAgentDeps['tmdb']
-  /** orchestrator 自己的 check_series_layout 等工具用（makeOrchestratorAgent 的既有依赖，
-   *  未随本次改动变化）——摄取层不再需要它，`getItemsPage` 那半 Pick 随 scanLibrary 一起消失。 */
-  jf: Pick<PlayerServer, 'getItem'>
   now: () => number
   /** null for the root pass (CLI `reconcile-all` / dashboard button, phase ⑦); a real jobs row
    *  id when this run IS a sibling orchestrator claimed off the jobs table (see
@@ -42,7 +38,6 @@ export async function runReconcileAll(deps: ReconcileAllDeps): Promise<Orchestra
     model: deps.model,
     lib: deps.lib,
     tmdb: deps.tmdb,
-    jf: deps.jf,
     jobs: deps.jobs,
     now: deps.now,
     orchestratorJobId: deps.orchestratorJobId,
@@ -55,7 +50,6 @@ export async function runReconcileAll(deps: ReconcileAllDeps): Promise<Orchestra
 export interface OrchestrateWorkerTaskDeps {
   lib: OrchestratorAgentDeps['lib']
   tmdb: OrchestratorAgentDeps['tmdb']
-  jf: Pick<PlayerServer, 'getItem'>
   model: LanguageModel
   now: () => number
   stepCap?: number
@@ -74,7 +68,7 @@ export async function runOrchestrateWorkerTask(
 ): Promise<OrchestratorDecision | null> {
   try {
     const runPass = makeOrchestratorAgent({
-      model: deps.model, lib: deps.lib, tmdb: deps.tmdb, jf: deps.jf, jobs, now: deps.now, orchestratorJobId: job.id,
+      model: deps.model, lib: deps.lib, tmdb: deps.tmdb, jobs, now: deps.now, orchestratorJobId: job.id,
       stepCap: deps.stepCap, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator,
     })
     const decision = await runPass()
