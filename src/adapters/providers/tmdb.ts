@@ -34,8 +34,30 @@ export interface SeasonTableEntry { seasonNumber: number; episodeCount: number; 
  *  (tv: name/first_air_date; movie: title/release_date — TMDB's own field-naming split).
  *  originalTitle = tv original_name / movie original_title (the title in the work's own language,
  *  e.g. a CJK name) — C3's clean-title tiebreak matches queries against it too, so a CJK query
- *  can hit a work whose display title is localized. Missing/blank → null. */
-export interface TmdbSearchHit { id: number; title: string; originalTitle: string | null; year: number | null }
+ *  can hit a work whose display title is localized. Missing/blank → null.
+ *  posterPath = TMDB image path (e.g. '/dqZEN...jpg', web 端自拼 CDN URL 前缀) — 去 Jellyfin 化
+ *  P3（design: docs/design/2026-07-16-de-jellyfin-design.md §P3）新增字段，供 ingest 层落
+ *  series/movies.poster_path。Missing/blank → null，同其余字段口径。 */
+export interface TmdbSearchHit {
+  id: number
+  title: string
+  originalTitle: string | null
+  year: number | null
+  posterPath: string | null
+}
+
+/** `/tv/{id}` `/movie/{id}` 详情端点归一化——去 Jellyfin 化 P3 新增，供 ingest 层一次性补全
+ *  series/movies 行的展示元数据（目前只有 posterPath/year 落库；overview/runtimeMinutes/
+ *  originalTitle 是通用详情面，供未来消费方使用，T3 本身不落这两列——schema v9 没有对应列）。
+ *  tv: episode_run_time?.[0]/first_air_date 年份/original_name；movie: runtime/release_date
+ *  年份/original_title——TMDB 两端点自己的字段名分裂，不是本类型的选择。 */
+export interface TmdbDetails {
+  overview: string | null
+  runtimeMinutes: number | null
+  posterPath: string | null
+  originalTitle: string | null
+  year: number | null
+}
 
 interface ItemLike {
   Type?: string | null
@@ -315,9 +337,46 @@ export class TmdbClient {
         const originalTitle = typeof rawOriginal === 'string' && rawOriginal ? rawOriginal : null
         const dateStr = mediaType === 'tv' ? r.first_air_date : r.release_date
         const year = typeof dateStr === 'string' && dateStr.length >= 4 ? Number(dateStr.slice(0, 4)) : null
-        return { id, title, originalTitle, year: Number.isFinite(year) ? year : null }
+        const rawPoster = r.poster_path
+        const posterPath = typeof rawPoster === 'string' && rawPoster ? rawPoster : null
+        return { id, title, originalTitle, year: Number.isFinite(year) ? year : null, posterPath }
       })
       .filter((h): h is TmdbSearchHit => h !== null)
+  }
+
+  /**
+   * 详情端点(`/tv/{id}` `/movie/{id}`)——去 Jellyfin 化 P3：识别命中后顺手拉 overview/runtime/
+   * poster/originalTitle/year 一次性补全展示元数据。语义同 getSeasonTable/getOriginLanguage：
+   * 404→null(真·无数据，脏/过期 TMDB id 是永久态)；其余失败(网络/超时/非 2xx/非 JSON)→
+   * 抛 TmdbRequestFailedError(瞬时，可重试，调用方绝不能当无数据静默降级/负缓存)。
+   */
+  async getDetails(mediaType: 'tv' | 'movie', tmdbId: string): Promise<TmdbDetails | null> {
+    const d = await this.getJsonStrict(`/${mediaType}/${tmdbId}`)
+    if (!d) return null
+
+    const overview = typeof d.overview === 'string' && d.overview ? d.overview : null
+    const rawPoster = d.poster_path
+    const posterPath = typeof rawPoster === 'string' && rawPoster ? rawPoster : null
+
+    let runtimeMinutes: number | null = null
+    let originalTitle: string | null = null
+    let year: number | null = null
+    if (mediaType === 'tv') {
+      const ert = d.episode_run_time
+      if (Array.isArray(ert) && typeof ert[0] === 'number') runtimeMinutes = ert[0]
+      const rawOriginal = d.original_name
+      originalTitle = typeof rawOriginal === 'string' && rawOriginal ? rawOriginal : null
+      const dateStr = d.first_air_date
+      year = typeof dateStr === 'string' && dateStr.length >= 4 ? Number(dateStr.slice(0, 4)) : null
+    } else {
+      runtimeMinutes = typeof d.runtime === 'number' ? d.runtime : null
+      const rawOriginal = d.original_title
+      originalTitle = typeof rawOriginal === 'string' && rawOriginal ? rawOriginal : null
+      const dateStr = d.release_date
+      year = typeof dateStr === 'string' && dateStr.length >= 4 ? Number(dateStr.slice(0, 4)) : null
+    }
+
+    return { overview, runtimeMinutes, posterPath, originalTitle, year: Number.isFinite(year) ? year : null }
   }
 }
 

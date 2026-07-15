@@ -478,6 +478,76 @@ describe('TmdbClient.getAbsoluteOrder', () => {
   })
 })
 
+describe('TmdbClient.getDetails', () => {
+  it('tv: episode_run_time[0]/first_air_date 年份/original_name/poster_path/overview', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      expect(new URL(String(url)).pathname).toBe('/3/tv/108964')
+      return new Response(JSON.stringify({
+        overview: 'A family of spies.',
+        episode_run_time: [24, 25],
+        first_air_date: '2022-04-09',
+        original_name: 'SPY×FAMILY',
+        poster_path: '/abc123.jpg',
+      }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getDetails('tv', '108964')).toEqual({
+      overview: 'A family of spies.',
+      runtimeMinutes: 24,
+      posterPath: '/abc123.jpg',
+      originalTitle: 'SPY×FAMILY',
+      year: 2022,
+    })
+  })
+
+  it('movie: runtime/release_date 年份/original_title/poster_path/overview', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      expect(new URL(String(url)).pathname).toBe('/3/movie/603')
+      return new Response(JSON.stringify({
+        overview: 'A computer hacker learns...',
+        runtime: 136,
+        release_date: '1999-03-30',
+        original_title: 'The Matrix',
+        poster_path: '/matrix.jpg',
+      }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getDetails('movie', '603')).toEqual({
+      overview: 'A computer hacker learns...',
+      runtimeMinutes: 136,
+      posterPath: '/matrix.jpg',
+      originalTitle: 'The Matrix',
+      year: 1999,
+    })
+  })
+
+  it('missing/blank fields → all null (not crash)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getDetails('tv', '1')).toEqual({
+      overview: null, runtimeMinutes: null, posterPath: null, originalTitle: null, year: null,
+    })
+  })
+
+  it('404 → null（真·无数据，不是失败）', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getDetails('movie', '999999')).toBeNull()
+  })
+
+  it('网络故障 → 抛 TmdbRequestFailedError（瞬时，可重试，绝不当无数据静默降级）', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED') })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getDetails('tv', '108964')).rejects.toThrow(TmdbRequestFailedError)
+  })
+
+  it('非 2xx（非 404）→ 抛 TmdbRequestFailedError', async () => {
+    const fetchImpl = vi.fn(async () => new Response('server error', { status: 500 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getDetails('tv', '108964')).rejects.toThrow(TmdbRequestFailedError)
+  })
+})
+
 describe('TmdbClient.search', () => {
   it('tv: hits normalized from name/first_air_date, hits /search/tv with URL-encoded query', async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
@@ -485,12 +555,24 @@ describe('TmdbClient.search', () => {
       expect(u.pathname).toBe('/3/search/tv')
       expect(u.searchParams.get('query')).toBe('Spy x Family')
       return new Response(JSON.stringify({
-        results: [{ id: 108964, name: 'Spy x Family', original_name: 'SPY×FAMILY', first_air_date: '2022-04-09', original_language: 'ja' }],
+        results: [{ id: 108964, name: 'Spy x Family', original_name: 'SPY×FAMILY', first_air_date: '2022-04-09', original_language: 'ja', poster_path: '/abc123.jpg' }],
       }), { status: 200 })
     })
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     const hits = await client.search('tv', 'Spy x Family')
-    expect(hits).toEqual([{ id: 108964, title: 'Spy x Family', originalTitle: 'SPY×FAMILY', year: 2022 }])
+    expect(hits).toEqual([{ id: 108964, title: 'Spy x Family', originalTitle: 'SPY×FAMILY', year: 2022, posterPath: '/abc123.jpg' }])
+  })
+
+  it('poster_path missing/blank → posterPath null', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      results: [
+        { id: 1, name: 'No Poster' },
+        { id: 2, name: 'Blank Poster', poster_path: '' },
+      ],
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    const hits = await client.search('tv', 'X')
+    expect(hits.map(h => h.posterPath)).toEqual([null, null])
   })
 
   it('tv: year param maps to first_air_date_year (not "year")', async () => {
@@ -520,7 +602,7 @@ describe('TmdbClient.search', () => {
     expect(u.pathname).toBe('/3/search/movie')
     expect(u.searchParams.get('year')).toBe('1999')
     expect(u.searchParams.has('first_air_date_year')).toBe(false)
-    expect(hits).toEqual([{ id: 603, title: 'The Matrix', originalTitle: 'The Matrix', year: 1999 }])
+    expect(hits).toEqual([{ id: 603, title: 'The Matrix', originalTitle: 'The Matrix', year: 1999, posterPath: null }])
   })
 
   it('movie originalTitle comes from original_title (CJK-origin film); missing/blank → null', async () => {
@@ -533,9 +615,9 @@ describe('TmdbClient.search', () => {
     }), { status: 200 }))
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.search('movie', 'Hero')).toEqual([
-      { id: 9550, title: 'Hero', originalTitle: '英雄', year: 2002 },
-      { id: 9551, title: 'Hero 2', originalTitle: null, year: 2004 },
-      { id: 9552, title: 'Hero 3', originalTitle: null, year: 2006 },
+      { id: 9550, title: 'Hero', originalTitle: '英雄', year: 2002, posterPath: null },
+      { id: 9551, title: 'Hero 2', originalTitle: null, year: 2004, posterPath: null },
+      { id: 9552, title: 'Hero 3', originalTitle: null, year: 2006, posterPath: null },
     ])
   })
 
@@ -548,8 +630,8 @@ describe('TmdbClient.search', () => {
     }), { status: 200 }))
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.search('tv', 'Foo')).toEqual([
-      { id: 1, title: 'Foo', originalTitle: null, year: null },
-      { id: 2, title: 'Foo 2', originalTitle: null, year: 2010 },
+      { id: 1, title: 'Foo', originalTitle: null, year: null, posterPath: null },
+      { id: 2, title: 'Foo 2', originalTitle: null, year: 2010, posterPath: null },
     ])
   })
 

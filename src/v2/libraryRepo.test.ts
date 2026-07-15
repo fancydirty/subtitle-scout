@@ -157,18 +157,18 @@ describe('媒体镜像', () => {
     })
   })
 
-  // chinese_title 回写 + 扫描不清空（task 2 依赖）
-  it('setSeriesChineseTitle 写回并记 checked_at，幂等', () => {
-    lib.upsertSeries({ id: 's1', name: 'A' })
-    lib.setSeriesChineseTitle('s1', '甲剧', 1000)
-    const row = lib.db.prepare('select chinese_title, chinese_title_checked_at from series where id=?').get('s1') as any
-    expect(row.chinese_title).toBe('甲剧')
-    expect(row.chinese_title_checked_at).toBe(1000)
+  // chinese_title 回写 + 扫描不清空（task 2 依赖）。
+  // D6（去 Jellyfin 化 P3）：setSeriesChineseTitle 曾是 job 执行路径的独立写回口，grep 全仓库
+  // 只有它自己的单测调用它，生产代码零调用点——判定为死代码，已删除。upsertSeries 的
+  // SeriesParams 早已直接支持 chineseTitle 参数（T3 ingest 层识别命中时随 series 行一并写入，
+  // 不再需要一个单独的 setter），这里改为直接验证 upsertSeries 的 chineseTitle 写入 + 幂等语义。
+  it('upsertSeries chineseTitle 写入', () => {
+    lib.upsertSeries({ id: 's1', name: 'A', chineseTitle: '甲剧' })
+    expect(lib.getSeries('s1')!.chinese_title).toBe('甲剧')
   })
 
   it('upsertSeries 传 null chineseTitle 不清空已回写的中文名（scan 复扫不丢名）', () => {
-    lib.upsertSeries({ id: 's1', name: 'A' })
-    lib.setSeriesChineseTitle('s1', '甲剧', 1000)
+    lib.upsertSeries({ id: 's1', name: 'A', chineseTitle: '甲剧' })
     // 模拟后续 scan：只带 name/posterTag（旧字段名兼容别名，写入同一 poster_path 列），
     // chineseTitle 缺省为 null
     lib.upsertSeries({ id: 's1', name: 'A', posterTag: 'ptag' })

@@ -444,17 +444,6 @@ export class LibraryRepo {
     }
   }
 
-  /** job 执行时解析到系列中文名后写回 series 行。仅当现值 IS NULL 或不同才写（幂等，失败静默由调用方兜）。 */
-  setSeriesChineseTitle(id: string, title: string, now: number): void {
-    this.db
-      .prepare(
-        `UPDATE series
-         SET chinese_title = ?, chinese_title_checked_at = ?
-         WHERE id = ? AND (chinese_title IS NULL OR chinese_title != ?)`
-      )
-      .run(title, now, id, title)
-  }
-
   /** job 执行时解析到电影中文名后写回 movies 行。仅当现值 IS NULL 或不同才写。 */
   setMovieChineseTitle(id: string, title: string, now: number): void {
     this.db

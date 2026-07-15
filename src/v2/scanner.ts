@@ -1,40 +1,12 @@
-import { dirname, basename } from 'node:path'
 import { isChineseOrigin, looksChineseTitle, usableChineseSubtitleStreams } from '../daemon/triggers.js'
 import { mapPath, type PathMapping } from '../core/mediaContext.js'
 import { tagsForLanguage, langOf } from '../agent/languages.js'
+import { findExternalSidecar, type SubtitleLanguage } from '../files/sidecar.js'
 import type { JellyfinItem } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
 import type { LibraryRepo, SubStatus } from './libraryRepo.js'
 
-const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
-
-export type SubtitleLanguage = string
-
-/** tag → subtitles.language 记账值。中文 tag 保留原有 zh-Hans/zh-Hant 二值域精修（db.ts ~:69）
- *  ——cht 是繁体的明确信号 → zh-Hant；zh-Hant 同理原样映射；其余（zh-Hans/zh/chs/chi/zho）落地
- *  简体（这些 tag 本身不携带简繁区分，chs 明确简体），与 core/schemas.ts:49 `language` 的默认值
- *  zh-Hans 一致，是本仓库已有的兜底口径。非中文语言（en/ja/ko 等）的 tag 一律折回其 BCP-47
- *  主语言码（eng→en 等）——没有登记在表里的 tag 直接原样返回，这对 tagsForLanguage() 兜底出的
- *  `[code]`（比如未表列语言的裸 code tag）天然正确。 */
-const LANGUAGE_BY_TAG: Record<string, SubtitleLanguage> = {
-  'zh-Hans': 'zh-Hans',
-  'zh-Hant': 'zh-Hant',
-  zh: 'zh-Hans',
-  chs: 'zh-Hans',
-  cht: 'zh-Hant',
-  chi: 'zh-Hans',
-  zho: 'zh-Hans',
-  en: 'en',
-  eng: 'en',
-  ja: 'ja',
-  jpn: 'ja',
-  ko: 'ko',
-  kor: 'ko',
-}
-
-function languageForTag(tag: string): SubtitleLanguage {
-  return LANGUAGE_BY_TAG[tag] ?? tag
-}
+export type { SubtitleLanguage }
 
 /** scan-time sidecar adoption 的 subtitles.source 取值：复用 executor.ts 里 pipeline
  *  already_exists 决策对应的 'preexisting'（而不是新增一个值）——语义完全等价：磁盘上有一份
@@ -43,28 +15,8 @@ function languageForTag(tag: string): SubtitleLanguage {
  *  没有理由分裂出第二个近义值。 */
 const DISK_ADOPTION_SOURCE = 'preexisting'
 
-/** 找到即返回真实 sidecar 路径 + 按匹配到的 tag 换算出的语言（供 scan 磁盘 arm 记账用其真实
- *  路径/语言建 subtitles 行）；未找到为 null。targetTags 是调用方按目标语言集合算好的 tag
- *  并集（见 classifyItemDetailed rule 3），本函数不关心它们分别属于哪个语言——探测机制
- *  （tag × ext 双层遍历、逐一 fileExists 探测）与泛化前完全一致。 */
-function findExternalSidecar(
-  videoPath: string,
-  targetTags: string[],
-  fileExists: (path: string) => boolean
-): { path: string; language: SubtitleLanguage } | null {
-  const dir = dirname(videoPath)
-  const videoBase = basename(videoPath).replace(/\.[^.]+$/, '')
-
-  for (const tag of targetTags) {
-    for (const ext of SUBTITLE_EXTS) {
-      const sidecarPath = `${dir}/${videoBase}.${tag}${ext}`
-      if (fileExists(sidecarPath)) {
-        return { path: sidecarPath, language: languageForTag(tag) }
-      }
-    }
-  }
-  return null
-}
+// findExternalSidecar/languageForTag 的表与实现已抽到 files/sidecar.ts（去 Jellyfin 化 P3，
+// design §P3）——v2/ingest.ts 复用同一份逻辑，本文件改为纯机械的 import 替换，行为零变化。
 
 export interface ClassifyResult {
   status: SubStatus

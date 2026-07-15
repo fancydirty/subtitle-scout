@@ -50,8 +50,12 @@ function isJunkDir(name: string): boolean {
  * the isJunkDir exclusion that script doesn't need (a one-shot evidence run over an
  * operator-chosen root doesn't loop back over its own daemon-created staging/build dirs forever;
  * a recurring self-scan tick would, without this).
+ *
+ * Exported (去 Jellyfin 化 P3, design §P3) so v2/ingest.ts's `makeIngestPass` can reuse the exact
+ * same walk — one filesystem-walking implementation, not two quietly drifting apart. This module
+ * (`makeSelfScan`) keeps using it as its own default below; zero behavior change here.
  */
-function defaultListVideoFiles(root: string): string[] {
+export function walkVideoFiles(root: string): string[] {
   const out: string[] = []
   walk(root, out)
   return out
@@ -139,7 +143,7 @@ export interface SelfScanResult {
  * TMDB flapping — one bad file (or one bad minute of TMDB) must never take down the whole tick.
  */
 export function makeSelfScan(deps: SelfScanDeps): () => Promise<SelfScanResult> {
-  const listVideoFiles = deps.listVideoFiles ?? defaultListVideoFiles
+  const listVideoFiles = deps.listVideoFiles ?? walkVideoFiles
 
   return async function selfScanTick(): Promise<SelfScanResult> {
     const known = deps.knownPaths()
