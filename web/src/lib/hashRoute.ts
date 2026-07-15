@@ -1,17 +1,19 @@
 // web/src/lib/hashRoute.ts：极简 hash 路由（无外部依赖）。
-// #/ 海报墙 · #/series/:id 详情 · #/history 全局记录。
+// #/ 海报墙 · #/series/:id 详情 · #/history 全局记录 · #/parked park 救援（去 Jellyfin 化 P6）。
 import { useEffect, useState } from 'react'
 
 export type Route =
   | { name: 'library' }
   | { name: 'series'; id: string }
   | { name: 'history' }
+  | { name: 'parked' }
 
 export function parseHash(hash: string): Route {
   const h = hash.replace(/^#/, '')
   const sm = h.match(/^\/series\/([^/?]+)/)
   if (sm) return { name: 'series', id: decodeURIComponent(sm[1]) }
   if (h.startsWith('/history')) return { name: 'history' }
+  if (h.startsWith('/parked')) return { name: 'parked' }
   return { name: 'library' }
 }
 

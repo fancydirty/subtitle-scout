@@ -1,7 +1,9 @@
 // src/dashboard/apiV2.ts
 // v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报直接暴露 TMDB
 // poster_path，前端自行拼 CDN URL（image.tmdb.org，公开、免 key）——不再经服务端代理。
+import { dirname } from 'node:path'
 import type { ScoutDb } from '../v2/db.js'
+import { LibraryRepo } from '../v2/libraryRepo.js'
 
 // ---- Library (海报墙) ----
 
@@ -394,4 +396,51 @@ export interface ReconcileAllResultDTO {
   dispatchedRealign: number
   spawnedSiblings: number
   summary: string
+}
+
+// ---- Parked (去 Jellyfin 化 P6：最小 park 救援——一次性脚手架，不做搜索/候选/批量) ----
+
+export interface ParkedItemDTO {
+  path: string
+  parkReason: string
+  firstSeen: number
+  lastAttempt: number
+}
+
+/** park 救援页列表：转发 LibraryRepo.listParkedPaths()（已 first_seen DESC 排序，挂得最久的排最前）。 */
+export function buildParked(db: ScoutDb): ParkedItemDTO[] {
+  return new LibraryRepo(db).listParkedPaths().map((p) => ({
+    path: p.path,
+    parkReason: p.park_reason,
+    firstSeen: p.first_seen,
+    lastAttempt: p.last_attempt,
+  }))
+}
+
+export type ClaimParkedResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * park 救援页认领：校验后写一条 identify_overrides。覆盖目标是 path 所在的**目录**
+ * （dirname(path)，前缀匹配），不是这一个文件本身——同一部剧的其它集通常散在同一目录下，
+ * 一次认领顺带救活整目录的兄弟集（LibraryRepo.findOverride 的最长前缀匹配语义）。
+ *
+ * 注意：这里**不**调用 clearParkedPath——认领只写 override，不代摄取层清 parked_paths 那一行。
+ * 下一轮巡检 recognize() 命中这条 override、重新识别成功后，识别层自己调用 clearParkedPath
+ * （T3 既有逻辑），parked_paths 这张表的"是否还挂着"由巡检的真实识别结果唯一决定，不由这个
+ * 认领端点越权代劳——保持单一数据源。
+ */
+export function claimParked(
+  db: ScoutDb,
+  input: { path: string; tmdbId: string; isTv: boolean }
+): ClaimParkedResult {
+  const { path, tmdbId, isTv } = input
+  if (!path) return { ok: false, error: 'path is required' }
+  if (!/^\d+$/.test(tmdbId)) return { ok: false, error: 'tmdbId must be a numeric string' }
+
+  const lib = new LibraryRepo(db)
+  const parked = lib.listParkedPaths().some((p) => p.path === path)
+  if (!parked) return { ok: false, error: 'path is not currently parked' }
+
+  lib.addOverride(dirname(path), tmdbId, isTv, Date.now())
+  return { ok: true }
 }

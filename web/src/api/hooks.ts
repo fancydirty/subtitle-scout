@@ -2,7 +2,7 @@
 // visibilitychange 时暂停轮询（省流、后台不空转）。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
-import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO } from './types.js'
+import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO } from './types.js'
 
 export interface Async<T> {
   data: T | null
@@ -124,3 +124,30 @@ export function useRuns(page: number): Async<RunHistoryDTO[]> {
 }
 
 export const RUNS_PAGE_SIZE = PAGE
+
+/** 去 Jellyfin 化 P6：park 救援页列表——一次性 + 手动 reload（不轮询，认领后调用方自己 reload）。 */
+export function useParked(): Async<ParkedItemDTO[]> {
+  const [data, setData] = useState<ParkedItemDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .parked(ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
+
+  return { data, loading, error, reload }
+}

@@ -1,10 +1,12 @@
 // src/dashboard/router.ts
-import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO } from './apiV2.js'
+import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO } from './apiV2.js'
 
 export interface RouterDeps {
   library: () => LibraryItemDTO[]
   series: (id: string) => SeriesDetailDTO | null
   runs: (offset: number, limit: number) => RunHistoryDTO[]
+  /** 去 Jellyfin 化 P6：park 救援页列表。 */
+  parked: () => ParkedItemDTO[]
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -44,6 +46,11 @@ export function handleApiRoute(
     const offset = Math.max(Number(req.query.offset) || 0, 0)
     return { status: 200, json: deps.runs(offset, limit) }
   }
+
+  // ---- parked (去 Jellyfin 化 P6：最小 park 救援) ----
+  // GET 只读列表走这里（纯同步）；POST /api/parked/claim 需要解析 JSON body + 写库校验，
+  // 走 server.ts 里同 /api/v2/reconcile-all 一样的专用分支，不硬塞进这个纯函数路由表。
+  if (pathname === '/api/parked') return { status: 200, json: deps.parked() }
 
   return { status: 404, json: { error: 'not found' } }
 }

@@ -69,3 +69,18 @@ export interface ReconcileAllResultDTO {
   spawnedSiblings: number
   summary: string
 }
+
+/** 去 Jellyfin 化 P6：park 救援页——一次性脚手架，GET /api/parked 的响应体。 */
+export interface ParkedItemDTO {
+  path: string
+  parkReason: string
+  firstSeen: number
+  lastAttempt: number
+}
+
+/** POST /api/parked/claim 请求体。 */
+export interface ClaimParkedInput {
+  path: string
+  tmdbId: string
+  isTv: boolean
+}

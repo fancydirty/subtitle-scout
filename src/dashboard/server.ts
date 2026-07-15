@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, type ReconcileAllResultDTO } from './apiV2.js'
+import { buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked, type ReconcileAllResultDTO } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 
 export interface DashboardOpts {
@@ -41,6 +41,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     library: () => buildLibrary(db),
     series: (id) => buildSeriesDetail(db, id),
     runs: (offset, limit) => buildRuns(db, offset, limit),
+    parked: () => buildParked(db),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
@@ -96,6 +97,40 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         } finally {
           reconcileInFlight = false
         }
+        return
+      }
+
+      // 去 Jellyfin 化 P6："park 救援页"认领——POST + JSON body，同 reconcile-all 一样独立于
+      // 下面纯同步的 handleApiRoute 分发（body 解析需要 await，handleApiRoute 保持纯函数）。
+      if (rawPath === '/api/parked/claim') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        let raw = ''
+        for await (const chunk of req) raw += chunk
+        let body: unknown
+        try {
+          body = JSON.parse(raw || '{}')
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'invalid JSON body' }))
+          return
+        }
+        const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown }
+        const result = claimParked(db, {
+          path: typeof b.path === 'string' ? b.path : '',
+          tmdbId: typeof b.tmdbId === 'string' ? b.tmdbId : String(b.tmdbId ?? ''),
+          isTv: Boolean(b.isTv),
+        })
+        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(result))
         return
       }
 

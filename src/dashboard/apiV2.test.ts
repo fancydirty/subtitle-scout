@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth } from './apiV2.js'
+import { buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth, buildParked, claimParked } from './apiV2.js'
 
 let db: ScoutDb
 let lib: LibraryRepo
@@ -215,6 +215,54 @@ describe('活动/时间线双源兼容 worker_task（退役 T2）', () => {
     expect(movie.job).toEqual({ state: 'wanted', priority: 0 })
     const detail = buildSeriesDetail(db, 's1')!
     expect(detail.runs.map(r => r.decision)).toEqual(['download', 'no_safe_match'])
+  })
+})
+
+// 去 Jellyfin 化 P6：park 救援页——一次性脚手架，不做搜索/候选/批量。
+describe('buildParked / claimParked（P6 park 救援）', () => {
+  it('buildParked 转发 listParkedPaths（first_seen desc），DTO 字段驼峰化', () => {
+    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW - 5000)
+    lib.upsertParkedPath('/media/tv/Another Show/e1.mkv', 'no match', NOW - 1000)
+
+    const parked = buildParked(db)
+    expect(parked).toEqual([
+      { path: '/media/tv/Another Show/e1.mkv', parkReason: 'no match', firstSeen: NOW - 1000, lastAttempt: NOW - 1000 },
+      { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW - 5000, lastAttempt: NOW - 5000 },
+    ])
+  })
+
+  it('claimParked：合法认领写入 identify_overrides，覆盖目标是 path 所在的目录（dirname），不是文件本身', () => {
+    lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
+
+    const result = claimParked(db, { path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '12345', isTv: true })
+    expect(result).toEqual({ ok: true })
+
+    // 目录前缀命中，兄弟集也会命中（最长前缀匹配）
+    expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '12345', isTv: true })
+    expect(lib.findOverride('/media/tv/Unknown Show/S01/e1.mkv')).toEqual({ tmdbId: '12345', isTv: true })
+  })
+
+  it('claimParked：认领不立即清 parked_paths——那一行等下一轮巡检 recognize 命中 override 后由摄取层自己清', () => {
+    lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
+    claimParked(db, { path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '12345', isTv: false })
+    expect(lib.listParkedPaths().some(p => p.path === '/media/tv/Unknown Show/S01/e1.mkv')).toBe(true)
+  })
+
+  it('claimParked：拒绝空 path', () => {
+    const result = claimParked(db, { path: '', tmdbId: '1', isTv: false })
+    expect(result).toEqual({ ok: false, error: expect.any(String) })
+  })
+
+  it('claimParked：拒绝不在 parked_paths 里的 path（未挂 park 户口/已被清）', () => {
+    const result = claimParked(db, { path: '/media/tv/Never Parked/e1.mkv', tmdbId: '1', isTv: false })
+    expect(result).toEqual({ ok: false, error: expect.any(String) })
+  })
+
+  it('claimParked：拒绝非数字 tmdbId', () => {
+    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+    const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: 'abc', isTv: false })
+    expect(result).toEqual({ ok: false, error: expect.any(String) })
+    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toBeNull()
   })
 })
 

@@ -1,5 +1,8 @@
 // web/src/api/client.ts：v2 只读数据层客户端。DASHBOARD_TOKEN 存在时带 ?token=。
-import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO } from './types.js'
+import type {
+  LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
+  ParkedItemDTO, ClaimParkedInput,
+} from './types.js'
 
 const token = (): string | null => new URLSearchParams(location.search).get('token')
 
@@ -25,20 +28,26 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   return res.json() as Promise<T>
 }
 
-/** POST helper：错误响应体是 `{error: string}`（server.ts 的 reconcile-all 端点约定），优先把
- *  那条人话消息抛出来，而不是裸的 HTTP 状态码——503（未配置 TMDB_API_KEY）/401/405/500 各自
- *  的 error 文案都值得直接展示给使用者。 */
-async function post<T>(path: string): Promise<T> {
-  const res = await fetch(withToken(path), { method: 'POST' })
-  const body: unknown = await res.json().catch(() => null)
+/** POST helper：错误响应体是 `{error: string}`（server.ts 的 reconcile-all/parked-claim 端点
+ *  约定），优先把那条人话消息抛出来，而不是裸的 HTTP 状态码——503（未配置 TMDB_API_KEY）/
+ *  400（认领校验失败）/401/405/500 各自的 error 文案都值得直接展示给使用者。`body` 给时按
+ *  JSON 发送（POST /api/parked/claim 用）；不给时是无 body 的纯触发（reconcile-all 用）。 */
+async function post<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(withToken(path), {
+    method: 'POST',
+    ...(body !== undefined
+      ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+      : {}),
+  })
+  const responseBody: unknown = await res.json().catch(() => null)
   if (!res.ok) {
     const message =
-      body && typeof body === 'object' && 'error' in body
-        ? String((body as { error: unknown }).error)
+      responseBody && typeof responseBody === 'object' && 'error' in responseBody
+        ? String((responseBody as { error: unknown }).error)
         : `${path} → ${res.status}`
     throw new Error(message)
   }
-  return body as T
+  return responseBody as T
 }
 
 export const api = {
@@ -48,4 +57,7 @@ export const api = {
   runs: (offset: number, limit: number, signal?: AbortSignal) =>
     get<RunHistoryDTO[]>(`/api/v2/runs?offset=${offset}&limit=${limit}`, signal),
   reconcileAll: () => post<ReconcileAllResultDTO>('/api/v2/reconcile-all'),
+  // 去 Jellyfin 化 P6：park 救援页——一次性脚手架。
+  parked: (signal?: AbortSignal) => get<ParkedItemDTO[]>('/api/parked', signal),
+  claimParked: (input: ClaimParkedInput) => post<{ ok: true }>('/api/parked/claim', input),
 }

@@ -1,7 +1,7 @@
 // src/dashboard/router.test.ts
 import { describe, it, expect } from 'vitest'
 import { handleApiRoute, type RouterDeps } from './router.js'
-import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO } from './apiV2.js'
+import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO } from './apiV2.js'
 
 const libItem: LibraryItemDTO = {
   id: 's1', kind: 'series', name: 'A', chineseTitle: null, year: null, posterPath: null, section: '剧集',
@@ -13,12 +13,16 @@ const seriesDetail: SeriesDetailDTO = {
 const run: RunHistoryDTO = {
   id: 1, jobId: 1, startedAt: 1, finishedAt: 2, decision: 'download', detail: 'ok', journalPath: null,
 }
+const parkedItem: ParkedItemDTO = {
+  path: '/media/tv/Unknown/e1.mkv', parkReason: 'ambiguous match', firstSeen: 1, lastAttempt: 1,
+}
 
 let lastRunsArgs: { offset: number; limit: number } | null = null
 const deps: RouterDeps = {
   library: () => [libItem],
   series: (id) => (id === 's1' ? seriesDetail : null),
   runs: (offset, limit) => { lastRunsArgs = { offset, limit }; return [run] },
+  parked: () => [parkedItem],
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string>; token?: string; configuredToken?: string } = {}) =>
@@ -43,6 +47,11 @@ describe('handleApiRoute (v2)', () => {
     expect(lastRunsArgs).toEqual({ offset: 0, limit: 50 })
     call('/api/v2/runs', { query: { offset: '10', limit: '5' } })
     expect(lastRunsArgs).toEqual({ offset: 10, limit: 5 })
+  })
+  it('routes /api/parked (P6 park 救援)', () => {
+    const r = call('/api/parked')
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual([parkedItem])
   })
   it('retires v1 endpoints with 410', () => {
     expect(call('/api/summary').status).toBe(410)

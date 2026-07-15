@@ -89,6 +89,67 @@ describe('startDashboard (v2)', () => {
     expect((await fetch(`${base}/api/v2/library?token=s3cret`)).status).toBe(200)
   })
 
+  describe('park 救援页 (去 Jellyfin 化 P6)', () => {
+    it('GET /api/parked lists parked_paths', async () => {
+      const lib = new LibraryRepo(db)
+      lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/parked`)
+      expect(res.status).toBe(200)
+      const parked = await res.json()
+      expect(parked).toEqual([
+        { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
+      ])
+    })
+
+    it('POST /api/parked/claim writes an override for the parked path and returns ok', async () => {
+      const lib = new LibraryRepo(db)
+      lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/parked/claim`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '999', isTv: true }),
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true })
+    })
+
+    it('POST /api/parked/claim returns 400 on validation failure (e.g. unparked path)', async () => {
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/parked/claim`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toEqual(expect.any(String))
+    })
+
+    it('POST /api/parked/claim rejects non-POST methods with 405', async () => {
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/parked/claim`, { method: 'GET' })
+      expect(res.status).toBe(405)
+    })
+
+    it('POST /api/parked/claim requires the configured token', async () => {
+      const lib = new LibraryRepo(db)
+      lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+      const { base } = await start(distWith('<!doctype html>'), 's3cret')
+      const unauthed = await fetch(`${base}/api/parked/claim`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: false }),
+      })
+      expect(unauthed.status).toBe(401)
+      const authed = await fetch(`${base}/api/parked/claim?token=s3cret`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: false }),
+      })
+      expect(authed.status).toBe(200)
+    })
+  })
+
   describe('POST /api/v2/reconcile-all (v3 phase ⑦)', () => {
     it('invokes the injected reconcileAll callback and returns its result', async () => {
       const reconcileAll = async () => ({

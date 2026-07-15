@@ -75,6 +75,10 @@ export function PosterWall() {
             onKeyDown={(e) => { if (e.key === 'Enter') go('/history') }}>
             记录
           </div>
+          <div className="tab history-link" onClick={() => go('/parked')} role="link" tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter') go('/parked') }}>
+            park 救援
+          </div>
         </div>
       </div>
 

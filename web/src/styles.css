@@ -101,6 +101,17 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); -web
 .state-line { font-size: 13.5px; color: var(--text); }
 .state-line.dim { color: var(--text-dim); }
 
+/* ---------- parked (去 Jellyfin 化 P6 park 救援：刻意最小，无样式打磨) ---------- */
+.parked-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.parked-table th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.parked-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.parked-path { color: var(--text-faint); font-family: monospace; word-break: break-all; }
+.parked-row.claimed { opacity: .45; }
+.parked-input { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; width: 100px; }
+.parked-tv { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+.parked-note { color: var(--teal); font-size: 12px; }
+.parked-err { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+
 /* ---------- skeletons (海报形状占位，非转圈) ---------- */
 @keyframes shimmer { 50% { opacity: .5; } }
 .skel { background: var(--surface-2); animation: shimmer 1.6s ease-in-out infinite; }
