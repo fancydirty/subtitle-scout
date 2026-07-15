@@ -16,11 +16,5 @@ export interface RunDTO {
   outcomeLabel: string; tone: Tone; ts: number; clickable: boolean
 }
 export interface RunsDTO { inFlight: InFlightItemDTO[]; runs: RunDTO[] }
-export interface StoryStepDTO { title: string; detail: string; state: 'done' | 'fail' }
-export interface StoryDTO {
-  name: string; decision: string; outcomeLabel: string; tone: Tone; ts: number
-  steps: StoryStepDTO[]
-  raw: { pipelineSteps: { name: string; at: string; data?: unknown }[]; llmCalls: { point: string; durationMs: number; prompt: string; parsed: unknown }[] }
-}
 export interface QueueItemDTO { itemId: string; name: string; statusLabel: string; nextRetryAt: number | null }
 export interface QueueDTO { pending: QueueItemDTO[]; dormant: QueueItemDTO[] }
