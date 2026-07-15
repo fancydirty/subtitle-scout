@@ -206,7 +206,7 @@ export class ScoutDaemon {
           log(
             `self-scan: scanned=${result.scan.scanned} recognized=${result.scan.recognized.length} ` +
             `parked=${result.scan.parked.length} newlyDiscovered=${result.newlyDiscovered.length} ` +
-            `orchestratorTriggered=${result.orchestratorTriggered}`
+            `ingestedNew=${result.ingestedNew.length} orchestratorTriggered=${result.orchestratorTriggered}`
           )
           lib.db
             .prepare(

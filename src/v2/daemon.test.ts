@@ -572,12 +572,14 @@ describe('ScoutDaemon', () => {
       parked: unknown[]
       newlyDiscovered: unknown[]
       refreshedLibraries: string[]
+      ingestedNew: unknown[]
       orchestratorTriggered: boolean
     }> = {}) {
       return {
         scan: { scanned: 1, recognized: [], parked: [], skippedKnown: 0, ...over },
         newlyDiscovered: [],
         refreshedLibraries: [],
+        ingestedNew: [],
         orchestratorTriggered: false,
         ...over,
       } as never // loosely-shaped test double — daemon.ts only reads the fields it logs
