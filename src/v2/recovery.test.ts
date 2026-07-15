@@ -5,21 +5,6 @@ import { join } from 'node:path'
 import { openDb } from './db.js'
 import { JobsRepo } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
-import type { JellyfinItem } from '../adapters/players/jellyfin.js'
-
-function movieItem(id: string, overrides: Partial<JellyfinItem> = {}): JellyfinItem {
-  return {
-    Id: id,
-    Name: 'The Matrix',
-    Type: 'Movie',
-    Path: `/media/movies/movie-${id}.mkv`,
-    ProductionYear: 1999,
-    ProductionLocations: ['United States of America'],
-    ProviderIds: { Imdb: 'tt0133093' },
-    MediaStreams: [],
-    ...overrides,
-  } as JellyfinItem
-}
 
 describe('崩溃恢复', () => {
   it('kill-mid-flight：claim 后模拟重启（新 JobsRepo 实例同一 db 文件）→ reapExpiredLeases → job 回 wanted，attempt 不变', () => {

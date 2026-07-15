@@ -9,16 +9,14 @@ import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { type FetchEvent } from './fetchLib.js'
 import { gcOrphans } from '../files/stagingSandbox.js'
-import { JellyfinClient } from '../adapters/players/jellyfin.js'
-import type { PlayerServer } from '../adapters/players/types.js'
-import { parsePathMappings, isDirWritable, type PathMapping } from '../core/mediaContext.js'
+import { isDirWritable, type PathMapping } from '../core/mediaContext.js'
 import { Ledger } from '../core/ledger.js'
 import { parseSince, formatReport } from './report.js'
 import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
-  checkJellyfin, checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots, checkPathMappings,
+  checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
@@ -54,11 +52,9 @@ function requireEnv(name: string): string {
 
 export interface Assembled {
   cacheRoot: string
-  jf: PlayerServer
-  /** realign 编排需要 PlayerServer 之外的能力（ScheduledTasks/VirtualFolders/单库刷新/删条目）
-   *  ——与 jf 是同一个 JellyfinClient 实例，只是这里保留具体类型，不经过 PlayerServer 抽象
-   *  （realign 目前是 Jellyfin-专属能力，尚无跨播放器抽象需求，YAGNI）。 */
-  jellyfinClient: JellyfinClient
+  /** 去 Jellyfin 化 P7（design §P7 代码出口）：MEDIA_PATH_MAPPINGS 环境变量退役，恒为
+   *  []——mapPath/PathMapping 机械函数本身保留（D2 软退役），realign port 继续以 identity
+   *  操作的形态消费空 mappings（见下方 assemble() 与 cmdWatch 的 realignDeps.mappings）。 */
   mappings: PathMapping[]
   /** 有 TMDB_API_KEY 时可用；取全部中文标题变体（增益路径，无 key 则 null）。 */
   tmdb: TmdbClient | null
@@ -70,8 +66,9 @@ export interface Assembled {
 
 async function assemble(): Promise<Assembled> {
   const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
-  const mappings = parsePathMappings(process.env.MEDIA_PATH_MAPPINGS)
-  const jf = new JellyfinClient({ baseUrl: requireEnv('JELLYFIN_URL'), apiKey: requireEnv('JELLYFIN_API_KEY') })
+  // 去 Jellyfin 化 P7：MEDIA_PATH_MAPPINGS 不再读取——mediaRoots() 的唯一根来源是 MEDIA_ROOTS
+  // 环境变量（见下方）；mappings 恒为空数组，realign port 以 identity 操作消费它（D2）。
+  const mappings: PathMapping[] = []
   let extraBody: Record<string, unknown> | undefined
   if (process.env.LLM_EXTRA_BODY) {
     try { extraBody = JSON.parse(process.env.LLM_EXTRA_BODY) } catch {
@@ -85,11 +82,15 @@ async function assemble(): Promise<Assembled> {
   // v3 phase ⑦：a real LanguageModel for the new ToolLoopAgent-based orchestrator/find-subtitle
   // subagents — same LLM_* env.
   const reasoningModel = makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModelName, extraBody })
-  // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第四把钥匙」）。缺 key → null，走 jellyfin fallback。
+  // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第三把钥匙」）。增益路径，无 key
+  // 时为 null——watch/reconcile-all 各自的硬性前置检查会因此报错退出（见 cmdWatch/cmdReconcileAll）。
   const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
-  return { cacheRoot, jf, jellyfinClient: jf, mappings, tmdb, reasoningModel }
+  return { cacheRoot, mappings, tmdb, reasoningModel }
 }
 
+/** 去 Jellyfin 化 P7：MEDIA_ROOTS 环境变量是媒体根目录的唯一来源——mappings 恒为 []（D2 软
+ *  退役），mappings.map(m => m.to) 恒空，这里保留 mappings 形参只是不动 mediaRoots() 的调用面，
+ *  不为一个死分支单独改签名。 */
 function mediaRoots(mappings: PathMapping[]): string[] {
   const fromEnv = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
   return [...mappings.map(m => m.to), ...fromEnv]
@@ -163,8 +164,8 @@ async function cmdReconcileAll() {
 
 async function cmdWatch() {
   // 去 Jellyfin 化 P5/Task 7：realign port 已切到库原生实现（makeRealignLibraryPort，下方），
-  // 不再需要 assemble() 的 jf/jellyfinClient 两个句柄——assemble() 本身的构造/requireEnv 不动
-  // （JELLYFIN_URL/JELLYFIN_API_KEY 退役是 P7 的范围，见 design §P7）。
+  // assemble() 不再持有任何 jf/jellyfinClient 句柄；P7 起 JELLYFIN_URL/JELLYFIN_API_KEY 的
+  // requireEnv 已一并删除（design §P7 代码出口）。
   const { cacheRoot, mappings, tmdb, reasoningModel } = await assemble()
   // 去 Jellyfin 化 T4：TMDB_API_KEY 从"realign/orchestrate 才需要，缺了静默降级"升级成 watch
   // 的硬性前置——v2/ingest.ts 的 makeIngestPass 不再有 Jellyfin fallback 世界，识别文件、
@@ -437,7 +438,9 @@ async function cmdWatch() {
     }
   }
 
-  console.log(`subtitle-scout v2 watching ${process.env.JELLYFIN_URL}`)
+  // 去 Jellyfin 化 P7：不再有单一"正在看哪台 Jellyfin"的地址可报，改报实际生效的媒体根白名单
+  // （MEDIA_ROOTS 未配置时 roots 为空——上方已经打印过对应的告警行）。
+  console.log(`subtitle-scout v2 watching (media roots: ${roots.length > 0 ? roots.join(', ') : '(none — MEDIA_ROOTS not set)'})`)
 
   const daemon = new ScoutDaemon(daemonDeps)
 
@@ -472,27 +475,10 @@ async function cmdReport(since: string) {
 
 async function cmdDoctor() {
   const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
-  const mappings = parsePathMappings(process.env.MEDIA_PATH_MAPPINGS)
   const roots = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
   const results: DoctorResult[] = []
 
   // env 缺失走诊断项（✗ + hint、exit 1），不 requireEnv 急切崩溃（那是 exit 2 的”用法错误”通道）
-  const jfUrl = process.env.JELLYFIN_URL
-  const jfKey = process.env.JELLYFIN_API_KEY
-  let jf: PlayerServer | undefined
-  let jellyfinResult: DoctorResult
-  if (!jfUrl || !jfKey) {
-    jellyfinResult = {
-      name: 'jellyfin', ok: false, detail: 'JELLYFIN_URL / JELLYFIN_API_KEY 未配置',
-      hint: '在 .env 里填上这两项（获取方法见 README 三把钥匙一节）。',
-    }
-  } else {
-    jf = new JellyfinClient({ baseUrl: jfUrl, apiKey: jfKey })
-    const client = jf
-    jellyfinResult = await checkJellyfin({ getSessions: () => withTimeout(client.getSessions(), 10_000, 'Jellyfin') })
-  }
-  results.push(jellyfinResult)
-
   const assrtToken = process.env.ASSRT_TOKEN
   if (!assrtToken) {
     results.push({
@@ -550,17 +536,6 @@ async function cmdDoctor() {
   {
     const { probeMountCapabilities } = await import('../files/mountCapabilities.js')
     results.push(checkMountCapabilities(roots, probeMountCapabilities))
-  }
-
-  if (jf && jellyfinResult.ok) {
-    try {
-      const items = await jf.getRecentItems(20)
-      results.push(checkPathMappings(items, mappings, { dirExists: d => existsSync(d), isWritable: isDirWritable }))
-    } catch {
-      results.push({ name: 'path-mapping', ok: true, skip: true, detail: '取媒体列表失败，跳过（先看 jellyfin 项）' })
-    }
-  } else {
-    results.push({ name: 'path-mapping', ok: true, skip: true, detail: 'Jellyfin 不可达，跳过（先修复 jellyfin 项）' })
   }
 
   // v2 database checks (only if db file exists)

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
-import { makeIngestPass, ingestLock, type IngestDeps } from './ingest.js'
+import { makeIngestPass, ingestLock, looksChineseTitle, type IngestDeps } from './ingest.js'
 import type { Recognized, Park } from '../recognition/index.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
@@ -608,6 +608,22 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
     expect(getOriginLanguage).toHaveBeenCalledTimes(1)
     expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('ignored')
     expect(lib.getEpisode('tmdb:1/s1e2')!.sub_status).toBe('ignored')
+  })
+})
+
+// 去 Jellyfin 化 P7：直接单测搬自 daemon/triggers.test.ts（原文件随出口清算删除——
+// needsChineseSubtitle/usableChineseSubtitleStreams 随 jellyfin.ts 一起退役，looksChineseTitle
+// 唯一消费方是本文件的 classify() rule 1b，随函数本体搬到同一处）。上面 rule 1b 的集成测试
+// 只覆盖了 Han-only / kana 两个场景，这里补全 null/空串等纯函数边界用例。
+describe('looksChineseTitle', () => {
+  it('Han-only → true; kana/hangul present → false', () => {
+    expect(looksChineseTitle('英雄')).toBe(true)
+    expect(looksChineseTitle('流浪地球')).toBe(true)
+    expect(looksChineseTitle('進撃の巨人')).toBe(false) // の is kana
+    expect(looksChineseTitle('오징어 게임')).toBe(false) // hangul
+    expect(looksChineseTitle('Peacemaker')).toBe(false) // no Han
+    expect(looksChineseTitle(null)).toBe(false)
+    expect(looksChineseTitle('')).toBe(false)
   })
 })
 

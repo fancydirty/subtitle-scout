@@ -5,7 +5,7 @@ import type { ScoutDb } from './db.js'
 export const CONTENT_BACKOFF_DAYS = [1, 2, 4, 8]
 export const ERROR_BACKOFF_MS = [30_000, 60_000, 120_000, 300_000]
 /** 1b 瞬时错误给-up 界：15min 封顶意味着无穷重试的瞬时错误每天要打 96 次完整
- *  identify+plan+search+/download，白烧 Jellyfin/TMDB/provider 调用。20 次 ≈ 20 * 15min = 5h
+ *  identify+plan+search+/download，白烧 TMDB/provider 调用。20 次 ≈ 20 * 15min = 5h
  *  的持续失败后，判定"短期内不会自愈"，退避阶梯升级为每天一次——但只是慢下来，
  *  绝不转 30 天 dormant（dormant 是内容轨在证实"搜索穷尽"后的专属结局；瞬时错误从来没有
  *  证明内容不存在，必须永远保持 failed 可重试）。一旦job 翻篇成功（done→wanted 复活），

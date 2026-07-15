@@ -1,6 +1,16 @@
-# 适配指南：为 Emby / 其他媒体服务器实现 PlayerServer
+# [已退役] 适配指南：为 Emby / 其他媒体服务器实现 PlayerServer
 
-本文档面向两类读者：
+> **本文档描述的架构已经整体退役（去 Jellyfin 化战役 P7，design:
+> `docs/design/2026-07-16-de-jellyfin-design.md` §P7 代码出口）。**
+> `PlayerServer` 接口、`src/adapters/players/`（`jellyfin.ts`/`types.ts`）已从代码库删除；
+> subtitle-scout 不再通过任何"媒体服务器适配器"发现或识别媒体——它直接扫描磁盘文件、
+> 用 TMDB 识别标题/年份/季集，字幕直接写视频同目录，播放器（Jellyfin/Emby/Plex 或者
+> 压根没有）如何发现新字幕是它自己的事，与 scout 无关。
+>
+> 以下内容作为历史存档保留（当时的设计权衡、Jellyfin API 实测坑点仍有参考价值），
+> 但**不要**按这份文档去实现新适配器——这个扩展点已经不存在了。
+
+本文档（历史存档）原面向两类读者：
 
 1. **开发者**：想为 Emby 或其他媒体服务器贡献适配器
 2. **使用 coding agent 的用户**：有自己的 Claude Code、Cursor 等工具，想让 agent 帮你写适配器

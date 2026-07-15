@@ -6,10 +6,6 @@ export interface SeriesParams {
   id: string
   name: string
   chineseTitle?: string | null
-  /** @deprecated 别名，写入同一 poster_path 列。scanner.ts（去 Jellyfin 化 P3/T4 才退役）仍用
-   *  这个字段名传 Jellyfin ImageTag——保留它只为让 scanner.ts 不做深改也能编译通过；新调用方
-   *  （T3 ingest 起）应传 posterPath。两者都给时 posterPath 优先。 */
-  posterTag?: string | null
   posterPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
@@ -31,8 +27,6 @@ export interface MovieParams {
   path: string
   subStatus: SubStatus
   chineseTitle?: string | null
-  /** @deprecated 别名，写入同一 poster_path 列——同 SeriesParams.posterTag 的兼容理由。 */
-  posterTag?: string | null
   posterPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
@@ -110,7 +104,7 @@ export class LibraryRepo {
   }
 
   upsertSeries(params: SeriesParams): void {
-    const posterPath = params.posterPath ?? params.posterTag ?? null
+    const posterPath = params.posterPath ?? null
     this.db
       .prepare(
         `INSERT INTO series (id, name, chinese_title, poster_path, year, provider_ids)
@@ -172,7 +166,7 @@ export class LibraryRepo {
 
   upsertMovie(params: MovieParams): void {
     const now = Date.now()
-    const posterPath = params.posterPath ?? params.posterTag ?? null
+    const posterPath = params.posterPath ?? null
     this.db
       .prepare(
         `INSERT INTO movies (id, name, path, sub_status, chinese_title, poster_path, year, provider_ids, updated_at)

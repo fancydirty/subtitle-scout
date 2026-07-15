@@ -15,8 +15,6 @@ import {
 } from '../files/realignManifest.js'
 import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
 import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
-import type { JellyfinItem } from '../adapters/players/jellyfin.js'
-import type { PlayerServer } from '../adapters/players/types.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { JobsRepo, Job } from './jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
@@ -304,6 +302,25 @@ export async function waitForJellyfinIdle(
 }
 
 /**
+ * 去 Jellyfin 化 P7（design §P7 代码出口）：players/jellyfin.ts、players/types.ts 已整体删除
+ * （JellyfinItem/PlayerServer 随之消失）——本文件对"媒体条目"的类型需求收窄到这里实际读取
+ * 的字段，不再从已退役的 Jellyfin 适配层引入完整线格式。verifyRealignedCounts 只读
+ * Type/Path/ParentIndexNumber（下方 Pick）；executeRealign 的 jf.getItem(seriesId) 只读
+ * Name/ProductionYear/ProviderIds?.Tmdb（:588-592 一带）。纯类型搬移，不改变任何一行运行时
+ * 逻辑——[key: string]: unknown 索引签名保留旧 JellyfinItemSchema.passthrough() 的宽松度，
+ * 让 realignLibraryPort.ts 现有的字面量返回值（多带 Id 等未列出字段）继续免改动通过类型检查。
+ */
+export interface RealignMediaItem {
+  Type: string
+  Name: string
+  Path?: string | null
+  ProductionYear?: number | null
+  ParentIndexNumber?: number | null
+  ProviderIds?: Record<string, string> | null
+  [key: string]: unknown
+}
+
+/**
  * 验收：按新目录路径前缀统计 Jellyfin 实际刮出的各季集数，与计划值比对。复用既有
  * getItemsPage（已带 Path 字段），不需要新增端点——按 Path 是否落在新目录路径之下过滤
  * （按路径段切割，"Show Extended" 不会蹭进 "Show" 的账），旧目录残留（尚未清理/尚未重刮）
@@ -311,7 +328,7 @@ export async function waitForJellyfinIdle(
  * 必须过一遍 MEDIA_PATH_MAPPINGS（不映射的话映射部署下验收永远数出 0 集）。
  */
 export async function verifyRealignedCounts(
-  jf: { getItemsPage(startIndex: number, limit: number): Promise<Pick<JellyfinItem, 'Type' | 'Path' | 'ParentIndexNumber'>[]> },
+  jf: { getItemsPage(startIndex: number, limit: number): Promise<Pick<RealignMediaItem, 'Type' | 'Path' | 'ParentIndexNumber'>[]> },
   newShowDirPath: string, expectedCounts: Map<number, number>,
   opts: { pageSize: number; mappings?: PathMapping[] },
 ): Promise<{ ok: boolean; detail: string }> {
@@ -340,8 +357,8 @@ export async function verifyRealignedCounts(
 }
 
 export interface RealignJellyfinPort {
-  getItem(itemId: string): ReturnType<PlayerServer['getItem']>
-  getItemsPage(startIndex: number, limit: number): ReturnType<PlayerServer['getItemsPage']>
+  getItem(itemId: string): Promise<RealignMediaItem>
+  getItemsPage(startIndex: number, limit: number): Promise<RealignMediaItem[]>
   getScheduledTasks(): Promise<ScheduledTaskLike[]>
   getVirtualFolders(): Promise<{ id: string; name: string; locations: string[]; enableRealtimeMonitor: boolean }[]>
   refreshLibrary(libraryId: string): Promise<void>

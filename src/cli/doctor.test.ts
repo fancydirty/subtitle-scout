@@ -1,18 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { checkJellyfin, checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots, checkPathMappings, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
+import { checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
 
 describe('doctor 远端三项', () => {
-  it('jellyfin 可达 → ok，带会话数', async () => {
-    const r = await checkJellyfin({ getSessions: async () => [{}, {}] })
-    expect(r.ok).toBe(true)
-    expect(r.name).toBe('jellyfin')
-    expect(r.detail).toContain('2')
-  })
-  it('jellyfin 401 → 失败并给人话提示', async () => {
-    const r = await checkJellyfin({ getSessions: async () => { throw new Error('jellyfin GET /Sessions: HTTP 401') } })
-    expect(r.ok).toBe(false)
-    expect(r.hint).toContain('API')
-  })
   it('assrt quota 正常 → ok 并显示剩余配额', async () => {
     const r = await checkAssrt({ quota: async () => ({ status: 0, user: { quota: 4 } }) })
     expect(r.ok).toBe(true)
@@ -99,51 +88,19 @@ describe('doctor 本地两项', () => {
     expect(r.ok).toBe(false)
     expect(r.detail).toContain('/ro')
   })
-  it('近期条目映射后的目录都存在且可写 → ok', () => {
-    const r = checkPathMappings(
-      [{ Path: '/data/movies/A/A.mkv' }, { Path: '/data/tv/B/S01/B.mkv' }],
-      [{ from: '/data', to: '/media' }],
-      { dirExists: () => true, isWritable: () => true },
-    )
-    expect(r.ok).toBe(true)
-  })
-  it('映射后的目录不存在 → 失败，报告 jellyfin 路径与映射结果', () => {
-    const r = checkPathMappings(
-      [{ Path: '/data/movies/A/A.mkv' }],
-      [],
-      { dirExists: () => false, isWritable: () => true },
-    )
-    expect(r.ok).toBe(false)
-    expect(r.detail).toContain('/data/movies/A')
-    expect(r.hint).toMatch(/MEDIA_PATH_MAPPINGS|挂载/)
-  })
-  it('映射后的目录存在但不可写 → 失败，分开报告 readonly', () => {
-    const r = checkPathMappings(
-      [{ Path: '/data/movies/A/A.mkv' }],
-      [],
-      { dirExists: () => true, isWritable: () => false },
-    )
-    expect(r.ok).toBe(false)
-    expect(r.detail).toContain('不可写')
-    expect(r.detail).toContain('/data/movies/A')
-  })
-  it('jellyfin 库为空 → skip', () => {
-    const r = checkPathMappings([], [], { dirExists: () => true, isWritable: () => true })
-    expect(r.skip).toBe(true)
-  })
 })
 
 describe('doctor 报告', () => {
   const results = [
-    { name: 'jellyfin', ok: true, detail: '可达' },
+    { name: 'llm', ok: true, detail: '可达' },
     { name: 'assrt', ok: false, detail: '失败', hint: '检查 token' },
-    { name: 'path-mapping', ok: true, skip: true, detail: '库为空' },
+    { name: 'media-roots', ok: true, skip: true, detail: '未配置' },
   ]
   it('输出含 ✓ / ✗ / ⊘ 三种标记与 hint', () => {
     const text = formatDoctorReport(results)
-    expect(text).toContain('✓ jellyfin')
+    expect(text).toContain('✓ llm')
     expect(text).toContain('✗ assrt')
-    expect(text).toContain('⊘ path-mapping')
+    expect(text).toContain('⊘ media-roots')
     expect(text).toContain('检查 token')
   })
   it('有失败 → overallOk false；skip 不算失败', () => {
@@ -155,7 +112,7 @@ describe('doctor 报告', () => {
 describe('withTimeout', () => {
   it('超时 → reject 并说明哪个远端无响应', async () => {
     const never = new Promise<string>(() => { /* never resolves */ })
-    await expect(withTimeout(never, 10, 'Jellyfin')).rejects.toThrow('Jellyfin 在 0.01s 内无响应')
+    await expect(withTimeout(never, 10, 'TMDB')).rejects.toThrow('TMDB 在 0.01s 内无响应')
   })
   it('按时完成 → 原样返回结果', async () => {
     await expect(withTimeout(Promise.resolve('ok'), 1000, 'ASSRT')).resolves.toBe('ok')

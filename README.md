@@ -1,6 +1,6 @@
 # subtitle-scout
 
-当你在 Jellyfin 里点开一部没有中文字幕的外语片，subtitle-scout 自动找到、验证并放好最合适的中文字幕。它不是又一个字幕下载器——它是一层带判断力的匹配智能：宁可不下，也不下错。
+subtitle-scout 盯着你的媒体库，自动找到、验证并放好最合适的中文字幕。它不是又一个字幕下载器——它是一层带判断力的匹配智能：宁可不下，也不下错。直接扫描媒体根目录识别文件，不依赖任何媒体服务器（Jellyfin/Emby/Plex 等）——装不装、用哪个播放器都与它无关，字幕落盘后你的播放器该怎么刷新怎么刷新。
 
 **核心能力**：自动发现缺中文字幕的影片 → 搜索并用大模型挑最合适的 → 验证后放到位；支持剧集整季打包下载；剧集目录/命名跟 TMDB 排布对不上时自动整理（可回滚）；自带监控页，处理记录可查。
 
@@ -8,11 +8,7 @@
 
 ## 快速上手
 
-根据你的情况选择一条路：
-
-### A. 已有 Jellyfin（推荐）
-
-使用 `docker-compose.yml`（独立版），三步：
+三步：
 
 ```bash
 cp .env.example .env
@@ -20,27 +16,13 @@ cp .env.example .env
 docker compose up -d
 ```
 
-### B. 从零开始
-
-使用 `docker-compose.bundle.yml`（全家桶），三步 + 一注意：
-
-```bash
-cp .env.example .env
-# 编辑 .env，填入三把钥匙（见下一节）与 MEDIA_HOST_PATH
-docker compose -f docker-compose.bundle.yml up -d
-```
-
-**注意**：Jellyfin 首次运行需先完成初始向导（访问 `http://<主机IP>:8096`），然后在控制台生成 API 密钥，填入 `.env` 的 `JELLYFIN_API_KEY`，再重启 scout：
-
-```bash
-docker compose -f docker-compose.bundle.yml restart subtitle-scout
-```
+想同时跑一个 Jellyfin 当播放器（和 scout 的字幕功能完全无关，纯粹图省事）？见 `docker-compose.bundle.yml`。
 
 ---
 
 ## 三把钥匙：怎么拿
 
-subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服务器。另有第四把可选钥匙 TMDB（强烈推荐，见本节末尾）。
+subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别文件用，硬性必填）。
 
 ### 1. ASSRT Token
 
@@ -65,29 +47,17 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、Jellyfin 服�
 
 **关键**：三项必须来自**同一个服务商**。模型能力影响匹配质量。
 
-### 3. Jellyfin API Key
+### 3. TMDB API Key（硬性必填）
 
-**获取步骤**：
-1. 打开 Jellyfin 控制台
-2. 进入"高级"设置
-3. 找到"API 密钥"
-4. 点击"新建"，复制生成的 key，填入 `.env` 的 `JELLYFIN_API_KEY`
+subtitle-scout 直接扫描媒体根目录发现文件，靠 TMDB 识别标题/年份/季集排布——**没有这把钥匙，`watch`/`reconcile-all` 会直接报错退出**，不会悄悄跑一个"什么都识别不了"的空转进程。
 
-填完 `JELLYFIN_URL` 后即可启动：Jellyfin 在同机 Docker 上就用 `http://host.docker.internal:8096`（开箱即通，Linux 也支持）；在别的机器上则用 `http://<Jellyfin主机IP>:8096`。
-
-### 第四把钥匙（可选但强烈推荐）：TMDB API Key
-
-不是必填，但**中文搜索召回率会因此质变**——强烈建议配上。
-
-**为什么值得**：字幕库按标题的**具体变体**分区索引，而同一部片的中文译名往往有好几个变体。以生产实例《爱，死亡和机器人》为例，它在各处的官方/民间译名分裂成：
+**它还顺手解决一个召回率问题**：字幕库按标题的**具体变体**分区索引，而同一部片的中文译名往往有好几个变体。以生产实例《爱，死亡和机器人》为例，它在各处的官方/民间译名分裂成：
 
 - 「爱，死亡和机器人」（官方译名，用「和」）
 - 「爱死亡与机器人」（用「与」）
 - 「爱、死亡 & 机器人」（用顿号 + &）
 
-「和」≠「与」，字幕站把它们分在不同的搜索分区里。只拿到一个变体，就只搜得到那一个分区的字幕；拿到**全部变体**，召回率立刻上一个台阶。TMDB 的 `/alternative_titles` 接口正好躺着一部片在 CN/TW/HK 区的全部译名变体——这是无 key 时的 Jellyfin 单译名 fallback 给不了的。
-
-> 没有 key 也能跑：程序会退回 Jellyfin 的单中文译名。TMDB 纯粹是增益路径，任何失败都静默降级、绝不阻塞主流程。
+「和」≠「与」，字幕站把它们分在不同的搜索分区里。只拿到一个变体，就只搜得到那一个分区的字幕；拿到**全部变体**，召回率立刻上一个台阶。TMDB 的 `/alternative_titles` 接口正好躺着一部片在 CN/TW/HK 区的全部译名变体。
 
 **怎么申请**（免费）：
 
@@ -119,46 +89,25 @@ ASSRT 主打国产字幕站，欧美剧集/电影覆盖有限；OpenSubtitles �
 启动后**先跑一遍 doctor**，确认接线正确：
 
 ```bash
-# 独立版
 docker compose exec subtitle-scout node dist/cli/index.js doctor
-
-# 全家桶版
-docker compose -f docker-compose.bundle.yml exec subtitle-scout node dist/cli/index.js doctor
 ```
 
 **示例输出**：
 
 ```
-✓ jellyfin  Jellyfin 可达，当前 2 个会话
 ✓ assrt  ASSRT token 有效，当前配额余量 180
+⊘ opensubtitles  未配置(可选 provider)——设 OPENSUBTITLES_API_KEY 启用
+⊘ zimuku  未配置(可选 provider,灰色站点条款风险自担)——设 ZIMUKU_ENABLED=true 启用
 ✓ llm  LLM 端点可用，最小对话成功
 ✓ media-roots  2 个媒体根目录全部可写
-✓ path-mapping  抽查 15 个条目、8 个目录：映射一致且可写
+✓ mount-capabilities  挂载能力画像 — /media/movies（硬链接: 支持, 大小写敏感: 是, 可写: 是）...
+✓ database  数据库可用，schema 版本 1
+✓ stuck-jobs  无卡住任务
 
 接线检查通过，可以起 watch 了。
 ```
 
-如果某项显示 `✗`，按提示修复后重跑。
-
-### 路径映射：最常见的接线错误
-
-**规则**：scout 容器必须**以与 Jellyfin 相同的路径**挂载媒体目录。
-
-**示例**（两者路径一致，无需配置）：
-- Jellyfin 容器挂载：`/mnt/media/Movies:/media/movies`
-- scout 容器挂载：`/mnt/media/Movies:/media/movies`
-
-**不一致时的解决方案**：
-
-如果 Jellyfin 和 scout 的挂载路径不同（例如 Jellyfin 看到的是 `/data/movies`，scout 看到的是 `/media/movies`），需配置 `MEDIA_PATH_MAPPINGS`：
-
-```bash
-MEDIA_PATH_MAPPINGS=/data/movies=/media/movies
-```
-
-格式为 `jellyfin前缀=本地前缀`，多对映射用逗号分隔。
-
-**doctor 的 `path-mapping` 项就是查这个**——如果它显示 `✗`，八成是路径对不上。
+如果某项显示 `✗`，按提示修复后重跑。`⊘` 是跳过（可选项未配置），不算失败。
 
 ---
 
@@ -177,11 +126,11 @@ MEDIA_PATH_MAPPINGS=/data/movies=/media/movies
 
 五步白话：
 
-1. **自扫描发现**：不依赖 Jellyfin 的播放/入库事件，程序周期性直接扫描媒体根目录，把新出现或变化的路径解析出剧名/季集号并配上 TMDB，判定这一集/这部片是否已有目标语言字幕
-2. **智能调度**：发现变化后先通知 Jellyfin 刷新对应库；确认它真入库了，再派发一次编排判断——先核对这部剧实际的目录/命名排布是否跟 TMDB 季表对得上，对不上就先派"整理"任务把文件挪回该在的位置（多层安全校验：先出计划、留痕可回滚、失败不改一个字节），排布没问题才派"找字幕"任务
+1. **自扫描发现**：程序周期性直接扫描媒体根目录（不依赖任何媒体服务器的播放/入库事件），把新出现或变化的路径解析出剧名/季集号并配上 TMDB，直接写自己的库（SQLite），判定这一集/这部片是否已有目标语言字幕
+2. **智能调度**：发现变化后派发一次编排判断——先核对这部剧实际的目录/命名排布是否跟 TMDB 季表对得上，对不上就先派"整理"任务把文件挪回该在的位置（多层安全校验：先出计划、留痕可回滚、失败不改一个字节），排布没问题才派"找字幕"任务
 3. **搜索候选**：大模型驱动的搜索 worker 自己规划搜索词（原名 + 中文译名 + 年份等组合），调用 ASSRT / OpenSubtitles 等字幕站 API
 4. **挑最靠谱**：候选逐个下载进一次性沙盒目录，结构性体检（cue 数量级、时间轴跨度是否匹配片长、简繁判定、编码可解码性等）之后，大模型看着这些证据终审"是/不是这一集"
-5. **验证写盘**：确认后把字幕写到视频同目录，刷新 Jellyfin 让它可见
+5. **验证写盘**：确认后把字幕写到视频同目录——你用的媒体服务器（Jellyfin/Emby/Plex 或者压根没有）该怎么发现这个新文件是它自己的事，scout 不参与也不需要参与
 
 每次决策都在监控页留一行人话摘要（选了谁、为什么，或为什么没找到），可查处理历史。
 
@@ -191,13 +140,13 @@ MEDIA_PATH_MAPPINGS=/data/movies=/media/movies
 
 | 命令 | 说明 |
 |------|------|
-| `doctor` | 检查接线（Jellyfin / ASSRT / LLM / 媒体根目录 / 路径映射） |
-| `watch` | 常驻模式（daemon）：自扫描发现 + 编排调度 + 找字幕/整理 worker，播放中条目额外提优先级 |
+| `doctor` | 检查接线（ASSRT / OpenSubtitles / zimuku / LLM / 媒体根目录 / 挂载能力 / 数据库） |
+| `watch` | 常驻模式（daemon）：自扫描发现 + 编排调度 + 找字幕/整理 worker |
 | `reconcile-all` | 全仓校验：一次性扫描全库，按当前规则重新判定并派发缺口任务（同监控页"全仓校验"按钮） |
 | `realign-rollback <archiveDir>` | 整理操作逃生舱：读 `<archiveDir>` 下的 write-ahead manifest，把文件搬动逆序重放回原位 |
 | `report [--since <24h\|7d\|ISO-date-UTC>]` | 统计报告（默认最近 24 小时） |
 
-**容器内执行示例**（独立版）：
+**容器内执行示例**：
 
 ```bash
 docker compose exec subtitle-scout node dist/cli/index.js watch
@@ -218,16 +167,13 @@ docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
 | `LLM_API_KEY` | 对应端点的 API key |
 | `LLM_MODEL` | 模型名 |
 | `ASSRT_TOKEN` | [assrt.net](https://assrt.net) 用户中心获取 |
-| `JELLYFIN_URL` | Jellyfin 地址，如 `http://host.docker.internal:8096` |
-| `JELLYFIN_API_KEY` | Jellyfin 控制台 → API 密钥 → 新建 |
+| `TMDB_API_KEY` | 识别文件/判定季集排布/取全部中文译名变体都靠它；缺失 `watch`/`reconcile-all` 直接报错退出；见「第三把钥匙」 |
 | `MEDIA_HOST_PATH` | （仅 compose）宿主机媒体库根目录，如 `/mnt/media` |
 
 ### 可选
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `MEDIA_PATH_MAPPINGS` | Jellyfin 路径到本地路径映射，格式 `jellyfin前缀=本地前缀` | 空 |
-| `TMDB_API_KEY` | TMDB key（可选，强烈推荐）——取全部中文译名变体，中文召回质变；见「第四把钥匙」 | 空 |
 | `OPENSUBTITLES_API_KEY` | OpenSubtitles key（可选）——ASSRT 之外的第二字幕源，欧美剧集补盲；见「OpenSubtitles」 | 空 |
 | `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` | OpenSubtitles 登录（可选）——免费档下载配额 5→20 次/天 | 空 |
 | `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔） | 空 |
@@ -248,50 +194,29 @@ docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
 
 ## Local development
 
-想跑一遍完整链路又没有 NAS/真实媒体库？`docker-compose.local.yml` 在本机（OrbStack/Docker）拉起 Jellyfin + 本地构建的 scout + 一批几 KB 的假视频，全程不碰任何真实文件。
+想跑一遍完整链路又没有 NAS/真实媒体库？`docker-compose.local.yml` 在本机（OrbStack/Docker）拉起本地构建的 scout + 一批几 KB 的假视频，全程不碰任何真实文件，也不需要起任何媒体服务器。
 
 ```bash
 scripts/gen-mock-library.sh          # 生成 fixtures/media 下的 mock 媒体库
-cp .env.example .env                 # 填 LLM/ASSRT 等钥匙，Jellyfin 那两项先留空
+cp .env.example .env                 # 填 LLM/ASSRT/TMDB 三把钥匙
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
-然后：
-1. 访问 `http://localhost:8096` 走 Jellyfin 初始向导，把 `/media/TV` 加成"节目"库、`/media/Movies` 加成"电影"库
-2. 控制台生成 API key，填入 `.env` 的 `JELLYFIN_API_KEY`，然后 `docker compose -f docker-compose.local.yml up -d subtitle-scout`（注意用 `up -d` 而不是 `restart`——`restart` 不会重载 `.env`）
-3. 监控页在 `http://localhost:8099`
+然后监控页在 `http://localhost:8099`。
 
 fixtures 里混了几个负例（内嵌中字的、国产片）方便验证跳过逻辑。`fixtures/media/` 已加入 `.gitignore`，不会被提交。
 
 ---
 
-## 适配 Emby / 其他媒体服务器
+## 关于 Emby / Plex / Jellyfin 等媒体服务器
 
-**Emby**：与 Jellyfin API 同源，预计改动很小。欢迎贡献 PR。
+subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、靠 TMDB 识别文件、把字幕写进视频同目录。用不用媒体服务器、用哪一个，都与它无关；字幕落盘之后，你的播放器该怎么发现新文件走它自己的机制（inotify、下次播放时扫描等）。
 
-**其他媒体服务器**：参考 [`docs/adapting.md`](docs/adapting.md)，里面有：
-- 架构说明（`PlayerServer` 接口）
-- 六个方法的契约（`getSessions`、`getRecentItems`、`getItem`、`refreshItem`、`getChineseTitle`、`getSeasonEpisodes`）
-- **给 coding agent 的现成提示词**（整段复制粘贴给 Claude Code / Cursor，让它帮你写适配器）
+早期版本曾经通过一个 `PlayerServer` 适配器接口直连 Jellyfin/Emby 拿播放会话与库元数据，这层依赖已经整体退役（见 [`docs/adapting.md`](docs/adapting.md) 头部的说明，历史存档）。
 
 ---
 
 ## FAQ / 排障
-
-### Q: 刚 up 完就跑 doctor，jellyfin 项 ✗？
-
-Jellyfin 首次启动需要几秒到几十秒完成初始化（尤其全家桶首跑），等它就绪后重跑 doctor 即可。另外：`MEDIA_HOST_PATH` 下不存在的子目录（如还没建 TV/）会被 Docker 自动创建为空目录，属正常现象。
-
-### Q: doctor 显示 `path-mapping` ✗，或"下载了但 Jellyfin 看不到"
-
-**症状**：doctor 输出类似"本容器内不存在：/data/movies"，或字幕已下载到本地但 Jellyfin 刷新后仍不可见。
-
-**原因**：scout 容器与 Jellyfin 容器的媒体挂载路径不一致。
-
-**解决**：
-1. 最佳方案：让两容器挂载**相同路径**（如都挂成 `/media/movies`）
-2. 无法一致时：配置 `MEDIA_PATH_MAPPINGS=jellyfin路径前缀=scout路径前缀`
-3. 修改后重跑 `doctor` 确认 ✓
 
 ### Q: 挂载是只读的怎么办
 
@@ -319,7 +244,7 @@ Jellyfin 首次启动需要几秒到几十秒完成初始化（尤其全家桶�
 
 ### Q: 为什么国产片被跳过
 
-默认 `SKIP_CHINESE_ORIGIN=true`，中国大陆出品的影片（`ProductionLocations` 含 `CN`）会被跳过——它们通常不需要中文字幕。
+默认 `SKIP_CHINESE_ORIGIN=true`：识别文件时会查 TMDB 的出品语言（origin language），解析为中文的条目会被跳过——它们通常不需要中文字幕。TMDB 一时查不到出品语言时，退回一条标题启发式兜底（标题只含汉字、不含假名/谚文 → 视作中文）。
 
 关掉此功能：设 `SKIP_CHINESE_ORIGIN=false`。
 

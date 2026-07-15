@@ -16,7 +16,7 @@ const NOW = 1_700_000_000_000
 
 function seed(db: ScoutDb): void {
   const lib = new LibraryRepo(db)
-  lib.upsertSeries({ id: 's1', name: 'Series A', chineseTitle: '甲剧', posterTag: 'ptag', year: 2021 })
+  lib.upsertSeries({ id: 's1', name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag', year: 2021 })
   lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/p/e1', subStatus: 'covered' })
   lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/p/e2', subStatus: 'missing' })
   const jobId = Number(

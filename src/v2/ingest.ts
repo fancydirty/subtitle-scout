@@ -1,5 +1,4 @@
 import { existsSync, statSync } from 'node:fs'
-import { looksChineseTitle } from '../daemon/triggers.js'
 import { tagsForLanguage, langOf } from '../agent/languages.js'
 import { seasonEpisodeForAbsolute } from '../agent/absoluteEpisodes.js'
 import { findExternalSidecar } from '../files/sidecar.js'
@@ -164,6 +163,17 @@ interface ClassifyInput {
  *
  * - rule 4（兜底）：以上都不命中 → 'missing'。
  */
+
+const HAN = /[一-鿿]/
+const KANA = /[぀-ヿ]/
+const HANGUL = /[가-힯]/
+/** rule 1b 的标题启发式：含汉字且无假名无谚文 → 视作中文（排除日番/韩剧）。无 TMDB origin
+ *  信号时用（去 Jellyfin 化 P7：原属 daemon/triggers.ts，唯一消费方只剩这里，随出口清算搬来
+ *  同一个文件——语义/正则逐字未变，纯位置移动）。 */
+export function looksChineseTitle(title: string | null | undefined): boolean {
+  return !!title && HAN.test(title) && !KANA.test(title) && !HANGUL.test(title)
+}
+
 function classify(input: ClassifyInput): SubStatus {
   const { title, originLang, originResolutionFailed, embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists } = input
 

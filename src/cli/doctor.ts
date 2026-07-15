@@ -1,5 +1,3 @@
-import { dirname } from 'node:path'
-import { mapPath, type PathMapping } from '../core/mediaContext.js'
 import { MIGRATIONS } from '../v2/db.js'
 import type { MountCapabilities } from '../files/mountCapabilities.js'
 
@@ -10,18 +8,6 @@ export interface DoctorResult {
   skip?: boolean
   detail: string
   hint?: string
-}
-
-export async function checkJellyfin(jf: { getSessions(): Promise<unknown[]> }): Promise<DoctorResult> {
-  try {
-    const sessions = await jf.getSessions()
-    return { name: 'jellyfin', ok: true, detail: `Jellyfin 可达，当前 ${sessions.length} 个会话` }
-  } catch (e) {
-    return {
-      name: 'jellyfin', ok: false, detail: `连接失败：${String(e)}`,
-      hint: '检查 JELLYFIN_URL 是否填写正确：subtitle-scout 和 Jellyfin 都跑在 Docker 里时，主机名要用 Docker 服务名（如 http://jellyfin:8096）而不是 localhost。API key 在 Jellyfin 控制台 → API 密钥里生成。',
-    }
-  }
 }
 
 export async function checkAssrt(assrt: { quota(): Promise<{ status: number; user?: { quota: number } }> }): Promise<DoctorResult> {
@@ -114,31 +100,6 @@ export function checkMediaRoots(roots: string[], isWritable: (dir: string) => bo
     }
   }
   return { name: 'media-roots', ok: true, detail: `${roots.length} 个媒体根目录全部可写` }
-}
-
-export function checkPathMappings(
-  items: Array<{ Path?: string | null }>,
-  mappings: PathMapping[],
-  deps: { dirExists: (dir: string) => boolean; isWritable: (dir: string) => boolean },
-): DoctorResult {
-  const paths = items.map(i => i.Path).filter((p): p is string => !!p)
-  if (paths.length === 0) {
-    return { name: 'path-mapping', ok: true, skip: true, detail: 'Jellyfin 库为空，无法校验路径映射（入库后重跑 doctor）' }
-  }
-  const dirs = [...new Set(paths.map(p => dirname(mapPath(p, mappings))))]
-  const missing = dirs.filter(d => !deps.dirExists(d))
-  const readonly = dirs.filter(d => deps.dirExists(d) && !deps.isWritable(d))
-  if (missing.length > 0 || readonly.length > 0) {
-    const parts: string[] = []
-    if (missing.length > 0) parts.push(`本容器内不存在：${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` 等 ${missing.length} 处` : ''}`)
-    if (readonly.length > 0) parts.push(`不可写：${readonly.slice(0, 3).join(', ')}`)
-    return {
-      name: 'path-mapping', ok: false,
-      detail: `Jellyfin 报告的媒体路径映射后有问题——${parts.join('；')}`,
-      hint: '这是最常见的接线错误：scout 容器必须以与 Jellyfin 相同的路径挂载媒体目录；无法一致时配置 MEDIA_PATH_MAPPINGS=jellyfin前缀=本地前缀。',
-    }
-  }
-  return { name: 'path-mapping', ok: true, detail: `抽查 ${paths.length} 个条目、${dirs.length} 个目录：映射一致且可写` }
 }
 
 export function formatDoctorReport(results: DoctorResult[]): string {

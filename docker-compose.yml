@@ -1,5 +1,7 @@
-# 独立版：你已经有一台在跑的 Jellyfin。
-# 从零开始的全家桶（Jellyfin + scout 一起拉起）见 docker-compose.bundle.yml。
+# v(next)：Jellyfin 不再是运行依赖——subtitle-scout 直接扫描磁盘 + TMDB 识别文件，
+# 不再打任何媒体服务器的 API。若你之前跑过旧版本，可随时移除 jellyfin 容器/相关 env
+# （JELLYFIN_URL / JELLYFIN_API_KEY / MEDIA_PATH_MAPPINGS）——不影响 scout 继续工作。
+# 想同时用 Jellyfin 当播放器（和 scout 的字幕功能完全无关，纯粹图省事）？见 docker-compose.bundle.yml。
 services:
   subtitle-scout:
     image: ghcr.io/fancydirty/subtitle-scout:latest
@@ -19,24 +21,19 @@ services:
     ports:
       - "${DASHBOARD_PORT:-8099}:${DASHBOARD_PORT:-8099}"
     # 让 Linux 上也能用 http://host.docker.internal 访问宿主机（macOS/Windows 默认可用）
+    # ——例如 LLM_BASE_URL 指向宿主机上跑的本地模型端点（Ollama/LM Studio 等）。
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      # 指向你现有的 Jellyfin（scout 容器视角可达的地址）
-      JELLYFIN_URL: ${JELLYFIN_URL}
-      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_MODEL: ${LLM_MODEL}
       LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
       ASSRT_TOKEN: ${ASSRT_TOKEN}
-      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_API_KEY: ${TMDB_API_KEY}
       OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
       OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
       OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
-      # 关键：本容器挂载的媒体路径必须与 Jellyfin 看到的路径一致，
-      # 不一致时用 MEDIA_PATH_MAPPINGS 映射（见 README「路径映射」）。
-      MEDIA_PATH_MAPPINGS: ${MEDIA_PATH_MAPPINGS:-}
       MEDIA_ROOTS: /media
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
@@ -44,7 +41,6 @@ services:
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
       DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
     volumes:
-      # 挂成与 Jellyfin 容器内相同的路径（例：Jellyfin 里是 /media/movies）
       - ${MEDIA_HOST_PATH}/Movies:/media/movies
       - ${MEDIA_HOST_PATH}/TV:/media/tv
       - ./cache:/cache

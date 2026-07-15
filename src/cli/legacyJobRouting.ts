@@ -1,7 +1,7 @@
 import type { Job, JobsRepo } from '../v2/jobsRepo.js'
 
 /** W0-4 切 feed 路由决策（纯函数，独立于 cmdWatch 的 executeJob 闭包以便单测——cmdWatch 本身
- *  门在 requireEnv 系列/assemble()，没法在不起真实 Jellyfin/LLM 连接的情况下实例化测试；
+ *  门在 requireEnv 系列/assemble()，没法在不起真实 LLM 连接的情况下实例化测试；
  *  这个模块本身零副作用，不像 cli/index.ts 顶层跑 main()，测试可以直接 value-import）。
  *  三个旧 kind（worker_task 已在调用点被更早的 if 分支拦截，不会到达这里）里：
  *  - 'realign' 仍然走老 executor.ts 的 executeJob——它的第一行就 dispatch 进

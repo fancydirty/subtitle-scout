@@ -169,9 +169,8 @@ describe('媒体镜像', () => {
 
   it('upsertSeries 传 null chineseTitle 不清空已回写的中文名（scan 复扫不丢名）', () => {
     lib.upsertSeries({ id: 's1', name: 'A', chineseTitle: '甲剧' })
-    // 模拟后续 scan：只带 name/posterTag（旧字段名兼容别名，写入同一 poster_path 列），
-    // chineseTitle 缺省为 null
-    lib.upsertSeries({ id: 's1', name: 'A', posterTag: 'ptag' })
+    // 模拟后续 scan：只带 name/posterPath，chineseTitle 缺省为 null
+    lib.upsertSeries({ id: 's1', name: 'A', posterPath: 'ptag' })
     const row = lib.db.prepare('select chinese_title, poster_path from series where id=?').get('s1') as any
     expect(row.chinese_title).toBe('甲剧')
     expect(row.poster_path).toBe('ptag')
@@ -187,12 +186,12 @@ describe('媒体镜像', () => {
 
   // origin_lang 缓存（task 2 依赖）
   it('origin_lang: set + get for series and movie, null by default', () => {
-    lib.upsertSeries({ id: 's1', name: 'S', posterTag: null })
+    lib.upsertSeries({ id: 's1', name: 'S', posterPath: null })
     expect(lib.getSeriesOriginLang('s1')).toBeNull()
     lib.setSeriesOriginLang('s1', 'zh')
     expect(lib.getSeriesOriginLang('s1')).toBe('zh')
 
-    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing', posterTag: null, year: null, providerIds: null })
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing', posterPath: null, year: null, providerIds: null })
     expect(lib.getMovieOriginLang('m1')).toBeNull()
     lib.setMovieOriginLang('m1', 'ja')
     expect(lib.getMovieOriginLang('m1')).toBe('ja')
@@ -202,9 +201,9 @@ describe('媒体镜像', () => {
     expect(lib.getMovieOriginLang('nope')).toBeNull()
   })
   it('upsertMovie does not clobber an existing origin_lang', () => {
-    lib.upsertMovie({ id: 'm2', name: 'M', path: '/m.mkv', subStatus: 'missing', posterTag: null, year: null, providerIds: null })
+    lib.upsertMovie({ id: 'm2', name: 'M', path: '/m.mkv', subStatus: 'missing', posterPath: null, year: null, providerIds: null })
     lib.setMovieOriginLang('m2', 'zh')
-    lib.upsertMovie({ id: 'm2', name: 'M2', path: '/m2.mkv', subStatus: 'covered', posterTag: null, year: 2020, providerIds: null })
+    lib.upsertMovie({ id: 'm2', name: 'M2', path: '/m2.mkv', subStatus: 'covered', posterPath: null, year: 2020, providerIds: null })
     expect(lib.getMovieOriginLang('m2')).toBe('zh')
   })
 })

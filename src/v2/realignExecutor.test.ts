@@ -22,7 +22,6 @@ import type { FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
-import { JellyfinItemNotFoundError } from '../adapters/players/jellyfin.js'
 
 describe('mountAliveSentinel', () => {
   it('库根不存在 → 拒绝', () => {
@@ -1061,13 +1060,15 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
 
     // 第二跑：daemon 重启后重新领到同一个 job。现实中 Jellyfin 此刻已经把旧 seriesId
     // 对应的 series item 裁掉（新目录下内容被识别成新条目）——jf.getItem(旧 seriesId)
-    // 会抛 JellyfinItemNotFoundError。旧实现（step 1 排最前）会在这里让异常直接冒出去，
+    // 会抛错（Jellyfin 时代是专门的 JellyfinItemNotFoundError，去 Jellyfin 化 P7 后 port 换成
+    // 库原生实现，抛一个语义清晰的 plain Error 即可复现同样的可观察行为——见
+    // realignLibraryPort.ts 的 getItem 注释）。旧实现（step 1 排最前）会在这里让异常直接冒出去，
     // 被上层 executor.ts 记成 error 走 30s→15min→daily 的无穷重试环，永远够不到下面
     // 本该接管的续走路径。
     const rerunJob = jobsRepo.get(job.id)!
     expect(rerunJob.plan_ref).toMatch(/manifest\.jsonl$/)
     const jf2 = mkJf({ locations: [libRoot], items: spyItems40(libRoot) })
-    jf2.getItem = vi.fn(async () => { throw new JellyfinItemNotFoundError('jf-series-1') })
+    jf2.getItem = vi.fn(async () => { throw new Error('realign: series not found in library: jf-series-1') })
     const deps2 = mkDeps({ lib, jobsRepo, jf: jf2, libRoot })
 
     const r2 = await executeRealign(rerunJob, deps2)
