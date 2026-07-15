@@ -47,7 +47,7 @@ import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { scanLibrary, type OriginResolver } from '../v2/scanner.js'
-import { executeJob, makeRunEpisode } from '../v2/executor.js'
+import { executeJob } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import type { MediaItem } from '../adapters/players/types.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
@@ -256,13 +256,6 @@ async function cmdWatch() {
   const lib = new LibraryRepo(db)
   const runs = new RunsRepo(db)
 
-  // Create runEpisode closure（I5b: 根限定经 opts 传入）
-  const runEpisode = makeRunEpisode(
-    { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb, reasoningModel },
-    lib,
-    { mediaRoots: roots },
-  )
-
   // Construct DaemonDeps
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
   // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
@@ -336,8 +329,9 @@ async function cmdWatch() {
         log,
         sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
         getSize: (p) => { try { return statSync(p).size } catch { return null } },
-        // CRIT#1：与 makeRunEpisode 的 opts.mediaRoots 同源白名单；IMP#8：镜像/库/验收路径
-        // 全是 Jellyfin 视角，任何 fs 操作前都要经 MEDIA_PATH_MAPPINGS 映射到本地。
+        // CRIT#1：与 findSubtitleWorkerTaskDeps 的 mediaRoots 同源白名单（旧 makeRunEpisode
+        // 的 opts.mediaRoots 已随退役T7/Wave 2A 删除，同源不变量转移到这里描述）；IMP#8：
+        // 镜像/库/验收路径全是 Jellyfin 视角，任何 fs 操作前都要经 MEDIA_PATH_MAPPINGS 映射到本地。
         mediaRoots: roots,
         mappings,
       }
@@ -347,7 +341,7 @@ async function cmdWatch() {
     : undefined
 
   // find-subtitle worker 依赖（v3 phase ⑦）：mediaRoots 是"已配置的根"白名单（外层沙盒，同
-  // makeRunEpisode/realignDeps 那道门）；FindSubtitleTask.mediaRoot（每个 task 各自的季/影片
+  // realignDeps 那道门）；FindSubtitleTask.mediaRoot（每个 task 各自的季/影片
   // 目录）才是 agent 自己受限的内层沙盒——两者不是同一个东西，见 findSubtitleWorkerTask.ts
   // 的 FindSubtitleTaskMapperDeps 注释。adapters 每次 claim 现建（同旧管线每次子进程重建一次
   // 的成本量级，非新增开销）。
@@ -472,15 +466,16 @@ async function cmdWatch() {
         return
       }
       // W0-4 切 feed: kind==='realign' still routes to the OLD executor.ts's executeJob — its
-      // first line dispatches straight into executeRealignBranch (never touches the
-      // series_season/movie logic below it, never reads deps.runEpisode), and that branch's
+      // first line dispatches straight into executeRealignBranch, and that branch's
       // 5-layer-safety realignExecutor.ts call chain is kept machinery (not retired today).
-      // series_season/movie are the only two kinds actually retired here — see routeLegacyJob.
+      // 退役T7 (Wave 2A): the series_season/movie branch executeJob used to fall through to
+      // (plus makeRunEpisode/deps.runEpisode, which fed it) has been deleted — that path now
+      // throws if ever reached. series_season/movie never reach it: routeLegacyJob tombstones
+      // them before this branch, same as before — see routeLegacyJob.
       if (routeLegacyJob(job.kind) === 'execute-realign') {
         await withJournal(() => executeJob(job, {
           lib,
           jobs,
-          runEpisode,
           executeRealign: executeRealignClosure,
           now: () => Date.now(),
           log,

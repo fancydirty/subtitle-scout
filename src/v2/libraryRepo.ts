@@ -267,7 +267,9 @@ export class LibraryRepo {
     this.db.prepare('UPDATE movies SET origin_lang = ? WHERE id = ?').run(lang, movieId)
   }
 
-  /** unavailable 复查到期后重新计入 missing，让 aggregator 把它纳入下一轮 job。 */
+  /** unavailable 复查到期后重新计入 missing——消费者是 v3 orchestrator 的
+   *  list_missing_coverage 工具（orchestratorAgent.tools.ts），旧管线的聚合层
+   *  （原 v2/aggregate 模块）已随退役T7 (Wave 2A) 删除。 */
   missingBySeason(now?: number): MissingBySeason[] {
     const timestamp = now ?? Date.now()
     return this.db

@@ -403,7 +403,13 @@ export class JobsRepo {
     return info.changes > 0
   }
 
-  /** Retire satisfied jobs from wanted/failed → done (aggregator cleanup semantic).
+  /** Retire satisfied jobs from wanted/failed → done (原旧管线聚合层的 cleanup semantic).
+   *  退役T7 (Wave 2A)：唯一的生产调用点（原 v2/aggregate 模块）已随旧管线删除——今天没有
+   *  任何生产代码调用这个方法。保留而不删：selfScanTrigger.test.ts 仍直接调它模拟"job
+   *  已被外部满足退休"这个精确的前置状态转移（wanted/failed→done，且尊重 backoff 窗口，
+   *  与语义不同的 retireClaimed/completeDone 都不能替代），jobsRepo.test.ts 也单独测它
+   *  自身的前置条件。方法体/precondition 均未改动，只是这条注释不再假称它还在服务
+   *  一个活的生产调用点。
    *  A 'failed' job with a pending next_retry_at is mid content-backoff (1/2/4/8d
    *  ladder) — its target can look momentarily "not missing" (e.g. unavailable with
    *  a future recheck_after) without being externally satisfied. Retiring it here
