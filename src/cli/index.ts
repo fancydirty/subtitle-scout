@@ -1,39 +1,22 @@
 import 'dotenv/config'
 import { parseArgs } from 'node:util'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { generateText, type LanguageModel } from 'ai'
-import type { PipelineDeps } from '../core/pipeline.js'
-import type { Journal } from '../core/journal.js'
-import { DecisionCache } from '../core/cache.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { TmdbClient, resolveTmdbRefStrict } from '../adapters/providers/tmdb.js'
-import { downloadDirect } from '../adapters/download/direct.js'
-import { makeCliProviderPort } from '../core/providerPort.js'
-import { providerErrorFields, providerNoticeFields, type FetchEvent } from './fetchLib.js'
-import { createLlmRuntime, type LlmRuntime } from '../agent/runtime.js'
-import { ProfileStore } from '../agent/profile.js'
-import { identifyMedia } from '../agent/identifyMedia.js'
-import { planSearch } from '../agent/planSearch.js'
-import { rankCandidates } from '../agent/rankCandidates.js'
-import { verifySubtitle } from '../agent/verifySubtitle.js'
-import { allocate, install, cleanup, gcOrphans } from '../files/stagingSandbox.js'
+import { type FetchEvent } from './fetchLib.js'
+import { gcOrphans } from '../files/stagingSandbox.js'
 import { JellyfinClient } from '../adapters/players/jellyfin.js'
 import type { PlayerServer } from '../adapters/players/types.js'
-import { parsePathMappings, isDirWritable, mapPath, type PathMapping } from '../core/mediaContext.js'
+import { parsePathMappings, isDirWritable, type PathMapping } from '../core/mediaContext.js'
 // import { Watcher } from '../daemon/watcher.js'  // v1 watcher — 保留文件但不再引用
 // import { PrefetchQueue } from '../daemon/queue.js'  // v1 queue — v2 不用
-import { scanOrphans } from '../files/orphanScanner.js'
-import { judgeOrphan } from '../agent/judgeOrphan.js'
 import { Ledger } from '../core/ledger.js'
 import { parseSince, formatReport } from './report.js'
 import { makeFileLogger } from '../core/fileLogger.js'
-import { pruneOldDirs } from '../core/retention.js'
-import { mapSeasonPack } from '../agent/mapSeasonPack.js'
-import type { SeasonEpisode } from '../core/episode.js'
 import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
@@ -71,15 +54,7 @@ function requireEnv(name: string): string {
 }
 
 export interface Assembled {
-  makeDeps: (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string, alreadyExisted?: boolean) => void | Promise<void> }) => PipelineDeps
-  /** 每个 job 独立的 journal 上下文——并发任务的 apiCall/自愈事件不再串记到相邻 journal。
-   *  所有 runPipeline 调用必须包在此内，否则 assrt/llm 回调取不到 journal 而丢事件。 */
-  withJournal: <T>(fn: () => Promise<T>) => Promise<T>
   cacheRoot: string
-  /** 底层对象本来就是 createLlmRuntime() 的产出，一直具备 .call()——旧管线的
-   *  identifyMedia/planSearch/rankCandidates/verifySubtitle/judgeOrphan/mapSeasonPack
-   *  都要用，声明成完整 LlmRuntime 接口而不只是给 ledger 写入代码用的 profileInfo()。 */
-  llm: LlmRuntime
   jf: PlayerServer
   /** realign 编排需要 PlayerServer 之外的能力（ScheduledTasks/VirtualFolders/单库刷新/删条目）
    *  ——与 jf 是同一个 JellyfinClient 实例，只是这里保留具体类型，不经过 PlayerServer 抽象
@@ -89,10 +64,8 @@ export interface Assembled {
   /** 有 TMDB_API_KEY 时可用；取全部中文标题变体（增益路径，无 key 则 null）。 */
   tmdb: TmdbClient | null
   /** v3 phase ⑦：orchestrator/find-subtitle 两个新 ToolLoopAgent-based 子代理要的是一个真实
-   *  `LanguageModel`（ai@7 的 `agent.generate()` 接口），不是 `llm: LlmRuntime`（旧管线
-   *  callStructured 的强制单 tool 调用封装，二者接口完全不同、不能互换）。同一组 LLM_* env
-   *  var，走 llm.ts 的 makeModel() 单独建一个 LanguageModel 实例——两条路径（旧管线的
-   *  LlmRuntime、新 v3 子代理的 LanguageModel）各自持有自己的 provider 实例，互不干扰。 */
+   *  `LanguageModel`（ai@7 的 `agent.generate()` 接口）。同一组 LLM_* env var，走 llm.ts 的
+   *  makeModel() 建一个 LanguageModel 实例。 */
   reasoningModel: LanguageModel
 }
 
@@ -107,83 +80,15 @@ async function assemble(): Promise<Assembled> {
       process.exit(2)
     }
   }
-  const profileStore = new ProfileStore(join(cacheRoot, 'llm-profiles'))
-  // 每个 job 在自己的 AsyncLocalStorage 上下文里跑；assrt/llm 回调按当前上下文解析 journal，
-  // 并发任务（watch 下多播放会话并行）不再把 apiCall/自愈事件串记到相邻 journal。
-  const journalStore = new AsyncLocalStorage<{ journal: Journal | null }>()
-  const withJournal = <T>(fn: () => Promise<T>): Promise<T> => journalStore.run({ journal: null }, fn)
   const llmBaseUrl = requireEnv('LLM_BASE_URL')
   const llmApiKey = requireEnv('LLM_API_KEY')
   const llmModelName = requireEnv('LLM_MODEL')
-  const llm = await createLlmRuntime({
-    baseUrl: llmBaseUrl,
-    apiKey: llmApiKey,
-    model: llmModelName,
-    extraBody,
-  }, profileStore, undefined, info => journalStore.getStore()?.journal?.step('llm_profile_healed', info))
   // v3 phase ⑦：a real LanguageModel for the new ToolLoopAgent-based orchestrator/find-subtitle
-  // subagents — same LLM_* env, independent provider instance from `llm` above (see Assembled's
-  // reasoningModel field comment for why these can't be the same object).
+  // subagents — same LLM_* env.
   const reasoningModel = makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModelName, extraBody })
   // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第四把钥匙」）。缺 key → null，走 jellyfin fallback。
   const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
-  const makeDeps = (perRun?: { itemId: string; onCovered: (ep: SeasonEpisode, path: string, providerRef?: string, alreadyExisted?: boolean) => void | Promise<void> }): PipelineDeps => ({
-    journalReady: j => { const s = journalStore.getStore(); if (s) s.journal = j; j.step('llm_profile', llm.profileInfo()) },
-    identify: c => identifyMedia(llm, c),
-    plan: (c, id) => planSearch(llm, c, id),
-    rank: (c, id, cands) => rankCandidates(llm, c, id, cands),
-    verify: (c, id, cand, signals) => verifySubtitle(llm, c, id, cand, signals),
-    staging: { allocate, install, cleanup },
-    providers: makeCliProviderPort({
-      onEvent: e => {
-        const journal = journalStore.getStore()?.journal
-        if (e.event === 'api_call') {
-          // MINOR-1 review finding: droppedEntries（per-entry fail-soft 过滤丢弃的条目数）之前从未
-          // 转发到 journal——journal.apiCall 的 ApiCallRecord 没有专门字段，塞进 params（本就是
-          // Record<string, unknown>）里，不新增 journal.ts 的类型面。
-          journal?.apiCall({
-            endpoint: e.endpoint,
-            params: { provider: e.provider, ...(e.droppedEntries !== undefined ? { droppedEntries: e.droppedEntries } : {}) },
-            status: e.status ?? 0, durationMs: e.durationMs, error: e.error,
-          })
-        } else if (e.event === 'provider_error') {
-          // code/resetAt（如 OS quota_exhausted）随 message 一起入 journal，供人工排障时能看到
-          // 重置时间——实际的重试调度消费在 v2 executor（见 pipeline.ts 的 ProviderQuotaExhaustedError 通路）。
-          journal?.step('providerError', providerErrorFields(e))
-        } else if (e.event === 'provider_notice') {
-          // 信息性事件——本次调用其实成功了（review finding: journal honesty）。用独立的
-          // 'providerNotice' step 名记录，不能沿用 'providerError'，否则日志/dashboard 读者会把
-          // 一次成功下载误读成一个错误步骤。
-          journal?.step('providerNotice', providerNoticeFields(e))
-        }
-      },
-    }),
-    download: (url, headers) => downloadDirect(url, { headers }),
-    llm,
-    cache: new DecisionCache(join(cacheRoot, 'decisions')),
-    maxApiCallsPerJob: 4,
-    // FINDING-1: 同一份 roots（mapping.to + MEDIA_ROOTS）喂给 pipeline，供它把试错沙盒钉在
-    // 媒体根一级——与 gcStaging()/isUnderRoots 校验用的是同一次 mediaRoots(mappings) 计算，
-    // 三处判定不会各算各的对不上号。裸 `cli run` 调试路径没有配置这些 env 时退化为 []（pipeline
-    // 内部再退回 outDir 本身，见 pipeline.ts stagingRoot 的注释）。
-    mediaRoots: mediaRoots(mappings),
-    adoption: (process.env.ADOPT_LOCAL_SUBTITLES ?? 'true') !== 'false' ? {
-      scan: (dir, video) => scanOrphans(dir, video),
-      judge: (c, id, orphans) => judgeOrphan(llm, id, c.media.filename, orphans),
-      read: p => readFileSync(p),
-    } : undefined,
-    ...(perRun ? {
-      seasonPack: {
-        enumerate: async () => {
-          const item = await jf.getItem(perRun.itemId)
-          return (await jf.getSeasonEpisodes(item)).map(e => ({ ...e, videoPath: mapPath(e.videoPath, mappings) }))
-        },
-        map: (c, id, filelist, eps) => mapSeasonPack(llm, c, id, filelist, eps),
-        onCovered: perRun.onCovered,
-      },
-    } : {}),
-  })
-  return { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jf, mappings, tmdb, reasoningModel }
+  return { cacheRoot, jf, jellyfinClient: jf, mappings, tmdb, reasoningModel }
 }
 
 function mediaRoots(mappings: PathMapping[]): string[] {
@@ -235,7 +140,7 @@ async function cmdReconcileAll() {
 }
 
 async function cmdWatch() {
-  const { makeDeps, withJournal, cacheRoot, llm, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb, reasoningModel } = await assemble()
+  const { cacheRoot, jf, jellyfinClient: jellyfinClientForRealign, mappings, tmdb, reasoningModel } = await assemble()
   const shutdown = new AbortController()
   const roots = mediaRoots(mappings)
   if (roots.length === 0) {
@@ -279,8 +184,8 @@ async function cmdWatch() {
     : undefined
 
   // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
-  // 逐 job Journal（journalStore/withJournal 只服务 callStructured 老管线），api_call 量大信号
-  // 低，只把 error/notice 落一行 log；同 assemble() 里 makeCliProviderPort 的 onEvent 分流。
+  // 逐 job Journal（老管线的 journalStore/withJournal 已随 Wave 2D 一并删除），api_call 量大信号
+  // 低，只把 error/notice 落一行 log。
   // 提到 realign 依赖块之前（Wall ②）：realign 的字幕先行现在也走这个 worker，组装它自己的
   // adapters 需要同一个 emit 函数。
   const emitProviderEvent = (e: FetchEvent) => {
@@ -473,13 +378,16 @@ async function cmdWatch() {
       // throws if ever reached. series_season/movie never reach it: routeLegacyJob tombstones
       // them before this branch, same as before — see routeLegacyJob.
       if (routeLegacyJob(job.kind) === 'execute-realign') {
-        await withJournal(() => executeJob(job, {
+        // Wave 2D: executeJob's ExecutorDeps (src/v2/executor.ts) never had a journal-shaped
+        // field — the old runPipeline/withJournal wrapper here was dead weight carried over
+        // from the retired old-pipeline call site, not a real dependency of this branch.
+        await executeJob(job, {
           lib,
           jobs,
           executeRealign: executeRealignClosure,
           now: () => Date.now(),
           log,
-        }))
+        })
         return
       }
       tombstoneLegacyJob(job, jobs, log, Date.now())
