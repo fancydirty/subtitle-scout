@@ -380,7 +380,7 @@ describe('scanLibrary', () => {
     expect(lib.getEpisode('e1')!.sub_status).toBe('unavailable')
   })
 
-  it('captures poster_tag: episode → series.poster_tag, movie → movies.poster_tag', async () => {
+  it('captures poster_path (posterTag alias): episode → series.poster_path, movie → movies.poster_path', async () => {
     const pages = [
       [epItem('e1', 1, 1, { SeriesPrimaryImageTag: 'series-ptag' })],
       [movieItem({ ImageTags: { Primary: 'movie-ptag', Backdrop: 'x' } })],
@@ -394,8 +394,8 @@ describe('scanLibrary', () => {
       fileExists: () => false,
       mappings,
     })
-    expect((lib.db.prepare('select poster_tag from series where id=?').get('s1') as any).poster_tag).toBe('series-ptag')
-    expect(lib.getMovie('m1')!.poster_tag).toBe('movie-ptag')
+    expect((lib.db.prepare('select poster_path from series where id=?').get('s1') as any).poster_path).toBe('series-ptag')
+    expect(lib.getMovie('m1')!.poster_path).toBe('movie-ptag')
   })
 
   it('unavailable is overwritten when reality says covered', async () => {

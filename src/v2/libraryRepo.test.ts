@@ -169,11 +169,12 @@ describe('媒体镜像', () => {
   it('upsertSeries 传 null chineseTitle 不清空已回写的中文名（scan 复扫不丢名）', () => {
     lib.upsertSeries({ id: 's1', name: 'A' })
     lib.setSeriesChineseTitle('s1', '甲剧', 1000)
-    // 模拟后续 scan：只带 name/posterTag，chineseTitle 缺省为 null
+    // 模拟后续 scan：只带 name/posterTag（旧字段名兼容别名，写入同一 poster_path 列），
+    // chineseTitle 缺省为 null
     lib.upsertSeries({ id: 's1', name: 'A', posterTag: 'ptag' })
-    const row = lib.db.prepare('select chinese_title, poster_tag from series where id=?').get('s1') as any
+    const row = lib.db.prepare('select chinese_title, poster_path from series where id=?').get('s1') as any
     expect(row.chinese_title).toBe('甲剧')
-    expect(row.poster_tag).toBe('ptag')
+    expect(row.poster_path).toBe('ptag')
   })
 
   it('setMovieChineseTitle 写回；upsertMovie 传 null 不清空', () => {
@@ -250,5 +251,119 @@ describe('realign 支持方法', () => {
     expect(lib.getEpisode('e1')).toBeNull()
     expect(lib.getSeries('s1')).toBeNull()
     expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('e1')).toEqual({ c: 0 })
+  })
+
+  it('upsertSeries posterPath / upsertMovie posterPath 写入 poster_path 列', () => {
+    lib.upsertSeries({ id: 's1', name: 'Show', posterPath: '/dqZEN.jpg' })
+    expect(lib.getSeries('s1')?.poster_path).toBe('/dqZEN.jpg')
+
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing', posterPath: '/abc.jpg' })
+    expect(lib.getMovie('m1')?.poster_path).toBe('/abc.jpg')
+  })
+})
+
+describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9）', () => {
+  describe('parked_paths', () => {
+    it('upsertParkedPath 插入新行；再次 upsert 更新 reason/last_attempt，保留 first_seen', () => {
+      lib.upsertParkedPath('/media/unknown/a.mkv', 'no tmdb match', 1000)
+      lib.upsertParkedPath('/media/unknown/a.mkv', 'ambiguous', 2000)
+      const rows = lib.listParkedPaths()
+      expect(rows).toEqual([
+        { path: '/media/unknown/a.mkv', park_reason: 'ambiguous', first_seen: 1000, last_attempt: 2000 },
+      ])
+    })
+
+    it('listParkedPaths 按 first_seen DESC 排序', () => {
+      lib.upsertParkedPath('/a', 'r1', 1000)
+      lib.upsertParkedPath('/b', 'r2', 3000)
+      lib.upsertParkedPath('/c', 'r3', 2000)
+      expect(lib.listParkedPaths().map((r) => r.path)).toEqual(['/b', '/c', '/a'])
+    })
+
+    it('clearParkedPath 删除该行（认领成功后调用）', () => {
+      lib.upsertParkedPath('/a', 'r1', 1000)
+      lib.clearParkedPath('/a')
+      expect(lib.listParkedPaths()).toEqual([])
+    })
+  })
+
+  describe('identify_overrides', () => {
+    it('addOverride + findOverride：单条命中', () => {
+      lib.addOverride('/media/anime/Show', '209867', true, 1000)
+      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true })
+    })
+
+    it('findOverride 无命中返回 null', () => {
+      lib.addOverride('/media/anime/Show', '209867', true, 1000)
+      expect(lib.findOverride('/media/other/x.mkv')).toBeNull()
+    })
+
+    it('findOverride 最长前缀匹配：两条嵌套前缀，更长者胜出', () => {
+      lib.addOverride('/media/anime', '1', true, 1000)
+      lib.addOverride('/media/anime/Show', '209867', true, 2000)
+      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true })
+      expect(lib.findOverride('/media/anime/Other/e1.mkv')).toEqual({ tmdbId: '1', isTv: true })
+    })
+
+    it('addOverride 对同一 path_prefix 幂等更新（PRIMARY KEY upsert）', () => {
+      lib.addOverride('/media/x', '1', true, 1000)
+      lib.addOverride('/media/x', '2', false, 2000)
+      expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '2', isTv: false })
+    })
+  })
+
+  describe('probeMemo / setProbeMemo', () => {
+    it('对 episode 行读写', () => {
+      lib.upsertSeries({ id: 's1', name: 'A' })
+      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a', subStatus: 'missing' })
+      expect(lib.probeMemo('e1')).toBeNull()
+      lib.setProbeMemo('e1', 111, 222, ['chi', 'eng'])
+      expect(lib.probeMemo('e1')).toEqual({ mtime: 111, size: 222, langs: ['chi', 'eng'] })
+    })
+
+    it('对 movie 行读写', () => {
+      lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing' })
+      expect(lib.probeMemo('m1')).toBeNull()
+      lib.setProbeMemo('m1', 333, 444, null)
+      expect(lib.probeMemo('m1')).toEqual({ mtime: 333, size: 444, langs: null })
+    })
+
+    it('未知 id 返回 null', () => {
+      expect(lib.probeMemo('nope')).toBeNull()
+    })
+  })
+
+  describe('deleteEpisodeByPath / deleteMovieByPath / deleteSeriesIfEmpty', () => {
+    it('deleteEpisodeByPath 删除该行 + 关联 subtitles', () => {
+      lib.upsertSeries({ id: 's1', name: 'A' })
+      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a.mkv', subStatus: 'covered' })
+      lib.markCovered('e1', '/a.zh-Hans.srt', 'scout-download')
+      lib.deleteEpisodeByPath('/a.mkv')
+      expect(lib.getEpisode('e1')).toBeNull()
+      expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('e1')).toEqual({ c: 0 })
+    })
+
+    it('deleteEpisodeByPath 对不存在的路径是空操作', () => {
+      expect(() => lib.deleteEpisodeByPath('/nope.mkv')).not.toThrow()
+    })
+
+    it('deleteMovieByPath 删除该行 + 关联 subtitles', () => {
+      lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'covered' })
+      lib.markCovered('m1', '/m.zh-Hans.srt', 'scout-download')
+      lib.deleteMovieByPath('/m.mkv')
+      expect(lib.getMovie('m1')).toBeNull()
+      expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('m1')).toEqual({ c: 0 })
+    })
+
+    it('deleteSeriesIfEmpty：还有集时不删；集清空后删', () => {
+      lib.upsertSeries({ id: 's1', name: 'A' })
+      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a.mkv', subStatus: 'missing' })
+      lib.deleteSeriesIfEmpty('s1')
+      expect(lib.getSeries('s1')).not.toBeNull()
+
+      lib.deleteEpisodeByPath('/a.mkv')
+      lib.deleteSeriesIfEmpty('s1')
+      expect(lib.getSeries('s1')).toBeNull()
+    })
   })
 })

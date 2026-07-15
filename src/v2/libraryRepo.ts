@@ -6,7 +6,11 @@ export interface SeriesParams {
   id: string
   name: string
   chineseTitle?: string | null
+  /** @deprecated 别名，写入同一 poster_path 列。scanner.ts（去 Jellyfin 化 P3/T4 才退役）仍用
+   *  这个字段名传 Jellyfin ImageTag——保留它只为让 scanner.ts 不做深改也能编译通过；新调用方
+   *  （T3 ingest 起）应传 posterPath。两者都给时 posterPath 优先。 */
   posterTag?: string | null
+  posterPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
 }
@@ -27,7 +31,9 @@ export interface MovieParams {
   path: string
   subStatus: SubStatus
   chineseTitle?: string | null
+  /** @deprecated 别名，写入同一 poster_path 列——同 SeriesParams.posterTag 的兼容理由。 */
   posterTag?: string | null
+  posterPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
 }
@@ -49,7 +55,7 @@ export interface Movie {
   id: string
   name: string
   chinese_title: string | null
-  poster_tag: string | null
+  poster_path: string | null
   year: number | null
   path: string
   provider_ids: string | null
@@ -70,10 +76,30 @@ export interface Series {
   name: string
   chinese_title: string | null
   chinese_title_checked_at: number | null
-  poster_tag: string | null
+  poster_path: string | null
   year: number | null
   provider_ids: string | null
   origin_lang: string | null
+}
+
+// ---- P2 新面：parked_paths / identify_overrides / probe memo（去 Jellyfin 化 schema v9） ----
+
+export interface ParkedPath {
+  path: string
+  park_reason: string
+  first_seen: number
+  last_attempt: number
+}
+
+export interface IdentifyOverride {
+  tmdbId: string
+  isTv: boolean
+}
+
+export interface ProbeMemo {
+  mtime: number
+  size: number
+  langs: string[] | null
 }
 
 export class LibraryRepo {
@@ -84,19 +110,20 @@ export class LibraryRepo {
   }
 
   upsertSeries(params: SeriesParams): void {
+    const posterPath = params.posterPath ?? params.posterTag ?? null
     this.db
       .prepare(
-        `INSERT INTO series (id, name, chinese_title, poster_tag, year, provider_ids)
+        `INSERT INTO series (id, name, chinese_title, poster_path, year, provider_ids)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
-           poster_tag = COALESCE(excluded.poster_tag, poster_tag),
+           poster_path = COALESCE(excluded.poster_path, poster_path),
            year = excluded.year,
            provider_ids = excluded.provider_ids
          WHERE name != excluded.name
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
-            OR (excluded.poster_tag IS NOT NULL AND poster_tag IS NOT excluded.poster_tag)
+            OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
             OR year IS NOT excluded.year
             OR provider_ids IS NOT excluded.provider_ids`
       )
@@ -104,7 +131,7 @@ export class LibraryRepo {
         params.id,
         params.name,
         params.chineseTitle ?? null,
-        params.posterTag ?? null,
+        posterPath,
         params.year ?? null,
         params.providerIds ?? null
       )
@@ -145,16 +172,17 @@ export class LibraryRepo {
 
   upsertMovie(params: MovieParams): void {
     const now = Date.now()
+    const posterPath = params.posterPath ?? params.posterTag ?? null
     this.db
       .prepare(
-        `INSERT INTO movies (id, name, path, sub_status, chinese_title, poster_tag, year, provider_ids, updated_at)
+        `INSERT INTO movies (id, name, path, sub_status, chinese_title, poster_path, year, provider_ids, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            path = excluded.path,
            sub_status = excluded.sub_status,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
-           poster_tag = COALESCE(excluded.poster_tag, poster_tag),
+           poster_path = COALESCE(excluded.poster_path, poster_path),
            year = excluded.year,
            provider_ids = excluded.provider_ids,
            updated_at = excluded.updated_at
@@ -162,7 +190,7 @@ export class LibraryRepo {
             OR path != excluded.path
             OR sub_status != excluded.sub_status
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
-            OR (excluded.poster_tag IS NOT NULL AND poster_tag IS NOT excluded.poster_tag)
+            OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
             OR year IS NOT excluded.year
             OR provider_ids IS NOT excluded.provider_ids`
       )
@@ -172,7 +200,7 @@ export class LibraryRepo {
         params.path,
         params.subStatus,
         params.chineseTitle ?? null,
-        params.posterTag ?? null,
+        posterPath,
         params.year ?? null,
         params.providerIds ?? null,
         now
@@ -436,5 +464,145 @@ export class LibraryRepo {
          WHERE id = ? AND (chinese_title IS NULL OR chinese_title != ?)`
       )
       .run(title, now, id, title)
+  }
+
+  // ---- P2：parked_paths（未识别文件的正式户口，去 Jellyfin 化 schema v9） ----
+
+  /** 插入或更新一条 park 记录：reason/last_attempt 每轮巡检覆盖，first_seen 首次写入后不再变
+   *  （同一路径第二次被 park 时沿用最早发现时间，供 P6 救援页按"挂了多久"排序）。 */
+  upsertParkedPath(path: string, reason: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO parked_paths (path, park_reason, first_seen, last_attempt)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(path) DO UPDATE SET
+           park_reason = excluded.park_reason,
+           last_attempt = excluded.last_attempt`
+      )
+      .run(path, reason, now, now)
+  }
+
+  /** 认领成功（identify_overrides 命中）后调用，路径退出 park 户口。 */
+  clearParkedPath(path: string): void {
+    this.db.prepare(`DELETE FROM parked_paths WHERE path = ?`).run(path)
+  }
+
+  /** P6 救援页读取；first_seen DESC——挂得最久的排最前，救援优先级天然对齐。 */
+  listParkedPaths(): ParkedPath[] {
+    return this.db
+      .prepare(
+        `SELECT path, park_reason, first_seen, last_attempt FROM parked_paths ORDER BY first_seen DESC`
+      )
+      .all() as ParkedPath[]
+  }
+
+  // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----
+
+  /** P6 手工认领写入：ON CONFLICT 幂等更新（同一前缀重新认领覆盖旧值）。 */
+  addOverride(pathPrefix: string, tmdbId: string, isTv: boolean, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO identify_overrides (path_prefix, tmdb_id, is_tv, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(path_prefix) DO UPDATE SET
+           tmdb_id = excluded.tmdb_id,
+           is_tv = excluded.is_tv,
+           created_at = excluded.created_at`
+      )
+      .run(pathPrefix, tmdbId, isTv ? 1 : 0, now)
+  }
+
+  /** 最长前缀匹配：candidates = path 以 path_prefix 开头的全部 override 行，取 path_prefix
+   *  最长者（嵌套前缀时更具体的那条胜出）。实现为 SQL 全表扫描 + JS 过滤而非 LIKE/GLOB
+   *  通配符匹配——path_prefix 本身可能含 % / * / ? 等对 LIKE/GLOB 有特殊含义的字符，字面量
+   *  startsWith 比较不会误判，正确性优先于取巧。identify_overrides 是 P6 手工认领写入的表，
+   *  预期行数很小（几十到几百量级），全表扫描代价可忽略。 */
+  findOverride(path: string): IdentifyOverride | null {
+    const rows = this.db
+      .prepare(`SELECT path_prefix, tmdb_id, is_tv FROM identify_overrides`)
+      .all() as { path_prefix: string; tmdb_id: string; is_tv: number }[]
+    let best: { path_prefix: string; tmdb_id: string; is_tv: number } | null = null
+    for (const row of rows) {
+      if (!path.startsWith(row.path_prefix)) continue
+      if (!best || row.path_prefix.length > best.path_prefix.length) best = row
+    }
+    if (!best) return null
+    return { tmdbId: best.tmdb_id, isTv: best.is_tv === 1 }
+  }
+
+  // ---- P2：ffprobe 探针记忆化（episodes/movies 共用列，见 db.ts P1 注释） ----
+
+  /** 两表 UPDATE 尝试模式（同 markCovered/markUnavailable/resetRecheck 的既有写法）：itemId
+   *  的自有 id 空间里 episodes 与 movies 互斥（episodes 形状含 '/s<N>e<M>' 段，movies 没有），
+   *  先按 episodes 查，查不到再查 movies，不需要额外的 kind 参数区分调用方意图。 */
+  probeMemo(itemId: string): ProbeMemo | null {
+    type Row = { probe_mtime: number | null; probe_size: number | null; embedded_langs: string | null }
+    const episodeRow = this.db
+      .prepare(`SELECT probe_mtime, probe_size, embedded_langs FROM episodes WHERE id = ?`)
+      .get(itemId) as Row | undefined
+    const row =
+      episodeRow ??
+      (this.db
+        .prepare(`SELECT probe_mtime, probe_size, embedded_langs FROM movies WHERE id = ?`)
+        .get(itemId) as Row | undefined)
+    if (!row || row.probe_mtime == null || row.probe_size == null) return null
+    return {
+      mtime: row.probe_mtime,
+      size: row.probe_size,
+      langs: row.embedded_langs != null ? (JSON.parse(row.embedded_langs) as string[]) : null,
+    }
+  }
+
+  /** 同 probeMemo 的两表尝试模式：先 UPDATE episodes，0 行受影响再 UPDATE movies。 */
+  setProbeMemo(itemId: string, mtime: number, size: number, langs: string[] | null): void {
+    const langsJson = langs != null ? JSON.stringify(langs) : null
+    const episodeResult = this.db
+      .prepare(`UPDATE episodes SET probe_mtime = ?, probe_size = ?, embedded_langs = ? WHERE id = ?`)
+      .run(mtime, size, langsJson, itemId)
+    if (episodeResult.changes === 0) {
+      this.db
+        .prepare(`UPDATE movies SET probe_mtime = ?, probe_size = ?, embedded_langs = ? WHERE id = ?`)
+        .run(mtime, size, langsJson, itemId)
+    }
+  }
+
+  // ---- P2：磁盘真相移除（T3 摄取层消费：文件从盘上消失 → 行退役） ----
+
+  /** 按 path 删 episode 行 + 关联 subtitles（subtitles 未声明外键到 episodes(id)，同属一份账目，
+   *  与 deleteSeriesRows 同样理由一并清理）。路径不存在时是空操作。 */
+  deleteEpisodeByPath(path: string): void {
+    const tx = this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT id FROM episodes WHERE path = ?`).get(path) as
+        | { id: string }
+        | undefined
+      if (!row) return
+      this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`).run(row.id)
+      this.db.prepare(`DELETE FROM episodes WHERE path = ?`).run(path)
+    })
+    tx()
+  }
+
+  /** 按 path 删 movie 行 + 关联 subtitles（同 deleteEpisodeByPath）。 */
+  deleteMovieByPath(path: string): void {
+    const tx = this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT id FROM movies WHERE path = ?`).get(path) as
+        | { id: string }
+        | undefined
+      if (!row) return
+      this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`).run(row.id)
+      this.db.prepare(`DELETE FROM movies WHERE path = ?`).run(path)
+    })
+    tx()
+  }
+
+  /** episodes 行随磁盘真相逐个被 deleteEpisodeByPath 删空后，该剧的 series 行变成永久性镜像
+   *  鬼影（同 deleteSeriesRows 头注释的既有理由）——T3 摄取层在删完某剧最后一个 episode 后调用。 */
+  deleteSeriesIfEmpty(seriesId: string): void {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as c FROM episodes WHERE series_id = ?`)
+      .get(seriesId) as { c: number }
+    if (row.c === 0) {
+      this.db.prepare(`DELETE FROM series WHERE id = ?`).run(seriesId)
+    }
   }
 }

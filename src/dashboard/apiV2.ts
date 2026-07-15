@@ -34,7 +34,7 @@ interface SeriesRow {
   name: string
   chinese_title: string | null
   year: number | null
-  poster_tag: string | null
+  poster_path: string | null
 }
 interface MovieRow extends SeriesRow {
   path: string
@@ -117,7 +117,7 @@ export function sectionOf(path: string, rootDepth: number): string {
 export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
   const seriesRows = db
     .prepare(
-      `SELECT id, name, chinese_title, year, poster_tag FROM series ORDER BY name ASC`
+      `SELECT id, name, chinese_title, year, poster_path FROM series ORDER BY name ASC`
     )
     .all() as SeriesRow[]
 
@@ -168,7 +168,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
 
   const movieRows = db
     .prepare(
-      `SELECT id, name, chinese_title, year, poster_tag, path, sub_status FROM movies ORDER BY name ASC`
+      `SELECT id, name, chinese_title, year, poster_path, path, sub_status FROM movies ORDER BY name ASC`
     )
     .all() as MovieRow[]
 
@@ -182,7 +182,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     name: s.name,
     chineseTitle: s.chinese_title,
     year: s.year,
-    posterTag: s.poster_tag,
+    posterTag: s.poster_path,
     section: sectionOf(pathBySeriesId.get(s.id) ?? '', rootDepth),
     coverage: coverageBySeriesId.get(s.id) ?? emptyCoverage(),
     job: jobBySeriesId.get(s.id) ?? null,
@@ -218,7 +218,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
       name: m.name,
       chineseTitle: m.chinese_title,
       year: m.year,
-      posterTag: m.poster_tag,
+      posterTag: m.poster_path,
       section: sectionOf(m.path, rootDepth),
       coverage,
       job: jobByMovieId.get(m.id) ?? null,
@@ -279,7 +279,7 @@ interface RunDetailRow {
 /** 剧详情：按季分节的集清单 + 经 job_id 关联该剧的 runs 时间线。未找到返回 null。 */
 export function buildSeriesDetail(db: ScoutDb, id: string): SeriesDetailDTO | null {
   const series = db
-    .prepare(`SELECT id, name, chinese_title, year, poster_tag FROM series WHERE id = ?`)
+    .prepare(`SELECT id, name, chinese_title, year, poster_path FROM series WHERE id = ?`)
     .get(id) as SeriesRow | undefined
   if (!series) return null
 
@@ -335,7 +335,7 @@ export function buildSeriesDetail(db: ScoutDb, id: string): SeriesDetailDTO | nu
     name: series.name,
     chineseTitle: series.chinese_title,
     year: series.year,
-    posterTag: series.poster_tag,
+    posterTag: series.poster_path,
     seasons,
     runs,
   }
