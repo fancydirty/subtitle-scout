@@ -101,12 +101,52 @@ describe('probeEmbeddedSubtitles', () => {
       expect(seenBin).toBe('/env/ffprobe')
     })
 
+    it('FFPROBE_PATH still wins over the lazy ffprobe-static import — the import is never attempted', async () => {
+      process.env.FFPROBE_PATH = '/env/ffprobe'
+      let seenBin: string | undefined
+      let importCalled = false
+      const execFileImpl = fakeExecFile((bin) => { seenBin = bin; return { stdout: JSON.stringify({ streams: [] }) } })
+      const importFfprobeStatic = async () => { importCalled = true; return { path: '/should/not/be/used' } }
+      await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+      expect(seenBin).toBe('/env/ffprobe')
+      expect(importCalled).toBe(false)
+    })
+
     it('falls back to the ffprobe-static bundled binary when neither opt nor env is set', async () => {
       delete process.env.FFPROBE_PATH
       let seenBin: string | undefined
       const execFileImpl = fakeExecFile((bin) => { seenBin = bin; return { stdout: JSON.stringify({ streams: [] }) } })
       await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl })
       expect(seenBin).toBe(ffprobeStaticPath)
+    })
+
+    describe('ffprobe-static is optional — lazy import can fail without crashing the process', () => {
+      it('returns null (probe-unavailable contract) when the import rejects and no explicit/env path is set', async () => {
+        delete process.env.FFPROBE_PATH
+        let execFileCalled = false
+        const execFileImpl = fakeExecFile(() => { execFileCalled = true; return { stdout: JSON.stringify({ streams: [] }) } })
+        const importFfprobeStatic = async () => { throw new Error('cannot download vendored binary tarball') }
+        const result = await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+        expect(result).toBeNull()
+        expect(execFileCalled).toBe(false)
+      })
+
+      it('returns null when the import resolves but the module has no usable path (package missing/stubbed)', async () => {
+        delete process.env.FFPROBE_PATH
+        const execFileImpl = fakeExecFile(() => ({ stdout: JSON.stringify({ streams: [] }) }))
+        const importFfprobeStatic = async () => ({})
+        const result = await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+        expect(result).toBeNull()
+      })
+
+      it('accepts the default-export shape (`{ default: { path } }`) as well as the named-export shape', async () => {
+        delete process.env.FFPROBE_PATH
+        let seenBin: string | undefined
+        const execFileImpl = fakeExecFile((bin) => { seenBin = bin; return { stdout: JSON.stringify({ streams: [] }) } })
+        const importFfprobeStatic = async () => ({ default: { path: '/interop/ffprobe' } })
+        await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+        expect(seenBin).toBe('/interop/ffprobe')
+      })
     })
   })
 })
