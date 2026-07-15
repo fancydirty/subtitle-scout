@@ -25,6 +25,7 @@
     "better-sqlite3": "^12.11.1",
     "chardet": "^2.2.0",
     "dotenv": "^17.4.2",
+    "ffprobe-static": "^3.1.0",
     "iconv-lite": "^0.7.3",
     "zod": "^4.4.3"
   },
@@ -32,6 +33,7 @@
     "@cloudflare/workers-types": "^4.20260702.1",
     "@types/adm-zip": "^0.5.8",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/ffprobe-static": "^2.0.3",
     "@types/node": "^26.1.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",
