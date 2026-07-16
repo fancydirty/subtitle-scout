@@ -511,7 +511,7 @@ describe('worker_task dispatch (v3 phase ④)', () => {
       expect(created).toEqual({ outcome: 'created' })
 
       const coalesced = repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', retry: true }, null, now)
-      expect(coalesced).toEqual({ outcome: 'coalesced', pendingState: 'wanted' })
+      expect(coalesced).toEqual({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true })
 
       const job = repo.claimNext(now)!
       repo.completeDone(job.id, now)
@@ -545,7 +545,74 @@ describe('worker_task dispatch (v3 phase ④)', () => {
       const job = repo.claimNext(now)!
       repo.completeError(job.id, 'boom', now)
       const result = repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now + 1)
-      expect(result).toEqual({ outcome: 'coalesced', pendingState: 'failed' })
+      expect(result).toEqual({ outcome: 'coalesced', pendingState: 'failed', intentRefreshed: true })
+    })
+  })
+
+  // F-R2-5（R2 复审，审计定罪：coalesced 谎报"identical"+新意图丢弃）：wanted/failed 两态还
+  // 没被认领，没有 worker 正在读它的 payload——本次 dispatch 携带的最新意图（新的季范围/
+  // reason/remainingWorkSummary）理应赢过旧的，而不是被无声丢弃在原地。active
+  // （searching/downloading/verifying）态不同：有一个 worker 正在跑，此刻覆写它正在读的
+  // payload 没有意义，继续保持"只碰 updated_at"的旧行为不变。attempt/error_attempt/
+  // next_retry_at 无论哪一态都不动——这两条退避轨只由 done→revived（归零重试计数）和
+  // dormant→blocked（停车判决）触碰，coalesced 从不改变它们（F1 裁决锁定的语义边界）。
+  describe('coalesced 意图刷新 (F-R2-5)', () => {
+    it('wanted 行 coalesce：payload 刷新为最新意图，intentRefreshed:true，updated_at 前进', () => {
+      const now = Date.now()
+      repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', seasons: [1] }, null, now)
+      const jobId = (
+        db.prepare(`SELECT id FROM jobs WHERE kind='worker_task' AND series_id='s1' AND season=1`).get() as { id: number }
+      ).id
+      const beforeRow = repo.get(jobId)!
+      expect(beforeRow.updated_at).toBe(now)
+
+      const result = repo.upsertWorkerTask(
+        { seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', seasons: [1, 2, 3] }, null, now + 1000,
+      )
+
+      expect(result).toEqual({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true })
+      const afterRow = repo.get(jobId)!
+      expect(JSON.parse(afterRow.payload!)).toEqual({ taskType: 'find_subtitle', seasons: [1, 2, 3] })
+      expect(afterRow.updated_at).toBe(now + 1000)
+    })
+
+    it('failed 行 coalesce：payload 也刷新，intentRefreshed:true，attempt/error_attempt/next_retry_at 不动', () => {
+      const now = Date.now()
+      repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', seasons: [1] }, null, now)
+      const job = repo.claimNext(now)!
+      repo.completeError(job.id, 'boom', now)
+      const beforeRow = repo.get(job.id)!
+      expect(beforeRow.error_attempt).toBe(1)
+      const savedNextRetryAt = beforeRow.next_retry_at
+
+      const result = repo.upsertWorkerTask(
+        { seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', seasons: [4, 5] }, null, now + 1,
+      )
+
+      expect(result).toEqual({ outcome: 'coalesced', pendingState: 'failed', intentRefreshed: true })
+      const afterRow = repo.get(job.id)!
+      expect(JSON.parse(afterRow.payload!)).toEqual({ taskType: 'find_subtitle', seasons: [4, 5] })
+      expect(afterRow.attempt).toBe(beforeRow.attempt)
+      expect(afterRow.error_attempt).toBe(1)
+      expect(afterRow.next_retry_at).toBe(savedNextRetryAt)
+      expect(afterRow.state).toBe('failed')
+    })
+
+    it('active（searching）行 coalesce：payload 保持不动，intentRefreshed:false（只碰 updated_at，同旧行为）', () => {
+      const now = Date.now()
+      repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', seasons: [1] }, null, now)
+      const job = repo.claimNext(now)!
+      expect(job.state).toBe('searching')
+
+      const result = repo.upsertWorkerTask(
+        { seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', seasons: [9, 9, 9] }, null, now + 1000,
+      )
+
+      expect(result).toEqual({ outcome: 'coalesced', pendingState: 'searching', intentRefreshed: false })
+      const afterRow = repo.get(job.id)!
+      expect(JSON.parse(afterRow.payload!)).toEqual({ taskType: 'find_subtitle', seasons: [1] })
+      expect(afterRow.updated_at).toBe(now + 1000)
+      expect(afterRow.state).toBe('searching')
     })
   })
 })

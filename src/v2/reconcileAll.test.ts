@@ -3,6 +3,7 @@ import { MockLanguageModelV4 } from 'ai/test'
 import { openDb } from './db.js'
 import { JobsRepo } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
+import { RunsRepo } from './runsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { runReconcileAll, runOrchestrateWorkerTask } from './reconcileAll.js'
 
@@ -156,5 +157,83 @@ describe('runOrchestrateWorkerTask', () => {
 
     expect(decision).toEqual(EMPTY_DECISION)
     expect(capturedPromptText).not.toContain('Handoff note')
+  })
+
+  // F-R2-3（R2 复审，审计定罪：orchestrator 汇报黑洞）：runOrchestrateWorkerTask 拿到
+  // OrchestratorDecision 后此前只 completeDone，从不写 runs——sibling pass 的 summary（dispatch
+  // 计数 + 措辞摘要）从未抵达 dashboard 时间线，是 blocked_dormant"上报人类"教导缺失的落地通道:
+  // summary 进 runs = 进 dashboard 时间线。
+  describe('runs row (dashboard 时间线落地, F-R2-3)', () => {
+    it('completeDone 前写一行 decision="orchestrate" 的 runs，detail 汇总 dispatch 计数 + summary', async () => {
+      const db = openDb(':memory:')
+      const jobs = new JobsRepo(db)
+      const lib = new LibraryRepo(db)
+      const runs = new RunsRepo(db)
+      jobs.upsertWorkerTask({ seriesId: 'orchestrator-shard-root-4', season: null, movieId: null }, { taskType: 'orchestrate' }, null, 1000)
+      const job = jobs.claimNext(1000)!
+
+      const decision = { dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched the backlog' }
+      const model = new MockLanguageModelV4({ doGenerate: async () => finalizeResult(decision) })
+
+      const result = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 2000, stepCap: 10, runs }, jobs)
+
+      expect(result).toEqual(decision)
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({
+        job_id: job.id, decision: 'orchestrate',
+        detail: 'dispatched 2 find / 1 realign, siblings 0: dispatched the backlog',
+      })
+      expect(jobs.get(job.id)!.state).toBe('done')
+    })
+
+    it('caps an overlong summary at 200 chars in the runs detail (dashboard timeline hygiene)', async () => {
+      const db = openDb(':memory:')
+      const jobs = new JobsRepo(db)
+      const lib = new LibraryRepo(db)
+      const runs = new RunsRepo(db)
+      jobs.upsertWorkerTask({ seriesId: 'orchestrator-shard-root-5', season: null, movieId: null }, { taskType: 'orchestrate' }, null, 1000)
+      const job = jobs.claimNext(1000)!
+
+      const decision = { dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'x'.repeat(300) }
+      const model = new MockLanguageModelV4({ doGenerate: async () => finalizeResult(decision) })
+
+      await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 2000, stepCap: 10, runs }, jobs)
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows[0].detail!.length).toBe(200)
+    })
+
+    it('deps.runs omitted: does not crash, decision still completes done, simply skips writing a runs row', async () => {
+      const db = openDb(':memory:')
+      const jobs = new JobsRepo(db)
+      const lib = new LibraryRepo(db)
+      jobs.upsertWorkerTask({ seriesId: 'orchestrator-shard-root-6', season: null, movieId: null }, { taskType: 'orchestrate' }, null, 1000)
+      const job = jobs.claimNext(1000)!
+
+      const model = new MockLanguageModelV4({ doGenerate: async () => finalizeResult(EMPTY_DECISION) })
+
+      const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 1000, stepCap: 10 }, jobs)
+
+      expect(decision).toEqual(EMPTY_DECISION)
+      expect(jobs.get(job.id)!.state).toBe('done')
+    })
+
+    it('worker-exhaustion path (thrown pass) does NOT write a runs row — completeError already records last_error, no duplicate reporting channel', async () => {
+      const db = openDb(':memory:')
+      const jobs = new JobsRepo(db)
+      const lib = new LibraryRepo(db)
+      const runs = new RunsRepo(db)
+      jobs.upsertWorkerTask({ seriesId: 'orchestrator-shard-root-7', season: null, movieId: null }, { taskType: 'orchestrate' }, null, 1000)
+      const job = jobs.claimNext(1000)!
+
+      const model = new MockLanguageModelV4({ doGenerate: async () => { throw new Error('network exploded') } })
+
+      const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 1000, stepCap: 10, runs }, jobs)
+
+      expect(decision).toBeNull()
+      expect(runs.getByJobId(job.id)).toHaveLength(0)
+      expect(jobs.get(job.id)!.state).toBe('failed')
+    })
   })
 })

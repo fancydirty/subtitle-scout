@@ -175,6 +175,11 @@ export class LibraryRepo {
       )
   }
 
+  /** F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零，R-3 不变式）：ON CONFLICT 分支的
+   *  search_attempts CASE——excluded.sub_status（本次要写入的新状态）落在 covered/embedded 时
+   *  归零，否则保持原值不动。这是 ingest 的 FULL PATH（新识别/probeMemo 过期，见 ingest.ts）
+   *  写入 covered/embedded 的落点：INSERT（新行）本就默认 0（db.ts schema default），只有
+   *  UPDATE（已存在的行，例如此前是 unavailable/missing）需要这条 CASE 主动归零。 */
   upsertEpisode(params: EpisodeParams): void {
     const now = Date.now()
     this.db
@@ -188,6 +193,7 @@ export class LibraryRepo {
            name = excluded.name,
            path = excluded.path,
            sub_status = excluded.sub_status,
+           search_attempts = CASE WHEN excluded.sub_status IN ('covered', 'embedded') THEN 0 ELSE search_attempts END,
            updated_at = excluded.updated_at
          WHERE series_id != excluded.series_id
             OR season != excluded.season
@@ -208,6 +214,8 @@ export class LibraryRepo {
       )
   }
 
+  /** F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零，R-3 不变式）：同 upsertEpisode 的
+   *  search_attempts CASE——见该方法头注释。 */
   upsertMovie(params: MovieParams): void {
     const now = Date.now()
     const posterPath = params.posterPath ?? null
@@ -219,6 +227,7 @@ export class LibraryRepo {
            name = excluded.name,
            path = excluded.path,
            sub_status = excluded.sub_status,
+           search_attempts = CASE WHEN excluded.sub_status IN ('covered', 'embedded') THEN 0 ELSE search_attempts END,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
            poster_path = COALESCE(excluded.poster_path, poster_path),
            year = excluded.year,
@@ -365,18 +374,33 @@ export class LibraryRepo {
 
   /** R-11（用户裁决 2026-07-16）：全剧（或季子集）缺口事实清单——派活范围不再是系统常量，是主
    *  代理按刮削出的磁盘事实自行裁量后经 payload.seasons 下发（数组=季子集，null=全剧）。谓词与
-   *  listMissingEpisodesInSeason 完全一致，只是不强制单季；ORDER BY season, episode 是清单
-   *  排序，不是执行顺序指令（同 listMissingEpisodesInSeason 的既有措辞）。 */
-  listMissingEpisodesForSeries(seriesId: string, seasons: number[] | null, now: number): MissingEpisodeFact[] {
+   *  listMissingEpisodesInSeason 基本一致，只是不强制单季；ORDER BY season, episode 是清单
+   *  排序，不是执行顺序指令（同 listMissingEpisodesInSeason 的既有措辞）。
+   *
+   *  F-R2-4（R2 复审，审计定罪：停牌提前重派的管道缺失）：新增第 4 参 includeThrottled（默认
+   *  false，向后兼容既有调用点）。orchestratorSkill 早就教"re-dispatching a throttled-only row
+   *  is YOUR call for a genuinely changed situation"，但这条谓词此前无条件要求
+   *  recheck_after <= now——orchestrator 判断"该提前重查"之后，事实清单本身还是把停牌中的行
+   *  整行滤掉，模型的判断没有实现它的管道。includeThrottled=true 时谓词放宽为
+   *  sub_status IN ('missing','unavailable')，不再看 recheck_after；false（默认）时谓词与此前
+   *  完全一致，既有窗口语义锁不变。 */
+  listMissingEpisodesForSeries(
+    seriesId: string, seasons: number[] | null, now: number, includeThrottled: boolean = false,
+  ): MissingEpisodeFact[] {
     const seasonFilter = seasons && seasons.length > 0 ? `AND season IN (${seasons.map(() => '?').join(',')})` : ''
+    const statusFilter = includeThrottled
+      ? `AND (sub_status = 'missing' OR sub_status = 'unavailable')`
+      : `AND (sub_status = 'missing' OR (sub_status = 'unavailable' AND recheck_after <= ?))`
+    const seasonParams = seasons && seasons.length > 0 ? seasons : []
+    const params = includeThrottled ? [seriesId, ...seasonParams] : [seriesId, ...seasonParams, now]
     return this.db
       .prepare(
         `SELECT id, path, season, episode FROM episodes
          WHERE series_id = ? ${seasonFilter}
-         AND (sub_status = 'missing' OR (sub_status = 'unavailable' AND recheck_after <= ?))
+         ${statusFilter}
          ORDER BY season ASC, episode ASC`
       )
-      .all(...(seasons && seasons.length > 0 ? [seriesId, ...seasons, now] : [seriesId, now])) as MissingEpisodeFact[]
+      .all(...params) as MissingEpisodeFact[]
   }
 
   /** missingBySeason 的电影同构版（同一裁决 R-3 呈现面）——电影没有"季"可分组，行形状从整

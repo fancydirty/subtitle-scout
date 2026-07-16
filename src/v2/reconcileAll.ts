@@ -1,7 +1,17 @@
 import type { LanguageModel } from 'ai'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
+import type { RunsRepo } from './runsRepo.js'
 import { makeOrchestratorAgent, type OrchestratorDecision, type OrchestratorAgentDeps } from '../agent/orchestratorAgent.js'
+
+/** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
+ *  trim/cap so a long OrchestratorDecision.summary doesn't blow out the timeline UI. Mirrors
+ *  findSubtitleWorkerTask.ts/realignWorkerTask.ts's own capDetail (kept file-local rather than
+ *  shared, matching this codebase's existing per-file small-helper idiom). */
+function capDetail(s: string, max = 200): string {
+  const trimmed = s.trim()
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed
+}
 
 export interface ReconcileAllDeps {
   /** 去 Jellyfin 化 T4：摄取 pass（v2/ingest.ts 的 makeIngestPass 预绑定结果，调用方
@@ -54,6 +64,12 @@ export interface OrchestrateWorkerTaskDeps {
   now: () => number
   stepCap?: number
   maxDispatchesPerOrchestrator?: number
+  /** F-R2-3（R2 复审，审计定罪：orchestrator 汇报黑洞）：optional so existing callers/tests keep
+   *  compiling without threading it — when absent, runOrchestrateWorkerTask silently skips writing
+   *  a runs row (no throw). Mirrors findSubtitleWorkerTask.ts/realignWorkerTask.ts's own `runs?:
+   *  Pick<RunsRepo,'insert'>` injection shape; cli/index.ts wires the same RunsRepo instance it
+   *  already builds for the other two worker_task runners. */
+  runs?: Pick<RunsRepo, 'insert'>
 }
 
 /** B3（审计发现，意图黑洞）：spawn_sibling_orchestrator (orchestratorAgent.tools.ts) writes
@@ -79,10 +95,19 @@ function readRemainingWorkSummary(payload: string | null): string | undefined {
  *  fails the job via completeError instead of propagating and crashing the daemon's claim loop —
  *  unlike those two worker kinds, a sibling orchestrator pass has no partial/no-match outcome to
  *  report; any successful return completes the job done. B3: reads the claimed job's own
- *  remainingWorkSummary (if the parent pass left one) and threads it through as promptSuffix. */
+ *  remainingWorkSummary (if the parent pass left one) and threads it through as promptSuffix.
+ *
+ *  F-R2-3（R2 复审，审计定罪：orchestrator 汇报黑洞）：拿到 OrchestratorDecision 后此前只
+ *  completeDone，从不写 runs——decision.summary（连同 dispatchedFindSubtitle/dispatchedRealign/
+ *  spawnedSiblings 三个计数）从未抵达 dashboard 的 runs 时间线，orchestrator 这一整类 job 在
+ *  时间线上是黑洞。这是 blocked_dormant"surface this to the operator"教导（见
+ *  orchestratorAgent.tools.ts 的 reportDispatchOutcome 注释）真正落地的通道：summary 写进 runs
+ *  = 运维能在 dashboard 上看见。completeError 分支不写 runs——那个分支已经把 msg 写进
+ *  jobs.last_error（completeError 自身的职责），runs 不是第二个上报通道，不重复记。 */
 export async function runOrchestrateWorkerTask(
   job: Job, deps: OrchestrateWorkerTaskDeps, jobs: Pick<JobsRepo, 'upsertWorkerTask' | 'get' | 'completeDone' | 'completeError'>,
 ): Promise<OrchestratorDecision | null> {
+  const startedAt = deps.now()
   try {
     const runPass = makeOrchestratorAgent({
       model: deps.model, lib: deps.lib, tmdb: deps.tmdb, jobs, now: deps.now, orchestratorJobId: job.id,
@@ -90,7 +115,12 @@ export async function runOrchestrateWorkerTask(
       promptSuffix: readRemainingWorkSummary(job.payload),
     })
     const decision = await runPass()
-    jobs.completeDone(job.id, deps.now())
+    const finishedAt = deps.now()
+    const detail =
+      `dispatched ${decision.dispatchedFindSubtitle} find / ${decision.dispatchedRealign} realign, ` +
+      `siblings ${decision.spawnedSiblings}: ${decision.summary}`
+    deps.runs?.insert({ jobId: job.id, startedAt, finishedAt, decision: 'orchestrate', detail: capDetail(detail), journalPath: null })
+    jobs.completeDone(job.id, finishedAt)
     return decision
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)

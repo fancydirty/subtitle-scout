@@ -303,6 +303,121 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
       expect(task!.targets.map(t => t.season)).toEqual([2])
     })
   })
+
+  // F-R2-4（R2 复审，审计定罪：停牌提前重派的管道缺失）：orchestratorSkill 早就教"re-dispatching
+  // a throttled-only row is YOUR call"，dispatch_find_subtitle_task 的 includeThrottled 参数把
+  // 这个判断落进 payload，mapper 在这里读出来传给 listMissingEpisodesForSeries/movie stillMissing
+  // 判断——没有这一步，模型的判断到了执行层照样被 recheck_after 窗口过滤器无声吃掉。
+  describe('payload.includeThrottled (F-R2-4)', () => {
+    it('series 分支：includeThrottled=true → 未到期 unavailable 的季也进 targets', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-throttled-series-'))
+      const showDir = join(root, 'Show', 'Season 01')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '100'
+      const sId = seriesId(tmdbId)
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const path = join(showDir, 'Show.S01E01.mkv')
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 1, 1), seriesId: sId, season: 1, episode: 1, name: 'E1', path, subStatus: 'missing' })
+      // 判决时刻=NOW，阶梯首次 +1 天 → 未到期（throttled，不是到期缺口）。
+      lib.markUnavailable(episodeId(tmdbId, 1, 1), '搜索穷尽', NOW)
+
+      jobsRepo.upsertWorkerTask(
+        { seriesId: sId, season: null, movieId: null },
+        { taskType: 'find_subtitle', seasons: null, includeThrottled: true, reason: 'operator says re-check now' },
+        null, NOW,
+      )
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(task!.targets.map(t => t.season)).toEqual([1])
+    })
+
+    it('series 分支：includeThrottled 省略（默认 false）→ 未到期 unavailable 仍被窗口排除（既有语义锁）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-throttled-series-default-'))
+      const showDir = join(root, 'Show', 'Season 01')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '101'
+      const sId = seriesId(tmdbId)
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const path = join(showDir, 'Show.S01E01.mkv')
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 1, 1), seriesId: sId, season: 1, episode: 1, name: 'E1', path, subStatus: 'missing' })
+      lib.markUnavailable(episodeId(tmdbId, 1, 1), '搜索穷尽', NOW)
+
+      jobsRepo.upsertWorkerTask(
+        { seriesId: sId, season: null, movieId: null },
+        { taskType: 'find_subtitle', seasons: null, reason: 'routine dispatch' },
+        null, NOW,
+      )
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(task).toBeNull()
+    })
+
+    it('movie 分支：includeThrottled=true → 未到期 unavailable 的电影也 stillMissing（放宽判断）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-throttled-movie-'))
+      const movieDir = join(root, 'Movie (2020)')
+      mkdirSync(movieDir, { recursive: true })
+      const videoPath = join(movieDir, 'Movie.mkv')
+      writeFileSync(videoPath, 'video')
+      const movieId = seriesId('556')
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertMovie({ id: movieId, name: 'Movie', path: videoPath, subStatus: 'missing', year: 2020 })
+      lib.markUnavailable(movieId, '搜索穷尽', NOW)
+
+      jobsRepo.upsertWorkerTask(
+        { seriesId: null, season: null, movieId },
+        { taskType: 'find_subtitle', includeThrottled: true, reason: 'operator says re-check now' },
+        null, NOW,
+      )
+      const job = jobsRepo.claimNext(NOW)!
+
+      const movieTask = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(movieTask!.targets).toHaveLength(1)
+    })
+
+    it('movie 分支：includeThrottled 省略（默认 false）→ 未到期 unavailable 的电影仍是 null（既有语义锁）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-throttled-movie-default-'))
+      const movieDir = join(root, 'Movie (2020)')
+      mkdirSync(movieDir, { recursive: true })
+      const videoPath = join(movieDir, 'Movie.mkv')
+      writeFileSync(videoPath, 'video')
+      const movieId = seriesId('557')
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertMovie({ id: movieId, name: 'Movie', path: videoPath, subStatus: 'missing', year: 2020 })
+      lib.markUnavailable(movieId, '搜索穷尽', NOW)
+
+      jobsRepo.upsertWorkerTask(
+        { seriesId: null, season: null, movieId },
+        { taskType: 'find_subtitle', reason: 'routine dispatch' },
+        null, NOW,
+      )
+      const job = jobsRepo.claimNext(NOW)!
+
+      const movieTask = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(movieTask).toBeNull()
+    })
+  })
 })
 
 /** FindSubtitleBatchReport 构造 helper：三桶默认皆空，测试按需覆写。 */

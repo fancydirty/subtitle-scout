@@ -164,7 +164,14 @@ function capCheck(counter: DispatchCounter, cap: number): { error: string } | nu
  *  主代理还是收到"派发成功"的假象，永久活锁（以为派了，其实那一行纹丝不动）。cap 只数真正
  *  落地的新/复活行（created/revived）——coalesced（已有等价行在途，本次派发合并进它）与
  *  blocked_dormant（这个身份被停车，本次派发无法唤醒）都没有产生任何新的待办工作量，不该
- *  占用 orchestrator 的 100-dispatch 预算。 */
+ *  占用 orchestrator 的 100-dispatch 预算。
+ *
+ *  F-R2-5（R2 复审，审计定罪：coalesced 谎报"identical"+新意图丢弃）：coalesced 的 note 按
+ *  intentRefreshed 分流措辞——intentRefreshed:true（wanted/failed 行）时如实说"你的新
+ *  scope/reason 已经生效"；intentRefreshed:false（active 行，一个 worker 正在跑）时如实说
+ *  "你的新 scope 没有套用到这个在跑的行，等它跑完再重派"。旧的单一"an identical task"措辞对
+ *  wanted/failed 已经不准确——upsertWorkerTask 从 F-R2-5 起真的会刷新那两态的 payload，不再是
+ *  单纯的"identical，什么都没变"。 */
 function reportDispatchOutcome(result: WorkerTaskUpsertOutcome, counter: DispatchCounter, cap: number) {
   if (result.outcome === 'created' || result.outcome === 'revived') {
     counter.count++
@@ -173,7 +180,9 @@ function reportDispatchOutcome(result: WorkerTaskUpsertOutcome, counter: Dispatc
   if (result.outcome === 'coalesced') {
     return {
       dispatched: false, outcome: 'coalesced' as const, pendingState: result.pendingState,
-      note: 'an identical task is already pending — your dispatch merged into it, no new row was created',
+      note: result.intentRefreshed
+        ? 'merged into the pending task and its scope/reason was refreshed to yours'
+        : 'already running — your new scope was NOT applied to the in-flight run; re-dispatch after it completes if it still matters',
     }
   }
   return {
@@ -219,7 +228,10 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
       'The result tells you truthfully what happened: outcome created/revived means a new or ' +
       'revived worker_task row landed and it counts against your dispatch cap; outcome ' +
       'coalesced/blocked_dormant means nothing new was written (an identical task was already ' +
-      'pending, or this identity is parked dormant) and it does NOT consume your dispatch budget.',
+      'pending, or this identity is parked dormant) and it does NOT consume your dispatch budget. ' +
+      'Pass includeThrottled:true only when the situation genuinely changed (e.g. a realign just ' +
+      'landed, the operator fixed naming) — it tells the worker to also take on items still ' +
+      'inside their search backoff window.',
     // Tolerant of the real model's natural shape (proven live, v3 live matrix, 2026-07-13): it
     // OMITS the other kind's field entirely (e.g. no `movieId` key at all when dispatching a
     // series) rather than sending an explicit JSON null, and may send seasons entries as strings
@@ -234,13 +246,24 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
       seasons: nullableTolerant(z.array(coercibleInt)),
       movieId: nullableTolerant(z.string()),
       reason: z.string(),
+      // F-R2-4（R2 复审，审计定罪：停牌提前重派的管道缺失）：orchestratorSkill already teaches
+      // "re-dispatching a throttled-only row is YOUR call for a genuinely changed situation", but
+      // until this field existed there was no way for that judgment to reach the mapper — the
+      // dispatched worker_task always got claimed and immediately no-op'd back to completeDone
+      // against the same recheck-window-filtered fact list. Same real-model tolerance as
+      // seriesId/seasons/movieId above: omitted/"None" → null → false (nullableTolerant + the
+      // explicit !!includeThrottled below), never an accidental widen from a stray null.
+      includeThrottled: nullableTolerant(z.boolean()),
     }).refine(hasWellFormedFindSubtitleIdentity, { message: FIND_SUBTITLE_IDENTITY_ERROR }),
-    execute: async ({ seriesId, seasons, movieId, reason }) => {
+    execute: async ({ seriesId, seasons, movieId, reason, includeThrottled }) => {
       const capped = capCheck(counter, cap)
       if (capped) return capped
       const result = deps.jobs.upsertWorkerTask(
         { seriesId, season: null, movieId },
-        { taskType: 'find_subtitle', seasons: seasons && seasons.length > 0 ? seasons : null, reason },
+        {
+          taskType: 'find_subtitle', seasons: seasons && seasons.length > 0 ? seasons : null, reason,
+          includeThrottled: !!includeThrottled,
+        },
         deps.parentJobId, deps.now(),
       )
       return reportDispatchOutcome(result, counter, cap)
@@ -271,6 +294,28 @@ export function makeDispatchRealignTaskTool(deps: DispatchDeps, counter: Dispatc
   })
 }
 
+/** F-R2-2（R2 复审）：如实转告 upsertWorkerTask 的四态回执——同 reportDispatchOutcome 的诚实
+ *  纪律，但字段名是 spawned 不是 dispatched（这条工具从不占 dispatch cap，见下方 makeSpawnSiblingOrchestratorTool
+ *  的头注释），且没有 counter/cap 要管。考古定罪：execute 曾经丢弃 upsertWorkerTask 的返回值、
+ *  无条件回报 {spawned:true}——同一分片身份（seriesId 由 parentJobId+shardIndex 合成）若已有
+ *  一行在途（coalesced）或被停车（blocked_dormant），本次派发携带的 remainingWorkSummary 悄悄
+ *  被吞掉，主代理却看到"已生成"的假象、以为交接的上下文真的送达了 sibling。 */
+function reportSpawnOutcome(result: WorkerTaskUpsertOutcome) {
+  if (result.outcome === 'created' || result.outcome === 'revived') {
+    return { spawned: true, outcome: result.outcome }
+  }
+  if (result.outcome === 'coalesced') {
+    return {
+      spawned: false, outcome: 'coalesced' as const, pendingState: result.pendingState,
+      note: 'a sibling with this shard identity is already pending — your remainingWorkSummary was NOT delivered to it; if the handoff context matters, use a different shardIndex',
+    }
+  }
+  return {
+    spawned: false, outcome: 'blocked_dormant' as const, reason: result.lastError,
+    note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
+  }
+}
+
 /** Does NOT count against the 100-dispatch cap — this IS the cap's escape valve. shardIndex is
  *  supplied by the model (or a simple incrementing counter the caller tracks) purely to keep
  *  the synthetic seriesId human-legible in the jobs table; it has no other significance. */
@@ -278,17 +323,20 @@ export function makeSpawnSiblingOrchestratorTool(deps: Omit<DispatchDeps, 'maxDi
   return tool({
     description:
       'Hand off remaining dispatch work to a new sibling orchestrator job, once you have used ' +
-      'up this orchestrator\'s dispatch capacity. Give it a short description of what remains.',
+      'up this orchestrator\'s dispatch capacity. Give it a short description of what remains. ' +
+      'The result tells you truthfully what happened: outcome created/revived means a new/revived ' +
+      'sibling row landed; outcome coalesced/blocked_dormant means nothing new was written and ' +
+      'your remainingWorkSummary was NOT delivered — see the note for what to do about it.',
     inputSchema: z.object({ shardIndex: z.number().int(), remainingWorkSummary: z.string() }),
     execute: async ({ shardIndex, remainingWorkSummary }) => {
       const syntheticSeriesId = `orchestrator-shard-${deps.parentJobId ?? 'root'}-${shardIndex}`
-      deps.jobs.upsertWorkerTask(
+      const result = deps.jobs.upsertWorkerTask(
         { seriesId: syntheticSeriesId, season: null, movieId: null },
         { taskType: 'orchestrate', remainingWorkSummary },
         deps.parentJobId,
         deps.now(),
       )
-      return { spawned: true, syntheticSeriesId }
+      return reportSpawnOutcome(result)
     },
   })
 }

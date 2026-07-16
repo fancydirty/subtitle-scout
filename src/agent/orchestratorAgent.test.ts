@@ -136,11 +136,15 @@ describe('makeOrchestratorAgent', () => {
     // R-11: find_subtitle 行的 season 身份列恒 NULL，范围事实在 payload.seasons。
     expect(seriesTask.season).toBeNull()
     expect(seriesTask.movie_id).toBeNull()
-    expect(JSON.parse(seriesTask.payload!)).toEqual({ taskType: 'find_subtitle', seasons: [1], reason: 'missing season 1' })
+    expect(JSON.parse(seriesTask.payload!)).toEqual({
+      taskType: 'find_subtitle', seasons: [1], reason: 'missing season 1', includeThrottled: false,
+    })
     expect(seriesTask.parent_job_id).toBeNull()
 
     const movieTask = dispatched.find(j => j.movie_id === 'm1')!
-    expect(JSON.parse(movieTask.payload!)).toEqual({ taskType: 'find_subtitle', seasons: null, reason: 'missing movie' })
+    expect(JSON.parse(movieTask.payload!)).toEqual({
+      taskType: 'find_subtitle', seasons: null, reason: 'missing movie', includeThrottled: false,
+    })
     expect(movieTask.parent_job_id).toBeNull()
   })
 
@@ -226,7 +230,9 @@ describe('makeOrchestratorAgent', () => {
     expect(dispatched[0].series_id).toBe('s1')
     expect(dispatched[0].season).toBeNull()
     expect(dispatched[0].movie_id).toBeNull()
-    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', seasons: [1], reason: 'missing s1' })
+    expect(JSON.parse(dispatched[0].payload!)).toEqual({
+      taskType: 'find_subtitle', seasons: [1], reason: 'missing s1', includeThrottled: false,
+    })
   })
 
   it('dispatches a worker_task row when the real model OMITS seriesId/season for a movie-only dispatch (same root cause, movie side)', async () => {
@@ -261,7 +267,9 @@ describe('makeOrchestratorAgent', () => {
     expect(dispatched[0].movie_id).toBe('m1')
     expect(dispatched[0].series_id).toBeNull()
     expect(dispatched[0].season).toBeNull()
-    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', seasons: null, reason: 'movie' })
+    expect(JSON.parse(dispatched[0].payload!)).toEqual({
+      taskType: 'find_subtitle', seasons: null, reason: 'movie', includeThrottled: false,
+    })
   })
 
   it('spawn_sibling_orchestrator does not count against the dispatch cap and records parent_job_id lineage', async () => {

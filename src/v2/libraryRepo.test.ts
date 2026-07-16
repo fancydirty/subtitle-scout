@@ -592,4 +592,26 @@ describe('listMissingEpisodesForSeries (R-11：派活范围裁量化)', () => {
     const rows = lib.listMissingEpisodesForSeries('tmdb:9', null, NOW_BEFORE_RECHECK)
     expect(rows).toEqual([])
   })
+
+  // F-R2-4（R2 复审，审计定罪：停牌提前重派的管道缺失）：orchestratorSkill 早就教"re-dispatching
+  // a throttled-only row is YOUR call"，但谓词此前无条件 recheck_after<=now，模型说了算的路径
+  // 根本不存在——一次"我判断该提前重查"的派发落地后照样被这道 SQL 门槛挡回空批。第 4 参
+  // includeThrottled=true 时放宽为不看 recheck_after，让机制真的存在。
+  it('includeThrottled=true：未到期 unavailable 也算缺口（放宽谓词，无 recheck 窗口过滤）', () => {
+    lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:9/s1e1', seriesId: 'tmdb:9', season: 1, episode: 1, name: 'E1', path: '/p/s1e1.mkv', subStatus: 'missing' })
+    lib.markUnavailable('tmdb:9/s1e1', '搜索穷尽', NOW_BEFORE_RECHECK)
+
+    const rows = lib.listMissingEpisodesForSeries('tmdb:9', null, NOW_BEFORE_RECHECK, true)
+    expect(rows.map(r => r.id)).toEqual(['tmdb:9/s1e1'])
+  })
+
+  it('includeThrottled 默认 false（省略第 4 参）：既有窗口语义不变', () => {
+    lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:9/s1e1', seriesId: 'tmdb:9', season: 1, episode: 1, name: 'E1', path: '/p/s1e1.mkv', subStatus: 'missing' })
+    lib.markUnavailable('tmdb:9/s1e1', '搜索穷尽', NOW_BEFORE_RECHECK)
+
+    const rows = lib.listMissingEpisodesForSeries('tmdb:9', null, NOW_BEFORE_RECHECK)
+    expect(rows).toEqual([])
+  })
 })

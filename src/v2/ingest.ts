@@ -90,20 +90,29 @@ function findRowByPath(db: ScoutDb, path: string): ExistingRow | null {
   return null
 }
 
-/** CHEAP PATH 专用：只改 sub_status（+updated_at），不碰其余列——"重跑覆盖分类，不是重新摄取"。
- *  LibraryRepo 没有通用的"任意改 sub_status"方法（markCovered/markUnavailable 都是带副作用的
- *  专用写法），直接对 lib.db 发 SQL，同 findRowByPath 的既有口径。
+/** CHEAP PATH 专用：只改 sub_status（+updated_at，+F-R2-6 的 search_attempts），不碰其余列——
+ *  "重跑覆盖分类，不是重新摄取"。LibraryRepo 没有通用的"任意改 sub_status"方法
+ *  （markCovered/markUnavailable 都是带副作用的专用写法），直接对 lib.db 发 SQL，同
+ *  findRowByPath 的既有口径。
  *  R-9（判决可稽核）：reason 非空时（目前只有 rule 1b 会给）连带写 status_reason；reason 为 null
  *  时完全不碰该列（不是写 null 清空它）——沿用改前的窄写口径，避免这次收窄改动波及其余状态
- *  转换（如 covered→missing）本不该动的列。 */
+ *  转换（如 covered→missing）本不该动的列。
+ *
+ *  F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零，R-3 不变式）：status 落地为
+ *  covered/embedded 时同步把 search_attempts 归零——"翻篇"事件。此前只有 markCovered
+ *  （find-subtitle worker 的 installed 落账）归零 search_attempts，ingest 自己判出的
+ *  covered/embedded（手工放字幕被摄取发现、内嵌轨被探针发现）从未归零：该行若之后又翻回
+ *  missing/unavailable，首次 markUnavailable 直接沿用滞留的旧计数，跳过 1 天档、错落到更远
+ *  的阶梯位置——阶梯的"翻篇即归零"单一语义被这条绕过的路径破坏。 */
 function writeSubStatusOnly(
   db: ScoutDb, kind: 'episode' | 'movie', id: string, status: SubStatus, now: number, reason: string | null = null,
 ): void {
   const table = kind === 'episode' ? 'episodes' : 'movies'
+  const attemptsClause = status === 'covered' || status === 'embedded' ? `, search_attempts = 0` : ''
   if (reason != null) {
-    db.prepare(`UPDATE ${table} SET sub_status = ?, status_reason = ?, updated_at = ? WHERE id = ?`).run(status, reason, now, id)
+    db.prepare(`UPDATE ${table} SET sub_status = ?, status_reason = ?, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, reason, now, id)
   } else {
-    db.prepare(`UPDATE ${table} SET sub_status = ?, updated_at = ? WHERE id = ?`).run(status, now, id)
+    db.prepare(`UPDATE ${table} SET sub_status = ?, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, now, id)
   }
 }
 

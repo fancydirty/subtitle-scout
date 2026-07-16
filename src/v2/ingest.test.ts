@@ -981,3 +981,122 @@ describe('makeIngestPass — fault isolation', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('/media/flaky.mkv'))
   })
 })
+
+// F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零）：markCovered（find-subtitle worker
+// 的 installed 落账）是"翻篇归零"的唯一入口，ingest 自己判出的 covered/embedded（手工放字幕、
+// 内嵌轨被发现）从未归零 search_attempts——该行若之后又翻回 missing/unavailable，首次
+// markUnavailable 直接沿用滞留的旧计数，跳过 1 天档、错落到更远的阶梯位置（R-3 不变式被绕过）。
+describe('makeIngestPass — search_attempts 归零 (F-R2-6, R-3 不变式：覆盖路径亦需"翻篇归零")', () => {
+  it('cheap path：unavailable→covered（sidecar 出现）时 search_attempts 归零', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', 1000)
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', 1000)
+    expect(lib.getEpisode('tmdb:1/s1e1')!.search_attempts).toBe(2)
+    lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345) // video unchanged → memo hit, cheap path
+    disk.addSidecar('/media/Show/Season 1/ep1.zh.srt')
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')!
+    expect(ep.sub_status).toBe('covered')
+    expect(ep.search_attempts).toBe(0)
+    expect(result.changed).toBe(true)
+  })
+
+  it('cheap path：unavailable→embedded（内嵌轨被 memo 记住）时 search_attempts 归零', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', 1000)
+    expect(lib.getEpisode('tmdb:1/s1e1')!.search_attempts).toBe(1)
+    // memo 记住的内嵌轨已含目标语言标签 —— cheap path 重跑分类时 rule 2 命中，无需真的探测。
+    lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, ['chi'])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')!
+    expect(ep.sub_status).toBe('embedded')
+    expect(ep.search_attempts).toBe(0)
+  })
+
+  it('full path（新识别/memo 过期，movie 分支）：unavailable→covered 时 search_attempts 归零', async () => {
+    const path = '/media/movies/hero.mkv'
+    lib.upsertMovie({ id: 'tmdb:603', name: 'The Matrix', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:603', '搜索穷尽', 1000)
+    expect(lib.getMovie('tmdb:603')!.search_attempts).toBe(1)
+    // 故意不设 probeMemo —— 走 full path（重新识别 + 探测），练到 upsertMovie 的 ON CONFLICT 分支。
+
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    disk.addSidecar('/media/movies/hero.zh.srt')
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const movie = lib.getMovie('tmdb:603')!
+    expect(movie.sub_status).toBe('covered')
+    expect(movie.search_attempts).toBe(0)
+  })
+
+  // 验收场景（任务原文）：手工放字幕→ingest 判 covered→attempts 归零→sidecar 删→missing→
+  // 首次 markUnavailable 回 1 天档（不是沿用滞留的旧 attempts、错落到更远的阶梯位置）。
+  it('端到端：覆盖→归零→再消失→missing→首次 markUnavailable 回到 1 天档（不是沿用滞留的旧计数）', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    const DAY = 86_400_000
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', 1000)
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', 1000)
+    expect(lib.getEpisode('tmdb:1/s1e1')!.search_attempts).toBe(2)
+    lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+
+    // 1) 手工放字幕 → ingest 判 covered → attempts 归零
+    disk.addSidecar('/media/Show/Season 1/ep1.zh.srt')
+    const passCovered = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+    await passCovered()
+    expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('covered')
+    expect(lib.getEpisode('tmdb:1/s1e1')!.search_attempts).toBe(0)
+
+    // 2) sidecar 删 → missing（video 本身未变，memo 仍命中，cheap path）
+    disk.removeSidecar('/media/Show/Season 1/ep1.zh.srt')
+    const passMissing = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+    await passMissing()
+    expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('missing')
+    expect(lib.getEpisode('tmdb:1/s1e1')!.search_attempts).toBe(0) // 仍是 0——missing 转换本身不改动它
+
+    // 3) 首次 markUnavailable → 1 天档（不是沿用滞留的旧 2 次计数错落到 4 天档）
+    const NOW = 2_000_000
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', NOW)
+    const ep = lib.getEpisode('tmdb:1/s1e1')!
+    expect(ep.search_attempts).toBe(1)
+    expect(ep.recheck_after).toBe(NOW + 1 * DAY)
+  })
+})

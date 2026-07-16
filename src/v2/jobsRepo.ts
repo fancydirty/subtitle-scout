@@ -28,11 +28,20 @@ export type JobState = 'wanted' | 'searching' | 'downloading' | 'verifying' | 'd
  *  吞掉主代理的新派发，还向它谎报成功，制造永久活锁（主代理以为派了，实际这一行纹丝不动）。
  *  blocked_dormant 是四态里唯一"没写"的结局：dormant 行不复活（park 通常意味着一个配置性
  *  缺陷被记录在案，机械复活=让同一个错误循环回归），但事实必须原样抵达 orchestrator，由它
- *  （而不是这一层沉默的 SQL）决定告警、绕行、还是上报人类。 */
+ *  （而不是这一层沉默的 SQL）决定告警、绕行、还是上报人类。
+ *
+ *  F-R2-5（R2 复审，审计定罪：coalesced 谎报"identical"+新意图丢弃）：coalesced 分裂出
+ *  intentRefreshed——wanted/failed 两态还没被认领，没有 worker 正在读它的 payload，本次
+ *  dispatch 携带的最新意图（新的季范围/reason/remainingWorkSummary）现在真的会覆盖旧的
+ *  （intentRefreshed:true）；active（searching/downloading/verifying）态有一个 worker 正在
+ *  跑、正在读着旧 payload，此刻覆写对它没有意义，继续保持"只碰 updated_at"的旧行为
+ *  （intentRefreshed:false）。考古定罪：旧代码对 wanted/failed/active 一视同仁地只刷
+ *  updated_at，本次 dispatch 的新意图在 wanted/failed 情形下被无声丢弃在原地，coalesced 回执
+ *  还谎称"an identical task"——多数情况下并不 identical，只是撞了同一个 identity。 */
 export type WorkerTaskUpsertOutcome =
   | { outcome: 'created' }
   | { outcome: 'revived' }                              // done → wanted 复活
-  | { outcome: 'coalesced'; pendingState: JobState }     // wanted/failed/active 既有行，只刷 updated_at
+  | { outcome: 'coalesced'; pendingState: JobState; intentRefreshed: boolean }
   | { outcome: 'blocked_dormant'; lastError: string | null }
 
 // worker_task 身份（v3 phase ④）。
@@ -82,10 +91,11 @@ export class JobsRepo {
    *  加上 payload 里的 taskType 做身份 dedup——jobs_identity 的 (kind, series_id, season,
    *  movie_id, taskType) 五元组（R-11，schema v11）里 kind 本身已经区分 worker_task 与
    *  series_season/movie/realign，taskType 进一步区分同一 series 下不同种类的 worker_task
-   *  （find_subtitle vs realign 不再共享一行）。同一 identity 重复派发是幂等 upsert（非 done
-   *  态只碰 updated_at，done 态整体刷新 payload/parent_job_id 并复活——见下方 R-2 outcome）。
-   *  没有自然季/剧归属的任务（如 sibling-orchestrator 分片）用合成 seriesId（如
-   *  'orchestrator-shard-<parentJobId>-<n>'），season/movieId 恒 null。故意是独立方法：
+   *  （find_subtitle vs realign 不再共享一行）。同一 identity 重复派发是幂等 upsert（done 态
+   *  整体刷新 payload/parent_job_id 并复活；wanted/failed 态刷新 payload（F-R2-5：最新意图
+   *  胜出，attempt/error_attempt/next_retry_at 不动）；active 态仅刷 updated_at——见下方 R-2/
+   *  F-R2-5 outcome）。没有自然季/剧归属的任务（如 sibling-orchestrator 分片）用合成 seriesId
+   *  （如 'orchestrator-shard-<parentJobId>-<n>'），season/movieId 恒 null。故意是独立方法：
    *  见上方 WorkerTaskIdentity 的注释。 */
   upsertWorkerTask(
     ident: WorkerTaskIdentity, payload: Record<string, unknown>, parentJobId: number | null, now: number,
@@ -138,11 +148,22 @@ export class JobsRepo {
         return { outcome: 'revived' }
       }
 
-      // wanted/failed/active: the existing row already represents this identity's live intent —
-      // the new dispatch merges into it, only updated_at moves (mirrors the old ON CONFLICT's
-      // no-op branch).
+      // F-R2-5（R2 复审，审计定罪：coalesced 谎报"identical"+新意图丢弃）：wanted/failed 两态
+      // 的行还没被认领——没有 worker 正在读它的 payload，本次 dispatch 携带的最新意图（新的
+      // 季范围/reason/remainingWorkSummary）理应赢过旧的，而不是被无声丢弃在原地。
+      // attempt/error_attempt/next_retry_at 不动：这两条退避轨只由 done→revived（归零重试
+      // 计数）和 dormant→blocked（停车判决）触碰，coalesced 从不改变它们（F1 裁决锁定的语义
+      // 边界，不因 F-R2-5 的 payload 刷新而松动）。
+      if (existing.state === 'wanted' || existing.state === 'failed') {
+        this.db.prepare(`UPDATE jobs SET updated_at = ?, payload = ? WHERE id = ?`).run(now, payloadJson, existing.id)
+        return { outcome: 'coalesced', pendingState: existing.state, intentRefreshed: true }
+      }
+
+      // active（searching/downloading/verifying）：一个 worker 正在跑、正在读着旧 payload——
+      // 此刻覆写对它没有意义（读过了）也有风险（万一它还没读完就被换底），只刷 updated_at
+      // （mirrors the old ON CONFLICT's no-op branch for this state only）。
       this.db.prepare(`UPDATE jobs SET updated_at = ? WHERE id = ?`).run(now, existing.id)
-      return { outcome: 'coalesced', pendingState: existing.state }
+      return { outcome: 'coalesced', pendingState: existing.state, intentRefreshed: false }
     })()
   }
 

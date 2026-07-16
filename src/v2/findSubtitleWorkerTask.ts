@@ -22,10 +22,14 @@ function capDetail(s: string, max = 200): string {
 // 推导。三态而非二态：`undefined`（键缺席）与显式 `null` 携带不同语义，故字段类型必须允许两者
 // 都出现，不能用 `?: number[] | null` 简化成默认值——mapper 靠 `'seasons' in payload` 之外的
 // JSON.parse 后 `payload.seasons !== undefined` 检测来区分（见下方 mapWorkerTaskToFindSubtitleTask）。
+// F-R2-4（R2 复审，审计定罪：停牌提前重派的管道缺失）：includeThrottled 承载 orchestrator 的
+// "这次要不要连未到期的停牌行也一起重查"判断（dispatch_find_subtitle_task 的同名参数写下来
+// 的落点）——省略键=false（既有窗口语义锁，见 mapWorkerTaskToFindSubtitleTask 的解析）。
 export interface FindSubtitleWorkerTaskPayload {
   taskType: 'find_subtitle'
   reason: string
   seasons?: number[] | null
+  includeThrottled?: boolean
 }
 
 /** Deps needed to turn a claimed `worker_task` row (payload.taskType==='find_subtitle') into a
@@ -151,12 +155,26 @@ function commonDir(dirs: string[]): string {
 export async function mapWorkerTaskToFindSubtitleTask(
   job: Job, deps: FindSubtitleTaskMapperDeps, now: number,
 ): Promise<FindSubtitleTask | null> {
+  // F-R2-4（R2 复审，审计定罪：停牌提前重派的管道缺失）：payload 现在提前到两个分支之前统一
+  // 解析一次——movie 分支的 stillMissing 判断与 series 分支的 listMissingEpisodesForSeries 调用
+  // 都要读 includeThrottled，此前只有 series 分支解析 payload（movie 分支从不看它）。省略键/
+  // 非布尔值一律折叠为 false（既有窗口语义锁，不因新字段解析失败而意外放宽）。
+  const payload = (() => {
+    try {
+      return JSON.parse(job.payload ?? '{}') as { seasons?: number[] | null; includeThrottled?: boolean }
+    } catch {
+      return {} as { seasons?: number[] | null; includeThrottled?: boolean }
+    }
+  })()
+  const includeThrottled = payload.includeThrottled === true
+
   // ---- movie 分支：单目标批量任务（movies 没有"季"概念，天然只有一个目标） ----
   if (job.movie_id) {
     const movie = deps.lib.getMovie(job.movie_id)
     if (!movie) return null
     const stillMissing =
-      movie.sub_status === 'missing' || (movie.sub_status === 'unavailable' && (movie.recheck_after ?? 0) <= now)
+      movie.sub_status === 'missing' ||
+      (movie.sub_status === 'unavailable' && (includeThrottled || (movie.recheck_after ?? 0) <= now))
     if (!stillMissing) return null
 
     const dir = dirname(movie.path)
@@ -201,15 +219,8 @@ export async function mapWorkerTaskToFindSubtitleTask(
       `worker_task job ${job.id} (find_subtitle) has neither movie_id nor series_id identity`,
     )
   }
-  const payload = (() => {
-    try {
-      return JSON.parse(job.payload ?? '{}') as { seasons?: number[] | null }
-    } catch {
-      return {} as { seasons?: number[] | null }
-    }
-  })()
   const gaps = payload.seasons !== undefined
-    ? deps.lib.listMissingEpisodesForSeries(job.series_id, payload.seasons, now)
+    ? deps.lib.listMissingEpisodesForSeries(job.series_id, payload.seasons, now, includeThrottled)
     : deps.lib.listMissingEpisodesInSeason(job.series_id, job.season ?? -1, now)
   // idempotent no-op: 本行被 claim 时范围内已无缺口——含病态"season 列为 null 且 payload 无
   // seasons 字段"的存量行（listMissingEpisodesInSeason(seriesId, -1, now) 恒空，无害兜底）。

@@ -291,7 +291,10 @@ async function cmdWatch() {
   // 用到 makeOrchestratorAgent 的 check_series_layout 工具，需要真实 TmdbClient——tmdb 在
   // cmdWatch 顶部已 requireEnv 式硬前置（清算波 R-6/F15），不再需要"tmdb ? {...} : undefined"
   // 降级三元。去 Jellyfin 化 P4 起不再需要 jf——tmdbId 直接从 seriesId 自身解析（src/v2/ownIds.ts）。
-  const orchestrateWorkerTaskDeps = { lib, tmdb, model: reasoningModel, now: () => Date.now() }
+  // F-R2-3（R2 复审）：runs 复用 cmdWatch 顶部已构造的同一份 RunsRepo 实例（同
+  // findSubtitleWorkerTaskDeps/realignDeps 两处既有接线一致的注入形态）——runOrchestrateWorkerTask
+  // 从此也写 dashboard 时间线，不再是黑洞。
+  const orchestrateWorkerTaskDeps = { lib, tmdb, model: reasoningModel, now: () => Date.now(), runs }
 
   // ingestPass 已在函数上方构造（realignDeps 的 refreshLibrary 也要复用它）。
   // makeIngestTrigger（src/daemon/ingestTrigger.ts）包一层：pass 本身报告 changed 时才 upsert

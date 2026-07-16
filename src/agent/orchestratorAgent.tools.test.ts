@@ -4,7 +4,7 @@ import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
   makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeDispatchRealignTaskTool,
-  makeCheckSeriesLayoutTool, type DispatchCounter, type MissingCoveragePage,
+  makeCheckSeriesLayoutTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter, type MissingCoveragePage,
 } from './orchestratorAgent.tools.js'
 
 const fakeOpts = { toolCallId: 't1', messages: [] } as any
@@ -173,7 +173,9 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 'norm', reason: 'x',
     })
-    expect(result).toEqual({ success: true, value: { seriesId: 'norm', seasons: null, movieId: null, reason: 'x' } })
+    expect(result).toEqual({
+      success: true, value: { seriesId: 'norm', seasons: null, movieId: null, reason: 'x', includeThrottled: null },
+    })
   })
 
   it('accepts seriesId/seasons OMITTED entirely for a movie-only dispatch (real model natural shape) — normalizes to seriesId:null, seasons:null', async () => {
@@ -184,7 +186,9 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       movieId: 'mov', reason: 'x',
     })
-    expect(result).toEqual({ success: true, value: { seriesId: null, seasons: null, movieId: 'mov', reason: 'x' } })
+    expect(result).toEqual({
+      success: true, value: { seriesId: null, seasons: null, movieId: 'mov', reason: 'x', includeThrottled: null },
+    })
   })
 
   it('coerces string-encoded season numbers inside the seasons array (["1","2"]) to integers', async () => {
@@ -195,7 +199,9 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 'norm', seasons: ['1', '2'], movieId: null, reason: 'x',
     })
-    expect(result).toEqual({ success: true, value: { seriesId: 'norm', seasons: [1, 2], movieId: null, reason: 'x' } })
+    expect(result).toEqual({
+      success: true, value: { seriesId: 'norm', seasons: [1, 2], movieId: null, reason: 'x', includeThrottled: null },
+    })
   })
 
   it('"None" string sentinel for seasons collapses to null (full-series scope, not an empty array)', async () => {
@@ -206,7 +212,9 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 'norm', seasons: 'None', movieId: null, reason: 'x',
     })
-    expect(result).toEqual({ success: true, value: { seriesId: 'norm', seasons: null, movieId: null, reason: 'x' } })
+    expect(result).toEqual({
+      success: true, value: { seriesId: 'norm', seasons: null, movieId: null, reason: 'x', includeThrottled: null },
+    })
   })
 
   it('still rejects a genuinely-malformed identity (seriesId AND movieId both set) even with seasons present', async () => {
@@ -229,11 +237,11 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
         now: () => 1000, parentJobId: null,
       }, counter,
     )
-    await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1, 2, 3], movieId: null, reason: 'sweep whole series' }, fakeOpts)
+    await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1, 2, 3], movieId: null, reason: 'sweep whole series', includeThrottled: null }, fakeOpts)
     expect(calls).toHaveLength(1)
     const [ident, payload] = calls[0]
     expect(ident).toEqual({ seriesId: 's1', season: null, movieId: null })
-    expect(payload).toEqual({ taskType: 'find_subtitle', seasons: [1, 2, 3], reason: 'sweep whole series' })
+    expect(payload).toEqual({ taskType: 'find_subtitle', seasons: [1, 2, 3], reason: 'sweep whole series', includeThrottled: false })
   })
 
   it('dispatch: seasons 省略/None → payload.seasons=null（全部有缺口的季）', async () => {
@@ -245,11 +253,62 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
         now: () => 1000, parentJobId: null,
       }, counter,
     )
-    await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: null, movieId: null, reason: 'whole series, all gaps' }, fakeOpts)
+    await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: null, movieId: null, reason: 'whole series, all gaps', includeThrottled: null }, fakeOpts)
     expect(calls).toHaveLength(1)
     const [ident, payload] = calls[0]
     expect(ident).toEqual({ seriesId: 's1', season: null, movieId: null })
-    expect(payload).toEqual({ taskType: 'find_subtitle', seasons: null, reason: 'whole series, all gaps' })
+    expect(payload).toEqual({ taskType: 'find_subtitle', seasons: null, reason: 'whole series, all gaps', includeThrottled: false })
+  })
+
+  // F-R2-4（R2 复审，审计定罪：停牌提前重派的管道缺失）：includeThrottled 是真模型容错字段——
+  // 省略/"None" 一律折叠为 null，execute() 里再显式 !!includeThrottled 折成 false，不让 null
+  // 悄悄经 JSON.stringify 泄漏成 payload 里的 null（该字段的下游消费者按布尔读，不按三态读）。
+  describe('dispatch_find_subtitle_task includeThrottled (F-R2-4)', () => {
+    it('省略 includeThrottled → schema 校验出 null，payload 写 false（既有默认语义不变）', async () => {
+      const counter: DispatchCounter = { count: 0 }
+      const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+        { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
+      )
+      const validated = await validate(dispatchFindSubtitle.inputSchema, { seriesId: 's1', reason: 'x' })
+      expect(validated).toEqual({
+        success: true,
+        value: { seriesId: 's1', seasons: null, movieId: null, reason: 'x', includeThrottled: null },
+      })
+    })
+
+    it('includeThrottled:true → payload.includeThrottled=true（操作员确认情况已变，主代理主动放宽）', async () => {
+      const counter: DispatchCounter = { count: 0 }
+      const calls: unknown[][] = []
+      const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+        {
+          jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args); return { outcome: 'created' } as const } },
+          now: () => 1000, parentJobId: null,
+        }, counter,
+      )
+      await dispatchFindSubtitle.execute!(
+        { seriesId: 's1', seasons: null, movieId: null, includeThrottled: true, reason: 'operator fixed naming' }, fakeOpts,
+      )
+      expect(calls).toHaveLength(1)
+      const [, payload] = calls[0]
+      expect(payload).toEqual({
+        taskType: 'find_subtitle', seasons: null, reason: 'operator fixed naming', includeThrottled: true,
+      })
+    })
+
+    it('includeThrottled 省略/null → payload.includeThrottled=false（默认，不放宽）', async () => {
+      const counter: DispatchCounter = { count: 0 }
+      const calls: unknown[][] = []
+      const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+        {
+          jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args); return { outcome: 'created' } as const } },
+          now: () => 1000, parentJobId: null,
+        }, counter,
+      )
+      await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: null, movieId: null, reason: 'routine', includeThrottled: null }, fakeOpts)
+      expect(calls).toHaveLength(1)
+      const [, payload] = calls[0]
+      expect(payload).toEqual({ taskType: 'find_subtitle', seasons: null, reason: 'routine', includeThrottled: false })
+    })
   })
 
   it('dispatch_find_subtitle_task: seriesId 与 movieId 互斥仍然强制', async () => {
@@ -275,7 +334,7 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
       { jobs: { upsertWorkerTask: () => ({ outcome: 'created' }) }, now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5 },
       counter,
     )
-    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x', includeThrottled: null }, fakeOpts)
     expect(result).toEqual({ dispatched: true, outcome: 'created', remainingCapacity: 4 })
     expect(counter.count).toBe(1)
   })
@@ -286,24 +345,47 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
       { jobs: { upsertWorkerTask: () => ({ outcome: 'revived' }) }, now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5 },
       counter,
     )
-    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x', includeThrottled: null }, fakeOpts)
     expect(result).toEqual({ dispatched: true, outcome: 'revived', remainingCapacity: 4 })
     expect(counter.count).toBe(1)
   })
 
-  it('coalesced → {dispatched:false, outcome:coalesced, pendingState, note}，不耗 cap', async () => {
+  // F-R2-5（R2 复审，审计定罪：coalesced 谎报"identical"+新意图丢弃）：note 措辞按
+  // intentRefreshed 分流——wanted/failed 行的 payload 真的被刷新了（intentRefreshed:true），
+  // note 如实说"merged...refreshed to yours"；active 行的 payload 保持不动
+  // （intentRefreshed:false），note 如实说"NOT applied to the in-flight run"。旧的单一"an
+  // identical task"措辞对 wanted/failed 已经不准确（往往不是 identical，只是同一 identity，
+  // 且这次的新意图确实被采纳了）。
+  it('coalesced（intentRefreshed:true，wanted/failed 行）→ {dispatched:false, outcome:coalesced, pendingState, note}，不耗 cap', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
       {
-        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted' }) },
+        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true }) },
         now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
       },
       counter,
     )
-    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x', includeThrottled: null }, fakeOpts)
     expect(result).toEqual({
       dispatched: false, outcome: 'coalesced', pendingState: 'wanted',
-      note: 'an identical task is already pending — your dispatch merged into it, no new row was created',
+      note: 'merged into the pending task and its scope/reason was refreshed to yours',
+    })
+    expect(counter.count).toBe(0)
+  })
+
+  it('coalesced（intentRefreshed:false，active 行）→ note 如实说新 scope 未套用到在跑的行', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'searching', intentRefreshed: false }) },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
+      },
+      counter,
+    )
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x', includeThrottled: null }, fakeOpts)
+    expect(result).toEqual({
+      dispatched: false, outcome: 'coalesced', pendingState: 'searching',
+      note: 'already running — your new scope was NOT applied to the in-flight run; re-dispatch after it completes if it still matters',
     })
     expect(counter.count).toBe(0)
   })
@@ -317,7 +399,7 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
       },
       counter,
     )
-    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x', includeThrottled: null }, fakeOpts)
     expect(result).toEqual({
       dispatched: false, outcome: 'blocked_dormant', reason: 'config defect',
       note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
@@ -334,7 +416,7 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
       },
       counter,
     )
-    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x', includeThrottled: null }, fakeOpts)
     expect(result).toEqual({
       error: 'dispatch cap (2) reached for this orchestrator — call spawn_sibling_orchestrator to hand off the rest instead of dispatching more directly',
     })
@@ -345,7 +427,7 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
     const counter: DispatchCounter = { count: 0 }
     const dispatchRealign = makeDispatchRealignTaskTool(
       {
-        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'failed' }) },
+        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'failed', intentRefreshed: true }) },
         now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
       },
       counter,
@@ -353,7 +435,7 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
     const coalescedResult = await dispatchRealign.execute!({ seriesId: 's1', reason: 'x' }, fakeOpts)
     expect(coalescedResult).toEqual({
       dispatched: false, outcome: 'coalesced', pendingState: 'failed',
-      note: 'an identical task is already pending — your dispatch merged into it, no new row was created',
+      note: 'merged into the pending task and its scope/reason was refreshed to yours',
     })
     expect(counter.count).toBe(0)
 
@@ -381,6 +463,50 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
       note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
     })
     expect(counter.count).toBe(0)
+  })
+})
+
+// F-R2-2（R2 复审）：spawn_sibling_orchestrator 曾经丢弃 upsertWorkerTask 的返回值、无条件回报
+// {spawned:true}——同一分片身份（seriesId 由 parentJobId+shardIndex 合成）若已有一行在途/停车，
+// 本次派发的 remainingWorkSummary 悄悄被吞掉，主代理却看到"已生成"的假象。如实转告四态，同
+// dispatch 工具一样的诚实纪律（但字段名是 spawned 不是 dispatched，且不涉及 dispatch cap）。
+describe('spawn_sibling_orchestrator 如实转告 upsertWorkerTask 回执 (F-R2-2)', () => {
+  it('created → {spawned:true, outcome:created}', async () => {
+    const spawnSibling = makeSpawnSiblingOrchestratorTool({
+      jobs: { upsertWorkerTask: () => ({ outcome: 'created' }) }, now: () => 1000, parentJobId: null,
+    })
+    const result = await spawnSibling.execute!({ shardIndex: 0, remainingWorkSummary: 'x' }, fakeOpts)
+    expect(result).toEqual({ spawned: true, outcome: 'created' })
+  })
+
+  it('revived → {spawned:true, outcome:revived}', async () => {
+    const spawnSibling = makeSpawnSiblingOrchestratorTool({
+      jobs: { upsertWorkerTask: () => ({ outcome: 'revived' }) }, now: () => 1000, parentJobId: null,
+    })
+    const result = await spawnSibling.execute!({ shardIndex: 0, remainingWorkSummary: 'x' }, fakeOpts)
+    expect(result).toEqual({ spawned: true, outcome: 'revived' })
+  })
+
+  it('coalesced → {spawned:false, outcome:coalesced, pendingState, note}（remainingWorkSummary 未送达在途分片）', async () => {
+    const spawnSibling = makeSpawnSiblingOrchestratorTool({
+      jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true }) }, now: () => 1000, parentJobId: null,
+    })
+    const result = await spawnSibling.execute!({ shardIndex: 0, remainingWorkSummary: 'x' }, fakeOpts)
+    expect(result).toEqual({
+      spawned: false, outcome: 'coalesced', pendingState: 'wanted',
+      note: 'a sibling with this shard identity is already pending — your remainingWorkSummary was NOT delivered to it; if the handoff context matters, use a different shardIndex',
+    })
+  })
+
+  it('blocked_dormant → {spawned:false, outcome:blocked_dormant, reason, note}（同 dispatch 工具的诚实形态）', async () => {
+    const spawnSibling = makeSpawnSiblingOrchestratorTool({
+      jobs: { upsertWorkerTask: () => ({ outcome: 'blocked_dormant', lastError: 'config defect' }) }, now: () => 1000, parentJobId: null,
+    })
+    const result = await spawnSibling.execute!({ shardIndex: 0, remainingWorkSummary: 'x' }, fakeOpts)
+    expect(result).toEqual({
+      spawned: false, outcome: 'blocked_dormant', reason: 'config defect',
+      note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
+    })
   })
 })
 

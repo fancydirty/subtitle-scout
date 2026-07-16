@@ -62,10 +62,15 @@ export function makeIngestTrigger(deps: IngestTriggerDeps): () => Promise<Ingest
 
     let orchestratorTriggered = false
     if (result.changed) {
-      // 固定 identity → upsertWorkerTask 的 ON CONFLICT dedup 保证"至多一个待处理的
-      // ingest-triggered orchestrator job"：本轮触发时若上一次触发的那行还没被认领/跑完
-      // （仍是 wanted/searching/...），这里只是同一行的 payload/updated_at 被刷新，不会
-      // 多出一行（见 jobsRepo.ts upsertWorkerTask 的 ON CONFLICT 分支）。
+      // 固定 identity → upsertWorkerTask 的身份 dedup（SELECT-then-branch，非 ON CONFLICT——
+      // 见 jobsRepo.ts upsertWorkerTask 头注释）保证"至多一个待处理的 ingest-triggered
+      // orchestrator job"，本轮触发时若上一次触发的那行还没被认领/跑完，不会多出一行：
+      // - 仍是 wanted（最常见——上一次触发的编排 pass 还没被 daemon claim）：F-R2-5（R2 复审）
+      //   起 payload（这条 reason 摘要）真的会被刷新为本轮最新的 scanned/upserted/parked/
+      //   removed 统计，不再是本轮的新意图被无声丢弃、dashboard 只看到上一轮的旧摘要。
+      // - 已被认领在跑（searching/downloading/verifying）：payload 保持不动，只刷
+      //   updated_at——那个 pass 已经在读旧摘要了，这轮的新变化会在它跑完、下一次 ingest
+      //   仍报 changed 时再触发一次新的编排 pass，不会丢。
       deps.jobs.upsertWorkerTask(
         { seriesId: INGEST_ORCHESTRATE_SERIES_ID, season: null, movieId: null },
         {
