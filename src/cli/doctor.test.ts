@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
+import { MIGRATIONS } from '../v2/db.js'
 
 describe('doctor 远端三项', () => {
   it('assrt quota 正常 → ok 并显示剩余配额', async () => {
@@ -121,13 +122,14 @@ describe('withTimeout', () => {
 
 describe('doctor v2 database checks', () => {
   it('checkDatabase：可开且版本匹配 → ✓ 显示版本', () => {
-    // 版本字面量随 v2/db.ts MIGRATIONS 数组长度走（去 Jellyfin 化 P2·D7：数组折叠成单条终态
-    // entry 后长度为 1）——checkDatabase 内部用 MIGRATIONS.length 算 EXPECTED_VERSION，这里
-    // 传入同一个当前值断言"匹配"分支，不是在断言这个数字本身有什么意义。
-    const r = checkDatabase(() => ({ version: '1' }))
+    // 版本值随 v2/db.ts MIGRATIONS 数组长度走——checkDatabase 内部用 MIGRATIONS.length 算
+    // EXPECTED_VERSION。此前这里硬编码字面量，每次追加迁移 entry 都会假红一次（胶水层战役
+    // v10/v11 各断一回）；改为直接派生同一来源，只断言"匹配"分支本身。
+    const current = String(MIGRATIONS.length)
+    const r = checkDatabase(() => ({ version: current }))
     expect(r.ok).toBe(true)
     expect(r.name).toBe('database')
-    expect(r.detail).toContain('1')
+    expect(r.detail).toContain(current)
   })
   it('checkDatabase：打开抛错 → ✗ 人话 hint', () => {
     const r = checkDatabase(() => { throw new Error('SQLITE_CANTOPEN') })

@@ -68,8 +68,9 @@ const shape: BacklogShape = {
   movies: [{ id: 'm1', missing: true }],
   expected: {
     findSubtitle: [
-      { seriesId: 'tmdb:10', season: 1, movieId: null },
-      { seriesId: 'tmdb:20', season: 1, movieId: null },
+      // R-11（范围裁量化）：find_subtitle 行的 season 身份列恒 NULL——范围事实在 payload.seasons。
+      { seriesId: 'tmdb:10', season: null, movieId: null },
+      { seriesId: 'tmdb:20', season: null, movieId: null },
       { seriesId: null, season: null, movieId: 'm1' },
     ],
     realignSeriesIds: [],
@@ -91,17 +92,17 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
         call++
         if (call === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 'tmdb:10', season: 1, movieId: null, reason: 'missing season 1 for a',
+            seriesId: 'tmdb:10', seasons: [1], movieId: null, reason: 'missing season 1 for a',
           })
         }
         if (call === 2) {
           return toolCallResult('c2', 'dispatch_find_subtitle_task', {
-            seriesId: 'tmdb:20', season: 1, movieId: null, reason: 'missing season 1 for b',
+            seriesId: 'tmdb:20', seasons: [1], movieId: null, reason: 'missing season 1 for b',
           })
         }
         if (call === 3) {
           return toolCallResult('c3', 'dispatch_find_subtitle_task', {
-            seriesId: null, season: null, movieId: 'm1', reason: 'missing movie m1',
+            seriesId: null, movieId: 'm1', reason: 'missing movie m1',
           })
         }
         return finalizeResult({
@@ -141,7 +142,7 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
         call2++
         if (call2 === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 'tmdb:10', season: 1, movieId: null, reason: 're-dispatch same identity',
+            seriesId: 'tmdb:10', seasons: [1], movieId: null, reason: 're-dispatch same identity',
           })
         }
         return finalizeResult({
@@ -171,23 +172,23 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
 // seedBacklog/BacklogShape harness as the test above.
 const capShape: BacklogShape = {
   name: 'plumbing-cap',
-  represents: 'one series with 3 independent fully-missing seasons — used only to exercise the ' +
+  // R-11（范围裁量化）后同一 series 的多个季共享一个 find_subtitle 身份行——原"一部剧三季=三次
+  // 派发"的 cap 前提失效（后两次会 coalesce 进第一行）。改为三部各缺一季的剧：三个独立身份，
+  // cap 语义原样可测。
+  represents: 'three series each with one fully-missing season — used only to exercise the ' +
     'dispatch cap at a low, cheap-to-test override',
   capOverride: 2,
-  series: [{
-    id: 'tmdb:30',
-    seasons: [
-      { season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
-      { season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
-      { season: 3, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
-    ],
-  }],
+  series: [
+    { id: 'tmdb:30', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+    { id: 'tmdb:31', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+    { id: 'tmdb:32', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+  ],
   movies: [],
   expected: { findSubtitle: [], realignSeriesIds: [] },
 }
 
 describe('orchestrator dispatch cap (tool-level), driven through the backlog-shape harness', () => {
-  it('enforces maxDispatchesPerOrchestrator=2 over a seeded backlog with 3 dispatchable seasons: ' +
+  it('enforces maxDispatchesPerOrchestrator=2 over a seeded backlog with 3 dispatchable series: ' +
      'only 2 worker_task rows land, and the 3rd dispatch_find_subtitle_task call gets the ' +
      'cap-reached error back rather than a 3rd row', async () => {
     const db = openDb(':memory:')
@@ -202,17 +203,17 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
         call++
         if (call === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 'tmdb:30', season: 1, movieId: null, reason: 'missing season 1',
+            seriesId: 'tmdb:30', seasons: [1], movieId: null, reason: 'missing season 1',
           })
         }
         if (call === 2) {
           return toolCallResult('c2', 'dispatch_find_subtitle_task', {
-            seriesId: 'tmdb:30', season: 2, movieId: null, reason: 'missing season 2',
+            seriesId: 'tmdb:31', seasons: [1], movieId: null, reason: 'missing season 1 of tmdb:31',
           })
         }
         if (call === 3) {
           return toolCallResult('c3', 'dispatch_find_subtitle_task', {
-            seriesId: 'tmdb:30', season: 3, movieId: null, reason: 'missing season 3',
+            seriesId: 'tmdb:32', seasons: [1], movieId: null, reason: 'missing season 1 of tmdb:32',
           })
         }
         // Step 4: the model has just seen c3's tool-result — assert it really is the
@@ -225,7 +226,7 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
         })
         return finalizeResult({
           dispatchedFindSubtitle: 2, dispatchedRealign: 0, spawnedSiblings: 1,
-          summary: 'cap reached after 2 dispatches, handed off season 3 to a sibling',
+          summary: 'cap reached after 2 dispatches, handed off the third series to a sibling',
         })
       },
     })
@@ -236,9 +237,12 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
     })
     await runPass()
 
-    // Exactly 2 rows landed — the 3rd (season 3) was refused by the cap, not silently written anyway.
+    // Exactly 2 rows landed — the 3rd (tmdb:32) was refused by the cap, not silently written anyway.
+    // R-11: find_subtitle 行的 season 身份列恒 NULL，请求的季在 payload.seasons 里核对。
     expect(jobs.countByState('wanted')).toBe(2)
     const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
-    expect(dispatched.map(j => j.season).sort()).toEqual([1, 2])
+    expect(dispatched.map(j => j.series_id).sort()).toEqual(['tmdb:30', 'tmdb:31'])
+    expect(dispatched.every(j => j.season === null)).toBe(true)
+    expect(dispatched.map(j => (JSON.parse(j.payload!) as { seasons: number[] }).seasons)).toEqual([[1], [1]])
   })
 })

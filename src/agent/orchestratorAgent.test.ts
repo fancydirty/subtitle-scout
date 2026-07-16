@@ -95,12 +95,12 @@ describe('makeOrchestratorAgent', () => {
         if (call === 1) return toolCallResult('c1', 'list_missing_coverage', {})
         if (call === 2) {
           return toolCallResult('c2', 'dispatch_find_subtitle_task', {
-            seriesId: 's1', season: 1, movieId: null, reason: 'missing season 1',
+            seriesId: 's1', seasons: [1], movieId: null, reason: 'missing season 1',
           })
         }
         if (call === 3) {
           return toolCallResult('c3', 'dispatch_find_subtitle_task', {
-            seriesId: null, season: null, movieId: 'm1', reason: 'missing movie',
+            seriesId: null, movieId: 'm1', reason: 'missing movie',
           })
         }
         return finalizeResult({
@@ -125,13 +125,14 @@ describe('makeOrchestratorAgent', () => {
     expect(dispatched).toHaveLength(2)
 
     const seriesTask = dispatched.find(j => j.series_id === 's1')!
-    expect(seriesTask.season).toBe(1)
+    // R-11: find_subtitle 行的 season 身份列恒 NULL，范围事实在 payload.seasons。
+    expect(seriesTask.season).toBeNull()
     expect(seriesTask.movie_id).toBeNull()
-    expect(JSON.parse(seriesTask.payload!)).toEqual({ taskType: 'find_subtitle', reason: 'missing season 1' })
+    expect(JSON.parse(seriesTask.payload!)).toEqual({ taskType: 'find_subtitle', seasons: [1], reason: 'missing season 1' })
     expect(seriesTask.parent_job_id).toBeNull()
 
     const movieTask = dispatched.find(j => j.movie_id === 'm1')!
-    expect(JSON.parse(movieTask.payload!)).toEqual({ taskType: 'find_subtitle', reason: 'missing movie' })
+    expect(JSON.parse(movieTask.payload!)).toEqual({ taskType: 'find_subtitle', seasons: null, reason: 'missing movie' })
     expect(movieTask.parent_job_id).toBeNull()
   })
 
@@ -142,17 +143,17 @@ describe('makeOrchestratorAgent', () => {
         call++
         if (call === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 's1', season: 1, movieId: null, reason: 'r1',
+            seriesId: 's1', seasons: [1], movieId: null, reason: 'r1',
           })
         }
         if (call === 2) {
           return toolCallResult('c2', 'dispatch_find_subtitle_task', {
-            seriesId: 's2', season: 1, movieId: null, reason: 'r2',
+            seriesId: 's2', seasons: [1], movieId: null, reason: 'r2',
           })
         }
         if (call === 3) {
           return toolCallResult('c3', 'dispatch_find_subtitle_task', {
-            seriesId: 's3', season: 1, movieId: null, reason: 'r3',
+            seriesId: 's3', seasons: [1], movieId: null, reason: 'r3',
           })
         }
         // Step 4: the model has just seen c3's tool-result — assert it really is the
@@ -196,7 +197,7 @@ describe('makeOrchestratorAgent', () => {
         // series dispatch, not a scripted `movieId: null`.
         if (call === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 's1', season: 1, reason: 'missing s1',
+            seriesId: 's1', seasons: [1], reason: 'missing s1',
           })
         }
         return finalizeResult({
@@ -215,9 +216,9 @@ describe('makeOrchestratorAgent', () => {
     const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
     expect(dispatched).toHaveLength(1)
     expect(dispatched[0].series_id).toBe('s1')
-    expect(dispatched[0].season).toBe(1)
+    expect(dispatched[0].season).toBeNull()
     expect(dispatched[0].movie_id).toBeNull()
-    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', reason: 'missing s1' })
+    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', seasons: [1], reason: 'missing s1' })
   })
 
   it('dispatches a worker_task row when the real model OMITS seriesId/season for a movie-only dispatch (same root cause, movie side)', async () => {
@@ -252,7 +253,7 @@ describe('makeOrchestratorAgent', () => {
     expect(dispatched[0].movie_id).toBe('m1')
     expect(dispatched[0].series_id).toBeNull()
     expect(dispatched[0].season).toBeNull()
-    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', reason: 'movie' })
+    expect(JSON.parse(dispatched[0].payload!)).toEqual({ taskType: 'find_subtitle', seasons: null, reason: 'movie' })
   })
 
   it('spawn_sibling_orchestrator does not count against the dispatch cap and records parent_job_id lineage', async () => {
@@ -270,12 +271,12 @@ describe('makeOrchestratorAgent', () => {
         call++
         if (call === 1) {
           return toolCallResult('c1', 'dispatch_find_subtitle_task', {
-            seriesId: 's1', season: 1, movieId: null, reason: 'r1',
+            seriesId: 's1', seasons: [1], movieId: null, reason: 'r1',
           })
         }
         if (call === 2) {
           return toolCallResult('c2', 'dispatch_find_subtitle_task', {
-            seriesId: 's2', season: 1, movieId: null, reason: 'r2',
+            seriesId: 's2', seasons: [1], movieId: null, reason: 'r2',
           })
         }
         if (call === 3) {
