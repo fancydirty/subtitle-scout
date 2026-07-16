@@ -137,6 +137,25 @@ C 区无发现区域：recognition 四文件（全仓最贴近北极星⑤的子
 
 裁决完毕。计划修订随本次提交（docs/superpowers/plans/2026-07-16-glue-layer-repair-campaign.md，本地文档不入库）。
 
+## 五、R1 架构灵魂验收对照表（Task 13 · 主控亲笔，2026-07-16 收官）
+
+对照面=本战役全部改动（a1a2cac..HEAD，含清算波）。逐条质询：
+
+| 北极星条款 | 改动面质询 | 判定 |
+|---|---|---|
+| ①agent 像人判断，确定性检查绝不守门（事实盘点除外） | completeNoMatch 的第 5 次机械 dormant 判决已处决；退避降为 item 事实阶梯（永不隐形）；check_series_layout 双信号+tmdbUnavailable 均为事实；orchestratorSkill 的 MUST/never 守门措辞处决，改事实+理由式；活文档谓词守门人处决（throttled 可见）。**主动质询甲：三桶队列映射是否重新引入确定性守门？**——否：completeDone/completeError 只登记 worker 已作出的判断类别（报告入账 vs 瞬时重试），不产生任何"值不值得做"的判决；内容判决全部在 worker（no_safe_match per item）与 orchestrator（差额再派）手里。**主动质询乙：itemId 幻觉防线是否越权？**——属事实盘点豁免：它是入账层的账实核对（报告条目 ∈ 任务清单），等价于会计拒绝为不存在的科目记账，不评判任何字幕对错；且方向是漏记不错标（⑥同向） | 符合 |
+| ②主代理意图原样抵达执行者 | representativeEpisodeId/representativeMovieId 处决（mapper 纯信使）；dormant 吞噬+谎报处决（四态回执）；sibling remainingWorkSummary 注入 prompt（明示 context-not-command）；retireAllForSeries 归位 worker_task；R-11 范围裁量进 payload.seasons 原样抵达 | 符合 |
+| ③子代理粒度=季/批，合集是最高效命中 | 任务形状=范围事实清单（单季/多季/全剧由主代理裁量）；worker skill 教批量收割+跨季认知+"最高效命中"原文；zip 包内清单归 agent（zimuku 季包不再盲拿首文件）；超时按目标数缩放 | 符合 |
+| ④机械层只产事实永不产指令 | 缺口清单 ORDER BY 注明"清单排序非执行指令"；活文档 missing/throttled/nextRecheckAt/sampleReason/seriesName 全事实化；providerFailures/archiveEntries/tmdbUnavailable/四态回执均为事实呈报；recheck_after 不再从 jobs 调度态倒灌（item 自算自持）。残留豁免：claimNext FIFO（到达序=事实，R-10）；worker timeout/stepCap/cap=资源自卫机械 | 符合 |
+| ⑤拿不准就停车，错认比停车糟 | skill 逐集"跳过该集不弃整包"教导；rule 1b 启发式判决已可稽核（status_reason 落库，T12b）+曝光债登记 dashboard 战役；recognize/ingest park 纪律未动（审计 C 区认证的模范子系统）；dormant"停车即死刑"悖论消解（blocked_dormant 事实回执 + find 任务永不 dormant） | 符合 |
+| ⑥零误触发 | realign 五重安全层字节未动（T9c 逐 hunk 亲验声明在案）；exceedsSeasonTable 保留（仍可点火的形态存在，C-B5）+diskLayoutNonstandard 并列，判断归 orchestrator，灾难防线在 executeRealign；itemId 幻觉防线为⑥在入账层的镜像；realign 富化补面降低字幕先行误认边际（A-F13） | 符合 |
+| skill 修订权只在人+主控 | 本战役两次 skill 重写（findSubtitleSkill/orchestratorSkill）均主控亲笔（bd2c675/a1b720f），实现子代理 prompt 中明令禁区，无违例 | 符合 |
+
+**"待核/TODO/暂时"零存活检查**：grep 零命中（两处"暂时"为正常语句非搁置标签）。
+**跨战役登记（非搁置，已裁决立项/记录在案）**：quota 呈报通道（R-6 发现，立项）；ORIGIN_UNKNOWN 不回查（C-C1 债）；C-B1 时长死枝（警示注释在案）；多语言单值截断（A4 已申报）；外部媒体服务器共库扫描窗口风险（C-B3，部署文档责任）；retireClaimed 孤儿化+MediaIdentitySchema 零外引（T9a 新发现，下轮清算候选）；B-15 剧级合集终态（R-11 已裁"按事实裁量"，形已留）。
+
+（R2 复审双签见下节；真站闸门报告随 Task 15 追加。）
+
 ## 四、裁决记录（Task 0.3 填写）
 
 （待）
