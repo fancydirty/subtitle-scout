@@ -221,6 +221,37 @@ describe('TmdbClient.getSeasonTable', () => {
   })
 })
 
+describe('TmdbClient.getSeasonEpisodes', () => {
+  it('解析 /tv/{id}/season/{n} 的 episodes 数组，取 episode_number/name', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      expect(new URL(String(url)).pathname).toBe('/3/tv/120089/season/1')
+      return new Response(JSON.stringify({
+        episodes: [
+          { episode_number: 1, name: 'Pilot' },
+          { episode_number: 2, name: '' }, // 空标题 → null
+        ],
+      }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getSeasonEpisodes('120089', 1)).toEqual([
+      { episode: 1, title: 'Pilot' },
+      { episode: 2, title: null },
+    ])
+  })
+
+  it('404（该季不存在）→ null（真·无数据）', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getSeasonEpisodes('120089', 99)).toBeNull()
+  })
+
+  it('网络故障 → 抛 TmdbRequestFailedError（瞬时，可重试，绝不当无数据）', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED') })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.getSeasonEpisodes('120089', 1)).rejects.toThrow(TmdbRequestFailedError)
+  })
+})
+
 // 按 URL path 路由到 episode_groups 的两个端点（列表 + 详情）；status>=400 → 非 ok 响应。
 interface EpisodeGroupRoutes {
   groupsList?: unknown

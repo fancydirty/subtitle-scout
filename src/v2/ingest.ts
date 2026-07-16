@@ -4,6 +4,7 @@ import { seasonEpisodeForAbsolute } from '../agent/absoluteEpisodes.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { walkVideoFiles } from '../daemon/selfScan.js'
 import { seriesId, episodeId } from './ownIds.js'
+import { refreshSeriesCatalog } from './tmdbCatalog.js'
 import type { ScoutDb } from './db.js'
 import type { LibraryRepo, SubStatus } from './libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
@@ -467,6 +468,12 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 posterPath = enrich.posterPath
                 year = enrich.year
                 chineseTitle = enrich.chineseTitle
+                // dashboard G2：三层格阵第一层——新剧首次入库顺手起播应有集缓存（tmdbCatalog.ts）。
+                // fire-and-forget：不 await，失败仅 log，绝不阻塞摄取主流程（该函数自身已是
+                // gain-path 降级，见其头注释）。
+                void refreshSeriesCatalog(lib.db, tmdb, ownSeriesId, nowMs).catch(e =>
+                  log(`ingest: refreshSeriesCatalog failed for ${ownSeriesId}, degraded this pass (retry next pass): ${e instanceof Error ? e.message : String(e)}`)
+                )
               }
               lib.upsertSeries({
                 id: ownSeriesId, name: title, chineseTitle, posterPath, year,

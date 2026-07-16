@@ -311,4 +311,23 @@ export class TmdbClient {
 
     return { overview, runtimeMinutes, posterPath, originalTitle, year: Number.isFinite(year) ? year : null }
   }
+
+  /**
+   * 单季集清单（`/tv/{id}/season/{n}`）——dashboard G2 应有集缓存（tmdbCatalog.ts）用它逐季拉
+   * episode_number/name 补全 getSeasonTable 只给到的季级 episode_count。语义同 getSeasonTable：
+   * null=真·无数据（含 404，该季不存在），抛 TmdbRequestFailedError=瞬时故障可重试，调用方
+   * （refreshSeriesCatalog）按 gain-path 降级处理，绝不当无数据清空旧缓存。
+   * episodes 非数组按空集处理（不 throw）——不同于 getSeasonTable 对 seasons 数组的严格校验：
+   * 季级 episode_count 已经是权威计数来源，这里拿不到集清单只是降级到"标题为 null"，不是
+   * 数据完整性红线。
+   */
+  async getSeasonEpisodes(tvId: string, season: number): Promise<{ episode: number; title: string | null }[] | null> {
+    const d = await this.getJsonStrict(`/tv/${tvId}/season/${season}`)
+    if (!d) return null
+    const episodes = d.episodes
+    if (!Array.isArray(episodes)) return null
+    return (episodes as Array<{ episode_number?: number; name?: string }>)
+      .filter((e): e is { episode_number: number; name?: string } => typeof e.episode_number === 'number')
+      .map(e => ({ episode: e.episode_number, title: typeof e.name === 'string' && e.name ? e.name : null }))
+  }
 }
