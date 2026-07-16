@@ -1,7 +1,7 @@
 // web/src/api/client.ts：v2 只读数据层客户端。DASHBOARD_TOKEN 存在时带 ?token=。
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
-  ParkedItemDTO, ClaimParkedInput,
+  ParkedItemDTO, ClaimParkedInput, WorkflowPendingDTO,
 } from './types.js'
 
 const token = (): string | null => new URLSearchParams(location.search).get('token')
@@ -60,4 +60,7 @@ export const api = {
   // 去 Jellyfin 化 P6：park 救援页——一次性脚手架。
   parked: (signal?: AbortSignal) => get<ParkedItemDTO[]>('/api/parked', signal),
   claimParked: (input: ClaimParkedInput) => post<{ ok: true }>('/api/parked/claim', input),
+  // dashboard-F2：顶栏新鲜度行 + 侧栏甄别角标共用同一份响应（meta + parked）。
+  workflowPending: (signal?: AbortSignal) =>
+    get<WorkflowPendingDTO>('/api/v2/workflow/pending', signal),
 }

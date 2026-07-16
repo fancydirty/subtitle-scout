@@ -1,24 +1,13 @@
-// web/src/App.tsx：hash 路由骨架：#/ 海报墙 · #/series/:id 详情 · #/history 历史 ·
-// #/parked park 救援（去 Jellyfin 化 P6）。
-import { useRoute } from './lib/hashRoute.js'
-import { PosterWall } from './components/PosterWall.js'
-import { SeriesDetail } from './components/SeriesDetail.js'
-import { History } from './components/History.js'
-import { Parked } from './components/Parked.js'
+// web/src/App.tsx：dashboard-F2 新外壳入口——I18nProvider 包 Shell（侧栏/顶栏/⌘K + 四 tab
+// hash 路由）。Theme（Astryx 主题）包裹在 main.tsx（见该文件顶部注释：选了 main.tsx 而不是这里，
+// 因为它是真正的渲染根，App 只管产品逻辑）。
+import { I18nProvider } from './i18n/useT.js'
+import { Shell } from './shell/AppShell.js'
 
 export function App() {
-  const route = useRoute()
   return (
-    <div className="stage">
-      {route.name === 'series' ? (
-        <SeriesDetail id={route.id} />
-      ) : route.name === 'history' ? (
-        <History />
-      ) : route.name === 'parked' ? (
-        <Parked />
-      ) : (
-        <PosterWall />
-      )}
-    </div>
+    <I18nProvider>
+      <Shell />
+    </I18nProvider>
   )
 }

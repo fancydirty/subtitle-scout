@@ -2,7 +2,9 @@
 // visibilitychange 时暂停轮询（省流、后台不空转）。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
-import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO } from './types.js'
+import type {
+  LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
+} from './types.js'
 
 export interface Async<T> {
   data: T | null
@@ -148,6 +150,63 @@ export function useParked(): Async<ParkedItemDTO[]> {
       })
     return () => ctrl.abort()
   }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F2：外壳级数据面——顶栏新鲜度行 + 侧栏甄别角标共用这一份轮询，避免两处各发一次。
+ *  轮询节奏与策略沿用 useLibrary（15s、后台不可见时暂停）：这行是"系统在跑"的唯一信号源，
+ *  过期太久等于假装活着（DESIGN.md §0）。本地无 daemon 时 fetch 会失败——data 保持 null，
+ *  调用方（Topbar/Sidebar）必须能优雅降级，不许因为这个请求失败就整屏空白。 */
+export function useWorkflowPending(): Async<WorkflowPendingDTO> {
+  const [data, setData] = useState<WorkflowPendingDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api.workflowPending()
+      setData(d)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
 
   return { data, loading, error, reload }
 }

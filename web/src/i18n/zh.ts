@@ -1,0 +1,30 @@
+// web/src/i18n/zh.ts：扁平 key 表，中文。workflow_* 键直接引用 en 的值——这是代码层面强制的
+// "Workflow 区永不本地化"裁决（DESIGN.md §7，用户裁决），不是漏翻译，不许在这里手写中文替换掉它。
+import { en } from './en.js'
+
+export const zh = {
+  // Triage 的中文=甄别（用户钦定，DESIGN.md §7）。Workflow 沿用视觉基准
+  // full-design-v2.html 里的"工作流"（外壳导航标签，不属于"Workflow 区"内容本身）。
+  nav_library: '媒体库',
+  nav_workflow: '工作流',
+  nav_triage: '甄别',
+  nav_settings: '设置',
+
+  cmdk_trigger: '搜索',
+  cmdk_label: '命令面板',
+  cmdk_placeholder: '跳转到页面…',
+  cmdk_empty: '无匹配',
+
+  library_empty_title: '媒体库暂无内容',
+  library_empty_desc: '扫描媒体根目录后，剧集与电影会出现在这里。',
+
+  // Workflow 区永不本地化（用户裁决）：直接引用 en 值，禁止改成中文。
+  workflow_empty_title: en.workflow_empty_title,
+  workflow_empty_desc: en.workflow_empty_desc,
+
+  triage_empty_title: '暂无待甄别项',
+  triage_empty_desc: '识别器无法确信归位的文件会停在这里，等待人工认领。',
+
+  settings_empty_title: '设置页即将上线',
+  settings_empty_desc: '媒体根目录、目标语言与部署信息将会集中呈现在这里。',
+} as const

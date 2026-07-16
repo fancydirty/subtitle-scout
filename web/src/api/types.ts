@@ -86,3 +86,34 @@ export interface ClaimParkedInput {
   isTv: boolean
   season?: number
 }
+
+/** dashboard-F2：GET /api/v2/workflow/pending 响应体——与 src/dashboard/apiV2.ts 的
+ *  WorkflowPendingDTO 一族保持一致。顶栏新鲜度行与侧栏甄别角标共用同一个请求（meta+parked）。 */
+export interface WorkflowPendingSeriesDTO {
+  seriesId: string
+  seriesName: string
+  season: number
+  missing: number
+  throttled: number
+  nextRecheckAt: number | null
+  sampleReason: string | null
+}
+export interface WorkflowPendingMovieDTO {
+  id: string
+  name: string
+  missing: 0 | 1
+  throttled: 0 | 1
+  nextRecheckAt: number | null
+  sampleReason: string | null
+}
+export interface WorkflowFreshnessDTO {
+  roots: string[]
+  lastScanAt: number | null
+  files: number
+}
+export interface WorkflowPendingDTO {
+  series: WorkflowPendingSeriesDTO[]
+  movies: WorkflowPendingMovieDTO[]
+  parked: number
+  meta: WorkflowFreshnessDTO
+}
