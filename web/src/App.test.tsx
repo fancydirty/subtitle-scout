@@ -1,6 +1,8 @@
-// web/src/App.test.tsx：dashboard-F2 新外壳冒烟测试。覆盖：外壳渲染（四 tab 项在场）、
-// tab 切换、fetch mock 下新鲜度行渲染、fetch 失败降级不白屏、⌘K 开合。
+// web/src/App.test.tsx：新外壳冒烟测试。覆盖：外壳渲染（四 tab 项在场）、tab 切换、fetch mock
+// 下新鲜度行渲染、fetch 失败降级不白屏、⌘K 开合。
 // i18n 完整性测试在 web/src/i18n/i18n.test.ts（不需要挂组件树，纯表对比更快更直接）。
+// Library tab 自己的三层格阵/筛选/详情板测试在 web/src/library/SeriesGrid.test.tsx 与
+// SeriesPage.test.tsx（dashboard-F3）——这里只保证外壳级别的路由/新鲜度行/⌘K 没被 F3 带崩。
 //
 // 查询手法说明：侧栏 tab 项渲染成 <a href="#/xxx">（SideNavItem 传了 href），跟顶栏面包屑
 // 的同名当前项文字（纯 <span>）会重名——统一用 getByRole('link', {name}) 定位侧栏项，
@@ -8,10 +10,28 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
 import { App } from './App.js'
-import type { WorkflowPendingDTO } from './api/types.js'
+import type { WorkflowPendingDTO, LibraryItemDTO } from './api/types.js'
 
-function mockFetch(body: unknown, ok = true) {
+/** 统一响应体、不看 URL——只适合"所有请求都该给同一个答案"的场景（比如全局失败测试）。 */
+function mockFetchAll(body: unknown, ok = true) {
   return vi.fn(async () => ({ ok, status: ok ? 200 : 500, json: async () => body }) as unknown as Response)
+}
+
+function requestPath(input: RequestInfo | URL): string {
+  const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+  return raw.split('?')[0]
+}
+
+/** 按 URL 路由的 fetch mock——Shell 现在并发打好几个端点（workflow/pending、library，
+ *  路由到剧集详情页时还有 library/series/:id），SeriesGrid 需要 /api/v2/library 真给一个
+ *  数组，不能再像 F2 时那样"随便什么 URL 都回同一个 body"（那样 SeriesGrid 拿到非数组会炸）。 */
+function mockFetchRouted(handlers: { path: string; body: unknown; prefix?: boolean }[]) {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const path = requestPath(input)
+    const hit = handlers.find((h) => (h.prefix ? path.startsWith(h.path) : path === h.path))
+    if (!hit) return { ok: false, status: 404, json: async () => ({ error: 'not found' }) } as unknown as Response
+    return { ok: true, status: 200, json: async () => hit.body } as unknown as Response
+  })
 }
 
 const WORKFLOW: WorkflowPendingDTO = {
@@ -19,6 +39,14 @@ const WORKFLOW: WorkflowPendingDTO = {
   movies: [],
   parked: 3,
   meta: { roots: ['/media'], lastScanAt: Date.now() - 2 * 60_000, files: 568 },
+}
+const EMPTY_LIBRARY: LibraryItemDTO[] = []
+
+function standardHandlers() {
+  return [
+    { path: '/api/v2/workflow/pending', body: WORKFLOW },
+    { path: '/api/v2/library', body: EMPTY_LIBRARY },
+  ]
 }
 
 beforeEach(() => {
@@ -39,7 +67,7 @@ afterEach(() => {
 
 describe('App 外壳冒烟', () => {
   it('渲染四个 tab 项', async () => {
-    vi.stubGlobal('fetch', mockFetch(WORKFLOW))
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
 
     expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
@@ -48,12 +76,12 @@ describe('App 外壳冒烟', () => {
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
   })
 
-  it('点击侧栏 tab 切换 hash 路由，对应占位内容跟着换', async () => {
-    vi.stubGlobal('fetch', mockFetch(WORKFLOW))
+  it('点击侧栏 tab 切换 hash 路由，对应内容跟着换（Library 落地页是空库态）', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
 
     await screen.findByRole('link', { name: 'Library' })
-    expect(screen.getByText('No library yet')).toBeInTheDocument()
+    expect(await screen.findByText('No library yet')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Workflow' }))
     await waitFor(() => expect(screen.getByText('No active work')).toBeInTheDocument())
@@ -66,7 +94,7 @@ describe('App 外壳冒烟', () => {
   })
 
   it('fetch 成功时顶栏渲染 mono 新鲜度行（watching/scanned/files 三段）', async () => {
-    vi.stubGlobal('fetch', mockFetch(WORKFLOW))
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
 
     expect(
@@ -77,7 +105,7 @@ describe('App 外壳冒烟', () => {
   })
 
   it('fetch 失败时外壳骨架仍在，不白屏——新鲜度行降级显示，甄别角标不渲染', async () => {
-    vi.stubGlobal('fetch', mockFetch({ error: 'boom' }, false))
+    vi.stubGlobal('fetch', mockFetchAll({ error: 'boom' }, false))
     render(<App />)
 
     // 外壳本身（四 tab 项）必须完整渲染，不能因为这一个请求失败就整屏空白。
@@ -92,7 +120,7 @@ describe('App 外壳冒烟', () => {
   })
 
   it('⌘K：点击触发器打开，Escape 关闭', async () => {
-    vi.stubGlobal('fetch', mockFetch(WORKFLOW))
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
     await screen.findByRole('link', { name: 'Library' })
 
@@ -110,7 +138,7 @@ describe('App 外壳冒烟', () => {
   })
 
   it('⌘K：选中一项后跳转对应 tab 并关闭面板', async () => {
-    vi.stubGlobal('fetch', mockFetch(WORKFLOW))
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
     await screen.findByRole('link', { name: 'Library' })
 

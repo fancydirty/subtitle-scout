@@ -37,3 +37,224 @@
 .astryx-side-nav-item[data-selected] {
   color: var(--color-accent);
 }
+
+/* dashboard-F3（Library tab）：三层格阵 + 海报墙 + 右侧详情板——原子 CSS 集中区。
+   跟上面 .cmdk-trigger 同一个理由：这几处是"组件语言表达不了"的原子级 UI（格阵网格、
+   海报卡 hover 发丝线抬升、EpisodeCell 的 5px 语义点 + 斜体、固定右侧板），Card/
+   ClickableCard/Text 都没留 xstyle 之外的样式逃生口（项目没装 @stylexjs/stylex 编译插件，
+   xstyle prop 本身也用不了），颜色一律读 scout.ts 已定义的 token，不新起配色
+   （DESIGN.md §10）。 */
+
+/* ---- 海报卡（SeriesGrid / PosterCard）---- */
+.library-poster-card {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-element, 8px);
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+.library-poster-card:hover,
+.library-poster-card:focus-visible {
+  transform: translateY(-2px);
+}
+.library-poster-card:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.library-poster-frame {
+  position: relative;
+  border-radius: var(--radius-element, 8px);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+  transition: border-color 120ms ease;
+}
+.library-poster-card:hover .library-poster-frame {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.library-poster-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.library-poster-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-background-surface);
+  color: var(--color-text-gray);
+  font-size: 22px;
+  font-weight: 600;
+}
+.library-poster-meta {
+  padding-top: 6px;
+}
+.library-poster-dot {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-text-green);
+}
+.library-poster-count {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  /* 海报底图深浅不定，角标需要一层不透明衬底才能保证可读——颜色仍读 --color-background-body
+     token（color-mix 派生半透明版本），不是新起一个硬编码色值。 */
+  background: color-mix(in srgb, var(--color-background-body) 72%, transparent);
+}
+.library-poster-skel-frame {
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-element, 8px);
+  overflow: hidden;
+}
+
+/* ---- 剧集页头部海报缩略（SeriesPage）---- */
+.library-detail-header-poster {
+  width: 72px;
+  height: 104px;
+  flex-shrink: 0;
+  border-radius: var(--radius-inner, 4px);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+}
+.library-detail-header-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.library-detail-header-poster .library-poster-fallback {
+  font-size: 28px;
+}
+
+/* ---- A 式格阵（EpisodeCell）---- */
+.ep-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 28px);
+  gap: 4px;
+}
+.ep-cell {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-inner, 4px);
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+  cursor: pointer;
+  font: inherit;
+}
+.ep-cell:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.ep-cell:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.ep-cell-selected {
+  border-color: var(--color-accent);
+}
+.ep-cell-dashed {
+  background: transparent;
+  border-style: dashed;
+}
+.ep-cell-error {
+  background: color-mix(in srgb, var(--color-text-red) 6%, transparent);
+}
+.ep-num {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  color: var(--color-text-secondary);
+}
+.ep-cell-dashed .ep-num {
+  color: var(--color-text-disabled);
+}
+.ep-cell-throttled .ep-num {
+  font-style: italic;
+  color: var(--color-text-gray);
+}
+.ep-cell-error .ep-num {
+  color: var(--color-text-red);
+}
+
+/* 5px 语义点——左上角，跟 mono 集号并排读（任务规格：EpisodeCell = 灰格 + 左上 5px 语义点）。 */
+.ep-dot {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.ep-dot-covered {
+  background: var(--color-text-green);
+}
+.ep-dot-missing {
+  background: transparent;
+  border: 1px solid var(--color-text-gray);
+  width: 4px;
+  height: 4px;
+}
+.ep-dot-throttled {
+  background: var(--color-text-gray);
+}
+.ep-dot-error {
+  background: var(--color-text-red);
+}
+.ep-cell-dashed-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 1px dashed var(--color-text-disabled);
+}
+
+/* ---- 右侧详情板（EpisodeDetail）——固定、不跳页不弹 modal（DESIGN.md §5/§6）。 ----
+   top 硬编码 46px = AppShell TopNav 的实测渲染高度（.astryx-app-shell-header，
+   contentPadding/variant 不变的前提下是个稳定值）。没用 CSS 变量兜底：Astryx 内部虽然定义了
+   --appshell-header-height，但只在它自己另一套"sticky content"用法里才会真的被赋值，本项目
+   现在的 AppShell 用法下这个变量从没被设置过（浏览器里 getComputedStyle 实测为空字符串，
+   会静默 fallback 到 0px，比硬编码 46px 更不可靠）。TopNav/AppShell 布局如果改了，
+   这个数字要跟着重新量一次——用浏览器量 .astryx-app-shell-header 的 getBoundingClientRect().height。 */
+.library-detail-panel {
+  position: fixed;
+  top: 46px;
+  bottom: 0;
+  right: 0;
+  width: 360px;
+  max-width: 90vw;
+  overflow-y: auto;
+  background: var(--color-background-card);
+  border-left: 1px solid var(--color-border);
+  z-index: 20;
+}
+.library-detail-close {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-inner, 4px);
+}
+.library-detail-close:hover {
+  background: var(--color-background-surface);
+}
+.library-detail-close:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

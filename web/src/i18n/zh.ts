@@ -18,6 +18,42 @@ export const zh = {
   library_empty_title: '媒体库暂无内容',
   library_empty_desc: '扫描媒体根目录后，剧集与电影会出现在这里。',
 
+  library_filter_all: '全部',
+  library_filter_gap: '有缺口',
+  library_filter_throttled: '停牌中',
+  library_filter_full: '全覆盖',
+
+  library_section_series: '剧集',
+  library_section_anime: '动漫',
+  library_section_movie: '电影',
+  library_section_other: '其他',
+
+  library_kind_series: '剧集',
+  library_kind_movie: '电影',
+
+  library_filtered_empty_title: '这个筛选下暂时没有条目',
+  library_filtered_empty_desc: '换一个筛选条件看看库里的其它内容。',
+
+  library_error_prefix: '无法加载媒体库：',
+  library_retry: '重试',
+
+  library_detail_error_prefix: '无法加载这部剧：',
+  library_detail_not_found_title: '未找到该剧集',
+  library_detail_not_found_desc: '这部剧可能已从库中移除。',
+  library_detail_layout_nonstandard: '目录结构与 TMDB 标准顺序不同',
+  library_detail_canonical_pending: '应有集目录尚未缓存',
+  library_detail_not_on_disk: '磁盘无此文件',
+  library_detail_no_subtitles: '这一集暂无字幕。',
+  library_detail_next_recheck_prefix: '预计复查',
+  library_detail_close_label: '关闭单集详情',
+  library_detail_file_heading: '文件',
+  library_detail_subtitles_heading: '字幕',
+
+  library_legend_covered: '已覆盖',
+  library_legend_missing: '缺字幕',
+  library_legend_throttled: '停牌中',
+  library_legend_dashed: '磁盘无此文件',
+
   // Workflow 区永不本地化（用户裁决）：直接引用 en 值，禁止改成中文。
   workflow_empty_title: en.workflow_empty_title,
   workflow_empty_desc: en.workflow_empty_desc,

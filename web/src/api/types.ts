@@ -117,3 +117,40 @@ export interface WorkflowPendingDTO {
   parked: number
   meta: WorkflowFreshnessDTO
 }
+
+/** dashboard-F3：GET /api/v2/library/series/:id 响应体——三层格阵合并详情（canonical ∪ 磁盘 ∪
+ *  覆盖），与 src/dashboard/apiV2.ts 的 LibrarySeriesDetailDTO 一族保持一致。 */
+export interface LibrarySeriesSummaryDTO {
+  id: string
+  name: string
+  chineseTitle: string | null
+  posterPath: string | null
+  year: number | null
+  layoutNonstandard: boolean
+}
+export interface LibraryCanonicalEpisodeDTO {
+  episode: number
+  title: string | null
+}
+export interface LibraryOnDiskEpisodeDTO {
+  episode: number
+  path: string
+  subStatus: string
+  statusReason: string | null
+  recheckAfter: number | null
+}
+export interface LibraryCoverageRowDTO {
+  episode: number
+  lang: string
+  path: string
+}
+export interface LibrarySeasonDTO {
+  season: number
+  canonical: LibraryCanonicalEpisodeDTO[]
+  onDisk: LibraryOnDiskEpisodeDTO[]
+  coverage: LibraryCoverageRowDTO[]
+}
+export interface LibrarySeriesDetailDTO {
+  series: LibrarySeriesSummaryDTO
+  seasons: LibrarySeasonDTO[]
+}

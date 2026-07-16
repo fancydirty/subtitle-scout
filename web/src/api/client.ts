@@ -1,7 +1,7 @@
 // web/src/api/client.ts：v2 只读数据层客户端。DASHBOARD_TOKEN 存在时带 ?token=。
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
-  ParkedItemDTO, ClaimParkedInput, WorkflowPendingDTO,
+  ParkedItemDTO, ClaimParkedInput, WorkflowPendingDTO, LibrarySeriesDetailDTO,
 } from './types.js'
 
 const token = (): string | null => new URLSearchParams(location.search).get('token')
@@ -63,4 +63,8 @@ export const api = {
   // dashboard-F2：顶栏新鲜度行 + 侧栏甄别角标共用同一份响应（meta + parked）。
   workflowPending: (signal?: AbortSignal) =>
     get<WorkflowPendingDTO>('/api/v2/workflow/pending', signal),
+  // dashboard-F3：剧集页三层格阵详情（canonical ∪ 磁盘 ∪ 覆盖）。id 含冒号（tmdb:123），
+  // encodeURIComponent 编码后由 router.ts 的 decodeIdSegment 解回。
+  librarySeriesDetail: (id: string, signal?: AbortSignal) =>
+    get<LibrarySeriesDetailDTO>(`/api/v2/library/series/${encodeURIComponent(id)}`, signal),
 }

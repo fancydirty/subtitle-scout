@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
+  LibrarySeriesDetailDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -150,6 +151,43 @@ export function useParked(): Async<ParkedItemDTO[]> {
       })
     return () => ctrl.abort()
   }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F3：剧集页三层格阵详情——随 id 变化重取，一次性（同 useSeries，详情不轮询）。
+ *  id 为 null 时（不在 #/library/:id 二级路由上）完全不发请求——Shell 在每次渲染都会调用
+ *  这个 hook（喂给 Topbar 面包屑 + SeriesPage），如果 null 也照样打一次 GET，四个 tab 里
+ *  三个会白白 404 一次；hooks 调用顺序仍然稳定（id 从 null 变成字符串只是走 else 分支，
+ *  不影响 hook 调用次数/顺序）。 */
+export function useLibrarySeriesDetail(id: string | null): Async<LibrarySeriesDetailDTO> {
+  const [data, setData] = useState<LibrarySeriesDetailDTO | null>(null)
+  const [loading, setLoading] = useState(id != null)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    if (id == null) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .librarySeriesDetail(id, ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [id, nonce])
 
   return { data, loading, error, reload }
 }
