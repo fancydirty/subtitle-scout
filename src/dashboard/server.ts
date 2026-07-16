@@ -163,10 +163,20 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         // 得早于 15s 心跳 resolve），显式 flushHeaders() 补上这一刻，不然客户端会白等一个心跳
         // 周期才看到 200（真实复现过：flushHeaders 缺席时 fetch() 卡到第一次 res.write 才返回）。
         res.flushHeaders()
+        // 复审修复（守护进程存活，两道都上）：socket 猝死（客户端断网/杀进程）到 'close' 事件
+        // 触发之间有窗口——窗口内订阅回调或心跳的 res.write 打在已毁/将毁的流上，ServerResponse
+        // 无 'error' 监听器时是 uncaughtException，整个守护进程（产品本体）直接崩。第一道：
+        // no-op 'error' 兜底吃掉在途写入的 EPIPE/ERR_STREAM_DESTROYED；第二道：写入前置守卫，
+        // 已知已毁的流连写都不写。
+        res.on('error', () => {})
         const unsubscribe = traceBus.subscribe((e) => {
+          if (res.destroyed || res.writableEnded) return
           res.write(`data: ${JSON.stringify(e)}\n\n`)
         })
-        const heartbeat = setInterval(() => res.write(': hb\n\n'), 15_000)
+        const heartbeat = setInterval(() => {
+          if (res.destroyed || res.writableEnded) return
+          res.write(': hb\n\n')
+        }, 15_000)
         req.on('close', () => {
           clearInterval(heartbeat)
           unsubscribe()

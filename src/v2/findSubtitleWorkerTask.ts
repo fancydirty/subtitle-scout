@@ -345,9 +345,13 @@ export async function runFindSubtitleWorkerTask(
   // executor.ts itself was deleted in the old-pipeline retirement; this comment only documents
   // where the shape was borrowed from.
   const recordRun = (decision: string, detail: string): void => {
+    // 复审修复（可选链短路陷阱）：traceJsonForThisRun() 必须先于可选链求值——留在 insert 实参
+    // 位置的话，deps.runs 缺席时可选链连实参求值一起短路，快照永不排空（残留污染同 job 重试
+    // 的快照，未排空的 runKey 缓冲还会随 job 数量无上界增长）。runs 缺席=只排空不落账。
+    const traceJson = traceJsonForThisRun()
     deps.runs?.insert({
       jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null,
-      traceJson: traceJsonForThisRun(),
+      traceJson,
     })
   }
   try {

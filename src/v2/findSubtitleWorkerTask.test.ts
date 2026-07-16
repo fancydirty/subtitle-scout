@@ -914,6 +914,38 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         expect(new Set(traceJsons).size).toBe(1) // 三行的 trace_json 逐字节相同——同一次快照。
         expect(JSON.parse(traceJsons[0]!)).toHaveLength(1)
       })
+
+      // 复审修复（可选链短路陷阱）：recordRun 曾把 traceJsonForThisRun() 留在 deps.runs?.insert
+      // 的实参位置——deps.runs 缺席时可选链连实参求值一起短路，快照永不排空：残留会污染同 job
+      // 重试的快照，且未排空的 runKey 缓冲随 job 数量增长无上界。排空必须无条件发生。
+      it('deps.runs 缺席时缓冲同样被排空（runs 缺席=只排空不落账，不许连快照一起短路）', async () => {
+        const { lib, jobsRepo, job } = setup()
+        const runKey = `job-${job.id}`
+        traceBus.publish({ runKey, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: 1 })
+        const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+        const deps = baseDeps({ lib, mediaRoots: [], runTask }) // no `runs`
+
+        await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+        expect(traceBus.snapshot(runKey)).toHaveLength(0)
+      })
+
+      it('worker 抛错（catch 路径）时缓冲同样被排空，快照附在 error 行上', async () => {
+        const { lib, jobsRepo, job, db } = setup()
+        const runs = new RunsRepo(db)
+        const runKey = `job-${job.id}`
+        traceBus.publish({ runKey, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: 1 })
+        const runTask = vi.fn(async () => { throw new Error('step count limit exceeded') })
+        const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+        await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+        const rows = runs.getByJobId(job.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0].decision).toBe('error')
+        expect(JSON.parse(rows[0].trace_json!)).toHaveLength(1)
+        expect(traceBus.snapshot(runKey)).toHaveLength(0) // 无残留
+      })
     })
   })
 })

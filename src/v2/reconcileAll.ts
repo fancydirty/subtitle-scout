@@ -132,6 +132,11 @@ export async function runOrchestrateWorkerTask(
     jobs.completeDone(job.id, finishedAt)
     return decision
   } catch (error) {
+    // 痕迹通道 C（复审修复）：失败尝试的痕迹不入账（completeError 分支本来就不写 runs 行——
+    // last_error 是它的上报通道，见上方 F-R2-3 注释），但必须排空丢弃——否则残留事件会污染
+    // 同一 job 重试成功那次的快照：重试时 makeRunTracer 重新构造、seq 从 0 重计，新旧事件混在
+    // 同一条环形缓冲里，seq 碰撞、回放乱序。snapshot 的清空副作用在这里正好是目的本身。
+    traceBus.snapshot(`job-${job.id}`)
     const msg = error instanceof Error ? error.message : String(error)
     jobs.completeError(job.id, msg, deps.now())
     return null

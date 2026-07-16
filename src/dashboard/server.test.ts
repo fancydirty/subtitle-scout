@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { connect } from 'node:net'
 import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -310,6 +311,41 @@ describe('startDashboard (v2)', () => {
       } finally {
         authedController.abort()
       }
+    })
+
+    // 复审修复（守护进程存活）：socket 猝死到 server 侧 'close' 事件触发之间有窗口——窗口内
+    // traceBus 订阅回调的 res.write 会写入已毁的流，ServerResponse 无 'error' 监听器时
+    // uncaughtException 直接炸掉守护进程（守护进程就是产品本体）。这里用原生 socket 手写 HTTP
+    // 请求后 destroy()（fetch+abort 走的是体面收场，模拟不了猝死），随即在同一 tick 内连发
+    // 多条 publish 打进窗口期。心跳（15s setInterval）的写入走完全相同的前置守卫
+    // （res.destroyed || res.writableEnded），不在测试内推进 15s 重复验证同一守卫。
+    it('SSE 连接 socket 猝死后窗口期 publish 不炸守护进程，server 仍可服务后续请求', async () => {
+      const { base } = await start(distWith('<!doctype html>'))
+      const port = Number(new URL(base).port)
+
+      const sock = connect(port, '127.0.0.1')
+      await new Promise<void>((resolve) => sock.on('connect', resolve))
+      sock.write('GET /api/v2/workflow/trace-stream HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n')
+      // 等 200 头真正冲刷回来——保证 server 已进入 SSE 分支、订阅已建立。
+      const head = await new Promise<string>((resolve) => sock.once('data', (d) => resolve(String(d))))
+      expect(head).toContain('200')
+      expect(head).toContain('text/event-stream')
+
+      sock.destroy() // 猝死：直接拆底层句柄，不走体面 FIN 收场
+      // 同一 tick 内 publish——server 侧 'close' 事件还没来得及跑，订阅者仍在册，res.write
+      // 正中窗口期。
+      for (let seq = 0; seq < 5; seq++) {
+        traceBus.publish({ runKey: 'job-sse-destroyed', seq, tool: 't', argsSummary: '', resultSummary: '', tookMs: 0, at: seq })
+      }
+      // 让 close/error 事件都跑完，再补一发（此时订阅者应已退订，同样不许炸）。
+      await new Promise((r) => setTimeout(r, 50))
+      traceBus.publish({ runKey: 'job-sse-destroyed', seq: 5, tool: 't', argsSummary: '', resultSummary: '', tookMs: 0, at: 5 })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // 守护进程活着的直接证据：同一 server 实例照常服务下一个请求。
+      // （若 uncaughtException 已炸，vitest 会把它记为本测试的 unhandled error，全绿即无泄漏。）
+      const res = await fetch(`${base}/api/v2/library`)
+      expect(res.status).toBe(200)
     })
   })
 })

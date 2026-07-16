@@ -277,5 +277,62 @@ describe('runOrchestrateWorkerTask', () => {
       expect(events.every((e) => e.runKey === `job-${job.id}`)).toBe(true)
       expect(events.map((e) => e.seq)).toEqual([0, 1])
     })
+
+    // 复审修复：catch 分支必须排空缓冲——失败尝试的痕迹不入账（completeError 不写 runs 行），
+    // 也不许残留到同一 job 重试成功那次的快照里（重试时 makeRunTracer 重新构造、seq 从 0 重计，
+    // 残留+新事件混在同一环形缓冲 = seq 碰撞、回放乱序）。
+    it('orchestrate 抛错后同 job 重试成功：成功行 trace_json 只含第二次的事件（失败尝试痕迹已排空，seq 从 0 单调无碰撞）', async () => {
+      const db = openDb(':memory:')
+      const jobs = new JobsRepo(db)
+      const lib = new LibraryRepo(db)
+      const runs = new RunsRepo(db)
+      jobs.upsertWorkerTask({ seriesId: 'orchestrator-shard-root-9', season: null, movieId: null }, { taskType: 'orchestrate' }, null, 1000)
+      const job = jobs.claimNext(1000)!
+
+      const listCall = () => ({
+        finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+        usage: {
+          inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: 5, text: undefined, reasoning: undefined },
+        },
+        content: [{ type: 'tool-call' as const, toolCallId: 'c1', toolName: 'list_missing_coverage', input: JSON.stringify({}) }],
+        warnings: [],
+      })
+
+      // 第一次尝试：走完一步真实工具调用（onStepEnd 发布一条痕迹进缓冲）之后模型爆炸——
+      // runPass 抛出，completeError，不写 runs 行。
+      let failingCall = 0
+      const failingModel = new MockLanguageModelV4({
+        doGenerate: async () => {
+          failingCall++
+          if (failingCall === 1) return listCall()
+          throw new Error('network exploded mid-pass')
+        },
+      })
+      const failed = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model: failingModel, now: () => 2000, stepCap: 10, runs }, jobs)
+      expect(failed).toBeNull()
+      expect(runs.getByJobId(job.id)).toHaveLength(0)
+      expect(jobs.get(job.id)!.state).toBe('failed')
+
+      // 重试：backoff 过期后 claimNext 重新领取同一行（id 不变 ⇒ runKey 不变，正是污染场景）。
+      const retried = jobs.claimNext(Number.MAX_SAFE_INTEGER)!
+      expect(retried.id).toBe(job.id)
+      let okCall = 0
+      const okModel = new MockLanguageModelV4({
+        doGenerate: async () => {
+          okCall++
+          if (okCall === 1) return listCall()
+          return finalizeResult(EMPTY_DECISION)
+        },
+      })
+      await runOrchestrateWorkerTask(retried, { lib, tmdb: fakeTmdb, model: okModel, now: () => 3000, stepCap: 10, runs }, jobs)
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      const events = JSON.parse(rows[0].trace_json!) as Array<{ seq: number; tool: string }>
+      // 无残留：只有第二次尝试的两个事件；seq 从 0 单调（残留在场时会是 3 个事件且 seq 0,0,1 碰撞）。
+      expect(events.map((e) => e.tool)).toEqual(['list_missing_coverage', 'finalize'])
+      expect(events.map((e) => e.seq)).toEqual([0, 1])
+    })
   })
 })
