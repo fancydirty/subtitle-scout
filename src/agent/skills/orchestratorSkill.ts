@@ -1,6 +1,12 @@
 // Dispatch playbook for the orchestrator agent (v3 phase ⑤). Same `.ts` const-module pattern as
 // findSubtitleSkill.ts — only the name+description reach the system prompt; the full content
 // below is loaded on demand via read_doc.
+//
+// 胶水层修复（2026-07-16，裁决 R-8/R-11/B5）：上一版把 layout 检查写成了 "you MUST … only
+// proceed if true … never dispatch" 的守门仪式——确定性布尔当了派活判断的闸门，agent 沦为
+// 计算器的橡皮图章（审计 B5 定罪）。本版把两个 layout 信号、停牌事实、派发回执全部还原为
+// 事实+理由式教导：判断是 orchestrator 的，真正的零误触发防线在下游 executeRealign 的确定性
+// 安全层（那是防灾难的机械，不是替 agent 判断的机械）。skill 修订权只在人+主控（铁律）。
 import type { Skill } from './types.js'
 
 const CONTENT = `
@@ -12,35 +18,80 @@ You plan dispatch order for OTHER agents. You do not search for subtitles, downl
 judge candidates yourself — that is the find-subtitle worker's job, not yours. Your only outputs
 are worker_task rows written through the dispatch tools, plus a final summary of what you did.
 
-## Workflow
+## Reading the living-doc
 
-1. Call \`list_missing_coverage\` to read the living-document: which series/seasons and movies
-   the mechanical pre-scan (scanLibrary, already run, already sitting in the database) currently
-   records as missing a target-language subtitle. This is factual bookkeeping, not a judgment call.
-2. For EVERY series in that backlog, before dispatching ANY find-subtitle task for it, call
-   \`check_series_layout\` for each of its missing seasons. The check is deterministic and cheap
-   (one call per series+season, no LLM cost downstream), and it is the only way to know whether
-   the series is a realign candidate — a series NEVER looks suspect from list_missing_coverage's
-   output alone, so "nothing seemed off" is not a reason to skip the check. Movies have no
-   seasons and never need a layout check. Then:
-   - If ANY checked season reports \`exceedsSeasonTable: true\`, dispatch the realign task for
-     that series and do NOT dispatch any find-subtitle task for that same series in this pass —
-     not even for its OTHER missing seasons. Realigning restructures the whole series' on-disk
-     layout: files move and get renumbered, so which episodes are "missing" and where their files
-     live is about to change. The correct find-subtitle dispatch for that series happens in a
-     LATER orchestrator pass, after the realign has completed and the mechanical rescan has
-     refreshed the living-doc — dispatching a find-subtitle task now would target paths that are
-     about to move. A realign-candidate series gets a realign task this pass and nothing else.
-   - If every checked season reports \`exceedsSeasonTable: false\`, the layout is legal per the
-     authoritative TMDB table: dispatch find-subtitle tasks for its missing seasons as normal
-     (step 4), and never dispatch realign for it.
-3. Before EVER calling \`dispatch_realign_task\` for a series/season, you MUST call
-   \`check_series_layout\` for it first and only proceed if \`exceedsSeasonTable\` is true. A
-   season whose mirror episode count does not exceed TMDB's recorded episode count is never a
-   realign candidate — do not dispatch a realign task on a hunch, and do not re-derive this
-   check yourself from list_missing_coverage's output.
-4. Dispatch one \`dispatch_find_subtitle_task\` call per missing series+season row or per missing
-   movie — one call per row, not one call bundling several rows together.
+\`list_missing_coverage\` is the mechanical pre-scan's fact sheet. Each series/season row now
+carries the FULL coverage picture, nothing pre-filtered for you:
+
+- \`missing\`: gaps that are actionable right now (never searched, or their recheck time has
+  arrived).
+- \`throttled\`: gaps a worker recently searched and exhausted — each item re-surfaces on its own
+  backoff cadence (1/2/4/8 days, then 30-day steps; nothing is ever hidden forever). A row's
+  \`nextRecheckAt\`/\`sampleReason\` tell you when and why. Normally you let the cadence run —
+  the worker genuinely found nothing very recently. Re-dispatching a throttled-only row is YOUR
+  call for a genuinely changed situation (e.g. the operator just fixed a naming problem, a
+  realign just landed), not a routine move: the facts changed, so re-judging is justified.
+- \`seriesName\` is on every row so you can reason about what the show actually is.
+
+## Scoping a find-subtitle dispatch: judge from the on-disk reality
+
+\`dispatch_find_subtitle_task\` takes a \`seasons\` array — the scope is YOUR judgment from what
+actually exists on disk, not a fixed granularity (裁决 R-11):
+
+- A series whose three seasons all have gaps: one dispatch with \`seasons: [1, 2, 3]\` hands one
+  worker the whole picture — one complete-series pack often covers everything, and that worker
+  sees all the gaps as one fact list.
+- Only season 3 exists on disk: \`seasons: [3]\` — there is nothing else to find.
+- Omit \`seasons\` to scope "every season that currently has gaps" for that series.
+- A huge backlog inside one series (say hundreds of gaps) may be split into several dispatches
+  at your discretion; the worker's own retry_later reporting also brings unfinished remainders
+  back to you.
+
+Movies have no seasons: pass \`movieId\` alone, one dispatch per movie.
+
+## Layout facts and realign judgment
+
+Make gathering these facts routine: for EVERY series you are about to dispatch for, call
+\`check_series_layout\` on its gap seasons first — it is cheap, and a live finding (W0-5,
+2026-07-15) showed that a series NEVER looks suspect from list_missing_coverage alone; skipping
+the look means deciding blind, and "nothing seemed off" is not a reason when you never looked.
+Movies have no seasons and never need a layout check. Looking is the routine; what you conclude
+from what you see is yours.
+
+\`check_series_layout\` reports two INDEPENDENT facts about a series' on-disk shape. Neither is a
+verdict, and neither gates your tools — they are evidence for your judgment:
+
+- \`exceedsSeasonTable\`: the mirror holds more episodes in a season than TMDB's table records.
+  Classic cause: an absolute-numbered flat library mis-scraped into a "Season 01" folder.
+- \`diskLayoutNonstandard\`: ingest observed this series' paths deviating from the canonical
+  \`Show (Year) [tmdbid-N]/Season NN/\` shape. This catches flat layouts that ingestion already
+  normalized into correct season/episode rows — coverage bookkeeping looks fine, but the disk
+  itself is still messy and pack-matching for it tends to be harder.
+- \`tmdbUnavailable: true\` means TMDB could not be consulted on this call — treat the layout
+  question as unanswered (a fact you lack), not as "no".
+
+Why realign ordering matters (the reason, so you can judge, not a rule to obey): realigning
+restructures the whole series on disk — files move and get renumbered, so which episodes are
+"missing" and where their files live is about to change. Dispatching find-subtitle for a series
+you are ALSO realigning this pass would aim workers at paths that are about to move. So when the
+facts genuinely point to a misaligned series, dispatch the realign first and give that series
+nothing else this pass; its find-subtitle dispatch belongs to a later pass, after the rescan
+refreshes the living-doc. When the facts do NOT point that way, realign is simply not what the
+evidence supports — a wrong realign dispatch is expensive (a full agent run + a big on-disk
+operation gated only by its own final safety checks), which is why the evidence bar is high, not
+why a rule forbids you. The deterministic disaster-prevention layer lives downstream in the
+realign executor itself; it protects the disk, it does not make your dispatch decision.
+
+## Dispatch receipts are facts — read them
+
+Every dispatch tool call tells you what actually happened; they never lie to keep you happy:
+
+- \`created\` / \`revived\`: a worker will actually run. These consume your dispatch budget.
+- \`coalesced\`: an identical task is already pending — your dispatch merged into it, no new row.
+  Costs no budget. Not a failure; the work is already queued.
+- \`blocked_dormant\`: this identity is parked with a configuration-class defect (the reason is
+  in the receipt). Dispatching cannot revive it — mention it in your final summary so the
+  operator learns about it; do not keep re-dispatching it this pass.
 
 ## Scale effort to the backlog
 
@@ -54,18 +105,19 @@ Simple backlog, simple dispatch.
 
 You may dispatch at most 100 worker_task rows in one orchestrator run — this is a hard cap
 enforced by the dispatch tools themselves, not just a guideline. \`dispatch_find_subtitle_task\`
-and \`dispatch_realign_task\` share the SAME budget (100 total across both, not 100 each). Once a
-dispatch tool reports the cap has been reached, do not keep retrying it — instead call
-\`spawn_sibling_orchestrator\` with a short description of what remains. That call hands off the
-rest of the backlog to a brand-new orchestrator job and does not count against your own cap; it
-is the cap's escape valve, not a violation of it.
+and \`dispatch_realign_task\` share the SAME budget (100 total across both, not 100 each; only
+created/revived receipts consume it). Once a dispatch tool reports the cap has been reached, do
+not keep retrying it — instead call \`spawn_sibling_orchestrator\` with a short description of
+what remains. That call hands off the rest of the backlog to a brand-new orchestrator job and
+does not count against your own cap; it is the cap's escape valve, not a violation of it. Your
+handoff note reaches the sibling as context; it still re-derives the facts from the living-doc.
 `.trim()
 
 export const ORCHESTRATOR_SKILL: Skill = {
   descriptor: {
     name: 'orchestrator-dispatch',
     description:
-      'How to read the living-doc, order realign before find-subtitle for the same series, scale dispatch effort to the actual backlog, and hand off to a sibling orchestrator once the 100-dispatch cap is reached.',
+      'How to read the living-doc (missing vs throttled coverage facts), scope find-subtitle dispatches by the on-disk reality (single season, several seasons, or a whole series — your judgment), weigh the two independent layout facts when considering realign (evidence for judgment, not gates), read dispatch receipts (created/revived/coalesced/blocked_dormant), scale effort to the backlog, and hand off to a sibling orchestrator at the 100-dispatch cap.',
   },
   content: CONTENT,
 }

@@ -22,19 +22,34 @@ describe('ORCHESTRATOR_SKILL', () => {
     expect(ORCHESTRATOR_SKILL.content).toMatch(/spawn_sibling_orchestrator/)
   })
 
-  // W0-5 live finding (2026-07-15): with a mixed backlog the model dispatched find-subtitle tasks
-  // WITHOUT ever consulting check_series_layout — the old wording only mandated the check before
-  // dispatch_realign_task, which is circular: nothing tells the model a series is suspect until it
-  // checks. The realign birth-right now lives ONLY in the orchestrator (executor diagnose hook
-  // removed, T3), so the layout sweep must be mandatory per backlog series, not suspicion-driven.
-  it('mandates a check_series_layout sweep for EVERY backlog series BEFORE any find-subtitle dispatch (realign birth-right discipline)', () => {
+  // W0-5 live finding (2026-07-15) 存留 + R-8 改判（2026-07-16）：不查就永远不知道嫌疑——
+  // "例行去看 layout 事实"的习惯教导保留（这是告诉 agent 眼睛往哪看，不是守门）；但旧版的
+  // "only proceed if true / never dispatch" 判决式措辞已被 B5 定罪处决——布尔是证据，
+  // 结论归 orchestrator，灾难防线在下游 executeRealign。
+  it('teaches the routine layout-fact sweep (look for every series, movies exempt) WITHOUT verdict-gating wording', () => {
     const c = ORCHESTRATOR_SKILL.content
     expect(c).toMatch(/EVERY series/)
-    expect(c).toMatch(/before dispatching ANY find-subtitle task/i)
-    expect(c).toMatch(/only way to know whether/i)
-    // movies are exempt (no seasons — a wasted call otherwise); [\s\S] because the sentence
-    // wraps across the const-module's hard line breaks
+    expect(c).toMatch(/check_series_layout/)
     expect(c).toMatch(/movies?[\s\S]{0,80}(no|never)[\s\S]{0,80}layout/i)
+    // 双信号并列呈现（R-8/C-B5：exceedsSeasonTable 未全死，diskLayoutNonstandard 为并列事实）
+    expect(c).toMatch(/exceedsSeasonTable/)
+    expect(c).toMatch(/diskLayoutNonstandard/)
+    expect(c).toMatch(/tmdbUnavailable/)
+    // 证据非判决——守门措辞已死
+    expect(c).toMatch(/neither is a[\s\S]{0,20}verdict|evidence for your judgment/i)
+    expect(c).not.toMatch(/only proceed if/i)
+    expect(c).not.toMatch(/never dispatch realign/i)
+  })
+
+  // T8b/T8c/R-11 新灵魂条款锚：停牌事实读法、范围裁量、派发回执。
+  it('teaches throttled-coverage reading, scope-by-disk-reality (seasons array), and dispatch receipts', () => {
+    const c = ORCHESTRATOR_SKILL.content
+    expect(c).toMatch(/throttled/)
+    expect(c).toMatch(/nextRecheckAt/)
+    expect(c).toMatch(/seasons: \[1, 2, 3\]|seasons array/i)
+    expect(c).toMatch(/YOUR judgment/i)
+    expect(c).toMatch(/coalesced/)
+    expect(c).toMatch(/blocked_dormant/)
   })
 
   it('carries no hardcoded target-language assumption (A-generalization)', () => {
