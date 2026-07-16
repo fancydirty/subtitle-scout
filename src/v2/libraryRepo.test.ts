@@ -289,6 +289,16 @@ describe('媒体镜像', () => {
     lib.upsertMovie({ id: 'm2', name: 'M2', path: '/m2.mkv', subStatus: 'covered', posterPath: null, year: 2020, providerIds: null })
     expect(lib.getMovieOriginLang('m2')).toBe('zh')
   })
+
+  // 债务D1（realign 出生信号换代）：摄取层每轮 pass 结束时写回的磁盘布局事实。
+  it('setSeriesLayoutNonstandard 写 1/0', () => {
+    lib.upsertSeries({ id: 's1', name: 'S' })
+    expect(lib.getSeries('s1')!.layout_nonstandard).toBe(0)
+    lib.setSeriesLayoutNonstandard('s1', true)
+    expect(lib.getSeries('s1')!.layout_nonstandard).toBe(1)
+    lib.setSeriesLayoutNonstandard('s1', false)
+    expect(lib.getSeries('s1')!.layout_nonstandard).toBe(0)
+  })
 })
 
 // R-3（裁决 2026-07-16）：item 级内容退避阶梯——markUnavailable 每次判决自增 search_attempts，

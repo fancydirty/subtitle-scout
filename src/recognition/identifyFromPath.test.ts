@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { identifyFromPath, type Park, type PathIdentity } from './identifyFromPath.js'
+import { identifyFromPath, isCanonicalEpisodePath, type Park, type PathIdentity } from './identifyFromPath.js'
 
 function isPark(result: PathIdentity | Park): result is Park {
   return 'park' in result
@@ -108,5 +108,26 @@ describe('identifyFromPath — path-string edge cases (node:path posix handling)
     expect(identity.title).toBe('Breaking Bad')
     expect(identity.season).toBe(1)
     expect(identity.episode).toBe(5)
+  })
+})
+
+// 债务D1（realign 出生信号换代）：isCanonicalEpisodePath 是识别层本来就看得见的并列事实——
+// 规范形 = `Show (Year) [tmdbid-N]/Season NN/<file>`（buildTargetShowDir 自产的形状）。只报
+// 事实，不判断要不要 realign（那永远归 orchestrator）。
+describe('isCanonicalEpisodePath', () => {
+  it('Show (2020) [tmdbid-9]/Season 01/file → true', () => {
+    expect(isCanonicalEpisodePath('Show (2020) [tmdbid-9]/Season 01/file.mkv')).toBe(true)
+  })
+
+  it('绝对编号平铺（无季夹层）→ false', () => {
+    expect(isCanonicalEpisodePath('Show (2020) [tmdbid-9]/ep 26.mkv')).toBe(false)
+  })
+
+  it('有季夹层但 show 目录无 tmdbid 标签 → false', () => {
+    expect(isCanonicalEpisodePath('Show (2020)/Season 01/file.mkv')).toBe(false)
+  })
+
+  it('Windows 反斜杠路径同样工作', () => {
+    expect(isCanonicalEpisodePath('C:\\Media\\Show (2020) [tmdbid-9]\\Season 01\\file.mkv')).toBe(true)
   })
 })

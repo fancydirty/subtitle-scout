@@ -90,6 +90,18 @@ function parseBareEpisode(fileNameNoExt: string): number | null {
   return null
 }
 
+/** 债务D1（realign 出生信号换代）：own-ingest 规范化让真·平铺库的 mirror 永不超 TMDB 季表，
+ *  exceedsSeasonTable 只剩误刮季夹层一种形态能点火；"磁盘布局不合规范形"是识别层本来就
+ *  看得见的并列事实。规范形 = `Show (Year) [tmdbid-N]/Season NN/<file>`（buildTargetShowDir
+ *  自产的形状）。只报事实——判断（要不要 realign）永远归 orchestrator。 */
+export function isCanonicalEpisodePath(videoPath: string): boolean {
+  const segments = toSegments(videoPath)
+  if (segments.length < 3) return false
+  const parentSeg = segments[segments.length - 2]
+  const grandparentSeg = segments[segments.length - 3]
+  return detectSeasonFolder(parentSeg) !== null && TMDB_ID_PATTERN.test(grandparentSeg)
+}
+
 /**
  * Path-aware layer on top of parseFilename (C1): cuts the path's last three segments
  * (file / parent dir / grandparent dir), parses each, and deterministically merges them into one

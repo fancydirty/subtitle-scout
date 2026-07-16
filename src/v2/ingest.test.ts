@@ -897,6 +897,64 @@ describe('makeIngestPass — ingestLock', () => {
   })
 })
 
+// 债务D1（realign 出生信号换代）：磁盘布局规范形事实——识别层本来就看得见的事实
+// （isCanonicalEpisodePath），落库为 series 级事实列，每轮全量重写（磁盘真相语义）。
+describe('makeIngestPass — layout_nonstandard fact (debt D1)', () => {
+  it('摄取一轮后 series.layout_nonstandard 反映本轮观察：平铺剧=1、规范形剧=0', async () => {
+    const flatPath = '/media/Show Flat/ep1.mkv'
+    const canonicalPath = '/media/Show Canon (2020) [tmdbid-22]/Season 01/ep1.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(flatPath)
+    disk.setVideo(canonicalPath)
+    const recognize = vi.fn(async (path: string) =>
+      path === flatPath
+        ? tvResult({ tmdbId: '11', season: 1, episode: 1 })
+        : tvResult({ tmdbId: '22', season: 1, episode: 1 })
+    )
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [flatPath, canonicalPath],
+      recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getSeries('tmdb:11')!.layout_nonstandard).toBe(1)
+    expect(lib.getSeries('tmdb:22')!.layout_nonstandard).toBe(0)
+  })
+
+  it('布局修复后（文件挪到规范形路径）下一轮 pass 回落 0', async () => {
+    const flatPath = '/media/Show Flat/ep1.mkv'
+    const canonicalPath = '/media/Show Flat (2020) [tmdbid-33]/Season 01/ep1.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(flatPath, 5000, 12345)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '33', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [flatPath],
+      recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+    expect(lib.getSeries('tmdb:33')!.layout_nonstandard).toBe(1)
+
+    // 模拟 realign 已经把文件搬到规范形路径、DB 行的 path 列也已跟着改写（本测试只关心
+    // layout_nonstandard 回落这一件事，不重放 realign 迁移本身跨轮次的落地细节）。
+    lib.db.prepare('UPDATE episodes SET path = ? WHERE id = ?').run(canonicalPath, 'tmdb:33/s1e1')
+    disk.removeVideo(flatPath)
+    disk.setVideo(canonicalPath, 5000, 12345)
+
+    const pass2 = makeIngestPass(makeDeps({
+      listVideoFiles: () => [canonicalPath],
+      recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+    await pass2()
+
+    expect(lib.getSeries('tmdb:33')!.layout_nonstandard).toBe(0)
+  })
+})
+
 describe('makeIngestPass — fault isolation', () => {
   it('recognize() throwing for one file does not kill the pass; other files still processed and the failed one is retried next pass', async () => {
     const disk = fakeDisk()

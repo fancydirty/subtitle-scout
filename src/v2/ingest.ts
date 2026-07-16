@@ -8,6 +8,7 @@ import type { ScoutDb } from './db.js'
 import type { LibraryRepo, SubStatus } from './libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { Recognized, Park } from '../recognition/index.js'
+import { isCanonicalEpisodePath } from '../recognition/identifyFromPath.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 
 /**
@@ -269,6 +270,10 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       const nowMs = deps.now ? deps.now() : Date.now()
       const result: IngestResult = { scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false }
       const seenPaths = new Set<string>()
+      // 债务D1（realign 出生信号换代）：本轮观察到的每个 series 的磁盘布局事实——
+      // true=本轮至少一集路径不合规范形。movies 豁免（没有规范形概念）、parked 路径不参与
+      // （没有 series 归属），pass 收尾处全量重写（见文件底部）。
+      const layoutObserved = new Map<string, boolean>()
 
       for (const root of deps.roots) {
         for (const path of listVideoFiles(root)) {
@@ -288,6 +293,13 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             if (existing) {
               const memo = lib.probeMemo(existing.id)
               if (memo && memo.mtime === stat.mtimeMs && memo.size === stat.size) {
+                // 债务D1：cheap path 也是一次真实的磁盘观察——series_id 从既有行直接可得。
+                if (existing.kind === 'episode' && existing.seriesId) {
+                  layoutObserved.set(
+                    existing.seriesId,
+                    (layoutObserved.get(existing.seriesId) ?? false) || !isCanonicalEpisodePath(path)
+                  )
+                }
                 const originLangCached = existing.kind === 'episode'
                   ? (existing.seriesId ? lib.getSeriesOriginLang(existing.seriesId) : null)
                   : lib.getMovieOriginLang(existing.id)
@@ -451,6 +463,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 name: `S${season}E${episode}`,
                 path, subStatus: toWrite,
               })
+              // 债务D1：full path 的 series_id 从识别结果直接可得（ownSeriesId）。
+              layoutObserved.set(ownSeriesId, (layoutObserved.get(ownSeriesId) ?? false) || !isCanonicalEpisodePath(path))
               lib.setProbeMemo(ownEpisodeId, stat.mtimeMs, stat.size, embeddedLangs)
               lib.clearParkedPath(path)
               result.upserted++
@@ -560,6 +574,10 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
         }
       }
       if (result.removed > 0) result.changed = true
+
+      // 债务D1：每轮全量重写本轮观察到的每个 series 的布局事实——磁盘真相语义（state=disk,
+      // DB=index），realign 整理完成后下一轮观察自然回落 0，无需任何显式清除。
+      for (const [sid, bad] of layoutObserved) lib.setSeriesLayoutNonstandard(sid, bad)
 
       return result
     } finally {

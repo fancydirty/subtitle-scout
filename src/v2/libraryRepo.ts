@@ -333,6 +333,11 @@ export class LibraryRepo {
     this.db.prepare('UPDATE movies SET origin_lang = ? WHERE id = ?').run(lang, movieId)
   }
 
+  /** 债务D1：摄取层每轮 pass 结束时写回的磁盘布局事实（1=本轮观察到任一集路径不合规范形）。 */
+  setSeriesLayoutNonstandard(seriesId: string, nonstandard: boolean): void {
+    this.db.prepare('UPDATE series SET layout_nonstandard = ? WHERE id = ?').run(nonstandard ? 1 : 0, seriesId)
+  }
+
   /** 胶水层修复（Task 8c，裁决 R-3 呈现面——考古定罪：谓词曾是守门人，把退避窗口内的停牌缺口
    *  整行隐藏，orchestrator 连"有一集停牌中"这个事实都看不到）：一季的覆盖事实行，missing 与
    *  throttled 分开呈报，不再用 WHERE 谓词把 throttled 的整行吃掉——HAVING missing>0 OR
