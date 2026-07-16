@@ -467,7 +467,8 @@ export function claimParked(
 
 /** spec §7 权威白名单——行为级设置的唯一合法 key 集合。本战役里只有 target_languages 真被
  *  消费（targetLanguages.ts 的 resolveTargetLanguages 第二参）；其余四键此刻只存取展示，值域
- *  校验在 server.ts 的 zod 门（PUT /api/v2/settings），这里只负责"读的时候只读这五个"。 */
+ *  校验在下方 updateSettings 的 zod 门（PUT /api/v2/settings 经 server.ts 转call），这里只负责
+ *  "读的时候只读这五个"。 */
 export const SETTINGS_KEYS = [
   'target_languages', 'hardsub_mode', 'exclude_extras', 'trace_retention_days', 'scan_interval_ms',
 ] as const
