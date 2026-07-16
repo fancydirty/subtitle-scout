@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util'
 import 'dotenv/config'
 import { makeModel } from '../src/agent/llm.js'
 import { openDb } from '../src/v2/db.js'
-import { JobsRepo } from '../src/v2/jobsRepo.js'
+import { JobsRepo, type Job } from '../src/v2/jobsRepo.js'
 import { LibraryRepo } from '../src/v2/libraryRepo.js'
 import { makeOrchestratorAgent } from '../src/agent/orchestratorAgent.js'
 import { makeToolCallTap } from '../src/testing/toolCallTap.js'
@@ -24,17 +24,22 @@ const repeat = values.repeat ? Number(values.repeat) : 1
 const shapes = values.shape ? ORCHESTRATOR_BACKLOG_SHAPES.filter(s => s.name === values.shape) : ORCHESTRATOR_BACKLOG_SHAPES
 if (shapes.length === 0) { console.error(`no shape named ${values.shape}`); process.exit(1) }
 
-function summarizeRows(jobs: JobsRepo): { find: string[]; realign: string[] } {
-  const rows = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
-  const find: string[] = [], realign: string[] = []
+/** 清算波 R-6 后 jobsRepo.listByState 已处决——改原生 SQL（同 orchestratorBacklog.plumbing.test.ts
+ *  的 listWanted 手法）。R-11 后 find 行身份=剧级（season 列恒 NULL），范围事实在
+ *  payload.seasons（null=该剧全部有缺口的季）——行摘要相应携带 seasons。 */
+interface FindRow { seriesId: string | null; movieId: string | null; seasons: number[] | null }
+function summarizeRows(db: ReturnType<typeof openDb>): { find: FindRow[]; realign: string[] } {
+  const rows = db.prepare(`SELECT * FROM jobs WHERE state = 'wanted' AND kind = 'worker_task'`).all() as Job[]
+  const find: FindRow[] = [], realign: string[] = []
   for (const r of rows) {
     const p = JSON.parse(r.payload!)
-    const id = `${r.series_id ?? ''}/${r.season ?? ''}/${r.movie_id ?? ''}`
-    if (p.taskType === 'find_subtitle') find.push(id)
+    if (p.taskType === 'find_subtitle') find.push({ seriesId: r.series_id, movieId: r.movie_id, seasons: p.seasons ?? null })
     else if (p.taskType === 'realign') realign.push(r.series_id ?? '')
   }
-  return { find: find.sort(), realign: realign.sort() }
+  return { find, realign: realign.sort() }
 }
+
+const fmtFind = (r: FindRow) => r.movieId ? `movie:${r.movieId}` : `${r.seriesId}[${r.seasons ? r.seasons.join(',') : 'all'}]`
 
 async function runShape(shape: BacklogShape, run: number, model: LanguageModel): Promise<boolean> {
   const db = openDb(':memory:'); const jobs = new JobsRepo(db); const lib = new LibraryRepo(db)
@@ -50,14 +55,30 @@ async function runShape(shape: BacklogShape, run: number, model: LanguageModel):
       ...(shape.capOverride !== undefined ? { maxDispatchesPerOrchestrator: shape.capOverride } : {}),
     })()
   } catch (e) { threw = String(e) }
-  const got = summarizeRows(jobs)
+  const got = summarizeRows(db)
   const wantRealign = [...shape.expected.realignSeriesIds].sort()
-  const wantFind = shape.expected.findSubtitle.map(f => `${f.seriesId ?? ''}/${f.season ?? ''}/${f.movieId ?? ''}`).sort()
-  // Pole star: realign set MUST match exactly (esp. empty on clean/normal). Find set: assert the
-  // expected are all present (the model may reasonably also dispatch find for a realign season — do
-  // not over-penalize extra finds), but realign is the hard gate.
+  // Pole star: realign set MUST match exactly (esp. empty on clean/normal). Find set: expected
+  // rows collapse per-series into "these seasons must be covered" — R-11 后模型可合法地一单配
+  // 全剧（seasons:null）或子集数组，覆盖到位即命中；movie 按 movieId 直判。仍不罚多派。
   const realignOk = JSON.stringify(got.realign) === JSON.stringify(wantRealign)
-  const findOk = wantFind.every(f => got.find.includes(f))
+  const wantBySeries = new Map<string, Set<number>>()
+  const wantMovies: string[] = []
+  for (const f of shape.expected.findSubtitle) {
+    if (f.movieId) wantMovies.push(f.movieId)
+    else if (f.seriesId) {
+      const s = wantBySeries.get(f.seriesId) ?? new Set<number>()
+      if (f.season !== null && f.season !== undefined) s.add(f.season)
+      wantBySeries.set(f.seriesId, s)
+    }
+  }
+  const findOk =
+    [...wantBySeries.entries()].every(([sid, seasons]) => {
+      const rows = got.find.filter(r => r.seriesId === sid)
+      if (rows.length === 0) return false
+      if (rows.some(r => r.seasons === null)) return true
+      const covered = new Set(rows.flatMap(r => r.seasons ?? []))
+      return [...seasons].every(se => covered.has(se))
+    }) && wantMovies.every(m => got.find.some(r => r.movieId === m))
 
   // Safety-gate invariant, applies to EVERY shape that actually dispatches a realign (messy-realign,
   // realign-and-find-same-series, and any future shape): check_series_layout must appear in
@@ -89,7 +110,7 @@ async function runShape(shape: BacklogShape, run: number, model: LanguageModel):
   const ok = !threw && realignOk && findOk && realignGateOk && siblingSpawnOk
   console.error(
     `${ok ? 'PASS' : 'FAIL'} ${shape.name} run ${run}: realign got=${JSON.stringify(got.realign)} want=${JSON.stringify(wantRealign)}${realignOk ? '' : ' <REALIGN-GATE-LEAK>'}` +
-    ` | find got=${JSON.stringify(got.find)} want_subset=${JSON.stringify(wantFind)}${findOk ? '' : ' <FIND-MISS>'}` +
+    ` | find got=${JSON.stringify(got.find.map(fmtFind))} want=${JSON.stringify([...wantBySeries.entries()].map(([sid,se])=>`${sid}[${[...se].join(',')}]`).concat(wantMovies.map(m=>`movie:${m}`)))}${findOk ? '' : ' <FIND-MISS>'}` +
     `${realignGateOk ? '' : ' <REALIGN-WITHOUT-LAYOUT-CHECK>'}${noSiblingSpawn ? ' <NO-SIBLING-SPAWN>' : ''}${capExceeded ? ' <CAP-EXCEEDED>' : ''}` +
     `${threw ? ` THREW=${threw.slice(0, 160)}` : ''} | tools=${tap.toolCalls.join('->')}`
   )
