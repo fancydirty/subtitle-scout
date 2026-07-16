@@ -720,6 +720,22 @@ describe('worker_task dispatch (v3 phase ④)', () => {
     expect(revived.state).toBe('wanted')
     expect(JSON.parse(revived.payload!)).toEqual({ taskType: 'find_subtitle', round: 2 })
   })
+
+  // R-11（用户裁决 2026-07-16）：schema v11 起 taskType 进 jobs_identity 元组——find_subtitle 与
+  // realign 对同一 series 不再共享身份行，派活范围（哪些季）由主代理经 payload.seasons 下发。
+  it('R-11 (v11): 同一 series 的 find_subtitle 与 realign worker_task 不再共享 identity——两次 upsert 落两行', () => {
+    const now = Date.now()
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle', seasons: [1, 2, 3] }, null, now)
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'realign' }, null, now)
+    expect(repo.countByState('wanted')).toBe(2)
+  })
+
+  it('R-11 (v11): 同一 taskType 重复 upsert（season 恒 null）仍旧幂等——不因 taskType 加入元组而失去既有的重复派发保护', () => {
+    const now = Date.now()
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle', seasons: [1] }, null, now)
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle', seasons: [1, 2] }, null, now)
+    expect(repo.countByState('wanted')).toBe(1)
+  })
 })
 
 describe('hasActiveRealignWorkerTask (去 Jellyfin 化 T4, D4 ingest/realign 互斥门)', () => {

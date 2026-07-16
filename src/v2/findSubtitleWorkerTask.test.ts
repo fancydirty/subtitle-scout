@@ -212,6 +212,88 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
       chmodSync(showDir, 0o755) // 还原，避免 vitest 清理临时目录时因权限报错
     }
   })
+
+  // R-11（用户裁决 2026-07-16）：派活范围是主代理的判断，不是系统常量——"进击的巨人有三季资源都
+  // 缺字幕就整季派，只有第三季资源就只找第三季"。mapper 不再自己按 job.season 单季推导，改按
+  // payload.seasons 下发的范围事实取缺口清单；job.season 列对 find_subtitle 行恒 NULL。
+  describe('payload.seasons 范围裁量（R-11）', () => {
+    it('payload.seasons=null → 全剧缺口整批上车（跨季 targets，mediaRoot=剧目录公共祖先）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-wholeseries-'))
+      const s1Dir = join(root, 'Show', 'Season 01')
+      const s2Dir = join(root, 'Show', 'Season 02')
+      mkdirSync(s1Dir, { recursive: true })
+      mkdirSync(s2Dir, { recursive: true })
+      const tmdbId = '70'
+      const sId = seriesId(tmdbId)
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const s1Path = join(s1Dir, 'Show.S01E01.mkv')
+      const s2Path = join(s2Dir, 'Show.S02E01.mkv')
+      writeFileSync(s1Path, 'video')
+      writeFileSync(s2Path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 1, 1), seriesId: sId, season: 1, episode: 1, name: 'E1', path: s1Path, subStatus: 'missing' })
+      lib.upsertEpisode({ id: episodeId(tmdbId, 2, 1), seriesId: sId, season: 2, episode: 1, name: 'E1', path: s2Path, subStatus: 'missing' })
+
+      // season 列恒 NULL——范围事实随 payload.seasons 下发，不是身份列（R-11）。
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: null, movieId: null }, { taskType: 'find_subtitle', seasons: null, reason: 'whole series' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(task!.targets.map(t => [t.season, t.episode])).toEqual([[1, 1], [2, 1]])
+      expect(task!.mediaRoot).toBe(join(root, 'Show'))
+    })
+
+    it('payload.seasons=[3] → 只带 S3 缺口（用户例：只有第三季资源就找第三季）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-s3only-'))
+      const s3Dir = join(root, 'Show', 'Season 03')
+      mkdirSync(s3Dir, { recursive: true })
+      const tmdbId = '80'
+      const sId = seriesId(tmdbId)
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const s3Path = join(s3Dir, 'Show.S03E01.mkv')
+      writeFileSync(s3Path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 3, 1), seriesId: sId, season: 3, episode: 1, name: 'E1', path: s3Path, subStatus: 'missing' })
+
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: null, movieId: null }, { taskType: 'find_subtitle', seasons: [3], reason: 'season 3 only' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(task!.targets.map(t => t.season)).toEqual([3])
+    })
+
+    it('旧行兼容：payload 无 seasons 字段 + job.season 有值 → 按该季推导（存量行语义不变）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-legacy-'))
+      const showDir = join(root, 'Show', 'Season 02')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '90'
+      const sId = seriesId(tmdbId)
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const path = join(showDir, 'Show.S02E01.mkv')
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 2, 1), seriesId: sId, season: 2, episode: 1, name: 'E1', path, subStatus: 'missing' })
+
+      // 存量行：v11 迁移前写入的形状——season 列有值，payload 里没有 seasons 字段。
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: 2, movieId: null }, { taskType: 'find_subtitle', reason: 'legacy row' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(task!.targets.map(t => t.season)).toEqual([2])
+    })
+  })
 })
 
 function decision(over: Partial<FindSubtitleDecision> = {}): FindSubtitleDecision {

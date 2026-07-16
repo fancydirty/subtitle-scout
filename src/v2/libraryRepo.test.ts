@@ -416,3 +416,50 @@ describe('listMissingEpisodesInSeason', () => {
     expect(rows.map(r => r.episode)).toEqual([1])
   })
 })
+
+// R-11（用户裁决 2026-07-16）：派活范围是主代理的判断，不是系统常量——listMissingEpisodesForSeries
+// 是 listMissingEpisodesInSeason 的全剧/季子集泛化版，供 mapper 按 payload.seasons 取事实清单。
+describe('listMissingEpisodesForSeries (R-11：派活范围裁量化)', () => {
+  const NOW = 10_000
+  const NOW_BEFORE_RECHECK = 1_000
+
+  it('seasons=null 返回全剧缺口（跨季，season,episode 升序）', () => {
+    lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:9/s1e1', seriesId: 'tmdb:9', season: 1, episode: 1, name: 'E1', path: '/p/s1e1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:9/s2e1', seriesId: 'tmdb:9', season: 2, episode: 1, name: 'E1', path: '/p/s2e1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:9/s2e2', seriesId: 'tmdb:9', season: 2, episode: 2, name: 'E2', path: '/p/s2e2.mkv', subStatus: 'covered' })
+    lib.upsertEpisode({ id: 'tmdb:9/s3e1', seriesId: 'tmdb:9', season: 3, episode: 1, name: 'E1', path: '/p/s3e1.mkv', subStatus: 'missing' })
+
+    const rows = lib.listMissingEpisodesForSeries('tmdb:9', null, NOW)
+    expect(rows.map(r => [r.season, r.episode])).toEqual([[1, 1], [2, 1], [3, 1]])
+  })
+
+  it('seasons=[2] 只返回该季缺口', () => {
+    lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:9/s1e1', seriesId: 'tmdb:9', season: 1, episode: 1, name: 'E1', path: '/p/s1e1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:9/s2e1', seriesId: 'tmdb:9', season: 2, episode: 1, name: 'E1', path: '/p/s2e1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:9/s3e1', seriesId: 'tmdb:9', season: 3, episode: 1, name: 'E1', path: '/p/s3e1.mkv', subStatus: 'missing' })
+
+    const rows = lib.listMissingEpisodesForSeries('tmdb:9', [2], NOW)
+    expect(rows.map(r => r.season)).toEqual([2])
+  })
+
+  it('seasons=[1,3] 只返回子集季的缺口（用户例的跨季变体：多季资源都缺字幕，一次带上但跳过没资源的季）', () => {
+    lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:9/s1e1', seriesId: 'tmdb:9', season: 1, episode: 1, name: 'E1', path: '/p/s1e1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:9/s2e1', seriesId: 'tmdb:9', season: 2, episode: 1, name: 'E1', path: '/p/s2e1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:9/s3e1', seriesId: 'tmdb:9', season: 3, episode: 1, name: 'E1', path: '/p/s3e1.mkv', subStatus: 'missing' })
+
+    const rows = lib.listMissingEpisodesForSeries('tmdb:9', [1, 3], NOW)
+    expect(rows.map(r => r.season)).toEqual([1, 3])
+  })
+
+  it('未到期 unavailable 不算缺口（谓词与 listMissingEpisodesInSeason 一致）', () => {
+    lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:9/s1e1', seriesId: 'tmdb:9', season: 1, episode: 1, name: 'E1', path: '/p/s1e1.mkv', subStatus: 'missing' })
+    lib.markUnavailable('tmdb:9/s1e1', '搜索穷尽', NOW_BEFORE_RECHECK + 100_000)
+
+    const rows = lib.listMissingEpisodesForSeries('tmdb:9', null, NOW_BEFORE_RECHECK)
+    expect(rows).toEqual([])
+  })
+})

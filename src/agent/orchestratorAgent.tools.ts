@@ -5,7 +5,7 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { tmdbIdFromOwnId } from '../v2/ownIds.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
-import { coercibleNullableInt, nullableTolerant } from './coerce.js'
+import { coercibleInt, nullableTolerant } from './coerce.js'
 
 export interface MissingSeasonRow { kind: 'season'; seriesId: string; season: number; missing: number }
 export interface MissingMovieRow { kind: 'movie'; movieId: string; name: string }
@@ -124,49 +124,63 @@ function capCheck(counter: DispatchCounter, cap: number): { error: string } | nu
   return null
 }
 
-/** A well-formed identity is exactly one of (seriesId + season, movieId null) XOR (movieId only,
- *  seriesId/season both null). This matters beyond ordinary input hygiene: upsertWorkerTask's
- *  identity tuple is (kind='worker_task', series_id, ifnull(season,-1), ifnull(movie_id,'')), and
+/** A well-formed identity is exactly one of (seriesId non-null, movieId null) XOR (movieId
+ *  non-null, seriesId null) — plain XOR, no season involved.
+ *
+ *  R-11（用户裁决 2026-07-16，原文锚点：「到底按季还是按剧，是根据具体情况具体分析的」）: this
+ *  used to also force season non-null for a series dispatch, because upsertWorkerTask's identity
+ *  tuple was (kind='worker_task', series_id, ifnull(season,-1), ifnull(movie_id,'')) and
  *  dispatch_realign_task ALSO writes kind='worker_task' with season forced to null for the same
- *  seriesId — so a find_subtitle dispatch with a null season for a series that already has (or
- *  later gets) a pending realign task for that same series lands on the EXACT SAME identity row
- *  as that realign task. Whichever of the two upserts second silently no-ops onto the other's
- *  payload (upsertWorkerTask only overwrites payload/parent_job_id when the existing row's state
- *  is 'done') rather than creating the distinct find-subtitle task the caller intended. Refusing
- *  a null season up front prevents this identity collision from ever being possible. */
-function hasWellFormedFindSubtitleIdentity(v: { seriesId: string | null; season: number | null; movieId: string | null }): boolean {
-  const isSeriesSeason = v.seriesId !== null && v.season !== null && v.movieId === null
-  const isMovie = v.seriesId === null && v.season === null && v.movieId !== null
-  return isSeriesSeason || isMovie
+ *  seriesId — a find_subtitle dispatch with a null season collided with that realign identity.
+ *  Schema v11 (db.ts MIGRATIONS[2]) folded payload's taskType into the jobs_identity unique index
+ *  (kind, series_id, season, movie_id, taskType), and jobsRepo.upsertWorkerTask's ON CONFLICT
+ *  target follows suit — find_subtitle and realign no longer share a row for the same series no
+ *  matter what season is. That was the null-season guard's ONLY reason to exist; with the
+ *  collision gone, dispatch scope (which seasons) is the orchestrator's own judgment call, carried
+ *  in the `seasons` array (see makeDispatchFindSubtitleTaskTool's description) rather than forced
+ *  through the identity tuple. */
+function hasWellFormedFindSubtitleIdentity(v: { seriesId: string | null; movieId: string | null }): boolean {
+  const isSeries = v.seriesId !== null && v.movieId === null
+  const isMovie = v.seriesId === null && v.movieId !== null
+  return isSeries || isMovie
 }
 
 const FIND_SUBTITLE_IDENTITY_ERROR =
-  'dispatch_find_subtitle_task requires exactly one well-formed identity: either (seriesId + ' +
-  'season) with movieId null, or movieId alone with seriesId and season both null. A null ' +
-  'season with a non-null seriesId is rejected because it collides with dispatch_realign_task\'s ' +
-  'worker_task identity for the same series (both would write kind=worker_task, series_id=X, ' +
-  'season=NULL).'
+  'dispatch_find_subtitle_task requires exactly one identity: either seriesId (optionally with ' +
+  'a seasons array) with movieId null, or movieId alone with seriesId null.'
 
 export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: DispatchCounter) {
   const cap = deps.maxDispatchesPerOrchestrator ?? 100
   return tool({
-    description: 'Dispatch a find-subtitle worker task for one series+season or one movie.',
+    description:
+      'Dispatch a find-subtitle worker task. Scope it by YOUR judgment of the on-disk reality: ' +
+      'pass seasons:[3] when only season 3 exists on disk, seasons:[1,2,3] to have one worker ' +
+      'sweep a series whose seasons are all missing subtitles (one season pack often covers them ' +
+      'all), or omit seasons to cover every season that currently has gaps. For a movie pass ' +
+      'movieId alone. Huge backlogs may be split into several dispatches at your discretion.',
     // Tolerant of the real model's natural shape (proven live, v3 live matrix, 2026-07-13): it
     // OMITS the other kind's field entirely (e.g. no `movieId` key at all when dispatching a
-    // series) rather than sending an explicit JSON null, and may send `season` as a string. Plain
-    // `.nullable()` rejects an omitted key (only `.nullish()`/`.optional()` accept `undefined`),
-    // so the tool-call failed validation before execute() ever ran and zero rows landed — same
-    // class of bug as the A-layer finalize-undefined fix. nullableTolerant/coercibleNullableInt
-    // normalize omitted-key/string-sentinel/string-number inputs to `null` (never `undefined`)
-    // before hasWellFormedFindSubtitleIdentity below ever sees them.
+    // series) rather than sending an explicit JSON null, and may send seasons entries as strings
+    // (`["1","2"]`) or the whole field as the sentinel "None". Plain `.nullable()` rejects an
+    // omitted key (only `.nullish()`/`.optional()` accept `undefined`), so the tool-call failed
+    // validation before execute() ever ran and zero rows landed — same class of bug as the
+    // A-layer finalize-undefined fix. nullableTolerant/coercibleInt normalize omitted-key/
+    // string-sentinel/string-number inputs to `null` (never `undefined`) before
+    // hasWellFormedFindSubtitleIdentity below ever sees them.
     inputSchema: z.object({
-      seriesId: nullableTolerant(z.string()), season: coercibleNullableInt, movieId: nullableTolerant(z.string()),
+      seriesId: nullableTolerant(z.string()),
+      seasons: nullableTolerant(z.array(coercibleInt)),
+      movieId: nullableTolerant(z.string()),
       reason: z.string(),
     }).refine(hasWellFormedFindSubtitleIdentity, { message: FIND_SUBTITLE_IDENTITY_ERROR }),
-    execute: async ({ seriesId, season, movieId, reason }) => {
+    execute: async ({ seriesId, seasons, movieId, reason }) => {
       const capped = capCheck(counter, cap)
       if (capped) return capped
-      deps.jobs.upsertWorkerTask({ seriesId, season, movieId }, { taskType: 'find_subtitle', reason }, deps.parentJobId, deps.now())
+      deps.jobs.upsertWorkerTask(
+        { seriesId, season: null, movieId },
+        { taskType: 'find_subtitle', seasons: seasons && seasons.length > 0 ? seasons : null, reason },
+        deps.parentJobId, deps.now(),
+      )
       counter.count++
       return { dispatched: true, remainingCapacity: cap - counter.count }
     },

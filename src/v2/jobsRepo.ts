@@ -59,6 +59,12 @@ export type JobIdent = JobIdentity | MovieJobIdentity | RealignJobIdentity
 // if/else-if/else 三分支穷尽窄化正好对应 JobIdent 现有的三个变体，塞入第 4 个变体而不
 // 重写那个 else 分支会让 worker_task 身份被静默路由进 realign 的 SQL 分支（写下 upsertWanted
 // 现有实现之后才看清这个风险）。upsertWorkerTask 用这个独立类型，走独立方法。
+// R-11（用户裁决 2026-07-16，schema v11）：season 字段对 find_subtitle 任务恒为 null——派活
+// 范围（哪些季）不再是身份的一部分，改由 payload.seasons 承载（数组=季子集，null=全剧，缺席=
+// 存量行按旧语义单季推导，见 findSubtitleWorkerTask.ts 的 mapper）。identity 元组本身也已从
+// (kind, series_id, season, movie_id) 扩到 (kind, series_id, season, movie_id, taskType)——
+// taskType 从 payload 里 json_extract 出来参与 ON CONFLICT（见下方 upsertWorkerTask 的 SQL），
+// 这样 find_subtitle 与 realign 对同一 series 才不会撞成同一行。
 export interface WorkerTaskIdentity {
   seriesId: string | null
   season: number | null
@@ -100,8 +106,17 @@ export class JobsRepo {
   // 回填），无条件 plan_ref = excluded.plan_ref 会让执行中/失败/休眠 job 的崩溃恢复清单指针
   // 被一次 mid-execution re-upsert 直接抹掉——只有 done→wanted 复活（翻篇重来）才重置，
   // 其余状态一律保留现值。
+  // R-11（用户裁决 2026-07-16，schema v11）实测踩坑必须就地适配：SQLite 的 ON CONFLICT 目标
+  // 必须逐字匹配某一个真实存在的 UNIQUE 索引/约束——jobs 表只有 jobs_identity 这一个相关唯一
+  // 索引，v11 是在原地把它从 4 元组换成 5 元组（DROP+CREATE 同名 jobs_identity，见 db.ts），
+  // 不是新增一个平行索引。这条 4 元组的 ON CONFLICT 目标因此不再匹配任何索引——
+  // upsertWanted 的三个调用分支（series_season/movie/realign）在 v11 迁移后的库上会直接抛
+  // `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`（已用最小复现脚本
+  // 实测确认）。这三个 kind 的 INSERT 列表从不带 payload 列（恒 NULL），所以追加的第 5 个表达式
+  // ifnull(json_extract(payload,'$.taskType'),'') 对它们求值恒为 ''，是常量、不改变既有 4 元组
+  // 语义——单纯让这条 SQL 重新匹配上 v11 后仍然唯一存在的那个索引，而不是引入新的行为分支。
   private static readonly UPSERT_CONFLICT_SQL = `
-           ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
+           ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''), ifnull(json_extract(payload,'$.taskType'),''))
            DO UPDATE SET
              updated_at = ?,
              plan_ref = CASE WHEN state = 'done' THEN excluded.plan_ref ELSE jobs.plan_ref END,
@@ -136,10 +151,12 @@ export class JobsRepo {
     }
   }
 
-  /** 主代理派活(v3 phase ④/⑤)：写一行 worker_task job。复用 series_id/season/movie_id 三列做
-   *  身份 dedup——jobs_identity 的 (kind, series_id, season, movie_id) 四元组里 kind 本身已经
-   *  区分 worker_task 与 series_season/movie/realign，同一 identity 重复派发是幂等 upsert
-   *  （镜像 upsertWanted 的 done→wanted 复活语义：非 done 态只碰 updated_at，done 态整体刷新
+  /** 主代理派活(v3 phase ④/⑤)：写一行 worker_task job。复用 series_id/season/movie_id 三列
+   *  加上 payload 里的 taskType 做身份 dedup——jobs_identity 的 (kind, series_id, season,
+   *  movie_id, taskType) 五元组（R-11，schema v11）里 kind 本身已经区分 worker_task 与
+   *  series_season/movie/realign，taskType 进一步区分同一 series 下不同种类的 worker_task
+   *  （find_subtitle vs realign 不再共享一行）。同一 identity 重复派发是幂等 upsert（镜像
+   *  upsertWanted 的 done→wanted 复活语义：非 done 态只碰 updated_at，done 态整体刷新
    *  payload/parent_job_id 并复活）。没有自然季/剧归属的任务（如 sibling-orchestrator 分片）
    *  用合成 seriesId（如 'orchestrator-shard-<parentJobId>-<n>'），season/movieId 恒 null。
    *  故意是独立方法而非塞进 upsertWanted：见上方 WorkerTaskIdentity 的注释。 */
@@ -151,7 +168,7 @@ export class JobsRepo {
       .prepare(
         `INSERT INTO jobs (kind, series_id, season, movie_id, payload, parent_job_id, state, priority, attempt, created_at, updated_at)
          VALUES ('worker_task', ?, ?, ?, ?, ?, 'wanted', 0, 0, ?, ?)
-         ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''))
+         ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''), ifnull(json_extract(payload,'$.taskType'),''))
          DO UPDATE SET
            updated_at = ?,
            payload = CASE WHEN state = 'done' THEN excluded.payload ELSE jobs.payload END,

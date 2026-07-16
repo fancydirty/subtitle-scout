@@ -337,6 +337,22 @@ export class LibraryRepo {
       .all(seriesId, season, now) as MissingEpisodeFact[]
   }
 
+  /** R-11（用户裁决 2026-07-16）：全剧（或季子集）缺口事实清单——派活范围不再是系统常量，是主
+   *  代理按刮削出的磁盘事实自行裁量后经 payload.seasons 下发（数组=季子集，null=全剧）。谓词与
+   *  listMissingEpisodesInSeason 完全一致，只是不强制单季；ORDER BY season, episode 是清单
+   *  排序，不是执行顺序指令（同 listMissingEpisodesInSeason 的既有措辞）。 */
+  listMissingEpisodesForSeries(seriesId: string, seasons: number[] | null, now: number): MissingEpisodeFact[] {
+    const seasonFilter = seasons && seasons.length > 0 ? `AND season IN (${seasons.map(() => '?').join(',')})` : ''
+    return this.db
+      .prepare(
+        `SELECT id, path, season, episode FROM episodes
+         WHERE series_id = ? ${seasonFilter}
+         AND (sub_status = 'missing' OR (sub_status = 'unavailable' AND recheck_after <= ?))
+         ORDER BY season ASC, episode ASC`
+      )
+      .all(...(seasons && seasons.length > 0 ? [seriesId, ...seasons, now] : [seriesId, now])) as MissingEpisodeFact[]
+  }
+
   missingMovies(now?: number): Movie[] {
     const timestamp = now ?? Date.now()
     return this.db

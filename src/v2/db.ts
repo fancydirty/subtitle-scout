@@ -125,6 +125,12 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_r
   `ALTER TABLE series ADD COLUMN layout_nonstandard INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE episodes ADD COLUMN search_attempts INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE movies ADD COLUMN search_attempts INTEGER NOT NULL DEFAULT 0`,
+  // v11（R-11 用户裁决 2026-07-16）：taskType 进身份元组——find_subtitle 与 realign 对同一
+  // series 不再共享身份；find 任务的范围事实（哪些季）随 payload.seasons 下发，season
+  // 身份列对新 find 行恒 NULL。原 dispatch 工具的 null-season 拒绝守卫（其存在唯一理由就是
+  // 这个身份碰撞）随之处决。
+  `DROP INDEX jobs_identity;
+   CREATE UNIQUE INDEX jobs_identity ON jobs(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''), ifnull(json_extract(payload,'$.taskType'),''))`,
 ]
 
 export function openDb(path: string): ScoutDb {

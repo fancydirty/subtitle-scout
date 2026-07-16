@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from './db.js'
+import { JobsRepo } from './jobsRepo.js'
 
 describe('db 基座', () => {
   it('打开即建 schema，pragma 三件套生效', () => {
@@ -14,15 +15,15 @@ describe('db 基座', () => {
       'series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta',
       'parked_paths', 'identify_overrides',
     ]) expect(tables).toContain(t)
-    // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10 本身）：
-    // v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
-    // 落库值随之是 '2'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '2' })
+    // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11
+    // 本身）：v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
+    // 落库值随之是 '2'；R-11 派活范围裁量化追加 v11 entry 后 MIGRATIONS.length=3，落库值是 '3'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '3' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '2' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '3' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -59,5 +60,20 @@ describe('db 基座', () => {
 
     const movieCols = (db.prepare('PRAGMA table_info(movies)').all() as { name: string }[]).map((c) => c.name)
     expect(movieCols).toContain('search_attempts')
+  })
+
+  // R-11（用户裁决 2026-07-16）：派活范围是主代理的判断，不是系统常量——taskType 进 jobs_identity
+  // 唯一索引的元组，find_subtitle 与 realign 对同一 series 不再共享一行身份。
+  it('v11: find_subtitle 与 realign 对同一 series 不再共享身份（可同时各有一行 pending）', () => {
+    const db = openDb(':memory:')
+    const jobs = new JobsRepo(db)
+    const now = Date.now()
+    jobs.upsertWorkerTask({ seriesId: 'tmdb:9', season: null, movieId: null }, { taskType: 'find_subtitle', seasons: [3], reason: 'x' }, null, now)
+    jobs.upsertWorkerTask({ seriesId: 'tmdb:9', season: null, movieId: null }, { taskType: 'realign', reason: 'y' }, null, now)
+    const rows = db
+      .prepare("SELECT kind, json_extract(payload,'$.taskType') as taskType FROM jobs WHERE series_id = 'tmdb:9'")
+      .all() as { kind: string; taskType: string }[]
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.taskType).sort()).toEqual(['find_subtitle', 'realign'])
   })
 })

@@ -17,7 +17,16 @@ function capDetail(s: string, max = 200): string {
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed
 }
 
-export interface FindSubtitleWorkerTaskPayload { taskType: 'find_subtitle'; reason: string }
+// R-11（用户裁决 2026-07-16）：seasons 承载主代理裁量后的派活范围——数组=季子集，null=全剧
+// （有缺口的季全部覆盖），可选键缺席=存量行（v11 迁移前写入，season 身份列有值）按旧语义单季
+// 推导。三态而非二态：`undefined`（键缺席）与显式 `null` 携带不同语义，故字段类型必须允许两者
+// 都出现，不能用 `?: number[] | null` 简化成默认值——mapper 靠 `'seasons' in payload` 之外的
+// JSON.parse 后 `payload.seasons !== undefined` 检测来区分（见下方 mapWorkerTaskToFindSubtitleTask）。
+export interface FindSubtitleWorkerTaskPayload {
+  taskType: 'find_subtitle'
+  reason: string
+  seasons?: number[] | null
+}
 
 /** Deps needed to turn a claimed `worker_task` row (payload.taskType==='find_subtitle') into a
  *  concrete FindSubtitleTask. 去 Jellyfin 化 P4: this used to round-trip through a live Jellyfin
@@ -182,14 +191,29 @@ export async function mapWorkerTaskToFindSubtitleTask(
     }
   }
 
-  // ---- series+season 分支：LibraryRepo 产出的缺口事实清单整批上车，mapper 不做任何取舍 ----
-  if (!job.series_id || job.season === null) {
+  // ---- series 分支：LibraryRepo 产出的缺口事实清单整批上车，mapper 不做任何取舍 ----
+  // R-11（用户裁决 2026-07-16，原文锚点：「到底按季还是按剧，是根据具体情况具体分析的」）：派活
+  // 范围是主代理的判断，不是系统常量——payload.seasons 决定这批任务覆盖哪些季：数组=季子集，
+  // null=全剧（有缺口的季全部覆盖），键缺席=存量行（v11 迁移前写入）按 job.season 单季推导
+  // （原语义，向后兼容）。season 身份列对新 find_subtitle 行恒 NULL，故不再要求它非空。
+  if (!job.series_id) {
     throw new Error(
-      `worker_task job ${job.id} (find_subtitle) has neither movie_id nor series_id+season identity`,
+      `worker_task job ${job.id} (find_subtitle) has neither movie_id nor series_id identity`,
     )
   }
-  const gaps = deps.lib.listMissingEpisodesInSeason(job.series_id, job.season, now)
-  if (gaps.length === 0) return null // idempotent no-op: 本行被 claim 时该季已无缺口
+  const payload = (() => {
+    try {
+      return JSON.parse(job.payload ?? '{}') as { seasons?: number[] | null }
+    } catch {
+      return {} as { seasons?: number[] | null }
+    }
+  })()
+  const gaps = payload.seasons !== undefined
+    ? deps.lib.listMissingEpisodesForSeries(job.series_id, payload.seasons, now)
+    : deps.lib.listMissingEpisodesInSeason(job.series_id, job.season ?? -1, now)
+  // idempotent no-op: 本行被 claim 时范围内已无缺口——含病态"season 列为 null 且 payload 无
+  // seasons 字段"的存量行（listMissingEpisodesInSeason(seriesId, -1, now) 恒空，无害兜底）。
+  if (gaps.length === 0) return null
 
   const series = deps.lib.getSeries(job.series_id)
   if (!series) throw new Error(`series row ${job.series_id} not found for job ${job.id}`)
