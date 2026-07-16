@@ -104,11 +104,40 @@ describe('search_source / list_candidates / get_candidate tools', () => {
     const store = makeFileResultSetStore(dir)
     const results = [fakeCandidate('1', 'Show.S01E01'), fakeCandidate('2', 'Show.S01E02'), fakeCandidate('3', 'Show.S01E03')]
     const searchSource = makeSearchSourceTool({ adapters: [fakeAdapter(results)], store, topN: 2 })
-    const out = await searchSource.execute!({ queries: ['Show S01E01'], languages: ['zh-Hans'] }, { toolCallId: 't1', messages: [] } as any) as { result_set_id: string; count: number; top: CandidateSummary[] }
+    const out = await searchSource.execute!({ queries: ['Show S01E01'], languages: ['zh-Hans'] }, { toolCallId: 't1', messages: [] } as any) as { result_set_id: string; count: number; top: CandidateSummary[]; providerFailures: unknown[] }
     expect(out.count).toBe(3)
     expect(out.top).toHaveLength(2)
     expect(out.top[0]).toEqual(summarizeCandidate(results[0]))
     expect(store.count(out.result_set_id)).toBe(3)
+    expect(out.providerFailures).toEqual([])
+  })
+
+  // Task 8c（审计发现 B9，事实诚实化）：search_source used to pass `() => {}` as runSearch's emit
+  // callback, silently discarding every provider_error event a partial provider failure produces.
+  // The find-subtitle worker is asked to judge retry_later vs no_safe_match off a search_source
+  // result but had no input distinguishing "every provider ran clean and truly found nothing" from
+  // "one provider errored and the rest came back empty" — this test proves that distinction is
+  // now surfaced: candidates from the healthy provider still come back (fail-soft, unchanged), and
+  // the failing provider is named in providerFailures.
+  it('search_source reports providerFailures when one provider errors and another succeeds', async () => {
+    const store = makeFileResultSetStore(dir)
+    function failingAdapter(): FetchAdapter {
+      return {
+        name: 'opensubtitles',
+        enabled: () => true,
+        search: async () => { throw new Error('boom: network timeout') },
+        resolve: async () => { throw new Error('not used in this test') },
+      }
+    }
+    const okResults = [fakeCandidate('1', 'A')]
+    const searchSource = makeSearchSourceTool({ adapters: [fakeAdapter(okResults), failingAdapter()], store })
+    const out = await searchSource.execute!({ queries: ['q'] }, { toolCallId: 't1', messages: [] } as any) as {
+      count: number; providerFailures: { provider: string; message: string }[]
+    }
+    expect(out.count).toBe(1)
+    expect(out.providerFailures).toHaveLength(1)
+    expect(out.providerFailures[0].provider).toBe('opensubtitles')
+    expect(out.providerFailures[0].message).toMatch(/boom: network timeout/)
   })
 
   // Spec-review fix #3 (A4): the model may simply omit `languages` on a search_source call — when

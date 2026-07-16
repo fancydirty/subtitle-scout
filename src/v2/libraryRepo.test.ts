@@ -45,7 +45,41 @@ describe('媒体镜像', () => {
         path: `/p/${e}`,
         subStatus: st,
       })
-    expect(lib.missingBySeason()).toEqual([{ series_id: 's1', season: 1, missing: 2 }])
+    expect(lib.missingBySeason()).toEqual([
+      { series_id: 's1', series_name: 'A', season: 1, missing: 2, throttled: 0, next_recheck_at: null, sample_reason: null },
+    ])
+  })
+
+  // Task 8c（裁决 R-3 呈现面，考古定罪：谓词曾是守门人，把退避窗口内的停牌缺口整行隐藏）：
+  // 停牌中的 item 不再从 missingBySeason 里消失——它作为 throttled 事实可见，带上几时复查
+  // 与样本原因，"值不值得提前重派"留给 orchestrator 判断，机械层只如实呈报。
+  it('missingBySeason：停牌行可见（未到期 unavailable 计入 throttled，不计入 missing）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: '', path: '/p/2', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'e3', seriesId: 's1', season: 1, episode: 3, name: '', path: '/p/3', subStatus: 'missing' })
+    // e3 变停牌：markUnavailable 用阶梯算出 recheck_after = NOW + 1 天，锚点 NOW 也用于查询，
+    // 所以这一行必然未到期。
+    const NOW = 1_000_000
+    lib.markUnavailable('e3', '搜索穷尽', NOW)
+
+    const rows = lib.missingBySeason(NOW)
+    expect(rows).toEqual([
+      {
+        series_id: 's1', series_name: 'A', season: 1,
+        missing: 2, throttled: 1,
+        next_recheck_at: NOW + 86_400_000,
+        sample_reason: '搜索穷尽',
+      },
+    ])
+  })
+
+  // 全 covered 的季没有任何缺口事实可报——HAVING missing>0 OR throttled>0 把它筛掉，这是
+  // "无事实可报"，不是把已有事实藏起来。
+  it('missingBySeason：全 covered 的季不出现', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'covered' })
+    expect(lib.missingBySeason()).toEqual([])
   })
 
   it('markCovered 写 episodes.sub_status + subtitles 行，同一事务', () => {
@@ -113,7 +147,7 @@ describe('媒体镜像', () => {
     expect((lib.db.prepare('select count(*) c from subtitles where item_id=?').get('e1') as any).c).toBe(0)
   })
 
-  it('unavailable 带复查时间，missingBySeason 不计入未到期的', () => {
+  it('unavailable 带复查时间，missingBySeason 不计入未到期的（原语义锁：未到期算 throttled 不算 missing）', () => {
     lib.upsertSeries({ id: 's1', name: 'A' })
     lib.upsertEpisode({
       id: 'e1',
@@ -126,8 +160,28 @@ describe('媒体镜像', () => {
     })
     // R-3: 3rd arg is `now`（判决发生的时刻）——阶梯自己算出 recheck_after（首次 1 天后），
     // 不再由调用方直接喂 recheckAfter。
-    lib.markUnavailable('e1', '搜索穷尽', Date.now())
-    expect(lib.missingBySeason()).toEqual([])
+    const now = Date.now()
+    lib.markUnavailable('e1', '搜索穷尽', now)
+    const rows = lib.missingBySeason(now)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].missing).toBe(0)
+    expect(rows[0].throttled).toBe(1)
+  })
+
+  // 原语义锁的另一半：到期的 unavailable（recheck_after <= now）重新计入 missing，不是永久
+  // 停在 throttled 里。sample_reason 仍如实带出该行的 status_reason——sub_status 本身还是
+  // 'unavailable'，只是到期了，SQL 的 sample_reason 谓词不区分"到期"与"未到期"，只区分
+  // "是不是 unavailable"，这是与给定 SQL 一致的既定行为，不是 bug。
+  it('到期 unavailable 计入 missing（原语义锁）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing' })
+    const NOW = 1_000_000
+    lib.markUnavailable('e1', '搜索穷尽', NOW)
+    // 查询时刻已经过了 1 天的复查窗口 → 到期，重新计入 missing。
+    const later = NOW + 86_400_000 + 1
+    expect(lib.missingBySeason(later)).toEqual([
+      { series_id: 's1', series_name: 'A', season: 1, missing: 1, throttled: 0, next_recheck_at: null, sample_reason: '搜索穷尽' },
+    ])
   })
 
   // Movie同构用例
@@ -157,6 +211,33 @@ describe('媒体镜像', () => {
       path: '/movies/test.zh-Hans.srt',
       provider_ref: 'assrt:713052',
     })
+  })
+
+  // Task 8c（裁决 R-3 呈现面）：missingMovies 的同构升级——电影没有"季"，行形状从整 Movie 行
+  // 改为 {id, name, missing, throttled, next_recheck_at, sample_reason}，missing/throttled 是
+  // 逐行 0|1（不是聚合计数），语义与 missingBySeason 完全一致。
+  it('missingMovies：missing 电影与停牌电影都可见，covered 的不出现', () => {
+    lib.upsertMovie({ id: 'm1', name: 'Missing Movie', path: '/m1.mkv', subStatus: 'missing' })
+    lib.upsertMovie({ id: 'm2', name: 'Covered Movie', path: '/m2.mkv', subStatus: 'covered' })
+    lib.upsertMovie({ id: 'm3', name: 'Throttled Movie', path: '/m3.mkv', subStatus: 'missing' })
+    const NOW = 1_000_000
+    lib.markUnavailable('m3', '搜索穷尽', NOW)
+
+    const rows = lib.missingMovies(NOW)
+    expect(rows).toEqual([
+      { id: 'm1', name: 'Missing Movie', missing: 1, throttled: 0, next_recheck_at: null, sample_reason: null },
+      { id: 'm3', name: 'Throttled Movie', missing: 0, throttled: 1, next_recheck_at: NOW + 86_400_000, sample_reason: '搜索穷尽' },
+    ])
+  })
+
+  it('missingMovies：到期 unavailable 计入 missing（同 missingBySeason 语义锁）', () => {
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m1.mkv', subStatus: 'missing' })
+    const NOW = 1_000_000
+    lib.markUnavailable('m1', '搜索穷尽', NOW)
+    const later = NOW + 86_400_000 + 1
+    expect(lib.missingMovies(later)).toEqual([
+      { id: 'm1', name: 'M', missing: 1, throttled: 0, next_recheck_at: null, sample_reason: '搜索穷尽' },
+    ])
   })
 
   // chinese_title 回写 + 扫描不清空（task 2 依赖）。

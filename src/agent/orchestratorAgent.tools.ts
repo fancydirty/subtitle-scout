@@ -7,8 +7,17 @@ import { tmdbIdFromOwnId } from '../v2/ownIds.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 import { coercibleInt, nullableTolerant } from './coerce.js'
 
-export interface MissingSeasonRow { kind: 'season'; seriesId: string; season: number; missing: number }
-export interface MissingMovieRow { kind: 'movie'; movieId: string; name: string }
+/** Task 8c（裁决 R-3 呈现面）：行形状增 throttled/nextRecheckAt/sampleReason——停牌中的缺口
+ *  现在是可见事实，不再被 SQL 谓词整行吃掉（见 libraryRepo.ts missingBySeason 头注释）。
+ *  seriesName 让模型不必再靠 seriesId 反查剧名。 */
+export interface MissingSeasonRow {
+  kind: 'season'; seriesId: string; seriesName: string; season: number
+  missing: number; throttled: number; nextRecheckAt: number | null; sampleReason: string | null
+}
+export interface MissingMovieRow {
+  kind: 'movie'; movieId: string; name: string
+  missing: 0 | 1; throttled: 0 | 1; nextRecheckAt: number | null; sampleReason: string | null
+}
 export type MissingCoverageRow = MissingSeasonRow | MissingMovieRow
 
 export interface MissingCoveragePage {
@@ -30,9 +39,10 @@ const MAX_MISSING_COVERAGE_LIMIT = 200
 export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'>, now: () => number) {
   return tool({
     description:
-      'Read the mechanical pre-scan\'s living-doc: which series/seasons and movies are ' +
-      'currently missing a Chinese subtitle. This is factual bookkeeping only — it does not ' +
-      'judge whether any particular subtitle is correct. Paginated: returns at most `limit` ' +
+      'The mechanical pre-scan\'s living-doc: every series/season and movie with subtitle gaps ' +
+      '— both currently-actionable gaps (missing) and throttled ones (recently exhausted, with ' +
+      'their recheck time and reason). This is factual bookkeeping only; whether a throttled ' +
+      'row is worth re-dispatching early is YOUR judgment. Paginated: returns at most `limit` ' +
       'rows per call (default 50, max 200) starting at `offset`. When `hasMore` is true, call ' +
       'again with a higher `offset` to see the rest — do not assume one call returned the whole ' +
       'backlog.',
@@ -42,10 +52,12 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
     }),
     execute: async ({ offset, limit }): Promise<MissingCoveragePage> => {
       const seasonRows: MissingCoverageRow[] = lib.missingBySeason(now()).map(s => ({
-        kind: 'season', seriesId: s.series_id, season: s.season, missing: s.missing,
+        kind: 'season', seriesId: s.series_id, seriesName: s.series_name, season: s.season,
+        missing: s.missing, throttled: s.throttled, nextRecheckAt: s.next_recheck_at, sampleReason: s.sample_reason,
       }))
       const movieRows: MissingCoverageRow[] = lib.missingMovies(now()).map(m => ({
         kind: 'movie', movieId: m.id, name: m.name,
+        missing: m.missing, throttled: m.throttled, nextRecheckAt: m.next_recheck_at, sampleReason: m.sample_reason,
       }))
       const all = [...seasonRows, ...movieRows]
       const total = all.length
@@ -62,45 +74,67 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
  *  dispatching a realign task on a hunch. The real code-level, zero-false-trigger
  *  ("正常库零误触发") gate lives downstream in executeRealign (phase ⑥, unchanged) — that is the
  *  safety net by design (the model decides dispatch; executeRealign is what actually must never
- *  misfire on an aligned library), not this tool. Reuses mirrorExceedsSeasonTable — the exact
- *  same pure primary-signal check src/agent/diagnoseSeason.ts already uses to short-circuit to
- *  'unknown' without spending an LLM call when the signal doesn't hold — confirmed unchanged by
- *  reading diagnoseSeason.ts directly. A season with mirrorEpisodeCount <= tmdbEpisodeCount is
- *  reported as NOT a realign candidate; the tool reports that fact, it does not enforce it.
+ *  misfire on an aligned library), not this tool. Reuses mirrorExceedsSeasonTable (pure,
+ *  src/core/seasonShape.ts) — a season with mirrorEpisodeCount <= tmdbEpisodeCount is reported as
+ *  NOT a realign candidate; the tool reports that fact, it does not enforce it.
+ *
+ *  Task 8c（裁决 R-4，审计发现 B6/B7）事实与结论分离：this tool used to fold a query failure into
+ *  exceedsSeasonTable:false — a TMDB lookup that errored out looked identical to a TMDB lookup
+ *  that genuinely found no overshoot, reporting a conclusion instead of the fact that the check
+ *  couldn't run. tmdbUnavailable now surfaces that distinction explicitly (true when tmdbId
+ *  couldn't be resolved from seriesId, or getSeasonTable threw) so the orchestrator can tell
+ *  "TMDB says this season is fine" apart from "TMDB was unreachable this call, try again" instead
+ *  of silently trusting a false. diskLayoutNonstandard adds a second, independent layout fact —
+ *  the ingest layer's own layout_nonstandard column (series table, schema v10) — for the flat/
+ *  absolute-numbering layouts ingest already normalized on write, which mirrorExceedsSeasonTable
+ *  alone cannot see (it only compares episode counts, so a correctly-counted-but-flat layout
+ *  passes it silently). Neither fact is a verdict; dispatch_realign_task still never reads either
+ *  one — see the executeRealign note above.
  *
  *  tmdbId is resolved INTERNALLY via tmdbIdFromOwnId(seriesId) (src/v2/ownIds.ts), NOT taken as a
  *  model-supplied input — the orchestrator model has no source for a series' tmdbId
- *  (list_missing_coverage rows are {seriesId, season, missing} only), so a model-facing tmdbId
- *  param was uncallable in practice (the model could only fabricate one, which silently always
- *  resolved to exceedsSeasonTable:false). 去 Jellyfin 化 P4: the id IS the identity now
- *  (series.id = 'tmdb:<TMDB id>', T2/ownIds.ts) — extracting it is a pure, zero-I/O string parse,
- *  no more live jf.getItem(seriesId) round-trip to read ProviderIds.Tmdb. This also retires the
- *  old "lib.getSeries().provider_ids is an unreliable historical mirror" caveat: T3's ingest layer
+ *  (list_missing_coverage rows carry no tmdbId field), so a model-facing tmdbId param was
+ *  uncallable in practice (the model could only fabricate one, which silently always resolved to
+ *  exceedsSeasonTable:false). 去 Jellyfin 化 P4: the id IS the identity now (series.id =
+ *  'tmdb:<TMDB id>', T2/ownIds.ts) — extracting it is a pure, zero-I/O string parse, no more live
+ *  jf.getItem(seriesId) round-trip to read ProviderIds.Tmdb. This also retires the old
+ *  "lib.getSeries().provider_ids is an unreliable historical mirror" caveat: T3's ingest layer
  *  (design D5) now writes provider_ids on every row, but that column was never the primary source
  *  of truth here anyway — the own id embedded in seriesId itself is, and always will be, since the
  *  id space's whole point is that identity round-trips through the id with zero I/O. */
 export function makeCheckSeriesLayoutTool(
-  lib: Pick<LibraryRepo, 'countEpisodesInSeason'>,
+  lib: Pick<LibraryRepo, 'countEpisodesInSeason' | 'getSeries'>,
   tmdb: Pick<TmdbClient, 'getSeasonTable'>,
 ) {
   return tool({
     description:
-      'Deterministic check: does this series/season\'s mirror episode count exceed TMDB\'s ' +
-      'recorded episode count for that season? Only a TRUE result is even a candidate for ' +
-      'dispatch_realign_task — this is the same primary signal diagnoseSeason.ts already uses ' +
-      'to rule out realign candidates without spending an LLM call. Resolves the series\' TMDB ' +
-      'id internally from seriesId itself — you only need to pass seriesId and season.',
+      'Two independent layout facts for a series/season, neither is a verdict: ' +
+      'exceedsSeasonTable (mirror episode count vs TMDB — still fires for mis-scraped "Season ' +
+      '01"-folder layouts) and diskLayoutNonstandard (ingest observed this series deviating from ' +
+      'the canonical Show (Year) [tmdbid-N]/Season NN/ shape — catches flat layouts that ingest ' +
+      'normalized). tmdbUnavailable:true means the TMDB side could not be consulted this call — ' +
+      'a fact, not a false. Resolves the series\' TMDB id internally from seriesId.',
     inputSchema: z.object({ seriesId: z.string(), season: z.number().int() }),
     execute: async ({ seriesId, season }) => {
       const mirrorEpisodeCount = lib.countEpisodesInSeason(seriesId, season)
+      const diskLayoutNonstandard = !!lib.getSeries(seriesId)?.layout_nonstandard
       const tmdbId = tmdbIdFromOwnId(seriesId)
       if (!tmdbId) {
-        return { mirrorEpisodeCount, tmdbEpisodeCount: null, exceedsSeasonTable: false }
+        return {
+          mirrorEpisodeCount, tmdbEpisodeCount: null, exceedsSeasonTable: false,
+          tmdbUnavailable: true, diskLayoutNonstandard,
+        }
       }
-      const seasonTable = await tmdb.getSeasonTable(tmdbId).catch(() => null)
+      let seasonTable: Awaited<ReturnType<typeof tmdb.getSeasonTable>> = null
+      let tmdbUnavailable = false
+      try {
+        seasonTable = await tmdb.getSeasonTable(tmdbId)
+      } catch {
+        tmdbUnavailable = true
+      }
       const tmdbEpisodeCount = seasonTable?.find(s => s.seasonNumber === season)?.episodeCount ?? null
       const exceedsSeasonTable = mirrorExceedsSeasonTable({ seriesId, season, mirrorEpisodeCount, tmdbEpisodeCount })
-      return { mirrorEpisodeCount, tmdbEpisodeCount, exceedsSeasonTable }
+      return { mirrorEpisodeCount, tmdbEpisodeCount, exceedsSeasonTable, tmdbUnavailable, diskLayoutNonstandard }
     },
   })
 }

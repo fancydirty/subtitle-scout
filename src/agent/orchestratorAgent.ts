@@ -26,7 +26,7 @@ export type OrchestratorDecision = z.infer<typeof OrchestratorDecisionSchema>
 
 export interface OrchestratorAgentDeps {
   model: LanguageModel
-  lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'countEpisodesInSeason'>
+  lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'countEpisodesInSeason' | 'getSeries'>
   tmdb: Pick<TmdbClient, 'getSeasonTable'>
   jobs: Pick<JobsRepo, 'upsertWorkerTask' | 'get'>
   now: () => number

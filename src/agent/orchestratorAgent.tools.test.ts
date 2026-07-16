@@ -18,15 +18,33 @@ async function validate(schema: unknown, value: unknown) {
   return asSchema(schema as any).validate!(value)
 }
 
+// Task 8c（裁决 R-3 呈现面）：fake missingBySeason/missingMovies rows now carry
+// series_name/throttled/next_recheck_at/sample_reason — the SQL predicate no longer hides
+// throttled gaps, so the tool's row shape must round-trip all of it, not just missing/count.
+function seasonRow(over: Partial<ReturnType<LibraryRepo['missingBySeason']>[number]> = {}) {
+  return {
+    series_id: 's1', series_name: 'Series One', season: 1,
+    missing: 2, throttled: 0, next_recheck_at: null, sample_reason: null,
+    ...over,
+  }
+}
+function movieRow(over: Partial<ReturnType<LibraryRepo['missingMovies']>[number]> = {}) {
+  return {
+    id: 'm1', name: 'Movie One',
+    missing: 1 as const, throttled: 0 as const, next_recheck_at: null, sample_reason: null,
+    ...over,
+  }
+}
+
 describe('makeListMissingCoverageTool', () => {
   it('paginates: first page returns `limit` rows + hasMore:true + correct total, second page returns the rest', async () => {
     // Seed 3 missing seasons — more than a limit of 2 — so a single unpaginated call would have
     // dumped the whole set inline (the finding this guards against).
     const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
       missingBySeason: () => [
-        { series_id: 's1', season: 1, missing: 2 },
-        { series_id: 's2', season: 1, missing: 1 },
-        { series_id: 's3', season: 1, missing: 5 },
+        seasonRow({ series_id: 's1', series_name: 'Series One', missing: 2 }),
+        seasonRow({ series_id: 's2', series_name: 'Series Two', missing: 1 }),
+        seasonRow({ series_id: 's3', series_name: 'Series Three', missing: 5 }),
       ],
       missingMovies: () => [],
     }
@@ -35,15 +53,17 @@ describe('makeListMissingCoverageTool', () => {
     const page1 = await listMissingCoverage.execute!({ offset: 0, limit: 2 }, fakeOpts) as MissingCoveragePage
     expect(page1.rows).toHaveLength(2)
     expect(page1.rows).toEqual([
-      { kind: 'season', seriesId: 's1', season: 1, missing: 2 },
-      { kind: 'season', seriesId: 's2', season: 1, missing: 1 },
+      { kind: 'season', seriesId: 's1', seriesName: 'Series One', season: 1, missing: 2, throttled: 0, nextRecheckAt: null, sampleReason: null },
+      { kind: 'season', seriesId: 's2', seriesName: 'Series Two', season: 1, missing: 1, throttled: 0, nextRecheckAt: null, sampleReason: null },
     ])
     expect(page1.total).toBe(3)
     expect(page1.offset).toBe(0)
     expect(page1.hasMore).toBe(true)
 
     const page2 = await listMissingCoverage.execute!({ offset: 2, limit: 2 }, fakeOpts) as MissingCoveragePage
-    expect(page2.rows).toEqual([{ kind: 'season', seriesId: 's3', season: 1, missing: 5 }])
+    expect(page2.rows).toEqual([
+      { kind: 'season', seriesId: 's3', seriesName: 'Series Three', season: 1, missing: 5, throttled: 0, nextRecheckAt: null, sampleReason: null },
+    ])
     expect(page2.total).toBe(3)
     expect(page2.offset).toBe(2)
     expect(page2.hasMore).toBe(false)
@@ -51,22 +71,38 @@ describe('makeListMissingCoverageTool', () => {
 
   it('combines missing seasons and missing movies into one offset-addressable list', async () => {
     const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
-      missingBySeason: () => [{ series_id: 's1', season: 1, missing: 2 }],
-      missingMovies: () => [{ id: 'm1', name: 'Movie One' } as any],
+      missingBySeason: () => [seasonRow()],
+      missingMovies: () => [movieRow()],
     }
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
     const page = await listMissingCoverage.execute!({ offset: 0, limit: 50 }, fakeOpts) as MissingCoveragePage
     expect(page.total).toBe(2)
     expect(page.rows).toEqual([
-      { kind: 'season', seriesId: 's1', season: 1, missing: 2 },
-      { kind: 'movie', movieId: 'm1', name: 'Movie One' },
+      { kind: 'season', seriesId: 's1', seriesName: 'Series One', season: 1, missing: 2, throttled: 0, nextRecheckAt: null, sampleReason: null },
+      { kind: 'movie', movieId: 'm1', name: 'Movie One', missing: 1, throttled: 0, nextRecheckAt: null, sampleReason: null },
     ])
     expect(page.hasMore).toBe(false)
   })
 
+  // 停牌行的字段（seriesName/throttled/nextRecheckAt/sampleReason）在工具层完整透传，不是
+  // libraryRepo 层加了字段、工具层还照旧只挑 seriesId/season/missing 三个老字段。
+  it('season row carries seriesName/throttled/nextRecheckAt/sampleReason through to the model', async () => {
+    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
+      missingBySeason: () => [
+        seasonRow({ missing: 2, throttled: 1, next_recheck_at: 5000, sample_reason: '搜索穷尽' }),
+      ],
+      missingMovies: () => [],
+    }
+    const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
+    const page = await listMissingCoverage.execute!({ offset: 0, limit: 50 }, fakeOpts) as MissingCoveragePage
+    expect(page.rows).toEqual([
+      { kind: 'season', seriesId: 's1', seriesName: 'Series One', season: 1, missing: 2, throttled: 1, nextRecheckAt: 5000, sampleReason: '搜索穷尽' },
+    ])
+  })
+
   it('defaults offset to 0 and limit to 50 when called with no arguments', async () => {
     const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
-      missingBySeason: () => [{ series_id: 's1', season: 1, missing: 2 }],
+      missingBySeason: () => [seasonRow()],
       missingMovies: () => [],
     }
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
@@ -350,17 +386,18 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
 
 describe('makeCheckSeriesLayoutTool', () => {
   // Root cause under test: the orchestrator model has NO source for a series' tmdbId
-  // (list_missing_coverage rows are {seriesId, season, missing} only) — the tool must resolve
-  // tmdbId itself, NOT take it as a model-supplied input. 去 Jellyfin 化 P4: this resolution is now
-  // a pure, zero-I/O string parse (tmdbIdFromOwnId, src/v2/ownIds.ts) off the seriesId itself
-  // (own-id space: series.id = 'tmdb:<TMDB id>') — no more live jf.getItem lookup.
+  // (list_missing_coverage rows carry no tmdbId field) — the tool must resolve tmdbId itself,
+  // NOT take it as a model-supplied input. 去 Jellyfin 化 P4: this resolution is now a pure,
+  // zero-I/O string parse (tmdbIdFromOwnId, src/v2/ownIds.ts) off the seriesId itself (own-id
+  // space: series.id = 'tmdb:<TMDB id>') — no more live jf.getItem lookup.
   it('resolves tmdbId internally from seriesId itself and reports exceedsSeasonTable:true when the mirror overshoots the TMDB season table', async () => {
-    const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason' | 'getSeries'> = {
       countEpisodesInSeason: (seriesId, season) => {
         expect(seriesId).toBe('tmdb:1429')
         expect(season).toBe(2)
         return 30
       },
+      getSeries: () => ({ layout_nonstandard: 0 } as any),
     }
     const tmdb: Pick<TmdbClient, 'getSeasonTable'> = {
       getSeasonTable: async (tmdbId) => {
@@ -372,11 +409,17 @@ describe('makeCheckSeriesLayoutTool', () => {
 
     const result = await checkSeriesLayout.execute!({ seriesId: 'tmdb:1429', season: 2 }, fakeOpts)
 
-    expect(result).toEqual({ mirrorEpisodeCount: 30, tmdbEpisodeCount: 12, exceedsSeasonTable: true })
+    expect(result).toEqual({
+      mirrorEpisodeCount: 30, tmdbEpisodeCount: 12, exceedsSeasonTable: true,
+      tmdbUnavailable: false, diskLayoutNonstandard: false,
+    })
   })
 
-  it('gracefully reports exceedsSeasonTable:false (never throws) when seriesId does not conform to the tmdb:<id> own-id shape', async () => {
-    const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = { countEpisodesInSeason: () => 30 }
+  it('gracefully reports exceedsSeasonTable:false, tmdbUnavailable:true (never throws) when seriesId does not conform to the tmdb:<id> own-id shape', async () => {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason' | 'getSeries'> = {
+      countEpisodesInSeason: () => 30,
+      getSeries: () => ({ layout_nonstandard: 0 } as any),
+    }
     const tmdb: Pick<TmdbClient, 'getSeasonTable'> = {
       getSeasonTable: async () => { throw new Error('must never be called — no tmdbId to look up') },
     }
@@ -384,11 +427,79 @@ describe('makeCheckSeriesLayoutTool', () => {
 
     const result = await checkSeriesLayout.execute!({ seriesId: 'not-a-tmdb-id', season: 2 }, fakeOpts)
 
-    expect(result).toEqual({ mirrorEpisodeCount: 30, tmdbEpisodeCount: null, exceedsSeasonTable: false })
+    expect(result).toEqual({
+      mirrorEpisodeCount: 30, tmdbEpisodeCount: null, exceedsSeasonTable: false,
+      tmdbUnavailable: true, diskLayoutNonstandard: false,
+    })
+  })
+
+  // Task 8c（裁决 R-4，审计发现 B6/B7）：事实与结论分离——一次 TMDB 抛错（超时/5xx/网络故障）
+  // 之前会被 .catch(() => null) 悄悄折叠成跟"TMDB 真的没查到"一模一样的 exceedsSeasonTable:
+  // false，orchestrator 无法分辨"这季真的没超"和"这次没查成，应该重试"。tmdbUnavailable:true
+  // 把这个事实摆出来，exceedsSeasonTable 仍然如实报 false（没有确定性信号时不猜）。
+  it('TMDB 查询抛错（非 tmdbId 解析失败）→ tmdbUnavailable:true, exceedsSeasonTable:false', async () => {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason' | 'getSeries'> = {
+      countEpisodesInSeason: () => 30,
+      getSeries: () => ({ layout_nonstandard: 0 } as any),
+    }
+    const tmdb: Pick<TmdbClient, 'getSeasonTable'> = {
+      getSeasonTable: async () => { throw new Error('TMDB 5xx / timeout') },
+    }
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
+
+    const result = await checkSeriesLayout.execute!({ seriesId: 'tmdb:1429', season: 2 }, fakeOpts)
+
+    expect(result).toEqual({
+      mirrorEpisodeCount: 30, tmdbEpisodeCount: null, exceedsSeasonTable: false,
+      tmdbUnavailable: true, diskLayoutNonstandard: false,
+    })
+  })
+
+  // Task 8c（审计发现 B12）：series.layout_nonstandard（schema v10，摄取层写入）如实透传——
+  // 这是与 exceedsSeasonTable 独立的第二个布局事实，摄取层观察到的非常规磁盘布局，不受
+  // TMDB 查询结果影响。
+  it('series.layout_nonstandard=1 → diskLayoutNonstandard:true', async () => {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason' | 'getSeries'> = {
+      countEpisodesInSeason: () => 5,
+      getSeries: (id) => {
+        expect(id).toBe('tmdb:1429')
+        return { layout_nonstandard: 1 } as any
+      },
+    }
+    const tmdb: Pick<TmdbClient, 'getSeasonTable'> = {
+      getSeasonTable: async () => [{ seasonNumber: 2, episodeCount: 12, airDate: null }] as any,
+    }
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
+
+    const result = await checkSeriesLayout.execute!({ seriesId: 'tmdb:1429', season: 2 }, fakeOpts)
+
+    expect(result).toEqual({
+      mirrorEpisodeCount: 5, tmdbEpisodeCount: 12, exceedsSeasonTable: false,
+      tmdbUnavailable: false, diskLayoutNonstandard: true,
+    })
+  })
+
+  it('series row missing entirely (getSeries returns null) → diskLayoutNonstandard:false, never throws', async () => {
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason' | 'getSeries'> = {
+      countEpisodesInSeason: () => 0,
+      getSeries: () => null,
+    }
+    const tmdb: Pick<TmdbClient, 'getSeasonTable'> = { getSeasonTable: async () => null }
+    const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
+
+    const result = await checkSeriesLayout.execute!({ seriesId: 'tmdb:1429', season: 2 }, fakeOpts)
+
+    expect(result).toEqual({
+      mirrorEpisodeCount: 0, tmdbEpisodeCount: null, exceedsSeasonTable: false,
+      tmdbUnavailable: false, diskLayoutNonstandard: false,
+    })
   })
 
   it('no tmdbId param in the input schema (model cannot fabricate one) — seriesId/season alone validate', async () => {
-    const lib: Pick<LibraryRepo, 'countEpisodesInSeason'> = { countEpisodesInSeason: () => 0 }
+    const lib: Pick<LibraryRepo, 'countEpisodesInSeason' | 'getSeries'> = {
+      countEpisodesInSeason: () => 0,
+      getSeries: () => null,
+    }
     const tmdb: Pick<TmdbClient, 'getSeasonTable'> = { getSeasonTable: async () => null }
     const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
 

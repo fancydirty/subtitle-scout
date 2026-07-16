@@ -69,10 +69,30 @@ export interface Movie {
   search_attempts: number
 }
 
+/** 胶水层修复（Task 8c，裁决 R-3 呈现面）：一季的覆盖事实行——不再是纯计数，退避窗口内的
+ *  停牌缺口不再整行隐形。missing=现在该找的（missing ∪ 到期 unavailable），
+ *  throttled=停牌中的（未到期 unavailable，之前被 SQL 谓词整行吃掉的那部分事实）。
+ *  next_recheck_at/sample_reason 让 orchestrator 能看到"停牌到几时、为什么"——判断"这行
+ *  值不值得提前重派"是 orchestrator 的事，机械层只负责把事实摆出来，不再替它做隐藏决定。 */
 export interface MissingBySeason {
   series_id: string
+  series_name: string
   season: number
   missing: number
+  throttled: number
+  next_recheck_at: number | null
+  sample_reason: string | null
+}
+
+/** missingMovies 的行形状——missingBySeason 的电影同构版（电影没有"季"，所以是逐行事实而非
+ *  分组聚合，但同一套 missing/throttled/next_recheck_at/sample_reason 语义）。 */
+export interface MissingMovie {
+  id: string
+  name: string
+  missing: 0 | 1
+  throttled: 0 | 1
+  next_recheck_at: number | null
+  sample_reason: string | null
 }
 
 /** 胶水层修复（2026-07-16）：listMissingEpisodesInSeason 的行形状——一条缺口事实（不是聚合计数）。 */
@@ -313,20 +333,27 @@ export class LibraryRepo {
     this.db.prepare('UPDATE movies SET origin_lang = ? WHERE id = ?').run(lang, movieId)
   }
 
-  /** unavailable 复查到期后重新计入 missing——消费者是 v3 orchestrator 的
-   *  list_missing_coverage 工具（orchestratorAgent.tools.ts），旧管线的聚合层
-   *  （原 v2/aggregate 模块）已随退役T7 (Wave 2A) 删除。 */
+  /** 胶水层修复（Task 8c，裁决 R-3 呈现面——考古定罪：谓词曾是守门人，把退避窗口内的停牌缺口
+   *  整行隐藏，orchestrator 连"有一集停牌中"这个事实都看不到）：一季的覆盖事实行，missing 与
+   *  throttled 分开呈报，不再用 WHERE 谓词把 throttled 的整行吃掉——HAVING missing>0 OR
+   *  throttled>0 只是"完全没缺口的季不出现"（无事实可报，不是隐藏事实）。JOIN series 拿
+   *  series_name，消费者不必再自己二次查剧名。消费者是 v3 orchestrator 的 list_missing_coverage
+   *  工具（orchestratorAgent.tools.ts），旧管线的聚合层（原 v2/aggregate 模块）已随退役T7
+   *  (Wave 2A) 删除。 */
   missingBySeason(now?: number): MissingBySeason[] {
     const timestamp = now ?? Date.now()
     return this.db
       .prepare(
-        `SELECT series_id, season, count(*) as missing
-         FROM episodes
-         WHERE sub_status = 'missing'
-            OR (sub_status = 'unavailable' AND recheck_after <= ?)
-         GROUP BY series_id, season`
+        `SELECT e.series_id, s.name AS series_name, e.season,
+           SUM(CASE WHEN e.sub_status = 'missing' OR (e.sub_status = 'unavailable' AND e.recheck_after <= ?) THEN 1 ELSE 0 END) AS missing,
+           SUM(CASE WHEN e.sub_status = 'unavailable' AND e.recheck_after > ? THEN 1 ELSE 0 END) AS throttled,
+           MIN(CASE WHEN e.sub_status = 'unavailable' AND e.recheck_after > ? THEN e.recheck_after END) AS next_recheck_at,
+           MAX(CASE WHEN e.sub_status = 'unavailable' THEN e.status_reason END) AS sample_reason
+         FROM episodes e JOIN series s ON s.id = e.series_id
+         GROUP BY e.series_id, e.season
+         HAVING missing > 0 OR throttled > 0`
       )
-      .all(timestamp) as MissingBySeason[]
+      .all(timestamp, timestamp, timestamp) as MissingBySeason[]
   }
 
   /** 胶水层修复（2026-07-16）：某剧某季当前全部缺口的事实清单。机械预清洗产物，呈事实不做
@@ -359,15 +386,24 @@ export class LibraryRepo {
       .all(...(seasons && seasons.length > 0 ? [seriesId, ...seasons, now] : [seriesId, now])) as MissingEpisodeFact[]
   }
 
-  missingMovies(now?: number): Movie[] {
+  /** missingBySeason 的电影同构版（同一裁决 R-3 呈现面）——电影没有"季"可分组，行形状从整
+   *  Movie 行改为覆盖事实行：missing/throttled 是 0|1（电影本身就是一行，不是聚合计数），
+   *  语义与 missingBySeason 完全一致。WHERE 只筛掉 covered/embedded/ignored（对两个事实
+   *  字段都恒为 0，没有可报的缺口事实），不是把 throttled 藏起来——一行只要落在
+   *  missing/unavailable 状态里，missing 与 throttled 两者必有其一为 1。 */
+  missingMovies(now?: number): MissingMovie[] {
     const timestamp = now ?? Date.now()
     return this.db
       .prepare(
-        `SELECT * FROM movies
-         WHERE sub_status = 'missing'
-            OR (sub_status = 'unavailable' AND recheck_after <= ?)`
+        `SELECT id, name,
+           CASE WHEN sub_status = 'missing' OR (sub_status = 'unavailable' AND recheck_after <= ?) THEN 1 ELSE 0 END AS missing,
+           CASE WHEN sub_status = 'unavailable' AND recheck_after > ? THEN 1 ELSE 0 END AS throttled,
+           CASE WHEN sub_status = 'unavailable' AND recheck_after > ? THEN recheck_after END AS next_recheck_at,
+           CASE WHEN sub_status = 'unavailable' THEN status_reason END AS sample_reason
+         FROM movies
+         WHERE sub_status = 'missing' OR sub_status = 'unavailable'`
       )
-      .all(timestamp) as Movie[]
+      .all(timestamp, timestamp, timestamp) as MissingMovie[]
   }
 
   /** scan 磁盘 arm 记账用：该 item 是否已有任意 subtitles 行。已经走过正规 pipeline 记账

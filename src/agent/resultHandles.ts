@@ -124,12 +124,26 @@ export interface SearchSourceDeps {
 /** search_source: runs the existing multi-provider fan-out (runSearch — fetchLib.ts, unchanged)
  *  but does NOT hand the full result list to the model. Full results go into the result-set
  *  store; the model gets a handle + count + a short preview (design: source-result
- *  handle-ization, "不内联" — Anthropic writing-tools guidance on large tool results). */
+ *  handle-ization, "不内联" — Anthropic writing-tools guidance on large tool results).
+ *
+ *  Task 8c（审计发现 B9，事实诚实化）：this used to pass `() => {}` as runSearch's emit callback,
+ *  silently discarding every `provider_error` event a partial provider failure produces
+ *  (fetchLib.ts's runSearch emits one per failed adapter, then still returns the surviving
+ *  providers' results — fail-soft by design). The agent worker is asked to judge retry_later vs
+ *  no_safe_match on a search_source result, but had zero input distinguishing "every provider
+ *  ran clean and truly found nothing" from "one provider errored out and the rest came back
+ *  empty" — a transient failure looked identical to an honest empty result. providerFailures now
+ *  carries that fact through. */
 export function makeSearchSourceTool(deps: SearchSourceDeps) {
   return tool({
     description:
       'Search all configured subtitle providers for this media. Returns a result_set_id, a ' +
-      'count, and a short top-N preview — call list_candidates/get_candidate to see more.',
+      'count, and a short top-N preview — call list_candidates/get_candidate to see more. If ' +
+      'some providers failed this call, providerFailures lists them — a transient provider ' +
+      'failure is grounds for retry_later on affected targets, absence of results across ' +
+      'healthy providers is not. When you omit `languages` the search defaults to this task\'s ' +
+      'target language. Some providers (e.g. assrt, zimuku) only consult the first 1-2 of your ' +
+      'query variants per call — plan queries accordingly.',
     inputSchema: z.object({
       queries: z.array(z.string()).min(1),
       imdb: z.string().optional(),
@@ -146,13 +160,17 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
       const languages = args.languages?.length
         ? args.languages
         : deps.targetLanguage ? [deps.targetLanguage] : undefined
-      const candidates = await runSearch({ ...args, languages, deep: false }, deps.adapters, () => {})
+      const failures: { provider: string; message: string }[] = []
+      const candidates = await runSearch({ ...args, languages, deep: false }, deps.adapters, (e) => {
+        if (e.event === 'provider_error') failures.push({ provider: e.provider, message: e.message })
+      })
       const resultSetId = deps.store.create(candidates)
       const topN = deps.topN ?? 5
       return {
         result_set_id: resultSetId,
         count: candidates.length,
         top: candidates.slice(0, topN).map(summarizeCandidate),
+        providerFailures: failures,
       }
     },
   })

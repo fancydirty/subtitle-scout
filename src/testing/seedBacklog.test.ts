@@ -57,9 +57,15 @@ describe('seedBacklog', () => {
     const checkSeriesLayout = makeCheckSeriesLayoutTool(lib, tmdb)
 
     const messyResult = await checkSeriesLayout.execute!({ seriesId: 'tmdb:100', season: 1 }, fakeOpts)
-    expect(messyResult).toEqual({ mirrorEpisodeCount: 40, tmdbEpisodeCount: 25, exceedsSeasonTable: true })
+    expect(messyResult).toEqual({
+      mirrorEpisodeCount: 40, tmdbEpisodeCount: 25, exceedsSeasonTable: true,
+      tmdbUnavailable: false, diskLayoutNonstandard: false,
+    })
 
     const normalResult = await checkSeriesLayout.execute!({ seriesId: 'tmdb:200', season: 1 }, fakeOpts)
-    expect(normalResult).toEqual({ mirrorEpisodeCount: 12, tmdbEpisodeCount: 12, exceedsSeasonTable: false })
+    expect(normalResult).toEqual({
+      mirrorEpisodeCount: 12, tmdbEpisodeCount: 12, exceedsSeasonTable: false,
+      tmdbUnavailable: false, diskLayoutNonstandard: false,
+    })
   })
 })
