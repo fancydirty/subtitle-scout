@@ -5,9 +5,14 @@ import { join, normalize, extname } from 'node:path'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
+import type { JobsRepo } from '../v2/jobsRepo.js'
+import type { TmdbClient } from '../adapters/providers/tmdb.js'
+import { refreshSeriesCatalog } from '../v2/tmdbCatalog.js'
 import {
   buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
+  buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
+  buildTriage, redispatch,
   type ReconcileAllResultDTO,
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
@@ -26,6 +31,13 @@ export interface DashboardOpts {
   /** dashboard G4：GET /api/v2/settings/deploy 脱敏展示的 env 来源——默认 process.env，测试
    *  注入固定值以避免依赖跑测试的机器/CI 实际配了什么。 */
   env?: Record<string, string | undefined>
+  /** dashboard G5：POST /api/v2/workflow/redispatch（人类扳手：手动重派）依赖——undefined（纯
+   *  只读测试场景）时该端点返回 503，同 reconcileAll 缺席的既有先例。 */
+  jobs?: Pick<JobsRepo, 'upsertWorkerTask'>
+  /** dashboard G5：GET /api/v2/library/series/:id 命中时的惰性 TMDB 应有集缓存刷新（G2 遗留的
+   *  触发点）——undefined（TMDB_API_KEY 未配置）时跳过，端点本身照常返回磁盘现状，不因为缺
+   *  TMDB 而报错。 */
+  tmdb?: Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes'>
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -45,7 +57,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll, env = process.env } = opts
+  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb } = opts
   const settingsRepo = new SettingsRepo(db)
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
@@ -56,6 +68,19 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     deploySettings: () => buildDeploySettings(env),
     roots: () => settingsRepo.listRoots(),
     fsList: (path) => listMediaSubdirs(path),
+    workflowPending: () => buildWorkflowPending(db, settingsRepo, Date.now()),
+    workflowPasses: (limit) => buildWorkflowPasses(db, limit),
+    workflowWorkers: () => buildWorkflowWorkers(db),
+    // G2 遗留的惰性刷新触发点：命中一个真实存在的 series 时 fire-and-forget 踢一次
+    // refreshSeriesCatalog（TTL 门在函数内部，无脑调用即可）——tmdb 缺席时跳过，不影响这个端点
+    // 本身的同步返回；只在 detail 非 null（series 真存在）时才触发，避免对着不存在的 series id
+    // 白打一次早退调用。
+    librarySeriesDetail: (id) => {
+      const detail = buildLibrarySeriesDetail(db, id)
+      if (detail && tmdb) void refreshSeriesCatalog(db, tmdb, id, Date.now()).catch(() => {})
+      return detail
+    },
+    triage: () => buildTriage(db),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
@@ -152,6 +177,41 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         return
       }
 
+      // dashboard G5：/api/v2/triage/claim——与上面 /api/parked/claim 同一个 claimParked 实现，
+      // 两条路径并存（v2 前缀给新前端一个自洽面，旧路径不动，见 apiV2.ts claimParked 头注释）。
+      if (rawPath === '/api/v2/triage/claim') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        let raw = ''
+        for await (const chunk of req) raw += chunk
+        let body: unknown
+        try {
+          body = JSON.parse(raw || '{}')
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'invalid JSON body' }))
+          return
+        }
+        const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown; season?: unknown }
+        const result = claimParked(db, {
+          path: typeof b.path === 'string' ? b.path : '',
+          tmdbId: typeof b.tmdbId === 'string' ? b.tmdbId : String(b.tmdbId ?? ''),
+          isTv: Boolean(b.isTv),
+          season: typeof b.season === 'number' ? b.season : (b.season == null ? b.season as null | undefined : NaN),
+        })
+        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(result))
+        return
+      }
+
       // dashboard G4：PUT /api/v2/settings——GET 同路径的展示走下面纯同步的 handleApiRoute
       // 分发（RouterDeps.settings），这里只截 method !== 'GET' 的写路径：PUT 之外一律 405
       // （同 parked/claim 先例：先 method 门再 token 门，PUT 需要解析 JSON body，不能是纯函数）。
@@ -230,6 +290,42 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = addMediaRoot(settingsRepo, b.path, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? { ok: true } : { error: result.error }))
+        return
+      }
+
+      // dashboard G5：POST /api/v2/workflow/redispatch——人类扳手①：手动重派。与
+      // /api/v2/reconcile-all 同一先例：method 门 → token 门 → 依赖是否配置门（jobs 缺席→503，
+      // 这里没有 TMDB_API_KEY 一说，纯粹是"watch 进程有没有把 JobsRepo 传进来"）→ body 解析 →
+      // 转调 apiV2.redispatch 纯函数（zod 校验 + upsertWorkerTask）。
+      if (rawPath === '/api/v2/workflow/redispatch') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        if (!jobs) {
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'redispatch not configured (jobs repo missing)' }))
+          return
+        }
+        let raw = ''
+        for await (const chunk of req) raw += chunk
+        let body: unknown
+        try {
+          body = JSON.parse(raw || '{}')
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'invalid JSON body' }))
+          return
+        }
+        const result = redispatch(jobs, body, Date.now())
+        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(result.ok ? result.outcome : { error: result.error }))
         return
       }
 

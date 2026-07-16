@@ -8,8 +8,12 @@ import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
+import { JobsRepo } from '../v2/jobsRepo.js'
+import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { startDashboard } from './server.js'
 import { traceBus, type TraceEvent } from './traceBus.js'
+
+type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes'>
 
 let server: Server | undefined
 let db: ScoutDb
@@ -44,11 +48,17 @@ async function start(
   distDir: string, token?: string,
   reconcileAll?: () => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>,
   env?: Record<string, string | undefined>,
+  // dashboard G5：POST /api/v2/workflow/redispatch 依赖（缺席→503，照 reconcileAll 先例）。
+  jobs?: Pick<JobsRepo, 'upsertWorkerTask'>,
+  // dashboard G5：GET /api/v2/library/series/:id 命中时的惰性刷新接线（缺席→跳过，不报错）。
+  tmdb?: FakeTmdb,
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
     reconcileAll,
     env,
+    jobs,
+    tmdb,
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
@@ -579,6 +589,186 @@ describe('startDashboard (v2)', () => {
         const { base } = await start(distWith('<!doctype html>'), 's3cret')
         const res = await fetch(`${base}/api/v2/settings/roots?path=/media/tv`, { method: 'DELETE' })
         expect(res.status).toBe(401)
+      })
+    })
+  })
+
+  // dashboard G5：workflow/library/甄别聚合 API——七端点全走真实 HTTP round-trip。
+  describe('workflow/library/甄别聚合 API（dashboard G5）', () => {
+    it('GET /api/v2/workflow/pending 聚合缺口事实 + parked 计数 + meta 新鲜度', async () => {
+      db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(NOW))
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/workflow/pending`)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.series.some((s: { seriesId: string; season: number }) => s.seriesId === 's1' && s.season === 1)).toBe(true)
+      expect(body.meta.lastScanAt).toBe(NOW)
+      expect(typeof body.meta.files).toBe('number')
+    })
+
+    it('GET /api/v2/workflow/passes 返回 orchestrate runs + receipts（从 trace_json 解析）', async () => {
+      const jobId = Number(
+        db.prepare(
+          `INSERT INTO jobs (kind, series_id, payload, state, priority, created_at, updated_at)
+           VALUES ('worker_task', 'orchestrator-shard-1', ?, 'done', 0, ?, ?)`
+        ).run(JSON.stringify({ taskType: 'orchestrate' }), NOW, NOW).lastInsertRowid
+      )
+      const events = [{
+        runKey: `job-${jobId}`, seq: 0, tool: 'dispatch_find_subtitle_task',
+        argsSummary: '{}', resultSummary: '{"outcome":"created"}', tookMs: 1, at: NOW,
+      }]
+      db.prepare(
+        `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, trace_json)
+         VALUES (?, ?, ?, 'orchestrate', 'ok', NULL, ?)`
+      ).run(jobId, NOW - 1000, NOW, JSON.stringify(events))
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/workflow/passes`)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body[0].receipts).toEqual({ created: 1, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 })
+    })
+
+    it('GET /api/v2/workflow/workers 返回跑中 worker + 近期 runs', async () => {
+      db.prepare(
+        `INSERT INTO jobs (kind, series_id, payload, state, priority, created_at, updated_at)
+         VALUES ('worker_task', 's1', ?, 'searching', 0, ?, ?)`
+      ).run(JSON.stringify({ taskType: 'find_subtitle', seasons: [1] }), NOW, NOW)
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/workflow/workers`)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.running.some((r: { seriesId: string; taskType: string }) => r.seriesId === 's1' && r.taskType === 'find_subtitle')).toBe(true)
+      expect(body.recent.length).toBeGreaterThan(0)
+    })
+
+    describe('GET /api/v2/library/series/:id（三层格阵合并 + 惰性刷新接线）', () => {
+      it('返回合并详情，404 未命中', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/library/series/s1`)
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.series.name).toBe('Series A')
+        const notFound = await fetch(`${base}/api/v2/library/series/nope`)
+        expect(notFound.status).toBe(404)
+      })
+
+      it('tmdb 未配置时端点仍正常工作（不报错，只是跳过惰性刷新）', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/library/series/s1`)
+        expect(res.status).toBe(200)
+      })
+
+      // 注：真实 seriesId 形如 'tmdb:<n>'（含冒号，src/v2/ownIds.ts）；router.ts 的 SAFE_ID
+      // 字符集不含 ':'，这条路由（同既有 /api/v2/series/:id）目前无法用真实带冒号的 id 走完整
+      // HTTP round-trip 触发 refreshSeriesCatalog 的真实 TMDB 分支（tmdbIdFromOwnId 对不含
+      // 冒号的 id 恒早退）——这是路由层既有限制，不是本端点新引入的缺陷，这里只验证 tmdb 配置
+      // 存在时命中仍是 200、不因 fire-and-forget 分支而报错/挂起。
+      it('tmdb 已配置时命中不报错、不阻塞响应（早退分支：测试用 id 不合 tmdb:<n> 形状）', async () => {
+        const tmdbStub: FakeTmdb = {
+          getSeasonTable: async () => [{ seasonNumber: 1, episodeCount: 1, airDate: null }],
+          getSeasonEpisodes: async () => [{ episode: 1, title: 'Ep1' }],
+        }
+        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
+        const res = await fetch(`${base}/api/v2/library/series/s1`)
+        expect(res.status).toBe(200)
+      })
+    })
+
+    describe('GET /api/v2/triage + POST /api/v2/triage/claim', () => {
+      it('GET /api/v2/triage 返回 pending + claimed', async () => {
+        const lib = new LibraryRepo(db)
+        lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/triage`)
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.pending).toEqual([
+          { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
+        ])
+        expect(body.claimed).toEqual([])
+      })
+
+      it('POST /api/v2/triage/claim 复用 claimParked 逻辑（与 /api/parked/claim 同一实现）', async () => {
+        const lib = new LibraryRepo(db)
+        lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/triage/claim`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '999', isTv: true }),
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ ok: true })
+        expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null })
+      })
+
+      it('POST /api/v2/triage/claim 校验失败 → 400', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/triage/claim`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
+        })
+        expect(res.status).toBe(400)
+      })
+
+      it('POST /api/v2/triage/claim 非 POST 方法 405', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/triage/claim`, { method: 'GET' })
+        expect(res.status).toBe(405)
+      })
+
+      it('POST /api/v2/triage/claim 需要配置的 token', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 's3cret')
+        const res = await fetch(`${base}/api/v2/triage/claim`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+        })
+        expect(res.status).toBe(401)
+      })
+    })
+
+    describe('POST /api/v2/workflow/redispatch（人类扳手：手动重派）', () => {
+      it('合法 body → 转调 upsertWorkerTask，原样返回四态回执', async () => {
+        const jobs = new JobsRepo(db)
+        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, jobs)
+        const res = await fetch(`${base}/api/v2/workflow/redispatch`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ seriesId: 's1', seasons: [1], includeThrottled: true }),
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ outcome: 'created' })
+      })
+
+      it('zod 拒绝非法 body → 400', async () => {
+        const jobs = new JobsRepo(db)
+        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, jobs)
+        const res = await fetch(`${base}/api/v2/workflow/redispatch`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ seriesId: '' }),
+        })
+        expect(res.status).toBe(400)
+      })
+
+      it('jobs 未配置 → 503（照 reconcileAll 先例）', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/workflow/redispatch`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ seriesId: 's1' }),
+        })
+        expect(res.status).toBe(503)
+      })
+
+      it('非 POST 方法 405，token 门', async () => {
+        const jobs = new JobsRepo(db)
+        const { base } = await start(distWith('<!doctype html>'), 's3cret', undefined, undefined, jobs)
+        expect((await fetch(`${base}/api/v2/workflow/redispatch`, { method: 'GET' })).status).toBe(405)
+        const unauthed = await fetch(`${base}/api/v2/workflow/redispatch`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seriesId: 's1' }),
+        })
+        expect(unauthed.status).toBe(401)
       })
     })
   })

@@ -70,6 +70,36 @@ describe('traceBus', () => {
     expect(snap[1]).toMatchObject({ runKey, seq: 1, tool: 'get_candidate' })
   })
 
+  // G5：直播补拉用 peek——非破坏性读尾部 N 条，不能用 snapshot（会清空缓冲）。
+  describe('peek（G5：直播补拉非破坏性读）', () => {
+    it('返回尾部 limit 条，不清空缓冲（peek 之后 snapshot 仍拿到全量）', () => {
+      const runKey = freshKey('peek')
+      for (let seq = 0; seq < 5; seq++) traceBus.publish(ev(runKey, seq))
+
+      const peeked = traceBus.peek(runKey, 3)
+      expect(peeked.map(e => e.seq)).toEqual([2, 3, 4])
+
+      // peek 不清空——再 peek 一次拿到同样的尾部
+      expect(traceBus.peek(runKey, 3).map(e => e.seq)).toEqual([2, 3, 4])
+
+      // snapshot 仍能拿到全量 5 条（peek 与 snapshot 互不干扰）
+      const snap = traceBus.snapshot(runKey)
+      expect(snap).toHaveLength(5)
+      expect(snap.map(e => e.seq)).toEqual([0, 1, 2, 3, 4])
+    })
+
+    it('limit 超过缓冲长度时返回全量', () => {
+      const runKey = freshKey('peek-over')
+      traceBus.publish(ev(runKey, 0))
+      traceBus.publish(ev(runKey, 1))
+      expect(traceBus.peek(runKey, 20).map(e => e.seq)).toEqual([0, 1])
+    })
+
+    it('不存在的 runKey 返回空数组', () => {
+      expect(traceBus.peek(freshKey('peek-missing'), 10)).toEqual([])
+    })
+  })
+
   it('订阅者抛错不炸 publish 也不影响其他订阅者', () => {
     const runKey = freshKey('throw')
     const receivedByGood: TraceEvent[] = []

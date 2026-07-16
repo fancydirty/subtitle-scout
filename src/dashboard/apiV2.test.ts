@@ -5,13 +5,17 @@ import { join } from 'node:path'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
+import { JobsRepo } from '../v2/jobsRepo.js'
 import {
   buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth, buildParked, claimParked,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
+  buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
+  buildTriage, redispatch,
 } from './apiV2.js'
 // 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
 import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
+import { traceBus } from './traceBus.js'
 
 let db: ScoutDb
 let lib: LibraryRepo
@@ -45,7 +49,12 @@ function insertJob(
  *  simplified stand-in. */
 function insertWorkerTaskJob(
   db: ScoutDb,
-  fields: { seriesId?: string; season?: number | null; movieId?: string; taskType: string; state: string; priority: number },
+  fields: {
+    seriesId?: string; season?: number | null; movieId?: string; taskType: string; state: string; priority: number
+    /** G5：buildWorkflowWorkers 的 payload.seasons 解析测试用——省略=payload 不带这个键
+     *  （parseWorkerPayload 视作 null，同旧调用点行为不变）。 */
+    seasons?: number[] | null
+  },
 ): number {
   const info = db
     .prepare(
@@ -56,7 +65,11 @@ function insertWorkerTaskJob(
       fields.seriesId ?? null,
       fields.season ?? null,
       fields.movieId ?? null,
-      JSON.stringify({ taskType: fields.taskType, reason: 'test' }),
+      JSON.stringify(
+        fields.seasons !== undefined
+          ? { taskType: fields.taskType, seasons: fields.seasons, reason: 'test' }
+          : { taskType: fields.taskType, reason: 'test' }
+      ),
       fields.state,
       fields.priority,
       NOW,
@@ -430,5 +443,215 @@ describe('listMediaSubdirs（GET /api/v2/fs/list：只列子目录名，绝不�
     } finally {
       chmodSync(locked, 0o755) // 恢复权限，让临时目录可被系统正常清理
     }
+  })
+})
+
+// dashboard G5：workflow/library/甄别聚合 API——纯读聚合 + 两个人类扳手（redispatch/claim）。
+// 北极星约束：全部走既有 repo/模块，不新增任何判断逻辑——机械层只产出事实。
+
+describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/missingMovies/parked/meta 直译聚合）', () => {
+  it('camelCase 直译 + meta 新鲜度行（roots/lastScanAt/files）', () => {
+    // e4（s1 season2, unavailable）经 markUnavailable 建立真实退避窗口，制造 throttled 事实
+    // （plain upsertEpisode 不落 recheck_after，NULL 比较恒 falsy，missingBySeason 两桶都是 0）。
+    lib.markUnavailable('e4', 'no_safe_match', NOW)
+    lib.upsertParkedPath('/media/tv/Unknown/e1.mkv', 'ambiguous match', NOW)
+    const settings = new SettingsRepo(db)
+    settings.addRoot('/media/tv', NOW)
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(NOW))
+
+    const result = buildWorkflowPending(db, settings, NOW)
+
+    const s1Season1 = result.series.find(s => s.seriesId === 's1' && s.season === 1)!
+    expect(s1Season1).toMatchObject({ seriesName: 'Series A', missing: 1, throttled: 0 })
+
+    const s1Season2 = result.series.find(s => s.seriesId === 's1' && s.season === 2)!
+    expect(s1Season2.missing).toBe(0)
+    expect(s1Season2.throttled).toBe(1)
+    expect(s1Season2.nextRecheckAt).toBe(NOW + 86_400_000) // 阶梯第 1 档=1 天
+    expect(s1Season2.sampleReason).toBe('no_safe_match')
+
+    expect(result.movies).toEqual([
+      { id: 'm1', name: 'Movie Z', missing: 1, throttled: 0, nextRecheckAt: null, sampleReason: null },
+    ])
+    expect(result.parked).toBe(1)
+    expect(result.meta).toEqual({ roots: ['/media/tv'], lastScanAt: NOW, files: 5 }) // episodes(4)+movies(1)
+  })
+
+  it('空库：series/movies 空数组，parked 0，lastScanAt null（meta 表从未写过 last_ingest_at）', () => {
+    const freshDb = openDb(':memory:')
+    const settings = new SettingsRepo(freshDb)
+    const result = buildWorkflowPending(freshDb, settings, NOW)
+    expect(result).toEqual({ series: [], movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 } })
+  })
+})
+
+describe('buildWorkflowPasses（GET /api/v2/workflow/passes：orchestrate runs + receipts 从 trace_json 解析）', () => {
+  function insertOrchestrateRun(
+    jobId: number, startedAt: number, finishedAt: number, detail: string, traceJson: string | null,
+  ): void {
+    db.prepare(
+      `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, trace_json)
+       VALUES (?, ?, ?, 'orchestrate', ?, NULL, ?)`
+    ).run(jobId, startedAt, finishedAt, detail, traceJson)
+  }
+
+  it('形状：id/jobId/startedAt/finishedAt/detail + receipts（2 created + 1 coalesced + 1 截断→unknown，非 dispatch_ 前缀不计入）', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 'orchestrator-shard-1', taskType: 'orchestrate', state: 'done', priority: 0 })
+    const events = [
+      { runKey: `job-${jobId}`, seq: 0, tool: 'dispatch_find_subtitle_task', argsSummary: '{}', resultSummary: '{"dispatched":true,"outcome":"created","remainingCapacity":99}', tookMs: 5, at: NOW },
+      { runKey: `job-${jobId}`, seq: 1, tool: 'dispatch_find_subtitle_task', argsSummary: '{}', resultSummary: '{"dispatched":true,"outcome":"created","remainingCapacity":98}', tookMs: 5, at: NOW + 1 },
+      { runKey: `job-${jobId}`, seq: 2, tool: 'dispatch_realign_task', argsSummary: '{}', resultSummary: '{"dispatched":false,"outcome":"coalesced","pendingState":"wanted","note":"merged"}', tookMs: 5, at: NOW + 2 },
+      // 模拟 summarizeForTrace 的 200 字符截断——outcome 值本身被切断，正则提不出完整枚举词。
+      { runKey: `job-${jobId}`, seq: 3, tool: 'dispatch_find_subtitle_task', argsSummary: '{}', resultSummary: '{"dispatched":false,"outcome":"blocked_dorm…', tookMs: 5, at: NOW + 3 },
+      // spawn_sibling_orchestrator 不以 'dispatch_' 开头——即使自带 outcome 字段也不计入 receipts。
+      { runKey: `job-${jobId}`, seq: 4, tool: 'spawn_sibling_orchestrator', argsSummary: '{}', resultSummary: '{"spawned":true,"outcome":"created"}', tookMs: 5, at: NOW + 4 },
+    ]
+    insertOrchestrateRun(jobId, NOW - 1000, NOW, 'dispatched 3 find / 0 realign, siblings 0: done', JSON.stringify(events))
+
+    const passes = buildWorkflowPasses(db, 20)
+    expect(passes).toHaveLength(1)
+    expect(passes[0]).toMatchObject({ jobId, startedAt: NOW - 1000, finishedAt: NOW, detail: 'dispatched 3 find / 0 realign, siblings 0: done' })
+    expect(passes[0].receipts).toEqual({ created: 2, revived: 0, coalesced: 1, blocked_dormant: 0, unknown: 1 })
+  })
+
+  it('trace_json 为 NULL → receipts 全零（不是新账目，纯解析呈现，无快照即无事实）', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 'orchestrator-shard-2', taskType: 'orchestrate', state: 'done', priority: 0 })
+    insertOrchestrateRun(jobId, NOW - 1000, NOW, 'no dispatches', null)
+    const passes = buildWorkflowPasses(db, 20)
+    expect(passes[0].receipts).toEqual({ created: 0, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 })
+  })
+
+  it('只取 decision=orchestrate 的行，finished_at desc（beforeEach 里两条非 orchestrate 的 runs 不出现）', () => {
+    const jobId1 = insertWorkerTaskJob(db, { seriesId: 'orchestrator-shard-3', taskType: 'orchestrate', state: 'done', priority: 0 })
+    const jobId2 = insertWorkerTaskJob(db, { seriesId: 'orchestrator-shard-4', taskType: 'orchestrate', state: 'done', priority: 0 })
+    insertOrchestrateRun(jobId1, NOW - 5000, NOW - 4000, 'first', null)
+    insertOrchestrateRun(jobId2, NOW - 3000, NOW - 1000, 'second', null)
+    const passes = buildWorkflowPasses(db, 20)
+    expect(passes.map(p => p.detail)).toEqual(['second', 'first'])
+  })
+})
+
+describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_task + 近期非 orchestrate runs）', () => {
+  it('running：state=searching 的 worker_task，payload 解析出 taskType/seasons，trail 来自 traceBus.peek', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's1', season: null, taskType: 'find_subtitle', state: 'searching', priority: 50, seasons: [1, 2] })
+    traceBus.publish({ runKey: `job-${jobId}`, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: NOW })
+
+    const result = buildWorkflowWorkers(db)
+    const running = result.running.find(r => r.jobId === jobId)!
+    expect(running).toMatchObject({ seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: [1, 2] })
+    expect(running.trail.map(e => e.tool)).toEqual(['search_source'])
+    traceBus.snapshot(`job-${jobId}`) // 测试卫生：清空本用例写入的进程级单例缓冲，不留给别的用例
+  })
+
+  it('recent：非 orchestrate 的 runs 行，finished_at desc（beforeEach 已插入 no_safe_match/download 两条）', () => {
+    const result = buildWorkflowWorkers(db)
+    expect(result.recent.map(r => r.decision)).toEqual(['download', 'no_safe_match'])
+  })
+
+  it('空库：running/recent 皆空数组', () => {
+    const freshDb = openDb(':memory:')
+    expect(buildWorkflowWorkers(freshDb)).toEqual({ running: [], recent: [] })
+  })
+})
+
+describe('buildLibrarySeriesDetail（GET /api/v2/library/series/:id：三层格阵合并——canonical ∪ 磁盘）', () => {
+  beforeEach(() => {
+    // season1 多一集只在 TMDB 应有集里（磁盘没有）；season3 纯 canonical（磁盘完全没有这季）。
+    const insertCatalog = db.prepare(
+      `INSERT INTO tmdb_seasons (series_id, season, episode, title, fetched_at) VALUES (?, ?, ?, ?, ?)`
+    )
+    insertCatalog.run('s1', 1, 1, 'Ep1 Title', NOW)
+    insertCatalog.run('s1', 1, 4, 'Ep4 Title', NOW)
+    insertCatalog.run('s1', 3, 1, 'S3E1 Title', NOW)
+    db.prepare(
+      `INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?, ?, ?, ?, ?)`
+    ).run('e1', '/media/tv/Series A/S01/e1.zh-Hans.srt', 'zh-Hans', 'scout-download', NOW)
+  })
+
+  it('形状：series 行直译 + 季号并集升序 + 各季 canonical/onDisk/coverage', () => {
+    const detail = buildLibrarySeriesDetail(db, 's1')!
+    expect(detail.series).toEqual({
+      id: 's1', name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag-s1', year: 2021, layoutNonstandard: false,
+    })
+    expect(detail.seasons.map(s => s.season)).toEqual([1, 2, 3]) // 并集：磁盘{1,2} ∪ canonical{1,3}
+
+    const season1 = detail.seasons[0]
+    expect(season1.canonical).toEqual([{ episode: 1, title: 'Ep1 Title' }, { episode: 4, title: 'Ep4 Title' }])
+    expect(season1.onDisk.map(e => e.episode)).toEqual([1, 2, 3])
+    expect(season1.onDisk[1]).toMatchObject({ episode: 2, subStatus: 'missing', statusReason: null, recheckAfter: null })
+    expect(season1.coverage).toEqual([{ episode: 1, lang: 'zh-Hans', path: '/media/tv/Series A/S01/e1.zh-Hans.srt' }])
+
+    const season2 = detail.seasons[1]
+    expect(season2.canonical).toEqual([]) // 该季无 TMDB 缓存
+    expect(season2.onDisk.map(e => e.episode)).toEqual([1])
+    expect(season2.coverage).toEqual([])
+
+    const season3 = detail.seasons[2]
+    expect(season3.canonical).toEqual([{ episode: 1, title: 'S3E1 Title' }])
+    expect(season3.onDisk).toEqual([]) // 磁盘完全没有这季
+    expect(season3.coverage).toEqual([])
+  })
+
+  it('series 不存在 → null（404 语义）', () => {
+    expect(buildLibrarySeriesDetail(db, 'nope')).toBeNull()
+  })
+})
+
+describe('buildTriage（GET /api/v2/triage：pending=buildParked + claimed=identify_overrides 全行直译）', () => {
+  it('形状：pending 转发 buildParked（含 reason），claimed 直译 identify_overrides', () => {
+    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+    lib.addOverride('/media/tv/Claimed Show/', '555', true, NOW, 2)
+
+    const triage = buildTriage(db)
+    expect(triage.pending).toEqual([
+      { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
+    ])
+    expect(triage.claimed).toEqual([
+      { pathPrefix: '/media/tv/Claimed Show/', tmdbId: '555', isTv: true, season: 2, createdAt: NOW },
+    ])
+  })
+
+  it('空表：pending/claimed 皆空数组', () => {
+    const freshDb = openDb(':memory:')
+    expect(buildTriage(freshDb)).toEqual({ pending: [], claimed: [] })
+  })
+})
+
+describe('redispatch（POST /api/v2/workflow/redispatch：转调 upsertWorkerTask，与 dispatch_find_subtitle_task 工具逐字段同形）', () => {
+  it('合法 body → upsertWorkerTask({seriesId,season:null,movieId:null},{taskType:find_subtitle,...})，原样返回四态回执', () => {
+    const jobs = new JobsRepo(db)
+    const result = redispatch(jobs, { seriesId: 's1', seasons: [1, 2], includeThrottled: true }, NOW)
+    expect(result).toEqual({ ok: true, outcome: { outcome: 'created' } })
+
+    const row = db.prepare(`SELECT series_id, season, movie_id, payload FROM jobs WHERE kind = 'worker_task'`).get() as
+      { series_id: string | null; season: number | null; movie_id: string | null; payload: string | null }
+    expect(row.series_id).toBe('s1')
+    expect(row.season).toBeNull()
+    expect(row.movie_id).toBeNull()
+    expect(JSON.parse(row.payload!)).toEqual({
+      taskType: 'find_subtitle', seasons: [1, 2], reason: 'manual redispatch from dashboard', includeThrottled: true,
+    })
+  })
+
+  it('省略 seasons/includeThrottled → seasons:null，includeThrottled:false（同 dispatch 工具默认）', () => {
+    const jobs = new JobsRepo(db)
+    const result = redispatch(jobs, { seriesId: 's2' }, NOW)
+    expect(result).toEqual({ ok: true, outcome: { outcome: 'created' } })
+    const row = db.prepare(`SELECT payload FROM jobs WHERE series_id = 's2'`).get() as { payload: string }
+    expect(JSON.parse(row.payload)).toEqual({
+      taskType: 'find_subtitle', seasons: null, reason: 'manual redispatch from dashboard', includeThrottled: false,
+    })
+  })
+
+  it('zod 拒绝：seriesId 空字符串 → ok:false，不写任何行', () => {
+    const jobs = new JobsRepo(db)
+    const result = redispatch(jobs, { seriesId: '' }, NOW)
+    expect(result).toEqual({ ok: false, error: expect.any(String) })
+  })
+
+  it('zod 拒绝：seasons 含非正整数 → ok:false', () => {
+    const jobs = new JobsRepo(db)
+    const result = redispatch(jobs, { seriesId: 's1', seasons: [0, -1] }, NOW)
+    expect(result.ok).toBe(false)
   })
 })

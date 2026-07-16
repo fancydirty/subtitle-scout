@@ -54,6 +54,16 @@ export const traceBus = {
     buffers.delete(runKey)
     return buf
   },
+
+  /** G5：直播补拉专用——非破坏性读该 runKey 缓冲的尾部 limit 条（不清空，可反复调用），与
+   *  snapshot 互不干扰（谁都不影响对方看到的数据）。返回的是浅拷贝，调用方改动返回数组不会
+   *  污染内部缓冲。runKey 从未出现过、limit<=0 时返回 []。 */
+  peek(runKey: string, limit: number): TraceEvent[] {
+    if (limit <= 0) return []
+    const buf = buffers.get(runKey)
+    if (!buf || buf.length === 0) return []
+    return buf.length <= limit ? [...buf] : buf.slice(buf.length - limit)
+  },
 }
 
 /** 绑定一个 runKey，返回一个补全 runKey + 自增 seq（从 0 开始）后调用 traceBus.publish 的函数。

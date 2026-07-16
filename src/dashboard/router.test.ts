@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
+  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO,
 } from './apiV2.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 
@@ -38,8 +39,31 @@ const deploySettingsDTO: DeploySettingsDTO = {
 }
 const mediaRoots: MediaRoot[] = [{ path: '/media/tv', type: 'local', addedAt: 1 }]
 
+// dashboard G5：workflow/library/甄别聚合 API 的路由层 stub DTO。
+const workflowPendingDTO: WorkflowPendingDTO = {
+  series: [{ seriesId: 's1', seriesName: 'A', season: 1, missing: 1, throttled: 0, nextRecheckAt: null, sampleReason: null }],
+  movies: [], parked: 0, meta: { roots: ['/media/tv'], lastScanAt: 1, files: 1 },
+}
+const workflowPassDTO: WorkflowPassDTO = {
+  id: 1, jobId: 1, startedAt: 1, finishedAt: 2, detail: 'x',
+  receipts: { created: 1, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 },
+}
+const workflowWorkersDTO: WorkflowWorkersDTO = {
+  running: [{ jobId: 1, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: null, startedAtLease: 1, trail: [] }],
+  recent: [{ jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2 }],
+}
+const librarySeriesDetailDTO: LibrarySeriesDetailDTO = {
+  series: { id: 's1', name: 'A', chineseTitle: null, posterPath: null, year: null, layoutNonstandard: false },
+  seasons: [],
+}
+const triageDTO: TriageDTO = {
+  pending: [parkedItem],
+  claimed: [{ pathPrefix: '/media/tv/X/', tmdbId: '1', isTv: true, season: null, createdAt: 1 }],
+}
+
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
+let lastPassesLimit: number | null = null
 const deps: RouterDeps = {
   library: () => [libItem],
   series: (id) => (id === 's1' ? seriesDetail : null),
@@ -52,6 +76,11 @@ const deps: RouterDeps = {
     lastFsListPath = path
     return path === '/media' ? ({ ok: true, dirs: ['tv', 'anime'] } satisfies FsListResult) : { ok: false, error: 'path does not exist' }
   },
+  workflowPending: () => workflowPendingDTO,
+  workflowPasses: (limit) => { lastPassesLimit = limit; return [workflowPassDTO] },
+  workflowWorkers: () => workflowWorkersDTO,
+  librarySeriesDetail: (id) => (id === 's1' ? librarySeriesDetailDTO : null),
+  triage: () => triageDTO,
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string>; token?: string; configuredToken?: string } = {}) =>
@@ -137,5 +166,58 @@ describe('handleApiRoute (v2)', () => {
   it('token 门也保护新增的 v2 端点', () => {
     expect(call('/api/v2/settings', { configuredToken: 's3cret' }).status).toBe(401)
     expect(call('/api/v2/settings', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
+  })
+
+  // dashboard G5：workflow/library/甄别聚合 API——五个纯同步 GET 端点的路由层测试。
+  describe('workflow/library/甄别聚合 API（dashboard G5）', () => {
+    it('routes GET /api/v2/workflow/pending', () => {
+      const r = call('/api/v2/workflow/pending')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual(workflowPendingDTO)
+    })
+
+    it('routes GET /api/v2/workflow/passes，limit 默认 20、clamp 到 [1,100]', () => {
+      call('/api/v2/workflow/passes')
+      expect(lastPassesLimit).toBe(20)
+      call('/api/v2/workflow/passes', { query: { limit: '5' } })
+      expect(lastPassesLimit).toBe(5)
+      call('/api/v2/workflow/passes', { query: { limit: '9999' } })
+      expect(lastPassesLimit).toBe(100)
+      // limit=0 是 falsy，同既有 /api/v2/runs 先例（`Number(...) || 默认值`）一样落回默认值 20，
+      // 不是 clamp 到下界 1——0 本身从未真正参与 Math.max/min 比较。
+      call('/api/v2/workflow/passes', { query: { limit: '0' } })
+      expect(lastPassesLimit).toBe(20)
+      call('/api/v2/workflow/passes', { query: { limit: '-5' } })
+      expect(lastPassesLimit).toBe(1)
+      const r = call('/api/v2/workflow/passes')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual([workflowPassDTO])
+    })
+
+    it('routes GET /api/v2/workflow/workers', () => {
+      const r = call('/api/v2/workflow/workers')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual(workflowWorkersDTO)
+    })
+
+    it('routes GET /api/v2/library/series/:id，404 未命中，400 非法 id', () => {
+      const hit = call('/api/v2/library/series/s1')
+      expect(hit.status).toBe(200)
+      expect(hit.json).toEqual(librarySeriesDetailDTO)
+      expect(call('/api/v2/library/series/nope').status).toBe(404)
+      expect(call('/api/v2/library/series/a..b').status).toBe(400)
+    })
+
+    it('routes GET /api/v2/triage', () => {
+      const r = call('/api/v2/triage')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual(triageDTO)
+    })
+
+    it('token 门同样保护五个新端点', () => {
+      expect(call('/api/v2/workflow/pending', { configuredToken: 's3cret' }).status).toBe(401)
+      expect(call('/api/v2/library/series/s1', { configuredToken: 's3cret' }).status).toBe(401)
+      expect(call('/api/v2/triage', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
+    })
   })
 })

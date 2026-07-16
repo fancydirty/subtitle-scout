@@ -7,6 +7,9 @@ import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import type { SettingsRepo } from '../v2/settingsRepo.js'
+import type { JobsRepo, WorkerTaskUpsertOutcome } from '../v2/jobsRepo.js'
+import { canonicalEpisodes } from '../v2/tmdbCatalog.js'
+import { traceBus, type TraceEvent } from './traceBus.js'
 // 清算波 R-6（F9b）：只为下面的文档注释引用真实常量，而不是把它的字符串值抄一份陈旧副本
 // （旧值 'self-scan-trigger' 已在去 Jellyfin 化 T4 改名为 INGEST_ORCHESTRATE_SERIES_ID=
 // 'ingest-trigger'——注释里继续写旧值会误导读者去 grep 一个早已不存在的字符串）。
@@ -623,4 +626,417 @@ export function addMediaRoot(
   }
   settingsRepo.addRoot(resolved, now)
   return { ok: true }
+}
+
+// ---- dashboard 重建战役 G5：workflow/library/甄别聚合 API ----
+// 北极星约束：这些端点是纯读聚合 + 两个人类扳手（redispatch/claim）——全部走既有 repo/模块，
+// 不新增任何判断逻辑。机械层产出事实，不产出指令。
+
+// ---- workflow/pending：缺口事实 + parked 计数 + 顶栏新鲜度行 ----
+
+export interface WorkflowPendingSeriesDTO {
+  seriesId: string
+  seriesName: string
+  season: number
+  missing: number
+  throttled: number
+  nextRecheckAt: number | null
+  sampleReason: string | null
+}
+export interface WorkflowPendingMovieDTO {
+  id: string
+  name: string
+  missing: 0 | 1
+  throttled: 0 | 1
+  nextRecheckAt: number | null
+  sampleReason: string | null
+}
+export interface WorkflowFreshnessDTO {
+  /** settingsRepo.listRoots() 的路径列表。 */
+  roots: string[]
+  /** meta 表 'last_ingest_at' 键（摄取层每轮心跳的真实写入点，见 v2/daemon.ts tickInner；
+   *  db.ts 注释里提到的 'last_reconcile_at' 未见任何代码路径写入，核实后改用真正被写的键）。
+   *  从未摄取过（首启/空库）时为 null。 */
+  lastScanAt: number | null
+  /** episodes + movies 两表行数之和——库内文件总量的机械计数。 */
+  files: number
+}
+export interface WorkflowPendingDTO {
+  series: WorkflowPendingSeriesDTO[]
+  movies: WorkflowPendingMovieDTO[]
+  parked: number
+  meta: WorkflowFreshnessDTO
+}
+
+/** GET /api/v2/workflow/pending：libraryRepo.missingBySeason/missingMovies 直译 camelCase +
+ *  parked_paths 计数 + 顶栏新鲜度行。纯读聚合，不做任何"该不该派"的判断——那是 orchestrator
+ *  的事，这里只把缺口事实摆出来。 */
+export function buildWorkflowPending(
+  db: ScoutDb, settingsRepo: Pick<SettingsRepo, 'listRoots'>, now: number,
+): WorkflowPendingDTO {
+  const lib = new LibraryRepo(db)
+
+  const series: WorkflowPendingSeriesDTO[] = lib.missingBySeason(now).map((r) => ({
+    seriesId: r.series_id, seriesName: r.series_name, season: r.season,
+    missing: r.missing, throttled: r.throttled, nextRecheckAt: r.next_recheck_at, sampleReason: r.sample_reason,
+  }))
+  const movies: WorkflowPendingMovieDTO[] = lib.missingMovies(now).map((r) => ({
+    id: r.id, name: r.name, missing: r.missing, throttled: r.throttled,
+    nextRecheckAt: r.next_recheck_at, sampleReason: r.sample_reason,
+  }))
+  const parked = lib.listParkedPaths().length
+
+  const lastScanRow = db.prepare(`SELECT value FROM meta WHERE key = 'last_ingest_at'`).get() as
+    | { value: string }
+    | undefined
+  const filesRow = db
+    .prepare(`SELECT (SELECT COUNT(*) FROM episodes) + (SELECT COUNT(*) FROM movies) AS c`)
+    .get() as { c: number }
+
+  return {
+    series, movies, parked,
+    meta: {
+      roots: settingsRepo.listRoots().map((r) => r.path),
+      lastScanAt: lastScanRow ? Number(lastScanRow.value) : null,
+      files: filesRow.c,
+    },
+  }
+}
+
+// ---- workflow/passes：orchestrate 通行记录 + receipts（纯解析 trace_json 快照，不是新账目）----
+
+export interface DispatchReceiptsDTO {
+  created: number
+  revived: number
+  coalesced: number
+  blocked_dormant: number
+  unknown: number
+}
+export interface WorkflowPassDTO {
+  id: number
+  jobId: number | null
+  startedAt: number
+  finishedAt: number | null
+  detail: string | null
+  receipts: DispatchReceiptsDTO
+}
+
+interface OrchestrateRunRow {
+  id: number
+  job_id: number | null
+  started_at: number
+  finished_at: number | null
+  detail: string | null
+  trace_json: string | null
+}
+
+const DISPATCH_OUTCOME_RE = /"outcome"\s*:\s*"(created|revived|coalesced|blocked_dormant)"/
+
+/** 把一行 orchestrate run 的 trace_json 快照解析成 receipts 计数：遍历事件，只看 tool 以
+ *  'dispatch_' 开头的行（dispatch_find_subtitle_task/dispatch_realign_task——spawn_sibling_
+ *  orchestrator 故意不算，那是分片交接不是缺口派发），从 resultSummary 里正则提取四态之一；
+ *  提不出来（被 200 字符截断，或压根没有 outcome 字段）计入 unknown。这是纯解析呈现，不是
+ *  新账目——traceBus 收官快照本身就是唯一真源，这里只是把它翻译给人看。 */
+function parseDispatchReceipts(traceJson: string | null): DispatchReceiptsDTO {
+  const receipts: DispatchReceiptsDTO = { created: 0, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 }
+  if (!traceJson) return receipts
+
+  let events: TraceEvent[]
+  try {
+    events = JSON.parse(traceJson) as TraceEvent[]
+  } catch {
+    return receipts
+  }
+
+  for (const e of events) {
+    if (!e.tool || !e.tool.startsWith('dispatch_')) continue
+    const match = DISPATCH_OUTCOME_RE.exec(e.resultSummary ?? '')
+    if (match) receipts[match[1] as keyof DispatchReceiptsDTO]++
+    else receipts.unknown++
+  }
+  return receipts
+}
+
+/** GET /api/v2/workflow/passes?limit=20：orchestrate runs 行（decision='orchestrate'），
+ *  finished_at 降序；limit 由调用方（router.ts）clamp 到 [1,100] 后传入，这里原样消费
+ *  （同 buildRuns 的既有分工：clamp 在路由层，聚合函数只管查询）。 */
+export function buildWorkflowPasses(db: ScoutDb, limit: number): WorkflowPassDTO[] {
+  const rows = db
+    .prepare(
+      `SELECT id, job_id, started_at, finished_at, detail, trace_json FROM runs
+       WHERE decision = 'orchestrate' ORDER BY finished_at DESC LIMIT ?`
+    )
+    .all(limit) as OrchestrateRunRow[]
+  return rows.map((r) => ({
+    id: r.id, jobId: r.job_id, startedAt: r.started_at, finishedAt: r.finished_at, detail: r.detail,
+    receipts: parseDispatchReceipts(r.trace_json),
+  }))
+}
+
+// ---- workflow/workers：跑中的 worker_task + 近期非 orchestrate runs ----
+
+export interface WorkflowRunningWorkerDTO {
+  jobId: number
+  seriesId: string | null
+  movieId: string | null
+  taskType: string | null
+  seasons: number[] | null
+  /** jobs.updated_at——本轮 claim/续租发生的时刻，jobs 表没有独立的 started_at 列，这是最接近
+   *  "这个租约/尝试何时开始"的既有字段（同 claimNext/renewLease 都会刷新它）。 */
+  startedAtLease: number
+  /** traceBus.peek(`job-${jobId}`, 20) 的直播补拉——非破坏性读尾部 20 条，不影响该 job 收官时
+   *  的 snapshot。 */
+  trail: TraceEvent[]
+}
+export interface WorkflowRecentRunDTO {
+  jobId: number | null
+  decision: string | null
+  detail: string | null
+  finishedAt: number | null
+}
+export interface WorkflowWorkersDTO {
+  running: WorkflowRunningWorkerDTO[]
+  recent: WorkflowRecentRunDTO[]
+}
+
+/** worker_task 的 payload JSON 里取 taskType/seasons——容错解析（同 buildLibrary 对 worker_task
+ *  payload 的既有查法口径一致），格式异常一律降级为 null，不炸聚合查询。 */
+function parseWorkerTaskPayload(payload: string | null): { taskType: string | null; seasons: number[] | null } {
+  if (!payload) return { taskType: null, seasons: null }
+  try {
+    const parsed = JSON.parse(payload) as { taskType?: unknown; seasons?: unknown }
+    const taskType = typeof parsed.taskType === 'string' ? parsed.taskType : null
+    const seasons = Array.isArray(parsed.seasons)
+      ? parsed.seasons.filter((s): s is number => typeof s === 'number')
+      : null
+    return { taskType, seasons }
+  } catch {
+    return { taskType: null, seasons: null }
+  }
+}
+
+/** GET /api/v2/workflow/workers：running=jobs 里 state='searching' 且 kind='worker_task' 的
+ *  跑中行（附 traceBus.peek 直播补拉）；recent=非 orchestrate 的 runs 行（find_subtitle/realign
+ *  worker 各自产出的收工记录），finished_at 降序 limit 20。 */
+export function buildWorkflowWorkers(db: ScoutDb): WorkflowWorkersDTO {
+  const runningRows = db
+    .prepare(
+      `SELECT id, series_id, movie_id, payload, updated_at FROM jobs
+       WHERE state = 'searching' AND kind = 'worker_task'`
+    )
+    .all() as { id: number; series_id: string | null; movie_id: string | null; payload: string | null; updated_at: number }[]
+
+  const running: WorkflowRunningWorkerDTO[] = runningRows.map((r) => {
+    const { taskType, seasons } = parseWorkerTaskPayload(r.payload)
+    return {
+      jobId: r.id, seriesId: r.series_id, movieId: r.movie_id, taskType, seasons,
+      startedAtLease: r.updated_at, trail: traceBus.peek(`job-${r.id}`, 20),
+    }
+  })
+
+  const recentRows = db
+    .prepare(
+      `SELECT job_id, decision, detail, finished_at FROM runs
+       WHERE decision IS NULL OR decision != 'orchestrate'
+       ORDER BY finished_at DESC LIMIT 20`
+    )
+    .all() as { job_id: number | null; decision: string | null; detail: string | null; finished_at: number | null }[]
+  const recent: WorkflowRecentRunDTO[] = recentRows.map((r) => ({
+    jobId: r.job_id, decision: r.decision, detail: r.detail, finishedAt: r.finished_at,
+  }))
+
+  return { running, recent }
+}
+
+// ---- library/series/:id：三层格阵合并呈现（canonical ∪ 磁盘 ∪ 覆盖）----
+
+export interface LibrarySeriesSummaryDTO {
+  id: string
+  name: string
+  chineseTitle: string | null
+  posterPath: string | null
+  year: number | null
+  layoutNonstandard: boolean
+}
+export interface LibraryCanonicalEpisodeDTO {
+  episode: number
+  title: string | null
+}
+export interface LibraryOnDiskEpisodeDTO {
+  episode: number
+  path: string
+  subStatus: string
+  statusReason: string | null
+  recheckAfter: number | null
+}
+export interface LibraryCoverageRowDTO {
+  episode: number
+  lang: string
+  path: string
+}
+export interface LibrarySeasonDTO {
+  season: number
+  canonical: LibraryCanonicalEpisodeDTO[]
+  onDisk: LibraryOnDiskEpisodeDTO[]
+  coverage: LibraryCoverageRowDTO[]
+}
+export interface LibrarySeriesDetailDTO {
+  series: LibrarySeriesSummaryDTO
+  seasons: LibrarySeasonDTO[]
+}
+
+interface LibrarySeriesRow {
+  id: string
+  name: string
+  chinese_title: string | null
+  poster_path: string | null
+  year: number | null
+  layout_nonstandard: number
+}
+interface OnDiskEpisodeRow {
+  season: number
+  episode: number
+  path: string
+  sub_status: string
+  status_reason: string | null
+  recheck_after: number | null
+}
+interface CoverageJoinRow {
+  season: number
+  episode: number
+  lang: string
+  path: string
+}
+
+/** GET /api/v2/library/series/:id：series 行直译 + 季号并集（canonical ∪ 磁盘）升序 + 各季
+ *  三层数据（tmdbCatalog.canonicalEpisodes 应有集 / episodes 磁盘现状 / subtitles join 覆盖
+ *  行）。未找到返回 null（404 语义）。惰性 TMDB 缓存刷新不在这里做——那是 server.ts 的 wiring
+ *  职责（DashboardOpts.tmdb，fire-and-forget），这个函数保持纯同步、只读 ScoutDb。 */
+export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeriesDetailDTO | null {
+  const row = db
+    .prepare(`SELECT id, name, chinese_title, poster_path, year, layout_nonstandard FROM series WHERE id = ?`)
+    .get(id) as LibrarySeriesRow | undefined
+  if (!row) return null
+
+  const onDiskRows = db
+    .prepare(
+      `SELECT season, episode, path, sub_status, status_reason, recheck_after FROM episodes
+       WHERE series_id = ? ORDER BY season ASC, episode ASC`
+    )
+    .all(id) as OnDiskEpisodeRow[]
+
+  const canonicalSeasonRows = db
+    .prepare(`SELECT DISTINCT season FROM tmdb_seasons WHERE series_id = ?`)
+    .all(id) as { season: number }[]
+
+  const coverageRows = db
+    .prepare(
+      `SELECT e.season AS season, e.episode AS episode, sub.language AS lang, sub.path AS path
+       FROM subtitles sub JOIN episodes e ON e.id = sub.item_id
+       WHERE e.series_id = ?`
+    )
+    .all(id) as CoverageJoinRow[]
+
+  const seasonNumbers = new Set<number>()
+  for (const r of onDiskRows) seasonNumbers.add(r.season)
+  for (const r of canonicalSeasonRows) seasonNumbers.add(r.season)
+  const sortedSeasons = [...seasonNumbers].sort((a, b) => a - b)
+
+  const seasons: LibrarySeasonDTO[] = sortedSeasons.map((season) => ({
+    season,
+    canonical: canonicalEpisodes(db, id, season),
+    onDisk: onDiskRows
+      .filter((r) => r.season === season)
+      .map((r) => ({
+        episode: r.episode, path: r.path, subStatus: r.sub_status,
+        statusReason: r.status_reason, recheckAfter: r.recheck_after,
+      })),
+    coverage: coverageRows
+      .filter((r) => r.season === season)
+      .map((r) => ({ episode: r.episode, lang: r.lang, path: r.path })),
+  }))
+
+  return {
+    series: {
+      id: row.id, name: row.name, chineseTitle: row.chinese_title, posterPath: row.poster_path,
+      year: row.year, layoutNonstandard: row.layout_nonstandard === 1,
+    },
+    seasons,
+  }
+}
+
+// ---- triage（甄别台）：pending=park 救援清单 + claimed=已认领 override 清单 ----
+
+export interface ClaimedOverrideDTO {
+  pathPrefix: string
+  tmdbId: string
+  isTv: boolean
+  season: number | null
+  createdAt: number
+}
+export interface TriageDTO {
+  pending: ParkedItemDTO[]
+  claimed: ClaimedOverrideDTO[]
+}
+
+interface IdentifyOverrideRow {
+  path_prefix: string
+  tmdb_id: string
+  is_tv: number
+  season: number | null
+  created_at: number
+}
+
+/** identify_overrides 全行直译（created_at desc——最近认领的排最前，同 buildParked 的
+ *  "越紧急/越新越靠前"呈现习惯）。 */
+function buildClaimedOverrides(db: ScoutDb): ClaimedOverrideDTO[] {
+  const rows = db
+    .prepare(`SELECT path_prefix, tmdb_id, is_tv, season, created_at FROM identify_overrides ORDER BY created_at DESC`)
+    .all() as IdentifyOverrideRow[]
+  return rows.map((r) => ({
+    pathPrefix: r.path_prefix, tmdbId: r.tmdb_id, isTv: r.is_tv === 1, season: r.season, createdAt: r.created_at,
+  }))
+}
+
+/** GET /api/v2/triage：pending 转发 buildParked（含 reason），claimed 转发 identify_overrides
+ *  全行直译——甄别台一页看全"待认领"与"已认领"两份事实。 */
+export function buildTriage(db: ScoutDb): TriageDTO {
+  return { pending: buildParked(db), claimed: buildClaimedOverrides(db) }
+}
+
+// ---- workflow/redispatch（人类扳手①：手动重派）----
+
+export type RedispatchResult =
+  | { ok: true; outcome: WorkerTaskUpsertOutcome }
+  | { ok: false; error: string }
+
+const REDISPATCH_SCHEMA = z.object({
+  seriesId: z.string().min(1),
+  seasons: z.array(z.number().int().positive()).optional(),
+  includeThrottled: z.boolean().optional(),
+})
+
+/** POST /api/v2/workflow/redispatch：zod 校验后转调 jobs.upsertWorkerTask——与
+ *  orchestratorAgent.tools.ts 的 dispatch_find_subtitle_task 工具逐字段同形（同一份身份元组、
+ *  同一个 taskType='find_subtitle'），reason 固定标注"manual redispatch from dashboard"以便
+ *  在 runs/日志里区分人工重派与 orchestrator 自主派发。回执 WorkerTaskUpsertOutcome 原样返回
+ *  ——created/revived/coalesced/blocked_dormant 四态都是事实，不是错误，调用方（server.ts）统一
+ *  按 200 回应；只有 zod 校验本身不通过才是 ok:false（对应 400）。 */
+export function redispatch(
+  jobs: Pick<JobsRepo, 'upsertWorkerTask'>, body: unknown, now: number,
+): RedispatchResult {
+  const parsed = REDISPATCH_SCHEMA.safeParse(body)
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? 'invalid body' }
+  }
+  const { seriesId, seasons, includeThrottled } = parsed.data
+  const outcome = jobs.upsertWorkerTask(
+    { seriesId, season: null, movieId: null },
+    {
+      taskType: 'find_subtitle', seasons: seasons && seasons.length > 0 ? seasons : null,
+      reason: 'manual redispatch from dashboard', includeThrottled: !!includeThrottled,
+    },
+    null, now,
+  )
+  return { ok: true, outcome }
 }

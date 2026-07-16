@@ -449,6 +449,12 @@ async function cmdWatch() {
       token: process.env.DASHBOARD_TOKEN || undefined,
       distDir,
       reconcileAll: reconcileAllClosure,
+      // dashboard G5：POST /api/v2/workflow/redispatch（人类扳手）依赖真实 JobsRepo；
+      // GET /api/v2/library/series/:id 命中时的惰性 TMDB 缓存刷新依赖真实 tmdb——两者在 cmdWatch
+      // 顶部都已 requireEnv 式硬前置为非空（tmdb 硬前置见函数开头；jobs 在上方无条件构造），
+      // 直接传，不需要"缺席则 undefined"的三元判断。
+      jobs,
+      tmdb,
     })
     if (dashServer.listening) {
       console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
