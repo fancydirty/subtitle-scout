@@ -2,7 +2,12 @@ import type { LibraryRepo } from './libraryRepo.js'
 import type { JobsRepo, Job } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
-import type { IngestTriggerResult } from '../daemon/ingestTrigger.js'
+import { INGEST_ORCHESTRATE_SERIES_ID, type IngestTriggerResult } from '../daemon/ingestTrigger.js'
+
+/** 债务D2（胶水层修复战役）：orchestrate 低频兜底心跳间隔。无变化世界里 ingest 恒
+ *  changed=0、永不触发 orchestrate——"识别晚到/pending 屏蔽"类惰性收敛洞永不愈合
+ *  （R4：吞吐异象=架构信号）。24h 兜底一拍，见 tickInner 步骤 2b 的注释。 */
+export const ORCHESTRATE_HEARTBEAT_MS = 24 * 3_600_000
 
 export interface DaemonDeps {
   lib: LibraryRepo
@@ -23,6 +28,8 @@ export interface DaemonDeps {
    *  daemon/selfScan.ts 已有的常量：该文件本身不在本次改动范围内，见 tickInner 注释）。
    *  cli/index.ts 由 SCAN_INTERVAL_MS 环境变量覆盖后传入。 */
   ingestEveryMs?: number
+  /** 债务D2：orchestrate 兜底心跳间隔（测试注入）。默认 ORCHESTRATE_HEARTBEAT_MS(24h)。 */
+  orchestrateHeartbeatMs?: number
   concurrency: {
     searching: number        // 默认 1
     downloading: number      // 默认 2（一期由 executor 内部串行，此处预留）
@@ -171,6 +178,18 @@ export class ScoutDaemon {
             )
             .run(String(now()))
 
+          // 债务D2：ingest 自己这一轮触发了一次 orchestrate 入队——任何一次 orchestrate
+          // 入队（不论来源）都刷新兜底心跳的时钟，避免 2b 步骤在同一 tick 或紧随其后的
+          // 一拍里因为陈旧的 last_orchestrate_at 而误判"早已过期"、重复入队。
+          if (result.orchestratorTriggered === true) {
+            lib.db
+              .prepare(
+                `INSERT INTO meta (key, value) VALUES ('last_orchestrate_at', ?)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+              )
+              .run(String(now()))
+          }
+
           // Boot ingest satisfied — only clear on success, so a failed boot pass keeps
           // retrying next tick instead of reopening the stale-gate window.
           this.bootIngestPending = false
@@ -185,6 +204,24 @@ export class ScoutDaemon {
     // Boot: 首轮 ingest 成功之前绝不 dispatch——整栈重启时，库里还躺着上个进程遗留的
     // stale wanted job（新分类规则尚未跑过一轮 ingest），若照常 dispatch 会派发过时判断。
     if (this.bootIngestPending) return
+
+    // 2b. 债务D2（胶水层修复战役）：orchestrate 低频兜底心跳。无变化世界里 ingest 恒
+    // changed=0、永不触发 orchestrate，"识别晚到/pending 屏蔽"类惰性收敛洞永不愈合。
+    // 任何一次 orchestrate 入队（ingest 触发或本心跳）都刷新时钟；identity 复用
+    // INGEST_ORCHESTRATE_SERIES_ID——与 ingest 触发的 orchestrate 落同一 identity 行，天然幂等。
+    // 冷启动 meta 缺失 → 立即补一拍：停机期间积累的惰性洞正好接住，属期望行为。
+    const hbRow = lib.db.prepare(`SELECT value FROM meta WHERE key = 'last_orchestrate_at'`).get() as { value: string } | undefined
+    const lastOrchestrate = hbRow ? Number(hbRow.value) : 0
+    if (now() - lastOrchestrate >= (this.deps.orchestrateHeartbeatMs ?? ORCHESTRATE_HEARTBEAT_MS)) {
+      jobs.upsertWorkerTask(
+        { seriesId: INGEST_ORCHESTRATE_SERIES_ID, season: null, movieId: null },
+        { taskType: 'orchestrate', reason: 'heartbeat: periodic no-change-world convergence pass' },
+        null, now(),
+      )
+      lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_orchestrate_at', ?)
+                      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(now()))
+      log('orchestrate heartbeat: enqueued periodic convergence pass (24h fallback)')
+    }
 
     // 3. Dispatch: claim jobs up to concurrency limit
     await this.dispatch()

@@ -5,7 +5,7 @@ import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import { ScoutDaemon, type DaemonDeps, MAX_CONSECUTIVE_TICK_FAILURES } from './daemon.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
-import type { IngestTriggerResult } from '../daemon/ingestTrigger.js'
+import { INGEST_ORCHESTRATE_SERIES_ID, type IngestTriggerResult } from '../daemon/ingestTrigger.js'
 
 function fakeIngestTriggerResult(over: Partial<IngestTriggerResult['ingest']> = {}): IngestTriggerResult {
   return {
@@ -28,6 +28,14 @@ describe('ScoutDaemon', () => {
     runs = new RunsRepo(db)
     now = Date.now()
     logs.length = 0
+    // 债务D2 适配注记：orchestrate 兜底心跳的冷启动语义是"meta 缺失 → 视为早已过期 →
+    // 立即补一拍"（真实生产场景下的合理默认）。但这套件里几乎每个既有测试都会在一个
+    // 全新内存库上至少 tick() 一次，且 now 取真实 Date.now() 纪元值——远超任何合理的
+    // 心跳阈值（含默认 24h）。若不预置这行 meta，绝大多数与 orchestrate 心跳无关的既有
+    // 测试都会在其第一次 tick() 里意外多出一行 orchestrate worker_task（污染
+    // wanted/searching 计数断言）。这里把"套件起点"预置为心跳基线的 ambient 假设——真正
+    // 想测试冷启动语义的用例（见下方"债务D2"describe 块）会显式删除这行 meta 再跑。
+    lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_orchestrate_at', ?)`).run(String(now))
   })
 
   const makeDeps = (overrides?: Partial<DaemonDeps>): DaemonDeps => ({
@@ -610,6 +618,104 @@ describe('ScoutDaemon', () => {
       await daemon.tick() // bootIngestPending 仍为 true（上轮从未成功）→ 强制再次尝试，这次放行
 
       expect(ingestTrigger).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('债务D2（胶水层修复战役）：orchestrate 24h 兜底心跳——无变化世界里 ingest 恒 changed=0 永不触发 orchestrate，"识别晚到/pending 屏蔽"类惰性收敛洞永不愈合', () => {
+    // orchestrate worker_task 行的固定 identity（同 ingest 触发的那一行）——两条来源天然落
+    // 同一行，故意不按 state 过滤：心跳/ingest 各自 upsert 后行可能已被 dispatch 认领进
+    // searching，仍要能查到同一行（idempotent dedup 的证据）。
+    function orchestrateWorkerTaskRows() {
+      return lib.db
+        .prepare(`SELECT id, payload, state FROM jobs WHERE kind = 'worker_task' AND series_id = ?`)
+        .all(INGEST_ORCHESTRATE_SERIES_ID) as Array<{ id: number; payload: string | null; state: string }>
+    }
+
+    it('无变化世界到点补一个 orchestrate 兜底 pass（identity=ingest-trigger，幂等）', async () => {
+      // beforeEach 的 ambient 种子把 last_orchestrate_at 预置成了套件起点——这里删掉它，
+      // 显式还原到"meta 真的缺失"这个要测的冷启动状态。
+      lib.db.prepare(`DELETE FROM meta WHERE key = 'last_orchestrate_at'`).run()
+
+      // ingestTrigger 恒返回零变化/未触发；orchestrateHeartbeatMs 注入一个小值。
+      const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+      const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, orchestrateHeartbeatMs: 1000 }))
+
+      // Tick 1（boot 首拍）：ingest 成功；meta 里 last_orchestrate_at 缺失 → 视同"早已过期"，
+      // 心跳立即补一拍（冷启动语义：停机期间积累的惰性洞正好接住）。
+      await daemon.tick()
+      expect(orchestrateWorkerTaskRows().length).toBe(1)
+
+      // 再跨过一次阈值：identity 去重保证还是同一行，不多出第二行。
+      now += 1000
+      await daemon.tick()
+
+      const rows = orchestrateWorkerTaskRows()
+      expect(rows.length).toBe(1)
+      const payload = JSON.parse(rows[0].payload!)
+      expect(payload.taskType).toBe('orchestrate')
+    })
+
+    it('ingest 自己触发过 orchestrate 的 tick 刷新时钟，不重复入队', async () => {
+      const orchestrateHeartbeatMs = 5000
+
+      // 故意把种子值设成"已经过期"（早于阈值）——模拟"心跳本该已经到点，但这一 tick 里
+      // ingest 自己先一步触发了 orchestrate"。若 daemon 没有落实"任何一次 orchestrate
+      // 入队都刷新时钟"，心跳块会在同一 tick 内基于这个陈旧种子值误判过期、重复触发
+      // （可观测为一行 'orchestrate heartbeat' log）。
+      lib.db
+        .prepare(
+          `INSERT INTO meta (key, value) VALUES ('last_orchestrate_at', ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+        )
+        .run(String(now - orchestrateHeartbeatMs - 1))
+
+      // 模拟真实 makeIngestTrigger 的副作用：ingest 自己检测到变化时会 upsert 一行
+      // orchestrate worker_task 并报告 orchestratorTriggered=true。
+      const ingestTrigger = vi.fn(async () => {
+        jobs.upsertWorkerTask(
+          { seriesId: INGEST_ORCHESTRATE_SERIES_ID, season: null, movieId: null },
+          { taskType: 'orchestrate', reason: 'ingest: scanned=1 upserted=1 parked=0 removed=0' },
+          null,
+          now,
+        )
+        return {
+          ingest: { scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true },
+          orchestratorTriggered: true,
+        }
+      })
+
+      const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, orchestrateHeartbeatMs }))
+
+      await daemon.tick()
+
+      expect(orchestrateWorkerTaskRows().length).toBe(1) // 幂等：同一 identity，未产生第二行
+      expect(logs.some(l => l.includes('orchestrate heartbeat'))).toBe(false) // 心跳块本 tick 未再触发
+    })
+
+    it('心跳未到点不入队', async () => {
+      // ambient 种子（beforeEach）已把 last_orchestrate_at 设为套件起点 now，未删除 →
+      // 走的是稳态时间门判定，不涉及冷启动路径。
+      const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+      const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, orchestrateHeartbeatMs: 24 * 3_600_000 }))
+
+      now += 60_000 // 远未到 24h 阈值
+      await daemon.tick()
+
+      expect(logs.some(l => l.includes('orchestrate heartbeat'))).toBe(false)
+      expect(orchestrateWorkerTaskRows().length).toBe(0)
+    })
+
+    it('boot 首拍 ingest 未成功前不心跳', async () => {
+      // boot ingest 抛错 → bootIngestPending 仍为 true → tickInner 在心跳块之前的
+      // `if (this.bootIngestPending) return` 守卫处提前返回，心跳块根本不会跑到——
+      // 即便阈值小到 1ms 也不该触发（stale 世界不派活的既有语义对齐）。
+      const ingestTrigger = vi.fn(async () => { throw new Error('tmdb not ready') })
+      const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, orchestrateHeartbeatMs: 1 }))
+
+      await daemon.tick()
+
+      expect(logs.some(l => l.includes('orchestrate heartbeat'))).toBe(false)
+      expect(orchestrateWorkerTaskRows().length).toBe(0)
     })
   })
 
