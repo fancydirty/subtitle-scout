@@ -226,9 +226,11 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
       'all), or omit seasons to cover every season that currently has gaps. For a movie pass ' +
       'movieId alone. Huge backlogs may be split into several dispatches at your discretion. ' +
       'The result tells you truthfully what happened: outcome created/revived means a new or ' +
-      'revived worker_task row landed and it counts against your dispatch cap; outcome ' +
-      'coalesced/blocked_dormant means nothing new was written (an identical task was already ' +
-      'pending, or this identity is parked dormant) and it does NOT consume your dispatch budget. ' +
+      'revived worker_task row landed and it counts against your dispatch cap; outcome coalesced ' +
+      'means a task with this identity was already pending (no new row, no budget consumed — the ' +
+      'note says whether your new scope/reason was refreshed onto it or the pending run was ' +
+      'already in flight); outcome blocked_dormant means this identity is parked and nothing was ' +
+      'written. ' +
       'Pass includeThrottled:true only when the situation genuinely changed (e.g. a realign just ' +
       'landed, the operator fixed naming) — it tells the worker to also take on items still ' +
       'inside their search backoff window.',
@@ -280,8 +282,9 @@ export function makeDispatchRealignTaskTool(deps: DispatchDeps, counter: Dispatc
       'the same series if both are pending — realigning first means the subsequent ' +
       'find-subtitle task sees correctly-numbered files. The result tells you truthfully what ' +
       'happened: outcome created/revived means a new or revived worker_task row landed and it ' +
-      'counts against your dispatch cap; outcome coalesced/blocked_dormant means nothing new ' +
-      'was written and it does NOT consume your dispatch budget.',
+      'counts against your dispatch cap; outcome coalesced means one was already pending (no new ' +
+      'row, no budget — the note says whether your reason was refreshed onto it); outcome ' +
+      'blocked_dormant means this identity is parked and nothing was written.',
     inputSchema: z.object({ seriesId: z.string(), reason: z.string() }),
     execute: async ({ seriesId, reason }) => {
       const capped = capCheck(counter, cap)
@@ -330,8 +333,10 @@ export function makeSpawnSiblingOrchestratorTool(deps: Omit<DispatchDeps, 'maxDi
       'Hand off remaining dispatch work to a new sibling orchestrator job, once you have used ' +
       'up this orchestrator\'s dispatch capacity. Give it a short description of what remains. ' +
       'The result tells you truthfully what happened: outcome created/revived means a new/revived ' +
-      'sibling row landed; outcome coalesced/blocked_dormant means nothing new was written and ' +
-      'your remainingWorkSummary was NOT delivered — see the note for what to do about it.',
+      'sibling row landed; outcome coalesced means a sibling with this shard identity already ' +
+      'exists — the note says whether your remainingWorkSummary was refreshed onto the pending ' +
+      'sibling or failed to reach an already-running one; outcome blocked_dormant means nothing ' +
+      'was written.',
     inputSchema: z.object({ shardIndex: z.number().int(), remainingWorkSummary: z.string() }),
     execute: async ({ shardIndex, remainingWorkSummary }) => {
       const syntheticSeriesId = `orchestrator-shard-${deps.parentJobId ?? 'root'}-${shardIndex}`
