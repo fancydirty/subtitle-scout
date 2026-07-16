@@ -55,6 +55,38 @@ describe('FIND_SUBTITLE_SKILL', () => {
     expect(c).toMatch(/non-chinese/i)
   })
 
+  // 胶水层修复（2026-07-16）：批量收割语义。worker 一轮 run 吃掉任务目标清单里全部可安全
+  // 完成的目标——逐集验证归属、单集拿不准跳过该集不弃整包/整批、finalize 恰好一次交三桶、
+  // itemId 一字不差抄任务清单。这些是本次事故修复的灵魂条款，锚死。
+  it('teaches batch harvest: per-target verification, skip-not-abandon, one finalize with three verbatim-itemId buckets', () => {
+    const c = FIND_SUBTITLE_SKILL.content
+    expect(c).toMatch(/PER TARGET|per target|each target/i)
+    expect(c).toMatch(/SKIP THAT TARGET/i)
+    expect(c).toMatch(/never abandon the whole batch/i)
+    expect(c).toMatch(/EXACTLY ONCE/i)
+    expect(c).toMatch(/installed/)
+    expect(c).toMatch(/no_safe_match/)
+    expect(c).toMatch(/retry_later/)
+    expect(c).toMatch(/VERBATIM/i)
+    expect(c).toMatch(/itemId/)
+  })
+
+  // R-11（用户裁决）：范围=主代理按磁盘实际裁量——skill 只教"清单可能跨季、合集是最高效
+  // 命中"，不教任何固定粒度。
+  it('teaches that the target list may span seasons and a spanning collection is the most efficient hit', () => {
+    const c = FIND_SUBTITLE_SKILL.content
+    expect(c).toMatch(/spanning several seasons|multi-season|complete-series/i)
+    expect(c).toMatch(/most efficient hit/i)
+  })
+
+  // C-D1/R-5：无 fileList 的 zip 包内选择归 agent——archiveEntries 事实 → archiveEntryName 选取。
+  it('teaches the archiveEntries → archiveEntryName workflow for un-indexed zip packs', () => {
+    const c = FIND_SUBTITLE_SKILL.content
+    expect(c).toMatch(/archiveEntries/)
+    expect(c).toMatch(/archiveEntryName/)
+    expect(c).toMatch(/choice of which file inside an archive .* is YOURS/i)
+  })
+
   // north star: the season-pack teaching must NOT smuggle in a scoring/gating vocabulary. Rather
   // than a brittle absence check (the skill legitimately PROHIBITS confidence scores), assert the
   // existing prohibition survives the rewrite and that no positive threshold/score guidance appears.
