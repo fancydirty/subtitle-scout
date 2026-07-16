@@ -38,7 +38,7 @@ export interface RealignWorkerTaskDeps extends RealignExecutorDeps {
  *  completeDone/completeError/park methods — no new safety logic.
  *
  *  Review fix (v3 phase ⑦, throw-containment): executeRealign genuinely throws — several of its
- *  steps (getVirtualFolders/getItem/waitForJellyfinIdle in realignExecutor.ts) sit outside its own
+ *  steps (getVirtualFolders/getItem/waitForIngestIdle in realignExecutor.ts) sit outside its own
  *  result-returning try/catch, so a Jellyfin outage mid-call propagates as a rejected promise, not
  *  a structured {decision:'error'}. Left unhandled, that throw would escape this wrapper entirely:
  *  the job stays 'searching' forever, reapOrphaned eventually bounces it back to 'wanted' with

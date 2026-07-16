@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runRealignWorkerTask, type RealignWorkerTaskDeps } from './realignWorkerTask.js'
-import type { RealignExecutorDeps, RealignJellyfinPort } from './realignExecutor.js'
+import type { RealignExecutorDeps, RealignLibraryPort } from './realignExecutor.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
@@ -34,7 +34,7 @@ function mkFlatLibrary(root: string, count: number): string {
 function mkJf(opts: {
   locations: string[]
   items?: { Type: string; Path: string; ParentIndexNumber: number }[]
-}): RealignJellyfinPort {
+}): RealignLibraryPort {
   return {
     getItem: vi.fn(async () => ({
       Id: 'jf-series-1', Name: 'Spy x Family', Type: 'Series', ProductionYear: 2022, ProviderIds: { Tmdb: '120089' },
@@ -42,7 +42,7 @@ function mkJf(opts: {
     getItemsPage: vi.fn(async (start: number) => (start === 0 ? (opts.items ?? []) : []) as never),
     getScheduledTasks: vi.fn(async () => [{ id: '1', name: 'scan', isRunning: false }]),
     getVirtualFolders: vi.fn(async () => [
-      { id: 'lib-1', name: 'TV', locations: opts.locations, enableRealtimeMonitor: false },
+      { id: 'lib-1', name: 'TV', locations: opts.locations },
     ]),
     refreshLibrary: vi.fn(async () => {}),
   }
@@ -77,7 +77,7 @@ function mkWorkerTaskMirror(paths: string[], opts: { seriesId?: string; title?: 
 }
 
 function mkDeps(
-  env: { lib: LibraryRepo; jobsRepo: JobsRepo; jf: RealignJellyfinPort; libRoot: string },
+  env: { lib: LibraryRepo; jobsRepo: JobsRepo; jf: RealignLibraryPort; libRoot: string },
   over: Partial<RealignWorkerTaskDeps> = {},
 ): RealignWorkerTaskDeps {
   return {

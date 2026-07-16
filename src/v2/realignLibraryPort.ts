@@ -3,11 +3,12 @@ import { walkVideoFiles } from '../daemon/selfScan.js'
 import { tmdbIdFromOwnId } from './ownIds.js'
 import { ingestLock } from './ingest.js'
 import type { LibraryRepo } from './libraryRepo.js'
-import type { RealignJellyfinPort } from './realignExecutor.js'
+import type { RealignLibraryPort } from './realignExecutor.js'
 
 /**
  * 去 Jellyfin 化 P5 / Task 7（design: docs/design/2026-07-16-de-jellyfin-design.md §P5，D4）：
- * RealignJellyfinPort 的库原生实现——realign 不再打 Jellyfin API，改读自有库行 + 直接走盘。
+ * RealignLibraryPort（C-B3 改名前旧名 RealignJellyfinPort）的库原生实现——realign 不再打
+ * Jellyfin API，改读自有库行 + 直接走盘。
  *
  * realignExecutor.ts 的 5 重安全层（restructuring/manifest/reveal/rollback + GAP-A 崩溃恢复
  * 纪律）全部零改动——本文件只换 port"读什么"，不碰 realignExecutor.ts"怎么用读到的东西"。
@@ -46,10 +47,10 @@ function seasonFromPath(path: string): number | null {
 }
 
 /**
- * RealignJellyfinPort 的库原生实现（少 deleteItem——D1：declared+wired+mocked 但从未被
+ * RealignLibraryPort 的库原生实现（少 deleteItem——D1：declared+wired+mocked 但从未被
  * realignExecutor.ts 调用，随本任务一并从接口删除，见 realignExecutor.ts 的唯一批准 hunk）。
  */
-export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignJellyfinPort {
+export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLibraryPort {
   return {
     /**
      * 消费方：realignExecutor.ts:589 `const seriesItem = await deps.jf.getItem(seriesId)`，
@@ -100,11 +101,12 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignJel
     },
 
     /**
-     * 消费方：waitForJellyfinIdle（realignExecutor.ts:292-304，经 :603/:791/:850/:863 调用）
-     * ——只读 isRunning。D4：把"扫描中不许挪文件"这条安全属性原样保留下来的关键——
-     * ingestLock.held（v2/ingest.ts 导出，makeIngestPass 的摄取 pass 执行期间为 true，含抛错
-     * 路径的 finally 兜底释放）映射成一个 Running 态任务，waitForJellyfinIdle 的既有轮询逻辑
-     * 字节不改照常工作，只是现在等的是"我们自己的摄取 pass"而不是 Jellyfin 的扫描任务。
+     * 消费方：waitForIngestIdle（C-B3 改名前旧名 waitForJellyfinIdle；realignExecutor.ts:
+     * 292-304，经 :603/:791/:850/:863 调用）——只读 isRunning。D4：把"扫描中不许挪文件"这条
+     * 安全属性原样保留下来的关键——ingestLock.held（v2/ingest.ts 导出，makeIngestPass 的摄取
+     * pass 执行期间为 true，含抛错路径的 finally 兜底释放）映射成一个 Running 态任务，
+     * waitForIngestIdle 的既有轮询逻辑字节不改照常工作，等的本来就是"我们自己的摄取 pass"，
+     * 不是 Jellyfin 的扫描任务——函数改名前的旧注释把主语错记成了 Jellyfin，C-B3 一并纠正。
      */
     async getScheduledTasks() {
       return ingestLock.held ? [{ id: 'ingest', name: 'library ingest', isRunning: true }] : []
@@ -113,17 +115,18 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignJel
     /**
      * 消费方：realignExecutor.ts:511（经 folders 透传给 forwardResume 供 :834 复用）——locations
      * 用于 mapPath→containingRoot 匹配库根（:512-513/:835）、段感知匹配目标虚拟库
-     * （:576/:845）；enableRealtimeMonitor 只影响一行提示日志（:580-582）。库原生世界没有
-     * "虚拟库"这个中间概念——每个 MEDIA_ROOTS 条目本身就是它自己的库，identity 映射：
-     * 一个根一个条目，locations=[root] 本身就是落地位置（不再有远程 Jellyfin 视角需要经
-     * mapPath 翻译成本地路径——两侧本就是同一个值）。
+     * （:576/:845）。库原生世界没有"虚拟库"这个中间概念——每个 MEDIA_ROOTS 条目本身就是它自己
+     * 的库，identity 映射：一个根一个条目，locations=[root] 本身就是落地位置（不再有远程
+     * Jellyfin 视角需要经 mapPath 翻译成本地路径——两侧本就是同一个值）。C-B2 处决：
+     * enableRealtimeMonitor 字段已随 realignExecutor.ts 那条恒死的提示日志分支一并删除——
+     * 库原生世界没有 Jellyfin 的"实时监控"概念可言，这里从来只能返回恒定的 false，不是真实
+     * 探测结果。
      */
     async getVirtualFolders() {
       return deps.roots.map((root, i) => ({
         id: `root:${i}`,
         name: basename(root),
         locations: [root],
-        enableRealtimeMonitor: false,
       }))
     },
 

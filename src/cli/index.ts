@@ -249,7 +249,13 @@ async function cmdWatch() {
     ? {
         lib, jobs,
         jf: makeRealignLibraryPort({ lib, roots, runIngest: ingestPass }),
-        tmdb: { getSeasonTable: (id) => tmdb.getSeasonTable(id) },
+        // A-F13：getDetails/getChineseTitles 补上——realign 字幕先行阶段的 TMDB 富化补面
+        // （见 realignExecutor.ts 步骤 12 附近的 fetchTmdbEnrichment 调用）需要它们。
+        tmdb: {
+          getSeasonTable: (id) => tmdb.getSeasonTable(id),
+          getDetails: (mediaType, id) => tmdb.getDetails(mediaType, id),
+          getChineseTitles: (mediaType, id) => tmdb.getChineseTitles(mediaType, id),
+        },
         fetchAnimeLists: () => fetchAnimeListsTable(),
         runEpisode: realignRunEpisode,
         now: () => Date.now(),

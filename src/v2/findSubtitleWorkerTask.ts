@@ -99,7 +99,7 @@ function buildAlternativeTitles(
 /** Concurrent, gain-path TMDB enrichment for one (mediaType, tmdbId) — both calls silently degrade
  *  (getDetails via .catch, getChineseTitles already swallows its own failures internally) so a TMDB
  *  outage or a non-conforming id (tmdbId null) never fails the mapping, only impoverishes the task. */
-async function fetchTmdbEnrichment(
+export async function fetchTmdbEnrichment(
   tmdb: TmdbClient | null, mediaType: 'tv' | 'movie', tmdbId: string | null,
 ): Promise<{ details: TmdbDetails | null; chineseTitles: string[] }> {
   if (!tmdb || !tmdbId) return { details: null, chineseTitles: [] }

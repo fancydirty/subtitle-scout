@@ -8,17 +8,17 @@ import { join, dirname, basename } from 'node:path'
 import {
   mountAliveSentinel, chooseRealignStrategy, archiveDirFor,
   planCollisions, invisibleBuildDir, assembleInvisibleTree, finalizeShowDir,
-  archiveOldDir, buildRealignMediaContext, makeRealignRunEpisode,
-  waitForJellyfinIdle, verifyRealignedCounts,
-  executeRealign, type RealignExecutorDeps, type RealignJellyfinPort,
+  archiveOldDir, buildRealignEpisodeFields, makeRealignRunEpisode,
+  waitForIngestIdle, verifyRealignedCounts,
+  executeRealign, type RealignExecutorDeps, type RealignLibraryPort,
 } from './realignExecutor.js'
 import { scanVideoFiles, buildRealignPlan, type RealignPlanItem } from '../files/libraryRealign.js'
 import {
   initManifest, appendManifestEntry, manifestPath, readManifest,
 } from '../files/realignManifest.js'
-import { MediaContextSchema } from '../core/schemas.js'
 import { isUnderRoots } from '../core/mediaContext.js'
-import type { FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
+import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
+import { episodeId } from './ownIds.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
@@ -208,27 +208,57 @@ describe('archiveOldDir', () => {
   })
 })
 
-describe('buildRealignMediaContext', () => {
-  it('字面构造 MediaContext：tmdbid 钉死、季集来自计划、trigger=library_scan', () => {
+const NO_ENRICHMENT = { originalTitle: null, alternativeTitles: [], overview: null, runtimeMinutes: null }
+
+describe('buildRealignEpisodeFields', () => {
+  it('字面构造字段：tmdbid 钉死、季集来自计划、itemId 走 episodes 自有 id 空间（ownIds.episodeId）', () => {
     const item: RealignPlanItem = {
       sourcePath: '/x.mkv', sourceFilename: 'x.mkv', absoluteEpisode: 26,
       targetSeason: 2, targetEpisode: 1, targetRelPath: 'Show (2022) [tmdbid-120089]/Season 02/y.mkv',
     }
-    const ctx = buildRealignMediaContext('间谍过家家', 2022, '120089', item, '/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
-    expect(() => MediaContextSchema.parse(ctx)).not.toThrow()
-    expect(ctx.media.type).toBe('episode')
-    expect(ctx.media.season).toBe(2)
-    expect(ctx.media.episode).toBe(1)
-    expect(ctx.media.provider_ids.tmdb).toBe('120089')
-    expect(ctx.media.path).toBe('/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
-    expect(ctx.media.filename).toBe('y.mkv')
-    expect(ctx.media.title).toBe('间谍过家家')
-    expect(ctx.media.year).toBe(2022)
-    expect(ctx.trigger).toBe('library_scan')
-    // Wall ②：absoluteEpisode 挂在 MediaContext 之外的兄弟字段上（不进 zod 校验，
-    // 上面 MediaContextSchema.parse(ctx) 不因为多出这个键而抛错），makeRealignRunEpisode
-    // 建 FindSubtitleTask 时要用它。
-    expect(ctx.absoluteEpisode).toBe(26)
+    const ctx = buildRealignEpisodeFields(
+      '间谍过家家', 2022, '120089', item, '/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv', NO_ENRICHMENT,
+    )
+    expect(ctx.season).toBe(2)
+    expect(ctx.episode).toBe(1)
+    expect(ctx.providerIds.tmdb).toBe('120089')
+    expect(ctx.videoPath).toBe('/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
+    expect(ctx.videoFilename).toBe('y.mkv')
+    expect(ctx.title).toBe('间谍过家家')
+    expect(ctx.year).toBe(2022)
+    expect(ctx.itemId).toBe(episodeId('120089', 2, 1))
+  })
+
+  // A-F13 富化补面：TMDB 可达时，enrichment 参数（fetchTmdbEnrichment 的产出，由调用方
+  // executeRealign 一次性取得）原样传导进字段——不再像老实现（C-B4 处决前）那样把
+  // original_title/alternative_titles/overview/runtime_minutes 硬编码成 null/[]。
+  it('富化补面：TMDB 可达时 originalTitle/alternativeTitles/overview/runtimeMinutes 原样传导', () => {
+    const item: RealignPlanItem = {
+      sourcePath: '/x.mkv', sourceFilename: 'x.mkv', absoluteEpisode: 26,
+      targetSeason: 2, targetEpisode: 1, targetRelPath: 'Show (2022) [tmdbid-120089]/Season 02/y.mkv',
+    }
+    const ctx = buildRealignEpisodeFields(
+      '间谍过家家', 2022, '120089', item, '/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv',
+      { originalTitle: 'SPY×FAMILY', alternativeTitles: ['间谍家家酒'], overview: 'A spy, an assassin, a telepath.', runtimeMinutes: 24 },
+    )
+    expect(ctx.originalTitle).toBe('SPY×FAMILY')
+    expect(ctx.alternativeTitles).toEqual(['间谍家家酒'])
+    expect(ctx.overview).toBe('A spy, an assassin, a telepath.')
+    expect(ctx.runtimeMinutes).toBe(24)
+  })
+
+  it('富化补面：TMDB 不可达时 originalTitle/overview/runtimeMinutes 为 null、alternativeTitles 为 []，不抛错', () => {
+    const item: RealignPlanItem = {
+      sourcePath: '/x.mkv', sourceFilename: 'x.mkv', absoluteEpisode: 26,
+      targetSeason: 2, targetEpisode: 1, targetRelPath: 'Show (2022) [tmdbid-120089]/Season 02/y.mkv',
+    }
+    const ctx = buildRealignEpisodeFields(
+      '间谍过家家', 2022, '120089', item, '/lib/Show (2022) [tmdbid-120089]/Season 02/y.mkv', NO_ENRICHMENT,
+    )
+    expect(ctx.originalTitle).toBeNull()
+    expect(ctx.alternativeTitles).toEqual([])
+    expect(ctx.overview).toBeNull()
+    expect(ctx.runtimeMinutes).toBeNull()
   })
 })
 
@@ -238,18 +268,24 @@ describe('makeRealignRunEpisode', () => {
     targetSeason: 2, targetEpisode: 1, targetRelPath: 'Show (2022) [tmdbid-120089]/Season 02/y.mkv',
   }
 
-  it('把 realign ctx 翻译成 FindSubtitleTask：videoPath 是 .realign-build 路径，mediaRoot 是库根（.realign-build 之前那一级，不是这一集自己的深层目录），季集/绝对集号/标题/tmdbId 都来自 ctx', async () => {
-    const ctx = buildRealignMediaContext(
+  it('把 realign ctx 翻译成单目标批量 FindSubtitleTask：videoPath 是 .realign-build 路径，mediaRoot 是库根（.realign-build 之前那一级，不是这一集自己的深层目录），季集/标题/tmdbId 都来自 ctx，targets 恰好一项且其 absoluteEpisode 为 null（与 realign 自己的绝对集号语义不同源，见实现注释）', async () => {
+    const ctx = buildRealignEpisodeFields(
       '间谍过家家', 2022, '120089', item,
       '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.mkv',
+      NO_ENRICHMENT,
     )
     let capturedTask: FindSubtitleTask | undefined
+    const report: FindSubtitleBatchReport = {
+      installed: [{
+        itemId: ctx.itemId,
+        installedPath: '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.zh.srt',
+        installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: '1', reason: 'ok',
+      }],
+      no_safe_match: [], retry_later: [],
+    }
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedTask = task
-      return {
-        decision: 'installed' as const, reason: 'ok', installedPath: '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.zh.srt',
-        installedLanguage: 'zh-Hans' as const, candidateProvider: 'assrt', candidateProviderId: '1',
-      }
+      return report
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
 
@@ -260,45 +296,41 @@ describe('makeRealignRunEpisode', () => {
     )
 
     expect(runFindSubtitleTask).toHaveBeenCalledTimes(1)
-    expect(capturedTask!.videoPath).toBe('/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
-    expect(capturedTask!.videoFilename).toBe('y.mkv')
+    expect(capturedTask!.targets).toHaveLength(1)
+    expect(capturedTask!.targets[0].videoPath).toBe('/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.mkv')
+    expect(capturedTask!.targets[0].videoFilename).toBe('y.mkv')
     expect(capturedTask!.mediaRoot).toBe('/lib/tv') // 库根，不是这一集的深层 outDir
     expect(capturedTask!.jobId).toBe('job-1-26')
-    expect(capturedTask!.season).toBe(2)
-    expect(capturedTask!.episode).toBe(1)
-    expect(capturedTask!.absoluteEpisode).toBe(26)
+    expect(capturedTask!.targets[0].season).toBe(2)
+    expect(capturedTask!.targets[0].episode).toBe(1)
+    expect(capturedTask!.targets[0].absoluteEpisode).toBeNull()
+    expect(capturedTask!.targets[0].itemId).toBe(ctx.itemId)
     expect(capturedTask!.title).toBe('间谍过家家')
     expect(capturedTask!.year).toBe(2022)
     expect(capturedTask!.providerIds.tmdb).toBe('120089')
-    expect(result).toEqual({
-      decision: 'installed', reason: 'ok',
-      installedPath: '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.zh.srt',
-      installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: '1',
-    })
+    expect(result).toEqual(report)
   })
 
   it('mediaRoot 推导让 find-subtitle worker 自己的沙盒判定 isUnderRoots(dirname(videoPath), [mediaRoot]) 通过', async () => {
-    const ctx = buildRealignMediaContext(
+    const ctx = buildRealignEpisodeFields(
       'Show', 2020, '1', item,
       '/media/tv/.realign-build/Show (2020) [tmdbid-1]/Season 02/y.mkv',
+      NO_ENRICHMENT,
     )
     let capturedMediaRoot = ''
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedMediaRoot = task.mediaRoot
-      return {
-        decision: 'no_safe_match' as const, reason: 'x', installedPath: null,
-        installedLanguage: null, candidateProvider: null, candidateProviderId: null,
-      }
+      return { installed: [], no_safe_match: [{ itemId: ctx.itemId, reason: 'x' }], retry_later: [] }
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
 
     await runEpisode(ctx, '/media/tv/.realign-build/Show (2020) [tmdbid-1]/Season 02', 'job-2')
 
-    expect(isUnderRoots(dirname(ctx.media.path), [capturedMediaRoot])).toBe(true)
+    expect(isUnderRoots(dirname(ctx.videoPath), [capturedMediaRoot])).toBe(true)
   })
 
   it('outDir 不含 .realign-build 段 → 抛错（mediaRoot 推导失败，绝不猜一个不安全的根）', async () => {
-    const ctx = buildRealignMediaContext('Show', 2020, '1', item, '/lib/tv/Show/Season 02/y.mkv')
+    const ctx = buildRealignEpisodeFields('Show', 2020, '1', item, '/lib/tv/Show/Season 02/y.mkv', NO_ENRICHMENT)
     const runFindSubtitleTask = vi.fn()
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
 
@@ -307,11 +339,11 @@ describe('makeRealignRunEpisode', () => {
   })
 })
 
-describe('waitForJellyfinIdle', () => {
+describe('waitForIngestIdle', () => {
   it('无运行中任务 → 立即 true，不 sleep', async () => {
     const jf = { getScheduledTasks: vi.fn(async () => [{ id: '1', name: 'scan', isRunning: false }]) }
     const sleep = vi.fn(async () => {})
-    const ok = await waitForJellyfinIdle(jf, { pollMs: 10, timeoutMs: 1000, sleep })
+    const ok = await waitForIngestIdle(jf, { pollMs: 10, timeoutMs: 1000, sleep })
     expect(ok).toBe(true)
     expect(sleep).not.toHaveBeenCalled()
   })
@@ -320,7 +352,7 @@ describe('waitForJellyfinIdle', () => {
     let calls = 0
     const jf = { getScheduledTasks: vi.fn(async () => { calls++; return [{ id: '1', name: 'scan', isRunning: calls < 3 }] }) }
     const sleep = vi.fn(async () => {})
-    const ok = await waitForJellyfinIdle(jf, { pollMs: 10, timeoutMs: 10_000, sleep })
+    const ok = await waitForIngestIdle(jf, { pollMs: 10, timeoutMs: 10_000, sleep })
     expect(ok).toBe(true)
     expect(sleep).toHaveBeenCalledTimes(2)
   })
@@ -328,7 +360,7 @@ describe('waitForJellyfinIdle', () => {
   it('超时仍在跑 → false（假时钟注入，不真等也不篡改全局 Date.now）', async () => {
     const jf = { getScheduledTasks: vi.fn(async () => [{ id: '1', name: 'scan', isRunning: true }]) }
     let clock = 0
-    const ok = await waitForJellyfinIdle(jf, {
+    const ok = await waitForIngestIdle(jf, {
       pollMs: 100, timeoutMs: 250,
       sleep: async (ms) => { clock += ms },
       now: () => clock,
@@ -466,8 +498,7 @@ function mkMirror(paths: string[], opts: { seriesId?: string; title?: string } =
 function mkJf(opts: {
   locations: string[]
   items?: { Type: string; Path: string; ParentIndexNumber: number }[]
-  realtime?: boolean
-}): RealignJellyfinPort {
+}): RealignLibraryPort {
   return {
     getItem: vi.fn(async () => ({
       Id: 'jf-series-1', Name: 'Spy x Family', Type: 'Series', ProductionYear: 2022, ProviderIds: { Tmdb: '120089' },
@@ -475,7 +506,7 @@ function mkJf(opts: {
     getItemsPage: vi.fn(async (start: number) => (start === 0 ? (opts.items ?? []) : []) as never),
     getScheduledTasks: vi.fn(async () => [{ id: '1', name: 'scan', isRunning: false }]),
     getVirtualFolders: vi.fn(async () => [
-      { id: 'lib-1', name: 'TV', locations: opts.locations, enableRealtimeMonitor: opts.realtime ?? false },
+      { id: 'lib-1', name: 'TV', locations: opts.locations },
     ]),
     refreshLibrary: vi.fn(async () => {}),
   }
@@ -491,7 +522,7 @@ function spyItems40(jfLibRoot: string) {
 }
 
 function mkDeps(
-  env: { lib: LibraryRepo; jobsRepo: JobsRepo; jf: RealignJellyfinPort; libRoot: string },
+  env: { lib: LibraryRepo; jobsRepo: JobsRepo; jf: RealignLibraryPort; libRoot: string },
   over: Partial<RealignExecutorDeps> = {},
 ): RealignExecutorDeps {
   return {
@@ -802,19 +833,19 @@ describe('executeRealign（顶层编排，集成）', () => {
     const libRoot = join(root, 'lib')
     const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
     const jf = mkJf({
-      locations: [libRoot], realtime: true,
+      locations: [libRoot],
       items: [1, 2, 3].map(i => ({ Type: 'Episode', Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i}.mkv`), ParentIndexNumber: 1 })),
     })
     const observed: Array<{ path: string; inBuild: boolean; finalVisible: boolean; videoOnDisk: boolean }> = []
-    const runEpisode = vi.fn(async (ctx: { media: { path: string } }) => {
+    const runEpisode = vi.fn(async (ctx: { videoPath: string }) => {
       observed.push({
-        path: ctx.media.path,
-        inBuild: ctx.media.path.includes('.realign-build'),
+        path: ctx.videoPath,
+        inBuild: ctx.videoPath.includes('.realign-build'),
         finalVisible: existsSync(join(libRoot, SHOW_DIR)),
-        videoOnDisk: existsSync(ctx.media.path),
+        videoOnDisk: existsSync(ctx.videoPath),
       })
-      writeFileSync(ctx.media.path.replace(/\.mkv$/, '.zh.srt'), 'subtitle') // 管线写 sidecar
-      return { decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 } }
+      writeFileSync(ctx.videoPath.replace(/\.mkv$/, '.zh.srt'), 'subtitle') // 管线写 sidecar
+      return { installed: [], no_safe_match: [], retry_later: [] }
     })
     const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
       runEpisode: runEpisode as never, tmdb: { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 3, airDate: null }]) },
@@ -832,8 +863,6 @@ describe('executeRealign（顶层编排，集成）', () => {
     // sidecar 随目录一起亮相
     const finalSrts = countAll(join(libRoot, SHOW_DIR), /\.zh\.srt$/)
     expect(finalSrts).toBe(3)
-    // enableRealtimeMonitor 被察觉并记录在案
-    expect(result.detail).toContain('实时监控')
     db.close()
   })
 
@@ -931,6 +960,86 @@ describe('executeRealign（顶层编排，集成）', () => {
     expect(existsSync(join(root, '.archive'))).toBe(false)
     expect(existsSync(join(libRoot, '.realign-build'))).toBe(false)
     expect(jobsRepo.get(job.id)!.plan_ref).toBeNull()
+    db.close()
+  })
+
+  it('A-F13 富化补面：TMDB 可达时字幕先行任务带 originalTitle/alternativeTitles/overview/runtimeMinutes（不再硬编码空），且全季共用同一次 TMDB 富化查询（不逐集各打一次往返）', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-enrich-ok-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
+    const jf = mkJf({
+      locations: [libRoot],
+      items: [1, 2, 3].map(i => ({ Type: 'Episode', Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i}.mkv`), ParentIndexNumber: 1 })),
+    })
+    const capturedTasks: FindSubtitleTask[] = []
+    const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
+      capturedTasks.push(task)
+      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [] }
+    })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+    const getDetails = vi.fn(async () => ({
+      overview: 'A spy, an assassin, a telepath.', runtimeMinutes: 24,
+      posterPath: null, originalTitle: 'SPY×FAMILY', year: 2022,
+    }))
+    const getChineseTitles = vi.fn(async () => ['间谍家家酒'])
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
+      runEpisode,
+      tmdb: {
+        getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 3, airDate: null }]),
+        getDetails, getChineseTitles,
+      },
+    })
+
+    const result = await executeRealign(job, deps)
+
+    expect(result.decision).toBe('realigned')
+    expect(capturedTasks).toHaveLength(3)
+    expect(getDetails).toHaveBeenCalledTimes(1)      // series 级富化只取一次，三个目标共用
+    expect(getChineseTitles).toHaveBeenCalledTimes(1)
+    for (const task of capturedTasks) {
+      expect(task.originalTitle).toBe('SPY×FAMILY')
+      expect(task.alternativeTitles).toEqual(['间谍家家酒'])
+      expect(task.overview).toBe('A spy, an assassin, a telepath.')
+      expect(task.runtimeMinutes).toBe(24)
+    }
+    db.close()
+  })
+
+  it('A-F13 富化补面：TMDB 请求失败（getDetails/getChineseTitles 拒绝）→ gain-path 降级为 null/[]，绝不因此 park/error，整理照常完成', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'realign-enrich-fail-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
+    const jf = mkJf({
+      locations: [libRoot],
+      items: [1, 2, 3].map(i => ({ Type: 'Episode', Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i}.mkv`), ParentIndexNumber: 1 })),
+    })
+    const capturedTasks: FindSubtitleTask[] = []
+    const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
+      capturedTasks.push(task)
+      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [] }
+    })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
+      runEpisode,
+      tmdb: {
+        getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 3, airDate: null }]),
+        getDetails: vi.fn(async () => { throw new Error('TMDB unreachable') }),
+        getChineseTitles: vi.fn(async () => { throw new Error('TMDB unreachable') }),
+      },
+    })
+
+    const result = await executeRealign(job, deps)
+
+    expect(result.decision).toBe('realigned') // 不炸——绝不因为富化失败而 park/error
+    expect(capturedTasks).toHaveLength(3)
+    for (const task of capturedTasks) {
+      expect(task.originalTitle).toBeNull()
+      expect(task.alternativeTitles).toEqual([])
+      expect(task.overview).toBeNull()
+      expect(task.runtimeMinutes).toBeNull()
+    }
     db.close()
   })
 })

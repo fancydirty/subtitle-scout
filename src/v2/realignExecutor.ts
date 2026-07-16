@@ -13,8 +13,9 @@ import {
   initManifest, appendManifestEntry, appendRollbackMarker, manifestPath, readManifest, replayRollback,
   type ManifestDoc,
 } from '../files/realignManifest.js'
-import { MediaContextSchema, type MediaContext } from '../core/schemas.js'
-import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
+import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
+import { fetchTmdbEnrichment } from './findSubtitleWorkerTask.js'
+import { episodeId } from './ownIds.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { JobsRepo, Job } from './jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
@@ -170,44 +171,58 @@ export function archiveOldDir(oldDir: string, archiveDir: string): string {
 }
 
 /**
- * 字幕先行阶段的 MediaContext：此刻 Jellyfin 尚未刮新结构、镜像无条目，identify 所需的
+ * 字幕先行阶段单集任务字段：此刻 Jellyfin/ingest 尚未刮新结构、镜像无条目，identify 所需的
  * 身份/tmdbid/季集/视频路径全在整理计划里，字面构造即可，不需要 jf.getItem。
- * trigger 用 'library_scan'（语义最贴近："库结构变化触发的搜索"，不是播放触发/手动搜索）。
+ *
+ * C-B4/A-F13 处决（考古定罪，裁决 R-7）：老实现在这里先拍一个 MediaContextSchema.parse(...)
+ * 出来（借旧管线遗留的 MediaContext 当传声筒——trigger 恒 'library_scan'、
+ * existing_subtitles/production_locations 等一堆恒空字段），再在 makeRealignRunEpisode 里把
+ * 这个 MediaContext 拍扁回 FindSubtitleTask 的字段——两次转译，且中间那次还把 TMDB 本来查得到
+ * 的 original_title/alternative_titles/overview/runtime_minutes 硬编码成 null/[]（文件刚被
+ * 重编号、最需要佐证候选归属的时刻反而拿到最少证据）。现在直接构造 FindSubtitleTask 缺
+ * jobId/mediaRoot 之外的全部字段本身——enrichment 参数来自调用方一次性取得的
+ * fetchTmdbEnrichment 结果（findSubtitleWorkerTask.ts 导出，与非 realign 路径共用同一份
+ * TMDB 富化实现，不重新发明）。
  */
-export interface RealignMediaContext extends MediaContext {
-  /** 绝对集号（跨全剧连续编号，早在 buildRealignPlan 阶段已从 RealignPlanItem 算出）。
-   *  MediaContextSchema（core/schemas.ts，老管线遗留类型，未按 realign 特化）本身没有这个
-   *  字段——挂在 MediaContext 之外的兄弟属性上，不进 zod 校验，也不影响 MediaContextSchema.parse
-   *  仍把这个对象当合法 MediaContext 收（zod 默认 strip 未知键，不是 strict 模式）。
-   *  Wall ②（old-pipeline-retirement）：makeRealignRunEpisode 建 FindSubtitleTask 时需要它。 */
-  absoluteEpisode: number
+export interface RealignEpisodeFields {
+  title: string
+  originalTitle: string | null
+  year: number
+  alternativeTitles: string[]
+  overview: string | null
+  runtimeMinutes: number | null
+  providerIds: Record<string, string>
+  videoPath: string
+  videoFilename: string
+  season: number
+  episode: number
+  /** episodes 自有 id 空间的形状（ownIds.ts 的 episodeId）——这一集尚未被 ingest 重新扫描
+   *  identify 之前就能字面拼出，且与 ingest 事后在新路径下识别出的同一集会得到的 episodes.id
+   *  完全一致（tmdbId 钉死、季集来自整理计划），不是随手编的占位符。 */
+  itemId: string
 }
 
-export function buildRealignMediaContext(
+export function buildRealignEpisodeFields(
   seriesTitle: string, year: number, tmdbId: string, item: RealignPlanItem, videoPath: string,
-): RealignMediaContext {
-  const ctx = MediaContextSchema.parse({
-    request_id: `realign-${tmdbId}-S${item.targetSeason}E${item.targetEpisode}-${Date.now()}`,
-    trigger: 'library_scan',
-    media: {
-      type: 'episode',
-      path: videoPath,
-      filename: basename(videoPath),
-      title: seriesTitle,
-      original_title: null,
-      year,
-      season: item.targetSeason,
-      episode: item.targetEpisode,
-      runtime_minutes: null,
-      provider_ids: { tmdb: tmdbId },
-      production_locations: [],
-      alternative_titles: [],
-      overview: null,
-      existing_subtitles: [],
-    },
-    preferences: {},
-  })
-  return { ...ctx, absoluteEpisode: item.absoluteEpisode }
+  enrichment: {
+    originalTitle: string | null; alternativeTitles: string[]
+    overview: string | null; runtimeMinutes: number | null
+  },
+): RealignEpisodeFields {
+  return {
+    title: seriesTitle,
+    originalTitle: enrichment.originalTitle,
+    year,
+    alternativeTitles: enrichment.alternativeTitles,
+    overview: enrichment.overview,
+    runtimeMinutes: enrichment.runtimeMinutes,
+    providerIds: { tmdb: tmdbId },
+    videoPath,
+    videoFilename: basename(videoPath),
+    season: item.targetSeason,
+    episode: item.targetEpisode,
+    itemId: episodeId(tmdbId, item.targetSeason, item.targetEpisode),
+  }
 }
 
 const REALIGN_BUILD_SEGMENT = `${sep}.realign-build${sep}`
@@ -255,27 +270,35 @@ function libRootFromRealignBuildDir(outDir: string): string {
  * makeFindSubtitleWorker(...)，测试走假函数）永远显式传入，注入点同样清楚。
  */
 export function makeRealignRunEpisode(
-  deps: { runFindSubtitleTask: (task: FindSubtitleTask) => Promise<FindSubtitleDecision>; targetLanguage?: string },
-): (ctx: RealignMediaContext, outDir: string, jobId: string) => Promise<unknown> {
+  deps: { runFindSubtitleTask: (task: FindSubtitleTask) => Promise<FindSubtitleBatchReport>; targetLanguage?: string },
+): (ctx: RealignEpisodeFields, outDir: string, jobId: string) => Promise<unknown> {
   return async (ctx, outDir, jobId) => {
     const task: FindSubtitleTask = {
       jobId,
       mediaRoot: libRootFromRealignBuildDir(outDir),
-      videoPath: ctx.media.path,
-      videoFilename: ctx.media.filename,
-      title: ctx.media.title,
-      originalTitle: ctx.media.original_title ?? null,
-      year: ctx.media.year ?? null,
-      season: ctx.media.season ?? null,
-      episode: ctx.media.episode ?? null,
-      absoluteEpisode: ctx.absoluteEpisode,
-      alternativeTitles: ctx.media.alternative_titles,
-      overview: ctx.media.overview ?? null,
-      runtimeMinutes: ctx.media.runtime_minutes ?? null,
-      providerIds: ctx.media.provider_ids,
+      title: ctx.title,
+      originalTitle: ctx.originalTitle,
+      year: ctx.year,
+      alternativeTitles: ctx.alternativeTitles,
+      overview: ctx.overview,
+      runtimeMinutes: ctx.runtimeMinutes,
+      providerIds: ctx.providerIds,
       // A4: primary configured target language (TARGET_LANGUAGES[0], wired by cli/index.ts);
       // multi-language per-item tasking is future work.
       targetLanguage: deps.targetLanguage ?? 'zh',
+      targets: [{
+        itemId: ctx.itemId,
+        videoPath: ctx.videoPath,
+        videoFilename: ctx.videoFilename,
+        season: ctx.season,
+        episode: ctx.episode,
+        // R-7 窄 diff：realign 的绝对集号（RealignPlanItem.absoluteEpisode，anime-lists 交叉
+        // 验证过）与 FindSubtitleTargetFact.absoluteEpisode 语义不同源（后者是 worker 自用的
+        // 归属定位 hint，来自 TMDB 绝对集表 resolveAbsoluteTable/absoluteFor）——两套来源不
+        // 混用，此处显式 null；worker 靠 season/episode + title/tmdbId 判断归属，绝对集号
+        // 缺席不是 blocker（同 findSubtitleWorker.schemas.ts 该字段自己的文档）。
+        absoluteEpisode: null,
+      }],
     }
     return deps.runFindSubtitleTask(task)
   }
@@ -284,10 +307,12 @@ export function makeRealignRunEpisode(
 export interface ScheduledTaskLike { id: string; name: string; isRunning: boolean }
 
 /**
- * 等 Jellyfin 扫描空闲（调研红线：扫描中挪文件=重复条目灾难）。轮询直到无任务在跑或超时。
+ * 等自家 ingest 走盘锁空闲（C-B3 改名前旧名 waitForJellyfinIdle——旧注释主语是 Jellyfin 扫描，
+ * 去 Jellyfin 化 P5 之后这里等的其实一直是 realignLibraryPort.ts 的 ingestLock.held，主语记错了
+ * 人；等待逻辑本体一行未动）。调研红线：走盘中挪文件=重复条目灾难。轮询直到无任务在跑或超时。
  * sleep/now 均可注入（测试用假时钟，不真等也不篡改全局 Date.now）。
  */
-export async function waitForJellyfinIdle(
+export async function waitForIngestIdle(
   jf: { getScheduledTasks(): Promise<ScheduledTaskLike[]> },
   opts: { pollMs: number; timeoutMs: number; sleep: (ms: number) => Promise<void>; now?: () => number },
 ): Promise<boolean> {
@@ -350,31 +375,35 @@ export async function verifyRealignedCounts(
   for (const [season, expected] of expectedCounts) {
     const actual = actualCounts.get(season) ?? 0
     if (actual !== expected) {
-      return { ok: false, detail: `第 ${season} 季验收：Jellyfin 报告 ${actual} 集，计划 ${expected} 集，不一致` }
+      return { ok: false, detail: `第 ${season} 季验收：走盘计数 ${actual} 集，计划 ${expected} 集，不一致` }
     }
   }
   return { ok: true, detail: '各季集数与计划一致' }
 }
 
-export interface RealignJellyfinPort {
+export interface RealignLibraryPort {
   getItem(itemId: string): Promise<RealignMediaItem>
   getItemsPage(startIndex: number, limit: number): Promise<RealignMediaItem[]>
   getScheduledTasks(): Promise<ScheduledTaskLike[]>
-  getVirtualFolders(): Promise<{ id: string; name: string; locations: string[]; enableRealtimeMonitor: boolean }[]>
+  getVirtualFolders(): Promise<{ id: string; name: string; locations: string[] }[]>
   refreshLibrary(libraryId: string): Promise<void>
 }
 
 export interface RealignExecutorDeps {
   lib: LibraryRepo
   jobs: Pick<JobsRepo, 'setPlanRef' | 'retireAllForSeries'>
-  jf: RealignJellyfinPort
-  tmdb: Pick<TmdbClient, 'getSeasonTable'>
+  jf: RealignLibraryPort
+  /** A-F13：getDetails/getChineseTitles 是 realign 字幕先行阶段的富化补面（见步骤 12 附近的
+   *  fetchTmdbEnrichment 调用）——可选（Partial），不强改所有既有调用方/测试；未接线时按
+   *  fetchTmdbEnrichment 自己的 gain-path 降级处理（tmdb 传 null → originalTitle/
+   *  alternativeTitles/overview/runtimeMinutes 全部 null/[]），绝不因为缺这两个方法而抛错。 */
+  tmdb: Pick<TmdbClient, 'getSeasonTable'> & Partial<Pick<TmdbClient, 'getDetails' | 'getChineseTitles'>>
   fetchAnimeLists: () => Promise<AnimeListsEntry[]>
   /** Wall ②（old-pipeline-retirement）：不再是 runPipeline 的 PipelineResult——现在是
    *  makeRealignRunEpisode（v3 find-subtitle worker 接线）的返回值。调用方（executeRealign
    *  步骤 12）本就丢弃返回值、只关心是否抛错（抛错被 catch 记录，不阻塞整理），因此这里放宽
    *  成 Promise<unknown>，不为一个从不被读取的返回值杜撰假的 PipelineResult 形状。 */
-  runEpisode: (ctx: RealignMediaContext, outDir: string, jobId: string) => Promise<unknown>
+  runEpisode: (ctx: RealignEpisodeFields, outDir: string, jobId: string) => Promise<unknown>
   now: () => number
   log: (msg: string) => void
   sleep: (ms: number) => Promise<void>
@@ -593,13 +622,15 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   if (!targetFolder) {
     return park(`找不到包含 ${scanDir} 的 Jellyfin 虚拟库——无法在整理后定向刷新，拒绝动任何文件`)
   }
-  if (targetFolder.enableRealtimeMonitor) {
-    notes.push('该库开启了实时监控（enableRealtimeMonitor）——Jellyfin 可能在整理过程中自行扫描，已尽量以点前缀目录规避')
-  }
+  // C-B2 处决：这里原有一条 targetFolder.enableRealtimeMonitor 分支——库原生实现
+  // （realignLibraryPort.ts 的 getVirtualFolders）恒返回 false（库原生世界没有 Jellyfin
+  // 的"实时监控"概念可言），这条分支永远走不到真，是纯粹的死代码，随字段一并删除。
 
-  // 1. series 元数据——统一走 jf.getItem(seriesId) 活查（series.provider_ids 镜像列是历史
-  //    空洞，从未被 scanner 写入，不能作为 TMDB id 的可信来源）。走到这里说明本轮不是
-  //    forward-resume（否则上面已经 return 了）：旧 series item 理应仍然存在——
+  // 1. series 元数据——统一走 jf.getItem(seriesId) 活查（不是因为 series.provider_ids 镜像列
+  //    是空洞——C-B7：T3 起 ingest 每行都写它——而是 realignLibraryPort.ts 的 getItem 实现根本
+  //    不读这一列：series.id 本身就是 'tmdb:<id>' 形状，tmdbIdFromOwnId 直接从 id 结构化解出
+  //    tmdbId，比再读一遍列/反序列化 JSON 更直接可信，没必要引入第二个数据源）。走到这里说明
+  //    本轮不是 forward-resume（否则上面已经 return 了）：旧 series item 理应仍然存在——
   //    refreshLibrary 尚未发生（它只在步骤 14 收尾里调用，而收尾只会在 reveal 之后触发，
   //    reveal 之后必然满足上面的续走判定），因此这里调用 jf.getItem 是安全的（GAP A）。
   const seriesItem = await deps.jf.getItem(seriesId)
@@ -616,7 +647,7 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
 
   // 5. Jellyfin 空闲等待（IMP#6 红线：扫描中挪文件=重复条目灾难）——先于包括回滚在内的
   //    一切搬动。
-  const idleBefore = await waitForJellyfinIdle(deps.jf, { pollMs: 2000, timeoutMs: 60_000, sleep: deps.sleep, now: deps.now })
+  const idleBefore = await waitForIngestIdle(deps.jf, { pollMs: 2000, timeoutMs: 60_000, sleep: deps.sleep, now: deps.now })
   if (!idleBefore) return { decision: 'error', detail: 'Jellyfin 扫描长时间未空闲，暂缓本次整理（下次重试）' }
 
   const showDirName = buildTargetShowDir(seriesTitle, year, tmdbId)
@@ -702,6 +733,8 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   if (!planResult.ok) return park(`整理计划构建失败：${planResult.failures.join('; ')}`)
 
   if (deps.getDurationSeconds) {
+    // ⚠️ 死枝（getDurationSeconds 从未接线）。若未来接线：禁止带 24 硬编码激活——45 分钟剧集
+    // 会被 ±10% 闸门整剧误 park；精确时长用 tmdb.getDetails().runtimeMinutes。裁决 C-B1 登记在案。
     const expectedRuntime = 24 // 保守默认值：TMDB /tv/{id} 的 episode_run_time 平均值，
     // 精确值应在 step1 从 seriesItem 附带取得；此处为可选抽查闸门，取不到时以默认容差跳过。
     const runtimeFailures = checkRuntimeTolerance(planResult.items, expectedRuntime, deps.getDurationSeconds)
@@ -748,9 +781,24 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
 
       // 12. 字幕先行（IMP#7）：在 .realign-build 里、亮相之前跑完——亮相展示的是含字幕的
       //     完整树。单集失败不阻塞整理（字幕可由常规 season job 事后补），记录在案。
+      // A-F13 处决：TMDB 富化一次性取（series 级数据，本轮全部目标共用同一份，不逐集各打一次
+      // 往返）；getDetails/getChineseTitles 未接线（RealignExecutorDeps.tmdb 的可选字段缺席，
+      // 多见于测试）或 TMDB 请求本身失败，都走 fetchTmdbEnrichment 自己的 gain-path 降级
+      // （null/[]），这里绝不因为它失败而 park/throw。
+      const tmdbForEnrichment = deps.tmdb.getDetails && deps.tmdb.getChineseTitles
+        ? (deps.tmdb as unknown as TmdbClient) : null
+      const { details, chineseTitles } = await fetchTmdbEnrichment(tmdbForEnrichment, 'tv', tmdbId)
+      const enrichOriginalTitle = details?.originalTitle ?? null
+      const enrichment = {
+        originalTitle: enrichOriginalTitle,
+        alternativeTitles: chineseTitles.filter((t, i, arr) =>
+          t.trim().length > 0 && t !== seriesTitle && t !== enrichOriginalTitle && arr.indexOf(t) === i),
+        overview: details?.overview ?? null,
+        runtimeMinutes: details?.runtimeMinutes ?? null,
+      }
       for (const item of collision.toMove) {
         const buildVideoPath = join(libRoot, '.realign-build', item.targetRelPath)
-        const ctx = buildRealignMediaContext(seriesTitle, year, tmdbId, item, buildVideoPath)
+        const ctx = buildRealignEpisodeFields(seriesTitle, year, tmdbId, item, buildVideoPath, enrichment)
         try {
           await deps.runEpisode(ctx, dirname(buildVideoPath), `${job.id}-${item.absoluteEpisode}`)
         } catch (e) {
@@ -804,7 +852,7 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
 
     // Jellyfin 编排：单库刷新 → 等空闲 → 验收。
     await deps.jf.refreshLibrary(targetFolder.id)
-    await waitForJellyfinIdle(deps.jf, { pollMs: 2000, timeoutMs: 120_000, sleep: deps.sleep, now: deps.now })
+    await waitForIngestIdle(deps.jf, { pollMs: 2000, timeoutMs: 120_000, sleep: deps.sleep, now: deps.now })
 
     const verify = await verifyRealignedCounts(deps.jf, finalShowDir, expectedCounts, {
       pageSize: 100, mappings: deps.mappings,
@@ -844,7 +892,7 @@ async function forwardResume(
   ctx: {
     seriesId: string; archiveDir: string; finalShowDir: string; scanDir: string | null
     candidateRoots: string[]
-    folders: { id: string; name: string; locations: string[]; enableRealtimeMonitor: boolean }[]
+    folders: { id: string; name: string; locations: string[] }[]
   },
 ): Promise<RealignExecutionResult> {
   const { seriesId, archiveDir, finalShowDir, scanDir, candidateRoots, folders } = ctx
@@ -863,7 +911,7 @@ async function forwardResume(
     return { decision: 'park', detail: `崩溃恢复：找不到包含 ${finalShowDir} 的 Jellyfin 虚拟库——无法定向刷新，需人工核查` }
   }
 
-  const idle = await waitForJellyfinIdle(deps.jf, { pollMs: 2000, timeoutMs: 60_000, sleep: deps.sleep, now: deps.now })
+  const idle = await waitForIngestIdle(deps.jf, { pollMs: 2000, timeoutMs: 60_000, sleep: deps.sleep, now: deps.now })
   if (!idle) return { decision: 'error', detail: 'Jellyfin 扫描长时间未空闲，暂缓收尾续走（下次重试）' }
 
   try {
@@ -876,7 +924,7 @@ async function forwardResume(
       archiveOldDir(scanDir, archiveDir)
     }
     await deps.jf.refreshLibrary(targetFolder.id)
-    await waitForJellyfinIdle(deps.jf, { pollMs: 2000, timeoutMs: 120_000, sleep: deps.sleep, now: deps.now })
+    await waitForIngestIdle(deps.jf, { pollMs: 2000, timeoutMs: 120_000, sleep: deps.sleep, now: deps.now })
     deps.lib.deleteSeriesRows(seriesId)
     deps.jobs.retireAllForSeries(seriesId, deps.now())
   } catch (error) {

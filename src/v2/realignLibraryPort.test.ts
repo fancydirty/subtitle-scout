@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeRealignLibraryPort } from './realignLibraryPort.js'
-import { verifyRealignedCounts, waitForJellyfinIdle } from './realignExecutor.js'
+import { verifyRealignedCounts, waitForIngestIdle } from './realignExecutor.js'
 import { ingestLock } from './ingest.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
@@ -127,7 +127,7 @@ describe('makeRealignLibraryPort · getScheduledTasks（D4：ingestLock 承载"�
     expect(tasks[0].isRunning).toBe(true)
   })
 
-  it('契约测试：waitForJellyfinIdle 在 ingestLock 释放前一直轮询，释放后返回 true', async () => {
+  it('契约测试：waitForIngestIdle 在 ingestLock 释放前一直轮询，释放后返回 true', async () => {
     const lib = mkLib()
     const port = makeRealignLibraryPort({ lib, roots: [], runIngest: vi.fn() })
     ingestLock.held = true
@@ -137,7 +137,7 @@ describe('makeRealignLibraryPort · getScheduledTasks（D4：ingestLock 承载"�
       if (ticks === 2) ingestLock.held = false
     }
 
-    const idle = await waitForJellyfinIdle(port, { pollMs: 1, timeoutMs: 10_000, sleep })
+    const idle = await waitForIngestIdle(port, { pollMs: 1, timeoutMs: 10_000, sleep })
     expect(idle).toBe(true)
     expect(ticks).toBe(2)
   })
@@ -151,8 +151,8 @@ describe('makeRealignLibraryPort · getVirtualFolders', () => {
     const folders = await port.getVirtualFolders()
 
     expect(folders).toHaveLength(2)
-    expect(folders[0]).toMatchObject({ name: 'tv', locations: ['/media/tv'], enableRealtimeMonitor: false })
-    expect(folders[1]).toMatchObject({ name: 'anime', locations: ['/media/anime'], enableRealtimeMonitor: false })
+    expect(folders[0]).toMatchObject({ name: 'tv', locations: ['/media/tv'] })
+    expect(folders[1]).toMatchObject({ name: 'anime', locations: ['/media/anime'] })
   })
 })
 
