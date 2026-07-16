@@ -10,7 +10,9 @@ import {
   runFindSubtitleWorkerTask, mapWorkerTaskToFindSubtitleTask,
   type FindSubtitleWorkerTaskDeps, type FindSubtitleTaskMapperDeps,
 } from './findSubtitleWorkerTask.js'
-import type { FindSubtitleDecision, FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
+import type {
+  FindSubtitleBatchReport, FindSubtitleInstalledItem, FindSubtitleUnresolvedItem, FindSubtitleTask,
+} from '../agent/findSubtitleWorker.schemas.js'
 import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { seriesId, episodeId } from './ownIds.js'
 
@@ -45,8 +47,11 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
       })
     }
     // e2 covered, e4 unavailable but not yet due for recheck — both excluded from the gap list.
+    // R-3: markUnavailable's 3rd arg is now `now` (the ladder computes recheck_after itself,
+    // 1 day out on the first call) — passing NOW here still lands recheck_after in the future
+    // relative to NOW, satisfying "not yet due".
     lib.markCovered(episodeId(tmdbId, 1, 2), null, 'preexisting')
-    lib.markUnavailable(episodeId(tmdbId, 1, 4), 'not due yet', NOW + 999_999_999)
+    lib.markUnavailable(episodeId(tmdbId, 1, 4), 'not due yet', NOW)
 
     jobsRepo.upsertWorkerTask({ seriesId: sId, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
     const job = jobsRepo.claimNext(NOW)!
@@ -296,12 +301,21 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
   })
 })
 
-function decision(over: Partial<FindSubtitleDecision> = {}): FindSubtitleDecision {
+/** FindSubtitleBatchReport 构造 helper：三桶默认皆空，测试按需覆写。 */
+function report(over: Partial<FindSubtitleBatchReport> = {}): FindSubtitleBatchReport {
+  return { installed: [], no_safe_match: [], retry_later: [], ...over }
+}
+
+function installedItem(itemId: string, over: Partial<FindSubtitleInstalledItem> = {}): FindSubtitleInstalledItem {
   return {
-    decision: 'installed', reason: 'looks right', installedPath: null,
-    installedLanguage: 'zh-Hans', candidateProvider: null, candidateProviderId: null,
+    itemId, installedPath: '/p/placeholder.srt', installedLanguage: 'zh-Hans',
+    candidateProvider: null, candidateProviderId: null, reason: 'looks right',
     ...over,
   }
+}
+
+function unresolvedItem(itemId: string, reason = 'looks unresolved'): FindSubtitleUnresolvedItem {
+  return { itemId, reason }
 }
 
 // Own-id space (去 Jellyfin 化 P2): series/movies.id = 'tmdb:<TMDB id>'. Using a real tmdb id
@@ -331,44 +345,195 @@ function setup() {
   return { root, videoPath, db, lib, jobsRepo, job }
 }
 
+/** 批量收割测试用：同一季 episodeCount 集全部 missing，一次 claim 拿到携带全部目标的批量任务
+ *  （镜像上方 mapper 测试"季级 job 映射为携带全部缺口的批量任务"的夹具形状）。 */
+function setupBatch(episodeCount: number) {
+  const root = mkdtempSync(join(tmpdir(), 'find-subtitle-worker-task-batch-'))
+  const showDir = join(root, 'Show', 'Season 01')
+  mkdirSync(showDir, { recursive: true })
+
+  const db = openDb(':memory:')
+  const lib = new LibraryRepo(db)
+  const jobsRepo = new JobsRepo(db)
+  lib.upsertSeries({ id: SHOW_SERIES_ID, name: 'Show' })
+  const episodeIds: string[] = []
+  for (let ep = 1; ep <= episodeCount; ep++) {
+    const id = episodeId(SHOW_TMDB_ID, 1, ep)
+    const videoPath = join(showDir, `Show.S01E0${ep}.mkv`)
+    writeFileSync(videoPath, 'video')
+    lib.upsertEpisode({
+      id, seriesId: SHOW_SERIES_ID, season: 1, episode: ep, name: `E${ep}`,
+      path: videoPath, subStatus: 'missing',
+    })
+    episodeIds.push(id)
+  }
+  jobsRepo.upsertWorkerTask({ seriesId: SHOW_SERIES_ID, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
+  const job = jobsRepo.claimNext(Date.now())!
+  return { root, db, lib, jobsRepo, job, episodeIds }
+}
+
+const MOVIE_ID = seriesId('555')
+
+function setupMovie() {
+  const root = mkdtempSync(join(tmpdir(), 'find-subtitle-worker-task-movie-'))
+  const movieDir = join(root, 'Movie (2020)')
+  mkdirSync(movieDir, { recursive: true })
+  const videoPath = join(movieDir, 'Movie.mkv')
+  writeFileSync(videoPath, 'video')
+
+  const db = openDb(':memory:')
+  const lib = new LibraryRepo(db)
+  const jobsRepo = new JobsRepo(db)
+  lib.upsertMovie({ id: MOVIE_ID, name: 'Movie', path: videoPath, subStatus: 'missing', year: 2020 })
+  jobsRepo.upsertWorkerTask({ seriesId: null, season: null, movieId: MOVIE_ID }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
+  const job = jobsRepo.claimNext(Date.now())!
+  return { root, videoPath, db, lib, jobsRepo, job }
+}
+
 function baseDeps(over: Partial<FindSubtitleWorkerTaskDeps> = {}): FindSubtitleWorkerTaskDeps {
   return {
     lib: over.lib!,
     tmdb: null,
     mediaRoots: [],
-    runTask: vi.fn(async () => decision()),
+    runTask: vi.fn(async () => report()),
     ...over,
   }
 }
 
-describe('runFindSubtitleWorkerTask', () => {
-  // Task 8 复活: mapWorkerTaskToFindSubtitleTask 现在返回批量 FindSubtitleTask（itemId 已挪进
-  // task.targets[]，不再有 mapper 侧的单独 targetItemId 返回值），但 runFindSubtitleWorkerTask
-  // 本体（这一收割/队列半区）还没跟进这个新契约——它仍按旧 `{ task, targetItemId }` 包装形状
-  // 解构 mapper 的返回值，'task'/'targetItemId' 两个字段在新返回类型上都不存在，解构出
-  // undefined。这五个 it.todo 在 mapper 处决当下（Task 4）就是已知会挂的收割测试，留给 Task 8
-  // 按批量契约重写 runFindSubtitleWorkerTask 本体时逐个复活——不是遗漏，是本任务明确划出的
-  // 边界（"本任务不改它"）。
-  it.todo('installs: maps the worker_task row to a FindSubtitleTask, marks the episode covered, and completes the job done — Task 8 复活')
+// R-3（裁决 2026-07-16）：批量收割入账 + 队列语义终局。旧单决定契约（mapper 返回
+// `{ task, targetItemId }`，installed/no_safe_match 各处理一个 itemId，no_safe_match 走
+// jobs 侧 dormant 判决）已随 Task 4 的 mapper 批量化处决——mapper 早就只返回整批
+// FindSubtitleTask 本身。这个 describe 块（Task 8）把 runFindSubtitleWorkerTask 本体重写为
+// 批量收割入账：installed/no_safe_match 逐项落账（markCovered/markUnavailable），内容退避
+// 下沉到 item 自己的 search_attempts 阶梯（见 libraryRepo.ts markUnavailable），
+// jobs.completeNoMatch 从此零调用（不删，见 jobsRepo.ts 头注释）。
+describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终局)', () => {
+  it('installed: 批量逐项 markCovered，job completeDone', async () => {
+    const { lib, jobsRepo, job, episodeIds } = setupBatch(3)
+    const runTask = vi.fn(async () => report({ installed: episodeIds.map((id) => installedItem(id)) }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    const result = await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(result).not.toBeNull()
+    for (const id of episodeIds) expect(lib.getEpisode(id)!.sub_status).toBe('covered')
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+  })
+
+  it('no_safe_match: 批量逐项 markUnavailable（item 级阶梯自算 recheck_after），job 仍 completeDone', async () => {
+    const { lib, jobsRepo, job, episodeIds } = setupBatch(2)
+    const runTask = vi.fn(async () => report({
+      no_safe_match: episodeIds.map((id) => unresolvedItem(id, '没有找到匹配的字幕')),
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    for (const id of episodeIds) {
+      const ep = lib.getEpisode(id)!
+      expect(ep.sub_status).toBe('unavailable')
+      expect(ep.search_attempts).toBe(1)
+      expect(ep.recheck_after).not.toBeNull()
+      expect(ep.status_reason).toBe('没有找到匹配的字幕')
+    }
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+  })
+
+  // R-3: 内容退避彻底下沉到 item 事实层——jobs 状态机从此不持有任何内容判决，dormant 判决之死。
+  it('全 no_safe_match 场景：jobsRepo.completeNoMatch 零调用（dormant 判决已死）', async () => {
+    const { lib, jobsRepo, job, episodeIds } = setupBatch(2)
+    const completeNoMatchSpy = vi.spyOn(jobsRepo, 'completeNoMatch')
+    const runTask = vi.fn(async () => report({ no_safe_match: episodeIds.map((id) => unresolvedItem(id)) }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(completeNoMatchSpy).not.toHaveBeenCalled()
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+  })
 
   // A2: markCovered's language fallback used to be a hardcoded 'zh-Hans' no matter the task's
   // actual target language. It must now fall back to task.targetLanguage instead — a defensive
-  // last resort for the rare case the worker finalizes 'installed' without installedLanguage set.
-  it.todo('markCovered records task.targetLanguage (not a hardcoded zh-Hans) when the decision omits installedLanguage — Task 8 复活')
+  // last resort for the rare case the worker finalizes an installed item without installedLanguage.
+  it('markCovered records task.targetLanguage (not a hardcoded zh-Hans) when the installed item omits installedLanguage', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(SHOW_EPISODE_ID, { installedLanguage: null, installedPath: '/p/e1.en.srt' })],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask, targetLanguage: 'en' })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    const row = lib.db.prepare('select language from subtitles where item_id=?').get(SHOW_EPISODE_ID) as { language: string }
+    expect(row.language).toBe('en')
+  })
 
   // Spec-review fix #1 (A1's "A4 接配置"): the task's targetLanguage comes from configuration
   // (deps.targetLanguage, wired from TARGET_LANGUAGES' primary entry in cli/index.ts), not a
   // hardcoded 'zh'. With TARGET_LANGUAGES=en, dispatched workers must hunt English subtitles.
-  it.todo('threads deps.targetLanguage into the constructed FindSubtitleTask (en config → en task) — Task 8 复活')
+  it('threads deps.targetLanguage into the constructed FindSubtitleTask (en config → en task)', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask, targetLanguage: 'en' })
 
-  it.todo('deps.targetLanguage omitted → task.targetLanguage defaults to zh (historical default) — Task 8 复活')
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
-  it.todo('movie identity: resolves the movie row (not an episode) and marks it covered — Task 8 复活')
+    expect(runTask).toHaveBeenCalledWith(expect.objectContaining({ targetLanguage: 'en' }))
+  })
+
+  it('deps.targetLanguage omitted → task.targetLanguage defaults to zh (historical default)', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(runTask).toHaveBeenCalledWith(expect.objectContaining({ targetLanguage: 'zh' }))
+  })
+
+  it('movie identity: resolves the movie row (not an episode) and marks it covered', async () => {
+    const { lib, jobsRepo, job } = setupMovie()
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(MOVIE_ID, { installedPath: '/movies/Movie.zh-Hans.srt' })],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(lib.getMovie(MOVIE_ID)!.sub_status).toBe('covered')
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+  })
+
+  // itemId 幻觉防线：markCovered/markUnavailable 都是两表盲 UPDATE，且 subtitles.item_id 没有
+  // FK 约束到 episodes(id)——不拦截的话，一个幻觉 itemId 能在没有任何对应 episodes 行的情况下,
+  // 直接在 subtitles 表里插入一条来路不明的记录。
+  it('itemId 幻觉防线：installed 报告里清单外的 itemId 被丢弃，不砸进 subtitles 表', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const alienId = 'tmdb:9999/s1e1'
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async () => report({
+      installed: [
+        installedItem(SHOW_EPISODE_ID, { installedPath: '/p/real.srt' }),
+        installedItem(alienId, { installedPath: '/p/alien.srt' }),
+      ],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(lib.getEpisode(SHOW_EPISODE_ID)!.sub_status).toBe('covered')
+    const alienSubtitleCount = (
+      lib.db.prepare('select count(*) c from subtitles where item_id=?').get(alienId) as { c: number }
+    ).c
+    expect(alienSubtitleCount).toBe(0)
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(alienId))
+    errorSpy.mockRestore()
+  })
 
   it('idempotent no-op: if the target is already covered by claim time, completes the job done WITHOUT ever invoking the worker', async () => {
     const { lib, jobsRepo, job } = setup()
     lib.markCovered(SHOW_EPISODE_ID, null, 'preexisting') // covered out-of-band before the worker claims this row
-    const runTask = vi.fn(async () => decision())
+    const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
     const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     const result = await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
@@ -378,22 +543,38 @@ describe('runFindSubtitleWorkerTask', () => {
     expect(jobsRepo.get(job.id)!.state).toBe('done')
   })
 
-  it('retry_later: completes the job as a retryable error (short backoff), does not touch LibraryRepo coverage', async () => {
-    const { lib, jobsRepo, job } = setup()
-    const runTask = vi.fn(async () => decision({ decision: 'retry_later', reason: 'provider timed out' }))
+  it('retry_later: 非空时 job completeError（短退避），同批已判明的事实（installed/no_safe_match）照记', async () => {
+    const { lib, jobsRepo, job, episodeIds } = setupBatch(3)
+    const [installedId, noMatchId, retryId] = episodeIds
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(installedId)],
+      no_safe_match: [unresolvedItem(noMatchId, '搜索穷尽')],
+      retry_later: [unresolvedItem(retryId, 'provider timed out')],
+    }))
     const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
+    expect(lib.getEpisode(installedId)!.sub_status).toBe('covered')
+    expect(lib.getEpisode(noMatchId)!.sub_status).toBe('unavailable')
+    expect(lib.getEpisode(retryId)!.sub_status).toBe('missing') // untouched — retry_later 不落账
     const row = jobsRepo.get(job.id)!
     expect(row.state).toBe('failed')
-    expect(row.last_error).toBe('provider timed out')
-    expect(lib.getEpisode(SHOW_EPISODE_ID)!.sub_status).toBe('missing') // untouched
+    expect(row.last_error).toContain('provider timed out')
   })
 
-  // Task 8 复活: 同上——targetItemId 不再是 mapper 返回值的顶层字段，markUnavailable 拿到的
-  // itemId 是 undefined，episodes 表不会真的被更新（sub_status 停留在 'missing'）。
-  it.todo('no_safe_match: completes the job via content-backoff and marks the episode unavailable with a recheck_after — Task 8 复活')
+  it('空报告（三桶皆空）→ completeError', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => report())
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    const result = await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(result).not.toBeNull() // report 本身返回了，只是三桶皆空——不是 mapper null 那个 no-op
+    const row = jobsRepo.get(job.id)!
+    expect(row.state).toBe('failed')
+    expect(row.last_error).toContain('empty batch report')
+  })
 
   it('worker-exhaustion: a thrown worker invocation (step-cap/timeout/abort) fails the job via completeError instead of propagating', async () => {
     const { lib, jobsRepo, job } = setup()
@@ -410,7 +591,7 @@ describe('runFindSubtitleWorkerTask', () => {
 
   it('sandbox: a mapped video path outside the configured MEDIA_ROOTS throws inside the mapper, and is caught the same way as a thrown worker (completeError, not a crash)', async () => {
     const { lib, jobsRepo, job } = setup()
-    const runTask = vi.fn(async () => decision())
+    const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
     // mediaRoots points somewhere that does NOT contain the episode's real path (set up() put it
     // under a tmpdir never listed here) — mirrors makeRunEpisode's root-restriction guard.
     const deps = baseDeps({ lib, mediaRoots: ['/completely/different/root'], runTask })
@@ -424,32 +605,65 @@ describe('runFindSubtitleWorkerTask', () => {
     expect(row.last_error).toMatch(/拒绝在媒体根目录之外写入/)
   })
 
-  // Task 8 复活: task.season/task.episode/task.absoluteEpisode 曾是 FindSubtitleTask 的顶层
-  // 字段；批量化后它们挪进了 task.targets[i]（见 findSubtitleWorker.schemas.ts 的
-  // FindSubtitleTargetFact）。runTask 拿到的 task 本身在旧解构下是 undefined，`.season` 直接
-  // 抛 TypeError。mapper 自身对 resolveAbsoluteTable 的取表-折算行为已经在
-  // mapWorkerTaskToFindSubtitleTask 的直接测试里覆盖（见上方"绝对集号一次取表逐集折算"），这两
-  // 条留给 Task 8 重写 runFindSubtitleWorkerTask 后，改成读 task.targets[0].absoluteEpisode。
-  it.todo('computes absoluteEpisode from TMDB season-concat data when tmdb is configured — Task 8 复活')
+  // mapper 自身对 resolveAbsoluteTable 的取表-折算行为已经在 mapWorkerTaskToFindSubtitleTask 的
+  // 直接测试里覆盖（见上方"绝对集号一次取表逐集折算"）；这里额外验证批量化后 runFindSubtitleWorkerTask
+  // 传给 runTask 的整批任务里，absoluteEpisode 挪进了 task.targets[i]（不再是 task 顶层字段）。
+  it('computes absoluteEpisode from TMDB season-concat data when tmdb is configured', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32) })
+    tmdb.getSeasonTable = vi.fn(async () => [{ seasonNumber: 1, episodeCount: 12, airDate: null }])
+    tmdb.getAbsoluteOrder = async () => null
+    // getDetails/getChineseTitles are gain-path enrichment unrelated to absoluteEpisode — stub
+    // them out too so this test never makes a real network call (no live TMDB access in CI/sandbox).
+    tmdb.getDetails = async () => null
+    tmdb.getChineseTitles = async () => []
+    const runTask = vi.fn(async (_task: FindSubtitleTask) => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask, tmdb })
 
-  it.todo('absoluteEpisode is null when deps.tmdb is not configured — Task 8 复活')
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    const passedTask = runTask.mock.calls[0][0]
+    expect(passedTask.targets[0].absoluteEpisode).toBe(1)
+  })
+
+  it('absoluteEpisode is null when deps.tmdb is not configured', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async (_task: FindSubtitleTask) => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask }) // tmdb: null (baseDeps default)
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    const passedTask = runTask.mock.calls[0][0]
+    expect(passedTask.targets[0].absoluteEpisode).toBeNull()
+  })
 
   // 退役T1 (W0-3a): v3 runner writes a `runs` row at each terminal outcome so the dashboard's
   // run-history timeline (which reads the `runs` table) has parity with the old pipeline while
   // it's still live. `runs` is optional on the deps — these tests both prove the row shape when
   // present and prove the runner doesn't crash when it's absent (existing tests above already
   // exercise the absent case implicitly since baseDeps never sets `runs`).
-  describe('runs row (timeline parity, 退役T1)', () => {
-    // Task 8 复活: installed 分支同样吃 targetItemId undefined 的坑——markCovered 里
-    // subtitles.item_id 是 NOT NULL 列，undefined 绑成 NULL 触发约束违例抛错，被外层 try/catch
-    // 接住变成 recordRun('error', ...)，实际写入的 runs 行 decision 是 'error' 不是 'installed'。
-    // 留给 Task 8 重写 runFindSubtitleWorkerTask 后一并复活。
-    it.todo('installed: writes one runs row with decision "installed" and a detail containing the worker reason — Task 8 复活')
+  // R-3: 按非空桶各记一行（installed/no_safe_match/retry_later 词表沿用，dashboard 时间线口径不破）。
+  describe('runs row (timeline parity, 退役T1；R-3：按非空桶各记一行)', () => {
+    it('installed: writes one runs row with decision "installed" and a detail containing the itemId', async () => {
+      const { lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('installed')
+      expect(rows[0].detail).toContain(SHOW_EPISODE_ID)
+    })
 
     it('no_safe_match: writes one runs row with decision "no_safe_match" and the worker reason as detail', async () => {
       const { lib, jobsRepo, job, db } = setup()
       const runs = new RunsRepo(db)
-      const runTask = vi.fn(async () => decision({ decision: 'no_safe_match', reason: '没有找到匹配的字幕' }))
+      const runTask = vi.fn(async () => report({
+        no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, '没有找到匹配的字幕')],
+      }))
       const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
@@ -460,10 +674,12 @@ describe('runFindSubtitleWorkerTask', () => {
       expect(rows[0].detail).toContain('没有找到匹配的字幕')
     })
 
-    it('retry_later: writes one runs row with decision "retry_later"', async () => {
+    it('retry_later: writes one runs row with decision "retry_later" and a detail containing the itemId', async () => {
       const { lib, jobsRepo, job, db } = setup()
       const runs = new RunsRepo(db)
-      const runTask = vi.fn(async () => decision({ decision: 'retry_later', reason: 'provider timed out' }))
+      const runTask = vi.fn(async () => report({
+        retry_later: [unresolvedItem(SHOW_EPISODE_ID, 'provider timed out')],
+      }))
       const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
@@ -471,7 +687,9 @@ describe('runFindSubtitleWorkerTask', () => {
       const rows = runs.getByJobId(job.id)
       expect(rows).toHaveLength(1)
       expect(rows[0].decision).toBe('retry_later')
-      expect(rows[0].detail).toContain('provider timed out')
+      // R-3: runs 的 retry_later 行按桶记 itemId 清单（同 installed/no_safe_match 的记法一致），
+      // 具体 reason 落在 jobs.last_error（completeError 那条消息）里，不是 runs.detail 的职责。
+      expect(rows[0].detail).toContain(SHOW_EPISODE_ID)
     })
 
     it('worker-throw: writes one runs row with decision "error" and the thrown message as detail', async () => {
@@ -488,9 +706,31 @@ describe('runFindSubtitleWorkerTask', () => {
       expect(rows[0].detail).toContain('step count limit exceeded')
     })
 
-    // Task 8 复活: same targetItemId-undefined/subtitles.item_id NOT NULL issue as the 'installed'
-    // runs-row test above — markCovered throws, runFindSubtitleWorkerTask's outer catch turns the
-    // whole call into completeError, so result ends up null instead of an 'installed' decision.
-    it.todo('deps.runs omitted: does not crash and simply skips writing a runs row — Task 8 复活')
+    it('deps.runs omitted: does not crash and simply skips writing a runs row', async () => {
+      const { lib, jobsRepo, job } = setup()
+      const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask }) // no `runs`
+
+      await expect(runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())).resolves.not.toBeNull()
+      expect(lib.getEpisode(SHOW_EPISODE_ID)!.sub_status).toBe('covered')
+    })
+
+    it('runs 按非空桶各记一行：混合报告（installed+no_safe_match+retry_later）写 3 行，词表覆盖三种 decision', async () => {
+      const { lib, jobsRepo, job, db, episodeIds } = setupBatch(3)
+      const runs = new RunsRepo(db)
+      const [installedId, noMatchId, retryId] = episodeIds
+      const runTask = vi.fn(async () => report({
+        installed: [installedItem(installedId)],
+        no_safe_match: [unresolvedItem(noMatchId, '搜索穷尽')],
+        retry_later: [unresolvedItem(retryId, 'provider timed out')],
+      }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      const decisions = rows.map((r) => r.decision).sort()
+      expect(decisions).toEqual(['installed', 'no_safe_match', 'retry_later'])
+    })
   })
 })

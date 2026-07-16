@@ -124,7 +124,9 @@ describe('媒体镜像', () => {
       path: '/p/1',
       subStatus: 'missing',
     })
-    lib.markUnavailable('e1', '搜索穷尽', Date.now() + 86_400_000)
+    // R-3: 3rd arg is `now`（判决发生的时刻）——阶梯自己算出 recheck_after（首次 1 天后），
+    // 不再由调用方直接喂 recheckAfter。
+    lib.markUnavailable('e1', '搜索穷尽', Date.now())
     expect(lib.missingBySeason()).toEqual([])
   })
 
@@ -205,6 +207,57 @@ describe('媒体镜像', () => {
     lib.setMovieOriginLang('m2', 'zh')
     lib.upsertMovie({ id: 'm2', name: 'M2', path: '/m2.mkv', subStatus: 'covered', posterPath: null, year: 2020, providerIds: null })
     expect(lib.getMovieOriginLang('m2')).toBe('zh')
+  })
+})
+
+// R-3（裁决 2026-07-16）：item 级内容退避阶梯——markUnavailable 每次判决自增 search_attempts，
+// recheck_after 按阶梯拉长（1/2/4/8 天，第 5 次起 30 天封顶）；markCovered 是翻篇归零事件。
+describe('markUnavailable 阶梯 (R-3: item 级内容退避下沉事实层)', () => {
+  const NOW = 1_000_000
+  const DAY = 86_400_000
+
+  it('同一 item 连续 6 次 markUnavailable → recheck 间隔 1/2/4/8/30/30 天', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing' })
+
+    const expectedDays = [1, 2, 4, 8, 30, 30]
+    expectedDays.forEach((days, i) => {
+      lib.markUnavailable('e1', '搜索穷尽', NOW)
+      const ep = lib.getEpisode('e1')!
+      expect(ep.search_attempts).toBe(i + 1)
+      expect(ep.recheck_after).toBe(NOW + days * DAY)
+    })
+  })
+
+  it('markCovered 归零后再 markUnavailable 回到 1 天（翻篇不背历史节奏）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing' })
+
+    lib.markUnavailable('e1', '搜索穷尽', NOW)
+    lib.markUnavailable('e1', '搜索穷尽', NOW)
+    expect(lib.getEpisode('e1')!.search_attempts).toBe(2)
+
+    lib.markCovered('e1', null, 'preexisting')
+    expect(lib.getEpisode('e1')!.search_attempts).toBe(0)
+
+    lib.markUnavailable('e1', '搜索穷尽', NOW)
+    const ep = lib.getEpisode('e1')!
+    expect(ep.search_attempts).toBe(1)
+    expect(ep.recheck_after).toBe(NOW + 1 * DAY)
+  })
+
+  it('两表尝试模式对 movie 同样生效（阶梯不是 episode 独有）', () => {
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing' })
+
+    lib.markUnavailable('m1', '搜索穷尽', NOW)
+    let movie = lib.getMovie('m1')!
+    expect(movie.search_attempts).toBe(1)
+    expect(movie.recheck_after).toBe(NOW + 1 * DAY)
+
+    lib.markUnavailable('m1', '搜索穷尽', NOW)
+    movie = lib.getMovie('m1')!
+    expect(movie.search_attempts).toBe(2)
+    expect(movie.recheck_after).toBe(NOW + 2 * DAY)
   })
 })
 
@@ -397,7 +450,9 @@ describe('listMissingEpisodesInSeason', () => {
     lib.upsertEpisode({ id: 'tmdb:7/s1e1', seriesId: 'tmdb:7', season: 1, episode: 1, name: 'E1', path: '/p/1.mkv', subStatus: 'missing' })
     lib.upsertEpisode({ id: 'tmdb:7/s1e2', seriesId: 'tmdb:7', season: 1, episode: 2, name: 'E2', path: '/p/2.mkv', subStatus: 'covered' })
     lib.upsertEpisode({ id: 'tmdb:7/s1e3', seriesId: 'tmdb:7', season: 1, episode: 3, name: 'E3', path: '/p/3.mkv', subStatus: 'missing' })
-    lib.markUnavailable('tmdb:7/s1e3', '搜索穷尽', NOW - 1_000) // 已到期
+    // R-3: 3rd arg is now `now`（判决发生的时刻），阶梯自算 recheck_after=now+1天（首次）。
+    // 要让它在查询时刻 NOW 已到期，判决时刻要落在 NOW 的 1 天以上之前。
+    lib.markUnavailable('tmdb:7/s1e3', '搜索穷尽', NOW - 2 * 86_400_000) // 已到期
 
     const rows = lib.listMissingEpisodesInSeason('tmdb:7', 1, NOW)
     expect(rows.map(r => r.episode)).toEqual([1, 3])
@@ -410,7 +465,8 @@ describe('listMissingEpisodesInSeason', () => {
     lib.upsertEpisode({ id: 'tmdb:7/s1e1', seriesId: 'tmdb:7', season: 1, episode: 1, name: 'E1', path: '/p/1.mkv', subStatus: 'missing' })
     lib.upsertEpisode({ id: 'tmdb:7/s1e2', seriesId: 'tmdb:7', season: 1, episode: 2, name: 'E2', path: '/p/2.mkv', subStatus: 'covered' })
     lib.upsertEpisode({ id: 'tmdb:7/s1e3', seriesId: 'tmdb:7', season: 1, episode: 3, name: 'E3', path: '/p/3.mkv', subStatus: 'missing' })
-    lib.markUnavailable('tmdb:7/s1e3', '搜索穷尽', NOW_BEFORE_RECHECK + 100_000) // 未到期
+    // 判决时刻=NOW_BEFORE_RECHECK，阶梯首次 +1 天 → 远晚于查询时刻，未到期。
+    lib.markUnavailable('tmdb:7/s1e3', '搜索穷尽', NOW_BEFORE_RECHECK) // 未到期
 
     const rows = lib.listMissingEpisodesInSeason('tmdb:7', 1, NOW_BEFORE_RECHECK)
     expect(rows.map(r => r.episode)).toEqual([1])
@@ -457,7 +513,8 @@ describe('listMissingEpisodesForSeries (R-11：派活范围裁量化)', () => {
   it('未到期 unavailable 不算缺口（谓词与 listMissingEpisodesInSeason 一致）', () => {
     lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
     lib.upsertEpisode({ id: 'tmdb:9/s1e1', seriesId: 'tmdb:9', season: 1, episode: 1, name: 'E1', path: '/p/s1e1.mkv', subStatus: 'missing' })
-    lib.markUnavailable('tmdb:9/s1e1', '搜索穷尽', NOW_BEFORE_RECHECK + 100_000)
+    // R-3: 判决时刻=NOW_BEFORE_RECHECK，阶梯首次 +1 天 → 未到期。
+    lib.markUnavailable('tmdb:9/s1e1', '搜索穷尽', NOW_BEFORE_RECHECK)
 
     const rows = lib.listMissingEpisodesForSeries('tmdb:9', null, NOW_BEFORE_RECHECK)
     expect(rows).toEqual([])

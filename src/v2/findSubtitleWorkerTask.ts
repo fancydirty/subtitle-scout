@@ -5,7 +5,7 @@ import type { RunsRepo } from './runsRepo.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
 import { isDirWritable, isUnderRoots } from '../core/mediaContext.js'
 import { candidateKey } from '../core/schemas.js'
-import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
+import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
 import { resolveAbsoluteTable, absoluteFor } from '../agent/absoluteEpisodes.js'
 import { tmdbIdFromOwnId } from './ownIds.js'
 
@@ -267,8 +267,11 @@ export interface FindSubtitleWorkerTaskDeps extends FindSubtitleTaskMapperDeps {
   /** The actual worker invocation — makeFindSubtitleWorker(...)'s returned runFindSubtitleTask in
    *  production; a plain vi.fn() in tests. Injected (not constructed in here) so this module's
    *  own tests never need a real LanguageModel/ToolLoopAgent — findSubtitleWorker.test.ts already
-   *  covers the agent loop itself in full. */
-  runTask: (task: FindSubtitleTask) => Promise<FindSubtitleDecision>
+   *  covers the agent loop itself in full.
+   *  批量收割重写（2026-07-16，R-3）：一次调用返回三桶批量报告（installed/no_safe_match/
+   *  retry_later），不再是旧的单一 FindSubtitleDecision——见 findSubtitleWorker.schemas.ts 的
+   *  FindSubtitleBatchReportSchema。 */
+  runTask: (task: FindSubtitleTask) => Promise<FindSubtitleBatchReport>
   /** 退役T1 (W0-3a): optional so existing callers/tests keep compiling without threading it —
    *  when absent, runFindSubtitleWorkerTask silently skips writing a runs row (no throw). cmdWatch
    *  (src/cli/index.ts) wires the real RunsRepo it already constructs for the old pipeline; the
@@ -279,22 +282,35 @@ export interface FindSubtitleWorkerTaskDeps extends FindSubtitleTaskMapperDeps {
 
 /** Claims-and-runs one worker_task row whose payload.taskType === 'find_subtitle' — the phase ③
  *  find-subtitle worker's counterpart to runRealignWorkerTask (phase ⑥, src/v2/realignWorkerTask.ts).
- *  Mirrors that file's shape: maps the row to a task, runs the worker, and completes the job's
- *  state transition itself (installed → completeDone + markCovered, retry_later → completeError,
- *  no_safe_match → completeNoMatch + markUnavailable) so the caller (cmdWatch's claim-dispatch
+ *  Maps the row to a batch task, runs the worker once, and posts the resulting batch harvest
+ *  report (installed/no_safe_match/retry_later) itself so the caller (cmdWatch's claim-dispatch
  *  switch, phase ⑦) is a thin routing switch, not business logic.
  *
+ *  批量收割入账重写（2026-07-16，R-3 裁决——docs/design/2026-07-16-old-world-lineage-registry.md）：
+ *  这个函数曾经按旧单决定契约把 mapper 的返回值解构成 `{ task, targetItemId }`（mapper 早在
+ *  Task 4 就已经改造成纯信使、返回整批 FindSubtitleTask 本身，那次解构从那时起就在拿
+ *  undefined），installed/no_safe_match 分支各自只认一个 itemId、且 no_safe_match 走的是已被
+ *  处决的 jobs 侧 dormant 判决（completeNoMatch + 30 天封顶）。R-3 终局改写：
+ *
+ *  1. 事实先入账——installed 逐项 markCovered、no_safe_match 逐项 markUnavailable，不等队列判
+ *     决落定；磁盘上字幕已经在了，队列怎么转都不改变这个事实。
+ *  2. 内容退避彻底下沉到 item 事实层（LibraryRepo.markUnavailable 自己的阶梯，见该方法的注释）
+ *     ——jobs 状态机从此不持有任何内容判决，completeNoMatch 因此零调用（不删，见该方法头注释）。
+ *  3. 队列语义化简：报告落地即收官——installed/no_safe_match 都完成 completeDone；只有
+ *     retry_later（瞬时故障的季剩余）走 completeError 的短退避节流轨（R-10 豁免：30s→15min→日，
+ *     永不 dormant）。空报告（三桶皆空）视为一次失败的调用，也走 completeError。
+ *
  *  Worker-exhaustion (phase ③/⑤ review, phase ⑦ critical instruction): runTask() (or the mapper
- *  above) can THROW — a step-cap/timeout/abort never produces a structured retry_later, it throws
+ *  above) can THROW — a step-cap/timeout/abort never produces a structured batch report, it throws
  *  out of agent.generate(). The entire body below is wrapped in one try/catch so a thrown worker
  *  fails this job via completeError + backoff instead of propagating up and crashing the daemon's
  *  claim loop. */
 export async function runFindSubtitleWorkerTask(
   job: Job,
   deps: FindSubtitleWorkerTaskDeps,
-  jobs: Pick<JobsRepo, 'completeDone' | 'completeNoMatch' | 'completeError' | 'get'>,
+  jobs: Pick<JobsRepo, 'completeDone' | 'completeError'>,
   now: () => number,
-): Promise<FindSubtitleDecision | null> {
+): Promise<FindSubtitleBatchReport | null> {
   const startedAt = now()
   // 退役T1 (W0-3a): one runs row per terminal outcome, mirroring executor.ts's own record()
   // shape (decision + human-readable detail, journalPath null — this runner has no journal).
@@ -302,47 +318,72 @@ export async function runFindSubtitleWorkerTask(
     deps.runs?.insert({ jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null })
   }
   try {
-    const mapped = await mapWorkerTaskToFindSubtitleTask(job, deps, now())
-    if (!mapped) {
-      // Idempotent no-op: target already covered by the time this row was claimed. No worker
-      // decision exists here, so (per the campaign design doc's own done/no_safe_match/retry_later/
-      // error enumeration) this isn't one of the four runs-worthy terminal outcomes — nothing was
-      // actually produced.
+    const task = await mapWorkerTaskToFindSubtitleTask(job, deps, now())
+    if (!task) {
+      // Idempotent no-op: every target already covered by the time this row was claimed. No
+      // worker report exists here, so this isn't one of the runs-worthy terminal outcomes —
+      // nothing was actually produced.
       jobs.completeDone(job.id, now())
       return null
     }
-    const { task, targetItemId } = mapped
-    const decision = await deps.runTask(task)
+    const report = await deps.runTask(task)
 
-    if (decision.decision === 'installed') {
+    // itemId 幻觉防线：清单外 id 一律丢弃告警——markCovered/markUnavailable 都是两表盲 UPDATE，
+    // 幻觉 id 可能砸中任何行；宁可漏记一条真报告，不可错标一个非本任务目标（零误触发在入账层
+    // 的镜像，同 T4/T4b 事实清单"呈事实不做选择"的既有纪律）。
+    const validIds = new Set(task.targets.map((t) => t.itemId))
+    const dropAlien = <T extends { itemId: string }>(bucket: T[], name: string): T[] =>
+      bucket.filter((x) => {
+        if (validIds.has(x.itemId)) return true
+        console.error(`[find-subtitle-harvest] job ${job.id}: dropping alien itemId ${x.itemId} from ${name}`)
+        return false
+      })
+    const installed = dropAlien(report.installed, 'installed')
+    const noMatch = dropAlien(report.no_safe_match, 'no_safe_match')
+    const retryLater = dropAlien(report.retry_later, 'retry_later')
+
+    // 事实先入账（installed 永远先记——磁盘上字幕已经在了，队列怎么转都不改变这个事实）
+    for (const item of installed) {
       const providerRef =
-        decision.candidateProvider && decision.candidateProviderId
-          ? candidateKey({ provider: decision.candidateProvider, providerId: decision.candidateProviderId })
+        item.candidateProvider && item.candidateProviderId
+          ? candidateKey({ provider: item.candidateProvider, providerId: item.candidateProviderId })
           : undefined
       // A2: fall back to the task's own target language, not a hardcoded 'zh-Hans' — the worker
-      // should always set installedLanguage on an 'installed' decision, this is only a defensive
-      // last resort, and a Chinese-only default would misrecord a non-Chinese task's language.
+      // should always set installedLanguage on an installed item, this is only a defensive last
+      // resort, and a Chinese-only default would misrecord a non-Chinese task's language.
       deps.lib.markCovered(
-        targetItemId, decision.installedPath, 'scout-download', providerRef,
-        decision.installedLanguage ?? task.targetLanguage,
+        item.itemId, item.installedPath, 'scout-download', providerRef,
+        item.installedLanguage ?? task.targetLanguage,
       )
-      jobs.completeDone(job.id, now())
-      recordRun('installed', decision.reason)
-    } else if (decision.decision === 'retry_later') {
-      jobs.completeError(job.id, decision.reason, now())
-      recordRun('retry_later', decision.reason)
-    } else {
-      // no_safe_match — same content-backoff bookkeeping as executor.ts's own no_safe_match branch.
-      const transitioned = jobs.completeNoMatch(job.id, now())
-      if (transitioned) {
-        const finalJob = jobs.get(job.id)!
-        const recheckAfter =
-          finalJob.state === 'dormant' ? now() + 30 * 86_400_000 : finalJob.next_retry_at ?? now() + 86_400_000
-        deps.lib.markUnavailable(targetItemId, decision.reason, recheckAfter)
-      }
-      recordRun('no_safe_match', decision.reason)
     }
-    return decision
+    // R-3：no_safe_match 是 worker 的语义判决，落账为 item 事实；"何时再看"由 item 自己的
+    // search_attempts 阶梯决定——jobs 状态机从此不持有任何内容判决。
+    for (const item of noMatch) deps.lib.markUnavailable(item.itemId, item.reason, now())
+
+    // 队列语义（R-3 终局）：报告落地即入账收官；仅 retry_later（瞬时故障的季剩余）走
+    // completeError 节流轨（R-10 豁免：30s→15min→日，永不 dormant）。completeNoMatch 已死。
+    if (installed.length === 0 && noMatch.length === 0 && retryLater.length === 0) {
+      jobs.completeError(job.id, 'worker returned an empty batch report', now())
+      recordRun('error', 'empty batch report')
+    } else if (retryLater.length > 0) {
+      jobs.completeError(
+        job.id, `retry_later ${retryLater.length} item(s): ${capDetail(retryLater[0].reason)}`, now(),
+      )
+    } else {
+      jobs.completeDone(job.id, now())
+    }
+
+    // runs：按非空桶各记一行，词表沿用（dashboard 时间线口径不破）
+    if (installed.length) {
+      recordRun('installed', `${installed.length} 集入账: ${installed.map((i) => i.itemId).join(', ')}`)
+    }
+    if (noMatch.length) {
+      recordRun('no_safe_match', `${noMatch.length} 集判无: ${noMatch.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
+    }
+    if (retryLater.length) {
+      recordRun('retry_later', `${retryLater.length} 集待重试: ${retryLater.map((i) => i.itemId).join(', ')}`)
+    }
+    return report
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     jobs.completeError(job.id, msg, now())

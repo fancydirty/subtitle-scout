@@ -2,6 +2,12 @@ import type { ScoutDb } from './db.js'
 
 export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored'
 
+/** R-3（裁决 2026-07-16）：item 级内容退避阶梯。worker 判"本轮搜索穷尽"（no_safe_match）后，
+ *  该 item 的重现节奏按自身 search_attempts 递增：1/2/4/8 天，第 5 次起 30 天封顶——只是
+ *  越来越慢，永不隐形、永无死刑（对照已处决的 jobs 侧 dormant 判决）。 */
+export const ITEM_CONTENT_BACKOFF_DAYS = [1, 2, 4, 8]
+export const ITEM_BACKOFF_CAP_DAYS = 30
+
 export interface SeriesParams {
   id: string
   name: string
@@ -398,10 +404,13 @@ export class LibraryRepo {
 
     const markCoveredTransaction = this.db.transaction(() => {
       // Try to update episode first
+      // R-3: markCovered 是内容退避阶梯的"翻篇"事件——item 终于被覆盖了，之前累积的
+      // search_attempts 失去意义，归零；下次它再变回 missing/unavailable 时退避重新从
+      // 1 天起步，不会背着上一轮的历史节奏。
       const episodeResult = this.db
         .prepare(
           `UPDATE episodes
-           SET sub_status = 'covered', updated_at = ?
+           SET sub_status = 'covered', search_attempts = 0, updated_at = ?
            WHERE id = ?`
         )
         .run(now, itemId)
@@ -411,7 +420,7 @@ export class LibraryRepo {
         this.db
           .prepare(
             `UPDATE movies
-             SET sub_status = 'covered', updated_at = ?
+             SET sub_status = 'covered', search_attempts = 0, updated_at = ?
              WHERE id = ?`
           )
           .run(now, itemId)
@@ -456,33 +465,63 @@ export class LibraryRepo {
     }
   }
 
-  markUnavailable(itemId: string, reason: string, recheckAfter: number): void {
-    const now = Date.now()
+  /** R-3（裁决 2026-07-16）：worker 判"本轮搜索穷尽"（no_safe_match）后调用——item 级内容退避
+   *  阶梯，替代原先由调用方算好 recheckAfter 直接传入的旧签名。`now` 既是这次判决发生的时刻
+   *  （写入 updated_at），也是阶梯计算的锚点（recheck_after = now + 对应天数）。
+   *
+   *  实现选择：沿用既有"先 episodes 后 movies"两表尝试模式（同 markCovered/resetRecheck/
+   *  probeMemo 等既有写法），但没有用纯 SQL CASE 把整个阶梯揉进一条 UPDATE——那样天数表
+   *  （ITEM_CONTENT_BACKOFF_DAYS）就要在 SQL 文本里再抄一遍，常量改了两处要同步改，是个
+   *  维护陷阱。改为每表先 SELECT 出当前 search_attempts（判"这行是不是这张表"的信号，同时
+   *  拿到算阶梯要用的输入），算出 newAttempts/recheckAfter 后一条 UPDATE 写回三列——单表
+   *  两次往返，但 SQL 里没有魔法数字，天数表只有 ITEM_CONTENT_BACKOFF_DAYS 这一处真身。 */
+  markUnavailable(itemId: string, reason: string, now: number): void {
+    const stepLadder = (currentAttempts: number): { newAttempts: number; recheckAfter: number } => {
+      const newAttempts = currentAttempts + 1
+      const days =
+        newAttempts <= ITEM_CONTENT_BACKOFF_DAYS.length
+          ? ITEM_CONTENT_BACKOFF_DAYS[newAttempts - 1]
+          : ITEM_BACKOFF_CAP_DAYS
+      return { newAttempts, recheckAfter: now + days * 86_400_000 }
+    }
 
     // Try episode first
-    const episodeResult = this.db
-      .prepare(
-        `UPDATE episodes
-         SET sub_status = 'unavailable',
-             status_reason = ?,
-             recheck_after = ?,
-             updated_at = ?
-         WHERE id = ?`
-      )
-      .run(reason, recheckAfter, now, itemId)
+    const episodeRow = this.db
+      .prepare(`SELECT search_attempts FROM episodes WHERE id = ?`)
+      .get(itemId) as { search_attempts: number } | undefined
+    if (episodeRow) {
+      const { newAttempts, recheckAfter } = stepLadder(episodeRow.search_attempts)
+      this.db
+        .prepare(
+          `UPDATE episodes
+           SET sub_status = 'unavailable',
+               status_reason = ?,
+               recheck_after = ?,
+               search_attempts = ?,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(reason, recheckAfter, newAttempts, now, itemId)
+      return
+    }
 
     // If episode not found, try movie
-    if (episodeResult.changes === 0) {
+    const movieRow = this.db
+      .prepare(`SELECT search_attempts FROM movies WHERE id = ?`)
+      .get(itemId) as { search_attempts: number } | undefined
+    if (movieRow) {
+      const { newAttempts, recheckAfter } = stepLadder(movieRow.search_attempts)
       this.db
         .prepare(
           `UPDATE movies
            SET sub_status = 'unavailable',
                status_reason = ?,
                recheck_after = ?,
+               search_attempts = ?,
                updated_at = ?
            WHERE id = ?`
         )
-        .run(reason, recheckAfter, now, itemId)
+        .run(reason, recheckAfter, newAttempts, now, itemId)
     }
   }
 
