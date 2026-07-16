@@ -141,7 +141,10 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
 
       // 去 Jellyfin 化 P6："park 救援页"认领——POST + JSON body，同 reconcile-all 一样独立于
       // 下面纯同步的 handleApiRoute 分发（body 解析需要 await，handleApiRoute 保持纯函数）。
-      if (rawPath === '/api/parked/claim') {
+      // dashboard G5：/api/v2/triage/claim 是同一个 claimParked 实现的第二个入口——两条路径
+      // 并存（v2 前缀给新前端一个自洽面，旧路径不动），合并成一个分支而不是复制两份，
+      // 避免两份一样的代码日后各改各的悄悄漂移。
+      if (rawPath === '/api/parked/claim' || rawPath === '/api/v2/triage/claim') {
         if (req.method !== 'POST') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
@@ -166,41 +169,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         // P7 disambiguation 补丁：season 未传/null → undefined/null（claimParked 视作"未指定"，
         // 原有行为）；传了但不是 number（如字符串/布尔）→ NaN，claimParked 的
         // Number.isInteger 校验会诚实拒绝，而不是静默丢弃一个格式错误的输入。
-        const result = claimParked(db, {
-          path: typeof b.path === 'string' ? b.path : '',
-          tmdbId: typeof b.tmdbId === 'string' ? b.tmdbId : String(b.tmdbId ?? ''),
-          isTv: Boolean(b.isTv),
-          season: typeof b.season === 'number' ? b.season : (b.season == null ? b.season as null | undefined : NaN),
-        })
-        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(result))
-        return
-      }
-
-      // dashboard G5：/api/v2/triage/claim——与上面 /api/parked/claim 同一个 claimParked 实现，
-      // 两条路径并存（v2 前缀给新前端一个自洽面，旧路径不动，见 apiV2.ts claimParked 头注释）。
-      if (rawPath === '/api/v2/triage/claim') {
-        if (req.method !== 'POST') {
-          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
-          return
-        }
-        let raw = ''
-        for await (const chunk of req) raw += chunk
-        let body: unknown
-        try {
-          body = JSON.parse(raw || '{}')
-        } catch {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid JSON body' }))
-          return
-        }
-        const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown; season?: unknown }
         const result = claimParked(db, {
           path: typeof b.path === 'string' ? b.path : '',
           tmdbId: typeof b.tmdbId === 'string' ? b.tmdbId : String(b.tmdbId ?? ''),

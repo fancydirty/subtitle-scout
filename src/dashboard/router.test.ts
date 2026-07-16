@@ -64,9 +64,11 @@ const triageDTO: TriageDTO = {
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
 let lastPassesLimit: number | null = null
+let lastSeriesId: string | null = null
+let lastLibrarySeriesId: string | null = null
 const deps: RouterDeps = {
   library: () => [libItem],
-  series: (id) => (id === 's1' ? seriesDetail : null),
+  series: (id) => { lastSeriesId = id; return id === 's1' || id === 'tmdb:71' ? seriesDetail : null },
   runs: (offset, limit) => { lastRunsArgs = { offset, limit }; return [run] },
   parked: () => [parkedItem],
   settings: () => settingsDTO,
@@ -79,7 +81,7 @@ const deps: RouterDeps = {
   workflowPending: () => workflowPendingDTO,
   workflowPasses: (limit) => { lastPassesLimit = limit; return [workflowPassDTO] },
   workflowWorkers: () => workflowWorkersDTO,
-  librarySeriesDetail: (id) => (id === 's1' ? librarySeriesDetailDTO : null),
+  librarySeriesDetail: (id) => { lastLibrarySeriesId = id; return id === 's1' || id === 'tmdb:71' ? librarySeriesDetailDTO : null },
   triage: () => triageDTO,
 }
 
@@ -98,7 +100,40 @@ describe('handleApiRoute (v2)', () => {
   })
   it('rejects illegal series id with 400', () => {
     expect(call('/api/v2/series/a..b').status).toBe(400)
-    expect(call('/api/v2/series/a%2fb').status).toBe(400) // '%' 不在允许字符集
+    expect(call('/api/v2/series/a%2fb').status).toBe(400) // %2f 解码为 '/'，不在允许字符集
+  })
+
+  // 复审修复：真实自有 id 恒为 'tmdb:<n>' 形状（src/v2/ownIds.ts）——冒号必须直通；有些客户端
+  // 会把 ':' 编码成 %3A，id 段先 decodeURIComponent 再过 isSafeId；畸形编码（URIError）→ 400。
+  describe('自有 id（tmdb:<n> 形状，含冒号）直通两个 series 详情端点', () => {
+    it('/api/v2/series/tmdb:71 → 200，deps 收到原样 id', () => {
+      const r = call('/api/v2/series/tmdb:71')
+      expect(r.status).toBe(200)
+      expect(lastSeriesId).toBe('tmdb:71')
+    })
+    it('/api/v2/series/tmdb%3A71 → 解码为 tmdb:71 后 200', () => {
+      const r = call('/api/v2/series/tmdb%3A71')
+      expect(r.status).toBe(200)
+      expect(lastSeriesId).toBe('tmdb:71')
+    })
+    it('/api/v2/series/%zz（畸形百分号编码）→ 400，不抛错', () => {
+      expect(call('/api/v2/series/%zz').status).toBe(400)
+    })
+    it('/api/v2/library/series/tmdb:71 → 200，deps 收到原样 id', () => {
+      const r = call('/api/v2/library/series/tmdb:71')
+      expect(r.status).toBe(200)
+      expect(lastLibrarySeriesId).toBe('tmdb:71')
+    })
+    it('/api/v2/library/series/tmdb%3A71 → 解码为 tmdb:71 后 200', () => {
+      const r = call('/api/v2/library/series/tmdb%3A71')
+      expect(r.status).toBe(200)
+      expect(lastLibrarySeriesId).toBe('tmdb:71')
+    })
+    it('/api/v2/library/series/%zz（畸形百分号编码）→ 400；含 .. 仍 400', () => {
+      expect(call('/api/v2/library/series/%zz').status).toBe(400)
+      expect(call('/api/v2/library/series/a..b').status).toBe(400)
+      expect(call('/api/v2/library/series/tmdb%3A..%3A71').status).toBe(400) // 解码后含 '..' 同样拒
+    })
   })
   it('routes /api/v2/runs with offset/limit defaults', () => {
     expect(call('/api/v2/runs').status).toBe(200)

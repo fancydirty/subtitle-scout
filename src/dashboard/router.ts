@@ -37,8 +37,22 @@ export interface RouterDeps {
 }
 export interface ApiResult { status: number; json: unknown }
 
-const SAFE_ID = /^[A-Za-z0-9._-]+$/   // 允许字符集；额外禁止 '..' 片段
+// 允许字符集；额外禁止 '..' 片段。':' 必须在集内——自有 id 空间是 'tmdb:<n>' 形状
+// （src/v2/ownIds.ts，冒号是身份的一部分不是装饰），且 ':' 在 RFC 3986 路径段里本就是合法
+// 未编码字符（new URL().pathname 原样保留）；漏掉它曾让两个 series 详情端点对一切真实 id 400。
+const SAFE_ID = /^[A-Za-z0-9._:-]+$/
 const isSafeId = (id: string) => SAFE_ID.test(id) && !id.includes('..')
+
+/** id 段解码：有些客户端会把 ':' 编码成 %3A——先 decodeURIComponent 再过 isSafeId。畸形
+ *  百分号编码（如 '%zz'）让 decodeURIComponent 抛 URIError，收敛成 null（调用方按 bad id 400），
+ *  不许炸到 server.ts 变 500。 */
+function decodeIdSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+}
 
 // v1 端点已随 ledger/queue 一并废弃——命中返回 410，别硬撑。
 const V1_GONE = { status: 410, json: { error: 'gone', detail: 'v1 endpoint retired; use /api/v2/*' } } as const
@@ -62,8 +76,8 @@ export function handleApiRoute(
 
   const sm = pathname.match(/^\/api\/v2\/series\/([^/]+)$/)
   if (sm) {
-    const id = sm[1]
-    if (!isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
+    const id = decodeIdSegment(sm[1])
+    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
     const detail = deps.series(id)
     return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
   }
@@ -108,8 +122,8 @@ export function handleApiRoute(
 
   const lsm = pathname.match(/^\/api\/v2\/library\/series\/([^/]+)$/)
   if (lsm) {
-    const id = lsm[1]
-    if (!isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
+    const id = decodeIdSegment(lsm[1])
+    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
     const detail = deps.librarySeriesDetail(id)
     return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
   }
