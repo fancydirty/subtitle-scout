@@ -194,6 +194,39 @@ parent_job_id（语义选择，留档）；心跳忽略回执（orchestrate 无 
 本环节全程：两轮对抗复审共揪出 1+5+1 处战役自身交付缝隙（含主控本人漏改的半个定罪现场），
 全部闭环。R2 制度在其首次全流程执行中即证明了自身价值。
 
+## 七、真站闸门报告（Task 15 · 主控亲跑，2026-07-16，tunnel）
+
+用户升级令执行：双容器实战，生产容器全删字幕重测，配额不设限。**判定：PASS。**
+
+**测试腿**（scout-test，tsx 源码，冷部署 rsync@2e41a67 后代码）：
+- v10+v11 迁移在带存量数据的真库自动升级（schema_version 1→3）✓
+- D2 心跳冷启动补拍（meta 缺失→立即收敛 pass）✓；F-R2-3 orchestrate 汇报落 runs ✓
+- **零误触发新体制首考**：27/28 剧 diskLayoutNonstandard=1 的诱惑下，真模型派 20 find /
+  0 realign（守门指令已废、判断归 agent 的世界里⑥依然成立）✓
+- R-11 剧级裁量派发（20 单全剧范围）✓；**批量收割决定性一击**：job 297 一轮 run 19 集入账
+  （事故形态=一 claim 一集的正面否定）；job 296 一轮 6 集判无+item 阶梯逐集 +1 ✓
+
+**生产腿**（subtitle-scout 容器，Dockerfile dist 构建 + apt ffmpeg）：
+- 化石库（v9 前旧管线 schema）按 D7 裁决归档重生，空库直落终态 schema ✓
+- 全删 52 个 sidecar（manifest 亲验零视频文件）→ 冷摄取 → orchestrate（2 轮汇报入 runs）→
+  dist 构建 worker 收割：**四结局词表全亮相**（4 installed / 1 no_safe_match / 1 retry_later /
+  2 error），删除的字幕由 agent 重新装回中 ✓
+- **TMDB 间歇超时（国内直连环境问题，非代码）下的韧性=设计预期**：fail-soft 降级、逐 pass
+  重试、census 单调收敛（108→170→408 集），守护全程无停摆无崩溃 ✓。部署债登记：TmdbClient
+  代理/镜像配置口（老容器同病，非本战役引入）。
+
+**B-matrix 复跑（债务 D3）**：7 形态真模型矩阵。首轮 ×2=14 局：**零误触发 14/14**（realign
+仅现于两个应派形态，且每局 layout 事实先于 dispatch_realign_task）；12/14 PASS，2 FAIL 为
+over-cap-spillover 形态前提死于 R-11（全剧单+coalesced 不耗预算→撞不到 cap，与 plumbing cap
+fixture 同病理）——修形为五剧各一季（7d4b30a）后复跑 **3/3 PASS**。escape valve
+（spawn_sibling）在新语义下验证成立。矩阵 runner 同步适配（1463532：listByState 处决善后 +
+R-11 季覆盖比较器）。
+
+**闸门后续观察项**（不阻断判定）：生产腿长尾收敛继续（TMDB 晚高峰抖动下 daemon 自主磨合，
+missing 220 排队消化中）；quota 打满行为未在本轮触发（配额未耗尽），留待日常浸泡观察。
+
+**胶水层修复 + 全仓语义考古 + 债务清算战役至此全部收官。dashboard 讨论与生产切换解冻。**
+
 ## 四、裁决记录（Task 0.3 填写）
 
 （待）
