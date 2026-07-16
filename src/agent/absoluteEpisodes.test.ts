@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildFromSeasonConcat, absoluteFor, buildFromAbsoluteOrder, resolveAbsoluteEpisode,
-  seasonEpisodeFor, seasonEpisodeForAbsolute,
+  seasonEpisodeFor, seasonEpisodeForAbsolute, resolveAbsoluteTable,
 } from './absoluteEpisodes.js'
 
 describe('buildFromSeasonConcat', () => {
@@ -158,5 +158,24 @@ describe('seasonEpisodeForAbsolute', () => {
   it('returns null when the season table is genuinely absent (404 no-data)', async () => {
     const resolved = await seasonEpisodeForAbsolute(26, { getSeasonTable: async () => null, getAbsoluteOrder: async () => null }, '120089')
     expect(resolved).toBeNull()
+  })
+})
+describe('resolveAbsoluteTable', () => {
+  it('resolveAbsoluteTable: 官方分组优先，季表兜底，两路独立 try/catch', async () => {
+    const src = {
+      getAbsoluteOrder: async () => { throw new Error('flaky') },
+      getSeasonTable: async () => [{ seasonNumber: 1, episodeCount: 2 }, { seasonNumber: 2, episodeCount: 3 }],
+    }
+    const table = await resolveAbsoluteTable(src, '42')
+    expect(table).not.toBeNull()
+    expect(absoluteFor(table!, 2, 1)).toBe(3)
+  })
+  it('resolveAbsoluteTable: 官方分组非空时用官方表，不级联季表', async () => {
+    const src = {
+      getAbsoluteOrder: async () => [{ season: 1, episode: 1 }, { season: 2, episode: 1 }],
+      getSeasonTable: async () => { throw new Error('must not be called') },
+    }
+    const table = await resolveAbsoluteTable(src, '42')
+    expect(absoluteFor(table!, 2, 1)).toBe(2)
   })
 })

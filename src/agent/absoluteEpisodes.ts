@@ -53,39 +53,46 @@ export interface AbsoluteOrderSource {
   getSeasonTable: (tvId: string) => Promise<{ seasonNumber: number; episodeCount: number }[] | null>
   getAbsoluteOrder: (tvId: string) => Promise<{ season: number; episode: number }[] | null>
 }
+
+/**
+ * 数据源纪律的唯一实现：官方 Absolute 型 episode-group 优先（独立 try/catch，瞬时抛错绝不连坐
+ * 季表兜底——否则 "concat fallback" 名不副实，一次抖动会把本可算出的绝对集号退化成 null，
+ * FALLBACK-DENIAL）；官方分组缺失/为空 → 季表 concat 兜底（同样独立 try/catch）；两路都不可用
+ * → null。resolveAbsoluteEpisode / seasonEpisodeForAbsolute 都只是在这张表上分别做正向/逆向查询
+ * （absoluteFor / seasonEpisodeFor），数据源纪律不重复。
+ *
+ * 批量 mapper（胶水层修复）用它取表一次、逐集调 absoluteFor/seasonEpisodeFor，替代逐集调
+ * resolveAbsoluteEpisode 造成的 2N 次 TMDB 往返。
+ */
+export async function resolveAbsoluteTable(
+  src: AbsoluteOrderSource, tvId: string,
+): Promise<AbsoluteEpisodeTable | null> {
+  let official: { season: number; episode: number }[] | null = null
+  try { official = await src.getAbsoluteOrder(tvId) } catch { official = null }
+  if (official && official.length > 0) return buildFromAbsoluteOrder(official)
+  try {
+    const seasons = await src.getSeasonTable(tvId)
+    if (!seasons) return null
+    return buildFromSeasonConcat(seasons)
+  } catch { return null }
+}
+
 export async function resolveAbsoluteEpisode(
   season: number | null, episode: number | null, src: AbsoluteOrderSource, tvId = '',
 ): Promise<number | null> {
   if (season == null || episode == null) return null
-  // 官方分组查询与季表兜底必须各自独立包裹 try/catch：官方查询瞬时抛错绝不能连坐吞掉 concat 兜底，
-  // 否则 "concat fallback" 名不副实——一次抖动会把本可算出的绝对集号退化成 null（FALLBACK-DENIAL）。
-  let official: { season: number; episode: number }[] | null = null
-  try { official = await src.getAbsoluteOrder(tvId) } catch { official = null }
-  if (official && official.length > 0) return absoluteFor(buildFromAbsoluteOrder(official), season, episode)
-  try {
-    const seasons = await src.getSeasonTable(tvId)
-    if (!seasons) return null
-    return absoluteFor(buildFromSeasonConcat(seasons), season, episode)
-  } catch { return null }
+  const table = await resolveAbsoluteTable(src, tvId)
+  return table ? absoluteFor(table, season, episode) : null
 }
 
 /**
- * resolveAbsoluteEpisode 的逆向版：绝对集号 → (season, episode)。数据源纪律逐字复刻正向实现
- * （见上方 FALLBACK-DENIAL 注释）：官方 Absolute 型 episode-group 优先（独立 try/catch，瞬时
- * 抛错绝不连坐 concat 兜底）；官方表存在但查不到该集号 → 直接 null，不再向 concat 级联（与
- * 正向同一裁决——官方表就是该剧绝对编号的权威事实，编号超出它的范围时用 concat 猜一个别的
- * 答案只会更错）；官方分组缺失/为空 → 季表 concat 兜底（独立 try/catch）；两路都不可用或
- * 集号越界 → null（调用方按"折算不出来"处理，如摄取层 park）。
+ * resolveAbsoluteEpisode 的逆向版：绝对集号 → (season, episode)。数据源纪律见 resolveAbsoluteTable
+ * ——官方表存在但查不到该集号时直接 null，不再向 concat 级联（官方表是该剧绝对编号的权威事实，
+ * 编号超出它的范围时用 concat 猜一个别的答案只会更错）。
  */
 export async function seasonEpisodeForAbsolute(
   absolute: number, src: AbsoluteOrderSource, tvId: string,
 ): Promise<{ season: number; episode: number } | null> {
-  let official: { season: number; episode: number }[] | null = null
-  try { official = await src.getAbsoluteOrder(tvId) } catch { official = null }
-  if (official && official.length > 0) return seasonEpisodeFor(buildFromAbsoluteOrder(official), absolute)
-  try {
-    const seasons = await src.getSeasonTable(tvId)
-    if (!seasons) return null
-    return seasonEpisodeFor(buildFromSeasonConcat(seasons), absolute)
-  } catch { return null }
+  const table = await resolveAbsoluteTable(src, tvId)
+  return table ? seasonEpisodeFor(table, absolute) : null
 }
