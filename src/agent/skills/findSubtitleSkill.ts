@@ -1,7 +1,6 @@
 // Judgment playbook for the find-subtitle worker (v3 phase ③). Written as a .ts const module,
-// not .md — see the phase ② header note above (tsconfig.build.json only compiles .ts, mirrors
-// src/agent/playbooks/realignPlaybook.ts). Loaded on demand via read_doc — the system prompt
-// only ever sees the name+description from the descriptor below.
+// not .md — tsconfig.build.json only compiles .ts. Loaded on demand via read_doc — the system
+// prompt only ever sees the name+description from the descriptor below.
 //
 // A5: the playbook is a factory parameterized by target language. The Chinese wording is the
 // canonical text (胶水层修复 2026-07-16 起为批量收割版——单集版的 live-acceptance 措辞在批量
