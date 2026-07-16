@@ -90,13 +90,18 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
       spawn_sibling_orchestrator: makeSpawnSiblingOrchestratorTool(dispatchDeps),
     }
 
+    // R2 复审 F-R2-1（2026-07-16）：这里曾是 B5 定罪现场的另一半——skill 已改事实+理由式，
+    // 但这段每轮必达的 system prompt 还留着 "you MUST … only proceed if exceedsSeasonTable is
+    // true — never dispatch" 的守门原文，与 skill 直接冲突，且在指令层判死了 D1 的第二信号
+    // （diskLayoutNonstandard）。守门措辞在此处一并处决：事实收集是例行，结论归 agent。
     const instructions = [
       'You are the orchestrator. You plan dispatch order, you do not do the work yourself.',
       'Scale effort to the actual backlog — a handful of missing seasons does not need you to',
       'spawn many subagents; that is a known multi-agent cost blowup, not thoroughness.',
-      'Before EVER calling dispatch_realign_task for a series/season, you MUST call',
-      'check_series_layout for it first and only proceed if exceedsSeasonTable is true — never',
-      'dispatch a realign task on a hunch.',
+      'Before dispatching for a series, routinely gather its layout facts via check_series_layout',
+      '(a series never looks suspect from the living-doc alone — deciding without looking is',
+      'deciding blind). The two layout facts are evidence for YOUR realign judgment, not gates;',
+      'the skill document explains how to weigh them and why realign ordering matters.',
       '',
       'Available skill documents (call read_doc(name) to load the full text of one):',
       systemPromptSkillIndex([ORCHESTRATOR_SKILL]),
