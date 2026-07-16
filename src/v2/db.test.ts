@@ -14,12 +14,15 @@ describe('db 基座', () => {
       'series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta',
       'parked_paths', 'identify_overrides',
     ]) expect(tables).toContain(t)
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '1' })
+    // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10 本身）：
+    // v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
+    // 落库值随之是 '2'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '2' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '1' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '2' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -44,5 +47,17 @@ describe('db 基座', () => {
 
     const overrideCols = (db.prepare('PRAGMA table_info(identify_overrides)').all() as { name: string }[]).map((c) => c.name)
     expect(overrideCols).toEqual(['path_prefix', 'tmdb_id', 'is_tv', 'season', 'created_at'])
+  })
+
+  it('v10：series.layout_nonstandard / episodes.search_attempts / movies.search_attempts 三列存在', () => {
+    const db = openDb(':memory:')
+    const seriesCols = (db.prepare('PRAGMA table_info(series)').all() as { name: string }[]).map((c) => c.name)
+    expect(seriesCols).toContain('layout_nonstandard')
+
+    const episodeCols = (db.prepare('PRAGMA table_info(episodes)').all() as { name: string }[]).map((c) => c.name)
+    expect(episodeCols).toContain('search_attempts')
+
+    const movieCols = (db.prepare('PRAGMA table_info(movies)').all() as { name: string }[]).map((c) => c.name)
+    expect(movieCols).toContain('search_attempts')
   })
 })

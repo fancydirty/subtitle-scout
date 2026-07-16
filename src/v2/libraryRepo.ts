@@ -43,6 +43,8 @@ export interface Episode {
   status_reason: string | null
   recheck_after: number | null
   updated_at: number
+  /** 胶水层修复（2026-07-16，schema v10）：item 级内容退避阶梯计数（裁决 R-3）。 */
+  search_attempts: number
 }
 
 export interface Movie {
@@ -57,12 +59,22 @@ export interface Movie {
   status_reason: string | null
   recheck_after: number | null
   updated_at: number
+  /** 胶水层修复（2026-07-16，schema v10）：item 级内容退避阶梯计数（裁决 R-3）。 */
+  search_attempts: number
 }
 
 export interface MissingBySeason {
   series_id: string
   season: number
   missing: number
+}
+
+/** 胶水层修复（2026-07-16）：listMissingEpisodesInSeason 的行形状——一条缺口事实（不是聚合计数）。 */
+export interface MissingEpisodeFact {
+  id: string
+  path: string
+  season: number
+  episode: number
 }
 
 export interface Series {
@@ -74,6 +86,9 @@ export interface Series {
   year: number | null
   provider_ids: string | null
   origin_lang: string | null
+  /** 胶水层修复（2026-07-16，schema v10）：摄取层观察到的"磁盘布局不合规范形"series 级事实
+   *  （债务 D1，realign 出生信号之一）。 */
+  layout_nonstandard: number
 }
 
 // ---- P2 新面：parked_paths / identify_overrides / probe memo（去 Jellyfin 化 schema v9） ----
@@ -306,6 +321,20 @@ export class LibraryRepo {
          GROUP BY series_id, season`
       )
       .all(timestamp) as MissingBySeason[]
+  }
+
+  /** 胶水层修复（2026-07-16）：某剧某季当前全部缺口的事实清单。机械预清洗产物，呈事实不做
+   *  选择——ORDER BY episode 是清单排序，不是执行顺序指令（顺序决策归 worker/orchestrator）。
+   *  谓词与 missingBySeason 完全一致。 */
+  listMissingEpisodesInSeason(seriesId: string, season: number, now: number): MissingEpisodeFact[] {
+    return this.db
+      .prepare(
+        `SELECT id, path, season, episode FROM episodes
+         WHERE series_id = ? AND season = ?
+         AND (sub_status = 'missing' OR (sub_status = 'unavailable' AND recheck_after <= ?))
+         ORDER BY episode ASC`
+      )
+      .all(seriesId, season, now) as MissingEpisodeFact[]
   }
 
   missingMovies(now?: number): Movie[] {

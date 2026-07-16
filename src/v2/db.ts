@@ -119,6 +119,12 @@ CREATE TABLE identify_overrides (   -- P6 认领写入；识别层消歧前查�
 );
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_reconcile_at 等
   `.trim(),
+  // v10（胶水层修复战役，2026-07-16）：三列事实增量。layout_nonstandard=摄取层观察到的
+  // "磁盘布局不合规范形"series 级事实（债务D1，realign 出生信号之一）；search_attempts=
+  // item 级内容退避阶梯计数（裁决 R-3：退避从 jobs 状态机下沉到事实层）。
+  `ALTER TABLE series ADD COLUMN layout_nonstandard INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE episodes ADD COLUMN search_attempts INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE movies ADD COLUMN search_attempts INTEGER NOT NULL DEFAULT 0`,
 ]
 
 export function openDb(path: string): ScoutDb {

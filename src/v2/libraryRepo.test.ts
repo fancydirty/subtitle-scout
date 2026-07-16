@@ -386,3 +386,33 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
     })
   })
 })
+
+// 胶水层修复战役（2026-07-16）：季级缺口事实清单，替代被处决的 LIMIT 1 代表集查询。
+describe('listMissingEpisodesInSeason', () => {
+  const NOW = 10_000
+  const NOW_BEFORE_RECHECK = 1_000
+
+  it('listMissingEpisodesInSeason: 返回全部缺口事实行（missing ∪ 到期 unavailable），episode 升序', () => {
+    lib.upsertSeries({ id: 'tmdb:7', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:7/s1e1', seriesId: 'tmdb:7', season: 1, episode: 1, name: 'E1', path: '/p/1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:7/s1e2', seriesId: 'tmdb:7', season: 1, episode: 2, name: 'E2', path: '/p/2.mkv', subStatus: 'covered' })
+    lib.upsertEpisode({ id: 'tmdb:7/s1e3', seriesId: 'tmdb:7', season: 1, episode: 3, name: 'E3', path: '/p/3.mkv', subStatus: 'missing' })
+    lib.markUnavailable('tmdb:7/s1e3', '搜索穷尽', NOW - 1_000) // 已到期
+
+    const rows = lib.listMissingEpisodesInSeason('tmdb:7', 1, NOW)
+    expect(rows.map(r => r.episode)).toEqual([1, 3])
+    expect(rows[0]).toMatchObject({ id: 'tmdb:7/s1e1', season: 1 })
+    expect(typeof rows[0].path).toBe('string')
+  })
+
+  it('listMissingEpisodesInSeason: 未到期 unavailable 不算缺口', () => {
+    lib.upsertSeries({ id: 'tmdb:7', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:7/s1e1', seriesId: 'tmdb:7', season: 1, episode: 1, name: 'E1', path: '/p/1.mkv', subStatus: 'missing' })
+    lib.upsertEpisode({ id: 'tmdb:7/s1e2', seriesId: 'tmdb:7', season: 1, episode: 2, name: 'E2', path: '/p/2.mkv', subStatus: 'covered' })
+    lib.upsertEpisode({ id: 'tmdb:7/s1e3', seriesId: 'tmdb:7', season: 1, episode: 3, name: 'E3', path: '/p/3.mkv', subStatus: 'missing' })
+    lib.markUnavailable('tmdb:7/s1e3', '搜索穷尽', NOW_BEFORE_RECHECK + 100_000) // 未到期
+
+    const rows = lib.listMissingEpisodesInSeason('tmdb:7', 1, NOW_BEFORE_RECHECK)
+    expect(rows.map(r => r.episode)).toEqual([1])
+  })
+})
