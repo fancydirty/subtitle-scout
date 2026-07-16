@@ -91,6 +91,10 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
     ])
     tmdb.getSeasonTable = spy
     tmdb.getAbsoluteOrder = async () => null
+    // 富化路径也必须 stub——不 stub 时 fetchTmdbEnrichment 会拿假 key 打真 TMDB（.catch 兜底
+    // 所以不报错，但网络往返让本测试在 5s 默认超时下 flaky——T8 交卷时定位的 T4 遗留卫生问题）。
+    tmdb.getDetails = async () => null
+    tmdb.getChineseTitles = async () => []
 
     const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib, tmdb }), NOW)
 
