@@ -154,7 +154,29 @@ C 区无发现区域：recognition 四文件（全仓最贴近北极星⑤的子
 **"待核/TODO/暂时"零存活检查**：grep 零命中（两处"暂时"为正常语句非搁置标签）。
 **跨战役登记（非搁置，已裁决立项/记录在案）**：quota 呈报通道（R-6 发现，立项）；ORIGIN_UNKNOWN 不回查（C-C1 债）；C-B1 时长死枝（警示注释在案）；多语言单值截断（A4 已申报）；外部媒体服务器共库扫描窗口风险（C-B3，部署文档责任）；retireClaimed 孤儿化+MediaIdentitySchema 零外引（T9a 新发现，下轮清算候选）；B-15 剧级合集终态（R-11 已裁"按事实裁量"，形已留）。
 
-（R2 复审双签见下节；真站闸门报告随 Task 15 追加。）
+## 六、R2 复审双签记录（Task 14）
+
+**第一轮复审（2026-07-16）：FAIL。** 审计官全项目复审推翻了 R1 对照表①行的"符合"判定：
+
+- **F-R2-1（阻断）**：orchestratorAgent.ts:97-99 的 system prompt 仍留 "you MUST … only proceed
+  if exceedsSeasonTable is true — never dispatch" 守门原文——B5 定罪现场是两处（skill+agent
+  instructions），a1b720f 只处决了 skill 那半。每轮必达的权威信道与主控亲笔 skill 直接冲突，
+  且在指令层判死 D1 第二信号。**主控认领：这是主控本人的漏改**——正是反省书"活着但灵魂是
+  旧的"的定义，R2 纪律因此存在。已亲手处决（92bb23f），守门措辞全仓 grep 仅存死刑记录注释。
+- **收官前修五项**（修复中，完成后追记）：F-R2-2 spawn_sibling 盲报成功；F-R2-3 orchestrator
+  最终汇报黑洞（blocked_dormant"上报人类"无落地通道，与 R10 叠加=操作员零知情）；F-R2-4
+  skill 教的"停牌提前重派"权力管道不存在（新违例：主控亲笔教导了不存在的能力）；F-R2-5
+  coalesced 谎报 identical+新意图丢弃；F-R2-6 ingest 覆盖路径绕过阶梯归零。
+- **登记十条**（移交下轮清算/立项）：park() 注释残留 wake 谎言；completeNoMatch 幽灵指针；
+  db.ts v9 注释教旧灵魂（attempt/dormant/priority=100）；跨桶重复 itemId 无守卫（⑥边际，
+  ingest 自愈兜底）；realign 崩溃恢复 detail 的 Jellyfin 主语残留；B11 决策数 DB-authoritative
+  改判显式立项；seasons:[] 静默归一未申报；fetchLib 两处未墓碑幽灵；deleteSeriesRows 注释
+  Jellyfin 叙事；**R10 结构性**：realign park 后无带内复活通道（wake 已删+upsert 拒绝+
+  retireAllForSeries 循环依赖），F-R2-3 修复补上知情权后，复活通道归 dashboard 救援页战役。
+- 审计官同时**确认**：五重安全层零改动宣称属实（git diff 亲验）；两项主动质询判定同意；
+  清算波无删漏删错；v11 身份无错位；R-5/B9/B10/C-E2/F9/F10/F15 足额交付。
+
+（第二轮复审与真站闸门报告随修复完成追加。）
 
 ## 四、裁决记录（Task 0.3 填写）
 
