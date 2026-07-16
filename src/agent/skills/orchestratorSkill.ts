@@ -30,7 +30,10 @@ carries the FULL coverage picture, nothing pre-filtered for you:
   \`nextRecheckAt\`/\`sampleReason\` tell you when and why. Normally you let the cadence run —
   the worker genuinely found nothing very recently. Re-dispatching a throttled-only row is YOUR
   call for a genuinely changed situation (e.g. the operator just fixed a naming problem, a
-  realign just landed), not a routine move: the facts changed, so re-judging is justified.
+  realign just landed), not a routine move: the facts changed, so re-judging is justified. To
+  actually act on that call, pass \`includeThrottled: true\` on the dispatch — it tells the
+  worker to also take on items still inside their backoff window; without it, a throttled-only
+  dispatch has nothing actionable to hand the worker.
 - \`seriesName\` is on every row so you can reason about what the show actually is.
 
 ## Scoping a find-subtitle dispatch: judge from the on-disk reality
@@ -87,8 +90,11 @@ realign executor itself; it protects the disk, it does not make your dispatch de
 Every dispatch tool call tells you what actually happened; they never lie to keep you happy:
 
 - \`created\` / \`revived\`: a worker will actually run. These consume your dispatch budget.
-- \`coalesced\`: an identical task is already pending — your dispatch merged into it, no new row.
-  Costs no budget. Not a failure; the work is already queued.
+- \`coalesced\`: a task with this identity is already pending — no new row. Costs no budget, and
+  the receipt tells you what happened to your intent: when the pending row had not been claimed
+  yet, its scope/reason was REFRESHED to yours (your latest judgment wins); when it is already
+  RUNNING, your new scope was NOT applied to the in-flight run — re-dispatch after it completes
+  if the scope change still matters.
 - \`blocked_dormant\`: this identity is parked with a configuration-class defect (the reason is
   in the receipt). Dispatching cannot revive it — mention it in your final summary so the
   operator learns about it; do not keep re-dispatching it this pass.

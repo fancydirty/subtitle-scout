@@ -305,9 +305,14 @@ function reportSpawnOutcome(result: WorkerTaskUpsertOutcome) {
     return { spawned: true, outcome: result.outcome }
   }
   if (result.outcome === 'coalesced') {
+    // F-R2-5 联动：wanted/failed 态的 coalesce 会刷新 payload——remainingWorkSummary 实际
+    // 送达了那个待跑 sibling；只有 active 态（sibling 已在跑）才真的没送到。回执按事实分叉，
+    // 不用一句对半错的固定文案（R2 复审子代理上报的跨修复张力，主控裁决收口）。
     return {
       spawned: false, outcome: 'coalesced' as const, pendingState: result.pendingState,
-      note: 'a sibling with this shard identity is already pending — your remainingWorkSummary was NOT delivered to it; if the handoff context matters, use a different shardIndex',
+      note: result.intentRefreshed
+        ? 'a sibling with this shard identity is already pending — no new row, but its handoff note was refreshed to YOUR remainingWorkSummary and will reach it when it runs'
+        : 'a sibling with this shard identity is already RUNNING — your remainingWorkSummary was NOT delivered to it; if the handoff context matters, use a different shardIndex',
     }
   }
   return {

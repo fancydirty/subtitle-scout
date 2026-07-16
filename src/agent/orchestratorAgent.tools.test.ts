@@ -487,15 +487,24 @@ describe('spawn_sibling_orchestrator 如实转告 upsertWorkerTask 回执 (F-R2-
     expect(result).toEqual({ spawned: true, outcome: 'revived' })
   })
 
-  it('coalesced → {spawned:false, outcome:coalesced, pendingState, note}（remainingWorkSummary 未送达在途分片）', async () => {
+  // F-R2-2 × F-R2-5 主控裁决收口：coalesce 送没送到 summary 取决于 intentRefreshed——
+  // 待跑行（wanted/failed）的 payload 被刷新，summary 实际送达；在跑行（active）才是真没送到。
+  // 回执按事实分叉，不用一句对半错的固定文案。
+  it('coalesced（待跑行，intentRefreshed:true）→ note 如实说 handoff note 已刷新送达', async () => {
     const spawnSibling = makeSpawnSiblingOrchestratorTool({
       jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true }) }, now: () => 1000, parentJobId: null,
     })
     const result = await spawnSibling.execute!({ shardIndex: 0, remainingWorkSummary: 'x' }, fakeOpts)
-    expect(result).toEqual({
-      spawned: false, outcome: 'coalesced', pendingState: 'wanted',
-      note: 'a sibling with this shard identity is already pending — your remainingWorkSummary was NOT delivered to it; if the handoff context matters, use a different shardIndex',
+    expect(result).toMatchObject({ spawned: false, outcome: 'coalesced', pendingState: 'wanted' })
+    expect((result as { note: string }).note).toMatch(/refreshed to YOUR remainingWorkSummary/)
+  })
+
+  it('coalesced（在跑行，intentRefreshed:false）→ note 如实说 summary 未送达', async () => {
+    const spawnSibling = makeSpawnSiblingOrchestratorTool({
+      jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'searching', intentRefreshed: false }) }, now: () => 1000, parentJobId: null,
     })
+    const result = await spawnSibling.execute!({ shardIndex: 0, remainingWorkSummary: 'x' }, fakeOpts)
+    expect((result as { note: string }).note).toMatch(/NOT delivered/)
   })
 
   it('blocked_dormant → {spawned:false, outcome:blocked_dormant, reason, note}（同 dispatch 工具的诚实形态）', async () => {
