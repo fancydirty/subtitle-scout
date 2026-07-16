@@ -87,6 +87,20 @@ worker 每 claim 一集、队列 retry 编舞缝合——系统驱动逻辑蹲�
 第二部分（考古，全貌先行）→ 第一部分（胶水层修复，含考古发现的顺手项）→ 第三部分
 （债务三件）→ R1/R2 收官纪律 → 真站闸门。dashboard 与生产切换在此之后才解冻。
 
+## 第四部分 · 存储协议层（用户 2026-07-16 上午提出，立项待排，位于本战役之后）
+
+**问题**：吞下 Jellyfin 后，守备目录常与本容器不在同一物理机——需支持 SMB/NFS（含账密，
+如 NAS 帐户）乃至 WebDAV（与 alist/openlist 协作）。
+**两级方案**（轮子情报待开工实测核验）：
+- **v1 挂载层（先行，零代码）**：mount.cifs/内核 NFS/rclone mount（FUSE，SMB+NFS+WebDAV+
+  SFTP 通吃，账密入 rclone config，alist 原生 WebDAV 对接）→ 应用无感。交付物=部署文档+
+  compose 配方 + doctor 对挂载点的健康检查。
+- **v2 应用层 VFS port（独立战役）**：全部 fs 触点（walker/探针/sidecar 写入/realign 原子
+  改名/staging）退到存储抽象后。协议排序：WebDAV 先（`webdav` npm 轮子成熟+alist 协同）→
+  SMB 次（纯 JS 轮子年久失修，需评估）→ NFS 留挂载层（用户态无好轮子）。
+  **红线**：realign 5 重安全层依赖原子改名语义，跨协议事务性差异必须在设计期解决，
+  不许在实现期即兴。ffprobe 可直读 http/WebDAV URL（探针 v2 或有捷径）。
+
 ## 附录 · 北极星清单（R1/R2 的质询基准，凝练自 2026-07-13 用户原始设计）
 
 - agent 像人一样判断，不敲计算器；确定性检查绝不当守门人（事实盘点除外）
