@@ -6,7 +6,7 @@ import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
 import { isDirWritable, isUnderRoots } from '../core/mediaContext.js'
 import { candidateKey } from '../core/schemas.js'
 import type { FindSubtitleTask, FindSubtitleDecision } from '../agent/findSubtitleWorker.schemas.js'
-import { resolveAbsoluteEpisode } from '../agent/absoluteEpisodes.js'
+import { resolveAbsoluteTable, absoluteFor } from '../agent/absoluteEpisodes.js'
 import { tmdbIdFromOwnId } from './ownIds.js'
 
 /** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
@@ -28,7 +28,17 @@ export interface FindSubtitleWorkerTaskPayload { taskType: 'find_subtitle'; reas
  *  titles/overview/runtime/provider_ids) comes straight off the series/movie library row plus a
  *  live TmdbClient.getDetails/getChineseTitles enrichment call keyed by tmdbIdFromOwnId(row.id) —
  *  see src/v2/ownIds.ts for why that extraction is a pure, zero-I/O string parse now that the row's
- *  own id IS its TMDB identity. */
+ *  own id IS its TMDB identity.
+ *
+ *  2026-07-16 架构事故修复：这个 mapper 曾经藏着 representativeEpisodeId()——一条
+ *  `ORDER BY episode ASC LIMIT 1` 的私有查询，把主代理本该整季派发的一批缺口机械降解成
+ *  "只查一集"的单集指令，注释还抄自旧管线，是本次事故的直接病灶。representativeEpisodeId /
+ *  representativeMovieId 已处决。mapper 现在是纯信使：零目标选择、零顺序决策——季级缺口
+ *  事实清单由 LibraryRepo.listMissingEpisodesInSeason 产出（ORDER BY episode 只是清单排序，
+ *  不是执行顺序指令），mapper 只负责把整批事实清单原样装进一个 FindSubtitleTask.targets
+ *  数组，连同该批目标共同的展示元数据（title/originalTitle/alternativeTitles/overview/…）
+ *  一次性上车；哪个目标先处理、跳过哪个、算不算完成，通通是 worker/orchestrator 的判断，
+ *  不是这层的活。 */
 export interface FindSubtitleTaskMapperDeps {
   lib: LibraryRepo
   /** null when TMDB_API_KEY isn't configured — getDetails/getChineseTitles enrichment is a
@@ -91,115 +101,106 @@ async function fetchTmdbEnrichment(
   return { details, chineseTitles }
 }
 
-/** Representative missing episode for a series+season identity — same query remainingTargets()
- *  (src/v2/executor.ts, private to that module) uses for the old pipeline's job.kind==='series_season'
- *  branch, just narrowed to LIMIT 1 / SELECT id since the caller only needs one id to act on. Not
- *  reusing remainingTargets() directly: that function is keyed off job.kind, and a worker_task row's
- *  kind is always 'worker_task' (never 'series_season') — reusing it would require constructing a
- *  fake Job with a lying kind field, which is worse than this small, independent query. */
-function representativeEpisodeId(lib: LibraryRepo, seriesId: string, season: number, now: number): string | null {
-  const row = lib.db
-    .prepare(
-      `SELECT id FROM episodes
-       WHERE series_id = ? AND season = ?
-       AND (sub_status = 'missing' OR (sub_status = 'unavailable' AND recheck_after <= ?))
-       ORDER BY episode ASC LIMIT 1`
-    )
-    .get(seriesId, season, now) as { id: string } | undefined
-  return row?.id ?? null
+/** OUTER (MEDIA_ROOTS) 沙盒边界检查 + 写权限探测，两连 throw——processed 前的既有防线，从
+ *  movie/series 两个分支各自的重复代码里抽出的模块内私有 helper。错误文案逐字保留：两条
+ *  message 是既有测试锁（sandbox/unwritable 两类调用方都靠这段文案定位问题）。 */
+function assertDirSafe(dir: string, roots: string[]): void {
+  if (!isUnderRoots(dir, roots)) {
+    throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
+  }
+  if (!isDirWritable(dir)) {
+    throw new Error(`Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`)
+  }
 }
 
-/** Movie identity mirrors remainingTargets()'s movie branch: still-missing check re-derived at
- *  claim time (idempotent — the dispatch that created this row may be stale by the time it's
- *  claimed, e.g. covered by a manual run in between). */
-function representativeMovieId(lib: LibraryRepo, movieId: string, now: number): string | null {
-  const movie = lib.getMovie(movieId)
-  if (!movie) return null
-  const stillMissing =
-    movie.sub_status === 'missing' || (movie.sub_status === 'unavailable' && (movie.recheck_after ?? 0) <= now)
-  return stillMissing ? movie.id : null
+/** 全部目标目录的公共祖先（INNER 沙盒根推导）。目录相等视为 under（isUnderRoots 既有语义）——
+ *  同季目标通常共享同一 Season 目录，一步命中；只有磁盘布局不规范（同季文件散落多个子目录）
+ *  时才需要真的逐级上探。 */
+function commonDir(dirs: string[]): string {
+  let candidate = dirs[0]
+  while (!dirs.every((d) => isUnderRoots(d, [candidate]))) {
+    const parent = dirname(candidate)
+    if (parent === candidate) break
+    candidate = parent
+  }
+  return candidate
 }
 
-export interface MappedFindSubtitleTask {
-  task: FindSubtitleTask
-  /** Own library id (episodes.id or movies.id, 去 Jellyfin 化 P2's `tmdb:<id>[/s<N>e<M>]` id
-   *  space) to markCovered/markUnavailable once the worker decides — LibraryRepo's
-   *  markCovered/markUnavailable try the episodes table then the movies table by this same id,
-   *  so the caller doesn't need to know which table it lives in. */
-  targetItemId: string
-}
-
-/** Maps a claimed worker_task row to a FindSubtitleTask, or null if there is nothing left to do
- *  (the target was already covered by the time this row got claimed — idempotent no-op, caller
- *  completes the job done without ever invoking the worker). Throws on a genuinely bad/unsafe
- *  wiring (library row vanished between claim and mapping, video dir outside the configured
- *  MEDIA_ROOTS, unwritable dir) — callers (runFindSubtitleWorkerTask below) must treat a throw
- *  here the same as a thrown worker invocation: completeError, never crash the daemon. */
+/** Maps a claimed worker_task row to a batch FindSubtitleTask, or null if there is nothing left
+ *  to do (every target in the season/movie was already covered by the time this row got claimed
+ *  — idempotent no-op, caller completes the job done without ever invoking the worker). Throws on
+ *  a genuinely bad/unsafe wiring (library row vanished between claim and mapping, a target's video
+ *  dir outside the configured MEDIA_ROOTS, unwritable dir) — callers (runFindSubtitleWorkerTask
+ *  below) must treat a throw here the same as a thrown worker invocation: completeError, never
+ *  crash the daemon.
+ *
+ *  2026-07-16 事故修复：this function used to pick ONE representative episode/movie id
+ *  (representativeEpisodeId, now deleted — see the file-header note above) and hand the worker a
+ *  single-episode task. It now hands over every still-open target in one shot: itemId travels
+ *  inside each FindSubtitleTargetFact (task.targets), not as a separate side-channel return value
+ *  — the messenger doesn't get to carry a second, undisclosed envelope. */
 export async function mapWorkerTaskToFindSubtitleTask(
   job: Job, deps: FindSubtitleTaskMapperDeps, now: number,
-): Promise<MappedFindSubtitleTask | null> {
-  let targetItemId: string | null
+): Promise<FindSubtitleTask | null> {
+  // ---- movie 分支：单目标批量任务（movies 没有"季"概念，天然只有一个目标） ----
   if (job.movie_id) {
-    targetItemId = representativeMovieId(deps.lib, job.movie_id, now)
-  } else if (job.series_id && job.season !== null) {
-    targetItemId = representativeEpisodeId(deps.lib, job.series_id, job.season, now)
-  } else {
-    throw new Error(
-      `worker_task job ${job.id} (find_subtitle) has neither movie_id nor series_id+season identity`,
-    )
-  }
-  if (!targetItemId) return null
+    const movie = deps.lib.getMovie(job.movie_id)
+    if (!movie) return null
+    const stillMissing =
+      movie.sub_status === 'missing' || (movie.sub_status === 'unavailable' && (movie.recheck_after ?? 0) <= now)
+    if (!stillMissing) return null
 
-  if (job.movie_id) {
-    const movie = deps.lib.getMovie(targetItemId)
-    if (!movie) throw new Error(`movie row ${targetItemId} vanished between claim and mapping`)
     const dir = dirname(movie.path)
-    if (!isUnderRoots(dir, deps.mediaRoots)) {
-      throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
-    }
-    if (!isDirWritable(dir)) {
-      throw new Error(`Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`)
-    }
+    assertDirSafe(dir, deps.mediaRoots)
 
     const tmdbId = tmdbIdFromOwnId(movie.id)
     const { details, chineseTitles } = await fetchTmdbEnrichment(deps.tmdb, 'movie', tmdbId)
     const originalTitle = details?.originalTitle ?? null
-    const alternativeTitles = buildAlternativeTitles(chineseTitles, movie.chinese_title, movie.name, originalTitle)
 
-    const task: FindSubtitleTask = {
+    return {
       jobId: String(job.id),
       mediaRoot: dir,
-      videoPath: movie.path,
-      videoFilename: basename(movie.path),
       title: movie.name,
       originalTitle,
       year: movie.year ?? details?.year ?? null,
-      season: null,
-      episode: null,
-      // Movies have neither season nor episode — absoluteEpisode is meaningless for this branch.
-      absoluteEpisode: null,
-      alternativeTitles,
+      alternativeTitles: buildAlternativeTitles(chineseTitles, movie.chinese_title, movie.name, originalTitle),
       overview: details?.overview ?? null,
       runtimeMinutes: details?.runtimeMinutes ?? null,
       providerIds: parseProviderIds(movie.provider_ids),
       // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
       // multi-language per-item tasking is future work.
       targetLanguage: deps.targetLanguage ?? 'zh',
+      targets: [{
+        itemId: movie.id,
+        videoPath: movie.path,
+        videoFilename: basename(movie.path),
+        season: null,
+        episode: null,
+        // Movies have neither season nor episode — absoluteEpisode is meaningless for this branch.
+        absoluteEpisode: null,
+      }],
     }
-    return { task, targetItemId }
   }
 
-  const episode = deps.lib.getEpisode(targetItemId)
-  if (!episode) throw new Error(`episode row ${targetItemId} vanished between claim and mapping`)
-  const series = deps.lib.getSeries(episode.series_id)
-  if (!series) throw new Error(`series row ${episode.series_id} not found for episode ${episode.id}`)
-
-  const dir = dirname(episode.path)
-  if (!isUnderRoots(dir, deps.mediaRoots)) {
-    throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
+  // ---- series+season 分支：LibraryRepo 产出的缺口事实清单整批上车，mapper 不做任何取舍 ----
+  if (!job.series_id || job.season === null) {
+    throw new Error(
+      `worker_task job ${job.id} (find_subtitle) has neither movie_id nor series_id+season identity`,
+    )
   }
-  if (!isDirWritable(dir)) {
-    throw new Error(`Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`)
+  const gaps = deps.lib.listMissingEpisodesInSeason(job.series_id, job.season, now)
+  if (gaps.length === 0) return null // idempotent no-op: 本行被 claim 时该季已无缺口
+
+  const series = deps.lib.getSeries(job.series_id)
+  if (!series) throw new Error(`series row ${job.series_id} not found for job ${job.id}`)
+
+  const dirs = gaps.map((g) => dirname(g.path))
+  for (const dir of dirs) assertDirSafe(dir, deps.mediaRoots)
+  const mediaRoot = commonDir(dirs)
+  if (!isUnderRoots(mediaRoot, deps.mediaRoots)) {
+    // 逐目标 assertDirSafe 已经过；这里再兜一层是防"目标分散在多个根各自都合规、但公共祖先
+    // 越出了全部根"的边界情形（每个单独的 dir 检查无法拦住这种组合态）。
+    throw new Error(`拒绝在媒体根目录之外写入: ${mediaRoot} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
   }
 
   // tmdbId comes from the SERIES row's own id (episodes never carry the series' tmdb id
@@ -207,31 +208,35 @@ export async function mapWorkerTaskToFindSubtitleTask(
   const tmdbId = tmdbIdFromOwnId(series.id)
   const { details, chineseTitles } = await fetchTmdbEnrichment(deps.tmdb, 'tv', tmdbId)
   const originalTitle = details?.originalTitle ?? null
-  const alternativeTitles = buildAlternativeTitles(chineseTitles, series.chinese_title, series.name, originalTitle)
-  const absoluteEpisode = deps.tmdb && tmdbId
-    ? await resolveAbsoluteEpisode(episode.season, episode.episode, deps.tmdb, tmdbId)
-    : null
+  // 取表一次，逐集折算（resolveAbsoluteTable + absoluteFor）——不再是旧 resolveAbsoluteEpisode
+  // 逐集各打一次 TMDB 往返（2N 次请求）。取不到表（tmdb 未配置/请求失败）→ 全部 null：
+  // absoluteEpisode 是定位 hint 缺席不是 blocker，见 findSubtitleWorker.schemas.ts 的字段注释。
+  const absTable = deps.tmdb && tmdbId ? await resolveAbsoluteTable(deps.tmdb, tmdbId) : null
 
-  const task: FindSubtitleTask = {
+  return {
     jobId: String(job.id),
-    mediaRoot: dir,
-    videoPath: episode.path,
-    videoFilename: basename(episode.path),
+    mediaRoot,
     title: series.name,
     originalTitle,
     year: series.year ?? details?.year ?? null,
-    season: episode.season,
-    episode: episode.episode,
-    absoluteEpisode,
-    alternativeTitles,
+    alternativeTitles: buildAlternativeTitles(chineseTitles, series.chinese_title, series.name, originalTitle),
     overview: details?.overview ?? null,
     runtimeMinutes: details?.runtimeMinutes ?? null,
     providerIds: parseProviderIds(series.provider_ids),
     // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
     // multi-language per-item tasking is future work.
     targetLanguage: deps.targetLanguage ?? 'zh',
+    // List order is fact-list order (gaps 已按 episode ASC，见 listMissingEpisodesInSeason),
+    // not an execution-order instruction — see FindSubtitleTargetFact's own doc comment.
+    targets: gaps.map((g) => ({
+      itemId: g.id,
+      videoPath: g.path,
+      videoFilename: basename(g.path),
+      season: g.season,
+      episode: g.episode,
+      absoluteEpisode: absTable ? absoluteFor(absTable, g.season, g.episode) : null,
+    })),
   }
-  return { task, targetItemId }
 }
 
 export interface FindSubtitleWorkerTaskDeps extends FindSubtitleTaskMapperDeps {
