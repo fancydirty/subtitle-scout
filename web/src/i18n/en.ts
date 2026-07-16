@@ -61,9 +61,54 @@ export const en = {
   library_legend_throttled: 'throttled',
   library_legend_dashed: 'not on disk',
 
-  // Workflow 区永不本地化——本文件是这两个键的唯一真源，zh.ts 直接引用，不重复翻译。
+  // Workflow 区永不本地化——本文件是这些键的唯一真源，zh.ts 直接引用，不重复翻译
+  // （DESIGN.md §7）。带运行期数字/技术枚举值的动态文案（缺口计数、receipts 分布、四态回执
+  // 句、trace 行的等宽工具名+耗时）故意不进这张表，走 web/src/workflow/text.ts 的纯函数——
+  // 同 shell/freshness.ts 的既有先例：那些是技术读数，天生不需要翻译，也用不上 t() 不支持的
+  // 插值。这里只收静态、不带运行期数据的 UI 文案（泳道头/空态/对话框/按钮）。
   workflow_empty_title: 'No active work',
   workflow_empty_desc: 'Pending passes and worker traces will show up here once the orchestrator has something to do.',
+
+  workflow_lane_pending: 'Pending',
+  workflow_lane_passes: 'Passes',
+  workflow_lane_workers: 'Workers',
+
+  workflow_pending_series_heading: 'Series',
+  workflow_pending_movies_heading: 'Movies',
+  workflow_pending_lane_empty: 'Nothing pending — the library is fully covered.',
+  workflow_pending_rerun_label: 'Rerun',
+
+  workflow_passes_lane_empty: 'No orchestrator passes yet.',
+  workflow_passes_open_label: 'Open',
+
+  workflow_workers_running_heading: 'Running',
+  workflow_workers_recent_heading: 'Recent',
+  workflow_workers_running_empty: 'No workers running right now.',
+  workflow_workers_recent_empty: 'No recent completions yet.',
+
+  workflow_rundetail_close_label: 'Close pass details',
+  workflow_rundetail_detail_heading: 'Detail',
+  workflow_rundetail_receipts_heading: 'Receipts',
+  workflow_rundetail_replay_heading: 'Trace replay',
+  workflow_rundetail_replay_empty: 'No trace events were captured for this pass.',
+  workflow_rundetail_replay_error_prefix: "Couldn't load the trace replay: ",
+
+  workflow_rerun_confirm_title: 'Rerun this series?',
+  workflow_rerun_confirm_desc: 'This dispatches a find_subtitle task for the series.',
+  workflow_rerun_include_throttled_label: 'Include throttled episodes',
+  workflow_rerun_include_throttled_desc: 'Also include throttled episodes that would otherwise wait for their next recheck.',
+  workflow_rerun_action_label: 'Rerun',
+  workflow_rerun_error_prefix: "Couldn't dispatch this rerun: ",
+  workflow_rerun_result_title: 'Rerun result',
+  workflow_rerun_failed_title: 'Rerun failed',
+  workflow_rerun_close_label: 'Close',
+
+  workflow_outcome_created: 'created — a new task was dispatched.',
+  workflow_outcome_revived: 'revived — a dormant task was reactivated.',
+  workflow_outcome_coalesced: 'coalesced — merged into an in-flight task.',
+  workflow_outcome_blocked_dormant: 'blocked — this series is dormant and was not dispatched.',
+
+  workflow_mobile_feed_empty: 'No workflow activity yet.',
 
   // Triage tab 占位。
   triage_empty_title: 'Nothing parked',

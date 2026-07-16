@@ -771,5 +771,39 @@ describe('startDashboard (v2)', () => {
         expect(unauthed.status).toBe(401)
       })
     })
+
+    describe('GET /api/v2/workflow/runs/:id/trace（dashboard-F4：单 run 痕迹快照回放）', () => {
+      it('数字 id 命中 → 200 + trace_json 原样解析', async () => {
+        const jobId = Number(
+          db.prepare(
+            `INSERT INTO jobs (kind, series_id, payload, state, priority, created_at, updated_at)
+             VALUES ('worker_task', 's1', ?, 'done', 0, ?, ?)`
+          ).run(JSON.stringify({ taskType: 'find_subtitle' }), NOW, NOW).lastInsertRowid
+        )
+        const events = [{ runKey: `job-${jobId}`, seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: NOW }]
+        const runId = Number(
+          db.prepare(
+            `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, trace_json)
+             VALUES (?, ?, ?, 'download', 'ok', NULL, ?)`
+          ).run(jobId, NOW - 1000, NOW, JSON.stringify(events)).lastInsertRowid
+        )
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/workflow/runs/${runId}/trace`)
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ events })
+      })
+
+      it('行不存在 → 404', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/workflow/runs/999999/trace`)
+        expect(res.status).toBe(404)
+      })
+
+      it('非数字 id → 404', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/workflow/runs/abc/trace`)
+        expect(res.status).toBe(404)
+      })
+    })
   })
 })

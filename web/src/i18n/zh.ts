@@ -58,6 +58,47 @@ export const zh = {
   workflow_empty_title: en.workflow_empty_title,
   workflow_empty_desc: en.workflow_empty_desc,
 
+  workflow_lane_pending: en.workflow_lane_pending,
+  workflow_lane_passes: en.workflow_lane_passes,
+  workflow_lane_workers: en.workflow_lane_workers,
+
+  workflow_pending_series_heading: en.workflow_pending_series_heading,
+  workflow_pending_movies_heading: en.workflow_pending_movies_heading,
+  workflow_pending_lane_empty: en.workflow_pending_lane_empty,
+  workflow_pending_rerun_label: en.workflow_pending_rerun_label,
+
+  workflow_passes_lane_empty: en.workflow_passes_lane_empty,
+  workflow_passes_open_label: en.workflow_passes_open_label,
+
+  workflow_workers_running_heading: en.workflow_workers_running_heading,
+  workflow_workers_recent_heading: en.workflow_workers_recent_heading,
+  workflow_workers_running_empty: en.workflow_workers_running_empty,
+  workflow_workers_recent_empty: en.workflow_workers_recent_empty,
+
+  workflow_rundetail_close_label: en.workflow_rundetail_close_label,
+  workflow_rundetail_detail_heading: en.workflow_rundetail_detail_heading,
+  workflow_rundetail_receipts_heading: en.workflow_rundetail_receipts_heading,
+  workflow_rundetail_replay_heading: en.workflow_rundetail_replay_heading,
+  workflow_rundetail_replay_empty: en.workflow_rundetail_replay_empty,
+  workflow_rundetail_replay_error_prefix: en.workflow_rundetail_replay_error_prefix,
+
+  workflow_rerun_confirm_title: en.workflow_rerun_confirm_title,
+  workflow_rerun_confirm_desc: en.workflow_rerun_confirm_desc,
+  workflow_rerun_include_throttled_label: en.workflow_rerun_include_throttled_label,
+  workflow_rerun_include_throttled_desc: en.workflow_rerun_include_throttled_desc,
+  workflow_rerun_action_label: en.workflow_rerun_action_label,
+  workflow_rerun_error_prefix: en.workflow_rerun_error_prefix,
+  workflow_rerun_result_title: en.workflow_rerun_result_title,
+  workflow_rerun_failed_title: en.workflow_rerun_failed_title,
+  workflow_rerun_close_label: en.workflow_rerun_close_label,
+
+  workflow_outcome_created: en.workflow_outcome_created,
+  workflow_outcome_revived: en.workflow_outcome_revived,
+  workflow_outcome_coalesced: en.workflow_outcome_coalesced,
+  workflow_outcome_blocked_dormant: en.workflow_outcome_blocked_dormant,
+
+  workflow_mobile_feed_empty: en.workflow_mobile_feed_empty,
+
   triage_empty_title: '暂无待甄别项',
   triage_empty_desc: '识别器无法确信归位的文件会停在这里，等待人工认领。',
 

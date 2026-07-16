@@ -5,6 +5,11 @@
 // dashboard-F3：Library tab 落地为真页面（SeriesGrid 列表 / SeriesPage 详情），二级路由
 // #/library/:id 命中时，剧集详情请求在这一层发起并同时喂给 Topbar（面包屑二级：剧名）和
 // SeriesPage（页面主体）——避免面包屑和页面各发一次 GET /api/v2/library/series/:id。
+//
+// dashboard-F4：Workflow tab 落地为真页面（Lanes：三泳道桌面主视图 + 移动端折叠 stack），
+// 自己发三个请求（workflow/pending 复用上面这一份、workflow/passes、workflow/workers），
+// 不像 Library 详情那样需要 Shell 这一层协调共享——三份数据只服务 Workflow 区自己，跟 Topbar/
+// Sidebar 无关，因此整个组件收在 workflow/Lanes.tsx 内部自洽。
 import { useState } from 'react'
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell'
 import { useWorkflowPending, useLibrarySeriesDetail } from '../api/hooks.js'
@@ -16,6 +21,7 @@ import { CommandK } from './CommandK.js'
 import { PlaceholderTab } from './PlaceholderTab.js'
 import { SeriesGrid } from '../library/SeriesGrid.js'
 import { SeriesPage } from '../library/SeriesPage.js'
+import { Lanes } from '../workflow/Lanes.js'
 
 export function Shell() {
   const route = useShellRoute()
@@ -52,9 +58,7 @@ export function Shell() {
           ) : (
             <SeriesGrid />
           ))}
-        {route.tab === 'workflow' && (
-          <PlaceholderTab title={t('workflow_empty_title')} description={t('workflow_empty_desc')} />
-        )}
+        {route.tab === 'workflow' && <Lanes />}
         {route.tab === 'triage' && (
           <PlaceholderTab title={t('triage_empty_title')} description={t('triage_empty_desc')} />
         )}

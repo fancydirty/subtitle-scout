@@ -258,3 +258,313 @@
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/* dashboard-F4（Workflow tab）：三泳道 + Inngest 式痕迹行——原子 CSS 集中区，同上面几段
+   一样的理由（密集技术网格/hover 揭示工具条，组件语言表达不了）。颜色一律读 scout.ts 已定义
+   的 token；蓝点/延展动画例外——DESIGN.md §5 明确把"active（在跑行的蓝点延展）"列为动效
+   allowlist 里唯一带颜色语义的一条，scout.ts 的色表（§2）本身没有蓝，用的是 Astryx 基础主题
+   自带的 --color-icon-blue（未被 scout.ts 覆盖，见该文件），不是新起一个硬编码色值，也没有
+   碰 scout.ts。 */
+
+/* ---- 三泳道 grid（Lanes）---- */
+.wf-lanes {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1.3fr;
+  gap: 16px;
+  align-items: start;
+}
+.wf-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.wf-lane-heading {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-gray);
+}
+
+/* ---- Pending 泳道行 ---- */
+.wf-pending-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.wf-pending-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-pending-row {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  background: var(--color-background-surface);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wf-pending-row-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.wf-pending-row-title {
+  font-size: 12.5px;
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+.wf-pending-row-badge {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+.wf-pending-row-throttled {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-gray);
+}
+/* 排队/中性=灰铁律（DESIGN.md §2）——throttled 是"停牌"不是"警报"，圆点固定读中性灰 token，
+   不是黄不是蓝不是红。 */
+.wf-dot-neutral {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-text-gray);
+  flex-shrink: 0;
+}
+.wf-pending-row-reason {
+  font-size: 11px;
+  color: var(--color-text-gray);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Rerun 工具条（Switch + Button）——hover/focus-within 才揭示（DESIGN 任务规格："Pending 泳道
+   每 series 行 hover 出 Rerun"），键盘用户 Tab 进开关/按钮时 focus-within 同样揭示，不靠
+   鼠标独占。 */
+.wf-pending-row-actions {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid var(--color-border);
+}
+.wf-pending-row:hover .wf-pending-row-actions,
+.wf-pending-row:focus-within .wf-pending-row-actions {
+  display: flex;
+}
+
+/* ---- Passes 泳道（PassCard）---- */
+.wf-pass-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  background: var(--color-background-surface);
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 120ms ease;
+}
+.wf-pass-card:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.wf-pass-card:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.wf-pass-time {
+  display: block;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-gray);
+}
+.wf-pass-detail {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.wf-chip {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--color-text-gray);
+  background: var(--color-background-body);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+/* ---- Workers 泳道（WorkerCard + TraceRows）---- */
+.wf-worker-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  background: var(--color-background-surface);
+  padding: 8px 10px;
+}
+.wf-worker-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.wf-dot-active {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-icon-blue);
+  flex-shrink: 0;
+}
+.wf-worker-title {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+}
+
+/* Inngest 式痕迹行：等宽工具名 + 截断 args 灰字 + 右对齐耗时（DESIGN.md §6）。 */
+.wf-trace-rows {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wf-trace-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.8;
+}
+.wf-trace-tool {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+.wf-trace-args {
+  color: var(--color-text-disabled);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.wf-trace-took {
+  color: var(--color-text-gray);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+/* 在跑行——蓝点延展动画，DESIGN.md §5 动效 allowlist 的"active"那一条。回放（RunDetail）
+   永远不传 live，这一行永远不出现在快照回放里。 */
+.wf-trace-row-active {
+  align-items: center;
+}
+.wf-trace-active-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-icon-blue);
+  animation: wf-pulse 1.2s ease-in-out infinite;
+}
+.wf-trace-active-bar {
+  margin-left: 6px;
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(90deg, var(--color-icon-blue), transparent);
+  animation: wf-extend 1.6s ease-in-out infinite;
+  transform-origin: left;
+}
+@keyframes wf-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+@keyframes wf-extend {
+  0% { transform: scaleX(0); opacity: 0.8; }
+  100% { transform: scaleX(1); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-trace-active-dot,
+  .wf-trace-active-bar {
+    animation: none;
+  }
+}
+
+/* ---- Recent 完成行（decision 语义色点：installed=绿/no_safe_match=灰/retry_later=灰/error=红）---- */
+.wf-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  padding: 4px 2px;
+}
+.wf-recent-decision {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+.wf-recent-detail {
+  color: var(--color-text-gray);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.wf-recent-time {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--color-text-gray);
+  flex-shrink: 0;
+}
+
+/* ---- RunDetail 右侧板——固定、不跳页不弹 modal（DESIGN.md §5/§6，同 .library-detail-panel
+   先例，尺寸单独一份不复用那个类：两个区域各自独立演化，不耦合）。 ---- */
+.wf-rundetail-panel {
+  position: fixed;
+  top: 46px;
+  bottom: 0;
+  right: 0;
+  width: 400px;
+  max-width: 90vw;
+  overflow-y: auto;
+  background: var(--color-background-card);
+  border-left: 1px solid var(--color-border);
+  z-index: 20;
+}
+.wf-rundetail-close {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-inner, 4px);
+}
+.wf-rundetail-close:hover {
+  background: var(--color-background-surface);
+}
+.wf-rundetail-close:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

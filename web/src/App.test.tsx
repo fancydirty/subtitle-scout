@@ -46,6 +46,12 @@ function standardHandlers() {
   return [
     { path: '/api/v2/workflow/pending', body: WORKFLOW },
     { path: '/api/v2/library', body: EMPTY_LIBRARY },
+    // dashboard-F4：Lanes.tsx（Workflow tab 真页面）额外发的两个端点——F2 时代 Workflow tab
+    // 还是占位态，不发这两个请求；现在真页面挂载就会打，不给会 404 → passes/workers 两个
+    // Async 一直卡在 error 态、data 恒 null，"三泳道皆空 → No active work"那条判定永远凑不齐
+    // （见 Lanes.tsx 的 allEmpty：三份 data 都要非 null 才判定为空）。
+    { path: '/api/v2/workflow/passes', body: [] },
+    { path: '/api/v2/workflow/workers', body: { running: [], recent: [] } },
   ]
 }
 

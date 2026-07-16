@@ -12,7 +12,7 @@ import {
   buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch,
+  buildTriage, redispatch, buildRunTrace,
   type ReconcileAllResultDTO,
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
@@ -81,6 +81,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       return detail
     },
     triage: () => buildTriage(db),
+    runTrace: (id) => buildRunTrace(db, id),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —

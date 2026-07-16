@@ -1,0 +1,108 @@
+// web/src/workflow/traceStream.ts：单例 EventSource——整页一条连接，按 runKey 分发给各
+// WorkerCard 的订阅者（DESIGN 任务规格："订阅：单例 EventSource（整页一个连接，按 runKey
+// 分发给各 WorkerCard），组件卸载退订"）。引用计数归零才真正关闭底层连接，避免"最后一个
+// WorkerCard 卸载"和"页面还剩别的 WorkerCard 在跑"这两种情况互相踩踏。
+//
+// 断线由浏览器 EventSource 原生自动重连；重连成功（第二次及以后触发的 onopen——首次连接不算
+// "重连"）会通知 onTraceReconnect 订阅者，让调用方（Lanes.tsx 里的 useWorkflowWorkers().reload()）
+// 主动补拉一次 workers 端点，弥补断线窗口期可能漏掉的直播事件（同 server.ts trace-stream 端点
+// 注释里"断线靠 EventSource 自动重连 + 落后补拉 workers 端点"的既定约定）。
+//
+// 可测试性：不直接硬编码 `new EventSource(...)`，而是在每次需要新建连接时才读取当时的
+// globalThis.EventSource——jsdom 不自带 EventSource 实现，测试可以在渲染组件前把一个假实现类
+// 挂到 globalThis.EventSource 上，驱动 onopen/onmessage 回调，不需要真的开一条网络连接
+// （DESIGN 任务规格建议的测试手法之一："EventSource 假实现注入"）。
+import { withToken } from '../api/client.js'
+import type { TraceEvent } from '../api/types.js'
+
+/** 只依赖用到的那三个成员，方便测试用一个精简假类满足这个形状，不用实现完整 EventSource 接口
+ *  （readyState/CLOSED 等常量测试假类用不上）。 */
+interface EventSourceLike {
+  onopen: ((ev: Event) => void) | null
+  onmessage: ((ev: MessageEvent) => void) | null
+  onerror: ((ev: Event) => void) | null
+  close(): void
+}
+type EventSourceCtor = new (url: string) => EventSourceLike
+
+const TRACE_STREAM_PATH = '/api/v2/workflow/trace-stream'
+
+let es: EventSourceLike | null = null
+let hasOpenedOnce = false
+let refCount = 0
+const listenersByRunKey = new Map<string, Set<(e: TraceEvent) => void>>()
+const reconnectListeners = new Set<() => void>()
+
+function currentCtor(): EventSourceCtor | undefined {
+  return (globalThis as { EventSource?: EventSourceCtor }).EventSource
+}
+
+function ensureConnected(): void {
+  if (es) return
+  const Impl = currentCtor()
+  if (!Impl) return // 环境没有 EventSource 实现（理论上只会发生在没打桩的测试环境）——静默跳过，不炸调用方
+  const instance = new Impl(withToken(TRACE_STREAM_PATH))
+  instance.onopen = () => {
+    if (hasOpenedOnce) {
+      for (const fn of reconnectListeners) fn()
+    }
+    hasOpenedOnce = true
+  }
+  instance.onmessage = (ev) => {
+    let parsed: TraceEvent
+    try {
+      parsed = JSON.parse(ev.data) as TraceEvent
+    } catch {
+      return // 畸形 data 行——静默丢弃，不让一条坏事件打断整条订阅
+    }
+    const set = listenersByRunKey.get(parsed.runKey)
+    if (set) for (const fn of set) fn(parsed)
+  }
+  es = instance
+}
+
+function teardownIfUnused(): void {
+  if (refCount <= 0 && es) {
+    es.close()
+    es = null
+    hasOpenedOnce = false
+  }
+}
+
+/** 订阅某个 runKey 的直播事件。返回退订函数——组件卸载时调用；引用计数归零即关闭底层连接。 */
+export function subscribeTrace(runKey: string, onEvent: (e: TraceEvent) => void): () => void {
+  refCount++
+  ensureConnected()
+  let set = listenersByRunKey.get(runKey)
+  if (!set) {
+    set = new Set()
+    listenersByRunKey.set(runKey, set)
+  }
+  set.add(onEvent)
+  return () => {
+    set?.delete(onEvent)
+    if (set && set.size === 0) listenersByRunKey.delete(runKey)
+    refCount--
+    teardownIfUnused()
+  }
+}
+
+/** 重连通知——第二次及以后的 onopen（首次连接不算"重连"）。返回退订函数。 */
+export function onTraceReconnect(fn: () => void): () => void {
+  reconnectListeners.add(fn)
+  return () => {
+    reconnectListeners.delete(fn)
+  }
+}
+
+/** 仅供测试：强制关闭当前连接并清空全部模块级状态，让下一次 subscribeTrace 重新走
+ *  ensureConnected（重新读取彼时的 globalThis.EventSource，测试可以借此在用例之间切换/重置
+ *  假实现，不必担心上一条用例留下的单例连接串扰下一条）。 */
+export function __resetTraceStreamForTests(): void {
+  if (es) es.close()
+  es = null
+  hasOpenedOnce = false
+  refCount = 0
+  listenersByRunKey.clear()
+  reconnectListeners.clear()
+}

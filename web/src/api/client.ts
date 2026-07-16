@@ -2,6 +2,7 @@
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
   ParkedItemDTO, ClaimParkedInput, WorkflowPendingDTO, LibrarySeriesDetailDTO,
+  WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
 } from './types.js'
 
 const token = (): string | null => new URLSearchParams(location.search).get('token')
@@ -67,4 +68,15 @@ export const api = {
   // encodeURIComponent 编码后由 router.ts 的 decodeIdSegment 解回。
   librarySeriesDetail: (id: string, signal?: AbortSignal) =>
     get<LibrarySeriesDetailDTO>(`/api/v2/library/series/${encodeURIComponent(id)}`, signal),
+  // dashboard-F4：Workflow 三泳道——中泳道 pass 记录 + 右泳道跑中/近期 worker。
+  workflowPasses: (limit: number, signal?: AbortSignal) =>
+    get<WorkflowPassDTO[]>(`/api/v2/workflow/passes?limit=${limit}`, signal),
+  workflowWorkers: (signal?: AbortSignal) => get<WorkflowWorkersDTO>('/api/v2/workflow/workers', signal),
+  // dashboard-F4：RunDetail 快照回放——runId 是 runs.id（纯数字），不经 encodeURIComponent
+  // 那一套（同 router.ts 该端点自己的纯数字校验口径，不是 tmdb:<n> 那种自有 id 空间）。
+  runTrace: (runId: number, signal?: AbortSignal) =>
+    get<RunTraceDTO>(`/api/v2/workflow/runs/${runId}/trace`, signal),
+  // dashboard-F4：人类扳手①——手动重派。四态回执（created/revived/coalesced/blocked_dormant）
+  // 都是 200，post() 的既有错误分支只在 zod 校验失败（400）/未配置（503）时触发。
+  redispatch: (input: RedispatchInput) => post<RedispatchOutcomeDTO>('/api/v2/workflow/redispatch', input),
 }

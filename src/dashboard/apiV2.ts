@@ -848,6 +848,34 @@ export function buildWorkflowWorkers(db: ScoutDb): WorkflowWorkersDTO {
   return { running, recent }
 }
 
+// ---- workflow/runs/:id/trace（dashboard-F4 后端例外口子：单 run 痕迹快照回放）----
+// 北极星④：纯解析呈现，不新增判断——runs.trace_json 原样解析成事件列表，供 RunDetail 右侧板
+// 的"快照回放"渲染（回放≠直播：这里不接 traceBus，只读已经落库的收官快照，同 G3 注释的
+// "snapshot 是唯一持久化点"口径）。
+
+export interface RunTraceDTO {
+  events: TraceEvent[]
+}
+
+interface RunTraceRow {
+  trace_json: string | null
+}
+
+/** GET /api/v2/workflow/runs/:id/trace：单行 trace_json 解析。行不存在 → null（router.ts 映射
+ *  404，同 buildSeriesDetail/buildLibrarySeriesDetail 先例）；trace_json 为 NULL 或解析失败
+ *  （脏数据/早于 G3 落地的历史行）→ events:[]——run 行本身是真实存在的，只是没有痕迹快照可
+ *  回放，不等于"这个 run 不存在"。 */
+export function buildRunTrace(db: ScoutDb, runId: number): RunTraceDTO | null {
+  const row = db.prepare(`SELECT trace_json FROM runs WHERE id = ?`).get(runId) as RunTraceRow | undefined
+  if (!row) return null
+  if (!row.trace_json) return { events: [] }
+  try {
+    return { events: JSON.parse(row.trace_json) as TraceEvent[] }
+  } catch {
+    return { events: [] }
+  }
+}
+
 // ---- library/series/:id：三层格阵合并呈现（canonical ∪ 磁盘 ∪ 覆盖）----
 
 export interface LibrarySeriesSummaryDTO {

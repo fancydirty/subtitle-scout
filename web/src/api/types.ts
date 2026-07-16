@@ -118,6 +118,81 @@ export interface WorkflowPendingDTO {
   meta: WorkflowFreshnessDTO
 }
 
+/** dashboard-F4：GET /api/v2/workflow/passes?limit=20 响应体——orchestrate 通行记录 + receipts，
+ *  与 src/dashboard/apiV2.ts 的 WorkflowPassDTO 一族保持一致。 */
+export interface DispatchReceiptsDTO {
+  created: number
+  revived: number
+  coalesced: number
+  blocked_dormant: number
+  unknown: number
+}
+export interface WorkflowPassDTO {
+  id: number
+  jobId: number | null
+  startedAt: number
+  finishedAt: number | null
+  detail: string | null
+  receipts: DispatchReceiptsDTO
+}
+
+/** dashboard-F4：痕迹通道 C 的事件形状——SSE data 行 / workers.running[].trail /
+ *  runs/:id/trace 的 events 三处共用同一个形状（与 src/dashboard/traceBus.ts 的
+ *  TraceEvent 一族保持一致）。runKey=`job-${jobId}`。 */
+export interface TraceEvent {
+  runKey: string
+  seq: number
+  tool: string
+  argsSummary: string
+  resultSummary: string
+  tookMs: number
+  at: number
+}
+
+/** dashboard-F4：GET /api/v2/workflow/workers 响应体，与 src/dashboard/apiV2.ts 的
+ *  WorkflowWorkersDTO 一族保持一致。 */
+export interface WorkflowRunningWorkerDTO {
+  jobId: number
+  seriesId: string | null
+  movieId: string | null
+  taskType: string | null
+  seasons: number[] | null
+  startedAtLease: number
+  /** traceBus.peek 的直播补拉——非破坏性尾部 20 条，供 TraceRows 首屏渲染的初始 trail。 */
+  trail: TraceEvent[]
+}
+export interface WorkflowRecentRunDTO {
+  jobId: number | null
+  decision: string | null
+  detail: string | null
+  finishedAt: number | null
+}
+export interface WorkflowWorkersDTO {
+  running: WorkflowRunningWorkerDTO[]
+  recent: WorkflowRecentRunDTO[]
+}
+
+/** dashboard-F4：GET /api/v2/workflow/runs/:id/trace 响应体——单 run 痕迹快照回放
+ *  （RunDetail 右侧板用，区别于 workers.running[].trail 的直播补拉）。 */
+export interface RunTraceDTO {
+  events: TraceEvent[]
+}
+
+/** dashboard-F4：POST /api/v2/workflow/redispatch 的四态回执——与 src/v2/jobsRepo.ts 的
+ *  WorkerTaskUpsertOutcome 一族保持一致。四态都是 200/事实，不是错误（DESIGN.md §8）。 */
+export type RedispatchOutcomeDTO =
+  | { outcome: 'created' }
+  | { outcome: 'revived' }
+  | { outcome: 'coalesced'; pendingState: string; intentRefreshed: boolean }
+  | { outcome: 'blocked_dormant'; lastError: string | null }
+
+/** POST /api/v2/workflow/redispatch 请求体——与 src/dashboard/apiV2.ts 的 REDISPATCH_SCHEMA 一致。 */
+export interface RedispatchInput {
+  seriesId: string
+  seasons?: number[]
+  includeThrottled?: boolean
+}
+
 /** dashboard-F3：GET /api/v2/library/series/:id 响应体——三层格阵合并详情（canonical ∪ 磁盘 ∪
  *  覆盖），与 src/dashboard/apiV2.ts 的 LibrarySeriesDetailDTO 一族保持一致。 */
 export interface LibrarySeriesSummaryDTO {

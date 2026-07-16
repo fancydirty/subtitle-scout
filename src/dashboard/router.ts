@@ -1,7 +1,7 @@
 // src/dashboard/router.ts
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO,
+  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
 } from './apiV2.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 
@@ -34,6 +34,10 @@ export interface RouterDeps {
   librarySeriesDetail: (id: string) => LibrarySeriesDetailDTO | null
   /** dashboard G5：GET /api/v2/triage——甄别台：pending（park 救援清单）+ claimed（已认领 override 清单）。 */
   triage: () => TriageDTO
+  /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace——单 run 痕迹快照回放（区别于
+   *  workflowWorkers 的 traceBus.peek 直播补拉：这里是收官后落库的完整快照，供 RunDetail
+   *  右侧板"快照回放"用）。id 已在本文件里做纯数字校验+转 number 后再传入。 */
+  runTrace: (id: number) => RunTraceDTO | null
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -119,6 +123,15 @@ export function handleApiRoute(
   }
 
   if (pathname === '/api/v2/workflow/workers') return { status: 200, json: deps.workflowWorkers() }
+
+  // dashboard-F4：GET /api/v2/workflow/runs/:id/trace——纯数字 id 校验（runs.id 是
+  // INTEGER PRIMARY KEY AUTOINCREMENT，跟 series/library 那两条路由的 tmdb:<n> 形状 id 不是
+  // 同一个 id 空间，不能复用 isSafeId/SAFE_ID 那一套）。非数字 400；数字但行不存在 404。
+  const trm = pathname.match(/^\/api\/v2\/workflow\/runs\/(\d+)\/trace$/)
+  if (trm) {
+    const trace = deps.runTrace(Number(trm[1]))
+    return trace ? { status: 200, json: trace } : { status: 404, json: { error: 'not found' } }
+  }
 
   const lsm = pathname.match(/^\/api\/v2\/library\/series\/([^/]+)$/)
   if (lsm) {

@@ -10,7 +10,7 @@ import {
   buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth, buildParked, claimParked,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch,
+  buildTriage, redispatch, buildRunTrace,
 } from './apiV2.js'
 // 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
@@ -551,6 +551,50 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
   it('空库：running/recent 皆空数组', () => {
     const freshDb = openDb(':memory:')
     expect(buildWorkflowWorkers(freshDb)).toEqual({ running: [], recent: [] })
+  })
+})
+
+describe('buildRunTrace（GET /api/v2/workflow/runs/:id/trace：单 run 痕迹快照回放，F4）', () => {
+  it('trace_json 携带事件 → 原样解析成 events 数组', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's1', taskType: 'find_subtitle', state: 'done', priority: 0 })
+    const events = [
+      { runKey: `job-${jobId}`, seq: 0, tool: 'search_source', argsSummary: '"silo 中字"', resultSummary: '41 candidates', tookMs: 1200, at: NOW },
+      { runKey: `job-${jobId}`, seq: 1, tool: 'get_candidate', argsSummary: '#3', resultSummary: 'fileList 22 entries', tookMs: 400, at: NOW + 1 },
+    ]
+    const runId = Number(
+      db.prepare(
+        `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, trace_json)
+         VALUES (?, ?, ?, 'download', 'ok', NULL, ?)`
+      ).run(jobId, NOW - 1000, NOW, JSON.stringify(events)).lastInsertRowid
+    )
+
+    expect(buildRunTrace(db, runId)).toEqual({ events })
+  })
+
+  it('trace_json 为 NULL → events:[]（run 行本身存在，只是没留下痕迹快照）', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's1', taskType: 'find_subtitle', state: 'done', priority: 0 })
+    const runId = Number(
+      db.prepare(
+        `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, trace_json)
+         VALUES (?, ?, ?, 'download', 'ok', NULL, NULL)`
+      ).run(jobId, NOW - 1000, NOW).lastInsertRowid
+    )
+    expect(buildRunTrace(db, runId)).toEqual({ events: [] })
+  })
+
+  it('trace_json 解析失败（脏数据）→ events:[]，不炸整个端点', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's1', taskType: 'find_subtitle', state: 'done', priority: 0 })
+    const runId = Number(
+      db.prepare(
+        `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, trace_json)
+         VALUES (?, ?, ?, 'download', 'ok', NULL, ?)`
+      ).run(jobId, NOW - 1000, NOW, '{not valid json').lastInsertRowid
+    )
+    expect(buildRunTrace(db, runId)).toEqual({ events: [] })
+  })
+
+  it('行不存在 → null（router.ts 映射 404）', () => {
+    expect(buildRunTrace(db, 999_999)).toBeNull()
   })
 })
 

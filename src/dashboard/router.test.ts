@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO,
+  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
 } from './apiV2.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 
@@ -60,12 +60,16 @@ const triageDTO: TriageDTO = {
   pending: [parkedItem],
   claimed: [{ pathPrefix: '/media/tv/X/', tmdbId: '1', isTv: true, season: null, createdAt: 1 }],
 }
+const runTraceDTO: RunTraceDTO = {
+  events: [{ runKey: 'job-1', seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: 1 }],
+}
 
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
 let lastPassesLimit: number | null = null
 let lastSeriesId: string | null = null
 let lastLibrarySeriesId: string | null = null
+let lastRunTraceId: number | null = null
 const deps: RouterDeps = {
   library: () => [libItem],
   series: (id) => { lastSeriesId = id; return id === 's1' || id === 'tmdb:71' ? seriesDetail : null },
@@ -83,6 +87,7 @@ const deps: RouterDeps = {
   workflowWorkers: () => workflowWorkersDTO,
   librarySeriesDetail: (id) => { lastLibrarySeriesId = id; return id === 's1' || id === 'tmdb:71' ? librarySeriesDetailDTO : null },
   triage: () => triageDTO,
+  runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string>; token?: string; configuredToken?: string } = {}) =>
@@ -253,6 +258,31 @@ describe('handleApiRoute (v2)', () => {
       expect(call('/api/v2/workflow/pending', { configuredToken: 's3cret' }).status).toBe(401)
       expect(call('/api/v2/library/series/s1', { configuredToken: 's3cret' }).status).toBe(401)
       expect(call('/api/v2/triage', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
+    })
+  })
+
+  // dashboard-F4：单 run 痕迹快照回放端点——纯数字 id 校验，404 语义（非数字 id 也是 404，
+  // 不是 400：这条路由本身就只认数字形状，跟 series/library 那两条 tmdb:<n> 形状 id 的
+  // "400=非法 id" 语义是两套不同的 id 空间，见 router.ts 该路由分支的注释）。
+  describe('GET /api/v2/workflow/runs/:id/trace（dashboard-F4：快照回放）', () => {
+    it('数字 id 命中 → 200 + deps 收到 number 类型的 id', () => {
+      const r = call('/api/v2/workflow/runs/1/trace')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual(runTraceDTO)
+      expect(lastRunTraceId).toBe(1)
+    })
+
+    it('数字 id 但 deps 返回 null（行不存在）→ 404', () => {
+      expect(call('/api/v2/workflow/runs/2/trace').status).toBe(404)
+    })
+
+    it('非数字 id → 404（路由本身不匹配，不是 400）', () => {
+      expect(call('/api/v2/workflow/runs/abc/trace').status).toBe(404)
+    })
+
+    it('token 门同样保护这条端点', () => {
+      expect(call('/api/v2/workflow/runs/1/trace', { configuredToken: 's3cret' }).status).toBe(401)
+      expect(call('/api/v2/workflow/runs/1/trace', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
     })
   })
 })

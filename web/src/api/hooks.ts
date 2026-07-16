@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
-  LibrarySeriesDetailDTO,
+  LibrarySeriesDetailDTO, WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -245,6 +245,152 @@ export function useWorkflowPending(): Async<WorkflowPendingDTO> {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F4：中泳道 pass 记录——同 useLibrary/useWorkflowPending 的既有轮询节奏（15s、
+ *  后台不可见时暂停）。limit 固定传入（Lanes.tsx 目前只用一个值，不做分页）。 */
+export function useWorkflowPasses(limit: number): Async<WorkflowPassDTO[]> {
+  const [data, setData] = useState<WorkflowPassDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api.workflowPasses(limit)
+      setData(d)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [limit])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F4：右泳道跑中/近期 worker——同样 15s 轮询做"落后补拉"（SSE 直播是增量，这份
+ *  轮询是兜底真源：running[].trail 首屏种子 + 断线重连后的补齐，见 workflow/traceStream.ts
+ *  的 onReconnect 钩子，由 Lanes.tsx 在重连时主动调用这里的 reload()）。 */
+export function useWorkflowWorkers(): Async<WorkflowWorkersDTO> {
+  const [data, setData] = useState<WorkflowWorkersDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api.workflowWorkers()
+      setData(d)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F4：RunDetail 右侧板的快照回放——一次性请求（同 useSeries/
+ *  useLibrarySeriesDetail：详情不轮询），runId 为 null 时（RunDetail 未开）完全不发请求
+ *  （同 useLibrarySeriesDetail 对 id=null 的既有降级口径）。 */
+export function useRunTrace(runId: number | null): Async<RunTraceDTO> {
+  const [data, setData] = useState<RunTraceDTO | null>(null)
+  const [loading, setLoading] = useState(runId != null)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    if (runId == null) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .runTrace(runId, ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [runId, nonce])
 
   return { data, loading, error, reload }
 }
