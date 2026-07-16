@@ -2,10 +2,11 @@ import { dirname, basename } from 'node:path'
 
 /**
  * 外挂字幕 sidecar 探测——从 v2/scanner.ts 的 classifyItemDetailed rule 3 抽出的共享模块
- * （去 Jellyfin 化 P3，design: docs/design/2026-07-16-de-jellyfin-design.md §P3）。scanner.ts
- * 与新的 v2/ingest.ts 都要用同一份"给定 tag 集合，逐 tag×ext 探测磁盘上是否存在
+ * （去 Jellyfin 化 P3，design: docs/design/2026-07-16-de-jellyfin-design.md §P3）。抽出当时
+ * scanner.ts 与新的 v2/ingest.ts 都要用同一份"给定 tag 集合，逐 tag×ext 探测磁盘上是否存在
  * `<videoBase>.<tag><ext>` sidecar 文件"的逻辑与语言换算表——搬到这里做单一事实来源，
- * scanner.ts 改为从此处导入（纯机械的 import 替换，不改它自己的行为/调用方式）。
+ * scanner.ts 当时改为从此处导入（纯机械的 import 替换，不改它自己的行为/调用方式）。
+ * scanner.ts 本身已随 T4（去 Jellyfin 化）整体退役删除，今天的唯一消费方是 v2/ingest.ts。
  */
 
 const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
@@ -41,7 +42,7 @@ export function languageForTag(tag: string): SubtitleLanguage {
 /** 找到即返回真实 sidecar 路径 + 按匹配到的 tag 换算出的语言；未找到为 null。targetTags 是
  *  调用方按目标语言集合算好的 tag 并集（languages.ts 的 tagsForLanguage 逐语言展开后
  *  flatMap），本函数不关心它们分别属于哪个语言——探测机制（tag × ext 双层遍历、逐一
- *  fileExists 探测）与 scanner.ts 原实现完全一致。 */
+ *  fileExists 探测）与已删除的 scanner.ts 原实现完全一致。 */
 export function findExternalSidecar(
   videoPath: string,
   targetTags: string[],

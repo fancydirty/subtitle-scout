@@ -14,8 +14,8 @@ import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 /**
  * 去 Jellyfin 化 P3（design: docs/design/2026-07-16-de-jellyfin-design.md §P3）的核心：
  * `FS 走盘 → recognize()（C 层）→ 覆盖探测（sidecar + 探针）→ 直写 series/episodes/movies 行`。
- * 顶替 v2/scanner.ts 的 Jellyfin API 读取整体（scanner.ts 本身留到 T4 才退役，见文件底部的
- * "分类规则移植"说明）。
+ * 顶替 v2/scanner.ts 的 Jellyfin API 读取整体（scanner.ts 本身按计划留到 T4 才退役，T4 已完成，
+ * scanner.ts 现已整体删除，见下方"分类规则移植"说明的溯源记录）。
  */
 
 export interface IngestDeps {
@@ -50,8 +50,8 @@ export const ingestLock = { held: false }
 
 /** origin_lang 缓存哨兵：TMDB 明确答复"无 original_language 数据"（真·no-data，含 404）时写入，
  *  区别于"从未解析过"（列为 SQL NULL）——否则每次都会重新回查同一个已经问过没有答案的 id。
- *  与 v2/scanner.ts 的同名 ORIGIN_UNKNOWN 哨兵同一套思路，各自模块私有，不共享/不导出
- *  （摄取层与 scanner.ts 各自独立演化，scanner.ts 在 T4 整体退役）。 */
+ *  与 v2/scanner.ts 曾经的同名 ORIGIN_UNKNOWN 哨兵同一套思路，各自模块私有，不共享/不导出
+ *  （摄取层与 scanner.ts 当年各自独立演化；scanner.ts 已随 T4 整体退役删除）。 */
 const ORIGIN_UNKNOWN = 'unknown'
 
 function decodeOriginLang(cached: string | null): string | null {
@@ -76,8 +76,8 @@ interface ExistingRow {
 
 /** 按 path 查现有行（尚未识别，只知道路径，不知道自有 id）——LibraryRepo 没有现成的
  *  "按 path 查"方法（T2 没提供，deleteEpisodeByPath/deleteMovieByPath 只按 path 删不查），
- *  直接对 lib.db 发 SQL——与 scanner.ts 对 meta 表的既有写法同一套口径（LibraryRepo.db 是
- *  公开字段，供没有专用方法覆盖的查询直接使用）。 */
+ *  直接对 lib.db 发 SQL——与已删除的 scanner.ts 当年对 meta 表的写法同一套口径（LibraryRepo.db
+ *  是公开字段，供没有专用方法覆盖的查询直接使用）。 */
 function findRowByPath(db: ScoutDb, path: string): ExistingRow | null {
   const ep = db.prepare('SELECT id, series_id, sub_status FROM episodes WHERE path = ?').get(path) as
     | { id: string; series_id: string; sub_status: SubStatus }
@@ -92,10 +92,19 @@ function findRowByPath(db: ScoutDb, path: string): ExistingRow | null {
 
 /** CHEAP PATH 专用：只改 sub_status（+updated_at），不碰其余列——"重跑覆盖分类，不是重新摄取"。
  *  LibraryRepo 没有通用的"任意改 sub_status"方法（markCovered/markUnavailable 都是带副作用的
- *  专用写法），直接对 lib.db 发 SQL，同 findRowByPath 的既有口径。 */
-function writeSubStatusOnly(db: ScoutDb, kind: 'episode' | 'movie', id: string, status: SubStatus, now: number): void {
+ *  专用写法），直接对 lib.db 发 SQL，同 findRowByPath 的既有口径。
+ *  R-9（判决可稽核）：reason 非空时（目前只有 rule 1b 会给）连带写 status_reason；reason 为 null
+ *  时完全不碰该列（不是写 null 清空它）——沿用改前的窄写口径，避免这次收窄改动波及其余状态
+ *  转换（如 covered→missing）本不该动的列。 */
+function writeSubStatusOnly(
+  db: ScoutDb, kind: 'episode' | 'movie', id: string, status: SubStatus, now: number, reason: string | null = null,
+): void {
   const table = kind === 'episode' ? 'episodes' : 'movies'
-  db.prepare(`UPDATE ${table} SET sub_status = ?, updated_at = ? WHERE id = ?`).run(status, now, id)
+  if (reason != null) {
+    db.prepare(`UPDATE ${table} SET sub_status = ?, status_reason = ?, updated_at = ? WHERE id = ?`).run(status, reason, now, id)
+  } else {
+    db.prepare(`UPDATE ${table} SET sub_status = ?, updated_at = ? WHERE id = ?`).run(status, now, id)
+  }
 }
 
 /** "unavailable 复查中"的条目，若本轮重新分类算出来是 missing，不能被打回 missing——那会
@@ -130,7 +139,9 @@ interface ClassifyInput {
 
 /**
  * 分类规则移植自 v2/scanner.ts:82-187 `classifyItemDetailed` 的 rule 0-4（语义保持，数据源换
- * 自有——design §P3 "分类规则(原 classifyItemDetailed 的 rule 0-4)语义保持，数据源换自有"）：
+ * 自有——design §P3 "分类规则(原 classifyItemDetailed 的 rule 0-4)语义保持，数据源换自有"）。
+ * v2/scanner.ts 本身已随 T4（去 Jellyfin 化）整体退役删除——下面的行号引用只是移植时刻的历史
+ * 快照，今天已经找不到那份源码核对，只作为"这套规则从哪来"的溯源记录：
  *
  * - rule 0（权威跳过门）：origin_lang 已解析且落在 originSkipLanguages 里 → ignored。数据源从
  *   Jellyfin ProductionLocations/scanner 的 OriginResolver 换成 TMDB getOriginLanguage 直填的
@@ -146,7 +157,10 @@ interface ClassifyInput {
  *   "resolver 尚未确认过"）且 zh ∈ originSkipLanguages 时，looksChineseTitle(title) 命中 →
  *   ignored。原实现还有一层"若条目自带 ProductionLocations 权威信号则该信号否决标题启发式"的
  *   veto——因为 rule 1 已被删除、ProductionLocations 信号在本世界压根不存在，veto 条件恒不成立，
- *   等价于直接去掉这层 veto（不是遗漏，是原逻辑在信号源缺失后的自然坍缩）。
+ *   等价于直接去掉这层 veto（不是遗漏，是原逻辑在信号源缺失后的自然坍缩）。R-9（判决可稽核）：
+ *   这条是启发式猜测而非权威信号（不同于 rule 0 的 TMDB 直答），命中时连带记一条 status_reason
+ *   （见下方 RULE_1B_REASON），供人工回看"这行为什么被判 ignored"；rule 0 命中不留 reason
+ *   （TMDB 原生语种是权威事实，不需要额外解释）。
  *
  * - rule 2（内嵌字幕轨覆盖）：探针记忆化的 embedded_langs（原始 ffprobe tag，如 'chi'/'eng'）
  *   与 targetLanguages 展开出的 tag 集合（tagsForLanguage）取交集，非空 → 'embedded'。**与旧
@@ -175,18 +189,29 @@ export function looksChineseTitle(title: string | null | undefined): boolean {
   return !!title && HAN.test(title) && !KANA.test(title) && !HANGUL.test(title)
 }
 
-function classify(input: ClassifyInput): SubStatus {
+/** R-9（判决可稽核）：rule 1b 命中时落的固定理由串——标题启发式是猜测，不是权威信号，人工回看
+ *  一条 ignored 行时应该能立刻分辨"TMDB 说的"（rule 0，reason=null）和"猜的"（rule 1b，这条）。 */
+const RULE_1B_REASON = 'ignored: 标题启发式判中文原声，origin 未确认'
+
+interface ClassifyResult {
+  status: SubStatus
+  /** 非 null 仅当 rule 1b 命中——rule 0/2/3/4 都不留痕（rule 0 是权威事实，无需解释；2/3/4
+   *  不是 ignored，reason 概念对它们不适用）。 */
+  reason: string | null
+}
+
+function classify(input: ClassifyInput): ClassifyResult {
   const { title, originLang, originResolutionFailed, embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists } = input
 
   // rule 0
   if (originLang != null && originSkipLanguages.includes(langOf(originLang))) {
-    return 'ignored'
+    return { status: 'ignored', reason: null }
   }
 
   // rule 1b（rule 1 已删除，见上方函数头注释）
   if (originSkipLanguages.includes('zh')) {
     if (originLang == null && !originResolutionFailed && looksChineseTitle(title)) {
-      return 'ignored'
+      return { status: 'ignored', reason: RULE_1B_REASON }
     }
   }
 
@@ -194,21 +219,22 @@ function classify(input: ClassifyInput): SubStatus {
 
   // rule 2
   if (embeddedLangs && embeddedLangs.some(lang => targetTags.includes(lang))) {
-    return 'embedded'
+    return { status: 'embedded', reason: null }
   }
 
   // rule 3
   if (findExternalSidecar(path, targetTags, fileExists)) {
-    return 'covered'
+    return { status: 'covered', reason: null }
   }
 
   // rule 4
-  return 'missing'
+  return { status: 'missing', reason: null }
 }
 
 /** origin_lang 解析 + 缓存写回，一份实现给 series/movie 两条分支复用（回调式 setCached 屏蔽
  *  两表 setSeriesOriginLang/setMovieOriginLang 的签名差异）。已缓存（含哨兵）直接解码返回，
- *  不重新请求 TMDB——"resolve once per series/movie"是 scanner.ts 就有的不变式，这里保持。
+ *  不重新请求 TMDB——"resolve once per series/movie"是已删除的 scanner.ts 当年就有的不变式，
+ *  这里保持。
  *  请求瞬时失败（TmdbRequestFailedError）→ 不缓存（下轮重试），返回 lang:null + failed:true，
  *  调用方据此压制 rule 1b 的标题启发式（"数据暂时拿不到"≠"确认无数据"，绝不能被兜底覆盖）。 */
 async function resolveOriginLang(
@@ -317,9 +343,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                   originSkipLanguages,
                   fileExists,
                 })
-                const toWrite = resolveStatusToWrite(computed, existing.subStatus)
+                const toWrite = resolveStatusToWrite(computed.status, existing.subStatus)
                 if (toWrite !== existing.subStatus) {
-                  writeSubStatusOnly(lib.db, existing.kind, existing.id, toWrite, nowMs)
+                  writeSubStatusOnly(lib.db, existing.kind, existing.id, toWrite, nowMs, computed.reason)
                   result.changed = true
                 }
                 continue
@@ -452,7 +478,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 title, originLang: origin.lang, originResolutionFailed: origin.failed,
                 embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists,
               })
-              const toWrite = resolveStatusToWrite(computed, priorEpisode?.sub_status ?? null)
+              const toWrite = resolveStatusToWrite(computed.status, priorEpisode?.sub_status ?? null)
 
               lib.upsertEpisode({
                 id: ownEpisodeId, seriesId: ownSeriesId, season, episode,
@@ -463,6 +489,12 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 name: `S${season}E${episode}`,
                 path, subStatus: toWrite,
               })
+              // R-9（判决可稽核）：upsertEpisode 的共享 SQL 不带 status_reason 列，写不进去就在
+              // 它之后补一条窄 UPDATE——只在 rule 1b 真给了 reason 时才发（rule 0/2/3/4 都是
+              // reason:null，不产生这条多余的写）。
+              if (computed.reason) {
+                lib.db.prepare(`UPDATE episodes SET status_reason = ? WHERE id = ?`).run(computed.reason, ownEpisodeId)
+              }
               // 债务D1：full path 的 series_id 从识别结果直接可得（ownSeriesId）。
               layoutObserved.set(ownSeriesId, (layoutObserved.get(ownSeriesId) ?? false) || !isCanonicalEpisodePath(path))
               lib.setProbeMemo(ownEpisodeId, stat.mtimeMs, stat.size, embeddedLangs)
@@ -526,12 +558,17 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 title, originLang: origin.lang, originResolutionFailed: origin.failed,
                 embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists,
               })
-              const toWrite = resolveStatusToWrite(computed, priorMovie?.sub_status ?? null)
+              const toWrite = resolveStatusToWrite(computed.status, priorMovie?.sub_status ?? null)
 
               lib.upsertMovie({
                 id: ownMovieId, name: title, path, subStatus: toWrite,
                 chineseTitle, posterPath, year, providerIds: JSON.stringify({ tmdb: tmdbId }),
               })
+              // R-9（判决可稽核）：同 TV 分支——upsertMovie 也不带 status_reason 列，rule 1b 命中
+              // 时补一条窄 UPDATE。
+              if (computed.reason) {
+                lib.db.prepare(`UPDATE movies SET status_reason = ? WHERE id = ?`).run(computed.reason, ownMovieId)
+              }
               lib.setProbeMemo(ownMovieId, stat.mtimeMs, stat.size, embeddedLangs)
               lib.clearParkedPath(path)
               result.upserted++

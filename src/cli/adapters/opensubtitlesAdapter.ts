@@ -4,9 +4,13 @@ import type { FetchAdapter, FetchEvent } from '../fetchLib.js'
 
 /**
  * 配额耗尽事件（真·失败路径专用）：标准 FetchEvent 的 `provider_error` 成员上 `code`/`resetAt`
- * 现已类型化（fetchLib.ts），JSON.stringify 序列化进 stderr 的 NDJSON 行——providerPort.ts 的
- * `JSON.parse(line)` 读到后，若 code 是 quota_exhausted 会构造 ProviderQuotaExhaustedError
- * 一路带 resetAt 传到 pipeline.ts → v2 executor，据此按重置时间精确退避（不再是盲的短退避阶梯）。
+ * 现已类型化（fetchLib.ts），JSON.stringify 序列化进 stderr 的 NDJSON 行。历史上（旧管线）
+ * providerPort.ts 的 `JSON.parse(line)` 读到后，若 code 是 quota_exhausted 会构造
+ * ProviderQuotaExhaustedError 一路带 resetAt 传到 pipeline.ts → v2 executor，据此按重置时间精确
+ * 退避（不再是盲的短退避阶梯）——providerPort.ts/pipeline.ts/旧 v2 executor 均已随旧管线退役
+ * 删除。今天的消费方（search_source 工具，见 agent/resultHandles.ts；cli/index.ts 的日志分支）
+ * 只读 provider/message 做展示，尚未接上 resetAt 精确退避这一层——code/resetAt 字段留在事件
+ * schema 上，为未来接线保留信号，不是当前有消费方在读。
  * 只用于 resolveDownload 本身抛出 OsQuotaExhaustedError 的场景——这次调用真的失败了。
  */
 const emitQuotaExhausted = (emit: (e: FetchEvent) => void, message: string, resetAt: string | null) => {

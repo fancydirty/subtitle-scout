@@ -262,7 +262,10 @@ export class LibraryRepo {
     return row ?? null
   }
 
-  /** 该剧该季在镜像里的集数——diagnoseSeason 的主信号(镜像集数 vs TMDB)所需的"镜像集数"侧。 */
+  /** 该剧该季在镜像里的集数——core/seasonShape.ts 的 SeasonShape.mirrorEpisodeCount 侧
+   *  （镜像集数 vs TMDB 该季 episode_count 的主信号，消费方是 v3 orchestrator 的布局检查
+   *  orchestratorAgent.tools.ts；同一套判据在旧管线时代叫 diagnoseSeason，该模块已随
+   *  旧管线退役删除）。 */
   countEpisodesInSeason(seriesId: string, season: number): number {
     const row = this.db
       .prepare(`SELECT COUNT(*) as count FROM episodes WHERE series_id = ? AND season = ?`)
@@ -401,11 +404,13 @@ export class LibraryRepo {
    *  providerRef: provider-neutral 候选标识，形如 "assrt:673114" / "opensubtitles:7174766"
    *  （见 core/schemas.ts candidateKey）；无来源可考时传 undefined。
    *  language: subtitles.language 取值（db.ts ~:69，plain TEXT——历史上只出现过 zh-Hans/zh-Hant，
-   *  A2 起泛化为任意语言标签，如 'en'），默认 'zh-Hans'——沿用历史行为，scout-download/
-   *  adopted-local 等既有调用方（executor.ts）不传此参数，行为完全不变。find-subtitle worker
-   *  （findSubtitleWorkerTask.ts）显式传入 decision.installedLanguage ?? task.targetLanguage；
-   *  scan 磁盘 arm 领养（scanner.ts）会按匹配到的 CHINESE_TAGS tag 显式传入真实语言，不再无论
-   *  简繁一律硬编码 zh-Hans。 */
+   *  A2 起泛化为任意语言标签，如 'en'），默认 'zh-Hans'——沿用历史行为。今天唯一的生产调用点是
+   *  find-subtitle worker（findSubtitleWorkerTask.ts），显式传入
+   *  decision.installedLanguage ?? task.targetLanguage，不吃这个默认值。旧管线时代的
+   *  scout-download/adopted-local 调用方（executor.ts）曾经不传此参数、吃这个默认值，
+   *  scan 磁盘 arm 领养（scanner.ts）曾经会按匹配到的 CHINESE_TAGS tag 显式传入真实语言——
+   *  executor.ts 与 scanner.ts 均已随各自的退役波删除，默认值本身原样保留，只是今天没有
+   *  调用方会真的落到它。 */
   markCovered(
     itemId: string,
     subtitlePath: string | null,

@@ -79,8 +79,11 @@ export const PROVIDERS = ['assrt', 'opensubtitles', 'zimuku'] as const
 export type ProviderName = (typeof PROVIDERS)[number]
 
 // invariant: `index` MUST equal the entry's position within its containing SubtitleCandidate.fileList
-// array — downstream resolution (gate.ts's episode-code backstop, pipeline.ts's artifact filename
-// lookup) indexes fileList positionally (`fileList[fileIndex]`), never by scanning for `.index === n`.
+// array — downstream resolution (cli/adapters/assrtAdapter.ts's resolve(), the v3 find-subtitle
+// worker's fileIndex arg — see agent/findSubtitleWorker.tools.ts) indexes fileList positionally
+// (`fileList[fileIndex]`), never by scanning for `.index === n`. (The original consumers this
+// invariant was written for, gate.ts and pipeline.ts, were both deleted in the old-pipeline
+// retirement; the invariant itself still holds for their replacements.)
 export const SubtitleFileSchema = z.object({
   index: z.number().int(),
   name: z.string(),

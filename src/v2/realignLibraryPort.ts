@@ -59,11 +59,13 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
      * "未知 id 的不可区分抛错形状"：realignExecutor.ts 全文这一行调用从无 try/catch 包裹
      * （不是遗漏——见函数顶部大注释 GAP A：崩溃恢复的续走判定被刻意排在这行调用之前，
      * 就是为了让"旧 series item 被裁掉"这类场景永远不必走到这一行），任何抛出都直接冒出
-     * executeRealign，被上层 v2/executor.ts 的通用 catch（无 instanceof 检查，全文 grep 确认）
-     * 记成 'error' 走短退避重试——JellyfinClient.getItem 抛的 JellyfinItemNotFoundError 也是
-     * 同样的下游命运，那个类本身从未被 instanceof 检查过。因此这里用一个语义清晰的库原生
-     * plain Error 即可复现完全相同的可观察行为，不需要（也不该）反向 import 正在被移除的
-     * Jellyfin 适配层的错误类——那会让"库原生" port 继续耦合它本该替代的东西。
+     * executeRealign，被上层的通用 catch（无 instanceof 检查，只按 error instanceof Error
+     * 取 message）记成 'error' 走短退避重试——今天这个 catch 在 v2/realignWorkerTask.ts 的
+     * runRealignWorkerTask 里（旧管线 v2/executor.ts 的等价 catch 服务同一职责，已随旧管线
+     * 退役删除）。JellyfinClient.getItem 抛的 JellyfinItemNotFoundError 也是同样的下游命运，
+     * 那个类本身从未被 instanceof 检查过。因此这里用一个语义清晰的库原生 plain Error 即可
+     * 复现完全相同的可观察行为，不需要（也不该）反向 import 正在被移除的 Jellyfin 适配层的
+     * 错误类——那会让"库原生" port 继续耦合它本该替代的东西。
      */
     async getItem(itemId) {
       const row = deps.lib.getSeries(itemId)

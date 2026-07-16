@@ -97,8 +97,10 @@ describe('乱排布矩阵（验收记录：5 种形态）', () => {
     const planResult = buildRealignPlan(files, { seriesTitle: 'Normal Show', year: 2018, tmdbId: '1', seasonTable })
     expect(planResult.ok).toBe(false) // headline assertion：正常库产不出 realign 计划
 
-    // 第二层守卫（诊断主信号）：镜像集数(3)未超过 TMDB 该季集数(3)，diagnoseSeason 连 LLM
-    // 都不会调用，直接判 unknown——两层独立守卫都确认"这个库不该被动"。
+    // 第二层守卫（诊断主信号）：镜像集数(3)未超过 TMDB 该季集数(3)，mirrorExceedsSeasonTable
+    // （core/seasonShape.ts，纯函数、不接 LLM）直接判 false——两层独立守卫都确认"这个库不该
+    // 被动"（旧管线时代这条信号由 diagnoseSeason 判定，其余情况会再问一次 LLM 兜底；
+    // diagnoseSeason 已随旧管线退役删除，v3 orchestrator 的布局检查只保留了这条纯判据）。
     expect(mirrorExceedsSeasonTable({ seriesId: 'normal', season: 1, mirrorEpisodeCount: 3, tmdbEpisodeCount: 3 })).toBe(false)
   })
 })

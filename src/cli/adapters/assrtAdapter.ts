@@ -5,8 +5,9 @@ import type { FetchAdapter, FetchEvent } from '../fetchLib.js'
 /** A4: assrt (assrt.net) is a China-only subtitle source — once target languages generalize past
  *  zh, it must be excluded for a search that isn't after Chinese subtitles at all, and stay
  *  included whenever zh is (still) one of the requested languages. Prefix match (no trailing `$`)
- *  so region/script-suffixed forms match too — bare 'zh'/'cn' (TMDB original_language aliases,
- *  daemon/triggers.ts's isChineseLang), ISO 639-2 'chi'/'zho', their zh-Hans/zh-Hant shorthands
+ *  so region/script-suffixed forms match too — bare 'zh'/'cn' (TMDB original_language aliases;
+ *  daemon/triggers.ts's isChineseLang used the same alias set before that module was deleted in
+ *  the de-Jellyfin-ization campaign), ISO 639-2 'chi'/'zho', their zh-Hans/zh-Hant shorthands
  *  'chs'/'cht', and anything prefixed with one of those (e.g. 'zh-cn'/'zh-tw' — FetchArgs.languages'
  *  own documented adapter default). runSearch (fetchLib.ts) guarantees `args.languages` is never
  *  undefined by the time `enabled` sees it (defaults to ['zh'] for the enabled-check only) — see
@@ -38,9 +39,10 @@ export function makeAssrtAdapter(
           const sim = await client.similar(top)
           for (const s of sim.sub.subs) if (!byId.has(s.id)) byId.set(s.id, toCandidate(s))
         } catch (e) {
-          // gems 失败不影响主结果（继续返回已有候选），但绝不能裸吞——上游的残缺候选集守卫
-          // （pipeline.ts 的 incomplete-candidate-set guard）需要这个信号，否则瞬时故障可能
-          // 被当成"确实没有"写进 1 天负缓存。
+          // gems 失败不影响主结果（继续返回已有候选），但绝不能裸吞——下游消费方需要这个信号，
+          // 否则瞬时故障可能被当成"确实没有"写进 1 天负缓存（这个信号本是给旧管线 pipeline.ts
+          // 的 incomplete-candidate-set guard 用的，pipeline.ts 已随旧管线退役删除，但"失败
+          // 不能裸吞"这条纪律不因消费方换人而失效）。
           emit?.({ event: 'provider_error', provider: 'assrt', message: `similar() failed: ${String(e)}` })
         }
       } else if (args.filename) {

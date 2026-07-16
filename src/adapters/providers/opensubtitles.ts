@@ -4,7 +4,9 @@ import type { SubtitleCandidate } from '../../core/schemas.js'
 const BASE = 'https://api.opensubtitles.com/api/v1'
 const DEFAULT_LANGUAGES = ['zh-cn', 'zh-tw']
 // assrt/tmdb 客户端都用 15s（ASSRT_TIMEOUT_MS / TMDB_TIMEOUT_MS），OS 对齐同一个值——
-// 之前 OS 是仓库里唯一没设超时的 provider，卡住的端点会拖满 180s 子进程预算（providerPort.ts 的 timeoutMs）。
+// 之前 OS 是仓库里唯一没设超时的 provider，卡住的端点会拖满旧管线 providerPort.ts 的 180s
+// 子进程预算（providerPort.ts 的 timeoutMs——该文件已随旧管线退役删除，这里的 15s 对齐
+// 决定本身与调用方是谁无关，原样保留）。
 export const OS_TIMEOUT_MS = 15_000
 
 export const OsSearchResponseSchema = z.object({

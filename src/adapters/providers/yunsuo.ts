@@ -172,7 +172,9 @@ export function parseChallenge(html: string, baseUrl: string): YunsuoChallenge {
 }
 
 /** 挑战破解耗尽/仍被拦截:瞬时错误,不是"确实没有字幕"的内容结论——上游 fetchLib.runSearch 的
- *  通用 catch 会把它转成 provider_error,pipeline.ts 的残缺候选集守卫据此拒写负缓存。 */
+ *  通用 catch 会把它转成 provider_error（这个信号本是给旧管线 pipeline.ts 的残缺候选集守卫
+ *  据此拒写负缓存用的；pipeline.ts 已随旧管线退役删除，今天的消费方——search_source 工具/
+ *  cli 日志分支——只把它当失败信号展示，同样不会把瞬时错误误判成"确实没有"）。 */
 export class ZimukuChallengeError extends Error {}
 
 function extractCookie(res: Response, name: string): string | null {

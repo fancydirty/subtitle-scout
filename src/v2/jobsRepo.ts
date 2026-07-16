@@ -179,10 +179,13 @@ export class JobsRepo {
    *  （如季包多集下载）被下一 tick 的 reapExpiredLeases 误判死亡回收、导致并发双派发。
    *  只作用于仍处活跃态的行——job 若已被 complete* 收尾则是 no-op。
    *  FIX-2：返回新写入的 lease_until（no-op 时返回 null），供调用方把这个值同步
-   *  写回它自己持有的 Job 对象引用（daemon.inflightJobs 里的那个），让"这次调用是否
-   *  还拥有租约"的判据（executor.ts 的 FIX-3 ownsLease 检查）能跟着合法续租一起前进，
-   *  而不是永远比对 claim 那一刻的旧值——否则任何跑超一个 tick 间隔的长任务都会被
-   *  误判"租约已失效"。 */
+   *  写回它自己持有的 Job 对象引用（daemon.inflightJobs 里的那个，见 daemon.ts
+   *  inflightJobs 字段声明处注释）。这个契约最初是为旧管线 executor.ts 的 FIX-3
+   *  ownsLease 检查准备的——让"这次调用是否还拥有租约"的判据（jobs.get(id).lease_until
+   *  === job.lease_until）能跟着合法续租一起前进，而不是永远比对 claim 那一刻的旧值，
+   *  否则任何跑超一个 tick 间隔的长任务都会被误判"租约已失效"。executor.ts 已随旧管线
+   *  退役删除，今天没有代码再做这个精确比对，但返回值契约本身仍按原样保留（daemon.ts
+   *  照常消费，为未来需要精确对比的消费方留一致的语义）。 */
   renewLease(jobId: number, now: number): number | null {
     const leaseUntil = now + LEASE_DURATION_MS
     const info = this.db

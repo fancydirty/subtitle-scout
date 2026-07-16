@@ -57,7 +57,9 @@ export interface ReasoningAgentHandle<TOOLS extends ToolSet, RESULT> {
  *  (finishReason 'stop'). Proven live. finalize-tool mode sends `tools` but never response_format,
  *  so native tool-calling — including the terminal decision — works, even with reasoning_effort:high.
  *
- *  Does NOT touch llm.ts's callStructured — this is a parallel, coexisting path. */
+ *  This is now the only structured-decision path in the codebase — llm.ts's callStructured (the
+ *  forced-JSON tool-call runtime this was originally built to coexist alongside) was deleted
+ *  wholesale in the old-pipeline retirement. */
 export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodType>(
   opts: ReasoningAgentOptions<TOOLS, SCHEMA>,
 ): ReasoningAgentHandle<TOOLS, z.infer<SCHEMA>> {

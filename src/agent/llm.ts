@@ -7,9 +7,11 @@ export interface LlmConfig {
   baseUrl: string
   apiKey: string
   model: string
-  /** 逐字段合并进每个请求体的额外参数。provider 怪癖逃生舱：
-   *  例如 DeepSeek v4 系列默认开 thinking 且 thinking 模式拒绝强制 tool_choice，
-   *  需要 {"thinking":{"type":"disabled"}}（2026-07-06 实测）。 */
+  /** 逐字段合并进每个请求体的额外参数。provider 怪癖逃生舱：不同 provider/模型各自的请求体
+   *  怪癖用这个字段按需打补丁即可，不必为每种怪癖单独开一个 config 选项。例如某些 reasoning
+   *  模型默认开 thinking，而调用方想要的输出形状要求显式关掉，就传
+   *  {"thinking":{"type":"disabled"}}——具体哪家 provider/哪个版本有怪癖会随时间变化，机制
+   *  本身跟怪癖是什么无关，这里不绑定某一次具体故障的细节。 */
   extraBody?: Record<string, unknown>
 }
 

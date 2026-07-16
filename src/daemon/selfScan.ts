@@ -33,9 +33,10 @@ function isVideoFile(path: string): boolean {
 
 /**
  * Directory names the walk must never descend into:
- *  - dot-dirs (`.`-prefixed) — matches the convention already established by
- *    src/files/orphanScanner.ts (`name.startsWith('.')`); covers this codebase's own
- *    `.subtitle-staging/` and `.realign-build/` housekeeping dirs along with anything else hidden.
+ *  - dot-dirs (`.`-prefixed) — matches the convention src/files/orphanScanner.ts (`name.startsWith('.')`)
+ *    used to establish before that module was deleted in the R-6 dead-organ purge; covers this
+ *    codebase's own `.subtitle-staging/` and `.realign-build/` housekeeping dirs along with
+ *    anything else hidden.
  *  - `@`-prefixed dirs — covers Synology-style `@eaDir` per-directory thumbnail caches and similar
  *    NAS vendor housekeeping junk that isn't dot-prefixed but is exactly the same kind of "not
  *    actually part of the library" noise.

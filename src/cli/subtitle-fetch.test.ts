@@ -3,8 +3,9 @@ import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
 // subtitle-fetch.ts 的顶层 main().catch() 在 import 时就会触发副作用（见 opensubtitlesAdapter.ts/
-// assrtAdapter.ts 头部注释），没法像其他 CLI 逻辑那样直接 import 后单测——只能像 providerPort.ts
-// 实际使用的那样，把它当子进程真跑一遍，断言退出码与 stderr 输出。
+// assrtAdapter.ts 头部注释），没法像其他 CLI 逻辑那样直接 import 后单测——只能当子进程真跑一遍，
+// 断言退出码与 stderr 输出（旧管线的 providerPort.ts 当年就是这么调用它的；providerPort.ts 已
+// 随旧管线退役删除，但"只能当子进程测"这条约束跟调用方是谁无关，对今天仍然成立）。
 const tsxBin = resolve('node_modules/.bin/tsx')
 const cliPath = resolve('src/cli/subtitle-fetch.ts')
 

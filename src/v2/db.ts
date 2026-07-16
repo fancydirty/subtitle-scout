@@ -81,7 +81,9 @@ CREATE UNIQUE INDEX jobs_identity ON jobs(kind, ifnull(series_id,''), ifnull(sea
 -- claimNext 派发热路径索引（state 过滤 + priority/created_at 排序）：
 CREATE INDEX jobs_claim ON jobs(state, priority DESC, created_at);
 CREATE INDEX jobs_parent ON jobs(parent_job_id);
-CREATE TABLE runs (                 -- 替代 ledger.jsonl；journals 明细文件保留并引用
+CREATE TABLE runs (                 -- 替代 ledger.jsonl；journal_path 列结构上保留（旧管线的
+                                     -- journalStore/withJournal 已随 Wave 2D 删除，今天所有
+                                     -- 写入方都传 journalPath: null，没有实际 journal 文件可引用）
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER REFERENCES jobs(id),
   started_at INTEGER NOT NULL, finished_at INTEGER,

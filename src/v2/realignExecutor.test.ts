@@ -1182,8 +1182,10 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
     // 会抛错（Jellyfin 时代是专门的 JellyfinItemNotFoundError，去 Jellyfin 化 P7 后 port 换成
     // 库原生实现，抛一个语义清晰的 plain Error 即可复现同样的可观察行为——见
     // realignLibraryPort.ts 的 getItem 注释）。旧实现（step 1 排最前）会在这里让异常直接冒出去，
-    // 被上层 executor.ts 记成 error 走 30s→15min→daily 的无穷重试环，永远够不到下面
-    // 本该接管的续走路径。
+    // 被上层记成 error 走 30s→15min→daily 的无穷重试环，永远够不到下面本该接管的续走路径
+    // （当年是旧管线 v2/executor.ts 接的这个 catch，今天是 v2/realignWorkerTask.ts 的
+    // runRealignWorkerTask；executor.ts 已随旧管线退役删除，这条历史描述的是修复前的行为，
+    // 不是当前实现）。
     const rerunJob = jobsRepo.get(job.id)!
     expect(rerunJob.plan_ref).toMatch(/manifest\.jsonl$/)
     const jf2 = mkJf({ locations: [libRoot], items: spyItems40(libRoot) })

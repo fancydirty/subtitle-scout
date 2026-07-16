@@ -131,7 +131,8 @@ describe('TmdbClient.getOriginLanguage', () => {
 
   it('request failure (network throw) → rejects with TmdbRequestFailedError, NOT null', async () => {
     // 验证的关键区分点：网络失败必须是可观察的拒绝，不能被吞成和"无数据"一样的 null，
-    // 否则 scanner.ts 没法区分"该缓存哨兵"还是"该重试"。
+    // 否则调用方（今天是 v2/ingest.ts 的 resolveOriginLang；同一区分点在已删除的 scanner.ts
+    // 里也曾经需要）没法区分"该缓存哨兵"还是"该重试"。
     const fetchImpl = vi.fn(async () => { throw new Error('network down') })
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     await expect(client.getOriginLanguage('tv', '1')).rejects.toThrow(TmdbRequestFailedError)

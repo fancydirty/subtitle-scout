@@ -187,10 +187,12 @@ export class AssrtClient {
 }
 
 /** 保险丝：fileList 的 index 字段必须与数组下标一一对应（详见 schemas.ts 上 SubtitleFileSchema 的
- *  invariant 注释）——下游 gate.ts / pipeline.ts 全是纯位置寻址（fileList[fileIndex]），不会按
- *  .index 字段反查。当前 map((f, i) => ({ index: i, ... })) 的写法本身就保证这条不变式恒成立；这个
- *  断言只是给未来的改动（比如中途插了一次 filter/sort）上一道保险丝，出问题当场炸，而不是留到
- *  线上装错文件才被发现。 */
+ *  invariant 注释）——下游全是纯位置寻址（fileList[fileIndex]），不会按 .index 字段反查（今天的
+ *  下游是 cli/adapters/assrtAdapter.ts 的 resolve()、v3 find-subtitle worker 的 fileIndex 参数；
+ *  这条不变式最初是为已删除的 gate.ts / pipeline.ts 写的，二者已随旧管线退役删除，但寻址方式
+ *  本身原样传给了它们的替代者）。当前 map((f, i) => ({ index: i, ... })) 的写法本身就保证这条
+ *  不变式恒成立；这个断言只是给未来的改动（比如中途插了一次 filter/sort）上一道保险丝，出问题
+ *  当场炸，而不是留到线上装错文件才被发现。 */
 function assertFileListIndexInvariant(fileList: SubtitleFile[]): void {
   fileList.forEach((f, i) => {
     if (f.index !== i) throw new Error(`assrt fileList index invariant violated: entry at array position ${i} has index=${f.index}`)

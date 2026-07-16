@@ -1,6 +1,7 @@
 // 自有内嵌字幕探针：跑 ffprobe -show_streams -select_streams s，读出视频容器里的字幕轨。
-// 顶替 Jellyfin MediaStreams 元数据（daemon/triggers.ts usableChineseSubtitleStreams 的数据源）——
-// de-Jellyfin-ization campaign P1（docs/design/2026-07-16-de-jellyfin-design.md）。
+// 顶替 Jellyfin MediaStreams 元数据（曾是 daemon/triggers.ts usableChineseSubtitleStreams 的
+// 数据源——daemon/triggers.ts 本身已随去 Jellyfin 化整体删除）——de-Jellyfin-ization campaign P1
+// （docs/design/2026-07-16-de-jellyfin-design.md）。
 import { execFile as nodeExecFile } from 'node:child_process'
 
 export interface EmbeddedSubtitleTrack {

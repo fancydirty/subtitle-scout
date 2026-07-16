@@ -25,10 +25,13 @@ export function parseCanonicalEpisodeCode(code: string): { season: number; episo
  * - 中文"第N集"——分季语义不明确（"第5集"可能是第几季的第5集未说明），且"话/集/合集"等变体
  *   混杂，数字边界不如 SxxEyy/NxM 可靠，误伤率评估下来高于收益。
  *
- * 复用点：pipeline.ts 的季横扫/季包升格 assignment 校验，以及 rankCandidates.ts 的
- * compactCandidates() relevance-aware filelist 预筛（真实事故：assrt:635301 一个 72 文件的
- * True Detective S3 全季包，filelist 被盲截前 30 条喂给 rank 的 LLM，E05-E08 的文件全部落在
- * 截断线之外、永远不可见——LLM 只能吐 file_index:null，gate 判 "out of range" 永久卡死后半季）。
+ * 复用点：agent/findSubtitleWorker.tools.ts 的候选文件名安全性判定（下载前校验 filename 里的
+ * 集号确实是这一集）。历史上还服务过旧管线 pipeline.ts 的季横扫/季包升格 assignment 校验、
+ * rankCandidates.ts 的 compactCandidates() relevance-aware filelist 预筛——两者均已随旧管线
+ * 退役删除，但当年促成这条函数收窄记法（非数字前瞻/后顾边界）的真实事故仍值得记录：
+ * assrt:635301 一个 72 文件的 True Detective S3 全季包，filelist 被盲截前 30 条喂给 rank 的
+ * LLM，E05-E08 的文件全部落在截断线之外、永远不可见——LLM 只能吐 file_index:null，gate 判
+ * "out of range" 永久卡死后半季（gate.ts 同样已随旧管线退役删除，此处只留事故本身的教训）。
  */
 export function matchesEpisodeCode(text: string, episodeCode: string): boolean {
   if (!text) return false

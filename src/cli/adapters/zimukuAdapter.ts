@@ -13,8 +13,8 @@ function toCandidate(r: ZimukuSearchResult): SubtitleCandidate {
     releaseSite: 'zimuku',
     uploadDate: null,
     // zimuku 详情页不预先列出压缩包内文件清单(要解压才知道)——与 opensubtitles 单文件候选
-    // 同款空 fileList 处理(见 core/pipeline.ts runSeasonSweep 对 OS 候选的注释)。v1 只支持
-    // 单字幕压缩包,writeSubtitle 在没有 selectFileName 时默认取 zip 内第一个字幕文件。
+    // 同款空 fileList 处理。v1 只支持单字幕压缩包,writeSubtitle 在没有 selectFileName 时默认取
+    // zip 内第一个字幕文件。
     fileList: [],
   }
 }

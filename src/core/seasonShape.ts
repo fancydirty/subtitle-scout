@@ -1,8 +1,10 @@
-/** The season "shape" that both the v3 orchestrator's layout check (orchestratorAgent.tools.ts)
- *  and the legacy season diagnosis reason over: how many episodes the local mirror holds for a
- *  season vs what TMDB's season table lists. Extracted out of diagnoseSeason.ts (a legacy-pipeline
- *  module) so the v3 path no longer imports from legacy — see the old-pipeline retirement scope
- *  (docs/design/2026-07-14-old-pipeline-retirement-scope.md, step 1). Pure, no LLM. */
+/** The season "shape" the v3 orchestrator's layout check (orchestratorAgent.tools.ts) reasons
+ *  over: how many episodes the local mirror holds for a season vs what TMDB's season table lists.
+ *  Originally extracted out of diagnoseSeason.ts (a legacy-pipeline module) so the v3 path didn't
+ *  have to import from legacy — see the old-pipeline retirement scope
+ *  (docs/design/2026-07-14-old-pipeline-retirement-scope.md, step 1). diagnoseSeason.ts itself has
+ *  since been deleted entirely (old-pipeline retirement); orchestratorAgent.tools.ts is this
+ *  module's sole consumer today. Pure, no LLM. */
 export interface SeasonShape {
   seriesId: string
   season: number

@@ -99,8 +99,10 @@ describe('makeAssrtAdapter: search', () => {
   })
 
   it('④b similar 抛错 → 不再裸吞：emit 一个 provider_error，供上游残缺集判定使用', async () => {
-    // gems 扩召回失败若被裸吞，下游 incomplete-candidate-set 守卫（pipeline.ts:303）永远看不到
-    // 这个瞬时故障，可能把"残缺集拒判"当成"确实没有"写 1 天负缓存。
+    // gems 扩召回失败若被裸吞，下游消费方永远看不到这个瞬时故障，可能把"残缺集拒判"当成
+    // "确实没有"写 1 天负缓存（这个信号本是给旧管线 pipeline.ts 的 incomplete-candidate-set
+    // 守卫用的——pipeline.ts 已随旧管线退役删除，但"失败不能裸吞"这条纪律本身跟消费方是谁
+    // 无关，对今天的 search_source/cli 日志消费方同样成立）。
     const search = vi.fn(async () => resp([mkSub(1)]))
     const similar = vi.fn(async () => { throw new Error('gems down') })
     const client = fakeClient({ search, similar })

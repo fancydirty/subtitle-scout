@@ -706,6 +706,8 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
     await pass()
 
     expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('ignored')
+    // R-9 rule1b 判决可稽核：标题启发式命中必须落 status_reason，不是裸 'ignored'。
+    expect(lib.getEpisode('tmdb:1/s1e1')!.status_reason).toBeTruthy()
   })
 
   it('Kana/Hangul title does NOT trigger the Chinese heuristic', async () => {

@@ -45,17 +45,19 @@ export interface RealignWorkerTaskDeps extends RealignExecutorDeps {
  *  neither error_attempt incremented nor next_retry_at set, it gets re-claimed almost immediately,
  *  and throws again — an unbounded, backoff-free spin loop that floods the runs table and
  *  monopolizes the realign concurrency slot for the entire outage. Mirrors the old path's
- *  executeRealignBranch (src/v2/executor.ts) and this file's two siblings
- *  (runFindSubtitleWorkerTask, runOrchestrateWorkerTask), both of which already wrap their
- *  respective call in try/catch → completeError. */
+ *  executeRealignBranch (src/v2/executor.ts, deleted in the old-pipeline retirement) and this
+ *  file's two siblings (runFindSubtitleWorkerTask, runOrchestrateWorkerTask), both of which
+ *  already wrap their respective call in try/catch → completeError. */
 export async function runRealignWorkerTask(
   job: Job, deps: RealignWorkerTaskDeps, jobs: Pick<JobsRepo, 'completeDone' | 'completeError' | 'park'>, now: () => number,
 ): Promise<RealignExecutionResult | null> {
   const startedAt = now()
   // 退役T1 (W0-3a): one runs row per terminal outcome, mirroring executor.ts's own
   // executeRealignBranch shape (decision + human-readable detail, journalPath null — this runner
-  // has no journal). decision strings are prefixed 'realign:' to disambiguate from the
-  // find-subtitle worker's own decision vocabulary in the shared runs table/dashboard timeline.
+  // has no journal). executor.ts itself was deleted in the old-pipeline retirement; this comment
+  // only documents where the shape was borrowed from. decision strings are prefixed 'realign:' to
+  // disambiguate from the find-subtitle worker's own decision vocabulary in the shared runs
+  // table/dashboard timeline.
   const recordRun = (decision: string, detail: string): void => {
     deps.runs?.insert({ jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null })
   }

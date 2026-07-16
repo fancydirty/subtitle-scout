@@ -314,6 +314,8 @@ export async function runFindSubtitleWorkerTask(
   const startedAt = now()
   // 退役T1 (W0-3a): one runs row per terminal outcome, mirroring executor.ts's own record()
   // shape (decision + human-readable detail, journalPath null — this runner has no journal).
+  // executor.ts itself was deleted in the old-pipeline retirement; this comment only documents
+  // where the shape was borrowed from.
   const recordRun = (decision: string, detail: string): void => {
     deps.runs?.insert({ jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null })
   }

@@ -54,8 +54,10 @@ describe('崩溃恢复', () => {
 
 // 退役T7 (Wave 2A)：原'双跑幂等'describe 块（"scanLibrary+aggregate 连跑两遍 → 快照一致"）
 // 已删除——它的 subject（旧管线聚合层的 aggregate() 函数）已随原 v2/aggregate 模块一起
-// 删除，scanLibrary 自身的幂等性由 scanner.test.ts 覆盖，不需要在这里重复经一个已退休的
-// 聚合层再测一遍。
+// 删除，当时 scanLibrary 自身的幂等性由 scanner.test.ts 覆盖，不需要在这里重复经一个已退休的
+// 聚合层再测一遍。后续 T4（去 Jellyfin 化）把 scanLibrary/scanner.ts 本身也整体删除，
+// v2/ingest.ts 的 makeIngestPass 顶替了它的角色——幂等性覆盖面相应转移到 ingest.test.ts
+// （"memo-hit cheap path" describe 块一类的用例）。
 
 describe('markCovered 事务原子性', () => {
   it('在事务内注入抛错 → episodes 与 subtitles 均未写入', () => {

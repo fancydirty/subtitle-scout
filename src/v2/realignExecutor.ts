@@ -425,7 +425,9 @@ export interface RealignExecutorDeps {
 }
 
 /** park（IMP#11）：确定性失败（配置缺陷/计划闸门/挂载能力），重试一万次也不会自己变好——
- *  由 executor.ts 停车成 dormant，不进瞬时错误的重试环。error：瞬时故障，短退避重试有意义。 */
+ *  由调用方停车成 dormant（今天是 v2/realignWorkerTask.ts 的 runRealignWorkerTask 调
+ *  jobs.park；旧管线时代由 executor.ts 承接同一职责，该文件已随旧管线退役删除），不进瞬时
+ *  错误的重试环。error：瞬时故障，短退避重试有意义。 */
 export interface RealignExecutionResult { decision: 'realigned' | 'error' | 'park'; detail: string }
 
 /** 多数出现次数的目录名（绝对编号平铺库通常全部集塞在同一个目录里）；空数组返回 null。 */
@@ -520,9 +522,13 @@ function briefError(error: unknown): string {
  *     的续走判定之后才调用，不再排最前。收尾阶段的 refreshLibrary 会让 Jellyfin 重新刮削
  *     整个目标虚拟库，若进程恰好死在 refreshLibrary 之后（120s 空闲等待期间/验收分页途中），
  *     旧 seriesId 对应的条目大概率已被裁掉（新目录下的内容被识别成新条目）——jf.getItem 若
- *     仍排在续走判定之前，每次重跑都会在这一行抛 JellyfinItemNotFoundError，被上层 executor.ts
- *     记成 'error' 走 30s→15min→daily 的无穷重试环，永远无法触达本该接管的续走路径（新树
- *     已经亮相且带字幕，仅差收尾）——新树活着但镜像 ghost 常驻、旧季 job 永不退休。账本才是
+ *     仍排在续走判定之前，每次重跑都会在这一行抛错，被上层记成 'error' 走 30s→15min→daily
+ *     的无穷重试环（Jellyfin 时代那类抛错是专门的 JellyfinItemNotFoundError，被旧管线
+ *     executor.ts 的通用 catch 记成 error；executor.ts 已随旧管线退役删除，今天承接同一个
+ *     catch 的是 v2/realignWorkerTask.ts 的 runRealignWorkerTask，去 Jellyfin 化 P7 后 port
+ *     换成库原生实现，抛一个语义清晰的 plain Error 复现同样的可观察行为——见
+ *     realignLibraryPort.ts 的 getItem 注释），永远无法触达本该接管的续走路径（新树已经
+ *     亮相且带字幕，仅差收尾）——新树活着但镜像 ghost 常驻、旧季 job 永不退休。账本才是
  *     崩溃恢复的真相源（source of truth），不是这一刻的 Jellyfin 活查。
  *  4. mount 哨兵（库根非空+可写）
  *  5. Jellyfin 空闲等待——任何搬动（包括崩溃恢复回滚）之前（IMP#6）

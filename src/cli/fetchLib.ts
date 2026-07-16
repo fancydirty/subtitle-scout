@@ -49,8 +49,9 @@ export interface FetchAdapter {
 
 /** A4: historical per-provider default when the caller doesn't specify languages — matches
  *  FetchArgs.languages's own documented "adapters default ['zh-cn','zh-tw']" convention. Every
- *  dispatch path that reaches runSearch (the old fetch path — pipeline.ts → providerPort.ts →
- *  subtitle-fetch.ts subprocess; the v3 find-subtitle worker's search_source tool, whose
+ *  dispatch path that reaches runSearch (historically: pipeline.ts → providerPort.ts →
+ *  subtitle-fetch.ts subprocess — both pipeline.ts and providerPort.ts were deleted in the
+ *  old-pipeline retirement; today: the v3 find-subtitle worker's search_source tool, whose
  *  `languages` param the MODEL decides whether to pass; the standalone `subtitle-fetch` CLI
  *  without --languages) can leave args.languages undefined. A language-gated adapter (assrt —
  *  see assrtAdapter.ts, a China-only source) must not silently drop out of an un-annotated

@@ -68,10 +68,12 @@ export class ScoutDaemon {
   // 新 invocation 从此失去心跳续租（FIX-2 审计修正）。改存 Job 对象引用后：
   //   1) 引用本身天然充当"这是哪一次 claim"的身份令牌——.finally 里用 === 比对，
   //      只有"我领到的那个对象仍是 map 里当前记录的那个"才允许删除自己的条目。
-  //   2) 心跳续租每 tick 原地 mutate 这个共享对象的 lease_until（而不是替换成新对象），
-  //      executor.ts 侧的 job.lease_until 读到的永远是最新值——FIX-3 的 ownsLease
-  //      判据（jobs.get(id).lease_until === job.lease_until）才不会被"合法续租"
-  //      误判成"租约已被回收重派"。
+  //   2) 心跳续租每 tick 原地 mutate 这个共享对象的 lease_until（而不是替换成新对象）——
+  //      这个设计最初是为旧管线 executor.ts 的 FIX-3 ownsLease 判据准备的
+  //      （jobs.get(id).lease_until === job.lease_until，让它跟着合法续租一起前进，
+  //      不被"合法续租"误判成"租约已被回收重派"）。executor.ts 已随旧管线退役删除，
+  //      今天没有代码再做这个精确比对；in-place mutate 而非替换引用的写法本身仍然保留，
+  //      与下方 renewLease 的返回值契约（jobsRepo.ts renewLease 注释）保持一致。
   private inflightJobs = new Map<number, Job>()
   private stopping = false
   // 部署重启瞬间：上个进程分钟前才写过 last_ingest_at，纯时间门会让首次 ingest 延迟
@@ -268,7 +270,9 @@ export class ScoutDaemon {
           // FIX-4b: fire-and-forget 的 catch 过去只记日志——日志会轮转/丢失，runs 表
           // 才是持久证据。补一条 synthetic error run 行，让每个 crashed invocation
           // 都在 runs 表留痕，即便 executeJob 内部自己那次 record() 没机会跑到
-          // （比如异常发生在 executor.ts 的 try/catch 覆盖范围之外）。
+          // （比如异常发生在 handleWorkerTask/runXxxWorkerTask 各自 try/catch 覆盖范围
+          // 之外的组装阶段——见 cli/index.ts handleWorkerTask 的 IMP#8 注释；旧管线
+          // executor.ts 当年也有同类缺口，已随旧管线退役删除）。
           // Fail-soft：记录动作本身绝不能再抛出去炸主循环。
           try {
             runs.insert({
