@@ -133,7 +133,7 @@ C 区无发现区域：recognition 四文件（全仓最贴近北极星⑤的子
 | R-8 | **债务D1 修订**（C-B5）：exceedsSeasonTable 保留（仍可点火），diskLayoutNonstandard 并列第二信号，skill 的 MUST/never 守门措辞改为事实+理由式教导（B5） | 阶段二 T11（修订） |
 | R-9 | **血统注释清洗波**（C-F4/E3/B14/F9注释）：17 文件幽灵坐标批量改写，零行为改动 | 阶段三前 T12b（sonnet） |
 | R-10 | **豁免与登记**：瞬时错误轨（30s→15min→日）=故障自愈机械豁免；claimNext FIFO=事实豁免；rule 1b=改造-lite+债登记；ingest resolveStatusToWrite=R-3 后诚实豁免；realign 五重安全层+16MB fail-closed+沙盒检查=既有定论豁免；C-B1 时长死枝/quota 呈报通道/多语言单值截断/ORIGIN_UNKNOWN 不回查/外部媒体服务器共库扫描风险=登记立项 | 本册+spec |
-| R-11 | **上报用户裁决**（B15）：子代理粒度"季=下限"还是"剧级合集=终态"——本战役维持季级（批量形状的 scope 字段已为将来剧级留形），待用户拍板后另立战役 | 用户 |
+| R-11 | **用户已裁决（2026-07-16）**（B15）：派活范围既不恒为季也不恒为剧——**主代理按刮削出的磁盘实际情况具体裁量**（"进击的巨人有三季资源分别缺字幕→一个任务带全剧缺口清单告诉子代理找什么资源哪些季各缺多少集及路径；只有 S3 资源→任务自然就是 S3"）。落地：taskType 进 jobs 身份元组（v11 索引重建，消灭 find/realign 同 identity 碰撞——原 null-season 拒绝守卫随之处决）；dispatch_find_subtitle_task 输入改 seriesId+可选 seasons 数组（null=全部有缺口的季）；mapper 加全剧清单推导；orchestrator skill 教范围裁量（主控亲改）。并入本战役阶段一（T4b/T8b 扩容） | 阶段一 T4b（新）/T8b（扩）/T7/T11 skill |
 
 裁决完毕。计划修订随本次提交（docs/superpowers/plans/2026-07-16-glue-layer-repair-campaign.md，本地文档不入库）。
 
