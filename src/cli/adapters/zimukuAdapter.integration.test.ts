@@ -8,8 +8,17 @@ import { ZimukuClient } from '../../adapters/providers/zimuku.js'
 import { ZimukuSessionStore } from '../../adapters/providers/zimukuSession.js'
 import { MinIntervalLimiter } from '../../adapters/providers/assrt.js'
 import { downloadDirect } from '../../adapters/download/direct.js'
-import { writeSubtitle } from '../../files/subtitleWriter.js'
+import { writeSubtitle, type WriteSubtitleOutcome, type WriteSubtitleResult } from '../../files/subtitleWriter.js'
 import { runSearch, runResolve } from '../fetchLib.js'
+
+// C-D1 fix widened writeSubtitle's return type to a WriteSubtitleOutcome union (a >1-entry zip
+// with no selectFileName now returns {needsSelection: true, entries} instead of writing). This
+// fixture's zip has exactly one subtitle entry, so it always takes the written-result branch —
+// narrow once so the assertions below can keep accessing path directly, with zero semantic change.
+const asWritten = (o: WriteSubtitleOutcome): WriteSubtitleResult => {
+  if ('needsSelection' in o) throw new Error('unexpected needsSelection')
+  return o
+}
 
 describe('zimuku end-to-end offline (challenge → solve → search → resolve → download → unzip → write)', () => {
   it('produces an installed subtitle file from a cold session, exercising the full FetchAdapter contract', async () => {
@@ -63,10 +72,10 @@ describe('zimuku end-to-end offline (challenge → solve → search → resolve 
 
     // 4. write(zero-changes 路径:pickFromZip 靠 .zip 扩展名自动触发,见 subtitleWriter.ts)
     const outDir = mkdtempSync(join(tmpdir(), 'zimuku-e2e-out-'))
-    const written = await writeSubtitle({
+    const written = asWritten(await writeSubtitle({
       artifact: dl.bytes, artifactFilename: resolved.filename!,
       videoFilename: 'SPY.FAMILY.S01E01.mkv', langTag: 'zh-Hans', outDir,
-    })
+    }))
     expect(existsSync(written.path)).toBe(true)
     expect(written.path).toContain('SPY.FAMILY.S01E01.zh-Hans.srt')
     expect(readFileSync(written.path, 'utf8')).toContain('阿尼亚喜欢花生')

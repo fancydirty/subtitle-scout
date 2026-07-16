@@ -13,7 +13,23 @@ import { makeAssrtAdapter } from '../cli/adapters/assrtAdapter.js'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import type { FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
 import { makeReplayFetch } from './replayFetch.js'
-import { loadCell } from './liveMatrix.js'
+import { loadCell, type LoadedCell } from './liveMatrix.js'
+
+/** Builds a single-target batch FindSubtitleTask out of one cell's flat task-fact shape — same
+ *  wrapping precedent as buildTask() in findSubtitleWorker.eval.test.ts. itemId defaults to the
+ *  cell's own jobId (there is exactly one target per on-disk cell). */
+function buildTask(cell: LoadedCell, jobId: string, mediaRoot: string, videoPath: string): FindSubtitleTask {
+  const t = cell.task
+  return {
+    jobId, mediaRoot, title: t.title, originalTitle: t.originalTitle, year: t.year,
+    alternativeTitles: t.alternativeTitles, overview: t.overview, runtimeMinutes: t.runtimeMinutes,
+    providerIds: t.providerIds, targetLanguage: t.targetLanguage ?? 'zh',
+    targets: [{
+      itemId: jobId, videoPath, videoFilename: t.videoFilename,
+      season: t.season, episode: t.episode, absoluteEpisode: t.absoluteEpisode,
+    }],
+  }
+}
 
 function toolResult(prompt: LanguageModelV4Prompt, toolName: string): any {
   for (const msg of prompt) {
@@ -40,6 +56,7 @@ describe('find-subtitle worker replay integration: anime/only-pack', () => {
 
   it('installs S01E01 from the recorded complete-series pack via the real assrt adapter', async () => {
     const cell = loadCell('anime', 'only-pack')
+    const jobId = 'replay-anime-only-pack'
     const mediaRoot = join(root, 'media')
     const showDir = join(mediaRoot, 'Attack on Titan')
     mkdirSync(showDir, { recursive: true })
@@ -74,9 +91,11 @@ describe('find-subtitle worker replay integration: anime/only-pack', () => {
       }
       const installed = toolResult(options.prompt, 'install_subtitle')
       return step('finalize-1', 'finalize', {
-        decision: 'installed', reason: 'picked S01E01 out of the recorded pack filelist',
-        installedPath: installed.path, installedLanguage: cell.expected.installedLanguage,
-        candidateProvider: cell.expected.candidateProvider, candidateProviderId: cell.expected.candidateProviderId,
+        installed: [{
+          itemId: jobId, reason: 'picked S01E01 out of the recorded pack filelist',
+          installedPath: installed.path, installedLanguage: cell.expected.installedLanguage,
+          candidateProvider: cell.expected.candidateProvider, candidateProviderId: cell.expected.candidateProviderId,
+        }],
       })
     }
 
@@ -86,17 +105,19 @@ describe('find-subtitle worker replay integration: anime/only-pack', () => {
       fetchImpl: replay, stepCap: 12,   // worker's OWN download fetch also replays
     })
 
-    const task: FindSubtitleTask = { ...cell.task, jobId: 'replay-anime-only-pack', mediaRoot, videoPath }
-    const decision = await runTask(task)
+    const task = buildTask(cell, jobId, mediaRoot, videoPath)
+    const report = await runTask(task)
 
-    expect(decision.decision).toBe('installed')
-    expect(decision.installedPath).toBe(join(showDir, cell.expected.installedFilename!))
-    expect(existsSync(decision.installedPath!)).toBe(true)
-    expect(decision.candidateProviderId).toBe(cell.expected.candidateProviderId)
+    expect(report.installed).toHaveLength(1)
+    const installed = report.installed[0]
+    expect(installed.itemId).toBe(jobId)
+    expect(installed.installedPath).toBe(join(showDir, cell.expected.installedFilename!))
+    expect(existsSync(installed.installedPath)).toBe(true)
+    expect(installed.candidateProviderId).toBe(cell.expected.candidateProviderId)
     // The installed filename derives from the VIDEO basename + langTag, so a wrong fileIndex would
     // still produce the identical name — only content equality pins the right episode's bytes.
     const downloadFixture = JSON.parse(readFileSync(join(cell.responsesDir, 'download.json'), 'utf8'))
-    expect(readFileSync(decision.installedPath!, 'utf8'))
+    expect(readFileSync(installed.installedPath, 'utf8'))
       .toBe(Buffer.from(downloadFixture.bodyBase64, 'base64').toString('utf8'))
   })
 })

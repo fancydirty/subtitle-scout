@@ -4,9 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
 import * as iconv from 'iconv-lite'
-import { writeSubtitle } from './subtitleWriter.js'
+import { writeSubtitle, type WriteSubtitleOutcome, type WriteSubtitleResult } from './subtitleWriter.js'
 
 const outDir = () => mkdtempSync(join(tmpdir(), 'subw-'))
+
+// C-D1 fix widened writeSubtitle's return type to a WriteSubtitleOutcome union (a >1-entry zip
+// with no selectFileName now returns {needsSelection: true, entries} instead of writing). Most
+// assertions below only ever expect the written-result branch — this narrows that branch once so
+// they can keep accessing path/bytes/encoding/alreadyExists directly, with zero semantic change.
+const asWritten = (o: WriteSubtitleOutcome): WriteSubtitleResult => {
+  if ('needsSelection' in o) throw new Error('unexpected needsSelection')
+  return o
+}
 
 // 用于模拟"原子写入的最后一步（rename）崩溃"：真正的进程崩溃无法在测试里重现，
 // 但可以让 renameSync 在被调用一次后抛错，观察崩溃发生在 rename 之前 vs 之后的落盘状态。
@@ -61,13 +70,13 @@ vi.mock('node:fs', async (importOriginal) => {
 describe('writeSubtitle', () => {
   it('writes a plain utf-8 srt with Jellyfin naming', async () => {
     const dir = outDir()
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from('1\n00:00:01,000 --> 00:00:02,000\n你好\n'),
       artifactFilename: 'sub.srt',
       videoFilename: 'The.Matrix.1999.1080p.BluRay.x264.mkv',
       langTag: 'zh-Hans',
       outDir: dir,
-    })
+    }))
     expect(r.path).toBe(join(dir, 'The.Matrix.1999.1080p.BluRay.x264.zh-Hans.srt'))
     expect(existsSync(r.path)).toBe(true)
     expect(r.encoding).toBe('utf-8')
@@ -78,13 +87,13 @@ describe('writeSubtitle', () => {
   // caller can write e.g. an English subtitle with the same Jellyfin-naming convention.
   it('accepts a non-Chinese langTag (e.g. "en") with the same Jellyfin naming convention', async () => {
     const dir = outDir()
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhello\n'),
       artifactFilename: 'sub.srt',
       videoFilename: 'The.Matrix.1999.1080p.BluRay.x264.mkv',
       langTag: 'en',
       outDir: dir,
-    })
+    }))
     expect(r.path).toBe(join(dir, 'The.Matrix.1999.1080p.BluRay.x264.en.srt'))
     expect(existsSync(r.path)).toBe(true)
   })
@@ -170,10 +179,10 @@ describe('writeSubtitle', () => {
   it('converts GB18030 to utf-8 and records original encoding', async () => {
     const gbk = iconv.encode('1\n00:00:01,000 --> 00:00:02,000\n黑客帝国经典台词测试字幕内容\n', 'gb18030')
     const dir = outDir()
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: gbk, artifactFilename: 'sub.srt',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
-    })
+    }))
     expect(readFileSync(r.path, 'utf8')).toContain('黑客帝国')
     expect(r.encoding?.toLowerCase()).not.toBe('utf-8')
   })
@@ -181,10 +190,10 @@ describe('writeSubtitle', () => {
   it('refuses to overwrite an existing file', async () => {
     const dir = outDir()
     writeFileSync(join(dir, 'Movie.zh-Hans.srt'), 'existing')
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from('new'), artifactFilename: 'sub.srt',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
-    })
+    }))
     expect(r.alreadyExists).toBe(true)
     expect(readFileSync(join(dir, 'Movie.zh-Hans.srt'), 'utf8')).toBe('existing')
     // 无残留临时文件时，短路分支不应凭空创建任何文件
@@ -201,10 +210,10 @@ describe('writeSubtitle', () => {
     writeFileSync(finalPath, 'existing final content')
     writeFileSync(tmpPath, 'orphaned partial write')
 
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from('new'), artifactFilename: 'sub.srt',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
-    })
+    }))
 
     expect(r.alreadyExists).toBe(true)
     expect(readFileSync(finalPath, 'utf8')).toBe('existing final content')
@@ -243,10 +252,10 @@ describe('writeSubtitle', () => {
     writeFileSync(tmpPath, 'orphaned partial write')
 
     forceUnlinkThrowOnce = true
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from('new'), artifactFilename: 'sub.srt',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
-    })
+    }))
 
     expect(r.alreadyExists).toBe(true)
     expect(readFileSync(finalPath, 'utf8')).toBe('existing final content')
@@ -256,13 +265,13 @@ describe('writeSubtitle', () => {
     // OpenSubtitles 下载是裸 UTF-8 .srt 而非 zip——必须原样直通，不做 zip 解析
     const dir = outDir()
     const body = '1\n00:00:01,000 --> 00:00:02,000\n和平使者第一集\n'
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from(body),
       artifactFilename: 'Peacemaker.S01E01.chs.SRT',
       videoFilename: 'Peacemaker.S01E01.2160p.WEB.mkv',
       langTag: 'zh-Hans',
       outDir: dir,
-    })
+    }))
     expect(r.path).toBe(join(dir, 'Peacemaker.S01E01.2160p.WEB.zh-Hans.srt'))
     expect(readFileSync(r.path, 'utf8')).toBe(body)
     expect(r.alreadyExists).toBe(false)
@@ -287,10 +296,10 @@ describe('writeSubtitle', () => {
     const body = '1\n00:00:01,000 --> 00:00:02,000\nfull content that is definitely longer than one byte\n'
 
     forceShortWriteOnce = true
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from(body), artifactFilename: 'sub.srt',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
-    })
+    }))
 
     expect(r.alreadyExists).toBe(false)
     expect(r.bytes).toBe(Buffer.byteLength(body))
@@ -326,10 +335,10 @@ describe('writeSubtitle', () => {
     expect(leftovers.length).toBeGreaterThan(0)
 
     // 重试（下一次守护进程 tick）：不应被残留临时文件卡住，应产出完整正确的文件
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from(body), artifactFilename: 'sub.srt',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: dir,
-    })
+    }))
     expect(r.alreadyExists).toBe(false)
     expect(existsSync(finalPath)).toBe(true)
     expect(readFileSync(finalPath, 'utf8')).toBe(body)
@@ -338,13 +347,13 @@ describe('writeSubtitle', () => {
   it('sanitizes path-traversal videoFilename and stays inside outDir', async () => {
     const dir = outDir()
     const { resolve } = await import('node:path')
-    const r = await writeSubtitle({
+    const r = asWritten(await writeSubtitle({
       artifact: Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhi\n'),
       artifactFilename: 'sub.srt',
       videoFilename: '../../../../tmp/EVIL-INJECTED.mkv',
       langTag: 'zh-Hans',
       outDir: dir,
-    })
+    }))
     expect(r.path.startsWith(resolve(dir))).toBe(true)
     expect(r.path.endsWith('EVIL-INJECTED.zh-Hans.srt')).toBe(true)
   })

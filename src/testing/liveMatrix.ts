@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { FindSubtitleTask } from '../agent/findSubtitleWorker.schemas.js'
 
 /** Resource-type axis (test-matrix spec §两轴). Chinese-content types map to assrt as primary
  *  provider; `western` may use opensubtitles. */
@@ -29,10 +28,28 @@ export interface CellExpectation {
   installedLanguage?: 'zh-Hans' | 'zh-Hant' | 'zh-any'
 }
 
-/** On-disk `cell.json`. `task` omits the three runtime-supplied fields (the runner/test fills
- *  jobId/mediaRoot/videoPath), matching EvalFixture in findSubtitleWorker.eval.test.ts. */
+/** On-disk `cell.json`'s flat, single-episode task-fact shape — predates the glue-layer repair's
+ *  batch `FindSubtitleTask.targets[]` (same flat shape as `EvalFixtureTaskFacts` in
+ *  findSubtitleWorker.eval.test.ts). `jobId`/`mediaRoot`/`videoPath` are runtime-supplied by the
+ *  consuming test/runner, which also wraps this into a single-target `targets: [...]` array. */
+export interface CellTaskFacts {
+  videoFilename: string
+  title: string
+  originalTitle: string | null
+  year: number | null
+  season: number | null
+  episode: number | null
+  absoluteEpisode: number | null
+  alternativeTitles: string[]
+  overview: string | null
+  runtimeMinutes: number | null
+  providerIds: Record<string, string>
+  targetLanguage?: string
+}
+
+/** On-disk `cell.json`. */
 export interface CellFile {
-  task: Omit<FindSubtitleTask, 'jobId' | 'mediaRoot' | 'videoPath'>
+  task: CellTaskFacts
   expected: CellExpectation
   note: string
 }
