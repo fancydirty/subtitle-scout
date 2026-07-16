@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { parseArgs } from 'node:util'
-import { readFileSync, existsSync, statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { generateText, type LanguageModel } from 'ai'
@@ -31,7 +31,7 @@ import { makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignEx
 import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
 import { replayRollback } from '../files/realignManifest.js'
 import { runRealignWorkerTask } from '../v2/realignWorkerTask.js'
-import { runFindSubtitleWorkerTask, type FindSubtitleWorkerTaskDeps } from '../v2/findSubtitleWorkerTask.js'
+import { runFindSubtitleWorkerTask } from '../v2/findSubtitleWorkerTask.js'
 import { runReconcileAll, runOrchestrateWorkerTask } from '../v2/reconcileAll.js'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from './buildAdapters.js'
@@ -552,7 +552,6 @@ async function cmdDoctor() {
   const dbPath = join(cacheRoot, 'scout.db')
   if (existsSync(dbPath)) {
     const { openDb } = await import('../v2/db.js')
-    const { JobsRepo } = await import('../v2/jobsRepo.js')
 
     results.push(checkDatabase(() => {
       const db = openDb(dbPath)
