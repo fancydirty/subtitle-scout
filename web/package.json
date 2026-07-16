@@ -5,15 +5,18 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "theme:build": "astryx theme build src/theme/scout.ts"
   },
   "dependencies": {
+    "@astryxdesign/core": "^0.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@testing-library/react": "^16.1.0",
+    "@astryxdesign/cli": "^0.1.6",
     "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
