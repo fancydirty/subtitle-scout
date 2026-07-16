@@ -1,9 +1,12 @@
 // src/dashboard/apiV2.ts
 // v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报直接暴露 TMDB
 // poster_path，前端自行拼 CDN URL（image.tmdb.org，公开、免 key）——不再经服务端代理。
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
+import type { SettingsRepo } from '../v2/settingsRepo.js'
 // 清算波 R-6（F9b）：只为下面的文档注释引用真实常量，而不是把它的字符串值抄一份陈旧副本
 // （旧值 'self-scan-trigger' 已在去 Jellyfin 化 T4 改名为 INGEST_ORCHESTRATE_SERIES_ID=
 // 'ingest-trigger'——注释里继续写旧值会误导读者去 grep 一个早已不存在的字符串）。
@@ -457,5 +460,154 @@ export function claimParked(
   if (!parked) return { ok: false, error: 'path is not currently parked' }
 
   lib.addOverride(dirname(path), tmdbId, isTv, Date.now(), season ?? null)
+  return { ok: true }
+}
+
+// ---- Settings（dashboard 重建战役 G4：settings 表 + 守备目录 + 部署层只读展示） ----
+
+/** spec §7 权威白名单——行为级设置的唯一合法 key 集合。本战役里只有 target_languages 真被
+ *  消费（targetLanguages.ts 的 resolveTargetLanguages 第二参）；其余四键此刻只存取展示，值域
+ *  校验在 server.ts 的 zod 门（PUT /api/v2/settings），这里只负责"读的时候只读这五个"。 */
+export const SETTINGS_KEYS = [
+  'target_languages', 'hardsub_mode', 'exclude_extras', 'trace_retention_days', 'scan_interval_ms',
+] as const
+export type SettingsKey = typeof SETTINGS_KEYS[number]
+export type SettingsDTO = Record<SettingsKey, string | null>
+
+/** GET /api/v2/settings：白名单五键各自 get()，未设置=null（前端自行显示默认值，不由后端
+ *  编造一份"默认值"跟真实存量状态混在一起）。 */
+export function buildSettings(settingsRepo: Pick<SettingsRepo, 'get'>): SettingsDTO {
+  const result = {} as SettingsDTO
+  for (const key of SETTINGS_KEYS) result[key] = settingsRepo.get(key)
+  return result
+}
+
+// ---- Deploy settings（GET /api/v2/settings/deploy：env 脱敏只读，Jellyfin 式部署/产品分界）----
+
+/** 密钥类 env——绝不回显明文，只答"配了没有"+ 尾 4 位供人眼核对"是不是我以为的那把钥匙"。
+ *  枚举来源：README「环境变量总表」+ src 内 process.env.* 全量 grep 核对（cli/index.ts、
+ *  cli/doctor.ts、adapters/providers/*）。 */
+const DEPLOY_SECRET_KEYS = [
+  'TMDB_API_KEY', 'LLM_API_KEY', 'DASHBOARD_TOKEN',
+  'ASSRT_TOKEN', 'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_PASSWORD',
+] as const
+
+/** 非机密 env——部署层信息，原样字符串展示（未设置为 null）帮助排障，不脱敏。 */
+const DEPLOY_NONSECRET_KEYS = [
+  'LLM_BASE_URL', 'LLM_MODEL', 'LLM_EXTRA_BODY', 'OPENSUBTITLES_USERNAME', 'ZIMUKU_ENABLED',
+  'DASHBOARD_PORT', 'SUBTITLE_SCOUT_CACHE_DIR', 'LOG_RETAIN_DAYS', 'REALIGN_ARCHIVE_ROOT',
+  'FFPROBE_PATH', 'SCAN_INTERVAL_MS', 'MEDIA_ROOTS',
+] as const
+
+export interface DeploySecretDTO { present: boolean; tail: string }
+export interface DeploySettingsDTO {
+  secrets: Record<(typeof DEPLOY_SECRET_KEYS)[number], DeploySecretDTO>
+  nonSecrets: Record<(typeof DEPLOY_NONSECRET_KEYS)[number], string | null>
+}
+
+/** 尾 4 位，不足 4 位全遮（不直接回显短密钥的任何真实字符，遮罩长度仍等于原长度，供人眼判断
+ *  "有没有配置"而不泄露内容）。 */
+function maskSecret(v: string | undefined): DeploySecretDTO {
+  if (!v) return { present: false, tail: '' }
+  return { present: true, tail: v.length >= 4 ? v.slice(-4) : '*'.repeat(v.length) }
+}
+
+export function buildDeploySettings(env: Record<string, string | undefined>): DeploySettingsDTO {
+  const secrets = {} as DeploySettingsDTO['secrets']
+  for (const key of DEPLOY_SECRET_KEYS) secrets[key] = maskSecret(env[key])
+  const nonSecrets = {} as DeploySettingsDTO['nonSecrets']
+  for (const key of DEPLOY_NONSECRET_KEYS) nonSecrets[key] = env[key] ?? null
+  return { secrets, nonSecrets }
+}
+
+// ---- fs/list（GET /api/v2/fs/list：dashboard 加根 UI 的目录选择器，Jellyfin 同款“挂载即可见”）----
+
+export type FsListResult = { ok: true; dirs: string[] } | { ok: false; error: string }
+
+/** 只列子**目录**名（排序），绝不列文件、绝不读文件内容——容器挂载本身就是可见性边界，这里
+ *  不设额外白名单（同 Jellyfin 的目录选择器思路：能挂进容器的目录才可能被看到，配置只是在
+ *  已挂载范围内挑选，不是打开一个任意读盘接口）。path 必须是绝对路径；resolve 后
+ *  existsSync + isDirectory 才列，否则给一个诚实的 4xx 语义（ok:false + error）而不是抛错。 */
+export function listMediaSubdirs(rawPath: string): FsListResult {
+  if (!rawPath.startsWith('/')) return { ok: false, error: 'path must be an absolute path' }
+  const resolved = resolve(rawPath)
+  if (!existsSync(resolved)) return { ok: false, error: 'path does not exist' }
+  const stat = statSync(resolved)
+  if (!stat.isDirectory()) return { ok: false, error: 'path is not a directory' }
+  const dirs = readdirSync(resolved, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort()
+  return { ok: true, dirs }
+}
+
+// ---- Settings 写入（PUT /api/v2/settings、POST/DELETE /api/v2/settings/roots）----
+// server.ts 的独立 rawPath 分支只做 method/token 门 + body 解析，业务校验与写入收在这里
+// （同 claimParked 的既有分层：server.ts 薄，判断逻辑集中在这一层可单测）。
+
+/** spec §7 权威值域——每个白名单键各自的取值校验（"repo 只管字符串存取，值域校验在调用方
+ *  边界做"，这里就是那个边界）。 */
+const SETTINGS_VALUE_SCHEMAS: Record<SettingsKey, z.ZodType<string>> = {
+  target_languages: z
+    .string()
+    .regex(/^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*(,[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*)*$/, 'must be comma-separated BCP-47 primary codes, e.g. "zh,en"'),
+  hardsub_mode: z.enum(['off', 'agent', 'aggressive']),
+  exclude_extras: z.enum(['true', 'false']),
+  trace_retention_days: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
+  scan_interval_ms: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
+}
+
+export type UpdateSettingsResult = { ok: true; settings: SettingsDTO } | { ok: false; error: string }
+
+/** PUT /api/v2/settings body 处理：白名单外的键 400；每键按值域校验，任一项不合法整体 400
+ *  （全有或全无——不做"合法的先写、非法的报错"的部分成功，避免半成品状态混进设置表）。全部
+ *  通过才落库，返回写入后的全量 settings（前端直接刷新展示，不用再发一次 GET）。 */
+export function updateSettings(
+  settingsRepo: Pick<SettingsRepo, 'get' | 'set'>, body: unknown, now: number,
+): UpdateSettingsResult {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'body must be a JSON object of setting key-value pairs' }
+  }
+  const entries = Object.entries(body as Record<string, unknown>)
+  for (const [key, value] of entries) {
+    if (!(SETTINGS_KEYS as readonly string[]).includes(key)) {
+      return { ok: false, error: `unknown setting key: ${key}` }
+    }
+    if (typeof value !== 'string') {
+      return { ok: false, error: `setting ${key} must be a string` }
+    }
+    const parsed = SETTINGS_VALUE_SCHEMAS[key as SettingsKey].safeParse(value)
+    if (!parsed.success) {
+      return { ok: false, error: `setting ${key}: ${parsed.error.issues[0]?.message ?? 'invalid value'}` }
+    }
+  }
+  for (const [key, value] of entries) settingsRepo.set(key, value as string, now)
+  return { ok: true, settings: buildSettings(settingsRepo) }
+}
+
+export type AddMediaRootResult = { ok: true } | { ok: false; error: string }
+
+/** POST /api/v2/settings/roots body={path} 处理：绝对路径 + 磁盘上存在 + 是目录才收——同
+ *  listMediaSubdirs 的判定口径（Jellyfin 式"挂载即可见"边界，这里只是收窄到"必须先能列出来
+ *  才能加"）。路径经 resolve() 归一化后落库（去掉冗余的尾斜杠/`.`/`..` 片段），避免同一个
+ *  目录因写法不同（"/media/tv" vs "/media/tv/"）被误判成两个不同的根。addRoot 本身幂等
+ *  （INSERT OR IGNORE），重复提交同一归一化路径直接 200，不报错。 */
+export function addMediaRoot(
+  settingsRepo: Pick<SettingsRepo, 'addRoot'>, rawPath: unknown, now: number,
+): AddMediaRootResult {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) {
+    return { ok: false, error: 'path is required' }
+  }
+  if (!rawPath.startsWith('/')) {
+    return { ok: false, error: 'path must be an absolute path' }
+  }
+  const resolved = resolve(rawPath)
+  if (!existsSync(resolved)) {
+    return { ok: false, error: 'path does not exist' }
+  }
+  if (!statSync(resolved).isDirectory()) {
+    return { ok: false, error: 'path is not a directory' }
+  }
+  settingsRepo.addRoot(resolved, now)
   return { ok: true }
 }

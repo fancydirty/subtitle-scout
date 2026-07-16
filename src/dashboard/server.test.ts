@@ -7,6 +7,7 @@ import { connect } from 'node:net'
 import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
+import { SettingsRepo } from '../v2/settingsRepo.js'
 import { startDashboard } from './server.js'
 import { traceBus, type TraceEvent } from './traceBus.js'
 
@@ -42,10 +43,12 @@ function distWith(html: string): string {
 async function start(
   distDir: string, token?: string,
   reconcileAll?: () => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>,
+  env?: Record<string, string | undefined>,
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
     reconcileAll,
+    env,
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
@@ -346,6 +349,218 @@ describe('startDashboard (v2)', () => {
       // （若 uncaughtException 已炸，vitest 会把它记为本测试的 unhandled error，全绿即无泄漏。）
       const res = await fetch(`${base}/api/v2/library`)
       expect(res.status).toBe(200)
+    })
+  })
+
+  // dashboard G4：settings 仓库 + 守备目录 DB 化——四个只读 GET + 三个带 body/query 的写入端点。
+  describe('settings + 守备目录 (dashboard G4)', () => {
+    it('GET /api/v2/settings 反映 DB 里已写入的行为键，未设置为 null', async () => {
+      new SettingsRepo(db).set('target_languages', 'zh,en', NOW)
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/settings`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        target_languages: 'zh,en', hardsub_mode: null, exclude_extras: null,
+        trace_retention_days: null, scan_interval_ms: null,
+      })
+    })
+
+    it('GET /api/v2/settings/deploy 反映注入的 env：secrets 脱敏，非机密原样', async () => {
+      const { base } = await start(distWith('<!doctype html>'), undefined, undefined, {
+        TMDB_API_KEY: 'sk-abcdef1234567890', LLM_BASE_URL: 'https://api.deepseek.com/v1',
+      })
+      const res = await fetch(`${base}/api/v2/settings/deploy`)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.secrets.TMDB_API_KEY).toEqual({ present: true, tail: '7890' })
+      expect(JSON.stringify(body)).not.toContain('abcdef')
+      expect(body.nonSecrets.LLM_BASE_URL).toBe('https://api.deepseek.com/v1')
+    })
+
+    it('GET /api/v2/settings/roots 反映 DB 里的守备目录', async () => {
+      new SettingsRepo(db).addRoot('/media/tv', NOW)
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/settings/roots`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([{ path: '/media/tv', type: 'local', addedAt: NOW }])
+    })
+
+    it('GET /api/v2/fs/list?path=... 真走文件系统，只列子目录名', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fs-list-server-'))
+      mkdirSync(join(dir, 'tv'))
+      mkdirSync(join(dir, 'anime'))
+      writeFileSync(join(dir, 'readme.txt'), 'x')
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/fs/list?path=${encodeURIComponent(dir)}`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ dirs: ['anime', 'tv'] })
+    })
+
+    describe('PUT /api/v2/settings', () => {
+      it('写入白名单键，回显全量 settings', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ target_languages: 'zh,en', hardsub_mode: 'aggressive' }),
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({
+          target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: null,
+          trace_retention_days: null, scan_interval_ms: null,
+        })
+        expect(new SettingsRepo(db).get('target_languages')).toBe('zh,en')
+      })
+
+      it('白名单外的 key → 400，且不写入任何行（全有或全无）', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ target_languages: 'zh', not_a_real_key: 'x' }),
+        })
+        expect(res.status).toBe(400)
+        expect(new SettingsRepo(db).get('target_languages')).toBeNull()
+      })
+
+      it('值域校验：hardsub_mode 不在枚举内 → 400', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ hardsub_mode: 'yolo' }),
+        })
+        expect(res.status).toBe(400)
+        expect((await res.json()).error).toEqual(expect.any(String))
+      })
+
+      it('值域校验：trace_retention_days 非正整数字符串 → 400', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ trace_retention_days: '-5' }),
+        })
+        expect(res.status).toBe(400)
+      })
+
+      it('非 PUT 方法 405', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings`, { method: 'POST' })
+        expect(res.status).toBe(405)
+      })
+
+      it('token 门', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 's3cret')
+        const unauthed = await fetch(`${base}/api/v2/settings`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+        })
+        expect(unauthed.status).toBe(401)
+      })
+    })
+
+    describe('POST /api/v2/settings/roots', () => {
+      it('绝对路径 + 存在 + 是目录 → 200，DB 可见', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'add-root-'))
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: dir }),
+        })
+        expect(res.status).toBe(200)
+        expect(new SettingsRepo(db).listRoots().map(r => r.path)).toContain(dir)
+      })
+
+      it('重复加同一路径是幂等 200', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'add-root-idem-'))
+        const { base } = await start(distWith('<!doctype html>'))
+        await fetch(`${base}/api/v2/settings/roots`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }),
+        })
+        const second = await fetch(`${base}/api/v2/settings/roots`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }),
+        })
+        expect(second.status).toBe(200)
+        expect(new SettingsRepo(db).listRoots().filter(r => r.path === dir)).toHaveLength(1)
+      })
+
+      it('相对路径 → 400', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: 'relative/path' }),
+        })
+        expect(res.status).toBe(400)
+      })
+
+      it('不存在的路径 → 400', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: '/definitely/does/not/exist/anywhere' }),
+        })
+        expect(res.status).toBe(400)
+      })
+
+      it('路径指向文件（非目录）→ 400', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'add-root-file-'))
+        const file = join(dir, 'x.txt')
+        writeFileSync(file, 'x')
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: file }),
+        })
+        expect(res.status).toBe(400)
+      })
+
+      it('非 POST/GET/DELETE 方法 405', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots`, { method: 'PUT' })
+        expect(res.status).toBe(405)
+      })
+
+      it('token 门（GET 不受影响，仍走纯路由的既有 401 语义；POST 同样要求 token）', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'add-root-token-'))
+        const { base } = await start(distWith('<!doctype html>'), 's3cret')
+        expect((await fetch(`${base}/api/v2/settings/roots`)).status).toBe(401)
+        expect((await fetch(`${base}/api/v2/settings/roots?token=s3cret`)).status).toBe(200)
+        const unauthedPost = await fetch(`${base}/api/v2/settings/roots`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }),
+        })
+        expect(unauthedPost.status).toBe(401)
+        const authedPost = await fetch(`${base}/api/v2/settings/roots?token=s3cret`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }),
+        })
+        expect(authedPost.status).toBe(200)
+      })
+    })
+
+    describe('DELETE /api/v2/settings/roots', () => {
+      it('级联删除并回显计数；root 本身从 listRoots 消失', async () => {
+        const lib = new LibraryRepo(db)
+        const settings = new SettingsRepo(db)
+        settings.addRoot('/media/tv', NOW)
+        lib.upsertSeries({ id: 'tmdb:99', name: 'Show' })
+        lib.upsertEpisode({
+          id: 'tmdb:99/s1e1', seriesId: 'tmdb:99', season: 1, episode: 1, name: 'E1',
+          path: '/media/tv/Show/Season 01/e1.mkv', subStatus: 'missing',
+        })
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media/tv')}`, { method: 'DELETE' })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ episodes: 1, movies: 0, series: 1, parked: 0 })
+        expect(settings.listRoots()).toEqual([])
+        expect(lib.getSeries('tmdb:99')).toBeNull()
+      })
+
+      it('缺 path 查询参数 → 400', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots`, { method: 'DELETE' })
+        expect(res.status).toBe(400)
+      })
+
+      it('token 门', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 's3cret')
+        const res = await fetch(`${base}/api/v2/settings/roots?path=/media/tv`, { method: 'DELETE' })
+        expect(res.status).toBe(401)
+      })
     })
   })
 })

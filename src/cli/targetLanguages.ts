@@ -34,11 +34,19 @@ export interface ResolvedTargetLanguages {
  * - If 'zh' isn't in TARGET_LANGUAGES to begin with (e.g. TARGET_LANGUAGES=en),
  *   SKIP_CHINESE_ORIGIN=false is a no-op (nothing to drop) — the least-surprising reading of
  *   that combination: the flag only ever concerned zh, so there's nothing for it to opt out of.
+ *
+ * dashboard G4: `settingsTargetLanguages` is the DB settings 表 target_languages 键（行为级设置，
+ * dashboard 里可改，优先于部署层的 TARGET_LANGUAGES env）——非空字符串时替代
+ * env.TARGET_LANGUAGES 参与下面的解析；null/undefined/空字符串（"未设置"）都沿用 env，不当作
+ * "覆盖成空"（否则一次误清空的 PUT 会把行为悄悄打回默认 zh，而不是保留部署层配置）。
+ * SKIP_CHINESE_ORIGIN 的交互逻辑完全不变，只是被解析的原始串换了来源。
  */
 export function resolveTargetLanguages(
   env: { TARGET_LANGUAGES?: string; SKIP_CHINESE_ORIGIN?: string },
+  settingsTargetLanguages?: string | null,
 ): ResolvedTargetLanguages {
-  const targetLanguages = parseTargetLanguages(env.TARGET_LANGUAGES)
+  const raw = settingsTargetLanguages ? settingsTargetLanguages : env.TARGET_LANGUAGES
+  const targetLanguages = parseTargetLanguages(raw)
   const skipChineseOrigin = (env.SKIP_CHINESE_ORIGIN ?? 'true') !== 'false'
   return {
     targetLanguages,

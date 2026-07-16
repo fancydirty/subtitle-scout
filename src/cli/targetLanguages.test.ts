@@ -77,4 +77,33 @@ describe('resolveTargetLanguages (TARGET_LANGUAGES + legacy SKIP_CHINESE_ORIGIN 
     expect(targetLanguages.length).toBeGreaterThan(0)
     expect(targetLanguages[0]).toBe('zh')
   })
+
+  // dashboard G4: settings.target_languages（第二参）非空时覆盖 env.TARGET_LANGUAGES 参与解析
+  // ——SKIP_CHINESE_ORIGIN 的交互逻辑一字不动，只是被解析的原始串换了来源。
+  describe('settings.target_languages override (dashboard G4)', () => {
+    it('settings 值存在时覆盖 env.TARGET_LANGUAGES', () => {
+      expect(resolveTargetLanguages({ TARGET_LANGUAGES: 'en' }, 'zh,en'))
+        .toEqual({ targetLanguages: ['zh', 'en'], originSkipLanguages: ['zh', 'en'] })
+    })
+
+    it('settings 为 null（未设置）→ 沿用 env（既有行为不变）', () => {
+      expect(resolveTargetLanguages({ TARGET_LANGUAGES: 'en' }, null))
+        .toEqual({ targetLanguages: ['en'], originSkipLanguages: ['en'] })
+    })
+
+    it('settings 为空字符串 → 不当"覆盖成空"，视同未设置，沿用 env（parseTargetLanguages 对空串的既有降级语义在覆盖场景下不该被绕过）', () => {
+      expect(resolveTargetLanguages({ TARGET_LANGUAGES: 'en' }, ''))
+        .toEqual({ targetLanguages: ['en'], originSkipLanguages: ['en'] })
+    })
+
+    it('省略第二参 → 与既有单参调用字节兼容', () => {
+      expect(resolveTargetLanguages({ TARGET_LANGUAGES: 'zh,en' }))
+        .toEqual({ targetLanguages: ['zh', 'en'], originSkipLanguages: ['zh', 'en'] })
+    })
+
+    it('settings 覆盖 + SKIP_CHINESE_ORIGIN=false 仍按既有两概念分裂：originSkipLanguages 掉 zh，targetLanguages 不受影响', () => {
+      expect(resolveTargetLanguages({ TARGET_LANGUAGES: 'en', SKIP_CHINESE_ORIGIN: 'false' }, 'zh,en'))
+        .toEqual({ targetLanguages: ['zh', 'en'], originSkipLanguages: ['en'] })
+    })
+  })
 })

@@ -23,6 +23,7 @@ import { openDb } from '../v2/db.js'
 import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
+import { SettingsRepo } from '../v2/settingsRepo.js'
 import { makeIngestPass } from '../v2/ingest.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
@@ -84,20 +85,15 @@ async function assemble(): Promise<Assembled> {
   return { cacheRoot, mappings, tmdb, reasoningModel }
 }
 
-/** 去 Jellyfin 化 P7：MEDIA_ROOTS 环境变量是媒体根目录的唯一来源——mappings 恒为 []（D2 软
- *  退役），mappings.map(m => m.to) 恒空，这里保留 mappings 形参只是不动 mediaRoots() 的调用面，
- *  不为一个死分支单独改签名。 */
-function mediaRoots(mappings: PathMapping[]): string[] {
-  const fromEnv = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
-  return [...mappings.map(m => m.to), ...fromEnv]
-}
-
 /** 去 Jellyfin 化 T4：cmdWatch 与 cmdReconcileAll 共用的摄取 pass 组装——recognize 预绑定 tmdb +
  *  lib.findOverride（P6 认领消歧，消歧前查），probe 绑定 ffprobe 探针（files/streamProbe.ts）。
  *  两个调用点各自决定 roots/targetLanguages/originSkipLanguages/log 的具体来源，其余接线逐字
- *  相同，不重复两份。 */
+ *  相同，不重复两份。
+ *  dashboard G4：roots 从静态数组换成惰性提供者——两个调用点都传
+ *  `() => settingsRepo.listRoots().map(r => r.path)`，dashboard 里增删守备目录后不需要重启进程
+ *  或重建这个 pass 闭包，下一轮调用自然读到最新的根集合（见 v2/ingest.ts 的 IngestDeps.roots）。 */
 function buildIngestPass(opts: {
-  roots: string[]
+  roots: () => string[]
   lib: LibraryRepo
   tmdb: TmdbClient
   targetLanguages: string[]
@@ -128,7 +124,7 @@ function buildIngestPass(opts: {
  *  也需要真实 TmdbClient 才能识别文件——手动触发的全仓校验若因为缺 key 而悄悄只做一半，
  *  会让使用者误以为已经跑过完整校验——所以这里直接报错退出，同 requireEnv 的硬依赖语义一致。 */
 async function cmdReconcileAll() {
-  const { mappings, tmdb, reasoningModel, cacheRoot } = await assemble()
+  const { tmdb, reasoningModel, cacheRoot } = await assemble()
   if (!tmdb) {
     console.error('reconcile-all requires TMDB_API_KEY（orchestrator 的 check_series_layout 工具与摄取层都需要真实 TMDB 数据）— 请在 .env 里配置')
     process.exit(2)
@@ -137,13 +133,22 @@ async function cmdReconcileAll() {
   const db = openDb(dbPath)
   const jobs = new JobsRepo(db)
   const lib = new LibraryRepo(db)
+  // dashboard G4：守备目录 DB 化——settingsRepo 是 roots 的权威来源，MEDIA_ROOTS env 只在
+  // media_roots 表为空时充当首启种子（见 SettingsRepo.seedRootsFromEnv）。这是一次性命令
+  // （跑完即退出），不需要惰性求值带来的"运行期加根即时生效"收益，但仍然统一走同一套接线，
+  // 不再维护第二套"从 env 直读"的旧逻辑。
+  const settingsRepo = new SettingsRepo(db)
+  settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now())
+  const currentRoots = () => settingsRepo.listRoots().map(r => r.path)
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
   // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
   // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
   // exact mapping (locked by targetLanguages.test.ts).
-  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env)
+  // dashboard G4：settings.target_languages（行为级设置，dashboard 里可改）优先于部署层的
+  // TARGET_LANGUAGES env，见 resolveTargetLanguages 第二参的文档注释。
+  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
   const ingest = buildIngestPass({
-    roots: mediaRoots(mappings), lib, tmdb, targetLanguages, originSkipLanguages,
+    roots: currentRoots, lib, tmdb, targetLanguages, originSkipLanguages,
     log: (msg) => console.log(`[reconcile-all] ${msg}`),
   })
   const decision = await runReconcileAll({
@@ -172,10 +177,6 @@ async function cmdWatch() {
     process.exit(2)
   }
   const shutdown = new AbortController()
-  const roots = mediaRoots(mappings)
-  if (roots.length === 0) {
-    console.log('[watch] no MEDIA_ROOTS/MEDIA_PATH_MAPPINGS configured — subtitle writes are not root-restricted; set MEDIA_ROOTS to harden')
-  }
 
   const fileLog = makeFileLogger(join(cacheRoot, 'logs'), Number(process.env.LOG_RETAIN_DAYS) || 30)
   const log = (msg: string) => {
@@ -191,18 +192,34 @@ async function cmdWatch() {
   const lib = new LibraryRepo(db)
   const runs = new RunsRepo(db)
 
+  // dashboard G4：守备目录 DB 化——spec 裁决照抄 Jellyfin 分界：挂载是部署层（compose volume），
+  // 守备目录是产品层（media_roots 表，dashboard 里增删）。MEDIA_ROOTS env 降级为首启种子值：
+  // 只在 media_roots 表为空时生效一次（seedRootsFromEnv 的既有幂等语义），此后 DB 是唯一真相。
+  // currentRoots 是惰性提供者，每次调用都重新查表——这是本任务的关键属性："dashboard 里加根后
+  // ingest 下一轮就能扫到"要求 roots 不能是这里冻结的一份静态数组快照。下面把它传给
+  // ingestPass；handleWorkerTask 的 realign/find_subtitle 分支也各自在派发时重新调用它，
+  // 不复用一份旧闭包捕获的数组（见各自分支的注释）。
+  const settingsRepo = new SettingsRepo(db)
+  settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now())
+  const currentRoots = (): string[] => settingsRepo.listRoots().map(r => r.path)
+  if (currentRoots().length === 0) {
+    console.log('[watch] no media roots configured（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）— subtitle writes are not root-restricted; 去 dashboard 加一个守备目录，或设 MEDIA_ROOTS 作首启种子')
+  }
+
   // Construct DaemonDeps
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
   // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
   // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
   // exact mapping (locked by targetLanguages.test.ts).
-  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env)
+  // dashboard G4：settings.target_languages（行为级设置）优先于部署层的 TARGET_LANGUAGES env
+  // ——见 resolveTargetLanguages 第二参的文档注释；本战役唯一被真正消费的行为键。
+  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
 
   // 去 Jellyfin 化 T4/T7：ingest 心跳依赖——v2/ingest.ts 的 makeIngestPass 顶替旧的机械 scan()
   // + B2 self-scan refresh-bridge 两条独立分支。提前到这里构造（原先在 ingestTrigger 组装处，
   // 见下方沿用注释）：realign port（下方 realignDeps）的 refreshLibrary 也要复用同一个 ingest
   // pass 闭包——"整理搬完之后让库看见新结构"就是再踢一次这同一份摄取，不重新拼一份。
-  const ingestPass = buildIngestPass({ roots, lib, tmdb, targetLanguages, originSkipLanguages, log })
+  const ingestPass = buildIngestPass({ roots: currentRoots, lib, tmdb, targetLanguages, originSkipLanguages, log })
 
   // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
   // 逐 job Journal（老管线的 journalStore/withJournal 已随 Wave 2D 一并删除），api_call 量大信号
@@ -242,9 +259,13 @@ async function cmdWatch() {
   // （src/v2/realignLibraryPort.ts）——realignExecutor.ts 的 5 重安全层（restructuring/
   // manifest/reveal/rollback + GAP-A 崩溃恢复纪律）零改动，只换这个 port 对象的构造方式。
   // runIngest 复用上方已构造的 ingestPass 闭包（refreshLibrary 的库原生等价操作）。
+  // dashboard G4：jf/mediaRoots 两字段下面用 currentRoots() 给一份构造时刻的快照——真正的
+  // "加根即时生效"由 handleWorkerTask 的 realign 分支在每次派发时用新鲜的 currentRoots() 整体
+  // 覆写这两个字段（见该分支注释），这里的初值只是满足 RealignExecutorDeps 的类型要求，不指望
+  // 被直接消费。
   const realignDeps: RealignExecutorDeps = {
     lib, jobs,
-    jf: makeRealignLibraryPort({ lib, roots, runIngest: ingestPass }),
+    jf: makeRealignLibraryPort({ lib, roots: currentRoots(), runIngest: ingestPass }),
     // A-F13：getDetails/getChineseTitles 补上——realign 字幕先行阶段的 TMDB 富化补面
     // （见 realignExecutor.ts 步骤 12 附近的 fetchTmdbEnrichment 调用）需要它们。
     tmdb: {
@@ -263,7 +284,7 @@ async function cmdWatch() {
     // 镜像/库/验收路径去 Jellyfin 化后已是本地路径（makeRealignLibraryPort 直接产出本地
     // 路径），mappings 在库原生世界对这些路径退化为 identity（配置的 from 侧从不匹配
     // 已经是本地形态的路径），仍原样传入以防将来有其余映射用途。
-    mediaRoots: roots,
+    mediaRoots: currentRoots(),
     mappings,
   }
 
@@ -276,10 +297,12 @@ async function cmdWatch() {
   // movies.path are already local filesystem paths (T3's ingest layer walks the filesystem
   // directly), so the mapper no longer needs a Jellyfin item lookup or MEDIA_PATH_MAPPINGS
   // translation (see src/v2/findSubtitleWorkerTask.ts's FindSubtitleTaskMapperDeps doc comment).
+  // dashboard G4：mediaRoots 同 realignDeps 的处置——这里给一份构造时刻的快照满足类型要求，
+  // handleWorkerTask 的 find_subtitle 分支在每次派发时用新鲜的 currentRoots() 覆写。
   const findSubtitleWorkerTaskDeps = {
     // targetLanguage: A4, the PRIMARY configured target — same single-valued note as
     // realignRunEpisode above.
-    lib, tmdb, mediaRoots: roots, targetLanguage: targetLanguages[0],
+    lib, tmdb, mediaRoots: currentRoots(), targetLanguage: targetLanguages[0],
     // 退役T1 (W0-3a): v3 worker_task runners previously wrote NOTHING to `runs` — only the old
     // pipeline did — so the dashboard's run-history timeline went dark for v3-produced work.
     // Threading the same RunsRepo instance cmdWatch already builds for the old pipeline gives
@@ -329,13 +352,25 @@ async function cmdWatch() {
           adapters: await buildAdapters(emitProviderEvent),
           cacheRoot,
         })
-        await runFindSubtitleWorkerTask(job, { ...findSubtitleWorkerTaskDeps, runTask }, jobs, () => Date.now())
+        // dashboard G4：mediaRoots 在每次派发时用新鲜的 currentRoots() 覆写——POST 加根后不需要
+        // 重启 watch 进程，下一个被 claim 的 find_subtitle 行就能写进新根（否则 outer 沙盒检查
+        // assertDirSafe 会一直拿着 watch 启动那一刻的旧白名单，新根永远进不来）。
+        await runFindSubtitleWorkerTask(
+          job, { ...findSubtitleWorkerTaskDeps, mediaRoots: currentRoots(), runTask }, jobs, () => Date.now(),
+        )
       } else if (payload.taskType === 'realign') {
         // 清算波 R-6（F15）：realignDeps 恒非空（tmdb 已在函数顶部硬前置，见 realignDeps 构造处
         // 的注释）——"未接线（缺 TMDB_API_KEY）"停车分支在这道硬前置之后不可达，随之删除。
         // 退役T1 (W0-3a): thread the same RunsRepo instance into the realign runner too — see
         // the comment on findSubtitleWorkerTaskDeps above for the why.
-        await runRealignWorkerTask(job, { ...realignDeps, runs }, jobs, () => Date.now())
+        // dashboard G4：同 find_subtitle 分支——mediaRoots + jf（realign port 内部按 roots 走盘/
+        // 列虚拟库）都用新鲜的 currentRoots() 重建，不复用 cmdWatch 启动时刻构造的旧闭包。
+        const roots = currentRoots()
+        await runRealignWorkerTask(job, {
+          ...realignDeps, runs,
+          mediaRoots: roots,
+          jf: makeRealignLibraryPort({ lib, roots, runIngest: ingestPass }),
+        }, jobs, () => Date.now())
       } else if (payload.taskType === 'orchestrate') {
         // 同上：orchestrateWorkerTaskDeps 恒非空，"未接线"停车分支不可达，随之删除。
         await runOrchestrateWorkerTask(job, orchestrateWorkerTaskDeps, jobs)
@@ -360,7 +395,8 @@ async function cmdWatch() {
     jobs,
     runs,
     ingestTrigger,
-    gcStaging: () => gcOrphans(roots, new Set()),
+    // dashboard G4：每次 daemon tick 调用时重新取一遍 roots——同 ingestPass，不锁定启动时刻的快照。
+    gcStaging: () => gcOrphans(currentRoots(), new Set()),
     // 清算波 R-6（A-F7）：job.kind==='worker_task' 是 claimNext() 这条 kind 无关队列上唯一的
     // 活执行通路。旧管线的中转层（v2/executor.ts 的 executeJob/executeRealignBranch）与它的
     // 路由决策（cli/legacyJobRouting.ts 的 routeLegacyJob/tombstoneLegacyJob）已整体删除：
@@ -422,8 +458,10 @@ async function cmdWatch() {
   }
 
   // 去 Jellyfin 化 P7：不再有单一"正在看哪台 Jellyfin"的地址可报，改报实际生效的媒体根白名单
-  // （MEDIA_ROOTS 未配置时 roots 为空——上方已经打印过对应的告警行）。
-  console.log(`subtitle-scout v2 watching (media roots: ${roots.length > 0 ? roots.join(', ') : '(none — MEDIA_ROOTS not set)'})`)
+  // （DB media_roots 与 MEDIA_ROOTS 首启种子都为空时 currentRoots() 为空——上方已经打印过对应
+  // 的告警行）。这里只是启动时刻的一次性播报，之后 dashboard 增删根不会回来改这行日志。
+  const startupRoots = currentRoots()
+  console.log(`subtitle-scout v2 watching (media roots: ${startupRoots.length > 0 ? startupRoots.join(', ') : '(none configured)'})`)
 
   const daemon = new ScoutDaemon(daemonDeps)
 

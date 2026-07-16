@@ -20,7 +20,11 @@ import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
  */
 
 export interface IngestDeps {
-  roots: string[]
+  /** dashboard G4：守备目录 DB 化——不再是启动时冻结的静态数组，惰性提供者，每轮 pass 起点
+   *  （见下方 ingestPass() 顶部）才求值一次。cmdWatch/cmdReconcileAll 传入
+   *  `() => settingsRepo.listRoots().map(r => r.path)`，dashboard 里加/删根后不需要重启进程或
+   *  重建这个 deps 对象，下一轮 pass 自然看见最新的根集合。 */
+  roots: () => string[]
   lib: LibraryRepo
   tmdb: TmdbClient
   /** 调用方预绑定好 tmdb + findOverride（recognition/index.ts 的 recognize 签名）。 */
@@ -311,7 +315,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       // （没有 series 归属），pass 收尾处全量重写（见文件底部）。
       const layoutObserved = new Map<string, boolean>()
 
-      for (const root of deps.roots) {
+      for (const root of deps.roots()) {
         for (const path of listVideoFiles(root)) {
           result.scanned++
           seenPaths.add(path)

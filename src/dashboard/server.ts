@@ -4,7 +4,12 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked, type ReconcileAllResultDTO } from './apiV2.js'
+import { SettingsRepo } from '../v2/settingsRepo.js'
+import {
+  buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked,
+  buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
+  type ReconcileAllResultDTO,
+} from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from './traceBus.js'
 
@@ -18,6 +23,9 @@ export interface DashboardOpts {
    *  同一个函数，不重复实现）。undefined（TMDB_API_KEY 未配置，或纯只读测试场景）时该端点
    *  返回 503，而不是让请求悬空或让 startDashboard 强制要求这个回调。 */
   reconcileAll?: () => Promise<ReconcileAllResultDTO>
+  /** dashboard G4：GET /api/v2/settings/deploy 脱敏展示的 env 来源——默认 process.env，测试
+   *  注入固定值以避免依赖跑测试的机器/CI 实际配了什么。 */
+  env?: Record<string, string | undefined>
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -37,12 +45,17 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll } = opts
+  const { db, port, token, distDir, reconcileAll, env = process.env } = opts
+  const settingsRepo = new SettingsRepo(db)
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
     series: (id) => buildSeriesDetail(db, id),
     runs: (offset, limit) => buildRuns(db, offset, limit),
     parked: () => buildParked(db),
+    settings: () => buildSettings(settingsRepo),
+    deploySettings: () => buildDeploySettings(env),
+    roots: () => settingsRepo.listRoots(),
+    fsList: (path) => listMediaSubdirs(path),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
@@ -136,6 +149,80 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         })
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result))
+        return
+      }
+
+      // dashboard G4：PUT /api/v2/settings——GET 同路径的展示走下面纯同步的 handleApiRoute
+      // 分发（RouterDeps.settings），这里只截 method !== 'GET' 的写路径：PUT 之外一律 405
+      // （同 parked/claim 先例：先 method 门再 token 门，PUT 需要解析 JSON body，不能是纯函数）。
+      if (rawPath === '/api/v2/settings' && req.method !== 'GET') {
+        if (req.method !== 'PUT') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        let raw = ''
+        for await (const chunk of req) raw += chunk
+        let body: unknown
+        try {
+          body = JSON.parse(raw || '{}')
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'invalid JSON body' }))
+          return
+        }
+        const result = updateSettings(settingsRepo, body, Date.now())
+        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(result.ok ? result.settings : { error: result.error }))
+        return
+      }
+
+      // dashboard G4：POST/DELETE /api/v2/settings/roots——GET（listRoots 展示）同样走下面纯
+      // 同步的 handleApiRoute 分发，这里只截 method !== 'GET' 的写路径。DELETE 用 query 传参
+      // （?path=...），不用 body——同 GET 端点的传参习惯一致，且删除是幂等操作不需要 JSON body。
+      if (rawPath === '/api/v2/settings/roots' && req.method !== 'GET') {
+        if (req.method !== 'POST' && req.method !== 'DELETE') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        if (req.method === 'DELETE') {
+          const path = url.searchParams.get('path')
+          if (!path) {
+            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(JSON.stringify({ error: 'path query param is required' }))
+            return
+          }
+          const result = settingsRepo.removeRoot(path)
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify(result))
+          return
+        }
+        // POST
+        let raw = ''
+        for await (const chunk of req) raw += chunk
+        let body: unknown
+        try {
+          body = JSON.parse(raw || '{}')
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'invalid JSON body' }))
+          return
+        }
+        const b = (body ?? {}) as { path?: unknown }
+        const result = addMediaRoot(settingsRepo, b.path, Date.now())
+        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(result.ok ? { ok: true } : { error: result.error }))
         return
       }
 

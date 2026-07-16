@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
-import { buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth, buildParked, claimParked } from './apiV2.js'
+import { SettingsRepo } from '../v2/settingsRepo.js'
+import {
+  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth, buildParked, claimParked,
+  buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
+} from './apiV2.js'
 // 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
 import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
@@ -306,5 +313,104 @@ describe('buildRuns', () => {
     const page = buildRuns(db, 1, 50)
     expect(page.length).toBe(1)
     expect(page[0].decision).toBe('no_safe_match')
+  })
+})
+
+// dashboard G4：settings/deploy/fs 三个只读端点的纯函数底座。
+describe('buildSettings（GET /api/v2/settings：白名单五键，未设置=null）', () => {
+  it('全部未设置时五键皆 null', () => {
+    const settings = new SettingsRepo(db)
+    expect(buildSettings(settings)).toEqual({
+      target_languages: null, hardsub_mode: null, exclude_extras: null,
+      trace_retention_days: null, scan_interval_ms: null,
+    })
+  })
+
+  it('已设置的键原样带出字符串值，其余仍为 null', () => {
+    const settings = new SettingsRepo(db)
+    settings.set('target_languages', 'zh,en', NOW)
+    settings.set('hardsub_mode', 'aggressive', NOW)
+    expect(buildSettings(settings)).toEqual({
+      target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: null,
+      trace_retention_days: null, scan_interval_ms: null,
+    })
+  })
+
+  it('白名单外的 key 不出现在 DTO 里（哪怕 repo 里真有这行）', () => {
+    const settings = new SettingsRepo(db)
+    settings.set('not_a_real_setting', 'sneaky', NOW)
+    const dto = buildSettings(settings)
+    expect(Object.keys(dto).sort()).toEqual([...SETTINGS_KEYS].sort())
+  })
+})
+
+describe('buildDeploySettings（GET /api/v2/settings/deploy：env 脱敏只读）', () => {
+  it('secrets 未配置 → present:false，tail 空', () => {
+    const dto = buildDeploySettings({})
+    expect(dto.secrets.TMDB_API_KEY).toEqual({ present: false, tail: '' })
+    expect(dto.secrets.DASHBOARD_TOKEN).toEqual({ present: false, tail: '' })
+  })
+
+  it('secrets 已配置（≥4位）→ present:true，tail 是尾 4 位，不泄露其余部分', () => {
+    const dto = buildDeploySettings({ TMDB_API_KEY: 'sk-abcdef1234567890' })
+    expect(dto.secrets.TMDB_API_KEY).toEqual({ present: true, tail: '7890' })
+    expect(JSON.stringify(dto)).not.toContain('abcdef')
+  })
+
+  it('secrets 短于 4 位 → 全遮（不直接回显短密钥的任何字符）', () => {
+    const dto = buildDeploySettings({ DASHBOARD_TOKEN: 'ab' })
+    expect(dto.secrets.DASHBOARD_TOKEN).toEqual({ present: true, tail: '**' })
+  })
+
+  it('非机密项原样字符串带出；未设置为 null', () => {
+    const dto = buildDeploySettings({ LLM_BASE_URL: 'https://api.deepseek.com/v1', LLM_MODEL: 'deepseek-chat' })
+    expect(dto.nonSecrets.LLM_BASE_URL).toBe('https://api.deepseek.com/v1')
+    expect(dto.nonSecrets.LLM_MODEL).toBe('deepseek-chat')
+    expect(dto.nonSecrets.DASHBOARD_PORT).toBeNull()
+  })
+
+  it('已知全部 secret key 枚举：TMDB/LLM/DASHBOARD/ASSRT/OpenSubtitles 均被覆盖', () => {
+    const dto = buildDeploySettings({})
+    const keys: (keyof typeof dto.secrets)[] = [
+      'TMDB_API_KEY', 'LLM_API_KEY', 'DASHBOARD_TOKEN', 'ASSRT_TOKEN', 'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_PASSWORD',
+    ]
+    for (const key of keys) {
+      expect(dto.secrets[key]).toBeDefined()
+    }
+  })
+})
+
+describe('listMediaSubdirs（GET /api/v2/fs/list：只列子目录名，绝不列文件/读内容）', () => {
+  it('列出子目录名，按字典序排序，排除文件', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fs-list-'))
+    mkdirSync(join(root, 'zeta'))
+    mkdirSync(join(root, 'alpha'))
+    writeFileSync(join(root, 'not-a-dir.txt'), 'x')
+    const result = listMediaSubdirs(root)
+    expect(result).toEqual({ ok: true, dirs: ['alpha', 'zeta'] })
+  })
+
+  it('相对路径拒绝（4xx 语义：ok:false）', () => {
+    const result = listMediaSubdirs('relative/path')
+    expect(result.ok).toBe(false)
+  })
+
+  it('不存在的路径拒绝', () => {
+    const result = listMediaSubdirs('/definitely/does/not/exist/on/this/machine')
+    expect(result.ok).toBe(false)
+  })
+
+  it('路径指向文件（非目录）拒绝', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fs-list-file-'))
+    const file = join(root, 'a-file.txt')
+    writeFileSync(file, 'x')
+    const result = listMediaSubdirs(file)
+    expect(result.ok).toBe(false)
+  })
+
+  it('空目录 → dirs 空数组', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fs-list-empty-'))
+    const result = listMediaSubdirs(root)
+    expect(result).toEqual({ ok: true, dirs: [] })
   })
 })

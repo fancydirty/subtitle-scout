@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
+import { SettingsRepo } from './settingsRepo.js'
 import { makeIngestPass, ingestLock, looksChineseTitle, type IngestDeps } from './ingest.js'
 import type { Recognized, Park } from '../recognition/index.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
@@ -66,7 +67,7 @@ function fakeDisk() {
 
 function makeDeps(over: Partial<IngestDeps> = {}): IngestDeps {
   return {
-    roots: ['/media'],
+    roots: () => ['/media'],
     lib,
     tmdb: fakeTmdb(),
     recognize: vi.fn(async (): Promise<Recognized | Park> => tvResult()),
@@ -1098,5 +1099,33 @@ describe('makeIngestPass — search_attempts 归零 (F-R2-6, R-3 不变式：覆
     const ep = lib.getEpisode('tmdb:1/s1e1')!
     expect(ep.search_attempts).toBe(1)
     expect(ep.recheck_after).toBe(NOW + 1 * DAY)
+  })
+})
+
+// dashboard G4：守备目录 DB 化——roots 不再是启动时冻结的静态数组，deps.roots 是惰性提供者
+// （() => string[]），每轮 pass 起点才求值一次。这里直接接 SettingsRepo（cmdWatch 组装 ingestPass
+// 时用的同一种 `() => settingsRepo.listRoots().map(r => r.path)` 写法）而不是 mock 一个手写的
+// 可变数组，断言的是"生产接线会得到的真实行为"：POST /api/v2/settings/roots（=SettingsRepo.addRoot）
+// 加根后，ingest 的下一轮 pass 就能扫到它，不需要重启进程重建 deps。
+describe('makeIngestPass — roots 是惰性提供者（dashboard G4：守备目录 DB 化）', () => {
+  it('deps.roots 每轮调用时才求值——加根后下一轮 pass 立刻扫描新根，不需要重建 ingestPass', async () => {
+    const settings = new SettingsRepo(db)
+    const seenRootsPerCall: string[][] = []
+    const listVideoFiles = (root: string) => { seenRootsPerCall.push([root]); return [] }
+
+    const pass = makeIngestPass(makeDeps({
+      roots: () => settings.listRoots().map(r => r.path),
+      listVideoFiles,
+    }))
+
+    settings.addRoot('/media/tv', 1_700_000_000_000)
+    await pass()
+    expect(seenRootsPerCall).toEqual([['/media/tv']])
+
+    // POST /api/v2/settings/roots 的等价动作——运行期加一个新根，不重建 ingestPass 闭包。
+    settings.addRoot('/media/anime', 1_700_000_001_000)
+    seenRootsPerCall.length = 0
+    await pass()
+    expect(seenRootsPerCall.sort()).toEqual([['/media/anime'], ['/media/tv']])
   })
 })

@@ -1,5 +1,8 @@
 // src/dashboard/router.ts
-import type { LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO } from './apiV2.js'
+import type {
+  LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
+} from './apiV2.js'
+import type { MediaRoot } from '../v2/settingsRepo.js'
 
 export interface RouterDeps {
   library: () => LibraryItemDTO[]
@@ -7,6 +10,17 @@ export interface RouterDeps {
   runs: (offset: number, limit: number) => RunHistoryDTO[]
   /** 去 Jellyfin 化 P6：park 救援页列表。 */
   parked: () => ParkedItemDTO[]
+  /** dashboard G4：settings 表白名单五键（GET /api/v2/settings，展示层——写入走 server.ts 的
+   *  PUT 分支，纯函数路由这里只读）。 */
+  settings: () => SettingsDTO
+  /** dashboard G4：部署层 env 脱敏只读展示（GET /api/v2/settings/deploy）。 */
+  deploySettings: () => DeploySettingsDTO
+  /** dashboard G4：守备目录清单（GET /api/v2/settings/roots；增删走 server.ts 的 POST/DELETE 分支）。 */
+  roots: () => MediaRoot[]
+  /** dashboard G4：加根 UI 的目录选择器（GET /api/v2/fs/list?path=...）——纯函数路由本身不摸
+   *  文件系统，实际的 existsSync/readdir 判定关在这个注入闭包里（同 library/series 那样，真实
+   *  I/O 由 server.ts 的 wiring 提供，这里只决定 status code）。 */
+  fsList: (path: string) => FsListResult
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -51,6 +65,20 @@ export function handleApiRoute(
   // GET 只读列表走这里（纯同步）；POST /api/parked/claim 需要解析 JSON body + 写库校验，
   // 走 server.ts 里同 /api/v2/reconcile-all 一样的专用分支，不硬塞进这个纯函数路由表。
   if (pathname === '/api/parked') return { status: 200, json: deps.parked() }
+
+  // ---- settings / deploy / roots / fs (dashboard G4：两层设置 + 守备目录 UI 化) ----
+  // 四个都是纯同步 GET，走这个纯函数路由表；写入端点（PUT settings、POST/DELETE roots）需要
+  // body 解析/zod 校验，同 parked/claim 一样落在 server.ts 的独立 rawPath 分支。
+  if (pathname === '/api/v2/settings') return { status: 200, json: deps.settings() }
+  if (pathname === '/api/v2/settings/deploy') return { status: 200, json: deps.deploySettings() }
+  if (pathname === '/api/v2/settings/roots') return { status: 200, json: deps.roots() }
+
+  if (pathname === '/api/v2/fs/list') {
+    const path = req.query.path
+    if (!path) return { status: 400, json: { error: 'path query param is required' } }
+    const result = deps.fsList(path)
+    return result.ok ? { status: 200, json: { dirs: result.dirs } } : { status: 400, json: { error: result.error } }
+  }
 
   return { status: 404, json: { error: 'not found' } }
 }
