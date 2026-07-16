@@ -203,7 +203,14 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
             res.end(JSON.stringify({ error: 'path query param is required' }))
             return
           }
+          // 复审修复 1：removeRoot 自带存在性守卫——不是登记在册的守备目录返回 null（含现存根
+          // 的父目录），这里映射成 404，绝不对非根路径跑级联清库。
           const result = settingsRepo.removeRoot(path)
+          if (!result) {
+            res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(JSON.stringify({ error: 'not a media root' }))
+            return
+          }
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify(result))
           return

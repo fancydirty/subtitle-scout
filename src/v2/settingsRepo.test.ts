@@ -84,7 +84,10 @@ describe('SettingsRepo · seedRootsFromEnv（首启种子）', () => {
 })
 
 describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，只清索引行）', () => {
+  /** 复审修复 1：removeRoot 只对真守备目录动手，seed 时一并把 root 登记进 media_roots——
+   *  没有这一步，级联根本不会跑（存在性守卫直接返回 null）。 */
   function seedUnderRoot(root: string, suffix: string) {
+    settings.addRoot(root, NOW)
     const seriesId = `tmdb:${suffix}`
     lib.upsertSeries({ id: seriesId, name: `Series ${suffix}` })
     const epId = `${seriesId}/s1e1`
@@ -103,7 +106,7 @@ describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，�
 
     const result = settings.removeRoot('/media/tv')
 
-    expect(result.episodes).toBe(1)
+    expect(result?.episodes).toBe(1)
     expect(lib.getEpisode(epId)).toBeNull()
     const after = db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id = ?').get(epId) as { c: number }
     expect(after.c).toBe(0)
@@ -117,7 +120,7 @@ describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，�
 
     const result = settings.removeRoot('/media/tv')
 
-    expect(result.series).toBe(1)
+    expect(result?.series).toBe(1)
     expect(lib.getSeries(seriesId)).toBeNull()
     const catalogRows = db.prepare('SELECT COUNT(*) as c FROM tmdb_seasons WHERE series_id = ?').get(seriesId) as { c: number }
     expect(catalogRows.c).toBe(0)
@@ -133,27 +136,29 @@ describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，�
 
     const result = settings.removeRoot('/media/tv')
 
-    expect(result.series).toBe(0)
+    expect(result?.series).toBe(0)
     expect(lib.getSeries(seriesId)).not.toBeNull()
   })
 
   it('删该根下 movies + 关联 subtitles 子行', () => {
+    settings.addRoot('/media/movies', NOW)
     lib.upsertMovie({ id: 'tmdb:603', name: 'Movie', path: '/media/movies/Movie (1999)/movie.mkv', subStatus: 'covered' })
     lib.markCovered('tmdb:603', '/media/movies/Movie (1999)/movie.zh.srt', 'scout-download')
 
     const result = settings.removeRoot('/media/movies')
 
-    expect(result.movies).toBe(1)
+    expect(result?.movies).toBe(1)
     expect(lib.getMovie('tmdb:603')).toBeNull()
   })
 
   it('删该根下 parked_paths', () => {
+    settings.addRoot('/media/tv', NOW)
     lib.upsertParkedPath('/media/tv/Unknown/e1.mkv', 'ambiguous match', NOW)
     lib.upsertParkedPath('/media/anime/Unknown/e1.mkv', 'ambiguous match', NOW)
 
     const result = settings.removeRoot('/media/tv')
 
-    expect(result.parked).toBe(1)
+    expect(result?.parked).toBe(1)
     expect(lib.listParkedPaths().map(p => p.path)).toEqual(['/media/anime/Unknown/e1.mkv'])
   })
 
@@ -169,13 +174,14 @@ describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，�
 
     const result = settings.removeRoot('/media/tv')
 
-    expect(result.episodes).toBe(1)
+    expect(result?.episodes).toBe(1)
     expect(lib.getSeries('tmdb:b')).not.toBeNull()
     expect(lib.episodePathsForSeries('tmdb:b')).toEqual(['/media/tv2/Series b/Season 01/e1.mkv'])
   })
 
   it('前缀安全：路径含 % 和 _ 时按字面量匹配，不当 LIKE 通配符（"100% Pascal-sensei" 场景）', () => {
     const root = '/media/tv'
+    settings.addRoot(root, NOW)
     lib.upsertSeries({ id: 'tmdb:pascal', name: '100% Pascal-sensei' })
     lib.upsertEpisode({
       id: 'tmdb:pascal/s1e1', seriesId: 'tmdb:pascal', season: 1, episode: 1, name: 'E1',
@@ -191,13 +197,29 @@ describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，�
 
     const result = settings.removeRoot(root)
 
-    expect(result.episodes).toBe(1)
+    expect(result?.episodes).toBe(1)
     expect(lib.getSeries('tmdb:pascal')).toBeNull()
     expect(lib.getSeries('tmdb:decoy')).not.toBeNull()
   })
 
-  it('对不存在的根路径调用是安全空操作（幂等 DELETE 语义）', () => {
+  // 复审修复 1（安全脚枪）：removeRoot 对不是守备目录的路径必须整体拒绝——存在性守卫在级联
+  // 之前，返回 null 且零删除。没有这道守卫，DELETE ?path=/media（现存根的公共父目录）甚至
+  // ?path=/ 会把该前缀下全部索引行静默清光，而它根本不是守备目录。
+  it('非守备目录路径 → 返回 null，不删任何行', () => {
     const result = settings.removeRoot('/media/never-added')
-    expect(result).toEqual({ episodes: 0, movies: 0, series: 0, parked: 0 })
+    expect(result).toBeNull()
+  })
+
+  it('现存根的父目录（本身不是守备目录）→ 返回 null，子根下的行一根毫毛都不掉', () => {
+    const { seriesId, epId } = seedUnderRoot('/media/tv', 'a')
+    lib.upsertParkedPath('/media/tv/Unknown/e1.mkv', 'ambiguous match', NOW)
+
+    const result = settings.removeRoot('/media')
+
+    expect(result).toBeNull()
+    expect(lib.getSeries(seriesId)).not.toBeNull()
+    expect(lib.getEpisode(epId)).not.toBeNull()
+    expect(lib.listParkedPaths()).toHaveLength(1)
+    expect(settings.listRoots().map(r => r.path)).toEqual(['/media/tv'])
   })
 })

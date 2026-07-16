@@ -59,10 +59,11 @@ export class SettingsRepo {
       .run(path, now)
   }
 
-  /** 首启种子：media_roots 为空且 envRaw 解析非空（逗号分隔，trim+filter，沿 cli/index.ts
-   *  旧 mediaRoots() 同一套解析法）时逐条写入；否则空操作——DB 一旦有过任何根（哪怕之后被全部
-   *  删光），就再也不会被 env 值悄悄"复活"，守住"守备目录是产品层状态，env 只是首启种子值"
-   *  这条分界（design 裁决）。 */
+  /** 首启种子：media_roots **当前为空**且 envRaw 解析非空（逗号分隔，trim+filter，沿
+   *  cli/index.ts 旧 mediaRoots() 同一套解析法）时逐条写入；否则空操作。注意判据是"当前
+   *  count=0"而非"从未有过根"——在 dashboard 里删光全部根后重启进程，env 值会重新种入。
+   *  这是可接受的（复审修复 3 确认，符合计划原文"空→种子"）：零守备目录的守护进程本无事
+   *  可做，env 种子是合理的恢复路径；部署层想彻底清空应同时清掉 MEDIA_ROOTS env。 */
   seedRootsFromEnv(envRaw: string | undefined, now: number): void {
     const existing = this.db.prepare('SELECT COUNT(*) as c FROM media_roots').get() as { c: number }
     if (existing.c > 0) return
@@ -72,6 +73,10 @@ export class SettingsRepo {
 
   /** 移除一个守备目录：单事务级联清理该根下的索引行——**磁盘文件不动，只清索引行**（用户
    *  在 dashboard 里删的是"扫描范围"，不是委托本软件去删用户的媒体文件）。
+   *
+   *  存在性守卫（复审修复 1，安全脚枪）：path 必须是 media_roots 里登记在册的守备目录，否则
+   *  返回 null、不进事务、不删任何行——没有这道门，对现存根的公共父目录（如 /media 甚至 /）
+   *  发一次 DELETE 就会把该前缀下全部索引行静默清光，而它根本不是守备目录。
    *
    *  前缀匹配用 `substr(path,1,length(?)) = ?`（? = root+'/'），不用 LIKE——媒体路径可以合法
    *  含有 % 和 _（如 "100% Pascal-sensei"、"Look_Back"），LIKE 的通配符语义会把这些字面字符
@@ -83,7 +88,10 @@ export class SettingsRepo {
    *  series 中因此变空壳的一并删除（连带清它的 tmdb_seasons 应有集缓存——G2 的缓存跟着 series
    *  走，留着就是永久性孤儿行）→ 删该根下的 parked_paths 户口。jobs 队列行不动：mapper 对
    *  "目标消失"已有防御（claim 时目标已被删的行走 idempotent no-op），登记册后续清算。 */
-  removeRoot(path: string): RemoveRootResult {
+  removeRoot(path: string): RemoveRootResult | null {
+    const isRoot = this.db.prepare('SELECT 1 FROM media_roots WHERE path = ?').get(path)
+    if (!isRoot) return null
+
     const prefix = path.endsWith('/') ? path : `${path}/`
 
     const tx = this.db.transaction((): RemoveRootResult => {

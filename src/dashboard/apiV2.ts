@@ -528,18 +528,24 @@ export type FsListResult = { ok: true; dirs: string[] } | { ok: false; error: st
 /** 只列子**目录**名（排序），绝不列文件、绝不读文件内容——容器挂载本身就是可见性边界，这里
  *  不设额外白名单（同 Jellyfin 的目录选择器思路：能挂进容器的目录才可能被看到，配置只是在
  *  已挂载范围内挑选，不是打开一个任意读盘接口）。path 必须是绝对路径；resolve 后
- *  existsSync + isDirectory 才列，否则给一个诚实的 4xx 语义（ok:false + error）而不是抛错。 */
+ *  existsSync + isDirectory 才列，否则给一个诚实的 4xx 语义（ok:false + error）而不是抛错。
+ *  复审修复 2：statSync/readdirSync 对权限拒绝（EACCES，NAS 挂载常态）会同步抛错——这是用户
+ *  点目录浏览器时的正常路况，不是服务器故障，同样收敛成 ok:false，不许炸到 server.ts 变 500。 */
 export function listMediaSubdirs(rawPath: string): FsListResult {
   if (!rawPath.startsWith('/')) return { ok: false, error: 'path must be an absolute path' }
   const resolved = resolve(rawPath)
   if (!existsSync(resolved)) return { ok: false, error: 'path does not exist' }
-  const stat = statSync(resolved)
-  if (!stat.isDirectory()) return { ok: false, error: 'path is not a directory' }
-  const dirs = readdirSync(resolved, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name)
-    .sort()
-  return { ok: true, dirs }
+  try {
+    const stat = statSync(resolved)
+    if (!stat.isDirectory()) return { ok: false, error: 'path is not a directory' }
+    const dirs = readdirSync(resolved, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort()
+    return { ok: true, dirs }
+  } catch {
+    return { ok: false, error: 'path is not readable (permission denied?)' }
+  }
 }
 
 // ---- Settings 写入（PUT /api/v2/settings、POST/DELETE /api/v2/settings/roots）----
@@ -606,8 +612,14 @@ export function addMediaRoot(
   if (!existsSync(resolved)) {
     return { ok: false, error: 'path does not exist' }
   }
-  if (!statSync(resolved).isDirectory()) {
-    return { ok: false, error: 'path is not a directory' }
+  // 复审修复 2：同 listMediaSubdirs——statSync 对权限拒绝（EACCES）的同步抛错收敛成 ok:false
+  // 的 4xx 语义（用户给了一个进程无权探测的路径是输入问题，不是服务器故障）。
+  try {
+    if (!statSync(resolved).isDirectory()) {
+      return { ok: false, error: 'path is not a directory' }
+    }
+  } catch {
+    return { ok: false, error: 'path is not readable (permission denied?)' }
   }
   settingsRepo.addRoot(resolved, now)
   return { ok: true }

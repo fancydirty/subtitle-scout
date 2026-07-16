@@ -556,6 +556,25 @@ describe('startDashboard (v2)', () => {
         expect(res.status).toBe(400)
       })
 
+      // 复审修复 1：不是守备目录的路径（含现存根的父目录）→ 404，零删除——防"一发 API 调用
+      // 把公共父前缀下全部索引行清光"的安全脚枪。
+      it('非守备目录路径（现存根的父目录）→ 404，索引行分毫不动', async () => {
+        const lib = new LibraryRepo(db)
+        const settings = new SettingsRepo(db)
+        settings.addRoot('/media/tv', NOW)
+        lib.upsertSeries({ id: 'tmdb:77', name: 'Keep Me' })
+        lib.upsertEpisode({
+          id: 'tmdb:77/s1e1', seriesId: 'tmdb:77', season: 1, episode: 1, name: 'E1',
+          path: '/media/tv/Keep Me/Season 01/e1.mkv', subStatus: 'missing',
+        })
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media')}`, { method: 'DELETE' })
+        expect(res.status).toBe(404)
+        expect((await res.json()).error).toEqual(expect.any(String))
+        expect(lib.getSeries('tmdb:77')).not.toBeNull()
+        expect(settings.listRoots().map(r => r.path)).toEqual(['/media/tv'])
+      })
+
       it('token 门', async () => {
         const { base } = await start(distWith('<!doctype html>'), 's3cret')
         const res = await fetch(`${base}/api/v2/settings/roots?path=/media/tv`, { method: 'DELETE' })

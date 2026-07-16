@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb, type ScoutDb } from '../v2/db.js'
@@ -412,5 +412,23 @@ describe('listMediaSubdirs（GET /api/v2/fs/list：只列子目录名，绝不�
     const root = mkdtempSync(join(tmpdir(), 'fs-list-empty-'))
     const result = listMediaSubdirs(root)
     expect(result).toEqual({ ok: true, dirs: [] })
+  })
+
+  // 复审修复 2：权限拒绝（EACCES，NAS 挂载常态）是用户点目录浏览器时的正常路况，必须收敛成
+  // ok:false 的 4xx 语义，不能同步抛错炸到 server.ts 变 500。用 chmod 000 真实触发 readdirSync
+  // 的 EACCES；root 用户不受权限位约束（chmod 000 后照样能读），该场景下跳过——CI 若以 root
+  // 跑，这条护栏由 try/catch 的存在本身兜底，无需 mock fs 层来强行复现。
+  it.skipIf(process.getuid?.() === 0)('无读权限的目录（EACCES）→ ok:false，不抛错', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'fs-list-eacces-'))
+    const locked = join(parent, 'locked')
+    mkdirSync(locked)
+    chmodSync(locked, 0o000)
+    try {
+      const result = listMediaSubdirs(locked)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toMatch(/not readable/)
+    } finally {
+      chmodSync(locked, 0o755) // 恢复权限，让临时目录可被系统正常清理
+    }
   })
 })
