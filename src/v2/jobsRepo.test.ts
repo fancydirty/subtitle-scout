@@ -578,11 +578,16 @@ describe('realign job kind', () => {
     expect(repo.get(job.id)!.plan_ref).toBeNull()
   })
 
-  it('retireAllForSeries：把该剧 wanted/failed 的 series_season job 退休为 done，active 态不动', () => {
+  // F10（审计修正 2026-07-16）：retireAllForSeries 曾经只退休 kind='series_season' 的行——
+  // 那是已退役的旧管线 kind（legacyJobRouting.ts），v3 起没有任何生产代码再写它，这个方法
+  // 因此从未真正作废过 realign 该作废的判决。真正对着"旧排布"下判决的行是 kind='worker_task'
+  // （find_subtitle 的 dormant/failed 判决）。下面两个测试就地适配为 worker_task 身份，
+  // series_season 的对应回归测试挪到独立 it（证明该 kind 不再被本方法触碰）。
+  it('retireAllForSeries：把该剧 wanted/failed 的 worker_task job 退休为 done，active 态不动', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 2 }, now)
-    repo.claimNext(now) // season 1 或 2 变 searching（active，不该被 retire）
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'realign' }, null, now)
+    repo.claimNext(now) // 两行之一变 searching（active，不该被 retire）
     const retired = repo.retireAllForSeries('s1', now)
     expect(retired).toBe(1)
   })
@@ -591,15 +596,55 @@ describe('realign job kind', () => {
   // "对着错误排布搜索穷尽"的判决，不退休它，realign 后这一季永远不会被重新搜索。
   it('retireAllForSeries 连 dormant 一起退休，下一轮聚合能重建全新 wanted job', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    repo.forceState('s1', 1, 'dormant', now)               // 旧排布下搜索穷尽的休眠判决
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    const job = repo.claimNext(now)!
+    repo.park(job.id, 'old layout search exhausted', now)   // 旧排布下搜索穷尽的休眠判决
     expect(repo.retireAllForSeries('s1', now)).toBe(1)
-    expect(repo.find('s1', 1)!.state).toBe('done')
-    // realign 后新一轮 scan/aggregate 重新 upsert → done→wanted 复活，attempt 归零，重新可搜
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now + 1)
-    const revived = repo.find('s1', 1)!
+    expect(repo.get(job.id)!.state).toBe('done')
+    // realign 后新一轮派活重新 upsert 同 identity → done→wanted 复活，attempt 归零，重新可搜
+    const revival = repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle' }, null, now + 1)
+    expect(revival).toEqual({ outcome: 'revived' })
+    const revived = repo.get(job.id)!
     expect(revived.state).toBe('wanted')
     expect(revived.attempt).toBe(0)
+  })
+
+  it('retireAllForSeries 不再触碰 kind=series_season（已退役 kind，v3 无生产代码再写它）', () => {
+    const now = Date.now()
+    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    repo.forceState('s1', 1, 'dormant', now)
+    expect(repo.retireAllForSeries('s1', now)).toBe(0)
+    expect(repo.find('s1', 1)!.state).toBe('dormant')
+  })
+
+  it('retireAllForSeries 作废该剧全部静止态 worker_task 行（wanted/failed/dormant→done），不碰别剧', () => {
+    const now = Date.now()
+
+    // failed：先建、先领、先失败——这一刻它是唯一 wanted 行，claimNext 落点无歧义。
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'realign' }, null, now)
+    const failedJob = repo.claimNext(now)!
+    repo.completeError(failedJob.id, 'boom', now) // → failed，next_retry_at 在近未来，不会被下面的 claimNext 误领
+
+    // dormant
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'orchestrate' }, null, now)
+    const dormantJob = repo.claimNext(now)!
+    repo.park(dormantJob.id, 'parked for test', now)
+
+    // wanted：留原样不动
+    repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    const wantedJobId = dormantJob.id + 1
+
+    // 别剧：不该被碰
+    repo.upsertWorkerTask({ seriesId: 's2', season: null, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+    const otherSeriesJobId = wantedJobId + 1
+
+    const retired = repo.retireAllForSeries('s1', now)
+    expect(retired).toBe(3)
+
+    expect(repo.get(failedJob.id)!.state).toBe('done')
+    expect(repo.get(dormantJob.id)!.state).toBe('done')
+    expect(repo.get(wantedJobId)!.state).toBe('done')
+    expect(repo.get(otherSeriesJobId)!.state).toBe('wanted') // 别剧不受影响
   })
 
   // D-review #1：UPSERT_CONFLICT_SQL 曾无条件 plan_ref = excluded.plan_ref——upsertWanted 的
@@ -735,6 +780,55 @@ describe('worker_task dispatch (v3 phase ④)', () => {
     repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle', seasons: [1] }, null, now)
     repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle', seasons: [1, 2] }, null, now)
     expect(repo.countByState('wanted')).toBe(1)
+  })
+
+  // R-2（裁决 2026-07-16，审计 A-F1/F2）：upsertWorkerTask 曾经对非 done 态行静默 no-op 且从
+  // 不返回任何东西——dispatch 工具因此无条件回报 {dispatched:true}，dormant/failed 行悄悄吞掉
+  // 主代理的新派发还谎报成功（永久活锁）。现在每次 upsert 返回它实际做了什么，四态穷尽。
+  describe('upsertWorkerTask outcome 回执 (R-2)', () => {
+    it('created/revived/coalesced/blocked_dormant 四态', () => {
+      const now = Date.now()
+
+      const created = repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+      expect(created).toEqual({ outcome: 'created' })
+
+      const coalesced = repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', retry: true }, null, now)
+      expect(coalesced).toEqual({ outcome: 'coalesced', pendingState: 'wanted' })
+
+      const job = repo.claimNext(now)!
+      repo.completeDone(job.id, now)
+      const revived = repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', round: 2 }, null, now)
+      expect(revived).toEqual({ outcome: 'revived' })
+
+      const job2 = repo.claimNext(now)!
+      repo.park(job2.id, 'config defect', now)
+      const blocked = repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+      expect(blocked).toEqual({ outcome: 'blocked_dormant', lastError: 'config defect' })
+    })
+
+    it('blocked_dormant 是唯一"没写"的结局：行完全不改（连 updated_at 也不刷），事实原样返回', () => {
+      const now = Date.now()
+      repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+      const job = repo.claimNext(now)!
+      repo.park(job.id, 'realign executor not wired', now)
+      const before = repo.get(job.id)!
+
+      const result = repo.upsertWorkerTask(
+        { seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle', attempt: 'new' }, null, now + 1000,
+      )
+
+      expect(result).toEqual({ outcome: 'blocked_dormant', lastError: 'realign executor not wired' })
+      expect(repo.get(job.id)!).toEqual(before)
+    })
+
+    it('coalesced 保留 pendingState=failed（不是只报 wanted）', () => {
+      const now = Date.now()
+      repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
+      const job = repo.claimNext(now)!
+      repo.completeError(job.id, 'boom', now)
+      const result = repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now + 1)
+      expect(result).toEqual({ outcome: 'coalesced', pendingState: 'failed' })
+    })
   })
 })
 

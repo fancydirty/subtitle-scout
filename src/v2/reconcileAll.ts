@@ -56,13 +56,30 @@ export interface OrchestrateWorkerTaskDeps {
   maxDispatchesPerOrchestrator?: number
 }
 
+/** B3（审计发现，意图黑洞）：spawn_sibling_orchestrator (orchestratorAgent.tools.ts) writes
+ *  remainingWorkSummary into the spawned worker_task's payload as free-text handoff context, but
+ *  until this fix nothing ever read it back out — the parent pass's context vanished the moment
+ *  it was written. Tolerant of a missing/malformed payload (no remainingWorkSummary key, payload
+ *  is null, or outright invalid JSON): a dirty handoff note must never crash the sibling pass
+ *  that's supposed to pick up the slack, so any parse failure silently degrades to "no note". */
+function readRemainingWorkSummary(payload: string | null): string | undefined {
+  if (!payload) return undefined
+  try {
+    const parsed = JSON.parse(payload) as { remainingWorkSummary?: unknown }
+    return typeof parsed.remainingWorkSummary === 'string' ? parsed.remainingWorkSummary : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Claims-and-runs one worker_task row whose payload.taskType === 'orchestrate' (a sibling
  *  orchestrator spawned by spawn_sibling_orchestrator when a parent pass hit its 100-dispatch
  *  cap, phase ⑤). Mirrors runRealignWorkerTask/runFindSubtitleWorkerTask's shape (phases ⑥/⑦):
  *  wraps the agent invocation so a thrown error (schema mismatch, step-cap exhaustion, network)
  *  fails the job via completeError instead of propagating and crashing the daemon's claim loop —
  *  unlike those two worker kinds, a sibling orchestrator pass has no partial/no-match outcome to
- *  report; any successful return completes the job done. */
+ *  report; any successful return completes the job done. B3: reads the claimed job's own
+ *  remainingWorkSummary (if the parent pass left one) and threads it through as promptSuffix. */
 export async function runOrchestrateWorkerTask(
   job: Job, deps: OrchestrateWorkerTaskDeps, jobs: Pick<JobsRepo, 'upsertWorkerTask' | 'get' | 'completeDone' | 'completeError'>,
 ): Promise<OrchestratorDecision | null> {
@@ -70,6 +87,7 @@ export async function runOrchestrateWorkerTask(
     const runPass = makeOrchestratorAgent({
       model: deps.model, lib: deps.lib, tmdb: deps.tmdb, jobs, now: deps.now, orchestratorJobId: job.id,
       stepCap: deps.stepCap, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator,
+      promptSuffix: readRemainingWorkSummary(job.payload),
     })
     const decision = await runPass()
     jobs.completeDone(job.id, deps.now())

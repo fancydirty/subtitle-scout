@@ -309,4 +309,55 @@ describe('makeOrchestratorAgent', () => {
       taskType: 'orchestrate', remainingWorkSummary: 'series s3..s10 still need dispatch',
     })
   })
+
+  // B3（审计发现，意图黑洞）：spawn_sibling_orchestrator 的 remainingWorkSummary 写进 payload
+  // 后此前从未被读回——sibling 分片交接的上下文原地失踪。promptSuffix 是读回的落点：拼进
+  // agent.generate 的 prompt 末尾，措辞明确"context, not command"（北极星④：机械层只产事实，
+  // 永不产指令），sibling 仍必须从 living-doc 事实重新推导要不要派、派什么。
+  describe('promptSuffix (sibling handoff note, B3)', () => {
+    it('appends the handoff note to the initial prompt when promptSuffix is provided', async () => {
+      let capturedPromptText = ''
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          const userMessage = options.prompt.find(m => m.role === 'user')
+          const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+          capturedPromptText = textPart?.text ?? ''
+          return finalizeResult({
+            dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'nothing to do',
+          })
+        },
+      })
+
+      const runPass = makeOrchestratorAgent({
+        model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+        promptSuffix: 'series s3..s10 still need dispatch',
+      })
+      await runPass()
+
+      expect(capturedPromptText).toContain('Handoff note from the orchestrator that spawned you')
+      expect(capturedPromptText).toContain('context, not command')
+      expect(capturedPromptText).toContain('series s3..s10 still need dispatch')
+    })
+
+    it('omits the handoff note entirely when promptSuffix is not provided (no phantom instructions)', async () => {
+      let capturedPromptText = ''
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          const userMessage = options.prompt.find(m => m.role === 'user')
+          const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+          capturedPromptText = textPart?.text ?? ''
+          return finalizeResult({
+            dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'nothing to do',
+          })
+        },
+      })
+
+      const runPass = makeOrchestratorAgent({
+        model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+      })
+      await runPass()
+
+      expect(capturedPromptText).not.toContain('Handoff note')
+    })
+  })
 })

@@ -99,4 +99,62 @@ describe('runOrchestrateWorkerTask', () => {
     expect(row.state).toBe('failed')
     expect(row.last_error).toMatch(/network exploded/)
   })
+
+  // B3（审计发现，意图黑洞）：spawn_sibling_orchestrator 写下的 remainingWorkSummary 此前从未
+  // 被读回——runOrchestrateWorkerTask 是读回它的落点，claim 到的 job.payload 里若带这个字段，
+  // 就把它作为 promptSuffix 传给 makeOrchestratorAgent，最终拼进 sibling pass 的 prompt。
+  it('payload.remainingWorkSummary is read back and injected into the sibling pass prompt as a handoff note', async () => {
+    const db = openDb(':memory:')
+    const jobs = new JobsRepo(db)
+    const lib = new LibraryRepo(db)
+    jobs.upsertWorkerTask(
+      { seriesId: 'orchestrator-shard-root-2', season: null, movieId: null },
+      { taskType: 'orchestrate', remainingWorkSummary: 'series s3..s10 still need dispatch' },
+      null, 1000,
+    )
+    const job = jobs.claimNext(1000)!
+
+    let capturedPromptText = ''
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        const userMessage = options.prompt.find((m: any) => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        return finalizeResult(EMPTY_DECISION)
+      },
+    })
+
+    const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 1000, stepCap: 10 }, jobs)
+
+    expect(decision).toEqual(EMPTY_DECISION)
+    expect(capturedPromptText).toContain('Handoff note from the orchestrator that spawned you')
+    expect(capturedPromptText).toContain('series s3..s10 still need dispatch')
+  })
+
+  it('payload without remainingWorkSummary (or malformed JSON) → no handoff note in the prompt, does not throw', async () => {
+    const db = openDb(':memory:')
+    const jobs = new JobsRepo(db)
+    const lib = new LibraryRepo(db)
+    jobs.upsertWorkerTask(
+      { seriesId: 'orchestrator-shard-root-3', season: null, movieId: null },
+      { taskType: 'orchestrate' }, // no remainingWorkSummary at all
+      null, 1000,
+    )
+    const job = jobs.claimNext(1000)!
+
+    let capturedPromptText = ''
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        const userMessage = options.prompt.find((m: any) => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        return finalizeResult(EMPTY_DECISION)
+      },
+    })
+
+    const decision = await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 1000, stepCap: 10 }, jobs)
+
+    expect(decision).toEqual(EMPTY_DECISION)
+    expect(capturedPromptText).not.toContain('Handoff note')
+  })
 })

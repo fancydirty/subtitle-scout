@@ -1,7 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
-import type { JobsRepo } from '../v2/jobsRepo.js'
+import type { JobsRepo, WorkerTaskUpsertOutcome } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { tmdbIdFromOwnId } from '../v2/ownIds.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
@@ -124,6 +124,30 @@ function capCheck(counter: DispatchCounter, cap: number): { error: string } | nu
   return null
 }
 
+/** R-2（裁决 2026-07-16，审计 A-F1/F2）：dispatch 工具如实转告 upsertWorkerTask 的四态回执，
+ *  不再无条件回报 {dispatched:true}——考古定罪：旧代码在 upsertWorkerTask 之后无条件
+ *  `counter.count++; return { dispatched: true, ... }`，dormant/failed 行被静默 no-op 吞掉时
+ *  主代理还是收到"派发成功"的假象，永久活锁（以为派了，其实那一行纹丝不动）。cap 只数真正
+ *  落地的新/复活行（created/revived）——coalesced（已有等价行在途，本次派发合并进它）与
+ *  blocked_dormant（这个身份被停车，本次派发无法唤醒）都没有产生任何新的待办工作量，不该
+ *  占用 orchestrator 的 100-dispatch 预算。 */
+function reportDispatchOutcome(result: WorkerTaskUpsertOutcome, counter: DispatchCounter, cap: number) {
+  if (result.outcome === 'created' || result.outcome === 'revived') {
+    counter.count++
+    return { dispatched: true, outcome: result.outcome, remainingCapacity: cap - counter.count }
+  }
+  if (result.outcome === 'coalesced') {
+    return {
+      dispatched: false, outcome: 'coalesced' as const, pendingState: result.pendingState,
+      note: 'an identical task is already pending — your dispatch merged into it, no new row was created',
+    }
+  }
+  return {
+    dispatched: false, outcome: 'blocked_dormant' as const, reason: result.lastError,
+    note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
+  }
+}
+
 /** A well-formed identity is exactly one of (seriesId non-null, movieId null) XOR (movieId
  *  non-null, seriesId null) — plain XOR, no season involved.
  *
@@ -157,7 +181,11 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
       'pass seasons:[3] when only season 3 exists on disk, seasons:[1,2,3] to have one worker ' +
       'sweep a series whose seasons are all missing subtitles (one season pack often covers them ' +
       'all), or omit seasons to cover every season that currently has gaps. For a movie pass ' +
-      'movieId alone. Huge backlogs may be split into several dispatches at your discretion.',
+      'movieId alone. Huge backlogs may be split into several dispatches at your discretion. ' +
+      'The result tells you truthfully what happened: outcome created/revived means a new or ' +
+      'revived worker_task row landed and it counts against your dispatch cap; outcome ' +
+      'coalesced/blocked_dormant means nothing new was written (an identical task was already ' +
+      'pending, or this identity is parked dormant) and it does NOT consume your dispatch budget.',
     // Tolerant of the real model's natural shape (proven live, v3 live matrix, 2026-07-13): it
     // OMITS the other kind's field entirely (e.g. no `movieId` key at all when dispatching a
     // series) rather than sending an explicit JSON null, and may send seasons entries as strings
@@ -176,13 +204,12 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
     execute: async ({ seriesId, seasons, movieId, reason }) => {
       const capped = capCheck(counter, cap)
       if (capped) return capped
-      deps.jobs.upsertWorkerTask(
+      const result = deps.jobs.upsertWorkerTask(
         { seriesId, season: null, movieId },
         { taskType: 'find_subtitle', seasons: seasons && seasons.length > 0 ? seasons : null, reason },
         deps.parentJobId, deps.now(),
       )
-      counter.count++
-      return { dispatched: true, remainingCapacity: cap - counter.count }
+      return reportDispatchOutcome(result, counter, cap)
     },
   })
 }
@@ -194,14 +221,18 @@ export function makeDispatchRealignTaskTool(deps: DispatchDeps, counter: Dispatc
       'Dispatch a realign worker task for one series whose on-disk layout looks misaligned ' +
       'with TMDB (e.g. absolute-numbering flat layout). Dispatch this BEFORE find_subtitle for ' +
       'the same series if both are pending — realigning first means the subsequent ' +
-      'find-subtitle task sees correctly-numbered files.',
+      'find-subtitle task sees correctly-numbered files. The result tells you truthfully what ' +
+      'happened: outcome created/revived means a new or revived worker_task row landed and it ' +
+      'counts against your dispatch cap; outcome coalesced/blocked_dormant means nothing new ' +
+      'was written and it does NOT consume your dispatch budget.',
     inputSchema: z.object({ seriesId: z.string(), reason: z.string() }),
     execute: async ({ seriesId, reason }) => {
       const capped = capCheck(counter, cap)
       if (capped) return capped
-      deps.jobs.upsertWorkerTask({ seriesId, season: null, movieId: null }, { taskType: 'realign', reason }, deps.parentJobId, deps.now())
-      counter.count++
-      return { dispatched: true, remainingCapacity: cap - counter.count }
+      const result = deps.jobs.upsertWorkerTask(
+        { seriesId, season: null, movieId: null }, { taskType: 'realign', reason }, deps.parentJobId, deps.now(),
+      )
+      return reportDispatchOutcome(result, counter, cap)
     },
   })
 }

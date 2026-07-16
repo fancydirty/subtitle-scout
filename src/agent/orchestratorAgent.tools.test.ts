@@ -3,8 +3,8 @@ import { asSchema } from 'ai'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
-  makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeCheckSeriesLayoutTool,
-  type DispatchCounter, type MissingCoveragePage,
+  makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeDispatchRealignTaskTool,
+  makeCheckSeriesLayoutTool, type DispatchCounter, type MissingCoveragePage,
 } from './orchestratorAgent.tools.js'
 
 const fakeOpts = { toolCallId: 't1', messages: [] } as any
@@ -84,7 +84,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('rejects seriesId+movieId set together', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 's1', movieId: 'm1', reason: 'bad identity',
@@ -95,7 +95,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('rejects an all-null identity', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: null, movieId: null, reason: 'nothing to dispatch',
@@ -106,7 +106,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('accepts a well-formed series identity with a seasons array (e.g. seasons:[1,2,3] to sweep a whole series in one worker)', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 's1', seasons: [1, 2, 3], movieId: null, reason: 'missing s1-3',
@@ -117,7 +117,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('accepts a well-formed movie-only identity', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: null, seasons: null, movieId: 'm1', reason: 'missing movie',
@@ -132,7 +132,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('accepts movieId/seasons OMITTED entirely for a series dispatch (real model natural shape) — normalizes to movieId:null, seasons:null', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 'norm', reason: 'x',
@@ -143,7 +143,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('accepts seriesId/seasons OMITTED entirely for a movie-only dispatch (real model natural shape) — normalizes to seriesId:null, seasons:null', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       movieId: 'mov', reason: 'x',
@@ -154,7 +154,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('coerces string-encoded season numbers inside the seasons array (["1","2"]) to integers', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 'norm', seasons: ['1', '2'], movieId: null, reason: 'x',
@@ -165,7 +165,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('"None" string sentinel for seasons collapses to null (full-series scope, not an empty array)', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 'norm', seasons: 'None', movieId: null, reason: 'x',
@@ -176,7 +176,7 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
   it('still rejects a genuinely-malformed identity (seriesId AND movieId both set) even with seasons present', async () => {
     const counter: DispatchCounter = { count: 0 }
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: () => {} }, now: () => 1000, parentJobId: null }, counter,
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' as const }) }, now: () => 1000, parentJobId: null }, counter,
     )
     const result = await validate(dispatchFindSubtitle.inputSchema, {
       seriesId: 'norm', seasons: [1], movieId: 'mov', reason: 'x',
@@ -188,7 +188,10 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
     const counter: DispatchCounter = { count: 0 }
     const calls: unknown[][] = []
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args) } }, now: () => 1000, parentJobId: null }, counter,
+      {
+        jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args); return { outcome: 'created' } as const } },
+        now: () => 1000, parentJobId: null,
+      }, counter,
     )
     await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1, 2, 3], movieId: null, reason: 'sweep whole series' }, fakeOpts)
     expect(calls).toHaveLength(1)
@@ -201,7 +204,10 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
     const counter: DispatchCounter = { count: 0 }
     const calls: unknown[][] = []
     const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
-      { jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args) } }, now: () => 1000, parentJobId: null }, counter,
+      {
+        jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args); return { outcome: 'created' } as const } },
+        now: () => 1000, parentJobId: null,
+      }, counter,
     )
     await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: null, movieId: null, reason: 'whole series, all gaps' }, fakeOpts)
     expect(calls).toHaveLength(1)
@@ -219,6 +225,126 @@ describe('dispatch_find_subtitle_task identity + scope validation (R-11)', () =>
     expect(both.success).toBe(false)
     const neither = await validate(dispatchFindSubtitle.inputSchema, { seriesId: null, movieId: null, reason: 'x' })
     expect(neither.success).toBe(false)
+  })
+})
+
+// R-2（裁决 2026-07-16，审计 A-F1/F2）：upsertWorkerTask 曾经对非 done 态行静默 no-op，而 dispatch
+// 工具无条件回报 {dispatched:true}——dormant/failed 行悄悄吞掉主代理的新派发还谎报成功（永久
+// 活锁）。这里锁死 dispatch 工具如实转告 upsertWorkerTask 的四态回执，且 coalesced/blocked_dormant
+// 不耗 dispatch 预算（cap 只数真正落地的新/复活行）。
+describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upsertWorkerTask 回执 (R-2)', () => {
+  it('created → {dispatched:true, outcome:created, remainingCapacity}，耗 1 个 cap 名额', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' }) }, now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5 },
+      counter,
+    )
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    expect(result).toEqual({ dispatched: true, outcome: 'created', remainingCapacity: 4 })
+    expect(counter.count).toBe(1)
+  })
+
+  it('revived → {dispatched:true, outcome:revived, remainingCapacity}，同 created 一样耗 cap', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'revived' }) }, now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5 },
+      counter,
+    )
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    expect(result).toEqual({ dispatched: true, outcome: 'revived', remainingCapacity: 4 })
+    expect(counter.count).toBe(1)
+  })
+
+  it('coalesced → {dispatched:false, outcome:coalesced, pendingState, note}，不耗 cap', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted' }) },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
+      },
+      counter,
+    )
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    expect(result).toEqual({
+      dispatched: false, outcome: 'coalesced', pendingState: 'wanted',
+      note: 'an identical task is already pending — your dispatch merged into it, no new row was created',
+    })
+    expect(counter.count).toBe(0)
+  })
+
+  it('blocked_dormant → {dispatched:false, outcome:blocked_dormant, reason, note}，不耗 cap', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => ({ outcome: 'blocked_dormant', lastError: 'config defect' }) },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
+      },
+      counter,
+    )
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    expect(result).toEqual({
+      dispatched: false, outcome: 'blocked_dormant', reason: 'config defect',
+      note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
+    })
+    expect(counter.count).toBe(0)
+  })
+
+  it('cap 已满时 capCheck 仍先于 upsertWorkerTask 拒绝（cap 满即拒，不看 upsertWorkerTask 会返回什么）', async () => {
+    const counter: DispatchCounter = { count: 2 }
+    const dispatchFindSubtitle = makeDispatchFindSubtitleTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => { throw new Error('must never be called — cap must reject first') } },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 2,
+      },
+      counter,
+    )
+    const result = await dispatchFindSubtitle.execute!({ seriesId: 's1', seasons: [1], movieId: null, reason: 'x' }, fakeOpts)
+    expect(result).toEqual({
+      error: 'dispatch cap (2) reached for this orchestrator — call spawn_sibling_orchestrator to hand off the rest instead of dispatching more directly',
+    })
+  })
+
+  // dispatch_realign_task 是同一份回执逻辑的第二个调用点——同样锁死。
+  it('dispatch_realign_task: coalesced → 不耗 cap；created → 耗 cap', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchRealign = makeDispatchRealignTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'failed' }) },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
+      },
+      counter,
+    )
+    const coalescedResult = await dispatchRealign.execute!({ seriesId: 's1', reason: 'x' }, fakeOpts)
+    expect(coalescedResult).toEqual({
+      dispatched: false, outcome: 'coalesced', pendingState: 'failed',
+      note: 'an identical task is already pending — your dispatch merged into it, no new row was created',
+    })
+    expect(counter.count).toBe(0)
+
+    const dispatchRealign2 = makeDispatchRealignTaskTool(
+      { jobs: { upsertWorkerTask: () => ({ outcome: 'created' }) }, now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5 },
+      counter,
+    )
+    const createdResult = await dispatchRealign2.execute!({ seriesId: 's2', reason: 'x' }, fakeOpts)
+    expect(createdResult).toEqual({ dispatched: true, outcome: 'created', remainingCapacity: 4 })
+    expect(counter.count).toBe(1)
+  })
+
+  it('dispatch_realign_task: blocked_dormant → {dispatched:false, outcome:blocked_dormant, reason}，不耗 cap', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const dispatchRealign = makeDispatchRealignTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => ({ outcome: 'blocked_dormant', lastError: 'realign executor not wired' }) },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
+      },
+      counter,
+    )
+    const result = await dispatchRealign.execute!({ seriesId: 's1', reason: 'x' }, fakeOpts)
+    expect(result).toEqual({
+      dispatched: false, outcome: 'blocked_dormant', reason: 'realign executor not wired',
+      note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
+    })
+    expect(counter.count).toBe(0)
   })
 })
 

@@ -55,6 +55,19 @@ export interface RealignJobIdentity {
 
 export type JobIdent = JobIdentity | MovieJobIdentity | RealignJobIdentity
 
+/** R-2（裁决 2026-07-16，审计 A-F1）：派发不再有静默结局——每次 upsert 返回它实际做了什么。
+ *  考古定罪：upsertWorkerTask 曾经对非 done 态行静默 no-op 且从不返回任何东西，而 dispatch
+ *  工具（orchestratorAgent.tools.ts）无条件回报 {dispatched:true}——dormant/failed 行悄悄
+ *  吞掉主代理的新派发，还向它谎报成功，制造永久活锁（主代理以为派了，实际这一行纹丝不动）。
+ *  blocked_dormant 是四态里唯一"没写"的结局：dormant 行不复活（park 通常意味着一个配置性
+ *  缺陷被记录在案，机械复活=让同一个错误循环回归），但事实必须原样抵达 orchestrator，由它
+ *  （而不是这一层沉默的 SQL）决定告警、绕行、还是上报人类。 */
+export type WorkerTaskUpsertOutcome =
+  | { outcome: 'created' }
+  | { outcome: 'revived' }                              // done → wanted 复活
+  | { outcome: 'coalesced'; pendingState: JobState }     // wanted/failed/active 既有行，只刷 updated_at
+  | { outcome: 'blocked_dormant'; lastError: string | null }
+
 // worker_task 身份（v3 phase ④）：故意不并入 JobIdent 联合类型——upsertWanted 的
 // if/else-if/else 三分支穷尽窄化正好对应 JobIdent 现有的三个变体，塞入第 4 个变体而不
 // 重写那个 else 分支会让 worker_task 身份被静默路由进 realign 的 SQL 分支（写下 upsertWanted
@@ -162,23 +175,61 @@ export class JobsRepo {
    *  故意是独立方法而非塞进 upsertWanted：见上方 WorkerTaskIdentity 的注释。 */
   upsertWorkerTask(
     ident: WorkerTaskIdentity, payload: Record<string, unknown>, parentJobId: number | null, now: number,
-  ): void {
+  ): WorkerTaskUpsertOutcome {
     const payloadJson = JSON.stringify(payload)
-    this.db
-      .prepare(
-        `INSERT INTO jobs (kind, series_id, season, movie_id, payload, parent_job_id, state, priority, attempt, created_at, updated_at)
-         VALUES ('worker_task', ?, ?, ?, ?, ?, 'wanted', 0, 0, ?, ?)
-         ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''), ifnull(json_extract(payload,'$.taskType'),''))
-         DO UPDATE SET
-           updated_at = ?,
-           payload = CASE WHEN state = 'done' THEN excluded.payload ELSE jobs.payload END,
-           parent_job_id = CASE WHEN state = 'done' THEN excluded.parent_job_id ELSE jobs.parent_job_id END,
-           state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
-           attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
-           error_attempt = CASE WHEN state = 'done' THEN 0 ELSE error_attempt END,
-           next_retry_at = CASE WHEN state = 'done' THEN NULL ELSE next_retry_at END`
-      )
-      .run(ident.seriesId, ident.season, ident.movieId, payloadJson, parentJobId, now, now, now)
+    const taskType = typeof payload.taskType === 'string' ? payload.taskType : ''
+    // R-2: SELECT-then-branch replaces the old blind ON CONFLICT DO UPDATE — the old SQL updated
+    // a dormant row's updated_at/payload no differently than any other non-done row, silently
+    // absorbing the new dispatch with zero signal that it went nowhere. Single transaction
+    // (SELECT + the branch's own write) closes the TOCTOU window between reading current state
+    // and acting on it — a concurrent writer can't flip the row between the two.
+    return this.db.transaction((): WorkerTaskUpsertOutcome => {
+      const existing = this.db
+        .prepare(
+          `SELECT * FROM jobs
+           WHERE kind = 'worker_task'
+             AND ifnull(series_id,'') = ifnull(?,'')
+             AND ifnull(season,-1) = ifnull(?,-1)
+             AND ifnull(movie_id,'') = ifnull(?,'')
+             AND ifnull(json_extract(payload,'$.taskType'),'') = ?`
+        )
+        .get(ident.seriesId, ident.season, ident.movieId, taskType) as Job | undefined
+
+      if (!existing) {
+        this.db
+          .prepare(
+            `INSERT INTO jobs (kind, series_id, season, movie_id, payload, parent_job_id, state, priority, attempt, created_at, updated_at)
+             VALUES ('worker_task', ?, ?, ?, ?, ?, 'wanted', 0, 0, ?, ?)`
+          )
+          .run(ident.seriesId, ident.season, ident.movieId, payloadJson, parentJobId, now, now)
+        return { outcome: 'created' }
+      }
+
+      // blocked_dormant: the one outcome that writes nothing at all (not even updated_at) — see
+      // the WorkerTaskUpsertOutcome doc comment above for why dormant must never be silently
+      // revived by a routine dispatch.
+      if (existing.state === 'dormant') {
+        return { outcome: 'blocked_dormant', lastError: existing.last_error }
+      }
+
+      if (existing.state === 'done') {
+        this.db
+          .prepare(
+            `UPDATE jobs
+             SET updated_at = ?, payload = ?, parent_job_id = ?,
+                 state = 'wanted', attempt = 0, error_attempt = 0, next_retry_at = NULL
+             WHERE id = ?`
+          )
+          .run(now, payloadJson, parentJobId, existing.id)
+        return { outcome: 'revived' }
+      }
+
+      // wanted/failed/active: the existing row already represents this identity's live intent —
+      // the new dispatch merges into it, only updated_at moves (mirrors the old ON CONFLICT's
+      // no-op branch).
+      this.db.prepare(`UPDATE jobs SET updated_at = ? WHERE id = ?`).run(now, existing.id)
+      return { outcome: 'coalesced', pendingState: existing.state }
+    })()
   }
 
   claimNext(now: number): Job | null {
@@ -468,18 +519,26 @@ export class JobsRepo {
     return info.changes > 0
   }
 
-  /** realign 完成后的镜像清理一环：该剧旧的 series_season job（按老的、即将被清空的季划分）
-   *  不再有意义（新结构下季/集边界完全变了，调和循环会在下一轮 scan 后按新结构重新聚合出
-   *  正确的 job）——退休全部静止态：wanted/failed/dormant。dormant 必须包含（D-review #2）：
-   *  它是"对着旧的错误排布搜索穷尽"的判决，本函数的全部意义就是宣告这类判决作废；漏掉它，
-   *  realign 后这一季会被 30 天休眠卡死、永远不再重新搜索（聚合器 upsertWanted 对 dormant
-   *  不复活）。active 态（理论上此刻不该有——realign 本身占着搜索槽，不会有同剧的
-   *  series_season job 正在跑）留给它自己的状态机走完，不强退。 */
+  /** realign 完成后的镜像清理一环：该剧旧排布下判决过时的 job 不再有意义（新结构下季/集
+   *  边界完全变了，调和循环会在下一轮 scan/派活后按新结构重新聚合出正确的 job）——退休全部
+   *  静止态：wanted/failed/dormant。dormant 必须包含（D-review #2）：它是"对着旧的错误排布
+   *  搜索穷尽"的判决，本函数的全部意义就是宣告这类判决作废；漏掉它，realign 后这一季会被
+   *  30 天休眠卡死、永远不再重新搜索（upsertWorkerTask 对 dormant 不复活，见上方
+   *  blocked_dormant）。active 态（理论上此刻不该有——realign 本身占着搜索槽）留给它自己的
+   *  状态机走完，不强退。
+   *  F10（审计修正 2026-07-16）：本方法曾经只退休 kind='series_season' 的行——那是已退役的
+   *  旧管线 kind（legacyJobRouting.ts 把它列为退役 kind，旧执行器不再接线），v3 起没有任何
+   *  生产代码再写它，这条 UPDATE 因此从未真正作废过 realign 该作废的判决，是个从未生效的
+   *  死镜像清理。真正对着"旧排布"下判决、需要作废的行是同一 series 下的 worker_task 行——
+   *  尤其 find_subtitle 的 dormant/failed 判决：它们是"对着旧排布搜索穷尽/失败"的结论，
+   *  新排布下这些结论从未被重新验证过。改为按 kind='worker_task' + series_id 定位（不分
+   *  taskType——同剧下 realign/orchestrate 类 worker_task 若恰好落在这三个静止态，同样是
+   *  过时判决，一并作废）。调用方（realignExecutor.ts:819/:881）签名不变，无需改动。 */
   retireAllForSeries(seriesId: string, now: number): number {
     const info = this.db
       .prepare(
         `UPDATE jobs SET state = 'done', updated_at = ?
-         WHERE kind = 'series_season' AND series_id = ? AND state IN ('wanted', 'failed', 'dormant')`
+         WHERE kind = 'worker_task' AND series_id = ? AND state IN ('wanted', 'failed', 'dormant')`
       )
       .run(now, seriesId)
     return info.changes

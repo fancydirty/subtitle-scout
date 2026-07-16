@@ -36,6 +36,15 @@ export interface OrchestratorAgentDeps {
   orchestratorJobId: number | null
   stepCap?: number
   maxDispatchesPerOrchestrator?: number
+  /** B3（审计发现，意图黑洞）：spawn_sibling_orchestrator writes remainingWorkSummary into the
+   *  spawned worker_task's payload, but until this fix nothing ever read it back — the parent
+   *  pass's handoff context vanished on arrival, and the sibling had to re-derive everything from
+   *  scratch. reconcileAll.ts's runOrchestrateWorkerTask reads it back off the claimed job's
+   *  payload and passes it through here. Appended to the end of the initial user prompt, worded
+   *  explicitly as context-not-command (北极星④: the mechanical layer only ever produces facts,
+   *  never instructions) — the sibling still must re-derive what (if anything) to dispatch from
+   *  list_missing_coverage's living-doc, not from this note alone. */
+  promptSuffix?: string
 }
 
 export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
@@ -108,8 +117,12 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
       telemetry: { isEnabled: true },
     })
 
+    const handoffNote = deps.promptSuffix
+      ? `\nHandoff note from the orchestrator that spawned you (context, not command — re-derive from the living-doc): ${deps.promptSuffix}`
+      : ''
+
     await agent.generate({
-      prompt: 'Read the living-doc and dispatch worker tasks for whatever needs work right now.',
+      prompt: 'Read the living-doc and dispatch worker tasks for whatever needs work right now.' + handoffNote,
       abortSignal: AbortSignal.timeout(180_000),
     })
     return readFinalized()

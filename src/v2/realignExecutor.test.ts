@@ -517,9 +517,12 @@ describe('executeRealign（顶层编排，集成）', () => {
     const { db, lib, jobsRepo, job } = mkMirror(
       Array.from({ length: 40 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
     )
-    // 旧排布下的 series_season 判决（dormant=搜索穷尽）——realign 成功后必须被 retire 作废
-    jobsRepo.upsertWanted({ kind: 'series_season', seriesId: 'jf-series-1', season: 1 }, Date.now())
-    jobsRepo.forceState('jf-series-1', 1, 'dormant', Date.now())
+    // F10（审计修正 2026-07-16，jobsRepo.ts retireAllForSeries）：旧排布下的判决现在活在
+    // kind='worker_task' 行里——series_season 是已退役的旧管线 kind，v3 起没有生产代码再写它。
+    // find_subtitle 对着旧排布"搜索穷尽"的 dormant 判决，realign 成功后必须被 retire 作废。
+    jobsRepo.upsertWorkerTask({ seriesId: 'jf-series-1', season: null, movieId: null }, { taskType: 'find_subtitle' }, null, Date.now())
+    const staleJudgment = jobsRepo.claimNext(Date.now())! // 唯一 wanted 行（realign job 已是 searching）
+    jobsRepo.park(staleJudgment.id, 'old layout search exhausted', Date.now())
 
     const jf = mkJf({ locations: [libRoot], items: spyItems40(libRoot) })
     const runEpisode = vi.fn(async () => ({
@@ -548,8 +551,8 @@ describe('executeRealign（顶层编排，集成）', () => {
     expect(doc.entries.filter(e => e.reason === 'realign')).toHaveLength(40)
     expect(doc.entries.some(e => e.reason === 'reveal')).toBe(true)
     expect(doc.entries.some(e => e.reason === 'archive-old-dir')).toBe(true)
-    // 旧排布的 dormant 判决被作废（retireAllForSeries 含 dormant）
-    expect(jobsRepo.find('jf-series-1', 1)!.state).toBe('done')
+    // 旧排布的 dormant 判决被作废（retireAllForSeries 含 dormant，F10 后目标是 worker_task 行）
+    expect(jobsRepo.get(staleJudgment.id)!.state).toBe('done')
     expect(result.detail).toContain('3 季')
     db.close()
   })
