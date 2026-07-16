@@ -2,6 +2,7 @@ import { dirname, basename } from 'node:path'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { RunsRepo } from './runsRepo.js'
+import { traceBus } from '../dashboard/traceBus.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
 import { isDirWritable, isUnderRoots } from '../core/mediaContext.js'
 import { candidateKey } from '../core/schemas.js'
@@ -323,12 +324,31 @@ export async function runFindSubtitleWorkerTask(
   now: () => number,
 ): Promise<FindSubtitleBatchReport | null> {
   const startedAt = now()
+  // 痕迹通道 C 收官快照：runKey 拼法与 findSubtitleWorker.ts 的 onStepEvent 接线处一致
+  // （`job-${jobId}`，jobId 即 String(job.id) —— 见 mapWorkerTaskToFindSubtitleTask 的 jobId
+  // 赋值），用 job.id（number）走模板字面量与 task.jobId（string）走模板字面量产出同一个字符
+  // 串。traceBus.snapshot() 有清空副作用，一次 runFindSubtitleWorkerTask 调用无论最终写几行
+  // runs（installed/no_safe_match/retry_later 可能各一行），只应该真正调用一次——下面用惰性
+  // 缓存把它钉死在"第一次 recordRun 调用时"，同一次快照原样附到这次调用产生的每一行 runs 上
+  // （它们描述的是同一次 agent 跑，不是各自独立的跑）。
+  const runKey = `job-${job.id}`
+  let traceJsonCache: string | null | undefined
+  const traceJsonForThisRun = (): string | null => {
+    if (traceJsonCache === undefined) {
+      const events = traceBus.snapshot(runKey)
+      traceJsonCache = events.length > 0 ? JSON.stringify(events) : null
+    }
+    return traceJsonCache
+  }
   // 退役T1 (W0-3a): one runs row per terminal outcome, mirroring executor.ts's own record()
   // shape (decision + human-readable detail, journalPath null — this runner has no journal).
   // executor.ts itself was deleted in the old-pipeline retirement; this comment only documents
   // where the shape was borrowed from.
   const recordRun = (decision: string, detail: string): void => {
-    deps.runs?.insert({ jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null })
+    deps.runs?.insert({
+      jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null,
+      traceJson: traceJsonForThisRun(),
+    })
   }
   try {
     const task = await mapWorkerTaskToFindSubtitleTask(job, deps, now())

@@ -165,6 +165,76 @@ describe('makeReasoningAgent (finalize-tool mode)', () => {
     expect(model.doGenerateCalls).toHaveLength(1)
     expect(model.doGenerateCalls[0].reasoning).toBe('none')
   })
+
+  // 痕迹通道 C：onStepEvent 是每步结算后对该步每个工具调用触发一次的诊断缝（finalize 也算一
+  // 步），缺席时必须零行为差异——这组用例只覆盖"传了会发生什么"，其余用例（上面全部）本身就是
+  // "不传时现状不变"的回归证据（它们从不传 onStepEvent，且行为与本文件改动前逐字节一致）。
+  it('onStepEvent 回调在每个工具调用结算后触发（finalize 也算一步）', async () => {
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        if (call === 1) return toolCall('c1', 'peek', { q: 'hello' })
+        return finalizeCall('f1', { verdict: 'match', reason: 'metadata lines up' })
+      },
+    })
+
+    const events: Array<{ tool: string; argsSummary: string; resultSummary: string; tookMs: number; at: number }> = []
+    const { agent, readFinalized } = makeReasoningAgent({
+      model,
+      tools: {
+        peek: tool({
+          description: 'peek at something',
+          inputSchema: z.object({ q: z.string() }),
+          execute: async () => ({ found: true }),
+        }),
+      },
+      schema: DecisionSchema,
+      onStepEvent: (e) => events.push(e),
+    })
+
+    await agent.generate({ prompt: 'is this a match?', abortSignal: AbortSignal.timeout(30_000) })
+
+    expect(readFinalized()).toEqual({ verdict: 'match', reason: 'metadata lines up' })
+    // Step 1 = peek (1 tool call), step 2 = finalize (1 tool call) → 2 events total.
+    expect(events).toHaveLength(2)
+    expect(events[0].tool).toBe('peek')
+    expect(events[0].argsSummary).toContain('hello')
+    expect(events[0].resultSummary).toContain('found')
+    expect(typeof events[0].tookMs).toBe('number')
+    expect(events[0].tookMs).toBeGreaterThanOrEqual(0)
+    expect(events[1].tool).toBe('finalize')
+    expect(events[1].argsSummary).toContain('match')
+  })
+
+  it('onStepEvent 抛错不影响 agent 循环与 readFinalized', async () => {
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        if (call === 1) return toolCall('c1', 'peek', {})
+        return finalizeCall('f1', { verdict: 'no_match', reason: 'nothing found' })
+      },
+    })
+
+    const { agent, readFinalized } = makeReasoningAgent({
+      model,
+      tools: {
+        peek: tool({
+          description: 'peek at something',
+          inputSchema: z.object({}),
+          execute: async () => ({ ok: true }),
+        }),
+      },
+      schema: DecisionSchema,
+      onStepEvent: () => { throw new Error('boom — trace sink misbehaving') },
+    })
+
+    const result = await agent.generate({ prompt: 'p', abortSignal: AbortSignal.timeout(30_000) })
+
+    expect(readFinalized()).toEqual({ verdict: 'no_match', reason: 'nothing found' })
+    expect(result.steps.length).toBe(2)
+  })
 })
 
 // THE root-cause regression guard. The live failure (AI_NoObjectGeneratedError against real

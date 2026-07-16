@@ -3,6 +3,9 @@ import {
   type LanguageModel, type ToolSet, type ToolLoopAgentSettings,
 } from 'ai'
 import type { z } from 'zod'
+// 只引类型不引单例——痕迹通道 C 的 TraceEvent 形状活在 dashboard/traceBus.ts，reasoningAgent
+// 对那个模块的单例状态零依赖，onStepEvent 只是把数据递出去，不知道也不关心谁在订阅。
+import type { TraceEvent } from '../dashboard/traceBus.js'
 
 export type ReasoningLevel = 'provider-default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
@@ -33,6 +36,22 @@ export interface ReasoningAgentOptions<TOOLS extends ToolSet, SCHEMA extends z.Z
    *  fear that reasoning breaks tool-calling was disproven. */
   reasoning?: ReasoningLevel
   telemetry?: { isEnabled: boolean }
+  /** 痕迹通道 C：每步结算后对该步每个工具调用触发一次（finalize 也算）。缺席=零行为差异。
+   *  回调抛错被吞——痕迹是增益，绝不许反噬 agent 循环。 */
+  onStepEvent?: (e: Omit<TraceEvent, 'runKey' | 'seq'>) => void
+}
+
+/** argsSummary/resultSummary 都走这个 cap——JSON.stringify 失败（理论上不该发生，工具输入/
+ *  输出都是普通对象，防御性兜底）就退化成 String(value)。截断加省略号，不追求可解析，只追求
+ *  "直播时人眼扫得过来"。 */
+function summarizeForTrace(value: unknown, max = 200): string {
+  let s: string
+  try {
+    s = JSON.stringify(value) ?? String(value)
+  } catch {
+    s = String(value)
+  }
+  return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
 export interface ReasoningAgentHandle<TOOLS extends ToolSet, RESULT> {
@@ -75,6 +94,12 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
   // the generic "never called finalize" message. Diagnosed live (v3 live test matrix, 2026-07-13):
   // that generic message hid that finalize actually WAS attempted.
   let lastStepToolCalls: ReadonlyArray<{ toolName: string; invalid?: boolean; input?: unknown }> = []
+  // 痕迹通道 C 计时基准：每次 onStepEnd 末尾重置为当前时刻，故 tookMs 是"上一步结束到这一步
+  // 结束"的墙钟耗时（含模型思考）。初始化在这里（构造时）而非真正字面意义的模块顶层——每个
+  // makeReasoningAgent() 调用都会拿到自己独立的闭包变量，避免并发跑多个 agent 时互相踩计时
+  // （见本文件顶部 lastStepToolCalls 同款闭包状态先例）。首步会多算"构造到 generate() 真正
+  // 起步"这段间隙，生产中两者紧邻，可忽略。
+  let stepStartedAt = Date.now()
 
   const finalizeTool = tool({
     description: opts.finalizeDescription ??
@@ -105,9 +130,38 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
     reasoning: opts.reasoning ?? 'high',
     telemetry: opts.telemetry,
     // Diagnostic capture only — does not affect the loop's control flow or output. See the
-    // lastStepToolCalls declaration above for why this is the only reachable seam.
-    onStepEnd: (step: { toolCalls?: ReadonlyArray<{ toolName: string; invalid?: boolean; input?: unknown }> }) => {
+    // lastStepToolCalls declaration above for why this is the only reachable seam. Also the sole
+    // bridge for 痕迹通道 C's onStepEvent (below) — same seam, two independent consumers.
+    onStepEnd: (step: {
+      toolCalls?: ReadonlyArray<{ toolCallId?: string; toolName: string; invalid?: boolean; input?: unknown }>
+      toolResults?: ReadonlyArray<{ toolCallId?: string; toolName: string; output?: unknown }>
+    }) => {
       lastStepToolCalls = step.toolCalls ?? []
+      // onStepEvent 未传时，下面这整段除了几次 Date.now()/数组分配之外不产生任何可观察副作用
+      // ——lastStepToolCalls 的赋值（唯一原本就存在的行为）已经在上面完成，与改动前逐字节一致。
+      if (opts.onStepEvent) {
+        const now = Date.now()
+        const tookMs = now - stepStartedAt
+        const toolCalls = step.toolCalls ?? []
+        const toolResults = step.toolResults ?? []
+        for (const call of toolCalls) {
+          const result = call.toolCallId != null
+            ? toolResults.find((r) => r.toolCallId === call.toolCallId)
+            : undefined
+          try {
+            opts.onStepEvent({
+              tool: call.toolName,
+              argsSummary: summarizeForTrace(call.input),
+              resultSummary: result ? summarizeForTrace(result.output) : '',
+              tookMs,
+              at: now,
+            })
+          } catch {
+            // 痕迹是增益，绝不许反噬 agent 循环——onStepEvent 抛错必须被吞。
+          }
+        }
+      }
+      stepStartedAt = Date.now()
     },
   } as unknown as ToolLoopAgentSettings<never, TOOLS, DefaultRuntimeContext, never>
 

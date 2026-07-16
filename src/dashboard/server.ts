@@ -6,6 +6,7 @@ import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
 import { buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked, type ReconcileAllResultDTO } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
+import { traceBus } from './traceBus.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -135,6 +136,41 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         })
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result))
+        return
+      }
+
+      // 痕迹通道 C：agent 工具调用直播——GET only + token 门（照抄上面两个先例分支的顺序：先
+      // method，再 token），命中后就地把响应转成 SSE 流，独立于下面纯同步的 handleApiRoute 分
+      // 发（订阅是有状态的长连接，不是一次性算完就 return 的纯函数）。
+      if (rawPath === '/api/v2/workflow/trace-stream') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        })
+        // writeHead() 本身不保证把响应头立即冲到 socket——Node 默认等到第一次 write()/end() 才
+        // 冲刷。SSE 客户端却要在第一条数据/心跳到达前就看到连接已建立（fetch() 的 headers 承诺
+        // 得早于 15s 心跳 resolve），显式 flushHeaders() 补上这一刻，不然客户端会白等一个心跳
+        // 周期才看到 200（真实复现过：flushHeaders 缺席时 fetch() 卡到第一次 res.write 才返回）。
+        res.flushHeaders()
+        const unsubscribe = traceBus.subscribe((e) => {
+          res.write(`data: ${JSON.stringify(e)}\n\n`)
+        })
+        const heartbeat = setInterval(() => res.write(': hb\n\n'), 15_000)
+        req.on('close', () => {
+          clearInterval(heartbeat)
+          unsubscribe()
+        })
         return
       }
 

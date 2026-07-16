@@ -1,6 +1,7 @@
 import { stepCountIs, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { makeReasoningAgent } from './reasoningAgent.js'
+import { makeRunTracer } from '../dashboard/traceBus.js'
 import { makeReadDocTool, systemPromptSkillIndex } from './skills/registry.js'
 import { ORCHESTRATOR_SKILL } from './skills/orchestratorSkill.js'
 import {
@@ -120,6 +121,12 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
       stopWhen: stepCountIs(deps.stepCap ?? 500),
       reasoning: 'high',
       telemetry: { isEnabled: true },
+      // 痕迹通道 C：null 是根编排器的合法测试矩阵态（deps.orchestratorJobId===null）——那种跑法
+      // 没有一条真实 jobs 行可挂靠 runKey，零痕迹是正确行为，不是遗漏。runKey 拼法与收官快照
+      // 读出时（reconcileAll.ts 的 runOrchestrateWorkerTask）必须一致，都是 `job-${id}`。
+      onStepEvent: deps.orchestratorJobId !== null
+        ? makeRunTracer(`job-${deps.orchestratorJobId}`)
+        : undefined,
     })
 
     const handoffNote = deps.promptSuffix

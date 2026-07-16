@@ -15,6 +15,7 @@ import type {
 } from '../agent/findSubtitleWorker.schemas.js'
 import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { seriesId, episodeId } from './ownIds.js'
+import { traceBus, type TraceEvent } from '../dashboard/traceBus.js'
 
 // 2026-07-16 事故修复回归测试：representativeEpisodeId 把季级派活机械降解为单集指令的
 // 架构事故已处决——mapper 现在是纯信使，零目标选择、零顺序决策，缺口事实清单由
@@ -853,6 +854,66 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       const rows = runs.getByJobId(job.id)
       const decisions = rows.map((r) => r.decision).sort()
       expect(decisions).toEqual(['installed', 'no_safe_match', 'retry_later'])
+    })
+
+    // G3（痕迹通道 C）：runKey 拼法必须与 findSubtitleWorker.ts 的 onStepEvent 接线处对齐
+    // （`job-${job.id}`）——这里不跑真 agent，直接模拟 agent 跑过程中会往 traceBus 发布的事件，
+    // 断言 runFindSubtitleWorkerTask 的收官落账把它们原样快照进 trace_json。
+    describe('trace_json 收官快照（G3）', () => {
+      it('installed: trace_json 携带 traceBus 缓冲里该 runKey 的全量事件', async () => {
+        const { lib, jobsRepo, job, db } = setup()
+        const runs = new RunsRepo(db)
+        const runKey = `job-${job.id}`
+        traceBus.publish({ runKey, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 10, at: 1 })
+        traceBus.publish({ runKey, seq: 1, tool: 'download_candidate', argsSummary: '{}', resultSummary: '{}', tookMs: 20, at: 2 })
+        const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+        const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+        await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+        const rows = runs.getByJobId(job.id)
+        expect(rows).toHaveLength(1)
+        const parsed = JSON.parse(rows[0].trace_json!) as TraceEvent[]
+        expect(parsed).toHaveLength(2)
+        expect(parsed.map((e) => e.tool)).toEqual(['search_source', 'download_candidate'])
+        // snapshot 有清空副作用——第二次读同一个 runKey 必须是空的。
+        expect(traceBus.snapshot(runKey)).toHaveLength(0)
+      })
+
+      it('未发布任何痕迹事件时 trace_json 落 null，不写 "[]" 噪音', async () => {
+        const { lib, jobsRepo, job, db } = setup()
+        const runs = new RunsRepo(db)
+        const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+        const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+        await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+        const rows = runs.getByJobId(job.id)
+        expect(rows[0].trace_json).toBeNull()
+      })
+
+      it('混合报告写 3 行 runs 时，三行共享同一份 trace_json（snapshot 只真正调用一次，不因多行清空丢数据）', async () => {
+        const { lib, jobsRepo, job, db, episodeIds } = setupBatch(3)
+        const runs = new RunsRepo(db)
+        const runKey = `job-${job.id}`
+        traceBus.publish({ runKey, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 5, at: 1 })
+        const [installedId, noMatchId, retryId] = episodeIds
+        const runTask = vi.fn(async () => report({
+          installed: [installedItem(installedId)],
+          no_safe_match: [unresolvedItem(noMatchId, '搜索穷尽')],
+          retry_later: [unresolvedItem(retryId, 'provider timed out')],
+        }))
+        const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+        await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+        const rows = runs.getByJobId(job.id)
+        expect(rows).toHaveLength(3)
+        const traceJsons = rows.map((r) => r.trace_json)
+        expect(traceJsons.every((t) => t !== null)).toBe(true)
+        expect(new Set(traceJsons).size).toBe(1) // 三行的 trace_json 逐字节相同——同一次快照。
+        expect(JSON.parse(traceJsons[0]!)).toHaveLength(1)
+      })
     })
   })
 })

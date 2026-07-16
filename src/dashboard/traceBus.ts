@@ -1,0 +1,67 @@
+// 痕迹通道 C：agent 工具调用的直播总线。哲学：过程证据≠账目——这里是进程级单例、零持久化的
+// 环形缓冲，只服务 SSE 直播订阅者；收官快照落 runs.trace_json 是唯一持久化点（见
+// findSubtitleWorkerTask.ts/reconcileAll.ts 的 traceBus.snapshot 调用），snapshot 本身会清空
+// 缓冲，只应在写那一行 runs 的时刻调用一次。
+
+export interface TraceEvent {
+  runKey: string
+  seq: number
+  tool: string
+  argsSummary: string
+  resultSummary: string
+  tookMs: number
+  at: number
+}
+
+/** 每个 runKey 最多缓冲这么多条事件——溢出丢最旧（收官快照因此只保证"最近 512 条"完整，不是
+ *  全量；直播场景下这已经足够，账目式的完整性从来不是这条通道的职责）。 */
+const RING_CAP = 512
+
+// 进程级单例状态：一个 runKey 一条环形缓冲；订阅者集合不分 runKey（过滤归客户端，见模块头注）。
+const buffers = new Map<string, TraceEvent[]>()
+const subscribers = new Set<(e: TraceEvent) => void>()
+
+export const traceBus = {
+  /** 追加进该 runKey 的环形缓冲（cap 512，溢出丢最旧）+ 广播给全部订阅者。订阅者回调抛错必须
+   *  被吞——直播是增益，绝不能反噬调用方的 agent 循环。 */
+  publish(e: TraceEvent): void {
+    let buf = buffers.get(e.runKey)
+    if (!buf) {
+      buf = []
+      buffers.set(e.runKey, buf)
+    }
+    buf.push(e)
+    if (buf.length > RING_CAP) buf.shift()
+    for (const fn of subscribers) {
+      try {
+        fn(e)
+      } catch {
+        // 吞掉——一个订阅者的异常不许打断 publish 本身，也不许波及其他订阅者。
+      }
+    }
+  },
+
+  /** 订阅全部 runKey 的事件（过滤到具体 runKey 是订阅者自己的事）。返回退订函数。 */
+  subscribe(fn: (e: TraceEvent) => void): () => void {
+    subscribers.add(fn)
+    return () => { subscribers.delete(fn) }
+  },
+
+  /** 返回该 runKey 缓冲的全量事件（最多 512 条）并从缓冲中清空——只应在收官落 runs 行的那一刻
+   *  调用一次；重复调用第二次起只会拿到空数组。 */
+  snapshot(runKey: string): TraceEvent[] {
+    const buf = buffers.get(runKey) ?? []
+    buffers.delete(runKey)
+    return buf
+  },
+}
+
+/** 绑定一个 runKey，返回一个补全 runKey + 自增 seq（从 0 开始）后调用 traceBus.publish 的函数。
+ *  seq 计数逻辑只活在这里——调用方（reasoningAgent 的 onStepEvent 桥接）不需要也不应该自己管
+ *  seq。 */
+export function makeRunTracer(runKey: string): (e: Omit<TraceEvent, 'runKey' | 'seq'>) => void {
+  let seq = 0
+  return (e) => {
+    traceBus.publish({ ...e, runKey, seq: seq++ })
+  }
+}

@@ -7,6 +7,7 @@ import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { startDashboard } from './server.js'
+import { traceBus, type TraceEvent } from './traceBus.js'
 
 let server: Server | undefined
 let db: ScoutDb
@@ -252,6 +253,63 @@ describe('startDashboard (v2)', () => {
       const thirdRes = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
       expect(thirdRes.status).toBe(200)
       expect(calls).toBe(2)
+    })
+  })
+
+  // 痕迹通道 C：GET /api/v2/workflow/trace-stream 是纯直播 SSE 端点，跟 reconcile-all/parked-claim
+  // 一样是 handleApiRoute 纯函数分发之前的独立 rawPath 分支——同样的 method-then-token 校验顺序。
+  describe('GET /api/v2/workflow/trace-stream (痕迹通道 C SSE 直播)', () => {
+    it('订阅期 traceBus.publish 的事件以 data: 行到达客户端', async () => {
+      const { base } = await start(distWith('<!doctype html>'))
+      const controller = new AbortController()
+      const res = await fetch(`${base}/api/v2/workflow/trace-stream`, { signal: controller.signal })
+      try {
+        expect(res.status).toBe(200)
+        expect(res.headers.get('content-type')).toContain('text/event-stream')
+
+        const reader = res.body!.getReader()
+        const decoder = new TextDecoder()
+        // 给 server 端 request handler 一点时间真正跑到 subscribe（handleApiRoute 之外的独立分
+        // 支，同 reconcile-all 的 409 门控用例一样留一点 event-loop 余量，不依赖精确同步时序）。
+        await new Promise((r) => setTimeout(r, 20))
+
+        const event: TraceEvent = {
+          runKey: 'job-sse-test', seq: 0, tool: 'search_source',
+          argsSummary: '{"q":"x"}', resultSummary: '{"ok":true}', tookMs: 12, at: Date.now(),
+        }
+        traceBus.publish(event)
+
+        let received = ''
+        while (!received.includes('data: ')) {
+          const { value, done } = await reader.read()
+          if (done) break
+          received += decoder.decode(value, { stream: true })
+        }
+        expect(received).toContain(`data: ${JSON.stringify(event)}`)
+      } finally {
+        controller.abort()
+      }
+    })
+
+    it('GET only（非 GET 405）', async () => {
+      const { base } = await start(distWith('<!doctype html>'))
+      const res = await fetch(`${base}/api/v2/workflow/trace-stream`, { method: 'POST' })
+      expect(res.status).toBe(405)
+    })
+
+    it('token 配置时无 token 401，带 token 200', async () => {
+      const { base } = await start(distWith('<!doctype html>'), 's3cret')
+      const controller = new AbortController()
+      const unauthed = await fetch(`${base}/api/v2/workflow/trace-stream`, { signal: controller.signal })
+      expect(unauthed.status).toBe(401)
+
+      const authedController = new AbortController()
+      const authed = await fetch(`${base}/api/v2/workflow/trace-stream?token=s3cret`, { signal: authedController.signal })
+      try {
+        expect(authed.status).toBe(200)
+      } finally {
+        authedController.abort()
+      }
     })
   })
 })

@@ -3,6 +3,7 @@ import type { LibraryRepo } from './libraryRepo.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import { makeOrchestratorAgent, type OrchestratorDecision, type OrchestratorAgentDeps } from '../agent/orchestratorAgent.js'
+import { traceBus } from '../dashboard/traceBus.js'
 
 /** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
  *  trim/cap so a long OrchestratorDecision.summary doesn't blow out the timeline UI. Mirrors
@@ -119,7 +120,15 @@ export async function runOrchestrateWorkerTask(
     const detail =
       `dispatched ${decision.dispatchedFindSubtitle} find / ${decision.dispatchedRealign} realign, ` +
       `siblings ${decision.spawnedSiblings}: ${decision.summary}`
-    deps.runs?.insert({ jobId: job.id, startedAt, finishedAt, decision: 'orchestrate', detail: capDetail(detail), journalPath: null })
+    // 痕迹通道 C 收官快照：runKey 与 orchestratorAgent.ts 的 onStepEvent 接线处一致
+    // （`job-${orchestratorJobId}`，此处 orchestratorJobId 即 job.id，见上面 makeOrchestratorAgent
+    // 调用）。这条路径只写一行 runs（不像 find-subtitle 那样按桶分多行），snapshot 天然只调一次。
+    const events = traceBus.snapshot(`job-${job.id}`)
+    const traceJson = events.length > 0 ? JSON.stringify(events) : null
+    deps.runs?.insert({
+      jobId: job.id, startedAt, finishedAt, decision: 'orchestrate', detail: capDetail(detail), journalPath: null,
+      traceJson,
+    })
     jobs.completeDone(job.id, finishedAt)
     return decision
   } catch (error) {

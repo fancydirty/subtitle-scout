@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path'
 import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
+import { makeRunTracer } from '../dashboard/traceBus.js'
 import { languageName } from './languages.js'
 import { makeFindSubtitleSkill } from './skills/findSubtitleSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
@@ -137,6 +138,10 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       stopWhen: stepCountIs(deps.stepCap ?? 500),
       reasoning: 'high',
       telemetry: { isEnabled: true },
+      // 痕迹通道 C：task.jobId 总是真实的（String(job.id)，见 findSubtitleWorkerTask.ts 的
+      // mapper）——无条件接线，runKey 拼法与收官快照读出时（findSubtitleWorkerTask.ts 的
+      // recordRun）必须一致，都是 `job-${jobId}`。
+      onStepEvent: makeRunTracer(`job-${task.jobId}`),
     })
 
     try {

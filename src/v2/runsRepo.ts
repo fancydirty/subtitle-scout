@@ -10,6 +10,7 @@ export interface Run {
   journal_path: string | null
   llm_calls: number | null
   assrt_calls: number | null
+  trace_json: string | null
 }
 
 export class RunsRepo {
@@ -24,11 +25,14 @@ export class RunsRepo {
     journalPath: string | null
     llmCalls?: number
     assrtCalls?: number
+    /** 痕迹通道 C 收官快照：traceBus.snapshot(runKey) 的 JSON.stringify 结果。undefined/空数组
+     *  一律落 null（不存 '[]' 噪音，见 findSubtitleWorkerTask.ts/reconcileAll.ts 的调用处）。 */
+    traceJson?: string | null
   }): void {
     this.db
       .prepare(
-        `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, llm_calls, assrt_calls)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, llm_calls, assrt_calls, trace_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         params.jobId,
@@ -38,7 +42,8 @@ export class RunsRepo {
         params.detail,
         params.journalPath ?? null,
         params.llmCalls ?? null,
-        params.assrtCalls ?? null
+        params.assrtCalls ?? null,
+        params.traceJson ?? null
       )
   }
 

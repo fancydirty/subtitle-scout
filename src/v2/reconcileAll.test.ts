@@ -235,5 +235,47 @@ describe('runOrchestrateWorkerTask', () => {
       expect(runs.getByJobId(job.id)).toHaveLength(0)
       expect(jobs.get(job.id)!.state).toBe('failed')
     })
+
+    // G3（痕迹通道 C）：端到端穿透——不手工往 traceBus 塞事件，而是让真实 ToolLoopAgent 走一步
+    // 工具调用（list_missing_coverage）再 finalize，验证 orchestratorAgent.ts 的 onStepEvent
+    // 接线（runKey=`job-${orchestratorJobId}`，此处 orchestratorJobId 即 job.id）与
+    // runOrchestrateWorkerTask 的收官快照读出（同一个 runKey）真的对上了。
+    it('runs 行的 trace_json 携带真实 agent 跑产生的工具调用痕迹（onStepEvent → traceBus → 收官快照全链路）', async () => {
+      const db = openDb(':memory:')
+      const jobs = new JobsRepo(db)
+      const lib = new LibraryRepo(db)
+      const runs = new RunsRepo(db)
+      jobs.upsertWorkerTask({ seriesId: 'orchestrator-shard-root-8', season: null, movieId: null }, { taskType: 'orchestrate' }, null, 1000)
+      const job = jobs.claimNext(1000)!
+
+      let call = 0
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          call++
+          if (call === 1) {
+            return {
+              finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+              usage: {
+                inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+                outputTokens: { total: 5, text: undefined, reasoning: undefined },
+              },
+              content: [{ type: 'tool-call' as const, toolCallId: 'c1', toolName: 'list_missing_coverage', input: JSON.stringify({}) }],
+              warnings: [],
+            }
+          }
+          return finalizeResult(EMPTY_DECISION)
+        },
+      })
+
+      await runOrchestrateWorkerTask(job, { lib, tmdb: fakeTmdb, model, now: () => 2000, stepCap: 10, runs }, jobs)
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].trace_json).not.toBeNull()
+      const events = JSON.parse(rows[0].trace_json!) as Array<{ runKey: string; seq: number; tool: string }>
+      expect(events.map((e) => e.tool)).toEqual(['list_missing_coverage', 'finalize'])
+      expect(events.every((e) => e.runKey === `job-${job.id}`)).toBe(true)
+      expect(events.map((e) => e.seq)).toEqual([0, 1])
+    })
   })
 })
