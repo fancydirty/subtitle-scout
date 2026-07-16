@@ -94,7 +94,48 @@ A 区无发现区域（已质询确认干净）：daemon.ts（故障机械+事�
 
 **A 区总裁决意见（主控采纳）**：representativeEpisodeId 只是同一具旧灵魂最显眼的一根手指。完整暗线：mapper 选目标（F4）→退避梯定放弃（F3/F6）→dormant 吞新意图谎报成功（F1）→上诉通道断头（F2）→realign 判决作废错位（F10）。**若 F1/F2/F3/F6 不与 F4 同刀处理，批量任务修好后第一个吃满 5 次 no_safe_match 的季照样掉进永久失明区，事故换符号名重演。**全部并入本战役。
 
-### C 区（摄取/识别/整理/CLI）——待回收
+### C 区（摄取/识别/整理/CLI）——主控已复核（C-B5 修正主控先前判断）
+
+| # | 现场 | 发现 | 北极星 | 主控复核 | 建议裁决 |
+|---|---|---|---|---|---|
+| C-A1~A3 | findSubtitleWorkerTask:310 + libraryRepo 谓词 + jobsRepo dormant | 嫌疑#2 主裁决：语义判决被记账✓、时间判决被系统窃取✗；dormant=意图黑洞（与 A-F1/F3/F6 独立复现，双审吻合） | ①②⑥ | 成立（与 A 区交叉验证一致） | 并入 R-2/R-3 统一裁决 |
+| C-A4 | libraryRepo.ts:390-412 resetRecheck | 退避窗唯一逃生舱零生产引用（播放触发已死）——退避无任何 agent/人为覆盖通道 | R3 | 成立（grep 亲验，A-F9 同报） | 处决；等价能力由活文档事实+orchestrator 判断替代 |
+| C-A5 | ingest.ts:100-108 resolveStatusToWrite | missing 新事实被旧 unavailable 判决否决（护住退避窗口） | ④边缘 | 成立 | 有条件豁免：R-3 落地后它是诚实的状态记忆 |
+| C-B1 | realignExecutor.ts:704-709 | 时长抽查死枝（getDurationSeconds 从未接线）+ expectedRuntime=24 动漫硬编码——若被好心激活会整剧误 park 45分钟剧 | ①近死 | 成立 | 登记为债：本战役不激活不删除（神圣文件最小改动），注释加"禁止带24硬编码激活"警示 |
+| C-B2 | realignExecutor.ts:596-598 + port:126 | enableRealtimeMonitor 恒死分支（纯 Jellyfin 残肢） | 近死 | 成立 | 随 T9c 窄 diff 处决（含接口字段） |
+| C-B3 | realignExecutor waitForJellyfinIdle | 互斥机制活着（D4 双向排他亲核成立），但命名/威胁模型主语是死掉的 Jellyfin；原威胁（外部媒体服务器共库扫描）失去观测手段 | 灵魂错位 | 成立 | 机制哲学豁免；改名/注释改造随 T9c；共库扫描风险书面登记入部署文档 |
+| C-B4 | realignExecutor buildRealignMediaContext + core/schemas MediaContextSchema | 旧管线 MediaContext 类型当传声筒（恒空旧字段），生产消费仅剩此链 | R3 | 成立 | 改造：直接构造 FindSubtitleTask；MediaContextSchema 随之处决出 core |
+| C-B5 | seasonShape + tools | **修正主控先前判断**：exceedsSeasonTable 并非全死——"Season NN 文件夹+裸数字文件"误刮形态下镜像仍可超表；真·平铺才被摄取规范化。布局事实列是补充信号不是替代 | 链路事实 | 成立（identifyFromPath 规则 3/4 亲核） | 债务D1 修订：diskLayoutNonstandard 与 exceedsSeasonTable 并列为两个事实信号，均不守门 |
+| C-B6/B7 | realignExecutor:353,:600-601 | 验收文案"Jellyfin 报告 N 集"撒谎；provider_ids"从未被写入"断言已失实 | 表述/R3 | 成立 | 随 T9c 注释改造 |
+| C-C1 | ingest.ts:167-190 rule 1b + ORIGIN_UNKNOWN | 标题启发式猜测→永久静默 ignored，零申诉通道（C 主张处决；A-F11 主张有条件豁免） | ①⑤⑥ | 成立 | **合議裁决**：本战役改造-lite（status_reason='ignored-by-heuristic' 落库可稽核）；曝光/申诉通道归 dashboard 战役救援页；永久性（ORIGIN_UNKNOWN 不回查）登记为债 |
+| C-D1 | subtitleWriter pickFromZip + zimukuAdapter fileList:[] + download_candidate 返回值 | **zip 包内选择被机械层偷走**：zimuku 恰是季包大户，agent 不能选也不知道包里有什么，只能盲拿第一个文件——③被废掉一半；批量收割的直接障碍 | ②③ | 成立（zimuku fileList:[] 注释引已删 pipeline.ts 为据） | 改造并入阶段一（T5 扩展）：download_candidate 返回压缩包内清单事实+支持按名选取 |
+| C-E1~E3 | adapters 层 | 无隐藏排序过滤（清白）；assrt slice(0,2)/zimuku 只用 queries[0] 未申报；陈旧引用两处 | ②边缘/R3 | 成立 | 截断申报（工具描述一句话）；注释随清洗波 |
+| C-F1 | cli report.ts + core/ledger.ts | report 命令给死人记账：Ledger 零生产写入，汇报 journal/llmProfile/queue 全是已删世界 | R3 典型 | 成立（grep 亲验零 .append 生产调用） | 处决（cmdReport+report.ts+ledger.ts 连测试） |
+| C-F2 | core/schemas.ts | 九个已处决 agent 的 schema 尸体零生产引用，靠测试供养 | R3 | 成立 | 处决（SearchPlan/RankDecision/RankedCandidate/VerifyDecision/FinalDecision/OrphanDecision/IdentityMatch/SeasonMap/LooseEpisodesMap/MediaContext + IDENTITY_MATCHES，连专属测试；SubtitleCandidate/candidateKey 等活体保留） |
+| C-F3 | core/episode.ts SeasonEpisode | PlayerAdapter 已死，接口零引用 | R3 | 成立 | 处决；matchesEpisodeCode 活体保留、注释改造 |
+| C-F4 | 全仓 17 文件陈旧血统注释 | scanner/providerPort/pipeline/rankCandidates/diagnoseSeason/triggers 幽灵坐标 | R3 | 成立 | 批量注释清洗波（T12b，sonnet 机械执行，零行为改动） |
+
+C 区无发现区域：recognition 四文件（全仓最贴近北极星⑤的子系统）、daemon 两文件、doctor/subtitle-fetch/buildAdapters/targetLanguages、mediaContext/fileLogger、streamProbe/subtitleInspect/stagingSandbox 等安全机械层。
+
+## 四、裁决记录（Task 0.3 · 主控终审，2026-07-16）
+
+三审合流后的统一裁决。**总方针（采纳审计官A总意见）：旧灵魂是一条贯穿暗线，F1/F2/F3/F6 与事故本体同刀，否则事故换符号名重演。**
+
+| 裁决号 | 内容 | 落点 |
+|---|---|---|
+| R-1 | **批量胶水层**（事故本体 F4/B4-worker侧）：处决 representativeEpisodeId/representativeMovieId/claim时目标重推导概念；任务形状=季级事实清单 | 阶段一 T1-T7（原计划） |
+| R-2 | **dispatch 事实回执**（F1/F2/B2/B3/B11）：upsertWorkerTask 返回 created/revived/coalesced/blocked_dormant 事实；dispatch 工具如实转告且 coalesced/blocked 不耗 cap；wake/boostPriority 处决；sibling 的 remainingWorkSummary 注入 prompt | 阶段一新任务 T8b/T8d |
+| R-3 | **退避梯下沉事实层**（F3/F6/C-A1~A5/F5 部分）：内容退避从 jobs 状态机整体迁到 item 事实列（episodes/movies 新列 search_attempts，v10）；recheck=CONTENT_BACKOFF_DAYS 阶梯、第5次起 30d——仍是事实、永不隐形；worker_task 永不再 dormant；completeNoMatch 处决；retry_later→completeError 保留为节流豁免；活文档呈现停牌事实（unavailable 数/nextRecheckAt/原因样本/剧名） | 阶段一 T8（语义重写）/T8c、阶段二 T10（v10 扩容） |
+| R-4 | **工具面事实诚实化**（B6/B7/B9/B10/B12/C-E2）：check_series_layout 报 tmdbUnavailable、描述去 diagnoseSeason 幽灵；search_source 报 providerFailures+申报默认语言过滤；缺口行带剧名；provider 查询截断申报 | 阶段一新任务 T8c |
+| R-5 | **zip 清单事实**（C-D1）：download_candidate 返回压缩包内字幕清单，支持按名/序选取，pickFromZip 升级——季包批量收割的直接前提 | 阶段一 T5 扩展 |
+| R-6 | **清算波**（F7/F8/F9/F10/F15/B8/B13/C-A4/C-F1/C-F2/C-F3）：legacyJobRouting+executor.ts 整体处决；jobsRepo/libraryRepo 死器官群处决（含 completeNoMatch/completePartial/quota管道/wake/boost/find/findMovie/listByState/setJournalRef/retire/resetRecheck/hasSubtitleRecord/setMovieChineseTitle/knownPaths+selfScan死链）；retireAllForSeries 改指 worker_task；realignPlaybook+deep字段+report/ledger+schemas尸体+SeasonEpisode 处决；apiV2 合成 id 改用常量 | 阶段一新任务 T9a（收绿前执行） |
+| R-7 | **realign 窄 diff**（C-B2/B3/B4/B6/B7 + A-F13）：批量 FindSubtitleTask 适配、MediaContext 传声筒处决、TMDB 富化补面、恒死监视分支处决、命名/注释主语纠正；**五重安全层字节不动，主控逐 hunk 亲验**（P5 纪律）；C-B1 时长死枝不激活不删除仅加警示注释 | 阶段一新任务 T9c |
+| R-8 | **债务D1 修订**（C-B5）：exceedsSeasonTable 保留（仍可点火），diskLayoutNonstandard 并列第二信号，skill 的 MUST/never 守门措辞改为事实+理由式教导（B5） | 阶段二 T11（修订） |
+| R-9 | **血统注释清洗波**（C-F4/E3/B14/F9注释）：17 文件幽灵坐标批量改写，零行为改动 | 阶段三前 T12b（sonnet） |
+| R-10 | **豁免与登记**：瞬时错误轨（30s→15min→日）=故障自愈机械豁免；claimNext FIFO=事实豁免；rule 1b=改造-lite+债登记；ingest resolveStatusToWrite=R-3 后诚实豁免；realign 五重安全层+16MB fail-closed+沙盒检查=既有定论豁免；C-B1 时长死枝/quota 呈报通道/多语言单值截断/ORIGIN_UNKNOWN 不回查/外部媒体服务器共库扫描风险=登记立项 | 本册+spec |
+| R-11 | **上报用户裁决**（B15）：子代理粒度"季=下限"还是"剧级合集=终态"——本战役维持季级（批量形状的 scope 字段已为将来剧级留形），待用户拍板后另立战役 | 用户 |
+
+裁决完毕。计划修订随本次提交（docs/superpowers/plans/2026-07-16-glue-layer-repair-campaign.md，本地文档不入库）。
 
 ## 四、裁决记录（Task 0.3 填写）
 
