@@ -116,8 +116,19 @@ throttled/embedded/hardsub-assumed）。
   NCOP/NCED/Menu/PV/CM/Trailer→excluded-extra 可稽核；灰区 SP/OVA 归 agent——实证依据：
   剧情级 OAD 有字幕专包[巨人 OAD1~8 实测]，纯映像特典无；判据=TMDB S0 条目或时长≥15min）；
   README 命名最佳实践。
-- **字幕跨重复源传播**（用户提出）：同一内容多副本时，已获字幕复制到重复源优于再调 API
-  ——ingest 的 duplicate-content park 已有事实基础，设计成机械复制还是小判断任务留立项时定。
+- **重复源战役**（2026-07-16 傍晚讨论定稿）：照抄 Jellyfin 版本分组的形（绝不动文件，
+  Sonarr 式淘汰出局）——新表 item_files 让副本升一等公民（ingest 不再 park 成
+  duplicate-content），覆盖语义改逐文件（条目=全部文件各有着落，格阵显示分体态）；
+  **传播=普通候选判断**（用户关键洞察：正常安装同样没有"轴已验证"，全系统的字幕都是
+  按元数据指纹判断到最好——传播只是候选来自自家磁盘：同源指纹→复制改名零成本，异源→
+  agent 按该副本 release 重搜或判"复制比没有强"，无需特殊心虚状态）。schema v13 级改动，
+  独立小战役排 dashboard 后；dashboard 格阵按单文件模型先上线，item_files 落地后自然长出
+  版本角标。远期可能性登记：音频对轴验证（ffsubsync 式"对轴官"）——另一物种，不排期。
+- **鉴权立项（公开发布前置）**：抄 Sonarr/Radarr 单管理员模型（首跑设密码+表单登录+
+  API key），不抄 Jellyfin 多用户（媒体服务器需求，对管理工具是伪需求）；现阶段
+  DASHBOARD_TOKEN 够用。
+- 维持搁置（用户 2026-07-16 再确认）：多语言覆盖（单语言先做完）、存储协议 v2（挂载层
+  正经测试都还没做）、公开发布工程（还早）。
 - 既有登记沿用：quota 呈报通道、登记册六节十条。
 
 ## 10. Non-goals
