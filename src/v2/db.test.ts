@@ -15,15 +15,16 @@ describe('db 基座', () => {
       'series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta',
       'parked_paths', 'identify_overrides',
     ]) expect(tables).toContain(t)
-    // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11
+    // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11/v12
     // 本身）：v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
-    // 落库值随之是 '2'；R-11 派活范围裁量化追加 v11 entry 后 MIGRATIONS.length=3，落库值是 '3'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '3' })
+    // 落库值随之是 '2'；R-11 派活范围裁量化追加 v11 entry 后 MIGRATIONS.length=3，落库值是 '3'；
+    // dashboard 重建战役 G1 追加 v12 entry 后 MIGRATIONS.length=4，落库值是 '4'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '4' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '3' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '4' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -75,5 +76,19 @@ describe('db 基座', () => {
       .all() as { kind: string; taskType: string }[]
     expect(rows).toHaveLength(2)
     expect(rows.map((r) => r.taskType).sort()).toEqual(['find_subtitle', 'realign'])
+  })
+
+  // v12（dashboard 重建战役 G1）：三张新表（应有集缓存 + 行为级设置 + 守备目录）+ runs 表加
+  // trace_json 痕迹列。
+  it('v12: tmdb_seasons/settings/media_roots 三表存在，runs 表有 trace_json 列', () => {
+    const db = openDb(':memory:')
+    const tables = db
+      .prepare("select name from sqlite_master where type='table' order by name")
+      .all()
+      .map((r: any) => r.name)
+    for (const t of ['tmdb_seasons', 'settings', 'media_roots']) expect(tables).toContain(t)
+
+    const runsCols = (db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]).map((c) => c.name)
+    expect(runsCols).toContain('trace_json')
   })
 })

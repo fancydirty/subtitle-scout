@@ -133,6 +133,26 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_r
   // 这个身份碰撞）随之处决。
   `DROP INDEX jobs_identity;
    CREATE UNIQUE INDEX jobs_identity ON jobs(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''), ifnull(json_extract(payload,'$.taskType'),''))`,
+  // v12（dashboard 重建战役 G1）：三表一列增量，纯 CREATE TABLE / ADD COLUMN，不做表重建。
+  `
+CREATE TABLE tmdb_seasons (        -- spec §8.1 应有集缓存（三层格阵第一层）
+  series_id TEXT NOT NULL,         -- own id: 'tmdb:<id>'
+  season INTEGER NOT NULL,
+  episode INTEGER NOT NULL,
+  title TEXT,                      -- 集标题，可 NULL
+  fetched_at INTEGER NOT NULL,     -- TTL 刷新锚（7 天）
+  PRIMARY KEY (series_id, season, episode)
+);
+CREATE TABLE settings (            -- spec §7 行为级设置
+  key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE media_roots (         -- spec §7 守备目录（Jellyfin 分界）
+  path TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT 'local',   -- 存储协议战役预留
+  added_at INTEGER NOT NULL
+);
+ALTER TABLE runs ADD COLUMN trace_json TEXT;   -- 痕迹通道 C 收官快照
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
