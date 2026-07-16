@@ -64,3 +64,11 @@ export function nullableTolerant<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.
     z.output<T> | null
   >
 }
+
+/** 批量 finalize 的桶容错（同 nullableTolerant 的动机）：真模型对空桶会省略键或串编码
+ *  "None"/"null"/""——一律折叠为 []，绝不让空桶哨兵炸掉整份报告的入账。 */
+export const tolerantArray = <T extends z.ZodTypeAny>(item: T) =>
+  z.preprocess(
+    (v) => (v === undefined || v === null || v === 'None' || v === 'null' || v === '' ? [] : v),
+    z.array(item),
+  )

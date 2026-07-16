@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { coercibleNullableInt, nullableTolerant } from './coerce.js'
-import { FindSubtitleDecisionSchema } from './findSubtitleWorker.schemas.js'
+import { coercibleNullableInt, nullableTolerant, tolerantArray } from './coerce.js'
 
 // Root-cause regression guard (v3 live matrix, 2026-07-13): the real model (mimo-v2.5) OMITS
 // the four installed-only fields entirely on a no_safe_match finalize — it doesn't send them as
@@ -42,17 +41,26 @@ describe('coercibleNullableInt', () => {
   })
 })
 
-describe('FindSubtitleDecisionSchema (end-to-end omitted-keys case)', () => {
-  it('parses a no_safe_match finalize with all four installed-only fields OMITTED entirely', () => {
-    const parsed = FindSubtitleDecisionSchema.parse({
-      decision: 'no_safe_match',
-      reason: 'no candidate plausibly named this episode',
-      // installedPath / installedLanguage / candidateProvider / candidateProviderId all omitted —
-      // this is the real-model arg shape observed live, not a hypothetical.
-    })
-    expect(parsed.installedPath).toBeNull()
-    expect(parsed.installedLanguage).toBeNull()
-    expect(parsed.candidateProvider).toBeNull()
-    expect(parsed.candidateProviderId).toBeNull()
+// Same motivation as nullableTolerant, one level up: batch finalize's three buckets
+// (installed/no_safe_match/retry_later) are arrays, and the real model's "no value" encodings
+// for an empty bucket aren't always a clean `[]` — an omitted key, or a string-encoded "None",
+// must fold to an empty array rather than hard-failing the whole batch report.
+describe('tolerantArray', () => {
+  it('parses undefined (an omitted key) to an empty array', () => {
+    expect(tolerantArray(z.string()).parse(undefined)).toEqual([])
+  })
+
+  it('collapses the string null-sentinels ("None"/"null"/"") to an empty array', () => {
+    for (const sentinel of ['None', 'null', '']) {
+      expect(tolerantArray(z.string()).parse(sentinel)).toEqual([])
+    }
+  })
+
+  it('still parses a real array of items unchanged', () => {
+    expect(tolerantArray(z.string()).parse(['a', 'b'])).toEqual(['a', 'b'])
+  })
+
+  it('still enforces the item schema on non-empty arrays (not a blanket bypass)', () => {
+    expect(() => tolerantArray(z.number()).parse(['not-a-number'])).toThrow()
   })
 })

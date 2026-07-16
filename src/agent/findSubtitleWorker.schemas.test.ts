@@ -1,93 +1,76 @@
 import { describe, it, expect } from 'vitest'
-import { FindSubtitleDecisionSchema } from './findSubtitleWorker.schemas.js'
+import { FindSubtitleBatchReportSchema } from './findSubtitleWorker.schemas.js'
 
-describe('FindSubtitleDecisionSchema', () => {
-  it('accepts an installed decision with all fields populated', () => {
-    const parsed = FindSubtitleDecisionSchema.parse({
-      decision: 'installed',
-      reason: 'release name and cue count match',
-      installedPath: '/media/Show/Show.S01E01.zh-Hans.srt',
-      installedLanguage: 'zh-Hans',
-      candidateProvider: 'assrt',
-      candidateProviderId: '12345',
+describe('FindSubtitleBatchReportSchema', () => {
+  it('接受三桶批量报告', () => {
+    const r = FindSubtitleBatchReportSchema.parse({
+      installed: [
+        {
+          itemId: 'tmdb:1/s1e1',
+          installedPath: '/m/a.zh-Hans.srt',
+          installedLanguage: 'zh-Hans',
+          candidateProvider: 'assrt',
+          candidateProviderId: '1',
+          reason: 'ok',
+        },
+      ],
+      no_safe_match: [{ itemId: 'tmdb:1/s1e2', reason: 'no entry in any pack' }],
+      retry_later: [],
     })
-    expect(parsed.decision).toBe('installed')
+    expect(r.installed).toHaveLength(1)
   })
 
-  it('accepts a no_safe_match decision with null install fields', () => {
-    const parsed = FindSubtitleDecisionSchema.parse({
-      decision: 'no_safe_match',
-      reason: 'no candidate plausibly named this episode',
-      installedPath: null,
-      installedLanguage: null,
-      candidateProvider: null,
-      candidateProviderId: null,
-    })
-    expect(parsed.decision).toBe('no_safe_match')
+  it('真模型哨兵容错：缺桶/None/null 一律折叠为空数组', () => {
+    const r = FindSubtitleBatchReportSchema.parse({ installed: 'None', no_safe_match: null } as unknown)
+    expect(r.installed).toEqual([])
+    expect(r.no_safe_match).toEqual([])
+    expect(r.retry_later).toEqual([])
   })
 
-  it('rejects an unknown decision value', () => {
+  it('installed 项的 installedPath 必须非空（覆盖入账不许无路径）', () => {
     expect(() =>
-      FindSubtitleDecisionSchema.parse({
-        decision: 'maybe', reason: 'x',
-        installedPath: null, installedLanguage: null, candidateProvider: null, candidateProviderId: null,
+      FindSubtitleBatchReportSchema.parse({
+        installed: [{ itemId: 'x', installedPath: '', reason: 'r' }],
+        no_safe_match: [],
+        retry_later: [],
       }),
     ).toThrow()
   })
 
-  it('rejects a missing reason', () => {
+  it('installed 项的可空字段（installedLanguage/candidateProvider/candidateProviderId）容许省略/哨兵', () => {
+    const r = FindSubtitleBatchReportSchema.parse({
+      installed: [
+        {
+          itemId: 'tmdb:1/s1e3',
+          installedPath: '/m/c.srt',
+          installedLanguage: 'None',
+          candidateProvider: undefined,
+          candidateProviderId: 'null',
+          reason: 'ok',
+        },
+      ],
+      no_safe_match: [],
+      retry_later: [],
+    })
+    expect(r.installed[0].installedLanguage).toBeNull()
+    expect(r.installed[0].candidateProvider).toBeNull()
+    expect(r.installed[0].candidateProviderId).toBeNull()
+  })
+
+  it('no_safe_match / retry_later 项要求 itemId 与 reason 非空', () => {
     expect(() =>
-      FindSubtitleDecisionSchema.parse({
-        decision: 'no_safe_match',
-        installedPath: null, installedLanguage: null, candidateProvider: null, candidateProviderId: null,
+      FindSubtitleBatchReportSchema.parse({
+        installed: [],
+        no_safe_match: [{ itemId: '', reason: 'x' }],
+        retry_later: [],
       }),
     ).toThrow()
-  })
-
-  // Third instance of the same string-encoding class as download_candidate.fileIndex: on a
-  // retry_later / no_safe_match finalize the real model emits the string "None" (or "null"/"")
-  // for fields it means as null. `installedLanguage` is a NULLABLE ENUM — "None" is neither a
-  // valid enum member nor JSON null, so it FAILS validation of the finalize tool's inputSchema,
-  // `captured` never gets set, and readFinalized() throws (the whole run dies). The nullable
-  // fields must collapse those sentinels to null before the enum/string check.
-  it('collapses string null-sentinels ("None"/"null"/"") to null on nullable fields', () => {
-    for (const sentinel of ['None', 'null', '', 'NONE']) {
-      const parsed = FindSubtitleDecisionSchema.parse({
-        decision: 'retry_later',
-        reason: 'transient failure, will retry',
-        installedPath: sentinel,
-        installedLanguage: sentinel,
-        candidateProvider: sentinel,
-        candidateProviderId: sentinel,
-      })
-      expect(parsed.installedLanguage).toBeNull()
-      expect(parsed.installedPath).toBeNull()
-      expect(parsed.candidateProvider).toBeNull()
-      expect(parsed.candidateProviderId).toBeNull()
-    }
-  })
-
-  it('still accepts a real Chinese-script installedLanguage value', () => {
-    expect(
-      FindSubtitleDecisionSchema.parse({
-        decision: 'installed', reason: 'match',
-        installedPath: '/media/Show/Show.S01E01.zh-Hant.srt', installedLanguage: 'zh-Hant',
-        candidateProvider: 'assrt', candidateProviderId: '667241',
-      }).installedLanguage,
-    ).toBe('zh-Hant')
-  })
-
-  // A2: installedLanguage was a two-value zh-Hans/zh-Hant enum, which rejected every non-Chinese
-  // installable language (e.g. an 'en' subtitle finalize would hard-fail this schema). Generalized
-  // to a plain non-empty string — Chinese Hans/Hant refinement is unaffected (still accepted above),
-  // but the domain is no longer locked to those two values.
-  it('accepts a non-Chinese installedLanguage value (the zh-Hans/zh-Hant enum lock is removed)', () => {
-    expect(
-      FindSubtitleDecisionSchema.parse({
-        decision: 'installed', reason: 'x',
-        installedPath: '/media/Show/Show.S01E01.en.srt', installedLanguage: 'en',
-        candidateProvider: 'opensubtitles', candidateProviderId: '9999',
-      }).installedLanguage,
-    ).toBe('en')
+    expect(() =>
+      FindSubtitleBatchReportSchema.parse({
+        installed: [],
+        no_safe_match: [],
+        retry_later: [{ itemId: 'x', reason: '' }],
+      }),
+    ).toThrow()
   })
 })
