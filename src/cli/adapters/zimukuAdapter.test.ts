@@ -13,7 +13,7 @@ function fakeClient(overrides: Partial<FakeZimukuClient> = {}): FakeZimukuClient
   }
 }
 
-const args = (over: Partial<FetchArgs> = {}): FetchArgs => ({ queries: [], deep: false, ...over })
+const args = (over: Partial<FetchArgs> = {}): FetchArgs => ({ queries: [], ...over })
 
 describe('makeZimukuAdapter: search', () => {
   it('searches with the first query only and maps results to provider-neutral candidates with empty fileList', async () => {

@@ -490,8 +490,15 @@ function mkMirror(paths: string[], opts: { seriesId?: string; title?: string } =
       path: p, subStatus: 'missing',
     })
   })
-  jobsRepo.upsertWanted({ kind: 'realign', seriesId }, Date.now())
-  const job = jobsRepo.claimNext(Date.now())!
+  // 清算波 R-6（A-F8）：jobsRepo.upsertWanted 已随死器官处决（production 已无调用点——realign
+  // worker_task 走 upsertWorkerTask，见 realignWorkerTask.ts）。直接 SQL 写一行同形状的
+  // realign job，逐字复刻 upsertWanted 原 realign 分支的 INSERT（jobsRepo.ts 头注释存档）。
+  const seedNow = Date.now()
+  db.prepare(
+    `INSERT INTO jobs (kind, series_id, season, plan_ref, state, priority, attempt, created_at, updated_at)
+     VALUES ('realign', ?, NULL, NULL, 'wanted', 0, 0, ?, ?)`
+  ).run(seriesId, seedNow, seedNow)
+  const job = jobsRepo.claimNext(seedNow)!
   return { db, lib, jobsRepo, job, seriesId }
 }
 
@@ -1204,7 +1211,11 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
       [1, 2, 3, 4, 5].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)),
     )
     // 旧排布下的 series_season job——假成功会把它错误退休（retireAllForSeries）
-    jobsRepo.upsertWanted({ kind: 'series_season', seriesId: 'jf-series-1', season: 1 }, Date.now())
+    // 清算波 R-6（A-F8）：upsertWanted 已随死器官处决，直接 SQL 写一行同形状的行。
+    db.prepare(
+      `INSERT INTO jobs (kind, series_id, season, state, priority, attempt, created_at, updated_at)
+       VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)`
+    ).run('jf-series-1', 1, Date.now(), Date.now())
 
     // —— 第一跑：字幕先行阶段（组装预检之后！）外来目录占住最终位置，亮相必然撞墙；
     //    同时旧目录被锁死（0o555）→ 进程内回滚 EACCES 半途而废、无 rollback 标记——
@@ -1247,7 +1258,8 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
     expect(countVideosRec(join(libRoot, '.realign-build'))).toBe(0) // build 无滞留
     expect(readFileSync(join(foreign, 'somebody-elses.mkv'), 'utf8')).toBe('foreign-content') // 外来文件原样
     expect(lib.getSeries('jf-series-1')).not.toBeNull()             // 镜像行未删
-    expect(jobsRepo.find('jf-series-1', 1)!.state).toBe('wanted')   // series_season job 未被退休
+    // jobsRepo.find 已随死器官处决，直接 SQL 读回同形状的行。
+    expect((db.prepare(`SELECT * FROM jobs WHERE kind = 'series_season' AND series_id = ? AND season = ?`).get('jf-series-1', 1) as { state: string }).state).toBe('wanted')   // series_season job 未被退休
     db.close()
   })
 

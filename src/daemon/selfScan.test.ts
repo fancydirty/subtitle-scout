@@ -1,127 +1,25 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { makeSelfScan, SELF_SCAN_DEFAULT_INTERVAL_MS, type SelfScanDeps } from './selfScan.js'
-import type { Recognized, Park } from '../recognition/index.js'
-
-function recognized(overrides: Partial<Recognized> = {}): Recognized {
-  return { tmdbId: 1, title: 'Show', isTv: true, season: 1, episode: 1, absoluteEpisode: null, ...overrides } as Recognized
-}
-
-function makeDeps(over: Partial<SelfScanDeps> = {}): SelfScanDeps {
-  return {
-    roots: [],
-    knownPaths: () => new Set<string>(),
-    recognize: vi.fn(async () => recognized()),
-    log: () => {},
-    ...over,
-  }
-}
+import { walkVideoFiles, SELF_SCAN_DEFAULT_INTERVAL_MS } from './selfScan.js'
 
 describe('SELF_SCAN_DEFAULT_INTERVAL_MS', () => {
-  it('is 15 minutes — the single source of truth B2 wires the daemon loop gate off of', () => {
+  it('is 15 minutes — the single source of truth cli/index.ts and v2/daemon.ts wire the ingest heartbeat gate off of', () => {
     expect(SELF_SCAN_DEFAULT_INTERVAL_MS).toBe(15 * 60_000)
   })
 })
 
-describe('makeSelfScan (injected listVideoFiles)', () => {
-  it('new path (not in knownPaths) → recognize() called, lands in recognized bucket', async () => {
-    const recognize = vi.fn(async () => recognized({ title: 'New Show' }))
-    const tick = makeSelfScan(makeDeps({
-      roots: ['/media'],
-      listVideoFiles: () => ['/media/new.mkv'],
-      knownPaths: () => new Set(),
-      recognize,
-    }))
-
-    const result = await tick()
-
-    expect(recognize).toHaveBeenCalledWith('/media/new.mkv')
-    expect(result.scanned).toBe(1)
-    expect(result.recognized).toEqual([{ path: '/media/new.mkv', result: recognized({ title: 'New Show' }) }])
-    expect(result.parked).toEqual([])
-    expect(result.skippedKnown).toBe(0)
-  })
-
-  it('known path (present in knownPaths) → recognize() NOT called, counted in skippedKnown', async () => {
-    const recognize = vi.fn(async () => recognized())
-    const tick = makeSelfScan(makeDeps({
-      roots: ['/media'],
-      listVideoFiles: () => ['/media/known.mkv'],
-      knownPaths: () => new Set(['/media/known.mkv']),
-      recognize,
-    }))
-
-    const result = await tick()
-
-    expect(recognize).not.toHaveBeenCalled()
-    expect(result.scanned).toBe(1)
-    expect(result.skippedKnown).toBe(1)
-    expect(result.recognized).toEqual([])
-    expect(result.parked).toEqual([])
-  })
-
-  it('previously parked path stays out of the library → recognize() retried on the NEXT pass', async () => {
-    const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-title-signal' }))
-    const known = new Set<string>() // parking never adds to knownPaths — the whole point of the design
-    const tick = makeSelfScan(makeDeps({
-      roots: ['/media'],
-      listVideoFiles: () => ['/media/junk.mkv'],
-      knownPaths: () => known,
-      recognize,
-    }))
-
-    const first = await tick()
-    expect(first.parked).toEqual([{ path: '/media/junk.mkv', reason: 'no-title-signal' }])
-    expect(recognize).toHaveBeenCalledTimes(1)
-
-    const second = await tick()
-    expect(second.parked).toEqual([{ path: '/media/junk.mkv', reason: 'no-title-signal' }])
-    expect(recognize).toHaveBeenCalledTimes(2) // retried, not remembered as "already parked"
-  })
-
-  it('recognize() throwing for one file does not kill the pass; other files still processed, thrown file lands in neither bucket, log is called', async () => {
-    const recognize = vi.fn(async (path: string): Promise<Recognized | Park> => {
-      if (path === '/media/flaky.mkv') throw new Error('transient TMDB blip')
-      return recognized({ title: 'OK Show' })
-    })
-    const log = vi.fn()
-    const tick = makeSelfScan(makeDeps({
-      roots: ['/media'],
-      listVideoFiles: () => ['/media/flaky.mkv', '/media/ok.mkv'],
-      knownPaths: () => new Set(),
-      recognize,
-      log,
-    }))
-
-    const result = await tick()
-
-    expect(result.scanned).toBe(2)
-    expect(result.recognized).toEqual([{ path: '/media/ok.mkv', result: recognized({ title: 'OK Show' }) }])
-    expect(result.parked).toEqual([])
-    expect(result.skippedKnown).toBe(0)
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('/media/flaky.mkv'))
-  })
-
-  it('scans across multiple roots, accumulating one SelfScanResult', async () => {
-    const recognize = vi.fn(async () => recognized())
-    const tick = makeSelfScan(makeDeps({
-      roots: ['/media/a', '/media/b'],
-      listVideoFiles: (root) => (root === '/media/a' ? ['/media/a/x.mkv'] : ['/media/b/y.mkv']),
-      knownPaths: () => new Set(),
-      recognize,
-    }))
-
-    const result = await tick()
-
-    expect(result.scanned).toBe(2)
-    expect(result.recognized.map(r => r.path).sort()).toEqual(['/media/a/x.mkv', '/media/b/y.mkv'])
-  })
-})
-
-describe('makeSelfScan (default fs walker)', () => {
-  it('recurses into real directories, filters by video extension, and excludes dot-dirs', async () => {
+// 清算波 R-6（A-F9/C-A4）：makeSelfScan（B1 的整个 walk→diff→recognize 编排，含它的
+// SelfScanDeps/SelfScanResult 类型）已随死器官处决——production 唯一调用点（B2 self-scan
+// refresh-bridge）早已折叠进 v2/ingest.ts 的统一 ingest 心跳。这个 describe 块原先借
+// makeSelfScan(...).tick() 间接验证 walkVideoFiles 的真实文件系统行为（递归、扩展名过滤、
+// 排除 dot-dir/@ 前缀目录）——这是 walkVideoFiles 唯一未被 mock 掉、真正走硬盘的测试点
+// （v2/ingest.test.ts、v2/realignLibraryPort.test.ts 里的同名 listVideoFiles 全部是注入的
+// mock）。walkVideoFiles 本身仍是活体（v2/ingest.ts、v2/realignLibraryPort.ts 直接消费），
+// 迁到直接调用它本身，不再经过已死的 makeSelfScan 包装层。
+describe('walkVideoFiles (real fs walk)', () => {
+  it('recurses into real directories, filters by video extension, and excludes dot-dirs', () => {
     const root = mkdtempSync(join(tmpdir(), 'selfscan-'))
 
     // Plain video file at top level
@@ -142,17 +40,8 @@ describe('makeSelfScan (default fs walker)', () => {
     mkdirSync(join(root, '@eaDir'), { recursive: true })
     writeFileSync(join(root, '@eaDir', 'thumb.mkv'), '')
 
-    const recognize = vi.fn(async () => recognized())
-    const tick = makeSelfScan(makeDeps({
-      roots: [root],
-      knownPaths: () => new Set(),
-      recognize,
-    }))
+    const paths = walkVideoFiles(root).sort()
 
-    const result = await tick()
-
-    expect(result.scanned).toBe(2)
-    const paths = result.recognized.map(r => r.path).sort()
     expect(paths).toEqual([join(root, 'Show', 'Season 01', 'ep1.mp4'), join(root, 'movie.mkv')].sort())
   })
 })

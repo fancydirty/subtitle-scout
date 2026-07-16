@@ -2,7 +2,6 @@ import type { ScoutDb } from './db.js'
 
 // 双轨速率差是有意的：网络类错误快重试到好（阶梯 30s→5min，封顶 15min 防撞墙），
 // 内容类失败按天退避（字幕产出以天为单位）。
-export const CONTENT_BACKOFF_DAYS = [1, 2, 4, 8]
 export const ERROR_BACKOFF_MS = [30_000, 60_000, 120_000, 300_000]
 /** 1b 瞬时错误给-up 界：15min 封顶意味着无穷重试的瞬时错误每天要打 96 次完整
  *  identify+plan+search+/download，白烧 TMDB/provider 调用。20 次 ≈ 20 * 15min = 5h
@@ -14,20 +13,6 @@ export const ERROR_GIVEUP_THRESHOLD = 20
 export const ERROR_BACKOFF_DAILY_MS = 24 * 3_600_000
 export const errorBackoffMs = (attempt: number) =>
   attempt > ERROR_GIVEUP_THRESHOLD ? ERROR_BACKOFF_DAILY_MS : (ERROR_BACKOFF_MS[attempt - 1] ?? 900_000)
-/** Partial-success throttle (I6): back to wanted but not immediately claimable — avoids tight re-claim loop. */
-export const PARTIAL_RETRY_MS = 30_000
-/** OS 配额耗尽 resetAt 之上的固定余量：吸收我们与 provider 之间的时钟偏差，避免恰好卡在
- *  重置边界重领仍扑空。是个保守 margin，不是真随机 jitter。 */
-export const QUOTA_RESET_MARGIN_MS = 5 * 60_000
-
-/** resetAt 是否值得据其单独排期：能解析 + 严格晚于 now 才行；否则 null（调用方落回默认阶梯）。
- *  过去时间/乱码字符串一律当作"没有可用的 resetAt"处理——不能让畸形 provider 数据把 job 卡死。 */
-function quotaRetryAt(resetAt: string | null | undefined, now: number): number | null {
-  if (!resetAt) return null
-  const parsed = Date.parse(resetAt)
-  if (Number.isNaN(parsed) || parsed <= now) return null
-  return parsed + QUOTA_RESET_MARGIN_MS
-}
 
 const LEASE_DURATION_MS = 30 * 60_000 // 30 minutes
 
@@ -36,24 +21,6 @@ const ACTIVE_STATES_SQL = `('searching', 'downloading', 'verifying')`
 
 export type JobKind = 'series_season' | 'movie' | 'realign' | 'worker_task'
 export type JobState = 'wanted' | 'searching' | 'downloading' | 'verifying' | 'done' | 'failed' | 'dormant'
-
-export interface JobIdentity {
-  kind: 'series_season'
-  seriesId: string
-  season: number
-}
-
-export interface MovieJobIdentity {
-  kind: 'movie'
-  movieId: string
-}
-
-export interface RealignJobIdentity {
-  kind: 'realign'
-  seriesId: string
-}
-
-export type JobIdent = JobIdentity | MovieJobIdentity | RealignJobIdentity
 
 /** R-2（裁决 2026-07-16，审计 A-F1）：派发不再有静默结局——每次 upsert 返回它实际做了什么。
  *  考古定罪：upsertWorkerTask 曾经对非 done 态行静默 no-op 且从不返回任何东西，而 dispatch
@@ -68,10 +35,12 @@ export type WorkerTaskUpsertOutcome =
   | { outcome: 'coalesced'; pendingState: JobState }     // wanted/failed/active 既有行，只刷 updated_at
   | { outcome: 'blocked_dormant'; lastError: string | null }
 
-// worker_task 身份（v3 phase ④）：故意不并入 JobIdent 联合类型——upsertWanted 的
-// if/else-if/else 三分支穷尽窄化正好对应 JobIdent 现有的三个变体，塞入第 4 个变体而不
-// 重写那个 else 分支会让 worker_task 身份被静默路由进 realign 的 SQL 分支（写下 upsertWanted
-// 现有实现之后才看清这个风险）。upsertWorkerTask 用这个独立类型，走独立方法。
+// worker_task 身份（v3 phase ④）。
+// 清算波 R-6（A-F8）：这里原先解释"故意不并入 JobIdent 联合类型"——JobIdent（连同它的
+// upsertWanted 消费者）已随死器官处决整体删除（series_season/movie/realign 三个旧 kind
+// 的创建/查询/优先级/唤醒方法在生产代码里已零调用点，唯一幸存的旧管线残余是 kind='realign'
+// worker_task 早已取代的老式行——见本文件历史 diff）。独立类型/独立方法的理由本身依然成立
+// （taskType 参与 identity 元组，见下方 R-11 注释），只是不再有一个"JobIdent 三分支"可比较。
 // R-11（用户裁决 2026-07-16，schema v11）：season 字段对 find_subtitle 任务恒为 null——派活
 // 范围（哪些季）不再是身份的一部分，改由 payload.seasons 承载（数组=季子集，null=全剧，缺席=
 // 存量行按旧语义单季推导，见 findSubtitleWorkerTask.ts 的 mapper）。identity 元组本身也已从
@@ -109,70 +78,15 @@ export interface Job {
 export class JobsRepo {
   constructor(private db: ScoutDb) {}
 
-  // I2: done job 的目标重新出现 missing（新集入库/字幕被删）时复活回 wanted；
-  //     failed/dormant/active 不动（各有自己的退避/唤醒通道）。
-  // 双轨 attempt 审计修正：error_attempt 与 attempt 同一套"done→wanted 才归零"语义——
-  // completeError/completeNoMatch/completePartial 本身都不重置对方或自己的计数器（各自
-  // 只增/减自己那条轨），归零统一发生在这里：job 彻底做完（done）后被下一轮复活，
-  // 才算翻篇重新开始，两条轨一起清零。
-  // plan_ref（D-review #1）：upsertWanted 的 INSERT 恒带 NULL（清单在执行阶段才由 setPlanRef
-  // 回填），无条件 plan_ref = excluded.plan_ref 会让执行中/失败/休眠 job 的崩溃恢复清单指针
-  // 被一次 mid-execution re-upsert 直接抹掉——只有 done→wanted 复活（翻篇重来）才重置，
-  // 其余状态一律保留现值。
-  // R-11（用户裁决 2026-07-16，schema v11）实测踩坑必须就地适配：SQLite 的 ON CONFLICT 目标
-  // 必须逐字匹配某一个真实存在的 UNIQUE 索引/约束——jobs 表只有 jobs_identity 这一个相关唯一
-  // 索引，v11 是在原地把它从 4 元组换成 5 元组（DROP+CREATE 同名 jobs_identity，见 db.ts），
-  // 不是新增一个平行索引。这条 4 元组的 ON CONFLICT 目标因此不再匹配任何索引——
-  // upsertWanted 的三个调用分支（series_season/movie/realign）在 v11 迁移后的库上会直接抛
-  // `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`（已用最小复现脚本
-  // 实测确认）。这三个 kind 的 INSERT 列表从不带 payload 列（恒 NULL），所以追加的第 5 个表达式
-  // ifnull(json_extract(payload,'$.taskType'),'') 对它们求值恒为 ''，是常量、不改变既有 4 元组
-  // 语义——单纯让这条 SQL 重新匹配上 v11 后仍然唯一存在的那个索引，而不是引入新的行为分支。
-  private static readonly UPSERT_CONFLICT_SQL = `
-           ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''), ifnull(json_extract(payload,'$.taskType'),''))
-           DO UPDATE SET
-             updated_at = ?,
-             plan_ref = CASE WHEN state = 'done' THEN excluded.plan_ref ELSE jobs.plan_ref END,
-             state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
-             attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
-             error_attempt = CASE WHEN state = 'done' THEN 0 ELSE error_attempt END,
-             next_retry_at = CASE WHEN state = 'done' THEN NULL ELSE next_retry_at END`
-
-  upsertWanted(ident: JobIdent, now: number): void {
-    if (ident.kind === 'series_season') {
-      this.db
-        .prepare(
-          `INSERT INTO jobs (kind, series_id, season, state, priority, attempt, created_at, updated_at)
-           VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
-        )
-        .run(ident.seriesId, ident.season, now, now, now)
-    } else if (ident.kind === 'movie') {
-      this.db
-        .prepare(
-          `INSERT INTO jobs (kind, movie_id, state, priority, attempt, created_at, updated_at)
-           VALUES ('movie', ?, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
-        )
-        .run(ident.movieId, now, now, now)
-    } else {
-      // realign：season 恒 NULL；plan_ref 诊断创建时未知，留 NULL，真正执行时由 setPlanRef 回填。
-      this.db
-        .prepare(
-          `INSERT INTO jobs (kind, series_id, season, plan_ref, state, priority, attempt, created_at, updated_at)
-           VALUES ('realign', ?, NULL, NULL, 'wanted', 0, 0, ?, ?)${JobsRepo.UPSERT_CONFLICT_SQL}`
-        )
-        .run(ident.seriesId, now, now, now)
-    }
-  }
-
   /** 主代理派活(v3 phase ④/⑤)：写一行 worker_task job。复用 series_id/season/movie_id 三列
    *  加上 payload 里的 taskType 做身份 dedup——jobs_identity 的 (kind, series_id, season,
    *  movie_id, taskType) 五元组（R-11，schema v11）里 kind 本身已经区分 worker_task 与
    *  series_season/movie/realign，taskType 进一步区分同一 series 下不同种类的 worker_task
-   *  （find_subtitle vs realign 不再共享一行）。同一 identity 重复派发是幂等 upsert（镜像
-   *  upsertWanted 的 done→wanted 复活语义：非 done 态只碰 updated_at，done 态整体刷新
-   *  payload/parent_job_id 并复活）。没有自然季/剧归属的任务（如 sibling-orchestrator 分片）
-   *  用合成 seriesId（如 'orchestrator-shard-<parentJobId>-<n>'），season/movieId 恒 null。
-   *  故意是独立方法而非塞进 upsertWanted：见上方 WorkerTaskIdentity 的注释。 */
+   *  （find_subtitle vs realign 不再共享一行）。同一 identity 重复派发是幂等 upsert（非 done
+   *  态只碰 updated_at，done 态整体刷新 payload/parent_job_id 并复活——见下方 R-2 outcome）。
+   *  没有自然季/剧归属的任务（如 sibling-orchestrator 分片）用合成 seriesId（如
+   *  'orchestrator-shard-<parentJobId>-<n>'），season/movieId 恒 null。故意是独立方法：
+   *  见上方 WorkerTaskIdentity 的注释。 */
   upsertWorkerTask(
     ident: WorkerTaskIdentity, payload: Record<string, unknown>, parentJobId: number | null, now: number,
   ): WorkerTaskUpsertOutcome {
@@ -250,23 +164,9 @@ export class JobsRepo {
     return job ?? null
   }
 
-  /** FIX-4a（observability 审计修正）：journal_ref 是 schema v1 就有的列，此前从未被
-   *  写过。executeJob 在真正跑 runEpisode（有网络/LLM 调用、可能撞上 lost async
-   *  continuation 那类异常）之前，把本次调用要用的 journal 引用先落盘——即便这次调用
-   *  之后进程"断线"、job 卡死，也能从这一行倒查是哪次运行、对应哪份 journal 明细，
-   *  不再是零证据。只在 active 态生效（no-op 保护，同 renewLease 语义：job 若已被
-   *  complete* 收尾，没有再写它的道理）。 */
-  setJournalRef(jobId: number, journalRef: string, now: number): void {
-    this.db
-      .prepare(
-        `UPDATE jobs SET journal_ref = ?, updated_at = ? WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
-      )
-      .run(journalRef, now, jobId)
-  }
-
   /** 整理执行闭包在计划构建、manifest 落盘之后回填清单路径——诊断创建 job 那一刻还没有
-   *  清单可指（诊断只判断"是不是绝对编号平铺"，不构建计划）。同 setJournalRef 语义：
-   *  仅在 active 态生效，job 已被 complete* 收尾则是 no-op。 */
+   *  清单可指（诊断只判断"是不是绝对编号平铺"，不构建计划）。仅在 active 态生效，job 已被
+   *  complete* 收尾则是 no-op（同 renewLease 语义：job 若已收尾，没有再写它的道理）。 */
   setPlanRef(jobId: number, planRef: string, now: number): void {
     this.db
       .prepare(
@@ -356,57 +256,17 @@ export class JobsRepo {
     return info.changes
   }
 
-  /** Content failure (no_safe_match): exponential backoff 1/2/4/8 days, then dormant on the 5th failure.
-   *  双轨 attempt 审计修正：只读写内容轨的 attempt 列，从不触碰 error_attempt——瞬时错误历史
-   *  不该被内容判据消费，也不该被内容失败清零（各自独立，统一在 done→wanted 复活时一起归零）。 */
-  completeNoMatch(jobId: number, now: number): boolean {
-    return this.db.transaction(() => {
-      const job = this.get(jobId)
-      if (!job) return false
-
-      const newAttempt = job.attempt + 1
-      if (newAttempt > CONTENT_BACKOFF_DAYS.length) {
-        // All backoff tiers exhausted — 5th content failure goes dormant.
-        const info = this.db
-          .prepare(
-            `UPDATE jobs
-             SET state = 'dormant', attempt = ?, next_retry_at = NULL, lease_until = NULL, updated_at = ?
-             WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
-          )
-          .run(newAttempt, now, jobId)
-        return info.changes > 0
-      }
-      const backoffDays = CONTENT_BACKOFF_DAYS[newAttempt - 1]
-      const nextRetryAt = now + backoffDays * 86_400_000
-      const info = this.db
-        .prepare(
-          `UPDATE jobs
-           SET state = 'failed', attempt = ?, next_retry_at = ?, lease_until = NULL, updated_at = ?
-           WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
-        )
-        .run(newAttempt, nextRetryAt, now, jobId)
-      return info.changes > 0
-    })()
-  }
-
   /** Transient error (network/LLM/5xx): short backoff, separate track from content failures.
    *  双轨 attempt 审计修正：只读写 error_attempt，从不触碰内容轨的 attempt 列——两条速率
-   *  差异巨大的退避梯（30s..15min..升级为每天 vs 1/2/4/8 天+dormant）曾共用一个计数器，
-   *  一串瞬时错误会让下一次真正的 no_safe_match 越级跳档（见 db.ts v4 迁移注释）。
-   *  quotaResetAt: OS 配额耗尽（quota_exhausted）时携带的 provider reset 时间——有效（可解析且未来）
-   *  时按 resetAt+margin 精确排期，而不是走盲的 ERROR_BACKOFF_MS 阶梯（否则会在配额重置前每
-   *  至多 15min 重打一次完整 identify+plan+search+/download，白烧 LLM/search 配额）。
-   *  IMPORTANT-2: 配额停车不是瞬时错误的真实累积，不该推高 error_attempt——同 reapExpiredLeases/
-   *  reapAllActive 的"不是失败别充电"语义。否则日常配额停车会悄悄推高 error_attempt，
-   *  误触发 give-up 阈值升级到每天一次退避。 */
-  completeError(jobId: number, error: string, now: number, quotaResetAt?: string | null): boolean {
+   *  差异巨大的退避梯（30s..15min..升级为每天 vs 内容轨的天级梯+dormant）曾共用一个计数器，
+   *  一串瞬时错误会让下一次真正的内容失败越级跳档（见 db.ts v4 迁移注释）。 */
+  completeError(jobId: number, error: string, now: number): boolean {
     return this.db.transaction(() => {
       const job = this.get(jobId)
       if (!job) return false
 
-      const quotaRetry = quotaRetryAt(quotaResetAt, now)
-      const newErrorAttempt = quotaRetry != null ? job.error_attempt : job.error_attempt + 1
-      const nextRetryAt = quotaRetry ?? now + errorBackoffMs(newErrorAttempt)
+      const newErrorAttempt = job.error_attempt + 1
+      const nextRetryAt = now + errorBackoffMs(newErrorAttempt)
       const info = this.db
         .prepare(
           `UPDATE jobs
@@ -414,31 +274,6 @@ export class JobsRepo {
            WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
         )
         .run(newErrorAttempt, nextRetryAt, error, now, jobId)
-      return info.changes > 0
-    })()
-  }
-
-  /** Partial success: attempt decrements (gradual escalation recovery), back to wanted for the remainder.
-   *  双轨 attempt 审计修正：只减内容轨的 attempt，从不触碰 error_attempt——部分覆盖是内容轨的
-   *  渐进恢复信号（验证过了这份候选是"可以往前走"的），与瞬时错误历史无关，不该替它归零。
-   *  I6: 带 30 秒节流窗（PARTIAL_RETRY_MS），防止 partial → wanted → 立即重领的紧循环。
-   *  quotaResetAt: 季包/季横扫中途撞配额耗尽时携带的 provider reset 时间（IMPORTANT-1a）——有效时
-   *  按 resetAt+margin 精确排期，而不是走盲的 30 秒节流，否则配额重置前每 30 秒重打一次覆盖剩余
-   *  集的全链路，白烧配额。 */
-  completePartial(jobId: number, now: number, quotaResetAt?: string | null): boolean {
-    return this.db.transaction(() => {
-      const job = this.get(jobId)
-      if (!job) return false
-
-      const newAttempt = Math.max(0, job.attempt - 1)
-      const nextRetryAt = quotaRetryAt(quotaResetAt, now) ?? now + PARTIAL_RETRY_MS
-      const info = this.db
-        .prepare(
-          `UPDATE jobs
-           SET state = 'wanted', attempt = ?, next_retry_at = ?, lease_until = NULL, updated_at = ?
-           WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
-        )
-        .run(newAttempt, nextRetryAt, now, jobId)
       return info.changes > 0
     })()
   }
@@ -471,41 +306,14 @@ export class JobsRepo {
     return info.changes > 0
   }
 
-  /** Retire satisfied jobs from wanted/failed → done (原旧管线聚合层的 cleanup semantic).
-   *  退役T7 (Wave 2A)：唯一的生产调用点（原 v2/aggregate 模块）已随旧管线删除——今天没有
-   *  任何生产代码调用这个方法。保留而不删：selfScanTrigger.test.ts 仍直接调它模拟"job
-   *  已被外部满足退休"这个精确的前置状态转移（wanted/failed→done，且尊重 backoff 窗口，
-   *  与语义不同的 retireClaimed/completeDone 都不能替代），jobsRepo.test.ts 也单独测它
-   *  自身的前置条件。方法体/precondition 均未改动，只是这条注释不再假称它还在服务
-   *  一个活的生产调用点。
-   *  A 'failed' job with a pending next_retry_at is mid content-backoff (1/2/4/8d
-   *  ladder) — its target can look momentarily "not missing" (e.g. unavailable with
-   *  a future recheck_after) without being externally satisfied. Retiring it here
-   *  flips it to 'done', and the next upsertWanted done→wanted revival resets
-   *  attempt to 0, silently defeating the ladder. Only retire once the backoff
-   *  window has actually elapsed (or there never was one). */
-  retire(jobId: number, now: number): boolean {
-    const info = this.db
-      .prepare(
-        `UPDATE jobs
-         SET state = 'done', updated_at = ?
-         WHERE id = ? AND state IN ('wanted', 'failed')
-         AND (next_retry_at IS NULL OR next_retry_at <= ?)`
-      )
-      .run(now, jobId, now)
-    return info.changes > 0
-  }
-
-  /** W0-4 存量墓碑：cmdWatch 的 executeJob 闭包对旧 kind（series_season/movie）收到一个已经
-   *  被 claimNext 领走（state='searching'）的存量行时调用——旧管线的执行器不再接线，这一行
-   *  不是失败，是被 v3 orchestrator 的 list_missing_coverage 正常派活覆盖了同一个 series/movie
-   *  的缺口。语义上与 completeDone（active→done，清 lease_until）完全同构，之所以不直接复用
-   *  completeDone、另起一个名字，是让调用点和日后 grep 都能一眼认出"这是退休声明，不是真的
-   *  跑完产出了字幕判断"（没有 runs 行、没有 subtitles 行）。
-   *  与既有的单 id `retire()`（wanted/failed→done，聚合器清理语义）precondition 不同——那个
-   *  方法服务的是"job 还没被认领、目标已被外部满足"，这里服务的是"job 已被认领
-   *  （active/searching），但旧执行器已经死了，得体面收场"，两者状态前提不重叠，不能共用
-   *  同一个方法（那会让 retire() 意外接受本不该由它处理的态）。
+  /** W0-4 存量墓碑：原本服务 cmdWatch 的 executeJob 闭包——旧 kind（series_season/movie）收到
+   *  一个已经被 claimNext 领走（state='searching'）的存量行时调用，体面退休而非报错。
+   *  清算波 R-6（A-F7）：唯一的生产调用点（cli/legacyJobRouting.ts 的 tombstoneLegacyJob）
+   *  已随 legacy 通路整体处决——今天没有任何生产代码调用这个方法（旧 kind 到达 executeJob
+   *  的兜底已改为 completeError，见 cli/index.ts）。不在本波删除清单内，保留：
+   *  jobsRepo.test.ts 仍单独测它自身的三个前置条件（active→done / wanted 无效 / done 幂等），
+   *  precondition 与 completeDone 完全同构但语义标签不同（"退休声明"而非"跑完产出判断"），
+   *  日后若真有旧 kind 存量行需要体面退休，这里仍是现成的语义化外壳。
    *  DB 不迁移（W0-4 明确决定）：state 列 CHECK 约束没有专门的 'retired' 值，落回既有的
    *  'done'——这也是为什么这个方法不新增状态机分支，只是 completeDone 的一个语义化外壳。 */
   retireClaimed(jobId: number, now: number): boolean {
@@ -542,94 +350,6 @@ export class JobsRepo {
       )
       .run(now, seriesId)
     return info.changes
-  }
-
-  /** Priority bump for existing (wanted/failed) jobs — does not change state. */
-  boostPriority(ident: JobIdent, priority: number): void {
-    if (ident.kind === 'series_season') {
-      this.db
-        .prepare(
-          `UPDATE jobs
-           SET priority = ?
-           WHERE kind = 'series_season' AND series_id = ? AND season = ?`
-        )
-        .run(priority, ident.seriesId, ident.season)
-    } else if (ident.kind === 'movie') {
-      this.db
-        .prepare(
-          `UPDATE jobs
-           SET priority = ?
-           WHERE kind = 'movie' AND movie_id = ?`
-        )
-        .run(priority, ident.movieId)
-    } else {
-      // realign：没有季维度，按 series_id 定位——同 upsertWanted/retireAllForSeries
-      // 已经确立的"realign 以剧为身份"语义。目前没有调用方会拿 realign 身份触发优先级
-      // 提升（realign 不是播放触发的），这里补全只是让三态联合类型保持穷尽可编译，
-      // 行为上与 series_season 分支对称。
-      this.db
-        .prepare(
-          `UPDATE jobs
-           SET priority = ?
-           WHERE kind = 'realign' AND series_id = ?`
-        )
-        .run(priority, ident.seriesId)
-    }
-  }
-
-  /** Playback-triggered wake: only revives dormant jobs. For wanted/failed use boostPriority. */
-  wake(ident: JobIdent, priority: number, now: number): boolean {
-    if (ident.kind === 'series_season') {
-      const info = this.db
-        .prepare(
-          `UPDATE jobs
-           SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
-           WHERE kind = 'series_season' AND series_id = ? AND season = ? AND state = 'dormant'`
-        )
-        .run(priority, now, ident.seriesId, ident.season)
-      return info.changes > 0
-    }
-    if (ident.kind === 'movie') {
-      const info = this.db
-        .prepare(
-          `UPDATE jobs
-           SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
-           WHERE kind = 'movie' AND movie_id = ? AND state = 'dormant'`
-        )
-        .run(priority, now, ident.movieId)
-      return info.changes > 0
-    }
-    // realign：同 boostPriority 的对称补全，按 series_id 定位，行为上不会被现有调用方
-    // 触发（realign 不是播放触发的），只为让穷尽检查通过。
-    const info = this.db
-      .prepare(
-        `UPDATE jobs
-         SET state = 'wanted', priority = ?, next_retry_at = NULL, updated_at = ?
-         WHERE kind = 'realign' AND series_id = ? AND state = 'dormant'`
-      )
-      .run(priority, now, ident.seriesId)
-    return info.changes > 0
-  }
-
-  find(seriesId: string, season: number): Job | null {
-    const job = this.db
-      .prepare(
-        `SELECT * FROM jobs
-         WHERE kind = 'series_season' AND series_id = ? AND season = ?`
-      )
-      .get(seriesId, season) as Job | undefined
-    return job ?? null
-  }
-
-  findMovie(movieId: string): Job | null {
-    const job = this.db
-      .prepare(`SELECT * FROM jobs WHERE kind = 'movie' AND movie_id = ?`)
-      .get(movieId) as Job | undefined
-    return job ?? null
-  }
-
-  listByState(state: JobState): Job[] {
-    return this.db.prepare(`SELECT * FROM jobs WHERE state = ?`).all(state) as Job[]
   }
 
   get(id: number): Job | null {

@@ -292,21 +292,6 @@ export class LibraryRepo {
     tx()
   }
 
-  /** B1（self-hosted 周期扫描）已知路径全集：episodes ∪ movies 的 path 列，供 selfScan 与
-   *  磁盘现状做差集——库里已有路径不再重复 recognize()（该行本身就是"已识别过"的记忆）。
-   *  UNION 天然去重；两表 path 列 schema 上是 NOT NULL，这里的 IS NOT NULL 是防御性写法，
-   *  不依赖当前 schema 保证。返回 Set 而非数组：调用方要做的是 O(1) 成员判定，不是遍历。 */
-  knownPaths(): Set<string> {
-    const rows = this.db
-      .prepare(
-        `SELECT path FROM episodes WHERE path IS NOT NULL
-         UNION
-         SELECT path FROM movies WHERE path IS NOT NULL`
-      )
-      .all() as { path: string }[]
-    return new Set(rows.map(r => r.path))
-  }
-
   /** TMDB original_language 缓存读取；NULL=未解析过。 */
   getSeriesOriginLang(seriesId: string): string | null {
     const row = this.db.prepare('SELECT origin_lang FROM series WHERE id = ?').get(seriesId) as
@@ -411,19 +396,6 @@ export class LibraryRepo {
       .all(timestamp, timestamp, timestamp) as MissingMovie[]
   }
 
-  /** scan 磁盘 arm 记账用：该 item 是否已有任意 subtitles 行。已经走过正规 pipeline 记账
-   *  （scout-download/adopted-local/preexisting 任一来源）的条目不该被 scan 的磁盘 arm
-   *  二次"认领"——即便这轮磁盘 arm 也命中（比如 Jellyfin 还没刷新 MediaStreams）。
-   *  已知取舍（accepted debt）：本 guard 只看"有没有任意行"，不比较路径——若既有行是
-   *  一条失效路径（文件已被移走/改名），磁盘上又冒出一个新路径的 sidecar，guard 仍会短路，
-   *  新 sidecar 不会被记账（旧行继续代表该 item 的字幕来源）。这是刻意的取舍，不在本次
-   *  修复范围内。 */
-  hasSubtitleRecord(itemId: string): boolean {
-    return (
-      this.db.prepare('SELECT 1 FROM subtitles WHERE item_id = ? LIMIT 1').get(itemId) !== undefined
-    )
-  }
-
   /** M7: subtitlePath=null 表示只知道"已覆盖"但没有可信的字幕文件路径（如 already_exists）——
    *  只改状态，不伪造 subtitles 行。
    *  providerRef: provider-neutral 候选标识，形如 "assrt:673114" / "opensubtitles:7174766"
@@ -482,35 +454,11 @@ export class LibraryRepo {
     markCoveredTransaction()
   }
 
-  /**
-   * 播放触发用：把 unavailable 条目的 recheck_after 拉回 now，
-   * 让 executor 重derive targets 时能纳入它（后台调和的 recheck 门对播放触发不适用）。
-   */
-  resetRecheck(itemId: string, now: number): void {
-    const episodeResult = this.db
-      .prepare(
-        `UPDATE episodes
-         SET recheck_after = ?, updated_at = ?
-         WHERE id = ? AND sub_status = 'unavailable'`
-      )
-      .run(now, now, itemId)
-
-    if (episodeResult.changes === 0) {
-      this.db
-        .prepare(
-          `UPDATE movies
-           SET recheck_after = ?, updated_at = ?
-           WHERE id = ? AND sub_status = 'unavailable'`
-        )
-        .run(now, now, itemId)
-    }
-  }
-
   /** R-3（裁决 2026-07-16）：worker 判"本轮搜索穷尽"（no_safe_match）后调用——item 级内容退避
    *  阶梯，替代原先由调用方算好 recheckAfter 直接传入的旧签名。`now` 既是这次判决发生的时刻
    *  （写入 updated_at），也是阶梯计算的锚点（recheck_after = now + 对应天数）。
    *
-   *  实现选择：沿用既有"先 episodes 后 movies"两表尝试模式（同 markCovered/resetRecheck/
+   *  实现选择：沿用既有"先 episodes 后 movies"两表尝试模式（同 markCovered/markUnavailable/
    *  probeMemo 等既有写法），但没有用纯 SQL CASE 把整个阶梯揉进一条 UPDATE——那样天数表
    *  （ITEM_CONTENT_BACKOFF_DAYS）就要在 SQL 文本里再抄一遍，常量改了两处要同步改，是个
    *  维护陷阱。改为每表先 SELECT 出当前 search_attempts（判"这行是不是这张表"的信号，同时
@@ -564,17 +512,6 @@ export class LibraryRepo {
         )
         .run(reason, recheckAfter, newAttempts, now, itemId)
     }
-  }
-
-  /** job 执行时解析到电影中文名后写回 movies 行。仅当现值 IS NULL 或不同才写。 */
-  setMovieChineseTitle(id: string, title: string, now: number): void {
-    this.db
-      .prepare(
-        `UPDATE movies
-         SET chinese_title = ?, updated_at = ?
-         WHERE id = ? AND (chinese_title IS NULL OR chinese_title != ?)`
-      )
-      .run(title, now, id, title)
   }
 
   // ---- P2：parked_paths（未识别文件的正式户口，去 Jellyfin 化 schema v9） ----
@@ -645,7 +582,7 @@ export class LibraryRepo {
 
   // ---- P2：ffprobe 探针记忆化（episodes/movies 共用列，见 db.ts P1 注释） ----
 
-  /** 两表 UPDATE 尝试模式（同 markCovered/markUnavailable/resetRecheck 的既有写法）：itemId
+  /** 两表 UPDATE 尝试模式（同 markCovered/markUnavailable 的既有写法）：itemId
    *  的自有 id 空间里 episodes 与 movies 互斥（episodes 形状含 '/s<N>e<M>' 段，movies 没有），
    *  先按 episodes 查，查不到再查 movies，不需要额外的 kind 参数区分调用方意图。 */
   probeMemo(itemId: string): ProbeMemo | null {

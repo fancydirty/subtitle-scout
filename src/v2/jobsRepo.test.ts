@@ -1,31 +1,49 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { openDb } from './db.js'
-import { JobsRepo, CONTENT_BACKOFF_DAYS, ERROR_BACKOFF_MS, errorBackoffMs, PARTIAL_RETRY_MS, QUOTA_RESET_MARGIN_MS, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
+import { openDb, type ScoutDb } from './db.js'
+import { JobsRepo, type Job, ERROR_BACKOFF_MS, errorBackoffMs, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
 
+let db: ScoutDb
 let repo: JobsRepo
-beforeEach(() => { repo = new JobsRepo(openDb(':memory:')) })
-const mkSeriesJob = (now = Date.now()) => repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 4 }, now)
+beforeEach(() => { db = openDb(':memory:'); repo = new JobsRepo(db) })
+
+// 清算波 R-6（A-F8）：jobsRepo.upsertWanted/find/findMovie/boostPriority/wake/completeNoMatch/
+// completePartial/retire（连同 JobIdent 联合类型）已随死器官处决——production 已零调用点（旧
+// series_season/movie/realign 三个旧 kind 的创建/查询/优先级/唤醒通路，以及旧管线内容退避梯，
+// 全部随 Wave 2A/2D 和去 Jellyfin 化 T4 死绝，见 jobsRepo.ts 头部注释存档）。这个 describe 块
+// 真正验证的是 claimNext/reap*/renewLease/completeDone/completeError/park/retireClaimed 这些
+// kind 无关的通用状态机方法——过去只是借 upsertWanted/find 的 series_season 变体当一个方便的
+// 造行/读回手段。下面两个本地 helper 直接对 db 做原生 SQL，逐字复刻 upsertWanted 已删除的
+// series_season 分支（含 ON CONFLICT 的 done→wanted 复活语义——部分测试依赖同一 identity 重复
+// 造行时复活同一行，而不是撞唯一索引），不引入任何新行为。
+const UPSERT_CONFLICT_SQL = `
+         ON CONFLICT(kind, ifnull(series_id,''), ifnull(season,-1), ifnull(movie_id,''), ifnull(json_extract(payload,'$.taskType'),''))
+         DO UPDATE SET
+           updated_at = ?,
+           state = CASE WHEN state = 'done' THEN 'wanted' ELSE state END,
+           attempt = CASE WHEN state = 'done' THEN 0 ELSE attempt END,
+           error_attempt = CASE WHEN state = 'done' THEN 0 ELSE error_attempt END,
+           next_retry_at = CASE WHEN state = 'done' THEN NULL ELSE next_retry_at END`
+const seedSeriesJob = (seriesId: string, season: number, now = Date.now()): void => {
+  db.prepare(
+    `INSERT INTO jobs (kind, series_id, season, state, priority, attempt, created_at, updated_at)
+     VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)${UPSERT_CONFLICT_SQL}`
+  ).run(seriesId, season, now, now, now)
+}
+const mkSeriesJob = (now = Date.now()) => seedSeriesJob('s1', 4, now)
+const findSeriesJob = (seriesId: string, season: number): Job | null =>
+  (db.prepare(`SELECT * FROM jobs WHERE kind = 'series_season' AND series_id = ? AND season = ?`)
+    .get(seriesId, season) as Job | undefined) ?? null
 
 describe('jobs 状态机', () => {
-  it('upsertWanted 幂等：同剧同季只有一行', () => {
-    mkSeriesJob(); mkSeriesJob()
-    expect(repo.countByState('wanted')).toBe(1)
-  })
   it('claimNext 原子领取：置 searching+租约，二次领取拿不到同一 job', () => {
     mkSeriesJob()
     const a = repo.claimNext(Date.now())
     expect(a?.state).toBe('searching')
     expect(repo.claimNext(Date.now())).toBeNull()
   })
-  it('优先级高者先领', () => {
-    const now = Date.now()
-    mkSeriesJob(now)
-    repo.upsertWanted({ kind: 'movie', movieId: 'm1' }, now); repo.boostPriority({ kind: 'movie', movieId: 'm1' }, 100)
-    expect(repo.claimNext(now)?.movie_id).toBe('m1')
-  })
   it('过租 job 被 reap 归位 wanted，attempt 不变（reap 不是内容性失败，不占内容退避梯名额）', () => {
-    // 审计修正：reap 曾经 attempt+1，与 completeNoMatch 的内容退避梯共用计数器，
-    // 会让"进程重启/租约抖动"错误地把 job 推向 30 天 dormant（见 jobsRepo.ts:119/:133 finding）。
+    // 审计修正：reap 曾经 attempt+1，与内容退避梯共用计数器，会让"进程重启/租约抖动"错误地把
+    // job 推向 dormant（见 jobsRepo.ts 历史 finding）。
     mkSeriesJob()
     const j = repo.claimNext(Date.now())!
     repo.reapExpiredLeases(Date.now() + 31 * 60_000)
@@ -37,7 +55,7 @@ describe('jobs 状态机', () => {
     mkSeriesJob(now)
     repo.forceState('s1', 4, 'searching', now)         // lease_until 为 NULL 的异常 active 态
     repo.reapExpiredLeases(now)
-    const row = repo.find('s1', 4)!
+    const row = findSeriesJob('s1', 4)!
     expect(row.state).toBe('wanted'); expect(row.attempt).toBe(0)
   })
   it('reapAllActive：未过期租约也被无条件归位（启动回收，单实例前提），attempt 不变', () => {
@@ -54,7 +72,7 @@ describe('jobs 状态机', () => {
   it('reapAllActive：覆盖全部活跃态，静止态（wanted/failed/done/dormant）不动', () => {
     const now = Date.now()
     for (const s of ['a', 'b', 'c', 'w', 'f', 'd', 'z']) {
-      repo.upsertWanted({ kind: 'series_season', seriesId: s, season: 1 }, now)
+      seedSeriesJob(s, 1, now)
     }
     repo.forceState('a', 1, 'searching', now)
     repo.forceState('b', 1, 'downloading', now)
@@ -64,13 +82,13 @@ describe('jobs 状态机', () => {
     repo.forceState('d', 1, 'done', now)
     repo.forceState('z', 1, 'dormant', now)
     expect(repo.reapAllActive(now)).toBe(3)
-    for (const s of ['a', 'b', 'c']) expect(repo.find(s, 1)!.state).toBe('wanted')
-    expect(repo.find('a', 1)!.attempt).toBe(0)          // reap 不占内容退避梯名额
-    expect(repo.find('w', 1)!.state).toBe('wanted')
-    expect(repo.find('w', 1)!.attempt).toBe(0)          // 本就 wanted 的不被 attempt+1
-    expect(repo.find('f', 1)!.state).toBe('failed')
-    expect(repo.find('d', 1)!.state).toBe('done')
-    expect(repo.find('z', 1)!.state).toBe('dormant')
+    for (const s of ['a', 'b', 'c']) expect(findSeriesJob(s, 1)!.state).toBe('wanted')
+    expect(findSeriesJob('a', 1)!.attempt).toBe(0)          // reap 不占内容退避梯名额
+    expect(findSeriesJob('w', 1)!.state).toBe('wanted')
+    expect(findSeriesJob('w', 1)!.attempt).toBe(0)          // 本就 wanted 的不被 attempt+1
+    expect(findSeriesJob('f', 1)!.state).toBe('failed')
+    expect(findSeriesJob('d', 1)!.state).toBe('done')
+    expect(findSeriesJob('z', 1)!.state).toBe('dormant')
   })
   it('FIX-1: reapOrphaned 只回收 active 且不在调用方给出的 trackedIds 里的行，attempt 不变', () => {
     // 派发饥饿审计修正：daemon 每 tick 该拿"本进程当前正跟踪"的 id 集合去核对——单实例
@@ -78,7 +96,7 @@ describe('jobs 状态机', () => {
     // 不必等 30min 租约到期。trackedIds 里的 id（真正 inflight）必须被放过。
     const now = Date.now()
     for (const s of ['tracked', 'orphan1', 'orphan2', 'idle']) {
-      repo.upsertWanted({ kind: 'series_season', seriesId: s, season: 1 }, now)
+      seedSeriesJob(s, 1, now)
     }
     const tracked = repo.claimNext(now)! // 'tracked' — series 优先级/created_at 顺序决定先领到谁，逐个 claim 更明确
     const orphan1 = repo.forceClaim('orphan1', 1, now)!
@@ -101,11 +119,11 @@ describe('jobs 状态机', () => {
     expect(repo.get(orphan1.id)!.attempt).toBe(0) // reap 不占内容退避梯名额
     expect(repo.get(orphan2.id)!.state).toBe('wanted')
 
-    expect(repo.find('idle', 1)!.state).toBe('wanted') // 静止态不受影响
+    expect(findSeriesJob('idle', 1)!.state).toBe('wanted') // 静止态不受影响
   })
   it('FIX-1: reapOrphaned 在 trackedIds 为空时回收全部 active 行（同 reapAllActive 语义）', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedSeriesJob('s1', 1, now)
     const j = repo.claimNext(now)!
     expect(repo.reapOrphaned([], now).map(r => r.id)).toEqual([j.id])
     expect(repo.get(j.id)!.state).toBe('wanted')
@@ -139,27 +157,6 @@ describe('jobs 状态机', () => {
 
     repo.completeDone(j.id, now)
     expect(repo.renewLease(j.id, now)).toBeNull() // 非活跃态 no-op
-  })
-  it('内容性失败指数退避：四次分别落 1/2/4/8 天，第 5 次才 dormant', () => {
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    for (let i = 0; i < CONTENT_BACKOFF_DAYS.length; i++) {
-      const j = repo.forceClaim('s1', 4, t0)!           // 测试助手：无视 next_retry_at 领取
-      expect(repo.completeNoMatch(j.id, t0)).toBe(true)
-      const row = repo.get(j.id)!
-      expect(row.state).toBe('failed')
-      expect(row.attempt).toBe(i + 1)
-      const expected = t0 + CONTENT_BACKOFF_DAYS[i] * 86_400_000
-      expect(row.next_retry_at).toBeGreaterThanOrEqual(expected - 1000)
-      expect(row.next_retry_at).toBeLessThanOrEqual(expected + 1000)
-    }
-    // 第 5 次内容性失败 → dormant
-    const j5 = repo.forceClaim('s1', 4, t0)!
-    expect(repo.completeNoMatch(j5.id, t0)).toBe(true)
-    const final = repo.get(j5.id)!
-    expect(final.state).toBe('dormant')
-    expect(final.attempt).toBe(5)
-    expect(final.next_retry_at).toBeNull()
   })
   it('错误性失败短退避且与内容性分流', () => {
     mkSeriesJob()
@@ -242,69 +239,6 @@ describe('jobs 状态机', () => {
     repo.completeError(revived.id, 'timeout', t0)
     expect(repo.get(revived.id)!.next_retry_at).toBe(t0 + 30_000)
   })
-  it('配额耗尽退避（quota_exhausted resetAt）：next_retry_at 对齐 resetAt+margin，不走盲阶梯', () => {
-    // 根因：OS 20/日配额耗尽后，若还是走 ERROR_BACKOFF_MS 封顶 15min 的阶梯，job 会在
-    // 配额于 UTC 重置前一直每 15min 重打一次 identify+plan+search+/download，白烧 LLM/search 配额。
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString() // 3h 后重置
-    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, resetAt)
-    const row = repo.get(j.id)!
-    expect(row.state).toBe('failed')
-    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
-    // 远大于短退避阶梯封顶(15min)，证明确实没有走 ERROR_BACKOFF_MS
-    expect(row.next_retry_at!).toBeGreaterThan(t0 + 900_000)
-  })
-  it('配额 resetAt 缺失（undefined）→ 落回默认错误退避阶梯，行为与调用方不传第 4 参一致', () => {
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    repo.completeError(j.id, 'network blip', t0, undefined)
-    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
-  })
-  it('配额 resetAt 是过去时间（已过期/时钟偏差）→ 落回默认阶梯，不把 job 判"未来"', () => {
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    const pastResetAt = new Date(t0 - 60_000).toISOString()
-    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, pastResetAt)
-    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
-  })
-  it('配额 resetAt 是无法解析的乱码字符串 → 落回默认阶梯，job 不会被永久搁置', () => {
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, 'not-a-date')
-    expect(repo.get(j.id)!.next_retry_at).toBe(t0 + errorBackoffMs(1))
-  })
-  it('部分成功节流（I6）：30s 内 claimNext 拿不到，窗口过后可领', () => {
-    const now = Date.now()
-    mkSeriesJob(now)
-    const j = repo.claimNext(now)!
-    repo.completePartial(j.id, now)
-    expect(repo.get(j.id)!.state).toBe('wanted')
-    expect(repo.claimNext(now)).toBeNull()                       // 立即重领被节流
-    expect(repo.claimNext(now + PARTIAL_RETRY_MS)?.id).toBe(j.id) // 窗口过后可领
-  })
-  it('IMPORTANT-2: 配额停车（completeError 带有效 quotaResetAt）不占瞬时错误梯——error_attempt 不变，同 reap* 语义', () => {
-    // 根因（历史，已由独立 error_attempt 列根治）：completeError 曾无条件把 attempt+1，
-    // 与内容轨共用一个计数器，配额停车会悄悄推高它，后面一次真正的 no_safe_match 就会
-    // 越级跳到 30 天 dormant。现在 completeError 只读写 error_attempt，配额停车同样不该
-    // 推高它——否则配额一天多次停车会误触发 give-up 阈值升级到每天一次。
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    expect(j.attempt).toBe(0)
-    expect(j.error_attempt).toBe(0)
-    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString()
-    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, resetAt)
-    const row = repo.get(j.id)!
-    expect(row.state).toBe('failed')
-    expect(row.attempt).toBe(0) // 内容计数器：completeError 从不触碰
-    expect(row.error_attempt).toBe(0) // 配额停车：error_attempt 不变
-    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
-  })
   it('双轨分流：completeError 只充 error_attempt，从不触碰内容计数器 attempt', () => {
     const t0 = Date.now()
     mkSeriesJob(t0)
@@ -314,59 +248,6 @@ describe('jobs 状态机', () => {
     expect(row.error_attempt).toBe(1)
     expect(row.attempt).toBe(0) // 内容计数器纹丝不动——两条轨彻底独立
   })
-  it('双轨分流：resetAt 无效（过去时间）时不算配额停车——落回默认阶梯，error_attempt 照常+1，attempt 仍不动', () => {
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    const pastResetAt = new Date(t0 - 60_000).toISOString()
-    repo.completeError(j.id, 'opensubtitles download quota exhausted', t0, pastResetAt)
-    const row = repo.get(j.id)!
-    expect(row.error_attempt).toBe(1)
-    expect(row.attempt).toBe(0)
-  })
-  it('双轨分流：completeNoMatch 只充内容计数器 attempt，从不触碰 error_attempt', () => {
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    repo.completeNoMatch(j.id, t0)
-    const row = repo.get(j.id)!
-    expect(row.attempt).toBe(1)
-    expect(row.error_attempt).toBe(0)
-  })
-  it('双轨分流：先攒瞬时错误再遇到内容失败——attempt 只算内容失败次数，不被瞬时错误历史污染（根治本次审计的核心 bug）', () => {
-    // 审计场景：一串瞬时错误（网络抖动）不该让紧接着的第一次真正 no_safe_match 就越级跳档。
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    let j = repo.claimNext(t0)!
-    repo.completeError(j.id, 'timeout 1', t0)
-    j = repo.forceClaim('s1', 4, t0)!
-    repo.completeError(j.id, 'timeout 2', t0)
-    j = repo.forceClaim('s1', 4, t0)!
-    repo.completeError(j.id, 'timeout 3', t0)
-    expect(repo.get(j.id)!.error_attempt).toBe(3)
-    expect(repo.get(j.id)!.attempt).toBe(0) // 三次瞬时错误，内容计数器仍是 0
-
-    j = repo.forceClaim('s1', 4, t0)!
-    repo.completeNoMatch(j.id, t0) // 第一次真正的内容失败
-    const row = repo.get(j.id)!
-    expect(row.attempt).toBe(1) // 走 1 天梯的第一档，而不是被污染跳到更后面
-    expect(row.state).toBe('failed')
-    expect(row.next_retry_at).toBeGreaterThanOrEqual(t0 + 1 * 86_400_000 - 1000)
-    expect(row.next_retry_at).toBeLessThanOrEqual(t0 + 1 * 86_400_000 + 1000)
-  })
-  it('双轨分流：completePartial 只减内容计数器 attempt，从不触碰 error_attempt', () => {
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    let j = repo.claimNext(t0)!
-    repo.completeError(j.id, 'timeout', t0) // error_attempt=1
-    j = repo.forceClaim('s1', 4, t0)!
-    repo.completeNoMatch(j.id, t0) // attempt=1
-    j = repo.forceClaim('s1', 4, t0)!
-    repo.completePartial(j.id, t0)
-    const row = repo.get(j.id)!
-    expect(row.attempt).toBe(0) // 1 - 1
-    expect(row.error_attempt).toBe(1) // completePartial 不碰瞬时错误计数器
-  })
   it('done→wanted 复活（I2 扩展）：error_attempt 与 attempt 一并归零，成功即翻篇', () => {
     const now = Date.now()
     mkSeriesJob(now)
@@ -374,76 +255,17 @@ describe('jobs 状态机', () => {
     repo.completeError(j.id, 'timeout', now) // error_attempt=1，job 仍 failed
     j = repo.forceClaim('s1', 4, now)!
     repo.completeDone(j.id, now)
-    mkSeriesJob(now) // 该季重新出现 missing → upsertWanted 的 done→wanted 复活
+    mkSeriesJob(now) // 该季重新出现 missing → done→wanted 复活
     const revived = repo.get(j.id)!
     expect(revived.state).toBe('wanted')
     expect(revived.attempt).toBe(0)
     expect(revived.error_attempt).toBe(0)
-  })
-  it('IMPORTANT-1a: completePartial 携带有效 quotaResetAt 时按 resetAt+margin 排期，不走盲的 30 秒节流', () => {
-    // 季包/季横扫中途撞配额耗尽、已有 ≥1 集覆盖时，剩余部分不该在配额重置前每 30 秒重打一次全链路。
-    const t0 = Date.now()
-    mkSeriesJob(t0)
-    const j = repo.claimNext(t0)!
-    const resetAt = new Date(t0 + 3 * 3_600_000).toISOString()
-    repo.completePartial(j.id, t0, resetAt)
-    const row = repo.get(j.id)!
-    expect(row.state).toBe('wanted')
-    expect(row.next_retry_at).toBe(Date.parse(resetAt) + QUOTA_RESET_MARGIN_MS)
-  })
-  it('IMPORTANT-1a: completePartial 不传 quotaResetAt 时行为不变（盲的 30 秒节流）', () => {
-    const now = Date.now()
-    mkSeriesJob(now)
-    const j = repo.claimNext(now)!
-    repo.completePartial(j.id, now)
-    expect(repo.get(j.id)!.next_retry_at).toBe(now + PARTIAL_RETRY_MS)
-  })
-  it('done 复活（I2）：upsertWanted 对 done 行复位 wanted/attempt=0，failed/dormant 不动', () => {
-    const now = Date.now()
-    mkSeriesJob(now)
-    const j = repo.claimNext(now)!
-    repo.completeDone(j.id, now)
-    mkSeriesJob(now)                                     // 该季重新出现 missing → upsertWanted
-    const revived = repo.get(j.id)!
-    expect(revived.state).toBe('wanted')
-    expect(revived.attempt).toBe(0)
-    expect(revived.next_retry_at).toBeNull()
-    // failed 不动（保留退避计划）
-    const j2 = repo.claimNext(now)!
-    repo.completeNoMatch(j2.id, now)
-    mkSeriesJob(now)
-    const failedRow = repo.get(j2.id)!
-    expect(failedRow.state).toBe('failed')
-    expect(failedRow.attempt).toBe(1)
-    expect(failedRow.next_retry_at).not.toBeNull()
-    // dormant 不动（只有 wake 可以复活）
-    repo.forceState('s1', 4, 'dormant', now)
-    mkSeriesJob(now)
-    expect(repo.get(j2.id)!.state).toBe('dormant')
-  })
-  it('部分成功 attempt 减 1 而非清零（escalation 渐进恢复）', () => {
-    const now = Date.now()
-    mkSeriesJob(now)
-    let j = repo.claimNext(now)!
-    repo.completeNoMatch(j.id, now)                    // attempt 1
-    j = repo.forceClaim('s1', 4, now)!
-    repo.completePartial(j.id, now)                    // attempt 应回 0
-    expect(repo.get(j.id)!.attempt).toBe(0)
-    expect(repo.get(j.id)!.state).toBe('wanted')       // 部分成功→回 wanted 继续追残集
   })
   it('completeDone 置 done 终态', () => {
     mkSeriesJob()
     const j = repo.claimNext(Date.now())!
     repo.completeDone(j.id, Date.now())
     expect(repo.get(j.id)!.state).toBe('done')
-  })
-  it('唤醒 dormant（播放触发语义）', () => {
-    const now = Date.now()
-    mkSeriesJob(now)
-    repo.forceState('s1', 4, 'dormant', now)           // 测试助手
-    expect(repo.wake({ kind: 'series_season', seriesId: 's1', season: 4 }, 100, now)).toBe(true)
-    const row = repo.find('s1', 4)!
-    expect(row.state).toBe('wanted'); expect(row.priority).toBe(100); expect(row.next_retry_at).toBeNull()
   })
   it('状态守卫：对 done 调 completeError 无效果返回 false', () => {
     const now = Date.now()
@@ -456,63 +278,13 @@ describe('jobs 状态机', () => {
     expect(row.attempt).toBe(0)
     expect(row.last_error).toBeNull()
   })
-  it('状态守卫：complete* 只作用于 active 态（wanted 上调用全部 false）', () => {
+  it('状态守卫：complete* 只作用于 active 态（wanted 上调用 completeDone/completeError 全部 false）', () => {
     const now = Date.now()
     mkSeriesJob(now)
-    const j = repo.find('s1', 4)!                      // state=wanted，未领取
-    expect(repo.completeNoMatch(j.id, now)).toBe(false)
-    expect(repo.completePartial(j.id, now)).toBe(false)
+    const j = findSeriesJob('s1', 4)!                      // state=wanted，未领取
     expect(repo.completeDone(j.id, now)).toBe(false)
+    expect(repo.completeError(j.id, 'boom', now)).toBe(false)
     expect(repo.get(j.id)!.state).toBe('wanted')
-  })
-  it('状态守卫：wake 只唤醒 dormant，对 searching 无效果', () => {
-    const now = Date.now()
-    mkSeriesJob(now)
-    repo.claimNext(now)
-    expect(repo.wake({ kind: 'series_season', seriesId: 's1', season: 4 }, 100, now)).toBe(false)
-    const row = repo.find('s1', 4)!
-    expect(row.state).toBe('searching'); expect(row.priority).toBe(0)
-  })
-
-  describe('retire (聚合器清理语义)', () => {
-    it('retire wanted job → done', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      const j = repo.find('s1', 4)!
-      expect(repo.retire(j.id, now)).toBe(true)
-      expect(repo.get(j.id)!.state).toBe('done')
-    })
-    it('retire failed job → done', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      repo.forceState('s1', 4, 'failed', now)
-      const j = repo.find('s1', 4)!
-      expect(repo.retire(j.id, now)).toBe(true)
-      expect(repo.get(j.id)!.state).toBe('done')
-    })
-    it('retire 对 active 态无效 (返回 false，状态不变)', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      const j = repo.claimNext(now)!                     // state=searching
-      expect(repo.retire(j.id, now)).toBe(false)
-      expect(repo.get(j.id)!.state).toBe('searching')
-    })
-    it('retire 对 dormant 无效 (dormant 有自己的复活通道)', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      repo.forceState('s1', 4, 'dormant', now)
-      const j = repo.find('s1', 4)!
-      expect(repo.retire(j.id, now)).toBe(false)
-      expect(repo.get(j.id)!.state).toBe('dormant')
-    })
-    it('retire 对 done 幂等 (已退役则 false)', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      repo.forceState('s1', 4, 'done', now)
-      const j = repo.find('s1', 4)!
-      expect(repo.retire(j.id, now)).toBe(false)
-      expect(repo.get(j.id)!.state).toBe('done')
-    })
   })
 
   describe('retireClaimed (W0-4 存量墓碑：旧 kind 已认领行退休)', () => {
@@ -526,10 +298,10 @@ describe('jobs 状态机', () => {
       expect(after.state).toBe('done')
       expect(after.lease_until).toBeNull()
     })
-    it('retireClaimed 对 wanted 无效（precondition 与 retire() 互补，不重叠）', () => {
+    it('retireClaimed 对 wanted 无效（precondition 只认 active 态）', () => {
       const now = Date.now()
       mkSeriesJob(now)
-      const j = repo.find('s1', 4)!
+      const j = findSeriesJob('s1', 4)!
       expect(repo.retireClaimed(j.id, now)).toBe(false)
       expect(repo.get(j.id)!.state).toBe('wanted')
     })
@@ -537,33 +309,23 @@ describe('jobs 状态机', () => {
       const now = Date.now()
       mkSeriesJob(now)
       repo.forceState('s1', 4, 'done', now)
-      const j = repo.find('s1', 4)!
+      const j = findSeriesJob('s1', 4)!
       expect(repo.retireClaimed(j.id, now)).toBe(false)
       expect(repo.get(j.id)!.state).toBe('done')
     })
   })
 })
 
-describe('realign job kind', () => {
-  it('upsertWanted({kind:"realign"}) 建 season=NULL 的 job，claimNext 能正常领取', () => {
+// 清算波 R-6（A-F8）：本 describe 原名"realign job kind"，测的其实是 setPlanRef/park 两个
+// kind 无关的通用方法——过去只是借 upsertWanted({kind:'realign'}) 当造行手段（realign 是唯一
+// 会写 plan_ref 的旧 kind）。upsertWanted 本身（含它测试过的幂等/plan_ref CASE-WHEN 语义）已
+// 随死器官处决——production 的 realign 早已改走 upsertWorkerTask（taskType:'realign'，不带
+// plan_ref 列），这条 SQL 分支不再存在，随之删除对它的直接测试。setPlanRef/park 仍是活体，
+// 改借一个普通 series_season 行验证，语义不变。
+describe('setPlanRef / park（kind 无关的通用状态机方法）', () => {
+  it('setPlanRef 写入 plan_ref，仅在 active 态生效', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
-    const job = repo.claimNext(now)
-    expect(job?.kind).toBe('realign')
-    expect(job?.series_id).toBe('s1')
-    expect(job?.season).toBeNull()
-  })
-
-  it('同剧重复 upsertWanted realign 幂等：只有一行', () => {
-    const now = Date.now()
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
-    expect(repo.countByState('wanted')).toBe(1)
-  })
-
-  it('setPlanRef 写入 plan_ref，仅在 active 态生效（同 setJournalRef 语义）', () => {
-    const now = Date.now()
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    mkSeriesJob(now)
     const job = repo.claimNext(now)!
     repo.setPlanRef(job.id, '/archive/s1-123/manifest.json', now)
     expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-123/manifest.json')
@@ -571,7 +333,7 @@ describe('realign job kind', () => {
 
   it('setPlanRef 对非 active 态 job 是 no-op', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+    mkSeriesJob(now)
     const job = repo.claimNext(now)!
     repo.completeDone(job.id, now)
     repo.setPlanRef(job.id, '/should/not/write', now)
@@ -579,10 +341,10 @@ describe('realign job kind', () => {
   })
 
   // F10（审计修正 2026-07-16）：retireAllForSeries 曾经只退休 kind='series_season' 的行——
-  // 那是已退役的旧管线 kind（legacyJobRouting.ts），v3 起没有任何生产代码再写它，这个方法
-  // 因此从未真正作废过 realign 该作废的判决。真正对着"旧排布"下判决的行是 kind='worker_task'
-  // （find_subtitle 的 dormant/failed 判决）。下面两个测试就地适配为 worker_task 身份，
-  // series_season 的对应回归测试挪到独立 it（证明该 kind 不再被本方法触碰）。
+  // 那是已退役的旧管线 kind，v3 起没有任何生产代码再写它，这个方法因此从未真正作废过 realign
+  // 该作废的判决。真正对着"旧排布"下判决的行是 kind='worker_task'（find_subtitle 的
+  // dormant/failed 判决）。下面两个测试就地适配为 worker_task 身份，series_season 的对应
+  // 回归测试挪到独立 it（证明该 kind 不再被本方法触碰）。
   it('retireAllForSeries：把该剧 wanted/failed 的 worker_task job 退休为 done，active 态不动', () => {
     const now = Date.now()
     repo.upsertWorkerTask({ seriesId: 's1', season: null, movieId: null }, { taskType: 'find_subtitle' }, null, now)
@@ -611,10 +373,10 @@ describe('realign job kind', () => {
 
   it('retireAllForSeries 不再触碰 kind=series_season（已退役 kind，v3 无生产代码再写它）', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedSeriesJob('s1', 1, now)
     repo.forceState('s1', 1, 'dormant', now)
     expect(repo.retireAllForSeries('s1', now)).toBe(0)
-    expect(repo.find('s1', 1)!.state).toBe('dormant')
+    expect(findSeriesJob('s1', 1)!.state).toBe('dormant')
   })
 
   it('retireAllForSeries 作废该剧全部静止态 worker_task 行（wanted/failed/dormant→done），不碰别剧', () => {
@@ -647,46 +409,12 @@ describe('realign job kind', () => {
     expect(repo.get(otherSeriesJobId)!.state).toBe('wanted') // 别剧不受影响
   })
 
-  // D-review #1：UPSERT_CONFLICT_SQL 曾无条件 plan_ref = excluded.plan_ref——upsertWanted 的
-  // INSERT 恒带 NULL，执行中/失败态 job 的崩溃恢复清单指针会被一次 re-upsert 直接抹掉。
-  it('mid-execution re-upsert 不清洗 active job 的 plan_ref（崩溃恢复清单指针）', () => {
-    const now = Date.now()
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
-    const job = repo.claimNext(now)!                                  // searching（active）
-    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)   // 诊断钩子再次触发同剧 upsert
-    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-1/manifest.json')
-  })
-
-  it('failed 静止态 re-upsert 同样保留 plan_ref（中断整理的清单仍要用于恢复/回滚）', () => {
-    const now = Date.now()
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
-    const job = repo.claimNext(now)!
-    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
-    repo.completeError(job.id, 'EXDEV', now)                          // → failed
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)
-    expect(repo.get(job.id)!.plan_ref).toBe('/archive/s1-1/manifest.json')
-  })
-
-  it('done→wanted 复活时 plan_ref 重置（新一轮整理不该带上一轮的旧清单）', () => {
-    const now = Date.now()
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
-    const job = repo.claimNext(now)!
-    repo.setPlanRef(job.id, '/archive/s1-1/manifest.json', now)
-    repo.completeDone(job.id, now)                                    // → done（plan_ref 仍在）
-    repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now + 1)   // done→wanted 复活
-    const revived = repo.get(job.id)!
-    expect(revived.state).toBe('wanted')
-    expect(revived.plan_ref).toBeNull()
-  })
-
   // D-review #3：executeRealign 未接线的 realign job 曾走 completeError → 30s→15min→daily
-  // 无穷 errorloop。park 提供"停车不重试"的诚实出口：active → dormant（不参与 claimNext，
-  // 唤醒通道 wake 仍可用）。
+  // 无穷 errorloop。park 提供"停车不重试"的诚实出口：active → dormant（不参与 claimNext）。
   describe('park（停车：active → dormant，不重试）', () => {
     it('active job 停车为 dormant，claimNext 不再派发（含一天后）', () => {
       const now = Date.now()
-      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      mkSeriesJob(now)
       const job = repo.claimNext(now)!
       expect(repo.park(job.id, 'realign executor not wired', now)).toBe(true)
       const parked = repo.get(job.id)!
@@ -699,20 +427,11 @@ describe('realign job kind', () => {
 
     it('对非 active 态是 no-op（同 complete* 守卫语义）', () => {
       const now = Date.now()
-      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
+      mkSeriesJob(now)
       const job = repo.claimNext(now)!
       repo.completeDone(job.id, now)
       expect(repo.park(job.id, 'x', now)).toBe(false)
       expect(repo.get(job.id)!.state).toBe('done')
-    })
-
-    it('停车的 job 仍可被 wake 唤醒（不是死刑，是停车）', () => {
-      const now = Date.now()
-      repo.upsertWanted({ kind: 'realign', seriesId: 's1' }, now)
-      const job = repo.claimNext(now)!
-      repo.park(job.id, 'not wired', now)
-      expect(repo.wake({ kind: 'realign', seriesId: 's1' }, 100, now)).toBe(true)
-      expect(repo.get(job.id)!.state).toBe('wanted')
     })
   })
 })
@@ -721,10 +440,9 @@ describe('worker_task dispatch (v3 phase ④)', () => {
   it('upsertWorkerTask writes a new wanted row with payload and parent_job_id', () => {
     const now = Date.now()
     repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
-    const job = repo.find('s1', 1)
-    // find() only looks at kind='series_season' — worker_task rows need a dedicated lookup;
-    // go through claimNext to prove the row is really there and claimable.
-    expect(job).toBeNull()
+    // upsertWorkerTask 行 kind='worker_task'，不是 'series_season' — 走 claimNext 证明这一行
+    // 真的在那儿、可被领取（旧版这里用已删除的 find() 断言它"看不见"这一行，find() 整个方法
+    // 已随死器官处决，直接从领取动作本身证明身份，等价且更直接）。
     const claimed = repo.claimNext(now)
     expect(claimed?.kind).toBe('worker_task')
     expect(claimed?.series_id).toBe('s1')
@@ -741,7 +459,7 @@ describe('worker_task dispatch (v3 phase ④)', () => {
 
   it('upsertWorkerTask does not collide with an existing series_season job for the same series/season', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedSeriesJob('s1', 1, now)
     repo.upsertWorkerTask({ seriesId: 's1', season: 1, movieId: null }, { taskType: 'find_subtitle' }, null, now)
     expect(repo.countByState('wanted')).toBe(2)
   })
@@ -867,7 +585,7 @@ describe('hasActiveRealignWorkerTask (去 Jellyfin 化 T4, D4 ingest/realign 互
 
   it('false for a searching series_season/movie job (not kind=worker_task at all)', () => {
     const now = Date.now()
-    repo.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedSeriesJob('s1', 1, now)
     repo.claimNext(now)
     expect(repo.hasActiveRealignWorkerTask()).toBe(false)
   })

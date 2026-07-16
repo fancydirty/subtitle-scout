@@ -27,7 +27,7 @@ async function main() {
   const { values } = parseArgs({ args: rawArgs, options: {
     query: { type: 'string', multiple: true }, imdb: { type: 'string' }, year: { type: 'string' },
     season: { type: 'string' }, episode: { type: 'string' }, filename: { type: 'string' },
-    languages: { type: 'string' }, deep: { type: 'boolean', default: false }, format: { type: 'string', default: 'json' },
+    languages: { type: 'string' }, format: { type: 'string', default: 'json' },
   } })
   const args: FetchArgs = {
     queries: values.query ?? [],
@@ -36,7 +36,6 @@ async function main() {
     episode: values.episode ? Number(values.episode) : undefined,
     filename: values.filename,
     languages: values.languages?.split(',').map(s => s.trim().toLowerCase()),
-    deep: values.deep!,
   }
   const candidates = await runSearch(args, await buildAdapters(emit), emit)
   process.stdout.write(JSON.stringify(candidates) + '\n')

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/provider'
-import { openDb } from '../v2/db.js'
-import { JobsRepo } from '../v2/jobsRepo.js'
+import { openDb, type ScoutDb } from '../v2/db.js'
+import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { makeOrchestratorAgent } from './orchestratorAgent.js'
@@ -57,12 +57,20 @@ const fakeTmdb: Pick<TmdbClient, 'getSeasonTable'> = {
 
 let jobs: JobsRepo
 let lib: LibraryRepo
+let db: ScoutDb
 
 beforeEach(() => {
-  const db = openDb(':memory:')
+  db = openDb(':memory:')
   jobs = new JobsRepo(db)
   lib = new LibraryRepo(db)
 })
+
+// 清算波 R-6（A-F8）：jobsRepo.listByState 已随死器官处决（production 零调用点）——这里只是
+// 借它枚举"当前所有 wanted 行"来断言主代理这一遍实际派发了什么，直接换成对同一个 db 连接的
+// 原生 SQL 查询，语义逐字不变。
+function listWanted(): Job[] {
+  return db.prepare(`SELECT * FROM jobs WHERE state = 'wanted'`).all() as Job[]
+}
 
 describe('makeOrchestratorAgent', () => {
   it('throws a descriptive error BEFORE the agent runs when orchestratorJobId does not reference an existing jobs row (was: silently dispatched zero rows behind a truthful-looking summary)', async () => {
@@ -121,7 +129,7 @@ describe('makeOrchestratorAgent', () => {
       summary: 'dispatched 2 find-subtitle tasks',
     })
 
-    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    const dispatched = listWanted().filter(j => j.kind === 'worker_task')
     expect(dispatched).toHaveLength(2)
 
     const seriesTask = dispatched.find(j => j.series_id === 's1')!
@@ -179,7 +187,7 @@ describe('makeOrchestratorAgent', () => {
 
     // Exactly 2 rows landed — the 3rd (s3) was refused by the cap, not silently written anyway.
     expect(jobs.countByState('wanted')).toBe(2)
-    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    const dispatched = listWanted().filter(j => j.kind === 'worker_task')
     expect(dispatched.map(j => j.series_id).sort()).toEqual(['s1', 's2'])
   })
 
@@ -213,7 +221,7 @@ describe('makeOrchestratorAgent', () => {
 
     await runPass()
 
-    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    const dispatched = listWanted().filter(j => j.kind === 'worker_task')
     expect(dispatched).toHaveLength(1)
     expect(dispatched[0].series_id).toBe('s1')
     expect(dispatched[0].season).toBeNull()
@@ -248,7 +256,7 @@ describe('makeOrchestratorAgent', () => {
 
     await runPass()
 
-    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    const dispatched = listWanted().filter(j => j.kind === 'worker_task')
     expect(dispatched).toHaveLength(1)
     expect(dispatched[0].movie_id).toBe('m1')
     expect(dispatched[0].series_id).toBeNull()
@@ -302,7 +310,7 @@ describe('makeOrchestratorAgent', () => {
     // find_subtitle tasks + the 1 spawned sibling orchestrator row = 3.
     expect(jobs.countByState('wanted')).toBe(3)
     const expectedShardId = `orchestrator-shard-${parentJob.id}-0`
-    const sibling = jobs.listByState('wanted').find(j => j.series_id === expectedShardId)!
+    const sibling = listWanted().find(j => j.series_id === expectedShardId)!
     expect(sibling).toBeDefined()
     expect(sibling.parent_job_id).toBe(parentJob.id)
     expect(JSON.parse(sibling.payload!)).toEqual({

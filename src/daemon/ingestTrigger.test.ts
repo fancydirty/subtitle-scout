@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { openDb } from '../v2/db.js'
-import { JobsRepo } from '../v2/jobsRepo.js'
+import { openDb, type ScoutDb } from '../v2/db.js'
+import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { makeIngestTrigger, INGEST_ORCHESTRATE_SERIES_ID, type IngestTriggerDeps } from './ingestTrigger.js'
 import type { IngestResult } from '../v2/ingest.js'
 
@@ -10,17 +10,19 @@ function ingestResult(over: Partial<IngestResult> = {}): IngestResult {
 
 describe('makeIngestTrigger (去 Jellyfin 化 T4：selfScanTrigger 两信号 refresh-bridge 的替代)', () => {
   let jobs: JobsRepo
+  let db: ScoutDb
   let now: number
 
   beforeEach(() => {
-    const db = openDb(':memory:')
+    db = openDb(':memory:')
     jobs = new JobsRepo(db)
     now = Date.now()
   })
 
-  function pendingOrchestrateJobs() {
-    return jobs
-      .listByState('wanted')
+  // 清算波 R-6（A-F8）：jobsRepo.listByState 已随死器官处决（production 零调用点）——直接换成
+  // 对同一个 db 连接的原生 SQL 查询，语义逐字不变。
+  function pendingOrchestrateJobs(): Job[] {
+    return (db.prepare(`SELECT * FROM jobs WHERE state = 'wanted'`).all() as Job[])
       .filter(j => j.kind === 'worker_task' && j.series_id === INGEST_ORCHESTRATE_SERIES_ID)
   }
 
@@ -100,7 +102,11 @@ describe('makeIngestTrigger (去 Jellyfin 化 T4：selfScanTrigger 两信号 ref
     const first = await tick()
     expect(first.orchestratorTriggered).toBe(true)
     const firstJobId = pendingOrchestrateJobs()[0].id
-    jobs.retire(firstJobId, now) // wanted → done (completeDone only covers active states)
+    // 清算波 R-6（A-F8）：jobsRepo.retire 已随死器官处决（production 零调用点，原 v2/aggregate
+    // 模块已随旧管线一起删除）。等价改走活体路径：claim 再 completeDone——同样是 wanted→done，
+    // 只是经由 active 态中转，而不是 retire() 的 wanted/failed→done 直跳。
+    expect(jobs.claimNext(now)?.id).toBe(firstJobId)
+    jobs.completeDone(firstJobId, now)
     expect(pendingOrchestrateJobs().length).toBe(0)
 
     const second = await tick()

@@ -5,17 +5,6 @@ export function formatEpisodeCode(season: number, episode: number): string {
   return `S${s}E${e}`
 }
 
-/** 一季中的一集（由 PlayerAdapter 枚举给出，路径已映射为本地）。 */
-export interface SeasonEpisode {
-  itemId: string
-  seasonNumber: number
-  episodeNumber: number
-  episodeCode: string
-  videoPath: string      // 本地路径（已过 MEDIA_PATH_MAPPINGS）
-  videoFilename: string
-  needsChinese: boolean
-}
-
 /** 从形如 "S02E05" 的规范集号拆出 season/episode 数值。集号可超过两位（长篇动画如 One Piece E1050）。 */
 export function parseCanonicalEpisodeCode(code: string): { season: number; episode: number } | null {
   const m = /^S(\d{1,4})E(\d{1,4})$/i.exec(code.trim())

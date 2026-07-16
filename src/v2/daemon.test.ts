@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { openDb } from './db.js'
-import { JobsRepo } from './jobsRepo.js'
+import { JobsRepo, type Job } from './jobsRepo.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { RunsRepo } from './runsRepo.js'
 import { ScoutDaemon, type DaemonDeps, MAX_CONSECUTIVE_TICK_FAILURES } from './daemon.js'
@@ -18,6 +18,26 @@ describe('ScoutDaemon', () => {
   let jobs: JobsRepo
   let lib: LibraryRepo
   let runs: RunsRepo
+
+  // 清算波 R-6（A-F8）：jobsRepo.upsertWanted/find/boostPriority 已随死器官处决——ScoutDaemon
+  // 测的是通用 claim/lease/dispatch 状态机（kind 无关），过去只是借 series_season 身份的
+  // upsertWanted/find 当一个方便的行种子/读回手段。改为直接对 lib.db（与 jobs 共享同一个
+  // sqlite 连接，见 daemon.test.ts 已有的 `lib.db.prepare(...INSERT INTO meta...)` 先例）
+  // 写/读同形状的 series_season 行——forceClaim/forceState 两个仍在用的测试助手本身就
+  // 硬编码 kind='series_season'，保持这个 kind 不变才能继续复用它们，语义与删除前逐字一致。
+  const seedJob = (seriesId: string, season: number, seedNow: number): void => {
+    lib.db.prepare(
+      `INSERT INTO jobs (kind, series_id, season, state, priority, attempt, created_at, updated_at)
+       VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)`
+    ).run(seriesId, season, seedNow, seedNow)
+  }
+  const findJob = (seriesId: string, season: number): Job | null =>
+    (lib.db.prepare(`SELECT * FROM jobs WHERE kind = 'series_season' AND series_id = ? AND season = ?`)
+      .get(seriesId, season) as Job | undefined) ?? null
+  const setPriority = (seriesId: string, season: number, priority: number): void => {
+    lib.db.prepare(`UPDATE jobs SET priority = ? WHERE kind = 'series_season' AND series_id = ? AND season = ?`)
+      .run(priority, seriesId, season)
+  }
   let now: number
   const logs: string[] = []
 
@@ -54,7 +74,7 @@ describe('ScoutDaemon', () => {
     const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
     const executeJob = vi.fn(async () => {})
 
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
     await daemon.tick()
@@ -66,18 +86,18 @@ describe('ScoutDaemon', () => {
     expect(executeJob).toHaveBeenCalledOnce()
     // Check that a job was claimed
     expect(jobs.countByState('searching')).toBe(1)
-    const claimedJob = jobs.find('s1', 1)
+    const claimedJob = findJob('s1', 1)
     expect(claimedJob?.state).toBe('searching')
   })
 
   it('FIX-4c: dispatch 为每次 claim 记一行 log——job id、series/kind、lease_until', async () => {
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 3 }, now)
+    seedJob('s1', 3, now)
     const executeJob = vi.fn(async () => {})
     const daemon = new ScoutDaemon(makeDeps({ executeJob }))
 
     await daemon.tick()
 
-    const claimed = jobs.find('s1', 3)!
+    const claimed = findJob('s1', 3)!
     const claimLine = logs.find(l => l.includes('dispatch') && l.includes(`${claimed.id}`))
     expect(claimLine).toBeDefined()
     expect(claimLine).toContain('s1')
@@ -92,9 +112,9 @@ describe('ScoutDaemon', () => {
     })
 
     // Create 3 wanted jobs
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's2', season: 1 }, now)
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's3', season: 1 }, now)
+    seedJob('s1', 1, now)
+    seedJob('s2', 1, now)
+    seedJob('s3', 1, now)
 
     const daemon = new ScoutDaemon(makeDeps({ executeJob, concurrency: { searching: 1, downloading: 2, verifying: 2 } }))
     await daemon.tick()
@@ -109,7 +129,7 @@ describe('ScoutDaemon', () => {
     // 生产实案：季包 job 合法跑超 30min 租约（多集 resolveDownload/LLM），
     // 若无心跳续租，下一 tick 的 reapExpiredLeases 会把它打回 wanted，
     // dispatch 立刻重领同一 job，产生并发双跑（provider/LLM 配额翻倍、队头饿死）。
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     let resolveJob: () => void = () => {}
     const executeJob = vi.fn(() => new Promise<void>((resolve) => { resolveJob = resolve }))
@@ -142,7 +162,7 @@ describe('ScoutDaemon', () => {
     // 最长 30 分钟租约到期后 reapExpiredLeases 自愈，期间 searching 并发槽（默认=1）
     // 被永久占用，队列彻底停摆且零 log/run 证据。这里绕过 daemon 直接 claimNext，
     // 模拟"该 job 从未被本 daemon 实例的 dispatch()/inflight 跟踪过"。
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
     const orphan = jobs.claimNext(now)!
     expect(orphan.state).toBe('searching')
     expect(orphan.lease_until).toBeGreaterThan(now) // 租约合法，远未过期
@@ -163,9 +183,9 @@ describe('ScoutDaemon', () => {
   it('FIX-1: 孤儿回收腾出的派发槽让另一个排队 job 得以领取（打破单槽饿死）', async () => {
     // 更贴近 spec 原句的场景：孤儿被回收回 wanted 后，槽位让**另一个**排队 job 拿到——
     // 而不是孤儿自己在同一 tick 内被重新领走。用优先级保证 claimNext 的选择确定性。
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now) // 将成为孤儿
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's2', season: 1 }, now) // 排队中，优先级更高
-    jobs.boostPriority({ kind: 'series_season', seriesId: 's2', season: 1 }, 100)
+    seedJob('s1', 1, now) // 将成为孤儿
+    seedJob('s2', 1, now) // 排队中，优先级更高
+    setPriority('s2', 1, 100)
 
     // forceClaim（测试助手）：指名领取 s1，绕开 claimNext 的 priority 排序——s2 优先级更高，
     // 若走 claimNext 反而会先领到 s2，测不出"孤儿腾出槽位给别的 job"这个点。
@@ -184,12 +204,12 @@ describe('ScoutDaemon', () => {
     const claimedJob = executeJob.mock.calls[0][0]
     expect(claimedJob.series_id).toBe('s2')
     // s1 本身回到 wanted、没有在同一 tick 内被抢回去，attempt 不变（reap 不占内容退避梯名额）。
-    expect(jobs.find('s1', 1)!.state).toBe('wanted')
-    expect(jobs.find('s1', 1)!.attempt).toBe(0)
+    expect(findJob('s1', 1)!.state).toBe('wanted')
+    expect(findJob('s1', 1)!.attempt).toBe(0)
   })
 
   it('FIX-1: 真正 inflight（daemon 自己 claim 且仍在跟踪）的 job 不被孤儿侦测误伤', async () => {
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     let resolveJob: () => void = () => {}
     const executeJob = vi.fn(() => new Promise<void>((resolve) => { resolveJob = resolve }))
@@ -210,7 +230,7 @@ describe('ScoutDaemon', () => {
   })
 
   it('FIX-1: 本 tick 刚被 dispatch 领走的 job 不会被同一 tick 的孤儿侦测误伤（顺序保证：侦测跑在 dispatch 之前）', async () => {
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
     const executeJob = vi.fn(() => new Promise<void>(() => {})) // 本 tick 内不会 settle
     const daemon = new ScoutDaemon(makeDeps({ executeJob }))
 
@@ -224,7 +244,7 @@ describe('ScoutDaemon', () => {
     // 生产语境：inflight 跟踪曾是 Set<number>（按 job id 去重），两次 claim 共享同一个
     // key——旧 invocation 的 .finally 一响就把新 invocation 的追踪条目也删了，新
     // invocation（仍在合法跑）从此失去心跳续租，租约到期后被误判死亡回收（双跑/饿死）。
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     let resolveFirst: () => void = () => {}
     let callCount = 0
@@ -245,7 +265,7 @@ describe('ScoutDaemon', () => {
     // 模拟：这一行在 invocation #1 仍"活着"（只是它的 continuation 还没运行）时被
     // 别处回收——确定性复现用 reapAllActive（同 FIX-1 的孤儿回收在其他时序下的效果）。
     jobs.reapAllActive(now)
-    expect(jobs.find('s1', 1)!.state).toBe('wanted')
+    expect(findJob('s1', 1)!.state).toBe('wanted')
 
     // Tick 2：dispatch 重新领取 s1 给 invocation #2——同一个 job id，全新的 Job 对象/token。
     await daemon.tick()
@@ -268,7 +288,7 @@ describe('ScoutDaemon', () => {
   })
 
   it('过租job被reap后可再领取', async () => {
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     const job = jobs.claimNext(now)
     expect(job?.state).toBe('searching')
@@ -281,7 +301,7 @@ describe('ScoutDaemon', () => {
 
     // Job should be back to wanted; attempt unchanged — reap is not a content
     // failure and must not consume a content-backoff-ladder slot (audit fix).
-    const reaped = jobs.find('s1', 1)
+    const reaped = findJob('s1', 1)
     expect(reaped?.state).toBe('wanted')
     expect(reaped?.attempt).toBe(0)
   })
@@ -344,7 +364,7 @@ describe('ScoutDaemon', () => {
       throw new Error('Simulated error')
     })
 
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     const daemon = new ScoutDaemon(makeDeps({ executeJob }))
 
@@ -363,12 +383,12 @@ describe('ScoutDaemon', () => {
       throw new Error('Simulated crash')
     })
 
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
     const daemon = new ScoutDaemon(makeDeps({ executeJob }))
 
     await daemon.tick()
 
-    const job = jobs.find('s1', 1)!
+    const job = findJob('s1', 1)!
     const runRows = runs.getByJobId(job.id)
     expect(runRows.length).toBe(1)
     expect(runRows[0].decision).toBe('error')
@@ -379,7 +399,7 @@ describe('ScoutDaemon', () => {
     const executeJob = vi.fn(async () => {
       throw new Error('Simulated crash')
     })
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     const runsSpy = vi.spyOn(runs, 'insert').mockImplementation(() => {
       throw new Error('disk full while writing runs row')
@@ -414,7 +434,7 @@ describe('ScoutDaemon', () => {
 
     // 稳态：到点 ingest，抛错
     now += 16 * 60_000
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
     await daemon.tick()
 
     // Ingest was attempted
@@ -480,7 +500,7 @@ describe('ScoutDaemon', () => {
     // seconds ago on a rolling deploy) — the time gate alone would skip the ingest.
     lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(now - 5_000))
 
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
     await daemon.tick()
@@ -552,7 +572,7 @@ describe('ScoutDaemon', () => {
 
     // Recent last_ingest_at（上个进程分钟前写的）+ 一个 stale wanted job
     lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(now - 5_000))
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
 
@@ -571,7 +591,7 @@ describe('ScoutDaemon', () => {
   describe('D4: ingest-vs-realign exclusion（design §P3，ingest 磁盘真相 walker 与 realign 整理搬移在同一批路径上跑会互相踩脚）', () => {
     it('一个正在跑的 realign worker_task 压制这一轮 ingest——即便是 boot 强制拍，也整轮跳过并留一行日志', async () => {
       vi.spyOn(jobs, 'hasActiveRealignWorkerTask').mockReturnValue(true)
-      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      seedJob('s1', 1, now)
       const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
       const executeJob = vi.fn(async () => {})
       const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
@@ -595,7 +615,7 @@ describe('ScoutDaemon', () => {
       executeJob.mockClear()
 
       vi.spyOn(jobs, 'hasActiveRealignWorkerTask').mockReturnValue(true)
-      jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      seedJob('s1', 1, now)
       now += 16 * 60_000 // 到点，若非 D4 压制本该触发 ingest
 
       await daemon.tick()
@@ -722,7 +742,7 @@ describe('ScoutDaemon', () => {
   it('run启动即回收上个进程的活跃租约（未过期也回收）', async () => {
     // 生产实案：部署重启瞬间在跑的 job 租约僵尸占 searching 槽最长 30 分钟。
     // 模拟旧进程遗孤：claim 后"进程死了"，租约仍在 30min 窗口内未过期。
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
     const orphan = jobs.claimNext(now)!
     expect(orphan.state).toBe('searching')
 
@@ -805,7 +825,7 @@ describe('ScoutDaemon', () => {
       })
     })
 
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    seedJob('s1', 1, now)
 
     const daemon = new ScoutDaemon(makeDeps({ executeJob }))
     const controller = new AbortController()

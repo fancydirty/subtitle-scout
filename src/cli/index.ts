@@ -10,8 +10,6 @@ import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { type FetchEvent } from './fetchLib.js'
 import { gcOrphans } from '../files/stagingSandbox.js'
 import { isDirWritable, type PathMapping } from '../core/mediaContext.js'
-import { Ledger } from '../core/ledger.js'
-import { parseSince, formatReport } from './report.js'
 import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
@@ -26,10 +24,9 @@ import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { makeIngestPass } from '../v2/ingest.js'
-import { executeJob } from '../v2/executor.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
-import { executeRealign, makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
+import { makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
 import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
 import { replayRollback } from '../files/realignManifest.js'
 import { runRealignWorkerTask } from '../v2/realignWorkerTask.js'
@@ -42,7 +39,6 @@ import { recognize } from '../recognition/index.js'
 import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles } from '../files/streamProbe.js'
-import { routeLegacyJob, tombstoneLegacyJob } from './legacyJobRouting.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -218,12 +214,13 @@ async function cmdWatch() {
     else if (e.event === 'provider_notice') log(`find-subtitle worker: provider notice (${e.provider}): ${e.message}`)
   }
 
-  // realign 执行依赖（Task 21 的 executeRealign 柯里化）：门在 tmdb 是否配置——计划构建需要
-  // TMDB 季表才有确定性闸门，没有 TMDB_API_KEY 时整个 realign 功能（诊断+执行）一起跳过，
-  // 行为回退到"只有内容退避梯，没有排布诊断"的现状，不报错、不阻塞正常找字幕流程。
-  // v3 phase ⑦：这份 deps 对象单独具名（不再只活在 executeRealignClosure 的闭包里）——
-  // cmdWatch claim 循环新增的 kind==='worker_task' 分支要把同一份 RealignExecutorDeps 转交给
-  // runRealignWorkerTask（phase ⑥，src/v2/realignWorkerTask.ts）复用，而不是重新拼一份。
+  // realign 执行依赖：计划构建需要 TMDB 季表才有确定性闸门。清算波 R-6（F15）：cmdWatch 顶部
+  // 已把 TMDB_API_KEY 做成 requireEnv 式硬前置（未配置直接 exit(2)，见函数开头），tmdb 从此在
+  // 整个 cmdWatch 函数体内恒非空——这份 deps 因此不再需要"tmdb ? {...} : undefined"三元
+  // （旧注释"没有 TMDB_API_KEY 时整个 realign 功能一起跳过"描述的是硬前置引入之前的降级行为，
+  // 已不成立，随手一并订正）。
+  // v3 phase ⑦：这份 deps 对象单独具名——cmdWatch claim 循环 kind==='worker_task' 分支把同一份
+  // RealignExecutorDeps 转交给 runRealignWorkerTask（phase ⑥，src/v2/realignWorkerTask.ts）复用。
   //
   // Wall ②（old-pipeline-retirement phase 1）：字幕先行不再走 runPipeline/withJournal 老管线，
   // 而是复用 v3 find-subtitle worker（同 handleWorkerTask 下 find_subtitle 分支一样的组装方式：
@@ -245,35 +242,30 @@ async function cmdWatch() {
   // （src/v2/realignLibraryPort.ts）——realignExecutor.ts 的 5 重安全层（restructuring/
   // manifest/reveal/rollback + GAP-A 崩溃恢复纪律）零改动，只换这个 port 对象的构造方式。
   // runIngest 复用上方已构造的 ingestPass 闭包（refreshLibrary 的库原生等价操作）。
-  const realignDeps: RealignExecutorDeps | undefined = tmdb
-    ? {
-        lib, jobs,
-        jf: makeRealignLibraryPort({ lib, roots, runIngest: ingestPass }),
-        // A-F13：getDetails/getChineseTitles 补上——realign 字幕先行阶段的 TMDB 富化补面
-        // （见 realignExecutor.ts 步骤 12 附近的 fetchTmdbEnrichment 调用）需要它们。
-        tmdb: {
-          getSeasonTable: (id) => tmdb.getSeasonTable(id),
-          getDetails: (mediaType, id) => tmdb.getDetails(mediaType, id),
-          getChineseTitles: (mediaType, id) => tmdb.getChineseTitles(mediaType, id),
-        },
-        fetchAnimeLists: () => fetchAnimeListsTable(),
-        runEpisode: realignRunEpisode,
-        now: () => Date.now(),
-        log,
-        sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
-        getSize: (p) => { try { return statSync(p).size } catch { return null } },
-        // CRIT#1：与 findSubtitleWorkerTaskDeps 的 mediaRoots 同源白名单（旧 makeRunEpisode
-        // 的 opts.mediaRoots 已随退役T7/Wave 2A 删除，同源不变量转移到这里描述）；IMP#8：
-        // 镜像/库/验收路径去 Jellyfin 化后已是本地路径（makeRealignLibraryPort 直接产出本地
-        // 路径），mappings 在库原生世界对这些路径退化为 identity（配置的 from 侧从不匹配
-        // 已经是本地形态的路径），仍原样传入以防将来有其余映射用途。
-        mediaRoots: roots,
-        mappings,
-      }
-    : undefined
-  const executeRealignClosure = realignDeps
-    ? (realignJob: Job) => executeRealign(realignJob, realignDeps)
-    : undefined
+  const realignDeps: RealignExecutorDeps = {
+    lib, jobs,
+    jf: makeRealignLibraryPort({ lib, roots, runIngest: ingestPass }),
+    // A-F13：getDetails/getChineseTitles 补上——realign 字幕先行阶段的 TMDB 富化补面
+    // （见 realignExecutor.ts 步骤 12 附近的 fetchTmdbEnrichment 调用）需要它们。
+    tmdb: {
+      getSeasonTable: (id) => tmdb.getSeasonTable(id),
+      getDetails: (mediaType, id) => tmdb.getDetails(mediaType, id),
+      getChineseTitles: (mediaType, id) => tmdb.getChineseTitles(mediaType, id),
+    },
+    fetchAnimeLists: () => fetchAnimeListsTable(),
+    runEpisode: realignRunEpisode,
+    now: () => Date.now(),
+    log,
+    sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
+    getSize: (p) => { try { return statSync(p).size } catch { return null } },
+    // CRIT#1：与 findSubtitleWorkerTaskDeps 的 mediaRoots 同源白名单（旧 makeRunEpisode
+    // 的 opts.mediaRoots 已随退役T7/Wave 2A 删除，同源不变量转移到这里描述）；IMP#8：
+    // 镜像/库/验收路径去 Jellyfin 化后已是本地路径（makeRealignLibraryPort 直接产出本地
+    // 路径），mappings 在库原生世界对这些路径退化为 identity（配置的 from 侧从不匹配
+    // 已经是本地形态的路径），仍原样传入以防将来有其余映射用途。
+    mediaRoots: roots,
+    mappings,
+  }
 
   // find-subtitle worker 依赖（v3 phase ⑦）：mediaRoots 是"已配置的根"白名单（外层沙盒，同
   // realignDeps 那道门）；FindSubtitleTask.mediaRoot（每个 task 各自的季/影片
@@ -296,9 +288,10 @@ async function cmdWatch() {
   }
 
   // orchestrator 依赖（v3 phase ⑦）：sibling-orchestrator worker_task（taskType==='orchestrate'）
-  // 同样门在 tmdb——makeOrchestratorAgent 的 check_series_layout 工具需要真实 TmdbClient。去
-  // Jellyfin 化 P4 起不再需要 jf——tmdbId 直接从 seriesId 自身解析（src/v2/ownIds.ts）。
-  const orchestrateWorkerTaskDeps = tmdb ? { lib, tmdb, model: reasoningModel, now: () => Date.now() } : undefined
+  // 用到 makeOrchestratorAgent 的 check_series_layout 工具，需要真实 TmdbClient——tmdb 在
+  // cmdWatch 顶部已 requireEnv 式硬前置（清算波 R-6/F15），不再需要"tmdb ? {...} : undefined"
+  // 降级三元。去 Jellyfin 化 P4 起不再需要 jf——tmdbId 直接从 seriesId 自身解析（src/v2/ownIds.ts）。
+  const orchestrateWorkerTaskDeps = { lib, tmdb, model: reasoningModel, now: () => Date.now() }
 
   // ingestPass 已在函数上方构造（realignDeps 的 refreshLibrary 也要复用它）。
   // makeIngestTrigger（src/daemon/ingestTrigger.ts）包一层：pass 本身报告 changed 时才 upsert
@@ -335,20 +328,13 @@ async function cmdWatch() {
         })
         await runFindSubtitleWorkerTask(job, { ...findSubtitleWorkerTaskDeps, runTask }, jobs, () => Date.now())
       } else if (payload.taskType === 'realign') {
-        if (!realignDeps) {
-          jobs.park(job.id, 'realign executor not wired (TMDB_API_KEY missing)', Date.now())
-          log(`warn: job ${job.id} worker_task(realign) 未接线（缺 TMDB_API_KEY），已停车`)
-          return
-        }
+        // 清算波 R-6（F15）：realignDeps 恒非空（tmdb 已在函数顶部硬前置，见 realignDeps 构造处
+        // 的注释）——"未接线（缺 TMDB_API_KEY）"停车分支在这道硬前置之后不可达，随之删除。
         // 退役T1 (W0-3a): thread the same RunsRepo instance into the realign runner too — see
         // the comment on findSubtitleWorkerTaskDeps above for the why.
         await runRealignWorkerTask(job, { ...realignDeps, runs }, jobs, () => Date.now())
       } else if (payload.taskType === 'orchestrate') {
-        if (!orchestrateWorkerTaskDeps) {
-          jobs.park(job.id, 'orchestrator not wired (TMDB_API_KEY missing)', Date.now())
-          log(`warn: job ${job.id} worker_task(orchestrate) 未接线（缺 TMDB_API_KEY），已停车`)
-          return
-        }
+        // 同上：orchestrateWorkerTaskDeps 恒非空，"未接线"停车分支不可达，随之删除。
         await runOrchestrateWorkerTask(job, orchestrateWorkerTaskDeps, jobs)
       } else {
         jobs.completeError(job.id, `unknown worker_task taskType: ${String(payload.taskType)}`, Date.now())
@@ -372,36 +358,24 @@ async function cmdWatch() {
     runs,
     ingestTrigger,
     gcStaging: () => gcOrphans(roots, new Set()),
+    // 清算波 R-6（A-F7）：job.kind==='worker_task' 是 claimNext() 这条 kind 无关队列上唯一的
+    // 活执行通路。旧管线的中转层（v2/executor.ts 的 executeJob/executeRealignBranch）与它的
+    // 路由决策（cli/legacyJobRouting.ts 的 routeLegacyJob/tombstoneLegacyJob）已整体删除：
+    // - kind==='realign' 的 worker_task 早已经由 handleWorkerTask 直连 runRealignWorkerTask
+    //   （见上方 realign 分支），从不经过这个旧中转层——executor.ts 服务的是已作古的老式
+    //   kind==='realign' 单行（非 worker_task），upsertWanted（唯一的创建方）已随死器官处决，
+    //   production 早已零调用点，没有任何在制品行会走到这里。
+    // - kind==='series_season'/'movie' 是更早退役（Wave 2A）的老式 kind，同样零创建点。
+    // 两者的存量墓碑处理（tombstoneLegacyJob）已不再需要专门的"体面收场"语义——任何非
+    // worker_task 的 job 到达这里都是接线回归警报（不应该发生的状态），completeError 兜底：
+    // 失败退避而不是让 daemon 崩，同时在 last_error 里留下可诊断的痕迹。
     executeJob: async (job) => {
-      // v3 phase ⑦: job.kind==='worker_task' is a THIRD, independent execution path off the
-      // same kind-agnostic claimNext() queue — routed by payload.taskType, never touching the
-      // OLD pipeline's executeJob (v2/executor.ts). This is what makes claimNext() genuinely
-      // serve the new find-subtitle worker and the realign wrapper off one queue.
       if (job.kind === 'worker_task') {
         await handleWorkerTask(job)
         return
       }
-      // W0-4 切 feed: kind==='realign' still routes to the OLD executor.ts's executeJob — its
-      // first line dispatches straight into executeRealignBranch, and that branch's
-      // 5-layer-safety realignExecutor.ts call chain is kept machinery (not retired today).
-      // 退役T7 (Wave 2A): the series_season/movie branch executeJob used to fall through to
-      // (plus makeRunEpisode/deps.runEpisode, which fed it) has been deleted — that path now
-      // throws if ever reached. series_season/movie never reach it: routeLegacyJob tombstones
-      // them before this branch, same as before — see routeLegacyJob.
-      if (routeLegacyJob(job.kind) === 'execute-realign') {
-        // Wave 2D: executeJob's ExecutorDeps (src/v2/executor.ts) never had a journal-shaped
-        // field — the old runPipeline/withJournal wrapper here was dead weight carried over
-        // from the retired old-pipeline call site, not a real dependency of this branch.
-        await executeJob(job, {
-          lib,
-          jobs,
-          executeRealign: executeRealignClosure,
-          now: () => Date.now(),
-          log,
-        })
-        return
-      }
-      tombstoneLegacyJob(job, jobs, log, Date.now())
+      jobs.completeError(job.id, `unknown/retired job kind reached executeJob: ${job.kind} (job ${job.id})`, Date.now())
+      log(`warn: job ${job.id} kind=${job.kind} 已不是活执行通路（legacy 管线已处决），已失败退避`)
     },
     log,
     now: () => Date.now(),
@@ -459,23 +433,6 @@ async function cmdWatch() {
   process.on('SIGTERM', stop)
 
   await daemon.run(shutdown.signal)
-  process.exit(0)
-}
-
-async function cmdReport(since: string) {
-  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
-  const ledger = new Ledger(join(cacheRoot, 'ledger.jsonl'))
-  let sinceMs: number
-  try {
-    sinceMs = parseSince(since, Date.now())
-  } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e))
-    process.exit(2)
-  }
-  const { events, badLines } = ledger.read(sinceMs)
-  // v2: queue 不再使用（去 Jellyfin 化 T4：daemon/queue.ts 本体已删），报告暂时传空队列状态。
-  const queueNow = { pending: 0, dormant: 0 }
-  process.stdout.write(formatReport(events, badLines, queueNow))
   process.exit(0)
 }
 
@@ -591,19 +548,16 @@ async function cmdRealignRollback(archiveDir: string) {
 }
 
 async function main() {
-  const { values, positionals } = parseArgs({
+  const { positionals } = parseArgs({
     allowPositionals: true,
-    options: {
-      since: { type: 'string', default: '24h' },
-    },
+    options: {},
   })
   const cmd = positionals[0]
   if (cmd === 'watch') return cmdWatch()
   if (cmd === 'reconcile-all') return cmdReconcileAll()
-  if (cmd === 'report') return cmdReport(values.since!)
   if (cmd === 'doctor') return cmdDoctor()
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
-  console.error('usage: subtitle-scout watch | reconcile-all | report [--since <24h|7d|ISO-date-UTC>] | doctor | realign-rollback <archiveDir>')
+  console.error('usage: subtitle-scout watch | reconcile-all | doctor | realign-rollback <archiveDir>')
   process.exit(2)
 }
 

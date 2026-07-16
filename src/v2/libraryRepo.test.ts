@@ -259,14 +259,6 @@ describe('媒体镜像', () => {
     expect(row.poster_path).toBe('ptag')
   })
 
-  it('setMovieChineseTitle 写回；upsertMovie 传 null 不清空', () => {
-    lib.upsertMovie({ id: 'm1', name: 'M', path: '/p', subStatus: 'missing' })
-    lib.setMovieChineseTitle('m1', '乙片', 2000)
-    lib.upsertMovie({ id: 'm1', name: 'M', path: '/p', subStatus: 'covered' })
-    expect(lib.getMovie('m1')!.chinese_title).toBe('乙片')
-    expect(lib.getMovie('m1')!.sub_status).toBe('covered')
-  })
-
   // origin_lang 缓存（task 2 依赖）
   it('origin_lang: set + get for series and movie, null by default', () => {
     lib.upsertSeries({ id: 's1', name: 'S', posterPath: null })
@@ -374,16 +366,6 @@ describe('realign 支持方法', () => {
     lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/Show/Season 01/a.mkv', subStatus: 'missing' })
     lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/media/Show/Season 01/b.mkv', subStatus: 'missing' })
     expect(lib.episodePathsForSeries('s1').sort()).toEqual(['/media/Show/Season 01/a.mkv', '/media/Show/Season 01/b.mkv'])
-  })
-
-  it('knownPaths 返回 episodes ∪ movies 的 path 全集（去重）', () => {
-    lib.upsertSeries({ id: 's1', name: 'Show' })
-    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/tv/a.mkv', subStatus: 'missing' })
-    lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/tv/b.mkv', subStatus: 'missing' })
-    lib.upsertMovie({ id: 'm1', name: 'Movie', path: '/movies/c.mkv', subStatus: 'missing' })
-    // upsert 同一路径两次（比如重新识别后再次入库）不应在 Set 里产生重复条目
-    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/tv/a.mkv', subStatus: 'covered' })
-    expect(lib.knownPaths()).toEqual(new Set(['/tv/a.mkv', '/tv/b.mkv', '/movies/c.mkv']))
   })
 
   it('deleteSeriesRows 删除该剧全部 episodes + subtitles + series 行', () => {

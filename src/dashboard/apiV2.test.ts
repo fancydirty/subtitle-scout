@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth, buildParked, claimParked } from './apiV2.js'
+// 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
+// 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
+import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
 
 let db: ScoutDb
 let lib: LibraryRepo
@@ -203,9 +206,9 @@ describe('活动/时间线双源兼容 worker_task（退役 T2）', () => {
     const item = buildLibrary(db).find(x => x.id === 's1')!
     expect(item.job).toEqual({ state: 'searching', priority: 100 })
 
-    // self-scan 触发器用的合成 series_id 也不该冒出一条幽灵库行
-    insertWorkerTaskJob(db, { seriesId: 'self-scan-trigger', season: null, taskType: 'orchestrate', state: 'wanted', priority: 1 })
-    expect(buildLibrary(db).find(x => x.id === 'self-scan-trigger')).toBeUndefined()
+    // ingest 触发器用的合成 series_id 也不该冒出一条幽灵库行
+    insertWorkerTaskJob(db, { seriesId: INGEST_ORCHESTRATE_SERIES_ID, season: null, taskType: 'orchestrate', state: 'wanted', priority: 1 })
+    expect(buildLibrary(db).find(x => x.id === INGEST_ORCHESTRATE_SERIES_ID)).toBeUndefined()
   })
 
   it('回归：旧 kind 行在双源变更后照常工作（叠加，不是替换）', () => {

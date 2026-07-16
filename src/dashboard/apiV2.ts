@@ -4,6 +4,10 @@
 import { dirname } from 'node:path'
 import type { ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
+// 清算波 R-6（F9b）：只为下面的文档注释引用真实常量，而不是把它的字符串值抄一份陈旧副本
+// （旧值 'self-scan-trigger' 已在去 Jellyfin 化 T4 改名为 INGEST_ORCHESTRATE_SERIES_ID=
+// 'ingest-trigger'——注释里继续写旧值会误导读者去 grep 一个早已不存在的字符串）。
+import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
 
 // ---- Library (海报墙) ----
 
@@ -150,9 +154,11 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
 
   // series 的最新 job（跨季取 max(id)）。双源过渡期：旧 kind='series_season' 与 v3
   // kind='worker_task'（payload.taskType 为 find_subtitle/realign）都算series活动；
-  // orchestrate 类 worker_task（含 self-scan 触发用的合成 series_id 'self-scan-trigger'）
-  // 是编排通道不是内容产出，故意排除，不当作库行徽章。series_id IS NOT NULL 顺带排掉
-  // movie 目标的 find_subtitle worker_task（其 series_id 恒为 NULL）。
+  // orchestrate 类 worker_task（含 ingest 触发用的合成 series_id，见上方导入的
+  // INGEST_ORCHESTRATE_SERIES_ID 常量）是编排通道不是内容产出，故意排除（用
+  // taskType IN ('find_subtitle','realign') 白名单实现，不逐个 series_id 拉黑——INGEST_
+  // ORCHESTRATE_SERIES_ID 本身也自然落在这条白名单外，无需再单独判它），不当作库行徽章。
+  // series_id IS NOT NULL 顺带排掉 movie 目标的 find_subtitle worker_task（其 series_id 恒为 NULL）。
   const seriesJobs = db
     .prepare(
       `SELECT j.series_id AS key, j.state, j.priority FROM jobs j

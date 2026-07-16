@@ -8,7 +8,6 @@ export interface FetchArgs {
   episode?: number
   filename?: string
   languages?: string[]   // lowercase; adapters default ['zh-cn','zh-tw']
-  deep: boolean
 }
 export type FetchEvent =
   /** droppedEntries：per-entry fail-soft 过滤丢弃的条目数（见 adapters/providers/assrt.ts /

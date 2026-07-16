@@ -161,7 +161,7 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
         ? args.languages
         : deps.targetLanguage ? [deps.targetLanguage] : undefined
       const failures: { provider: string; message: string }[] = []
-      const candidates = await runSearch({ ...args, languages, deep: false }, deps.adapters, (e) => {
+      const candidates = await runSearch({ ...args, languages }, deps.adapters, (e) => {
         if (e.event === 'provider_error') failures.push({ provider: e.provider, message: e.message })
       })
       const resultSetId = deps.store.create(candidates)

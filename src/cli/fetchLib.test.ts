@@ -17,7 +17,7 @@ function adapter(name: string, opts: Partial<FetchAdapter> = {}): FetchAdapter {
 }
 
 describe('runSearch', () => {
-  const args: FetchArgs = { queries: ['q1'], deep: false }
+  const args: FetchArgs = { queries: ['q1'] }
   it('merges results from all enabled adapters', async () => {
     const r = await runSearch(args, [adapter('a'), adapter('b')], () => {})
     expect(r.map(c => c.providerId).sort()).toEqual(['a-1', 'b-1'])
@@ -63,7 +63,7 @@ describe('runSearch', () => {
 })
 
 describe('FetchEvent api_call droppedEntries (MINOR-1: declared on the api_call variant so it can reach cli/index.ts\'s journal.apiCall, per-entry fail-soft observability)', () => {
-  const args: FetchArgs = { queries: ['q1'], deep: false }
+  const args: FetchArgs = { queries: ['q1'] }
   it('an api_call event carrying droppedEntries type-checks and round-trips through runSearch\'s emit unchanged', async () => {
     const events: FetchEvent[] = []
     const withDrop = adapter('assrt', {
@@ -156,7 +156,7 @@ describe('runResolve header pass-through (zimuku archive download needs browser 
 
 describe('"no providers configured" message mentions all three provider gates', () => {
   it('mentions ZIMUKU_ENABLED alongside ASSRT_TOKEN/OPENSUBTITLES_API_KEY', async () => {
-    await expect(runSearch({ queries: ['q'], deep: false }, [], () => {})).rejects.toThrow(/ZIMUKU_ENABLED/)
+    await expect(runSearch({ queries: ['q'] }, [], () => {})).rejects.toThrow(/ZIMUKU_ENABLED/)
   })
 })
 
@@ -176,7 +176,7 @@ describe('runSearch: A4 default-language plumbing for enabled() gating (a langua
   it('args.languages omitted entirely (no explicit target — the un-annotated old fetch path / model-omitted search_source call) → still resolves to a Chinese default, assrt-like adapter stays enabled', async () => {
     const seen: FetchArgs[] = []
     const adapter = languageGatedAdapter('assrt', seen)
-    const r = await runSearch({ queries: ['q1'], deep: false }, [adapter], () => {})
+    const r = await runSearch({ queries: ['q1'] }, [adapter], () => {})
     expect(r.map(c => c.providerId)).toEqual(['assrt-1'])
     expect(seen[0]?.languages).toEqual(['zh'])
   })
@@ -184,7 +184,7 @@ describe('runSearch: A4 default-language plumbing for enabled() gating (a langua
   it('args.languages explicitly set to a non-Chinese target (e.g. [\'en\']) → NOT overridden, adapter correctly excluded', async () => {
     const seen: FetchArgs[] = []
     const adapter = languageGatedAdapter('assrt', seen)
-    await expect(runSearch({ queries: ['q1'], languages: ['en'], deep: false }, [adapter], () => {}))
+    await expect(runSearch({ queries: ['q1'], languages: ['en'] }, [adapter], () => {}))
       .rejects.toThrow(/no providers configured/)
     expect(seen[0]?.languages).toEqual(['en'])
   })
@@ -192,7 +192,7 @@ describe('runSearch: A4 default-language plumbing for enabled() gating (a langua
   it('args.languages explicitly set to a Chinese target → passed through unchanged (not clobbered by the default)', async () => {
     const seen: FetchArgs[] = []
     const adapter = languageGatedAdapter('assrt', seen)
-    await runSearch({ queries: ['q1'], languages: ['zh-cn'], deep: false }, [adapter], () => {})
+    await runSearch({ queries: ['q1'], languages: ['zh-cn'] }, [adapter], () => {})
     expect(seen[0]?.languages).toEqual(['zh-cn'])
   })
 
@@ -204,7 +204,7 @@ describe('runSearch: A4 default-language plumbing for enabled() gating (a langua
       search: async (a) => { searchSawLanguages = a.languages; return [cand('assrt', 'os-1')] },
       resolve: async () => ({ url: 'https://dl/os' }),
     }
-    await runSearch({ queries: ['q1'], deep: false }, [adapter], () => {})
+    await runSearch({ queries: ['q1'] }, [adapter], () => {})
     expect(searchSawLanguages).toBeUndefined()
   })
 })

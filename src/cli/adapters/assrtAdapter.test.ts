@@ -22,7 +22,7 @@ function fakeClient(overrides: Partial<FakeAssrtClient> = {}): FakeAssrtClient {
   } as FakeAssrtClient
 }
 
-const args = (over: Partial<FetchArgs> = {}): FetchArgs => ({ queries: [], deep: false, ...over })
+const args = (over: Partial<FetchArgs> = {}): FetchArgs => ({ queries: [], ...over })
 
 describe('makeAssrtAdapter: enabled (A4 provider language gating — assrt is a China-only subtitle source)', () => {
   const adapter = makeAssrtAdapter(fakeClient())

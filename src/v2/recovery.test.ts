@@ -15,7 +15,13 @@ describe('崩溃恢复', () => {
     {
       const db1 = openDb(dbPath)
       const jobs1 = new JobsRepo(db1)
-      jobs1.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+      // 清算波 R-6（A-F8）：jobsRepo.upsertWanted/find 已随死器官处决——本用例测的是
+      // reapExpiredLeases 的通用崩溃恢复语义（kind 无关），upsertWanted/find 过去只是拿来
+      // 造一行/读回的便利手段，改为直接 SQL 写一行同形状的 series_season 行。
+      db1.prepare(
+        `INSERT INTO jobs (kind, series_id, season, state, priority, attempt, created_at, updated_at)
+         VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)`
+      ).run('s1', 1, now, now)
       const claimed = jobs1.claimNext(now)
       expect(claimed?.state).toBe('searching')
       expect(claimed?.attempt).toBe(0)
@@ -28,7 +34,7 @@ describe('崩溃恢复', () => {
       const jobs2 = new JobsRepo(db2)
 
       // Before reap: job is still in searching state
-      const beforeReap = jobs2.find('s1', 1)
+      const beforeReap = db2.prepare(`SELECT * FROM jobs WHERE kind = 'series_season' AND series_id = ? AND season = ?`).get('s1', 1) as { state: string } | undefined
       expect(beforeReap?.state).toBe('searching')
 
       // Reap expired leases (simulate time passing beyond lease)
@@ -36,7 +42,7 @@ describe('崩溃恢复', () => {
 
       // After reap: job is back to wanted; attempt unchanged — reap is not a
       // content failure and must not consume a content-backoff-ladder slot.
-      const afterReap = jobs2.find('s1', 1)
+      const afterReap = db2.prepare(`SELECT * FROM jobs WHERE kind = 'series_season' AND series_id = ? AND season = ?`).get('s1', 1) as { state: string; attempt: number; lease_until: number | null } | undefined
       expect(afterReap?.state).toBe('wanted')
       expect(afterReap?.attempt).toBe(0)
       expect(afterReap?.lease_until).toBeNull()
@@ -127,25 +133,38 @@ describe('dormant 不复活', () => {
     const jobs = new JobsRepo(db)
     const now = Date.now()
 
-    // Create a dormant job
-    jobs.upsertWanted({ kind: 'series_season', seriesId: 's1', season: 1 }, now)
+    // Create a dormant job — 清算波 R-6（A-F8）：upsertWanted/find 已随死器官处决，直接 SQL
+    // 写一行同形状的 series_season 行（forceState 仍是活的测试助手，硬编码同一个 kind）。
+    db.prepare(
+      `INSERT INTO jobs (kind, series_id, season, state, priority, attempt, created_at, updated_at)
+       VALUES ('series_season', ?, ?, 'wanted', 0, 0, ?, ?)`
+    ).run('s1', 1, now, now)
     jobs.forceState('s1', 1, 'dormant', now)
 
+    const findJob = () =>
+      db.prepare(`SELECT * FROM jobs WHERE kind = 'series_season' AND series_id = ? AND season = ?`).get('s1', 1) as { state: string } | undefined
+
     // Verify it's dormant
-    const before = jobs.find('s1', 1)
+    const before = findJob()
     expect(before?.state).toBe('dormant')
 
     // Run reapExpiredLeases (should not affect dormant jobs)
     jobs.reapExpiredLeases(now + 31 * 60_000)
 
     // Still dormant
-    const after = jobs.find('s1', 1)
+    const after = findJob()
     expect(after?.state).toBe('dormant')
   })
 
   // 退役T7 (Wave 2A)：以下三条原用例（"aggregate 对无/有 missing 的组…"、"aggregate 不 wake
   // unavailable 集…"）覆盖的是 aggregate() 自己的 dormant 唤醒/免打扰判断——它们的 subject
-  // 已随原 v2/aggregate 模块一起删除。JobsRepo.wake() 这个更底层的原语本身不受影响，仍由
-  // jobsRepo.test.ts 覆盖（daemon.ts 的会话播放唤醒仍在用它）；aggregate 特有的"按季 missing
-  // 覆盖面决定是否唤醒 dormant"这层判断逻辑已不存在，没有替代 subject 可测，随之删除。
+  // 已随原 v2/aggregate 模块一起删除。
+  //
+  // 清算波 R-6（A-F8）补记：上面这条注释原先还说"JobsRepo.wake() 这个更底层的原语本身不受
+  // 影响，仍由 jobsRepo.test.ts 覆盖（daemon.ts 的会话播放唤醒仍在用它）"——已核实失实：
+  // daemon.ts 的 Jellyfin 播放会话轮询（pollSessions，wake/boost 的唯一生产调用点）早已随
+  // 去 Jellyfin 化 T4 整体删除（daemon.ts 头注释原话："用户根本不用 Jellyfin 播放...这条
+  // 播放优先级机制服务的场景在本战役的产品坐标下语义已死"），wake/boostPriority 今天已无
+  // 任何生产调用点，随本波一并处决（连同 upsertWanted/find/completeNoMatch/completePartial/
+  // retire/findMovie/setJournalRef/JobIdent 联合类型等同类死器官）。
 })

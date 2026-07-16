@@ -20,7 +20,7 @@ function fakeClient(overrides: Partial<FakeOsClient> = {}): FakeOsClient {
   } as FakeOsClient
 }
 
-const args = (over: Partial<FetchArgs> = {}): FetchArgs => ({ queries: [], deep: false, ...over })
+const args = (over: Partial<FetchArgs> = {}): FetchArgs => ({ queries: [], ...over })
 
 describe('makeOpenSubtitlesAdapter: search', () => {
   it('①episode with imdb → imdb_id query, NO parentImdbId/season/episode (regression guard)', async () => {

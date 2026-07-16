@@ -409,8 +409,12 @@ function baseDeps(over: Partial<FindSubtitleWorkerTaskDeps> = {}): FindSubtitleW
 // jobs 侧 dormant 判决）已随 Task 4 的 mapper 批量化处决——mapper 早就只返回整批
 // FindSubtitleTask 本身。这个 describe 块（Task 8）把 runFindSubtitleWorkerTask 本体重写为
 // 批量收割入账：installed/no_safe_match 逐项落账（markCovered/markUnavailable），内容退避
-// 下沉到 item 自己的 search_attempts 阶梯（见 libraryRepo.ts markUnavailable），
-// jobs.completeNoMatch 从此零调用（不删，见 jobsRepo.ts 头注释）。
+// 下沉到 item 自己的 search_attempts 阶梯（见 libraryRepo.ts markUnavailable）。
+// 清算波 R-6（A-F8）：jobs.completeNoMatch 当时"零调用不删"，现已确认 production 全仓
+// 零调用点，随死器官处决整体删除（jobsRepo.ts 不再有这个方法）——原先在这里用 vi.spyOn
+// 验证"零调用"的回归测试因此撤下：TypeScript 本身就会在任何重新写出
+// `jobsRepo.completeNoMatch(...)` 调用点时报编译错误（方法已不存在），是比运行时 spy 更强
+// 的保证，不需要重复验证。
 describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终局)', () => {
   it('installed: 批量逐项 markCovered，job completeDone', async () => {
     const { lib, jobsRepo, job, episodeIds } = setupBatch(3)
@@ -444,15 +448,14 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
   })
 
   // R-3: 内容退避彻底下沉到 item 事实层——jobs 状态机从此不持有任何内容判决，dormant 判决之死。
-  it('全 no_safe_match 场景：jobsRepo.completeNoMatch 零调用（dormant 判决已死）', async () => {
+  // （完整场景验证——见上面 describe 头注释：completeNoMatch 已删除，"零调用"由编译期保证。）
+  it('全 no_safe_match 场景：job 仍走 completeDone 收尾（批量收割入账不因内容判决而卡住）', async () => {
     const { lib, jobsRepo, job, episodeIds } = setupBatch(2)
-    const completeNoMatchSpy = vi.spyOn(jobsRepo, 'completeNoMatch')
     const runTask = vi.fn(async () => report({ no_safe_match: episodeIds.map((id) => unresolvedItem(id)) }))
     const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
-    expect(completeNoMatchSpy).not.toHaveBeenCalled()
     expect(jobsRepo.get(job.id)!.state).toBe('done')
   })
 

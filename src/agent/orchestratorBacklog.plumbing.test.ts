@@ -1,11 +1,18 @@
 import { describe, it, expect } from 'vitest'
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/provider'
-import { openDb } from '../v2/db.js'
-import { JobsRepo } from '../v2/jobsRepo.js'
+import { openDb, type ScoutDb } from '../v2/db.js'
+import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { makeOrchestratorAgent } from './orchestratorAgent.js'
 import { seedBacklog, makeBacklogFakes, type BacklogShape } from '../testing/seedBacklog.js'
+
+// 清算波 R-6（A-F8）：jobsRepo.listByState 已随死器官处决（production 零调用点）——这里只是
+// 借它枚举"当前所有 wanted 行"来断言主代理这一遍实际派发了什么，直接换成对同一个 db 连接的
+// 原生 SQL 查询，语义逐字不变。
+function listWanted(db: ScoutDb): Job[] {
+  return db.prepare(`SELECT * FROM jobs WHERE state = 'wanted'`).all() as Job[]
+}
 
 // Copied from orchestratorAgent.test.ts:11-37 — the scripted-model helpers this suite reuses.
 function toolCallResult(toolCallId: string, toolName: string, input: unknown) {
@@ -123,7 +130,7 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
     })
 
     expect(jobs.countByState('wanted')).toBe(3)
-    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    const dispatched = listWanted(db).filter(j => j.kind === 'worker_task')
     expect(dispatched).toHaveLength(3)
 
     // Identity check against the real row shape (series_id/season/movie_id), order-independent.
@@ -158,7 +165,7 @@ describe('orchestrator dispatch plumbing over a seeded backlog', () => {
     await runPass2()
 
     expect(jobs.countByState('wanted')).toBe(3)
-    const dispatchedAfter = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    const dispatchedAfter = listWanted(db).filter(j => j.kind === 'worker_task')
     expect(dispatchedAfter).toHaveLength(3)
     expect(sortedIdentities(dispatchedAfter.map(j => ({ seriesId: j.series_id, season: j.season, movieId: j.movie_id }))))
       .toEqual(sortedIdentities(shape.expected.findSubtitle))
@@ -240,7 +247,7 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
     // Exactly 2 rows landed — the 3rd (tmdb:32) was refused by the cap, not silently written anyway.
     // R-11: find_subtitle 行的 season 身份列恒 NULL，请求的季在 payload.seasons 里核对。
     expect(jobs.countByState('wanted')).toBe(2)
-    const dispatched = jobs.listByState('wanted').filter(j => j.kind === 'worker_task')
+    const dispatched = listWanted(db).filter(j => j.kind === 'worker_task')
     expect(dispatched.map(j => j.series_id).sort()).toEqual(['tmdb:30', 'tmdb:31'])
     expect(dispatched.every(j => j.season === null)).toBe(true)
     expect(dispatched.map(j => (JSON.parse(j.payload!) as { seasons: number[] }).seasons)).toEqual([[1], [1]])
