@@ -102,8 +102,69 @@ describe('writeSubtitle', () => {
       langTag: 'zh-Hans',
       outDir: dir,
     })
+    if ('needsSelection' in r) throw new Error('expected a written result, not needsSelection')
     expect(readFileSync(r.path, 'utf8')).toContain('Title: right')
     expect(r.path.endsWith('Movie.2020.zh-Hans.ass')).toBe(true)
+  })
+
+  // C-D1 fix: a zip with exactly one subtitle entry is zero-friction — no selectFileName needed,
+  // it is picked directly (unchanged behavior; only the >1-entries-with-no-selection case changes).
+  it('picks the sole entry directly when a zip has exactly one subtitle file and no selectFileName is given', async () => {
+    const zip = new AdmZip()
+    zip.addFile('only.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nsolo\n'))
+    const dir = outDir()
+    const r = await writeSubtitle({
+      artifact: zip.toBuffer(),
+      artifactFilename: 'pack.zip',
+      videoFilename: 'Movie.mkv',
+      langTag: 'zh-Hans',
+      outDir: dir,
+    })
+    if ('needsSelection' in r) throw new Error('expected a written result, not needsSelection')
+    expect(readFileSync(r.path, 'utf8')).toContain('solo')
+    expect(r.path.endsWith('Movie.zh-Hans.srt')).toBe(true)
+  })
+
+  // C-D1 fix (the audit finding this task addresses): a season-pack zip with MULTIPLE subtitle
+  // entries and no selectFileName used to have pickFromZip mechanically grab entries[0] — a season
+  // pack could only ever yield episode 1, no matter which episode the agent actually wanted, and the
+  // agent had no way to see what else was in the archive. Now the entry list comes back as a fact;
+  // nothing is written, and the caller must re-call with selectFileName to pick.
+  it('returns needsSelection with the entry list (writes nothing) when a zip has multiple subtitle entries and no selectFileName is given', async () => {
+    const zip = new AdmZip()
+    zip.addFile('Show.S01E01.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep1\n'))
+    zip.addFile('Show.S01E02.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep2\n'))
+    const dir = outDir()
+    const r = await writeSubtitle({
+      artifact: zip.toBuffer(),
+      artifactFilename: 'pack.zip',
+      videoFilename: 'Show.S01E01.mkv',
+      langTag: 'zh-Hans',
+      outDir: dir,
+    })
+    expect(r).toEqual({ needsSelection: true, entries: ['Show.S01E01.srt', 'Show.S01E02.srt'] })
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  // Selection-then-write follow-up: once the agent knows the entry list, selectFileName picks the
+  // exact episode out of a multi-entry pack (not just the 2-entry wrong/right shape already covered
+  // above) and it writes normally.
+  it('writes the selected entry out of a multi-entry zip once selectFileName is given', async () => {
+    const zip = new AdmZip()
+    zip.addFile('Show.S01E01.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep1\n'))
+    zip.addFile('Show.S01E02.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep2\n'))
+    const dir = outDir()
+    const r = await writeSubtitle({
+      artifact: zip.toBuffer(),
+      artifactFilename: 'pack.zip',
+      selectFileName: 'Show.S01E02.srt',
+      videoFilename: 'Show.S01E02.mkv',
+      langTag: 'zh-Hans',
+      outDir: dir,
+    })
+    if ('needsSelection' in r) throw new Error('expected a written result, not needsSelection')
+    expect(readFileSync(r.path, 'utf8')).toContain('ep2')
+    expect(r.path.endsWith('Show.S01E02.zh-Hans.srt')).toBe(true)
   })
 
   it('converts GB18030 to utf-8 and records original encoding', async () => {

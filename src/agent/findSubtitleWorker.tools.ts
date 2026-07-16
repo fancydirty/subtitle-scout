@@ -10,7 +10,7 @@ import { install } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
 import { formatEpisodeCode, matchesEpisodeCode } from '../core/episode.js'
 import { parseCandidateKey } from '../core/schemas.js'
-import { coercibleInt, coercibleNullableInt } from './coerce.js'
+import { coercibleInt, coercibleNullableInt, nullableTolerant } from './coerce.js'
 
 export interface DownloadCandidateDeps {
   adapters: FetchAdapter[]
@@ -22,13 +22,33 @@ export interface DownloadCandidateDeps {
   /** Opaque handle → real staged path, shared with install_subtitle. Never exposed to the
    *  agent — install_subtitle takes stagedFileId, not a path. */
   stagedFiles: Map<string, string>
-  videoFilename: string
+  /** Every target video filename in this batch task (Task 5 / R-5: a worker run now covers a whole
+   *  season-level range, not one episode). The tool's `videoFilename` input claims ONE of these per
+   *  call — see resolveTargetFilename below. */
+  targetFilenames: string[]
   /** task.targetLanguage (BCP-47 primary code, e.g. 'zh'/'en') — drives the provisional langTag
    *  this staging write uses (see execute below). Optional/defaulted to 'zh' only so existing
    *  callers/tests that predate A2 keep working unchanged; makeFindSubtitleWorker always passes
    *  it explicitly from the task. */
   targetLanguage?: string
   fetchImpl?: typeof fetch
+}
+
+/** Shared by download_candidate and install_subtitle (Task 5 / R-5): resolves the agent-supplied
+ *  `videoFilename` input against this task's list of target filenames. Three states:
+ *  - named + matches one of `filenames` → that filename (claims that target for this call).
+ *  - named + matches none → an error (agent named a file that isn't part of this task).
+ *  - omitted (null) + exactly one target → defaults to it (single-target tasks stay zero-friction).
+ *  - omitted (null) + multiple targets → an error asking the agent to say which one. */
+function resolveTargetFilename(videoFilename: string | null, filenames: string[]): string | { error: string } {
+  if (videoFilename === null) {
+    return filenames.length === 1
+      ? filenames[0]
+      : { error: `this task has ${filenames.length} targets — pass videoFilename to say which one this call is for` }
+  }
+  return filenames.includes(videoFilename)
+    ? videoFilename
+    : { error: `unknown videoFilename: ${videoFilename} — must be one of the task's target files` }
 }
 
 /** download_candidate's provisional staging langTag (A2): for a Chinese target the real Hans/Hant
@@ -47,9 +67,18 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       'sandbox, and inspect its structural signals (cue count, time span, detected script). ' +
       'candidateId is the candidate\'s `id` exactly as shown by search_source / list_candidates / ' +
       'get_candidate (e.g. "assrt:667241") — pass it back whole. ' +
-      'Use fileIndex to pull ONE file out of a season pack / collection: set it to the index ' +
-      'of the entry in the candidate\'s fileList (seen via get_candidate) that names your ' +
+      'This task may cover several target videos at once: pass videoFilename to say which target ' +
+      'file this call is for (must be one of the task\'s target files); you can omit it when the ' +
+      'task has exactly one target. ' +
+      'Use fileIndex to pull ONE file out of a season pack / collection BEFORE download: set it to ' +
+      'the index of the entry in the candidate\'s fileList (seen via get_candidate) that names your ' +
       'target episode; pass fileIndex: null for a plain single-file candidate. ' +
+      'If the downloaded archive is a zip with more than one subtitle file inside (e.g. an ' +
+      'un-indexed season pack), this call returns an `archiveEntries` list instead of staging ' +
+      'anything — call again with archiveEntryName set to the exact entry name from that list to ' +
+      'pick which file INSIDE the zip to use (archiveEntryName picks an entry AFTER download, ' +
+      'inside the unpacked archive — a different step from fileIndex, which picks the source file ' +
+      'before download). ' +
       'Does NOT install it — call install_subtitle once you decide it is a match.',
     inputSchema: z.object({
       // The agent only ever sees ONE identifier per candidate — candidateKey(c) = the composite
@@ -59,8 +88,16 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       candidateId: z.string(),
       // Real models string-encode numbers ("10") and emit "None"/"null"/"" for a null — coerce them.
       fileIndex: coercibleNullableInt,
+      // Which of the task's target videos this call claims (Task 5 / R-5) — see resolveTargetFilename.
+      videoFilename: nullableTolerant(z.string()),
+      // Which entry inside a multi-subtitle zip to pick (C-D1) — matched by exact basename in
+      // subtitleWriter's pickFromZip.
+      archiveEntryName: nullableTolerant(z.string()),
     }),
-    execute: async ({ candidateId, fileIndex }) => {
+    execute: async ({ candidateId, fileIndex, videoFilename, archiveEntryName }) => {
+      const resolvedTarget = resolveTargetFilename(videoFilename, deps.targetFilenames)
+      if (typeof resolvedTarget !== 'string') return resolvedTarget
+
       const parsed = parseCandidateKey(candidateId)
       if (!parsed) {
         return {
@@ -76,9 +113,16 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       const stagedFileId = randomUUID()
       const attemptDir = join(deps.stagingDir, stagedFileId)
       const written = await writeSubtitle({
-        artifact: bytes, artifactFilename, videoFilename: deps.videoFilename,
+        artifact: bytes, artifactFilename, videoFilename: resolvedTarget,
         langTag: stagingLangTag(deps.targetLanguage ?? 'zh'), outDir: attemptDir,
+        selectFileName: archiveEntryName ?? undefined,
       })
+      if ('needsSelection' in written) {
+        return {
+          archiveEntries: written.entries,
+          hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
+        }
+      }
       const signals = inspectSubtitle(written.path)
       deps.stagedFiles.set(stagedFileId, written.path)
       return { stagedFileId, bytes: written.bytes, encoding: written.encoding, signals }
@@ -88,13 +132,14 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
 
 export interface InstallSubtitleDeps {
   stagedFiles: Map<string, string>
-  /** Fixed by the caller at task-construction time — dirname(task.videoPath). Never derived
-   *  from anything the agent supplies. */
-  outDir: string
-  /** The ONE sandbox root for this task — checked again here even though outDir is already
-   *  fixed (defense-in-depth, mirrors realignExecutor.ts's containingRoot/isUnderRoots use). */
+  /** Every target this batch task covers, each with its OWN outDir (dirname(target.videoPath),
+   *  never derived from anything the agent supplies — Task 5 / R-5: a worker run installs
+   *  episode-by-episode across a whole season, so each target needs its own destination dir). The
+   *  tool's `videoFilename` input claims ONE of these per call — see resolveTargetFilename. */
+  targets: { videoFilename: string; outDir: string }[]
+  /** The ONE sandbox root for this task — checked again here even though each target's outDir is
+   *  already fixed (defense-in-depth, mirrors realignExecutor.ts's containingRoot/isUnderRoots use). */
   mediaRoot: string
-  videoFilename: string
 }
 
 export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
@@ -102,20 +147,29 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
     description:
       'Atomically install a previously downloaded+inspected candidate (by stagedFileId) as ' +
       'the final subtitle for this task\'s video. Only call this once you have decided, like ' +
-      'a person who opened the file, that this candidate really is the subtitle for this exact video.',
+      'a person who opened the file, that this candidate really is the subtitle for this exact video. ' +
+      'This task may cover several target videos at once: pass videoFilename to say which target ' +
+      'file you are installing for (must be one of the task\'s target files); you can omit it when ' +
+      'the task has exactly one target.',
     inputSchema: z.object({
       stagedFileId: z.string(),
       // A2: any non-empty language tag, not just zh-Hans/zh-Hant — the agent picks this from
       // task.targetLanguage (refined to Hans/Hant via subtitleInspect's detectedScript for
       // Chinese targets), not from a fixed two-value domain.
       langTag: z.string().min(1),
+      // Which of the task's target videos this call claims (Task 5 / R-5) — see resolveTargetFilename.
+      videoFilename: nullableTolerant(z.string()),
     }),
-    execute: async ({ stagedFileId, langTag }) => {
+    execute: async ({ stagedFileId, langTag, videoFilename }) => {
+      const resolvedTarget = resolveTargetFilename(videoFilename, deps.targets.map(t => t.videoFilename))
+      if (typeof resolvedTarget !== 'string') return resolvedTarget
+      const target = deps.targets.find(t => t.videoFilename === resolvedTarget)!
+
       const stagedPath = deps.stagedFiles.get(stagedFileId)
       if (!stagedPath) return { error: `unknown stagedFileId: ${stagedFileId} — call download_candidate first` }
-      const videoBase = basename(deps.videoFilename).replace(/\.[^.]+$/, '')
+      const videoBase = basename(target.videoFilename).replace(/\.[^.]+$/, '')
       const ext = extname(stagedPath)
-      const finalPath = join(deps.outDir, `${videoBase}.${langTag}${ext}`)
+      const finalPath = join(target.outDir, `${videoBase}.${langTag}${ext}`)
       if (!isUnderRoots(finalPath, [deps.mediaRoot])) {
         return { error: `refusing to install outside sandboxed media root: ${finalPath}` }
       }

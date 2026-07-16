@@ -29,28 +29,51 @@ export interface WriteSubtitleResult {
   alreadyExists: boolean
 }
 
-// gate 按 filelist 的 file_index 校验范围；这里按文件名解析 zip 条目，因为 zip 内部顺序 ≠ filelist 顺序。名字对不上则抛错（fail closed）。
-function pickFromZip(buf: Buffer, selectFileName?: string): { name: string; data: Buffer } {
+/** C-D1 fix: a zip with >1 subtitle entries and no selectFileName can no longer be resolved
+ *  mechanically (there is no correct default — that used to silently grab entries[0], stealing the
+ *  choice from the agent, e.g. a season pack always yielding episode 1). This is a discriminable
+ *  outcome unioned into writeSubtitle's return type rather than a thrown error, so the caller (the
+ *  download_candidate tool) can hand the entry list back to the agent as a fact to choose from. */
+export interface WriteSubtitleNeedsSelection {
+  needsSelection: true
+  /** Subtitle-extension entry names only (same filter as the direct-pick path), in zip order. */
+  entries: string[]
+}
+export type WriteSubtitleOutcome = WriteSubtitleResult | WriteSubtitleNeedsSelection
+
+type ZipPick = { name: string; data: Buffer } | WriteSubtitleNeedsSelection
+
+// gate 按 filelist 的 file_index 校验范围；这里按文件名解析 zip 条目，因为 zip 内部顺序 ≠ filelist 顺序。
+// selectFileName 给了但名字对不上 zip 内任何条目 → 仍然抛错（fail closed，行为不变）。没给
+// selectFileName 时：恰好 1 个字幕条目 → 零摩擦直取（不变）；>1 个 → 不再机械偷取 entries[0]，
+// 清单是事实，交回调用方（见 WriteSubtitleNeedsSelection）。
+function pickFromZip(buf: Buffer, selectFileName?: string): ZipPick {
   const zip = new AdmZip(buf)
   const entries = zip.getEntries().filter(e =>
     !e.isDirectory &&
     SUBTITLE_EXTS.includes(extname(e.entryName).toLowerCase()) &&
     !basename(e.entryName).startsWith('.'))
   if (entries.length === 0) throw new Error('zip contains no subtitle files')
-  const chosen = selectFileName
-    ? entries.find(e => basename(e.entryName) === basename(selectFileName))
-    : entries[0]
-  if (!chosen) throw new Error(`selected file not found in zip: ${selectFileName}`)
-  return { name: basename(chosen.entryName), data: chosen.getData() }
+  if (selectFileName) {
+    const chosen = entries.find(e => basename(e.entryName) === basename(selectFileName))
+    if (!chosen) throw new Error(`selected file not found in zip: ${selectFileName}`)
+    return { name: basename(chosen.entryName), data: chosen.getData() }
+  }
+  if (entries.length === 1) {
+    return { name: basename(entries[0].entryName), data: entries[0].getData() }
+  }
+  return { needsSelection: true, entries: entries.map(e => basename(e.entryName)) }
 }
 
-export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSubtitleResult> {
+export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSubtitleOutcome> {
   const artifactExt = extname(input.artifactFilename).toLowerCase()
   let subtitleName: string
   let data: Buffer
 
   if (artifactExt === '.zip') {
-    ({ name: subtitleName, data } = pickFromZip(input.artifact, input.selectFileName))
+    const picked = pickFromZip(input.artifact, input.selectFileName)
+    if ('needsSelection' in picked) return picked
+    ;({ name: subtitleName, data } = picked)
   } else if (SUBTITLE_EXTS.includes(artifactExt)) {
     subtitleName = input.artifactFilename
     data = input.artifact

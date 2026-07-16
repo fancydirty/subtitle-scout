@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import AdmZip from 'adm-zip'
 import type { FetchAdapter } from '../cli/fetchLib.js'
 import type { CandidateRef } from '../core/schemas.js'
 import { makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool } from './findSubtitleWorker.tools.js'
@@ -55,11 +56,11 @@ describe('download_candidate tool', () => {
       adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
       stagingDir: sandboxDir,
       stagedFiles: new Map(),
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     expect(out.stagedFileId).toBeTruthy()
@@ -76,10 +77,24 @@ describe('download_candidate tool', () => {
       adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
       stagingDir: sandboxDir,
       stagedFiles: new Map(),
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
     })
     expect(tool_.description).toMatch(/fileIndex/)
     expect(tool_.description).toMatch(/pack|collection|filelist|file list/i)
+  })
+
+  // Task 5 (R-5): the worker now claims targets one at a time via `videoFilename`, and can pick an
+  // entry out of a downloaded zip via `archiveEntryName` — the description is what the model reads,
+  // so both new params must be spelled out there, including how they differ from fileIndex.
+  it('description explains videoFilename for claiming a target and archiveEntryName for picking a zip entry', () => {
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      targetFilenames: ['Show.S01E01.mkv'],
+    })
+    expect(tool_.description).toMatch(/videoFilename/)
+    expect(tool_.description).toMatch(/archiveEntryName/)
   })
 
   // BUG 1 (id format mismatch): the ONLY candidate identifier the agent ever sees is candidateKey(c)
@@ -95,11 +110,11 @@ describe('download_candidate tool', () => {
       adapters: [capturingAdapter('assrt', 'http://file0.assrt.net/x.srt', sink)],
       stagingDir: sandboxDir,
       stagedFiles: new Map(),
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     await tool_.execute!(
-      { candidateId: 'assrt:667241', fileIndex: 10 },
+      { candidateId: 'assrt:667241', fileIndex: 10, videoFilename: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(sink.ref).toEqual({ provider: 'assrt', providerId: '667241', fileIndex: 10 })
@@ -112,11 +127,11 @@ describe('download_candidate tool', () => {
       adapters: [capturingAdapter('zimuku', 'http://file0.zimuku.net/x.srt', sink)],
       stagingDir: sandboxDir,
       stagedFiles: new Map(),
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     await tool_.execute!(
-      { candidateId: 'zimuku:z-501', fileIndex: null },
+      { candidateId: 'zimuku:z-501', fileIndex: null, videoFilename: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(sink.ref).toEqual({ provider: 'zimuku', providerId: 'z-501', fileIndex: null })
@@ -127,10 +142,10 @@ describe('download_candidate tool', () => {
       adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
       stagingDir: sandboxDir,
       stagedFiles: new Map(),
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
     })
     const out = await tool_.execute!(
-      { candidateId: 'not-a-real-key', fileIndex: null },
+      { candidateId: 'not-a-real-key', fileIndex: null, videoFilename: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toHaveProperty('error')
@@ -146,7 +161,7 @@ describe('download_candidate tool', () => {
       adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
       stagingDir: sandboxDir,
       stagedFiles: new Map(),
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
     })
     const schema = tool_.inputSchema as import('zod').ZodType
     const idx = (v: unknown) => (schema.parse({ candidateId: 'assrt:1', fileIndex: v }) as { fileIndex: number | null }).fileIndex
@@ -170,11 +185,14 @@ describe('download_candidate tool', () => {
       adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
       stagingDir: sandboxDir,
       stagedFiles,
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
       targetLanguage: 'en',
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    const out = await tool_.execute!({ candidateId: 'assrt:1', fileIndex: null }, { toolCallId: 't1', messages: [] } as any) as DownloadCandidateOutput
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
     const stagedPath = stagedFiles.get(out.stagedFileId)!
     expect(stagedPath.endsWith('.en.srt')).toBe(true)
   })
@@ -189,11 +207,14 @@ describe('download_candidate tool', () => {
       adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
       stagingDir: sandboxDir,
       stagedFiles,
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
       targetLanguage: 'zh',
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    const out = await tool_.execute!({ candidateId: 'assrt:1', fileIndex: null }, { toolCallId: 't1', messages: [] } as any) as DownloadCandidateOutput
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
     const stagedPath = stagedFiles.get(out.stagedFileId)!
     expect(stagedPath.endsWith('.zh-Hans.srt')).toBe(true)
   })
@@ -207,11 +228,17 @@ describe('download_candidate tool', () => {
       adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
       stagingDir: sandboxDir,
       stagedFiles,
-      videoFilename: 'Show.S01E01.mkv',
+      targetFilenames: ['Show.S01E01.mkv'],
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    const first = await tool_.execute!({ candidateId: 'assrt:1', fileIndex: null }, { toolCallId: 't1', messages: [] } as any) as DownloadCandidateOutput
-    const second = await tool_.execute!({ candidateId: 'assrt:2', fileIndex: null }, { toolCallId: 't2', messages: [] } as any) as DownloadCandidateOutput
+    const first = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
+    const second = await tool_.execute!(
+      { candidateId: 'assrt:2', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't2', messages: [] } as any,
+    ) as DownloadCandidateOutput
     expect(first.stagedFileId).not.toBe(second.stagedFileId)
     const firstPath = stagedFiles.get(first.stagedFileId)!
     const secondPath = stagedFiles.get(second.stagedFileId)!
@@ -220,6 +247,145 @@ describe('download_candidate tool', () => {
     expect(readFileSync(secondPath, 'utf8')).toContain('second')
     expect(existsSync(firstPath)).toBe(true)
     expect(existsSync(secondPath)).toBe(true)
+  })
+})
+
+// Task 5 (R-5): download_candidate used to be single-target — deps.videoFilename was fixed at
+// worker-construction time, so a batch run over a whole season had no way to say WHICH target a
+// given download_candidate call was for. Now the worker run carries every target's filename
+// (deps.targetFilenames) and the tool claims one per call via the videoFilename input, resolved by
+// the same three-state rule install_subtitle uses: named + valid → use it; named + unknown → error;
+// omitted + exactly one target → default to it; omitted + multiple targets → error asking to pick.
+describe('download_candidate target resolution', () => {
+  it('defaults to the sole target when videoFilename is omitted and the task has exactly one target (already covered implicitly above, asserted explicitly here)', async () => {
+    const stagedFiles = new Map<string, string>()
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhi\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      targetFilenames: ['Show.S01E01.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
+    const stagedPath = stagedFiles.get(out.stagedFileId)!
+    expect(stagedPath).toContain('Show.S01E01')
+  })
+
+  it('stages under the named target when videoFilename matches one of several task targets', async () => {
+    const stagedFiles = new Map<string, string>()
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhi\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      targetFilenames: ['Show.S01E01.mkv', 'Show.S01E02.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: 'Show.S01E02.mkv', archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
+    const stagedPath = stagedFiles.get(out.stagedFileId)!
+    expect(stagedPath).toContain('Show.S01E02')
+  })
+
+  it('errors without downloading when videoFilename does not match any of the task targets', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhi\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      targetFilenames: ['Show.S01E01.mkv', 'Show.S01E02.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: 'Show.S01E99.mkv', archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ error: "unknown videoFilename: Show.S01E99.mkv — must be one of the task's target files" })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('errors asking which target when videoFilename is omitted and the task has multiple targets', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhi\n')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [fakeAdapter('http://file0.assrt.net/x.srt')],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      targetFilenames: ['Show.S01E01.mkv', 'Show.S01E02.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ error: 'this task has 2 targets — pass videoFilename to say which one this call is for' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+// C-D1 (audit finding this task fixes): zimuku et al. hand back candidates with an empty fileList,
+// so fileIndex can't steer which file inside a season-pack zip gets used. subtitleWriter's
+// pickFromZip used to mechanically grab entries[0] whenever selectFileName was omitted — a season
+// pack could only ever yield episode 1 no matter what the agent wanted, and the agent never even
+// saw what else was inside. Now the zip's entry list is a fact the tool hands back to the agent.
+describe('download_candidate zip entry selection (C-D1)', () => {
+  function packAdapter(): FetchAdapter {
+    return {
+      name: 'assrt',
+      enabled: () => true,
+      search: async () => [],
+      resolve: async () => ({ url: 'http://file0.assrt.net/pack.zip', filename: 'Show.S01.zip' }),
+    }
+  }
+
+  it('returns archiveEntries as a fact — does not stage anything — when the zip has multiple subtitle entries and no archiveEntryName was given', async () => {
+    const zip = new AdmZip()
+    zip.addFile('Show.S01E01.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep1\n'))
+    zip.addFile('Show.S01E02.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep2\n'))
+    const fetchImpl = vi.fn(async () => new Response(zip.toBuffer()))
+    const stagedFiles = new Map<string, string>()
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [packAdapter()],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      targetFilenames: ['Show.S01E01.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({
+      archiveEntries: ['Show.S01E01.srt', 'Show.S01E02.srt'],
+      hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
+    })
+    expect(stagedFiles.size).toBe(0)
+  })
+
+  it('archiveEntryName picks the exact entry out of a multi-file zip and stages it', async () => {
+    const zip = new AdmZip()
+    zip.addFile('Show.S01E01.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep1\n'))
+    zip.addFile('Show.S01E02.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep2\n'))
+    const fetchImpl = vi.fn(async () => new Response(zip.toBuffer()))
+    const stagedFiles = new Map<string, string>()
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [packAdapter()],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      targetFilenames: ['Show.S01E02.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: 'Show.S01E02.srt' },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
+    const stagedPath = stagedFiles.get(out.stagedFileId)!
+    expect(readFileSync(stagedPath, 'utf8')).toContain('ep2')
   })
 })
 
@@ -234,9 +400,14 @@ describe('install_subtitle tool', () => {
     const stagedFiles = new Map([[stagedFileId, stagedPath]])
 
     const tool_ = makeInstallSubtitleTool({
-      stagedFiles, outDir: videoDir, mediaRoot: join(sandboxDir, 'media'), videoFilename: 'Show.S01E01.mkv',
+      stagedFiles,
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: videoDir }],
+      mediaRoot: join(sandboxDir, 'media'),
     })
-    const out = await tool_.execute!({ stagedFileId, langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any) as InstallSubtitleOutput
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as InstallSubtitleOutput
     expect(out.path).toBe(join(videoDir, 'Show.S01E01.zh-Hans.srt'))
     expect(existsSync(out.path!)).toBe(true)
   })
@@ -246,11 +417,13 @@ describe('install_subtitle tool', () => {
   // ran. Generalized to any non-empty string.
   it('inputSchema accepts any non-empty langTag string, not just zh-Hans/zh-Hant', () => {
     const tool_ = makeInstallSubtitleTool({
-      stagedFiles: new Map(), outDir: sandboxDir, mediaRoot: sandboxDir, videoFilename: 'Show.S01E01.mkv',
+      stagedFiles: new Map(),
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: sandboxDir }],
+      mediaRoot: sandboxDir,
     })
     const schema = tool_.inputSchema as import('zod').ZodType
-    expect(schema.parse({ stagedFileId: 'x', langTag: 'en' })).toEqual({ stagedFileId: 'x', langTag: 'en' })
-    expect(schema.parse({ stagedFileId: 'x', langTag: 'zh-Hans' })).toEqual({ stagedFileId: 'x', langTag: 'zh-Hans' })
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'en' })).toEqual({ stagedFileId: 'x', langTag: 'en', videoFilename: null })
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'zh-Hans' })).toEqual({ stagedFileId: 'x', langTag: 'zh-Hans', videoFilename: null })
   })
 
   it('installs a staged file with a non-Chinese lang tag (e.g. an English subtitle)', async () => {
@@ -263,18 +436,28 @@ describe('install_subtitle tool', () => {
     const stagedFiles = new Map([[stagedFileId, stagedPath]])
 
     const tool_ = makeInstallSubtitleTool({
-      stagedFiles, outDir: videoDir, mediaRoot: join(sandboxDir, 'media'), videoFilename: 'Show.S01E01.mkv',
+      stagedFiles,
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: videoDir }],
+      mediaRoot: join(sandboxDir, 'media'),
     })
-    const out = await tool_.execute!({ stagedFileId, langTag: 'en' }, { toolCallId: 't1', messages: [] } as any) as InstallSubtitleOutput
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'en', videoFilename: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as InstallSubtitleOutput
     expect(out.path).toBe(join(videoDir, 'Show.S01E01.en.srt'))
     expect(existsSync(out.path!)).toBe(true)
   })
 
   it('rejects an unknown stagedFileId', async () => {
     const tool_ = makeInstallSubtitleTool({
-      stagedFiles: new Map(), outDir: sandboxDir, mediaRoot: sandboxDir, videoFilename: 'Show.S01E01.mkv',
+      stagedFiles: new Map(),
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: sandboxDir }],
+      mediaRoot: sandboxDir,
     })
-    const out = await tool_.execute!({ stagedFileId: 'nope', langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any)
+    const out = await tool_.execute!(
+      { stagedFileId: 'nope', langTag: 'zh-Hans', videoFilename: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
     expect(out).toEqual({ error: 'unknown stagedFileId: nope — call download_candidate first' })
   })
 
@@ -284,13 +467,89 @@ describe('install_subtitle tool', () => {
     const stagedFileId = 'handle-escape'
     const tool_ = makeInstallSubtitleTool({
       stagedFiles: new Map([[stagedFileId, stagedPath]]),
-      outDir: join(sandboxDir, 'outside'), // deliberately NOT under mediaRoot below
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: join(sandboxDir, 'outside') }], // deliberately NOT under mediaRoot below
       mediaRoot: join(sandboxDir, 'media'),
-      videoFilename: 'Show.S01E01.mkv',
     })
-    const out = await tool_.execute!({ stagedFileId, langTag: 'zh-Hans' }, { toolCallId: 't1', messages: [] } as any)
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
     expect(out).toHaveProperty('error')
     expect((out as { error: string }).error).toMatch(/refusing to install outside/)
+  })
+})
+
+// Task 5 (R-5): install_subtitle used to be single-target too (deps.outDir/deps.videoFilename fixed
+// at worker-construction time). A batch run installs episode-by-episode across the whole season, so
+// each install_subtitle call must say which target it is installing for — same three-state
+// resolution rule as download_candidate, sharing the resolveTargetFilename helper.
+describe('install_subtitle target resolution', () => {
+  it("installs into the named target's own outDir when videoFilename matches one of several targets", async () => {
+    const dirA = join(sandboxDir, 'media', 'ShowA')
+    const dirB = join(sandboxDir, 'media', 'ShowB')
+    mkdirSync(dirA, { recursive: true })
+    mkdirSync(dirB, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-multi'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [
+        { videoFilename: 'ShowA.S01E01.mkv', outDir: dirA },
+        { videoFilename: 'ShowB.S01E01.mkv', outDir: dirB },
+      ],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: 'ShowB.S01E01.mkv' },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as InstallSubtitleOutput
+    expect(out.path).toBe(join(dirB, 'ShowB.S01E01.zh-Hans.srt'))
+    expect(existsSync(out.path!)).toBe(true)
+    // proves it did NOT fall through to the other target's dir
+    expect(existsSync(join(dirA, 'ShowA.S01E01.zh-Hans.srt'))).toBe(false)
+  })
+
+  it("errors without installing when videoFilename does not match any of the task's targets", async () => {
+    const dir = join(sandboxDir, 'media', 'Show')
+    mkdirSync(dir, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-unknown-target'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: dir }],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: 'Show.S01E99.mkv' },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ error: "unknown videoFilename: Show.S01E99.mkv — must be one of the task's target files" })
+    expect(existsSync(join(dir, 'Show.S01E99.zh-Hans.srt'))).toBe(false)
+  })
+
+  it('errors asking which target when videoFilename is omitted and there are multiple targets', async () => {
+    const dirA = join(sandboxDir, 'media', 'ShowA')
+    const dirB = join(sandboxDir, 'media', 'ShowB')
+    mkdirSync(dirA, { recursive: true })
+    mkdirSync(dirB, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-omitted'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [
+        { videoFilename: 'ShowA.S01E01.mkv', outDir: dirA },
+        { videoFilename: 'ShowB.S01E01.mkv', outDir: dirB },
+      ],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ error: 'this task has 2 targets — pass videoFilename to say which one this call is for' })
   })
 })
 
