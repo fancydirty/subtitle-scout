@@ -57,7 +57,7 @@ describe('zimuku end-to-end offline (challenge → solve → search → resolve 
     const adapter = makeZimukuAdapter(client)
 
     // 1. search(模拟 fetchLib.runSearch 的调度层)
-    const candidates = await runSearch({ queries: ['间谍过家家'], deep: false }, [adapter], () => {})
+    const candidates = await runSearch({ queries: ['间谍过家家'] }, [adapter], () => {})
     expect(candidates).toHaveLength(2)
     expect(candidates[0]).toMatchObject({ provider: 'zimuku', providerId: '58421', fileList: [] })
 
