@@ -74,21 +74,23 @@ export const ORCHESTRATOR_BACKLOG_SHAPES: BacklogShape[] = [
   },
   {
     name: 'over-cap-spillover',
-    represents: 'a normal (non-realign) series with MORE independent dispatchable seasons than a ' +
-      'deliberately-low, test-only dispatch cap (capOverride: 2, vs the real 100) — the model ' +
-      'must hit the cap-reached escape valve (spawn_sibling_orchestrator) after 2 dispatches ' +
-      'instead of either silently truncating the backlog or dispatching past its own budget. ' +
-      'capOverride keeps this cheap to run against a real model instead of needing a real ' +
-      '100-dispatch run just to reach the cap.',
+    // R-11（范围裁量化）修形：原形态是"一部剧三个季"——旧世界=三个独立身份能撞 cap；新世界
+    // 模型一单全剧就配完（后续重复派发 coalesced 不耗预算，T8b 语义），前提死亡（D3 复跑
+    // 2026-07-16 实测 <NO-SIBLING-SPAWN>）。改成五部各缺一季的剧：五个独立身份 vs cap=2，
+    // 逼出 escape valve 的语义不变。
+    represents: 'FIVE normal (non-realign) series each with a dispatchable season — more ' +
+      'independent identities than a deliberately-low, test-only dispatch cap (capOverride: 2, ' +
+      'vs the real 100) — the model must hit the cap-reached escape valve ' +
+      '(spawn_sibling_orchestrator) after 2 dispatches instead of either silently truncating ' +
+      'the backlog or dispatching past its own budget.',
     capOverride: 2,
-    series: [{
-      id: 'tmdb:7',
-      seasons: [
-        { season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
-        { season: 2, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
-        { season: 3, episodes: 10, missing: 10, tmdbEpisodeCount: 10 },
-      ],
-    }],
+    series: [
+      { id: 'tmdb:71', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+      { id: 'tmdb:72', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+      { id: 'tmdb:73', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+      { id: 'tmdb:74', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+      { id: 'tmdb:75', seasons: [{ season: 1, episodes: 10, missing: 10, tmdbEpisodeCount: 10 }] },
+    ],
     movies: [],
     expected: {
       // Not asserting which specific finds landed (only 2 of the 3 seasons fit under the cap,
