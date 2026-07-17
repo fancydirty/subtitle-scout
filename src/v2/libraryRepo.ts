@@ -1,6 +1,6 @@
 import type { ScoutDb } from './db.js'
 
-export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored'
+export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored' | 'hardsub-assumed'
 
 /** R-3（裁决 2026-07-16）：item 级内容退避阶梯。worker 判"本轮搜索穷尽"（no_safe_match）后，
  *  该 item 的重现节奏按自身 search_attempts 递增：1/2/4/8 天，第 5 次起 30 天封顶——只是
@@ -609,6 +609,27 @@ export class LibraryRepo {
            WHERE id = ?`
         )
         .run(reason, recheckAfter, newAttempts, now, itemId)
+    }
+  }
+
+  /** 救援R5：agent 档判定/aggressive 档机械直判"硬字幕假定"——诚实标注为覆盖的一种（"已覆盖
+   *  （硬字幕假定）"），不是失败判决，因此**不进**markUnavailable 的内容退避阶梯（search_attempts
+   *  不动，不设 recheck_after）：这既不是"还没找到需要重试"，也不是"确认穷尽"，是"判断这条
+   *  不需要再找外挂字幕"——三个既有终局（covered/unavailable/embedded）都不贴切，故 sub_status
+   *  收新词而不是复用其中之一（schema v15 CHECK 约束扩容）。reason 落 status_reason（同
+   *  markUnavailable 的人话理由字段），供 UI 覆盖详情面展示判定依据。 */
+  markHardsubAssumed(itemId: string, reason: string, now: number): void {
+    const episodeResult = this.db
+      .prepare(
+        `UPDATE episodes SET sub_status = 'hardsub-assumed', status_reason = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(reason, now, itemId)
+    if (episodeResult.changes === 0) {
+      this.db
+        .prepare(
+          `UPDATE movies SET sub_status = 'hardsub-assumed', status_reason = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(reason, now, itemId)
     }
   }
 

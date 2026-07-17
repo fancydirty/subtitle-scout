@@ -1,11 +1,13 @@
 // web/src/api/types.ts：必须与 src/dashboard/apiV2.ts 的 DTO 保持一致
-export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored'
+export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored' | 'hardsub-assumed'
 
 export interface CoverageDTO {
   covered: number
   missing: number
   embedded: number
   unavailable: number
+  /** 救援R5：硬字幕假定——独立桶，前端渲染独立样式，不冒充"外挂字幕已确认"的绿点。 */
+  hardsubAssumed: number
 }
 export interface LibraryJobDTO {
   state: string

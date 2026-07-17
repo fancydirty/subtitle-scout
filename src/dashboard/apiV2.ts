@@ -22,6 +22,9 @@ export interface CoverageDTO {
   missing: number
   embedded: number
   unavailable: number
+  /** 救援R5：硬字幕假定（诚实标注为覆盖的一种，不是失败）——独立桶而非并入 covered，前端渲染
+   *  独立样式（DESIGN.md 语义色灰绿间调），不冒充"外挂字幕已确认"的绿点。 */
+  hardsubAssumed: number
 }
 
 export interface LibraryJobDTO {
@@ -68,7 +71,7 @@ interface JobRow {
   priority: number
 }
 
-const emptyCoverage = (): CoverageDTO => ({ covered: 0, missing: 0, embedded: 0, unavailable: 0 })
+const emptyCoverage = (): CoverageDTO => ({ covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0 })
 
 /** 把一条 sub_status 累加进覆盖桶（ignored 不入桶，它不参与 scout）。 */
 function addToCoverage(cov: CoverageDTO, status: string, n: number): void {
@@ -76,6 +79,7 @@ function addToCoverage(cov: CoverageDTO, status: string, n: number): void {
   else if (status === 'missing') cov.missing += n
   else if (status === 'embedded') cov.embedded += n
   else if (status === 'unavailable') cov.unavailable += n
+  else if (status === 'hardsub-assumed') cov.hardsubAssumed += n
 }
 
 // ---- Section 派生（海报墙分区，零配置按库目录结构分组）----

@@ -82,6 +82,37 @@ describe('媒体镜像', () => {
     expect(lib.missingBySeason()).toEqual([])
   })
 
+  // 救援R5：markHardsubAssumed——诚实标注为覆盖的一种，不进 markUnavailable 的内容退避阶梯
+  // （search_attempts 不动，无 recheck_after），reason 落 status_reason 供覆盖详情面展示。
+  it('markHardsubAssumed：写 sub_status=hardsub-assumed + status_reason，不触碰 search_attempts/recheck_after', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '', path: '/p/1', subStatus: 'missing' })
+    const NOW = 1_000_000
+
+    lib.markHardsubAssumed('e1', '组名标记 [Group]，无内嵌，无外挂候选', NOW)
+
+    const row = db
+      .prepare('SELECT sub_status, status_reason, recheck_after, search_attempts, updated_at FROM episodes WHERE id = ?')
+      .get('e1')
+    expect(row).toEqual({
+      sub_status: 'hardsub-assumed',
+      status_reason: '组名标记 [Group]，无内嵌，无外挂候选',
+      recheck_after: null,
+      search_attempts: 0,
+      updated_at: NOW,
+    })
+    // 不进退避梯——missingBySeason 的 throttled 谓词只认 unavailable，hardsub-assumed 既不在
+    // missing 也不在 throttled（它已经是"判定完的覆盖"，不该占用缺口清单的任何一格）。
+    expect(lib.missingBySeason(NOW)).toEqual([])
+  })
+
+  it('markHardsubAssumed：episode 找不到时落 movie（两表尝试模式，同 markCovered/markUnavailable）', () => {
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/p/m1', subStatus: 'missing' })
+    lib.markHardsubAssumed('m1', 'aggressive 档机械直判', 2_000_000)
+    const row = db.prepare('SELECT sub_status, status_reason FROM movies WHERE id = ?').get('m1')
+    expect(row).toEqual({ sub_status: 'hardsub-assumed', status_reason: 'aggressive 档机械直判' })
+  })
+
   it('markCovered 写 episodes.sub_status + subtitles 行，同一事务', () => {
     lib.upsertSeries({ id: 's1', name: 'A' })
     lib.upsertEpisode({
