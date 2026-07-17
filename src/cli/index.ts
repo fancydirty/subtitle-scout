@@ -100,8 +100,8 @@ function buildIngestPass(opts: {
   roots: () => string[]
   lib: LibraryRepo
   tmdb: TmdbClient
-  targetLanguages: string[]
-  originSkipLanguages: string[]
+  targetLanguages: () => string[]
+  originSkipLanguages: () => string[]
   log: (msg: string) => void
 }): ReturnType<typeof makeIngestPass> {
   return makeIngestPass({
@@ -150,9 +150,12 @@ async function cmdReconcileAll() {
   // exact mapping (locked by targetLanguages.test.ts).
   // dashboard G4：settings.target_languages（行为级设置，dashboard 里可改）优先于部署层的
   // TARGET_LANGUAGES env，见 resolveTargetLanguages 第二参的文档注释。
-  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
+  // 债务D5：语言配置提供者——settings 行为级 > env 部署级的求值挪进闭包，每次消费新鲜读。
+  const languagesNow = () => resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
   const ingest = buildIngestPass({
-    roots: currentRoots, lib, tmdb, targetLanguages, originSkipLanguages,
+    roots: currentRoots, lib, tmdb,
+    targetLanguages: () => languagesNow().targetLanguages,
+    originSkipLanguages: () => languagesNow().originSkipLanguages,
     log: (msg) => console.log(`[reconcile-all] ${msg}`),
   })
   const decision = await runReconcileAll({
@@ -217,13 +220,20 @@ async function cmdWatch() {
   // exact mapping (locked by targetLanguages.test.ts).
   // dashboard G4：settings.target_languages（行为级设置）优先于部署层的 TARGET_LANGUAGES env
   // ——见 resolveTargetLanguages 第二参的文档注释；本战役唯一被真正消费的行为键。
-  const { targetLanguages, originSkipLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
+  // 债务D5：语言配置提供者——settings 行为级 > env 部署级的求值挪进闭包，每次消费新鲜读。
+  const { targetLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
+  const languagesNow = () => resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
 
   // 去 Jellyfin 化 T4/T7：ingest 心跳依赖——v2/ingest.ts 的 makeIngestPass 顶替旧的机械 scan()
   // + B2 self-scan refresh-bridge 两条独立分支。提前到这里构造（原先在 ingestTrigger 组装处，
   // 见下方沿用注释）：realign port（下方 realignDeps）的 refreshLibrary 也要复用同一个 ingest
   // pass 闭包——"整理搬完之后让库看见新结构"就是再踢一次这同一份摄取，不重新拼一份。
-  const ingestPass = buildIngestPass({ roots: currentRoots, lib, tmdb, targetLanguages, originSkipLanguages, log })
+  const ingestPass = buildIngestPass({
+    roots: currentRoots, lib, tmdb,
+    targetLanguages: () => languagesNow().targetLanguages,
+    originSkipLanguages: () => languagesNow().originSkipLanguages,
+    log,
+  })
 
   // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
   // 逐 job Journal（老管线的 journalStore/withJournal 已随 Wave 2D 一并删除），api_call 量大信号
@@ -258,6 +268,9 @@ async function cmdWatch() {
     }),
     // A4: the PRIMARY configured target language — FindSubtitleTask.targetLanguage is
     // single-valued; multi-language per-item tasking is future work.
+    // 债务D5：ingest/find_subtitle 已新鲜求值，realign 字幕先行仍是 watch 启动时快照
+    // （realignExecutor 组装是长驻闭包，改语言后需重启才影响 realign 这一条路径——如实注记，
+    // 非债务遗漏）。
     targetLanguage: targetLanguages[0],
   })
   // 去 Jellyfin 化 P5/Task 7：port 的实现从 JellyfinClient 适配换成库原生实现
@@ -360,8 +373,10 @@ async function cmdWatch() {
         // dashboard G4：mediaRoots 在每次派发时用新鲜的 currentRoots() 覆写——POST 加根后不需要
         // 重启 watch 进程，下一个被 claim 的 find_subtitle 行就能写进新根（否则 outer 沙盒检查
         // assertDirSafe 会一直拿着 watch 启动那一刻的旧白名单，新根永远进不来）。
+        // 债务D5：targetLanguage 同 mediaRoots 在每次派发时新鲜读取——设置页改 target_languages
+        // 后被 claim 的 find_subtitle 任务立即生效。
         await runFindSubtitleWorkerTask(
-          job, { ...findSubtitleWorkerTaskDeps, mediaRoots: currentRoots(), runTask }, jobs, () => Date.now(),
+          job, { ...findSubtitleWorkerTaskDeps, mediaRoots: currentRoots(), targetLanguage: languagesNow().targetLanguages[0], runTask }, jobs, () => Date.now(),
         )
       } else if (payload.taskType === 'realign') {
         // 清算波 R-6（F15）：realignDeps 恒非空（tmdb 已在函数顶部硬前置，见 realignDeps 构造处

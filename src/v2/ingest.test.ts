@@ -78,7 +78,7 @@ function makeDeps(over: Partial<IngestDeps> = {}): IngestDeps {
     listVideoFiles: () => [],
     fileExists: () => false,
     statFile: () => null,
-    targetLanguages: ['zh'],
+    targetLanguages: () => ['zh'],
     log: () => {},
     now: () => 1_700_000_000_000,
     ...over,
@@ -701,7 +701,7 @@ describe('makeIngestPass — probe contract (streamProbe.ts: null=unavailable, d
       listVideoFiles: () => [path],
       recognize: vi.fn(async () => tvResult()),
       probe,
-      targetLanguages: ['zh'],
+      targetLanguages: () => ['zh'],
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
 
@@ -805,8 +805,8 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
       listVideoFiles: () => [path],
       recognize: vi.fn(async () => tvResult({ title: '甲剧标题' })),
       tmdb: fakeTmdb({ getOriginLanguage: async () => null }),
-      targetLanguages: ['en'],
-      originSkipLanguages: ['en'],
+      targetLanguages: () => ['en'],
+      originSkipLanguages: () => ['en'],
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
 
@@ -1197,6 +1197,33 @@ describe('makeIngestPass — roots 是惰性提供者（dashboard G4：守备目
     seenRootsPerCall.length = 0
     await pass()
     expect(seenRootsPerCall.sort()).toEqual([['/media/anime'], ['/media/tv']])
+  })
+})
+
+// 债务D5：target_languages 提供者化——每轮 pass 起点才求值，设置页改完后下一轮扫描生效。
+describe('makeIngestPass — targetLanguages 是惰性提供者（债务D5）', () => {
+  it('两轮返回不同 targetLanguages：内嵌 en 轨第一轮因目标为 zh 判 missing，第二轮目标改 en 判 embedded', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    const probe = vi.fn(async () => [track({ lang: 'eng', codec: 'subrip' })])
+    let targets = ['zh']
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize: vi.fn(async () => tvResult()),
+      probe,
+      targetLanguages: () => targets,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+    expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('missing')
+
+    targets = ['en']
+    await pass()
+    expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('embedded')
+    // 第二轮命中 memo，无需重新探测
+    expect(probe).toHaveBeenCalledTimes(1)
   })
 })
 

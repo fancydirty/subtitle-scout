@@ -15,12 +15,10 @@ export const DEFAULT_TARGET_LANGUAGES = 'zh'
  *  ——是否消费由旁边的救援官注记单独诚实标注。 */
 export const DEFAULT_HARDSUB_MODE = 'agent'
 
-/** trace_retention_days / scan_interval_ms 未设置时的占位数字——这两个 settings 键此刻完全没有
- *  被任何代码路径读取（settingsRepo.get('scan_interval_ms') 无调用点；cli/index.ts 的
- *  ingestEveryMs 走的是 process.env.SCAN_INTERVAL_MS 这个部署层同名 env，不是这个 DB 键）。
- *  数字本身是相邻部署层旋钮的真实代码缺省（cli/index.ts:181 的 LOG_RETAIN_DAYS 兜底 30；
- *  src/daemon/selfScan.ts 的 SELF_SCAN_DEFAULT_INTERVAL_MS=900000），只作占位参考，不暗示这个
- *  设置键本身已经生效——那句诚实注记（settings_backend_unconsumed_note）才是权威说明。 */
+/** trace_retention_days / scan_interval_ms 未设置时的占位数字——这两个 settings 键已被
+ *  daemon 行为级消费（cli/index.ts: 债务D5 惰性读），此处数字是部署层兜底/缺省的真实参考
+ *  （cli/index.ts 的 LOG_RETAIN_DAYS 兜底 30；src/daemon/selfScan.ts 的
+ *  SELF_SCAN_DEFAULT_INTERVAL_MS=900000），只作占位参考。 */
 export const PLACEHOLDER_TRACE_RETENTION_DAYS = '30'
 export const PLACEHOLDER_SCAN_INTERVAL_MS = '900000'
 

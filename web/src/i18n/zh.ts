@@ -137,7 +137,8 @@ export const zh = {
   settings_target_languages_label: '目标语言',
   settings_target_languages_description: '逗号分隔的 BCP-47 代码，如 "zh,en"。未设置时默认为 "zh"。',
   settings_target_languages_save_label: '保存',
-  settings_target_languages_restart_note: '已即时保存，但需要守护进程重启后才会生效——它只在启动时读取一次这项设置。',
+  // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
+  settings_target_languages_restart_note: '下一轮扫描生效。',
 
   settings_hardsub_mode_label: '硬字幕假定',
   settings_hardsub_mode_option_off: '关闭',
@@ -147,8 +148,9 @@ export const zh = {
   settings_rescue_officer_pending_note: '已保存，但执行逻辑随救援官战役上线——目前尚未被消费。',
 
   settings_trace_retention_label: '痕迹保留天数',
+  settings_trace_retention_note: '每日痕迹清理时生效。',
   settings_scan_interval_label: '扫描间隔（毫秒）',
-  settings_backend_unconsumed_note: '已保存，但后端目前尚未读取此项——当前不会产生任何效果。',
+  settings_scan_interval_note: '下一个守护进程心跳生效。',
 
   settings_save_error_prefix: '保存失败：',
 

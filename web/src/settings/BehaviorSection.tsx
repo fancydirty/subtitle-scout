@@ -4,9 +4,8 @@
 // Empty/Error 三态每屏全覆盖），local 是这份状态的唯一写手——settings hook 的 data 只作首载
 // 种子，之后每次单键 PUT 成功都直接拿响应体覆盖 local，不需要重新 GET。
 //
-// 已知债务如实标注（DESIGN.md §8）：target_languages 改后需守护进程重启才生效（只在启动时读
-// 一次）；hardsub_mode/exclude_extras 已保存但执行逻辑随救援官战役上线；trace_retention_days/
-// scan_interval_ms 此刻完全没有被任何代码路径读取——四条注记各自诚实，不共用一句糊弄过去。
+// 已知债务如实标注（DESIGN.md §8）：target_languages/scan_interval_ms/trace_retention_days 已真
+// 消费；hardsub_mode/exclude_extras 已保存但执行逻辑随救援官战役上线——两条注记各自诚实，不共用一句糊弄过去。
 import { useEffect, useRef, useState } from 'react'
 import { Text } from '@astryxdesign/core/Text'
 import { TextInput } from '@astryxdesign/core/TextInput'
@@ -249,7 +248,7 @@ export function BehaviorSection({ settings }: Props) {
           settingKey="trace_retention_days"
           label={t('settings_trace_retention_label')}
           placeholder={PLACEHOLDER_TRACE_RETENTION_DAYS}
-          note={t('settings_backend_unconsumed_note')}
+          note={t('settings_trace_retention_note')}
         />
         <NumberSettingRow
           settings={local}
@@ -257,7 +256,7 @@ export function BehaviorSection({ settings }: Props) {
           settingKey="scan_interval_ms"
           label={t('settings_scan_interval_label')}
           placeholder={PLACEHOLDER_SCAN_INTERVAL_MS}
-          note={t('settings_backend_unconsumed_note')}
+          note={t('settings_scan_interval_note')}
         />
       </VStack>
     </section>

@@ -46,7 +46,7 @@ function renderSection(settings: Async<SettingsDTO>) {
 }
 
 describe('BehaviorSection：null 值默认占位', () => {
-  it('target_languages 空占位=zh；hardsub_mode 默认选中 agent；重启注记在场', () => {
+  it('target_languages 空占位=zh；hardsub_mode 默认选中 agent；生效注记在场', () => {
     renderSection(asyncOf(NULL_SETTINGS))
 
     const input = screen.getByRole('textbox', { name: 'Target languages' })
@@ -56,7 +56,7 @@ describe('BehaviorSection：null 值默认占位', () => {
     expect(mode.textContent).toContain('Agent')
 
     expect(
-      screen.getByText('Saved immediately, but only takes effect after the daemon restarts — it reads this setting once at startup.'),
+      screen.getByText('Takes effect on the next library scan.'),
     ).toBeInTheDocument()
 
     const excludeExtras = screen.getByRole('switch', { name: 'Exclude extras' })
@@ -67,13 +67,16 @@ describe('BehaviorSection：null 值默认占位', () => {
     const scanInterval = screen.getByRole('spinbutton', { name: 'Scan interval (ms)' })
     expect(scanInterval).toHaveAttribute('placeholder', '900000')
 
-    // hardsub_mode/exclude_extras 共用救援官注记；trace/scan 共用"未消费"注记——各出现两次。
+    // hardsub_mode/exclude_extras 共用救援官注记；trace/scan 各有独立生效注记。
     expect(
       screen.getAllByText('Saved, but the execution logic ships with the rescue-officer campaign — not consumed yet.'),
     ).toHaveLength(2)
     expect(
-      screen.getAllByText('Saved, but not read by the backend yet — this value has no effect currently.'),
-    ).toHaveLength(2)
+      screen.getByText('Takes effect at the daily trace cleanup.'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('Takes effect on the next daemon tick.'),
+    ).toBeInTheDocument()
   })
 
   it('已设置值原样回显（非默认占位）', () => {

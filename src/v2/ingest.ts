@@ -35,8 +35,11 @@ export interface IngestDeps {
   fileExists?: (p: string) => boolean
   /** 测试注入点；默认 node:fs statSync 包一层 try/catch（失败→null）。 */
   statFile?: (p: string) => { mtimeMs: number; size: number } | null
-  targetLanguages: string[]
-  originSkipLanguages?: string[]
+  /** 债务D5：target_languages/origin_skip_languages 提供者化——每轮 pass 起点才新鲜求值
+   *  （dashboard G4 roots 同款手法）。设置页改 target_languages 后，下一轮扫描即生效；
+   *  find_subtitle worker 的每次派发也独立覆写，无需重启 watch 进程。 */
+  targetLanguages: () => string[]
+  originSkipLanguages?: () => string[]
   log: (msg: string) => void
   now?: () => number
 }
@@ -330,10 +333,12 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
   const listVideoFiles = deps.listVideoFiles ?? walkVideoFiles
   const fileExists = deps.fileExists ?? ((p: string) => existsSync(p))
   const statFile = deps.statFile ?? defaultStatFile
-  const originSkipLanguages = deps.originSkipLanguages ?? deps.targetLanguages
-  const { lib, tmdb, targetLanguages, log } = deps
+  const { lib, tmdb, log } = deps
 
   return async function ingestPass(): Promise<IngestResult> {
+    // 债务D5：语言配置每轮 pass 新鲜求值——设置页改 target_languages 后下一轮扫描即生效。
+    const targetLanguages = deps.targetLanguages()
+    const originSkipLanguages = deps.originSkipLanguages?.() ?? targetLanguages
     ingestLock.held = true
     try {
       const nowMs = deps.now ? deps.now() : Date.now()

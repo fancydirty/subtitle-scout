@@ -173,10 +173,9 @@ export const en = {
   settings_target_languages_label: 'Target languages',
   settings_target_languages_description: 'Comma-separated BCP-47 codes, e.g. "zh,en". Unset defaults to "zh".',
   settings_target_languages_save_label: 'Save',
-  // 已知债务如实标注（DESIGN.md §8）：改后需守护进程重启才生效——它只在启动时读取一次，
-  // 不许假装即时生效。
+  // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
   settings_target_languages_restart_note:
-    'Saved immediately, but only takes effect after the daemon restarts — it reads this setting once at startup.',
+    'Takes effect on the next library scan.',
 
   settings_hardsub_mode_label: 'Hardsub assumption',
   settings_hardsub_mode_option_off: 'Off',
@@ -189,10 +188,9 @@ export const en = {
     'Saved, but the execution logic ships with the rescue-officer campaign — not consumed yet.',
 
   settings_trace_retention_label: 'Trace retention (days)',
+  settings_trace_retention_note: 'Takes effect at the daily trace cleanup.',
   settings_scan_interval_label: 'Scan interval (ms)',
-  // trace_retention_days / scan_interval_ms：这两个 settings 键此刻没有任何代码路径读取
-  // （见 web/src/settings/text.ts 顶部注释的代码溯源），如实标注，不假装生效。
-  settings_backend_unconsumed_note: 'Saved, but not read by the backend yet — this value has no effect currently.',
+  settings_scan_interval_note: 'Takes effect on the next daemon tick.',
 
   settings_save_error_prefix: "Couldn't save: ",
 
