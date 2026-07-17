@@ -301,3 +301,52 @@ spec=2026-07-16-dashboard-rebuild-design.md；宪法=web/DESIGN.md；F0 裁决�
 
 **K3 执行器第二役战报**：7 派单全部一次交付零返工（对比验收轮一的两次溜号），任务书"自带全上下文
 +强制汇报格式"纪律显效；两处自主偏离（D2 探针编码、D3 router.test 涟漪修复）皆正确且如实申报。
+
+## 十、救援官战役收官报告（R1-R6 · 主控+K3 执行器，2026-07-18 凌晨）
+
+**背景**：spec=docs/design/2026-07-17-rescue-officer-design.md；四战役队列第二役，紧接债务清扫波（登记册 §九）。执行纪律沿用：K3（opencode company/kimi-k3）一单一件+任务书全上下文自带，主控逐 diff 亲核+亲跑测试；`src/agent/skills/` 改动=主控亲笔铁律；`realignExecutor.ts` 圣文件恒禁触（本役一次单字段类型加字段例外，同 imdbId 先例）。
+
+### 六单落地
+
+- **R1**（1e08aff）：机械层管道——mapper 按目录分组备料（duplicate-content/excluded-extra 过滤，谓词 `isRescueEligible` 单源）、ffprobe 时长探针、runner 三桶收割（trace 排空纪律逐形照 find-subtitle 先例）。
+- **R2**：rescueSkill 判断纪律主控亲笔（8af2576，双证据门槛/宁停不猜/特典灰区 S0-or-15min/finalize 单一生效通道——决策工具只验证登记不落库，agent 中途死掉零副作用，主控安全化定夺）+K3 工具面/factory/cmdWatch 路由（82c4448）。
+- **R3**：orchestratorSkill 补 parked 事实块+救援派发礼仪主控亲笔（78cf195，一趟一单/共享 100 预算/识别判断归 worker）+K3 接线（cdfcf2b，`dispatch_rescue_task` 单例身份`rescue-backlog`+B-matrix；熔断重派一次，零脏活）。
+- **R4**：K3 机械铁案层（30719c3，正则红线 SP/OVA/OAD/Special 绝不入表；K3 溜号一次，测试 describe 块错位嵌套，主控 surgical 修复）+**主控亲手**发现并补上翻案死循环坑（e346e82：spec 原案"删 parked 行触发重识别"是 no-op——机械过滤按文件名判定，删了下一轮又命中；独立豁免表 `extras_exemptions` 破局）+K3 翻案箱前端（fb7bfa3）。
+- **R5**：**主控亲手四刀**——schema v15 CHECK 约束建新表重建（e310c5f，SQLite 不能 ALTER CHECK，spec"无新列"低估了难度；自己写的迁移安全性测试当场抓出手抄列表漏了 v10 才加的 search_attempts）/ markHardsubAssumed+CoverageDTO 新桶（0e12991）/ findSubtitleSkill hardsub_assumed 判断段主控亲笔（6c334b7，双证据：括号组名+搜索已穷尽，`hardsubMode==='off'` 时整段文字零"hardsub"字样）/ rule 4b aggressive 档机械直判（e832e66，探针 null≠证据）。+K3 前端主体与主控收尾接线（63841bf：finalize 第四桶/mapper 透传/harvest 路由/cli 派发覆写；K3 该单两次熔断杀死，第二次死前已写 21 web 文件零 commit，验尸只发现一处真错——注册了不合法的 `defineTheme` token，第三方设计系统 TokenName 是封闭枚举，改用 `color-mix` 混两个既有 token 达成同一视觉效果；其余前端工作完整正确直接采用）。
+- **R6**：README 命名最佳实践新节+甄别/设置页文案对齐（0d9e311，含清理孤儿 i18n 键 `settings_rescue_officer_pending_note`）+本节真站验收。
+
+root 1497/web 232 全绿，双侧 tsc 清（每单落地即验，非收官一次性补测）。
+
+### 真站验收（生产容器，2026-07-18 凌晨，用户已授权"可切生产/媒体目录内可折腾"）
+
+**部署**：rsync 全量代码 → `docker compose build && up -d` → schema 迁移 5→7（v14 extras_exemptions + v15 hardsub CHECK 重建）在真实生产库上一次成功，**census 零丢失**（26 剧/408 集/8 影/1 根，与迁移前逐字节一致），CHECK 约束真机验证接受 `hardsub-assumed` 新值。这是本役最高风险操作（两次 12 步建新表重建，episodes 表还有外键），在真实数据上验证通过。
+
+**口径①②（真机停车场跑一轮救援 pass）**：真实 76 条停车（40 duplicate-content 不算/24 ambiguous/12 no-signal），直接构造 `rescue_identify` worker_task（同 `dispatch_rescue_task` 工具同一代码路径，跳过 orchestrator 自主择时）触发真实 agent 跑——5 组：
+- **Peacemaker**（tmdb 110492）单强证据+get_tmdb_details 验证 → 认领 → requestIngest 自动踢扫描 → 3+ 集正确入 S02E0x。
+- **Cassandra**（tmdb 248982，双候选辨识后选中年份匹配的一个）→ 认领 → 6 集正确入 S01E01-06。
+- **The Fantastic 4 - First Steps**（tmdb 617126）→ 认领 → 电影正确入库，探针命中 embedded。
+- **High School D×D**（tmdb 45950）→ agent 正确识别出"是哪部剧"（search 三次改写查询词验证），但**未指定季**去认领——P7 disambiguation 守卫接管，12 个 Hero 文件从 `no-signal` 转 `override-ambiguous-numbering` 诚实停留，不是错误，是"识别出剧、季留给人工"的正确谦逊（当年 Prickly Heat/24240 悬案的反面教材在此正面验证：宁可少做一步也不猜错）。
+- **The Astronaut (2025)**：TMDB 上真有两部同名 2025 电影，agent 正确识别出冲突并 keep_parked——**发现一处真实质量瑕疵**：agent 在中间 `keep_parked` 工具调用时写了丰富理由（"Multiple 2025 movies with the same title on TMDB..."），但最终 `finalize` 报告里对同一目录的 reason 退化成了机械层原有的"ambiguous"三字——skill 只教"repeating the decisions you recorded"，没强制"逐字复制"，模型有权限但没照做。**功能安全性未受影响**（没有误认领、没有死循环），是文案质量而非正确性问题，留作 skill 未来润色项，已如实记录不掩盖。
+
+**口径③（特典排除开关）**：真实媒体库扫描确认零 NC 类文件存量（用户库很干净）——无法用真数据演示。改用用户已授权的媒体目录内合成文件测试：`/media/tv/ZZ-Rescue-Test-Synthetic/` 隔离目录放一个真实 `[TestGroup] Synthetic Show - NCOP01.mkv`（ffmpeg 生成的合法最小 MKV），打开 `exclude_extras` 设置，下一轮 ingest **通过** ✓——机械铁案层正确将其 park 成 `excluded-extra`（词边界正则命中 NCOP，归甄别页 Excluded extras 箱）。
+
+**口径④（hardsub 三档）**：aggressive 档机械直判。首次合成测试暴露一个测试设计教训（如实记录）：rule 4b 活在 `classify()` 里，只对 `recognize()` 识别成功的文件运行——用 TMDB 认不出的假剧名做测试，文件在识别阶段就 park 成 no-match，根本到不了 rule 4b（这是正确行为：没有 episodes 行就无处写 hardsub-assumed 状态，hardsub-assumed 是 recognized 文件的一种覆盖态）。改用真实可识别剧名（`[TestGroup] Dandadan S01E01.mkv`，TMDB 240411）+ 发布组标记 + ffprobe 确认零字幕流 + aggressive 档重测，下一轮 ingest **通过** ✓——episodes 行落 `sub_status='hardsub-assumed'`，status_reason 精确为"aggressive 档机械直判：发布组标记 + 探针确认零内嵌字幕轨"。（rule 4b 逻辑本身已被 6 条单测穷尽覆盖，含探针 null≠证据、有内嵌轨则 rule2 优先等边界。）
+
+### 真站验收总账
+
+四条口径全部真站通过。验收后 census 从迁移前 26 剧/408 集/8 影**合理增长**到 28/430/9——增量全部是救援 pass 真实认领入库的内容（Peacemaker +16 集、Cassandra +6 集、The Fantastic Four First Steps +1 电影），不是测试残留。两个隔离合成测试目录（ZZ-Rescue-Test-Synthetic / Dandadan 2024）+ 合成产生的 series/episodes/parked/exemption 行全部清理干净（residue 三处查零），我为测试临时打开的 `exclude_extras`/`hardsub_mode` 两设置已复位到未设置态（用户没主动配过，恢复测试前状态）。High School D×D 12 集仍正确停在 `override-ambiguous-numbering`（识别出剧、季待人工）。
+
+**辐射范围核查**：本次真站验收全程仅动 subtitle-scout 容器 + 两个隔离合成测试目录（用后即删）+ 我临时改的两个测试设置（已复位），Jellyfin 容器与用户真实媒体文件全程零触碰。
+
+**救援官战役至此收官**：R1-R6 六单落地，四条真站口径全绿，双侧 1497+232 测试全绿。下一役=重复源 P1-P5。
+
+### K3 三役战报（R1-R5 累计）
+
+多次熔断杀死（会话外部因素，非任务本身问题）但**零脏活损失**——被杀单要么零 commit（探索阶段），要么留下可修的小错（一次 describe 嵌套错位、一次非法主题 token），从未留下语义错误或已提交的半成品破坏代码正确性。派单节奏=主控趁跑单预写下张任务书，零空转；被杀单=原样重派或主控直接续完，视剩余量取舍。
+
+### 登记
+
+- **待办**：重复源 P1-P5 → 鉴权 A1-A4（specs 已在册，计划本地未入库）。
+- **技术债**：Astronaut 案例暴露的 finalize-reason 与 tool-call-reason 一致性未强制，留给未来 skill 润色（非阻塞项）。
+- **辐射范围核查**：本次真站验收全程仅动 subtitle-scout 容器+两个隔离合成测试目录，Jellyfin 容器与真实媒体文件全程零触碰。
+
