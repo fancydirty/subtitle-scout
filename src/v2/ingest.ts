@@ -13,6 +13,7 @@ import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { Recognized, Park } from '../recognition/index.js'
 import { isCanonicalEpisodePath } from '../recognition/identifyFromPath.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
+import { propagateSubtitleToReplica } from './subtitlePropagation.js'
 
 /**
  * 去 Jellyfin 化 P3（design: docs/design/2026-07-16-de-jellyfin-design.md §P3）的核心：
@@ -32,6 +33,10 @@ export interface IngestDeps {
   /** 调用方预绑定好 tmdb + findOverride（recognition/index.ts 的 recognize 签名）。 */
   recognize: (videoPath: string) => Promise<Recognized | Park>
   probe: (videoPath: string) => Promise<EmbeddedSubtitleTrack[] | null>
+  /** 重复源 P4b（"复制优先"机械通道，v2/subtitlePropagation.ts）：探测一个视频的时长（秒），
+   *  失败（ffprobe 缺席/超时/非视频）返回 null——同 probe 一样，调用方永远显式提供，测试永远
+   *  注入固定值/null，从不在测试里真的 spawn ffprobe。 */
+  probeDuration: (videoPath: string) => Promise<number | null>
   /** 默认 daemon/selfScan.ts 导出的 walkVideoFiles（B1 的同一份遍历实现，见该文件顶部注释）。 */
   listVideoFiles?: (root: string) => string[]
   fileExists?: (p: string) => boolean
@@ -547,6 +552,12 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 lib.addItemFile(ownEpisodeId, path, nowMs)
                 lib.clearParkedPath(path)
                 result.changed = true
+                // 重复源 P4b："复制优先"机械通道——主文件已有字幕、这个副本还没有，时长够接近就
+                // 直接复制装上（详见 subtitlePropagation.ts 头注释）。best-effort：探测/复制失败
+                // 只落 log，绝不抛出打断这一轮扫描剩下的文件。
+                await propagateSubtitleToReplica(
+                  { lib, probeDuration: deps.probeDuration, log }, ownEpisodeId, priorEpisode.path, path, nowMs,
+                )
                 continue
               }
 
@@ -638,6 +649,10 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 lib.addItemFile(ownMovieId, path, nowMs)
                 lib.clearParkedPath(path)
                 result.changed = true
+                // 重复源 P4b：同 TV 分支（见其注释）。
+                await propagateSubtitleToReplica(
+                  { lib, probeDuration: deps.probeDuration, log }, ownMovieId, priorMovie.path, path, nowMs,
+                )
                 continue
               }
 

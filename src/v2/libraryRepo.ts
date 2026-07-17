@@ -787,6 +787,24 @@ export class LibraryRepo {
     return rows as Array<{ id: number; path: string; language: string }>
   }
 
+  /** 重复源 P4b（"复制优先"机械通道，v2/subtitlePropagation.ts 的唯一写口）：给一个具体副本文件
+   *  挂一行字幕账——file_path 恒指向该副本自己的 path（永不是 NULL，NULL 是主文件的兼容语义，
+   *  见 listSubtitlesForFile 头注释）。ON CONFLICT(item_id, path) DO NOTHING 同 markCovered 的
+   *  既有写法：目标 path 是按副本 basename+langTag 派生的确定性文件名，重复调用（ingest 每轮都
+   *  可能重新命中这个 hook，见 subtitlePropagation.ts 的幂等前置检查）天然幂等，这里的 ON
+   *  CONFLICT 只是同一份防御性兜底，不承担主要幂等责任。不动 episodes/movies.sub_status——
+   *  副本覆盖从来只由 subtitles.file_path 是否存在对应行反映（itemFileCoverage 头注释），没有
+   *  独立状态列要更新。 */
+  addReplicaSubtitle(itemId: string, filePath: string, subtitlePath: string, language: string, source: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO subtitles (item_id, path, language, source, file_path, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(item_id, path) DO NOTHING`
+      )
+      .run(itemId, subtitlePath, language, source, filePath, now)
+  }
+
   // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----
 
   /** P6 手工认领写入：ON CONFLICT 幂等更新（同一前缀重新认领覆盖旧值）。P7：新增可选 season

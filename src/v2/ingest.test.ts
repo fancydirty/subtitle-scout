@@ -75,6 +75,9 @@ function makeDeps(over: Partial<IngestDeps> = {}): IngestDeps {
     tmdb: fakeTmdb(),
     recognize: vi.fn(async (): Promise<Recognized | Park> => tvResult()),
     probe: vi.fn(async (): Promise<EmbeddedSubtitleTrack[] | null> => []),
+    // 重复源 P4b：默认 null——从不在测试里真的 spawn ffprobe（同 probe 的既有约定），需要机械
+    // 复制通道真正触发的测试自己覆写。
+    probeDuration: vi.fn(async (): Promise<number | null> => null),
     listVideoFiles: () => [],
     fileExists: () => false,
     statFile: () => null,
@@ -729,6 +732,79 @@ describe('makeIngestPass — duplicate identity → item_files 副本入册（�
     expect(ep).not.toBeNull()
     expect(ep!.path).toBe(survivingReplica)
     expect(lib.listItemFiles('tmdb:1/s1e1')).toEqual([])
+  })
+
+  // 重复源 P4b："复制优先"机械通道接线验证——只验证 ingest.ts 在 addItemFile 分支正确调用
+  // propagateSubtitleToReplica（正确的 itemId/mainPath/replicaPath），不重新验证复制/时长判断
+  // 本身的逻辑（那部分已经在 subtitlePropagation.test.ts 用真实临时文件+真实 DB 独立覆盖）。
+  it('TV 副本入册时，若主文件已有字幕，会用主副两个 path 调用 probeDuration（复制优先通道被正确触发）', async () => {
+    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
+    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathMain, 5000, 111)
+    disk.setVideo(pathDup, 5000, 222)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+    // 主文件已有一份字幕（无 file_path=挂主文件，既有兼容语义）。
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:1/s1e1', '/media/Show/Season 1/ep1-main.zh-Hans.srt', 'zh-Hans', 'scout-download', 1000)
+
+    const probeDuration = vi.fn(async () => null) // 虚拟磁盘上没有真实视频文件——探测失败即可，只看接线
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+      probeDuration,
+    }))()
+
+    expect(probeDuration).toHaveBeenCalledWith(pathMain)
+    expect(probeDuration).toHaveBeenCalledWith(pathDup)
+  })
+
+  it('movie 副本入册时同理会触发复制优先通道的探测调用', async () => {
+    const pathA = '/media/Movies/Hero (2002).mkv'
+    const pathB = '/media/Movies (dup)/Hero (2002) [1080p].mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathA, 5000, 111)
+    disk.setVideo(pathB, 5000, 222)
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '603' }))
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathA], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:603', '/media/Movies/Hero (2002).zh-Hans.srt', 'zh-Hans', 'scout-download', 1000)
+
+    const probeDuration = vi.fn(async () => null)
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathA, pathB], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+      probeDuration,
+    }))()
+
+    expect(probeDuration).toHaveBeenCalledWith(pathA)
+    expect(probeDuration).toHaveBeenCalledWith(pathB)
+  })
+
+  it('主文件还没有字幕时，副本入册不会触发探测调用（最常见情形，零额外开销）', async () => {
+    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
+    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathMain, 5000, 111)
+    disk.setVideo(pathDup, 5000, 222)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const probeDuration = vi.fn(async () => 1420)
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+      probeDuration,
+    }))
+
+    await pass()
+
+    expect(probeDuration).not.toHaveBeenCalled()
   })
 })
 

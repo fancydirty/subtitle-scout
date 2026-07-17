@@ -115,6 +115,9 @@ function buildIngestPass(opts: {
     tmdb: opts.tmdb,
     recognize: (videoPath: string) => recognize(videoPath, opts.tmdb, { findOverride: (p) => opts.lib.findOverride(p) }),
     probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
+    // 重复源 P4b："复制优先"机械通道（v2/subtitlePropagation.ts）接线——同 realign 那处既有接线
+    // 复用同一个 probeDurationSec，不是新引入的探针实现。
+    probeDuration: (videoPath: string) => probeDurationSec(videoPath),
     targetLanguages: opts.targetLanguages,
     originSkipLanguages: opts.originSkipLanguages,
     excludeExtras: opts.excludeExtras,

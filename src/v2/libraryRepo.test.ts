@@ -641,6 +641,31 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
     it('listSubtitlesForFile：无匹配 → 空数组', () => {
       expect(lib.listSubtitlesForFile('s1/e1', '/media/main.mkv', true)).toEqual([])
     })
+
+    // 重复源 P4b："复制优先"机械通道（v2/subtitlePropagation.ts）的唯一写口。
+    it('addReplicaSubtitle：给副本挂一行字幕账，file_path 指向副本自己的 path——之后 listSubtitlesForFile(isMainFile=false) 能捡到', () => {
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      lib.addReplicaSubtitle('s1/e1', '/media/4k.mkv', '/media/4k.zh-Hans.srt', 'zh-Hans', 'scout-propagate', 2000)
+      const rows = lib.listSubtitlesForFile('s1/e1', '/media/4k.mkv', false)
+      expect(rows).toEqual([{ id: expect.any(Number), path: '/media/4k.zh-Hans.srt', language: 'zh-Hans' }])
+      // 不影响主文件——isMainFile=true 的既有 NULL-兼容语义不该意外捡到副本这行（file_path 精确等于副本自己的 path，不等于主文件 path，也不是 NULL）
+      expect(lib.listSubtitlesForFile('s1/e1', '/media/main.mkv', true)).toEqual([])
+    })
+
+    it('addReplicaSubtitle：不动 episodes/movies.sub_status——副本覆盖只反映在 subtitles.file_path 上', () => {
+      lib.upsertEpisode({ id: 's1/e3', seriesId: 's1', season: 1, episode: 3, name: 'E3', path: '/media/e3-main.mkv', subStatus: 'missing' })
+      lib.addItemFile('s1/e3', '/media/e3-4k.mkv', 1000)
+      lib.addReplicaSubtitle('s1/e3', '/media/e3-4k.mkv', '/media/e3-4k.zh-Hans.srt', 'zh-Hans', 'scout-propagate', 2000)
+      expect(lib.getEpisode('s1/e3')!.sub_status).toBe('missing') // 主文件仍缺口，未被这次副本写入意外改动
+      expect(lib.itemFileCoverage('s1/e3').find((f) => f.path === '/media/e3-4k.mkv')!.covered).toBe(true)
+    })
+
+    it('addReplicaSubtitle：ON CONFLICT(item_id, path) 幂等——同一目标路径重复调用不抛不重复插入', () => {
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      lib.addReplicaSubtitle('s1/e1', '/media/4k.mkv', '/media/4k.zh-Hans.srt', 'zh-Hans', 'scout-propagate', 2000)
+      lib.addReplicaSubtitle('s1/e1', '/media/4k.mkv', '/media/4k.zh-Hans.srt', 'zh-Hans', 'scout-propagate', 3000)
+      expect(lib.listSubtitlesForFile('s1/e1', '/media/4k.mkv', false)).toHaveLength(1)
+    })
   })
 
   describe('identify_overrides', () => {
