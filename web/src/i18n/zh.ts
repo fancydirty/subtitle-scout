@@ -99,8 +99,33 @@ export const zh = {
 
   workflow_mobile_feed_empty: en.workflow_mobile_feed_empty,
 
-  triage_empty_title: '暂无待甄别项',
-  triage_empty_desc: '识别器无法确信归位的文件会停在这里，等待人工认领。',
+  triage_empty_title: '所有文件都已找到归属',
+  triage_empty_desc: '暂时没有需要人工认领的文件——识别器已经确信地归位了每一个文件。',
+  triage_error_prefix: '无法加载甄别队列：',
+  triage_retry_label: '重试',
+
+  triage_pending_heading: '待甄别',
+  triage_claimed_heading: '已认领',
+  triage_claimed_empty_title: '暂无认领记录',
+  triage_claimed_empty_desc: '手动认领一个停车文件后，记录会出现在这里。',
+  triage_claim_selected_label: '认领所选',
+  triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',
+
+  triage_type_tv: '剧集',
+  triage_type_movie: '电影',
+
+  triage_dialog_title: '认领所选文件',
+  triage_search_placeholder: '搜索 TMDB…',
+  triage_search_unreachable: '无法连接 TMDB——你仍可以手动填写 tmdb id',
+  triage_search_no_results: '无匹配结果',
+  triage_tmdbid_label: 'TMDB ID',
+  triage_season_label: '季',
+  triage_season_placeholder: 'auto',
+  triage_submit_label: '认领',
+  triage_cancel_label: '取消',
+  triage_close_label: '关闭',
+  triage_results_heading: '结果',
+  triage_partial_failure_desc: '部分认领失败——请查看下方结果。',
 
   settings_empty_title: '设置页即将上线',
   settings_empty_desc: '媒体根目录、目标语言与部署信息将会集中呈现在这里。',

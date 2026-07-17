@@ -193,6 +193,34 @@ export interface RedispatchInput {
   includeThrottled?: boolean
 }
 
+/** dashboard-F5：GET /api/v2/triage 响应体——已认领 override 清单，与 src/dashboard/apiV2.ts 的
+ *  ClaimedOverrideDTO 一族保持一致（identify_overrides 全行直译）。 */
+export interface ClaimedOverrideDTO {
+  pathPrefix: string
+  tmdbId: string
+  isTv: boolean
+  season: number | null
+  createdAt: number
+}
+/** dashboard-F5：GET /api/v2/triage 响应体——甄别台一页看全"待认领"（pending，转发
+ *  buildParked）与"已认领"（claimed）两份事实，与 src/dashboard/apiV2.ts 的 TriageDTO 一致。 */
+export interface TriageDTO {
+  pending: ParkedItemDTO[]
+  claimed: ClaimedOverrideDTO[]
+}
+
+/** dashboard-F5：GET /api/v2/tmdb/search 响应体——ClaimDialog 的 TMDB 搜索代理（只读）。字段名
+ *  对齐 server.ts 独立分支的映射（TmdbSearchHit.title → name，见该文件该端点注释）。 */
+export interface TmdbSearchResultDTO {
+  id: number
+  name: string
+  year: number | null
+  posterPath: string | null
+}
+export interface TmdbSearchResponseDTO {
+  results: TmdbSearchResultDTO[]
+}
+
 /** dashboard-F3：GET /api/v2/library/series/:id 响应体——三层格阵合并详情（canonical ∪ 磁盘 ∪
  *  覆盖），与 src/dashboard/apiV2.ts 的 LibrarySeriesDetailDTO 一族保持一致。 */
 export interface LibrarySeriesSummaryDTO {

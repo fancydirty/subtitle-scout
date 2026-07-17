@@ -568,3 +568,215 @@
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/* dashboard-F5（Triage tab）：两箱 + 认领对话框——原子 CSS 集中区，同上面几段一样的理由
+   （mono 路径行/箱内密集行/进度行是"组件语言表达不了"的技术级原子 UI），颜色一律读 scout.ts
+   已定义的 token，不新起配色（DESIGN.md §10）。 */
+
+/* ---- 两箱布局（TriagePage）——桌面双列（中间给未来 excluded-extra 箱留的是代码位不是视觉
+   空位，见 TriagePage.tsx 头注释），窄屏单列堆叠。 ---- */
+.triage-boxes {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 767px) {
+  .triage-boxes {
+    grid-template-columns: 1fr;
+  }
+}
+.triage-box {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element, 8px);
+  background: var(--color-background-card);
+  padding: 14px;
+  min-width: 0;
+}
+
+/* ---- 待甄别箱行（PendingBox）---- */
+.triage-pending-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  background: var(--color-background-surface);
+  padding: 8px 10px;
+  min-width: 0;
+}
+.triage-pending-row-path {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+.triage-pending-row-reason {
+  font-size: 11px;
+  color: var(--color-text-gray);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+/* 改名指引——箱底常驻灰字一条；路径形状本身 mono（技术值，DESIGN.md §3）。 */
+.triage-naming-hint {
+  font-size: 11px;
+  color: var(--color-text-gray);
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+.triage-naming-hint-code {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-secondary);
+}
+
+/* ---- 已认领箱行（ClaimedBox）——只读，一行读完：prefix → tmdbId + 词 + S{n} + 时间。 ---- */
+.triage-claimed-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 2px;
+  font-size: 11.5px;
+  min-width: 0;
+}
+.triage-claimed-prefix {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.triage-claimed-arrow {
+  color: var(--color-text-disabled);
+  flex-shrink: 0;
+}
+.triage-claimed-tmdbid {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+.triage-claimed-kind {
+  font-size: 11px;
+  color: var(--color-text-gray);
+  flex-shrink: 0;
+}
+.triage-claimed-season {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+.triage-claimed-time {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--color-text-gray);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* ---- 认领对话框（ClaimDialog）---- */
+.triage-dialog-path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  background: var(--color-background-surface);
+  padding: 8px 10px;
+}
+.triage-dialog-path-item {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.triage-dialog-more {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-gray);
+}
+.triage-dialog-more:hover {
+  color: var(--color-text-secondary);
+}
+.triage-dialog-more:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.triage-search-poster {
+  width: 32px;
+  height: 46px;
+  flex-shrink: 0;
+  border-radius: var(--radius-inner, 4px);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+}
+.triage-search-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.triage-search-poster .library-poster-fallback {
+  font-size: 14px;
+}
+
+/* ---- 提交进度行（逐 path ✓/✗+error）---- */
+.triage-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  min-width: 0;
+}
+/* 状态词——同色词（DESIGN.md §4：圆点+一个同色词；语义色只给状态，pending=中性灰）。 */
+.triage-progress-word {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
+.triage-progress-word-pending {
+  color: var(--color-text-gray);
+}
+.triage-progress-word-ok {
+  color: var(--color-text-green);
+}
+.triage-progress-word-error {
+  color: var(--color-text-red);
+}
+.triage-progress-path {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 45%;
+}
+.triage-progress-error {
+  font-size: 10.5px;
+  color: var(--color-text-red);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}

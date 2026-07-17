@@ -3,6 +3,7 @@ import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
   ParkedItemDTO, ClaimParkedInput, WorkflowPendingDTO, LibrarySeriesDetailDTO,
   WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
+  TriageDTO, TmdbSearchResponseDTO,
 } from './types.js'
 
 const token = (): string | null => new URLSearchParams(location.search).get('token')
@@ -79,4 +80,15 @@ export const api = {
   // dashboard-F4：人类扳手①——手动重派。四态回执（created/revived/coalesced/blocked_dormant）
   // 都是 200，post() 的既有错误分支只在 zod 校验失败（400）/未配置（503）时触发。
   redispatch: (input: RedispatchInput) => post<RedispatchOutcomeDTO>('/api/v2/workflow/redispatch', input),
+  // dashboard-F5：甄别台——pending+claimed 一次性查询（ClaimDialog 提交成功后由调用方手动
+  // reload，同 useParked 的既有轮询口径：认领是低频动作，不值得为它常驻轮询）。
+  triage: (signal?: AbortSignal) => get<TriageDTO>('/api/v2/triage', signal),
+  // dashboard-F5：人类扳手②——甄别认领。与 claimParked 是同一个后端实现的第二个入口（见
+  // src/dashboard/server.ts 的既有注释），这里单独开一个 client 函数指向 v2 路径，跟其余
+  // v2 端点的命名口径一致，不复用旧 /api/parked/claim 那个一次性脚手架入口。
+  claimTriage: (input: ClaimParkedInput) => post<{ ok: true }>('/api/v2/triage/claim', input),
+  // dashboard-F5：ClaimDialog 的 TMDB 搜索代理（只读）——type 与 q 都做 URI 编码，q 可能含
+  // CJK/空格/斜杠等需要转义的字符。
+  tmdbSearch: (type: 'tv' | 'movie', q: string, signal?: AbortSignal) =>
+    get<TmdbSearchResponseDTO>(`/api/v2/tmdb/search?type=${encodeURIComponent(type)}&q=${encodeURIComponent(q)}`, signal),
 }

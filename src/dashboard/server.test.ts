@@ -13,7 +13,8 @@ import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { startDashboard } from './server.js'
 import { traceBus, type TraceEvent } from './traceBus.js'
 
-type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes'>
+// dashboard-F5：'search' 加入 Pick——GET /api/v2/tmdb/search 的 fake tmdb 注入复用同一个类型。
+type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
 
 let server: Server | undefined
 let db: ScoutDb
@@ -667,10 +668,54 @@ describe('startDashboard (v2)', () => {
         const tmdbStub: FakeTmdb = {
           getSeasonTable: async () => [{ seasonNumber: 1, episodeCount: 1, airDate: null }],
           getSeasonEpisodes: async () => [{ episode: 1, title: 'Ep1' }],
+          search: async () => [],
         }
         const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
         const res = await fetch(`${base}/api/v2/library/series/s1`)
         expect(res.status).toBe(200)
+      })
+    })
+
+    describe('GET /api/v2/tmdb/search（dashboard-F5：ClaimDialog 的 TMDB 搜索代理）', () => {
+      it('转调 tmdb.search，结果映射成 {id,name,year,posterPath}（形状）', async () => {
+        const tmdbStub: FakeTmdb = {
+          getSeasonTable: async () => [],
+          getSeasonEpisodes: async () => [],
+          search: async (mediaType, query) => {
+            expect(mediaType).toBe('tv')
+            expect(query).toBe('进击的巨人')
+            return [{ id: 1429, title: 'Attack on Titan', originalTitle: '進撃の巨人', year: 2013, posterPath: '/p.jpg' }]
+          },
+        }
+        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
+        const res = await fetch(`${base}/api/v2/tmdb/search?q=${encodeURIComponent('进击的巨人')}&type=tv`)
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ results: [{ id: 1429, name: 'Attack on Titan', year: 2013, posterPath: '/p.jpg' }] })
+      })
+
+      it('tmdb 未配置 → 503（照 reconcile-all 先例）', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv`)
+        expect(res.status).toBe(503)
+      })
+
+      it('q 缺失 / type 非法 → 400', async () => {
+        const tmdbStub: FakeTmdb = { getSeasonTable: async () => [], getSeasonEpisodes: async () => [], search: async () => [] }
+        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
+        expect((await fetch(`${base}/api/v2/tmdb/search?type=tv`)).status).toBe(400)
+        expect((await fetch(`${base}/api/v2/tmdb/search?q=x&type=bogus`)).status).toBe(400)
+      })
+
+      it('tmdb.search 抛错 → 502（瞬时故障如实转告，不吞成空结果）', async () => {
+        const tmdbStub: FakeTmdb = {
+          getSeasonTable: async () => [],
+          getSeasonEpisodes: async () => [],
+          search: async () => { throw new Error('network blew up') },
+        }
+        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
+        const res = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv`)
+        expect(res.status).toBe(502)
+        expect(await res.json()).toEqual({ error: 'tmdb search failed' })
       })
     })
 

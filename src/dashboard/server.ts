@@ -36,8 +36,10 @@ export interface DashboardOpts {
   jobs?: Pick<JobsRepo, 'upsertWorkerTask'>
   /** dashboard G5：GET /api/v2/library/series/:id 命中时的惰性 TMDB 应有集缓存刷新（G2 遗留的
    *  触发点）——undefined（TMDB_API_KEY 未配置）时跳过，端点本身照常返回磁盘现状，不因为缺
-   *  TMDB 而报错。 */
-  tmdb?: Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes'>
+   *  TMDB 而报错。
+   *  dashboard-F5：'search' 供 GET /api/v2/tmdb/search（ClaimDialog 的只读搜索代理）转调——
+   *  同一个 tmdb 依赖，缺席时两个消费点各自独立降级（这里 503，series/:id 那边跳过刷新）。 */
+  tmdb?: Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -340,6 +342,55 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           clearInterval(heartbeat)
           unsubscribe()
         })
+        return
+      }
+
+      // dashboard-F5：GET /api/v2/tmdb/search?q=…&type=tv|movie——ClaimDialog 的 TMDB 搜索代理
+      // （只读）。独立分支（不是 router.ts 纯函数）：需要 await tmdb.search，同
+      // reconcile-all/redispatch 先例——method 门 → token 门 → tmdb 缺席门（503，同 reconcile-all
+      // 缺 TMDB_API_KEY 的既有先例）→ query 校验 → 转调真实 TmdbClient.search，结果映射成
+      // {results:[{id,name,year,posterPath}]}（TmdbSearchHit.title → name，对齐 ClaimDialog
+      // "海报缩略+名+年份"的呈现用词）。tmdb.search 本身失败（网络/超时/非 2xx，
+      // TmdbRequestFailedError）如实报 502，不吞成空结果数组——瞬时故障要如实转告使用者
+      // （DESIGN.md §8：数据诚实），不能让"TMDB 抽风"和"真的查无结果"在 UI 上长一个样。
+      if (rawPath === '/api/v2/tmdb/search') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        if (!tmdb) {
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'tmdb search not configured (TMDB_API_KEY missing?)' }))
+          return
+        }
+        const q = url.searchParams.get('q')
+        if (!q) {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'q query param is required' }))
+          return
+        }
+        const mediaType = url.searchParams.get('type')
+        if (mediaType !== 'tv' && mediaType !== 'movie') {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: "type must be 'tv' or 'movie'" }))
+          return
+        }
+        try {
+          const hits = await tmdb.search(mediaType, q)
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({
+            results: hits.map((h) => ({ id: h.id, name: h.title, year: h.year, posterPath: h.posterPath })),
+          }))
+        } catch {
+          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'tmdb search failed' }))
+        }
         return
       }
 

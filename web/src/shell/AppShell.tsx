@@ -10,6 +10,10 @@
 // 自己发三个请求（workflow/pending 复用上面这一份、workflow/passes、workflow/workers），
 // 不像 Library 详情那样需要 Shell 这一层协调共享——三份数据只服务 Workflow 区自己，跟 Topbar/
 // Sidebar 无关，因此整个组件收在 workflow/Lanes.tsx 内部自洽。
+//
+// dashboard-F5：Triage tab 落地为真页面（TriagePage：两箱 + 认领对话框），同 Lanes 的自洽
+// 口径——自己发 GET /api/v2/triage，跟外壳共享的只有侧栏角标（那份 parked 计数来自
+// workflow/pending，不是 triage 端点，两者的数据源不同步是可接受的：15s 轮询 vs 手动 reload）。
 import { useState } from 'react'
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell'
 import { useWorkflowPending, useLibrarySeriesDetail } from '../api/hooks.js'
@@ -22,6 +26,7 @@ import { PlaceholderTab } from './PlaceholderTab.js'
 import { SeriesGrid } from '../library/SeriesGrid.js'
 import { SeriesPage } from '../library/SeriesPage.js'
 import { Lanes } from '../workflow/Lanes.js'
+import { TriagePage } from '../triage/TriagePage.js'
 
 export function Shell() {
   const route = useShellRoute()
@@ -59,9 +64,7 @@ export function Shell() {
             <SeriesGrid />
           ))}
         {route.tab === 'workflow' && <Lanes />}
-        {route.tab === 'triage' && (
-          <PlaceholderTab title={t('triage_empty_title')} description={t('triage_empty_desc')} />
-        )}
+        {route.tab === 'triage' && <TriagePage />}
         {route.tab === 'settings' && (
           <PlaceholderTab title={t('settings_empty_title')} description={t('settings_empty_desc')} />
         )}

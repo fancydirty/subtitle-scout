@@ -52,6 +52,10 @@ function standardHandlers() {
     // （见 Lanes.tsx 的 allEmpty：三份 data 都要非 null 才判定为空）。
     { path: '/api/v2/workflow/passes', body: [] },
     { path: '/api/v2/workflow/workers', body: { running: [], recent: [] } },
+    // dashboard-F5：TriagePage（Triage tab 真页面）挂载即打 /api/v2/triage——同上面 passes/
+    // workers 的既有理由：F4 及以前 Triage 还是占位态不发请求，现在不给会 404 → error 态，
+    // 下面"切到 Triage tab 看空态"的断言永远等不到。
+    { path: '/api/v2/triage', body: { pending: [], claimed: [] } },
   ]
 }
 
@@ -95,7 +99,8 @@ describe('App 外壳冒烟', () => {
     expect(screen.queryByText('No library yet')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: /^Triage/ }))
-    await waitFor(() => expect(screen.getByText('Nothing parked')).toBeInTheDocument())
+    // dashboard-F5：Triage 真页面的待甄别箱空态（好事文案，见 i18n triage_empty_title）。
+    await waitFor(() => expect(screen.getByText('Every file found its identifier')).toBeInTheDocument())
     expect(location.hash).toBe('#/triage')
   })
 

@@ -110,9 +110,39 @@ export const en = {
 
   workflow_mobile_feed_empty: 'No workflow activity yet.',
 
-  // Triage tab 占位。
-  triage_empty_title: 'Nothing parked',
-  triage_empty_desc: 'Files the recognizer could not place with confidence will wait here for a manual claim.',
+  // Triage tab（甄别，dashboard-F5）——正常双语区（DESIGN.md §7 只豁免 Workflow 区）。
+  // 待甄别箱空态是好消息——"identifier 全部归位"方向写，不是"这里本来会显示什么"式说明
+  // （triage_empty_title/desc 这两个键最早是 F2 占位期借用的，F5 填肉后原样留作真实空态用，
+  // 同 library_empty_title 在 F3 落地时的既有先例）。
+  triage_empty_title: 'Every file found its identifier',
+  triage_empty_desc: 'Nothing needs a manual claim right now — the recognizer placed every file with confidence.',
+  triage_error_prefix: "Couldn't load the triage queue: ",
+  triage_retry_label: 'Retry',
+
+  triage_pending_heading: 'Pending',
+  triage_claimed_heading: 'Claimed',
+  triage_claimed_empty_title: 'No claims yet',
+  triage_claimed_empty_desc: 'Manual claims will show up here once you resolve a parked file.',
+  triage_claim_selected_label: 'Claim selected',
+  // 改名指引——README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）。路径形状本身
+  // 是技术值，组件层拼接成 mono 片段，不进这条 i18n 文案（DESIGN.md §3：mono 是技术层专属声音）。
+  triage_naming_hint_prefix: 'Correct naming skips manual triage — best practice: ',
+
+  triage_type_tv: 'TV',
+  triage_type_movie: 'Movie',
+
+  triage_dialog_title: 'Claim selected files',
+  triage_search_placeholder: 'Search TMDB…',
+  triage_search_unreachable: 'TMDB unreachable — you can still paste a tmdb id',
+  triage_search_no_results: 'No matches',
+  triage_tmdbid_label: 'TMDB ID',
+  triage_season_label: 'Season',
+  triage_season_placeholder: 'auto',
+  triage_submit_label: 'Claim',
+  triage_cancel_label: 'Cancel',
+  triage_close_label: 'Close',
+  triage_results_heading: 'Results',
+  triage_partial_failure_desc: 'Some claims failed — review the results below.',
 
   // Settings tab 占位。
   settings_empty_title: 'Settings coming soon',

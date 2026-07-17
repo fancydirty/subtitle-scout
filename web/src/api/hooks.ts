@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
-  LibrarySeriesDetailDTO, WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO,
+  LibrarySeriesDetailDTO, WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, TriageDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -356,6 +356,35 @@ export function useWorkflowWorkers(): Async<WorkflowWorkersDTO> {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F5：甄别台（Triage tab）——pending（park 救援清单）+ claimed（已认领 override
+ *  清单）。同 useParked 的既有先例：一次性 + 手动 reload（不轮询，ClaimDialog 提交成功后调用方
+ *  自己 reload——认领是低频人工动作，不像 workflow 那样需要常驻轮询感知后台变化）。 */
+export function useTriage(): Async<TriageDTO> {
+  const [data, setData] = useState<TriageDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .triage(ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
 
   return { data, loading, error, reload }
 }
