@@ -610,12 +610,12 @@ describe('makeIngestPass — memo-hit cheap path', () => {
 
 // P7 真库闸门 Bug 2：两个不同磁盘路径识别到同一个 own-id（同 tmdbId+season/episode，movies 同 tmdbId）
 // ——重复内容（多质量版本、种子机硬链接残留常见）。episodes/movies 的 path 列是单值，一行只能记
-// 一个 path；不设防的话两条路径会在每一轮互相"抢" path 列——findRowByPath 按字面 path 查，谁都
-// 找不到自己上一轮写的行，于是永远走 FULL PATH、永远 upserted++，在完全安静的库上 upserted 计数
-// 永远不收敛到 0（真·幂等性泄漏，非 by-design：其余任何"每轮都会重跑"的既有行为——12 个 TMDB
-// 抖动重试、park 条目本身每轮重新尝试——都有各自的既有理由且不计入 upserted；这一类没有）。
-describe('makeIngestPass — idempotency: duplicate on-disk paths resolving to the same identity (Bug 2 fix)', () => {
-  it('two TV paths recognized to the same tmdbId/season/episode: first pass creates the row + parks the loser; subsequent passes on a quiet disk do NOT re-upsert either one', async () => {
+// 一个 path；不设防的话两条路径会在每一轮互相"抢" path 列。**重复源 P2 起**：后来者不再 park
+// duplicate-content，而是登记为一等公民副本（item_files）——条目=文件集合，主文件（最早入库者）
+// 占 episodes/movies.path，副本进 item_files。幂等性仍然成立：安静盘上主文件走 CHEAP PATH 不
+// re-upsert，副本每轮命中撞身份守卫 addItemFile（ON CONFLICT 幂等）不 upsert。
+describe('makeIngestPass — duplicate identity → item_files 副本入册（重复源 P2）', () => {
+  it('two TV paths to the same tmdbId/season/episode: 主文件占 episodes.path，后来者进 item_files（不 park）；安静盘不 re-upsert', async () => {
     const pathA = '/media/Show/Season 1/ep1-copyA.mkv'
     const pathB = '/media/Show (dup)/Season 1/ep1-copyB.mkv'
     const disk = fakeDisk()
@@ -631,27 +631,25 @@ describe('makeIngestPass — idempotency: duplicate on-disk paths resolving to t
 
     const r1 = await pass()
     expect(r1.upserted).toBe(1)
-    expect(r1.parked).toBe(1)
+    expect(r1.parked).toBe(0) // P2：不再 park
 
     const r2 = await pass()
-    expect(r2.upserted).toBe(0) // quiet disk — must NOT still be re-upserting
-    expect(r2.parked).toBe(1)
-
-    const r3 = await pass()
-    expect(r3.upserted).toBe(0)
-    expect(r3.parked).toBe(1)
+    expect(r2.upserted).toBe(0) // quiet disk — must NOT re-upsert
+    expect(r2.parked).toBe(0)
 
     const episode = lib.getEpisode('tmdb:1/s1e1')
     expect(episode).not.toBeNull()
-    // exactly one of the two paths stably owns the row across all three passes — no ping-pong.
+    // 一个 path 稳定占主文件行，另一个作为副本入 item_files（无 ping-pong）。
     expect([pathA, pathB]).toContain(episode!.path)
-    const parkedPaths = lib.listParkedPaths().map((p) => p.path)
-    expect(parkedPaths).toHaveLength(1)
-    expect([pathA, pathB]).toContain(parkedPaths[0])
-    expect(parkedPaths[0]).not.toBe(episode!.path)
+    const replicas = lib.listItemFiles('tmdb:1/s1e1')
+    expect(replicas).toHaveLength(1)
+    expect([pathA, pathB]).toContain(replicas[0].path)
+    expect(replicas[0].path).not.toBe(episode!.path)
+    // 停车场干净——副本不占停车位。
+    expect(lib.listParkedPaths()).toEqual([])
   })
 
-  it('the losing duplicate path parks with an honest, distinct reason (duplicate-content)', async () => {
+  it('movie 副本同理入 item_files（不 park duplicate-content）', async () => {
     const pathA = '/media/Movies/Hero (2002).mkv'
     const pathB = '/media/Movies (dup)/Hero (2002) [1080p].mkv'
     const disk = fakeDisk()
@@ -665,10 +663,72 @@ describe('makeIngestPass — idempotency: duplicate on-disk paths resolving to t
 
     await pass()
 
-    const parked = lib.listParkedPaths()
-    expect(parked).toHaveLength(1)
-    expect(parked[0].park_reason).toBe('duplicate-content')
+    expect(lib.listParkedPaths()).toEqual([])
     expect(lib.getMovie('tmdb:603')).not.toBeNull()
+    const replicas = lib.listItemFiles('tmdb:603')
+    expect(replicas).toHaveLength(1)
+    expect([pathA, pathB]).toContain(replicas[0].path)
+  })
+
+  it('存量自愈：既有 duplicate-content 停车行下一轮命中撞身份守卫 → 转副本入册 + 退户口', async () => {
+    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
+    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathMain, 5000, 111)
+    disk.setVideo(pathDup, 5000, 222)
+    // 先让主文件入库
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const passMainOnly = makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+    await passMainOnly()
+    // 手工模拟 P2 之前遗留的 duplicate-content 停车行
+    lib.upsertParkedPath(pathDup, 'duplicate-content', 5000)
+    expect(lib.listParkedPaths().map((p) => p.path)).toContain(pathDup)
+
+    // 现在全量扫描（含 dup）→ dup 命中撞身份守卫 → addItemFile + clearParkedPath
+    const passAll = makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+    await passAll()
+
+    expect(lib.listParkedPaths()).toEqual([]) // 自愈退户口
+    expect(lib.listItemFiles('tmdb:1/s1e1').map((f) => f.path)).toEqual([pathDup])
+  })
+
+  it('主文件消失但有存活副本 → 最年长副本晋升，条目不退役', async () => {
+    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
+    const pathDup = '/media/Show/Season 1/ep1-dup.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathMain, 5000, 111)
+    disk.setVideo(pathDup, 5000, 222)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const deps = makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    })
+    await makeIngestPass(deps)()
+    const mainBefore = lib.getEpisode('tmdb:1/s1e1')!.path
+
+    // 主文件从盘上消失（只留副本）
+    disk.removeVideo(mainBefore)
+    const survivingReplica = [pathMain, pathDup].find((p) => p !== mainBefore)!
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [survivingReplica], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+
+    // 条目没退役（removed 不因它 +1），主文件 path 顶替成存活副本，item_files 清空
+    const ep = lib.getEpisode('tmdb:1/s1e1')
+    expect(ep).not.toBeNull()
+    expect(ep!.path).toBe(survivingReplica)
+    expect(lib.listItemFiles('tmdb:1/s1e1')).toEqual([])
   })
 })
 

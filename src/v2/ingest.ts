@@ -540,8 +540,13 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // 还要用它，不重复查询。
               const priorEpisode = lib.getEpisode(ownEpisodeId)
               if (priorEpisode && priorEpisode.path !== path) {
-                lib.upsertParkedPath(path, 'duplicate-content', nowMs)
-                result.parked++
+                // 重复源 P2：撞既有身份但 path 不同 = 同一集的副本（4K/1080p/不同压制），不再
+                // park duplicate-content，而是登记为一等公民副本（item_files）。clearParkedPath
+                // 顺带自愈存量：此 path 若此前被 park 成 duplicate-content（P2 之前的行为），此刻
+                // 退户口——存量迁移不需要独立脚本，就是这一行 no-op-safe 的清理（非停车路径删无害）。
+                lib.addItemFile(ownEpisodeId, path, nowMs)
+                lib.clearParkedPath(path)
+                result.changed = true
                 continue
               }
 
@@ -628,8 +633,11 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // null 在它眼里等价，行为不变，见下方 toWrite 那行）。
               const priorMovie = lib.getMovie(ownMovieId)
               if (priorMovie && priorMovie.path !== path) {
-                lib.upsertParkedPath(path, 'duplicate-content', nowMs)
-                result.parked++
+                // 重复源 P2：同一部电影的副本 → item_files（同 TV 分支，见其注释）。clearParkedPath
+                // 顺带自愈存量 duplicate-content 停车行。
+                lib.addItemFile(ownMovieId, path, nowMs)
+                lib.clearParkedPath(path)
+                result.changed = true
                 continue
               }
 
@@ -701,20 +709,40 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       // 双重条件缺一不可：只看"本轮没见到"会在 walk() 遇到某子目录瞬时 readdir 失败时
       // （daemon/selfScan.ts 的 walk() 吞掉该错误、跳过整棵子树）误删仍然真实存在的文件的
       // 库行——"宁多查勿漏配"，加一道 fileExists 复核堵住这个假阳性。
-      const episodeRows = lib.db.prepare('SELECT path, series_id FROM episodes').all() as
-        { path: string; series_id: string }[]
-      for (const row of episodeRows) {
-        if (!seenPaths.has(row.path) && !fileExists(row.path)) {
-          lib.deleteEpisodeByPath(row.path)
-          lib.deleteSeriesIfEmpty(row.series_id)
-          result.removed++
+      //
+      // 重复源 P2：item_files 副本清理**必须先于**下面的主文件退役循环——死副本先出表，晋升时
+      // listItemFiles 只会看到仍在盘上的副本，promoteOldestReplica 不会把主文件 path 指向一个
+      // 同样已消失的副本（否则要多轮扫描才收敛，中途主文件指向死文件）。
+      for (const f of lib.db.prepare('SELECT path FROM item_files').all() as { path: string }[]) {
+        if (!seenPaths.has(f.path) && !fileExists(f.path)) {
+          lib.removeItemFileByPath(f.path)
+          result.changed = true
         }
       }
-      const movieRows = lib.db.prepare('SELECT path FROM movies').all() as { path: string }[]
+      const episodeRows = lib.db.prepare('SELECT id, path, series_id FROM episodes').all() as
+        { id: string; path: string; series_id: string }[]
+      for (const row of episodeRows) {
+        if (!seenPaths.has(row.path) && !fileExists(row.path)) {
+          // 重复源 P2：主文件消失但仍有（存活的）副本 → 最年长副本晋升顶替，条目不退役；
+          // 无副本可晋升才真正删行（既有行为）。
+          if (lib.promoteOldestReplica(row.id) !== null) {
+            result.changed = true
+          } else {
+            lib.deleteEpisodeByPath(row.path)
+            lib.deleteSeriesIfEmpty(row.series_id)
+            result.removed++
+          }
+        }
+      }
+      const movieRows = lib.db.prepare('SELECT id, path FROM movies').all() as { id: string; path: string }[]
       for (const row of movieRows) {
         if (!seenPaths.has(row.path) && !fileExists(row.path)) {
-          lib.deleteMovieByPath(row.path)
-          result.removed++
+          if (lib.promoteOldestReplica(row.id) !== null) {
+            result.changed = true
+          } else {
+            lib.deleteMovieByPath(row.path)
+            result.removed++
+          }
         }
       }
       // parked_paths 同理清理（不计入 removed——那是 episodes/movies 行退役的计数，park 户口
