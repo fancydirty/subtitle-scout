@@ -33,6 +33,26 @@ const emitQuotaNotice = (emit: (e: FetchEvent) => void, message: string, resetAt
  * 一律视为"无 imdb"，退化到标题+season/episode 查询——否则会带着必然 0 命中的 imdb_id 查询提交，
  * 而本该走的标题查询分支被跳过（`imdb != null` 对 0 和 NaN 都是 true）。
  */
+/** BCP-47 → OS 语言码映射（Shelby Oaks 案主刀，验收轮一 2026-07-17）：A4 语言域泛化后任务
+ *  目标语言的内部规范形是 BCP-47 主码（'zh'），search_source 默认把它直传 adapter——而 OS API
+ *  码表没有裸 'zh'，会**静默**返回 200+空集（不报错、不进 providerFailures），OS 自 A4 起在
+ *  默认配置下从未贡献过一条候选、全程隐形。provider 特定码表归 provider adapter 消化：
+ *  zh→zh-cn+zh-tw 双查、zh-Hans→zh-cn、zh-Hant→zh-tw，其余（en/ja/…）OS 本就收小写主码，
+ *  原样透传；保序去重。 */
+function osLanguages(languages: string[]): string[] {
+  const out: string[] = []
+  for (const l of languages) {
+    const lower = l.toLowerCase()
+    const mapped =
+      lower === 'zh' ? ['zh-cn', 'zh-tw'] :
+      lower === 'zh-hans' ? ['zh-cn'] :
+      lower === 'zh-hant' ? ['zh-tw'] :
+      [lower]
+    for (const m of mapped) if (!out.includes(m)) out.push(m)
+  }
+  return out
+}
+
 const imdbDigits = (s: string | undefined): number | undefined => {
   if (!s) return undefined
   const n = Number(s.replace(/^tt/, ''))
@@ -57,7 +77,7 @@ export function makeOpenSubtitlesAdapter(
     name: 'opensubtitles',
     enabled: () => true,
     search: async (args) => {
-      const languages = args.languages ?? ['zh-cn', 'zh-tw']
+      const languages = osLanguages(args.languages ?? ['zh-cn', 'zh-tw'])
       const imdb = imdbDigits(args.imdb)
       let resp = await client.search(imdb != null
         ? { imdbId: imdb, languages }

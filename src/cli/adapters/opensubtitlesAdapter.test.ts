@@ -128,6 +128,30 @@ describe('makeOpenSubtitlesAdapter: search', () => {
     expect(search).toHaveBeenCalledTimes(1)
   })
 
+  // Shelby Oaks 案第二层（真正的主刀）：A4 语言域泛化后任务目标语言是 BCP-47 主码 'zh'，
+  // search_source 默认把它直传 adapter——OS API 的码表里没有裸 'zh'，静默返回 200+空集（不报错
+  // 不进 providerFailures），OS 因此在默认配置下自 A4 起从未贡献过候选。provider 特定码表归
+  // provider adapter：zh→zh-cn+zh-tw、zh-Hans→zh-cn、zh-Hant→zh-tw，其余原样透传。
+  it('③g language mapping: bare zh → zh-cn+zh-tw (OS has no bare zh; silent-empty regression)', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => fixture)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ queries: ['Shelby Oaks'], languages: ['zh'] }), () => {})
+
+    expect(search.mock.calls[0][0].languages).toEqual(['zh-cn', 'zh-tw'])
+  })
+
+  it('③h language mapping: zh-Hans→zh-cn, zh-Hant→zh-tw, en passthrough, dedupe', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => fixture)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ queries: ['x'], languages: ['zh-Hans', 'zh-Hant', 'en', 'zh'] }), () => {})
+
+    expect(search.mock.calls[0][0].languages).toEqual(['zh-cn', 'zh-tw', 'en'])
+  })
+
   it('④imdb with tt prefix is stripped to a number', async () => {
     const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
     const client = fakeClient({ search })
