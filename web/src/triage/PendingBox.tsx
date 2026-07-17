@@ -1,102 +1,155 @@
-// web/src/triage/PendingBox.tsx：待甄别箱——park 救援清单。每行=路径尾段（mono，title 属性给
-// 全路径）+ park reason（灰小字）+ 行选择 checkbox（多选）。箱头=计数 + "Claim selected" 按钮
-// （选中 >0 才可用）。箱底常驻一条改名指引（灰字，双语）：正确命名可免人工甄别——不是错误提示，
-// 是"你本可以不用来这里"式的提示，因此不放进 loading/error/empty 三态判断里，恒定渲染。
+// web/src/triage/PendingBox.tsx：待甄别箱——按目录分组渲染 park 救援清单（验收修复轮一 Task V2，
+// spec §C.1）。claimParked 的 override 覆盖粒度是 dirname(path) 前缀（见 src/dashboard/apiV2.ts
+// claimParked 注释），所以"目录=认领单元"：组头=目录尾段 mono + 文件计数 + 一个 Claim 按钮
+// （挂在整个目录组上，不是逐文件），组体=文件名列表只读、>5 折叠。原逐行 checkbox 多选整体撤掉
+// ——旧版靠用户手动跨行多选拼凑出"这些文件属于同一部剧"，新版分组函数直接把这层事实做出来，
+// 多选歧义随之消灭。
 //
-// 选择态是这个组件的私有状态（同 PendingLane 的 includeThrottled 开关先例：发起方自己管临时
-// UI 状态，只把最终动作通过回调交给父级）——ClaimDialog 打开后父级才需要知道"选了哪些路径"，
-// 选择过程本身跟 TriagePage/ClaimedBox 无关。
-import { useEffect, useState } from 'react'
-import { CheckboxInput } from '@astryxdesign/core/CheckboxInput'
+// duplicate-content 停车行单独归入 duplicates 桶（spec §C.3）：默认折叠的 Collapsible，组头
+// 说明"这类重复副本不需要人工认领"，展开后同款目录组卡但没有 Claim 按钮。
+//
+// 认领后的置灰过渡态（claimedDirs）是这个组件的入参而非私有状态——TriagePage 持有它，理由见
+// TriagePage.tsx 的文件头注释（认领只写 override，parked_paths 那一行要等下一轮 ingest pass
+// 才真的消失，这份 UI 状态桥接"写库那一刻"到"真的退户口那一刻"之间的诚实过渡）。
+import { useState } from 'react'
 import { Button } from '@astryxdesign/core/Button'
 import { Text } from '@astryxdesign/core/Text'
 import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { EmptyState } from '@astryxdesign/core/EmptyState'
+import { Collapsible } from '@astryxdesign/core/Collapsible'
+import { StatusDot } from '@astryxdesign/core/StatusDot'
 import type { ParkedItemDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
-import { pathTail } from './text.js'
+import { pathTail, fileCountLabel, moreLabel, groupPending, type DirGroup } from './text.js'
 
 // README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）——路径形状是技术值，
 // mono 且不翻译（DESIGN.md §3/§7），两种语言下原样出现。
 const NAMING_PATTERN = 'Title (Year)/Season NN/Title SNNENN.mkv'
 
-function PendingRow({
-  item, checked, onToggle,
+const FILES_COLLAPSE_AT = 5
+
+function DirGroupCard({
+  group, claimed, onClaim,
 }: {
-  item: ParkedItemDTO
-  checked: boolean
-  onToggle: () => void
+  group: DirGroup
+  claimed: boolean
+  /** undefined＝不给这个组渲染 Claim 按钮（duplicates 桶的组卡、或已认领的组都是这种情况）。 */
+  onClaim?: () => void
 }) {
-  const tail = pathTail(item.path)
+  const { t, lang } = useT()
+  const [expanded, setExpanded] = useState(false)
+  const visible = expanded ? group.files : group.files.slice(0, FILES_COLLAPSE_AT)
+  const hidden = group.files.length - visible.length
+
   return (
-    <div className="triage-pending-row">
-      <CheckboxInput label={tail} isLabelHidden value={checked} onChange={onToggle} size="sm" />
-      <VStack gap={0.5} width="100%">
-        <span className="triage-pending-row-path" title={item.path}>
-          {tail}
-        </span>
-        <span className="triage-pending-row-reason">{item.parkReason}</span>
-      </VStack>
+    <div className={`triage-dirgroup${claimed ? ' triage-dirgroup-claimed' : ''}`}>
+      <HStack gap={2} vAlign="center" justify="between">
+        <HStack gap={2} vAlign="center">
+          <span className="triage-dirgroup-tail" title={group.dir}>
+            {group.dirTail}
+          </span>
+          <Text type="code" color="secondary">
+            {fileCountLabel(group.files.length, lang)}
+          </Text>
+        </HStack>
+        {claimed ? (
+          // DESIGN.md §4：状态 = 6px 圆点 + 一个同色词——认领后等待重扫是排队态，灰
+          // （neutral），不是错误也不是完成。
+          <span className="triage-dirgroup-badge">
+            <StatusDot variant="neutral" label={t('triage_claimed_badge')} />
+            {t('triage_claimed_badge')}
+          </span>
+        ) : onClaim ? (
+          <Button size="sm" variant="secondary" label={t('triage_claim_group_label')} onClick={onClaim} />
+        ) : null}
+      </HStack>
+      <div className="triage-dirgroup-files">
+        {visible.map((f) => (
+          <span key={f.path} className="triage-dirgroup-file" title={f.path}>
+            {pathTail(f.path)}
+          </span>
+        ))}
+        {hidden > 0 ? (
+          <button type="button" className="triage-dialog-more" onClick={() => setExpanded(true)}>
+            {moreLabel(hidden, lang)}
+          </button>
+        ) : null}
+      </div>
     </div>
   )
 }
 
 interface Props {
   pending: ParkedItemDTO[]
-  onClaimSelected: (paths: string[]) => void
+  /** 本次会话里已认领、正等待下一轮 ingest pass 退户口的目录集合（TriagePage 持有，见其文件头
+   *  注释）——命中的组置灰、显示"claimed · awaiting rescan"角标、Claim 按钮消失、沉到组列表
+   *  底部。 */
+  claimedDirs: Set<string>
+  onClaimGroup: (group: DirGroup) => void
 }
 
-export function PendingBox({ pending, onClaimSelected }: Props) {
+export function PendingBox({ pending, claimedDirs, onClaimGroup }: Props) {
   const { t } = useT()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const { actionable, duplicates } = groupPending(pending)
 
-  // pending 列表变化（认领刷新后某些路径消失）时，把选择态里已经不存在的路径清掉——不然会有
-  // 勾选框"看不见但仍计入选中数"的幽灵态。
-  useEffect(() => {
-    setSelected((prev) => {
-      const next = new Set([...prev].filter((p) => pending.some((row) => row.path === p)))
-      return next.size === prev.size ? prev : next
-    })
-  }, [pending])
-
-  const toggle = (path: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-  }
+  // 未认领组在前（按 groupPending 已排好的文件数降序），已认领组沉到最后——组内顺序不重要，
+  // 反正下一轮扫描真的退户口后这些组就会从 pending 里彻底消失。
+  const notClaimed = actionable.filter((g) => !claimedDirs.has(g.dir))
+  const claimedGroups = actionable.filter((g) => claimedDirs.has(g.dir))
+  const orderedActionable = [...notClaimed, ...claimedGroups]
+  // 箱头计数只算"还需要人工认领"的文件数——已认领但还没退户口的组不再计入（spec §C.2：
+  // "actionable 计数减除"），duplicates 桶有自己的计数，不叠进这里。
+  const actionableCount = notClaimed.reduce((n, g) => n + g.files.length, 0)
+  const duplicatesCount = duplicates.reduce((n, g) => n + g.files.length, 0)
 
   return (
     <div className="triage-box">
       <VStack gap={3}>
-        <HStack gap={3} vAlign="center" justify="between">
-          <HStack gap={2} vAlign="center">
-            <Text type="label">{t('triage_pending_heading')}</Text>
-            <Text type="code" color="secondary">
-              {pending.length}
-            </Text>
-          </HStack>
-          <Button
-            size="sm"
-            variant="secondary"
-            label={t('triage_claim_selected_label')}
-            isDisabled={selected.size === 0}
-            onClick={() => onClaimSelected([...selected])}
-          />
+        <HStack gap={2} vAlign="center">
+          <Text type="label">{t('triage_pending_heading')}</Text>
+          <Text type="code" color="secondary">
+            {actionableCount}
+          </Text>
         </HStack>
 
-        {pending.length === 0 ? (
+        {orderedActionable.length === 0 ? (
           <EmptyState isCompact title={t('triage_empty_title')} description={t('triage_empty_desc')} />
         ) : (
-          <VStack gap={2}>
-            {pending.map((item) => (
-              <PendingRow key={item.path} item={item} checked={selected.has(item.path)} onToggle={() => toggle(item.path)} />
-            ))}
-          </VStack>
+          <div className="triage-actionable-groups">
+            <VStack gap={2}>
+              {orderedActionable.map((group) => (
+                <DirGroupCard
+                  key={group.dir}
+                  group={group}
+                  claimed={claimedDirs.has(group.dir)}
+                  onClaim={claimedDirs.has(group.dir) ? undefined : () => onClaimGroup(group)}
+                />
+              ))}
+            </VStack>
+          </div>
         )}
+
+        {duplicates.length > 0 ? (
+          <div className="triage-duplicates-section">
+            <Collapsible
+              defaultIsOpen={false}
+              trigger={
+                <HStack gap={2} vAlign="center">
+                  <Text type="label">{t('triage_duplicates_heading')}</Text>
+                  <Text type="code" color="secondary">
+                    {duplicatesCount}
+                  </Text>
+                </HStack>
+              }>
+              <VStack gap={2}>
+                {duplicates.map((group) => (
+                  <DirGroupCard key={group.dir} group={group} claimed={false} />
+                ))}
+              </VStack>
+            </Collapsible>
+          </div>
+        ) : null}
 
         <div className="triage-naming-hint">
           {t('triage_naming_hint_prefix')}

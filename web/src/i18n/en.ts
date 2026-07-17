@@ -121,7 +121,16 @@ export const en = {
   triage_claimed_heading: 'Claimed',
   triage_claimed_empty_title: 'No claims yet',
   triage_claimed_empty_desc: 'Manual claims will show up here once you resolve a parked file.',
-  triage_claim_selected_label: 'Claim selected',
+  // 验收修复轮一 Task V2：PendingBox 从逐行 checkbox 多选改成目录组卡——这个键是每张组卡上的
+  // Claim 按钮（挂在整个目录组上，见 PendingBox.tsx 文件头注释），不再是箱头的"批量认领所选"。
+  triage_claim_group_label: 'Claim',
+  // 认领后的置灰过渡态角标——认领只写 override，parked_paths 那一行要等下一轮 ingest pass 才
+  // 真的退户口（TriagePage.tsx claimedDirs 注释），这条文案如实说明"已经点过认领，正在等扫描"，
+  // 不假装文件已经消失。
+  triage_claimed_badge: 'claimed · awaiting rescan',
+  // duplicate-content 停车行的说明——归重复源战役本体（字幕自动同步）尚未落地，这类行不需要
+  // 人工认领，用户点名要求跟"待人工认领"分开成组、别再吓人（spec §C.3）。
+  triage_duplicates_heading: 'Duplicates — subtitle propagation is planned; no action needed',
   // 改名指引——README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）。路径形状本身
   // 是技术值，组件层拼接成 mono 片段，不进这条 i18n 文案（DESIGN.md §3：mono 是技术层专属声音）。
   triage_naming_hint_prefix: 'Correct naming skips manual triage — best practice: ',
@@ -129,7 +138,7 @@ export const en = {
   triage_type_tv: 'TV',
   triage_type_movie: 'Movie',
 
-  triage_dialog_title: 'Claim selected files',
+  triage_dialog_title: 'Claim this folder',
   triage_search_placeholder: 'Search TMDB…',
   triage_search_unreachable: 'TMDB unreachable — you can still paste a tmdb id',
   triage_search_no_results: 'No matches',
@@ -140,7 +149,7 @@ export const en = {
   triage_cancel_label: 'Cancel',
   triage_close_label: 'Close',
   triage_results_heading: 'Results',
-  triage_partial_failure_desc: 'Some claims failed — review the results below.',
+  triage_partial_failure_desc: 'This claim failed — see the error below.',
 
   // Settings tab（dashboard-F6）——正常双语区（DESIGN.md §7 只豁免 Workflow 区）。F2 占位期的
   // settings_empty_title/desc（"coming soon"）随 F6 落地真内容一并退役——不像 triage_empty_*

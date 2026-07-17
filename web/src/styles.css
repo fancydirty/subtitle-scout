@@ -623,33 +623,59 @@
   min-width: 0;
 }
 
-/* ---- 待甄别箱行（PendingBox）---- */
-.triage-pending-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
+/* ---- 待甄别箱目录组卡（PendingBox，验收修复轮一 Task V2：checkbox 多选撤，改按目录分组认领
+   ——组头=目录尾段 mono + 文件计数 + Claim 按钮，组体=文件名只读列表。 ---- */
+.triage-dirgroup {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-inner, 4px);
   background: var(--color-background-surface);
-  padding: 8px 10px;
+  padding: 10px 12px;
   min-width: 0;
 }
-.triage-pending-row-path {
+.triage-dirgroup-tail {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  display: block;
 }
-.triage-pending-row-reason {
+.triage-dirgroup-files {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+}
+.triage-dirgroup-file {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  display: block;
+}
+.triage-dirgroup-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--color-text-gray);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+/* 认领后置灰过渡态——下一轮扫描前的诚实中间态，不是错误也不是禁用（DESIGN.md §8：数据诚实）。 */
+.triage-dirgroup-claimed {
+  opacity: 0.55;
+}
+.triage-dirgroup-claimed .triage-dirgroup-tail,
+.triage-dirgroup-claimed .triage-dirgroup-file {
+  color: var(--color-text-disabled);
+}
+
+/* ---- duplicate-content 分组（Collapsible，默认折叠，spec §C.3）---- */
+.triage-duplicates-section {
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
 }
 
 /* 改名指引——箱底常驻灰字一条；路径形状本身 mono（技术值，DESIGN.md §3）。 */

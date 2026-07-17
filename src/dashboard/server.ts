@@ -40,6 +40,13 @@ export interface DashboardOpts {
    *  dashboard-F5：'search' 供 GET /api/v2/tmdb/search（ClaimDialog 的只读搜索代理）转调——
    *  同一个 tmdb 依赖，缺席时两个消费点各自独立降级（这里 503，series/:id 那边跳过刷新）。 */
   tmdb?: Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
+  /** 验收修复轮一 Task V2：甄别台目录组认领成功后踢一脚扫描——认领只写 override（见
+   *  claimParked 注释），停车行真正退户口要等下一轮 ingest pass 命中这条 override 重新识别
+   *  成功。不等 daemon 自己的时间门（ingestEveryMs），认领这一刻立即请求一次扫描，让用户体感
+   *  "认领后很快消失"而不是等到下一个自然扫描周期。undefined（watch 进程未接线，或纯只读
+   *  测试场景）＝无事发生，同 reconcileAll/jobs/tmdb 三个既有可选依赖的缺席降级先例——不强制
+   *  startDashboard 的调用方必须提供这个回调。 */
+  requestIngest?: () => void
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -59,7 +66,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb } = opts
+  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest } = opts
   const settingsRepo = new SettingsRepo(db)
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
@@ -178,6 +185,17 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           isTv: Boolean(b.isTv),
           season: typeof b.season === 'number' ? b.season : (b.season == null ? b.season as null | undefined : NaN),
         })
+        // 验收修复轮一 Task V2：认领成功后踢一脚扫描（DashboardOpts.requestIngest 注释）——
+        // fire-and-forget：不 await（不让扫描拖慢这个端点的响应），同步抛错也吞掉（认领这个
+        // 动作本身已经写对了数据，触发扫描失败不该让它对用户显示失败；下一个自然周期还会再扫
+        // 一次，不会永久错过）。
+        if (result.ok && requestIngest) {
+          try {
+            requestIngest()
+          } catch {
+            // swallow — 见上方注释。
+          }
+        }
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result))
         return

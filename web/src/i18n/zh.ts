@@ -106,13 +106,15 @@ export const zh = {
   triage_claimed_heading: '已认领',
   triage_claimed_empty_title: '暂无认领记录',
   triage_claimed_empty_desc: '手动认领一个停车文件后，记录会出现在这里。',
-  triage_claim_selected_label: '认领所选',
+  triage_claim_group_label: '认领',
+  triage_claimed_badge: '已认领 · 等待重新扫描',
+  triage_duplicates_heading: '重复副本——字幕自动同步功能正在规划中，无需处理',
   triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',
 
   triage_type_tv: '剧集',
   triage_type_movie: '电影',
 
-  triage_dialog_title: '认领所选文件',
+  triage_dialog_title: '认领此目录',
   triage_search_placeholder: '搜索 TMDB…',
   triage_search_unreachable: '无法连接 TMDB——你仍可以手动填写 tmdb id',
   triage_search_no_results: '无匹配结果',
@@ -123,7 +125,7 @@ export const zh = {
   triage_cancel_label: '取消',
   triage_close_label: '关闭',
   triage_results_heading: '结果',
-  triage_partial_failure_desc: '部分认领失败——请查看下方结果。',
+  triage_partial_failure_desc: '认领失败——详情见下方错误。',
 
   settings_behavior_heading: '行为',
   settings_deploy_heading: '部署',

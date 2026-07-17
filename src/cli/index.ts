@@ -456,6 +456,15 @@ async function cmdWatch() {
       // 直接传，不需要"缺席则 undefined"的三元判断。
       jobs,
       tmdb,
+      // 验收修复轮一 Task V2：甄别台目录组认领成功后踢一脚扫描（DashboardOpts.requestIngest
+      // 注释）——复用上方已经构造好的同一个 ingestTrigger 闭包（daemon 自己的周期 tick 也调它，
+      // 见 daemonDeps.ingestTrigger），认领这一刻立即触发一轮，不用等 ingestEveryMs 时间门。
+      // fire-and-forget：不 await（不让 POST /api/v2/triage/claim 卡在一整轮扫描后才响应），
+      // ingestTrigger() 返回的 promise 若拒绝，在这里兜底记日志，不让未捕获的 rejection 冒到
+      // 进程顶层（server.ts 那侧的 try/catch 只兜同步抛错，异步失败必须自己接住）。
+      requestIngest: () => {
+        void ingestTrigger().catch((e) => log(`warn: 甄别认领后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
+      },
     })
     if (dashServer.listening) {
       console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)

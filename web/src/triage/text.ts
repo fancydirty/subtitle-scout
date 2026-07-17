@@ -2,14 +2,15 @@
 // 只豁免 Workflow 区，甄别区正常双语）。带运行期数字的句子走这里而不是 useT.ts 的扁平表（同
 // library/text.ts 的既有分工：t() 故意不支持插值）。
 import type { Lang } from '../i18n/useT.js'
+import type { ParkedItemDTO } from '../api/types.js'
 import { formatDuration } from '../library/text.js'
 
-/** ClaimDialog 头部副标题——"N files selected" / "已选 N 个文件"。 */
-export function selectedCountLabel(n: number, lang: Lang): string {
-  return lang === 'zh' ? `已选 ${n} 个文件` : `${n} file${n === 1 ? '' : 's'} selected`
+/** 目录组头文件计数——"12 files" / "12 个文件"（PendingBox 的组卡头 + ClaimDialog 副标题共用）。 */
+export function fileCountLabel(n: number, lang: Lang): string {
+  return lang === 'zh' ? `${n} 个文件` : `${n} file${n === 1 ? '' : 's'}`
 }
 
-/** 选中路径列表折叠——">5 条折叠显示 +N more"。 */
+/** 折叠列表的展开提示——">5 条折叠显示 +N more"（组卡文件列表 + ClaimDialog 路径列表共用）。 */
 export function moreLabel(n: number, lang: Lang): string {
   return lang === 'zh' ? `还有 ${n} 个…` : `+${n} more`
 }
@@ -22,8 +23,9 @@ export function relativeClaimedAgo(deltaMs: number, lang: Lang): string {
   return lang === 'zh' ? `${d} 前` : `${d} ago`
 }
 
-/** 路径尾段（最后一个 '/' 之后的文件名）——PendingBox/进度行的 mono 展示用，full path 走
- *  title 属性兜底。没有 '/' 时原样返回（理论不该发生：本项目路径恒为绝对路径，防御性处理）。 */
+/** 最后一个 '/' 之后的那一段——文件路径给"文件名"，目录路径给"目录尾段"（dirTail），同一个
+ *  函数天然覆盖两种输入形状，不需要为目录单独写一份。mono 展示用，full path 走 title 属性
+ *  兜底。没有 '/' 时原样返回（理论不该发生：本项目路径恒为绝对路径，防御性处理）。 */
 export function pathTail(path: string): string {
   const idx = path.lastIndexOf('/')
   return idx >= 0 ? path.slice(idx + 1) : path
@@ -39,18 +41,50 @@ export function dirnameOf(path: string): string {
   return path.slice(0, idx)
 }
 
-/** 提交前去重：同目录的多个选中路径只保留第一条——claimParked 的 override 覆盖粒度是
- *  dirname(path) 前缀（见 src/dashboard/apiV2.ts claimParked 注释："一次认领顺带救活整目录的
- *  兄弟集"），同目录内的第二条 POST 是纯浪费请求，不会带来任何额外效果。保序（Map 迭代顺序=
- *  插入顺序）：不改变用户勾选时的相对次序，进度行按这个顺序展示。 */
-export function dedupeByDirname(paths: string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const p of paths) {
-    const dir = dirnameOf(p)
-    if (seen.has(dir)) continue
-    seen.add(dir)
-    out.push(p)
+// ---- 验收修复轮一 Task V2：目录组分组（spec §C.1/§C.3）----
+
+/** 待甄别箱的一个目录组——claimParked 的 override 覆盖粒度是 dirname(path) 前缀（见
+ *  src/dashboard/apiV2.ts claimParked 注释），所以"目录=认领单元"与后端语义一比一：一次认领
+ *  顺带救活整目录的兄弟集。UI 因此按目录分组、一组一个认领对话框，不是逐文件多选。 */
+export interface DirGroup {
+  /** 目录绝对路径（POSIX），claimParked 的 override 前缀本体。 */
+  dir: string
+  /** 目录尾段（mono 展示用），dir 本身走 title 属性兜底全路径。 */
+  dirTail: string
+  files: ParkedItemDTO[]
+}
+
+/** duplicate-content 停车行的"重复副本"park reason（见 src/v2/ingest.ts 的
+ *  upsertParkedPath(path, 'duplicate-content', ...) 调用点）——归重复源战役本体（字幕自动
+ *  同步）尚未落地，本轮只做呈现分组：这类行不需要人工认领，与"待人工认领"的行分开成组、默认
+ *  折叠（见 PendingBox 的 Collapsible 用法），避免用户看见一堆"重复"行误以为出了问题。 */
+const DUPLICATE_PARK_REASON = 'duplicate-content'
+
+/** 单个 reason 桶内部按 dirname 分组：组内文件按 path 排序（稳定展示顺序，不随后端返回顺序
+ *  抖动），组间按文件数降序（文件最多的目录最可能是用户最想优先处理的那一部剧，排最前）——
+ *  并列时按 dir 名排序兜底，保证同一份输入的分组顺序在两次渲染之间保持确定，不依赖 Map 迭代
+ *  顺序这种隐式契约。 */
+function groupByDir(rows: ParkedItemDTO[]): DirGroup[] {
+  const buckets = new Map<string, ParkedItemDTO[]>()
+  for (const row of rows) {
+    const dir = dirnameOf(row.path)
+    const bucket = buckets.get(dir)
+    if (bucket) bucket.push(row)
+    else buckets.set(dir, [row])
   }
-  return out
+  const groups = [...buckets.entries()].map(([dir, files]) => ({
+    dir,
+    dirTail: pathTail(dir),
+    files: [...files].sort((a, b) => a.path.localeCompare(b.path)),
+  }))
+  groups.sort((a, b) => b.files.length - a.files.length || a.dir.localeCompare(b.dir))
+  return groups
+}
+
+/** PendingBox 的分组入口：先按 park reason 分两桶（duplicate-content 单独归箱，spec §C.3），
+ *  桶内再各自按目录分组（spec §C.1）。 */
+export function groupPending(rows: ParkedItemDTO[]): { actionable: DirGroup[]; duplicates: DirGroup[] } {
+  const duplicateRows = rows.filter((r) => r.parkReason === DUPLICATE_PARK_REASON)
+  const actionableRows = rows.filter((r) => r.parkReason !== DUPLICATE_PARK_REASON)
+  return { actionable: groupByDir(actionableRows), duplicates: groupByDir(duplicateRows) }
 }

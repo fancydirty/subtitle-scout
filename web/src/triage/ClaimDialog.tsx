@@ -3,10 +3,16 @@
 // purpose="form"：录入过程中点击背板不会意外丢数据（同 astryx 官方 DialogFormDialog 模板的
 // 既有推荐用法）。
 //
-// 流程：打开时列出选中路径（原始未去重列表，>5 条折叠）→ TMDB 搜索（type 切换 + 400ms 防抖）
-// 或手动 tmdbId 兜底 → 提交（同 dirname 去重成一条 POST，claimParked 的 override 覆盖粒度是
-// 整个目录前缀，见 web/src/triage/text.ts 的 dedupeByDirname 注释）→ 逐行 ✓/✗ 进度 → 全部成功
-// 关闭+刷新两箱，部分失败保留对话框展示结果（DESIGN.md §8：数据诚实，不假装全部顺利）。
+// 验收修复轮一 Task V2：入参从"选中路径快照 paths[]"改成"单个目录组快照 group"（PendingBox 的
+// Claim 按钮挂在整个目录组上，不是逐文件多选，见该文件头注释）——文件列表只读展示（>5 折叠），
+// 不再需要提交前去重（旧版 dedupeByDirname 处理的是"跨目录多选"场景，新版一个对话框恒对应
+// 一个目录，天然不会撞见这个问题，函数已随这次重构删除）。
+//
+// 流程：打开时列出目录组内全部文件（只读，>5 条折叠）→ TMDB 搜索（type 切换 + 400ms 防抖）
+// 或手动 tmdbId 兜底 → 提交一条 claim（取组内第一个文件的 path——claimParked 的 override 覆盖
+// 粒度是 dirname(path) 前缀，见 src/dashboard/apiV2.ts claimParked 注释，组内随便挑一个文件都
+// 能救活整个目录，不需要逐文件各发一条）→ 成功关闭+通知父级置灰该组并刷新两箱，失败保留对话框
+// 展示结果（DESIGN.md §8：数据诚实，不假装全部顺利）。
 import { useEffect, useState } from 'react'
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog'
 import { Layout, LayoutContent, LayoutFooter, HStack, VStack } from '@astryxdesign/core/Layout'
@@ -21,7 +27,7 @@ import { api } from '../api/client.js'
 import type { TmdbSearchResultDTO } from '../api/types.js'
 import { PosterThumb } from '../library/PosterThumb.js'
 import { useT, type Lang } from '../i18n/useT.js'
-import { selectedCountLabel, moreLabel, dedupeByDirname, pathTail } from './text.js'
+import { fileCountLabel, moreLabel, pathTail, type DirGroup } from './text.js'
 
 type MediaType = 'tv' | 'movie'
 type Phase = 'idle' | 'submitting' | 'done'
@@ -96,14 +102,15 @@ function ProgressRow({ result }: { result: RowResult }) {
 }
 
 interface Props {
-  /** null＝对话框关闭。非空数组＝打开时刻的选中路径快照（原始、未去重）。 */
-  paths: string[] | null
+  /** null＝对话框关闭。非空＝打开时刻的目录组快照（PendingBox 的 Claim 按钮点击时交上来）。 */
+  group: DirGroup | null
   onClose: () => void
-  /** 全部认领成功后调用——父级借此刷新两箱（TriagePage 传 triage.reload）。 */
-  onSuccess: () => void
+  /** 认领成功后调用，带上被认领的目录——父级（TriagePage）借此标记该组"claimed · awaiting
+   *  rescan"并刷新两箱。 */
+  onSuccess: (dir: string) => void
 }
 
-export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
+export function ClaimDialog({ group, onClose, onSuccess }: Props) {
   const { t, lang } = useT()
 
   const [mediaType, setMediaType] = useState<MediaType>('tv')
@@ -118,8 +125,8 @@ export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [results, setResults] = useState<RowResult[]>([])
 
-  // 每次打开（paths 换一份新引用）重置整个表单态——同一个对话框元素在 TriagePage 里常驻，
-  // 不会因为 paths→null 而卸载（同 RerunDialog 的既有先例）。
+  // 每次打开（group 换一份新引用）重置整个表单态——同一个对话框元素在 TriagePage 里常驻，
+  // 不会因为 group→null 而卸载（同 RerunDialog 的既有先例）。
   useEffect(() => {
     setMediaType('tv')
     setQuery('')
@@ -132,7 +139,7 @@ export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
     setSeason(null)
     setPhase('idle')
     setResults([])
-  }, [paths])
+  }, [group])
 
   // 400ms 防抖。
   useEffect(() => {
@@ -142,7 +149,7 @@ export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
 
   // 防抖后的真实搜索请求——debouncedQuery 为空时不发请求，也不残留上一次的结果。
   useEffect(() => {
-    if (!paths) return
+    if (!group) return
     if (!debouncedQuery) {
       setSearchResults(null)
       setSearchError(false)
@@ -167,9 +174,9 @@ export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
         if (!ctrl.signal.aborted) setSearching(false)
       })
     return () => ctrl.abort()
-  }, [debouncedQuery, mediaType, paths])
+  }, [debouncedQuery, mediaType, group])
 
-  if (!paths) return null
+  if (!group) return null
 
   const effectiveTmdbId = selectedHitId != null ? String(selectedHitId) : manualTmdbId != null ? String(manualTmdbId) : null
   const canSubmit = effectiveTmdbId != null && phase === 'idle'
@@ -177,28 +184,26 @@ export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
 
   const handleSubmit = async () => {
     if (!effectiveTmdbId) return
-    const deduped = dedupeByDirname(paths)
+    // claimParked 的 override 覆盖粒度是 dirname(path) 前缀（见 src/dashboard/apiV2.ts
+    // claimParked 注释）——组内随便挑一个文件的 path 发一条 claim 就能救活整个目录，group.files
+    // 已经按 path 排过序（text.ts groupPending），取第一个即可，不需要遍历整组逐个提交。
+    const path = group.files[0].path
     setPhase('submitting')
-    setResults(deduped.map((p) => ({ path: p, status: 'pending' as const })))
-    let allOk = true
-    for (const p of deduped) {
-      try {
-        await api.claimTriage({
-          path: p,
-          tmdbId: effectiveTmdbId,
-          isTv: mediaType === 'tv',
-          ...(mediaType === 'tv' && season != null ? { season } : {}),
-        })
-        setResults((prev) => prev.map((r) => (r.path === p ? { ...r, status: 'ok' as const } : r)))
-      } catch (e) {
-        allOk = false
-        setResults((prev) => prev.map((r) => (r.path === p ? { ...r, status: 'error' as const, error: String(e) } : r)))
-      }
-    }
-    setPhase('done')
-    if (allOk) {
-      onSuccess()
+    setResults([{ path, status: 'pending' }])
+    try {
+      await api.claimTriage({
+        path,
+        tmdbId: effectiveTmdbId,
+        isTv: mediaType === 'tv',
+        ...(mediaType === 'tv' && season != null ? { season } : {}),
+      })
+      setResults([{ path, status: 'ok' }])
+      setPhase('done')
+      onSuccess(group.dir)
       onClose()
+    } catch (e) {
+      setResults([{ path, status: 'error', error: String(e) }])
+      setPhase('done')
     }
   }
 
@@ -210,7 +215,7 @@ export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
         header={
           <DialogHeader
             title={t('triage_dialog_title')}
-            subtitle={selectedCountLabel(paths.length, lang)}
+            subtitle={fileCountLabel(group.files.length, lang)}
             onOpenChange={() => onClose()}
           />
         }
@@ -219,7 +224,7 @@ export function ClaimDialog({ paths, onClose, onSuccess }: Props) {
             <VStack gap={4}>
               {showForm ? (
                 <>
-                  <PathList paths={paths} lang={lang} />
+                  <PathList paths={group.files.map((f) => f.path)} lang={lang} />
 
                   <SegmentedControl
                     value={mediaType}

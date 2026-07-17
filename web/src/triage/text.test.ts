@@ -1,9 +1,10 @@
-// web/src/triage/text.test.ts：甄别区纯函数——路径处理（pathTail/dirnameOf/dedupeByDirname）
-// 与双语动态文案（selectedCountLabel/moreLabel/relativeClaimedAgo）。
+// web/src/triage/text.test.ts：甄别区纯函数——路径处理（pathTail/dirnameOf）、目录分组
+// （groupPending，验收修复轮一 Task V2）与双语动态文案（fileCountLabel/moreLabel/relativeClaimedAgo）。
 import { describe, it, expect } from 'vitest'
 import {
-  pathTail, dirnameOf, dedupeByDirname, selectedCountLabel, moreLabel, relativeClaimedAgo,
+  pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel, relativeClaimedAgo,
 } from './text.js'
+import type { ParkedItemDTO } from '../api/types.js'
 
 describe('pathTail', () => {
   it('绝对路径 → 最后一段文件名', () => {
@@ -26,27 +27,62 @@ describe('dirnameOf（POSIX dirname 语义）', () => {
   })
 })
 
-describe('dedupeByDirname——claimParked 的 override 粒度是 dirname 前缀，同目录只 POST 一条', () => {
-  it('同目录多文件保留第一条、保序', () => {
-    expect(
-      dedupeByDirname([
-        '/media/tv/Show A/S01/ep1.mkv',
-        '/media/tv/Show A/S01/ep2.mkv',
-        '/media/tv/Show B/ep1.mkv',
-        '/media/tv/Show A/S01/ep3.mkv',
-      ]),
-    ).toEqual(['/media/tv/Show A/S01/ep1.mkv', '/media/tv/Show B/ep1.mkv'])
+function row(path: string, parkReason = 'ambiguous match'): ParkedItemDTO {
+  return { path, parkReason, firstSeen: 0, lastAttempt: 0 }
+}
+
+describe('groupPending——按 dirname 分组 + duplicate-content 单独分箱（claimParked 的 override 粒度=目录前缀）', () => {
+  it('actionable：按目录分组，组内按 path 排序、组间按文件数降序', () => {
+    const { actionable } = groupPending([
+      row('/media/tv/Show B/ep1.mkv'),
+      row('/media/tv/Show A/S01/ep2.mkv'),
+      row('/media/tv/Show A/S01/ep1.mkv'),
+    ])
+    expect(actionable).toEqual([
+      {
+        dir: '/media/tv/Show A/S01',
+        dirTail: 'S01',
+        files: [row('/media/tv/Show A/S01/ep1.mkv'), row('/media/tv/Show A/S01/ep2.mkv')],
+      },
+      {
+        dir: '/media/tv/Show B',
+        dirTail: 'Show B',
+        files: [row('/media/tv/Show B/ep1.mkv')],
+      },
+    ])
   })
-  it('全部不同目录 → 原样', () => {
-    expect(dedupeByDirname(['/a/x.mkv', '/b/x.mkv'])).toEqual(['/a/x.mkv', '/b/x.mkv'])
+
+  it('duplicate-content 行进 duplicates 桶，其余进 actionable 桶——两桶各自独立分组', () => {
+    const { actionable, duplicates } = groupPending([
+      row('/media/tv/Show A/ep1.mkv', 'ambiguous match'),
+      row('/media/tv/Show A/ep2.mkv', 'duplicate-content'),
+    ])
+    expect(actionable).toEqual([
+      { dir: '/media/tv/Show A', dirTail: 'Show A', files: [row('/media/tv/Show A/ep1.mkv', 'ambiguous match')] },
+    ])
+    expect(duplicates).toEqual([
+      { dir: '/media/tv/Show A', dirTail: 'Show A', files: [row('/media/tv/Show A/ep2.mkv', 'duplicate-content')] },
+    ])
+  })
+
+  it('组间文件数并列时按 dir 名排序，结果确定不抖动', () => {
+    const { actionable } = groupPending([
+      row('/media/tv/Show B/ep1.mkv'),
+      row('/media/tv/Show A/ep1.mkv'),
+    ])
+    expect(actionable.map((g) => g.dir)).toEqual(['/media/tv/Show A', '/media/tv/Show B'])
+  })
+
+  it('空输入 → 两桶皆空', () => {
+    expect(groupPending([])).toEqual({ actionable: [], duplicates: [] })
   })
 })
 
 describe('双语动态文案', () => {
-  it('selectedCountLabel：en 单复数 / zh 计数', () => {
-    expect(selectedCountLabel(1, 'en')).toBe('1 file selected')
-    expect(selectedCountLabel(3, 'en')).toBe('3 files selected')
-    expect(selectedCountLabel(3, 'zh')).toBe('已选 3 个文件')
+  it('fileCountLabel：en 单复数 / zh 计数', () => {
+    expect(fileCountLabel(1, 'en')).toBe('1 file')
+    expect(fileCountLabel(3, 'en')).toBe('3 files')
+    expect(fileCountLabel(3, 'zh')).toBe('3 个文件')
   })
   it('moreLabel', () => {
     expect(moreLabel(4, 'en')).toBe('+4 more')
