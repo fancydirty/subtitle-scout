@@ -187,11 +187,9 @@ export const en = {
   settings_hardsub_mode_option_aggressive: 'Aggressive',
   settings_hardsub_mode_note: 'Takes effect on the next dispatched find-subtitle task.',
   settings_exclude_extras_label: 'Exclude extras',
-  // 救援R4c：exclude_extras 已被 ingest 消费，独立"下一轮扫描生效"注记（hardsub_mode 仍共用救援官注记）。
+  // 救援R6：exclude_extras/hardsub_mode 已各自独立生效注记（R4c/R5e）——rescue-officer 战役
+  // 全线收官，这条"尚未落地"占位注记已无消费点，随手清理，不留误导性文案。
   settings_exclude_extras_restart_note: 'Takes effect on the next library scan.',
-  // hardsub_mode 仍共用同一句诚实注记：执行逻辑尚未落地（spec §9 立项登记：救援官战役）。
-  settings_rescue_officer_pending_note:
-    'Saved, but the execution logic ships with the rescue-officer campaign — not consumed yet.',
 
   settings_trace_retention_label: 'Trace retention (days)',
   settings_trace_retention_note: 'Takes effect at the daily trace cleanup.',
