@@ -90,6 +90,44 @@ describe('makeOpenSubtitlesAdapter: search', () => {
     expect(call.query).toBe('Peacemaker')
   })
 
+  // Shelby Oaks 实案（验收轮一，2026-07-17）：TMDB 主发行年 2025，OS 特征年 2024——严格年份
+  // 过滤把 OS 上确实存在的两条简中字幕滤成零，agent 只看得见 assrt 的 PGS 包于是判无。跨年
+  // 上映/节展片是常态，标题查询零命中且带过年份时必须去年份重试一次（召回优先——归属判断
+  // 本来就归 agent，这里多召回不放大误装风险）。
+  it('③d title query with year → 0 hits → retries ONCE without year (Shelby Oaks regression)', async () => {
+    const search = vi.fn(async (p: OsSearchParams) => (p.year != null ? emptyResp : fixture))
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    const results = await adapter.search(args({ queries: ['Shelby Oaks'], year: 2025 }), () => {})
+
+    expect(search).toHaveBeenCalledTimes(2)
+    expect(search.mock.calls[0][0]).toMatchObject({ query: 'Shelby Oaks', year: 2025 })
+    expect(search.mock.calls[1][0].year).toBeUndefined()
+    expect(search.mock.calls[1][0].query).toBe('Shelby Oaks')
+    expect(results.length).toBe(2)
+  })
+
+  it('③e title query with year that DOES hit → no retry (year filter kept for precision)', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => fixture)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ queries: ['Shelby Oaks'], year: 2025 }), () => {})
+
+    expect(search).toHaveBeenCalledTimes(1)
+  })
+
+  it('③f title query without year → 0 hits → no pointless retry', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ queries: ['Shelby Oaks'] }), () => {})
+
+    expect(search).toHaveBeenCalledTimes(1)
+  })
+
   it('④imdb with tt prefix is stripped to a number', async () => {
     const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
     const client = fakeClient({ search })

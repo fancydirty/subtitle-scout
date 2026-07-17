@@ -59,9 +59,17 @@ export function makeOpenSubtitlesAdapter(
     search: async (args) => {
       const languages = args.languages ?? ['zh-cn', 'zh-tw']
       const imdb = imdbDigits(args.imdb)
-      const resp = await client.search(imdb != null
+      let resp = await client.search(imdb != null
         ? { imdbId: imdb, languages }
         : { query: args.queries[0], season: args.season, episode: args.episode, year: args.year, languages })
+      // Shelby Oaks 实案（验收轮一，2026-07-17）：TMDB 主发行年与 OS 特征年差一年是跨年上映/
+      // 节展片的常态（此案 2025 vs 2024），严格年份过滤会把确实存在的字幕滤成零、且在 fail-soft
+      // 世界里无声无息——agent 拿到被污染的"全网没有"证据后判无。标题查询带年份零命中时去掉
+      // 年份重试一次：召回优先，归属判断本来就归 agent（findSubtitleSkill 的逐候选判断），
+      // 多召回不放大误装风险。imdb 路径不需要（imdb 本身就是精确身份，没有年份参与）。
+      if (imdb == null && args.year != null && resp.data.length === 0) {
+        resp = await client.search({ query: args.queries[0], season: args.season, episode: args.episode, languages })
+      }
       return osToCandidates(resp)
     },
     resolve: async (ref, emit) => {
