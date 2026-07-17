@@ -295,7 +295,11 @@ async function enrichNewSeriesOrMovie(
     const details = await tmdb.getDetails(mediaType, tmdbId)
     posterPath = details?.posterPath ?? null
     year = details?.year ?? null
-    genres = details?.genreIds ?? null
+    // 债务D6：404（getDetails 契约=返回 null，TMDB 权威答复查无此 id，永久态）时 genres 落 []
+    // 而不是 null——null 不写列（见 libraryRepo 两条写路的 != null 判定），该行会永远留在
+    // listSeriesNeedingEnrich 的 `genres IS NULL` 候选里，空转击穿每轮 10 个重试槽。瞬时失败
+    // （下面 catch 分支）维持 null → 下轮重试，两种"没拿到"必须分开。
+    genres = details ? details.genreIds : []
     originalTitle = details?.originalTitle ?? null
   } catch (e) {
     log(`ingest: getDetails failed for ${mediaType}:${tmdbId}, proceeding without poster/year/genres/originalTitle this pass: ${e instanceof Error ? e.message : String(e)}`)

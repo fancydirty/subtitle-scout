@@ -1340,4 +1340,53 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     // 现值已有 imdb → COALESCE 语义：不动，新采到的值不覆盖。
     expect(series!.provider_ids).toBe(JSON.stringify({ tmdb: '24240', imdb: 'tt99999' }))
   })
+
+  // 债务D6：富化重试谓词护栏——404 死 id 必须落 '[]' 退出候选，瞬时失败保持 NULL 继续重试。
+  it('D6：TMDB 回空 genres 时，genres 落 "[]" 并退出候选清单', async () => {
+    lib.upsertSeries({ id: 'tmdb:24240', name: 'Stub Name' })
+    const getDetails = vi.fn(async () => ({
+      overview: null, runtimeMinutes: null, posterPath: null,
+      originalTitle: 'Rescued Show', year: null, genreIds: [] as number[],
+    }))
+    const pass = makeIngestPass(makeDeps({
+      tmdb: fakeTmdb({ getDetails }),
+      listVideoFiles: () => [],
+    }))
+
+    await pass()
+
+    const series = lib.getSeries('tmdb:24240')
+    expect(series!.genres).toBe(JSON.stringify([]))
+    expect(lib.listSeriesNeedingEnrich(10).map((r) => r.id)).not.toContain('tmdb:24240')
+  })
+
+  it('D6：404 死 id（getDetails 返回 null）时 genres 落 "[]" 并退出候选清单', async () => {
+    lib.upsertSeries({ id: 'tmdb:24240', name: 'Stub Name' })
+    const getDetails = vi.fn(async () => null)
+    const pass = makeIngestPass(makeDeps({
+      tmdb: fakeTmdb({ getDetails }),
+      listVideoFiles: () => [],
+    }))
+
+    await pass()
+
+    const series = lib.getSeries('tmdb:24240')
+    expect(series!.genres).toBe(JSON.stringify([]))
+    expect(lib.listSeriesNeedingEnrich(10).map((r) => r.id)).not.toContain('tmdb:24240')
+  })
+
+  it('D6：getDetails 瞬时失败时 genres 仍 NULL，保持在候选清单下轮重试', async () => {
+    lib.upsertSeries({ id: 'tmdb:24240', name: 'Stub Name' })
+    const getDetails = vi.fn(async () => { throw new TmdbRequestFailedError(new Error('ECONNREFUSED')) })
+    const pass = makeIngestPass(makeDeps({
+      tmdb: fakeTmdb({ getDetails }),
+      listVideoFiles: () => [],
+    }))
+
+    await pass()
+
+    const series = lib.getSeries('tmdb:24240')
+    expect(series!.genres).toBeNull()
+    expect(lib.listSeriesNeedingEnrich(10).map((r) => r.id)).toEqual(['tmdb:24240'])
+  })
 })
