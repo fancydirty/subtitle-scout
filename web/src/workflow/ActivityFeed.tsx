@@ -30,11 +30,13 @@ const TONE_VARIANT: Record<DecisionTone, 'success' | 'neutral' | 'error'> = {
   ok: 'success', neutral: 'neutral', bad: 'error',
 }
 
-/** running worker 目前只有 seriesId/movieId（V3 只给 recent 行加了 name join，running 没有），
- *  这里诚实地用 id 当主语——不编造一个 DTO 没有的名字。realign 任务读作"整理"，find_subtitle
- *  读作"搜索字幕"（铁律①：句子主语=内容，不是"worker/job"）。 */
-function nowWorkingTitle(w: Pick<WorkflowRunningWorkerDTO, 'taskType' | 'seriesId' | 'movieId'>): string {
-  const target = w.seriesId ?? w.movieId ?? '?'
+/** 卡头主语=剧/片名（铁律①：句子主语=内容，不是"worker/job"），名字查无/为空时降级显示 id
+ *  ——诚实兜底（收官补刀：running 行的 name join 已在后端补齐，与 recent 行同款待遇）。
+ *  realign 任务读作"整理"，find_subtitle 读作"搜索字幕"。 */
+function nowWorkingTitle(
+  w: Pick<WorkflowRunningWorkerDTO, 'taskType' | 'seriesId' | 'movieId' | 'seriesName' | 'movieName'>,
+): string {
+  const target = w.seriesName ?? w.movieName ?? w.seriesId ?? w.movieId ?? '?'
   return w.taskType === 'realign' ? `Tidying up ${target}` : `Searching subtitles for ${target}`
 }
 

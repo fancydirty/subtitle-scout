@@ -214,6 +214,7 @@ describe('Lanes：Now working 卡 + SSE 直播流入 TraceRows（phraseMode 人�
       running: [
         {
           jobId: 42, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: [1],
+          seriesName: null, movieName: null,
           startedAtLease: NOW,
           trail: [{ runKey: 'job-42', seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: NOW }],
         },

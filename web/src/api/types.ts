@@ -157,6 +157,10 @@ export interface WorkflowRunningWorkerDTO {
   movieId: string | null
   taskType: string | null
   seasons: number[] | null
+  /** 验收修复轮一收官补刀（spec §B 铁律①）：跑中卡头主语=剧/片名；null=空名/查无（前端降级
+   *  显示 id，诚实兜底）。 */
+  seriesName: string | null
+  movieName: string | null
   startedAtLease: number
   /** traceBus.peek 的直播补拉——非破坏性尾部 20 条，供 TraceRows 首屏渲染的初始 trail。 */
   trail: TraceEvent[]

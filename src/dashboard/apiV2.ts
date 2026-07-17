@@ -821,6 +821,10 @@ export interface WorkflowRunningWorkerDTO {
   movieId: string | null
   taskType: string | null
   seasons: number[] | null
+  /** 验收修复轮一收官补刀（spec §B 铁律①）：跑中卡头主语=剧/片名，LEFT JOIN series/movies
+   *  取 name（空名/查无→null，前端降级显示 id——诚实兜底）。 */
+  seriesName: string | null
+  movieName: string | null
   /** jobs.updated_at——本轮 claim/续租发生的时刻，jobs 表没有独立的 started_at 列，这是最接近
    *  "这个租约/尝试何时开始"的既有字段（同 claimNext/renewLease 都会刷新它）。 */
   startedAtLease: number
@@ -889,12 +893,21 @@ function nullIfEmpty(name: string | null): string | null {
  *  （design §B）：顶部总览句"N episodes installed in the last 24h"的数据源。now 由调用方传入
  *  （沿 buildWorkflowPending 的既有 now 传参先例）。 */
 export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersDTO {
+  // 验收修复轮一收官补刀：running 卡头的主语也要是剧名不是 tmdb id（spec §B 铁律①——V3 只给
+  // recent 加了 name join，跑中行漏了同款待遇）。LEFT JOIN 手法与下方 recent 查询一致。
   const runningRows = db
     .prepare(
-      `SELECT id, series_id, movie_id, payload, updated_at FROM jobs
-       WHERE state = 'searching' AND kind = 'worker_task'`
+      `SELECT j.id, j.series_id, j.movie_id, j.payload, j.updated_at,
+              s.name AS series_name, m.name AS movie_name
+       FROM jobs j
+       LEFT JOIN series s ON s.id = j.series_id
+       LEFT JOIN movies m ON m.id = j.movie_id
+       WHERE j.state = 'searching' AND j.kind = 'worker_task'`
     )
-    .all() as { id: number; series_id: string | null; movie_id: string | null; payload: string | null; updated_at: number }[]
+    .all() as {
+      id: number; series_id: string | null; movie_id: string | null; payload: string | null
+      updated_at: number; series_name: string | null; movie_name: string | null
+    }[]
 
   const running: WorkflowRunningWorkerDTO[] = runningRows.map((r) => {
     const { taskType, seasons } = parseWorkerTaskPayload(r.payload)
@@ -907,6 +920,7 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
       : traceBus.peek(`job-${r.id}`, 20)
     return {
       jobId: r.id, seriesId: r.series_id, movieId: r.movie_id, taskType, seasons,
+      seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
       startedAtLease: r.updated_at, trail,
     }
   })

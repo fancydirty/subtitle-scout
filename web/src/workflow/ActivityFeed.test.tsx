@@ -47,6 +47,7 @@ describe('ActivityFeed：Now working 卡——人话卡头 + phraseMode 直播',
   function runningWorker(overrides: Partial<WorkflowRunningWorkerDTO> = {}): WorkflowRunningWorkerDTO {
     return {
       jobId: 42, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: [1],
+      seriesName: null, movieName: null,
       startedAtLease: NOW - 5 * 60_000,
       trail: [{ runKey: 'job-42', seq: 0, tool: 'search_source', argsSummary: '"silo 中字"', resultSummary: '41 candidates', tookMs: 1200, at: NOW }],
       ...overrides,
@@ -57,6 +58,15 @@ describe('ActivityFeed：Now working 卡——人话卡头 + phraseMode 直播',
     renderFeed({ workers: asyncOf({ running: [runningWorker()], recent: [], installedLast24h: 0 }) })
     expect(screen.getByText('Searching subtitles for s1')).toBeInTheDocument()
     expect(screen.getByText('5m ago')).toBeInTheDocument()
+  })
+
+  // 收官补刀（spec §B 铁律①）：running 行带 seriesName 时卡头主语用名字不用 id。
+  it('卡头有 seriesName 时用名字，不再显示 tmdb id', () => {
+    renderFeed({
+      workers: asyncOf({ running: [runningWorker({ seriesName: 'The Rig' })], recent: [], installedLast24h: 0 }),
+    })
+    expect(screen.getByText('Searching subtitles for The Rig')).toBeInTheDocument()
+    expect(screen.queryByText('Searching subtitles for s1')).not.toBeInTheDocument()
   })
 
   it('realign 任务 → "Tidying up {target}"', () => {
