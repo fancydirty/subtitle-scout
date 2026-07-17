@@ -169,4 +169,29 @@ describe('propagateSubtitleToReplica', () => {
     expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([])
     expect(logs.some((l) => l.includes('复制失败'))).toBe(true)
   })
+
+  // 数据损失防线：副本旁边磁盘上已经有一份字幕文件（比如用户亲手放的 sidecar，它不在 DB 里——
+  // 副本走 ingest 的 addItemFile 分支不做 sidecar 探测）——绝不能用主文件的字幕覆盖它。
+  it('目标位置磁盘上已有文件（未登记 DB 的手放 sidecar）→ 绝不覆盖，跳过并落 log，不写字幕行', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.4K.mkv')
+    const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
+    const userSidecar = join(root, 'Show.4K.zh-Hans.srt') // 副本旁用户手放的字幕，DB 里没有这行
+    writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+    writeFileSync(mainSubPath, 'MAIN subtitle content')
+    writeFileSync(userSidecar, 'USER hand-placed subtitle — must survive')
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'covered' })
+    lib.addItemFile('e1', replicaPath, 1000)
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('e1', mainSubPath, 'zh-Hans', 'scout-download', 1000)
+
+    await propagateSubtitleToReplica(deps(async () => 1420), 'e1', mainPath, replicaPath, 2000)
+
+    // 用户那份字幕原样活着——没被主文件字幕覆盖
+    expect(readFileSync(userSidecar, 'utf8')).toBe('USER hand-placed subtitle — must survive')
+    // 不猜它的归属，不登记进 DB（宁停不猜）
+    expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([])
+    expect(logs.some((l) => l.includes('目标位置已有文件'))).toBe(true)
+  })
 })

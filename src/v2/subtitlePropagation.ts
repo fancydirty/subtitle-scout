@@ -1,4 +1,5 @@
 import { copyFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { join, basename, extname, dirname } from 'node:path'
 import type { LibraryRepo } from './libraryRepo.js'
 
@@ -66,6 +67,16 @@ export async function propagateSubtitleToReplica(
   const replicaDir = dirname(replicaPath)
   for (const sub of mainSubs) {
     const destPath = join(replicaDir, `${replicaBase}.${sub.language}${extname(sub.path)}`)
+    // 磁盘上目标位置已经有文件了——绝不覆盖。前置的 DB 检查（本函数开头）只看得到登记进
+    // subtitles 表的字幕；而副本文件是走 ingest.ts 的"撞身份→addItemFile"分支入库的，那条分支
+    // 不做 sidecar 探测（不同于新文件的 classify() 路径），所以副本旁边用户亲手放的 sidecar
+    // 根本不在 DB 里——这层磁盘存在性检查是它唯一的防线，少了它这条通道会拿主文件的字幕覆盖
+    // 掉用户手放的那份（真实数据损失）。这里只跳过、不 addReplicaSubtitle：那份磁盘文件的语言/
+    // 归属不是这条通道该猜的（宁停不猜），登记归属是 ingest 未来若加副本 sidecar 探测的职责。
+    if (existsSync(destPath)) {
+      deps.log(`[subtitle-propagate] ${itemId}: 目标位置已有文件，跳过不覆盖：${destPath}`)
+      continue
+    }
     try {
       await copyFile(sub.path, destPath)
     } catch (e) {
