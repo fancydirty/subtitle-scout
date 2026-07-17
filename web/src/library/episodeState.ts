@@ -11,7 +11,7 @@
 //   dashed    canonical 有但磁盘没有对应集——三层合成的核心呈现，不计入上述任何一态
 import type { LibraryCanonicalEpisodeDTO, LibraryOnDiskEpisodeDTO, LibrarySeasonDTO } from '../api/types.js'
 
-export type EpisodeCellState = 'covered' | 'hardsub' | 'missing' | 'throttled' | 'error' | 'dashed'
+export type EpisodeCellState = 'covered' | 'hardsub' | 'missing' | 'throttled' | 'error' | 'dashed' | 'partial'
 
 export interface GridCell {
   episode: number
@@ -24,6 +24,12 @@ export interface GridCell {
 
 /** 单条磁盘记录 → 非 dashed 的四态之一。 */
 function classifyOnDisk(ep: LibraryOnDiskEpisodeDTO, now: number): Exclude<EpisodeCellState, 'dashed'> {
+  // 重复源 P3b：多文件条目且副本间覆盖不一致 → partial（分体态）。
+  if (ep.files && ep.files.length > 1) {
+    const hasCovered = ep.files.some((f) => f.covered)
+    const hasUncovered = ep.files.some((f) => !f.covered)
+    if (hasCovered && hasUncovered) return 'partial'
+  }
   switch (ep.subStatus) {
     case 'covered':
     case 'embedded':
@@ -76,11 +82,12 @@ export interface SeasonTally {
   throttled: number
   error: number
   dashed: number
+  partial: number
   total: number
 }
 
 export function tallyGridCells(cells: GridCell[]): SeasonTally {
-  const t: SeasonTally = { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, total: cells.length }
+  const t: SeasonTally = { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, partial: 0, total: cells.length }
   for (const c of cells) {
     switch (c.state) {
       case 'covered':
@@ -101,6 +108,9 @@ export function tallyGridCells(cells: GridCell[]): SeasonTally {
         break
       case 'dashed':
         t.dashed++
+        break
+      case 'partial':
+        t.partial++
         break
     }
   }

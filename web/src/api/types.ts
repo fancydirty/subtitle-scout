@@ -8,6 +8,8 @@ export interface CoverageDTO {
   unavailable: number
   /** 救援R5：硬字幕假定——独立桶，前端渲染独立样式，不冒充"外挂字幕已确认"的绿点。 */
   hardsubAssumed: number
+  /** 重复源 P3b：文件级副本间覆盖不一致——独立桶。 */
+  partial: number
 }
 export interface LibraryJobDTO {
   state: string
@@ -310,6 +312,8 @@ export interface LibraryOnDiskEpisodeDTO {
   subStatus: string
   statusReason: string | null
   recheckAfter: number | null
+  /** 重复源 P3b：逐文件覆盖（主文件 + 全部副本）。 */
+  files: Array<{ path: string; isMain: boolean; covered: boolean }>
 }
 export interface LibraryCoverageRowDTO {
   episode: number

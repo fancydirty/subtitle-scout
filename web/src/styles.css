@@ -195,6 +195,9 @@
 .ep-cell-error .ep-num {
   color: var(--color-text-red);
 }
+.ep-cell-partial .ep-num {
+  color: var(--color-text-orange);
+}
 
 /* 5px 语义点——左上角，跟 mono 集号并排读（任务规格：EpisodeCell = 灰格 + 左上 5px 语义点）。 */
 .ep-dot {
@@ -211,6 +214,10 @@
 .ep-dot-hardsub {
   /* 灰绿间调，理由同上方 .ep-cell-hardsub .ep-num 注释。 */
   background: color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%);
+}
+.ep-dot-partial {
+  /* 分体态：半覆盖——左半绿（有字幕）右半灰（缺字幕），用既有 token，不注册新 defineTheme token。 */
+  background: linear-gradient(90deg, var(--color-text-green) 50%, var(--color-text-gray) 50%);
 }
 .ep-dot-missing {
   background: transparent;

@@ -117,12 +117,12 @@ describe('buildLibrary', () => {
     expect(series.chineseTitle).toBe('甲剧')
     expect(series.year).toBe(2021)
     expect(series.posterPath).toBe('ptag-s1')
-    expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 1, unavailable: 1, hardsubAssumed: 0 })
+    expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 1, unavailable: 1, hardsubAssumed: 0, partial: 0 })
     expect(series.job).toEqual({ state: 'searching', priority: 100 })
 
     const movie = lib2.find(x => x.id === 'm1')!
     expect(movie.kind).toBe('movie')
-    expect(movie.coverage).toEqual({ covered: 0, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0 })
+    expect(movie.coverage).toEqual({ covered: 0, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
     expect(movie.job).toEqual({ state: 'wanted', priority: 0 })
   })
 
@@ -164,7 +164,7 @@ describe('buildLibrary', () => {
     lib.upsertSeries({ id: 's9', name: 'Orphan' })
     const item = buildLibrary(db).find(x => x.id === 's9')!
     expect(item.job).toBeNull()
-    expect(item.coverage).toEqual({ covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0 })
+    expect(item.coverage).toEqual({ covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
   })
 })
 

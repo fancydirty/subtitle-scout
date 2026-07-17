@@ -53,14 +53,17 @@ export const en = {
   library_detail_next_recheck_prefix: 'next recheck in',
   library_detail_close_label: 'Close episode details',
   library_detail_file_heading: 'File',
+  library_detail_files_heading: 'Files',
   library_detail_subtitles_heading: 'Subtitles',
   library_detail_hardsub_assumed: 'covered (hardsub assumed)',
+  library_detail_main_file: 'main',
 
   // 格阵图例。
   library_legend_covered: 'covered',
   library_legend_hardsub: 'hardsub assumed',
   library_legend_missing: 'missing',
   library_legend_throttled: 'throttled',
+  library_legend_partial: 'partial',
   library_legend_dashed: 'not on disk',
 
   // Workflow 区永不本地化——本文件是这些键的唯一真源，zh.ts 直接引用，不重复翻译

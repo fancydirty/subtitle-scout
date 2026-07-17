@@ -4,7 +4,7 @@ import { seasonCoverageSentence, formatResultCount, formatDuration } from './tex
 import type { SeasonTally } from './episodeState.js'
 
 function tally(p: Partial<SeasonTally>): SeasonTally {
-  return { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, total: 0, ...p }
+  return { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, partial: 0, total: 0, ...p }
 }
 
 describe('seasonCoverageSentence', () => {

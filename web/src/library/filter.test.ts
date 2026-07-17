@@ -4,7 +4,7 @@ import { matchesLibraryFilter, groupBySection } from './filter.js'
 import type { CoverageDTO, LibraryItemDTO } from '../api/types.js'
 
 function cov(partial: Partial<CoverageDTO>): CoverageDTO {
-  return { covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, ...partial }
+  return { covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0, ...partial }
 }
 
 describe('matchesLibraryFilter', () => {

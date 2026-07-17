@@ -47,13 +47,16 @@ export const zh = {
   library_detail_next_recheck_prefix: '预计复查',
   library_detail_close_label: '关闭单集详情',
   library_detail_file_heading: '文件',
+  library_detail_files_heading: '文件清单',
   library_detail_subtitles_heading: '字幕',
   library_detail_hardsub_assumed: '已覆盖（硬字幕假定）',
+  library_detail_main_file: '主文件',
 
   library_legend_covered: '已覆盖',
   library_legend_hardsub: '硬字幕假定',
   library_legend_missing: '缺字幕',
   library_legend_throttled: '停牌中',
+  library_legend_partial: '部分覆盖',
   library_legend_dashed: '磁盘无此文件',
 
   // Workflow 区永不本地化（用户裁决）：直接引用 en 值，禁止改成中文。

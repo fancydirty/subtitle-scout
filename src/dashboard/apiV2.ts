@@ -25,6 +25,9 @@ export interface CoverageDTO {
   /** 救援R5：硬字幕假定（诚实标注为覆盖的一种，不是失败）——独立桶而非并入 covered，前端渲染
    *  独立样式（DESIGN.md 语义色灰绿间调），不冒充"外挂字幕已确认"的绿点。 */
   hardsubAssumed: number
+  /** 重复源 P3b：文件级副本间覆盖不一致——独立的第六个事实桶，不改变 covered/missing 等
+   *  既有主文件桶计数。 */
+  partial: number
 }
 
 export interface LibraryJobDTO {
@@ -71,7 +74,7 @@ interface JobRow {
   priority: number
 }
 
-const emptyCoverage = (): CoverageDTO => ({ covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0 })
+const emptyCoverage = (): CoverageDTO => ({ covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
 
 /** 把一条 sub_status 累加进覆盖桶（ignored 不入桶，它不参与 scout）。 */
 function addToCoverage(cov: CoverageDTO, status: string, n: number): void {
@@ -228,6 +231,37 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     )
     .all() as MovieRow[]
 
+  // 重复源 P3b：只对有副本的 item（item_files 表）计算 partial，避免全表逐集循环。
+  const itemIdsWithCopies = db
+    .prepare(`SELECT DISTINCT item_id FROM item_files`)
+    .all() as { item_id: string }[]
+  const itemIds = itemIdsWithCopies.map((r) => r.item_id)
+  const itemIdToSeriesId = new Map<string, string>()
+  if (itemIds.length > 0) {
+    const placeholders = itemIds.map(() => '?').join(',')
+    const episodeRows = db
+      .prepare(`SELECT id, series_id FROM episodes WHERE id IN (${placeholders})`)
+      .all(...itemIds) as { id: string; series_id: string }[]
+    for (const r of episodeRows) itemIdToSeriesId.set(r.id, r.series_id)
+  }
+  const movieIds = new Set(movieRows.map((m) => m.id))
+  const partialMovieIds = new Set<string>()
+  const lib = new LibraryRepo(db)
+  for (const itemId of itemIds) {
+    const files = lib.itemFileCoverage(itemId)
+    if (files.length === 0) continue
+    const hasCovered = files.some((f) => f.covered)
+    const hasUncovered = files.some((f) => !f.covered)
+    if (!hasCovered || !hasUncovered) continue
+    const seriesId = itemIdToSeriesId.get(itemId)
+    if (seriesId) {
+      const cov = coverageBySeriesId.get(seriesId)
+      if (cov) cov.partial++
+    } else if (movieIds.has(itemId)) {
+      partialMovieIds.add(itemId)
+    }
+  }
+
   // 媒体根深度：series 代表 path + movie path 一起求最长公共祖先（零配置对齐用户库根）
   const allPaths = [...pathBySeriesId.values(), ...movieRows.map((m) => m.path)]
   const rootDepth = commonRootDepth(allPaths)
@@ -268,6 +302,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
   const movieItems: LibraryItemDTO[] = movieRows.map((m) => {
     const coverage = emptyCoverage()
     addToCoverage(coverage, m.sub_status, 1)
+    if (partialMovieIds.has(m.id)) coverage.partial = 1
     return {
       id: m.id,
       kind: 'movie',
@@ -1055,6 +1090,9 @@ export interface LibraryOnDiskEpisodeDTO {
   subStatus: string
   statusReason: string | null
   recheckAfter: number | null
+  /** 重复源 P3b：该集的逐文件覆盖（主文件 + 全部副本），来自 libraryRepo.itemFileCoverage。
+   *  单文件条目 length=1（只有主文件）；多文件条目 length>1，前端据此渲染分体态。 */
+  files: Array<{ path: string; isMain: boolean; covered: boolean }>
 }
 export interface LibraryCoverageRowDTO {
   episode: number
@@ -1081,6 +1119,7 @@ interface LibrarySeriesRow {
   layout_nonstandard: number
 }
 interface OnDiskEpisodeRow {
+  id: string
   season: number
   episode: number
   path: string
@@ -1107,7 +1146,7 @@ export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeries
 
   const onDiskRows = db
     .prepare(
-      `SELECT season, episode, path, sub_status, status_reason, recheck_after FROM episodes
+      `SELECT id, season, episode, path, sub_status, status_reason, recheck_after FROM episodes
        WHERE series_id = ? ORDER BY season ASC, episode ASC`
     )
     .all(id) as OnDiskEpisodeRow[]
@@ -1129,6 +1168,7 @@ export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeries
   for (const r of canonicalSeasonRows) seasonNumbers.add(r.season)
   const sortedSeasons = [...seasonNumbers].sort((a, b) => a - b)
 
+  const lib = new LibraryRepo(db)
   const seasons: LibrarySeasonDTO[] = sortedSeasons.map((season) => ({
     season,
     canonical: canonicalEpisodes(db, id, season),
@@ -1137,6 +1177,7 @@ export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeries
       .map((r) => ({
         episode: r.episode, path: r.path, subStatus: r.sub_status,
         statusReason: r.status_reason, recheckAfter: r.recheck_after,
+        files: lib.itemFileCoverage(r.id),
       })),
     coverage: coverageRows
       .filter((r) => r.season === season)

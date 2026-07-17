@@ -111,6 +111,10 @@ function Legend() {
         <Text type="code" color="secondary">{t('library_legend_throttled')}</Text>
       </HStack>
       <HStack gap={1} vAlign="center">
+        <span className="ep-dot ep-dot-partial" aria-hidden="true" />
+        <Text type="code" color="secondary">{t('library_legend_partial')}</Text>
+      </HStack>
+      <HStack gap={1} vAlign="center">
         <span className="ep-cell-dashed-swatch" aria-hidden="true" />
         <Text type="code" color="secondary">{t('library_legend_dashed')}</Text>
       </HStack>

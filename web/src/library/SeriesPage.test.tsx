@@ -42,12 +42,12 @@ describe('SeriesPage：三层合成渲染', () => {
           season: 1,
           canonical: Array.from({ length: 8 }, (_, i) => ({ episode: i + 1, title: `E${i + 1}` })),
           onDisk: [
-            { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-            { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-            { episode: 3, path: '/m/e3.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-            { episode: 4, path: '/m/e4.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-            { episode: 5, path: '/m/e5.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null },
-            { episode: 6, path: '/m/e6.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null },
+            { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { episode: 3, path: '/m/e3.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { episode: 4, path: '/m/e4.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { episode: 5, path: '/m/e5.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
+            { episode: 6, path: '/m/e6.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
           ],
           coverage: [
             { episode: 1, lang: 'zh-Hans', path: '/m/e1.zh-Hans.ass' },
@@ -77,7 +77,7 @@ describe('SeriesPage：覆盖句文案', () => {
           season: 1,
           canonical: Array.from({ length: 28 }, (_, i) => ({ episode: i + 1, title: null })),
           onDisk: Array.from({ length: 24 }, (_, i) => ({
-            episode: i + 1, path: `/m/e${i + 1}.mkv`, subStatus: 'covered', statusReason: null, recheckAfter: null,
+            episode: i + 1, path: `/m/e${i + 1}.mkv`, subStatus: 'covered', statusReason: null, recheckAfter: null, files: [],
           })),
           coverage: [],
         },
@@ -121,7 +121,7 @@ describe('SeriesPage：canonical 缓存未建', () => {
         {
           season: 1,
           canonical: [],
-          onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null }],
+          onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] }],
           coverage: [],
         },
       ],
@@ -144,7 +144,7 @@ describe('SeriesPage：详情板开合', () => {
           onDisk: [
             {
               episode: 1, path: '/media/Series A/S01/Series.A.S01E01.1080p.mkv',
-              subStatus: 'covered', statusReason: null, recheckAfter: null,
+              subStatus: 'covered', statusReason: null, recheckAfter: null, files: [],
             },
           ],
           coverage: [{ episode: 1, lang: 'zh-Hans', path: '/media/Series A/S01/Series.A.S01E01.zh-Hans.ass' }],
@@ -169,7 +169,7 @@ describe('SeriesPage：详情板开合', () => {
     detail.seasons[0].onDisk = [
       {
         episode: 1, path: '/media/Series A/S01/Series.A.S01E01.1080p.mkv',
-        subStatus: 'hardsub-assumed', statusReason: 'video stream has Chinese hard subtitles', recheckAfter: null,
+        subStatus: 'hardsub-assumed', statusReason: 'video stream has Chinese hard subtitles', recheckAfter: null, files: [],
       },
     ]
     detail.seasons[0].coverage = []

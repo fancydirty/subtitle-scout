@@ -14,12 +14,12 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
     const s = season({
       canonical: Array.from({ length: 8 }, (_, i) => ({ episode: i + 1, title: `E${i + 1}` })),
       onDisk: [
-        { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-        { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-        { episode: 3, path: '/m/e3.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-        { episode: 4, path: '/m/e4.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-        { episode: 5, path: '/m/e5.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null },
-        { episode: 6, path: '/m/e6.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null },
+        { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 3, path: '/m/e3.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 4, path: '/m/e4.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 5, path: '/m/e5.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 6, path: '/m/e6.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
       ],
       coverage: [
         { episode: 1, lang: 'zh-Hans', path: '/m/e1.zh-Hans.ass' },
@@ -53,7 +53,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
       onDisk: [
         {
           episode: 1, path: '/m/e1.mkv', subStatus: 'unavailable',
-          statusReason: 'no safe match', recheckAfter: NOW + 3 * 86_400_000,
+          statusReason: 'no safe match', recheckAfter: NOW + 3 * 86_400_000, files: [],
         },
       ],
     })
@@ -67,7 +67,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
       onDisk: [
         {
           episode: 1, path: '/m/e1.mkv', subStatus: 'unavailable',
-          statusReason: 'no safe match', recheckAfter: NOW - 1000,
+          statusReason: 'no safe match', recheckAfter: NOW - 1000, files: [],
         },
       ],
     })
@@ -78,8 +78,8 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
   it('embedded/ignored 都算 covered（策略跳过视觉等同已处理）', () => {
     const s = season({
       onDisk: [
-        { episode: 1, path: '/m/e1.mkv', subStatus: 'embedded', statusReason: null, recheckAfter: null },
-        { episode: 2, path: '/m/e2.mkv', subStatus: 'ignored', statusReason: null, recheckAfter: null },
+        { episode: 1, path: '/m/e1.mkv', subStatus: 'embedded', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 2, path: '/m/e2.mkv', subStatus: 'ignored', statusReason: null, recheckAfter: null, files: [] },
       ],
     })
     const states = buildGridCells(s, NOW).map((c) => c.state)
@@ -92,7 +92,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
       onDisk: [
         {
           episode: 1, path: '/m/e1.mkv', subStatus: 'hardsub-assumed',
-          statusReason: 'video stream has Chinese hard subtitles', recheckAfter: null,
+          statusReason: 'video stream has Chinese hard subtitles', recheckAfter: null, files: [],
         },
       ],
     })
@@ -106,7 +106,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
 
   it('未知 sub_status → error（红点，谨慎兜底，不静默吞掉数据异常）', () => {
     const s = season({
-      onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'weird', statusReason: null, recheckAfter: null }],
+      onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'weird', statusReason: null, recheckAfter: null, files: [] }],
     })
     const [cell] = buildGridCells(s, NOW)
     expect(cell.state).toBe('error')
@@ -116,8 +116,8 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
     const s = season({
       canonical: [{ episode: 1, title: 'E1' }],
       onDisk: [
-        { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
-        { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null },
+        { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
       ],
     })
     const cells = buildGridCells(s, NOW)

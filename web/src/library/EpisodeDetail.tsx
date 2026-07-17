@@ -33,6 +33,8 @@ export function EpisodeDetail({ season, cell, coverage, onClose }: Props) {
   const episodeLabel = `S${String(season).padStart(2, '0')}E${String(cell.episode).padStart(2, '0')}`
   const episodeCoverage = coverage.filter((c) => c.episode === cell.episode)
   const isHardsubAssumed = cell.onDisk?.subStatus === 'hardsub-assumed'
+  const files = cell.onDisk?.files ?? []
+  const hasMultipleFiles = files.length > 1
 
   return (
     <div className="library-detail-panel" role="dialog" aria-label={episodeLabel}>
@@ -67,11 +69,32 @@ export function EpisodeDetail({ season, cell, coverage, onClose }: Props) {
           <>
             <VStack gap={1}>
               <Text type="supporting" color="secondary">
-                {t('library_detail_file_heading')}
+                {hasMultipleFiles ? t('library_detail_files_heading') : t('library_detail_file_heading')}
               </Text>
-              <Text type="code" wordBreak="break-all">
-                {basename(cell.onDisk.path)}
-              </Text>
+              {hasMultipleFiles ? (
+                <VStack gap={1}>
+                  {files.map((file, i) => (
+                    <HStack gap={2} key={i}>
+                      <span
+                        className={`ep-dot ${file.covered ? 'ep-dot-covered' : 'ep-dot-missing'}`}
+                        aria-hidden="true"
+                      />
+                      <Text type="code" wordBreak="break-all">
+                        {basename(file.path)}
+                      </Text>
+                      {file.isMain ? (
+                        <Text type="supporting" color="secondary">
+                          {t('library_detail_main_file')}
+                        </Text>
+                      ) : null}
+                    </HStack>
+                  ))}
+                </VStack>
+              ) : (
+                <Text type="code" wordBreak="break-all">
+                  {basename(cell.onDisk.path)}
+                </Text>
+              )}
             </VStack>
 
             <VStack gap={1}>
