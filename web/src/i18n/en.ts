@@ -138,6 +138,8 @@ export const en = {
   // duplicate-content 停车行的说明——归重复源战役本体（字幕自动同步）尚未落地，这类行不需要
   // 人工认领，用户点名要求跟"待人工认领"分开成组、别再吓人（spec §C.3）。
   triage_duplicates_heading: 'Duplicates — subtitle propagation is planned; no action needed',
+  triage_excluded_heading: 'Excluded extras',
+  triage_excluded_restore_label: 'Restore',
   // 改名指引——README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）。路径形状本身
   // 是技术值，组件层拼接成 mono 片段，不进这条 i18n 文案（DESIGN.md §3：mono 是技术层专属声音）。
   triage_naming_hint_prefix: 'Correct naming skips manual triage — best practice: ',
@@ -182,8 +184,9 @@ export const en = {
   settings_hardsub_mode_option_agent: 'Agent',
   settings_hardsub_mode_option_aggressive: 'Aggressive',
   settings_exclude_extras_label: 'Exclude extras',
-  // hardsub_mode 与 exclude_extras 共用同一句诚实注记：两者都只存取展示，执行逻辑尚未落地
-  // （spec §9 立项登记：救援官战役）。
+  // 救援R4c：exclude_extras 已被 ingest 消费，独立"下一轮扫描生效"注记（hardsub_mode 仍共用救援官注记）。
+  settings_exclude_extras_restart_note: 'Takes effect on the next library scan.',
+  // hardsub_mode 仍共用同一句诚实注记：执行逻辑尚未落地（spec §9 立项登记：救援官战役）。
   settings_rescue_officer_pending_note:
     'Saved, but the execution logic ships with the rescue-officer campaign — not consumed yet.',
 

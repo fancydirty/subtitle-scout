@@ -713,6 +713,29 @@
   padding-top: 10px;
 }
 
+/* ---- excluded-extra 翻案箱（Collapsible，默认折叠，救援R4c）——每行一个文件名 + Restore 按钮。 ---- */
+.triage-excluded-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  background: var(--color-background-surface);
+  min-width: 0;
+}
+.triage-excluded-file {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
 /* 改名指引——箱底常驻灰字一条；路径形状本身 mono（技术值，DESIGN.md §3）。 */
 .triage-naming-hint {
   font-size: 11px;

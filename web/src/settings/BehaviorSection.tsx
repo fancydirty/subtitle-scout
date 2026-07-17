@@ -150,7 +150,7 @@ function ExcludeExtrasRow({ settings, onUpdated }: RowProps) {
         status={error ? { type: 'error', message: error } : undefined}
       />
       <Text type="supporting" color="secondary">
-        {t('settings_rescue_officer_pending_note')}
+        {t('settings_exclude_extras_restart_note')}
       </Text>
     </VStack>
   )

@@ -109,6 +109,8 @@ export const zh = {
   triage_claim_group_label: '认领',
   triage_claimed_badge: '已认领 · 等待重新扫描',
   triage_duplicates_heading: '重复副本——字幕自动同步功能正在规划中，无需处理',
+  triage_excluded_heading: '已排除的特典',
+  triage_excluded_restore_label: '恢复',
   triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',
 
   triage_type_tv: '剧集',
@@ -145,6 +147,9 @@ export const zh = {
   settings_hardsub_mode_option_agent: 'Agent 判断',
   settings_hardsub_mode_option_aggressive: '激进',
   settings_exclude_extras_label: '排除特典',
+  // 救援R4c：exclude_extras 已被 ingest 消费，独立"下一轮扫描生效"注记（hardsub_mode 仍共用救援官注记）。
+  settings_exclude_extras_restart_note: '下一轮扫描生效。',
+  // hardsub_mode 仍共用同一句诚实注记：执行逻辑尚未落地（spec §9 立项登记：救援官战役）。
   settings_rescue_officer_pending_note: '已保存，但执行逻辑随救援官战役上线——目前尚未被消费。',
 
   settings_trace_retention_label: '痕迹保留天数',

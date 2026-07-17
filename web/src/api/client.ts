@@ -114,6 +114,8 @@ export const api = {
   // src/dashboard/server.ts 的既有注释），这里单独开一个 client 函数指向 v2 路径，跟其余
   // v2 端点的命名口径一致，不复用旧 /api/parked/claim 那个一次性脚手架入口。
   claimTriage: (input: ClaimParkedInput) => post<{ ok: true }>('/api/v2/triage/claim', input),
+  // 救援R4c：excluded-extra 停车行翻案——取消排除，让文件回到 pending 池重新参与 ingest。
+  unexclude: (path: string) => post<{ ok: true }>('/api/v2/triage/unexclude', { path }),
   // dashboard-F5：ClaimDialog 的 TMDB 搜索代理（只读）——type 与 q 都做 URI 编码，q 可能含
   // CJK/空格/斜杠等需要转义的字符。
   tmdbSearch: (type: 'tv' | 'movie', q: string, signal?: AbortSignal) =>

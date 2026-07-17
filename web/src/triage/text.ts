@@ -60,6 +60,11 @@ export interface DirGroup {
  *  折叠（见 PendingBox 的 Collapsible 用法），避免用户看见一堆"重复"行误以为出了问题。 */
 const DUPLICATE_PARK_REASON = 'duplicate-content'
 
+/** excluded-extra 停车行的 park reason（见 src/v2/ingest.ts 的 upsertParkedPath(path,
+ *  'excluded-extra', ...) 调用点）——被 exclude_extras 设置当作"特典"排除的文件，可在此
+ *  逐文件翻案恢复，让它们回到 pending 池重新参与 ingest。 */
+const EXCLUDED_PARK_REASON = 'excluded-extra'
+
 /** 单个 reason 桶内部按 dirname 分组：组内文件按 path 排序（稳定展示顺序，不随后端返回顺序
  *  抖动），组间按文件数降序（文件最多的目录最可能是用户最想优先处理的那一部剧，排最前）——
  *  并列时按 dir 名排序兜底，保证同一份输入的分组顺序在两次渲染之间保持确定，不依赖 Map 迭代
@@ -81,10 +86,15 @@ function groupByDir(rows: ParkedItemDTO[]): DirGroup[] {
   return groups
 }
 
-/** PendingBox 的分组入口：先按 park reason 分两桶（duplicate-content 单独归箱，spec §C.3），
- *  桶内再各自按目录分组（spec §C.1）。 */
-export function groupPending(rows: ParkedItemDTO[]): { actionable: DirGroup[]; duplicates: DirGroup[] } {
+/** PendingBox 的分组入口：按 park reason 分三桶——duplicate-content 单独归箱、
+ *  excluded-extra 单独归"翻案"箱、其余归 actionable；桶内再按目录分组（spec §C.1）。 */
+export function groupPending(rows: ParkedItemDTO[]): { actionable: DirGroup[]; duplicates: DirGroup[]; excluded: ParkedItemDTO[] } {
   const duplicateRows = rows.filter((r) => r.parkReason === DUPLICATE_PARK_REASON)
-  const actionableRows = rows.filter((r) => r.parkReason !== DUPLICATE_PARK_REASON)
-  return { actionable: groupByDir(actionableRows), duplicates: groupByDir(duplicateRows) }
+  const excludedRows = rows.filter((r) => r.parkReason === EXCLUDED_PARK_REASON)
+  const actionableRows = rows.filter((r) => r.parkReason !== DUPLICATE_PARK_REASON && r.parkReason !== EXCLUDED_PARK_REASON)
+  return {
+    actionable: groupByDir(actionableRows),
+    duplicates: groupByDir(duplicateRows),
+    excluded: excludedRows.sort((a, b) => a.path.localeCompare(b.path)),
+  }
 }

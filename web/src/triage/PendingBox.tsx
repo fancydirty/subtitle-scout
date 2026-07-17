@@ -21,7 +21,7 @@ import { Collapsible } from '@astryxdesign/core/Collapsible'
 import { StatusDot } from '@astryxdesign/core/StatusDot'
 import type { ParkedItemDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
-import { pathTail, fileCountLabel, moreLabel, groupPending, type DirGroup } from './text.js'
+import { pathTail, fileCountLabel, moreLabel, type DirGroup } from './text.js'
 
 // README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）——路径形状是技术值，
 // mono 且不翻译（DESIGN.md §3/§7），两种语言下原样出现。
@@ -81,7 +81,10 @@ function DirGroupCard({
 }
 
 interface Props {
-  pending: ParkedItemDTO[]
+  /** 待人工认领的目录组（已由 TriagePage 通过 groupPending 分桶）。 */
+  actionable: DirGroup[]
+  /** duplicate-content 桶（已由 TriagePage 通过 groupPending 分桶）。 */
+  duplicates: DirGroup[]
   /** 本次会话里已认领、正等待下一轮 ingest pass 退户口的目录集合（TriagePage 持有，见其文件头
    *  注释）——命中的组置灰、显示"claimed · awaiting rescan"角标、Claim 按钮消失、沉到组列表
    *  底部。 */
@@ -89,9 +92,8 @@ interface Props {
   onClaimGroup: (group: DirGroup) => void
 }
 
-export function PendingBox({ pending, claimedDirs, onClaimGroup }: Props) {
+export function PendingBox({ actionable, duplicates, claimedDirs, onClaimGroup }: Props) {
   const { t } = useT()
-  const { actionable, duplicates } = groupPending(pending)
 
   // 未认领组在前（按 groupPending 已排好的文件数降序），已认领组沉到最后——组内顺序不重要，
   // 反正下一轮扫描真的退户口后这些组就会从 pending 里彻底消失。
