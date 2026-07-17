@@ -20,13 +20,14 @@ describe('db 基座', () => {
     // 落库值随之是 '2'；R-11 派活范围裁量化追加 v11 entry 后 MIGRATIONS.length=3，落库值是 '3'；
     // dashboard 重建战役 G1 追加 v12 entry 后 MIGRATIONS.length=4，落库值是 '4'；验收修复轮一
     // Task V1 追加 v13 entry 后 MIGRATIONS.length=5，落库值是 '5'；救援R4b 追加 v14
-    // extras_exemptions entry 后 MIGRATIONS.length=6，落库值是 '6'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '6' })
+    // extras_exemptions entry 后 MIGRATIONS.length=6，落库值是 '6'；救援R5 追加 v15
+    // hardsub-assumed 值域重建 entry 后 MIGRATIONS.length=7，落库值是 '7'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '7' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '6' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '7' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -100,5 +101,118 @@ describe('db 基座', () => {
     const db = openDb(':memory:')
     const seriesCols = (db.prepare('PRAGMA table_info(series)').all() as { name: string }[]).map((c) => c.name)
     expect(seriesCols).toContain('genres')
+  })
+
+  // v15（救援R5）：episodes/movies.sub_status 的 CHECK 约束收 'hardsub-assumed'——CHECK 约束
+  // 不能 ALTER，只能建新表→拷数据→改名（见 MIGRATIONS v15 entry 注释）。这条测试锁住"新值真的
+  // 能写入"（不是只改了注释没改约束——CHECK 约束的枚举字符串手抄错一个字就会静默漏收）。
+  it('v15: episodes/movies.sub_status 接受 hardsub-assumed（真实插入，不只是 PRAGMA 读列名）', () => {
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO series (id, name) VALUES ('tmdb:1', 'S')`).run()
+    // 新值可插入
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+           VALUES ('tmdb:1/s1e1', 'tmdb:1', 1, 1, 'E1', '/p', 'hardsub-assumed', 1000)`
+        )
+        .run()
+    ).not.toThrow()
+    // 旧枚举值原样合法（约束是"增补"不是"替换"）
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+           VALUES ('tmdb:1/s1e2', 'tmdb:1', 1, 2, 'E2', '/p2', 'covered', 1000)`
+        )
+        .run()
+    ).not.toThrow()
+    // 非法值仍被拒绝（约束没被松到"随便什么字符串都收"）
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+           VALUES ('tmdb:1/s1e3', 'tmdb:1', 1, 3, 'E3', '/p3', 'not-a-real-status', 1000)`
+        )
+        .run()
+    ).toThrow()
+
+    db.prepare(
+      `INSERT INTO movies (id, name, path, sub_status, updated_at) VALUES ('tmdb:2', 'M', '/m', 'hardsub-assumed', 1000)`
+    ).run()
+    expect(db.prepare(`SELECT sub_status FROM movies WHERE id = 'tmdb:2'`).get()).toEqual({
+      sub_status: 'hardsub-assumed',
+    })
+  })
+
+  // 迁移安全性核心断言：真·旧库（v14 形状，无 hardsub-assumed 支持）里已有的数据在升级到 v15
+  // 后必须原样存活——12 步建新表手法最容易犯的错就是拷数据时列漏了/顺序错了导致静默丢数据或
+  // 串列（如 name 值跑进了 path 列）。这里手搭一个 v14 形状的库（不经过完整 MIGRATIONS 链，
+  // 直接照 v14 终态列清单建表——与 db.ts 里 v15 entry 重建时用的列清单是同一份真相源，若两处
+  // 手抄出现字段顺序不一致，这条测试会因取到错位的值而失败），插入代表性行，重新 openDb() 触发
+  // v15 迁移，断言行数与字段值原样不变，且新库确实支持新值。
+  it('v15 迁移安全性：v14 形状旧库升级后，既有 episodes/movies 行原样存活（不丢数据不串列）', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
+    const Database = (openDb(':memory:').constructor) as new (path: string) => import('better-sqlite3').Database
+    const raw = new Database(dbPath)
+    raw.pragma('foreign_keys = OFF')
+    raw.exec(`
+      CREATE TABLE series (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT, year INTEGER,
+        provider_ids TEXT, layout_nonstandard INTEGER NOT NULL DEFAULT 0, genres TEXT
+      );
+      CREATE TABLE episodes (
+        id TEXT PRIMARY KEY, series_id TEXT NOT NULL REFERENCES series(id),
+        season INTEGER NOT NULL, episode INTEGER NOT NULL, name TEXT, path TEXT NOT NULL,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE movies (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT,
+        year INTEGER, path TEXT NOT NULL, provider_ids TEXT,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        origin_lang TEXT, probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, series_id TEXT, season INTEGER, movie_id TEXT, plan_ref TEXT, payload TEXT, parent_job_id INTEGER, state TEXT NOT NULL DEFAULT 'wanted', priority INTEGER NOT NULL DEFAULT 100, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, lease_until INTEGER, last_error TEXT);
+      CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, started_at INTEGER NOT NULL, finished_at INTEGER, decision TEXT, detail TEXT, journal_path TEXT, llm_calls INTEGER, assrt_calls INTEGER, trace_json TEXT);
+      CREATE TABLE subtitles (item_id TEXT NOT NULL, language TEXT NOT NULL, source TEXT NOT NULL, installed_at INTEGER NOT NULL);
+      CREATE TABLE blacklist (provider_ref TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', reason TEXT, created_at INTEGER NOT NULL, PRIMARY KEY(provider_ref, filename));
+      CREATE TABLE parked_paths (path TEXT PRIMARY KEY, park_reason TEXT NOT NULL, first_seen INTEGER NOT NULL, last_attempt INTEGER NOT NULL);
+      CREATE TABLE identify_overrides (path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL, is_tv INTEGER NOT NULL, season INTEGER, created_at INTEGER NOT NULL);
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE tmdb_seasons (series_id TEXT NOT NULL, season INTEGER NOT NULL, episode INTEGER NOT NULL, title TEXT, fetched_at INTEGER NOT NULL, PRIMARY KEY (series_id, season, episode));
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE media_roots (path TEXT PRIMARY KEY, type TEXT NOT NULL DEFAULT 'local', added_at INTEGER NOT NULL);
+      CREATE TABLE extras_exemptions (path TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
+      INSERT INTO meta (key, value) VALUES ('schema_version', '6');
+      INSERT INTO series (id, name) VALUES ('tmdb:100', 'Preexisting Show');
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+        VALUES ('tmdb:100/s1e1', 'tmdb:100', 1, 1, 'Ep1', '/media/ep1.mkv', 'covered', 5000);
+      INSERT INTO movies (id, name, path, sub_status, updated_at)
+        VALUES ('tmdb:200', 'Preexisting Movie', '/media/movie.mkv', 'missing', 6000);
+    `)
+    raw.pragma('foreign_keys = ON')
+    raw.close()
+
+    const db = openDb(dbPath)
+
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '7' })
+    expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
+      series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
+      sub_status: 'covered', updated_at: 5000,
+    })
+    expect(db.prepare(`SELECT * FROM movies WHERE id = 'tmdb:200'`).get()).toMatchObject({
+      name: 'Preexisting Movie', path: '/media/movie.mkv', sub_status: 'missing', updated_at: 6000,
+    })
+    // 迁移后的库确实支持新值——不是只重建了表结构但约束还是老的。
+    expect(() =>
+      db.prepare(`UPDATE episodes SET sub_status = 'hardsub-assumed' WHERE id = 'tmdb:100/s1e1'`).run()
+    ).not.toThrow()
   })
 })

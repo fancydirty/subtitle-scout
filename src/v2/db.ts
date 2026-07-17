@@ -168,6 +168,46 @@ ALTER TABLE runs ADD COLUMN trace_json TEXT;   -- 痕迹通道 C 收官快照
   path TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL
 )`,
+  // v15（救援R5）：episodes/movies.sub_status 的 CHECK 约束需收 'hardsub-assumed'（agent 档判定
+  // /aggressive 档机械直判都要能落这个值）——SQLite 不支持 ALTER 已有 CHECK 约束，标准作法是
+  // 12 步建新表→拷数据→删旧表→改名（见 openDb() 顶部 pragma 注释，foreign_keys=OFF 已在迁移期
+  // 全程生效，RENAME 回原名对 episodes.series_id 的外键身份判定无影响，因为没有任何表
+  // REFERENCES episodes/movies——重建这两张表本身不触发"父表被引用"那条陷阱）。列清单/顺序=
+  // 顶部 v9 终态定义 + v10 用 ALTER TABLE ADD COLUMN 追加的 search_attempts（该列不在 v9 那段
+  // CREATE TABLE 原文里，只多一个枚举值，SELECT * 直拷才不炸——手抄漏掉这一列的教训已被
+  // db.test.ts 的迁移安全性测试抓出过一次，不是纸上谈兵的提醒）。
+  `
+CREATE TABLE episodes_v15 (
+  id TEXT PRIMARY KEY,
+  series_id TEXT NOT NULL REFERENCES series(id),
+  season INTEGER NOT NULL, episode INTEGER NOT NULL,
+  name TEXT, path TEXT NOT NULL,
+  sub_status TEXT NOT NULL CHECK(sub_status IN
+    ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+  status_reason TEXT, recheck_after INTEGER,
+  updated_at INTEGER NOT NULL,
+  probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+  search_attempts INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO episodes_v15 SELECT * FROM episodes;
+DROP TABLE episodes;
+ALTER TABLE episodes_v15 RENAME TO episodes;
+
+CREATE TABLE movies_v15 (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT,
+  year INTEGER, path TEXT NOT NULL, provider_ids TEXT,
+  sub_status TEXT NOT NULL CHECK(sub_status IN
+    ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+  status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+  origin_lang TEXT,
+  probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+  search_attempts INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO movies_v15 SELECT * FROM movies;
+DROP TABLE movies;
+ALTER TABLE movies_v15 RENAME TO movies;
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
