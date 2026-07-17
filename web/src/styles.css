@@ -348,6 +348,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* R2D-4：甄别计数入口——mono 灰事实句（不是按钮不是 CTA，不占 accent 预算），hover 才升半档。 */
+.wf-parked-note a {
+  font-family: var(--font-family-code);
+  font-size: 11px;
+  color: var(--color-text-gray);
+  text-decoration: none;
+}
+.wf-parked-note a:hover {
+  color: var(--color-text-secondary);
+}
 /* Rerun 工具条（Switch + Button）——hover/focus-within 才揭示（DESIGN 任务规格："Pending 泳道
    每 series 行 hover 出 Rerun"），键盘用户 Tab 进开关/按钮时 focus-within 同样揭示，不靠
    鼠标独占。 */

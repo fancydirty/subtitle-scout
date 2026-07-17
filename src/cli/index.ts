@@ -562,11 +562,17 @@ async function cmdDoctor() {
   if (dbExists) {
     // openDb 走既有的动态 import 手法（数据库尚未初始化时不 import v2/db.js）；SettingsRepo 本
     // 文件顶部已经静态 import 过（cmdWatch 也用它），这里直接复用，不重复动态 import 同一个类。
-    const { openDb } = await import('../v2/db.js')
-    const db = openDb(dbPath)
-    mediaRootsForDoctor = new SettingsRepo(db).listRoots().map(r => r.path)
-    db.close()
-    mediaRootsSource = 'db'
+    // R2D-20：openDb 对迁移失败/外键违例是抛错路径——诊断工具不许死在它本该诊断的病上（下方
+    // checkDatabase 会把同一种抛错转成 ✗ 诊断行），这里失败就回落 env seed 继续体检其余项。
+    try {
+      const { openDb } = await import('../v2/db.js')
+      const db = openDb(dbPath)
+      mediaRootsForDoctor = new SettingsRepo(db).listRoots().map(r => r.path)
+      db.close()
+      mediaRootsSource = 'db'
+    } catch {
+      // 保持 roots/env seed 初值——库打不开的具体病由 checkDatabase 如实呈报。
+    }
   }
   results.push(checkMediaRoots(mediaRootsForDoctor, isDirWritable, mediaRootsSource))
 

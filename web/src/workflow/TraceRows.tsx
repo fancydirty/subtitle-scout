@@ -19,7 +19,9 @@ export function TraceRows({ events, live = false }: Props) {
   return (
     <div className="wf-trace-rows">
       {events.map((e) => (
-        <div className="wf-trace-row" key={e.seq}>
+        // key 必须带 runKey（R2D-18）：realign 的混流 trail/回放合法地含多个 seq=0（各子集
+        // runKey 的 seq 都从 0 起算），纯 seq 会撞 React key——与 mergeTrail 的去重复合键同形。
+        <div className="wf-trace-row" key={`${e.runKey}#${e.seq}`}>
           <span className="wf-trace-tool">{e.tool}</span>
           <span className="wf-trace-args">{truncate(e.argsSummary, 60)}</span>
           <span className="wf-trace-took">{formatTookMs(e.tookMs)}</span>

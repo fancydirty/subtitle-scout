@@ -94,17 +94,30 @@ export function PendingLane({ pending, now, onRerun }: Props) {
   }
   if (!pending.data) return null
 
-  const { series, movies } = pending.data
+  const { series, movies, parked } = pending.data
+  // R2D-4（spec §5）：左泳道的甄别计数入口——parked 是活文档之外的另一种"待办事实"，在这条
+  // 泳道给一行通往甄别台的事实句（Workflow 区恒英文）。
+  const parkedNote =
+    parked > 0 ? (
+      <div className="wf-parked-note">
+        <a href="#/triage">{`${parked} parked · triage →`}</a>
+      </div>
+    ) : null
+
   if (series.length === 0 && movies.length === 0) {
     return (
-      <Text type="supporting" color="secondary">
-        {t('workflow_pending_lane_empty')}
-      </Text>
+      <>
+        <Text type="supporting" color="secondary">
+          {t('workflow_pending_lane_empty')}
+        </Text>
+        {parkedNote}
+      </>
     )
   }
 
   return (
     <div className="wf-pending-lane">
+      {parkedNote}
       {series.length > 0 ? (
         <div className="wf-pending-group">
           <Text type="supporting" color="secondary" as="div">

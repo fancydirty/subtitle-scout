@@ -183,13 +183,25 @@ export function Lanes() {
   // （useCallback([load])，load 本身 useCallback([])），这个 effect 只挂载一次。
   useEffect(() => onTraceReconnect(() => workers.reload()), [workers.reload])
 
+  // R2D-4：parked 也是"有事可做"的事实——parked>0 时不许整页宣告 "No active work"（否则与侧栏
+  // 甄别角标 N 同屏自相矛盾），改为在空态里给一条通往甄别台的事实句。
+  const parkedCount = pending.data?.parked ?? 0
   const allEmpty =
     pending.data != null && pending.data.series.length === 0 && pending.data.movies.length === 0 &&
     passes.data != null && passes.data.length === 0 &&
     workers.data != null && workers.data.running.length === 0 && workers.data.recent.length === 0
 
   if (allEmpty) {
-    return <EmptyState title={t('workflow_empty_title')} description={t('workflow_empty_desc')} />
+    return (
+      <VStack gap={2}>
+        <EmptyState title={t('workflow_empty_title')} description={t('workflow_empty_desc')} />
+        {parkedCount > 0 ? (
+          <div className="wf-parked-note">
+            <a href="#/triage">{`${parkedCount} parked · triage →`}</a>
+          </div>
+        ) : null}
+      </VStack>
+    )
   }
 
   return (

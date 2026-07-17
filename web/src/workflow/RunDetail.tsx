@@ -13,8 +13,10 @@
 //
 // 快照回放（GET runs/:id/trace 拿事件列表，静态 TraceRows 渲染，live=false——回放≠直播，
 // 无蓝点延展）两种来源完全一致，只是 id 的取值不同（pass.id vs run.id，都是 runs 表的行 id）。
+import { useState } from 'react'
 import { useHotkeys } from '@astryxdesign/core/hooks'
 import { Kbd } from '@astryxdesign/core/Kbd'
+import { Switch } from '@astryxdesign/core/Switch'
 import { Text } from '@astryxdesign/core/Text'
 import { VStack } from '@astryxdesign/core/VStack'
 import { HStack } from '@astryxdesign/core/HStack'
@@ -53,9 +55,13 @@ export function RunDetail({ source, now, onClose, onRerun }: Props) {
   const decision = source.kind === 'worker' ? source.run.decision : null
   const seriesId = source.kind === 'worker' ? source.run.seriesId : null
 
+  // R2D-19：Rerun 扳手的完整定义含 includeThrottled 开关（spec §5）——详情入口这一半不能只交付
+  // 半个扳手，与 PendingLane 行内 Switch 同款（该状态随面板打开的 run 走，不跨 run 残留：
+  // source 变更时组件由父级以 key 重挂载或 seriesId 变化，默认关是保守派）。
+  const [includeThrottled, setIncludeThrottled] = useState(false)
   const handleRerun = () => {
     if (seriesId == null) return
-    onRerun({ seriesId, season: null, includeThrottled: false })
+    onRerun({ seriesId, season: null, includeThrottled })
   }
 
   return (
@@ -119,12 +125,20 @@ export function RunDetail({ source, now, onClose, onRerun }: Props) {
         ) : null}
 
         {seriesId != null ? (
-          <Button
-            size="sm"
-            variant="secondary"
-            label={t('workflow_pending_rerun_label')}
-            onClick={handleRerun}
-          />
+          <HStack gap={2} vAlign="center">
+            <Switch
+              label={t('workflow_rerun_include_throttled_label')}
+              value={includeThrottled}
+              onChange={setIncludeThrottled}
+              labelSpacing="hug"
+            />
+            <Button
+              size="sm"
+              variant="secondary"
+              label={t('workflow_pending_rerun_label')}
+              onClick={handleRerun}
+            />
+          </HStack>
         ) : null}
 
         <VStack gap={1}>
