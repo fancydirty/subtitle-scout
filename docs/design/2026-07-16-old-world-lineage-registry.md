@@ -266,3 +266,38 @@ spec=2026-07-16-dashboard-rebuild-design.md；宪法=web/DESIGN.md；F0 裁决�
 - **生产切换**：生产容器仍跑 78f8093 dist 构建（无 dashboard）。切换=compose build 重建（用户过目本报告后择机执行）。
 
 **dashboard 重建战役至此收官。四 tab 真数据+SSE 直播+双签全绿，待用户过目。**
+
+## 九、债务清扫波收官报告（四战役第一役 · 主控+K3 执行器，2026-07-17 晚）
+
+六件独立小刀（spec：docs/design/2026-07-17-debt-sweep-design.md），K3 一单一件共 7 派单
+（D3/D5 各拆前后半场）、主控每单逐 diff 亲核+鲜验，全程零返工单：
+
+- **D1**（2481d2e）：dispatch_* 工具 resultSummary cap 200→400，回执 JSON 完整存活；其余工具
+  与 argsSummary 维持 200。§八登记的"42/64 unparsed"债务从机制上拔根，真站命中率待下次部署观测。
+- **D2**（a55b4c2）：serveStatic 判定改 `base 恰等 ∨ startsWith(base+sep)`，兄弟目录同前缀穿越
+  封堵；回归探针用 `%2e%2e%2f`（WHATWG URL 解析连编码点段都归一化，裸/整段编码 `..` 根本
+  到不了 serveStatic——K3 实测发现，主控核实收录）。
+- **D3**（cdbeac3+e142a7d）：quota 事实链贯通——`applyQuotaEvent` 纯函数（quota 事件写
+  `quota_state_<provider>` 旁路键、`/download` 端点 200 清键，成功+预警的事件顺序天然自洽）
+  → workers 端点 `providerQuota`（读侧滤过期+fail-soft）→ Activity 顶部灰点中性事实句
+  `{provider} quota exhausted · resets in Xh`（英文区铁律，不进 i18n）。
+- **D4**（da008e8）：TmdbClient 开 `TMDB_BASE_URL`/`TMDB_PROXY_URL` 两配置口（镜像域末尾斜杠
+  剥离；undici ProxyAgent 惰性挂载，import 失败告警降级直连）；缺省零行为变化有断言锁死
+  （init 不含 dispatcher 键）；部署区 nonSecrets 展示两键。
+- **D5**（9af8eba+c07395a）：settings 零装饰品——scan_interval_ms 每 tick 惰性读（行为级>部署级
+  >默认）；trace_retention_days 驱动 daemon 2c 每日修剪（runs 行保留只清 trace_json，meta 时间
+  门）；target_languages 提供者化（ingest 每轮 pass 起点新鲜求值 + find_subtitle 每次派发覆写
+  ——G4 currentRoots 同款手法；realign 字幕先行维持启动快照，代码注释如实标注非债务遗漏）；
+  设置页三条注记归真（settings_backend_unconsumed_note 整键退役）。§八登记的两条 settings 债
+  全部清偿。
+- **D6**（2f6570a）：富化重试空转击穿拔根——主控备料时核实 spec 预想的"`[]` 落不了库"并不存在
+  （两条写路 `!= null` 判空数组为真），真洞是 getDetails 404（权威无数据，永久态）与瞬时失败被
+  `?? null` 拍平：404 死 id 永久占据每轮 10 个重试槽。修法=404 落 `[]` 退出候选谓词、瞬时失败
+  维持 null 保重试语义；三条护栏测试（fixture 沿用 24240 悬案的死 id 本尊）。
+
+**收官核查**：root 85 文件 1422 tests 全绿；web 24 文件 227 tests 全绿；双侧 tsc 零错。真站腿
+（D1 unparsed 回落、D3 事实句活体、D4 镜像实配）待下次生产重部署跟车观测——测试台已停役且与
+生产共 nas_media（串行纪律），不为验收单独复活。
+
+**K3 执行器第二役战报**：7 派单全部一次交付零返工（对比验收轮一的两次溜号），任务书"自带全上下文
++强制汇报格式"纪律显效；两处自主偏离（D2 探针编码、D3 router.test 涟漪修复）皆正确且如实申报。
