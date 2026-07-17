@@ -81,7 +81,7 @@ describe('startDashboard (v2)', () => {
     const lib = await (await fetch(`${base}/api/v2/library`)).json()
     const series = lib.find((x: any) => x.id === 's1')
     expect(series).toMatchObject({ name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag' })
-    expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0 })
+    expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
     expect(series.job).toEqual({ state: 'searching', priority: 100 })
   })
   it('serves /api/v2/series/:id and /api/v2/runs', async () => {
