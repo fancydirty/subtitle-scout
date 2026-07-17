@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { relativeAgo, formatNextRecheck, formatTookMs } from './time.js'
+import { relativeAgo, formatNextRecheck, formatTookMs, formatResetsIn } from './time.js'
 
 describe('relativeAgo', () => {
   it('< 5s → "just now"', () => {
@@ -26,6 +26,18 @@ describe('formatNextRecheck', () => {
   })
   it('负数（理论上不该发生）clamp 到 0', () => {
     expect(formatNextRecheck(-1000)).toBe('next recheck in 0s')
+  })
+})
+
+describe('formatResetsIn', () => {
+  it('秒/分/时/天各档', () => {
+    expect(formatResetsIn(30_000)).toBe('resets in 30s')
+    expect(formatResetsIn(90_000)).toBe('resets in 1m')
+    expect(formatResetsIn(2 * 60 * 60_000)).toBe('resets in 2h')
+    expect(formatResetsIn(3 * 24 * 60 * 60_000)).toBe('resets in 3d')
+  })
+  it('负数（理论上不该发生）clamp 到 0', () => {
+    expect(formatResetsIn(-1000)).toBe('resets in 0s')
   })
 })
 

@@ -32,6 +32,7 @@ function workersWith(installedLast24h: number, runningCount: number): WorkflowWo
     })),
     recent: [],
     installedLast24h,
+    providerQuota: [],
   }
 }
 

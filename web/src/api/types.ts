@@ -187,6 +187,8 @@ export interface WorkflowWorkersDTO {
   recent: WorkflowRecentRunDTO[]
   /** 验收修复轮一 Task V3：顶部总览句"N episodes installed in the last 24h"的数据源。 */
   installedLast24h: number
+  /** 债务 D3：provider 配额事实——后端已滤除过期条目；resetAt=ISO 串或 null（未知重置时刻）。 */
+  providerQuota: Array<{ provider: string; resetAt: string | null; observedAt: number }>
 }
 
 /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace 响应体——单 run 痕迹快照回放

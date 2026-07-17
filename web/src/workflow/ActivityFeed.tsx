@@ -15,7 +15,7 @@ import { useT } from '../i18n/useT.js'
 import { useLiveTrail } from './useLiveTrail.js'
 import { TraceRows } from './TraceRows.js'
 import { decisionPhrase, type DecisionTone } from './phrases.js'
-import { relativeAgo } from './time.js'
+import { relativeAgo, formatResetsIn } from './time.js'
 import { truncate, receiptChips, collapseRecentRuns } from './text.js'
 
 interface Props {
@@ -51,6 +51,28 @@ function NowWorkingCard({ worker, now }: { worker: WorkflowRunningWorkerDTO; now
       </div>
       <TraceRows events={trail} live phraseMode />
     </div>
+  )
+}
+
+/** 债务 D3：provider 配额事实句——中性灰点，不是告警（五铁律：failure/wait 中性措辞）。
+ *  数据源=workers.providerQuota（后端已滤过期）；空数组=不渲染任何东西。Workflow 区英文
+ *  铁律，不进 i18n。 */
+function QuotaFactsSection({ workers, now }: { workers: Async<WorkflowWorkersDTO>; now: number }) {
+  const quota = workers.data?.providerQuota ?? []
+  if (quota.length === 0) return null
+  return (
+    <VStack gap={1}>
+      {quota.map((q) => {
+        const resetMs = q.resetAt != null ? Date.parse(q.resetAt) : NaN
+        const suffix = Number.isFinite(resetMs) ? ` · ${formatResetsIn(resetMs - now)}` : ''
+        return (
+          <div className="wf-quota-fact" key={q.provider}>
+            <StatusDot variant="neutral" label={`${q.provider} quota exhausted${suffix}`} />
+            <span className="wf-quota-text">{`${q.provider} quota exhausted${suffix}`}</span>
+          </div>
+        )
+      })}
+    </VStack>
   )
 }
 
@@ -178,6 +200,7 @@ export function ActivityFeed({ workers, passes, now, onOpenRun, onOpenPass }: Pr
   const { t } = useT()
   return (
     <VStack gap={5}>
+      <QuotaFactsSection workers={workers} now={now} />
       <NowWorkingSection workers={workers} now={now} />
       <RecentSection workers={workers} now={now} onOpenRun={onOpenRun} />
       <Collapsible trigger={t('workflow_orchestrator_log_heading')} defaultIsOpen={false}>

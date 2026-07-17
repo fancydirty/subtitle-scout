@@ -589,6 +589,18 @@
   flex-shrink: 0;
 }
 
+/* ---- provider 配额事实句（债务 D3）：中性灰点，不打断 Activity 流 ---- */
+.wf-quota-fact {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.wf-quota-text {
+  color: var(--color-text-secondary);
+}
+
 /* ---- RunDetail 右侧板——固定、不跳页不弹 modal（DESIGN.md §5/§6，同 .library-detail-panel
    先例，尺寸单独一份不复用那个类：两个区域各自独立演化，不耦合）。 ---- */
 .wf-rundetail-panel {

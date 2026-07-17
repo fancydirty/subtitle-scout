@@ -52,7 +52,7 @@ function mockFetchRouted(handlers: Handler[]) {
 const EMPTY_PENDING: WorkflowPendingDTO = {
   series: [], movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
 }
-const EMPTY_WORKERS: WorkflowWorkersDTO = { running: [], recent: [], installedLast24h: 0 }
+const EMPTY_WORKERS: WorkflowWorkersDTO = { running: [], recent: [], installedLast24h: 0, providerQuota: [] }
 
 afterEach(() => {
   cleanup()
@@ -221,6 +221,7 @@ describe('Lanes：Now working 卡 + SSE 直播流入 TraceRows（phraseMode 人�
       ],
       recent: [],
       installedLast24h: 0,
+      providerQuota: [],
     }
   }
 
@@ -364,7 +365,7 @@ describe('Lanes：PendingLane series 行 Rerun includeThrottled 开关按事实�
 // 仍用 runs.id（同一个 job 可能有多行 runs）。
 describe('Lanes：recent 人话句子行点开 → RunDetail（worker run 详情入口）', () => {
   function workersWithRecent(recent: WorkflowWorkersDTO['recent']): WorkflowWorkersDTO {
-    return { running: [], recent, installedLast24h: 0 }
+    return { running: [], recent, installedLast24h: 0, providerQuota: [] }
   }
 
   it('点开渲染 decision 语义点 + detail + 静态 TraceRows；seriesId 非空时显示 Rerun 按钮', async () => {

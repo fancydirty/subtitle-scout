@@ -33,6 +33,19 @@ export function formatNextRecheck(deltaMs: number): string {
   return `next recheck in ${d}d`
 }
 
+/** 未来重置时刻的倒计时——"resets in 4h" 式，Activity 顶部 quota 事实句用。deltaMs 为负
+ *  （后端滤过期后理论上不该发生）clamp 到 0，防御性口径同 formatNextRecheck。 */
+export function formatResetsIn(deltaMs: number): string {
+  const s = Math.max(0, Math.floor(deltaMs / 1000))
+  if (s < 60) return `resets in ${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `resets in ${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `resets in ${h}h`
+  const d = Math.floor(h / 24)
+  return `resets in ${d}d`
+}
+
 /** 工具调用耗时——mono 右对齐（"1.2s"/"840ms"），TraceRows 每行末尾读数，Inngest 式痕迹的
  *  核心技术字段。 */
 export function formatTookMs(ms: number): string {
