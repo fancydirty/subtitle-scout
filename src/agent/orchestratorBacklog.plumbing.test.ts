@@ -253,3 +253,57 @@ describe('orchestrator dispatch cap (tool-level), driven through the backlog-sha
     expect(dispatched.map(j => (JSON.parse(j.payload!) as { seasons: number[] }).seasons)).toEqual([[1], [1]])
   })
 })
+
+// B-matrix（救援R3）：orchestrator 读到 parked 事实块后，应能派发 rescue_identify worker_task。
+// 该场景直接调用 list_missing_coverage 与 dispatch_rescue_task，验证工具 plumbing 而非真模型决策。
+describe('orchestrator rescue dispatch plumbing over parked files', () => {
+  it('seeds two rescue-eligible parked paths and dispatches a singleton rescue_identify task', async () => {
+    const db = openDb(':memory:')
+    const jobs = new JobsRepo(db)
+    const lib = new LibraryRepo(db)
+
+    lib.upsertParkedPath('/media/Rescue/A/a.mkv', 'no tmdb match', 1000)
+    lib.upsertParkedPath('/media/Rescue/B/b.mkv', 'ambiguous', 1000)
+    // excluded-extra / duplicate-content 不应触发 rescue 计数，也不应进入 parked sample。
+    lib.upsertParkedPath('/media/Rescue/C/c.mkv', 'excluded-extra', 1000)
+    lib.upsertParkedPath('/media/Rescue/D/d.mkv', 'duplicate-content', 1000)
+
+    const { tmdb } = makeBacklogFakes({
+      name: 'rescue-plumbing',
+      represents: 'two rescue-eligible parked paths used only to exercise dispatch_rescue_task plumbing',
+      series: [],
+      movies: [],
+      expected: { findSubtitle: [], realignSeriesIds: [] },
+    })
+
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        if (call === 1) {
+          return toolCallResult('r1', 'dispatch_rescue_task', {
+            reason: 'parked backlog has unidentified files worth another identification pass',
+          })
+        }
+        return finalizeResult({
+          dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0,
+          summary: 'dispatched rescue_identify for parked backlog',
+        })
+      },
+    })
+
+    const runPass = makeOrchestratorAgent({
+      model, lib, tmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 20,
+    })
+    const decision = await runPass()
+
+    const wanted = listWanted(db).filter(j => j.kind === 'worker_task')
+    expect(wanted).toHaveLength(1)
+    expect(wanted[0].series_id).toBe('rescue-backlog')
+    expect(wanted[0].season).toBeNull()
+    expect(wanted[0].movie_id).toBeNull()
+    const payload = JSON.parse(wanted[0].payload!) as { taskType: string; reason: string }
+    expect(payload.taskType).toBe('rescue_identify')
+    expect(payload.reason).toBe('parked backlog has unidentified files worth another identification pass')
+  })
+})

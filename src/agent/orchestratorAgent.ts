@@ -6,7 +6,7 @@ import { makeReadDocTool, systemPromptSkillIndex } from './skills/registry.js'
 import { ORCHESTRATOR_SKILL } from './skills/orchestratorSkill.js'
 import {
   makeListMissingCoverageTool, makeCheckSeriesLayoutTool, makeDispatchFindSubtitleTaskTool,
-  makeDispatchRealignTaskTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter,
+  makeDispatchRealignTaskTool, makeDispatchRescueTaskTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter,
 } from './orchestratorAgent.tools.js'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
@@ -27,7 +27,7 @@ export type OrchestratorDecision = z.infer<typeof OrchestratorDecisionSchema>
 
 export interface OrchestratorAgentDeps {
   model: LanguageModel
-  lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'countEpisodesInSeason' | 'getSeries'>
+  lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'countEpisodesInSeason' | 'getSeries' | 'listParkedPaths'>
   tmdb: Pick<TmdbClient, 'getSeasonTable'>
   jobs: Pick<JobsRepo, 'upsertWorkerTask' | 'get'>
   now: () => number
@@ -86,6 +86,9 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
         { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
       ),
       dispatch_realign_task: makeDispatchRealignTaskTool(
+        { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
+      ),
+      dispatch_rescue_task: makeDispatchRescueTaskTool(
         { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
       ),
       spawn_sibling_orchestrator: makeSpawnSiblingOrchestratorTool(dispatchDeps),

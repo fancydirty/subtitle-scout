@@ -4,7 +4,7 @@ import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
   makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeDispatchRealignTaskTool,
-  makeCheckSeriesLayoutTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter, type MissingCoveragePage,
+  makeDispatchRescueTaskTool, makeCheckSeriesLayoutTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter, type MissingCoveragePage,
 } from './orchestratorAgent.tools.js'
 
 const fakeOpts = { toolCallId: 't1', messages: [] } as any
@@ -40,13 +40,14 @@ describe('makeListMissingCoverageTool', () => {
   it('paginates: first page returns `limit` rows + hasMore:true + correct total, second page returns the rest', async () => {
     // Seed 3 missing seasons — more than a limit of 2 — so a single unpaginated call would have
     // dumped the whole set inline (the finding this guards against).
-    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
+    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'listParkedPaths'> = {
       missingBySeason: () => [
         seasonRow({ series_id: 's1', series_name: 'Series One', missing: 2 }),
         seasonRow({ series_id: 's2', series_name: 'Series Two', missing: 1 }),
         seasonRow({ series_id: 's3', series_name: 'Series Three', missing: 5 }),
       ],
       missingMovies: () => [],
+      listParkedPaths: () => [],
     }
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
 
@@ -70,9 +71,10 @@ describe('makeListMissingCoverageTool', () => {
   })
 
   it('combines missing seasons and missing movies into one offset-addressable list', async () => {
-    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
+    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'listParkedPaths'> = {
       missingBySeason: () => [seasonRow()],
       missingMovies: () => [movieRow()],
+      listParkedPaths: () => [],
     }
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
     const page = await listMissingCoverage.execute!({ offset: 0, limit: 50 }, fakeOpts) as MissingCoveragePage
@@ -87,11 +89,12 @@ describe('makeListMissingCoverageTool', () => {
   // 停牌行的字段（seriesName/throttled/nextRecheckAt/sampleReason）在工具层完整透传，不是
   // libraryRepo 层加了字段、工具层还照旧只挑 seriesId/season/missing 三个老字段。
   it('season row carries seriesName/throttled/nextRecheckAt/sampleReason through to the model', async () => {
-    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
+    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'listParkedPaths'> = {
       missingBySeason: () => [
         seasonRow({ missing: 2, throttled: 1, next_recheck_at: 5000, sample_reason: '搜索穷尽' }),
       ],
       missingMovies: () => [],
+      listParkedPaths: () => [],
     }
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
     const page = await listMissingCoverage.execute!({ offset: 0, limit: 50 }, fakeOpts) as MissingCoveragePage
@@ -101,13 +104,42 @@ describe('makeListMissingCoverageTool', () => {
   })
 
   it('defaults offset to 0 and limit to 50 when called with no arguments', async () => {
-    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies'> = {
+    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'listParkedPaths'> = {
       missingBySeason: () => [seasonRow()],
       missingMovies: () => [],
+      listParkedPaths: () => [],
     }
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
     const result = await validate(listMissingCoverage.inputSchema, {})
     expect(result).toEqual({ success: true, value: { offset: 0, limit: 50 } })
+  })
+
+  // 救援R3：parked 事实块只计救援资格行，excluded-extra/duplicate-content 不计入也不进 sample。
+  it('parked block counts only rescue-eligible rows and caps sample at 5', async () => {
+    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'listParkedPaths'> = {
+      missingBySeason: () => [],
+      missingMovies: () => [],
+      listParkedPaths: () => [
+        { path: '/media/A/a.mkv', park_reason: 'no tmdb match', first_seen: 1000, last_attempt: 1000 },
+        { path: '/media/A/b.mkv', park_reason: 'ambiguous', first_seen: 1000, last_attempt: 1000 },
+        { path: '/media/B/c.mkv', park_reason: 'excluded-extra', first_seen: 1000, last_attempt: 1000 },
+        { path: '/media/C/d.mkv', park_reason: 'duplicate-content', first_seen: 1000, last_attempt: 1000 },
+        { path: '/media/D/e.mkv', park_reason: 'no tmdb match', first_seen: 1000, last_attempt: 1000 },
+        { path: '/media/E/f.mkv', park_reason: 'ambiguous', first_seen: 1000, last_attempt: 1000 },
+        { path: '/media/F/g.mkv', park_reason: 'no tmdb match', first_seen: 1000, last_attempt: 1000 },
+      ],
+    }
+    const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
+    const page = await listMissingCoverage.execute!({ offset: 0, limit: 50 }, fakeOpts) as MissingCoveragePage
+    expect(page.parked.count).toBe(5)
+    expect(page.parked.sample).toHaveLength(5)
+    expect(page.parked.sample).toEqual([
+      { path: '/media/A/a.mkv', reason: 'no tmdb match' },
+      { path: '/media/A/b.mkv', reason: 'ambiguous' },
+      { path: '/media/D/e.mkv', reason: 'no tmdb match' },
+      { path: '/media/E/f.mkv', reason: 'ambiguous' },
+      { path: '/media/F/g.mkv', reason: 'no tmdb match' },
+    ])
   })
 })
 
@@ -463,6 +495,58 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
       note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
     })
     expect(counter.count).toBe(0)
+  })
+
+  // 救援R3：dispatch_rescue_task 固定单例身份，共享 dispatch 预算，四态回执与 realign 工具同形。
+  it('dispatch_rescue_task: created → {dispatched:true, outcome:created, remainingCapacity}，耗 1 个 cap 名额', async () => {
+    const counter: DispatchCounter = { count: 0 }
+    const calls: unknown[][] = []
+    const dispatchRescue = makeDispatchRescueTaskTool(
+      {
+        jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args); return { outcome: 'created' } as const } },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
+      },
+      counter,
+    )
+    const result = await dispatchRescue.execute!({ reason: 'parked backlog looks worth a rescue pass' }, fakeOpts)
+    expect(result).toEqual({ dispatched: true, outcome: 'created', remainingCapacity: 4 })
+    expect(counter.count).toBe(1)
+    expect(calls).toHaveLength(1)
+    const [ident, payload] = calls[0]
+    expect(ident).toEqual({ seriesId: 'rescue-backlog', season: null, movieId: null })
+    expect(payload).toEqual({ taskType: 'rescue_identify', reason: 'parked backlog looks worth a rescue pass' })
+  })
+
+  it('dispatch_rescue_task: second call coalesces into the singleton identity without consuming cap', async () => {
+    const counter: DispatchCounter = { count: 1 }
+    const dispatchRescue = makeDispatchRescueTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true }) },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
+      },
+      counter,
+    )
+    const result = await dispatchRescue.execute!({ reason: 'still worth a rescue pass' }, fakeOpts)
+    expect(result).toEqual({
+      dispatched: false, outcome: 'coalesced', pendingState: 'wanted',
+      note: 'merged into the pending task and its scope/reason was refreshed to yours',
+    })
+    expect(counter.count).toBe(1)
+  })
+
+  it('dispatch_rescue_task: cap reached returns error before upsertWorkerTask', async () => {
+    const counter: DispatchCounter = { count: 2 }
+    const dispatchRescue = makeDispatchRescueTaskTool(
+      {
+        jobs: { upsertWorkerTask: () => { throw new Error('must never be called — cap must reject first') } },
+        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 2,
+      },
+      counter,
+    )
+    const result = await dispatchRescue.execute!({ reason: 'cap full' }, fakeOpts)
+    expect(result).toEqual({
+      error: 'dispatch cap (2) reached for this orchestrator — call spawn_sibling_orchestrator to hand off the rest instead of dispatching more directly',
+    })
   })
 })
 

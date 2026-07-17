@@ -33,12 +33,19 @@ export interface RescueWorkerTaskDeps {
   runTask: (task: RescueTask) => Promise<RescueReport>
 }
 
+/** 救援资格谓词：excluded-extra 已裁决、duplicate-content 归重复源战役（spec 非目标）。
+ *  mapper 与 orchestrator 的 parked 事实块共用这一个谓词——两处过滤漂移=orchestrator 看见
+ *  的数字与 rescue worker 实拿的任务组对不上。 */
+export function isRescueEligible(parkReason: string): boolean {
+  return parkReason !== 'excluded-extra' && parkReason !== 'duplicate-content'
+}
+
 export async function mapWorkerTaskToRescueTask(
   deps: { lib: LibraryRepo; probeDuration: (path: string) => Promise<number | null> },
   jobId: string,
 ): Promise<RescueTask | null> {
   const all = deps.lib.listParkedPaths()
-  const eligible = all.filter((p) => p.park_reason !== 'excluded-extra' && p.park_reason !== 'duplicate-content')
+  const eligible = all.filter((p) => isRescueEligible(p.park_reason))
   const byDir = new Map<string, typeof eligible>()
   for (const p of eligible) {
     const dir = dirname(p.path)
