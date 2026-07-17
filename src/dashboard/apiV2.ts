@@ -501,6 +501,10 @@ const DEPLOY_NONSECRET_KEYS = [
   'LLM_BASE_URL', 'LLM_MODEL', 'LLM_EXTRA_BODY', 'OPENSUBTITLES_USERNAME', 'ZIMUKU_ENABLED',
   'DASHBOARD_PORT', 'SUBTITLE_SCOUT_CACHE_DIR', 'LOG_RETAIN_DAYS', 'REALIGN_ARCHIVE_ROOT',
   'FFPROBE_PATH', 'SCAN_INTERVAL_MS', 'MEDIA_ROOTS',
+  // R2D-10（R2 复审）：A4 引入的部署层旋钮（cli/index.ts resolveTargetLanguages 的第一参来源）
+  // 此前漏收进这张展示清单——枚举来源核对时补齐，纯只读展示，不影响 resolveTargetLanguages 本身
+  // 的行为级 settings.target_languages 优先级（见该函数第二参的文档注释）。
+  'TARGET_LANGUAGES', 'SKIP_CHINESE_ORIGIN',
 ] as const
 
 export interface DeploySecretDTO { present: boolean; tail: string }
@@ -789,10 +793,20 @@ export interface WorkflowRunningWorkerDTO {
   trail: TraceEvent[]
 }
 export interface WorkflowRecentRunDTO {
+  /** R2D-1（R2 复审）：runs.id——worker run 详情入口的身份键（RunDetail 打开哪一行、React key，
+   *  同一个 job 可能有多行 runs，jobId 不足以定位具体是哪一行）。 */
+  id: number
   jobId: number | null
   decision: string | null
   detail: string | null
   finishedAt: number | null
+  /** R2D-1：该行关联 job 的 series_id（LEFT JOIN jobs）——RunDetail 的 Rerun 按钮据此判断是否
+   *  可用（同 Rerun 扳手的既有口径：只认 seriesId，movie 目标没有这个扳手）。job 已不存在/
+   *  job_id 为 NULL 时降级 null，不炸查询。 */
+  seriesId: string | null
+  /** R2D-1：同 seriesId，movie_id（find_subtitle 的 movie 目标）——目前只用于展示，Rerun 只认
+   *  seriesId。 */
+  movieId: string | null
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]
@@ -828,21 +842,37 @@ export function buildWorkflowWorkers(db: ScoutDb): WorkflowWorkersDTO {
 
   const running: WorkflowRunningWorkerDTO[] = runningRows.map((r) => {
     const { taskType, seasons } = parseWorkerTaskPayload(r.payload)
+    // R2D-13（R2 复审）：realign 字幕先行阶段逐集起 `job-${jobId}-${absoluteEpisode}` runKey
+    // （见 src/v2/realignWorkerTask.ts 的同名注释）——单 runKey 的 peek 永远拿不到这些子集事件，
+    // realign WorkerCard 因此直播空转。taskType==='realign' 时改用 peekPrefix 合并读全部子集
+    // 缓冲；其余 taskType（find_subtitle）只有一个 runKey，维持 peek 原样。
+    const trail = taskType === 'realign'
+      ? traceBus.peekPrefix(`job-${r.id}-`, 20)
+      : traceBus.peek(`job-${r.id}`, 20)
     return {
       jobId: r.id, seriesId: r.series_id, movieId: r.movie_id, taskType, seasons,
-      startedAtLease: r.updated_at, trail: traceBus.peek(`job-${r.id}`, 20),
+      startedAtLease: r.updated_at, trail,
     }
   })
 
+  // R2D-1（R2 复审）：worker run 详情入口需要 runs.id（身份键）+ 该行所属 job 的 series_id/
+  // movie_id（Rerun 按钮判据）——LEFT JOIN（不是 JOIN）：job_id 为 NULL 或指向的 job 行已不存在
+  // 时该行仍要出现在 recent 里，只是 seriesId/movieId 降级 null，不能因为关联缺失就整行消失。
   const recentRows = db
     .prepare(
-      `SELECT job_id, decision, detail, finished_at FROM runs
-       WHERE decision IS NULL OR decision != 'orchestrate'
-       ORDER BY finished_at DESC LIMIT 20`
+      `SELECT r.id AS id, r.job_id AS job_id, r.decision AS decision, r.detail AS detail,
+              r.finished_at AS finished_at, j.series_id AS series_id, j.movie_id AS movie_id
+       FROM runs r LEFT JOIN jobs j ON r.job_id = j.id
+       WHERE r.decision IS NULL OR r.decision != 'orchestrate'
+       ORDER BY r.finished_at DESC LIMIT 20`
     )
-    .all() as { job_id: number | null; decision: string | null; detail: string | null; finished_at: number | null }[]
+    .all() as {
+      id: number; job_id: number | null; decision: string | null; detail: string | null
+      finished_at: number | null; series_id: string | null; movie_id: string | null
+    }[]
   const recent: WorkflowRecentRunDTO[] = recentRows.map((r) => ({
-    jobId: r.job_id, decision: r.decision, detail: r.detail, finishedAt: r.finished_at,
+    id: r.id, jobId: r.job_id, decision: r.decision, detail: r.detail, finishedAt: r.finished_at,
+    seriesId: r.series_id, movieId: r.movie_id,
   }))
 
   return { running, recent }

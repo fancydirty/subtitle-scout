@@ -37,4 +37,39 @@ describe('mergeTrail', () => {
     expect(mergeTrail([ev(0)], [])).toEqual([ev(0)])
     expect(mergeTrail([], [ev(0)])).toEqual([ev(0)])
   })
+
+  // R2D-13（R2 复审）：realign WorkerCard 的 baseTrail/SSE 事件混合了多个子集 runKey
+  // （`job-${jobId}-${absoluteEpisode}`），各子集各自的 seq 从 0 起算——纯按 seq 去重会把不同
+  // 子集的第 0 条事件互相当同一条覆盖掉，丢事件。去重键必须带上 runKey。
+  describe('跨 runKey 的 seq 重复（realign 逐集事件混流）', () => {
+    function evAt(runKey: string, seq: number, at: number, tool = 't'): TraceEvent {
+      return { runKey, seq, tool, argsSummary: '', resultSummary: '', tookMs: 1, at }
+    }
+
+    it('不同 runKey 的相同 seq 都保留，不互相覆盖', () => {
+      const merged = mergeTrail(
+        [evAt('job-42-1', 0, 100, 'a')],
+        [evAt('job-42-2', 0, 50, 'b')],
+      )
+      expect(merged).toHaveLength(2)
+      expect(merged.map((e) => e.runKey)).toEqual(['job-42-2', 'job-42-1']) // 按 at 升序：50 在前
+    })
+
+    it('同一 runKey 的相同 seq 仍然去重（后来者为准）', () => {
+      const merged = mergeTrail(
+        [evAt('job-42-1', 0, 100, 'old')],
+        [evAt('job-42-1', 0, 100, 'new')],
+      )
+      expect(merged).toHaveLength(1)
+      expect(merged[0].tool).toBe('new')
+    })
+
+    it('排序主键是 at，seq 只是同 at 时的次序 tie-break', () => {
+      const merged = mergeTrail(
+        [evAt('job-42-1', 5, 300), evAt('job-42-2', 1, 100)],
+        [evAt('job-42-3', 2, 200)],
+      )
+      expect(merged.map((e) => e.runKey)).toEqual(['job-42-2', 'job-42-3', 'job-42-1'])
+    })
+  })
 })

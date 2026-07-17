@@ -1,7 +1,7 @@
 // src/dashboard/server.ts
 import { createServer, type Server } from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, normalize, extname } from 'node:path'
+import { join, normalize, extname, resolve } from 'node:path'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
@@ -234,9 +234,13 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
             res.end(JSON.stringify({ error: 'path query param is required' }))
             return
           }
+          // R2D-6（R2 复审）：POST 侧 addMediaRoot 落库前先 resolve() 归一化（见 apiV2.ts 该函数
+          // 注释），DELETE 侧此前直接拿 query 里的原始字符串去精确匹配——两侧口径不对称，用户
+          // 加个尾斜杠（"/media/tv/" vs 库里存的 "/media/tv"）就会 404，明明是同一个根。这里
+          // resolve() 一次，与 add 侧口径对称。
           // 复审修复 1：removeRoot 自带存在性守卫——不是登记在册的守备目录返回 null（含现存根
           // 的父目录），这里映射成 404，绝不对非根路径跑级联清库。
-          const result = settingsRepo.removeRoot(path)
+          const result = settingsRepo.removeRoot(resolve(path))
           if (!result) {
             res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
             res.end(JSON.stringify({ error: 'not a media root' }))

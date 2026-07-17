@@ -71,6 +71,31 @@ describe('traceStream：单例 EventSource + runKey 分发', () => {
     expect(receivedB).toHaveLength(0)
   })
 
+  // R2D-13（R2 复审）：realign 字幕先行阶段逐集起 `job-${jobId}-${absoluteEpisode}` runKey——
+  // WorkerCard 订阅的仍是 `job-${jobId}`（不知道、也不该知道子集号），分发谓词因此要接受
+  // "精确匹配或以 key+'-' 为前缀"两种情况，否则 realign WorkerCard 的 SSE 直播永远空转。
+  it('runKey 是 job-${jobId}-${子集号} 时也分发给 job-${jobId} 的订阅者（realign 逐集直播）', () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const received: TraceEvent[] = []
+    subscribeTrace('job-42', (e) => received.push(e))
+
+    FakeEventSource.instances[0].emit(ev('job-42-13', 0))
+    FakeEventSource.instances[0].emit(ev('job-42-14', 0))
+
+    expect(received.map((e) => e.runKey)).toEqual(['job-42-13', 'job-42-14'])
+  })
+
+  it('前缀匹配不误吞数字延伸的不相关 job（job-420 不该命中 job-42 的订阅者）', () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const received: TraceEvent[] = []
+    subscribeTrace('job-42', (e) => received.push(e))
+
+    FakeEventSource.instances[0].emit(ev('job-420', 0))
+    FakeEventSource.instances[0].emit(ev('job-420-1', 0))
+
+    expect(received).toHaveLength(0)
+  })
+
   it('引用计数归零才关闭底层连接；页面还有别的订阅者时不关闭', () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     const unsubA = subscribeTrace('job-a', () => {})

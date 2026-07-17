@@ -25,9 +25,24 @@ export function posterUrl(posterPath: string | null): string | null {
   return `${TMDB_IMAGE_BASE}${posterPath}`
 }
 
+/** 从失败响应体尝试抽取 `{error: string}` 形状的诚实消息（server.ts 端点失败时的既有约定），
+ *  抽不出来（响应体不是 JSON、或没有 error 字段）就回落 "path → status" 形式——get()/mutate()
+ *  共用同一套抽取逻辑。R2D-8（R2 复审）：get() 此前从不解析失败响应体，只吐裸状态码——
+ *  DirBrowser 这类"如实展示后端错误文案"的调用方因此永远看不到后端已经给出的人话消息（比如
+ *  listMediaSubdirs 的 "path is not readable (permission denied?)"），这里补齐，与 mutate() 的
+ *  既有手法对称。 */
+function errorMessage(path: string, status: number, body: unknown): string {
+  return body && typeof body === 'object' && 'error' in body
+    ? String((body as { error: unknown }).error)
+    : `${path} → ${status}`
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(withToken(path), { signal })
-  if (!res.ok) throw new Error(`${path} → ${res.status}`)
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => null)
+    throw new Error(errorMessage(path, res.status, body))
+  }
   return res.json() as Promise<T>
 }
 
@@ -46,11 +61,7 @@ async function mutate<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?:
   })
   const responseBody: unknown = await res.json().catch(() => null)
   if (!res.ok) {
-    const message =
-      responseBody && typeof responseBody === 'object' && 'error' in responseBody
-        ? String((responseBody as { error: unknown }).error)
-        : `${path} → ${res.status}`
-    throw new Error(message)
+    throw new Error(errorMessage(path, res.status, responseBody))
   }
   return responseBody as T
 }

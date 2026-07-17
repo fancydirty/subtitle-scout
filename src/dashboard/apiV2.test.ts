@@ -548,6 +548,57 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
     expect(result.recent.map(r => r.decision)).toEqual(['download', 'no_safe_match'])
   })
 
+  // R2D-1（R2 复审）：worker run 详情入口需要 runs.id（打开 RunDetail 的身份键——用它而不是
+  // jobId 当 React key/请求参数，同一个 job 可能有多行 runs）+ 该 job 关联的 series_id/movie_id
+  // （Rerun 按钮判断是否可用）。beforeEach 里的两条 runs 都挂在 kind='series_season'、
+  // series_id='s1' 的 job 上。
+  it('recent：每行带 runs.id 与该 job 的 seriesId/movieId（LEFT JOIN jobs）', () => {
+    const result = buildWorkflowWorkers(db)
+    expect(result.recent.every(r => typeof r.id === 'number')).toBe(true)
+    // 两条 id 各不相同（各自一行 runs，不是同一行重复出现）
+    expect(new Set(result.recent.map(r => r.id)).size).toBe(result.recent.length)
+    expect(result.recent.every(r => r.seriesId === 's1' && r.movieId === null)).toBe(true)
+  })
+
+  it('recent：job_id 为 NULL 的行（理论边界）时 seriesId/movieId 降级 null，不炸查询', () => {
+    db.prepare(
+      `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path)
+       VALUES (NULL, ?, ?, 'error', 'no job', '/j/orphan/decision.json')`
+    ).run(NOW - 500, NOW - 400)
+    const result = buildWorkflowWorkers(db)
+    const orphan = result.recent.find(r => r.jobId === null)!
+    expect(orphan).toMatchObject({ seriesId: null, movieId: null })
+  })
+
+  // R2D-13（R2 复审）：realign 字幕先行阶段逐集起 `job-${jobId}-${absoluteEpisode}` runKey——
+  // 单 runKey 的 traceBus.peek(`job-${jobId}`, ...) 永远拿不到这些子集事件，Workflow 页 realign
+  // WorkerCard 因此直播空转。taskType==='realign' 时改用 peekPrefix 合并读全部子集缓冲。
+  it('running：taskType=realign 时 trail 用 peekPrefix 合并逐集 job-${jobId}-${ep} 缓冲', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's2', season: null, taskType: 'realign', state: 'searching', priority: 50 })
+    traceBus.publish({ runKey: `job-${jobId}-3`, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: NOW })
+    traceBus.publish({ runKey: `job-${jobId}-7`, seq: 0, tool: 'get_candidate', argsSummary: '{}', resultSummary: '{}', tookMs: 2, at: NOW + 1 })
+    // 单一 runKey `job-${jobId}`（没有子集号）不该混进来干扰断言，但也不该被 peekPrefix 漏掉的
+    // 相邻 job 前缀污染——这里只发子集事件，验证 peekPrefix 真的把两条都收拢。
+
+    const result = buildWorkflowWorkers(db)
+    const running = result.running.find(r => r.jobId === jobId)!
+    expect(running.taskType).toBe('realign')
+    expect(running.trail.map(e => e.tool)).toEqual(['search_source', 'get_candidate'])
+
+    traceBus.snapshotPrefix(`job-${jobId}-`) // 测试卫生：排空本用例写入的进程级单例缓冲
+  })
+
+  it('running：taskType=find_subtitle 时 trail 维持 peek 原样（不受同名前缀子集事件影响）', () => {
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's3', season: null, taskType: 'find_subtitle', state: 'searching', priority: 50 })
+    traceBus.publish({ runKey: `job-${jobId}`, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: NOW })
+
+    const result = buildWorkflowWorkers(db)
+    const running = result.running.find(r => r.jobId === jobId)!
+    expect(running.trail.map(e => e.tool)).toEqual(['search_source'])
+
+    traceBus.snapshot(`job-${jobId}`)
+  })
+
   it('空库：running/recent 皆空数组', () => {
     const freshDb = openDb(':memory:')
     expect(buildWorkflowWorkers(freshDb)).toEqual({ running: [], recent: [] })

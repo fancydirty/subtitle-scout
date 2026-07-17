@@ -290,6 +290,109 @@ describe('Lanes：Pass 点开 → RunDetail 快照回放（回放≠直播，无
   })
 })
 
+// R2D-1+9（R2 复审）：worker run 详情入口——之前 Recent 区一条 worker run（find_subtitle/realign
+// 的收工记录）完全点不开，唯一能看到的只有截断的一行 detail 文本；React key 用 jobId 也有重复
+// 隐患（同一个 job 可能有多行 runs）。这里验证：①点开渲染 decision/detail/快照回放 ②同一 job
+// 两行 runs 各自独立可点开（key 不撞车）③Rerun 按钮只在 seriesId 非空时出现，且请求体不带
+// seasons 键（全剧缺口语义）。
+describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D-1）', () => {
+  function workersWithRecent(recent: WorkflowWorkersDTO['recent']): WorkflowWorkersDTO {
+    return { running: [], recent }
+  }
+
+  it('点开渲染 decision 语义点 + detail + 静态 TraceRows；seriesId 非空时显示 Rerun 按钮', async () => {
+    const recentRow = {
+      id: 5, jobId: 10, decision: 'installed', detail: '3 集入账: e1, e2, e3', finishedAt: NOW, seriesId: 's9', movieId: null,
+    }
+    const trace: RunTraceDTO = {
+      events: [{ runKey: 'job-10', seq: 0, tool: 'download_candidate', argsSummary: 'E01', resultSummary: 'ok', tookMs: 800, at: NOW }],
+    }
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRouted([
+        { path: '/api/v2/workflow/pending', body: EMPTY_PENDING },
+        { path: '/api/v2/workflow/passes', body: [] },
+        { path: '/api/v2/workflow/workers', body: workersWithRecent([recentRow]) },
+        { path: '/api/v2/workflow/runs/5/trace', body: trace },
+      ]),
+    )
+    renderLanes()
+
+    const row = await screen.findByText('3 集入账: e1, e2, e3')
+    fireEvent.click(row)
+
+    const panel = await screen.findByRole('dialog', { name: 'run 5' })
+    expect(within(panel).getByText('installed')).toBeInTheDocument()
+    expect(within(panel).getByText('3 集入账: e1, e2, e3')).toBeInTheDocument()
+    expect(within(panel).getByText('download_candidate')).toBeInTheDocument()
+    expect(within(panel).queryByTestId('wf-trace-active')).not.toBeInTheDocument() // 回放不是直播
+    expect(within(panel).getByRole('button', { name: 'Rerun' })).toBeInTheDocument()
+  })
+
+  it('seriesId 为 null（如 movie 目标的 find_subtitle worker run）→ 不显示 Rerun 按钮', async () => {
+    const recentRow = { id: 6, jobId: 11, decision: 'installed', detail: 'movie 装好了', finishedAt: NOW, seriesId: null, movieId: 'm1' }
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRouted([
+        { path: '/api/v2/workflow/pending', body: EMPTY_PENDING },
+        { path: '/api/v2/workflow/passes', body: [] },
+        { path: '/api/v2/workflow/workers', body: workersWithRecent([recentRow]) },
+        { path: '/api/v2/workflow/runs/6/trace', body: { events: [] } },
+      ]),
+    )
+    renderLanes()
+    fireEvent.click(await screen.findByText('movie 装好了'))
+    const panel = await screen.findByRole('dialog', { name: 'run 6' })
+    expect(within(panel).queryByRole('button', { name: 'Rerun' })).not.toBeInTheDocument()
+  })
+
+  it('同一 job 两行 runs（jobId 相同、id 不同）各自独立可点开——不因 key 撞车而错配', async () => {
+    const rowA = { id: 21, jobId: 30, decision: 'installed', detail: 'first row', finishedAt: NOW - 100, seriesId: 's1', movieId: null }
+    const rowB = { id: 22, jobId: 30, decision: 'retry_later', detail: 'second row', finishedAt: NOW, seriesId: 's1', movieId: null }
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRouted([
+        { path: '/api/v2/workflow/pending', body: EMPTY_PENDING },
+        { path: '/api/v2/workflow/passes', body: [] },
+        { path: '/api/v2/workflow/workers', body: workersWithRecent([rowB, rowA]) },
+        { path: '/api/v2/workflow/runs/21/trace', body: { events: [] } },
+        { path: '/api/v2/workflow/runs/22/trace', body: { events: [] } },
+      ]),
+    )
+    renderLanes()
+    await screen.findByText('first row')
+    expect(screen.getByText('second row')).toBeInTheDocument() // 两行都渲染，没有互相顶掉
+
+    fireEvent.click(screen.getByText('first row'))
+    expect(await screen.findByRole('dialog', { name: 'run 21' })).toBeInTheDocument()
+  })
+
+  it('Rerun 按钮走现有 RerunDialog 流，POST 请求体不带 seasons 键（全剧缺口）', async () => {
+    const recentRow = { id: 5, jobId: 10, decision: 'installed', detail: '3 集入账', finishedAt: NOW, seriesId: 's9', movieId: null }
+    const fetchMock = mockFetchRouted([
+      { path: '/api/v2/workflow/pending', body: EMPTY_PENDING },
+      { path: '/api/v2/workflow/passes', body: [] },
+      { path: '/api/v2/workflow/workers', body: workersWithRecent([recentRow]) },
+      { path: '/api/v2/workflow/runs/5/trace', body: { events: [] } },
+      { path: '/api/v2/workflow/redispatch', method: 'POST', body: { outcome: 'created' } },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    renderLanes()
+    fireEvent.click(await screen.findByText('3 集入账'))
+    const panel = await screen.findByRole('dialog', { name: 'run 5' })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Rerun' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rerun' }))
+    expect(await within(dialog).findByText('created — a new task was dispatched.')).toBeInTheDocument()
+
+    const call = fetchMock.mock.calls.find((c) => requestInfo(c[0] as RequestInfo).path.includes('redispatch'))!
+    const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>
+    expect(body).toEqual({ seriesId: 's9', includeThrottled: false })
+    expect('seasons' in body).toBe(false)
+  })
+})
+
 describe('Lanes：Rerun 确认流——AlertDialog → POST → 四态回执各断言一条', () => {
   function pendingWithSeries(): WorkflowPendingDTO {
     return {

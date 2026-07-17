@@ -40,6 +40,7 @@ import { recognize } from '../recognition/index.js'
 import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles } from '../files/streamProbe.js'
+import { dashboardNoTokenWarningLines } from './dashboardTokenWarning.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -458,6 +459,12 @@ async function cmdWatch() {
     })
     if (dashServer.listening) {
       console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
+      // R2D-5（R2 复审，主控裁决）：无 token 高声告警——不做 403 硬拒（会砸现行无 token 的家用
+      // 部署；正式鉴权归 Sonarr 式立项），只在这里把风险说清楚。三行文案见
+      // dashboardTokenWarning.ts（那个模块单独测，这里不直接写在 index.ts 里的理由见其头注释）。
+      if (!process.env.DASHBOARD_TOKEN) {
+        for (const line of dashboardNoTokenWarningLines()) console.error(line)
+      }
     } else {
       log('dashboard server failed to start (port conflict?), continuing without dashboard')
     }
@@ -541,7 +548,27 @@ async function cmdDoctor() {
       (await generateText({ model, prompt: '回复"ok"两个字母即可', abortSignal: AbortSignal.timeout(30_000) })).text))
   }
 
-  results.push(checkMediaRoots(roots, isDirWritable))
+  // R2D-11（R2 复审）：MEDIA_ROOTS env 只是"首启种子"——dashboard G4 之后真正生效的守备目录
+  // 存活在 DB media_roots 表（可经 dashboard 动态增删，env 早已不是唯一真源，见
+  // settingsRepo.seedRootsFromEnv 的既有注释）。db 文件存在时读该表（沿用下方既有的动态 import
+  // 手法，doctor 在数据库尚未初始化时不该白白 import 一整个 v2/db.js）并标注来源（db）；db
+  // 尚未初始化（全新部署，一次 watch 都没跑过）时回落 env 首启种子并标注（env seed）——不假装
+  // 这就是"真正生效"的清单。dbPath/dbExists 提前到这里算，下方 v2 database checks 复用同一份
+  // 判定，不重复 existsSync。
+  const dbPath = join(cacheRoot, 'scout.db')
+  const dbExists = existsSync(dbPath)
+  let mediaRootsForDoctor = roots
+  let mediaRootsSource: 'db' | 'env seed' = 'env seed'
+  if (dbExists) {
+    // openDb 走既有的动态 import 手法（数据库尚未初始化时不 import v2/db.js）；SettingsRepo 本
+    // 文件顶部已经静态 import 过（cmdWatch 也用它），这里直接复用，不重复动态 import 同一个类。
+    const { openDb } = await import('../v2/db.js')
+    const db = openDb(dbPath)
+    mediaRootsForDoctor = new SettingsRepo(db).listRoots().map(r => r.path)
+    db.close()
+    mediaRootsSource = 'db'
+  }
+  results.push(checkMediaRoots(mediaRootsForDoctor, isDirWritable, mediaRootsSource))
 
   {
     const { probeMountCapabilities } = await import('../files/mountCapabilities.js')
@@ -549,8 +576,7 @@ async function cmdDoctor() {
   }
 
   // v2 database checks (only if db file exists)
-  const dbPath = join(cacheRoot, 'scout.db')
-  if (existsSync(dbPath)) {
+  if (dbExists) {
     const { openDb } = await import('../v2/db.js')
 
     results.push(checkDatabase(() => {

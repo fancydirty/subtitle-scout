@@ -89,6 +89,29 @@ describe('doctor 本地两项', () => {
     expect(r.ok).toBe(false)
     expect(r.detail).toContain('/ro')
   })
+
+  // R2D-11（R2 复审）：MEDIA_ROOTS env 只是"首启种子"——dashboard G4 之后真正生效的守备目录
+  // 存活在 DB media_roots 表（可动态增删）。第三参 source 可选，标注这份 roots 清单的来源，
+  // 让 doctor 报告能诚实回答"你在看的是不是当前真正生效的清单"，不假装 env 恒是唯一真源。
+  it('source="db" 时 detail 标注来源为 db', () => {
+    const r = checkMediaRoots(['/media/movies'], () => true, 'db')
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('db')
+  })
+  it('source="env seed" 时 detail 标注来源为 env seed', () => {
+    const r = checkMediaRoots(['/media/movies'], () => true, 'env seed')
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('env seed')
+  })
+  it('source 省略时不标注来源（向后兼容既有调用点/文案）', () => {
+    const r = checkMediaRoots(['/media/movies'], () => true)
+    expect(r.detail).not.toContain('db')
+    expect(r.detail).not.toContain('env seed')
+  })
+  it('skip 分支与失败分支同样带上 source 标注', () => {
+    expect(checkMediaRoots([], () => true, 'db').detail).toContain('db')
+    expect(checkMediaRoots(['/ro'], () => false, 'env seed').detail).toContain('env seed')
+  })
 })
 
 describe('doctor 报告', () => {

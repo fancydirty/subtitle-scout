@@ -1,6 +1,7 @@
 import { executeRealign, type RealignExecutorDeps, type RealignExecutionResult } from './realignExecutor.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
+import { traceBus } from '../dashboard/traceBus.js'
 
 export interface RealignWorkerTaskPayload { taskType: 'realign'; seriesId: string; reason: string }
 
@@ -52,14 +53,32 @@ export async function runRealignWorkerTask(
   job: Job, deps: RealignWorkerTaskDeps, jobs: Pick<JobsRepo, 'completeDone' | 'completeError' | 'park'>, now: () => number,
 ): Promise<RealignExecutionResult | null> {
   const startedAt = now()
+  // R2D-13（R2 复审）：字幕先行阶段不是单一 runKey——deps.runEpisode 逐集调用（realignExecutor.ts
+  // 步骤 12），每次调用把 `${job.id}-${item.absoluteEpisode}` 当作 jobId 传给 makeRealignRunEpisode
+  // 组出的 FindSubtitleTask，find-subtitle worker 的 onStepEvent 桥接因此把工具调用痕迹发布到
+  // `job-${job.id}-${absoluteEpisode}` 这个逐集 runKey——从未等于本函数自己的 `job-${job.id}`。
+  // 收官快照必须用 snapshotPrefix 把"以 job-${job.id}- 开头"的全部子集缓冲一并收走，否则：
+  // ①这些缓冲无上界残留在 traceBus 的进程级 Map 里，永远没有 snapshot 调用把它们清空
+  // ②realign runs 行永远没有 trace_json（Workflow 页 realign WorkerCard 直播因此也永远空白，
+  // 见 apiV2.ts buildWorkflowWorkers 对应的 peekPrefix 改法）。
+  const runKeyPrefix = `job-${job.id}-`
   // 退役T1 (W0-3a): one runs row per terminal outcome, mirroring executor.ts's own
   // executeRealignBranch shape (decision + human-readable detail, journalPath null — this runner
   // has no journal). executor.ts itself was deleted in the old-pipeline retirement; this comment
   // only documents where the shape was borrowed from. decision strings are prefixed 'realign:' to
   // disambiguate from the find-subtitle worker's own decision vocabulary in the shared runs
-  // table/dashboard timeline.
+  // table/dashboard timeline. recordRun is called exactly once per invocation (one of the three
+  // success branches below, or the catch) — no lazy-cache needed here, unlike
+  // findSubtitleWorkerTask.ts's recordRun (which can fire multiple times per invocation).
   const recordRun = (decision: string, detail: string): void => {
-    deps.runs?.insert({ jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null })
+    // 复审修复（可选链短路陷阱，同 findSubtitleWorkerTask.ts 先例）：snapshotPrefix() 必须先于
+    // 可选链求值——留在 insert 实参位置的话，deps.runs 缺席时可选链连实参求值一起短路，逐集
+    // runKey 缓冲永不排空（无上界残留，审计脚本已实证）。runs 缺席=只排空不落账。
+    const events = traceBus.snapshotPrefix(runKeyPrefix)
+    const traceJson = events.length > 0 ? JSON.stringify(events) : null
+    deps.runs?.insert({
+      jobId: job.id, startedAt, finishedAt: now(), decision, detail: capDetail(detail), journalPath: null, traceJson,
+    })
   }
   try {
     const result = await executeRealign(job, deps)

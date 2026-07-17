@@ -55,8 +55,15 @@ function ensureConnected(): void {
     } catch {
       return // 畸形 data 行——静默丢弃，不让一条坏事件打断整条订阅
     }
-    const set = listenersByRunKey.get(parsed.runKey)
-    if (set) for (const fn of set) fn(parsed)
+    // R2D-13（R2 复审）：realign 字幕先行阶段逐集起 `job-${jobId}-${absoluteEpisode}` runKey——
+    // WorkerCard 订阅的仍是 `job-${jobId}`（子集号是 realignExecutor 内部循环的实现细节，订阅方
+    // 不知道也不该知道）。分发谓词从"精确匹配"放宽成"精确匹配或以 key+'-' 为前缀"：`key+'-'`
+    // 的尾连字符防止 job-42 误吞 job-420 这类数字延伸、并不相关的另一个 job。
+    for (const [key, set] of listenersByRunKey) {
+      if (parsed.runKey === key || parsed.runKey.startsWith(`${key}-`)) {
+        for (const fn of set) fn(parsed)
+      }
+    }
   }
   es = instance
 }

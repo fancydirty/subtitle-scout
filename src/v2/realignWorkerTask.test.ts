@@ -8,6 +8,7 @@ import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
+import { traceBus } from '../dashboard/traceBus.js'
 
 // Mirrors realignExecutor.test.ts's SEASONS_1x5/statSize/mkFlatLibrary/mkJf/mkDeps helpers
 // (read in full before writing this file, per the phase ⑥ plan note) — trimmed to a 3-episode,
@@ -254,6 +255,92 @@ describe('runRealignWorkerTask', () => {
       const rows = runs.getByJobId(job.id)
       expect(rows).toHaveLength(1)
       expect(rows[0].decision).toBe('realign:error')
+      db.close()
+    })
+
+    // R2D-13（R2 复审）：realign 字幕先行逐集调用 deps.runEpisode 时会经由 makeFindSubtitleWorker
+    // 的 onStepEvent 桥接把工具调用痕迹发布到 `job-${job.id}-${absoluteEpisode}` 这样的逐集
+    // runKey（见 realignExecutor.ts 的 deps.runEpisode 调用点、findSubtitleWorker.ts 的
+    // onStepEvent 接线）——这些 runKey 从未等于 runRealignWorkerTask 自己的 `job-${job.id}`，此前
+    // 从无代码路径 snapshot 它们，导致：①进程级缓冲无上界残留 ②realign runs 行永远没有
+    // trace_json。这里用 runEpisode mock 模拟这条桥接，验证 recordRun 改用 snapshotPrefix 后
+    // 能把全部逐集事件收拢进同一行 runs.trace_json，且收官后缓冲真正排空。
+    it('trace: 逐集 runEpisode 发布的 job-${jobId}-${ep} 痕迹全部并入 runs.trace_json，收官后缓冲排空', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-runs-trace-'))
+      const oldSeasonDir = mkFlatLibrary(root, 3)
+      const libRoot = join(root, 'lib')
+      const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+        Array.from({ length: 3 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
+      )
+      const jf = mkJf({
+        locations: [libRoot],
+        items: Array.from({ length: 3 }, (_, i) => ({
+          Type: 'Episode',
+          Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i + 1}.mkv`),
+          ParentIndexNumber: 1,
+        })),
+      })
+      const runs = new RunsRepo(db)
+      const publishedRunKeys: string[] = []
+      const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
+        runs,
+        runEpisode: vi.fn(async (_ctx, _outDir, epJobId: string) => {
+          const runKey = `job-${epJobId}`
+          publishedRunKeys.push(runKey)
+          traceBus.publish({
+            runKey, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 5, at: Date.now(),
+          })
+          return { decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 } }
+        }),
+      })
+
+      const result = await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(result!.decision).toBe('realigned')
+      expect(publishedRunKeys.length).toBeGreaterThan(0) // sanity：runEpisode 真的逐集被调用过
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].trace_json).not.toBeNull()
+      const events = JSON.parse(rows[0].trace_json!) as { runKey: string }[]
+      expect(events).toHaveLength(publishedRunKeys.length)
+      expect(events.map((e) => e.runKey).sort()).toEqual([...publishedRunKeys].sort())
+
+      // 收官快照必须排空——同 job 前缀二次 snapshotPrefix 为空，不许无上界残留。
+      expect(traceBus.snapshotPrefix(`job-${job.id}-`)).toEqual([])
+      db.close()
+    })
+
+    // 防可选链短路陷阱（同 findSubtitleWorkerTask.ts 先例）：deps.runs 缺席时 recordRun 不落账，
+    // 但 snapshotPrefix 仍必须被调用——否则残留缓冲永远清不空。
+    it('runs 缺席时仍排空 snapshotPrefix 缓冲（防可选链短路陷阱）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'realign-worker-task-trace-norun-'))
+      const oldSeasonDir = mkFlatLibrary(root, 3)
+      const libRoot = join(root, 'lib')
+      const { db, lib, jobsRepo, job } = mkWorkerTaskMirror(
+        Array.from({ length: 3 }, (_, i) => join(oldSeasonDir, `Spy x Family E${i + 1}.mkv`)),
+      )
+      const jf = mkJf({
+        locations: [libRoot],
+        items: Array.from({ length: 3 }, (_, i) => ({
+          Type: 'Episode',
+          Path: join(libRoot, SHOW_DIR, 'Season 01', `f${i + 1}.mkv`),
+          ParentIndexNumber: 1,
+        })),
+      })
+      const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
+        // 故意不传 runs
+        runEpisode: vi.fn(async (_ctx, _outDir, epJobId: string) => {
+          traceBus.publish({
+            runKey: `job-${epJobId}`, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 5, at: Date.now(),
+          })
+          return { decision: 'download' as const, journalPath: '/j.json', stats: { durationMs: 1, llmCalls: 1, apiCalls: 1 } }
+        }),
+      })
+
+      await runRealignWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(traceBus.snapshotPrefix(`job-${job.id}-`)).toEqual([])
       db.close()
     })
 

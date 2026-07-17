@@ -53,7 +53,9 @@ export function RerunDialog({ request, onClose }: Props) {
     try {
       const outcome = await api.redispatch({
         seriesId: target.seriesId,
-        seasons: [target.season],
+        // R2D-1（R2 复审）：season===null 表示"全剧缺口"（RunDetail 的 worker-run Rerun 按钮走
+        // 这条路）——不传 seasons 键，走 REDISPATCH_SCHEMA 的省略键语义（同 rerun.ts 的文档注释）。
+        seasons: target.season != null ? [target.season] : undefined,
         includeThrottled: target.includeThrottled,
       })
       if (requestRef.current !== target) return

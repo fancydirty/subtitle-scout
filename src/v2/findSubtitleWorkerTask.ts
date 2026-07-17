@@ -65,9 +65,13 @@ export interface FindSubtitleTaskMapperDeps {
    *  (this episode/movie's own containing directory) makeFindSubtitleWorker enforces on the agent
    *  itself ("each worker gets ONLY its series' media dir", phase ⑦ instructions). */
   mediaRoots: string[]
-  /** A4 (spec-review fix #1): the PRIMARY configured target subtitle language — cli/index.ts
-   *  wires `resolveTargetLanguages(process.env).targetLanguages[0]`. FindSubtitleTask.targetLanguage
-   *  is single-valued, so a multi-language TARGET_LANGUAGES config tasks only its first entry;
+  /** A4 (spec-review fix #1): the PRIMARY configured target subtitle language. R2D-12 (R2 复审,
+   *  stale-comment fix): cli/index.ts wires
+   *  `resolveTargetLanguages(process.env, settingsRepo.get('target_languages')).targetLanguages[0]`
+   *  — the old one-arg mention here predates dashboard G4's behavior-level settings override
+   *  (settings.target_languages takes precedence over the deploy-layer TARGET_LANGUAGES env; see
+   *  resolveTargetLanguages's own second-arg doc comment). FindSubtitleTask.targetLanguage is
+   *  single-valued, so a multi-language TARGET_LANGUAGES config tasks only its first entry;
    *  per-item multi-language tasking is future work (the per-item coverage model — one sub_status
    *  per item — can't express "covered for zh but missing for en" yet). Optional/defaulted to
    *  'zh' (the historical default) so existing tests/callers predating the config keep working. */

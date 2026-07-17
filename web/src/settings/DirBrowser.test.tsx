@@ -78,16 +78,19 @@ describe('DirBrowser：下钻 + 面包屑', () => {
   })
 
   it('不可读目录：灰字如实降级，不是红色告警', async () => {
-    // get() 是全站共用的只读 helper（library/series/runs 等全部端点共用），失败时抛
-    // "path → status" 形状的消息，不解析响应体 {error} 字段（同 SeriesPage.test.tsx 的既有
-    // 断言口径）——这里只验证降级路径落在灰字 class 而不是红色告警，不要求比这更友好的文案。
+    // R2D-8（R2 复审）：get()（全站共用的只读 helper）现在照 mutate() 的既有手法解析失败响应体
+    // 的 {error} 字段——listMediaSubdirs 早就给出了具体原因（"path is not readable (permission
+    // denied?)"），之前 get() 会把它丢在地上、只吐裸的 "path → status"。这里断言那句诚实文案
+    // 真的传到了 UI 上，不只是验证降级路径落在灰字 class。
     const fetchMock = mockFetchRouted([
       { path: '/api/v2/fs/list', status: 400, body: { error: 'path is not readable (permission denied?)' } },
     ])
     vi.stubGlobal('fetch', fetchMock)
     renderBrowser('/mnt/locked')
 
-    const err = await screen.findByText(/Couldn't list this directory/)
+    // DirBrowser 用 String(e) 呈现（e 是 Error 实例），JS 的 Error#toString() 自带 "Error: " 前缀
+    // ——这是既有呈现方式，不是这次改动引入的，断言照实际渲染文本走。
+    const err = await screen.findByText(/Couldn't list this directory: Error: path is not readable \(permission denied\?\)/)
     expect(err).toBeInTheDocument()
     expect(err.className).toContain('settings-dirbrowser-list-error')
   })

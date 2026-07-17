@@ -108,8 +108,6 @@ export const en = {
   workflow_outcome_coalesced: 'coalesced — merged into an in-flight task.',
   workflow_outcome_blocked_dormant: 'blocked — this series is dormant and was not dispatched.',
 
-  workflow_mobile_feed_empty: 'No workflow activity yet.',
-
   // Triage tab（甄别，dashboard-F5）——正常双语区（DESIGN.md §7 只豁免 Workflow 区）。
   // 待甄别箱空态是好消息——"identifier 全部归位"方向写，不是"这里本来会显示什么"式说明
   // （triage_empty_title/desc 这两个键最早是 F2 占位期借用的，F5 填肉后原样留作真实空态用，

@@ -591,6 +591,19 @@ describe('startDashboard (v2)', () => {
         const res = await fetch(`${base}/api/v2/settings/roots?path=/media/tv`, { method: 'DELETE' })
         expect(res.status).toBe(401)
       })
+
+      // R2D-6（R2 复审）：POST 侧 addMediaRoot 落库前先 resolve() 归一化（去掉冗余尾斜杠/./..
+      // 片段）；DELETE 侧此前直接拿 query 里的原始字符串去 settingsRepo.removeRoot 精确匹配
+      // `path = ?`，两侧口径不对称——用户在地址栏/脚本里加个尾斜杠（"/media/tv/" vs 库里存的
+      // "/media/tv"）就会 404，明明是同一个根。
+      it('尾斜杠路径经 resolve() 归一化后仍能命中已登记的守备目录 → 200', async () => {
+        const settings = new SettingsRepo(db)
+        settings.addRoot('/media/tv', NOW)
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media/tv/')}`, { method: 'DELETE' })
+        expect(res.status).toBe(200)
+        expect(settings.listRoots()).toEqual([])
+      })
     })
   })
 

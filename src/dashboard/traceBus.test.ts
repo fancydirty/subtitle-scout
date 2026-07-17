@@ -100,6 +100,82 @@ describe('traceBus', () => {
     })
   })
 
+  // R2D-13（R2 复审）：realign 字幕先行阶段逐集起 runKey（`job-${jobId}-${absoluteEpisode}`），
+  // 收官快照必须把同一个 job 下全部子集的缓冲一并收走——否则各集缓冲无上界残留，永远不被
+  // snapshot 清空（审计脚本已实证的进程级泄漏）。
+  describe('snapshotPrefix（R2D-13：realign 逐集 runKey 收官快照）', () => {
+    it('收集并清空所有以 prefix 开头的 runKey 缓冲，合并后按 (at, seq) 升序返回', () => {
+      const base = freshKey('snappfx')
+      const jobPrefix = `${base}-`
+      traceBus.publish(ev(`${jobPrefix}1`, 0, { at: 100 }))
+      traceBus.publish(ev(`${jobPrefix}2`, 0, { at: 50 }))
+      traceBus.publish(ev(`${jobPrefix}1`, 1, { at: 150 }))
+
+      const snap = traceBus.snapshotPrefix(jobPrefix)
+      expect(snap.map((e) => [e.runKey, e.seq])).toEqual([
+        [`${jobPrefix}2`, 0], // at:50 最早
+        [`${jobPrefix}1`, 0], // at:100
+        [`${jobPrefix}1`, 1], // at:150
+      ])
+    })
+
+    it('二次调用为空（缓冲已清空）', () => {
+      const base = freshKey('snappfx-twice')
+      const jobPrefix = `${base}-`
+      traceBus.publish(ev(`${jobPrefix}1`, 0))
+      traceBus.publish(ev(`${jobPrefix}2`, 0))
+      expect(traceBus.snapshotPrefix(jobPrefix)).toHaveLength(2)
+      expect(traceBus.snapshotPrefix(jobPrefix)).toEqual([])
+    })
+
+    it('语义是 startsWith(prefix)——不匹配的 runKey（含恰好等于去掉尾连字符的 job id 本身）不受影响', () => {
+      const base = freshKey('snappfx-scope')
+      const jobPrefix = `${base}-`
+      const bareJobKey = base // 去掉尾连字符——不该被 `${base}-` 前缀命中
+      traceBus.publish(ev(bareJobKey, 0))
+      traceBus.publish(ev(`${jobPrefix}1`, 0))
+
+      const snap = traceBus.snapshotPrefix(jobPrefix)
+      expect(snap).toHaveLength(1)
+      expect(snap[0].runKey).toBe(`${jobPrefix}1`)
+      // bareJobKey 那条缓冲原封不动
+      expect(traceBus.snapshot(bareJobKey)).toHaveLength(1)
+    })
+
+    it('不存在任何匹配 runKey 时返回空数组', () => {
+      expect(traceBus.snapshotPrefix(`${freshKey('snappfx-missing')}-`)).toEqual([])
+    })
+  })
+
+  describe('peekPrefix（R2D-13：直播补拉的前缀合并版）', () => {
+    it('非破坏性合并读多个 runKey 缓冲尾部 limit 条，按 (at, seq) 排序', () => {
+      const base = freshKey('peekpfx')
+      const jobPrefix = `${base}-`
+      traceBus.publish(ev(`${jobPrefix}1`, 0, { at: 10 }))
+      traceBus.publish(ev(`${jobPrefix}2`, 0, { at: 20 }))
+      traceBus.publish(ev(`${jobPrefix}1`, 1, { at: 30 }))
+
+      const peeked = traceBus.peekPrefix(jobPrefix, 2)
+      expect(peeked.map((e) => [e.runKey, e.seq])).toEqual([
+        [`${jobPrefix}2`, 0],
+        [`${jobPrefix}1`, 1],
+      ])
+
+      // 不清空——snapshotPrefix 之后仍能拿到全量 3 条
+      expect(traceBus.snapshotPrefix(jobPrefix)).toHaveLength(3)
+    })
+
+    it('limit<=0 返回空数组', () => {
+      const jobPrefix = `${freshKey('peekpfx-zero')}-`
+      traceBus.publish(ev(`${jobPrefix}1`, 0))
+      expect(traceBus.peekPrefix(jobPrefix, 0)).toEqual([])
+    })
+
+    it('无匹配 runKey 返回空数组', () => {
+      expect(traceBus.peekPrefix(`${freshKey('peekpfx-missing')}-`, 10)).toEqual([])
+    })
+  })
+
   it('订阅者抛错不炸 publish 也不影响其他订阅者', () => {
     const runKey = freshKey('throw')
     const receivedByGood: TraceEvent[] = []

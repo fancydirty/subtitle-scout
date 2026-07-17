@@ -161,11 +161,17 @@ export interface WorkflowRunningWorkerDTO {
   /** traceBus.peek 的直播补拉——非破坏性尾部 20 条，供 TraceRows 首屏渲染的初始 trail。 */
   trail: TraceEvent[]
 }
+/** R2D-1（R2 复审）：worker run 详情入口——id 是身份键（RunDetail/RerunDialog 用），
+ *  seriesId/movieId 供 RunDetail 判断 Rerun 按钮是否可用（同 src/dashboard/apiV2.ts 的
+ *  WorkflowRecentRunDTO 一致）。 */
 export interface WorkflowRecentRunDTO {
+  id: number
   jobId: number | null
   decision: string | null
   detail: string | null
   finishedAt: number | null
+  seriesId: string | null
+  movieId: string | null
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]

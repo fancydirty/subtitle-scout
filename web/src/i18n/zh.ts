@@ -97,8 +97,6 @@ export const zh = {
   workflow_outcome_coalesced: en.workflow_outcome_coalesced,
   workflow_outcome_blocked_dormant: en.workflow_outcome_blocked_dormant,
 
-  workflow_mobile_feed_empty: en.workflow_mobile_feed_empty,
-
   triage_empty_title: '所有文件都已找到归属',
   triage_empty_desc: '暂时没有需要人工认领的文件——识别器已经确信地归位了每一个文件。',
   triage_error_prefix: '无法加载甄别队列：',

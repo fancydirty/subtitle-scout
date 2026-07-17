@@ -85,21 +85,28 @@ export async function checkLlm(minimalChat: () => Promise<string>): Promise<Doct
   }
 }
 
-export function checkMediaRoots(roots: string[], isWritable: (dir: string) => boolean): DoctorResult {
+/** R2D-11（R2 复审）：source 标注这份 roots 清单从哪来——MEDIA_ROOTS env 只是"首启种子"，
+ *  dashboard G4 之后真正生效的守备目录活在 DB media_roots 表（可动态增删，早已不是唯一真源）。
+ *  可选、省略时不标注（向后兼容既有调用点/测试文案）——调用方（cmdDoctor）db 文件存在时传
+ *  'db'、否则传 'env seed'，让报告诚实回答"你在看的是不是当前真正生效的清单"。 */
+export function checkMediaRoots(
+  roots: string[], isWritable: (dir: string) => boolean, source?: 'db' | 'env seed',
+): DoctorResult {
+  const sourceSuffix = source ? `（来源：${source}）` : ''
   if (roots.length === 0) {
     return {
       name: 'media-roots', ok: true, skip: true,
-      detail: 'MEDIA_ROOTS 未配置，跳过（建议配置写入白名单）',
+      detail: `MEDIA_ROOTS 未配置，跳过（建议配置写入白名单）${sourceSuffix}`,
     }
   }
   const bad = roots.filter(r => !isWritable(r))
   if (bad.length > 0) {
     return {
-      name: 'media-roots', ok: false, detail: `以下根目录不可写：${bad.join(', ')}`,
+      name: 'media-roots', ok: false, detail: `以下根目录不可写：${bad.join(', ')}${sourceSuffix}`,
       hint: '确认挂载不是只读（ro）、容器用户有写权限。只读网盘/WebDAV 挂载无法写入 sidecar 字幕。',
     }
   }
-  return { name: 'media-roots', ok: true, detail: `${roots.length} 个媒体根目录全部可写` }
+  return { name: 'media-roots', ok: true, detail: `${roots.length} 个媒体根目录全部可写${sourceSuffix}` }
 }
 
 export function formatDoctorReport(results: DoctorResult[]): string {

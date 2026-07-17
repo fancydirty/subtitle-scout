@@ -508,13 +508,32 @@
   }
 }
 
-/* ---- Recent 完成行（decision 语义色点：installed=绿/no_safe_match=灰/retry_later=灰/error=红）---- */
+/* ---- Recent 完成行（decision 语义色点：installed=绿/no_safe_match=灰/retry_later=灰/error=红）----
+   R2D-1（R2 复审）：这一行现在是可点开 RunDetail 的 <button>（worker run 详情入口）——按钮重置
+   （宽度撑满/左对齐/去边框背景）+ hover/focus-visible 处理同 .wf-pass-card 的既有先例
+   （DESIGN.md §2：hover 微染面 .04）。 */
 .wf-recent-row {
   display: flex;
   align-items: center;
   gap: 7px;
   font-size: 11.5px;
-  padding: 4px 2px;
+  padding: 4px 6px;
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-inner, 4px);
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.wf-recent-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.wf-recent-row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 .wf-recent-decision {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;

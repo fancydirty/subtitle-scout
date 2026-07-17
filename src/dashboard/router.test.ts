@@ -35,6 +35,8 @@ const deploySettingsDTO: DeploySettingsDTO = {
     OPENSUBTITLES_USERNAME: null, ZIMUKU_ENABLED: null, DASHBOARD_PORT: '8099',
     SUBTITLE_SCOUT_CACHE_DIR: null, LOG_RETAIN_DAYS: null, REALIGN_ARCHIVE_ROOT: null,
     FFPROBE_PATH: null, SCAN_INTERVAL_MS: null, MEDIA_ROOTS: null,
+    // R2D-10（R2 复审）：DEPLOY_NONSECRET_KEYS 补齐的两键（apiV2.ts）。
+    TARGET_LANGUAGES: null, SKIP_CHINESE_ORIGIN: null,
   },
 }
 const mediaRoots: MediaRoot[] = [{ path: '/media/tv', type: 'local', addedAt: 1 }]
@@ -50,7 +52,7 @@ const workflowPassDTO: WorkflowPassDTO = {
 }
 const workflowWorkersDTO: WorkflowWorkersDTO = {
   running: [{ jobId: 1, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: null, startedAtLease: 1, trail: [] }],
-  recent: [{ jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2 }],
+  recent: [{ id: 1, jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2, seriesId: 's1', movieId: null }],
 }
 const librarySeriesDetailDTO: LibrarySeriesDetailDTO = {
   series: { id: 's1', name: 'A', chineseTitle: null, posterPath: null, year: null, layoutNonstandard: false },

@@ -2,6 +2,11 @@
 // 环形缓冲，只服务 SSE 直播订阅者；收官快照落 runs.trace_json 是唯一持久化点（见
 // findSubtitleWorkerTask.ts/reconcileAll.ts 的 traceBus.snapshot 调用），snapshot 本身会清空
 // 缓冲，只应在写那一行 runs 的时刻调用一次。
+//
+// R2D-13（R2 复审）：单 runKey 的 snapshot/peek 假设"一次 agent 跑=一个 runKey"，realign 字幕
+// 先行阶段打破了这个假设（逐集各起一个 `job-${jobId}-${absoluteEpisode}` runKey）——
+// snapshotPrefix/peekPrefix 是这一族场景的对应版本：按 runKey 前缀（startsWith）收集/合并多个
+// runKey 的缓冲，其余语义（清空 vs 非破坏、cap 512、订阅者过滤）与单 key 版一致。
 
 export interface TraceEvent {
   runKey: string
@@ -63,6 +68,38 @@ export const traceBus = {
     const buf = buffers.get(runKey)
     if (!buf || buf.length === 0) return []
     return buf.length <= limit ? [...buf] : buf.slice(buf.length - limit)
+  },
+
+  /** R2D-13（R2 复审）：realign 字幕先行阶段不是单一 runKey——每一集各自起一个
+   *  `job-${jobId}-${absoluteEpisode}` runKey（见 realignExecutor.ts 的 deps.runEpisode 调用点），
+   *  单 runKey 的 snapshot() 因此永远收不走这些子集缓冲：进程级无上界残留，且收官落 runs 行时
+   *  trace_json 永远是空的。这里把"以 prefix 开头"的全部 runKey 缓冲一并收走并清空——语义就是
+   *  `key.startsWith(prefix)`，调用方传入的 prefix 自带尾连字符（`job-${job.id}-`），避免
+   *  `job-42` 前缀误吞 `job-420-13` 这种数字延伸的不相关 job。合并结果按 (at, seq) 升序返回
+   *  （不同子集各自的 seq 从 0 起算，不能直接按 seq 排——at 才是跨子集的真实时间序）。 */
+  snapshotPrefix(prefix: string): TraceEvent[] {
+    const collected: TraceEvent[] = []
+    for (const key of [...buffers.keys()]) {
+      if (!key.startsWith(prefix)) continue
+      const buf = buffers.get(key)
+      if (buf) collected.push(...buf)
+      buffers.delete(key)
+    }
+    collected.sort((a, b) => a.at - b.at || a.seq - b.seq)
+    return collected
+  },
+
+  /** peek 的前缀合并版——同 snapshotPrefix 服务同一个"realign 逐集 runKey"场景，但非破坏性
+   *  （直播补拉用，供 WorkerCard 首屏渲染 realign worker 的多子集尾部事件）。合并全部匹配
+   *  runKey 的缓冲、按 (at, seq) 升序排序后只取尾部 limit 条，不清空任何缓冲。 */
+  peekPrefix(prefix: string, limit: number): TraceEvent[] {
+    if (limit <= 0) return []
+    const collected: TraceEvent[] = []
+    for (const [key, buf] of buffers) {
+      if (key.startsWith(prefix)) collected.push(...buf)
+    }
+    collected.sort((a, b) => a.at - b.at || a.seq - b.seq)
+    return collected.length <= limit ? collected : collected.slice(collected.length - limit)
   },
 }
 

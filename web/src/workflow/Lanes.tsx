@@ -21,7 +21,7 @@ import { truncate, decisionVariant } from './text.js'
 import { PendingLane } from './PendingLane.js'
 import { PassCard } from './PassCard.js'
 import { WorkerCard } from './WorkerCard.js'
-import { RunDetail } from './RunDetail.js'
+import { RunDetail, type RunDetailSource } from './RunDetail.js'
 import { RerunDialog } from './RerunDialog.js'
 import type { RerunRequest } from './rerun.js'
 
@@ -90,21 +90,31 @@ function PassesLaneBody({
   )
 }
 
-function RecentRunRow({ row, now }: { row: WorkflowRecentRunDTO; now: number }) {
+// R2D-1+9（R2 复审）：Recent 行现在可点开 RunDetail（worker run 详情入口——之前完全没有任何
+// 途径查看一条 worker run 的完整 detail/快照回放，审计定罪的入口缺失）；同一次改动顺带修了
+// React key 用 jobId 的重复隐患（同一个 job 多行 runs 时 jobId 不唯一，见下方 WorkersLaneBody
+// 的 key 改法）——按钮化 + key 改用 runs.id 是同一处代码改动，拆成两次改动反而各自都不完整。
+function RecentRunRow({ row, now, onOpen }: { row: WorkflowRecentRunDTO; now: number; onOpen: (row: WorkflowRecentRunDTO) => void }) {
   const variant = decisionVariant(row.decision)
   const label = row.decision ?? 'unknown'
   const at = row.finishedAt ?? now
   return (
-    <div className="wf-recent-row">
+    <button type="button" className="wf-recent-row" onClick={() => onOpen(row)}>
       <StatusDot variant={variant} label={label} />
       <span className="wf-recent-decision">{label}</span>
       {row.detail ? <span className="wf-recent-detail">{truncate(row.detail, 70)}</span> : null}
       <span className="wf-recent-time">{relativeAgo(now - at)}</span>
-    </div>
+    </button>
   )
 }
 
-function WorkersLaneBody({ workers, now }: { workers: Async<WorkflowWorkersDTO>; now: number }) {
+function WorkersLaneBody({
+  workers, now, onOpenRun,
+}: {
+  workers: Async<WorkflowWorkersDTO>
+  now: number
+  onOpenRun: (row: WorkflowRecentRunDTO) => void
+}) {
   const { t } = useT()
   if (workers.loading && !workers.data) {
     return (
@@ -145,7 +155,10 @@ function WorkersLaneBody({ workers, now }: { workers: Async<WorkflowWorkersDTO>;
             {t('workflow_workers_recent_empty')}
           </Text>
         ) : (
-          recent.map((r, i) => <RecentRunRow key={r.jobId ?? i} row={r} now={now} />)
+          // R2D-9：key 改用 runs.id（恒为主键，唯一）——旧的 `r.jobId ?? i` 在同一个 job 有多行
+          // runs 时（installed/no_safe_match/retry_later 各一行、或同 job 重跑多次）会产出重复
+          // key，React 用 index 兜底导致行错配复用（重排序时 StatusDot/detail 文本可能对不上）。
+          recent.map((r) => <RecentRunRow key={r.id} row={r} now={now} onOpen={onOpenRun} />)
         )}
       </VStack>
     </VStack>
@@ -160,7 +173,9 @@ export function Lanes() {
   const workers = useWorkflowWorkers()
   const now = Date.now()
 
-  const [selectedPass, setSelectedPass] = useState<WorkflowPassDTO | null>(null)
+  // R2D-1（R2 复审）：selectedPass 泛化为 selectedRun——两种来源（pass/worker run）共用同一块
+  // RunDetail 右侧板（见 RunDetail.tsx 的 RunDetailSource 判别式联合）。
+  const [selectedRun, setSelectedRun] = useState<RunDetailSource | null>(null)
   const [rerunRequest, setRerunRequest] = useState<RerunRequest | null>(null)
 
   // 断线重连补拉：SSE 自动重连成功后主动刷新一次 workers 端点，弥补断线窗口期可能漏掉的直播
@@ -185,10 +200,10 @@ export function Lanes() {
             <PendingLane pending={pending} now={now} onRerun={setRerunRequest} />
           </Collapsible>
           <Collapsible trigger={<LaneHeading labelKey="workflow_lane_passes" />} defaultIsOpen>
-            <PassesLaneBody passes={passes} now={now} onOpen={setSelectedPass} />
+            <PassesLaneBody passes={passes} now={now} onOpen={(pass) => setSelectedRun({ kind: 'pass', pass })} />
           </Collapsible>
           <Collapsible trigger={<LaneHeading labelKey="workflow_lane_workers" />} defaultIsOpen>
-            <WorkersLaneBody workers={workers} now={now} />
+            <WorkersLaneBody workers={workers} now={now} onOpenRun={(run) => setSelectedRun({ kind: 'worker', run })} />
           </Collapsible>
         </VStack>
       ) : (
@@ -199,16 +214,18 @@ export function Lanes() {
           </div>
           <div className="wf-lane">
             <LaneHeading labelKey="workflow_lane_passes" />
-            <PassesLaneBody passes={passes} now={now} onOpen={setSelectedPass} />
+            <PassesLaneBody passes={passes} now={now} onOpen={(pass) => setSelectedRun({ kind: 'pass', pass })} />
           </div>
           <div className="wf-lane">
             <LaneHeading labelKey="workflow_lane_workers" />
-            <WorkersLaneBody workers={workers} now={now} />
+            <WorkersLaneBody workers={workers} now={now} onOpenRun={(run) => setSelectedRun({ kind: 'worker', run })} />
           </div>
         </div>
       )}
 
-      {selectedPass ? <RunDetail pass={selectedPass} now={now} onClose={() => setSelectedPass(null)} /> : null}
+      {selectedRun ? (
+        <RunDetail source={selectedRun} now={now} onClose={() => setSelectedRun(null)} onRerun={setRerunRequest} />
+      ) : null}
       <RerunDialog request={rerunRequest} onClose={() => setRerunRequest(null)} />
     </>
   )
