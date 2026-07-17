@@ -648,6 +648,25 @@ export class LibraryRepo {
       .all() as ParkedPath[]
   }
 
+  // ---- 救援R4b：特典机械排除的用户翻案豁免（extras_exemptions，schema v14） ----
+
+  /** 翻案：把 path 写进豁免表（幂等 upsert）。机械过滤器此后跳过该 path 的 NC 铁案，
+   *  让它重回正常识别流。见 db.ts v14 迁移注释的"为何独立成表"。 */
+  addExtrasExemption(path: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO extras_exemptions (path, created_at) VALUES (?, ?)
+         ON CONFLICT(path) DO NOTHING`
+      )
+      .run(path, now)
+  }
+
+  /** 机械过滤器每轮 pass 查询：该 path 是否已被用户翻案豁免。 */
+  isExtrasExempt(path: string): boolean {
+    const row = this.db.prepare(`SELECT 1 FROM extras_exemptions WHERE path = ?`).get(path)
+    return row != null
+  }
+
   // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----
 
   /** P6 手工认领写入：ON CONFLICT 幂等更新（同一前缀重新认领覆盖旧值）。P7：新增可选 season

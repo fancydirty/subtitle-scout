@@ -13,19 +13,20 @@ describe('db 基座', () => {
     const tables = db.prepare("select name from sqlite_master where type='table' order by name").all().map((r: any) => r.name)
     for (const t of [
       'series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta',
-      'parked_paths', 'identify_overrides',
+      'parked_paths', 'identify_overrides', 'extras_exemptions',
     ]) expect(tables).toContain(t)
     // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11/v12
     // 本身）：v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
     // 落库值随之是 '2'；R-11 派活范围裁量化追加 v11 entry 后 MIGRATIONS.length=3，落库值是 '3'；
     // dashboard 重建战役 G1 追加 v12 entry 后 MIGRATIONS.length=4，落库值是 '4'；验收修复轮一
-    // Task V1 追加 v13 entry 后 MIGRATIONS.length=5，落库值是 '5'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '5' })
+    // Task V1 追加 v13 entry 后 MIGRATIONS.length=5，落库值是 '5'；救援R4b 追加 v14
+    // extras_exemptions entry 后 MIGRATIONS.length=6，落库值是 '6'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '6' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '5' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '6' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {

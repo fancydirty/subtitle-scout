@@ -1451,4 +1451,25 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     expect(result.parked).toBe(0)
     expect(recognize).toHaveBeenCalledWith(path)
   })
+
+  it('R4b：已翻案豁免的 path 即使命中 NC 正则也跳过铁案，重走 recognize（防再排除循环）', async () => {
+    const disk = fakeDisk()
+    const path = '/media/Show - NCOP01.mkv'
+    disk.setVideo(path)
+    lib.addExtrasExemption(path, 1000) // 用户此前翻过案
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      excludeExtras: () => true, // 开关开着，但豁免优先
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    // 没被再排除——豁免让它绕过铁案，正常进识别流
+    expect(result.parked).toBe(0)
+    expect(recognize).toHaveBeenCalledWith(path)
+    expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull()
+  })
 })

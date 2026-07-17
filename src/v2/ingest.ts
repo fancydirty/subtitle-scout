@@ -372,7 +372,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
             // 救援R4（spec §3）：特典机械铁案——excludeExtras 开启时，文件名命中 NC/菜单/预告类
             // 标记直接 park excluded-extra，不进识别流（灰区 SP/OVA 不在这张表，归 rescueSkill）。
-            if (excludeExtras && isMechanicalExtra(path)) {
+            // R4b：用户在甄别页翻过案的 path（extras_exemptions）跳过铁案——否则文件名仍匹配 NC
+            // 正则，下一轮 pass 会无限再排除，翻案沦为 no-op。
+            if (excludeExtras && isMechanicalExtra(path) && !lib.isExtrasExempt(path)) {
               lib.upsertParkedPath(path, 'excluded-extra', nowMs)
               result.parked++
               continue

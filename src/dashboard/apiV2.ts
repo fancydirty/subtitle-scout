@@ -502,6 +502,26 @@ export function claimParked(
   return { ok: true }
 }
 
+/** 救援R4b 翻案：用户在甄别页「Excluded extras」箱认为某个被机械排除的文件其实是真内容。
+ *  校验它确实是当前 park reason=excluded-extra 的行 → 写豁免（extras_exemptions）+ 退 park 户口，
+ *  让下一轮 ingest 跳过机械铁案、重新走识别流（豁免持久，见 db.ts v14 迁移注释）。校验失败诚实
+ *  拒绝（同 claimParked 的分层：server.ts 薄，判断集中在这一层可单测）。 */
+export function unexclude(db: ScoutDb, input: { path: string }): ClaimParkedResult {
+  const { path } = input
+  if (!path) return { ok: false, error: 'path is required' }
+
+  const lib = new LibraryRepo(db)
+  const row = lib.listParkedPaths().find((p) => p.path === path)
+  if (!row) return { ok: false, error: 'path is not currently parked' }
+  if (row.park_reason !== 'excluded-extra') {
+    return { ok: false, error: 'path is not an excluded extra' }
+  }
+
+  lib.addExtrasExemption(path, Date.now())
+  lib.clearParkedPath(path)
+  return { ok: true }
+}
+
 // ---- Settings（dashboard 重建战役 G4：settings 表 + 守备目录 + 部署层只读展示） ----
 
 /** spec §7 权威白名单——行为级设置的唯一合法 key 集合。本战役里只有 target_languages 真被

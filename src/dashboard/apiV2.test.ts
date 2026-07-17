@@ -7,7 +7,7 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, claimParked,
+  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, claimParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
@@ -355,6 +355,37 @@ describe('buildParked / claimParked（P6 park 救援）', () => {
     const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: 'abc', isTv: false })
     expect(result).toEqual({ ok: false, error: expect.any(String) })
     expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toBeNull()
+  })
+})
+
+describe('unexclude（救援R4b 特典翻案）', () => {
+  it('合法翻案：excluded-extra 行 → 写豁免 + 退 park 户口', () => {
+    const path = '/media/tv/Show/Show - NCOP01.mkv'
+    lib.upsertParkedPath(path, 'excluded-extra', NOW)
+
+    const result = unexclude(db, { path })
+    expect(result).toEqual({ ok: true })
+    expect(lib.isExtrasExempt(path)).toBe(true)
+    // park 户口已退——下一轮 ingest 靠豁免跳过铁案重走识别流
+    expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(false)
+  })
+
+  it('拒绝空 path', () => {
+    expect(unexclude(db, { path: '' })).toEqual({ ok: false, error: expect.any(String) })
+  })
+
+  it('拒绝不在 parked_paths 的 path', () => {
+    expect(unexclude(db, { path: '/media/never/parked.mkv' })).toEqual({ ok: false, error: expect.any(String) })
+  })
+
+  it('拒绝 reason 非 excluded-extra 的行（只翻特典的案，不误退普通停车行）', () => {
+    const path = '/media/tv/Show/e1.mkv'
+    lib.upsertParkedPath(path, 'no match', NOW)
+    const result = unexclude(db, { path })
+    expect(result).toEqual({ ok: false, error: expect.any(String) })
+    // 普通停车行原样保留，未被误退、未被误豁免
+    expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(true)
+    expect(lib.isExtrasExempt(path)).toBe(false)
   })
 })
 

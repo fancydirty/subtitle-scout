@@ -9,7 +9,7 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { refreshSeriesCatalog } from '../v2/tmdbCatalog.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked,
+  buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
@@ -196,6 +196,45 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
             requestIngest()
           } catch {
             // swallow — 见上方注释。
+          }
+        }
+        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(result))
+        return
+      }
+
+      // 救援R4b：POST /api/v2/triage/unexclude——甄别页「Excluded extras」箱翻案。照 claim 分支
+      // 的薄转发先例：method 门 → token 门 → 解析 body → unexclude(db) 判断层 → 成功踢一脚扫描。
+      if (rawPath === '/api/v2/triage/unexclude') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (token && reqToken !== token) {
+          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return
+        }
+        let raw = ''
+        for await (const chunk of req) raw += chunk
+        let body: unknown
+        try {
+          body = JSON.parse(raw || '{}')
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'invalid JSON body' }))
+          return
+        }
+        const b = (body ?? {}) as { path?: unknown }
+        const result = unexclude(db, { path: typeof b.path === 'string' ? b.path : '' })
+        // 翻案成功后踢一脚扫描——豁免已写库、park 行已退，重扫让文件立即重回识别流（同 claim
+        // 先例：fire-and-forget，同步抛错吞掉，下一个自然周期还会再扫）。
+        if (result.ok && requestIngest) {
+          try {
+            requestIngest()
+          } catch {
+            // swallow — 见 claim 分支同款注释。
           }
         }
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })

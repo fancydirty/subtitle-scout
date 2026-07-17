@@ -895,6 +895,59 @@ describe('startDashboard (v2)', () => {
       })
     })
 
+    describe('POST /api/v2/triage/unexclude（救援R4b 特典翻案）', () => {
+      it('合法翻案 → 200 + 写豁免 + 退 park 户口 + 踢一脚扫描', async () => {
+        const lib = new LibraryRepo(db)
+        const path = '/media/tv/Show/Show - NCOP01.mkv'
+        lib.upsertParkedPath(path, 'excluded-extra', NOW)
+        let calls = 0
+        const { base } = await start(
+          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined, () => { calls++ },
+        )
+        const res = await fetch(`${base}/api/v2/triage/unexclude`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path }),
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ ok: true })
+        expect(lib.isExtrasExempt(path)).toBe(true)
+        expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(false)
+        expect(calls).toBe(1)
+      })
+
+      it('reason 非 excluded-extra → 400，requestIngest 不被调用', async () => {
+        const lib = new LibraryRepo(db)
+        const path = '/media/tv/Show/e1.mkv'
+        lib.upsertParkedPath(path, 'no match', NOW)
+        let calls = 0
+        const { base } = await start(
+          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined, () => { calls++ },
+        )
+        const res = await fetch(`${base}/api/v2/triage/unexclude`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path }),
+        })
+        expect(res.status).toBe(400)
+        expect(calls).toBe(0)
+      })
+
+      it('非 POST 方法 405', async () => {
+        const { base } = await start(distWith('<!doctype html>'))
+        const res = await fetch(`${base}/api/v2/triage/unexclude`, { method: 'GET' })
+        expect(res.status).toBe(405)
+      })
+
+      it('需要配置的 token', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 's3cret')
+        const res = await fetch(`${base}/api/v2/triage/unexclude`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+        })
+        expect(res.status).toBe(401)
+      })
+    })
+
     describe('POST /api/v2/workflow/redispatch（人类扳手：手动重派）', () => {
       it('合法 body → 转调 upsertWorkerTask，原样返回四态回执', async () => {
         const jobs = new JobsRepo(db)

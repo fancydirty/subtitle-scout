@@ -158,6 +158,16 @@ ALTER TABLE runs ADD COLUMN trace_json TEXT;   -- 痕迹通道 C 收官快照
   // 的 JSON 数组（如 '[16,35]'，16=Animation）；NULL=尚未富化（含存量 36 部剧与"空名 ? 卡"）。
   // 富化重试机制（ingest.ts pass 收尾）逐步回填，sectionOf 新规读它判"动漫 vs 剧集"。
   `ALTER TABLE series ADD COLUMN genres TEXT`,
+  // v14（救援R4b）：特典机械排除的"用户翻案"豁免表。isMechanicalExtra 命中的路径在
+  // exclude_extras 开启时会被 park excluded-extra；用户在甄别页「Excluded extras」箱点翻案时，
+  // 把该 path 写进这里——机械过滤器每轮 pass 先查此表，命中即跳过铁案、让文件重回正常识别流
+  // （否则文件名仍匹配 NC 正则，下一轮 pass 会无限再排除，翻案沦为 no-op）。持久化独立成表
+  // 而非复用 parked_paths.reason：recognize() 的 upsertParkedPath 会覆写 reason，豁免标记若挂在
+  // parked_paths 上会被识别失败的再 park 冲掉——独立表不受该覆写影响，豁免恒久生效。
+  `CREATE TABLE extras_exemptions (
+  path TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+)`,
 ]
 
 export function openDb(path: string): ScoutDb {

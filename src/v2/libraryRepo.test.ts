@@ -485,6 +485,17 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       lib.updateParkReason('/nope', 'whatever', 3000)
       expect(lib.listParkedPaths()).toHaveLength(1)
     })
+
+    it('救援R4b：addExtrasExemption/isExtrasExempt——幂等写入，命中查询', () => {
+      expect(lib.isExtrasExempt('/media/Show - NCOP01.mkv')).toBe(false)
+      lib.addExtrasExemption('/media/Show - NCOP01.mkv', 1000)
+      expect(lib.isExtrasExempt('/media/Show - NCOP01.mkv')).toBe(true)
+      // 幂等：重复写同一 path 不抛错
+      lib.addExtrasExemption('/media/Show - NCOP01.mkv', 2000)
+      expect(lib.isExtrasExempt('/media/Show - NCOP01.mkv')).toBe(true)
+      // 未豁免的其他 path 不受影响
+      expect(lib.isExtrasExempt('/media/Other.mkv')).toBe(false)
+    })
   })
 
   describe('identify_overrides', () => {
