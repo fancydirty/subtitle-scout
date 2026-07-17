@@ -24,10 +24,12 @@ export interface DaemonDeps {
   executeJob: (job: Job) => Promise<void>
   log: (msg: string) => void
   now: () => number
-  /** ingest 心跳的时间门间隔——默认 SELF_SCAN_DEFAULT_INTERVAL_MS(15min，沿用
-   *  daemon/selfScan.ts 已有的常量：该文件本身不在本次改动范围内，见 tickInner 注释）。
-   *  cli/index.ts 由 SCAN_INTERVAL_MS 环境变量覆盖后传入。 */
-  ingestEveryMs?: number
+  /** ingest 心跳的时间门间隔——number=构造时快照（测试注入沿用）；函数=每 tick 惰性求值
+   *  （债务D5：settings.scan_interval_ms 改后下一 tick 即生效，不用重启守护进程）。默认
+   *  SELF_SCAN_DEFAULT_INTERVAL_MS(15min)。 */
+  ingestEveryMs?: number | (() => number)
+  /** 债务D5：trace 快照保留天数（settings.trace_retention_days 惰性读），默认 30。 */
+  traceRetentionDays?: () => number
   /** 债务D2：orchestrate 兜底心跳间隔（测试注入）。默认 ORCHESTRATE_HEARTBEAT_MS(24h)。 */
   orchestrateHeartbeatMs?: number
   concurrency: {
@@ -154,7 +156,8 @@ export class ScoutDaemon {
       .get() as { value: string } | undefined
     const lastIngest = lastIngestRow ? Number(lastIngestRow.value) : 0
     const timeSinceIngest = now() - lastIngest
-    const ingestEveryMs = this.deps.ingestEveryMs ?? SELF_SCAN_DEFAULT_INTERVAL_MS
+    const ingestEveryDep = this.deps.ingestEveryMs
+    const ingestEveryMs = (typeof ingestEveryDep === 'function' ? ingestEveryDep() : ingestEveryDep) ?? SELF_SCAN_DEFAULT_INTERVAL_MS
 
     if (this.bootIngestPending || timeSinceIngest >= ingestEveryMs) {
       // D4（design §P3 "Ingest-vs-realign exclusion"）：ingest 的磁盘真相 walker 与 realign
@@ -201,6 +204,22 @@ export class ScoutDaemon {
           // 稳态（boot 已成功后）中途 ingest 抖动不停摆 dispatch；boot 阶段则由下方守卫压制 dispatch。
         }
       }
+    }
+
+    // 2c. 债务D5：trace 快照每日修剪——runs 行保留（决策史不删），只把过保留期的 trace_json
+    //     置 NULL。时间门同 last_ingest_at 的 meta 键手法，一天一次足矣（修剪不是热路径）。
+    const lastPruneRow = lib.db
+      .prepare(`SELECT value FROM meta WHERE key = 'last_trace_prune_at'`)
+      .get() as { value: string } | undefined
+    const lastPrune = lastPruneRow ? Number(lastPruneRow.value) : 0
+    if (now() - lastPrune >= 86_400_000) {
+      const retentionDays = this.deps.traceRetentionDays?.() ?? 30
+      const pruned = this.deps.runs.pruneTraces(now() - retentionDays * 86_400_000)
+      if (pruned > 0) log(`trace prune: cleared ${pruned} snapshots older than ${retentionDays}d`)
+      lib.db
+        .prepare(`INSERT INTO meta (key, value) VALUES ('last_trace_prune_at', ?)
+                  ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+        .run(String(now()))
     }
 
     // Boot: 首轮 ingest 成功之前绝不 dispatch——整栈重启时，库里还躺着上个进程遗留的

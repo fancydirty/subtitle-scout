@@ -428,9 +428,11 @@ async function cmdWatch() {
       downloading: 2,  // 一期由 executor 内部串行，此处预留
       verifying: 2,    // 一期由 executor 内部串行，此处预留
     },
-    // ingest 心跳的时间门间隔——SCAN_INTERVAL_MS 环境变量沿用（原先驱动 B2 self-scan 的同一个
-    // 旋钮，语义现在直接就是 ingest 心跳的节拍，见 daemon.ts DaemonDeps.ingestEveryMs 注释）。
-    ingestEveryMs: Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
+    // 债务D5：改惰性读——行为级 settings.scan_interval_ms 优先于部署级 SCAN_INTERVAL_MS env
+    // （同 target_languages 的既有优先级口径），每 tick 求值，设置页改完下一 tick 生效。
+    ingestEveryMs: () => Number(settingsRepo.get('scan_interval_ms')) || Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
+    // 债务D5：trace 保留天数同款惰性读，默认 30 天。
+    traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 30,
   }
 
   // "全仓校验"触发器（v3 phase ⑦ Task 3）：与 cmdReconcileAll（独立 CLI 命令，自己开一份 db 连接）

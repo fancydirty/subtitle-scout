@@ -641,6 +641,72 @@ describe('ScoutDaemon', () => {
     })
   })
 
+  it('债务D5：ingestEveryMs 支持函数，每 tick 惰性求值（设置页改 interval 后不用重启 daemon）', async () => {
+    let currentInterval = 1e9
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, ingestEveryMs: () => currentInterval }))
+
+    // 首 tick 仍受 boot 强制拍驱动，与惰性读本身无关；清掉后才能隔离稳态时间门行为。
+    await daemon.tick()
+    expect(ingestTrigger).toHaveBeenCalledTimes(1)
+    ingestTrigger.mockClear()
+
+    // 稳态：间隔仍很大，不该触发 ingest
+    await daemon.tick()
+    expect(ingestTrigger).toHaveBeenCalledTimes(0)
+
+    // 模拟设置页改小 scan_interval_ms -> 下一 tick 立即触发，不用重启
+    currentInterval = 0
+    await daemon.tick()
+    expect(ingestTrigger).toHaveBeenCalledTimes(1)
+  })
+
+  it('债务D5：trace 快照每日修剪——只清过期 trace_json，runs 行保留，且 meta 记录时间门', async () => {
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, traceRetentionDays: () => 30 }))
+
+    seedJob('prune-series', 1, now)
+    const jobId = findJob('prune-series', 1)!.id
+    const oldFinishedAt = now - 31 * 86_400_000
+    runs.insert({
+      jobId,
+      startedAt: oldFinishedAt - 1000,
+      finishedAt: oldFinishedAt,
+      decision: 'installed',
+      detail: 'old run',
+      journalPath: null,
+      traceJson: '[{"old": true}]',
+    })
+
+    // 首 tick 触发修剪（冷启动 meta 缺失，视为已过期）
+    await daemon.tick()
+
+    const rows = runs.getByJobId(jobId)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].trace_json).toBeNull()
+    const metaRow = lib.db
+      .prepare(`SELECT value FROM meta WHERE key = 'last_trace_prune_at'`)
+      .get() as { value: string } | undefined
+    expect(metaRow).toBeDefined()
+    expect(Number(metaRow!.value)).toBeGreaterThan(0)
+
+    // 再种一行旧 trace，但时间门未过，不应再修剪
+    const pruneSpy = vi.spyOn(runs, 'pruneTraces')
+    runs.insert({
+      jobId,
+      startedAt: oldFinishedAt - 1000,
+      finishedAt: oldFinishedAt,
+      decision: 'installed',
+      detail: 'another old run',
+      journalPath: null,
+      traceJson: '[{"old": true}]',
+    })
+    now += 1000
+    await daemon.tick()
+    expect(pruneSpy).not.toHaveBeenCalled()
+    pruneSpy.mockRestore()
+  })
+
   describe('债务D2（胶水层修复战役）：orchestrate 24h 兜底心跳——无变化世界里 ingest 恒 changed=0 永不触发 orchestrate，"识别晚到/pending 屏蔽"类惰性收敛洞永不愈合', () => {
     // orchestrate worker_task 行的固定 identity（同 ingest 触发的那一行）——两条来源天然落
     // 同一行，故意不按 state 过滤：心跳/ingest 各自 upsert 后行可能已被 dispatch 认领进

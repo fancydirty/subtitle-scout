@@ -52,4 +52,12 @@ export class RunsRepo {
       .prepare(`SELECT * FROM runs WHERE job_id = ? ORDER BY started_at DESC`)
       .all(jobId) as Run[]
   }
+
+  /** 债务D5：trace 快照修剪——过保留期的 runs 行 trace_json 置 NULL（行本身保留：决策史是
+   *  一等事实不删，只丢直播回放的大 JSON）。返回修剪行数。 */
+  pruneTraces(beforeMs: number): number {
+    return this.db.prepare(
+      `UPDATE runs SET trace_json = NULL WHERE finished_at < ? AND trace_json IS NOT NULL`
+    ).run(beforeMs).changes
+  }
 }

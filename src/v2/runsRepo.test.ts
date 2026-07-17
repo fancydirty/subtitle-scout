@@ -37,4 +37,26 @@ describe('RunsRepo trace_json (痕迹通道 C 收官快照)', () => {
     const rows = runs.getByJobId(jobId)
     expect(rows[0].trace_json).toBeNull()
   })
+
+  it('债务D5：pruneTraces 只把过期且非空的 trace_json 置 NULL，保留 runs 行本身', () => {
+    const boundary = 1000
+    // 旧 + 有 trace_json → 会被修剪
+    runs.insert({ jobId, startedAt: 100, finishedAt: boundary - 1, decision: 'installed', detail: 'old traced', journalPath: null, traceJson: '[{"old":true}]' })
+    // 新 + 有 trace_json → 不修剪
+    runs.insert({ jobId, startedAt: 100, finishedAt: boundary + 1, decision: 'installed', detail: 'new traced', journalPath: null, traceJson: '[{"new":true}]' })
+    // 旧 + trace_json 已 NULL → 不修剪（不重复计数）
+    runs.insert({ jobId, startedAt: 100, finishedAt: boundary - 1, decision: 'installed', detail: 'old pruned', journalPath: null, traceJson: null })
+
+    const pruned = runs.pruneTraces(boundary)
+    expect(pruned).toBe(1)
+
+    const rows = runs.getByJobId(jobId)
+    expect(rows).toHaveLength(3)
+    const oldTraced = rows.find(r => r.detail === 'old traced')!
+    const newTraced = rows.find(r => r.detail === 'new traced')!
+    const oldPruned = rows.find(r => r.detail === 'old pruned')!
+    expect(oldTraced.trace_json).toBeNull()
+    expect(newTraced.trace_json).toBe('[{"new":true}]')
+    expect(oldPruned.trace_json).toBeNull()
+  })
 })
