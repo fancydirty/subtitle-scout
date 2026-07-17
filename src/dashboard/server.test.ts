@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { connect } from 'node:net'
 import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
@@ -99,6 +99,32 @@ describe('startDashboard (v2)', () => {
     expect(res.headers.get('content-type')).toContain('text/html')
     expect(await res.text()).toContain('scout')
   })
+
+  describe('兄弟目录穿越封堵 (债务 D2)', () => {
+    it('阻止同前缀兄弟目录被 serveStatic 读出', async () => {
+      const dist = distWith('<html>ok</html>')
+      const sibling = dist + '-old'
+      mkdirSync(sibling)
+      writeFileSync(join(sibling, 'secret.js'), 'evil')
+      const { base } = await start(dist)
+      const res = await fetch(`${base}/%2e%2e%2f${basename(dist)}-old/secret.js`)
+      expect([403, 404]).toContain(res.status)
+      const text = await res.text()
+      expect(text).not.toContain('evil')
+    })
+
+    it('正常资源不受影响', async () => {
+      const dist = distWith('<html>ok</html>')
+      writeFileSync(join(dist, 'app.js'), 'console.log("app")')
+      const { base } = await start(dist)
+      const root = await fetch(`${base}/`)
+      expect(root.status).toBe(200)
+      expect(await root.text()).toContain('ok')
+      const app = await fetch(`${base}/app.js`)
+      expect(app.status).toBe(200)
+    })
+  })
+
   it('retires v1 endpoints with 410', async () => {
     const { base } = await start(distWith('<!doctype html>'))
     expect((await fetch(`${base}/api/summary`)).status).toBe(410)

@@ -1,7 +1,7 @@
 // src/dashboard/server.ts
 import { createServer, type Server } from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, normalize, extname, resolve } from 'node:path'
+import { join, normalize, extname, resolve, sep } from 'node:path'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
@@ -57,8 +57,10 @@ const CONTENT_TYPES: Record<string, string> = {
 
 function serveStatic(distDir: string, pathname: string): { status: number; body: Buffer; type: string } {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
+  const base = normalize(distDir)
   const full = normalize(join(distDir, rel))
-  if (!full.startsWith(normalize(distDir))) return { status: 403, body: Buffer.from('forbidden'), type: 'text/plain' }
+  // 必须用 base + sep 开头：否则兄弟目录 <distDir>-old 仍满足 startsWith(base)，导致 prefix 穿越。
+  if (full !== base && !full.startsWith(base + sep)) return { status: 403, body: Buffer.from('forbidden'), type: 'text/plain' }
   const target = existsSync(full) && extname(full) ? full : join(distDir, 'index.html') // SPA 回退
   if (!existsSync(target)) return { status: 404, body: Buffer.from('not found'), type: 'text/plain' }
   return { status: 200, body: readFileSync(target), type: CONTENT_TYPES[extname(target)] ?? 'application/octet-stream' }
