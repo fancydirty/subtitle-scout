@@ -16,7 +16,7 @@
 import type { Skill } from './types.js'
 import { languageName } from '../languages.js'
 
-export function makeFindSubtitleSkill(targetLanguage: string): Skill {
+export function makeFindSubtitleSkill(targetLanguage: string, hardsubMode: 'off' | 'agent' | 'aggressive' = 'off'): Skill {
   const name = languageName(targetLanguage)
   const isChinese = targetLanguage === 'zh'
 
@@ -40,6 +40,37 @@ a non-Chinese file just to "have something".`
 A subtitle in any other language (even one that happens to sit in the same pack) is NOT
 coverage — install one in ${name}, or report no_safe_match for that item; never install a
 wrong-language file just to "have something".`
+
+  // 救援R5（spec §4 agent 档，主控亲笔——skill 修订权铁律）：只在 hardsubMode==='agent' 时
+  // 才把"硬字幕假定"这个概念递给模型；'off'/'aggressive' 时整段文字连"hardsub"这个词都不出现
+  // ——零误触发（北极星⑥）的做法是让模型压根不知道这个选项存在，不是靠指令去"劝阻"它别用。
+  // 'aggressive' 档是机械层直判（ingest 探针阶段），根本不会把这类文件当 target 派给这个 worker
+  // ——worker 侧不需要为它做任何事，同 'off' 一样什么都不讲。
+  const hardsubSection = hardsubMode === 'agent'
+    ? `
+
+## Hardsub-assumed: a fourth outcome, only for genuinely hardcoded video
+
+Some releases never had a separate subtitle file because the subtitles are burned into the
+video image itself (hardsubs) — usually fansub groups whose filename carries a bracketed group
+tag, e.g. \`[SubsPlease] Show - 01 [1080p].mkv\` or \`[Group] Show S01E01.mkv\`. Every target you
+are given already has NO embedded subtitle track (the mechanical pre-scan already ruled that
+out before this item became a target) — so "no embedded track" is not evidence by itself, it is
+already true of everything on your list.
+
+You may judge a target as \`hardsub_assumed\` INSTEAD of \`no_safe_match\` only when BOTH hold:
+1. The video filename carries a bracketed fansub/release-group tag (the \`[Group]\` pattern) —
+   this is the actual evidence that the release is a hardsub-only encode, not a guess.
+2. You have genuinely exhausted the search for an external subtitle for that target — same bar
+   as \`no_safe_match\`, not a shortcut to skip searching. Only reach for \`hardsub_assumed\`
+   after search has come up empty, never before.
+
+This is a POSITIVE outcome — you are recording "this episode's subtitles are already in the
+video, no action needed" — not a failure. Do not use it as a way to avoid searching, and do not
+use it for a target whose filename has no group tag: an untagged file with no external
+candidate is still genuinely \`no_safe_match\` (you do not know why nothing was found), not
+\`hardsub_assumed\` (you have no positive evidence subtitles are burned in).`
+    : ''
 
   const content = `
 # Find-Subtitle Judgment Playbook
@@ -154,7 +185,7 @@ is not a blocker.
    next to that target's video. If you are not sure about that target, that is no_safe_match
    for that item, not a hopeful guess.
 7. Report ONE batch outcome by calling \`finalize\` EXACTLY ONCE, after you have worked
-   through the whole target list. The report has three buckets, and every target's itemId
+   through the whole target list. The report has ${hardsubMode === 'agent' ? 'four buckets' : 'three buckets'}, and every target's itemId
    must land in exactly one of them, copied VERBATIM from the task's target list (never
    invent, alter, or abbreviate an itemId):
    - \`installed\`: targets you installed — each with the exact path \`install_subtitle\`
@@ -166,12 +197,16 @@ is not a blocker.
      (a pack that spans the season DOES contain it).
    - \`retry_later\`: targets you could not process because of a TRANSIENT failure (a provider
      errored, a download timed out) — the system will bring them back soon. Not for doubt;
-     doubt is no_safe_match.
+     doubt is no_safe_match.${hardsubMode === 'agent' ? `
+   - \`hardsub_assumed\`: targets you judge to already carry hardcoded subtitles baked into the
+     video — see the dedicated section below for the evidence bar. Only this task's mode makes
+     this bucket available to you at all.` : ''}
    Once you have filed every target into a bucket, stop — do not keep looping.
 
 ## Language: coverage, not preference
 
 ${languageSection}
+${hardsubSection}
 
 ## Sandbox
 
@@ -184,7 +219,7 @@ location. \`install_subtitle\` will refuse anything outside this task's director
     descriptor: {
       name: 'find-subtitle-judgment',
       description:
-        `How to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}, and the search→compare→install workflow.`,
+        `How to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, and the search→compare→install workflow.`,
     },
     content,
   }

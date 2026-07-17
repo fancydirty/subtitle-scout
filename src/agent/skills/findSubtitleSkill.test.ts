@@ -123,4 +123,37 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
     const xx = makeFindSubtitleSkill('xx')
     expect(xx.content).toMatch(/target language is xx/)
   })
+
+  // 救援R5：hardsub_mode='agent' 才把 hardsub_assumed 概念递给模型；'off'（默认）时整段文字
+  // 连"hardsub"字样都不出现——零误触发（北极星⑥）靠模型压根不知道这个选项存在，不是靠劝阻。
+  describe('hardsub-assumed judgment（救援R5 §4 agent 档）', () => {
+    it('默认（hardsubMode 缺省=off）：内容与描述完全不提 hardsub，finalize 仍是三桶', () => {
+      const off = makeFindSubtitleSkill('zh')
+      expect(off.content).not.toMatch(/hardsub/i)
+      expect(off.descriptor.description).not.toMatch(/hardsub/i)
+      expect(off.content).toMatch(/three buckets/)
+    })
+
+    it("显式 hardsubMode='off' 同缺省：零 hardsub 字样", () => {
+      const off = makeFindSubtitleSkill('zh', 'off')
+      expect(off.content).not.toMatch(/hardsub/i)
+    })
+
+    it("hardsubMode='aggressive'：worker 侧同样零 hardsub 字样（机械层直判，不进这个 worker）", () => {
+      const aggressive = makeFindSubtitleSkill('zh', 'aggressive')
+      expect(aggressive.content).not.toMatch(/hardsub/i)
+    })
+
+    it("hardsubMode='agent'：finalize 变四桶，讲清双证据门槛（组名标记 + 搜索已穷尽）", () => {
+      const agent = makeFindSubtitleSkill('zh', 'agent')
+      expect(agent.content).toMatch(/four buckets/)
+      expect(agent.content).toMatch(/hardsub_assumed/)
+      // 双证据：括号组名标记 + 搜索已穷尽（不是抄近路跳过搜索）
+      expect(agent.content).toMatch(/bracketed.*group|\[Group\]/i)
+      expect(agent.content).toMatch(/exhausted the search|genuinely exhausted/i)
+      // 正面结局措辞——不是失败判决
+      expect(agent.content).toMatch(/POSITIVE outcome/)
+      expect(agent.descriptor.description).toMatch(/hardsub_assumed/)
+    })
+  })
 })
