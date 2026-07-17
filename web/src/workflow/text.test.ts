@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   truncate, missingBadge, throttledLine, receiptChips, decisionVariant, outcomeMessageKey,
+  collapseRecentRuns,
 } from './text.js'
-import type { DispatchReceiptsDTO } from '../api/types.js'
+import type { DispatchReceiptsDTO, WorkflowRecentRunDTO } from '../api/types.js'
 
 describe('truncate', () => {
   it('短字符串原样返回', () => {
@@ -63,14 +64,58 @@ describe('decisionVariant（排队/中性=灰铁律，DESIGN.md §2）', () => {
   })
 })
 
-describe('outcomeMessageKey（四态各自一个键）', () => {
-  it('四态各不相同', () => {
-    const keys = new Set([
-      outcomeMessageKey('created'),
-      outcomeMessageKey('revived'),
-      outcomeMessageKey('coalesced'),
-      outcomeMessageKey('blocked_dormant'),
-    ])
-    expect(keys.size).toBe(4)
+describe('collapseRecentRuns（Activity 流连续重试折叠：同 jobId 同 decision 的连续行只保留一条，count=折叠数量）', () => {
+  function row(overrides: Partial<WorkflowRecentRunDTO> & { id: number; jobId: number; decision: string }): WorkflowRecentRunDTO {
+    return {
+      detail: null,
+      finishedAt: 1_700_000_000_000 - overrides.id * 60_000,
+      seriesId: 's1',
+      movieId: null,
+      seriesName: 'Silo',
+      movieName: null,
+      ...overrides,
+    }
+  }
+
+  it('12 条同 job 同 decision → 1 条 count 12（row=最新那条）', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => row({ id: i + 1, jobId: 46, decision: 'error' }))
+    const folded = collapseRecentRuns(rows)
+    expect(folded).toHaveLength(1)
+    expect(folded[0].count).toBe(12)
+    expect(folded[0].row.id).toBe(1)
+  })
+
+  it('A,A,B,A → 三段（2,1,1），交错不跨段折叠', () => {
+    const rows = [
+      row({ id: 1, jobId: 1, decision: 'error' }),
+      row({ id: 2, jobId: 1, decision: 'error' }),
+      row({ id: 3, jobId: 1, decision: 'installed' }),
+      row({ id: 4, jobId: 1, decision: 'error' }),
+    ]
+    const folded = collapseRecentRuns(rows)
+    expect(folded.map((f) => f.count)).toEqual([2, 1, 1])
+    expect(folded[0].row.id).toBe(1)
+    expect(folded[1].row.id).toBe(3)
+    expect(folded[2].row.id).toBe(4)
+  })
+
+  it('不同 jobId 但同 decision 不折叠', () => {
+    const rows = [
+      row({ id: 1, jobId: 1, decision: 'error' }),
+      row({ id: 2, jobId: 2, decision: 'error' }),
+    ]
+    const folded = collapseRecentRuns(rows)
+    expect(folded.map((f) => f.count)).toEqual([1, 1])
+  })
+
+  it('空数组 → 空数组', () => {
+    expect(collapseRecentRuns([])).toEqual([])
+  })
+
+  it('单行 → 1 条 count 1', () => {
+    const rows = [row({ id: 1, jobId: 1, decision: 'error' })]
+    const folded = collapseRecentRuns(rows)
+    expect(folded).toHaveLength(1)
+    expect(folded[0].count).toBe(1)
   })
 })

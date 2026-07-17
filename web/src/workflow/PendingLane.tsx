@@ -21,7 +21,9 @@ interface Props {
 
 function SeriesRow({ row, now, onRerun }: { row: WorkflowPendingSeriesDTO; now: number; onRerun: (r: RerunRequest) => void }) {
   const { t } = useT()
-  const [includeThrottled, setIncludeThrottled] = useState(false)
+  // 初始值按当前行事实判定：0 缺口且纯停牌时，Rerun 不含停牌集就是空派，因此预开；
+  // 有真缺口时维持默认关。该初始值仅在首次渲染生效，行数据后续轮询变化不跟随。
+  const [includeThrottled, setIncludeThrottled] = useState(row.missing === 0 && row.throttled > 0)
   const throttled = throttledLine(row.throttled, row.nextRecheckAt, now)
 
   return (

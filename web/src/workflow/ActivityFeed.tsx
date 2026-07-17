@@ -16,7 +16,7 @@ import { useLiveTrail } from './useLiveTrail.js'
 import { TraceRows } from './TraceRows.js'
 import { decisionPhrase, type DecisionTone } from './phrases.js'
 import { relativeAgo } from './time.js'
-import { truncate, receiptChips } from './text.js'
+import { truncate, receiptChips, collapseRecentRuns } from './text.js'
 
 interface Props {
   workers: Async<WorkflowWorkersDTO>
@@ -85,7 +85,7 @@ function subjectOf(row: WorkflowRecentRunDTO): string {
   return row.seriesName ?? row.movieName ?? row.seriesId ?? row.movieId ?? 'unknown'
 }
 
-function ActivityRow({ row, now, onOpen }: { row: WorkflowRecentRunDTO; now: number; onOpen: (row: WorkflowRecentRunDTO) => void }) {
+function ActivityRow({ row, count, now, onOpen }: { row: WorkflowRecentRunDTO; count: number; now: number; onOpen: (row: WorkflowRecentRunDTO) => void }) {
   const phrase = decisionPhrase(row.decision ?? 'unknown')
   const at = row.finishedAt ?? now
   return (
@@ -96,6 +96,11 @@ function ActivityRow({ row, now, onOpen }: { row: WorkflowRecentRunDTO; now: num
         —
       </span>
       <span className="wf-activity-phrase">{phrase.text}</span>
+      {count > 1 ? (
+        <span className="wf-activity-count" aria-label={`${count} retries`}>
+          × {count}
+        </span>
+      ) : null}
       <span className="wf-activity-time">{relativeAgo(now - at)}</span>
     </button>
   )
@@ -105,18 +110,20 @@ function RecentSection({ workers, now, onOpenRun }: { workers: Async<WorkflowWor
   const { t } = useT()
   if (!workers.data) return null // NowWorkingSection 已经呈现了 loading/error 态，这里不重复渲染
   const { recent } = workers.data
+  const folded = collapseRecentRuns(recent)
   return (
     <VStack gap={2}>
       <Text type="supporting" color="secondary" as="div">
         {t('workflow_workers_recent_heading')}
       </Text>
-      {recent.length === 0 ? (
+      {folded.length === 0 ? (
         <Text type="supporting" color="secondary">
           {t('workflow_workers_recent_empty')}
         </Text>
       ) : (
         // R2D-9 既有先例：key 用 runs.id（恒为主键，唯一），不用 jobId（同一个 job 可能多行 runs）。
-        recent.map((r) => <ActivityRow key={r.id} row={r} now={now} onOpen={onOpenRun} />)
+        // 折叠后 key 仍用代表行的 id（折叠段以最新那条为代表）。
+        folded.map((f) => <ActivityRow key={f.row.id} row={f.row} count={f.count} now={now} onOpen={onOpenRun} />)
       )}
     </VStack>
   )

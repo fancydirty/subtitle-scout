@@ -134,11 +134,21 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
     expect(screen.getByText('s-empty')).toBeInTheDocument()
   })
 
-  it('点开一行 → onOpenRun 收到该行原始对象', () => {
-    const row = recentRow()
-    const { onOpenRun } = renderFeed({ workers: asyncOf({ running: [], recent: [row], installedLast24h: 0 }) })
+  it('同一 job 连续 12 次 error 决策 → 折叠为 1 行，行尾时间前显示 mono 角标 × 12', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      id: i + 1, jobId: 46, decision: 'error' as const, detail: 'retry', finishedAt: NOW - i * 60_000,
+      seriesId: 's1', movieId: null, seriesName: 'Silo', movieName: null,
+    }))
+    const { onOpenRun } = renderFeed({ workers: asyncOf({ running: [], recent: rows, installedLast24h: 0 }) })
+    expect(screen.getAllByRole('button', { name: /hit a problem/ })).toHaveLength(1)
+    expect(screen.getByText('× 12')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Silo'))
-    expect(onOpenRun).toHaveBeenCalledWith(row)
+    expect(onOpenRun).toHaveBeenCalledWith(rows[0])
+  })
+
+  it('count=1 的常规行不显示折叠角标', () => {
+    renderFeed({ workers: asyncOf({ running: [], recent: [recentRow()], installedLast24h: 0 }) })
+    expect(screen.queryByText(/^× \d+$/)).not.toBeInTheDocument()
   })
 
   it('无完成行 → 空态文案', () => {

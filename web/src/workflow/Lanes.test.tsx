@@ -320,6 +320,45 @@ describe('Lanes：Orchestrator log 展开后点开一条 pass → RunDetail 快�
   })
 })
 
+describe('Lanes：PendingLane series 行 Rerun includeThrottled 开关按事实预开', () => {
+  function pendingSeries(missing: number, throttled: number): WorkflowPendingDTO {
+    return {
+      series: [{ seriesId: 's1', seriesName: 'Silo', season: 1, missing, throttled, nextRecheckAt: null, sampleReason: null }],
+      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
+    }
+  }
+
+  it('missing:0 + throttled:6 → Include throttled 开关初始 checked', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRouted([
+        { path: '/api/v2/workflow/pending', body: pendingSeries(0, 6) },
+        { path: '/api/v2/workflow/passes', body: [] },
+        { path: '/api/v2/workflow/workers', body: EMPTY_WORKERS },
+      ]),
+    )
+    renderLanes()
+    await screen.findByText('Silo · S1')
+    const toggle = screen.getByRole('switch', { name: 'Include throttled episodes' }) as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+  })
+
+  it('missing:2 + throttled:0 → Include throttled 开关初始 unchecked', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRouted([
+        { path: '/api/v2/workflow/pending', body: pendingSeries(2, 0) },
+        { path: '/api/v2/workflow/passes', body: [] },
+        { path: '/api/v2/workflow/workers', body: EMPTY_WORKERS },
+      ]),
+    )
+    renderLanes()
+    await screen.findByText('Silo · S1')
+    const toggle = screen.getByRole('switch', { name: 'Include throttled episodes' }) as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+  })
+})
+
 // R2D-1+9（R2 复审，验收修复轮一 Task V4 沿用）：worker run 详情入口——recent 行现在渲染成人话
 // 句子（主语=剧名/片名 + decisionPhrase），点开一条仍打开同一块 RunDetail 右侧板；React key
 // 仍用 runs.id（同一个 job 可能有多行 runs）。

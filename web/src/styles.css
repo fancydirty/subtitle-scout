@@ -576,6 +576,12 @@
   flex: 1;
   min-width: 0;
 }
+.wf-activity-count {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--color-text-gray);
+  flex-shrink: 0;
+}
 .wf-activity-time {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
