@@ -42,8 +42,8 @@ export interface ReasoningAgentOptions<TOOLS extends ToolSet, SCHEMA extends z.Z
 }
 
 /** argsSummary/resultSummary 都走这个 cap——JSON.stringify 失败（理论上不该发生，工具输入/
- *  输出都是普通对象，防御性兜底）就退化成 String(value)。截断加省略号，不追求可解析，只追求
- *  "直播时人眼扫得过来"。 */
+ *  输出都是普通对象，防御性兜底）就退化成 String(value)。截断加省略号，默认 cap 200 保直播可
+ *  读；dispatch_* 回执是 JSON，下游需完整解析，故其 resultSummary 单独放宽到 400。 */
 function summarizeForTrace(value: unknown, max = 200): string {
   let s: string
   try {
@@ -152,7 +152,7 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
             opts.onStepEvent({
               tool: call.toolName,
               argsSummary: summarizeForTrace(call.input),
-              resultSummary: result ? summarizeForTrace(result.output) : '',
+              resultSummary: result ? summarizeForTrace(result.output, call.toolName.startsWith('dispatch_') ? 400 : 200) : '',
               tookMs,
               at: now,
             })

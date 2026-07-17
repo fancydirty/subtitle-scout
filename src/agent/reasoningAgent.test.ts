@@ -235,6 +235,72 @@ describe('makeReasoningAgent (finalize-tool mode)', () => {
     expect(readFinalized()).toEqual({ verdict: 'no_match', reason: 'nothing found' })
     expect(result.steps.length).toBe(2)
   })
+
+  // D1 回执截断治理：dispatch_* 工具返回 JSON 回执，200 字符 cap 会拦腰截断导致下游解析失败，
+  // 因此仅其 resultSummary 放宽到 400；argsSummary 和其他工具维持 200 不变。
+  it('dispatch_* 工具 resultSummary cap 放宽到 400，其余 cap 保持 200', async () => {
+    let call = 0
+    const longPayload = 'x'.repeat(300)
+    const longArgs = 'y'.repeat(250)
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        if (call === 1) {
+          return {
+            finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+            usage: {
+              inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+              outputTokens: { total: 5, text: undefined, reasoning: undefined },
+            },
+            content: [
+              { type: 'tool-call' as const, toolCallId: 'd1', toolName: 'dispatch_find_subtitle_task', input: JSON.stringify({ payload: longArgs }) },
+              { type: 'tool-call' as const, toolCallId: 's1', toolName: 'search_source', input: JSON.stringify({ payload: longArgs }) },
+            ],
+            warnings: [],
+          }
+        }
+        return finalizeCall('f1', { verdict: 'match', reason: 'dispatch result parsed' })
+      },
+    })
+
+    const events: Array<{ tool: string; argsSummary: string; resultSummary: string; tookMs: number; at: number }> = []
+    const { agent, readFinalized } = makeReasoningAgent({
+      model,
+      tools: {
+        dispatch_find_subtitle_task: tool({
+          description: 'dispatch a task',
+          inputSchema: z.object({ payload: z.string() }),
+          execute: async () => ({ result: longPayload }),
+        }),
+        search_source: tool({
+          description: 'search source',
+          inputSchema: z.object({ payload: z.string() }),
+          execute: async () => ({ result: longPayload }),
+        }),
+      },
+      schema: DecisionSchema,
+      onStepEvent: (e) => events.push(e),
+    })
+
+    await agent.generate({ prompt: 'p', abortSignal: AbortSignal.timeout(30_000) })
+
+    expect(readFinalized()).toEqual({ verdict: 'match', reason: 'dispatch result parsed' })
+    const dispatchEvent = events.find((e) => e.tool === 'dispatch_find_subtitle_task')
+    const searchEvent = events.find((e) => e.tool === 'search_source')
+    expect(dispatchEvent).toBeDefined()
+    expect(searchEvent).toBeDefined()
+
+    // dispatch_* 回执是 JSON，需完整存活供下游解析。
+    expect(dispatchEvent!.resultSummary.endsWith('…')).toBe(false)
+    expect(dispatchEvent!.resultSummary.length).toBeGreaterThanOrEqual(300)
+    expect(dispatchEvent!.resultSummary.length).toBeLessThan(400)
+    // 普通工具仍维持 200 cap + 省略号。
+    expect(searchEvent!.resultSummary.endsWith('…')).toBe(true)
+    expect(searchEvent!.resultSummary.length).toBe(201)
+    // argsSummary 不受 dispatch 例外影响。
+    expect(dispatchEvent!.argsSummary.endsWith('…')).toBe(true)
+    expect(dispatchEvent!.argsSummary.length).toBe(201)
+  })
 })
 
 // THE root-cause regression guard. The live failure (AI_NoObjectGeneratedError against real
