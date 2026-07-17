@@ -119,6 +119,10 @@ export interface SearchSourceDeps {
    *  enabled-check fallback (fetchLib.ts), preserving pre-A4 behavior. Model-passed `languages`
    *  always win over this default. */
   targetLanguage?: string
+  /** 重复源 P4：本地候选——mapper 算好的 provider:'local' 候选（该任务里 partial 条目已覆盖
+   *  文件的现有字幕），每次 search_source 调用都前置注入结果集（不经过 adapters 扇出、零网络
+   *  开销）。省略/空数组=绝大多数任务的常态。 */
+  localCandidates?: SubtitleCandidate[]
 }
 
 /** search_source: runs the existing multi-provider fan-out (runSearch — fetchLib.ts, unchanged)
@@ -145,7 +149,11 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
       'target language. Some providers (e.g. assrt, zimuku) only consult the first 1-2 of your ' +
       'query variants per call — plan queries accordingly. Only pass `imdb` when your task ' +
       'facts explicitly provide one — NEVER invent or derive it from a tmdb id (a wrong imdb ' +
-      'makes providers query the wrong identity and silently return zero results).',
+      'makes providers query the wrong identity and silently return zero results). ' +
+      'When this task has a target whose item already has another file with a subtitle (a ' +
+      'duplicate/replica), that subtitle appears in your results as a provider:"local" candidate ' +
+      '— treat it exactly like any other candidate (same belonging judgment, same download/install ' +
+      'flow); see the playbook for how to judge it.',
     inputSchema: z.object({
       queries: z.array(z.string()).min(1),
       imdb: z.string().optional(),
@@ -163,9 +171,12 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
         ? args.languages
         : deps.targetLanguage ? [deps.targetLanguage] : undefined
       const failures: { provider: string; message: string }[] = []
-      const candidates = await runSearch({ ...args, languages }, deps.adapters, (e) => {
+      const remoteCandidates = await runSearch({ ...args, languages }, deps.adapters, (e) => {
         if (e.event === 'provider_error') failures.push({ provider: e.provider, message: e.message })
       })
+      // 重复源 P4：本地候选前置——零成本、不经过 adapters 扇出，每次 search_source 调用都带上，
+      // 与查询词无关（这些是"该条目另一个文件已有的字幕"这一固定事实，不是搜出来的）。
+      const candidates = [...(deps.localCandidates ?? []), ...remoteCandidates]
       const resultSetId = deps.store.create(candidates)
       const topN = deps.topN ?? 5
       // 键序即证据存活序（Shelby Oaks 案取证教训，2026-07-17）：痕迹通道 C 的 resultSummary

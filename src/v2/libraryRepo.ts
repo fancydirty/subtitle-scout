@@ -777,6 +777,16 @@ export class LibraryRepo {
     ]
   }
 
+  /** 重复源 P4：某个条目里一个具体文件（用 path 定位）挂着的字幕行——供传播判断构造本地候选
+   *  （零成本、指纹=该文件的 release 解析）。isMainFile 由调用方传入（已从 itemFileCoverage 知道）
+   *  ——file_path IS NULL 的存量字幕行只挂主文件（P1 兼容语义），非主文件永远不该捡到这些行。 */
+  listSubtitlesForFile(itemId: string, filePath: string, isMainFile: boolean): Array<{ id: number; path: string; language: string }> {
+    const rows = isMainFile
+      ? this.db.prepare(`SELECT id, path, language FROM subtitles WHERE item_id = ? AND (file_path = ? OR file_path IS NULL)`).all(itemId, filePath)
+      : this.db.prepare(`SELECT id, path, language FROM subtitles WHERE item_id = ? AND file_path = ?`).all(itemId, filePath)
+    return rows as Array<{ id: number; path: string; language: string }>
+  }
+
   // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----
 
   /** P6 手工认领写入：ON CONFLICT 幂等更新（同一前缀重新认领覆盖旧值）。P7：新增可选 season

@@ -67,13 +67,17 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
 
     const tools = {
       read_doc: makeReadDocTool([skill]),
-      search_source: makeSearchSourceTool({ adapters: deps.adapters, store, targetLanguage: task.targetLanguage }),
+      search_source: makeSearchSourceTool({
+        adapters: deps.adapters, store, targetLanguage: task.targetLanguage,
+        localCandidates: task.localCandidates,
+      }),
       list_candidates: makeListCandidatesTool(store),
       get_candidate: makeGetCandidateTool(store),
       download_candidate: makeDownloadCandidateTool({
         adapters: deps.adapters, stagingDir, stagedFiles,
         targetFilenames: task.targets.map(t => t.videoFilename),
         targetLanguage: task.targetLanguage, fetchImpl: deps.fetchImpl,
+        mediaRoot: task.mediaRoot,
       }),
       install_subtitle: makeInstallSubtitleTool({
         stagedFiles, mediaRoot: task.mediaRoot,

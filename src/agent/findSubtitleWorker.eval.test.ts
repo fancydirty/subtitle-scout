@@ -61,7 +61,7 @@ function buildTask(fixture: EvalFixture, mediaRoot: string, videoPath: string): 
   return {
     jobId: fixture.jobId, mediaRoot, title: t.title, originalTitle: t.originalTitle, year: t.year,
     alternativeTitles: t.alternativeTitles, overview: t.overview, runtimeMinutes: t.runtimeMinutes,
-    providerIds: t.providerIds, targetLanguage: t.targetLanguage ?? 'zh', hardsubMode: 'off',
+    providerIds: t.providerIds, targetLanguage: t.targetLanguage ?? 'zh', hardsubMode: 'off', localCandidates: [],
     targets: [{
       itemId: fixture.jobId, videoPath, videoFilename: t.videoFilename,
       season: t.season, episode: t.episode, absoluteEpisode: t.absoluteEpisode, imdbId: null,
@@ -412,7 +412,7 @@ describe('find-subtitle worker offline eval: batch (multi-target within one seri
 
     const task: FindSubtitleTask = {
       jobId: 'eval-batch', mediaRoot, title: 'Show', originalTitle: null, year: 2024,
-      alternativeTitles: [], overview: null, runtimeMinutes: 24, providerIds: {}, targetLanguage: 'zh', hardsubMode: 'off',
+      alternativeTitles: [], overview: null, runtimeMinutes: 24, providerIds: {}, targetLanguage: 'zh', hardsubMode: 'off', localCandidates: [],
       targets: [target1, target2],
     }
     const report = await runTask(task)

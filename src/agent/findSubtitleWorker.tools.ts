@@ -1,6 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import { join, basename, extname } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { runResolve, type FetchAdapter } from '../cli/fetchLib.js'
 import { downloadDirect } from '../adapters/download/direct.js'
@@ -32,6 +33,10 @@ export interface DownloadCandidateDeps {
    *  it explicitly from the task. */
   targetLanguage?: string
   fetchImpl?: typeof fetch
+  /** 重复源 P4：本地候选读盘用的沙盒边界——local 分支绕过 runResolve/downloadDirect 的网络路径，
+   *  直接 readFile 磁盘上的字幕文件，isUnderRoots 复核（defense in depth，同 install_subtitle
+   *  既有先例）防一个畸形/被篡改的 providerId 逃出媒体根之外。 */
+  mediaRoot?: string
 }
 
 /** Shared by download_candidate and install_subtitle (Task 5 / R-5): resolves the agent-supplied
@@ -107,6 +112,41 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
         }
       }
       const { provider, providerId } = parsed
+
+      // 重复源 P4：provider:'local' 是"该条目另一个文件已有的字幕"，不是真实网络适配器——
+      // providerId 直接编码字幕文件的绝对路径（mapper 侧 encodeURIComponent 写入，见
+      // findSubtitleWorkerTask.ts 的 buildLocalCandidates），这里解码后直接读盘，完全绕开
+      // runResolve/downloadDirect 的网络路径。同一份 writeSubtitle/inspectSubtitle 落盘纪律，
+      // 同一个 stagedFileId 机制——install_subtitle 完全不用知道这份字幕是网络下的还是本地复制的。
+      if (provider === 'local') {
+        const srcPath = decodeURIComponent(providerId)
+        if (deps.mediaRoot && !isUnderRoots(srcPath, [deps.mediaRoot])) {
+          return { error: `refusing to read local candidate outside sandboxed media root: ${srcPath}` }
+        }
+        let bytes: Buffer
+        try {
+          bytes = await readFile(srcPath)
+        } catch (e) {
+          return { error: `local candidate file unreadable: ${srcPath} (${e instanceof Error ? e.message : String(e)})` }
+        }
+        const stagedFileId = randomUUID()
+        const attemptDir = join(deps.stagingDir, stagedFileId)
+        const written = await writeSubtitle({
+          artifact: bytes, artifactFilename: basename(srcPath), videoFilename: resolvedTarget,
+          langTag: stagingLangTag(deps.targetLanguage ?? 'zh'), outDir: attemptDir,
+          selectFileName: archiveEntryName ?? undefined,
+        })
+        if ('needsSelection' in written) {
+          return {
+            archiveEntries: written.entries,
+            hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
+          }
+        }
+        const signals = inspectSubtitle(written.path)
+        deps.stagedFiles.set(stagedFileId, written.path)
+        return { stagedFileId, bytes: written.bytes, encoding: written.encoding, signals }
+      }
+
       const { url, filename, headers } = await runResolve({ provider, providerId, fileIndex }, deps.adapters)
       const { bytes, contentType } = await downloadDirect(url, { headers, fetchImpl: deps.fetchImpl })
       const artifactFilename = filename ?? (contentType?.includes('zip') ? 'download.zip' : 'download.srt')

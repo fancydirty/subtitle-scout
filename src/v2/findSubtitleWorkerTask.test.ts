@@ -63,6 +63,127 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
     expect(task!.targets.map(t => t.itemId)).toEqual(['tmdb:9/s1e1', 'tmdb:9/s1e3', 'tmdb:9/s1e5'])
   })
 
+  // 重复源 P4：某个正常缺口目标所属的条目若还有副本，且副本已有字幕（partial 覆盖）——把那份
+  // 已有字幕转成 provider:'local' 候选前置注入 task.localCandidates。（本单只做"从已覆盖副本
+  // 传播到缺口主文件"这一可达场景——main 已覆盖、副本反而缺字幕的场景需要额外的"partial→
+  // 可派活目标"机制，超出本单范围，如实标注不冒充已完成。）
+  describe('localCandidates（重复源 P4 传播判断素材）', () => {
+    it('主文件缺口 + 副本已有字幕 → 副本字幕转成 provider:local 候选', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-local-'))
+      const showDir = join(root, 'Show', 'Season 01')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '10'
+      const sId = seriesId(tmdbId)
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const mainPath = join(showDir, 'Show.S01E01.1080p.mkv')
+      const replicaPath = join(showDir, 'Show.S01E01.4K.mkv')
+      writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+      const epId = episodeId(tmdbId, 1, 1)
+      // 主文件缺口（正常 gap，会被 listMissingEpisodesInSeason 选中）；副本已有字幕。
+      lib.upsertEpisode({ id: epId, seriesId: sId, season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'missing' })
+      lib.addItemFile(epId, replicaPath, NOW)
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, file_path, created_at) VALUES (?,?,?,?,?,?)`)
+        .run(epId, join(showDir, 'Show.S01E01.4K.zh-Hans.srt'), 'zh-Hans', 'scout-download', replicaPath, NOW)
+
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+      expect(task!.localCandidates).toHaveLength(1)
+      expect(task!.localCandidates[0]).toMatchObject({
+        provider: 'local', language: 'zh-Hans', videoName: 'Show.S01E01.4K.mkv',
+      })
+      expect(decodeURIComponent(task!.localCandidates[0].providerId)).toBe(join(showDir, 'Show.S01E01.4K.zh-Hans.srt'))
+    })
+
+    it('单文件条目（无副本）→ localCandidates 空数组', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-local-single-'))
+      const showDir = join(root, 'Show', 'Season 01')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '11'
+      const sId = seriesId(tmdbId)
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const path = join(showDir, 'Show.S01E01.mkv')
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 1, 1), seriesId: sId, season: 1, episode: 1, name: 'E1', path, subStatus: 'missing' })
+
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+      expect(task!.localCandidates).toEqual([])
+    })
+
+    it('多文件条目但全部覆盖或全部未覆盖（非 partial）→ localCandidates 空数组', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-local-full-'))
+      const showDir = join(root, 'Show', 'Season 01')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '12'
+      const sId = seriesId(tmdbId)
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      // e1：全覆盖（主+副本都有字幕）——已覆盖不产生这一集的目标，但仍验证不产生候选。
+      const mainPath1 = join(showDir, 'Show.S01E01.mkv')
+      const replicaPath1 = join(showDir, 'Show.S01E01.dup.mkv')
+      writeFileSync(mainPath1, 'video'); writeFileSync(replicaPath1, 'video')
+      const epId1 = episodeId(tmdbId, 1, 1)
+      lib.upsertEpisode({ id: epId1, seriesId: sId, season: 1, episode: 1, name: 'E1', path: mainPath1, subStatus: 'covered' })
+      lib.addItemFile(epId1, replicaPath1, NOW)
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, file_path, created_at) VALUES (?,?,?,?,?,?)`)
+        .run(epId1, '/x.srt', 'zh-Hans', 'scout-download', replicaPath1, NOW)
+      // e2：missing，但也有一个副本一样是 missing（全未覆盖）。
+      const mainPath2 = join(showDir, 'Show.S01E02.mkv')
+      const replicaPath2 = join(showDir, 'Show.S01E02.dup.mkv')
+      writeFileSync(mainPath2, 'video'); writeFileSync(replicaPath2, 'video')
+      const epId2 = episodeId(tmdbId, 1, 2)
+      lib.upsertEpisode({ id: epId2, seriesId: sId, season: 1, episode: 2, name: 'E2', path: mainPath2, subStatus: 'missing' })
+      lib.addItemFile(epId2, replicaPath2, NOW)
+
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+      // e1 已全覆盖，不进 targets；e2 全未覆盖，是本任务唯一目标。两者都不产生本地候选。
+      expect(task!.targets.map((t) => t.itemId)).toEqual([epId2])
+      expect(task!.localCandidates).toEqual([])
+    })
+
+    it('movie 分支同理支持传播（主文件缺口 + 副本已有字幕）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-local-movie-'))
+      const movieDir = join(root, 'Movie')
+      mkdirSync(movieDir, { recursive: true })
+      const tmdbId = '13'
+      const mId = seriesId(tmdbId)
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      const mainPath = join(movieDir, 'Movie.1080p.mkv')
+      const replicaPath = join(movieDir, 'Movie.4K.mkv')
+      writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+      // 主文件缺口（正常会被 stillMissing 选中）；副本已有字幕。
+      lib.upsertMovie({ id: mId, name: 'Movie', path: mainPath, subStatus: 'missing' })
+      lib.addItemFile(mId, replicaPath, NOW)
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, file_path, created_at) VALUES (?,?,?,?,?,?)`)
+        .run(mId, join(movieDir, 'Movie.4K.zh-Hans.srt'), 'zh-Hans', 'scout-download', replicaPath, NOW)
+
+      jobsRepo.upsertWorkerTask({ seriesId: null, season: null, movieId: mId }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+      expect(task!.localCandidates).toHaveLength(1)
+      expect(task!.localCandidates[0].provider).toBe('local')
+    })
+  })
+
   it('绝对集号一次取表逐集折算（getSeasonTable 只打一次）', async () => {
     const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-abstable-'))
     const showDir = join(root, 'Show', 'Season 02')

@@ -72,8 +72,8 @@ describe('ASSRT zero-result search (subs is an empty OBJECT, recorded 2026-07-06
 })
 
 describe('PROVIDERS registry', () => {
-  it('includes zimuku alongside assrt/opensubtitles', () => {
-    expect(PROVIDERS).toEqual(['assrt', 'opensubtitles', 'zimuku'])
+  it('includes zimuku + local alongside assrt/opensubtitles（重复源 P4：local=本地候选，非真实网络适配器）', () => {
+    expect(PROVIDERS).toEqual(['assrt', 'opensubtitles', 'zimuku', 'local'])
   })
   it('SubtitleCandidateSchema accepts provider:"zimuku"', () => {
     const c = SubtitleCandidateSchema.parse({

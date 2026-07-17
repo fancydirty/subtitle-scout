@@ -618,6 +618,29 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
     it('itemFileCoverage：条目不存在 → 空数组', () => {
       expect(lib.itemFileCoverage('tmdb:999/s9e9')).toEqual([])
     })
+
+    it('listSubtitlesForFile：主文件（isMainFile=true）捡到 file_path 匹配的 + file_path IS NULL 的存量行', () => {
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, file_path, created_at) VALUES (?,?,?,?,?,?)`)
+        .run('s1/e1', '/media/main.zh.srt', 'zh-Hans', 'scout-download', '/media/main.mkv', 1000)
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+        .run('s1/e1', '/media/legacy.zh.srt', 'zh-Hant', 'adopted-local', 2000)
+      const rows = lib.listSubtitlesForFile('s1/e1', '/media/main.mkv', true)
+      expect(rows.map((r) => r.path).sort()).toEqual(['/media/legacy.zh.srt', '/media/main.zh.srt'])
+    })
+
+    it('listSubtitlesForFile：副本（isMainFile=false）只捡 file_path 精确匹配，不捡 NULL 存量行', () => {
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, file_path, created_at) VALUES (?,?,?,?,?,?)`)
+        .run('s1/e1', '/media/4k.zh.srt', 'zh-Hans', 'scout-download', '/media/4k.mkv', 1000)
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+        .run('s1/e1', '/media/legacy.zh.srt', 'zh-Hant', 'adopted-local', 2000) // NULL=挂主文件，不属于这个副本
+      const rows = lib.listSubtitlesForFile('s1/e1', '/media/4k.mkv', false)
+      expect(rows.map((r) => r.path)).toEqual(['/media/4k.zh.srt'])
+    })
+
+    it('listSubtitlesForFile：无匹配 → 空数组', () => {
+      expect(lib.listSubtitlesForFile('s1/e1', '/media/main.mkv', true)).toEqual([])
+    })
   })
 
   describe('identify_overrides', () => {

@@ -208,6 +208,34 @@ is not a blocker.
 ${languageSection}
 ${hardsubSection}
 
+## Local candidates: a sibling file already has a subtitle
+
+Some of your targets belong to an item that has MORE THAN ONE video file (a duplicate/replica —
+the same release re-encoded, a different quality cut, an extras variant that turned out to be
+the same title). When a target's sibling file already carries an installed subtitle, that
+subtitle shows up in your \`search_source\` results as an ordinary candidate with
+\`provider: "local"\` — not fetched from a network source, but sourced from disk.
+
+Judge a \`local\` candidate EXACTLY the way you judge any other candidate — same belonging
+judgment, same \`download_candidate\` → inspect → \`install_subtitle\` flow. There is no
+shortcut and no extra suspicion:
+- It is NOT automatically correct just because it is "already yours" — a sibling file can be a
+  different cut of the same title (extended vs theatrical, a censored regional release, a
+  re-encode that trims a preview or recap) whose subtitle's timing does not line up with THIS
+  target's runtime. Download it and inspect its structural signals (cue count, time span)
+  against this target the same as you would any freshly-searched file — trust the bytes, not
+  the fact that it came from a sibling.
+- It is NOT automatically suspect either — most of the time a duplicate/replica is
+  byte-identical or near-identical to its sibling, and its subtitle is a clean, free match. Do
+  not invent extra scrutiny for it beyond your normal structural check.
+- If it checks out, install it for this target exactly as you would install any other verified
+  candidate. If it does not, that is simply this candidate failing your judgment for this
+  target — keep searching this target's other candidates as usual; a local candidate failing
+  does not mean the target itself is unresolvable.
+
+This is the same judgment you already make for every candidate — a local candidate is not a new
+kind of decision, just a new place a candidate can come from.
+
 ## Sandbox
 
 You only know about the media directories of THIS task's targets. There is no other directory
@@ -219,7 +247,7 @@ location. \`install_subtitle\` will refuse anything outside this task's director
     descriptor: {
       name: 'find-subtitle-judgment',
       description:
-        `How to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, and the search→compare→install workflow.`,
+        `How to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
     },
     content,
   }

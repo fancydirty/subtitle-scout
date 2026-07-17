@@ -389,6 +389,76 @@ describe('download_candidate zip entry selection (C-D1)', () => {
   })
 })
 
+// 重复源 P4：provider:'local' 候选——mapper（buildLocalCandidates, findSubtitleWorkerTask.ts）把
+// "该条目另一个文件已有的字幕" 编码成 candidateId = `local:${encodeURIComponent(srcPath)}`。这里
+// 验证 download_candidate 的本地分支：不经过 adapters/runResolve/downloadDirect（没配 adapters 也
+// 没配 fetchImpl，若误入网络路径会直接抛错），直接读盘，同一份 writeSubtitle/inspectSubtitle 落盘。
+describe('download_candidate local candidate branch (重复源 P4)', () => {
+  it('reads the local subtitle file straight off disk and stages it — no adapters/fetch involved', async () => {
+    const srcPath = join(sandboxDir, 'Show.S01E01.zh-Hans.srt')
+    writeFileSync(srcPath, '1\n00:00:01,000 --> 00:00:02,000\nlocal hello\n')
+    const stagedFiles = new Map<string, string>()
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [], // no network adapters configured — the local branch must never reach runResolve
+      stagingDir: join(sandboxDir, 'staging'),
+      stagedFiles,
+      targetFilenames: ['Show.S01E01.mkv'],
+      mediaRoot: sandboxDir,
+    })
+    const out = await tool_.execute!(
+      { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
+    expect(out.stagedFileId).toBeTruthy()
+    expect(out.signals.cueCount).toBe(1)
+    expect(out.signals.decodable).toBe(true)
+    const stagedPath = stagedFiles.get(out.stagedFileId)!
+    expect(readFileSync(stagedPath, 'utf8')).toContain('local hello')
+  })
+
+  it('refuses to read a local candidate whose decoded path escapes the sandboxed mediaRoot', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'scout-find-subtitle-tools-outside-'))
+    try {
+      const srcPath = join(outsideDir, 'Show.S01E01.zh-Hans.srt')
+      writeFileSync(srcPath, '1\n00:00:01,000 --> 00:00:02,000\nshould not be read\n')
+      const stagedFiles = new Map<string, string>()
+      const tool_ = makeDownloadCandidateTool({
+        adapters: [],
+        stagingDir: join(sandboxDir, 'staging'),
+        stagedFiles,
+        targetFilenames: ['Show.S01E01.mkv'],
+        mediaRoot: sandboxDir, // srcPath lives under outsideDir, NOT sandboxDir
+      })
+      const out = await tool_.execute!(
+        { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, archiveEntryName: null },
+        { toolCallId: 't1', messages: [] } as any,
+      )
+      expect(out).toEqual({ error: expect.stringMatching(/refusing to read local candidate outside sandboxed media root/) })
+      expect(stagedFiles.size).toBe(0)
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns a structured error (does not throw) when the local candidate file is missing on disk', async () => {
+    const srcPath = join(sandboxDir, 'Show.S01E01.zh-Hans.srt') // never written
+    const stagedFiles = new Map<string, string>()
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [],
+      stagingDir: join(sandboxDir, 'staging'),
+      stagedFiles,
+      targetFilenames: ['Show.S01E01.mkv'],
+      mediaRoot: sandboxDir,
+    })
+    const out = await tool_.execute!(
+      { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ error: expect.stringMatching(/local candidate file unreadable/) })
+    expect(stagedFiles.size).toBe(0)
+  })
+})
+
 describe('install_subtitle tool', () => {
   it('installs a staged file to the video directory with the given lang tag', async () => {
     const videoDir = join(sandboxDir, 'media', 'Show')

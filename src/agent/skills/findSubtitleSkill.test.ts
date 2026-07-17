@@ -96,6 +96,19 @@ describe('FIND_SUBTITLE_SKILL', () => {
     // no "score >= N" / "threshold of" style deterministic gate language introduced
     expect(c).not.toMatch(/threshold|score\s*(>=|>|of\s+\d)/i)
   })
+
+  // 重复源 P4（spec §4 "传播=普通候选判断"）：provider:"local" 候选——某条目另一个文件已有的
+  // 字幕——必须用和任何候选一样的归属判断对待，没有"因为是自己的"走捷径，也没有额外猜忌。
+  // 该段不随 hardsubMode/language 门控（不是新增的 finalize 桶，只是候选可能来自的一个新地方），
+  // 所以直接锚在无参数的 FIND_SUBTITLE_SKILL 上。
+  it('teaches judging a provider:"local" candidate exactly like any other candidate — no shortcut, no extra suspicion', () => {
+    const c = FIND_SUBTITLE_SKILL.content
+    expect(c).toMatch(/provider:\s*"local"|provider: "local"/i)
+    expect(c).toMatch(/EXACTLY the way you judge any other candidate/i)
+    expect(c).toMatch(/NOT automatically correct/i)
+    expect(c).toMatch(/NOT automatically suspect/i)
+    expect(FIND_SUBTITLE_SKILL.descriptor.description).toMatch(/provider:"local"/)
+  })
 })
 
 // A5: the skill is a per-task factory parameterized by target language. The Chinese wording is

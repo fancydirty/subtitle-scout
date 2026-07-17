@@ -290,6 +290,10 @@ export function makeRealignRunEpisode(
       // orchestrator 的 find_subtitle 派发那样每次新鲜读 settings），且这里的目标文件正在被
       // realign 重排/搬移，不是稳定存量场景，hardsub-assumed 判断的价值本就不适用这条路径。
       hardsubMode: 'off',
+      // 重复源 P4：realign 字幕先行处理"整理搬完立即找字幕"的单次场景，不涉及副本/partial 条目
+      // 判断（那是 orchestrator 常规批量 find_subtitle 派发的职责）——固定空数组，同 hardsubMode
+      // 一样是这条长驻闭包路径与常规批量路径的天然分界，不是遗漏。
+      localCandidates: [],
       targets: [{
         itemId: ctx.itemId,
         videoPath: ctx.videoPath,

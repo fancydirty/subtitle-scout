@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { nullableTolerant, tolerantArray } from './coerce.js'
+import type { SubtitleCandidate } from '../core/schemas.js'
 
 /** Batch task/report shapes for the find-subtitle worker (phase ③) — see
  *  docs/design/2026-07-16-glue-layer-repair-and-semantic-audit-design.md, 第一部分第 1/3 条
@@ -61,6 +62,13 @@ export interface FindSubtitleTask {
   /** 救援R5：hardsub_mode 透传给 skill 决定是否教模型用第四桶。派发时新鲜读取（同
    *  targetLanguage 的既有先例——见 cli/index.ts handleWorkerTask find_subtitle 分支）。 */
   hardsubMode: 'off' | 'agent' | 'aggressive'
+  /** 重复源 P4：本地候选——该任务目标里有副本条目（partial 覆盖）时，其已覆盖文件的现有字幕
+   *  作为零成本候选前置注入 search_source 结果集（provider:'local'）。空数组=本任务没有需要
+   *  传播的条目（绝大多数任务）。构造方=mapper（findSubtitleWorkerTask.ts）；search_source
+   *  工具（resultHandles.ts）每次调用都把它们 prepend 进真实搜索结果——agent 用同一套
+   *  list_candidates/get_candidate/download_candidate/install_subtitle 工具面对待它们，
+   *  "同一套归属判断，无特殊心虚状态"（spec §4）。 */
+  localCandidates: SubtitleCandidate[]
   /** ≥1. List order is fact-list order (episode ascending), not an execution-order instruction. */
   targets: FindSubtitleTargetFact[]
 }

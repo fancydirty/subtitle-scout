@@ -5,7 +5,7 @@ import type { RunsRepo } from './runsRepo.js'
 import { traceBus } from '../dashboard/traceBus.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
 import { isDirWritable, isUnderRoots } from '../core/mediaContext.js'
-import { candidateKey } from '../core/schemas.js'
+import { candidateKey, type SubtitleCandidate } from '../core/schemas.js'
 import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
 import { resolveAbsoluteTable, absoluteFor } from '../agent/absoluteEpisodes.js'
 import { tmdbIdFromOwnId } from './ownIds.js'
@@ -108,6 +108,40 @@ function buildAlternativeTitles(
     .filter((t, i, arr) => arr.indexOf(t) === i)
 }
 
+/** 重复源 P4：本地候选构造——对本任务的每个 itemId，若它是多文件条目（item_files 有副本）且
+ *  覆盖不一致（partial：有文件已覆盖、有文件缺字幕），把每个已覆盖文件的现有字幕行转成一个
+ *  provider:'local' 候选，前置注入 search_source 结果集（resultHandles.ts）。providerId 直接
+ *  编码字幕文件的绝对路径（encodeURIComponent，避开路径里的特殊字符）——download_candidate 的
+ *  本地分支解码回路径直接读盘，不需要额外的旁路查找表；path 恒在本任务的 mediaRoot 沙盒内
+ *  （同一条目的文件天然同目录），download_candidate 侧仍会做 isUnderRoots 复核（defense in
+ *  depth，同 install_subtitle 的既有先例）。单文件条目（没有副本）或全覆盖/全缺口（没有"该
+ *  传播给谁"的缺口）都不产生候选——绝大多数任务这里是空数组，零额外查询开销。 */
+function buildLocalCandidates(lib: LibraryRepo, itemIds: string[]): SubtitleCandidate[] {
+  const out: SubtitleCandidate[] = []
+  for (const itemId of itemIds) {
+    const files = lib.itemFileCoverage(itemId)
+    if (files.length <= 1) continue
+    const hasCovered = files.some((f) => f.covered)
+    const hasUncovered = files.some((f) => !f.covered)
+    if (!hasCovered || !hasUncovered) continue
+    for (const f of files.filter((f) => f.covered)) {
+      for (const sub of lib.listSubtitlesForFile(itemId, f.path, f.isMain)) {
+        out.push({
+          provider: 'local',
+          providerId: encodeURIComponent(sub.path),
+          videoName: basename(f.path),
+          nativeName: null,
+          language: sub.language,
+          subtype: null,
+          releaseSite: null,
+          fileList: [],
+        })
+      }
+    }
+  }
+  return out
+}
+
 /** Concurrent, gain-path TMDB enrichment for one (mediaType, tmdbId) — both calls silently degrade
  *  (getDetails via .catch, getChineseTitles already swallows its own failures internally) so a TMDB
  *  outage or a non-conforming id (tmdbId null) never fails the mapping, only impoverishes the task. */
@@ -207,6 +241,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
       // multi-language per-item tasking is future work.
       targetLanguage: deps.targetLanguage ?? 'zh',
       hardsubMode: deps.hardsubMode ?? 'off',
+      localCandidates: buildLocalCandidates(deps.lib, [movie.id]),
       targets: [{
         itemId: movie.id,
         videoPath: movie.path,
@@ -260,6 +295,16 @@ export async function mapWorkerTaskToFindSubtitleTask(
   const absTable = deps.tmdb && tmdbId ? await resolveAbsoluteTable(deps.tmdb, tmdbId) : null
   const providerIds = parseProviderIds(series.provider_ids)
 
+  const targets = gaps.map((g) => ({
+    itemId: g.id,
+    videoPath: g.path,
+    videoFilename: basename(g.path),
+    season: g.season,
+    episode: g.episode,
+    absoluteEpisode: absTable ? absoluteFor(absTable, g.season, g.episode) : null,
+    imdbId: providerIds.imdb ?? null,
+  }))
+
   return {
     jobId: String(job.id),
     mediaRoot,
@@ -274,17 +319,10 @@ export async function mapWorkerTaskToFindSubtitleTask(
     // multi-language per-item tasking is future work.
     targetLanguage: deps.targetLanguage ?? 'zh',
     hardsubMode: deps.hardsubMode ?? 'off',
+    localCandidates: buildLocalCandidates(deps.lib, targets.map((t) => t.itemId)),
     // List order is fact-list order (gaps 已按 episode ASC，见 listMissingEpisodesInSeason),
     // not an execution-order instruction — see FindSubtitleTargetFact's own doc comment.
-    targets: gaps.map((g) => ({
-      itemId: g.id,
-      videoPath: g.path,
-      videoFilename: basename(g.path),
-      season: g.season,
-      episode: g.episode,
-      absoluteEpisode: absTable ? absoluteFor(absTable, g.season, g.episode) : null,
-      imdbId: providerIds.imdb ?? null,
-    })),
+    targets,
   }
 }
 

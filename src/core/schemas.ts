@@ -75,7 +75,14 @@ export const AssrtQuotaResponseSchema = z.object({
 })
 
 // ---------- Provider-neutral candidate (multi-source) ----------
-export const PROVIDERS = ['assrt', 'opensubtitles', 'zimuku'] as const
+// 重复源 P4：'local' 是第四个"provider"——不是一个真实网络适配器（deps.adapters 里永远没有名叫
+// 'local' 的 FetchAdapter），代表"该条目另一个文件已有的字幕"这一本地事实。runSearch/runResolve
+// 从不知道它存在（本地候选是 search_source 结果集构造完之后前置注入的，不经过 adapters 扇出）；
+// download_candidate 的 execute() 在调用 runResolve 之前拦截 provider==='local'，走本地读文件
+// 分支——同一份 SubtitleCandidate/candidateKey/parseCandidateKey/summarizeCandidate 机制，agent
+// 用同一套工具面对待本地候选，这正是 spec §4"传播=普通候选判断"要求的（同一套归属判断，不是
+// 特殊心虚状态）。
+export const PROVIDERS = ['assrt', 'opensubtitles', 'zimuku', 'local'] as const
 export type ProviderName = (typeof PROVIDERS)[number]
 
 // invariant: `index` MUST equal the entry's position within its containing SubtitleCandidate.fileList
