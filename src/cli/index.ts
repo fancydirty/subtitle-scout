@@ -83,7 +83,9 @@ async function assemble(): Promise<Assembled> {
   const reasoningModel = makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModelName, extraBody })
   // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第三把钥匙」）。增益路径，无 key
   // 时为 null——watch/reconcile-all 各自的硬性前置检查会因此报错退出（见 cmdWatch/cmdReconcileAll）。
-  const tmdb = process.env.TMDB_API_KEY ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY }) : null
+  const tmdb = process.env.TMDB_API_KEY
+    ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY, baseUrl: process.env.TMDB_BASE_URL, proxyUrl: process.env.TMDB_PROXY_URL })
+    : null
   return { cacheRoot, mappings, tmdb, reasoningModel }
 }
 

@@ -537,6 +537,8 @@ const DEPLOY_NONSECRET_KEYS = [
   'LLM_BASE_URL', 'LLM_MODEL', 'LLM_EXTRA_BODY', 'OPENSUBTITLES_USERNAME', 'ZIMUKU_ENABLED',
   'DASHBOARD_PORT', 'SUBTITLE_SCOUT_CACHE_DIR', 'LOG_RETAIN_DAYS', 'REALIGN_ARCHIVE_ROOT',
   'FFPROBE_PATH', 'SCAN_INTERVAL_MS', 'MEDIA_ROOTS',
+  // 债务 D4：TMDB 镜像域/HTTP 代理配置口，纯只读展示
+  'TMDB_BASE_URL', 'TMDB_PROXY_URL',
   // R2D-10（R2 复审）：A4 引入的部署层旋钮（cli/index.ts resolveTargetLanguages 的第一参来源）
   // 此前漏收进这张展示清单——枚举来源核对时补齐，纯只读展示，不影响 resolveTargetLanguages 本身
   // 的行为级 settings.target_languages 优先级（见该函数第二参的文档注释）。

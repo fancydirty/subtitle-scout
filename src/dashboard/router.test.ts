@@ -35,6 +35,7 @@ const deploySettingsDTO: DeploySettingsDTO = {
     OPENSUBTITLES_USERNAME: null, ZIMUKU_ENABLED: null, DASHBOARD_PORT: '8099',
     SUBTITLE_SCOUT_CACHE_DIR: null, LOG_RETAIN_DAYS: null, REALIGN_ARCHIVE_ROOT: null,
     FFPROBE_PATH: null, SCAN_INTERVAL_MS: null, MEDIA_ROOTS: null,
+    TMDB_BASE_URL: null, TMDB_PROXY_URL: null,
     // R2D-10（R2 复审）：DEPLOY_NONSECRET_KEYS 补齐的两键（apiV2.ts）。
     TARGET_LANGUAGES: null, SKIP_CHINESE_ORIGIN: null,
   },

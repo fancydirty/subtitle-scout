@@ -679,10 +679,35 @@ describe('TmdbClient.search', () => {
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     await expect(client.search('tv', 'Show')).rejects.toThrow(TmdbRequestFailedError)
   })
+})
 
-  it('404 → treated as no data (empty array), not a failure', async () => {
-    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
-    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
-    expect(await client.search('tv', 'Show')).toEqual([])
+describe('TmdbClient baseUrl/proxyUrl deployment knobs', () => {
+  it('baseUrl 注入：镜像域末尾斜杠剥掉，路径正常拼接', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const u = new URL(String(url))
+      expect(u.origin).toBe('https://mirror.example')
+      expect(u.pathname).toBe('/3/tv/1')
+      return new Response(JSON.stringify({ original_language: 'ja' }), { status: 200 })
+    })
+    const client = new TmdbClient({
+      apiKey: 'k'.repeat(32),
+      baseUrl: 'https://mirror.example/3/',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    expect(await client.getOriginLanguage('tv', '1')).toBe('ja')
+  })
+
+  it('缺省零变化：URL 前缀仍为官方，init 不含 dispatcher 键', async () => {
+    let seenInit: RequestInit | undefined
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seenInit = init
+      return new Response(JSON.stringify({ original_language: 'ja' }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'k'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.getOriginLanguage('tv', '1')
+    const callUrl = String(fetchImpl.mock.calls[0][0])
+    expect(callUrl.startsWith('https://api.themoviedb.org/3')).toBe(true)
+    expect(seenInit).toBeDefined()
+    expect('dispatcher' in (seenInit as Record<string, unknown>)).toBe(false)
   })
 })

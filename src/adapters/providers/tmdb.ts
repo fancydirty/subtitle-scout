@@ -4,6 +4,13 @@ const BASE = 'https://api.themoviedb.org/3'
 export interface TmdbClientOpts {
   apiKey: string
   fetchImpl?: typeof fetch
+  /** 债务 D4：镜像域配置口（CN 直连超时解药）。缺省=官方 https://api.themoviedb.org/3。
+   *  末尾斜杠会被剥掉，路径拼接口径与 BASE 一致。 */
+  baseUrl?: string
+  /** 债务 D4：HTTP 代理。有值时动态 import('undici') 挂 ProxyAgent dispatcher；import 失败
+   *  （理论上不该发生，undici 是 Node 内置 fetch 的实现库）打一行告警后继续直连——代理是增益，
+   *  绝不许把无代理也能通的请求搞挂。 */
+  proxyUrl?: string
 }
 
 // v4 Read Access Token 是 JWT，以 eyJ 开头 → Authorization: Bearer 头；
@@ -75,8 +82,17 @@ export class TmdbRequestFailedError extends Error {
 
 export class TmdbClient {
   private fetchImpl: typeof fetch
+  private base: string
+  private dispatcherP: Promise<unknown>
   constructor(private opts: TmdbClientOpts) {
     this.fetchImpl = opts.fetchImpl ?? fetch
+    this.base = (opts.baseUrl ?? BASE).replace(/\/+$/, '')
+    this.dispatcherP = opts.proxyUrl
+      ? import('undici').then(
+          (u) => new u.ProxyAgent(opts.proxyUrl!),
+          (e) => { console.error(`TMDB_PROXY_URL 设置了但 undici 不可用，继续直连: ${String(e)}`); return undefined },
+        )
+      : Promise.resolve(undefined)
   }
 
   /**
@@ -88,15 +104,16 @@ export class TmdbClient {
   private async getJsonStrict(path: string): Promise<Record<string, unknown> | null> {
     const v4 = isV4Token(this.opts.apiKey)
     const url = v4
-      ? `${BASE}${path}`
-      : `${BASE}${path}?api_key=${encodeURIComponent(this.opts.apiKey)}`
+      ? `${this.base}${path}`
+      : `${this.base}${path}?api_key=${encodeURIComponent(this.opts.apiKey)}`
     const headers = v4 ? { Authorization: `Bearer ${this.opts.apiKey}` } : undefined
+    const dispatcher = await this.dispatcherP
     let res: Response
     try {
-      res = await this.fetchImpl(url, {
-        headers,
-        signal: AbortSignal.timeout(TMDB_TIMEOUT_MS),
-      })
+      const init: RequestInit = { headers, signal: AbortSignal.timeout(TMDB_TIMEOUT_MS) }
+      // dispatcher 是 undici 扩展字段，TS 的 RequestInit 类型不认识，cast 记录型绕过。
+      if (dispatcher) (init as Record<string, unknown>).dispatcher = dispatcher
+      res = await this.fetchImpl(url, init)
     } catch (e) {
       throw new TmdbRequestFailedError(e)
     }
@@ -230,14 +247,15 @@ export class TmdbClient {
     const v4 = isV4Token(this.opts.apiKey)
     const qs = new URLSearchParams(params)
     if (!v4) qs.set('api_key', this.opts.apiKey)
-    const url = `${BASE}${path}?${qs.toString()}`
+    const url = `${this.base}${path}?${qs.toString()}`
     const headers = v4 ? { Authorization: `Bearer ${this.opts.apiKey}` } : undefined
+    const dispatcher = await this.dispatcherP
     let res: Response
     try {
-      res = await this.fetchImpl(url, {
-        headers,
-        signal: AbortSignal.timeout(TMDB_TIMEOUT_MS),
-      })
+      const init: RequestInit = { headers, signal: AbortSignal.timeout(TMDB_TIMEOUT_MS) }
+      // dispatcher 是 undici 扩展字段，TS 的 RequestInit 类型不认识，cast 记录型绕过。
+      if (dispatcher) (init as Record<string, unknown>).dispatcher = dispatcher
+      res = await this.fetchImpl(url, init)
     } catch (e) {
       throw new TmdbRequestFailedError(e)
     }
