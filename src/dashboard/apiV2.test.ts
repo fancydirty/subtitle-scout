@@ -7,7 +7,7 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, commonRootDepth, buildParked, claimParked,
+  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, claimParked,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
@@ -138,6 +138,28 @@ describe('buildLibrary', () => {
     expect(item.section).toBe('其他')
   })
 
+  // 验收修复轮一 Task V1（design §A，用户裁决）：分区判据元数据优先——genres 含 16
+  // 即动漫，哪怕路径落在按目录名会派生成"剧集"的 /media/tv/ 下也照样归动漫。
+  it('genres 含 16 → 动漫，覆盖路径派生（元数据优先于目录名）', () => {
+    lib.upsertSeries({ id: 's-anime', name: 'Peacemaker', genres: [16, 35] })
+    lib.upsertEpisode({
+      id: 'e-anime', seriesId: 's-anime', season: 1, episode: 1, name: 'E1',
+      path: '/media/tv/Peacemaker/S01/e1.mkv', subStatus: 'missing',
+    })
+    const item = buildLibrary(db).find(x => x.id === 's-anime')!
+    expect(item.section).toBe('动漫')
+  })
+
+  it('genres 已富化但不含 16 → 剧集', () => {
+    lib.upsertSeries({ id: 's-drama', name: 'Drama Show', genres: [18] })
+    lib.upsertEpisode({
+      id: 'e-drama', seriesId: 's-drama', season: 1, episode: 1, name: 'E1',
+      path: '/media/anime/Drama Show/S01/e1.mkv', subStatus: 'missing',
+    })
+    const item = buildLibrary(db).find(x => x.id === 's-drama')!
+    expect(item.section).toBe('剧集')
+  })
+
   it('无 job 的条目 job=null', () => {
     lib.upsertSeries({ id: 's9', name: 'Orphan' })
     const item = buildLibrary(db).find(x => x.id === 's9')!
@@ -160,11 +182,29 @@ describe('section 派生（纯函数）', () => {
     expect(sectionOf(paths[2], depth)).toBe('电影')
   })
 
-  it('未知目录名首字母大写原样展示；空路径→其他', () => {
+  // 验收修复轮一 Task V1（design §A，用户裁决）：未知目录名不再首字母大写原样漏出——一律归
+  // '其他'（处决 `_scout_realign_test` 式陌生目录名直接展示成分区标签的旧行为）。
+  it('未知目录名一律归其他（不再原样漏出目录名）；空路径→其他', () => {
     const paths = ['/srv/media/kids/Bluey/e1.mkv', '/srv/media/tv/Show/e1.mkv']
     const depth = commonRootDepth(paths) // /srv/media → 3
-    expect(sectionOf('/srv/media/kids/Bluey/e1.mkv', depth)).toBe('Kids')
+    expect(sectionOf('/srv/media/kids/Bluey/e1.mkv', depth)).toBe('其他')
     expect(sectionOf('', depth)).toBe('其他')
+  })
+})
+
+describe('sectionForItem（分区判据：元数据优先，spec §A）', () => {
+  it('genres 含 16 → 动漫；不含 → 剧集；movie 条目恒 电影', () => {
+    expect(sectionForItem('series', JSON.stringify([16, 35]), '/media/tv/Show/e1.mkv', 2)).toBe('动漫')
+    expect(sectionForItem('series', JSON.stringify([35, 18]), '/media/anime/Show/e1.mkv', 2)).toBe('剧集')
+    // movie 恒电影，genres 参数（movies 表没有这一列）与路径都不影响判定
+    expect(sectionForItem('movie', null, '/media/anime/Movie/m.mkv', 2)).toBe('电影')
+    expect(sectionForItem('movie', JSON.stringify([16]), '/media/tv/Movie/m.mkv', 2)).toBe('电影')
+  })
+
+  it('genres NULL → 路径派生兜底；路径也未知 → 其他（不再原样漏出目录名）', () => {
+    expect(sectionForItem('series', null, '/media/tv/Show/e1.mkv', 2)).toBe('剧集')
+    expect(sectionForItem('series', null, '/media/kids/Bluey/e1.mkv', 2)).toBe('其他')
+    expect(sectionForItem('series', null, '', 2)).toBe('其他')
   })
 })
 

@@ -15,6 +15,12 @@ export interface SeriesParams {
   posterPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
+  /** 验收修复轮一 Task V1（design §A）：TMDB genre id 集合（如 [16,35]）。有值→JSON.stringify
+   *  落库；undefined/null→NULL（不清空既有 genres，同 chineseTitle/posterPath 的既有 COALESCE
+   *  语义——见 upsertSeries 实现，"未富化过"与"本次调用没给"两件事都用 SQL NULL 表示，不冲突：
+   *  ingest 首次入库才可能真的给出 genres，后续每轮重跑 upsertSeries 不重新查 TMDB，传 undefined
+   *  即可，既有值原样保留）。 */
+  genres?: number[] | null
 }
 
 export interface EpisodeParams {
@@ -115,6 +121,9 @@ export interface Series {
   /** 胶水层修复（2026-07-16，schema v10）：摄取层观察到的"磁盘布局不合规范形"series 级事实
    *  （债务 D1，realign 出生信号之一）。 */
   layout_nonstandard: number
+  /** 验收修复轮一 Task V1（design §A，schema v13）：TMDB genre id 的 JSON 数组字符串（如
+   *  '[16,35]'）；NULL=尚未富化。dashboard sectionOf 新规读它判"动漫（含 16）vs 剧集"。 */
+  genres: string | null
 }
 
 // ---- P2 新面：parked_paths / identify_overrides / probe memo（去 Jellyfin 化 schema v9） ----
@@ -149,21 +158,27 @@ export class LibraryRepo {
 
   upsertSeries(params: SeriesParams): void {
     const posterPath = params.posterPath ?? null
+    // 验收修复轮一 Task V1：genres 有值才 JSON.stringify，无值（undefined/null）→ NULL 绑定，
+    // ON CONFLICT 分支用 COALESCE 保护既有值不被后续无 genres 的重复调用清空（同
+    // chineseTitle/posterPath 的既有语义）。
+    const genresJson = params.genres != null ? JSON.stringify(params.genres) : null
     this.db
       .prepare(
-        `INSERT INTO series (id, name, chinese_title, poster_path, year, provider_ids)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO series (id, name, chinese_title, poster_path, year, provider_ids, genres)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
            poster_path = COALESCE(excluded.poster_path, poster_path),
            year = excluded.year,
-           provider_ids = excluded.provider_ids
+           provider_ids = excluded.provider_ids,
+           genres = COALESCE(excluded.genres, genres)
          WHERE name != excluded.name
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
             OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
             OR year IS NOT excluded.year
-            OR provider_ids IS NOT excluded.provider_ids`
+            OR provider_ids IS NOT excluded.provider_ids
+            OR (excluded.genres IS NOT NULL AND genres IS NOT excluded.genres)`
       )
       .run(
         params.id,
@@ -171,8 +186,59 @@ export class LibraryRepo {
         params.chineseTitle ?? null,
         posterPath,
         params.year ?? null,
-        params.providerIds ?? null
+        params.providerIds ?? null,
+        genresJson
       )
+  }
+
+  /** 富化重试机制的候选清单（验收修复轮一 Task V1，design §A，一石二鸟）：name 为空串
+   *  （P6 认领写入的空名占位——"空名 ? 卡"债务）或 genres 尚未富化（NULL——存量剧 + 首次入库
+   *  时 getDetails 抖动失败的剧）都算候选。limit 由调用方传 cap（ingest.ts pass 收尾每轮传
+   *  10，防 TMDB 抖动期连环空转把整轮 pass 拖垮）。 */
+  listSeriesNeedingEnrich(limit: number): { id: string }[] {
+    return this.db
+      .prepare(`SELECT id FROM series WHERE name = '' OR genres IS NULL LIMIT ?`)
+      .all(limit) as { id: string }[]
+  }
+
+  /** 富化重试的落笔处（验收修复轮一 Task V1，design §A）——宁可不写不可覆盖：这是"回填"，
+   *  不是"覆盖"，任何字段只在当前列真的缺失时才被本次给出的新值填上，绝不用新值覆盖一个
+   *  已经有效的旧值（哪怕旧值本身就是这次 enrich 想改进的东西——那不是这个方法的职责，
+   *  identify_overrides/P6 认领才有权强改）。
+   *  - name：只在当前是空串且本次给出非 null 新值时才写（CASE 手法）——空串是"从未识别成功
+   *    过"的占位语义（同 P6 override 写入时的空名占位），非空 name 不会被这里改写。
+   *  - chinese_title/poster_path/year/genres：COALESCE(现列, 新值)——现列非 NULL 就原样保留，
+   *    现列 NULL 才落新值。调用方给的字段用 undefined/null 表示"这次没查到"，转成 SQL NULL，
+   *    COALESCE 对它是 no-op，天然满足"没查到就不动"。 */
+  applyEnrichment(
+    id: string,
+    e: {
+      name?: string | null
+      chineseTitle?: string | null
+      posterPath?: string | null
+      year?: number | null
+      genres?: number[] | null
+    }
+  ): void {
+    const genresJson = e.genres != null ? JSON.stringify(e.genres) : null
+    this.db
+      .prepare(
+        `UPDATE series SET
+           name = CASE WHEN name = '' AND @name IS NOT NULL THEN @name ELSE name END,
+           chinese_title = COALESCE(chinese_title, @chineseTitle),
+           poster_path = COALESCE(poster_path, @posterPath),
+           year = COALESCE(year, @year),
+           genres = COALESCE(genres, @genres)
+         WHERE id = @id`
+      )
+      .run({
+        id,
+        name: e.name ?? null,
+        chineseTitle: e.chineseTitle ?? null,
+        posterPath: e.posterPath ?? null,
+        year: e.year ?? null,
+        genres: genresJson,
+      })
   }
 
   /** F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零，R-3 不变式）：ON CONFLICT 分支的

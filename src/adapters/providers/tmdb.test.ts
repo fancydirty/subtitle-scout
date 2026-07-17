@@ -419,6 +419,7 @@ describe('TmdbClient.getDetails', () => {
       posterPath: '/abc123.jpg',
       originalTitle: 'SPY×FAMILY',
       year: 2022,
+      genreIds: [],
     })
   })
 
@@ -440,15 +441,42 @@ describe('TmdbClient.getDetails', () => {
       posterPath: '/matrix.jpg',
       originalTitle: 'The Matrix',
       year: 1999,
+      genreIds: [],
     })
   })
 
-  it('missing/blank fields → all null (not crash)', async () => {
+  it('missing/blank fields → all null (not crash), genreIds → []', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.getDetails('tv', '1')).toEqual({
       overview: null, runtimeMinutes: null, posterPath: null, originalTitle: null, year: null,
+      genreIds: [],
     })
+  })
+
+  // 验收修复轮一 Task V1（design §A）：genres[].id 解析——16=Animation 是 sectionOf 新规的
+  // 判据来源，必须逐字段准确提取，不受其余 genre 字段（如 name）干扰。
+  it('genres[].id → genreIds（如 [16,35]，16=Animation，动漫分区判据来源）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      genres: [{ id: 16, name: 'Animation' }, { id: 35, name: 'Comedy' }],
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    const details = await client.getDetails('tv', '108964')
+    expect(details?.genreIds).toEqual([16, 35])
+  })
+
+  it('genres 非数组或元素 id 非 number → 过滤兜底为 []（宁多防勿信脏数据）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      genres: 'not-an-array',
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect((await client.getDetails('movie', '1'))?.genreIds).toEqual([])
+
+    const fetchImpl2 = vi.fn(async () => new Response(JSON.stringify({
+      genres: [{ id: 'bogus' }, { name: 'no id field' }, { id: 12 }],
+    }), { status: 200 }))
+    const client2 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl2 as unknown as typeof fetch })
+    expect((await client2.getDetails('movie', '1'))?.genreIds).toEqual([12])
   })
 
   it('404 → null（真·无数据，不是失败）', async () => {

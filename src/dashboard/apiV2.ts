@@ -49,6 +49,9 @@ interface SeriesRow {
   chinese_title: string | null
   year: number | null
   poster_path: string | null
+  /** 验收修复轮一 Task V1（design §A，schema v13）：TMDB genre id 的 JSON 数组字符串；
+   *  NULL=尚未富化。sectionForItem 据此判"动漫 vs 剧集"。 */
+  genres: string | null
 }
 interface MovieRow extends SeriesRow {
   path: string
@@ -84,11 +87,6 @@ const SECTION_LABELS: Record<string, string> = {
   movie: '电影', movies: '电影', film: '电影', films: '电影',
 }
 
-/** 首字母大写（未知目录名原样展示）。 */
-function titleCase(s: string): string {
-  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
-}
-
 /** path 的目录段（去掉文件名），posix 风格，末尾空段丢弃。 */
 function dirSegments(path: string): string[] {
   const segs = path.split('/')
@@ -114,7 +112,11 @@ export function commonRootDepth(paths: string[]): number {
 
 /**
  * 取 path 在媒体根下的一级目录名（rootDepth 处的段），映射为人话分区标签。
- * 如 rootDepth=2、/media/tv/... → "tv" → "剧集"；未知目录名首字母大写原样展示。
+ * 如 rootDepth=2、/media/tv/... → "tv" → "剧集"；未知目录名（含空路径）一律归"其他"——
+ * 验收修复轮一 Task V1（design §A，用户裁决）：分区判据改为 TMDB 元数据优先，这个函数降级
+ * 为 genres 未富化时的纯路径兜底（sectionForItem 调用它），不再原样漏出目录名（处决
+ * `_scout_realign_test` 式陌生目录名直接展示成分区标签的旧行为）。分区 token 收敛为闭集
+ * {剧集,动漫,电影,其他}，前端 sectionLabel（web/src/library/sectionLabel.ts）全量可 i18n。
  */
 export function sectionOf(path: string, rootDepth: number): string {
   if (!path) return '其他'
@@ -122,8 +124,42 @@ export function sectionOf(path: string, rootDepth: number): string {
   // 媒体根下一级目录；越界（条目直接在根下）时回退到最末目录段
   const raw = segs[rootDepth] ?? segs[segs.length - 1] ?? ''
   const mapped = SECTION_LABELS[raw.toLowerCase()]
-  if (mapped) return mapped
-  return titleCase(raw) || '其他'
+  return mapped ?? '其他'
+}
+
+/** TMDB genre id 16 = Animation（spec §A 用户确认判据：不看产地，含 16 即动漫）。 */
+const ANIME_GENRE_ID = 16
+
+/** genres 落库列（JSON 数组字符串，如 '[16,35]'）是否含动漫判据 id。解析失败（脏数据/非
+ *  数组）按"不含"处理——sectionForItem 已经用 `genresJson != null` 门控只在"已富化"时调用
+ *  这个函数，这里的 try/catch 是纯防御，不是主逻辑分支。 */
+function hasAnimeGenre(genresJson: string): boolean {
+  try {
+    const arr = JSON.parse(genresJson)
+    return Array.isArray(arr) && arr.includes(ANIME_GENRE_ID)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 海报墙分区判据（验收修复轮一 Task V1，design §A，用户裁决：媒体库分区与守备目录解耦）：
+ * - movie 条目恒 '电影'（不再看路径）；
+ * - series 有 genres（非 NULL，即已富化过，哪怕结果是空数组）→ 含 16(Animation) → '动漫'，
+ *   否则 '剧集'；
+ * - series 的 genres 尚未富化（NULL）→ 沿 sectionOf 的路径派生兜底（未知目录名一律'其他'）。
+ * sectionOf(path, rootDepth) 原是 series/movie 共用的唯一判据源，这里重构为它的上层：
+ * sectionOf 降级为"path 派生"这一件事，元数据优先级判断收在这个函数。
+ */
+export function sectionForItem(
+  kind: 'series' | 'movie',
+  genresJson: string | null,
+  path: string,
+  rootDepth: number,
+): string {
+  if (kind === 'movie') return '电影'
+  if (genresJson != null) return hasAnimeGenre(genresJson) ? '动漫' : '剧集'
+  return sectionOf(path, rootDepth)
 }
 
 
@@ -131,7 +167,7 @@ export function sectionOf(path: string, rootDepth: number): string {
 export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
   const seriesRows = db
     .prepare(
-      `SELECT id, name, chinese_title, year, poster_path FROM series ORDER BY name ASC`
+      `SELECT id, name, chinese_title, year, poster_path, genres FROM series ORDER BY name ASC`
     )
     .all() as SeriesRow[]
 
@@ -199,7 +235,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     chineseTitle: s.chinese_title,
     year: s.year,
     posterPath: s.poster_path,
-    section: sectionOf(pathBySeriesId.get(s.id) ?? '', rootDepth),
+    section: sectionForItem('series', s.genres, pathBySeriesId.get(s.id) ?? '', rootDepth),
     coverage: coverageBySeriesId.get(s.id) ?? emptyCoverage(),
     job: jobBySeriesId.get(s.id) ?? null,
   }))
@@ -235,7 +271,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
       chineseTitle: m.chinese_title,
       year: m.year,
       posterPath: m.poster_path,
-      section: sectionOf(m.path, rootDepth),
+      section: sectionForItem('movie', null, m.path, rootDepth),
       coverage,
       job: jobByMovieId.get(m.id) ?? null,
     }

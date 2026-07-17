@@ -18,13 +18,14 @@ describe('db 基座', () => {
     // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11/v12
     // 本身）：v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
     // 落库值随之是 '2'；R-11 派活范围裁量化追加 v11 entry 后 MIGRATIONS.length=3，落库值是 '3'；
-    // dashboard 重建战役 G1 追加 v12 entry 后 MIGRATIONS.length=4，落库值是 '4'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '4' })
+    // dashboard 重建战役 G1 追加 v12 entry 后 MIGRATIONS.length=4，落库值是 '4'；验收修复轮一
+    // Task V1 追加 v13 entry 后 MIGRATIONS.length=5，落库值是 '5'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '5' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '4' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '5' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -90,5 +91,13 @@ describe('db 基座', () => {
 
     const runsCols = (db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]).map((c) => c.name)
     expect(runsCols).toContain('trace_json')
+  })
+
+  // v13（验收修复轮一 Task V1，design: 2026-07-17-acceptance-round-1-design.md §A）：分区
+  // 元数据化——series 加 genres 列（TMDB genre id 的 JSON 数组，NULL=尚未富化）。
+  it('v13: series.genres 列存在', () => {
+    const db = openDb(':memory:')
+    const seriesCols = (db.prepare('PRAGMA table_info(series)').all() as { name: string }[]).map((c) => c.name)
+    expect(seriesCols).toContain('genres')
   })
 })

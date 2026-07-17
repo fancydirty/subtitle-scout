@@ -987,7 +987,7 @@ describe('executeRealign（顶层编排，集成）', () => {
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
     const getDetails = vi.fn(async () => ({
       overview: 'A spy, an assassin, a telepath.', runtimeMinutes: 24,
-      posterPath: null, originalTitle: 'SPY×FAMILY', year: 2022,
+      posterPath: null, originalTitle: 'SPY×FAMILY', year: 2022, genreIds: [],
     }))
     const getChineseTitles = vi.fn(async () => ['间谍家家酒'])
     const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {

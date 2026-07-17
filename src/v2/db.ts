@@ -153,6 +153,11 @@ CREATE TABLE media_roots (         -- spec §7 守备目录（Jellyfin 分界）
 );
 ALTER TABLE runs ADD COLUMN trace_json TEXT;   -- 痕迹通道 C 收官快照
   `.trim(),
+  // v13（验收修复轮一 Task V1，design: docs/design/2026-07-17-acceptance-round-1-design.md §A，
+  // 用户裁决：媒体库分区与守备目录解耦，改由 TMDB 元数据派生）：纯增量一列。genres=TMDB genre id
+  // 的 JSON 数组（如 '[16,35]'，16=Animation）；NULL=尚未富化（含存量 36 部剧与"空名 ? 卡"）。
+  // 富化重试机制（ingest.ts pass 收尾）逐步回填，sectionOf 新规读它判"动漫 vs 剧集"。
+  `ALTER TABLE series ADD COLUMN genres TEXT`,
 ]
 
 export function openDb(path: string): ScoutDb {

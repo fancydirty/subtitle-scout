@@ -53,6 +53,12 @@ export interface TmdbDetails {
   posterPath: string | null
   originalTitle: string | null
   year: number | null
+  /** 验收修复轮一 Task V1（design: 2026-07-17-acceptance-round-1-design.md §A，用户裁决）：
+   *  `genres[].id` 原样保留（如 [16,35]，16=Animation）——dashboard sectionOf 用它判"动漫 vs
+   *  剧集"。genres 缺失/非数组/元素 id 非 number → 过滤兜底为 `[]`，恒是数组，从不是 null——
+   *  "该剧是否已富化"这件事体现在 series.genres 落库列是否为 SQL NULL，不是这个字段本身
+   *  （getDetails 整体 404/失败时 TmdbDetails 本身为 null/抛错，调用方据此区分，见下方实现）。 */
+  genreIds: number[]
 }
 
 /**
@@ -290,6 +296,12 @@ export class TmdbClient {
     const overview = typeof d.overview === 'string' && d.overview ? d.overview : null
     const rawPoster = d.poster_path
     const posterPath = typeof rawPoster === 'string' && rawPoster ? rawPoster : null
+    const rawGenres = d.genres
+    const genreIds = Array.isArray(rawGenres)
+      ? (rawGenres as Array<{ id?: unknown }>)
+          .map((g) => g?.id)
+          .filter((id): id is number => typeof id === 'number')
+      : []
 
     let runtimeMinutes: number | null = null
     let originalTitle: string | null = null
@@ -309,7 +321,10 @@ export class TmdbClient {
       year = typeof dateStr === 'string' && dateStr.length >= 4 ? Number(dateStr.slice(0, 4)) : null
     }
 
-    return { overview, runtimeMinutes, posterPath, originalTitle, year: Number.isFinite(year) ? year : null }
+    return {
+      overview, runtimeMinutes, posterPath, originalTitle,
+      year: Number.isFinite(year) ? year : null, genreIds,
+    }
   }
 
   /**

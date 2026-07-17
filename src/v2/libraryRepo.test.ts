@@ -259,6 +259,70 @@ describe('媒体镜像', () => {
     expect(row.poster_path).toBe('ptag')
   })
 
+  // 验收修复轮一 Task V1（design §A）：genres 落库 + 富化重试的两个新方法。
+  it('upsertSeries 落 genres（JSON 数组字符串）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A', genres: [16, 35] })
+    expect(lib.getSeries('s1')!.genres).toBe(JSON.stringify([16, 35]))
+  })
+
+  it('upsertSeries 传 undefined genres 不清空已回写的 genres（同 chineseTitle 的既有语义）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A', genres: [16] })
+    lib.upsertSeries({ id: 's1', name: 'A', posterPath: 'ptag' }) // 不带 genres
+    expect(lib.getSeries('s1')!.genres).toBe(JSON.stringify([16]))
+  })
+
+  it('listSeriesNeedingEnrich: name 为空或 genres IS NULL 的行，最多 limit 条', () => {
+    lib.upsertSeries({ id: 's1', name: '' }) // 空名占位（P6 认领债务）
+    lib.upsertSeries({ id: 's2', name: 'Show B' }) // genres 未富化（NULL）
+    lib.upsertSeries({ id: 's3', name: 'Show C', genres: [16] }) // 已富化，不是候选
+    const rows = lib.listSeriesNeedingEnrich(10)
+    expect(rows.map((r) => r.id).sort()).toEqual(['s1', 's2'])
+  })
+
+  it('listSeriesNeedingEnrich 遵守 limit', () => {
+    lib.upsertSeries({ id: 's1', name: '' })
+    lib.upsertSeries({ id: 's2', name: '' })
+    lib.upsertSeries({ id: 's3', name: '' })
+    expect(lib.listSeriesNeedingEnrich(2)).toHaveLength(2)
+  })
+
+  it('applyEnrichment：name 只在当前空串时才写，非空 name 不覆盖', () => {
+    lib.upsertSeries({ id: 's1', name: 'Existing Name' })
+    lib.applyEnrichment('s1', { name: 'New Name From TMDB' })
+    expect(lib.getSeries('s1')!.name).toBe('Existing Name')
+
+    lib.upsertSeries({ id: 's2', name: '' })
+    lib.applyEnrichment('s2', { name: 'Filled In' })
+    expect(lib.getSeries('s2')!.name).toBe('Filled In')
+  })
+
+  it('applyEnrichment：chinese_title/poster_path/year/genres 只在现列 NULL 时才写', () => {
+    lib.upsertSeries({ id: 's1', name: 'A', chineseTitle: '甲剧', posterPath: 'ptag', year: 2020, genres: [16] })
+    lib.applyEnrichment('s1', { chineseTitle: '乙剧', posterPath: 'ptag2', year: 2099, genres: [35] })
+    const row = lib.getSeries('s1')!
+    expect(row.chinese_title).toBe('甲剧')
+    expect(row.poster_path).toBe('ptag')
+    expect(row.year).toBe(2020)
+    expect(row.genres).toBe(JSON.stringify([16]))
+
+    lib.upsertSeries({ id: 's2', name: 'B' }) // 全空
+    lib.applyEnrichment('s2', { chineseTitle: '乙剧', posterPath: 'ptag2', year: 2099, genres: [35] })
+    const row2 = lib.getSeries('s2')!
+    expect(row2.chinese_title).toBe('乙剧')
+    expect(row2.poster_path).toBe('ptag2')
+    expect(row2.year).toBe(2099)
+    expect(row2.genres).toBe(JSON.stringify([35]))
+  })
+
+  it('applyEnrichment：字段缺省（undefined）视同没查到，不误写', () => {
+    lib.upsertSeries({ id: 's1', name: '' })
+    lib.applyEnrichment('s1', {}) // TMDB 失败路径：什么都没拿到
+    const row = lib.getSeries('s1')!
+    expect(row.name).toBe('')
+    expect(row.chinese_title).toBeNull()
+    expect(row.genres).toBeNull()
+  })
+
   // origin_lang 缓存（task 2 依赖）
   it('origin_lang: set + get for series and movie, null by default', () => {
     lib.upsertSeries({ id: 's1', name: 'S', posterPath: null })
