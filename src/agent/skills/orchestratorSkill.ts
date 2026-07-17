@@ -52,6 +52,29 @@ actually exists on disk, not a fixed granularity (裁决 R-11):
 
 Movies have no seasons: pass \`movieId\` alone, one dispatch per movie.
 
+## The parked backlog and rescue dispatch
+
+\`list_missing_coverage\` also carries a \`parked\` fact block: the count of rescue-eligible
+parked files (paths the scraper could not identify — excluded extras and duplicate-content
+rows are someone else's business and are not in this count) plus a small sample of paths with
+their park reasons. Facts only, as always — whether to act on them is yours.
+
+When the parked count is above zero, you MAY dispatch ONE \`dispatch_rescue_task\` — it spawns
+a rescue-identify worker that examines every eligible parked directory in one run: it gathers
+TMDB evidence and either claims a directory (identity confirmed), excludes it (pure extras), or
+keeps it parked with a written reason for the operator. Identification judgment belongs to that
+worker, not to you — do not try to reason about what a parked path "probably is" yourself.
+
+Rescue dispatch etiquette:
+
+- One rescue task covers the WHOLE parked backlog — never dispatch it more than once per pass
+  (the identity is a singleton; a second dispatch just coalesces).
+- It shares your same 100-dispatch budget (a created/revived receipt costs one).
+- A parked count that stays the same across passes means the remainder already resisted a
+  rescue round — those directories are human-review material; mention the count in your final
+  summary instead of re-dispatching every pass. A count that GREW since the living-doc last
+  showed it (new unrecognized arrivals) is what justifies a fresh rescue dispatch.
+
 ## Layout facts and realign judgment
 
 Make gathering these facts routine: for EVERY series you are about to dispatch for, call
@@ -123,7 +146,7 @@ export const ORCHESTRATOR_SKILL: Skill = {
   descriptor: {
     name: 'orchestrator-dispatch',
     description:
-      'How to read the living-doc (missing vs throttled coverage facts), scope find-subtitle dispatches by the on-disk reality (single season, several seasons, or a whole series — your judgment), weigh the two independent layout facts when considering realign (evidence for judgment, not gates), read dispatch receipts (created/revived/coalesced/blocked_dormant), scale effort to the backlog, and hand off to a sibling orchestrator at the 100-dispatch cap.',
+      'How to read the living-doc (missing vs throttled coverage facts, plus the parked backlog), scope find-subtitle dispatches by the on-disk reality (single season, several seasons, or a whole series — your judgment), dispatch a rescue-identify worker for the parked backlog (once per pass, identification judgment stays with that worker), weigh the two independent layout facts when considering realign (evidence for judgment, not gates), read dispatch receipts (created/revived/coalesced/blocked_dormant), scale effort to the backlog, and hand off to a sibling orchestrator at the 100-dispatch cap.',
   },
   content: CONTENT,
 }
