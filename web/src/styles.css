@@ -780,3 +780,167 @@
   flex: 1;
   min-width: 0;
 }
+
+/* dashboard-F6（Settings tab）：行为区/部署区/守备目录管理器——原子 CSS 集中区，同上面几段
+   一样的理由（mono 键值行/面包屑/目录浏览器列表是"组件语言表达不了"的技术级原子 UI），颜色
+   一律读 scout.ts 已定义的 token，不新起配色（DESIGN.md §10）。 */
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-section:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+/* ---- 部署区（DeploySection，只读）：key/value 行——key 与技术值一律 mono。 ---- */
+.settings-deploy-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  min-width: 0;
+}
+.settings-deploy-key {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+  min-width: 220px;
+  flex-shrink: 0;
+}
+.settings-deploy-tail,
+.settings-deploy-value {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 圆点旁的同色词——DESIGN.md §4：状态=圆点+一个同色词，不能只靠点色。present/absent 是技术
+   状态词，不翻译（同 Workflow decision 词表口径）。 */
+.settings-deploy-status-word {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+}
+.settings-deploy-status-word-present {
+  color: var(--color-text-green);
+}
+.settings-deploy-status-word-absent {
+  color: var(--color-text-gray);
+}
+.settings-deploy-error {
+  font-size: 12px;
+  color: var(--color-text-red);
+}
+
+/* ---- 守备目录管理器（RootsManager）：现有根列表行。 ---- */
+.settings-root-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  background: var(--color-background-surface);
+  padding: 8px 10px;
+  min-width: 0;
+}
+.settings-root-path {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.settings-root-type {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-gray);
+  flex-shrink: 0;
+}
+.settings-root-added {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-gray);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ---- 目录浏览器（DirBrowser）：面包屑 + 子目录列表 + 当前路径行。 ---- */
+.settings-dirbrowser-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.settings-dirbrowser-breadcrumb-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.settings-dirbrowser-breadcrumb-item {
+  background: none;
+  border: none;
+  padding: 2px 3px;
+  font: inherit;
+  font-family: inherit;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.settings-dirbrowser-breadcrumb-item:hover {
+  color: var(--color-text-primary);
+  background: var(--color-background-card);
+}
+.settings-dirbrowser-breadcrumb-current {
+  color: var(--color-text-primary);
+  padding: 2px 3px;
+}
+.settings-dirbrowser-breadcrumb-sep {
+  color: var(--color-text-disabled);
+}
+.settings-dirbrowser-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--color-background-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner, 4px);
+  padding: 6px 10px;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+.settings-dirbrowser-entry:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.settings-dirbrowser-list-error {
+  font-size: 11.5px;
+  color: var(--color-text-gray);
+}
+.settings-dirbrowser-current {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+/* 真失败（如加根 400）用红字——区别于上面 list-error 的"路况事实灰字"（DESIGN.md §8：
+   不可读目录是正常路况，加根被拒是真错误）。 */
+.settings-error-text {
+  font-size: 11.5px;
+  color: var(--color-text-red);
+}

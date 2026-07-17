@@ -17,22 +17,20 @@
 import { useState } from 'react'
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell'
 import { useWorkflowPending, useLibrarySeriesDetail } from '../api/hooks.js'
-import { useT } from '../i18n/useT.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
 import { CommandK } from './CommandK.js'
-import { PlaceholderTab } from './PlaceholderTab.js'
 import { SeriesGrid } from '../library/SeriesGrid.js'
 import { SeriesPage } from '../library/SeriesPage.js'
 import { Lanes } from '../workflow/Lanes.js'
 import { TriagePage } from '../triage/TriagePage.js'
+import { SettingsPage } from '../settings/SettingsPage.js'
 
 export function Shell() {
   const route = useShellRoute()
   const workflow = useWorkflowPending()
   const [isCmdKOpen, setCmdKOpen] = useState(false)
-  const { t } = useT()
 
   // 三处（Shell 自己判断渲染哪个组件 / Topbar 面包屑二级 / SeriesPage 页面主体）共享同一次
   // GET /api/v2/library/series/:id——route.libraryId 为 null 时 hook 内部直接跳过请求
@@ -65,9 +63,7 @@ export function Shell() {
           ))}
         {route.tab === 'workflow' && <Lanes />}
         {route.tab === 'triage' && <TriagePage />}
-        {route.tab === 'settings' && (
-          <PlaceholderTab title={t('settings_empty_title')} description={t('settings_empty_desc')} />
-        )}
+        {route.tab === 'settings' && <SettingsPage />}
       </AstryxAppShell>
       <CommandK isOpen={isCmdKOpen} onOpenChange={setCmdKOpen} />
     </>

@@ -56,6 +56,15 @@ function standardHandlers() {
     // workers 的既有理由：F4 及以前 Triage 还是占位态不发请求，现在不给会 404 → error 态，
     // 下面"切到 Triage tab 看空态"的断言永远等不到。
     { path: '/api/v2/triage', body: { pending: [], claimed: [] } },
+    // dashboard-F6：SettingsPage（Settings tab 真页面）挂载即打三个端点——同上面历次先例，
+    // 不给会让三个 section 各自落进 error 态（各自独立降级，不会白屏，但下面"切到 Settings
+    // tab"的断言需要真数据才能命中）。
+    {
+      path: '/api/v2/settings',
+      body: { target_languages: null, hardsub_mode: null, exclude_extras: null, trace_retention_days: null, scan_interval_ms: null },
+    },
+    { path: '/api/v2/settings/deploy', body: { secrets: {}, nonSecrets: {} } },
+    { path: '/api/v2/settings/roots', body: [] },
   ]
 }
 
@@ -163,6 +172,7 @@ describe('App 外壳冒烟', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(location.hash).toBe('#/settings')
-    await waitFor(() => expect(screen.getByText('Settings coming soon')).toBeInTheDocument())
+    // dashboard-F6：Settings 真页面落地——行为区标题是稳定、不重名的锚点。
+    await waitFor(() => expect(screen.getByText('Behavior')).toBeInTheDocument())
   })
 })

@@ -4,6 +4,7 @@ import type {
   ParkedItemDTO, ClaimParkedInput, WorkflowPendingDTO, LibrarySeriesDetailDTO,
   WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
   TriageDTO, TmdbSearchResponseDTO,
+  SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
 } from './types.js'
 
 const token = (): string | null => new URLSearchParams(location.search).get('token')
@@ -30,13 +31,15 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   return res.json() as Promise<T>
 }
 
-/** POST helper：错误响应体是 `{error: string}`（server.ts 的 reconcile-all/parked-claim 端点
- *  约定），优先把那条人话消息抛出来，而不是裸的 HTTP 状态码——503（未配置 TMDB_API_KEY）/
- *  400（认领校验失败）/401/405/500 各自的 error 文案都值得直接展示给使用者。`body` 给时按
- *  JSON 发送（POST /api/parked/claim 用）；不给时是无 body 的纯触发（reconcile-all 用）。 */
-async function post<T>(path: string, body?: unknown): Promise<T> {
+/** 非 GET 请求 helper：POST/PUT/DELETE 共用同一套响应体解析 + 错误消息抽取口径——错误响应体是
+ *  `{error: string}`（server.ts 的 reconcile-all/parked-claim/settings 端点约定），优先把那条
+ *  人话消息抛出来，而不是裸的 HTTP 状态码——503（未配置 TMDB_API_KEY）/400（校验失败）/401/
+ *  404（settings/roots 删除非登记根）/405/500 各自的 error 文案都值得直接展示给使用者。`body`
+ *  给时按 JSON 发送；不给时是无 body 的纯触发/query 传参请求（reconcile-all、DELETE
+ *  /api/v2/settings/roots?path=… 用）。 */
+async function mutate<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const res = await fetch(withToken(path), {
-    method: 'POST',
+    method,
     ...(body !== undefined
       ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
       : {}),
@@ -50,6 +53,19 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     throw new Error(message)
   }
   return responseBody as T
+}
+
+async function post<T>(path: string, body?: unknown): Promise<T> {
+  return mutate<T>('POST', path, body)
+}
+/** dashboard-F6：单键行为设置提交用（PUT /api/v2/settings，body 必给——同 mutate() 的 body!==
+ *  undefined 判据，PUT 语义上不该有无 body 的调用形状）。 */
+async function put<T>(path: string, body: unknown): Promise<T> {
+  return mutate<T>('PUT', path, body)
+}
+/** dashboard-F6：删根用（DELETE /api/v2/settings/roots?path=…，query 传参不带 body）。 */
+async function del<T>(path: string): Promise<T> {
+  return mutate<T>('DELETE', path)
 }
 
 export const api = {
@@ -91,4 +107,18 @@ export const api = {
   // CJK/空格/斜杠等需要转义的字符。
   tmdbSearch: (type: 'tv' | 'movie', q: string, signal?: AbortSignal) =>
     get<TmdbSearchResponseDTO>(`/api/v2/tmdb/search?type=${encodeURIComponent(type)}&q=${encodeURIComponent(q)}`, signal),
+  // dashboard-F6：Settings tab——行为级设置读写 + 部署层只读展示 + 守备目录管理 + 目录浏览器。
+  settings: (signal?: AbortSignal) => get<SettingsDTO>('/api/v2/settings', signal),
+  // 单键提交（BehaviorSection 每行改动即时 PUT，body 只含那一个改动的键）；200 回执是写入后的
+  // 全量 settings，调用方直接拿它回写本地状态，不用再发一次 GET（同 src/dashboard/apiV2.ts
+  // updateSettings 的既有约定）。
+  updateSettings: (patch: SettingsPatch) => put<SettingsDTO>('/api/v2/settings', patch),
+  deploySettings: (signal?: AbortSignal) => get<DeploySettingsDTO>('/api/v2/settings/deploy', signal),
+  roots: (signal?: AbortSignal) => get<MediaRootDTO[]>('/api/v2/settings/roots', signal),
+  addRoot: (path: string) => post<{ ok: true }>('/api/v2/settings/roots', { path }),
+  // DELETE 成功回执是级联清理计数（RemoveRootResultDTO）；404（非登记在册的守备目录）由
+  // mutate() 的既有错误口径抛出，调用方（RemoveRootDialog）如实展示那句 error 文案。
+  removeRoot: (path: string) => del<RemoveRootResultDTO>(`/api/v2/settings/roots?path=${encodeURIComponent(path)}`),
+  fsList: (path: string, signal?: AbortSignal) =>
+    get<FsListDTO>(`/api/v2/fs/list?path=${encodeURIComponent(path)}`, signal),
 }

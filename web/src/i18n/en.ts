@@ -144,7 +144,72 @@ export const en = {
   triage_results_heading: 'Results',
   triage_partial_failure_desc: 'Some claims failed — review the results below.',
 
-  // Settings tab 占位。
-  settings_empty_title: 'Settings coming soon',
-  settings_empty_desc: 'Media roots, target languages, and deploy info will live here.',
+  // Settings tab（dashboard-F6）——正常双语区（DESIGN.md §7 只豁免 Workflow 区）。F2 占位期的
+  // settings_empty_title/desc（"coming soon"）随 F6 落地真内容一并退役——不像 triage_empty_*
+  // 那样有一个"真的空"的状态可以复用这段文案，四 tab 占位就此全部清空
+  // （shell/PlaceholderTab.tsx 同步删除，见该文件退役时的 git 记录）。
+  settings_behavior_heading: 'Behavior',
+  settings_deploy_heading: 'Deploy',
+  settings_roots_heading: 'Media roots',
+
+  settings_error_prefix: "Couldn't load settings: ",
+  settings_retry_label: 'Retry',
+
+  // 行为区（BehaviorSection）——五项，逐项改动即时单键 PUT。
+  settings_target_languages_label: 'Target languages',
+  settings_target_languages_description: 'Comma-separated BCP-47 codes, e.g. "zh,en". Unset defaults to "zh".',
+  settings_target_languages_save_label: 'Save',
+  // 已知债务如实标注（DESIGN.md §8）：改后需守护进程重启才生效——它只在启动时读取一次，
+  // 不许假装即时生效。
+  settings_target_languages_restart_note:
+    'Saved immediately, but only takes effect after the daemon restarts — it reads this setting once at startup.',
+
+  settings_hardsub_mode_label: 'Hardsub assumption',
+  settings_hardsub_mode_option_off: 'Off',
+  settings_hardsub_mode_option_agent: 'Agent',
+  settings_hardsub_mode_option_aggressive: 'Aggressive',
+  settings_exclude_extras_label: 'Exclude extras',
+  // hardsub_mode 与 exclude_extras 共用同一句诚实注记：两者都只存取展示，执行逻辑尚未落地
+  // （spec §9 立项登记：救援官战役）。
+  settings_rescue_officer_pending_note:
+    'Saved, but the execution logic ships with the rescue-officer campaign — not consumed yet.',
+
+  settings_trace_retention_label: 'Trace retention (days)',
+  settings_scan_interval_label: 'Scan interval (ms)',
+  // trace_retention_days / scan_interval_ms：这两个 settings 键此刻没有任何代码路径读取
+  // （见 web/src/settings/text.ts 顶部注释的代码溯源），如实标注，不假装生效。
+  settings_backend_unconsumed_note: 'Saved, but not read by the backend yet — this value has no effect currently.',
+
+  settings_save_error_prefix: "Couldn't save: ",
+
+  // 部署区（DeploySection，只读）——env 脱敏展示，零输入控件。
+  settings_deploy_readonly_note: 'deploy-level, read-only — edit via environment/compose',
+  settings_deploy_secrets_heading: 'Secrets',
+  settings_deploy_nonsecrets_heading: 'Other',
+  settings_deploy_error_prefix: "Couldn't load deploy info: ",
+  settings_deploy_present_word: 'configured',
+  settings_deploy_absent_word: 'not set',
+
+  // 守备目录管理器（RootsManager）。
+  settings_roots_error_prefix: "Couldn't load media roots: ",
+  settings_roots_retry_label: 'Retry',
+  settings_roots_empty_hint: 'No media roots yet — browse below to add the first one.',
+  settings_roots_remove_label: 'Remove',
+  settings_roots_add_button_label: 'Add a root',
+  // 删根 AlertDialog——destructive 才用 AlertDialog（DESIGN.md §5），文案明示后果。
+  settings_roots_remove_confirm_desc:
+    'This clears every indexed row under this root — episodes, movies, subtitle records, and parked entries. Files on disk are not touched.',
+  settings_roots_remove_result_title: 'Media root removed',
+  settings_roots_remove_failed_title: 'Could not remove this root',
+  settings_roots_remove_close_label: 'Close',
+  settings_roots_remove_error_prefix: "Couldn't remove this root: ",
+
+  // 目录浏览器（DirBrowser）——加根流程。
+  settings_dirbrowser_description: 'Browse directories visible to the container and add the one you want scanned.',
+  settings_dirbrowser_add_button: 'Add this directory',
+  // 后端 roots 已动态化——加根即刻生效于下一轮巡检，这句是真的（不是"假装即时生效"）。
+  settings_dirbrowser_add_success: 'Added — the next scan will pick it up automatically.',
+  settings_dirbrowser_add_error_prefix: "Couldn't add this directory: ",
+  settings_dirbrowser_empty: 'No subdirectories here.',
+  settings_dirbrowser_error_prefix: "Couldn't list this directory: ",
 } as const

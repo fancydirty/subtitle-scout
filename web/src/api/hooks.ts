@@ -5,6 +5,7 @@ import { api } from './client.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
   LibrarySeriesDetailDTO, WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, TriageDTO,
+  SettingsDTO, DeploySettingsDTO, MediaRootDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -376,6 +377,91 @@ export function useTriage(): Async<TriageDTO> {
     setError(null)
     api
       .triage(ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F6：Settings tab 行为级设置——一次性 + 手动 reload（同 useTriage/useParked 的既有
+ *  先例：设置改动是低频人工动作，不需要常驻轮询；BehaviorSection 单键 PUT 成功后直接用响应体
+ *  回写本地状态，不依赖这里的 reload——reload 只在首载失败重试时用）。 */
+export function useSettings(): Async<SettingsDTO> {
+  const [data, setData] = useState<SettingsDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .settings(ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F6：部署层 env 脱敏只读展示——一次性（同 useSettings，deploy env 在运行期内不会
+ *  变化，没有轮询的理由）。 */
+export function useDeploySettings(): Async<DeploySettingsDTO> {
+  const [data, setData] = useState<DeploySettingsDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .deploySettings(ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** dashboard-F6：守备目录清单——一次性 + 手动 reload（同 useTriage：加根/删根成功后调用方自己
+ *  reload，不轮询——守备目录改动同样是低频人工动作）。 */
+export function useRoots(): Async<MediaRootDTO[]> {
+  const [data, setData] = useState<MediaRootDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .roots(ctrl.signal)
       .then((d) => setData(d))
       .catch((e) => {
         if (!ctrl.signal.aborted) setError(String(e))

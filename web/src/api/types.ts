@@ -221,6 +221,54 @@ export interface TmdbSearchResponseDTO {
   results: TmdbSearchResultDTO[]
 }
 
+/** dashboard-F6：GET /api/v2/settings 响应体——行为级设置白名单五键，与 src/dashboard/apiV2.ts
+ *  的 SETTINGS_KEYS/SettingsDTO 一致。每键 string|null，null=未设置（前端自行显示默认占位，
+ *  见 web/src/settings/text.ts）。 */
+export type SettingsKey =
+  | 'target_languages' | 'hardsub_mode' | 'exclude_extras' | 'trace_retention_days' | 'scan_interval_ms'
+export type SettingsDTO = Record<SettingsKey, string | null>
+
+/** dashboard-F6：PUT /api/v2/settings 请求体——部分键值对象（全 string），与
+ *  src/dashboard/apiV2.ts 的 updateSettings 输入形状一致（未列出的键不改动）。 */
+export type SettingsPatch = Partial<Record<SettingsKey, string>>
+
+/** dashboard-F6：GET /api/v2/settings/deploy 响应体——env 脱敏只读展示，与
+ *  src/dashboard/apiV2.ts 的 DeploySettingsDTO 一致。key 集合刻意不在前端复刻后端
+ *  DEPLOY_SECRET_KEYS/DEPLOY_NONSECRET_KEYS 那两个字面量元组——DeploySection 只是遍历
+ *  Object.entries 逐行渲染，后端增删 env key 时前端不需要跟着改一份重复清单。 */
+export interface DeploySecretDTO {
+  present: boolean
+  tail: string
+}
+export interface DeploySettingsDTO {
+  secrets: Record<string, DeploySecretDTO>
+  nonSecrets: Record<string, string | null>
+}
+
+/** dashboard-F6：GET /api/v2/settings/roots 响应体行——与 src/v2/settingsRepo.ts 的
+ *  MediaRoot 一致。 */
+export interface MediaRootDTO {
+  path: string
+  type: string
+  addedAt: number
+}
+
+/** dashboard-F6：DELETE /api/v2/settings/roots?path=… 成功响应体——与
+ *  src/v2/settingsRepo.ts 的 RemoveRootResult 一致（级联清理计数，磁盘文件不动）。 */
+export interface RemoveRootResultDTO {
+  episodes: number
+  movies: number
+  series: number
+  parked: number
+}
+
+/** dashboard-F6：GET /api/v2/fs/list?path=… 成功响应体——与 src/dashboard/apiV2.ts 的
+ *  listMediaSubdirs 成功分支一致（失败分支是 {error} 字符串，走 client.ts 既有的错误抛出口径，
+ *  不建一个 union 类型）。 */
+export interface FsListDTO {
+  dirs: string[]
+}
+
 /** dashboard-F3：GET /api/v2/library/series/:id 响应体——三层格阵合并详情（canonical ∪ 磁盘 ∪
  *  覆盖），与 src/dashboard/apiV2.ts 的 LibrarySeriesDetailDTO 一族保持一致。 */
 export interface LibrarySeriesSummaryDTO {
