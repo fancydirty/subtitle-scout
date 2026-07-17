@@ -641,7 +641,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
 
   it('空库：running/recent 皆空数组、installedLast24h=0', () => {
     const freshDb = openDb(':memory:')
-    expect(buildWorkflowWorkers(freshDb, NOW)).toEqual({ running: [], recent: [], installedLast24h: 0 })
+    expect(buildWorkflowWorkers(freshDb, NOW)).toEqual({ running: [], recent: [], installedLast24h: 0, providerQuota: [] })
   })
 
   // 验收修复轮一 Task V3（design §B）：recent 行的剧名/片名——LEFT JOIN series/movies 取 name，
@@ -685,6 +685,44 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
 
     const result = buildWorkflowWorkers(db, NOW)
     expect(result.installedLast24h).toBe(2)
+  })
+
+  // 债务 D3：provider 配额事实从 settings 旁路键 quota_state_* 读取，过滤已过期/非法值。
+  describe('buildWorkflowWorkers · providerQuota', () => {
+    it('未过期键出现在 providerQuota', () => {
+      const settings = new SettingsRepo(db)
+      settings.set('quota_state_opensubtitles', JSON.stringify({ resetAt: '2026-01-01T00:00:00Z', observedAt: NOW - 1000 }), NOW)
+
+      const result = buildWorkflowWorkers(db, NOW)
+
+      expect(result.providerQuota).toEqual([
+        { provider: 'opensubtitles', resetAt: '2026-01-01T00:00:00Z', observedAt: NOW - 1000 },
+      ])
+    })
+
+    it('resetAt 已过期（早于 now）的键不出现', () => {
+      const settings = new SettingsRepo(db)
+      settings.set('quota_state_opensubtitles', JSON.stringify({ resetAt: '2020-01-01T00:00:00Z', observedAt: NOW - 1000 }), NOW)
+
+      const result = buildWorkflowWorkers(db, NOW)
+
+      expect(result.providerQuota).toEqual([])
+    })
+
+    it('值为垃圾字符串的键不出现、不炸端点', () => {
+      const settings = new SettingsRepo(db)
+      settings.set('quota_state_opensubtitles', '{not valid json', NOW)
+
+      const result = buildWorkflowWorkers(db, NOW)
+
+      expect(result.providerQuota).toEqual([])
+    })
+
+    it('无 quota_state_* 键时 providerQuota 为空数组', () => {
+      const freshDb = openDb(':memory:')
+      const result = buildWorkflowWorkers(freshDb, NOW)
+      expect(result.providerQuota).toEqual([])
+    })
   })
 })
 

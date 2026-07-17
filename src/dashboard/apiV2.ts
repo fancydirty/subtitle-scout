@@ -6,7 +6,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
-import type { SettingsRepo } from '../v2/settingsRepo.js'
+import { SettingsRepo } from '../v2/settingsRepo.js'
 import type { JobsRepo, WorkerTaskUpsertOutcome } from '../v2/jobsRepo.js'
 import { canonicalEpisodes } from '../v2/tmdbCatalog.js'
 import { traceBus, type TraceEvent } from './traceBus.js'
@@ -862,6 +862,9 @@ export interface WorkflowWorkersDTO {
    *  数据源——runs 里 decision='installed' 且 finished_at > now-86400e3 的计数，独立 COUNT
    *  查询（一句 SQL）。now 由调用方传入（沿 buildWorkflowPending 的既有 now 传参先例）。 */
   installedLast24h: number
+  /** 债务 D3：provider 配额事实句数据源——settings 旁路键 quota_state_*（见 cli/quotaState.ts）。
+   *  读侧滤除已过期（resetAt 早于 now）的条目；值 JSON 解析失败 fail-soft 跳过整条。 */
+  providerQuota: Array<{ provider: string; resetAt: string | null; observedAt: number }>
 }
 
 /** worker_task 的 payload JSON 里取 taskType/seasons——容错解析（同 buildLibrary 对 worker_task
@@ -957,7 +960,25 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
     .prepare(`SELECT COUNT(*) AS c FROM runs WHERE decision = 'installed' AND finished_at > ?`)
     .get(now - 86_400_000) as { c: number }
 
-  return { running, recent, installedLast24h: installedRow.c }
+  const settingsRepo = new SettingsRepo(db)
+  const providerQuota: WorkflowWorkersDTO['providerQuota'] = []
+  for (const { key, value } of settingsRepo.listByPrefix('quota_state_')) {
+    try {
+      const parsed = JSON.parse(value) as { resetAt?: unknown; observedAt?: unknown }
+      const resetAt = typeof parsed.resetAt === 'string' ? parsed.resetAt : null
+      const observedAt = typeof parsed.observedAt === 'number' ? parsed.observedAt : null
+      if (observedAt === null) continue
+      if (resetAt !== null) {
+        const resetMs = Date.parse(resetAt)
+        if (Number.isNaN(resetMs) || resetMs < now) continue
+      }
+      providerQuota.push({ provider: key.slice('quota_state_'.length), resetAt, observedAt })
+    } catch {
+      // JSON parse 失败或非法形状 fail-soft：跳过垃圾值，不炸聚合端点
+    }
+  }
+
+  return { running, recent, installedLast24h: installedRow.c, providerQuota }
 }
 
 // ---- workflow/runs/:id/trace（dashboard-F4 后端例外口子：单 run 痕迹快照回放）----

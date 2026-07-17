@@ -8,6 +8,7 @@ import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { type FetchEvent } from './fetchLib.js'
+import { applyQuotaEvent } from './quotaState.js'
 import { gcOrphans } from '../files/stagingSandbox.js'
 import { isDirWritable, type PathMapping } from '../core/mediaContext.js'
 import { makeFileLogger } from '../core/fileLogger.js'
@@ -228,6 +229,7 @@ async function cmdWatch() {
   // 提到 realign 依赖块之前（Wall ②）：realign 的字幕先行现在也走这个 worker，组装它自己的
   // adapters 需要同一个 emit 函数。
   const emitProviderEvent = (e: FetchEvent) => {
+    applyQuotaEvent(e, settingsRepo, Date.now())
     if (e.event === 'provider_error') log(`find-subtitle worker: provider error (${e.provider}): ${e.message}`)
     else if (e.event === 'provider_notice') log(`find-subtitle worker: provider notice (${e.provider}): ${e.message}`)
   }

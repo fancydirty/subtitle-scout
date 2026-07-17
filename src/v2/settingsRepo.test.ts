@@ -40,6 +40,30 @@ describe('SettingsRepo · get/set', () => {
   })
 })
 
+describe('SettingsRepo · listByPrefix / delete', () => {
+  it('listByPrefix 按前缀筛选并按 key 排序', () => {
+    settings.set('quota_state_opensubtitles', JSON.stringify({ resetAt: null, observedAt: NOW }), NOW)
+    settings.set('quota_state_assrt', JSON.stringify({ resetAt: null, observedAt: NOW }), NOW)
+    settings.set('target_languages', 'zh', NOW)
+
+    const rows = settings.listByPrefix('quota_state_')
+
+    expect(rows).toHaveLength(2)
+    expect(rows.map(r => r.key)).toEqual(['quota_state_assrt', 'quota_state_opensubtitles'])
+    expect(rows[0].value).toContain('observedAt')
+  })
+
+  it('delete 后 get 返回 null', () => {
+    settings.set('hardsub_mode', 'off', NOW)
+    settings.delete('hardsub_mode')
+    expect(settings.get('hardsub_mode')).toBeNull()
+  })
+
+  it('delete 不存在的键不抛错', () => {
+    expect(() => settings.delete('not_there')).not.toThrow()
+  })
+})
+
 describe('SettingsRepo · listRoots/addRoot', () => {
   it('listRoots 初始为空数组', () => {
     expect(settings.listRoots()).toEqual([])

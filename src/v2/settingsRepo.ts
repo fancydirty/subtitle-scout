@@ -42,6 +42,18 @@ export class SettingsRepo {
       .run(key, value, now)
   }
 
+  /** 前缀枚举（quota_state_* 旁路键消费用）。不用 LIKE——键名虽然目前不含 %/_，但仓库同文件
+   *  media_roots 一带已确立 substr 判前缀的先例（LIKE 通配符语义陷阱），沿用同款。 */
+  listByPrefix(prefix: string): Array<{ key: string; value: string }> {
+    return this.db.prepare(
+      'SELECT key, value FROM settings WHERE substr(key, 1, ?) = ? ORDER BY key'
+    ).all(prefix.length, prefix) as Array<{ key: string; value: string }>
+  }
+
+  delete(key: string): void {
+    this.db.prepare('DELETE FROM settings WHERE key = ?').run(key)
+  }
+
   // ---- media_roots(path,type,added_at)：守备目录 ----
 
   listRoots(): MediaRoot[] {
