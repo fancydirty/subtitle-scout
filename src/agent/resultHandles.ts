@@ -166,11 +166,14 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
       })
       const resultSetId = deps.store.create(candidates)
       const topN = deps.topN ?? 5
+      // 键序即证据存活序（Shelby Oaks 案取证教训，2026-07-17）：痕迹通道 C 的 resultSummary
+      // 只留前 200 字符——providerFailures 排在 top[] 长尾后面时，恰恰在"某 provider 静默失败"
+      // 最需要验尸的场景里被截没。失败事实排最前、top 长尾垫底，截断永远吃不到关键证据。
       return {
+        providerFailures: failures,
         result_set_id: resultSetId,
         count: candidates.length,
         top: candidates.slice(0, topN).map(summarizeCandidate),
-        providerFailures: failures,
       }
     },
   })
