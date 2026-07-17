@@ -101,7 +101,8 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const targetsBlock = task.targets.map(t => {
       const se = t.season != null ? `S${t.season}E${t.episode}` : '(movie)'
       const abs = t.absoluteEpisode != null ? ` | absolute episode: ${t.absoluteEpisode}` : ''
-      return `- itemId: ${t.itemId} | ${se}${abs} | file: ${t.videoFilename}`
+      const imdb = t.imdbId ? ` | imdb: ${t.imdbId}` : ' | imdb: unknown'
+      return `- itemId: ${t.itemId} | ${se}${abs}${imdb} | file: ${t.videoFilename}`
     }).join('\n')
 
     const prompt = [

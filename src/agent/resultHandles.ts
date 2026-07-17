@@ -143,7 +143,9 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
       'failure is grounds for retry_later on affected targets, absence of results across ' +
       'healthy providers is not. When you omit `languages` the search defaults to this task\'s ' +
       'target language. Some providers (e.g. assrt, zimuku) only consult the first 1-2 of your ' +
-      'query variants per call — plan queries accordingly.',
+      'query variants per call — plan queries accordingly. Only pass `imdb` when your task ' +
+      'facts explicitly provide one — NEVER invent or derive it from a tmdb id (a wrong imdb ' +
+      'makes providers query the wrong identity and silently return zero results).',
     inputSchema: z.object({
       queries: z.array(z.string()).min(1),
       imdb: z.string().optional(),

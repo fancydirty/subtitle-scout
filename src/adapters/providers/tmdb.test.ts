@@ -498,6 +498,47 @@ describe('TmdbClient.getDetails', () => {
   })
 })
 
+describe('TmdbClient.getExternalIds', () => {
+  it('happy path → returns imdbId', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      expect(new URL(String(url)).pathname).toBe('/3/movie/603/external_ids')
+      return new Response(JSON.stringify({ imdb_id: 'tt0133093', wikidata_id: 123 }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getExternalIds('movie', '603')).toEqual({ imdbId: 'tt0133093' })
+  })
+
+  it('缺失/空串/非字符串 imdb_id → {imdbId: null}', async () => {
+    const fetchImpl1 = vi.fn(async () => new Response(JSON.stringify({ imdb_id: '' }), { status: 200 }))
+    const client1 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl1 as unknown as typeof fetch })
+    expect(await client1.getExternalIds('tv', '1')).toEqual({ imdbId: null })
+
+    const fetchImpl2 = vi.fn(async () => new Response(JSON.stringify({ id: 1 }), { status: 200 }))
+    const client2 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl2 as unknown as typeof fetch })
+    expect(await client2.getExternalIds('tv', '1')).toEqual({ imdbId: null })
+  })
+
+  it('404 → {imdbId: null}（真·无数据）', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getExternalIds('movie', '999999')).toEqual({ imdbId: null })
+  })
+
+  it('网络/非 2xx/非 JSON 故障 → 抛 TmdbRequestFailedError（瞬时，可重试）', async () => {
+    const fetchImpl1 = vi.fn(async () => { throw new Error('ECONNREFUSED') })
+    const client1 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl1 as unknown as typeof fetch })
+    await expect(client1.getExternalIds('tv', '1')).rejects.toThrow(TmdbRequestFailedError)
+
+    const fetchImpl2 = vi.fn(async () => new Response('server error', { status: 500 }))
+    const client2 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl2 as unknown as typeof fetch })
+    await expect(client2.getExternalIds('tv', '1')).rejects.toThrow(TmdbRequestFailedError)
+
+    const fetchImpl3 = vi.fn(async () => new Response('not json', { status: 200 }))
+    const client3 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl3 as unknown as typeof fetch })
+    await expect(client3.getExternalIds('tv', '1')).rejects.toThrow(TmdbRequestFailedError)
+  })
+})
+
 describe('TmdbClient.search', () => {
   it('tv: hits normalized from name/first_air_date, hits /search/tv with URL-encoded query', async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {

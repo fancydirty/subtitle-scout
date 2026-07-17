@@ -26,7 +26,7 @@ function buildTask(cell: LoadedCell, jobId: string, mediaRoot: string, videoPath
     providerIds: t.providerIds, targetLanguage: t.targetLanguage ?? 'zh',
     targets: [{
       itemId: jobId, videoPath, videoFilename: t.videoFilename,
-      season: t.season, episode: t.episode, absoluteEpisode: t.absoluteEpisode,
+      season: t.season, episode: t.episode, absoluteEpisode: t.absoluteEpisode, imdbId: null,
     }],
   }
 }

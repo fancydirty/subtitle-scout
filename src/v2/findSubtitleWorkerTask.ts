@@ -188,6 +188,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
     const tmdbId = tmdbIdFromOwnId(movie.id)
     const { details, chineseTitles } = await fetchTmdbEnrichment(deps.tmdb, 'movie', tmdbId)
     const originalTitle = details?.originalTitle ?? null
+    const providerIds = parseProviderIds(movie.provider_ids)
 
     return {
       jobId: String(job.id),
@@ -198,7 +199,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
       alternativeTitles: buildAlternativeTitles(chineseTitles, movie.chinese_title, movie.name, originalTitle),
       overview: details?.overview ?? null,
       runtimeMinutes: details?.runtimeMinutes ?? null,
-      providerIds: parseProviderIds(movie.provider_ids),
+      providerIds,
       // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
       // multi-language per-item tasking is future work.
       targetLanguage: deps.targetLanguage ?? 'zh',
@@ -210,6 +211,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
         episode: null,
         // Movies have neither season nor episode — absoluteEpisode is meaningless for this branch.
         absoluteEpisode: null,
+        imdbId: providerIds.imdb ?? null,
       }],
     }
   }
@@ -252,6 +254,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
   // 逐集各打一次 TMDB 往返（2N 次请求）。取不到表（tmdb 未配置/请求失败）→ 全部 null：
   // absoluteEpisode 是定位 hint 缺席不是 blocker，见 findSubtitleWorker.schemas.ts 的字段注释。
   const absTable = deps.tmdb && tmdbId ? await resolveAbsoluteTable(deps.tmdb, tmdbId) : null
+  const providerIds = parseProviderIds(series.provider_ids)
 
   return {
     jobId: String(job.id),
@@ -262,7 +265,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
     alternativeTitles: buildAlternativeTitles(chineseTitles, series.chinese_title, series.name, originalTitle),
     overview: details?.overview ?? null,
     runtimeMinutes: details?.runtimeMinutes ?? null,
-    providerIds: parseProviderIds(series.provider_ids),
+    providerIds,
     // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
     // multi-language per-item tasking is future work.
     targetLanguage: deps.targetLanguage ?? 'zh',
@@ -275,6 +278,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
       season: g.season,
       episode: g.episode,
       absoluteEpisode: absTable ? absoluteFor(absTable, g.season, g.episode) : null,
+      imdbId: providerIds.imdb ?? null,
     })),
   }
 }

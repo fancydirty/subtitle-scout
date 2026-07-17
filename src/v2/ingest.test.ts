@@ -31,6 +31,7 @@ interface FakeTmdbOpts {
   getOriginLanguage?: (mediaType: 'tv' | 'movie', id: string) => Promise<string | null>
   getDetails?: (mediaType: 'tv' | 'movie', id: string) => Promise<TmdbDetails | null>
   getChineseTitles?: (mediaType: 'tv' | 'movie', id: string) => Promise<string[]>
+  getExternalIds?: (mediaType: 'tv' | 'movie', id: string) => Promise<{ imdbId: string | null }>
   getSeasonTable?: (tvId: string) => Promise<{ seasonNumber: number; episodeCount: number; airDate: string | null }[] | null>
   getAbsoluteOrder?: (tvId: string) => Promise<{ season: number; episode: number }[] | null>
 }
@@ -39,6 +40,7 @@ function fakeTmdb(opts: FakeTmdbOpts = {}): TmdbClient {
     getOriginLanguage: opts.getOriginLanguage ?? (async () => null),
     getDetails: opts.getDetails ?? (async () => null),
     getChineseTitles: opts.getChineseTitles ?? (async () => []),
+    getExternalIds: opts.getExternalIds ?? (async () => ({ imdbId: null })),
     getSeasonTable: opts.getSeasonTable ?? (async () => null),
     getAbsoluteOrder: opts.getAbsoluteOrder ?? (async () => null),
   } as unknown as TmdbClient
@@ -144,6 +146,73 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
   })
 })
 
+describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () => {
+  it('TV 首次入库：external_ids 有 imdb 时 provider_ids 同时写入 tmdb + imdb', async () => {
+    const disk = fakeDisk()
+    disk.setVideo('/media/Show/Season 1/ep1.mkv')
+    const tmdb = fakeTmdb({
+      getExternalIds: async () => ({ imdbId: 'tt10872600' }),
+    })
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => ['/media/Show/Season 1/ep1.mkv'],
+      tmdb,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const series = lib.getSeries('tmdb:1')
+    expect(series).toMatchObject({
+      provider_ids: JSON.stringify({ tmdb: '1', imdb: 'tt10872600' }),
+    })
+  })
+
+  it('movie 首次入库：external_ids 有 imdb 时 provider_ids 同时写入 tmdb + imdb', async () => {
+    const disk = fakeDisk()
+    disk.setVideo('/media/movies/hero.mkv')
+    const tmdb = fakeTmdb({
+      getExternalIds: async () => ({ imdbId: 'tt0133093' }),
+    })
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => ['/media/movies/hero.mkv'],
+      recognize: vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' })),
+      tmdb,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const movie = lib.getMovie('tmdb:603')
+    expect(movie).toMatchObject({
+      provider_ids: JSON.stringify({ tmdb: '603', imdb: 'tt0133093' }),
+    })
+  })
+
+  it('external_ids 瞬时失败时，其余富化照常、provider_ids 仍写 tmdb（不拖垮）', async () => {
+    const disk = fakeDisk()
+    disk.setVideo('/media/Show/Season 1/ep1.mkv')
+    const tmdb = fakeTmdb({
+      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', originalTitle: 'Show', year: 2020, genreIds: [] }),
+      getChineseTitles: async () => ['演出'],
+      getExternalIds: async () => { throw new TmdbRequestFailedError(new Error('ECONNREFUSED')) },
+    })
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => ['/media/Show/Season 1/ep1.mkv'],
+      tmdb,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const series = lib.getSeries('tmdb:1')
+    expect(series).toMatchObject({
+      provider_ids: JSON.stringify({ tmdb: '1' }),
+      poster_path: '/poster.jpg',
+      chinese_title: '演出',
+      year: 2020,
+    })
+  })
+})
 describe('makeIngestPass — park', () => {
   it('a Park outcome writes a parked_paths row, not an episode/movie row', async () => {
     const disk = fakeDisk()
@@ -1205,21 +1274,43 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     expect(lib.listSeriesNeedingEnrich(10).map((r) => r.id)).toEqual(['tmdb:24240'])
   })
 
-  it('单剧富化失败不连坐其余候选剧（一个 TMDB 抖动不拖垮整轮富化重试）', async () => {
-    lib.upsertSeries({ id: 'tmdb:1', name: '' })
-    lib.upsertSeries({ id: 'tmdb:2', name: '' })
-    const getDetails = vi.fn(async (mediaType: 'tv' | 'movie', id: string) => {
-      if (id === '1') throw new TmdbRequestFailedError(new Error('boom'))
-      return { overview: null, runtimeMinutes: null, posterPath: null, originalTitle: 'Show Two', year: null, genreIds: [] }
-    })
+  it('富化重试回填 imdb：现 provider_ids 无 imdb 时，external_ids 采到后并入', async () => {
+    lib.upsertSeries({ id: 'tmdb:24240', name: '' }) // 空名/未富化 → 进候选
+    const getDetails = vi.fn(async () => ({
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
+    }))
+    const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
     const pass = makeIngestPass(makeDeps({
-      tmdb: fakeTmdb({ getDetails }),
+      tmdb: fakeTmdb({ getDetails, getExternalIds }),
       listVideoFiles: () => [],
     }))
 
     await pass()
 
-    expect(lib.getSeries('tmdb:1')!.name).toBe('') // 失败的那个不写
-    expect(lib.getSeries('tmdb:2')!.name).toBe('Show Two') // 另一个正常富化
+    const series = lib.getSeries('tmdb:24240')
+    expect(series).toMatchObject({
+      name: 'Rescued Show',
+      provider_ids: JSON.stringify({ tmdb: '24240', imdb: 'tt24240' }),
+    })
+  })
+
+  it('富化重试回填 imdb：现 provider_ids 已含 imdb 时，不再覆盖/改写', async () => {
+    lib.upsertSeries({ id: 'tmdb:24240', name: '', providerIds: JSON.stringify({ tmdb: '24240', imdb: 'tt99999' }) })
+    const getDetails = vi.fn(async () => ({
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
+    }))
+    const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
+    const pass = makeIngestPass(makeDeps({
+      tmdb: fakeTmdb({ getDetails, getExternalIds }),
+      listVideoFiles: () => [],
+    }))
+
+    await pass()
+
+    const series = lib.getSeries('tmdb:24240')
+    // 现值已有 imdb → COALESCE 语义：不动，新采到的值不覆盖。
+    expect(series!.provider_ids).toBe(JSON.stringify({ tmdb: '24240', imdb: 'tt99999' }))
   })
 })

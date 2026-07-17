@@ -328,6 +328,18 @@ export class TmdbClient {
   }
 
   /**
+   * 外部 id 端点（`/tv/{id}/external_ids` `/movie/{id}/external_ids`）——验收修复轮一：摄取时采
+   * 真 imdb id，堵住 LLM 把 tmdb id 幻觉成 "tt<tmdbId>" 的源头。语义同 getDetails：
+   * 404→{imdbId:null}（真·无数据），其余失败→抛 TmdbRequestFailedError（瞬时，可重试）。
+   * 空串/缺失/非字符串→统一返回 null。 */
+  async getExternalIds(mediaType: 'tv' | 'movie', tmdbId: string): Promise<{ imdbId: string | null }> {
+    const d = await this.getJsonStrict(`/${mediaType}/${tmdbId}/external_ids`)
+    if (!d) return { imdbId: null }
+    const imdbId = typeof d.imdb_id === 'string' && d.imdb_id ? d.imdb_id : null
+    return { imdbId }
+  }
+
+  /**
    * 单季集清单（`/tv/{id}/season/{n}`）——dashboard G2 应有集缓存（tmdbCatalog.ts）用它逐季拉
    * episode_number/name 补全 getSeasonTable 只给到的季级 episode_count。语义同 getSeasonTable：
    * null=真·无数据（含 404，该季不存在），抛 TmdbRequestFailedError=瞬时故障可重试，调用方

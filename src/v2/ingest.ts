@@ -283,26 +283,47 @@ async function enrichNewSeriesOrMovie(
   tmdbId: string,
   tmdb: TmdbClient,
   log: (msg: string) => void,
-): Promise<{ posterPath: string | null; year: number | null; chineseTitle: string | null; genres: number[] | null }> {
+): Promise<{ posterPath: string | null; year: number | null; chineseTitle: string | null; genres: number[] | null; originalTitle: string | null; imdbId: string | null }> {
   let posterPath: string | null = null
   let year: number | null = null
-  // 验收修复轮一 Task V1（design §A）：genres 走同一条 getDetails 调用与同一条 fail-soft
-  // 降级路径——TMDB 抖动/404 时保持 null（"尚未富化"，series.genres 落 SQL NULL），不伪造
-  // 空数组吞掉这次失败（空数组是"getDetails 明确答复无 genre 数据"的合法结果，与"这次没查到"
-  // 是两件不同的事，见 tmdb.ts TmdbDetails.genreIds 头注释）。tv 分支首次入库时 ingest.ts 调用
-  // 点把它透传进 upsertSeries；movies 表没有 genres 列（分区判据 movie 恒'电影'，不需要它），
-  // movie 分支算出来但不使用，见调用点。
   let genres: number[] | null = null
+  let originalTitle: string | null = null
   try {
     const details = await tmdb.getDetails(mediaType, tmdbId)
     posterPath = details?.posterPath ?? null
     year = details?.year ?? null
     genres = details?.genreIds ?? null
+    originalTitle = details?.originalTitle ?? null
   } catch (e) {
-    log(`ingest: getDetails failed for ${mediaType}:${tmdbId}, proceeding without poster/year/genres this pass: ${e instanceof Error ? e.message : String(e)}`)
+    log(`ingest: getDetails failed for ${mediaType}:${tmdbId}, proceeding without poster/year/genres/originalTitle this pass: ${e instanceof Error ? e.message : String(e)}`)
   }
   const zhTitles = await tmdb.getChineseTitles(mediaType, tmdbId) // 自身已 fail-soft，失败返回 []
-  return { posterPath, year, chineseTitle: zhTitles[0] ?? null, genres }
+  let imdbId: string | null = null
+  try {
+    imdbId = (await tmdb.getExternalIds(mediaType, tmdbId)).imdbId
+  } catch (e) {
+    log(`ingest: getExternalIds failed for ${mediaType}:${tmdbId}, proceeding without imdbId this pass: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  return { posterPath, year, chineseTitle: zhTitles[0] ?? null, genres, originalTitle, imdbId }
+}
+
+/** 合并 provider_ids：只在现有 JSON 不含 imdb 键且新值有 imdb 时才写入，否则返回 null。
+ *  provider_ids 是 JSON 字符串，合并逻辑必须在 ingest 侧做（SQL 无法读 JSON 内键做 COALESCE）。
+ *  损坏的现值 → 宁可不写也不覆盖；现值为 null 但有 tmdbId 时，用 tmdbId 兜底构建新对象。 */
+function mergeProviderIds(existingJson: string | null, newImdbId: string | null, tmdbId: string | null): string | null {
+  if (!newImdbId) return null
+  let existing: Record<string, unknown>
+  try {
+    existing = existingJson ? JSON.parse(existingJson) as Record<string, unknown> : {}
+  } catch {
+    return null
+  }
+  if (existing.imdb) return null
+  if (!existingJson && tmdbId) {
+    existing = { tmdb: tmdbId }
+  }
+  existing.imdb = newImdbId
+  return JSON.stringify(existing)
 }
 
 export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
@@ -476,12 +497,14 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               let year: number | null = null
               let chineseTitle: string | null = null
               let genres: number[] | null = null
+              let imdbId: string | null = null
               if (!seriesExisted) {
                 const enrich = await enrichNewSeriesOrMovie('tv', tmdbId, tmdb, log)
                 posterPath = enrich.posterPath
                 year = enrich.year
                 chineseTitle = enrich.chineseTitle
                 genres = enrich.genres
+                imdbId = enrich.imdbId
                 // dashboard G2：三层格阵第一层——新剧首次入库顺手起播应有集缓存（tmdbCatalog.ts）。
                 // fire-and-forget：不 await，失败仅 log，绝不阻塞摄取主流程（该函数自身已是
                 // gain-path 降级，见其头注释）。
@@ -491,7 +514,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               }
               lib.upsertSeries({
                 id: ownSeriesId, name: title, chineseTitle, posterPath, year, genres,
-                providerIds: JSON.stringify({ tmdb: tmdbId }),
+                providerIds: imdbId
+                  ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
+                  : JSON.stringify({ tmdb: tmdbId }),
               })
 
               const cachedOriginLang = lib.getSeriesOriginLang(ownSeriesId)
@@ -559,18 +584,22 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               let posterPath: string | null = null
               let year: number | null = null
               let chineseTitle: string | null = null
+              let imdbId: string | null = null
               if (!movieExisted) {
                 const enrich = await enrichNewSeriesOrMovie('movie', tmdbId, tmdb, log)
                 posterPath = enrich.posterPath
                 year = enrich.year
                 chineseTitle = enrich.chineseTitle
+                imdbId = enrich.imdbId
                 // 占位插入：origin_lang 缓存写回（setMovieOriginLang）是 UPDATE-only，必须先有
                 // 行才能写——movies 表把"series 级元数据"和"episode 级 sub_status"揉进同一行，
                 // 不像 series/episodes 天然分两张表，没有"先写不带 sub_status 的元数据行"这条
                 // 路可走。subStatus 先给个占位值，下面算出真实值后立刻二次 upsert 覆盖。
                 lib.upsertMovie({
                   id: ownMovieId, name: title, path, subStatus: 'missing',
-                  chineseTitle, posterPath, year, providerIds: JSON.stringify({ tmdb: tmdbId }),
+                  chineseTitle, posterPath, year, providerIds: imdbId
+                    ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
+                    : JSON.stringify({ tmdb: tmdbId }),
                 })
               }
 
@@ -592,7 +621,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
               lib.upsertMovie({
                 id: ownMovieId, name: title, path, subStatus: toWrite,
-                chineseTitle, posterPath, year, providerIds: JSON.stringify({ tmdb: tmdbId }),
+                chineseTitle, posterPath, year, providerIds: imdbId
+                  ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
+                  : JSON.stringify({ tmdb: tmdbId }),
               })
               // R-9（判决可稽核）：同 TV 分支——upsertMovie 也不带 status_reason 列，rule 1b 命中
               // 时补一条窄 UPDATE。
@@ -659,10 +690,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       // （recognition/resolveToTmdb.ts 的 TMDB /search/tv 命中标题 adopted.title，见该文件），
       // 这条查询词驱动的搜索在这里用不上。getDetails 的 originalTitle 字段（tv: original_name）
       // 是这个端点唯一能给出的标题字段，虽是"原语言标题"而非展示标题，但好过永久空着——沿用
-      // enrichNewSeriesOrMovie 同一套 fail-soft 手法，只是这里直接调 tmdb 而非复用该函数（它
-      // 不返回 name/originalTitle，且不需要 movies 分支）。
-      //
-      // 只查 series 表（listSeriesNeedingEnrich 的 SQL 范围），故 mediaType 恒 'tv'——movies
+      // enrichNewSeriesOrMovie 同一套 fail-soft 手法，并复用它采集 imdbId（验收修复轮一：
+      // 把真 imdb 回填空名/未富化剧，从源头封杀 LLM 把 tmdb id 幻觉成 imdb 的 bug）。
+      // 这里只查 series 表（listSeriesNeedingEnrich 的 SQL 范围），故 mediaType 恒 'tv'。
       // 没有这条债务（P6 override 的 movie 分支同样写空 title，但 movies 表没有 genres 列，
       // 分区判据不需要它富化；空名 movie 留给未来若有需要再补，不在本轮范围内，YAGNI）。
       // 单剧失败（TMDB 抖动/getDetails 抛错）只 log 继续，不炸整轮 pass、不写任何字段——下一轮
@@ -671,14 +701,16 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
         try {
           const enrichTmdbId = tmdbIdFromOwnId(id)
           if (!enrichTmdbId) continue // 非本形状 id（理论不可达，series.id 恒 tmdb:<id>），跳过不炸
-          const details = await tmdb.getDetails('tv', enrichTmdbId)
-          const zhTitles = await tmdb.getChineseTitles('tv', enrichTmdbId) // 自身已 fail-soft
+          const enrich = await enrichNewSeriesOrMovie('tv', enrichTmdbId, tmdb, log)
+          const existing = lib.getSeries(id)
+          const mergedProviderIds = mergeProviderIds(existing?.provider_ids ?? null, enrich.imdbId, enrichTmdbId)
           lib.applyEnrichment(id, {
-            name: details?.originalTitle ?? null,
-            chineseTitle: zhTitles[0] ?? null,
-            posterPath: details?.posterPath ?? null,
-            year: details?.year ?? null,
-            genres: details?.genreIds ?? null,
+            name: enrich.originalTitle,
+            chineseTitle: enrich.chineseTitle,
+            posterPath: enrich.posterPath,
+            year: enrich.year,
+            genres: enrich.genres,
+            providerIds: mergedProviderIds,
           })
         } catch (e) {
           log(`ingest: enrich retry failed for ${id}, will retry next pass: ${e instanceof Error ? e.message : String(e)}`)

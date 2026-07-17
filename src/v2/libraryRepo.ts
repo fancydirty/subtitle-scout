@@ -218,6 +218,7 @@ export class LibraryRepo {
       posterPath?: string | null
       year?: number | null
       genres?: number[] | null
+      providerIds?: string | null
     }
   ): void {
     const genresJson = e.genres != null ? JSON.stringify(e.genres) : null
@@ -228,7 +229,8 @@ export class LibraryRepo {
            chinese_title = COALESCE(chinese_title, @chineseTitle),
            poster_path = COALESCE(poster_path, @posterPath),
            year = COALESCE(year, @year),
-           genres = COALESCE(genres, @genres)
+           genres = COALESCE(genres, @genres),
+           provider_ids = COALESCE(@providerIds, provider_ids)
          WHERE id = @id`
       )
       .run({
@@ -238,6 +240,7 @@ export class LibraryRepo {
         posterPath: e.posterPath ?? null,
         year: e.year ?? null,
         genres: genresJson,
+        providerIds: e.providerIds ?? null,
       })
   }
 

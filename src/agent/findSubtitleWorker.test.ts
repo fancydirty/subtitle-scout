@@ -129,7 +129,7 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     })
 
     const task = baseTask(mediaRoot, [
-      { itemId: 'ep-1', videoPath, videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null },
+      { itemId: 'ep-1', videoPath, videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
     ])
 
     const report = await runTask(task)
@@ -153,8 +153,8 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     // Two targets: the first is fine, the second escapes — ANY escaping target must fail the
     // WHOLE task before the model is ever invoked, not just that one target.
     const task = baseTask(mediaRoot, [
-      { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null },
-      { itemId: 'ep-2', videoPath: join(root, 'elsewhere', 'Show.S01E02.mkv'), videoFilename: 'Show.S01E02.mkv', season: 1, episode: 2, absoluteEpisode: null },
+      { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+      { itemId: 'ep-2', videoPath: join(root, 'elsewhere', 'Show.S01E02.mkv'), videoFilename: 'Show.S01E02.mkv', season: 1, episode: 2, absoluteEpisode: null, imdbId: null },
     ], { jobId: 'job-2', year: null, runtimeMinutes: null })
     await expect(runTask(task)).rejects.toThrow(/escapes its own sandboxed mediaRoot/)
   })
@@ -177,7 +177,7 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
 
     const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
     const task = baseTask(mediaRoot, [
-      { itemId: 'ep-1', videoPath, videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null },
+      { itemId: 'ep-1', videoPath, videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
     ], { jobId: 'job-3', targetLanguage: 'en' })
 
     await runTask(task)
@@ -205,17 +205,19 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
 
     const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
     const task = baseTask(mediaRoot, [
-      { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: 1 },
-      { itemId: 'ep-2', videoPath: join(mediaRoot, 'Show', 'Show.S01E02.mkv'), videoFilename: 'Show.S01E02.mkv', season: 1, episode: 2, absoluteEpisode: 2 },
-      { itemId: 'movie-1', videoPath: join(mediaRoot, 'Show', 'Movie.mkv'), videoFilename: 'Movie.mkv', season: null, episode: null, absoluteEpisode: null },
+      { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: 1, imdbId: null },
+      { itemId: 'ep-2', videoPath: join(mediaRoot, 'Show', 'Show.S01E02.mkv'), videoFilename: 'Show.S01E02.mkv', season: 1, episode: 2, absoluteEpisode: 2, imdbId: null },
+      { itemId: 'movie-1', videoPath: join(mediaRoot, 'Show', 'Movie.mkv'), videoFilename: 'Movie.mkv', season: null, episode: null, absoluteEpisode: null, imdbId: 'tt0133093' },
     ], { jobId: 'job-4' })
 
     await runTask(task)
 
+    // 验收轮一（imdb 采集）：目标行携带 imdb 事实——有值给真值（worker 用它做精确搜索），
+    // 无值明示 unknown（禁止编造，见 search_source 工具描述）。
     expect(capturedPromptText).toContain('targets (3 item(s), current gaps in this scope):')
-    expect(capturedPromptText).toContain('- itemId: ep-1 | S1E1 | absolute episode: 1 | file: Show.S01E01.mkv')
-    expect(capturedPromptText).toContain('- itemId: ep-2 | S1E2 | absolute episode: 2 | file: Show.S01E02.mkv')
-    expect(capturedPromptText).toContain('- itemId: movie-1 | (movie) | file: Movie.mkv')
+    expect(capturedPromptText).toContain('- itemId: ep-1 | S1E1 | absolute episode: 1 | imdb: unknown | file: Show.S01E01.mkv')
+    expect(capturedPromptText).toContain('- itemId: ep-2 | S1E2 | absolute episode: 2 | imdb: unknown | file: Show.S01E02.mkv')
+    expect(capturedPromptText).toContain('- itemId: movie-1 | (movie) | imdb: tt0133093 | file: Movie.mkv')
   })
 
   it('finalize returns a batch report keyed by installed/no_safe_match/retry_later buckets', async () => {
@@ -232,8 +234,8 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
 
     const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
     const task = baseTask(mediaRoot, [
-      { itemId: 'ep-2', videoPath: join(mediaRoot, 'Show', 'Show.S01E02.mkv'), videoFilename: 'Show.S01E02.mkv', season: 1, episode: 2, absoluteEpisode: null },
-      { itemId: 'ep-3', videoPath: join(mediaRoot, 'Show', 'Show.S01E03.mkv'), videoFilename: 'Show.S01E03.mkv', season: 1, episode: 3, absoluteEpisode: null },
+      { itemId: 'ep-2', videoPath: join(mediaRoot, 'Show', 'Show.S01E02.mkv'), videoFilename: 'Show.S01E02.mkv', season: 1, episode: 2, absoluteEpisode: null, imdbId: null },
+      { itemId: 'ep-3', videoPath: join(mediaRoot, 'Show', 'Show.S01E03.mkv'), videoFilename: 'Show.S01E03.mkv', season: 1, episode: 3, absoluteEpisode: null, imdbId: null },
     ], { jobId: 'job-5' })
 
     const report = await runTask(task)
@@ -250,7 +252,7 @@ describe('timeout scaling by target count (BATCH_BASE_TIMEOUT_MS / PER_TARGET_TI
       itemId: `ep-${i + 1}`,
       videoPath: join(mediaRoot, 'Show', `Show.S01E${String(i + 1).padStart(2, '0')}.mkv`),
       videoFilename: `Show.S01E${String(i + 1).padStart(2, '0')}.mkv`,
-      season: 1, episode: i + 1, absoluteEpisode: null,
+      season: 1, episode: i + 1, absoluteEpisode: null, imdbId: null,
     }))
   }
 

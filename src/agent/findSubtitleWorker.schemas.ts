@@ -35,6 +35,9 @@ export interface FindSubtitleTargetFact {
   /** System-computed whole-series absolute episode number (a locating hint, not a proof of
    *  belonging); null for movies or when it couldn't be reliably derived. */
   absoluteEpisode: number | null
+  /** 验收修复轮一：从 series/movies.provider_ids 解析出的真 imdb id（或 null）。这个值会被原样
+   *  写进 worker prompt 的 targetsBlock，search_source 工具只许用它，禁止 LLM 自行编造。 */
+  imdbId: string | null
 }
 
 /** Input to one find-subtitle worker run: a season-level (or single-movie) range + the current

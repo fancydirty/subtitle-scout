@@ -298,6 +298,10 @@ export function makeRealignRunEpisode(
         // 混用，此处显式 null；worker 靠 season/episode + title/tmdbId 判断归属，绝对集号
         // 缺席不是 blocker（同 findSubtitleWorker.schemas.ts 该字段自己的文档）。
         absoluteEpisode: null,
+        // 验收轮一（imdb 采集）：realign 字幕先行的上下文（RealignSubtitleContext）不携带
+        // provider_ids，无 imdb 可传——显式 null（worker 靠标题/季集判断归属，同上一字段的
+        // 缺席语义；不许在这里编造或反查，宁缺毋假）。
+        imdbId: null,
       }],
     }
     return deps.runFindSubtitleTask(task)
