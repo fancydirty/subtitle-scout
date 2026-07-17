@@ -227,6 +227,42 @@ missing 220 排队消化中）；quota 打满行为未在本轮触发（配额�
 
 **胶水层修复 + 全仓语义考古 + 债务清算战役至此全部收官。dashboard 讨论与生产切换解冻。**
 
-## 四、裁决记录（Task 0.3 填写）
+## 八、dashboard 重建战役收官报告（F7 · 主控，2026-07-17）
 
-（待）
+**范围**：`78f8093..8df4a85`（18 commits：G1-G6 后端半场 + F0-F6 前端半场 + R2 双签修复两轮）。
+spec=2026-07-16-dashboard-rebuild-design.md；宪法=web/DESIGN.md；F0 裁决（采用 Astryx）落于计划文件。
+终态：root 84 文件/1357 测试 + web 21 文件/181 测试全绿，双侧 tsc 零错。
+
+### R1 北极星对照表（主控亲笔）
+
+| 北极星 | 判定 | 依据 |
+|---|---|---|
+| ① 判断归 agent，确定性检查不守门 | ✓ | dashboard 零新增门；settings 五键中仅 target_languages 被消费（配置非门）；hardsub/extras 只存取待救援官战役 |
+| ② 意图原文送达 | ✓ | redispatch 与 dispatch_find_subtitle_task 工具逐字段同形（identity 元组/taskType/seasons/includeThrottled），仅 reason 标注人工来源 |
+| ③ 颗粒=季/批 | ✓ | redispatch 剧级+seasons 数组，与 R-11 世界同构 |
+| ④ 机械层产出事实不产出指令 | ✓（R2 维度二"未能推翻"）| 全部端点=repo 直译聚合；receipts=trace_json 纯解析（截断诚实计 unparsed）；唯二写扳手 Rerun/claim=HITL 合法 |
+| ⑤ 拿不准就停车 | ✓ | 甄别台=停车事实呈现+人工认领，无自动裁决面 |
+| ⑥ 零误触发 | ✓ | dashboard 无 realign 扳手；重派仅 find_subtitle |
+
+### R2 复审双签（对抗审计官全项目复审）
+
+- **一轮 FAIL**（3 MAJOR / 8 MINOR / 6 NIT）：R2D-13 realign 痕迹缓冲永久泄漏+直播空转（审计官脚本实证——G3 复审漏掉的整条腿）；R2D-1+9 worker run 的 trace_json 在 UI 无入口+React key 撞车；R2D-5 无 token+0.0.0.0 下写面质变。
+- **修复轮**（91851fd）：traceBus 加 snapshotPrefix/peekPrefix（前缀带尾连字符防 job-420 误吞）、realign runs 补收官快照+全终局排空、recent DTO 加 id/seriesId→RunDetail 泛化（worker run 详情+回放+Rerun）、无 token 三行高声告警（**真站活体验证打印**）、清扫 R2D-6/8/10/11/12/17。
+- **二轮 PASS（有条件）**：三 MAJOR 全 CONFIRMED-FIXED、无新 MAJOR；条件项 R2D-18/19/20+残留 R2D-4 由主控亲修四刀（8df4a85）清零。
+- **主控改判落字**：R2D-5 不做 403 硬拒（保无 token 家用部署），连同 R2D-2（fs/list 裸机全盘枚举）归档进 **Sonarr 式单管理员鉴权立项**（发布前必做）；「pass 卡无 Rerun」维持——pass≠series，Rerun 语义挂 worker run 详情+Pending 行。
+
+### 真站腿（router 测试容器，串行窗口：停产→测试→复产，2026-07-17 午）
+
+- v12 迁移真库自动升级（schema 3→4）+ media_roots env 种子（4 根）✓；无 token 告警活体打印 ✓
+- **四 tab 真数据过目**：Library 海报墙（36 部/筛选 chip/覆盖角标）；Workflow 三泳道（The Rig 停牌行含真实原因+next recheck、passes 回执 chip `1 created·2 revived·19 coalesced·42 unparsed`、`110 parked · triage →` 入口）；甄别两箱（110 真停车+P6 存量认领）；Settings 三区+诚实效果注记逐条在场 ✓
+- **SSE 直播实锤**：真 worker（tmdb:112581）痕迹行从 1 条实时涨到 3 条（read_doc 2.7s→search_source 34.6s→30.3s）+蓝点 ✓
+- **三层格阵皇冠**：访问触发惰性 TMDB 目录刷新（canonical 0→6），S2 第 5 集渲染 dashed 磁盘缺档格，覆盖句自动升级"3/6 集——1 集停牌中，1 集磁盘缺档" ✓
+- 底线核查：视频文件零触碰、无关容器零触碰、生产容器窗口后复跑 ✓
+
+### 登记（债务与立项）
+
+- **鉴权立项（发布前必做）**：Sonarr 式单管理员 + R2D-5/R2D-2 归档（无 token 写面靠告警过渡）。
+- **债务**：target_languages 改后需重启（spec"即时生效"降级，UI 已如实标注）；trace_retention_days/scan_interval_ms 零消费（纯存取，UI 已标注）；receipts 解析受 resultSummary 200 字符截断（真站 42/64 unparsed——考虑 dispatch 工具结果加长 cap 或结构化回执面）；serveStatic 前缀穿越（战役前遗留，另立小修）；R2D-16 双 accent 同屏（真站看=可接受，暂维持）。
+- **生产切换**：生产容器仍跑 78f8093 dist 构建（无 dashboard）。切换=compose build 重建（用户过目本报告后择机执行）。
+
+**dashboard 重建战役至此收官。四 tab 真数据+SSE 直播+双签全绿，待用户过目。**
