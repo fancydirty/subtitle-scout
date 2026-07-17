@@ -79,7 +79,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     fsList: (path) => listMediaSubdirs(path),
     workflowPending: () => buildWorkflowPending(db, settingsRepo, Date.now()),
     workflowPasses: (limit) => buildWorkflowPasses(db, limit),
-    workflowWorkers: () => buildWorkflowWorkers(db),
+    workflowWorkers: () => buildWorkflowWorkers(db, Date.now()),
     // G2 遗留的惰性刷新触发点：命中一个真实存在的 series 时 fire-and-forget 踢一次
     // refreshSeriesCatalog（TTL 门在函数内部，无脑调用即可）——tmdb 缺席时跳过，不影响这个端点
     // 本身的同步返回；只在 detail 非 null（series 真存在）时才触发，避免对着不存在的 series id

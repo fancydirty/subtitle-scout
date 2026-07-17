@@ -576,7 +576,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
     const jobId = insertWorkerTaskJob(db, { seriesId: 's1', season: null, taskType: 'find_subtitle', state: 'searching', priority: 50, seasons: [1, 2] })
     traceBus.publish({ runKey: `job-${jobId}`, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: NOW })
 
-    const result = buildWorkflowWorkers(db)
+    const result = buildWorkflowWorkers(db, NOW)
     const running = result.running.find(r => r.jobId === jobId)!
     expect(running).toMatchObject({ seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: [1, 2] })
     expect(running.trail.map(e => e.tool)).toEqual(['search_source'])
@@ -584,7 +584,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
   })
 
   it('recent：非 orchestrate 的 runs 行，finished_at desc（beforeEach 已插入 no_safe_match/download 两条）', () => {
-    const result = buildWorkflowWorkers(db)
+    const result = buildWorkflowWorkers(db, NOW)
     expect(result.recent.map(r => r.decision)).toEqual(['download', 'no_safe_match'])
   })
 
@@ -593,7 +593,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
   // （Rerun 按钮判断是否可用）。beforeEach 里的两条 runs 都挂在 kind='series_season'、
   // series_id='s1' 的 job 上。
   it('recent：每行带 runs.id 与该 job 的 seriesId/movieId（LEFT JOIN jobs）', () => {
-    const result = buildWorkflowWorkers(db)
+    const result = buildWorkflowWorkers(db, NOW)
     expect(result.recent.every(r => typeof r.id === 'number')).toBe(true)
     // 两条 id 各不相同（各自一行 runs，不是同一行重复出现）
     expect(new Set(result.recent.map(r => r.id)).size).toBe(result.recent.length)
@@ -605,7 +605,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
       `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path)
        VALUES (NULL, ?, ?, 'error', 'no job', '/j/orphan/decision.json')`
     ).run(NOW - 500, NOW - 400)
-    const result = buildWorkflowWorkers(db)
+    const result = buildWorkflowWorkers(db, NOW)
     const orphan = result.recent.find(r => r.jobId === null)!
     expect(orphan).toMatchObject({ seriesId: null, movieId: null })
   })
@@ -620,7 +620,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
     // 单一 runKey `job-${jobId}`（没有子集号）不该混进来干扰断言，但也不该被 peekPrefix 漏掉的
     // 相邻 job 前缀污染——这里只发子集事件，验证 peekPrefix 真的把两条都收拢。
 
-    const result = buildWorkflowWorkers(db)
+    const result = buildWorkflowWorkers(db, NOW)
     const running = result.running.find(r => r.jobId === jobId)!
     expect(running.taskType).toBe('realign')
     expect(running.trail.map(e => e.tool)).toEqual(['search_source', 'get_candidate'])
@@ -632,16 +632,59 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
     const jobId = insertWorkerTaskJob(db, { seriesId: 's3', season: null, taskType: 'find_subtitle', state: 'searching', priority: 50 })
     traceBus.publish({ runKey: `job-${jobId}`, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: NOW })
 
-    const result = buildWorkflowWorkers(db)
+    const result = buildWorkflowWorkers(db, NOW)
     const running = result.running.find(r => r.jobId === jobId)!
     expect(running.trail.map(e => e.tool)).toEqual(['search_source'])
 
     traceBus.snapshot(`job-${jobId}`)
   })
 
-  it('空库：running/recent 皆空数组', () => {
+  it('空库：running/recent 皆空数组、installedLast24h=0', () => {
     const freshDb = openDb(':memory:')
-    expect(buildWorkflowWorkers(freshDb)).toEqual({ running: [], recent: [] })
+    expect(buildWorkflowWorkers(freshDb, NOW)).toEqual({ running: [], recent: [], installedLast24h: 0 })
+  })
+
+  // 验收修复轮一 Task V3（design §B）：recent 行的剧名/片名——LEFT JOIN series/movies 取 name，
+  // 空名（P6 认领占位/尚未富化）诚实降级为 null，不假装有名字。
+  it('recent：行带 seriesName/movieName（LEFT JOIN series/movies 取 name，空名→null）', () => {
+    // beforeEach 的两条 runs 挂在 series_id='s1' 的 job 上，s1.name='Series A'。
+    const withSeriesName = buildWorkflowWorkers(db, NOW)
+    expect(withSeriesName.recent.every(r => r.seriesName === 'Series A' && r.movieName === null)).toBe(true)
+
+    // 空名剧（P6 认领占位式）——诚实降级为 null，不原样吐空串。
+    lib.upsertSeries({ id: 's-empty', name: '' })
+    const emptyJobId = insertJob(db, { kind: 'series_season', seriesId: 's-empty', season: 1, state: 'wanted', priority: 0 })
+    insertRun(db, emptyJobId, NOW - 300, 'installed', 'empty name series')
+    const result = buildWorkflowWorkers(db, NOW)
+    const emptyRow = result.recent.find(r => r.jobId === emptyJobId)!
+    expect(emptyRow.seriesName).toBeNull()
+
+    // movie 目标：LEFT JOIN movies 取 name（beforeEach 已占用 m1 的 jobs_identity 身份，这里
+    // 新开一部电影避免撞车）。
+    lib.upsertMovie({ id: 'm2', name: 'Movie Y', path: '/media/movies/Movie Y/y.mkv', subStatus: 'missing' })
+    const movieJobId = insertJob(db, { kind: 'movie', movieId: 'm2', state: 'wanted', priority: 0 })
+    insertRun(db, movieJobId, NOW - 200, 'installed', 'movie installed')
+    const movieResult = buildWorkflowWorkers(db, NOW)
+    const movieRow = movieResult.recent.find(r => r.jobId === movieJobId)!
+    expect(movieRow).toMatchObject({ seriesName: null, movieName: 'Movie Y' })
+  })
+
+  // installedLast24h：runs 里 decision='installed' 且 finished_at > now-86400e3 的计数——独立
+  // COUNT 查询，now 由调用方传入（沿 buildWorkflowPending 的既有 now 传参先例）。
+  it('installedLast24h：仅计入 24h 窗口内 decision=installed 的行，窗口外/其它 decision 不计', () => {
+    const dayMs = 86_400_000
+    // season: 2（beforeEach 已占用 season 1 的 jobs_identity 身份，这里避免撞车）
+    const jobId = insertJob(db, { kind: 'series_season', seriesId: 's1', season: 2, state: 'wanted', priority: 0 })
+    // 窗口内两条 installed
+    insertRun(db, jobId, NOW - 1000, 'installed', 'in window 1')
+    insertRun(db, jobId, NOW - 2000, 'installed', 'in window 2')
+    // 窗口外一条 installed（超过 24h）
+    insertRun(db, jobId, NOW - dayMs - 5000, 'installed', 'outside window')
+    // 窗口内但非 installed
+    insertRun(db, jobId, NOW - 1500, 'no_safe_match', 'in window but not installed')
+
+    const result = buildWorkflowWorkers(db, NOW)
+    expect(result.installedLast24h).toBe(2)
   })
 })
 

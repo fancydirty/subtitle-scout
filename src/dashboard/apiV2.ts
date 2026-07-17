@@ -843,10 +843,21 @@ export interface WorkflowRecentRunDTO {
   /** R2D-1：同 seriesId，movie_id（find_subtitle 的 movie 目标）——目前只用于展示，Rerun 只认
    *  seriesId。 */
   movieId: string | null
+  /** 验收修复轮一 Task V3（design §B）：seriesId 对应行的 series.name（LEFT JOIN series）——
+   *  Workflow 叙事化用它替换裸 tmdb id 呈现（"Searching subtitles for {seriesName}"式人话
+   *  句）。空名（P6 认领占位/尚未富化的 ''）诚实降级为 null，不假装有名字；seriesId 为 null 时
+   *  同样为 null。 */
+  seriesName: string | null
+  /** 同 seriesName，movieId 对应行的 movies.name（LEFT JOIN movies）。 */
+  movieName: string | null
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]
   recent: WorkflowRecentRunDTO[]
+  /** 验收修复轮一 Task V3（design §B）：顶部总览句"N episodes installed in the last 24h"的
+   *  数据源——runs 里 decision='installed' 且 finished_at > now-86400e3 的计数，独立 COUNT
+   *  查询（一句 SQL）。now 由调用方传入（沿 buildWorkflowPending 的既有 now 传参先例）。 */
+  installedLast24h: number
 }
 
 /** worker_task 的 payload JSON 里取 taskType/seasons——容错解析（同 buildLibrary 对 worker_task
@@ -865,10 +876,19 @@ function parseWorkerTaskPayload(payload: string | null): { taskType: string | nu
   }
 }
 
+/** 空字符串（P6 认领占位/尚未富化的 name 列）诚实降级为 null——同 sectionForItem 一带的
+ *  "已知债务如实标注"口径，不假装一个空名剧/空名片有名字。 */
+function nullIfEmpty(name: string | null): string | null {
+  return name != null && name !== '' ? name : null
+}
+
 /** GET /api/v2/workflow/workers：running=jobs 里 state='searching' 且 kind='worker_task' 的
  *  跑中行（附 traceBus.peek 直播补拉）；recent=非 orchestrate 的 runs 行（find_subtitle/realign
- *  worker 各自产出的收工记录），finished_at 降序 limit 20。 */
-export function buildWorkflowWorkers(db: ScoutDb): WorkflowWorkersDTO {
+ *  worker 各自产出的收工记录，附 LEFT JOIN series/movies 取的 name，供 Workflow 叙事化的人话句
+ *  使用），finished_at 降序 limit 20；installedLast24h=独立 COUNT 查询，验收修复轮一 Task V3
+ *  （design §B）：顶部总览句"N episodes installed in the last 24h"的数据源。now 由调用方传入
+ *  （沿 buildWorkflowPending 的既有 now 传参先例）。 */
+export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersDTO {
   const runningRows = db
     .prepare(
       `SELECT id, series_id, movie_id, payload, updated_at FROM jobs
@@ -894,24 +914,36 @@ export function buildWorkflowWorkers(db: ScoutDb): WorkflowWorkersDTO {
   // R2D-1（R2 复审）：worker run 详情入口需要 runs.id（身份键）+ 该行所属 job 的 series_id/
   // movie_id（Rerun 按钮判据）——LEFT JOIN（不是 JOIN）：job_id 为 NULL 或指向的 job 行已不存在
   // 时该行仍要出现在 recent 里，只是 seriesId/movieId 降级 null，不能因为关联缺失就整行消失。
+  // 验收修复轮一 Task V3（design §B）：再 LEFT JOIN series/movies 取 name——同样的"缺失不删行、
+  // 降级为 null"口径，series_id/movie_id 本身为 NULL，或指向的行不存在/name 是空串占位，都不该
+  // 让整行 recent 消失或假装有名字。
   const recentRows = db
     .prepare(
       `SELECT r.id AS id, r.job_id AS job_id, r.decision AS decision, r.detail AS detail,
-              r.finished_at AS finished_at, j.series_id AS series_id, j.movie_id AS movie_id
+              r.finished_at AS finished_at, j.series_id AS series_id, j.movie_id AS movie_id,
+              s.name AS series_name, m.name AS movie_name
        FROM runs r LEFT JOIN jobs j ON r.job_id = j.id
+       LEFT JOIN series s ON j.series_id = s.id
+       LEFT JOIN movies m ON j.movie_id = m.id
        WHERE r.decision IS NULL OR r.decision != 'orchestrate'
        ORDER BY r.finished_at DESC LIMIT 20`
     )
     .all() as {
       id: number; job_id: number | null; decision: string | null; detail: string | null
       finished_at: number | null; series_id: string | null; movie_id: string | null
+      series_name: string | null; movie_name: string | null
     }[]
   const recent: WorkflowRecentRunDTO[] = recentRows.map((r) => ({
     id: r.id, jobId: r.job_id, decision: r.decision, detail: r.detail, finishedAt: r.finished_at,
     seriesId: r.series_id, movieId: r.movie_id,
+    seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
   }))
 
-  return { running, recent }
+  const installedRow = db
+    .prepare(`SELECT COUNT(*) AS c FROM runs WHERE decision = 'installed' AND finished_at > ?`)
+    .get(now - 86_400_000) as { c: number }
+
+  return { running, recent, installedLast24h: installedRow.c }
 }
 
 // ---- workflow/runs/:id/trace（dashboard-F4 后端例外口子：单 run 痕迹快照回放）----

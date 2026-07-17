@@ -172,10 +172,17 @@ export interface WorkflowRecentRunDTO {
   finishedAt: number | null
   seriesId: string | null
   movieId: string | null
+  /** 验收修复轮一 Task V3：seriesId 对应行的 series.name（LEFT JOIN），空名/未富化诚实降级
+   *  为 null——Workflow 叙事化的人话句用它替换裸 tmdb id。 */
+  seriesName: string | null
+  /** 同 seriesName，movieId 对应行的 movies.name。 */
+  movieName: string | null
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]
   recent: WorkflowRecentRunDTO[]
+  /** 验收修复轮一 Task V3：顶部总览句"N episodes installed in the last 24h"的数据源。 */
+  installedLast24h: number
 }
 
 /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace 响应体——单 run 痕迹快照回放
