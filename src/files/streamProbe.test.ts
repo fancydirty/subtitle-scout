@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { existsSync } from 'node:fs'
 import type { execFile } from 'node:child_process'
 import { path as ffprobeStaticPath } from 'ffprobe-static'
-import { probeEmbeddedSubtitles } from './streamProbe.js'
+import { probeEmbeddedSubtitles, probeDurationSec } from './streamProbe.js'
 
 /** Builds a fake execFileImpl that resolves/rejects like node:child_process's execFile
  *  callback form (error, stdout, stderr) — real signature is overloaded to the point of being
@@ -148,6 +148,45 @@ describe('probeEmbeddedSubtitles', () => {
         expect(seenBin).toBe('/interop/ffprobe')
       })
     })
+  })
+})
+
+describe('probeDurationSec', () => {
+  it('returns floor(duration) from format.duration string', async () => {
+    const execFileImpl = fakeExecFile(() => ({
+      stdout: JSON.stringify({ format: { duration: '123.456789' } }),
+    }))
+    const result = await probeDurationSec('/media/movie.mkv', { execFileImpl })
+    expect(result).toBe(123)
+  })
+
+  it('returns null on malformed stdout', async () => {
+    const execFileImpl = fakeExecFile(() => ({ stdout: 'not json' }))
+    const result = await probeDurationSec('/media/movie.mkv', { execFileImpl })
+    expect(result).toBeNull()
+  })
+
+  it('returns null when execFileImpl throws ENOENT', async () => {
+    const enoent = Object.assign(new Error('spawn ffprobe ENOENT'), { code: 'ENOENT' })
+    const execFileImpl = fakeExecFile(() => ({ error: enoent }))
+    const result = await probeDurationSec('/media/movie.mkv', { execFileImpl })
+    expect(result).toBeNull()
+  })
+
+  it('returns null when format.duration is absent', async () => {
+    const execFileImpl = fakeExecFile(() => ({
+      stdout: JSON.stringify({ format: { filename: '/media/movie.mkv' } }),
+    }))
+    const result = await probeDurationSec('/media/movie.mkv', { execFileImpl })
+    expect(result).toBeNull()
+  })
+
+  it('returns null when format.duration is non-numeric', async () => {
+    const execFileImpl = fakeExecFile(() => ({
+      stdout: JSON.stringify({ format: { duration: 'N/A' } }),
+    }))
+    const result = await probeDurationSec('/media/movie.mkv', { execFileImpl })
+    expect(result).toBeNull()
   })
 })
 

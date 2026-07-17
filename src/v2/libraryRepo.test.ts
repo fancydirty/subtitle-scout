@@ -474,6 +474,17 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       lib.clearParkedPath('/a')
       expect(lib.listParkedPaths()).toEqual([])
     })
+
+    it('updateParkReason 改写 reason/last_attempt；行不存在=空操作', () => {
+      lib.upsertParkedPath('/a', 'r1', 1000)
+      lib.updateParkReason('/a', 'agent still unsure', 2000)
+      expect(lib.listParkedPaths()).toEqual([
+        { path: '/a', park_reason: 'agent still unsure', first_seen: 1000, last_attempt: 2000 },
+      ])
+      // 不存在的行：不抛错、不影响表。
+      lib.updateParkReason('/nope', 'whatever', 3000)
+      expect(lib.listParkedPaths()).toHaveLength(1)
+    })
   })
 
   describe('identify_overrides', () => {

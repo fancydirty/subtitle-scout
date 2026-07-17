@@ -633,6 +633,12 @@ export class LibraryRepo {
     this.db.prepare(`DELETE FROM parked_paths WHERE path = ?`).run(path)
   }
 
+  /** 救援R1：改写停车理由（agent keep_parked 的人话理由 / excluded-extra 裁决落档）。
+   *  行不存在=无事发生（幽灵防御：收割时文件可能已被认领退户口）。 */
+  updateParkReason(path: string, reason: string, now: number): void {
+    this.db.prepare(`UPDATE parked_paths SET park_reason = ?, last_attempt = ? WHERE path = ?`).run(reason, now, path)
+  }
+
   /** P6 救援页读取；first_seen DESC——挂得最久的排最前，救援优先级天然对齐。 */
   listParkedPaths(): ParkedPath[] {
     return this.db

@@ -19,6 +19,17 @@ interface FfprobeStream {
   tags?: { language?: string }
 }
 
+interface FfprobeShowFormatOutput {
+  format?: { duration?: string }
+}
+
+function isFfprobeShowFormatOutput(value: unknown): value is FfprobeShowFormatOutput {
+  if (typeof value !== 'object' || value === null) return false
+  const format = (value as { format?: unknown }).format
+  if (typeof format !== 'object' || format === null) return false
+  return typeof (format as { duration?: unknown }).duration === 'string'
+}
+
 interface FfprobeShowStreamsOutput {
   streams: FfprobeStream[]
 }
@@ -129,4 +140,60 @@ export async function probeEmbeddedSubtitles(
     codec: stream.codec_name ?? null,
     isImageBased: IMAGE_BASED_CODECS.has(stream.codec_name ?? ''),
   }))
+}
+
+/**
+ * 探测一个视频文件的时长（ffprobe `-show_format -print_format json`）。
+ *
+ * 二进制解析顺序与 probeEmbeddedSubtitles 完全一致：`opts.ffprobePath` →
+ * `process.env.FFPROBE_PATH` → 懒加载 `import('ffprobe-static')`。任何失败（二进制
+ * 缺席、spawn 失败、JSON 解析失败、无 duration 字段或 duration 非有效数值）一律
+ * 降级为 null——备料是增益，不阻塞后续流程。
+ *
+ * 返回值：向下取整后的秒数，失败时 null。 */
+export async function probeDurationSec(
+  videoPath: string,
+  opts?: {
+    ffprobePath?: string
+    timeoutMs?: number
+    execFileImpl?: typeof nodeExecFile
+    /** 测试专用注入：顶替懒加载的 `import('ffprobe-static')`，绕开模块级缓存。 */
+    importFfprobeStatic?: () => Promise<unknown>
+  },
+): Promise<number | null> {
+  const bin = opts?.ffprobePath
+    ?? process.env.FFPROBE_PATH
+    ?? (opts?.importFfprobeStatic
+      ? await resolveFfprobeStaticPathWith(opts.importFfprobeStatic)
+      : await resolveFfprobeStaticPath())
+  if (bin === null) return null
+
+  const impl = opts?.execFileImpl ?? nodeExecFile
+  const timeout = opts?.timeoutMs ?? 15000
+
+  let stdout: string
+  try {
+    stdout = await execFileAsync(
+      impl,
+      bin,
+      ['-v', 'quiet', '-print_format', 'json', '-show_format', videoPath],
+      { timeout },
+    )
+  } catch {
+    return null
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return null
+  }
+
+  if (!isFfprobeShowFormatOutput(parsed)) return null
+  const duration = parsed.format!.duration
+  if (typeof duration !== 'string') return null
+  const seconds = parseFloat(duration)
+  if (!Number.isFinite(seconds) || seconds < 0) return null
+  return Math.floor(seconds)
 }
