@@ -38,6 +38,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
     expect(tally.dashed).toBe(2)
     expect(tally.covered).toBe(4)
     expect(tally.missing).toBe(2)
+    expect(tally.hardsub).toBe(0)
     expect(tally.throttled).toBe(0)
     expect(tally.error).toBe(0)
 
@@ -83,6 +84,24 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
     })
     const states = buildGridCells(s, NOW).map((c) => c.state)
     expect(states).toEqual<EpisodeCellState[]>(['covered', 'covered'])
+  })
+
+  it('hardsub-assumed → hardsub，且计入 covered 分子', () => {
+    const s = season({
+      canonical: [{ episode: 1, title: 'E1' }],
+      onDisk: [
+        {
+          episode: 1, path: '/m/e1.mkv', subStatus: 'hardsub-assumed',
+          statusReason: 'video stream has Chinese hard subtitles', recheckAfter: null,
+        },
+      ],
+    })
+    const cells = buildGridCells(s, NOW)
+    expect(cells[0].state).toBe('hardsub')
+
+    const tally = tallyGridCells(cells)
+    expect(tally.hardsub).toBe(1)
+    expect(tally.covered).toBe(1)
   })
 
   it('未知 sub_status → error（红点，谨慎兜底，不静默吞掉数据异常）', () => {

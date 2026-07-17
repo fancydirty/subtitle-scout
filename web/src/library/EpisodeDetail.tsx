@@ -32,6 +32,7 @@ export function EpisodeDetail({ season, cell, coverage, onClose }: Props) {
 
   const episodeLabel = `S${String(season).padStart(2, '0')}E${String(cell.episode).padStart(2, '0')}`
   const episodeCoverage = coverage.filter((c) => c.episode === cell.episode)
+  const isHardsubAssumed = cell.onDisk?.subStatus === 'hardsub-assumed'
 
   return (
     <div className="library-detail-panel" role="dialog" aria-label={episodeLabel}>
@@ -77,7 +78,11 @@ export function EpisodeDetail({ season, cell, coverage, onClose }: Props) {
               <Text type="supporting" color="secondary">
                 {t('library_detail_subtitles_heading')}
               </Text>
-              {episodeCoverage.length === 0 ? (
+              {isHardsubAssumed ? (
+                <Text type="body" color="secondary">
+                  {t('library_detail_hardsub_assumed')}
+                </Text>
+              ) : episodeCoverage.length === 0 ? (
                 <Text type="body" color="secondary">
                   {t('library_detail_no_subtitles')}
                 </Text>

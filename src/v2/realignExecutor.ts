@@ -286,6 +286,10 @@ export function makeRealignRunEpisode(
       // A4: primary configured target language (TARGET_LANGUAGES[0], wired by cli/index.ts);
       // multi-language per-item tasking is future work.
       targetLanguage: deps.targetLanguage ?? 'zh',
+      // 救援R5：realign 的字幕先行固定 'off'——这是长驻闭包（watch 启动时构造一次，不像
+      // orchestrator 的 find_subtitle 派发那样每次新鲜读 settings），且这里的目标文件正在被
+      // realign 重排/搬移，不是稳定存量场景，hardsub-assumed 判断的价值本就不适用这条路径。
+      hardsubMode: 'off',
       targets: [{
         itemId: ctx.itemId,
         videoPath: ctx.videoPath,

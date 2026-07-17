@@ -63,13 +63,11 @@ describe('BehaviorSection：null 值默认占位', () => {
     const scanInterval = screen.getByRole('spinbutton', { name: 'Scan interval (ms)' })
     expect(scanInterval).toHaveAttribute('placeholder', '900000')
 
-    // exclude_extras 已随救援官战役落地生效，使用"下一轮扫描生效"注记（与 target_languages 同款）；
-    // hardsub_mode 执行逻辑仍未落地，保留救援官注记。
     expect(
       screen.getAllByText('Takes effect on the next library scan.'),
     ).toHaveLength(2)
     expect(
-      screen.getByText('Saved, but the execution logic ships with the rescue-officer campaign — not consumed yet.'),
+      screen.getByText('Takes effect on the next dispatched find-subtitle task.'),
     ).toBeInTheDocument()
     expect(
       screen.getByText('Takes effect at the daily trace cleanup.'),

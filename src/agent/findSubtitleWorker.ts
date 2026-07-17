@@ -63,7 +63,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const stagedFiles = new Map<string, string>()
     // A5: the judgment playbook is parameterized by the task's target language (Chinese keeps
     // the canonical Hans/Hant-equivalence wording; other languages get language-neutral text).
-    const skill = makeFindSubtitleSkill(task.targetLanguage)
+    const skill = makeFindSubtitleSkill(task.targetLanguage, task.hardsubMode)
 
     const tools = {
       read_doc: makeReadDocTool([skill]),

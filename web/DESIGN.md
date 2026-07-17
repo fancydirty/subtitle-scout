@@ -39,6 +39,7 @@
 | ink 失效 | `--color-text-disabled` | `#4b5563` |
 | accent | `--color-accent` | `#a3e635`（lime） |
 | 成功 | `--color-text-green` | `#28bf5c` |
+| 硬字幕假定 | `color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%)`（灰绿间调，非新 token——defineTheme 的 TokenName 是第三方设计系统封闭枚举） | 混合色 |
 | 警示 | `--color-text-orange` | `#e8a33d` |
 | 错误 | `--color-text-red` | `#e11d48` |
 

@@ -397,7 +397,17 @@ async function cmdWatch() {
         // 债务D5：targetLanguage 同 mediaRoots 在每次派发时新鲜读取——设置页改 target_languages
         // 后被 claim 的 find_subtitle 任务立即生效。
         await runFindSubtitleWorkerTask(
-          job, { ...findSubtitleWorkerTaskDeps, mediaRoots: currentRoots(), targetLanguage: languagesNow().targetLanguages[0], runTask }, jobs, () => Date.now(),
+          job, {
+            ...findSubtitleWorkerTaskDeps, mediaRoots: currentRoots(),
+            targetLanguage: languagesNow().targetLanguages[0],
+            // 救援R5：hardsub_mode 同 targetLanguage 的既有先例——每次派发新鲜读取，脏值/未设置
+            // 降级 'off'（同 ingest 侧 buildIngestPass 调用点的同款判定逻辑）。
+            hardsubMode: (() => {
+              const v = settingsRepo.get('hardsub_mode')
+              return v === 'agent' || v === 'aggressive' ? v : 'off'
+            })(),
+            runTask,
+          }, jobs, () => Date.now(),
         )
       } else if (payload.taskType === 'realign') {
         // 清算波 R-6（F15）：realignDeps 恒非空（tmdb 已在函数顶部硬前置，见 realignDeps 构造处

@@ -54,9 +54,11 @@ export const en = {
   library_detail_close_label: 'Close episode details',
   library_detail_file_heading: 'File',
   library_detail_subtitles_heading: 'Subtitles',
+  library_detail_hardsub_assumed: 'covered (hardsub assumed)',
 
   // 格阵图例。
   library_legend_covered: 'covered',
+  library_legend_hardsub: 'hardsub assumed',
   library_legend_missing: 'missing',
   library_legend_throttled: 'throttled',
   library_legend_dashed: 'not on disk',
@@ -183,6 +185,7 @@ export const en = {
   settings_hardsub_mode_option_off: 'Off',
   settings_hardsub_mode_option_agent: 'Agent',
   settings_hardsub_mode_option_aggressive: 'Aggressive',
+  settings_hardsub_mode_note: 'Takes effect on the next dispatched find-subtitle task.',
   settings_exclude_extras_label: 'Exclude extras',
   // 救援R4c：exclude_extras 已被 ingest 消费，独立"下一轮扫描生效"注记（hardsub_mode 仍共用救援官注记）。
   settings_exclude_extras_restart_note: 'Takes effect on the next library scan.',

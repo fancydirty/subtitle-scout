@@ -11,7 +11,7 @@
 //   dashed    canonical 有但磁盘没有对应集——三层合成的核心呈现，不计入上述任何一态
 import type { LibraryCanonicalEpisodeDTO, LibraryOnDiskEpisodeDTO, LibrarySeasonDTO } from '../api/types.js'
 
-export type EpisodeCellState = 'covered' | 'missing' | 'throttled' | 'error' | 'dashed'
+export type EpisodeCellState = 'covered' | 'hardsub' | 'missing' | 'throttled' | 'error' | 'dashed'
 
 export interface GridCell {
   episode: number
@@ -29,6 +29,8 @@ function classifyOnDisk(ep: LibraryOnDiskEpisodeDTO, now: number): Exclude<Episo
     case 'embedded':
     case 'ignored':
       return 'covered'
+    case 'hardsub-assumed':
+      return 'hardsub'
     case 'unavailable':
       return ep.recheckAfter != null && ep.recheckAfter > now ? 'throttled' : 'missing'
     case 'missing':
@@ -69,6 +71,7 @@ export function isCanonicalPending(season: LibrarySeasonDTO): boolean {
 
 export interface SeasonTally {
   covered: number
+  hardsub: number
   missing: number
   throttled: number
   error: number
@@ -77,7 +80,29 @@ export interface SeasonTally {
 }
 
 export function tallyGridCells(cells: GridCell[]): SeasonTally {
-  const t: SeasonTally = { covered: 0, missing: 0, throttled: 0, error: 0, dashed: 0, total: cells.length }
-  for (const c of cells) t[c.state]++
+  const t: SeasonTally = { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, total: cells.length }
+  for (const c of cells) {
+    switch (c.state) {
+      case 'covered':
+        t.covered++
+        break
+      case 'hardsub':
+        t.hardsub++
+        t.covered++
+        break
+      case 'missing':
+        t.missing++
+        break
+      case 'throttled':
+        t.throttled++
+        break
+      case 'error':
+        t.error++
+        break
+      case 'dashed':
+        t.dashed++
+        break
+    }
+  }
   return t
 }

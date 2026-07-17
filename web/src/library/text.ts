@@ -29,6 +29,9 @@ export function seasonCoverageSentence(season: number, tally: SeasonTally, lang:
   if (tally.dashed > 0) {
     clauseParts.push(lang === 'zh' ? `${tally.dashed} 集磁盘缺档` : `${tally.dashed} files missing on disk`)
   }
+  if (tally.hardsub > 0) {
+    clauseParts.push(lang === 'zh' ? `${tally.hardsub} 集硬字幕假定` : `${tally.hardsub} hardsub assumed`)
+  }
   const clause = clauseParts.length > 0 ? clauseParts.join(lang === 'zh' ? '，' : ', ') : null
 
   return { prefix, emphasis, suffix, clause }

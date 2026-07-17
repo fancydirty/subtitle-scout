@@ -4,7 +4,7 @@ import { seasonCoverageSentence, formatResultCount, formatDuration } from './tex
 import type { SeasonTally } from './episodeState.js'
 
 function tally(p: Partial<SeasonTally>): SeasonTally {
-  return { covered: 0, missing: 0, throttled: 0, error: 0, dashed: 0, total: 0, ...p }
+  return { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, total: 0, ...p }
 }
 
 describe('seasonCoverageSentence', () => {
@@ -36,6 +36,16 @@ describe('seasonCoverageSentence', () => {
   it('只有 throttled 时 clause 只报那一项', () => {
     const s = seasonCoverageSentence(1, tally({ throttled: 1 }), 'en')
     expect(s.clause).toBe('1 throttled')
+  })
+
+  it('hardsub assumed 非零时拼进 clause（英文）', () => {
+    const s = seasonCoverageSentence(1, tally({ covered: 24, total: 28, hardsub: 3 }), 'en')
+    expect(s.clause).toBe('3 hardsub assumed')
+  })
+
+  it('hardsub assumed 非零时拼进 clause（中文）', () => {
+    const s = seasonCoverageSentence(1, tally({ covered: 24, total: 28, hardsub: 3 }), 'zh')
+    expect(s.clause).toBe('3 集硬字幕假定')
   })
 })
 

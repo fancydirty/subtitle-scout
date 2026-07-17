@@ -281,7 +281,7 @@ describe('makeRealignRunEpisode', () => {
         installedPath: '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.zh.srt',
         installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: '1', reason: 'ok',
       }],
-      no_safe_match: [], retry_later: [],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
     }
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedTask = task
@@ -320,7 +320,7 @@ describe('makeRealignRunEpisode', () => {
     let capturedMediaRoot = ''
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedMediaRoot = task.mediaRoot
-      return { installed: [], no_safe_match: [{ itemId: ctx.itemId, reason: 'x' }], retry_later: [] }
+      return { installed: [], no_safe_match: [{ itemId: ctx.itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
 
@@ -852,7 +852,7 @@ describe('executeRealign（顶层编排，集成）', () => {
         videoOnDisk: existsSync(ctx.videoPath),
       })
       writeFileSync(ctx.videoPath.replace(/\.mkv$/, '.zh.srt'), 'subtitle') // 管线写 sidecar
-      return { installed: [], no_safe_match: [], retry_later: [] }
+      return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
     })
     const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
       runEpisode: runEpisode as never, tmdb: { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 3, airDate: null }]) },
@@ -982,7 +982,7 @@ describe('executeRealign（顶层编排，集成）', () => {
     const capturedTasks: FindSubtitleTask[] = []
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedTasks.push(task)
-      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [] }
+      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
     const getDetails = vi.fn(async () => ({
@@ -1025,7 +1025,7 @@ describe('executeRealign（顶层编排，集成）', () => {
     const capturedTasks: FindSubtitleTask[] = []
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedTasks.push(task)
-      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [] }
+      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
     const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {

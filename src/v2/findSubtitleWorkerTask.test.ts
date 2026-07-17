@@ -421,9 +421,9 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
   })
 })
 
-/** FindSubtitleBatchReport 构造 helper：三桶默认皆空，测试按需覆写。 */
+/** FindSubtitleBatchReport 构造 helper：四桶默认皆空，测试按需覆写。 */
 function report(over: Partial<FindSubtitleBatchReport> = {}): FindSubtitleBatchReport {
-  return { installed: [], no_safe_match: [], retry_later: [], ...over }
+  return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], ...over }
 }
 
 function installedItem(itemId: string, over: Partial<FindSubtitleInstalledItem> = {}): FindSubtitleInstalledItem {
@@ -573,6 +573,61 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
     expect(jobsRepo.get(job.id)!.state).toBe('done')
+  })
+
+  // 救援R5：hardsub_assumed 是 agent 档的正面判决——markHardsubAssumed 落 sub_status，不进
+  // markUnavailable 的内容退避阶梯（search_attempts/recheck_after 都不动）。
+  it('hardsub_assumed: 批量逐项 markHardsubAssumed（不进退避阶梯），job 走 completeDone', async () => {
+    const { lib, jobsRepo, job, episodeIds } = setupBatch(2)
+    const runTask = vi.fn(async () => report({
+      hardsub_assumed: episodeIds.map((id) => unresolvedItem(id, '发布组标记+搜索已穷尽')),
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    for (const id of episodeIds) {
+      const ep = lib.getEpisode(id)!
+      expect(ep.sub_status).toBe('hardsub-assumed')
+      expect(ep.status_reason).toBe('发布组标记+搜索已穷尽')
+      // 不进退避阶梯——search_attempts 不动（初始 0），不像 markUnavailable 那样 +1。
+      expect(ep.search_attempts).toBe(0)
+      expect(ep.recheck_after).toBeNull()
+    }
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+  })
+
+  it('installed + hardsub_assumed 混合桶：两边各自入账，job 仍 completeDone', async () => {
+    const { lib, jobsRepo, job, episodeIds } = setupBatch(2)
+    const [installedId, hardsubId] = episodeIds
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(installedId)],
+      hardsub_assumed: [unresolvedItem(hardsubId, 'x')],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(lib.getEpisode(installedId)!.sub_status).toBe('covered')
+    expect(lib.getEpisode(hardsubId)!.sub_status).toBe('hardsub-assumed')
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+  })
+
+  it('hardsub_assumed 桶里的幻觉 itemId 被 dropAlien 丢弃，不入账、不炸', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const alienId = 'tmdb:999/s9e9'
+    const runTask = vi.fn(async () => report({
+      hardsub_assumed: [unresolvedItem(alienId, 'x')],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(lib.getEpisode(alienId)).toBeNull()
+    // 全空批（幻觉被丢弃后四桶皆空）→ error 收尾，不是 completeDone。
+    expect(jobsRepo.get(job.id)!.state).toBe('failed')
+    errorSpy.mockRestore()
   })
 
   // A2: markCovered's language fallback used to be a hardcoded 'zh-Hans' no matter the task's
@@ -812,6 +867,23 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       expect(rows[0].decision).toBe('retry_later')
       // R-3: runs 的 retry_later 行按桶记 itemId 清单（同 installed/no_safe_match 的记法一致），
       // 具体 reason 落在 jobs.last_error（completeError 那条消息）里，不是 runs.detail 的职责。
+      expect(rows[0].detail).toContain(SHOW_EPISODE_ID)
+    })
+
+    // 救援R5：hardsub_assumed 桶同 installed/no_safe_match/retry_later 的记法一致——非空即记一行。
+    it('hardsub_assumed: writes one runs row with decision "hardsub_assumed" and a detail containing the itemId', async () => {
+      const { lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => report({
+        hardsub_assumed: [unresolvedItem(SHOW_EPISODE_ID, '发布组标记+搜索已穷尽')],
+      }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].decision).toBe('hardsub_assumed')
       expect(rows[0].detail).toContain(SHOW_EPISODE_ID)
     })
 

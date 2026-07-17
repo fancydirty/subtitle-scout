@@ -58,6 +58,9 @@ export interface FindSubtitleTask {
   /** BCP-47 primary language code for the subtitle to find, e.g. 'zh'/'en'. Interpolated into the
    *  worker prompt via languageName() (see languages.ts). */
   targetLanguage: string
+  /** 救援R5：hardsub_mode 透传给 skill 决定是否教模型用第四桶。派发时新鲜读取（同
+   *  targetLanguage 的既有先例——见 cli/index.ts handleWorkerTask find_subtitle 分支）。 */
+  hardsubMode: 'off' | 'agent' | 'aggressive'
   /** ≥1. List order is fact-list order (episode ascending), not an execution-order instruction. */
   targets: FindSubtitleTargetFact[]
 }
@@ -84,6 +87,10 @@ export const FindSubtitleBatchReportSchema = z.object({
   installed: tolerantArray(FindSubtitleInstalledItemSchema),
   no_safe_match: tolerantArray(FindSubtitleUnresolvedItemSchema),
   retry_later: tolerantArray(FindSubtitleUnresolvedItemSchema),
+  /** 救援R5：hardsub_mode='agent' 时 skill 教模型用这桶——目标已判定"字幕烧录进画面本身，
+   *  不需要外挂"。'off'/'aggressive' 模式下 skill 文字不提这个概念，模型不会主动填它，但
+   *  schema 层不按模式收紧（tolerantArray 缺省即 []，零填也不炸）——校验只管形状。 */
+  hardsub_assumed: tolerantArray(FindSubtitleUnresolvedItemSchema),
 })
 export type FindSubtitleBatchReport = z.infer<typeof FindSubtitleBatchReportSchema>
 export type FindSubtitleInstalledItem = z.infer<typeof FindSubtitleInstalledItemSchema>

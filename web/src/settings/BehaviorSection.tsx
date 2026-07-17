@@ -129,7 +129,7 @@ function HardsubModeRow({ settings, onUpdated }: RowProps) {
         status={error ? { type: 'error', message: error } : undefined}
       />
       <Text type="supporting" color="secondary">
-        {t('settings_rescue_officer_pending_note')}
+        {t('settings_hardsub_mode_note')}
       </Text>
     </VStack>
   )

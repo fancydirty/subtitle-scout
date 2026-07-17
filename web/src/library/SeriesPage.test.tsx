@@ -164,6 +164,24 @@ describe('SeriesPage：详情板开合', () => {
     expect(screen.getByText('Series.A.S01E01.zh-Hans.ass')).toBeInTheDocument()
   })
 
+  it('点击 hardsub-assumed 格子 → 面板显示硬字幕假定与后端 reason', async () => {
+    const detail = detailFixture()
+    detail.seasons[0].onDisk = [
+      {
+        episode: 1, path: '/media/Series A/S01/Series.A.S01E01.1080p.mkv',
+        subStatus: 'hardsub-assumed', statusReason: 'video stream has Chinese hard subtitles', recheckAfter: null,
+      },
+    ]
+    detail.seasons[0].coverage = []
+
+    renderPage(asyncData(detail))
+    const cells = await screen.findAllByRole('button', { name: '1' })
+    fireEvent.click(cells[0])
+
+    expect(await screen.findByText('covered (hardsub assumed)')).toBeInTheDocument()
+    expect(screen.getByText('video stream has Chinese hard subtitles')).toBeInTheDocument()
+  })
+
   it('点击 dashed 格（磁盘无）→ 面板显示 canonical 标题 + not on disk', async () => {
     renderPage(asyncData(detailFixture()))
     const cells = await screen.findAllByRole('button', { name: '2' })

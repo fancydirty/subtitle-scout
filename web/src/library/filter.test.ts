@@ -4,7 +4,7 @@ import { matchesLibraryFilter, groupBySection } from './filter.js'
 import type { CoverageDTO, LibraryItemDTO } from '../api/types.js'
 
 function cov(partial: Partial<CoverageDTO>): CoverageDTO {
-  return { covered: 0, missing: 0, embedded: 0, unavailable: 0, ...partial }
+  return { covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, ...partial }
 }
 
 describe('matchesLibraryFilter', () => {
@@ -26,6 +26,8 @@ describe('matchesLibraryFilter', () => {
   it('full：missing===0 且 unavailable===0 且已有战果', () => {
     expect(matchesLibraryFilter(cov({ covered: 12 }), 'full')).toBe(true)
     expect(matchesLibraryFilter(cov({ embedded: 3 }), 'full')).toBe(true)
+    expect(matchesLibraryFilter(cov({ hardsubAssumed: 3 }), 'full')).toBe(true)
+    expect(matchesLibraryFilter(cov({ hardsubAssumed: 3 }), 'gap')).toBe(false)
     expect(matchesLibraryFilter(cov({}), 'full')).toBe(false) // 零集不算全覆盖
     expect(matchesLibraryFilter(cov({ covered: 1, missing: 1 }), 'full')).toBe(false)
   })

@@ -13,7 +13,7 @@ export const LIBRARY_FILTERS: readonly LibraryFilter[] = ['all', 'gap', 'throttl
 /** 全覆盖：无缺口无停牌，且确有已处理集数（covered/embedded 任一 > 0）。海报卡的角标
  *  （posterAngle.ts）复用这同一条判定，两处不许各算一套"什么叫全覆盖"。 */
 export function isFullyCovered(cov: CoverageDTO): boolean {
-  return cov.missing === 0 && cov.unavailable === 0 && (cov.covered > 0 || cov.embedded > 0)
+  return cov.missing === 0 && cov.unavailable === 0 && (cov.covered > 0 || cov.embedded > 0 || cov.hardsubAssumed > 0)
 }
 
 export function matchesLibraryFilter(cov: CoverageDTO, filter: LibraryFilter): boolean {

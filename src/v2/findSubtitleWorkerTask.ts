@@ -76,6 +76,9 @@ export interface FindSubtitleTaskMapperDeps {
    *  per item — can't express "covered for zh but missing for en" yet). Optional/defaulted to
    *  'zh' (the historical default) so existing tests/callers predating the config keep working. */
   targetLanguage?: string
+  /** 救援R5：hardsub_mode，同 targetLanguage 的既有先例——mapper 直接透传进 FindSubtitleTask，
+   *  真正的"每次派发新鲜读 settings"发生在 cli/index.ts 的派发覆写处（见该文件注释）。 */
+  hardsubMode?: 'off' | 'agent' | 'aggressive'
 }
 
 /** Parses series/movies.provider_ids (JSON, written by T3's ingest layer as `{"tmdb":"<id>"}` —
@@ -203,6 +206,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
       // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
       // multi-language per-item tasking is future work.
       targetLanguage: deps.targetLanguage ?? 'zh',
+      hardsubMode: deps.hardsubMode ?? 'off',
       targets: [{
         itemId: movie.id,
         videoPath: movie.path,
@@ -269,6 +273,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
     // A4: the primary configured target language (see FindSubtitleTaskMapperDeps.targetLanguage);
     // multi-language per-item tasking is future work.
     targetLanguage: deps.targetLanguage ?? 'zh',
+    hardsubMode: deps.hardsubMode ?? 'off',
     // List order is fact-list order (gaps 已按 episode ASC，见 listMissingEpisodesInSeason),
     // not an execution-order instruction — see FindSubtitleTargetFact's own doc comment.
     targets: gaps.map((g) => ({
@@ -386,6 +391,7 @@ export async function runFindSubtitleWorkerTask(
     const installed = dropAlien(report.installed, 'installed')
     const noMatch = dropAlien(report.no_safe_match, 'no_safe_match')
     const retryLater = dropAlien(report.retry_later, 'retry_later')
+    const hardsubAssumed = dropAlien(report.hardsub_assumed, 'hardsub_assumed')
 
     // 事实先入账（installed 永远先记——磁盘上字幕已经在了，队列怎么转都不改变这个事实）
     for (const item of installed) {
@@ -404,10 +410,16 @@ export async function runFindSubtitleWorkerTask(
     // R-3：no_safe_match 是 worker 的语义判决，落账为 item 事实；"何时再看"由 item 自己的
     // search_attempts 阶梯决定——jobs 状态机从此不持有任何内容判决。
     for (const item of noMatch) deps.lib.markUnavailable(item.itemId, item.reason, now())
+    // 救援R5：hardsub_assumed 是 agent 档的正面判决——诚实标注为覆盖的一种，不进
+    // markUnavailable 的内容退避阶梯（markHardsubAssumed 自己的两表尝试模式不碰 search_attempts/
+    // recheck_after，见 libraryRepo.ts 该方法头注释）。
+    for (const item of hardsubAssumed) deps.lib.markHardsubAssumed(item.itemId, item.reason, now())
 
     // 队列语义（R-3 终局）：报告落地即入账收官；仅 retry_later（瞬时故障的季剩余）走
     // completeError 节流轨（R-10 豁免：30s→15min→日，永不 dormant）。completeNoMatch 已死。
-    if (installed.length === 0 && noMatch.length === 0 && retryLater.length === 0) {
+    // 救援R5：hardsub_assumed 非空视为"这批已完成"的一种（同 installed/noMatch），走
+    // completeDone——它不是失败判决，不该被"报告为空"或"待重试"两个分支误吞。
+    if (installed.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
       jobs.completeError(job.id, 'worker returned an empty batch report', now())
       recordRun('error', 'empty batch report')
     } else if (retryLater.length > 0) {
@@ -427,6 +439,9 @@ export async function runFindSubtitleWorkerTask(
     }
     if (retryLater.length) {
       recordRun('retry_later', `${retryLater.length} 集待重试: ${retryLater.map((i) => i.itemId).join(', ')}`)
+    }
+    if (hardsubAssumed.length) {
+      recordRun('hardsub_assumed', `${hardsubAssumed.length} 集判定硬字幕假定: ${hardsubAssumed.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
     }
     return report
   } catch (error) {

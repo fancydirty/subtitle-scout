@@ -23,7 +23,7 @@ function buildTask(cell: LoadedCell, jobId: string, mediaRoot: string, videoPath
   return {
     jobId, mediaRoot, title: t.title, originalTitle: t.originalTitle, year: t.year,
     alternativeTitles: t.alternativeTitles, overview: t.overview, runtimeMinutes: t.runtimeMinutes,
-    providerIds: t.providerIds, targetLanguage: t.targetLanguage ?? 'zh',
+    providerIds: t.providerIds, targetLanguage: t.targetLanguage ?? 'zh', hardsubMode: 'off',
     targets: [{
       itemId: jobId, videoPath, videoFilename: t.videoFilename,
       season: t.season, episode: t.episode, absoluteEpisode: t.absoluteEpisode, imdbId: null,

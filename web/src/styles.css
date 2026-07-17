@@ -186,6 +186,12 @@
   font-style: italic;
   color: var(--color-text-gray);
 }
+.ep-cell-hardsub .ep-num {
+  /* 救援R5：硬字幕假定——独立样式非绿点。defineTheme 的 TokenName 是第三方设计系统的封闭
+     枚举，不能注册新主 token；灰绿间调直接用 color-mix 混两个既有合法 token 达成，同样表意
+     "已覆盖但不是外挂字幕已确认"，不占用/不冒充 --color-text-green。 */
+  color: color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%);
+}
 .ep-cell-error .ep-num {
   color: var(--color-text-red);
 }
@@ -201,6 +207,10 @@
 }
 .ep-dot-covered {
   background: var(--color-text-green);
+}
+.ep-dot-hardsub {
+  /* 灰绿间调，理由同上方 .ep-cell-hardsub .ep-num 注释。 */
+  background: color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%);
 }
 .ep-dot-missing {
   background: transparent;

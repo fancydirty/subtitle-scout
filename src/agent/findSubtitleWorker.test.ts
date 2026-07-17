@@ -38,6 +38,7 @@ function baseTask(mediaRoot: string, targets: FindSubtitleTargetFact[], override
   return {
     jobId: 'job-1', mediaRoot, title: 'Show', originalTitle: null, year: 2024,
     alternativeTitles: [], overview: null, runtimeMinutes: 24, providerIds: {}, targetLanguage: 'zh',
+    hardsubMode: 'off',
     targets,
     ...overrides,
   }

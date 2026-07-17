@@ -99,6 +99,10 @@ function Legend() {
         <Text type="code" color="secondary">{t('library_legend_covered')}</Text>
       </HStack>
       <HStack gap={1} vAlign="center">
+        <span className="ep-dot ep-dot-hardsub" aria-hidden="true" />
+        <Text type="code" color="secondary">{t('library_legend_hardsub')}</Text>
+      </HStack>
+      <HStack gap={1} vAlign="center">
         <span className="ep-dot ep-dot-missing" aria-hidden="true" />
         <Text type="code" color="secondary">{t('library_legend_missing')}</Text>
       </HStack>

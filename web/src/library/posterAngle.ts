@@ -13,12 +13,12 @@ export interface PosterAngle {
 
 /** scout 关心的集数（内嵌/策略跳过不计入分母，跟旧 lib/badge.ts 的 scoutScope 口径一致）。 */
 function scoutScope(cov: CoverageDTO): number {
-  return cov.covered + cov.missing + cov.unavailable
+  return cov.covered + cov.hardsubAssumed + cov.missing + cov.unavailable
 }
 
 export function posterAngle(cov: CoverageDTO): PosterAngle {
   if (isFullyCovered(cov)) return { kind: 'full', text: null }
   const scope = scoutScope(cov)
-  if (scope > 0) return { kind: 'gap', text: `${cov.covered}/${scope}` }
+  if (scope > 0) return { kind: 'gap', text: `${cov.covered + cov.hardsubAssumed}/${scope}` }
   return { kind: 'none', text: null }
 }

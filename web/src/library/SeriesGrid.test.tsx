@@ -14,7 +14,7 @@ function mockFetch(body: unknown, ok = true) {
 function item(overrides: Partial<LibraryItemDTO>): LibraryItemDTO {
   return {
     id: 'tmdb:1', kind: 'series', name: 'Series A', chineseTitle: null, year: 2021, posterPath: null,
-    section: '剧集', coverage: { covered: 0, missing: 0, embedded: 0, unavailable: 0 }, job: null,
+    section: '剧集', coverage: { covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0 }, job: null,
     ...overrides,
   }
 }
@@ -62,8 +62,8 @@ describe('SeriesGrid', () => {
 
   it('筛选 chip："有缺口" 只留 missing>0 的条目', async () => {
     const data: LibraryItemDTO[] = [
-      item({ id: 's1', name: 'Gappy Series', coverage: { covered: 2, missing: 3, embedded: 0, unavailable: 0 } }),
-      item({ id: 's2', name: 'Full Series', coverage: { covered: 12, missing: 0, embedded: 0, unavailable: 0 } }),
+      item({ id: 's1', name: 'Gappy Series', coverage: { covered: 2, missing: 3, embedded: 0, unavailable: 0, hardsubAssumed: 0 } }),
+      item({ id: 's2', name: 'Full Series', coverage: { covered: 12, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0 } }),
     ]
     vi.stubGlobal('fetch', mockFetch(data))
     renderGrid()
@@ -81,7 +81,7 @@ describe('SeriesGrid', () => {
 
   it('筛选后零结果 → 区别于空库的"这个筛选下暂时没有条目"', async () => {
     const data: LibraryItemDTO[] = [
-      item({ id: 's1', name: 'Only Series', coverage: { covered: 1, missing: 1, embedded: 0, unavailable: 0 } }),
+      item({ id: 's1', name: 'Only Series', coverage: { covered: 1, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0 } }),
     ]
     vi.stubGlobal('fetch', mockFetch(data))
     renderGrid()

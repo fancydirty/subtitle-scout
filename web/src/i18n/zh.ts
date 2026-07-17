@@ -48,8 +48,10 @@ export const zh = {
   library_detail_close_label: '关闭单集详情',
   library_detail_file_heading: '文件',
   library_detail_subtitles_heading: '字幕',
+  library_detail_hardsub_assumed: '已覆盖（硬字幕假定）',
 
   library_legend_covered: '已覆盖',
+  library_legend_hardsub: '硬字幕假定',
   library_legend_missing: '缺字幕',
   library_legend_throttled: '停牌中',
   library_legend_dashed: '磁盘无此文件',
@@ -146,6 +148,7 @@ export const zh = {
   settings_hardsub_mode_option_off: '关闭',
   settings_hardsub_mode_option_agent: 'Agent 判断',
   settings_hardsub_mode_option_aggressive: '激进',
+  settings_hardsub_mode_note: '下一次派发的字幕搜索任务生效。',
   settings_exclude_extras_label: '排除特典',
   // 救援R4c：exclude_extras 已被 ingest 消费，独立"下一轮扫描生效"注记（hardsub_mode 仍共用救援官注记）。
   settings_exclude_extras_restart_note: '下一轮扫描生效。',
