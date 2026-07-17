@@ -529,6 +529,56 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
     })
   })
 
+  describe('item_files（重复源 P1，schema v16）', () => {
+    beforeEach(() => {
+      lib.upsertSeries({ id: 's1', name: 'A' })
+      lib.upsertEpisode({ id: 's1/e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/main.mkv', subStatus: 'covered' })
+    })
+
+    it('addItemFile + listItemFiles：副本入册，added_at ASC 排序（最年长在前）', () => {
+      lib.addItemFile('s1/e1', '/media/1080p.mkv', 2000)
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      const files = lib.listItemFiles('s1/e1')
+      expect(files.map((f) => f.path)).toEqual(['/media/4k.mkv', '/media/1080p.mkv'])
+      expect(files.every((f) => f.item_id === 's1/e1')).toBe(true)
+    })
+
+    it('addItemFile 幂等（path UNIQUE，重复入册不抛不重复）', () => {
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 2000)
+      expect(lib.listItemFiles('s1/e1')).toHaveLength(1)
+    })
+
+    it('removeItemFileByPath：删副本行；不存在的 path 无事发生', () => {
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      lib.removeItemFileByPath('/media/4k.mkv')
+      expect(lib.listItemFiles('s1/e1')).toEqual([])
+      expect(() => lib.removeItemFileByPath('/media/nope.mkv')).not.toThrow()
+    })
+
+    it('promoteOldestReplica：最年长副本 path 顶替 episodes.path，该副本退出 item_files', () => {
+      lib.addItemFile('s1/e1', '/media/1080p.mkv', 2000)
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      const newMain = lib.promoteOldestReplica('s1/e1')
+      expect(newMain).toBe('/media/4k.mkv')
+      expect(lib.getEpisode('s1/e1')!.path).toBe('/media/4k.mkv')
+      // 晋升的副本退出 item_files，只剩另一个
+      expect(lib.listItemFiles('s1/e1').map((f) => f.path)).toEqual(['/media/1080p.mkv'])
+    })
+
+    it('promoteOldestReplica：movie 分支（两表尝试模式）', () => {
+      lib.upsertMovie({ id: 'm1', name: 'M', path: '/media/m-main.mkv', subStatus: 'covered' })
+      lib.addItemFile('m1', '/media/m-4k.mkv', 1000)
+      expect(lib.promoteOldestReplica('m1')).toBe('/media/m-4k.mkv')
+      expect(lib.getMovie('m1')!.path).toBe('/media/m-4k.mkv')
+    })
+
+    it('promoteOldestReplica：无副本可晋升 → 返回 null，不动主文件', () => {
+      expect(lib.promoteOldestReplica('s1/e1')).toBeNull()
+      expect(lib.getEpisode('s1/e1')!.path).toBe('/media/main.mkv')
+    })
+  })
+
   describe('identify_overrides', () => {
     it('addOverride + findOverride：单条命中', () => {
       lib.addOverride('/media/anime/Show', '209867', true, 1000)

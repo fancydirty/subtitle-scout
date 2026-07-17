@@ -13,7 +13,7 @@ describe('db 基座', () => {
     const tables = db.prepare("select name from sqlite_master where type='table' order by name").all().map((r: any) => r.name)
     for (const t of [
       'series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta',
-      'parked_paths', 'identify_overrides', 'extras_exemptions',
+      'parked_paths', 'identify_overrides', 'extras_exemptions', 'item_files',
     ]) expect(tables).toContain(t)
     // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11/v12
     // 本身）：v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
@@ -21,13 +21,14 @@ describe('db 基座', () => {
     // dashboard 重建战役 G1 追加 v12 entry 后 MIGRATIONS.length=4，落库值是 '4'；验收修复轮一
     // Task V1 追加 v13 entry 后 MIGRATIONS.length=5，落库值是 '5'；救援R4b 追加 v14
     // extras_exemptions entry 后 MIGRATIONS.length=6，落库值是 '6'；救援R5 追加 v15
-    // hardsub-assumed 值域重建 entry 后 MIGRATIONS.length=7，落库值是 '7'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '7' })
+    // hardsub-assumed 值域重建 entry 后 MIGRATIONS.length=7，落库值是 '7'；重复源 P1 追加 v16
+    // item_files+subtitles.file_path entry 后 MIGRATIONS.length=8，落库值是 '8'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '8' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '7' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '8' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -202,7 +203,8 @@ describe('db 基座', () => {
 
     const db = openDb(dbPath)
 
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '7' })
+    // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16 两条迁移到 '8'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '8' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -214,5 +216,25 @@ describe('db 基座', () => {
     expect(() =>
       db.prepare(`UPDATE episodes SET sub_status = 'hardsub-assumed' WHERE id = 'tmdb:100/s1e1'`).run()
     ).not.toThrow()
+  })
+
+  // v16（重复源 P1）：item_files 表 + subtitles.file_path 列，纯增量。列出表存在 + 新列可写 +
+  // subtitles 存量行 file_path 默认 NULL（兼容语义：NULL=挂主文件）。
+  it('v16: item_files 表存在且 path UNIQUE，subtitles.file_path 列存在（存量行默认 NULL）', () => {
+    const db = openDb(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(item_files)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toEqual(['id', 'item_id', 'path', 'added_at'])
+    const subCols = (db.prepare('PRAGMA table_info(subtitles)').all() as { name: string }[]).map((c) => c.name)
+    expect(subCols).toContain('file_path')
+
+    // item_files.path UNIQUE 生效
+    db.prepare(`INSERT INTO item_files (item_id, path, added_at) VALUES ('tmdb:1/s1e1', '/media/a.mkv', 1)`).run()
+    expect(() =>
+      db.prepare(`INSERT INTO item_files (item_id, path, added_at) VALUES ('tmdb:1/s1e2', '/media/a.mkv', 2)`).run()
+    ).toThrow()
+
+    // subtitles.file_path 存量行默认 NULL（兼容：不带 file_path 的插入=挂主文件）
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES ('tmdb:1/s1e1', '/media/a.zh.srt', 'zh-Hans', 'scout-download', 1)`).run()
+    expect(db.prepare(`SELECT file_path FROM subtitles WHERE item_id = 'tmdb:1/s1e1'`).get()).toEqual({ file_path: null })
   })
 })

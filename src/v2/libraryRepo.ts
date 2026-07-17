@@ -135,6 +135,15 @@ export interface ParkedPath {
   last_attempt: number
 }
 
+/** 重复源 P1：item_files 行——同一条目（episodes.id/movies.id）的副本文件（4K/1080p/不同压制）。
+ *  主文件在 episodes/movies.path（身份锚），不进此表。 */
+export interface ItemFile {
+  id: number
+  item_id: string
+  path: string
+  added_at: number
+}
+
 export interface IdentifyOverride {
   tmdbId: string
   isTv: boolean
@@ -686,6 +695,53 @@ export class LibraryRepo {
   isExtrasExempt(path: string): boolean {
     const row = this.db.prepare(`SELECT 1 FROM extras_exemptions WHERE path = ?`).get(path)
     return row != null
+  }
+
+  // ---- 重复源 P1：item_files（同一条目的副本文件，schema v16） ----
+
+  /** 副本入册（幂等 upsert on path）：path UNIQUE，同一副本第二次入册只刷 added_at 无害
+   *  （实际调用方 ingest 只在识别到"撞既有身份但 path 不同"时调，天然不重复；ON CONFLICT
+   *  防御性兜底 seenPaths 差异清理与重扫的竞态）。 */
+  addItemFile(itemId: string, path: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO item_files (item_id, path, added_at) VALUES (?, ?, ?)
+         ON CONFLICT(path) DO UPDATE SET item_id = excluded.item_id`
+      )
+      .run(itemId, path, now)
+  }
+
+  /** 一个条目的全部副本（added_at ASC——最年长在前，promoteOldestReplica 晋升时取 [0]）。 */
+  listItemFiles(itemId: string): ItemFile[] {
+    return this.db
+      .prepare(`SELECT id, item_id, path, added_at FROM item_files WHERE item_id = ? ORDER BY added_at ASC, id ASC`)
+      .all(itemId) as ItemFile[]
+  }
+
+  /** 副本文件从磁盘消失时删行（seenPaths 差异清理调用）。行不存在=无事发生。 */
+  removeItemFileByPath(path: string): void {
+    this.db.prepare(`DELETE FROM item_files WHERE path = ?`).run(path)
+  }
+
+  /** 主文件消失时：最年长副本晋升为主文件——episodes/movies.path 顶替成该副本 path，该副本
+   *  从 item_files 退出（它现在是主文件了）。字幕行的 file_path 归属不动（spec §2）：原本挂在
+   *  该副本 path 上的字幕，其 file_path 仍指向同一物理文件，只是这个文件现在的角色从"副本"变
+   *  "主文件"，归属语义不变。无副本可晋升（列表空）=无事发生，调用方据此决定删条目还是留空壳。
+   *  返回晋升后的新主文件 path（null=无副本可晋升）。 */
+  promoteOldestReplica(itemId: string): string | null {
+    const replicas = this.listItemFiles(itemId)
+    if (replicas.length === 0) return null
+    const promoted = replicas[0]
+    const promote = this.db.transaction(() => {
+      // 两表尝试（同 markCovered/markUnavailable 的既有口径）：itemId 要么是 episode 要么是 movie。
+      const epResult = this.db.prepare(`UPDATE episodes SET path = ? WHERE id = ?`).run(promoted.path, itemId)
+      if (epResult.changes === 0) {
+        this.db.prepare(`UPDATE movies SET path = ? WHERE id = ?`).run(promoted.path, itemId)
+      }
+      this.db.prepare(`DELETE FROM item_files WHERE id = ?`).run(promoted.id)
+    })
+    promote()
+    return promoted.path
   }
 
   // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----

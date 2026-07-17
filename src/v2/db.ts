@@ -208,6 +208,20 @@ INSERT INTO movies_v15 SELECT * FROM movies;
 DROP TABLE movies;
 ALTER TABLE movies_v15 RENAME TO movies;
   `.trim(),
+  // v16（重复源 P1）：同一条目的多个视频文件（4K/1080p/不同压制）从"后来者停车"升级为一等公民。
+  // 主文件仍在 episodes/movies.path（最早入库者=身份锚）；副本进 item_files。subtitles 加 file_path
+  // 归属列（NULL=挂主文件，兼容存量——覆盖判定按"该条目每个文件各有着落"）。两条都是纯增量
+  // （CREATE TABLE + ADD COLUMN），不触发 12 步建新表，无 CHECK 约束变更。
+  `
+CREATE TABLE item_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT NOT NULL,          -- episodes.id / movies.id（该条目的主文件行）
+  path TEXT NOT NULL UNIQUE,      -- 副本文件绝对路径
+  added_at INTEGER NOT NULL
+);
+CREATE INDEX item_files_item ON item_files(item_id);
+ALTER TABLE subtitles ADD COLUMN file_path TEXT;
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
