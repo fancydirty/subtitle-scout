@@ -23,23 +23,36 @@ dashboard 战役 F7 收官后用户首轮真机验收的反馈修复。两项设
 
 ## B. Workflow 页叙事化（用户裁决：结构重造，语言全英文——原"永不本地化"裁决完整保留）
 
-病根：三条运维泳道无叙事。重造为"活动故事"页：
+病根：三条运维泳道无叙事。两路调研定稿（正面样本=ChatGPT agent/Devin/Perplexity/Netlify/
+GitHub Actions/Overseerr 的公约数五铁律；反面实锤=Sonarr/Radarr Activity 页正是同受众
+"看不懂"抱怨的重灾区，与现三泳道同构；工程向 run 视图——Inngest/Trigger.dev/langfuse——
+无一提供人话层先例，只配当内层；组件轮子全是 shadcn 系，Astryx 上自绘）：
 
-- **顶部人话总览行**（英文，Midday 式大数字嵌句）：
-  `Watching 13 gaps · 37 episodes installed in last 24h · 1 worker running`。
-  数据全部来自现有三端点聚合，不新增后端账目（installed 24h 计数=recent runs 里
-  decision='installed' 且 finished_at>now-24h 的行数——近似值，limit 20 截断如实；
-  或 workers 端点顺手加一条 COUNT 查询，实施时取后者，一句 SQL 的事）。
-- **Activity 流（页面主体，右/宽列）**：running 卡在最上（保留 TraceRows 直播——灵魂卖点不动），
-  卡头改人话句 `Searching subtitles — The Rig`; 其下 recent 行改人话句式：
-  `{seriesName} — {decision 短语} · {相对时间}`，decision 短语静态映射
+**五铁律**：①句子主语=内容（剧名）永不=系统部件（worker/job/pass）②默认态=人话摘要，
+工程细节永远在点开之后③"正在进行"=短句+步数+耗时，不是滚动日志糊脸④失败/等待用面向
+下一步的中性话，红只给点不给块⑤相对时间右对齐位置恒定。
+
+- **顶部人话总览行**（Midday 式大数字嵌句）：
+  `Watching 13 gaps · 37 episodes installed in the last 24h · 1 agent working`。
+  installed 24h 计数=workers 端点加一条 COUNT 查询（一句 SQL），其余来自现有聚合。
+- **Now working 卡（Activity 流顶部）**：卡头人话句 `Searching subtitles for {seriesName}` +
+  已跑时长；直播步骤保留（灵魂卖点）但**工具名静态映射成人话动词短语**（read_doc→
+  `Reading the playbook`、search_source→`Searching providers`、list_candidates→
+  `Reviewing candidates`、probe_candidate→`Inspecting a candidate`、install_subtitle→
+  `Installing a subtitle`、finalize→`Wrapping up`、dispatch_*→`Planning work`；未映射工具名
+  原样 mono 兜底）；argsSummary 默认不显示，行右仍是耗时；卡头点开右侧板见原始工具名+参数
+  （工程层）。
+- **Activity 流（页面主体，宽列）**：recent 行改人话句式
+  `{seriesName} — {decision 短语} · {相对时间右对齐}`，decision 短语静态映射
   （installed→"subtitles installed"，no_safe_match→"no safe match found"，
-  retry_later→"transient failure, will retry"，error→"failed"，realign:*→"library realigned" 族）。
-  **剧名替换 tmdb id**（后端 recent 查询 LEFT JOIN series 取 name，movie 同理）；detail 原文
-  与三桶报告仍在点开的右侧板（RunDetail 不动）。
+  retry_later→"will retry later"【灰点中性，铁律④】，error→"hit a problem — will retry"
+  【红点无红块】，realign:done→"library realigned"，realign:parked→"needs a manual look"，
+  realign:error→"realign hit a problem"）。**剧名替换 tmdb id**（后端 recent 的 LEFT JOIN
+  顺手取 series.name/movies.name；名字为空的降级显示 id——诚实兜底）；detail 原文/三桶报告/
+  原始痕迹仍在点开的右侧板（RunDetail 零改动）。
 - **Orchestrator passes 降级折叠**：Collapsible「Orchestrator log」默认收起，回执 chip 只在
   展开后出现——工程师内容零删除，只是不再糊脸。
-- **Pending 泳道保持**（已可读），布局从三泳道改两列：Pending | Activity（passes 折叠区挂
+- **Gaps 列保持**（原 Pending，已可读），布局三泳道→两列：Gaps | Activity（passes 折叠区挂
   Activity 底部）；移动端单列不变。
 
 ## C. 甄别页修复三件（用户点名）
