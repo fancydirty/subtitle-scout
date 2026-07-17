@@ -105,6 +105,7 @@ function buildIngestPass(opts: {
   tmdb: TmdbClient
   targetLanguages: () => string[]
   originSkipLanguages: () => string[]
+  excludeExtras?: () => boolean
   log: (msg: string) => void
 }): ReturnType<typeof makeIngestPass> {
   return makeIngestPass({
@@ -115,6 +116,7 @@ function buildIngestPass(opts: {
     probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
     targetLanguages: opts.targetLanguages,
     originSkipLanguages: opts.originSkipLanguages,
+    excludeExtras: opts.excludeExtras,
     log: opts.log,
   })
 }
@@ -159,6 +161,7 @@ async function cmdReconcileAll() {
     roots: currentRoots, lib, tmdb,
     targetLanguages: () => languagesNow().targetLanguages,
     originSkipLanguages: () => languagesNow().originSkipLanguages,
+    excludeExtras: () => settingsRepo.get('exclude_extras') === 'true',
     log: (msg) => console.log(`[reconcile-all] ${msg}`),
   })
   const decision = await runReconcileAll({
@@ -235,6 +238,7 @@ async function cmdWatch() {
     roots: currentRoots, lib, tmdb,
     targetLanguages: () => languagesNow().targetLanguages,
     originSkipLanguages: () => languagesNow().originSkipLanguages,
+    excludeExtras: () => settingsRepo.get('exclude_extras') === 'true',
     log,
   })
 

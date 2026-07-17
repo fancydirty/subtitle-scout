@@ -3,6 +3,7 @@ import { tagsForLanguage, langOf } from '../agent/languages.js'
 import { seasonEpisodeForAbsolute } from '../agent/absoluteEpisodes.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { walkVideoFiles } from '../daemon/selfScan.js'
+import { isMechanicalExtra } from './extrasFilter.js'
 import { seriesId, episodeId, tmdbIdFromOwnId } from './ownIds.js'
 import { refreshSeriesCatalog } from './tmdbCatalog.js'
 import type { ScoutDb } from './db.js'
@@ -40,6 +41,9 @@ export interface IngestDeps {
    *  find_subtitle worker 的每次派发也独立覆写，无需重启 watch 进程。 */
   targetLanguages: () => string[]
   originSkipLanguages?: () => string[]
+  /** 救援R4：特典机械排除开关（settings.exclude_extras）。() => true 才启用铁案过滤。
+   *  提供者化：每轮 pass 新鲜求值，设置页改完下一轮生效。缺省 false（保守）。 */
+  excludeExtras?: () => boolean
   log: (msg: string) => void
   now?: () => number
 }
@@ -343,6 +347,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
     // 债务D5：语言配置每轮 pass 新鲜求值——设置页改 target_languages 后下一轮扫描即生效。
     const targetLanguages = deps.targetLanguages()
     const originSkipLanguages = deps.originSkipLanguages?.() ?? targetLanguages
+    const excludeExtras = deps.excludeExtras?.() ?? false
     ingestLock.held = true
     try {
       const nowMs = deps.now ? deps.now() : Date.now()
@@ -365,6 +370,13 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               continue
             }
 
+            // 救援R4（spec §3）：特典机械铁案——excludeExtras 开启时，文件名命中 NC/菜单/预告类
+            // 标记直接 park excluded-extra，不进识别流（灰区 SP/OVA 不在这张表，归 rescueSkill）。
+            if (excludeExtras && isMechanicalExtra(path)) {
+              lib.upsertParkedPath(path, 'excluded-extra', nowMs)
+              result.parked++
+              continue
+            }
             const existing = findRowByPath(lib.db, path)
 
             // ---- CHEAP PATH：行存在 + 探针记忆化命中当前 (mtime,size) → 只重跑覆盖分类 ----

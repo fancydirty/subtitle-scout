@@ -1390,3 +1390,65 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     expect(lib.listSeriesNeedingEnrich(10).map((r) => r.id)).toEqual(['tmdb:24240'])
   })
 })
+
+// 救援R4：特典机械三级排除——文件名级硬过滤受 exclude_extras 门控。
+describe('makeIngestPass — mechanical extras (R4)', () => {
+  it('excludeExtras=true → NCOP 文件 park excluded-extra，不进 recognize/probe', async () => {
+    const disk = fakeDisk()
+    const path = '/media/Show - NCOP01.mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult())
+    const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize, probe,
+      excludeExtras: () => true,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
+    expect(recognize).not.toHaveBeenCalled()
+    expect(probe).not.toHaveBeenCalled()
+    const parked = lib.listParkedPaths()
+    expect(parked).toHaveLength(1)
+    expect(parked[0]).toMatchObject({ path, park_reason: 'excluded-extra' })
+  })
+
+  it('excludeExtras=false → 同文件正常走 recognize，不park', async () => {
+    const disk = fakeDisk()
+    const path = '/media/Show - NCOP01.mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      excludeExtras: () => false,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    expect(result.parked).toBe(0)
+    expect(recognize).toHaveBeenCalledWith(path)
+    expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull()
+  })
+
+  it('excludeExtras 未提供时默认 false，不启用机械过滤', async () => {
+    const disk = fakeDisk()
+    const path = '/media/Show - NCOP01.mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    expect(result.parked).toBe(0)
+    expect(recognize).toHaveBeenCalledWith(path)
+  })
+})
