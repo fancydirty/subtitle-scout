@@ -69,9 +69,12 @@ export const en = {
   workflow_empty_title: 'No active work',
   workflow_empty_desc: 'Pending passes and worker traces will show up here once the orchestrator has something to do.',
 
-  workflow_lane_pending: 'Pending',
-  workflow_lane_passes: 'Passes',
-  workflow_lane_workers: 'Workers',
+  // 验收修复轮一 Task V4（design §B）：三泳道→两列重排，Gaps | Activity。workflow_lane_pending
+  // 键名不变（PendingLane 组件/测试仍叫 pending），显示文案改"Gaps"——泳道标题改名，不是重命名
+  // 概念。workflow_lane_passes/workflow_lane_workers 随三泳道布局一起废弃（Passes/Workers 折进
+  // ActivityFeed，不再各自有一条独立泳道标题）。
+  workflow_lane_pending: 'Gaps',
+  workflow_lane_activity: 'Activity',
 
   workflow_pending_series_heading: 'Series',
   workflow_pending_movies_heading: 'Movies',
@@ -80,8 +83,12 @@ export const en = {
 
   workflow_passes_lane_empty: 'No orchestrator passes yet.',
   workflow_passes_open_label: 'Open',
+  // Orchestrator log 折叠区（design §B）：原三泳道之一的 Passes，现降级为 Activity 列底部默认
+  // 收起的 Collapsible——回执 chip 只在展开后可见，工程师内容零删除。
+  workflow_orchestrator_log_heading: 'Orchestrator log',
 
-  workflow_workers_running_heading: 'Running',
+  // "Now working" 即原 Running 泳道小标题——改名对齐 design §B 的叙事称呼（Now working 卡）。
+  workflow_workers_running_heading: 'Now working',
   workflow_workers_recent_heading: 'Recent',
   workflow_workers_running_empty: 'No workers running right now.',
   workflow_workers_recent_empty: 'No recent completions yet.',

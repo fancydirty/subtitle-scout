@@ -259,17 +259,18 @@
   outline-offset: 2px;
 }
 
-/* dashboard-F4（Workflow tab）：三泳道 + Inngest 式痕迹行——原子 CSS 集中区，同上面几段
-   一样的理由（密集技术网格/hover 揭示工具条，组件语言表达不了）。颜色一律读 scout.ts 已定义
-   的 token；蓝点/延展动画例外——DESIGN.md §5 明确把"active（在跑行的蓝点延展）"列为动效
-   allowlist 里唯一带颜色语义的一条，scout.ts 的色表（§2）本身没有蓝，用的是 Astryx 基础主题
-   自带的 --color-icon-blue（未被 scout.ts 覆盖，见该文件），不是新起一个硬编码色值，也没有
-   碰 scout.ts。 */
+/* dashboard-F4（Workflow tab）：两列（Gaps | Activity，验收修复轮一 Task V4 design §B 叙事化
+   重排，原三泳道 Pending/Passes/Workers 收拢——Passes/Workers 折进右列 ActivityFeed 一个组件）
+   + Inngest 式痕迹行——原子 CSS 集中区，同上面几段一样的理由（密集技术网格/hover 揭示工具条，
+   组件语言表达不了）。颜色一律读 scout.ts 已定义的 token；蓝点/延展动画例外——DESIGN.md §5
+   明确把"active（在跑行的蓝点延展）"列为动效 allowlist 里唯一带颜色语义的一条，scout.ts 的
+   色表（§2）本身没有蓝，用的是 Astryx 基础主题自带的 --color-icon-blue（未被 scout.ts 覆盖，
+   见该文件），不是新起一个硬编码色值，也没有碰 scout.ts。 */
 
-/* ---- 三泳道 grid（Lanes）---- */
+/* ---- 两列 grid（Lanes）：窄列 Gaps | 宽列 Activity ---- */
 .wf-lanes {
   display: grid;
-  grid-template-columns: 1fr 1.2fr 1.3fr;
+  grid-template-columns: 1fr 2fr;
   gap: 16px;
   align-items: start;
 }
@@ -426,14 +427,14 @@
   padding: 1px 7px;
 }
 
-/* ---- Workers 泳道（WorkerCard + TraceRows）---- */
-.wf-worker-card {
+/* ---- Now working 卡（design §B：原 WorkerCard 的替身，人话卡头 + phraseMode 直播）---- */
+.wf-now-card {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-inner, 4px);
   background: var(--color-background-surface);
   padding: 8px 10px;
 }
-.wf-worker-header {
+.wf-now-header {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -445,10 +446,18 @@
   background: var(--color-icon-blue);
   flex-shrink: 0;
 }
-.wf-worker-title {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+.wf-now-title {
+  font-size: 12.5px;
   color: var(--color-text-primary);
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+}
+.wf-now-elapsed {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-text-gray);
+  flex-shrink: 0;
 }
 
 /* Inngest 式痕迹行：等宽工具名 + 截断 args 灰字 + 右对齐耗时（DESIGN.md §6）。 */
@@ -518,15 +527,16 @@
   }
 }
 
-/* ---- Recent 完成行（decision 语义色点：installed=绿/no_safe_match=灰/retry_later=灰/error=红）----
-   R2D-1（R2 复审）：这一行现在是可点开 RunDetail 的 <button>（worker run 详情入口）——按钮重置
-   （宽度撑满/左对齐/去边框背景）+ hover/focus-visible 处理同 .wf-pass-card 的既有先例
+/* ---- recent 完成行的人话句子流（design §B，铁律①④⑤：主语=剧名/片名，短语=decisionPhrase，
+   tone 只染 StatusDot 圆点——红只给点不给块，行本身没有随 tone 变化的背景色 class）----
+   R2D-1（R2 复审）先例延续：这一行是可点开 RunDetail 的 <button>（worker run 详情入口）——
+   按钮重置（宽度撑满/左对齐/去边框背景）+ hover/focus-visible 处理同 .wf-pass-card 的既有先例
    （DESIGN.md §2：hover 微染面 .04）。 */
-.wf-recent-row {
+.wf-activity-row {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: 12px;
   padding: 4px 6px;
   width: 100%;
   border: none;
@@ -538,28 +548,35 @@
   cursor: pointer;
   transition: background-color 120ms ease;
 }
-.wf-recent-row:hover {
+.wf-activity-row:hover {
   background: rgba(255, 255, 255, 0.04);
 }
-.wf-recent-row:focus-visible {
+.wf-activity-row:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
-.wf-recent-decision {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+.wf-activity-subject {
   color: var(--color-text-primary);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 40%;
+}
+.wf-activity-sep {
+  color: var(--color-text-gray);
   flex-shrink: 0;
 }
-.wf-recent-detail {
-  color: var(--color-text-gray);
+.wf-activity-phrase {
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   min-width: 0;
 }
-.wf-recent-time {
+.wf-activity-time {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   color: var(--color-text-gray);

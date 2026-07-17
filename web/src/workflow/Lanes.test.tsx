@@ -1,7 +1,8 @@
-// web/src/workflow/Lanes.test.tsx：Workflow tab 主体的集成测试——三泳道渲染、throttled 行事实
-// 呈现、receipts chip 非零才显示、SSE 直播流入 TraceRows、Pass 点开→RunDetail 快照回放、
-// Rerun 确认流四态回执各断言一条。Lanes 自己发请求（不像 SeriesPage 那样吃 prop），所以这里
-// mock 全局 fetch，同 App.test.tsx 的既有手法（按 URL 路由不同响应体）。
+// web/src/workflow/Lanes.test.tsx：Workflow tab 主体的集成测试——两列布局（Gaps | Activity，
+// 验收修复轮一 Task V4）、throttled 行事实呈现、receipts chip 非零才显示（Orchestrator log
+// 折叠区展开后）、SSE 直播流入 TraceRows（phraseMode 人话短语）、recent 行/pass 行点开→RunDetail
+// 快照回放、Rerun 确认流四态回执各断言一条。Lanes 自己发请求（不像 SeriesPage 那样吃 prop），
+// 所以这里 mock 全局 fetch，同 App.test.tsx 的既有手法（按 URL 路由不同响应体）。
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
@@ -51,7 +52,7 @@ function mockFetchRouted(handlers: Handler[]) {
 const EMPTY_PENDING: WorkflowPendingDTO = {
   series: [], movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
 }
-const EMPTY_WORKERS: WorkflowWorkersDTO = { running: [], recent: [] }
+const EMPTY_WORKERS: WorkflowWorkersDTO = { running: [], recent: [], installedLast24h: 0 }
 
 afterEach(() => {
   cleanup()
@@ -69,7 +70,15 @@ function renderLanes() {
   )
 }
 
-describe('Lanes：三泳道皆空 → 整页 empty 态', () => {
+async function openOrchestratorLog() {
+  const trigger = await screen.findByRole('button', { name: 'Orchestrator log' })
+  expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(trigger)
+  expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  return trigger
+}
+
+describe('Lanes：两列皆空 → 整页 empty 态', () => {
   it('渲染 "No active work"', async () => {
     vi.stubGlobal(
       'fetch',
@@ -84,15 +93,12 @@ describe('Lanes：三泳道皆空 → 整页 empty 态', () => {
   })
 })
 
-describe('Lanes：Pending 泳道——throttled 行事实呈现（灰、含 next recheck）', () => {
+describe('Lanes：Gaps 列（PendingLane 原样）——throttled 行事实呈现（灰、含 next recheck）', () => {
   it('throttled>0 的行显示 "{n} throttled · next recheck {相对}"，missing 计数也在场', async () => {
     // nextRecheckAt 用真实 Date.now()（不是本文件的 NOW 假常量）——Lanes.tsx 内部用真实
     // Date.now() 算 next recheck 倒计时（同 SeriesPage/EpisodeDetail 的既有先例，"now" 不是
     // 从测试注入的），拿假 NOW 算出来的 delta 会是好几年，倒计时会被 formatNextRecheck 的
-    // clamp 成 0s，断言就对不上了。刻意加 1 小时余量（而不是刚好 3*24h）——formatNextRecheck
-    // 是 floor 语义（同 shell/freshness.ts relAgo 的既有口径），测试固件创建到组件渲染之间的
-    // 几毫秒间隙如果让 delta 刚好跌破 72h 整点，会把 "3d" floor 成 "2d"，加一点余量消除这个
-    // 边界抖动。
+    // clamp 成 0s，断言就对不上了。刻意加 1 小时余量消除边界抖动（同既有先例）。
     const pending: WorkflowPendingDTO = {
       series: [
         {
@@ -116,6 +122,10 @@ describe('Lanes：Pending 泳道——throttled 行事实呈现（灰、含 next
     expect(screen.getByText('5 missing')).toBeInTheDocument()
     expect(screen.getByText('2 throttled · next recheck in 3d')).toBeInTheDocument()
     expect(screen.getByText('no candidates found')).toBeInTheDocument()
+    // 两列泳道标题——窄列改名 "Gaps"（design §B），宽列新增 "Activity"（原 Passes/Workers
+    // 两条独立标题折叠成一条）。
+    expect(screen.getByText('Gaps')).toBeInTheDocument()
+    expect(screen.getByText('Activity')).toBeInTheDocument()
   })
 
   it('throttled=0 → 不渲染 throttled 行', async () => {
@@ -142,8 +152,22 @@ describe('Lanes：Pending 泳道——throttled 行事实呈现（灰、含 next
   })
 })
 
-describe('Lanes：Passes 泳道——receipts chip 非零才显示', () => {
-  it('全零 receipts → 不渲染 chip 排', async () => {
+describe('Lanes：Orchestrator log 折叠区——默认收起，展开后 receipts chip 非零才显示', () => {
+  it('默认折叠', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRouted([
+        { path: '/api/v2/workflow/pending', body: EMPTY_PENDING },
+        { path: '/api/v2/workflow/passes', body: [] },
+        { path: '/api/v2/workflow/workers', body: EMPTY_WORKERS },
+      ]),
+    )
+    renderLanes()
+    const trigger = await screen.findByRole('button', { name: 'Orchestrator log' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('全零 receipts → 展开后不渲染 chip 排', async () => {
     const pass: WorkflowPassDTO = {
       id: 1, jobId: 10, startedAt: NOW - 1000, finishedAt: NOW, detail: 'no dispatches',
       receipts: { created: 0, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 },
@@ -157,11 +181,12 @@ describe('Lanes：Passes 泳道——receipts chip 非零才显示', () => {
       ]),
     )
     renderLanes()
-    await screen.findByText('no dispatches')
+    await openOrchestratorLog()
+    expect(await screen.findByText('no dispatches')).toBeInTheDocument()
     expect(screen.queryByText(/created|coalesced|revived|blocked|unparsed/)).not.toBeInTheDocument()
   })
 
-  it('非零 receipts → 只显示非零的 chip', async () => {
+  it('非零 receipts → 展开后只显示非零的 chip', async () => {
     const pass: WorkflowPassDTO = {
       id: 2, jobId: 11, startedAt: NOW - 1000, finishedAt: NOW, detail: 'dispatched 4',
       receipts: { created: 3, revived: 0, coalesced: 1, blocked_dormant: 0, unknown: 0 },
@@ -175,6 +200,7 @@ describe('Lanes：Passes 泳道——receipts chip 非零才显示', () => {
       ]),
     )
     renderLanes()
+    await openOrchestratorLog()
     expect(await screen.findByText('3 created')).toBeInTheDocument()
     expect(screen.getByText('1 coalesced')).toBeInTheDocument()
     expect(screen.queryByText(/revived/)).not.toBeInTheDocument()
@@ -182,7 +208,7 @@ describe('Lanes：Passes 泳道——receipts chip 非零才显示', () => {
   })
 })
 
-describe('Lanes：Workers 泳道 + SSE 直播流入 TraceRows', () => {
+describe('Lanes：Now working 卡 + SSE 直播流入 TraceRows（phraseMode 人话短语）', () => {
   function workersWithRunning(): WorkflowWorkersDTO {
     return {
       running: [
@@ -193,10 +219,11 @@ describe('Lanes：Workers 泳道 + SSE 直播流入 TraceRows', () => {
         },
       ],
       recent: [],
+      installedLast24h: 0,
     }
   }
 
-  it('初始 trail 来自 workers 端点，渲染在跑行（蓝点）', async () => {
+  it('初始 trail 来自 workers 端点，工具名经 phraseMode 映射，渲染在跑行（蓝点）', async () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     vi.stubGlobal(
       'fetch',
@@ -208,12 +235,12 @@ describe('Lanes：Workers 泳道 + SSE 直播流入 TraceRows', () => {
     )
     renderLanes()
 
-    expect(await screen.findByText('search_source')).toBeInTheDocument()
-    expect(screen.getByText('find_subtitle · s1[S1]')).toBeInTheDocument()
+    expect(await screen.findByText('Searching providers')).toBeInTheDocument() // toolPhrase('search_source')
+    expect(screen.getByText('Searching subtitles for s1')).toBeInTheDocument() // 人话卡头
     expect(screen.getByTestId('wf-trace-active')).toBeInTheDocument()
   })
 
-  it('SSE 事件流入后新增一行痕迹（按 seq 追加，不重复）', async () => {
+  it('SSE 事件流入后新增一行痕迹（未映射工具名原样 mono 兜底，按 seq 追加不重复）', async () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     vi.stubGlobal(
       'fetch',
@@ -224,7 +251,7 @@ describe('Lanes：Workers 泳道 + SSE 直播流入 TraceRows', () => {
       ]),
     )
     renderLanes()
-    await screen.findByText('search_source')
+    await screen.findByText('Searching providers')
     expect(FakeEventSource.instances).toHaveLength(1)
 
     FakeEventSource.instances[0].emit({
@@ -234,12 +261,12 @@ describe('Lanes：Workers 泳道 + SSE 直播流入 TraceRows', () => {
     expect(await screen.findByText('download_candidate')).toBeInTheDocument()
     expect(screen.getByText('4.0s')).toBeInTheDocument()
     // 原有那条痕迹还在——是追加不是替换。
-    expect(screen.getByText('search_source')).toBeInTheDocument()
+    expect(screen.getByText('Searching providers')).toBeInTheDocument()
   })
 })
 
-describe('Lanes：Pass 点开 → RunDetail 快照回放（回放≠直播，无蓝点）', () => {
-  it('点开渲染 detail/receipts + 静态 TraceRows', async () => {
+describe('Lanes：Orchestrator log 展开后点开一条 pass → RunDetail 快照回放（回放≠直播，无蓝点）', () => {
+  it('点开渲染 detail/receipts + 静态 TraceRows（原始工具名）', async () => {
     const pass: WorkflowPassDTO = {
       id: 7, jobId: 20, startedAt: NOW - 1000, finishedAt: NOW, detail: 'dispatched 2 find / 0 realign',
       receipts: { created: 2, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 },
@@ -257,13 +284,14 @@ describe('Lanes：Pass 点开 → RunDetail 快照回放（回放≠直播，无
       ]),
     )
     renderLanes()
+    await openOrchestratorLog()
 
     const card = await screen.findByText('dispatched 2 find / 0 realign')
     fireEvent.click(card)
 
     const panel = await screen.findByRole('dialog', { name: 'pass 7' })
+    // RunDetail 回放零改动——原始工具名（不经 phraseMode 映射）在场。
     expect(within(panel).getByText('dispatch_find_subtitle_task')).toBeInTheDocument()
-    // 回放是静态渲染，不带在跑行。
     expect(within(panel).queryByTestId('wf-trace-active')).not.toBeInTheDocument()
 
     fireEvent.keyDown(window, { key: 'Escape' })
@@ -285,24 +313,24 @@ describe('Lanes：Pass 点开 → RunDetail 快照回放（回放≠直播，无
       ]),
     )
     renderLanes()
+    await openOrchestratorLog()
     fireEvent.click(await screen.findByText('no dispatches'))
     expect(await screen.findByText('No trace events were captured for this pass.')).toBeInTheDocument()
   })
 })
 
-// R2D-1+9（R2 复审）：worker run 详情入口——之前 Recent 区一条 worker run（find_subtitle/realign
-// 的收工记录）完全点不开，唯一能看到的只有截断的一行 detail 文本；React key 用 jobId 也有重复
-// 隐患（同一个 job 可能有多行 runs）。这里验证：①点开渲染 decision/detail/快照回放 ②同一 job
-// 两行 runs 各自独立可点开（key 不撞车）③Rerun 按钮只在 seriesId 非空时出现，且请求体不带
-// seasons 键（全剧缺口语义）。
-describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D-1）', () => {
+// R2D-1+9（R2 复审，验收修复轮一 Task V4 沿用）：worker run 详情入口——recent 行现在渲染成人话
+// 句子（主语=剧名/片名 + decisionPhrase），点开一条仍打开同一块 RunDetail 右侧板；React key
+// 仍用 runs.id（同一个 job 可能有多行 runs）。
+describe('Lanes：recent 人话句子行点开 → RunDetail（worker run 详情入口）', () => {
   function workersWithRecent(recent: WorkflowWorkersDTO['recent']): WorkflowWorkersDTO {
-    return { running: [], recent }
+    return { running: [], recent, installedLast24h: 0 }
   }
 
   it('点开渲染 decision 语义点 + detail + 静态 TraceRows；seriesId 非空时显示 Rerun 按钮', async () => {
     const recentRow = {
-      id: 5, jobId: 10, decision: 'installed', detail: '3 集入账: e1, e2, e3', finishedAt: NOW, seriesId: 's9', movieId: null,
+      id: 5, jobId: 10, decision: 'installed', detail: '3 集入账: e1, e2, e3', finishedAt: NOW,
+      seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null,
     }
     const trace: RunTraceDTO = {
       events: [{ runKey: 'job-10', seq: 0, tool: 'download_candidate', argsSummary: 'E01', resultSummary: 'ok', tookMs: 800, at: NOW }],
@@ -318,7 +346,8 @@ describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D
     )
     renderLanes()
 
-    const row = await screen.findByText('3 集入账: e1, e2, e3')
+    // recent 行主语=剧名（Silo），不再是裸 tmdb id 或截断 detail 文本。
+    const row = await screen.findByText('Silo')
     fireEvent.click(row)
 
     const panel = await screen.findByRole('dialog', { name: 'run 5' })
@@ -329,8 +358,11 @@ describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D
     expect(within(panel).getByRole('button', { name: 'Rerun' })).toBeInTheDocument()
   })
 
-  it('seriesId 为 null（如 movie 目标的 find_subtitle worker run）→ 不显示 Rerun 按钮', async () => {
-    const recentRow = { id: 6, jobId: 11, decision: 'installed', detail: 'movie 装好了', finishedAt: NOW, seriesId: null, movieId: 'm1' }
+  it('seriesId 为 null（如 movie 目标的 find_subtitle worker run）→ 不显示 Rerun 按钮；剧名缺失降级片名', async () => {
+    const recentRow = {
+      id: 6, jobId: 11, decision: 'installed', detail: 'movie 装好了', finishedAt: NOW,
+      seriesId: null, movieId: 'm1', seriesName: null, movieName: 'Movie Z',
+    }
     vi.stubGlobal(
       'fetch',
       mockFetchRouted([
@@ -341,14 +373,38 @@ describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D
       ]),
     )
     renderLanes()
-    fireEvent.click(await screen.findByText('movie 装好了'))
+    fireEvent.click(await screen.findByText('Movie Z'))
     const panel = await screen.findByRole('dialog', { name: 'run 6' })
     expect(within(panel).queryByRole('button', { name: 'Rerun' })).not.toBeInTheDocument()
   })
 
+  it('剧名/片名皆缺失 → 主语降级显示 id（诚实兜底）', async () => {
+    const recentRow = {
+      id: 9, jobId: 12, decision: 'no_safe_match', detail: null, finishedAt: NOW,
+      seriesId: 's-empty', movieId: null, seriesName: null, movieName: null,
+    }
+    vi.stubGlobal(
+      'fetch',
+      mockFetchRouted([
+        { path: '/api/v2/workflow/pending', body: EMPTY_PENDING },
+        { path: '/api/v2/workflow/passes', body: [] },
+        { path: '/api/v2/workflow/workers', body: workersWithRecent([recentRow]) },
+      ]),
+    )
+    renderLanes()
+    expect(await screen.findByText('s-empty')).toBeInTheDocument()
+    expect(screen.getByText('no safe match found')).toBeInTheDocument()
+  })
+
   it('同一 job 两行 runs（jobId 相同、id 不同）各自独立可点开——不因 key 撞车而错配', async () => {
-    const rowA = { id: 21, jobId: 30, decision: 'installed', detail: 'first row', finishedAt: NOW - 100, seriesId: 's1', movieId: null }
-    const rowB = { id: 22, jobId: 30, decision: 'retry_later', detail: 'second row', finishedAt: NOW, seriesId: 's1', movieId: null }
+    const rowA = {
+      id: 21, jobId: 30, decision: 'installed', detail: 'first row', finishedAt: NOW - 100,
+      seriesId: 's1', movieId: null, seriesName: 'Silo', movieName: null,
+    }
+    const rowB = {
+      id: 22, jobId: 30, decision: 'error', detail: 'second row', finishedAt: NOW,
+      seriesId: 's1', movieId: null, seriesName: 'Silo', movieName: null,
+    }
     vi.stubGlobal(
       'fetch',
       mockFetchRouted([
@@ -360,15 +416,19 @@ describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D
       ]),
     )
     renderLanes()
-    await screen.findByText('first row')
-    expect(screen.getByText('second row')).toBeInTheDocument() // 两行都渲染，没有互相顶掉
+    // 两个短语都各自渲染（同一主语 "Silo" 出现两次，靠短语区分——decisionPhrase 各不相同）。
+    await screen.findByText('subtitles installed')
+    expect(screen.getByText('hit a problem — will retry')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('first row'))
+    fireEvent.click(screen.getByText('subtitles installed'))
     expect(await screen.findByRole('dialog', { name: 'run 21' })).toBeInTheDocument()
   })
 
   it('Rerun 按钮走现有 RerunDialog 流，POST 请求体不带 seasons 键（全剧缺口）', async () => {
-    const recentRow = { id: 5, jobId: 10, decision: 'installed', detail: '3 集入账', finishedAt: NOW, seriesId: 's9', movieId: null }
+    const recentRow = {
+      id: 5, jobId: 10, decision: 'installed', detail: '3 集入账', finishedAt: NOW,
+      seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null,
+    }
     const fetchMock = mockFetchRouted([
       { path: '/api/v2/workflow/pending', body: EMPTY_PENDING },
       { path: '/api/v2/workflow/passes', body: [] },
@@ -378,7 +438,7 @@ describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D
     ])
     vi.stubGlobal('fetch', fetchMock)
     renderLanes()
-    fireEvent.click(await screen.findByText('3 集入账'))
+    fireEvent.click(await screen.findByText('Silo'))
     const panel = await screen.findByRole('dialog', { name: 'run 5' })
     fireEvent.click(within(panel).getByRole('button', { name: 'Rerun' }))
 
@@ -393,7 +453,7 @@ describe('Lanes：Recent 行点开 → RunDetail（worker run 详情入口，R2D
   })
 })
 
-describe('Lanes：Rerun 确认流——AlertDialog → POST → 四态回执各断言一条', () => {
+describe('Lanes：Rerun 确认流（Gaps 列 PendingLane 发起）——AlertDialog → POST → 四态回执各断言一条', () => {
   function pendingWithSeries(): WorkflowPendingDTO {
     return {
       series: [{ seriesId: 's1', seriesName: 'Silo', season: 1, missing: 3, throttled: 0, nextRecheckAt: null, sampleReason: null }],

@@ -1,7 +1,7 @@
-// web/src/workflow/text.ts：Workflow 三泳道的动态文案组装——纯函数，全部英文（DESIGN.md §7：
+// web/src/workflow/text.ts：Workflow 区的动态文案组装——纯函数，全部英文（DESIGN.md §7：
 // Workflow 区永不本地化），带运行期数字/技术枚举值的拼句故意不进 i18n 表（同 time.ts 的既有
-// 理由），集中收纳供 PendingLane/PassCard/WorkerCard 共用同一份口径，避免三处各拼一套措辞。
-import type { DispatchReceiptsDTO, WorkflowRunningWorkerDTO } from '../api/types.js'
+// 理由），集中收纳供 PendingLane/ActivityFeed/RunDetail 共用同一份口径，避免多处各拼一套措辞。
+import type { DispatchReceiptsDTO } from '../api/types.js'
 import type { TKey } from '../i18n/useT.js'
 import { formatNextRecheck } from './time.js'
 
@@ -40,17 +40,6 @@ const RECEIPT_LABEL: Record<keyof DispatchReceiptsDTO, string> = {
  *  分布 chip 排...非零才显示"）。 */
 export function receiptChips(receipts: DispatchReceiptsDTO): string[] {
   return RECEIPT_ORDER.filter((k) => receipts[k] > 0).map((k) => `${receipts[k]} ${RECEIPT_LABEL[k]}`)
-}
-
-/** WorkerCard 头行——"{taskType} · {target}[S{seasons}]"，target 优先 seriesId、其次 movieId
- *  （find_subtitle 的 movie 目标 seriesId 恒为 null，见 src/dashboard/apiV2.ts
- *  buildWorkflowWorkers 的既有注释）。 */
-export function workerHeaderText(
-  w: Pick<WorkflowRunningWorkerDTO, 'taskType' | 'seriesId' | 'movieId' | 'seasons'>,
-): string {
-  const target = w.seriesId ?? w.movieId ?? '?'
-  const seasonsPart = w.seasons && w.seasons.length > 0 ? `[S${w.seasons}]` : ''
-  return `${w.taskType ?? 'task'} · ${target}${seasonsPart}`
 }
 
 /** decision 词 → 语义色变体（DESIGN.md 任务规格："decision 语义色点：installed=绿/

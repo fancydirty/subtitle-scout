@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  truncate, missingBadge, throttledLine, receiptChips, workerHeaderText, decisionVariant, outcomeMessageKey,
+  truncate, missingBadge, throttledLine, receiptChips, decisionVariant, outcomeMessageKey,
 } from './text.js'
 import type { DispatchReceiptsDTO } from '../api/types.js'
 
@@ -46,24 +46,6 @@ describe('receiptChips（非零才显示，unknown → "N unparsed"）', () => {
   it('blocked_dormant 显示为 "blocked"', () => {
     const r: DispatchReceiptsDTO = { created: 0, revived: 0, coalesced: 0, blocked_dormant: 2, unknown: 0 }
     expect(receiptChips(r)).toEqual(['2 blocked'])
-  })
-})
-
-describe('workerHeaderText', () => {
-  it('series 目标 + 季数组 → "{taskType} · {seriesId}[S{seasons}]"', () => {
-    expect(workerHeaderText({ taskType: 'find_subtitle', seriesId: 's1', movieId: null, seasons: [1, 2] })).toBe(
-      'find_subtitle · s1[S1,2]',
-    )
-  })
-  it('无季（seasons null）→ 不带方括号后缀', () => {
-    expect(workerHeaderText({ taskType: 'realign', seriesId: 's1', movieId: null, seasons: null })).toBe(
-      'realign · s1',
-    )
-  })
-  it('movie 目标（seriesId null）→ 落回 movieId', () => {
-    expect(workerHeaderText({ taskType: 'find_subtitle', seriesId: null, movieId: 'm1', seasons: null })).toBe(
-      'find_subtitle · m1',
-    )
   })
 })
 

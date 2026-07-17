@@ -59,8 +59,7 @@ export const zh = {
   workflow_empty_desc: en.workflow_empty_desc,
 
   workflow_lane_pending: en.workflow_lane_pending,
-  workflow_lane_passes: en.workflow_lane_passes,
-  workflow_lane_workers: en.workflow_lane_workers,
+  workflow_lane_activity: en.workflow_lane_activity,
 
   workflow_pending_series_heading: en.workflow_pending_series_heading,
   workflow_pending_movies_heading: en.workflow_pending_movies_heading,
@@ -69,6 +68,7 @@ export const zh = {
 
   workflow_passes_lane_empty: en.workflow_passes_lane_empty,
   workflow_passes_open_label: en.workflow_passes_open_label,
+  workflow_orchestrator_log_heading: en.workflow_orchestrator_log_heading,
 
   workflow_workers_running_heading: en.workflow_workers_running_heading,
   workflow_workers_recent_heading: en.workflow_workers_recent_heading,
