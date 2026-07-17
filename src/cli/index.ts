@@ -106,6 +106,7 @@ function buildIngestPass(opts: {
   targetLanguages: () => string[]
   originSkipLanguages: () => string[]
   excludeExtras?: () => boolean
+  hardsubMode?: () => 'off' | 'agent' | 'aggressive'
   log: (msg: string) => void
 }): ReturnType<typeof makeIngestPass> {
   return makeIngestPass({
@@ -117,6 +118,7 @@ function buildIngestPass(opts: {
     targetLanguages: opts.targetLanguages,
     originSkipLanguages: opts.originSkipLanguages,
     excludeExtras: opts.excludeExtras,
+    hardsubMode: opts.hardsubMode,
     log: opts.log,
   })
 }
@@ -162,6 +164,12 @@ async function cmdReconcileAll() {
     targetLanguages: () => languagesNow().targetLanguages,
     originSkipLanguages: () => languagesNow().originSkipLanguages,
     excludeExtras: () => settingsRepo.get('exclude_extras') === 'true',
+    // 救援R5：hardsub_mode 提供者——非三态合法值（未设置/脏值）一律降级 'off'（最保守，
+    // 同 exclude_extras 的默认关闭口径）。
+    hardsubMode: () => {
+      const v = settingsRepo.get('hardsub_mode')
+      return v === 'agent' || v === 'aggressive' ? v : 'off'
+    },
     log: (msg) => console.log(`[reconcile-all] ${msg}`),
   })
   const decision = await runReconcileAll({
@@ -239,6 +247,12 @@ async function cmdWatch() {
     targetLanguages: () => languagesNow().targetLanguages,
     originSkipLanguages: () => languagesNow().originSkipLanguages,
     excludeExtras: () => settingsRepo.get('exclude_extras') === 'true',
+    // 救援R5：hardsub_mode 提供者——非三态合法值（未设置/脏值）一律降级 'off'（最保守，
+    // 同 exclude_extras 的默认关闭口径）。
+    hardsubMode: () => {
+      const v = settingsRepo.get('hardsub_mode')
+      return v === 'agent' || v === 'aggressive' ? v : 'off'
+    },
     log,
   })
 

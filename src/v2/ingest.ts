@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'node:fs'
+import { basename } from 'node:path'
 import { tagsForLanguage, langOf } from '../agent/languages.js'
 import { seasonEpisodeForAbsolute } from '../agent/absoluteEpisodes.js'
 import { findExternalSidecar } from '../files/sidecar.js'
@@ -44,6 +45,10 @@ export interface IngestDeps {
   /** 救援R4：特典机械排除开关（settings.exclude_extras）。() => true 才启用铁案过滤。
    *  提供者化：每轮 pass 新鲜求值，设置页改完下一轮生效。缺省 false（保守）。 */
   excludeExtras?: () => boolean
+  /** 救援R5：hardsub_mode 提供者（settings.hardsub_mode）。'off'/'agent' 时 classify() 的
+   *  rule 4b 不生效（agent 档判断归 find-subtitle skill，不在这里）；'aggressive' 才机械直判。
+   *  提供者化，同 excludeExtras 手法：每轮 pass 新鲜求值，设置页改完下一轮生效。缺省 'off'。 */
+  hardsubMode?: () => 'off' | 'agent' | 'aggressive'
   log: (msg: string) => void
   now?: () => number
 }
@@ -156,6 +161,9 @@ interface ClassifyInput {
   targetLanguages: string[]
   originSkipLanguages: string[]
   fileExists: (path: string) => boolean
+  /** 救援R5 aggressive 档：机械层直判开关。'agent'/'off' 时这条规则不生效（agent 档的判断
+   *  归 find-subtitle skill，机械层不越权代劳；见 rule 4b 注释）。 */
+  hardsubMode: 'off' | 'agent' | 'aggressive'
 }
 
 /**
@@ -197,12 +205,23 @@ interface ClassifyInput {
  * - rule 3（磁盘 sidecar）：findExternalSidecar（现搬到 files/sidecar.ts，见该文件头注释）按
  *   同一套 targetTags 探测磁盘 `<videoBase>.<tag>.<ext>` sidecar，命中 → 'covered'。逐字不变。
  *
+ * - rule 4b（救援R5 §4 aggressive 档，机械层直判，新增）：仅在 hardsubMode==='aggressive' 且
+ *   探针**确凿**判定"零内嵌字幕轨"（embeddedLangs 非 null 且为空数组——探针真的跑过、真的没
+ *   查到任何轨；embeddedLangs 为 null 是"探针不可用/未知"，不是证据，不能触发这条规则）且文件名
+ *   带括号发布组标记（fansub 惯例，如 [Group] Show - 01.mkv）时，直接判 hardsub-assumed，不落
+ *   missing——这类文件根本不会被派给 find-subtitle worker 做徒劳搜索。agent 档的同款判断
+ *   （证据完全一致：组名标记+确认无内嵌，只是"搜索已穷尽"这第三重证据机械层拿不到）故意不在
+ *   这里做——那是 find-subtitle skill 的职责（agent 判断先搜索、机械层直接跳过搜索），两档
+ *   共享判据但不共享代码路径，避免机械层偷跑 agent 档的职责边界。
  * - rule 4（兜底）：以上都不命中 → 'missing'。
  */
 
 const HAN = /[一-鿿]/
 const KANA = /[぀-ヿ]/
 const HANGUL = /[가-힯]/
+/** rule 4b 的发布组标记：文件名以 [任意非] 字符] 开头——fansub 命名惯例（[Group] Show...）。
+ *  只看 basename，不看目录名（目录名带括号更常是年份/tmdbid 标记，不是发布组）。 */
+const RELEASE_GROUP_TAG = /^\[[^\]]+\]/
 /** rule 1b 的标题启发式：含汉字且无假名无谚文 → 视作中文（排除日番/韩剧）。无 TMDB origin
  *  信号时用（去 Jellyfin 化 P7：原属 daemon/triggers.ts，唯一消费方只剩这里，随出口清算搬来
  *  同一个文件——语义/正则逐字未变，纯位置移动）。 */
@@ -222,7 +241,7 @@ interface ClassifyResult {
 }
 
 function classify(input: ClassifyInput): ClassifyResult {
-  const { title, originLang, originResolutionFailed, embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists } = input
+  const { title, originLang, originResolutionFailed, embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists, hardsubMode } = input
 
   // rule 0
   if (originLang != null && originSkipLanguages.includes(langOf(originLang))) {
@@ -246,6 +265,15 @@ function classify(input: ClassifyInput): ClassifyResult {
   // rule 3
   if (findExternalSidecar(path, targetTags, fileExists)) {
     return { status: 'covered', reason: null }
+  }
+
+  // rule 4b（见函数头注释）：aggressive 档 + 探针确凿零内嵌轨 + 发布组标记 → 直判 hardsub-assumed。
+  if (
+    hardsubMode === 'aggressive' &&
+    embeddedLangs !== null && embeddedLangs.length === 0 &&
+    RELEASE_GROUP_TAG.test(basename(path))
+  ) {
+    return { status: 'hardsub-assumed', reason: 'aggressive 档机械直判：发布组标记 + 探针确认零内嵌字幕轨' }
   }
 
   // rule 4
@@ -348,6 +376,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
     const targetLanguages = deps.targetLanguages()
     const originSkipLanguages = deps.originSkipLanguages?.() ?? targetLanguages
     const excludeExtras = deps.excludeExtras?.() ?? false
+    const hardsubMode = deps.hardsubMode?.() ?? 'off'
     ingestLock.held = true
     try {
       const nowMs = deps.now ? deps.now() : Date.now()
@@ -408,6 +437,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                   targetLanguages,
                   originSkipLanguages,
                   fileExists,
+                  hardsubMode,
                 })
                 const toWrite = resolveStatusToWrite(computed.status, existing.subStatus)
                 if (toWrite !== existing.subStatus) {
@@ -554,7 +584,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // priorEpisode 已经在上面的 own-id 幂等性守卫里查过一次，直接复用，不重复查询。
               const computed = classify({
                 title, originLang: origin.lang, originResolutionFailed: origin.failed,
-                embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists,
+                embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists, hardsubMode,
               })
               const toWrite = resolveStatusToWrite(computed.status, priorEpisode?.sub_status ?? null)
 
@@ -638,7 +668,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // priorMovie 已经在上面的 own-id 幂等性守卫里查过一次，直接复用，不重复查询。
               const computed = classify({
                 title, originLang: origin.lang, originResolutionFailed: origin.failed,
-                embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists,
+                embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists, hardsubMode,
               })
               const toWrite = resolveStatusToWrite(computed.status, priorMovie?.sub_status ?? null)
 

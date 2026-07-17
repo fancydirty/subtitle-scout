@@ -1473,3 +1473,118 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull()
   })
 })
+
+// 救援R5（rule 4b）：aggressive 档机械直判——发布组标记 + 探针确认零内嵌字幕轨 → hardsub-assumed，
+// 不落 missing（不会被派 find-subtitle worker 徒劳搜索）。
+describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
+  it("hardsubMode='aggressive' + 发布组标记 + probe 确认零内嵌轨 → 直判 hardsub-assumed", async () => {
+    const disk = fakeDisk()
+    const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]), // 探针真的跑了，零轨
+      hardsubMode: () => 'aggressive',
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')
+    expect(ep?.sub_status).toBe('hardsub-assumed')
+    expect(ep?.status_reason).toMatch(/aggressive/)
+  })
+
+  it("hardsubMode='agent'：worker 侧判断，机械层不代劳——同款证据下仍落 missing", async () => {
+    const disk = fakeDisk()
+    const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      hardsubMode: () => 'agent',
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getEpisode('tmdb:1/s1e1')?.sub_status).toBe('missing')
+  })
+
+  it("hardsubMode='off'（缺省）：同款证据下仍落 missing", async () => {
+    const disk = fakeDisk()
+    const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getEpisode('tmdb:1/s1e1')?.sub_status).toBe('missing')
+  })
+
+  it('aggressive 档但无发布组标记的文件名 → 仍落 missing（标记是硬证据，不是可选项）', async () => {
+    const disk = fakeDisk()
+    const path = '/media/Show - 01.mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      hardsubMode: () => 'aggressive',
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getEpisode('tmdb:1/s1e1')?.sub_status).toBe('missing')
+  })
+
+  it('aggressive 档 + 发布组标记，但探针不可用（null，不是确认零轨）→ 不判定，仍落 missing', async () => {
+    const disk = fakeDisk()
+    const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      probe: vi.fn(async () => null), // 探针不可用=不知道，不是"确认没有"
+      hardsubMode: () => 'aggressive',
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getEpisode('tmdb:1/s1e1')?.sub_status).toBe('missing')
+  })
+
+  it('aggressive 档 + 发布组标记 + 探针确认有内嵌轨（非零）→ 不判定 hardsub-assumed', async () => {
+    const disk = fakeDisk()
+    const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize,
+      probe: vi.fn(async () => [track({ lang: 'eng' })]),
+      targetLanguages: () => ['eng'],
+      hardsubMode: () => 'aggressive',
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    // 命中 rule 2（embedded），不会走到 rule 4b
+    expect(lib.getEpisode('tmdb:1/s1e1')?.sub_status).toBe('embedded')
+  })
+})
