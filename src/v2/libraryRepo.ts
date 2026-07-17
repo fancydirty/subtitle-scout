@@ -144,6 +144,14 @@ export interface ItemFile {
   added_at: number
 }
 
+/** 重复源 P3：逐文件覆盖事实（itemFileCoverage 返回项）。isMain=是否主文件（其余为副本）；
+ *  covered=该文件是否已有字幕着落（主文件看 sub_status，副本看 subtitles.file_path）。 */
+export interface ItemFileCoverage {
+  path: string
+  isMain: boolean
+  covered: boolean
+}
+
 export interface IdentifyOverride {
   tmdbId: string
   isTv: boolean
@@ -742,6 +750,31 @@ export class LibraryRepo {
     })
     promote()
     return promoted.path
+  }
+
+  /** 重复源 P3：逐文件覆盖事实——一个条目的每个文件（主文件 + 全部副本）各自是否已有字幕着落。
+   *  主文件覆盖看 episodes/movies.sub_status（covered/embedded/hardsub-assumed 三态都算"已处理，
+   *  无需再找外挂"）；副本覆盖看 subtitles.file_path 是否有对应该副本 path 的行（P2 起字幕可按
+   *  file_path 归属到具体文件；file_path IS NULL 的存量字幕=挂主文件，不算副本覆盖）。
+   *  条目不存在（两表都查不到）→ 空数组。派生态由调用方算：全 covered→covered、混合→partial、
+   *  filesMissing=covered 为 false 的文件数。 */
+  itemFileCoverage(itemId: string): ItemFileCoverage[] {
+    const ep = this.db.prepare(`SELECT path, sub_status FROM episodes WHERE id = ?`).get(itemId) as
+      | { path: string; sub_status: SubStatus } | undefined
+    const main = ep ?? (this.db.prepare(`SELECT path, sub_status FROM movies WHERE id = ?`).get(itemId) as
+      | { path: string; sub_status: SubStatus } | undefined)
+    if (!main) return []
+
+    const COVERED_ISH: ReadonlySet<string> = new Set(['covered', 'embedded', 'hardsub-assumed'])
+    const replicaSubPaths = new Set(
+      (this.db.prepare(`SELECT DISTINCT file_path FROM subtitles WHERE item_id = ? AND file_path IS NOT NULL`).all(itemId) as
+        { file_path: string }[]).map((r) => r.file_path)
+    )
+    const replicas = this.listItemFiles(itemId)
+    return [
+      { path: main.path, isMain: true, covered: COVERED_ISH.has(main.sub_status) },
+      ...replicas.map((r) => ({ path: r.path, isMain: false, covered: replicaSubPaths.has(r.path) })),
+    ]
   }
 
   // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----

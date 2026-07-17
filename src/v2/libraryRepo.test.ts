@@ -577,6 +577,47 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       expect(lib.promoteOldestReplica('s1/e1')).toBeNull()
       expect(lib.getEpisode('s1/e1')!.path).toBe('/media/main.mkv')
     })
+
+    it('itemFileCoverage：主文件 covered + 副本无字幕 → 主 covered、副本 uncovered（partial 素材）', () => {
+      // 主文件已入库为 covered（beforeEach 设的 sub_status='covered'）
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      const cov = lib.itemFileCoverage('s1/e1')
+      expect(cov).toEqual([
+        { path: '/media/main.mkv', isMain: true, covered: true },
+        { path: '/media/4k.mkv', isMain: false, covered: false },
+      ])
+      // 派生：混合 → partial，filesMissing=1
+      expect(cov.filter((f) => !f.covered)).toHaveLength(1)
+    })
+
+    it('itemFileCoverage：副本有 file_path 归属的字幕行 → 副本 covered', () => {
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      // 给副本装一条按 file_path 归属的字幕（P2 起 subtitles 支持 file_path）
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, file_path, created_at) VALUES (?,?,?,?,?,?)`)
+        .run('s1/e1', '/media/4k.zh.srt', 'zh-Hans', 'scout-download', '/media/4k.mkv', 1000)
+      const cov = lib.itemFileCoverage('s1/e1')
+      expect(cov.find((f) => f.path === '/media/4k.mkv')!.covered).toBe(true)
+      expect(cov.every((f) => f.covered)).toBe(true) // 全覆盖
+    })
+
+    it('itemFileCoverage：file_path IS NULL 的存量字幕只挂主文件，不算副本覆盖', () => {
+      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
+      // 存量字幕（无 file_path）——挂主文件，不应让副本变 covered
+      db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+        .run('s1/e1', '/media/main.zh.srt', 'zh-Hans', 'scout-download', 1000)
+      expect(lib.itemFileCoverage('s1/e1').find((f) => f.path === '/media/4k.mkv')!.covered).toBe(false)
+    })
+
+    it('itemFileCoverage：主文件 missing 无副本 → 单元素主文件 uncovered', () => {
+      lib.upsertEpisode({ id: 's1/e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/media/e2.mkv', subStatus: 'missing' })
+      expect(lib.itemFileCoverage('s1/e2')).toEqual([
+        { path: '/media/e2.mkv', isMain: true, covered: false },
+      ])
+    })
+
+    it('itemFileCoverage：条目不存在 → 空数组', () => {
+      expect(lib.itemFileCoverage('tmdb:999/s9e9')).toEqual([])
+    })
   })
 
   describe('identify_overrides', () => {
