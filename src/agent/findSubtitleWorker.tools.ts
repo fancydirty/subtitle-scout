@@ -1,7 +1,8 @@
 import { tool } from 'ai'
 import { z } from 'zod'
-import { join, basename, extname } from 'node:path'
+import { join, basename, extname, dirname, resolve } from 'node:path'
 import { readFile } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { runResolve, type FetchAdapter } from '../cli/fetchLib.js'
 import { downloadDirect } from '../adapters/download/direct.js'
@@ -219,10 +220,16 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
       'the task has exactly one target.',
     inputSchema: z.object({
       stagedFileId: z.string(),
-      // A2: any non-empty language tag, not just zh-Hans/zh-Hant — the agent picks this from
-      // task.targetLanguage (refined to Hans/Hant via subtitleInspect's detectedScript for
-      // Chinese targets), not from a fixed two-value domain.
-      langTag: z.string().min(1),
+      // A2 + H2（2026-07-18 数据安全审计——路径注入防线）：langTag 曾接受任意非空字符串，直接拼进
+      // finalPath 的文件名段（见下方 finalPath 计算）；一个含 '/' 或 '..' 的 langTag（例如
+      // '../OtherShow/ep01'）能在 join() 之后把 finalPath 落到沙盒内别的目录——isUnderRoots 是对
+      // 整棵沙盒树的宽检查,拦不住"沙盒内越权"这种子集,配合任何覆盖缺陷就是越权顶掉别的字幕。
+      // 收紧为 BCP-47 形态足够用的白名单：字母/数字/连字符，长度上限 20（zh-Hans/en/pt-BR 都合法，
+      // '/'和'..'一律在 schema 层被拒绝，tool-arg 校验都不会跑到 execute）。
+      langTag: z.string().regex(
+        /^[A-Za-z0-9-]{1,20}$/,
+        'langTag must look like a BCP-47 tag (letters/digits/hyphens only, e.g. zh-Hans, en, pt-BR)',
+      ),
       // Which of the task's target videos this call claims (Task 5 / R-5) — see resolveTargetFilename.
       videoFilename: nullableTolerant(z.string()),
     }),
@@ -236,10 +243,62 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
       const videoBase = basename(target.videoFilename).replace(/\.[^.]+$/, '')
       const ext = extname(stagedPath)
       const finalPath = join(target.outDir, `${videoBase}.${langTag}${ext}`)
+
+      // H2 第二道防线（defense-in-depth，同下面 isUnderRoots 复核的精神）：finalPath 必须恰好落在
+      // target.outDir 本身，一层不多一层不少。上面的白名单已经挡掉了几乎所有注入形态，这里再兜
+      // 一层——万一 langTag 校验将来被放宽/绕过，这道断言仍能挡住任何试图新建子目录或跳出
+      // outDir 的 finalPath。
+      if (dirname(finalPath) !== resolve(target.outDir)) {
+        return {
+          error: `refusing to install to unexpected directory: ${dirname(finalPath)} ` +
+            `(expected exactly ${resolve(target.outDir)})`,
+        }
+      }
       if (!isUnderRoots(finalPath, [deps.mediaRoot])) {
         return { error: `refusing to install outside sandboxed media root: ${finalPath}` }
       }
+
+      // H3（2026-07-18 数据安全审计——符号链接逃逸防线）：isUnderRoots 是纯字符串前缀比较，从不
+      // 解析链接（不改 isUnderRoots 本身——它用途广，别的调用方要的就是这个便宜的字符串检查）。
+      // 如果 target.outDir（或它的某层祖先目录）本身是指向沙盒外的符号链接，上面两道字符串级
+      // 检查会全部误判通过。真实写入前做最后一次 realpath 校验：目标目录的真实路径必须仍在
+      // mediaRoot 的真实路径之下。目录不存在/realpath 失败一律按"不通过"处理（宁停不猜）。
+      let realDir: string
+      try {
+        realDir = realpathSync(dirname(finalPath))
+      } catch (e) {
+        return {
+          error: `refusing to install: cannot resolve real path of ${dirname(finalPath)} ` +
+            `(${e instanceof Error ? e.message : String(e)})`,
+        }
+      }
+      let realMediaRoot: string
+      try {
+        realMediaRoot = realpathSync(deps.mediaRoot)
+      } catch (e) {
+        return {
+          error: `refusing to install: cannot resolve real path of configured mediaRoot ${deps.mediaRoot} ` +
+            `(${e instanceof Error ? e.message : String(e)})`,
+        }
+      }
+      if (!isUnderRoots(realDir, [realMediaRoot])) {
+        return {
+          error: `refusing to install: real path of target directory (${realDir}) escapes the sandboxed ` +
+            `media root — possible symlink escape`,
+        }
+      }
+
       const result = await install(stagedPath, finalPath)
+      // H1（2026-07-18 数据安全审计——防静默覆盖）：finalPath 已存在时 install() 不改名、不覆盖，
+      // 原样把冲突报回来——这里把它转成给 agent 的 error 文案：agent 据此可以自行判断，比如这份
+      // 字幕其实已经在了就直接 finalize 收工，或者换一个 langTag 重新安装。
+      if ('conflict' in result) {
+        return {
+          error: `refusing to overwrite existing file at ${result.path} — a file already exists at this ` +
+            `location (a hand-placed subtitle, or a leftover from a previous run). If it is already correct, ` +
+            `finalize without reinstalling; otherwise pick a different langTag.`,
+        }
+      }
       return { path: result.path }
     },
   })

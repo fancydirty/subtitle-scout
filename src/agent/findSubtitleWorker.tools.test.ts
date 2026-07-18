@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
@@ -484,8 +484,11 @@ describe('install_subtitle tool', () => {
 
   // A2: langTag's inputSchema used to be a two-value zh-Hans/zh-Hant enum, which would hard-reject
   // a real model's tool call to install an 'en' (or any non-Chinese) subtitle before execute ever
-  // ran. Generalized to any non-empty string.
-  it('inputSchema accepts any non-empty langTag string, not just zh-Hans/zh-Hant', () => {
+  // ran. Generalized — and then H2 (2026-07-18 数据安全审计) narrowed "any non-empty string" down
+  // to a BCP-47-ish whitelist (letters/digits/hyphens only), because langTag is spliced verbatim
+  // into finalPath's filename segment and an unrestricted string is a path-injection vector
+  // (see the regex test below).
+  it('inputSchema accepts any BCP-47-ish langTag (letters/digits/hyphens), not just zh-Hans/zh-Hant', () => {
     const tool_ = makeInstallSubtitleTool({
       stagedFiles: new Map(),
       targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: sandboxDir }],
@@ -494,6 +497,24 @@ describe('install_subtitle tool', () => {
     const schema = tool_.inputSchema as import('zod').ZodType
     expect(schema.parse({ stagedFileId: 'x', langTag: 'en' })).toEqual({ stagedFileId: 'x', langTag: 'en', videoFilename: null })
     expect(schema.parse({ stagedFileId: 'x', langTag: 'zh-Hans' })).toEqual({ stagedFileId: 'x', langTag: 'zh-Hans', videoFilename: null })
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'pt-BR' })).toEqual({ stagedFileId: 'x', langTag: 'pt-BR', videoFilename: null })
+  })
+
+  // H2 (2026-07-18 数据安全审计——路径注入防线): langTag used to be `z.string().min(1)`, so a
+  // langTag like '../OtherShow/ep01' sailed through schema validation and got spliced straight
+  // into finalPath's filename segment — join() would then resolve it to somewhere else inside the
+  // sandbox tree entirely (isUnderRoots is a whole-tree check, it doesn't stop THAT). Whitelisted
+  // to a BCP-47-ish shape so '/' and '..' never reach execute at all.
+  it('inputSchema rejects a langTag containing a path separator or parent-dir traversal', () => {
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map(),
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: sandboxDir }],
+      mediaRoot: sandboxDir,
+    })
+    const schema = tool_.inputSchema as import('zod').ZodType
+    expect(() => schema.parse({ stagedFileId: 'x', langTag: '../OtherShow/ep01' })).toThrow()
+    expect(() => schema.parse({ stagedFileId: 'x', langTag: 'zh/Hans' })).toThrow()
+    expect(() => schema.parse({ stagedFileId: 'x', langTag: '..' })).toThrow()
   })
 
   it('installs a staged file with a non-Chinese lang tag (e.g. an English subtitle)', async () => {
@@ -546,6 +567,121 @@ describe('install_subtitle tool', () => {
     )
     expect(out).toHaveProperty('error')
     expect((out as { error: string }).error).toMatch(/refusing to install outside/)
+  })
+
+  // H2 second line of defense (2026-07-18 数据安全审计): the schema whitelist above already blocks
+  // this at the tool-arg boundary — this test calls execute() directly (bypassing schema.parse, the
+  // same style every other execute() call in this suite already uses) to prove the dirname
+  // assertion INSIDE execute would independently catch a langTag containing a path separator, in
+  // case the whitelist is ever loosened/bypassed by a future change.
+  it('defense-in-depth: rejects a finalPath that would land outside outDir even if the langTag schema were bypassed', async () => {
+    const videoDir = join(sandboxDir, 'media', 'Show')
+    mkdirSync(videoDir, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-dirname-escape'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: videoDir }],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: '../evil', videoFilename: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toHaveProperty('error')
+    expect((out as { error: string }).error).toMatch(/refusing to install to unexpected directory/)
+    expect(existsSync(join(videoDir, 'evil.srt'))).toBe(false)
+  })
+
+  // H3 (2026-07-18 数据安全审计——符号链接逃逸防线): isUnderRoots is a pure string-prefix check and
+  // never resolves symlinks. If target.outDir is itself a symlink pointing outside the sandboxed
+  // mediaRoot, the string-level isUnderRoots(finalPath, [mediaRoot]) check above is fooled — finalPath
+  // starts with mediaRoot lexically even though its REAL location is elsewhere entirely.
+  describe('symlink escape (H3)', () => {
+    let mediaRootDir: string
+    let outsideDir: string
+    afterEach(() => {
+      rmSync(mediaRootDir, { recursive: true, force: true })
+      rmSync(outsideDir, { recursive: true, force: true })
+    })
+
+    it('refuses to install when outDir is a symlink whose real path escapes the sandboxed mediaRoot', async () => {
+      mediaRootDir = mkdtempSync(join(tmpdir(), 'scout-h3-mediaroot-'))
+      outsideDir = mkdtempSync(join(tmpdir(), 'scout-h3-outside-'))
+      const linkPath = join(mediaRootDir, 'Show') // looks like it's under mediaRootDir, lexically
+      symlinkSync(outsideDir, linkPath) // ...but really points elsewhere entirely
+
+      const stagedPath = join(mediaRootDir, 'staged.srt')
+      writeFileSync(stagedPath, 'hello')
+      const stagedFileId = 'handle-symlink-escape'
+      const tool_ = makeInstallSubtitleTool({
+        stagedFiles: new Map([[stagedFileId, stagedPath]]),
+        targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: linkPath }],
+        mediaRoot: mediaRootDir,
+      })
+
+      const out = await tool_.execute!(
+        { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+        { toolCallId: 't1', messages: [] } as any,
+      )
+
+      expect(out).toHaveProperty('error')
+      expect((out as { error: string }).error).toMatch(/symlink escape/)
+      // never actually wrote through the symlink into the outside directory
+      expect(existsSync(join(outsideDir, 'Show.S01E01.zh-Hans.srt'))).toBe(false)
+    })
+
+    it('still installs normally through a NON-symlinked outDir (realpath check does not break the happy path)', async () => {
+      mediaRootDir = mkdtempSync(join(tmpdir(), 'scout-h3-mediaroot-normal-'))
+      outsideDir = mkdtempSync(join(tmpdir(), 'scout-h3-outside-unused-')) // only here for afterEach symmetry
+      const videoDir = join(mediaRootDir, 'Show')
+      mkdirSync(videoDir, { recursive: true })
+      const stagedPath = join(mediaRootDir, 'staged.srt')
+      writeFileSync(stagedPath, 'hello')
+      const stagedFileId = 'handle-symlink-normal'
+      const tool_ = makeInstallSubtitleTool({
+        stagedFiles: new Map([[stagedFileId, stagedPath]]),
+        targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: videoDir }],
+        mediaRoot: mediaRootDir,
+      })
+
+      const out = await tool_.execute!(
+        { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+        { toolCallId: 't1', messages: [] } as any,
+      ) as InstallSubtitleOutput
+
+      expect(out.path).toBe(join(videoDir, 'Show.S01E01.zh-Hans.srt'))
+      expect(existsSync(out.path!)).toBe(true)
+    })
+  })
+
+  // H1 (2026-07-18 数据安全审计——防静默覆盖): install() now refuses to renameSync over an existing
+  // finalPath and reports a conflict instead — this is the tool-layer consumer test, proving that
+  // conflict result gets turned into an error the agent can act on (not a thrown exception, not a
+  // silent overwrite).
+  it('H1: refuses to overwrite an existing file at finalPath and reports it as an error, not a silent overwrite', async () => {
+    const videoDir = join(sandboxDir, 'media', 'Show')
+    mkdirSync(videoDir, { recursive: true })
+    const existingPath = join(videoDir, 'Show.S01E01.zh-Hans.srt')
+    writeFileSync(existingPath, 'PRE-EXISTING content — must survive (hand-placed or leftover)')
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'new candidate content')
+    const stagedFileId = 'handle-conflict'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [{ videoFilename: 'Show.S01E01.mkv', outDir: videoDir }],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+
+    expect(out).toHaveProperty('error')
+    expect((out as { error: string }).error).toMatch(/refusing to overwrite existing file/)
+    expect(readFileSync(existingPath, 'utf8')).toBe('PRE-EXISTING content — must survive (hand-placed or leftover)')
   })
 })
 

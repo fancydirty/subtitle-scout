@@ -356,6 +356,60 @@ describe('install — retry and EXDEV fallback', () => {
   })
 })
 
+describe('install — conflict detection (H1, 2026-07-18 数据安全审计: renameSync 对已存在目标零防线)', () => {
+  afterEach(() => {
+    renameSyncOverride = null
+  })
+
+  it('目标位置已存在文件（用户手放字幕/上次崩溃残留）→ 不覆盖，返回冲突结果，原文件内容不变', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'NEW candidate content')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+    writeFileSync(finalPath, 'EXISTING content — must survive')
+
+    const result = await install(stagedPath, finalPath)
+
+    expect(result).toEqual({ conflict: true, path: finalPath })
+    expect(readFileSync(finalPath, 'utf8')).toBe('EXISTING content — must survive')
+    // staged file untouched too — nothing was renamed away
+    expect(existsSync(stagedPath)).toBe(true)
+  })
+
+  it('目标不存在 → 照常改名成功（结果不带 conflict 字段）', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'x')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+
+    const result = await install(stagedPath, finalPath)
+
+    expect(result).toEqual({ path: finalPath })
+    expect('conflict' in result).toBe(false)
+  })
+
+  it('EXDEV 兜底路径同样受保护：跨设备重试前目标恰好被别处创建 → 冲突而非覆盖', async () => {
+    const root = mediaRoot()
+    const stagedDir = allocate('job-1', root)
+    const stagedPath = join(stagedDir, 'candidate.srt')
+    writeFileSync(stagedPath, 'cross-device content')
+    const finalPath = join(root, 'Show.S01E01.zh-Hans.srt')
+
+    renameSyncOverride = () => {
+      // 模拟竞态：EXDEV 触发的那一刻，目标恰好已被别的进程/用户创建
+      writeFileSync(finalPath, 'RACE WINNER content — must survive')
+      throw Object.assign(new Error('cross-device'), { code: 'EXDEV' })
+    }
+
+    const result = await install(stagedPath, finalPath)
+
+    expect(result).toEqual({ conflict: true, path: finalPath })
+    expect(readFileSync(finalPath, 'utf8')).toBe('RACE WINNER content — must survive')
+  })
+})
+
 describe('gcOrphans', () => {
   it('removes every staging dir not in activeJobIds, across multiple media roots', () => {
     const root1 = mediaRoot()

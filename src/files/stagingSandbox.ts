@@ -108,19 +108,43 @@ export interface InstallOptions {
   delaysMs?: number[]
 }
 
+/** install() 的成功结果:文件已落在 finalPath。 */
+export interface InstallResult {
+  path: string
+}
+
+/** install() 的冲突结果(H1,2026-07-18 数据安全审计):finalPath 已存在(用户手放字幕、或
+ *  上次崩溃/硬杀残留),没有发生任何改名/覆盖——原文件原样保留。调用方(目前是
+ *  agent/findSubtitleWorker.tools.ts 的 install_subtitle)据此把冲突转成给 agent 的 error 文案,
+ *  让 agent 自行决定 finalize 收工还是换个 langTag 重试,而不是本函数替它做那个判断。 */
+export interface InstallConflict {
+  conflict: true
+  path: string
+}
+
 /** 原子安装:沙盒里胜出的文件 rename 进媒体目录。文件名一律 NFC 归一化(群晖 SMB 的
  *  NFD/NFC 乱码坑)——finalPath 先 normalize('NFC') 再判存在性/改名。遇 EEXIST/EPERM/
  *  EBUSY(SMB oplock 抖动)退避重试;EXDEV(跨设备)兜底走拷贝+改名。不用 O_TMPFILE
- *  (网络盘不支持)。 */
+ *  (网络盘不支持)。
+ *
+ *  H1(2026-07-18 数据安全审计,损失场景:用户手放字幕/上次崩溃残留与本次 finalPath 同名):
+ *  renameSync 对一个已存在的目标文件零防线——实测会静默覆盖,无声吞掉原文件内容,不可恢复。
+ *  每次尝试(包括 EXDEV 兜底分支的同盘改名)前都先 existsSync(normalizedFinal) 探测;命中即
+ *  当场返回冲突结果,不改名、不重试、不覆盖——"宁停不猜"同 v2/subtitlePropagation.ts 的
+ *  既有防线(那条防副本旁用户手放的 sidecar 被主文件字幕覆盖,这里防同一类损失落到
+ *  finalPath 本身)。 */
 export async function install(
   stagedPath: string,
   finalPath: string,
   opts?: InstallOptions,
-): Promise<{ path: string }> {
+): Promise<InstallResult | InstallConflict> {
   const delaysMs = opts?.delaysMs ?? INSTALL_RETRY_DELAYS_MS
   const normalizedFinal = finalPath.normalize('NFC')
   let lastError: unknown
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    if (existsSync(normalizedFinal)) {
+      return { conflict: true, path: normalizedFinal }
+    }
     try {
       renameSync(stagedPath, normalizedFinal)
       fsyncDirBestEffort(dirname(normalizedFinal))
@@ -128,6 +152,9 @@ export async function install(
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
       if (code === 'EXDEV') {
+        if (existsSync(normalizedFinal)) {
+          return { conflict: true, path: normalizedFinal }
+        }
         copyThenRenameSameDir(stagedPath, normalizedFinal)
         fsyncDirBestEffort(dirname(normalizedFinal))
         return { path: normalizedFinal }

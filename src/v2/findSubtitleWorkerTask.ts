@@ -4,7 +4,7 @@ import type { LibraryRepo } from './libraryRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import { traceBus } from '../dashboard/traceBus.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
-import { isDirWritable, isUnderRoots } from '../core/mediaContext.js'
+import { isDirWritable, isUnderRoots, containingRoot } from '../core/mediaContext.js'
 import { candidateKey, type SubtitleCandidate } from '../core/schemas.js'
 import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
 import { resolveAbsoluteTable, absoluteFor } from '../agent/absoluteEpisodes.js'
@@ -168,6 +168,26 @@ function assertDirSafe(dir: string, roots: string[]): void {
   }
 }
 
+/** H4（2026-07-18 数据安全审计——gcOrphans 盲区修复）：求 FindSubtitleTask.stagingRoot——
+ *  deps.mediaRoots 里包含 dir（这批目标的收窄 INNER 沙盒根）的那一个配置根，供
+ *  files/stagingSandbox.ts 的 allocate/cleanup 对齐（gcOrphans 只在配置根一级非递归扫描，见该
+ *  文件 allocate 的头注释）。复用 core/mediaContext.ts 的 containingRoot（它的文档注释本就是为
+ *  这个场景写的）而不是另起一个同类 helper。找不到匹配根（典型场景：deps.mediaRoots 为空——
+ *  未配置 MEDIA_ROOTS 的开发态/测试态，此时 isUnderRoots 自己也把"空=不限制"当特例，containingRoot
+ *  在这种输入下必然返回 null）——安全退化为 dir 本身并 console.error 告警：这批任务的 staging
+ *  目录不再受 gcOrphans 保护，但不阻塞派发（宁可退化保护，不阻塞主流程）。 */
+function stagingRootFor(dir: string, roots: string[], jobId: number): string {
+  const root = containingRoot(dir, roots)
+  if (!root) {
+    console.error(
+      `[find-subtitle-worker-task] job ${jobId}: no configured mediaRoot contains ${dir} — ` +
+        `this task's staging dir will not be swept by gcOrphans`,
+    )
+    return dir
+  }
+  return root
+}
+
 /** 全部目标目录的公共祖先（INNER 沙盒根推导）。目录相等视为 under（isUnderRoots 既有语义）——
  *  同季目标通常共享同一 Season 目录，一步命中；只有磁盘布局不规范（同季文件散落多个子目录）
  *  时才需要真的逐级上探。 */
@@ -230,6 +250,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
     return {
       jobId: String(job.id),
       mediaRoot: dir,
+      stagingRoot: stagingRootFor(dir, deps.mediaRoots, job.id),
       title: movie.name,
       originalTitle,
       year: movie.year ?? details?.year ?? null,
@@ -329,6 +350,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
   return {
     jobId: String(job.id),
     mediaRoot,
+    stagingRoot: stagingRootFor(mediaRoot, deps.mediaRoots, job.id),
     title: series.name,
     originalTitle,
     year: series.year ?? details?.year ?? null,

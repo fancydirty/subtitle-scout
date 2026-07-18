@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb, type ScoutDb } from './db.js'
@@ -193,5 +193,41 @@ describe('propagateSubtitleToReplica', () => {
     // 不猜它的归属，不登记进 DB（宁停不猜）
     expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([])
     expect(logs.some((l) => l.includes('目标位置已有文件'))).toBe(true)
+  })
+
+  // H5（2026-07-18 数据安全审计——TOCTOU + 悬空符号链接防线）：目标位置是一个悬空符号链接
+  // （链接本身存在，但指向的目标文件不存在）——旧的 existsSync(destPath) 预检对悬空链接返回
+  // false（误判"不存在"），copyFile（无 flag）会跟随链接把主文件的字幕内容写到链接指向的任意
+  // 位置，哪怕那在媒体目录之外。COPYFILE_EXCL 必须在 open() 层面直接拒绝——目标 dirent 已存在
+  // （哪怕是悬空链接）就 EEXIST，从不穿透写入链接目标。
+  it('目标位置是悬空符号链接（existsSync 会误判为不存在）→ 不穿透写到链接目标，跳过不覆盖', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.4K.mkv')
+    const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
+    writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+    writeFileSync(mainSubPath, 'MAIN subtitle content — must never leak through the dangling symlink')
+
+    const outsideDir = mkdtempSync(join(tmpdir(), 'scout-subtitle-propagate-outside-'))
+    const escapedTarget = join(outsideDir, 'escaped.srt') // dangling target — never created
+    const destPath = join(root, 'Show.4K.zh-Hans.srt')
+    symlinkSync(escapedTarget, destPath) // destPath itself is a dangling symlink
+
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'covered' })
+    lib.addItemFile('e1', replicaPath, 1000)
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('e1', mainSubPath, 'zh-Hans', 'scout-download', 1000)
+
+    try {
+      await propagateSubtitleToReplica(deps(async () => 1420), 'e1', mainPath, replicaPath, 2000)
+
+      // never wrote through the dangling link to somewhere outside the media root
+      expect(existsSync(escapedTarget)).toBe(false)
+      // not registered in the DB either (宁停不猜——同磁盘手放 sidecar 的既有纪律)
+      expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([])
+      expect(logs.some((l) => l.includes('目标位置已有文件'))).toBe(true)
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true })
+    }
   })
 })

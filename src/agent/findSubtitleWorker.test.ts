@@ -282,6 +282,62 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     expect(report.no_safe_match).toEqual([{ itemId: 'ep-2', reason: 'no plausible candidate' }])
     expect(report.retry_later).toEqual([{ itemId: 'ep-3', reason: 'provider timed out' }])
   })
+
+  // H4（2026-07-18 数据安全审计——gcOrphans 盲区修复）：allocate/cleanup 必须挂在
+  // task.stagingRoot（配置媒体根一级），不是收窄的 task.mediaRoot——否则 gcOrphans 按配置根
+  // 一级非递归扫描永远够不到它，硬杀在 allocate/cleanup 之间发生时就是永久泄漏。断言在
+  // doGenerate 内部实时检查磁盘状态（跑到一半时），而不是只看运行结束后的状态——运行结束后
+  // 两种实现（对/错）都会把目录清空，只有"运行期间"能分辨 allocate 到底把沙盒挂在了哪。
+  it('allocate/cleanup 都用 task.stagingRoot 当沙盒根，不是收窄的 task.mediaRoot（H4）', async () => {
+    const stagingRootDir = join(root, 'media') // 配置媒体根一级
+    const narrowMediaRoot = join(stagingRootDir, 'Show', 'Season 01') // 收窄的 INNER 沙盒根
+    mkdirSync(narrowMediaRoot, { recursive: true })
+    const videoPath = join(narrowMediaRoot, 'Show.S01E01.mkv')
+
+    let sawStagingUnderConfiguredRoot = false
+    let sawNoStagingUnderNarrowRoot = false
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        sawStagingUnderConfiguredRoot = existsSync(join(stagingRootDir, '.subtitle-staging', 'job-h4'))
+        sawNoStagingUnderNarrowRoot = !existsSync(join(narrowMediaRoot, '.subtitle-staging', 'job-h4'))
+        return finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'nothing plausible' }], retry_later: [] })
+      },
+    })
+
+    const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
+    const task = baseTask(narrowMediaRoot, [
+      { itemId: 'ep-1', videoPath, videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+    ], { jobId: 'job-h4', stagingRoot: stagingRootDir })
+
+    await runTask(task)
+
+    expect(sawStagingUnderConfiguredRoot).toBe(true) // allocate 挂在了 stagingRoot 下
+    expect(sawNoStagingUnderNarrowRoot).toBe(true) // 没有误挂在收窄的 mediaRoot 下
+    // cleanup 也用了同一个根——staging 目录在运行结束后被清空，不是留在 mediaRoot 下的空手套
+    expect(existsSync(join(stagingRootDir, '.subtitle-staging', 'job-h4'))).toBe(false)
+  })
+
+  // stagingRoot 缺席（realignExecutor.ts 圣文件不带这个键的路径）→ fallback 到 task.mediaRoot，
+  // 保持与 H4 之前完全一致的行为（回归测试：本次改动前 allocate/cleanup 一直只认 task.mediaRoot）。
+  it('task.stagingRoot 缺席时 fallback 到 task.mediaRoot（realignExecutor.ts 兼容路径）', async () => {
+    const mediaRoot = join(root, 'media-fallback')
+    const videoPath = join(mediaRoot, 'Show', 'Show.S01E01.mkv')
+    mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'nothing plausible' }], retry_later: [] }),
+    })
+
+    const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
+    // no stagingRoot override — baseTask's overrides never set it, so task.stagingRoot is undefined.
+    const task = baseTask(mediaRoot, [
+      { itemId: 'ep-1', videoPath, videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+    ], { jobId: 'job-h4-fallback' })
+
+    await runTask(task)
+
+    expect(existsSync(join(mediaRoot, '.subtitle-staging', 'job-h4-fallback'))).toBe(false) // cleaned up, no leak
+  })
 })
 
 describe('timeout scaling by target count (BATCH_BASE_TIMEOUT_MS / PER_TARGET_TIMEOUT_MS / BATCH_TIMEOUT_CAP_MS)', () => {

@@ -60,6 +60,21 @@ export interface FindSubtitleTask {
   /** This task's INNER sandbox root: the common ancestor directory of every target's path (the
    *  mapper derives it and has already verified it's inside MEDIA_ROOTS). */
   mediaRoot: string
+  /** H4（2026-07-18 数据安全审计——gcOrphans 盲区修复）：staging 沙盒该挂在哪个目录，供
+   *  files/stagingSandbox.ts 的 allocate/cleanup 使用——必须是配置媒体根一级（deps.mediaRoots 里
+   *  包含 mediaRoot 的那一个），不是上面这个收窄的 INNER 沙盒根：gcOrphans 只在每个"配置根"
+   *  一级非递归扫描 `<root>/.subtitle-staging/`（见 stagingSandbox.ts allocate 的头注释），
+   *  沙盒挂在 mediaRoot 这样的深层目录上，硬杀（SIGKILL/OOM/断电）在 allocate 与 cleanup 之间
+   *  发生时就会成为永久泄漏——没有任何清扫路径够得到它。
+   *
+   *  可选（`?:`）——两个原因都要求它能缺席：① v2/realignExecutor.ts（圣文件，不可改）的
+   *  makeRealignRunEpisode 构造 FindSubtitleTask 字面量时不带这个键，字段必须允许缺席才能保持
+   *  零改动兼容；② 那条路径恰好不需要它——realign 的 task.mediaRoot 本就是配置根级（见该文件
+   *  libRootFromRealignBuildDir 的注释），缺席时 fallback 到 mediaRoot 本身刚好正确。
+   *  找不到匹配配置根的场景（mapper 侧 containingRoot 返回 null）也会让这个字段缺席/等于
+   *  mediaRoot——安全退化（沙盒目录不受 gcOrphans 保护），不阻塞派发。
+   *  实际 fallback 逻辑在消费方（agent/findSubtitleWorker.ts）：`task.stagingRoot ?? task.mediaRoot`。 */
+  stagingRoot?: string
   title: string
   originalTitle: string | null
   year: number | null

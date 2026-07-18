@@ -361,6 +361,86 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
     expect(task!.mediaRoot).toBe(showDir)
   })
 
+  // H4（2026-07-18 数据安全审计——gcOrphans 盲区修复）：stagingRoot 必须是配置媒体根一级
+  // （deps.mediaRoots 里包含收窄 mediaRoot 的那一个），不是 mediaRoot 本身——见
+  // findSubtitleWorker.schemas.ts 的 FindSubtitleTask.stagingRoot 字段文档。
+  describe('stagingRoot (H4)', () => {
+    it('季级任务：stagingRoot=deps.mediaRoots 里包含收窄 mediaRoot 的配置根，不是收窄目录本身', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-stagingroot-series-'))
+      const showDir = join(root, 'Show', 'Season 01')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '31'
+      const sId = seriesId(tmdbId)
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const path = join(showDir, 'Show.S01E01.mkv')
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 1, 1), seriesId: sId, season: 1, episode: 1, name: 'E1', path, subStatus: 'missing' })
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib, mediaRoots: [root] }), NOW)
+
+      expect(task!.mediaRoot).toBe(showDir) // INNER 沙盒根不变——仍是收窄目录
+      expect(task!.stagingRoot).toBe(root) // 但 staging 根对齐到配置根一级
+    })
+
+    it('movie 任务：stagingRoot=deps.mediaRoots 里包含 movie 目录的配置根', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-stagingroot-movie-'))
+      const movieDir = join(root, 'Movie (2020)')
+      mkdirSync(movieDir, { recursive: true })
+      const videoPath = join(movieDir, 'Movie.mkv')
+      writeFileSync(videoPath, 'video')
+      const movieId = seriesId('556')
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertMovie({ id: movieId, name: 'Movie', path: videoPath, subStatus: 'missing', year: 2020 })
+      jobsRepo.upsertWorkerTask({ seriesId: null, season: null, movieId }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const movieTask = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib, mediaRoots: [root] }), NOW)
+
+      expect(movieTask!.mediaRoot).toBe(movieDir)
+      expect(movieTask!.stagingRoot).toBe(root)
+    })
+
+    it('找不到包含收窄目录的配置根（如 mediaRoots 未配置）→ fallback 到收窄目录本身，并 console.error 告警', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-stagingroot-fallback-'))
+      const showDir = join(root, 'Show', 'Season 01')
+      mkdirSync(showDir, { recursive: true })
+      const tmdbId = '32'
+      const sId = seriesId(tmdbId)
+
+      const db = openDb(':memory:')
+      const lib = new LibraryRepo(db)
+      const jobsRepo = new JobsRepo(db)
+      lib.upsertSeries({ id: sId, name: 'Show' })
+      const path = join(showDir, 'Show.S01E01.mkv')
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({ id: episodeId(tmdbId, 1, 1), seriesId: sId, season: 1, episode: 1, name: 'E1', path, subStatus: 'missing' })
+      jobsRepo.upsertWorkerTask({ seriesId: sId, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+      const job = jobsRepo.claimNext(NOW)!
+
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        // mediaRoots: [] (mapperDeps 默认) — isUnderRoots 把它当"未配置=不限制"通过，但
+        // containingRoot 对同样的空数组必然返回 null——这是 stagingRootFor 唯一可达的 fallback
+        // 场景（一旦 mediaRoots 非空且这批目标已经过 assertDirSafe，containingRoot 必能命中同一个根）。
+        const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib }), NOW)
+
+        expect(task!.stagingRoot).toBe(showDir) // fallback = 收窄目录本身
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/no configured mediaRoot contains/))
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+  })
+
   it('movie job 映射为单目标批量任务', async () => {
     const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-movie-'))
     const movieDir = join(root, 'Movie (2020)')

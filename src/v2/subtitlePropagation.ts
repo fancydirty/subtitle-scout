@@ -1,5 +1,5 @@
 import { copyFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { constants as fsConstants } from 'node:fs'
 import { join, basename, extname, dirname } from 'node:path'
 import type { LibraryRepo } from './libraryRepo.js'
 
@@ -67,19 +67,26 @@ export async function propagateSubtitleToReplica(
   const replicaDir = dirname(replicaPath)
   for (const sub of mainSubs) {
     const destPath = join(replicaDir, `${replicaBase}.${sub.language}${extname(sub.path)}`)
-    // 磁盘上目标位置已经有文件了——绝不覆盖。前置的 DB 检查（本函数开头）只看得到登记进
-    // subtitles 表的字幕；而副本文件是走 ingest.ts 的"撞身份→addItemFile"分支入库的，那条分支
-    // 不做 sidecar 探测（不同于新文件的 classify() 路径），所以副本旁边用户亲手放的 sidecar
-    // 根本不在 DB 里——这层磁盘存在性检查是它唯一的防线，少了它这条通道会拿主文件的字幕覆盖
-    // 掉用户手放的那份（真实数据损失）。这里只跳过、不 addReplicaSubtitle：那份磁盘文件的语言/
-    // 归属不是这条通道该猜的（宁停不猜），登记归属是 ingest 未来若加副本 sidecar 探测的职责。
-    if (existsSync(destPath)) {
-      deps.log(`[subtitle-propagate] ${itemId}: 目标位置已有文件，跳过不覆盖：${destPath}`)
-      continue
-    }
     try {
-      await copyFile(sub.path, destPath)
+      // H5（2026-07-18 数据安全审计——TOCTOU + 悬空符号链接防线）：曾经是 existsSync(destPath) 预检
+      // + 无 flag 的 copyFile，中间有 TOCTOU 窗口，且 existsSync 对悬空符号链接（entry 存在但链接
+      // 目标不存在）返回 false——那种情况会误判"不存在"，copyFile 穿过链接把主文件字幕写到链接
+      // 指向的任意位置（可能在媒体目录之外）。COPYFILE_EXCL 让底层 open() 带 O_EXCL：目标路径只要
+      // 已存在任何 dirent（哪怕是悬空符号链接本身），一律 EEXIST，从不穿透、从不覆盖。
+      await copyFile(sub.path, destPath, fsConstants.COPYFILE_EXCL)
     } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code === 'EEXIST') {
+        // 磁盘上目标位置已经有文件（或悬空符号链接）了——绝不覆盖。前置的 DB 检查（本函数开头）
+        // 只看得到登记进 subtitles 表的字幕；而副本文件是走 ingest.ts 的"撞身份→addItemFile"分支
+        // 入库的，那条分支不做 sidecar 探测（不同于新文件的 classify() 路径），所以副本旁边用户
+        // 亲手放的 sidecar 根本不在 DB 里——这层写入时的存在性检查是它唯一的防线，少了它这条
+        // 通道会拿主文件的字幕覆盖掉用户手放的那份（真实数据损失）。这里只跳过、不
+        // addReplicaSubtitle：那份磁盘文件的语言/归属不是这条通道该猜的（宁停不猜），登记归属
+        // 是 ingest 未来若加副本 sidecar 探测的职责。
+        deps.log(`[subtitle-propagate] ${itemId}: 目标位置已有文件，跳过不覆盖：${destPath}`)
+        continue
+      }
       deps.log(
         `[subtitle-propagate] ${itemId}: 复制失败（${sub.path} -> ${destPath}): ` +
           `${e instanceof Error ? e.message : String(e)}`,

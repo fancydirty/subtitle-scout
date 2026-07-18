@@ -58,7 +58,12 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       }
     }
 
-    const stagingDir = allocate(task.jobId, task.mediaRoot)
+    // H4（2026-07-18 数据安全审计）：staging 沙盒必须挂在配置媒体根一级(task.stagingRoot)才能被
+    // gcOrphans 的非递归扫描回收，不是这里收窄的 INNER 沙盒根(task.mediaRoot)——见
+    // findSubtitleWorker.schemas.ts 的 FindSubtitleTask.stagingRoot 字段文档。allocate/cleanup 必须
+    // 用同一个根，否则 cleanup 会去清一个从未被 allocate 用过的目录，真正的 staging 目录永久泄漏。
+    const stagingBase = task.stagingRoot ?? task.mediaRoot
+    const stagingDir = allocate(task.jobId, stagingBase)
     const store = makeFileResultSetStore(join(deps.cacheRoot, 'result-sets', task.jobId))
     const stagedFiles = new Map<string, string>()
     // A5: the judgment playbook is parameterized by the task's target language (Chinese keeps
@@ -171,7 +176,8 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     } finally {
       // Try-error sandbox cleanup runs even on a thrown error — the staging dir never
       // survives a run, matching stagingSandbox's own "job ends, sandbox is deleted" contract.
-      cleanup(task.jobId, task.mediaRoot)
+      // Must match whatever root allocate() above actually used (stagingBase, not task.mediaRoot).
+      cleanup(task.jobId, stagingBase)
     }
   }
 }
