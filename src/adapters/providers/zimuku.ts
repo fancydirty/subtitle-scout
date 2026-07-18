@@ -4,7 +4,12 @@ import { JitteredIntervalLimiter, type RandomFn } from './jitter.js'
 import { detectChallenge, solveYunsuoChallenge, ZimukuChallengeError } from './yunsuo.js'
 import type { ZimukuSessionStore } from './zimukuSession.js'
 
-export const ZIMUKU_BASE = 'https://www.zimuku.org'
+// apex host,不带 www。2026-07-19 单源大考实弹根因:`www.zimuku.org` 现返回 301 到 apex,但
+// nginx 的 Location 拼接坏了——`/search?q=x` 被重写成 `https://zimuku.orgsearch?q=x`(host 与
+// path 之间漏了斜杠),Node fetch 默认自动跟随 → getaddrinfo ENOTFOUND `zimuku.orgsearch` → 全站
+// 请求静默炸成 "TypeError: fetch failed"。apex 直连正常:`/detail/N.html` 直出 200、`/search` 直出
+// 云锁挑战页(detectChallenge 接手)。回归锁见 zimuku.test.ts describe('ZIMUKU_BASE')。
+export const ZIMUKU_BASE = 'https://zimuku.org'
 
 export interface ZimukuSearchResult {
   id: string

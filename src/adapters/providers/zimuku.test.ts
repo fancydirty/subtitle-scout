@@ -7,6 +7,19 @@ import { MinIntervalLimiter } from './assrt.js'
 import { ZimukuSessionStore } from './zimukuSession.js'
 import { ZimukuChallengeError } from './yunsuo.js'
 
+// 2026-07-19 zimuku 单源大考实弹回归锁:ZIMUKU_BASE 必须是 apex `https://zimuku.org`,不能带
+// www。根因铁证——`www.zimuku.org` 现返回 301,且 nginx 的 Location 拼接坏了:`/search?q=x`
+// 被重写成 `https://zimuku.orgsearch?q=x`(host 与 path 之间漏了斜杠),Node fetch 默认自动跟随
+// 重定向 → getaddrinfo ENOTFOUND `zimuku.orgsearch` → "TypeError: fetch failed"。apex `/detail/
+// N.html` 直出 200、`/search` 直出云锁挑战页(正是 detectChallenge 要接的)。这条锁防止有人把
+// base 改回 www 让全站请求再次静默炸在传输层(单测全走离线夹具,永远碰不到真重定向)。
+describe('ZIMUKU_BASE', () => {
+  it('is the apex host, never www (www 301-redirects with a broken Location that resolves to a garbage host)', () => {
+    expect(ZIMUKU_BASE).toBe('https://zimuku.org')
+    expect(ZIMUKU_BASE.startsWith('https://www.')).toBe(false)
+  })
+})
+
 describe('parseSearchResults', () => {
   it('extracts id + title from every /detail/<id>.html anchor (fixture has varied attribute order and quote style)', () => {
     const html = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
@@ -96,7 +109,7 @@ describe('ZimukuClient', () => {
   it('search: fetches /search?q=..., sends browser headers, parses results (no challenge)', async () => {
     const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(String(url)).toBe('https://www.zimuku.org/search?q=%E9%97%B4%E8%B0%8D%E8%BF%87%E5%AE%B6%E5%AE%B6')
+      expect(String(url)).toBe('https://zimuku.org/search?q=%E9%97%B4%E8%B0%8D%E8%BF%87%E5%AE%B6%E5%AE%B6')
       expect((init!.headers as Record<string, string>)['User-Agent']).toContain('Mozilla')
       expect((init!.headers as Record<string, string>)['Accept-Language']).toBe('zh-CN,zh;q=0.9')
       return new Response(searchHtml)

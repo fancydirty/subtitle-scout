@@ -20,6 +20,7 @@ import {
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
 import { detectChallenge } from '../adapters/providers/yunsuo.js'
+import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
 import { openDb } from '../v2/db.js'
 import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -606,7 +607,7 @@ async function cmdDoctor() {
   } else {
     results.push(await checkZimuku({
       fetchHomepage: async () => {
-        const res = await withTimeout(fetch('https://www.zimuku.org/', { signal: AbortSignal.timeout(10_000) }), 10_000, 'zimuku')
+        const res = await withTimeout(fetch(`${ZIMUKU_BASE}/`, { signal: AbortSignal.timeout(10_000) }), 10_000, 'zimuku')
         const html = await res.text()
         return { ok: res.ok, challenged: detectChallenge(html) }
       },
