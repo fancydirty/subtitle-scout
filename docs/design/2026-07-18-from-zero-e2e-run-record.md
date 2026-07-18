@@ -56,3 +56,20 @@
 **整机从零可用性成立**:识别→分类→智能派活→agent 获取→传播→救援全链在真实生产库上
 自主重建了字幕世界(260 旧 → 249 新 + 26 诚实判无,真回归 2 例均已定位根因)。
 下一步 = 修发现 #1/#2(走 K3 子代理 + 主控亲核),#3/#4 排后。
+
+## 追记:发现 #1/#2 已修复并真机闭环(2026-07-18 下午)
+
+- **#1(NBSP)根因字节级钉死**:带 hex 追踪的现场复现抓到成对铁证——盘上 `V klenutých`(c2a0)
+  vs 模型复述 `V klenutých`(20);单目标任务被"省略→默认"分支侥幸兜住、多目标任务必死,机制全闭合。
+  两个先行假说(NFD、模型打不出捷克字符)均被证据证伪(对照组:同目录 5 个变音符文件名全成功)。
+  修复 `53f5c93`:resolveTargetFilename 三级匹配(精确→NFKC 规范化命中返回 task 侧原字节→取证 hex
+  日志)+4 条真字节回归锁。LD&R S03E08 已装上(复现跑直接命中 assrt:661405/fileIndex7)。
+- **#2(时长)修复 `ca03d3c`**:TmdbClient.getSeasonEpisodeRuntimes(一季一调)→FindSubtitleTargetFact
+  可选 runtimeMinutes(圣文件零触碰)→prompt 逐 target 渲染 + task 级改标"剧级典型 fallback"。
+  9 条新测试(含以事故命名的回归锁)。**真机闭环**:同集复跑,target 喂 `runtimeMinutes=87`,agent
+  判词"~86.4 min span matching the ~87 min episode runtime"→installed(opensubtitles:4074627)。
+  早上拒掉的同类候选,拿到真事实后正确接受——判断力从头到尾没错,错的只是喂给它的事实。
+- 两修复已部署生产(HEAD c35f95c,1549 测试绿)。260 旧字幕的账本至此:**零未解释回归**。
+- 过程副产物:E08 磁盘领养自愈验证 ✓(外装 sidecar 下轮扫描正确翻 covered),同时暴露两条新小尾巴
+  (F-A 领养不写 subtitles 行=provenance 缺口;F-B 领养后 status_reason 残留旧失败叙事)——已入
+  根因队列,与传播探测空转、finalize 未调、PendingBox 死代码一起在无人值守循环里逐条清算。
