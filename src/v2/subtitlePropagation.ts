@@ -1,7 +1,7 @@
 import { copyFile } from 'node:fs/promises'
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, statSync } from 'node:fs'
 import { join, basename, extname, dirname } from 'node:path'
-import type { LibraryRepo } from './libraryRepo.js'
+import type { FileFingerprint, LibraryRepo, VerdictFingerprint } from './libraryRepo.js'
 
 export interface PropagateDeps {
   lib: LibraryRepo
@@ -9,12 +9,38 @@ export interface PropagateDeps {
    *  从不在测试里真的 spawn ffprobe（同 IngestDeps.probe 的既有约定）。 */
   probeDuration: (videoPath: string) => Promise<number | null>
   log: (msg: string) => void
+  /** B3-4（专项#1，判决指纹记忆化）：读取一个文件当前的 (mtimeMs,size) 快照，用于跟上次判决
+   *  时刻的快照比对——"文件没变，判决就还有效"。测试注入点；默认 node:fs statSync 包一层
+   *  try/catch（失败→null，同 ingest.ts defaultStatFile 的既有约定）。 */
+  statFile?: (p: string) => FileFingerprint | null
 }
 
 /** 两个视频时长相差在这个秒数以内，认定是"同一剪辑版本的不同压制/分辨率"（编码/容器取整、偶尔
  *  的尾帧差异，真实同源重复几乎总在这个范围内）；差得更多大概率是不同剪辑版本（加长版/删减版/
  *  重制版掐掉了预告-recap），机械层不猜，原样留给下面 agent 兜底路径。 */
 const DURATION_TOLERANCE_SEC = 5
+
+function defaultStatFile(path: string): FileFingerprint | null {
+  try {
+    const s = statSync(path)
+    return { mtimeMs: s.mtimeMs, size: s.size }
+  } catch {
+    return null
+  }
+}
+
+/** B3-4：判决那一刻记住的快照，与两个文件当前的快照是否逐项相等——任一维度（mtime/size，
+ *  主/副任一文件）不等都算"文件变了"，必须重判，不能沿用旧判决。 */
+function fingerprintUnchanged(
+  memo: VerdictFingerprint,
+  currentMain: FileFingerprint,
+  currentReplica: FileFingerprint,
+): boolean {
+  return (
+    memo.main.mtimeMs === currentMain.mtimeMs && memo.main.size === currentMain.size &&
+    memo.replica.mtimeMs === currentReplica.mtimeMs && memo.replica.size === currentReplica.size
+  )
+}
 
 /**
  * 重复源 P4b（"复制优先"机械通道——spec §4 + 目标句"字幕跨副本传播（复制优先，agent 兜底）"）：
@@ -30,7 +56,16 @@ const DURATION_TOLERANCE_SEC = 5
  *
  * 幂等、零多余开销：ingest 每轮都会为同一个已入册副本重新命中调用方的 addItemFile 分支（该分支
  * 本身就是幂等 upsert），所以这个函数每轮都会被重新调用一次——第一行前置检查（副本是否已有任意
- * 字幕行）让"已经补齐"或"探测失败过一次"之外的绝大多数轮次直接短路，不重新触发 ffprobe。 */
+ * 字幕行）让"已经补齐"或"探测失败过一次"之外的绝大多数轮次直接短路，不重新触发 ffprobe。
+ *
+ * B3-4（专项#1，判决指纹记忆化）：上面这条前置检查只覆盖"成功复制过"的情形——时长不匹配/探测
+ * 失败这两种"判过但没能复制"的结局什么都不写，于是每轮都要对主副两个文件重新真的 ffprobe（生产
+ * 实证：SPY×FAMILY 13 集×2 探测/每 pass 的探测空转）。这里补上第二条短路锚点：mismatch/
+ * probe-failed 判决落地时，把判决结果 + 判决那一刻主副两个文件的 (mtimeMs,size) 快照一起记进
+ * item_files（duration_verdict/verdict_fingerprint，schema v17）；下次调用时先比对两个文件的
+ * 当前快照与记住的快照是否逐项相等——完全相等（文件没变）就直接沿用旧判决短路，不重新探测；任一
+ * 文件变了（重新下载/替换/修复损坏文件）说明旧判决可能已经过期，照常重新判并覆写记忆。成功复制
+ * 路径不需要这套记忆——有字幕行本身就是上面那条更早的短路锚点。 */
 export async function propagateSubtitleToReplica(
   deps: PropagateDeps,
   itemId: string,
@@ -44,6 +79,19 @@ export async function propagateSubtitleToReplica(
   const mainSubs = deps.lib.listSubtitlesForFile(itemId, mainPath, true)
   if (mainSubs.length === 0) return // 主文件自己都没字幕——没有可传播的东西
 
+  const statFile = deps.statFile ?? defaultStatFile
+  const currentMainStat = statFile(mainPath)
+  const currentReplicaStat = statFile(replicaPath)
+
+  const verdictMemo = deps.lib.getItemFileVerdict(replicaPath)
+  if (
+    verdictMemo && currentMainStat && currentReplicaStat &&
+    fingerprintUnchanged(verdictMemo.fingerprint, currentMainStat, currentReplicaStat)
+  ) {
+    // 两个文件都没变——上次判过 mismatch/probe-failed，这次结果不会不同，静默短路。
+    return
+  }
+
   const [mainDur, replicaDur] = await Promise.all([
     deps.probeDuration(mainPath),
     deps.probeDuration(replicaPath),
@@ -53,6 +101,9 @@ export async function propagateSubtitleToReplica(
       `[subtitle-propagate] ${itemId}: 时长探测失败（${mainDur === null ? mainPath : replicaPath}）——` +
         `跳过机械复制，留给 agent 兜底`,
     )
+    if (currentMainStat && currentReplicaStat) {
+      deps.lib.setItemFileVerdict(replicaPath, 'probe-failed', { main: currentMainStat, replica: currentReplicaStat })
+    }
     return
   }
   if (Math.abs(mainDur - replicaDur) > DURATION_TOLERANCE_SEC) {
@@ -60,6 +111,9 @@ export async function propagateSubtitleToReplica(
       `[subtitle-propagate] ${itemId}: 时长不一致（主 ${mainDur}s / 副本 ${replicaDur}s）——` +
         `大概率是不同剪辑版本，不机械复制`,
     )
+    if (currentMainStat && currentReplicaStat) {
+      deps.lib.setItemFileVerdict(replicaPath, 'mismatch', { main: currentMainStat, replica: currentReplicaStat })
+    }
     return
   }
 
@@ -83,8 +137,13 @@ export async function propagateSubtitleToReplica(
         // 亲手放的 sidecar 根本不在 DB 里——这层写入时的存在性检查是它唯一的防线，少了它这条
         // 通道会拿主文件的字幕覆盖掉用户手放的那份（真实数据损失）。这里只跳过、不
         // addReplicaSubtitle：那份磁盘文件的语言/归属不是这条通道该猜的（宁停不猜），登记归属
-        // 是 ingest 未来若加副本 sidecar 探测的职责。
-        deps.log(`[subtitle-propagate] ${itemId}: 目标位置已有文件，跳过不覆盖：${destPath}`)
+        // 是 ingest 未来若加副本 sidecar 探测的职责（B3-5：不在本批扩，主控裁决——见批③ B3-5
+        // 小节）。这类文件会永久卡在"磁盘有文件但 DB 不知道"的状态，运维排查覆盖率缺口时容易
+        // 漏看，日志必须把这层后果说清楚，不能只说"跳过不覆盖"这种自证性但没解释后果的措辞。
+        deps.log(
+          `[subtitle-propagate] WARN ${itemId}: 目标位置已有文件，跳过不覆盖：${destPath}——` +
+            `该文件存在但未登记，不会计入覆盖，需人工核查归属（可能是永久 stuck 的副本字幕）`,
+        )
         continue
       }
       deps.log(

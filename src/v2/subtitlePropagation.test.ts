@@ -230,4 +230,124 @@ describe('propagateSubtitleToReplica', () => {
       rmSync(outsideDir, { recursive: true, force: true })
     }
   })
+
+  // B3-5（批③顺手小件）：批①把 EEXIST 分支改成"跳过不登记"（宁停不猜，保留），但旧日志措辞
+  // 只说"跳过不覆盖"，没说清后果——这类文件会永久卡在"磁盘有文件但 DB 不知道"，运维排查覆盖率
+  // 缺口时容易漏看。日志必须升级为含"该文件存在但未登记，不会计入覆盖"的明确警示措辞。
+  it('B3-5：EEXIST 分支日志含新警示措辞——"该文件存在但未登记，不会计入覆盖"', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.4K.mkv')
+    const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
+    const userSidecar = join(root, 'Show.4K.zh-Hans.srt') // 副本旁用户手放的字幕，DB 里没有这行
+    writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+    writeFileSync(mainSubPath, 'MAIN subtitle content')
+    writeFileSync(userSidecar, 'USER hand-placed subtitle')
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'covered' })
+    lib.addItemFile('e1', replicaPath, 1000)
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('e1', mainSubPath, 'zh-Hans', 'scout-download', 1000)
+
+    await propagateSubtitleToReplica(deps(async () => 1420), 'e1', mainPath, replicaPath, 2000)
+
+    expect(logs.some((l) => l.includes('该文件存在但未登记') && l.includes('不会计入覆盖'))).toBe(true)
+    // 旧断言仍然成立——新措辞是升级，不是替换（其它测试仍按这个子串断言）。
+    expect(logs.some((l) => l.includes('目标位置已有文件'))).toBe(true)
+  })
+})
+
+// B3-4（专项#1，判决指纹记忆化，schema v17 item_files.duration_verdict/verdict_fingerprint）：
+// mismatch/probe-failed 判决落地后，只要主副两个文件的 (mtimeMs,size) 快照没变，第二次调用必须
+// 直接短路——不重新真的探测（生产实证：SPY×FAMILY 13 集×2 探测/每 pass 的探测空转）。文件被替换
+// （重新下载/修复损坏文件，mtime/size 变了）时旧判决必须失效，照常重新真实探测。
+describe('propagateSubtitleToReplica — B3-4 判决指纹记忆化（mismatch/probe-failed 不再每轮重新探测）', () => {
+  function setupMainWithSub(mainPath: string, replicaPath: string, mainSubPath: string) {
+    writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+    writeFileSync(mainSubPath, 'content')
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'covered' })
+    lib.addItemFile('e1', replicaPath, 1000)
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('e1', mainSubPath, 'zh-Hans', 'scout-download', 1000)
+  }
+
+  it('时长不匹配判过一次后，文件指纹不变 → 第二次调用不再重新探测（静默短路）', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.Extended.mkv')
+    const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
+    setupMainWithSub(mainPath, replicaPath, mainSubPath)
+
+    const stats = new Map<string, { mtimeMs: number; size: number }>([
+      [mainPath, { mtimeMs: 5000, size: 100 }],
+      [replicaPath, { mtimeMs: 6000, size: 200 }],
+    ])
+    const statFile = (p: string) => stats.get(p) ?? null
+    const probeDuration = vi.fn(async (p: string) => (p === mainPath ? 1420 : 1620)) // 差 200s，远超容差
+
+    await propagateSubtitleToReplica({ ...deps(probeDuration), statFile }, 'e1', mainPath, replicaPath, 2000)
+    expect(probeDuration).toHaveBeenCalledTimes(2)
+    expect(logs.some((l) => l.includes('时长不一致'))).toBe(true)
+
+    probeDuration.mockClear()
+    logs.length = 0
+
+    await propagateSubtitleToReplica({ ...deps(probeDuration), statFile }, 'e1', mainPath, replicaPath, 3000)
+
+    expect(probeDuration).not.toHaveBeenCalled() // 指纹未变——沿用旧判决，不重新探测
+    expect(logs).toEqual([]) // 静默短路，不刷屏
+    expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([]) // 仍然没有复制成功
+  })
+
+  it('探测失败判过一次后，文件指纹不变 → 第二次调用不再重新探测（同一套记忆机制）', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.4K.mkv')
+    const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
+    setupMainWithSub(mainPath, replicaPath, mainSubPath)
+
+    const stats = new Map<string, { mtimeMs: number; size: number }>([
+      [mainPath, { mtimeMs: 5000, size: 100 }],
+      [replicaPath, { mtimeMs: 6000, size: 200 }],
+    ])
+    const statFile = (p: string) => stats.get(p) ?? null
+    const probeDuration = vi.fn(async (p: string) => (p === mainPath ? 1420 : null)) // 副本探测失败
+
+    await propagateSubtitleToReplica({ ...deps(probeDuration), statFile }, 'e1', mainPath, replicaPath, 2000)
+    expect(probeDuration).toHaveBeenCalledTimes(2)
+    expect(logs.some((l) => l.includes('时长探测失败'))).toBe(true)
+
+    probeDuration.mockClear()
+    logs.length = 0
+
+    await propagateSubtitleToReplica({ ...deps(probeDuration), statFile }, 'e1', mainPath, replicaPath, 3000)
+
+    expect(probeDuration).not.toHaveBeenCalled()
+    expect(logs).toEqual([])
+  })
+
+  it('副本文件被替换（mtime/size 变化）→ 判决记忆失效，照常重新真实探测（这次匹配则正常复制）', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.Extended.mkv')
+    const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
+    setupMainWithSub(mainPath, replicaPath, mainSubPath)
+
+    const stats = new Map<string, { mtimeMs: number; size: number }>([
+      [mainPath, { mtimeMs: 5000, size: 100 }],
+      [replicaPath, { mtimeMs: 6000, size: 200 }],
+    ])
+    const statFile = (p: string) => stats.get(p) ?? null
+    const probeDuration = vi.fn(async (p: string) => (p === mainPath ? 1420 : 1620)) // 第一次：不匹配
+
+    await propagateSubtitleToReplica({ ...deps(probeDuration), statFile }, 'e1', mainPath, replicaPath, 2000)
+    expect(probeDuration).toHaveBeenCalledTimes(2)
+
+    // 副本被替换（重新下载/修了个新压制）——mtime/size 变了，这次真实时长其实匹配了。
+    stats.set(replicaPath, { mtimeMs: 9000, size: 999 })
+    probeDuration.mockImplementation(async () => 1420)
+
+    await propagateSubtitleToReplica({ ...deps(probeDuration), statFile }, 'e1', mainPath, replicaPath, 3000)
+
+    expect(probeDuration).toHaveBeenCalledTimes(4) // 2（第一轮真探测）+ 2（指纹变了，第二轮又真探测）
+    const destPath = join(root, 'Show.Extended.zh-Hans.srt')
+    expect(existsSync(destPath)).toBe(true) // 重判后确实匹配 → 正常复制成功
+  })
 })

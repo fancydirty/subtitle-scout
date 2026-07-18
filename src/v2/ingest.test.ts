@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
@@ -805,6 +808,281 @@ describe('makeIngestPass — duplicate identity → item_files 副本入册（�
     await pass()
 
     expect(probeDuration).not.toHaveBeenCalled()
+  })
+})
+
+// 批③ B3-1（领养记账，F-A correctness）：classify() rule 3（磁盘 sidecar）判 covered 时，此前
+// 只翻 sub_status，不写 subtitles 表行——生产实证 tmdb:86831/s3e8 covered 而 subtitles 表空。
+// 后果：①provenance 账本缺口 ②adopted 主文件对副本传播失效（subtitlePropagation.ts 找主文件
+// 字幕源靠 subtitles 行，无行=无源可复制）。修复：CHEAP PATH 与 FULL PATH（TV/movie 两分支）
+// 判 covered 时同步调用 lib.recordAdoptedSidecar 补写一行（path=sidecar 真路径，
+// source='preexisting'，language=findExternalSidecar 命中 tag 换算值）。
+describe('makeIngestPass — B3-1 领养(sidecar)记账：covered 判定同时补写 subtitles 行', () => {
+  it('cheap path：磁盘出现 sidecar（missing→covered）→ 补写 subtitles 行（path/source/language 断言）', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    disk.addSidecar('/media/Show/Season 1/ep1.zh.srt')
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')!
+    expect(ep.sub_status).toBe('covered')
+    const row = db.prepare(`SELECT path, language, source, file_path FROM subtitles WHERE item_id = ?`).get('tmdb:1/s1e1')
+    expect(row).toEqual({
+      path: '/media/Show/Season 1/ep1.zh.srt', language: 'zh-Hans', source: 'preexisting', file_path: null,
+    })
+  })
+
+  it('full path（新文件首次识别即命中 sidecar）→ 同样补写 subtitles 行', async () => {
+    const path = '/media/Show/Season 1/ep2.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    disk.addSidecar('/media/Show/Season 1/ep2.zh.srt')
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 2 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getEpisode('tmdb:1/s1e2')!.sub_status).toBe('covered')
+    const row = db.prepare(`SELECT path, language, source FROM subtitles WHERE item_id = ?`).get('tmdb:1/s1e2')
+    expect(row).toEqual({ path: '/media/Show/Season 1/ep2.zh.srt', language: 'zh-Hans', source: 'preexisting' })
+  })
+
+  it('连跑两轮（含安静盘重复命中 cheap path）→ 不重复插 subtitles 行（ON CONFLICT 幂等）', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, [])
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    disk.addSidecar('/media/Show/Season 1/ep1.zh.srt')
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+    await pass()
+    await pass()
+
+    const rows = db.prepare(`SELECT * FROM subtitles WHERE item_id = ?`).all('tmdb:1/s1e1')
+    expect(rows).toHaveLength(1)
+  })
+
+  // 闭环测试（真实临时文件 + 真实 fs，同 subtitlePropagation.test.ts 的既有测试纪律——只
+  // probeDuration 注入固定值，从不真的 spawn ffprobe）：B3-1 写的 subtitles 行必须真的能被
+  // subtitlePropagation.ts 当作"主文件已有字幕"的源，传播到后来发现的副本身上——否则领养记账
+  // 只是好看的数字，实际闭环没打通。
+  it('闭环：adopted 主文件(sidecar 领养) + 后发现的缺字幕副本 → 传播能找到源并复制', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'scout-ingest-b31-'))
+    const realStatFile = (p: string) => {
+      try {
+        const s = statSync(p)
+        return { mtimeMs: s.mtimeMs, size: s.size }
+      } catch {
+        return null
+      }
+    }
+    try {
+      const mainPath = join(root, 'Show.1080p.mkv')
+      const dupPath = join(root, 'Show.4K.mkv')
+      const sidecarPath = join(root, 'Show.1080p.zh.srt')
+      writeFileSync(mainPath, 'video-main')
+      writeFileSync(dupPath, 'video-dup')
+      writeFileSync(sidecarPath, '1\n00:00:01,000 --> 00:00:02,000\nadopted sub\n')
+
+      const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+
+      // 第一轮：只扫主文件——命中磁盘 sidecar，领养 covered，B3-1 补写 subtitles 行。
+      await makeIngestPass(makeDeps({
+        listVideoFiles: () => [mainPath], recognize,
+        fileExists: existsSync, statFile: realStatFile,
+      }))()
+      expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('covered')
+      expect(db.prepare(`SELECT COUNT(*) as c FROM subtitles WHERE item_id = 'tmdb:1/s1e1'`).get()).toEqual({ c: 1 })
+
+      // 第二轮：副本出现——撞既有身份 → addItemFile + 触发"复制优先"传播；源必须是刚领养的那行。
+      const probeDuration = vi.fn(async () => 1420) // 主副时长一致（测接线，不测真探测）
+      await makeIngestPass(makeDeps({
+        listVideoFiles: () => [mainPath, dupPath], recognize,
+        fileExists: existsSync, statFile: realStatFile,
+        probeDuration,
+      }))()
+
+      const destPath = join(root, 'Show.4K.zh-Hans.srt')
+      expect(existsSync(destPath)).toBe(true)
+      expect(readFileSync(destPath, 'utf8')).toContain('adopted sub')
+      expect(lib.listSubtitlesForFile('tmdb:1/s1e1', dupPath, false)).toEqual([
+        { id: expect.any(Number), path: destPath, language: 'zh-Hans' },
+      ])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// 批③ B3-2（领养清理 stale status_reason，F-B）：领养把 unavailable→covered 后，status_reason
+// 此前仍残留旧失败叙事（生产实证同上，E08 的 reason 还是"unknown videoFilename…"）——误导人工
+// 回看。修复：writeSubStatusOnly（cheap path）与 FULL PATH 的 TV/movie 两分支在 toWrite==='covered'
+// 时主动清空 status_reason。
+describe('makeIngestPass — B3-2 领养(sidecar)清理 stale status_reason', () => {
+  it('cheap path：unavailable(带旧 reason)→sidecar 出现判 covered → status_reason 被清空', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:1/s1e1', 'unknown videoFilename for tmdb:86831/s3e8', 1000)
+    expect(lib.getEpisode('tmdb:1/s1e1')!.status_reason).toBe('unknown videoFilename for tmdb:86831/s3e8')
+    lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    disk.addSidecar('/media/Show/Season 1/ep1.zh.srt')
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')!
+    expect(ep.sub_status).toBe('covered')
+    expect(ep.status_reason).toBeNull()
+  })
+
+  it('full path（movie 分支，memo 过期重新识别）：unavailable(带旧 reason)→sidecar 命中 covered → status_reason 被清空', async () => {
+    const path = '/media/movies/hero.mkv'
+    lib.upsertMovie({ id: 'tmdb:603', name: 'The Matrix', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:603', '搜索穷尽', 1000)
+    expect(lib.getMovie('tmdb:603')!.status_reason).toBe('搜索穷尽')
+
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    disk.addSidecar('/media/movies/hero.zh.srt')
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const movie = lib.getMovie('tmdb:603')!
+    expect(movie.sub_status).toBe('covered')
+    expect(movie.status_reason).toBeNull()
+  })
+})
+
+// 批③ B3-3（C-1，配额止血）：findRowByPath 只查 episodes/movies，看不到已登记副本（身份记在
+// item_files，episodes/movies.path 仍指向主文件）——已登记副本每轮 pass 都会落到 FULL PATH 重新
+// 真的 recognize()（真 TMDB 搜索），白烧配额。修复：主扫描循环在 CHEAP PATH 之后、FULL PATH
+// 之前新增 item_files 反查短路——命中即跳过 recognize()，只照常触发一次幂等的传播调用。
+describe('makeIngestPass — B3-3 已登记副本免重识别（配额止血）', () => {
+  it('副本第二轮 pass 命中 item_files → 不再调用 recognize()（真实 TMDB 搜索的替身）', async () => {
+    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
+    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathMain, 5000, 111)
+    disk.setVideo(pathDup, 5000, 222)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass() // 首轮：两条路径都要真识别一次（其中一条落 item_files 副本）
+    expect(recognize).toHaveBeenCalledTimes(2)
+
+    recognize.mockClear()
+    await pass() // 二轮：安静盘——主文件走 CHEAP PATH，副本命中 item_files 短路，都不该调 recognize
+
+    expect(recognize).not.toHaveBeenCalled()
+  })
+
+  it('副本命中短路分支后，仍照常触发幂等传播（主文件已有字幕时）', async () => {
+    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
+    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathMain, 5000, 111)
+    disk.setVideo(pathDup, 5000, 222)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    // 首轮：只扫主文件入库。
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+    // 二轮：扫到副本——此时还没登记过 item_files，走 FULL PATH 撞身份分支入册。
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+    expect(lib.listItemFiles('tmdb:1/s1e1')).toHaveLength(1)
+
+    // 主文件现在补上一份字幕。
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:1/s1e1', '/media/Show/Season 1/ep1-main.zh-Hans.srt', 'zh-Hans', 'scout-download', 1000)
+
+    recognize.mockClear()
+    const probeDuration = vi.fn(async () => null) // 虚拟磁盘没有真实视频文件——只看接线，不看复制结果
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+      probeDuration,
+    }))()
+
+    expect(recognize).not.toHaveBeenCalled() // B3-3：这轮副本走短路分支，不再重识别
+    expect(probeDuration).toHaveBeenCalledWith(pathMain)
+    expect(probeDuration).toHaveBeenCalledWith(pathDup)
+  })
+
+  // 回归锁：B3-3 短路分支不能破坏重复源 P2 的"主文件消失→最年长副本晋升"逻辑——该逻辑读
+  // item_files 表本身，与副本本轮是走 CHEAP/B3-3/FULL 哪条分支无关。
+  it('主文件消失但有存活副本（副本此前已在走 B3-3 短路）→ 晋升逻辑依然生效（回归锁）', async () => {
+    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
+    const pathDup = '/media/Show/Season 1/ep1-dup.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(pathMain, 5000, 111)
+    disk.setVideo(pathDup, 5000, 222)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+    const mainBefore = lib.getEpisode('tmdb:1/s1e1')!.path
+    const survivingReplica = [pathMain, pathDup].find((p) => p !== mainBefore)!
+
+    // 确认副本这轮已经在走 B3-3 短路（不再重识别）——晋升测试建立在这个前提上。
+    recognize.mockClear()
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathMain, pathDup], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+    expect(recognize).not.toHaveBeenCalled()
+
+    // 主文件从盘上消失（只留副本）——晋升逻辑必须依然生效。
+    disk.removeVideo(mainBefore)
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [survivingReplica], recognize,
+      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')
+    expect(ep).not.toBeNull()
+    expect(ep!.path).toBe(survivingReplica)
+    expect(lib.listItemFiles('tmdb:1/s1e1')).toEqual([])
   })
 })
 

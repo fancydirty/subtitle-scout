@@ -22,13 +22,14 @@ describe('db 基座', () => {
     // Task V1 追加 v13 entry 后 MIGRATIONS.length=5，落库值是 '5'；救援R4b 追加 v14
     // extras_exemptions entry 后 MIGRATIONS.length=6，落库值是 '6'；救援R5 追加 v15
     // hardsub-assumed 值域重建 entry 后 MIGRATIONS.length=7，落库值是 '7'；重复源 P1 追加 v16
-    // item_files+subtitles.file_path entry 后 MIGRATIONS.length=8，落库值是 '8'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '8' })
+    // item_files+subtitles.file_path entry 后 MIGRATIONS.length=8，落库值是 '8'；批③ B3-4 追加
+    // v17 item_files.duration_verdict/verdict_fingerprint entry 后 MIGRATIONS.length=9，落库值是 '9'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '9' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '8' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '9' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -203,8 +204,8 @@ describe('db 基座', () => {
 
     const db = openDb(dbPath)
 
-    // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16 两条迁移到 '8'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '8' })
+    // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17 三条迁移到 '9'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '9' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -223,7 +224,8 @@ describe('db 基座', () => {
   it('v16: item_files 表存在且 path UNIQUE，subtitles.file_path 列存在（存量行默认 NULL）', () => {
     const db = openDb(':memory:')
     const cols = (db.prepare('PRAGMA table_info(item_files)').all() as { name: string }[]).map((c) => c.name)
-    expect(cols).toEqual(['id', 'item_id', 'path', 'added_at'])
+    // v17（批③ B3-4）追加 duration_verdict/verdict_fingerprint 两列——见下方专属测试。
+    expect(cols).toEqual(['id', 'item_id', 'path', 'added_at', 'duration_verdict', 'verdict_fingerprint'])
     const subCols = (db.prepare('PRAGMA table_info(subtitles)').all() as { name: string }[]).map((c) => c.name)
     expect(subCols).toContain('file_path')
 
@@ -236,5 +238,94 @@ describe('db 基座', () => {
     // subtitles.file_path 存量行默认 NULL（兼容：不带 file_path 的插入=挂主文件）
     db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES ('tmdb:1/s1e1', '/media/a.zh.srt', 'zh-Hans', 'scout-download', 1)`).run()
     expect(db.prepare(`SELECT file_path FROM subtitles WHERE item_id = 'tmdb:1/s1e1'`).get()).toEqual({ file_path: null })
+  })
+
+  // v17（批③ B3-4，专项#1：传播"不匹配判决"指纹记忆）：item_files 加 duration_verdict/
+  // verdict_fingerprint 两列，纯增量（ALTER TABLE ADD COLUMN ×2）。存量行两列默认 NULL
+  // （兼容语义：NULL=未判过），新值可写。
+  it('v17: item_files.duration_verdict/verdict_fingerprint 两列存在（存量行默认 NULL，新值可写）', () => {
+    const db = openDb(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(item_files)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toContain('duration_verdict')
+    expect(cols).toContain('verdict_fingerprint')
+
+    db.prepare(`INSERT INTO item_files (item_id, path, added_at) VALUES ('tmdb:1/s1e1', '/media/a.mkv', 1)`).run()
+    expect(db.prepare(`SELECT duration_verdict, verdict_fingerprint FROM item_files WHERE path = '/media/a.mkv'`).get())
+      .toEqual({ duration_verdict: null, verdict_fingerprint: null })
+
+    const fp = JSON.stringify({ main: { mtimeMs: 1000, size: 111 }, replica: { mtimeMs: 2000, size: 222 } })
+    db.prepare(`UPDATE item_files SET duration_verdict = 'mismatch', verdict_fingerprint = ? WHERE path = '/media/a.mkv'`).run(fp)
+    expect(db.prepare(`SELECT duration_verdict, verdict_fingerprint FROM item_files WHERE path = '/media/a.mkv'`).get())
+      .toEqual({ duration_verdict: 'mismatch', verdict_fingerprint: fp })
+  })
+
+  // 迁移安全性（血泪教训，本仓已两次立功——见 v15 测试同名注释）：真造一个 v16 形状的旧库
+  // （schema_version '8'，无 duration_verdict/verdict_fingerprint 两列），塞入代表性 item_files
+  // 行，重新 openDb() 触发 v17 迁移，断言存量行原样存活（不丢数据）且新列确实可写。
+  it('v17 迁移安全性：v16 形状旧库升级后，既有 item_files 行原样存活，新列可写', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
+    const Database = (openDb(':memory:').constructor) as new (path: string) => import('better-sqlite3').Database
+    const raw = new Database(dbPath)
+    raw.pragma('foreign_keys = OFF')
+    raw.exec(`
+      CREATE TABLE series (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT, year INTEGER,
+        provider_ids TEXT, layout_nonstandard INTEGER NOT NULL DEFAULT 0, genres TEXT, origin_lang TEXT
+      );
+      CREATE TABLE episodes (
+        id TEXT PRIMARY KEY, series_id TEXT NOT NULL REFERENCES series(id),
+        season INTEGER NOT NULL, episode INTEGER NOT NULL, name TEXT, path TEXT NOT NULL,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE movies (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT,
+        year INTEGER, path TEXT NOT NULL, provider_ids TEXT,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        origin_lang TEXT, probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, series_id TEXT, season INTEGER, movie_id TEXT, plan_ref TEXT, payload TEXT, parent_job_id INTEGER, state TEXT NOT NULL DEFAULT 'wanted', priority INTEGER NOT NULL DEFAULT 100, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, lease_until INTEGER, last_error TEXT);
+      CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, started_at INTEGER NOT NULL, finished_at INTEGER, decision TEXT, detail TEXT, journal_path TEXT, llm_calls INTEGER, assrt_calls INTEGER, trace_json TEXT);
+      CREATE TABLE subtitles (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, path TEXT NOT NULL, language TEXT NOT NULL, source TEXT NOT NULL, provider_ref TEXT, assrt_sub_id INTEGER, size INTEGER, created_at INTEGER NOT NULL, file_path TEXT, UNIQUE(item_id, path));
+      CREATE TABLE blacklist (provider_ref TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', reason TEXT, created_at INTEGER NOT NULL, PRIMARY KEY(provider_ref, filename));
+      CREATE TABLE parked_paths (path TEXT PRIMARY KEY, park_reason TEXT NOT NULL, first_seen INTEGER NOT NULL, last_attempt INTEGER NOT NULL);
+      CREATE TABLE identify_overrides (path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL, is_tv INTEGER NOT NULL, season INTEGER, created_at INTEGER NOT NULL);
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE tmdb_seasons (series_id TEXT NOT NULL, season INTEGER NOT NULL, episode INTEGER NOT NULL, title TEXT, fetched_at INTEGER NOT NULL, PRIMARY KEY (series_id, season, episode));
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE media_roots (path TEXT PRIMARY KEY, type TEXT NOT NULL DEFAULT 'local', added_at INTEGER NOT NULL);
+      CREATE TABLE extras_exemptions (path TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
+      CREATE TABLE item_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        added_at INTEGER NOT NULL
+      );
+      INSERT INTO meta (key, value) VALUES ('schema_version', '8');
+      INSERT INTO series (id, name) VALUES ('tmdb:100', 'Preexisting Show');
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+        VALUES ('tmdb:100/s1e1', 'tmdb:100', 1, 1, 'Ep1', '/media/ep1-main.mkv', 'covered', 5000);
+      INSERT INTO item_files (item_id, path, added_at) VALUES ('tmdb:100/s1e1', '/media/ep1-replica.mkv', 6000);
+    `)
+    raw.pragma('foreign_keys = ON')
+    raw.close()
+
+    const db = openDb(dbPath)
+
+    // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17 一条迁移到 '9'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '9' })
+    // 存量 item_files 行原样存活，不丢数据不串列。
+    expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
+      .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
+    // 新列确实可写（不是只重建了表结构但列还没真的加上）。
+    expect(() =>
+      db.prepare(`UPDATE item_files SET duration_verdict = 'probe-failed', verdict_fingerprint = '{}' WHERE path = '/media/ep1-replica.mkv'`).run()
+    ).not.toThrow()
   })
 })

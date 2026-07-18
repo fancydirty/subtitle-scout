@@ -166,6 +166,20 @@ export interface ProbeMemo {
   langs: string[] | null
 }
 
+/** B3-4（专项#1，schema v17）：一份文件的判决指纹快照（mtimeMs+size，同 ProbeMemo 的既有形状,
+ *  这里不复用 ProbeMemo 本身——语义不同，这个快照只服务"文件是否变了"的判断，不带 langs）。 */
+export interface FileFingerprint {
+  mtimeMs: number
+  size: number
+}
+
+/** 一次时长判决发生时刻，主文件与副本文件各自的指纹快照——item_files.verdict_fingerprint 的
+ *  JSON 形状。 */
+export interface VerdictFingerprint {
+  main: FileFingerprint
+  replica: FileFingerprint
+}
+
 export class LibraryRepo {
   readonly db: ScoutDb
 
@@ -569,6 +583,24 @@ export class LibraryRepo {
     markCoveredTransaction()
   }
 
+  /** B3-1（批③领养记账）：ingest.ts classify() rule 3（磁盘 sidecar 探测，findExternalSidecar）
+   *  判 covered 时的记账落点——只插入 subtitles 行，不碰 sub_status/search_attempts（那两个已经
+   *  由调用方的 writeSubStatusOnly/upsertEpisode/upsertMovie 写过一次，这里不重复）。
+   *  source 恒 'preexisting'（db.ts subtitles 表注释里的既有值——"摄取时发现磁盘上已经有"，
+   *  不是新造的枚举），file_path 留 NULL（主文件语义，见 listSubtitlesForFile 头注释：sidecar
+   *  是主文件旁边的外挂字幕，不是副本）。ON CONFLICT(item_id, path) DO NOTHING 防重——sidecar
+   *  path 由 videoBase+tag 确定性派生，同一条目同一 pass/跨 pass 重复命中都是同一个 path，
+   *  天然幂等，这里的 ON CONFLICT 只是同 markCovered 一样的防御性兜底。 */
+  recordAdoptedSidecar(itemId: string, path: string, language: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO subtitles (item_id, path, language, source, created_at)
+         VALUES (?, ?, ?, 'preexisting', ?)
+         ON CONFLICT(item_id, path) DO NOTHING`
+      )
+      .run(itemId, path, language, now)
+  }
+
   /** R-3（裁决 2026-07-16）：worker 判"本轮搜索穷尽"（no_safe_match）后调用——item 级内容退避
    *  阶梯，替代原先由调用方算好 recheckAfter 直接传入的旧签名。`now` 既是这次判决发生的时刻
    *  （写入 updated_at），也是阶梯计算的锚点（recheck_after = now + 对应天数）。
@@ -726,6 +758,17 @@ export class LibraryRepo {
       .all(itemId) as ItemFile[]
   }
 
+  /** B3-3（配额止血）：按 path 反查该 path 是否已是某条目的登记副本——ingest.ts 主扫描循环用它
+   *  在调用昂贵的 recognize() 之前先判断"这条路径我们已经认得，只是副本身份"，从而跳过重新识别
+   *  （findRowByPath 只查 episodes/movies，天生看不到副本；这条是它的 item_files 侧对应口）。
+   *  找不到（路径不是任何条目的已登记副本）→ null。 */
+  getItemFileByPath(path: string): ItemFile | null {
+    const row = this.db
+      .prepare(`SELECT id, item_id, path, added_at FROM item_files WHERE path = ?`)
+      .get(path) as ItemFile | undefined
+    return row ?? null
+  }
+
   /** 副本文件从磁盘消失时删行（seenPaths 差异清理调用）。行不存在=无事发生。 */
   removeItemFileByPath(path: string): void {
     this.db.prepare(`DELETE FROM item_files WHERE path = ?`).run(path)
@@ -750,6 +793,27 @@ export class LibraryRepo {
     })
     promote()
     return promoted.path
+  }
+
+  /** B3-4（专项#1，schema v17）：某副本 path 上次记住的时长判决（mismatch/probe-failed）+ 判决
+   *  那一刻主/副两个文件各自的 (mtimeMs,size) 快照。行不存在，或两列任一为 NULL（从未判过/
+   *  ON CONFLICT 新建的副本行）→ null，调用方据此决定"必须重新真的探测一次"。 */
+  getItemFileVerdict(path: string): { verdict: string; fingerprint: VerdictFingerprint } | null {
+    const row = this.db
+      .prepare(`SELECT duration_verdict, verdict_fingerprint FROM item_files WHERE path = ?`)
+      .get(path) as { duration_verdict: string | null; verdict_fingerprint: string | null } | undefined
+    if (!row || row.duration_verdict == null || row.verdict_fingerprint == null) return null
+    return { verdict: row.duration_verdict, fingerprint: JSON.parse(row.verdict_fingerprint) as VerdictFingerprint }
+  }
+
+  /** B3-4：写入/刷新某副本 path 的时长判决记忆——subtitlePropagation.ts 唯一写口，仅在
+   *  mismatch/probe-failed 两个失败分支调用（成功复制路径不需要 verdict，有字幕行本身就是短路
+   *  锚点）。要求该 path 已在 item_files 里有行（调用方永远是 addItemFile 之后才调用
+   *  propagateSubtitleToReplica，这个前提天然成立）。 */
+  setItemFileVerdict(path: string, verdict: string, fingerprint: VerdictFingerprint): void {
+    this.db
+      .prepare(`UPDATE item_files SET duration_verdict = ?, verdict_fingerprint = ? WHERE path = ?`)
+      .run(verdict, JSON.stringify(fingerprint), path)
   }
 
   /** 重复源 P3：逐文件覆盖事实——一个条目的每个文件（主文件 + 全部副本）各自是否已有字幕着落。

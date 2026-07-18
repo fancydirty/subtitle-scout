@@ -222,6 +222,17 @@ CREATE TABLE item_files (
 CREATE INDEX item_files_item ON item_files(item_id);
 ALTER TABLE subtitles ADD COLUMN file_path TEXT;
   `.trim(),
+  // v17（批③ B3-4，专项#1：传播"不匹配判决"指纹记忆）：item_files 加两列，纯增量。
+  // duration_verdict=上次时长判决结果（'mismatch'/'probe-failed'；NULL=未判过，或判过但已被
+  // 文件变化清空语义上等价于"重判"——本仓不显式清空，指纹不匹配即等价于未判）。
+  // verdict_fingerprint=判决那一刻主/副两个文件各自的 {mtimeMs,size} 快照（JSON），
+  // subtitlePropagation.ts 用它判断"文件是否变了"——两个文件的当前 stat 与快照完全一致才敢
+  // 直接沿用旧判决短路，跳过重新 ffprobe；任一文件变了就重判。成功复制路径不写这两列
+  // （有字幕行本身就是短路锚点，见 propagateSubtitleToReplica 入口检查），只有 mismatch/
+  // probe-failed 两个失败分支才写——避免每轮 pass 对同一对"确认不匹配"的文件重复真实探测
+  // （生产实证：SPY×FAMILY 13 集×2 探测/每 pass 的探测空转）。
+  `ALTER TABLE item_files ADD COLUMN duration_verdict TEXT;
+   ALTER TABLE item_files ADD COLUMN verdict_fingerprint TEXT`,
 ]
 
 export function openDb(path: string): ScoutDb {

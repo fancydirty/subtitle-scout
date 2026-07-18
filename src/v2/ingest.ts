@@ -112,13 +112,21 @@ function findRowByPath(db: ScoutDb, path: string): ExistingRow | null {
   return null
 }
 
-/** CHEAP PATH 专用：只改 sub_status（+updated_at，+F-R2-6 的 search_attempts），不碰其余列——
- *  "重跑覆盖分类，不是重新摄取"。LibraryRepo 没有通用的"任意改 sub_status"方法
- *  （markCovered/markUnavailable 都是带副作用的专用写法），直接对 lib.db 发 SQL，同
- *  findRowByPath 的既有口径。
+/** CHEAP PATH 专用：只改 sub_status（+updated_at，+F-R2-6 的 search_attempts，+B3-2 的
+ *  status_reason 清理），不碰其余列——"重跑覆盖分类，不是重新摄取"。LibraryRepo 没有通用的
+ *  "任意改 sub_status"方法（markCovered/markUnavailable 都是带副作用的专用写法），直接对
+ *  lib.db 发 SQL，同 findRowByPath 的既有口径。
  *  R-9（判决可稽核）：reason 非空时（目前只有 rule 1b 会给）连带写 status_reason；reason 为 null
- *  时完全不碰该列（不是写 null 清空它）——沿用改前的窄写口径，避免这次收窄改动波及其余状态
- *  转换（如 covered→missing）本不该动的列。
+ *  时原则上完全不碰该列（不是写 null 清空它）——沿用改前的窄写口径，避免这次收窄改动波及其余
+ *  状态转换（如 covered→missing）本不该动的列。
+ *
+ *  B3-2（批③领养记账，审计定罪：领养翻 covered 后 status_reason 残留旧失败叙事）：上面这条
+ *  "reason 为 null 就不碰该列"的窄口径有个例外——status 落地为 covered 时（rule 3 sidecar 领养，
+ *  reason 恒 null）主动清空 status_reason。理由：covered 是终局态之一，若该行此前是
+ *  unavailable/rule 1b ignored 留下的旧叙事（如 markUnavailable 的"搜索穷尽"人话理由），领养
+ *  成功后这条旧理由已经完全不适用（生产实证：tmdb:86831/s3e8 covered 而 status_reason 仍是
+ *  "unknown videoFilename…"，误导人工回看）。missing/ignored 等其余转换不受影响——reason 为
+ *  null 且 status 不是 covered 时仍保持"不碰该列"的既有窄口径不变。
  *
  *  F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零，R-3 不变式）：status 落地为
  *  covered/embedded 时同步把 search_attempts 归零——"翻篇"事件。此前只有 markCovered
@@ -133,6 +141,9 @@ function writeSubStatusOnly(
   const attemptsClause = status === 'covered' || status === 'embedded' ? `, search_attempts = 0` : ''
   if (reason != null) {
     db.prepare(`UPDATE ${table} SET sub_status = ?, status_reason = ?, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, reason, now, id)
+  } else if (status === 'covered') {
+    // B3-2：领养（rule 3 sidecar）终局，清掉可能残留的旧 unavailable/ignored 叙事。
+    db.prepare(`UPDATE ${table} SET sub_status = ?, status_reason = NULL, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, now, id)
   } else {
     db.prepare(`UPDATE ${table} SET sub_status = ?, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, now, id)
   }
@@ -243,6 +254,11 @@ interface ClassifyResult {
   /** 非 null 仅当 rule 1b 命中——rule 0/2/3/4 都不留痕（rule 0 是权威事实，无需解释；2/3/4
    *  不是 ignored，reason 概念对它们不适用）。 */
   reason: string | null
+  /** B3-1（批③领养记账）：rule 3（磁盘 sidecar）命中时的真实路径 + 按匹配 tag 换算出的语言——
+   *  非 null 恒等价于 status === 'covered'（classify() 里只有 rule 3 会产出 'covered'），调用方
+   *  据此补写 subtitles 行（领养入账，见 libraryRepo.recordAdoptedSidecar 头注释）。其余规则
+   *  （0/1b/2/4/4b）恒 null。 */
+  sidecar: { path: string; language: string } | null
 }
 
 function classify(input: ClassifyInput): ClassifyResult {
@@ -250,13 +266,13 @@ function classify(input: ClassifyInput): ClassifyResult {
 
   // rule 0
   if (originLang != null && originSkipLanguages.includes(langOf(originLang))) {
-    return { status: 'ignored', reason: null }
+    return { status: 'ignored', reason: null, sidecar: null }
   }
 
   // rule 1b（rule 1 已删除，见上方函数头注释）
   if (originSkipLanguages.includes('zh')) {
     if (originLang == null && !originResolutionFailed && looksChineseTitle(title)) {
-      return { status: 'ignored', reason: RULE_1B_REASON }
+      return { status: 'ignored', reason: RULE_1B_REASON, sidecar: null }
     }
   }
 
@@ -264,12 +280,13 @@ function classify(input: ClassifyInput): ClassifyResult {
 
   // rule 2
   if (embeddedLangs && embeddedLangs.some(lang => targetTags.includes(lang))) {
-    return { status: 'embedded', reason: null }
+    return { status: 'embedded', reason: null, sidecar: null }
   }
 
   // rule 3
-  if (findExternalSidecar(path, targetTags, fileExists)) {
-    return { status: 'covered', reason: null }
+  const sidecarMatch = findExternalSidecar(path, targetTags, fileExists)
+  if (sidecarMatch) {
+    return { status: 'covered', reason: null, sidecar: sidecarMatch }
   }
 
   // rule 4b（见函数头注释）：aggressive 档 + 探针确凿零内嵌轨 + 发布组标记 → 直判 hardsub-assumed。
@@ -278,11 +295,11 @@ function classify(input: ClassifyInput): ClassifyResult {
     embeddedLangs !== null && embeddedLangs.length === 0 &&
     RELEASE_GROUP_TAG.test(basename(path))
   ) {
-    return { status: 'hardsub-assumed', reason: 'aggressive 档机械直判：发布组标记 + 探针确认零内嵌字幕轨' }
+    return { status: 'hardsub-assumed', reason: 'aggressive 档机械直判：发布组标记 + 探针确认零内嵌字幕轨', sidecar: null }
   }
 
   // rule 4
-  return { status: 'missing', reason: null }
+  return { status: 'missing', reason: null, sidecar: null }
 }
 
 /** origin_lang 解析 + 缓存写回，一份实现给 series/movie 两条分支复用（回调式 setCached 屏蔽
@@ -449,8 +466,35 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                   writeSubStatusOnly(lib.db, existing.kind, existing.id, toWrite, nowMs, computed.reason)
                   result.changed = true
                 }
+                // B3-1（批③领养记账）：toWrite==='covered' 恒来自 rule 3（sidecar），无关这次
+                // if 是否真的改了 sub_status——已经是 covered 的行（上一轮已领养过）也要保证
+                // subtitles 行存在（ON CONFLICT DO NOTHING 天然幂等，不重复插）。
+                if (toWrite === 'covered' && computed.sidecar) {
+                  lib.recordAdoptedSidecar(existing.id, computed.sidecar.path, computed.sidecar.language, nowMs)
+                }
                 continue
               }
+            }
+
+            // ---- B3-3（配额止血）：已登记副本——item_files 命中该 path → 跳过 recognize() ----
+            // findRowByPath 只查 episodes/movies，天生看不到副本（副本的身份记在 item_files，
+            // episodes/movies.path 仍指向主文件）；不设防的话，每一轮 pass 副本都会落到下面的
+            // FULL PATH 重新真的 recognize()（真 TMDB 搜索）——生产实证：已登记副本每轮空转
+            // 重识别，白烧 TMDB 配额。这条路径已知 itemId（从 item_files 反查），不需要重新识别，
+            // 只需照常触发一次幂等的 propagateSubtitleToReplica（同 FULL PATH 撞身份分支的既有
+            // 调用），别的什么都不用做——不碰 addItemFile（行已经在），不影响下面"主文件消失
+            // 晋升"逻辑（该逻辑读 item_files 表本身，不关心这条路径本轮走了 CHEAP/B3-3/FULL 哪
+            // 条分支；seenPaths 已在循环顶部加过这条 path，晋升清理不会误删它）。
+            const existingReplica = existing ? null : lib.getItemFileByPath(path)
+            if (existingReplica) {
+              const ownerPath =
+                lib.getEpisode(existingReplica.item_id)?.path ?? lib.getMovie(existingReplica.item_id)?.path ?? null
+              if (ownerPath) {
+                await propagateSubtitleToReplica(
+                  { lib, probeDuration: deps.probeDuration, log }, existingReplica.item_id, ownerPath, path, nowMs,
+                )
+              }
+              continue
             }
 
             // ---- FULL PATH：无行，或行存在但探针记忆化已过期 → 重新识别 + 补全 + 探测 ----
@@ -618,6 +662,16 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // reason:null，不产生这条多余的写）。
               if (computed.reason) {
                 lib.db.prepare(`UPDATE episodes SET status_reason = ? WHERE id = ?`).run(computed.reason, ownEpisodeId)
+              } else if (toWrite === 'covered') {
+                // B3-2：同 CHEAP PATH（writeSubStatusOnly 头注释）——领养(sidecar)终局清掉
+                // upsertEpisode 的 ON CONFLICT 分支不会碰、因而可能残留的旧 unavailable 叙事。
+                // upsertEpisode 全新 INSERT 分支本就默认 NULL，这条 UPDATE 对新行是无害 no-op。
+                lib.db.prepare(`UPDATE episodes SET status_reason = NULL WHERE id = ?`).run(ownEpisodeId)
+              }
+              // B3-1（批③领养记账）：toWrite==='covered' 恒来自 rule 3（sidecar）——补写 subtitles
+              // 行（ON CONFLICT DO NOTHING 幂等，跨 pass 重复命中不重复插）。
+              if (toWrite === 'covered' && computed.sidecar) {
+                lib.recordAdoptedSidecar(ownEpisodeId, computed.sidecar.path, computed.sidecar.language, nowMs)
               }
               // 债务D1：full path 的 series_id 从识别结果直接可得（ownSeriesId）。
               layoutObserved.set(ownSeriesId, (layoutObserved.get(ownSeriesId) ?? false) || !isCanonicalEpisodePath(path))
@@ -705,6 +759,13 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // 时补一条窄 UPDATE。
               if (computed.reason) {
                 lib.db.prepare(`UPDATE movies SET status_reason = ? WHERE id = ?`).run(computed.reason, ownMovieId)
+              } else if (toWrite === 'covered') {
+                // B3-2：同 TV 分支（见其注释）——领养(sidecar)终局清掉可能残留的旧 unavailable 叙事。
+                lib.db.prepare(`UPDATE movies SET status_reason = NULL WHERE id = ?`).run(ownMovieId)
+              }
+              // B3-1（批③领养记账）：同 TV 分支（见其注释）。
+              if (toWrite === 'covered' && computed.sidecar) {
+                lib.recordAdoptedSidecar(ownMovieId, computed.sidecar.path, computed.sidecar.language, nowMs)
               }
               lib.setProbeMemo(ownMovieId, stat.mtimeMs, stat.size, embeddedLangs)
               lib.clearParkedPath(path)
