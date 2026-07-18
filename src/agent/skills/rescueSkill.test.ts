@@ -30,6 +30,14 @@ describe('rescueSkill 语义锚点', () => {
     expect(rescueSkill.content).toContain('finalize exactly')
   })
 
+  // 救援官 R6 真站验收的已知债(Astronaut 案例):中途 keep_parked 判词丰富,finalize 对同一目录
+  // 的 reason 退化成机械"ambiguous"——skill 只教"repeating the decisions"没强制逐字携带。
+  // 2026-07-18 主控亲笔补上;此锁保住"原样或更全,绝不更薄"的措辞。
+  it('finalize reason 必须原样携带决策时判词(Astronaut 案例回归锁)', () => {
+    expect(rescueSkill.content).toContain('copy it verbatim (or write it fuller), never thinner')
+    expect(rescueSkill.content).toContain('shows ONLY the finalize reason')
+  })
+
   it('一目录一认领纪律在场', () => {
     expect(rescueSkill.content).toContain('one claim covers one directory')
   })

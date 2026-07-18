@@ -82,6 +82,12 @@ filtered before parking. What reaches you is the grey zone:
   once, with one outcome per directory, repeating the decisions you recorded. If a decision
   tool returns an error (unknown directory, malformed tmdbId), fix the decision — do not
   carry an errored decision into finalize.
+- Each directory's reason in finalize must carry the SAME substantive reason you wrote when
+  you recorded that decision — copy it verbatim (or write it fuller), never thinner. The
+  human triage page shows ONLY the finalize reason; a rich keep_parked reason that finalize
+  collapses to a one-word label ("ambiguous") throws away exactly the evidence the human
+  needs to act. If you wrote "matches both 'X (2019)' and 'X (2023)', file count 13 fits
+  neither season table" at decision time, finalize must say that too.
 - season in a claim: pass it only when the directory maps to ONE specific season and you
   verified it against the season table; otherwise omit it and let ingest resolve per-file.
 `,
