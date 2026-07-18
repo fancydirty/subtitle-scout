@@ -765,7 +765,7 @@ describe('TmdbClient baseUrl/proxyUrl deployment knobs', () => {
 
   it('缺省零变化：URL 前缀仍为官方，init 不含 dispatcher 键', async () => {
     let seenInit: RequestInit | undefined
-    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
       seenInit = init
       return new Response(JSON.stringify({ original_language: 'ja' }), { status: 200 })
     })
