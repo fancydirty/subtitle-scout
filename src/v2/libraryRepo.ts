@@ -534,13 +534,21 @@ export class LibraryRepo {
    *  scout-download/adopted-local 调用方（executor.ts）曾经不传此参数、吃这个默认值，
    *  scan 磁盘 arm 领养（scanner.ts）曾经会按匹配到的 CHINESE_TAGS tag 显式传入真实语言——
    *  executor.ts 与 scanner.ts 均已随各自的退役波删除，默认值本身原样保留，只是今天没有
-   *  调用方会真的落到它。 */
+   *  调用方会真的落到它。
+   *  reason（W3，装机记账修复批，2026-07-18）：这次覆盖的判词——find-subtitle worker 传
+   *  item.reason（finalize 里 agent 给出的"为什么装这个"人话理由），落进 status_reason，供事后
+   *  观察性审计（Peacemaker 错装 5 天后无迹可查的教训：covered 行的 status_reason 此前恒为
+   *  markCovered 从不碰这一列，旧的 unavailable/hardsub-assumed 叙事原样残留误导人工回看）。
+   *  给了 reason 就写新的；省略/null 时照 ingest.ts writeSubStatusOnly 的既有 F-B 口径清空
+   *  （covered 是终局态之一，旧叙事不再适用）——不是"不碰该列"，是"明确清空"。翻 missing/
+   *  unavailable 走的是 markUnavailable 等其它写路径，不受这里影响，那条"翻篇清除"逻辑照旧。 */
   markCovered(
     itemId: string,
     subtitlePath: string | null,
     source: string,
     providerRef?: string,
-    language: string = 'zh-Hans'
+    language: string = 'zh-Hans',
+    reason?: string | null
   ): void {
     const now = Date.now()
 
@@ -552,20 +560,20 @@ export class LibraryRepo {
       const episodeResult = this.db
         .prepare(
           `UPDATE episodes
-           SET sub_status = 'covered', search_attempts = 0, updated_at = ?
+           SET sub_status = 'covered', search_attempts = 0, status_reason = ?, updated_at = ?
            WHERE id = ?`
         )
-        .run(now, itemId)
+        .run(reason ?? null, now, itemId)
 
       // If episode not found, try movie
       if (episodeResult.changes === 0) {
         this.db
           .prepare(
             `UPDATE movies
-             SET sub_status = 'covered', search_attempts = 0, updated_at = ?
+             SET sub_status = 'covered', search_attempts = 0, status_reason = ?, updated_at = ?
              WHERE id = ?`
           )
-          .run(now, itemId)
+          .run(reason ?? null, now, itemId)
       }
 
       // Insert subtitle record (UNIQUE constraint handles duplicates)

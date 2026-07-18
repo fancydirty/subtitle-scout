@@ -162,6 +162,39 @@ describe('媒体镜像', () => {
     expect(lib.db.prepare('select language from subtitles where item_id=?').get('e3')).toEqual({ language: 'en' })
   })
 
+  // W3（装机记账修复批，2026-07-18）：markCovered 的可选 reason 参数落进 status_reason——
+  // 给了 reason 就写新的判词。
+  it('markCovered reason 参数（W3）：给了 reason 时写进 status_reason', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '',
+      path: '/p/1.mkv', subStatus: 'missing',
+    })
+    lib.markCovered('e1', '/p/1.zh-Hans.srt', 'scout-download', 'assrt:713051', 'zh-Hans', '文件名与集号完全吻合')
+    expect(lib.getEpisode('e1')!.status_reason).toBe('文件名与集号完全吻合')
+  })
+
+  // 同 ingest.ts writeSubStatusOnly 的既有 F-B 口径：covered 是终局态之一，没给 reason 时清空
+  // 可能残留的旧 unavailable/hardsub-assumed 叙事——不是"不碰该列"。
+  it('markCovered reason 参数（W3）：省略 reason 时清空该行残留的旧 status_reason（同 ingest.ts F-B 口径）', () => {
+    lib.upsertSeries({ id: 's1', name: 'A' })
+    lib.upsertEpisode({
+      id: 'e1', seriesId: 's1', season: 1, episode: 1, name: '',
+      path: '/p/1.mkv', subStatus: 'missing',
+    })
+    lib.markUnavailable('e1', '旧的失败叙事', Date.now())
+    expect(lib.getEpisode('e1')!.status_reason).toBe('旧的失败叙事')
+
+    lib.markCovered('e1', '/p/1.zh-Hans.srt', 'scout-download')
+    expect(lib.getEpisode('e1')!.status_reason).toBeNull()
+  })
+
+  it('markCovered reason 参数（W3）：movie 分支同样生效', () => {
+    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing' })
+    lib.markCovered('m1', '/m.zh-Hans.srt', 'scout-download', undefined, 'zh-Hans', '判词')
+    expect(lib.getMovie('m1')!.status_reason).toBe('判词')
+  })
+
   it('markCovered 传 null 路径（M7）：只改状态，不伪造 subtitles 行', () => {
     lib.upsertSeries({ id: 's1', name: 'A' })
     lib.upsertEpisode({

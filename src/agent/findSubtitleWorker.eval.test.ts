@@ -351,7 +351,14 @@ describe('find-subtitle worker offline eval: batch (multi-target within one seri
         return { url: `http://file0.assrt.net/${entry.index}.srt`, filename: entry.name }
       },
     }
-    const fetchImpl = async () => new Response(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nhello\n'))
+    // W1（装机记账修复批·跨集内容近似去重闸）：真实季包里每一集的对白内容不同——这里按 URL
+    // 区分两个 fileIndex 各自的内容，避免两个 target 装出逐句相同的对白，误撞新增的跨集内容
+    // 近似去重闸（该闸的设计目标正是拦这种"内容相同却贴了两个集号"的情形，这里的两个 target
+    // 是真的不同集，测试夹具必须让它们的内容本身也不同，才不会假触发）。
+    const fetchImpl = async (url: string | URL) =>
+      new Response(Buffer.from(String(url).includes('/0.srt')
+        ? '1\n00:00:01,000 --> 00:00:02,000\nhello from episode one\n'
+        : '1\n00:00:01,000 --> 00:00:02,000\nhello from episode two\n'))
 
     let call = 0
     let finalizeCalls = 0

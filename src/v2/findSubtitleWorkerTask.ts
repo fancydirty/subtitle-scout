@@ -476,16 +476,29 @@ export async function runFindSubtitleWorkerTask(
 
     // 事实先入账（installed 永远先记——磁盘上字幕已经在了，队列怎么转都不改变这个事实）
     for (const item of installed) {
+      // W2（装机记账修复批，2026-07-18，审计实证 DxD/HOTD/Gracie 遍地）：candidateProviderId 全链
+      // 唯一来源是 finalize 工具的 inputSchema（findSubtitleWorker.schemas.ts），agent 填它时手上
+      // 唯一见过的候选标识就是 candidateKey() 复合形态（"provider:providerId"，见
+      // findSubtitleWorker.tools.ts 头注释"The agent only ever sees ONE identifier per candidate"）
+      // ——candidateProviderId 事实上报上来的就已经是 "assrt:661405" 这种复合形态，不是裸 id。
+      // 原代码无条件再拼一次 candidateKey({provider, providerId})，把这个已经带前缀的值当裸 id
+      // 用，落库成 "assrt:assrt:661405" 双前缀。真实 providerId（core/schemas.ts 的 PROVIDERS 适
+      // 配器）从不含冒号，含冒号即可判定"已经是复合形态"——已含前缀原样使用，没有前缀（真正的裸
+      // id，防御性兜底，理论上不会再发生但不假设它绝不会发生）才补一次 candidateKey()。
       const providerRef =
         item.candidateProvider && item.candidateProviderId
-          ? candidateKey({ provider: item.candidateProvider, providerId: item.candidateProviderId })
+          ? item.candidateProviderId.includes(':')
+            ? item.candidateProviderId
+            : candidateKey({ provider: item.candidateProvider, providerId: item.candidateProviderId })
           : undefined
       // A2: fall back to the task's own target language, not a hardcoded 'zh-Hans' — the worker
       // should always set installedLanguage on an installed item, this is only a defensive last
       // resort, and a Chinese-only default would misrecord a non-Chinese task's language.
+      // W3（装机记账修复批）：item.reason 是 finalize 里 agent 给出的判词，落进该行的
+      // status_reason——覆盖时留判词，供事后审计"为什么装的是这个"。
       deps.lib.markCovered(
         item.itemId, item.installedPath, 'scout-download', providerRef,
-        item.installedLanguage ?? task.targetLanguage,
+        item.installedLanguage ?? task.targetLanguage, item.reason,
       )
     }
     // R-3：no_safe_match 是 worker 的语义判决，落账为 item 事实；"何时再看"由 item 自己的

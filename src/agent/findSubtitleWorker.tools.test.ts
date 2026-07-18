@@ -683,6 +683,144 @@ describe('install_subtitle tool', () => {
     expect((out as { error: string }).error).toMatch(/refusing to overwrite existing file/)
     expect(readFileSync(existingPath, 'utf8')).toBe('PRE-EXISTING content — must survive (hand-placed or leftover)')
   })
+
+  // W1（装机记账修复批·跨集内容近似去重闸，DxD S3E11/S3E12 案根因修复）：同一 run 里两个不同
+  // target 装出逐句相同的对白（仅时间戳偏移）——第二次装机必须被拒，文案指向已装的那个 itemId。
+  describe('W1: 跨集内容近似去重闸（installedFingerprints）', () => {
+    it('rejects installing near-identical dialogue (timestamp-shifted only) for a different target in the same run', async () => {
+      const dirA = join(sandboxDir, 'media', 'Show', 'Season 3')
+      mkdirSync(dirA, { recursive: true })
+      const contentA = '1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond line\n'
+      const contentBShiftedTiming = '1\n00:00:02,000 --> 00:00:04,000\nHello world\n\n2\n00:00:05,000 --> 00:00:07,000\nSecond line\n'
+      const stagedPathA = join(sandboxDir, 'stagedA.srt')
+      const stagedPathB = join(sandboxDir, 'stagedB.srt')
+      writeFileSync(stagedPathA, contentA)
+      writeFileSync(stagedPathB, contentBShiftedTiming)
+      const stagedFiles = new Map([['handle-a', stagedPathA], ['handle-b', stagedPathB]])
+      const tool_ = makeInstallSubtitleTool({
+        stagedFiles,
+        installedFingerprints: new Map(),
+        targets: [
+          { itemId: 'tmdb:1/s3e11', videoFilename: 'Show.S03E11.mkv', outDir: dirA },
+          { itemId: 'tmdb:1/s3e12', videoFilename: 'Show.S03E12.mkv', outDir: dirA },
+        ],
+        mediaRoot: join(sandboxDir, 'media'),
+      })
+
+      const first = await tool_.execute!(
+        { stagedFileId: 'handle-a', langTag: 'zh-Hans', videoFilename: 'Show.S03E11.mkv', itemId: 'tmdb:1/s3e11' },
+        { toolCallId: 't1', messages: [] } as any,
+      ) as InstallSubtitleOutput
+      expect(existsSync(first.path!)).toBe(true)
+
+      const second = await tool_.execute!(
+        { stagedFileId: 'handle-b', langTag: 'zh-Hans', videoFilename: 'Show.S03E12.mkv', itemId: 'tmdb:1/s3e12' },
+        { toolCallId: 't2', messages: [] } as any,
+      )
+      expect(second).toHaveProperty('error')
+      const msg = (second as { error: string }).error
+      expect(msg).toMatch(/nearly identical/)
+      expect(msg).toContain('tmdb:1/s3e11')
+      expect(existsSync(join(dirA, 'Show.S03E12.zh-Hans.srt'))).toBe(false)
+    })
+
+    it('installs both targets normally when their dialogue content genuinely differs', async () => {
+      const dirA = join(sandboxDir, 'media', 'Show', 'Season 3')
+      mkdirSync(dirA, { recursive: true })
+      const contentA = '1\n00:00:01,000 --> 00:00:03,000\nHello world\n'
+      const contentB = '1\n00:00:01,000 --> 00:00:03,000\nCompletely different dialogue\n'
+      const stagedPathA = join(sandboxDir, 'stagedA.srt')
+      const stagedPathB = join(sandboxDir, 'stagedB.srt')
+      writeFileSync(stagedPathA, contentA)
+      writeFileSync(stagedPathB, contentB)
+      const stagedFiles = new Map([['handle-a', stagedPathA], ['handle-b', stagedPathB]])
+      const tool_ = makeInstallSubtitleTool({
+        stagedFiles,
+        installedFingerprints: new Map(),
+        targets: [
+          { itemId: 'tmdb:1/s3e11', videoFilename: 'Show.S03E11.mkv', outDir: dirA },
+          { itemId: 'tmdb:1/s3e12', videoFilename: 'Show.S03E12.mkv', outDir: dirA },
+        ],
+        mediaRoot: join(sandboxDir, 'media'),
+      })
+
+      const first = await tool_.execute!(
+        { stagedFileId: 'handle-a', langTag: 'zh-Hans', videoFilename: 'Show.S03E11.mkv', itemId: 'tmdb:1/s3e11' },
+        { toolCallId: 't1', messages: [] } as any,
+      ) as InstallSubtitleOutput
+      const second = await tool_.execute!(
+        { stagedFileId: 'handle-b', langTag: 'zh-Hans', videoFilename: 'Show.S03E12.mkv', itemId: 'tmdb:1/s3e12' },
+        { toolCallId: 't2', messages: [] } as any,
+      ) as InstallSubtitleOutput
+
+      expect(existsSync(first.path!)).toBe(true)
+      expect(existsSync(second.path!)).toBe(true)
+    })
+
+    it('does not reject re-installing for the SAME target (same itemId) — only cross-target collisions are rejected', async () => {
+      const dirA = join(sandboxDir, 'media', 'Show', 'Season 3')
+      mkdirSync(dirA, { recursive: true })
+      const content = '1\n00:00:01,000 --> 00:00:03,000\nHello world\n'
+      const stagedPathA = join(sandboxDir, 'stagedA.srt')
+      const stagedPathB = join(sandboxDir, 'stagedB.en.srt')
+      writeFileSync(stagedPathA, content)
+      writeFileSync(stagedPathB, content)
+      const stagedFiles = new Map([['handle-a', stagedPathA], ['handle-b', stagedPathB]])
+      const tool_ = makeInstallSubtitleTool({
+        stagedFiles,
+        installedFingerprints: new Map(),
+        targets: [{ itemId: 'tmdb:1/s3e11', videoFilename: 'Show.S03E11.mkv', outDir: dirA }],
+        mediaRoot: join(sandboxDir, 'media'),
+      })
+
+      const first = await tool_.execute!(
+        { stagedFileId: 'handle-a', langTag: 'zh-Hans', videoFilename: 'Show.S03E11.mkv', itemId: 'tmdb:1/s3e11' },
+        { toolCallId: 't1', messages: [] } as any,
+      ) as InstallSubtitleOutput
+      expect(existsSync(first.path!)).toBe(true)
+
+      // Different langTag → different finalPath, so no H1 conflict; must not hit the W1 dedup gate
+      // either since it's the SAME target/itemId re-installing the same content.
+      const second = await tool_.execute!(
+        { stagedFileId: 'handle-b', langTag: 'en', videoFilename: 'Show.S03E11.mkv', itemId: 'tmdb:1/s3e11' },
+        { toolCallId: 't2', messages: [] } as any,
+      ) as InstallSubtitleOutput
+      expect(existsSync(second.path!)).toBe(true)
+    })
+
+    it('still gates cross-target collisions when installedFingerprints is omitted (defaults to a fresh Map, still shared across this tool_ instance\'s calls)', async () => {
+      const dirA = join(sandboxDir, 'media', 'Show', 'Season 3')
+      mkdirSync(dirA, { recursive: true })
+      const content = '1\n00:00:01,000 --> 00:00:03,000\nHello world\n'
+      const stagedPathA = join(sandboxDir, 'stagedA.srt')
+      const stagedPathB = join(sandboxDir, 'stagedB.srt')
+      writeFileSync(stagedPathA, content)
+      writeFileSync(stagedPathB, content)
+      const stagedFiles = new Map([['handle-a', stagedPathA], ['handle-b', stagedPathB]])
+      const tool_ = makeInstallSubtitleTool({
+        stagedFiles,
+        targets: [
+          { itemId: 'tmdb:1/s3e11', videoFilename: 'Show.S03E11.mkv', outDir: dirA },
+          { itemId: 'tmdb:1/s3e12', videoFilename: 'Show.S03E12.mkv', outDir: dirA },
+        ],
+        mediaRoot: join(sandboxDir, 'media'),
+        // installedFingerprints intentionally omitted — must still behave like an explicit fresh Map.
+      })
+
+      const first = await tool_.execute!(
+        { stagedFileId: 'handle-a', langTag: 'zh-Hans', videoFilename: 'Show.S03E11.mkv', itemId: 'tmdb:1/s3e11' },
+        { toolCallId: 't1', messages: [] } as any,
+      ) as InstallSubtitleOutput
+      expect(existsSync(first.path!)).toBe(true)
+
+      const second = await tool_.execute!(
+        { stagedFileId: 'handle-b', langTag: 'zh-Hans', videoFilename: 'Show.S03E12.mkv', itemId: 'tmdb:1/s3e12' },
+        { toolCallId: 't2', messages: [] } as any,
+      )
+      expect(second).toHaveProperty('error')
+      expect((second as { error: string }).error).toMatch(/nearly identical/)
+    })
+  })
 })
 
 // Task 5 (R-5): install_subtitle used to be single-target too (deps.outDir/deps.videoFilename fixed

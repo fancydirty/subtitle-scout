@@ -957,6 +957,80 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     expect(row.language).toBe('en')
   })
 
+  // W2（装机记账修复批，2026-07-18，审计实证 DxD/HOTD/Gracie 遍地）：agent 上报的
+  // candidateProviderId 全链唯一来源就是它自己在 candidateKey() 复合形态里见过的那个 id
+  // （"assrt:661405"），不是裸 providerId。原代码无条件再拼一次 provider 前缀，落库成
+  // "assrt:assrt:661405" 双前缀——这里锁住修复：candidateProviderId 已含 provider 前缀时原样
+  // 使用，不重复拼接。
+  it('provider_ref: candidateProviderId 已含 provider 前缀（agent 复述 candidateKey 复合形态）时不重复拼接', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(SHOW_EPISODE_ID, { candidateProvider: 'assrt', candidateProviderId: 'assrt:661405' })],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    const row = lib.db.prepare('select provider_ref from subtitles where item_id=?').get(SHOW_EPISODE_ID) as { provider_ref: string }
+    expect(row.provider_ref).toBe('assrt:661405')
+  })
+
+  // 防御性兜底的另一半：candidateProviderId 若真的是裸 id（不含冒号），仍要正常拼上 provider
+  // 前缀——修复不能把这条路径也堵死。
+  it('provider_ref: candidateProviderId 是裸 id（不含冒号）时仍正常拼接 provider 前缀', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(SHOW_EPISODE_ID, { candidateProvider: 'assrt', candidateProviderId: '661405' })],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    const row = lib.db.prepare('select provider_ref from subtitles where item_id=?').get(SHOW_EPISODE_ID) as { provider_ref: string }
+    expect(row.provider_ref).toBe('assrt:661405')
+  })
+
+  // W3（装机记账修复批，观察性：坏装机事后要有判词可查）：installed item 的 reason（finalize
+  // 里 agent 给出的判词）要落进该集的 status_reason——此前 markCovered 从不碰这一列，covered
+  // 行的 status_reason 恒为装机前残留的旧叙事（或 null），Peacemaker 错装 5 天后无迹可查。
+  it('W3: installed item 的 reason 落进该集 status_reason（装机判词可查）', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(SHOW_EPISODE_ID, { reason: 'S3E11 season-pack 内文件名与集号完全吻合' })],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    expect(lib.getEpisode(SHOW_EPISODE_ID)!.status_reason).toBe('S3E11 season-pack 内文件名与集号完全吻合')
+  })
+
+  // 翻篇仍会清（F-B 逻辑不受影响）：装机判词入账之后，该集若之后又被判 no_safe_match（翻回
+  // unavailable），走的是 markUnavailable 自己的写路径，会把 status_reason 换成新的失败叙事——
+  // 不会永久卡着装机判词。这里用两次独立的 runFindSubtitleWorkerTask 调用模拟"翻篇"。
+  it('W3: 装机判词落库后，后续翻 unavailable 仍会清（换成新的失败叙事，不背装机判词）', async () => {
+    const { lib, jobsRepo, job } = setup()
+    const runTask1 = vi.fn(async () => report({
+      installed: [installedItem(SHOW_EPISODE_ID, { reason: '装机判词' })],
+    }))
+    const deps1 = baseDeps({ lib, mediaRoots: [], runTask: runTask1 })
+    await runFindSubtitleWorkerTask(job, deps1, jobsRepo, () => Date.now())
+    expect(lib.getEpisode(SHOW_EPISODE_ID)!.status_reason).toBe('装机判词')
+
+    // 手工把该集重新置回 missing，模拟"下一轮巡检又发现缺口"（真实流程由 ingest.ts 完成，
+    // 这里只关心 markCovered 写入的判词不会赖着不走）。
+    lib.db.prepare(`UPDATE episodes SET sub_status='missing' WHERE id=?`).run(SHOW_EPISODE_ID)
+    jobsRepo.upsertWorkerTask({ seriesId: SHOW_SERIES_ID, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing again' }, null, Date.now())
+    const job2 = jobsRepo.claimNext(Date.now())!
+    const runTask2 = vi.fn(async () => report({
+      no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, '搜索穷尽（新一轮）')],
+    }))
+    const deps2 = baseDeps({ lib, mediaRoots: [], runTask: runTask2 })
+    await runFindSubtitleWorkerTask(job2, deps2, jobsRepo, () => Date.now())
+
+    expect(lib.getEpisode(SHOW_EPISODE_ID)!.status_reason).toBe('搜索穷尽（新一轮）')
+  })
+
   // Spec-review fix #1 (A1's "A4 接配置"): the task's targetLanguage comes from configuration
   // (deps.targetLanguage, wired from TARGET_LANGUAGES' primary entry in cli/index.ts), not a
   // hardcoded 'zh'. With TARGET_LANGUAGES=en, dispatched workers must hunt English subtitles.

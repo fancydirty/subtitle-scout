@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, openSync, writeSync, closeSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as iconv from 'iconv-lite'
-import { inspectSubtitle } from './subtitleInspect.js'
+import { inspectSubtitle, subtitleDialogueFingerprint } from './subtitleInspect.js'
 
 const dir = () => mkdtempSync(join(tmpdir(), 'inspect-'))
 function stage(name: string, content: string): string {
@@ -290,5 +290,46 @@ describe('inspectSubtitle — assTitle / assHeaderComment truncation and extract
   it('omits assHeaderComment when the ASS file has no [Script Info] comment lines', () => {
     const signals = inspectSubtitle(stage('no-comment.ass', ASS_SAMPLE))
     expect(signals.assHeaderComment).toBeUndefined()
+  })
+})
+
+// W1（装机记账修复批·跨集内容近似去重闸，DxD S3E11/S3E12 案）：subtitleDialogueFingerprint
+// 是 install_subtitle 装机前置校验用的纯函数——见 subtitleInspect.ts 头注释。
+describe('subtitleDialogueFingerprint', () => {
+  it('produces the identical fingerprint for the same dialogue with a shifted timestamp (the DxD case)', () => {
+    const original = [
+      '1', '00:00:01,000 --> 00:00:03,500', '你好世界', '',
+      '2', '00:00:04,000 --> 00:00:06,200', '第二条字幕', '',
+    ].join('\n')
+    const timeShiftedBy1s = [
+      '1', '00:00:02,000 --> 00:00:04,500', '你好世界', '',
+      '2', '00:00:05,000 --> 00:00:07,200', '第二条字幕', '',
+    ].join('\n')
+    expect(subtitleDialogueFingerprint(original)).toBe(subtitleDialogueFingerprint(timeShiftedBy1s))
+  })
+
+  it('produces different fingerprints for genuinely different dialogue', () => {
+    const a = ['1', '00:00:01,000 --> 00:00:03,500', '你好世界', ''].join('\n')
+    const b = ['1', '00:00:01,000 --> 00:00:03,500', '完全不同的内容', ''].join('\n')
+    expect(subtitleDialogueFingerprint(a)).not.toBe(subtitleDialogueFingerprint(b))
+  })
+
+  it('strips ASS override tags and produces the same fingerprint as the equivalent plain SRT dialogue', () => {
+    const srt = ['1', '00:00:01,000 --> 00:00:03,500', 'Hello world', '', '2', '00:00:04,000 --> 00:00:06,200', 'Second line', ''].join('\n')
+    const ass = [
+      '[Script Info]', 'Title: x', '',
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      // {\an8} 是 ASS override 标签——须被剥掉才能与 SRT 侧的裸文本对齐。
+      'Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,{\\an8}Hello world',
+      'Dialogue: 0,0:00:04.00,0:00:06.20,Default,,0,0,0,,Second line',
+    ].join('\n')
+    expect(subtitleDialogueFingerprint(srt)).toBe(subtitleDialogueFingerprint(ass))
+  })
+
+  it('collapses whitespace differences so equivalent dialogue still matches', () => {
+    const a = ['1', '00:00:01,000 --> 00:00:03,500', 'Hello   world', ''].join('\n')
+    const b = ['1', '00:00:02,000 --> 00:00:04,500', 'Hello world', ''].join('\n')
+    expect(subtitleDialogueFingerprint(a)).toBe(subtitleDialogueFingerprint(b))
   })
 })

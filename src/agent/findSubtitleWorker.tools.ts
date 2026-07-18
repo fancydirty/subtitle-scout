@@ -2,12 +2,13 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import { join, basename, extname, dirname, resolve } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { runResolve, type FetchAdapter } from '../cli/fetchLib.js'
 import { downloadDirect } from '../adapters/download/direct.js'
 import { writeSubtitle } from '../files/subtitleWriter.js'
-import { inspectSubtitle } from '../files/subtitleInspect.js'
+import { inspectSubtitle, subtitleDialogueFingerprint } from '../files/subtitleInspect.js'
+import { decodeToUtf8 } from '../files/subtitleEncoding.js'
 import { install } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
 import { formatEpisodeCode, matchesEpisodeCode } from '../core/episode.js'
@@ -270,9 +271,26 @@ export interface InstallSubtitleDeps {
   /** The ONE sandbox root for this task — checked again here even though each target's outDir is
    *  already fixed (defense-in-depth, mirrors realignExecutor.ts's containingRoot/isUnderRoots use). */
   mediaRoot: string
+  /** W1（装机记账修复批·跨集内容近似去重闸，2026-07-18，DxD S3E11/S3E12 案根因修复）：per-run
+   *  对白指纹表（itemId → subtitleDialogueFingerprint 结果），与 stagedFiles 同法由调用方
+   *  （findSubtitleWorker.ts）每 run 新建注入并跨这一个 run 的多次 execute 调用共享。装机前先查：
+   *  若这份内容的指纹与同一 run 里已装的某个**不同** itemId 完全一致，拒装（源头很可能把同一集
+   *  内容贴了两个集号标签，见本文件下方 execute 的判词文案）；装机成功后把这次的指纹记入表。
+   *  可选——省略时工具构造时惰性建一个空 Map（同 stagedFiles 的构造期生命周期，不是每次
+   *  execute 现造），这道闸依旧在同一个工具实例的多次调用之间生效，只是没有调用方自己保留
+   *  这份记账的引用；只有从一开始就不会在同一个工具实例上装两个不同 target 的旧测试夹具
+   *  才不受影响（它们的行为在这次改动前后本就相同）。 */
+  installedFingerprints?: Map<string, string>
 }
 
 export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
+  // W1: constructed ONCE per tool instance (mirrors deps.stagedFiles' per-run lifetime) — every
+  // execute() call below shares the SAME map, so a second target's install within this run can see
+  // what the first one already installed. Falling back to a fresh Map when the caller doesn't pass
+  // one keeps every pre-existing test fixture (and any caller with no cross-target dedup need)
+  // unchanged: an empty map can never produce a collision.
+  const installedFingerprints = deps.installedFingerprints ?? new Map<string, string>()
+
   return tool({
     description:
       'Atomically install a previously downloaded+inspected candidate (by stagedFileId) as ' +
@@ -309,6 +327,26 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
 
       const stagedPath = deps.stagedFiles.get(stagedFileId)
       if (!stagedPath) return { error: `unknown stagedFileId: ${stagedFileId} — call download_candidate first` }
+
+      // W1（装机记账修复批·跨集内容近似去重闸，DxD S3E11/S3E12 案）：装机前算这份内容的规范化
+      // 对白指纹，与本 run 里已经装过的其它 target 比对——同源常见的事故形态是把同一集内容贴上
+      // 两个不同的集号标签（DxD 案：assrt:662362/assrt:647484 内容逐句相同，仅时轴偏移 1 秒）。
+      // 精确 hash 比对，不做模糊相似度（YAGNI）。fingerprintKey 用 itemId；itemId 缺席（旧测试
+      // 夹具/无跨 target 需求）时退化用 videoFilename，行为不变——这两种情形下不同 target 也不会
+      // 意外撞上同一个 key。同一 target 内重复安装（同 key 覆盖同 key）不算跨集碰撞，天然放行。
+      const fingerprintKey = target.itemId ?? target.videoFilename
+      const rawForFingerprint = readFileSync(stagedPath)
+      const dialogueFingerprint = subtitleDialogueFingerprint(decodeToUtf8(rawForFingerprint).data.toString('utf8'))
+      for (const [otherKey, fp] of installedFingerprints) {
+        if (otherKey !== fingerprintKey && fp === dialogueFingerprint) {
+          return {
+            error: `content is nearly identical to the subtitle you already installed for ${otherKey} — ` +
+              `the source likely mislabeled the same episode under two labels; pick a different ` +
+              `candidate/entry for this target or leave it`,
+          }
+        }
+      }
+
       const videoBase = basename(target.videoFilename).replace(/\.[^.]+$/, '')
       const ext = extname(stagedPath)
       const finalPath = join(target.outDir, `${videoBase}.${langTag}${ext}`)
@@ -368,6 +406,9 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
             `finalize without reinstalling; otherwise pick a different langTag.`,
         }
       }
+      // W1: only record on a genuine successful install — a conflict/error above must never poison
+      // the dedup table with content that was never actually written.
+      installedFingerprints.set(fingerprintKey, dialogueFingerprint)
       return { path: result.path }
     },
   })

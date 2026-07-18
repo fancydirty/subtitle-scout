@@ -2,6 +2,7 @@
 // 原始值(cue 数/时间轴跨度/检测到的文字体系)原样呈交,agent 像人一样推理,不是打分。
 import { readFileSync, statSync } from 'node:fs'
 import { extname } from 'node:path'
+import { createHash } from 'node:crypto'
 import { decodeToUtf8 } from './subtitleEncoding.js'
 
 export interface InspectSignals {
@@ -133,6 +134,24 @@ const CANTONESE_MARKERS = new Set('嘅嘢喺咁佢哋唔冇啦喎')
 
 function stripTags(s: string): string {
   return s.replace(/\{[^}]*\}/g, '').replace(/<[^>]*>/g, '')
+}
+
+/** W1（装机记账修复批·跨集内容近似去重闸,2026-07-18,DxD S3E11/S3E12 案根因修复）：给
+ *  install_subtitle 装机前置校验用的规范化对白指纹——不看扩展名(输入只是已解码的文本),先按
+ *  SRT 解析;解出 0 条 cue 时按 ASS 解析(两者共用的 parseSrtCues/parseAssCues 已经把时间戳从
+ *  cue.text 里剔除,只需再剥一层样式标签(stripTags:ASS 的 {\...} override 标签 / SRT 的
+ *  <...> HTML 风格标签)和空白(折叠连续空白+首尾 trim)),把每条对白按原顺序 join('\n') 后取
+ *  sha1。目的是给"同一集内容被贴了两个集号标签"的装机开一道精确去重闸——DxD 案两个 assrt 条目
+ *  装出的内容逐句相同,仅时轴偏移 1 秒,时间戳剥离后即可命中完全一致的 hash。故意不做模糊相似度
+ *  匹配(YAGNI,见设计正文)：这只堵"时间戳偏移但对白逐句相同"这一种形态,不追求近似匹配任意
+ *  程度的相似字幕。 */
+export function subtitleDialogueFingerprint(text: string): string {
+  const srtCues = parseSrtCues(text)
+  const cues = srtCues.length > 0 ? srtCues : parseAssCues(text).cues
+  const dialogueLines = cues
+    .map((c) => stripTags(c.text).replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length > 0)
+  return createHash('sha1').update(dialogueLines.join('\n')).digest('hex')
 }
 
 /** 语言/简繁判定:采样多条 cue 拼接后判——单行简繁不可靠(design 明文要求)。是信号,

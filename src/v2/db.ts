@@ -247,6 +247,27 @@ CREATE TABLE pending_removals (
   misses INTEGER NOT NULL
 )
   `.trim(),
+  // v19（装机记账修复批，2026-07-18——本仓 MIGRATIONS 数组下标+1 与设计文档里的语义版本号历史上
+  // 就不是一一对应，见 db.test.ts 头注释：这条数组序号是第 11 条 entry，落库 meta.schema_version
+  // 会从 '10' 变成 '11'，正文/commit message 提到的"schema v11"就是指这个落库值，不是这里的注释
+  // 标号）：两件存量清洗，纯 UPDATE，无 DDL 变更，不触发 12 步建新表。
+  // W2：provider_ref 双前缀清洗——装机记账把 `provider:candidateProviderId` 拼接时，
+  // candidateProviderId 全链唯一来源是 agent 在 candidateKey() 复合形态里见过的那个 id
+  // （"assrt:661405"），本身已经带 provider 前缀；findSubtitleWorkerTask.ts 原代码无条件再拼一次
+  // 前缀，落库成 "assrt:assrt:661405" 双前缀（审计实证 DxD/HOTD/Gracie 遍地）。剥一层前缀即可
+  // （instr 定位第一个 ':'，substr 取它之后的部分——第二个 ':' 及其后的原始 providerId 原样保留）。
+  // LIKE 谓词按 core/schemas.ts PROVIDERS 枚举里真实存在的两个非 local provider（assrt/
+  // opensubtitles）收窄，只清洗确诊双前缀的行，不碰其余正常单前缀的 provider_ref。
+  // W4：存量陈旧 status_reason 清洗——F-B 修复（ingest.ts writeSubStatusOnly 与本批 W3 新增的
+  // markCovered reason 参数，"覆盖时清空/更新旧叙事"）只在"翻篇那一刻"生效，先于这些修复就已经
+  // 是 covered/embedded 的行（如 TD S02E08/LD&R S03E08）留着修复前的失败叙事，永不自清。此后
+  // covered/embedded 行的 status_reason 是 W3 写入的新鲜装机判词（或 NULL），不再是陈旧失败叙事。
+  `
+UPDATE subtitles SET provider_ref = substr(provider_ref, instr(provider_ref, ':') + 1)
+  WHERE provider_ref LIKE 'assrt:assrt:%' OR provider_ref LIKE 'opensubtitles:opensubtitles:%';
+UPDATE episodes SET status_reason = NULL WHERE sub_status IN ('covered','embedded') AND status_reason IS NOT NULL;
+UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded') AND status_reason IS NOT NULL;
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {

@@ -66,6 +66,9 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const stagingDir = allocate(task.jobId, stagingBase)
     const store = makeFileResultSetStore(join(deps.cacheRoot, 'result-sets', task.jobId))
     const stagedFiles = new Map<string, string>()
+    // W1（装机记账修复批·跨集内容近似去重闸）：per-run 对白指纹表，与 stagedFiles 同法每 run
+    // 新建注入——见 findSubtitleWorker.tools.ts 的 InstallSubtitleDeps.installedFingerprints 头注释。
+    const installedFingerprints = new Map<string, string>()
     // A5: the judgment playbook is parameterized by the task's target language (Chinese keeps
     // the canonical Hans/Hant-equivalence wording; other languages get language-neutral text).
     const skill = makeFindSubtitleSkill(task.targetLanguage, task.hardsubMode)
@@ -89,7 +92,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
         mediaRoot: task.mediaRoot,
       }),
       install_subtitle: makeInstallSubtitleTool({
-        stagedFiles, mediaRoot: task.mediaRoot,
+        stagedFiles, mediaRoot: task.mediaRoot, installedFingerprints,
         // itemId flows through so a basename collision across targets (see above) can be resolved
         // by itemId instead of defaulting to the first same-named target's outDir.
         targets: task.targets.map(t => ({ videoFilename: t.videoFilename, outDir: dirname(t.videoPath), itemId: t.itemId })),

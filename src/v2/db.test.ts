@@ -25,13 +25,15 @@ describe('db 基座', () => {
     // item_files+subtitles.file_path entry 后 MIGRATIONS.length=8，落库值是 '8'；批③ B3-4 追加
     // v17 item_files.duration_verdict/verdict_fingerprint entry 后 MIGRATIONS.length=9，落库值是 '9'；
     // 数据安全审计头号遗留修复（CIFS 挂载抖动误删）追加 v18 pending_removals entry 后
-    // MIGRATIONS.length=10，落库值是 '10'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '10' })
+    // MIGRATIONS.length=10，落库值是 '10'；装机记账修复批追加 v19（provider_ref 双前缀清洗 +
+    // 存量陈旧 status_reason 清洗）entry 后 MIGRATIONS.length=11，落库值是 '11'——这就是设计正文
+    // 与 commit message 里"schema v11"指代的那个数字。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '11' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '10' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '11' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -185,7 +187,11 @@ describe('db 基座', () => {
       );
       CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, series_id TEXT, season INTEGER, movie_id TEXT, plan_ref TEXT, payload TEXT, parent_job_id INTEGER, state TEXT NOT NULL DEFAULT 'wanted', priority INTEGER NOT NULL DEFAULT 100, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, lease_until INTEGER, last_error TEXT);
       CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, started_at INTEGER NOT NULL, finished_at INTEGER, decision TEXT, detail TEXT, journal_path TEXT, llm_calls INTEGER, assrt_calls INTEGER, trace_json TEXT);
-      CREATE TABLE subtitles (item_id TEXT NOT NULL, language TEXT NOT NULL, source TEXT NOT NULL, installed_at INTEGER NOT NULL);
+      -- W2 迁移安全性修复：这里原来漏抄了 v9 终态 subtitles 的真实列形状（id/path/provider_ref/
+      -- assrt_sub_id/size/created_at）——之前没有任何迁移直接引用这些列名（v16 只 ALTER ADD
+      -- COLUMN file_path，对列缺席不敏感），这个疏漏一直没被抓出来；本批新增的 v19 迁移第一次
+      -- 对 subtitles.provider_ref 做 UPDATE，列缺席会让迁移直接报错，因此这里补全为真实形状。
+      CREATE TABLE subtitles (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, path TEXT NOT NULL, language TEXT NOT NULL, source TEXT NOT NULL, provider_ref TEXT, assrt_sub_id INTEGER, size INTEGER, created_at INTEGER NOT NULL, UNIQUE(item_id, path));
       CREATE TABLE blacklist (provider_ref TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', reason TEXT, created_at INTEGER NOT NULL, PRIMARY KEY(provider_ref, filename));
       CREATE TABLE parked_paths (path TEXT PRIMARY KEY, park_reason TEXT NOT NULL, first_seen INTEGER NOT NULL, last_attempt INTEGER NOT NULL);
       CREATE TABLE identify_overrides (path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL, is_tv INTEGER NOT NULL, season INTEGER, created_at INTEGER NOT NULL);
@@ -206,8 +212,8 @@ describe('db 基座', () => {
 
     const db = openDb(dbPath)
 
-    // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18 四条迁移到 '10'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '10' })
+    // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19 五条迁移到 '11'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '11' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -320,8 +326,8 @@ describe('db 基座', () => {
 
     const db = openDb(dbPath)
 
-    // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18 两条迁移到 '10'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '10' })
+    // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19 三条迁移到 '11'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '11' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -414,8 +420,8 @@ describe('db 基座', () => {
 
     const db = openDb(dbPath)
 
-    // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18 一条迁移到 '10'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '10' })
+    // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19 两条迁移到 '11'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '11' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -434,5 +440,118 @@ describe('db 基座', () => {
     ).not.toThrow()
     expect(db.prepare(`SELECT * FROM pending_removals WHERE path = '/media/gone.mkv'`).get())
       .toEqual({ path: '/media/gone.mkv', first_missing_at: 7000, misses: 1 })
+  })
+
+  // v19（装机记账修复批，2026-07-18）：真造一个 v18 形状的旧库（schema_version '10'），塞入
+  // W2（provider_ref 双前缀）与 W4（covered/embedded 行残留陈旧 status_reason）两类确诊脏数据 +
+  // 干净的对照行，重新 openDb() 触发 v19 迁移，断言：脏数据被清洗，干净的对照行原样不受影响
+  // （迁移不是无差别的"一律清空"，只清洗确诊命中谓词的行）。
+  it('v19 迁移安全性：真造旧库塞双前缀 provider_ref 与陈旧 covered/embedded status_reason，升级后清洗且不误伤', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
+    const Database = (openDb(':memory:').constructor) as new (path: string) => import('better-sqlite3').Database
+    const raw = new Database(dbPath)
+    raw.pragma('foreign_keys = OFF')
+    raw.exec(`
+      CREATE TABLE series (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT, year INTEGER,
+        provider_ids TEXT, layout_nonstandard INTEGER NOT NULL DEFAULT 0, genres TEXT, origin_lang TEXT
+      );
+      CREATE TABLE episodes (
+        id TEXT PRIMARY KEY, series_id TEXT NOT NULL REFERENCES series(id),
+        season INTEGER NOT NULL, episode INTEGER NOT NULL, name TEXT, path TEXT NOT NULL,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE movies (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT,
+        year INTEGER, path TEXT NOT NULL, provider_ids TEXT,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        origin_lang TEXT, probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, series_id TEXT, season INTEGER, movie_id TEXT, plan_ref TEXT, payload TEXT, parent_job_id INTEGER, state TEXT NOT NULL DEFAULT 'wanted', priority INTEGER NOT NULL DEFAULT 100, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, lease_until INTEGER, last_error TEXT);
+      CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, started_at INTEGER NOT NULL, finished_at INTEGER, decision TEXT, detail TEXT, journal_path TEXT, llm_calls INTEGER, assrt_calls INTEGER, trace_json TEXT);
+      CREATE TABLE subtitles (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, path TEXT NOT NULL, language TEXT NOT NULL, source TEXT NOT NULL, provider_ref TEXT, assrt_sub_id INTEGER, size INTEGER, created_at INTEGER NOT NULL, file_path TEXT, UNIQUE(item_id, path));
+      CREATE TABLE blacklist (provider_ref TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', reason TEXT, created_at INTEGER NOT NULL, PRIMARY KEY(provider_ref, filename));
+      CREATE TABLE parked_paths (path TEXT PRIMARY KEY, park_reason TEXT NOT NULL, first_seen INTEGER NOT NULL, last_attempt INTEGER NOT NULL);
+      CREATE TABLE identify_overrides (path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL, is_tv INTEGER NOT NULL, season INTEGER, created_at INTEGER NOT NULL);
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE tmdb_seasons (series_id TEXT NOT NULL, season INTEGER NOT NULL, episode INTEGER NOT NULL, title TEXT, fetched_at INTEGER NOT NULL, PRIMARY KEY (series_id, season, episode));
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE media_roots (path TEXT PRIMARY KEY, type TEXT NOT NULL DEFAULT 'local', added_at INTEGER NOT NULL);
+      CREATE TABLE extras_exemptions (path TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
+      CREATE TABLE item_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, path TEXT NOT NULL UNIQUE, added_at INTEGER NOT NULL,
+        duration_verdict TEXT, verdict_fingerprint TEXT
+      );
+      CREATE TABLE pending_removals (path TEXT PRIMARY KEY, first_missing_at INTEGER NOT NULL, misses INTEGER NOT NULL);
+      INSERT INTO meta (key, value) VALUES ('schema_version', '10');
+      INSERT INTO series (id, name) VALUES ('tmdb:100', 'DxD-like Show');
+      -- W2 确诊脏数据：DxD 案实证形态——assrt/opensubtitles 双前缀。
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+        VALUES ('tmdb:100/s3e11', 'tmdb:100', 3, 11, 'E11', '/media/e11.mkv', 'covered', 5000);
+      INSERT INTO subtitles (item_id, path, language, source, provider_ref, created_at)
+        VALUES ('tmdb:100/s3e11', '/media/e11.zh.srt', 'zh-Hans', 'scout-download', 'assrt:assrt:662362', 5500);
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+        VALUES ('tmdb:100/s3e12', 'tmdb:100', 3, 12, 'E12', '/media/e12.mkv', 'covered', 5100);
+      INSERT INTO subtitles (item_id, path, language, source, provider_ref, created_at)
+        VALUES ('tmdb:100/s3e12', '/media/e12.zh.srt', 'zh-Hans', 'scout-download', 'opensubtitles:opensubtitles:7174766', 5600);
+      -- 干净对照行：单前缀 provider_ref，不该被误伤。
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+        VALUES ('tmdb:100/s3e13', 'tmdb:100', 3, 13, 'E13', '/media/e13.mkv', 'covered', 5200);
+      INSERT INTO subtitles (item_id, path, language, source, provider_ref, created_at)
+        VALUES ('tmdb:100/s3e13', '/media/e13.zh.srt', 'zh-Hans', 'scout-download', 'assrt:661405', 5700);
+      -- W4 确诊脏数据：covered/embedded 行残留修复前的失败叙事（TD S02E08/LD&R S03E08 型事故）。
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, status_reason, updated_at)
+        VALUES ('tmdb:100/s2e8', 'tmdb:100', 2, 8, 'E8', '/media/e8.mkv', 'covered', 'unknown videoFilename: 旧修复前的失败叙事', 5800);
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, status_reason, updated_at)
+        VALUES ('tmdb:100/s2e9', 'tmdb:100', 2, 9, 'E9', '/media/e9.mkv', 'embedded', '旧的 unavailable 叙事残留', 5900);
+      INSERT INTO movies (id, name, path, sub_status, status_reason, updated_at)
+        VALUES ('tmdb:300', 'Stale Movie', '/media/m1.mkv', 'covered', '旧的失败叙事残留', 6000);
+      -- 干净对照行：非 covered/embedded 的 status_reason 不该被清空（unavailable 的复查叙事仍然
+      -- 有效，不是"陈旧"）。
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, status_reason, updated_at)
+        VALUES ('tmdb:100/s2e10', 'tmdb:100', 2, 10, 'E10', '/media/e10.mkv', 'unavailable', '搜索穷尽，仍在复查窗口内', 6100);
+      INSERT INTO movies (id, name, path, sub_status, updated_at)
+        VALUES ('tmdb:400', 'Missing Movie', '/media/m2.mkv', 'missing', 6200);
+    `)
+    raw.pragma('foreign_keys = ON')
+    raw.close()
+
+    const db = openDb(dbPath)
+
+    // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19 一条迁移到 '11'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '11' })
+
+    // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
+    expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())
+      .toEqual({ provider_ref: 'assrt:662362' })
+    expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e12'`).get())
+      .toEqual({ provider_ref: 'opensubtitles:7174766' })
+    // 干净对照行：单前缀原样不变，不被误伤。
+    expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e13'`).get())
+      .toEqual({ provider_ref: 'assrt:661405' })
+
+    // W4：covered/embedded 行的陈旧 status_reason 被清空。
+    expect(db.prepare(`SELECT status_reason FROM episodes WHERE id = 'tmdb:100/s2e8'`).get())
+      .toEqual({ status_reason: null })
+    expect(db.prepare(`SELECT status_reason FROM episodes WHERE id = 'tmdb:100/s2e9'`).get())
+      .toEqual({ status_reason: null })
+    expect(db.prepare(`SELECT status_reason FROM movies WHERE id = 'tmdb:300'`).get())
+      .toEqual({ status_reason: null })
+    // 干净对照行：非 covered/embedded 的 status_reason 原样保留，不被误伤。
+    expect(db.prepare(`SELECT status_reason FROM episodes WHERE id = 'tmdb:100/s2e10'`).get())
+      .toEqual({ status_reason: '搜索穷尽，仍在复查窗口内' })
+
+    // 不丢数据不串列——其余列原样存活。
+    expect(db.prepare(`SELECT sub_status, updated_at FROM episodes WHERE id = 'tmdb:100/s2e8'`).get())
+      .toEqual({ sub_status: 'covered', updated_at: 5800 })
+    expect(db.prepare(`SELECT sub_status, updated_at FROM movies WHERE id = 'tmdb:400'`).get())
+      .toEqual({ sub_status: 'missing', updated_at: 6200 })
   })
 })
