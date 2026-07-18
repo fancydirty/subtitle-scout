@@ -6,7 +6,7 @@ import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { SettingsRepo } from './settingsRepo.js'
-import { makeIngestPass, ingestLock, looksChineseTitle, type IngestDeps } from './ingest.js'
+import { makeIngestPass, ingestLock, looksChineseTitle, classifyStatError, type IngestDeps } from './ingest.js'
 import type { Recognized, Park } from '../recognition/index.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
@@ -1336,7 +1336,7 @@ describe('looksChineseTitle', () => {
 })
 
 describe('makeIngestPass — disk-truth removal', () => {
-  it('a library row whose path is no longer seen AND no longer exists on disk → row removed, series dropped when it becomes empty', async () => {
+  it('a library row whose path is no longer seen AND no longer exists on disk → row removed after REMOVAL_CONFIRM_PASSES (default 2) consecutive confirmations, series dropped when it becomes empty', async () => {
     lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
     lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'x', path: '/media/gone.mkv', subStatus: 'covered' })
 
@@ -1345,14 +1345,21 @@ describe('makeIngestPass — disk-truth removal', () => {
       fileExists: () => false, // confirmed gone
     }))
 
-    const result = await pass()
+    // 三层防线②消失去抖：首轮判 gone 只记账不删（默认 REMOVAL_CONFIRM_PASSES=2）。
+    const r1 = await pass()
+    expect(r1).toEqual({ scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false })
+    expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull()
+    expect(db.prepare(`SELECT misses FROM pending_removals WHERE path = '/media/gone.mkv'`).get()).toEqual({ misses: 1 })
 
-    expect(result).toEqual({ scanned: 0, upserted: 0, parked: 0, removed: 1, changed: true })
+    // 第二轮仍然 gone——连续两轮确认，真删。
+    const r2 = await pass()
+    expect(r2).toEqual({ scanned: 0, upserted: 0, parked: 0, removed: 1, changed: true })
     expect(lib.getEpisode('tmdb:1/s1e1')).toBeNull()
     expect(lib.getSeries('tmdb:1')).toBeNull()
+    expect(db.prepare(`SELECT * FROM pending_removals WHERE path = '/media/gone.mkv'`).get()).toBeUndefined()
   })
 
-  it('series survives if a sibling episode remains', async () => {
+  it('series survives if a sibling episode remains (after two confirmed-gone passes)', async () => {
     lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
     lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'x', path: '/media/gone.mkv', subStatus: 'covered' })
     lib.upsertEpisode({ id: 'tmdb:1/s1e2', seriesId: 'tmdb:1', season: 1, episode: 2, name: 'y', path: '/media/stays.mkv', subStatus: 'covered' })
@@ -1365,7 +1372,9 @@ describe('makeIngestPass — disk-truth removal', () => {
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
 
-    await pass()
+    await pass() // 第一轮：gone 记账，未删
+    expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull()
+    await pass() // 第二轮：确认删除
 
     expect(lib.getEpisode('tmdb:1/s1e1')).toBeNull()
     expect(lib.getSeries('tmdb:1')).not.toBeNull()
@@ -1394,12 +1403,228 @@ describe('makeIngestPass — disk-truth removal', () => {
     expect(lib.listParkedPaths()).toEqual([])
   })
 
-  it('movie row removal (mirrors episode branch)', async () => {
+  it('movie row removal (mirrors episode branch, after two confirmed-gone passes)', async () => {
     lib.upsertMovie({ id: 'tmdb:603', name: 'M', path: '/media/gone.mkv', subStatus: 'covered' })
     const pass = makeIngestPass(makeDeps({ listVideoFiles: () => [], fileExists: () => false }))
-    const result = await pass()
-    expect(result.removed).toBe(1)
+    const r1 = await pass()
+    expect(r1.removed).toBe(0)
+    expect(lib.getMovie('tmdb:603')).not.toBeNull()
+    const r2 = await pass()
+    expect(r2.removed).toBe(1)
     expect(lib.getMovie('tmdb:603')).toBeNull()
+  })
+})
+
+// 数据安全审计头号遗留修复（2026-07-18）：CIFS 挂载抖动可致整库索引批量误删。原先的"双重条件"
+// （!seenPaths.has(path) && !fileExists(path)）在整个挂载闪断场景下两个信号同源失效——
+// daemon/selfScan.ts 的 walk() 对根目录 readdirSync 报错时整棵子树的 seenPaths 都是空的，默认
+// fileExists 对 ESTALE/EIO/ETIMEDOUT/ENOTCONN 与 ENOENT 无差别折叠成 false。三层防线：
+// ①errno 区分（checkFileGone）②消失去抖（pending_removals）③骤降哨兵（rootsCollapsed）。
+describe('classifyStatError（三层防线①核心分类，纯函数，不碰真实文件系统）', () => {
+  const errnoErr = (code: string) => Object.assign(new Error(code), { code })
+
+  it('ENOENT / ENOTDIR → gone（确认不在磁盘上——权威事实）', () => {
+    expect(classifyStatError(errnoErr('ENOENT'))).toBe('gone')
+    expect(classifyStatError(errnoErr('ENOTDIR'))).toBe('gone')
+  })
+
+  it('ESTALE / EIO / ETIMEDOUT / ENOTCONN / EACCES / ENAMETOOLONG（CIFS/NFS 挂载抖动典型 errno）→ unknown（探测本身失败，不是"确认消失"）', () => {
+    for (const code of ['ESTALE', 'EIO', 'ETIMEDOUT', 'ENOTCONN', 'EACCES', 'ENAMETOOLONG']) {
+      expect(classifyStatError(errnoErr(code))).toBe('unknown')
+    }
+  })
+
+  it('没有 errno（非 Node 系统错误——任意其它异常/非 Error 值）→ 保守判 unknown，不是 gone', () => {
+    expect(classifyStatError(new Error('boom, no code'))).toBe('unknown')
+    expect(classifyStatError('not even an Error object')).toBe('unknown')
+    expect(classifyStatError(undefined)).toBe('unknown')
+  })
+})
+
+describe('makeIngestPass — 三层防线①errno 区分：unknown 本轮跳过不删，不进消失去抖记账', () => {
+  it('注入的 checkFileGone 对某条路径返回 unknown（模拟真实 ESTALE）→ 该路径本轮不删，pending_removals 也不留痕', async () => {
+    lib.upsertMovie({ id: 'tmdb:603', name: 'M', path: '/media/flaky.mkv', subStatus: 'covered' })
+
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [],
+      checkFileGone: (p) => (p === '/media/flaky.mkv' ? 'unknown' : 'gone'),
+    }))
+
+    const result = await pass()
+
+    expect(result.removed).toBe(0)
+    expect(lib.getMovie('tmdb:603')).not.toBeNull()
+    expect(db.prepare(`SELECT * FROM pending_removals WHERE path = '/media/flaky.mkv'`).get()).toBeUndefined()
+  })
+
+  it('真实 statSync 路径（未注入 checkFileGone/fileExists）：超长路径触发真实 ENAMETOOLONG（非 ENOENT/ENOTDIR）→ 不删 + console.error 带 errno 警示', async () => {
+    const longPath = '/media/' + 'x'.repeat(5000) + '.mkv'
+    lib.upsertMovie({ id: 'tmdb:603', name: 'M', path: longPath, subStatus: 'missing' })
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const pass = makeIngestPass(makeDeps({
+        listVideoFiles: () => [],
+        fileExists: undefined,
+        checkFileGone: undefined,
+      }))
+
+      const result = await pass()
+
+      expect(result.removed).toBe(0)
+      expect(lib.getMovie('tmdb:603')).not.toBeNull()
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('ENAMETOOLONG'))
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+})
+
+describe('makeIngestPass — 三层防线②消失去抖：连续确认才真删', () => {
+  it('首轮 gone→不删且清零记账；第二轮仍 present→行清除，不删（复活场景）', async () => {
+    lib.upsertMovie({ id: 'tmdb:900', name: 'M', path: '/media/flip-flop.mkv', subStatus: 'missing' })
+    let onDisk = false
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [], // 只关心移除循环本身，不依赖主扫描循环把它标记为"seen"
+      fileExists: () => onDisk,
+    }))
+
+    await pass() // 第一轮：gone，记账 misses=1，不删
+    expect(lib.getMovie('tmdb:900')).not.toBeNull()
+    expect(db.prepare(`SELECT misses FROM pending_removals WHERE path = '/media/flip-flop.mkv'`).get()).toEqual({ misses: 1 })
+
+    onDisk = true // 复活
+    await pass() // 第二轮：present → 清零重计，不删
+    expect(lib.getMovie('tmdb:900')).not.toBeNull()
+    expect(db.prepare(`SELECT * FROM pending_removals WHERE path = '/media/flip-flop.mkv'`).get()).toBeUndefined()
+
+    onDisk = false
+    await pass() // 第三轮：gone again → 重新从 misses=1 开始，不是延续之前的计数直接判定"够轮次"
+    expect(lib.getMovie('tmdb:900')).not.toBeNull()
+    expect(db.prepare(`SELECT misses FROM pending_removals WHERE path = '/media/flip-flop.mkv'`).get()).toEqual({ misses: 1 })
+  })
+
+  it('item_files 副本本身"消失"同样走 errno+去抖两层：首轮 gone 不删，连续两轮才真删', async () => {
+    lib.upsertMovie({ id: 'tmdb:603', name: 'M', path: '/media/main.mkv', subStatus: 'covered' })
+    lib.addItemFile('tmdb:603', '/media/replica.mkv', 1000)
+
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [],
+      fileExists: (p) => p === '/media/main.mkv', // 主文件仍在盘上，副本已消失
+    }))
+
+    const r1 = await pass()
+    expect(r1.removed).toBe(0)
+    expect(lib.listItemFiles('tmdb:603')).toHaveLength(1) // 首轮只记账，不删
+    expect(db.prepare(`SELECT misses FROM pending_removals WHERE path = '/media/replica.mkv'`).get()).toEqual({ misses: 1 })
+    // 主文件仍在（present），不受影响。
+    expect(lib.getMovie('tmdb:603')).not.toBeNull()
+    expect(lib.getMovie('tmdb:603')!.path).toBe('/media/main.mkv')
+
+    await pass() // 第二轮：副本仍然 gone → 确认删除
+    expect(lib.listItemFiles('tmdb:603')).toHaveLength(0)
+  })
+})
+
+describe('makeIngestPass — 三层防线③骤降哨兵：某根 seenPaths 相对已知库存暴跌时整根跳过本轮移除', () => {
+  function seedTenMovies(): void {
+    for (let i = 1; i <= 10; i++) {
+      lib.upsertMovie({ id: `tmdb:${900 + i}`, name: `M${i}`, path: `/media/movie${i}.mkv`, subStatus: 'covered' })
+    }
+  }
+
+  it('seen 骤降到已知库存的 40%（<0.5 默认阈值，已知=10≥10）→ 整根本轮零删除 + console.error 响亮警示（含根路径与 seen/known 数字）', async () => {
+    seedTenMovies()
+    const seenList = ['/media/movie1.mkv', '/media/movie2.mkv', '/media/movie3.mkv', '/media/movie4.mkv'] // 4/10 = 40%
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const pass = makeIngestPass(makeDeps({
+        listVideoFiles: (root) => (root === '/media' ? seenList : []),
+        // seenPaths.add() 在主扫描循环顶部无条件发生，statFile 返回 null 使该分支在标记为
+        // "seen"之后立刻 continue，不触发 recognize()/probe() 之类的后续机械——这里只关心移除
+        // 循环怎么处理 seenPaths，不关心主循环的识别结果。
+        statFile: () => null,
+        fileExists: () => false, // 剩下 6 个若无哨兵，两轮后会被判定"确认消失"
+      }))
+
+      const result = await pass()
+
+      expect(result.removed).toBe(0)
+      for (let i = 1; i <= 10; i++) expect(lib.getMovie(`tmdb:${900 + i}`)).not.toBeNull()
+      // 整根跳过——连"记一次 miss"这种去抖记账都不该发生（否则比例后续恢复时会带着一段旧计数）。
+      expect((db.prepare('SELECT COUNT(*) as c FROM pending_removals').get() as { c: number }).c).toBe(0)
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('SCAN COLLAPSE'))
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('/media'))
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('4/10'))
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('比例正常（≥0.5）时不设防——消失去抖照常记账，不触发哨兵警示', async () => {
+    seedTenMovies()
+    const seenList = ['/media/movie1.mkv', '/media/movie2.mkv', '/media/movie3.mkv', '/media/movie4.mkv', '/media/movie5.mkv', '/media/movie6.mkv'] // 6/10 = 60%
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const pass = makeIngestPass(makeDeps({
+        listVideoFiles: (root) => (root === '/media' ? seenList : []),
+        statFile: () => null,
+        fileExists: () => false,
+      }))
+
+      const result = await pass()
+
+      expect(result.removed).toBe(0) // 消失去抖仍然只记第一次账，不代表哨兵没生效——这里断言的是"生效方式不同"
+      for (let i = 7; i <= 10; i++) {
+        expect(db.prepare(`SELECT misses FROM pending_removals WHERE path = '/media/movie${i}.mkv'`).get()).toEqual({ misses: 1 })
+      }
+      expect(errorSpy).not.toHaveBeenCalled()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+})
+
+describe('makeIngestPass — 回归锁：审计点名的"同源失效"场景（walk 整根失败 + fileExists 全线不确定）', () => {
+  it('walk 整根失败(seenPaths 空) + 磁盘复核对每条路径都给不出确定答案(模拟整挂载 ESTALE) → 零删除，连续两轮皆如此', async () => {
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    for (let e = 1; e <= 5; e++) {
+      lib.upsertEpisode({
+        id: `tmdb:1/s1e${e}`, seriesId: 'tmdb:1', season: 1, episode: e, name: `E${e}`,
+        path: `/media/Show/s1e${e}.mkv`, subStatus: 'covered',
+      })
+    }
+    lib.upsertMovie({ id: 'tmdb:603', name: 'M', path: '/media/movie.mkv', subStatus: 'covered' })
+    lib.addItemFile('tmdb:603', '/media/movie-replica.mkv', 1000)
+
+    // walk() 遇到根目录本身 readdirSync 失败——seenPaths 整根为空（旧代码两个失效条件之一）。
+    // 磁盘复核对每条路径都给不出确定答案——网络挂载抖动典型（ESTALE/EIO/ETIMEDOUT），旧代码
+    // 默认 fileExists=裸 existsSync 会把这些无差别折叠成 false（"确认消失"），两个信号同源
+    // 失效，一轮内批量误删整剧+电影+副本。新代码的 checkFileGone 把它们判 'unknown'，仅第①层
+    // 防线就足以拦住——不需要等第②③层。
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [],
+      checkFileGone: () => 'unknown',
+    }))
+
+    const result1 = await pass()
+    expect(result1.removed).toBe(0)
+    expect(result1.changed).toBe(false)
+    for (let e = 1; e <= 5; e++) expect(lib.getEpisode(`tmdb:1/s1e${e}`)).not.toBeNull()
+    expect(lib.getSeries('tmdb:1')).not.toBeNull()
+    expect(lib.getMovie('tmdb:603')).not.toBeNull()
+    expect(lib.listItemFiles('tmdb:603')).toHaveLength(1)
+    // 'unknown' 不进消失去抖记账——不该有任何 pending_removals 行残留。
+    expect((db.prepare('SELECT COUNT(*) as c FROM pending_removals').get() as { c: number }).c).toBe(0)
+
+    // 挂载持续闪断（连续第二轮仍然 unknown）——不是"debounce 只延迟了一轮，第二轮照样会删"。
+    const result2 = await pass()
+    expect(result2.removed).toBe(0)
+    for (let e = 1; e <= 5; e++) expect(lib.getEpisode(`tmdb:1/s1e${e}`)).not.toBeNull()
+    expect(lib.getSeries('tmdb:1')).not.toBeNull()
+    expect(lib.getMovie('tmdb:603')).not.toBeNull()
   })
 })
 

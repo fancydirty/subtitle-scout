@@ -13,7 +13,7 @@ describe('db 基座', () => {
     const tables = db.prepare("select name from sqlite_master where type='table' order by name").all().map((r: any) => r.name)
     for (const t of [
       'series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta',
-      'parked_paths', 'identify_overrides', 'extras_exemptions', 'item_files',
+      'parked_paths', 'identify_overrides', 'extras_exemptions', 'item_files', 'pending_removals',
     ]) expect(tables).toContain(t)
     // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11/v12
     // 本身）：v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
@@ -23,13 +23,15 @@ describe('db 基座', () => {
     // extras_exemptions entry 后 MIGRATIONS.length=6，落库值是 '6'；救援R5 追加 v15
     // hardsub-assumed 值域重建 entry 后 MIGRATIONS.length=7，落库值是 '7'；重复源 P1 追加 v16
     // item_files+subtitles.file_path entry 后 MIGRATIONS.length=8，落库值是 '8'；批③ B3-4 追加
-    // v17 item_files.duration_verdict/verdict_fingerprint entry 后 MIGRATIONS.length=9，落库值是 '9'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '9' })
+    // v17 item_files.duration_verdict/verdict_fingerprint entry 后 MIGRATIONS.length=9，落库值是 '9'；
+    // 数据安全审计头号遗留修复（CIFS 挂载抖动误删）追加 v18 pending_removals entry 后
+    // MIGRATIONS.length=10，落库值是 '10'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '10' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '9' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '10' })
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
@@ -204,8 +206,8 @@ describe('db 基座', () => {
 
     const db = openDb(dbPath)
 
-    // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17 三条迁移到 '9'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '9' })
+    // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18 四条迁移到 '10'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '10' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -318,8 +320,8 @@ describe('db 基座', () => {
 
     const db = openDb(dbPath)
 
-    // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17 一条迁移到 '9'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '9' })
+    // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18 两条迁移到 '10'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '10' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -327,5 +329,110 @@ describe('db 基座', () => {
     expect(() =>
       db.prepare(`UPDATE item_files SET duration_verdict = 'probe-failed', verdict_fingerprint = '{}' WHERE path = '/media/ep1-replica.mkv'`).run()
     ).not.toThrow()
+  })
+
+  // v18（数据安全审计头号遗留修复，2026-07-18：CIFS 挂载抖动可致整库索引批量误删——三层防线
+  // 第②层"消失去抖"）：pending_removals 表存在，列形状齐全，PRIMARY KEY(path) 生效，misses
+  // 可累加更新（ON CONFLICT DO UPDATE 用法，见 v2/ingest.ts recordMissingPass）。
+  it('v18: pending_removals 表存在，列形状齐全，path 是主键（去抖记账表）', () => {
+    const db = openDb(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(pending_removals)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toEqual(['path', 'first_missing_at', 'misses'])
+
+    db.prepare(`INSERT INTO pending_removals (path, first_missing_at, misses) VALUES ('/media/a.mkv', 1000, 1)`).run()
+    // path 是主键——重复插入同一 path 报错（misses 只能靠 ON CONFLICT DO UPDATE 累加，不能重插）。
+    expect(() =>
+      db.prepare(`INSERT INTO pending_removals (path, first_missing_at, misses) VALUES ('/media/a.mkv', 2000, 1)`).run()
+    ).toThrow()
+
+    db.prepare(
+      `INSERT INTO pending_removals (path, first_missing_at, misses) VALUES ('/media/a.mkv', 1000, 1)
+       ON CONFLICT(path) DO UPDATE SET misses = misses + 1`
+    ).run()
+    expect(db.prepare(`SELECT * FROM pending_removals WHERE path = '/media/a.mkv'`).get())
+      .toEqual({ path: '/media/a.mkv', first_missing_at: 1000, misses: 2 })
+  })
+
+  // 迁移安全性（血泪教训，本仓已两次立功——见 v15/v17 测试同名注释）：真造一个 v17 形状的旧库
+  // （schema_version '9'，无 pending_removals 表），塞入代表性 episodes/subtitles 数据，重新
+  // openDb() 触发 v18 迁移，断言存量行原样存活（不丢数据）且新表确实可用。这正是本次修复要堵的
+  // 那类"整库索引批量误删"事故的对立面——先确认迁移本身绝不会丢数据，再谈运行期的三层防线。
+  it('v18 迁移安全性：v17 形状旧库升级后，既有 episodes/subtitles 行原样存活，pending_removals 可用', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
+    const Database = (openDb(':memory:').constructor) as new (path: string) => import('better-sqlite3').Database
+    const raw = new Database(dbPath)
+    raw.pragma('foreign_keys = OFF')
+    raw.exec(`
+      CREATE TABLE series (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT, year INTEGER,
+        provider_ids TEXT, layout_nonstandard INTEGER NOT NULL DEFAULT 0, genres TEXT, origin_lang TEXT
+      );
+      CREATE TABLE episodes (
+        id TEXT PRIMARY KEY, series_id TEXT NOT NULL REFERENCES series(id),
+        season INTEGER NOT NULL, episode INTEGER NOT NULL, name TEXT, path TEXT NOT NULL,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE movies (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT, poster_path TEXT,
+        year INTEGER, path TEXT NOT NULL, provider_ids TEXT,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review','hardsub-assumed')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL,
+        origin_lang TEXT, probe_mtime INTEGER, probe_size INTEGER, embedded_langs TEXT,
+        search_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, series_id TEXT, season INTEGER, movie_id TEXT, plan_ref TEXT, payload TEXT, parent_job_id INTEGER, state TEXT NOT NULL DEFAULT 'wanted', priority INTEGER NOT NULL DEFAULT 100, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, lease_until INTEGER, last_error TEXT);
+      CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, started_at INTEGER NOT NULL, finished_at INTEGER, decision TEXT, detail TEXT, journal_path TEXT, llm_calls INTEGER, assrt_calls INTEGER, trace_json TEXT);
+      CREATE TABLE subtitles (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, path TEXT NOT NULL, language TEXT NOT NULL, source TEXT NOT NULL, provider_ref TEXT, assrt_sub_id INTEGER, size INTEGER, created_at INTEGER NOT NULL, file_path TEXT, UNIQUE(item_id, path));
+      CREATE TABLE blacklist (provider_ref TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', reason TEXT, created_at INTEGER NOT NULL, PRIMARY KEY(provider_ref, filename));
+      CREATE TABLE parked_paths (path TEXT PRIMARY KEY, park_reason TEXT NOT NULL, first_seen INTEGER NOT NULL, last_attempt INTEGER NOT NULL);
+      CREATE TABLE identify_overrides (path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL, is_tv INTEGER NOT NULL, season INTEGER, created_at INTEGER NOT NULL);
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE tmdb_seasons (series_id TEXT NOT NULL, season INTEGER NOT NULL, episode INTEGER NOT NULL, title TEXT, fetched_at INTEGER NOT NULL, PRIMARY KEY (series_id, season, episode));
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE media_roots (path TEXT PRIMARY KEY, type TEXT NOT NULL DEFAULT 'local', added_at INTEGER NOT NULL);
+      CREATE TABLE extras_exemptions (path TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
+      CREATE TABLE item_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, path TEXT NOT NULL UNIQUE, added_at INTEGER NOT NULL,
+        duration_verdict TEXT, verdict_fingerprint TEXT
+      );
+      INSERT INTO meta (key, value) VALUES ('schema_version', '9');
+      INSERT INTO series (id, name) VALUES ('tmdb:100', 'Preexisting Show');
+      INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+        VALUES ('tmdb:100/s1e1', 'tmdb:100', 1, 1, 'Ep1', '/media/ep1.mkv', 'covered', 5000);
+      INSERT INTO subtitles (item_id, path, language, source, created_at)
+        VALUES ('tmdb:100/s1e1', '/media/ep1.zh.srt', 'zh-Hans', 'preexisting', 5500);
+      INSERT INTO movies (id, name, path, sub_status, updated_at)
+        VALUES ('tmdb:200', 'Preexisting Movie', '/media/movie.mkv', 'missing', 6000);
+    `)
+    raw.pragma('foreign_keys = ON')
+    raw.close()
+
+    const db = openDb(dbPath)
+
+    // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18 一条迁移到 '10'。
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '10' })
+    // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
+    // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
+    expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
+      series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
+      sub_status: 'covered', updated_at: 5000,
+    })
+    expect(db.prepare(`SELECT * FROM subtitles WHERE item_id = 'tmdb:100/s1e1'`).get()).toMatchObject({
+      path: '/media/ep1.zh.srt', language: 'zh-Hans', source: 'preexisting',
+    })
+    expect(db.prepare(`SELECT * FROM movies WHERE id = 'tmdb:200'`).get()).toMatchObject({
+      name: 'Preexisting Movie', path: '/media/movie.mkv', sub_status: 'missing', updated_at: 6000,
+    })
+    // 新表确实可用（不是只声明没建成）。
+    expect(() =>
+      db.prepare(`INSERT INTO pending_removals (path, first_missing_at, misses) VALUES ('/media/gone.mkv', 7000, 1)`).run()
+    ).not.toThrow()
+    expect(db.prepare(`SELECT * FROM pending_removals WHERE path = '/media/gone.mkv'`).get())
+      .toEqual({ path: '/media/gone.mkv', first_missing_at: 7000, misses: 1 })
   })
 })

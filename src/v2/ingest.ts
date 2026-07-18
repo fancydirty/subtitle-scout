@@ -40,6 +40,23 @@ export interface IngestDeps {
   /** 默认 daemon/selfScan.ts 导出的 walkVideoFiles（B1 的同一份遍历实现，见该文件顶部注释）。 */
   listVideoFiles?: (root: string) => string[]
   fileExists?: (p: string) => boolean
+  /** 三层防线①（CIFS 挂载抖动误删修复——审计头号遗留，2026-07-18）：磁盘真相移除循环用它区分
+   *  "确认不在磁盘上"（ENOENT/ENOTDIR）与"探测本身失败/结果不确定"（其它任何 errno——ESTALE/
+   *  EIO/ETIMEDOUT/ENOTCONN/EACCES 等，NAS/CIFS 挂载抖动典型；这类错误不代表文件真的被删了，
+   *  只代表"这一刻问不出答案"，绝不能折叠成"消失"）。测试注入点；未提供时若提供了旧 fileExists，
+   *  从它派生（布尔只能表达 present/gone 两态，永不产生 unknown——保持所有从未涉及这次改动的
+   *  既有测试的行为不变，它们从来没测过 unknown 分支，不该被迫涉入）；两者都未提供时（生产默认
+   *  路径）落到真实 statSync 包一层 try/catch，按 errno 分三态（见 classifyStatError/
+   *  defaultCheckFileGone）。 */
+  checkFileGone?: (p: string) => 'gone' | 'present' | 'unknown'
+  /** 三层防线②（消失去抖）：同一路径连续判 gone 达到这个轮次才真删（默认 2，环境变量
+   *  REMOVAL_CONFIRM_PASSES 可覆盖，见 makeIngestPass 顶部解析）。测试注入点，用于精确控制
+   *  轮次边界断言。 */
+  removalConfirmPasses?: number
+  /** 三层防线③（骤降哨兵）：某根本轮 seenPaths 相对该根已知库存条目数（episodes+movies）的比例
+   *  低于这个阈值（且已知条目数 ≥10）时，整根本轮跳过全部移除（默认 0.5，环境变量
+   *  SCAN_COLLAPSE_RATIO 可覆盖）。测试注入点。 */
+  scanCollapseRatio?: number
   /** 测试注入点；默认 node:fs statSync 包一层 try/catch（失败→null）。 */
   statFile?: (p: string) => { mtimeMs: number; size: number } | null
   /** 债务D5：target_languages/origin_skip_languages 提供者化——每轮 pass 起点才新鲜求值
@@ -87,6 +104,63 @@ function defaultStatFile(path: string): { mtimeMs: number; size: number } | null
   } catch {
     return null
   }
+}
+
+/** 三层防线①核心分类：errno → 'gone'（确认不在——ENOENT 路径本身不存在/ENOTDIR 路径某一节
+ *  不是目录，两者都是"权威事实：这个路径现在解析不出东西"）| 'unknown'（其它任何 errno——
+ *  ESTALE/EIO/ETIMEDOUT/ENOTCONN/EACCES/ENAMETOOLONG 等等，代表探测本身失败或给不出权威答案，
+ *  绝不能等价于"消失"——CIFS/NFS 挂载抖动的典型症状就是整个挂载点下的每一次 stat 都抛同一类
+ *  这种错误，若被当成"消失"处理，等于把"问不出答案"错读成"确认没了"）。纯函数，不做 IO，脱离
+ *  真实文件系统单测（真实 statSync 包裹见 defaultCheckFileGone）。 */
+export function classifyStatError(err: unknown): 'gone' | 'unknown' {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code
+  return code === 'ENOENT' || code === 'ENOTDIR' ? 'gone' : 'unknown'
+}
+
+/** IngestDeps.checkFileGone 的默认实现：真实 statSync 包一层 try/catch。'unknown' 分支主动
+ *  console.error 一行警示（带 errno——同 daemon/selfScan.ts walk() 遇到不可读子树时的既有风格，
+ *  那边也是直接 console.error，不走注入的 log 回调），供运维在真实 CIFS/NFS 抖动时从日志里
+ *  立刻看到"这条路径这一刻问不出答案"，而不是被静默折叠成删除。 */
+function defaultCheckFileGone(path: string): 'gone' | 'present' | 'unknown' {
+  try {
+    statSync(path)
+    return 'present'
+  } catch (e) {
+    const verdict = classifyStatError(e)
+    if (verdict === 'unknown') {
+      const code = (e as NodeJS.ErrnoException | undefined)?.code ?? '(no errno)'
+      console.error(
+        `ingest: stat probe for ${path} failed with errno ${code} (not ENOENT/ENOTDIR) — ` +
+        `treating as indeterminate, NOT removing this pass (mount-blip guard): ` +
+        `${e instanceof Error ? e.message : String(e)}`
+      )
+    }
+    return verdict
+  }
+}
+
+/** path 是否落在 root 目录下（含 root 自身）——纯字符串前缀判断需要边界感知，否则 '/media2/x'
+ *  会被误判成 '/media' 的子路径。骤降哨兵按根分组统计归属用它。 */
+function pathUnderRoot(path: string, root: string): boolean {
+  const withSep = root.endsWith('/') ? root : `${root}/`
+  return path === root || path.startsWith(withSep)
+}
+
+/** 三层防线②（消失去抖）：本轮判定 gone 记一次账，返回累计 miss 次数（含本次）——真删门槛见
+ *  removalConfirmPasses。pending_removals 是 schema v10 的纯增量小表（PRIMARY KEY(path)）。 */
+function recordMissingPass(db: ScoutDb, path: string, now: number): number {
+  db.prepare(
+    `INSERT INTO pending_removals (path, first_missing_at, misses) VALUES (?, ?, 1)
+     ON CONFLICT(path) DO UPDATE SET misses = misses + 1`
+  ).run(path, now)
+  const row = db.prepare(`SELECT misses FROM pending_removals WHERE path = ?`).get(path) as { misses: number }
+  return row.misses
+}
+
+/** present/unknown 都要清零重计——复活或探测不确定都不该延续之前攒的 miss 计数（否则一次真实
+ *  复活后紧跟着的下一次真实消失会被错误地立刻判定"已经连续够轮次"）。行不存在=无事发生。 */
+function clearPendingRemoval(db: ScoutDb, path: string): void {
+  db.prepare(`DELETE FROM pending_removals WHERE path = ?`).run(path)
 }
 
 interface ExistingRow {
@@ -391,6 +465,15 @@ function mergeProviderIds(existingJson: string | null, newImdbId: string | null,
 export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
   const listVideoFiles = deps.listVideoFiles ?? walkVideoFiles
   const fileExists = deps.fileExists ?? ((p: string) => existsSync(p))
+  // 三层防线①：checkFileGone 优先用注入值；否则若注入了旧 fileExists，从它派生（布尔只有
+  // present/gone 两态，不产生 unknown——保持所有从未涉及这次改动的既有测试的行为不变）；两者
+  // 都没注入（生产默认路径）才落到真实 statSync 的 errno 分三态实现（defaultCheckFileGone）。
+  const checkFileGone: (p: string) => 'gone' | 'present' | 'unknown' =
+    deps.checkFileGone ?? (deps.fileExists ? ((p: string) => (deps.fileExists!(p) ? 'present' : 'gone')) : defaultCheckFileGone)
+  // 三层防线②③的可配阈值——env 覆盖同 cli/index.ts 里 SCAN_INTERVAL_MS 等既有旋钮的解析口径
+  // （数字环境变量 → 数字常量兜底），deps 注入优先于 env（测试精确控制轮次/比例边界）。
+  const removalConfirmPasses = deps.removalConfirmPasses ?? (Number(process.env.REMOVAL_CONFIRM_PASSES) || 2)
+  const scanCollapseRatio = deps.scanCollapseRatio ?? (Number(process.env.SCAN_COLLAPSE_RATIO) || 0.5)
   const statFile = deps.statFile ?? defaultStatFile
   const { lib, tmdb, log } = deps
 
@@ -784,50 +867,113 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
         }
       }
 
-      // ---- 磁盘真相移除：本轮走盘没见到 + fileExists 确认真的不在了 → 行退役 ----
-      // 双重条件缺一不可：只看"本轮没见到"会在 walk() 遇到某子目录瞬时 readdir 失败时
-      // （daemon/selfScan.ts 的 walk() 吞掉该错误、跳过整棵子树）误删仍然真实存在的文件的
-      // 库行——"宁多查勿漏配"，加一道 fileExists 复核堵住这个假阳性。
-      //
+      // ---- 磁盘真相移除：本轮走盘没见到 + 磁盘复核确认真的不在了 → 行退役 ----
+      // 三层防线（CIFS 挂载抖动误删修复——审计头号遗留，2026-07-18）：原先的"双重条件"
+      // （!seenPaths.has(path) && !fileExists(path)）在**整个挂载闪断**场景下两个信号同源
+      // 失效——walk() 对 readdirSync 报错 catch 后跳过整棵子树（根目录抛错→seenPaths 整根为
+      // 空），默认 fileExists 对 ESTALE/ETIMEDOUT/EIO/ENOTCONN（CIFS 抖动典型 errno）与
+      // ENOENT 无差别折叠成 false——一轮 pass 内该根全部条目被判"消失"，级联删 subtitles/series，
+      // 物理文件无损但 DB 认知/用户纠正全丢。三层缺一不可，各自堵一类失效面：
+      //  ①errno 区分（checkFileGone）——ENOENT/ENOTDIR 才是"确认不在"，其它 errno 判 'unknown'，
+      //   本轮该路径原地不动（不进 pending_removals 计数，也不清零——真正的"不确定"，什么都不做）；
+      //  ②消失去抖（pending_removals）——'gone' 只记账，连续 removalConfirmPasses 轮确认才真删，
+      //   期间任何一轮 present/unknown 都清零重计；
+      //  ③骤降哨兵（rootsCollapsed，pass 级）——某根本轮 seenPaths 相对已知库存暴跌时，整根
+      //   跳过本轮全部移除。①②各自看的是单条路径的信号，堵不住"walk 根节点直接抛错导致
+      //   seenPaths 整根为空"这种批量场景——③是这场景的最后闸门。
+      // 晋升（promoteOldestReplica）是自愈性动作——不丢数据，误判也能在挂载恢复后的下一轮自我
+      // 纠正——不需要等 removalConfirmPasses 这道确认闸，'gone' 就立即尝试；只有"无副本可晋升"
+      // 这条真正会丢数据（级联删 subtitles/series）的分支才必须过这道闸。
+      const episodeRows = lib.db.prepare('SELECT id, path, series_id FROM episodes').all() as
+        { id: string; path: string; series_id: string }[]
+      const movieRows = lib.db.prepare('SELECT id, path FROM movies').all() as { id: string; path: string }[]
+
+      // 骤降哨兵：按根分组，"已知"=该根前缀下的 episodes+movies 路径数，"seen"=本轮 seenPaths
+      // 命中同一前缀的数量。已知 < 10 的根不设防——样本太小，比例天然抖动，误伤（该删的也不删）
+      // 成本高于收益；这也保持了绝大多数小规模场景/测试下的既有行为（旧测试的库通常只有个位数
+      // 条目，从未触发这一层）。
+      const rootsCollapsed = new Set<string>()
+      for (const root of deps.roots()) {
+        const known =
+          episodeRows.filter(r => pathUnderRoot(r.path, root)).length +
+          movieRows.filter(r => pathUnderRoot(r.path, root)).length
+        if (known < 10) continue
+        let seen = 0
+        for (const p of seenPaths) if (pathUnderRoot(p, root)) seen++
+        if (seen < known * scanCollapseRatio) {
+          rootsCollapsed.add(root)
+          console.error(
+            `ingest: SCAN COLLAPSE guard tripped for root "${root}" — this pass saw ${seen}/${known} ` +
+            `known library paths under it (ratio ${(seen / known).toFixed(2)} < ${scanCollapseRatio}); ` +
+            `skipping ALL removal under this root this pass (mount-vanished guard)`
+          )
+        }
+      }
+      const isCollapsedRoot = (path: string): boolean => {
+        for (const root of rootsCollapsed) if (pathUnderRoot(path, root)) return true
+        return false
+      }
+
       // 重复源 P2：item_files 副本清理**必须先于**下面的主文件退役循环——死副本先出表，晋升时
       // listItemFiles 只会看到仍在盘上的副本，promoteOldestReplica 不会把主文件 path 指向一个
-      // 同样已消失的副本（否则要多轮扫描才收敛，中途主文件指向死文件）。
+      // 同样已消失的副本（否则要多轮扫描才收敛，中途主文件指向死文件）。三层防线同样覆盖这一
+      // 环：错判"副本消失"会撤走 promoteOldestReplica 的安全网，把风险直接转嫁给下面的主文件
+      // 循环（item_files 一旦被错删，同一轮里主文件的晋升就找不到它了）。
       for (const f of lib.db.prepare('SELECT path FROM item_files').all() as { path: string }[]) {
-        if (!seenPaths.has(f.path) && !fileExists(f.path)) {
+        if (seenPaths.has(f.path) || isCollapsedRoot(f.path)) continue
+        const state = checkFileGone(f.path)
+        if (state !== 'gone') { clearPendingRemoval(lib.db, f.path); continue }
+        const misses = recordMissingPass(lib.db, f.path, nowMs)
+        if (misses >= removalConfirmPasses) {
+          clearPendingRemoval(lib.db, f.path)
           lib.removeItemFileByPath(f.path)
           result.changed = true
         }
       }
-      const episodeRows = lib.db.prepare('SELECT id, path, series_id FROM episodes').all() as
-        { id: string; path: string; series_id: string }[]
       for (const row of episodeRows) {
-        if (!seenPaths.has(row.path) && !fileExists(row.path)) {
-          // 重复源 P2：主文件消失但仍有（存活的）副本 → 最年长副本晋升顶替，条目不退役；
-          // 无副本可晋升才真正删行（既有行为）。
-          if (lib.promoteOldestReplica(row.id) !== null) {
-            result.changed = true
-          } else {
-            lib.deleteEpisodeByPath(row.path)
-            lib.deleteSeriesIfEmpty(row.series_id)
-            result.removed++
-          }
+        if (seenPaths.has(row.path) || isCollapsedRoot(row.path)) continue
+        const state = checkFileGone(row.path)
+        if (state !== 'gone') { clearPendingRemoval(lib.db, row.path); continue }
+        // 重复源 P2：主文件消失但仍有（存活的）副本 → 最年长副本晋升顶替，条目不退役
+        // （自愈动作，见上方总注释——不受 removalConfirmPasses 门控）。
+        if (lib.promoteOldestReplica(row.id) !== null) {
+          clearPendingRemoval(lib.db, row.path)
+          result.changed = true
+          continue
+        }
+        // 无副本可晋升才是真正会丢数据的分支——过消失去抖这道闸。
+        const misses = recordMissingPass(lib.db, row.path, nowMs)
+        if (misses >= removalConfirmPasses) {
+          clearPendingRemoval(lib.db, row.path)
+          lib.deleteEpisodeByPath(row.path)
+          lib.deleteSeriesIfEmpty(row.series_id)
+          result.removed++
+          result.changed = true
         }
       }
-      const movieRows = lib.db.prepare('SELECT id, path FROM movies').all() as { id: string; path: string }[]
       for (const row of movieRows) {
-        if (!seenPaths.has(row.path) && !fileExists(row.path)) {
-          if (lib.promoteOldestReplica(row.id) !== null) {
-            result.changed = true
-          } else {
-            lib.deleteMovieByPath(row.path)
-            result.removed++
-          }
+        if (seenPaths.has(row.path) || isCollapsedRoot(row.path)) continue
+        const state = checkFileGone(row.path)
+        if (state !== 'gone') { clearPendingRemoval(lib.db, row.path); continue }
+        if (lib.promoteOldestReplica(row.id) !== null) {
+          clearPendingRemoval(lib.db, row.path)
+          result.changed = true
+          continue
+        }
+        const misses = recordMissingPass(lib.db, row.path, nowMs)
+        if (misses >= removalConfirmPasses) {
+          clearPendingRemoval(lib.db, row.path)
+          lib.deleteMovieByPath(row.path)
+          result.removed++
+          result.changed = true
         }
       }
       // parked_paths 同理清理（不计入 removed——那是 episodes/movies 行退役的计数，park 户口
-      // 消失是另一件事，P6 救援页读 listParkedPaths 时自然看不到已经不在盘上的路径）。
+      // 消失是另一件事，P6 救援页读 listParkedPaths 时自然看不到已经不在盘上的路径）。低风险、
+      // 可自愈（文件真的还在的话下一轮会被重新 park）——只接入①errno 区分（unknown 不清），不
+      // 接入②消失去抖/③骤降哨兵这两层重武装，维持既有单轮清理的响应速度。
       for (const p of lib.listParkedPaths()) {
-        if (!seenPaths.has(p.path) && !fileExists(p.path)) {
+        if (!seenPaths.has(p.path) && checkFileGone(p.path) === 'gone') {
           lib.clearParkedPath(p.path)
         }
       }

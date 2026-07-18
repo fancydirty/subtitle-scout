@@ -233,6 +233,20 @@ ALTER TABLE subtitles ADD COLUMN file_path TEXT;
   // （生产实证：SPY×FAMILY 13 集×2 探测/每 pass 的探测空转）。
   `ALTER TABLE item_files ADD COLUMN duration_verdict TEXT;
    ALTER TABLE item_files ADD COLUMN verdict_fingerprint TEXT`,
+  // v18（数据安全审计头号遗留修复，2026-07-18：CIFS 挂载抖动可致整库索引批量误删）：三层防线
+  // 第②层"消失去抖"用的记账表，纯增量 CREATE TABLE，无 CHECK 约束变更，不触发 12 步建新表。
+  // pending_removals：一个磁盘真相移除循环候选路径首次被判 gone 时记一行（first_missing_at=
+  // 首次判 gone 的时刻，misses=累计连续 gone 轮次），连续 ≥REMOVAL_CONFIRM_PASSES（默认 2）轮
+  // 才真删；期间任一轮 present/unknown（探测本身失败，如 ESTALE/EIO——见 v2/ingest.ts
+  // classifyStatError/checkFileGone）都清零重计（对应行被删）。PRIMARY KEY(path)——同一路径
+  // 同一时刻只有一个在途判决，无需额外身份维度。
+  `
+CREATE TABLE pending_removals (
+  path TEXT PRIMARY KEY,
+  first_missing_at INTEGER NOT NULL,
+  misses INTEGER NOT NULL
+)
+  `.trim(),
 ]
 
 export function openDb(path: string): ScoutDb {
