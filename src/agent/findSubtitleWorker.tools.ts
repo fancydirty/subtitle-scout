@@ -39,21 +39,47 @@ export interface DownloadCandidateDeps {
   mediaRoot?: string
 }
 
+/** Canonicalize a filename for tolerant matching: NFKC folds NBSP / narrow NBSP / full-width
+ *  space / NFD decomposition into normalized forms, and collapses runs of whitespace to a single
+ *  ASCII space. This fixes the 2026-07-18 production incident where the real filename used
+ *  U+00A0 (NBSP, bytes c2a0) between "V" and "klenutých", but the model echoed it as a plain
+ *  U+0020 space, making the previous exact `filenames.includes(videoFilename)` match fail for
+ *  multi-target tasks with no single-target fallback. */
+const canonFilename = (s: string): string => s.normalize('NFKC').replace(/\s+/g, ' ').trim()
+
 /** Shared by download_candidate and install_subtitle (Task 5 / R-5): resolves the agent-supplied
  *  `videoFilename` input against this task's list of target filenames. Three states:
  *  - named + matches one of `filenames` → that filename (claims that target for this call).
  *  - named + matches none → an error (agent named a file that isn't part of this task).
  *  - omitted (null) + exactly one target → defaults to it (single-target tasks stay zero-friction).
  *  - omitted (null) + multiple targets → an error asking the agent to say which one. */
-function resolveTargetFilename(videoFilename: string | null, filenames: string[]): string | { error: string } {
+export function resolveTargetFilename(videoFilename: string | null, filenames: string[]): string | { error: string } {
   if (videoFilename === null) {
     return filenames.length === 1
       ? filenames[0]
       : { error: `this task has ${filenames.length} targets — pass videoFilename to say which one this call is for` }
   }
-  return filenames.includes(videoFilename)
-    ? videoFilename
-    : { error: `unknown videoFilename: ${videoFilename} — must be one of the task's target files` }
+
+  // ① Exact match first — preserves existing behavior and protects against canonical collisions.
+  if (filenames.includes(videoFilename)) {
+    return videoFilename
+  }
+
+  // ② Tolerant match against canonical forms (NBSP vs space, NFD vs NFC, etc.), returning the
+  //    original element from `filenames` so the task's true bytes are used as the disk path.
+  const canonVideo = canonFilename(videoFilename)
+  const matched = filenames.find(f => canonFilename(f) === canonVideo)
+  if (matched) {
+    return matched
+  }
+
+  // ③ Forensic log before returning the error. This observability was missing during the
+  //    2026-07-18 production incident and forced a real-device reproduction; keep it.
+  const toHex = (s: string) => Buffer.from(s, 'utf8').toString('hex')
+  console.error(
+    `[find-subtitle-worker] videoFilename mismatch: agent=${toHex(videoFilename)} targets=${filenames.map(f => toHex(f).slice(0, 80)).join(', ')}`
+  )
+  return { error: `unknown videoFilename: ${videoFilename} — must be one of the task's target files` }
 }
 
 /** download_candidate's provisional staging langTag (A2): for a Chinese target the real Hans/Hant

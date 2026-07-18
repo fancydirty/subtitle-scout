@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import AdmZip from 'adm-zip'
 import type { FetchAdapter } from '../cli/fetchLib.js'
 import type { CandidateRef } from '../core/schemas.js'
-import { makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool } from './findSubtitleWorker.tools.js'
+import { makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool, resolveTargetFilename } from './findSubtitleWorker.tools.js'
 import type { InspectSignals } from '../files/subtitleInspect.js'
 
 interface DownloadCandidateOutput {
@@ -623,6 +623,50 @@ describe('install_subtitle target resolution', () => {
   })
 })
 
+describe('resolveTargetFilename', () => {
+  it('matches NBSP target when agent uses a regular space and returns the original target element', () => {
+    // Production incident: Love, Death & Robots S03E08, 2026-07-18.
+    // The real filename contains U+00A0 NO-BREAK SPACE after "V", but the model
+    // rendered it as U+0020 SPACE when naming videoFilename. This must still resolve.
+    const targetWithNbsp = 'Love, Death & Robots_S03E08_V\u00A0klenutých sálech pohřbený.mkv'
+    const agentWithSpace = 'Love, Death & Robots_S03E08_V klenutých sálech pohřbený.mkv'
+    const targets = [targetWithNbsp]
+    const result = resolveTargetFilename(agentWithSpace, targets)
+    expect(result).toBe(targetWithNbsp)
+    expect(result).toBe(targets[0])
+    expect(Buffer.from(result as string).toString('hex')).toBe(Buffer.from(targetWithNbsp).toString('hex'))
+  })
+
+  it('matches NFD-decomposed target when agent uses the NFC form', () => {
+    const targetNfc = 'pohřbený.mkv'
+    const agentNfd = 'pohr\u030Cbeny\u0301.mkv'
+    const result = resolveTargetFilename(agentNfd, [targetNfc])
+    expect(result).toBe(targetNfc)
+  })
+
+  it('still rejects a genuinely different filename', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const result = resolveTargetFilename('wrong.mkv', ['Show.S01E01.mkv'])
+      expect(result).toEqual({ error: "unknown videoFilename: wrong.mkv — must be one of the task's target files" })
+      expect(spy).toHaveBeenCalledTimes(1)
+      const call = spy.mock.calls[0][0] as string
+      expect(call).toMatch(/^\[find-subtitle-worker\] videoFilename mismatch:/)
+      expect(call).toContain('agent=')
+      expect(call).toContain('targets=')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('prefers exact match before canonical fallback when both space and NBSP variants exist', () => {
+    const spaceTarget = 'a b.mkv'
+    const nbspTarget = 'a\u00A0b.mkv'
+    const result = resolveTargetFilename('a b.mkv', [spaceTarget, nbspTarget])
+    expect(result).toBe(spaceTarget)
+  })
+})
+
 describe('check_episode_code_safety tool', () => {
   it('reports safe:true when the filename matches the target episode code', async () => {
     const tool_ = makeCheckEpisodeCodeSafetyTool()
@@ -652,3 +696,4 @@ describe('check_episode_code_safety tool', () => {
     expect(schema.parse({ filename: 'x', season: 2, episode: 3 })).toEqual({ filename: 'x', season: 2, episode: 3 })
   })
 })
+
