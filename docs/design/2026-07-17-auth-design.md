@@ -1,4 +1,7 @@
-# 鉴权战役 · Spec（2026-07-17）
+# 鉴权战役 · Spec（2026-07-17;2026-07-19 注记:用户已点名开做,本 spec 经核仍完整有效——
+# schema v11 世界无冲突(settings 表键值增量,无迁移);实证输入=生产启动日志 DASHBOARD_TOKEN
+# 裸奔告警(局域网零鉴权,写端点不受保护)。执行拆 A1 凭据/门 → A2 前端向导+登录 → A3
+# Settings安全区+api key → A4 兼容与验收,compact 后按 writing-plans 出计划再动工。）
 
 出处：dashboard 战役 R2 双签归档项（R2D-5 无 token 写面质变仅靠告警过渡、R2D-2 fs/list 裸机
 全盘枚举），登记册 §八"发布前必做"。用户裁决：照抄 Sonarr 式单管理员。
