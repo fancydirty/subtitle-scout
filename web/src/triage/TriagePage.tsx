@@ -52,7 +52,7 @@ export function TriagePage() {
   if (!triage.data) return null
 
   const now = Date.now()
-  const { actionable, duplicates, excluded } = groupPending(triage.data.pending)
+  const { actionable, excluded } = groupPending(triage.data.pending)
 
   const handleRestore = async (path: string) => {
     await api.unexclude(path)
@@ -64,7 +64,6 @@ export function TriagePage() {
       <div className="triage-boxes">
         <PendingBox
           actionable={actionable}
-          duplicates={duplicates}
           claimedDirs={claimedDirs}
           onClaimGroup={setClaimGroup}
         />

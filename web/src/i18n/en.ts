@@ -140,9 +140,8 @@ export const en = {
   // 真的退户口（TriagePage.tsx claimedDirs 注释），这条文案如实说明"已经点过认领，正在等扫描"，
   // 不假装文件已经消失。
   triage_claimed_badge: 'claimed · awaiting rescan',
-  // duplicate-content 停车行的说明——归重复源战役本体（字幕自动同步）尚未落地，这类行不需要
-  // 人工认领，用户点名要求跟"待人工认领"分开成组、别再吓人（spec §C.3）。
-  triage_duplicates_heading: 'Duplicates — subtitle propagation is planned; no action needed',
+  // triage_duplicates_heading 已退役（P2 起 ingest 不再产 duplicate-content 停车行，duplicates
+  // 折叠箱是纯死代码，见 PendingBox.tsx 文件头注释）——连同键一起删掉，不留一个不再被引用的字符串。
   triage_excluded_heading: 'Excluded extras',
   triage_excluded_restore_label: 'Restore',
   // 改名指引——README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）。路径形状本身

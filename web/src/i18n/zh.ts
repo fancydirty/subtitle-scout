@@ -113,7 +113,7 @@ export const zh = {
   triage_claimed_empty_desc: '手动认领一个停车文件后，记录会出现在这里。',
   triage_claim_group_label: '认领',
   triage_claimed_badge: '已认领 · 等待重新扫描',
-  triage_duplicates_heading: '重复副本——字幕自动同步功能正在规划中，无需处理',
+  // triage_duplicates_heading 已退役——见 en.ts 同位置注释。
   triage_excluded_heading: '已排除的特典',
   triage_excluded_restore_label: '恢复',
   triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',

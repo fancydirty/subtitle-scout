@@ -724,12 +724,6 @@
   color: var(--color-text-disabled);
 }
 
-/* ---- duplicate-content 分组（Collapsible，默认折叠，spec §C.3）---- */
-.triage-duplicates-section {
-  border-top: 1px solid var(--color-border);
-  padding-top: 10px;
-}
-
 /* ---- excluded-extra 翻案箱（Collapsible，默认折叠，救援R4c）——每行一个文件名 + Restore 按钮。 ---- */
 .triage-excluded-row {
   display: flex;

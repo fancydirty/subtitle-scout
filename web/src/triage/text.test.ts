@@ -31,7 +31,7 @@ function row(path: string, parkReason = 'ambiguous match'): ParkedItemDTO {
   return { path, parkReason, firstSeen: 0, lastAttempt: 0 }
 }
 
-describe('groupPending——按 dirname 分组 + duplicate-content 单独分箱 + excluded-extra 翻案桶（claimParked 的 override 粒度=目录前缀）', () => {
+describe('groupPending——按 dirname 分组 + excluded-extra 翻案桶（claimParked 的 override 粒度=目录前缀）', () => {
   it('actionable：按目录分组，组内按 path 排序、组间按文件数降序', () => {
     const { actionable, excluded } = groupPending([
       row('/media/tv/Show B/ep1.mkv'),
@@ -53,17 +53,24 @@ describe('groupPending——按 dirname 分组 + duplicate-content 单独分箱 
     ])
   })
 
-  it('duplicate-content 行进 duplicates 桶，其余进 actionable 桶——两桶各自独立分组', () => {
-    const { actionable, duplicates, excluded } = groupPending([
+  // duplicates 桶已退役（P2 起 ingest 不再产 duplicate-content 停车行，见 text.ts 头注释）——
+  // 历史遗留的 duplicate-content 行不再单独分桶，随其余非 excluded-extra 的行一起落进
+  // actionable，跟其他待认领行同等对待，不会凭空消失于 UI。
+  it('历史遗留的 duplicate-content 行 → 不再单独分桶，随其余行一起进 actionable（duplicates 桶退役）', () => {
+    const { actionable, excluded } = groupPending([
       row('/media/tv/Show A/ep1.mkv', 'ambiguous match'),
       row('/media/tv/Show A/ep2.mkv', 'duplicate-content'),
     ])
     expect(excluded).toEqual([])
     expect(actionable).toEqual([
-      { dir: '/media/tv/Show A', dirTail: 'Show A', files: [row('/media/tv/Show A/ep1.mkv', 'ambiguous match')] },
-    ])
-    expect(duplicates).toEqual([
-      { dir: '/media/tv/Show A', dirTail: 'Show A', files: [row('/media/tv/Show A/ep2.mkv', 'duplicate-content')] },
+      {
+        dir: '/media/tv/Show A',
+        dirTail: 'Show A',
+        files: [
+          row('/media/tv/Show A/ep1.mkv', 'ambiguous match'),
+          row('/media/tv/Show A/ep2.mkv', 'duplicate-content'),
+        ],
+      },
     ])
   })
 
@@ -76,8 +83,8 @@ describe('groupPending——按 dirname 分组 + duplicate-content 单独分箱 
     expect(actionable.map((g) => g.dir)).toEqual(['/media/tv/Show A', '/media/tv/Show B'])
   })
 
-  it('excluded-extra 行进 excluded 桶，actionable 与 duplicates 均不收', () => {
-    const { actionable, duplicates, excluded } = groupPending([
+  it('excluded-extra 行进 excluded 桶，actionable 不收；duplicate-content 行仍进 actionable（不是 excluded）', () => {
+    const { actionable, excluded } = groupPending([
       row('/media/tv/Show A/ep1.mkv', 'excluded-extra'),
       row('/media/tv/Show A/ep2.mkv', 'excluded-extra'),
       row('/media/tv/Show B/ep1.mkv', 'ambiguous match'),
@@ -85,8 +92,6 @@ describe('groupPending——按 dirname 分组 + duplicate-content 单独分箱 
     ])
     expect(actionable).toEqual([
       { dir: '/media/tv/Show B', dirTail: 'Show B', files: [row('/media/tv/Show B/ep1.mkv', 'ambiguous match')] },
-    ])
-    expect(duplicates).toEqual([
       { dir: '/media/tv/Show C', dirTail: 'Show C', files: [row('/media/tv/Show C/ep1.mkv', 'duplicate-content')] },
     ])
     expect(excluded).toEqual([
@@ -95,8 +100,8 @@ describe('groupPending——按 dirname 分组 + duplicate-content 单独分箱 
     ])
   })
 
-  it('空输入 → 三桶皆空', () => {
-    expect(groupPending([])).toEqual({ actionable: [], duplicates: [], excluded: [] })
+  it('空输入 → 两桶皆空', () => {
+    expect(groupPending([])).toEqual({ actionable: [], excluded: [] })
   })
 })
 

@@ -1,8 +1,12 @@
 // web/src/triage/TriagePage.test.tsx：甄别 tab 集成测试（验收修复轮一 Task V2 全面重写）——
-// 目录分组渲染（组头=目录尾段 mono+计数、组间按文件数降序、无逐行 checkbox）、duplicate-content
-// 单独折叠箱、认领流端到端（打开单目录组对话框→搜索/手动 tmdbId→提交一条 claim→成功关闭+刷新+
-// 该组置灰沉底+计数减除，失败保留对话框如实展示）。TriagePage 自己发请求（同 Lanes 的自洽口径），
-// 所以 mock 全局 fetch 按 URL 路由（同 Lanes.test.tsx 的既有手法）。
+// 目录分组渲染（组头=目录尾段 mono+计数、组间按文件数降序、无逐行 checkbox）、认领流端到端
+// （打开单目录组对话框→搜索/手动 tmdbId→提交一条 claim→成功关闭+刷新+该组置灰沉底+计数减除，
+// 失败保留对话框如实展示）。TriagePage 自己发请求（同 Lanes 的自洽口径），所以 mock 全局 fetch
+// 按 URL 路由（同 Lanes.test.tsx 的既有手法）。
+//
+// duplicates 折叠箱已退役（P2 起 ingest 不再产 duplicate-content 停车行，PendingBox.tsx 文件头
+// 注释）——历史遗留的 duplicate-content 行不再单独分桶，样本数据里的 Show C（reason 仍标
+// duplicate-content，模拟老数据）现在随其余行一起进 actionable 分组区正常展示。
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
@@ -37,19 +41,16 @@ function mockFetchRouted(handlers: Handler[]) {
 const EMPTY_TRIAGE: TriageDTO = { pending: [], claimed: [] }
 
 // 目录分组样本：Show A/S01 两集（组内文件最多，按文件数降序排最前）、Show B 一集
-// （actionable 合计 3 文件）、Show C 四集但 reason=duplicate-content（单独归 duplicates
-// 箱，合计 4 文件）——四个计数（3 顶部/2 每组/1 每组/4 duplicates）互不相同，dirTail
-// （S01/Show B/Show C）也互不相同，测试断言不需要额外 DOM 作用域即可消歧。
+// （actionable 合计 3 文件）——两个计数（3 顶部/2 每组/1 每组）互不相同，dirTail
+// （S01/Show B）也互不相同，测试断言不需要额外 DOM 作用域即可消歧。duplicate-content 历史行
+// 的展示行为单独用一份局部 fixture 测（见下方"历史遗留 duplicate-content 行"测试），不混进这份
+// 被认领流等大量测试共用的主 fixture，免得扰动那些测试依赖的组排序/计数假设。
 function triageWithData(): TriageDTO {
   return {
     pending: [
       { path: '/media/tv/Show A/S01/a-ep1.mkv', parkReason: 'ambiguous match', firstSeen: NOW - 60_000, lastAttempt: NOW },
       { path: '/media/tv/Show A/S01/a-ep2.mkv', parkReason: 'ambiguous match', firstSeen: NOW - 60_000, lastAttempt: NOW },
       { path: '/media/tv/Show B/b-ep1.mkv', parkReason: 'no tmdb hit', firstSeen: NOW - 120_000, lastAttempt: NOW },
-      { path: '/media/tv/Show C/c-ep1.mkv', parkReason: 'duplicate-content', firstSeen: NOW - 30_000, lastAttempt: NOW },
-      { path: '/media/tv/Show C/c-ep2.mkv', parkReason: 'duplicate-content', firstSeen: NOW - 30_000, lastAttempt: NOW },
-      { path: '/media/tv/Show C/c-ep3.mkv', parkReason: 'duplicate-content', firstSeen: NOW - 30_000, lastAttempt: NOW },
-      { path: '/media/tv/Show C/c-ep4.mkv', parkReason: 'duplicate-content', firstSeen: NOW - 30_000, lastAttempt: NOW },
     ],
     claimed: [
       { pathPrefix: '/media/tv/Old Show', tmdbId: '4242', isTv: true, season: 2, createdAt: NOW - 3 * 24 * 60 * 60_000 - 60_000 },
@@ -97,7 +98,7 @@ function claimBodies(fetchMock: ReturnType<typeof mockFetchRouted>): unknown[] {
 }
 
 describe('TriagePage：目录分组渲染（验收修复轮一 Task V2）', () => {
-  it('待甄别箱按目录分组：组头=目录尾段 mono + 文件计数，组体=文件名只读列表；箱头计数=actionable 文件数（不含 duplicates）', async () => {
+  it('待甄别箱按目录分组：组头=目录尾段 mono + 文件计数，组体=文件名只读列表；箱头计数=actionable 文件数', async () => {
     vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: triageWithData() }]))
     renderPage()
 
@@ -108,7 +109,7 @@ describe('TriagePage：目录分组渲染（验收修复轮一 Task V2）', () =
     expect(screen.getByTitle('/media/tv/Show A/S01/a-ep1.mkv')).toHaveTextContent('a-ep1.mkv')
     expect(screen.getByTitle('/media/tv/Show A/S01/a-ep2.mkv')).toHaveTextContent('a-ep2.mkv')
     expect(screen.getByTitle('/media/tv/Show B/b-ep1.mkv')).toHaveTextContent('b-ep1.mkv')
-    // 箱头计数：actionable 总文件数（S01 的 2 + Show B 的 1 = 3），不含 duplicates 桶的 2 个。
+    // 箱头计数：actionable 总文件数（S01 的 2 + Show B 的 1 = 3）。
     expect(screen.getByText('3')).toBeInTheDocument()
 
     // 改名指引恒定渲染（原有断言延续）
@@ -128,30 +129,33 @@ describe('TriagePage：目录分组渲染（验收修复轮一 Task V2）', () =
     vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: triageWithData() }]))
     const { container } = renderPage()
     await screen.findByText('S01')
-    // 只看 actionable 分组区（.triage-actionable-groups）——duplicates 桶的组卡即便折叠也还在
-    // DOM 里（Collapsible 用 display:none 隐藏，不卸载），不应该混进这个断言的作用域。
     const actionable = container.querySelector('.triage-actionable-groups')
     const tails = [...actionable!.querySelectorAll('.triage-dirgroup-tail')].map((el) => el.textContent)
     expect(tails).toEqual(['S01', 'Show B'])
   })
 
-  it('duplicate-content 行单独成组、默认折叠在 Duplicates 箱里，组头说明文案在场，无 Claim 按钮', async () => {
-    vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: triageWithData() }]))
+  // duplicates 桶已退役（P2 起 ingest 不再产 duplicate-content 停车行）——历史遗留的
+  // duplicate-content 行不再被单独过滤进一个折叠箱，就是一个普普通通的 actionable 目录组：
+  // 正常参与排序、正常给 Claim 按钮、正常计入箱头计数。用局部 fixture（不是共享的
+  // triageWithData()）避免扰动其余测试依赖的组排序假设。
+  it('历史遗留 duplicate-content 行 → 不再单独分桶折叠，就是普通 actionable 组（有 Claim 按钮，计入箱头计数）', async () => {
+    const data: TriageDTO = {
+      pending: [
+        { path: '/media/tv/Show C/c-ep1.mkv', parkReason: 'duplicate-content', firstSeen: NOW - 30_000, lastAttempt: NOW },
+      ],
+      claimed: [],
+    }
+    vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: data }]))
     renderPage()
-    await screen.findByText('S01')
 
-    const trigger = screen.getByRole('button', {
-      name: /Duplicates — subtitle propagation is planned; no action needed/,
-    })
-    expect(trigger).toHaveAttribute('aria-expanded', 'false')
-    expect(within(trigger).getByText('4')).toBeInTheDocument()
-
-    // 展开后同款目录组卡，但没有 Claim 按钮（duplicates 桶不给 Claim）——只有 2 个 actionable
-    // Claim 按钮（S01 + Show B），展开 duplicates 不会多出第三个。
-    fireEvent.click(trigger)
-    expect(trigger).toHaveAttribute('aria-expanded', 'true')
-    expect(await screen.findByTitle('/media/tv/Show C/c-ep1.mkv')).toHaveTextContent('c-ep1.mkv')
-    expect(screen.getAllByRole('button', { name: 'Claim' })).toHaveLength(2)
+    expect(await screen.findByText('Show C')).toBeInTheDocument()
+    expect(screen.getByTitle('/media/tv/Show C/c-ep1.mkv')).toHaveTextContent('c-ep1.mkv')
+    // 计入箱头计数（1），不是被隔离在别处的 4——这里就是普通 actionable 桶的行为。
+    expect(screen.getByText('1')).toBeInTheDocument()
+    // 有 Claim 按钮——不再是 duplicates 桶那种"不给认领"的组卡。
+    expect(screen.getAllByRole('button', { name: 'Claim' })).toHaveLength(1)
+    // 没有 Duplicates 折叠区这种东西了。
+    expect(screen.queryByText(/Duplicates —/)).not.toBeInTheDocument()
   })
 
   it('页面无逐行 checkbox（多选已撤）', async () => {
@@ -161,12 +165,11 @@ describe('TriagePage：目录分组渲染（验收修复轮一 Task V2）', () =
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
   })
 
-  it('两箱空态：待甄别空=好事（identifier 全部归位方向），已认领空=中性说明；无 duplicates 时不渲染 Duplicates 折叠区', async () => {
+  it('两箱空态：待甄别空=好事（identifier 全部归位方向），已认领空=中性说明', async () => {
     vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: EMPTY_TRIAGE }]))
     renderPage()
     expect(await screen.findByText('Every file found its identifier')).toBeInTheDocument()
     expect(screen.getByText('No claims yet')).toBeInTheDocument()
-    expect(screen.queryByText(/Duplicates —/)).not.toBeInTheDocument()
   })
 })
 

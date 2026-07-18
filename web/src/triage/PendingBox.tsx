@@ -5,8 +5,11 @@
 // ——旧版靠用户手动跨行多选拼凑出"这些文件属于同一部剧"，新版分组函数直接把这层事实做出来，
 // 多选歧义随之消灭。
 //
-// duplicate-content 停车行单独归入 duplicates 桶（spec §C.3）：默认折叠的 Collapsible，组头
-// 说明"这类重复副本不需要人工认领"，展开后同款目录组卡但没有 Claim 按钮。
+// duplicates 桶已退役（P2 起 ingest 不再产 duplicate-content 停车行，见 text.ts 的 groupPending
+// 头注释）：曾经这里渲染一个默认折叠的 Collapsible，专门装"这类重复副本不需要人工认领"的组卡。
+// 生产该桶早已清零，是纯死代码，本批连同 duplicates prop / duplicatesCount 一并撤掉。历史遗留的
+// duplicate-content 行（若有）现在随普通 actionable 行一起出现在下面这一个分组区里——不会凭空
+// 消失，只是不再单独折叠归箱，也照样能被认领。
 //
 // 认领后的置灰过渡态（claimedDirs）是这个组件的入参而非私有状态——TriagePage 持有它，理由见
 // TriagePage.tsx 的文件头注释（认领只写 override，parked_paths 那一行要等下一轮 ingest pass
@@ -17,7 +20,6 @@ import { Text } from '@astryxdesign/core/Text'
 import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { EmptyState } from '@astryxdesign/core/EmptyState'
-import { Collapsible } from '@astryxdesign/core/Collapsible'
 import { StatusDot } from '@astryxdesign/core/StatusDot'
 import type { ParkedItemDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
@@ -34,7 +36,8 @@ function DirGroupCard({
 }: {
   group: DirGroup
   claimed: boolean
-  /** undefined＝不给这个组渲染 Claim 按钮（duplicates 桶的组卡、或已认领的组都是这种情况）。 */
+  /** undefined＝不给这个组渲染 Claim 按钮（已认领的组是唯一还会传 undefined 的情况——duplicates
+   *  桶已退役，见文件头注释）。 */
   onClaim?: () => void
 }) {
   const { t, lang } = useT()
@@ -83,8 +86,6 @@ function DirGroupCard({
 interface Props {
   /** 待人工认领的目录组（已由 TriagePage 通过 groupPending 分桶）。 */
   actionable: DirGroup[]
-  /** duplicate-content 桶（已由 TriagePage 通过 groupPending 分桶）。 */
-  duplicates: DirGroup[]
   /** 本次会话里已认领、正等待下一轮 ingest pass 退户口的目录集合（TriagePage 持有，见其文件头
    *  注释）——命中的组置灰、显示"claimed · awaiting rescan"角标、Claim 按钮消失、沉到组列表
    *  底部。 */
@@ -92,7 +93,7 @@ interface Props {
   onClaimGroup: (group: DirGroup) => void
 }
 
-export function PendingBox({ actionable, duplicates, claimedDirs, onClaimGroup }: Props) {
+export function PendingBox({ actionable, claimedDirs, onClaimGroup }: Props) {
   const { t } = useT()
 
   // 未认领组在前（按 groupPending 已排好的文件数降序），已认领组沉到最后——组内顺序不重要，
@@ -101,9 +102,8 @@ export function PendingBox({ actionable, duplicates, claimedDirs, onClaimGroup }
   const claimedGroups = actionable.filter((g) => claimedDirs.has(g.dir))
   const orderedActionable = [...notClaimed, ...claimedGroups]
   // 箱头计数只算"还需要人工认领"的文件数——已认领但还没退户口的组不再计入（spec §C.2：
-  // "actionable 计数减除"），duplicates 桶有自己的计数，不叠进这里。
+  // "actionable 计数减除"）。
   const actionableCount = notClaimed.reduce((n, g) => n + g.files.length, 0)
-  const duplicatesCount = duplicates.reduce((n, g) => n + g.files.length, 0)
 
   return (
     <div className="triage-box">
@@ -131,27 +131,6 @@ export function PendingBox({ actionable, duplicates, claimedDirs, onClaimGroup }
             </VStack>
           </div>
         )}
-
-        {duplicates.length > 0 ? (
-          <div className="triage-duplicates-section">
-            <Collapsible
-              defaultIsOpen={false}
-              trigger={
-                <HStack gap={2} vAlign="center">
-                  <Text type="label">{t('triage_duplicates_heading')}</Text>
-                  <Text type="code" color="secondary">
-                    {duplicatesCount}
-                  </Text>
-                </HStack>
-              }>
-              <VStack gap={2}>
-                {duplicates.map((group) => (
-                  <DirGroupCard key={group.dir} group={group} claimed={false} />
-                ))}
-              </VStack>
-            </Collapsible>
-          </div>
-        ) : null}
 
         <div className="triage-naming-hint">
           {t('triage_naming_hint_prefix')}

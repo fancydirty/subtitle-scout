@@ -54,11 +54,14 @@ export interface DirGroup {
   files: ParkedItemDTO[]
 }
 
-/** duplicate-content 停车行的"重复副本"park reason（见 src/v2/ingest.ts 的
- *  upsertParkedPath(path, 'duplicate-content', ...) 调用点）——归重复源战役本体（字幕自动
- *  同步）尚未落地，本轮只做呈现分组：这类行不需要人工认领，与"待人工认领"的行分开成组、默认
- *  折叠（见 PendingBox 的 Collapsible 用法），避免用户看见一堆"重复"行误以为出了问题。 */
-const DUPLICATE_PARK_REASON = 'duplicate-content'
+/** duplicates 桶退役记录：曾经这里有一个 DUPLICATE_PARK_REASON = 'duplicate-content' 常量，
+ *  把这类停车行单独分桶、默认折叠展示（见已删除的 PendingBox Collapsible 用法）。P2 起 ingest
+ *  不再产生 duplicate-content 这个 park reason——撞身份的重复文件改走 item_files 副本入册，
+ *  根本不停车了（见 src/v2/ingest.ts）；生产该桶早已清零，是纯死代码，本批退役。
+ *
+ *  保守边界：DB 里若还有老版本 ingest 留下的历史 duplicate-content 行，退役后不再特殊分桶、也
+ *  不该凭空从 UI 消失——下面 groupPending 不再过滤这个 reason，历史行就随其余非 excluded-extra
+ *  的行一起落进 actionable，跟其他"待人工认领"的行同等对待、正常展示、正常可认领。 */
 
 /** excluded-extra 停车行的 park reason（见 src/v2/ingest.ts 的 upsertParkedPath(path,
  *  'excluded-extra', ...) 调用点）——被 exclude_extras 设置当作"特典"排除的文件，可在此
@@ -86,15 +89,14 @@ function groupByDir(rows: ParkedItemDTO[]): DirGroup[] {
   return groups
 }
 
-/** PendingBox 的分组入口：按 park reason 分三桶——duplicate-content 单独归箱、
- *  excluded-extra 单独归"翻案"箱、其余归 actionable；桶内再按目录分组（spec §C.1）。 */
-export function groupPending(rows: ParkedItemDTO[]): { actionable: DirGroup[]; duplicates: DirGroup[]; excluded: ParkedItemDTO[] } {
-  const duplicateRows = rows.filter((r) => r.parkReason === DUPLICATE_PARK_REASON)
+/** PendingBox 的分组入口：按 park reason 分两桶——excluded-extra 单独归"翻案"箱，其余
+ *  （含历史遗留的 duplicate-content 行，见上方退役记录：那个桶已退役，不再特殊处理）一律归
+ *  actionable；桶内再按目录分组（spec §C.1）。 */
+export function groupPending(rows: ParkedItemDTO[]): { actionable: DirGroup[]; excluded: ParkedItemDTO[] } {
   const excludedRows = rows.filter((r) => r.parkReason === EXCLUDED_PARK_REASON)
-  const actionableRows = rows.filter((r) => r.parkReason !== DUPLICATE_PARK_REASON && r.parkReason !== EXCLUDED_PARK_REASON)
+  const actionableRows = rows.filter((r) => r.parkReason !== EXCLUDED_PARK_REASON)
   return {
     actionable: groupByDir(actionableRows),
-    duplicates: groupByDir(duplicateRows),
     excluded: excludedRows.sort((a, b) => a.path.localeCompare(b.path)),
   }
 }
