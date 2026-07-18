@@ -28,6 +28,11 @@ export interface DownloadCandidateDeps {
    *  season-level range, not one episode). The tool's `videoFilename` input claims ONE of these per
    *  call — see resolveTargetFilename below. */
   targetFilenames: string[]
+  /** Parallel to targetFilenames (same index) — each target's itemId, used only to disambiguate a
+   *  videoFilename that collides across two-or-more targets (cross-season batch, same basename;
+   *  see resolveTarget). Optional: pre-fix callers/tests with no collision in play need not supply
+   *  it, and makeFindSubtitleWorker always passes it explicitly from task.targets. */
+  targetItemIds?: string[]
   /** task.targetLanguage (BCP-47 primary code, e.g. 'zh'/'en') — drives the provisional langTag
    *  this staging write uses (see execute below). Optional/defaulted to 'zh' only so existing
    *  callers/tests that predate A2 keep working unchanged; makeFindSubtitleWorker always passes
@@ -83,6 +88,53 @@ export function resolveTargetFilename(videoFilename: string | null, filenames: s
   return { error: `unknown videoFilename: ${videoFilename} — must be one of the task's target files` }
 }
 
+/** A target object resolveTarget can disambiguate between. `itemId` is optional at the type level
+ *  so callers that never see a basename collision (single-target tasks, or batches where every
+ *  target's filename happens to be distinct) don't have to supply it — see resolveTarget below for
+ *  when it actually matters. */
+interface DisambiguatableTarget {
+  videoFilename: string
+  itemId?: string
+}
+
+/** Post-audit correctness fix (batch②, 2026-07-18): shared by download_candidate and
+ *  install_subtitle. Layers itemId disambiguation on top of resolveTargetFilename's existing
+ *  filename resolution (NBSP/NFKC tolerant matching, single-target default, wrong-name error — all
+ *  unchanged, see above). Once a filename is resolved, MORE THAN ONE target can legitimately share
+ *  it: cross-season batch tasks (findSubtitleWorkerTask.ts's `payload.seasons` /
+ *  listMissingEpisodesForSeries, ORDER BY season,episode) routinely produce targets like
+ *  "Season 1/01.mkv" and "Season 2/01.mkv" — same basename, different episodes. The OLD code did
+ *  `deps.targets.find(t => t.videoFilename === resolvedTarget)!`, which silently returns whichever
+ *  target happens to come first — installing S02E01's subtitle into S01E01's directory. Now a
+ *  basename collision REQUIRES itemId (shown alongside videoFilename on every target line in the
+ *  worker's prompt) to pick between the colliding targets; a single hit still defaults exactly as
+ *  before, itemId or not. */
+export function resolveTarget<T extends DisambiguatableTarget>(
+  videoFilename: string | null,
+  itemId: string | null | undefined,
+  targets: T[],
+): T | { error: string } {
+  const resolvedName = resolveTargetFilename(videoFilename, targets.map(t => t.videoFilename))
+  if (typeof resolvedName !== 'string') return resolvedName
+
+  const matches = targets.filter(t => t.videoFilename === resolvedName)
+  if (matches.length === 1) return matches[0]
+
+  // Basename collision — more than one target claims this exact resolved filename.
+  const itemIdList = matches.map(t => t.itemId ?? '(missing itemId)').join(', ')
+  if (itemId != null) {
+    const found = matches.find(t => t.itemId === itemId)
+    if (found) return found
+    return {
+      error: `itemId "${itemId}" does not match any target sharing filename "${resolvedName}" — ` +
+        `must be one of: ${itemIdList}`,
+    }
+  }
+  return {
+    error: `multiple targets share filename "${resolvedName}" — pass itemId to disambiguate: ${itemIdList}`,
+  }
+}
+
 /** download_candidate's provisional staging langTag (A2): for a Chinese target the real Hans/Hant
  *  call is made later by the agent at install_subtitle time, from subtitleInspect's detectedScript
  *  signal — not here, before the file is even inspected — so this keeps the historical 'zh-Hans'
@@ -102,6 +154,9 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       'This task may cover several target videos at once: pass videoFilename to say which target ' +
       'file this call is for (must be one of the task\'s target files); you can omit it when the ' +
       'task has exactly one target. ' +
+      'If more than one target shares that exact file name (e.g. a same-basename episode in two ' +
+      'different seasons), also pass itemId — the itemId shown for each target — to say exactly ' +
+      'which one; omit it when no other target shares the name. ' +
       'Use fileIndex to pull ONE file out of a season pack / collection BEFORE download: set it to ' +
       'the index of the entry in the candidate\'s fileList (seen via get_candidate) that names your ' +
       'target episode; pass fileIndex: null for a plain single-file candidate. ' +
@@ -122,13 +177,18 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       fileIndex: coercibleNullableInt,
       // Which of the task's target videos this call claims (Task 5 / R-5) — see resolveTargetFilename.
       videoFilename: nullableTolerant(z.string()),
+      // Disambiguates a videoFilename that collides across targets (basename shared by two-or-more
+      // targets, e.g. cross-season batch) — see resolveTarget.
+      itemId: nullableTolerant(z.string()),
       // Which entry inside a multi-subtitle zip to pick (C-D1) — matched by exact basename in
       // subtitleWriter's pickFromZip.
       archiveEntryName: nullableTolerant(z.string()),
     }),
-    execute: async ({ candidateId, fileIndex, videoFilename, archiveEntryName }) => {
-      const resolvedTarget = resolveTargetFilename(videoFilename, deps.targetFilenames)
-      if (typeof resolvedTarget !== 'string') return resolvedTarget
+    execute: async ({ candidateId, fileIndex, videoFilename, itemId, archiveEntryName }) => {
+      const targets = deps.targetFilenames.map((f, i) => ({ videoFilename: f, itemId: deps.targetItemIds?.[i] }))
+      const resolved = resolveTarget(videoFilename, itemId, targets)
+      if ('error' in resolved) return resolved
+      const resolvedTarget = resolved.videoFilename
 
       const parsed = parseCandidateKey(candidateId)
       if (!parsed) {
@@ -202,8 +262,11 @@ export interface InstallSubtitleDeps {
   /** Every target this batch task covers, each with its OWN outDir (dirname(target.videoPath),
    *  never derived from anything the agent supplies — Task 5 / R-5: a worker run installs
    *  episode-by-episode across a whole season, so each target needs its own destination dir). The
-   *  tool's `videoFilename` input claims ONE of these per call — see resolveTargetFilename. */
-  targets: { videoFilename: string; outDir: string }[]
+   *  tool's `videoFilename` input claims ONE of these per call — see resolveTargetFilename.
+   *  `itemId` is optional here only so pre-fix test fixtures with no basename collision in play
+   *  don't have to supply it — makeFindSubtitleWorker always passes it from task.targets, and it
+   *  becomes REQUIRED at runtime the moment two targets share a basename (see resolveTarget). */
+  targets: { videoFilename: string; outDir: string; itemId?: string }[]
   /** The ONE sandbox root for this task — checked again here even though each target's outDir is
    *  already fixed (defense-in-depth, mirrors realignExecutor.ts's containingRoot/isUnderRoots use). */
   mediaRoot: string
@@ -217,7 +280,10 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
       'a person who opened the file, that this candidate really is the subtitle for this exact video. ' +
       'This task may cover several target videos at once: pass videoFilename to say which target ' +
       'file you are installing for (must be one of the task\'s target files); you can omit it when ' +
-      'the task has exactly one target.',
+      'the task has exactly one target. ' +
+      'If more than one target shares that exact file name (e.g. a same-basename episode in two ' +
+      'different seasons), also pass itemId — the itemId shown for each target — to say exactly ' +
+      'which one; omit it when no other target shares the name.',
     inputSchema: z.object({
       stagedFileId: z.string(),
       // A2 + H2（2026-07-18 数据安全审计——路径注入防线）：langTag 曾接受任意非空字符串，直接拼进
@@ -232,11 +298,14 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
       ),
       // Which of the task's target videos this call claims (Task 5 / R-5) — see resolveTargetFilename.
       videoFilename: nullableTolerant(z.string()),
+      // Disambiguates a videoFilename that collides across targets (basename shared by two-or-more
+      // targets, e.g. cross-season batch) — see resolveTarget.
+      itemId: nullableTolerant(z.string()),
     }),
-    execute: async ({ stagedFileId, langTag, videoFilename }) => {
-      const resolvedTarget = resolveTargetFilename(videoFilename, deps.targets.map(t => t.videoFilename))
-      if (typeof resolvedTarget !== 'string') return resolvedTarget
-      const target = deps.targets.find(t => t.videoFilename === resolvedTarget)!
+    execute: async ({ stagedFileId, langTag, videoFilename, itemId }) => {
+      const resolved = resolveTarget(videoFilename, itemId, deps.targets)
+      if ('error' in resolved) return resolved
+      const target = resolved
 
       const stagedPath = deps.stagedFiles.get(stagedFileId)
       if (!stagedPath) return { error: `unknown stagedFileId: ${stagedFileId} — call download_candidate first` }

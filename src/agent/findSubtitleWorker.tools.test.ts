@@ -60,7 +60,7 @@ describe('download_candidate tool', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     expect(out.stagedFileId).toBeTruthy()
@@ -114,7 +114,7 @@ describe('download_candidate tool', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     await tool_.execute!(
-      { candidateId: 'assrt:667241', fileIndex: 10, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:667241', fileIndex: 10, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(sink.ref).toEqual({ provider: 'assrt', providerId: '667241', fileIndex: 10 })
@@ -131,7 +131,7 @@ describe('download_candidate tool', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     await tool_.execute!(
-      { candidateId: 'zimuku:z-501', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'zimuku:z-501', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(sink.ref).toEqual({ provider: 'zimuku', providerId: 'z-501', fileIndex: null })
@@ -145,7 +145,7 @@ describe('download_candidate tool', () => {
       targetFilenames: ['Show.S01E01.mkv'],
     })
     const out = await tool_.execute!(
-      { candidateId: 'not-a-real-key', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'not-a-real-key', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toHaveProperty('error')
@@ -190,7 +190,7 @@ describe('download_candidate tool', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     const stagedPath = stagedFiles.get(out.stagedFileId)!
@@ -212,7 +212,7 @@ describe('download_candidate tool', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     const stagedPath = stagedFiles.get(out.stagedFileId)!
@@ -232,11 +232,11 @@ describe('download_candidate tool', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const first = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     const second = await tool_.execute!(
-      { candidateId: 'assrt:2', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:2', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't2', messages: [] } as any,
     ) as DownloadCandidateOutput
     expect(first.stagedFileId).not.toBe(second.stagedFileId)
@@ -268,7 +268,7 @@ describe('download_candidate target resolution', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     const stagedPath = stagedFiles.get(out.stagedFileId)!
@@ -286,7 +286,7 @@ describe('download_candidate target resolution', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: 'Show.S01E02.mkv', archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: 'Show.S01E02.mkv', itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     const stagedPath = stagedFiles.get(out.stagedFileId)!
@@ -303,7 +303,7 @@ describe('download_candidate target resolution', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: 'Show.S01E99.mkv', archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: 'Show.S01E99.mkv', itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({ error: "unknown videoFilename: Show.S01E99.mkv — must be one of the task's target files" })
@@ -320,7 +320,7 @@ describe('download_candidate target resolution', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({ error: 'this task has 2 targets — pass videoFilename to say which one this call is for' })
@@ -357,7 +357,7 @@ describe('download_candidate zip entry selection (C-D1)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({
@@ -381,7 +381,7 @@ describe('download_candidate zip entry selection (C-D1)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
-      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, archiveEntryName: 'Show.S01E02.srt' },
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: 'Show.S01E02.srt' },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     const stagedPath = stagedFiles.get(out.stagedFileId)!
@@ -406,7 +406,7 @@ describe('download_candidate local candidate branch (重复源 P4)', () => {
       mediaRoot: sandboxDir,
     })
     const out = await tool_.execute!(
-      { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as DownloadCandidateOutput
     expect(out.stagedFileId).toBeTruthy()
@@ -430,7 +430,7 @@ describe('download_candidate local candidate branch (重复源 P4)', () => {
         mediaRoot: sandboxDir, // srcPath lives under outsideDir, NOT sandboxDir
       })
       const out = await tool_.execute!(
-        { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, archiveEntryName: null },
+        { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
         { toolCallId: 't1', messages: [] } as any,
       )
       expect(out).toEqual({ error: expect.stringMatching(/refusing to read local candidate outside sandboxed media root/) })
@@ -451,7 +451,7 @@ describe('download_candidate local candidate branch (重复源 P4)', () => {
       mediaRoot: sandboxDir,
     })
     const out = await tool_.execute!(
-      { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, archiveEntryName: null },
+      { candidateId: `local:${encodeURIComponent(srcPath)}`, fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({ error: expect.stringMatching(/local candidate file unreadable/) })
@@ -475,7 +475,7 @@ describe('install_subtitle tool', () => {
       mediaRoot: join(sandboxDir, 'media'),
     })
     const out = await tool_.execute!(
-      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null, itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as InstallSubtitleOutput
     expect(out.path).toBe(join(videoDir, 'Show.S01E01.zh-Hans.srt'))
@@ -495,9 +495,9 @@ describe('install_subtitle tool', () => {
       mediaRoot: sandboxDir,
     })
     const schema = tool_.inputSchema as import('zod').ZodType
-    expect(schema.parse({ stagedFileId: 'x', langTag: 'en' })).toEqual({ stagedFileId: 'x', langTag: 'en', videoFilename: null })
-    expect(schema.parse({ stagedFileId: 'x', langTag: 'zh-Hans' })).toEqual({ stagedFileId: 'x', langTag: 'zh-Hans', videoFilename: null })
-    expect(schema.parse({ stagedFileId: 'x', langTag: 'pt-BR' })).toEqual({ stagedFileId: 'x', langTag: 'pt-BR', videoFilename: null })
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'en' })).toEqual({ stagedFileId: 'x', langTag: 'en', videoFilename: null, itemId: null })
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'zh-Hans' })).toEqual({ stagedFileId: 'x', langTag: 'zh-Hans', videoFilename: null, itemId: null })
+    expect(schema.parse({ stagedFileId: 'x', langTag: 'pt-BR' })).toEqual({ stagedFileId: 'x', langTag: 'pt-BR', videoFilename: null, itemId: null })
   })
 
   // H2 (2026-07-18 数据安全审计——路径注入防线): langTag used to be `z.string().min(1)`, so a
@@ -532,7 +532,7 @@ describe('install_subtitle tool', () => {
       mediaRoot: join(sandboxDir, 'media'),
     })
     const out = await tool_.execute!(
-      { stagedFileId, langTag: 'en', videoFilename: null },
+      { stagedFileId, langTag: 'en', videoFilename: null, itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as InstallSubtitleOutput
     expect(out.path).toBe(join(videoDir, 'Show.S01E01.en.srt'))
@@ -546,7 +546,7 @@ describe('install_subtitle tool', () => {
       mediaRoot: sandboxDir,
     })
     const out = await tool_.execute!(
-      { stagedFileId: 'nope', langTag: 'zh-Hans', videoFilename: null },
+      { stagedFileId: 'nope', langTag: 'zh-Hans', videoFilename: null, itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({ error: 'unknown stagedFileId: nope — call download_candidate first' })
@@ -562,7 +562,7 @@ describe('install_subtitle tool', () => {
       mediaRoot: join(sandboxDir, 'media'),
     })
     const out = await tool_.execute!(
-      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null, itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toHaveProperty('error')
@@ -586,7 +586,7 @@ describe('install_subtitle tool', () => {
       mediaRoot: join(sandboxDir, 'media'),
     })
     const out = await tool_.execute!(
-      { stagedFileId, langTag: '../evil', videoFilename: null },
+      { stagedFileId, langTag: '../evil', videoFilename: null, itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toHaveProperty('error')
@@ -622,7 +622,7 @@ describe('install_subtitle tool', () => {
       })
 
       const out = await tool_.execute!(
-        { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+        { stagedFileId, langTag: 'zh-Hans', videoFilename: null, itemId: null },
         { toolCallId: 't1', messages: [] } as any,
       )
 
@@ -647,7 +647,7 @@ describe('install_subtitle tool', () => {
       })
 
       const out = await tool_.execute!(
-        { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+        { stagedFileId, langTag: 'zh-Hans', videoFilename: null, itemId: null },
         { toolCallId: 't1', messages: [] } as any,
       ) as InstallSubtitleOutput
 
@@ -675,7 +675,7 @@ describe('install_subtitle tool', () => {
     })
 
     const out = await tool_.execute!(
-      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null, itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     )
 
@@ -707,7 +707,7 @@ describe('install_subtitle target resolution', () => {
       mediaRoot: join(sandboxDir, 'media'),
     })
     const out = await tool_.execute!(
-      { stagedFileId, langTag: 'zh-Hans', videoFilename: 'ShowB.S01E01.mkv' },
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: 'ShowB.S01E01.mkv', itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     ) as InstallSubtitleOutput
     expect(out.path).toBe(join(dirB, 'ShowB.S01E01.zh-Hans.srt'))
@@ -728,7 +728,7 @@ describe('install_subtitle target resolution', () => {
       mediaRoot: join(sandboxDir, 'media'),
     })
     const out = await tool_.execute!(
-      { stagedFileId, langTag: 'zh-Hans', videoFilename: 'Show.S01E99.mkv' },
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: 'Show.S01E99.mkv', itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({ error: "unknown videoFilename: Show.S01E99.mkv — must be one of the task's target files" })
@@ -752,10 +752,155 @@ describe('install_subtitle target resolution', () => {
       mediaRoot: join(sandboxDir, 'media'),
     })
     const out = await tool_.execute!(
-      { stagedFileId, langTag: 'zh-Hans', videoFilename: null },
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: null, itemId: null },
       { toolCallId: 't1', messages: [] } as any,
     )
     expect(out).toEqual({ error: 'this task has 2 targets — pass videoFilename to say which one this call is for' })
+  })
+})
+
+// Post-audit fix (batch②, 2026-07-18): install_subtitle/download_candidate used to resolve
+// videoFilename to a bare filename STRING via resolveTargetFilename, then grab
+// `deps.targets.find(t => t.videoFilename === resolvedTarget)!` — the FIRST target with that
+// basename, unconditionally. Real cross-season batch tasks (findSubtitleWorkerTask.ts's
+// `payload.seasons` / listMissingEpisodesForSeries, ORDER BY season,episode) commonly produce two
+// targets with the IDENTICAL basename in different season folders (e.g. "Season 1/01.mkv" and
+// "Season 2/01.mkv") — installing for S02E01 always silently resolved to S01E01's target and wrote
+// the subtitle into the WRONG directory. Fixed: a basename collision (>1 target sharing the
+// resolved filename) now REQUIRES itemId to pick between them; a single hit still defaults with no
+// itemId, unchanged (see the describe block above for that regression coverage).
+describe('install_subtitle target resolution — itemId disambiguation on basename collision', () => {
+  it("installs into the itemId-selected target's outDir when two targets share the same basename (cross-season collision)", async () => {
+    const dirA = join(sandboxDir, 'media', 'Season 1')
+    const dirB = join(sandboxDir, 'media', 'Season 2')
+    mkdirSync(dirA, { recursive: true })
+    mkdirSync(dirB, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-collision'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [
+        { itemId: 'tmdb:1/s1e1', videoFilename: '01.mkv', outDir: dirA },
+        { itemId: 'tmdb:1/s2e1', videoFilename: '01.mkv', outDir: dirB },
+      ],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: '01.mkv', itemId: 'tmdb:1/s2e1' },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as InstallSubtitleOutput
+    expect(out.path).toBe(join(dirB, '01.zh-Hans.srt'))
+    expect(existsSync(out.path!)).toBe(true)
+    // proves it did NOT fall through to the other (first-listed) same-basename target's dir
+    expect(existsSync(join(dirA, '01.zh-Hans.srt'))).toBe(false)
+  })
+
+  it('errors naming both itemIds when two targets share the same basename and no itemId is given', async () => {
+    const dirA = join(sandboxDir, 'media', 'Season 1')
+    const dirB = join(sandboxDir, 'media', 'Season 2')
+    mkdirSync(dirA, { recursive: true })
+    mkdirSync(dirB, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-collision-no-itemid'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [
+        { itemId: 'tmdb:1/s1e1', videoFilename: '01.mkv', outDir: dirA },
+        { itemId: 'tmdb:1/s2e1', videoFilename: '01.mkv', outDir: dirB },
+      ],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: '01.mkv', itemId: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toHaveProperty('error')
+    const msg = (out as { error: string }).error
+    expect(msg).toContain('tmdb:1/s1e1')
+    expect(msg).toContain('tmdb:1/s2e1')
+    expect(existsSync(join(dirA, '01.zh-Hans.srt'))).toBe(false)
+    expect(existsSync(join(dirB, '01.zh-Hans.srt'))).toBe(false)
+  })
+
+  it('errors when itemId is given but does not match any of the colliding targets', async () => {
+    const dirA = join(sandboxDir, 'media', 'Season 1')
+    const dirB = join(sandboxDir, 'media', 'Season 2')
+    mkdirSync(dirA, { recursive: true })
+    mkdirSync(dirB, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-collision-wrong-itemid'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [
+        { itemId: 'tmdb:1/s1e1', videoFilename: '01.mkv', outDir: dirA },
+        { itemId: 'tmdb:1/s2e1', videoFilename: '01.mkv', outDir: dirB },
+      ],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: '01.mkv', itemId: 'tmdb:1/s3e1' },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toHaveProperty('error')
+    expect((out as { error: string }).error).toMatch(/tmdb:1\/s3e1/)
+    expect(existsSync(join(dirA, '01.zh-Hans.srt'))).toBe(false)
+    expect(existsSync(join(dirB, '01.zh-Hans.srt'))).toBe(false)
+  })
+
+  it('single-hit resolution still defaults with no itemId needed when there is no basename collision (regression lock)', async () => {
+    const dirA = join(sandboxDir, 'media', 'ShowA')
+    const dirB = join(sandboxDir, 'media', 'ShowB')
+    mkdirSync(dirA, { recursive: true })
+    mkdirSync(dirB, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-no-collision'
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [
+        { itemId: 'tmdb:1/s1e1', videoFilename: 'ShowA.S01E01.mkv', outDir: dirA },
+        { itemId: 'tmdb:1/s1e2', videoFilename: 'ShowB.S01E01.mkv', outDir: dirB },
+      ],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    // itemId omitted entirely (null) — videoFilename alone is already unambiguous, so no
+    // collision logic should even trigger.
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: 'ShowB.S01E01.mkv', itemId: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as InstallSubtitleOutput
+    expect(out.path).toBe(join(dirB, 'ShowB.S01E01.zh-Hans.srt'))
+    expect(existsSync(out.path!)).toBe(true)
+  })
+
+  it('combines with NBSP-tolerant normalization: after canonical matching resolves to a shared basename, collision still requires itemId', async () => {
+    const dirA = join(sandboxDir, 'media', 'Season 1')
+    const dirB = join(sandboxDir, 'media', 'Season 2')
+    mkdirSync(dirA, { recursive: true })
+    mkdirSync(dirB, { recursive: true })
+    const stagedPath = join(sandboxDir, 'staged.srt')
+    writeFileSync(stagedPath, 'hello')
+    const stagedFileId = 'handle-nbsp-collision'
+    const nbspName = '01\u00A0.mkv' // real target filename uses U+00A0 NBSP between "01" and ".mkv"
+    const spaceName = '01 .mkv' // agent echoes a plain space instead
+    const tool_ = makeInstallSubtitleTool({
+      stagedFiles: new Map([[stagedFileId, stagedPath]]),
+      targets: [
+        { itemId: 'tmdb:1/s1e1', videoFilename: nbspName, outDir: dirA },
+        { itemId: 'tmdb:1/s2e1', videoFilename: nbspName, outDir: dirB },
+      ],
+      mediaRoot: join(sandboxDir, 'media'),
+    })
+    const out = await tool_.execute!(
+      { stagedFileId, langTag: 'zh-Hans', videoFilename: spaceName, itemId: 'tmdb:1/s2e1' },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as InstallSubtitleOutput
+    expect(out.path).toBe(join(dirB, '01\u00A0.zh-Hans.srt'))
+    expect(existsSync(out.path!)).toBe(true)
+    expect(existsSync(join(dirA, '01\u00A0.zh-Hans.srt'))).toBe(false)
   })
 })
 

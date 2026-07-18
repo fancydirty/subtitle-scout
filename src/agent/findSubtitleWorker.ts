@@ -81,12 +81,18 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       download_candidate: makeDownloadCandidateTool({
         adapters: deps.adapters, stagingDir, stagedFiles,
         targetFilenames: task.targets.map(t => t.videoFilename),
+        // Post-audit fix (batch②, 2026-07-18): parallel to targetFilenames — lets resolveTarget
+        // disambiguate a basename collision (cross-season batch, e.g. "Season 1/01.mkv" and
+        // "Season 2/01.mkv") instead of silently picking whichever target comes first.
+        targetItemIds: task.targets.map(t => t.itemId),
         targetLanguage: task.targetLanguage, fetchImpl: deps.fetchImpl,
         mediaRoot: task.mediaRoot,
       }),
       install_subtitle: makeInstallSubtitleTool({
         stagedFiles, mediaRoot: task.mediaRoot,
-        targets: task.targets.map(t => ({ videoFilename: t.videoFilename, outDir: dirname(t.videoPath) })),
+        // itemId flows through so a basename collision across targets (see above) can be resolved
+        // by itemId instead of defaulting to the first same-named target's outDir.
+        targets: task.targets.map(t => ({ videoFilename: t.videoFilename, outDir: dirname(t.videoPath), itemId: t.itemId })),
       }),
       check_episode_code_safety: makeCheckEpisodeCodeSafetyTool(),
     }
@@ -99,6 +105,15 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       'You are the find-subtitle worker for the target items of exactly ONE series/scope. You have',
       "no knowledge of any other directory or media item outside this task's targets — do not ask",
       'about or reference one.',
+      '',
+      // Post-audit fix (batch②, 2026-07-18): a cross-season batch can legitimately contain two
+      // targets with the exact same file name (e.g. "Season 1/01.mkv" and "Season 2/01.mkv") — a
+      // videoFilename alone can no longer tell download_candidate/install_subtitle which target
+      // you mean in that case. Mechanical, not a judgment call: if the target list below shows
+      // more than one target with the same file name, pass that target's itemId too.
+      "If more than one target below shares the exact same file name, download_candidate and",
+      "install_subtitle cannot tell them apart from videoFilename alone — pass that target's itemId",
+      '(shown on its line below) as well so the correct one is used.',
       '',
       'Available skill documents (call read_doc(name) to load the full text of one):',
       systemPromptSkillIndex([skill]),
