@@ -1,7 +1,8 @@
 import { copyFile } from 'node:fs/promises'
-import { constants as fsConstants, statSync } from 'node:fs'
+import { constants as fsConstants, statSync, existsSync } from 'node:fs'
 import { join, basename, extname, dirname } from 'node:path'
 import type { FileFingerprint, LibraryRepo, VerdictFingerprint } from './libraryRepo.js'
+import { findExternalSidecar, KNOWN_LANGUAGE_TAGS } from '../files/sidecar.js'
 
 export interface PropagateDeps {
   lib: LibraryRepo
@@ -13,6 +14,10 @@ export interface PropagateDeps {
    *  时刻的快照比对——"文件没变，判决就还有效"。测试注入点；默认 node:fs statSync 包一层
    *  try/catch（失败→null，同 ingest.ts defaultStatFile 的既有约定）。 */
   statFile?: (p: string) => FileFingerprint | null
+  /** C-3（状态收敛,批③a）：EEXIST 分支识别磁盘已存在文件的语言 tag 时用——默认真实 existsSync
+   *  （同 ingest.ts 的既有默认口径）。测试从不需要覆写：subtitlePropagation.test.ts 全程用真实
+   *  临时文件+真实 DB，从不 mock fs（见文件顶部注释），真实 existsSync 天然够用。 */
+  fileExists?: (path: string) => boolean
 }
 
 /** 两个视频时长相差在这个秒数以内，认定是"同一剪辑版本的不同压制/分辨率"（编码/容器取整、偶尔
@@ -80,6 +85,7 @@ export async function propagateSubtitleToReplica(
   if (mainSubs.length === 0) return // 主文件自己都没字幕——没有可传播的东西
 
   const statFile = deps.statFile ?? defaultStatFile
+  const fileExists = deps.fileExists ?? existsSync
   const currentMainStat = statFile(mainPath)
   const currentReplicaStat = statFile(replicaPath)
 
@@ -134,12 +140,28 @@ export async function propagateSubtitleToReplica(
         // 磁盘上目标位置已经有文件（或悬空符号链接）了——绝不覆盖。前置的 DB 检查（本函数开头）
         // 只看得到登记进 subtitles 表的字幕；而副本文件是走 ingest.ts 的"撞身份→addItemFile"分支
         // 入库的，那条分支不做 sidecar 探测（不同于新文件的 classify() 路径），所以副本旁边用户
-        // 亲手放的 sidecar 根本不在 DB 里——这层写入时的存在性检查是它唯一的防线，少了它这条
-        // 通道会拿主文件的字幕覆盖掉用户手放的那份（真实数据损失）。这里只跳过、不
-        // addReplicaSubtitle：那份磁盘文件的语言/归属不是这条通道该猜的（宁停不猜），登记归属
-        // 是 ingest 未来若加副本 sidecar 探测的职责（B3-5：不在本批扩，主控裁决——见批③ B3-5
-        // 小节）。这类文件会永久卡在"磁盘有文件但 DB 不知道"的状态，运维排查覆盖率缺口时容易
-        // 漏看，日志必须把这层后果说清楚，不能只说"跳过不覆盖"这种自证性但没解释后果的措辞。
+        // 亲手放的 sidecar 根本不在 DB 里。
+        //
+        // C-3（状态收敛,批③a）：B3-5 只把日志措辞升级成 warn,没有登记——但如果这份磁盘文件的
+        // 文件名本身就能被认出目标语言 tag(走 findExternalSidecar 同一套 existsSync 磁盘验真
+        // 机制,天然排除悬空符号链接这类"名字像但摸不到"的假阳性,H5 的 COPYFILE_EXCL 已经在
+        // copyFile 层面挡过一次,这里 existsSync 跟随符号链接语义顺手又挡了一次),就不该继续装
+        // 看不见——用 KNOWN_LANGUAGE_TAGS(与用户当前 target_languages 配置无关,见该常量头注释)
+        // 反查 replicaPath 旁边究竟是谁,命中且正是这次撞上的 destPath 才登记(避免误认成
+        // 附近另一份不相关的已知语言 sidecar)。"宁停不猜"只对"猜不出语言"成立，能确定语言时
+        // 不该继续装看不见。
+        const identified = findExternalSidecar(replicaPath, KNOWN_LANGUAGE_TAGS, fileExists)
+        if (identified && identified.path === destPath) {
+          deps.lib.addReplicaSubtitle(itemId, replicaPath, destPath, identified.language, 'preexisting', now)
+          deps.log(
+            `[subtitle-propagate] ${itemId}: 目标位置已有文件，从文件名识别出语言 ${identified.language}，` +
+              `登记为预置字幕（不覆盖，只记账）：${destPath}`,
+          )
+          continue
+        }
+        // 识别不出（裸名/非标准 tag/悬空链接）→ 维持 B3-5 的"宁停不猜"+warn：这类文件会永久卡在
+        // "磁盘有文件但 DB 不知道"的状态，运维排查覆盖率缺口时容易漏看，日志必须把这层后果说
+        // 清楚，不能只说"跳过不覆盖"这种自证性但没解释后果的措辞。
         deps.log(
           `[subtitle-propagate] WARN ${itemId}: 目标位置已有文件，跳过不覆盖：${destPath}——` +
             `该文件存在但未登记，不会计入覆盖，需人工核查归属（可能是永久 stuck 的副本字幕）`,

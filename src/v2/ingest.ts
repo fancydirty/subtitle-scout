@@ -141,8 +141,9 @@ function writeSubStatusOnly(
   const attemptsClause = status === 'covered' || status === 'embedded' ? `, search_attempts = 0` : ''
   if (reason != null) {
     db.prepare(`UPDATE ${table} SET sub_status = ?, status_reason = ?, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, reason, now, id)
-  } else if (status === 'covered') {
-    // B3-2：领养（rule 3 sidecar）终局，清掉可能残留的旧 unavailable/ignored 叙事。
+  } else if (status === 'covered' || status === 'embedded') {
+    // B3-2 + 批③a F-B：领养（covered）/内嵌覆盖（embedded）终局，清掉可能残留的旧
+    // unavailable/ignored 叙事。
     db.prepare(`UPDATE ${table} SET sub_status = ?, status_reason = NULL, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, now, id)
   } else {
     db.prepare(`UPDATE ${table} SET sub_status = ?, updated_at = ?${attemptsClause} WHERE id = ?`).run(status, now, id)
@@ -662,10 +663,11 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // reason:null，不产生这条多余的写）。
               if (computed.reason) {
                 lib.db.prepare(`UPDATE episodes SET status_reason = ? WHERE id = ?`).run(computed.reason, ownEpisodeId)
-              } else if (toWrite === 'covered') {
-                // B3-2：同 CHEAP PATH（writeSubStatusOnly 头注释）——领养(sidecar)终局清掉
-                // upsertEpisode 的 ON CONFLICT 分支不会碰、因而可能残留的旧 unavailable 叙事。
-                // upsertEpisode 全新 INSERT 分支本就默认 NULL，这条 UPDATE 对新行是无害 no-op。
+              } else if (toWrite === 'covered' || toWrite === 'embedded') {
+                // B3-2 + 批③a F-B：同 CHEAP PATH（writeSubStatusOnly 头注释）——领养(sidecar)/
+                // 内嵌覆盖(embedded)终局清掉 upsertEpisode 的 ON CONFLICT 分支不会碰、因而可能
+                // 残留的旧 unavailable 叙事。upsertEpisode 全新 INSERT 分支本就默认 NULL，这条
+                // UPDATE 对新行是无害 no-op。
                 lib.db.prepare(`UPDATE episodes SET status_reason = NULL WHERE id = ?`).run(ownEpisodeId)
               }
               // B3-1（批③领养记账）：toWrite==='covered' 恒来自 rule 3（sidecar）——补写 subtitles
@@ -759,8 +761,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               // 时补一条窄 UPDATE。
               if (computed.reason) {
                 lib.db.prepare(`UPDATE movies SET status_reason = ? WHERE id = ?`).run(computed.reason, ownMovieId)
-              } else if (toWrite === 'covered') {
-                // B3-2：同 TV 分支（见其注释）——领养(sidecar)终局清掉可能残留的旧 unavailable 叙事。
+              } else if (toWrite === 'covered' || toWrite === 'embedded') {
+                // B3-2 + 批③a F-B：同 TV 分支（见其注释）——领养(sidecar)/内嵌覆盖(embedded)
+                // 终局清掉可能残留的旧 unavailable 叙事。
                 lib.db.prepare(`UPDATE movies SET status_reason = NULL WHERE id = ?`).run(ownMovieId)
               }
               // B3-1（批③领养记账）：同 TV 分支（见其注释）。

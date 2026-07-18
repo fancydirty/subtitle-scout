@@ -980,6 +980,56 @@ describe('makeIngestPass — B3-2 领养(sidecar)清理 stale status_reason', ()
     expect(movie.sub_status).toBe('covered')
     expect(movie.status_reason).toBeNull()
   })
+
+  // 批③a F-B 补齐：B3-2 当时只按生产实证覆盖了 covered（rule 3 sidecar）这一条翻篇路径——
+  // embedded（rule 2，内嵌字幕轨覆盖）同样是"这轮判定已覆盖"的终局态，若此前是 unavailable
+  // 留下的旧 status_reason，翻成 embedded 后同样不该继续显示陈旧叙事。
+  it('cheap path：unavailable(带旧 reason)→内嵌轨被 memo 记住判 embedded → status_reason 被清空', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', 1000)
+    expect(lib.getEpisode('tmdb:1/s1e1')!.status_reason).toBe('搜索穷尽')
+    // memo 记住的内嵌轨已含目标语言标签 —— cheap path 重跑分类时 rule 2 命中，无需真的探测。
+    lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, ['chi'])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')!
+    expect(ep.sub_status).toBe('embedded')
+    expect(ep.status_reason).toBeNull()
+  })
+
+  it('full path（新识别/memo 过期，TV 分支）：unavailable(带旧 reason)→探针发现内嵌轨判 embedded → status_reason 被清空', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
+    lib.markUnavailable('tmdb:1/s1e1', '搜索穷尽', 1000)
+    expect(lib.getEpisode('tmdb:1/s1e1')!.status_reason).toBe('搜索穷尽')
+    // 故意不设 probeMemo —— 走 full path（重新识别 + 探测）。
+
+    const disk = fakeDisk()
+    disk.setVideo(path)
+    const recognize = vi.fn(async () => tvResult())
+    const probe = vi.fn(async (): Promise<EmbeddedSubtitleTrack[]> => [track({ lang: 'chi' })])
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], recognize, probe,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const ep = lib.getEpisode('tmdb:1/s1e1')!
+    expect(ep.sub_status).toBe('embedded')
+    expect(ep.status_reason).toBeNull()
+  })
 })
 
 // 批③ B3-3（C-1，配额止血）：findRowByPath 只查 episodes/movies，看不到已登记副本（身份记在

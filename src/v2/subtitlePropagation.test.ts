@@ -170,9 +170,11 @@ describe('propagateSubtitleToReplica', () => {
     expect(logs.some((l) => l.includes('复制失败'))).toBe(true)
   })
 
-  // 数据损失防线：副本旁边磁盘上已经有一份字幕文件（比如用户亲手放的 sidecar，它不在 DB 里——
-  // 副本走 ingest 的 addItemFile 分支不做 sidecar 探测）——绝不能用主文件的字幕覆盖它。
-  it('目标位置磁盘上已有文件（未登记 DB 的手放 sidecar）→ 绝不覆盖，跳过并落 log，不写字幕行', async () => {
+  // C-3（状态收敛,批③a）：副本旁边磁盘上已经有一份字幕文件（比如用户亲手放的 sidecar，它不在
+  // DB 里——副本走 ingest 的 addItemFile 分支不做 sidecar 探测）——绝不能用主文件的字幕覆盖它,
+  // 但文件名能识别出语言 tag 时应该登记账（让 itemFileCoverage/buildLocalCandidates 看得见它），
+  // 不是永远视而不见（这一点是本批修复：此前无条件跳过不登记）。
+  it('目标位置磁盘上已有文件、文件名能识别出语言 tag → 绝不覆盖，但登记为预置字幕（C-3 状态收敛）', async () => {
     const mainPath = join(root, 'Show.1080p.mkv')
     const replicaPath = join(root, 'Show.4K.mkv')
     const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
@@ -190,9 +192,59 @@ describe('propagateSubtitleToReplica', () => {
 
     // 用户那份字幕原样活着——没被主文件字幕覆盖
     expect(readFileSync(userSidecar, 'utf8')).toBe('USER hand-placed subtitle — must survive')
-    // 不猜它的归属，不登记进 DB（宁停不猜）
+    // 识别出 zh-Hans → 登记为预置字幕（这次能猜对，不该继续装看不见）
+    expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([
+      { id: expect.any(Number), path: userSidecar, language: 'zh-Hans' },
+    ])
+    expect(logs.some((l) => l.includes('识别出语言'))).toBe(true)
+  })
+
+  // 同上，换一个不同的 tag + ext（zh-Hant/.ass）验证不是只认 zh-Hans/.srt 这一种组合。
+  it('副本旁已有 <replica>.zh-Hant.ass（不同 tag/ext 组合）→ 同样识别登记（C-3 泛化）', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.4K.mkv')
+    const mainSubPath = join(root, 'Show.1080p.zh-Hant.ass')
+    const userSidecar = join(root, 'Show.4K.zh-Hant.ass')
+    writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+    writeFileSync(mainSubPath, 'MAIN subtitle content')
+    writeFileSync(userSidecar, 'USER hand-placed subtitle — must survive')
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'covered' })
+    lib.addItemFile('e1', replicaPath, 1000)
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('e1', mainSubPath, 'zh-Hant', 'scout-download', 1000)
+
+    await propagateSubtitleToReplica(deps(async () => 1420), 'e1', mainPath, replicaPath, 2000)
+
+    expect(readFileSync(userSidecar, 'utf8')).toBe('USER hand-placed subtitle — must survive')
+    expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([
+      { id: expect.any(Number), path: userSidecar, language: 'zh-Hant' },
+    ])
+  })
+
+  // 识别不出语言 tag（裸名/非标准）时——"宁停不猜"仍然成立，保持跳过 + warn，不登记。
+  it('目标位置磁盘上已有文件、文件名无法识别出语言 tag（裸名）→ 跳过不登记，落 warn 日志（C-3 反面）', async () => {
+    const mainPath = join(root, 'Show.1080p.mkv')
+    const replicaPath = join(root, 'Show.4K.mkv')
+    // 主文件字幕行故意登记一个非标准 language 值（legacy 脏数据场景），令 destPath 落在一个
+    // KNOWN_LANGUAGE_TAGS 之外的裸名上——foo 不是任何已知 tag。
+    const mainSubPath = join(root, 'Show.1080p.foo.srt')
+    const userSidecar = join(root, 'Show.4K.foo.srt')
+    writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
+    writeFileSync(mainSubPath, 'MAIN subtitle content')
+    writeFileSync(userSidecar, 'USER hand-placed subtitle — must survive')
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'covered' })
+    lib.addItemFile('e1', replicaPath, 1000)
+    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
+      .run('e1', mainSubPath, 'foo', 'scout-download', 1000)
+
+    await propagateSubtitleToReplica(deps(async () => 1420), 'e1', mainPath, replicaPath, 2000)
+
+    expect(readFileSync(userSidecar, 'utf8')).toBe('USER hand-placed subtitle — must survive')
     expect(lib.listSubtitlesForFile('e1', replicaPath, false)).toEqual([])
     expect(logs.some((l) => l.includes('目标位置已有文件'))).toBe(true)
+    expect(logs.some((l) => l.includes('WARN'))).toBe(true)
   })
 
   // H5（2026-07-18 数据安全审计——TOCTOU + 悬空符号链接防线）：目标位置是一个悬空符号链接
@@ -234,11 +286,11 @@ describe('propagateSubtitleToReplica', () => {
   // B3-5（批③顺手小件）：批①把 EEXIST 分支改成"跳过不登记"（宁停不猜，保留），但旧日志措辞
   // 只说"跳过不覆盖"，没说清后果——这类文件会永久卡在"磁盘有文件但 DB 不知道"，运维排查覆盖率
   // 缺口时容易漏看。日志必须升级为含"该文件存在但未登记，不会计入覆盖"的明确警示措辞。
-  it('B3-5：EEXIST 分支日志含新警示措辞——"该文件存在但未登记，不会计入覆盖"', async () => {
+  it('B3-5：EEXIST 分支日志含新警示措辞——"该文件存在但未登记，不会计入覆盖"（用无法识别语言的文件名，走 C-3 warn 分支）', async () => {
     const mainPath = join(root, 'Show.1080p.mkv')
     const replicaPath = join(root, 'Show.4K.mkv')
-    const mainSubPath = join(root, 'Show.1080p.zh-Hans.srt')
-    const userSidecar = join(root, 'Show.4K.zh-Hans.srt') // 副本旁用户手放的字幕，DB 里没有这行
+    const mainSubPath = join(root, 'Show.1080p.foo.srt')
+    const userSidecar = join(root, 'Show.4K.foo.srt') // 副本旁用户手放的字幕，DB 里没有这行，tag 非标准
     writeFileSync(mainPath, 'video'); writeFileSync(replicaPath, 'video')
     writeFileSync(mainSubPath, 'MAIN subtitle content')
     writeFileSync(userSidecar, 'USER hand-placed subtitle')
@@ -246,7 +298,7 @@ describe('propagateSubtitleToReplica', () => {
     lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: mainPath, subStatus: 'covered' })
     lib.addItemFile('e1', replicaPath, 1000)
     db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
-      .run('e1', mainSubPath, 'zh-Hans', 'scout-download', 1000)
+      .run('e1', mainSubPath, 'foo', 'scout-download', 1000)
 
     await propagateSubtitleToReplica(deps(async () => 1420), 'e1', mainPath, replicaPath, 2000)
 

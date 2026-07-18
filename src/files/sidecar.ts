@@ -39,6 +39,13 @@ export function languageForTag(tag: string): SubtitleLanguage {
   return LANGUAGE_BY_TAG[tag] ?? tag
 }
 
+/** C-3（状态收敛,批③a）：本模块结构性认得的全部 tag(LANGUAGE_BY_TAG 的键集合)——
+ *  subtitlePropagation.ts 的 EEXIST 分支用它判断"磁盘上已存在、传播被挡下的那份文件,文件名
+ *  能不能被认出语言"，与用户当前配置的 target_languages 无关(这是"认不认识这个 tag"的问题,
+ *  不是"用户现在要不要这个语言"的问题,两者故意不耦合——磁盘上一份可辨认语言的字幕,不该因为
+ *  当前设置没勾这个语言就被当成"看不懂")。 */
+export const KNOWN_LANGUAGE_TAGS: string[] = Object.keys(LANGUAGE_BY_TAG)
+
 /** 找到即返回真实 sidecar 路径 + 按匹配到的 tag 换算出的语言；未找到为 null。targetTags 是
  *  调用方按目标语言集合算好的 tag 并集（languages.ts 的 tagsForLanguage 逐语言展开后
  *  flatMap），本函数不关心它们分别属于哪个语言——探测机制（tag × ext 双层遍历、逐一
