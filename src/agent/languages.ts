@@ -19,6 +19,15 @@ export function languageName(code: string): string {
  *  tagsForLanguage below). Kept verbatim — do not change its contents. */
 const CHINESE_SIDECAR_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho']
 
+/** BCP-47 地区变体(P0,zimuku 单源大考前置修复,2026-07-19)。A2 泛化后 agent 可自由选
+ *  langTag(findSubtitleWorker H2 白名单),生产实证装出 `.zh-CN.srt` 而领养臂全瞎(Witch
+ *  Watch E02/05/11/20 + Adam's E05:文件在、内容对、subtitles 零行、状态停 unavailable);
+ *  NAS #recycle 里的 Bazarr 时代存量则是小写 `.zh-cn.srt`。探测机制是"构造
+ *  `<base>.<tag><ext>` 后 fileExists"(files/sidecar.ts),在大小写敏感 FS 上不存在机制性
+ *  不分大小写,故两种真实世界大小写形态都显式枚举。排在历史 tag 集之后——findExternalSidecar
+ *  按序首中即返,规范装机形态(zh-Hans/zh-Hant)并存时继续优先。 */
+const CHINESE_BCP47_REGION_TAGS = ['zh-CN', 'zh-cn', 'zh-TW', 'zh-tw', 'zh-HK', 'zh-hk', 'zh-SG', 'zh-sg']
+
 /** BCP-47 primary language code → sidecar filename tags that count as that language on disk
  *  (used by files/sidecar.ts's on-disk subtitle detection — originally scanner.ts's, before that
  *  module was deleted in the old-pipeline retirement). Deliberately NOT an exhaustive ISO 639-2
@@ -26,7 +35,7 @@ const CHINESE_SIDECAR_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', '
  *  their common ISO 639-2/T 3-letter form. Unknown codes fall back to [code], which is still
  *  correct for the common case of a sidecar tagged with the bare 2-letter code. */
 const LANGUAGE_TAGS: Record<string, string[]> = {
-  zh: CHINESE_SIDECAR_TAGS,
+  zh: [...CHINESE_SIDECAR_TAGS, ...CHINESE_BCP47_REGION_TAGS],
   en: ['en', 'eng'],
   ja: ['ja', 'jpn'],
   ko: ['ko', 'kor'],

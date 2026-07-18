@@ -16,8 +16,18 @@ describe('languageName', () => {
 })
 
 describe('tagsForLanguage', () => {
-  it('zh maps to the historical Chinese sidecar tag set', () => {
-    expect(tagsForLanguage('zh')).toEqual(['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho'])
+  it('zh maps to the historical Chinese sidecar tag set plus BCP-47 region variants', () => {
+    expect(tagsForLanguage('zh')).toEqual([
+      'zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho',
+      'zh-CN', 'zh-cn', 'zh-TW', 'zh-tw', 'zh-HK', 'zh-hk', 'zh-SG', 'zh-sg',
+    ])
+  })
+
+  it('P0(zimuku大考): 地区变体两种大小写形态都必须在探测集内——探测机制是构造路径后 fileExists,大小写敏感 FS 上只能显式枚举(zh-CN=agent白名单装机形态,zh-cn=Bazarr遗留惯例)', () => {
+    const tags = tagsForLanguage('zh')
+    for (const t of ['zh-CN', 'zh-cn', 'zh-TW', 'zh-tw', 'zh-HK', 'zh-hk', 'zh-SG', 'zh-sg']) {
+      expect(tags).toContain(t)
+    }
   })
 
   it('en maps to en/eng', () => {
