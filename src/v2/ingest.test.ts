@@ -932,6 +932,56 @@ describe('makeIngestPass — B3-1 领养(sidecar)记账：covered 判定同时�
   })
 })
 
+// P0(zimuku 单源大考前置,2026-07-19)生产实证回归锁:探针以 langTag 'zh-CN' 装机(H2 白名单
+// 合法),`.zh-CN.srt` 落盘且内容正确,但领养 tag 集无 BCP-47 地区变体 → 领养臂全瞎——episodes
+// 停 unavailable(判无叙事还挂着),subtitles 零行(WITCH WATCH E02/05/11/20 + Adam's E05)。
+// 本 describe 锁死修复后行为:cheap path 下一轮 pass 即领养,unavailable→covered(covered 可
+// 覆写 unavailable,resolveStatusToWrite 只挡 missing),判无叙事清除,subtitles 行落账。
+describe('makeIngestPass — P0 BCP-47 地区变体 sidecar 领养', () => {
+  it('.zh-CN.srt + 条目 unavailable(带判无叙事) → cheap path 领养:covered + 叙事清除 + subtitles 行 zh-Hans', async () => {
+    const path = '/media/WITCH WATCH/ep5.mkv'
+    lib.upsertSeries({ id: 'tmdb:261868', name: 'Witch Watch' })
+    lib.upsertEpisode({ id: 'tmdb:261868/s1e5', seriesId: 'tmdb:261868', season: 1, episode: 5, name: 'E5', path, subStatus: 'missing' })
+    db.prepare(`UPDATE episodes SET sub_status = 'unavailable', status_reason = 'No Chinese subtitle found on any provider' WHERE id = 'tmdb:261868/s1e5'`).run()
+    lib.setProbeMemo('tmdb:261868/s1e5', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    disk.addSidecar('/media/WITCH WATCH/ep5.zh-CN.srt')
+
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+
+    expect(lib.getEpisode('tmdb:261868/s1e5')!.sub_status).toBe('covered')
+    const narrative = db.prepare(`SELECT status_reason r FROM episodes WHERE id = 'tmdb:261868/s1e5'`).get() as { r: string | null }
+    expect(narrative.r).toBeNull()
+    const row = db.prepare(`SELECT path, language, source FROM subtitles WHERE item_id = ?`).get('tmdb:261868/s1e5')
+    expect(row).toEqual({ path: '/media/WITCH WATCH/ep5.zh-CN.srt', language: 'zh-Hans', source: 'preexisting' })
+  })
+
+  it('.zh-cn.srt(Bazarr 遗留小写) missing→covered 同样领养', async () => {
+    const path = '/media/Show/Season 1/ep9.mkv'
+    lib.upsertSeries({ id: 'tmdb:9', name: 'Show' })
+    lib.upsertEpisode({ id: 'tmdb:9/s1e9', seriesId: 'tmdb:9', season: 1, episode: 9, name: 'E9', path, subStatus: 'missing' })
+    lib.setProbeMemo('tmdb:9/s1e9', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    disk.addSidecar('/media/Show/Season 1/ep9.zh-cn.srt')
+
+    await makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+
+    expect(lib.getEpisode('tmdb:9/s1e9')!.sub_status).toBe('covered')
+    const row = db.prepare(`SELECT path, language, source FROM subtitles WHERE item_id = ?`).get('tmdb:9/s1e9')
+    expect(row).toEqual({ path: '/media/Show/Season 1/ep9.zh-cn.srt', language: 'zh-Hans', source: 'preexisting' })
+  })
+})
+
 // 批③ B3-2（领养清理 stale status_reason，F-B）：领养把 unavailable→covered 后，status_reason
 // 此前仍残留旧失败叙事（生产实证同上，E08 的 reason 还是"unknown videoFilename…"）——误导人工
 // 回看。修复：writeSubStatusOnly（cheap path）与 FULL PATH 的 TV/movie 两分支在 toWrite==='covered'
