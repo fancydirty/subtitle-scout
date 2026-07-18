@@ -33,6 +33,17 @@ const LANGUAGE_BY_TAG: Record<string, SubtitleLanguage> = {
   jpn: 'ja',
   ko: 'ko',
   kor: 'ko',
+  // P0(zimuku 单源大考前置,2026-07-19):BCP-47 地区变体。区码→简繁按业界惯例:CN/SG 简体、
+  // TW/HK 繁体;小写形态是 Bazarr 装机遗留惯例(NAS #recycle 实锤),大写规范形是 agent H2
+  // 白名单装机产物(生产实锤)。探测集侧的对应扩表见 agent/languages.ts CHINESE_BCP47_REGION_TAGS。
+  'zh-CN': 'zh-Hans',
+  'zh-cn': 'zh-Hans',
+  'zh-SG': 'zh-Hans',
+  'zh-sg': 'zh-Hans',
+  'zh-TW': 'zh-Hant',
+  'zh-tw': 'zh-Hant',
+  'zh-HK': 'zh-Hant',
+  'zh-hk': 'zh-Hant',
 }
 
 export function languageForTag(tag: string): SubtitleLanguage {
