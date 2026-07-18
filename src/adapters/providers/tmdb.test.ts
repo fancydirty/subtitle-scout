@@ -252,6 +252,72 @@ describe('TmdbClient.getSeasonEpisodes', () => {
   })
 })
 
+// 2026-07-18 事故修复回归锁（True Detective S02E08）：getDetails 的 episode_run_time[0] 是剧级
+// "典型"单集时长（该剧 58 分），S02E08 是 ~86 分钟的加长季终——用剧级典型误喂 agent 会让 agent
+// 诚实地把时长正确的候选字幕全部拒判。getSeasonEpisodeRuntimes 是逐集实际时长的数据源。
+describe('TmdbClient.getSeasonEpisodeRuntimes (True Detective S02E08 事故修复)', () => {
+  it('正常季 → episode_number→runtime 的 Map；runtime 为 null 的集被跳过', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      expect(new URL(String(url)).pathname).toBe('/3/tv/46648/season/2')
+      return new Response(JSON.stringify({
+        episodes: [
+          { episode_number: 1, runtime: 58 },
+          { episode_number: 2, runtime: 58 },
+          { episode_number: 7, runtime: 62 },
+          { episode_number: 8, runtime: 86 }, // True Detective S02E08：加长季终
+          { episode_number: 9, runtime: null }, // 无数据 → 跳过，不进 Map
+        ],
+      }), { status: 200 })
+    })
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    const runtimes = await client.getSeasonEpisodeRuntimes('46648', 2)
+    expect(runtimes).toEqual(new Map([[1, 58], [2, 58], [7, 62], [8, 86]]))
+    expect(runtimes?.has(9)).toBe(false)
+  })
+
+  it('runtime 非正数（0/负数）的集同样跳过（不是 0，是没有数据）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      episodes: [
+        { episode_number: 1, runtime: 0 },
+        { episode_number: 2, runtime: -5 },
+        { episode_number: 3, runtime: 45 },
+      ],
+    }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getSeasonEpisodeRuntimes('1', 1)).toEqual(new Map([[3, 45]]))
+  })
+
+  it('404（该季不存在）→ null（真·无数据，增益路径）', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not found', { status: 404 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(await client.getSeasonEpisodeRuntimes('46648', 99)).toBeNull()
+  })
+
+  it('请求失败（网络拒绝/非 2xx/非 JSON）→ null（增益路径，getJson 静默吞错，绝不炸调用方）', async () => {
+    const fetchImpl1 = vi.fn(async () => { throw new Error('ECONNREFUSED') })
+    const client1 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl1 as unknown as typeof fetch })
+    expect(await client1.getSeasonEpisodeRuntimes('46648', 2)).toBeNull()
+
+    const fetchImpl2 = vi.fn(async () => new Response('server error', { status: 500 }))
+    const client2 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl2 as unknown as typeof fetch })
+    expect(await client2.getSeasonEpisodeRuntimes('46648', 2)).toBeNull()
+
+    const fetchImpl3 = vi.fn(async () => new Response('not json', { status: 200 }))
+    const client3 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl3 as unknown as typeof fetch })
+    expect(await client3.getSeasonEpisodeRuntimes('46648', 2)).toBeNull()
+  })
+
+  it('episodes 非数组/缺失 → null（不 throw，季级数据形状异常按降级处理）', async () => {
+    const fetchImpl1 = vi.fn(async () => new Response(JSON.stringify({ episodes: 'oops' }), { status: 200 }))
+    const client1 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl1 as unknown as typeof fetch })
+    expect(await client1.getSeasonEpisodeRuntimes('46648', 2)).toBeNull()
+
+    const fetchImpl2 = vi.fn(async () => new Response(JSON.stringify({ id: 2 }), { status: 200 }))
+    const client2 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl2 as unknown as typeof fetch })
+    expect(await client2.getSeasonEpisodeRuntimes('46648', 2)).toBeNull()
+  })
+})
+
 // 按 URL path 路由到 episode_groups 的两个端点（列表 + 详情）；status>=400 → 非 ok 响应。
 interface EpisodeGroupRoutes {
   groupsList?: unknown

@@ -224,6 +224,116 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
+  // 2026-07-18 事故修复回归锁：True Detective S02E08 从零 e2e 真实事故——getDetails 的剧级
+  // "典型"单集时长（该剧首集/众数 ~58 分）被当作全季所有集的事实喂给 agent，S02E08 实际是
+  // ~86 分钟的加长季终，agent 诚实地把时长正确的候选字幕全部拒判判无（agent 判断没错，喂的
+  // 事实错了）。逐集实际时长（getSeasonEpisodeRuntimes）修复后，target 级必须携带该集本尊
+  // 时长，不再是剧级典型值的复读。
+  it('True Detective S02E08 事故回归锁：E08 target.runtimeMinutes 取该集本尊 86，非剧级典型 58', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-truedetective-'))
+    const showDir = join(root, 'True Detective', 'Season 02')
+    mkdirSync(showDir, { recursive: true })
+    const tmdbId = '46648' // True Detective 的真实 TMDB id，事故背景锚点
+    const sId = seriesId(tmdbId)
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertSeries({ id: sId, name: 'True Detective' })
+    for (const ep of [7, 8]) {
+      const path = join(showDir, `True.Detective.S02E0${ep}.mkv`)
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({
+        id: episodeId(tmdbId, 2, ep), seriesId: sId, season: 2, episode: ep, name: `E${ep}`,
+        path, subStatus: 'missing',
+      })
+    }
+    jobsRepo.upsertWorkerTask({ seriesId: sId, season: 2, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+    const job = jobsRepo.claimNext(NOW)!
+
+    const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32) })
+    const spy = vi.fn(async (_tvId: string, _season: number) => new Map([[7, 58], [8, 86]]))
+    tmdb.getSeasonEpisodeRuntimes = spy
+    tmdb.getAbsoluteOrder = async () => null
+    tmdb.getSeasonTable = async () => null
+    // 典型单集时长（剧级 fallback）：该剧 episode_run_time[0]=58——task 顶层字段保持这个值
+    // 不变（不是本次修复的目标，只是既有 fallback 语义），本单只验证 target 级取到本尊值。
+    tmdb.getDetails = async () => ({
+      overview: null, runtimeMinutes: 58, posterPath: null, originalTitle: null, year: null, genreIds: [],
+    })
+    tmdb.getChineseTitles = async () => []
+
+    const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib, tmdb }), NOW)
+
+    const e7 = task!.targets.find((t) => t.episode === 7)!
+    const e8 = task!.targets.find((t) => t.episode === 8)!
+    expect(e7.runtimeMinutes).toBe(58)
+    expect(e8.runtimeMinutes).toBe(86) // 关键断言：加长季终拿到本尊 86，不是剧级典型 58
+    expect(task!.runtimeMinutes).toBe(58) // task 顶层典型值 fallback 不受影响
+    expect(spy).toHaveBeenCalledTimes(1) // 一季一次调用，不逐集调
+  })
+
+  it('季端点失败（getSeasonEpisodeRuntimes 返回 null）→ 全部 target.runtimeMinutes 为 null，任务照常构造', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-seasonruntime-fail-'))
+    const showDir = join(root, 'Show', 'Season 01')
+    mkdirSync(showDir, { recursive: true })
+    const tmdbId = '999'
+    const sId = seriesId(tmdbId)
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertSeries({ id: sId, name: 'Show' })
+    for (const ep of [1, 2]) {
+      const path = join(showDir, `Show.S01E0${ep}.mkv`)
+      writeFileSync(path, 'video')
+      lib.upsertEpisode({
+        id: episodeId(tmdbId, 1, ep), seriesId: sId, season: 1, episode: ep, name: `E${ep}`,
+        path, subStatus: 'missing',
+      })
+    }
+    jobsRepo.upsertWorkerTask({ seriesId: sId, season: 1, movieId: null }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+    const job = jobsRepo.claimNext(NOW)!
+
+    const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32) })
+    tmdb.getSeasonEpisodeRuntimes = async () => null // 增益路径失败降级（本身已经不 throw，见 tmdb.ts）
+    tmdb.getAbsoluteOrder = async () => null
+    tmdb.getSeasonTable = async () => null
+    tmdb.getDetails = async () => null
+    tmdb.getChineseTitles = async () => []
+
+    const task = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib, tmdb }), NOW)
+
+    expect(task).not.toBeNull()
+    expect(task!.targets.every((t) => t.runtimeMinutes === null)).toBe(true)
+  })
+
+  it('movie 分支的 target.runtimeMinutes 取 details.runtimeMinutes（电影时长本就是单片级）', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-movie-runtime-'))
+    const movieDir = join(root, 'Movie (2020)')
+    mkdirSync(movieDir, { recursive: true })
+    const videoPath = join(movieDir, 'Movie.mkv')
+    writeFileSync(videoPath, 'video')
+    const movieId = seriesId('777')
+
+    const db = openDb(':memory:')
+    const lib = new LibraryRepo(db)
+    const jobsRepo = new JobsRepo(db)
+    lib.upsertMovie({ id: movieId, name: 'Movie', path: videoPath, subStatus: 'missing', year: 2020 })
+    jobsRepo.upsertWorkerTask({ seriesId: null, season: null, movieId }, { taskType: 'find_subtitle', reason: 'missing' }, null, NOW)
+    const job = jobsRepo.claimNext(NOW)!
+
+    const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32) })
+    tmdb.getDetails = async () => ({
+      overview: null, runtimeMinutes: 136, posterPath: null, originalTitle: null, year: 2020, genreIds: [],
+    })
+    tmdb.getChineseTitles = async () => []
+
+    const movieTask = await mapWorkerTaskToFindSubtitleTask(job, mapperDeps({ lib, tmdb }), NOW)
+
+    expect(movieTask!.targets[0].runtimeMinutes).toBe(136)
+  })
+
   it('mediaRoot=全部目标的公共祖先目录', async () => {
     const root = mkdtempSync(join(tmpdir(), 'find-subtitle-mapper-mediaroot-'))
     const showDir = join(root, 'Show', 'Season 01')

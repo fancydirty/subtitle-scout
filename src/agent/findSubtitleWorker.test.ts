@@ -222,6 +222,42 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     expect(capturedPromptText).toContain('- itemId: movie-1 | (movie) | imdb: tt0133093 | file: Movie.mkv')
   })
 
+  // 2026-07-18 事故修复（True Detective S02E08）：target 级实际时长事实必须与 task 级剧典型
+  // fallback 值在措辞上可区分——agent 曾经只看到 task 级剧典型值（"runtime minutes: 58"），
+  // 把它当全季所有集的事实，诚实地拒判了时长正确的加长季终候选字幕。
+  it('target 行有 runtimeMinutes 时附加该集本尊时长事实；task 级行措辞明示是剧级典型 fallback', async () => {
+    const mediaRoot = join(root, 'media')
+    mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+
+    let capturedPromptText = ''
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options: LanguageModelV4CallOptions) => {
+        const userMessage = options.prompt.find(m => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        return finalizeResult({ installed: [], no_safe_match: [], retry_later: [] })
+      },
+    })
+
+    const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
+    const task = baseTask(mediaRoot, [
+      // True Detective S02E08：加长季终，本尊时长 86 分——远高于剧级典型 58。
+      { itemId: 'ep-8', videoPath: join(mediaRoot, 'Show', 'Show.S02E08.mkv'), videoFilename: 'Show.S02E08.mkv', season: 2, episode: 8, absoluteEpisode: null, imdbId: null, runtimeMinutes: 86 },
+      // 没有本尊时长事实的 target（缺席/null）——不虚报一段 runtime。
+      { itemId: 'ep-9', videoPath: join(mediaRoot, 'Show', 'Show.S02E09.mkv'), videoFilename: 'Show.S02E09.mkv', season: 2, episode: 9, absoluteEpisode: null, imdbId: null, runtimeMinutes: null },
+    ], { jobId: 'job-5', runtimeMinutes: 58 })
+
+    await runTask(task)
+
+    expect(capturedPromptText).toContain('- itemId: ep-8 | S2E8 | imdb: unknown | runtime ~86 min | file: Show.S02E08.mkv')
+    expect(capturedPromptText).toContain('- itemId: ep-9 | S2E9 | imdb: unknown | file: Show.S02E09.mkv')
+    expect(capturedPromptText).not.toContain('itemId: ep-9 | S2E9 | imdb: unknown | runtime')
+    // task 级行：措辞明示这是剧级典型/fallback 值，不是单集事实——绝不能让 agent 把它当
+    // 每一集的实际时长使用。
+    expect(capturedPromptText).toContain('typical episode runtime (series-level fallback, minutes): 58')
+    expect(capturedPromptText).not.toContain('runtime minutes: 58')
+  })
+
   it('finalize returns a batch report keyed by installed/no_safe_match/retry_later buckets', async () => {
     const mediaRoot = join(root, 'media')
     mkdirSync(join(mediaRoot, 'Show'), { recursive: true })

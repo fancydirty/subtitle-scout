@@ -106,7 +106,11 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       const se = t.season != null ? `S${t.season}E${t.episode}` : '(movie)'
       const abs = t.absoluteEpisode != null ? ` | absolute episode: ${t.absoluteEpisode}` : ''
       const imdb = t.imdbId ? ` | imdb: ${t.imdbId}` : ' | imdb: unknown'
-      return `- itemId: ${t.itemId} | ${se}${abs}${imdb} | file: ${t.videoFilename}`
+      // 2026-07-18 事故修复（True Detective S02E08）：这是该 target 自己的实际时长事实
+      // （FindSubtitleTargetFact.runtimeMinutes），区别于下方 task 级那行的剧级典型 fallback
+      // 值——只有取到值才附加这一段，取不到（null/缺席）时整段省略，不虚报一个 unknown。
+      const runtime = t.runtimeMinutes != null ? ` | runtime ~${t.runtimeMinutes} min` : ''
+      return `- itemId: ${t.itemId} | ${se}${abs}${imdb}${runtime} | file: ${t.videoFilename}`
     }).join('\n')
 
     const prompt = [
@@ -123,7 +127,10 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       `year: ${task.year ?? 'unknown'}`,
       `alternative/native titles: ${task.alternativeTitles.length ? task.alternativeTitles.join(', ') : 'none'}`,
       `overview: ${task.overview ?? 'none'}`,
-      `runtime minutes: ${task.runtimeMinutes ?? 'unknown'}`,
+      // 2026-07-18 事故修复（True Detective S02E08）：措辞明示这是剧级典型值/fallback，不是
+      // 单集事实——真正的单集实际时长（有的话）在下方每个 target 行自己的 "runtime ~N min"。
+      // 别把这行当单集事实用：加长集/季终集的实际时长可能远高于这个数字。
+      `typical episode runtime (series-level fallback, minutes): ${task.runtimeMinutes ?? 'unknown'}`,
       `provider ids: ${JSON.stringify(task.providerIds)}`,
       '',
       `targets (${task.targets.length} item(s), current gaps in this scope):`,

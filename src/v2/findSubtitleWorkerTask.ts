@@ -251,6 +251,10 @@ export async function mapWorkerTaskToFindSubtitleTask(
         // Movies have neither season nor episode — absoluteEpisode is meaningless for this branch.
         absoluteEpisode: null,
         imdbId: providerIds.imdb ?? null,
+        // 2026-07-18 事故修复（True Detective S02E08）：电影时长本就是单片级（不像剧集有
+        // "剧级典型 vs 单集实际"的分裂）——details.runtimeMinutes 直接就是这部电影自己的
+        // 实际时长，原样透传即正确，无需另开一条查询。
+        runtimeMinutes: details?.runtimeMinutes ?? null,
       }],
     }
   }
@@ -295,6 +299,20 @@ export async function mapWorkerTaskToFindSubtitleTask(
   const absTable = deps.tmdb && tmdbId ? await resolveAbsoluteTable(deps.tmdb, tmdbId) : null
   const providerIds = parseProviderIds(series.provider_ids)
 
+  // 2026-07-18 事故修复（True Detective S02E08，根因见 findSubtitleWorker.schemas.ts 的
+  // FindSubtitleTargetFact.runtimeMinutes 字段文档）：逐集实际时长——按 targets 涉及的
+  // distinct season 一季一次调用 getSeasonEpisodeRuntimes（不逐集调，同 absTable 取表一次
+  // 逐集折算的既有先例），取代 getDetails 的剧级"典型"单集时长。getSeasonEpisodeRuntimes 本身
+  // 是增益路径（任何失败静默返回 null），这里 Map 缺席（tmdb 未配置/该季端点失败）即整季
+  // 目标的 runtimeMinutes 全 null——绝不因此让整批任务构造失败。
+  const seasonRuntimes = new Map<number, Map<number, number> | null>()
+  if (deps.tmdb && tmdbId) {
+    const seasons = [...new Set(gaps.map((g) => g.season))]
+    await Promise.all(seasons.map(async (s) => {
+      seasonRuntimes.set(s, await deps.tmdb!.getSeasonEpisodeRuntimes(tmdbId, s))
+    }))
+  }
+
   const targets = gaps.map((g) => ({
     itemId: g.id,
     videoPath: g.path,
@@ -303,6 +321,9 @@ export async function mapWorkerTaskToFindSubtitleTask(
     episode: g.episode,
     absoluteEpisode: absTable ? absoluteFor(absTable, g.season, g.episode) : null,
     imdbId: providerIds.imdb ?? null,
+    // 该集实际时长——区别于本函数返回值顶层 runtimeMinutes 的剧级典型值（见下方 return 的
+    // 同名字段，那个保持现状作 fallback）。Map 缺席/该集不在 Map 里 → null。
+    runtimeMinutes: seasonRuntimes.get(g.season)?.get(g.episode) ?? null,
   }))
 
   return {

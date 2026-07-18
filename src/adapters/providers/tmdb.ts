@@ -375,4 +375,36 @@ export class TmdbClient {
       .filter((e): e is { episode_number: number; name?: string } => typeof e.episode_number === 'number')
       .map(e => ({ episode: e.episode_number, title: typeof e.name === 'string' && e.name ? e.name : null }))
   }
+
+  /**
+   * 单季逐集实际时长（`/tv/{id}/season/{n}`，与 getSeasonEpisodes 同一端点）——喂给
+   * find-subtitle worker 的"该集本尊时长"事实来源。根因：getDetails 的 `episode_run_time[0]`
+   * 只是 TMDB 给的剧级"典型"单集时长（通常是首集/众数，不代表某一集），加长集/季终集会被
+   * 错误对齐——真实事故（2026-07-18 从零 e2e）：True Detective S02E08 实际约 86 分钟的加长
+   * 季终，被剧级典型约 58 分钟误喂给 agent，agent 诚实地把时长正确的候选字幕全部拒判判无
+   * （agent 判断没错，喂的事实错了）。
+   *
+   * 返回 episode_number→runtime(分钟) 的 Map；runtime 缺失/null/非正数的集跳过（不进 Map，
+   * 不是 0——"没有数据"和"时长为 0"不该混同）。
+   *
+   * 增益路径（同 getChineseTitles/getAbsoluteOrder，用 getJson 而非 getJsonStrict）：任何失败
+   * （网络拒绝、超时、非 2xx、非 JSON、404）一律静默返回 null——这是喂给 agent 的补充事实，
+   * 不是权威阻断信号,绝不能让一次 TMDB 抽风拖垮整批任务构造（调用方 findSubtitleWorkerTask.ts
+   * 同样绝不因此失败，见该文件消费处的注释）。episodes 非数组同样按 null 处理，不 throw——
+   * 季级 episode_count 已经是权威计数来源（getSeasonTable），这里拿不到集清单只是这批目标
+   * 少一条辅助事实，不是数据完整性红线。
+   */
+  async getSeasonEpisodeRuntimes(tvId: string, season: number): Promise<Map<number, number> | null> {
+    const d = await this.getJson(`/tv/${tvId}/season/${season}`)
+    if (!d) return null
+    const episodes = d.episodes
+    if (!Array.isArray(episodes)) return null
+    const out = new Map<number, number>()
+    for (const e of episodes as Array<{ episode_number?: number; runtime?: number | null }>) {
+      if (typeof e.episode_number === 'number' && typeof e.runtime === 'number' && e.runtime > 0) {
+        out.set(e.episode_number, e.runtime)
+      }
+    }
+    return out
+  }
 }

@@ -39,6 +39,17 @@ export interface FindSubtitleTargetFact {
   /** 验收修复轮一：从 series/movies.provider_ids 解析出的真 imdb id（或 null）。这个值会被原样
    *  写进 worker prompt 的 targetsBlock，search_source 工具只许用它，禁止 LLM 自行编造。 */
   imdbId: string | null
+  /** 2026-07-18 事故修复（True Detective S02E08）：该集/该片的实际时长（分钟）——per-episode
+   *  fact，区别于 FindSubtitleTask 顶层的 `runtimeMinutes`（那是 TMDB `episode_run_time[0]`
+   *  给出的剧级"典型"单集时长，通常是首集/众数，不代表某一集）。根因事故：True Detective
+   *  S02E08 是 ~86 分钟的加长季终，agent 被喂剧级典型 ~58 分钟，把时长正确的候选字幕全部
+   *  诚实拒判判无——agent 判断没错，喂的事实错了。mapper（findSubtitleWorkerTask.ts）用
+   *  TmdbClient.getSeasonEpisodeRuntimes 逐季取值填充，取不到（tmdb 未配置/季端点失败）
+   *  → null，绝不因此让整批任务构造失败。
+   *
+   *  必须可选（`?:`）——realignExecutor.ts（圣文件，不可动）的 makeRealignRunEpisode 构造
+   *  target 字面量时不带这个键，字段必须允许缺席才能保持零改动兼容；缺席等价于 null。 */
+  runtimeMinutes?: number | null
 }
 
 /** Input to one find-subtitle worker run: a season-level (or single-movie) range + the current
