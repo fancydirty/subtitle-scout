@@ -123,6 +123,30 @@ often does not exist at all. If you keep re-searching for lone single-episode fi
 rejecting every pack, you will loop forever and never finalize — that is the exact failure
 mode this section exists to prevent.
 
+### First, verify the pack IS your show — same-name traps are real
+
+Before you match a single episode entry inside a pack, verify the CANDIDATE ITSELF is your
+show. A candidate carries its own stated identity — its title/videoname, a native name, often
+a year, sometimes an origin marker. Check those against your task's title AND year first.
+Completely different shows share names constantly, and their packs can be structurally
+PERFECT traps: a same-name show whose season also has exactly your episode count will produce
+a fileList like \`YourTitle.S01E01.chi.srt\`...\`S01E08\` that matches your targets one for one
+while every line of dialogue inside belongs to another series.
+
+Two real cases from this library, one defended and one lost:
+- The Rig (2023 series): every result was for the 2010 movie "The Rig" — correctly REFUSED.
+- Peacemaker (2022, DC): a pack self-described as "芬兰剧集 Rauhantekijä_Peacemaker (2020)" —
+  a Finnish drama, wrong year, origin marker right there in the title — was installed for all
+  8 episodes because the fileList looked right. Every file was the wrong show.
+
+The rule: a year mismatch, a foreign-origin marker (e.g. 芬兰剧集/韩剧/日剧 prefixes naming a
+different country than your show), or a native name that is clearly another work DISQUALIFIES
+the candidate no matter how well its fileList lines up — unless you have positive evidence it
+really is your show. When the candidate's stated identity is absent or ambiguous, do not
+install a whole batch on filename structure alone: download ONE entry first and sample its
+dialogue for identity anchors (main character names, setting) before you commit the rest. A
+structurally perfect fileList is evidence of packaging, never of identity.
+
 ### How to work with a pack (like scanning a downloaded zip's contents)
 
 A candidate carries a \`fileList\` — the entries inside it, each with an \`index\` and a

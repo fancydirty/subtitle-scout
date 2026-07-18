@@ -169,4 +169,21 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
       expect(agent.descriptor.description).toMatch(/hardsub_assumed/)
     })
   })
+
+  // 2026-07-18 生产事故回归锁(装机内容审计雷C-1):Peacemaker S1 整季 8 集被装成芬兰同名剧
+  // Rauhantekijä(2020)的字幕——候选自述身份(标题里的"芬兰剧集"、年份 2020 vs 任务 2022)
+  // 就摆在元数据里,agent 没核就按 fileList 结构配集。本锁钉死 skill 必须教"先验证候选是
+  // 你的剧,再进 fileList 配集"这一硬序,且两个真实案例(防住的 The Rig/栽了的 Peacemaker)
+  // 必须留在文中作对照教材。
+  it('teaches the same-name-different-show trap: verify candidate identity (title+year+origin) BEFORE fileList matching', () => {
+    const c = makeFindSubtitleSkill('zh').content
+    expect(c).toMatch(/same-name trap|same-name shows|share names/i)
+    expect(c).toMatch(/year mismatch/i)
+    expect(c).toMatch(/Rauhantekijä/)
+    expect(c).toMatch(/The Rig/)
+    // 结构完美≠身份正确,这句是本段灵魂
+    expect(c).toMatch(/evidence of packaging, never of identity/i)
+    // 身份不明时的验证动作:先下一份抽对白锚点再批量装
+    expect(c).toMatch(/download ONE entry first|sample its\s+dialogue/i)
+  })
 })
