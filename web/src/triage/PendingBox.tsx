@@ -21,7 +21,6 @@ import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { EmptyState } from '@astryxdesign/core/EmptyState'
 import { StatusDot } from '@astryxdesign/core/StatusDot'
-import type { ParkedItemDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
 import { pathTail, fileCountLabel, moreLabel, type DirGroup } from './text.js'
 
