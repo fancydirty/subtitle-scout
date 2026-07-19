@@ -105,7 +105,13 @@ describe('parseChallenge (redirect shape — real zimuku.org JS-redirect challen
     expect(challenge.submitUrlPrefix).toBe('https://www.zimuku.org/?security_verify_img=')
   })
 
-  it('hex-encodes baseUrl as the srcurl cookie value (stand-in for window.location.href)', () => {
+  it('hex-encodes the requested href as the srcurl cookie value (the full challenged URL — window.location.href)', () => {
+    // 实测铁证:提交验证码时 srcurl 必须是 hex(被挑战的完整 URL),不是 hex(baseUrl)。
+    const challenge = asRedirect(parseChallenge(html, 'https://zimuku.org', 'https://zimuku.org/search?q=Pulp'))
+    expect(challenge.srcurlCookieValue).toBe(Buffer.from('https://zimuku.org/search?q=Pulp', 'latin1').toString('hex'))
+  })
+
+  it('falls back to hex(baseUrl) for srcurl when no requestHref is passed (backward compatible with 2-arg callers)', () => {
     const challenge = asRedirect(parseChallenge(html, 'https://www.zimuku.org'))
     // stringToHex("https://www.zimuku.org") — each char -> 2-digit hex of its charCode
     expect(challenge.srcurlCookieValue).toBe('68747470733a2f2f7777772e7a696d756b752e6f7267')

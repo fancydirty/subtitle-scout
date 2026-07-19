@@ -42,8 +42,10 @@ export interface YunsuoChallengeRedirect {
    *  最终提交 URL = submitUrlPrefix + stringToHex(digits),复刻 YunsuoAutoJump() 里的
    *  `self.location = "/?security_verify_img=" + stringToHex(text)`。 */
   submitUrlPrefix: string
-  /** 跳转前 YunsuoAutoJump() 会设置的 srcurl cookie 值——hex 编码的"当前页面 URL"。真实浏览器里
-   *  是 window.location.href;这里没有真实导航历史,用 baseUrl(挑战发生的站点)作为替身。 */
+  /** 跳转前 YunsuoAutoJump() 会设置的 srcurl cookie 值——hex 编码的"当前页面 URL"(真实浏览器里的
+   *  window.location.href,即被挑战的那个完整请求 URL)。由 parseChallenge 的 requestHref 提供;
+   *  缺省时回退到 baseUrl(仅为兼容只传两参的老调用点/测试)。实测铁证:提交验证码时服务端要求
+   *  srcurl=hex(href),用 hex(baseUrl) 会被拒。 */
   srcurlCookieValue: string
   /** 验证码图片的绝对 URL 或 data: URI(真实页面是内嵌 base64 的 data:image/bmp;base64,...)。 */
   imageUrl: string
@@ -133,7 +135,7 @@ function parseFormChallenge(html: string, baseUrl: string, formTag: TagMatch): Y
  * data:image/bmp;base64,... 内嵌图)+ YunsuoAutoJump() 里 `self.location = "..." +
  * stringToHex(text)` 这行 JS——从这行提取跳转 URL 前缀,提交时原样拼接 hex 编码的验证码数字。
  */
-function parseRedirectChallenge(html: string, baseUrl: string): YunsuoChallengeRedirect {
+function parseRedirectChallenge(html: string, baseUrl: string, requestHref?: string): YunsuoChallengeRedirect {
   const inputTag = findTagByAttr(html, 'input', 'id', v => v === 'intext')
   if (!inputTag) {
     throw new Error(
@@ -158,17 +160,18 @@ function parseRedirectChallenge(html: string, baseUrl: string): YunsuoChallengeR
   return {
     kind: 'redirect',
     submitUrlPrefix: new URL(m[2], baseUrl).toString(),
-    srcurlCookieValue: stringToHex(baseUrl),
+    srcurlCookieValue: stringToHex(requestHref ?? baseUrl),
     imageUrl: resolveImageUrl(imgTag.attrs.src, baseUrl),
   }
 }
 
 /** 解析挑战页——按形状分派(先查 <form>,没有就按真实页面的 JS 跳转形状解析),见模块顶部
- *  注释的两种挑战页形状说明。 */
-export function parseChallenge(html: string, baseUrl: string): YunsuoChallenge {
+ *  注释的两种挑战页形状说明。redirect 形状用 requestHref 计算 srcurl cookie(hex(href));
+ *  form 形状不用 srcurl,requestHref 可省。 */
+export function parseChallenge(html: string, baseUrl: string, requestHref?: string): YunsuoChallenge {
   const formTag = findNextTag(html, 'form')
   if (formTag) return parseFormChallenge(html, baseUrl, formTag)
-  return parseRedirectChallenge(html, baseUrl)
+  return parseRedirectChallenge(html, baseUrl, requestHref)
 }
 
 /** 挑战破解耗尽/仍被拦截:瞬时错误,不是"确实没有字幕"的内容结论——上游 fetchLib.runSearch 的
