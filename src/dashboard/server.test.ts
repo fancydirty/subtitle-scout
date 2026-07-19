@@ -1201,3 +1201,37 @@ describe('auth Security 区端点（A3 Task 12）', () => {
     expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': nk } })).status).toBe(200)
   })
 })
+
+describe('改密撤销会话 + 补发当前 cookie（审计 MEDIUM #1）', () => {
+  async function setupAndCookie(base: string) {
+    const r = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    return (r.headers.get('set-cookie') ?? '').split(';')[0]
+  }
+  it('改密后：其它会话全失效，但发起改密的请求拿到一枚新 cookie 继续有效', async () => {
+    const { base } = await start(distWith('x'))
+    const cookie1 = await setupAndCookie(base)
+    // 第二个独立会话
+    const login = await fetch(`${base}/api/v2/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const cookie2 = (login.headers.get('set-cookie') ?? '').split(';')[0]
+    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie1 } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie2 } })).status).toBe(200)
+    // 用 cookie1 改密
+    const cp = await fetch(`${base}/api/v2/auth/change-password`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: cookie1 },
+      body: JSON.stringify({ oldPassword: 'hunter2222', newPassword: 'newpass8888' }),
+    })
+    expect(cp.status).toBe(200)
+    const cookie3 = (cp.headers.get('set-cookie') ?? '').split(';')[0]
+    expect(cookie3).toMatch(/^scout_session=[0-9a-f]{64}$/)
+    // 旧的两枚全失效，新的一枚有效
+    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie1 } })).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie2 } })).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie3 } })).status).toBe(200)
+  })
+})

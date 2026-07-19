@@ -17,7 +17,7 @@ import {
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from './traceBus.js'
-import { AuthService, AUTH_KEYS } from './auth.js'
+import { AuthService, AUTH_KEYS, safeStrEqual } from './auth.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -151,7 +151,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const authed =
           (sessionToken !== undefined && auth.sessions.verify(sessionToken, Date.now())) ||
           (apiKeyReq !== undefined && auth.verifyApiKey(apiKeyReq)) ||
-          (token !== undefined && legacyReq === token)
+          // legacy DASHBOARD_TOKEN：常量时间比较（审计 #4——与 api key 路径口径一致，不留 === 时序侧信道）。
+          (token !== undefined && legacyReq !== undefined && safeStrEqual(legacyReq, token))
 
         // 探测端点：任何态放行（前端 app-shell 靠它决定去 /setup、/login 还是正常渲染）
         if (rawPath === '/api/v2/auth/status' && req.method === 'GET') {
@@ -228,8 +229,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
             typeof b.oldPassword === 'string' ? b.oldPassword : '',
             typeof b.newPassword === 'string' ? b.newPassword : '', Date.now(),
           )
-          res.writeHead(r.ok ? 200 : 400, JSON_CT)
-          res.end(JSON.stringify(r.ok ? { ok: true } : { error: r.error }))
+          if (!r.ok) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: r.error })); return }
+          // 审计 MEDIUM #1：changePassword 已清空全部会话（含发起者自己的）——给当前请求补发一枚
+          // 新 cookie，让改密的管理员不被自己踢下线（"sign out everywhere but me"），其它会话仍失效。
+          const fresh = auth.sessions.create(Date.now())
+          res.writeHead(200, { ...JSON_CT, 'set-cookie': sessionCookie(fresh) })
+          res.end(JSON.stringify({ ok: true }))
           return
         }
         if (rawPath === '/api/v2/auth/regenerate-api-key') {

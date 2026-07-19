@@ -14,6 +14,16 @@ export function hashPassword(password: string): string {
   return `${salt.toString('hex')}:${hash.toString('hex')}`
 }
 
+/** 常量时间字符串比较：先按**字节**长度守卫（多字节字符可使字符串等长而 Buffer 不等长，
+ *  直接 timingSafeEqual 会抛 RangeError），等长才 timingSafeEqual。凭据比较（api key / legacy
+ *  token）统一走这里，避免 `===` 的首字节短路时序侧信道（审计 #4）。 */
+export function safeStrEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a)
+  const bb = Buffer.from(b)
+  if (ab.length !== bb.length) return false
+  return timingSafeEqual(ab, bb)
+}
+
 /** 畸形存储串（缺冒号/非 hex/长度不符）一律 false——绝不抛错炸到 server.ts。 */
 export function verifyPassword(password: string, stored: string): boolean {
   const idx = stored.indexOf(':')
@@ -53,22 +63,35 @@ export class SessionStore {
   revoke(token: string): void {
     this.sessions.delete(token)
   }
+
+  /** 全员下线：清空所有会话（改密时用——凭据轮换必须让任何被盗会话立即失效）。 */
+  clear(): void {
+    this.sessions.clear()
+  }
 }
 
-/** 登录失败节流（spec §2：内存计数 5 次/分钟）。按"尝试"计数而非"失败"——比 spec 略严但
- *  实现更简单且更保守（合法用户 1 次就登进去了，感受不到差别）。 */
+/** 登录失败节流（spec §2：内存计数 5 次/分钟）。只计**失败**（审计 #3）——成功登录不消耗预算，
+ *  否则合法管理员正常登录会白白吃掉配额，且被别人的失败尝试连累锁死。check 只读判定当前窗口是否
+ *  还在预算内（不自增），recordFailure 在密码错时显式记一次。 */
 export class LoginThrottle {
   private counts = new Map<string, { windowStart: number; count: number }>()
   constructor(private limit = 5, private windowMs = 60_000) {}
 
-  allow(key: string, now: number): boolean {
+  /** 当前来源在窗口内是否还允许尝试（不改计数）。窗口已滚过视为重置（放行）。 */
+  check(key: string, now: number): boolean {
+    const entry = this.counts.get(key)
+    if (!entry || now - entry.windowStart >= this.windowMs) return true
+    return entry.count < this.limit
+  }
+
+  /** 记一次失败（密码错时调用）。窗口已滚过则开新窗口。 */
+  recordFailure(key: string, now: number): void {
     const entry = this.counts.get(key)
     if (!entry || now - entry.windowStart >= this.windowMs) {
       this.counts.set(key, { windowStart: now, count: 1 })
-      return true
+      return
     }
     entry.count++
-    return entry.count <= this.limit
   }
 }
 
@@ -114,25 +137,25 @@ export class AuthService {
   }
 
   login(username: string, password: string, remoteAddr: string, now: number): LoginResult {
-    if (!this.throttle.allow(remoteAddr, now)) return { ok: false, status: 429, error: 'too many attempts — wait a minute' }
+    if (!this.throttle.check(remoteAddr, now)) return { ok: false, status: 429, error: 'too many attempts — wait a minute' }
     const storedUser = this.settings.get(AUTH_KEYS.username)
     const storedHash = this.settings.get(AUTH_KEYS.passwordHash)
-    if (storedUser === null || storedHash === null) return { ok: false, status: 401, error: 'not initialized' }
+    if (storedUser === null || storedHash === null) {
+      this.throttle.recordFailure(remoteAddr, now)
+      return { ok: false, status: 401, error: 'not initialized' }
+    }
     if (username !== storedUser || !verifyPassword(password, storedHash)) {
+      this.throttle.recordFailure(remoteAddr, now) // 只对失败计入（审计 #3）
       return { ok: false, status: 401, error: 'invalid username or password' }
     }
     return { ok: true, sessionToken: this.sessions.create(now) }
   }
 
-  /** 常量时间比较（同长才比，node timingSafeEqual 要求等长）。长度比较必须在**字节**层面——
-   *  多字节字符可使字符串等长而 Buffer 不等长，直接 timingSafeEqual 会抛 RangeError（门上 500）。 */
+  /** 常量时间比较（safeStrEqual：字节长度守卫 + timingSafeEqual）。 */
   verifyApiKey(key: string): boolean {
     const stored = this.settings.get(AUTH_KEYS.apiKey)
     if (stored === null) return false
-    const kb = Buffer.from(key)
-    const sb = Buffer.from(stored)
-    if (kb.length !== sb.length) return false
-    return timingSafeEqual(kb, sb)
+    return safeStrEqual(key, stored)
   }
 
   changePassword(oldPassword: string, newPassword: string, now: number): ChangePasswordResult {
@@ -141,6 +164,9 @@ export class AuthService {
     if (!verifyPassword(oldPassword, storedHash)) return { ok: false, error: 'current password is incorrect' }
     if (newPassword.length < MIN_PASSWORD_LEN) return { ok: false, error: `password must be at least ${MIN_PASSWORD_LEN} characters` }
     this.settings.set(AUTH_KEYS.passwordHash, hashPassword(newPassword), now)
+    // 审计 MEDIUM #1：凭据轮换必须让被盗会话立即失效——改密即全员下线。调用方（server.ts）负责
+    // 给发起改密的当前请求补发一枚新 cookie，让管理员自己不被自己踢下线（"sign out everywhere but me"）。
+    this.sessions.clear()
     return { ok: true }
   }
 

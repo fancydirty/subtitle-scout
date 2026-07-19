@@ -53,22 +53,46 @@ describe('SessionStore（内存 Map，30 天滚动过期）', () => {
   })
 })
 
-describe('LoginThrottle（5 次/分钟/来源，内存计数）', () => {
+describe('LoginThrottle（5 次失败/分钟/来源，只计失败——审计 #3）', () => {
   const NOW = 1_700_000_000_000
-  it('同一来源 60s 窗口内前 5 次放行，第 6 次拒绝', () => {
+  it('同一来源记 5 次失败后 check 变 false（第 6 次被拒）', () => {
     const th = new LoginThrottle()
-    for (let i = 0; i < 5; i++) expect(th.allow('1.2.3.4', NOW + i * 1000)).toBe(true)
-    expect(th.allow('1.2.3.4', NOW + 5000)).toBe(false)
+    for (let i = 0; i < 5; i++) {
+      expect(th.check('1.2.3.4', NOW + i * 1000)).toBe(true)
+      th.recordFailure('1.2.3.4', NOW + i * 1000)
+    }
+    expect(th.check('1.2.3.4', NOW + 5000)).toBe(false)
   })
   it('窗口滚过（61s 后）计数重置', () => {
     const th = new LoginThrottle()
-    for (let i = 0; i < 6; i++) th.allow('1.2.3.4', NOW)
-    expect(th.allow('1.2.3.4', NOW + 61_000)).toBe(true)
+    for (let i = 0; i < 6; i++) th.recordFailure('1.2.3.4', NOW)
+    expect(th.check('1.2.3.4', NOW + 61_000)).toBe(true)
   })
   it('不同来源互不影响', () => {
     const th = new LoginThrottle()
-    for (let i = 0; i < 6; i++) th.allow('1.2.3.4', NOW)
-    expect(th.allow('5.6.7.8', NOW)).toBe(true)
+    for (let i = 0; i < 6; i++) th.recordFailure('1.2.3.4', NOW)
+    expect(th.check('5.6.7.8', NOW)).toBe(true)
+  })
+  it('check 不自增：连查 100 次不计入预算', () => {
+    const th = new LoginThrottle()
+    for (let i = 0; i < 100; i++) expect(th.check('1.2.3.4', NOW)).toBe(true)
+  })
+})
+
+describe('login 只对失败计入节流（审计 #3：成功登录不消耗预算）', () => {
+  const NOW = 1_700_000_000_000
+  it('连续 10 次成功登录全部放行——成功不消耗节流预算', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', NOW)
+    for (let i = 0; i < 10; i++) expect(auth.login('admin', 'hunter2222', '1.1.1.1', NOW).ok).toBe(true)
+  })
+  it('4 次失败后穿插成功，成功不加计数——之后还能再失败 1 次才触顶', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', NOW)
+    for (let i = 0; i < 4; i++) auth.login('admin', 'wrong', '2.2.2.2', NOW)
+    expect(auth.login('admin', 'hunter2222', '2.2.2.2', NOW).ok).toBe(true) // 成功不计
+    expect(auth.login('admin', 'wrong', '2.2.2.2', NOW)).toMatchObject({ ok: false, status: 401 }) // 第 5 次失败
+    expect(auth.login('admin', 'hunter2222', '2.2.2.2', NOW)).toMatchObject({ ok: false, status: 429 }) // 触顶
   })
 })
 
@@ -184,5 +208,34 @@ describe('AuthService.reset（A4 Task 15：诚实找回密码的后端）', () =
     expect(auth.login('admin', 'hunter2222', '1.1.1.1', 2).ok).toBe(false)
     // reset 后可重新 setup（向导重跑）
     expect(auth.setup('admin2', 'newpass8888', 3).ok).toBe(true)
+  })
+})
+
+describe('改密撤销现有会话（审计 MEDIUM #1：凭据轮换必须让被盗会话失效）', () => {
+  const NOW = 1_700_000_000_000
+  it('changePassword 成功后，此前签发的所有会话 token 全部失效', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', NOW)
+    const s1 = auth.sessions.create(NOW)
+    const s2 = auth.sessions.create(NOW)
+    expect(auth.sessions.verify(s1, NOW + 1)).toBe(true)
+    expect(auth.sessions.verify(s2, NOW + 1)).toBe(true)
+    expect(auth.changePassword('hunter2222', 'newpass8888', NOW + 2).ok).toBe(true)
+    expect(auth.sessions.verify(s1, NOW + 3)).toBe(false)
+    expect(auth.sessions.verify(s2, NOW + 3)).toBe(false)
+  })
+  it('changePassword 失败（旧密码错）不动会话', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', NOW)
+    const s1 = auth.sessions.create(NOW)
+    expect(auth.changePassword('wrong', 'newpass8888', NOW + 2).ok).toBe(false)
+    expect(auth.sessions.verify(s1, NOW + 3)).toBe(true) // 没成功就不撤销
+  })
+  it('SessionStore.clear 清空全部会话', () => {
+    const s = new SessionStore()
+    const a = s.create(NOW), b = s.create(NOW)
+    s.clear()
+    expect(s.verify(a, NOW + 1)).toBe(false)
+    expect(s.verify(b, NOW + 1)).toBe(false)
   })
 })
