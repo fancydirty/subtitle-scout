@@ -361,6 +361,17 @@ export function openDb(path: string): ScoutDb {
       // openDb 抛错后调用方拿不到 db，无从 close；残留的打开连接会占着 -wal/-shm 和
       // 文件锁，妨碍修复者（同上方 FK 体检失败路径的 close 语义）。
       db.close()
+      // v9 起 MIGRATIONS 折叠：v1–v8 时代的老库(schema_version 落在 1–8 的 de-Jellyfin 之前世界)
+      // 与折叠后的增量链不兼容——会在 v17+ 的 ALTER item_files 上撞 "no such table"(item_files
+      // 建在被跳过的 v9 折叠 entry 里)。产品已裁决老库作废、操作者自删。给一句人话而不是裸 SQL 错。
+      const msg = String((err as Error)?.message ?? err)
+      if (currentVersion >= 1 && currentVersion < 9 && /no such (table|column)/i.test(msg)) {
+        throw new Error(
+          `数据库 schema v${currentVersion} 是 de-Jellyfin 化(v9)之前的旧版本,与当前折叠后的迁移链不兼容` +
+          `(底层错误：${msg})。这类开发期老库已作废——请备份后删除 scout.db(及 -wal/-shm)让程序重新` +
+          `初始化,重启后会从零重扫媒体库、重新识别与找字幕。`,
+        )
+      }
       throw err
     }
   }

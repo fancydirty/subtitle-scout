@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import Database from 'better-sqlite3'
 import { openDb } from './db.js'
 import { JobsRepo } from './jobsRepo.js'
 
@@ -34,6 +35,16 @@ describe('db 基座', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
     expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '11' })
+  })
+
+  it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'scout-old-')), 'scout.db')
+    // 手造一个 de-Jellyfin(v9)之前的老库:有 meta.schema_version=8,但没有 v9 折叠 entry 建的
+    // item_files 等表——openDb 会因 8<11 去跑 MIGRATIONS[8]=v17 的 ALTER item_files → no such table。
+    const raw = new Database(p)
+    raw.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key,value) VALUES ('schema_version','8')")
+    raw.close()
+    expect(() => openDb(p)).toThrow(/de-Jellyfin|旧版本|删除 scout\.db/)
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
