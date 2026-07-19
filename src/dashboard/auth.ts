@@ -78,7 +78,9 @@ export const AUTH_KEYS = {
   apiKey: 'auth_api_key',
 } as const
 
-const MIN_PASSWORD_LEN = 8
+// 调研回补（design-recon）：Homarr 是唯一有强度规则的对象，且上手期声明；NIST 对齐"只管长度不
+// 管组成"。10 与 setup/Security 页 mono 提示 `min 10 characters` 一致。
+const MIN_PASSWORD_LEN = 10
 
 export type SetupResult = { ok: true; apiKey: string } | { ok: false; error: string }
 export type LoginResult = { ok: true; sessionToken: string } | { ok: false; status: 401 | 429; error: string }
@@ -101,9 +103,13 @@ export class AuthService {
     if (!username.trim()) return { ok: false, error: 'username is required' }
     if (password.length < MIN_PASSWORD_LEN) return { ok: false, error: `password must be at least ${MIN_PASSWORD_LEN} characters` }
     const apiKey = randomBytes(16).toString('hex')
-    this.settings.set(AUTH_KEYS.username, username.trim(), now)
-    this.settings.set(AUTH_KEYS.passwordHash, hashPassword(password), now)
-    this.settings.set(AUTH_KEYS.apiKey, apiKey, now)
+    // 原子性（Jellyfin 未授权改密 CVE 的延伸防御）：三键必须全有或全无——否则中途崩溃会留下
+    // passwordHash 已写（isInitialized 为 true）但 apiKey 为 null 的半初始化态，verifyApiKey 永假。
+    this.settings.db.transaction(() => {
+      this.settings.set(AUTH_KEYS.username, username.trim(), now)
+      this.settings.set(AUTH_KEYS.passwordHash, hashPassword(password), now)
+      this.settings.set(AUTH_KEYS.apiKey, apiKey, now)
+    })()
     return { ok: true, apiKey }
   }
 

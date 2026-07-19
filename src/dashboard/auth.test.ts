@@ -145,3 +145,29 @@ describe('verifyApiKey 多字节边界（主控亲核补）', () => {
     expect(auth.verifyApiKey(evil)).toBe(false)
   })
 })
+
+describe('A1 硬化（Task 14′：长度阈值 10 + setup 原子性）', () => {
+  it('MIN_PASSWORD_LEN=10：9 字符拒绝，10 字符通过', () => {
+    const a1 = new AuthService(new SettingsRepo(openDb(':memory:')))
+    expect(a1.setup('admin', 'x'.repeat(9), 1).ok).toBe(false)
+    const a2 = new AuthService(new SettingsRepo(openDb(':memory:')))
+    expect(a2.setup('admin', 'x'.repeat(10), 1).ok).toBe(true)
+  })
+  it('changePassword 同样 10 阈值：9 字符新密码拒绝', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', 1)
+    expect(auth.changePassword('hunter2222', 'x'.repeat(9), 2).ok).toBe(false)
+    expect(auth.changePassword('hunter2222', 'x'.repeat(10), 2).ok).toBe(true)
+  })
+  it('setup 原子：三键写入中途抛错→事务回滚，isInitialized 仍 false', () => {
+    const db = openDb(':memory:')
+    const repo = new SettingsRepo(db)
+    let calls = 0
+    const orig = repo.set.bind(repo)
+    repo.set = (k: string, v: string, n: number) => { if (++calls === 3) throw new Error('disk full'); return orig(k, v, n) }
+    const auth = new AuthService(repo)
+    expect(() => auth.setup('admin', 'hunter2222', 1)).toThrow()
+    // 新实例读同一 db：三键应因回滚而全不存在。
+    expect(new AuthService(new SettingsRepo(db)).isInitialized()).toBe(false)
+  })
+})
