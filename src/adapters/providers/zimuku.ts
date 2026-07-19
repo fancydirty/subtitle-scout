@@ -1,4 +1,3 @@
-import { basename } from 'node:path'
 import { findNextTag } from './htmlAttrs.js'
 import { JitteredIntervalLimiter, type RandomFn } from './jitter.js'
 import { detectChallenge, solveYunsuoChallenge, ZimukuChallengeError } from './yunsuo.js'
@@ -48,31 +47,60 @@ export function parseSearchResults(html: string): ZimukuSearchResult[] {
 }
 
 export interface ZimukuDetailResult {
-  downloadUrl: string
-  filename: string
+  dldUrl: string
 }
 
 /**
- * 详情页解析:抓 id="down" 的下载锚点(社区脚本/实地侦察共同印证的下载按钮标记)。文件名从
- * 下载 URL 的 basename 派生(zimuku 静态文件名通常已含语言/季信息,比详情页标题更适合直接
- * 落盘);解析不出锚点视为页面结构漂移,fail closed 抛错而不是静默返回空。
+ * 详情页解析:定位下载锚点。真站(2026-07-19 抓包)的下载按钮是 `<a id="down1" href="/dld/<id>.html">`
+ * ——一个间接的高速下载页,不是直链 static URL。**按 href 形状匹配**(`/dld/<数字>.html`)而不是
+ * 绑定具体 id 名(真站是 down1、合成页可能是别的;href 形状是版面改版最稳的锚点)。返回相对 baseUrl
+ * 解析后的绝对 dld URL(filename 不再在此派生——真实链路的文件名由下载层的 Content-Disposition
+ * 或候选 title 提供)。解析不出锚点视为页面结构漂移,fail closed 抛错而不是静默返回空。
  *
- * 同 parseSearchResults:用 findNextTag 按属性名读 id/href,不管两者谁先出现、引号是单是双、
- * 中间夹了多少个 class/title 之类的其它属性。
+ * 同 parseSearchResults:用 findNextTag 按属性名读 href,不管 id/href 谁先出现、引号是单是双。
  */
 export function parseDetailPage(html: string, baseUrl: string): ZimukuDetailResult {
+  const dldHrefRe = /\/dld\/\d+\.html/
   let hrefRaw: string | null = null
   let idx = 0
   for (;;) {
     const tag = findNextTag(html, 'a', idx)
     if (!tag) break
-    if (tag.attrs.id === 'down' && tag.attrs.href) { hrefRaw = tag.attrs.href; break }
+    if (tag.attrs.href && dldHrefRe.test(tag.attrs.href)) { hrefRaw = tag.attrs.href; break }
     idx = tag.end
   }
-  if (!hrefRaw) throw new Error('zimuku detail page has no download link (id="down") — page shape drift?')
-  const downloadUrl = new URL(hrefRaw, baseUrl).toString()
-  const filename = basename(new URL(downloadUrl).pathname) || 'subtitle.zip'
-  return { downloadUrl, filename }
+  if (!hrefRaw) throw new Error('zimuku detail page has no /dld download link — page shape drift?')
+  return { dldUrl: new URL(hrefRaw, baseUrl).toString() }
+}
+
+export interface ZimukuDldResult {
+  mirrorUrls: string[]
+}
+
+/**
+ * dld(高速下载页)解析:抓所有镜像下载链接 `<a href="/download/<base64token>/svr/<mirror>">`
+ * (mirror ∈ {d0,d1,l0,l1,y0,...},电信/联通/移动多线路)。相对 baseUrl 解析成绝对 URL 数组,
+ * 保序(调用方默认取首个)。base64 token 内嵌时限时间戳,故下载须紧接 dld 之后。全无镜像 → 抛错
+ * (页面结构漂移),沿用 parseDetailPage 的 fail-closed 纪律。
+ *
+ * 同上:用 findNextTag 按属性名读 href,只依赖 href 形状(/download/.../svr/X),不绑 class/容器。
+ */
+export function parseDldPage(html: string, baseUrl: string): ZimukuDldResult {
+  const mirrorHrefRe = /\/download\/[^"]+\/svr\/\w+/
+  const mirrorUrls: string[] = []
+  let idx = 0
+  for (;;) {
+    const tag = findNextTag(html, 'a', idx)
+    if (!tag) break
+    if (tag.attrs.href && mirrorHrefRe.test(tag.attrs.href)) {
+      mirrorUrls.push(new URL(tag.attrs.href, baseUrl).toString())
+    }
+    idx = tag.end
+  }
+  if (mirrorUrls.length === 0) {
+    throw new Error('zimuku dld page has no /download/.../svr mirror links — page shape drift?')
+  }
+  return { mirrorUrls }
 }
 
 export const ZIMUKU_TIMEOUT_MS = 15_000

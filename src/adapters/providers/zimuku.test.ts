@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseSearchResults, parseDetailPage, ZIMUKU_BASE, ZimukuClient, type ZimukuClientOpts } from './zimuku.js'
+import { parseSearchResults, parseDetailPage, parseDldPage, ZIMUKU_BASE, ZimukuClient, type ZimukuClientOpts } from './zimuku.js'
 import { MinIntervalLimiter } from './assrt.js'
 import { ZimukuSessionStore } from './zimukuSession.js'
 import { ZimukuChallengeError } from './yunsuo.js'
@@ -79,30 +79,45 @@ describe('parseSearchResults', () => {
 })
 
 describe('parseDetailPage', () => {
-  it('extracts the absolute download url and derives the filename from it (fixture has href before id="down")', () => {
-    const html = readFileSync('fixtures/zimuku/detail-58421.html', 'utf8')
-    const r = parseDetailPage(html, ZIMUKU_BASE)
-    expect(r).toEqual({
-      downloadUrl: 'https://static.zimuku.org/files/2026/07/12/spy_family_s01_zh.zip',
-      filename: 'spy_family_s01_zh.zip',
-    })
+  it('locates the /dld/<id>.html download anchor on the real detail page (id="down1") and returns the absolute dld url', () => {
+    // 真站(2026-07-19)的详情页下载锚点是 `<a id="down1" href="/dld/179286.html">`——间接下载页,
+    // 不是直链 static URL。parseDetailPage 现返回 { dldUrl },filename 改由下载层 Content-Disposition 提供。
+    const html = readFileSync('fixtures/zimuku/live-detail-179286-20260719.html', 'utf8')
+    expect(parseDetailPage(html, ZIMUKU_BASE)).toEqual({ dldUrl: 'https://zimuku.org/dld/179286.html' })
   })
 
-  it('throws when the page has no id="down" download link (page shape drift)', () => {
+  it('throws when the page has no /dld/<id>.html download link (page shape drift)', () => {
     expect(() => parseDetailPage('<html><body>no download link</body></html>', ZIMUKU_BASE))
-      .toThrow(/id="down"/)
+      .toThrow(/dld/)
   })
 
-  it('is attribute-order and quote agnostic for the id="down" anchor: id-first, href-first, extra attrs, single-quoted', () => {
+  it('matches by href shape (/dld/<id>.html), not id name: id-first, href-first, extra attrs, single-quoted', () => {
+    // 按 href 形状匹配而不是绑定 id 名(真站是 down1,合成页可能是别的)——版面改版最稳的锚点。
     const cases = [
-      '<a id="down" href="https://static.zimuku.org/x.zip">下载</a>',
-      '<a href="https://static.zimuku.org/x.zip" id="down">下载</a>',
-      '<a class="btn" href="https://static.zimuku.org/x.zip" id="down" title="点击下载">下载</a>',
-      "<a id='down' href='https://static.zimuku.org/x.zip'>下载</a>",
+      '<a id="down1" href="/dld/179286.html">下载</a>',
+      '<a href="/dld/179286.html" id="down1" rel="nofollow">下载</a>',
+      '<a class="btn" id="whatever" href="/dld/179286.html" title="点击下载">下载</a>',
+      "<a id='down1' href='/dld/179286.html'>下载</a>",
     ]
     for (const html of cases) {
-      expect(parseDetailPage(html, ZIMUKU_BASE).downloadUrl).toBe('https://static.zimuku.org/x.zip')
+      expect(parseDetailPage(html, ZIMUKU_BASE).dldUrl).toBe('https://zimuku.org/dld/179286.html')
     }
+  })
+})
+
+describe('parseDldPage', () => {
+  it('extracts every mirror download url (/download/<token>/svr/<mirror>) as an absolute url, in order', () => {
+    // 真站 dld 高速下载页(2026-07-19):多条镜像线路 /download/<base64token>/svr/{d0,d1,l0,l1,y0}。
+    const html = readFileSync('fixtures/zimuku/live-dld-179286-20260719.html', 'utf8')
+    const { mirrorUrls } = parseDldPage(html, ZIMUKU_BASE)
+    expect(mirrorUrls.length).toBeGreaterThanOrEqual(3)
+    expect(mirrorUrls[0].startsWith('https://zimuku.org/download/')).toBe(true)
+    expect(mirrorUrls[0]).toContain('/svr/')
+  })
+
+  it('throws when the page has no /download/.../svr mirror links (page shape drift)', () => {
+    expect(() => parseDldPage('<html><body>no mirrors here</body></html>', ZIMUKU_BASE))
+      .toThrow(/mirror|download/)
   })
 })
 
@@ -134,15 +149,12 @@ describe('ZimukuClient', () => {
     ])
   })
 
-  it('detail: fetches /detail/<id>.html and parses the download link', async () => {
-    const detailHtml = readFileSync('fixtures/zimuku/detail-58421.html', 'utf8')
+  it('detail: fetches /detail/<id>.html and parses the /dld download link', async () => {
+    const detailHtml = readFileSync('fixtures/zimuku/live-detail-179286-20260719.html', 'utf8')
     const fetchImpl = vi.fn(async () => new Response(detailHtml))
     const c = client({ fetchImpl: fetchImpl as unknown as typeof fetch })
-    const r = await c.detail('58421')
-    expect(r).toEqual({
-      downloadUrl: 'https://static.zimuku.org/files/2026/07/12/spy_family_s01_zh.zip',
-      filename: 'spy_family_s01_zh.zip',
-    })
+    const r = await c.detail('179286')
+    expect(r).toEqual({ dldUrl: 'https://zimuku.org/dld/179286.html' })
   })
 
   it('respects the MinIntervalLimiter between requests (politeness)', async () => {
