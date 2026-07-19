@@ -172,9 +172,11 @@ export class AssrtClient {
   search(q: string) {
     return this.call('sub/search', { q, filelist: '1', no_muxer: '1' }, AssrtSearchResponseSchema)
   }
-  /** ASSRT 白捡增益①：传命中 id 返最多 5 条相似字幕（免费召回扩展）。 */
+  /** ASSRT 白捡增益①：传命中 id 返最多 5 条相似字幕（免费召回扩展）。带 filelist:'1' 与
+   *  search/searchByFilename 对齐——否则 similar 召回的季包候选 fileList 为空,agent 看不到内部
+   *  各集、无法按 fileIndex 逐集导航,只能整包下载兜底(白白丢了 per-episode 选集能力)。 */
   similar(id: number) {
-    return this.call('sub/similar', { id: String(id) }, AssrtSearchResponseSchema)
+    return this.call('sub/similar', { id: String(id), filelist: '1' }, AssrtSearchResponseSchema)
   }
   /** ASSRT 白捡增益②：整文件名精确模式兜底查询。 */
   searchByFilename(filename: string) {
