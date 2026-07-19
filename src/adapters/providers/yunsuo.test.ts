@@ -139,8 +139,14 @@ describe('parseChallenge (redirect shape — real zimuku.org JS-redirect challen
   })
 })
 
+/** form 形状(合成 fixture)向后兼容:submitChallenge 多了 pendingCookie 参数,但成功语义不变
+ *  (security_session_verify);挑战页无 pending 时传 null。solveYunsuoChallenge 现在每次尝试通过
+ *  fetchChallenge 闭包重抓挑战页(form fixture 每次返回同一份 html + null pending),3rd 参数是
+ *  requestHref(form 分支用不到,传占位)。 */
 describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backward compat)', () => {
   const html = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
+  const requestHref = 'https://www.zimuku.org/detail/1.html'
+  const freshChallenge = () => vi.fn(async () => ({ html, pendingCookie: null as string | null }))
 
   it('fetches the captcha image, calls solve, submits digits, and returns the security_session_verify cookie on first try', async () => {
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -155,7 +161,8 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
     })
     const solve = vi.fn(async () => ({ digits: '74504' }))
     const r = await solveYunsuoChallenge(
-      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html,
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge: freshChallenge() },
+      'https://www.zimuku.org', requestHref,
     )
     expect(r.cookie).toBe('security_session_verify=abc123')
     expect(solve).toHaveBeenCalledTimes(1)
@@ -170,7 +177,10 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
     })
     const solve = vi.fn(async () => ({ digits: '00000' }))
     await expect(
-      solveYunsuoChallenge({ fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 3, 1),
+      solveYunsuoChallenge(
+        { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge: freshChallenge() },
+        'https://www.zimuku.org', requestHref, 3, 1,
+      ),
     ).rejects.toThrow(ZimukuChallengeError)
     expect(submitCount).toBe(3) // 有界:恰好 maxAttempts 次提交,不多不少
   })
@@ -185,12 +195,15 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
       return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=xyz; Path=/' } })
     })
     const solve = vi.fn(async () => ({ digits: '11111' }))
+    const fetchChallenge = freshChallenge()
     const r = await solveYunsuoChallenge(
-      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 5, 1,
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge },
+      'https://www.zimuku.org', requestHref, 5, 1,
     )
     expect(r.cookie).toBe('security_session_verify=xyz')
     expect(imgFetches).toBe(3)
     expect(submitCount).toBe(3)
+    expect(fetchChallenge).toHaveBeenCalledTimes(3) // 每次尝试都重抓挑战页
   })
 
   it('when solve() throws (e.g. a schema-validation error from a schema-failing LLM read), counts it as a failed attempt and re-rolls a fresh captcha — does not propagate the raw error', async () => {
@@ -208,7 +221,8 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
       return { digits: '11111' }
     })
     const r = await solveYunsuoChallenge(
-      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 5, 1,
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge: freshChallenge() },
+      'https://www.zimuku.org', requestHref, 5, 1,
     )
     expect(r.cookie).toBe('security_session_verify=xyz')
     expect(imgFetches).toBe(3) // 每次尝试(含 solve 抛错的两次)都重刷验证码
@@ -222,7 +236,8 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
     })
     const solve = vi.fn(async () => { throw new MockSolveSchemaError('schema mismatch') })
     const rejection = solveYunsuoChallenge(
-      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 3, 1,
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge: freshChallenge() },
+      'https://www.zimuku.org', requestHref, 3, 1,
     )
     await expect(rejection).rejects.toThrow(ZimukuChallengeError)
     await expect(rejection).rejects.not.toThrow(MockSolveSchemaError)
@@ -242,7 +257,8 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
       const solve = vi.fn(async () => ({ digits: '11111' }))
       const rng = () => 0.5 // 目标延迟 = 1000 + 0.5*2000 = 2000ms
       const p = solveYunsuoChallenge(
-        { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html,
+        { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge: freshChallenge() },
+        'https://www.zimuku.org', requestHref,
         5, 1000, 2000, rng,
       )
       let done = false
@@ -267,7 +283,10 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
     const solve = vi.fn(async () => ({ digits: '00000' }))
     const t0 = Date.now()
     await expect(
-      solveYunsuoChallenge({ fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 2, 5),
+      solveYunsuoChallenge(
+        { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge: freshChallenge() },
+        'https://www.zimuku.org', requestHref, 2, 5,
+      ),
     ).rejects.toThrow(ZimukuChallengeError)
     // maxAttempts=2, retryDelayMs=5, jitterRangeMs 默认 0 → 恰好一次 5ms 定长延迟,不应明显超出
     expect(Date.now() - t0).toBeLessThan(200)
@@ -275,54 +294,72 @@ describe('solveYunsuoChallenge (form shape — synthetic fixture, kept for backw
   })
 })
 
-describe('solveYunsuoChallenge (redirect shape — real zimuku.org JS-redirect challenge page)', () => {
-  const html = readFileSync('fixtures/zimuku/real-challenge.html', 'utf8')
+describe('solveYunsuoChallenge (redirect shape — real zimuku.org live challenge + real success protocol)', () => {
+  const html = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
+  const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
+  const baseUrl = 'https://zimuku.org'
+  const requestHref = 'https://zimuku.org/search?q=Pulp'
+  const srcurlHex = Buffer.from(requestHref, 'latin1').toString('hex')
 
-  it('decodes the data: URI captcha image locally (no network fetch), GETs the hex-encoded submit URL with the srcurl cookie, and returns the security_session_verify cookie', async () => {
+  it('re-fetches a fresh challenge, decodes the data: URI captcha locally, submits hex(digits) carrying the pending security_session_verify + srcurl=hex(href) cookies, and on success returns the verify+high_verify pair', async () => {
+    const fetchChallenge = vi.fn(async () => ({ html, pendingCookie: 'PENDINGVAL' as string | null }))
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(String(url)).toBe('https://www.zimuku.org/?security_verify_img=3734353034')
-      expect(init?.method ?? 'GET').toBe('GET') // GET redirect, not a form POST
+      // 提交 GET:submitUrlPrefix + hex('88640') = '3838363430'(golden 铁证 captcha5=88640)
+      expect(String(url)).toBe('https://zimuku.org/search?q=Pulp&security_verify_img=3838363430')
+      expect(init?.method ?? 'GET').toBe('GET') // GET 跳转,不是表单 POST
+      // 铁证:回带挑战页下发的 pending security_session_verify + srcurl=hex(被挑战的完整 URL)
       expect((init?.headers as Record<string, string> | undefined)?.Cookie)
-        .toBe('srcurl=68747470733a2f2f7777772e7a696d756b752e6f7267')
-      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=abc123; Path=/; HttpOnly' } })
+        .toBe(`security_session_verify=PENDINGVAL; srcurl=${srcurlHex}`)
+      // 答对 → 服务端下发 security_session_high_verify(这才是"已验证"令牌),body 是 923B 成功中间页
+      return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HIGHVAL; Path=/; HttpOnly' } })
     })
-    const solve = vi.fn(async (imageBytes: Buffer) => {
-      expect(imageBytes.toString('utf8')).toBe('YUNSUO-CAPTCHA-BYTES') // decoded straight from the data: URI
-      return { digits: '74504' }
-    })
+    const solve = vi.fn(async () => ({ digits: '88640' }))
     const r = await solveYunsuoChallenge(
-      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html,
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge }, baseUrl, requestHref,
     )
-    expect(r.cookie).toBe('security_session_verify=abc123')
-    expect(fetchImpl).toHaveBeenCalledTimes(1) // 图片本地解码,唯一一次网络调用是提交 GET
+    // 验证后的会话是这对 cookie 的组合串,后续请求都要带
+    expect(r.cookie).toBe('security_session_verify=PENDINGVAL; security_session_high_verify=HIGHVAL')
+    expect(fetchChallenge).toHaveBeenCalledTimes(1)
+    expect(fetchImpl).toHaveBeenCalledTimes(1) // 验证码内嵌 data: URI 本地解码,唯一网络调用是提交 GET
     expect(solve).toHaveBeenCalledTimes(1)
   })
 
-  it('retries (re-decoding the same embedded captcha) on a wrong-digits rejection, up to maxAttempts, then throws ZimukuChallengeError', async () => {
+  it('treats a response WITHOUT security_session_high_verify as a wrong answer even when it re-issues a pending security_session_verify, re-fetches a fresh challenge every attempt, then throws ZimukuChallengeError', async () => {
+    let pendingSeq = 0
+    const fetchChallenge = vi.fn(async () => ({ html, pendingCookie: `PENDING${++pendingSeq}` as string | null }))
     let submitCount = 0
     const fetchImpl = vi.fn(async () => {
       submitCount++
-      return new Response('rejected') // no set-cookie header → treated as wrong digits
+      // 答错:服务端重新挑战,只下发新的 pending security_session_verify(不是 high_verify)——
+      // 这正是旧代码 bug5 误判为成功、缓存无效 cookie 的地方。真实协议下这必须算失败。
+      return new Response('re-challenged', { headers: { 'set-cookie': `security_session_verify=REISSUED${submitCount}; Path=/` } })
     })
     const solve = vi.fn(async () => ({ digits: '00000' }))
     await expect(
-      solveYunsuoChallenge({ fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 3, 1),
+      solveYunsuoChallenge(
+        { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge }, baseUrl, requestHref, 3, 1,
+      ),
     ).rejects.toThrow(ZimukuChallengeError)
-    expect(submitCount).toBe(3) // 有界:恰好 maxAttempts 次提交
+    expect(fetchChallenge).toHaveBeenCalledTimes(3) // 每次尝试重抓新鲜挑战页(拿新图 + 新 pending),绝不复用同一张
+    expect(submitCount).toBe(3)
   })
 
-  it('succeeds on the Nth attempt after N-1 rejections', async () => {
+  it('succeeds on the Nth attempt after N-1 wrong answers, re-fetching a fresh challenge each time', async () => {
     let submitCount = 0
+    const fetchChallenge = vi.fn(async () => ({ html, pendingCookie: 'PVAL' as string | null }))
     const fetchImpl = vi.fn(async () => {
       submitCount++
-      if (submitCount < 3) return new Response('rejected')
-      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=xyz; Path=/' } })
+      if (submitCount < 3) {
+        return new Response('re-challenged', { headers: { 'set-cookie': 'security_session_verify=REISSUED; Path=/' } })
+      }
+      return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HV; Path=/' } })
     })
     const solve = vi.fn(async () => ({ digits: '11111' }))
     const r = await solveYunsuoChallenge(
-      { fetchImpl: fetchImpl as unknown as typeof fetch, solve }, 'https://www.zimuku.org', html, 5, 1,
+      { fetchImpl: fetchImpl as unknown as typeof fetch, solve, fetchChallenge }, baseUrl, requestHref, 5, 1,
     )
-    expect(r.cookie).toBe('security_session_verify=xyz')
+    expect(r.cookie).toBe('security_session_verify=PVAL; security_session_high_verify=HV')
+    expect(fetchChallenge).toHaveBeenCalledTimes(3)
     expect(submitCount).toBe(3)
   })
 })

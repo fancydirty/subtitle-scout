@@ -195,6 +195,10 @@ export interface SolveYunsuoChallengeDeps {
   fetchImpl: typeof fetch
   /** 验证码识别回调——生产接线用 solveNumericCaptcha(llm, png),与 LLM 解耦,测试注入假实现 */
   solve: (imageBytes: Buffer) => Promise<{ digits: string }>
+  /** 每次尝试重新抓一张新鲜挑战页 + 它下发的 pending security_session_verify cookie 值
+   *  (仅值,不含 "security_session_verify=" 前缀;无则 null)。redirect 形状的验证码内嵌在
+   *  挑战页里,答错后服务端会轮换 pending 会话,故重试必须重抓、不能复用同一张图。 */
+  fetchChallenge: () => Promise<{ html: string; pendingCookie: string | null }>
 }
 
 /** 抓验证码图片字节:data: URI(真实页面形状)直接从 base64 payload 本地解码,不发网络请求;
@@ -209,39 +213,66 @@ async function fetchCaptchaImage(fetchImpl: typeof fetch, imageUrl: string): Pro
   return Buffer.from(await res.arrayBuffer())
 }
 
-/** 提交识别出的验证码数字——按挑战形状分派:"form" 形状 POST 表单字段(向后兼容合成 fixture);
- *  "redirect" 形状复刻 YunsuoAutoJump() 的 GET 跳转,hex 编码数字拼到 submitUrlPrefix 后面,
- *  并带上跳转前 JS 设置的 srcurl cookie(此处没有真实浏览器 cookie jar,直接当请求头带上)。 */
-async function submitChallenge(fetchImpl: typeof fetch, challenge: YunsuoChallenge, digits: string): Promise<Response> {
+/** 提交识别出的验证码数字,返回"已验证会话 cookie 串"(成功)或 null(答错/被拒)——把成功判定
+ *  内聚到形状分派处。按挑战形状分派:
+ *  - "redirect"(真实生产形状):复刻 YunsuoAutoJump() 的 GET 跳转——hex 编码数字拼到
+ *    submitUrlPrefix 后面,请求头带 `Cookie: security_session_verify=<pending>; srcurl=<hex(href)>`
+ *    (pending 是挑战页下发的会话、srcurl 是被挑战的完整 URL;WAF 靠这对把答案绑到会话)。
+ *    成功=响应下发 security_session_high_verify(这才是"已验证"令牌)→ 返回组合串
+ *    `security_session_verify=<pending>; security_session_high_verify=<high>`(后续请求两者都要带)。
+ *    答错时服务端只重新下发一个 pending security_session_verify、没有 high_verify——旧代码在这里
+ *    误把答错当成功、缓存了无效 cookie,故这里严格按 high_verify 判定,无则 null。
+ *  - "form"(合成 fixture,向后兼容):POST 表单字段,成功=响应下发 security_session_verify → 返回它。 */
+async function submitChallenge(
+  fetchImpl: typeof fetch, challenge: YunsuoChallenge, digits: string, pendingCookie: string | null,
+): Promise<string | null> {
   if (challenge.kind === 'form') {
     const body = new URLSearchParams({ ...challenge.fields, [challenge.captchaFieldName]: digits })
-    return fetchImpl(challenge.action, { method: 'POST', body })
+    const res = await fetchImpl(challenge.action, { method: 'POST', body })
+    return extractCookie(res, 'security_session_verify')
   }
   const submitUrl = challenge.submitUrlPrefix + stringToHex(digits)
-  return fetchImpl(submitUrl, { headers: { Cookie: `srcurl=${challenge.srcurlCookieValue}` } })
+  const cookieParts = [
+    ...(pendingCookie ? [`security_session_verify=${pendingCookie}`] : []),
+    `srcurl=${challenge.srcurlCookieValue}`,
+  ]
+  const res = await fetchImpl(submitUrl, { headers: { Cookie: cookieParts.join('; ') } })
+  const high = extractCookie(res, 'security_session_high_verify')
+  if (!high) return null
+  const verify = pendingCookie ? `security_session_verify=${pendingCookie}; ` : ''
+  return `${verify}${high}`
 }
 
 /**
- * 有界重试破解云锁验证码:抓图→识别→提交,拿到 security_session_verify cookie 即成功返回;
- * 提交被拒(cookie 没出现在响应里)则重刷验证码重试,最多 maxAttempts 次(默认 5,与设计文档
- * 一致)。攻击性节流:失败重试之间等待 jitteredDelayMs(retryDelayMs, retryJitterRangeMs, rng)——
- * 默认 jitterRangeMs=0 时就是恒定的 retryDelayMs(向后兼容/测试友好),生产调用方(zimuku.ts)
- * 显式传入非零 jitterRangeMs 以获得随机化的重试节奏,绝不无延迟重试风暴。
+ * 有界重试破解云锁验证码:每次尝试都重新抓一张新鲜挑战页(deps.fetchChallenge——拿新图 + 新 pending
+ * security_session_verify cookie)→ 解析 → 抓图 → 识别 → 提交;submitChallenge 返回"已验证会话
+ * cookie 串"即成功返回,返回 null(答错/被拒)则重试,最多 maxAttempts 次(默认 5,与设计文档一致)。
+ *
+ * 为什么每次重抓而不是复用一张挑战页:redirect 形状(真实生产形状)的验证码是内嵌在挑战页里的
+ * data:URI,答错后服务端会轮换 pending 会话——复用同一张图 + 旧 pending 的重试毫无意义。故重试路径
+ * 必须重新抓挑战页,拿到配套的新图 + 新 pending 再提交。requestHref 是被挑战的完整请求 URL,用于
+ * redirect 形状的 srcurl=hex(href)(见 submitChallenge)。
+ *
+ * 攻击性节流:失败重试之间等待 jitteredDelayMs(retryDelayMs, retryJitterRangeMs, rng)——默认
+ * jitterRangeMs=0 时就是恒定的 retryDelayMs(向后兼容/测试友好),生产调用方(zimuku.ts)显式传入
+ * 非零 jitterRangeMs 以获得随机化的重试节奏,绝不无延迟重试风暴。(注:重抓挑战页本身的礼貌限速由
+ * 调用方的 fetchChallenge 闭包负责,见 zimuku.ts。)
  *
  * deps.solve() 本身也被算作"这次尝试失败"而不是让它的异常穿透:LLM 结构化输出校验失败会抛出
  * schema 不匹配的异常,这属于"这次验证码读数拿不到"的瞬时失败,应该跟"提交
  * 被拒"走同一条重刷验证码的有界重试路径,而不是绕过重试直接把内部实现细节的错误类型甩给调用方。
  *
  * 两种挑战形状(见 parseChallenge)在这里透明地分派给 fetchCaptchaImage/submitChallenge——
- * 上层(zimuku.ts)完全不需要知道当次挑战页是哪种形状。
+ * 上层(zimuku.ts)完全不需要知道当次挑战页是哪种形状;两形状的成功语义差异内聚在 submitChallenge。
  */
 export async function solveYunsuoChallenge(
-  deps: SolveYunsuoChallengeDeps, baseUrl: string, challengeHtml: string,
+  deps: SolveYunsuoChallengeDeps, baseUrl: string, requestHref: string,
   maxAttempts = 5, retryDelayMs = 2000, retryJitterRangeMs = 0, rng: RandomFn = Math.random,
 ): Promise<{ cookie: string }> {
-  const challenge = parseChallenge(challengeHtml, baseUrl)
   let lastError = ''
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { html, pendingCookie } = await deps.fetchChallenge()
+    const challenge = parseChallenge(html, baseUrl, requestHref)
     const imgBytes = await fetchCaptchaImage(deps.fetchImpl, challenge.imageUrl)
 
     let digits: string
@@ -256,10 +287,9 @@ export async function solveYunsuoChallenge(
       continue
     }
 
-    const res = await submitChallenge(deps.fetchImpl, challenge, digits)
-    const cookie = extractCookie(res, 'security_session_verify')
-    if (cookie) return { cookie }
-    lastError = `attempt ${attempt}: no security_session_verify cookie in response (wrong digits?)`
+    const verified = await submitChallenge(deps.fetchImpl, challenge, digits, pendingCookie)
+    if (verified) return { cookie: verified }
+    lastError = `attempt ${attempt}: no security_session_high_verify cookie in response (wrong digits?)`
     if (attempt < maxAttempts) {
       await new Promise(r => setTimeout(r, jitteredDelayMs(retryDelayMs, retryJitterRangeMs, rng)))
     }
