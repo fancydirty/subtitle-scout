@@ -14,6 +14,7 @@ import { gcOrphans } from '../files/stagingSandbox.js'
 import { isDirWritable, type PathMapping } from '../core/mediaContext.js'
 import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
+import { AuthService } from '../dashboard/auth.js'
 import { makeModel } from '../agent/llm.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
@@ -45,7 +46,7 @@ import { recognize } from '../recognition/index.js'
 import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
-import { dashboardNoTokenWarningLines } from './dashboardTokenWarning.js'
+import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
 import { claimParked } from '../dashboard/apiV2.js'
 
 function requireEnv(name: string): string {
@@ -542,13 +543,13 @@ async function cmdWatch() {
       },
     })
     if (dashServer.listening) {
-      console.log(`dashboard on http://0.0.0.0:${dashPort}${process.env.DASHBOARD_TOKEN ? ' (token required)' : ''}`)
-      // R2D-5（R2 复审，主控裁决）：无 token 高声告警——不做 403 硬拒（会砸现行无 token 的家用
-      // 部署；正式鉴权归 Sonarr 式立项），只在这里把风险说清楚。三行文案见
-      // dashboardTokenWarning.ts（那个模块单独测，这里不直接写在 index.ts 里的理由见其头注释）。
-      if (!process.env.DASHBOARD_TOKEN) {
-        for (const line of dashboardNoTokenWarningLines()) console.error(line)
-      }
+      // 鉴权 A4 Task 15：启动播报三态（裸奔告警退役）。DASHBOARD_TOKEN 现在只是 legacy 兼容
+      // 输入；是否已建账号由 settings.auth_password_hash 决定。后缀与逐行播报都据这两态给。
+      const tokenSet = Boolean(process.env.DASHBOARD_TOKEN)
+      const initialized = new SettingsRepo(db).get('auth_password_hash') !== null
+      const suffix = tokenSet ? ' (legacy token)' : initialized ? '' : ' (setup pending)'
+      console.log(`dashboard on http://0.0.0.0:${dashPort}${suffix}`)
+      for (const line of dashboardAuthStartupLines({ tokenSet, initialized })) console.error(line)
     } else {
       log('dashboard server failed to start (port conflict?), continuing without dashboard')
     }
@@ -734,7 +735,24 @@ async function cmdRealignRollback(archiveDir: string) {
   }
 }
 
-const USAGE = 'usage: subtitle-scout watch | reconcile-all | doctor | realign-rollback <archiveDir>'
+const USAGE = 'usage: subtitle-scout watch | reconcile-all | doctor | realign-rollback <archiveDir> | auth reset'
+
+/** 鉴权 A4 Task 15：`subtitle-scout auth reset`——诚实找回密码。删管理员三键回到未初始化态，
+ *  下次访问 dashboard 重进创建管理员向导。复用 SUBTITLE_SCOUT_DB / cmdWatch 同一套 db 定位。 */
+function cmdAuthReset(): void {
+  const dbPath = process.env.SUBTITLE_SCOUT_DB || join(homedir(), '.subtitle-scout', 'scout.db')
+  if (!existsSync(dbPath)) {
+    console.error(`未找到数据库 ${dbPath}——尚无管理员账号可重置（或先设置 SUBTITLE_SCOUT_DB 指向正确路径）。`)
+    process.exit(2)
+  }
+  const db = openDb(dbPath)
+  try {
+    new AuthService(new SettingsRepo(db)).reset()
+    console.log('已清除管理员凭据。下次访问 dashboard 将重新进入创建管理员向导。')
+  } finally {
+    db.close()
+  }
+}
 
 async function main() {
   // strict:false:parseArgs 默认 strict 会对任何未声明的 --flag(含用户本能敲的 --help/-h)抛原始
@@ -749,6 +767,7 @@ async function main() {
   if (cmd === 'reconcile-all') return cmdReconcileAll()
   if (cmd === 'doctor') return cmdDoctor()
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
+  if (cmd === 'auth' && positionals[1] === 'reset') return cmdAuthReset()
   console.error(USAGE)
   process.exit(2)
 }

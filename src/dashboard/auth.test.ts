@@ -171,3 +171,18 @@ describe('A1 硬化（Task 14′：长度阈值 10 + setup 原子性）', () => 
     expect(new AuthService(new SettingsRepo(db)).isInitialized()).toBe(false)
   })
 })
+
+describe('AuthService.reset（A4 Task 15：诚实找回密码的后端）', () => {
+  it('reset 后回到未初始化态，旧密码/apiKey 全失效', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const r = auth.setup('admin', 'hunter2222', 1)
+    if (!r.ok) throw new Error('setup failed')
+    expect(auth.isInitialized()).toBe(true)
+    auth.reset()
+    expect(auth.isInitialized()).toBe(false)
+    expect(auth.verifyApiKey(r.apiKey)).toBe(false)
+    expect(auth.login('admin', 'hunter2222', '1.1.1.1', 2).ok).toBe(false)
+    // reset 后可重新 setup（向导重跑）
+    expect(auth.setup('admin2', 'newpass8888', 3).ok).toBe(true)
+  })
+})

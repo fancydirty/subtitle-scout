@@ -154,4 +154,14 @@ export class AuthService {
     const stored = this.settings.get(AUTH_KEYS.apiKey)
     return stored === null ? null : stored.slice(-4)
   }
+
+  /** A4 Task 15：诚实找回密码——删三键回到未初始化态，下次访问 dashboard 重进创建管理员向导。
+   *  CLI `subtitle-scout auth reset` 的后端（自托管的 CLI 恢复路径，同 *arr/Homarr）。 */
+  reset(): void {
+    this.settings.db.transaction(() => {
+      this.settings.delete(AUTH_KEYS.username)
+      this.settings.delete(AUTH_KEYS.passwordHash)
+      this.settings.delete(AUTH_KEYS.apiKey)
+    })()
+  }
 }

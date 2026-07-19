@@ -1,27 +1,35 @@
 import { describe, it, expect } from 'vitest'
-import { dashboardNoTokenWarningLines } from './dashboardTokenWarning.js'
+import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
 
-// R2D-5（R2 复审）：dashboard 绑 0.0.0.0 且未设 DASHBOARD_TOKEN 时的高声告警——裁决版不做 403
-// 硬拒（会砸现行无 token 家用部署；正式鉴权归 Sonarr 式立项），只在 cmdWatch 起 dashboard 之后
-// 高声播报风险。抽成独立纯函数是因为 cli/index.ts 顶层有 main().catch(...) 的 import 时副作用
-// （同 subtitle-fetch.test.ts 顶部注释记录的既有教训），不能直接 import index.ts 来测。
-describe('dashboardNoTokenWarningLines', () => {
-  it('返回三行，点明 0.0.0.0 绑定、零鉴权、写端点对局域网开放、强烈建议设置 DASHBOARD_TOKEN', () => {
-    const lines = dashboardNoTokenWarningLines()
-    expect(lines).toHaveLength(3)
+// 鉴权 A4 Task 15：R2D-5 裸奔告警退役。DASHBOARD_TOKEN 时代结束——首启向导本身就是门，"未设账号"
+// 不再是裸奔态。三态播报（cmdWatch 起 dashboard 后逐行 console 播报）：
+//   ① tokenSet（无论初始化否）：legacy token 仍有效，建议迁移到账号密码
+//   ② 未初始化 + 无 token：一行指路——首次访问进创建管理员向导（不是告警）
+//   ③ 已初始化 + 无 token：零输出（健康态不聒噪）
+// 抽成独立纯函数是因为 cli/index.ts 顶层有 main().catch(...) 的 import 时副作用（既有教训），
+// 不能直接 import index.ts 来测。
+describe('dashboardAuthStartupLines（三态播报）', () => {
+  it('DASHBOARD_TOKEN 已设 → legacy 提示，建议迁移到账号密码', () => {
+    const lines = dashboardAuthStartupLines({ tokenSet: true, initialized: false })
+    expect(lines.length).toBeGreaterThanOrEqual(1)
     const joined = lines.join('\n')
-    expect(joined).toContain('0.0.0.0')
     expect(joined).toContain('DASHBOARD_TOKEN')
-    // 写端点对局域网完全开放——至少点名 settings/roots 与 redispatch 两类
-    expect(joined).toMatch(/settings|roots/i)
-    expect(joined).toMatch(/redispatch/i)
+    expect(joined).toMatch(/迁移|账号|移除/)
   })
 
-  it('每行都走 console.error（高声告警，不是普通 console.log）——这里只锁内容，调用点在 cmdWatch 自行验证', () => {
-    // 纯函数本身不产生副作用，调用方决定用什么级别打印；这条用例只是防止有人把它悄悄改成
-    // 返回单行大字符串（那样调用方就没法逐行 console.error 了）。
-    const lines = dashboardNoTokenWarningLines()
-    expect(Array.isArray(lines)).toBe(true)
-    for (const line of lines) expect(typeof line).toBe('string')
+  it('DASHBOARD_TOKEN 已设 + 已初始化 → 同样给 legacy 迁移提示（token 与账号可共存，提示迁移）', () => {
+    const lines = dashboardAuthStartupLines({ tokenSet: true, initialized: true })
+    expect(lines.join('\n')).toContain('DASHBOARD_TOKEN')
+  })
+
+  it('未初始化 + 无 token → 一行指路（进创建管理员向导），不含"警告/裸奔/零鉴权"字样', () => {
+    const lines = dashboardAuthStartupLines({ tokenSet: false, initialized: false })
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/向导|设置|管理员/)
+    expect(lines[0]).not.toMatch(/警告|裸奔|零鉴权/)
+  })
+
+  it('已初始化 + 无 token → 零输出（健康态不聒噪）', () => {
+    expect(dashboardAuthStartupLines({ tokenSet: false, initialized: true })).toEqual([])
   })
 })
