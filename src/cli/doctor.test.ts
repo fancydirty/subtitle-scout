@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
+import { checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
 import { MIGRATIONS } from '../v2/db.js'
 
 describe('doctor 远端三项', () => {
@@ -46,6 +46,17 @@ describe('doctor 远端三项', () => {
     const r = await checkLlm(async () => { throw new Error('401 Unauthorized') })
     expect(r.ok).toBe(false)
     expect(r.hint).toMatch(/LLM_BASE_URL|LLM_API_KEY/)
+  })
+  it('tmdb key 有效(探测命中) → ok', async () => {
+    const r = await checkTmdb(async () => 3)
+    expect(r.ok).toBe(true)
+    expect(r.name).toBe('tmdb')
+    expect(r.detail).toMatch(/命中 3/)
+  })
+  it('tmdb 探测失败 → ✗ 并提示检查 key/反代', async () => {
+    const r = await checkTmdb(async () => { throw new Error('401') })
+    expect(r.ok).toBe(false)
+    expect(r.hint).toMatch(/TMDB_API_KEY|TMDB_PROXY_URL/)
   })
 })
 

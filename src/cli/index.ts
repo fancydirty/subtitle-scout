@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util'
 import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { generateText, type LanguageModel } from 'ai'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
@@ -15,7 +16,7 @@ import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
 import { makeModel } from '../agent/llm.js'
 import {
-  checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkMediaRoots,
+  checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
@@ -514,7 +515,10 @@ async function cmdWatch() {
   // Dashboard v2（媒体库 API，读 v2 SQLite；海报直出 TMDB CDN，不再走服务端代理）
   const dashPort = Number(process.env.DASHBOARD_PORT) || 0
   if (dashPort > 0) {
-    const distDir = join(new URL('../..', import.meta.url).pathname, 'web', 'dist')
+    // fileURLToPath 而非 .pathname:file:// URL 的 .pathname 会百分号编码(路径含空格/非 ASCII 时
+    // `/Users/My Projects/...`→`/Users/My%20Projects/...`),导致 existsSync 找不到 web/dist、SPA 全 404
+    // 白屏(docker 固定 /app 无空格碰巧测不出)。fileURLToPath 正确解码成真实文件系统路径。
+    const distDir = join(fileURLToPath(new URL('../..', import.meta.url)), 'web', 'dist')
     const dashServer = await startDashboard({
       db,
       port: dashPort,
@@ -548,6 +552,15 @@ async function cmdWatch() {
     } else {
       log('dashboard server failed to start (port conflict?), continuing without dashboard')
     }
+  } else {
+    // dashPort=0 有两种来路:未设(用户不要 dashboard,正常)vs 设了但值无效(如 "8o99"→NaN→0,
+    // 静默不启动会让用户以为 dashboard 坏了却毫无线索)。区分播报,后者高声告警。
+    const raw = process.env.DASHBOARD_PORT
+    if (raw && raw.trim() !== '') {
+      console.error(`warn: DASHBOARD_PORT="${raw}" 不是有效端口号，dashboard 未启动（设为正整数如 8099 启用，或删除该变量以静默禁用）`)
+    } else {
+      log('dashboard disabled (DASHBOARD_PORT 未设)')
+    }
   }
 
   // 去 Jellyfin 化 P7：不再有单一"正在看哪台 Jellyfin"的地址可报，改报实际生效的媒体根白名单
@@ -576,6 +589,19 @@ async function cmdDoctor() {
   const results: DoctorResult[] = []
 
   // env 缺失走诊断项（✗ + hint、exit 1），不 requireEnv 急切崩溃（那是 exit 2 的”用法错误”通道）
+  // TMDB 排最前:它是 watch/reconcile-all 的硬前置(缺 key 直接拒绝启动),缺它 doctor 必须 ✗ 而非
+  // 假装全绿——修复"doctor 通过但 watch 立刻因缺 TMDB_API_KEY 退出"的假信心。
+  const tmdbKey = process.env.TMDB_API_KEY
+  if (!tmdbKey) {
+    results.push({
+      name: 'tmdb', ok: false, detail: 'TMDB_API_KEY 未配置（watch/reconcile-all 的硬前置，缺它直接拒绝启动）',
+      hint: '获取：https://www.themoviedb.org → 账户设置 → API → 复制 API Key(v3 auth)。墙内环境可配 TMDB_PROXY_URL 或 TMDB_BASE_URL 走反代。',
+    })
+  } else {
+    const tmdb = new TmdbClient({ apiKey: tmdbKey, baseUrl: process.env.TMDB_BASE_URL, proxyUrl: process.env.TMDB_PROXY_URL })
+    results.push(await checkTmdb(() => withTimeout(tmdb.search('movie', 'The Matrix', 1999), 10_000, 'TMDB').then(h => h.length)))
+  }
+
   const assrtToken = process.env.ASSRT_TOKEN
   if (!assrtToken) {
     results.push({
@@ -657,8 +683,11 @@ async function cmdDoctor() {
   results.push(checkMediaRoots(mediaRootsForDoctor, isDirWritable, mediaRootsSource))
 
   {
+    // R2D-11 同源修正:挂载能力也探"真正生效的" DB 根(mediaRootsForDoctor),而不是 env 种子 roots
+    // ——用户若只在 dashboard 加守备目录(MEDIA_ROOTS env 留空),用 env roots 会误报"未配置,跳过",
+    // 而 realign 降级阶梯恰恰依赖这些 DB 根的硬链接/大小写能力。与紧邻的 checkMediaRoots 口径对齐。
     const { probeMountCapabilities } = await import('../files/mountCapabilities.js')
-    results.push(checkMountCapabilities(roots, probeMountCapabilities))
+    results.push(checkMountCapabilities(mediaRootsForDoctor, probeMountCapabilities))
   }
 
   // v2 database checks (only if db file exists)
@@ -705,17 +734,22 @@ async function cmdRealignRollback(archiveDir: string) {
   }
 }
 
+const USAGE = 'usage: subtitle-scout watch | reconcile-all | doctor | realign-rollback <archiveDir>'
+
 async function main() {
-  const { positionals } = parseArgs({
-    allowPositionals: true,
-    options: {},
-  })
+  // strict:false:parseArgs 默认 strict 会对任何未声明的 --flag(含用户本能敲的 --help/-h)抛原始
+  // 错误,被顶层 catch 打成栈退出——新用户得到栈而非用法。改宽松解析,自己识别 help,未知子命令走 usage。
+  const { positionals } = parseArgs({ allowPositionals: true, strict: false })
   const cmd = positionals[0]
+  if (cmd === 'help' || cmd === undefined || process.argv.slice(2).some(a => a === '--help' || a === '-h')) {
+    console.log(USAGE)
+    process.exit(0)
+  }
   if (cmd === 'watch') return cmdWatch()
   if (cmd === 'reconcile-all') return cmdReconcileAll()
   if (cmd === 'doctor') return cmdDoctor()
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
-  console.error('usage: subtitle-scout watch | reconcile-all | doctor | realign-rollback <archiveDir>')
+  console.error(USAGE)
   process.exit(2)
 }
 

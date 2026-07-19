@@ -73,6 +73,22 @@ export async function checkZimuku(
   }
 }
 
+/** TMDB 是 watch/reconcile-all 的**硬前置**(识别文件、拉 origin_lang/季表全靠它——缺 key 时
+ *  cmdWatch/cmdReconcileAll 直接 requireEnv 崩溃退出)。故它不是可选 provider:cmdDoctor 在缺 key 时
+ *  直接推一条 ✗(而非 skip),配了 key 才走这里用零成本搜索探测 key/网络可用。这条检查的存在本身
+ *  就是修复"doctor 全绿但 watch 立刻因缺 TMDB_API_KEY 退出"的假信心。 */
+export async function checkTmdb(probe: () => Promise<number>): Promise<DoctorResult> {
+  try {
+    const hits = await probe()
+    return { name: 'tmdb', ok: true, detail: `TMDB API key 有效，探测命中 ${hits} 条` }
+  } catch (e) {
+    return {
+      name: 'tmdb', ok: false, detail: `搜索失败：${String(e)}`,
+      hint: 'TMDB_API_KEY 无效或网络不通。获取：https://www.themoviedb.org → 账户设置 → API → 复制 API Key(v3 auth)。墙内环境可配 TMDB_PROXY_URL 或 TMDB_BASE_URL 走反代。',
+    }
+  }
+}
+
 export async function checkLlm(minimalChat: () => Promise<string>): Promise<DoctorResult> {
   try {
     await minimalChat()
