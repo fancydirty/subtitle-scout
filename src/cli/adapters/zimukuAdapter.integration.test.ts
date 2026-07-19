@@ -22,7 +22,9 @@ const asWritten = (o: WriteSubtitleOutcome): WriteSubtitleResult => {
 
 describe('zimuku end-to-end offline (challenge → solve → search → resolve → download → unzip → write)', () => {
   it('produces an installed subtitle file from a cold session, exercising the full FetchAdapter contract', async () => {
-    const challengeHtml = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
+    // 真实 golden fixtures:14202B 活挑战页 + 923B 成功中间页(2026-07-19 抓包),走真实云锁协议
+    const challengeHtml = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
+    const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
     const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
     const detailHtml = readFileSync('fixtures/zimuku/detail-58421.html', 'utf8')
 
@@ -32,18 +34,19 @@ describe('zimuku end-to-end offline (challenge → solve → search → resolve 
     ))
     const zipBuffer = zip.toBuffer()
 
-    let searchCallCount = 0
-    const fetchImpl = async (url: string) => {
+    const fetchImpl = async (url: string, init?: RequestInit) => {
       const u = String(url)
+      const cookie = (init?.headers as Record<string, string> | undefined)?.Cookie ?? ''
+      // 验证码提交:回带 pending security_session_verify + srcurl → 答对下发 high_verify(923B 中间页)
+      if (u.includes('security_verify_img=')) {
+        return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HIGH; Path=/' } })
+      }
       if (u.includes('/search?q=')) {
-        searchCallCount++
-        return searchCallCount === 1 ? new Response(challengeHtml) : new Response(searchHtml)
+        // 带 high_verify 的重试请求 → 放行真实内容;否则仍是挑战页(下发一个 pending)
+        if (cookie.includes('security_session_high_verify')) return new Response(searchHtml)
+        return new Response(challengeHtml, { headers: { 'set-cookie': 'security_session_verify=PEND; Path=/' } })
       }
       if (u.includes('/detail/58421.html')) return new Response(detailHtml)
-      if (u.includes('security_verify_img')) return new Response(Buffer.from('png'))
-      if (u.includes('aq_wzws_confirm.html')) {
-        return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=e2e789; Path=/' } })
-      }
       if (u.includes('static.zimuku.org')) return new Response(zipBuffer)
       throw new Error(`unexpected fetch in test: ${u}`)
     }
@@ -51,7 +54,7 @@ describe('zimuku end-to-end offline (challenge → solve → search → resolve 
     const sessionStore = new ZimukuSessionStore(mkdtempSync(join(tmpdir(), 'zimuku-e2e-session-')))
     const client = new ZimukuClient({
       sessionStore, fetchImpl: fetchImpl as unknown as typeof fetch,
-      solve: async () => ({ digits: '74504' }),
+      solve: async () => ({ digits: '88640' }), // golden 铁证 captcha5=88640
       limiter: new MinIntervalLimiter(1),
     })
     const adapter = makeZimukuAdapter(client)
@@ -80,7 +83,7 @@ describe('zimuku end-to-end offline (challenge → solve → search → resolve 
     expect(written.path).toContain('SPY.FAMILY.S01E01.zh-Hans.srt')
     expect(readFileSync(written.path, 'utf8')).toContain('阿尼亚喜欢花生')
 
-    // 会话 cookie 已经缓存下来,供下一次 job 复用(不必重新破解)
-    expect(sessionStore.get()?.cookie).toBe('security_session_verify=e2e789')
+    // 会话 cookie 已经缓存下来(组合串:pending + 验证令牌),供下一次 job 复用(不必重新破解)
+    expect(sessionStore.get()?.cookie).toBe('security_session_verify=PEND; security_session_high_verify=HIGH')
   })
 })

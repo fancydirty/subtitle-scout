@@ -143,29 +143,40 @@ describe('ZimukuClient', () => {
     expect(waitSpy).toHaveBeenCalled()
   })
 
-  it('on first hitting the challenge page, solves it, caches the cookie, and retries the original request once', async () => {
-    const challengeHtml = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
+  it('on first hitting the challenge page, solves it via the real yunsuo protocol (pending cookie + high_verify), caches the combined session cookie, and retries the original request', async () => {
+    // 真实 golden fixtures:14202B 活挑战页 + 923B 成功中间页(2026-07-19 抓包)
+    const challengeHtml = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
+    const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
     const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
-    let searchCallCount = 0
-    const fetchImpl = vi.fn(async (url: string) => {
+    let challengeFetches = 0
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       const u = String(url)
-      if (u.includes('/search?q=')) {
-        searchCallCount++
-        return searchCallCount === 1 ? new Response(challengeHtml) : new Response(searchHtml)
+      const cookie = (init?.headers as Record<string, string> | undefined)?.Cookie ?? ''
+      if (u.includes('security_verify_img=')) {
+        // 验证码提交:必须回带挑战页下发的 pending security_session_verify + srcurl → 答对下发 high_verify
+        expect(cookie).toContain('security_session_verify=PEND')
+        expect(cookie).toContain('srcurl=')
+        return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HIGH; Path=/' } })
       }
-      if (u.includes('security_verify_img')) return new Response(Buffer.from('png'))
-      // captcha 表单提交
-      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=cached123; Path=/' } })
+      if (u.includes('/search?q=')) {
+        // 带 high_verify 的重试请求 → 放行真实内容;否则仍是挑战页(下发一个 pending)
+        if (cookie.includes('security_session_high_verify')) return new Response(searchHtml)
+        challengeFetches++
+        return new Response(challengeHtml, { headers: { 'set-cookie': `security_session_verify=PEND${challengeFetches}; Path=/` } })
+      }
+      throw new Error(`unexpected fetch in test: ${u}`)
     })
-    const solve = vi.fn(async () => ({ digits: '74504' }))
+    const solve = vi.fn(async () => ({ digits: '88640' })) // golden 铁证 captcha5=88640
     const sessionStore = new ZimukuSessionStore(mkdtempSync(join(tmpdir(), 'zimuku-client-')))
     const c = new ZimukuClient({
       sessionStore, solve, fetchImpl: fetchImpl as unknown as typeof fetch, limiter: new MinIntervalLimiter(1),
     })
-    const results = await c.search('间谍过家家')
+    const results = await c.search('Pulp')
     expect(results.length).toBe(2)
-    expect(searchCallCount).toBe(2) // 首次撞挑战页 + 破解后重试一次
-    expect(sessionStore.get()?.cookie).toBe('security_session_verify=cached123')
+    // 首发撞挑战页(call1) + fetchChallenge 重抓一张新鲜挑战页(call2)各消耗一次
+    expect(challengeFetches).toBe(2)
+    // 缓存的是组合串:pending security_session_verify + 验证令牌 security_session_high_verify,后续整串带上
+    expect(sessionStore.get()?.cookie).toBe('security_session_verify=PEND2; security_session_high_verify=HIGH')
   })
 
   it('reuses a cached cookie without re-solving when the session store already has one and the site does not challenge', async () => {
@@ -185,20 +196,25 @@ describe('ZimukuClient', () => {
   })
 
   it('invalidates the cookie and throws ZimukuChallengeError when still challenged immediately after solving', async () => {
-    const challengeHtml = readFileSync('fixtures/zimuku/challenge.html', 'utf8')
+    const challengeHtml = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
+    const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
+    let pendingSeq = 0
     const fetchImpl = vi.fn(async (url: string) => {
       const u = String(url)
-      if (u.includes('/search?q=')) return new Response(challengeHtml) // 每次都是挑战页——破解后仍被拦
-      if (u.includes('security_verify_img')) return new Response(Buffer.from('png'))
-      return new Response('ok', { headers: { 'set-cookie': 'security_session_verify=stillbad; Path=/' } })
+      // 破解本身"成功"(下发 high_verify)……
+      if (u.includes('security_verify_img=')) {
+        return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HIGH; Path=/' } })
+      }
+      // ……但每次 /search 都还是挑战页(即便带了验证 cookie)→ 破解后重试仍被拦
+      return new Response(challengeHtml, { headers: { 'set-cookie': `security_session_verify=PEND${++pendingSeq}; Path=/` } })
     })
-    const solve = vi.fn(async () => ({ digits: '74504' }))
+    const solve = vi.fn(async () => ({ digits: '88640' }))
     const dir = mkdtempSync(join(tmpdir(), 'zimuku-client-'))
     const sessionStore = new ZimukuSessionStore(dir)
     const c = new ZimukuClient({
       sessionStore, solve, fetchImpl: fetchImpl as unknown as typeof fetch, limiter: new MinIntervalLimiter(1),
     })
-    await expect(c.search('x')).rejects.toThrow(ZimukuChallengeError)
+    await expect(c.search('Pulp')).rejects.toThrow(ZimukuChallengeError)
     expect(sessionStore.get()).toBeNull() // 失效的 cookie 没有残留在缓存里
   })
 

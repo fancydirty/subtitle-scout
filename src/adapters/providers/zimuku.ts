@@ -118,7 +118,10 @@ export class ZimukuClient {
     this.limiter = opts.limiter ?? new JitteredIntervalLimiter(DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, opts.rng)
   }
 
-  private async fetchPath(path: string, cookie?: string): Promise<string> {
+  /** 发一次请求并返回 { html, challengeCookie }——challengeCookie 是从响应 Set-Cookie 提取的
+   *  pending `security_session_verify` **值**(无则 null)。命中挑战页时,这个 pending 会话
+   *  cookie 必须回带给验证码提交,才能让 WAF 把答案绑到会话(见 yunsuo.ts submitChallenge)。 */
+  private async fetchPath(path: string, cookie?: string): Promise<{ html: string; challengeCookie: string | null }> {
     const t0 = Date.now()
     const headers: Record<string, string> = { ...ZIMUKU_HEADERS, ...(cookie ? { Cookie: cookie } : {}) }
     try {
@@ -127,7 +130,15 @@ export class ZimukuClient {
       })
       const html = await res.text()
       this.opts.onApiCall?.({ endpoint: path, status: res.status, durationMs: Date.now() - t0 })
-      return html
+      const raw = typeof res.headers.getSetCookie === 'function'
+        ? res.headers.getSetCookie()
+        : [res.headers.get('set-cookie') ?? '']
+      let challengeCookie: string | null = null
+      for (const line of raw) {
+        const m = line.match(/security_session_verify=([^;]+)/)
+        if (m) { challengeCookie = m[1]; break }
+      }
+      return { html, challengeCookie }
     } catch (e) {
       this.opts.onApiCall?.({ endpoint: path, status: null, durationMs: Date.now() - t0, error: String(e) })
       throw e
@@ -135,34 +146,41 @@ export class ZimukuClient {
   }
 
   /** 云锁破反爬 + 礼貌节流的统一入口:search()/detail() 都经过这里。命中挑战页时破解一次、
-   *  缓存 cookie、用新 cookie 重试恰好一次。 */
+   *  缓存组合 cookie(security_session_verify + security_session_high_verify)、用它重试恰好一次。 */
   private async requestHtml(path: string): Promise<string> {
     await this.limiter.wait()
     const cached = this.opts.sessionStore.get()
-    const html = await this.fetchPath(path, cached?.cookie)
-    if (!detectChallenge(html)) return html
-    const retryHtml = await this.solveAndRetry(path, html)
-    if (detectChallenge(retryHtml)) {
-      this.opts.sessionStore.invalidate()
-      throw new ZimukuChallengeError(`still challenged after solving captcha for ${path} — cookie rejected immediately`)
-    }
-    return retryHtml
-  }
+    const first = await this.fetchPath(path, cached?.cookie)
+    if (!detectChallenge(first.html)) return first.html
 
-  /** 命中挑战页后的破解+重试:先作废旧 cookie(响应驱动的失效检测,不按计时——设计文档),
-   *  破解拿到新 cookie 后写盘缓存,再礼貌等待一次节流间隔,用新 cookie 重发原始请求恰好一次。 */
-  private async solveAndRetry(path: string, challengeHtml: string): Promise<string> {
     // 命中挑战:缓存的 cookie(若有)已经失效——按响应失效检测,不按计时(设计文档)
     this.opts.sessionStore.invalidate()
+    const href = `${ZIMUKU_BASE}${path}`
     const { cookie } = await solveYunsuoChallenge(
-      { fetchImpl: this.fetchImpl, solve: this.opts.solve },
-      ZIMUKU_BASE, challengeHtml, this.opts.maxCaptchaAttempts ?? 5,
+      {
+        fetchImpl: this.fetchImpl,
+        solve: this.opts.solve,
+        // 每次尝试重抓新鲜挑战页(拿新图 + 配套的新 pending cookie)——redirect 形状答错后服务端
+        // 会轮换 pending 会话,复用同一张图无意义。礼貌限速在每次重抓前。第一次 fetchChallenge 会
+        // 再打一次挑战页(首发已消耗一次),这是可接受的——保证每次尝试都有配套的新鲜 pending cookie。
+        fetchChallenge: async () => {
+          await this.limiter.wait()
+          const c = await this.fetchPath(path)
+          return { html: c.html, pendingCookie: c.challengeCookie }
+        },
+      },
+      ZIMUKU_BASE, href, this.opts.maxCaptchaAttempts ?? 5,
       DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, this.opts.rng,
     )
     this.opts.sessionStore.put({ cookie, capturedAt: Date.now() })
 
     await this.limiter.wait()
-    return this.fetchPath(path, cookie)
+    const retry = await this.fetchPath(path, cookie)
+    if (detectChallenge(retry.html)) {
+      this.opts.sessionStore.invalidate()
+      throw new ZimukuChallengeError(`still challenged after solving captcha for ${path} — verified cookie rejected`)
+    }
+    return retry.html
   }
 
   async search(query: string): Promise<ZimukuSearchResult[]> {
