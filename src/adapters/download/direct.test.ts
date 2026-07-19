@@ -1,5 +1,23 @@
 import { describe, it, expect, vi } from 'vitest'
-import { downloadDirect } from './direct.js'
+import { downloadDirect, filenameFromContentDisposition } from './direct.js'
+
+describe('filenameFromContentDisposition', () => {
+  it('parses a quoted filename (zimuku CDN form)', () => {
+    expect(filenameFromContentDisposition('attachment; filename="[zmk.pw]pulp.fiction.zh.srt"'))
+      .toBe('[zmk.pw]pulp.fiction.zh.srt')
+  })
+  it('parses RFC 5987 filename* (percent-encoded UTF-8) in preference', () => {
+    expect(filenameFromContentDisposition("attachment; filename=\"fallback.srt\"; filename*=UTF-8''%E4%B8%AD%E6%96%87.srt"))
+      .toBe('中文.srt')
+  })
+  it('parses a bare unquoted filename', () => {
+    expect(filenameFromContentDisposition('attachment; filename=sub.zip')).toBe('sub.zip')
+  })
+  it('returns null when absent or no filename token', () => {
+    expect(filenameFromContentDisposition(null)).toBeNull()
+    expect(filenameFromContentDisposition('inline')).toBeNull()
+  })
+})
 
 describe('downloadDirect', () => {
   it('returns bytes on success', async () => {
@@ -7,6 +25,18 @@ describe('downloadDirect', () => {
     const r = await downloadDirect('http://file0.assrt.net/x.ass', { fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(r.bytes.toString()).toBe('subtitle content')
     expect(r.bytes.length).toBeGreaterThan(0)
+  })
+  it('extracts the Content-Disposition filename (authoritative .srt/.zip ext for writeSubtitle)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('x'), {
+      headers: { 'content-disposition': 'attachment; filename="[zmk.pw]a.b.zip"' },
+    }))
+    const r = await downloadDirect('http://s.zimuku.org/download/tok', { fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(r.filename).toBe('[zmk.pw]a.b.zip')
+  })
+  it('filename is null when the response has no Content-Disposition', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('x')))
+    const r = await downloadDirect('http://x/y.ass', { fetchImpl: fetchImpl as unknown as typeof fetch })
+    expect(r.filename).toBeNull()
   })
   it('retries once on failure then succeeds', async () => {
     const fetchImpl = vi.fn()

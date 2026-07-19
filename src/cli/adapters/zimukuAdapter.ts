@@ -24,7 +24,7 @@ function toCandidate(r: ZimukuSearchResult): SubtitleCandidate {
  * client 收窄到用到的 2 个方法(Pick),测试用假 client 免造真 ZimukuClient(网络/WAF/限速)。
  */
 export function makeZimukuAdapter(
-  client: Pick<ZimukuClient, 'search' | 'detail'>,
+  client: Pick<ZimukuClient, 'search' | 'resolveDownload'>,
 ): FetchAdapter {
   return {
     name: 'zimuku',
@@ -37,9 +37,15 @@ export function makeZimukuAdapter(
       const results = await client.search(q)
       return results.map(toCandidate)
     },
+    // 真实下载链路(2026-07-19 抓包)detail→dld→镜像:resolveDownload 串起 detail(拿 /dld url)
+    // 与 dld(拿镜像 /download/.../svr 链 + PHPSESSID cookie),返回首个镜像绝对 URL。镜像带
+    // PHPSESSID 请求 → 301 到 s.zimuku.org CDN 取文件,downloadDirect 自动跟随重定向。
+    // filename 不返回——CandidateRef 无该字段;下载层按 contentType 兜底(download.zip/.srt),
+    // 最终盘上文件名由 writeSubtitle 用视频名派生。
     resolve: async (ref) => {
-      const detail = await client.detail(ref.providerId)
-      return { url: detail.downloadUrl, filename: detail.filename, headers: ZIMUKU_HEADERS }
+      const { url, cookie } = await client.resolveDownload(ref.providerId)
+      const headers = { ...ZIMUKU_HEADERS, ...(cookie ? { Cookie: cookie } : {}) }
+      return { url, headers }
     },
   }
 }

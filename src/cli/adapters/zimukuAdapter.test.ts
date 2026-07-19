@@ -3,12 +3,12 @@ import { makeZimukuAdapter } from './zimukuAdapter.js'
 import type { ZimukuClient } from '../../adapters/providers/zimuku.js'
 import type { FetchArgs } from '../fetchLib.js'
 
-type FakeZimukuClient = Pick<ZimukuClient, 'search' | 'detail'>
+type FakeZimukuClient = Pick<ZimukuClient, 'search' | 'resolveDownload'>
 
 function fakeClient(overrides: Partial<FakeZimukuClient> = {}): FakeZimukuClient {
   return {
     search: vi.fn(async () => []),
-    detail: vi.fn(async () => ({ downloadUrl: 'https://static.zimuku.org/x.zip', filename: 'x.zip' })),
+    resolveDownload: vi.fn(async () => ({ url: 'https://zimuku.org/download/tok/svr/d0', cookie: 'PHPSESSID=abc' })),
     ...overrides,
   }
 }
@@ -41,15 +41,22 @@ describe('makeZimukuAdapter: search', () => {
 })
 
 describe('makeZimukuAdapter: resolve', () => {
-  it('resolves to the archive url + filename + browser headers (needed by downloadDirect for the archive GET)', async () => {
-    const detail = vi.fn(async () => ({ downloadUrl: 'https://static.zimuku.org/files/x.zip', filename: 'x.zip' }))
-    const adapter = makeZimukuAdapter(fakeClient({ detail }))
+  it('resolves via detail→dld to the first mirror url + browser headers incl. the PHPSESSID cookie (downloadDirect follows the 301 to the CDN)', async () => {
+    const resolveDownload = vi.fn(async () => ({ url: 'https://zimuku.org/download/tok/svr/d0', cookie: 'PHPSESSID=xyz' }))
+    const adapter = makeZimukuAdapter(fakeClient({ resolveDownload }))
 
-    const r = await adapter.resolve({ provider: 'zimuku', providerId: '58421', fileIndex: null }, () => {})
+    const r = await adapter.resolve({ provider: 'zimuku', providerId: '179286', fileIndex: null }, () => {})
 
-    expect(detail).toHaveBeenCalledWith('58421')
-    expect(r.url).toBe('https://static.zimuku.org/files/x.zip')
-    expect(r.filename).toBe('x.zip')
-    expect(r.headers).toMatchObject({ 'Accept-Language': 'zh-CN,zh;q=0.9' })
+    expect(resolveDownload).toHaveBeenCalledWith('179286')
+    expect(r.url).toBe('https://zimuku.org/download/tok/svr/d0')
+    expect(r.filename).toBeUndefined() // CandidateRef 无 videoName;下载层按 contentType 兜底命名
+    expect(r.headers).toMatchObject({ 'Accept-Language': 'zh-CN,zh;q=0.9', Cookie: 'PHPSESSID=xyz' })
+  })
+
+  it('omits the Cookie header when the dld page issued no PHPSESSID', async () => {
+    const resolveDownload = vi.fn(async () => ({ url: 'https://zimuku.org/download/tok/svr/l0', cookie: null }))
+    const adapter = makeZimukuAdapter(fakeClient({ resolveDownload }))
+    const r = await adapter.resolve({ provider: 'zimuku', providerId: '1', fileIndex: null }, () => {})
+    expect(r.headers && 'Cookie' in r.headers).toBe(false)
   })
 })

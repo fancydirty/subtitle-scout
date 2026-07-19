@@ -1,4 +1,19 @@
-export interface DownloadResult { bytes: Buffer; contentType: string | null }
+export interface DownloadResult { bytes: Buffer; contentType: string | null; filename: string | null }
+
+/** 从 Content-Disposition 头解析下载文件名——`filename*=UTF-8''<pct>`(RFC 5987,优先)或
+ *  `filename="..."`/`filename=...`。zimuku CDN 用 `attachment; filename="[zmk.pw]xxx.srt"` 携带
+ *  真实文件名+扩展名(.srt/.zip),是判 zip-vs-raw 的权威来源(writeSubtitle 按扩展名分派)。
+ *  拿不到返回 null。 */
+export function filenameFromContentDisposition(cd: string | null): string | null {
+  if (!cd) return null
+  const star = cd.match(/filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/)
+  if (star) { try { return decodeURIComponent(star[1].trim()) } catch { /* fall through */ } }
+  const quoted = cd.match(/filename\s*=\s*"([^"]+)"/)
+  if (quoted) return quoted[1].trim()
+  const bare = cd.match(/filename\s*=\s*([^;]+)/)
+  if (bare) return bare[1].trim()
+  return null
+}
 export interface DownloadOpts {
   fetchImpl?: typeof fetch
   retries?: number
@@ -40,7 +55,11 @@ export async function downloadDirect(url: string, opts: DownloadOpts = {}): Prom
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
       const bytes = Buffer.from(await res.arrayBuffer())
       if (bytes.length === 0) throw new Error('download returned empty body')
-      return { bytes, contentType: res.headers.get('content-type') }
+      return {
+        bytes,
+        contentType: res.headers.get('content-type'),
+        filename: filenameFromContentDisposition(res.headers.get('content-disposition')),
+      }
     } catch (e) {
       lastError = e
       // 文件下载超时是远端端点挂死，重试大概率继续挂；直接快败，不拖 agent 总预算。

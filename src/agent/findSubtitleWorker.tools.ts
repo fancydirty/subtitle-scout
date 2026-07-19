@@ -236,8 +236,10 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       }
 
       const { url, filename, headers } = await runResolve({ provider, providerId, fileIndex }, deps.adapters)
-      const { bytes, contentType } = await downloadDirect(url, { headers, fetchImpl: deps.fetchImpl })
-      const artifactFilename = filename ?? (contentType?.includes('zip') ? 'download.zip' : 'download.srt')
+      const { bytes, contentType, filename: dlFilename } = await downloadDirect(url, { headers, fetchImpl: deps.fetchImpl })
+      // 文件名优先级:resolve 显式给的 → 下载响应 Content-Disposition(zimuku CDN 权威携带
+      // .srt/.zip 扩展名,决定 writeSubtitle 走解压还是裸文件)→ 按 content-type 兜底猜测。
+      const artifactFilename = filename ?? dlFilename ?? (contentType?.includes('zip') ? 'download.zip' : 'download.srt')
       const stagedFileId = randomUUID()
       const attemptDir = join(deps.stagingDir, stagedFileId)
       const written = await writeSubtitle({
