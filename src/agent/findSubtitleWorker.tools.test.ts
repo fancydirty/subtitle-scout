@@ -440,6 +440,34 @@ describe('download_candidate local candidate branch (重复源 P4)', () => {
     }
   })
 
+  it('refuses to read a local candidate that is a symlink pointing outside the mediaRoot (realpath 防线，与 install 侧 H3 对齐)', async () => {
+    // isUnderRoots 是纯字符串前缀检查：symlink 的字符串路径落在沙盒内，真实指向却在沙盒外——
+    // install 路径（H3）已有 realpath 复核，read 路径此前没有（防御不对称）。
+    const outsideDir = mkdtempSync(join(tmpdir(), 'scout-find-subtitle-tools-outside-'))
+    try {
+      const realTarget = join(outsideDir, 'secret.srt')
+      writeFileSync(realTarget, '1\n00:00:01,000 --> 00:00:02,000\nshould not be read\n')
+      const linkPath = join(sandboxDir, 'Show.S01E01.zh-Hans.srt')
+      symlinkSync(realTarget, linkPath)
+      const stagedFiles = new Map<string, string>()
+      const tool_ = makeDownloadCandidateTool({
+        adapters: [],
+        stagingDir: join(sandboxDir, 'staging'),
+        stagedFiles,
+        targetFilenames: ['Show.S01E01.mkv'],
+        mediaRoot: sandboxDir, // linkPath 字符串在沙盒内，realpath 在 outsideDir
+      })
+      const out = await tool_.execute!(
+        { candidateId: `local:${encodeURIComponent(linkPath)}`, fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
+        { toolCallId: 't1', messages: [] } as any,
+      )
+      expect(out).toEqual({ error: expect.stringMatching(/escapes the sandboxed media root/) })
+      expect(stagedFiles.size).toBe(0)
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true })
+    }
+  })
+
   it('returns a structured error (does not throw) when the local candidate file is missing on disk', async () => {
     const srcPath = join(sandboxDir, 'Show.S01E01.zh-Hans.srt') // never written
     const stagedFiles = new Map<string, string>()

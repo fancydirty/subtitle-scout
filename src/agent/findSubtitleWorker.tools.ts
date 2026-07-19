@@ -211,6 +211,25 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
         if (deps.mediaRoot && !isUnderRoots(srcPath, [deps.mediaRoot])) {
           return { error: `refusing to read local candidate outside sandboxed media root: ${srcPath}` }
         }
+        // H3 对齐（read 侧）：isUnderRoots 是纯字符串前缀检查，从不解析链接——srcPath（或其某层
+        // 祖先）若是指向沙盒外的符号链接，上面会误判通过。读盘前做 realpath 复核（比 install 侧
+        // 更强：连文件本身的 symlink 一并解析），失败一律按"不通过"处理（宁停不猜）。
+        if (deps.mediaRoot) {
+          let realSrc: string
+          let realRoot: string
+          try {
+            realSrc = realpathSync(srcPath)
+            realRoot = realpathSync(deps.mediaRoot)
+          } catch (e) {
+            return { error: `local candidate file unreadable: ${srcPath} (${e instanceof Error ? e.message : String(e)})` }
+          }
+          if (!isUnderRoots(realSrc, [realRoot])) {
+            return {
+              error: `refusing to read local candidate: real path (${realSrc}) escapes the sandboxed ` +
+                `media root — possible symlink escape`,
+            }
+          }
+        }
         let bytes: Buffer
         try {
           bytes = await readFile(srcPath)
