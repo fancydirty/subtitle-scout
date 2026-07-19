@@ -74,6 +74,21 @@ describe('inspectSubtitle — ASS cue parsing', () => {
     const signals = inspectSubtitle(stage('c.ssa', ASS_SAMPLE))
     expect(signals.cueCount).toBe(2)
   })
+
+  it('Start/End 在 Format 行的非规范列位时,按 Format 声明读列(不写死 fields[1]/[2])', () => {
+    // 非规范列序:Start/End 放在 Marker 之后。旧代码写死 fields[1]/[2] 会读到 Layer/Marker →
+    // assTimeToMs 得 null → cue 全丢、cueCount=0(误信号会让 agent 拒掉本来正确的字幕)。
+    const nonCanonical = [
+      '[Events]',
+      'Format: Layer, Marker, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Dialogue: 0,x,0:00:01.00,0:00:03.50,Default,,0,0,0,,你好',
+      'Dialogue: 0,x,0:00:04.00,0:00:06.20,Default,,0,0,0,,世界',
+    ].join('\n')
+    const signals = inspectSubtitle(stage('nc.ass', nonCanonical))
+    expect(signals.cueCount).toBe(2)
+    expect(signals.firstCueMs).toBe(1000)
+    expect(signals.lastCueMs).toBe(6200)
+  })
 })
 
 describe('inspectSubtitle — decodable / isHtml', () => {
@@ -331,5 +346,17 @@ describe('subtitleDialogueFingerprint', () => {
     const a = ['1', '00:00:01,000 --> 00:00:03,500', 'Hello   world', ''].join('\n')
     const b = ['1', '00:00:02,000 --> 00:00:04,500', 'Hello world', ''].join('\n')
     expect(subtitleDialogueFingerprint(a)).toBe(subtitleDialogueFingerprint(b))
+  })
+
+  it('无可提取对白 → 返回 null(不返回 sha1(空) 常量),避免两个内容各异的空 cue 字幕误撞去重闸', () => {
+    expect(subtitleDialogueFingerprint('not a subtitle at all')).toBeNull()
+    expect(subtitleDialogueFingerprint('')).toBeNull()
+    // 只有时轴无对白文本(全空行)也是 null
+    expect(subtitleDialogueFingerprint(['1', '00:00:01,000 --> 00:00:03,500', '', ''].join('\n'))).toBeNull()
+    // 关键:两段各异但都无 cue 的内容,指纹都是 null → 不会相等(旧实现都是 sha1('') 会误判相等)
+    const a = subtitleDialogueFingerprint('garbage A')
+    const b = subtitleDialogueFingerprint('completely different garbage B')
+    expect(a).toBeNull()
+    expect(b).toBeNull()
   })
 })

@@ -339,12 +339,16 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
       const fingerprintKey = target.itemId ?? target.videoFilename
       const rawForFingerprint = readFileSync(stagedPath)
       const dialogueFingerprint = subtitleDialogueFingerprint(decodeToUtf8(rawForFingerprint).data.toString('utf8'))
-      for (const [otherKey, fp] of installedFingerprints) {
-        if (otherKey !== fingerprintKey && fp === dialogueFingerprint) {
-          return {
-            error: `content is nearly identical to the subtitle you already installed for ${otherKey} — ` +
-              `the source likely mislabeled the same episode under two labels; pick a different ` +
-              `candidate/entry for this target or leave it`,
+      // dialogueFingerprint 为 null = 无可提取对白,无法指纹 → 不参与跨 target 去重(否则两个内容
+      // 各异但都解析不出 cue 的字幕会撞上同一空 hash,让第二个的正确字幕被误判重复而拒装,凭空造缺口)。
+      if (dialogueFingerprint !== null) {
+        for (const [otherKey, fp] of installedFingerprints) {
+          if (otherKey !== fingerprintKey && fp === dialogueFingerprint) {
+            return {
+              error: `content is nearly identical to the subtitle you already installed for ${otherKey} — ` +
+                `the source likely mislabeled the same episode under two labels; pick a different ` +
+                `candidate/entry for this target or leave it`,
+            }
           }
         }
       }
@@ -409,8 +413,9 @@ export function makeInstallSubtitleTool(deps: InstallSubtitleDeps) {
         }
       }
       // W1: only record on a genuine successful install — a conflict/error above must never poison
-      // the dedup table with content that was never actually written.
-      installedFingerprints.set(fingerprintKey, dialogueFingerprint)
+      // the dedup table with content that was never actually written. null(无可提取对白)不入表——
+      // 它无法作去重依据,存了也只会让后续空指纹字幕误撞。
+      if (dialogueFingerprint !== null) installedFingerprints.set(fingerprintKey, dialogueFingerprint)
       return { path: result.path }
     },
   })

@@ -89,6 +89,11 @@ function parseAssCues(text: string): { cues: Cue[]; title: string | null; header
   let inScriptInfo = false
   let inEvents = false
   let textFieldIndex = -1
+  // Start/End 列位也由 Format 行决定,不写死 fields[1]/[2]——ASS 的 Format 行定义列顺序,
+  // 少数文件把 Start/End 放在非规范位置,写死会读到别的列 → assTimeToMs 得 null → cue 被丢弃 →
+  // cueCount/spanMs 少算,而这些正是 skill 让 agent"信结构信号胜过标签"的依据(错信号会误拒好字幕)。
+  let startFieldIndex = 1
+  let endFieldIndex = 2
   for (const raw of lines) {
     const line = raw.trim()
     if (/^\[Script Info\]/i.test(line)) { inScriptInfo = true; inEvents = false; continue }
@@ -107,6 +112,8 @@ function parseAssCues(text: string): { cues: Cue[]; title: string | null; header
     if (inEvents && /^Format\s*:/i.test(line)) {
       const fields = line.slice(line.indexOf(':') + 1).split(',').map(f => f.trim().toLowerCase())
       textFieldIndex = fields.indexOf('text')
+      const si = fields.indexOf('start'); if (si >= 0) startFieldIndex = si
+      const ei = fields.indexOf('end'); if (ei >= 0) endFieldIndex = ei
       continue
     }
     if (inEvents && /^Dialogue\s*:/i.test(line)) {
@@ -115,8 +122,8 @@ function parseAssCues(text: string): { cues: Cue[]; title: string | null; header
       // Text 字段允许含逗号:Format 声明的位置往后全部并回去(标准 ASS 惯例)
       const idx = textFieldIndex >= 0 ? textFieldIndex : 9
       if (fields.length <= idx) continue
-      const startMs = assTimeToMs(fields[1] ?? '')
-      const endMs = assTimeToMs(fields[2] ?? '')
+      const startMs = assTimeToMs(fields[startFieldIndex] ?? '')
+      const endMs = assTimeToMs(fields[endFieldIndex] ?? '')
       if (startMs == null || endMs == null) continue
       const cueText = fields.slice(idx).join(',').trim()
       cues.push({ startMs, endMs, text: cueText })
@@ -144,13 +151,19 @@ function stripTags(s: string): string {
  *  sha1。目的是给"同一集内容被贴了两个集号标签"的装机开一道精确去重闸——DxD 案两个 assrt 条目
  *  装出的内容逐句相同,仅时轴偏移 1 秒,时间戳剥离后即可命中完全一致的 hash。故意不做模糊相似度
  *  匹配(YAGNI,见设计正文)：这只堵"时间戳偏移但对白逐句相同"这一种形态,不追求近似匹配任意
- *  程度的相似字幕。 */
-export function subtitleDialogueFingerprint(text: string): string {
+ *  程度的相似字幕。
+ *
+ *  无可提取对白(0 条 cue,或全是空行/纯标签)→ 返回 null,**不返回 sha1('') 这个常量**。否则两个
+ *  内容各异但都解析不出 cue 的字幕(如 cue 字段数与 Format 声明不符的 .ass、本解析器认不出的格式)
+ *  会撞上同一个空 hash,让第二个 target 的正确字幕被误判成"重复"而拒装,凭空造缺口。null 语义 =
+ *  "无法指纹、不参与跨 target 去重",由调用方据此跳过比对与入表(见 install_subtitle)。 */
+export function subtitleDialogueFingerprint(text: string): string | null {
   const srtCues = parseSrtCues(text)
   const cues = srtCues.length > 0 ? srtCues : parseAssCues(text).cues
   const dialogueLines = cues
     .map((c) => stripTags(c.text).replace(/\s+/g, ' ').trim())
     .filter((line) => line.length > 0)
+  if (dialogueLines.length === 0) return null
   return createHash('sha1').update(dialogueLines.join('\n')).digest('hex')
 }
 
