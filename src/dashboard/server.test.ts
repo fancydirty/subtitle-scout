@@ -77,19 +77,19 @@ beforeEach(() => {
 
 describe('startDashboard (v2)', () => {
   it('serves /api/v2/library with coverage + job', async () => {
-    const { base } = await start(distWith('<!doctype html><title>scout</title>'))
-    const lib = await (await fetch(`${base}/api/v2/library`)).json()
+    const { base } = await start(distWith('<!doctype html><title>scout</title>'), 'tok')
+    const lib = await (await fetch(`${base}/api/v2/library?token=tok`)).json()
     const series = lib.find((x: any) => x.id === 's1')
     expect(series).toMatchObject({ name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag' })
     expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
     expect(series.job).toEqual({ state: 'searching', priority: 100 })
   })
   it('serves /api/v2/series/:id and /api/v2/runs', async () => {
-    const { base } = await start(distWith('<!doctype html>'))
-    const detail = await (await fetch(`${base}/api/v2/series/s1`)).json()
+    const { base } = await start(distWith('<!doctype html>'), 'tok')
+    const detail = await (await fetch(`${base}/api/v2/series/s1?token=tok`)).json()
     expect(detail.seasons[0].episodes.map((e: any) => e.id)).toEqual(['e1', 'e2'])
     expect(detail.runs[0]).toMatchObject({ decision: 'download', detail: '下好一集' })
-    const runs = await (await fetch(`${base}/api/v2/runs`)).json()
+    const runs = await (await fetch(`${base}/api/v2/runs?token=tok`)).json()
     expect(runs.length).toBe(1)
     expect(runs[0].decision).toBe('download')
   })
@@ -126,8 +126,8 @@ describe('startDashboard (v2)', () => {
   })
 
   it('retires v1 endpoints with 410', async () => {
-    const { base } = await start(distWith('<!doctype html>'))
-    expect((await fetch(`${base}/api/summary`)).status).toBe(410)
+    const { base } = await start(distWith('<!doctype html>'), 'tok')
+    expect((await fetch(`${base}/api/summary?token=tok`)).status).toBe(410)
   })
   it('rejects api without token when configured (401)', async () => {
     const { base } = await start(distWith('<!doctype html>'), 's3cret')
@@ -139,8 +139,8 @@ describe('startDashboard (v2)', () => {
     it('GET /api/parked lists parked_paths', async () => {
       const lib = new LibraryRepo(db)
       lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/parked`)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/parked?token=tok`)
       expect(res.status).toBe(200)
       const parked = await res.json()
       expect(parked).toEqual([
@@ -151,8 +151,8 @@ describe('startDashboard (v2)', () => {
     it('POST /api/parked/claim writes an override for the parked path and returns ok', async () => {
       const lib = new LibraryRepo(db)
       lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/parked/claim`, {
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '999', isTv: true }),
@@ -166,8 +166,8 @@ describe('startDashboard (v2)', () => {
     it('POST /api/parked/claim with a season carries it through to identify_overrides.season', async () => {
       const lib = new LibraryRepo(db)
       lib.upsertParkedPath('/media/TV/High School D×D/Hero - 01.mkv', 'no-signal', NOW)
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/parked/claim`, {
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4 }),
@@ -180,8 +180,8 @@ describe('startDashboard (v2)', () => {
     it('POST /api/parked/claim rejects a non-positive-integer season (400)', async () => {
       const lib = new LibraryRepo(db)
       lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/parked/claim`, {
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: 0 }),
@@ -192,8 +192,8 @@ describe('startDashboard (v2)', () => {
     })
 
     it('POST /api/parked/claim returns 400 on validation failure (e.g. unparked path)', async () => {
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/parked/claim`, {
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
@@ -203,8 +203,8 @@ describe('startDashboard (v2)', () => {
     })
 
     it('POST /api/parked/claim rejects non-POST methods with 405', async () => {
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/parked/claim`, { method: 'GET' })
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/parked/claim?token=tok`, { method: 'GET' })
       expect(res.status).toBe(405)
     })
 
@@ -230,8 +230,8 @@ describe('startDashboard (v2)', () => {
       const reconcileAll = async () => ({
         dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
       })
-      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
-      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({
         dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
@@ -239,15 +239,15 @@ describe('startDashboard (v2)', () => {
     })
 
     it('returns 503 when reconcileAll is not configured (e.g. TMDB_API_KEY missing)', async () => {
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
       expect(res.status).toBe(503)
     })
 
     it('rejects non-POST methods with 405', async () => {
       const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: '' })
-      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
-      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'GET' })
+      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'GET' })
       expect(res.status).toBe(405)
     })
 
@@ -262,8 +262,8 @@ describe('startDashboard (v2)', () => {
 
     it('returns 500 with the error message when reconcileAll throws', async () => {
       const reconcileAll = async () => { throw new Error('orchestrator blew up') }
-      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
-      const res = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
+      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
       expect(res.status).toBe(500)
       expect((await res.json()).error).toMatch(/orchestrator blew up/)
     })
@@ -277,14 +277,14 @@ describe('startDashboard (v2)', () => {
         await gate // blocks until the test explicitly releases it, simulating a long scan+LLM pass
         return { dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' }
       }
-      const { base } = await start(distWith('<!doctype html>'), undefined, reconcileAll)
+      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
 
       // Fire the first POST and let it actually enter the handler (increment `calls`, flip the
       // in-flight flag, and start blocking on `gate`) before firing the second.
-      const firstReq = fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      const firstReq = fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
       await new Promise(r => setTimeout(r, 20))
 
-      const secondRes = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      const secondRes = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
       expect(secondRes.status).toBe(409)
       expect((await secondRes.json()).error).toMatch(/already running/i)
       expect(calls).toBe(1) // the second POST never invoked reconcileAll at all
@@ -295,7 +295,7 @@ describe('startDashboard (v2)', () => {
       expect(calls).toBe(1)
 
       // Once the in-flight pass finishes, the guard releases and a later POST runs normally.
-      const thirdRes = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
+      const thirdRes = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
       expect(thirdRes.status).toBe(200)
       expect(calls).toBe(2)
     })
@@ -305,9 +305,9 @@ describe('startDashboard (v2)', () => {
   // 一样是 handleApiRoute 纯函数分发之前的独立 rawPath 分支——同样的 method-then-token 校验顺序。
   describe('GET /api/v2/workflow/trace-stream (痕迹通道 C SSE 直播)', () => {
     it('订阅期 traceBus.publish 的事件以 data: 行到达客户端', async () => {
-      const { base } = await start(distWith('<!doctype html>'))
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
       const controller = new AbortController()
-      const res = await fetch(`${base}/api/v2/workflow/trace-stream`, { signal: controller.signal })
+      const res = await fetch(`${base}/api/v2/workflow/trace-stream?token=tok`, { signal: controller.signal })
       try {
         expect(res.status).toBe(200)
         expect(res.headers.get('content-type')).toContain('text/event-stream')
@@ -337,8 +337,8 @@ describe('startDashboard (v2)', () => {
     })
 
     it('GET only（非 GET 405）', async () => {
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/workflow/trace-stream`, { method: 'POST' })
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/workflow/trace-stream?token=tok`, { method: 'POST' })
       expect(res.status).toBe(405)
     })
 
@@ -364,12 +364,12 @@ describe('startDashboard (v2)', () => {
     // 多条 publish 打进窗口期。心跳（15s setInterval）的写入走完全相同的前置守卫
     // （res.destroyed || res.writableEnded），不在测试内推进 15s 重复验证同一守卫。
     it('SSE 连接 socket 猝死后窗口期 publish 不炸守护进程，server 仍可服务后续请求', async () => {
-      const { base } = await start(distWith('<!doctype html>'))
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
       const port = Number(new URL(base).port)
 
       const sock = connect(port, '127.0.0.1')
       await new Promise<void>((resolve) => sock.on('connect', resolve))
-      sock.write('GET /api/v2/workflow/trace-stream HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n')
+      sock.write('GET /api/v2/workflow/trace-stream?token=tok HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n')
       // 等 200 头真正冲刷回来——保证 server 已进入 SSE 分支、订阅已建立。
       const head = await new Promise<string>((resolve) => sock.once('data', (d) => resolve(String(d))))
       expect(head).toContain('200')
@@ -388,7 +388,7 @@ describe('startDashboard (v2)', () => {
 
       // 守护进程活着的直接证据：同一 server 实例照常服务下一个请求。
       // （若 uncaughtException 已炸，vitest 会把它记为本测试的 unhandled error，全绿即无泄漏。）
-      const res = await fetch(`${base}/api/v2/library`)
+      const res = await fetch(`${base}/api/v2/library?token=tok`)
       expect(res.status).toBe(200)
     })
   })
@@ -397,8 +397,8 @@ describe('startDashboard (v2)', () => {
   describe('settings + 守备目录 (dashboard G4)', () => {
     it('GET /api/v2/settings 反映 DB 里已写入的行为键，未设置为 null', async () => {
       new SettingsRepo(db).set('target_languages', 'zh,en', NOW)
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/settings`)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/settings?token=tok`)
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({
         target_languages: 'zh,en', hardsub_mode: null, exclude_extras: null,
@@ -407,10 +407,10 @@ describe('startDashboard (v2)', () => {
     })
 
     it('GET /api/v2/settings/deploy 反映注入的 env：secrets 脱敏，非机密原样', async () => {
-      const { base } = await start(distWith('<!doctype html>'), undefined, undefined, {
+      const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, {
         TMDB_API_KEY: 'sk-abcdef1234567890', LLM_BASE_URL: 'https://api.deepseek.com/v1',
       })
-      const res = await fetch(`${base}/api/v2/settings/deploy`)
+      const res = await fetch(`${base}/api/v2/settings/deploy?token=tok`)
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.secrets.TMDB_API_KEY).toEqual({ present: true, tail: '7890' })
@@ -420,8 +420,8 @@ describe('startDashboard (v2)', () => {
 
     it('GET /api/v2/settings/roots 反映 DB 里的守备目录', async () => {
       new SettingsRepo(db).addRoot('/media/tv', NOW)
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/settings/roots`)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/settings/roots?token=tok`)
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual([{ path: '/media/tv', type: 'local', addedAt: NOW }])
     })
@@ -431,16 +431,16 @@ describe('startDashboard (v2)', () => {
       mkdirSync(join(dir, 'tv'))
       mkdirSync(join(dir, 'anime'))
       writeFileSync(join(dir, 'readme.txt'), 'x')
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/fs/list?path=${encodeURIComponent(dir)}`)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/fs/list?path=${encodeURIComponent(dir)}&token=tok`)
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ dirs: ['anime', 'tv'] })
     })
 
     describe('PUT /api/v2/settings', () => {
       it('写入白名单键，回显全量 settings', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings?token=tok`, {
           method: 'PUT', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ target_languages: 'zh,en', hardsub_mode: 'aggressive' }),
         })
@@ -453,8 +453,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('白名单外的 key → 400，且不写入任何行（全有或全无）', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings?token=tok`, {
           method: 'PUT', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ target_languages: 'zh', not_a_real_key: 'x' }),
         })
@@ -463,8 +463,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('值域校验：hardsub_mode 不在枚举内 → 400', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings?token=tok`, {
           method: 'PUT', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ hardsub_mode: 'yolo' }),
         })
@@ -473,8 +473,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('值域校验：trace_retention_days 非正整数字符串 → 400', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings?token=tok`, {
           method: 'PUT', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ trace_retention_days: '-5' }),
         })
@@ -482,8 +482,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('非 PUT 方法 405', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings`, { method: 'POST' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings?token=tok`, { method: 'POST' })
         expect(res.status).toBe(405)
       })
 
@@ -499,8 +499,8 @@ describe('startDashboard (v2)', () => {
     describe('POST /api/v2/settings/roots', () => {
       it('绝对路径 + 存在 + 是目录 → 200，DB 可见', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'add-root-'))
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: dir }),
         })
@@ -510,11 +510,11 @@ describe('startDashboard (v2)', () => {
 
       it('重复加同一路径是幂等 200', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'add-root-idem-'))
-        const { base } = await start(distWith('<!doctype html>'))
-        await fetch(`${base}/api/v2/settings/roots`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        await fetch(`${base}/api/v2/settings/roots?token=tok`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }),
         })
-        const second = await fetch(`${base}/api/v2/settings/roots`, {
+        const second = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }),
         })
         expect(second.status).toBe(200)
@@ -522,8 +522,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('相对路径 → 400', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: 'relative/path' }),
         })
@@ -531,8 +531,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('不存在的路径 → 400', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/definitely/does/not/exist/anywhere' }),
         })
@@ -543,8 +543,8 @@ describe('startDashboard (v2)', () => {
         const dir = mkdtempSync(join(tmpdir(), 'add-root-file-'))
         const file = join(dir, 'x.txt')
         writeFileSync(file, 'x')
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: file }),
         })
@@ -552,8 +552,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('非 POST/GET/DELETE 方法 405', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots`, { method: 'PUT' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, { method: 'PUT' })
         expect(res.status).toBe(405)
       })
 
@@ -583,8 +583,8 @@ describe('startDashboard (v2)', () => {
           id: 'tmdb:99/s1e1', seriesId: 'tmdb:99', season: 1, episode: 1, name: 'E1',
           path: '/media/tv/Show/Season 01/e1.mkv', subStatus: 'missing',
         })
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media/tv')}`, { method: 'DELETE' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media/tv')}&token=tok`, { method: 'DELETE' })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ episodes: 1, movies: 0, series: 1, parked: 0 })
         expect(settings.listRoots()).toEqual([])
@@ -592,8 +592,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('缺 path 查询参数 → 400', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots`, { method: 'DELETE' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, { method: 'DELETE' })
         expect(res.status).toBe(400)
       })
 
@@ -608,8 +608,8 @@ describe('startDashboard (v2)', () => {
           id: 'tmdb:77/s1e1', seriesId: 'tmdb:77', season: 1, episode: 1, name: 'E1',
           path: '/media/tv/Keep Me/Season 01/e1.mkv', subStatus: 'missing',
         })
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media')}`, { method: 'DELETE' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media')}&token=tok`, { method: 'DELETE' })
         expect(res.status).toBe(404)
         expect((await res.json()).error).toEqual(expect.any(String))
         expect(lib.getSeries('tmdb:77')).not.toBeNull()
@@ -629,8 +629,8 @@ describe('startDashboard (v2)', () => {
       it('尾斜杠路径经 resolve() 归一化后仍能命中已登记的守备目录 → 200', async () => {
         const settings = new SettingsRepo(db)
         settings.addRoot('/media/tv', NOW)
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media/tv/')}`, { method: 'DELETE' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media/tv/')}&token=tok`, { method: 'DELETE' })
         expect(res.status).toBe(200)
         expect(settings.listRoots()).toEqual([])
       })
@@ -641,8 +641,8 @@ describe('startDashboard (v2)', () => {
   describe('workflow/library/甄别聚合 API（dashboard G5）', () => {
     it('GET /api/v2/workflow/pending 聚合缺口事实 + parked 计数 + meta 新鲜度', async () => {
       db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(NOW))
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/workflow/pending`)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/workflow/pending?token=tok`)
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.series.some((s: { seriesId: string; season: number }) => s.seriesId === 's1' && s.season === 1)).toBe(true)
@@ -665,8 +665,8 @@ describe('startDashboard (v2)', () => {
         `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path, trace_json)
          VALUES (?, ?, ?, 'orchestrate', 'ok', NULL, ?)`
       ).run(jobId, NOW - 1000, NOW, JSON.stringify(events))
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/workflow/passes`)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/workflow/passes?token=tok`)
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body[0].receipts).toEqual({ created: 1, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 })
@@ -677,8 +677,8 @@ describe('startDashboard (v2)', () => {
         `INSERT INTO jobs (kind, series_id, payload, state, priority, created_at, updated_at)
          VALUES ('worker_task', 's1', ?, 'searching', 0, ?, ?)`
       ).run(JSON.stringify({ taskType: 'find_subtitle', seasons: [1] }), NOW, NOW)
-      const { base } = await start(distWith('<!doctype html>'))
-      const res = await fetch(`${base}/api/v2/workflow/workers`)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/workflow/workers?token=tok`)
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.running.some((r: { seriesId: string; taskType: string }) => r.seriesId === 's1' && r.taskType === 'find_subtitle')).toBe(true)
@@ -687,18 +687,18 @@ describe('startDashboard (v2)', () => {
 
     describe('GET /api/v2/library/series/:id（三层格阵合并 + 惰性刷新接线）', () => {
       it('返回合并详情，404 未命中', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/library/series/s1`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/library/series/s1?token=tok`)
         expect(res.status).toBe(200)
         const body = await res.json()
         expect(body.series.name).toBe('Series A')
-        const notFound = await fetch(`${base}/api/v2/library/series/nope`)
+        const notFound = await fetch(`${base}/api/v2/library/series/nope?token=tok`)
         expect(notFound.status).toBe(404)
       })
 
       it('tmdb 未配置时端点仍正常工作（不报错，只是跳过惰性刷新）', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/library/series/s1`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/library/series/s1?token=tok`)
         expect(res.status).toBe(200)
       })
 
@@ -713,8 +713,8 @@ describe('startDashboard (v2)', () => {
           getSeasonEpisodes: async () => [{ episode: 1, title: 'Ep1' }],
           search: async () => [],
         }
-        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
-        const res = await fetch(`${base}/api/v2/library/series/s1`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        const res = await fetch(`${base}/api/v2/library/series/s1?token=tok`)
         expect(res.status).toBe(200)
       })
     })
@@ -730,23 +730,23 @@ describe('startDashboard (v2)', () => {
             return [{ id: 1429, title: 'Attack on Titan', originalTitle: '進撃の巨人', year: 2013, posterPath: '/p.jpg' }]
           },
         }
-        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
-        const res = await fetch(`${base}/api/v2/tmdb/search?q=${encodeURIComponent('进击的巨人')}&type=tv`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        const res = await fetch(`${base}/api/v2/tmdb/search?q=${encodeURIComponent('进击的巨人')}&type=tv&token=tok`)
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ results: [{ id: 1429, name: 'Attack on Titan', year: 2013, posterPath: '/p.jpg' }] })
       })
 
       it('tmdb 未配置 → 503（照 reconcile-all 先例）', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv&token=tok`)
         expect(res.status).toBe(503)
       })
 
       it('q 缺失 / type 非法 → 400', async () => {
         const tmdbStub: FakeTmdb = { getSeasonTable: async () => [], getSeasonEpisodes: async () => [], search: async () => [] }
-        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
-        expect((await fetch(`${base}/api/v2/tmdb/search?type=tv`)).status).toBe(400)
-        expect((await fetch(`${base}/api/v2/tmdb/search?q=x&type=bogus`)).status).toBe(400)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        expect((await fetch(`${base}/api/v2/tmdb/search?type=tv&token=tok`)).status).toBe(400)
+        expect((await fetch(`${base}/api/v2/tmdb/search?q=x&type=bogus&token=tok`)).status).toBe(400)
       })
 
       it('tmdb.search 抛错 → 502（瞬时故障如实转告，不吞成空结果）', async () => {
@@ -755,8 +755,8 @@ describe('startDashboard (v2)', () => {
           getSeasonEpisodes: async () => [],
           search: async () => { throw new Error('network blew up') },
         }
-        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, undefined, tmdbStub)
-        const res = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        const res = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv&token=tok`)
         expect(res.status).toBe(502)
         expect(await res.json()).toEqual({ error: 'tmdb search failed' })
       })
@@ -766,8 +766,8 @@ describe('startDashboard (v2)', () => {
       it('GET /api/v2/triage 返回 pending + claimed', async () => {
         const lib = new LibraryRepo(db)
         lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/triage`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/triage?token=tok`)
         expect(res.status).toBe(200)
         const body = await res.json()
         expect(body.pending).toEqual([
@@ -779,8 +779,8 @@ describe('startDashboard (v2)', () => {
       it('POST /api/v2/triage/claim 复用 claimParked 逻辑（与 /api/parked/claim 同一实现）', async () => {
         const lib = new LibraryRepo(db)
         lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/triage/claim`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '999', isTv: true }),
@@ -791,8 +791,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('POST /api/v2/triage/claim 校验失败 → 400', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/triage/claim`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
@@ -801,8 +801,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('POST /api/v2/triage/claim 非 POST 方法 405', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/triage/claim`, { method: 'GET' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, { method: 'GET' })
         expect(res.status).toBe(405)
       })
 
@@ -824,9 +824,9 @@ describe('startDashboard (v2)', () => {
         lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
         )
-        const res = await fetch(`${base}/api/parked/claim`, {
+        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
@@ -840,9 +840,9 @@ describe('startDashboard (v2)', () => {
         lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
         )
-        const res = await fetch(`${base}/api/v2/triage/claim`, {
+        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
@@ -854,9 +854,9 @@ describe('startDashboard (v2)', () => {
       it('校验失败（400）→ requestIngest 不被调用', async () => {
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
         )
-        const res = await fetch(`${base}/api/parked/claim`, {
+        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
@@ -868,8 +868,8 @@ describe('startDashboard (v2)', () => {
       it('未配置 requestIngest → claim 仍正常响应，不炸（同 reconcileAll/jobs/tmdb 三个既有可选依赖的缺席先例）', async () => {
         const lib = new LibraryRepo(db)
         lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/parked/claim`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
@@ -882,10 +882,10 @@ describe('startDashboard (v2)', () => {
         const lib = new LibraryRepo(db)
         lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
         const { base } = await start(
-          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined,
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined,
           () => { throw new Error('boom') },
         )
-        const res = await fetch(`${base}/api/parked/claim`, {
+        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
@@ -902,9 +902,9 @@ describe('startDashboard (v2)', () => {
         lib.upsertParkedPath(path, 'excluded-extra', NOW)
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
         )
-        const res = await fetch(`${base}/api/v2/triage/unexclude`, {
+        const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path }),
@@ -922,9 +922,9 @@ describe('startDashboard (v2)', () => {
         lib.upsertParkedPath(path, 'no match', NOW)
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), undefined, undefined, undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
         )
-        const res = await fetch(`${base}/api/v2/triage/unexclude`, {
+        const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ path }),
@@ -934,8 +934,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('非 POST 方法 405', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/triage/unexclude`, { method: 'GET' })
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, { method: 'GET' })
         expect(res.status).toBe(405)
       })
 
@@ -951,8 +951,8 @@ describe('startDashboard (v2)', () => {
     describe('POST /api/v2/workflow/redispatch（人类扳手：手动重派）', () => {
       it('合法 body → 转调 upsertWorkerTask，原样返回四态回执', async () => {
         const jobs = new JobsRepo(db)
-        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, jobs)
-        const res = await fetch(`${base}/api/v2/workflow/redispatch`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, jobs)
+        const res = await fetch(`${base}/api/v2/workflow/redispatch?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ seriesId: 's1', seasons: [1], includeThrottled: true }),
@@ -963,8 +963,8 @@ describe('startDashboard (v2)', () => {
 
       it('zod 拒绝非法 body → 400', async () => {
         const jobs = new JobsRepo(db)
-        const { base } = await start(distWith('<!doctype html>'), undefined, undefined, undefined, jobs)
-        const res = await fetch(`${base}/api/v2/workflow/redispatch`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, jobs)
+        const res = await fetch(`${base}/api/v2/workflow/redispatch?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ seriesId: '' }),
@@ -973,8 +973,8 @@ describe('startDashboard (v2)', () => {
       })
 
       it('jobs 未配置 → 503（照 reconcileAll 先例）', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/workflow/redispatch`, {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/workflow/redispatch?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ seriesId: 's1' }),
@@ -985,7 +985,7 @@ describe('startDashboard (v2)', () => {
       it('非 POST 方法 405，token 门', async () => {
         const jobs = new JobsRepo(db)
         const { base } = await start(distWith('<!doctype html>'), 's3cret', undefined, undefined, jobs)
-        expect((await fetch(`${base}/api/v2/workflow/redispatch`, { method: 'GET' })).status).toBe(405)
+        expect((await fetch(`${base}/api/v2/workflow/redispatch?token=s3cret`, { method: 'GET' })).status).toBe(405)
         const unauthed = await fetch(`${base}/api/v2/workflow/redispatch`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seriesId: 's1' }),
         })
@@ -1008,23 +1008,136 @@ describe('startDashboard (v2)', () => {
              VALUES (?, ?, ?, 'download', 'ok', NULL, ?)`
           ).run(jobId, NOW - 1000, NOW, JSON.stringify(events)).lastInsertRowid
         )
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/workflow/runs/${runId}/trace`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/workflow/runs/${runId}/trace?token=tok`)
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ events })
       })
 
       it('行不存在 → 404', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/workflow/runs/999999/trace`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/workflow/runs/999999/trace?token=tok`)
         expect(res.status).toBe(404)
       })
 
       it('非数字 id → 404', async () => {
-        const { base } = await start(distWith('<!doctype html>'))
-        const res = await fetch(`${base}/api/v2/workflow/runs/abc/trace`)
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/workflow/runs/abc/trace?token=tok`)
         expect(res.status).toBe(404)
       })
     })
+  })
+})
+
+describe('auth 前置门（A1：统一门，spec §2）', () => {
+  it('未初始化：/api/v2/library 401 setup required；静态资源照常 200', async () => {
+    const { base } = await start(distWith('<!doctype html><title>scout</title>'))
+    const api = await fetch(`${base}/api/v2/library`)
+    expect(api.status).toBe(401)
+    expect(await api.json()).toEqual({ error: 'setup required' })
+    const page = await fetch(`${base}/`)
+    expect(page.status).toBe(200)
+  })
+  it('setup：POST 写三键返回 apiKey + 签发 session cookie；二次 setup 403', async () => {
+    const { base } = await start(distWith('x'))
+    const r = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { apiKey: string }
+    expect(body.apiKey).toMatch(/^[0-9a-f]{32}$/)
+    expect(r.headers.get('set-cookie')).toMatch(/^scout_session=[0-9a-f]{64}; /)
+    const again = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'x', password: 'y'.repeat(10) }),
+    })
+    expect(again.status).toBe(403)
+  })
+  it('login/logout：对密码拿 cookie 后 API 通；logout 后同 cookie 401', async () => {
+    const { base } = await start(distWith('x'))
+    await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const login = await fetch(`${base}/api/v2/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    expect(login.status).toBe(200)
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]
+    const lib = await fetch(`${base}/api/v2/library`, { headers: { cookie } })
+    expect(lib.status).toBe(200)
+    const out = await fetch(`${base}/api/v2/auth/logout`, { method: 'POST', headers: { cookie } })
+    expect(out.status).toBe(200)
+    const after = await fetch(`${base}/api/v2/library`, { headers: { cookie } })
+    expect(after.status).toBe(401)
+  })
+  it('login 错密码 401；连爆 6 次 429（节流）', async () => {
+    const { base } = await start(distWith('x'))
+    await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const bad = () => fetch(`${base}/api/v2/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'nope-nope' }),
+    })
+    expect((await bad()).status).toBe(401)
+    for (let i = 0; i < 4; i++) await bad()
+    expect((await bad()).status).toBe(429)
+  })
+  it('X-Api-Key 头与 ?apikey= query 都走通（SSE/脚本通道）', async () => {
+    const { base } = await start(distWith('x'))
+    const setup = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const { apiKey } = await setup.json() as { apiKey: string }
+    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': apiKey } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/library?apikey=${apiKey}`)).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': 'wrong' } })).status).toBe(401)
+  })
+  it('auth/status：未初始化 {initialized:false,...}；登录后 authenticated:true', async () => {
+    const { base } = await start(distWith('x'))
+    const s1 = await fetch(`${base}/api/v2/auth/status`)
+    expect(await s1.json()).toEqual({ initialized: false, authenticated: false })
+    const setup = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const cookie = (setup.headers.get('set-cookie') ?? '').split(';')[0]
+    const s2 = await fetch(`${base}/api/v2/auth/status`, { headers: { cookie } })
+    expect(await s2.json()).toEqual({ initialized: true, authenticated: true })
+    const s3 = await fetch(`${base}/api/v2/auth/status`)
+    expect(await s3.json()).toEqual({ initialized: true, authenticated: false })
+  })
+  it('legacy DASHBOARD_TOKEN：未初始化+带旧 token → API 照常通（旧部署零破坏）', async () => {
+    const { base } = await start(distWith('x'), 'legacy-tok')
+    expect((await fetch(`${base}/api/v2/library?token=legacy-tok`)).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-dashboard-token': 'legacy-tok' } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/library?token=wrong`)).status).toBe(401)
+  })
+  it('已初始化后 legacy token 仍等价 api key（迁移期共存）', async () => {
+    const { base } = await start(distWith('x'), 'legacy-tok')
+    await fetch(`${base}/api/v2/auth/setup?token=legacy-tok`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    expect((await fetch(`${base}/api/v2/library?token=legacy-tok`)).status).toBe(200)
+  })
+  it('SSE trace-stream 走 ?apikey=（EventSource 无法带头）', async () => {
+    const { base } = await start(distWith('x'))
+    const setup = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const { apiKey } = await setup.json() as { apiKey: string }
+    const ac = new AbortController()
+    const sse = await fetch(`${base}/api/v2/workflow/trace-stream?apikey=${apiKey}`, { signal: ac.signal })
+    expect(sse.status).toBe(200)
+    expect(sse.headers.get('content-type')).toContain('text/event-stream')
+    ac.abort()
+    expect((await fetch(`${base}/api/v2/workflow/trace-stream`)).status).toBe(401)
   })
 })

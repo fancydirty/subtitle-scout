@@ -17,10 +17,13 @@ import {
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from './traceBus.js'
+import { AuthService } from './auth.js'
 
 export interface DashboardOpts {
   db: ScoutDb
   port: number
+  /** legacy DASHBOARD_TOKEN 兼容输入——唯一角色是喂下方统一前置门的 legacy token 通道
+   *  （A1 起鉴权只有前置门一处；旧部署带 ?token=/x-dashboard-token 头照常通行）。 */
   token?: string
   distDir: string
   /** v3 phase ⑦："全仓校验"触发器——POST /api/v2/reconcile-all 调它，跑一次机械预扫描
@@ -55,6 +58,34 @@ const CONTENT_TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ico': 'image/x-icon', '.map': 'application/json',
 }
 
+const JSON_CT = { 'content-type': 'application/json; charset=utf-8' }
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!header) return out
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=')
+    if (idx > 0) out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim()
+  }
+  return out
+}
+
+function sessionCookie(token: string): string {
+  // 无 HTTPS（家庭局域网形态，spec §2 安全边界如实）故无 Secure；反代加 TLS 见 README
+  return `scout_session=${token}; HttpOnly; Path=/; Max-Age=2592000; SameSite=Lax`
+}
+
+/** JSON body 读取：解析失败返回 undefined（调用方 400），空 body 视作 {}。 */
+async function readJsonBody(req: import('node:http').IncomingMessage): Promise<unknown> {
+  let raw = ''
+  for await (const chunk of req) raw += chunk
+  try {
+    return JSON.parse(raw || '{}')
+  } catch {
+    return undefined
+  }
+}
+
 function serveStatic(distDir: string, pathname: string): { status: number; body: Buffer; type: string } {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
   const base = normalize(distDir)
@@ -70,6 +101,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
   const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest } = opts
   const settingsRepo = new SettingsRepo(db)
+  const auth = new AuthService(settingsRepo)
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
     series: (id) => buildSeriesDetail(db, id),
@@ -108,20 +140,81 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost')
       const rawPath = url.pathname   // 未解码
-      const reqToken = url.searchParams.get('token') ?? (req.headers['x-dashboard-token'] as string | undefined)
+
+      // ---- 鉴权 A1：统一前置门（spec §2）。静态资源不设防（SPA 壳/login 页本身要能加载），
+      // /api/* 全部先过这里。cookie/api key/legacy token 三通道；未初始化只放 setup/status。----
+      if (rawPath.startsWith('/api/')) {
+        const cookies = parseCookies(req.headers.cookie)
+        const sessionToken = cookies['scout_session']
+        const apiKeyReq = (req.headers['x-api-key'] as string | undefined) ?? url.searchParams.get('apikey') ?? undefined
+        const legacyReq = url.searchParams.get('token') ?? (req.headers['x-dashboard-token'] as string | undefined)
+        const authed =
+          (sessionToken !== undefined && auth.sessions.verify(sessionToken, Date.now())) ||
+          (apiKeyReq !== undefined && auth.verifyApiKey(apiKeyReq)) ||
+          (token !== undefined && legacyReq === token)
+
+        // 探测端点：任何态放行（前端 app-shell 靠它决定去 /setup、/login 还是正常渲染）
+        if (rawPath === '/api/v2/auth/status' && req.method === 'GET') {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ initialized: auth.isInitialized(), authenticated: authed }))
+          return
+        }
+
+        if (rawPath === '/api/v2/auth/setup') {
+          if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
+          if (auth.isInitialized()) { res.writeHead(403, JSON_CT); res.end(JSON.stringify({ error: 'already initialized' })); return }
+          const body = await readJsonBody(req)
+          if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
+          const b = (body ?? {}) as { username?: unknown; password?: unknown }
+          const r = auth.setup(
+            typeof b.username === 'string' ? b.username : '',
+            typeof b.password === 'string' ? b.password : '', Date.now(),
+          )
+          if (!r.ok) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: r.error })); return }
+          // 成功即登录（spec §3 向导语义）：直接签发 session cookie
+          const t = auth.sessions.create(Date.now())
+          res.writeHead(200, { ...JSON_CT, 'set-cookie': sessionCookie(t) })
+          res.end(JSON.stringify({ ok: true, apiKey: r.apiKey }))
+          return
+        }
+
+        if (rawPath === '/api/v2/auth/login') {
+          if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
+          const body = await readJsonBody(req)
+          if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
+          const b = (body ?? {}) as { username?: unknown; password?: unknown }
+          const r = auth.login(
+            typeof b.username === 'string' ? b.username : '',
+            typeof b.password === 'string' ? b.password : '',
+            req.socket.remoteAddress ?? 'unknown', Date.now(),
+          )
+          if (!r.ok) { res.writeHead(r.status, JSON_CT); res.end(JSON.stringify({ error: r.error })); return }
+          res.writeHead(200, { ...JSON_CT, 'set-cookie': sessionCookie(r.sessionToken) })
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        if (rawPath === '/api/v2/auth/logout') {
+          if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
+          if (sessionToken) auth.sessions.revoke(sessionToken)
+          res.writeHead(200, { ...JSON_CT, 'set-cookie': 'scout_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax' })
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        if (!authed) {
+          res.writeHead(401, JSON_CT)
+          res.end(JSON.stringify({ error: auth.isInitialized() ? 'unauthorized' : 'setup required' }))
+          return
+        }
+      }
 
       // v3 phase ⑦："全仓校验"触发器——异步 + 只接受 POST，独立于下面纯同步的 handleApiRoute
-      // 分发（同 handleApiRoute 一样，token 校验放在方法/存在性检查之后没关系：两项都不泄露
-      // 除"这个端点存在"外的信息）。
+      // 分发。鉴权已由上方统一前置门完成（A1 起它是唯一的门），这里只剩 method/存在性检查。
       if (rawPath === '/api/v2/reconcile-all') {
         if (req.method !== 'POST') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
           return
         }
         if (!reconcileAll) {
@@ -162,11 +255,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
-          return
-        }
         let raw = ''
         for await (const chunk of req) raw += chunk
         let body: unknown
@@ -204,16 +292,11 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       }
 
       // 救援R4b：POST /api/v2/triage/unexclude——甄别页「Excluded extras」箱翻案。照 claim 分支
-      // 的薄转发先例：method 门 → token 门 → 解析 body → unexclude(db) 判断层 → 成功踢一脚扫描。
+      // 的薄转发先例：method 门 → 解析 body → unexclude(db) 判断层 → 成功踢一脚扫描（鉴权在统一前置门）。
       if (rawPath === '/api/v2/triage/unexclude') {
         if (req.method !== 'POST') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
           return
         }
         let raw = ''
@@ -244,16 +327,11 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
 
       // dashboard G4：PUT /api/v2/settings——GET 同路径的展示走下面纯同步的 handleApiRoute
       // 分发（RouterDeps.settings），这里只截 method !== 'GET' 的写路径：PUT 之外一律 405
-      // （同 parked/claim 先例：先 method 门再 token 门，PUT 需要解析 JSON body，不能是纯函数）。
+      // （同 parked/claim 先例：PUT 需要解析 JSON body，不能是纯函数；鉴权在统一前置门）。
       if (rawPath === '/api/v2/settings' && req.method !== 'GET') {
         if (req.method !== 'PUT') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
           return
         }
         let raw = ''
@@ -279,11 +357,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         if (req.method !== 'POST' && req.method !== 'DELETE') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
           return
         }
         if (req.method === 'DELETE') {
@@ -328,18 +401,13 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       }
 
       // dashboard G5：POST /api/v2/workflow/redispatch——人类扳手①：手动重派。与
-      // /api/v2/reconcile-all 同一先例：method 门 → token 门 → 依赖是否配置门（jobs 缺席→503，
+      // /api/v2/reconcile-all 同一先例：method 门 → 依赖是否配置门（jobs 缺席→503，
       // 这里没有 TMDB_API_KEY 一说，纯粹是"watch 进程有没有把 JobsRepo 传进来"）→ body 解析 →
-      // 转调 apiV2.redispatch 纯函数（zod 校验 + upsertWorkerTask）。
+      // 转调 apiV2.redispatch 纯函数（zod 校验 + upsertWorkerTask）。鉴权在统一前置门。
       if (rawPath === '/api/v2/workflow/redispatch') {
         if (req.method !== 'POST') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
           return
         }
         if (!jobs) {
@@ -363,18 +431,13 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         return
       }
 
-      // 痕迹通道 C：agent 工具调用直播——GET only + token 门（照抄上面两个先例分支的顺序：先
-      // method，再 token），命中后就地把响应转成 SSE 流，独立于下面纯同步的 handleApiRoute 分
+      // 痕迹通道 C：agent 工具调用直播——GET only（鉴权已由统一前置门完成，这里只剩 method 门），
+      // 命中后就地把响应转成 SSE 流，独立于下面纯同步的 handleApiRoute 分
       // 发（订阅是有状态的长连接，不是一次性算完就 return 的纯函数）。
       if (rawPath === '/api/v2/workflow/trace-stream') {
         if (req.method !== 'GET') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
           return
         }
         res.writeHead(200, {
@@ -410,7 +473,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
 
       // dashboard-F5：GET /api/v2/tmdb/search?q=…&type=tv|movie——ClaimDialog 的 TMDB 搜索代理
       // （只读）。独立分支（不是 router.ts 纯函数）：需要 await tmdb.search，同
-      // reconcile-all/redispatch 先例——method 门 → token 门 → tmdb 缺席门（503，同 reconcile-all
+      // reconcile-all/redispatch 先例——method 门 → tmdb 缺席门（503，同 reconcile-all
       // 缺 TMDB_API_KEY 的既有先例）→ query 校验 → 转调真实 TmdbClient.search，结果映射成
       // {results:[{id,name,year,posterPath}]}（TmdbSearchHit.title → name，对齐 ClaimDialog
       // "海报缩略+名+年份"的呈现用词）。tmdb.search 本身失败（网络/超时/非 2xx，
@@ -420,11 +483,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         if (req.method !== 'GET') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        if (token && reqToken !== token) {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'unauthorized' }))
           return
         }
         if (!tmdb) {
@@ -460,7 +518,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       if (rawPath.startsWith('/api/')) {
         const query: Record<string, string> = {}
         url.searchParams.forEach((v, k) => { query[k] = v })
-        const result = handleApiRoute({ pathname: rawPath, query, token: reqToken ?? undefined }, deps, token)
+        const result = handleApiRoute({ pathname: rawPath, query }, deps)
         res.writeHead(result.status, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.json))
         return

@@ -61,14 +61,12 @@ function decodeIdSegment(raw: string): string | null {
 // v1 端点已随 ledger/queue 一并废弃——命中返回 410，别硬撑。
 const V1_GONE = { status: 410, json: { error: 'gone', detail: 'v1 endpoint retired; use /api/v2/*' } } as const
 
-/** 纯 API 路由。token 未配置则不校验;配置了则需精确匹配。id 非法 400,未命中 404。 */
+/** 纯 API 路由。鉴权不上到这层——A1 起唯一的门是 server.ts 的统一前置门（cookie/api key/
+ *  legacy token 三通道）；这里只做 method/shape/存在性判定。id 非法 400,未命中 404。 */
 export function handleApiRoute(
-  req: { pathname: string; query: Record<string, string>; token?: string },
+  req: { pathname: string; query: Record<string, string> },
   deps: RouterDeps,
-  configuredToken?: string,
 ): ApiResult {
-  if (configuredToken && req.token !== configuredToken) return { status: 401, json: { error: 'unauthorized' } }
-
   const { pathname } = req
 
   // ---- v1 retired ----

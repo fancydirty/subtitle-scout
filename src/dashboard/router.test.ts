@@ -95,8 +95,8 @@ const deps: RouterDeps = {
   runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
 }
 
-const call = (pathname: string, opts: { query?: Record<string, string>; token?: string; configuredToken?: string } = {}) =>
-  handleApiRoute({ pathname, query: opts.query ?? {}, token: opts.token }, deps, opts.configuredToken)
+const call = (pathname: string, opts: { query?: Record<string, string> } = {}) =>
+  handleApiRoute({ pathname, query: opts.query ?? {} }, deps)
 
 describe('handleApiRoute (v2)', () => {
   it('routes /api/v2/library', () => {
@@ -162,11 +162,6 @@ describe('handleApiRoute (v2)', () => {
     expect(call('/api/runs').status).toBe(410)
     expect(call('/api/runs/i-1000').status).toBe(410)
   })
-  it('enforces token when configured', () => {
-    expect(call('/api/v2/library', { configuredToken: 's3cret' }).status).toBe(401)
-    expect(call('/api/v2/library', { configuredToken: 's3cret', token: 'wrong' }).status).toBe(401)
-    expect(call('/api/v2/library', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
-  })
   it('returns 404 for non-api paths (static handled elsewhere)', () => {
     expect(call('/index.html').status).toBe(404)
   })
@@ -206,11 +201,6 @@ describe('handleApiRoute (v2)', () => {
     const r = call('/api/v2/fs/list', { query: { path: '/nope' } })
     expect(r.status).toBe(400)
     expect((r.json as { error: string }).error).toEqual(expect.any(String))
-  })
-
-  it('token 门也保护新增的 v2 端点', () => {
-    expect(call('/api/v2/settings', { configuredToken: 's3cret' }).status).toBe(401)
-    expect(call('/api/v2/settings', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
   })
 
   // dashboard G5：workflow/library/甄别聚合 API——五个纯同步 GET 端点的路由层测试。
@@ -258,12 +248,6 @@ describe('handleApiRoute (v2)', () => {
       expect(r.status).toBe(200)
       expect(r.json).toEqual(triageDTO)
     })
-
-    it('token 门同样保护五个新端点', () => {
-      expect(call('/api/v2/workflow/pending', { configuredToken: 's3cret' }).status).toBe(401)
-      expect(call('/api/v2/library/series/s1', { configuredToken: 's3cret' }).status).toBe(401)
-      expect(call('/api/v2/triage', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
-    })
   })
 
   // dashboard-F4：单 run 痕迹快照回放端点——纯数字 id 校验，404 语义（非数字 id 也是 404，
@@ -283,11 +267,6 @@ describe('handleApiRoute (v2)', () => {
 
     it('非数字 id → 404（路由本身不匹配，不是 400）', () => {
       expect(call('/api/v2/workflow/runs/abc/trace').status).toBe(404)
-    })
-
-    it('token 门同样保护这条端点', () => {
-      expect(call('/api/v2/workflow/runs/1/trace', { configuredToken: 's3cret' }).status).toBe(401)
-      expect(call('/api/v2/workflow/runs/1/trace', { configuredToken: 's3cret', token: 's3cret' }).status).toBe(200)
     })
   })
 })
