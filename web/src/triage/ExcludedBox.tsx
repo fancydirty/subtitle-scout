@@ -1,6 +1,7 @@
 // web/src/triage/ExcludedBox.tsx：excluded-extra 翻案箱——默认折叠，列出被 exclude_extras 设置
 // 当作"特典"排除的停车行，每行一个文件名 + Restore 按钮，取消排除后该文件回到 pending 池重新
 // 参与 ingest。
+import { useState } from 'react'
 import { Button } from '@astryxdesign/core/Button'
 import { Text } from '@astryxdesign/core/Text'
 import { HStack } from '@astryxdesign/core/HStack'
@@ -12,11 +13,29 @@ import { pathTail } from './text.js'
 
 interface Props {
   excluded: ParkedItemDTO[]
-  onRestore: (path: string) => void
+  /** 翻案一行——返回 Promise，本组件据其成败驱动 busy/error（dashboard 审计 #2：此前 onRestore
+   *  返回 void，失败被裸吞、无 loading 可双提交）。 */
+  onRestore: (path: string) => Promise<void>
 }
 
-function ExcludedRow({ row, onRestore }: { row: ParkedItemDTO; onRestore: (path: string) => void }) {
+function ExcludedRow({ row, onRestore }: { row: ParkedItemDTO; onRestore: (path: string) => Promise<void> }) {
   const { t } = useT()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function restore() {
+    if (busy) return // 同步去重：飞行中不再触发（双提交防护）
+    setBusy(true)
+    setError(null)
+    try {
+      await onRestore(row.path)
+    } catch (e) {
+      setError(t('triage_restore_error_prefix') + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="triage-excluded-row">
       <span className="triage-excluded-file" title={row.path}>
@@ -26,8 +45,11 @@ function ExcludedRow({ row, onRestore }: { row: ParkedItemDTO; onRestore: (path:
         size="sm"
         variant="secondary"
         label={t('triage_excluded_restore_label')}
-        onClick={() => onRestore(row.path)}
+        isLoading={busy}
+        isDisabled={busy}
+        onClick={restore}
       />
+      {error && <span className="auth-error" role="alert">{error}</span>}
     </div>
   )
 }

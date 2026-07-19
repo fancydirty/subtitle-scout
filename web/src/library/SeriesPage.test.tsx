@@ -235,12 +235,22 @@ describe('SeriesPage：三态', () => {
     expect(screen.queryByText('Series A')).not.toBeInTheDocument()
   })
 
-  it('404 → 未找到态', async () => {
+  it('404 → 未找到态（真实 payload：后端 404 body {error:"not found"} → client 返回 "not found"）', async () => {
+    // 生产真相：router.ts 的 series-detail 404 返回 {error:'not found'}，client.ts errorMessage 对
+    // 4xx 优先取 body.error → 错误串就是 'not found'（不是合成的 '… → 404'）。此前 isNotFoundError
+    // 只认 '→ 404'，导致真 404 落进"错误 + 重试"死循环，友好未找到态是死代码（dashboard 审计 #1）。
     render(
       <I18nProvider>
-        <SeriesPage
-          detail={{ data: null, loading: false, error: '/api/v2/library/series/tmdb:9 → 404', reload: vi.fn() }}
-        />
+        <SeriesPage detail={{ data: null, loading: false, error: 'not found', reload: vi.fn() }} />
+      </I18nProvider>,
+    )
+    expect(await screen.findByText('Series not found')).toBeInTheDocument()
+  })
+
+  it('404 非 JSON body 的兜底形态（"… → 404"）仍判未找到', async () => {
+    render(
+      <I18nProvider>
+        <SeriesPage detail={{ data: null, loading: false, error: '/api/v2/library/series/tmdb:9 → 404', reload: vi.fn() }} />
       </I18nProvider>,
     )
     expect(await screen.findByText('Series not found')).toBeInTheDocument()

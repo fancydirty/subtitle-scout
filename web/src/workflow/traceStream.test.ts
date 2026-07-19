@@ -14,10 +14,17 @@ class FakeEventSource {
   onmessage: ((ev: MessageEvent) => void) | null = null
   onerror: ((ev: Event) => void) | null = null
   closed = false
+  readyState = 1 // OPEN 默认；致命关闭时测试置 2(CLOSED)
 
   constructor(url: string) {
     this.url = url
     FakeEventSource.instances.push(this)
+  }
+
+  /** 模拟致命关闭（非 2xx 响应，如服务端重启 502/会话失效 401）：readyState→CLOSED + onerror。 */
+  fatalClose(): void {
+    this.readyState = 2
+    this.onerror?.({} as Event)
   }
 
   close(): void {
@@ -138,6 +145,60 @@ describe('traceStream：单例 EventSource + runKey 分发', () => {
     instance.open() // 首次——不算重连
     instance.open() // 第二次——浏览器原生自动重连成功
     expect(reconnectFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('致命关闭（readyState=CLOSED，服务端重启/会话失效）后退避重连，新连接事件仍达订阅者（审计 #3）', () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    vi.useFakeTimers()
+    try {
+      const received: TraceEvent[] = []
+      subscribeTrace('job-1', (e) => received.push(e))
+      const inst1 = FakeEventSource.instances[0]
+      inst1.open()
+      inst1.fatalClose() // 浏览器不会自动重连——旧代码单例 es 常驻非 null，直播永久卡死
+      vi.advanceTimersByTime(5000)
+      expect(FakeEventSource.instances).toHaveLength(2) // 主动退避重连出一条新连接
+      const inst2 = FakeEventSource.instances[1]
+      inst2.open()
+      inst2.emit(ev('job-1', 0))
+      expect(received).toHaveLength(1) // 直播恢复
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('致命关闭后的重连成功（第二条连接 onopen）通知 onTraceReconnect（补拉 workers 弥补断线窗口）', () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    vi.useFakeTimers()
+    try {
+      const reconnectFn = vi.fn()
+      onTraceReconnect(reconnectFn)
+      subscribeTrace('job-1', () => {})
+      const inst1 = FakeEventSource.instances[0]
+      inst1.open() // 首次
+      inst1.fatalClose()
+      vi.advanceTimersByTime(5000)
+      FakeEventSource.instances[1].open() // 重连成功
+      expect(reconnectFn).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('浏览器正在自行重连（readyState=CONNECTING）时不插手，不新建连接', () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    vi.useFakeTimers()
+    try {
+      subscribeTrace('job-1', () => {})
+      const inst1 = FakeEventSource.instances[0]
+      inst1.open()
+      inst1.readyState = 0 // CONNECTING——浏览器原生瞬断重连中
+      inst1.onerror?.({} as Event)
+      vi.advanceTimersByTime(5000)
+      expect(FakeEventSource.instances).toHaveLength(1) // 不干预原生重连
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('畸形 data 行静默丢弃，不炸订阅回调', () => {

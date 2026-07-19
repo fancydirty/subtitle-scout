@@ -21,17 +21,33 @@ interface EventSourceLike {
   onopen: ((ev: Event) => void) | null
   onmessage: ((ev: MessageEvent) => void) | null
   onerror: ((ev: Event) => void) | null
+  /** 0=CONNECTING 1=OPEN 2=CLOSED（W3C EventSource）。致命关闭判定用（dashboard 审计 #3）。 */
+  readyState: number
   close(): void
 }
 type EventSourceCtor = new (url: string) => EventSourceLike
 
 const TRACE_STREAM_PATH = '/api/v2/workflow/trace-stream'
+const CLOSED = 2 // EventSource.CLOSED
+const RECONNECT_DELAY_MS = 3000
 
 let es: EventSourceLike | null = null
 let hasOpenedOnce = false
 let refCount = 0
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 const listenersByRunKey = new Map<string, Set<(e: TraceEvent) => void>>()
 const reconnectListeners = new Set<() => void>()
+
+/** 致命关闭后的退避重连（dashboard 审计 #3）：单次挂起，到点若仍有订阅者就重建连接。重连出的
+ *  新连接 onopen 会（hasOpenedOnce 仍为 true）触发 reconnectListeners，让 Lanes 补拉 workers
+ *  弥补断线窗口。自身若再次致命关闭会再排一次，天然形成带退避的重试。 */
+function scheduleReconnect(): void {
+  if (reconnectTimer != null) return
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    if (refCount > 0) ensureConnected()
+  }, RECONNECT_DELAY_MS)
+}
 
 function currentCtor(): EventSourceCtor | undefined {
   return (globalThis as { EventSource?: EventSourceCtor }).EventSource
@@ -47,6 +63,17 @@ function ensureConnected(): void {
       for (const fn of reconnectListeners) fn()
     }
     hasOpenedOnce = true
+  }
+  instance.onerror = () => {
+    // readyState CONNECTING(0)：浏览器正在自行重连（网络瞬断）——不插手，交给原生自动重连。
+    // CLOSED(2)：致命关闭（非 2xx 响应，如服务端重启 502/会话失效 401），浏览器不会自动重连，
+    // 且单例 es 常驻非 null 会让后续 subscribeTrace 全部短路（if (es) return）→ 直播永久卡死
+    // （dashboard 审计 #3）。主动 teardown 当前连接 + 退避重连。
+    if (instance.readyState === CLOSED && es === instance) {
+      instance.close()
+      es = null
+      scheduleReconnect()
+    }
   }
   instance.onmessage = (ev) => {
     let parsed: TraceEvent
@@ -110,6 +137,10 @@ export function __resetTraceStreamForTests(): void {
   es = null
   hasOpenedOnce = false
   refCount = 0
+  if (reconnectTimer != null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
   listenersByRunKey.clear()
   reconnectListeners.clear()
 }

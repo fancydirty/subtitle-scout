@@ -117,6 +117,7 @@ export const zh = {
   // triage_duplicates_heading 已退役——见 en.ts 同位置注释。
   triage_excluded_heading: '已排除的特典',
   triage_excluded_restore_label: '恢复',
+  triage_restore_error_prefix: '恢复失败：',
   triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',
 
   triage_type_tv: '剧集',

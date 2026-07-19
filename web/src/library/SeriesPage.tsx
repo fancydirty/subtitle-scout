@@ -28,8 +28,12 @@ interface Selection {
   cell: GridCell
 }
 
+// 未找到判定（dashboard 审计 #1）：series-detail 端点 404 时后端 body 是 {error:'not found'}
+// （router.ts），client.ts 对 4xx 优先取 body.error → 错误串就是 'not found'。SeriesPage 的
+// detail 只来自这一个端点（其 4xx 仅 'bad id'/'not found'），故这两种信号唯一对应真 404；
+// '… → 404' 是非 JSON body 的兜底形态，一并认。
 function isNotFoundError(error: string): boolean {
-  return error.endsWith('→ 404')
+  return error === 'not found' || error.endsWith('→ 404')
 }
 
 function HeaderSkeleton() {
