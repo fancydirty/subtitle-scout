@@ -103,6 +103,18 @@ export function parseDldPage(html: string, baseUrl: string): ZimukuDldResult {
   return { mirrorUrls }
 }
 
+/** 从 set-cookie 行数组里提出 `<name>=<val>`(返回可直接拼进 Cookie 头的 "name=val",无则 null)。
+ *  dld 页下发 PHPSESSID,下载镜像须带它请求。yunsuo.ts 的 extractCookie 收的是 Response 不通用,
+ *  这里按 raw set-cookie 行数组另写一个小工具。 */
+function extractSetCookieValue(setCookies: string[], name: string): string | null {
+  const re = new RegExp(`${name}=([^;]+)`)
+  for (const line of setCookies) {
+    const m = line.match(re)
+    if (m) return `${name}=${m[1]}`
+  }
+  return null
+}
+
 export const ZIMUKU_TIMEOUT_MS = 15_000
 // 设计文档要求的礼貌节流:单站串行、请求间 2-5s 随机延迟(不是恒定值——固定周期本身就是可指纹
 // 的行为特征)。住宅 IP 被封是真实家庭成本,绝不重试风暴。base 是下限、jitterRange 是上浮空间,
@@ -155,7 +167,7 @@ export class ZimukuClient {
   /** 发一次请求并返回 { html, challengeCookie }——challengeCookie 是从响应 Set-Cookie 提取的
    *  pending `security_session_verify` **值**(无则 null)。命中挑战页时,这个 pending 会话
    *  cookie 必须回带给验证码提交,才能让 WAF 把答案绑到会话(见 yunsuo.ts submitChallenge)。 */
-  private async fetchPath(path: string, cookie?: string): Promise<{ html: string; challengeCookie: string | null }> {
+  private async fetchPath(path: string, cookie?: string): Promise<{ html: string; challengeCookie: string | null; setCookies: string[] }> {
     const t0 = Date.now()
     const headers: Record<string, string> = { ...ZIMUKU_HEADERS, ...(cookie ? { Cookie: cookie } : {}) }
     try {
@@ -172,7 +184,8 @@ export class ZimukuClient {
         const m = line.match(/security_session_verify=([^;]+)/)
         if (m) { challengeCookie = m[1]; break }
       }
-      return { html, challengeCookie }
+      // setCookies 透出完整 raw 数组,供 dld 步提取 PHPSESSID(challengeCookie 逻辑不变——WAF 破解仍用它)。
+      return { html, challengeCookie, setCookies: raw }
     } catch (e) {
       this.opts.onApiCall?.({ endpoint: path, status: null, durationMs: Date.now() - t0, error: String(e) })
       throw e
@@ -234,9 +247,20 @@ export class ZimukuClient {
     return parseSearchResults(html)
   }
 
-  async detail(id: string): Promise<ZimukuDetailResult> {
-    const html = await this.requestHtml(`/detail/${id}.html`)
-    return parseDetailPage(html, ZIMUKU_BASE)
+  /** 把候选 id 解析成"可直接下载的镜像 URL + 下载所需 cookie"。真实链路 detail→dld→镜像:
+   *  detail 页给出 /dld/<id>.html,dld 页下发 PHPSESSID 并列出镜像 /download/.../svr/X;镜像带
+   *  PHPSESSID 请求 → 301 到 s.zimuku.org CDN 取文件(downloadDirect 自动跟随重定向)。镜像 token
+   *  内嵌时限时间戳,故此方法紧接下载调用。detail 步走 requestHtml(挑战破解 + 会话复用),dld 步
+   *  直出通常无挑战、但仍走 fetchPath 以复用会话 cookie 并拿到 PHPSESSID。 */
+  async resolveDownload(id: string): Promise<{ url: string; cookie: string | null }> {
+    const detailHtml = await this.requestHtml(`/detail/${id}.html`)
+    const { dldUrl } = parseDetailPage(detailHtml, ZIMUKU_BASE)
+    await this.limiter.wait()
+    const dldPath = dldUrl.startsWith(ZIMUKU_BASE) ? dldUrl.slice(ZIMUKU_BASE.length) : new URL(dldUrl).pathname
+    const dld = await this.fetchPath(dldPath, this.opts.sessionStore.get()?.cookie)
+    const phpSess = extractSetCookieValue(dld.setCookies, 'PHPSESSID')
+    const { mirrorUrls } = parseDldPage(dld.html, ZIMUKU_BASE)
+    return { url: mirrorUrls[0], cookie: phpSess }
   }
 }
 

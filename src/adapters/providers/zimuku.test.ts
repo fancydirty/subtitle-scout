@@ -149,12 +149,25 @@ describe('ZimukuClient', () => {
     ])
   })
 
-  it('detail: fetches /detail/<id>.html and parses the /dld download link', async () => {
+  it('resolveDownload: follows detail → dld and returns the first mirror absolute url + the PHPSESSID cookie the dld page issues', async () => {
+    // 真实链路(2026-07-19):detail 页给出 /dld/<id>.html,dld 页下发 PHPSESSID cookie 并列出
+    // 镜像下载链 /download/<token>/svr/X。resolveDownload 串起这两跳,返回首个镜像绝对 URL + PHPSESSID
+    // (供 downloadDirect 带 cookie 请求镜像 → 301 到 s.zimuku.org CDN 取文件)。
     const detailHtml = readFileSync('fixtures/zimuku/live-detail-179286-20260719.html', 'utf8')
-    const fetchImpl = vi.fn(async () => new Response(detailHtml))
+    const dldHtml = readFileSync('fixtures/zimuku/live-dld-179286-20260719.html', 'utf8')
+    const fetchImpl = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/detail/179286.html')) return new Response(detailHtml)
+      if (u.includes('/dld/179286.html')) {
+        return new Response(dldHtml, { headers: { 'set-cookie': 'PHPSESSID=abc123def; path=/' } })
+      }
+      throw new Error(`unexpected fetch in test: ${u}`)
+    })
     const c = client({ fetchImpl: fetchImpl as unknown as typeof fetch })
-    const r = await c.detail('179286')
-    expect(r).toEqual({ dldUrl: 'https://zimuku.org/dld/179286.html' })
+    const r = await c.resolveDownload('179286')
+    expect(r.url.startsWith('https://zimuku.org/download/')).toBe(true)
+    expect(r.url).toContain('/svr/')
+    expect(r.cookie).toBe('PHPSESSID=abc123def')
   })
 
   it('respects the MinIntervalLimiter between requests (politeness)', async () => {
