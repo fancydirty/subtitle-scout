@@ -1158,3 +1158,46 @@ describe('fs/list 收口（R2D-2：未鉴权全盘枚举关闭）', () => {
     expect((await fetch(`${base}/api/v2/fs/list?path=/`, { headers: { cookie } })).status).toBe(200)
   })
 })
+
+describe('auth Security 区端点（A3 Task 12）', () => {
+  async function setupAndCookie(base: string) {
+    const r = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const { apiKey } = await r.json() as { apiKey: string }
+    return { cookie: (r.headers.get('set-cookie') ?? '').split(';')[0], apiKey }
+  }
+  it('GET /api/v2/auth/security：authed 才给 username+完整 apiKey', async () => {
+    const { base } = await start(distWith('x'))
+    const { cookie, apiKey } = await setupAndCookie(base)
+    expect((await fetch(`${base}/api/v2/auth/security`)).status).toBe(401)
+    const r = await fetch(`${base}/api/v2/auth/security`, { headers: { cookie } })
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual({ username: 'admin', apiKey })
+  })
+  it('POST change-password：旧密码错 400；对则 200 且新密码能登、旧的不能', async () => {
+    const { base } = await start(distWith('x'))
+    const { cookie } = await setupAndCookie(base)
+    const post = (body: unknown) => fetch(`${base}/api/v2/auth/change-password`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
+    })
+    expect((await post({ oldPassword: 'wrong', newPassword: 'newpass888' })).status).toBe(400)
+    expect((await post({ oldPassword: 'hunter2222', newPassword: 'newpass888' })).status).toBe(200)
+    const login = (password: string) => fetch(`${base}/api/v2/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password }),
+    })
+    expect((await login('hunter2222')).status).toBe(401)
+    expect((await login('newpass888')).status).toBe(200)
+  })
+  it('POST regenerate-api-key：返回新 key，旧 key 立即失效', async () => {
+    const { base } = await start(distWith('x'))
+    const { cookie, apiKey } = await setupAndCookie(base)
+    const r = await fetch(`${base}/api/v2/auth/regenerate-api-key`, { method: 'POST', headers: { cookie } })
+    const { apiKey: nk } = await r.json() as { apiKey: string }
+    expect(nk).toMatch(/^[0-9a-f]{32}$/)
+    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': apiKey } })).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': nk } })).status).toBe(200)
+  })
+})

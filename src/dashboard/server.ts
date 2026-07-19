@@ -17,7 +17,7 @@ import {
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from './traceBus.js'
-import { AuthService } from './auth.js'
+import { AuthService, AUTH_KEYS } from './auth.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -205,6 +205,37 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         if (!authed) {
           res.writeHead(401, JSON_CT)
           res.end(JSON.stringify({ error: auth.isInitialized() ? 'unauthorized' : 'setup required' }))
+          return
+        }
+
+        // ---- 鉴权 A3：Security 区三端点（已过前置门，此处必然 authed）----
+        if (rawPath === '/api/v2/auth/security') {
+          if (req.method !== 'GET') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
+          // 完整 apiKey 只对已鉴权管理员回显（Sonarr 同款语义）；前端脱敏展示尾 4 位、复制钮拷全量。
+          res.writeHead(200, JSON_CT)
+          res.end(JSON.stringify({
+            username: settingsRepo.get(AUTH_KEYS.username) ?? '',
+            apiKey: settingsRepo.get(AUTH_KEYS.apiKey) ?? '',
+          }))
+          return
+        }
+        if (rawPath === '/api/v2/auth/change-password') {
+          if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
+          const body = await readJsonBody(req)
+          if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
+          const b = (body ?? {}) as { oldPassword?: unknown; newPassword?: unknown }
+          const r = auth.changePassword(
+            typeof b.oldPassword === 'string' ? b.oldPassword : '',
+            typeof b.newPassword === 'string' ? b.newPassword : '', Date.now(),
+          )
+          res.writeHead(r.ok ? 200 : 400, JSON_CT)
+          res.end(JSON.stringify(r.ok ? { ok: true } : { error: r.error }))
+          return
+        }
+        if (rawPath === '/api/v2/auth/regenerate-api-key') {
+          if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
+          res.writeHead(200, JSON_CT)
+          res.end(JSON.stringify({ apiKey: auth.regenerateApiKey(Date.now()) }))
           return
         }
       }
