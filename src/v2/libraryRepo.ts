@@ -389,15 +389,22 @@ export class LibraryRepo {
       .map(r => r.path)
   }
 
-  /** 镜像清理：realign 完成、Jellyfin 用新 SeriesId 重刮之后，旧 seriesId 下的
-   *  episodes/subtitles/series 行永远不会再被下一轮 scanLibrary 碰到（它只 upsert Jellyfin
-   *  当前报告的条目），是永久性的镜像鬼影，必须显式清除。subtitles 表未声明外键到
-   *  episodes(id)，但同属一份账目，一并清理保持镜像干净。 */
+  /** realign 收尾清旧 seriesId 下的 episodes/subtitles/series 行。
+   *
+   *  ⚠️ 数据腐蚀根因修复(2026-07-19,两路审计交叉确认 SEVERE):必须同时清 item_files。
+   *  去 Jellyfin 后 seriesId 由 tmdb id 稳定派生(ownIds.ts),realign 收尾的 refreshLibrary→ingest
+   *  会用**同一个 seriesId** 重识别整理好的新目录;与旧编号重叠的集触发 own-id 幂等副本分支,把新
+   *  文件登记成旧行的 item_files 副本。若此处只删 episodes 不删 item_files,那些副本就成了 owner
+   *  已删的孤儿——下一轮 ingest 的 B3-3 短路命中孤儿 path、ownerPath 为 null → continue,该路径
+   *  **永远不再被重识别成 episode 行**,盘上有视频有字幕却从库里永久消失,非自愈。旧注释假设的
+   *  "Jellyfin 重刮换新 SeriesId"不变式在去 Jellyfin 后已失效,故旧代码漏删 item_files 从良性变致命。
+   *  subtitles/item_files 均未声明外键到 episodes(id),但同属一份账目,一并清理保持镜像干净。 */
   deleteSeriesRows(seriesId: string): void {
     const tx = this.db.transaction(() => {
       const episodeIds = this.db.prepare(`SELECT id FROM episodes WHERE series_id = ?`).all(seriesId) as { id: string }[]
       const delSub = this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`)
-      for (const e of episodeIds) delSub.run(e.id)
+      const delItemFiles = this.db.prepare(`DELETE FROM item_files WHERE item_id = ?`)
+      for (const e of episodeIds) { delSub.run(e.id); delItemFiles.run(e.id) }
       this.db.prepare(`DELETE FROM episodes WHERE series_id = ?`).run(seriesId)
       this.db.prepare(`DELETE FROM series WHERE id = ?`).run(seriesId)
     })

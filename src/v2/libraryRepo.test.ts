@@ -506,6 +506,22 @@ describe('realign 支持方法', () => {
     expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('e1')).toEqual({ c: 0 })
   })
 
+  it('deleteSeriesRows 同时清 item_files——否则 realign 后副本成孤儿、集永久隐形(SEVERE 腐蚀根因)', () => {
+    // realign 收尾:refreshLibrary→ingest 用同一稳定 seriesId 重识别新目录,重叠集把新文件登记成旧行
+    // 的 item_files 副本;deleteSeriesRows 若漏删 item_files,这些副本 owner 已删成孤儿 → 下一轮 ingest
+    // B3-3 短路命中孤儿 path 却 ownerPath=null → continue,该 path 永不再被重识别成 episode → 集消失。
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 's1/e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/main.mkv', subStatus: 'covered' })
+    lib.addItemFile('s1/e1', '/media/4k-replica.mkv', 1000) // 跨根副本
+    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).not.toBeNull()
+
+    lib.deleteSeriesRows('s1')
+
+    // 副本行必须一并清除,不能留成孤儿
+    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).toBeNull()
+    expect(lib.db.prepare('SELECT COUNT(*) as c FROM item_files WHERE item_id=?').get('s1/e1')).toEqual({ c: 0 })
+  })
+
   it('upsertSeries posterPath / upsertMovie posterPath 写入 poster_path 列', () => {
     lib.upsertSeries({ id: 's1', name: 'Show', posterPath: '/dqZEN.jpg' })
     expect(lib.getSeries('s1')?.poster_path).toBe('/dqZEN.jpg')
