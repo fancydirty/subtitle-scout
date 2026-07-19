@@ -7,6 +7,7 @@ export const en = {
   nav_workflow: 'Workflow',
   nav_triage: 'Triage',
   nav_settings: 'Settings',
+  nav_logout: 'Log out',
 
   // ⌘K 命令面板：F2 只做四 tab 导航，不做搜索。
   cmdk_trigger: 'Find anything',

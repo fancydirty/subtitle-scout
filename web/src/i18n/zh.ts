@@ -9,6 +9,7 @@ export const zh = {
   nav_workflow: '工作流',
   nav_triage: '甄别',
   nav_settings: '设置',
+  nav_logout: '登出',
 
   cmdk_trigger: '搜索',
   cmdk_label: '命令面板',
