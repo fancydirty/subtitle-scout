@@ -5,7 +5,12 @@ import type {
   WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
   TriageDTO, TmdbSearchResponseDTO,
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
+  AuthStatusDTO, AuthSecurityDTO,
 } from './types.js'
+
+/** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
+ *  触发一次 auth/status 重探，自动把界面切回 LoginPage——避免每个数据 hook 各自处理 401。 */
+export const UNAUTHORIZED_EVENT = 'scout:unauthorized'
 
 const token = (): string | null => new URLSearchParams(location.search).get('token')
 
@@ -36,16 +41,27 @@ function errorMessage(path: string, status: number, body: unknown): string {
   // 的人话,而不是每个面板各自显示裸的 "path → 401"/"unauthorized"——否则用户听劝设了 token 后
   // 直接开面板,只看到满屏 unauthorized/offline,不知道要手动拼 ?token= 参数。
   if (status === 401) {
-    return '需要访问令牌:请在网址末尾加 ?token=<你的 DASHBOARD_TOKEN>(当前请求未带 token 或 token 不正确)'
+    // 鉴权 A2：token 时代退役——401 现在意味"会话过期/未登录"。App 层收到 scout:unauthorized
+    // 会自动切回 LoginPage，这条文案只在切换前的一瞬被面板短暂显示。
+    return '会话未授权或已失效，请重新登录'
   }
   return body && typeof body === 'object' && 'error' in body
     ? String((body as { error: unknown }).error)
     : `${path} → ${status}`
 }
 
+/** 401 时派发全局 scout:unauthorized——get/mutate 共用；SSR 安全（typeof window 守卫，虽然本
+ *  客户端只跑浏览器，守卫是零成本的稳妥）。 */
+function notifyIfUnauthorized(status: number): void {
+  if (status === 401 && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+  }
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(withToken(path), { signal })
   if (!res.ok) {
+    notifyIfUnauthorized(res.status)
     const body: unknown = await res.json().catch(() => null)
     throw new Error(errorMessage(path, res.status, body))
   }
@@ -67,6 +83,7 @@ async function mutate<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?:
   })
   const responseBody: unknown = await res.json().catch(() => null)
   if (!res.ok) {
+    notifyIfUnauthorized(res.status)
     throw new Error(errorMessage(path, res.status, responseBody))
   }
   return responseBody as T
@@ -140,4 +157,16 @@ export const api = {
   removeRoot: (path: string) => del<RemoveRootResultDTO>(`/api/v2/settings/roots?path=${encodeURIComponent(path)}`),
   fsList: (path: string, signal?: AbortSignal) =>
     get<FsListDTO>(`/api/v2/fs/list?path=${encodeURIComponent(path)}`, signal),
+  // 鉴权 A2/A3：账号鉴权端点。status 是 App 门的探测源（任何态放行）；setup/login/logout 走
+  // 会话 cookie（服务端 set-cookie，浏览器自动携带，无需前端存 token）；security/改密/重生成
+  // 是 Settings Security 区用。
+  authStatus: (signal?: AbortSignal) => get<AuthStatusDTO>('/api/v2/auth/status', signal),
+  authSetup: (username: string, password: string) =>
+    post<{ ok: true; apiKey: string }>('/api/v2/auth/setup', { username, password }),
+  login: (username: string, password: string) => post<{ ok: true }>('/api/v2/auth/login', { username, password }),
+  logout: () => post<{ ok: true }>('/api/v2/auth/logout'),
+  authSecurity: (signal?: AbortSignal) => get<AuthSecurityDTO>('/api/v2/auth/security', signal),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    post<{ ok: true }>('/api/v2/auth/change-password', { oldPassword, newPassword }),
+  regenerateApiKey: () => post<{ apiKey: string }>('/api/v2/auth/regenerate-api-key'),
 }

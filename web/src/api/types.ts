@@ -268,6 +268,22 @@ export interface DeploySettingsDTO {
   nonSecrets: Record<string, string | null>
 }
 
+/** 鉴权 A2：GET /api/v2/auth/status 响应体——App 层鉴权门（useAuthStatus）据此三态分流：
+ *  未初始化→SetupWizard、已初始化未登录→LoginPage、已登录→Shell。与 src/dashboard/server.ts
+ *  的 auth/status 端点一致。 */
+export interface AuthStatusDTO {
+  initialized: boolean
+  authenticated: boolean
+}
+
+/** 鉴权 A3：GET /api/v2/auth/security 响应体——Settings Security 区展示用（username + 完整
+ *  apiKey，仅对已鉴权管理员回显；前端自行脱敏成尾 4 位）。与 src/dashboard/server.ts 的
+ *  auth/security 端点一致。 */
+export interface AuthSecurityDTO {
+  username: string
+  apiKey: string
+}
+
 /** dashboard-F6：GET /api/v2/settings/roots 响应体行——与 src/v2/settingsRepo.ts 的
  *  MediaRoot 一致。 */
 export interface MediaRootDTO {

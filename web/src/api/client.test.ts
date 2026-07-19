@@ -40,11 +40,43 @@ describe('client.ts get() 失败时的错误消息', () => {
     await expect(api.fsList('/mnt/y')).rejects.toThrow('/api/v2/fs/list?path=%2Fmnt%2Fy → 404')
   })
 
-  it('401 → 给可操作的"加 ?token="人话提示,而不是裸 path → 401 / unauthorized', async () => {
+  it('401 → 给"请重新登录"人话提示,而不是裸 path → 401 / unauthorized（鉴权 A2：token 时代退役）', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: false, status: 401, json: async () => null }) as unknown as Response),
     )
-    await expect(api.library()).rejects.toThrow(/\?token=/)
+    await expect(api.library()).rejects.toThrow(/登录/)
+  })
+})
+
+// 鉴权 A2 Task 8：api client auth 端点 + 全局 401 事件。App 层鉴权门（useAuthStatus）监听
+// scout:unauthorized——任意请求撞 401（会话过期/登出）即触发一次 auth/status 重探，自动切回
+// LoginPage，无需每个 hook 各自处理 401。
+describe('auth api（A2 Task 8）', () => {
+  it('authStatus 打 GET /api/v2/auth/status', async () => {
+    const mock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ initialized: true, authenticated: false }) }) as unknown as Response)
+    vi.stubGlobal('fetch', mock)
+    const r = await api.authStatus()
+    expect(r).toEqual({ initialized: true, authenticated: false })
+    expect(String((mock.mock.calls[0] as unknown[])[0])).toBe('/api/v2/auth/status')
+  })
+
+  it('login 打 POST /api/v2/auth/login 带 JSON body', async () => {
+    const mock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }) as unknown as Response)
+    vi.stubGlobal('fetch', mock)
+    await api.login('admin', 'pw')
+    const [path, init] = mock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(path).toBe('/api/v2/auth/login')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ username: 'admin', password: 'pw' })
+  })
+
+  it('任何请求 401 → 派发 scout:unauthorized 全局事件（App 门据此切回 login）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) }) as unknown as Response))
+    const seen = vi.fn()
+    window.addEventListener('scout:unauthorized', seen)
+    await expect(api.settings()).rejects.toThrow()
+    expect(seen).toHaveBeenCalledTimes(1)
+    window.removeEventListener('scout:unauthorized', seen)
   })
 })
