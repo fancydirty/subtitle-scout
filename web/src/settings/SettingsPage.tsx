@@ -8,6 +8,7 @@ import { useSettings, useDeploySettings, useRoots } from '../api/hooks.js'
 import { BehaviorSection } from './BehaviorSection.js'
 import { DeploySection } from './DeploySection.js'
 import { RootsManager } from './RootsManager.js'
+import { SecuritySection } from './SecuritySection.js'
 
 export function SettingsPage() {
   const settings = useSettings()
@@ -19,6 +20,8 @@ export function SettingsPage() {
       <BehaviorSection settings={settings} />
       <DeploySection deploy={deploy} />
       <RootsManager roots={roots} />
+      {/* 安全区排最后——低频人工操作（改密/换 key），不抢常用设置的视觉序位。 */}
+      <SecuritySection />
     </VStack>
   )
 }
