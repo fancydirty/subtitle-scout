@@ -230,4 +230,31 @@ export const en = {
   settings_dirbrowser_add_error_prefix: "Couldn't add this directory: ",
   settings_dirbrowser_empty: 'No subdirectories here.',
   settings_dirbrowser_error_prefix: "Couldn't list this directory: ",
+
+  // ── 鉴权 A2/A3（setup 向导 / 登录 / Security 区）。共享字段标签在此，各页复用。 ──
+  auth_username_label: 'Username',
+  auth_password_label: 'Password',
+  auth_show_password: 'Show password',
+  auth_hide_password: 'Hide password',
+  // SetupWizard（首启向导，单屏建管理员）。
+  setup_heading: 'Create the admin account',
+  setup_intro: 'This instance is single-admin. Credentials are stored locally; recovery is via the CLI.',
+  setup_confirm_label: 'Confirm password',
+  setup_password_hint: 'At least 10 characters',
+  setup_password_mismatch: 'Passwords do not match',
+  setup_submit: 'Create account',
+  setup_submitting: 'Creating…',
+  // 一次性 API key 告知屏（建成即登录后立即展示，唯一一次全显）。
+  setup_apikey_heading: 'Your API key',
+  setup_apikey_notice: 'Shown in full only this once. From now on Settings shows the last 4 characters; you can copy or regenerate it there anytime.',
+  setup_apikey_copy: 'Copy',
+  setup_apikey_copied: 'Copied',
+  setup_enter_label: 'Continue to dashboard',
+  // LoginPage（登录页，极简）。
+  login_heading: 'Sign in',
+  login_submit: 'Log in',
+  login_submitting: 'Signing in…',
+  login_error_invalid: 'Incorrect username or password.',
+  login_error_transport: "Can't reach the server.",
+  login_forgot_hint: 'Locked out? Reset from the CLI: subtitle-scout auth reset',
 } as const

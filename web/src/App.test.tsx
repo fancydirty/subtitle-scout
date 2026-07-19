@@ -12,11 +12,6 @@ import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/re
 import { App } from './App.js'
 import type { WorkflowPendingDTO, LibraryItemDTO } from './api/types.js'
 
-/** 统一响应体、不看 URL——只适合"所有请求都该给同一个答案"的场景（比如全局失败测试）。 */
-function mockFetchAll(body: unknown, ok = true) {
-  return vi.fn(async () => ({ ok, status: ok ? 200 : 500, json: async () => body }) as unknown as Response)
-}
-
 function requestPath(input: RequestInfo | URL): string {
   const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
   return raw.split('?')[0]
@@ -44,6 +39,9 @@ const EMPTY_LIBRARY: LibraryItemDTO[] = []
 
 function standardHandlers() {
   return [
+    // 鉴权 A2 Task 11：App 门先探 auth/status；已登录才渲染 Shell。外壳冒烟测试关注 Shell 内部，
+    // 统一给一个"已初始化已登录"的 status，让门放行到 Shell。
+    { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
     { path: '/api/v2/workflow/pending', body: WORKFLOW },
     { path: '/api/v2/library', body: EMPTY_LIBRARY },
     // dashboard-F4：Lanes.tsx（Workflow tab 真页面）额外发的两个端点——F2 时代 Workflow tab
@@ -124,11 +122,15 @@ describe('App 外壳冒烟', () => {
     expect(screen.getByText('3')).toBeInTheDocument()
   })
 
-  it('fetch 失败时外壳骨架仍在，不白屏——新鲜度行降级显示，甄别角标不渲染', async () => {
-    vi.stubGlobal('fetch', mockFetchAll({ error: 'boom' }, false))
+  it('已登录但后端端点失败时外壳骨架仍在，不白屏——新鲜度行降级显示，甄别角标不渲染', async () => {
+    // 鉴权 A2 后：只给 auth/status（放行到 Shell），其余端点一律 404（mockFetchRouted 未列即 404）
+    // → workflow/pending 失败 → 新鲜度行降级 offline。验证"已登录时后端抖动不白屏"仍成立。
+    vi.stubGlobal('fetch', mockFetchRouted([
+      { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
+    ]))
     render(<App />)
 
-    // 外壳本身（四 tab 项）必须完整渲染，不能因为这一个请求失败就整屏空白。
+    // 外壳本身（四 tab 项）必须完整渲染，不能因为后端请求失败就整屏空白。
     expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workflow' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /^Triage/ })).toBeInTheDocument()
@@ -137,6 +139,39 @@ describe('App 外壳冒烟', () => {
     await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument())
     // 无数据时不显示甄别角标。
     expect(screen.queryByText('3')).not.toBeInTheDocument()
+  })
+})
+
+// 鉴权 A2 Task 11：App 层鉴权门三态分流 + 结构性白赚的两个 *arr bug 免疫。
+describe('App 鉴权门（A2 Task 11）', () => {
+  it('auth/status initialized:false → 渲染 SetupWizard（不渲染 Shell）', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([
+      { path: '/api/v2/auth/status', body: { initialized: false, authenticated: false } },
+    ]))
+    render(<App />)
+    expect(await screen.findByText('Create the admin account')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Library' })).not.toBeInTheDocument()
+  })
+
+  it('initialized:true authenticated:false → 渲染 LoginPage', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([
+      { path: '/api/v2/auth/status', body: { initialized: true, authenticated: false } },
+    ]))
+    render(<App />)
+    expect(await screen.findByRole('button', { name: /log in|登录/i })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Library' })).not.toBeInTheDocument()
+  })
+
+  it('authenticated:true → 渲染 Shell', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
+    render(<App />)
+    expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
+  })
+
+  it('auth/status 探测彻底失败（服务器不可达）→ 安全默认为 LoginPage，不白屏', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    render(<App />)
+    expect(await screen.findByRole('button', { name: /log in|登录/i })).toBeInTheDocument()
   })
 
   it('⌘K：点击触发器打开，Escape 关闭', async () => {
