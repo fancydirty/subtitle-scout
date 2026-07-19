@@ -38,6 +38,23 @@ describe('downloadDirect', () => {
     const r = await downloadDirect('http://x/y.ass', { fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(r.filename).toBeNull()
   })
+  it('rejects early when Content-Length declares over the size cap (OOM/zip-bomb防线)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('x'), {
+      headers: { 'content-length': String(200 * 1024 * 1024) },
+    }))
+    await expect(downloadDirect('http://x/huge.zip', { fetchImpl: fetchImpl as unknown as typeof fetch, retryDelayMs: 1 }))
+      .rejects.toThrow(/too large|cap/)
+  })
+  it('aborts mid-stream when the body exceeds the size cap despite no Content-Length', async () => {
+    // 每次调用给一条新鲜流(重试会再取一次,复用同一条会因 locked 报别的错):每 chunk 8MB 持续吐,
+    // 超过 100MB cap 应中止抛错(不把整体读进内存)。
+    const makeStream = () => new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(8 * 1024 * 1024)) },
+    })
+    const fetchImpl = vi.fn(async () => new Response(makeStream()))
+    await expect(downloadDirect('http://x/stream', { fetchImpl: fetchImpl as unknown as typeof fetch, retryDelayMs: 1 }))
+      .rejects.toThrow(/size cap|exceeded/)
+  })
   it('retries once on failure then succeeds', async () => {
     const fetchImpl = vi.fn()
       .mockRejectedValueOnce(new Error('ECONNRESET'))

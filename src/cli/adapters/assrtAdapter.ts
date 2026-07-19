@@ -55,10 +55,28 @@ export function makeAssrtAdapter(
       const detail = await client.detail(Number(ref.providerId))
       const sub = detail.sub.subs.find(s => String(s.id) === ref.providerId) ?? detail.sub.subs[0]
       if (!sub) throw new Error(`assrt detail ${ref.providerId} returned no subs`)
-      const entry = ref.fileIndex != null ? sub.filelist[ref.fileIndex] : undefined
-      const url = entry?.url ?? sub.url
+      // fileIndex 非空但在 detail.filelist 越界:**绝不静默回落到 sub.url(整包/顶层文件)**——那会装错集
+      // (search 与 detail 是两次独立 API,filelist 长度/顺序不保证一致;越界时我们根本不知道 agent 想要
+      // 的那一集对应到哪。宁停不猜:抛错让 agent 换候选或改用 fileIndex:null 走整包+archiveEntryName 选集,
+      // 而不是把"整包顶层文件"当成那一集悄悄装上——silent 装错比留缺口更糟,是北极星明令避免的)。
+      let url: string | undefined
+      let filename: string | undefined
+      if (ref.fileIndex != null) {
+        const entry = sub.filelist[ref.fileIndex]
+        if (!entry) {
+          throw new Error(
+            `assrt ${ref.providerId}: fileIndex ${ref.fileIndex} 在 detail filelist(${sub.filelist.length} 项)越界——` +
+            `拒绝静默回落到整包 URL(会装错集);agent 应换候选或用 fileIndex:null 走整包+archiveEntryName 选集`,
+          )
+        }
+        url = entry.url
+        filename = entry.f ?? undefined
+      } else {
+        url = sub.url
+        filename = sub.filename ?? undefined
+      }
       if (!url) throw new Error(`assrt ${ref.providerId} has no download url`)
-      return { url, filename: entry?.f ?? sub.filename ?? undefined }
+      return { url, filename }
     },
   }
 }

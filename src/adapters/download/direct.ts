@@ -43,6 +43,36 @@ function isAbortError(e: unknown): boolean {
   return e instanceof DOMException && (e.name === 'AbortError' || e.name === 'TimeoutError')
 }
 
+/** 字幕/字幕包的合理体量上限。单条字幕通常几十 KB~几 MB,整季 zip 包也远小于此;超过 = 异常
+ *  (误标的大文件、zip 炸弹的外层、纯 HTTP CDN 被 MITM 塞垃圾)。无人值守 daemon 若无上限地
+ *  arrayBuffer 一个多 GB 响应会 OOM 拖垮所有在途 job。故边下边计数,超限即中止,不把整个身体
+ *  读进内存才发现太大。DOWNLOAD_TIMEOUT_MS 只管墙钟,管不了字节数,两者互补。 */
+export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024 // 100 MB
+
+/** 流式读取响应体,累计超过 cap 立即 cancel 并抛错——不等整体读完才发现超限(防 OOM)。
+ *  res.body 为 null(极少数实现/空体)时回落 arrayBuffer(此时 cap 仅作事后校验)。 */
+async function readBodyCapped(res: Response, cap: number): Promise<Buffer> {
+  const reader = res.body?.getReader?.()
+  if (!reader) {
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (buf.length > cap) throw new Error(`download too large: ${buf.length} bytes > cap ${cap}`)
+    return buf
+  }
+  const chunks: Buffer[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.length
+    if (total > cap) {
+      await reader.cancel().catch(() => {})
+      throw new Error(`download exceeded size cap ${cap} bytes (aborted mid-stream)`)
+    }
+    chunks.push(Buffer.from(value))
+  }
+  return Buffer.concat(chunks)
+}
+
 export async function downloadDirect(url: string, opts: DownloadOpts = {}): Promise<DownloadResult> {
   const { fetchImpl = fetch, retries = 1, retryDelayMs = 2000, headers, timeoutMs = DOWNLOAD_TIMEOUT_MS } = opts
   let lastError: unknown
@@ -53,7 +83,12 @@ export async function downloadDirect(url: string, opts: DownloadOpts = {}): Prom
         ...(headers ? { headers } : {}),
       })
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
-      const bytes = Buffer.from(await res.arrayBuffer())
+      // Content-Length 若已声明超限,连身体都不用读,早拒。
+      const declared = Number(res.headers.get('content-length'))
+      if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) {
+        throw new Error(`download too large: declared ${declared} bytes > cap ${MAX_DOWNLOAD_BYTES}`)
+      }
+      const bytes = await readBodyCapped(res, MAX_DOWNLOAD_BYTES)
       if (bytes.length === 0) throw new Error('download returned empty body')
       return {
         bytes,

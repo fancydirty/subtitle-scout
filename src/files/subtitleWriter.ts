@@ -47,6 +47,23 @@ type ZipPick = { name: string; data: Buffer } | WriteSubtitleNeedsSelection
 // selectFileName 给了但名字对不上 zip 内任何条目 → 仍然抛错（fail closed，行为不变）。没给
 // selectFileName 时：恰好 1 个字幕条目 → 零摩擦直取（不变）；>1 个 → 不再机械偷取 entries[0]，
 // 清单是事实，交回调用方（见 WriteSubtitleNeedsSelection）。
+/** zip 内单条目解压后体量上限——防 zip 炸弹(小压缩包解压成 GB 级吃爆内存)。字幕文件几十 KB~
+ *  几 MB,32MB 已极宽松(inspectSubtitle 的 16MB 上限本就会拒收更大的);超此判炸弹拒绝,不 getData。
+ *  AdmZip 条目 header.size 是本地头声明的解压尺寸——先据它拒,再解压。 */
+const MAX_ZIP_ENTRY_BYTES = 32 * 1024 * 1024
+
+function extractEntryCapped(entry: AdmZip.IZipEntry): Buffer {
+  const declared = entry.header?.size ?? 0
+  if (declared > MAX_ZIP_ENTRY_BYTES) {
+    throw new Error(`zip entry ${basename(entry.entryName)} declares ${declared} bytes uncompressed > cap ${MAX_ZIP_ENTRY_BYTES} (zip bomb?)`)
+  }
+  const data = entry.getData()
+  if (data.length > MAX_ZIP_ENTRY_BYTES) {
+    throw new Error(`zip entry ${basename(entry.entryName)} decompressed to ${data.length} bytes > cap ${MAX_ZIP_ENTRY_BYTES} (zip bomb?)`)
+  }
+  return data
+}
+
 function pickFromZip(buf: Buffer, selectFileName?: string): ZipPick {
   const zip = new AdmZip(buf)
   const entries = zip.getEntries().filter(e =>
@@ -57,10 +74,10 @@ function pickFromZip(buf: Buffer, selectFileName?: string): ZipPick {
   if (selectFileName) {
     const chosen = entries.find(e => basename(e.entryName) === basename(selectFileName))
     if (!chosen) throw new Error(`selected file not found in zip: ${selectFileName}`)
-    return { name: basename(chosen.entryName), data: chosen.getData() }
+    return { name: basename(chosen.entryName), data: extractEntryCapped(chosen) }
   }
   if (entries.length === 1) {
-    return { name: basename(entries[0].entryName), data: entries[0].getData() }
+    return { name: basename(entries[0].entryName), data: extractEntryCapped(entries[0]) }
   }
   return { needsSelection: true, entries: entries.map(e => basename(e.entryName)) }
 }

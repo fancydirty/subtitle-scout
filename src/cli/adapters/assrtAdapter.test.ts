@@ -173,4 +173,17 @@ describe('makeAssrtAdapter: resolve', () => {
     await expect(adapter.resolve({ provider: 'assrt', providerId: '5', fileIndex: null }, () => {}))
       .rejects.toThrow(/has no download url/)
   })
+
+  it('⑩fileIndex 非空但在 detail filelist 越界 → 抛错,绝不静默回落到 sub.url(防装错集)', async () => {
+    // search 与 detail 是两次独立 API,filelist 长度/顺序不保证一致——search 时有效的 index 到
+    // resolve 可能越界。旧代码 entry?.url ?? sub.url 会把整包顶层文件当成那一集悄悄装上(silent 装错)。
+    const detail = vi.fn(async () => resp([mkSub(5, {
+      url: 'http://whole-pack.zip', filename: 'pack.zip',
+      filelist: [{ f: 'a.srt', url: 'http://a' }], // 只有 1 项,fileIndex=3 越界
+    })]))
+    const adapter = makeAssrtAdapter(fakeClient({ detail }))
+
+    await expect(adapter.resolve({ provider: 'assrt', providerId: '5', fileIndex: 3 }, () => {}))
+      .rejects.toThrow(/越界|out of range/)
+  })
 })
