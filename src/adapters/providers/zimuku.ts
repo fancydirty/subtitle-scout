@@ -230,28 +230,47 @@ export class ZimukuClient {
     // 命中挑战:缓存的 cookie(若有)已经失效——按响应失效检测,不按计时(设计文档)
     this.opts.sessionStore.invalidate()
     const href = `${ZIMUKU_BASE}${path}`
-    const { cookie } = await solveYunsuoChallenge(
-      {
-        fetchImpl: this.fetchImpl,
-        solve: this.opts.solve,
-        // 每次尝试重抓新鲜挑战页(拿新图 + 配套的新 pending cookie)——redirect 形状答错后服务端
-        // 会轮换 pending 会话,复用同一张图无意义。礼貌限速在每次重抓前。第一次 fetchChallenge 会
-        // 再打一次挑战页(首发已消耗一次),这是可接受的——保证每次尝试都有配套的新鲜 pending cookie。
-        fetchChallenge: async () => {
-          await this.limiter.wait()
-          const c = await this.fetchPath(path)
-          return { html: c.html, pendingCookie: c.challengeCookie }
+    // 观测化(2026-07-19 大考遗留):每次挑战遭遇战以一条合成 api_call 收口——endpoint
+    // 'captcha:yunsuo',status 200=破解且内容核验通过,null+error=放弃(求解耗尽/verified cookie
+    // 被拒)。daemon 从此可统计求解次数/成功率,不再只能靠"装机成功数"反证。底下每次真实 HTTP
+    // 照旧由 fetchPath 单独打点,这条是遭遇战级别的汇总,durationMs=整场攻坚耗时(含内容重试)。
+    const challengeT0 = Date.now()
+    let cookie: string
+    try {
+      ;({ cookie } = await solveYunsuoChallenge(
+        {
+          fetchImpl: this.fetchImpl,
+          solve: this.opts.solve,
+          // 每次尝试重抓新鲜挑战页(拿新图 + 配套的新 pending cookie)——redirect 形状答错后服务端
+          // 会轮换 pending 会话,复用同一张图无意义。礼貌限速在每次重抓前。第一次 fetchChallenge 会
+          // 再打一次挑战页(首发已消耗一次),这是可接受的——保证每次尝试都有配套的新鲜 pending cookie。
+          fetchChallenge: async () => {
+            await this.limiter.wait()
+            const c = await this.fetchPath(path)
+            return { html: c.html, pendingCookie: c.challengeCookie }
+          },
         },
-      },
-      ZIMUKU_BASE, href, this.opts.maxCaptchaAttempts ?? 5,
-      DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, this.opts.rng,
-    )
+        ZIMUKU_BASE, href, this.opts.maxCaptchaAttempts ?? 5,
+        DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, this.opts.rng,
+      ))
+    } catch (e) {
+      this.opts.onApiCall?.({
+        endpoint: 'captcha:yunsuo', status: null, durationMs: Date.now() - challengeT0,
+        error: e instanceof Error ? e.message : String(e),
+      })
+      throw e
+    }
     this.opts.sessionStore.put({ cookie, capturedAt: Date.now() })
 
     const html = await this.fetchContentWithVerifiedCookie(path, cookie)
-    if (html !== null) return html
+    if (html !== null) {
+      this.opts.onApiCall?.({ endpoint: 'captcha:yunsuo', status: 200, durationMs: Date.now() - challengeT0 })
+      return html
+    }
     this.opts.sessionStore.invalidate()
-    throw new ZimukuChallengeError(`still challenged after solving captcha for ${path} — verified cookie rejected across ${CONTENT_VERIFY_ATTEMPTS} attempts`)
+    const rejectedMsg = `still challenged after solving captcha for ${path} — verified cookie rejected across ${CONTENT_VERIFY_ATTEMPTS} attempts`
+    this.opts.onApiCall?.({ endpoint: 'captcha:yunsuo', status: null, durationMs: Date.now() - challengeT0, error: rejectedMsg })
+    throw new ZimukuChallengeError(rejectedMsg)
   }
 
   async search(query: string): Promise<ZimukuSearchResult[]> {

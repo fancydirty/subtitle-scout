@@ -255,6 +255,59 @@ describe('ZimukuClient', () => {
     expect(sessionStore.get()).toBeNull() // 失效的 cookie 没有残留在缓存里
   })
 
+  it('观测化:攻克挑战并通过内容核验后 emit onApiCall({endpoint:"captcha:yunsuo",status:200})（大考遗留:daemon 无法统计求解次数/成功率）', async () => {
+    const challengeHtml = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
+    const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
+    const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
+    let challengeFetches = 0
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      const cookie = (init?.headers as Record<string, string> | undefined)?.Cookie ?? ''
+      if (u.includes('security_verify_img=')) {
+        return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HIGH; Path=/' } })
+      }
+      if (cookie.includes('security_session_high_verify')) return new Response(searchHtml)
+      challengeFetches++
+      return new Response(challengeHtml, { headers: { 'set-cookie': `security_session_verify=PEND${challengeFetches}; Path=/` } })
+    })
+    const events: { endpoint: string; status: number | null; durationMs: number; error?: string }[] = []
+    const c = client({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      solve: vi.fn(async () => ({ digits: '88640' })),
+      onApiCall: r => events.push(r),
+    })
+    await c.search('Pulp')
+    const captcha = events.filter(e => e.endpoint === 'captcha:yunsuo')
+    expect(captcha).toHaveLength(1)
+    expect(captcha[0].status).toBe(200)
+    expect(captcha[0].error).toBeUndefined()
+    expect(typeof captcha[0].durationMs).toBe('number')
+  })
+
+  it('观测化:破解后 verified cookie 仍被拒 → emit onApiCall({endpoint:"captcha:yunsuo",status:null,error})', async () => {
+    const challengeHtml = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
+    const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
+    let pendingSeq = 0
+    const fetchImpl = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('security_verify_img=')) {
+        return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HIGH; Path=/' } })
+      }
+      return new Response(challengeHtml, { headers: { 'set-cookie': `security_session_verify=PEND${++pendingSeq}; Path=/` } })
+    })
+    const events: { endpoint: string; status: number | null; durationMs: number; error?: string }[] = []
+    const c = client({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      solve: vi.fn(async () => ({ digits: '88640' })),
+      onApiCall: r => events.push(r),
+    })
+    await expect(c.search('Pulp')).rejects.toThrow(ZimukuChallengeError)
+    const captcha = events.filter(e => e.endpoint === 'captcha:yunsuo')
+    expect(captcha).toHaveLength(1)
+    expect(captcha[0].status).toBeNull()
+    expect(captcha[0].error).toContain('verified cookie rejected')
+  })
+
   it('retries the content fetch when the freshly-minted verified cookie is challenged before it propagates (2026-07-19 实测:同一有效 cookie 前脚被拒后脚放行)', async () => {
     const challengeHtml = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
     const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
