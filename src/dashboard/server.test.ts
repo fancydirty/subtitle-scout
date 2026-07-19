@@ -1141,3 +1141,20 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
     expect((await fetch(`${base}/api/v2/workflow/trace-stream`)).status).toBe(401)
   })
 })
+
+describe('fs/list 收口（R2D-2：未鉴权全盘枚举关闭）', () => {
+  it('未初始化：?path=/etc 401 setup required（向导阶段无匿名浏览）', async () => {
+    const { base } = await start(distWith('x'))
+    expect((await fetch(`${base}/api/v2/fs/list?path=/etc`)).status).toBe(401)
+  })
+  it('已初始化未登录：401；登录后可浏览（加根选择器的正常用途）', async () => {
+    const { base } = await start(distWith('x'))
+    const setup = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    const cookie = (setup.headers.get('set-cookie') ?? '').split(';')[0]
+    expect((await fetch(`${base}/api/v2/fs/list?path=/`)).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/fs/list?path=/`, { headers: { cookie } })).status).toBe(200)
+  })
+})
