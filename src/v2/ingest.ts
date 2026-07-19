@@ -424,10 +424,11 @@ async function enrichNewSeriesOrMovie(
     const details = await tmdb.getDetails(mediaType, tmdbId)
     posterPath = details?.posterPath ?? null
     year = details?.year ?? null
-    // 债务D6：404（getDetails 契约=返回 null，TMDB 权威答复查无此 id，永久态）时 genres 落 []
-    // 而不是 null——null 不写列（见 libraryRepo 两条写路的 != null 判定），该行会永远留在
-    // listSeriesNeedingEnrich 的 `genres IS NULL` 候选里，空转击穿每轮 10 个重试槽。瞬时失败
-    // （下面 catch 分支）维持 null → 下轮重试，两种"没拿到"必须分开。
+    // 债务D6（已收尾）：404（getDetails 契约=返回 null，TMDB 权威答复查无此 id，永久态）时
+    // genres 落 [] 而不是 null——null 不写列（见 libraryRepo 两条写路的 != null 判定），行会
+    // 留在 `genres IS NULL` 候选里空转击穿每轮 10 个重试槽；[] 即"已有定论"，配合收窄后的
+    // listSeriesNeedingEnrich 谓词当轮熄火（此前谓词还有 name='' 臂，404 空名行照样永留候选）。
+    // 瞬时失败（下面 catch 分支）维持 null → 下轮重试，两种"没拿到"必须分开。
     genres = details ? details.genreIds : []
     originalTitle = details?.originalTitle ?? null
   } catch (e) {
@@ -695,6 +696,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               let chineseTitle: string | null = null
               let genres: number[] | null = null
               let imdbId: string | null = null
+              let enrichOriginalTitle: string | null = null
               if (!seriesExisted) {
                 const enrich = await enrichNewSeriesOrMovie('tv', tmdbId, tmdb, log)
                 posterPath = enrich.posterPath
@@ -702,6 +704,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 chineseTitle = enrich.chineseTitle
                 genres = enrich.genres
                 imdbId = enrich.imdbId
+                enrichOriginalTitle = enrich.originalTitle
                 // dashboard G2：三层格阵第一层——新剧首次入库顺手起播应有集缓存（tmdbCatalog.ts）。
                 // fire-and-forget：不 await，失败仅 log，绝不阻塞摄取主流程（该函数自身已是
                 // gain-path 降级，见其头注释）。
@@ -710,7 +713,12 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 )
               }
               lib.upsertSeries({
-                id: ownSeriesId, name: title, chineseTitle, posterPath, year, genres,
+                // claim-gated 建行（recognition 只知道 tmdbId，title 恒 ''）时用建行 enrich 已经
+                // 拿到手的 originalTitle 当场回填——名字建行即有，不留"空名 ? 卡"债给富化重试
+                // （收窄后的熄火谓词只看 genres，接不住 genres 已非 NULL 的空名行）。getDetails
+                // 404/抖动时仍空串：前者定论熄火，后者 genres NULL 下轮重试整套回填。
+                id: ownSeriesId, name: title !== '' ? title : (enrichOriginalTitle ?? ''),
+                chineseTitle, posterPath, year, genres,
                 providerIds: imdbId
                   ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
                   : JSON.stringify({ tmdb: tmdbId }),

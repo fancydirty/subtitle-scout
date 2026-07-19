@@ -2050,6 +2050,43 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     expect(getDetails).toHaveBeenCalledTimes(10)
   })
 
+  it('404 熄火：getDetails 查无此 id（返回 null，权威定论）的空名剧，一轮定论后不再每轮空转重查', async () => {
+    // 债务D6 收尾：404 写 genres=[] 脱离 genres IS NULL 臂，但旧谓词的 name='' 臂让它永留候选，
+    // 每轮烧 3 个 TMDB 请求（getDetails+getChineseTitles+getExternalIds）且挤占 cap 10 重试槽。
+    lib.upsertSeries({ id: 'tmdb:404404', name: '' })
+    const getDetails = vi.fn(async () => null) // TMDB 权威答复：查无此 id（非抖动——抖动走 throw）
+    const pass = makeIngestPass(makeDeps({
+      tmdb: fakeTmdb({ getDetails }),
+      listVideoFiles: () => [],
+    }))
+
+    await pass() // 第一轮：补拍一次，拿到定论（genres=[]，name 无从获得）
+    expect(getDetails).toHaveBeenCalledTimes(1)
+    await pass()
+    await pass()
+    expect(getDetails).toHaveBeenCalledTimes(1) // 定论后绝不再烧
+  })
+
+  it('claim 建行（recognition title 空）且 getDetails 成功 → name 建行当场回填 originalTitle，不留空名债', async () => {
+    // 建行时 enrich 明明拿到了 originalTitle 却写 name:''——这债本可不欠：欠了之后 genres 已
+    // 非 NULL，收窄后的候选谓词接不住它，名字将永远空着。治源头：建行当场回填。
+    const disk = fakeDisk()
+    disk.setVideo('/media/Show/Season 1/ep1.mkv', 5000, 12345)
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '24240', title: '', season: 1, episode: 1 }))
+    const getDetails = vi.fn(async () => ({ overview: null, runtimeMinutes: 24, posterPath: null, originalTitle: 'Claimed Show', year: 2023, genreIds: [16] }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => ['/media/Show/Season 1/ep1.mkv'],
+      recognize, tmdb: fakeTmdb({ getDetails }),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getSeries('tmdb:24240')!.name).toBe('Claimed Show')
+    // 建行那次 enrich 已经拿到了全部字段——不许再靠 pass 收尾的富化重试为同一剧烧第二次 TMDB
+    expect(getDetails).toHaveBeenCalledTimes(1)
+  })
+
   it('TMDB 失败（getDetails 抛 TmdbRequestFailedError）时重试不写任何字段、不抛，下轮再试', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '' })
     const getDetails = vi.fn(async () => { throw new TmdbRequestFailedError(new Error('ECONNREFUSED')) })

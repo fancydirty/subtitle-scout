@@ -335,12 +335,30 @@ describe('媒体镜像', () => {
     expect(lib.getSeries('s1')!.genres).toBe(JSON.stringify([16]))
   })
 
-  it('listSeriesNeedingEnrich: name 为空或 genres IS NULL 的行，最多 limit 条', () => {
-    lib.upsertSeries({ id: 's1', name: '' }) // 空名占位（P6 认领债务）
+  it('listSeriesNeedingEnrich: genres IS NULL 的行（含空名占位建行——其 genres 必为 NULL），最多 limit 条', () => {
+    lib.upsertSeries({ id: 's1', name: '' }) // 空名占位（P6 认领债务）——genres NULL，经 genres 臂落网
     lib.upsertSeries({ id: 's2', name: 'Show B' }) // genres 未富化（NULL）
     lib.upsertSeries({ id: 's3', name: 'Show C', genres: [16] }) // 已富化，不是候选
     const rows = lib.listSeriesNeedingEnrich(10)
     expect(rows.map((r) => r.id).sort()).toEqual(['s1', 's2'])
+  })
+
+  it('listSeriesNeedingEnrich: 空名但 TMDB 已有定论（404 → genres=[]）的行熄火，不再是候选', () => {
+    // 404 时富化重试写 genres=[]（权威答复"查无此 id"，永久态）但 name 恒 ''——旧谓词的
+    // name='' 臂会让它每轮重进候选、空转烧 TMDB 配额并挤占 cap 10 的重试槽。重试对这种行
+    // 必然徒劳（TMDB 每次给同一答案）：定论即熄火。
+    lib.upsertSeries({ id: 's404', name: '', genres: [] })
+    expect(lib.listSeriesNeedingEnrich(10)).toEqual([])
+  })
+
+  it('upsertSeries: excluded.name 为空串占位时不踩既有非空 name（claim 剧来新集不得抹掉已治好的名字）', () => {
+    // claim-gated 分支的 title 恒 ''：该剧每来一集新文件都会带着空名重新 upsert——空串是
+    // "从未识别成功过"的占位语义（同 applyEnrichment 的 name CASE），绝不能覆盖一个真名。
+    lib.upsertSeries({ id: 's1', name: 'Healed Name', genres: [16] })
+    lib.upsertSeries({ id: 's1', name: '', year: 2024 }) // 空名占位再度 upsert（其余字段照常生效）
+    const row = lib.getSeries('s1')!
+    expect(row.name).toBe('Healed Name')
+    expect(row.year).toBe(2024)
   })
 
   it('listSeriesNeedingEnrich 遵守 limit', () => {

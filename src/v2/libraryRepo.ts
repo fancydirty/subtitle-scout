@@ -192,19 +192,22 @@ export class LibraryRepo {
     // 验收修复轮一 Task V1：genres 有值才 JSON.stringify，无值（undefined/null）→ NULL 绑定，
     // ON CONFLICT 分支用 COALESCE 保护既有值不被后续无 genres 的重复调用清空（同
     // chineseTitle/posterPath 的既有语义）。
+    // name 的 CASE：空串是"从未识别成功过"的占位语义（同 applyEnrichment 的 name CASE）——
+    // claim-gated 分支的 title 恒 ''，该剧每来一集新文件都带着空名重新 upsert，绝不能拿占位
+    // 覆盖一个已治好的真名。WHERE 里的 excluded.name != '' 同步豁免：占位入参不算 name 变更。
     const genresJson = params.genres != null ? JSON.stringify(params.genres) : null
     this.db
       .prepare(
         `INSERT INTO series (id, name, chinese_title, poster_path, year, provider_ids, genres)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name,
+           name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
            poster_path = COALESCE(excluded.poster_path, poster_path),
            year = excluded.year,
            provider_ids = excluded.provider_ids,
            genres = COALESCE(excluded.genres, genres)
-         WHERE name != excluded.name
+         WHERE (excluded.name != '' AND name != excluded.name)
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
             OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
             OR year IS NOT excluded.year
@@ -222,13 +225,16 @@ export class LibraryRepo {
       )
   }
 
-  /** 富化重试机制的候选清单（验收修复轮一 Task V1，design §A，一石二鸟）：name 为空串
-   *  （P6 认领写入的空名占位——"空名 ? 卡"债务）或 genres 尚未富化（NULL——存量剧 + 首次入库
-   *  时 getDetails 抖动失败的剧）都算候选。limit 由调用方传 cap（ingest.ts pass 收尾每轮传
-   *  10，防 TMDB 抖动期连环空转把整轮 pass 拖垮）。 */
+  /** 富化重试机制的候选清单（验收修复轮一 Task V1，design §A，一石二鸟）：genres 尚未富化
+   *  （NULL——存量剧 + getDetails 抖动失败的剧）即候选；空名占位建行时 genres 必为 NULL，同样
+   *  落网。genres 非 NULL 即"TMDB 已给过权威答复"——此时 name 仍为空只剩确定性无解形态
+   *  （404 → genres=[]，或查无标题），重试必然拿到同一答案：定论即熄火（债务D6 收尾——旧谓词
+   *  的 name='' 臂让 404 行永留候选，每轮空转烧 3 个 TMDB 请求并挤占 cap 槽）。可治愈的空名
+   *  （建行时 getDetails 成功）已由建行当场回填 originalTitle 兜住（ingest.ts），不经过这里。
+   *  limit 由调用方传 cap（ingest.ts pass 收尾每轮传 10，防 TMDB 抖动期连环空转拖垮整轮 pass）。 */
   listSeriesNeedingEnrich(limit: number): { id: string }[] {
     return this.db
-      .prepare(`SELECT id FROM series WHERE name = '' OR genres IS NULL LIMIT ?`)
+      .prepare(`SELECT id FROM series WHERE genres IS NULL LIMIT ?`)
       .all(limit) as { id: string }[]
   }
 
