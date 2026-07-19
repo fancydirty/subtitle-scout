@@ -9,10 +9,13 @@ import { I18nProvider } from './i18n/useT.js'
 import { Shell } from './shell/AppShell.js'
 import { SetupWizard } from './auth/SetupWizard.js'
 import { LoginPage } from './auth/LoginPage.js'
+import { ConnectionError } from './auth/ConnectionError.js'
 import { useAuthStatus } from './auth/useAuthStatus.js'
 
 function AuthGate() {
-  const { status, reload } = useAuthStatus()
+  const { status, error, reload } = useAuthStatus()
+  // 探测失败：如实显示连接错误 + 重试，不误导为 LoginPage、不永久白屏（correctness 审计 #2/#6）。
+  if (error) return <ConnectionError onRetry={reload} />
   if (status === null) return null // 首探未回：加载空拍（<100ms），不闪任何内容
   if (!status.initialized) return <SetupWizard onDone={reload} />
   if (!status.authenticated) return <LoginPage onDone={reload} />

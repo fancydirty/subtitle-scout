@@ -258,6 +258,10 @@ export const en = {
   login_error_invalid: 'Incorrect username or password.',
   login_error_transport: "Can't reach the server.",
   login_forgot_prefix: 'Locked out? Reset from the CLI: ',
+  // 鉴权门探测失败的连接错误屏。
+  auth_connection_error_heading: "Can't reach the server",
+  auth_connection_error_desc: 'The dashboard could not reach the server. Check that it is running, then retry.',
+  auth_retry: 'Retry',
   // Settings → Security 区（A3）。
   settings_security_heading: 'Security',
   settings_security_loading: 'loading…',

@@ -168,10 +168,29 @@ describe('App 鉴权门（A2 Task 11）', () => {
     expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
   })
 
-  it('auth/status 探测彻底失败（服务器不可达）→ 安全默认为 LoginPage，不白屏', async () => {
+  it('auth/status 探测失败（服务器不可达）→ 连接错误屏 + 重试，不误导为 LoginPage、不白屏', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
     render(<App />)
-    expect(await screen.findByRole('button', { name: /log in|登录/i })).toBeInTheDocument()
+    // 不是 LoginPage（fresh install 上误显登录会让用户对着"用户名/密码不正确"的假象），而是诚实
+    // 的连接错误 + 重试（correctness 审计 #2）。
+    expect(await screen.findByText(/can't reach the server|无法连接服务器/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry|重试/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /log in|登录/i })).not.toBeInTheDocument()
+  })
+
+  it('连接错误后点重试，服务器恢复 → 进入对应界面（此处 SetupWizard）', async () => {
+    let healthy = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (!healthy) throw new TypeError('Failed to fetch')
+      if (url.includes('/auth/status')) return { ok: true, status: 200, json: async () => ({ initialized: false, authenticated: false }) } as unknown as Response
+      return { ok: true, status: 200, json: async () => ({}) } as unknown as Response
+    }))
+    render(<App />)
+    await screen.findByRole('button', { name: /retry|重试/i })
+    healthy = true
+    fireEvent.click(screen.getByRole('button', { name: /retry|重试/i }))
+    expect(await screen.findByText('Create the admin account')).toBeInTheDocument()
   })
 
   it('⌘K：点击触发器打开，Escape 关闭', async () => {
