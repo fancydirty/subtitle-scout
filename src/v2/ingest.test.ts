@@ -1574,6 +1574,32 @@ describe('makeIngestPass — 三层防线②消失去抖：连续确认才真删
     await pass() // 第二轮：副本仍然 gone → 确认删除
     expect(lib.listItemFiles('tmdb:603')).toHaveLength(0)
   })
+
+  it('文件本轮被正常走盘到(在 seenPaths)也清零去抖计数——不只是 checkFileGone 那条 present 路径(修复:seenPaths 早退曾跳过 clearPendingRemoval → 非连续消失被误计为连续触发误删)', async () => {
+    const path = '/media/walked.mkv'
+    lib.upsertMovie({ id: 'tmdb:901', name: 'M', path, subStatus: 'covered' })
+    lib.setProbeMemo('tmdb:901', 5000, 12345, []) // cheap path 命中,免 recognize
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    let present = false
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => present ? [path] : [],
+      fileExists: (p) => present && disk.fileExists(p),
+      statFile: disk.statFile,
+    }))
+
+    await pass() // 第一轮:消失(不在 listVideoFiles)→ misses=1
+    expect(db.prepare(`SELECT misses FROM pending_removals WHERE path = ?`).get(path)).toEqual({ misses: 1 })
+
+    present = true
+    await pass() // 第二轮:文件回来且正常走盘(进 seenPaths)→ 必须清零(旧代码在此早退跳过清零)
+    expect(db.prepare(`SELECT * FROM pending_removals WHERE path = ?`).get(path)).toBeUndefined()
+
+    present = false
+    await pass() // 第三轮:再消失 → 从 misses=1 重新开始,不是延续到 2 直接删
+    expect(lib.getMovie('tmdb:901')).not.toBeNull()
+    expect(db.prepare(`SELECT misses FROM pending_removals WHERE path = ?`).get(path)).toEqual({ misses: 1 })
+  })
 })
 
 describe('makeIngestPass — 三层防线③骤降哨兵：某根 seenPaths 相对已知库存暴跌时整根跳过本轮移除', () => {

@@ -920,7 +920,11 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       // 环：错判"副本消失"会撤走 promoteOldestReplica 的安全网，把风险直接转嫁给下面的主文件
       // 循环（item_files 一旦被错删，同一轮里主文件的晋升就找不到它了）。
       for (const f of lib.db.prepare('SELECT path FROM item_files').all() as { path: string }[]) {
-        if (seenPaths.has(f.path) || isCollapsedRoot(f.path)) continue
+        // 文件本轮被走盘到(present)=消失序列中断,去抖计数必须清零——否则"消失→复现→再消失"会被
+        // 误计为连续两轮消失而触发误删(防线②去抖本要防的正是非连续消失)。骤降哨兵根整根跳过,连
+        // pending 都不碰(挂载抖动,保留跨轮状态)。
+        if (seenPaths.has(f.path)) { clearPendingRemoval(lib.db, f.path); continue }
+        if (isCollapsedRoot(f.path)) continue
         const state = checkFileGone(f.path)
         if (state !== 'gone') { clearPendingRemoval(lib.db, f.path); continue }
         const misses = recordMissingPass(lib.db, f.path, nowMs)
@@ -931,7 +935,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
         }
       }
       for (const row of episodeRows) {
-        if (seenPaths.has(row.path) || isCollapsedRoot(row.path)) continue
+        // present=消失序列中断,去抖计数清零(见 item_files 循环同款注释);骤降哨兵根整根跳过不碰 pending。
+        if (seenPaths.has(row.path)) { clearPendingRemoval(lib.db, row.path); continue }
+        if (isCollapsedRoot(row.path)) continue
         const state = checkFileGone(row.path)
         if (state !== 'gone') { clearPendingRemoval(lib.db, row.path); continue }
         // 重复源 P2：主文件消失但仍有（存活的）副本 → 最年长副本晋升顶替，条目不退役
@@ -952,7 +958,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
         }
       }
       for (const row of movieRows) {
-        if (seenPaths.has(row.path) || isCollapsedRoot(row.path)) continue
+        // present=消失序列中断,去抖计数清零(见 item_files 循环同款注释);骤降哨兵根整根跳过不碰 pending。
+        if (seenPaths.has(row.path)) { clearPendingRemoval(lib.db, row.path); continue }
+        if (isCollapsedRoot(row.path)) continue
         const state = checkFileGone(row.path)
         if (state !== 'gone') { clearPendingRemoval(lib.db, row.path); continue }
         if (lib.promoteOldestReplica(row.id) !== null) {
