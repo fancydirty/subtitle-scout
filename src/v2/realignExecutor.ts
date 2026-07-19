@@ -65,6 +65,15 @@ export function chooseRealignStrategy(
   return 'rename'
 }
 
+/** rename 原子性多域合并：实搬范围有两个 rename 域（scanDir↔归档、库根↔归档），任一域探出
+ *  false 即整体 false；无 false 但有 'unknown' 即 'unknown'（没条件探绝不能当探出来了）；双 true
+ *  才 true。喂给 chooseRealignStrategy 时 !== true 一律 abandon（该函数头注释的铁律不变）。 */
+export function worstRenameOutcome(a: ProbeOutcome, b: ProbeOutcome): ProbeOutcome {
+  if (a === false || b === false) return false
+  if (a === 'unknown' || b === 'unknown') return 'unknown'
+  return true
+}
+
 /** 归档位置：<归档根>/.archive/<剧名>-<时间戳>/。归档根必须在媒体库根之外（Jellyfin 不看），
  *  但通常在同一 share 内（rename 保持原子——由 probeRenameBetween 探明）。归档根解析顺序见
  *  executeRealign：deps.archiveRoot > REALIGN_ARCHIVE_ROOT 环境变量 > 库根上一级（默认）。
@@ -432,8 +441,11 @@ export interface RealignExecutorDeps {
    *  REALIGN_ARCHIVE_ROOT 环境变量 → 库根上一级目录（默认，与库根同 share 保 rename 原子）。 */
   archiveRoot?: string
   /** 挂载能力探测（可选注入，测试用假探针；默认走真实 mountCapabilities.ts 的
-   *  probeHardlink/probeRenameBetween）。返回值直接喂给 chooseRealignStrategy。 */
-  probeStrategy?: (libRoot: string, archiveDir: string) => RealignStrategy
+   *  probeHardlink/probeRenameBetween）。返回值直接喂给 chooseRealignStrategy。
+   *  scanDir 是 rename 的实际源（scanDir→build 组装、scanDir→archive 步骤 14）——审计
+   *  finding（2026-07-19）：只探 libRoot↔archiveDir 在 scanDir 嵌套挂载时会放行后 EXDEV
+   *  半途，探针必须覆盖实搬范围。 */
+  probeStrategy?: (scanDir: string, libRoot: string, archiveDir: string) => RealignStrategy
 }
 
 /** park（IMP#11）：确定性失败（配置缺陷/计划闸门/挂载能力），重试一万次也不会自己变好——
@@ -456,14 +468,18 @@ function mostCommonDir(paths: string[]): string | null {
 /** 默认策略探测：真实 probeHardlink + probeRenameBetween。probeRenameBetween 要求两侧目录都
  *  存在（探针铁律：绝不创建媒体根），archiveDir 此刻尚未存在——但它不是媒体根，是 realign
  *  自己的写路径（mount 哨兵已验过库根活着且可写），临时建出来探完即清（仅当本次新建且仍空），
- *  任何早退路径都不留空壳归档目录。 */
-function probeStrategyDefault(libRoot: string, archiveDir: string): RealignStrategy {
+ *  任何早退路径都不留空壳归档目录。
+ *  两个 rename 域都要探（审计 finding 2026-07-19）：scanDir↔归档（archiveOldDir 的真实搬移对）
+ *  与库根↔归档；双 true 传递覆盖 scanDir↔库根（build 组装域）。scanDir 通常与库根同 fs，但
+ *  scanDir（或其祖先）是嵌套挂载点时，旧探针（只探库根↔归档）放行后实搬会 EXDEV 半途——库里
+ *  新旧目录并存。三态合并见 worstRenameOutcome。 */
+function probeStrategyDefault(scanDir: string, libRoot: string, archiveDir: string): RealignStrategy {
   const archiveExisted = existsSync(archiveDir)
   mkdirSync(archiveDir, { recursive: true })
   try {
     return chooseRealignStrategy(
       { writable: true, hardlink: probeHardlink(libRoot) },
-      probeRenameBetween(libRoot, archiveDir),
+      worstRenameOutcome(probeRenameBetween(scanDir, archiveDir), probeRenameBetween(libRoot, archiveDir)),
     )
   } finally {
     if (!archiveExisted) {
@@ -707,10 +723,10 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   //     本实现只走 rename 这一条执行路径，strategy==='hardlink' 时也按 rename 执行（安全，
   //     只是放弃保种收益）；只有 abandon（rename 原子性无法证明）才拒绝，且为确定性缺陷 → park。
   const strategy = deps.probeStrategy
-    ? deps.probeStrategy(libRoot, archiveDir)
-    : probeStrategyDefault(libRoot, archiveDir)
+    ? deps.probeStrategy(scanDir, libRoot, archiveDir)
+    : probeStrategyDefault(scanDir, libRoot, archiveDir)
   if (strategy === 'abandon') {
-    return park(`挂载能力不支持安全整理（硬链接不支持，且库根↔归档目录间 rename 非原子）：${libRoot} ↔ ${archiveDir}`)
+    return park(`挂载能力不支持安全整理（硬链接不支持，且实搬范围内 rename 非原子）：${scanDir} / ${libRoot} ↔ ${archiveDir}`)
   }
 
   // 8. 计划构建：扫描目录 → TMDB 季表 → anime-lists 交叉验证 → 确定性闸门（不过 → park）。

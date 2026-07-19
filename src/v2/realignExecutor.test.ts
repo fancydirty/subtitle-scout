@@ -6,7 +6,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import {
-  mountAliveSentinel, chooseRealignStrategy, archiveDirFor,
+  mountAliveSentinel, chooseRealignStrategy, worstRenameOutcome, archiveDirFor,
   planCollisions, invisibleBuildDir, assembleInvisibleTree, finalizeShowDir,
   archiveOldDir, buildRealignEpisodeFields, makeRealignRunEpisode,
   waitForIngestIdle, verifyRealignedCounts,
@@ -766,6 +766,34 @@ describe('executeRealign（顶层编排，集成）', () => {
     expect(result.detail).toContain('挂载能力不支持')
     expect(countVideosRec(oldSeasonDir)).toBe(3) // 探针拒绝，整理从未开始
     db.close()
+  })
+
+  it('7b 探针必须覆盖实际搬移范围：probeStrategy 收到 scanDir（实搬源）+ 库根 + 归档目录', async () => {
+    // 审计 finding（2026-07-19 已批）：旧探针只探 libRoot↔archiveDir，但实际 rename 的源是
+    // scanDir（scanDir→build 组装、scanDir→archive 步骤 14）——scanDir 或其祖先是嵌套挂载点时
+    // 旧探针放行、实搬 EXDEV 半途，库里新旧目录并存（重复条目）。探针必须探到 scanDir 本身。
+    const root = mkdtempSync(join(tmpdir(), 'realign-probe-scope-'))
+    const oldSeasonDir = mkFlatLibrary(root, 3)
+    const libRoot = join(root, 'lib')
+    const { db, lib, jobsRepo, job } = mkMirror([1, 2, 3].map(i => join(oldSeasonDir, `Spy x Family E${i}.mkv`)))
+    const jf = mkJf({ locations: [libRoot] })
+    const probeStrategy = vi.fn(() => 'abandon' as const) // abandon 即停——本测试只验探针收到的范围
+    const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, { probeStrategy })
+
+    await executeRealign(job, deps)
+
+    expect(probeStrategy).toHaveBeenCalledWith(oldSeasonDir, libRoot, expect.stringContaining('.archive'))
+    db.close()
+  })
+
+  it('worstRenameOutcome：三态取最差——任一 false 即 false，无 false 但有 unknown 即 unknown，双 true 才 true', () => {
+    expect(worstRenameOutcome(true, true)).toBe(true)
+    expect(worstRenameOutcome(true, false)).toBe(false)
+    expect(worstRenameOutcome(false, true)).toBe(false)
+    expect(worstRenameOutcome(true, 'unknown')).toBe('unknown')
+    expect(worstRenameOutcome('unknown', true)).toBe('unknown')
+    expect(worstRenameOutcome('unknown', false)).toBe(false) // false 比 unknown 更确定地坏
+    expect(worstRenameOutcome('unknown', 'unknown')).toBe('unknown')
   })
 
   it('CRIT#3 最终目标目录已存在且无账本可考（非崩溃遗留）→ park，绝不合并、绝不组装', async () => {
