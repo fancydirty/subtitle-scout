@@ -257,7 +257,7 @@ export const en = {
   login_submitting: 'Signing in…',
   login_error_invalid: 'Incorrect username or password.',
   login_error_transport: "Can't reach the server.",
-  login_forgot_hint: 'Locked out? Reset from the CLI: subtitle-scout auth reset',
+  login_forgot_prefix: 'Locked out? Reset from the CLI: ',
   // Settings → Security 区（A3）。
   settings_security_heading: 'Security',
   settings_security_loading: 'loading…',

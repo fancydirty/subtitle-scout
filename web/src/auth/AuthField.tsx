@@ -25,6 +25,7 @@ export function AuthField({
   const [revealed, setRevealed] = useState(false)
   const isPassword = type === 'password'
   const effectiveType = isPassword && revealed ? 'text' : type
+  const hintId = hint !== undefined ? `${id}-hint` : undefined
 
   return (
     <div className="auth-field">
@@ -33,17 +34,22 @@ export function AuthField({
         <input
           id={id}
           ref={inputRef}
-          className="auth-field__input"
+          // 密码框右侧给 show-password 钮留位（--pw 修饰加 padding-right），避免揭示后长文本压到钮下。
+          className={`auth-field__input${isPassword ? ' auth-field__input--pw' : ''}`}
           type={effectiveType}
           value={value}
           autoComplete={autoComplete}
           autoFocus={autoFocus}
+          // a11y：把长度规则等提示通过 aria-describedby 关联，屏幕阅读器聚焦时能听到（审计前端 #1）。
+          aria-describedby={hintId}
           onChange={(e) => onChange(e.target.value)}
         />
         {isPassword && (
           <button
             type="button"
             className="auth-field__toggle"
+            // 切换语义：aria-pressed 反映当前是否已揭示（审计前端 #2）。
+            aria-pressed={revealed}
             aria-label={revealed ? t('auth_hide_password') : t('auth_show_password')}
             onClick={() => setRevealed((r) => !r)}
           >
@@ -52,7 +58,7 @@ export function AuthField({
         )}
       </div>
       {hint !== undefined && (
-        <span className={`auth-field__hint${hintMet ? ' auth-field__hint--met' : ''}`}>{hint}</span>
+        <span id={hintId} className={`auth-field__hint${hintMet ? ' auth-field__hint--met' : ''}`}>{hint}</span>
       )}
     </div>
   )

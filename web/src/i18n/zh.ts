@@ -214,7 +214,7 @@ export const zh = {
   login_submitting: '登录中…',
   login_error_invalid: '用户名或密码不正确。',
   login_error_transport: '无法连接服务器。',
-  login_forgot_hint: '被锁在门外？用 CLI 重置：subtitle-scout auth reset',
+  login_forgot_prefix: '被锁在门外？用 CLI 重置：',
   settings_security_heading: '安全',
   settings_security_loading: '加载中…',
   settings_security_error_prefix: '无法加载安全设置：',

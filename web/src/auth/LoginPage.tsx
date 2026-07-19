@@ -53,9 +53,10 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
           isLoading={busy} isDisabled={busy}
         />
       </form>
-      {/* 诚实找回密码：命令真实存在（A4 的 `auth reset` CLI 背书），mono 展示。 */}
+      {/* 诚实找回密码：命令真实存在（A4 的 auth reset CLI 背书），mono 展示。前缀与命令分成两段
+          （审计前端 #8：避免 .replace 依赖译文含某字面量，译文一改就重复渲染）。 */}
       <p className="auth-forgot">
-        {t('login_forgot_hint').replace(/subtitle-scout auth reset/, '')}
+        {t('login_forgot_prefix')}
         <code>subtitle-scout auth reset</code>
       </p>
     </AuthShell>

@@ -1136,8 +1136,18 @@
   outline: none;
   transition: border-color 120ms ease;
 }
+/* 密码框右侧留位给 show-password 钮（审计前端 #2：避免揭示后文本压到钮下）。 */
+.auth-field__input--pw {
+  padding-right: 96px;
+}
+/* 焦点指示（审计前端 #9）：不只靠 1px 色变——加 2px 描边环（DESIGN 禁 drop-shadow，outline 允许）。 */
+.auth-field__input:focus-visible {
+  border-color: var(--color-accent, #96da26);
+  outline: 2px solid var(--color-accent, #96da26);
+  outline-offset: 1px;
+}
 .auth-field__input:focus {
-  border-color: var(--color-accent, #a3e635);
+  border-color: var(--color-accent, #96da26);
 }
 .auth-field__toggle {
   position: absolute;
@@ -1152,7 +1162,9 @@
 .auth-field__hint {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  color: var(--color-text-gray, var(--color-text-secondary));
+  /* 未满足态用 secondary（~7.5:1）而非 gray（~4:1，11px 下低于 AA）——这正是用户需要读的规则状态
+     （审计前端 #4）。 */
+  color: var(--color-text-secondary);
 }
 .auth-field__hint--met {
   color: var(--color-text-primary);
@@ -1162,13 +1174,15 @@
   color: var(--color-text-secondary);
   margin: 0;
 }
-/* 错误行：≤6% 红染，绝不大红块（DESIGN.md §5）。 */
+/* 错误行：≤6% 红染做背景，绝不大红块（DESIGN.md §5）。文字用更亮的红（#fb7185，~5:1 达 AA），
+   而不是深红 token（#e11d48 在近黑上仅 ~4.2:1，13px 下低于 AA）——背景仍用 token 的 6% 染色
+   （审计前端 #3）。 */
 .auth-error {
   font-size: 13px;
   padding: 8px 11px;
   border-radius: 4px;
-  color: var(--color-text-red, #f87171);
-  background: color-mix(in srgb, var(--color-text-red, #f87171) 6%, transparent);
+  color: #fb7185;
+  background: color-mix(in srgb, var(--color-text-red) 6%, transparent);
 }
 .auth-forgot {
   font-size: 13px;

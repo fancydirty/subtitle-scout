@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { Text } from '@astryxdesign/core/Text'
 import { Button } from '@astryxdesign/core/Button'
 import { VStack } from '@astryxdesign/core/VStack'
+import { AlertDialog } from '@astryxdesign/core/AlertDialog'
 import { api } from '../api/client.js'
 import type { AuthSecurityDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
@@ -32,7 +33,7 @@ export function SecuritySection() {
     return (
       <section className="settings-section">
         <Text type="label">{t('settings_security_heading')}</Text>
-        <div className="auth-error">{error}</div>
+        <div className="auth-error" role="alert">{error}</div>
       </section>
     )
   }
@@ -64,6 +65,7 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
   const { t } = useT()
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   async function copy() {
     try {
@@ -75,8 +77,8 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
   }
 
   async function regenerate() {
-    // 破坏性动作：确认弹窗陈述爆炸半径（调研：*arr 的"Are you sure?"是无后果坏范例）。
-    if (!window.confirm(t('settings_security_regen_confirm'))) return
+    // 破坏性动作：AlertDialog 陈述爆炸半径（审计前端 #5：DESIGN §5 铁律，destructive 用 AlertDialog
+    // 而非 window.confirm——同 RemoveRootDialog 先例）。onAction 不自动关闭，这里手动收尾。
     setBusy(true)
     try {
       const r = await api.regenerateApiKey()
@@ -86,6 +88,7 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
       // best-effort：失败保持旧值不变；此处不额外弹错（低频动作，用户可重试）。
     } finally {
       setBusy(false)
+      setConfirmOpen(false)
     }
   }
 
@@ -95,8 +98,18 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
       <div className="settings-deploy-row">
         <span className="settings-deploy-key">{maskKey(data.apiKey)}</span>
         <Button size="sm" variant="secondary" label={copied ? t('settings_security_copied') : t('settings_security_copy')} onClick={copy} />
-        <Button size="sm" variant="destructive" label={t('settings_security_regenerate')} isLoading={busy} onClick={regenerate} />
+        <Button size="sm" variant="destructive" label={t('settings_security_regenerate')} onClick={() => setConfirmOpen(true)} />
       </div>
+      <AlertDialog
+        isOpen={confirmOpen}
+        onOpenChange={(open) => { if (!open) setConfirmOpen(false) }}
+        title={t('settings_security_regenerate')}
+        description={t('settings_security_regen_confirm')}
+        actionLabel={t('settings_security_regenerate')}
+        actionVariant="destructive"
+        isActionLoading={busy}
+        onAction={() => void regenerate()}
+      />
     </VStack>
   )
 }

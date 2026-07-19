@@ -60,6 +60,22 @@ describe('SetupWizard（鉴权 A2 Task 9+9′：首启向导，单屏建管理�
     expect(onDone).toHaveBeenCalled()
   })
 
+  it('apiKey 屏复制后，Continue 钮升为 primary（屏上唯一 lime 引导前进）——审计前端 #6', async () => {
+    vi.stubGlobal('fetch', okJson(200, { ok: true, apiKey: 'a'.repeat(32) }))
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn(async () => {}) } })
+    renderWizard()
+    fireEvent.change(screen.getByLabelText(/username|用户名/i), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByLabelText(/^password$|^密码$/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.change(screen.getByLabelText(/confirm|确认/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.click(screen.getByRole('button', { name: /create account|创建账号/i }))
+    const cont = await screen.findByRole('button', { name: /continue to dashboard|进入仪表盘/i })
+    expect(cont.getAttribute('data-variant')).not.toBe('primary') // 复制前 Continue 非 primary
+    fireEvent.click(screen.getByRole('button', { name: /^copy$|^复制$/i }))
+    await screen.findByRole('button', { name: /copied|已复制/i })
+    // 复制后 Continue 成为 primary
+    expect(screen.getByRole('button', { name: /continue to dashboard|进入仪表盘/i }).getAttribute('data-variant')).toBe('primary')
+  })
+
   it('服务端 400（密码太短等）→ 错误行内展示', async () => {
     vi.stubGlobal('fetch', okJson(400, { error: 'password must be at least 10 characters' }))
     renderWizard()

@@ -38,6 +38,26 @@ describe('AuthField（鉴权 A2 Task 9′：承载密码管理器契约 + show-p
     expect(onChange).toHaveBeenCalledWith('admin')
   })
 
+  it('hint 通过 aria-describedby 关联到 input（屏幕阅读器听得到密码规则）', () => {
+    wrap(<AuthField id="p" label="Password" value="" onChange={() => {}} type="password" autoComplete="new-password" hint="min 10" hintMet={false} />)
+    const input = screen.getByLabelText('Password')
+    expect(input).toHaveAttribute('aria-describedby', 'p-hint')
+    expect(screen.getByText('min 10')).toHaveAttribute('id', 'p-hint')
+  })
+
+  it('无 hint 时 input 不带 aria-describedby', () => {
+    wrap(<AuthField id="u" label="Username" value="" onChange={() => {}} autoComplete="username" />)
+    expect(screen.getByLabelText('Username')).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('show-password 切换钮带 aria-pressed 反映开合态', () => {
+    wrap(<AuthField id="p" label="Password" value="x" onChange={() => {}} type="password" autoComplete="new-password" />)
+    const toggle = screen.getByRole('button', { name: /show password|显示密码/i })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getByRole('button', { name: /hide password|隐藏密码/i })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('hint 满足态切 class（met）', () => {
     const { rerender } = wrap(
       <AuthField id="p" label="Password" value="short" onChange={() => {}} type="password" autoComplete="new-password" hint="min 10" hintMet={false} />,

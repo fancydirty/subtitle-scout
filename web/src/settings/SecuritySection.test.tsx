@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { SecuritySection } from './SecuritySection.js'
 
@@ -34,32 +34,36 @@ describe('SecuritySection（鉴权 A3 Task 13）', () => {
     await screen.findByText(/incorrect|不正确/i)
   })
 
-  it('重生成：确认后 POST regenerate-api-key，新尾 4 位上屏', async () => {
+  it('重生成：点钮开 AlertDialog（陈述爆炸半径），确认后 POST，新尾 4 位上屏（审计前端 #5：不用 window.confirm）', async () => {
     let regenerated = false
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url.includes('regenerate-api-key')) { regenerated = true; return { ok: true, status: 200, json: async () => ({ apiKey: 'b'.repeat(28) + 'cafe' }) } as unknown as Response }
       return { ok: true, status: 200, json: async () => ({ username: 'admin', apiKey: 'a'.repeat(28) + 'beef' }) } as unknown as Response
     }))
-    vi.stubGlobal('confirm', vi.fn(() => true)) // 破坏性动作要确认（旧 key 立即失效）
     wrap()
     await screen.findByText(/beef$/)
     fireEvent.click(screen.getByRole('button', { name: /regenerate|重新生成/i }))
+    // AlertDialog 打开且陈述爆炸半径（立即失效/客户端会失败）
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent(/立即失效|stops working immediately/i)
+    fireEvent.click(within(dialog).getByRole('button', { name: /regenerate|重新生成/i }))
     await screen.findByText(/cafe$/)
     expect(regenerated).toBe(true)
   })
 
-  it('重生成确认被取消（confirm false）→ 不发请求', async () => {
+  it('重生成 AlertDialog 取消 → 不发请求', async () => {
     let regenerated = false
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url.includes('regenerate-api-key')) { regenerated = true }
       return { ok: true, status: 200, json: async () => ({ username: 'admin', apiKey: 'a'.repeat(28) + 'beef' }) } as unknown as Response
     }))
-    vi.stubGlobal('confirm', vi.fn(() => false))
     wrap()
     await screen.findByText(/beef$/)
     fireEvent.click(screen.getByRole('button', { name: /regenerate|重新生成/i }))
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /cancel|取消/i }))
     expect(regenerated).toBe(false)
   })
 })

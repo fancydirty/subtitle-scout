@@ -88,7 +88,8 @@ function ApiKeyNotice({ apiKey, onDone }: { apiKey: string; onDone: () => void }
           label={copied ? t('setup_apikey_copied') : t('setup_apikey_copy')}
           onClick={copy}
         />
-        <Button variant="secondary" label={t('setup_enter_label')} onClick={onDone} />
+        {/* 复制后把 lime 让给 Continue——屏上始终恰好一处 accent，且引导用户前进（审计前端 #6）。 */}
+        <Button variant={copied ? 'primary' : 'secondary'} label={t('setup_enter_label')} onClick={onDone} />
       </div>
     </AuthShell>
   )
