@@ -39,4 +39,12 @@ describe('client.ts get() 失败时的错误消息', () => {
     )
     await expect(api.fsList('/mnt/y')).rejects.toThrow('/api/v2/fs/list?path=%2Fmnt%2Fy → 404')
   })
+
+  it('401 → 给可操作的"加 ?token="人话提示,而不是裸 path → 401 / unauthorized', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 401, json: async () => null }) as unknown as Response),
+    )
+    await expect(api.library()).rejects.toThrow(/\?token=/)
+  })
 })

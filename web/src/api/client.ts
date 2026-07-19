@@ -32,6 +32,12 @@ export function posterUrl(posterPath: string | null): string | null {
  *  listMediaSubdirs 的 "path is not readable (permission denied?)"），这里补齐，与 mutate() 的
  *  既有手法对称。 */
 function errorMessage(path: string, status: number, body: unknown): string {
+  // 401 = 整站 token 门未过(设了 DASHBOARD_TOKEN 但网址没带 ?token= 或 token 不对)。给一句可操作
+  // 的人话,而不是每个面板各自显示裸的 "path → 401"/"unauthorized"——否则用户听劝设了 token 后
+  // 直接开面板,只看到满屏 unauthorized/offline,不知道要手动拼 ?token= 参数。
+  if (status === 401) {
+    return '需要访问令牌:请在网址末尾加 ?token=<你的 DASHBOARD_TOKEN>(当前请求未带 token 或 token 不正确)'
+  }
   return body && typeof body === 'object' && 'error' in body
     ? String((body as { error: unknown }).error)
     : `${path} → ${status}`
