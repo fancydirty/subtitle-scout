@@ -1,3 +1,4 @@
+import { Agent } from 'undici'
 import { findNextTag } from './htmlAttrs.js'
 import { JitteredIntervalLimiter, type RandomFn } from './jitter.js'
 import { detectChallenge, solveYunsuoChallenge, ZimukuChallengeError } from './yunsuo.js'
@@ -160,7 +161,18 @@ export class ZimukuClient {
   private limiter: RequestLimiter
 
   constructor(private opts: ZimukuClientOpts) {
-    this.fetchImpl = opts.fetchImpl ?? fetch
+    // 连接钉死(生产路径):云锁 WAF 的 LB 是**连接粘性**的(2026-07-19 实测:curl --next 同一
+    // TCP 连接 submit→内容 稳定放行;分开的连接约 50/50 命中——刚签发的验证会话只在签发它的那个
+    // 后端节点上立刻有效,跨节点要过几秒才传播)。全部 zimuku 请求(挑战/提交/内容/detail/dld)
+    // 走同一条 keep-alive 连接 → 同一节点 → 验证会话稳定被认。注入的 fetchImpl(测试假实现)不包裹,
+    // 保持可注入/离线可测;仅真实 fetch 走钉死 dispatcher。keepAlive 上限拉长以覆盖礼貌限速间的空闲。
+    if (opts.fetchImpl) {
+      this.fetchImpl = opts.fetchImpl
+    } else {
+      const agent = new Agent({ connections: 1, pipelining: 1, keepAliveTimeout: 60_000, keepAliveMaxTimeout: 600_000 })
+      this.fetchImpl = ((input: string | URL | Request, init?: RequestInit) =>
+        fetch(input, { ...init, dispatcher: agent } as RequestInit & { dispatcher: Agent })) as typeof fetch
+    }
     this.limiter = opts.limiter ?? new JitteredIntervalLimiter(DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, opts.rng)
   }
 
