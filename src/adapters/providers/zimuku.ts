@@ -27,7 +27,10 @@ export interface ZimukuSearchResult {
  */
 export function parseSearchResults(html: string): ZimukuSearchResult[] {
   const results: ZimukuSearchResult[] = []
-  const detailHrefRe = /^\/detail\/(\d+)\.html$/
+  // 真站(2026-07-19 抓包)的结果 href 是协议相对绝对 URL `//zimuku.org/detail/<id>.html`,不是
+  // 路径式 `/detail/<id>.html`。去掉起始锚 `^` 后,前缀允许 `//zimuku.org` / `https://zimuku.org` /
+  // 纯 `/`(合成 fixture 仍匹配,向后兼容);末尾锚 `$` 保留,继续拒 `/detailed/`、拒带 query 的 href。
+  const detailHrefRe = /\/detail\/(\d+)\.html$/
   let idx = 0
   for (;;) {
     const tag = findNextTag(html, 'a', idx)

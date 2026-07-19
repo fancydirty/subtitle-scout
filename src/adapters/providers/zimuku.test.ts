@@ -21,6 +21,18 @@ describe('ZIMUKU_BASE', () => {
 })
 
 describe('parseSearchResults', () => {
+  it('extracts id + title from the real live search page whose hrefs are protocol-relative absolute URLs (//zimuku.org/detail/<id>.html), title from the <b> inner text', () => {
+    // 2026-07-19 抓包的真实 "Pulp" 搜索页(9 条候选)。真站 href 是协议相对绝对 URL
+    // `//zimuku.org/detail/<id>.html`,不是路径式 `/detail/<id>.html`——旧的 `^` 锚正则全失配。
+    const html = readFileSync('fixtures/zimuku/live-search-pulp-20260719.html', 'utf8')
+    const results = parseSearchResults(html)
+    expect(results.length).toBeGreaterThanOrEqual(8)
+    expect(results[0]).toEqual({
+      id: '179286',
+      title: 'rrh-pulp.a.film.about.life.death.supermarkets.srt',
+    })
+  })
+
   it('extracts id + title from every /detail/<id>.html anchor (fixture has varied attribute order and quote style)', () => {
     const html = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
     const results = parseSearchResults(html)
