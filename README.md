@@ -118,7 +118,32 @@ docker compose exec subtitle-scout node dist/cli/index.js doctor
 - 每部剧/电影的字幕覆盖状态一览（哪几集缺、哪几集处理中、哪几集暂时没找到）
 - 全局运行历史：每次处理的结果 + 一行人话摘要（选了谁、为什么，或为什么没找到），出问题可查
 
-**可选只读保护**：设置 `DASHBOARD_TOKEN` 后，访问需带 `?token=<值>` 参数。
+### 账号鉴权（单管理员）
+
+首次访问监控页会进入**创建管理员向导**（用户名 + 密码，密码至少 10 位）。设置后：
+
+- 用**账号密码登录**，会话以 httpOnly cookie 保持（30 天滚动过期）。
+- 同时生成一个 **API key**（32 位十六进制，向导页一次性完整显示，之后在「设置 → 安全」里以脱敏尾 4 位展示，可复制或重新生成）。脚本/集成用 API key 调接口：
+
+  ```bash
+  curl -H 'X-Api-Key: <你的-api-key>' http://<主机IP>:8099/api/v2/library
+  # 或（SSE/EventSource 无法带头时用 query）
+  curl 'http://<主机IP>:8099/api/v2/library?apikey=<你的-api-key>'
+  ```
+
+- **忘记密码**：没有邮件找回（自托管形态），在服务器上运行 `subtitle-scout auth reset` 清除管理员凭据，下次访问重新进入创建向导。
+
+**旧 `DASHBOARD_TOKEN` 兼容**：已设该变量的老部署继续有效——它等价于一个 API key（`?token=<值>` 或 `X-Dashboard-Token` 头仍被接受）。建议在向导里建好账号后**移除** `DASHBOARD_TOKEN`，改用账号密码。
+
+**无内建 HTTPS**：监控页面向家庭局域网，自身不做 TLS。如需从公网访问，请在前面加一层反向代理终止 TLS，例如 Caddy：
+
+```
+scout.example.com {
+    reverse_proxy 127.0.0.1:8099
+}
+```
+
+（Caddy 自动申请证书；nginx/Traefik 同理，把 `:8099` 反代出去即可。）
 
 ---
 
@@ -219,7 +244,7 @@ docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
 | `SKIP_CACHE_MINUTES` | 已有字幕/不需要项的短期跳过缓存（分钟） | `5` |
 | `DASHBOARD_PORT` | 监控页端口 | `8099` |
-| `DASHBOARD_TOKEN` | 监控页访问 token（可选） | 空 |
+| `DASHBOARD_TOKEN` | **legacy**：老部署的访问 token，等价一个 API key。新部署建议留空，改用首启向导设账号密码 | 空 |
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
 | `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
 | `LLM_EXTRA_BODY` | （高级）强制注入请求体的 JSON，通常无需配置 | 空 |
@@ -302,7 +327,8 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 **检查**：
 1. `DASHBOARD_PORT` 是否在 compose 的 `ports` 里正确映射
 2. 防火墙是否放行该端口
-3. 设了 `DASHBOARD_TOKEN` 但访问时没带 `?token=<值>` 参数
+3. 忘记管理员密码：在服务器上运行 `subtitle-scout auth reset` 清除凭据，重新走创建向导
+4. 老部署设了 `DASHBOARD_TOKEN` 但访问时没带 `?token=<值>` 参数（新部署改用账号密码登录）
 
 ---
 
