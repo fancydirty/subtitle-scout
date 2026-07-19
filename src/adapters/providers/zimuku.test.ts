@@ -218,6 +218,36 @@ describe('ZimukuClient', () => {
     expect(sessionStore.get()).toBeNull() // 失效的 cookie 没有残留在缓存里
   })
 
+  it('retries the content fetch when the freshly-minted verified cookie is challenged before it propagates (2026-07-19 实测:同一有效 cookie 前脚被拒后脚放行)', async () => {
+    const challengeHtml = readFileSync('fixtures/zimuku/live-redirect-challenge-20260719.html', 'utf8')
+    const interstitial = readFileSync('fixtures/zimuku/verify-success-interstitial-20260719.html', 'utf8')
+    const searchHtml = readFileSync('fixtures/zimuku/search-spy-family.html', 'utf8')
+    let verifiedContentFetches = 0
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      const cookie = (init?.headers as Record<string, string> | undefined)?.Cookie ?? ''
+      if (u.includes('security_verify_img=')) {
+        return new Response(interstitial, { headers: { 'set-cookie': 'security_session_high_verify=HIGH; Path=/' } })
+      }
+      if (cookie.includes('security_session_high_verify')) {
+        // 带验证令牌的内容请求:头两次仍被挑战(节点未识别),第三次才放行——验证有界重试真的重试
+        verifiedContentFetches++
+        if (verifiedContentFetches < 3) return new Response(challengeHtml, { headers: { 'set-cookie': 'security_session_verify=X; Path=/' } })
+        return new Response(searchHtml)
+      }
+      return new Response(challengeHtml, { headers: { 'set-cookie': 'security_session_verify=PEND; Path=/' } })
+    })
+    const solve = vi.fn(async () => ({ digits: '88640' }))
+    const sessionStore = new ZimukuSessionStore(mkdtempSync(join(tmpdir(), 'zimuku-client-')))
+    const c = new ZimukuClient({
+      sessionStore, solve, fetchImpl: fetchImpl as unknown as typeof fetch, limiter: new MinIntervalLimiter(1),
+    })
+    const results = await c.search('Pulp')
+    expect(results.length).toBe(2)          // 第三次内容请求成功拿到真实结果
+    expect(verifiedContentFetches).toBe(3)  // 前两次被挑战、第三次放行——CONTENT_VERIFY_ATTEMPTS 生效
+    expect(solve).toHaveBeenCalledTimes(1)  // 只破解一次,内容重试不重新破解验证码
+  })
+
   it('without an explicit limiter override, defaults to a randomized 2-5s inter-request delay (RNG injectable)', async () => {
     vi.useFakeTimers()
     try {

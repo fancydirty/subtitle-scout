@@ -78,6 +78,9 @@ export const ZIMUKU_TIMEOUT_MS = 15_000
 // 即 [DEFAULT_MIN_INTERVAL_MS, DEFAULT_MIN_INTERVAL_MS + DEFAULT_JITTER_RANGE_MS) = [2s, 5s)。
 export const DEFAULT_MIN_INTERVAL_MS = 2_000
 export const DEFAULT_JITTER_RANGE_MS = 3_000
+// 破解成功后用 verify+high 组合 cookie 拉内容的有界重试次数——云锁验证会话跨后端节点存在
+// 传播/非确定性识别窗口(2026-07-19 实测:同一有效 cookie 对前脚被拒后脚放行)。每次带礼貌限速。
+export const CONTENT_VERIFY_ATTEMPTS = 4
 
 /** 完整浏览器请求头:UA + 简体中文 Accept-Language + Referer——zimuku 对无头 HTTP 客户端的
  *  第一道防线就是这三样缺一漏出马脚。同一份头也要用在归档下载请求上(见 zimukuAdapter.ts 的
@@ -145,8 +148,23 @@ export class ZimukuClient {
     }
   }
 
-  /** 云锁破反爬 + 礼貌节流的统一入口:search()/detail() 都经过这里。命中挑战页时破解一次、
-   *  缓存组合 cookie(security_session_verify + security_session_high_verify)、用它重试恰好一次。 */
+  /** 用(已验证)组合 cookie 拉内容,命中挑战则有界重试——云锁验证会话刚签发时未必被每个后端
+   *  节点立刻识别(2026-07-19 实测铁证:同一对 verify+high cookie 前脚一个请求被判挑战、隔几秒
+   *  另一个请求就放行真内容;去掉 srcurl 后 verify+high 本身是跨连接可复用的正确会话)。故内容
+   *  请求有界重试 CONTENT_VERIFY_ATTEMPTS 次(每次礼貌限速),而不是拿到有效 cookie 却因一次节点
+   *  不巧就前功尽弃。全部仍被挑战 → 返回 null,调用方据此判定 cookie 真失效。 */
+  private async fetchContentWithVerifiedCookie(path: string, cookie: string): Promise<string | null> {
+    for (let i = 0; i < CONTENT_VERIFY_ATTEMPTS; i++) {
+      await this.limiter.wait()
+      const res = await this.fetchPath(path, cookie)
+      if (!detectChallenge(res.html)) return res.html
+    }
+    return null
+  }
+
+  /** 云锁破反爬 + 礼貌节流的统一入口:search()/detail() 都经过这里。先探一次(带缓存 cookie);
+   *  命中挑战页则破解、缓存组合 cookie(security_session_verify + security_session_high_verify,
+   *  不含 srcurl——srcurl 只用于提交步,内容步带上反而被 WAF 判为仍在挑战流程),用它有界重试内容。 */
   private async requestHtml(path: string): Promise<string> {
     await this.limiter.wait()
     const cached = this.opts.sessionStore.get()
@@ -174,13 +192,10 @@ export class ZimukuClient {
     )
     this.opts.sessionStore.put({ cookie, capturedAt: Date.now() })
 
-    await this.limiter.wait()
-    const retry = await this.fetchPath(path, cookie)
-    if (detectChallenge(retry.html)) {
-      this.opts.sessionStore.invalidate()
-      throw new ZimukuChallengeError(`still challenged after solving captcha for ${path} — verified cookie rejected`)
-    }
-    return retry.html
+    const html = await this.fetchContentWithVerifiedCookie(path, cookie)
+    if (html !== null) return html
+    this.opts.sessionStore.invalidate()
+    throw new ZimukuChallengeError(`still challenged after solving captcha for ${path} — verified cookie rejected across ${CONTENT_VERIFY_ATTEMPTS} attempts`)
   }
 
   async search(query: string): Promise<ZimukuSearchResult[]> {
