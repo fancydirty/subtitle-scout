@@ -17,10 +17,14 @@ describe('subhd 真机冒烟 (SUBHD_LIVE_SMOKE=1)', () => {
     expect(results.length).toBeGreaterThan(0)
     expect(results.every(r => r.id.length > 0)).toBe(true)
 
-    // 逐条尝试直到一条完成 resolve+下载（临时页时间窗/偶发限流下，客户端内部已重试，这里再多试几条）
+    // 逐条尝试直到一条完成 resolve+下载。候选之间拉开 ~25s——mint 限流是窗口内速率/量，把各候选的
+    // 3 次 mint 摊到更长时间线上既不易触发限流、又能在 IP 正从限流里恢复时让后面的候选撞上干净窗口。
     let downloaded: { id: string; url: string; bytes: number } | null = null
     let lastErr: unknown
-    for (const r of results.slice(0, 3)) {
+    const candidates = results.slice(0, 4)
+    for (let i = 0; i < candidates.length; i++) {
+      const r = candidates[i]
+      if (i > 0) await new Promise(res => setTimeout(res, 25_000))
       try {
         const dl = await client.resolveDownload(r.id)
         const res = await fetch(dl.url, {
