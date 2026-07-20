@@ -119,7 +119,7 @@ describe('SubhdClient (注入假 fetch，不碰真网络/curl)', () => {
 
   it('search → 20 候选', async () => {
     const client = new SubhdClient({
-      baseUrl: 'https://subhd.me', limiter: noLimiter, stepDelayMs: 0,
+      baseUrl: 'https://subhd.me', limiter: noLimiter,
       fetchImpl: fakeFetch({ 'GET /search/x': { body: searchHtml } }),
     })
     expect((await client.search('x')).length).toBe(20)
@@ -128,7 +128,7 @@ describe('SubhdClient (注入假 fetch，不碰真网络/curl)', () => {
   it('resolveDownload 串 prepare→GET /down(激活)→api/sub/down，返回 CDN url（无需 cookie）', async () => {
     const log: Captured[] = []
     const client = new SubhdClient({
-      baseUrl: 'https://subhd.me', limiter: noLimiter, stepDelayMs: 0,
+      baseUrl: 'https://subhd.me', limiter: noLimiter,
       fetchImpl: fakeFetch({
         'POST /api/sub/prepare-download': { body: JSON.stringify({ success: true, url: '/down/aZ9' }), setCookie: ['tk_a=b; Max-Age=300; HttpOnly'] },
         'GET /down/aZ9': { body: '<html>landing with button</html>' },
@@ -152,7 +152,7 @@ describe('SubhdClient (注入假 fetch，不碰真网络/curl)', () => {
 
   it('resolveDownload 对"临时页已失效"重试整个 prepare→down→api 单元', async () => {
     const client = new SubhdClient({
-      baseUrl: 'https://subhd.me', limiter: noLimiter, stepDelayMs: 0, resolveAttempts: 3,
+      baseUrl: 'https://subhd.me', limiter: noLimiter, resolveAttempts: 3,
       fetchImpl: fakeFetch({
         'POST /api/sub/prepare-download': { body: JSON.stringify({ success: true, url: '/down/aZ9' }), setCookie: ['tk_a=b'] },
         'GET /down/aZ9': { body: '<html></html>' },
@@ -168,7 +168,7 @@ describe('SubhdClient (注入假 fetch，不碰真网络/curl)', () => {
 
   it('主站网络失败 → 依次试镜像', async () => {
     const client = new SubhdClient({
-      baseUrl: 'https://subhd.me', mirrors: ['https://subhd.one'], limiter: noLimiter, stepDelayMs: 0,
+      baseUrl: 'https://subhd.me', mirrors: ['https://subhd.one'], limiter: noLimiter,
       fetchImpl: (async (input: string | URL) => {
         const u = new URL(String(input))
         if (u.host === 'subhd.me') throw new TypeError('fetch failed')

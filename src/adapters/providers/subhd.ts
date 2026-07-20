@@ -48,14 +48,20 @@ export function parseApiSubDown(body: string): string {
   return d.url
 }
 
-/** 从 Set-Cookie 行数组（或整段响应头行）里提出首个 `tk_<name>=<value>` 段（`;` 前），可直接拼进
- *  Cookie 头。无则 null。tk_ 是 prepare-download 下发的 5 分钟临时下载令牌（Max-Age=300）。 */
-export function extractTkCookie(setCookies: string[]): string | null {
+/** 从 Set-Cookie 行数组里提出首个匹配 `<prefix>…=<value>` 的 cookie 段（`;` 前），可直接拼进
+ *  Cookie 头。无则 null。 */
+export function extractCookie(setCookies: string[], prefix: string): string | null {
+  const re = new RegExp(`(${prefix}[^=\\s]*=[^;\\s]+)`)
   for (const c of setCookies) {
-    const m = /(tk_[^=\s]+=[^;\s]+)/.exec(c)
+    const m = re.exec(c)
     if (m) return m[1]
   }
   return null
+}
+
+/** 提取 `tk_…=…`——prepare-download 下发的 5 分钟临时下载令牌（Max-Age=300，path=/）。 */
+export function extractTkCookie(setCookies: string[]): string | null {
+  return extractCookie(setCookies, 'tk_')
 }
 
 /** 轻量 HTML 数字/命名实体解码——发布名里出现 `I&#39;ll` 之类（htmlAttrs 本身不解码实体）。
@@ -170,9 +176,6 @@ export const DEFAULT_JITTER_RANGE_MS = 3_000
 // ~5-6 次即开始对整个 IP 回"已失效"），故重试要克制：base 默认 2 次，靠单元间的 2-5s 限速拉开节奏
 // （限流是窗口内速率/量，拉开间隔比多打更有效）。打满多次只会加深限流，不会救回已被限的 IP。
 export const DEFAULT_RESOLVE_ATTEMPTS = 2
-// 单元内步间小停顿（激活→取 url）——模仿人肉 flow2 三条独立 curl 进程的天然间隔，等服务端临时页
-// 激活传播完成再打 api/sub/down（同进程背靠背太快会被判"已失效"）。几百毫秒远在秒级窗口内。
-export const SUBHD_STEP_DELAY_MS = 350
 // 可用镜像（STRUCTURE.md 里站点自报）。主 base 网络不可达时依次兜底。
 export const DEFAULT_MIRRORS = ['https://subhd.one', 'https://subhd.top', 'https://subhd.cc']
 
@@ -237,8 +240,6 @@ export interface SubhdClientOpts {
   limiter?: RequestLimiter
   rng?: RandomFn
   resolveAttempts?: number
-  /** 单元内步间停顿（ms）。默认 SUBHD_STEP_DELAY_MS；测试注入 0 免真延迟。 */
-  stepDelayMs?: number
   onApiCall?: (r: { endpoint: string; status: number | null; durationMs: number; error?: string }) => void
 }
 
@@ -255,7 +256,6 @@ export class SubhdClient {
   private fetchImpl: typeof fetch
   private limiter: RequestLimiter
   private resolveAttempts: number
-  private stepDelay: number
 
   constructor(private opts: SubhdClientOpts = {}) {
     this.base = (opts.baseUrl ?? SUBHD_BASE).replace(/\/+$/, '')
@@ -263,7 +263,6 @@ export class SubhdClient {
     this.fetchImpl = opts.fetchImpl ?? curlFetch
     this.limiter = opts.limiter ?? new JitteredIntervalLimiter(DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, opts.rng)
     this.resolveAttempts = opts.resolveAttempts ?? DEFAULT_RESOLVE_ATTEMPTS
-    this.stepDelay = opts.stepDelayMs ?? SUBHD_STEP_DELAY_MS
   }
 
   private hosts(): string[] { return [this.base, ...this.mirrors] }
@@ -326,19 +325,17 @@ export class SubhdClient {
     parsePrepareDownload(prep.body) // 校验 success；/down/<id> 路径就是 id 本身，无需另存
     const tk = extractTkCookie(prep.setCookies)
     if (!tk) throw new Error('subhd prepare-download returned no tk_ cookie')
-    await this.sleep(this.stepDelay)
-    await this.doRequest(host, `/down/${id}`, { cookie: tk, referer: `${host}/a/${id}` }) // 激活临时页
-    // 激活→取 url 之间留一小拍：人肉实测通过的 flow2 是三条独立 curl 进程，进程启停天然有 ~100-300ms
-    // 间隔；客户端同进程背靠背发（<50ms）会赶在服务端"临时页激活"传播完成之前打 api/sub/down → 判
-    // "已失效"。这一拍模仿 flow2 的自然节奏（临时页窗口是秒级，几百毫秒远在窗口内，不会超时）。
-    await this.sleep(this.stepDelay)
+    // 🔴 GET /down 不只是"访问一下激活"——它的响应 **Set-Cookie 下发第二个授权 cookie `down_<id>_<hex>`**
+    // （path=/api/sub/down、HttpOnly），才是 api/sub/down 的真正凭证。人肉 flow2 用 cookie jar 天然把它
+    // 带上；客户端必须显式从 down 响应里取出，连同 tk 一起回传 api——只带 tk 会被判"已失效"（血泪根因）。
+    const down = await this.doRequest(host, `/down/${id}`, { cookie: tk, referer: `${host}/a/${id}` })
+    const downCookie = extractCookie(down.setCookies, 'down_')
+    const apiCookie = [tk, downCookie].filter(Boolean).join('; ')
     const api = await this.doRequest(host, '/api/sub/down', {
-      method: 'POST', body: JSON.stringify({ sid: id }), cookie: tk, referer: `${host}/down/${id}`,
+      method: 'POST', body: JSON.stringify({ sid: id }), cookie: apiCookie, referer: `${host}/down/${id}`,
     })
     return parseApiSubDown(api.body) // "已失效"/success:false 在此抛
   }
-
-  private sleep(ms: number): Promise<void> { return ms > 0 ? new Promise(r => setTimeout(r, ms)) : Promise.resolve() }
 
   /** 把候选 id 解析成可下载的 CDN 文件 url。CDN（dlus.subhd.me）无指纹门、credentials omit，故不带
    *  cookie（cookie 恒 null）。单元失败（临时页失效/瞬时网络）重试；每 host 重试 resolveAttempts 次，
