@@ -13,11 +13,19 @@ import type { LibraryCanonicalEpisodeDTO, LibraryOnDiskEpisodeDTO, LibrarySeason
 
 export type EpisodeCellState = 'covered' | 'hardsub' | 'missing' | 'throttled' | 'error' | 'dashed' | 'partial'
 
+/** 逐集行式呈现的上限（详情页重设计 item B）：≤50 集用行式（EpisodeRow，逐集剧照+行内展开），
+ *  超过就回落紧凑格阵（SeasonGridBody）——适配国产长剧动辄上百集，不至于把行式撑爆。 */
+export const EPISODE_ROW_CAP = 50
+
 export interface GridCell {
   episode: number
   state: EpisodeCellState
   /** canonical 标题（有 TMDB 缓存时）；dashed 格用它做详情板文案。 */
   title: string | null
+  /** canonical 富化（详情页重设计 item B）——逐集简介 / 首播日 / 剧照路径，dashed 与 onDisk 格都携带。 */
+  overview: string | null
+  airDate: string | null
+  stillPath: string | null
   /** 磁盘行——dashed 格恒为 null。 */
   onDisk: LibraryOnDiskEpisodeDTO | null
 }
@@ -62,9 +70,16 @@ export function buildGridCells(season: LibrarySeasonDTO, now: number): GridCell[
     .sort((a, b) => a - b)
     .map((episode) => {
       const disk = onDiskByEp.get(episode) ?? null
-      const title = canonicalByEp.get(episode)?.title ?? null
-      if (disk) return { episode, state: classifyOnDisk(disk, now), title, onDisk: disk }
-      return { episode, state: 'dashed' as const, title, onDisk: null }
+      const c = canonicalByEp.get(episode)
+      const base = {
+        episode,
+        title: c?.title ?? null,
+        overview: c?.overview ?? null,
+        airDate: c?.airDate ?? null,
+        stillPath: c?.stillPath ?? null,
+      }
+      if (disk) return { ...base, state: classifyOnDisk(disk, now), onDisk: disk }
+      return { ...base, state: 'dashed' as const, onDisk: null }
     })
 }
 

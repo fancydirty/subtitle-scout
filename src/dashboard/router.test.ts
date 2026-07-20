@@ -58,7 +58,7 @@ const workflowWorkersDTO: WorkflowWorkersDTO = {
   providerQuota: [],
 }
 const librarySeriesDetailDTO: LibrarySeriesDetailDTO = {
-  series: { id: 's1', name: 'A', chineseTitle: null, posterPath: null, year: null, layoutNonstandard: false },
+  series: { id: 's1', name: 'A', chineseTitle: null, posterPath: null, overview: null, backdropPath: null, year: null, layoutNonstandard: false },
   seasons: [],
 }
 const triageDTO: TriageDTO = {

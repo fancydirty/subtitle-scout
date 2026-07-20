@@ -1,13 +1,14 @@
-// web/src/library/SeriesPage.test.tsx：剧集页——三层格阵合成渲染、详情板开合（点击/esc）、
-// 覆盖句文案、layoutNonstandard 事实陈述、canonical 缓存未建提示。SeriesPage 不自己发请求
-// （Shell 把 useLibrarySeriesDetail 的结果当 prop 传下来，见 shell/AppShell.tsx），所以这里
-// 直接手搭 Async<LibrarySeriesDetailDTO> 对象喂给组件，不需要 mock fetch。
+// web/src/library/SeriesPage.test.tsx：剧集页——渐变 hero + 事实栏 + 季手风琴逐集行内展开（详情页
+// 重设计 item B：不再有右侧滑入面板）。三层格阵合成语义、覆盖句文案、layoutNonstandard 事实陈述、
+// canonical 缓存未建提示、三态。SeriesPage 不自己发请求（Shell 把 useLibrarySeriesDetail 结果当
+// prop 传下来，见 shell/AppShell.tsx），所以这里直接手搭 Async<LibrarySeriesDetailDTO> 喂给组件。
+// 默认测试语言 en（jsdom navigator.language=en-US）——覆盖句大数字段在 en 下渲染为 "N of M"。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { SeriesPage } from './SeriesPage.js'
 import type { Async } from '../api/hooks.js'
-import type { LibrarySeriesDetailDTO } from '../api/types.js'
+import type { LibraryCanonicalEpisodeDTO, LibrarySeriesDetailDTO } from '../api/types.js'
 
 afterEach(() => {
   cleanup()
@@ -28,19 +29,25 @@ function renderPage(detail: Async<LibrarySeriesDetailDTO>) {
 
 function baseSeries(overrides: Partial<LibrarySeriesDetailDTO['series']> = {}) {
   return {
-    id: 'tmdb:1', name: 'Series A', chineseTitle: null, posterPath: null, year: 2021,
+    id: 'tmdb:1', name: 'Series A', chineseTitle: null, posterPath: null,
+    overview: null, backdropPath: null, year: 2021,
     layoutNonstandard: false, ...overrides,
   }
 }
 
-describe('SeriesPage：三层合成渲染', () => {
-  it('canonical 8 集 / 磁盘 6（4 covered + 2 missing）→ 8 格，2 dashed，4 绿点，2 灰', async () => {
+/** canonical 富化字段默认 null——多数用例不关心 overview/airDate/stillPath，工厂省样板。 */
+function canon(episode: number, over: Partial<LibraryCanonicalEpisodeDTO> = {}): LibraryCanonicalEpisodeDTO {
+  return { episode, title: `E${episode}`, overview: null, airDate: null, stillPath: null, ...over }
+}
+
+describe('SeriesPage：三层合成渲染（行式）', () => {
+  it('canonical 8 集 / 磁盘 6（4 covered + 2 missing）→ 8 行，4 covered 点，事实栏 4 / 8', async () => {
     const detail: LibrarySeriesDetailDTO = {
       series: baseSeries(),
       seasons: [
         {
           season: 1,
-          canonical: Array.from({ length: 8 }, (_, i) => ({ episode: i + 1, title: `E${i + 1}` })),
+          canonical: Array.from({ length: 8 }, (_, i) => canon(i + 1)),
           onDisk: [
             { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
             { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
@@ -61,21 +68,23 @@ describe('SeriesPage：三层合成渲染', () => {
     const { container } = renderPage(asyncData(detail))
 
     await screen.findByText('Series A')
-    expect(container.querySelectorAll('.ep-cell')).toHaveLength(8)
-    expect(container.querySelectorAll('.ep-cell-dashed')).toHaveLength(2)
-    expect(container.querySelectorAll('.ep-cell-covered')).toHaveLength(4)
-    expect(container.querySelectorAll('.ep-cell-missing')).toHaveLength(2)
+    // ≤50 集 → 行式（EpisodeRow），非格阵：8 行，其中 4 集 covered 绿点。
+    expect(container.querySelectorAll('.library-eprow-head')).toHaveLength(8)
+    expect(container.querySelectorAll('.ep-cell')).toHaveLength(0)
+    expect(container.querySelectorAll('.ep-dot-covered')).toHaveLength(4)
+    // 跨季事实栏合计（FactsRail）：4 / 8 覆盖。
+    expect(screen.getByText(/4 \/ 8/)).toBeInTheDocument()
   })
 })
 
-describe('SeriesPage：覆盖句文案', () => {
+describe('SeriesPage：覆盖句文案（季手风琴头）', () => {
   it('24 of 28 episodes covered——大数字嵌句', async () => {
     const detail: LibrarySeriesDetailDTO = {
       series: baseSeries(),
       seasons: [
         {
           season: 1,
-          canonical: Array.from({ length: 28 }, (_, i) => ({ episode: i + 1, title: null })),
+          canonical: Array.from({ length: 28 }, (_, i) => canon(i + 1, { title: null })),
           onDisk: Array.from({ length: 24 }, (_, i) => ({
             episode: i + 1, path: `/m/e${i + 1}.mkv`, subStatus: 'covered', statusReason: null, recheckAfter: null, files: [],
           })),
@@ -83,10 +92,10 @@ describe('SeriesPage：覆盖句文案', () => {
         },
       ],
     }
-    // 覆盖句是"前缀 + 嵌句大数字 + 后缀"三段拼接（seasonCoverageSentence 的结构，见
-    // library/text.ts），前后缀是裸文本节点、不各自成一个元素——RTL 的 getByText 只按元素
-    // 文本内容匹配，找不到"裸文本节点"，所以前后缀用 container.textContent 整体断言，
-    // 只有嵌句大数字（有自己的 <Text as="span">）才用 getByText 精确定位。
+    // 覆盖句"前缀 + 嵌句大数字 + 后缀"三段拼接（seasonCoverageSentence，见 library/text.ts），
+    // 前后缀是裸文本节点，只有嵌句大数字有自己的 <Text as="span"> → 用 getByText 精确定位大数字，
+    // 前后缀用 container.textContent 整体断言。事实栏用 " / " 分隔（"24 / 28"），覆盖句大数字段用
+    // en 的 "24 of 28"——两者文本不同，findByText('24 of 28') 唯一命中覆盖句。
     const { container } = renderPage(asyncData(detail))
 
     expect(await screen.findByText('24 of 28')).toBeInTheDocument()
@@ -114,7 +123,7 @@ describe('SeriesPage：layoutNonstandard 事实陈述', () => {
 })
 
 describe('SeriesPage：canonical 缓存未建', () => {
-  it('canonical 为空、磁盘有行 → 提示 + 格阵只按磁盘行渲染', async () => {
+  it('canonical 为空、磁盘有行 → 提示 + 行式只按磁盘行渲染', async () => {
     const detail: LibrarySeriesDetailDTO = {
       series: baseSeries(),
       seasons: [
@@ -128,122 +137,30 @@ describe('SeriesPage：canonical 缓存未建', () => {
     }
     const { container } = renderPage(asyncData(detail))
     expect(await screen.findByText('canonical catalog pending')).toBeInTheDocument()
-    expect(container.querySelectorAll('.ep-cell')).toHaveLength(1)
-    expect(container.querySelectorAll('.ep-cell-dashed')).toHaveLength(0)
+    expect(container.querySelectorAll('.library-eprow-head')).toHaveLength(1)
+    expect(container.querySelectorAll('.ep-cell')).toHaveLength(0)
   })
 })
 
-describe('SeriesPage：详情板开合', () => {
-  function detailFixture(): LibrarySeriesDetailDTO {
-    return {
+describe('SeriesPage：逐集行内展开（无右侧面板）', () => {
+  it('点击某集 → 行内展开该集 TMDB 简介（无右侧面板）', async () => {
+    const detail: LibrarySeriesDetailDTO = {
       series: baseSeries(),
       seasons: [
         {
           season: 1,
-          canonical: [{ episode: 1, title: 'Pilot' }, { episode: 2, title: 'Second' }],
-          onDisk: [
-            {
-              episode: 1, path: '/media/Series A/S01/Series.A.S01E01.1080p.mkv',
-              subStatus: 'covered', statusReason: null, recheckAfter: null, files: [],
-            },
-          ],
-          coverage: [{ episode: 1, lang: 'zh-Hans', path: '/media/Series A/S01/Series.A.S01E01.zh-Hans.ass' }],
+          canonical: [canon(1, { title: 'Pilot', overview: '哈蒙一家搬进凶宅', airDate: '2011-10-05' })],
+          onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] }],
+          coverage: [],
         },
       ],
     }
-  }
-
-  it('点击已上盘的格子 → 面板显示文件名 + 字幕清单', async () => {
-    renderPage(asyncData(detailFixture()))
-    const cells = await screen.findAllByRole('button', { name: '1' })
-    fireEvent.click(cells[0])
-
-    expect(await screen.findByText('S01E01')).toBeInTheDocument()
-    expect(screen.getByText('Series.A.S01E01.1080p.mkv')).toBeInTheDocument()
-    expect(screen.getByText('zh-Hans')).toBeInTheDocument()
-    expect(screen.getByText('Series.A.S01E01.zh-Hans.ass')).toBeInTheDocument()
-  })
-
-  it('点击 hardsub-assumed 格子 → 面板显示硬字幕假定与后端 reason', async () => {
-    const detail = detailFixture()
-    detail.seasons[0].onDisk = [
-      {
-        episode: 1, path: '/media/Series A/S01/Series.A.S01E01.1080p.mkv',
-        subStatus: 'hardsub-assumed', statusReason: 'video stream has Chinese hard subtitles', recheckAfter: null, files: [],
-      },
-    ]
-    detail.seasons[0].coverage = []
-
     renderPage(asyncData(detail))
-    const cells = await screen.findAllByRole('button', { name: '1' })
-    fireEvent.click(cells[0])
-
-    expect(await screen.findByText('covered (hardsub assumed)')).toBeInTheDocument()
-    expect(screen.getByText('video stream has Chinese hard subtitles')).toBeInTheDocument()
-  })
-
-  it('点击 embedded 格子 → 显示"已覆盖·内嵌字幕"而非误导性"无字幕"（A 修：grid 绿点 vs 详情自相矛盾）', async () => {
-    // 生产实证 bug：内嵌剧集（如 AHS S01E04）subStatus=embedded、外挂 coverage 为空 → grid 判
-    // covered 显绿点，但详情面板旧逻辑落进 episodeCoverage.length===0 的"无字幕"分支，自相矛盾。
-    const detail = detailFixture()
-    detail.seasons[0].onDisk = [
-      {
-        episode: 1, path: '/media/Series A/S01/Series.A.S01E01.1080p.mkv',
-        subStatus: 'embedded', statusReason: null, recheckAfter: null, files: [],
-      },
-    ]
-    detail.seasons[0].coverage = [] // 内嵌 ⟹ 外挂 coverage 恒空（正是 bug 现象成因）
-
-    renderPage(asyncData(detail))
-    const cells = await screen.findAllByRole('button', { name: '1' })
-    fireEvent.click(cells[0])
-
-    const panel = await screen.findByRole('dialog')
-    expect(within(panel).getByText('covered · embedded subtitles (in video)')).toBeInTheDocument()
-    // 关键：绝不再显示误导性的"无字幕"
-    expect(within(panel).queryByText('No subtitles found for this episode.')).not.toBeInTheDocument()
-  })
-
-  it('点击 dashed 格（磁盘无）→ 面板显示 canonical 标题 + not on disk', async () => {
-    renderPage(asyncData(detailFixture()))
-    const cells = await screen.findAllByRole('button', { name: '2' })
-    fireEvent.click(cells[0])
-
-    expect(await screen.findByText('S01E02')).toBeInTheDocument()
-    // "not on disk" 也是格阵图例里 dashed 图例的文案（同一句话，两处都成立不是 bug）——
-    // 用 within(panel) 把断言限定在详情板内，避免撞上图例那一份同名文本。
-    const panel = screen.getByRole('dialog')
-    expect(within(panel).getByText('Second')).toBeInTheDocument()
-    expect(within(panel).getByText('not on disk')).toBeInTheDocument()
-  })
-
-  it('esc 关闭面板', async () => {
-    renderPage(asyncData(detailFixture()))
-    const cells = await screen.findAllByRole('button', { name: '1' })
-    fireEvent.click(cells[0])
-    await screen.findByText('S01E01')
-
-    fireEvent.keyDown(window, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByText('S01E01')).not.toBeInTheDocument())
-  })
-
-  it('点击关闭控件关闭面板', async () => {
-    renderPage(asyncData(detailFixture()))
-    const cells = await screen.findAllByRole('button', { name: '1' })
-    fireEvent.click(cells[0])
-    await screen.findByText('S01E01')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close episode details' }))
-    await waitFor(() => expect(screen.queryByText('S01E01')).not.toBeInTheDocument())
-  })
-
-  it('再次点击同一格 → 关闭（toggle）', async () => {
-    renderPage(asyncData(detailFixture()))
-    const cells = await screen.findAllByRole('button', { name: '1' })
-    fireEvent.click(cells[0])
-    await screen.findByText('S01E01')
-    fireEvent.click(cells[0])
-    await waitFor(() => expect(screen.queryByText('S01E01')).not.toBeInTheDocument())
+    // 单季默认展开 → 行立即可见；点击行头行内展开该集简介。
+    fireEvent.click(await screen.findByRole('button', { name: /Pilot/ }))
+    expect(screen.getByText('哈蒙一家搬进凶宅')).toBeInTheDocument()
+    // 详情页重设计 item B：旧右侧滑入面板（role=dialog）已彻底移除。
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
 

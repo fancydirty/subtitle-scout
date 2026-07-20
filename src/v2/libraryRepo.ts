@@ -13,6 +13,10 @@ export interface SeriesParams {
   name: string
   chineseTitle?: string | null
   posterPath?: string | null
+  /** 详情页重设计 item B：TMDB 剧集简介 / hero 背景大图路径。undefined/null→NULL 绑定，
+   *  ON CONFLICT 分支 COALESCE 保护既有值不被后续无值的重复调用清空（同 posterPath 语义）。 */
+  overview?: string | null
+  backdropPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
   /** 验收修复轮一 Task V1（design §A）：TMDB genre id 集合（如 [16,35]）。有值→JSON.stringify
@@ -196,20 +200,26 @@ export class LibraryRepo {
     // claim-gated 分支的 title 恒 ''，该剧每来一集新文件都带着空名重新 upsert，绝不能拿占位
     // 覆盖一个已治好的真名。WHERE 里的 excluded.name != '' 同步豁免：占位入参不算 name 变更。
     const genresJson = params.genres != null ? JSON.stringify(params.genres) : null
+    const overview = params.overview ?? null
+    const backdropPath = params.backdropPath ?? null
     this.db
       .prepare(
-        `INSERT INTO series (id, name, chinese_title, poster_path, year, provider_ids, genres)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO series (id, name, chinese_title, poster_path, overview, backdrop_path, year, provider_ids, genres)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
            poster_path = COALESCE(excluded.poster_path, poster_path),
+           overview = COALESCE(excluded.overview, overview),
+           backdrop_path = COALESCE(excluded.backdrop_path, backdrop_path),
            year = excluded.year,
            provider_ids = excluded.provider_ids,
            genres = COALESCE(excluded.genres, genres)
          WHERE (excluded.name != '' AND name != excluded.name)
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
             OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
+            OR (excluded.overview IS NOT NULL AND overview IS NOT excluded.overview)
+            OR (excluded.backdrop_path IS NOT NULL AND backdrop_path IS NOT excluded.backdrop_path)
             OR year IS NOT excluded.year
             OR provider_ids IS NOT excluded.provider_ids
             OR (excluded.genres IS NOT NULL AND genres IS NOT excluded.genres)`
@@ -219,6 +229,8 @@ export class LibraryRepo {
         params.name,
         params.chineseTitle ?? null,
         posterPath,
+        overview,
+        backdropPath,
         params.year ?? null,
         params.providerIds ?? null,
         genresJson
@@ -233,8 +245,15 @@ export class LibraryRepo {
    *  （建行时 getDetails 成功）已由建行当场回填 originalTitle 兜住（ingest.ts），不经过这里。
    *  limit 由调用方传 cap（ingest.ts pass 收尾每轮传 10，防 TMDB 抖动期连环空转拖垮整轮 pass）。 */
   listSeriesNeedingEnrich(limit: number): { id: string }[] {
+    // 详情页重设计 item B（db.ts v16 迁移）：series.overview/backdrop_path 后加两列，存量
+    // 已富化剧（genres 早已非 NULL）这两列恒 NULL——迁移注释假定"series 层靠既有富化重试 pass
+    // 连带补齐"，但旧谓词只认 genres IS NULL 接不住它们。放宽第二臂 overview IS NULL 把它们
+    // 拉回候选一次性回填；自熄火——overview 一旦落值即脱离该臂，不会 re-enrich 风暴。
+    // 护栏 name != ''：第二臂只捞真名剧。空名占位（P6 认领债务 / 404 死 id，genres 已落 []
+    // 但 overview 永远拿不到）绝不能经 overview 臂永留候选空转烧 TMDB 配额（复活债务D6 的
+    // 熄火不变式——空名死 id 只能经 genres IS NULL 臂进候选、拿到 genres=[] 定论后彻底熄火）。
     return this.db
-      .prepare(`SELECT id FROM series WHERE genres IS NULL LIMIT ?`)
+      .prepare(`SELECT id FROM series WHERE genres IS NULL OR (overview IS NULL AND name != '') LIMIT ?`)
       .all(limit) as { id: string }[]
   }
 
@@ -253,6 +272,8 @@ export class LibraryRepo {
       name?: string | null
       chineseTitle?: string | null
       posterPath?: string | null
+      overview?: string | null
+      backdropPath?: string | null
       year?: number | null
       genres?: number[] | null
       providerIds?: string | null
@@ -261,10 +282,15 @@ export class LibraryRepo {
     const genresJson = e.genres != null ? JSON.stringify(e.genres) : null
     this.db
       .prepare(
+        // overview/backdrop_path（详情页重设计 item B）随 poster/genres 同一套"宁可不写不可覆盖"
+        // COALESCE 手法回填——存量已富化剧经放宽后的 listSeriesNeedingEnrich 谓词重入候选后，
+        // 由这里把 getDetails 拿到的 overview/backdrop 落进原本 NULL 的两列（现列非 NULL 则保留）。
         `UPDATE series SET
            name = CASE WHEN name = '' AND @name IS NOT NULL THEN @name ELSE name END,
            chinese_title = COALESCE(chinese_title, @chineseTitle),
            poster_path = COALESCE(poster_path, @posterPath),
+           overview = COALESCE(overview, @overview),
+           backdrop_path = COALESCE(backdrop_path, @backdropPath),
            year = COALESCE(year, @year),
            genres = COALESCE(genres, @genres),
            provider_ids = COALESCE(@providerIds, provider_ids)
@@ -275,6 +301,8 @@ export class LibraryRepo {
         name: e.name ?? null,
         chineseTitle: e.chineseTitle ?? null,
         posterPath: e.posterPath ?? null,
+        overview: e.overview ?? null,
+        backdropPath: e.backdropPath ?? null,
         year: e.year ?? null,
         genres: genresJson,
         providerIds: e.providerIds ?? null,

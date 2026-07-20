@@ -59,6 +59,11 @@ export const en = {
   library_detail_hardsub_assumed: 'covered (hardsub assumed)',
   library_detail_embedded: 'covered · embedded subtitles (in video)',
   library_detail_main_file: 'main',
+  // 详情页重设计 item B（Phase 5）：hero + FactsRail + 季手风琴 + 逐集行内展开。
+  library_detail_embedded_short: 'embedded',
+  library_episode_no_overview: 'No synopsis for this episode (not provided by TMDB).',
+  library_facts_coverage: 'covered',
+  library_facts_embedded_unit: 'embedded',
 
   // 格阵图例。
   library_legend_covered: 'covered',

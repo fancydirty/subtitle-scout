@@ -408,21 +408,26 @@ async function resolveOriginLang(
  *  门控），避免每集/每次重跑都重复两次 TMDB 请求。getDetails 失败（TmdbRequestFailedError）
  *  按 fail-soft 处理——poster/year 这类展示增益字段不该因为一次 TMDB 抖动就阻塞识别与覆盖
  *  分类这条主线（本行为与 getChineseTitles 自身已经 fail-soft 的哲学一致，tmdb.ts 全文档）。
- *  overview/runtimeMinutes 由 getDetails 一并返回但 T3 不落库——schema v9 的 series/movies 都
- *  没有对应列（3a 的 getDetails 是通用详情面，供未来消费方使用）。 */
+ *  详情页重设计 item B：overview/backdropPath 现随新 series 行一并落库（series 新增两列，
+ *  见 db.ts 末条迁移）——仅新剧首次入库路径回填；movie 分支与既有 movies 表不受影响。
+ *  runtimeMinutes 仍由 getDetails 一并返回但不落 series/movies 列（喂 find-subtitle worker 用）。 */
 async function enrichNewSeriesOrMovie(
   mediaType: 'tv' | 'movie',
   tmdbId: string,
   tmdb: TmdbClient,
   log: (msg: string) => void,
-): Promise<{ posterPath: string | null; year: number | null; chineseTitle: string | null; genres: number[] | null; originalTitle: string | null; imdbId: string | null }> {
+): Promise<{ posterPath: string | null; backdropPath: string | null; overview: string | null; year: number | null; chineseTitle: string | null; genres: number[] | null; originalTitle: string | null; imdbId: string | null }> {
   let posterPath: string | null = null
+  let backdropPath: string | null = null
+  let overview: string | null = null
   let year: number | null = null
   let genres: number[] | null = null
   let originalTitle: string | null = null
   try {
     const details = await tmdb.getDetails(mediaType, tmdbId)
     posterPath = details?.posterPath ?? null
+    backdropPath = details?.backdropPath ?? null
+    overview = details?.overview ?? null
     year = details?.year ?? null
     // 债务D6（已收尾）：404（getDetails 契约=返回 null，TMDB 权威答复查无此 id，永久态）时
     // genres 落 [] 而不是 null——null 不写列（见 libraryRepo 两条写路的 != null 判定），行会
@@ -441,7 +446,7 @@ async function enrichNewSeriesOrMovie(
   } catch (e) {
     log(`ingest: getExternalIds failed for ${mediaType}:${tmdbId}, proceeding without imdbId this pass: ${e instanceof Error ? e.message : String(e)}`)
   }
-  return { posterPath, year, chineseTitle: zhTitles[0] ?? null, genres, originalTitle, imdbId }
+  return { posterPath, backdropPath, overview, year, chineseTitle: zhTitles[0] ?? null, genres, originalTitle, imdbId }
 }
 
 /** 合并 provider_ids：只在现有 JSON 不含 imdb 键且新值有 imdb 时才写入，否则返回 null。
@@ -692,6 +697,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
               const seriesExisted = lib.getSeries(ownSeriesId) !== null
               let posterPath: string | null = null
+              let backdropPath: string | null = null
+              let overview: string | null = null
               let year: number | null = null
               let chineseTitle: string | null = null
               let genres: number[] | null = null
@@ -700,6 +707,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               if (!seriesExisted) {
                 const enrich = await enrichNewSeriesOrMovie('tv', tmdbId, tmdb, log)
                 posterPath = enrich.posterPath
+                backdropPath = enrich.backdropPath
+                overview = enrich.overview
                 year = enrich.year
                 chineseTitle = enrich.chineseTitle
                 genres = enrich.genres
@@ -718,7 +727,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 // （收窄后的熄火谓词只看 genres，接不住 genres 已非 NULL 的空名行）。getDetails
                 // 404/抖动时仍空串：前者定论熄火，后者 genres NULL 下轮重试整套回填。
                 id: ownSeriesId, name: title !== '' ? title : (enrichOriginalTitle ?? ''),
-                chineseTitle, posterPath, year, genres,
+                chineseTitle, posterPath, backdropPath, overview, year, genres,
                 providerIds: imdbId
                   ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
                   : JSON.stringify({ tmdb: tmdbId }),
@@ -1030,6 +1039,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             name: enrich.originalTitle,
             chineseTitle: enrich.chineseTitle,
             posterPath: enrich.posterPath,
+            overview: enrich.overview,
+            backdropPath: enrich.backdropPath,
             year: enrich.year,
             genres: enrich.genres,
             providerIds: mergedProviderIds,

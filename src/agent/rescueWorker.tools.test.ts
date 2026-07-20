@@ -36,6 +36,7 @@ describe('makeRescueWorkerTools', () => {
       overview: 'Overview',
       runtimeMinutes: 24,
       posterPath: null,
+      backdropPath: null,
       originalTitle: null,
       year: 2024,
       genreIds: [],

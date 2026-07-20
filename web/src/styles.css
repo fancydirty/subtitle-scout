@@ -137,6 +137,101 @@
   font-size: 28px;
 }
 
+/* ---- 剧集页 hero 头部（SeriesHero，详情页重设计 item B）——渐变压暗背景大图 + 排印。 ---- */
+.library-hero {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  padding: 20px;
+}
+.library-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 20%;
+  z-index: 0;
+}
+.library-hero-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(11, 12, 15, 0.35) 0%, var(--color-background-body) 82%);
+}
+.library-hero-body {
+  position: relative;
+  z-index: 2;
+}
+
+/* ---- 逐集行（EpisodeRow，详情页重设计 item B）——文字在左 + 剧照 + 点击行内展开简介。 ---- */
+.library-eprow {
+  border-top: 1px solid var(--color-border);
+}
+.library-eprow-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 4px 9px 10px;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.library-eprow-head:hover {
+  background: var(--color-background-card);
+}
+.library-eprow-active > .library-eprow-head {
+  border-left-color: var(--color-accent);
+  background: var(--color-background-card);
+}
+.library-eprow-spacer {
+  flex: 1;
+}
+.library-eprow-still {
+  width: 112px;
+  height: 63px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+}
+.library-eprow-tag {
+  font-family: var(--font-code, ui-monospace);
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.library-eprow-body {
+  padding: 2px 10px 12px 40px;
+}
+
+/* ---- 季手风琴（SeasonAccordion，详情页重设计 item B）——季头卷起汇总 + 展开箭头。 ---- */
+.library-season-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 2px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.library-season-chev {
+  color: var(--color-text-gray);
+  transition: transform 0.18s ease;
+  display: inline-block;
+}
+.library-season-chev.open {
+  transform: rotate(90deg);
+}
+
 /* ---- A 式格阵（EpisodeCell）---- */
 .ep-grid {
   display: grid;
@@ -237,43 +332,6 @@
   height: 9px;
   border-radius: 2px;
   border: 1px dashed var(--color-text-disabled);
-}
-
-/* ---- 右侧详情板（EpisodeDetail）——固定、不跳页不弹 modal（DESIGN.md §5/§6）。 ----
-   top 硬编码 46px = AppShell TopNav 的实测渲染高度（.astryx-app-shell-header，
-   contentPadding/variant 不变的前提下是个稳定值）。没用 CSS 变量兜底：Astryx 内部虽然定义了
-   --appshell-header-height，但只在它自己另一套"sticky content"用法里才会真的被赋值，本项目
-   现在的 AppShell 用法下这个变量从没被设置过（浏览器里 getComputedStyle 实测为空字符串，
-   会静默 fallback 到 0px，比硬编码 46px 更不可靠）。TopNav/AppShell 布局如果改了，
-   这个数字要跟着重新量一次——用浏览器量 .astryx-app-shell-header 的 getBoundingClientRect().height。 */
-.library-detail-panel {
-  position: fixed;
-  top: 46px;
-  bottom: 0;
-  right: 0;
-  width: 360px;
-  max-width: 90vw;
-  overflow-y: auto;
-  background: var(--color-background-card);
-  border-left: 1px solid var(--color-border);
-  z-index: 20;
-}
-.library-detail-close {
-  display: inline-flex;
-  align-items: center;
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  padding: 2px;
-  border-radius: var(--radius-inner, 4px);
-}
-.library-detail-close:hover {
-  background: var(--color-background-surface);
-}
-.library-detail-close:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
 }
 
 /* dashboard-F4（Workflow tab）：两列（Gaps | Activity，验收修复轮一 Task V4 design §B 叙事化

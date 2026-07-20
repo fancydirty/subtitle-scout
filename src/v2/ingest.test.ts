@@ -96,7 +96,7 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv', 5000, 12345)
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
+      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: '/bd.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
     })
     const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', title: 'Spy x Family', season: 1, episode: 2 }))
@@ -114,6 +114,8 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
     expect(series).toMatchObject({
       id: 'tmdb:108964', name: 'Spy x Family', chinese_title: '演出',
       poster_path: '/poster.jpg', year: 2020, provider_ids: JSON.stringify({ tmdb: '108964' }),
+      // 详情页重设计 item B：新剧 enrich 落 series overview/backdrop_path。
+      overview: 'x', backdrop_path: '/bd.jpg',
     })
     const episode = lib.getEpisode('tmdb:108964/s1e2')
     expect(episode).toMatchObject({
@@ -130,7 +132,7 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
     const disk = fakeDisk()
     disk.setVideo('/media/movies/hero.mkv')
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', originalTitle: null, year: 1999, genreIds: [] }),
+      getDetails: async () => ({ overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', backdropPath: null, originalTitle: null, year: 1999, genreIds: [] }),
       getChineseTitles: async () => ['黑客帝国', '駭客任務'],
     })
     const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' }))
@@ -198,7 +200,7 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv')
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', originalTitle: 'Show', year: 2020, genreIds: [] }),
+      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null, originalTitle: 'Show', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
       getExternalIds: async () => { throw new TmdbRequestFailedError(new Error('ECONNREFUSED')) },
     })
@@ -1998,7 +2000,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('空名/未富化 series 被补拍 name/chineseTitle/posterPath/year/genres', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '' }) // 空名 ? 卡（模拟 P6 认领债务）
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getChineseTitles = vi.fn(async () => ['救回剧'])
@@ -2020,10 +2022,36 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     expect(result.scanned).toBe(0)
   })
 
-  it('已富化（genres 非 NULL 且 name 非空）的剧不进候选清单，不被重跑', async () => {
-    lib.upsertSeries({ id: 'tmdb:1', name: 'Already Good', genres: [35] })
+  it('存量已富化库回填 series overview/backdrop：genres 已有但 overview/backdrop NULL 的真名剧被补拍', async () => {
+    // 详情页重设计 item B：series.overview/backdrop_path 是 schema 后加的列（db.ts v16 迁移），
+    // 存量库里"名字已识别、genres 早已富化"的剧这两列恒 NULL。旧候选谓词只认 genres IS NULL，
+    // 这些剧永不再进富化重试候选，详情页 hero 永久空白（迁移注释假定"series 层靠既有富化重试
+    // pass 连带补齐"，但那条 pass 接不住它们——这正是本次要堵的缺口）。候选放宽 overview IS NULL
+    // （限真名剧，见下方 D6 护栏测试）+ retry 路径把 overview/backdrop 穿进 applyEnrichment。
+    lib.upsertSeries({ id: 'tmdb:777', name: 'Enriched Show', genres: [18] }) // 已富化真名剧；overview/backdrop 恒 NULL
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: null, posterPath: null, originalTitle: 'x', year: null, genreIds: [],
+      overview: 'ov', runtimeMinutes: 42, posterPath: '/p.jpg', backdropPath: '/bd.jpg',
+      originalTitle: 'Enriched Show', year: 2021, genreIds: [18],
+    }))
+    const pass = makeIngestPass(makeDeps({
+      tmdb: fakeTmdb({ getDetails }),
+      listVideoFiles: () => [],
+    }))
+
+    await pass()
+
+    expect(getDetails).toHaveBeenCalledWith('tv', '777')
+    const row = db.prepare(`SELECT overview, backdrop_path FROM series WHERE id = 'tmdb:777'`).get() as { overview: string | null; backdrop_path: string | null }
+    expect(row).toEqual({ overview: 'ov', backdrop_path: '/bd.jpg' })
+  })
+
+  it('已富化（genres 非 NULL、name 非空、overview 已落）的剧不进候选清单，不被重跑', async () => {
+    // 详情页重设计后"已富化"的判据同时含 overview：候选谓词第二臂 overview IS NULL 会把
+    // genres 已有但 overview 仍空的真名剧拉回候选（存量回填），故此处必须连 overview/backdrop
+    // 一并落齐才算真·已富化、才不再被重跑。
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Already Good', genres: [35], overview: 'has overview', backdropPath: '/bd.jpg' })
+    const getDetails = vi.fn(async () => ({
+      overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: 'x', year: null, genreIds: [],
     }))
     const pass = makeIngestPass(makeDeps({
       tmdb: fakeTmdb({ getDetails }),
@@ -2038,7 +2066,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('每轮 cap 10：候选超过 10 个时只补拍前 10 个（防 TMDB 抖动期连环空转）', async () => {
     for (let i = 0; i < 15; i++) lib.upsertSeries({ id: `tmdb:${i}`, name: '' })
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: null, posterPath: null, originalTitle: 'x', year: null, genreIds: [],
+      overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: 'x', year: null, genreIds: [],
     }))
     const pass = makeIngestPass(makeDeps({
       tmdb: fakeTmdb({ getDetails }),
@@ -2073,7 +2101,10 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv', 5000, 12345)
     const recognize = vi.fn(async () => tvResult({ tmdbId: '24240', title: '', season: 1, episode: 1 }))
-    const getDetails = vi.fn(async () => ({ overview: null, runtimeMinutes: 24, posterPath: null, originalTitle: 'Claimed Show', year: 2023, genreIds: [16] }))
+    // overview 必须由建行 enrich 一并落库（build path 已 upsertSeries overview/backdrop）——否则
+    // overview 留 NULL，同一轮 pass 的富化重试段会经放宽后的 overview IS NULL 臂把它重新捞起，
+    // 白烧第二次 getDetails。这正是本测试守的"建行已拿全、不许同轮二次 TMDB"不变式。
+    const getDetails = vi.fn(async () => ({ overview: 'Claimed overview', runtimeMinutes: 24, posterPath: null, backdropPath: null, originalTitle: 'Claimed Show', year: 2023, genreIds: [16] }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/Show/Season 1/ep1.mkv'],
       recognize, tmdb: fakeTmdb({ getDetails }),
@@ -2106,7 +2137,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('富化重试回填 imdb：现 provider_ids 无 imdb 时，external_ids 采到后并入', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '' }) // 空名/未富化 → 进候选
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
@@ -2127,7 +2158,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('富化重试回填 imdb：现 provider_ids 已含 imdb 时，不再覆盖/改写', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '', providerIds: JSON.stringify({ tmdb: '24240', imdb: 'tt99999' }) })
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
@@ -2146,8 +2177,10 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   // 债务D6：富化重试谓词护栏——404 死 id 必须落 '[]' 退出候选，瞬时失败保持 NULL 继续重试。
   it('D6：TMDB 回空 genres 时，genres 落 "[]" 并退出候选清单', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: 'Stub Name' })
+    // 真名剧退出候选现需 overview 也落齐（详情页重设计后候选谓词加了 overview IS NULL 臂）：
+    // 空 genres 的定论靠 genres='[]' 熄火 genres 臂，overview 落值熄火 overview 臂，两臂皆灭方退。
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: null, posterPath: null,
+      overview: 'ov', runtimeMinutes: null, posterPath: null, backdropPath: null,
       originalTitle: 'Rescued Show', year: null, genreIds: [] as number[],
     }))
     const pass = makeIngestPass(makeDeps({
@@ -2163,7 +2196,10 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   })
 
   it('D6：404 死 id（getDetails 返回 null）时 genres 落 "[]" 并退出候选清单', async () => {
-    lib.upsertSeries({ id: 'tmdb:24240', name: 'Stub Name' })
+    // 404 死 id 现实里恒无名（getDetails 拿不到任何标题/overview）：name='' 让它经 overview IS NULL
+    // 臂时被 name != '' 护栏挡下，只从 genres 臂进候选、拿到 genres='[]' 定论后彻底熄火，绝不因
+    // overview 永远拿不到而经 overview 臂永留候选空转烧 TMDB 配额（D6 熄火不变式的现实形态）。
+    lib.upsertSeries({ id: 'tmdb:24240', name: '' })
     const getDetails = vi.fn(async () => null)
     const pass = makeIngestPass(makeDeps({
       tmdb: fakeTmdb({ getDetails }),

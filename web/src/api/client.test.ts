@@ -4,11 +4,20 @@
 // 抽取 `{error: string}` 字段；抽不出来（响应体不是 JSON、或没有 error 字段）时回落 "path →
 // status"，不炸调用方。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { api } from './client.js'
+import { api, backdropUrl, stillUrl } from './client.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+describe('backdropUrl / stillUrl（详情页 hero + 逐集剧照 CDN 拼接）', () => {
+  it('backdrop 用 w1280、still 用 w300；null → null', () => {
+    expect(backdropUrl('/bd.jpg')).toBe('https://image.tmdb.org/t/p/w1280/bd.jpg')
+    expect(stillUrl('/s.jpg')).toBe('https://image.tmdb.org/t/p/w300/s.jpg')
+    expect(backdropUrl(null)).toBeNull()
+    expect(stillUrl(null)).toBeNull()
+  })
 })
 
 describe('client.ts get() 失败时的错误消息', () => {

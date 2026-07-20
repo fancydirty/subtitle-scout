@@ -53,6 +53,11 @@ export const zh = {
   library_detail_hardsub_assumed: '已覆盖（硬字幕假定）',
   library_detail_embedded: '已覆盖 · 内嵌字幕（视频自带）',
   library_detail_main_file: '主文件',
+  // 详情页重设计 item B（Phase 5）：hero + FactsRail + 季手风琴 + 逐集行内展开。
+  library_detail_embedded_short: '内嵌',
+  library_episode_no_overview: '暂无本集简介（TMDB 未提供）',
+  library_facts_coverage: '覆盖',
+  library_facts_embedded_unit: '集内嵌',
 
   library_legend_covered: '已覆盖',
   library_legend_hardsub: '硬字幕假定',
