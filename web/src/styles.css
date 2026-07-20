@@ -162,6 +162,53 @@
   z-index: 2;
 }
 
+/* ---- 逐集行（EpisodeRow，详情页重设计 item B）——文字在左 + 剧照 + 点击行内展开简介。 ---- */
+.library-eprow {
+  border-top: 1px solid var(--color-border);
+}
+.library-eprow-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 4px 9px 10px;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.library-eprow-head:hover {
+  background: var(--color-background-card);
+}
+.library-eprow-active > .library-eprow-head {
+  border-left-color: var(--color-accent);
+  background: var(--color-background-card);
+}
+.library-eprow-spacer {
+  flex: 1;
+}
+.library-eprow-still {
+  width: 112px;
+  height: 63px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+}
+.library-eprow-tag {
+  font-family: var(--font-code, ui-monospace);
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.library-eprow-body {
+  padding: 2px 10px 12px 40px;
+}
+
 /* ---- A 式格阵（EpisodeCell）---- */
 .ep-grid {
   display: grid;
