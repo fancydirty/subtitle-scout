@@ -161,12 +161,13 @@ export function parseSearchResults(html: string): SubhdSearchResult[] {
 // ---------- SubhdClient：真 HTTP（curl 兜底）+ 限速 + 镜像 ----------
 
 export const SUBHD_BASE = 'https://subhd.me'
-export const SUBHD_TIMEOUT_MS = 25_000
+// mint 响应正常 <1s；15s 超时抓真挂死，又不让偶发慢镜像把总预算吃穿（曾用 25s → 冒烟 180s 超时）。
+export const SUBHD_TIMEOUT_MS = 15_000
 // 礼貌节流（住宅 IP 被封是真实家庭成本）：单元之间 2-5s 随机延迟；恒定周期本身可指纹。
 export const DEFAULT_MIN_INTERVAL_MS = 2_000
 export const DEFAULT_JITTER_RANGE_MS = 3_000
-// prepare→down→api 临时页时间窗很短，失败重试整个单元；默认 4 次（每次限速在单元之间，不在单元内）。
-export const DEFAULT_RESOLVE_ATTEMPTS = 4
+// prepare→down→api 临时页时间窗很短，失败重试整个单元；base 默认 3 次（限速在单元之间，不在单元内）。
+export const DEFAULT_RESOLVE_ATTEMPTS = 3
 // 可用镜像（STRUCTURE.md 里站点自报）。主 base 网络不可达时依次兜底。
 export const DEFAULT_MIRRORS = ['https://subhd.one', 'https://subhd.top', 'https://subhd.cc']
 
@@ -317,11 +318,15 @@ export class SubhdClient {
    *  耗尽再切镜像。限速只在单元之间（不进单元内，保临时页时间窗）。 */
   async resolveDownload(id: string): Promise<{ url: string; cookie: string | null }> {
     let lastErr: unknown
-    for (const host of this.hosts()) {
-      for (let a = 0; a < this.resolveAttempts; a++) {
-        await this.limiter.wait()
-        try { return { url: await this.resolveOnce(host, id), cookie: null } } catch (e) { lastErr = e }
-      }
+    // base（已证可达的那个）拿满重试预算——"已失效"/瞬时网络重试整个单元。
+    for (let a = 0; a < this.resolveAttempts; a++) {
+      await this.limiter.wait()
+      try { return { url: await this.resolveOnce(this.base, id), cookie: null } } catch (e) { lastErr = e }
+    }
+    // 镜像（未证可达、可能慢/超时）：每个只试一次，别拿满预算把总时间吃穿（否则冒烟必超时）。
+    for (const m of this.mirrors) {
+      await this.limiter.wait()
+      try { return { url: await this.resolveOnce(m, id), cookie: null } } catch (e) { lastErr = e }
     }
     throw lastErr ?? new Error(`subhd resolveDownload exhausted for ${id}`)
   }
