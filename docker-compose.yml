@@ -34,6 +34,10 @@ services:
       OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
       OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
       OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
+      # 字幕源开关：默认关（各自需额外配置）。docker compose 只注入本块显式列出的变量，
+      # 缺列时 .env 里的 SUBHD_ENABLED/ZIMUKU_ENABLED=true 到不了容器 → 源静默不生效。
+      ZIMUKU_ENABLED: ${ZIMUKU_ENABLED:-false}
+      SUBHD_ENABLED: ${SUBHD_ENABLED:-false}
       MEDIA_ROOTS: /media
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
