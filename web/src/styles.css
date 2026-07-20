@@ -137,6 +137,31 @@
   font-size: 28px;
 }
 
+/* ---- 剧集页 hero 头部（SeriesHero，详情页重设计 item B）——渐变压暗背景大图 + 排印。 ---- */
+.library-hero {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  padding: 20px;
+}
+.library-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 20%;
+  z-index: 0;
+}
+.library-hero-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(11, 12, 15, 0.35) 0%, var(--color-background-body) 82%);
+}
+.library-hero-body {
+  position: relative;
+  z-index: 2;
+}
+
 /* ---- A 式格阵（EpisodeCell）---- */
 .ep-grid {
   display: grid;
