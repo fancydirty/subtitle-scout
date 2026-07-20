@@ -182,6 +182,28 @@ describe('SeriesPage：详情板开合', () => {
     expect(screen.getByText('video stream has Chinese hard subtitles')).toBeInTheDocument()
   })
 
+  it('点击 embedded 格子 → 显示"已覆盖·内嵌字幕"而非误导性"无字幕"（A 修：grid 绿点 vs 详情自相矛盾）', async () => {
+    // 生产实证 bug：内嵌剧集（如 AHS S01E04）subStatus=embedded、外挂 coverage 为空 → grid 判
+    // covered 显绿点，但详情面板旧逻辑落进 episodeCoverage.length===0 的"无字幕"分支，自相矛盾。
+    const detail = detailFixture()
+    detail.seasons[0].onDisk = [
+      {
+        episode: 1, path: '/media/Series A/S01/Series.A.S01E01.1080p.mkv',
+        subStatus: 'embedded', statusReason: null, recheckAfter: null, files: [],
+      },
+    ]
+    detail.seasons[0].coverage = [] // 内嵌 ⟹ 外挂 coverage 恒空（正是 bug 现象成因）
+
+    renderPage(asyncData(detail))
+    const cells = await screen.findAllByRole('button', { name: '1' })
+    fireEvent.click(cells[0])
+
+    const panel = await screen.findByRole('dialog')
+    expect(within(panel).getByText('covered · embedded subtitles (in video)')).toBeInTheDocument()
+    // 关键：绝不再显示误导性的"无字幕"
+    expect(within(panel).queryByText('No subtitles found for this episode.')).not.toBeInTheDocument()
+  })
+
   it('点击 dashed 格（磁盘无）→ 面板显示 canonical 标题 + not on disk', async () => {
     renderPage(asyncData(detailFixture()))
     const cells = await screen.findAllByRole('button', { name: '2' })

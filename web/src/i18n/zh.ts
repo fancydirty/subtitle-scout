@@ -51,6 +51,7 @@ export const zh = {
   library_detail_files_heading: '文件清单',
   library_detail_subtitles_heading: '字幕',
   library_detail_hardsub_assumed: '已覆盖（硬字幕假定）',
+  library_detail_embedded: '已覆盖 · 内嵌字幕（视频自带）',
   library_detail_main_file: '主文件',
 
   library_legend_covered: '已覆盖',

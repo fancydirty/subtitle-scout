@@ -83,15 +83,21 @@ export interface SeasonTally {
   error: number
   dashed: number
   partial: number
+  /** A 修：covered 分子里"内嵌字幕（视频自带轨）"的子计数——格态仍是 covered（grid 绿点不变），
+   *  但覆盖句要能诚实标注"其中 N 集是内嵌"，不把内嵌冒充成外挂已抓取。ignored/外挂-covered 不计入。 */
+  embedded: number
   total: number
 }
 
 export function tallyGridCells(cells: GridCell[]): SeasonTally {
-  const t: SeasonTally = { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, partial: 0, total: cells.length }
+  const t: SeasonTally = { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, partial: 0, embedded: 0, total: cells.length }
   for (const c of cells) {
     switch (c.state) {
       case 'covered':
         t.covered++
+        // 内嵌是 covered 的一个子类（classifyOnDisk 把 embedded 塌缩进 covered 格态）——原始
+        // subStatus 仍在 onDisk 上，据此单独计数，不改格态、不动 grid 视觉。
+        if (c.onDisk?.subStatus === 'embedded') t.embedded++
         break
       case 'hardsub':
         t.hardsub++

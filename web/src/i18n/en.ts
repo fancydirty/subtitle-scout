@@ -57,6 +57,7 @@ export const en = {
   library_detail_files_heading: 'Files',
   library_detail_subtitles_heading: 'Subtitles',
   library_detail_hardsub_assumed: 'covered (hardsub assumed)',
+  library_detail_embedded: 'covered · embedded subtitles (in video)',
   library_detail_main_file: 'main',
 
   // 格阵图例。

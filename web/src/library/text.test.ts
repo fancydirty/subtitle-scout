@@ -4,7 +4,7 @@ import { seasonCoverageSentence, formatResultCount, formatDuration } from './tex
 import type { SeasonTally } from './episodeState.js'
 
 function tally(p: Partial<SeasonTally>): SeasonTally {
-  return { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, partial: 0, total: 0, ...p }
+  return { covered: 0, hardsub: 0, missing: 0, throttled: 0, error: 0, dashed: 0, partial: 0, embedded: 0, total: 0, ...p }
 }
 
 describe('seasonCoverageSentence', () => {
@@ -46,6 +46,21 @@ describe('seasonCoverageSentence', () => {
   it('hardsub assumed 非零时拼进 clause（中文）', () => {
     const s = seasonCoverageSentence(1, tally({ covered: 24, total: 28, hardsub: 3 }), 'zh')
     expect(s.clause).toBe('3 集硬字幕假定')
+  })
+
+  it('embedded 非零时拼进 clause，标注覆盖里有几集是内嵌（英文）', () => {
+    const s = seasonCoverageSentence(1, tally({ covered: 6, total: 6, embedded: 6 }), 'en')
+    expect(s.clause).toBe('6 via embedded track')
+  })
+
+  it('embedded 非零时拼进 clause（中文）', () => {
+    const s = seasonCoverageSentence(1, tally({ covered: 6, total: 6, embedded: 6 }), 'zh')
+    expect(s.clause).toBe('6 集内嵌字幕')
+  })
+
+  it('embedded 与停牌等 clause 共存时按序拼接（内嵌是事实注解，殿后）', () => {
+    const s = seasonCoverageSentence(1, tally({ covered: 20, total: 24, throttled: 2, embedded: 3 }), 'zh')
+    expect(s.clause).toBe('2 集停牌中，3 集内嵌字幕')
   })
 })
 

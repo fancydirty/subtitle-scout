@@ -32,6 +32,12 @@ export function seasonCoverageSentence(season: number, tally: SeasonTally, lang:
   if (tally.hardsub > 0) {
     clauseParts.push(lang === 'zh' ? `${tally.hardsub} 集硬字幕假定` : `${tally.hardsub} hardsub assumed`)
   }
+  // A 修：内嵌字幕是"已覆盖"里的一个子类（视频自带轨，非外挂抓取）——事实注解殿后，让覆盖句
+  // 诚实说明"6/6 覆盖里有几集其实是内嵌"，避免用户误以为全是抓到的外挂字幕。它不是警报（不同于
+  // 停牌/缺档/硬字幕假定），但仍归入同一条 clause 平铺，句子结构不为它单开一段。
+  if (tally.embedded > 0) {
+    clauseParts.push(lang === 'zh' ? `${tally.embedded} 集内嵌字幕` : `${tally.embedded} via embedded track`)
+  }
   const clause = clauseParts.length > 0 ? clauseParts.join(lang === 'zh' ? '，' : ', ') : null
 
   return { prefix, emphasis, suffix, clause }

@@ -33,6 +33,9 @@ export function EpisodeDetail({ season, cell, coverage, onClose }: Props) {
   const episodeLabel = `S${String(season).padStart(2, '0')}E${String(cell.episode).padStart(2, '0')}`
   const episodeCoverage = coverage.filter((c) => c.episode === cell.episode)
   const isHardsubAssumed = cell.onDisk?.subStatus === 'hardsub-assumed'
+  // A 修：内嵌字幕（视频自带轨）也是"已处理但无外挂 sidecar"——与 hardsub 同构。缺了这一支，
+  // 内嵌集会落进下面 episodeCoverage.length===0 的"无字幕"兜底，跟 grid 的 covered 绿点自相矛盾。
+  const isEmbedded = cell.onDisk?.subStatus === 'embedded'
   const files = cell.onDisk?.files ?? []
   const hasMultipleFiles = files.length > 1
 
@@ -107,7 +110,10 @@ export function EpisodeDetail({ season, cell, coverage, onClose }: Props) {
                 </Text>
               ) : episodeCoverage.length === 0 ? (
                 <Text type="body" color="secondary">
-                  {t('library_detail_no_subtitles')}
+                  {/* 空外挂清单再分岔：内嵌 → 诚实说"已覆盖·内嵌字幕"；真缺 → "无字幕"。
+                      放在空分支里而非无条件前置，是为了万一内嵌集也带了外挂（后端分类下几乎不会发生：
+                      有外挂即判 covered 而非 embedded），仍照常列外挂，不吞掉事实。 */}
+                  {isEmbedded ? t('library_detail_embedded') : t('library_detail_no_subtitles')}
                 </Text>
               ) : (
                 <VStack gap={1}>

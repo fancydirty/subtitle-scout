@@ -86,6 +86,21 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
     expect(states).toEqual<EpisodeCellState[]>(['covered', 'covered'])
   })
 
+  it('embedded 单独计数：tally.embedded 只数内嵌集，且内嵌仍算进 covered 分子（格态不变，grid 照旧绿点）', () => {
+    // A 修：内嵌是"已覆盖"的一个子类（视频自带轨），格态塌缩成 covered 让 grid 视觉一致，
+    // 但 tally 要能把内嵌单独数出来，供覆盖句诚实标注"其中 N 集是内嵌"（不冒充外挂已抓取）。
+    const s = season({
+      canonical: [{ episode: 1, title: 'E1' }, { episode: 2, title: 'E2' }],
+      onDisk: [
+        { episode: 1, path: '/m/e1.mkv', subStatus: 'embedded', statusReason: null, recheckAfter: null, files: [] },
+        { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+      ],
+    })
+    const tally = tallyGridCells(buildGridCells(s, NOW))
+    expect(tally.embedded).toBe(1)
+    expect(tally.covered).toBe(2) // 内嵌 + 外挂都算已覆盖分子，分子不因单独计数而缩水
+  })
+
   it('hardsub-assumed → hardsub，且计入 covered 分子', () => {
     const s = season({
       canonical: [{ episode: 1, title: 'E1' }],
