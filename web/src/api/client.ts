@@ -30,6 +30,23 @@ export function posterUrl(posterPath: string | null): string | null {
   return `${TMDB_IMAGE_BASE}${posterPath}`
 }
 
+/** 背景大图（hero 用）与逐集剧照的 CDN 前缀——详情页重设计 item B。背景走 w1280 大图，剧照
+ *  走 w300 缩略，皆浏览器直连 TMDB（同 posterUrl 的免 key 直连策略）。 */
+const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280'
+const TMDB_STILL_BASE = 'https://image.tmdb.org/t/p/w300'
+
+/** 背景大图 URL（hero 用），无 path → null 让调用方降级纯排印头部。 */
+export function backdropUrl(path: string | null): string | null {
+  if (!path) return null
+  return `${TMDB_BACKDROP_BASE}${path}`
+}
+
+/** 逐集剧照缩略图 URL，无 path → null 让调用方不渲染 img。 */
+export function stillUrl(path: string | null): string | null {
+  if (!path) return null
+  return `${TMDB_STILL_BASE}${path}`
+}
+
 /** 从失败响应体尝试抽取 `{error: string}` 形状的诚实消息（server.ts 端点失败时的既有约定），
  *  抽不出来（响应体不是 JSON、或没有 error 字段）就回落 "path → status" 形式——get()/mutate()
  *  共用同一套抽取逻辑。R2D-8（R2 复审）：get() 此前从不解析失败响应体，只吐裸状态码——
