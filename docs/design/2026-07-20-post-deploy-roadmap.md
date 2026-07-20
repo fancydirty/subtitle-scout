@@ -9,7 +9,7 @@
 - **B 详情页重设计** ✅ 合并 main(`9d5d88b`)——hero+逐集剧照+季手风琴+行内简介展开+删右侧板+超长季50回落;后端 TMDB 富化管线(含存量库回填);已随 C 一并部署上生产。
 - **C subhd 字幕源** ✅ 合并 main(`0c94eac`)+ **已部署生产 + subhd 生产实测可用**。真机侦察出 5 步下载流,curl 绕 Node TLS 指纹;**部署踩两坑均已修**:Dockerfile 缺 ca-certificates(`198c6f0`)、cloudflared build 期掉线(detach build 绕过)。容器直连 subhd.me=200,软路由家宽直通不用代理。动漫专源=侦察实证不建;里番=死缺口。
 - **部署机制**:`deploy/deploy.sh`(rsync 工作树→路由 `/mnt/nvme0n1-4/docker/subtitle-scout`→`docker compose build && up`)。cloudflared build 期易掉线→**长 build 用 detach**(`nohup ...>log; echo EXIT-$?>done` 后轮询 done)。SSH 别名 `media-router-tunnel`。VPS 跳板:`jisuan`(23.254.150.206)/`yt-email-vps`(192.129.128.217),D 狂打 subhd 时当出口避灰名单。
-- **E AI 翻译** 📐 设计完成(spec: docs/design/2026-07-20-ai-translation-design.md)——术语表先行+分批带记忆+fail-closed 闸;v1 靠同剧既有中字+TMDB(不接 SearXNG/搜索 SaaS/Jina),wiki/web 留 phase-2;编排式单 agent 串行翻译+critic;The Rig 是试验田。**待 writing-plans→实现(排在 D 之后)**。
+- **E AI 翻译** 🧪 **原型验证达标(2026-07-21 凌晨)**——方法论(强模型调轮廓→弱模型测回归→质量闸)在 The Rig S2E01 前200 cue 上跑通:强译术语100%过闸、弱译69.8%被拦(fail-closed 成立)。**质量闸确定性层已落项目** `src/translate/qualityGate.ts`(commit 0da3845)。**translateWorker 全量(~2k行 agent+DB迁移+编排)留晨间共执行**(大功能非高置信机械修、夜跑生产烧配额)。记录+计划:`docs/design/2026-07-21-e-prototype-validation-and-port-plan.md`。原设计 spec: docs/design/2026-07-20-ai-translation-design.md。
 - **已定但未实现的产品小决策**(compact 后随手做):①**partial** 放宽——只对短到几秒几分的荒谬时长兜底,合理差异(片尾广告等)一视同仁当正常;②**里番**——TMDB `adult` 标记的媒体 ingest 阶段直接不入库/不进工作流(比短路更干净);③**embedded 海报徽章**——把 embedded 计入覆盖分子(与 A 修一致,显 `10/12` 而非误导的 `0/2`);④**subhd 防灰**——D 狂打时容器起 SSH SOCKS 隧道到 VPS(`jisuan`/`yt-email-vps`)+ `ALL_PROXY`,灰了切另一台 IP。
 - **D 从零验证** ✅ **完成(2026-07-20,18:45→21:12,2h27m)。终报:docs/design/2026-07-20-from-zero-fullsource-exam-report.md**。
   - **判词**:整机从零自主重建成立,**216 集一轮拿下 ≈94.7% 超九成**;四源全出力、**subhd 实锤 19 个**。
