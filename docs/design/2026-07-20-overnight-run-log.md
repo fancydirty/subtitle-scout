@@ -6,8 +6,11 @@
 
 **Phase 3 — 全项目审计(agency 人格,高置信自动修)**
 
-- 状态:进行中 · 3.1 分维度派 opencode 人格审
+- 状态:进行中 · 3.1 人格审跑中 / 主循环并行独立审
 - 心跳:job 607c49d0(每 15 分钟)。
+- **已修 1 条真发现**:streamProbe 真二进制 smoke 并发 flaky(默认5s超时 vs 真ffprobe探1080p超时)→ 显式30s(commit `a0e45c7`,全量1756绿)。
+- **独立复核干净**:fetchLib.ts(#11 interleave/dedup/fail-soft)、candidateKey 含 provider(dedup 无跨源误丢)——不制造 nitpick。
+- **opencode 人格 flaky**:find-1/3 出现 filePath schema 错 + 幻觉 Windows 路径;find-2 "momus not found"回退默认persona。产出会打折,每条仍对抗式复核。待 3 审完工triage。
 
 ### Phase 2 收口 ✅(E 原型验证达标 + 质量闸落地;worker 留晨间共执行)
 - 2a–2d 全部完成,**2d.3 质量门 = GO**(强译 PASS 100%术语 / 弱译 FAIL 69.8% 被拦 = fail-closed 成立)。
