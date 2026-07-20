@@ -4,7 +4,14 @@
 (covered 257+6 外挂 / embedded 150+4 内嵌 / ignored 30 / **unavailable 仅 5 集**)。用户口述下一
 阶段蓝图,**context 将满,先落档 → compact → 接续**。执行顺序未定死,主控可调。
 
-## 真实缺口(仅此 5 集,两部)
+## ⏱ 进度实况(2026-07-20 深夜,接续第一眼看这里)
+- **A 内嵌 UX bug** ✅ 合并 main(`d4be89d`)。
+- **B 详情页重设计** ✅ 合并 main(`9d5d88b`)——hero+逐集剧照+季手风琴+行内简介展开+删右侧板+超长季50回落;后端 TMDB 富化管线(含存量库回填);已随 C 一并部署上生产。
+- **C subhd 字幕源** ✅ 合并 main(`0c94eac`)+ **已部署生产 + subhd 生产实测可用**。真机侦察出 5 步下载流,curl 绕 Node TLS 指纹;**部署踩两坑均已修**:Dockerfile 缺 ca-certificates(`198c6f0`)、cloudflared build 期掉线(detach build 绕过)。容器直连 subhd.me=200,软路由家宽直通不用代理。动漫专源=侦察实证不建;里番=死缺口。
+- **部署机制**:`deploy/deploy.sh`(rsync 工作树→路由 `/mnt/nvme0n1-4/docker/subtitle-scout`→`docker compose build && up`)。cloudflared build 期易掉线→**长 build 用 detach**(`nohup ...>log; echo EXIT-$?>done` 后轮询 done)。SSH 别名 `media-router-tunnel`。VPS 跳板:`jisuan`(23.254.150.206)/`yt-email-vps`(192.129.128.217),D 狂打 subhd 时当出口避灰名单。
+- **下一步 = D 从零验证**(破坏性,环境用户明确"随意弄"可劲造)+ 里番短路。**建议 compact 后在干净窗口做 D**(破坏性操作忌中途 compact)。
+
+## 真实缺口(仅此 5 集,两部)——注:subhd 上线后此表待 D 从零重测刷新
 - **Adam's Sweet Agony(甘い懲罰,里番/成人动漫)** S1E6/E7/E8 —— 主流站不收,需专门动漫/成人源,基本"确实没有"。
 - **The Rig** S2E1/S2E6 —— 新剧,可能中文字幕未出 or 匹配问题;**关键:The Rig 的视频文件里带内嵌
   的外挂英文字幕(soft sub,非硬字幕)** → 是 AI 翻译功能的天然试验田。
