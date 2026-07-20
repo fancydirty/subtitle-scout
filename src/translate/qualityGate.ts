@@ -21,11 +21,15 @@ export interface SrtCue {
   text: string[]
 }
 
-/** 单条术语违规:该专名在源文本出现、但对齐的候选译文里没有其 canonical zh 形的所有 cue 序号。 */
+/** 单条术语违规:该专名在源文本出现、但对齐的候选译文里没有其 canonical zh 形的所有 cue 序号。
+ *  occurrences/hits 暴露 per-term 符合情况(审计发现 #1:聚合符合率会稀释稀有关键专名的漂移,
+ *  per-term 可见性让 worker 的 critic 定位到底哪个专名漂了、漂得多彻底)。 */
 export interface TermViolation {
   term: string
   expectZh: string
   missAtCues: number[]
+  occurrences: number
+  hits: number
 }
 
 export interface GateResult {
@@ -137,25 +141,44 @@ export function evaluateTranslationGate(
   if (overCpsCues) soft.push(`读速超标(>${opts.maxCps}字/秒)${overCpsCues} 处`)
 
   // ---- Layer 2:术语符合性 ----
+  // 边界匹配用 unicode-aware lookaround(非 `\b`)——审计发现 #3:`\b` 只认 ASCII 词字符,重音/
+  // 撇号专名(Café / O'Brien / Zoë)的 `\bTERM\b` 边界失效 → 该术语永不匹配源 → 永不校验 → 静默
+  // 假放行。改成"术语两侧不是字母/数字"的 unicode 边界,重音名照样被校验。
   const violations: TermViolation[] = []
   let checks = 0
   let hits = 0
   for (const t of glossary) {
     const en = t.en.trim()
     if (!en || !t.zh) continue
-    const re = new RegExp(`\\b${escapeRegExp(en)}\\b`, 'i')
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(en)}(?![\\p{L}\\p{N}])`, 'iu')
     const miss: number[] = []
+    let occ = 0
+    let termHits = 0
     for (let i = 0; i < n; i++) {
       if (!re.test(source[i].text.join(' '))) continue
+      occ++
       checks++
-      if (candidate[i].text.join(' ').includes(t.zh)) hits++
-      else miss.push(Number(candidate[i].index) || i + 1)
+      if (candidate[i].text.join(' ').includes(t.zh)) {
+        hits++
+        termHits++
+      } else {
+        miss.push(Number(candidate[i].index) || i + 1)
+      }
     }
-    if (miss.length) violations.push({ term: en, expectZh: t.zh, missAtCues: miss })
+    if (miss.length) violations.push({ term: en, expectZh: t.zh, missAtCues: miss, occurrences: occ, hits: termHits })
   }
   const conformance = checks > 0 ? hits / checks : 1
   if (conformance < opts.minTermConformance) {
     hard.push(`术语符合率 ${(conformance * 100).toFixed(1)}% < ${(opts.minTermConformance * 100).toFixed(0)}%(专名漂移/破术语)`)
+  }
+  // 审计发现 #1:聚合符合率会被高频正确术语稀释,让一个稀有关键专名的**系统性**漂移蒙混过关
+  // (北极星"错译比留缺口更糟"要拦的正是这个)。补一条 per-term 硬闸:任一专名在源里出现 ≥2 次
+  // 却**从未**在译文里正确落地(termHits===0)= 系统性漂移(如 Pictor→"皮克特" 7/7),不管聚合
+  // 多高一律硬拦。阈值 ≥2 次:单次未落地可能是合法的代词替换/省略,不硬拦(留给聚合率兜),
+  // ≥2 次全漏则几无省略之说,是真漂移。
+  const systematicDrift = violations.filter((v) => v.occurrences >= 2 && v.hits === 0)
+  if (systematicDrift.length) {
+    hard.push(`专名系统性漂移(出现≥2次却从未正确落地): ${systematicDrift.map((v) => `${v.term}→期望"${v.expectZh}"(0/${v.occurrences})`).join('; ')}`)
   }
 
   return {

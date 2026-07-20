@@ -107,6 +107,50 @@ describe('evaluateTranslationGate — CJK 约束是 soft(不否决)', () => {
   })
 })
 
+describe('evaluateTranslationGate — 非 ASCII 专名也被校验(审计#3)', () => {
+  it('FAIL:重音名 Zoë 漂移被抓(旧 \\b 边界会静默跳过该术语)', () => {
+    const src = parseSrtCues(
+      ['1', '00:00:01,000 --> 00:00:03,000', 'Zoë arrives.', '', '2', '00:00:04,000 --> 00:00:06,000', 'Zoë waves.', ''].join('\n'),
+    )
+    const cand: SrtCue[] = [
+      { index: '1', timing: '00:00:01,000 --> 00:00:03,000', text: ['若伊到了。'] },
+      { index: '2', timing: '00:00:04,000 --> 00:00:06,000', text: ['若伊挥手。'] },
+    ]
+    const r = evaluateTranslationGate(src, cand, [{ en: 'Zoë', zh: '佐伊' }])
+    expect(r.glossary.checks).toBe(2) // 被校验(旧实现 \b 边界失效会是 0)
+    expect(r.verdict).toBe('fail') // 2/2 漂移 → 系统性漂移硬拦
+  })
+})
+
+describe('evaluateTranslationGate — 稀有专名系统性漂移不被聚合率稀释(审计#1)', () => {
+  it('FAIL:高频名全对 + 稀有名 0/2 漂移,聚合率仍>85% 但 per-term 硬闸拦下', () => {
+    const src: SrtCue[] = []
+    const cand: SrtCue[] = []
+    // 12 条含高频正确术语 Rose→罗斯
+    for (let i = 1; i <= 12; i++) {
+      const ts = `00:00:${String(i).padStart(2, '0')},000 --> 00:00:${String(i).padStart(2, '0')},500`
+      src.push({ index: String(i), timing: ts, text: ['Rose speaks.'] })
+      cand.push({ index: String(i), timing: ts, text: ['罗斯说话。'] })
+    }
+    // 2 条含稀有关键术语 Pictor,译文漂成"皮克特"
+    for (let i = 13; i <= 14; i++) {
+      const ts = `00:00:${i},000 --> 00:00:${i},500`
+      src.push({ index: String(i), timing: ts, text: ['Pictor did it.'] })
+      cand.push({ index: String(i), timing: ts, text: ['皮克特干的。'] })
+    }
+    const glo = [
+      { en: 'Rose', zh: '罗斯' },
+      { en: 'Pictor', zh: '皮克托' },
+    ]
+    const r = evaluateTranslationGate(src, cand, glo)
+    expect(r.glossary.conformance).toBeGreaterThan(85) // 聚合 12/14≈85.7% 过阈值
+    expect(r.verdict).toBe('fail') // 但 Pictor 0/2 系统性漂移 → 硬拦
+    expect(r.hardViolations.some((h) => h.includes('系统性漂移'))).toBe(true)
+    const pictor = r.glossary.violations.find((v) => v.term === 'Pictor')
+    expect(pictor).toMatchObject({ occurrences: 2, hits: 0 })
+  })
+})
+
 describe('evaluateTranslationGate — 空术语表', () => {
   it('无术语表时术语层跳过(conformance=100),仅结构/CJK 生效', () => {
     const src = parseSrtCues(SRT)
