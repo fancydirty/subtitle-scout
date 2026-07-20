@@ -21,6 +21,36 @@ export interface SubhdSearchResult {
 
 const A_HREF_ID_RE = /^\/a\/([A-Za-z0-9]+)$/
 
+/** step 2：解析 POST /api/sub/prepare-download 的响应体 `{success:true,url:"/down/<id>"}`，返回
+ *  `/down/<id>` 相对路径。success!==true 或缺 url → 抛（携带前 200 字节便于诊断）。 */
+export function parsePrepareDownload(body: string): string {
+  const d = JSON.parse(body) as { success?: boolean; url?: string }
+  if (d.success !== true || typeof d.url !== 'string' || !d.url) {
+    throw new Error(`subhd prepare-download failed: ${body.slice(0, 200)}`)
+  }
+  return d.url
+}
+
+/** step 4：解析 POST /api/sub/down 的响应体 `{success:true,pass:true,url:"https://dlus…"}`，返回真
+ *  CDN 文件 url。success!==true / 缺 url → 携带站点 msg（如"时间过长本临时页面已经失效"）抛。 */
+export function parseApiSubDown(body: string): string {
+  const d = JSON.parse(body) as { success?: boolean; pass?: boolean; url?: string | null; msg?: string }
+  if (d.success !== true || typeof d.url !== 'string' || !d.url) {
+    throw new Error(`subhd api/sub/down failed: ${d.msg ?? body.slice(0, 200)}`)
+  }
+  return d.url
+}
+
+/** 从 Set-Cookie 行数组（或整段响应头行）里提出首个 `tk_<name>=<value>` 段（`;` 前），可直接拼进
+ *  Cookie 头。无则 null。tk_ 是 prepare-download 下发的 5 分钟临时下载令牌（Max-Age=300）。 */
+export function extractTkCookie(setCookies: string[]): string | null {
+  for (const c of setCookies) {
+    const m = /(tk_[^=\s]+=[^;\s]+)/.exec(c)
+    if (m) return m[1]
+  }
+  return null
+}
+
 /** 轻量 HTML 数字/命名实体解码——发布名里出现 `I&#39;ll` 之类（htmlAttrs 本身不解码实体）。
  *  只覆盖字幕站发布名里实际见过的几种，够用就好。 */
 function decodeEntities(s: string): string {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { parseSearchResults } from './subhd.js'
+import { parseSearchResults, parsePrepareDownload, extractTkCookie, parseApiSubDown } from './subhd.js'
 
 const fx = (name: string) => readFileSync(join(__dirname, '__fixtures__/subhd', name), 'utf8')
 
@@ -45,5 +45,41 @@ describe('parseSearchResults (真机夹具 search-the-rig.html)', () => {
   it('空/畸形 HTML → 空数组，不抛', () => {
     expect(parseSearchResults('')).toEqual([])
     expect(parseSearchResults('<html><body>no results</body></html>')).toEqual([])
+  })
+})
+
+describe('parsePrepareDownload（step 2：拿 /down/<id> 相对路径）', () => {
+  it('{success:true,url:"/down/x"} → "/down/x"；success:false → 抛', () => {
+    expect(parsePrepareDownload(JSON.stringify({ success: true, url: '/down/aZ9' }))).toBe('/down/aZ9')
+    expect(() => parsePrepareDownload(JSON.stringify({ success: false }))).toThrow()
+    expect(() => parsePrepareDownload(JSON.stringify({ success: true }))).toThrow()
+  })
+  it('真机夹具 prepare-download-2BNs4Y.json → /down/2BNs4Y', () => {
+    expect(parsePrepareDownload(fx('prepare-download-2BNs4Y.json'))).toBe('/down/2BNs4Y')
+  })
+})
+
+describe('extractTkCookie（从 Set-Cookie 行数组提 tk_）', () => {
+  it('提取首个 tk_ 段，无则 null', () => {
+    expect(extractTkCookie(['tk_abc=xyz123; Max-Age=300; HttpOnly', 'other=1'])).toBe('tk_abc=xyz123')
+    expect(extractTkCookie([])).toBeNull()
+    expect(extractTkCookie(['session=nope; Path=/'])).toBeNull()
+  })
+  it('真机夹具 headers.txt → 完整 tk_…=… 段', () => {
+    const lines = fx('prepare-download-2BNs4Y.headers.txt').split(/\r?\n/)
+    const tk = extractTkCookie(lines)
+    expect(tk).toBe('tk_663413_519a312e0c1377d16ab1e610=249e07620566c77e9b5683ee7e45765fe21f50c9d19f077ee0cc75ae0e893f61')
+  })
+})
+
+describe('parseApiSubDown（step 4：拿真 CDN 文件 url）', () => {
+  it('{success:true,pass:true,url:"https://…"} → url；success:false → 携 msg 抛', () => {
+    expect(parseApiSubDown(JSON.stringify({ success: true, pass: true, url: 'https://dlus.subhd.me/x.ass' })))
+      .toBe('https://dlus.subhd.me/x.ass')
+    expect(() => parseApiSubDown(JSON.stringify({ success: false, msg: '时间过长本临时页面已经失效', url: null })))
+      .toThrow(/时间过长/)
+  })
+  it('真机夹具 api-sub-down-2BNs4Y.json → dlus CDN url', () => {
+    expect(parseApiSubDown(fx('api-sub-down-2BNs4Y.json'))).toBe('https://dlus.subhd.me/2026/06/1782478768658.ass')
   })
 })
