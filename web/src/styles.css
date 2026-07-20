@@ -209,6 +209,29 @@
   padding: 2px 10px 12px 40px;
 }
 
+/* ---- 季手风琴（SeasonAccordion，详情页重设计 item B）——季头卷起汇总 + 展开箭头。 ---- */
+.library-season-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 2px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.library-season-chev {
+  color: var(--color-text-gray);
+  transition: transform 0.18s ease;
+  display: inline-block;
+}
+.library-season-chev.open {
+  transform: rotate(90deg);
+}
+
 /* ---- A 式格阵（EpisodeCell）---- */
 .ep-grid {
   display: grid;
