@@ -10,13 +10,18 @@
 1. `GET /search/<urlencoded>` → 搜索页 HTML（每条结果一张卡片，卡片里 `/a/<base62>` 链接出现两次）
 2. `POST /api/sub/prepare-download`，JSON `{"sid":"<id>"}`，头 `Referer: <base>/a/<id>` + `Origin` + `X-Requested-With: XMLHttpRequest` + `Content-Type: application/json`
    → `{"success":true,"url":"/down/<id>"}` + `Set-Cookie: tk_<id数字>_<hex>=<hex>; Max-Age=300; HttpOnly; Secure; SameSite=Lax`
-3. `GET /down/<id>`，头 `Cookie: tk_…` + `Referer: <base>/a/<id>` → 下载落地页 HTML（**激活临时页**；不带 tk 或超时→"下载页面已失效"403）
-4. `POST /api/sub/down`，JSON `{"sid":"<id>"}`，头 `Cookie: tk_…` + `Referer: <base>/down/<id>` + `Origin` + `X-Requested-With`
+3. `GET /down/<id>`，头 `Cookie: tk_…` + `Referer: <base>/a/<id>` → 下载落地页 HTML。
+   **🔴 关键：这一步的响应 `Set-Cookie` 下发第二个授权 cookie `down_<id数字>_<hex>=<hex>`（path=`/api/sub/down`、HttpOnly）**
+   ——它才是 step 4 的真正凭证。人肉 curl 用 cookie jar（`-c/-b JAR`）天然把它带上；代码必须显式从 down 响应
+   里取出（`extractCookie(setCookies,'down_')`），连同 tk 一起回传 step 4。**只带 tk 会被判"已失效"（血泪根因）。**
+4. `POST /api/sub/down`，JSON `{"sid":"<id>"}`，头 `Cookie: tk_…; down_…` + `Referer: <base>/down/<id>` + `Origin` + `X-Requested-With`
    → `{"success":true,"msg":"验证通过","pass":true,"url":"https://dlus.subhd.me/YYYY/MM/<ts>.<ext>"}`（**这一步才给真文件 url**）
-   失败 → `{"success":false,"msg":"时间过长本临时页面已经失效","pass":false,"url":null}`
+   缺 down_ / 超时 → `{"success":false,"msg":"时间过长本临时页面已经失效","pass":false,"url":null}`（"时间过长"是通用失败文案，多半是缺 down_ cookie）
 5. `GET <cdn url>`（credentials omit，**无需任何 cookie**）→ 真字幕文件 / 压缩包
 
 **临时页时间窗很短**：prepare→api 之间超时就 `已失效`；resolve 里三步须紧连（无人为延迟），失败重试整个 prepare→down→api 单元。
+
+**🔴 mint 端点按-IP 限流很紧**：短窗口内 ~5-6 次 prepare/api 后，整个 IP 一段时间内对所有 mint 恒回 `已失效`（约十几~二十分钟自愈）。故重试要克制（`DEFAULT_RESOLVE_ATTEMPTS=2`、不铺镜像换 host——限流按 IP，换 host 同 IP 无用），靠单元间 2-5s 限速拉开节奏。开发期反复压测极易把本机 IP 打进这个状态，与真实 bug 难分辨——先冷却再判。
 
 ## 🔴🔴 Node（undici fetch / node:https）跑不通第 2-4 步——必须用 curl
 
