@@ -74,7 +74,13 @@ zimuku 6 条被挤到 61-66。agent `list_candidates` offset0 limit50 只看前 
 **修法(已实施 commit 5f40900)**:`interleaveByProvider` 轮转合并各 provider 结果,每源头部结果都进前几名
 (zimuku 6 条全落前 ~23 名,agent 必看见)。**纯重排不丢候选**(分页可达全部)、**非守门闸不打分**,北极星安全。
 通用改善——任何少产精准源被高产噪声糊墙的场景都受益。TDD:2 行为测试红先验证(拼接下 zimuku 埋 rank50)+
-助手单测,1747 绿 tsc 净。**真机复现 The Rig S1 装上闭环待部署后验(见收尾)。**
+助手单测,1747 绿 tsc 净。
+
+**✅ 真机闭环已验(2026-07-20,部署 5f40900 后)**:重置 The Rig S1E1-6→missing、reconcile-all 触发重跑,agent
+用新 interleave 代码 **6/6 全部 covered,字幕全来自 `zimuku:181453`**——即之前被埋在第 66 名的那个整季包。这不仅
+证明可见性修复,更端到端验证了 **zimuku 整季包经 archiveEntries 开包逐集安装**的完整链路(此前从没在真机跑过)。
+全库:episodes covered 238→**244**、unavailable 12→**6**;剩余 unavailable 正好剩 6 个真缺口(Adam's 里番×4 +
+The Rig S2E1/E6×2),D 那次被本 bug 灌水的 12 归正为真实的 6。
 
 ### 🟠 #2 识别回归·括号堆砌片名再识别失败被 park(The Astronaut + DxD Hero×12)
 

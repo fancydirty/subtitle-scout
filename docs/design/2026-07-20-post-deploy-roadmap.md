@@ -16,12 +16,13 @@
     但大考揪出**三处真回归**(不容粉饰):🔴#1 **结果集排序把精准低产源埋出分页窗→agent 从没看见正确候选**
     (runSearch 按 adapter 顺序拼接、OS 返 50 条错剧把 zimuku 唯一 exact-match 整季包挤到第 66 名,agent limit50
     分页窗只到 49),丢 The Rig S1×6 合法覆盖(baseline 是 zimuku:181453 真中字,已抽内容验实)——**✅已修 commit 5f40900**
-    (interleaveByProvider 轮转合并,纯重排非闸,北极星安全;初版误判"空fileList致弃选"已更正,真机复现待部署验);🟠#2 recognizer
+    (interleaveByProvider 轮转合并,纯重排非闸,北极星安全;初版误判"空fileList致弃选"已更正;**✅真机闭环已验**:
+    The Rig S1 6/6 covered from zimuku:181453,端到端含 archiveEntries 开包逐集装;全库 covered 238→244、unavailable 12→6);🟠#2 recognizer
     对括号密集片名(The Astronaut YTS.MX、[The-Nut] DxD Hero)**再识别失败被 park**(movies 10→9;DxD Hero 整季),
     park 是安全失败、daemon 会重试**可能自愈**——次高;🟢#3 里番(Adam's×4)+ The Rig **S2E1/E6** = 真缺口/真 AI 翻译案例。
     err×1=已知 finalize 未调类(DxD 最终 36/36 覆盖,完全恢复)、nsm×2=合法。观测小缺口:run 级 API 计数器未落库。
   - **⚠️ E 图景更正**:The Rig **S1 不是 AI 翻译案例**(zimuku 有真中字,#1 没装上);**只有 S2E1/E6** 是真"无中字+内嵌英文轨"试验田。
-  - **接续排序**:①修 #1 zimuku fileList(TDD+真机 The Rig S1 装上闭环)②查 #2 recognizer park 回归(观自愈 or 修解析)③E 以 The Rig S2E1/E6 为唯一靶子。#1/#2 可并入 E 前一轮清算。
+  - **接续排序**:①✅**#1 结果集排序已修+真机闭环验**(commit 5f40900 interleaveByProvider;The Rig S1 6/6 covered)②**#2 recognizer park**——rescue-identify 重试**未自愈**(parked 仍 13)=**真解析缺陷非瞬时**,需真修 recognizer 对括号密集/非常规发布名(YTS.MX、[The-Nut] DxD Hero)的解析③E 实现。**⚠️E 松绑(用户 2026-07-20)**:AI 翻译要 feature 本身,不必拿 Rig 当例子——随便找带内嵌/外挂英文轨的媒体验证即可,不是真为 Rig 中字。
   - ~~(下方为执行中记录,留档)~~
   - 🔴 **飞行前揪出并修掉一个会让 D 作废的生产 bug**:subhd 从没被 app 装载过。根因=生产 compose 的
     `environment:` 块漏列 `SUBHD_ENABLED`(docker compose 只注入显式列出的变量、无 env_file),.env 里
