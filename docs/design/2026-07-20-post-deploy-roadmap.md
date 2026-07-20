@@ -33,11 +33,17 @@ companion)③后端:TMDB 逐集 overview——查 tmdb_seasons 缓存(G2/tmdbCat
 overview;TMDB /tv/{id}/season/{s} 端点带每集 overview,可能要扩缓存 + DTO + 前端渲染。
 这是设计任务,先 brainstorming 出 spec 再 writing-plans。
 
-### C. 【新字幕源】subhd + 专门动漫源 —— **未实现**
-- **subhd**:通用型中文字幕站(非动漫专站,已纠正)。套 zimuku 模板(provider+adapter+反爬+
-  session)。**铁律:真站实地侦察 + 真机冒烟,禁止只靠夹具绿**(zimuku 血泪)。
-- **专门动漫源**:补里番/动漫弱项(大考实证动漫 27%)。漫游/诸神/澄空生态 or 聚合站。
-  里番(成人动漫)更难,可能仍够不着——预期它是死缺口。
+### C. 【新字幕源】subhd —— **已实现（feat/subhd-source）**；专门动漫源 —— **不建**
+- **subhd** ✅:通用型中文字幕站。真机实测后的链路（与设计文档假设有出入，以实测为准）：
+  搜索 `GET /search/<q>`(HTML cards) → `POST /api/sub/prepare-download`(拿 tk 5min cookie) →
+  `GET /down/<id>`(激活临时页) → `POST /api/sub/down`(拿真 CDN 文件 url) → `GET dlus.subhd.me/…`。
+  **🔴 关键坑:Node TLS(JA3) 指纹被 Cloudflare 在临时页校验上拒**——undici/node:https 恒"已失效",
+  故 SubhdClient 默认 fetchImpl **shell 到 curl**（CDN 文件下载仍走 undici，无指纹门）。无验证码/无
+  云锁/无 session store，比 zimuku 简单。产物可为单文件 .ass/.srt 或压缩包 .zip/.rar/.7z（.rar/.7z
+  非 zip、v1 诚实 UnsupportedArchiveError，由 agent 换候选）。SUBHD_ENABLED=true 开门（无需 LLM）。
+  提交见 feat/subhd-source(T1–T10);真机端到端冒烟 `SUBHD_LIVE_SMOKE=1`（默认 CI 跳过）。
+- **专门动漫源**:按侦察结论**不建**——里番/成人动漫主流站基本不收,专门源覆盖也差,预期死缺口,
+  短路押后到 D（从零验证）再据实评估,不预造。
 
 ### D. 【从零验证】清空容器全部日志/状态,完完全全从零跑
 用户令:**把当前容器内所有日志/状态全删,完全从零开始**,确认 subhd + 其他源加入后成功率能否
