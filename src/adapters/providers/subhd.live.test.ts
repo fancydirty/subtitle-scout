@@ -9,10 +9,9 @@ const live = process.env.SUBHD_LIVE_SMOKE === '1'
 
 describe('subhd 真机冒烟 (SUBHD_LIVE_SMOKE=1)', () => {
   it.skipIf(!live)('搜真剧 → resolve → 下真字幕（非空）', async () => {
-    // resolveAttempts:1——每候选恰好 3 次 mint 请求（prepare/down/api），别在单个候选上重试铺量把
-    // subhd 的按-IP mint 限流触发（~5-6 次/窗口即整 IP 回"已失效"）；靠默认 2-5s 限速在候选间拉开节奏，
-    // 逐条换候选给多次机会。走 subhd.me，默认 curlFetch。
-    const client = new SubhdClient({ resolveAttempts: 1 })
+    // 默认 resolveAttempts=3——subhd 的"已失效"是概率性的（有效 cookie 也可能被拒），几次重试才撞上
+    // 放行（实测 base 3 次稳）。候选间再拉开 25s，摊平 mint 速率。走 subhd.me，默认 curlFetch。
+    const client = new SubhdClient({})
     const results = await client.search('The Rig')
     expect(results.length).toBeGreaterThan(0)
     expect(results.every(r => r.id.length > 0)).toBe(true)

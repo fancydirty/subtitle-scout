@@ -172,10 +172,10 @@ export const SUBHD_TIMEOUT_MS = 15_000
 // 礼貌节流（住宅 IP 被封是真实家庭成本）：单元之间 2-5s 随机延迟；恒定周期本身可指纹。
 export const DEFAULT_MIN_INTERVAL_MS = 2_000
 export const DEFAULT_JITTER_RANGE_MS = 3_000
-// prepare→down→api 临时页时间窗很短，失败重试整个单元。subhd 对 mint 端点**限流很紧**（短窗口内
-// ~5-6 次即开始对整个 IP 回"已失效"），故重试要克制：base 默认 2 次，靠单元间的 2-5s 限速拉开节奏
-// （限流是窗口内速率/量，拉开间隔比多打更有效）。打满多次只会加深限流，不会救回已被限的 IP。
-export const DEFAULT_RESOLVE_ATTEMPTS = 2
+// prepare→down→api 临时页时间窗很短，失败重试整个单元。subhd 的"已失效"是**概率性**的（同一有效
+// tk/down_ cookie 前脚被拒、后脚放行），故需几次重试才能撞上一次放行——实测 base 3 次能稳定拿到
+// （只 1 次常空手而归）。每次重试之间走 2-5s 限速，既给概率窗口又不过量压 mint 端点。
+export const DEFAULT_RESOLVE_ATTEMPTS = 3
 // 可用镜像（STRUCTURE.md 里站点自报）。主 base 网络不可达时依次兜底。
 export const DEFAULT_MIRRORS = ['https://subhd.one', 'https://subhd.top', 'https://subhd.cc']
 
