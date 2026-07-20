@@ -259,7 +259,7 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
     // 典型单集时长（剧级 fallback）：该剧 episode_run_time[0]=58——task 顶层字段保持这个值
     // 不变（不是本次修复的目标，只是既有 fallback 语义），本单只验证 target 级取到本尊值。
     tmdb.getDetails = async () => ({
-      overview: null, runtimeMinutes: 58, posterPath: null, originalTitle: null, year: null, genreIds: [],
+      overview: null, runtimeMinutes: 58, posterPath: null, backdropPath: null, originalTitle: null, year: null, genreIds: [],
     })
     tmdb.getChineseTitles = async () => []
 
@@ -325,7 +325,7 @@ describe('mapWorkerTaskToFindSubtitleTask (胶水层修复 2026-07-16: mapper �
 
     const tmdb = new TmdbClient({ apiKey: 'a'.repeat(32) })
     tmdb.getDetails = async () => ({
-      overview: null, runtimeMinutes: 136, posterPath: null, originalTitle: null, year: 2020, genreIds: [],
+      overview: null, runtimeMinutes: 136, posterPath: null, backdropPath: null, originalTitle: null, year: 2020, genreIds: [],
     })
     tmdb.getChineseTitles = async () => []
 

@@ -234,9 +234,21 @@ describe('TmdbClient.getSeasonEpisodes', () => {
     })
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.getSeasonEpisodes('120089', 1)).toEqual([
-      { episode: 1, title: 'Pilot' },
-      { episode: 2, title: null },
+      { episode: 1, title: 'Pilot', overview: null, airDate: null, stillPath: null },
+      { episode: 2, title: null, overview: null, airDate: null, stillPath: null },
     ])
+  })
+
+  // 详情页重设计 item B：逐集简介/首播日/剧照来源。空串/缺/null → null（不渲染 → 占位降级）。
+  it('getSeasonEpisodes 提取 overview/airDate/stillPath（空串/缺 → null）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ episodes: [
+      { episode_number: 1, name: 'E1', overview: 'ov1', air_date: '2011-10-05', still_path: '/s1.jpg' },
+      { episode_number: 2, name: 'E2', overview: '', air_date: '', still_path: null },
+    ] }), { status: 200 }))
+    const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
+    const eps = await client.getSeasonEpisodes('1', 1)
+    expect(eps?.[0]).toEqual({ episode: 1, title: 'E1', overview: 'ov1', airDate: '2011-10-05', stillPath: '/s1.jpg' })
+    expect(eps?.[1]).toEqual({ episode: 2, title: 'E2', overview: null, airDate: null, stillPath: null })
   })
 
   it('404（该季不存在）→ null（真·无数据）', async () => {
@@ -483,6 +495,7 @@ describe('TmdbClient.getDetails', () => {
       overview: 'A family of spies.',
       runtimeMinutes: 24,
       posterPath: '/abc123.jpg',
+      backdropPath: null,
       originalTitle: 'SPY×FAMILY',
       year: 2022,
       genreIds: [],
@@ -505,6 +518,7 @@ describe('TmdbClient.getDetails', () => {
       overview: 'A computer hacker learns...',
       runtimeMinutes: 136,
       posterPath: '/matrix.jpg',
+      backdropPath: null,
       originalTitle: 'The Matrix',
       year: 1999,
       genreIds: [],
@@ -515,9 +529,20 @@ describe('TmdbClient.getDetails', () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.getDetails('tv', '1')).toEqual({
-      overview: null, runtimeMinutes: null, posterPath: null, originalTitle: null, year: null,
+      overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: null, year: null,
       genreIds: [],
     })
+  })
+
+  // 详情页重设计 item B：hero 背景大图来源。backdrop_path 空/缺 → null（同 posterPath 口径）。
+  it('getDetails 提取 backdropPath（空/缺 → null）', async () => {
+    const fetchWith = (json: unknown) =>
+      vi.fn(async () => new Response(JSON.stringify(json), { status: 200 })) as unknown as typeof fetch
+    const c = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchWith({ overview: 'o', backdrop_path: '/bd.jpg', seasons: [] }) })
+    const d = await c.getDetails('tv', '1')
+    expect(d?.backdropPath).toBe('/bd.jpg')
+    const c2 = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchWith({ overview: 'o' }) })
+    expect((await c2.getDetails('tv', '1'))?.backdropPath).toBeNull()
   })
 
   // 验收修复轮一 Task V1（design §A）：genres[].id 解析——16=Animation 是 sectionOf 新规的

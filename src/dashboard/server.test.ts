@@ -710,7 +710,7 @@ describe('startDashboard (v2)', () => {
       it('tmdb 已配置时命中不报错、不阻塞响应（早退分支：测试用 id 不合 tmdb:<n> 形状）', async () => {
         const tmdbStub: FakeTmdb = {
           getSeasonTable: async () => [{ seasonNumber: 1, episodeCount: 1, airDate: null }],
-          getSeasonEpisodes: async () => [{ episode: 1, title: 'Ep1' }],
+          getSeasonEpisodes: async () => [{ episode: 1, title: 'Ep1', overview: null, airDate: null, stillPath: null }],
           search: async () => [],
         }
         const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)

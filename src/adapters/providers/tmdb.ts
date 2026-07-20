@@ -58,6 +58,9 @@ export interface TmdbDetails {
   overview: string | null
   runtimeMinutes: number | null
   posterPath: string | null
+  /** 详情页重设计 item B：剧集 hero 背景大图路径（如 '/bd.jpg'；web 端自拼 w1280 CDN URL）。
+   *  缺/空 → null，同 posterPath 口径，让调用方降级纯排印头部。 */
+  backdropPath: string | null
   originalTitle: string | null
   year: number | null
   /** 验收修复轮一 Task V1（design: 2026-07-17-acceptance-round-1-design.md §A，用户裁决）：
@@ -314,6 +317,8 @@ export class TmdbClient {
     const overview = typeof d.overview === 'string' && d.overview ? d.overview : null
     const rawPoster = d.poster_path
     const posterPath = typeof rawPoster === 'string' && rawPoster ? rawPoster : null
+    const rawBackdrop = d.backdrop_path
+    const backdropPath = typeof rawBackdrop === 'string' && rawBackdrop ? rawBackdrop : null
     const rawGenres = d.genres
     const genreIds = Array.isArray(rawGenres)
       ? (rawGenres as Array<{ id?: unknown }>)
@@ -340,7 +345,7 @@ export class TmdbClient {
     }
 
     return {
-      overview, runtimeMinutes, posterPath, originalTitle,
+      overview, runtimeMinutes, posterPath, backdropPath, originalTitle,
       year: Number.isFinite(year) ? year : null, genreIds,
     }
   }
@@ -366,14 +371,20 @@ export class TmdbClient {
    * 季级 episode_count 已经是权威计数来源，这里拿不到集清单只是降级到"标题为 null"，不是
    * 数据完整性红线。
    */
-  async getSeasonEpisodes(tvId: string, season: number): Promise<{ episode: number; title: string | null }[] | null> {
+  async getSeasonEpisodes(tvId: string, season: number): Promise<{ episode: number; title: string | null; overview: string | null; airDate: string | null; stillPath: string | null }[] | null> {
     const d = await this.getJsonStrict(`/tv/${tvId}/season/${season}`)
     if (!d) return null
     const episodes = d.episodes
     if (!Array.isArray(episodes)) return null
-    return (episodes as Array<{ episode_number?: number; name?: string }>)
-      .filter((e): e is { episode_number: number; name?: string } => typeof e.episode_number === 'number')
-      .map(e => ({ episode: e.episode_number, title: typeof e.name === 'string' && e.name ? e.name : null }))
+    return (episodes as Array<{ episode_number?: number; name?: string; overview?: string; air_date?: string; still_path?: string | null }>)
+      .filter((e): e is { episode_number: number; name?: string; overview?: string; air_date?: string; still_path?: string | null } => typeof e.episode_number === 'number')
+      .map(e => ({
+        episode: e.episode_number,
+        title: typeof e.name === 'string' && e.name ? e.name : null,
+        overview: typeof e.overview === 'string' && e.overview ? e.overview : null,
+        airDate: typeof e.air_date === 'string' && e.air_date ? e.air_date : null,
+        stillPath: typeof e.still_path === 'string' && e.still_path ? e.still_path : null,
+      }))
   }
 
   /**
