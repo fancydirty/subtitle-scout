@@ -39,7 +39,7 @@ export async function refreshSeriesCatalog(
   }
   if (!seasonTable) return
 
-  const rows: { season: number; episode: number; title: string | null }[] = []
+  const rows: { season: number; episode: number; title: string | null; overview: string | null; airDate: string | null; stillPath: string | null }[] = []
   for (const s of seasonTable) {
     let episodes: Awaited<ReturnType<typeof tmdb.getSeasonEpisodes>>
     try {
@@ -48,15 +48,15 @@ export async function refreshSeriesCatalog(
       return // 任一季失败 → 整体放弃，不留半新半旧缓存
     }
     if (!episodes) return
-    for (const e of episodes) rows.push({ season: s.seasonNumber, episode: e.episode, title: e.title })
+    for (const e of episodes) rows.push({ season: s.seasonNumber, episode: e.episode, title: e.title, overview: e.overview, airDate: e.airDate, stillPath: e.stillPath })
   }
 
   const writeRows = db.transaction(() => {
     db.prepare('DELETE FROM tmdb_seasons WHERE series_id = ?').run(seriesId)
     const insert = db.prepare(
-      'INSERT INTO tmdb_seasons (series_id, season, episode, title, fetched_at) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO tmdb_seasons (series_id, season, episode, title, overview, air_date, still_path, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
-    for (const r of rows) insert.run(seriesId, r.season, r.episode, r.title, now)
+    for (const r of rows) insert.run(seriesId, r.season, r.episode, r.title, r.overview, r.airDate, r.stillPath, now)
   })
   writeRows()
 }
@@ -67,8 +67,8 @@ export function canonicalEpisodes(
   db: ScoutDb,
   seriesId: string,
   season: number,
-): { episode: number; title: string | null }[] {
+): { episode: number; title: string | null; overview: string | null; airDate: string | null; stillPath: string | null }[] {
   return db
-    .prepare('SELECT episode, title FROM tmdb_seasons WHERE series_id = ? AND season = ? ORDER BY episode ASC')
-    .all(seriesId, season) as { episode: number; title: string | null }[]
+    .prepare('SELECT episode, title, overview, air_date AS airDate, still_path AS stillPath FROM tmdb_seasons WHERE series_id = ? AND season = ? ORDER BY episode ASC')
+    .all(seriesId, season) as { episode: number; title: string | null; overview: string | null; airDate: string | null; stillPath: string | null }[]
 }
