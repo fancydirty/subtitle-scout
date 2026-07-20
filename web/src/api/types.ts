@@ -315,12 +315,19 @@ export interface LibrarySeriesSummaryDTO {
   name: string
   chineseTitle: string | null
   posterPath: string | null
+  /** 详情页重设计 item B：TMDB 剧集简介 + hero 背景大图路径（web 端自拼 backdropUrl w1280）。 */
+  overview: string | null
+  backdropPath: string | null
   year: number | null
   layoutNonstandard: boolean
 }
 export interface LibraryCanonicalEpisodeDTO {
   episode: number
   title: string | null
+  /** 详情页重设计 item B：逐集简介 / 首播日 / 剧照路径（web 端自拼 stillUrl w300）。 */
+  overview: string | null
+  airDate: string | null
+  stillPath: string | null
 }
 export interface LibraryOnDiskEpisodeDTO {
   episode: number

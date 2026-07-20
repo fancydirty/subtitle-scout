@@ -818,12 +818,15 @@ describe('buildLibrarySeriesDetail（GET /api/v2/library/series/:id：三层格�
   it('形状：series 行直译 + 季号并集升序 + 各季 canonical/onDisk/coverage', () => {
     const detail = buildLibrarySeriesDetail(db, 's1')!
     expect(detail.series).toEqual({
-      id: 's1', name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag-s1', year: 2021, layoutNonstandard: false,
+      id: 's1', name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag-s1', overview: null, backdropPath: null, year: 2021, layoutNonstandard: false,
     })
     expect(detail.seasons.map(s => s.season)).toEqual([1, 2, 3]) // 并集：磁盘{1,2} ∪ canonical{1,3}
 
     const season1 = detail.seasons[0]
-    expect(season1.canonical).toEqual([{ episode: 1, title: 'Ep1 Title' }, { episode: 4, title: 'Ep4 Title' }])
+    expect(season1.canonical).toEqual([
+      { episode: 1, title: 'Ep1 Title', overview: null, airDate: null, stillPath: null },
+      { episode: 4, title: 'Ep4 Title', overview: null, airDate: null, stillPath: null },
+    ])
     expect(season1.onDisk.map(e => e.episode)).toEqual([1, 2, 3])
     expect(season1.onDisk[1]).toMatchObject({ episode: 2, subStatus: 'missing', statusReason: null, recheckAfter: null })
     expect(season1.coverage).toEqual([{ episode: 1, lang: 'zh-Hans', path: '/media/tv/Series A/S01/e1.zh-Hans.srt' }])
@@ -834,13 +837,24 @@ describe('buildLibrarySeriesDetail（GET /api/v2/library/series/:id：三层格�
     expect(season2.coverage).toEqual([])
 
     const season3 = detail.seasons[2]
-    expect(season3.canonical).toEqual([{ episode: 1, title: 'S3E1 Title' }])
+    expect(season3.canonical).toEqual([{ episode: 1, title: 'S3E1 Title', overview: null, airDate: null, stillPath: null }])
     expect(season3.onDisk).toEqual([]) // 磁盘完全没有这季
     expect(season3.coverage).toEqual([])
   })
 
   it('series 不存在 → null（404 语义）', () => {
     expect(buildLibrarySeriesDetail(db, 'nope')).toBeNull()
+  })
+
+  // 详情页重设计 item B：series.overview/backdropPath + 逐集 canonical overview/airDate/stillPath 透传。
+  it('buildLibrarySeriesDetail 出参带 series.overview/backdropPath 与逐集 canonical overview/airDate/stillPath', () => {
+    const db2 = openDb(':memory:')
+    db2.prepare(`INSERT INTO series (id, name, overview, backdrop_path) VALUES ('tmdb:9','S','ov','/bd.jpg')`).run()
+    db2.prepare(`INSERT INTO tmdb_seasons (series_id, season, episode, title, overview, air_date, still_path, fetched_at) VALUES ('tmdb:9',1,1,'E1','eov','2011-10-05','/s1.jpg',1)`).run()
+    const dto = buildLibrarySeriesDetail(db2, 'tmdb:9')!
+    expect(dto.series.overview).toBe('ov')
+    expect(dto.series.backdropPath).toBe('/bd.jpg')
+    expect(dto.seasons[0].canonical[0]).toEqual({ episode: 1, title: 'E1', overview: 'eov', airDate: '2011-10-05', stillPath: '/s1.jpg' })
   })
 })
 

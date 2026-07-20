@@ -1077,12 +1077,19 @@ export interface LibrarySeriesSummaryDTO {
   name: string
   chineseTitle: string | null
   posterPath: string | null
+  /** 详情页重设计 item B：TMDB 剧集简介 + hero 背景大图路径（web 端自拼 backdropUrl w1280）。 */
+  overview: string | null
+  backdropPath: string | null
   year: number | null
   layoutNonstandard: boolean
 }
 export interface LibraryCanonicalEpisodeDTO {
   episode: number
   title: string | null
+  /** 详情页重设计 item B：逐集简介 / 首播日 / 剧照路径（web 端自拼 stillUrl w300）。 */
+  overview: string | null
+  airDate: string | null
+  stillPath: string | null
 }
 export interface LibraryOnDiskEpisodeDTO {
   episode: number
@@ -1115,6 +1122,8 @@ interface LibrarySeriesRow {
   name: string
   chinese_title: string | null
   poster_path: string | null
+  overview: string | null
+  backdrop_path: string | null
   year: number | null
   layout_nonstandard: number
 }
@@ -1140,7 +1149,7 @@ interface CoverageJoinRow {
  *  职责（DashboardOpts.tmdb，fire-and-forget），这个函数保持纯同步、只读 ScoutDb。 */
 export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeriesDetailDTO | null {
   const row = db
-    .prepare(`SELECT id, name, chinese_title, poster_path, year, layout_nonstandard FROM series WHERE id = ?`)
+    .prepare(`SELECT id, name, chinese_title, poster_path, overview, backdrop_path, year, layout_nonstandard FROM series WHERE id = ?`)
     .get(id) as LibrarySeriesRow | undefined
   if (!row) return null
 
@@ -1187,6 +1196,7 @@ export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeries
   return {
     series: {
       id: row.id, name: row.name, chineseTitle: row.chinese_title, posterPath: row.poster_path,
+      overview: row.overview, backdropPath: row.backdrop_path,
       year: row.year, layoutNonstandard: row.layout_nonstandard === 1,
     },
     seasons,
