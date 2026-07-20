@@ -2,6 +2,19 @@ import { SUBHD_HEADERS, type SubhdClient, type SubhdSearchResult } from '../../a
 import type { SubtitleCandidate } from '../../core/schemas.js'
 import type { FetchAdapter } from '../fetchLib.js'
 
+/** 从 CDN 文件 url 派生带真实扩展名的文件名（`.../1782478768658.ass` → `1782478768658.ass`）。
+ *  这个扩展名是 writeSubtitle 分派的权威依据：.ass/.srt/.ssa 裸存、.zip 解包、.rar/.7z 诚实抛
+ *  UnsupportedArchiveError（"only zip in v1"）。不派生（无扩展名）时返回 undefined——绝不硬编一个
+ *  错的兜底（否则 .rar 会被下载层兜成 download.srt，把压缩包二进制当字幕写成垃圾）。 */
+function deriveFilename(url: string): string | undefined {
+  try {
+    const base = new URL(url).pathname.split('/').pop() ?? ''
+    return /\.[A-Za-z0-9]+$/.test(base) ? base : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function toCandidate(r: SubhdSearchResult): SubtitleCandidate {
   return {
     provider: 'subhd',
@@ -45,7 +58,8 @@ export function makeSubhdAdapter(
     resolve: async (ref) => {
       const { url, cookie } = await client.resolveDownload(ref.providerId)
       const headers = { ...SUBHD_HEADERS, ...(cookie ? { Cookie: cookie } : {}) }
-      return { url, headers }
+      const filename = deriveFilename(url)
+      return { url, ...(filename ? { filename } : {}), headers }
     },
   }
 }

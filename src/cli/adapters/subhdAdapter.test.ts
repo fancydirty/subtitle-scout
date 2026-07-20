@@ -32,6 +32,27 @@ describe('makeSubhdAdapter', () => {
     expect(r.headers?.Cookie).toBe('tk_x=y')
   })
 
+  it('resolve 从 CDN url 派生 filename（扩展名驱动 writeSubtitle 分派：.ass/.srt 裸存、.zip 解包、.rar/.7z 诚实报错，而非被当 download.srt 写成垃圾）', async () => {
+    const cases: [string, string][] = [
+      ['https://dlus.subhd.me/2026/06/1782478768658.ass', '.ass'],
+      ['https://dlus.subhd.me/x/y.srt', '.srt'],
+      ['https://dlus.subhd.me/a/b.rar', '.rar'],
+      ['https://dlus.subhd.me/a/b.7z', '.7z'],
+      ['https://dlus.subhd.me/a/b.zip', '.zip'],
+    ]
+    for (const [url, ext] of cases) {
+      const client = { search: async () => [], resolveDownload: async () => ({ url, cookie: null }) }
+      const r = await makeSubhdAdapter(client).resolve({ provider: 'subhd', providerId: 'x', fileIndex: null }, () => {})
+      expect(r.filename?.toLowerCase().endsWith(ext)).toBe(true)
+    }
+  })
+
+  it('resolve：url 无扩展名 → 不返回 filename（不硬编一个错的兜底）', async () => {
+    const client = { search: async () => [], resolveDownload: async () => ({ url: 'https://dlus.subhd.me/noext', cookie: null }) }
+    const r = await makeSubhdAdapter(client).resolve({ provider: 'subhd', providerId: 'x', fileIndex: null }, () => {})
+    expect(r.filename).toBeUndefined()
+  })
+
   it('queries 为空 → 空候选', async () => {
     const a = makeSubhdAdapter({ search: async () => [oneResult], resolveDownload: async () => ({ url: '', cookie: null }) })
     expect(await a.search({ queries: [] }, () => {})).toEqual([])
