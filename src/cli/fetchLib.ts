@@ -60,6 +60,28 @@ export interface FetchAdapter {
  *  args its search() actually receives. */
 const DEFAULT_ENABLED_CHECK_LANGUAGES = ['zh']
 
+/** Round-robin merge of per-provider candidate arrays (one array per adapter, in `enabled` order).
+ *  Replaces a naive concatenation that ordered the result set by adapter fan-out order
+ *  (assrt→opensubtitles→zimuku→subhd), which let a high-volume provider bury a low-volume one past
+ *  the agent's pagination window. The Rig 2026-07-20 regression: opensubtitles returned 50
+ *  wrong-show results, pushing zimuku's single exact-match season pack (钻井.The.Rig.S01…TRUFFLE)
+ *  to rank 66 — the find-subtitle worker (list_candidates offset 0 limit 50) never saw it and
+ *  judged the season unavailable despite a legitimate pack existing. Interleaving surfaces every
+ *  provider's TOP results in the first ranks. Pure reordering: drops nothing, every candidate stays
+ *  reachable via pagination; NOT a relevance gate (north star #2 — deterministic checks never
+ *  gatekeep "is this the right subtitle"; this only orders for visibility, and does not score match
+ *  quality). Each provider's own internal ordering is preserved within its round-robin slot. */
+export function interleaveByProvider(perProvider: SubtitleCandidate[][]): SubtitleCandidate[] {
+  const out: SubtitleCandidate[] = []
+  const maxLen = perProvider.reduce((m, a) => Math.max(m, a.length), 0)
+  for (let i = 0; i < maxLen; i++) {
+    for (const arr of perProvider) {
+      if (i < arr.length) out.push(arr[i])
+    }
+  }
+  return out
+}
+
 export async function runSearch(
   args: FetchArgs, adapters: FetchAdapter[], emit: (e: FetchEvent) => void, env: NodeJS.ProcessEnv = process.env,
 ): Promise<SubtitleCandidate[]> {
@@ -82,8 +104,12 @@ export async function runSearch(
   if (failures.length === enabled.length) {
     throw new Error(`all providers failed: ${failures.map(f => `${f.provider}: ${f.message}`).join('; ')}`)
   }
+  // Round-robin interleave (not results.flat() concatenation) so a low-volume provider's precise
+  // result isn't buried past the agent's pagination window by a high-volume one — see
+  // interleaveByProvider (The Rig 2026-07-20 regression). Dedup by candidateKey keeps first
+  // occurrence, preserving the interleaved order; cross-provider keys never collide.
   const byKey = new Map<string, SubtitleCandidate>()
-  for (const c of results.flat()) if (!byKey.has(candidateKey(c))) byKey.set(candidateKey(c), c)
+  for (const c of interleaveByProvider(results)) if (!byKey.has(candidateKey(c))) byKey.set(candidateKey(c), c)
   return [...byKey.values()]
 }
 

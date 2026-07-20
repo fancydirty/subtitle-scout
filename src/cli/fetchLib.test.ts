@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { runSearch, runResolve, providerErrorFields, providerNoticeFields, type FetchAdapter, type FetchArgs, type FetchEvent } from './fetchLib.js'
+import { runSearch, runResolve, interleaveByProvider, providerErrorFields, providerNoticeFields, type FetchAdapter, type FetchArgs, type FetchEvent } from './fetchLib.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 const cand = (provider: 'assrt' | 'opensubtitles', id: string): SubtitleCandidate =>
@@ -59,6 +59,54 @@ describe('runSearch', () => {
   it('zero adapters configured → fail-fast, never an "honest empty" result', async () => {
     // 没配任何 provider key 时若输出 [] exit 0，pipeline 会写负缓存——整库静默毒化
     await expect(runSearch(args, [], () => {})).rejects.toThrow(/no providers configured/)
+  })
+})
+
+describe('runSearch: provider-diversity interleave (The Rig 2026-07-20 regression — a precise low-volume provider result must not be buried past the pagination window by a high-volume one)', () => {
+  const many = (provider: SubtitleCandidate['provider'], n: number): SubtitleCandidate[] =>
+    Array.from({ length: n }, (_, i) => ({
+      provider, providerId: `${provider}-${i}`, videoName: null, nativeName: null,
+      language: null, subtype: null, releaseSite: null, uploadDate: null, fileList: [],
+    }))
+  const provAdapter = (name: string, cands: SubtitleCandidate[]): FetchAdapter =>
+    ({ name, enabled: () => true, search: async () => cands, resolve: async () => ({ url: 'x' }) })
+
+  it('surfaces a low-volume provider\'s top candidate in the first ranks, not behind a high-volume provider\'s block', async () => {
+    // Real bug: opensubtitles returned 50, zimuku returned 1 exact-match season pack → naive
+    // concatenation put the zimuku pack at rank ~50, outside the agent's list_candidates limit-50 window.
+    const r = await runSearch({ queries: ['q'] }, [
+      provAdapter('opensubtitles', many('opensubtitles', 50)),
+      provAdapter('zimuku', many('zimuku', 1)),
+    ], () => {})
+    const zimukuRank = r.findIndex(c => c.provider === 'zimuku')
+    expect(zimukuRank).toBeGreaterThanOrEqual(0)
+    expect(zimukuRank).toBeLessThan(5)   // visible up front, not ~rank 50
+    expect(r).toHaveLength(51)           // pure reorder — nothing dropped
+  })
+
+  it('round-robin: every provider\'s Nth result precedes any provider\'s (N+1)th', async () => {
+    const r = await runSearch({ queries: ['q'] }, [
+      provAdapter('assrt', many('assrt', 3)),
+      provAdapter('zimuku', many('zimuku', 2)),
+    ], () => {})
+    expect(r.map(c => c.providerId)).toEqual(['assrt-0', 'zimuku-0', 'assrt-1', 'zimuku-1', 'assrt-2'])
+  })
+})
+
+describe('interleaveByProvider', () => {
+  const c = (p: SubtitleCandidate['provider'], id: string): SubtitleCandidate =>
+    ({ provider: p, providerId: id, videoName: null, nativeName: null, language: null,
+       subtype: null, releaseSite: null, uploadDate: null, fileList: [] })
+  it('round-robins uneven-length arrays and drops nothing (preserves each provider\'s internal order)', () => {
+    const out = interleaveByProvider([
+      [c('assrt', 'a0'), c('assrt', 'a1')],
+      [c('zimuku', 'z0')],
+      [c('subhd', 's0'), c('subhd', 's1'), c('subhd', 's2')],
+    ])
+    expect(out.map(x => x.providerId)).toEqual(['a0', 'z0', 's0', 'a1', 's1', 's2'])
+  })
+  it('empty input → empty output', () => {
+    expect(interleaveByProvider([])).toEqual([])
   })
 })
 
