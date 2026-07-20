@@ -24,7 +24,10 @@ WORKDIR /app
 # curl：subhd 源（SUBHD_ENABLED=true）必需——Node 的 TLS(JA3) 指纹被 subhd/Cloudflare 在临时页
 # 校验上拒（undici/node:https 恒"已失效"），SubhdClient 默认 fetchImpl shell 到 curl（见
 # src/adapters/providers/subhd.ts）。不启用 subhd 时 curl 只是闲置，代价极小。
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
+# ca-certificates：curl 做 HTTPS 必需的 CA bundle。node:22-slim 不自带 /etc/ssl/certs/ca-certificates.crt，
+# 而 --no-install-recommends 会把它作为 curl 的"推荐依赖"跳过 → curl(77) 证书错误 → subhd 容器内恒失效
+# （host 冒烟能过是因 host 有 CA，容器没有——生产实测暴露）。装它，其 postinst 生成 CA bundle。
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 ENV FFPROBE_PATH=/usr/bin/ffprobe
 COPY package.json package-lock.json ./
