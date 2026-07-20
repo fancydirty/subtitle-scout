@@ -49,30 +49,32 @@ run 决策:installed 24 / rescue:parked 6 / rescue:claimed 3 / no_safe_match 2 /
 
 ## 大考交卷的发现(按严重度)
 
-### 🔴 #1 真回归·zimuku adapter 整季包 fileList 为空 → agent 无从验包弃选(The Rig S1×6)
+### 🔴 #1 真回归·结果集排序把精准低产源埋出分页窗 → agent 从没看见正确候选(The Rig S1×6)
+
+> ⚠️ **本节根因经修复深挖后已更正(2026-07-20,commit 5f40900)。** 初版误判为"zimuku 空 fileList 致 agent
+> 弃选"——那是"看到症状(候选元数据薄)就推断判决"的错误。深挖排序发现:agent **压根没触达**那个候选,谈不上
+> 弃选。systematic-debugging 教训:symptom ≠ root cause,验证 agent 是否真触达才敢下根因。
 
 **实证**:baseline 里 The Rig(2023,tmdb:112581)S1E1-E6 全 covered,来源 `zimuku:181453`(Season 1 TRUFFLE
 整季包)。从归档抽出 `The.Rig.S01E01...zh-Hans.srt`,内容是**货真价实的 2023 剧中字**("金洛克B区"=剧中钻井
 平台 Kinloch Bravo、"于特西拉北海南海…西南风三到四节"=S1E1 开场航运预报)。**baseline 覆盖合法无误。**
 
-本轮从零,agent 对 The Rig 搜了 **17 次**(穷尽 "The Rig"/"钻井平台"/"鑽油平台危機"/"The Rig 2023 S01
-AMZN"…),`cache/result-sets/8/` 缓存证实 **zimuku 本轮确实召回了同一个 181453 包**(命中 6 次)。但 agent
-眼中该候选长这样:
+本轮从零,agent 对 The Rig 搜了 **17 次**,`cache/result-sets/8/` 缓存证实 **zimuku 本轮确实召回了同一个
+181453 包**(命中 6 次)。**但它排在结果集第 66 名**:`runSearch` 曾按 adapter 顺序拼接(assrt→opensubtitles→
+zimuku→subhd)、无相关性排序无 provider 交错 → assrt(0-10)+ **opensubtitles 返 50 条错剧**(11-60)糊墙 →
+zimuku 6 条被挤到 61-66。agent `list_candidates` offset0 limit50 只看前 50 名 → **那个正确候选从没进过 agent 的
+视野**;判词"'The Rig' 全是 2010 电影"是"没看见"不是"看见后拒"。
 
 ```json
 { "provider":"zimuku","providerId":"181453",
-  "videoName":"钻井.The.Rig.S01.1080p.AMZN.WEBRip.DDP5.1.x264-TRUFFLE",
-  "language": null,        // 无法从元数据确认中文
-  "fileList": [] }         // 整季包内容清单为空!
+  "videoName":"钻井.The.Rig.S01.1080p.AMZN.WEBRip.DDP5.1.x264-TRUFFLE",  // exact match, 却排第 66 名
+  "language": null, "fileList": [] }   // 元数据薄,但非本案主因——archiveEntries 开包机制本可绕过
 ```
 
-**根因**:zimuku adapter 对整季包候选返回**空 `fileList` + null `language`** → agent 无从验证包内含哪 6 集、
-是否中文 → 谨慎的反-Bazarr 判断只能弃选(叠加 assrt 返"雷玛根大桥"1969电影、OS 返"窗邊女孩"错剧的噪声)→
-判 no_safe_match。**判断力没错,喂给它的候选元数据残缺**(与 2026-07-18 从零 #2"喂错单集时长"同族:错在喂料)。
-
-**修法**(入队):zimuku 搜索结果须填充 `fileList`(开包枚举季内逐集文件)+ `language`;或加"resolve 前置窥包"
-步骤,让 agent 判前拿到包内清单。zimuku 本轮为别的剧装了 17 个字幕(健康),故是**整季包路径特异性缺陷**,
-非源整体故障。
+**修法(已实施 commit 5f40900)**:`interleaveByProvider` 轮转合并各 provider 结果,每源头部结果都进前几名
+(zimuku 6 条全落前 ~23 名,agent 必看见)。**纯重排不丢候选**(分页可达全部)、**非守门闸不打分**,北极星安全。
+通用改善——任何少产精准源被高产噪声糊墙的场景都受益。TDD:2 行为测试红先验证(拼接下 zimuku 埋 rank50)+
+助手单测,1747 绿 tsc 净。**真机复现 The Rig S1 装上闭环待部署后验(见收尾)。**
 
 ### 🟠 #2 识别回归·括号堆砌片名再识别失败被 park(The Astronaut + DxD Hero×12)
 

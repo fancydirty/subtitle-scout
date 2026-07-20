@@ -13,8 +13,10 @@
 - **已定但未实现的产品小决策**(compact 后随手做):①**partial** 放宽——只对短到几秒几分的荒谬时长兜底,合理差异(片尾广告等)一视同仁当正常;②**里番**——TMDB `adult` 标记的媒体 ingest 阶段直接不入库/不进工作流(比短路更干净);③**embedded 海报徽章**——把 embedded 计入覆盖分子(与 A 修一致,显 `10/12` 而非误导的 `0/2`);④**subhd 防灰**——D 狂打时容器起 SSH SOCKS 隧道到 VPS(`jisuan`/`yt-email-vps`)+ `ALL_PROXY`,灰了切另一台 IP。
 - **D 从零验证** ✅ **完成(2026-07-20,18:45→21:12,2h27m)。终报:docs/design/2026-07-20-from-zero-fullsource-exam-report.md**。
   - **判词**:整机从零自主重建成立,**216 集一轮拿下 ≈94.7% 超九成**;四源全出力、**subhd 实锤 19 个**。
-    但大考揪出**三处真回归**(不容粉饰):🔴#1 **zimuku 整季包 `fileList:[]`+`language:null`→agent 无从验包弃选**,
-    丢 The Rig S1×6 合法覆盖(baseline 是 zimuku:181453 真中字,已抽内容验实)——**可修,最高优**;🟠#2 recognizer
+    但大考揪出**三处真回归**(不容粉饰):🔴#1 **结果集排序把精准低产源埋出分页窗→agent 从没看见正确候选**
+    (runSearch 按 adapter 顺序拼接、OS 返 50 条错剧把 zimuku 唯一 exact-match 整季包挤到第 66 名,agent limit50
+    分页窗只到 49),丢 The Rig S1×6 合法覆盖(baseline 是 zimuku:181453 真中字,已抽内容验实)——**✅已修 commit 5f40900**
+    (interleaveByProvider 轮转合并,纯重排非闸,北极星安全;初版误判"空fileList致弃选"已更正,真机复现待部署验);🟠#2 recognizer
     对括号密集片名(The Astronaut YTS.MX、[The-Nut] DxD Hero)**再识别失败被 park**(movies 10→9;DxD Hero 整季),
     park 是安全失败、daemon 会重试**可能自愈**——次高;🟢#3 里番(Adam's×4)+ The Rig **S2E1/E6** = 真缺口/真 AI 翻译案例。
     err×1=已知 finalize 未调类(DxD 最终 36/36 覆盖,完全恢复)、nsm×2=合法。观测小缺口:run 级 API 计数器未落库。
