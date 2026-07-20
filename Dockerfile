@@ -21,7 +21,10 @@ FROM node:22-slim
 WORKDIR /app
 # 系统 ffprobe：内嵌字幕探针（src/files/streamProbe.ts）优先走 FFPROBE_PATH，
 # 镜像自带后运行时不再依赖 ffprobe-static 这个 ~50MB 的 npm 二进制下载。
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# curl：subhd 源（SUBHD_ENABLED=true）必需——Node 的 TLS(JA3) 指纹被 subhd/Cloudflare 在临时页
+# 校验上拒（undici/node:https 恒"已失效"），SubhdClient 默认 fetchImpl shell 到 curl（见
+# src/adapters/providers/subhd.ts）。不启用 subhd 时 curl 只是闲置，代价极小。
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
     && rm -rf /var/lib/apt/lists/*
 ENV FFPROBE_PATH=/usr/bin/ffprobe
 COPY package.json package-lock.json ./
