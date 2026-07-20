@@ -1,4 +1,11 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { readFileSync, unlinkSync } from 'node:fs'
 import { findNextTag } from './htmlAttrs.js'
+import { JitteredIntervalLimiter, type RandomFn } from './jitter.js'
 
 // subhd 字幕源客户端。真实链路（curl 实测 2026-07-20，见 __fixtures__/subhd/STRUCTURE.md）：
 //   search: GET /search/<q> → 搜索页 HTML（cards）
@@ -149,4 +156,173 @@ export function parseSearchResults(html: string): SubhdSearchResult[] {
     })
   }
   return results
+}
+
+// ---------- SubhdClient：真 HTTP（curl 兜底）+ 限速 + 镜像 ----------
+
+export const SUBHD_BASE = 'https://subhd.me'
+export const SUBHD_TIMEOUT_MS = 25_000
+// 礼貌节流（住宅 IP 被封是真实家庭成本）：单元之间 2-5s 随机延迟；恒定周期本身可指纹。
+export const DEFAULT_MIN_INTERVAL_MS = 2_000
+export const DEFAULT_JITTER_RANGE_MS = 3_000
+// prepare→down→api 临时页时间窗很短，失败重试整个单元；默认 4 次（每次限速在单元之间，不在单元内）。
+export const DEFAULT_RESOLVE_ATTEMPTS = 4
+// 可用镜像（STRUCTURE.md 里站点自报）。主 base 网络不可达时依次兜底。
+export const DEFAULT_MIRRORS = ['https://subhd.one', 'https://subhd.top', 'https://subhd.cc']
+
+/** 完整浏览器请求头：UA + 简体中文 Accept-Language。CDN 文件下载也带这份（见 subhdAdapter.resolve）。 */
+export const SUBHD_HEADERS: Record<string, string> = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept-Language': 'zh-CN,zh;q=0.9',
+}
+
+const execFileP = promisify(execFile)
+
+/**
+ * 🔴 默认 fetch 实现——shell 到 curl。**Node 的 TLS(JA3) 指纹被 subhd/Cloudflare 在临时页校验上拒**
+ * （undici fetch / node:https 均实测 api/sub/down 恒返回"时间过长本临时页面已经失效"，curl 恒"验证通过"，
+ * 见 STRUCTURE.md）。故 SubhdClient 的默认 fetchImpl 走 curl；测试注入假 fetch，不碰 curl/真网络。
+ * 只处理文本响应（搜索 HTML / mint JSON）；真文件走下载层 undici（CDN 无指纹门）。
+ */
+export async function curlFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = String(input)
+  const method = init?.method ?? 'GET'
+  const headers = (init?.headers ?? {}) as Record<string, string>
+  const headerFile = join(tmpdir(), `subhd-h-${randomUUID()}`)
+  const args = ['-sS', '--max-time', String(Math.ceil(SUBHD_TIMEOUT_MS / 1000)), '-D', headerFile, '-o', '-']
+  for (const [k, v] of Object.entries(headers)) args.push('-H', `${k}: ${v}`)
+  if (method !== 'GET') args.push('-X', method)
+  if (init?.body != null) args.push('--data-binary', String(init.body))
+  args.push(url)
+  try {
+    const { stdout } = await execFileP('curl', args, { encoding: 'buffer', maxBuffer: 128 * 1024 * 1024 })
+    const headerText = readFileSync(headerFile, 'utf8')
+    // 多段头（重定向/100-continue）取最后一段的状态行
+    const status = Number([...headerText.matchAll(/HTTP\/[\d.]+ (\d+)/g)].pop()?.[1] ?? 0)
+    const h = new Headers()
+    for (const line of headerText.split(/\r?\n/)) {
+      const i = line.indexOf(':')
+      if (i <= 0) continue
+      const name = line.slice(0, i).trim()
+      const val = line.slice(i + 1).trim()
+      if (!name) continue
+      try { h.append(name, val) } catch { /* skip malformed header line */ }
+    }
+    return new Response(stdout as unknown as BodyInit, { status: status || 200, headers: h })
+  } finally {
+    try { unlinkSync(headerFile) } catch { /* header temp already gone */ }
+  }
+}
+
+export interface RequestLimiter { wait(): Promise<void> }
+
+export interface SubhdClientOpts {
+  baseUrl?: string
+  mirrors?: string[]
+  fetchImpl?: typeof fetch
+  limiter?: RequestLimiter
+  rng?: RandomFn
+  resolveAttempts?: number
+  onApiCall?: (r: { endpoint: string; status: number | null; durationMs: number; error?: string }) => void
+}
+
+function getSetCookies(res: Response): string[] {
+  const g = (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie
+  if (typeof g === 'function') return g.call(res.headers)
+  const one = res.headers.get('set-cookie')
+  return one ? [one] : []
+}
+
+export class SubhdClient {
+  private base: string
+  private mirrors: string[]
+  private fetchImpl: typeof fetch
+  private limiter: RequestLimiter
+  private resolveAttempts: number
+
+  constructor(private opts: SubhdClientOpts = {}) {
+    this.base = (opts.baseUrl ?? SUBHD_BASE).replace(/\/+$/, '')
+    this.mirrors = (opts.mirrors ?? DEFAULT_MIRRORS).map(m => m.replace(/\/+$/, ''))
+    this.fetchImpl = opts.fetchImpl ?? curlFetch
+    this.limiter = opts.limiter ?? new JitteredIntervalLimiter(DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, opts.rng)
+    this.resolveAttempts = opts.resolveAttempts ?? DEFAULT_RESOLVE_ATTEMPTS
+  }
+
+  private hosts(): string[] { return [this.base, ...this.mirrors] }
+
+  /** 对某一 host 发一次请求（不含限速/镜像切换，由调用方掌控节奏）。返回 {status, body, setCookies}。
+   *  POST 自动带 Content-Type/Origin/X-Requested-With（api 端点的固定契约）。 */
+  private async doRequest(
+    host: string, path: string,
+    init: { method?: string; body?: string; cookie?: string; referer?: string } = {},
+  ): Promise<{ status: number; body: string; setCookies: string[] }> {
+    const method = init.method ?? 'GET'
+    const headers: Record<string, string> = { ...SUBHD_HEADERS }
+    if (init.referer) headers.Referer = init.referer
+    if (init.cookie) headers.Cookie = init.cookie
+    if (method !== 'GET') {
+      headers['Content-Type'] = 'application/json'
+      headers.Origin = host
+      headers['X-Requested-With'] = 'XMLHttpRequest'
+    }
+    const t0 = Date.now()
+    try {
+      const res = await this.fetchImpl(`${host}${path}`, {
+        method, headers,
+        ...(init.body != null ? { body: init.body } : {}),
+        signal: AbortSignal.timeout(SUBHD_TIMEOUT_MS),
+      })
+      const body = await res.text()
+      this.opts.onApiCall?.({ endpoint: path, status: res.status, durationMs: Date.now() - t0 })
+      return { status: res.status, body, setCookies: getSetCookies(res) }
+    } catch (e) {
+      this.opts.onApiCall?.({ endpoint: path, status: null, durationMs: Date.now() - t0, error: String(e) })
+      throw e
+    }
+  }
+
+  /** GET 一个 path，主 base 失败（网络/抛错）→依次试镜像，首个成功即返回。每次前走限速。 */
+  private async getFirstOk(path: string): Promise<string> {
+    let lastErr: unknown
+    for (const host of this.hosts()) {
+      await this.limiter.wait()
+      try { return (await this.doRequest(host, path)).body } catch (e) { lastErr = e }
+    }
+    throw lastErr ?? new Error(`subhd all hosts failed: ${path}`)
+  }
+
+  async search(query: string): Promise<SubhdSearchResult[]> {
+    const html = await this.getFirstOk(`/search/${encodeURIComponent(query)}`)
+    return parseSearchResults(html)
+  }
+
+  /** 一个 host 上跑完整 prepare→GET /down(激活)→api/sub/down 单元（三步紧连、无限速间隔——临时页
+   *  时间窗很短，中间插延迟会必然失效）。返回真 CDN 文件 url；任一步失败即抛。 */
+  private async resolveOnce(host: string, id: string): Promise<string> {
+    const prep = await this.doRequest(host, '/api/sub/prepare-download', {
+      method: 'POST', body: JSON.stringify({ sid: id }), referer: `${host}/a/${id}`,
+    })
+    parsePrepareDownload(prep.body) // 校验 success；/down/<id> 路径就是 id 本身，无需另存
+    const tk = extractTkCookie(prep.setCookies)
+    if (!tk) throw new Error('subhd prepare-download returned no tk_ cookie')
+    await this.doRequest(host, `/down/${id}`, { cookie: tk, referer: `${host}/a/${id}` }) // 激活临时页
+    const api = await this.doRequest(host, '/api/sub/down', {
+      method: 'POST', body: JSON.stringify({ sid: id }), cookie: tk, referer: `${host}/down/${id}`,
+    })
+    return parseApiSubDown(api.body) // "已失效"/success:false 在此抛
+  }
+
+  /** 把候选 id 解析成可下载的 CDN 文件 url。CDN（dlus.subhd.me）无指纹门、credentials omit，故不带
+   *  cookie（cookie 恒 null）。单元失败（临时页失效/瞬时网络）重试；每 host 重试 resolveAttempts 次，
+   *  耗尽再切镜像。限速只在单元之间（不进单元内，保临时页时间窗）。 */
+  async resolveDownload(id: string): Promise<{ url: string; cookie: string | null }> {
+    let lastErr: unknown
+    for (const host of this.hosts()) {
+      for (let a = 0; a < this.resolveAttempts; a++) {
+        await this.limiter.wait()
+        try { return { url: await this.resolveOnce(host, id), cookie: null } } catch (e) { lastErr = e }
+      }
+    }
+    throw lastErr ?? new Error(`subhd resolveDownload exhausted for ${id}`)
+  }
 }
