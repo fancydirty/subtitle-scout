@@ -11,7 +11,31 @@
 - **部署机制**:`deploy/deploy.sh`(rsync 工作树→路由 `/mnt/nvme0n1-4/docker/subtitle-scout`→`docker compose build && up`)。cloudflared build 期易掉线→**长 build 用 detach**(`nohup ...>log; echo EXIT-$?>done` 后轮询 done)。SSH 别名 `media-router-tunnel`。VPS 跳板:`jisuan`(23.254.150.206)/`yt-email-vps`(192.129.128.217),D 狂打 subhd 时当出口避灰名单。
 - **E AI 翻译** 📐 设计完成(spec: docs/design/2026-07-20-ai-translation-design.md)——术语表先行+分批带记忆+fail-closed 闸;v1 靠同剧既有中字+TMDB(不接 SearXNG/搜索 SaaS/Jina),wiki/web 留 phase-2;编排式单 agent 串行翻译+critic;The Rig 是试验田。**待 writing-plans→实现(排在 D 之后)**。
 - **已定但未实现的产品小决策**(compact 后随手做):①**partial** 放宽——只对短到几秒几分的荒谬时长兜底,合理差异(片尾广告等)一视同仁当正常;②**里番**——TMDB `adult` 标记的媒体 ingest 阶段直接不入库/不进工作流(比短路更干净);③**embedded 海报徽章**——把 embedded 计入覆盖分子(与 A 修一致,显 `10/12` 而非误导的 `0/2`);④**subhd 防灰**——D 狂打时容器起 SSH SOCKS 隧道到 VPS(`jisuan`/`yt-email-vps`)+ `ALL_PROXY`,灰了切另一台 IP。
-- **下一步 = D 从零验证**(破坏性,环境用户明确"随意弄"可劲造)。**强烈建议 compact 后在干净窗口做 D**(破坏性操作忌中途 compact)。排序:D → E(实现)→ 上面 4 个小决策(可并入 D 收尾)。
+- **D 从零验证** ✅ **完成(2026-07-20,18:45→21:12,2h27m)。终报:docs/design/2026-07-20-from-zero-fullsource-exam-report.md**。
+  - **判词**:整机从零自主重建成立,**216 集一轮拿下 ≈94.7% 超九成**;四源全出力、**subhd 实锤 19 个**。
+    但大考揪出**三处真回归**(不容粉饰):🔴#1 **zimuku 整季包 `fileList:[]`+`language:null`→agent 无从验包弃选**,
+    丢 The Rig S1×6 合法覆盖(baseline 是 zimuku:181453 真中字,已抽内容验实)——**可修,最高优**;🟠#2 recognizer
+    对括号密集片名(The Astronaut YTS.MX、[The-Nut] DxD Hero)**再识别失败被 park**(movies 10→9;DxD Hero 整季),
+    park 是安全失败、daemon 会重试**可能自愈**——次高;🟢#3 里番(Adam's×4)+ The Rig **S2E1/E6** = 真缺口/真 AI 翻译案例。
+    err×1=已知 finalize 未调类(DxD 最终 36/36 覆盖,完全恢复)、nsm×2=合法。观测小缺口:run 级 API 计数器未落库。
+  - **⚠️ E 图景更正**:The Rig **S1 不是 AI 翻译案例**(zimuku 有真中字,#1 没装上);**只有 S2E1/E6** 是真"无中字+内嵌英文轨"试验田。
+  - **接续排序**:①修 #1 zimuku fileList(TDD+真机 The Rig S1 装上闭环)②查 #2 recognizer park 回归(观自愈 or 修解析)③E 以 The Rig S2E1/E6 为唯一靶子。#1/#2 可并入 E 前一轮清算。
+  - ~~(下方为执行中记录,留档)~~
+  - 🔴 **飞行前揪出并修掉一个会让 D 作废的生产 bug**:subhd 从没被 app 装载过。根因=生产 compose 的
+    `environment:` 块漏列 `SUBHD_ENABLED`(docker compose 只注入显式列出的变量、无 env_file),.env 里
+    `SUBHD_ENABLED=true` 从未到达容器 → `buildAdapters` 门控 `SUBHD_ENABLED==='true'` 恒 false → subhd
+    adapter 从未注册。之前"容器→subhd.me=200"只是 curl 连通性,测错了层(ca-cert 同款陷阱)。**修**:路由侧
+    自治 compose 补 `SUBHD_ENABLED` 行 + 重建容器,运行时实跑 `buildAdapters()` 打印 `assrt,opensubtitles,
+    zimuku,subhd` 铁证四源全在线。OSS 仓 compose 同缺 ZIMUKU/SUBHD 两门(公开用户同坑),已 commit
+    `1c7a8d1`(本地,未 push)。deploy.sh 明确不下发 docker-compose.yml(生产 compose 路由侧自治)。
+  - e2e-zero 协议:基线快照(eps covered257/embedded150/ignored30/unavailable5、mov covered6/embedded4、
+    subs270)→ 归档 270 sidecar 字幕(tar 验证 270==270)+ cache-before/(12.7M 对照物)→ 删 270 字幕(盘剩0)
+    + 清 scout.db/result-sets/session → 起全新空 DB。**auth 管理员账号随 DB 清空**(预期副作用,dashboard 需重走
+    创建向导——终报提醒用户重建登录)。
+  - 触发后:识别浪潮跑完 **228 missing eps + 5 missing mov**(与 2026-07-18 从零 228 一致=同库),首个 agent
+    job 已起。change-driven 监视器 persistent 看到 missing→0。预期 2-3h,目标一次性到九成、只剩 The Rig+里番。
+- **下一步排序**:D 跑完出终报(验尸 270 旧字幕账本 + subhd 是否真出力 group by source + 剩余缺口)→ E(实现)
+  → 上面 4 个小决策(可并入 D 收尾)。
 
 ## 真实缺口(仅此 5 集,两部)——注:subhd 上线后此表待 D 从零重测刷新
 - **Adam's Sweet Agony(甘い懲罰,里番/成人动漫)** S1E6/E7/E8 —— 主流站不收,需专门动漫/成人源,基本"确实没有"。
