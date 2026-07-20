@@ -13,6 +13,10 @@ export interface SeriesParams {
   name: string
   chineseTitle?: string | null
   posterPath?: string | null
+  /** 详情页重设计 item B：TMDB 剧集简介 / hero 背景大图路径。undefined/null→NULL 绑定，
+   *  ON CONFLICT 分支 COALESCE 保护既有值不被后续无值的重复调用清空（同 posterPath 语义）。 */
+  overview?: string | null
+  backdropPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
   /** 验收修复轮一 Task V1（design §A）：TMDB genre id 集合（如 [16,35]）。有值→JSON.stringify
@@ -196,20 +200,26 @@ export class LibraryRepo {
     // claim-gated 分支的 title 恒 ''，该剧每来一集新文件都带着空名重新 upsert，绝不能拿占位
     // 覆盖一个已治好的真名。WHERE 里的 excluded.name != '' 同步豁免：占位入参不算 name 变更。
     const genresJson = params.genres != null ? JSON.stringify(params.genres) : null
+    const overview = params.overview ?? null
+    const backdropPath = params.backdropPath ?? null
     this.db
       .prepare(
-        `INSERT INTO series (id, name, chinese_title, poster_path, year, provider_ids, genres)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO series (id, name, chinese_title, poster_path, overview, backdrop_path, year, provider_ids, genres)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
            poster_path = COALESCE(excluded.poster_path, poster_path),
+           overview = COALESCE(excluded.overview, overview),
+           backdrop_path = COALESCE(excluded.backdrop_path, backdrop_path),
            year = excluded.year,
            provider_ids = excluded.provider_ids,
            genres = COALESCE(excluded.genres, genres)
          WHERE (excluded.name != '' AND name != excluded.name)
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
             OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
+            OR (excluded.overview IS NOT NULL AND overview IS NOT excluded.overview)
+            OR (excluded.backdrop_path IS NOT NULL AND backdrop_path IS NOT excluded.backdrop_path)
             OR year IS NOT excluded.year
             OR provider_ids IS NOT excluded.provider_ids
             OR (excluded.genres IS NOT NULL AND genres IS NOT excluded.genres)`
@@ -219,6 +229,8 @@ export class LibraryRepo {
         params.name,
         params.chineseTitle ?? null,
         posterPath,
+        overview,
+        backdropPath,
         params.year ?? null,
         params.providerIds ?? null,
         genresJson

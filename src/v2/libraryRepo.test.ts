@@ -335,6 +335,16 @@ describe('媒体镜像', () => {
     expect(lib.getSeries('s1')!.genres).toBe(JSON.stringify([16]))
   })
 
+  // 详情页重设计 item B：overview/backdropPath 落库 + COALESCE 不清空既有（同 chineseTitle/poster 语义）。
+  it('upsertSeries 落 overview/backdrop，COALESCE 不清空既有', () => {
+    lib.upsertSeries({ id: 'tmdb:9', name: 'S', overview: 'ov', backdropPath: '/bd.jpg' })
+    let row = db.prepare(`SELECT overview, backdrop_path FROM series WHERE id='tmdb:9'`).get() as { overview: string; backdrop_path: string }
+    expect(row).toEqual({ overview: 'ov', backdrop_path: '/bd.jpg' })
+    lib.upsertSeries({ id: 'tmdb:9', name: 'S' }) // 无新值 → 不清空
+    row = db.prepare(`SELECT overview, backdrop_path FROM series WHERE id='tmdb:9'`).get() as { overview: string; backdrop_path: string }
+    expect(row).toEqual({ overview: 'ov', backdrop_path: '/bd.jpg' })
+  })
+
   it('listSeriesNeedingEnrich: genres IS NULL 的行（含空名占位建行——其 genres 必为 NULL），最多 limit 条', () => {
     lib.upsertSeries({ id: 's1', name: '' }) // 空名占位（P6 认领债务）——genres NULL，经 genres 臂落网
     lib.upsertSeries({ id: 's2', name: 'Show B' }) // genres 未富化（NULL）
