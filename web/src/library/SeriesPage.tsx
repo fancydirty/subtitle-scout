@@ -1,8 +1,8 @@
-// web/src/library/SeriesPage.tsx：剧集页（#/library/:id）——头部（海报缩略 + 名 + 年份 +
-// 人话覆盖句）+ 每季 A 式格阵（EpisodeCell）+ 图例 + 点格弹出右侧详情板（EpisodeDetail）。
-// detail 数据由 Shell 传入（跟 Topbar 面包屑共用同一次 GET /api/v2/library/series/:id，见
-// shell/AppShell.tsx 顶部注释），这里不自己再发一次请求。
-import { useState } from 'react'
+// web/src/library/SeriesPage.tsx：剧集页（#/library/:id）——渐变 hero 头部（SeriesHero，含 TMDB
+// 剧集简介 + 背景大图）+ 跨季覆盖事实栏（FactsRail）+ 每季手风琴（SeasonAccordion，逐集行内展开
+// 该集简介，超长季回落格阵）。详情页重设计 item B：移除旧的右侧滑入详情面板（EpisodeDetail）与
+// 点格选中态。detail 数据由 Shell 传入（跟 Topbar 面包屑共用同一次 GET /api/v2/library/series/:id，
+// 见 shell/AppShell.tsx 顶部注释），这里不自己再发一次请求。
 import { Section } from '@astryxdesign/core/Section'
 import { VStack } from '@astryxdesign/core/VStack'
 import { HStack } from '@astryxdesign/core/HStack'
@@ -11,21 +11,15 @@ import { EmptyState } from '@astryxdesign/core/EmptyState'
 import { Skeleton } from '@astryxdesign/core/Skeleton'
 import { Button } from '@astryxdesign/core/Button'
 import type { Async } from '../api/hooks.js'
-import type { LibrarySeasonDTO, LibrarySeriesDetailDTO } from '../api/types.js'
-import { useT, type Lang } from '../i18n/useT.js'
-import { buildGridCells, tallyGridCells, isCanonicalPending, type GridCell } from './episodeState.js'
-import { seasonCoverageSentence } from './text.js'
-import { EpisodeCell } from './EpisodeCell.js'
-import { EpisodeDetail } from './EpisodeDetail.js'
-import { PosterThumb } from './PosterThumb.js'
+import type { LibrarySeriesDetailDTO } from '../api/types.js'
+import { useT } from '../i18n/useT.js'
+import { buildGridCells, tallyGridCells } from './episodeState.js'
+import { SeriesHero } from './SeriesHero.js'
+import { FactsRail } from './FactsRail.js'
+import { SeasonAccordion } from './SeasonAccordion.js'
 
 interface Props {
   detail: Async<LibrarySeriesDetailDTO>
-}
-
-interface Selection {
-  season: number
-  cell: GridCell
 }
 
 // 未找到判定（dashboard 审计 #1）：series-detail 端点 404 时后端 body 是 {error:'not found'}
@@ -50,90 +44,8 @@ function HeaderSkeleton() {
   )
 }
 
-function SeasonBlock({
-  season, now, lang, isSelected, onSelectCell,
-}: {
-  season: LibrarySeasonDTO
-  now: number
-  lang: Lang
-  isSelected: (cell: GridCell) => boolean
-  onSelectCell: (season: number, cell: GridCell) => void
-}) {
-  const { t } = useT()
-  const cells = buildGridCells(season, now)
-  const tally = tallyGridCells(cells)
-  const sentence = seasonCoverageSentence(season.season, tally, lang)
-  const pending = isCanonicalPending(season)
-
-  return (
-    <VStack gap={2}>
-      <Text type="body" color="secondary">
-        {sentence.prefix}{' '}
-        <Text type="body" as="span" weight="semibold" color="primary" size="lg">
-          {sentence.emphasis}
-        </Text>{' '}
-        {sentence.suffix}
-        {sentence.clause ? <Text type="body" as="span" color="secondary"> — {sentence.clause}.</Text> : null}
-      </Text>
-      {pending ? (
-        <Text type="code" color="secondary">
-          {t('library_detail_canonical_pending')}
-        </Text>
-      ) : null}
-      <div className="ep-grid">
-        {cells.map((cell) => (
-          <EpisodeCell
-            key={cell.episode}
-            cell={cell}
-            isSelected={isSelected(cell)}
-            onSelect={() => onSelectCell(season.season, cell)}
-          />
-        ))}
-      </div>
-    </VStack>
-  )
-}
-
-function Legend() {
-  const { t } = useT()
-  return (
-    <HStack gap={4} wrap="wrap">
-      <HStack gap={1} vAlign="center">
-        <span className="ep-dot ep-dot-covered" aria-hidden="true" />
-        <Text type="code" color="secondary">{t('library_legend_covered')}</Text>
-      </HStack>
-      <HStack gap={1} vAlign="center">
-        <span className="ep-dot ep-dot-hardsub" aria-hidden="true" />
-        <Text type="code" color="secondary">{t('library_legend_hardsub')}</Text>
-      </HStack>
-      <HStack gap={1} vAlign="center">
-        <span className="ep-dot ep-dot-missing" aria-hidden="true" />
-        <Text type="code" color="secondary">{t('library_legend_missing')}</Text>
-      </HStack>
-      <HStack gap={1} vAlign="center">
-        <span className="ep-dot ep-dot-throttled" aria-hidden="true" />
-        <Text type="code" color="secondary">{t('library_legend_throttled')}</Text>
-      </HStack>
-      <HStack gap={1} vAlign="center">
-        <span className="ep-dot ep-dot-partial" aria-hidden="true" />
-        <Text type="code" color="secondary">{t('library_legend_partial')}</Text>
-      </HStack>
-      <HStack gap={1} vAlign="center">
-        <span className="ep-cell-dashed-swatch" aria-hidden="true" />
-        <Text type="code" color="secondary">{t('library_legend_dashed')}</Text>
-      </HStack>
-    </HStack>
-  )
-}
-
 export function SeriesPage({ detail }: Props) {
-  const { t, lang } = useT()
-  const [selection, setSelection] = useState<Selection | null>(null)
-  const now = Date.now()
-
-  const onSelectCell = (season: number, cell: GridCell) => {
-    setSelection((prev) => (prev && prev.season === season && prev.cell.episode === cell.episode ? null : { season, cell }))
-  }
+  const { t } = useT()
 
   if (detail.loading && !detail.data) {
     return (
@@ -166,55 +78,39 @@ export function SeriesPage({ detail }: Props) {
   const { series, seasons } = detail.data
   const title = series.chineseTitle ?? series.name
   const originalName = series.chineseTitle && series.chineseTitle !== series.name ? series.name : null
-  const selectedSeason = selection ? seasons.find((s) => s.season === selection.season) : undefined
+  const now = Date.now()
+  // 顶部覆盖汇总喂 FactsRail：跨季合计（沿用 buildGridCells/tallyGridCells 同一事实源）。
+  const totals = seasons.reduce(
+    (acc, s) => {
+      const ta = tallyGridCells(buildGridCells(s, now))
+      return { covered: acc.covered + ta.covered, total: acc.total + ta.total, embedded: acc.embedded + ta.embedded }
+    },
+    { covered: 0, total: 0, embedded: 0 },
+  )
+  const langs = [...new Set(seasons.flatMap((s) => s.coverage.map((c) => c.lang)))].sort()
 
   return (
     <Section padding={4}>
       <VStack gap={6}>
-        <HStack gap={4}>
-          <div className="library-detail-header-poster">
-            <PosterThumb posterPath={series.posterPath} name={title} />
-          </div>
-          <VStack gap={1}>
-            <HStack gap={2} vAlign="center">
-              <Text type="large" weight="semibold">{title}</Text>
-              <Text type="code" color="secondary">{series.id}</Text>
-            </HStack>
-            <Text type="supporting" color="secondary">
-              {[originalName, series.year ? String(series.year) : null].filter(Boolean).join(' · ')}
-            </Text>
-            {series.layoutNonstandard ? (
-              <Text type="supporting" color="secondary">
-                {t('library_detail_layout_nonstandard')}
-              </Text>
-            ) : null}
-          </VStack>
-        </HStack>
-
+        <SeriesHero
+          name={title}
+          originalName={originalName}
+          year={series.year}
+          seriesId={series.id}
+          posterPath={series.posterPath}
+          backdropPath={series.backdropPath}
+          overview={series.overview}
+        />
+        {series.layoutNonstandard ? (
+          <Text type="supporting" color="secondary">{t('library_detail_layout_nonstandard')}</Text>
+        ) : null}
+        <FactsRail covered={totals.covered} total={totals.total} embedded={totals.embedded} langs={langs} />
         <VStack gap={6}>
           {seasons.map((season) => (
-            <SeasonBlock
-              key={season.season}
-              season={season}
-              now={now}
-              lang={lang}
-              isSelected={(cell) => selection?.season === season.season && selection.cell.episode === cell.episode}
-              onSelectCell={onSelectCell}
-            />
+            <SeasonAccordion key={season.season} season={season} now={now} defaultOpen={seasons.length === 1} />
           ))}
         </VStack>
-
-        <Legend />
       </VStack>
-
-      {selection && selectedSeason ? (
-        <EpisodeDetail
-          season={selection.season}
-          cell={selection.cell}
-          coverage={selectedSeason.coverage}
-          onClose={() => setSelection(null)}
-        />
-      ) : null}
     </Section>
   )
 }

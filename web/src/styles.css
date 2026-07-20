@@ -334,43 +334,6 @@
   border: 1px dashed var(--color-text-disabled);
 }
 
-/* ---- 右侧详情板（EpisodeDetail）——固定、不跳页不弹 modal（DESIGN.md §5/§6）。 ----
-   top 硬编码 46px = AppShell TopNav 的实测渲染高度（.astryx-app-shell-header，
-   contentPadding/variant 不变的前提下是个稳定值）。没用 CSS 变量兜底：Astryx 内部虽然定义了
-   --appshell-header-height，但只在它自己另一套"sticky content"用法里才会真的被赋值，本项目
-   现在的 AppShell 用法下这个变量从没被设置过（浏览器里 getComputedStyle 实测为空字符串，
-   会静默 fallback 到 0px，比硬编码 46px 更不可靠）。TopNav/AppShell 布局如果改了，
-   这个数字要跟着重新量一次——用浏览器量 .astryx-app-shell-header 的 getBoundingClientRect().height。 */
-.library-detail-panel {
-  position: fixed;
-  top: 46px;
-  bottom: 0;
-  right: 0;
-  width: 360px;
-  max-width: 90vw;
-  overflow-y: auto;
-  background: var(--color-background-card);
-  border-left: 1px solid var(--color-border);
-  z-index: 20;
-}
-.library-detail-close {
-  display: inline-flex;
-  align-items: center;
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  padding: 2px;
-  border-radius: var(--radius-inner, 4px);
-}
-.library-detail-close:hover {
-  background: var(--color-background-surface);
-}
-.library-detail-close:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
 /* dashboard-F4（Workflow tab）：两列（Gaps | Activity，验收修复轮一 Task V4 design §B 叙事化
    重排，原三泳道 Pending/Passes/Workers 收拢——Passes/Workers 折进右列 ActivityFeed 一个组件）
    + Inngest 式痕迹行——原子 CSS 集中区，同上面几段一样的理由（密集技术网格/hover 揭示工具条，
