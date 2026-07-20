@@ -18,7 +18,11 @@
 [[glue-layer-campaign-progress]] 的 docs/design/2026-07-20-dashboard-robustness-audit.md。
 位置:web/src/library/SeriesPage.tsx(EpisodeDetail 面板)、episodeState.ts、text.ts 的覆盖句。
 
-### B. 【详情页重设计·需 brainstorming + visual companion】
+### B. 【详情页重设计·需 brainstorming + visual companion】 —— ✅ 已完成（2026-07-20，branch feat/detail-page-redesign）
+> spec: docs/design/2026-07-20-detail-page-redesign-design.md · plan: docs/superpowers/plans/2026-07-20-detail-page-redesign.md（本地）
+> 落地=hero 渐变背景图 + FactsRail + 季手风琴 + 逐集剧照 + 点集行内展开该集 TMDB 简介 + 删右侧面板 + 超长季 50 集回落格阵。
+> 后端补 TMDB 富化管线（series overview/backdrop + 逐集 overview/air_date/still_path，含存量库回填修补 de19112）。
+> 16 提交，root 1717 + web 291 全绿、双端 tsc 净。待并回 main。原始需求：
 **用户不满**:详情页"小家子气"、空白多、**没充分利用 TMDB 元数据能力**。要:
 1. 展现**剧集 description**(TMDB series overview)。
 2. **点击某一集 → 展现那一集的 description(TMDB episode overview)!!!**(用户重点强调)。
