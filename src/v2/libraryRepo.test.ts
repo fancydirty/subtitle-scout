@@ -348,9 +348,29 @@ describe('媒体镜像', () => {
   it('listSeriesNeedingEnrich: genres IS NULL 的行（含空名占位建行——其 genres 必为 NULL），最多 limit 条', () => {
     lib.upsertSeries({ id: 's1', name: '' }) // 空名占位（P6 认领债务）——genres NULL，经 genres 臂落网
     lib.upsertSeries({ id: 's2', name: 'Show B' }) // genres 未富化（NULL）
-    lib.upsertSeries({ id: 's3', name: 'Show C', genres: [16] }) // 已富化，不是候选
+    // 详情页重设计后"已富化不是候选"需连 overview 也落齐——否则会经放宽后的 overview IS NULL 臂
+    // 被拉回候选（下方专测覆盖该新臂）。
+    lib.upsertSeries({ id: 's3', name: 'Show C', genres: [16], overview: 'ov' }) // 已富化（含 overview），不是候选
     const rows = lib.listSeriesNeedingEnrich(10)
     expect(rows.map((r) => r.id).sort()).toEqual(['s1', 's2'])
+  })
+
+  it('listSeriesNeedingEnrich: genres 已富化但 overview NULL 的真名剧（存量回填缺口）是候选', () => {
+    // 详情页重设计 item B：overview/backdrop 是后加列，存量已富化剧（genres 早非 NULL）overview
+    // 恒 NULL。第二臂 overview IS NULL AND name != '' 把它们拉回候选一次性补拍；overview 落值后
+    // 脱离该臂自熄火，无 re-enrich 风暴。
+    lib.upsertSeries({ id: 's1', name: 'Stock Show', genres: [16] }) // genres 有、overview NULL、真名 → 候选
+    expect(lib.listSeriesNeedingEnrich(10).map((r) => r.id)).toEqual(['s1'])
+    // 回填 overview 后脱离候选（自熄火）
+    lib.applyEnrichment('s1', { overview: 'now filled' })
+    expect(lib.listSeriesNeedingEnrich(10)).toEqual([])
+  })
+
+  it('listSeriesNeedingEnrich: overview 臂受 name != \'\' 护栏——空名死 id（genres 已落定论）不因 overview NULL 复活候选', () => {
+    // D6 熄火不变式的护栏：空名占位/404 死 id 一旦 genres 落非 NULL 定论（如 []）即须彻底退出候选，
+    // 绝不能因 overview 永远拿不到而经 overview 臂永留候选空转烧 TMDB 配额。name != '' 护栏挡住它。
+    lib.upsertSeries({ id: 'dead', name: '', genres: [] }) // 空名 + genres 定论 + overview NULL
+    expect(lib.listSeriesNeedingEnrich(10)).toEqual([])
   })
 
   it('listSeriesNeedingEnrich: 空名但 TMDB 已有定论（404 → genres=[]）的行熄火，不再是候选', () => {
@@ -404,6 +424,19 @@ describe('媒体镜像', () => {
     expect(row2.poster_path).toBe('ptag2')
     expect(row2.year).toBe(2099)
     expect(row2.genres).toBe(JSON.stringify([35]))
+  })
+
+  it('applyEnrichment：overview/backdrop 只在现列 NULL 时才回填，非空不覆盖', () => {
+    // 详情页重设计 item B：存量已富化剧经放宽后的候选谓词重入后，由 applyEnrichment 把 getDetails
+    // 的 overview/backdrop 落进原本 NULL 的两列——同 poster/genres 的"宁可不写不可覆盖"语义。
+    lib.upsertSeries({ id: 's1', name: 'Stock Show', genres: [16] }) // overview/backdrop NULL
+    lib.applyEnrichment('s1', { overview: 'filled ov', backdropPath: '/bd.jpg' })
+    let row = db.prepare(`SELECT overview, backdrop_path FROM series WHERE id='s1'`).get() as { overview: string | null; backdrop_path: string | null }
+    expect(row).toEqual({ overview: 'filled ov', backdrop_path: '/bd.jpg' })
+    // 现列已非 NULL → 后续 enrich 不覆盖
+    lib.applyEnrichment('s1', { overview: 'other', backdropPath: '/other.jpg' })
+    row = db.prepare(`SELECT overview, backdrop_path FROM series WHERE id='s1'`).get() as { overview: string | null; backdrop_path: string | null }
+    expect(row).toEqual({ overview: 'filled ov', backdrop_path: '/bd.jpg' })
   })
 
   it('applyEnrichment：字段缺省（undefined）视同没查到，不误写', () => {

@@ -1039,6 +1039,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             name: enrich.originalTitle,
             chineseTitle: enrich.chineseTitle,
             posterPath: enrich.posterPath,
+            overview: enrich.overview,
+            backdropPath: enrich.backdropPath,
             year: enrich.year,
             genres: enrich.genres,
             providerIds: mergedProviderIds,
