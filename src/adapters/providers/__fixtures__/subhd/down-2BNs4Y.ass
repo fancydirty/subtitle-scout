@@ -1,0 +1,812 @@
+[Script Info]
+Title: Bilingual Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: Yes
+PlayResX: 1920
+PlayResY: 1080
+Collisions: Normal
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,70,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,35,1
+Style: Secondary,Noto Sans,55,&H003CF7F4,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,35,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:07.67,0:00:10.67,Secondary,NTP,0000,0000,0000,,The story of life on Earth...
+Dialogue: 0,0:00:07.67,0:00:10.67,Default,NTP,0000,0000,0000,,地球生命的故事……
+Dialogue: 0,0:00:11.63,0:00:13.63,Secondary,NTP,0000,0000,0000,,...is marked by a series of
+Dialogue: 0,0:00:11.63,0:00:13.63,Default,NTP,0000,0000,0000,,……以一系列……为标志
+Dialogue: 0,0:00:13.63,0:00:16.51,Secondary,NTP,0000,0000,0000,,catastrophic extinction events.
+Dialogue: 0,0:00:13.63,0:00:16.51,Default,NTP,0000,0000,0000,,灾难性灭绝事件。
+Dialogue: 0,0:00:16.51,0:00:20.72,Secondary,NTP,0000,0000,0000,,Natural disasters which have threatened to wipe out
+Dialogue: 0,0:00:16.51,0:00:20.72,Default,NTP,0000,0000,0000,,威胁要摧毁一切的自然灾害
+Dialogue: 0,0:00:20.72,0:00:24.02,Secondary,NTP,0000,0000,0000,,many of the creatures that call our planet home.
+Dialogue: 0,0:00:20.72,0:00:24.02,Default,NTP,0000,0000,0000,,许多以我们星球为家的生物。
+Dialogue: 0,0:00:24.56,0:00:28.06,Secondary,NTP,0000,0000,0000,,But after every brush with death,
+Dialogue: 0,0:00:24.56,0:00:28.06,Default,NTP,0000,0000,0000,,但每次与死神擦肩而过之后，
+Dialogue: 0,0:00:28.06,0:00:29.73,Secondary,NTP,0000,0000,0000,,life has come back
+Dialogue: 0,0:00:28.06,0:00:29.73,Default,NTP,0000,0000,0000,,生活又回来了。
+Dialogue: 0,0:00:31.86,0:00:33.78,Secondary,NTP,0000,0000,0000,,even stronger.
+Dialogue: 0,0:00:31.86,0:00:33.78,Default,NTP,0000,0000,0000,,甚至更强。
+Dialogue: 0,0:00:34.70,0:00:37.78,Secondary,NTP,0000,0000,0000,,One of the most devastating catastrophes took place
+Dialogue: 0,0:00:34.70,0:00:37.78,Default,NTP,0000,0000,0000,,其中一场最具破坏性的灾难发生了
+Dialogue: 0,0:00:37.78,0:00:40.29,Secondary,NTP,0000,0000,0000,,66 million years ago,
+Dialogue: 0,0:00:37.78,0:00:40.29,Default,NTP,0000,0000,0000,,6600万年前，
+Dialogue: 0,0:00:42.08,0:00:44.04,Secondary,NTP,0000,0000,0000,,an asteroid hit the Earth
+Dialogue: 0,0:00:42.08,0:00:44.04,Default,NTP,0000,0000,0000,,一颗小行星撞击了地球
+Dialogue: 0,0:00:44.04,0:00:48.92,Secondary,NTP,0000,0000,0000,,with the destructive force of nine billion atomic bombs...
+Dialogue: 0,0:00:44.04,0:00:48.92,Default,NTP,0000,0000,0000,,拥有相当于90亿颗原子弹的破坏力……
+Dialogue: 0,0:00:50.38,0:00:53.76,Secondary,NTP,0000,0000,0000,,ending the reign of the giant dinosaurs.
+Dialogue: 0,0:00:50.38,0:00:53.76,Default,NTP,0000,0000,0000,,终结了巨型恐龙的统治。
+Dialogue: 0,0:00:58.39,0:01:00.51,Secondary,NTP,0000,0000,0000,,But it wasn’t the blast that wiped them out.
+Dialogue: 0,0:00:58.39,0:01:00.51,Default,NTP,0000,0000,0000,,但真正将他们消灭的并不是爆炸。
+Dialogue: 0,0:01:01.47,0:01:05.14,Secondary,NTP,0000,0000,0000,,It was the decade of darkness that followed.
+Dialogue: 0,0:01:01.47,0:01:05.14,Default,NTP,0000,0000,0000,,接下来是长达十年的黑暗时期。
+Dialogue: 0,0:01:14.44,0:01:16.74,Secondary,NTP,0000,0000,0000,,After the skies cleared,
+Dialogue: 0,0:01:14.44,0:01:16.74,Default,NTP,0000,0000,0000,,天空放晴后，
+Dialogue: 0,0:01:17.57,0:01:21.07,Secondary,NTP,0000,0000,0000,,the Earth would belong to a new dynasty of animals
+Dialogue: 0,0:01:17.57,0:01:21.07,Default,NTP,0000,0000,0000,,地球将属于一个新的动物王朝。
+Dialogue: 0,0:01:21.08,0:01:23.95,Secondary,NTP,0000,0000,0000,,we are a lot more familiar with.
+Dialogue: 0,0:01:21.08,0:01:23.95,Default,NTP,0000,0000,0000,,我们对此更加熟悉。
+Dialogue: 0,0:01:28.17,0:01:29.58,Secondary,NTP,0000,0000,0000,,Mammals.
+Dialogue: 0,0:01:28.17,0:01:29.58,Default,NTP,0000,0000,0000,,哺乳动物。
+Dialogue: 0,0:01:53.44,0:01:55.82,Secondary,NTP,0000,0000,0000,,66 million years ago
+Dialogue: 0,0:01:53.44,0:01:55.82,Default,NTP,0000,0000,0000,,6600万年前
+Dialogue: 0,0:01:57.36,0:02:00.03,Secondary,NTP,0000,0000,0000,,life on Earth is thriving.
+Dialogue: 0,0:01:57.36,0:02:00.03,Default,NTP,0000,0000,0000,,地球上的生命正在蓬勃发展。
+Dialogue: 0,0:02:02.91,0:02:05.70,Secondary,NTP,0000,0000,0000,,Polar forests cover the high arctic,
+Dialogue: 0,0:02:02.91,0:02:05.70,Default,NTP,0000,0000,0000,,极地森林覆盖着北极高纬度地区。
+Dialogue: 0,0:02:10.17,0:02:11.63,Secondary,NTP,0000,0000,0000,,Winter is over
+Dialogue: 0,0:02:10.17,0:02:11.63,Default,NTP,0000,0000,0000,,冬天结束了
+Dialogue: 0,0:02:12.13,0:02:16.00,Secondary,NTP,0000,0000,0000,,and months of total darkness have come to an end.
+Dialogue: 0,0:02:12.13,0:02:16.00,Default,NTP,0000,0000,0000,,长达数月的完全黑暗终于结束了。
+Dialogue: 0,0:02:19.93,0:02:22.76,Secondary,NTP,0000,0000,0000,,At last Spring is here.
+Dialogue: 0,0:02:19.93,0:02:22.76,Default,NTP,0000,0000,0000,,春天终于来了。
+Dialogue: 0,0:02:27.81,0:02:30.48,Secondary,NTP,0000,0000,0000,,Sunlight shines on this lost world
+Dialogue: 0,0:02:27.81,0:02:30.48,Default,NTP,0000,0000,0000,,阳光照耀着这个失落的世界
+Dialogue: 0,0:02:31.19,0:02:34.15,Secondary,NTP,0000,0000,0000,,where dinosaurs reign supreme.
+Dialogue: 0,0:02:31.19,0:02:34.15,Default,NTP,0000,0000,0000,,恐龙称霸天下。
+Dialogue: 0,0:02:38.74,0:02:42.62,Secondary,NTP,0000,0000,0000,,This Nanuqsaurus is enjoying the spring air.
+Dialogue: 0,0:02:38.74,0:02:42.62,Default,NTP,0000,0000,0000,,这只纳努克龙正在享受春天的气息。
+Dialogue: 0,0:02:46.33,0:02:48.79,Secondary,NTP,0000,0000,0000,,He’s a gigantic arctic predator,
+Dialogue: 0,0:02:46.33,0:02:48.79,Default,NTP,0000,0000,0000,,他是北极的巨型掠食者，
+Dialogue: 0,0:02:49.66,0:02:52.50,Secondary,NTP,0000,0000,0000,,weighing as much as three polar bears.
+Dialogue: 0,0:02:49.66,0:02:52.50,Default,NTP,0000,0000,0000,,重量相当于三只北极熊。
+Dialogue: 0,0:02:55.84,0:02:59.26,Secondary,NTP,0000,0000,0000,,An older male, he’s seen a lot of life.
+Dialogue: 0,0:02:55.84,0:02:59.26,Default,NTP,0000,0000,0000,,他年纪较大，阅历丰富。
+Dialogue: 0,0:03:06.35,0:03:08.81,Secondary,NTP,0000,0000,0000,,He still wears his white winter feathers.
+Dialogue: 0,0:03:06.35,0:03:08.81,Default,NTP,0000,0000,0000,,他仍然披着白色的冬羽。
+Dialogue: 0,0:03:09.98,0:03:11.90,Secondary,NTP,0000,0000,0000,,Good for camouflage in the snow,
+Dialogue: 0,0:03:09.98,0:03:11.90,Default,NTP,0000,0000,0000,,适合在雪地里伪装。
+Dialogue: 0,0:03:13.06,0:03:14.52,Secondary,NTP,0000,0000,0000,,but he sticks out a bit
+Dialogue: 0,0:03:13.06,0:03:14.52,Default,NTP,0000,0000,0000,,但他有点显眼。
+Dialogue: 0,0:03:14.52,0:03:16.61,Secondary,NTP,0000,0000,0000,,now that the trees are turning green.
+Dialogue: 0,0:03:14.52,0:03:16.61,Default,NTP,0000,0000,0000,,现在树叶都变绿了。
+Dialogue: 0,0:03:22.70,0:03:24.95,Secondary,NTP,0000,0000,0000,,Don’t let the peaceful forest fool you,
+Dialogue: 0,0:03:22.70,0:03:24.95,Default,NTP,0000,0000,0000,,不要被宁静的森林所迷惑，
+Dialogue: 0,0:03:26.70,0:03:28.58,Secondary,NTP,0000,0000,0000,,this guy knows another rival
+Dialogue: 0,0:03:26.70,0:03:28.58,Default,NTP,0000,0000,0000,,这家伙认识另一个对手
+Dialogue: 0,0:03:28.58,0:03:31.08,Secondary,NTP,0000,0000,0000,,could be hiding anywhere in here.
+Dialogue: 0,0:03:28.58,0:03:31.08,Default,NTP,0000,0000,0000,,它可能藏在这里的任何地方。
+Dialogue: 0,0:03:33.83,0:03:37.92,Secondary,NTP,0000,0000,0000,,A surprise encounter could result in a fight to the death.
+Dialogue: 0,0:03:33.83,0:03:37.92,Default,NTP,0000,0000,0000,,突如其来的遭遇可能导致生死搏斗。
+Dialogue: 0,0:03:40.92,0:03:43.89,Secondary,NTP,0000,0000,0000,,So, when he stumbles into a female’s nesting area,
+Dialogue: 0,0:03:40.92,0:03:43.89,Default,NTP,0000,0000,0000,,所以，当他误入雌鸟的筑巢区域时，
+Dialogue: 0,0:03:46.05,0:03:47.64,Secondary,NTP,0000,0000,0000,,he is wary.
+Dialogue: 0,0:03:46.05,0:03:47.64,Default,NTP,0000,0000,0000,,他很谨慎。
+Dialogue: 0,0:04:03.82,0:04:05.41,Secondary,NTP,0000,0000,0000,,But there’s nothing to worry about.
+Dialogue: 0,0:04:03.82,0:04:05.41,Default,NTP,0000,0000,0000,,但没什么好担心的。
+Dialogue: 0,0:04:07.33,0:04:09.24,Secondary,NTP,0000,0000,0000,,She is his mate.
+Dialogue: 0,0:04:07.33,0:04:09.24,Default,NTP,0000,0000,0000,,她是他的伴侣。
+Dialogue: 0,0:04:10.41,0:04:13.67,Secondary,NTP,0000,0000,0000,,They have been together for twelve years.
+Dialogue: 0,0:04:10.41,0:04:13.67,Default,NTP,0000,0000,0000,,他们在一起已经十二年了。
+Dialogue: 0,0:04:14.29,0:04:15.96,Secondary,NTP,0000,0000,0000,,And they’ve had each other’s backs
+Dialogue: 0,0:04:14.29,0:04:15.96,Default,NTP,0000,0000,0000,,他们一直互相支持。
+Dialogue: 0,0:04:15.96,0:04:18.75,Secondary,NTP,0000,0000,0000,,through many extreme Arctic seasons.
+Dialogue: 0,0:04:15.96,0:04:18.75,Default,NTP,0000,0000,0000,,经历了北极许多极端寒冷的季节。
+Dialogue: 0,0:04:27.14,0:04:30.43,Secondary,NTP,0000,0000,0000,,Springtime is a relief from the winter darkness,
+Dialogue: 0,0:04:27.14,0:04:30.43,Default,NTP,0000,0000,0000,,春天是冬日黑暗后的曙光，
+Dialogue: 0,0:04:30.89,0:04:33.52,Secondary,NTP,0000,0000,0000,,but the months of plenty are yet to come
+Dialogue: 0,0:04:30.89,0:04:33.52,Default,NTP,0000,0000,0000,,但丰收的月份尚未到来。
+Dialogue: 0,0:04:33.98,0:04:38.48,Secondary,NTP,0000,0000,0000,,when all the animals here can bask in a long hot summer
+Dialogue: 0,0:04:33.98,0:04:38.48,Default,NTP,0000,0000,0000,,当这里所有的动物都能享受漫长炎热的夏天时
+Dialogue: 0,0:04:38.90,0:04:40.82,Secondary,NTP,0000,0000,0000,,of 24 hour sun.
+Dialogue: 0,0:04:38.90,0:04:40.82,Default,NTP,0000,0000,0000,,24小时不间断的阳光。
+Dialogue: 0,0:04:42.82,0:04:44.86,Secondary,NTP,0000,0000,0000,,Life is starting to gear up.
+Dialogue: 0,0:04:42.82,0:04:44.86,Default,NTP,0000,0000,0000,,生活节奏开始加快了。
+Dialogue: 0,0:04:44.86,0:04:46.41,Secondary,NTP,0000,0000,0000,,Trees take leaf,
+Dialogue: 0,0:04:44.86,0:04:46.41,Default,NTP,0000,0000,0000,,树木发芽，
+Dialogue: 0,0:04:48.49,0:04:51.03,Secondary,NTP,0000,0000,0000,,warming waters tell these mayflies,
+Dialogue: 0,0:04:48.49,0:04:51.03,Default,NTP,0000,0000,0000,,水温升高告诉这些蜉蝣：
+Dialogue: 0,0:04:51.04,0:04:52.54,Secondary,NTP,0000,0000,0000,,that it’s time to hatch.
+Dialogue: 0,0:04:51.04,0:04:52.54,Default,NTP,0000,0000,0000,,是时候孵化了。
+Dialogue: 0,0:04:54.29,0:04:57.88,Secondary,NTP,0000,0000,0000,,Everywhere there is renewal.
+Dialogue: 0,0:04:54.29,0:04:57.88,Default,NTP,0000,0000,0000,,处处都在复苏。
+Dialogue: 0,0:05:03.59,0:05:06.51,Secondary,NTP,0000,0000,0000,,It’s the same for our Nanuqsaurus couple.
+Dialogue: 0,0:05:03.59,0:05:06.51,Default,NTP,0000,0000,0000,,我们的纳努克龙夫妇也是如此。
+Dialogue: 0,0:05:08.72,0:05:12.06,Secondary,NTP,0000,0000,0000,,She has just laid her eggs and they are getting
+Dialogue: 0,0:05:08.72,0:05:12.06,Default,NTP,0000,0000,0000,,她刚下完蛋，蛋正在孵化。
+Dialogue: 0,0:05:12.06,0:05:13.60,Secondary,NTP,0000,0000,0000,,ready to have a family.
+Dialogue: 0,0:05:12.06,0:05:13.60,Default,NTP,0000,0000,0000,,准备组建家庭。
+Dialogue: 0,0:05:15.52,0:05:18.19,Secondary,NTP,0000,0000,0000,,Our new mom has built a nest of leaves that
+Dialogue: 0,0:05:15.52,0:05:18.19,Default,NTP,0000,0000,0000,,我们的新妈妈用树叶搭了个窝，
+Dialogue: 0,0:05:18.19,0:05:22.40,Secondary,NTP,0000,0000,0000,,not only protects her eggs but also generates warmth
+Dialogue: 0,0:05:18.19,0:05:22.40,Default,NTP,0000,0000,0000,,它不仅能保护卵，还能产生热量。
+Dialogue: 0,0:05:22.40,0:05:24.40,Secondary,NTP,0000,0000,0000,,which helps them incubate.
+Dialogue: 0,0:05:22.40,0:05:24.40,Default,NTP,0000,0000,0000,,这有助于它们孵化。
+Dialogue: 0,0:05:32.95,0:05:36.16,Secondary,NTP,0000,0000,0000,,But a nice warm home like this has also
+Dialogue: 0,0:05:32.95,0:05:36.16,Default,NTP,0000,0000,0000,,但像这样温馨舒适的家也有……
+Dialogue: 0,0:05:36.16,0:05:38.46,Secondary,NTP,0000,0000,0000,,attracted a sleepy squatter.
+Dialogue: 0,0:05:36.16,0:05:38.46,Default,NTP,0000,0000,0000,,吸引了一个昏昏欲睡的非法居住者。
+Dialogue: 0,0:05:41.17,0:05:46.67,Secondary,NTP,0000,0000,0000,,This tiny mammal, an Unnuakomys, is napping the day away.
+Dialogue: 0,0:05:41.17,0:05:46.67,Default,NTP,0000,0000,0000,,这只名叫乌努阿科米斯的小哺乳动物正在打盹儿。
+Dialogue: 0,0:05:48.93,0:05:50.80,Secondary,NTP,0000,0000,0000,,But he’s not bothering anyone,
+Dialogue: 0,0:05:48.93,0:05:50.80,Default,NTP,0000,0000,0000,,但他并没有打扰任何人。
+Dialogue: 0,0:05:51.85,0:05:53.97,Secondary,NTP,0000,0000,0000,,so our couple doesn’t pay him any mind.
+Dialogue: 0,0:05:51.85,0:05:53.97,Default,NTP,0000,0000,0000,,所以这对夫妇根本没把他放在眼里。
+Dialogue: 0,0:06:03.02,0:06:06.61,Secondary,NTP,0000,0000,0000,,A strange animal call drifts up from the valley below.
+Dialogue: 0,0:06:03.02,0:06:06.61,Default,NTP,0000,0000,0000,,山谷下方飘来一阵奇怪的动物叫声。
+Dialogue: 0,0:06:08.45,0:06:11.45,Secondary,NTP,0000,0000,0000,,Mom finishes covering her eggs.
+Dialogue: 0,0:06:08.45,0:06:11.45,Default,NTP,0000,0000,0000,,妈妈盖好了鸡蛋。
+Dialogue: 0,0:06:14.20,0:06:17.62,Secondary,NTP,0000,0000,0000,,Now it’s time to hunt.
+Dialogue: 0,0:06:14.20,0:06:17.62,Default,NTP,0000,0000,0000,,现在是狩猎的时候了。
+Dialogue: 0,0:06:27.34,0:06:28.88,Secondary,NTP,0000,0000,0000,,The pair work well together,
+Dialogue: 0,0:06:27.34,0:06:28.88,Default,NTP,0000,0000,0000,,他们俩合作得很好。
+Dialogue: 0,0:06:29.59,0:06:32.01,Secondary,NTP,0000,0000,0000,,they’ve done this many times before.
+Dialogue: 0,0:06:29.59,0:06:32.01,Default,NTP,0000,0000,0000,,他们以前多次这样做过。
+Dialogue: 0,0:06:39.98,0:06:41.52,Secondary,NTP,0000,0000,0000,,Edmontosaurus.
+Dialogue: 0,0:06:39.98,0:06:41.52,Default,NTP,0000,0000,0000,,埃德蒙顿龙。
+Dialogue: 0,0:06:42.48,0:06:46.07,Secondary,NTP,0000,0000,0000,,A vast herd of these herbivores have arrived from the south
+Dialogue: 0,0:06:42.48,0:06:46.07,Default,NTP,0000,0000,0000,,一大群这样的食草动物从南方迁徙而来。
+Dialogue: 0,0:06:46.40,0:06:48.49,Secondary,NTP,0000,0000,0000,,in search of plants to graze.
+Dialogue: 0,0:06:46.40,0:06:48.49,Default,NTP,0000,0000,0000,,寻找可供放牧的植物。
+Dialogue: 0,0:06:49.86,0:06:54.58,Secondary,NTP,0000,0000,0000,,But these beasts won’t be easy prey for our Nanuqsaurus couple.
+Dialogue: 0,0:06:49.86,0:06:54.58,Default,NTP,0000,0000,0000,,但对于我们的纳努克龙夫妇来说，这些野兽可不是容易对付的猎物。
+Dialogue: 0,0:06:56.24,0:07:00.21,Secondary,NTP,0000,0000,0000,,An adult Edmontosaurus is as long as a school bus,
+Dialogue: 0,0:06:56.24,0:07:00.21,Default,NTP,0000,0000,0000,,成年埃德蒙顿龙的体长和一辆校车一样长。
+Dialogue: 0,0:07:00.75,0:07:03.75,Secondary,NTP,0000,0000,0000,,far too large even for our two predators.
+Dialogue: 0,0:07:00.75,0:07:03.75,Default,NTP,0000,0000,0000,,即使对于我们这里的两种捕食者来说，体型也太大了。
+Dialogue: 0,0:07:06.17,0:07:08.51,Secondary,NTP,0000,0000,0000,,But they have a plan...
+Dialogue: 0,0:07:06.17,0:07:08.51,Default,NTP,0000,0000,0000,,但他们早有计划……
+Dialogue: 0,0:07:12.30,0:07:14.51,Secondary,NTP,0000,0000,0000,,and wait for their moment.
+Dialogue: 0,0:07:12.30,0:07:14.51,Default,NTP,0000,0000,0000,,静待时机。
+Dialogue: 0,0:07:22.06,0:07:26.44,Secondary,NTP,0000,0000,0000,,Right on time some teenagers arrive.
+Dialogue: 0,0:07:22.06,0:07:26.44,Default,NTP,0000,0000,0000,,几个青少年准时到达。
+Dialogue: 0,0:07:34.28,0:07:38.45,Secondary,NTP,0000,0000,0000,,And like most teenagers they are impatient.
+Dialogue: 0,0:07:34.28,0:07:38.45,Default,NTP,0000,0000,0000,,和大多数青少年一样，他们缺乏耐心。
+Dialogue: 0,0:07:42.04,0:07:45.96,Secondary,NTP,0000,0000,0000,,What they don’t realize is they have bigger problems
+Dialogue: 0,0:07:42.04,0:07:45.96,Default,NTP,0000,0000,0000,,他们没有意识到，他们面临着更大的问题。
+Dialogue: 0,0:07:45.96,0:07:47.96,Secondary,NTP,0000,0000,0000,,than who gets to eat first.
+Dialogue: 0,0:07:45.96,0:07:47.96,Default,NTP,0000,0000,0000,,比谁先吃更重要。
+Dialogue: 0,0:07:51.42,0:07:53.80,Secondary,NTP,0000,0000,0000,,What looks like a dim star,
+Dialogue: 0,0:07:51.42,0:07:53.80,Default,NTP,0000,0000,0000,,看起来像一颗昏暗的星星，
+Dialogue: 0,0:07:55.26,0:07:58.43,Secondary,NTP,0000,0000,0000,,is actually an asteroid.
+Dialogue: 0,0:07:55.26,0:07:58.43,Default,NTP,0000,0000,0000,,它实际上是一颗小行星。
+Dialogue: 0,0:07:59.97,0:08:02.31,Secondary,NTP,0000,0000,0000,,Seven and a half-miles wide,
+Dialogue: 0,0:07:59.97,0:08:02.31,Default,NTP,0000,0000,0000,,宽七英里半，
+Dialogue: 0,0:08:02.31,0:08:08.15,Secondary,NTP,0000,0000,0000,,hurtling towards the Earth at 45,000 miles per hour.
+Dialogue: 0,0:08:02.31,0:08:08.15,Default,NTP,0000,0000,0000,,以每小时 45,000 英里的速度向地球疾驰而来。
+Dialogue: 0,0:08:15.82,0:08:21.20,Secondary,NTP,0000,0000,0000,,For the dinosaurs this is the end of the world.
+Dialogue: 0,0:08:15.82,0:08:21.20,Default,NTP,0000,0000,0000,,对恐龙来说，这就是世界末日。
+Dialogue: 0,0:08:29.04,0:08:31.34,Secondary,NTP,0000,0000,0000,,66 million years ago
+Dialogue: 0,0:08:29.04,0:08:31.34,Default,NTP,0000,0000,0000,,6600万年前
+Dialogue: 0,0:08:31.34,0:08:34.42,Secondary,NTP,0000,0000,0000,,the climate is warm, and many species of
+Dialogue: 0,0:08:31.34,0:08:34.42,Default,NTP,0000,0000,0000,,气候温暖，适宜多种生物生存。
+Dialogue: 0,0:08:34.43,0:08:38.64,Secondary,NTP,0000,0000,0000,,plant and animal life thrive even at the poles.
+Dialogue: 0,0:08:34.43,0:08:38.64,Default,NTP,0000,0000,0000,,即使在两极，动植物也能繁衍生息。
+Dialogue: 0,0:08:40.06,0:08:42.56,Secondary,NTP,0000,0000,0000,,The dinosaurs rule the world
+Dialogue: 0,0:08:40.06,0:08:42.56,Default,NTP,0000,0000,0000,,恐龙统治世界
+Dialogue: 0,0:08:42.56,0:08:43.98,Secondary,NTP,0000,0000,0000,,for now.
+Dialogue: 0,0:08:42.56,0:08:43.98,Default,NTP,0000,0000,0000,,目前。
+Dialogue: 0,0:08:47.02,0:08:51.61,Secondary,NTP,0000,0000,0000,,They have no idea everything is about to change.
+Dialogue: 0,0:08:47.02,0:08:51.61,Default,NTP,0000,0000,0000,,他们丝毫没有意识到一切即将改变。
+Dialogue: 0,0:08:59.07,0:09:01.83,Secondary,NTP,0000,0000,0000,,4,500 miles to the south
+Dialogue: 0,0:08:59.07,0:09:01.83,Default,NTP,0000,0000,0000,,向南4500英里
+Dialogue: 0,0:09:01.83,0:09:05.08,Secondary,NTP,0000,0000,0000,,a giant asteroid has slammed into the Earth,
+Dialogue: 0,0:09:01.83,0:09:05.08,Default,NTP,0000,0000,0000,,一颗巨型小行星撞击了地球。
+Dialogue: 0,0:09:06.37,0:09:08.12,Secondary,NTP,0000,0000,0000,,unleashing the destructive force
+Dialogue: 0,0:09:06.37,0:09:08.12,Default,NTP,0000,0000,0000,,释放破坏力
+Dialogue: 0,0:09:08.13,0:09:11.59,Secondary,NTP,0000,0000,0000,,of nine billion atomic bombs.
+Dialogue: 0,0:09:08.13,0:09:11.59,Default,NTP,0000,0000,0000,,九十亿颗原子弹。
+Dialogue: 0,0:09:31.02,0:09:33.86,Secondary,NTP,0000,0000,0000,,Landing off the coast of what is now Mexico.
+Dialogue: 0,0:09:31.02,0:09:33.86,Default,NTP,0000,0000,0000,,在如今的墨西哥海岸附近登陆。
+Dialogue: 0,0:09:35.11,0:09:37.95,Secondary,NTP,0000,0000,0000,,The rock penetrates deep into the Earth’s crust,
+Dialogue: 0,0:09:35.11,0:09:37.95,Default,NTP,0000,0000,0000,,岩石深入地壳，
+Dialogue: 0,0:09:38.91,0:09:41.24,Secondary,NTP,0000,0000,0000,,which triggers mega tsunamis at sea.
+Dialogue: 0,0:09:38.91,0:09:41.24,Default,NTP,0000,0000,0000,,这会引发海上超级海啸。
+Dialogue: 0,0:09:42.91,0:09:45.75,Secondary,NTP,0000,0000,0000,,And releases a blast that incinerates everything
+Dialogue: 0,0:09:42.91,0:09:45.75,Default,NTP,0000,0000,0000,,然后释放出一股爆炸力，将一切都焚毁殆尽。
+Dialogue: 0,0:09:45.75,0:09:48.25,Secondary,NTP,0000,0000,0000,,on land within 1,000 miles.
+Dialogue: 0,0:09:45.75,0:09:48.25,Default,NTP,0000,0000,0000,,在方圆 1000 英里内的陆地上。
+Dialogue: 0,0:09:51.63,0:09:53.96,Secondary,NTP,0000,0000,0000,,But far away in the Arctic Circle
+Dialogue: 0,0:09:51.63,0:09:53.96,Default,NTP,0000,0000,0000,,但远在北极圈内
+Dialogue: 0,0:09:54.46,0:09:57.30,Secondary,NTP,0000,0000,0000,,devastation has yet to hit.
+Dialogue: 0,0:09:54.46,0:09:57.30,Default,NTP,0000,0000,0000,,灾难尚未真正降临。
+Dialogue: 0,0:10:01.14,0:10:07.31,Secondary,NTP,0000,0000,0000,,And though their world is about to end, the dinosaur predators
+Dialogue: 0,0:10:01.14,0:10:07.31,Default,NTP,0000,0000,0000,,尽管它们的世界即将终结，但恐龙捕食者
+Dialogue: 0,0:10:07.31,0:10:10.69,Secondary,NTP,0000,0000,0000,,continue to hunt as they have done for millions of years.
+Dialogue: 0,0:10:07.31,0:10:10.69,Default,NTP,0000,0000,0000,,它们会像数百万年来那样继续狩猎。
+Dialogue: 0,0:10:12.44,0:10:15.23,Secondary,NTP,0000,0000,0000,,The adolescent group have identified their target,
+Dialogue: 0,0:10:12.44,0:10:15.23,Default,NTP,0000,0000,0000,,青少年团体已经确定了他们的目标群体，
+Dialogue: 0,0:10:15.98,0:10:18.99,Secondary,NTP,0000,0000,0000,,a young Edmontosaurus with his mother
+Dialogue: 0,0:10:15.98,0:10:18.99,Default,NTP,0000,0000,0000,,一只幼年埃德蒙顿龙和它的母亲
+Dialogue: 0,0:10:19.41,0:10:20.99,Secondary,NTP,0000,0000,0000,,on the edge of the herd.
+Dialogue: 0,0:10:19.41,0:10:20.99,Default,NTP,0000,0000,0000,,在兽群边缘。
+Dialogue: 0,0:10:29.33,0:10:31.83,Secondary,NTP,0000,0000,0000,,The eager teenagers go on the attack,
+Dialogue: 0,0:10:29.33,0:10:31.83,Default,NTP,0000,0000,0000,,这些跃跃欲试的青少年发动了进攻，
+Dialogue: 0,0:10:31.83,0:10:34.42,Secondary,NTP,0000,0000,0000,,while our couple wait.
+Dialogue: 0,0:10:31.83,0:10:34.42,Default,NTP,0000,0000,0000,,这对夫妇在等待。
+Dialogue: 0,0:10:43.89,0:10:46.72,Secondary,NTP,0000,0000,0000,,At the same time, shockwaves from the blast
+Dialogue: 0,0:10:43.89,0:10:46.72,Default,NTP,0000,0000,0000,,与此同时，爆炸产生的冲击波
+Dialogue: 0,0:10:46.72,0:10:50.52,Secondary,NTP,0000,0000,0000,,are racing across the planet at close to the speed of sound
+Dialogue: 0,0:10:46.72,0:10:50.52,Default,NTP,0000,0000,0000,,正以接近音速的速度横跨地球
+Dialogue: 0,0:10:52.77,0:10:55.36,Secondary,NTP,0000,0000,0000,,...minutes after the asteroid hit.
+Dialogue: 0,0:10:52.77,0:10:55.36,Default,NTP,0000,0000,0000,,小行星撞击地球几分钟后。
+Dialogue: 0,0:10:56.86,0:11:01.03,Secondary,NTP,0000,0000,0000,,The first shock waves reach the Nanuqsaurus Arctic home.
+Dialogue: 0,0:10:56.86,0:11:01.03,Default,NTP,0000,0000,0000,,第一波冲击波抵达了纳努克龙的北极家园。
+Dialogue: 0,0:11:02.16,0:11:05.53,Secondary,NTP,0000,0000,0000,,Triggering earthquakes and blind panic among the dinosaurs.
+Dialogue: 0,0:11:02.16,0:11:05.53,Default,NTP,0000,0000,0000,,引发地震，并在恐龙中造成盲目恐慌。
+Dialogue: 0,0:11:12.71,0:11:14.67,Secondary,NTP,0000,0000,0000,,The herd stampedes.
+Dialogue: 0,0:11:12.71,0:11:14.67,Default,NTP,0000,0000,0000,,牛群奔腾而过。
+Dialogue: 0,0:11:21.30,0:11:25.72,Secondary,NTP,0000,0000,0000,,In the chaos those that can’t keep up are trampled.
+Dialogue: 0,0:11:21.30,0:11:25.72,Default,NTP,0000,0000,0000,,混乱之中，跟不上节奏的人会被践踏。
+Dialogue: 0,0:11:36.69,0:11:39.15,Secondary,NTP,0000,0000,0000,,Finally, the tremors stop.
+Dialogue: 0,0:11:36.69,0:11:39.15,Default,NTP,0000,0000,0000,,最终，震动停止了。
+Dialogue: 0,0:11:40.99,0:11:43.91,Secondary,NTP,0000,0000,0000,,One of the teenagers didn’t survive.
+Dialogue: 0,0:11:40.99,0:11:43.91,Default,NTP,0000,0000,0000,,其中一名青少年不幸身亡。
+Dialogue: 0,0:11:47.79,0:11:51.75,Secondary,NTP,0000,0000,0000,,But his pals spot a chance to pick up where they left off...
+Dialogue: 0,0:11:47.79,0:11:51.75,Default,NTP,0000,0000,0000,,但他的伙伴们发现了一个机会，可以继续他们未完成的工作……
+Dialogue: 0,0:11:56.00,0:11:58.80,Secondary,NTP,0000,0000,0000,,...a juvenile, abandoned by the herd.
+Dialogue: 0,0:11:56.00,0:11:58.80,Default,NTP,0000,0000,0000,,……一只被牛群遗弃的幼牛。
+Dialogue: 0,0:12:04.72,0:12:06.26,Secondary,NTP,0000,0000,0000,,He doesn’t stand a chance.
+Dialogue: 0,0:12:04.72,0:12:06.26,Default,NTP,0000,0000,0000,,他毫无胜算。
+Dialogue: 0,0:12:11.10,0:12:14.31,Secondary,NTP,0000,0000,0000,,Our Nanuqsaurus couple watch...
+Dialogue: 0,0:12:11.10,0:12:14.31,Default,NTP,0000,0000,0000,,我们的纳努克萨鲁斯夫妇正在观看……
+Dialogue: 0,0:12:20.23,0:12:23.20,Secondary,NTP,0000,0000,0000,,and now they make their move.
+Dialogue: 0,0:12:20.23,0:12:23.20,Default,NTP,0000,0000,0000,,现在他们开始行动了。
+Dialogue: 0,0:12:27.03,0:12:30.08,Secondary,NTP,0000,0000,0000,,After letting the teenagers do the hard work,
+Dialogue: 0,0:12:27.03,0:12:30.08,Default,NTP,0000,0000,0000,,在让青少年们完成艰苦的工作之后，
+Dialogue: 0,0:12:30.08,0:12:33.66,Secondary,NTP,0000,0000,0000,,our more experienced team steals the prize.
+Dialogue: 0,0:12:30.08,0:12:33.66,Default,NTP,0000,0000,0000,,我们经验更丰富的团队最终赢得了比赛。
+Dialogue: 0,0:12:41.51,0:12:44.26,Secondary,NTP,0000,0000,0000,,They’ve been running this con for years.
+Dialogue: 0,0:12:41.51,0:12:44.26,Default,NTP,0000,0000,0000,,他们这个骗局已经持续好几年了。
+Dialogue: 0,0:12:45.76,0:12:48.43,Secondary,NTP,0000,0000,0000,,Mom and dad claim the kill.
+Dialogue: 0,0:12:45.76,0:12:48.43,Default,NTP,0000,0000,0000,,爸爸妈妈都声称猎物是她打的。
+Dialogue: 0,0:12:56.19,0:12:59.94,Secondary,NTP,0000,0000,0000,,Hours have passed since the asteroid slammed into Earth.
+Dialogue: 0,0:12:56.19,0:12:59.94,Default,NTP,0000,0000,0000,,小行星撞击地球至今已过去数小时。
+Dialogue: 0,0:13:07.45,0:13:11.33,Secondary,NTP,0000,0000,0000,,But now another wave is tearing through the atmosphere.
+Dialogue: 0,0:13:07.45,0:13:11.33,Default,NTP,0000,0000,0000,,但现在另一股浪潮正席卷大气层。
+Dialogue: 0,0:13:19.67,0:13:21.84,Secondary,NTP,0000,0000,0000,,An intense air blast.
+Dialogue: 0,0:13:19.67,0:13:21.84,Default,NTP,0000,0000,0000,,一股强烈的气流。
+Dialogue: 0,0:13:25.13,0:13:27.51,Secondary,NTP,0000,0000,0000,,It overtakes the old couple.
+Dialogue: 0,0:13:25.13,0:13:27.51,Default,NTP,0000,0000,0000,,它超过了那对老夫妇。
+Dialogue: 0,0:13:28.14,0:13:30.93,Secondary,NTP,0000,0000,0000,,But they battle on to get back to their nest.
+Dialogue: 0,0:13:28.14,0:13:30.93,Default,NTP,0000,0000,0000,,但它们会奋力游回巢穴。
+Dialogue: 0,0:13:46.53,0:13:49.37,Secondary,NTP,0000,0000,0000,,At last, the winds break.
+Dialogue: 0,0:13:46.53,0:13:49.37,Default,NTP,0000,0000,0000,,风终于停了。
+Dialogue: 0,0:13:54.79,0:13:56.58,Secondary,NTP,0000,0000,0000,,In all their years together,
+Dialogue: 0,0:13:54.79,0:13:56.58,Default,NTP,0000,0000,0000,,在他们共同生活的那些年里，
+Dialogue: 0,0:13:56.58,0:13:59.88,Secondary,NTP,0000,0000,0000,,they’ve never experienced anything like this.
+Dialogue: 0,0:13:56.58,0:13:59.88,Default,NTP,0000,0000,0000,,他们从未经历过这样的事情。
+Dialogue: 0,0:14:04.50,0:14:08.88,Secondary,NTP,0000,0000,0000,,Despite the chaos most creatures try to carry on as normal.
+Dialogue: 0,0:14:04.50,0:14:08.88,Default,NTP,0000,0000,0000,,尽管一片混乱，大多数生物还是试图像往常一样生活。
+Dialogue: 0,0:14:10.39,0:14:13.35,Secondary,NTP,0000,0000,0000,,This young Nanuqsaurus may not know what happened,
+Dialogue: 0,0:14:10.39,0:14:13.35,Default,NTP,0000,0000,0000,,这只幼年纳努克龙可能不知道发生了什么事。
+Dialogue: 0,0:14:13.72,0:14:16.56,Secondary,NTP,0000,0000,0000,,but he isn’t going to let a good Edmontosaurus carcass
+Dialogue: 0,0:14:13.72,0:14:16.56,Default,NTP,0000,0000,0000,,但他不会放过一具保存完好的埃德蒙顿龙尸体。
+Dialogue: 0,0:14:16.56,0:14:18.06,Secondary,NTP,0000,0000,0000,,go to waste.
+Dialogue: 0,0:14:16.56,0:14:18.06,Default,NTP,0000,0000,0000,,浪费掉。
+Dialogue: 0,0:14:23.23,0:14:26.15,Secondary,NTP,0000,0000,0000,,He’s interrupted by a little opportunist.
+Dialogue: 0,0:14:23.23,0:14:26.15,Default,NTP,0000,0000,0000,,他被一个小投机分子打断了。
+Dialogue: 0,0:14:26.15,0:14:28.40,Secondary,NTP,0000,0000,0000,,A Dromaeosaur.
+Dialogue: 0,0:14:26.15,0:14:28.40,Default,NTP,0000,0000,0000,,驰龙。
+Dialogue: 0,0:14:34.91,0:14:36.66,Secondary,NTP,0000,0000,0000,,He has also brought a friend.
+Dialogue: 0,0:14:34.91,0:14:36.66,Default,NTP,0000,0000,0000,,他还带来了一位朋友。
+Dialogue: 0,0:14:39.58,0:14:41.17,Secondary,NTP,0000,0000,0000,,And another.
+Dialogue: 0,0:14:39.58,0:14:41.17,Default,NTP,0000,0000,0000,,还有一个。
+Dialogue: 0,0:14:49.63,0:14:52.26,Secondary,NTP,0000,0000,0000,,But this is no family style restaurant.
+Dialogue: 0,0:14:49.63,0:14:52.26,Default,NTP,0000,0000,0000,,但这并非一家家庭式餐厅。
+Dialogue: 0,0:15:00.64,0:15:02.98,Secondary,NTP,0000,0000,0000,,The Nanuqsaurus is not going to let these
+Dialogue: 0,0:15:00.64,0:15:02.98,Default,NTP,0000,0000,0000,,纳努克龙不会让这些
+Dialogue: 0,0:15:02.98,0:15:05.11,Secondary,NTP,0000,0000,0000,,scavengers interrupt his dinner.
+Dialogue: 0,0:15:02.98,0:15:05.11,Default,NTP,0000,0000,0000,,食腐动物打断了他的晚餐。
+Dialogue: 0,0:15:12.86,0:15:18.33,Secondary,NTP,0000,0000,0000,,Further up the valley our couple finally approach home.
+Dialogue: 0,0:15:12.86,0:15:18.33,Default,NTP,0000,0000,0000,,沿着山谷继续向上走，这对夫妇终于接近了家。
+Dialogue: 0,0:15:20.46,0:15:23.63,Secondary,NTP,0000,0000,0000,,They don’t know the high winds have damaged their nest,
+Dialogue: 0,0:15:20.46,0:15:23.63,Default,NTP,0000,0000,0000,,它们并不知道强风已经损坏了它们的巢穴。
+Dialogue: 0,0:15:24.29,0:15:25.92,Secondary,NTP,0000,0000,0000,,exposing their hidden eggs.
+Dialogue: 0,0:15:24.29,0:15:25.92,Default,NTP,0000,0000,0000,,揭露它们藏匿的卵。
+Dialogue: 0,0:15:28.51,0:15:33.22,Secondary,NTP,0000,0000,0000,,Making them easy picking for a band of Dromaeosaurs.
+Dialogue: 0,0:15:28.51,0:15:33.22,Default,NTP,0000,0000,0000,,这使得它们很容易成为一群驰龙的猎物。
+Dialogue: 0,0:15:43.06,0:15:45.44,Secondary,NTP,0000,0000,0000,,They’ve returned seconds too late.
+Dialogue: 0,0:15:43.06,0:15:45.44,Default,NTP,0000,0000,0000,,他们回来晚了几秒钟。
+Dialogue: 0,0:15:58.58,0:16:01.12,Secondary,NTP,0000,0000,0000,,Even the father’s terrifying show of strength
+Dialogue: 0,0:15:58.58,0:16:01.12,Default,NTP,0000,0000,0000,,甚至父亲那令人胆寒的力量展示也令人震惊。
+Dialogue: 0,0:16:01.12,0:16:03.29,Secondary,NTP,0000,0000,0000,,can’t save their babies.
+Dialogue: 0,0:16:01.12,0:16:03.29,Default,NTP,0000,0000,0000,,救不了他们的孩子。
+Dialogue: 0,0:16:12.88,0:16:16.18,Secondary,NTP,0000,0000,0000,,The mother finds four of her eggs were destroyed.
+Dialogue: 0,0:16:12.88,0:16:16.18,Default,NTP,0000,0000,0000,,母亲发现自己的四个蛋被毁了。
+Dialogue: 0,0:16:20.31,0:16:24.64,Secondary,NTP,0000,0000,0000,,Heartbroken, they console each other.
+Dialogue: 0,0:16:20.31,0:16:24.64,Default,NTP,0000,0000,0000,,他们心碎不已，互相安慰。
+Dialogue: 0,0:16:35.66,0:16:40.16,Secondary,NTP,0000,0000,0000,,A terrifying and deadly day for all the Artic animals.
+Dialogue: 0,0:16:35.66,0:16:40.16,Default,NTP,0000,0000,0000,,对于北极所有动物来说，这是可怕而致命的一天。
+Dialogue: 0,0:16:42.75,0:16:45.58,Secondary,NTP,0000,0000,0000,,They might hope that tomorrow will be easier.
+Dialogue: 0,0:16:42.75,0:16:45.58,Default,NTP,0000,0000,0000,,他们或许会希望明天会更容易些。
+Dialogue: 0,0:16:46.42,0:16:49.42,Secondary,NTP,0000,0000,0000,,But the asteroid isn’t finished with them yet.
+Dialogue: 0,0:16:46.42,0:16:49.42,Default,NTP,0000,0000,0000,,但小行星还没放过他们。
+Dialogue: 0,0:16:51.25,0:16:54.76,Secondary,NTP,0000,0000,0000,,In fact, the worst is yet to come.
+Dialogue: 0,0:16:51.25,0:16:54.76,Default,NTP,0000,0000,0000,,事实上，最糟糕的情况尚未到来。
+Dialogue: 0,0:16:58.72,0:17:02.01,Secondary,NTP,0000,0000,0000,,A towering pillar of pulverized rock dust
+Dialogue: 0,0:16:58.72,0:17:02.01,Default,NTP,0000,0000,0000,,一根高耸的碎岩粉柱
+Dialogue: 0,0:17:02.02,0:17:03.98,Secondary,NTP,0000,0000,0000,,rises from the impact crater.
+Dialogue: 0,0:17:02.02,0:17:03.98,Default,NTP,0000,0000,0000,,从撞击坑中升起。
+Dialogue: 0,0:17:04.94,0:17:09.23,Secondary,NTP,0000,0000,0000,,Dense and vast it starts to blocks out the sun
+Dialogue: 0,0:17:04.94,0:17:09.23,Default,NTP,0000,0000,0000,,它浓密而广袤，开始遮蔽阳光。
+Dialogue: 0,0:17:09.23,0:17:10.90,Secondary,NTP,0000,0000,0000,,for the entire planet.
+Dialogue: 0,0:17:09.23,0:17:10.90,Default,NTP,0000,0000,0000,,为了整个地球。
+Dialogue: 0,0:17:12.90,0:17:17.91,Secondary,NTP,0000,0000,0000,,A time of endless darkness has arrived and threatens
+Dialogue: 0,0:17:12.90,0:17:17.91,Default,NTP,0000,0000,0000,,无尽的黑暗时代已经来临，并带来威胁。
+Dialogue: 0,0:17:17.91,0:17:20.53,Secondary,NTP,0000,0000,0000,,all life on Earth.
+Dialogue: 0,0:17:17.91,0:17:20.53,Default,NTP,0000,0000,0000,,地球上所有生命。
+Dialogue: 0,0:17:29.21,0:17:31.42,Secondary,NTP,0000,0000,0000,,An asteroid has hit the Earth
+Dialogue: 0,0:17:29.21,0:17:31.42,Default,NTP,0000,0000,0000,,一颗小行星撞击了地球
+Dialogue: 0,0:17:32.21,0:17:36.22,Secondary,NTP,0000,0000,0000,,launching billions of tones of debris into the atmosphere.
+Dialogue: 0,0:17:32.21,0:17:36.22,Default,NTP,0000,0000,0000,,向大气层排放数十亿吨碎片。
+Dialogue: 0,0:17:43.52,0:17:47.60,Secondary,NTP,0000,0000,0000,,A dark cloud starting to covering the entire planet.
+Dialogue: 0,0:17:43.52,0:17:47.60,Default,NTP,0000,0000,0000,,一团乌云开始笼罩整个地球。
+Dialogue: 0,0:17:49.56,0:17:54.11,Secondary,NTP,0000,0000,0000,,This black swirling dust, rich in carbon and sulfur,
+Dialogue: 0,0:17:49.56,0:17:54.11,Default,NTP,0000,0000,0000,,这种富含碳和硫的黑色旋涡状尘埃，
+Dialogue: 0,0:17:54.69,0:17:57.32,Secondary,NTP,0000,0000,0000,,is about to make the world uninhabitable
+Dialogue: 0,0:17:54.69,0:17:57.32,Default,NTP,0000,0000,0000,,即将使世界变得不适宜居住
+Dialogue: 0,0:17:57.32,0:17:59.49,Secondary,NTP,0000,0000,0000,,for millions of creatures.
+Dialogue: 0,0:17:57.32,0:17:59.49,Default,NTP,0000,0000,0000,,对于数百万生物而言。
+Dialogue: 0,0:18:09.92,0:18:13.34,Secondary,NTP,0000,0000,0000,,Almost five thousand miles north of the impact,
+Dialogue: 0,0:18:09.92,0:18:13.34,Default,NTP,0000,0000,0000,,撞击点以北近五千英里处
+Dialogue: 0,0:18:14.00,0:18:17.01,Secondary,NTP,0000,0000,0000,,the creatures of the Arctic are about to face
+Dialogue: 0,0:18:14.00,0:18:17.01,Default,NTP,0000,0000,0000,,北极的生物即将面临
+Dialogue: 0,0:18:17.01,0:18:19.22,Secondary,NTP,0000,0000,0000,,the asteroid’s final blow.
+Dialogue: 0,0:18:17.01,0:18:19.22,Default,NTP,0000,0000,0000,,小行星的最后一击。
+Dialogue: 0,0:18:33.82,0:18:36.57,Secondary,NTP,0000,0000,0000,,As the debris cloud reaches them.
+Dialogue: 0,0:18:33.82,0:18:36.57,Default,NTP,0000,0000,0000,,当碎片云到达他们面前时。
+Dialogue: 0,0:18:37.53,0:18:40.66,Secondary,NTP,0000,0000,0000,,They are plunged into total darkness.
+Dialogue: 0,0:18:37.53,0:18:40.66,Default,NTP,0000,0000,0000,,他们陷入了彻底的黑暗。
+Dialogue: 0,0:18:43.91,0:18:46.75,Secondary,NTP,0000,0000,0000,,They will never see the sun again.
+Dialogue: 0,0:18:43.91,0:18:46.75,Default,NTP,0000,0000,0000,,他们将再也见不到阳光了。
+Dialogue: 0,0:18:51.54,0:18:54.63,Secondary,NTP,0000,0000,0000,,Even animals who are adapted to dark Arctic winters
+Dialogue: 0,0:18:51.54,0:18:54.63,Default,NTP,0000,0000,0000,,即使是那些适应了北极漫长冬季的动物
+Dialogue: 0,0:18:54.63,0:18:58.47,Secondary,NTP,0000,0000,0000,,will find this darkness unlike anything
+Dialogue: 0,0:18:54.63,0:18:58.47,Default,NTP,0000,0000,0000,,你会发现这种黑暗与任何事物都截然不同。
+Dialogue: 0,0:18:59.05,0:19:00.88,Secondary,NTP,0000,0000,0000,,they’ve experienced before.
+Dialogue: 0,0:18:59.05,0:19:00.88,Default,NTP,0000,0000,0000,,他们以前有过类似的经历。
+Dialogue: 0,0:19:05.14,0:19:10.02,Secondary,NTP,0000,0000,0000,,Earth, once home to a diverse spectrum of colorful life,
+Dialogue: 0,0:19:05.14,0:19:10.02,Default,NTP,0000,0000,0000,,地球，曾经是丰富多彩的生命家园，
+Dialogue: 0,0:19:10.44,0:19:13.90,Secondary,NTP,0000,0000,0000,,is transforming into a dark mass of gray.
+Dialogue: 0,0:19:10.44,0:19:13.90,Default,NTP,0000,0000,0000,,正在变成一团暗灰色的东西。
+Dialogue: 0,0:19:25.83,0:19:30.41,Secondary,NTP,0000,0000,0000,,Two months later what should be a hot summer
+Dialogue: 0,0:19:25.83,0:19:30.41,Default,NTP,0000,0000,0000,,两个月后，本应是炎热的夏天。
+Dialogue: 0,0:19:31.21,0:19:34.29,Secondary,NTP,0000,0000,0000,,is instead a deep freeze.
+Dialogue: 0,0:19:31.21,0:19:34.29,Default,NTP,0000,0000,0000,,而是一个深度冷冻室。
+Dialogue: 0,0:19:37.00,0:19:41.26,Secondary,NTP,0000,0000,0000,,The natural rhythm of life is being turned upside down.
+Dialogue: 0,0:19:37.00,0:19:41.26,Default,NTP,0000,0000,0000,,生命的自然节奏正在被彻底颠覆。
+Dialogue: 0,0:19:53.19,0:19:57.94,Secondary,NTP,0000,0000,0000,,For our Nanuqsaurus couple, there is more tragedy.
+Dialogue: 0,0:19:53.19,0:19:57.94,Default,NTP,0000,0000,0000,,对于我们的纳努克萨鲁斯夫妇来说，还有更多悲剧。
+Dialogue: 0,0:20:01.28,0:20:05.03,Secondary,NTP,0000,0000,0000,,Their remaining eggs have frozen in the bitter cold.
+Dialogue: 0,0:20:01.28,0:20:05.03,Default,NTP,0000,0000,0000,,它们剩下的蛋都在严寒中冻住了。
+Dialogue: 0,0:20:10.04,0:20:12.79,Secondary,NTP,0000,0000,0000,,Even this brave mother couldn’t protect them
+Dialogue: 0,0:20:10.04,0:20:12.79,Default,NTP,0000,0000,0000,,即使是这位勇敢的母亲也无法保护他们。
+Dialogue: 0,0:20:12.79,0:20:16.63,Secondary,NTP,0000,0000,0000,,from the decay and death of a world with no sunlight.
+Dialogue: 0,0:20:12.79,0:20:16.63,Default,NTP,0000,0000,0000,,从一个没有阳光的世界的衰败和死亡中。
+Dialogue: 0,0:20:20.13,0:20:22.97,Secondary,NTP,0000,0000,0000,,With no reason to stay by the nest they share,
+Dialogue: 0,0:20:20.13,0:20:22.97,Default,NTP,0000,0000,0000,,没有理由继续留在他们共同的巢穴里，
+Dialogue: 0,0:20:23.68,0:20:25.47,Secondary,NTP,0000,0000,0000,,the two decide to move on.
+Dialogue: 0,0:20:23.68,0:20:25.47,Default,NTP,0000,0000,0000,,两人决定继续前进。
+Dialogue: 0,0:20:34.98,0:20:36.56,Secondary,NTP,0000,0000,0000,,As months pass,
+Dialogue: 0,0:20:34.98,0:20:36.56,Default,NTP,0000,0000,0000,,几个月过去了，
+Dialogue: 0,0:20:37.73,0:20:41.82,Secondary,NTP,0000,0000,0000,,trillions of tons of dust strangle the planet.
+Dialogue: 0,0:20:37.73,0:20:41.82,Default,NTP,0000,0000,0000,,万亿吨尘埃笼罩着地球。
+Dialogue: 0,0:20:49.28,0:20:50.54,Secondary,NTP,0000,0000,0000,,Rain is scarce.
+Dialogue: 0,0:20:49.28,0:20:50.54,Default,NTP,0000,0000,0000,,降雨稀少。
+Dialogue: 0,0:20:51.04,0:20:54.37,Secondary,NTP,0000,0000,0000,,And what does fall is turned to acid.
+Dialogue: 0,0:20:51.04,0:20:54.37,Default,NTP,0000,0000,0000,,而掉落的物质都会变成酸。
+Dialogue: 0,0:20:58.04,0:21:01.92,Secondary,NTP,0000,0000,0000,,In this cold darkness, plants can no longer produce
+Dialogue: 0,0:20:58.04,0:21:01.92,Default,NTP,0000,0000,0000,,在这寒冷的黑暗中，植物无法再生长。
+Dialogue: 0,0:21:01.92,0:21:04.38,Secondary,NTP,0000,0000,0000,,their energy through photosynthesis.
+Dialogue: 0,0:21:01.92,0:21:04.38,Default,NTP,0000,0000,0000,,它们通过光合作用获取能量。
+Dialogue: 0,0:21:08.14,0:21:10.18,Secondary,NTP,0000,0000,0000,,Even mature trees are dying.
+Dialogue: 0,0:21:08.14,0:21:10.18,Default,NTP,0000,0000,0000,,就连成熟的树木也在死亡。
+Dialogue: 0,0:21:11.26,0:21:14.14,Secondary,NTP,0000,0000,0000,,It’s the beginning of the end for plant eaters
+Dialogue: 0,0:21:11.26,0:21:14.14,Default,NTP,0000,0000,0000,,这是食草动物末日的开始。
+Dialogue: 0,0:21:14.14,0:21:15.81,Secondary,NTP,0000,0000,0000,,who will starve.
+Dialogue: 0,0:21:14.14,0:21:15.81,Default,NTP,0000,0000,0000,,谁会挨饿？
+Dialogue: 0,0:21:21.32,0:21:23.23,Secondary,NTP,0000,0000,0000,,This young Edmontosaurus
+Dialogue: 0,0:21:21.32,0:21:23.23,Default,NTP,0000,0000,0000,,这只年轻的埃德蒙顿龙
+Dialogue: 0,0:21:23.23,0:21:25.53,Secondary,NTP,0000,0000,0000,,is struggling to breathe.
+Dialogue: 0,0:21:23.23,0:21:25.53,Default,NTP,0000,0000,0000,,呼吸困难。
+Dialogue: 0,0:21:26.40,0:21:28.41,Secondary,NTP,0000,0000,0000,,Dust has filled his lungs.
+Dialogue: 0,0:21:26.40,0:21:28.41,Default,NTP,0000,0000,0000,,灰尘充满了他的肺。
+Dialogue: 0,0:21:29.03,0:21:33.04,Secondary,NTP,0000,0000,0000,,But even worse, he’s lost his herd.
+Dialogue: 0,0:21:29.03,0:21:33.04,Default,NTP,0000,0000,0000,,但更糟糕的是，他失去了他的牛群。
+Dialogue: 0,0:21:35.91,0:21:40.46,Secondary,NTP,0000,0000,0000,,He would be easy prey for our resting pair of Nanuqsaurus.
+Dialogue: 0,0:21:35.91,0:21:40.46,Default,NTP,0000,0000,0000,,对于正在休息的那对纳努克龙来说，他简直就是唾手可得的猎物。
+Dialogue: 0,0:21:58.69,0:22:01.77,Secondary,NTP,0000,0000,0000,,Fortunately for him, with so many dying
+Dialogue: 0,0:21:58.69,0:22:01.77,Default,NTP,0000,0000,0000,,对他来说幸运的是，当时有那么多人死去
+Dialogue: 0,0:22:01.77,0:22:03.36,Secondary,NTP,0000,0000,0000,,herbivores around,
+Dialogue: 0,0:22:01.77,0:22:03.36,Default,NTP,0000,0000,0000,,周围有食草动物，
+Dialogue: 0,0:22:03.36,0:22:04.57,Secondary,NTP,0000,0000,0000,,they’ve already eaten.
+Dialogue: 0,0:22:03.36,0:22:04.57,Default,NTP,0000,0000,0000,,他们已经吃过了。
+Dialogue: 0,0:22:23.34,0:22:25.13,Secondary,NTP,0000,0000,0000,,The youngster is spared.
+Dialogue: 0,0:22:23.34,0:22:25.13,Default,NTP,0000,0000,0000,,这名年轻人幸免于难。
+Dialogue: 0,0:22:27.63,0:22:29.84,Secondary,NTP,0000,0000,0000,,The Edmontosaurus herd is following their
+Dialogue: 0,0:22:27.63,0:22:29.84,Default,NTP,0000,0000,0000,,埃德蒙顿龙群正跟随它们的
+Dialogue: 0,0:22:29.84,0:22:32.26,Secondary,NTP,0000,0000,0000,,instincts and heading south.
+Dialogue: 0,0:22:29.84,0:22:32.26,Default,NTP,0000,0000,0000,,出于本能，一路向南。
+Dialogue: 0,0:22:32.89,0:22:35.43,Secondary,NTP,0000,0000,0000,,Their senses tell them it’s winter.
+Dialogue: 0,0:22:32.89,0:22:35.43,Default,NTP,0000,0000,0000,,他们的感官告诉他们，现在是冬天。
+Dialogue: 0,0:22:39.10,0:22:41.77,Secondary,NTP,0000,0000,0000,,They have no idea there’s nothing
+Dialogue: 0,0:22:39.10,0:22:41.77,Default,NTP,0000,0000,0000,,他们根本不知道什么都没有。
+Dialogue: 0,0:22:41.77,0:22:45.19,Secondary,NTP,0000,0000,0000,,for them to the south but more cold and darkness.
+Dialogue: 0,0:22:41.77,0:22:45.19,Default,NTP,0000,0000,0000,,对他们来说，南方将更加寒冷和黑暗。
+Dialogue: 0,0:22:48.28,0:22:51.53,Secondary,NTP,0000,0000,0000,,For the Nanuqsaurus, the departure of the Edmontosaurus
+Dialogue: 0,0:22:48.28,0:22:51.53,Default,NTP,0000,0000,0000,,对于纳努克龙来说，埃德蒙顿龙的离开
+Dialogue: 0,0:22:51.53,0:22:56.62,Secondary,NTP,0000,0000,0000,,herd means scarcity and hunger will hit the predators too.
+Dialogue: 0,0:22:51.53,0:22:56.62,Default,NTP,0000,0000,0000,,畜群意味着食物匮乏，饥饿也会影响到捕食者。
+Dialogue: 0,0:22:59.12,0:23:03.13,Secondary,NTP,0000,0000,0000,,Life is about to become desperate for our old pair.
+Dialogue: 0,0:22:59.12,0:23:03.13,Default,NTP,0000,0000,0000,,我们这对老兄的生活即将变得岌岌可危。
+Dialogue: 0,0:23:14.93,0:23:17.18,Secondary,NTP,0000,0000,0000,,It’s been more than a year since the asteroid
+Dialogue: 0,0:23:14.93,0:23:17.18,Default,NTP,0000,0000,0000,,小行星撞击地球至今已超过一年。
+Dialogue: 0,0:23:17.18,0:23:21.69,Secondary,NTP,0000,0000,0000,,collided with Earth and the planet is an alien world.
+Dialogue: 0,0:23:17.18,0:23:21.69,Default,NTP,0000,0000,0000,,它与地球相撞，而这颗星球是一个外星世界。
+Dialogue: 0,0:23:24.27,0:23:27.98,Secondary,NTP,0000,0000,0000,,It remains shrouded in a thick cloud of foul dust.
+Dialogue: 0,0:23:24.27,0:23:27.98,Default,NTP,0000,0000,0000,,它仍然笼罩在一层厚厚的污浊尘埃中。
+Dialogue: 0,0:23:30.74,0:23:33.16,Secondary,NTP,0000,0000,0000,,And this apocalyptic, endless night,
+Dialogue: 0,0:23:30.74,0:23:33.16,Default,NTP,0000,0000,0000,,而这末日般的、无尽的黑夜，
+Dialogue: 0,0:23:34.37,0:23:38.58,Secondary,NTP,0000,0000,0000,,the average temperature has dropped 36 degrees
+Dialogue: 0,0:23:34.37,0:23:38.58,Default,NTP,0000,0000,0000,,平均气温下降了36度
+Dialogue: 0,0:23:38.58,0:23:42.83,Secondary,NTP,0000,0000,0000,,and the once thriving ecosystems have frozen to death.
+Dialogue: 0,0:23:38.58,0:23:42.83,Default,NTP,0000,0000,0000,,曾经繁荣的生态系统已经冻死了。
+Dialogue: 0,0:23:44.21,0:23:46.54,Secondary,NTP,0000,0000,0000,,The Arctic, like much of the planet,
+Dialogue: 0,0:23:44.21,0:23:46.54,Default,NTP,0000,0000,0000,,北极，就像地球上的大部分地区一样，
+Dialogue: 0,0:23:46.54,0:23:49.05,Secondary,NTP,0000,0000,0000,,is in an unprecedented deep freeze.
+Dialogue: 0,0:23:46.54,0:23:49.05,Default,NTP,0000,0000,0000,,正处于前所未有的严寒之中。
+Dialogue: 0,0:23:54.30,0:23:57.85,Secondary,NTP,0000,0000,0000,,Incredibly, there are places water still runs.
+Dialogue: 0,0:23:54.30,0:23:57.85,Default,NTP,0000,0000,0000,,令人难以置信的是，有些地方仍然有水流淌。
+Dialogue: 0,0:23:58.64,0:24:03.56,Secondary,NTP,0000,0000,0000,,And here, near the Nanuqsaurus’ old nesting site, is an oasis.
+Dialogue: 0,0:23:58.64,0:24:03.56,Default,NTP,0000,0000,0000,,在纳努克龙的旧巢穴附近，有一片绿洲。
+Dialogue: 0,0:24:04.69,0:24:08.48,Secondary,NTP,0000,0000,0000,,An area of volcanic activity has caused the ground to warm.
+Dialogue: 0,0:24:04.69,0:24:08.48,Default,NTP,0000,0000,0000,,火山活动导致地表升温。
+Dialogue: 0,0:24:09.15,0:24:12.32,Secondary,NTP,0000,0000,0000,,Water is now flowing here instead of ice.
+Dialogue: 0,0:24:09.15,0:24:12.32,Default,NTP,0000,0000,0000,,这里现在流动的是水而不是冰。
+Dialogue: 0,0:24:13.32,0:24:16.62,Secondary,NTP,0000,0000,0000,,And that attracts life.
+Dialogue: 0,0:24:13.32,0:24:16.62,Default,NTP,0000,0000,0000,,这样就能吸引生命。
+Dialogue: 0,0:24:21.66,0:24:23.62,Secondary,NTP,0000,0000,0000,,Insects thrive in the water.
+Dialogue: 0,0:24:21.66,0:24:23.62,Default,NTP,0000,0000,0000,,昆虫在水中繁衍生息。
+Dialogue: 0,0:24:25.08,0:24:27.75,Secondary,NTP,0000,0000,0000,,They provide food for the birds.
+Dialogue: 0,0:24:25.08,0:24:27.75,Default,NTP,0000,0000,0000,,它们为鸟类提供食物。
+Dialogue: 0,0:24:28.75,0:24:33.42,Secondary,NTP,0000,0000,0000,,Miraculously, the dark gray world is still showing signs of
+Dialogue: 0,0:24:28.75,0:24:33.42,Default,NTP,0000,0000,0000,,奇迹般地，这片灰暗的世界仍然展现出一些迹象。
+Dialogue: 0,0:24:33.42,0:24:35.97,Secondary,NTP,0000,0000,0000,,life and hope for the future,
+Dialogue: 0,0:24:33.42,0:24:35.97,Default,NTP,0000,0000,0000,,生命和对未来的希望，
+Dialogue: 0,0:24:35.97,0:24:38.76,Secondary,NTP,0000,0000,0000,,at least for these smaller creatures.
+Dialogue: 0,0:24:35.97,0:24:38.76,Default,NTP,0000,0000,0000,,至少对于这些体型较小的生物来说是这样。
+Dialogue: 0,0:24:44.89,0:24:47.02,Secondary,NTP,0000,0000,0000,,Our brave Nanuqsaurus pair
+Dialogue: 0,0:24:44.89,0:24:47.02,Default,NTP,0000,0000,0000,,我们勇敢的纳努克龙夫妇
+Dialogue: 0,0:24:47.02,0:24:51.23,Secondary,NTP,0000,0000,0000,,are still hanging on, unsure what their future holds.
+Dialogue: 0,0:24:47.02,0:24:51.23,Default,NTP,0000,0000,0000,,他们仍在苦苦支撑，对未来感到迷茫。
+Dialogue: 0,0:24:53.07,0:24:55.41,Secondary,NTP,0000,0000,0000,,Our mother is once again carrying eggs.
+Dialogue: 0,0:24:53.07,0:24:55.41,Default,NTP,0000,0000,0000,,我们的母羊又怀孕了。
+Dialogue: 0,0:24:56.16,0:25:00.87,Secondary,NTP,0000,0000,0000,,But something is wrong and she is growing sicker by the day.
+Dialogue: 0,0:24:56.16,0:25:00.87,Default,NTP,0000,0000,0000,,但是情况不对劲，她的病情一天比一天严重。
+Dialogue: 0,0:25:02.12,0:25:05.79,Secondary,NTP,0000,0000,0000,,It will be impossible for her to bring life into this world.
+Dialogue: 0,0:25:02.12,0:25:05.79,Default,NTP,0000,0000,0000,,她不可能将生命带到这个世界上。
+Dialogue: 0,0:25:09.09,0:25:11.84,Secondary,NTP,0000,0000,0000,,Her mate is powerless to help.
+Dialogue: 0,0:25:09.09,0:25:11.84,Default,NTP,0000,0000,0000,,她的伴侣无力帮助她。
+Dialogue: 0,0:25:13.42,0:25:17.47,Secondary,NTP,0000,0000,0000,,Unbearably, in order for him to find food,
+Dialogue: 0,0:25:13.42,0:25:17.47,Default,NTP,0000,0000,0000,,令人难以忍受的是，为了找到食物，
+Dialogue: 0,0:25:17.47,0:25:19.51,Secondary,NTP,0000,0000,0000,,he must leave her on her own.
+Dialogue: 0,0:25:17.47,0:25:19.51,Default,NTP,0000,0000,0000,,他必须把她独自留下。
+Dialogue: 0,0:25:20.64,0:25:24.14,Secondary,NTP,0000,0000,0000,,With no choice, he ventures into the unknown,
+Dialogue: 0,0:25:20.64,0:25:24.14,Default,NTP,0000,0000,0000,,别无选择之下，他冒险进入了未知领域。
+Dialogue: 0,0:25:24.73,0:25:27.15,Secondary,NTP,0000,0000,0000,,leaving her without his protection.
+Dialogue: 0,0:25:24.73,0:25:27.15,Default,NTP,0000,0000,0000,,他让她失去了保护。
+Dialogue: 0,0:25:34.24,0:25:38.28,Secondary,NTP,0000,0000,0000,,She is now alone and vulnerable.
+Dialogue: 0,0:25:34.24,0:25:38.28,Default,NTP,0000,0000,0000,,她现在孤身一人，处境脆弱。
+Dialogue: 0,0:25:45.16,0:25:48.00,Secondary,NTP,0000,0000,0000,,The two teenage Nanuqsaurus are back.
+Dialogue: 0,0:25:45.16,0:25:48.00,Default,NTP,0000,0000,0000,,两只青少年纳努克龙回来了。
+Dialogue: 0,0:25:49.71,0:25:52.67,Secondary,NTP,0000,0000,0000,,Hungry and impatient as usual.
+Dialogue: 0,0:25:49.71,0:25:52.67,Default,NTP,0000,0000,0000,,像往常一样又饿又没耐心。
+Dialogue: 0,0:25:59.51,0:26:03.22,Secondary,NTP,0000,0000,0000,,They haven’t eaten for days and are desperate.
+Dialogue: 0,0:25:59.51,0:26:03.22,Default,NTP,0000,0000,0000,,他们已经好几天没吃东西了，非常饥饿。
+Dialogue: 0,0:26:11.40,0:26:14.86,Secondary,NTP,0000,0000,0000,,Once, they saw her as competition...
+Dialogue: 0,0:26:11.40,0:26:14.86,Default,NTP,0000,0000,0000,,曾经，他们视她为竞争对手……
+Dialogue: 0,0:26:18.91,0:26:21.32,Secondary,NTP,0000,0000,0000,,...now, she is prey.
+Dialogue: 0,0:26:18.91,0:26:21.32,Default,NTP,0000,0000,0000,,现在，她成了猎物。
+Dialogue: 0,0:26:26.95,0:26:29.58,Secondary,NTP,0000,0000,0000,,She will not go without a fight,
+Dialogue: 0,0:26:26.95,0:26:29.58,Default,NTP,0000,0000,0000,,她不会束手就擒。
+Dialogue: 0,0:26:29.58,0:26:32.21,Secondary,NTP,0000,0000,0000,,but the end is inevitable.
+Dialogue: 0,0:26:29.58,0:26:32.21,Default,NTP,0000,0000,0000,,但结局是不可避免的。
+Dialogue: 0,0:26:47.89,0:26:49.73,Secondary,NTP,0000,0000,0000,,The forests are frozen.
+Dialogue: 0,0:26:47.89,0:26:49.73,Default,NTP,0000,0000,0000,,森林都结冰了。
+Dialogue: 0,0:26:50.19,0:26:54.90,Secondary,NTP,0000,0000,0000,,And almost all large land animals are dead and gone.
+Dialogue: 0,0:26:50.19,0:26:54.90,Default,NTP,0000,0000,0000,,几乎所有大型陆地动物都已经灭绝了。
+Dialogue: 0,0:26:57.40,0:27:00.15,Secondary,NTP,0000,0000,0000,,Without sunlight, the web of life that
+Dialogue: 0,0:26:57.40,0:27:00.15,Default,NTP,0000,0000,0000,,如果没有阳光，生命之网就会崩溃。
+Dialogue: 0,0:27:00.15,0:27:02.37,Secondary,NTP,0000,0000,0000,,supported them has collapsed.
+Dialogue: 0,0:27:00.15,0:27:02.37,Default,NTP,0000,0000,0000,,支撑他们的那部分已经崩溃了。
+Dialogue: 0,0:27:06.41,0:27:11.00,Secondary,NTP,0000,0000,0000,,Only the bones of our female Nanuqsaurus remain.
+Dialogue: 0,0:27:06.41,0:27:11.00,Default,NTP,0000,0000,0000,,只剩下我们发现的雌性纳努克龙的骨骼了。
+Dialogue: 0,0:27:18.13,0:27:22.43,Secondary,NTP,0000,0000,0000,,Sitting beside her skeleton is her devoted mate.
+Dialogue: 0,0:27:18.13,0:27:22.43,Default,NTP,0000,0000,0000,,坐在她骸骨旁边的是她忠诚的伴侣。
+Dialogue: 0,0:27:23.14,0:27:28.85,Secondary,NTP,0000,0000,0000,,Now alone, he must endure the cold and conserve his energy
+Dialogue: 0,0:27:23.14,0:27:28.85,Default,NTP,0000,0000,0000,,如今他孤身一人，必须忍受寒冷，保存体力。
+Dialogue: 0,0:27:28.85,0:27:31.77,Secondary,NTP,0000,0000,0000,,and hope for something, anything,
+Dialogue: 0,0:27:28.85,0:27:31.77,Default,NTP,0000,0000,0000,,并抱有一丝希望，哪怕是任何希望。
+Dialogue: 0,0:27:31.77,0:27:33.90,Secondary,NTP,0000,0000,0000,,to give him a chance to survive.
+Dialogue: 0,0:27:31.77,0:27:33.90,Default,NTP,0000,0000,0000,,给他一个活下去的机会。
+Dialogue: 0,0:27:48.20,0:27:51.04,Secondary,NTP,0000,0000,0000,,Year two of endless night on Earth.
+Dialogue: 0,0:27:48.20,0:27:51.04,Default,NTP,0000,0000,0000,,地球上的第二个无尽黑夜。
+Dialogue: 0,0:27:51.50,0:27:54.00,Secondary,NTP,0000,0000,0000,,It is a catastrophe for all life,
+Dialogue: 0,0:27:51.50,0:27:54.00,Default,NTP,0000,0000,0000,,这对所有生命来说都是一场灾难。
+Dialogue: 0,0:27:54.42,0:27:58.00,Secondary,NTP,0000,0000,0000,,especially large animals like the dinosaurs.
+Dialogue: 0,0:27:54.42,0:27:58.00,Default,NTP,0000,0000,0000,,尤其是像恐龙这样的大型动物。
+Dialogue: 0,0:28:05.34,0:28:08.43,Secondary,NTP,0000,0000,0000,,Our old female Nanuqsaurus put up a fight,
+Dialogue: 0,0:28:05.34,0:28:08.43,Default,NTP,0000,0000,0000,,我们那只年老的雌性纳努克龙奋力反抗，
+Dialogue: 0,0:28:08.77,0:28:10.35,Secondary,NTP,0000,0000,0000,,but is long gone.
+Dialogue: 0,0:28:08.77,0:28:10.35,Default,NTP,0000,0000,0000,,但早已不复存在。
+Dialogue: 0,0:28:10.89,0:28:14.19,Secondary,NTP,0000,0000,0000,,Miraculously, her mate is still alive.
+Dialogue: 0,0:28:10.89,0:28:14.19,Default,NTP,0000,0000,0000,,奇迹般地，她的伴侣还活着。
+Dialogue: 0,0:28:15.02,0:28:18.19,Secondary,NTP,0000,0000,0000,,Enduring the cold and scavenging for food.
+Dialogue: 0,0:28:15.02,0:28:18.19,Default,NTP,0000,0000,0000,,忍受严寒，四处觅食。
+Dialogue: 0,0:28:19.19,0:28:21.74,Secondary,NTP,0000,0000,0000,,His body has even become a refuge
+Dialogue: 0,0:28:19.19,0:28:21.74,Default,NTP,0000,0000,0000,,他的身体甚至成了避难所
+Dialogue: 0,0:28:21.74,0:28:24.03,Secondary,NTP,0000,0000,0000,,for other living creatures.
+Dialogue: 0,0:28:21.74,0:28:24.03,Default,NTP,0000,0000,0000,,对于其他生物而言。
+Dialogue: 0,0:28:26.99,0:28:28.41,Secondary,NTP,0000,0000,0000,,In his feathers,
+Dialogue: 0,0:28:26.99,0:28:28.41,Default,NTP,0000,0000,0000,,在他的羽毛里，
+Dialogue: 0,0:28:28.83,0:28:33.87,Secondary,NTP,0000,0000,0000,,the tiny mammal, Unnuakomys, picks ticks from his skin.
+Dialogue: 0,0:28:28.83,0:28:33.87,Default,NTP,0000,0000,0000,,这种体型娇小的哺乳动物，学名 Unnuakomys，会从皮肤上挑出蜱虫。
+Dialogue: 0,0:28:36.92,0:28:39.13,Secondary,NTP,0000,0000,0000,,A good exchange for the warm bed.
+Dialogue: 0,0:28:36.92,0:28:39.13,Default,NTP,0000,0000,0000,,用温暖的床换取一张好床。
+Dialogue: 0,0:28:42.72,0:28:46.30,Secondary,NTP,0000,0000,0000,,The Nanuqsaurus never did shed his winter coat.
+Dialogue: 0,0:28:42.72,0:28:46.30,Default,NTP,0000,0000,0000,,纳努克龙始终没有脱掉它的冬毛。
+Dialogue: 0,0:28:50.56,0:28:54.85,Secondary,NTP,0000,0000,0000,,At last, he spots what he has been waiting for.
+Dialogue: 0,0:28:50.56,0:28:54.85,Default,NTP,0000,0000,0000,,他终于看到了自己一直在等待的东西。
+Dialogue: 0,0:29:18.25,0:29:20.63,Secondary,NTP,0000,0000,0000,,One of the adolescent Nanuqsaurus
+Dialogue: 0,0:29:18.25,0:29:20.63,Default,NTP,0000,0000,0000,,其中一只幼年纳努克龙
+Dialogue: 0,0:29:20.63,0:29:23.55,Secondary,NTP,0000,0000,0000,,is wasting his energy chasing birds.
+Dialogue: 0,0:29:20.63,0:29:23.55,Default,NTP,0000,0000,0000,,他把精力浪费在追逐鸟类上了。
+Dialogue: 0,0:29:25.72,0:29:28.60,Secondary,NTP,0000,0000,0000,,Still, our male waits.
+Dialogue: 0,0:29:25.72,0:29:28.60,Default,NTP,0000,0000,0000,,然而，我们的男主角仍在等待。
+Dialogue: 0,0:29:30.10,0:29:33.48,Secondary,NTP,0000,0000,0000,,He watches as the kid wears himself out.
+Dialogue: 0,0:29:30.10,0:29:33.48,Default,NTP,0000,0000,0000,,他看着那孩子把自己累得筋疲力尽。
+Dialogue: 0,0:29:44.19,0:29:46.49,Secondary,NTP,0000,0000,0000,,Then, he summons what little
+Dialogue: 0,0:29:44.19,0:29:46.49,Default,NTP,0000,0000,0000,,然后，他召唤出仅有的那一点点东西。
+Dialogue: 0,0:29:46.49,0:29:49.95,Secondary,NTP,0000,0000,0000,,strength he has for the attack.
+Dialogue: 0,0:29:46.49,0:29:49.95,Default,NTP,0000,0000,0000,,他拥有进攻所需的力量。
+Dialogue: 0,0:30:04.80,0:30:06.97,Secondary,NTP,0000,0000,0000,,Revenge is sweet.
+Dialogue: 0,0:30:04.80,0:30:06.97,Default,NTP,0000,0000,0000,,复仇的滋味真甜。
+Dialogue: 0,0:30:07.38,0:30:11.64,Secondary,NTP,0000,0000,0000,,Our Nanuqsaurus is now the last of his kind.
+Dialogue: 0,0:30:07.38,0:30:11.64,Default,NTP,0000,0000,0000,,我们的纳努克龙现在是同类中最后一只了。
+Dialogue: 0,0:30:13.56,0:30:16.31,Secondary,NTP,0000,0000,0000,,After a 170 million year reign,
+Dialogue: 0,0:30:13.56,0:30:16.31,Default,NTP,0000,0000,0000,,经过1.7亿年的统治，
+Dialogue: 0,0:30:16.31,0:30:20.56,Secondary,NTP,0000,0000,0000,,the giant dinosaurs are passing into history.
+Dialogue: 0,0:30:16.31,0:30:20.56,Default,NTP,0000,0000,0000,,巨型恐龙正在成为历史。
+Dialogue: 0,0:30:24.78,0:30:27.40,Secondary,NTP,0000,0000,0000,,Years go by, and still,
+Dialogue: 0,0:30:24.78,0:30:27.40,Default,NTP,0000,0000,0000,,岁月流逝，依然如此。
+Dialogue: 0,0:30:27.40,0:30:30.03,Secondary,NTP,0000,0000,0000,,the dark cloud blankets the Earth.
+Dialogue: 0,0:30:27.40,0:30:30.03,Default,NTP,0000,0000,0000,,乌云笼罩着大地。
+Dialogue: 0,0:30:34.58,0:30:38.62,Secondary,NTP,0000,0000,0000,,Robbed of the sun’s energy, three quarters of
+Dialogue: 0,0:30:34.58,0:30:38.62,Default,NTP,0000,0000,0000,,失去了太阳能量，四分之三的
+Dialogue: 0,0:30:38.62,0:30:43.08,Secondary,NTP,0000,0000,0000,,all species across the planet are driven to extinction.
+Dialogue: 0,0:30:38.62,0:30:43.08,Default,NTP,0000,0000,0000,,地球上所有物种都走向灭绝。
+Dialogue: 0,0:30:58.89,0:31:01.56,Secondary,NTP,0000,0000,0000,,Finally, a decade later...
+Dialogue: 0,0:30:58.89,0:31:01.56,Default,NTP,0000,0000,0000,,最终，十年之后……
+Dialogue: 0,0:31:02.56,0:31:07.61,Secondary,NTP,0000,0000,0000,,the dust clouds clear and give way to a new dawn.
+Dialogue: 0,0:31:02.56,0:31:07.61,Default,NTP,0000,0000,0000,,尘埃落定，黎明到来。
+Dialogue: 0,0:31:09.20,0:31:13.87,Secondary,NTP,0000,0000,0000,,Seeds that have laid dormant in the soil spring to life.
+Dialogue: 0,0:31:09.20,0:31:13.87,Default,NTP,0000,0000,0000,,土壤中休眠的种子苏醒过来。
+Dialogue: 0,0:31:29.09,0:31:30.59,Secondary,NTP,0000,0000,0000,,Few animals made it,
+Dialogue: 0,0:31:29.09,0:31:30.59,Default,NTP,0000,0000,0000,,只有少数动物幸存下来。
+Dialogue: 0,0:31:30.59,0:31:33.39,Secondary,NTP,0000,0000,0000,,finding creative ways to survive.
+Dialogue: 0,0:31:30.59,0:31:33.39,Default,NTP,0000,0000,0000,,寻找创造性的生存方法。
+Dialogue: 0,0:31:34.97,0:31:37.22,Secondary,NTP,0000,0000,0000,,Some hid underground...
+Dialogue: 0,0:31:34.97,0:31:37.22,Default,NTP,0000,0000,0000,,有些人躲藏在地下……
+Dialogue: 0,0:31:38.39,0:31:40.56,Secondary,NTP,0000,0000,0000,,...some in water.
+Dialogue: 0,0:31:38.39,0:31:40.56,Default,NTP,0000,0000,0000,,……有些在水中。
+Dialogue: 0,0:31:41.77,0:31:45.27,Secondary,NTP,0000,0000,0000,,But all were small and adaptable.
+Dialogue: 0,0:31:41.77,0:31:45.27,Default,NTP,0000,0000,0000,,但它们都很小巧，适应性强。
+Dialogue: 0,0:31:48.57,0:31:51.70,Secondary,NTP,0000,0000,0000,,The planet they inherited is a blank canvas,
+Dialogue: 0,0:31:48.57,0:31:51.70,Default,NTP,0000,0000,0000,,他们继承的星球就像一张空白的画布。
+Dialogue: 0,0:31:53.49,0:31:58.83,Secondary,NTP,0000,0000,0000,,and evolution is about to go into overdrive.
+Dialogue: 0,0:31:53.49,0:31:58.83,Default,NTP,0000,0000,0000,,进化即将进入超速运转阶段。
+Dialogue: 0,0:32:07.04,0:32:09.21,Secondary,NTP,0000,0000,0000,,Five million years later
+Dialogue: 0,0:32:07.04,0:32:09.21,Default,NTP,0000,0000,0000,,五百万年后
+Dialogue: 0,0:32:13.55,0:32:17.60,Secondary,NTP,0000,0000,0000,,a vibrant new habitat now dominates the land.
+Dialogue: 0,0:32:13.55,0:32:17.60,Default,NTP,0000,0000,0000,,如今，一片充满活力的全新栖息地占据了这片土地。
+Dialogue: 0,0:32:22.98,0:32:25.73,Secondary,NTP,0000,0000,0000,,Lush, tropical rainforests.
+Dialogue: 0,0:32:22.98,0:32:25.73,Default,NTP,0000,0000,0000,,郁郁葱葱的热带雨林。
+Dialogue: 0,0:32:35.61,0:32:38.95,Secondary,NTP,0000,0000,0000,,Beneath the canopy, the air is filled with the scent
+Dialogue: 0,0:32:35.61,0:32:38.95,Default,NTP,0000,0000,0000,,树冠下，空气中弥漫着香气。
+Dialogue: 0,0:32:38.95,0:32:40.58,Secondary,NTP,0000,0000,0000,,of colorful flowers
+Dialogue: 0,0:32:38.95,0:32:40.58,Default,NTP,0000,0000,0000,,五彩缤纷的花朵
+Dialogue: 0,0:32:41.50,0:32:44.12,Secondary,NTP,0000,0000,0000,,and the hum of pollinating insects.
+Dialogue: 0,0:32:41.50,0:32:44.12,Default,NTP,0000,0000,0000,,还有授粉昆虫的嗡嗡声。
+Dialogue: 0,0:32:47.08,0:32:49.59,Secondary,NTP,0000,0000,0000,,The only descendants of the dinosaurs that have
+Dialogue: 0,0:32:47.08,0:32:49.59,Default,NTP,0000,0000,0000,,恐龙的唯一后代
+Dialogue: 0,0:32:49.59,0:32:52.59,Secondary,NTP,0000,0000,0000,,survived are the birds.
+Dialogue: 0,0:32:49.59,0:32:52.59,Default,NTP,0000,0000,0000,,幸存下来的是鸟类。
+Dialogue: 0,0:32:53.76,0:32:55.80,Secondary,NTP,0000,0000,0000,,Other creatures have made the most of this new
+Dialogue: 0,0:32:53.76,0:32:55.80,Default,NTP,0000,0000,0000,,其他生物已经充分利用了这一新特性。
+Dialogue: 0,0:32:55.80,0:32:59.18,Secondary,NTP,0000,0000,0000,,environment and found ways to thrive.
+Dialogue: 0,0:32:55.80,0:32:59.18,Default,NTP,0000,0000,0000,,环境并找到了生存之道。
+Dialogue: 0,0:33:01.81,0:33:04.89,Secondary,NTP,0000,0000,0000,,High in the canopy, it is not just the birds
+Dialogue: 0,0:33:01.81,0:33:04.89,Default,NTP,0000,0000,0000,,在高高的树冠上，不仅仅是鸟类。
+Dialogue: 0,0:33:04.89,0:33:06.31,Secondary,NTP,0000,0000,0000,,looking for breakfast.
+Dialogue: 0,0:33:04.89,0:33:06.31,Default,NTP,0000,0000,0000,,想找个地方吃早餐。
+Dialogue: 0,0:33:09.32,0:33:12.49,Secondary,NTP,0000,0000,0000,,These are Plesiadapis.
+Dialogue: 0,0:33:09.32,0:33:12.49,Default,NTP,0000,0000,0000,,这些是近齿鲎。
+Dialogue: 0,0:33:13.24,0:33:16.57,Secondary,NTP,0000,0000,0000,,They are mammals, and mammals are thriving
+Dialogue: 0,0:33:13.24,0:33:16.57,Default,NTP,0000,0000,0000,,它们是哺乳动物，而哺乳动物正在繁荣发展。
+Dialogue: 0,0:33:16.57,0:33:17.91,Secondary,NTP,0000,0000,0000,,in these new forests.
+Dialogue: 0,0:33:16.57,0:33:17.91,Default,NTP,0000,0000,0000,,在这些新形成的森林里。
+Dialogue: 0,0:33:21.70,0:33:24.33,Secondary,NTP,0000,0000,0000,,This is a fruit hunting mission.
+Dialogue: 0,0:33:21.70,0:33:24.33,Default,NTP,0000,0000,0000,,这是一次寻找水果的任务。
+Dialogue: 0,0:33:25.12,0:33:29.34,Secondary,NTP,0000,0000,0000,,They work together to find the best afternoon snack.
+Dialogue: 0,0:33:25.12,0:33:29.34,Default,NTP,0000,0000,0000,,他们一起合作，寻找最好的下午茶点。
+Dialogue: 0,0:33:31.50,0:33:34.84,Secondary,NTP,0000,0000,0000,,And there are plenty of delicious options.
+Dialogue: 0,0:33:31.50,0:33:34.84,Default,NTP,0000,0000,0000,,而且还有很多美味的选择。
+Dialogue: 0,0:33:38.01,0:33:39.97,Secondary,NTP,0000,0000,0000,,The new world is so abundant,
+Dialogue: 0,0:33:38.01,0:33:39.97,Default,NTP,0000,0000,0000,,新世界如此富饶，
+Dialogue: 0,0:33:39.97,0:33:43.39,Secondary,NTP,0000,0000,0000,,they have the luxury to choose only the ripe ones.
+Dialogue: 0,0:33:39.97,0:33:43.39,Default,NTP,0000,0000,0000,,他们有条件只挑选成熟的果实。
+Dialogue: 0,0:33:51.11,0:33:55.53,Secondary,NTP,0000,0000,0000,,Plesiadapis is one of the very first primates.
+Dialogue: 0,0:33:51.11,0:33:55.53,Default,NTP,0000,0000,0000,,近猴是最早的灵长类动物之一。
+Dialogue: 0,0:33:56.57,0:33:59.91,Secondary,NTP,0000,0000,0000,,A group of mammals whose intelligence and climbing skills
+Dialogue: 0,0:33:56.57,0:33:59.91,Default,NTP,0000,0000,0000,,一群智力和攀爬能力都很强的哺乳动物
+Dialogue: 0,0:33:59.91,0:34:03.83,Secondary,NTP,0000,0000,0000,,have helped them seize the high ground up in the tree canopies.
+Dialogue: 0,0:33:59.91,0:34:03.83,Default,NTP,0000,0000,0000,,帮助他们占据了树冠上的高地。
+Dialogue: 0,0:34:09.83,0:34:13.84,Secondary,NTP,0000,0000,0000,,But in the water below, there is danger.
+Dialogue: 0,0:34:09.83,0:34:13.84,Default,NTP,0000,0000,0000,,但下面的水中却暗藏危险。
+Dialogue: 0,0:34:23.35,0:34:25.72,Secondary,NTP,0000,0000,0000,,Not every reptilian predator...
+Dialogue: 0,0:34:23.35,0:34:25.72,Default,NTP,0000,0000,0000,,并非所有爬行动物捕食者……
+Dialogue: 0,0:34:27.60,0:34:29.69,Secondary,NTP,0000,0000,0000,,died with the dinosaurs.
+Dialogue: 0,0:34:27.60,0:34:29.69,Default,NTP,0000,0000,0000,,与恐龙一同灭绝。
+Dialogue: 0,0:34:37.49,0:34:40.99,Secondary,NTP,0000,0000,0000,,It is five million years after the asteroid impact.
+Dialogue: 0,0:34:37.49,0:34:40.99,Default,NTP,0000,0000,0000,,距小行星撞击事件已过去五百万年。
+Dialogue: 0,0:34:41.87,0:34:45.75,Secondary,NTP,0000,0000,0000,,The world is now covered in lush tropical rainforests.
+Dialogue: 0,0:34:41.87,0:34:45.75,Default,NTP,0000,0000,0000,,如今，世界各地都被郁郁葱葱的热带雨林覆盖。
+Dialogue: 0,0:34:48.62,0:34:52.29,Secondary,NTP,0000,0000,0000,,Here, birds and mammals thrive.
+Dialogue: 0,0:34:48.62,0:34:52.29,Default,NTP,0000,0000,0000,,这里是鸟类和哺乳动物繁衍生息的地方。
+Dialogue: 0,0:34:54.63,0:34:57.42,Secondary,NTP,0000,0000,0000,,The giant dinosaurs are gone,
+Dialogue: 0,0:34:54.63,0:34:57.42,Default,NTP,0000,0000,0000,,巨型恐龙已经消失了，
+Dialogue: 0,0:34:58.67,0:35:01.97,Secondary,NTP,0000,0000,0000,,but other reptilian predators have survived.
+Dialogue: 0,0:34:58.67,0:35:01.97,Default,NTP,0000,0000,0000,,但其他爬行动物捕食者却幸存了下来。
+Dialogue: 0,0:35:08.64,0:35:10.94,Secondary,NTP,0000,0000,0000,,This Plesiadapis is safe
+Dialogue: 0,0:35:08.64,0:35:10.94,Default,NTP,0000,0000,0000,,这种拟态生物是安全的。
+Dialogue: 0,0:35:11.65,0:35:14.07,Secondary,NTP,0000,0000,0000,,as long as he stays in the trees.
+Dialogue: 0,0:35:11.65,0:35:14.07,Default,NTP,0000,0000,0000,,只要他待在树上。
+Dialogue: 0,0:35:20.53,0:35:23.83,Secondary,NTP,0000,0000,0000,,But this tasty snack is just out of reach
+Dialogue: 0,0:35:20.53,0:35:23.83,Default,NTP,0000,0000,0000,,但这种美味的零食却遥不可及。
+Dialogue: 0,0:35:25.16,0:35:28.08,Secondary,NTP,0000,0000,0000,,and he makes a potentially fatal mistake.
+Dialogue: 0,0:35:25.16,0:35:28.08,Default,NTP,0000,0000,0000,,他犯了一个可能致命的错误。
+Dialogue: 0,0:35:39.34,0:35:41.42,Secondary,NTP,0000,0000,0000,,This little mammal has no idea
+Dialogue: 0,0:35:39.34,0:35:41.42,Default,NTP,0000,0000,0000,,这只小哺乳动物完全不知道
+Dialogue: 0,0:35:41.43,0:35:43.80,Secondary,NTP,0000,0000,0000,,what lurks in the murky depths.
+Dialogue: 0,0:35:41.43,0:35:43.80,Default,NTP,0000,0000,0000,,幽暗深处潜藏着什么？
+Dialogue: 0,0:35:48.93,0:35:50.94,Secondary,NTP,0000,0000,0000,,It doesn’t look good for our little...
+Dialogue: 0,0:35:48.93,0:35:50.94,Default,NTP,0000,0000,0000,,情况对我们的小家伙不太妙……
+Dialogue: 0,0:35:54.19,0:35:55.94,Secondary,NTP,0000,0000,0000,,aw, never mind.
+Dialogue: 0,0:35:54.19,0:35:55.94,Default,NTP,0000,0000,0000,,哦，没事了。
+Dialogue: 0,0:36:04.16,0:36:07.03,Secondary,NTP,0000,0000,0000,,Crocodiles survived the apocalyptic winter
+Dialogue: 0,0:36:04.16,0:36:07.03,Default,NTP,0000,0000,0000,,鳄鱼在末日般的寒冬中幸存了下来
+Dialogue: 0,0:36:07.03,0:36:10.41,Secondary,NTP,0000,0000,0000,,because they lived in the water and could go long periods
+Dialogue: 0,0:36:07.03,0:36:10.41,Default,NTP,0000,0000,0000,,因为它们生活在水中，可以长时间待在水里。
+Dialogue: 0,0:36:10.41,0:36:11.71,Secondary,NTP,0000,0000,0000,,without eating.
+Dialogue: 0,0:36:10.41,0:36:11.71,Default,NTP,0000,0000,0000,,不吃东西。
+Dialogue: 0,0:36:17.59,0:36:21.63,Secondary,NTP,0000,0000,0000,,After devouring his prey, this giant Kosmodraco
+Dialogue: 0,0:36:17.59,0:36:21.63,Default,NTP,0000,0000,0000,,吞食猎物后，这只巨大的科斯莫德拉科
+Dialogue: 0,0:36:21.63,0:36:25.01,Secondary,NTP,0000,0000,0000,,likes to take a long bask in the sun.
+Dialogue: 0,0:36:21.63,0:36:25.01,Default,NTP,0000,0000,0000,,喜欢长时间晒太阳。
+Dialogue: 0,0:36:31.89,0:36:37.57,Secondary,NTP,0000,0000,0000,,He settles down and opens his mouth wide to keep cool.
+Dialogue: 0,0:36:31.89,0:36:37.57,Default,NTP,0000,0000,0000,,他平静下来，张大嘴巴降温。
+Dialogue: 0,0:36:39.15,0:36:43.70,Secondary,NTP,0000,0000,0000,,But a nice warm patch of sand attracts all sorts
+Dialogue: 0,0:36:39.15,0:36:43.70,Default,NTP,0000,0000,0000,,但是，一片温暖舒适的沙滩会吸引各种各样的生物。
+Dialogue: 0,0:36:43.70,0:36:45.57,Secondary,NTP,0000,0000,0000,,of creatures from the forest...
+Dialogue: 0,0:36:43.70,0:36:45.57,Default,NTP,0000,0000,0000,,来自森林的生物……
+Dialogue: 0,0:36:48.74,0:36:50.70,Secondary,NTP,0000,0000,0000,,...like Titanoides.
+Dialogue: 0,0:36:48.74,0:36:50.70,Default,NTP,0000,0000,0000,,……比如钛铁矿。
+Dialogue: 0,0:36:58.09,0:37:01.46,Secondary,NTP,0000,0000,0000,,Mammals like these have evolved to be immense
+Dialogue: 0,0:36:58.09,0:37:01.46,Default,NTP,0000,0000,0000,,像这样的哺乳动物已经进化得体型巨大。
+Dialogue: 0,0:37:01.46,0:37:03.26,Secondary,NTP,0000,0000,0000,,and powerful.
+Dialogue: 0,0:37:01.46,0:37:03.26,Default,NTP,0000,0000,0000,,而且威力强大。
+Dialogue: 0,0:37:03.92,0:37:07.09,Secondary,NTP,0000,0000,0000,,Large enough to take on the biggest reptiles.
+Dialogue: 0,0:37:03.92,0:37:07.09,Default,NTP,0000,0000,0000,,体型大到足以与最大的爬行动物搏斗。
+Dialogue: 0,0:37:28.57,0:37:31.62,Secondary,NTP,0000,0000,0000,,These tough guys now rule the shores.
+Dialogue: 0,0:37:28.57,0:37:31.62,Default,NTP,0000,0000,0000,,这些硬汉现在统治着这片海岸。
+Dialogue: 0,0:37:40.84,0:37:45.05,Secondary,NTP,0000,0000,0000,,The age of the mammals has truly arrived.
+Dialogue: 0,0:37:40.84,0:37:45.05,Default,NTP,0000,0000,0000,,哺乳动物的时代已经真正来临。
+Dialogue: 0,0:37:47.80,0:37:50.64,Secondary,NTP,0000,0000,0000,,No longer in the shadow of the reptiles,
+Dialogue: 0,0:37:47.80,0:37:50.64,Default,NTP,0000,0000,0000,,不再生活在爬行动物的阴影下，
+Dialogue: 0,0:37:51.68,0:37:55.64,Secondary,NTP,0000,0000,0000,,mammals will soon dominate the planet.
+Dialogue: 0,0:37:51.68,0:37:55.64,Default,NTP,0000,0000,0000,,哺乳动物很快将主宰地球。
+Dialogue: 0,0:38:17.92,0:38:20.25,Secondary,NTP,0000,0000,0000,,When scientists became convinced that
+Dialogue: 0,0:38:17.92,0:38:20.25,Default,NTP,0000,0000,0000,,当科学家们确信
+Dialogue: 0,0:38:20.25,0:38:22.96,Secondary,NTP,0000,0000,0000,,a cosmic collision killed off the dinosaurs,
+Dialogue: 0,0:38:20.25,0:38:22.96,Default,NTP,0000,0000,0000,,一次宇宙碰撞导致恐龙灭绝。
+Dialogue: 0,0:38:23.92,0:38:26.76,Secondary,NTP,0000,0000,0000,,it inspired more thorough scientific study
+Dialogue: 0,0:38:23.92,0:38:26.76,Default,NTP,0000,0000,0000,,它激发了更深入的科学研究。
+Dialogue: 0,0:38:26.76,0:38:30.22,Secondary,NTP,0000,0000,0000,,of the threat asteroids present to life on Earth.
+Dialogue: 0,0:38:26.76,0:38:30.22,Default,NTP,0000,0000,0000,,小行星对地球生命构成的威胁。
+Dialogue: 0,0:38:37.31,0:38:39.73,Secondary,NTP,0000,0000,0000,,Starting in the 1990s,
+Dialogue: 0,0:38:37.31,0:38:39.73,Default,NTP,0000,0000,0000,,从上世纪90年代开始，
+Dialogue: 0,0:38:39.73,0:38:42.02,Secondary,NTP,0000,0000,0000,,astronomers all over the world have been using
+Dialogue: 0,0:38:39.73,0:38:42.02,Default,NTP,0000,0000,0000,,世界各地的天文学家一直在使用
+Dialogue: 0,0:38:42.02,0:38:44.73,Secondary,NTP,0000,0000,0000,,their telescopes to track and catalog
+Dialogue: 0,0:38:42.02,0:38:44.73,Default,NTP,0000,0000,0000,,他们利用望远镜进行跟踪和编目
+Dialogue: 0,0:38:44.73,0:38:47.57,Secondary,NTP,0000,0000,0000,,the many objects flying around our Solar System.
+Dialogue: 0,0:38:44.73,0:38:47.57,Default,NTP,0000,0000,0000,,围绕我们太阳系飞行的众多天体。
+Dialogue: 0,0:38:51.91,0:38:55.12,Secondary,NTP,0000,0000,0000,,Today, they believe they have found all asteroids
+Dialogue: 0,0:38:51.91,0:38:55.12,Default,NTP,0000,0000,0000,,如今，他们认为已经找到了所有的小行星。
+Dialogue: 0,0:38:55.12,0:38:58.87,Secondary,NTP,0000,0000,0000,,large enough to cause a similar mass extinction event.
+Dialogue: 0,0:38:55.12,0:38:58.87,Default,NTP,0000,0000,0000,,规模大到足以引发类似的物种大灭绝事件。
+Dialogue: 0,0:38:59.83,0:39:01.42,Secondary,NTP,0000,0000,0000,,And while none of these present
+Dialogue: 0,0:38:59.83,0:39:01.42,Default,NTP,0000,0000,0000,,虽然这些人都不在场
+Dialogue: 0,0:39:01.42,0:39:04.54,Secondary,NTP,0000,0000,0000,,any immediate danger, there are thousands of
+Dialogue: 0,0:39:01.42,0:39:04.54,Default,NTP,0000,0000,0000,,如无迫在眉睫的危险，有成千上万的人可以依靠。
+Dialogue: 0,0:39:04.55,0:39:08.55,Secondary,NTP,0000,0000,0000,,smaller objects which could cause major destruction
+Dialogue: 0,0:39:04.55,0:39:08.55,Default,NTP,0000,0000,0000,,较小的物体也可能造成重大破坏
+Dialogue: 0,0:39:08.55,0:39:10.55,Secondary,NTP,0000,0000,0000,,if they impacted the Earth.
+Dialogue: 0,0:39:08.55,0:39:10.55,Default,NTP,0000,0000,0000,,如果它们撞击了地球。
+Dialogue: 0,0:39:15.89,0:39:18.77,Secondary,NTP,0000,0000,0000,,Recently, a 100-foot-wide lump of rock
+Dialogue: 0,0:39:15.89,0:39:18.77,Default,NTP,0000,0000,0000,,最近，一块宽100英尺的巨石
+Dialogue: 0,0:39:18.77,0:39:22.81,Secondary,NTP,0000,0000,0000,,called 2024-YR4 was spotted
+Dialogue: 0,0:39:18.77,0:39:22.81,Default,NTP,0000,0000,0000,,名为 2024-YR4 的探测器被发现
+Dialogue: 0,0:39:22.81,0:39:25.07,Secondary,NTP,0000,0000,0000,,on a near-collision course with Earth.
+Dialogue: 0,0:39:22.81,0:39:25.07,Default,NTP,0000,0000,0000,,正朝着地球近乎相撞的方向运行。
+Dialogue: 0,0:39:25.90,0:39:28.90,Secondary,NTP,0000,0000,0000,,It will miss us, but only by luck.
+Dialogue: 0,0:39:25.90,0:39:28.90,Default,NTP,0000,0000,0000,,它不会来，但只是侥幸。
+Dialogue: 0,0:39:31.49,0:39:34.20,Secondary,NTP,0000,0000,0000,,Few scientists believe that watching the skies
+Dialogue: 0,0:39:31.49,0:39:34.20,Default,NTP,0000,0000,0000,,很少有科学家相信观察天空
+Dialogue: 0,0:39:34.20,0:39:37.12,Secondary,NTP,0000,0000,0000,,and hoping for the best is a winning strategy.
+Dialogue: 0,0:39:34.20,0:39:37.12,Default,NTP,0000,0000,0000,,抱有最好的希望是一种制胜策略。
+Dialogue: 0,0:39:38.50,0:39:42.71,Secondary,NTP,0000,0000,0000,,So, in 2021, NASA launched DART,
+Dialogue: 0,0:39:38.50,0:39:42.71,Default,NTP,0000,0000,0000,,因此，在2021年，NASA发射了DART探测器。
+Dialogue: 0,0:39:43.79,0:39:47.21,Secondary,NTP,0000,0000,0000,,a prototype of a new planetary defense system,
+Dialogue: 0,0:39:43.79,0:39:47.21,Default,NTP,0000,0000,0000,,一种新型行星防御系统的原型
+Dialogue: 0,0:39:48.26,0:39:51.26,Secondary,NTP,0000,0000,0000,,its aim was to smash into the side of an asteroid
+Dialogue: 0,0:39:48.26,0:39:51.26,Default,NTP,0000,0000,0000,,它的目标是撞击一颗小行星的侧面。
+Dialogue: 0,0:39:52.18,0:39:55.60,Secondary,NTP,0000,0000,0000,,and prove threats like these could be neutralized,
+Dialogue: 0,0:39:52.18,0:39:55.60,Default,NTP,0000,0000,0000,,并证明此类威胁可以被消除。
+Dialogue: 0,0:39:57.01,0:39:59.02,Secondary,NTP,0000,0000,0000,,if we spotted them in time.
+Dialogue: 0,0:39:57.01,0:39:59.02,Default,NTP,0000,0000,0000,,如果我们及时发现它们的话。
+Dialogue: 0,0:40:07.07,0:40:09.78,Secondary,NTP,0000,0000,0000,,The mission succeeded.
+Dialogue: 0,0:40:07.07,0:40:09.78,Default,NTP,0000,0000,0000,,任务成功。
+Dialogue: 0,0:40:14.87,0:40:16.74,Secondary,NTP,0000,0000,0000,,While some human technology may
+Dialogue: 0,0:40:14.87,0:40:16.74,Default,NTP,0000,0000,0000,,虽然某些人类技术可能
+Dialogue: 0,0:40:16.74,0:40:18.95,Secondary,NTP,0000,0000,0000,,pose a threat to life on Earth...
+Dialogue: 0,0:40:16.74,0:40:18.95,Default,NTP,0000,0000,0000,,对地球上的生命构成威胁……
+Dialogue: 0,0:40:20.08,0:40:23.79,Secondary,NTP,0000,0000,0000,,breakthroughs like the DART program could be what
+Dialogue: 0,0:40:20.08,0:40:23.79,Default,NTP,0000,0000,0000,,像DART项目这样的突破性进展可能正是我们所需要的。
+Dialogue: 0,0:40:23.79,0:40:25.96,Secondary,NTP,0000,0000,0000,,saves many species,
+Dialogue: 0,0:40:23.79,0:40:25.96,Default,NTP,0000,0000,0000,,拯救了许多物种，
+Dialogue: 0,0:40:27.38,0:40:29.13,Secondary,NTP,0000,0000,0000,,including our own,
+Dialogue: 0,0:40:27.38,0:40:29.13,Default,NTP,0000,0000,0000,,包括我们自己的
+Dialogue: 0,0:40:29.63,0:40:32.76,Secondary,NTP,0000,0000,0000,,from going the way of the dinosaurs.
+Dialogue: 0,0:40:29.63,0:40:32.76,Default,NTP,0000,0000,0000,,避免重蹈恐龙灭绝的覆辙。
+Dialogue: 0,0:40:38.10,0:40:41.85,Secondary,NTP,0000,0000,0000,,<i>♪ I see trees of green ♪</i>
+Dialogue: 0,0:40:38.10,0:40:41.85,Default,NTP,0000,0000,0000,,<i>♪ 我看见绿色的树木 ♪</i>
+Dialogue: 0,0:40:42.52,0:40:44.98,Secondary,NTP,0000,0000,0000,,<i>♪ Red roses too ♪</i>
+Dialogue: 0,0:40:42.52,0:40:44.98,Default,NTP,0000,0000,0000,,<i>♪也是红玫瑰♪</i>
+Dialogue: 0,0:40:45.56,0:40:48.61,Secondary,NTP,0000,0000,0000,,<i>♪ I watch them bloom ♪</i>
+Dialogue: 0,0:40:45.56,0:40:48.61,Default,NTP,0000,0000,0000,,<i>♪ 我看着它们绽放♪</i>
+Dialogue: 0,0:40:48.61,0:40:50.90,Secondary,NTP,0000,0000,0000,,<i>♪ For me and you ♪</i>
+Dialogue: 0,0:40:48.61,0:40:50.90,Default,NTP,0000,0000,0000,,<i>♪ 为你和我 ♪</i>
+Dialogue: 0,0:40:50.90,0:40:54.03,Secondary,NTP,0000,0000,0000,,<i>♪ And I think to myself ♪</i>
+Dialogue: 0,0:40:50.90,0:40:54.03,Default,NTP,0000,0000,0000,,<i>♪ 我心想 ♪</i>
+Dialogue: 0,0:40:55.07,0:41:01.83,Secondary,NTP,0000,0000,0000,,<i>♪ What a wonderful world ♪</i>
+Dialogue: 0,0:40:55.07,0:41:01.83,Default,NTP,0000,0000,0000,,<i>♪多么美好的世界♪</i>
+Dialogue: 0,0:41:01.83,0:41:06.00,Secondary,NTP,0000,0000,0000,,<i>♪ Yes, I think to myself ♪</i>
+Dialogue: 0,0:41:01.83,0:41:06.00,Default,NTP,0000,0000,0000,,<i>♪ 是的，我心想 ♪</i>
+Dialogue: 0,0:41:07.08,0:41:11.50,Secondary,NTP,0000,0000,0000,,<i>♪ What a wonderful world ♪</i>
+Dialogue: 0,0:41:07.08,0:41:11.50,Default,NTP,0000,0000,0000,,<i>♪多么美好的世界♪</i>

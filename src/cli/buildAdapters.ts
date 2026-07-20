@@ -4,10 +4,12 @@ import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { ZimukuClient } from '../adapters/providers/zimuku.js'
 import { ZimukuSessionStore } from '../adapters/providers/zimukuSession.js'
+import { SubhdClient } from '../adapters/providers/subhd.js'
 import type { FetchAdapter, FetchEvent } from './fetchLib.js'
 import { makeAssrtAdapter } from './adapters/assrtAdapter.js'
 import { makeOpenSubtitlesAdapter } from './adapters/opensubtitlesAdapter.js'
 import { makeZimukuAdapter } from './adapters/zimukuAdapter.js'
+import { makeSubhdAdapter } from './adapters/subhdAdapter.js'
 import { makeModel } from '../agent/llm.js'
 import { solveNumericCaptcha } from '../agent/solveNumericCaptcha.js'
 
@@ -63,6 +65,16 @@ export async function buildAdapters(emit: (e: FetchEvent) => void = () => {}): P
       onApiCall: r => emit({ event: 'api_call', provider: 'zimuku', ...r }),
     })
     adapters.push(makeZimukuAdapter(client))
+  }
+
+  if (process.env.SUBHD_ENABLED === 'true') {
+    // subhd 无验证码/无云锁挑战，故不需 LLM（与 zimuku 相反）。默认走 subhd.me；SUBHD_BASE_URL 可覆盖。
+    // 客户端默认 fetchImpl shell 到 curl（Node TLS 指纹被临时页校验拒，见 adapters/providers/subhd.ts）。
+    const client = new SubhdClient({
+      baseUrl: process.env.SUBHD_BASE_URL,
+      onApiCall: r => emit({ event: 'api_call', provider: 'subhd', ...r }),
+    })
+    adapters.push(makeSubhdAdapter(client))
   }
   return adapters
 }
