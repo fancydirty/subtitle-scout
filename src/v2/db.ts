@@ -268,6 +268,18 @@ UPDATE subtitles SET provider_ref = substr(provider_ref, instr(provider_ref, ':'
 UPDATE episodes SET status_reason = NULL WHERE sub_status IN ('covered','embedded') AND status_reason IS NOT NULL;
 UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded') AND status_reason IS NOT NULL;
   `.trim(),
+  // v16（详情页重设计 item B，design: docs/design/2026-07-20-detail-page-redesign-design.md）：
+  // TMDB 元数据富化——series 剧集简介/背景图 + tmdb_seasons 逐集简介/首播日/剧照。纯 ADD COLUMN，
+  // 不触发建新表。加列后现有 tmdb_seasons 行新字段为 NULL；UPDATE fetched_at=0 强制下轮
+  // refreshSeriesCatalog 重富化回填（不干等 7 天 TTL）。series 层靠既有富化重试 pass 连带补齐。
+  // （注：此处"v16"是设计文档 item 编号，非本仓 schema 历史里的 v16=item_files；本条是数组第 12 条
+  // entry，落库 meta.schema_version 从 '11' 变成 '12'。）
+  `ALTER TABLE series ADD COLUMN overview TEXT;
+   ALTER TABLE series ADD COLUMN backdrop_path TEXT;
+   ALTER TABLE tmdb_seasons ADD COLUMN overview TEXT;
+   ALTER TABLE tmdb_seasons ADD COLUMN air_date TEXT;
+   ALTER TABLE tmdb_seasons ADD COLUMN still_path TEXT;
+   UPDATE tmdb_seasons SET fetched_at = 0`,
 ]
 
 export function openDb(path: string): ScoutDb {
