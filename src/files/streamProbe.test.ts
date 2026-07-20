@@ -196,8 +196,12 @@ const SAMPLE_VIDEO = 'fixtures/media/Movies/The Wandering Earth (2019)/The Wande
 const canRunRealSmoke = existsSync(ffprobeStaticPath) && existsSync(SAMPLE_VIDEO)
 
 describe.skipIf(!canRunRealSmoke)('probeEmbeddedSubtitles — real binary smoke', () => {
+  // 显式 30s 测试超时:此用例真起 ffprobe 子进程探一个 1080p fixture。probeEmbeddedSubtitles
+  // 内部已 catch 掉一切错误/超时返回 null(断言恒不会因返回值失败),故唯一的失败模式是 vitest
+  // 测试级超时——单跑约 150ms,但在全量套件并行(数十用例争 CPU)下真 ffprobe 可超 vitest 默认
+  // 5s,导致间歇性 flaky(单跑绿、全量偶挂)。内部 ffprobe 超时是 15s,这里给 30s 留足余量。
   it('probes a real fixture file without throwing', async () => {
     const result = await probeEmbeddedSubtitles(SAMPLE_VIDEO)
     expect(result === null || Array.isArray(result)).toBe(true)
-  })
+  }, 30000)
 })
