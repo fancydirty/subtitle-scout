@@ -96,7 +96,7 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv', 5000, 12345)
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
+      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: '/bd.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
     })
     const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', title: 'Spy x Family', season: 1, episode: 2 }))
@@ -114,6 +114,8 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
     expect(series).toMatchObject({
       id: 'tmdb:108964', name: 'Spy x Family', chinese_title: '演出',
       poster_path: '/poster.jpg', year: 2020, provider_ids: JSON.stringify({ tmdb: '108964' }),
+      // 详情页重设计 item B：新剧 enrich 落 series overview/backdrop_path。
+      overview: 'x', backdrop_path: '/bd.jpg',
     })
     const episode = lib.getEpisode('tmdb:108964/s1e2')
     expect(episode).toMatchObject({
@@ -130,7 +132,7 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
     const disk = fakeDisk()
     disk.setVideo('/media/movies/hero.mkv')
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', originalTitle: null, year: 1999, genreIds: [] }),
+      getDetails: async () => ({ overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', backdropPath: null, originalTitle: null, year: 1999, genreIds: [] }),
       getChineseTitles: async () => ['黑客帝国', '駭客任務'],
     })
     const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' }))
@@ -198,7 +200,7 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv')
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', originalTitle: 'Show', year: 2020, genreIds: [] }),
+      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null, originalTitle: 'Show', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
       getExternalIds: async () => { throw new TmdbRequestFailedError(new Error('ECONNREFUSED')) },
     })
@@ -1998,7 +2000,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('空名/未富化 series 被补拍 name/chineseTitle/posterPath/year/genres', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '' }) // 空名 ? 卡（模拟 P6 认领债务）
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getChineseTitles = vi.fn(async () => ['救回剧'])
@@ -2023,7 +2025,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('已富化（genres 非 NULL 且 name 非空）的剧不进候选清单，不被重跑', async () => {
     lib.upsertSeries({ id: 'tmdb:1', name: 'Already Good', genres: [35] })
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: null, posterPath: null, originalTitle: 'x', year: null, genreIds: [],
+      overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: 'x', year: null, genreIds: [],
     }))
     const pass = makeIngestPass(makeDeps({
       tmdb: fakeTmdb({ getDetails }),
@@ -2038,7 +2040,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('每轮 cap 10：候选超过 10 个时只补拍前 10 个（防 TMDB 抖动期连环空转）', async () => {
     for (let i = 0; i < 15; i++) lib.upsertSeries({ id: `tmdb:${i}`, name: '' })
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: null, posterPath: null, originalTitle: 'x', year: null, genreIds: [],
+      overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: 'x', year: null, genreIds: [],
     }))
     const pass = makeIngestPass(makeDeps({
       tmdb: fakeTmdb({ getDetails }),
@@ -2073,7 +2075,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv', 5000, 12345)
     const recognize = vi.fn(async () => tvResult({ tmdbId: '24240', title: '', season: 1, episode: 1 }))
-    const getDetails = vi.fn(async () => ({ overview: null, runtimeMinutes: 24, posterPath: null, originalTitle: 'Claimed Show', year: 2023, genreIds: [16] }))
+    const getDetails = vi.fn(async () => ({ overview: null, runtimeMinutes: 24, posterPath: null, backdropPath: null, originalTitle: 'Claimed Show', year: 2023, genreIds: [16] }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/Show/Season 1/ep1.mkv'],
       recognize, tmdb: fakeTmdb({ getDetails }),
@@ -2106,7 +2108,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('富化重试回填 imdb：现 provider_ids 无 imdb 时，external_ids 采到后并入', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '' }) // 空名/未富化 → 进候选
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
@@ -2127,7 +2129,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('富化重试回填 imdb：现 provider_ids 已含 imdb 时，不再覆盖/改写', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '', providerIds: JSON.stringify({ tmdb: '24240', imdb: 'tt99999' }) })
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg',
+      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
@@ -2147,7 +2149,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('D6：TMDB 回空 genres 时，genres 落 "[]" 并退出候选清单', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: 'Stub Name' })
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: null, posterPath: null,
+      overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null,
       originalTitle: 'Rescued Show', year: null, genreIds: [] as number[],
     }))
     const pass = makeIngestPass(makeDeps({
