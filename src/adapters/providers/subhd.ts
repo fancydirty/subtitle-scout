@@ -168,6 +168,9 @@ export const DEFAULT_MIN_INTERVAL_MS = 2_000
 export const DEFAULT_JITTER_RANGE_MS = 3_000
 // prepare→down→api 临时页时间窗很短，失败重试整个单元；base 默认 3 次（限速在单元之间，不在单元内）。
 export const DEFAULT_RESOLVE_ATTEMPTS = 3
+// 单元内步间小停顿（激活→取 url）——模仿人肉 flow2 三条独立 curl 进程的天然间隔，等服务端临时页
+// 激活传播完成再打 api/sub/down（同进程背靠背太快会被判"已失效"）。几百毫秒远在秒级窗口内。
+export const SUBHD_STEP_DELAY_MS = 350
 // 可用镜像（STRUCTURE.md 里站点自报）。主 base 网络不可达时依次兜底。
 export const DEFAULT_MIRRORS = ['https://subhd.one', 'https://subhd.top', 'https://subhd.cc']
 
@@ -191,9 +194,17 @@ export async function curlFetch(input: RequestInfo | URL, init?: RequestInit): P
   const headers = (init?.headers ?? {}) as Record<string, string>
   const headerFile = join(tmpdir(), `subhd-h-${randomUUID()}`)
   const args = ['-sS', '--max-time', String(Math.ceil(SUBHD_TIMEOUT_MS / 1000)), '-D', headerFile, '-o', '-']
-  for (const [k, v] of Object.entries(headers)) args.push('-H', `${k}: ${v}`)
+  // User-Agent→-A、Cookie→-b（curl 原生标志），其余按插入顺序 -H——这样 curl 组装出的 wire 头顺序
+  // 与人肉实测通过的 flow2（`curl -A UA -b tk -H Referer -H X-Requested-With -H Origin -H Content-Type`）
+  // 逐字节一致。临时页校验对请求形状敏感（Node fetch/自定义头序均被拒），必须复刻 flow2。
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = k.toLowerCase()
+    if (lk === 'user-agent') args.push('-A', v)
+    else if (lk === 'cookie') args.push('-b', v)
+    else args.push('-H', `${k}: ${v}`)
+  }
   if (method !== 'GET') args.push('-X', method)
-  if (init?.body != null) args.push('--data-binary', String(init.body))
+  if (init?.body != null) args.push('--data', String(init.body))
   args.push(url)
   try {
     const { stdout } = await execFileP('curl', args, { encoding: 'buffer', maxBuffer: 128 * 1024 * 1024 })
@@ -224,6 +235,8 @@ export interface SubhdClientOpts {
   limiter?: RequestLimiter
   rng?: RandomFn
   resolveAttempts?: number
+  /** 单元内步间停顿（ms）。默认 SUBHD_STEP_DELAY_MS；测试注入 0 免真延迟。 */
+  stepDelayMs?: number
   onApiCall?: (r: { endpoint: string; status: number | null; durationMs: number; error?: string }) => void
 }
 
@@ -240,6 +253,7 @@ export class SubhdClient {
   private fetchImpl: typeof fetch
   private limiter: RequestLimiter
   private resolveAttempts: number
+  private stepDelay: number
 
   constructor(private opts: SubhdClientOpts = {}) {
     this.base = (opts.baseUrl ?? SUBHD_BASE).replace(/\/+$/, '')
@@ -247,6 +261,7 @@ export class SubhdClient {
     this.fetchImpl = opts.fetchImpl ?? curlFetch
     this.limiter = opts.limiter ?? new JitteredIntervalLimiter(DEFAULT_MIN_INTERVAL_MS, DEFAULT_JITTER_RANGE_MS, opts.rng)
     this.resolveAttempts = opts.resolveAttempts ?? DEFAULT_RESOLVE_ATTEMPTS
+    this.stepDelay = opts.stepDelayMs ?? SUBHD_STEP_DELAY_MS
   }
 
   private hosts(): string[] { return [this.base, ...this.mirrors] }
@@ -258,14 +273,17 @@ export class SubhdClient {
     init: { method?: string; body?: string; cookie?: string; referer?: string } = {},
   ): Promise<{ status: number; body: string; setCookies: string[] }> {
     const method = init.method ?? 'GET'
-    const headers: Record<string, string> = { ...SUBHD_HEADERS }
+    // 头顺序/头集刻意复刻人肉实测通过的 flow2（curlFetch 把 UA→-A、Cookie→-b）：UA, Referer,
+    // [POST: X-Requested-With, Origin, Content-Type], Cookie。**不带 Accept-Language**——flow2 无它、
+    // 临时页校验对请求形状敏感（多一个头就可能被判"已失效"）。CDN 文件下载另走 SUBHD_HEADERS（含它，无妨）。
+    const headers: Record<string, string> = { 'User-Agent': SUBHD_HEADERS['User-Agent'] }
     if (init.referer) headers.Referer = init.referer
-    if (init.cookie) headers.Cookie = init.cookie
     if (method !== 'GET') {
-      headers['Content-Type'] = 'application/json'
-      headers.Origin = host
       headers['X-Requested-With'] = 'XMLHttpRequest'
+      headers.Origin = host
+      headers['Content-Type'] = 'application/json'
     }
+    if (init.cookie) headers.Cookie = init.cookie
     const t0 = Date.now()
     try {
       const res = await this.fetchImpl(`${host}${path}`, {
@@ -306,12 +324,19 @@ export class SubhdClient {
     parsePrepareDownload(prep.body) // 校验 success；/down/<id> 路径就是 id 本身，无需另存
     const tk = extractTkCookie(prep.setCookies)
     if (!tk) throw new Error('subhd prepare-download returned no tk_ cookie')
+    await this.sleep(this.stepDelay)
     await this.doRequest(host, `/down/${id}`, { cookie: tk, referer: `${host}/a/${id}` }) // 激活临时页
+    // 激活→取 url 之间留一小拍：人肉实测通过的 flow2 是三条独立 curl 进程，进程启停天然有 ~100-300ms
+    // 间隔；客户端同进程背靠背发（<50ms）会赶在服务端"临时页激活"传播完成之前打 api/sub/down → 判
+    // "已失效"。这一拍模仿 flow2 的自然节奏（临时页窗口是秒级，几百毫秒远在窗口内，不会超时）。
+    await this.sleep(this.stepDelay)
     const api = await this.doRequest(host, '/api/sub/down', {
       method: 'POST', body: JSON.stringify({ sid: id }), cookie: tk, referer: `${host}/down/${id}`,
     })
     return parseApiSubDown(api.body) // "已失效"/success:false 在此抛
   }
+
+  private sleep(ms: number): Promise<void> { return ms > 0 ? new Promise(r => setTimeout(r, ms)) : Promise.resolve() }
 
   /** 把候选 id 解析成可下载的 CDN 文件 url。CDN（dlus.subhd.me）无指纹门、credentials omit，故不带
    *  cookie（cookie 恒 null）。单元失败（临时页失效/瞬时网络）重试；每 host 重试 resolveAttempts 次，
