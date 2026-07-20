@@ -1,7 +1,7 @@
 // web/src/library/episodeState.test.ts
 import { describe, it, expect } from 'vitest'
-import { buildGridCells, tallyGridCells, isCanonicalPending, type EpisodeCellState } from './episodeState.js'
-import type { LibrarySeasonDTO } from '../api/types.js'
+import { buildGridCells, tallyGridCells, isCanonicalPending, EPISODE_ROW_CAP, type EpisodeCellState } from './episodeState.js'
+import type { LibraryCanonicalEpisodeDTO, LibrarySeasonDTO } from '../api/types.js'
 
 const NOW = 1_700_000_000_000
 
@@ -9,10 +9,15 @@ function season(overrides: Partial<LibrarySeasonDTO> = {}): LibrarySeasonDTO {
   return { season: 1, canonical: [], onDisk: [], coverage: [], ...overrides }
 }
 
+/** canonical 富化字段默认 null——现有用例不关心 overview/airDate/stillPath，工厂给默认值省样板。 */
+function canon(episode: number, over: Partial<LibraryCanonicalEpisodeDTO> = {}): LibraryCanonicalEpisodeDTO {
+  return { episode, title: `E${episode}`, overview: null, airDate: null, stillPath: null, ...over }
+}
+
 describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
   it('canonical 8 集 / 磁盘 6 集（4 covered + 2 missing）→ 8 格，2 dashed，4 绿点，2 灰', () => {
     const s = season({
-      canonical: Array.from({ length: 8 }, (_, i) => ({ episode: i + 1, title: `E${i + 1}` })),
+      canonical: Array.from({ length: 8 }, (_, i) => canon(i + 1)),
       onDisk: [
         { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
         { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
@@ -49,7 +54,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
 
   it('unavailable + recheckAfter 在未来 → throttled（灰点，不是失败态）', () => {
     const s = season({
-      canonical: [{ episode: 1, title: 'E1' }],
+      canonical: [canon(1)],
       onDisk: [
         {
           episode: 1, path: '/m/e1.mkv', subStatus: 'unavailable',
@@ -63,7 +68,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
 
   it('unavailable + recheckAfter 已到期 → missing（可复查，不是停牌中）', () => {
     const s = season({
-      canonical: [{ episode: 1, title: 'E1' }],
+      canonical: [canon(1)],
       onDisk: [
         {
           episode: 1, path: '/m/e1.mkv', subStatus: 'unavailable',
@@ -90,7 +95,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
     // A 修：内嵌是"已覆盖"的一个子类（视频自带轨），格态塌缩成 covered 让 grid 视觉一致，
     // 但 tally 要能把内嵌单独数出来，供覆盖句诚实标注"其中 N 集是内嵌"（不冒充外挂已抓取）。
     const s = season({
-      canonical: [{ episode: 1, title: 'E1' }, { episode: 2, title: 'E2' }],
+      canonical: [canon(1), canon(2)],
       onDisk: [
         { episode: 1, path: '/m/e1.mkv', subStatus: 'embedded', statusReason: null, recheckAfter: null, files: [] },
         { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
@@ -103,7 +108,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
 
   it('hardsub-assumed → hardsub，且计入 covered 分子', () => {
     const s = season({
-      canonical: [{ episode: 1, title: 'E1' }],
+      canonical: [canon(1)],
       onDisk: [
         {
           episode: 1, path: '/m/e1.mkv', subStatus: 'hardsub-assumed',
@@ -129,7 +134,7 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
 
   it('磁盘有但 canonical 没有对应集——不是 dashed（磁盘是事实，照常按 subStatus 判定）', () => {
     const s = season({
-      canonical: [{ episode: 1, title: 'E1' }],
+      canonical: [canon(1)],
       onDisk: [
         { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
         { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
@@ -141,11 +146,38 @@ describe('buildGridCells（三层合成：canonical ∪ 磁盘）', () => {
   })
 })
 
+describe('GridCell 富化透传 + EPISODE_ROW_CAP', () => {
+  it('GridCell 透传 canonical overview/airDate/stillPath（dashed 与 onDisk 都带）', () => {
+    const s = season({
+      canonical: [canon(1, { title: 'E1', overview: 'ov1', airDate: '2011-10-05', stillPath: '/s1.jpg' })],
+      onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] }],
+    })
+    const [cell] = buildGridCells(s, NOW)
+    expect(cell.overview).toBe('ov1')
+    expect(cell.airDate).toBe('2011-10-05')
+    expect(cell.stillPath).toBe('/s1.jpg')
+
+    // dashed 格（磁盘无）同样透传富化字段
+    const s2 = season({
+      canonical: [canon(1, { overview: 'ov1', airDate: '2011-10-05', stillPath: '/s1.jpg' })],
+    })
+    const [dashed] = buildGridCells(s2, NOW)
+    expect(dashed.state).toBe('dashed')
+    expect(dashed.overview).toBe('ov1')
+    expect(dashed.airDate).toBe('2011-10-05')
+    expect(dashed.stillPath).toBe('/s1.jpg')
+  })
+
+  it('EPISODE_ROW_CAP 为 50', () => {
+    expect(EPISODE_ROW_CAP).toBe(50)
+  })
+})
+
 describe('isCanonicalPending', () => {
   it('canonical 为空 → true（缓存未建，格阵只按磁盘行渲染）', () => {
     expect(isCanonicalPending(season({ canonical: [] }))).toBe(true)
   })
   it('canonical 非空 → false', () => {
-    expect(isCanonicalPending(season({ canonical: [{ episode: 1, title: null }] }))).toBe(false)
+    expect(isCanonicalPending(season({ canonical: [canon(1, { title: null })] }))).toBe(false)
   })
 })
