@@ -84,6 +84,15 @@ The Rig S2E1/E6×2),D 那次被本 bug 灌水的 12 归正为真实的 6。
 
 ### 🟠 #2 识别回归·括号堆砌片名再识别失败被 park(The Astronaut + DxD Hero×12)
 
+> ⚠️ **本节"recognizer 解析回归"定性经 #12 深挖后已证伪(2026-07-20 夜)。** 见
+> `docs/design/2026-07-20-recognizer-park-investigation.md`。真相:**两处都不是解析 bug,而是
+> 北极星("拿不准就不动手")下正确的安全 park**。① The Astronaut 解析层完全正确,park 因 TMDB
+> 有**两条精确同 title+year 的记录**(id 1086260 真片/404 票 vs 1435035 空壳/0 票)不可约歧义;
+> ② DxD Hero 解析虽失败,但"修好"会让 `search(tv,"High School DxD Hero")` 得单一 hit=主系列 45950,
+> 折算绝对1→S1E1 装到 S4 文件 = 撞红线,**保持 park 才对**。两者都 rescue-eligible、可经救援页
+> 人工认领(baseline 正是靠 identify_overrides,从零清库连该表清空才重新 park)。**非回归、无代码修复**,
+> 留一条"票数 tiebreak"设计建议待用户拍板。下文为初判原文,存证。
+
 **实证**:parked=13 全部是 `The Astronaut (2025) [2160p] [4K] [WEB] [5.1] [YTS.MX].mkv` 与
 `[The-Nut] High School DxD Hero - 01..12.mkv`。这些文件**盘上都在**(只删了字幕),baseline 都有字幕(在删除清单),
 即 baseline 曾识别+覆盖。本轮再识别失败 → park。

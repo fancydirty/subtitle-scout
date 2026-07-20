@@ -22,7 +22,7 @@
     park 是安全失败、daemon 会重试**可能自愈**——次高;🟢#3 里番(Adam's×4)+ The Rig **S2E1/E6** = 真缺口/真 AI 翻译案例。
     err×1=已知 finalize 未调类(DxD 最终 36/36 覆盖,完全恢复)、nsm×2=合法。观测小缺口:run 级 API 计数器未落库。
   - **⚠️ E 图景更正**:The Rig **S1 不是 AI 翻译案例**(zimuku 有真中字,#1 没装上);**只有 S2E1/E6** 是真"无中字+内嵌英文轨"试验田。
-  - **接续排序**:①✅**#1 结果集排序已修+真机闭环验**(commit 5f40900 interleaveByProvider;The Rig S1 6/6 covered)②**#2 recognizer park**——rescue-identify 重试**未自愈**(parked 仍 13)=**真解析缺陷非瞬时**,需真修 recognizer 对括号密集/非常规发布名(YTS.MX、[The-Nut] DxD Hero)的解析③E 实现。**⚠️E 松绑(用户 2026-07-20)**:AI 翻译要 feature 本身,不必拿 Rig 当例子——随便找带内嵌/外挂英文轨的媒体验证即可,不是真为 Rig 中字。
+  - **接续排序**:①✅**#1 结果集排序已修+真机闭环验**(commit 5f40900 interleaveByProvider;The Rig S1 6/6 covered)②✅**#2 已调查证伪(非 bug)**——见 `docs/design/2026-07-20-recognizer-park-investigation.md`:The Astronaut 解析完全正确,park 因 TMDB 两条精确同 title+year 记录(1086260 真片/404 票 vs 1435035 空壳/0 票)不可约歧义;DxD Hero"修好解析"会撞多季红线(单一 hit=主系列 45950,折算绝对1→S1E1 装 S4 文件)。两者皆**北极星正确安全 park**,rescue-eligible 可人工认领(baseline 靠 override,从零清库才重 park)。**无代码修复**,留"票数 tiebreak"设计建议待拍板③E 实现。**⚠️E 松绑(用户 2026-07-20)**:AI 翻译要 feature 本身,不必拿 Rig 当例子——随便找带内嵌/外挂英文轨的媒体验证即可,不是真为 Rig 中字。
   - ~~(下方为执行中记录,留档)~~
   - 🔴 **飞行前揪出并修掉一个会让 D 作废的生产 bug**:subhd 从没被 app 装载过。根因=生产 compose 的
     `environment:` 块漏列 `SUBHD_ENABLED`(docker compose 只注入显式列出的变量、无 env_file),.env 里
