@@ -39,6 +39,9 @@ export interface DaemonDeps {
    *  dispatch 之前、boot ingest 门之后：与 orchestrate 心跳同一时机语义（判定纯机械无 LLM，
    *  幂等 upsert，每 tick 调也只在候选出现时建行）。 */
   dispatchTranslate?: () => void
+  /** DB 审计🔴 耐久运维钩:每 tick 调用一次,内部时间门控(小时级 wal_checkpoint /
+   *  天级 VACUUM INTO 备份)。cli 接线侧预绑定 db/cacheDir/state;失败只记日志不炸 tick。 */
+  dbMaintenance?: () => void
   concurrency: {
     searching: number        // 默认 1
     downloading: number      // 默认 2（一期由 executor 内部串行，此处预留）
@@ -255,6 +258,11 @@ export class ScoutDaemon {
     // 失败只记一行 warn 不炸 tick——翻译是增益路径，绝不拖垮主循环。
     if (this.deps.dispatchTranslate) {
       try { this.deps.dispatchTranslate() } catch (e) { log(`warn: translate dispatch failed: ${String(e)}`) }
+    }
+
+    // 2d. DB 耐久运维（周期 checkpoint/在线备份，内部时间门控，见 dbMaintenance.ts）。
+    if (this.deps.dbMaintenance) {
+      try { this.deps.dbMaintenance() } catch (e) { log(`warn: db maintenance failed: ${String(e)}`) }
     }
 
     // 3. Dispatch: claim jobs up to concurrency limit

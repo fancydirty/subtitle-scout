@@ -122,6 +122,15 @@ export class SettingsRepo {
       for (const e of episodeIds) delSub.run(e.id)
       for (const m of movieIds) delSub.run(m.id)
 
+      // DB 审计🟡:item_files/pending_removals 同级级联——libraryRepo.deleteSeriesRows 的
+      // "SEVERE 数据腐蚀"修复珠玉在前:owner 删除后 item_files 孤儿行会让副本路径对 ingest
+      // 永久隐形(B3-3 短路命中孤儿行,ownerPath null → 不重新识别,磁盘有片库里永远没有,
+      // 非自愈)。removeRoot 必须遵守同一约定。
+      const delFiles = this.db.prepare('DELETE FROM item_files WHERE item_id = ?')
+      for (const e of episodeIds) delFiles.run(e.id)
+      for (const m of movieIds) delFiles.run(m.id)
+      this.db.prepare('DELETE FROM pending_removals WHERE substr(path,1,length(?)) = ?').run(prefix, prefix)
+
       const episodesResult = this.db
         .prepare('DELETE FROM episodes WHERE substr(path,1,length(?)) = ?')
         .run(prefix, prefix)
@@ -156,6 +165,6 @@ export class SettingsRepo {
       }
     })
 
-    return tx()
+    return tx.immediate()
   }
 }

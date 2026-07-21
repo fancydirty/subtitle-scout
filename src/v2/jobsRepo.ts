@@ -119,6 +119,9 @@ export class JobsRepo {
     // absorbing the new dispatch with zero signal that it went nowhere. Single transaction
     // (SELECT + the branch's own write) closes the TOCTOU window between reading current state
     // and acting on it — a concurrent writer can't flip the row between the two.
+    // DB 审计🟡:读后再写的事务改 BEGIN IMMEDIATE(取 RESERVED 锁于 BEGIN——deferred 的快照
+    //  升级写锁时撞并发写者会立即 SQLITE_BUSY_SNAPSHOT,busy_timeout 帮不上;跨进程(daemon vs
+    //  docker exec 一次性 CLI)竞态从"升级死锁"变"诚实等待")。
     return this.db.transaction((): WorkerTaskUpsertOutcome => {
       const existing = this.db
         .prepare(
@@ -176,7 +179,7 @@ export class JobsRepo {
       // （mirrors the old ON CONFLICT's no-op branch for this state only）。
       this.db.prepare(`UPDATE jobs SET updated_at = ? WHERE id = ?`).run(now, existing.id)
       return { outcome: 'coalesced', pendingState: existing.state, intentRefreshed: false }
-    })()
+    }).immediate()
   }
 
   claimNext(now: number): Job | null {
@@ -288,7 +291,7 @@ export class JobsRepo {
         else update.run(now, c.id)
       }
       return candidates
-    })()
+    }).immediate()
   }
 
   /** 启动即回收：无条件把所有活跃态 job 归位 wanted，**不看租约是否过期**。
@@ -336,7 +339,7 @@ export class JobsRepo {
         )
         .run(newErrorAttempt, nextRetryAt, error, now, jobId)
       return info.changes > 0
-    })()
+    }).immediate()
   }
 
   completeDone(jobId: number, now: number): boolean {

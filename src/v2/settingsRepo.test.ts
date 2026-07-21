@@ -136,6 +136,20 @@ describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，�
     expect(after.c).toBe(0)
   })
 
+  it('级联含 item_files/pending_removals(DB 审计:owner 删后孤儿行会让副本路径对 ingest 永久隐形)', () => {
+    const { epId } = seedUnderRoot('/media/tv', 'a')
+    db.prepare("INSERT INTO item_files (item_id, path, added_at) VALUES (?, ?, ?)")
+      .run(epId, '/media/tv/Series a/Season 01/e1-replica.mkv', NOW)
+    db.prepare("INSERT INTO pending_removals (path, first_missing_at, misses) VALUES (?, ?, ?)")
+      .run('/media/tv/Series a/Season 01/gone.mkv', NOW, 1)
+
+    const result = settings.removeRoot('/media/tv')
+
+    expect(result?.episodes).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) as c FROM item_files WHERE item_id = ?').get(epId)).toEqual({ c: 0 })
+    expect(db.prepare("SELECT COUNT(*) as c FROM pending_removals WHERE path LIKE '/media/tv/%'").get()).toEqual({ c: 0 })
+  })
+
   it('该根下 series 因此变空壳 → series 行连带删除（+ 清 tmdb_seasons 缓存）；返回 series 计数', () => {
     const { seriesId } = seedUnderRoot('/media/tv', 'a')
     db.prepare(

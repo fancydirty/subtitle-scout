@@ -291,10 +291,23 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
 export function openDb(path: string): ScoutDb {
   const db = new Database(path)
 
-  // Pragma 三件套
+  // Pragma 四件套
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
-  db.pragma('synchronous = NORMAL')
+  // DB 审计🔴:软路由掉电常态,NORMAL 只 checkpoint 时 fsync,掉电丢最近 N 分钟提交——jobs/
+  // blacklist/overrides/settings 不可从磁盘重建,静默状态分歧。本库写量极小(每 tick 几行),
+  // FULL(每提交 fsync WAL)成本可忽略,掉电丢失窗口归零。
+  db.pragma('synchronous = FULL')
+  // DB 审计🟡:打开即体检(单趟快速版)。损坏库过去是 tick 循环里裸炸 SQLITE_CORRUPT 还无限
+  // 重试,分不清磁盘满还是库死了;这里 fail-loud 指明文件+恢复路径。
+  const qc = db.pragma('quick_check(1)') as Array<{ quick_check: string }>
+  if (qc[0]?.quick_check !== 'ok') {
+    db.close()
+    throw new Error(
+      `数据库体检失败(${path}): ${qc[0]?.quick_check}。` +
+      `恢复:停 daemon → sqlite3 "${path}" ".recover" | sqlite3 recovered.db,或还原 cache/backups/ 最新快照`,
+    )
+  }
   // foreign_keys 故意先关掉、留到迁移跑完之后才打开（见下方 return 前的说明）——better-sqlite3
   // 的连接默认就是 foreign_keys=ON（不是"不设置=关闭"，是"不设置=已经开着"，必须显式 OFF）。
   // 这条机制是从 v1→v8 的历史 ALTER 迁移链继承下来的通用基础设施（v9 起该链已折叠成上面
@@ -327,6 +340,13 @@ export function openDb(path: string): ScoutDb {
 
   // 执行未应用的迁移
   if (currentVersion < MIGRATIONS.length) {
+    // DB 审计🔴:迁移前自动快照(任何进程 openDb 触发迁移都有恢复点,不靠运维记得手动备份)。
+    // VACUUM INTO 在线一致、连 WAL 内容一起收;:memory: 跳过。
+    if (path !== ':memory:') {
+      try {
+        db.exec(`VACUUM INTO '${path}.pre-v${MIGRATIONS.length}.bak'`)
+      } catch { /* 快照失败不阻塞迁移(空间不足等),迁移事务本身仍是 all-or-nothing */ }
+    }
     // Pre-flight: 历史迁移链的建新表→拷数据→删旧表→改名手法（见上方 pragma 注释）会把存量行
     // 原样拷进重建的表——若库里蛰伏着孤儿行（外键引用的父行已不存在，比如父行曾被手工删除、
     // 或数据是在 foreign_keys=OFF 时代写入的从未被真正验证过），拷贝期间这行数据本身就是脏

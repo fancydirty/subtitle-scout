@@ -32,6 +32,7 @@ import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
+import { makeMaintenanceState, runDbMaintenance } from '../v2/dbMaintenance.js'
 import { makeIngestPass } from '../v2/ingest.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
@@ -521,11 +522,21 @@ async function cmdWatch() {
     log,
     now: () => Date.now(),
     // E AI 翻译:派活双门——①显式 TRANSLATE_* 三件套(部署层)②settings.ai_translate_enabled==='true'
-    // (行为级开关,默认关,设置页改)。派活纯机械(SQL 筛候选 + 幂等 upsert,无 LLM),真正的翻译在被
-    // claim 的 translate worker 里跑;worker 端仍只认 TRANSLATE_*(开关只断派活,存量行不受影响)。
-    dispatchTranslate: (tryAutoTranslateCfg() && settingsRepo.get('ai_translate_enabled') === 'true')
-      ? () => { dispatchTranslateTasks(db, jobs, () => Date.now()) }
-      : undefined,
+    // (行为级开关,默认关)。**每 tick 惰性求值**(同 scan_interval_ms 的债务D5 口径):设置页改完
+    // 下一 tick 生效,不用重启守护进程;TRANSLATE_* 缺席时 tryAutoTranslateCfg()=null 同样按 tick 现取。
+    // 派活纯机械(SQL 筛候选 + 幂等 upsert,无 LLM);worker claim 端仍只认 TRANSLATE_*(开关只断派活,
+    // 存量行不受影响)。失败只记一行 warn 不炸 tick。
+    dispatchTranslate: () => {
+      if (tryAutoTranslateCfg() && settingsRepo.get('ai_translate_enabled') === 'true') {
+        dispatchTranslateTasks(db, jobs, () => Date.now())
+      }
+    },
+    // DB 审计🔴 耐久运维:周期 wal_checkpoint + 天级 VACUUM INTO 在线备份(留 7 份),
+    // 内部时间门控;失败只记日志(运维是增益,不拖主循环)。
+    dbMaintenance: (() => {
+      const state = makeMaintenanceState()
+      return () => runDbMaintenance(db, cacheRoot, state, Date.now(), log)
+    })(),
     concurrency: {
       searching: 1,
       downloading: 2,  // 一期由 executor 内部串行，此处预留
@@ -617,6 +628,8 @@ async function cmdWatch() {
   process.on('SIGTERM', stop)
 
   await daemon.run(shutdown.signal)
+  // 干净退出:关连接(checkpoint 落 WAL)再走,别把未落盘提交交给运气(软路由断电常态)。
+  try { db.close() } catch { /* 尽力 */ }
   process.exit(0)
 }
 
