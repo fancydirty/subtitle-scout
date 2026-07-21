@@ -3,7 +3,7 @@
 // CLI 与 daemon 各自接线真实现。北极星:held(过不了闸)绝不写 sidecar,留原态交上层。
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { GateResult } from './qualityGate.js'
-import { translateSubtitle, type TranslationContext, type TranslationLM } from './translatePipeline.js'
+import { translateSubtitle, type TranslationContext, type TranslationLM, type TranslationCritic } from './translatePipeline.js'
 
 export interface TranslateItemDeps {
   /** 探内嵌字幕轨(probeEmbeddedSubtitles);null=探针不可用。数组顺序=字幕流顺序(与 -map 0:s:N 对齐)。 */
@@ -15,6 +15,8 @@ export interface TranslateItemDeps {
   readExistingChineseSidecar: (videoPath: string) => string | null
   /** 可选:攒上下文(同剧既有中字/TMDB)。缺省=空上下文。 */
   gatherContext?: (videoPath: string) => Promise<TranslationContext>
+  /** 可选:LLM-judge 语义层(确定性闸过后再审)。缺省=不跑 critic。 */
+  critic?: TranslationCritic
   /** 写中文 sidecar,返回写入路径。 */
   writeSidecar: (videoPath: string, content: string) => string
 }
@@ -49,7 +51,7 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
   if (src === null) return { status: 'extract-failed' }
 
   const ctx = deps.gatherContext ? await deps.gatherContext(videoPath) : {}
-  const result = await translateSubtitle(src, ctx, deps.lm)
+  const result = await translateSubtitle(src, ctx, deps.lm, { critic: deps.critic })
 
   if (result.verdict === 'installed' && result.translatedSrt !== null) {
     const sidecarPath = deps.writeSidecar(videoPath, result.translatedSrt)

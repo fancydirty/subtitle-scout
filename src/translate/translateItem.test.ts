@@ -73,6 +73,17 @@ describe('translateItem — 端到端编排', () => {
     expect(written).toHaveLength(0)
   })
 
+  it('critic 判不合格 → held,不写 sidecar(语义层透传)', async () => {
+    const written: { path: string; content: string }[] = []
+    const deps = baseDeps({
+      critic: { async review() { return { ok: false, issues: [{ cueIndex: '1', severity: 'major', kind: 'awkward', note: '生硬' }] } } },
+      writeSidecar: (vp, c) => { const p = vp.replace(/\.[^.]+$/, '.zh-Hans.srt'); written.push({ path: p, content: c }); return p },
+    })
+    const r = await translateItem('/media/x.mkv', deps)
+    expect(r.status).toBe('held')
+    expect(written).toHaveLength(0)
+  })
+
   it('选第一条非中文文本轨当源(跳过图形轨)', async () => {
     let extractedIndex = -1
     const deps = baseDeps({
