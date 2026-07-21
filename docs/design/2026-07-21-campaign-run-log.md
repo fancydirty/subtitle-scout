@@ -71,3 +71,20 @@ opencode 官方 **无** 会话 timer。本战役用 `nohup` + `*.done` + 主控�
 | 生产自动翻译 | **关闭**(开关未设/false;符合默认关) |
 
 **注意**:dashboard API 当前 `setup required`(未建管理员),UI 验证待用户首登;开关写库路径已被 server/apiV2 单测覆盖。
+
+## 战役 3:从零 live test(2026-07-21 23:15 起,过夜)
+
+**目的**:清全部字幕+清库,弱模型(mimo)跑整夜暴露问题。
+
+| 项 | 值 |
+|---|---|
+| 备份 | `/mnt/nvme0n1-4/backup/20260721-zerotest/`(subtitles-all.tar.gz 274 条 + scout.db.bak + .env.bak-pre-zerotest) |
+| 字幕删除 | 274 → 0(.srt/.ass/.ssa/.sub/.vtt/.sup,Movies/TV/anime) |
+| 库 | scout.db 清空重建(schema 自动迁移) |
+| LLM_* | mimo-v2.5(未动) |
+| TRANSLATE_* | **改指 mimo**(base/key=LLM 同,model=mimo-v2.5)——弱模型才能暴露问题 |
+| ai_translate_enabled | **true**(测试期开启,让翻译腿参与) |
+| 恢复路径 | 字幕 tar + scout.db.bak + .env.bak 三件套回滚 |
+
+**起步确认(23:18)**:17 series / 231 episodes / 8 movies / 36 parked 已入库,daemon 15s tick 中。
+**监控**:主控心跳轮询(nohup+done 不适用——这是 daemon 常驻;改为定期查库+logs 记此文件)。
