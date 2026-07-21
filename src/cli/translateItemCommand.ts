@@ -147,13 +147,20 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
   }
   const deps = makeTranslateItemDeps(cfg, fetchSourceSub, locateOriginLang)
   console.log(`[translate-item] 开始: ${videoPath}`)
-  const r = await translateItem(videoPath, deps)
-  db?.close()
+  let r: Awaited<ReturnType<typeof translateItem>>
+  try {
+    r = await translateItem(videoPath, deps)
+  } finally {
+    db?.close()
+  }
   const tail = (r.sidecarPath ? ` → ${r.sidecarPath}` : '') + (r.reason ? ` (${r.reason})` : '') + (r.sourceRef ? ` [源: ${r.sourceRef}]` : '')
   console.log(`[translate-item] 结果: ${r.status}${tail}`)
   if (r.gate) {
     console.log(`[translate-item] 闸: verdict=${r.gate.verdict} 术语符合=${r.gate.glossary.conformance}% (${r.gate.glossary.hits}/${r.gate.glossary.checks}) cues=${r.gate.cueCount.candidate} 硬违规=${r.gate.hardViolations.length}`)
     for (const h of r.gate.hardViolations) console.log(`  ✗ ${h}`)
   }
+  // 生产实测(Astronaut):sidecar 落盘后进程迟迟不退(16min+,单线程 sleep)。根因未完全定位
+  // (疑 fetch/undici 或 docker exec 管道),故这里把 db 关闭挪进 finally 兜底,并在打印结果后
+  // 立即 exit 收尾——CLI 是一次性进程,exit 即权威收尾;daemon 路径不走这里(常驻,不 exit)。
   process.exit(r.status === 'installed' ? 0 : 1)
 }

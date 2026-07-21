@@ -402,7 +402,7 @@ describe('startDashboard (v2)', () => {
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({
         target_languages: 'zh,en', hardsub_mode: null, exclude_extras: null,
-        trace_retention_days: null, scan_interval_ms: null,
+        trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
       })
     })
 
@@ -447,9 +447,25 @@ describe('startDashboard (v2)', () => {
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({
           target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: null,
-          trace_retention_days: null, scan_interval_ms: null,
+          trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
         })
         expect(new SettingsRepo(db).get('target_languages')).toBe('zh,en')
+      })
+
+      it('写入 ai_translate_enabled=true/false 合法（AI 翻译开关）', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/settings?token=tok`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ai_translate_enabled: 'true' }),
+        })
+        expect(res.status).toBe(200)
+        expect(new SettingsRepo(db).get('ai_translate_enabled')).toBe('true')
+        const res2 = await fetch(`${base}/api/v2/settings?token=tok`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ai_translate_enabled: 'off' }),
+        })
+        expect(res2.status).toBe(400)
+        expect(new SettingsRepo(db).get('ai_translate_enabled')).toBe('true')
       })
 
       it('白名单外的 key → 400，且不写入任何行（全有或全无）', async () => {

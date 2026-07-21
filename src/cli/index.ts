@@ -520,10 +520,10 @@ async function cmdWatch() {
     },
     log,
     now: () => Date.now(),
-    // E AI 翻译:仅当显式配了 TRANSLATE_* 三件套才注入派活钩子;否则 undefined = 功能休眠零成本
-    // (同 SUBHD_ENABLED 模式)。派活纯机械(SQL 筛候选 + 幂等 upsert,无 LLM),真正的翻译在被
-    // claim 的 translate worker 里跑。
-    dispatchTranslate: tryAutoTranslateCfg()
+    // E AI 翻译:派活双门——①显式 TRANSLATE_* 三件套(部署层)②settings.ai_translate_enabled==='true'
+    // (行为级开关,默认关,设置页改)。派活纯机械(SQL 筛候选 + 幂等 upsert,无 LLM),真正的翻译在被
+    // claim 的 translate worker 里跑;worker 端仍只认 TRANSLATE_*(开关只断派活,存量行不受影响)。
+    dispatchTranslate: (tryAutoTranslateCfg() && settingsRepo.get('ai_translate_enabled') === 'true')
       ? () => { dispatchTranslateTasks(db, jobs, () => Date.now()) }
       : undefined,
     concurrency: {

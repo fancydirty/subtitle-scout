@@ -110,7 +110,14 @@ export async function runSearch(
   // occurrence, preserving the interleaved order; cross-provider keys never collide.
   const byKey = new Map<string, SubtitleCandidate>()
   for (const c of interleaveByProvider(results)) if (!byKey.has(candidateKey(c))) byKey.set(candidateKey(c), c)
-  return [...byKey.values()]
+  const merged = [...byKey.values()]
+  // F2 日字源优先级:ja 搜索时把 jimaku(日字专门站)候选移到最前。真机实测 OS 也收 ja 且
+  // 可能抢跑,其日字质量曾触发 critic held,而 jimaku 同集 installed——机械重排(不评对错),
+  // 只影响展示/候选顺序,归属判断仍归 agent/质量闸(北极星#2)。
+  if ((args.languages ?? []).some((l) => /^(ja|jpn|jp)([-_]|$)/i.test(l))) {
+    return merged.sort((a, b) => (a.provider === 'jimaku' ? 0 : 1) - (b.provider === 'jimaku' ? 0 : 1))
+  }
+  return merged
 }
 
 export async function runResolve(

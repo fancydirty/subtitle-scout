@@ -91,6 +91,23 @@ describe('runSearch: provider-diversity interleave (The Rig 2026-07-20 regressio
     ], () => {})
     expect(r.map(c => c.providerId)).toEqual(['assrt-0', 'zimuku-0', 'assrt-1', 'zimuku-1', 'assrt-2'])
   })
+
+  it('F2: ja 搜索时 jimaku 候选移到最前（日字专门源优先，真机 OS 日字曾致 critic held）', async () => {
+    const r = await runSearch({ queries: ['Frieren'], languages: ['ja'] }, [
+      provAdapter('opensubtitles', many('opensubtitles', 3)),
+      provAdapter('jimaku', many('jimaku', 1)),
+    ], () => {})
+    expect(r[0].provider).toBe('jimaku')
+    expect(r).toHaveLength(4)
+  })
+
+  it('非 ja 搜索（en）不重排，保持 round-robin', async () => {
+    const r = await runSearch({ queries: ['q'], languages: ['en'] }, [
+      provAdapter('opensubtitles', many('opensubtitles', 2)),
+      provAdapter('jimaku', many('jimaku', 1)),
+    ], () => {})
+    expect(r.map(c => c.providerId)).toEqual(['opensubtitles-0', 'jimaku-0', 'opensubtitles-1'])
+  })
 })
 
 describe('interleaveByProvider', () => {

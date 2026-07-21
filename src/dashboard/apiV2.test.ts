@@ -401,12 +401,12 @@ describe('buildRuns', () => {
 })
 
 // dashboard G4：settings/deploy/fs 三个只读端点的纯函数底座。
-describe('buildSettings（GET /api/v2/settings：白名单五键，未设置=null）', () => {
-  it('全部未设置时五键皆 null', () => {
+describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null）', () => {
+  it('全部未设置时六键皆 null', () => {
     const settings = new SettingsRepo(db)
     expect(buildSettings(settings)).toEqual({
       target_languages: null, hardsub_mode: null, exclude_extras: null,
-      trace_retention_days: null, scan_interval_ms: null,
+      trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
     })
   })
 
@@ -416,7 +416,7 @@ describe('buildSettings（GET /api/v2/settings：白名单五键，未设置=nul
     settings.set('hardsub_mode', 'aggressive', NOW)
     expect(buildSettings(settings)).toEqual({
       target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: null,
-      trace_retention_days: null, scan_interval_ms: null,
+      trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
     })
   })
 

@@ -170,6 +170,10 @@ export const zh = {
   settings_scan_interval_label: '扫描间隔（毫秒）',
   settings_scan_interval_note: '下一个守护进程心跳生效。',
 
+  settings_ai_translate_label: 'AI 字幕翻译',
+  settings_ai_translate_note:
+    '默认关闭。开启后守护进程会对搜不到字幕的条目自动翻译（消耗 TRANSLATE_* 配额）。需部署层配 TRANSLATE_BASE_URL/API_KEY/MODEL。手动 translate-item 不受此开关影响。',
+
   settings_save_error_prefix: '保存失败：',
 
   settings_deploy_readonly_note: '部署层配置，只读——如需修改请编辑环境变量或 compose 文件',

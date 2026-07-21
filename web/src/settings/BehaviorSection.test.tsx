@@ -11,7 +11,7 @@ import type { SettingsDTO } from '../api/types.js'
 
 const NULL_SETTINGS: SettingsDTO = {
   target_languages: null, hardsub_mode: null, exclude_extras: null,
-  trace_retention_days: null, scan_interval_ms: null,
+  trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
 }
 
 function asyncOf(data: SettingsDTO | null, error: string | null = null): Async<SettingsDTO> {
@@ -81,14 +81,21 @@ describe('BehaviorSection：null 值默认占位', () => {
     renderSection(
       asyncOf({
         target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: 'true',
-        trace_retention_days: '14', scan_interval_ms: '600000',
+        trace_retention_days: '14', scan_interval_ms: '600000', ai_translate_enabled: 'true',
       }),
     )
     expect(screen.getByRole('textbox', { name: 'Target languages' })).toHaveValue('zh,en')
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' }).textContent).toContain('Aggressive')
     expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeChecked()
+    expect(screen.getByRole('switch', { name: 'AI subtitle translation' })).toBeChecked()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toHaveValue(14)
     expect(screen.getByRole('spinbutton', { name: 'Scan interval (ms)' })).toHaveValue(600000)
+  })
+
+  it('ai_translate_enabled 默认关（null → 未勾选）且默认关注记在场', () => {
+    renderSection(asyncOf(NULL_SETTINGS))
+    expect(screen.getByRole('switch', { name: 'AI subtitle translation' })).not.toBeChecked()
+    expect(screen.getByText(/Default off/)).toBeInTheDocument()
   })
 })
 
@@ -131,6 +138,18 @@ describe('BehaviorSection：单键即时 PUT', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
     expect(JSON.parse(String(init.body))).toEqual({ exclude_extras: 'true' })
+  })
+
+  it('ai_translate_enabled 切换即刻单键 PUT', async () => {
+    const fetchMock = mockPut(200, { ...NULL_SETTINGS, ai_translate_enabled: 'true' })
+    vi.stubGlobal('fetch', fetchMock)
+    renderSection(asyncOf(NULL_SETTINGS))
+
+    fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({ ai_translate_enabled: 'true' })
   })
 
   it('trace_retention_days 回车提交单键 PUT', async () => {

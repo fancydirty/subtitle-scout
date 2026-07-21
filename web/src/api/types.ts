@@ -249,6 +249,7 @@ export interface TmdbSearchResponseDTO {
  *  见 web/src/settings/text.ts）。 */
 export type SettingsKey =
   | 'target_languages' | 'hardsub_mode' | 'exclude_extras' | 'trace_retention_days' | 'scan_interval_ms'
+  | 'ai_translate_enabled'
 export type SettingsDTO = Record<SettingsKey, string | null>
 
 /** dashboard-F6：PUT /api/v2/settings 请求体——部分键值对象（全 string），与

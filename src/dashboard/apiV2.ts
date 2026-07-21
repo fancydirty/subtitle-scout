@@ -569,6 +569,7 @@ export function unexclude(db: ScoutDb, input: { path: string }): ClaimParkedResu
  *  "读的时候只读这五个"。 */
 export const SETTINGS_KEYS = [
   'target_languages', 'hardsub_mode', 'exclude_extras', 'trace_retention_days', 'scan_interval_ms',
+  'ai_translate_enabled',
 ] as const
 export type SettingsKey = typeof SETTINGS_KEYS[number]
 export type SettingsDTO = Record<SettingsKey, string | null>
@@ -666,6 +667,7 @@ const SETTINGS_VALUE_SCHEMAS: Record<SettingsKey, z.ZodType<string>> = {
   exclude_extras: z.enum(['true', 'false']),
   trace_retention_days: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
   scan_interval_ms: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
+  ai_translate_enabled: z.enum(['true', 'false']),
 }
 
 export type UpdateSettingsResult = { ok: true; settings: SettingsDTO } | { ok: false; error: string }

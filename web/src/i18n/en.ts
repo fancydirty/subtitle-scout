@@ -206,6 +206,10 @@ export const en = {
   settings_scan_interval_label: 'Scan interval (ms)',
   settings_scan_interval_note: 'Takes effect on the next daemon tick.',
 
+  settings_ai_translate_label: 'AI subtitle translation',
+  settings_ai_translate_note:
+    'Default off. When on, the daemon auto-translates items no source could subtitle (burns TRANSLATE_* quota). Requires deploy-level TRANSLATE_BASE_URL/API_KEY/MODEL. Manual translate-item is unaffected.',
+
   settings_save_error_prefix: "Couldn't save: ",
 
   // 部署区（DeploySection，只读）——env 脱敏展示，零输入控件。

@@ -156,6 +156,27 @@ function ExcludeExtrasRow({ settings, onUpdated }: RowProps) {
   )
 }
 
+function AiTranslateRow({ settings, onUpdated }: RowProps) {
+  const { t } = useT()
+  const { saving, error, commit } = useFieldCommit(onUpdated)
+  const value = settings.ai_translate_enabled === 'true'
+
+  return (
+    <VStack gap={2}>
+      <Switch
+        label={t('settings_ai_translate_label')}
+        value={value}
+        onChange={(checked) => void commit('ai_translate_enabled', checked ? 'true' : 'false')}
+        isLoading={saving}
+        status={error ? { type: 'error', message: error } : undefined}
+      />
+      <Text type="supporting" color="secondary">
+        {t('settings_ai_translate_note')}
+      </Text>
+    </VStack>
+  )
+}
+
 function NumberSettingRow({
   settings, onUpdated, settingKey, label, placeholder, note,
 }: RowProps & { settingKey: SettingsKey; label: string; placeholder: string; note: string }) {
@@ -242,6 +263,7 @@ export function BehaviorSection({ settings }: Props) {
         <TargetLanguagesRow settings={local} onUpdated={setLocal} />
         <HardsubModeRow settings={local} onUpdated={setLocal} />
         <ExcludeExtrasRow settings={local} onUpdated={setLocal} />
+        <AiTranslateRow settings={local} onUpdated={setLocal} />
         <NumberSettingRow
           settings={local}
           onUpdated={setLocal}
