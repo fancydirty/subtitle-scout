@@ -8,8 +8,9 @@ import { probeEmbeddedSubtitles } from '../files/streamProbe.js'
 import { extractEmbeddedSubtitle } from '../files/extractEmbeddedSub.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { makeTranslationLM } from '../translate/translateLm.js'
+import { makeTranslationCritic } from '../translate/translateCritic.js'
 import { translateItem, type TranslateItemDeps } from '../translate/translateItem.js'
-import type { TranslationContext } from '../translate/translatePipeline.js'
+import type { TranslationContext, TranslationCritic } from '../translate/translatePipeline.js'
 
 const CHINESE_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'zh-CN', 'zh-TW', 'chs', 'cht', 'chi', 'zho']
 
@@ -39,20 +40,34 @@ function gatherSeriesContext(videoPath: string): TranslationContext {
   return subs.length ? { seriesExistingSubs: subs } : {}
 }
 
+/** E 翻译用的 LLM 配置。TRANSLATE_MODEL 一旦设置 → 走 TRANSLATE_* 三件套(让 E 用强模型,与
+ *  captcha 用的 LLM_MODEL=mimo 分开——真机实测 mimo 对翻译太弱);否则回退 LLM_*。 */
+function translateLlmCfg(): { baseUrl: string; apiKey: string; model: string } {
+  if (process.env.TRANSLATE_MODEL) {
+    return { baseUrl: requireEnv('TRANSLATE_BASE_URL'), apiKey: requireEnv('TRANSLATE_API_KEY'), model: process.env.TRANSLATE_MODEL }
+  }
+  return { baseUrl: requireEnv('LLM_BASE_URL'), apiKey: requireEnv('LLM_API_KEY'), model: requireEnv('LLM_MODEL') }
+}
+
 export async function cmdTranslateItem(videoPath: string): Promise<void> {
   if (!existsSync(videoPath)) {
     console.error(`文件不存在: ${videoPath}`)
     process.exit(2)
   }
-  const model = makeModel({
-    baseUrl: requireEnv('LLM_BASE_URL'),
-    apiKey: requireEnv('LLM_API_KEY'),
-    model: requireEnv('LLM_MODEL'),
-  })
+  const cfg = translateLlmCfg()
+  const model = makeModel(cfg)
+  // LLM-judge critic 默认开(质量 > 省一次调用);TRANSLATE_CRITIC=off 关闭。critic 模型默认同翻译模型,
+  // TRANSLATE_CRITIC_MODEL 可单独指定(如更强的判官)。
+  const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
+  const critic: TranslationCritic | undefined = criticOn
+    ? makeTranslationCritic(process.env.TRANSLATE_CRITIC_MODEL ? makeModel({ ...cfg, model: process.env.TRANSLATE_CRITIC_MODEL }) : model)
+    : undefined
+  console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'}`)
   const deps: TranslateItemDeps = {
     probe: (v) => probeEmbeddedSubtitles(v),
     extract: (v, i) => extractEmbeddedSubtitle(v, i),
     lm: makeTranslationLM(model),
+    critic,
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
     gatherContext: async (v) => gatherSeriesContext(v),
     writeSidecar: (v, content) => {
