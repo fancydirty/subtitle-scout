@@ -2,15 +2,15 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from './db.js'
 import { JobsRepo, type Job } from './jobsRepo.js'
 import {
-  listTranslateCandidates, dispatchTranslateTasks, runTranslateWorkerTask,
+  listTranslateCandidates, dispatchTranslateTasks, runTranslateWorkerTask, SUPPORTED_SOURCE_LANGS,
 } from './translateWorkerTask.js'
 
 let db: ScoutDb
 let jobs: JobsRepo
 beforeEach(() => { db = openDb(':memory:'); jobs = new JobsRepo(db) })
 
-function seedSeries(id: string): void {
-  db.prepare(`INSERT INTO series (id, name) VALUES (?, ?)`).run(id, id)
+function seedSeries(id: string, originLang: string | null = null): void {
+  db.prepare(`INSERT INTO series (id, name, origin_lang) VALUES (?, ?, ?)`).run(id, id, originLang)
 }
 function seedEpisode(id: string, seriesId: string, subStatus: string, embeddedLangs: string | null, path = `/media/tv/${id}.mkv`): void {
   db.prepare(
@@ -18,11 +18,11 @@ function seedEpisode(id: string, seriesId: string, subStatus: string, embeddedLa
      VALUES (?, ?, 1, 1, ?, ?, 0, ?)`,
   ).run(id, seriesId, path, subStatus, embeddedLangs)
 }
-function seedMovie(id: string, subStatus: string, embeddedLangs: string | null, path = `/media/movies/${id}.mkv`): void {
+function seedMovie(id: string, subStatus: string, embeddedLangs: string | null, path = `/media/movies/${id}.mkv`, originLang: string | null = null): void {
   db.prepare(
-    `INSERT INTO movies (id, name, path, sub_status, updated_at, embedded_langs)
-     VALUES (?, ?, ?, ?, 0, ?)`,
-  ).run(id, id, path, subStatus, embeddedLangs)
+    `INSERT INTO movies (id, name, path, sub_status, updated_at, embedded_langs, origin_lang)
+     VALUES (?, ?, ?, ?, 0, ?, ?)`,
+  ).run(id, id, path, subStatus, embeddedLangs, originLang)
 }
 
 describe('listTranslateCandidates — unavailable + 内嵌非中文轨才算可译候选', () => {
@@ -47,6 +47,51 @@ describe('listTranslateCandidates — unavailable + 内嵌非中文轨才算可�
     seedEpisode('tmdb:1/s1e2', 'tmdb:1', 'unavailable', '[]', '/media/tv/e2.mkv')
     seedEpisode('tmdb:1/s1e3', 'tmdb:1', 'unavailable', null, '/media/tv/e3.mkv')
     expect(listTranslateCandidates(db)).toEqual([])
+  })
+})
+
+describe('listTranslateCandidates — F1 源语言腿:unavailable + origin_lang ∈ SUPPORTED_SOURCE_LANGS 也算候选', () => {
+  it('SUPPORTED_SOURCE_LANGS 是 F1 铁原则常量:只有 en(日漫等 F2,永不英语中继)', () => {
+    expect(SUPPORTED_SOURCE_LANGS).toEqual(['en'])
+  })
+
+  it('unavailable + 零内嵌 + series.origin_lang=en → 候选(episodes JOIN series 取 origin_lang)', () => {
+    seedSeries('tmdb:1', 'en')
+    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', null)
+    seedEpisode('tmdb:1/s1e2', 'tmdb:1', 'unavailable', '[]', '/media/tv/e2.mkv')
+    expect(listTranslateCandidates(db).map((x) => x.itemId).sort()).toEqual(['tmdb:1/s1e1', 'tmdb:1/s1e2'])
+  })
+
+  it('origin_lang=ja → 非候选(F1 只支持 en,绝不日→英→中中继)', () => {
+    seedSeries('tmdb:2', 'ja')
+    seedEpisode('tmdb:2/s1e1', 'tmdb:2', 'unavailable', null)
+    expect(listTranslateCandidates(db)).toEqual([])
+  })
+
+  it('movies 同构:origin_lang=en 零内嵌 → 候选;ja/null → 非', () => {
+    seedMovie('tmdb:9', 'unavailable', null, '/media/movies/en.mkv', 'en')
+    seedMovie('tmdb:10', 'unavailable', null, '/media/movies/ja.mkv', 'ja')
+    seedMovie('tmdb:11', 'unavailable', null, '/media/movies/null.mkv', null)
+    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:9'])
+  })
+
+  it('origin_lang 脏值(大小写/空白)lower+trim 后比对:" EN " → 候选', () => {
+    seedSeries('tmdb:3', ' EN ')
+    seedEpisode('tmdb:3/s1e1', 'tmdb:3', 'unavailable', null)
+    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:3/s1e1'])
+  })
+
+  it('origin_lang=en 但 sub_status 非 unavailable → 非候选(只救搜索穷尽确认无的)', () => {
+    seedSeries('tmdb:4', 'en')
+    seedEpisode('tmdb:4/s1e1', 'tmdb:4', 'missing', null)
+    seedMovie('tmdb:12', 'covered', null, '/media/movies/c.mkv', 'en')
+    expect(listTranslateCandidates(db)).toEqual([])
+  })
+
+  it('两腿是 OR:origin_lang=en + 内嵌非中文轨的同一条目只出现一次(不重复派活)', () => {
+    seedSeries('tmdb:5', 'en')
+    seedEpisode('tmdb:5/s1e1', 'tmdb:5', 'unavailable', '["eng"]')
+    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:5/s1e1'])
   })
 })
 
@@ -106,13 +151,34 @@ describe('runTranslateWorkerTask — 结局映射', () => {
     expect(row.last_error).toContain('held')
   })
 
-  it('already-covered / no-embedded → completeDone(无事可做,不算错)', async () => {
-    for (const status of ['already-covered', 'no-embedded'] as const) {
+  it('already-covered / no-embedded / no-source → completeDone(无事可做,不算错)', async () => {
+    for (const status of ['already-covered', 'no-embedded', 'no-source'] as const) {
       db.prepare(`DELETE FROM jobs`).run()
       const job = makeJob('/media/x.mkv')
       await runTranslateWorkerTask(job, { runItem: async () => ({ status }) }, jobs, () => 99)
       expect((db.prepare(`SELECT state FROM jobs WHERE id=?`).get(job.id) as { state: string }).state).toBe('done')
     }
+  })
+
+  it('F1: no-source → runs 记录 decision=translate:no-source(同 no-embedded 口径)', async () => {
+    const job = makeJob('/media/x.mkv')
+    const runsRows: { decision: string; detail: string }[] = []
+    await runTranslateWorkerTask(job, {
+      runItem: async () => ({ status: 'no-source' }),
+      runs: { insert: (r: { decision: string; detail: string }) => { runsRows.push(r) } } as never,
+    }, jobs, () => 99)
+    expect(runsRows[0]?.decision).toBe('translate:no-source')
+  })
+
+  it('F1: installed 带 sourceRef → runs detail 里可追溯来源', async () => {
+    const job = makeJob('/media/x.mkv')
+    const runsRows: { decision: string; detail: string }[] = []
+    await runTranslateWorkerTask(job, {
+      runItem: async () => ({ status: 'installed', sidecarPath: '/media/x.zh-Hans.srt', sourceRef: 'opensubtitles:12345' }),
+      runs: { insert: (r: { decision: string; detail: string }) => { runsRows.push(r) } } as never,
+    }, jobs, () => 99)
+    expect(runsRows[0]?.decision).toBe('translate:installed')
+    expect(runsRows[0]?.detail).toContain('opensubtitles:12345')
   })
 
   it('runItem 抛错 → completeError,不崩', async () => {

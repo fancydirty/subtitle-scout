@@ -30,19 +30,36 @@ function hasNonChineseTrack(embeddedLangsJson: string | null): boolean {
   return langs.some((l) => typeof l === 'string' && !isChineseTag(l))
 }
 
+/** F1 铁原则:只做"源语言→中文"单跳直译,永不中继(JP→EN→CN 丢义严重,用户明令禁止)。
+ *  故源语言外挂搜索腿只认这个集合;日漫(origin ja)等 F2 的 jimaku 日文源落地后再加 'ja'。
+ *  值域=TMDB original_language 小写码('en'/'ja'),比对方(listTranslateCandidates/
+ *  cli/fetchSourceSub.ts 的语言门)负责 lower+trim 防脏值。 */
+export const SUPPORTED_SOURCE_LANGS = ['en']
+
+function isSupportedSourceLang(originLang: string | null): boolean {
+  if (!originLang) return false
+  return SUPPORTED_SOURCE_LANGS.includes(originLang.trim().toLowerCase())
+}
+
 export interface TranslateCandidate {
   itemId: string
   videoPath: string
 }
 
 export function listTranslateCandidates(db: ScoutDb): TranslateCandidate[] {
+  // F1:候选从单腿(内嵌非中文轨)扩成双腿 OR(内嵌非中文轨 OR origin_lang ∈ SUPPORTED_SOURCE_LANGS)。
+  // episodes 无 origin_lang 列,JOIN series 取;movies 直取自身列。embedded_langs 的 IS NOT NULL
+  // 预筛随之取消——零内嵌(NULL/'[]')但源语言受支持的项正是 F1 要救的("零字幕数据"场景),
+  // 判定移到下方 JS 过滤。同一条目两腿都命中只出现一次(一行一判,天然去重)。
   const rows = db.prepare(
-    `SELECT id, path, embedded_langs FROM episodes WHERE sub_status = 'unavailable' AND embedded_langs IS NOT NULL
+    `SELECT e.id AS id, e.path AS path, e.embedded_langs AS embedded_langs, s.origin_lang AS origin_lang
+       FROM episodes e JOIN series s ON e.series_id = s.id
+      WHERE e.sub_status = 'unavailable'
      UNION ALL
-     SELECT id, path, embedded_langs FROM movies WHERE sub_status = 'unavailable' AND embedded_langs IS NOT NULL`,
-  ).all() as Array<{ id: string; path: string; embedded_langs: string | null }>
+     SELECT id, path, embedded_langs, origin_lang FROM movies WHERE sub_status = 'unavailable'`,
+  ).all() as Array<{ id: string; path: string; embedded_langs: string | null; origin_lang: string | null }>
   return rows
-    .filter((r) => hasNonChineseTrack(r.embedded_langs))
+    .filter((r) => hasNonChineseTrack(r.embedded_langs) || isSupportedSourceLang(r.origin_lang))
     .map((r) => ({ itemId: r.id, videoPath: r.path }))
 }
 
@@ -62,7 +79,7 @@ export function dispatchTranslateTasks(db: ScoutDb, jobs: JobsRepo, now: () => n
 
 export interface TranslateWorkerTaskDeps {
   /** 端到端翻译一个视频(translateItem 预绑定真实 deps)。 */
-  runItem: (videoPath: string) => Promise<Pick<TranslateItemResult, 'status' | 'sidecarPath' | 'reason'>>
+  runItem: (videoPath: string) => Promise<Pick<TranslateItemResult, 'status' | 'sidecarPath' | 'reason' | 'sourceRef'>>
   /** installed 后踢一脚 ingest,让新 sidecar 尽快记账成 covered(镜像 rescue 的先例)。 */
   requestIngest?: () => void
   runs?: Pick<RunsRepo, 'insert'>
@@ -96,10 +113,12 @@ export async function runTranslateWorkerTask(
     const r = await deps.runItem(videoPath)
     if (r.status === 'installed') {
       jobs.completeDone(job.id, now())
-      recordRun('translate:installed', `${videoPath} → ${r.sidecarPath ?? '?'}`)
+      // F1:sourceRef(外挂搜索腿的 'provider:id')进 detail 供追溯;内嵌轨腿无此值,不加尾巴。
+      recordRun('translate:installed', `${videoPath} → ${r.sidecarPath ?? '?'}${r.sourceRef ? ` (source: ${r.sourceRef})` : ''}`)
       deps.requestIngest?.()
-    } else if (r.status === 'already-covered' || r.status === 'no-embedded') {
+    } else if (r.status === 'already-covered' || r.status === 'no-embedded' || r.status === 'no-source') {
       // 候选预筛与现场重探之间世界变了(有人装了字幕/轨其实不可抽)——无事可做,不算错。
+      // no-source(F1)同口径:外挂搜索穷尽也没有=诚实无源;unavailable 的衰减复查会周期性再给机会。
       jobs.completeDone(job.id, now())
       recordRun(`translate:${r.status}`, videoPath)
     } else {

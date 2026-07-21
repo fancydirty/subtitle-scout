@@ -3,6 +3,7 @@
 // src/translate/translateItem.ts(已单测)。真机验收 E 用它。
 import { existsSync, writeFileSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, basename, join } from 'node:path'
+import { homedir } from 'node:os'
 import { makeModel } from '../agent/llm.js'
 import { probeEmbeddedSubtitles } from '../files/streamProbe.js'
 import { extractEmbeddedSubtitle } from '../files/extractEmbeddedSub.js'
@@ -11,6 +12,8 @@ import { makeTranslationLM } from '../translate/translateLm.js'
 import { makeTranslationCritic } from '../translate/translateCritic.js'
 import { translateItem, type TranslateItemDeps } from '../translate/translateItem.js'
 import type { TranslationContext, TranslationCritic } from '../translate/translatePipeline.js'
+import { makeRealFetchSourceSub } from './fetchSourceSub.js'
+import { buildAdapters } from './buildAdapters.js'
 
 const CHINESE_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'zh-CN', 'zh-TW', 'chs', 'cht', 'chi', 'zho']
 
@@ -60,8 +63,13 @@ export function tryAutoTranslateCfg(env: NodeJS.ProcessEnv = process.env): { bas
 
 /** 组装 translateItem 的真实 I/O deps(probe/extract/LM/critic/sidecar 读写/同剧上下文)。
  *  手动 CLI(cmdTranslateItem)与 daemon 的 translate worker(cli/index.ts 路由分支)共用,
- *  防两处组装漂移。critic 默认开(TRANSLATE_CRITIC=off 关);TRANSLATE_CRITIC_MODEL 单指定判官。 */
-export function makeTranslateItemDeps(cfg: { baseUrl: string; apiKey: string; model: string }): TranslateItemDeps {
+ *  防两处组装漂移。critic 默认开(TRANSLATE_CRITIC=off 关);TRANSLATE_CRITIC_MODEL 单指定判官。
+ *  F1:fetchSourceSub 可选注入(makeRealFetchSourceSub 组装,需要 db+adapters,由调用方各自
+ *  提供——daemon 分支必接;手动 CLI 在库文件存在时接)。未注入=行为不变(零合格轨→no-embedded)。 */
+export function makeTranslateItemDeps(
+  cfg: { baseUrl: string; apiKey: string; model: string },
+  fetchSourceSub?: TranslateItemDeps['fetchSourceSub'],
+): TranslateItemDeps {
   const model = makeModel(cfg)
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
   const critic: TranslationCritic | undefined = criticOn
@@ -72,6 +80,7 @@ export function makeTranslateItemDeps(cfg: { baseUrl: string; apiKey: string; mo
     extract: (v, i) => extractEmbeddedSubtitle(v, i),
     lm: makeTranslationLM(model),
     critic,
+    fetchSourceSub,
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
     gatherContext: async (v) => gatherSeriesContext(v),
     writeSidecar: (v, content) => {
@@ -90,10 +99,30 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
   const cfg = translateLlmCfg()
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
   console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'}`)
-  const deps = makeTranslateItemDeps(cfg)
+  // F1:手动 CLI 也接同一 fetchSourceSub(与 daemon 分支共用 makeRealFetchSourceSub 组装,防漂移)。
+  // 需要库定位(origin_lang/imdb),故只在 scout.db 已存在时接线——库还没建(从没跑过 watch)时
+  // 不为一次手动翻译凭空创建空库(openDb 会落盘建表),此时 fetch 腿关闭,行为同 F1 前(no-embedded)。
+  // db/adapters 组装失败(如 ZIMUKU_ENABLED=true 缺 LLM_*)同样降级关腿,不拦手动翻译主线。
+  let fetchSourceSub: TranslateItemDeps['fetchSourceSub']
+  let db: import('../v2/db.js').ScoutDb | undefined
+  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
+  const dbPath = join(cacheRoot, 'scout.db')
+  if (existsSync(dbPath)) {
+    try {
+      const { openDb } = await import('../v2/db.js')
+      db = openDb(dbPath)
+      fetchSourceSub = makeRealFetchSourceSub(db, await buildAdapters())
+    } catch (e) {
+      console.log(`[translate-item] 源语言外挂搜索腿未启用(${e instanceof Error ? e.message : String(e)}),仅走内嵌轨`)
+    }
+  } else {
+    console.log(`[translate-item] 未找到库 ${dbPath}(先跑一次 watch 建库),源语言外挂搜索腿未启用,仅走内嵌轨`)
+  }
+  const deps = makeTranslateItemDeps(cfg, fetchSourceSub)
   console.log(`[translate-item] 开始: ${videoPath}`)
   const r = await translateItem(videoPath, deps)
-  const tail = (r.sidecarPath ? ` → ${r.sidecarPath}` : '') + (r.reason ? ` (${r.reason})` : '')
+  db?.close()
+  const tail = (r.sidecarPath ? ` → ${r.sidecarPath}` : '') + (r.reason ? ` (${r.reason})` : '') + (r.sourceRef ? ` [源: ${r.sourceRef}]` : '')
   console.log(`[translate-item] 结果: ${r.status}${tail}`)
   if (r.gate) {
     console.log(`[translate-item] 闸: verdict=${r.gate.verdict} 术语符合=${r.gate.glossary.conformance}% (${r.gate.glossary.hits}/${r.gate.glossary.checks}) cues=${r.gate.cueCount.candidate} 硬违规=${r.gate.hardViolations.length}`)

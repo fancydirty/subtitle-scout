@@ -17,15 +17,21 @@ export interface TranslateItemDeps {
   gatherContext?: (videoPath: string) => Promise<TranslationContext>
   /** 可选:LLM-judge 语义层(确定性闸过后再审)。缺省=不跑 critic。 */
   critic?: TranslationCritic
+  /** F1 可选第二腿:probe 探得零合格轨时按源语言搜外挂字幕(cli/fetchSourceSub.ts 接线)。
+   *  返回 srtText=可直接进管道的字幕文本,sourceRef='provider:id' 供 runs 追溯;null=诚实失败
+   *  (搜不到/都解不出,绝不抛)。未接线=行为不变(no-embedded)。 */
+  fetchSourceSub?: (videoPath: string) => Promise<{ srtText: string; sourceRef: string } | null>
   /** 写中文 sidecar,返回写入路径。 */
   writeSidecar: (videoPath: string, content: string) => string
 }
 
 export interface TranslateItemResult {
-  status: 'installed' | 'held' | 'no-embedded' | 'already-covered' | 'extract-failed'
+  status: 'installed' | 'held' | 'no-embedded' | 'already-covered' | 'extract-failed' | 'no-source'
   sidecarPath?: string
   reason?: string
   gate?: GateResult
+  /** F1:源文本来自外挂搜索时的候选标识('provider:id'),进 runs 记录供追溯;内嵌轨腿无此值。 */
+  sourceRef?: string
 }
 
 /** 中文语言标签判定(ffprobe 原始 ISO:chi、zho、zh 前缀、chs、cht)。 */
@@ -45,17 +51,30 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
 
   // 源轨:第一条非中文的文本轨(图形轨不可当文本比对/翻译)。其在字幕流里的位置即 -map 0:s:N 的 N。
   const sourceIdx = tracks.findIndex((t) => !t.isImageBased && !isChinese(t.lang))
-  if (sourceIdx < 0) return { status: 'no-embedded' }
 
-  const src = await deps.extract(videoPath, sourceIdx)
-  if (src === null) return { status: 'extract-failed' }
+  // 源文本双腿(F1):有合格内嵌轨→抽取(绝不调 fetchSourceSub,省下载配额);零合格轨且接了
+  // fetchSourceSub→按源语言搜外挂;两腿都没有→no-embedded(未接线时语义与从前完全一致)。
+  let src: string
+  let sourceRef: string | undefined
+  if (sourceIdx >= 0) {
+    const extracted = await deps.extract(videoPath, sourceIdx)
+    if (extracted === null) return { status: 'extract-failed' }
+    src = extracted
+  } else if (deps.fetchSourceSub) {
+    const fetched = await deps.fetchSourceSub(videoPath)
+    if (fetched === null) return { status: 'no-source' } // 诚实失败:搜索穷尽/都解不出
+    src = fetched.srtText
+    sourceRef = fetched.sourceRef
+  } else {
+    return { status: 'no-embedded' }
+  }
 
   const ctx = deps.gatherContext ? await deps.gatherContext(videoPath) : {}
   const result = await translateSubtitle(src, ctx, deps.lm, { critic: deps.critic })
 
   if (result.verdict === 'installed' && result.translatedSrt !== null) {
     const sidecarPath = deps.writeSidecar(videoPath, result.translatedSrt)
-    return { status: 'installed', sidecarPath, gate: result.gate }
+    return { status: 'installed', sidecarPath, gate: result.gate, sourceRef }
   }
-  return { status: 'held', reason: result.reason, gate: result.gate }
+  return { status: 'held', reason: result.reason, gate: result.gate, sourceRef }
 }

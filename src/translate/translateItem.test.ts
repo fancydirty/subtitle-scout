@@ -84,6 +84,64 @@ describe('translateItem — 端到端编排', () => {
     expect(written).toHaveLength(0)
   })
 
+  it('F1: 无合格轨 + fetchSourceSub 命中 → 走同一管道 installed,带 sourceRef', async () => {
+    const written: { path: string; content: string }[] = []
+    const deps = baseDeps({
+      probe: async () => [{ lang: 'eng', codec: 'hdmv_pgs_subtitle', isImageBased: true }], // 只有图形轨=无合格轨
+      fetchSourceSub: async () => ({ srtText: SOURCE, sourceRef: 'opensubtitles:12345' }),
+      writeSidecar: (vp, c) => { const p = vp.replace(/\.[^.]+$/, '.zh-Hans.srt'); written.push({ path: p, content: c }); return p },
+    })
+    const r = await translateItem('/media/x.mkv', deps)
+    expect(r.status).toBe('installed')
+    expect(r.sourceRef).toBe('opensubtitles:12345')
+    expect(written).toHaveLength(1)
+    expect(written[0].content).toContain('皮克托') // 抓下来的文本走了既有翻译管道
+  })
+
+  it('F1: 无合格轨 + fetchSourceSub 返回 null → no-source', async () => {
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      probe: async () => [],
+      fetchSourceSub: async () => null,
+    }))
+    expect(r.status).toBe('no-source')
+  })
+
+  it('F1: 无合格轨 + 未接线 fetchSourceSub → no-embedded(行为不变)', async () => {
+    const r = await translateItem('/media/x.mkv', baseDeps({ probe: async () => [] }))
+    expect(r.status).toBe('no-embedded')
+  })
+
+  it('F1: 有合格内嵌轨时绝不调 fetchSourceSub(省下载配额)', async () => {
+    let fetchCalls = 0
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      fetchSourceSub: async () => { fetchCalls++; return { srtText: SOURCE, sourceRef: 'opensubtitles:1' } },
+    }))
+    expect(r.status).toBe('installed')
+    expect(fetchCalls).toBe(0)
+  })
+
+  it('F1: 探针不可用(probe null)时不调 fetchSourceSub → no-embedded(不能判、不猜、不译)', async () => {
+    let fetchCalls = 0
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      probe: async () => null,
+      fetchSourceSub: async () => { fetchCalls++; return { srtText: SOURCE, sourceRef: 'opensubtitles:1' } },
+    }))
+    expect(r.status).toBe('no-embedded')
+    expect(fetchCalls).toBe(0)
+  })
+
+  it('F1: fetch 腿的译文同样过 fail-closed 闸 → 漂移 held,不写 sidecar', async () => {
+    const written: string[] = []
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      probe: async () => [],
+      fetchSourceSub: async () => ({ srtText: SOURCE, sourceRef: 'opensubtitles:9' }),
+      lm: mockLM(true),
+      writeSidecar: (vp) => { written.push(vp); return vp },
+    }))
+    expect(r.status).toBe('held')
+    expect(written).toHaveLength(0)
+  })
+
   it('选第一条非中文文本轨当源(跳过图形轨)', async () => {
     let extractedIndex = -1
     const deps = baseDeps({
