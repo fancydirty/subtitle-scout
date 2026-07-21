@@ -49,7 +49,9 @@ export async function extractEmbeddedSubtitle(
     stdout = await execFileAsync(
       impl,
       bin,
-      ['-v', 'error', '-i', videoPath, '-map', `0:s:${subtitleStreamIndex}`, '-f', 'srt', 'pipe:1'],
+      // -nostdin:ffmpeg 交互模式会读 stdin,execFile 的子进程 stdin 是永不关闭的管道,
+      // 一旦走交互分支就吊到超时(审计💭)。
+      ['-nostdin', '-v', 'error', '-i', videoPath, '-map', `0:s:${subtitleStreamIndex}`, '-f', 'srt', 'pipe:1'],
       { timeout, maxBuffer: 32 * 1024 * 1024 },
     )
   } catch {

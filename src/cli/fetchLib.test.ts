@@ -101,6 +101,19 @@ describe('runSearch: provider-diversity interleave (The Rig 2026-07-20 regressio
     expect(r).toHaveLength(4)
   })
 
+  it('ja 重排保稳定:多 jimaku 候选相对顺序不变,非 jimaku 块相对顺序也不变', async () => {
+    const r = await runSearch({ queries: ['q'], languages: ['ja'] }, [
+      provAdapter('opensubtitles', many('opensubtitles', 2)),
+      provAdapter('jimaku', many('jimaku', 3)),
+      provAdapter('zimuku', many('zimuku', 2)),
+    ], () => {})
+    // jimaku 块整体前置且内部保序
+    expect(r.slice(0, 3).map((c) => c.providerId)).toEqual(['jimaku-0', 'jimaku-1', 'jimaku-2'])
+    // 其余块保持 interleave 后的相对顺序
+    const rest = r.slice(3).map((c) => c.providerId)
+    expect(rest).toEqual(['opensubtitles-0', 'zimuku-0', 'opensubtitles-1', 'zimuku-1'])
+  })
+
   it('非 ja 搜索（en）不重排，保持 round-robin', async () => {
     const r = await runSearch({ queries: ['q'], languages: ['en'] }, [
       provAdapter('opensubtitles', many('opensubtitles', 2)),

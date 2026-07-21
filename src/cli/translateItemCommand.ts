@@ -102,8 +102,13 @@ export function makeTranslateItemDeps(
   const model = makeModel(cfg)
   const lmTimeout = translateTimeoutMs()
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
+  // 审计🟡:critic 曾裸继承 LLM_TIMEOUT_MS(120s)——全片对照 payload 远大于单批,慢端点必超时,
+  // 再被优雅降级静默跳过("过了"与"没审"日志无别)。与翻译 LM 同门:TRANSLATE_TIMEOUT_MS 可配。
   const critic: TranslationCritic | undefined = criticOn
-    ? makeTranslationCritic(process.env.TRANSLATE_CRITIC_MODEL ? makeModel({ ...cfg, model: process.env.TRANSLATE_CRITIC_MODEL }) : model)
+    ? makeTranslationCritic(
+        process.env.TRANSLATE_CRITIC_MODEL ? makeModel({ ...cfg, model: process.env.TRANSLATE_CRITIC_MODEL }) : model,
+        { timeoutMs: lmTimeout },
+      )
     : undefined
   return {
     probe: (v) => probeEmbeddedSubtitles(v),

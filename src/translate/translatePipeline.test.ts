@@ -143,6 +143,43 @@ describe('translateSubtitle — 分批带滚动记忆', () => {
   })
 })
 
+describe('translateSubtitle — F2 源语言参数化(Reality Checker:三跳管线必须有断言)', () => {
+  it('ctx.sourceLangName 到达 translateBatch 第 4 参(glossary 同 ctx 语义)', async () => {
+    const seen: (string | undefined)[] = []
+    const lm: TranslationLM = {
+      async buildGlossary(_src, ctx) { seen.push(ctx.sourceLangName); return [] },
+      async translateBatch(batch, _g, _s, lang) {
+        seen.push(lang)
+        return { cues: batch.map((c) => ({ ...c, text: ['译' + c.text.join('')] })), summary: '' }
+      },
+    }
+    await translateSubtitle(SOURCE, { sourceLangName: '日文' }, lm)
+    expect(seen).toEqual(['日文', '日文', '日文']) // glossary + 两个 batch
+  })
+
+  it('ctx.sourceLangName 到达 critic.review 第 4 参', async () => {
+    let seenLang: string | undefined
+    const critic: TranslationCritic = {
+      async review(_s, _c, _g, lang) { seenLang = lang; return { ok: true, issues: [] } },
+    }
+    await translateSubtitle(SOURCE, { sourceLangName: '日文' }, makeMockLM(), { critic })
+    expect(seenLang).toBe('日文')
+  })
+
+  it('缺省不传 sourceLangName → LM/critic 收到 undefined(上游默认英文,向后兼容)', async () => {
+    const seen: (string | undefined)[] = []
+    const lm: TranslationLM = {
+      async buildGlossary(_s, ctx) { seen.push(ctx.sourceLangName); return [] },
+      async translateBatch(batch, _g, _s, lang) {
+        seen.push(lang)
+        return { cues: batch.map((c) => ({ ...c, text: ['x' + c.text.join('')] })), summary: '' }
+      },
+    }
+    await translateSubtitle(SOURCE, {}, lm)
+    expect(seen.every((v) => v === undefined)).toBe(true)
+  })
+})
+
 describe('translateSubtitle — LLM-judge critic 层(语义/通顺,确定性闸之外)', () => {
   it('确定性闸过、但 critic 判语义/通顺不合格 → held(抓确定性闸抓不到的生硬译文)', async () => {
     const critic: TranslationCritic = {
