@@ -73,6 +73,12 @@ export function parseSrtCues(text: string): SrtCue[] {
   return cues
 }
 
+/** parseSrtCues 的逆:把 cue 数组序列化成标准 SRT 文本(序号行 / 时轴行 / 正文行 / 空行分隔)。
+ *  translateWorker 组装译文落盘用。与 parseSrtCues 互逆(见 round-trip 测试)。 */
+export function serializeSrtCues(cues: SrtCue[]): string {
+  return cues.map((c) => [c.index, c.timing, ...c.text].join('\n')).join('\n\n') + '\n'
+}
+
 function fullWidthLen(s: string): number {
   const stripped = s.replace(TAG, '')
   let n = 0

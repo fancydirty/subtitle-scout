@@ -1,10 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseSrtCues,
+  serializeSrtCues,
   evaluateTranslationGate,
   type GlossaryTerm,
   type SrtCue,
 } from './qualityGate.js'
+
+describe('serializeSrtCues ↔ parseSrtCues round-trip', () => {
+  it('序列化后再解析得回同样的 cue(标准 SRT 形状)', () => {
+    const cues: SrtCue[] = [
+      { index: '1', timing: '00:00:01,000 --> 00:00:03,500', text: ['第一行', '第二行'] },
+      { index: '2', timing: '00:00:04,000 --> 00:00:06,200', text: ['<i>斜体</i>'] },
+    ]
+    const srt = serializeSrtCues(cues)
+    expect(srt).toContain('00:00:01,000 --> 00:00:03,500')
+    expect(parseSrtCues(srt)).toEqual(cues)
+  })
+})
 
 const SRT = [
   '1', '00:00:01,000 --> 00:00:03,500', 'David Coake,', 'Pictor Research and Expansion.', '',
