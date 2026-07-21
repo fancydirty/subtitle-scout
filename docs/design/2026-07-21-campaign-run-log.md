@@ -51,4 +51,23 @@ opencode 官方 **无** 会话 timer。本战役用 `nohup` + `*.done` + 主控�
 ## 未做 / 非目标
 - 未 push 公开 GitHub
 - 未做票数 tiebreak
-- CLI 写盘后挂起根因未深挖
+- CLI 写盘后挂起根因未深挖(已 finally+exit 兜底)
+
+## 战役 2:AI 翻译设置页开关(2026-07-21 晚)
+
+**用户拍板**:AI 翻译=默认关、用户显式开的行为级开关(防 token 随无字幕媒体失控)。
+
+| 项 | 结果 |
+|---|---|
+| `settings.ai_translate_enabled` | 新增(true/false,默认关),白名单+zod |
+| daemon 门 | `TRANSLATE_* && ai_translate_enabled==='true'` 才派活;worker 端仍只认 env |
+| 手动 CLI | 不受开关限制 |
+| 设置页 | BehaviorSection Switch(中/英注记:默认关+需三件套+烧配额) |
+| ja 优先 | runSearch ja 时 jimaku 排最前 |
+| CLI 挂起 | db close 进 finally;打印结果后立即 exit |
+| 测试 | 1877 passed + tsc + web 293 |
+| commit | `e3988de`(未 push) |
+| 部署 | media-router 已重 build+up,生产 `ai_translate_enabled=false` 落库 |
+| 生产自动翻译 | **关闭**(开关未设/false;符合默认关) |
+
+**注意**:dashboard API 当前 `setup required`(未建管理员),UI 验证待用户首登;开关写库路径已被 server/apiV2 单测覆盖。
