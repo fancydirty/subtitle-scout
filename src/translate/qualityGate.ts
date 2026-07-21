@@ -131,7 +131,11 @@ export function evaluateTranslationGate(
   }
   if (indexMismatch) hard.push(`序号行不符 ${indexMismatch}/${n} 条`)
   if (timingMismatch) hard.push(`时轴行不符 ${timingMismatch}/${n} 条(时轴须逐字节冻结)`)
-  if (tagMismatch) hard.push(`样式标签数不符 ${tagMismatch}/${n} 条(标签须原位保留)`)
+  // 样式标签(<i>/<b> 等)数不符 → soft 而非 hard:斜体/粗体是装饰,丢了既非错译也非缺口,按北极星
+  // 不该 fail-close 整档。真机实测(2026-07-21)强(opus)弱(mimo)模型都会偶尔在译文里丢内联标签,
+  // 硬拦会让合格译文因几个斜体全被毙、feature 不可用。硬闸只留 corruption 类(条数/时轴/术语)。
+  // 标签冻结(strip→translate→reinsert 保证不丢)是 phase-2 质量增强。
+  if (tagMismatch) soft.push(`样式标签数不符 ${tagMismatch}/${n} 条(斜体/粗体等装饰标签,非 corruption,不硬拦)`)
 
   // ---- Layer 3(确定性部分):CJK 约束(soft) ----
   let overLongLines = 0

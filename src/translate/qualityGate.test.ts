@@ -99,11 +99,13 @@ describe('evaluateTranslationGate — 结构违规硬拦', () => {
     expect(r.hardViolations.some((h) => h.includes('时轴行不符'))).toBe(true)
   })
 
-  it('FAIL:<i> 样式标签丢失', () => {
+  it('样式标签丢失 → soft 告警不硬拦(斜体/粗体是装饰非 corruption;真机实测强弱模型都会偶尔丢)', () => {
     const noTag = GOOD.map((c, i) => (i === 1 ? { ...c, text: ['自从皮克托发现了它，'] } : c))
     const r = evaluateTranslationGate(source, noTag, GLOSSARY)
-    expect(r.verdict).toBe('fail')
-    expect(r.hardViolations.some((h) => h.includes('样式标签'))).toBe(true)
+    expect(r.verdict).toBe('pass') // 仅标签丢失、其余都对 → 不硬拦
+    expect(r.structural.tagMismatch).toBe(1)
+    expect(r.softWarnings.some((h) => h.includes('样式标签'))).toBe(true)
+    expect(r.hardViolations).toEqual([])
   })
 })
 
