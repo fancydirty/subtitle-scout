@@ -39,7 +39,10 @@ export async function extractEmbeddedSubtitle(
 ): Promise<string | null> {
   const bin = opts?.ffmpegPath ?? process.env.FFMPEG_PATH ?? 'ffmpeg'
   const impl = opts?.execFileImpl ?? nodeExecFile
-  const timeout = opts?.timeoutMs ?? 30000
+  // 默认 5min:4K 长片抽内嵌 subrip 真机可超 30s(Astronaut ~90s+);EXTRACT_TIMEOUT_MS 可配。
+  const fromEnv = Number(process.env.EXTRACT_TIMEOUT_MS)
+  const timeout = opts?.timeoutMs
+    ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 300_000)
 
   let stdout: string
   try {

@@ -70,4 +70,25 @@ describe('extractEmbeddedSubtitle', () => {
       else delete process.env.FFMPEG_PATH
     }
   })
+
+  it('默认 timeout 300s(长片 4K 抽轨);EXTRACT_TIMEOUT_MS 可覆盖', async () => {
+    let seenTimeout = 0
+    const impl = ((bin: string, args: string[], options: { timeout: number }, callback: (e: Error | null, stdout: string, stderr: string) => void) => {
+      seenTimeout = options.timeout
+      callback(null, SRT, '')
+      return undefined as never
+    }) as unknown as typeof NodeExecFile
+    const prev = process.env.EXTRACT_TIMEOUT_MS
+    delete process.env.EXTRACT_TIMEOUT_MS
+    try {
+      await extractEmbeddedSubtitle('/media/x.mkv', 0, { execFileImpl: impl })
+      expect(seenTimeout).toBe(300_000)
+      process.env.EXTRACT_TIMEOUT_MS = '120000'
+      await extractEmbeddedSubtitle('/media/x.mkv', 0, { execFileImpl: impl })
+      expect(seenTimeout).toBe(120_000)
+    } finally {
+      if (prev !== undefined) process.env.EXTRACT_TIMEOUT_MS = prev
+      else delete process.env.EXTRACT_TIMEOUT_MS
+    }
+  })
 })
