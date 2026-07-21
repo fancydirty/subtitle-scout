@@ -50,6 +50,27 @@
 - `TRANSLATE_CRITIC`:`off` 关 critic(默认开)。`TRANSLATE_CRITIC_MODEL`:单独指定判官模型。
 - CLI:`subtitle-scout translate-item "<videoPath>"` → 过闸+critic 才写 `<base>.zh-Hans.srt`(held 不写)。
 
+## 深度质量复核发现(2026-07-21 下午,对生产字幕的批判性评估)
+
+对已写进库的 The Rig S2E01 全 941-cue 字幕做批判性评估(不只 gate pass/fail):
+
+**质量结论:高。** ①**术语跨 941 cue 完全一致**(Pictor→皮克托 17× 零漂移、Rose→罗斯 25×、Ancestor→始祖 11×、
+Coake→科克 29×、Fulmer→富尔默 13×,每专名仅一种译法——glossary-first 守住长片最难的一致性关)②结构完美
+(0 时轴/序号漂移)③通顺地道、SDH 全译、CJK 近乎完美(941 中仅 1 长行 2 超速,标签丢 16=soft)。
+
+**但 critic 复审(生产跑时关的)逼出 critic 层自身的真缺陷 → 新改计划:**
+对 cue 441-500 补跑 opus critic:6 条(5 minor 风格 + 1 **major**)。对抗式复核那条 major(cue 450
+"Aye, me and Danny Glover" 译"我和丹尼·格洛弗一样"):**判官过判了**——"老"的语境已由相邻 cue 449
+("Getting a bit old for going up the stairs?"→"爬楼梯有点吃不消了?")承载,450 直译忠实,判官要求补"老了"
+是可选本地化非错译。**判官把忠实译文误判成 major mistranslation。**
+
+- **缺陷1:critic 过判**(严重度校准太激进,混淆"真错译"与"可更本地化")。
+- **缺陷2:"任一 major→held 整档"太刚**——一条(还是误判的)major 会让整部术语一致、通顺的 941-cue 字幕
+  全作废、零安装。**灾难性 false-hold。** 故生产跑关 critic 反而对;但 **critic 默认 on 是潜在隐患**。
+- **正确修法(留评审)**:① 收紧 critic prompt 的严重度定义(major 只给"改变语义/影响理解"的真错,忠实但
+  可更地道的归 minor)② 把"整档 hold"换成 **E 设计步⑥ reflect-refine 逐句精修**(critic 标出的 major cue
+  单独重译),或"major 占比超阈值才 hold"。在修好前,**建议 critic 默认改 off** 或仅作 advisory 日志、不 hold。
+
 ## 剩余(未做,留评审/后续)
 
 - **daemon 自动触发接线**(2e.1/2e.5):sub_status 引入"可译"态(embedded 非目标可抽轨 + 无目标外挂)
