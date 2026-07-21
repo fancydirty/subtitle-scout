@@ -43,7 +43,7 @@
 - **E CLI 驱动全功能真机验收完成。** 临时文件(含 company key env-file)已清理。
 - **运维踩坑记**:软路由是 busybox(无 timeout/pkill/kill 二进制、ps 假阴性)→ ps 假阴性骗我以为进程死了、重复启动 2 个并行翻译白烧几批配额;用 /proc 查明真相 + sh 内建 kill 清干净、最终单跑成功。教训:busybox 判进程死活用 /proc 不用 ps。
 
-剩:**daemon 自动触发接线**(sub_status 可译探测+DB迁移+reconcile 派活)——改状态机的较大集成,留评审。
+剩:**~~daemon 自动触发接线~~ ✅ 已做+验证(commit 1a3b299)**——env 门控机械派活(候选=unavailable+内嵌非中文轨),真库验证正确筛出 The Rig S2E06、排除已覆盖 S2E01。**E 全功能收口**(手动 CLI + 自动 daemon 双通路)。仅剩 critic 缺陷2 reflect-refine(架构级,留评审)+ 标签冻结(phase-2)。上线自动翻译只需服务器配 TRANSLATE_* + 重部署。
 
 ## 当前相位
 

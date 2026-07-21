@@ -76,8 +76,13 @@ Coake→科克 29×、Fulmer→富尔默 13×,每专名仅一种译法——glos
 
 ## 剩余(未做,留评审/后续)
 
-- **daemon 自动触发接线**(2e.1/2e.5):sub_status 引入"可译"态(embedded 非目标可抽轨 + 无目标外挂)
-  + DB 迁移 + reconcileAll 派 translate 任务。当前只有手动 CLI 入口;自动化是改状态机+迁移的较大集成,
-  非高置信机械修,留评审后做。
+- **~~daemon 自动触发接线~~ ✅ 已做+验证(2026-07-21,commit 1a3b299)**:daemon 每 tick 机械派
+  translate worker_task(候选=unavailable+内嵌非中文轨);**双重 env 门控**(只认显式 TRANSLATE_* 三件套,
+  不全则功能休眠零成本/任务拒跑,绝不回退 mimo 烧配额,同 SUBHD_ENABLED 模式);**无 DB 迁移**(复用
+  unavailable/embedded_langs 现成列),不碰圣文件。**真数据验证**:生产库 5 条 unavailable+embedded →
+  正确筛出唯一候选 tmdb:112581/s2e6(The Rig S2E06),排除已覆盖的 S2E01;翻译过的 S2E01 已被 ingest
+  记成 covered(端到端通)。10 单测 + daemon 钩子 3 测。**上线只需服务器配 TRANSLATE_* + 重部署(留用户开关)。**
+- **critic 缺陷2 reflect-refine(留评审)**:把"任一 major→held 整档"换成逐句精修——改 pipeline 编排的
+  架构级改动;缺陷1(过判)校准修好后已不紧急,留评审再动。
 - **标签冻结**(phase-2 质量):strip→translate→reinsert 保证内联标签不丢(当前降 soft 兜住)。
 - **eval 补强**:MockLM eval 已覆盖 fail-closed;可加更多真机 MQM 样本回归。
