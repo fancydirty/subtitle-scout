@@ -34,18 +34,43 @@ export interface TranslationLM {
   ): Promise<{ cues: SrtCue[]; summary: string }>
 }
 
+/** critic(LLM-judge)一条问题:确定性闸抓不到的语义/通顺/漏译类。severity=major 才应否决。 */
+export interface CriticIssue {
+  cueIndex: string
+  severity: 'major' | 'minor'
+  kind: string
+  note: string
+}
+
+export interface CriticVerdict {
+  /** false → held(有 major 语义/通顺问题)。 */
+  ok: boolean
+  issues: CriticIssue[]
+}
+
+/** LLM-judge 语义/通顺 QA:确定性闸(结构/术语/CJK)之外的一层,强模型当判官抓生硬译文/语义错/
+ *  漏译——正是确定性层判不了的"通顺度"。真实现用强模型 ai SDK(见 translateCritic.ts);测试注入 Mock。 */
+export interface TranslationCritic {
+  review(source: SrtCue[], candidate: SrtCue[], glossary: GlossaryTerm[]): Promise<CriticVerdict>
+}
+
 export interface TranslateOptions {
   gapSec?: number
   maxBatch?: number
   gate?: GateOptions
+  /** 可选 LLM-judge 语义层。确定性闸过后再跑;critic 判不合格 → held。critic 抛错 → 优雅降级
+   *  (确定性闸已过则装),不因判官抽风阻塞可用译文。 */
+  critic?: TranslationCritic
 }
 
 export interface TranslationResult {
-  /** installed=过闸可落盘;held=fail-closed 未过闸,不落盘(上层留英文+标记)。 */
+  /** installed=过闸(含 critic)可落盘;held=fail-closed 未过,不落盘(上层留英文+标记)。 */
   verdict: 'installed' | 'held'
   translatedSrt: string | null
   glossary: GlossaryTerm[]
   gate: GateResult
+  /** 跑了 critic 才有(确定性闸过 + 提供了 critic 时)。 */
+  critic?: CriticVerdict
   reason?: string
 }
 
@@ -95,7 +120,7 @@ export async function translateSubtitle(
     }
   }
 
-  // ⑦ fail-closed 质量闸:LM 失败 或 闸不过 → held(不落盘)。闸对齐结构/术语/CJK。
+  // ⑦ fail-closed 确定性质量闸:LM 失败 或 闸不过 → held(不落盘,且不浪费一次 critic LLM 调用)。
   const gate = evaluateTranslationGate(source, translated, glossary, opts.gate)
   if (failed || gate.verdict === 'fail') {
     return {
@@ -106,5 +131,26 @@ export async function translateSubtitle(
       reason: failed ? 'LM 翻译失败(批次抛错)' : gate.hardViolations.join('; '),
     }
   }
-  return { verdict: 'installed', translatedSrt: serializeSrtCues(translated), glossary, gate }
+
+  // ⑦b LLM-judge 语义/通顺层(确定性闸之外):强模型判官抓生硬译文/语义错/漏译——确定性层判不了
+  //     通顺度。critic 抛错 → 优雅降级(确定性闸已过则装),不因判官抽风阻塞。
+  let critic: CriticVerdict | undefined
+  if (opts.critic) {
+    try {
+      critic = await opts.critic.review(source, translated, glossary)
+    } catch {
+      critic = { ok: true, issues: [] }
+    }
+    if (!critic.ok) {
+      return {
+        verdict: 'held',
+        translatedSrt: null,
+        glossary,
+        gate,
+        critic,
+        reason: 'critic 判不合格: ' + critic.issues.filter((i) => i.severity === 'major').map((i) => i.note).join('; '),
+      }
+    }
+  }
+  return { verdict: 'installed', translatedSrt: serializeSrtCues(translated), glossary, gate, critic }
 }

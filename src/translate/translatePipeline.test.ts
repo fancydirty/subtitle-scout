@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { translateSubtitle, type TranslationLM } from './translatePipeline.js'
+import { translateSubtitle, type TranslationLM, type TranslationCritic } from './translatePipeline.js'
 import { parseSrtCues, type GlossaryTerm, type SrtCue } from './qualityGate.js'
 
 const SOURCE = [
@@ -95,6 +95,41 @@ describe('translateSubtitle — 分批带滚动记忆', () => {
     expect(summaryLog.length).toBe(2) // 两批
     expect(summaryLog[0]).toBe('') // 首批无前文
     expect(summaryLog[1]).toBe('批0译毕') // 次批拿到首批摘要
+  })
+})
+
+describe('translateSubtitle — LLM-judge critic 层(语义/通顺,确定性闸之外)', () => {
+  it('确定性闸过、但 critic 判语义/通顺不合格 → held(抓确定性闸抓不到的生硬译文)', async () => {
+    const critic: TranslationCritic = {
+      async review() { return { ok: false, issues: [{ cueIndex: '1', severity: 'major', kind: 'awkward', note: '打孔在地球上 生硬' }] } }
+    }
+    const r = await translateSubtitle(SOURCE, {}, makeMockLM(), { critic })
+    expect(r.gate.verdict).toBe('pass') // 确定性闸放行
+    expect(r.verdict).toBe('held') // 但 critic 拦下
+    expect(r.translatedSrt).toBeNull()
+    expect(r.critic?.ok).toBe(false)
+    expect(r.reason).toContain('critic')
+  })
+
+  it('critic 判合格 → installed', async () => {
+    const critic: TranslationCritic = { async review() { return { ok: true, issues: [] } } }
+    const r = await translateSubtitle(SOURCE, {}, makeMockLM(), { critic })
+    expect(r.verdict).toBe('installed')
+    expect(r.critic?.ok).toBe(true)
+  })
+
+  it('critic 抛错 → 优雅降级到确定性闸判决(不因判官抽风阻塞可用译文)', async () => {
+    const critic: TranslationCritic = { async review() { throw new Error('critic LM down') } }
+    const r = await translateSubtitle(SOURCE, {}, makeMockLM(), { critic })
+    expect(r.verdict).toBe('installed') // 确定性闸已过 → 装
+  })
+
+  it('确定性闸已 fail 时不跑 critic(省一次 LLM 调用),仍 held', async () => {
+    let criticCalled = false
+    const critic: TranslationCritic = { async review() { criticCalled = true; return { ok: true, issues: [] } } }
+    const r = await translateSubtitle(SOURCE, {}, makeMockLM({ termMap: { Pictor: '皮克特' } }), { critic })
+    expect(r.verdict).toBe('held')
+    expect(criticCalled).toBe(false)
   })
 })
 

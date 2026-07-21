@@ -10,8 +10,9 @@ import { LLM_TIMEOUT_MS } from '../agent/llm.js'
 import type { GlossaryTerm, SrtCue } from './qualityGate.js'
 import type { TranslationContext, TranslationLM } from './translatePipeline.js'
 
-/** 从模型自由文本里容错提取一段 JSON(裸 JSON / ```json 围栏 / 前后夹散文都能拿到)。解析不出返回 null。 */
-function extractJson(raw: string): unknown {
+/** 从模型自由文本里容错提取一段 JSON(裸 JSON / ```json 围栏 / 前后夹散文都能拿到)。解析不出返回 null。
+ *  导出供 translateCritic 复用(同类"从 LLM 自由文本抠 JSON"需求)。 */
+export function extractJson(raw: string): unknown {
   let s = raw.trim()
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
   if (fence) s = fence[1].trim()
