@@ -4,7 +4,7 @@ import { buildAdapters } from './buildAdapters.js'
 const ENV_KEYS = [
   'ASSRT_TOKEN', 'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD',
   'ZIMUKU_ENABLED', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL', 'SUBTITLE_SCOUT_CACHE_DIR',
-  'SUBHD_ENABLED', 'SUBHD_BASE_URL',
+  'SUBHD_ENABLED', 'SUBHD_BASE_URL', 'JIMAKU_API_KEY',
 ] as const
 
 let saved: Record<string, string | undefined>
@@ -55,6 +55,17 @@ describe('buildAdapters', () => {
   it('excludes subhd when SUBHD_ENABLED is unset', async () => {
     const adapters = await buildAdapters()
     expect(adapters.some(a => a.name === 'subhd')).toBe(false)
+  })
+
+  it('includes jimaku when JIMAKU_API_KEY is set(F2 日字源)', async () => {
+    process.env.JIMAKU_API_KEY = 'k-test'
+    const adapters = await buildAdapters()
+    expect(adapters.map(a => a.name)).toEqual(['jimaku'])
+  })
+
+  it('excludes jimaku when JIMAKU_API_KEY unset', async () => {
+    const adapters = await buildAdapters()
+    expect(adapters.some(a => a.name === 'jimaku')).toBe(false)
   })
 
   it('rejects with a descriptive error when ZIMUKU_ENABLED=true but LLM_* env is missing (captcha solving needs a multimodal LLM)', async () => {

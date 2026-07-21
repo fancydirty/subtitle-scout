@@ -5,11 +5,13 @@ import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { ZimukuClient } from '../adapters/providers/zimuku.js'
 import { ZimukuSessionStore } from '../adapters/providers/zimukuSession.js'
 import { SubhdClient } from '../adapters/providers/subhd.js'
+import { JimakuClient } from '../adapters/providers/jimaku.js'
 import type { FetchAdapter, FetchEvent } from './fetchLib.js'
 import { makeAssrtAdapter } from './adapters/assrtAdapter.js'
 import { makeOpenSubtitlesAdapter } from './adapters/opensubtitlesAdapter.js'
 import { makeZimukuAdapter } from './adapters/zimukuAdapter.js'
 import { makeSubhdAdapter } from './adapters/subhdAdapter.js'
+import { makeJimakuAdapter } from './adapters/jimakuAdapter.js'
 import { makeModel } from '../agent/llm.js'
 import { solveNumericCaptcha } from '../agent/solveNumericCaptcha.js'
 
@@ -75,6 +77,15 @@ export async function buildAdapters(emit: (e: FetchEvent) => void = () => {}): P
       onApiCall: r => emit({ event: 'api_call', provider: 'subhd', ...r }),
     })
     adapters.push(makeSubhdAdapter(client))
+  }
+
+  // F2:jimaku.cc 日字专门源。有 key 才入列;enabled 再按 languages 含 ja 门控(英剧搜 en 时不扇出)。
+  if (process.env.JIMAKU_API_KEY) {
+    const client = new JimakuClient({
+      apiKey: process.env.JIMAKU_API_KEY,
+      onApiCall: r => emit({ event: 'api_call', provider: 'jimaku', ...r }),
+    })
+    adapters.push(makeJimakuAdapter(client))
   }
   return adapters
 }

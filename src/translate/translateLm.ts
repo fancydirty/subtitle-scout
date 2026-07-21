@@ -65,11 +65,19 @@ export function reconstructBatch(modelText: string, batch: SrtCue[]): SrtCue[] {
   })
 }
 
+/** F2:源语言显示名。ctx 优先,缺省'英文'(F1 回归)。 */
+function srcLang(ctx: { sourceLangName?: string } | string | undefined): string {
+  if (typeof ctx === 'string') return ctx || '英文'
+  return ctx?.sourceLangName?.trim() || '英文'
+}
+
 function glossaryPrompt(sourceText: string, ctx: TranslationContext): string {
+  const lang = srcLang(ctx)
   const parts: string[] = [
-    '你是资深英译简中字幕译者。通读下面的英文字幕(及上下文),产出 EN→ZH 专名术语表:覆盖角色名、',
+    `你是资深${lang}译简中字幕译者。通读下面的${lang}字幕(及上下文),产出源语言→ZH 专名术语表:覆盖角色名、`,
     '地名/组织名、世界观与技术术语、敬称。每个术语给唯一固定的简体中文译法。',
-    '只输出 JSON 数组,形如 [{"en":"Rose","zh":"罗斯","note":"角色名"}],不要任何其它文字。',
+    // 字段名固定 en/zh(内部 schema 稳定);en 槽位=源语言原文,不是"必须是英语"。
+    '只输出 JSON 数组,形如 [{"en":"源语言专名","zh":"中文译名","note":"角色名"}],不要任何其它文字。',
     '',
   ]
   if (ctx.tmdbSynopsis) parts.push(`【剧情简介】${ctx.tmdbSynopsis}`, '')
@@ -79,14 +87,17 @@ function glossaryPrompt(sourceText: string, ctx: TranslationContext): string {
   if (ctx.priorGlossary?.length) {
     parts.push(`【已有术语表(沿用,勿改译名)】${JSON.stringify(ctx.priorGlossary)}`, '')
   }
-  parts.push('【英文字幕】', sourceText.slice(0, 12000))
+  parts.push(`【${lang}字幕】`, sourceText.slice(0, 12000))
   return parts.join('\n')
 }
 
-function batchPrompt(batch: SrtCue[], glossary: GlossaryTerm[], rollingSummary: string): string {
+function batchPrompt(
+  batch: SrtCue[], glossary: GlossaryTerm[], rollingSummary: string, sourceLangName?: string,
+): string {
+  const lang = srcLang(sourceLangName)
   const cuesBlock = batch.map((c) => `[${c.index}] ${c.text.join(' ⏎ ')}`).join('\n')
   return [
-    '把下面每条英文字幕译成简体中文。硬规则:',
+    `把下面每条${lang}字幕译成简体中文。硬规则:`,
     '① 所有专名严格钉死术语表的中文译法,全批一致;',
     '② CJK 排版:每行≤16个全角字符,过长自然断成多行(多行用 \\n 连接);口语自然通顺;',
     '③ 只译文本,保留 <i></i> 等内联标签原位;',
@@ -126,10 +137,10 @@ export function makeTranslationLM(model: LanguageModel, opts: TranslationLmOptio
       })
       return parseGlossaryResponse(text)
     },
-    async translateBatch(batch, glossary, rollingSummary) {
+    async translateBatch(batch, glossary, rollingSummary, sourceLangName) {
       const { text } = await generateText({
         model,
-        prompt: batchPrompt(batch, glossary, rollingSummary),
+        prompt: batchPrompt(batch, glossary, rollingSummary, sourceLangName),
         temperature,
         abortSignal: AbortSignal.timeout(timeoutMs),
       })

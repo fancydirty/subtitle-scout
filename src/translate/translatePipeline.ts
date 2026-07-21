@@ -21,6 +21,8 @@ export interface TranslationContext {
   seriesExistingSubs?: string[]
   tmdbSynopsis?: string
   priorGlossary?: GlossaryTerm[]
+  /** F2:源语言显示名(如'英文'/'日文'),写入 prompt;缺省=英文(F1 回归)。 */
+  sourceLangName?: string
 }
 
 /** 注入的 LM 能力:①通读源+上下文产术语表 ②按批带滚动记忆翻译(冻结时轴/标签,只译文本)。
@@ -31,6 +33,8 @@ export interface TranslationLM {
     batch: SrtCue[],
     glossary: GlossaryTerm[],
     rollingSummary: string,
+    /** F2:与 buildGlossary 同源语言名;缺省实现可忽略(Mock/英文路径)。 */
+    sourceLangName?: string,
   ): Promise<{ cues: SrtCue[]; summary: string }>
 }
 
@@ -51,13 +55,22 @@ export interface CriticVerdict {
 /** LLM-judge 语义/通顺 QA:确定性闸(结构/术语/CJK)之外的一层,强模型当判官抓生硬译文/语义错/
  *  漏译——正是确定性层判不了的"通顺度"。真实现用强模型 ai SDK(见 translateCritic.ts);测试注入 Mock。 */
 export interface TranslationCritic {
-  review(source: SrtCue[], candidate: SrtCue[], glossary: GlossaryTerm[]): Promise<CriticVerdict>
+  review(
+    source: SrtCue[],
+    candidate: SrtCue[],
+    glossary: GlossaryTerm[],
+    sourceLangName?: string,
+  ): Promise<CriticVerdict>
 }
 
 export interface TranslateOptions {
   gapSec?: number
   maxBatch?: number
   gate?: GateOptions
+  /** 单批抛错后的重试次数(默认 2)。真机逼出:F1 fetch 腿的外挂字幕碎成上百个小批,
+   *  串行长跑中单次网关抖动/超时曾把整档 false-held;重试只在抛错路径发生,绿路径零成本。
+   *  重试用尽仍败 → failed → held,fail-closed 不变。 */
+  batchRetries?: number
   /** 可选 LLM-judge 语义层。确定性闸过后再跑;critic 判不合格 → held。critic 抛错 → 优雅降级
    *  (确定性闸已过则装),不因判官抽风阻塞可用译文。 */
   critic?: TranslationCritic
@@ -104,17 +117,26 @@ export async function translateSubtitle(
     glossary = ctx.priorGlossary ?? []
   }
 
-  // ⑤ 场景分批 → 串行逐批译带滚动记忆。任一批抛错 → 标记失败中断(下方 fail-closed 兜底)。
+  // ⑤ 场景分批 → 串行逐批译带滚动记忆。单批抛错先重试(batchRetries,默认 2)——瞬时抖动不
+  //  该整档陪葬;重试用尽仍败 → 标记失败中断(下方 fail-closed 兜底)。
   const batches = batchIntoScenes(source, { gapSec: opts.gapSec, maxBatch: opts.maxBatch })
+  const maxAttempts = 1 + (opts.batchRetries ?? 2)
   const translated: SrtCue[] = []
   let rollingSummary = ''
   let failed = false
   for (const batch of batches) {
-    try {
-      const { cues, summary } = await lm.translateBatch(batch, glossary, rollingSummary)
-      translated.push(...cues)
-      rollingSummary = summary
-    } catch {
+    let ok = false
+    for (let attempt = 0; attempt < maxAttempts && !ok; attempt++) {
+      try {
+        const { cues, summary } = await lm.translateBatch(
+          batch, glossary, rollingSummary, ctx.sourceLangName,
+        )
+        translated.push(...cues)
+        rollingSummary = summary
+        ok = true
+      } catch { /* 瞬时失败 → 下 attempt 重试同批 */ }
+    }
+    if (!ok) {
       failed = true
       break
     }
@@ -137,7 +159,7 @@ export async function translateSubtitle(
   let critic: CriticVerdict | undefined
   if (opts.critic) {
     try {
-      critic = await opts.critic.review(source, translated, glossary)
+      critic = await opts.critic.review(source, translated, glossary, ctx.sourceLangName)
     } catch {
       critic = { ok: true, issues: [] }
     }

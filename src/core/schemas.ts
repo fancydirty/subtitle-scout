@@ -82,7 +82,7 @@ export const AssrtQuotaResponseSchema = z.object({
 // 分支——同一份 SubtitleCandidate/candidateKey/parseCandidateKey/summarizeCandidate 机制，agent
 // 用同一套工具面对待本地候选，这正是 spec §4"传播=普通候选判断"要求的（同一套归属判断，不是
 // 特殊心虚状态）。
-export const PROVIDERS = ['assrt', 'opensubtitles', 'zimuku', 'subhd', 'local'] as const
+export const PROVIDERS = ['assrt', 'opensubtitles', 'zimuku', 'subhd', 'jimaku', 'local'] as const
 export type ProviderName = (typeof PROVIDERS)[number]
 
 // invariant: `index` MUST equal the entry's position within its containing SubtitleCandidate.fileList

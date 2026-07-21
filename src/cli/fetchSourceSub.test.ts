@@ -49,13 +49,24 @@ describe('makeFetchSourceSub — 语言门(中继防线)与定位', () => {
     expect(await fetch('/media/x.mkv')).toBeNull()
   })
 
-  it('origin ja ∉ SUPPORTED_SOURCE_LANGS → null,search 不被调(日漫绝不英语中继)', async () => {
+  it('origin ja ∈ SUPPORTED_SOURCE_LANGS(F2) → 过门,search languages=[ja](单跳日→中,非英语中继)', async () => {
+    let seen: unknown
+    const fetch = makeFetchSourceSub(baseDeps({
+      locate: () => ({ ...LOCATED, originLang: 'ja', title: 'Frieren' }),
+      search: async (args) => { seen = args; return [] },
+    }))
+    // search 空 → 仍 null(诚实无源),但必须被调且 languages=ja
+    expect(await fetch('/media/anime.mkv')).toBeNull()
+    expect(seen).toMatchObject({ queries: ['Frieren'], languages: ['ja'] })
+  })
+
+  it('origin ko ∉ SUPPORTED_SOURCE_LANGS → null,search 不被调(未支持源语言宁 no-source)', async () => {
     let searched = 0
     const fetch = makeFetchSourceSub(baseDeps({
-      locate: () => ({ ...LOCATED, originLang: 'ja' }),
+      locate: () => ({ ...LOCATED, originLang: 'ko' }),
       search: async () => { searched++; return [] },
     }))
-    expect(await fetch('/media/anime.mkv')).toBeNull()
+    expect(await fetch('/media/kdrama.mkv')).toBeNull()
     expect(searched).toBe(0)
   })
 

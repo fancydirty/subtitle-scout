@@ -26,8 +26,18 @@ function requireEnv(name: string): string {
   return v
 }
 
-/** 扫同目录既有中文 sidecar 当上下文播种术语表(库内直读、零网络;取前 3 份各截断 3000 字)。 */
-function gatherSeriesContext(videoPath: string): TranslationContext {
+/** F2:TMDB original_language 码 → prompt 源语言显示名。未知码→'源语言'(宁泛不硬套英文)。 */
+export function sourceLangDisplayName(originLang: string | null | undefined): string {
+  const l = (originLang ?? '').trim().toLowerCase()
+  if (l === 'en' || l.startsWith('en-')) return '英文'
+  if (l === 'ja' || l === 'jpn' || l.startsWith('ja-')) return '日文'
+  if (!l) return '英文' // 缺省=F1 回归(英剧主路径)
+  return '源语言'
+}
+
+/** 扫同目录既有中文 sidecar 当上下文播种术语表(库内直读、零网络;取前 3 份各截断 3000 字)。
+ *  F2:可选 originLang 注入 sourceLangName,驱动日/英 prompt 文案。 */
+function gatherSeriesContext(videoPath: string, originLang?: string | null): TranslationContext {
   const dir = dirname(videoPath)
   const self = basename(videoPath)
   const subs: string[] = []
@@ -40,7 +50,9 @@ function gatherSeriesContext(videoPath: string): TranslationContext {
       if (subs.length >= 3) break
     }
   } catch { /* 目录读失败 → 无上下文 */ }
-  return subs.length ? { seriesExistingSubs: subs } : {}
+  const ctx: TranslationContext = { sourceLangName: sourceLangDisplayName(originLang) }
+  if (subs.length) ctx.seriesExistingSubs = subs
+  return ctx
 }
 
 /** E 翻译用的 LLM 配置。TRANSLATE_MODEL 一旦设置 → 走 TRANSLATE_* 三件套(让 E 用强模型,与
@@ -50,6 +62,13 @@ function translateLlmCfg(): { baseUrl: string; apiKey: string; model: string } {
     return { baseUrl: requireEnv('TRANSLATE_BASE_URL'), apiKey: requireEnv('TRANSLATE_API_KEY'), model: process.env.TRANSLATE_MODEL }
   }
   return { baseUrl: requireEnv('LLM_BASE_URL'), apiKey: requireEnv('LLM_API_KEY'), model: requireEnv('LLM_MODEL') }
+}
+
+/** 翻译批超时:默认 300s,TRANSLATE_TIMEOUT_MS 可配。真机逼出(F1 验收):34-cue 大批经慢端点
+ *  120s(LLM_TIMEOUT_MS)必然超时 → 单批抛错整档 false-held;翻译是重活,不与快路径共享 120s。 */
+export function translateTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const v = Number(env.TRANSLATE_TIMEOUT_MS)
+  return Number.isFinite(v) && v > 0 ? v : 300_000
 }
 
 /** daemon 自动翻译的配置门(与上面手动 CLI 的区别):**只认显式 TRANSLATE_* 三件套,绝不回退
@@ -69,8 +88,11 @@ export function tryAutoTranslateCfg(env: NodeJS.ProcessEnv = process.env): { bas
 export function makeTranslateItemDeps(
   cfg: { baseUrl: string; apiKey: string; model: string },
   fetchSourceSub?: TranslateItemDeps['fetchSourceSub'],
+  /** F2:可选 locate,用于把 origin_lang 喂进 prompt 源语言名;缺省=英文。 */
+  locateOriginLang?: (videoPath: string) => string | null,
 ): TranslateItemDeps {
   const model = makeModel(cfg)
+  const lmTimeout = translateTimeoutMs()
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
   const critic: TranslationCritic | undefined = criticOn
     ? makeTranslationCritic(process.env.TRANSLATE_CRITIC_MODEL ? makeModel({ ...cfg, model: process.env.TRANSLATE_CRITIC_MODEL }) : model)
@@ -78,11 +100,11 @@ export function makeTranslateItemDeps(
   return {
     probe: (v) => probeEmbeddedSubtitles(v),
     extract: (v, i) => extractEmbeddedSubtitle(v, i),
-    lm: makeTranslationLM(model),
+    lm: makeTranslationLM(model, { timeoutMs: lmTimeout }),
     critic,
     fetchSourceSub,
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
-    gatherContext: async (v) => gatherSeriesContext(v),
+    gatherContext: async (v) => gatherSeriesContext(v, locateOriginLang?.(v) ?? null),
     writeSidecar: (v, content) => {
       const out = v.replace(/\.[^.]+$/, '.zh-Hans.srt')
       writeFileSync(out, content, 'utf8')
@@ -107,18 +129,23 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
   let db: import('../v2/db.js').ScoutDb | undefined
   const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
   const dbPath = join(cacheRoot, 'scout.db')
+  let locateOriginLang: ((videoPath: string) => string | null) | undefined
   if (existsSync(dbPath)) {
     try {
       const { openDb } = await import('../v2/db.js')
+      const { makeDbLocate } = await import('./fetchSourceSub.js')
       db = openDb(dbPath)
-      fetchSourceSub = makeRealFetchSourceSub(db, await buildAdapters())
+      const adapters = await buildAdapters()
+      fetchSourceSub = makeRealFetchSourceSub(db, adapters)
+      const locate = makeDbLocate(db)
+      locateOriginLang = (p) => locate(p)?.originLang ?? null
     } catch (e) {
       console.log(`[translate-item] 源语言外挂搜索腿未启用(${e instanceof Error ? e.message : String(e)}),仅走内嵌轨`)
     }
   } else {
     console.log(`[translate-item] 未找到库 ${dbPath}(先跑一次 watch 建库),源语言外挂搜索腿未启用,仅走内嵌轨`)
   }
-  const deps = makeTranslateItemDeps(cfg, fetchSourceSub)
+  const deps = makeTranslateItemDeps(cfg, fetchSourceSub, locateOriginLang)
   console.log(`[translate-item] 开始: ${videoPath}`)
   const r = await translateItem(videoPath, deps)
   db?.close()

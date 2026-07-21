@@ -72,8 +72,16 @@ describe('ASSRT zero-result search (subs is an empty OBJECT, recorded 2026-07-06
 })
 
 describe('PROVIDERS registry', () => {
-  it('includes zimuku + local alongside assrt/opensubtitles（重复源 P4：local=本地候选，非真实网络适配器）', () => {
-    expect(PROVIDERS).toEqual(['assrt', 'opensubtitles', 'zimuku', 'subhd', 'local'])
+  it('includes zimuku + jimaku + local alongside assrt/opensubtitles（F2:jimaku=日字源;local=本地候选非网络适配器）', () => {
+    expect(PROVIDERS).toEqual(['assrt', 'opensubtitles', 'zimuku', 'subhd', 'jimaku', 'local'])
+  })
+  it("PROVIDERS 含 'jimaku'，且 provider:'jimaku' 的候选能通过校验", () => {
+    expect(PROVIDERS).toContain('jimaku')
+    const parsed = SubtitleCandidateSchema.safeParse({ provider: 'jimaku', providerId: '729' })
+    expect(parsed.success).toBe(true)
+  })
+  it('parseCandidateKey recognizes the jimaku: prefix', () => {
+    expect(parseCandidateKey('jimaku:729')).toEqual({ provider: 'jimaku', providerId: '729' })
   })
   it('SubtitleCandidateSchema accepts provider:"zimuku"', () => {
     const c = SubtitleCandidateSchema.parse({

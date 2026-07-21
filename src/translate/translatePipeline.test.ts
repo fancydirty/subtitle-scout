@@ -21,19 +21,29 @@ function makeMockLM(opts: {
   termMap?: Record<string, string> // en → zh(覆盖 glossary 的 zh,用于造漂移)
   dropLastCueOfBatch?: boolean
   throwOnBatch?: number
+  /** 第 idx 批的前 fails 次调用抛错、之后恢复(模拟瞬时网络抖动/网关 5xx)。 */
+  flakyOnBatch?: { idx: number; fails: number }
+  attemptsLog?: number[]
   summaryLog?: string[]
 } = {}): TranslationLM {
   const glossary = opts.glossary ?? GLOSSARY
   const map: Record<string, string> = {}
   for (const t of glossary) map[t.en.toLowerCase()] = opts.termMap?.[t.en] ?? t.zh
   let batchCount = 0
+  let flakyThrown = 0
   return {
     async buildGlossary() {
       return opts.glossary === undefined ? GLOSSARY : opts.glossary
     },
     async translateBatch(batch: SrtCue[], _glossary, rollingSummary) {
-      const idx = batchCount++
+      const idx = batchCount
+      opts.attemptsLog?.push(idx)
+      if (opts.flakyOnBatch && idx === opts.flakyOnBatch.idx && flakyThrown < opts.flakyOnBatch.fails) {
+        flakyThrown++
+        throw new Error('mock LM transient boom')
+      }
       if (opts.throwOnBatch === idx) throw new Error('mock LM boom')
+      batchCount++
       opts.summaryLog?.push(rollingSummary)
       let cues = batch.map((c) => ({
         ...c,
@@ -85,6 +95,27 @@ describe('translateSubtitle — fail-closed(held,绝不装错译)', () => {
     const r = await translateSubtitle(SOURCE, {}, lm)
     expect(r.verdict).toBe('held')
     expect(r.translatedSrt).toBeNull()
+  })
+})
+
+describe('translateSubtitle — 批次瞬时失败重试(一次抖动不死整档)', () => {
+  it('批次首次抛错、重试后成功 → installed(真机逼出:136 批长跑,单次网关抖动曾 false-hold 整档)', async () => {
+    const attemptsLog: number[] = []
+    const lm = makeMockLM({ flakyOnBatch: { idx: 0, fails: 1 }, attemptsLog })
+    const r = await translateSubtitle(SOURCE, {}, lm)
+    expect(r.verdict).toBe('installed')
+    expect(r.translatedSrt).not.toBeNull()
+    // batch0 被调了 2 次(1 败 1 成),之后正常
+    expect(attemptsLog.filter((i) => i === 0).length).toBe(2)
+  })
+
+  it('重试次数用尽仍抛错 → held(fail-closed 不变),且调用次数 = 1 + 重试上限', async () => {
+    const attemptsLog: number[] = []
+    const lm = makeMockLM({ flakyOnBatch: { idx: 0, fails: 99 }, attemptsLog })
+    const r = await translateSubtitle(SOURCE, {}, lm)
+    expect(r.verdict).toBe('held')
+    expect(r.translatedSrt).toBeNull()
+    expect(attemptsLog.length).toBe(3) // 默认 2 次重试 → 共 3 次尝试
   })
 })
 

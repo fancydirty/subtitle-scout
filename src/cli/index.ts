@@ -462,8 +462,12 @@ async function cmdWatch() {
           // F1:源语言外挂搜索腿(零合格内嵌轨时按 origin_lang 搜外挂英字直译)。adapters 每次
           // claim 现建(同 find_subtitle 分支口径);组装与手动 CLI 共用 makeRealFetchSourceSub
           // 防漂移。translateItem 只在 probe 零合格轨时才调它,有轨候选不多花一次搜索/下载。
-          const fetchSourceSub = makeRealFetchSourceSub(db, await buildAdapters(emitProviderEvent), emitProviderEvent)
-          const itemDeps = makeTranslateItemDeps(cfg, fetchSourceSub)
+          const adapters = await buildAdapters(emitProviderEvent)
+          const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
+          // F2:locate 喂 origin_lang → prompt 源语言名(日/英);与手动 CLI 共用 makeDbLocate。
+          const { makeDbLocate } = await import('./fetchSourceSub.js')
+          const locate = makeDbLocate(db)
+          const itemDeps = makeTranslateItemDeps(cfg, fetchSourceSub, (p) => locate(p)?.originLang ?? null)
           await runTranslateWorkerTask(job, {
             runItem: (videoPath) => translateItem(videoPath, itemDeps),
             requestIngest: () => {

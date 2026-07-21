@@ -34,7 +34,7 @@ function hasNonChineseTrack(embeddedLangsJson: string | null): boolean {
  *  故源语言外挂搜索腿只认这个集合;日漫(origin ja)等 F2 的 jimaku 日文源落地后再加 'ja'。
  *  值域=TMDB original_language 小写码('en'/'ja'),比对方(listTranslateCandidates/
  *  cli/fetchSourceSub.ts 的语言门)负责 lower+trim 防脏值。 */
-export const SUPPORTED_SOURCE_LANGS = ['en']
+export const SUPPORTED_SOURCE_LANGS = ['en', 'ja']
 
 function isSupportedSourceLang(originLang: string | null): boolean {
   if (!originLang) return false

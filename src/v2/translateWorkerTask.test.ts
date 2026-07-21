@@ -51,8 +51,8 @@ describe('listTranslateCandidates — unavailable + 内嵌非中文轨才算可�
 })
 
 describe('listTranslateCandidates — F1 源语言腿:unavailable + origin_lang ∈ SUPPORTED_SOURCE_LANGS 也算候选', () => {
-  it('SUPPORTED_SOURCE_LANGS 是 F1 铁原则常量:只有 en(日漫等 F2,永不英语中继)', () => {
-    expect(SUPPORTED_SOURCE_LANGS).toEqual(['en'])
+  it('SUPPORTED_SOURCE_LANGS 是单跳直译铁原则常量:en+ja(F2 jimaku;永不英语中继)', () => {
+    expect(SUPPORTED_SOURCE_LANGS).toEqual(['en', 'ja'])
   })
 
   it('unavailable + 零内嵌 + series.origin_lang=en → 候选(episodes JOIN series 取 origin_lang)', () => {
@@ -62,17 +62,18 @@ describe('listTranslateCandidates — F1 源语言腿:unavailable + origin_lang 
     expect(listTranslateCandidates(db).map((x) => x.itemId).sort()).toEqual(['tmdb:1/s1e1', 'tmdb:1/s1e2'])
   })
 
-  it('origin_lang=ja → 非候选(F1 只支持 en,绝不日→英→中中继)', () => {
+  it('origin_lang=ja → 候选(F2 jimaku;单跳日→中,永不英语中继)', () => {
     seedSeries('tmdb:2', 'ja')
     seedEpisode('tmdb:2/s1e1', 'tmdb:2', 'unavailable', null)
-    expect(listTranslateCandidates(db)).toEqual([])
+    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:2/s1e1'])
   })
 
-  it('movies 同构:origin_lang=en 零内嵌 → 候选;ja/null → 非', () => {
+  it('movies 同构:origin_lang=en/ja 零内嵌 → 候选;null/ko → 非', () => {
     seedMovie('tmdb:9', 'unavailable', null, '/media/movies/en.mkv', 'en')
     seedMovie('tmdb:10', 'unavailable', null, '/media/movies/ja.mkv', 'ja')
     seedMovie('tmdb:11', 'unavailable', null, '/media/movies/null.mkv', null)
-    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:9'])
+    seedMovie('tmdb:13', 'unavailable', null, '/media/movies/ko.mkv', 'ko')
+    expect(listTranslateCandidates(db).map((x) => x.itemId).sort()).toEqual(['tmdb:10', 'tmdb:9'])
   })
 
   it('origin_lang 脏值(大小写/空白)lower+trim 后比对:" EN " → 候选', () => {

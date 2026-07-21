@@ -29,12 +29,15 @@ export function parseCriticResponse(raw: string): CriticVerdict {
   return { ok: !issues.some((i) => i.severity === 'major'), issues }
 }
 
-function criticPrompt(source: SrtCue[], candidate: SrtCue[], glossary: GlossaryTerm[]): string {
+function criticPrompt(
+  source: SrtCue[], candidate: SrtCue[], glossary: GlossaryTerm[], sourceLangName = '英文',
+): string {
+  const lang = sourceLangName.trim() || '英文'
   const pairs = source
-    .map((s, idx) => `[${s.index}] EN: ${s.text.join(' ')} | ZH: ${candidate[idx] ? candidate[idx].text.join(' ') : '(缺)'}`)
+    .map((s, idx) => `[${s.index}] SRC: ${s.text.join(' ')} | ZH: ${candidate[idx] ? candidate[idx].text.join(' ') : '(缺)'}`)
     .join('\n')
   return [
-    '你是中文字幕译审。下面是英文原文与其简体中文译文的逐条对照。找出译文里的真问题:',
+    `你是中文字幕译审。下面是${lang}原文与其简体中文译文的逐条对照。找出译文里的真问题:`,
     '① mistranslation 意思错/反/被曲解 ② awkward 生硬到不像人话 ③ omission 关键信息漏译 ④ term 专名不符术语表。',
     '',
     '严重度极其克制,只有两档:',
@@ -63,10 +66,10 @@ export interface TranslationCriticOptions {
 /** 用注入的强模型 LanguageModel 造 critic。真机调用点;单测走 MockCritic + parseCriticResponse 直测。 */
 export function makeTranslationCritic(model: LanguageModel, opts: TranslationCriticOptions = {}): TranslationCritic {
   return {
-    async review(source, candidate, glossary) {
+    async review(source, candidate, glossary, sourceLangName) {
       const { text } = await generateText({
         model,
-        prompt: criticPrompt(source, candidate, glossary),
+        prompt: criticPrompt(source, candidate, glossary, sourceLangName),
         temperature: opts.temperature ?? 0,
         abortSignal: AbortSignal.timeout(opts.timeoutMs ?? LLM_TIMEOUT_MS),
       })
