@@ -34,8 +34,16 @@
 2. 强弱模型都偶尔丢内联标签 → 样式标签检查降级 soft(commit 66b4f90),硬闸只留 corruption 类。
 3. 确定性闸判不了通顺 → LLM-judge critic 层(commit 9d9bb04)+ 端到端接通(e0fc484)。
 
-**E 已真机验收:强模型产出可安装的高质量中文。** 正在跑完整管道(opus LM+opus critic)产出 The Rig S2E01 真中文字幕 artifact。
-剩:①软路由真跑 translate-item 写进真库(部署+跑)②daemon 自动触发接线(sub_status 可译探测+reconcile 派活)。
+**E 已真机验收:强模型产出可安装的高质量中文。**
+
+### ✅✅ 终极验收通过(2026-07-21 13:29)——真字幕已在生产库
+软路由部署新代码 → `docker exec ... translate-item "The Rig S2E01"`(TRANSLATE_MODEL=claude-opus-4-8,critic 关):
+- **结果:installed → 写盘成功**。`/mnt/nvme0n1-4/nas_media/TV/The Rig (2023)/The.Rig.S02E01...zh-Hans.srt`,**65.9KB / 941 cue 完整**,尾段到 00:56 片尾,SDH 全译。
+- 闸:**verdict=pass 术语符合 95.7%(176/184) 硬违规 0**。全 941 cue 端到端(probe→extract→opus译→fail-closed闸→写盘)在真 mkv 上跑通。
+- **E CLI 驱动全功能真机验收完成。** 临时文件(含 company key env-file)已清理。
+- **运维踩坑记**:软路由是 busybox(无 timeout/pkill/kill 二进制、ps 假阴性)→ ps 假阴性骗我以为进程死了、重复启动 2 个并行翻译白烧几批配额;用 /proc 查明真相 + sh 内建 kill 清干净、最终单跑成功。教训:busybox 判进程死活用 /proc 不用 ps。
+
+剩:**daemon 自动触发接线**(sub_status 可译探测+DB迁移+reconcile 派活)——改状态机的较大集成,留评审。
 
 ## 当前相位
 
