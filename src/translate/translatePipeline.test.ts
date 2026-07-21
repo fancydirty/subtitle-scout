@@ -96,6 +96,13 @@ describe('translateSubtitle — fail-closed(held,绝不装错译)', () => {
     expect(r.verdict).toBe('held')
     expect(r.translatedSrt).toBeNull()
   })
+
+  it('零 cue 输入 → held(审计🟡 vacuous pass:空字幕不得走 installed 成功路径)', async () => {
+    const r = await translateSubtitle('not a srt at all\n\nno cues here', {}, makeMockLM())
+    expect(r.verdict).toBe('held')
+    expect(r.translatedSrt).toBeNull()
+    expect(r.reason).toContain('0 条 cue')
+  })
 })
 
 describe('translateSubtitle — 批次瞬时失败重试(一次抖动不死整档)', () => {

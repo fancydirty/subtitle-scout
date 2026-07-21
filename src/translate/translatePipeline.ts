@@ -108,6 +108,19 @@ export async function translateSubtitle(
 ): Promise<TranslationResult> {
   const source = parseSrtCues(sourceSrt)
 
+  // 审计🟡:零 cue 是 vacuous pass 死角——source=candidate=[],术语符合率缺省 1、零硬违规,
+  // 会被判 installed 并写出空 .zh-Hans.srt(成功路径的假安装)。fetch 腿已有 parse 闸,内嵌腿
+  // (ffmpeg 异 codec 可产出非空但零 cue 文本)和这里本身都没有。空输入没有可译内容 → held。
+  if (source.length === 0) {
+    return {
+      verdict: 'held',
+      translatedSrt: null,
+      glossary: [],
+      gate: evaluateTranslationGate([], [], [], opts.gate),
+      reason: '源字幕解析出 0 条 cue(无可译内容,拒绝安装空字幕)',
+    }
+  }
+
   // ④ 术语表先行:持久化的 prior + 新建,合并去重(prior 胜)。buildGlossary 失败降级为仅用 prior。
   let glossary: GlossaryTerm[]
   try {

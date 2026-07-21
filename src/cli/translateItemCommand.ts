@@ -1,7 +1,7 @@
 // E AI 翻译 · CLI 入口 `subtitle-scout translate-item <videoPath>`:对单个视频跑端到端翻译
 // (探内嵌轨→抽→译→fail-closed 闸→过闸写中文 sidecar)。薄 I/O 胶水,核心逻辑在
 // src/translate/translateItem.ts(已单测)。真机验收 E 用它。
-import { existsSync, writeFileSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, writeFileSync, renameSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { makeModel } from '../agent/llm.js'
@@ -64,6 +64,14 @@ function translateLlmCfg(): { baseUrl: string; apiKey: string; model: string } {
   return { baseUrl: requireEnv('LLM_BASE_URL'), apiKey: requireEnv('LLM_API_KEY'), model: requireEnv('LLM_MODEL') }
 }
 
+/** sidecar 输出路径:有扩展名→替换;无扩展名/以点结尾→追加(绝不原样返回 videoPath 本身——
+ *  replace 无匹配时返回输入,writeFileSync 会把视频源文件截断覆盖成字幕文本,成功路径上的
+ *  数据丢失,与 fail-closed 北极星正面冲突)。 */
+export function sidecarPathFor(videoPath: string): string {
+  const stem = videoPath.replace(/\.[^.]+$/, '')
+  return stem === videoPath ? `${videoPath}.zh-Hans.srt` : `${stem}.zh-Hans.srt`
+}
+
 /** 翻译批超时:默认 300s,TRANSLATE_TIMEOUT_MS 可配。真机逼出(F1 验收):34-cue 大批经慢端点
  *  120s(LLM_TIMEOUT_MS)必然超时 → 单批抛错整档 false-held;翻译是重活,不与快路径共享 120s。 */
 export function translateTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -106,8 +114,13 @@ export function makeTranslateItemDeps(
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
     gatherContext: async (v) => gatherSeriesContext(v, locateOriginLang?.(v) ?? null),
     writeSidecar: (v, content) => {
-      const out = v.replace(/\.[^.]+$/, '.zh-Hans.srt')
-      writeFileSync(out, content, 'utf8')
+      // 原子写:tmp+rename。SIGKILL 落在裸 writeFileSync 中途会留下截断的 .zh-Hans.srt,
+      // 下一轮 readExistingChineseSidecar 命中 → already-covered → 该条目永久不再重译且
+      // 坏字幕直接进播放器。rename 同文件系统原子,截断 tmp 只会被重新覆盖。
+      const out = sidecarPathFor(v)
+      const tmp = `${out}.tmp`
+      writeFileSync(tmp, content, 'utf8')
+      renameSync(tmp, out)
       return out
     },
   }

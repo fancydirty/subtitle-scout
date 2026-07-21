@@ -39,7 +39,7 @@ export interface JimakuClientOpts {
   apiKey: string
   fetchImpl?: typeof fetch
   timeoutMs?: number
-  onApiCall?: (r: { endpoint: string; status: number | null; durationMs: number; error?: string }) => void
+  onApiCall?: (r: { endpoint: string; status: number | null; durationMs: number; error?: string; droppedEntries?: number }) => void
 }
 
 export class JimakuClient {
@@ -59,17 +59,52 @@ export class JimakuClient {
     else if (params.query) q.set('query', params.query)
     else throw new Error('jimaku search requires query or anilistId')
     const raw = await this.getJson(`/entries/search?${q}`)
-    const parsed = z.array(EntrySchema).safeParse(raw)
-    if (!parsed.success) throw new Error(`jimaku search schema: ${parsed.error.message}`)
-    return parsed.data
+    return this.parseEntries(raw, '/entries/search')
   }
 
   async files(entryId: number, episode?: number): Promise<JimakuFile[]> {
     const q = episode != null ? `?episode=${episode}` : ''
     const raw = await this.getJson(`/entries/${entryId}/files${q}`)
-    const parsed = z.array(FileSchema).safeParse(raw)
-    if (!parsed.success) throw new Error(`jimaku files schema: ${parsed.error.message}`)
-    return parsed.data
+    return this.parseFiles(raw, `/entries/${entryId}/files`)
+  }
+
+  /** 逐条 fail-soft 解析(对齐 assrt/opensubtitles 的 filterMalformedSubs 先例):单条坏数据
+   *  不拖死整页——上游 schema drift 时保留好条目;droppedEntries 经 onApiCall 透出。
+   *  全灭(非数组/一条不剩)才抛——那是形状级坏,不是"诚实空结果"。 */
+  private parseEntries(raw: unknown, endpoint: string): JimakuEntry[] {
+    if (!Array.isArray(raw)) throw new Error(`jimaku ${endpoint} schema: not an array`)
+    const out: JimakuEntry[] = []
+    let dropped = 0
+    for (const item of raw) {
+      const p = EntrySchema.safeParse(item)
+      if (p.success) out.push(p.data)
+      else dropped++
+    }
+    if (dropped > 0 && out.length === 0) {
+      throw new Error(`jimaku ${endpoint}: all ${dropped} entries malformed (schema drift?)`)
+    }
+    if (dropped > 0) {
+      this.onApiCall?.({ endpoint, status: 200, durationMs: 0, droppedEntries: dropped })
+    }
+    return out
+  }
+
+  private parseFiles(raw: unknown, endpoint: string): JimakuFile[] {
+    if (!Array.isArray(raw)) throw new Error(`jimaku ${endpoint} schema: not an array`)
+    const out: JimakuFile[] = []
+    let dropped = 0
+    for (const item of raw) {
+      const p = FileSchema.safeParse(item)
+      if (p.success) out.push(p.data)
+      else dropped++
+    }
+    if (dropped > 0 && out.length === 0) {
+      throw new Error(`jimaku ${endpoint}: all ${dropped} files malformed (schema drift?)`)
+    }
+    if (dropped > 0) {
+      this.onApiCall?.({ endpoint, status: 200, durationMs: 0, droppedEntries: dropped })
+    }
+    return out
   }
 
   private async getJson(path: string): Promise<unknown> {
