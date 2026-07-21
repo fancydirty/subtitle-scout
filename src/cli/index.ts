@@ -16,6 +16,7 @@ import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
 import { AuthService } from '../dashboard/auth.js'
 import { makeModel } from '../agent/llm.js'
+import { cmdTranslateItem } from './translateItemCommand.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities,
@@ -735,7 +736,7 @@ async function cmdRealignRollback(archiveDir: string) {
   }
 }
 
-const USAGE = 'usage: subtitle-scout watch | reconcile-all | doctor | realign-rollback <archiveDir> | auth reset'
+const USAGE = 'usage: subtitle-scout watch | reconcile-all | doctor | translate-item <videoPath> | realign-rollback <archiveDir> | auth reset'
 
 /** 鉴权 A4 Task 15：`subtitle-scout auth reset`——诚实找回密码。删管理员三键回到未初始化态，
  *  下次访问 dashboard 重进创建管理员向导。复用 SUBTITLE_SCOUT_DB / cmdWatch 同一套 db 定位。 */
@@ -766,6 +767,7 @@ async function main() {
   if (cmd === 'watch') return cmdWatch()
   if (cmd === 'reconcile-all') return cmdReconcileAll()
   if (cmd === 'doctor') return cmdDoctor()
+  if (cmd === 'translate-item' && positionals[1]) return cmdTranslateItem(positionals[1])
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
   if (cmd === 'auth' && positionals[1] === 'reset') return cmdAuthReset()
   console.error(USAGE)
