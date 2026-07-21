@@ -67,9 +67,12 @@ Coake→科克 29×、Fulmer→富尔默 13×,每专名仅一种译法——glos
 - **缺陷1:critic 过判**(严重度校准太激进,混淆"真错译"与"可更本地化")。
 - **缺陷2:"任一 major→held 整档"太刚**——一条(还是误判的)major 会让整部术语一致、通顺的 941-cue 字幕
   全作废、零安装。**灾难性 false-hold。** 故生产跑关 critic 反而对;但 **critic 默认 on 是潜在隐患**。
-- **正确修法(留评审)**:① 收紧 critic prompt 的严重度定义(major 只给"改变语义/影响理解"的真错,忠实但
-  可更地道的归 minor)② 把"整档 hold"换成 **E 设计步⑥ reflect-refine 逐句精修**(critic 标出的 major cue
-  单独重译),或"major 占比超阈值才 hold"。在修好前,**建议 critic 默认改 off** 或仅作 advisory 日志、不 hold。
+- **修法①(已做,commit f9ecc81)**:收紧 critic prompt 严重度定义——major 仅限"改变原意/丢关键信息/看不懂"
+  的真硬伤,忠实但可更地道→minor,结合相邻上下文判断,宁漏报不过判。**empirically 验证**:同一 cue 441-500
+  从 6 条(含1误判 major)→ ok=true 仅 1 minor,false-major 消失。**这也大幅降了缺陷2危险**——判官现在只在
+  真硬伤才 major,"任一major→held"就成正确 fail-closed(不再灾难性 false-hold 好字幕),故 critic 默认 on 现可接受。
+- **修法②(留评审)**:把"整档 hold"换成 **E 设计步⑥ reflect-refine 逐句精修**(只重译 critic 标 major 的那句,
+  而非弃整档)——更优架构,但改 pipeline 编排,留用户评审再动。
 
 ## 剩余(未做,留评审/后续)
 
