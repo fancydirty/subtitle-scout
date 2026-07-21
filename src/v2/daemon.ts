@@ -32,6 +32,13 @@ export interface DaemonDeps {
   traceRetentionDays?: () => number
   /** 债务D2：orchestrate 兜底心跳间隔（测试注入）。默认 ORCHESTRATE_HEARTBEAT_MS(24h)。 */
   orchestrateHeartbeatMs?: number
+  /** E AI 翻译（2026-07-21）：机械派 translate worker_task 的钩子（translateWorkerTask.ts 的
+   *  dispatchTranslateTasks 预绑定 db/jobs）。**env 门控在 cli 接线侧**：TRANSLATE_MODEL/LLM_MODEL
+   *  未配 → cmdWatch 根本不注入本钩子（undefined），功能休眠零成本（同 SUBHD_ENABLED 模式）。
+   *  候选=sub_status='unavailable' 且内嵌非中文轨——翻译是最后手段，天然候选极少。放在 tick 的
+   *  dispatch 之前、boot ingest 门之后：与 orchestrate 心跳同一时机语义（判定纯机械无 LLM，
+   *  幂等 upsert，每 tick 调也只在候选出现时建行）。 */
+  dispatchTranslate?: () => void
   concurrency: {
     searching: number        // 默认 1
     downloading: number      // 默认 2（一期由 executor 内部串行，此处预留）
@@ -242,6 +249,12 @@ export class ScoutDaemon {
       lib.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_orchestrate_at', ?)
                       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(now()))
       log('orchestrate heartbeat: enqueued periodic convergence pass (24h fallback)')
+    }
+
+    // 2c. E AI 翻译：机械派 translate 任务（见 DaemonDeps.dispatchTranslate 的门控/时机注释）。
+    // 失败只记一行 warn 不炸 tick——翻译是增益路径，绝不拖垮主循环。
+    if (this.deps.dispatchTranslate) {
+      try { this.deps.dispatchTranslate() } catch (e) { log(`warn: translate dispatch failed: ${String(e)}`) }
     }
 
     // 3. Dispatch: claim jobs up to concurrency limit

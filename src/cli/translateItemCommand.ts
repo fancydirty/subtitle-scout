@@ -49,21 +49,25 @@ function translateLlmCfg(): { baseUrl: string; apiKey: string; model: string } {
   return { baseUrl: requireEnv('LLM_BASE_URL'), apiKey: requireEnv('LLM_API_KEY'), model: requireEnv('LLM_MODEL') }
 }
 
-export async function cmdTranslateItem(videoPath: string): Promise<void> {
-  if (!existsSync(videoPath)) {
-    console.error(`文件不存在: ${videoPath}`)
-    process.exit(2)
-  }
-  const cfg = translateLlmCfg()
+/** daemon 自动翻译的配置门(与上面手动 CLI 的区别):**只认显式 TRANSLATE_* 三件套,绝不回退
+ *  LLM_***——自动路径拿 LLM_MODEL(mimo,太弱且非用户对本功能的 opt-in)烧配额是事故。三件套
+ *  不全 → null = 功能休眠(daemon 不注入派活钩子,translate 任务也拒跑),同 SUBHD_ENABLED 模式。 */
+export function tryAutoTranslateCfg(env: NodeJS.ProcessEnv = process.env): { baseUrl: string; apiKey: string; model: string } | null {
+  const { TRANSLATE_MODEL, TRANSLATE_BASE_URL, TRANSLATE_API_KEY } = env
+  if (!TRANSLATE_MODEL || !TRANSLATE_BASE_URL || !TRANSLATE_API_KEY) return null
+  return { baseUrl: TRANSLATE_BASE_URL, apiKey: TRANSLATE_API_KEY, model: TRANSLATE_MODEL }
+}
+
+/** 组装 translateItem 的真实 I/O deps(probe/extract/LM/critic/sidecar 读写/同剧上下文)。
+ *  手动 CLI(cmdTranslateItem)与 daemon 的 translate worker(cli/index.ts 路由分支)共用,
+ *  防两处组装漂移。critic 默认开(TRANSLATE_CRITIC=off 关);TRANSLATE_CRITIC_MODEL 单指定判官。 */
+export function makeTranslateItemDeps(cfg: { baseUrl: string; apiKey: string; model: string }): TranslateItemDeps {
   const model = makeModel(cfg)
-  // LLM-judge critic 默认开(质量 > 省一次调用);TRANSLATE_CRITIC=off 关闭。critic 模型默认同翻译模型,
-  // TRANSLATE_CRITIC_MODEL 可单独指定(如更强的判官)。
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
   const critic: TranslationCritic | undefined = criticOn
     ? makeTranslationCritic(process.env.TRANSLATE_CRITIC_MODEL ? makeModel({ ...cfg, model: process.env.TRANSLATE_CRITIC_MODEL }) : model)
     : undefined
-  console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'}`)
-  const deps: TranslateItemDeps = {
+  return {
     probe: (v) => probeEmbeddedSubtitles(v),
     extract: (v, i) => extractEmbeddedSubtitle(v, i),
     lm: makeTranslationLM(model),
@@ -76,6 +80,17 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
       return out
     },
   }
+}
+
+export async function cmdTranslateItem(videoPath: string): Promise<void> {
+  if (!existsSync(videoPath)) {
+    console.error(`文件不存在: ${videoPath}`)
+    process.exit(2)
+  }
+  const cfg = translateLlmCfg()
+  const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
+  console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'}`)
+  const deps = makeTranslateItemDeps(cfg)
   console.log(`[translate-item] 开始: ${videoPath}`)
   const r = await translateItem(videoPath, deps)
   const tail = (r.sidecarPath ? ` → ${r.sidecarPath}` : '') + (r.reason ? ` (${r.reason})` : '')

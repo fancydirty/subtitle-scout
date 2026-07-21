@@ -916,4 +916,26 @@ describe('ScoutDaemon', () => {
     // Should exit cleanly after job completes
     await expect(runPromise).resolves.toBeUndefined()
   }, 10000)
+
+  describe('E AI 翻译:dispatchTranslate 钩子(env 门控)', () => {
+    it('注入时每 tick 触发一次(boot ingest 门后)', async () => {
+      const dispatchTranslate = vi.fn(() => {})
+      const daemon = new ScoutDaemon(makeDeps({ dispatchTranslate }))
+      await daemon.tick()
+      expect(dispatchTranslate).toHaveBeenCalledOnce()
+    })
+
+    it('未注入(功能休眠)时 tick 正常不崩', async () => {
+      const daemon = new ScoutDaemon(makeDeps({ dispatchTranslate: undefined }))
+      await expect(daemon.tick()).resolves.toBeUndefined()
+    })
+
+    it('派活抛错只 warn 不炸 tick(增益路径不拖垮主循环)', async () => {
+      const dispatchTranslate = vi.fn(() => { throw new Error('translate dispatch boom') })
+      const executeJob = vi.fn(async () => {})
+      const daemon = new ScoutDaemon(makeDeps({ dispatchTranslate, executeJob }))
+      await expect(daemon.tick()).resolves.toBeUndefined()
+      expect(logs.some((l) => l.includes('translate dispatch failed'))).toBe(true)
+    })
+  })
 })

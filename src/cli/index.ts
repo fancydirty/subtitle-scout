@@ -16,7 +16,9 @@ import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
 import { AuthService } from '../dashboard/auth.js'
 import { makeModel } from '../agent/llm.js'
-import { cmdTranslateItem } from './translateItemCommand.js'
+import { cmdTranslateItem, tryAutoTranslateCfg, makeTranslateItemDeps } from './translateItemCommand.js'
+import { dispatchTranslateTasks, runTranslateWorkerTask } from '../v2/translateWorkerTask.js'
+import { translateItem } from '../translate/translateItem.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities,
@@ -447,6 +449,24 @@ async function cmdWatch() {
           runs,
           runTask: makeRescueWorker({ model: reasoningModel, tmdb }),
         }, jobs, () => Date.now())
+      } else if (payload.taskType === 'translate') {
+        // E AI 翻译:daemon 自动翻一个可译候选。**双重 env 门控**——tryAutoTranslateCfg 只认显式
+        // TRANSLATE_* 三件套(绝不回退 LLM_*=mimo 烧配额),不全则拒跑走 completeError(等用户配齐;
+        // 与 dispatch 侧门控对称,即便有残留 translate 行也不会误用弱模型)。deps 与手动 CLI 共用
+        // makeTranslateItemDeps 防漂移。
+        const cfg = tryAutoTranslateCfg()
+        if (!cfg) {
+          jobs.completeError(job.id, 'translate 未启用:需配 TRANSLATE_MODEL/TRANSLATE_BASE_URL/TRANSLATE_API_KEY 三件套', Date.now())
+        } else {
+          const itemDeps = makeTranslateItemDeps(cfg)
+          await runTranslateWorkerTask(job, {
+            runItem: (videoPath) => translateItem(videoPath, itemDeps),
+            requestIngest: () => {
+              void ingestTrigger().catch((e) => log(`warn: translate 后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
+            },
+            runs,
+          }, jobs, () => Date.now())
+        }
       } else {
         jobs.completeError(job.id, `unknown worker_task taskType: ${String(payload.taskType)}`, Date.now())
       }
@@ -491,6 +511,12 @@ async function cmdWatch() {
     },
     log,
     now: () => Date.now(),
+    // E AI 翻译:仅当显式配了 TRANSLATE_* 三件套才注入派活钩子;否则 undefined = 功能休眠零成本
+    // (同 SUBHD_ENABLED 模式)。派活纯机械(SQL 筛候选 + 幂等 upsert,无 LLM),真正的翻译在被
+    // claim 的 translate worker 里跑。
+    dispatchTranslate: tryAutoTranslateCfg()
+      ? () => { dispatchTranslateTasks(db, jobs, () => Date.now()) }
+      : undefined,
     concurrency: {
       searching: 1,
       downloading: 2,  // 一期由 executor 内部串行，此处预留
