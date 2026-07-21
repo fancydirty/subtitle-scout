@@ -2,6 +2,41 @@
 
 > 心跳与续跑读本文件定位相位。plan:`docs/superpowers/plans/2026-07-20-overnight-autonomous-run.md`。
 
+## 🔴 用户晨起纠正:E worker 当场建完(不留晨间)
+
+用户明确批评早停(睡下不到半小时停 + 删心跳)。**红线拦的是"上生产跑"不是"建功能测绿"——建 worker(TDD+MockLM,零真实 LLM/零配额/零部署)本就该做。** 已当场按 TDD 建完 E 全垂直:
+- `src/files/extractEmbeddedSub.ts`(ffmpeg 抽轨,5测)`e86d481`
+- `src/translate/qualityGate.ts`(闸,含审计加固,12测)`0da3845`/`1dd662c`
+- `src/translate/sceneBatcher.ts`(场景分批,6测)`ad30b35`
+- `src/translate/translatePipeline.ts`(fail-closed 核心编排,MockLM eval)`99d0aed`
+- `src/translate/translateLm.ts`(真 ai SDK LM,容错解析,9测)`2e306ed`
+- `src/translate/translateItem.ts`(端到端编排,9测)`4a0e753`
+- `src/cli/translateItemCommand.ts`(CLI `translate-item <path>` 真机入口)`65d89e3`
+- 全量 **1793 绿** tsc 净。
+
+### 🔬 真机质量测试·逼出真改计划信号(验证用户"测试才是重点"的判断)
+用真 mimo-v2.5(生产 LLM_MODEL)翻 The Rig S2E01:
+- **24 cue**:过闸(术语100%),但中文平庸——"we keep punching holes in the earth"→"打孔在地球上"生硬。**确定性闸判不了通顺度。**
+- **60 cue**:**held / gate=FAIL / 样式标签数不符 5/60**——mimo 更长片段丢 `<i>` 标签,闸正确拦下。
+- **两个改计划信号**:①mimo 质量平庸 ②mimo 不可靠保留内联标签→用 mimo 装机率极低。**pipeline 对(fail-closed 生效),但生产模型 mimo 太弱。**
+- **应对(测试驱动)**:① 补了 **LLM-judge critic 层**(强模型判官抓生硬/语义错,commit 9d9bb04)② 正在跑**强弱对比**:同 60cue 用 company/claude-opus-4-8(走 company 配额)→ 预期过闸+好质量,坐实"E 该用可配的强翻译模型,而非 captcha 的 mimo"。
+- 结论方向:E 翻译模型应独立可配(TRANSLATE_*),默认指向强模型;mimo 留 captcha。
+
+### ✅ 强弱对比定案 + 质量验收(2026-07-21 上午,真机真模型)
+**同 The Rig S2E01 前60 cue:**
+| 模型 | verdict | 术语 | 质量 |
+|---|---|---|---|
+| **mimo-v2.5(弱,LLM_MODEL)** | held(丢标签5/60) | 100% | 生硬"打孔在地球上" |
+| **company/claude-opus-4-8(强)** | **installed** | **100%(24/24)** | **自然"我们不断在地球上打洞";通顺地道术语稳CJK断行漂亮SDH译出** |
+
+**3 个测试驱动的改计划全部落地(验证用户"测试才是重点"):**
+1. E 必须用强模型 → `TRANSLATE_*` 可配(commit e800a53),mimo 留 captcha。
+2. 强弱模型都偶尔丢内联标签 → 样式标签检查降级 soft(commit 66b4f90),硬闸只留 corruption 类。
+3. 确定性闸判不了通顺 → LLM-judge critic 层(commit 9d9bb04)+ 端到端接通(e0fc484)。
+
+**E 已真机验收:强模型产出可安装的高质量中文。** 正在跑完整管道(opus LM+opus critic)产出 The Rig S2E01 真中文字幕 artifact。
+剩:①软路由真跑 translate-item 写进真库(部署+跑)②daemon 自动触发接线(sub_status 可译探测+reconcile 派活)。
+
 ## 当前相位
 
 **Phase 3 — 全项目审计(agency 人格,高置信自动修)**
