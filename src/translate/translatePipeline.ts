@@ -71,6 +71,9 @@ export interface TranslateOptions {
    *  串行长跑中单次网关抖动/超时曾把整档 false-held;重试只在抛错路径发生,绿路径零成本。
    *  重试用尽仍败 → failed → held,fail-closed 不变。 */
   batchRetries?: number
+  /** 重试间隔(毫秒,按第几次重试取值)。默认递增 2s/5s——429/网关抖动需要喘息,
+   *  背靠背秒发三次会把可恢复的 30s 限流打成整档 held;测试注入 () => 0 保持快。 */
+  retryDelayMs?: (attempt: number) => number
   /** 可选 LLM-judge 语义层。确定性闸过后再跑;critic 判不合格 → held。critic 抛错 → 优雅降级
    *  (确定性闸已过则装),不因判官抽风阻塞可用译文。 */
   critic?: TranslationCritic
@@ -86,6 +89,10 @@ export interface TranslationResult {
   critic?: CriticVerdict
   reason?: string
 }
+
+/** 默认重试间隔:第 1 次 3s、第 2 次 5s(429/网关抖动需要喘息;背靠背秒发三次会把
+ *  可恢复的限流打成整档 held)。导出供测试直测,生产由 translateSubtitle 缺省使用。 */
+export const defaultRetryDelayMs = (attempt: number): number => attempt * 2000 + 1000
 
 /** prior(持久化 canonical)优先合并 fresh,按 en 去重(大小写不敏感),prior 胜——保证跨集术语稳定。 */
 function mergeGlossary(prior: GlossaryTerm[], fresh: GlossaryTerm[]): GlossaryTerm[] {
@@ -130,16 +137,20 @@ export async function translateSubtitle(
     glossary = ctx.priorGlossary ?? []
   }
 
-  // ⑤ 场景分批 → 串行逐批译带滚动记忆。单批抛错先重试(batchRetries,默认 2)——瞬时抖动不
-  //  该整档陪葬;重试用尽仍败 → 标记失败中断(下方 fail-closed 兜底)。
+  // ⑤ 场景分批 → 串行逐批译带滚动记忆。单批抛错先按递增间隔重试(batchRetries,默认 2)——
+  //  瞬时抖动/限流不该整档陪葬;重试用尽仍败 → 标记失败中断(下方 fail-closed 兜底),
+  //  lastErr 带进 reason(daemon 日志可诊断,不再是干巴巴一句"批次抛错")。
   const batches = batchIntoScenes(source, { gapSec: opts.gapSec, maxBatch: opts.maxBatch })
   const maxAttempts = 1 + (opts.batchRetries ?? 2)
+  const retryDelay = opts.retryDelayMs ?? defaultRetryDelayMs
   const translated: SrtCue[] = []
   let rollingSummary = ''
   let failed = false
+  let lastErr: unknown
   for (const batch of batches) {
     let ok = false
     for (let attempt = 0; attempt < maxAttempts && !ok; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, retryDelay(attempt)))
       try {
         const { cues, summary } = await lm.translateBatch(
           batch, glossary, rollingSummary, ctx.sourceLangName,
@@ -147,7 +158,9 @@ export async function translateSubtitle(
         translated.push(...cues)
         rollingSummary = summary
         ok = true
-      } catch { /* 瞬时失败 → 下 attempt 重试同批 */ }
+      } catch (e) {
+        lastErr = e /* 瞬时失败 → 下 attempt 重试同批 */
+      }
     }
     if (!ok) {
       failed = true
@@ -163,7 +176,9 @@ export async function translateSubtitle(
       translatedSrt: null,
       glossary,
       gate,
-      reason: failed ? 'LM 翻译失败(批次抛错)' : gate.hardViolations.join('; '),
+      reason: failed
+        ? `LM 翻译失败(批次抛错): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+        : gate.hardViolations.join('; '),
     }
   }
 

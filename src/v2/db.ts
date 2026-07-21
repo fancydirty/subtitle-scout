@@ -280,6 +280,12 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
    ALTER TABLE tmdb_seasons ADD COLUMN air_date TEXT;
    ALTER TABLE tmdb_seasons ADD COLUMN still_path TEXT;
    UPDATE tmdb_seasons SET fetched_at = 0`,
+  // v20（SRE 审计 F1,2026-07-21：崩溃循环无退避=money fire——reap 故意不计内容失败(良性重启
+  // 不占退避梯),但"claim→跑付费 LLM→进程死→docker 重启→reap→立即重 claim"的确定性崩溃
+  // 循环也没有任何计数,会以重启速度无限烧钱。reap_count 只记"连续无完成回收"次数,到阈
+  // (jobsRepo.REAP_PARK_THRESHOLD)由 reap 直接 park 隔离;任何完成(completeDone/completeError)
+  // 清零。纯 ADD COLUMN,不触发建新表。本条是数组第 13 条 entry,落库 meta.schema_version 13。
+  `ALTER TABLE jobs ADD COLUMN reap_count INTEGER NOT NULL DEFAULT 0`,
 ]
 
 export function openDb(path: string): ScoutDb {

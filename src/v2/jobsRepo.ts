@@ -76,6 +76,9 @@ export interface Job {
   target_episodes: string | null
   attempt: number
   error_attempt: number
+  /** SRE 审计 F1:连续"无完成回收"次数(claim→进程死→reap→重 claim 的崩溃循环计数)。
+   *  到 REAP_PARK_THRESHOLD 由 reap 直接 park;任何完成(completeDone/completeError)清零。 */
+  reap_count: number
   next_retry_at: number | null
   lease_until: number | null
   last_error: string | null
@@ -83,6 +86,15 @@ export interface Job {
   created_at: number
   updated_at: number
 }
+
+/** SRE 审计 F1:崩溃循环隔离阈。reap 故意不占内容退避梯(良性重启不该推向 dormant),但
+ *  "确定性崩溃+容器自动重启"会以重启速度无限重跑付费 LLM 任务——连续这么多次无完成回收
+ *  后,job 被 park 成 dormant(停车待人工,非死刑),不再参与 claimNext。 */
+export const REAP_PARK_THRESHOLD = 5
+
+/** reap 共用的两阶段 SQL:先把将触阈的行 park(计数照记,last_error 写明隔离原因),
+ *  其余归位 wanted。reap_count 在任何完成处清零(completeDone/completeError)。 */
+const REAP_PARK_REASON = `连续 ${REAP_PARK_THRESHOLD} 次进程崩溃/租约死亡回收未竟全功——疑确定性崩溃(poison task),已隔离防无限烧钱(修复后手动唤醒)`
 
 export class JobsRepo {
   constructor(private db: ScoutDb) {}
@@ -141,7 +153,7 @@ export class JobsRepo {
           .prepare(
             `UPDATE jobs
              SET updated_at = ?, payload = ?, parent_job_id = ?,
-                 state = 'wanted', attempt = 0, error_attempt = 0, next_retry_at = NULL
+                 state = 'wanted', attempt = 0, error_attempt = 0, next_retry_at = NULL, reap_count = 0
              WHERE id = ?`
           )
           .run(now, payloadJson, parentJobId, existing.id)
@@ -221,13 +233,22 @@ export class JobsRepo {
 
   reapExpiredLeases(now: number): void {
     // Active state with NULL lease is anomalous (should never happen) — reap it too.
-    // NOTE: 不再 attempt+1——reap 只是"租约死了/异常态"，不是内容性失败，不该占内容退避梯
-    // 的名额（否则进程重启/租约抖动会把 job 错误地推向 30 天 dormant，见审计 jobsRepo.ts:119
-    // / :133 的 attempt 计数器混同问题）。
+    // NOTE: 不 attempt+1——reap 只是"租约死了/异常态"，不是内容性失败，不占内容退避梯
+    // 名额（见审计 jobsRepo.ts:119 的 attempt 计数器混同问题）。但 reap_count+1（崩溃循环
+    // 计数，SRE F1）——触阈的行 park 隔离而非归位。
     this.db
       .prepare(
         `UPDATE jobs
-         SET state = 'wanted', lease_until = NULL, updated_at = ?
+         SET state = 'dormant', last_error = ?, lease_until = NULL, updated_at = ?, reap_count = reap_count + 1
+         WHERE state IN ${ACTIVE_STATES_SQL}
+         AND (lease_until < ? OR lease_until IS NULL)
+         AND reap_count + 1 >= ${REAP_PARK_THRESHOLD}`
+      )
+      .run(REAP_PARK_REASON, now, now)
+    this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'wanted', lease_until = NULL, updated_at = ?, reap_count = reap_count + 1
          WHERE state IN ${ACTIVE_STATES_SQL}
          AND (lease_until < ? OR lease_until IS NULL)`
       )
@@ -255,10 +276,17 @@ export class JobsRepo {
         .all(...excluded) as Job[]
       if (candidates.length === 0) return []
       const update = this.db.prepare(
-        `UPDATE jobs SET state = 'wanted', lease_until = NULL, updated_at = ?
+        `UPDATE jobs SET state = 'wanted', lease_until = NULL, updated_at = ?, reap_count = reap_count + 1
          WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
       )
-      for (const c of candidates) update.run(now, c.id)
+      const park = this.db.prepare(
+        `UPDATE jobs SET state = 'dormant', last_error = ?, lease_until = NULL, updated_at = ?, reap_count = reap_count + 1
+         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+      )
+      for (const c of candidates) {
+        if (c.reap_count + 1 >= REAP_PARK_THRESHOLD) park.run(REAP_PARK_REASON, now, c.id)
+        else update.run(now, c.id)
+      }
       return candidates
     })()
   }
@@ -268,12 +296,20 @@ export class JobsRepo {
    *  的租约都是上个进程留下的遗孤（重启瞬间在跑的 job 租约仍未过期，最长可占 searching 槽
    *  30 分钟拖停调度）。返回回收行数。 */
   reapAllActive(now: number): number {
-    // NOTE: 不再 attempt+1——同 reapExpiredLeases 的理由：进程重启/崩溃回收的 job 不是
-    // 内容性失败，不该消耗内容退避梯的名额。
+    // NOTE: 不 attempt+1——同 reapExpiredLeases 的理由：进程重启/崩溃回收的 job 不是
+    // 内容性失败，不该消耗内容退避梯的名额。reap_count 同款 +1/触阈 park（SRE F1）。
+    this.db
+      .prepare(
+        `UPDATE jobs
+         SET state = 'dormant', last_error = ?, lease_until = NULL, updated_at = ?, reap_count = reap_count + 1
+         WHERE state IN ${ACTIVE_STATES_SQL}
+         AND reap_count + 1 >= ${REAP_PARK_THRESHOLD}`
+      )
+      .run(REAP_PARK_REASON, now)
     const info = this.db
       .prepare(
         `UPDATE jobs
-         SET state = 'wanted', lease_until = NULL, updated_at = ?
+         SET state = 'wanted', lease_until = NULL, updated_at = ?, reap_count = reap_count + 1
          WHERE state IN ${ACTIVE_STATES_SQL}`
       )
       .run(now)
@@ -294,7 +330,8 @@ export class JobsRepo {
       const info = this.db
         .prepare(
           `UPDATE jobs
-           SET state = 'failed', error_attempt = ?, next_retry_at = ?, last_error = ?, lease_until = NULL, updated_at = ?
+           SET state = 'failed', error_attempt = ?, next_retry_at = ?, last_error = ?, lease_until = NULL, updated_at = ?,
+               reap_count = 0
            WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
         )
         .run(newErrorAttempt, nextRetryAt, error, now, jobId)
@@ -306,7 +343,7 @@ export class JobsRepo {
     const info = this.db
       .prepare(
         `UPDATE jobs
-         SET state = 'done', lease_until = NULL, updated_at = ?
+         SET state = 'done', lease_until = NULL, updated_at = ?, reap_count = 0
          WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
       )
       .run(now, jobId)

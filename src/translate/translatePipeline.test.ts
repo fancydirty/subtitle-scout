@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { translateSubtitle, type TranslationLM, type TranslationCritic } from './translatePipeline.js'
+import { translateSubtitle, defaultRetryDelayMs, type TranslationLM, type TranslationCritic } from './translatePipeline.js'
 import { parseSrtCues, type GlossaryTerm, type SrtCue } from './qualityGate.js'
 
 const SOURCE = [
@@ -92,7 +92,7 @@ describe('translateSubtitle — fail-closed(held,绝不装错译)', () => {
 
   it('LM 抛错 → held,不崩溃', async () => {
     const lm = makeMockLM({ throwOnBatch: 0 })
-    const r = await translateSubtitle(SOURCE, {}, lm)
+    const r = await translateSubtitle(SOURCE, {}, lm, { retryDelayMs: () => 0 })
     expect(r.verdict).toBe('held')
     expect(r.translatedSrt).toBeNull()
   })
@@ -109,20 +109,27 @@ describe('translateSubtitle — 批次瞬时失败重试(一次抖动不死整�
   it('批次首次抛错、重试后成功 → installed(真机逼出:136 批长跑,单次网关抖动曾 false-hold 整档)', async () => {
     const attemptsLog: number[] = []
     const lm = makeMockLM({ flakyOnBatch: { idx: 0, fails: 1 }, attemptsLog })
-    const r = await translateSubtitle(SOURCE, {}, lm)
+    const r = await translateSubtitle(SOURCE, {}, lm, { retryDelayMs: () => 0 })
     expect(r.verdict).toBe('installed')
     expect(r.translatedSrt).not.toBeNull()
     // batch0 被调了 2 次(1 败 1 成),之后正常
     expect(attemptsLog.filter((i) => i === 0).length).toBe(2)
   })
 
-  it('重试次数用尽仍抛错 → held(fail-closed 不变),且调用次数 = 1 + 重试上限', async () => {
+  it('重试次数用尽仍抛错 → held(fail-closed 不变),调用次数 = 1 + 重试上限,reason 带原始错误', async () => {
     const attemptsLog: number[] = []
     const lm = makeMockLM({ flakyOnBatch: { idx: 0, fails: 99 }, attemptsLog })
-    const r = await translateSubtitle(SOURCE, {}, lm)
+    const r = await translateSubtitle(SOURCE, {}, lm, { retryDelayMs: () => 0 })
     expect(r.verdict).toBe('held')
     expect(r.translatedSrt).toBeNull()
     expect(attemptsLog.length).toBe(3) // 默认 2 次重试 → 共 3 次尝试
+    expect(r.reason).toContain('LM 翻译失败(批次抛错)')
+    expect(r.reason).toContain('mock LM transient boom')
+  })
+
+  it('默认 retryDelayMs 递增(429/网关抖动需要喘息,不背靠背秒发)', async () => {
+    expect(defaultRetryDelayMs(1)).toBe(3000)
+    expect(defaultRetryDelayMs(2)).toBe(5000)
   })
 })
 

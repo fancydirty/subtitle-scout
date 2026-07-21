@@ -29,13 +29,14 @@ describe('db 基座', () => {
     // MIGRATIONS.length=10，落库值是 '10'；装机记账修复批追加 v19（provider_ref 双前缀清洗 +
     // 存量陈旧 status_reason 清洗）entry 后 MIGRATIONS.length=11，落库值是 '11'——这就是设计正文
     // 与 commit message 里"schema v11"指代的那个数字。详情页重设计 item B 追加末条富化迁移
-    // （series+tmdb_seasons ADD COLUMN）后 MIGRATIONS.length=12，落库值随之是 '12'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '12' })
+    // （series+tmdb_seasons ADD COLUMN）后 MIGRATIONS.length=12，落库值随之是 '12'；
+    // SRE 审计 F1 追加 v20（jobs.reap_count）entry 后 MIGRATIONS.length=13，落库值是 '13'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '13' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '12' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '13' })
   })
 
   it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
@@ -225,7 +226,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19+详情页富化 六条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '12' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '13' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -349,7 +350,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19+详情页富化 四条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '12' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '13' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -443,7 +444,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19+详情页富化 三条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '12' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '13' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -548,7 +549,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19+详情页富化 两条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '12' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '13' })
 
     // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
     expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())

@@ -128,8 +128,7 @@ describe('jobs 状态机', () => {
     expect(repo.reapOrphaned([], now).map(r => r.id)).toEqual([j.id])
     expect(repo.get(j.id)!.state).toBe('wanted')
   })
-  it('心跳续租（renewLease）：仅对活跃态生效，续租后不会被 reapExpiredLeases 回收', () => {
-    const now = Date.now()
+  it('心跳续租（renewLease）：仅对活跃态生效，续租后不会被 reapExpiredLeases 回收', () => {    const now = Date.now()
     mkSeriesJob(now)
     const j = repo.claimNext(now)!
     // 快到期前续租
@@ -146,6 +145,61 @@ describe('jobs 状态机', () => {
     repo.renewLease(j.id, now)
     expect(repo.get(j.id)!.state).toBe('done')
     expect(repo.get(j.id)!.lease_until).toBeNull()
+  })
+
+  describe('崩溃循环隔离（SRE F1:reap 计数,连续无完成回收触阈 → park 防 money fire）', () => {
+    it('连续 5 次 claim→reapAllActive(模拟进程死+容器重启) → 第 5 次 park 成 dormant,不再被 claim', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      for (let i = 1; i <= 4; i++) {
+        repo.claimNext(now)
+        repo.reapAllActive(now)
+        const row = findSeriesJob('s1', 4)!
+        expect(row.state).toBe('wanted')          // 前 4 次仍归位(良性重启不受影响)
+        expect(row.reap_count).toBe(i)
+      }
+      repo.claimNext(now)
+      repo.reapAllActive(now)                      // 第 5 次触阈
+      const row = findSeriesJob('s1', 4)!
+      expect(row.state).toBe('dormant')
+      expect(row.reap_count).toBe(5)
+      expect(row.last_error).toContain('poison task')
+      expect(repo.claimNext(now)).toBeNull()       // dormant 不参与派发
+    })
+
+    it('中途有完成(completeError) → reap_count 清零,重新起计', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      for (let i = 0; i < 3; i++) { repo.claimNext(now); repo.reapAllActive(now) }
+      expect(findSeriesJob('s1', 4)!.reap_count).toBe(3)
+      const j = repo.claimNext(now)!
+      repo.completeError(j.id, 'boom', now)        // 完成了一次(内容失败结局)
+      expect(findSeriesJob('s1', 4)!.reap_count).toBe(0)
+      repo.forceState('s1', 4, 'searching', now)
+      repo.reapAllActive(now)
+      expect(findSeriesJob('s1', 4)!.reap_count).toBe(1)
+    })
+
+    it('completeDone 也清零 reap_count', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      repo.claimNext(now); repo.reapAllActive(now)
+      expect(findSeriesJob('s1', 4)!.reap_count).toBe(1)
+      const j = repo.claimNext(now)!
+      repo.completeDone(j.id, now)
+      expect(findSeriesJob('s1', 4)!.reap_count).toBe(0)
+    })
+
+    it('reapExpiredLeases 同款触阈 park(租约死亡路径)', () => {
+      const now = Date.now()
+      mkSeriesJob(now)
+      repo.forceState('s1', 4, 'searching', now)
+      db.prepare("UPDATE jobs SET reap_count = 4 WHERE kind='series_season' AND series_id='s1'").run()
+      repo.reapExpiredLeases(now)
+      const row = findSeriesJob('s1', 4)!
+      expect(row.state).toBe('dormant')
+      expect(row.reap_count).toBe(5)
+    })
   })
   it('FIX-2: renewLease 返回新写入的 lease_until（no-op 时返回 null）——供 daemon 把值同步回它持有的 Job 对象引用', () => {
     const now = Date.now()
