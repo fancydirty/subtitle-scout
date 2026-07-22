@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from './db.js'
-import { JobsRepo, type Job, ERROR_BACKOFF_MS, errorBackoffMs, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
+import { JobsRepo, type Job, ERROR_BACKOFF_MS, errorBackoffMs, heldBackoffMs, ERROR_GIVEUP_THRESHOLD, ERROR_BACKOFF_DAILY_MS } from './jobsRepo.js'
 
 let db: ScoutDb
 let repo: JobsRepo
@@ -35,6 +35,31 @@ const findSeriesJob = (seriesId: string, season: number): Job | null =>
     .get(seriesId, season) as Job | undefined) ?? null
 
 describe('jobs 状态机', () => {
+  it('claimNext 可排除 translate 车道，巡检任务先领；也可只领 translate', () => {
+    const now = Date.now()
+    seedSeriesJob('patrol', 1, now)
+    db.prepare(`INSERT INTO jobs (kind, movie_id, payload, state, priority, attempt, created_at, updated_at)
+                VALUES ('worker_task', 'movie:translate', '{"taskType":"translate"}', 'wanted', 0, 0, ?, ?)`)
+      .run(now, now)
+
+    const patrol = repo.claimNext(now, { excludeTaskType: 'translate' })
+    expect(patrol?.series_id).toBe('patrol')
+    expect(repo.countClaimable(now, { onlyTaskType: 'translate' })).toBe(1)
+    expect(repo.countActiveTaskType('translate', true)).toBe(1)
+
+    const translation = repo.claimNext(now, { onlyTaskType: 'translate' })
+    expect(translation?.movie_id).toBe('movie:translate')
+    expect(repo.countActiveTaskType('translate', false)).toBe(1)
+  })
+
+  it('heldBackoffMs：首周每日、次周三日、之后七日', () => {
+    expect(heldBackoffMs(1)).toBe(86_400_000)
+    expect(heldBackoffMs(7)).toBe(86_400_000)
+    expect(heldBackoffMs(8)).toBe(3 * 86_400_000)
+    expect(heldBackoffMs(14)).toBe(3 * 86_400_000)
+    expect(heldBackoffMs(15)).toBe(7 * 86_400_000)
+  })
+
   it('claimNext 原子领取：置 searching+租约，二次领取拿不到同一 job', () => {
     mkSeriesJob()
     const a = repo.claimNext(Date.now())

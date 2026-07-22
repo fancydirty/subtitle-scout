@@ -270,77 +270,93 @@ export class ScoutDaemon {
   }
 
   /**
-   * Dispatcher: claim wanted/failed jobs until searching concurrency limit reached
+   * Dispatcher: 双车道相位分隔(用户裁决 2026-07-22)。
+   *  车道 A(巡检):find_subtitle/realign/orchestrate 等——照常占 searching 名额,永不被翻译堵。
+   *  车道 B(翻译):taskType='translate'——**只在巡检世界全空**(无到点可领的非翻译任务、
+   *  无非翻译活跃任务)且当前无翻译在跑时才领;不占 searching 名额(一场 2h 长翻译期间,
+   *  新到的巡检工作照常走车道 A,互不阻塞)。
    */
   private async dispatch(): Promise<void> {
-    const { jobs, runs, executeJob, log, now, concurrency } = this.deps
+    const { jobs, log, now, concurrency } = this.deps
 
-    // Keep claiming while under concurrency limit
-    while (true) {
-      // Check current searching count
-      const searchingCount = jobs.countByState('searching')
-      if (searchingCount >= concurrency.searching) {
-        break
-      }
-
-      // Try to claim next job
-      const job = jobs.claimNext(now())
-      if (!job) {
-        // No more jobs to claim
-        break
-      }
-
-      // FIX-4c: 一行 log 记下每次 claim——job id、series/kind、lease_until，供人工
-      // 追查"这个 job 是什么时候被派出去的、原定租约到几点"。
-      log(
-        `dispatch: claimed job ${job.id} (${job.kind} ${job.series_id ?? job.movie_id ?? '?'}` +
-        `${job.kind === 'series_season' ? ` S${job.season}` : ''}) lease_until=${job.lease_until ?? 'null'}`
-      )
-
-      // Fire-and-forget: don't await, but track in inflight set (promise + job id →
-      // Job object; the id feeds the heartbeat renewal above so this job's lease
-      // never expires out from under it while genuinely still running in this
-      // process). FIX-2: store the actual Job object (not just the id) — it doubles
-      // as this invocation's identity token, see field-declaration comment above.
-      this.inflightJobs.set(job.id, job)
-      const jobPromise = executeJob(job)
-        .catch((error) => {
-          const msg = error instanceof Error ? error.message : String(error)
-          log(`executeJob error for job ${job.id}: ${msg}`)
-          // FIX-4b: fire-and-forget 的 catch 过去只记日志——日志会轮转/丢失，runs 表
-          // 才是持久证据。补一条 synthetic error run 行，让每个 crashed invocation
-          // 都在 runs 表留痕，即便 executeJob 内部自己那次 record() 没机会跑到
-          // （比如异常发生在 handleWorkerTask/runXxxWorkerTask 各自 try/catch 覆盖范围
-          // 之外的组装阶段——见 cli/index.ts handleWorkerTask 的 IMP#8 注释；旧管线
-          // executor.ts 当年也有同类缺口，已随旧管线退役删除）。
-          // Fail-soft：记录动作本身绝不能再抛出去炸主循环。
-          try {
-            runs.insert({
-              jobId: job.id,
-              startedAt: now(),
-              finishedAt: now(),
-              decision: 'error',
-              detail: `daemon 捕获未处理异常（synthetic run 行，executeJob 本身未落 runs）：${msg}`,
-              journalPath: null,
-            })
-          } catch (recordError) {
-            const recordMsg = recordError instanceof Error ? recordError.message : String(recordError)
-            log(`warn: job ${job.id} synthetic error run 行落盘失败（fail-soft，忽略）：${recordMsg}`)
-          }
-        })
-        .finally(() => {
-          this.inflight.delete(jobPromise)
-          // FIX-2: only evict if the map still holds *this* invocation's own Job
-          // object for this id — a stale/detached invocation's late .finally must
-          // never delete a newer invocation's entry (reap+re-claim while the old
-          // one is still "alive", i.e. its continuation just hasn't run yet).
-          if (this.inflightJobs.get(job.id) === job) {
-            this.inflightJobs.delete(job.id)
-          }
-        })
-
-      this.inflight.add(jobPromise)
+    // 车道 A:巡检任务(排除 translate)。本次 dispatch 只要领过巡检，就算本拍仍处于
+    // patrol phase；即使 mock/极快 worker 同步完成，也要等下一 tick 才切 translate，
+    // 不让两相位在同一拍背靠背混在一起。
+    let patrolClaimedThisDispatch = false
+    while (jobs.countActiveTaskType('translate', true) < concurrency.searching) {
+      const job = jobs.claimNext(now(), { excludeTaskType: 'translate' })
+      if (!job) break
+      patrolClaimedThisDispatch = true
+      this.claimAndRun(job)
     }
+
+    // 车道 B:翻译——巡检队列全空 + 无翻译在跑,才领一条
+    const patrolBusy =
+      jobs.countClaimable(now(), { excludeTaskType: 'translate' }) > 0 ||
+      jobs.countActiveTaskType('translate', true) > 0
+    if (!patrolClaimedThisDispatch && !patrolBusy && jobs.countActiveTaskType('translate', false) === 0) {
+      const job = jobs.claimNext(now(), { onlyTaskType: 'translate' })
+      if (job) {
+        log(`dispatch: 巡检队列已空,相位切换到翻译车道(claimed job ${job.id})`)
+        this.claimAndRun(job)
+      }
+    }
+  }
+
+  /** 领到一个 job 后的统一执行簿记:日志 + inflight 跟踪 + fire-and-forget + 异常 synthetic run。 */
+  private claimAndRun(job: Job): void {
+    const { runs, executeJob, log, now } = this.deps
+
+    // FIX-4c: 一行 log 记下每次 claim——job id、series/kind、lease_until，供人工
+    // 追查"这个 job 是什么时候被派出去的、原定租约到几点"。
+    log(
+      `dispatch: claimed job ${job.id} (${job.kind} ${job.series_id ?? job.movie_id ?? '?'}` +
+      `${job.kind === 'series_season' ? ` S${job.season}` : ''}) lease_until=${job.lease_until ?? 'null'}`
+    )
+
+    // Fire-and-forget: don't await, but track in inflight set (promise + job id →
+    // Job object; the id feeds the heartbeat renewal above so this job's lease
+    // never expires out from under it while genuinely still running in this
+    // process). FIX-2: store the actual Job object (not just the id) — it doubles
+    // as this invocation's identity token, see field-declaration comment above.
+    this.inflightJobs.set(job.id, job)
+    const jobPromise = executeJob(job)
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error)
+        log(`executeJob error for job ${job.id}: ${msg}`)
+        // FIX-4b: fire-and-forget 的 catch 过去只记日志——日志会轮转/丢失，runs 表
+        // 才是持久证据。补一条 synthetic error run 行，让每个 crashed invocation
+        // 都在 runs 表留痕，即便 executeJob 内部自己那次 record() 没机会跑到
+        // （比如异常发生在 handleWorkerTask/runXxxWorkerTask 各自 try/catch 覆盖范围
+        // 之外的组装阶段——见 cli/index.ts handleWorkerTask 的 IMP#8 注释；旧管线
+        // executor.ts 当年也有同类缺口，已随旧管线退役删除）。
+        // Fail-soft：记录动作本身绝不能再抛出去炸主循环。
+        try {
+          runs.insert({
+            jobId: job.id,
+            startedAt: now(),
+            finishedAt: now(),
+            decision: 'error',
+            detail: `daemon 捕获未处理异常（synthetic run 行，executeJob 本身未落 runs）：${msg}`,
+            journalPath: null,
+          })
+        } catch (recordError) {
+          const recordMsg = recordError instanceof Error ? recordError.message : String(recordError)
+          log(`warn: job ${job.id} synthetic error run 行落盘失败（fail-soft，忽略）：${recordMsg}`)
+        }
+      })
+      .finally(() => {
+        this.inflight.delete(jobPromise)
+        // FIX-2: only evict if the map still holds *this* invocation's own Job
+        // object for this id — a stale/detached invocation's late .finally must
+        // never delete a newer invocation's entry (reap+re-claim while the old
+        // one is still "alive", i.e. its continuation just hasn't run yet).
+        if (this.inflightJobs.get(job.id) === job) {
+          this.inflightJobs.delete(job.id)
+        }
+      })
+
+    this.inflight.add(jobPromise)
   }
 
   /**

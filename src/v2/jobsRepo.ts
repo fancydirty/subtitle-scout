@@ -87,6 +87,14 @@ export interface Job {
   updated_at: number
 }
 
+/** held 衰减梯(见 completeHeld):首周 +1d,次周 +3d,之后 +7d。 */
+export function heldBackoffMs(errorAttempt: number): number {
+  const DAY = 86_400_000
+  if (errorAttempt <= 7) return DAY
+  if (errorAttempt <= 14) return 3 * DAY
+  return 7 * DAY
+}
+
 /** SRE 审计 F1:崩溃循环隔离阈。reap 故意不占内容退避梯(良性重启不该推向 dormant),但
  *  "确定性崩溃+容器自动重启"会以重启速度无限重跑付费 LLM 任务——连续这么多次无完成回收
  *  后,job 被 park 成 dormant(停车待人工,非死刑),不再参与 claimNext。 */
@@ -182,8 +190,18 @@ export class JobsRepo {
     }).immediate()
   }
 
-  claimNext(now: number): Job | null {
+  claimNext(now: number, opts?: { onlyTaskType?: string; excludeTaskType?: string }): Job | null {
     const leaseUntil = now + LEASE_DURATION_MS
+    // 相位分隔(用户裁决 2026-07-22):taskType 过滤进 claim 本身——translate 任务只在调用方
+    // 显式 onlyTaskType 时才会被领走;主派发循环带 excludeTaskType:'translate',巡检工作
+    // (find_subtitle/realign/orchestrate)永远先走,不被长翻译头阻塞。
+    const only = opts?.onlyTaskType
+    const exclude = opts?.excludeTaskType
+    const taskFilter = only != null
+      ? `AND ifnull(json_extract(payload,'$.taskType'),'') = '${only.replace(/'/g, '')}'`
+      : exclude != null
+        ? `AND ifnull(json_extract(payload,'$.taskType'),'') != '${exclude.replace(/'/g, '')}'`
+        : ''
     const job = this.db
       .prepare(
         `UPDATE jobs SET state = 'searching', lease_until = ?, updated_at = ?
@@ -191,6 +209,7 @@ export class JobsRepo {
            SELECT id FROM jobs
            WHERE state IN ('wanted', 'failed')
            AND (next_retry_at IS NULL OR next_retry_at <= ?)
+           ${taskFilter}
            ORDER BY priority DESC, created_at ASC
            LIMIT 1
          )
@@ -198,6 +217,39 @@ export class JobsRepo {
       )
       .get(leaseUntil, now, now) as Job | undefined
     return job ?? null
+  }
+
+  /** claimNext 同款谓词的只读计数(wanted/failed 且到点,可按 taskType 收窄/排除)——
+   *  相位分隔的"巡检队列已空"门:不计活跃态,只数"现在就能领的活"。 */
+  countClaimable(now: number, opts?: { onlyTaskType?: string; excludeTaskType?: string }): number {
+    const only = opts?.onlyTaskType
+    const exclude = opts?.excludeTaskType
+    const taskFilter = only != null
+      ? `AND ifnull(json_extract(payload,'$.taskType'),'') = '${only.replace(/'/g, '')}'`
+      : exclude != null
+        ? `AND ifnull(json_extract(payload,'$.taskType'),'') != '${exclude.replace(/'/g, '')}'`
+        : ''
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM jobs
+         WHERE state IN ('wanted', 'failed')
+         AND (next_retry_at IS NULL OR next_retry_at <= ?)
+         ${taskFilter}`
+      )
+      .get(now) as { c: number }
+    return row.c
+  }
+
+  /** 活跃态(searching/downloading/verifying)按 taskType 计数:exclude=null 只数指定
+   *  taskType;exclude 给定时数除它之外的(相位分隔的双车道计数)。 */
+  countActiveTaskType(taskType: string, exclude: boolean): number {
+    const cond = exclude
+      ? `ifnull(json_extract(payload,'$.taskType'),'') != ?`
+      : `ifnull(json_extract(payload,'$.taskType'),'') = ?`
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM jobs WHERE state IN ${ACTIVE_STATES_SQL} AND ${cond}`)
+      .get(taskType) as { c: number }
+    return row.c
   }
 
   /** 整理执行闭包在计划构建、manifest 落盘之后回填清单路径——诊断创建 job 那一刻还没有
@@ -317,6 +369,27 @@ export class JobsRepo {
       )
       .run(now)
     return info.changes
+  }
+
+  /** held 专用衰减梯(用户裁决 2026-07-22):翻译质量闸拦下不是瞬时故障——模型 nondeterministic
+   *  值得再给机会,但频率要衰减:首周每天一次(n≤7 → +1d),然后隔三差五(n≤14 → +3d),
+   *  之后周级(+7d)。永不热循环烧配额,也永不判死刑(unavailable 衰减复查语义一致)。 */
+  completeHeld(jobId: number, error: string, now: number): boolean {
+    return this.db.transaction(() => {
+      const job = this.get(jobId)
+      if (!job) return false
+      const newErrorAttempt = job.error_attempt + 1
+      const nextRetryAt = now + heldBackoffMs(newErrorAttempt)
+      const info = this.db
+        .prepare(
+          `UPDATE jobs
+           SET state = 'failed', error_attempt = ?, next_retry_at = ?, last_error = ?, lease_until = NULL, updated_at = ?,
+               reap_count = 0
+           WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
+        )
+        .run(newErrorAttempt, nextRetryAt, error, now, jobId)
+      return info.changes > 0
+    }).immediate()
   }
 
   /** Transient error (network/LLM/5xx): short backoff, separate track from content failures.

@@ -142,14 +142,16 @@ describe('runTranslateWorkerTask — 结局映射', () => {
     expect(runsRows[0]?.decision).toBe('translate:installed')
   })
 
-  it('held(fail-closed) → completeError(可重试,带原因)', async () => {
+  it('held(fail-closed) → completeHeld(首周每日衰减重试,带原因)', async () => {
     const job = makeJob('/media/x.mkv')
     await runTranslateWorkerTask(job, {
       runItem: async () => ({ status: 'held', reason: '术语漂移' }),
     }, jobs, () => 99)
-    const row = db.prepare(`SELECT state, last_error FROM jobs WHERE id=?`).get(job.id) as { state: string; last_error: string }
+    const row = db.prepare(`SELECT state, last_error, error_attempt, next_retry_at FROM jobs WHERE id=?`).get(job.id) as { state: string; last_error: string; error_attempt: number; next_retry_at: number }
     expect(row.state).toBe('failed')
     expect(row.last_error).toContain('held')
+    expect(row.error_attempt).toBe(1)
+    expect(row.next_retry_at).toBe(99 + 86_400_000)
   })
 
   it('already-covered / no-embedded / no-source → completeDone(无事可做,不算错)', async () => {

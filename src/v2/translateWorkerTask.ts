@@ -88,7 +88,7 @@ export interface TranslateWorkerTaskDeps {
 export async function runTranslateWorkerTask(
   job: Job,
   deps: TranslateWorkerTaskDeps,
-  jobs: Pick<JobsRepo, 'completeDone' | 'completeError'>,
+  jobs: Pick<JobsRepo, 'completeDone' | 'completeError' | 'completeHeld'>,
   now: () => number,
 ): Promise<void> {
   const startedAt = now()
@@ -121,8 +121,13 @@ export async function runTranslateWorkerTask(
       // no-source(F1)同口径:外挂搜索穷尽也没有=诚实无源;unavailable 的衰减复查会周期性再给机会。
       jobs.completeDone(job.id, now())
       recordRun(`translate:${r.status}`, videoPath)
+    } else if (r.status === 'held') {
+      // held(fail-closed 质量闸拦下):衰减重试(用户裁决 2026-07-22——首周每天,然后隔三差
+      // 五,之后周级;模型 nondeterministic 值得再给机会,但绝不热循环烧配额)。
+      jobs.completeHeld(job.id, `translate held: ${r.reason ?? ''}`, now())
+      recordRun('translate:held', `${videoPath} ${r.reason ?? ''}`)
     } else {
-      // held(fail-closed 质量闸拦下)/extract-failed:诚实失败,completeError 走重试退避。
+      // extract-failed:诚实失败,completeError 走瞬时退避梯。
       jobs.completeError(job.id, `translate ${r.status}: ${r.reason ?? ''}`, now())
       recordRun(`translate:${r.status}`, `${videoPath} ${r.reason ?? ''}`)
     }

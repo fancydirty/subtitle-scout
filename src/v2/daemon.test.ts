@@ -90,6 +90,28 @@ describe('ScoutDaemon', () => {
     expect(claimedJob?.state).toBe('searching')
   })
 
+  it('相位分隔：巡检队列未空时先领巡检，巡检完成后的下一拍才领 translate，且不占巡检车道', async () => {
+    seedJob('patrol', 1, now)
+    lib.db.prepare(
+      `INSERT INTO jobs (kind, movie_id, payload, state, priority, attempt, created_at, updated_at)
+       VALUES ('worker_task', 'movie:translate', '{"taskType":"translate"}', 'wanted', 0, 0, ?, ?)`,
+    ).run(now, now)
+
+    const executeJob = vi.fn(async (job: Job) => {
+      jobs.completeDone(job.id, now)
+    })
+    const daemon = new ScoutDaemon(makeDeps({ executeJob }))
+
+    await daemon.tick()
+    expect(executeJob).toHaveBeenCalledTimes(1)
+    expect((executeJob.mock.calls[0]![0] as Job).series_id).toBe('patrol')
+
+    await Promise.resolve()
+    await daemon.tick()
+    expect(executeJob).toHaveBeenCalledTimes(2)
+    expect((executeJob.mock.calls[1]![0] as Job).movie_id).toBe('movie:translate')
+  })
+
   it('FIX-4c: dispatch 为每次 claim 记一行 log——job id、series/kind、lease_until', async () => {
     seedJob('s1', 3, now)
     const executeJob = vi.fn(async () => {})
