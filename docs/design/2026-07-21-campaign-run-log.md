@@ -88,3 +88,31 @@ opencode 官方 **无** 会话 timer。本战役用 `nohup` + `*.done` + 主控�
 
 **起步确认(23:18)**:17 series / 231 episodes / 8 movies / 36 parked 已入库,daemon 15s tick 中。
 **监控**:主控心跳轮询(nohup+done 不适用——这是 daemon 常驻;改为定期查库+logs 记此文件)。
+
+## 从零 live test 终报(2026-07-22 11:30,~12h)
+
+**队列排空:28 done + 4 failed(held 衰减中)。设计全链路验证通过。**
+
+| 指标 | 值 |
+|---|---|
+| 字幕安装 | 259(subtitles 行) |
+| episodes | covered=246 / embedded=150 / ignored=30 / **unavailable=4** |
+| movies | covered=5 / embedded=4 |
+| find-subtitle installed | 26 runs |
+| translate:installed | 1(Adam's Sweet Agony S01E01,jimaku→mimo 过闸) |
+| translate:held | 23 runs(4 条目反复 held) |
+| parked | DxD×12(编号歧义,待人工)+ The Astronaut(ambiguous,新库 override 已随清库丢失) |
+
+**4 个 unavailable = 4 个翻译衰减中的任务**(Adam's S01E06/07/08 + Witch Watch E02)。
+held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 attempt=4 → 07-23(1 天档)。
+
+**mimo 弱模型实测(暴露问题目的达成)**:
+- critic 抓到真错:メスゴリラ→"雄性大猩猩"(性别反)、大量日文原句未译、术语符合率 63.3%
+- fail-closed 完美:23 次 held 全部**没有**脏字幕进库——弱模型不配过闸,系统拒绝安装
+- 相位分隔正确:巡检清空后才切翻译车道;翻译期间 ingest 照常
+
+**开关已复位**:ai_translate_enabled=false(测试结束即关,token 止损)。
+
+**The Astronaut**:新库又被 park ambiguous(override 在旧库)。票数 tiebreak 仍留用户拍板,或手动 dashboard 认领。
+
+**遗留**:恢复路径仍在 backup/20260721-zerotest/(当前新库状态更优,建议不恢复)。
