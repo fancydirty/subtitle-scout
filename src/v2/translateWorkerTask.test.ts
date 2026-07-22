@@ -197,4 +197,50 @@ describe('runTranslateWorkerTask — 结局映射', () => {
     await runTranslateWorkerTask(job, { runItem: async () => ({ status: 'installed' }) }, jobs, () => 99)
     expect((db.prepare(`SELECT state FROM jobs WHERE id=?`).get(job.id) as { state: string }).state).toBe('failed')
   })
+
+  it('held 同签名熔断:第二次相同 reason → park(dormant),不再自动重试', async () => {
+    // 生产实案:job29 重试 11 次全同样的错误(衰减梯空转烧配额)。同签名反复 held = 模型对这条
+    // 字幕系统性过不了闸 → park 成 dormant 转人工审查,而非无穷衰减重试。
+    const job = makeJob('/media/x.mkv')
+    // 第一次 held:正常衰减重试(completeHeld → failed)
+    await runTranslateWorkerTask(job, {
+      runItem: async () => ({ status: 'held', reason: '术语漂移' }),
+    }, jobs, () => 99)
+    let row = db.prepare(`SELECT state, error_attempt FROM jobs WHERE id=?`).get(job.id) as { state: string; error_attempt: number }
+    expect(row.state).toBe('failed')
+    expect(row.error_attempt).toBe(1)
+
+    // 重新 claim(state→searching),并重新取出 job 对象(拿最新的 last_error 供签名比对)
+    db.prepare(`UPDATE jobs SET state='searching'`).run()
+    const job2 = db.prepare(`SELECT * FROM jobs WHERE id=?`).get(job.id) as Job
+
+    // 第二次相同签名 held → park(dormant,转人工审查)
+    await runTranslateWorkerTask(job2, {
+      runItem: async () => ({ status: 'held', reason: '术语漂移' }),
+    }, jobs, () => 200)
+    const parked = db.prepare(`SELECT state, last_error, next_retry_at FROM jobs WHERE id=?`).get(job.id) as { state: string; last_error: string; next_retry_at: number | null }
+    expect(parked.state).toBe('dormant')
+    expect(parked.last_error).toContain('签名重复')
+    expect(parked.next_retry_at).toBeNull()
+  })
+
+  it('held 不同签名 → 正常衰减重试(completeHeld),不熔断', async () => {
+    const job = makeJob('/media/x.mkv')
+    // 第一次 held:reason A
+    await runTranslateWorkerTask(job, {
+      runItem: async () => ({ status: 'held', reason: '术语漂移' }),
+    }, jobs, () => 99)
+
+    db.prepare(`UPDATE jobs SET state='searching'`).run()
+    const job2 = db.prepare(`SELECT * FROM jobs WHERE id=?`).get(job.id) as Job
+
+    // 第二次不同签名 held(reason B)→ completeHeld 正常衰减,不熔断
+    await runTranslateWorkerTask(job2, {
+      runItem: async () => ({ status: 'held', reason: 'CPS 读速超标' }),
+    }, jobs, () => 200)
+    const row = db.prepare(`SELECT state, last_error, error_attempt, next_retry_at FROM jobs WHERE id=?`).get(job.id) as { state: string; last_error: string; error_attempt: number; next_retry_at: number }
+    expect(row.state).toBe('failed')
+    expect(row.error_attempt).toBe(2)
+    expect(row.last_error).toContain('CPS')
+  })
 })

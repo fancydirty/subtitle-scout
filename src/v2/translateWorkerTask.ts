@@ -88,7 +88,7 @@ export interface TranslateWorkerTaskDeps {
 export async function runTranslateWorkerTask(
   job: Job,
   deps: TranslateWorkerTaskDeps,
-  jobs: Pick<JobsRepo, 'completeDone' | 'completeError' | 'completeHeld'>,
+  jobs: Pick<JobsRepo, 'completeDone' | 'completeError' | 'completeHeld' | 'park'>,
   now: () => number,
 ): Promise<void> {
   const startedAt = now()
@@ -124,8 +124,18 @@ export async function runTranslateWorkerTask(
     } else if (r.status === 'held') {
       // held(fail-closed 质量闸拦下):衰减重试(用户裁决 2026-07-22——首周每天,然后隔三差
       // 五,之后周级;模型 nondeterministic 值得再给机会,但绝不热循环烧配额)。
-      jobs.completeHeld(job.id, `translate held: ${r.reason ?? ''}`, now())
-      recordRun('translate:held', `${videoPath} ${r.reason ?? ''}`)
+      // 同签名熔断:同一 held 失败签名反复出现 = 模型对这条字幕系统性过不了闸,衰减重试只烧配额
+      // 不产结果(job29 重试 11 次全同样错误实案)→ park 成 dormant,转人工审查(不再自动重试)。
+      const heldError = `translate held: ${r.reason ?? ''}`
+      const prevSig = (job.last_error ?? '').slice(0, 80)
+      const newSig = heldError.slice(0, 80)
+      if (job.last_error !== null && prevSig === newSig) {
+        jobs.park(job.id, `translate held 签名重复,转人工审查: ${r.reason ?? ''}`, now())
+        recordRun('translate:held-parked', `${videoPath} 同签名熔断: ${r.reason ?? ''}`)
+      } else {
+        jobs.completeHeld(job.id, heldError, now())
+        recordRun('translate:held', `${videoPath} ${r.reason ?? ''}`)
+      }
     } else {
       // extract-failed:诚实失败,completeError 走瞬时退避梯。
       jobs.completeError(job.id, `translate ${r.status}: ${r.reason ?? ''}`, now())
