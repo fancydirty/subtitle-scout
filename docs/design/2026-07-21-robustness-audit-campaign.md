@@ -41,3 +41,11 @@
 ## 心跳
 
 opencode 无 timer;主控短轮询 + nohup/done + 本文件时间线。
+
+## 后续翻译相位战役(2026-07-22)
+
+- `held` 不再走瞬时错误的短退避：第 1–7 次每次 +1 天，第 8–14 次 +3 天，之后 +7 天。
+- daemon 分两车道：巡检任务(`find_subtitle`/`realign`/`orchestrate`)先占 searching 车道；只有到点可领的巡检任务和巡检活跃任务都为空时，才 claim 一个 translate 任务。
+- translate 不占巡检车道；长翻译期间新巡检仍可执行。
+- 新版本生产日志已实证：`巡检队列已空,相位切换到翻译车道` → claim translate。
+- commit: `bf06f31`，已部署 media-router-tunnel（直连暂时 banner timeout，隧道完成部署）。
