@@ -126,3 +126,19 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - detached build marker exit 0;compose up exit 0;镜像 `sha256:5a22cf46f9efce742f559dc77e8ae3029d1bd6dfdbad890cce72bdbc5f5208dc`。
 - 部署后:Compose `Up`,dashboard HTTP 200,restart count 0,SQLite `quick_check=ok`,`ai_translate_enabled=false`;两次观测均 `translate_running=0`,translate runs 保持 `count=24/max_id=73/last_started_at=1784695756355`,未启动失控翻译。
 - 备注:镜像未定义 Docker healthcheck(`health=none`);以 Compose 运行态、HTTP 200、启动日志和 DB 体检联合验收。
+
+## 战役 5:Task 1 部署审计阻断修复(2026-07-22 23:31–2026-07-23 00:36 CST)
+
+- 部署机制修复:`deploy/deploy.sh` 现从 `git archive HEAD` 建立白名单 stage，包含 `web/package-lock.json`；stage 与生产受管源码均用 `rsync --delete` 精确同步，路由自治的 `.env` / `docker-compose.yml` 受保护且不覆盖、不删除。
+- 串行/取证:路由侧 `mkdir` 原子锁 + trap 释放；每次只跑一条 detached runner，固定 `rollout.log` + `rollout.done`。部署前给旧镜像打时间戳 rollback tag，并保存源码 tar/manifest、Compose 前后 hash、镜像身份和运行态证据。
+- 镜像身份:Dockerfile 接收 `IMAGE_REVISION` 并写 OCI `org.opencontainers.image.revision`；label 放在昂贵 APT/npm 层之后，revision 变化不再主动击穿依赖层缓存。
+- 本地验证:`npm test` = **1921 passed / 1 skipped**(110 files passed / 1 skipped)；`npm run check` exit 0；focused deploy contract 3/3；外层 Bash 与内嵌 BusyBox/POSIX sh 均通过语法检查。
+- 代码 commits:`94cb6e2`(精确同步/锁/回滚/身份)、`90ab383`(runner fail-closed)、`71a9dc9`(显式传播 build/up 状态 + 保留依赖缓存)。未 push。
+- 路由 Compose 先备份，再且仅将 dashboard 映射从 all-interface 改为 `127.0.0.1:${DASHBOARD_PORT:-8099}:${DASHBOARD_PORT:-8099}`；归一化后与备份逐字节相同。SHA-256:`2e71cf77...` → `636220bd...`。
+- 首次受锁 build 在旧容器仍运行、尚未执行 `compose up` 时因 revision label 位置导致 APT 缓存失效且下载极慢，人工 TERM；attempt marker=`1`、锁正常释放。修复缓存层和显式状态传播后才开始新 attempt，全程无重叠 compose；首轮日志/marker 一并保留。
+- 成功 attempt:`20260723-003300-task1-remediation`，marker=`0`、锁释放；成功部署 revision `71a9dc959470197128c1d72668e11059a2fd5f39`。本地镜像内容 ID=`sha256:945c5ee2e4425d90f6f3dae02f10e524f7b909ed088a885814c97eb1cbf798fc`(本地 Compose build 无 registry RepoDigest)。
+- 回滚:`subtitle-scout-rollback:20260723-003347` → `sha256:5a22cf46f9efce742f559dc77e8ae3029d1bd6dfdbad890cce72bdbc5f5208dc`。
+- Dashboard 资格:容器/内核监听均仅 `127.0.0.1:8099`；路由 localhost HTTP 200；LAN peer `curl` exit 7 / HTTP 000；setup 仍返回 `setup required`，未创建账号/凭据。
+- 数据资格:SQLite `quick_check=ok`；`ai_translate_enabled=false`；translate runs 部署前后均 `count=24 / max_id=73 / max_started_at=1784695756355`；translate jobs `count=5 / running=0`。
+- 精确源码资格:archive 同时包含根/web lockfile，manifest 全量校验 `ok`；archive 对生产受管树 dry-run exact-sync=`clean`。
+- 根权限证据:`/mnt/nvme0n1-4/backup/20260723-003300-task1-remediation-deploy/` 为 `0700 root:root`，证据文件均 `0600`；包含源 archive/manifest、两次 attempt log/marker、Compose 备份/哈希、rollback/current image、DB/settings/runs 和 dashboard bind 证据，无 secret value。
