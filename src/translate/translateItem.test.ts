@@ -213,3 +213,50 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
     expect(r.status).toBe('installed')
   })
 })
+
+describe('translateItem — sourceLangName 从实际轨语言取(审计🔴)', () => {
+  // Witch Watch E02: origin_lang=ja,内嵌英文轨。旧逻辑:prompt 说"日文"却喂英文文本→模型困惑。
+  // 新逻辑:内嵌轨路径用 track.lang 映射,fetch 路径沿用 origin_lang。
+  it('内嵌英文轨 → sourceLangName="英文"(不是 origin_lang 的"日文")', async () => {
+    let seenLang: string | undefined
+    const deps = baseDeps({
+      probe: async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }],
+      gatherContext: async () => ({ sourceLangName: '日文' }), // origin_lang=ja → 旧逻辑
+      lm: {
+        async buildGlossary(_src, ctx) { seenLang = ctx.sourceLangName; return [{ en: 'Rose', zh: '罗斯' }] },
+        async translateBatch(batch) { return { cues: batch.map(c => ({ ...c, text: c.text })), summary: 's' } },
+      },
+    })
+    await translateItem('/media/x.mkv', deps)
+    expect(seenLang).toBe('英文') // 从实际轨 lang=eng 取,不是 origin_lang=ja
+  })
+
+  it('内嵌日文轨 → sourceLangName="日文"', async () => {
+    let seenLang: string | undefined
+    const deps = baseDeps({
+      probe: async () => [{ lang: 'jpn', codec: 'subrip', isImageBased: false }],
+      gatherContext: async () => ({ sourceLangName: '日文' }),
+      lm: {
+        async buildGlossary(_src, ctx) { seenLang = ctx.sourceLangName; return [{ en: 'Rose', zh: '罗斯' }] },
+        async translateBatch(batch) { return { cues: batch.map(c => ({ ...c, text: c.text })), summary: 's' } },
+      },
+    })
+    await translateItem('/media/x.mkv', deps)
+    expect(seenLang).toBe('日文')
+  })
+
+  it('fetch 路径(零内嵌)→ sourceLangName 沿用 gatherContext(origin_lang)', async () => {
+    let seenLang: string | undefined
+    const deps = baseDeps({
+      probe: async () => [],
+      fetchSourceSub: async () => ({ srtText: SOURCE, sourceRef: 'jimaku:729' }),
+      gatherContext: async () => ({ sourceLangName: '日文' }),
+      lm: {
+        async buildGlossary(_src, ctx) { seenLang = ctx.sourceLangName; return [{ en: 'Rose', zh: '罗斯' }] },
+        async translateBatch(batch) { return { cues: batch.map(c => ({ ...c, text: c.text })), summary: 's' } },
+      },
+    })
+    await translateItem('/media/x.mkv', deps)
+    expect(seenLang).toBe('日文') // fetch 路径不变
+  })
+})

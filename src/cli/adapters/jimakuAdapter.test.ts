@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { makeJimakuAdapter, jimakuQueryVariants, _clearJimakuFileCache } from './jimakuAdapter.js'
+import { makeJimakuAdapter, jimakuQueryVariants, entryMatchesQuery, _clearJimakuFileCache } from './jimakuAdapter.js'
 
 beforeEach(() => _clearJimakuFileCache())
 
@@ -20,6 +20,23 @@ describe('jimakuQueryVariants', () => {
       'Attack on Titan',
       'Attack',
     ])
+  })
+})
+
+describe('entryMatchesQuery — 审计🔴:变体回退防无关番混入', () => {
+  it('Adam 变体搜出 BanG Dream → 拒(零词重叠)', () => {
+    expect(entryMatchesQuery('BanG Dream! It\'s MyGO!!!!!', 'BanG Dream!', "Adam's Sweet Agony")).toBe(false)
+    expect(entryMatchesQuery('DEAD DEAD DEMONS DEDEDEDE DESTRUCTION', 'デッドデッド', "Adam's Sweet Agony")).toBe(false)
+  })
+  it('Frieren 变体搜出 Frieren entry → 过(Frieren 词重叠)', () => {
+    expect(entryMatchesQuery('Frieren: Beyond Journey\'s End', '葬送のフリーレン', "Frieren: Beyond Journey's End")).toBe(true)
+    expect(entryMatchesQuery('Frieren: Beyond Journey\'s End', '葬送のフリーレン', 'Frieren')).toBe(true)
+  })
+  it('日文查询匹配日文名', () => {
+    expect(entryMatchesQuery('Sousou no Frieren', '葬送のフリーレン', '葬送のフリーレン')).toBe(true)
+  })
+  it('无法分词(全≤2字符)→ 不过滤(保守,不误杀)', () => {
+    expect(entryMatchesQuery('Anything', null, 'K')).toBe(true)
   })
 })
 
@@ -181,7 +198,7 @@ describe('makeJimakuAdapter.resolve — fail-closed(审计🔴:缓存失集绝�
     }))
     // files 按 episode 区分:fake client 需带 ep——简化:重写 client
     const c = {
-      search: async () => [{ id: 9, name: 'S' }],
+      search: async () => [{ id: 9, name: 'Show', english_name: 'Show' }],
       files: async (_id: number, ep?: number) =>
         ep === 1 ? [{ url: 'https://j/e1.srt', name: 'e1.srt' }] : [{ url: 'https://j/e2.srt', name: 'e2.srt' }],
     }

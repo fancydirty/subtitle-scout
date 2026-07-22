@@ -43,6 +43,27 @@ function providerIdOf(entryId: number, episode?: number): string {
   return episode != null ? `${entryId}#ep${episode}` : `${entryId}#all`
 }
 
+/** jimaku 标题校验(审计🔴:变体回退 "Adam's" 曾返回 BanG Dream/DEAD DEAD/高达——
+ *  全是不相关番,adapter 毫无校验就收了,翻译出来的字幕跟目标视频毫不相干)。
+ *  规则:原始查询(非变体)分词后,至少一个 ≥3 字符的词出现在 entry 的英文名或日文名里。
+ *  "Adam's Sweet Agony" tokens=[adam,sweet,agony]; BanG Dream → 零交集→拒。
+ *  "Frieren" token=[frieren]; Frieren entry → 交集→过。 */
+export function entryMatchesQuery(
+  englishName: string | null | undefined,
+  japaneseName: string | null | undefined,
+  originalQuery: string,
+): boolean {
+  const STOP = new Set(['the', 'a', 'an', 'no', 'of', 'to'])
+  const tokens = originalQuery
+    .toLowerCase()
+    .replace(/[^\w\s\u3040-\u30ff\u4e00-\u9faf]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !STOP.has(w))
+  if (tokens.length === 0) return true // 无法分词→不过滤(保守,不误杀)
+  const haystack = `${englishName ?? ''} ${japaneseName ?? ''}`.toLowerCase()
+  return tokens.some((t) => haystack.includes(t))
+}
+
 export function makeJimakuAdapter(
   client: Pick<JimakuClient, 'search' | 'files'>,
 ): FetchAdapter {
@@ -65,7 +86,11 @@ export function makeJimakuAdapter(
           emit?.({ event: 'provider_error', provider: 'jimaku', message: `search(${q}): ${String(e)}` })
           continue
         }
-        for (const entry of entries.slice(0, MAX_ENTRIES)) {
+        // 标题校验:变体回退搜出的无关番(BanG Dream 冒充 Adam)在此拦截
+        const matched = entries.filter((e) =>
+          entryMatchesQuery(e.english_name ?? e.name, e.japanese_name, query),
+        )
+        for (const entry of matched.slice(0, MAX_ENTRIES)) {
           try {
             const files = await client.files(entry.id, args.episode)
             if (files.length === 0) continue

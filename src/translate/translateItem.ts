@@ -82,6 +82,16 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
   }
 
   const ctx = deps.gatherContext ? await deps.gatherContext(videoPath) : {}
+  // 审计🔴:内嵌轨路径的 sourceLangName 必须从实际轨语言取,不用 origin_lang。
+  // Witch Watch E02: origin_lang=ja → gatherContext 设"日文",但内嵌轨是英文(eng),
+  // prompt 告诉模型"这是日文"却喂英文文本→模型困惑,质量下降。
+  if (sourceIdx >= 0 && tracks[sourceIdx].lang) {
+    const tl = tracks[sourceIdx].lang.toLowerCase()
+    ctx.sourceLangName = tl.startsWith('en') ? '英文'
+      : tl.startsWith('ja') || tl === 'jpn' ? '日文'
+      : tl.startsWith('zh') || tl === 'chi' || tl === 'zho' ? '中文'
+      : '源语言'
+  }
   const result = await translateSubtitle(src, ctx, deps.lm, { critic: deps.critic })
 
   if (result.verdict === 'installed' && result.translatedSrt !== null) {
