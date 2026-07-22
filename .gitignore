@@ -12,6 +12,9 @@ dist/
 
 # 作者私有（不随公开仓；本地保留）
 deploy/
+!deploy/
+deploy/*
+!deploy/deploy.sh
 worker/
 docs/superpowers/
 docs/cloudflare-worker.md
