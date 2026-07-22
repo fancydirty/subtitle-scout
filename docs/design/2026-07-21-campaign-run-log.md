@@ -116,3 +116,13 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 **The Astronaut**:新库又被 park ambiguous(override 在旧库)。票数 tiebreak 仍留用户拍板,或手动 dashboard 认领。
 
 **遗留**:恢复路径仍在 backup/20260721-zerotest/(当前新库状态更优,建议不恢复)。
+
+## 战役 4:翻译加固部署证据(2026-07-22 22:52–22:59 CST)
+
+- 本地 `e67e067`(含修复至 `0546f24`):`npm test` = **1918 passed / 1 skipped**(109 files passed / 1 skipped);`npm run check` exit 0、无诊断。
+- 部署前:`subtitle-scout` running;SQLite `quick_check=ok`;`ai_translate_enabled=false`。
+- 证据包:`/mnt/nvme0n1-4/backup/20260722-225216-task1-deploy/`;含 `VACUUM INTO` 一致快照(`scout.db.snapshot`,snapshot `quick_check=ok`)、近 24h 日志、jobs/runs 聚合、仅配置 key 名、部署日志与前后验收。
+- 白名单 rsync 未下发生产 compose;其 SHA-256 部署前后均为 `2e71cf77aaa47d060be24789f513ee5a7fb11a1f05921929950e3b8ba9e5869a`。
+- detached build marker exit 0;compose up exit 0;镜像 `sha256:5a22cf46f9efce742f559dc77e8ae3029d1bd6dfdbad890cce72bdbc5f5208dc`。
+- 部署后:Compose `Up`,dashboard HTTP 200,restart count 0,SQLite `quick_check=ok`,`ai_translate_enabled=false`;两次观测均 `translate_running=0`,translate runs 保持 `count=24/max_id=73/last_started_at=1784695756355`,未启动失控翻译。
+- 备注:镜像未定义 Docker healthcheck(`health=none`);以 Compose 运行态、HTTP 200、启动日志和 DB 体检联合验收。
