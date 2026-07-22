@@ -156,3 +156,60 @@ describe('translateItem — 端到端编排', () => {
     expect(r.status).toBe('installed')
   })
 })
+
+describe('translateItem — 时长校验闸(北极星:错版本/错源永不落盘)', () => {
+  // 生产实案:Overflow 全季 8 集装错版本(TV 版 210s 视频装了 423s 完整版字幕);Adam E01
+  // 翻译用了 24 分钟字幕给 3.5 分钟视频(spanRatio=6.8)。translatePipeline 是纯文本管道
+  // 不知视频时长,这道闸只能在 translateItem 层(它持 videoPath)用 ffprobe 比对产出字幕
+  // 最后 cue 结束时间 / 视频时长,不在 [0.85, 1.15] → held(fail-closed 绝不写 sidecar)。
+  // mockLM 冻结时轴(只替换文本),故产出字幕的结束时间 = 源 SRT 的结束时间。
+
+  it('产出字幕最后 cue 结束时间 / 视频时长 > 1.15 → held(duration-mismatch),绝不写 sidecar', async () => {
+    // 423s 字幕 / 210s 视频 = 2.01(Overflow 装错版本实案)
+    const longSource = ['1', '00:00:01,000 --> 00:07:03,000', 'Rose enters Pictor.', ''].join('\n')
+    const written: string[] = []
+    const r = await translateItem('/media/Overflow.S01.mkv', baseDeps({
+      extract: async () => longSource,
+      videoDurationSec: async () => 210,
+      writeSidecar: (vp) => { written.push(vp); return vp },
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(r.reason).toContain('423')
+    expect(r.reason).toContain('210')
+    expect(written).toHaveLength(0)
+  })
+
+  it('产出字幕最后 cue 结束时间 / 视频时长 < 0.85 → held(duration-mismatch)', async () => {
+    // 100s 字幕 / 1000s 视频 = 0.1(字幕远短于视频)
+    const shortSource = ['1', '00:00:01,000 --> 00:01:40,000', 'Rose enters Pictor.', ''].join('\n')
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => shortSource,
+      videoDurationSec: async () => 1000,
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+  })
+
+  it('ratio 在 [0.85, 1.15] 内 → installed(正常落盘)', async () => {
+    // 208s 字幕 / 210s 视频 = 0.99(正常时轴)
+    const src = ['1', '00:00:01,000 --> 00:03:28,000', 'Rose enters Pictor.', ''].join('\n')
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => src,
+      videoDurationSec: async () => 210,
+    }))
+    expect(r.status).toBe('installed')
+  })
+
+  it('videoDurationSec 返回 null(探针不可用)→ 跳过校验,installed(宁缺毋滥不阻塞)', async () => {
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      videoDurationSec: async () => null,
+    }))
+    expect(r.status).toBe('installed')
+  })
+
+  it('未接 videoDurationSec → 不校验,行为与从前完全一致(向后兼容)', async () => {
+    const r = await translateItem('/media/x.mkv', baseDeps())
+    expect(r.status).toBe('installed')
+  })
+})

@@ -5,7 +5,7 @@ import { existsSync, writeFileSync, renameSync, readdirSync, readFileSync } from
 import { dirname, basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { makeModel } from '../agent/llm.js'
-import { probeEmbeddedSubtitles } from '../files/streamProbe.js'
+import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { extractEmbeddedSubtitle } from '../files/extractEmbeddedSub.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { makeTranslationLM } from '../translate/translateLm.js'
@@ -118,6 +118,7 @@ export function makeTranslateItemDeps(
     fetchSourceSub,
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
     gatherContext: async (v) => gatherSeriesContext(v, locateOriginLang?.(v) ?? null),
+    videoDurationSec: (v) => probeDurationSec(v),
     writeSidecar: (v, content) => {
       // 原子写:tmp+rename。SIGKILL 落在裸 writeFileSync 中途会留下截断的 .zh-Hans.srt,
       // 下一轮 readExistingChineseSidecar 命中 → already-covered → 该条目永久不再重译且

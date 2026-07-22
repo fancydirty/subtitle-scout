@@ -2,7 +2,7 @@
 // fail-closed 翻译 → 过闸才写中文 sidecar。所有 I/O(探针/抽取/LM/读旧字幕/写盘)注入,可脱机全测;
 // CLI 与 daemon 各自接线真实现。北极星:held(过不了闸)绝不写 sidecar,留原态交上层。
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
-import type { GateResult } from './qualityGate.js'
+import { parseSrtCues, type GateResult } from './qualityGate.js'
 import { translateSubtitle, type TranslationContext, type TranslationLM, type TranslationCritic } from './translatePipeline.js'
 
 export interface TranslateItemDeps {
@@ -23,6 +23,11 @@ export interface TranslateItemDeps {
   fetchSourceSub?: (videoPath: string) => Promise<{ srtText: string; sourceRef: string } | null>
   /** 写中文 sidecar,返回写入路径。 */
   writeSidecar: (videoPath: string, content: string) => string
+  /** 可选:探视频时长(probeDurationSec),用于时长校验闸——产出字幕最后 cue 的结束时间 / 视频时长
+   *  不在 [0.85, 1.15] → held(duration-mismatch),fail-closed 防错版本/错源字幕落盘(Overflow
+   *  全季装错版本实案)。translatePipeline 是纯文本管道(不知视频时长),这道闸只能在持 videoPath
+   *  的本层做。缺省/返回 null=不校验(同 probe=null 语义:宁缺毋滥不阻塞)。 */
+  videoDurationSec?: (videoPath: string) => Promise<number | null>
 }
 
 export interface TranslateItemResult {
@@ -39,6 +44,13 @@ function isChinese(lang: string | null): boolean {
   if (!lang) return false
   const l = lang.toLowerCase()
   return l.startsWith('zh') || l === 'chi' || l === 'zho' || l === 'chs' || l === 'cht'
+}
+
+/** 从 SRT 时轴行提取结束秒数('HH:MM:SS,mmm --> HH:MM:SS,mmm' 的后半段)。 */
+function cueEndSec(timing: string): number {
+  const m = timing.match(/-->\s*(\d+):(\d+):(\d+)[,.](\d+)/)
+  if (!m) return 0
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000
 }
 
 export async function translateItem(videoPath: string, deps: TranslateItemDeps): Promise<TranslateItemResult> {
@@ -73,6 +85,21 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
   const result = await translateSubtitle(src, ctx, deps.lm, { critic: deps.critic })
 
   if (result.verdict === 'installed' && result.translatedSrt !== null) {
+    // 时长校验闸(北极星 fail-closed):产出字幕最后 cue 的结束时间 / 视频时长 不在 [0.85, 1.15]
+    // → held(duration-mismatch),绝不写 sidecar。防错版本/错源字幕落盘(Overflow 全季 8 集装错版本;
+    // Adam E01 翻译用 24 分钟字幕给 3.5 分钟视频)。translatePipeline 纯文本管道(不知视频时长),
+    // 这道闸只能在持 videoPath 的本层做。探针不可用(返回 null)→ 跳过(同 probe=null:宁缺毋滥不阻塞)。
+    if (deps.videoDurationSec) {
+      const videoSec = await deps.videoDurationSec(videoPath)
+      if (videoSec !== null && videoSec > 0) {
+        const cues = parseSrtCues(result.translatedSrt)
+        const lastEndSec = cues.length > 0 ? cueEndSec(cues[cues.length - 1].timing) : 0
+        const ratio = lastEndSec / videoSec
+        if (ratio < 0.85 || ratio > 1.15) {
+          return { status: 'held', reason: `duration-mismatch: source ${Math.round(lastEndSec)}s vs video ${videoSec}s`, gate: result.gate, sourceRef }
+        }
+      }
+    }
     const sidecarPath = deps.writeSidecar(videoPath, result.translatedSrt)
     return { status: 'installed', sidecarPath, gate: result.gate, sourceRef }
   }
