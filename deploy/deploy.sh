@@ -105,8 +105,8 @@ rsync -a --delete \
   --exclude='*' \
   "$stage_dir/" "$remote_dir/"
 
-docker compose build --build-arg IMAGE_REVISION="$revision" subtitle-scout && \
-  docker compose up -d subtitle-scout
+docker compose build --build-arg IMAGE_REVISION="$revision" subtitle-scout || exit $?
+docker compose up -d subtitle-scout || exit $?
 
 current_image=$(docker inspect -f '{{.Image}}' subtitle-scout)
 actual_revision=$(docker image inspect "$current_image" -f '{{index .Config.Labels "org.opencontainers.image.revision"}}')

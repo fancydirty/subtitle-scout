@@ -19,8 +19,6 @@ RUN npm run build
 # 阶段 3：运行时（生产 install 只拿 dependencies，plain node 跑编译产物 dist/，不含 tsx）
 FROM node:22-slim
 WORKDIR /app
-ARG IMAGE_REVISION=unknown
-LABEL org.opencontainers.image.revision=$IMAGE_REVISION
 # 系统 ffprobe：内嵌字幕探针（src/files/streamProbe.ts）优先走 FFPROBE_PATH，
 # 镜像自带后运行时不再依赖 ffprobe-static 这个 ~50MB 的 npm 二进制下载。
 # curl：subhd 源（SUBHD_ENABLED=true）必需——Node 的 TLS(JA3) 指纹被 subhd/Cloudflare 在临时页
@@ -36,5 +34,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --omit=optional
 COPY --from=build /app/dist ./dist
 COPY --from=web /web/dist ./web/dist
+ARG IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$IMAGE_REVISION
 ENV NODE_ENV=production
 CMD ["node", "--enable-source-maps", "dist/cli/index.js", "watch"]

@@ -20,6 +20,8 @@ describe('production deployment contract', () => {
     expect(deployScript).toMatch(/nohup sh (?:-c )?/)
     expect(deployScript).toContain('rollout.log')
     expect(deployScript).toContain('rollout.done')
+    expect(deployScript).toContain('docker compose build --build-arg IMAGE_REVISION="$revision" subtitle-scout || exit $?')
+    expect(deployScript).toContain('docker compose up -d subtitle-scout || exit $?')
     expect(deployScript).toMatch(/docker compose build[\s\S]*docker compose up -d subtitle-scout/)
   })
 
@@ -31,5 +33,6 @@ describe('production deployment contract', () => {
     expect(deployScript).toContain('--build-arg IMAGE_REVISION=')
     expect(dockerfile).toContain('ARG IMAGE_REVISION')
     expect(dockerfile).toContain('LABEL org.opencontainers.image.revision=$IMAGE_REVISION')
+    expect(dockerfile.indexOf('LABEL org.opencontainers.image.revision')).toBeGreaterThan(dockerfile.indexOf('RUN apt-get'))
   })
 })
