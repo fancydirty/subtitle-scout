@@ -40,7 +40,7 @@ rsync -az --delete \
 
 ssh "$SSH_HOST" "cat > '$RUNNER'" <<'REMOTE_RUNNER'
 #!/bin/sh
-set -u
+set -eu
 umask 077
 
 remote_dir=$1

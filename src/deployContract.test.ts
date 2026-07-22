@@ -14,6 +14,7 @@ describe('production deployment contract', () => {
   })
 
   it('serializes one detached rollout and leaves one durable result marker', () => {
+    expect(deployScript).toContain('#!/bin/sh\nset -eu')
     expect(deployScript).toContain('mkdir "$lock_dir"')
     expect(deployScript).toContain('trap cleanup')
     expect(deployScript).toMatch(/nohup sh (?:-c )?/)
