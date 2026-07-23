@@ -15,6 +15,8 @@ export interface TranslateWorkerDeps {
   /** Install merge-produced SRT as the Chinese sidecar; returns installed path. */
   install: (videoPath: string, srtContent: string) => string
   videoDurationSec?: (videoPath: string) => Promise<number | null>
+  /** Legacy parity: existing Chinese sidecar path, or null (already-covered short-circuit). */
+  readExistingChineseSidecar?: (videoPath: string) => string | null
   fetchTmdbContext?: (task: TranslateTask) => Promise<string | null>
   fetchSeriesTargetSubs?: (task: TranslateTask) => Promise<string | null>
   /** @default 200 */
@@ -39,6 +41,7 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
         resolveDeps: deps.resolveDeps,
         install: deps.install,
         videoDurationSec: deps.videoDurationSec,
+        readExistingChineseSidecar: deps.readExistingChineseSidecar,
         fetchTmdbContext: deps.fetchTmdbContext,
         fetchSeriesTargetSubs: deps.fetchSeriesTargetSubs,
       }),
@@ -68,17 +71,25 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
       tools,
       instructions,
       schema: TranslateReportSchema,
-      stopWhen: stepCountIs(deps.stepCap ?? 200),
+      stopWhen: stepCountIs(deps.stepCap ?? 500),
       reasoning: 'high',
       telemetry: { isEnabled: true },
       onStepEvent: makeRunTracer(`job-${task.jobId}`),
     })
 
-    const result = await agent.generate({
-      prompt,
-      abortSignal: AbortSignal.timeout(deps.timeoutMs ?? 900_000),
-    })
-    console.error(`[translate-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
-    return readFinalized()
+    try {
+      const result = await agent.generate({
+        prompt,
+        abortSignal: AbortSignal.timeout(deps.timeoutMs ?? 900_000),
+      })
+      console.error(`[translate-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
+      return readFinalized()
+    } catch (e) {
+      // 模型放弃/步数耗尽/abort 等未 finalize 的情形:诚实 held(fail-closed),绝不让异常
+      // 以未捕获形态炸出调用方——与 find-subtitle worker-exhaustion 语义对齐。
+      const reason = e instanceof Error ? e.message : String(e)
+      console.error(`[translate-worker] job ${task.jobId} ended without a clean finalize: ${reason}`)
+      return { status: 'held', reason: `worker exhausted: ${reason.slice(0, 200)}`, sourceRef: null, sidecarPath: null }
+    }
   }
 }

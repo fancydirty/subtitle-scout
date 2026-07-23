@@ -4,10 +4,11 @@ import type { WorkspacePaths } from './types.js'
 import type { BilingualRow, CleanCue } from './types.js'
 
 const ASS_OVERRIDE = /\{\\[^}]*\}/g
+const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g
 
 function cleanText(lines: string[]): string {
   return lines
-    .map((line) => line.replace(ASS_OVERRIDE, ''))
+    .map((line) => line.replace(ASS_OVERRIDE, '').replace(HTML_TAG, ''))
     .join('\n')
     .replace(/[ \t]+\n/g, '\n')
     .trim()

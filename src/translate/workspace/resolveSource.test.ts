@@ -61,6 +61,29 @@ describe('resolveTranslateSource — origin-lang single-hop', () => {
     }
   })
 
+  it('origin empty with en embedded → treated as en (legacy parity)', async () => {
+    const r = await resolveTranslateSource({
+      originLang: null,
+      videoPath: '/m/x.mkv',
+      deps: baseDeps({
+        probe: async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }],
+        extract: async () => '1\n00:00:01,000 --> 00:00:02,000\nHello\n',
+      }),
+    })
+    expect(r).toMatchObject({ status: 'ok', sourceLangName: '英文' })
+  })
+
+  it('origin empty with only ja embedded → no-source (no honest language guess)', async () => {
+    const r = await resolveTranslateSource({
+      originLang: null,
+      videoPath: '/m/x.mkv',
+      deps: baseDeps({
+        probe: async () => [{ lang: 'jpn', codec: 'ass', isImageBased: false }],
+      }),
+    })
+    expect(r.status).toBe('no-source')
+  })
+
   it('origin=ja with no embedded ja but fetch returns ja → ok with sourceRef', async () => {
     const r = await resolveTranslateSource({
       originLang: 'ja',

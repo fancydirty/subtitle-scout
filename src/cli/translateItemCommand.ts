@@ -173,6 +173,7 @@ export function makeTranslateAgentDeps(
     },
     install: (v, content) => writeSidecarAtomic(v, content),
     videoDurationSec: (v) => probeDurationSec(v),
+    readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
     fetchTmdbContext: opts.fetchTmdbContext,
     fetchSeriesTargetSubs: opts.fetchSeriesTargetSubs ?? ((task: TranslateTask) => Promise.resolve(readSeriesTargetSubs(task.videoPath))),
     timeoutMs: translateTimeoutMs() * 3, // 整集工作台(多窗),比单批宽

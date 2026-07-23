@@ -18,23 +18,24 @@ const SAMPLE = [
 ].join('\n')
 
 describe('materializeAgentView', () => {
-  it('writes clean jsonl without timing and strips ASS overrides; inits bilingual pending', () => {
+  it('writes clean jsonl without timing, strips ASS overrides and style tags; inits bilingual pending', () => {
     const base = mkdtempSync(join(tmpdir(), 'tw-mat-'))
     const paths = ensureWorkspaceLayout(base, 'j1')
     const { cues, rows } = materializeAgentView(paths, SAMPLE)
     expect(cues).toHaveLength(2)
-    expect(cues[0]).toMatchObject({ id: '1', text: 'Hello <i>Nico</i>' })
+    expect(cues[0]).toMatchObject({ id: '1', text: 'Hello Nico' })
     expect(cues[0].text).not.toContain('\\an8')
     expect(cues[1]).toEqual({ id: '2', text: 'Second line' })
 
     const cleanLines = readFileSync(paths.sourceCleanPath, 'utf8').trim().split('\n')
     const parsed = cleanLines.map((l) => JSON.parse(l) as CleanCue)
-    expect(parsed[0].text).toBe('Hello <i>Nico</i>')
+    expect(parsed[0].text).toBe('Hello Nico')
     expect(JSON.stringify(parsed[0])).not.toMatch(/-->/)
+    expect(JSON.stringify(parsed[0])).not.toContain('<i>')
 
     const bi = readFileSync(paths.bilingualPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as BilingualRow)
     expect(bi).toEqual([
-      { id: '1', src: 'Hello <i>Nico</i>', tgt: '', status: 'pending' },
+      { id: '1', src: 'Hello Nico', tgt: '', status: 'pending' },
       { id: '2', src: 'Second line', tgt: '', status: 'pending' },
     ])
     expect(rows).toEqual(bi)

@@ -131,11 +131,14 @@ describe('translate workspace tools', () => {
     const tools = makeTranslateWorkspaceTools(deps)
     await call(tools.resolve_source)
     await call(tools.materialize_agent_view)
+    await call(tools.freeze_glossary, { terms: [{ src: 'Nico', zh: '妮可' }] })
     await call(tools.update_row, { id: '1', tgt: '你好妮可', status: 'ok' })
     await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
     const m = await call(tools.merge_to_srt)
     expect(m).toMatchObject({ ok: true, cueCount: 2 })
     expect(readFileSync(paths.targetSrtPath, 'utf8')).toContain('00:00:01,000 --> 00:00:02,000')
+    const gate = await call(tools.run_structural_gate)
+    expect(gate.verdict).toBe('pass')
     const i = await call(tools.install_sidecar)
     expect(i).toMatchObject({ ok: true, sidecarPath: join(base, 'x.zh-Hans.srt') })
     expect(installed).toContain('你好妮可')
@@ -145,6 +148,76 @@ describe('translate workspace tools', () => {
     const tools = makeTranslateWorkspaceTools(baseDeps())
     const r = await call(tools.install_sidecar)
     expect(r).toHaveProperty('error')
+  })
+
+  it('C1: install_sidecar refuses without a gate pass even when target.srt exists', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.update_row, { id: '1', tgt: '你好妮可', status: 'ok' })
+    await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
+    await call(tools.merge_to_srt)
+    // 无 freeze_glossary + 无 run_structural_gate → 拒绝
+    const r = await call(tools.install_sidecar)
+    expect(r).toHaveProperty('error')
+    expect(String(r.error)).toMatch(/gate/i)
+  })
+
+  it('C1: row edit after gate pass invalidates install (stale marker)', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.freeze_glossary, { terms: [{ src: 'Nico', zh: '妮可' }] })
+    await call(tools.update_row, { id: '1', tgt: '你好妮可', status: 'ok' })
+    await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
+    await call(tools.merge_to_srt)
+    expect((await call(tools.run_structural_gate)).verdict).toBe('pass')
+    await call(tools.update_row, { id: '2', tgt: '再会', status: 'ok' })
+    const r = await call(tools.install_sidecar)
+    expect(r).toHaveProperty('error')
+  })
+
+  it('update_rows batch: all-or-nothing; bad id → nothing written', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    const bad = await call(tools.update_rows, { rows: [{ id: '1', tgt: '你好妮可' }, { id: '99', tgt: 'x' }] })
+    expect(bad).toHaveProperty('error')
+    expect((await call(tools.list_rows)).rows.every((r: any) => !r.tgt)).toBe(true)
+    const good = await call(tools.update_rows, {
+      rows: [
+        { id: '1', tgt: '你好妮可', status: 'ok' },
+        { id: '2', tgt: '再见', status: 'ok' },
+      ],
+    })
+    expect(good).toMatchObject({ ok: true, count: 2 })
+    expect((await call(tools.get_row, { id: '1' })).row).toMatchObject({ tgt: '你好妮可', status: 'ok' })
+  })
+
+  it('write_workspace_doc only allows .md under context/ or work/', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const ok = await call(tools.write_workspace_doc, { path: 'context/notes.md', content: '# 笔记' })
+    expect(ok).toMatchObject({ ok: true })
+    expect(readFileSync(join(paths.contextDir, 'notes.md'), 'utf8')).toContain('笔记')
+    expect((await call(tools.write_workspace_doc, { path: 'canonical/evil.md', content: 'x' }))).toHaveProperty('error')
+    expect((await call(tools.write_workspace_doc, { path: 'work/bilingual.jsonl', content: 'x' }))).toHaveProperty('error')
+    expect((await call(tools.write_workspace_doc, { path: '../outside.md', content: 'x' }))).toHaveProperty('error')
+  })
+
+  it('already-covered: embedded zh text track or existing sidecar short-circuits resolve_source', async () => {
+    const zhTrack = makeTranslateWorkspaceTools(baseDeps({
+      resolveDeps: {
+        probe: async () => [{ lang: 'chi', codec: 'subrip', isImageBased: false }],
+        extract: async () => SAMPLE_SRT,
+      },
+    }))
+    expect((await call(zhTrack.resolve_source)).status).toBe('already-covered')
+
+    const sidecar = makeTranslateWorkspaceTools(baseDeps({
+      readExistingChineseSidecar: () => join(base, 'x.zh-Hans.srt'),
+    }))
+    expect((await call(sidecar.resolve_source)).status).toBe('already-covered')
+    expect(existsSync(paths.canonicalSourcePath)).toBe(false)
   })
 
   it('get_window returns clean cues without timing', async () => {

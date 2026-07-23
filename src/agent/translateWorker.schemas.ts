@@ -23,7 +23,7 @@ export interface TranslateTask {
 
 /** finalize report for one translate run. */
 export const TranslateReportSchema = z.object({
-  status: z.enum(['installed', 'held', 'no-source', 'extract-failed', 'probe-failed']),
+  status: z.enum(['installed', 'held', 'no-source', 'extract-failed', 'probe-failed', 'already-covered']),
   reason: nullableTolerant(z.string().min(1)),
   sourceRef: nullableTolerant(z.string().min(1)),
   sidecarPath: nullableTolerant(z.string().min(1)),

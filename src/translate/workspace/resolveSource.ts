@@ -72,14 +72,22 @@ export async function resolveTranslateSource(args: {
     }
   }
 
-  if (isEn(origin)) {
+  if (isEn(origin) || origin === '') {
+    // origin 空(库未刮到 original_language):有 en 内嵌轨时按 en 处理(legacy 行为);
+    // 有 ja 内嵌轨而 origin 空则仍走 no-source——单跳不许把日片英译,也不许英片日译的反向臆断。
+    if (origin === '' && !tracks.some((t) => !t.isImageBased && isEnTrack(t))) {
+      return {
+        status: 'no-source',
+        reason: 'origin_lang unknown and no English embedded track — cannot pick a single-hop source language honestly',
+      }
+    }
     const enIdx = tracks.findIndex((t) => !t.isImageBased && isEnTrack(t))
     if (enIdx >= 0) {
       const srt = await args.deps.extract(args.videoPath, enIdx)
       if (srt == null) return { status: 'extract-failed', reason: 'eng embedded extract failed' }
       return { status: 'ok', srtText: srt, sourceRef: `embedded:s:${enIdx}`, sourceLangName: '英文' }
     }
-    if (args.deps.fetchSourceSub) {
+    if (args.deps.fetchSourceSub && isEn(origin)) {
       const fetched = await args.deps.fetchSourceSub(args.videoPath)
       if (fetched) {
         return { status: 'ok', srtText: fetched.srtText, sourceRef: fetched.sourceRef, sourceLangName: '英文' }

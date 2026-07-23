@@ -134,6 +134,19 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
     expect(existsSync(baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'))).toBe(false)
   })
 
+  it('worker-exhaustion: model never finalizes → held report (not an uncaught throw)', async () => {
+    mkdirSync(join(root, 'Show'), { recursive: true })
+    writeFileSync(baseTask().videoPath, 'video-bytes')
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => toolCallResult('c1', 'get_window', { centerId: '1', radius: 1 }),
+    })
+    const run = makeTranslateWorker(baseDeps(model, { stepCap: 3 }))
+    const report = await run(baseTask())
+    expect(report.status).toBe('held')
+    expect(report.reason).toMatch(/exhausted|finalize/i)
+    expect(existsSync(baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'))).toBe(false)
+  })
+
   it('filename and facts reach the prompt (basename only, no other dirs)', async () => {
     mkdirSync(join(root, 'Show'), { recursive: true })
     writeFileSync(baseTask().videoPath, 'video-bytes')

@@ -1,6 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { evaluateTranslationGate, parseSrtCues } from '../translate/qualityGate.js'
 import { materializeAgentView } from '../translate/workspace/materialize.js'
@@ -19,6 +20,8 @@ export interface TranslateToolDeps {
   /** Optional duration gate: max cue end / video duration must sit in [0.85, 1.15].
    *  When provided, a failed/absent probe fails closed (see translateItem hardening). */
   videoDurationSec?: (videoPath: string) => Promise<number | null>
+  /** Legacy-parity coverage check: existing Chinese sidecar path, or null. */
+  readExistingChineseSidecar?: (videoPath: string) => string | null
   /** Optional context enrichers (P1: TMDB + same-series target-language subs). */
   fetchTmdbContext?: (task: TranslateTask) => Promise<string | null>
   fetchSeriesTargetSubs?: (task: TranslateTask) => Promise<string | null>
@@ -55,6 +58,36 @@ function maxCueEndSec(srt: string): number {
   return max
 }
 
+// ---------- gate-pass enforcement (fail-closed must be code, not model manners) ----------
+
+function gateMarkerPath(paths: WorkspacePaths): string {
+  return resolve(paths.workDir, 'GATE_PASS.json')
+}
+
+function bilingualHash(paths: WorkspacePaths): string {
+  if (!existsSync(paths.bilingualPath)) return ''
+  return createHash('sha256').update(readFileSync(paths.bilingualPath, 'utf8')).digest('hex')
+}
+
+function writeGateMarker(paths: WorkspacePaths): void {
+  writeFileSync(gateMarkerPath(paths), JSON.stringify({ hash: bilingualHash(paths), at: Date.now() }))
+}
+
+function clearGateMarker(paths: WorkspacePaths): void {
+  try { rmSync(gateMarkerPath(paths), { force: true }) } catch { /* best-effort */ }
+}
+
+function gateMarkerValid(paths: WorkspacePaths): boolean {
+  const p = gateMarkerPath(paths)
+  if (!existsSync(p)) return false
+  try {
+    const marker = JSON.parse(readFileSync(p, 'utf8')) as { hash?: string }
+    return marker.hash != null && marker.hash === bilingualHash(paths)
+  } catch {
+    return false
+  }
+}
+
 // ---------- tools ----------
 
 export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
@@ -67,6 +100,18 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       'Returns no-source when no valid same-language source exists — never fall back to another language.',
     inputSchema: z.object({}),
     execute: async () => {
+      // Legacy parity: already covered → never re-translate (embedded zh text track / sidecar).
+      const probeTracks = await deps.resolveDeps.probe(task.videoPath)
+      if (probeTracks === null) return { status: 'probe-failed', reason: 'subtitle probe unavailable' }
+      if (probeTracks.some((t) => {
+        const l = (t.lang ?? '').toLowerCase()
+        return !t.isImageBased && (l.startsWith('zh') || l === 'chi' || l === 'zho' || l === 'chs' || l === 'cht')
+      })) {
+        return { status: 'already-covered', reason: 'embedded Chinese text track present' }
+      }
+      if (deps.readExistingChineseSidecar?.(task.videoPath)) {
+        return { status: 'already-covered', reason: 'Chinese sidecar already exists' }
+      }
       // Duration-aware fetch predicate (fail-closed when probe missing).
       let preVideoSec: number | null | undefined
       const accept = deps.videoDurationSec
@@ -101,6 +146,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       meta.itemId = task.itemId
       meta.originLang = task.originLang
       meta.sourceRef = r.sourceRef
+      meta.resolvedAt = Date.now()
       writeFileSync(paths.metaPath, JSON.stringify(meta, null, 2))
       return r
     },
@@ -159,14 +205,38 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       if (!abs.startsWith(paths.jobRoot + '/') && abs !== paths.jobRoot) {
         return { error: `path escapes the job workspace: ${path}` }
       }
-      if (abs.includes('/canonical/')) {
+      if (abs.toLowerCase().includes('/canonical/')) {
         return { error: 'canonical/ is not agent-readable — use agent_view/source_clean.jsonl instead' }
       }
       if (!existsSync(abs)) return { error: `no such workspace doc: ${path}` }
+      if (statSync(abs).isDirectory()) return { error: `path is a directory, not a doc: ${path}` }
       const lines = readFileSync(abs, 'utf8').split('\n')
       const start = offset ?? 0
       const end = limit != null ? Math.min(lines.length, start + limit) : lines.length
       return { path, totalLines: lines.length, offset: start, lines: lines.slice(start, end) }
+    },
+  })
+
+  const write_workspace_doc = tool({
+    description:
+      'Write/replace a SMALL markdown note inside context/ or work/ (e.g. context/notes.md, ' +
+      'work/summary.md). Cannot write canonical/, glossary/, or .jsonl tables — those have ' +
+      'their own tools.',
+    inputSchema: z.object({
+      path: z.string().min(1),
+      content: z.string().max(8000),
+    }),
+    execute: async ({ path, content }) => {
+      const abs = resolve(paths.jobRoot, path)
+      if (!abs.startsWith(paths.jobRoot + '/')) {
+        return { error: `path escapes the job workspace: ${path}` }
+      }
+      const allowed = abs.startsWith(paths.contextDir + '/') || abs.startsWith(paths.workDir + '/')
+      if (!allowed || !abs.endsWith('.md')) {
+        return { error: 'write_workspace_doc only allows .md files under context/ or work/' }
+      }
+      writeFileSync(abs, content.endsWith('\n') ? content : content + '\n')
+      return { ok: true, path, chars: content.length }
     },
   })
 
@@ -216,6 +286,30 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     },
   })
 
+  const get_row = tool({
+    description: 'Read ONE bilingual row in full (id/src/tgt/status/notes).',
+    inputSchema: z.object({ id: z.string().min(1) }),
+    execute: async ({ id }) => {
+      const row = readRows(paths).find((r) => r.id === id)
+      if (!row) return { error: `no bilingual row with id=${id}` }
+      return { row }
+    },
+  })
+
+  const rowStatusEnum = z.enum(['pending', 'draft', 'ok', 'needs_review', 'failed'])
+
+  const applyRowPatch = (
+    rows: BilingualRow[], id: string,
+    patch: { tgt?: string; status?: 'pending' | 'draft' | 'ok' | 'needs_review' | 'failed'; notes?: string },
+  ): { ok: true; row: BilingualRow } | { error: string } => {
+    const row = rows.find((r) => r.id === id)
+    if (!row) return { error: `no bilingual row with id=${id}` }
+    if (patch.tgt !== undefined) row.tgt = patch.tgt
+    if (patch.status !== undefined) row.status = patch.status
+    if (patch.notes !== undefined) row.notes = patch.notes
+    return { ok: true, row }
+  }
+
   const update_row = tool({
     description:
       'Write your translation into ONE bilingual row (KV-style): set tgt (Simplified Chinese text, ' +
@@ -223,20 +317,49 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     inputSchema: z.object({
       id: z.string().min(1),
       tgt: z.string().optional(),
-      status: z.enum(['pending', 'draft', 'ok', 'needs_review', 'failed']).optional(),
+      status: rowStatusEnum.optional(),
       notes: z.string().optional(),
-    }),
+    }).strict(),
     execute: async (input) => {
-      const raw = input as Record<string, unknown>
-      if ('src' in raw) return { error: 'update_row cannot modify src — only tgt/status/notes' }
+      // .strict() 在生产已被 schema 拦;此处 defense-in-depth(直接 execute 的调用方同样被拒)。
+      if ('src' in (input as Record<string, unknown>)) {
+        return { error: 'update_row cannot modify src — only tgt/status/notes' }
+      }
       const rows = readRows(paths)
-      const row = rows.find((r) => r.id === input.id)
-      if (!row) return { error: `no bilingual row with id=${input.id}` }
-      if (input.tgt !== undefined) row.tgt = input.tgt
-      if (input.status !== undefined) row.status = input.status
-      if (input.notes !== undefined) row.notes = input.notes
+      const r = applyRowPatch(rows, input.id, input)
+      if ('error' in r) return r
       writeRows(paths, rows)
-      return { ok: true, row }
+      clearGateMarker(paths) // any row edit invalidates a prior gate pass
+      return { ok: true, row: r.row }
+    },
+  })
+
+  const update_rows = tool({
+    description:
+      'Batch-write translations for MANY rows in one call (preferred for a window): ' +
+      'rows: [{id, tgt, status?, notes?}]. src is immutable. All-or-nothing: one bad id → error, nothing written.',
+    inputSchema: z.object({
+      rows: z.array(z.object({
+        id: z.string().min(1),
+        tgt: z.string().optional(),
+        status: rowStatusEnum.optional(),
+        notes: z.string().optional(),
+      }).strict()).min(1).max(100),
+    }),
+    execute: async ({ rows: patches }) => {
+      if (patches.some((p) => 'src' in (p as Record<string, unknown>))) {
+        return { error: 'update_rows cannot modify src — only tgt/status/notes' }
+      }
+      const rows = readRows(paths)
+      const updated: BilingualRow[] = []
+      for (const p of patches) {
+        const r = applyRowPatch(rows, p.id, p)
+        if ('error' in r) return { error: r.error }
+        updated.push(r.row)
+      }
+      writeRows(paths, rows)
+      clearGateMarker(paths)
+      return { ok: true, count: updated.length }
     },
   })
 
@@ -278,6 +401,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       'is wired. Returns verdict pass/fail with reasons.',
     inputSchema: z.object({}),
     execute: async () => {
+      clearGateMarker(paths) // every gate evaluation resets the pass state first
       const rows = readRows(paths)
       if (rows.length === 0) return { verdict: 'fail', reasons: ['no bilingual rows — materialize first'] }
       const empty = rows.filter((r) => !r.tgt.trim()).map((r) => r.id)
@@ -304,6 +428,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
         }
       }
       const verdict = gate.verdict === 'pass' && reasons.length === 0 ? 'pass' : 'fail'
+      if (verdict === 'pass') writeGateMarker(paths)
       return {
         verdict,
         reasons,
@@ -338,6 +463,11 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       if (!existsSync(paths.targetSrtPath)) {
         return { error: 'out/target.srt missing — run merge_to_srt first' }
       }
+      // fail-closed 必须代码强制(终审 C1):没有有效的 gate-pass 标记(或标记后又有行编辑)
+      // 一律拒绝装盘——闸不过绝不装,不依赖模型自觉。
+      if (!gateMarkerValid(paths)) {
+        return { error: 'no valid structural-gate pass for the current bilingual table — run run_structural_gate and do not edit rows afterwards' }
+      }
       try {
         const sidecarPath = deps.install(task.videoPath, readFileSync(paths.targetSrtPath, 'utf8'))
         return { ok: true, sidecarPath }
@@ -353,10 +483,13 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     fetch_tmdb_context,
     fetch_series_target_subs,
     read_workspace_doc,
+    write_workspace_doc,
     freeze_glossary,
     lookup_glossary,
     list_rows,
+    get_row,
     update_row,
+    update_rows,
     get_window,
     update_summary,
     run_structural_gate,
