@@ -234,3 +234,80 @@ describe('translateSubtitle — 术语表持久化继承(priorGlossary)', () => 
     void lm
   })
 })
+
+describe('translateSubtitle — ASS/SSA override 剥离(装入 SRT 前)', () => {
+  const assSource = [
+    '1', '00:00:01,000 --> 00:00:03,000', 'Dialogue {\\an8}Hello', '',
+    '2', '00:00:04,000 --> 00:00:06,000', 'Keep {literal} braces', '',
+    '3', '00:00:07,000 --> 00:00:09,000', 'Multi {\\an8\\blur4\\pos(1,2)}Line', '',
+  ].join('\n')
+
+  function passthroughLM(overrideTexts?: string[]): TranslationLM {
+    return {
+      async buildGlossary() { return [] },
+      async translateBatch(batch) {
+        if (!overrideTexts) {
+          return { cues: batch.map((c) => ({ ...c, text: [...c.text] })), summary: '' }
+        }
+        return {
+          cues: batch.map((c, i) => ({
+            ...c,
+            text: [overrideTexts[Number(c.index) - 1] ?? c.text.join('')],
+          })),
+          summary: '',
+        }
+      },
+    }
+  }
+
+  it('Dialogue {\\an8}Hello → installed SRT 为 Dialogue Hello;条数/时轴不变', async () => {
+    const r = await translateSubtitle(assSource, {}, passthroughLM())
+    expect(r.verdict).toBe('installed')
+    expect(r.translatedSrt).not.toBeNull()
+    const cues = parseSrtCues(r.translatedSrt!)
+    expect(cues).toHaveLength(3)
+    expect(cues[0].text.join('\n')).toBe('Dialogue Hello')
+    expect(cues[0].timing).toBe('00:00:01,000 --> 00:00:03,000')
+    expect(cues[0].index).toBe('1')
+    expect(cues[1].timing).toBe('00:00:04,000 --> 00:00:06,000')
+    expect(cues[2].timing).toBe('00:00:07,000 --> 00:00:09,000')
+  })
+
+  it('普通 {literal} 保留(非 ASS override)', async () => {
+    const r = await translateSubtitle(assSource, {}, passthroughLM())
+    expect(r.verdict).toBe('installed')
+    const cues = parseSrtCues(r.translatedSrt!)
+    expect(cues[1].text.join('\n')).toBe('Keep {literal} braces')
+  })
+
+  it('多命令 override 块 {\\an8\\blur4\\pos(1,2)} 整块剥离', async () => {
+    const r = await translateSubtitle(assSource, {}, passthroughLM())
+    expect(r.verdict).toBe('installed')
+    const cues = parseSrtCues(r.translatedSrt!)
+    expect(cues[2].text.join('\n')).toBe('Multi Line')
+    expect(cues[2].text.join('\n')).not.toMatch(/\\an8|\\blur|\\pos/)
+  })
+
+  it('仅 override / 剥离后空白的 cue → held(不装)', async () => {
+    const onlyOverride = [
+      '1', '00:00:01,000 --> 00:00:03,000', 'Hello world', '',
+      '2', '00:00:04,000 --> 00:00:06,000', '{\\an8}', '',
+    ].join('\n')
+    const lm: TranslationLM = {
+      async buildGlossary() { return [] },
+      async translateBatch(batch) {
+        return {
+          cues: batch.map((c) => ({
+            ...c,
+            text: c.index === '2' ? ['{\\an8}'] : c.text.map((l) => l),
+          })),
+          summary: '',
+        }
+      },
+    }
+    const r = await translateSubtitle(onlyOverride, {}, lm)
+    expect(r.verdict).toBe('held')
+    expect(r.translatedSrt).toBeNull()
+    expect(r.gate.verdict).toBe('fail')
+  })
+})

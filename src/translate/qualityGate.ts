@@ -191,6 +191,16 @@ export function evaluateTranslationGate(
     hard.push(`专名系统性漂移(出现≥2次却从未正确落地): ${systematicDrift.map((v) => `${v.term}→期望"${v.expectZh}"(0/${v.occurrences})`).join('; ')}`)
   }
 
+  // 可见文本为空(仅空白/空行)→ 硬拦。ASS override 剥离后可能只剩空白;vacuous 空 cue 不得过闸安装。
+  const emptyVisible: number[] = []
+  for (let i = 0; i < n; i++) {
+    const visible = candidate[i].text.join('').replace(/\s+/g, '')
+    if (!visible) emptyVisible.push(Number(candidate[i].index) || i + 1)
+  }
+  if (emptyVisible.length) {
+    hard.push(`候选 cue 可见文本为空: cue ${emptyVisible.join(', ')}`)
+  }
+
   return {
     verdict: hard.length === 0 ? 'pass' : 'fail',
     cueCount: { source: source.length, candidate: candidate.length },

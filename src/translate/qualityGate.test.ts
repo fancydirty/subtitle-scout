@@ -175,3 +175,29 @@ describe('evaluateTranslationGate — 空术语表', () => {
     expect(r.verdict).toBe('pass')
   })
 })
+
+describe('evaluateTranslationGate — 空可见文本硬拦', () => {
+  it('FAIL:候选 cue 可见文本为空(仅空白)→ hard violation,不可 vacuous pass', () => {
+    const src: SrtCue[] = [
+      { index: '1', timing: '00:00:01,000 --> 00:00:03,000', text: ['Hello'] },
+    ]
+    const cand: SrtCue[] = [
+      { index: '1', timing: '00:00:01,000 --> 00:00:03,000', text: ['   '] },
+    ]
+    const r = evaluateTranslationGate(src, cand, [])
+    expect(r.verdict).toBe('fail')
+    expect(r.hardViolations.some((h) => h.includes('空') || h.includes('可见'))).toBe(true)
+  })
+
+  it('FAIL:候选 cue text 全空数组 → hard violation', () => {
+    const src: SrtCue[] = [
+      { index: '1', timing: '00:00:01,000 --> 00:00:03,000', text: ['Hello'] },
+    ]
+    const cand: SrtCue[] = [
+      { index: '1', timing: '00:00:01,000 --> 00:00:03,000', text: [] },
+    ]
+    const r = evaluateTranslationGate(src, cand, [])
+    expect(r.verdict).toBe('fail')
+    expect(r.hardViolations.length).toBeGreaterThan(0)
+  })
+})

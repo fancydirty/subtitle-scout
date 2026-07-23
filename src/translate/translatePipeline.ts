@@ -107,6 +107,17 @@ function mergeGlossary(prior: GlossaryTerm[], fresh: GlossaryTerm[]): GlossaryTe
   return out
 }
 
+/** ASS/SSA override 块(`{\an8}` / `{\blur4\pos(1,2)}`)。要求 `{` 后紧跟 `\`,普通 `{literal}` 保留。 */
+const ASS_OVERRIDE = /\{\\[^}]*\}/g
+
+/** 译后、闸前:剥离 ASS override,保留条数/时轴/序号。 */
+function stripAssOverrides(cues: SrtCue[]): SrtCue[] {
+  return cues.map((c) => ({
+    ...c,
+    text: c.text.map((line) => line.replace(ASS_OVERRIDE, '')),
+  }))
+}
+
 export async function translateSubtitle(
   sourceSrt: string,
   ctx: TranslationContext,
@@ -168,8 +179,11 @@ export async function translateSubtitle(
     }
   }
 
+  // 译后卫生:剥离 ASS/SSA override(`{\an8}` 等)再进闸/critic/序列化。普通 `{literal}` 不动。
+  const sanitized = stripAssOverrides(translated)
+
   // ⑦ fail-closed 确定性质量闸:LM 失败 或 闸不过 → held(不落盘,且不浪费一次 critic LLM 调用)。
-  const gate = evaluateTranslationGate(source, translated, glossary, opts.gate)
+  const gate = evaluateTranslationGate(source, sanitized, glossary, opts.gate)
   if (failed || gate.verdict === 'fail') {
     return {
       verdict: 'held',
@@ -187,7 +201,7 @@ export async function translateSubtitle(
   let critic: CriticVerdict | undefined
   if (opts.critic) {
     try {
-      critic = await opts.critic.review(source, translated, glossary, ctx.sourceLangName)
+      critic = await opts.critic.review(source, sanitized, glossary, ctx.sourceLangName)
     } catch {
       critic = { ok: true, issues: [] }
     }
@@ -202,5 +216,5 @@ export async function translateSubtitle(
       }
     }
   }
-  return { verdict: 'installed', translatedSrt: serializeSrtCues(translated), glossary, gate, critic }
+  return { verdict: 'installed', translatedSrt: serializeSrtCues(sanitized), glossary, gate, critic }
 }
