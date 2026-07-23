@@ -313,3 +313,30 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - 《》屏幕字标记偶有不配对残留(闸不查,critic 层)
 - 跨 job 术语 canonical 方差(东国/奥斯塔尼亚)——剧级术语持久化是 P2 需求证据
 - 串行全量 **1997 passed / 1 skipped**;未 push 未部署(daemon 仍 legacy)
+
+## 战役 10:Translate Workspace Agent P2(2026-07-23 深夜)
+
+**目标**:P1 验收暴露的三项真实需求 + GC。
+
+### P2.1 剧级术语持久化
+
+- db migration v23: `translate_glossaries (series_key, terms_json, updated_at)`
+- freeze_glossary 合并 prior(同剧历史,prior 胜);install 成功回写
+- **live 验收**:SPY jobA(120c) seed → jobB(同剧不同集 120c) → jobB 术语表继承 jobA canonical
+  (ロイド→洛伊德·**佛杰** 不是重新决定的福杰;东国/荆棘公主等跨 job 稳定) ✅
+
+### P2.2a 确定性括号闸
+
+- run_structural_gate 硬违规:《》「」【】每行左右数必须相等
+- P1 验收残留《呼……》现被拦下
+
+### P2.2b run_critic 工具 + P2.3 wiki + P2.4 GC
+
+- run_critic (可选 deps.critic) 写 work/critic.md
+- fetch_wiki_context (zh.wikipedia API) 写 context/wiki.md
+- gcOrphans 扫 `.subtitle-staging` + `.subtitle-translate`
+
+### 门禁
+
+- 串行全量 **2003 passed / 1 skipped**,tsc+build 净
+- HEAD `ac4bdaf`,本地 main,未 push 未部署
