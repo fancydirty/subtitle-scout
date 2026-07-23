@@ -8,6 +8,7 @@ import { makeTranslateWorkspaceTools } from './translateWorker.tools.js'
 import { TranslateReportSchema, type TranslateReport, type TranslateTask } from './translateWorker.schemas.js'
 import { ensureWorkspaceLayout } from '../translate/workspace/paths.js'
 import type { ResolveSourceDeps } from '../translate/workspace/resolveSource.js'
+import type { GlossaryTerm } from '../translate/workspace/types.js'
 
 export interface TranslateWorkerDeps {
   model: LanguageModel
@@ -17,6 +18,11 @@ export interface TranslateWorkerDeps {
   videoDurationSec?: (videoPath: string) => Promise<number | null>
   /** Legacy parity: existing Chinese sidecar path, or null (already-covered short-circuit). */
   readExistingChineseSidecar?: (videoPath: string) => string | null
+  /** P2: 剧级术语持久化(v2/glossaryRepo 的真实现由 CLI/daemon 接线)。 */
+  glossaryStore?: {
+    load: (seriesKey: string) => GlossaryTerm[]
+    save: (seriesKey: string, terms: GlossaryTerm[], updatedAt: number) => void
+  }
   fetchTmdbContext?: (task: TranslateTask) => Promise<string | null>
   fetchSeriesTargetSubs?: (task: TranslateTask) => Promise<string | null>
   /** @default 500 — windowed protocol needs room; exhaustion maps to held, not a crash. */
@@ -42,6 +48,7 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
         install: deps.install,
         videoDurationSec: deps.videoDurationSec,
         readExistingChineseSidecar: deps.readExistingChineseSidecar,
+        glossaryStore: deps.glossaryStore,
         fetchTmdbContext: deps.fetchTmdbContext,
         fetchSeriesTargetSubs: deps.fetchSeriesTargetSubs,
       }),

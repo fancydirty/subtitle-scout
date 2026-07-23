@@ -307,6 +307,13 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
     if (!columns.has('llm_calls')) db.exec('ALTER TABLE runs ADD COLUMN llm_calls INTEGER')
     if (!columns.has('assrt_calls')) db.exec('ALTER TABLE runs ADD COLUMN assrt_calls INTEGER')
   },
+  // v23（剧级术语持久化 P2）：跨 job 继承冻结术语表，消除同剧 canonical 方差（验收实证：
+  // 同一模型同剧两 run 选出 东国/奥斯塔尼亚）。纯 CREATE TABLE，幂等 IF NOT EXISTS。
+  `CREATE TABLE IF NOT EXISTS translate_glossaries (
+    series_key TEXT PRIMARY KEY,
+    terms_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
 ]
 
 export function openDb(path: string): ScoutDb {

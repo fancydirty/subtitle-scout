@@ -161,9 +161,20 @@ export function makeTranslateAgentDeps(
   opts: {
     fetchTmdbContext?: TranslateWorkerDeps['fetchTmdbContext']
     fetchSeriesTargetSubs?: TranslateWorkerDeps['fetchSeriesTargetSubs']
+    db?: import('../v2/db.js').ScoutDb
   } = {},
 ): TranslateWorkerDeps {
   const model = makeModel(cfg)
+  const glossaryStore = opts.db
+    ? (() => {
+        const { GlossaryRepo } = require('../v2/glossaryRepo.js') as typeof import('../v2/glossaryRepo.js')
+        const repo = new GlossaryRepo(opts.db)
+        return {
+          load: (k: string) => repo.load(k),
+          save: (k: string, t: import('../translate/workspace/types.js').GlossaryTerm[], at: number) => repo.save(k, t, at),
+        }
+      })()
+    : undefined
   return {
     model,
     resolveDeps: {
@@ -174,6 +185,7 @@ export function makeTranslateAgentDeps(
     install: (v, content) => writeSidecarAtomic(v, content),
     videoDurationSec: (v) => probeDurationSec(v),
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
+    glossaryStore,
     fetchTmdbContext: opts.fetchTmdbContext,
     fetchSeriesTargetSubs: opts.fetchSeriesTargetSubs ?? ((task: TranslateTask) => Promise.resolve(readSeriesTargetSubs(task.videoPath))),
     timeoutMs: translateTimeoutMs() * 3, // 整集工作台(多窗),比单批宽

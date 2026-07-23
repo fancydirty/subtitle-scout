@@ -7,6 +7,7 @@ import { evaluateTranslationGate, parseSrtCues } from '../translate/qualityGate.
 import { materializeAgentView } from '../translate/workspace/materialize.js'
 import { mergeBilingualToSrt } from '../translate/workspace/merge.js'
 import { resolveTranslateSource, type ResolveSourceDeps } from '../translate/workspace/resolveSource.js'
+import { seriesKeyOf } from '../v2/glossaryRepo.js'
 import type { BilingualRow, GlossaryTerm, WorkspacePaths } from '../translate/workspace/types.js'
 import type { TranslateTask } from './translateWorker.schemas.js'
 
@@ -25,6 +26,11 @@ export interface TranslateToolDeps {
   /** Optional context enrichers (P1: TMDB + same-series target-language subs). */
   fetchTmdbContext?: (task: TranslateTask) => Promise<string | null>
   fetchSeriesTargetSubs?: (task: TranslateTask) => Promise<string | null>
+  /** P2: 剧级术语持久化——freeze 合并 prior(prior 胜),install 成功后回写。 */
+  glossaryStore?: {
+    load: (seriesKey: string) => GlossaryTerm[]
+    save: (seriesKey: string, terms: GlossaryTerm[], updatedAt: number) => void
+  }
 }
 
 // ---------- jsonl helpers ----------
@@ -272,9 +278,25 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
             `original script: ${bad.map((t) => `${t.src}→"${t.zh}"`).slice(0, 8).join(', ')}`,
         }
       }
-      writeFileSync(paths.glossaryPath, JSON.stringify(terms, null, 2))
+      // P2 剧级持久化:prior(同剧历史冻结)优先,按 src 去重——canonical 跨 job 稳定,
+      // 新集只需补新术语,不重决旧译名(消除同剧 东国/奥斯塔尼亚 方差)。
+      const prior = deps.glossaryStore?.load(seriesKeyOf(task.itemId)) ?? []
+      const seen = new Set<string>()
+      const merged: GlossaryTerm[] = []
+      for (const t of [...prior, ...terms]) {
+        const k = t.src.trim().toLowerCase()
+        if (!k || seen.has(k)) continue
+        seen.add(k)
+        merged.push(t)
+      }
+      writeFileSync(paths.glossaryPath, JSON.stringify(merged, null, 2))
       writeFileSync(paths.glossaryFrozenPath, 'frozen\n')
-      return { ok: true, count: terms.length, keepOriginal: terms.filter((t) => t.keepOriginal).length }
+      return {
+        ok: true,
+        count: merged.length,
+        inherited: prior.length,
+        keepOriginal: merged.filter((t) => t.keepOriginal).length,
+      }
     },
   })
 
@@ -489,6 +511,12 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       }
       try {
         const sidecarPath = deps.install(task.videoPath, readFileSync(paths.targetSrtPath, 'utf8'))
+        // P2:安装成功 → 回写剧级术语表(下一集/下一次 job 继承同一 canonical)。
+        if (deps.glossaryStore && existsSync(paths.glossaryPath)) {
+          try {
+            deps.glossaryStore.save(seriesKeyOf(task.itemId), readTerms(paths), Date.now())
+          } catch { /* 持久化失败不反噬已成功的安装 */ }
+        }
         return { ok: true, sidecarPath }
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) }

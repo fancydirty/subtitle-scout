@@ -245,6 +245,35 @@ describe('translate workspace tools', () => {
     expect(existsSync(paths.canonicalSourcePath)).toBe(false)
   })
 
+  it('P2: freeze merges prior series glossary (prior wins), install persists merged terms', async () => {
+    const saved: { key: string; terms: unknown[] }[] = []
+    const deps = baseDeps({
+      glossaryStore: {
+        load: (key) => key === 'tmdb:1' ? [{ src: 'Nico', zh: '妮可', note: '官方' }] : [],
+        save: (key, terms) => { saved.push({ key, terms }) },
+      },
+    })
+    const tools = makeTranslateWorkspaceTools(deps)
+    const r = await call(tools.freeze_glossary, {
+      terms: [{ src: 'Nico', zh: '尼可' }, { src: 'Moi', zh: '莫伊' }],
+    })
+    expect(r).toMatchObject({ ok: true, count: 2, inherited: 1 })
+    const merged = JSON.parse(readFileSync(paths.glossaryPath, 'utf8')) as { src: string; zh: string }[]
+    expect(merged.find((t) => t.src === 'Nico')?.zh).toBe('妮可') // prior 胜,不被新值覆盖
+    expect(merged.find((t) => t.src === 'Moi')?.zh).toBe('莫伊')  // 新术语补入
+
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.update_rows, { rows: [{ id: '1', tgt: '你好妮可', status: 'ok' }, { id: '2', tgt: '再见', status: 'ok' }] })
+    await call(tools.merge_to_srt)
+    expect((await call(tools.run_structural_gate)).verdict).toBe('pass')
+    const i = await call(tools.install_sidecar)
+    expect(i).toMatchObject({ ok: true })
+    expect(saved).toHaveLength(1)
+    expect(saved[0].key).toBe('tmdb:1')
+    expect(saved[0].terms).toHaveLength(2)
+  })
+
   it('get_window returns clean cues without timing', async () => {
     const tools = makeTranslateWorkspaceTools(baseDeps())
     await call(tools.resolve_source)
