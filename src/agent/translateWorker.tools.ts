@@ -2,7 +2,7 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { evaluateTranslationGate, parseSrtCues } from '../translate/qualityGate.js'
 import { materializeAgentView } from '../translate/workspace/materialize.js'
 import { mergeBilingualToSrt } from '../translate/workspace/merge.js'
@@ -30,6 +30,10 @@ export interface TranslateToolDeps {
   glossaryStore?: {
     load: (seriesKey: string) => GlossaryTerm[]
     save: (seriesKey: string, terms: GlossaryTerm[], updatedAt: number) => void
+  }
+  /** P2.2b: run_critic 工具可选接线(legacy translateCritic)。 */
+  critic?: {
+    evaluate: (src: string[], tgt: string[], glossary: Array<{ en: string; zh: string }>) => Promise<string>
   }
 }
 
@@ -542,6 +546,62 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     },
   })
 
+  const run_critic = tool({
+    description:
+      'Run LLM quality critic over a window of bilingual rows ([fromId, toId]). Writes work/critic.md ' +
+      'with feedback. Model should read critic.md, decide whether to fix flagged rows (via update_row ' +
+      'which clears the gate marker), then re-run gate, or accept and finalize. Only available if deps.critic wired.',
+    inputSchema: z.object({
+      fromId: z.string().optional(),
+      toId: z.string().optional(),
+    }),
+    execute: async ({ fromId, toId }) => {
+      if (!deps.critic) return { error: 'critic not available (TRANSLATE_CRITIC=off or unwired)' }
+      const rows = readRows(paths)
+      if (rows.length === 0) return { error: 'no bilingual rows to critique' }
+      const start = fromId ? rows.findIndex((r) => r.id === fromId) : 0
+      const end = toId ? rows.findIndex((r) => r.id === toId) : rows.length - 1
+      if (start < 0 || end < 0 || start > end) {
+        return { error: `invalid window: fromId=${fromId} toId=${toId}` }
+      }
+      const window = rows.slice(start, end + 1)
+      const terms = readTerms(paths).map((t) => ({ en: t.src, zh: t.zh }))
+      try {
+        const feedback = await deps.critic.evaluate(
+          window.map((r) => r.src), window.map((r) => r.tgt), terms,
+        )
+        writeFileSync(join(paths.workDir, 'critic.md'), `# Translation Quality Critique\n\n${feedback}\n`)
+        return { ok: true, windowSize: window.length, feedbackChars: feedback.length }
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  })
+
+  const fetch_wiki_context = tool({
+    description:
+      'Fetch Wikipedia context (zh.wikipedia.org API) for a title/topic. Writes context/wiki.md. ' +
+      'Network-dependent; failure returns ok:false without throwing.',
+    inputSchema: z.object({ query: z.string().min(1).max(200) }),
+    execute: async ({ query }) => {
+      try {
+        const url = `https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`
+        const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+        if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` }
+        const data = await res.json() as { query?: { search?: Array<{ title?: string; snippet?: string }> } }
+        const hits = data.query?.search ?? []
+        if (hits.length === 0) return { ok: false, reason: 'no results' }
+        const md = hits.slice(0, 3).map((h, i) =>
+          `## ${i + 1}. ${h.title ?? 'Untitled'}\n${(h.snippet ?? '').replace(/<[^>]*>/g, '')}`,
+        ).join('\n\n')
+        writeFileSync(join(paths.contextDir, 'wiki.md'), `# Wikipedia: ${query}\n\n${md}\n`)
+        return { ok: true, hits: hits.length, charsWritten: md.length }
+      } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  })
+
   return {
     resolve_source,
     materialize_agent_view,
@@ -557,6 +617,8 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     update_rows,
     get_window,
     update_summary,
+    run_critic,
+    fetch_wiki_context,
     run_structural_gate,
     merge_to_srt,
     install_sidecar,
