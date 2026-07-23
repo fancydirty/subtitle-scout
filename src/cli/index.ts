@@ -16,7 +16,7 @@ import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
 import { AuthService } from '../dashboard/auth.js'
 import { makeModel } from '../agent/llm.js'
-import { cmdTranslateItem, tryAutoTranslateCfg, makeTranslateItemDeps } from './translateItemCommand.js'
+import { cmdTranslateItem, tryAutoTranslateCfg, makeDaemonTranslateRunItem } from './translateItemCommand.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { dispatchTranslateTasks, runTranslateWorkerTask } from '../v2/translateWorkerTask.js'
 import { translateItem } from '../translate/translateItem.js'
@@ -460,17 +460,16 @@ async function cmdWatch() {
         if (!cfg) {
           jobs.completeError(job.id, 'translate 未启用:需配 TRANSLATE_MODEL/TRANSLATE_BASE_URL/TRANSLATE_API_KEY 三件套', Date.now())
         } else {
-          // F1:源语言外挂搜索腿(零合格内嵌轨时按 origin_lang 搜外挂英字直译)。adapters 每次
-          // claim 现建(同 find_subtitle 分支口径);组装与手动 CLI 共用 makeRealFetchSourceSub
-          // 防漂移。translateItem 只在 probe 零合格轨时才调它,有轨候选不多花一次搜索/下载。
+          // P3:translate 分支从 legacy translateItem 切到 workspace agent。库内定位身份
+          // (origin_lang/itemId) → 工作台翻译;glossaryStore/critic/TMDB 与手动 CLI 同门接线。
+          // adapters 每次 claim 现建(同 find_subtitle 分支口径),fetchSourceSub 防漂移共用。
           const adapters = await buildAdapters(emitProviderEvent)
           const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
-          // F2:locate 喂 origin_lang → prompt 源语言名(日/英);与手动 CLI 共用 makeDbLocate。
-          const { makeDbLocate } = await import('./fetchSourceSub.js')
-          const locate = makeDbLocate(db)
-          const itemDeps = makeTranslateItemDeps(cfg, fetchSourceSub, (p) => locate(p)?.originLang ?? null)
+          const runItem = makeDaemonTranslateRunItem({
+            db, cfg, fetchSourceSub, tmdb, roots: currentRoots,
+          })
           await runTranslateWorkerTask(job, {
-            runItem: (videoPath) => translateItem(videoPath, itemDeps),
+            runItem,
             requestIngest: () => {
               void ingestTrigger().catch((e) => log(`warn: translate 后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
             },

@@ -25,17 +25,24 @@ export interface TranslateWorkerDeps {
   }
   fetchTmdbContext?: (task: TranslateTask) => Promise<string | null>
   fetchSeriesTargetSubs?: (task: TranslateTask) => Promise<string | null>
+  /** P2.2b critic 适配器(可选;TRANSLATE_CRITIC=off 时缺席)。 */
+  critic?: {
+    evaluate: (src: string[], tgt: string[], glossary: Array<{ en: string; zh: string }>) => Promise<string>
+  }
   /** @default 500 — windowed protocol needs room; exhaustion maps to held, not a crash. */
   stepCap?: number
   /** @default 900_000 */
   timeoutMs?: number
 }
 
+export type TranslateRunReport = TranslateReport & { llmCalls?: number }
+
 /** Assembles one translate workspace run. The model is the translator: it reads cleaned
  *  documents on the job workspace and writes tgt rows KV-style; final SRT comes only from
- *  the deterministic merge tool. Every dependency is injected — no global state. */
+ *  the deterministic merge tool. Every dependency is injected — no global state.
+ *  The returned report carries llmCalls = agent loop steps (runs 账本口径:尝试边界的模型调用)。 */
 export function makeTranslateWorker(deps: TranslateWorkerDeps) {
-  return async function runTranslateTask(task: TranslateTask): Promise<TranslateReport> {
+  return async function runTranslateTask(task: TranslateTask): Promise<TranslateRunReport> {
     const stagingBase = task.stagingRoot ?? task.mediaRoot
     const paths = ensureWorkspaceLayout(stagingBase, task.jobId)
 
@@ -51,6 +58,7 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
         glossaryStore: deps.glossaryStore,
         fetchTmdbContext: deps.fetchTmdbContext,
         fetchSeriesTargetSubs: deps.fetchSeriesTargetSubs,
+        critic: deps.critic,
       }),
     }
 
@@ -90,13 +98,13 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
         abortSignal: AbortSignal.timeout(deps.timeoutMs ?? 900_000),
       })
       console.error(`[translate-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
-      return readFinalized()
+      return { ...readFinalized(), llmCalls: result.steps.length }
     } catch (e) {
       // 模型放弃/步数耗尽/abort 等未 finalize 的情形:诚实 held(fail-closed),绝不让异常
       // 以未捕获形态炸出调用方——与 find-subtitle worker-exhaustion 语义对齐。
       const reason = e instanceof Error ? e.message : String(e)
       console.error(`[translate-worker] job ${task.jobId} ended without a clean finalize: ${reason}`)
-      return { status: 'held', reason: `worker exhausted: ${reason.slice(0, 200)}`, sourceRef: null, sidecarPath: null }
+      return { status: 'held', reason: `worker exhausted: ${reason.slice(0, 200)}`, sourceRef: null, sidecarPath: null, llmCalls: 0 }
     }
   }
 }

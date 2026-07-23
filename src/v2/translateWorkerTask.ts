@@ -78,8 +78,9 @@ export function dispatchTranslateTasks(db: ScoutDb, jobs: JobsRepo, now: () => n
 }
 
 export interface TranslateWorkerTaskDeps {
-  /** 端到端翻译一个视频(translateItem 预绑定真实 deps)。 */
-  runItem: (videoPath: string) => Promise<Pick<TranslateItemResult, 'status' | 'sidecarPath' | 'reason' | 'sourceRef'> & { llmCalls?: number }>
+  /** 端到端翻译一个视频(translateItem 预绑定真实 deps;P3 起也可为 workspace agent 报告,
+   *  agent 状态集多一个 'probe-failed'——else 分支同样走 completeError,语义对齐)。 */
+  runItem: (videoPath: string) => Promise<Pick<TranslateItemResult, 'sidecarPath' | 'reason' | 'sourceRef'> & { status: TranslateItemResult['status'] | 'probe-failed'; llmCalls?: number }>
   /** installed 后踢一脚 ingest,让新 sidecar 尽快记账成 covered(镜像 rescue 的先例)。 */
   requestIngest?: () => void
   runs?: Pick<RunsRepo, 'insert'>

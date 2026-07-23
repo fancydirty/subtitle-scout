@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { translateTimeoutMs, sourceLangDisplayName, sidecarPathFor, readSeriesTargetSubs, locateTranslateIdentity } from './translateItemCommand.js'
+import { translateTimeoutMs, sourceLangDisplayName, sidecarPathFor, readSeriesTargetSubs, locateTranslateIdentity, makeDaemonTranslateRunItem } from './translateItemCommand.js'
 import { openDb } from '../v2/db.js'
 
 // 真机逼出(F1 验收):34-cue 大批经慢端点 120s(LLM_TIMEOUT_MS)必然超时 → 整档 false-held。
@@ -96,6 +96,60 @@ describe('locateTranslateIdentity — db 身份定位', () => {
       itemId: 'tmdb:7', title: 'Some Film', originLang: 'en', tmdbId: '7', mediaType: 'movie',
     })
     expect(locateTranslateIdentity(db, '/nowhere.mkv')).toBeNull()
+    db.close()
+  })
+})
+
+describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
+  function seedDb(): ReturnType<typeof openDb> {
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO series (id, name, origin_lang) VALUES ('tmdb:261868', 'Witch Watch', 'ja')`).run()
+    db.prepare(`INSERT INTO episodes (id, series_id, season, episode, path, sub_status, updated_at)
+                VALUES ('tmdb:261868/s1e2', 'tmdb:261868', 1, 2, '/media/tv/ww/e02.mkv', 'unavailable', 0)`).run()
+    return db
+  }
+
+  it('库外路径 → no-source(llmCalls=0),不调 agent', async () => {
+    const db = seedDb()
+    let agentCalls = 0
+    const runItem = makeDaemonTranslateRunItem({
+      db,
+      cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+      roots: () => [],
+      agentRunner: (() => {
+        return async () => { agentCalls++; return { status: 'installed', reason: null, sourceRef: null, sidecarPath: '/x.srt', llmCalls: 9 } as never }
+      })() as never,
+    })
+    const r = await runItem('/nowhere/x.mkv')
+    expect(r).toMatchObject({ status: 'no-source', llmCalls: 0 })
+    expect(agentCalls).toBe(0)
+    db.close()
+  })
+
+  it('库内身份 → 构造 agent 任务(itemId/originLang/stagingRoot=配置根),报告归一化', async () => {
+    const db = seedDb()
+    let seenTask: Record<string, unknown> | null = null
+    const runItem = makeDaemonTranslateRunItem({
+      db,
+      cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+      roots: () => ['/media/tv'],
+      agentRunner: (() => {
+        return async (task: Record<string, unknown>) => {
+          seenTask = task
+          return { status: 'installed', reason: null, sourceRef: 'fallback:embedded:s:0', sidecarPath: '/media/tv/ww/e02.zh-Hans.srt', llmCalls: 9 } as never
+        }
+      })() as never,
+    })
+    const r = await runItem('/media/tv/ww/e02.mkv')
+    expect(seenTask).toMatchObject({
+      itemId: 'tmdb:261868/s1e2', originLang: 'ja', title: 'Witch Watch',
+      mediaRoot: '/media/tv/ww', stagingRoot: '/media/tv',
+    })
+    expect(r).toMatchObject({
+      status: 'installed', sourceRef: 'fallback:embedded:s:0',
+      sidecarPath: '/media/tv/ww/e02.zh-Hans.srt', llmCalls: 9,
+    })
+    expect(r.reason).toBeUndefined() // null → undefined 归一化
     db.close()
   })
 })

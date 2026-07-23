@@ -162,6 +162,8 @@ export function makeTranslateAgentDeps(
     fetchTmdbContext?: TranslateWorkerDeps['fetchTmdbContext']
     fetchSeriesTargetSubs?: TranslateWorkerDeps['fetchSeriesTargetSubs']
     db?: import('../v2/db.js').ScoutDb
+    /** critic 开关:默认开(TRANSLATE_CRITIC=off 关);显式 false 强制关。 */
+    critic?: boolean
   } = {},
 ): TranslateWorkerDeps {
   const model = makeModel(cfg)
@@ -172,6 +174,24 @@ export function makeTranslateAgentDeps(
         return {
           load: (k: string) => repo.load(k),
           save: (k: string, t: import('../translate/workspace/types.js').GlossaryTerm[], at: number) => repo.save(k, t, at),
+        }
+      })()
+    : undefined
+  const criticOn = opts.critic ?? (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
+  const critic: TranslateWorkerDeps['critic'] = criticOn
+    ? (() => {
+        const criticModel = process.env.TRANSLATE_CRITIC_MODEL ? makeModel({ ...cfg, model: process.env.TRANSLATE_CRITIC_MODEL }) : model
+        const impl = makeTranslationCritic(criticModel, { timeoutMs: translateTimeoutMs() })
+        return {
+          evaluate: async (src: string[], tgt: string[], glossary: Array<{ en: string; zh: string }>) => {
+            const mk = (text: string, i: number) => ({ index: String(i + 1), timing: '00:00:00,000 --> 00:00:01,000', text: text.split('\n') })
+            const verdict = await impl.review(src.map(mk), tgt.map(mk), glossary)
+            if (verdict.ok) return 'PASS: no major issues found.'
+            return [
+              'FAIL: major issues detected:',
+              ...verdict.issues.map((i) => `- [${i.severity}] cue ${i.cueIndex} (${i.kind}): ${i.note}`),
+            ].join('\n')
+          },
         }
       })()
     : undefined
@@ -186,6 +206,7 @@ export function makeTranslateAgentDeps(
     videoDurationSec: (v) => probeDurationSec(v),
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
     glossaryStore,
+    critic,
     fetchTmdbContext: opts.fetchTmdbContext,
     fetchSeriesTargetSubs: opts.fetchSeriesTargetSubs ?? ((task: TranslateTask) => Promise.resolve(readSeriesTargetSubs(task.videoPath))),
     timeoutMs: translateTimeoutMs() * 3, // 整集工作台(多窗),比单批宽
@@ -212,6 +233,72 @@ export function locateTranslateIdentity(
     return { itemId: mv.id, title: mv.name, originLang: mv.origin_lang, tmdbId, mediaType: 'movie' }
   }
   return null
+}
+
+export type DaemonTranslateRunItemResult = {
+  status: import('../translate/translateItem.js').TranslateItemResult['status'] | 'probe-failed'
+  reason?: string
+  sourceRef?: string
+  sidecarPath?: string
+  llmCalls?: number
+}
+
+/** P3:daemon translate 分支的 runItem——库内定位身份 → workspace agent。与手动 CLI 共用
+ *  makeTranslateAgentDeps(同一份 cfg/glossaryStore/critic),防两处组装漂移。
+ *  agentRunner 可注入(测试);生产默认 makeTranslateWorker(makeTranslateAgentDeps(...))。 */
+export function makeDaemonTranslateRunItem(opts: {
+  db: import('../v2/db.js').ScoutDb
+  cfg: { baseUrl: string; apiKey: string; model: string }
+  fetchSourceSub?: import('../translate/workspace/resolveSource.js').ResolveSourceDeps['fetchSourceSub']
+  tmdb?: import('../adapters/providers/tmdb.js').TmdbClient | null
+  roots: () => string[]
+  agentRunner?: ReturnType<typeof makeTranslateWorker>
+}): (videoPath: string) => Promise<DaemonTranslateRunItemResult> {
+  return async (videoPath) => {
+    const identity = locateTranslateIdentity(opts.db, videoPath)
+    if (!identity) {
+      return {
+        status: 'no-source' as const,
+        reason: `库内定位失败(${videoPath} 不在 episodes/movies)——agent 单跳选源需要 origin_lang`,
+        sourceRef: undefined, sidecarPath: undefined, llmCalls: 0,
+      }
+    }
+    let fetchTmdbContext: TranslateWorkerDeps['fetchTmdbContext']
+    if (opts.tmdb && identity.tmdbId && identity.mediaType) {
+      const tmdb = opts.tmdb
+      const tmdbId = identity.tmdbId
+      const mediaType = identity.mediaType
+      fetchTmdbContext = async () => {
+        try {
+          const d = await tmdb.getDetails(mediaType, tmdbId)
+          if (!d) return null
+          return [`# ${identity.title}`, d.year ? `year: ${d.year}` : null, d.overview ?? ''].filter(Boolean).join('\n')
+        } catch {
+          return null
+        }
+      }
+    }
+    const runner = opts.agentRunner ?? makeTranslateWorker(
+      makeTranslateAgentDeps(opts.cfg, opts.fetchSourceSub, { db: opts.db, fetchTmdbContext }),
+    )
+    const videoDir = dirname(videoPath)
+    const report = await runner({
+      jobId: `daemon-${Date.now()}`,
+      videoPath,
+      itemId: identity.itemId,
+      originLang: identity.originLang,
+      title: identity.title,
+      mediaRoot: videoDir,
+      stagingRoot: containingRoot(videoDir, opts.roots()) ?? videoDir,
+    })
+    // agent 报告的 nullable(zod) → runTranslateWorkerTask 的 optional 字段口径。
+    return {
+      ...report,
+      reason: report.reason ?? undefined,
+      sourceRef: report.sourceRef ?? undefined,
+      sidecarPath: report.sidecarPath ?? undefined,
+    }
+  }
 }
 
 export async function cmdTranslateItem(videoPath: string): Promise<void> {
