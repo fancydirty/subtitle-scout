@@ -88,6 +88,8 @@ export interface TranslationResult {
   /** 跑了 critic 才有(确定性闸过 + 提供了 critic 时)。 */
   critic?: CriticVerdict
   reason?: string
+  /** 尝试边界计数:glossary / 每 batch 尝试(含重试) / critic,含失败/抛错。 */
+  llmCalls: number
 }
 
 /** 默认重试间隔:第 1 次 3s、第 2 次 5s(429/网关抖动需要喘息;背靠背秒发三次会把
@@ -125,6 +127,7 @@ export async function translateSubtitle(
   opts: TranslateOptions = {},
 ): Promise<TranslationResult> {
   const source = parseSrtCues(sourceSrt)
+  let llmCalls = 0
 
   // 审计🟡:零 cue 是 vacuous pass 死角——source=candidate=[],术语符合率缺省 1、零硬违规,
   // 会被判 installed 并写出空 .zh-Hans.srt(成功路径的假安装)。fetch 腿已有 parse 闸,内嵌腿
@@ -136,12 +139,14 @@ export async function translateSubtitle(
       glossary: [],
       gate: evaluateTranslationGate([], [], [], opts.gate),
       reason: '源字幕解析出 0 条 cue(无可译内容,拒绝安装空字幕)',
+      llmCalls: 0,
     }
   }
 
   // ④ 术语表先行:持久化的 prior + 新建,合并去重(prior 胜)。buildGlossary 失败降级为仅用 prior。
   let glossary: GlossaryTerm[]
   try {
+    llmCalls++
     const built = await lm.buildGlossary(sourceSrt, ctx)
     glossary = mergeGlossary(ctx.priorGlossary ?? [], built)
   } catch {
@@ -163,6 +168,7 @@ export async function translateSubtitle(
     for (let attempt = 0; attempt < maxAttempts && !ok; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, retryDelay(attempt)))
       try {
+        llmCalls++
         const { cues, summary } = await lm.translateBatch(
           batch, glossary, rollingSummary, ctx.sourceLangName,
         )
@@ -193,6 +199,7 @@ export async function translateSubtitle(
       reason: failed
         ? `LM 翻译失败(批次抛错): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
         : gate.hardViolations.join('; '),
+      llmCalls,
     }
   }
 
@@ -201,6 +208,7 @@ export async function translateSubtitle(
   let critic: CriticVerdict | undefined
   if (opts.critic) {
     try {
+      llmCalls++
       critic = await opts.critic.review(source, sanitized, glossary, ctx.sourceLangName)
     } catch {
       critic = { ok: true, issues: [] }
@@ -213,8 +221,9 @@ export async function translateSubtitle(
         gate,
         critic,
         reason: 'critic 判不合格: ' + critic.issues.filter((i) => i.severity === 'major').map((i) => i.note).join('; '),
+        llmCalls,
       }
     }
   }
-  return { verdict: 'installed', translatedSrt: serializeSrtCues(sanitized), glossary, gate, critic }
+  return { verdict: 'installed', translatedSrt: serializeSrtCues(sanitized), glossary, gate, critic, llmCalls }
 }

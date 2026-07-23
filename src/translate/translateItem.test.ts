@@ -307,6 +307,7 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
       translatedSrt: longTranslated,
       glossary: [],
       gate: passGate,
+      llmCalls: 2,
     } satisfies TranslationResult)
     let probeCalls = 0
     const written: string[] = []
@@ -401,5 +402,28 @@ describe('translateItem — sourceLangName 从实际轨语言取(审计🔴)', (
     })
     await translateItem('/media/x.mkv', deps)
     expect(seenLang).toBe('日文') // fetch 路径不变
+  })
+})
+
+describe('translateItem — llmCalls 记账', () => {
+  it('预检 duration-mismatch → llmCalls=0(不进 pipeline)', async () => {
+    const longSource = ['1', '00:00:01,000 --> 00:07:03,000', 'Rose enters Pictor.', ''].join('\n')
+    const r = await translateItem('/media/Overflow.S01.mkv', baseDeps({
+      extract: async () => longSource,
+      videoDurationSec: async () => 210,
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(r.llmCalls).toBe(0)
+    expect(translateSubtitleMock).not.toHaveBeenCalled()
+  })
+
+  it('no-source → llmCalls=0', async () => {
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      probe: async () => [],
+      fetchSourceSub: async () => null,
+    }))
+    expect(r.status).toBe('no-source')
+    expect(r.llmCalls).toBe(0)
   })
 })

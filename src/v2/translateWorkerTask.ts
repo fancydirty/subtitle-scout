@@ -79,7 +79,7 @@ export function dispatchTranslateTasks(db: ScoutDb, jobs: JobsRepo, now: () => n
 
 export interface TranslateWorkerTaskDeps {
   /** 端到端翻译一个视频(translateItem 预绑定真实 deps)。 */
-  runItem: (videoPath: string) => Promise<Pick<TranslateItemResult, 'status' | 'sidecarPath' | 'reason' | 'sourceRef'>>
+  runItem: (videoPath: string) => Promise<Pick<TranslateItemResult, 'status' | 'sidecarPath' | 'reason' | 'sourceRef'> & { llmCalls?: number }>
   /** installed 后踢一脚 ingest,让新 sidecar 尽快记账成 covered(镜像 rescue 的先例)。 */
   requestIngest?: () => void
   runs?: Pick<RunsRepo, 'insert'>
@@ -92,9 +92,10 @@ export async function runTranslateWorkerTask(
   now: () => number,
 ): Promise<void> {
   const startedAt = now()
-  const recordRun = (decision: string, detail: string): void => {
+  const recordRun = (decision: string, detail: string, llmCalls = 0): void => {
     deps.runs?.insert({
       jobId: job.id, startedAt, finishedAt: now(), decision, detail: detail.slice(0, 200), journalPath: null,
+      llmCalls,
       traceJson: null,
     })
   }
@@ -111,16 +112,17 @@ export async function runTranslateWorkerTask(
 
   try {
     const r = await deps.runItem(videoPath)
+    const llmCalls = r.llmCalls ?? 0
     if (r.status === 'installed') {
       jobs.completeDone(job.id, now())
       // F1:sourceRef(外挂搜索腿的 'provider:id')进 detail 供追溯;内嵌轨腿无此值,不加尾巴。
-      recordRun('translate:installed', `${videoPath} → ${r.sidecarPath ?? '?'}${r.sourceRef ? ` (source: ${r.sourceRef})` : ''}`)
+      recordRun('translate:installed', `${videoPath} → ${r.sidecarPath ?? '?'}${r.sourceRef ? ` (source: ${r.sourceRef})` : ''}`, llmCalls)
       deps.requestIngest?.()
     } else if (r.status === 'already-covered' || r.status === 'no-embedded' || r.status === 'no-source') {
       // 候选预筛与现场重探之间世界变了(有人装了字幕/轨其实不可抽)——无事可做,不算错。
       // no-source(F1)同口径:外挂搜索穷尽也没有=诚实无源;unavailable 的衰减复查会周期性再给机会。
       jobs.completeDone(job.id, now())
-      recordRun(`translate:${r.status}`, videoPath)
+      recordRun(`translate:${r.status}`, videoPath, llmCalls)
     } else if (r.status === 'held') {
       // held(fail-closed 质量闸拦下):衰减重试(用户裁决 2026-07-22——首周每天,然后隔三差
       // 五,之后周级;模型 nondeterministic 值得再给机会,但绝不热循环烧配额)。
@@ -131,19 +133,19 @@ export async function runTranslateWorkerTask(
       const newSig = heldError.slice(0, 80)
       if (job.last_error !== null && prevSig === newSig) {
         jobs.park(job.id, `translate held 签名重复,转人工审查: ${r.reason ?? ''}`, now())
-        recordRun('translate:held-parked', `${videoPath} 同签名熔断: ${r.reason ?? ''}`)
+        recordRun('translate:held-parked', `${videoPath} 同签名熔断: ${r.reason ?? ''}`, llmCalls)
       } else {
         jobs.completeHeld(job.id, heldError, now())
-        recordRun('translate:held', `${videoPath} ${r.reason ?? ''}`)
+        recordRun('translate:held', `${videoPath} ${r.reason ?? ''}`, llmCalls)
       }
     } else {
       // extract-failed:诚实失败,completeError 走瞬时退避梯。
       jobs.completeError(job.id, `translate ${r.status}: ${r.reason ?? ''}`, now())
-      recordRun(`translate:${r.status}`, `${videoPath} ${r.reason ?? ''}`)
+      recordRun(`translate:${r.status}`, `${videoPath} ${r.reason ?? ''}`, llmCalls)
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     jobs.completeError(job.id, msg, now())
-    recordRun('error', msg)
+    recordRun('error', msg, 0)
   }
 }

@@ -235,6 +235,57 @@ describe('translateSubtitle — 术语表持久化继承(priorGlossary)', () => 
   })
 })
 
+describe('translateSubtitle — llmCalls 记账(尝试边界,含失败)', () => {
+  it('空源 early held → llmCalls=0(不进 glossary/batch)', async () => {
+    const r = await translateSubtitle('not a srt at all\n\nno cues here', {}, makeMockLM())
+    expect(r.verdict).toBe('held')
+    expect(r.llmCalls).toBe(0)
+  })
+
+  it('glossary 成功 + 2 batches → llmCalls=3', async () => {
+    // SOURCE 因 cue2→3 有 14s 间隔默认切成两批
+    const r = await translateSubtitle(SOURCE, {}, makeMockLM(), { gapSec: 2, maxBatch: 40 })
+    expect(r.verdict).toBe('installed')
+    expect(r.llmCalls).toBe(3) // 1 glossary + 2 batches
+  })
+
+  it('glossary 失败 + 1 batch → llmCalls=2(glossary 尝试仍计)', async () => {
+    const oneCue = ['1', '00:00:01,000 --> 00:00:03,000', 'Rose enters Pictor HQ.', ''].join('\n')
+    const lm: TranslationLM = {
+      async buildGlossary() { throw new Error('glossary boom') },
+      async translateBatch(batch) {
+        return {
+          cues: batch.map((c) => ({
+            ...c,
+            text: c.text.map((l) => l.replace(/Rose/ig, '罗斯').replace(/Pictor/ig, '皮克托')),
+          })),
+          summary: '',
+        }
+      },
+    }
+    const r = await translateSubtitle(oneCue, {}, lm)
+    expect(r.verdict).toBe('installed')
+    expect(r.llmCalls).toBe(2)
+  })
+
+  it('一批失败两次后成功 → glossary + 3 batch 尝试 = 4', async () => {
+    const oneCue = ['1', '00:00:01,000 --> 00:00:03,000', 'Rose enters Pictor HQ.', ''].join('\n')
+    const attemptsLog: number[] = []
+    const lm = makeMockLM({ flakyOnBatch: { idx: 0, fails: 2 }, attemptsLog, glossary: [{ en: 'Rose', zh: '罗斯' }, { en: 'Pictor', zh: '皮克托' }] })
+    const r = await translateSubtitle(oneCue, {}, lm, { retryDelayMs: () => 0 })
+    expect(r.verdict).toBe('installed')
+    expect(attemptsLog.length).toBe(3)
+    expect(r.llmCalls).toBe(4) // 1 glossary + 3 batch attempts
+  })
+
+  it('critic 尝试(抛错降级)仍 +1', async () => {
+    const critic: TranslationCritic = { async review() { throw new Error('critic LM down') } }
+    const r = await translateSubtitle(SOURCE, {}, makeMockLM(), { critic, gapSec: 2, maxBatch: 40 })
+    expect(r.verdict).toBe('installed')
+    expect(r.llmCalls).toBe(4) // 1 glossary + 2 batches + 1 critic
+  })
+})
+
 describe('translateSubtitle — ASS/SSA override 剥离(装入 SRT 前)', () => {
   const assSource = [
     '1', '00:00:01,000 --> 00:00:03,000', 'Dialogue {\\an8}Hello', '',

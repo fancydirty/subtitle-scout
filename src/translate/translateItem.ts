@@ -37,6 +37,8 @@ export interface TranslateItemResult {
   gate?: GateResult
   /** F1:源文本来自外挂搜索时的候选标识('provider:id'),进 runs 记录供追溯;内嵌轨腿无此值。 */
   sourceRef?: string
+  /** 尝试边界 LLM 调用次数(含失败);未进 pipeline 的路径为 0。 */
+  llmCalls: number
 }
 
 /** 中文语言标签判定(ffprobe 原始 ISO:chi、zho、zh 前缀、chs、cht)。 */
@@ -55,11 +57,11 @@ function cueEndSec(timing: string): number {
 
 export async function translateItem(videoPath: string, deps: TranslateItemDeps): Promise<TranslateItemResult> {
   const tracks = await deps.probe(videoPath)
-  if (tracks === null) return { status: 'no-embedded' } // 探针不可用:不能判、不猜、不译
+  if (tracks === null) return { status: 'no-embedded', llmCalls: 0 } // 探针不可用:不能判、不猜、不译
 
   // 已覆盖:内嵌有中文文本轨,或已有中文外挂 → 别译。
-  if (tracks.some((t) => !t.isImageBased && isChinese(t.lang))) return { status: 'already-covered' }
-  if (deps.readExistingChineseSidecar(videoPath)) return { status: 'already-covered' }
+  if (tracks.some((t) => !t.isImageBased && isChinese(t.lang))) return { status: 'already-covered', llmCalls: 0 }
+  if (deps.readExistingChineseSidecar(videoPath)) return { status: 'already-covered', llmCalls: 0 }
 
   // 源轨:第一条非中文的文本轨(图形轨不可当文本比对/翻译)。其在字幕流里的位置即 -map 0:s:N 的 N。
   const sourceIdx = tracks.findIndex((t) => !t.isImageBased && !isChinese(t.lang))
@@ -70,15 +72,15 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
   let sourceRef: string | undefined
   if (sourceIdx >= 0) {
     const extracted = await deps.extract(videoPath, sourceIdx)
-    if (extracted === null) return { status: 'extract-failed' }
+    if (extracted === null) return { status: 'extract-failed', llmCalls: 0 }
     src = extracted
   } else if (deps.fetchSourceSub) {
     const fetched = await deps.fetchSourceSub(videoPath)
-    if (fetched === null) return { status: 'no-source' } // 诚实失败:搜索穷尽/都解不出
+    if (fetched === null) return { status: 'no-source', llmCalls: 0 } // 诚实失败:搜索穷尽/都解不出
     src = fetched.srtText
     sourceRef = fetched.sourceRef
   } else {
-    return { status: 'no-embedded' }
+    return { status: 'no-embedded', llmCalls: 0 }
   }
 
   // 源时长预检(Task 3):错源在 LLM 之前 fail-closed。probe 至多一次,结果复用给译后闸。
@@ -96,6 +98,7 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
             status: 'held',
             reason: `duration-mismatch: source ${Math.round(sourceEndSec)}s vs video ${videoSec}s`,
             sourceRef,
+            llmCalls: 0,
           }
         }
       }
@@ -123,11 +126,11 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
       const lastEndSec = cues.length > 0 ? cueEndSec(cues[cues.length - 1].timing) : 0
       const ratio = lastEndSec / videoSec
       if (ratio < 0.85 || ratio > 1.15) {
-        return { status: 'held', reason: `duration-mismatch: source ${Math.round(lastEndSec)}s vs video ${videoSec}s`, gate: result.gate, sourceRef }
+        return { status: 'held', reason: `duration-mismatch: source ${Math.round(lastEndSec)}s vs video ${videoSec}s`, gate: result.gate, sourceRef, llmCalls: result.llmCalls }
       }
     }
     const sidecarPath = deps.writeSidecar(videoPath, result.translatedSrt)
-    return { status: 'installed', sidecarPath, gate: result.gate, sourceRef }
+    return { status: 'installed', sidecarPath, gate: result.gate, sourceRef, llmCalls: result.llmCalls }
   }
-  return { status: 'held', reason: result.reason, gate: result.gate, sourceRef }
+  return { status: 'held', reason: result.reason, gate: result.gate, sourceRef, llmCalls: result.llmCalls }
 }

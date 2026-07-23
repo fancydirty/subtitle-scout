@@ -243,4 +243,32 @@ describe('runTranslateWorkerTask — 结局映射', () => {
     expect(row.error_attempt).toBe(2)
     expect(row.last_error).toContain('CPS')
   })
+
+  it('installed/held insert 带 llmCalls(来自 result)', async () => {
+    for (const [status, llmCalls] of [['installed', 5], ['held', 3]] as const) {
+      db.prepare(`DELETE FROM jobs`).run()
+      const job = makeJob('/media/x.mkv')
+      const runsRows: { decision: string; llmCalls?: number }[] = []
+      await runTranslateWorkerTask(job, {
+        runItem: async () => (
+          status === 'installed'
+            ? { status: 'installed', sidecarPath: '/media/x.zh-Hans.srt', llmCalls }
+            : { status: 'held', reason: '术语漂移', llmCalls }
+        ),
+        runs: { insert: (r: { decision: string; llmCalls?: number }) => { runsRows.push(r) } } as never,
+      }, jobs, () => 99)
+      expect(runsRows[0]?.llmCalls).toBe(llmCalls)
+    }
+  })
+
+  it('no-source insert 带 llmCalls=0', async () => {
+    const job = makeJob('/media/x.mkv')
+    const runsRows: { decision: string; llmCalls?: number }[] = []
+    await runTranslateWorkerTask(job, {
+      runItem: async () => ({ status: 'no-source', llmCalls: 0 }),
+      runs: { insert: (r: { decision: string; llmCalls?: number }) => { runsRows.push(r) } } as never,
+    }, jobs, () => 99)
+    expect(runsRows[0]?.decision).toBe('translate:no-source')
+    expect(runsRows[0]?.llmCalls).toBe(0)
+  })
 })
