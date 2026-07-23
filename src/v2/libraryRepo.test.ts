@@ -594,37 +594,138 @@ describe('realign 支持方法', () => {
 
 describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9）', () => {
   describe('parked_paths', () => {
+    const HOUR = 60 * 60 * 1000
+    const fp = (mtimeMs = 100, size = 1000) => ({ mtimeMs, size })
+
     it('upsertParkedPath 插入新行；再次 upsert 更新 reason/last_attempt，保留 first_seen', () => {
-      lib.upsertParkedPath('/media/unknown/a.mkv', 'no tmdb match', 1000)
-      lib.upsertParkedPath('/media/unknown/a.mkv', 'ambiguous', 2000)
+      lib.upsertParkedPath('/media/unknown/a.mkv', 'no tmdb match', 1000, fp())
+      lib.upsertParkedPath('/media/unknown/a.mkv', 'ambiguous', 2000, fp())
       const rows = lib.listParkedPaths()
-      expect(rows).toEqual([
-        { path: '/media/unknown/a.mkv', park_reason: 'ambiguous', first_seen: 1000, last_attempt: 2000 },
-      ])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({
+        path: '/media/unknown/a.mkv',
+        park_reason: 'ambiguous',
+        first_seen: 1000,
+        last_attempt: 2000,
+      })
     })
 
     it('listParkedPaths 按 first_seen DESC 排序', () => {
-      lib.upsertParkedPath('/a', 'r1', 1000)
-      lib.upsertParkedPath('/b', 'r2', 3000)
-      lib.upsertParkedPath('/c', 'r3', 2000)
+      lib.upsertParkedPath('/a', 'r1', 1000, fp())
+      lib.upsertParkedPath('/b', 'r2', 3000, fp())
+      lib.upsertParkedPath('/c', 'r3', 2000, fp())
       expect(lib.listParkedPaths().map((r) => r.path)).toEqual(['/b', '/c', '/a'])
     })
 
     it('clearParkedPath 删除该行（认领成功后调用）', () => {
-      lib.upsertParkedPath('/a', 'r1', 1000)
+      lib.upsertParkedPath('/a', 'r1', 1000, fp())
       lib.clearParkedPath('/a')
       expect(lib.listParkedPaths()).toEqual([])
     })
 
     it('updateParkReason 改写 reason/last_attempt；行不存在=空操作', () => {
-      lib.upsertParkedPath('/a', 'r1', 1000)
+      lib.upsertParkedPath('/a', 'r1', 1000, fp())
       lib.updateParkReason('/a', 'agent still unsure', 2000)
-      expect(lib.listParkedPaths()).toEqual([
-        { path: '/a', park_reason: 'agent still unsure', first_seen: 1000, last_attempt: 2000 },
-      ])
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        path: '/a',
+        park_reason: 'agent still unsure',
+        first_seen: 1000,
+        last_attempt: 2000,
+      })
       // 不存在的行：不抛错、不影响表。
       lib.updateParkReason('/nope', 'whatever', 3000)
       expect(lib.listParkedPaths()).toHaveLength(1)
+    })
+
+    it('负缓存：新 park → retry_count=0, next_retry_at=now+1h，存 fingerprint', () => {
+      lib.upsertParkedPath('/a', 'no-match', 10_000, fp(111, 222))
+      const row = lib.listParkedPaths()[0]
+      expect(row.retry_count).toBe(0)
+      expect(row.next_retry_at).toBe(10_000 + HOUR)
+      expect(row.probe_mtime).toBe(111)
+      expect(row.probe_size).toBe(222)
+    })
+
+    it('负缓存：同 reason+fp 到期后 bump 阶段 1h→4h→24h→cap', () => {
+      const t0 = 1_000_000
+      lib.upsertParkedPath('/a', 'no-match', t0, fp())
+      // stage0 done: next was t0+1h; retry when due → stage1 next = now+4h
+      const t1 = t0 + HOUR
+      lib.upsertParkedPath('/a', 'no-match', t1, fp())
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        retry_count: 1,
+        next_retry_at: t1 + 4 * HOUR,
+      })
+      // stage1 done → stage2 next = now+24h
+      const t2 = t1 + 4 * HOUR
+      lib.upsertParkedPath('/a', 'no-match', t2, fp())
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        retry_count: 2,
+        next_retry_at: t2 + 24 * HOUR,
+      })
+      // stage2+ stays 24h
+      const t3 = t2 + 24 * HOUR
+      lib.upsertParkedPath('/a', 'no-match', t3, fp())
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        retry_count: 3,
+        next_retry_at: t3 + 24 * HOUR,
+      })
+      const t4 = t3 + 24 * HOUR
+      lib.upsertParkedPath('/a', 'no-match', t4, fp())
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        retry_count: 4,
+        next_retry_at: t4 + 24 * HOUR,
+      })
+    })
+
+    it('负缓存：同 reason+fp 在 next_retry_at 之前 → shouldRetry=false；到期后 true', () => {
+      const t0 = 1_000_000
+      lib.upsertParkedPath('/a', 'no-match', t0, fp())
+      expect(lib.shouldRetryParkedPath('/a', fp(), t0 + HOUR - 1)).toBe(false)
+      expect(lib.shouldRetryParkedPath('/a', fp(), t0 + HOUR)).toBe(true)
+      expect(lib.shouldRetryParkedPath('/a', fp(), t0 + HOUR + 1)).toBe(true)
+    })
+
+    it('负缓存：reason 变更 → 重置到 1h 阶段', () => {
+      const t0 = 1_000_000
+      lib.upsertParkedPath('/a', 'no-match', t0, fp())
+      lib.upsertParkedPath('/a', 'no-match', t0 + HOUR, fp()) // bump to stage1
+      expect(lib.listParkedPaths()[0].retry_count).toBe(1)
+
+      const tReset = t0 + HOUR + 1000
+      lib.upsertParkedPath('/a', 'ambiguous', tReset, fp())
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        park_reason: 'ambiguous',
+        retry_count: 0,
+        next_retry_at: tReset + HOUR,
+      })
+    })
+
+    it('负缓存：fingerprint 变更 → 立即 eligible；再 park 新 fp 重置 1h', () => {
+      const t0 = 1_000_000
+      lib.upsertParkedPath('/a', 'no-match', t0, fp(100, 200))
+      expect(lib.shouldRetryParkedPath('/a', fp(100, 200), t0 + 1)).toBe(false)
+      expect(lib.shouldRetryParkedPath('/a', fp(999, 200), t0 + 1)).toBe(true)
+      expect(lib.shouldRetryParkedPath('/a', fp(100, 999), t0 + 1)).toBe(true)
+
+      const t1 = t0 + 5000
+      lib.upsertParkedPath('/a', 'no-match', t1, fp(999, 200))
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        retry_count: 0,
+        next_retry_at: t1 + HOUR,
+        probe_mtime: 999,
+        probe_size: 200,
+      })
+    })
+
+    it('负缓存：路径未 park → shouldRetry=true（首次识别）', () => {
+      expect(lib.shouldRetryParkedPath('/never', fp(), 0)).toBe(true)
+    })
+
+    it('负缓存：next_retry_at 为 null（存量迁移行）→ eligible', () => {
+      lib.upsertParkedPath('/a', 'no-match', 1000, fp())
+      db.prepare('UPDATE parked_paths SET next_retry_at = NULL').run()
+      expect(lib.shouldRetryParkedPath('/a', fp(), 1000)).toBe(true)
     })
 
     it('救援R4b：addExtrasExemption/isExtrasExempt——幂等写入，命中查询', () => {

@@ -516,7 +516,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             // R4b：用户在甄别页翻过案的 path（extras_exemptions）跳过铁案——否则文件名仍匹配 NC
             // 正则，下一轮 pass 会无限再排除，翻案沦为 no-op。
             if (excludeExtras && isMechanicalExtra(path) && !lib.isExtrasExempt(path)) {
-              lib.upsertParkedPath(path, 'excluded-extra', nowMs)
+              lib.upsertParkedPath(path, 'excluded-extra', nowMs, { mtimeMs: stat.mtimeMs, size: stat.size })
               result.parked++
               continue
             }
@@ -588,9 +588,19 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             }
 
             // ---- FULL PATH：无行，或行存在但探针记忆化已过期 → 重新识别 + 补全 + 探测 ----
+            // parked-path 负缓存（Task 5）：未变 fingerprint 的已 park 路径按 1h→4h→24h 退避，
+            // 跳过昂贵 recognize；seenPaths 已登记本 path，收尾清理不会误删。identify override
+            // 强制立即 eligible（用户刚认领，必须重走识别）。
+            const pathFingerprint = { mtimeMs: stat.mtimeMs, size: stat.size }
+            if (
+              !lib.shouldRetryParkedPath(path, pathFingerprint, nowMs) &&
+              !lib.findOverride(path)
+            ) {
+              continue
+            }
             const outcome = await deps.recognize(path)
             if ('park' in outcome) {
-              lib.upsertParkedPath(path, outcome.park, nowMs)
+              lib.upsertParkedPath(path, outcome.park, nowMs, pathFingerprint)
               result.parked++
               continue
             }
@@ -626,7 +636,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 if (outcome.viaOverrideLenient) {
                   const seasonTable = await tmdb.getSeasonTable(tmdbId)
                   if (seasonTable && seasonTable.length > 1) {
-                    lib.upsertParkedPath(path, 'override-ambiguous-numbering', nowMs)
+                    lib.upsertParkedPath(path, 'override-ambiguous-numbering', nowMs, pathFingerprint)
                     result.parked++
                     continue
                   }
@@ -645,7 +655,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 // 且刻意不清理 `existing`（若这条路径此前已经成功入库过一次）：一次识别遇挫
                 // 不该把之前的可用行也搭进去，宁可留一条现在暂时对不上的旧行，也不无端丢数据。
                 const reason = outcome.absoluteEpisode !== null ? 'absolute-episode-unresolved' : 'no-episode-number'
-                lib.upsertParkedPath(path, reason, nowMs)
+                lib.upsertParkedPath(path, reason, nowMs, pathFingerprint)
                 result.parked++
                 continue
               }

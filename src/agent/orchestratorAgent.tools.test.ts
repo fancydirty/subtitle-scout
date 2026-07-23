@@ -119,15 +119,18 @@ describe('makeListMissingCoverageTool', () => {
     const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'listParkedPaths'> = {
       missingBySeason: () => [],
       missingMovies: () => [],
-      listParkedPaths: () => [
-        { path: '/media/A/a.mkv', park_reason: 'no tmdb match', first_seen: 1000, last_attempt: 1000 },
-        { path: '/media/A/b.mkv', park_reason: 'ambiguous', first_seen: 1000, last_attempt: 1000 },
-        { path: '/media/B/c.mkv', park_reason: 'excluded-extra', first_seen: 1000, last_attempt: 1000 },
-        { path: '/media/C/d.mkv', park_reason: 'duplicate-content', first_seen: 1000, last_attempt: 1000 },
-        { path: '/media/D/e.mkv', park_reason: 'no tmdb match', first_seen: 1000, last_attempt: 1000 },
-        { path: '/media/E/f.mkv', park_reason: 'ambiguous', first_seen: 1000, last_attempt: 1000 },
-        { path: '/media/F/g.mkv', park_reason: 'no tmdb match', first_seen: 1000, last_attempt: 1000 },
-      ],
+      listParkedPaths: () => {
+        const base = { first_seen: 1000, last_attempt: 1000, retry_count: 0, next_retry_at: null, probe_mtime: null, probe_size: null }
+        return [
+          { path: '/media/A/a.mkv', park_reason: 'no tmdb match', ...base },
+          { path: '/media/A/b.mkv', park_reason: 'ambiguous', ...base },
+          { path: '/media/B/c.mkv', park_reason: 'excluded-extra', ...base },
+          { path: '/media/C/d.mkv', park_reason: 'duplicate-content', ...base },
+          { path: '/media/D/e.mkv', park_reason: 'no tmdb match', ...base },
+          { path: '/media/E/f.mkv', park_reason: 'ambiguous', ...base },
+          { path: '/media/F/g.mkv', park_reason: 'no tmdb match', ...base },
+        ]
+      },
     }
     const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
     const page = await listMissingCoverage.execute!({ offset: 0, limit: 50 }, fakeOpts) as MissingCoveragePage

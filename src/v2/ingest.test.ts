@@ -236,7 +236,113 @@ describe('makeIngestPass — park', () => {
 
     expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
     const parked = lib.listParkedPaths()
-    expect(parked).toEqual([{ path: '/media/junk.mkv', park_reason: 'no-match', first_seen: 1_700_000_000_000, last_attempt: 1_700_000_000_000 }])
+    expect(parked).toHaveLength(1)
+    expect(parked[0]).toMatchObject({
+      path: '/media/junk.mkv',
+      park_reason: 'no-match',
+      first_seen: 1_700_000_000_000,
+      last_attempt: 1_700_000_000_000,
+    })
+  })
+
+  describe('parked-path negative cache (skip re-identify until retry due)', () => {
+    const HOUR = 60 * 60 * 1000
+    const path = '/media/parked-cache.mkv'
+    const t0 = 1_700_000_000_000
+
+    it('ineligible parked path: recognize NOT called; not counted as newly parked; seenPaths keeps it (cleanup does not delete)', async () => {
+      const disk = fakeDisk()
+      disk.setVideo(path, 100, 200)
+      lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
+      // also park a vanished path that should still be cleaned if not seen
+      lib.upsertParkedPath('/media/gone-other.mkv', 'no-match', t0, { mtimeMs: 1, size: 1 })
+
+      const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-match' }))
+      const pass = makeIngestPass(makeDeps({
+        listVideoFiles: () => [path],
+        recognize,
+        fileExists: disk.fileExists,
+        statFile: disk.statFile,
+        now: () => t0 + 1000, // still within 1h backoff
+      }))
+
+      const result = await pass()
+
+      expect(recognize).not.toHaveBeenCalled()
+      expect(result.parked).toBe(0)
+      expect(result.scanned).toBe(1)
+      expect(lib.listParkedPaths().map((p) => p.path)).toContain(path)
+      expect(lib.listParkedPaths().map((p) => p.path)).not.toContain('/media/gone-other.mkv')
+    })
+
+    it('after next_retry_at: recognize IS called and re-park bumps stage', async () => {
+      const disk = fakeDisk()
+      disk.setVideo(path, 100, 200)
+      lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
+
+      const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-match' }))
+      const due = t0 + HOUR
+      const pass = makeIngestPass(makeDeps({
+        listVideoFiles: () => [path],
+        recognize,
+        fileExists: disk.fileExists,
+        statFile: disk.statFile,
+        now: () => due,
+      }))
+
+      const result = await pass()
+
+      expect(recognize).toHaveBeenCalledWith(path)
+      expect(result.parked).toBe(1)
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        retry_count: 1,
+        next_retry_at: due + 4 * HOUR,
+      })
+    })
+
+    it('fingerprint change: eligible immediately even before next_retry_at', async () => {
+      const disk = fakeDisk()
+      disk.setVideo(path, 999, 200) // mtime changed
+      lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
+
+      const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-match' }))
+      const pass = makeIngestPass(makeDeps({
+        listVideoFiles: () => [path],
+        recognize,
+        fileExists: disk.fileExists,
+        statFile: disk.statFile,
+        now: () => t0 + 1000,
+      }))
+
+      await pass()
+      expect(recognize).toHaveBeenCalledWith(path)
+      expect(lib.listParkedPaths()[0]).toMatchObject({
+        retry_count: 0,
+        probe_mtime: 999,
+        probe_size: 200,
+      })
+    })
+
+    it('identify override: eligible immediately (do not skip recognize)', async () => {
+      const disk = fakeDisk()
+      disk.setVideo(path, 100, 200)
+      lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
+      lib.addOverride(path, '108964', true, t0)
+
+      const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', season: 1, episode: 1 }))
+      const pass = makeIngestPass(makeDeps({
+        listVideoFiles: () => [path],
+        recognize,
+        fileExists: disk.fileExists,
+        statFile: disk.statFile,
+        now: () => t0 + 1000,
+      }))
+
+      const result = await pass()
+      expect(recognize).toHaveBeenCalledWith(path)
+      expect(result.upserted).toBe(1)
+      expect(lib.listParkedPaths()).toEqual([])
+    })
   })
 
   it('TV recognition with no episode number at all (no season structure, no absolute) → park no-episode-number', async () => {

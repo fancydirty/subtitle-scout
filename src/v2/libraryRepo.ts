@@ -137,6 +137,31 @@ export interface ParkedPath {
   park_reason: string
   first_seen: number
   last_attempt: number
+  /** 已完成的退避阶数：0=刚 park（下次 1h），1=下次 4h，≥2=下次 24h。 */
+  retry_count: number
+  /** 下次可重试时刻（ms）；NULL/缺省视为立即 eligible。 */
+  next_retry_at: number | null
+  probe_mtime: number | null
+  probe_size: number | null
+}
+
+/** parked-path 负缓存：文件指纹（stat mtimeMs + size）。 */
+export interface ParkedPathFingerprint {
+  mtimeMs: number
+  size: number
+}
+
+/** 退避阶梯：retry_count 0→1h，1→4h，≥2→24h（封顶）。单位 ms。 */
+const PARKED_RETRY_DELAYS_MS = [
+  60 * 60 * 1000, // 1h after first park
+  4 * 60 * 60 * 1000, // 4h after first retry
+  24 * 60 * 60 * 1000, // 24h thereafter
+] as const
+
+function parkedRetryDelayMs(retryCount: number): number {
+  if (retryCount <= 0) return PARKED_RETRY_DELAYS_MS[0]
+  if (retryCount === 1) return PARKED_RETRY_DELAYS_MS[1]
+  return PARKED_RETRY_DELAYS_MS[2]
 }
 
 /** 重复源 P1：item_files 行——同一条目（episodes.id/movies.id）的副本文件（4K/1080p/不同压制）。
@@ -734,17 +759,92 @@ export class LibraryRepo {
   // ---- P2：parked_paths（未识别文件的正式户口，去 Jellyfin 化 schema v9） ----
 
   /** 插入或更新一条 park 记录：reason/last_attempt 每轮巡检覆盖，first_seen 首次写入后不再变
-   *  （同一路径第二次被 park 时沿用最早发现时间，供 P6 救援页按"挂了多久"排序）。 */
-  upsertParkedPath(path: string, reason: string, now: number): void {
+   *  （同一路径第二次被 park 时沿用最早发现时间，供 P6 救援页按"挂了多久"排序）。
+   *  fingerprint 可选：省略时不写 probe_* / 不推进退避阶梯（兼容旧调用方）；有指纹时按负缓存规则：
+   *  - 新行 / reason 变 / fingerprint 变 → retry_count=0, next_retry_at=now+1h
+   *  - 同 reason+同 fingerprint（到期后重 park）→ bump retry_count，下一档 4h→24h→cap 24h */
+  upsertParkedPath(path: string, reason: string, now: number, fingerprint?: ParkedPathFingerprint): void {
+    const existing = this.db
+      .prepare(
+        `SELECT park_reason, retry_count, probe_mtime, probe_size FROM parked_paths WHERE path = ?`
+      )
+      .get(path) as
+      | { park_reason: string; retry_count: number; probe_mtime: number | null; probe_size: number | null }
+      | undefined
+
+    let retryCount = 0
+    let nextRetryAt: number | null = now + parkedRetryDelayMs(0)
+    let probeMtime: number | null = fingerprint?.mtimeMs ?? null
+    let probeSize: number | null = fingerprint?.size ?? null
+
+    if (existing && fingerprint) {
+      const sameReason = existing.park_reason === reason
+      const sameFp =
+        existing.probe_mtime === fingerprint.mtimeMs && existing.probe_size === fingerprint.size
+      if (sameReason && sameFp) {
+        // 完成当前档 → 进入下一档（0→1→2+）
+        retryCount = existing.retry_count + 1
+        nextRetryAt = now + parkedRetryDelayMs(retryCount)
+      } else {
+        // reason 或 fingerprint 变：重置 1h 档
+        retryCount = 0
+        nextRetryAt = now + parkedRetryDelayMs(0)
+      }
+      probeMtime = fingerprint.mtimeMs
+      probeSize = fingerprint.size
+    } else if (existing && !fingerprint) {
+      // 无指纹的旧调用：只覆写 reason/last_attempt，保留退避列
+      retryCount = existing.retry_count
+      nextRetryAt = null // 让 list 读回时用 DB 原值——下面 SQL 用 COALESCE 保护
+      probeMtime = existing.probe_mtime
+      probeSize = existing.probe_size
+    }
+
+    if (existing && !fingerprint) {
+      this.db
+        .prepare(
+          `UPDATE parked_paths SET park_reason = ?, last_attempt = ? WHERE path = ?`
+        )
+        .run(reason, now, path)
+      return
+    }
+
     this.db
       .prepare(
-        `INSERT INTO parked_paths (path, park_reason, first_seen, last_attempt)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO parked_paths (
+           path, park_reason, first_seen, last_attempt,
+           retry_count, next_retry_at, probe_mtime, probe_size
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            park_reason = excluded.park_reason,
-           last_attempt = excluded.last_attempt`
+           last_attempt = excluded.last_attempt,
+           retry_count = excluded.retry_count,
+           next_retry_at = excluded.next_retry_at,
+           probe_mtime = excluded.probe_mtime,
+           probe_size = excluded.probe_size`
       )
-      .run(path, reason, now, now)
+      .run(path, reason, now, now, retryCount, nextRetryAt, probeMtime, probeSize)
+  }
+
+  /**
+   * parked-path 负缓存：是否应在本轮 FULL PATH 重新 recognize。
+   * - 未 park → true
+   * - fingerprint 与库中不一致 → true（文件变了）
+   * - next_retry_at 为 null 或 now >= next_retry_at → true
+   * - 否则 false（仍在退避窗内）
+   */
+  shouldRetryParkedPath(path: string, fingerprint: ParkedPathFingerprint, now: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?`
+      )
+      .get(path) as
+      | { next_retry_at: number | null; probe_mtime: number | null; probe_size: number | null }
+      | undefined
+    if (!row) return true
+    if (row.probe_mtime !== fingerprint.mtimeMs || row.probe_size !== fingerprint.size) return true
+    if (row.next_retry_at == null) return true
+    return now >= row.next_retry_at
   }
 
   /** 认领成功（identify_overrides 命中）后调用，路径退出 park 户口。 */
@@ -762,7 +862,9 @@ export class LibraryRepo {
   listParkedPaths(): ParkedPath[] {
     return this.db
       .prepare(
-        `SELECT path, park_reason, first_seen, last_attempt FROM parked_paths ORDER BY first_seen DESC`
+        `SELECT path, park_reason, first_seen, last_attempt,
+                retry_count, next_retry_at, probe_mtime, probe_size
+         FROM parked_paths ORDER BY first_seen DESC`
       )
       .all() as ParkedPath[]
   }

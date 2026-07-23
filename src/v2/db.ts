@@ -286,6 +286,14 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
   // (jobsRepo.REAP_PARK_THRESHOLD)由 reap 直接 park 隔离;任何完成(completeDone/completeError)
   // 清零。纯 ADD COLUMN,不触发建新表。本条是数组第 13 条 entry,落库 meta.schema_version 13。
   `ALTER TABLE jobs ADD COLUMN reap_count INTEGER NOT NULL DEFAULT 0`,
+  // v21（parked-path 负缓存 Task 5）：未识别路径在 fingerprint 不变时按 1h→4h→24h 阶梯退避
+  // 重识别，避免每轮 FULL PATH 白烧 TMDB/LLM。retry_count=已完成的退避阶数；next_retry_at=下次
+  // 可重试时刻（NULL=立即 eligible，兼容存量迁移行）；probe_mtime/probe_size=park 时指纹。
+  // 纯 ADD COLUMN。本条是数组第 14 条 entry，落库 meta.schema_version 14。
+  `ALTER TABLE parked_paths ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE parked_paths ADD COLUMN next_retry_at INTEGER;
+   ALTER TABLE parked_paths ADD COLUMN probe_mtime INTEGER;
+   ALTER TABLE parked_paths ADD COLUMN probe_size INTEGER`,
 ]
 
 export function openDb(path: string): ScoutDb {
