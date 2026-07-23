@@ -264,3 +264,17 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 
 - 手动 CLI 无库身份(文件不在库)时自动回退 legacy,日志明示——agent 单跳选源需要 origin_lang。
 - 未 push;生产未部署(agent 未接 daemon,零生产行为变化)。
+
+### 终审修复(2026-07-23,`7478fbf` + `c4be203`)
+
+终审发现 1 Critical + 5 Important,全部修复并复评通过:
+
+- **C1 闸强制**:gate pass 写 `work/GATE_PASS.json`(bilingual 内容 sha256);`update_row/update_rows` 后标记失效;`install_sidecar` 无有效标记一律拒绝——fail-closed 由代码强制,不依赖模型自觉。
+- **I1**:空 origin_lang + en 内嵌 → 按 en 处理(legacy 对齐);无 en 轨仍诚实 no-source。
+- **I2**:already-covered 短路(内嵌中文文本轨 / 既有中文 sidecar),不重复烧配额。
+- **I3**:stepCap 默认 500;未 finalize(耗尽/abort) → held 报告,不再抛未捕获异常。
+- **I4**:补 `write_workspace_doc`(限 context/work 下 .md)与 `get_row`;加 `update_rows` 批量写(全有或全无)。
+- **I5**:删除并行非 agent runner(整集文本灌 glossary、无时长闸,与本战役目标相悖)。
+- M 级:`.strict()` + src 守卫双保险;canonical 目录守卫大小写不敏感 + 目录读取拒绝;clean view 剥 `<font>/<i>` 样式标签。
+
+复评:无 Critical/Important 遗留;串行全量 **1996 passed / 1 skipped**,tsc+build 净。

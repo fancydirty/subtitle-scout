@@ -19,7 +19,7 @@ export interface TranslateWorkerDeps {
   readExistingChineseSidecar?: (videoPath: string) => string | null
   fetchTmdbContext?: (task: TranslateTask) => Promise<string | null>
   fetchSeriesTargetSubs?: (task: TranslateTask) => Promise<string | null>
-  /** @default 200 */
+  /** @default 500 — windowed protocol needs room; exhaustion maps to held, not a crash. */
   stepCap?: number
   /** @default 900_000 */
   timeoutMs?: number
