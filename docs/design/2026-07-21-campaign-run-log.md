@@ -278,3 +278,38 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - M 级:`.strict()` + src 守卫双保险;canonical 目录守卫大小写不敏感 + 目录读取拒绝;clean view 剥 `<font>/<i>` 样式标签。
 
 复评:无 Critical/Important 遗留;串行全量 **1996 passed / 1 skipped**,tsc+build 净。
+
+## 战役 9:Translate Workspace Agent · 本地真模型验收(2026-07-23 晚)
+
+**协议**:本地零部署;fixtures=生产抽出的真实字幕轨 + 已知时长;install 落临时目录不碰生产。
+脚本 `scripts/live-translate-agent.ts`;样本 `/var/folders/.../opencode/tw-live/`(含 RESEARCH.md)。
+
+### 强模型轮(claude-opus-4-8):6/6 绿
+
+| 样本 | 步数 | 结果 |
+|---|---|---|
+| WW no-source(ja+仅 eng 内嵌) | 2 | PASS,引用铁律拒英译 |
+| Rig E-EN 120c | 21 | installed,术语 100%(富尔默/皮克特/先祖) |
+| SPY JA 120c+同剧中字 ctx | 18 | installed,术语 100%(黄昏/阿尼亚/枭行动/东国) |
+| SPY JA 全长 304c | 28 | installed,26 术语 100%,12.5min |
+| Rig 400c | 23 | installed,46 术语 96.4% |
+| covered 负例 | 3 | already-covered 短路 |
+
+### 弱模型轮(mimo-v2.5):发现 1 真 bug,修后 5/5 绿
+
+- **C1 级漏洞**:mimo 冻结的术语表 zh 照抄拉丁原文(Fulmer→"Fulmer"),术语闸虚 100%,拉丁名人混排译文装盘。
+  根因=freeze 无中文校验。**修复(commit c0b16aa)**:freeze 拒非 CJK zh;`keepOriginal:true` 显式声明且不计符合率;skill 文案强制简中译名。
+- **修后**:Rig 120c installed(法尔默→复跑富尔默,与官方一致);SPY 120c installed(fansub 级锚定);
+  **SPY 全长 304c installed(53 步 8.4min,28 术语 100%,304/304,0 空行 0 假名残留)**;WW no-source PASS。
+- 验收脚本接线 bug(covered 检查缺失)同轮修复。
+
+### 核心结论
+
+**同一 mimo,批灌=莫里希托式垃圾,工作台=fansub 级术语。** 净文文档 + CJK 冻结术语表 +
+窗格写行 + 代码强制闸,让弱模型也产出可装盘译文。P1 逻辑本地真机跑通,循环退出(连续复跑零新问题)。
+
+### 遗留(P2 关注)
+
+- 《》屏幕字标记偶有不配对残留(闸不查,critic 层)
+- 跨 job 术语 canonical 方差(东国/奥斯塔尼亚)——剧级术语持久化是 P2 需求证据
+- 串行全量 **1997 passed / 1 skipped**;未 push 未部署(daemon 仍 legacy)
