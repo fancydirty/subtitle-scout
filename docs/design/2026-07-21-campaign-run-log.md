@@ -222,3 +222,10 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - sidecar 复原前后 SHA-256 同为 `0c6bf9f5dd4b840b751a4daf2cc641701731dff45d64dc84f474f8c7bb1f8702`。
 - 命令 exit 1 是 `translate-item` 对 `no-source` 的预期退出语义;分类 **PASS**。
 - Adam E06 与 Grieving Soul E23 在 Task 2 已于候选解析前 `no-source`;Peacemaker 的唯一新变量仍是已知 mimo 质量不足。三者不重复烧配额,二次矩阵只重跑能验证本轮行为变化的 Overflow 对照项。
+
+### 终审补丁(时长闸 fail-closed)
+
+- 终审 Important×2:`videoDurationSec=null` 曾 fail-open;`译后复用预检缓存` 可在路径替换后装错片。
+- `eb343c0`:接上探针后 null/<=0 → held(`duration-unavailable`) / F1 no-source;写盘前强制重探;34 focused + 串行全量 **1960 passed / 1 skipped**。
+- 部署 revision `eb343c082d9a0f4233e2718c13d59b65499b27b3`;证据 `/mnt/nvme0n1-4/backup/20260723-165847-eb343c082d9a-deploy/`;rollback `subtitle-scout-rollback:20260723-170018`。
+- 终态:schema 15、`quick_check=ok`、`ai_translate_enabled=false`、running translate=0、dashboard `127.0.0.1:8099` HTTP 200。
