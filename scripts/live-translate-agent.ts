@@ -17,6 +17,8 @@ import { makeModel } from '../src/agent/llm.js'
 import { makeTranslateWorker } from '../src/agent/translateWorker.js'
 import type { TranslateReport } from '../src/agent/translateWorker.schemas.js'
 import { findExternalSidecar } from '../src/files/sidecar.js'
+import { openDb } from '../src/v2/db.js'
+import { GlossaryRepo } from '../src/v2/glossaryRepo.js'
 
 const { values } = parseArgs({
   options: {
@@ -33,6 +35,7 @@ const { values } = parseArgs({
     'context-tmdb': { type: 'string' },
     'step-cap': { type: 'string' },
     'timeout-ms': { type: 'string' },
+    'glossary-db': { type: 'string' },
   },
 })
 
@@ -78,6 +81,9 @@ mkdirSync(sampleDir, { recursive: true })
 
 const sidecarOut = join(sampleDir, `out-${modelKind}.zh-Hans.srt`)
 
+const db = openDb(values['glossary-db'] ? resolve(values['glossary-db']) : join(sampleDir, 'live-glossary.db'))
+const glossaryRepo = new GlossaryRepo(db)
+
 const run = makeTranslateWorker({
   model: makeModel(cfg),
   resolveDeps: {
@@ -91,6 +97,10 @@ const run = makeTranslateWorker({
   videoDurationSec: async () => durationSec,
   readExistingChineseSidecar: (v) =>
     findExternalSidecar(v, ['zh-Hans', 'zh-Hant', 'zh', 'zh-CN', 'zh-TW', 'chs', 'cht'], existsSync)?.path ?? null,
+  glossaryStore: {
+    load: (k) => glossaryRepo.load(k),
+    save: (k, t, at) => glossaryRepo.save(k, t, at),
+  },
   fetchSeriesTargetSubs: values['context-zh']
     ? async () => readFileSync(join(sampleDir, values['context-zh']), 'utf8').slice(0, 6000)
     : undefined,
@@ -128,4 +138,5 @@ const summary = {
 }
 writeFileSync(join(sampleDir, `report-${modelKind}.json`), JSON.stringify({ ...summary, report }, null, 2))
 console.log(JSON.stringify(summary, null, 2))
+db.close()
 process.exit(report.status === 'installed' ? 0 : 1)
