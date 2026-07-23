@@ -240,24 +240,41 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     },
   })
 
+  const CJK = /[　-鿿豈-﫿]/
+
   const freeze_glossary = tool({
     description:
-      'Freeze the termbase for this job: [{src, zh, note?}] — every proper noun in the source must ' +
-      'appear here with ONE canonical Chinese rendering. One-shot: re-freezing is rejected.',
+      'Freeze the termbase for this job: [{src, zh, note?, keepOriginal?}] — every proper noun in ' +
+      'the source must appear here with ONE canonical SIMPLIFIED-CHINESE rendering (zh must ' +
+      'contain Chinese characters). If a term genuinely must stay in the original script (rare, ' +
+      'e.g. an acronym the audience reads as-is), set keepOriginal:true — such terms are excluded ' +
+      'from term-conformance accounting. One-shot: re-freezing is rejected.',
     inputSchema: z.object({
       terms: z.array(z.object({
         src: z.string().min(1),
         zh: z.string().min(1),
         note: z.string().optional(),
+        keepOriginal: z.boolean().optional(),
       })).min(1),
     }),
     execute: async ({ terms }) => {
       if (existsSync(paths.glossaryFrozenPath)) {
         return { error: 'glossary is already frozen for this job' }
       }
+      // 弱模型实证坑:zh 照抄原文(如 Fulmer→"Fulmer")会让术语闸形同虚设(conformance 虚 100%)。
+      // 冻结时强制 zh 含 CJK,除非显式 keepOriginal——把"名从主人但留原文"变成显式声明而非默认摆烂。
+      const bad = terms.filter((t) => !t.keepOriginal && !CJK.test(t.zh))
+      if (bad.length) {
+        return {
+          error:
+            'these terms have a zh that is not Chinese (no CJK characters) — translate them into ' +
+            'Simplified Chinese, or set keepOriginal:true only if the audience must read the ' +
+            `original script: ${bad.map((t) => `${t.src}→"${t.zh}"`).slice(0, 8).join(', ')}`,
+        }
+      }
       writeFileSync(paths.glossaryPath, JSON.stringify(terms, null, 2))
       writeFileSync(paths.glossaryFrozenPath, 'frozen\n')
-      return { ok: true, count: terms.length }
+      return { ok: true, count: terms.length, keepOriginal: terms.filter((t) => t.keepOriginal).length }
     },
   })
 
@@ -409,11 +426,13 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
         return { verdict: 'fail', reasons: [`empty tgt rows: ${empty.slice(0, 10).join(',')}${empty.length > 10 ? '…' : ''}`] }
       }
       const terms = readTerms(paths)
+      // keepOriginal 术语不参与符合率统计(期望输出=原文,谈不上"漂移";计入只会虚增分子)。
+      const gateTerms = terms.filter((t) => !t.keepOriginal)
       const srcCues = rows.map((r) => ({ index: r.id, timing: '00:00:00,000 --> 00:00:01,000', text: r.src.split('\n') }))
       const tgtCues = rows.map((r) => ({ index: r.id, timing: '00:00:00,000 --> 00:00:01,000', text: r.tgt.split('\n') }))
       const gate = evaluateTranslationGate(
         srcCues, tgtCues,
-        terms.map((t) => ({ en: t.src, zh: t.zh, note: t.note })),
+        gateTerms.map((t) => ({ en: t.src, zh: t.zh, note: t.note })),
       )
       const reasons: string[] = [...gate.hardViolations]
       if (gate.verdict === 'pass' && deps.videoDurationSec && existsSync(paths.canonicalSourcePath)) {

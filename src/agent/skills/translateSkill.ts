@@ -44,7 +44,11 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
 3. **materialize_agent_view** — build \`source_clean.jsonl\` + pending bilingual rows.
 4. Load context: TMDB synopsis/cast; same-series target-language subtitle excerpts when present.
 5. Skim cleaned source via windowed reads (\`get_window\` / paged \`read_workspace_doc\`). Build a
-   glossary of characters, places, world terms. **freeze_glossary** → \`glossary/terms.json\`.
+   glossary of characters, places, world terms. **Every \`zh\` must be a Simplified-Chinese
+   rendering** (transliterate names the way official Chinese subtitles do — never copy the Latin
+   original into \`zh\`; freeze will REJECT non-Chinese \`zh\`). Only if the audience genuinely
+   reads the original script (rare, e.g. an acronym) may you set \`keepOriginal: true\`.
+   **freeze_glossary** → \`glossary/terms.json\`.
 6. Translate **by windows** (about 10–40 cues). For each window: read glossary + summary + rows →
    draft → **update_row** for each id → **update_summary**. Proper names must match the frozen
    glossary.

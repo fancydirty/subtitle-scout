@@ -17,6 +17,8 @@ describe('translateSkill', () => {
     expect(c).toMatch(/Brave|web_search|通用搜索/)
     expect(c).toMatch(/glossary|术语/)
     expect(c).toMatch(/freeze|冻结/)
+    expect(c).toMatch(/Simplified-Chinese|简中|中文译名/)
+    expect(c).toMatch(/keepOriginal/)
     expect(c).toMatch(/bilingual|update_row|工作表/)
     expect(c).toMatch(/source_clean|agent_view|staging/)
     expect(c).toMatch(/merge|merge_to_srt/)

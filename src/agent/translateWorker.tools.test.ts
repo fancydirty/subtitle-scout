@@ -85,6 +85,31 @@ describe('translate workspace tools', () => {
     expect(r2).toHaveProperty('error')
   })
 
+  it('freeze_glossary rejects zh that is not Chinese; keepOriginal opt-out excluded from gate', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const bad = await call(tools.freeze_glossary, {
+      terms: [{ src: 'Fulmer', zh: 'Fulmer', note: 'name' }],
+    })
+    expect(bad).toHaveProperty('error')
+    expect(String(bad.error)).toMatch(/not Chinese|keepOriginal/)
+
+    const ok = await call(tools.freeze_glossary, {
+      terms: [
+        { src: 'Fulmer', zh: '富尔默' },
+        { src: 'ROV', zh: 'ROV', keepOriginal: true },
+      ],
+    })
+    expect(ok).toMatchObject({ ok: true, count: 2, keepOriginal: 1 })
+
+    // gate:keepOriginal 不计入 checks
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.update_row, { id: '1', tgt: '你好妮可', status: 'ok' })
+    await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
+    const gate = await call(tools.run_structural_gate)
+    expect(gate.termChecks).toBe(0) // Fulmer/Nico 不在本批源文本;ROV 被排除
+  })
+
   it('update_row cannot change src; tgt persists; list_rows reflects status', async () => {
     const tools = makeTranslateWorkspaceTools(baseDeps())
     await call(tools.resolve_source)

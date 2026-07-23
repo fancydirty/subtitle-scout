@@ -18,6 +18,8 @@ export interface GlossaryTerm {
   src: string
   zh: string
   note?: string
+  /** 显式声明"该术语译文保留原文"(如首字母缩写);不参与术语符合率统计。 */
+  keepOriginal?: boolean
 }
 
 export interface WorkspaceMeta {
