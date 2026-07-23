@@ -142,3 +142,48 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - 数据资格:SQLite `quick_check=ok`；`ai_translate_enabled=false`；translate runs 部署前后均 `count=24 / max_id=73 / max_started_at=1784695756355`；translate jobs `count=5 / running=0`。
 - 精确源码资格:archive 同时包含根/web lockfile，manifest 全量校验 `ok`；archive 对生产受管树 dry-run exact-sync=`clean`。
 - 根权限证据:`/mnt/nvme0n1-4/backup/20260723-003300-task1-remediation-deploy/` 为 `0700 root:root`，证据文件均 `0600`；包含源 archive/manifest、两次 attempt log/marker、Compose 备份/哈希、rollback/current image、DB/settings/runs 和 dashboard bind 证据，无 secret value。
+
+## 战役 6:Task 2 mimo-v2.5 资格矩阵(2026-07-23 10:39–11:53 CST)
+
+**目的**:固定样本上用生产 `TRANSLATE_MODEL=mimo-v2.5` + critic 开，手动 `translate-item` 量测 EN/JA 路径与负例，**不**把 EN/JA 结论合并。
+
+| 项 | 值 |
+|---|---|
+| 证据根 | `/mnt/nvme0n1-4/backup/20260723-101705-task2-mimo-qual/`(`0700`) |
+| 模型 | `TRANSLATE_MODEL=mimo-v2.5`(容器 env 确认) |
+| critic | 开 |
+| `ai_translate_enabled` | **false**(全程未开;结束后仍 false) |
+| CLI | `node /app/dist/cli/index.js translate-item "<path>"`(cache=`/cache`) |
+| 跑法 | 删中文 sidecar → detached `docker exec`/`nohup` + log + `.done` 轮询 |
+
+### 样本结果(分类只认 translate-item 日志,不认盘上 sidecar 来源)
+
+| 样本 | 路径要点 | 预检 | 结果 | 分类 |
+|---|---|---|---|---|
+| **E-EN** Witch Watch E02 | Erai-raws MultiSub mkv | 1453.7s; eng ASS `CR_English` + 多语 ASS | `held` 术语 74.7%(74/99) cues=439 硬违规=1 | **HELD_MODEL_QUALITY** |
+| **F1-EN** Peacemaker S01E01 | BluRay ARGUS | 2798s; 仅 PGS eng/chi | `held` critic(大量英文未译); 源 `opensubtitles:11144052`; 闸 pass cues=368 | **HELD_MODEL_QUALITY** |
+| **F2-JA** Grieving Soul S01E23 | ToonsHub JPN WEB | 1430s; `origin_lang=ja` `embedded_langs=[]` | `no-source`(jimaku/外源无可用日文) | **NO_SOURCE** |
+| **E-JA**(F2 回退) SPY×FAMILY S3E01 | NanakoRaws 4K | 1440s; jpn ASS+SRT 内嵌 | `held` critic(大量日文未译); 闸 pass 术语 100%(13/13) cues=491 | **HELD_MODEL_QUALITY** |
+| **NEG** Adam E06 | NanDesuKa AMZN | 210s; 无内嵌 | `no-source`; 无 sidecar; 无模型翻译 | **NO_SOURCE** |
+| **NEG** Overflow E01 | TV ver 01 | 210.09s(~3.5min); 无内嵌 | `held` critic(错译+未译+译名混); 源 `opensubtitles:11753599`; 闸 pass cues=295;**非** duration-mismatch | **HELD_MODEL_QUALITY** |
+
+### 关键指标
+
+- **E-EN**:内嵌英轨路径通; fail-closed 因术语闸(非 critic)。**未**由 translate 装盘。
+- **F1-EN**:PGS 不可用 → 外抓英文源成功 → 全量译+critic → held。路径=F1 符合预期;质量=mimo 不够。
+- **F2-JA**:真 F2 样本 `no-source`(无日文源)。按矩阵规则补跑 **E-JA**(内嵌日文抽轨→译→held),与 F2 分列。
+- **NEG Adam**:标题校验/无源,早退,无烧翻译配额。
+- **NEG Overflow**:本轮**未**触发 duration-mismatch;外源被接受并完成模型翻译后被 critic 拦下(`model_work=YES`)。与 postmortem「TV 3.5min vs 7min 错版」历史问题不同——本轮是质量 held,不是时长闸。
+
+### 残留 / 干扰
+
+1. **find-subtitle 竞态**:删中文 sidecar 后 daemon 将 ep 标 missing 并派 find,若干样本盘上重新出现 zh sidecar(OpenSubtitles/既有包),**不是** translate 安装(translate 全 held/no-source)。分类以 CLI 日志为准。
+2. CLI stdout 在长跑中缓冲,需容器内 log 文件 + `.done` marker。
+3. 结束后:`ai_translate_enabled=false`;无 `translate-item` 进程;jobs 无 running translate。
+
+### 对模型策略的含义(不改代码,只记结论)
+
+- mimo-v2.5 **不足以**作为 E/F1/E-JA 生产翻译模型:EN 术语/漏译、JA 大段未译,均被闸或 critic 正确 fail-closed。
+- 管道(抽轨 / F1 外抓 / critic / 术语闸)行为符合设计;瓶颈在模型能力,非 PIPELINE_DEFECT。
+- F2 jimaku 对本集无源 → 记 **NO_SOURCE**(样本/目录覆盖),不记模型能力。
+- Overflow 时长闸仍是 postmortem 🔴 项;本轮负例未打到该闸(外源过了选源后在语义层失败)。

@@ -74,3 +74,14 @@
 6. **🟡 ASS→SRT 剥离 override 标签**
 7. **🟡 runs 表补 llm_calls 记账**
 8. **🟡 rescue 强制输出 season**
+
+## 更正附注(2026-07-23 Task 2 mimo 资格矩阵,不擦历史)
+
+证据:`/mnt/nvme0n1-4/backup/20260723-101705-task2-mimo-qual/`。`TRANSLATE_MODEL=mimo-v2.5`,手动 `translate-item`,EN/JA 分列。
+
+| 历史表述 | Task 2 复核 |
+|---|---|
+| mimo 日→中能力不足(held 主因 MODEL_CAPA) | **维持并加宽**:E-JA(内嵌 jpn)critic 因大段日文未译 held;E-EN 术语 74.7% held;F1-EN critic 因英文未译 held。fail-closed 仍全部正确,无 translate 装盘。 |
+| Overflow=时长错版主病理 | **不推翻历史装错版事实**;本轮同一 E01 在删 sidecar 后走外源 translate → **critic held**,**未**出现 duration-mismatch 结果码。说明:时长闸仍缺(历史🔴仍在),但「再跑 Overflow」也可能先死在模型质量而非时长。 |
+| F2 jimaku 为 ja 源主路径 | 真 F2 样本(Grieving Soul S01E23,embedded=[]) → **no-source**;回退 E-JA 才进入翻译车道。F2 覆盖/匹配仍是独立风险,与 mimo 质量正交。 |
+| 弱模型+强判官可省配额 | 本轮 critic 与翻译同为 mimo 仍拦住全部不合格产出;若生产要「能装上」,翻译侧仍需强模型(与建议 4 一致),不能指望 mimo 过闸。 |
