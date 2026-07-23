@@ -229,3 +229,38 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - `eb343c0`:接上探针后 null/<=0 → held(`duration-unavailable`) / F1 no-source;写盘前强制重探;34 focused + 串行全量 **1960 passed / 1 skipped**。
 - 部署 revision `eb343c082d9a0f4233e2718c13d59b65499b27b3`;证据 `/mnt/nvme0n1-4/backup/20260723-165847-eb343c082d9a-deploy/`;rollback `subtitle-scout-rollback:20260723-170018`。
 - 终态:schema 15、`quick_check=ok`、`ai_translate_enabled=false`、running translate=0、dashboard `127.0.0.1:8099` HTTP 200。
+
+## 战役 8:Translate Workspace Agent · P1(2026-07-23)
+
+**规格**:`docs/design/2026-07-23-translate-workspace-agent-design.md`(全图 C,P1–P3 分期)。
+**计划**:`docs/design/2026-07-23-translate-workspace-agent-p1.md`。
+
+### P1 已交付(TDD,全量 1990 passed / 1 skipped,tsc+build 净)
+
+| Commit | 内容 |
+|---|---|
+| `eeeb34f` | staging 路径 `.subtitle-translate/<jobId>/` + types |
+| `d6e8ca3` | materialize 净文 / merge / **ja 永不 eng** resolveSource |
+| `721cc69` | `translate-workspace` skill + `runWorkspaceTranslate` 工作台 runner |
+| `458703e` | 14 个工作台工具 + task/report schemas |
+| `e7f5de7` | `makeTranslateWorker` agent 入口(finalize-tool 循环) |
+| `5a1fb72` | CLI `translate-item` 默认走 agent(库内定位;`--legacy`/`TRANSLATE_AGENT=off` 回退) |
+
+### 关键行为(测试钉死)
+
+- ja origin + 仅 eng 内嵌 → **no-source**,绝不英译;工具层 resolve_source 亦不写 canonical。
+- agent 翻译 = 模型在工作台上读净文文档、冻结术语表、按行 `update_row` 写译文;最终 SRT **只**来自确定性 merge(canonical timing shells)。
+- 工作台文件齐全:canonical / source_clean / terms.json(FROZEN) / bilingual / summary / out。
+- 闸:空 tgt / 术语符合率 <85% / 时长(探针失败 fail-closed) → held,不装盘。
+- 路径沙盒:`read_workspace_doc` 禁逃逸与 canonical 直读;`update_row` 禁改 src;`freeze_glossary` 一次性。
+
+### 未做(分期明确)
+
+- **P2**:wiki/权威 fetch 工具、critic 写 `critic.md`、reflect-refine。
+- **P3**:daemon `translate` 分支切 agent(当前 daemon 仍 legacy `translateItem`,双门不变)、staging GC、runs.llm_calls 对齐。
+- 真机/子代理验收(真 mimo + 工作台):接 CLI 后单独跑。
+
+### 备注
+
+- 手动 CLI 无库身份(文件不在库)时自动回退 legacy,日志明示——agent 单跳选源需要 origin_lang。
+- 未 push;生产未部署(agent 未接 daemon,零生产行为变化)。
