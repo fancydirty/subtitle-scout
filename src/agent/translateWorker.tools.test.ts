@@ -60,12 +60,13 @@ describe('translate workspace tools', () => {
     expect(readFileSync(paths.canonicalSourcePath, 'utf8')).toContain('Hello Nico')
   })
 
-  it('resolve_source: ja origin with only eng embedded → no-source, canonical absent', async () => {
+  it('resolve_source: ja origin with only eng embedded → fallback eng, canonical written', async () => {
     task.originLang = 'ja'
     const tools = makeTranslateWorkspaceTools(baseDeps())
     const r = await call(tools.resolve_source)
-    expect(r.status).toBe('no-source')
-    expect(existsSync(paths.canonicalSourcePath)).toBe(false)
+    expect(r.status).toBe('ok')
+    expect(r.sourceRef).toMatch(/^fallback:embedded/)
+    expect(existsSync(paths.canonicalSourcePath)).toBe(true)
   })
 
   it('read_workspace_doc rejects path escape outside jobRoot', async () => {

@@ -15,6 +15,7 @@ describe('translateSkill', () => {
     expect(c).toMatch(/must not|禁止|never/i)
     expect(c).toMatch(/English|英/)
     expect(c).toMatch(/Brave|web_search|通用搜索/)
+    expect(c).toMatch(/fallback/)
     expect(c).toMatch(/glossary|术语/)
     expect(c).toMatch(/freeze|冻结/)
     expect(c).toMatch(/Simplified-Chinese|简中|中文译名/)

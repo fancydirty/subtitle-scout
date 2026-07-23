@@ -98,20 +98,28 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
     expect(readFileSync(join(jobRoot, 'work', 'summary.md'), 'utf8')).toContain('道别')
   })
 
-  it('ja origin with only eng embedded: resolve_source → no-source → finalize no-source', async () => {
+  it('ja origin with only eng embedded: resolve_source → fallback eng → 正常走翻译车道', async () => {
     mkdirSync(join(root, 'Show'), { recursive: true })
     writeFileSync(baseTask().videoPath, 'video-bytes')
     const steps = [
       toolCallResult('c1', 'resolve_source', {}),
-      finalizeResult({ status: 'no-source', reason: 'origin_lang=ja requires Japanese source', sourceRef: null, sidecarPath: null }),
+      toolCallResult('c2', 'materialize_agent_view', {}),
+      toolCallResult('c3', 'freeze_glossary', { terms: [{ src: 'Nico', zh: '妮可' }] }),
+      toolCallResult('c4', 'update_rows', { rows: [{ id: '1', tgt: '你好妮可', status: 'ok' }, { id: '2', tgt: '再见', status: 'ok' }] }),
+      toolCallResult('c5', 'run_structural_gate', {}),
+      toolCallResult('c6', 'merge_to_srt', {}),
+      toolCallResult('c7', 'install_sidecar', {}),
+      finalizeResult({
+        status: 'installed', reason: null,
+        sourceRef: 'fallback:embedded:s:0', sidecarPath: baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'),
+      }),
     ]
     let call = 0
     const model = new MockLanguageModelV4({ doGenerate: async () => steps[Math.min(call++, steps.length - 1)] })
     const run = makeTranslateWorker(baseDeps(model))
     const report = await run(baseTask({ originLang: 'ja' }))
-    expect(report.status).toBe('no-source')
-    expect(existsSync(baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'))).toBe(false)
-    expect(existsSync(join(root, '.subtitle-translate', 'job-1', 'out', 'target.srt'))).toBe(false)
+    expect(report.status).toBe('installed')
+    expect(report.sourceRef).toMatch(/^fallback:embedded/)
   })
 
   it('gate fail → model finalizes held; nothing installed', async () => {

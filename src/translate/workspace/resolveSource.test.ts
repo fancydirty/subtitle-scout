@@ -11,18 +11,31 @@ function baseDeps(over: Partial<ResolveSourceDeps> = {}): ResolveSourceDeps {
 }
 
 describe('resolveTranslateSource — origin-lang single-hop', () => {
-  it('origin=ja with only eng embedded → no-source (never eng)', async () => {
-    const extract = vi.fn(async () => 'should-not-run')
+  it('origin=ja with only eng embedded → fallback eng (ja 优先,无 ja 时 eng 兜底)', async () => {
     const r = await resolveTranslateSource({
       originLang: 'ja',
       videoPath: '/m/x.mkv',
       deps: baseDeps({
         probe: async () => [{ lang: 'eng', codec: 'ass', isImageBased: false }],
-        extract,
+        extract: async () => '1\n00:00:01,000 --> 00:00:02,000\nHello\n',
       }),
     })
-    expect(r).toEqual({ status: 'no-source', reason: expect.stringMatching(/ja|japanese|日/i) })
-    expect(extract).not.toHaveBeenCalled()
+    expect(r.status).toBe('ok')
+    if (r.status === 'ok') {
+      expect(r.sourceRef).toMatch(/^fallback:embedded/)
+      expect(r.sourceLangName).toBe('英文')
+    }
+  })
+
+  it('origin=ja with neither ja nor eng → no-source', async () => {
+    const r = await resolveTranslateSource({
+      originLang: 'ja',
+      videoPath: '/m/x.mkv',
+      deps: baseDeps({
+        probe: async () => [{ lang: 'spa', codec: 'ass', isImageBased: false }],
+      }),
+    })
+    expect(r.status).toBe('no-source')
   })
 
   it('origin=ja with jpn embedded text track → embedded source', async () => {

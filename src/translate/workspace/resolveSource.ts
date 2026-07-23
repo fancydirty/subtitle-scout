@@ -54,6 +54,9 @@ export async function resolveTranslateSource(args: {
   }
 
   if (isJa(origin)) {
+    // 源语言优先(单跳首选):ja 内嵌 → jimaku/外源 ja。都没有 → 退而求其次 eng(用户裁决
+    // 2026-07-24:fallback 设计=尽量源语言,jimaku 确实没有就 eng 兜底,context 补信息熵;
+    // 总好过留空缺)。eng 兜底时 sourceRef 前缀 'fallback:' 明示,供 runs/审计区分。
     const jaIdx = tracks.findIndex((t) => !t.isImageBased && isJaTrack(t))
     if (jaIdx >= 0) {
       const srt = await args.deps.extract(args.videoPath, jaIdx)
@@ -66,9 +69,15 @@ export async function resolveTranslateSource(args: {
         return { status: 'ok', srtText: fetched.srtText, sourceRef: fetched.sourceRef, sourceLangName: '日文' }
       }
     }
+    const enIdx = tracks.findIndex((t) => !t.isImageBased && isEnTrack(t))
+    if (enIdx >= 0) {
+      const srt = await args.deps.extract(args.videoPath, enIdx)
+      if (srt == null) return { status: 'extract-failed', reason: 'eng fallback embedded extract failed' }
+      return { status: 'ok', srtText: srt, sourceRef: `fallback:embedded:s:${enIdx}`, sourceLangName: '英文' }
+    }
     return {
       status: 'no-source',
-      reason: 'origin_lang=ja requires Japanese source (jimaku/embedded ja); eng embedded is not a valid single-hop source',
+      reason: 'origin_lang=ja: no Japanese source (jimaku/embedded ja) and no English fallback track either',
     }
   }
 
