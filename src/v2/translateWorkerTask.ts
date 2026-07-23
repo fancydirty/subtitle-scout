@@ -63,10 +63,24 @@ export function listTranslateCandidates(db: ScoutDb): TranslateCandidate[] {
     .map((r) => ({ itemId: r.id, videoPath: r.path }))
 }
 
+/** done(含 no-source 诚实收官)行的复查窗:窗内不重派——zerotest2 实证热循环(job28 每 tick
+ *  done→revive→no-source→done,~30 runs/10min 烧配额且饿死同列其它 translate job)。
+ *  超窗才 revive,对应"unavailable 的衰减复查周期性再给机会"的既有语义。 */
+export const TRANSLATE_DONE_RECHECK_MS = 24 * 3_600_000
+
 /** 返回本轮新建的 job 行数(幂等:已有 identity 行时 created=0)。 */
-export function dispatchTranslateTasks(db: ScoutDb, jobs: JobsRepo, now: () => number): number {
+export function dispatchTranslateTasks(
+  db: ScoutDb, jobs: JobsRepo, now: () => number,
+  opts?: { doneRecheckMs?: number },
+): number {
+  const recheckMs = opts?.doneRecheckMs ?? TRANSLATE_DONE_RECHECK_MS
   let created = 0
   for (const c of listTranslateCandidates(db)) {
+    const existing = db.prepare(
+      `SELECT state, updated_at FROM jobs
+        WHERE kind = 'worker_task' AND series_id = ? AND ifnull(json_extract(payload,'$.taskType'),'') = 'translate'`,
+    ).get(`translate:${c.itemId}`) as { state: string; updated_at: number } | undefined
+    if (existing && existing.state === 'done' && now() - existing.updated_at < recheckMs) continue
     const outcome = jobs.upsertWorkerTask(
       { seriesId: `translate:${c.itemId}`, season: null, movieId: null },
       { taskType: 'translate', videoPath: c.videoPath, itemId: c.itemId },

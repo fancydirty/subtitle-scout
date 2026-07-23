@@ -117,6 +117,26 @@ describe('dispatchTranslateTasks — 派 translate worker_task(合成 identity �
     const n = db.prepare(`SELECT COUNT(*) AS n FROM jobs`).get() as { n: number }
     expect(n.n).toBe(2)
   })
+
+  it('done 行在 24h 复查窗内跳过(不热循环 revive no-source);超窗才复活', () => {
+    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["eng"]')
+    expect(dispatchTranslateTasks(db, jobs, () => 1_000)).toBe(1)
+    // 标记 done(模拟一次 no-source 收官)
+    db.prepare(`UPDATE jobs SET state='done', updated_at=2_000`).run()
+    expect(dispatchTranslateTasks(db, jobs, () => 2_000 + 3_600_000)).toBe(0) // 1h 后:窗内,跳过
+    expect((db.prepare(`SELECT state FROM jobs`).get() as { state: string }).state).toBe('done')
+    // 超 24h 窗:复活重派(revived 非 created,返回值仍 0,状态翻 wanted)
+    expect(dispatchTranslateTasks(db, jobs, () => 2_000 + 25 * 3_600_000)).toBe(0)
+    expect((db.prepare(`SELECT state FROM jobs`).get() as { state: string }).state).toBe('wanted')
+  })
+
+  it('done 复查窗可注入(缩短窗→复活)', () => {
+    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["eng"]')
+    dispatchTranslateTasks(db, jobs, () => 1_000)
+    db.prepare(`UPDATE jobs SET state='done', updated_at=2_000`).run()
+    expect(dispatchTranslateTasks(db, jobs, () => 2_000 + 60_000, { doneRecheckMs: 30_000 })).toBe(0)
+    expect((db.prepare(`SELECT state FROM jobs`).get() as { state: string }).state).toBe('wanted')
+  })
 })
 
 describe('runTranslateWorkerTask — 结局映射', () => {
