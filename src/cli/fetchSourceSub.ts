@@ -36,7 +36,10 @@ export interface FetchSourceSubDeps {
   parseSrt: (text: string) => SrtCue[]
 }
 
-export type FetchSourceSub = (videoPath: string) => Promise<{ srtText: string; sourceRef: string } | null>
+export type FetchSourceSub = (
+  videoPath: string,
+  accept?: (srtText: string) => Promise<boolean>,
+) => Promise<{ srtText: string; sourceRef: string } | null>
 
 /** 按序最多试 3 个候选——OS 每日下载配额有限,机械循环不该一晚烧光;3 个都解不出基本就是没有。 */
 export const MAX_CANDIDATE_ATTEMPTS = 3
@@ -61,7 +64,7 @@ function subtitleTextFromDownload(dl: DownloadResult): string | null {
 }
 
 export function makeFetchSourceSub(deps: FetchSourceSubDeps): FetchSourceSub {
-  return async (videoPath) => {
+  return async (videoPath, accept) => {
     let located: LocatedItem | null
     try { located = deps.locate(videoPath) } catch { return null }
     if (!located) return null
@@ -90,6 +93,7 @@ export function makeFetchSourceSub(deps: FetchSourceSubDeps): FetchSourceSub {
         const text = subtitleTextFromDownload(dl)
         if (text === null) continue
         if (deps.parseSrt(text).length === 0) continue // srt 闸:解不出一条 cue 的不收
+        if (accept && !await accept(text)) continue
         return { srtText: text, sourceRef: candidateKey(c) }
       } catch { continue } // 网络/配额/解包错 → 试下一候选
     }

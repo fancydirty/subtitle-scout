@@ -139,7 +139,7 @@ export async function runTranslateWorkerTask(
         recordRun('translate:held', `${videoPath} ${r.reason ?? ''}`, llmCalls)
       }
     } else {
-      // extract-failed:诚实失败,completeError 走瞬时退避梯。
+      // extract/write 失败:诚实失败,completeError 走瞬时退避梯。
       jobs.completeError(job.id, `translate ${r.status}: ${r.reason ?? ''}`, now())
       recordRun(`translate:${r.status}`, `${videoPath} ${r.reason ?? ''}`, llmCalls)
     }

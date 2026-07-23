@@ -271,4 +271,15 @@ describe('runTranslateWorkerTask — 结局映射', () => {
     expect(runsRows[0]?.decision).toBe('translate:no-source')
     expect(runsRows[0]?.llmCalls).toBe(0)
   })
+
+  it('write-failed insert 保留 result 的 llmCalls', async () => {
+    const job = makeJob('/media/x.mkv')
+    const runsRows: { decision: string; llmCalls?: number }[] = []
+    await runTranslateWorkerTask(job, {
+      runItem: async () => ({ status: 'write-failed', reason: 'disk full', llmCalls: 2 }) as never,
+      runs: { insert: (r: { decision: string; llmCalls?: number }) => { runsRows.push(r) } } as never,
+    }, jobs, () => 99)
+    expect((db.prepare(`SELECT state FROM jobs WHERE id=?`).get(job.id) as { state: string }).state).toBe('failed')
+    expect(runsRows[0]).toMatchObject({ decision: 'translate:write-failed', llmCalls: 2 })
+  })
 })

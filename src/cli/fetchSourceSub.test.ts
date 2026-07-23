@@ -111,6 +111,17 @@ describe('makeFetchSourceSub — 候选循环(机械按序,最多 3 个)', () =>
     expect(await fetch('/media/x.mkv')).toEqual({ srtText: SRT, sourceRef: 'opensubtitles:good' })
   })
 
+  it('调用方拒绝错源后继续试下一候选', async () => {
+    const wrongDuration = ['1', '00:00:00,000 --> 00:03:20,000', 'Wrong episode.', ''].join('\n')
+    const fetch = makeFetchSourceSub(baseDeps({
+      search: async () => [cand('opensubtitles', 'wrong'), cand('opensubtitles', 'right')],
+      resolve: async (ref) => ({ url: `https://${ref.providerId}` }),
+      download: async (url) => dl(url.endsWith('wrong') ? wrongDuration : SRT),
+    }))
+    const r = await fetch('/media/x.mkv', async (text) => parseSrtCues(text)[0]?.timing.includes('00:00:03') ?? false)
+    expect(r).toEqual({ srtText: SRT, sourceRef: 'opensubtitles:right' })
+  })
+
   it('resolve/download 抛错(配额撞顶/网络)吞成试下一候选', async () => {
     let resolves = 0
     const fetch = makeFetchSourceSub(baseDeps({

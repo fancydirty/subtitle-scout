@@ -263,6 +263,23 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
     expect(written).toHaveLength(0)
   })
 
+  it('F1 将时长谓词交给 fetch 腿,跳过错源后采用下一合格候选', async () => {
+    const wrongSource = ['1', '00:00:00,000 --> 00:03:20,000', 'Wrong episode.', ''].join('\n')
+    let checked = 0
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      probe: async () => [],
+      fetchSourceSub: async (_videoPath, accept) => {
+        if (await accept?.(wrongSource)) return { srtText: wrongSource, sourceRef: 'opensubtitles:wrong' }
+        checked++
+        if (await accept?.(SOURCE)) return { srtText: SOURCE, sourceRef: 'opensubtitles:right' }
+        return null
+      },
+      videoDurationSec: async () => 3,
+    }))
+    expect(r).toMatchObject({ status: 'installed', sourceRef: 'opensubtitles:right' })
+    expect(checked).toBe(1)
+  })
+
   it('预检:源字幕过短 ratio<0.85 → held(duration-mismatch),零模型调用', async () => {
     const shortSource = ['1', '00:00:01,000 --> 00:01:40,000', 'Rose enters Pictor.', ''].join('\n')
     const lm = countingLM()
@@ -275,6 +292,41 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
     expect(r.reason).toContain('duration-mismatch')
     expect(lm.calls.glossary).toBe(0)
     expect(lm.calls.batch).toBe(0)
+  })
+
+  it('预检:乱序 SRT 仍按最大 cue 结束时间拦下,零模型调用', async () => {
+    // 末条 cue 正好 1s,但首条实际延伸到 200s。不能因文件乱序把错源放进 LLM。
+    const unsortedSource = [
+      '1', '00:00:00,000 --> 00:03:20,000', 'Rose enters Pictor.', '',
+      '2', '00:00:00,000 --> 00:00:01,000', 'Rose leaves Pictor.', '',
+    ].join('\n')
+    const lm = countingLM()
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => unsortedSource,
+      lm,
+      videoDurationSec: async () => 1,
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(r.reason).toContain('200')
+    expect(lm.calls.glossary).toBe(0)
+    expect(lm.calls.batch).toBe(0)
+  })
+
+  it('预检:20 万 cue 仍能按最大结束时间拦下,不触发参数展开异常', async () => {
+    const longCue = ['1', '00:00:00,000 --> 00:03:20,000', 'Wrong episode.', ''].join('\n')
+    const shortCues = Array.from({ length: 199_999 }, (_, i) => [
+      String(i + 2), '00:00:00,000 --> 00:00:01,000', 'Short cue.', '',
+    ].join('\n'))
+    const lm = countingLM()
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => [longCue, ...shortCues].join('\n'),
+      lm,
+      videoDurationSec: async () => 1,
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('200')
+    expect(lm.calls.glossary).toBe(0)
   })
 
   it('预检:ratio 在 [0.85, 1.15] 内 → 继续翻译并可 installed', async () => {
@@ -355,6 +407,15 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
     expect(r.reason).toContain('423')
     expect(r.reason).toContain('210')
     expect(written).toHaveLength(0)
+  })
+
+  it('写 sidecar 失败 → write-failed 携带已经尝试的 llmCalls', async () => {
+    const lm = countingLM()
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      lm,
+      writeSidecar: () => { throw new Error('disk full') },
+    }))
+    expect(r).toMatchObject({ status: 'write-failed', reason: 'disk full', llmCalls: 2 })
   })
 })
 
