@@ -1,0 +1,159 @@
+import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, afterEach, beforeEach } from 'vitest'
+import { ensureWorkspaceLayout } from '../translate/workspace/paths.js'
+import { materializeAgentView } from '../translate/workspace/materialize.js'
+import { makeTranslateWorkspaceTools, type TranslateToolDeps } from './translateWorker.tools.js'
+import type { TranslateTask } from './translateWorker.schemas.js'
+import type { WorkspacePaths } from '../translate/workspace/types.js'
+
+const SAMPLE_SRT = [
+  '1',
+  '00:00:01,000 --> 00:00:02,000',
+  'Hello Nico',
+  '',
+  '2',
+  '00:00:03,000 --> 00:00:04,000',
+  'Goodbye',
+  '',
+].join('\n')
+
+let base: string
+let task: TranslateTask
+let paths: WorkspacePaths
+
+function baseDeps(over: Partial<TranslateToolDeps> = {}): TranslateToolDeps {
+  return {
+    task,
+    paths,
+    resolveDeps: {
+      probe: async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }],
+      extract: async () => SAMPLE_SRT,
+    },
+    install: () => join(base, 'out.srt'),
+    ...over,
+  }
+}
+
+async function call(t: unknown, input: Record<string, unknown> = {}): Promise<any> {
+  const tool = t as { execute: (args: any, opts: any) => Promise<any> }
+  return tool.execute(input, { toolCallId: 't', messages: [], abortSignal: undefined as never })
+}
+
+beforeEach(() => {
+  base = mkdtempSync(join(tmpdir(), 'tw-tools-'))
+  task = {
+    jobId: 'job-1', videoPath: join(base, 'x.mkv'), itemId: 'tmdb:1/s1e1',
+    originLang: 'en', title: 'Show', mediaRoot: base,
+  }
+  paths = ensureWorkspaceLayout(base, 'job-1')
+})
+afterEach(() => { rmSync(base, { recursive: true, force: true }) })
+
+describe('translate workspace tools', () => {
+  it('resolve_source writes canonical + meta.sourceRef and reports sourceLangName', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const r = await call(tools.resolve_source)
+    expect(r).toMatchObject({ status: 'ok', sourceLangName: '英文' })
+    expect(r.sourceRef).toMatch(/embedded/)
+    expect(readFileSync(paths.canonicalSourcePath, 'utf8')).toContain('Hello Nico')
+  })
+
+  it('resolve_source: ja origin with only eng embedded → no-source, canonical absent', async () => {
+    task.originLang = 'ja'
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const r = await call(tools.resolve_source)
+    expect(r.status).toBe('no-source')
+    expect(existsSync(paths.canonicalSourcePath)).toBe(false)
+  })
+
+  it('read_workspace_doc rejects path escape outside jobRoot', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const r = await call(tools.read_workspace_doc, { path: '../outside.txt' })
+    expect(r).toHaveProperty('error')
+    expect(String(r.error)).toMatch(/escapes|outside|whitelist/i)
+  })
+
+  it('freeze_glossary writes terms.json + FROZEN; second freeze fails closed', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const r1 = await call(tools.freeze_glossary, { terms: [{ src: 'Nico', zh: '妮可' }] })
+    expect(r1).toMatchObject({ ok: true, count: 1 })
+    expect(readFileSync(paths.glossaryPath, 'utf8')).toContain('妮可')
+    expect(existsSync(paths.glossaryFrozenPath)).toBe(true)
+    const r2 = await call(tools.freeze_glossary, { terms: [{ src: 'X', zh: '某' }] })
+    expect(r2).toHaveProperty('error')
+  })
+
+  it('update_row cannot change src; tgt persists; list_rows reflects status', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    const bad = await call(tools.update_row, { id: '1', src: 'HACKED', tgt: '你好' } as any)
+    expect(bad).toHaveProperty('error')
+    const good = await call(tools.update_row, { id: '1', tgt: '你好', status: 'ok' })
+    expect(good).toMatchObject({ ok: true })
+    const listed = await call(tools.list_rows)
+    const row1 = listed.rows.find((r: any) => r.id === '1')
+    expect(row1).toMatchObject({ tgt: '你好', status: 'ok', src: 'Hello Nico' })
+  })
+
+  it('run_structural_gate fails on empty tgt, passes when filled + glossary conformant', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    const gateEmpty = await call(tools.run_structural_gate)
+    expect(gateEmpty.verdict).toBe('fail')
+
+    await call(tools.freeze_glossary, { terms: [{ src: 'Nico', zh: '妮可' }] })
+    await call(tools.update_row, { id: '1', tgt: '你好妮可', status: 'ok' })
+    await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
+    const gate = await call(tools.run_structural_gate)
+    expect(gate.verdict).toBe('pass')
+  })
+
+  it('run_structural_gate fails on glossary drift (Nico translated wrong)', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.freeze_glossary, { terms: [{ src: 'Nico', zh: '妮可' }] })
+    await call(tools.update_row, { id: '1', tgt: '你好尼古', status: 'ok' })
+    await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
+    const gate = await call(tools.run_structural_gate)
+    expect(gate.verdict).toBe('fail')
+  })
+
+  it('merge_to_srt writes out/target.srt with canonical timing; install_sidecar invokes install', async () => {
+    let installed: string | null = null
+    const deps = baseDeps({
+      install: (_vp, content) => { installed = content; return join(base, 'x.zh-Hans.srt') },
+    })
+    const tools = makeTranslateWorkspaceTools(deps)
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.update_row, { id: '1', tgt: '你好妮可', status: 'ok' })
+    await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
+    const m = await call(tools.merge_to_srt)
+    expect(m).toMatchObject({ ok: true, cueCount: 2 })
+    expect(readFileSync(paths.targetSrtPath, 'utf8')).toContain('00:00:01,000 --> 00:00:02,000')
+    const i = await call(tools.install_sidecar)
+    expect(i).toMatchObject({ ok: true, sidecarPath: join(base, 'x.zh-Hans.srt') })
+    expect(installed).toContain('你好妮可')
+  })
+
+  it('install_sidecar fails closed before merge (no target.srt)', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const r = await call(tools.install_sidecar)
+    expect(r).toHaveProperty('error')
+  })
+
+  it('get_window returns clean cues without timing', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    const w = await call(tools.get_window, { centerId: '1', radius: 1 })
+    expect(w.cues).toHaveLength(2)
+    expect(JSON.stringify(w.cues)).not.toMatch(/-->/)
+    expect(w.cues[0]).toMatchObject({ id: '1', text: 'Hello Nico' })
+  })
+})
