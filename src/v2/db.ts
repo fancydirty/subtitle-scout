@@ -11,7 +11,9 @@ export type ScoutDb = Database.Database
 // openDb() 的版本化机制本身（meta.schema_version 门、迁移前 FK 体检、迁移期 foreign_keys
 // 开关、事务）原样保留——它是通用基础设施，不因当前 MIGRATIONS 只剩一条 entry 而失去意义：
 // 未来若再长出 v10，这条机制照常够用，不需要重新发明。
-export const MIGRATIONS: string[] = [
+type Migration = string | ((db: ScoutDb) => void)
+
+export const MIGRATIONS: Migration[] = [
   // v9: 终态 schema（去 Jellyfin 化 P2）。id 语义换自有：series/movies.id = 'tmdb:<TMDB id>'，
   // episodes.id = 'tmdb:<TMDB id>/s<N>e<M>'（无零填充）——id 即身份，一切"拿 id 换身份"的
   // jf.getItem 缝从根上消失（src/v2/ownIds.ts 的 seriesId/episodeId/tmdbIdFromOwnId 是这套
@@ -294,6 +296,17 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
    ALTER TABLE parked_paths ADD COLUMN next_retry_at INTEGER;
    ALTER TABLE parked_paths ADD COLUMN probe_mtime INTEGER;
    ALTER TABLE parked_paths ADD COLUMN probe_size INTEGER`,
+  // v22（翻译账本补偿）：早期已初始化的 runs 表可能缺少原本只写进 v9 折叠终态的记账列。
+  // 新库已有列，必须条件式补齐，不能裸 ALTER 让 fresh install 失败。
+  (db) => {
+    const runsExists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'").get()
+    if (!runsExists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>).map((column) => column.name),
+    )
+    if (!columns.has('llm_calls')) db.exec('ALTER TABLE runs ADD COLUMN llm_calls INTEGER')
+    if (!columns.has('assrt_calls')) db.exec('ALTER TABLE runs ADD COLUMN assrt_calls INTEGER')
+  },
 ]
 
 export function openDb(path: string): ScoutDb {
@@ -393,7 +406,9 @@ export function openDb(path: string): ScoutDb {
 
     const migrate = db.transaction(() => {
       for (let i = currentVersion; i < MIGRATIONS.length; i++) {
-        db.exec(MIGRATIONS[i])
+        const migration = MIGRATIONS[i]
+        if (typeof migration === 'string') db.exec(migration)
+        else migration(db)
         const newVersion = i + 1
         db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)").run(
           String(newVersion)
