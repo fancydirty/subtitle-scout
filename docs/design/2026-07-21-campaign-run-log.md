@@ -314,6 +314,58 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - 跨 job 术语 canonical 方差(东国/奥斯塔尼亚)——剧级术语持久化是 P2 需求证据
 - 串行全量 **1997 passed / 1 skipped**;未 push 未部署(daemon 仍 legacy)
 
+## 战役 11:从零 live test 2.0 + P3 接线 + 夜间 auto-research(2026-07-24 凌晨,用户睡觉授权)
+
+**授权**:WW E-EN 实验 → P3 daemon 接线 → 备份 → 部署 → 从零(删全量字幕+清库) →
+ai_translate_enabled=true → 阻塞监控 ~4h → 多代理验收 → 根因修复循环。
+
+### WW E-EN fallback 实验(睡前)
+
+- jimaku 确认无 Witch Watch(英/片假名/罗马音全 0)
+- fallback 设计进代码(用户裁决:源语言优先,jimaku 没有就 eng 兜底,`fallback:` sourceRef 前缀可审计)
+- mimo + E05/E07 中字 ctx,120c:installed,94.6%;妮可/魔女/使魔 ✅,Morihito→莫伊人(官中守仁)⚠️
+- 结论:E-EN+ctx 可用,罗马音人名回官中有边界——JA→中无此问题
+
+### 从零 2.0 过程(4h 阻塞监控 + 2 轮根因修复)
+
+| 时间 | 事件 |
+|---|---|
+| 00:54 | 备份三件套 `/mnt/nvme0n1-4/backup/20260724-zerotest2/`(db 快照+env+259 字幕 tar) |
+| 00:56 | 部署 `ca85621`(P3 agent 接线);删 259 字幕;清库;schema 16 重建 |
+| 00:57 | `ai_translate_enabled=true`,TRANSLATE_*=mimo |
+| ~2h | find-subtitle 收割:episodes 244 covered+150 embedded,subs 257 ——与 zerotest1 同水平 |
+| 4h | **translateRuns=0**——发现 translate 从未启动 |
+| 诊断1 | 6 个 translate job 全 `require is not defined`:makeTranslateAgentDeps 用了 CJS `require`,ESM 生产构建崩 |
+| 修复1 | `6e760d4` 静态 import GlossaryRepo;补 db 接线测试;部署 |
+| 诊断2 | job28(Adam E01)热循环:done→revive→no-source→done,~30 runs/10min;29–33 error_attempt=12 饿死 |
+| 修复2 | `d9e316c` dispatchTranslateTasks done 行 24h 复查窗(可注入);部署 |
+| +50min | **全部 6 个 translate job 完成**:Adam×4 各 3 llm_calls → 诚实 no-source(jimaku 标题校验正确拒错配);**WW E02 installed(58 calls,~35min)+ WW E07 installed(44 calls)** |
+
+### 终局(08:00)
+
+| 指标 | zerotest1 | zerotest2 |
+|---|---|---|
+| episodes covered+embedded | 246+150 | 246+150 |
+| movies | 5+4 | 5+4 |
+| subtitles | 259 | 259 |
+| translate:installed | 1(假) | **2(真,WW E02/E07)** |
+| translate held | 23 | **0** |
+| 热循环/死循环 | 有 | **零** |
+
+### WW 翻译质量(生产,mimo,eng 兜底)
+
+- E02:`守仁,你还记得妮可吗?`——与官中逐字一致;**Morihito→守仁/Moi→守仁/Otogi→乙木**(非莫伊人!)
+- 守仁哪来的:find 先于翻译把 E05/E11/E20/E24 装好中字 → readSeriesTargetSubs 锚到 fansub canonical——**上下文管线在生产按设计工作**
+- E07:新月/妮可对话自然;两集 cues 439/436(=各自 eng 源解析数,merge 构造保证),0 空行 0 纯拉丁
+- **P2 持久化生效**:`translate_glossaries` tmdb:261868 = 74 术语(守仁/妮可/乙木/若月…),下一集 WW 翻译继承同一 canonical,莫伊人类方差死亡
+
+### 收尾
+
+- `ai_translate_enabled=false` 已复位(token 止损,同 zerotest1 协议)
+- 恢复路径:backup/20260724-zerotest2/(当前新库+新字幕更优,建议不恢复)
+- 修复提交:`6e760d4`(ESM require)、`d9e316c`(24h 复查窗);串行全量 **2009 passed / 1 skipped**
+- 部署:d9e316c 在跑;rollback tag 见各 deploy evidence
+
 ## 战役 10:Translate Workspace Agent P2(2026-07-23 深夜)
 
 **目标**:P1 验收暴露的三项真实需求 + GC。
