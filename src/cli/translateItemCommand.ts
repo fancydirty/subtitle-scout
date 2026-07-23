@@ -12,6 +12,9 @@ import { makeTranslationLM } from '../translate/translateLm.js'
 import { makeTranslationCritic } from '../translate/translateCritic.js'
 import { translateItem, type TranslateItemDeps } from '../translate/translateItem.js'
 import type { TranslationContext, TranslationCritic } from '../translate/translatePipeline.js'
+import { makeTranslateWorker, type TranslateWorkerDeps } from '../agent/translateWorker.js'
+import type { TranslateTask } from '../agent/translateWorker.schemas.js'
+import { containingRoot } from '../core/mediaContext.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { buildAdapters } from './buildAdapters.js'
 
@@ -119,17 +122,83 @@ export function makeTranslateItemDeps(
     readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
     gatherContext: async (v) => gatherSeriesContext(v, locateOriginLang?.(v) ?? null),
     videoDurationSec: (v) => probeDurationSec(v),
-    writeSidecar: (v, content) => {
-      // 原子写:tmp+rename。SIGKILL 落在裸 writeFileSync 中途会留下截断的 .zh-Hans.srt,
-      // 下一轮 readExistingChineseSidecar 命中 → already-covered → 该条目永久不再重译且
-      // 坏字幕直接进播放器。rename 同文件系统原子,截断 tmp 只会被重新覆盖。
-      const out = sidecarPathFor(v)
-      const tmp = `${out}.tmp`
-      writeFileSync(tmp, content, 'utf8')
-      renameSync(tmp, out)
-      return out
-    },
+    writeSidecar: (v, content) => writeSidecarAtomic(v, content),
   }
+}
+
+/** 原子 sidecar 写(tmp+rename):SIGKILL 落在裸 writeFileSync 中途会留下截断的 .zh-Hans.srt,
+ *  下一轮 already-covered 误判 → 该条目永久不再重译且坏字幕直接进播放器。 */
+function writeSidecarAtomic(videoPath: string, content: string): string {
+  const out = sidecarPathFor(videoPath)
+  const tmp = `${out}.tmp`
+  writeFileSync(tmp, content, 'utf8')
+  renameSync(tmp, out)
+  return out
+}
+
+/** 读同目录既有中文 sidecar 当术语锚(库内直读、零网络;最多 3 份各截断 3000 字)。 */
+export function readSeriesTargetSubs(videoPath: string): string | null {
+  const dir = dirname(videoPath)
+  const self = basename(videoPath)
+  const subs: string[] = []
+  try {
+    for (const f of readdirSync(dir)) {
+      if (f === self || !/\.(srt|ass|ssa)$/i.test(f)) continue
+      const lower = f.toLowerCase()
+      if (!CHINESE_TAGS.some((t) => lower.includes(`.${t.toLowerCase()}.`))) continue
+      try { subs.push(`### ${f}\n${readFileSync(join(dir, f), 'utf8').slice(0, 3000)}`) } catch { /* skip */ }
+      if (subs.length >= 3) break
+    }
+  } catch { /* 目录读失败 → 无上下文 */ }
+  return subs.length ? subs.join('\n\n') : null
+}
+
+/** 组装 translate workspace agent 的真实 I/O deps。与 makeTranslateItemDeps 同门的 cfg/超时
+ *  语义;install 只在 agent 通过闸后经 merge 产物触发(工具面保证)。 */
+export function makeTranslateAgentDeps(
+  cfg: { baseUrl: string; apiKey: string; model: string },
+  fetchSourceSub?: import('../translate/workspace/resolveSource.js').ResolveSourceDeps['fetchSourceSub'],
+  opts: {
+    fetchTmdbContext?: TranslateWorkerDeps['fetchTmdbContext']
+    fetchSeriesTargetSubs?: TranslateWorkerDeps['fetchSeriesTargetSubs']
+  } = {},
+): TranslateWorkerDeps {
+  const model = makeModel(cfg)
+  return {
+    model,
+    resolveDeps: {
+      probe: (v) => probeEmbeddedSubtitles(v),
+      extract: (v, i) => extractEmbeddedSubtitle(v, i),
+      fetchSourceSub,
+    },
+    install: (v, content) => writeSidecarAtomic(v, content),
+    videoDurationSec: (v) => probeDurationSec(v),
+    fetchTmdbContext: opts.fetchTmdbContext,
+    fetchSeriesTargetSubs: opts.fetchSeriesTargetSubs ?? ((task: TranslateTask) => Promise.resolve(readSeriesTargetSubs(task.videoPath))),
+    timeoutMs: translateTimeoutMs() * 3, // 整集工作台(多窗),比单批宽
+  }
+}
+
+/** db 定位任务的 itemId/origin_lang/tmdb 身份(供 agent 任务构造与 TMDB 富化)。 */
+export function locateTranslateIdentity(
+  db: import('../v2/db.js').ScoutDb,
+  videoPath: string,
+): { itemId: string; title: string; originLang: string | null; tmdbId?: string; mediaType?: 'tv' | 'movie' } | null {
+  const ep = db.prepare(
+    `SELECT e.id AS itemId, e.series_id AS seriesId, s.name AS title, s.origin_lang AS originLang
+       FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.path = ?`,
+  ).get(videoPath) as { itemId: string; seriesId: string; title: string; originLang: string | null } | undefined
+  if (ep) {
+    const tmdbId = ep.seriesId.startsWith('tmdb:') ? ep.seriesId.slice(5) : undefined
+    return { itemId: ep.itemId, title: ep.title, originLang: ep.originLang, tmdbId, mediaType: 'tv' }
+  }
+  const mv = db.prepare('SELECT id, name, origin_lang FROM movies WHERE path = ?')
+    .get(videoPath) as { id: string; name: string; origin_lang: string | null } | undefined
+  if (mv) {
+    const tmdbId = mv.id.startsWith('tmdb:') ? mv.id.slice(5) : undefined
+    return { itemId: mv.id, title: mv.name, originLang: mv.origin_lang, tmdbId, mediaType: 'movie' }
+  }
+  return null
 }
 
 export async function cmdTranslateItem(videoPath: string): Promise<void> {
@@ -138,8 +207,11 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
     process.exit(2)
   }
   const cfg = translateLlmCfg()
+  const legacyFlag = process.argv.includes('--legacy')
+  const agentOn = !legacyFlag && (process.env.TRANSLATE_AGENT ?? 'on').toLowerCase() !== 'off'
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
-  console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'}`)
+  console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'} 路径=${agentOn ? 'workspace-agent' : 'legacy'}`)
+
   // F1:手动 CLI 也接同一 fetchSourceSub(与 daemon 分支共用 makeRealFetchSourceSub 组装,防漂移)。
   // 需要库定位(origin_lang/imdb),故只在 scout.db 已存在时接线——库还没建(从没跑过 watch)时
   // 不为一次手动翻译凭空创建空库(openDb 会落盘建表),此时 fetch 腿关闭,行为同 F1 前(no-embedded)。
@@ -164,6 +236,73 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
   } else {
     console.log(`[translate-item] 未找到库 ${dbPath}(先跑一次 watch 建库),源语言外挂搜索腿未启用,仅走内嵌轨`)
   }
+
+  // Workspace agent 主路径(P1):需要库定位拿到 origin_lang/itemId(单跳选源依赖);
+  // 定位不到(库外文件)时诚实回退 legacy,不让 agent 在零身份下乱猜源语言。
+  if (agentOn && db) {
+    const identity = locateTranslateIdentity(db, videoPath)
+    if (identity) {
+      console.log(`[translate-item] 开始: ${videoPath} (workspace-agent)`)
+      let exitCode = 1
+      try {
+        // TMDB 富化(可选):getDetails overview;无 key/失败 → 空文档,不拦主线。
+        let fetchTmdbContext: TranslateWorkerDeps['fetchTmdbContext']
+        if (process.env.TMDB_API_KEY && identity.tmdbId && identity.mediaType) {
+          const { TmdbClient } = await import('../adapters/providers/tmdb.js')
+          const tmdb = new TmdbClient({
+            apiKey: process.env.TMDB_API_KEY,
+            baseUrl: process.env.TMDB_BASE_URL,
+            proxyUrl: process.env.TMDB_PROXY_URL,
+          })
+          const tmdbId = identity.tmdbId
+          const mediaType = identity.mediaType
+          fetchTmdbContext = async () => {
+            try {
+              const d = await tmdb.getDetails(mediaType, tmdbId)
+              if (!d) return null
+              return [`# ${identity.title}`, d.year ? `year: ${d.year}` : null, d.overview ?? ''].filter(Boolean).join('\n')
+            } catch {
+              return null
+            }
+          }
+        }
+        // stagingRoot:配置根优先(库 settings roots;退化 MEDIA_ROOTS env;再退化视频目录)。
+        let roots: string[] = []
+        try {
+          const { SettingsRepo } = await import('../v2/settingsRepo.js')
+          roots = new SettingsRepo(db).listRoots().map((r) => r.path)
+        } catch { /* settings 缺席 → env */ }
+        if (roots.length === 0 && process.env.MEDIA_ROOTS) {
+          roots = process.env.MEDIA_ROOTS.split(':').map((s) => s.trim()).filter(Boolean)
+        }
+        const videoDir = dirname(videoPath)
+        const stagingRoot = containingRoot(videoDir, roots) ?? videoDir
+        const deps = makeTranslateAgentDeps(cfg, fetchSourceSub, { fetchTmdbContext })
+        const run = makeTranslateWorker(deps)
+        const report = await run({
+          jobId: `cli-${Date.now()}`,
+          videoPath,
+          itemId: identity.itemId,
+          originLang: identity.originLang,
+          title: identity.title,
+          mediaRoot: videoDir,
+          stagingRoot,
+        })
+        const tail = (report.sidecarPath ? ` → ${report.sidecarPath}` : '') +
+          (report.reason ? ` (${report.reason})` : '') +
+          (report.sourceRef ? ` [源: ${report.sourceRef}]` : '')
+        console.log(`[translate-item] 结果: ${report.status}${tail}`)
+        exitCode = report.status === 'installed' ? 0 : 1
+      } finally {
+        db?.close()
+      }
+      process.exit(exitCode)
+    }
+    console.log(`[translate-item] 库内定位失败(无 origin_lang/itemId),回退 legacy 管道`)
+  } else if (agentOn && !db) {
+    console.log(`[translate-item] 无库身份(workspace-agent 需要 origin_lang 单跳选源),回退 legacy 管道`)
+  }
+
   const deps = makeTranslateItemDeps(cfg, fetchSourceSub, locateOriginLang)
   console.log(`[translate-item] 开始: ${videoPath}`)
   let r: Awaited<ReturnType<typeof translateItem>>
