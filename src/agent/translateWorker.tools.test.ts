@@ -274,6 +274,18 @@ describe('translate workspace tools', () => {
     expect(saved[0].terms).toHaveLength(2)
   })
 
+  it('P2.2a: run_structural_gate fails on unbalanced 《》「」【】', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.freeze_glossary, { terms: [{ src: 'Nico', zh: '妮可' }] })
+    await call(tools.update_row, { id: '1', tgt: '《呼……总算糊弄过去了', status: 'ok' })
+    await call(tools.update_row, { id: '2', tgt: '正常对白', status: 'ok' })
+    const gate = await call(tools.run_structural_gate)
+    expect(gate.verdict).toBe('fail')
+    expect(gate.reasons).toEqual(expect.arrayContaining([expect.stringMatching(/bracket|括号|《》/i)]))
+  })
+
   it('get_window returns clean cues without timing', async () => {
     const tools = makeTranslateWorkspaceTools(baseDeps())
     await call(tools.resolve_source)

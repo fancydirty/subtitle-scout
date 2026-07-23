@@ -443,10 +443,28 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       clearGateMarker(paths) // every gate evaluation resets the pass state first
       const rows = readRows(paths)
       if (rows.length === 0) return { verdict: 'fail', reasons: ['no bilingual rows — materialize first'] }
-      const empty = rows.filter((r) => !r.tgt.trim()).map((r) => r.id)
-      if (empty.length) {
-        return { verdict: 'fail', reasons: [`empty tgt rows: ${empty.slice(0, 10).join(',')}${empty.length > 10 ? '…' : ''}`] }
+      const emptyRows = rows.filter((r) => r.status !== 'pending' && !r.tgt.trim())
+      if (emptyRows.length) {
+        return { verdict: 'fail', reasons: [`${emptyRows.length} row(s) with status=${emptyRows[0].status} have empty tgt`] }
       }
+      // P2.2a deterministic 括号配对闸(验收实证:mimo 残留《呼……而非《呼……》)——
+      // 《》「」【】每行左右数必须相等;常规()（）不强制(字幕里单边括号合法)。
+      const bracketPairs: [string, string][] = [['《', '》'], ['「', '」'], ['【', '】']]
+      const unbalanced: string[] = []
+      for (const r of rows) {
+        for (const [L, R] of bracketPairs) {
+          const left = (r.tgt.match(new RegExp(L.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length
+          const right = (r.tgt.match(new RegExp(R.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length
+          if (left !== right) {
+            unbalanced.push(`row ${r.id}: unbalanced ${L}${R} (${left} left, ${right} right)`)
+            break
+          }
+        }
+      }
+      if (unbalanced.length) {
+        return { verdict: 'fail', reasons: [`bracket pairing violation: ${unbalanced.slice(0, 5).join('; ')}`] }
+      }
+
       const terms = readTerms(paths)
       // keepOriginal 术语不参与符合率统计(期望输出=原文,谈不上"漂移";计入只会虚增分子)。
       const gateTerms = terms.filter((t) => !t.keepOriginal)
