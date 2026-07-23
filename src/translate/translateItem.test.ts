@@ -338,7 +338,7 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
       videoDurationSec: async () => { probeCalls++; return 210 },
     }))
     expect(r.status).toBe('installed')
-    expect(probeCalls).toBe(1) // 预检探针结果复用于译后闸,不二次 probe
+    expect(probeCalls).toBe(2) // 预检 + 写盘前重探
   })
 
   it('译后闸 defense-in-depth:源 ok 但译文时轴被拉长 → 仍 held,不写 sidecar', async () => {
@@ -372,20 +372,49 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
     expect(r.reason).toContain('duration-mismatch')
     expect(r.reason).toContain('423')
     expect(written).toHaveLength(0)
-    expect(probeCalls).toBe(1) // 预检一次,译后复用
+    expect(probeCalls).toBe(2) // 预检 + 写盘前重探
     expect(parseSrtCues(okSource)).toHaveLength(1) // 源可解析且时轴正常
   })
 
-  it('videoDurationSec 返回 null → 跳过预检,installed(宁缺毋滥不阻塞)', async () => {
+  it('videoDurationSec 返回 null → held(duration-unavailable),零模型调用且不写 sidecar', async () => {
+    // fail-closed:探针不可用时不得放行错时长源进 LLM/装盘。
     const longSource = ['1', '00:00:01,000 --> 00:07:03,000', 'Rose enters Pictor.', ''].join('\n')
     const lm = countingLM()
+    const written: string[] = []
     const r = await translateItem('/media/x.mkv', baseDeps({
       extract: async () => longSource,
       lm,
       videoDurationSec: async () => null,
+      writeSidecar: (vp) => { written.push(vp); return vp },
     }))
-    expect(r.status).toBe('installed')
-    expect(lm.calls.glossary).toBeGreaterThan(0) // null 不拦,照常走 LLM
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-unavailable')
+    expect(lm.calls.glossary).toBe(0)
+    expect(lm.calls.batch).toBe(0)
+    expect(written).toHaveLength(0)
+  })
+
+  it('F1:videoDurationSec 返回 null → 拒绝全部候选,no-source(不 fail-open)', async () => {
+    const lm = countingLM()
+    const written: string[] = []
+    let acceptCalls = 0
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      probe: async () => [],
+      fetchSourceSub: async (_vp, accept) => {
+        if (accept) {
+          acceptCalls++
+          if (await accept(SOURCE)) return { srtText: SOURCE, sourceRef: 'opensubtitles:x' }
+        }
+        return null
+      },
+      lm,
+      videoDurationSec: async () => null,
+      writeSidecar: (vp) => { written.push(vp); return vp },
+    }))
+    expect(r.status).toBe('no-source')
+    expect(acceptCalls).toBe(1)
+    expect(lm.calls.glossary).toBe(0)
+    expect(written).toHaveLength(0)
   })
 
   it('未接 videoDurationSec → 不校验,行为与从前完全一致(向后兼容)', async () => {
@@ -406,6 +435,28 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
     expect(r.reason).toContain('duration-mismatch')
     expect(r.reason).toContain('423')
     expect(r.reason).toContain('210')
+    expect(written).toHaveLength(0)
+  })
+
+  it('译后写盘前重探时长:预检 3s 过闸,译后变 210s → held,不写 sidecar', async () => {
+    // 防长跑期间路径被替换:写盘前必须重探,不能复用译前缓存。
+    const okSource = ['1', '00:00:01,000 --> 00:00:03,000', 'Rose enters Pictor.', ''].join('\n')
+    const durations = [3, 210]
+    let probeCalls = 0
+    const written: string[] = []
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => okSource,
+      videoDurationSec: async () => {
+        probeCalls++
+        return durations.shift() ?? 210
+      },
+      writeSidecar: (vp) => { written.push(vp); return vp },
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(r.reason).toContain('3')
+    expect(r.reason).toContain('210')
+    expect(probeCalls).toBe(2)
     expect(written).toHaveLength(0)
   })
 

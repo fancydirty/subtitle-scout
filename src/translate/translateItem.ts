@@ -26,10 +26,10 @@ export interface TranslateItemDeps {
   ) => Promise<{ srtText: string; sourceRef: string } | null>
   /** 写中文 sidecar,返回写入路径。 */
   writeSidecar: (videoPath: string, content: string) => string
-  /** 可选:探视频时长(probeDurationSec),用于时长校验闸——产出字幕最后 cue 的结束时间 / 视频时长
-   *  不在 [0.85, 1.15] → held(duration-mismatch),fail-closed 防错版本/错源字幕落盘(Overflow
-   *  全季装错版本实案)。translatePipeline 是纯文本管道(不知视频时长),这道闸只能在持 videoPath
-   *  的本层做。缺省/返回 null=不校验(同 probe=null 语义:宁缺毋滥不阻塞)。 */
+  /** 可选:探视频时长(probeDurationSec),用于时长校验闸——源/译文最大 cue end / 视频时长
+   *  不在 [0.85, 1.15] → held(duration-mismatch)。接上后探针失败(null/<=0)也 fail-closed
+   *  (held duration-unavailable / F1 no-source),不 fail-open 放行错时长源。缺省=不校验
+   *  (向后兼容未接线路径)。写盘前会重探,不复用译前缓存。 */
   videoDurationSec?: (videoPath: string) => Promise<number | null>
 }
 
@@ -75,15 +75,11 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
   // 源轨:第一条非中文的文本轨(图形轨不可当文本比对/翻译)。其在字幕流里的位置即 -map 0:s:N 的 N。
   const sourceIdx = tracks.findIndex((t) => !t.isImageBased && !isChinese(t.lang))
 
-  // 每轮最多探一次视频时长。F1 在候选循环里先过滤错源，随后源/译后闸复用同一结果。
-  let durationProbed = false
-  let videoSec: number | null = null
-  const getVideoSec = async (): Promise<number | null> => {
-    if (!durationProbed) {
-      durationProbed = true
-      videoSec = deps.videoDurationSec ? await deps.videoDurationSec(videoPath) : null
-    }
-    return videoSec
+  // 时长探针:接上 videoDurationSec 后 null/<=0 一律不可用。写盘前会强制重探,不缓存跨 LLM。
+  const probeVideoSec = async (): Promise<number | null> => {
+    if (!deps.videoDurationSec) return null
+    const sec = await deps.videoDurationSec(videoPath)
+    return sec !== null && sec > 0 ? sec : null
   }
 
   // 源文本双腿(F1):有合格内嵌轨→抽取(绝不调 fetchSourceSub,省下载配额);零合格轨且接了
@@ -95,37 +91,39 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
     if (extracted === null) return { status: 'extract-failed', llmCalls: 0 }
     src = extracted
   } else if (deps.fetchSourceSub) {
+    // F1 候选 accept:时长未知 → 全拒(fail-closed,不把错版放进 LLM)。
+    let preVideoSec: number | null | undefined
     const fetched = await deps.fetchSourceSub(videoPath, async (candidate) => {
-      const candidateVideoSec = await getVideoSec()
-      if (candidateVideoSec === null || candidateVideoSec <= 0) return true
+      if (preVideoSec === undefined) preVideoSec = await probeVideoSec()
+      if (preVideoSec === null) return false
       const cues = parseSrtCues(candidate)
       if (cues.length === 0) return false
-      const ratio = maxCueEndSec(cues) / candidateVideoSec
+      const ratio = maxCueEndSec(cues) / preVideoSec
       return ratio >= 0.85 && ratio <= 1.15
     })
-    if (fetched === null) return { status: 'no-source', llmCalls: 0 } // 诚实失败:搜索穷尽/都解不出
+    if (fetched === null) return { status: 'no-source', llmCalls: 0 } // 诚实失败:搜索穷尽/都解不出/时长不可用
     src = fetched.srtText
     sourceRef = fetched.sourceRef
   } else {
     return { status: 'no-embedded', llmCalls: 0 }
   }
 
-  // 源时长预检(Task 3):错源在 LLM 之前 fail-closed。probe 至多一次,结果复用给译后闸。
-  // videoSec null/<=0 或无源 cue → 不发明时长,走既有路径(译后闸仍可拦)。
+  // 源时长预检:接上探针后必须拿到有效时长;null → held(duration-unavailable),零 LLM。
   if (deps.videoDurationSec) {
-    videoSec = await getVideoSec()
-    if (videoSec !== null && videoSec > 0) {
-      const sourceCues = parseSrtCues(src)
-      if (sourceCues.length > 0) {
-        const sourceEndSec = maxCueEndSec(sourceCues)
-        const ratio = sourceEndSec / videoSec
-        if (ratio < 0.85 || ratio > 1.15) {
-          return {
-            status: 'held',
-            reason: `duration-mismatch: source ${Math.round(sourceEndSec)}s vs video ${videoSec}s`,
-            sourceRef,
-            llmCalls: 0,
-          }
+    const videoSec = await probeVideoSec()
+    if (videoSec === null) {
+      return { status: 'held', reason: 'duration-unavailable: video duration probe failed', sourceRef, llmCalls: 0 }
+    }
+    const sourceCues = parseSrtCues(src)
+    if (sourceCues.length > 0) {
+      const sourceEndSec = maxCueEndSec(sourceCues)
+      const ratio = sourceEndSec / videoSec
+      if (ratio < 0.85 || ratio > 1.15) {
+        return {
+          status: 'held',
+          reason: `duration-mismatch: source ${Math.round(sourceEndSec)}s vs video ${videoSec}s`,
+          sourceRef,
+          llmCalls: 0,
         }
       }
     }
@@ -145,14 +143,29 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
   const result = await translateSubtitle(src, ctx, deps.lm, { critic: deps.critic })
 
   if (result.verdict === 'installed' && result.translatedSrt !== null) {
-    // 译后时长闸(defense in depth):产出字幕最大 cue 结束 / 视频时长 不在 [0.85, 1.15]
-    // → held(duration-mismatch),绝不写 sidecar。复用预检已 probe 的 videoSec,不二次 probe。
-    if (videoSec !== null && videoSec > 0) {
+    // 写盘前重探时长(防长跑期间路径被替换)+ 译后时轴 defense-in-depth。
+    if (deps.videoDurationSec) {
+      const videoSec = await probeVideoSec()
+      if (videoSec === null) {
+        return {
+          status: 'held',
+          reason: 'duration-unavailable: video duration probe failed',
+          gate: result.gate,
+          sourceRef,
+          llmCalls: result.llmCalls,
+        }
+      }
       const cues = parseSrtCues(result.translatedSrt)
       const sourceEndSec = maxCueEndSec(cues)
       const ratio = sourceEndSec / videoSec
       if (ratio < 0.85 || ratio > 1.15) {
-        return { status: 'held', reason: `duration-mismatch: source ${Math.round(sourceEndSec)}s vs video ${videoSec}s`, gate: result.gate, sourceRef, llmCalls: result.llmCalls }
+        return {
+          status: 'held',
+          reason: `duration-mismatch: source ${Math.round(sourceEndSec)}s vs video ${videoSec}s`,
+          gate: result.gate,
+          sourceRef,
+          llmCalls: result.llmCalls,
+        }
       }
     }
     try {

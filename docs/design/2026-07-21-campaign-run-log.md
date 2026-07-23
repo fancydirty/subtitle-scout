@@ -187,3 +187,38 @@ held 衰减梯真机生效:job29 attempt=11 → 下次 07-25(3 天档);job30 att
 - 管道(抽轨 / F1 外抓 / critic / 术语闸)行为符合设计;瓶颈在模型能力,非 PIPELINE_DEFECT。
 - F2 jimaku 对本集无源 → 记 **NO_SOURCE**(样本/目录覆盖),不记模型能力。
 - Overflow 时长闸仍是 postmortem 🔴 项;本轮负例未打到该闸(外源过了选源后在语义层失败)。
+
+## 战役 7:翻译加固 RC + 二次差分资格(2026-07-23 15:21–16:29 CST)
+
+### 加固与本地门禁
+
+- `86fa1a1`:ASS/SSA override 在译后、闸前剥离;剥离后空 cue fail-closed。
+- `710edb5`:源字幕最大 cue end / 视频时长不在 `[0.85,1.15]` 时,进入 LLM 前拒绝。
+- `2e1ff2d`:未变化 parked path 按负缓存退避,不再每轮重探。
+- `5e19637`:翻译尝试(含失败/critic/write-failed)记入 `runs.llm_calls`。
+- `d177507`:F1/F2 外源逐候选做时长验收,错版候选继续试下一项;同时补最大 cue end 与写失败记账审计项。
+- focused review:无 Critical/Important 发现。`npm run check`、`npm run build`、`git diff --check` 均通过;串行全量 **1958 passed / 1 skipped**。默认并行全量曾有 4 个无关 5s timeout;两个失败文件独跑全绿,串行全量全绿,根因归为本机 Vitest worker 资源争用,未改无关测试时限。
+
+### RC 部署与迁移阻断修复
+
+- 首轮部署 `d17750720bafcffd2b24ea7ef68c9649cb6df44b`;证据 `/mnt/nvme0n1-4/backup/20260723-152114-task7-rc-d177507-deploy/`;rollback `subtitle-scout-rollback:20260723-152140`。
+- 生产旧库暴露 schema 漂移:`runs` 缺 `llm_calls/assrt_calls`,新 worker 写 run 会报 `no such column: llm_calls`;保持 `ai_translate_enabled=false`,未进入资格烧配额。
+- `f332bb4` 增加条件式 v22 补偿迁移:旧 `runs` 原地 ADD 两列,新库/无 runs 的历史窄 fixture 幂等;迁移与 schema version 更新同事务。生产部署 revision `f332bb42224ca1daa151737fcd473c41b464bd30`;证据 `/mnt/nvme0n1-4/backup/20260723-155041-f332bb42224c-deploy/`;rollback `subtitle-scout-rollback:20260723-155119`。
+- 部署后:SQLite `quick_check=ok`,schema `15`,`runs.llm_calls/assrt_calls` 均存在;容器 running/restart=0;dashboard 仅 `127.0.0.1:8099` 且 HTTP 200;`ai_translate_enabled=false`,running translate jobs=0。
+
+### 二次差分资格:Overflow E01
+
+证据:`/mnt/nvme0n1-4/backup/20260723-160500-task7b-overflow-qual/`(`0700`,文件 `0600`)。
+
+| 项 | Task 2 控制 | 加固后复验 |
+|---|---|---|
+| 样本 | Overflow TV E01,视频 210.09s | 同一文件 |
+| 外源 | `opensubtitles:11753599` 被接受 | 候选时长验收拒绝全部不匹配项 |
+| 结果 | `held`,完整翻译+critic 后质量拒绝 | `no-source`,数秒退出 |
+| 模型工作 | YES | **NO**(未进入 translate pipeline) |
+| 落盘 | translate 未安装 | translate 未安装 |
+
+- 为消除首轮 find-subtitle 竞态,短暂停生产容器;trap runner 在任意退出路径恢复 E01 既有 sidecar 并重启服务。
+- sidecar 复原前后 SHA-256 同为 `0c6bf9f5dd4b840b751a4daf2cc641701731dff45d64dc84f474f8c7bb1f8702`。
+- 命令 exit 1 是 `translate-item` 对 `no-source` 的预期退出语义;分类 **PASS**。
+- Adam E06 与 Grieving Soul E23 在 Task 2 已于候选解析前 `no-source`;Peacemaker 的唯一新变量仍是已知 mimo 质量不足。三者不重复烧配额,二次矩阵只重跑能验证本轮行为变化的 Overflow 对照项。
