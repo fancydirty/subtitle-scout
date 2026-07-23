@@ -152,4 +152,18 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
     expect(r.reason).toBeUndefined() // null → undefined 归一化
     db.close()
   })
+
+  it('makeTranslateAgentDeps with db: glossaryStore 直连 GlossaryRepo(ESM 无 require)', async () => {
+    const db = openDb(':memory:')
+    const { makeTranslateAgentDeps } = await import('./translateItemCommand.js')
+    const deps = makeTranslateAgentDeps(
+      { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+      undefined,
+      { db, critic: false },
+    )
+    expect(deps.glossaryStore).toBeDefined()
+    deps.glossaryStore!.save('tmdb:1', [{ src: 'Nico', zh: '妮可' }], 1)
+    expect(deps.glossaryStore!.load('tmdb:1')).toEqual([{ src: 'Nico', zh: '妮可' }])
+    db.close()
+  })
 })

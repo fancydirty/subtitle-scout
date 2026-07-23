@@ -15,6 +15,7 @@ import type { TranslationContext, TranslationCritic } from '../translate/transla
 import { makeTranslateWorker, type TranslateWorkerDeps } from '../agent/translateWorker.js'
 import type { TranslateTask } from '../agent/translateWorker.schemas.js'
 import { containingRoot } from '../core/mediaContext.js'
+import { GlossaryRepo } from '../v2/glossaryRepo.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { buildAdapters } from './buildAdapters.js'
 
@@ -169,7 +170,6 @@ export function makeTranslateAgentDeps(
   const model = makeModel(cfg)
   const glossaryStore = opts.db
     ? (() => {
-        const { GlossaryRepo } = require('../v2/glossaryRepo.js') as typeof import('../v2/glossaryRepo.js')
         const repo = new GlossaryRepo(opts.db)
         return {
           load: (k: string) => repo.load(k),
