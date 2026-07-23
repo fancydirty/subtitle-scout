@@ -81,6 +81,27 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
     return { status: 'no-embedded' }
   }
 
+  // 源时长预检(Task 3):错源在 LLM 之前 fail-closed。probe 至多一次,结果复用给译后闸。
+  // videoSec null/<=0 或无源 cue → 不发明时长,走既有路径(译后闸仍可拦)。
+  let videoSec: number | null = null
+  if (deps.videoDurationSec) {
+    videoSec = await deps.videoDurationSec(videoPath)
+    if (videoSec !== null && videoSec > 0) {
+      const sourceCues = parseSrtCues(src)
+      if (sourceCues.length > 0) {
+        const sourceEndSec = cueEndSec(sourceCues[sourceCues.length - 1].timing)
+        const ratio = sourceEndSec / videoSec
+        if (ratio < 0.85 || ratio > 1.15) {
+          return {
+            status: 'held',
+            reason: `duration-mismatch: source ${Math.round(sourceEndSec)}s vs video ${videoSec}s`,
+            sourceRef,
+          }
+        }
+      }
+    }
+  }
+
   const ctx = deps.gatherContext ? await deps.gatherContext(videoPath) : {}
   // 审计🔴:内嵌轨路径的 sourceLangName 必须从实际轨语言取,不用 origin_lang。
   // Witch Watch E02: origin_lang=ja → gatherContext 设"日文",但内嵌轨是英文(eng),
@@ -95,19 +116,14 @@ export async function translateItem(videoPath: string, deps: TranslateItemDeps):
   const result = await translateSubtitle(src, ctx, deps.lm, { critic: deps.critic })
 
   if (result.verdict === 'installed' && result.translatedSrt !== null) {
-    // 时长校验闸(北极星 fail-closed):产出字幕最后 cue 的结束时间 / 视频时长 不在 [0.85, 1.15]
-    // → held(duration-mismatch),绝不写 sidecar。防错版本/错源字幕落盘(Overflow 全季 8 集装错版本;
-    // Adam E01 翻译用 24 分钟字幕给 3.5 分钟视频)。translatePipeline 纯文本管道(不知视频时长),
-    // 这道闸只能在持 videoPath 的本层做。探针不可用(返回 null)→ 跳过(同 probe=null:宁缺毋滥不阻塞)。
-    if (deps.videoDurationSec) {
-      const videoSec = await deps.videoDurationSec(videoPath)
-      if (videoSec !== null && videoSec > 0) {
-        const cues = parseSrtCues(result.translatedSrt)
-        const lastEndSec = cues.length > 0 ? cueEndSec(cues[cues.length - 1].timing) : 0
-        const ratio = lastEndSec / videoSec
-        if (ratio < 0.85 || ratio > 1.15) {
-          return { status: 'held', reason: `duration-mismatch: source ${Math.round(lastEndSec)}s vs video ${videoSec}s`, gate: result.gate, sourceRef }
-        }
+    // 译后时长闸(defense in depth):产出字幕最后 cue 结束 / 视频时长 不在 [0.85, 1.15]
+    // → held(duration-mismatch),绝不写 sidecar。复用预检已 probe 的 videoSec,不二次 probe。
+    if (videoSec !== null && videoSec > 0) {
+      const cues = parseSrtCues(result.translatedSrt)
+      const lastEndSec = cues.length > 0 ? cueEndSec(cues[cues.length - 1].timing) : 0
+      const ratio = lastEndSec / videoSec
+      if (ratio < 0.85 || ratio > 1.15) {
+        return { status: 'held', reason: `duration-mismatch: source ${Math.round(lastEndSec)}s vs video ${videoSec}s`, gate: result.gate, sourceRef }
       }
     }
     const sidecarPath = deps.writeSidecar(videoPath, result.translatedSrt)

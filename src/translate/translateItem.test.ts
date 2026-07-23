@@ -1,7 +1,18 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { translateItem, type TranslateItemDeps } from './translateItem.js'
-import type { TranslationLM } from './translatePipeline.js'
+import type { TranslationLM, TranslationResult } from './translatePipeline.js'
 import type { SrtCue } from './qualityGate.js'
+import { parseSrtCues } from './qualityGate.js'
+
+const translateSubtitleMock = vi.hoisted(() => vi.fn())
+vi.mock('./translatePipeline.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./translatePipeline.js')>()
+  return {
+    ...actual,
+    translateSubtitle: (...args: Parameters<typeof actual.translateSubtitle>) =>
+      translateSubtitleMock(...args) as ReturnType<typeof actual.translateSubtitle>,
+  }
+})
 
 const SOURCE = ['1', '00:00:01,000 --> 00:00:03,000', 'Rose enters Pictor.', ''].join('\n')
 
@@ -17,6 +28,19 @@ function mockLM(drift = false): TranslationLM {
     },
   }
 }
+
+/** 默认走真实 pipeline;单测可 override translateSubtitleMock 做 defense-in-depth 注入。 */
+async function realTranslateSubtitle(
+  ...args: Parameters<typeof import('./translatePipeline.js').translateSubtitle>
+) {
+  const { translateSubtitle } = await vi.importActual<typeof import('./translatePipeline.js')>('./translatePipeline.js')
+  return translateSubtitle(...args)
+}
+
+beforeEach(() => {
+  translateSubtitleMock.mockReset()
+  translateSubtitleMock.mockImplementation(realTranslateSubtitle)
+})
 
 function baseDeps(over: Partial<TranslateItemDeps> = {}): TranslateItemDeps {
   return {
@@ -163,9 +187,161 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
   // 不知视频时长,这道闸只能在 translateItem 层(它持 videoPath)用 ffprobe 比对产出字幕
   // 最后 cue 结束时间 / 视频时长,不在 [0.85, 1.15] → held(fail-closed 绝不写 sidecar)。
   // mockLM 冻结时轴(只替换文本),故产出字幕的结束时间 = 源 SRT 的结束时间。
+  //
+  // Task 3: 源字幕时长预检在 LLM 之前——错源零模型调用;译后闸保留作 defense in depth。
 
+  function countingLM(drift = false): TranslationLM & { calls: { glossary: number; batch: number } } {
+    const calls = { glossary: 0, batch: 0 }
+    return {
+      calls,
+      async buildGlossary() {
+        calls.glossary++
+        return [{ en: 'Rose', zh: '罗斯' }, { en: 'Pictor', zh: '皮克托' }]
+      },
+      async translateBatch(batch: SrtCue[]) {
+        calls.batch++
+        return {
+          cues: batch.map((c) => ({
+            ...c,
+            text: c.text.map((l) => l.replace(/Rose/g, '罗斯').replace(/Pictor/g, drift ? '皮克特' : '皮克托')),
+          })),
+          summary: 's',
+        }
+      },
+    }
+  }
+
+  it('预检:内嵌路径源字幕过长 → held(duration-mismatch),零模型调用且不写 sidecar', async () => {
+    // 423s 源 / 210s 视频 = 2.01(Overflow 装错版本实案)——在 gatherContext/LLM 之前拦下
+    const longSource = ['1', '00:00:01,000 --> 00:07:03,000', 'Rose enters Pictor.', ''].join('\n')
+    const lm = countingLM()
+    let gatherCalls = 0
+    let criticCalls = 0
+    const written: string[] = []
+    let probeCalls = 0
+    const r = await translateItem('/media/Overflow.S01.mkv', baseDeps({
+      extract: async () => longSource,
+      lm,
+      gatherContext: async () => { gatherCalls++; return {} },
+      critic: { async review() { criticCalls++; return { ok: true, issues: [] } } },
+      videoDurationSec: async () => { probeCalls++; return 210 },
+      writeSidecar: (vp) => { written.push(vp); return vp },
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(r.reason).toContain('423')
+    expect(r.reason).toContain('210')
+    expect(lm.calls.glossary).toBe(0)
+    expect(lm.calls.batch).toBe(0)
+    expect(gatherCalls).toBe(0)
+    expect(criticCalls).toBe(0)
+    expect(written).toHaveLength(0)
+    expect(probeCalls).toBe(1)
+  })
+
+  it('预检:fetch 路径源字幕过长 → held(duration-mismatch)+sourceRef,零模型调用', async () => {
+    const longSource = ['1', '00:00:01,000 --> 00:07:03,000', 'Rose enters Pictor.', ''].join('\n')
+    const lm = countingLM()
+    let gatherCalls = 0
+    const written: string[] = []
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      probe: async () => [],
+      fetchSourceSub: async () => ({ srtText: longSource, sourceRef: 'opensubtitles:overflow' }),
+      lm,
+      gatherContext: async () => { gatherCalls++; return {} },
+      videoDurationSec: async () => 210,
+      writeSidecar: (vp) => { written.push(vp); return vp },
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(r.reason).toContain('423')
+    expect(r.reason).toContain('210')
+    expect(r.sourceRef).toBe('opensubtitles:overflow')
+    expect(lm.calls.glossary).toBe(0)
+    expect(lm.calls.batch).toBe(0)
+    expect(gatherCalls).toBe(0)
+    expect(written).toHaveLength(0)
+  })
+
+  it('预检:源字幕过短 ratio<0.85 → held(duration-mismatch),零模型调用', async () => {
+    const shortSource = ['1', '00:00:01,000 --> 00:01:40,000', 'Rose enters Pictor.', ''].join('\n')
+    const lm = countingLM()
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => shortSource,
+      lm,
+      videoDurationSec: async () => 1000,
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(lm.calls.glossary).toBe(0)
+    expect(lm.calls.batch).toBe(0)
+  })
+
+  it('预检:ratio 在 [0.85, 1.15] 内 → 继续翻译并可 installed', async () => {
+    // 208s 源 / 210s 视频 = 0.99
+    const src = ['1', '00:00:01,000 --> 00:03:28,000', 'Rose enters Pictor.', ''].join('\n')
+    let probeCalls = 0
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => src,
+      videoDurationSec: async () => { probeCalls++; return 210 },
+    }))
+    expect(r.status).toBe('installed')
+    expect(probeCalls).toBe(1) // 预检探针结果复用于译后闸,不二次 probe
+  })
+
+  it('译后闸 defense-in-depth:源 ok 但译文时轴被拉长 → 仍 held,不写 sidecar', async () => {
+    // 源 3s / 视频 3s = 1.0 过预检;pipeline 故意返回 423s 译文(绕过时轴冻结闸)→ 译后闸拦下
+    const okSource = ['1', '00:00:01,000 --> 00:00:03,000', 'Rose enters Pictor.', ''].join('\n')
+    const longTranslated = ['1', '00:00:01,000 --> 00:07:03,000', '罗斯进入皮克托。', ''].join('\n')
+    const passGate = {
+      verdict: 'pass' as const,
+      cueCount: { source: 1, candidate: 1 },
+      structural: { indexMismatch: 0, timingMismatch: 0, tagMismatch: 0 },
+      cjk: { overLongLines: 0, overCpsCues: 0 },
+      glossary: { checks: 0, hits: 0, conformance: 1, violations: [] },
+      hardViolations: [] as string[],
+      softWarnings: [] as string[],
+    }
+    translateSubtitleMock.mockResolvedValue({
+      verdict: 'installed',
+      translatedSrt: longTranslated,
+      glossary: [],
+      gate: passGate,
+    } satisfies TranslationResult)
+    let probeCalls = 0
+    const written: string[] = []
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => okSource,
+      videoDurationSec: async () => { probeCalls++; return 3 },
+      writeSidecar: (vp) => { written.push(vp); return vp },
+    }))
+    expect(r.status).toBe('held')
+    expect(r.reason).toContain('duration-mismatch')
+    expect(r.reason).toContain('423')
+    expect(written).toHaveLength(0)
+    expect(probeCalls).toBe(1) // 预检一次,译后复用
+    expect(parseSrtCues(okSource)).toHaveLength(1) // 源可解析且时轴正常
+  })
+
+  it('videoDurationSec 返回 null → 跳过预检,installed(宁缺毋滥不阻塞)', async () => {
+    const longSource = ['1', '00:00:01,000 --> 00:07:03,000', 'Rose enters Pictor.', ''].join('\n')
+    const lm = countingLM()
+    const r = await translateItem('/media/x.mkv', baseDeps({
+      extract: async () => longSource,
+      lm,
+      videoDurationSec: async () => null,
+    }))
+    expect(r.status).toBe('installed')
+    expect(lm.calls.glossary).toBeGreaterThan(0) // null 不拦,照常走 LLM
+  })
+
+  it('未接 videoDurationSec → 不校验,行为与从前完全一致(向后兼容)', async () => {
+    const r = await translateItem('/media/x.mkv', baseDeps())
+    expect(r.status).toBe('installed')
+  })
+
+  // 保留既有译后闸用例语义(源=产出时轴,mockLM 冻结时轴)
   it('产出字幕最后 cue 结束时间 / 视频时长 > 1.15 → held(duration-mismatch),绝不写 sidecar', async () => {
-    // 423s 字幕 / 210s 视频 = 2.01(Overflow 装错版本实案)
     const longSource = ['1', '00:00:01,000 --> 00:07:03,000', 'Rose enters Pictor.', ''].join('\n')
     const written: string[] = []
     const r = await translateItem('/media/Overflow.S01.mkv', baseDeps({
@@ -178,39 +354,6 @@ describe('translateItem — 时长校验闸(北极星:错版本/错源永不落�
     expect(r.reason).toContain('423')
     expect(r.reason).toContain('210')
     expect(written).toHaveLength(0)
-  })
-
-  it('产出字幕最后 cue 结束时间 / 视频时长 < 0.85 → held(duration-mismatch)', async () => {
-    // 100s 字幕 / 1000s 视频 = 0.1(字幕远短于视频)
-    const shortSource = ['1', '00:00:01,000 --> 00:01:40,000', 'Rose enters Pictor.', ''].join('\n')
-    const r = await translateItem('/media/x.mkv', baseDeps({
-      extract: async () => shortSource,
-      videoDurationSec: async () => 1000,
-    }))
-    expect(r.status).toBe('held')
-    expect(r.reason).toContain('duration-mismatch')
-  })
-
-  it('ratio 在 [0.85, 1.15] 内 → installed(正常落盘)', async () => {
-    // 208s 字幕 / 210s 视频 = 0.99(正常时轴)
-    const src = ['1', '00:00:01,000 --> 00:03:28,000', 'Rose enters Pictor.', ''].join('\n')
-    const r = await translateItem('/media/x.mkv', baseDeps({
-      extract: async () => src,
-      videoDurationSec: async () => 210,
-    }))
-    expect(r.status).toBe('installed')
-  })
-
-  it('videoDurationSec 返回 null(探针不可用)→ 跳过校验,installed(宁缺毋滥不阻塞)', async () => {
-    const r = await translateItem('/media/x.mkv', baseDeps({
-      videoDurationSec: async () => null,
-    }))
-    expect(r.status).toBe('installed')
-  })
-
-  it('未接 videoDurationSec → 不校验,行为与从前完全一致(向后兼容)', async () => {
-    const r = await translateItem('/media/x.mkv', baseDeps())
-    expect(r.status).toBe('installed')
   })
 })
 
