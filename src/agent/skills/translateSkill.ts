@@ -54,8 +54,19 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
    **freeze_glossary** → \`glossary/terms.json\`.
 6. Translate **by windows** (about 10–40 cues). For each window: read glossary + summary + rows →
    draft → **update_row** for each id → **update_summary**. Proper names must match the frozen
-   glossary.
-7. **run_structural_gate** (term conformance, empty tgt, counts). On fail → held (fail-closed).
+   glossary **exactly** — including nicknames and surname-only forms (if the glossary says
+   Morihito→守仁 and Moi→守仁, then "Moi" in the source is 守仁 in your output, never a new
+   transliteration). When you are unsure of a name, \`lookup_glossary\` before inventing one.
+   **Translate every row** — do not stop early to "check progress"; the repair loop at step 7
+   is where quality is enforced.
+7. **run_structural_gate** (term conformance, empty tgt, counts). If it FAILS, this is **not**
+   the end — it returns a \`violations\` list telling you EXACTLY which terms are wrong and at
+   which cue ids (\`term\`, \`expectZh\`, \`missAtCues\`). **Repair loop (up to 3 rounds):**
+   for every violation, \`update_row\`/\`update_rows\` the flagged cues so the frozen glossary's
+   canonical \`expectZh\` is used, then **re-run the gate**. Only after 3 failed repair rounds
+   do you finalize \`held\` — giving up without repairing is abandoning fixable work.
+   If rows are still \`pending\`/empty, that is unfinished translation, not a gate problem —
+   keep translating them before judging.
 8. **merge_to_srt** then **install_sidecar** only if gates pass. Do not hand-write final SRT
    timings.
 

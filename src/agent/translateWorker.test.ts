@@ -142,6 +142,47 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
     expect(existsSync(baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'))).toBe(false)
   })
 
+  it('修复循环:闸 fail 带 violations 明细 → 模型修 flagged 行 → 重闸 pass → installed', async () => {
+    mkdirSync(join(root, 'Show'), { recursive: true })
+    writeFileSync(baseTask().videoPath, 'video-bytes')
+    const steps = [
+      toolCallResult('c1', 'resolve_source', {}),
+      toolCallResult('c2', 'materialize_agent_view', {}),
+      toolCallResult('c3', 'freeze_glossary', { terms: [{ src: 'Nico', zh: '妮可' }] }),
+      // 模型故意写错(Nico→尼古)
+      toolCallResult('c4', 'update_rows', { rows: [{ id: '1', tgt: '你好尼古', status: 'ok' }, { id: '2', tgt: '再见', status: 'ok' }] }),
+      toolCallResult('c5', 'run_structural_gate', {}),
+      // 模型读到 violations(Nico 应为妮可,missAtCues=[1]) → 修复第 1 行
+      toolCallResult('c6', 'update_row', { id: '1', tgt: '你好妮可', status: 'ok' }),
+      toolCallResult('c7', 'run_structural_gate', {}),
+      toolCallResult('c8', 'merge_to_srt', {}),
+      toolCallResult('c9', 'install_sidecar', {}),
+      finalizeResult({ status: 'installed', reason: null, sourceRef: 'embedded:s:0', sidecarPath: baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt') }),
+    ]
+    let call = 0
+    let gateCallCount = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async (opts: any) => {
+        const step = steps[Math.min(call++, steps.length - 1)]
+        if (step.content[0].toolName === 'run_structural_gate') {
+          gateCallCount++
+          // 验证第二次闸在修复后发生
+          if (gateCallCount === 2) {
+            const prompt = JSON.stringify(opts.prompt)
+            expect(prompt).toContain('violations')
+          }
+        }
+        return step
+      },
+    })
+    const run = makeTranslateWorker(baseDeps(model))
+    const report = await run(baseTask())
+    expect(report.status).toBe('installed')
+    expect(gateCallCount).toBe(2) // 修复循环真发生了:fail → 修 → 重闸 pass
+    const text = readFileSync(baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'), 'utf8')
+    expect(text).toContain('你好妮可') // 修复后的文本装盘
+  })
+
   it('worker-exhaustion: model never finalizes → held report (not an uncaught throw)', async () => {
     mkdirSync(join(root, 'Show'), { recursive: true })
     writeFileSync(baseTask().videoPath, 'video-bytes')

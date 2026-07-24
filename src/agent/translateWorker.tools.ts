@@ -503,6 +503,15 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
         termConformance: gate.glossary.conformance,
         termHits: gate.glossary.hits,
         termChecks: gate.glossary.checks,
+        // 修复循环(auto-research 根因修复):per-term 违规明细透传给模型——哪个术语、期望
+        // 译法、错在哪几行。没有这份靶子,模型只能撂挑子 held;有了就能 update_row 修复再重闸。
+        violations: gate.glossary.violations.map((v) => ({
+          term: v.term,
+          expectZh: v.expectZh,
+          occurrences: v.occurrences,
+          hits: v.hits,
+          missAtCues: v.missAtCues.slice(0, 20),
+        })),
       }
     },
   })
