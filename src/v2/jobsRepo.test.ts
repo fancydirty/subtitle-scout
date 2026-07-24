@@ -365,34 +365,6 @@ describe('jobs 状态机', () => {
     expect(repo.completeError(j.id, 'boom', now)).toBe(false)
     expect(repo.get(j.id)!.state).toBe('wanted')
   })
-
-  describe('retireClaimed (W0-4 存量墓碑：旧 kind 已认领行退休)', () => {
-    it('retireClaimed 对 active(searching) job → done，清 lease_until', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      const j = repo.claimNext(now)! // state=searching, lease_until 已写
-      expect(j.lease_until).not.toBeNull()
-      expect(repo.retireClaimed(j.id, now)).toBe(true)
-      const after = repo.get(j.id)!
-      expect(after.state).toBe('done')
-      expect(after.lease_until).toBeNull()
-    })
-    it('retireClaimed 对 wanted 无效（precondition 只认 active 态）', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      const j = findSeriesJob('s1', 4)!
-      expect(repo.retireClaimed(j.id, now)).toBe(false)
-      expect(repo.get(j.id)!.state).toBe('wanted')
-    })
-    it('retireClaimed 对 done 幂等 (已退役则 false)', () => {
-      const now = Date.now()
-      mkSeriesJob(now)
-      repo.forceState('s1', 4, 'done', now)
-      const j = findSeriesJob('s1', 4)!
-      expect(repo.retireClaimed(j.id, now)).toBe(false)
-      expect(repo.get(j.id)!.state).toBe('done')
-    })
-  })
 })
 
 // 清算波 R-6（A-F8）：本 describe 原名"realign job kind"，测的其实是 setPlanRef/park 两个

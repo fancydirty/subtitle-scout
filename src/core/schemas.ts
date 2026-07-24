@@ -1,43 +1,5 @@
 import { z } from 'zod'
 
-// LLM 边界归一化：MiMo 等模型会把数字输出成字符串、把空值输出成 "-"。
-// 明确无歧义的表示做确定性转换；垃圾值仍然拒绝。
-const NULLISH_STRINGS = new Set(['', '-', 'null', 'none', 'unknown', 'n/a'])
-// 可空字符串字段同样需要归一化：模型会把空值写成 "None"/"null" 等
-function looseNullableString(): z.ZodType<string | null | undefined> {
-  return z.preprocess(
-    v => (typeof v === 'string' && NULLISH_STRINGS.has(v.trim().toLowerCase()) ? null : v),
-    z.string().nullish(),
-  )
-}
-function looseNumeric(inner: z.ZodNumber): z.ZodType<number | null | undefined> {
-  return z.preprocess(v => {
-    if (typeof v === 'string') {
-      const t = v.trim().toLowerCase()
-      if (NULLISH_STRINGS.has(t)) return null
-      if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t)
-    }
-    return v
-  }, inner.nullish())
-}
-
-// ---------- 判断点输出 ----------
-export const MediaIdentitySchema = z.object({
-  canonical_title: z.string(),
-  original_title: looseNullableString(),
-  year: looseNumeric(z.number().int()),
-  type: z.enum(['movie', 'episode']),
-  season: looseNumeric(z.number().int()),
-  episode: looseNumeric(z.number().int()),
-  edition: looseNullableString(),
-  confidence: z.preprocess(
-    v => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v),
-    z.number().min(0).max(1),
-  ),
-  evidence: z.array(z.string()),
-})
-export type MediaIdentity = z.infer<typeof MediaIdentitySchema>
-
 // ---------- ASSRT 响应（宽松：只锁我们用的字段） ----------
 // 实测：search 的 filelist 可能是 {} 或 [{s,f}]；detail 的 filelist 项带 url。
 const FileListSchema = z.preprocess(

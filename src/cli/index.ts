@@ -537,8 +537,6 @@ async function cmdWatch() {
     })(),
     concurrency: {
       searching: 1,
-      downloading: 2,  // 一期由 executor 内部串行，此处预留
-      verifying: 2,    // 一期由 executor 内部串行，此处预留
     },
     // 债务D5：改惰性读——行为级 settings.scan_interval_ms 优先于部署级 SCAN_INTERVAL_MS env
     // （同 target_languages 的既有优先级口径），每 tick 求值，设置页改完下一 tick 生效。

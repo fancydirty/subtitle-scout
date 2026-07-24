@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
-  MediaIdentitySchema, AssrtSearchResponseSchema, AssrtDetailResponseSchema,
+  AssrtSearchResponseSchema, AssrtDetailResponseSchema,
   PROVIDERS, SubtitleCandidateSchema, parseCandidateKey,
 } from './schemas.js'
 
@@ -19,47 +19,6 @@ describe('ASSRT response schemas', () => {
     const r = AssrtDetailResponseSchema.parse(raw)
     expect(r.sub.subs[0].url).toMatch(/^http/)
     expect(r.sub.subs[0].filelist[0].url).toMatch(/^http/)
-  })
-})
-
-describe('agent output schemas', () => {
-  it('MediaIdentity roundtrips', () => {
-    const id = MediaIdentitySchema.parse({
-      canonical_title: 'The Matrix', year: 1999, type: 'movie',
-      season: null, episode: null, edition: null,
-      confidence: 0.95, evidence: ['filename contains 1999'],
-    })
-    expect(id.type).toBe('movie')
-  })
-})
-
-describe('LLM output coercion (MiMo returns numbers as strings)', () => {
-  it('MediaIdentity coerces numeric strings and dash-to-null', () => {
-    const id = MediaIdentitySchema.parse({
-      canonical_title: 'The Matrix', year: '1999', type: 'movie',
-      season: '-', episode: '', edition: null,
-      confidence: '0.95', evidence: [],
-    })
-    expect(id.year).toBe(1999)
-    expect(id.season).toBeNull()
-    expect(id.episode).toBeNull()
-    expect(id.confidence).toBe(0.95)
-  })
-  it('MediaIdentity coerces Python-style "None" to null, incl. string fields', () => {
-    const id = MediaIdentitySchema.parse({
-      canonical_title: 'The Matrix', year: '1999', type: 'movie',
-      season: 'None', episode: 'None', edition: 'None',
-      confidence: 0.99, evidence: [],
-    })
-    expect(id.season).toBeNull()
-    expect(id.episode).toBeNull()
-    expect(id.edition).toBeNull()
-  })
-  it('MediaIdentity still rejects garbage numerics', () => {
-    expect(() => MediaIdentitySchema.parse({
-      canonical_title: 'x', year: 'about 1999', type: 'movie',
-      season: null, episode: null, edition: null, confidence: 0.9, evidence: [],
-    })).toThrow()
   })
 })
 

@@ -66,7 +66,7 @@ describe('ScoutDaemon', () => {
     executeJob: vi.fn(async () => {}),
     log: (msg) => logs.push(msg),
     now: () => now,
-    concurrency: { searching: 1, downloading: 2, verifying: 2 },
+    concurrency: { searching: 1 },
     ...overrides,
   })
 
@@ -138,7 +138,7 @@ describe('ScoutDaemon', () => {
     seedJob('s2', 1, now)
     seedJob('s3', 1, now)
 
-    const daemon = new ScoutDaemon(makeDeps({ executeJob, concurrency: { searching: 1, downloading: 2, verifying: 2 } }))
+    const daemon = new ScoutDaemon(makeDeps({ executeJob, concurrency: { searching: 1 } }))
     await daemon.tick()
 
     // Should only claim 1 job (concurrency limit)
@@ -216,7 +216,7 @@ describe('ScoutDaemon', () => {
 
     const executeJob = vi.fn(async (_job) => {})
     const daemon = new ScoutDaemon(
-      makeDeps({ executeJob, concurrency: { searching: 1, downloading: 2, verifying: 2 } })
+      makeDeps({ executeJob, concurrency: { searching: 1 } })
     )
 
     await daemon.tick()

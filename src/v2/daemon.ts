@@ -43,9 +43,7 @@ export interface DaemonDeps {
    *  天级 VACUUM INTO 备份)。cli 接线侧预绑定 db/cacheDir/state;失败只记日志不炸 tick。 */
   dbMaintenance?: () => void
   concurrency: {
-    searching: number        // 默认 1
-    downloading: number      // 默认 2（一期由 executor 内部串行，此处预留）
-    verifying: number        // 默认 2（一期由 executor 内部串行，此处预留）
+    searching: number        // 默认 1（唯一起实际作用的并发槽;downloading/verifying 已随 executor 处决）
   }
   /** 进程退出钩子（测试注入用，默认 process.exit）。tick 连续意外失败达阈值时调用，
    *  nonzero 码交给外部编排（docker restart:unless-stopped 等）重启进程。 */

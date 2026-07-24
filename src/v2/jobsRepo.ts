@@ -444,27 +444,6 @@ export class JobsRepo {
     return info.changes > 0
   }
 
-  /** W0-4 存量墓碑：原本服务 cmdWatch 的 executeJob 闭包——旧 kind（series_season/movie）收到
-   *  一个已经被 claimNext 领走（state='searching'）的存量行时调用，体面退休而非报错。
-   *  清算波 R-6（A-F7）：唯一的生产调用点（cli/legacyJobRouting.ts 的 tombstoneLegacyJob）
-   *  已随 legacy 通路整体处决——今天没有任何生产代码调用这个方法（旧 kind 到达 executeJob
-   *  的兜底已改为 completeError，见 cli/index.ts）。不在本波删除清单内，保留：
-   *  jobsRepo.test.ts 仍单独测它自身的三个前置条件（active→done / wanted 无效 / done 幂等），
-   *  precondition 与 completeDone 完全同构但语义标签不同（"退休声明"而非"跑完产出判断"），
-   *  日后若真有旧 kind 存量行需要体面退休，这里仍是现成的语义化外壳。
-   *  DB 不迁移（W0-4 明确决定）：state 列 CHECK 约束没有专门的 'retired' 值，落回既有的
-   *  'done'——这也是为什么这个方法不新增状态机分支，只是 completeDone 的一个语义化外壳。 */
-  retireClaimed(jobId: number, now: number): boolean {
-    const info = this.db
-      .prepare(
-        `UPDATE jobs
-         SET state = 'done', lease_until = NULL, updated_at = ?
-         WHERE id = ? AND state IN ${ACTIVE_STATES_SQL}`
-      )
-      .run(now, jobId)
-    return info.changes > 0
-  }
-
   /** realign 完成后的镜像清理一环：该剧旧排布下判决过时的 job 不再有意义（新结构下季/集
    *  边界完全变了，调和循环会在下一轮 scan/派活后按新结构重新聚合出正确的 job）——退休全部
    *  静止态：wanted/failed/dormant。dormant 必须包含（D-review #2）：它是"对着旧的错误排布
