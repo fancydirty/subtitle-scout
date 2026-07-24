@@ -25,6 +25,13 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
 
 ## Iron rules
 
+0. **Long tasks are the normal case.** A 3-hour film (~3000 cues) legitimately takes 300+ tool
+   calls and over an hour of wall time. **There is no "session capacity" limit that requires
+   you to stop early** — the infrastructure is built for exactly this. NEVER finalize early
+   because the task "feels too long" or "exceeds a session": unfinished rows are a failure of
+   diligence, not of capacity. The only acceptable early exits are \`no-source\`,
+   \`extract-failed\`, \`probe-failed\`, \`already-covered\`, or a gate that still fails after
+   the full repair loop at step 7.
 1. **Source-language → Chinese single-hop only.** Never JP→EN→CN relay.
 2. If \`origin_lang\` is Japanese (\`ja\`/\`jpn\`): **source language first** — embedded ja or
    jimaku. Only when NO Japanese source exists does the resolver fall back to an English track

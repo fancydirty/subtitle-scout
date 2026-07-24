@@ -209,7 +209,8 @@ export function makeTranslateAgentDeps(
     critic,
     fetchTmdbContext: opts.fetchTmdbContext,
     fetchSeriesTargetSubs: opts.fetchSeriesTargetSubs ?? ((task: TranslateTask) => Promise.resolve(readSeriesTargetSubs(task.videoPath))),
-    timeoutMs: translateTimeoutMs() * 3, // 整集工作台(多窗),比单批宽
+    // timeoutMs 不再此处覆盖(E02 pro 实证:900s 砍死长任务)——走 translateWorker 的 4h 默认;
+    // translateTimeoutMs 只管 legacy 管道的单批 LM 调用。
   }
 }
 

@@ -19,6 +19,7 @@ describe('translateSkill', () => {
     expect(c).toMatch(/violations/)
     expect(c).toMatch(/Repair loop|修复/)
     expect(c).toMatch(/missAtCues/)
+    expect(c).toMatch(/session capacity|too long|3000/)
     expect(c).toMatch(/glossary|术语/)
     expect(c).toMatch(/freeze|冻结/)
     expect(c).toMatch(/Simplified-Chinese|简中|中文译名/)
