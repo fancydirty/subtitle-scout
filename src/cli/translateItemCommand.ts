@@ -1,6 +1,5 @@
-// E AI 翻译 · CLI 入口 `subtitle-scout translate-item <videoPath>`:对单个视频跑端到端翻译
-// (探内嵌轨→抽→译→fail-closed 闸→过闸写中文 sidecar)。薄 I/O 胶水,核心逻辑在
-// src/translate/translateItem.ts(已单测)。真机验收 E 用它。
+// src/cli/translateItemCommand.ts：CLI translate-item 命令——审计 Wave 3 D 波后仅保留
+// workspace agent 路径(legacy 管道已退役)。库外文件诚实拒绝(agent 需 origin_lang 单跳选源)。
 import { existsSync, writeFileSync, renameSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, basename, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -8,10 +7,7 @@ import { makeModel } from '../agent/llm.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { extractEmbeddedSubtitle } from '../files/extractEmbeddedSub.js'
 import { findExternalSidecar } from '../files/sidecar.js'
-import { makeTranslationLM } from '../translate/translateLm.js'
 import { makeTranslationCritic } from '../translate/translateCritic.js'
-import { translateItem, type TranslateItemDeps } from '../translate/translateItem.js'
-import type { TranslationContext, TranslationCritic } from '../translate/translatePipeline.js'
 import { makeTranslateWorker, type TranslateWorkerDeps } from '../agent/translateWorker.js'
 import type { TranslateTask } from '../agent/translateWorker.schemas.js'
 import { containingRoot } from '../core/mediaContext.js'
@@ -41,23 +37,6 @@ export function sourceLangDisplayName(originLang: string | null | undefined): st
 
 /** 扫同目录既有中文 sidecar 当上下文播种术语表(库内直读、零网络;取前 3 份各截断 3000 字)。
  *  F2:可选 originLang 注入 sourceLangName,驱动日/英 prompt 文案。 */
-function gatherSeriesContext(videoPath: string, originLang?: string | null): TranslationContext {
-  const dir = dirname(videoPath)
-  const self = basename(videoPath)
-  const subs: string[] = []
-  try {
-    for (const f of readdirSync(dir)) {
-      if (f === self || !/\.(srt|ass|ssa)$/i.test(f)) continue
-      const lower = f.toLowerCase()
-      if (!CHINESE_TAGS.some((t) => lower.includes(`.${t.toLowerCase()}.`))) continue
-      try { subs.push(readFileSync(join(dir, f), 'utf8').slice(0, 3000)) } catch { /* 单份读失败跳过 */ }
-      if (subs.length >= 3) break
-    }
-  } catch { /* 目录读失败 → 无上下文 */ }
-  const ctx: TranslationContext = { sourceLangName: sourceLangDisplayName(originLang) }
-  if (subs.length) ctx.seriesExistingSubs = subs
-  return ctx
-}
 
 /** E 翻译用的 LLM 配置。TRANSLATE_MODEL 一旦设置 → 走 TRANSLATE_* 三件套(让 E 用强模型,与
  *  captcha 用的 LLM_MODEL=mimo 分开——真机实测 mimo 对翻译太弱);否则回退 LLM_*。 */
@@ -97,35 +76,6 @@ export function tryAutoTranslateCfg(env: NodeJS.ProcessEnv = process.env): { bas
  *  防两处组装漂移。critic 默认开(TRANSLATE_CRITIC=off 关);TRANSLATE_CRITIC_MODEL 单指定判官。
  *  F1:fetchSourceSub 可选注入(makeRealFetchSourceSub 组装,需要 db+adapters,由调用方各自
  *  提供——daemon 分支必接;手动 CLI 在库文件存在时接)。未注入=行为不变(零合格轨→no-embedded)。 */
-export function makeTranslateItemDeps(
-  cfg: { baseUrl: string; apiKey: string; model: string },
-  fetchSourceSub?: TranslateItemDeps['fetchSourceSub'],
-  /** F2:可选 locate,用于把 origin_lang 喂进 prompt 源语言名;缺省=英文。 */
-  locateOriginLang?: (videoPath: string) => string | null,
-): TranslateItemDeps {
-  const model = makeModel(cfg)
-  const lmTimeout = translateTimeoutMs()
-  const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
-  // 审计🟡:critic 曾裸继承 LLM_TIMEOUT_MS(120s)——全片对照 payload 远大于单批,慢端点必超时,
-  // 再被优雅降级静默跳过("过了"与"没审"日志无别)。与翻译 LM 同门:TRANSLATE_TIMEOUT_MS 可配。
-  const critic: TranslationCritic | undefined = criticOn
-    ? makeTranslationCritic(
-        process.env.TRANSLATE_CRITIC_MODEL ? makeModel({ ...cfg, model: process.env.TRANSLATE_CRITIC_MODEL }) : model,
-        { timeoutMs: lmTimeout },
-      )
-    : undefined
-  return {
-    probe: (v) => probeEmbeddedSubtitles(v),
-    extract: (v, i) => extractEmbeddedSubtitle(v, i),
-    lm: makeTranslationLM(model, { timeoutMs: lmTimeout }),
-    critic,
-    fetchSourceSub,
-    readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
-    gatherContext: async (v) => gatherSeriesContext(v, locateOriginLang?.(v) ?? null),
-    videoDurationSec: (v) => probeDurationSec(v),
-    writeSidecar: (v, content) => writeSidecarAtomic(v, content),
-  }
-}
 
 /** 原子 sidecar 写(tmp+rename):SIGKILL 落在裸 writeFileSync 中途会留下截断的 .zh-Hans.srt,
  *  下一轮 already-covered 误判 → 该条目永久不再重译且坏字幕直接进播放器。 */
@@ -237,7 +187,7 @@ export function locateTranslateIdentity(
 }
 
 export type DaemonTranslateRunItemResult = {
-  status: import('../translate/translateItem.js').TranslateItemResult['status'] | 'probe-failed'
+  status: 'installed' | 'held' | 'no-source' | 'extract-failed' | 'no-embedded' | 'already-covered' | 'write-failed' | 'probe-failed'
   reason?: string
   sourceRef?: string
   sidecarPath?: string
@@ -308,16 +258,14 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
     process.exit(2)
   }
   const cfg = translateLlmCfg()
-  const legacyFlag = process.argv.includes('--legacy')
-  const agentOn = !legacyFlag && (process.env.TRANSLATE_AGENT ?? 'on').toLowerCase() !== 'off'
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
-  console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'} 路径=${agentOn ? 'workspace-agent' : 'legacy'}`)
+  console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'} 路径=workspace-agent`)
 
   // F1:手动 CLI 也接同一 fetchSourceSub(与 daemon 分支共用 makeRealFetchSourceSub 组装,防漂移)。
   // 需要库定位(origin_lang/imdb),故只在 scout.db 已存在时接线——库还没建(从没跑过 watch)时
   // 不为一次手动翻译凭空创建空库(openDb 会落盘建表),此时 fetch 腿关闭,行为同 F1 前(no-embedded)。
   // db/adapters 组装失败(如 ZIMUKU_ENABLED=true 缺 LLM_*)同样降级关腿,不拦手动翻译主线。
-  let fetchSourceSub: TranslateItemDeps['fetchSourceSub']
+  let fetchSourceSub: import('../translate/workspace/resolveSource.js').ResolveSourceDeps['fetchSourceSub']
   let db: import('../v2/db.js').ScoutDb | undefined
   const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
   const dbPath = join(cacheRoot, 'scout.db')
@@ -340,7 +288,7 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
 
   // Workspace agent 主路径(P1):需要库定位拿到 origin_lang/itemId(单跳选源依赖);
   // 定位不到(库外文件)时诚实回退 legacy,不让 agent 在零身份下乱猜源语言。
-  if (agentOn && db) {
+  if (db) {
     const identity = locateTranslateIdentity(db, videoPath)
     if (identity) {
       console.log(`[translate-item] 开始: ${videoPath} (workspace-agent)`)
@@ -398,28 +346,10 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
         db?.close()
       }
       process.exit(exitCode)
+    } else {
+      console.error(`[translate-item] 库不存在或定位失败 → workspace-agent 无法工作,拒绝执行`)
+      console.error(`[translate-item] 解决: 先跑一次 watch 建库,或将视频放入已扫描的媒体根`)
+      process.exit(1)
     }
-    console.log(`[translate-item] 库内定位失败(无 origin_lang/itemId),回退 legacy 管道`)
-  } else if (agentOn && !db) {
-    console.log(`[translate-item] 无库身份(workspace-agent 需要 origin_lang 单跳选源),回退 legacy 管道`)
   }
-
-  const deps = makeTranslateItemDeps(cfg, fetchSourceSub, locateOriginLang)
-  console.log(`[translate-item] 开始: ${videoPath}`)
-  let r: Awaited<ReturnType<typeof translateItem>>
-  try {
-    r = await translateItem(videoPath, deps)
-  } finally {
-    db?.close()
-  }
-  const tail = (r.sidecarPath ? ` → ${r.sidecarPath}` : '') + (r.reason ? ` (${r.reason})` : '') + (r.sourceRef ? ` [源: ${r.sourceRef}]` : '')
-  console.log(`[translate-item] 结果: ${r.status}${tail}`)
-  if (r.gate) {
-    console.log(`[translate-item] 闸: verdict=${r.gate.verdict} 术语符合=${r.gate.glossary.conformance}% (${r.gate.glossary.hits}/${r.gate.glossary.checks}) cues=${r.gate.cueCount.candidate} 硬违规=${r.gate.hardViolations.length}`)
-    for (const h of r.gate.hardViolations) console.log(`  ✗ ${h}`)
-  }
-  // 生产实测(Astronaut):sidecar 落盘后进程迟迟不退(16min+,单线程 sleep)。根因未完全定位
-  // (疑 fetch/undici 或 docker exec 管道),故这里把 db 关闭挪进 finally 兜底,并在打印结果后
-  // 立即 exit 收尾——CLI 是一次性进程,exit 即权威收尾;daemon 路径不走这里(常驻,不 exit)。
-  process.exit(r.status === 'installed' ? 0 : 1)
 }

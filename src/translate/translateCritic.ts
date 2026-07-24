@@ -2,13 +2,63 @@
 // ——真机实测暴露:弱模型(mimo)译文能过确定性闸,但中文生硬(如"打孔在地球上")。critic 用强模型
 // 当判官逐条审英中对照,抓 mistranslation/awkward/omission/term,major 问题 → held。
 //
-// 判官输出坏/抛错时优雅降级(见 translatePipeline 的 ⑦b + parseCriticResponse):确定性闸已过,
-// critic 是额外一层,不该因判官抽风阻塞可用译文。
+// 判官输出坏/抛错时优雅降级:确定性闸已过,critic 是额外一层,不该因判官抽风阻塞可用译文。
+// (审计 Wave 3 D 波:legacy translatePipeline 已退役,类型就地定义,extractJson 内联。)
 import { generateText, type LanguageModel } from 'ai'
 import { LLM_TIMEOUT_MS } from '../agent/llm.js'
-import { extractJson } from './translateLm.js'
 import type { GlossaryTerm, SrtCue } from './qualityGate.js'
-import type { CriticIssue, CriticVerdict, TranslationCritic } from './translatePipeline.js'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES(原 translatePipeline.ts 定义,legacy 退役后挪这里)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CriticIssue {
+  cueIndex: string
+  severity: 'major' | 'minor'
+  kind: string
+  note: string
+}
+
+export interface CriticVerdict {
+  /** false → held(有 major 语义/通顺问题)。 */
+  ok: boolean
+  issues: CriticIssue[]
+}
+
+/** LLM-judge 语义/通顺 QA:确定性闸(结构/术语/CJK)之外的一层,强模型当判官抓生硬译文/语义错/
+ *  漏译——正是确定性层判不了的"通顺度"。真实现用强模型 ai SDK;测试注入 Mock。 */
+export interface TranslationCritic {
+  review(
+    source: SrtCue[],
+    candidate: SrtCue[],
+    glossary: GlossaryTerm[],
+    sourceLangName?: string,
+  ): Promise<CriticVerdict>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL(原 translateLm.ts 的 extractJson,legacy 退役后内联)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function extractJson(raw: string): unknown {
+  let s = raw.trim()
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence) s = fence[1].trim()
+  const firstArr = s.indexOf('[')
+  const firstObj = s.indexOf('{')
+  let start = -1
+  let close = ''
+  if (firstArr >= 0 && (firstObj < 0 || firstArr < firstObj)) { start = firstArr; close = ']' }
+  else if (firstObj >= 0) { start = firstObj; close = '}' }
+  if (start < 0) return null
+  const end = s.lastIndexOf(close)
+  if (end <= start) return null
+  try { return JSON.parse(s.slice(start, end + 1)) } catch { return null }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRITIC IMPL
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** 容错解析判官响应 → CriticVerdict。有 major 问题 → ok=false;解析不出 → 优雅降级 ok=true。 */
 export function parseCriticResponse(raw: string): CriticVerdict {

@@ -15,7 +15,18 @@ import type { ScoutDb } from './db.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import { traceBus } from '../core/traceBus.js'
-import type { TranslateItemResult } from '../translate/translateItem.js'
+
+/** runItem 的报告形状(legacy translate/translateItem.ts 已随审计 D 波退役——类型就地定义,
+ *  与 cli/translateItemCommand.ts 的 DaemonTranslateRunItemResult 同构)。 */
+export interface TranslateRunItemResult {
+  status:
+    | 'installed' | 'held' | 'no-source' | 'extract-failed'
+    | 'no-embedded' | 'already-covered' | 'write-failed' | 'probe-failed'
+  sidecarPath?: string
+  reason?: string
+  sourceRef?: string
+  llmCalls?: number
+}
 
 /** 中文 tag 判定(原始 ffprobe tag,口径同 translateItem.isChinese)。 */
 function isChineseTag(lang: string): boolean {
@@ -93,9 +104,9 @@ export function dispatchTranslateTasks(
 }
 
 export interface TranslateWorkerTaskDeps {
-  /** 端到端翻译一个视频(translateItem 预绑定真实 deps;P3 起也可为 workspace agent 报告,
-   *  agent 状态集多一个 'probe-failed'——else 分支同样走 completeError,语义对齐)。 */
-  runItem: (videoPath: string) => Promise<Pick<TranslateItemResult, 'sidecarPath' | 'reason' | 'sourceRef'> & { status: TranslateItemResult['status'] | 'probe-failed'; llmCalls?: number }>
+  /** 端到端翻译一个视频(workspace agent 报告;状态集含 probe-failed——else 分支同样走
+   *  completeError,语义对齐)。 */
+  runItem: (videoPath: string) => Promise<TranslateRunItemResult>
   /** installed 后踢一脚 ingest,让新 sidecar 尽快记账成 covered(镜像 rescue 的先例)。 */
   requestIngest?: () => void
   runs?: Pick<RunsRepo, 'insert'>
