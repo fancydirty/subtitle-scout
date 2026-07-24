@@ -590,6 +590,10 @@ export function buildSettings(settingsRepo: Pick<SettingsRepo, 'get'>): Settings
 const DEPLOY_SECRET_KEYS = [
   'TMDB_API_KEY', 'LLM_API_KEY', 'DASHBOARD_TOKEN',
   'ASSRT_TOKEN', 'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_PASSWORD',
+  // AI 翻译部署门三件套之密钥(审计共识:用户必须能在 UI 验证"配没配",否则开了个寂寞开关)
+  'TRANSLATE_API_KEY',
+  // jimaku 日字源密钥(同为密钥,同档脱敏)
+  'JIMAKU_API_KEY',
 ] as const
 
 /** 非机密 env——部署层信息，原样字符串展示（未设置为 null）帮助排障，不脱敏。 */
@@ -603,6 +607,9 @@ const DEPLOY_NONSECRET_KEYS = [
   // 此前漏收进这张展示清单——枚举来源核对时补齐，纯只读展示，不影响 resolveTargetLanguages 本身
   // 的行为级 settings.target_languages 优先级（见该函数第二参的文档注释）。
   'TARGET_LANGUAGES', 'SKIP_CHINESE_ORIGIN',
+  // AI 翻译部署门三件套之非机密两件 + 判官/超时旋钮（设置页"部署门状态行"的数据源）
+  'TRANSLATE_BASE_URL', 'TRANSLATE_MODEL', 'TRANSLATE_CRITIC', 'TRANSLATE_CRITIC_MODEL',
+  'TRANSLATE_TIMEOUT_MS', 'SUBHD_ENABLED',
 ] as const
 
 export interface DeploySecretDTO { present: boolean; tail: string }

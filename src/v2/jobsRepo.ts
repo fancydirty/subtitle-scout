@@ -429,8 +429,9 @@ export class JobsRepo {
   /** 停车（D-review #3）：active → dormant，一步到位、不走退避梯。与 completeError 的本质
    *  区别：completeError 服务"会自愈的瞬时故障"（网络/LLM/5xx），30s→15min→daily 重试有
    *  意义；park 服务"重试无意义的配置性缺陷"（如 executeRealign 未接线）——重试一万次也
-   *  不会自己长出接线，走 error 轨就是无穷 errorloop。dormant 不参与 claimNext 派发，但
-   *  保留 wake 唤醒通道（修好配置后可手动/播放唤醒），不是死刑是停车。
+   *  不会自己长出接线，走 error 轨就是无穷 errorloop。dormant 不参与 claimNext 派发；
+   *  复活语义=upsert 四态回执（created/revived/coalesced/blocked_dormant）+ dashboard
+   *  甄别页认领（claimParked）——wake/boostPriority 通道已随 R-2/R-6 处决。
    *  同 complete* 守卫语义：仅从 active 态出发，否则 no-op。 */
   park(jobId: number, reason: string, now: number): boolean {
     const info = this.db

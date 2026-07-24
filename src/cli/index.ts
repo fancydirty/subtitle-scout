@@ -19,7 +19,6 @@ import { makeModel } from '../agent/llm.js'
 import { cmdTranslateItem, tryAutoTranslateCfg, makeDaemonTranslateRunItem } from './translateItemCommand.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { dispatchTranslateTasks, runTranslateWorkerTask } from '../v2/translateWorkerTask.js'
-import { translateItem } from '../translate/translateItem.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities,
@@ -455,7 +454,7 @@ async function cmdWatch() {
         // E AI 翻译:daemon 自动翻一个可译候选。**双重 env 门控**——tryAutoTranslateCfg 只认显式
         // TRANSLATE_* 三件套(绝不回退 LLM_*=mimo 烧配额),不全则拒跑走 completeError(等用户配齐;
         // 与 dispatch 侧门控对称,即便有残留 translate 行也不会误用弱模型)。deps 与手动 CLI 共用
-        // makeTranslateItemDeps 防漂移。
+        // makeDaemonTranslateRunItem→makeTranslateAgentDeps(workspace agent 主路径)防漂移。
         const cfg = tryAutoTranslateCfg()
         if (!cfg) {
           jobs.completeError(job.id, 'translate 未启用:需配 TRANSLATE_MODEL/TRANSLATE_BASE_URL/TRANSLATE_API_KEY 三件套', Date.now())

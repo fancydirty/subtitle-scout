@@ -7,11 +7,11 @@ services:
     image: ghcr.io/fancydirty/subtitle-scout:latest
     container_name: subtitle-scout
     restart: unless-stopped
-    # 容器内 PID 1 是 node（Dockerfile CMD 直接跑 dist/cli/index.js）——但普通进程
-    # 不具备 init 的孤儿收割职责。providerPort.ts 里每次字幕抓取都 detached 起一个独立
-    # 进程组的 subtitle-fetch 子进程；主进程若异常退出，该子进程会被重新收养给 PID 1，
-    # 而 node 不会像 tini 那样自动 wait() 收割不认识的子孙进程，久而久之堆成僵尸。
-    # init:true 让 Docker 注入内置 tini 作真正的 PID 1，负责收割 + 正确转发终止信号。
+    # 容器内 PID 1 默认是 node（Dockerfile CMD 直接跑 dist/cli/index.js）——普通进程不具备
+    # init 的孤儿收割职责,异常退出时子孙进程会被重新收养给 PID 1 而 node 不 wait() 它们。
+    # init:true 让 Docker 注入内置 tini 作真正的 PID 1,负责收割 + 正确转发终止信号。
+    # （历史背景:旧管线曾 detached 起 subtitle-fetch 子进程,僵尸问题更突出;v3 worker 全部
+    # 进程内调 adapter,但 tini 的信号/收割卫生依然正确。）
     init: true
     logging:
       driver: json-file
@@ -38,9 +38,24 @@ services:
       # 缺列时 .env 里的 SUBHD_ENABLED/ZIMUKU_ENABLED=true 到不了容器 → 源静默不生效。
       ZIMUKU_ENABLED: ${ZIMUKU_ENABLED:-false}
       SUBHD_ENABLED: ${SUBHD_ENABLED:-false}
+      # TMDB 反代/代理（墙内直连常被墙时用;不配则默认直连官方 API）
+      TMDB_BASE_URL: ${TMDB_BASE_URL:-}
+      TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
+      # jimaku 日字源(F2);不填则该 adapter 休眠
+      JIMAKU_API_KEY: ${JIMAKU_API_KEY:-}
+      # AI 翻译部署门:三件套缺一,daemon 自动翻译整体休眠(手动 translate-item 不受影响)
+      TRANSLATE_BASE_URL: ${TRANSLATE_BASE_URL:-}
+      TRANSLATE_API_KEY: ${TRANSLATE_API_KEY:-}
+      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-}
+      TRANSLATE_CRITIC: ${TRANSLATE_CRITIC:-}
+      TRANSLATE_CRITIC_MODEL: ${TRANSLATE_CRITIC_MODEL:-}
+      TRANSLATE_TIMEOUT_MS: ${TRANSLATE_TIMEOUT_MS:-}
+      # 目标字幕语言与扫描节奏(dashboard 设置页的行为级配置优先于这两个种子值)
+      TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
+      SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}
+      LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}
       MEDIA_ROOTS: /media
       SUBTITLE_SCOUT_CACHE_DIR: /cache
-      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
       TZ: ${TZ:-Asia/Shanghai}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
       DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}

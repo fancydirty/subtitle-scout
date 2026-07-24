@@ -200,16 +200,17 @@ Title (Year)/Season NN/Title SNNENN.ext
 | 命令 | 说明 |
 |------|------|
 | `doctor` | 检查接线（ASSRT / OpenSubtitles / zimuku / LLM / 媒体根目录 / 挂载能力 / 数据库） |
-| `watch` | 常驻模式（daemon）：自扫描发现 + 编排调度 + 找字幕/整理 worker |
+| `watch` | 常驻模式（daemon）：自扫描发现 + 编排调度 + 找字幕/整理/翻译 worker |
 | `reconcile-all` | 全仓校验：一次性扫描全库，按当前规则重新判定并派发缺口任务（同监控页"全仓校验"按钮） |
+| `translate-item <videoPath>` | 对单个视频跑 AI 翻译（agent 工作台：选源 → 术语表 → 逐行译 → 质量闸 → 装盘） |
+| `auth reset` | 重置管理员账号（忘记密码时用；需能访问数据库文件） |
 | `realign-rollback <archiveDir>` | 整理操作逃生舱：读 `<archiveDir>` 下的 write-ahead manifest，把文件搬动逆序重放回原位 |
-| `report [--since <24h\|7d\|ISO-date-UTC>]` | 统计报告（默认最近 24 小时） |
 
 **容器内执行示例**：
 
 ```bash
 docker compose exec subtitle-scout node dist/cli/index.js watch
-docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
+docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media/tv/Show/ep.mkv"
 ```
 
 ---
@@ -236,13 +237,15 @@ docker compose exec subtitle-scout node dist/cli/index.js report --since 7d
 | `OPENSUBTITLES_API_KEY` | OpenSubtitles key（可选）——ASSRT 之外的第二字幕源，欧美剧集补盲；见「OpenSubtitles」 | 空 |
 | `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` | OpenSubtitles 登录（可选）——免费档下载配额 5→20 次/天 | 空 |
 | `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔） | 空 |
+| `TARGET_LANGUAGES` | 目标字幕语言（逗号分隔 BCP-47；设置页 target_languages 优先于此） | `zh` |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
-| `POLL_INTERVAL_SECONDS` | watch 模式轮询间隔（秒） | `15` |
-| `ITEM_COOLDOWN_MINUTES` | 同一条目处理冷却期（分钟） | `30` |
-| `TREAT_PGS_AS_MISSING` | 图形字幕（PGS）视为缺字幕 | `true` |
-| `ADOPT_LOCAL_SUBTITLES` | 收编目录中不规范命名的本地字幕 | `true` |
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
-| `SKIP_CACHE_MINUTES` | 已有字幕/不需要项的短期跳过缓存（分钟） | `5` |
+| `JIMAKU_API_KEY` | jimaku.cc 日文字幕源 API key（F2 日→中直译日源；空则该源休眠） | 空 |
+| `TRANSLATE_BASE_URL` / `TRANSLATE_API_KEY` / `TRANSLATE_MODEL` | **AI 翻译部署门三件套**——缺一 daemon 自动翻译整体休眠；未配 `TRANSLATE_MODEL` 时回退 `LLM_*`。compose 部署还需确认 compose 的 environment 透传了它们 | 空 |
+| `TRANSLATE_CRITIC` | 语义判官开关（关闭后仅靠确定性质量闸，仍 fail-closed） | `on` |
+| `TRANSLATE_CRITIC_MODEL` | 判官单指定模型 | 同 `TRANSLATE_MODEL` |
+| `TRANSLATE_TIMEOUT_MS` | 单批翻译超时（毫秒） | `300000` |
+| `SCAN_INTERVAL_MS` | 自扫描间隔（毫秒；设置页 scan_interval_ms 优先） | `900000` |
 | `DASHBOARD_PORT` | 监控页端口 | `8099` |
 | `DASHBOARD_TOKEN` | **legacy**：老部署的访问 token，等价一个 API key。新部署建议留空，改用首启向导设账号密码 | 空 |
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
@@ -310,7 +313,7 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 
 ### Q: 配额烧完了会怎样
 
-**ASSRT 配额耗尽**：搜索返回 429，程序会记日志并跳过该条目，进入冷却期（默认 30 分钟）。配额恢复后自动重试。
+**ASSRT 配额耗尽**：搜索返回 429，任务记瞬时错误并按退避梯重试（30 秒 → 15 分钟 → 天级），监控页运行历史可见；配额恢复后自然通过。
 
 **LLM 配额耗尽**：取决于你的 LLM 服务商返回的错误，通常会记录在监控页的运行历史里，条目进冷却期。
 
