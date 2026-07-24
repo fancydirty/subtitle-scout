@@ -16,7 +16,7 @@ import {
 } from './findSubtitleWorker.schemas.js'
 import { allocate, cleanup } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
-import type { FetchAdapter } from '../cli/fetchLib.js'
+import type { FetchAdapter } from '../adapters/fetchLib.js'
 
 export interface FindSubtitleWorkerDeps {
   model: LanguageModel

@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
-import type { FetchAdapter } from '../cli/fetchLib.js'
+import type { FetchAdapter } from '../adapters/fetchLib.js'
 import type { CandidateRef } from '../core/schemas.js'
 import { makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool, resolveTargetFilename } from './findSubtitleWorker.tools.js'
 import type { InspectSignals } from '../files/subtitleInspect.js'

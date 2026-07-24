@@ -17,7 +17,7 @@ import type { TranslateTask } from '../agent/translateWorker.schemas.js'
 import { containingRoot } from '../core/mediaContext.js'
 import { GlossaryRepo } from '../v2/glossaryRepo.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
-import { buildAdapters } from './buildAdapters.js'
+import { buildAdapters } from '../adapters/buildAdapters.js'
 
 const CHINESE_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'zh-CN', 'zh-TW', 'chs', 'cht', 'chi', 'zho']
 

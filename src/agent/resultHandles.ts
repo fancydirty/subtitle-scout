@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { tool } from 'ai'
 import { z } from 'zod'
-import { runSearch, type FetchAdapter } from '../cli/fetchLib.js'
+import { runSearch, type FetchAdapter } from '../adapters/fetchLib.js'
 import { candidateKey, type SubtitleCandidate } from '../core/schemas.js'
 import { coercibleInt, coercibleOptionalInt } from './coerce.js'
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/provider'
-import type { FetchAdapter } from '../cli/fetchLib.js'
+import type { FetchAdapter } from '../adapters/fetchLib.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 import {
   makeFindSubtitleWorker, BATCH_BASE_TIMEOUT_MS, PER_TARGET_TIMEOUT_MS, BATCH_TIMEOUT_CAP_MS,

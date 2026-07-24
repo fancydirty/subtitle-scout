@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { makeFileResultSetStore } from './resultHandles.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 import { makeSearchSourceTool, makeListCandidatesTool, makeGetCandidateTool, summarizeCandidate, type CandidateSummary } from './resultHandles.js'
-import type { FetchAdapter } from '../cli/fetchLib.js'
+import type { FetchAdapter } from '../adapters/fetchLib.js'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'scout-resultsets-')) })

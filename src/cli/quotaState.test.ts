@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { applyQuotaEvent, QUOTA_STATE_PREFIX } from './quotaState.js'
-import type { FetchEvent } from './fetchLib.js'
+import type { FetchEvent } from '../adapters/fetchLib.js'
 
 function fakeRepo() {
   const store = new Map<string, string>()

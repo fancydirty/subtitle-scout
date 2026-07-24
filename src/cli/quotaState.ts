@@ -1,4 +1,4 @@
-import type { FetchEvent } from './fetchLib.js'
+import type { FetchEvent } from '../adapters/fetchLib.js'
 
 export const QUOTA_STATE_PREFIX = 'quota_state_'
 
