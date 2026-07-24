@@ -341,13 +341,18 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
 
   const rowStatusEnum = z.enum(['pending', 'draft', 'ok', 'needs_review', 'failed'])
 
+  /** tgt 文本净化(zerotest2 验收实证):①字面 \n 两字符序列→真换行(模型把 JSON 转义当文本写);
+   *  ②连续空行压成单换行(空行会让 serialize 产出无 cue 头的孤儿块)。 */
+  const sanitizeTgt = (tgt: string): string =>
+    tgt.replace(/\\n/g, '\n').replace(/\n{2,}/g, '\n').trim()
+
   const applyRowPatch = (
     rows: BilingualRow[], id: string,
     patch: { tgt?: string; status?: 'pending' | 'draft' | 'ok' | 'needs_review' | 'failed'; notes?: string },
   ): { ok: true; row: BilingualRow } | { error: string } => {
     const row = rows.find((r) => r.id === id)
     if (!row) return { error: `no bilingual row with id=${id}` }
-    if (patch.tgt !== undefined) row.tgt = patch.tgt
+    if (patch.tgt !== undefined) row.tgt = sanitizeTgt(patch.tgt)
     if (patch.status !== undefined) row.status = patch.status
     if (patch.notes !== undefined) row.notes = patch.notes
     return { ok: true, row }

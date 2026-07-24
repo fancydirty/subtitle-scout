@@ -377,7 +377,7 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
         }
         const videoDir = dirname(videoPath)
         const stagingRoot = containingRoot(videoDir, roots) ?? videoDir
-        const deps = makeTranslateAgentDeps(cfg, fetchSourceSub, { fetchTmdbContext })
+        const deps = makeTranslateAgentDeps(cfg, fetchSourceSub, { db, fetchTmdbContext })
         const run = makeTranslateWorker(deps)
         const report = await run({
           jobId: `cli-${Date.now()}`,

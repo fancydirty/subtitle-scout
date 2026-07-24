@@ -152,6 +152,7 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
     const report = await run(baseTask())
     expect(report.status).toBe('held')
     expect(report.reason).toMatch(/exhausted|finalize/i)
+    expect(report.llmCalls).toBe(3) // 耗尽路径配额账本不失明(stepCap=3 步)
     expect(existsSync(baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'))).toBe(false)
   })
 

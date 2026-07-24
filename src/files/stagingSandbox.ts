@@ -186,24 +186,28 @@ export async function install(
  *  指向目录)只解链接本身,不会顺着链接递归删目标——指向的真实目录不受影响。 */
 export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>): number {
   let cleaned = 0
+  // P2.4(复审 Important-1):translate 工作台 `.subtitle-translate` 与 find 的 `.subtitle-staging`
+  // 同法清扫——daemon translate 每 job 落 `<root>/.subtitle-translate/<jobId>/`,无清扫则无界堆积。
   for (const root of mediaRoots) {
-    const stagingRoot = join(root, STAGING_DIRNAME)
-    if (!existsSync(stagingRoot)) continue
-    let entries: string[]
-    try {
-      entries = readdirSync(stagingRoot)
-    } catch {
-      continue // best-effort:目录列不出来(权限/挂载抖动)跳过这一根,下次启动再试
-    }
-    for (const name of entries) {
-      if (name === '.ignore' || activeJobIds.has(name)) continue
-      const full = join(stagingRoot, name)
+    for (const dirname of [STAGING_DIRNAME, '.subtitle-translate']) {
+      const stagingRoot = join(root, dirname)
+      if (!existsSync(stagingRoot)) continue
+      let entries: string[]
       try {
-        lstatSync(full) // 存在性探测,不跟随链接;断链在这里也不会抛
-        rmSync(full, { recursive: true, force: true })
-        cleaned++
+        entries = readdirSync(stagingRoot)
       } catch {
-        // best-effort:单个条目清理失败不影响其它条目/其它根
+        continue // best-effort:目录列不出来(权限/挂载抖动)跳过这一根,下次启动再试
+      }
+      for (const name of entries) {
+        if (name === '.ignore' || activeJobIds.has(name)) continue
+        const full = join(stagingRoot, name)
+        try {
+          lstatSync(full) // 存在性探测,不跟随链接;断链在这里也不会抛
+          rmSync(full, { recursive: true, force: true })
+          cleaned++
+        } catch {
+          // best-effort:单个条目清理失败不影响其它条目/其它根
+        }
       }
     }
   }

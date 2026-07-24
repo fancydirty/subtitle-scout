@@ -203,6 +203,22 @@ describe('translate workspace tools', () => {
     expect(r).toHaveProperty('error')
   })
 
+  it('tgt 净化:字面 \\n 转真换行;连续空行压单换行(不产生孤儿块)', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    const r = await call(tools.update_row, { id: '1', tgt: '第一行\\n第二行', status: 'ok' })
+    expect(r.row.tgt).toBe('第一行\n第二行')
+    const r2 = await call(tools.update_row, { id: '1', tgt: '上段\n\n\n下段', status: 'ok' })
+    expect(r2.row.tgt).toBe('上段\n下段')
+    // merge 后无无头块:全文每个块都必须含时轴
+    await call(tools.update_row, { id: '2', tgt: '再见', status: 'ok' })
+    await call(tools.merge_to_srt)
+    const srt = readFileSync(paths.targetSrtPath, 'utf8')
+    const blocks = srt.replace(/\r/g, '').split(/\n\n+/).filter(Boolean)
+    expect(blocks.every((b) => b.includes('-->'))).toBe(true)
+  })
+
   it('update_rows batch: all-or-nothing; bad id → nothing written', async () => {
     const tools = makeTranslateWorkspaceTools(baseDeps())
     await call(tools.resolve_source)

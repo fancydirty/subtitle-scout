@@ -22,7 +22,9 @@ export function mergeBilingualToSrt(paths: WorkspacePaths): string {
     if (!row) throw new Error(`merge missing bilingual row for id=${c.index}`)
     const tgt = row.tgt.trim()
     if (!tgt) throw new Error(`merge empty tgt for id=${c.index} (status=${row.status})`)
-    return { index: c.index, timing: c.timing, text: tgt.split('\n') }
+    // 防御:空行会产生无 cue 头的孤儿块(update_row 已净化,此处兜底老数据/直接写表的路径)。
+    const lines = tgt.split('\n').filter((l) => l.trim() !== '')
+    return { index: c.index, timing: c.timing, text: lines.length ? lines : [tgt] }
   })
   const srt = serializeSrtCues(out)
   writeFileSync(paths.targetSrtPath, srt)

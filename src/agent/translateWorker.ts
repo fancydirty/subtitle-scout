@@ -81,6 +81,10 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
       `file: ${basename(task.videoPath)}`,
     ].join('\n')
 
+    const tracer = makeRunTracer(`job-${task.jobId}`)
+    // 配额账本(复审 Important-2):耗尽/abort 路径 result.steps 不可得,llm 调用数必须走
+    // onStepEvent 闭包计数——最烧配额的路径恰恰不能在账本里显示零成本。
+    let stepCount = 0
     const { agent, readFinalized } = makeReasoningAgent({
       model: deps.model,
       tools,
@@ -89,7 +93,10 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
       stopWhen: stepCountIs(deps.stepCap ?? 500),
       reasoning: 'high',
       telemetry: { isEnabled: true },
-      onStepEvent: makeRunTracer(`job-${task.jobId}`),
+      onStepEvent: (e) => {
+        stepCount++
+        tracer(e)
+      },
     })
 
     try {
@@ -104,7 +111,7 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
       // 以未捕获形态炸出调用方——与 find-subtitle worker-exhaustion 语义对齐。
       const reason = e instanceof Error ? e.message : String(e)
       console.error(`[translate-worker] job ${task.jobId} ended without a clean finalize: ${reason}`)
-      return { status: 'held', reason: `worker exhausted: ${reason.slice(0, 200)}`, sourceRef: null, sidecarPath: null, llmCalls: 0 }
+      return { status: 'held', reason: `worker exhausted: ${reason.slice(0, 200)}`, sourceRef: null, sidecarPath: null, llmCalls: stepCount }
     }
   }
 }

@@ -448,6 +448,16 @@ describe('gcOrphans', () => {
     expect(cleaned).toBe(3)
   })
 
+  it('P2.4: .subtitle-translate 工作台同法清扫(活跃 jobId 保留)', () => {
+    const root = mediaRoot()
+    mkdirSync(join(root, '.subtitle-translate', 'daemon-1'), { recursive: true })
+    mkdirSync(join(root, '.subtitle-translate', 'daemon-2'), { recursive: true })
+    const cleaned = gcOrphans([root], new Set(['daemon-2']))
+    expect(cleaned).toBe(1)
+    expect(existsSync(join(root, '.subtitle-translate', 'daemon-1'))).toBe(false)
+    expect(existsSync(join(root, '.subtitle-translate', 'daemon-2'))).toBe(true)
+  })
+
   it('removes a stray non-directory file squatting in .subtitle-staging (not just orphan job dirs)', () => {
     const root = mediaRoot()
     allocate('job-1', root) // 顺带创建 .subtitle-staging/.ignore
