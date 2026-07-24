@@ -29,6 +29,7 @@ const deploySettingsDTO: DeploySettingsDTO = {
     TMDB_API_KEY: { present: true, tail: '7890' }, LLM_API_KEY: { present: false, tail: '' },
     DASHBOARD_TOKEN: { present: false, tail: '' }, ASSRT_TOKEN: { present: false, tail: '' },
     OPENSUBTITLES_API_KEY: { present: false, tail: '' }, OPENSUBTITLES_PASSWORD: { present: false, tail: '' },
+    TRANSLATE_API_KEY: { present: true, tail: 'cdef' }, JIMAKU_API_KEY: { present: false, tail: '' },
   },
   nonSecrets: {
     LLM_BASE_URL: 'https://api.deepseek.com/v1', LLM_MODEL: 'deepseek-chat', LLM_EXTRA_BODY: null,
@@ -38,6 +39,9 @@ const deploySettingsDTO: DeploySettingsDTO = {
     TMDB_BASE_URL: null, TMDB_PROXY_URL: null,
     // R2D-10（R2 复审）：DEPLOY_NONSECRET_KEYS 补齐的两键（apiV2.ts）。
     TARGET_LANGUAGES: null, SKIP_CHINESE_ORIGIN: null,
+    // Wave0：AI 翻译部署门可见性三角（apiV2.ts）。
+    TRANSLATE_BASE_URL: null, TRANSLATE_MODEL: 'mimo-v2.5-pro', TRANSLATE_CRITIC: null,
+    TRANSLATE_CRITIC_MODEL: null, TRANSLATE_TIMEOUT_MS: null, SUBHD_ENABLED: null,
   },
 }
 const mediaRoots: MediaRoot[] = [{ path: '/media/tv', type: 'local', addedAt: 1 }]
