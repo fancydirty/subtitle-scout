@@ -86,8 +86,36 @@ describe('translate workspace tools', () => {
     expect(r2).toHaveProperty('error')
   })
 
-  it('freeze_glossary rejects zh that is not Chinese; keepOriginal opt-out excluded from gate', async () => {
-    const tools = makeTranslateWorkspaceTools(baseDeps())
+  it('E02 实案:freeze 拒绝子串矛盾词条(Komeran→轩兰 ⊂ Arashi Komeran→岚科美兰),合法昵称豁免', async () => {
+    const tools = makeTranslateWorkspaceTools(baseDeps({
+      glossaryStore: {
+        load: () => [{ src: 'Arashi Komeran', zh: '岚科美兰' }],
+        save: () => {},
+      },
+    }))
+    // fresh 加矛盾短词条(模型在 E02 生产的真实行为)
+    const bad = await call(tools.freeze_glossary, {
+      terms: [
+        { src: 'Komeran', zh: '轩兰' },
+        { src: 'Nico', zh: '妮可' },
+      ],
+    })
+    expect(bad).toHaveProperty('error')
+    expect(String(bad.error)).toMatch(/contradictory|conflict/i)
+
+    // 合法昵称:short.zh ⊆ long.zh(Gon→小杰 / adult Gon→成年小杰)
+    const paths2 = ensureWorkspaceLayout(mkdtempSync(join(tmpdir(), 'tw-tools-ok-')), 'job-ok')
+    const tools2 = makeTranslateWorkspaceTools({ ...baseDeps(), paths: paths2 })
+    const ok = await call(tools2.freeze_glossary, {
+      terms: [
+        { src: 'Gon', zh: '小杰' },
+        { src: 'adult Gon', zh: '成年小杰' },
+      ],
+    })
+    expect(ok).toMatchObject({ ok: true })
+  })
+
+  it('freeze_glossary rejects zh that is not Chinese; keepOriginal opt-out excluded from gate', async () => {    const tools = makeTranslateWorkspaceTools(baseDeps())
     const bad = await call(tools.freeze_glossary, {
       terms: [{ src: 'Fulmer', zh: 'Fulmer', note: 'name' }],
     })

@@ -252,6 +252,29 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
 
   const CJK = /[　-鿿豈-﫿]/
 
+  /** 术语表内部一致性(E02 生产实案):短词条是长词条的子串且 zh 互不包含 → 逻辑矛盾
+   *  (gate 对两词条独立检查,永远无法同时满足,systematic drift 必硬拦)。
+   *  合法昵称豁免:short.zh 是 long.zh 的子串(Gon→小杰 / adult Gon→成年小杰,小杰⊂成年小杰)。 */
+  function findGlossaryConflicts(terms: GlossaryTerm[]): string[] {
+    const boundary = (s: string) =>
+      new RegExp(`(?<![\\p{L}\\p{N}])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu')
+    const conflicts: string[] = []
+    for (let i = 0; i < terms.length; i++) {
+      for (let j = 0; j < terms.length; j++) {
+        if (i === j) continue
+        const short = terms[i]
+        const long = terms[j]
+        if (short.src.length >= long.src.length) continue
+        if (!boundary(short.src).test(long.src)) continue
+        // short 是 long 的子串(如 Komeran ⊂ Arashi Komeran):要求 short.zh ⊆ long.zh,否则矛盾
+        if (!long.zh.includes(short.zh)) {
+          conflicts.push(`"${short.src}"→"${short.zh}" conflicts with "${long.src}"→"${long.zh}" (substring with incompatible zh)`)
+        }
+      }
+    }
+    return conflicts
+  }
+
   const freeze_glossary = tool({
     description:
       'Freeze the termbase for this job: [{src, zh, note?, keepOriginal?}] — every proper noun in ' +
@@ -282,6 +305,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
             `original script: ${bad.map((t) => `${t.src}→"${t.zh}"`).slice(0, 8).join(', ')}`,
         }
       }
+      // E02 实案:子串矛盾词条会让 gate 永远无法通过——冻结前拦下,让模型当场取舍。
       // P2 剧级持久化:prior(同剧历史冻结)优先,按 src 去重——canonical 跨 job 稳定,
       // 新集只需补新术语,不重决旧译名(消除同剧 东国/奥斯塔尼亚 方差)。
       const prior = deps.glossaryStore?.load(seriesKeyOf(task.itemId)) ?? []
@@ -292,6 +316,17 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
         if (!k || seen.has(k)) continue
         seen.add(k)
         merged.push(t)
+      }
+      // E02 实案:矛盾校验必须在合并后的全集上跑——prior(长形)与 fresh(模型自造短形)
+      // 混出 Komeran→轩兰 ⊂ Arashi Komeran→岚科美兰 这类无解矛盾,gate 永不过。
+      const conflicts = findGlossaryConflicts(merged)
+      if (conflicts.length) {
+        return {
+          error:
+            'glossary has contradictory substring terms (a short form whose zh is not contained in ' +
+            'the longer form\'s zh) — the gate can never pass with both. Keep ONE canonical zh per ' +
+            `name family (usually the longer/more specific form governs the short form's zh too): ${conflicts.slice(0, 6).join('; ')}`,
+        }
       }
       writeFileSync(paths.glossaryPath, JSON.stringify(merged, null, 2))
       writeFileSync(paths.glossaryFrozenPath, 'frozen\n')
