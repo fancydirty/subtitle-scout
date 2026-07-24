@@ -209,6 +209,16 @@ export const en = {
   settings_ai_translate_label: 'AI subtitle translation',
   settings_ai_translate_note:
     'Default off. When on, the daemon auto-translates items no source could subtitle (burns TRANSLATE_* quota). Requires deploy-level TRANSLATE_BASE_URL/API_KEY/MODEL. Manual translate-item is unaffected.',
+  settings_translate_section_heading: 'AI translation (agent workspace)',
+  settings_translate_dormant_warning:
+    'Deploy gate missing — the switch is on but nothing will run. Add TRANSLATE_* to .env and recreate the container.',
+  settings_translate_view_workflow: 'View translation activity in Workflow →',
+  settings_translate_confirm_title: 'Enable AI translation?',
+  settings_translate_confirm_body_ready:
+    'The daemon will auto-translate items no provider could subtitle, continuously consuming TRANSLATE_* quota. Items blocked by the quality gate retry on a decaying ladder, and repeated identical failures park for manual review. Deploy gate: ready.',
+  settings_translate_confirm_body_missing:
+    'The daemon will auto-translate items no provider could subtitle, continuously consuming TRANSLATE_* quota. Deploy gate: MISSING — nothing will run until TRANSLATE_* is configured and the container recreated.',
+  settings_translate_confirm_action: 'Enable',
 
   settings_save_error_prefix: "Couldn't save: ",
 

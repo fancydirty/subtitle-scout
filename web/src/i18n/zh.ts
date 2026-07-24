@@ -173,6 +173,16 @@ export const zh = {
   settings_ai_translate_label: 'AI 字幕翻译',
   settings_ai_translate_note:
     '默认关闭。开启后守护进程会对搜不到字幕的条目自动翻译（消耗 TRANSLATE_* 配额）。需部署层配 TRANSLATE_BASE_URL/API_KEY/MODEL。手动 translate-item 不受此开关影响。',
+  settings_translate_section_heading: 'AI 翻译（agent 工作台）',
+  settings_translate_dormant_warning:
+    '部署门缺失——开关已打开但不会运行任何翻译。请在 .env 配置 TRANSLATE_* 并重建容器。',
+  settings_translate_view_workflow: '到 Workflow 页查看翻译活动 →',
+  settings_translate_confirm_title: '开启 AI 翻译？',
+  settings_translate_confirm_body_ready:
+    '守护进程将对搜索穷尽无中字的条目自动调用 LLM 翻译，持续消耗 TRANSLATE_* 配额；质量闸拦下的条目按衰减梯重试，同签名反复失败会停车转人工。部署门：就绪。',
+  settings_translate_confirm_body_missing:
+    '守护进程将对搜索穷尽无中字的条目自动调用 LLM 翻译，持续消耗 TRANSLATE_* 配额。部署门：缺失——配好 TRANSLATE_* 并重建容器前不会有任何翻译运行。',
+  settings_translate_confirm_action: '开启',
 
   settings_save_error_prefix: '保存失败：',
 

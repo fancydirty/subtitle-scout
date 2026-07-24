@@ -10,10 +10,10 @@ import type { RemoveRootResultDTO, DeploySecretDTO } from '../api/types.js'
  *  这里只抄这一个事实作占位提示，不编造任何这份代码里没有的数字（DESIGN.md §8）。 */
 export const DEFAULT_TARGET_LANGUAGES = 'zh'
 
-/** hardsub_mode 未设置时的展示态——spec §7 明确写的产品默认（"硬字幕假定三档...默认
- *  agent"，docs/design/2026-07-16-dashboard-rebuild-design.md）。展示默认选中项不等于"已生效"
- *  ——是否消费由旁边的救援官注记单独诚实标注。 */
-export const DEFAULT_HARDSUB_MODE = 'agent'
+/** hardsub_mode 未设置时的真实运行期默认值——后端 cli/index.ts 的硬事实：未设置/脏值一律
+ *  降级 'off'（最保守口径）。PM 审计发现的"spec 写 agent、UI 显示 agent、后端跑 off"三方
+ *  打架以**后端为准**对齐（spec 文档为过时记述）。 */
+export const DEFAULT_HARDSUB_MODE = 'off'
 
 /** trace_retention_days / scan_interval_ms 未设置时的占位数字——这两个 settings 键已被
  *  daemon 行为级消费（cli/index.ts: 债务D5 惰性读），此处数字是部署层兜底/缺省的真实参考

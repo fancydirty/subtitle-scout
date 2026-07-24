@@ -5,7 +5,8 @@
 // 种子，之后每次单键 PUT 成功都直接拿响应体覆盖 local，不需要重新 GET。
 //
 // 已知债务如实标注（DESIGN.md §8）：target_languages/scan_interval_ms/trace_retention_days 已真
-// 消费；hardsub_mode/exclude_extras 已保存但执行逻辑随救援官战役上线——两条注记各自诚实，不共用一句糊弄过去。
+// 消费；hardsub_mode/exclude_extras 均已保存且被消费（cli/index.ts live getter，下一轮扫描/派发
+// 生效——救援官战役已上线）。ai_translate_enabled 行已迁至 TranslateSection.tsx（Wave 3）。
 import { useEffect, useRef, useState } from 'react'
 import { Text } from '@astryxdesign/core/Text'
 import { TextInput } from '@astryxdesign/core/TextInput'
@@ -156,27 +157,6 @@ function ExcludeExtrasRow({ settings, onUpdated }: RowProps) {
   )
 }
 
-function AiTranslateRow({ settings, onUpdated }: RowProps) {
-  const { t } = useT()
-  const { saving, error, commit } = useFieldCommit(onUpdated)
-  const value = settings.ai_translate_enabled === 'true'
-
-  return (
-    <VStack gap={2}>
-      <Switch
-        label={t('settings_ai_translate_label')}
-        value={value}
-        onChange={(checked) => void commit('ai_translate_enabled', checked ? 'true' : 'false')}
-        isLoading={saving}
-        status={error ? { type: 'error', message: error } : undefined}
-      />
-      <Text type="supporting" color="secondary">
-        {t('settings_ai_translate_note')}
-      </Text>
-    </VStack>
-  )
-}
-
 function NumberSettingRow({
   settings, onUpdated, settingKey, label, placeholder, note,
 }: RowProps & { settingKey: SettingsKey; label: string; placeholder: string; note: string }) {
@@ -263,7 +243,6 @@ export function BehaviorSection({ settings }: Props) {
         <TargetLanguagesRow settings={local} onUpdated={setLocal} />
         <HardsubModeRow settings={local} onUpdated={setLocal} />
         <ExcludeExtrasRow settings={local} onUpdated={setLocal} />
-        <AiTranslateRow settings={local} onUpdated={setLocal} />
         <NumberSettingRow
           settings={local}
           onUpdated={setLocal}
