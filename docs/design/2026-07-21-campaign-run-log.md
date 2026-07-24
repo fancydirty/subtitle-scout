@@ -395,6 +395,36 @@ ai_translate_enabled=true → 阻塞监控 ~4h → 多代理验收 → 根因修
 - 生产翻译模型策略:mimo 可用但有人名 hallucinate 风险;强模型 TRANSLATE_MODEL 切换需用户拍板
 - `#recycle` 3331 + `_scout_realign_test` 30 字幕残留(健康代理观察项)
 
+## 战役 12:mimo→pro 控制变量 + auto-research 深水区(2026-07-24 全天,用户全程授权)
+
+### 控制变量实验证明模型强度决定质量(docs/design/model-choice-evidence.md)
+
+同源同 context 同工作流只换模型:mimo 人名四种随机错法(莫伊人/神代/森人/新月) vs pro 稳定官中(监志)。
+**生产已切 TRANSLATE_MODEL=mimo-v2.5-pro**。
+
+### auto-research 五轮根因修复(每轮:暴露→根因→修→复验)
+
+| # | 暴露 | 根因 | 修复 commit |
+|---|---|---|---|
+| 1 | E02 pro 也 held(62.7%) | 闸只回聚合百分比,**没给模型违规明细**(哪个术语错在哪行)→ 模型想修没靶子只能撂挑子 | `1b91e26` 闸返回 violations 明细 + skill 修复循环(≤3 轮) |
+| 2 | E02 又 held(timeout) | makeTranslateAgentDeps 的 900s 覆盖新 4h 默认 | `be54619` 删覆盖 + skill 反撂挑子规则(长任务=正常形态) |
+| 3 | 奥本海默 17% 主动放弃 + 32% 术语 | ①模型臆想"session capacity"放弃 ②**tgt[i]=translate(src[i+2]) 行错位**(合并多行对白 cue),模型自述"batch rejected"是虚构 | `3361914` possibleRowShift 检测器(±3 行邻域找期望译法,投票偏移量) + 反合并规则 |
+| 4 | 奥本海默第四跑 | **installed:86.7min/3008c/167 术语/94.7%** —— 3h 电影完整答卷 | (验证 1-3) |
+| 5 | E02 仍 held(92.3% 过阈但 systematic drift) | **术语表子串矛盾**:Komeran→轩兰 ⊂ Arashi Komeran→岚科美兰,zh 互不包含,闸逻辑上永不过;连 pro 都会自造矛盾短词条 | `6a941a2` freeze 合并后冲突校验(short.zh 必须 ⊆ long.zh;Gon/adult Gon 合法昵称豁免) + 数据清理 92→89 |
+
+### 终局
+
+- **E02 installed(98 calls)**:守仁×16/妮可×23/真神圭护×2,莫伊/监志/真上圭护/轩兰 全 0
+- **奥本海默 installed**:86.7min 全 3008c,抽样 cue 1/1000/2000/3008 全自然,0 纯拉丁
+- 生产:episodes 246 covered+150 embedded,translate 5 installed,ai_translate_enabled=false 复位
+- 串行全量 **2013 passed / 1 skipped**;HEAD `6a941a2` + docs commit;未 push
+- 主子代理裁决:**暂不需要**——pro 单代理 82 cues/min,3h 电影 87min 可接受;>8h 或限速再议
+
+### 方法论沉淀(auto-research loop 的完整形状)
+
+fail-closed 哲学下,held 不是终点是**诊断原料**:每轮 held 的 reason 都指向下一个真实根因
+(工具缺口→超时→行错位→术语矛盾)。**模型会虚构失败解释("batch rejected"),只信数据不信叙述。**
+
 ## 战役 10:Translate Workspace Agent P2(2026-07-23 深夜)
 
 **目标**:P1 验收暴露的三项真实需求 + GC。
