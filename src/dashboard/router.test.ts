@@ -57,8 +57,10 @@ const workflowPassDTO: WorkflowPassDTO = {
 }
 const workflowWorkersDTO: WorkflowWorkersDTO = {
   running: [{ jobId: 1, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: null, seriesName: null, movieName: null, startedAtLease: 1, trail: [] }],
-  recent: [{ id: 1, jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2, seriesId: 's1', movieId: null, seriesName: 'A', movieName: null }],
+  recent: [{ id: 1, jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2, seriesId: 's1', movieId: null, seriesName: 'A', movieName: null, llmCalls: null }],
   installedLast24h: 3,
+  translatedLast24h: 1,
+  held: [],
   providerQuota: [],
 }
 const librarySeriesDetailDTO: LibrarySeriesDetailDTO = {

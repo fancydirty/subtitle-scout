@@ -27,6 +27,7 @@ function Num({ children }: { children: number }) {
 export function SummaryLine({ pending, workers }: Props) {
   const gaps = pending.data ? pending.data.series.length + pending.data.movies.length : null
   const installed = workers.data ? workers.data.installedLast24h : null
+  const translated = workers.data ? workers.data.translatedLast24h : null
   const running = workers.data ? workers.data.running.length : null
 
   const segments: ReactNode[] = []
@@ -41,6 +42,15 @@ export function SummaryLine({ pending, workers }: Props) {
     segments.push(
       <span key="installed">
         <Num>{installed}</Num> episodes installed in the last 24h
+      </span>,
+    )
+  }
+  // 审计 UX-P0:翻译计数与下载计数分列(仅 >0 时显示——翻译是烧钱路径,有产出才给片段,
+  //  与"不编造 0 占位"的 SummaryLine 既有哲学一致)。
+  if (translated != null && translated > 0) {
+    segments.push(
+      <span key="translated">
+        <Num>{translated}</Num> translated
       </span>,
     )
   }

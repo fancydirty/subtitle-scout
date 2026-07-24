@@ -98,6 +98,13 @@ export function RunDetail({ source, now, onClose, onRerun }: Props) {
           </HStack>
         ) : null}
 
+        {/* 审计 UX-P0:LLM 成本事实句(翻译 run 的 llm_calls 账本,mono-fact 口径) */}
+        {source.kind === 'worker' && source.run.llmCalls != null && source.run.llmCalls > 0 ? (
+          <Text type="supporting" color="secondary">
+            llm calls · {source.run.llmCalls}
+          </Text>
+        ) : null}
+
         {detail ? (
           <VStack gap={1}>
             <Text type="supporting" color="secondary">

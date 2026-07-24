@@ -17,7 +17,7 @@ function asyncOf<T>(data: T | null): Async<T> {
   return { data, loading: data == null, error: null, reload: () => {} }
 }
 
-const EMPTY_WORKERS: WorkflowWorkersDTO = { running: [], recent: [], installedLast24h: 0, providerQuota: [] }
+const EMPTY_WORKERS: WorkflowWorkersDTO = { running: [], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }
 
 afterEach(() => {
   cleanup()
@@ -55,7 +55,7 @@ describe('ActivityFeed：Now working 卡——人话卡头 + phraseMode 直播',
   }
 
   it('卡头 = "Searching subtitles for {target}" + 已跑时长', () => {
-    renderFeed({ workers: asyncOf({ running: [runningWorker()], recent: [], installedLast24h: 0, providerQuota: [] }) })
+    renderFeed({ workers: asyncOf({ running: [runningWorker()], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }) })
     expect(screen.getByText('Searching subtitles for s1')).toBeInTheDocument()
     expect(screen.getByText('5m ago')).toBeInTheDocument()
   })
@@ -63,7 +63,7 @@ describe('ActivityFeed：Now working 卡——人话卡头 + phraseMode 直播',
   // 收官补刀（spec §B 铁律①）：running 行带 seriesName 时卡头主语用名字不用 id。
   it('卡头有 seriesName 时用名字，不再显示 tmdb id', () => {
     renderFeed({
-      workers: asyncOf({ running: [runningWorker({ seriesName: 'The Rig' })], recent: [], installedLast24h: 0, providerQuota: [] }),
+      workers: asyncOf({ running: [runningWorker({ seriesName: 'The Rig' })], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }),
     })
     expect(screen.getByText('Searching subtitles for The Rig')).toBeInTheDocument()
     expect(screen.queryByText('Searching subtitles for s1')).not.toBeInTheDocument()
@@ -71,13 +71,13 @@ describe('ActivityFeed：Now working 卡——人话卡头 + phraseMode 直播',
 
   it('realign 任务 → "Tidying up {target}"', () => {
     renderFeed({
-      workers: asyncOf({ running: [runningWorker({ taskType: 'realign', seriesId: 's2' })], recent: [], installedLast24h: 0, providerQuota: [] }),
+      workers: asyncOf({ running: [runningWorker({ taskType: 'realign', seriesId: 's2' })], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }),
     })
     expect(screen.getByText('Tidying up s2')).toBeInTheDocument()
   })
 
   it('phraseMode：工具名已映射（Searching providers），argsSummary 不在 DOM', () => {
-    renderFeed({ workers: asyncOf({ running: [runningWorker()], recent: [], installedLast24h: 0, providerQuota: [] }) })
+    renderFeed({ workers: asyncOf({ running: [runningWorker()], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }) })
     expect(screen.getByText('Searching providers')).toBeInTheDocument()
     expect(screen.queryByText('search_source')).not.toBeInTheDocument()
     expect(screen.queryByText('"silo 中字"')).not.toBeInTheDocument()
@@ -93,13 +93,13 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
   function recentRow(overrides: Partial<WorkflowRecentRunDTO> = {}): WorkflowRecentRunDTO {
     return {
       id: 5, jobId: 10, decision: 'installed', detail: '3 集入账', finishedAt: NOW - 60_000,
-      seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null,
+      seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null, llmCalls: null,
       ...overrides,
     }
   }
 
   it('installed 行：主语=剧名，短语="subtitles installed"，右对齐相对时间', () => {
-    renderFeed({ workers: asyncOf({ running: [], recent: [recentRow()], installedLast24h: 0, providerQuota: [] }) })
+    renderFeed({ workers: asyncOf({ running: [], recent: [recentRow()], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }) })
     expect(screen.getByText('Silo')).toBeInTheDocument()
     expect(screen.getByText('subtitles installed')).toBeInTheDocument()
     expect(screen.getByText('1m ago')).toBeInTheDocument()
@@ -107,7 +107,7 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
 
   it('retry_later 行：灰点（tone=neutral），不是红', () => {
     renderFeed({
-      workers: asyncOf({ running: [], recent: [recentRow({ id: 6, decision: 'retry_later' })], installedLast24h: 0, providerQuota: [] }),
+      workers: asyncOf({ running: [], recent: [recentRow({ id: 6, decision: 'retry_later' })], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }),
     })
     const dot = screen.getByRole('img', { name: 'will retry later' })
     expect(dot).toHaveAttribute('data-variant', 'neutral')
@@ -115,7 +115,7 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
 
   it('error 行：红点（tone=bad→error variant），行本身无额外红底块 class', () => {
     renderFeed({
-      workers: asyncOf({ running: [], recent: [recentRow({ id: 7, decision: 'error' })], installedLast24h: 0, providerQuota: [] }),
+      workers: asyncOf({ running: [], recent: [recentRow({ id: 7, decision: 'error' })], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }),
     })
     const dot = screen.getByRole('img', { name: 'hit a problem — will retry' })
     expect(dot).toHaveAttribute('data-variant', 'error')
@@ -127,7 +127,7 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
   it('剧名/片名皆缺失 → 降级显示 id（诚实兜底）', () => {
     renderFeed({
       workers: asyncOf({
-        running: [], installedLast24h: 0, providerQuota: [],
+        running: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [],
         recent: [recentRow({ id: 8, seriesId: 's-empty', seriesName: null, movieName: null })],
       }),
     })
@@ -138,8 +138,9 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
     const rows = Array.from({ length: 12 }, (_, i) => ({
       id: i + 1, jobId: 46, decision: 'error' as const, detail: 'retry', finishedAt: NOW - i * 60_000,
       seriesId: 's1', movieId: null, seriesName: 'Silo', movieName: null,
+      llmCalls: null,
     }))
-    const { onOpenRun } = renderFeed({ workers: asyncOf({ running: [], recent: rows, installedLast24h: 0, providerQuota: [] }) })
+    const { onOpenRun } = renderFeed({ workers: asyncOf({ running: [], recent: rows, installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }) })
     expect(screen.getAllByRole('button', { name: /hit a problem/ })).toHaveLength(1)
     expect(screen.getByText('× 12')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Silo'))
@@ -147,7 +148,7 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
   })
 
   it('count=1 的常规行不显示折叠角标', () => {
-    renderFeed({ workers: asyncOf({ running: [], recent: [recentRow()], installedLast24h: 0, providerQuota: [] }) })
+    renderFeed({ workers: asyncOf({ running: [], recent: [recentRow()], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }) })
     expect(screen.queryByText(/^× \d+$/)).not.toBeInTheDocument()
   })
 
@@ -163,6 +164,8 @@ describe('ActivityFeed：provider 配额事实句（债务 D3）', () => {
     renderFeed({
       workers: asyncOf({
         running: [], recent: [], installedLast24h: 0,
+        translatedLast24h: 0,
+        held: [],
         providerQuota: [{ provider: 'opensubtitles', resetAt, observedAt: NOW }],
       }),
     })
@@ -172,7 +175,7 @@ describe('ActivityFeed：provider 配额事实句（债务 D3）', () => {
 
   it('providerQuota 空数组 → 不渲染 quota 相关文案', () => {
     renderFeed({
-      workers: asyncOf({ running: [], recent: [], installedLast24h: 0, providerQuota: [] }),
+      workers: asyncOf({ running: [], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }),
     })
     expect(screen.queryByText(/quota exhausted/)).not.toBeInTheDocument()
   })

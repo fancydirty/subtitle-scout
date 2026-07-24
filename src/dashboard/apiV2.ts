@@ -869,6 +869,18 @@ export interface WorkflowRecentRunDTO {
   seriesName: string | null
   /** 同 seriesName，movieId 对应行的 movies.name（LEFT JOIN movies）。 */
   movieName: string | null
+  /** 审计 UX-P0:LLM 调用账本（runs.llm_calls,翻译 run 写入;find/realign 为 null）——Workflow
+   *  ActivityRow 的"· N calls"成本后缀数据源。 */
+  llmCalls: number | null
+}
+export interface WorkflowHeldJobDTO {
+  /** 审计 UX-P0:held(fail-closed 质量闸拦下)落库后不再隐身——failed + next_retry_at 未来的
+   *  worker_task 行。itemId 取 payload.itemId(translate 合成行),缺省回退 seriesId。 */
+  jobId: number
+  itemId: string | null
+  reason: string | null
+  nextRetryAt: number | null
+  errorAttempt: number
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]
@@ -877,6 +889,10 @@ export interface WorkflowWorkersDTO {
    *  数据源——runs 里 decision='installed' 且 finished_at > now-86400e3 的计数，独立 COUNT
    *  查询（一句 SQL）。now 由调用方传入（沿 buildWorkflowPending 的既有 now 传参先例）。 */
   installedLast24h: number
+  /** 审计 UX-P0:同口径 translate:installed 的 24h 计数——SummaryLine"N translated"段数据源。 */
+  translatedLast24h: number
+  /** 审计 UX-P0:held 队列(见 WorkflowHeldJobDTO)。 */
+  held: WorkflowHeldJobDTO[]
   /** 债务 D3：provider 配额事实句数据源——settings 旁路键 quota_state_*（见 cli/quotaState.ts）。
    *  读侧滤除已过期（resetAt 早于 now）的条目；值 JSON 解析失败 fail-soft 跳过整条。 */
   providerQuota: Array<{ provider: string; resetAt: string | null; observedAt: number }>
@@ -952,7 +968,8 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
   const recentRows = db
     .prepare(
       `SELECT r.id AS id, r.job_id AS job_id, r.decision AS decision, r.detail AS detail,
-              r.finished_at AS finished_at, j.series_id AS series_id, j.movie_id AS movie_id,
+              r.finished_at AS finished_at, r.llm_calls AS llm_calls,
+              j.series_id AS series_id, j.movie_id AS movie_id,
               s.name AS series_name, m.name AS movie_name
        FROM runs r LEFT JOIN jobs j ON r.job_id = j.id
        LEFT JOIN series s ON j.series_id = s.id
@@ -962,18 +979,45 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
     )
     .all() as {
       id: number; job_id: number | null; decision: string | null; detail: string | null
-      finished_at: number | null; series_id: string | null; movie_id: string | null
+      finished_at: number | null; llm_calls: number | null; series_id: string | null; movie_id: string | null
       series_name: string | null; movie_name: string | null
     }[]
   const recent: WorkflowRecentRunDTO[] = recentRows.map((r) => ({
     id: r.id, jobId: r.job_id, decision: r.decision, detail: r.detail, finishedAt: r.finished_at,
     seriesId: r.series_id, movieId: r.movie_id,
     seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
+    llmCalls: r.llm_calls,
   }))
 
   const installedRow = db
     .prepare(`SELECT COUNT(*) AS c FROM runs WHERE decision = 'installed' AND finished_at > ?`)
     .get(now - 86_400_000) as { c: number }
+  const translatedRow = db
+    .prepare(`SELECT COUNT(*) AS c FROM runs WHERE decision = 'translate:installed' AND finished_at > ?`)
+    .get(now - 86_400_000) as { c: number }
+
+  // 审计 UX-P0:held 队列——failed + 未来重试时刻的 worker_task;payload.itemId(translate 合成行)
+  // 优先,缺省回退 series_id。同 parseWorkerTaskPayload 的容错口径:payload 坏了 itemId 降级 null。
+  const heldRows = db
+    .prepare(
+      `SELECT id, series_id, payload, last_error, next_retry_at, error_attempt FROM jobs
+       WHERE state = 'failed' AND kind = 'worker_task' AND next_retry_at IS NOT NULL AND next_retry_at > ?`,
+    )
+    .all(now) as {
+      id: number; series_id: string | null; payload: string | null
+      last_error: string | null; next_retry_at: number | null; error_attempt: number
+    }[]
+  const held: WorkflowHeldJobDTO[] = heldRows.map((r) => {
+    let itemId: string | null = null
+    try {
+      const p = JSON.parse(r.payload ?? '{}') as { itemId?: unknown }
+      if (typeof p.itemId === 'string' && p.itemId) itemId = p.itemId
+    } catch { /* 降级 seriesId */ }
+    return {
+      jobId: r.id, itemId: itemId ?? r.series_id,
+      reason: r.last_error, nextRetryAt: r.next_retry_at, errorAttempt: r.error_attempt,
+    }
+  })
 
   const settingsRepo = new SettingsRepo(db)
   const providerQuota: WorkflowWorkersDTO['providerQuota'] = []
@@ -993,7 +1037,7 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
     }
   }
 
-  return { running, recent, installedLast24h: installedRow.c, providerQuota }
+  return { running, recent, installedLast24h: installedRow.c, translatedLast24h: translatedRow.c, held, providerQuota }
 }
 
 // ---- workflow/runs/:id/trace（dashboard-F4 后端例外口子：单 run 痕迹快照回放）----

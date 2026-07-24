@@ -31,6 +31,8 @@ function workersWith(installedLast24h: number, runningCount: number): WorkflowWo
       jobId: i, seriesId: `s${i}`, movieId: null, taskType: 'find_subtitle', seasons: null, seriesName: null, movieName: null, startedAtLease: 1, trail: [],
     })),
     recent: [],
+    translatedLast24h: 0,
+    held: [],
     installedLast24h,
     providerQuota: [],
   }
@@ -48,6 +50,12 @@ describe('SummaryLine：三片段渲染', () => {
     expect(screen.getByTestId('wf-summary-line').textContent).toBe(
       'Watching 0 gaps · 0 episodes installed in the last 24h · 2 agents working',
     )
+  })
+
+  it('UX-P0:translatedLast24h>0 → 增加 "N translated" 片段;=0 不显示(同不编造 0 占位哲学)', () => {
+    const w = workersWith(0, 0)
+    render(<SummaryLine pending={asyncOf(pendingWith(0, 0))} workers={asyncOf({ ...w, translatedLast24h: 3 })} />)
+    expect(screen.getByTestId('wf-summary-line').textContent).toContain('3 translated')
   })
 })
 

@@ -185,12 +185,26 @@ export interface WorkflowRecentRunDTO {
   seriesName: string | null
   /** 同 seriesName，movieId 对应行的 movies.name。 */
   movieName: string | null
+  /** 审计 UX-P0：LLM 调用账本（翻译 run 写入；find/realign 为 null）——ActivityRow 成本后缀。 */
+  llmCalls: number | null
+}
+/** 审计 UX-P0：held（fail-closed 拦下）落库可见——failed + 未来重试时刻的 worker_task。 */
+export interface WorkflowHeldJobDTO {
+  jobId: number
+  itemId: string | null
+  reason: string | null
+  nextRetryAt: number | null
+  errorAttempt: number
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]
   recent: WorkflowRecentRunDTO[]
   /** 验收修复轮一 Task V3：顶部总览句"N episodes installed in the last 24h"的数据源。 */
   installedLast24h: number
+  /** 审计 UX-P0：SummaryLine "N translated" 段数据源（translate:installed 24h 计数）。 */
+  translatedLast24h: number
+  /** 审计 UX-P0：held 队列。 */
+  held: WorkflowHeldJobDTO[]
   /** 债务 D3：provider 配额事实——后端已滤除过期条目；resetAt=ISO 串或 null（未知重置时刻）。 */
   providerQuota: Array<{ provider: string; resetAt: string | null; observedAt: number }>
 }

@@ -45,6 +45,15 @@ const DECISION_PHRASES: Record<string, DecisionPhrase> = {
   'realign:done': { text: 'library realigned', tone: 'ok' },
   'realign:parked': { text: 'needs a manual look', tone: 'neutral' },
   'realign:error': { text: 'realign hit a problem', tone: 'bad' },
+  // 审计 UX-P0：翻译决策全家——此前全部 fallback 裸词糊脸。held/held-parked 是质量闸正确拦下
+  // （等待/人工），中性灰不红；extract-failed 是真故障给 bad。
+  'translate:installed': { text: 'subtitles translated', tone: 'ok' },
+  'translate:held': { text: 'translation held for review', tone: 'neutral' },
+  'translate:held-parked': { text: 'needs a manual look', tone: 'neutral' },
+  'translate:no-source': { text: 'no source subtitle found', tone: 'neutral' },
+  'translate:extract-failed': { text: 'could not extract subtitles', tone: 'bad' },
+  'translate:probe-failed': { text: 'could not probe the video', tone: 'bad' },
+  'translate:already-covered': { text: 'already covered', tone: 'ok' },
 }
 
 /** recent 完成行的 decision → 人话句 + 语义 tone。未登记的 decision 词（如历史遗留的

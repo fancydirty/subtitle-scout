@@ -32,12 +32,15 @@ const TONE_VARIANT: Record<DecisionTone, 'success' | 'neutral' | 'error'> = {
 
 /** 卡头主语=剧/片名（铁律①：句子主语=内容，不是"worker/job"），名字查无/为空时降级显示 id
  *  ——诚实兜底（收官补刀：running 行的 name join 已在后端补齐，与 recent 行同款待遇）。
- *  realign 任务读作"整理"，find_subtitle 读作"搜索字幕"。 */
+ *  realign 任务读作"整理"，find_subtitle 读作"搜索字幕"，translate 读作"翻译"
+ *  （审计 UX-P0：此前合成 id 'translate:<itemId>' 被当剧名裸奔）。 */
 function nowWorkingTitle(
   w: Pick<WorkflowRunningWorkerDTO, 'taskType' | 'seriesId' | 'movieId' | 'seriesName' | 'movieName'>,
 ): string {
   const target = w.seriesName ?? w.movieName ?? w.seriesId ?? w.movieId ?? '?'
-  return w.taskType === 'realign' ? `Tidying up ${target}` : `Searching subtitles for ${target}`
+  if (w.taskType === 'realign') return `Tidying up ${target}`
+  if (w.taskType === 'translate') return `Translating subtitles for ${target}`
+  return `Searching subtitles for ${target}`
 }
 
 function NowWorkingCard({ worker, now }: { worker: WorkflowRunningWorkerDTO; now: number }) {
@@ -118,6 +121,11 @@ function ActivityRow({ row, count, now, onOpen }: { row: WorkflowRecentRunDTO; c
         —
       </span>
       <span className="wf-activity-phrase">{phrase.text}</span>
+      {row.llmCalls != null && row.llmCalls > 0 ? (
+        <span className="wf-activity-count" aria-label={`${row.llmCalls} llm calls`}>
+          · {row.llmCalls} calls
+        </span>
+      ) : null}
       {count > 1 ? (
         <span className="wf-activity-count" aria-label={`${count} retries`}>
           × {count}
@@ -125,6 +133,38 @@ function ActivityRow({ row, count, now, onOpen }: { row: WorkflowRecentRunDTO; c
       ) : null}
       <span className="wf-activity-time">{relativeAgo(now - at)}</span>
     </button>
+  )
+}
+
+/** 审计 UX-P0:held 区——fail-closed 拦下的翻译不再落库隐身。灰点+下次重试相对时间,
+ *  点开复用 RunDetail 现有面板(held job 的最新 run 即其证据)。空数组不渲染。 */
+function HeldSection({ workers, now, onOpenRun }: { workers: Async<WorkflowWorkersDTO>; now: number; onOpenRun: (row: WorkflowRecentRunDTO) => void }) {
+  if (!workers.data || workers.data.held.length === 0) return null
+  const { held, recent } = workers.data
+  return (
+    <VStack gap={2}>
+      <Text type="supporting" color="secondary" as="div">
+        Translation held
+      </Text>
+      {held.map((h) => {
+        const run = recent.find((r) => r.jobId === h.jobId)
+        return (
+          <button
+            type="button"
+            className="wf-activity-row"
+            key={h.jobId}
+            onClick={() => run && onOpenRun(run)}
+          >
+            <StatusDot variant="neutral" label="held" />
+            <span className="wf-activity-subject">{h.itemId ?? `job ${h.jobId}`}</span>
+            <span className="wf-activity-phrase">{h.reason ?? 'held'}</span>
+            <span className="wf-activity-time">
+              {h.nextRetryAt != null ? `retry in ${relativeAgo(h.nextRetryAt - now)}` : ''}
+            </span>
+          </button>
+        )
+      })}
+    </VStack>
   )
 }
 
@@ -202,6 +242,7 @@ export function ActivityFeed({ workers, passes, now, onOpenRun, onOpenPass }: Pr
     <VStack gap={5}>
       <QuotaFactsSection workers={workers} now={now} />
       <NowWorkingSection workers={workers} now={now} />
+      <HeldSection workers={workers} now={now} onOpenRun={onOpenRun} />
       <RecentSection workers={workers} now={now} onOpenRun={onOpenRun} />
       <Collapsible trigger={t('workflow_orchestrator_log_heading')} defaultIsOpen={false}>
         <OrchestratorLogBody passes={passes} now={now} onOpenPass={onOpenPass} />

@@ -672,7 +672,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
 
   it('空库：running/recent 皆空数组、installedLast24h=0', () => {
     const freshDb = openDb(':memory:')
-    expect(buildWorkflowWorkers(freshDb, NOW)).toEqual({ running: [], recent: [], installedLast24h: 0, providerQuota: [] })
+    expect(buildWorkflowWorkers(freshDb, NOW)).toEqual({ running: [], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] })
   })
 
   // 验收修复轮一 Task V3（design §B）：recent 行的剧名/片名——LEFT JOIN series/movies 取 name，
@@ -702,8 +702,7 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
 
   // installedLast24h：runs 里 decision='installed' 且 finished_at > now-86400e3 的计数——独立
   // COUNT 查询，now 由调用方传入（沿 buildWorkflowPending 的既有 now 传参先例）。
-  it('installedLast24h：仅计入 24h 窗口内 decision=installed 的行，窗口外/其它 decision 不计', () => {
-    const dayMs = 86_400_000
+  it('installedLast24h：仅计入 24h 窗口内 decision=installed 的行，窗口外/其它 decision 不计', () => {    const dayMs = 86_400_000
     // season: 2（beforeEach 已占用 season 1 的 jobs_identity 身份，这里避免撞车）
     const jobId = insertJob(db, { kind: 'series_season', seriesId: 's1', season: 2, state: 'wanted', priority: 0 })
     // 窗口内两条 installed
@@ -716,6 +715,44 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
 
     const result = buildWorkflowWorkers(db, NOW)
     expect(result.installedLast24h).toBe(2)
+  })
+
+  it('UX-P0:recent 行透传 llmCalls(runs.llm_calls),translatedLast24h 独立计数,held 队列只收未来重试行', () => {
+    const dayMs = 86_400_000
+    const jobId = insertJob(db, { kind: 'series_season', seriesId: 's1', season: 2, state: 'wanted', priority: 0 })
+    insertRun(db, jobId, NOW - 1000, 'installed', 'find')
+    // 窗口内两条 translate:installed(带 llm_calls);窗口外一条不计
+    const r1 = db.prepare(
+      `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, llm_calls) VALUES (?, ?, ?, 'translate:installed', 'ww e02', 58)`,
+    ).run(jobId, NOW - 3000, NOW - 2500)
+    db.prepare(
+      `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, llm_calls) VALUES (?, ?, ?, 'translate:installed', 'ww e07', 44)`,
+    ).run(jobId, NOW - 2000, NOW - 1500)
+    db.prepare(
+      `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, llm_calls) VALUES (?, ?, ?, 'translate:installed', 'old', 30)`,
+    ).run(jobId, NOW - dayMs - 9000, NOW - dayMs - 8000)
+
+    // held 三态:未来重试(收)/已过期(不收)/非 worker_task(不收)
+    const heldJobId = Number(db.prepare(
+      `INSERT INTO jobs (kind, series_id, payload, state, priority, last_error, next_retry_at, error_attempt, created_at, updated_at)
+       VALUES ('worker_task', 'translate:tmdb:1/s1e1', ?, 'failed', 0, 'translate held: term conformance 62.7%', ?, 3, ?, ?)`,
+    ).run(JSON.stringify({ taskType: 'translate', itemId: 'tmdb:1/s1e1' }), NOW + dayMs, NOW, NOW).lastInsertRowid)
+    db.prepare(
+      `INSERT INTO jobs (kind, series_id, payload, state, priority, last_error, next_retry_at, error_attempt, created_at, updated_at)
+       VALUES ('worker_task', 'translate:tmdb:1/s1e2', ?, 'failed', 0, 'x', ?, 1, ?, ?)`,
+    ).run(JSON.stringify({ taskType: 'translate', itemId: 'tmdb:1/s1e2' }), NOW - 1000, NOW, NOW)
+    insertJob(db, { kind: 'series_season', seriesId: 's1', season: 3, state: 'failed', priority: 0 })
+    db.prepare(`UPDATE jobs SET next_retry_at = ? WHERE kind = 'series_season' AND season = 3`).run(NOW + dayMs)
+
+    const result = buildWorkflowWorkers(db, NOW)
+    expect(result.translatedLast24h).toBe(2)
+    const llmRow = result.recent.find((r) => r.detail === 'ww e02')
+    expect(llmRow?.llmCalls).toBe(58)
+    expect(result.held).toHaveLength(1)
+    expect(result.held[0]).toMatchObject({
+      jobId: heldJobId, itemId: 'tmdb:1/s1e1', errorAttempt: 3,
+    })
+    expect(result.held[0].reason).toContain('62.7%')
   })
 
   // 债务 D3：provider 配额事实从 settings 旁路键 quota_state_* 读取，过滤已过期/非法值。

@@ -14,6 +14,7 @@
 import type { ScoutDb } from './db.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
+import { traceBus } from '../core/traceBus.js'
 import type { TranslateItemResult } from '../translate/translateItem.js'
 
 /** 中文 tag 判定(原始 ffprobe tag,口径同 translateItem.isChinese)。 */
@@ -107,11 +108,23 @@ export async function runTranslateWorkerTask(
   now: () => number,
 ): Promise<void> {
   const startedAt = now()
+  // 审计 UX-P0:翻译 run 的 trace 快照落库(此前恒 null,RunDetail 回放永远空白)。
+  // 与 findSubtitleWorkerTask 的 G3 同款:traceBus.snapshot 有清空副作用,一次任务收官只取一次,
+  // 多行 recordRun 共享同一份(held 与 installed 只会写一行,但 catch 路径可能补写,语义一致)。
+  const runKey = `job-${job.id}`
+  let traceJsonCache: string | null | undefined
+  const traceJsonForThisRun = (): string | null => {
+    if (traceJsonCache === undefined) {
+      const events = traceBus.snapshot(runKey)
+      traceJsonCache = events.length > 0 ? JSON.stringify(events) : null
+    }
+    return traceJsonCache
+  }
   const recordRun = (decision: string, detail: string, llmCalls = 0): void => {
     deps.runs?.insert({
       jobId: job.id, startedAt, finishedAt: now(), decision, detail: detail.slice(0, 200), journalPath: null,
       llmCalls,
-      traceJson: null,
+      traceJson: traceJsonForThisRun(),
     })
   }
 
