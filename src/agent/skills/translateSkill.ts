@@ -64,6 +64,13 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
    glossary **exactly** — including nicknames and surname-only forms (if the glossary says
    Morihito→守仁 and Moi→守仁, then "Moi" in the source is 守仁 in your output, never a new
    transliteration). When you are unsure of a name, \`lookup_glossary\` before inventing one.
+   The glossary governs **how** you render a name, not **whether** you must render it every
+   time: translation is for the target reader, not word-matching — pronouns, ellipsis, and
+   restructuring are fine where natural Chinese calls for them ("policy disagreement with
+   Dr. Oppenheimer" may become 「…的政策分歧」 when the referent is obvious). But never use
+   "naturalness" as an excuse to drop a name systematically — the gate hard-fails any term
+   that appears ≥2 times in the source and never lands correctly. Density is the gate's call,
+   not your taste; if you are unsure whether to spell the name out, spell it out.
    **Translate every row** — do not stop early to "check progress"; the repair loop at step 7
    is where quality is enforced.
    **One output row per source row, always.** NEVER merge two source cues into one output row,

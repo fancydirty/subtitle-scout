@@ -20,6 +20,11 @@ describe('translateSkill', () => {
     expect(c).toMatch(/Repair loop|修复/)
     expect(c).toMatch(/missAtCues/)
     expect(c).toMatch(/session capacity|too long|3000/)
+    // 翻译哲学锚点:术语表管怎么译不管必须译;代词/省略可以;系统性丢名不行;密度由闸裁决
+    expect(c).toMatch(/how.*render|怎么译|governs/)
+    expect(c).toMatch(/pronouns|ellipsis|代词|省略/)
+    expect(c).toMatch(/naturalness"?\s*as an excuse/)
+    expect(c).toMatch(/gate's call|闸.*裁决/)
     expect(c).toMatch(/glossary|术语/)
     expect(c).toMatch(/freeze|冻结/)
     expect(c).toMatch(/Simplified-Chinese|简中|中文译名/)
