@@ -66,12 +66,21 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
    transliteration). When you are unsure of a name, \`lookup_glossary\` before inventing one.
    **Translate every row** — do not stop early to "check progress"; the repair loop at step 7
    is where quality is enforced.
+   **One output row per source row, always.** NEVER merge two source cues into one output row,
+   never split one into two, never skip — even when a cue holds two speakers ("- A. - B.") or
+   feels like it belongs with its neighbor. Merging shifts every subsequent row id and the
+   whole file misaligns (the gate will catch it as a \`possibleRowShift\`; you will then have
+   to rewrite the entire shifted span instead of the two rows you tried to save).
 7. **run_structural_gate** (term conformance, empty tgt, counts). If it FAILS, this is **not**
    the end — it returns a \`violations\` list telling you EXACTLY which terms are wrong and at
    which cue ids (\`term\`, \`expectZh\`, \`missAtCues\`). **Repair loop (up to 3 rounds):**
    for every violation, \`update_row\`/\`update_rows\` the flagged cues so the frozen glossary's
    canonical \`expectZh\` is used, then **re-run the gate**. Only after 3 failed repair rounds
    do you finalize \`held\` — giving up without repairing is abandoning fixable work.
+   If the gate returns \`possibleRowShift\`, your translations were written to the WRONG row ids
+   (you merged or skipped source cues somewhere near the reported first cue). Do not patch
+   individual terms — \`get_window\` that span, rewrite EVERY row in it with
+   \`update_rows\` keyed to the correct ids (one row per source row), then re-run the gate.
    If rows are still \`pending\`/empty, that is unfinished translation, not a gate problem —
    keep translating them before judging.
 8. **merge_to_srt** then **install_sidecar** only if gates pass. Do not hand-write final SRT

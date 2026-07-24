@@ -497,12 +497,52 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       }
       const verdict = gate.verdict === 'pass' && reasons.length === 0 ? 'pass' : 'fail'
       if (verdict === 'pass') writeGateMarker(paths)
+
+      // 行错位检测(奥本海默实案):模型把多行对白 cue 合并后,译文整体偏移 N 行——术语闸看到
+      // 的"漂移"其实是错位。对每个 miss 术语,在 tgt 的 ±3 行邻域找期望译法;若大量 miss 在
+      // 同一非零偏移量命中 → 给模型精确信号"从 cue X 起偏移了 +N 行,重写该段",而不是让它
+      // 对着一个 38% 的聚合数字干瞪眼(它当时虚构了"batch writes rejected"的错误解释)。
+      let possibleRowShift: { delta: number; votes: number; firstCueId: string } | undefined
+      if (verdict === 'fail' && gate.glossary.violations.length) {
+        const votes = new Map<number, { count: number; firstIdx: number }>()
+        for (const v of gate.glossary.violations) {
+          for (const cueNum of v.missAtCues) {
+            const idx = rows.findIndex((r) => Number(r.id) === cueNum)
+            if (idx < 0) continue
+            for (let d = -3; d <= 3; d++) {
+              if (d === 0) continue
+              const j = idx + d
+              if (j < 0 || j >= rows.length) continue
+              if (rows[j].tgt.includes(v.expectZh)) {
+                const cur = votes.get(d) ?? { count: 0, firstIdx: idx }
+                votes.set(d, { count: cur.count + 1, firstIdx: Math.min(cur.firstIdx, idx) })
+              }
+            }
+          }
+        }
+        let best: { d: number; count: number; firstIdx: number } | undefined
+        for (const [d, v] of votes) {
+          if (!best || v.count > best.count) best = { d, ...v }
+        }
+        if (best && best.count >= 3) {
+          possibleRowShift = {
+            delta: best.d,
+            votes: best.count,
+            firstCueId: rows[best.firstIdx]?.id ?? '?',
+          }
+          reasons.push(
+            `possible row shift: ${best.count} term misses find their expected zh ${best.d > 0 ? '+' : ''}${best.d} row(s) away — translations appear written to wrong row ids starting near cue ${possibleRowShift.firstCueId}. Rewrite that span with update_rows keyed to the correct ids (get_window first, one output row per source row, never merge/split cues), then re-run this gate.`,
+          )
+        }
+      }
+
       return {
         verdict,
         reasons,
         termConformance: gate.glossary.conformance,
         termHits: gate.glossary.hits,
         termChecks: gate.glossary.checks,
+        possibleRowShift,
         // 修复循环(auto-research 根因修复):per-term 违规明细透传给模型——哪个术语、期望
         // 译法、错在哪几行。没有这份靶子,模型只能撂挑子 held;有了就能 update_row 修复再重闸。
         violations: gate.glossary.violations.map((v) => ({

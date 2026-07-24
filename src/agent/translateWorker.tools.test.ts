@@ -291,6 +291,51 @@ describe('translate workspace tools', () => {
     expect(saved[0].terms).toHaveLength(2)
   })
 
+  it('run_structural_gate: 检测行错位(possibleRowShift)——奥本海默实案:译文整体偏移', async () => {
+    // 实案形状:6 行源,模型把 src3-6 的译文写进 tgt1-4(前两行源被合并吞掉,整体偏移 -2)
+    const srt = [
+      '1', '00:00:01,000 --> 00:00:02,000', 'Alpha one.', '',
+      '2', '00:00:03,000 --> 00:00:04,000', 'Bravo two.', '',
+      '3', '00:00:05,000 --> 00:00:06,000', 'Charlie three.', '',
+      '4', '00:00:07,000 --> 00:00:08,000', 'Delta four.', '',
+      '5', '00:00:09,000 --> 00:00:10,000', 'Echo five.', '',
+      '6', '00:00:11,000 --> 00:00:12,000', 'Foxtrot six.', '',
+    ].join('\n')
+    const tools = makeTranslateWorkspaceTools(baseDeps({
+      resolveDeps: {
+        probe: async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }],
+        extract: async () => srt,
+      },
+    }))
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    await call(tools.freeze_glossary, {
+      terms: [
+        { src: 'Charlie', zh: '查理' },
+        { src: 'Delta', zh: '德尔塔' },
+        { src: 'Echo', zh: '回声' },
+        { src: 'Foxtrot', zh: '狐步' },
+      ],
+    })
+    // tgt1-4 = src3-6 的译文(偏移);tgt5-6 = 乱写
+    await call(tools.update_rows, {
+      rows: [
+        { id: '1', tgt: '查理三号。', status: 'ok' },
+        { id: '2', tgt: '德尔塔四号。', status: 'ok' },
+        { id: '3', tgt: '回声五号。', status: 'ok' },
+        { id: '4', tgt: '狐步六号。', status: 'ok' },
+        { id: '5', tgt: '无关内容甲。', status: 'ok' },
+        { id: '6', tgt: '无关内容乙。', status: 'ok' },
+      ],
+    })
+    const gate = await call(tools.run_structural_gate)
+    expect(gate.verdict).toBe('fail')
+    expect(gate.possibleRowShift).toBeDefined()
+    expect(gate.possibleRowShift.delta).toBe(-2)
+    expect(gate.possibleRowShift.votes).toBeGreaterThanOrEqual(3)
+    expect(gate.reasons.join(' ')).toMatch(/row shift|wrong row ids/)
+  })
+
   it('P2.2a: run_structural_gate fails on unbalanced 《》「」【】', async () => {
     const tools = makeTranslateWorkspaceTools(baseDeps())
     await call(tools.resolve_source)
