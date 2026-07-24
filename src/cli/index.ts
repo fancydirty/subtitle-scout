@@ -51,7 +51,7 @@ import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
-import { claimParked } from '../dashboard/apiV2.js'
+import { claimParked } from '../v2/triageOps.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
