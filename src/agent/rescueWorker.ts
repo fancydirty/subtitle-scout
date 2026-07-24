@@ -1,6 +1,6 @@
 import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
-import { makeRunTracer } from '../dashboard/traceBus.js'
+import { makeRunTracer } from '../core/traceBus.js'
 import { rescueSkill } from './skills/rescueSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
 import { makeRescueWorkerTools } from './rescueWorker.tools.js'

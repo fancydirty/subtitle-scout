@@ -11,7 +11,7 @@ import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { startDashboard } from './server.js'
-import { traceBus, type TraceEvent } from './traceBus.js'
+import { traceBus, type TraceEvent } from '../core/traceBus.js'
 
 // dashboard-F5：'search' 加入 Pick——GET /api/v2/tmdb/search 的 fake tmdb 注入复用同一个类型。
 type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>

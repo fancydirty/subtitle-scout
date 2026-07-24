@@ -1,7 +1,7 @@
 import { stepCountIs, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { makeReasoningAgent } from './reasoningAgent.js'
-import { makeRunTracer } from '../dashboard/traceBus.js'
+import { makeRunTracer } from '../core/traceBus.js'
 import { makeReadDocTool, systemPromptSkillIndex } from './skills/registry.js'
 import { ORCHESTRATOR_SKILL } from './skills/orchestratorSkill.js'
 import {

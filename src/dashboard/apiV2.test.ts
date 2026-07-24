@@ -15,7 +15,7 @@ import {
 // 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
 import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
-import { traceBus } from './traceBus.js'
+import { traceBus } from '../core/traceBus.js'
 
 let db: ScoutDb
 let lib: LibraryRepo

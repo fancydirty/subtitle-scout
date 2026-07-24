@@ -16,7 +16,7 @@ import {
   type ReconcileAllResultDTO,
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
-import { traceBus } from './traceBus.js'
+import { traceBus } from '../core/traceBus.js'
 import { AuthService, AUTH_KEYS, safeStrEqual } from './auth.js'
 
 export interface DashboardOpts {

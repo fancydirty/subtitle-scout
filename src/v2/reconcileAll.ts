@@ -3,7 +3,7 @@ import type { LibraryRepo } from './libraryRepo.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import { makeOrchestratorAgent, type OrchestratorDecision, type OrchestratorAgentDeps } from '../agent/orchestratorAgent.js'
-import { traceBus } from '../dashboard/traceBus.js'
+import { traceBus } from '../core/traceBus.js'
 
 /** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
  *  trim/cap so a long OrchestratorDecision.summary doesn't blow out the timeline UI. Mirrors

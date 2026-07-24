@@ -1,7 +1,7 @@
 import { executeRealign, type RealignExecutorDeps, type RealignExecutionResult } from './realignExecutor.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
-import { traceBus } from '../dashboard/traceBus.js'
+import { traceBus } from '../core/traceBus.js'
 
 export interface RealignWorkerTaskPayload { taskType: 'realign'; seriesId: string; reason: string }
 

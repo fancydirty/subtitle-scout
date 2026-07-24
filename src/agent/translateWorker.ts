@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
-import { makeRunTracer } from '../dashboard/traceBus.js'
+import { makeRunTracer } from '../core/traceBus.js'
 import { translateSkill } from './skills/translateSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
 import { makeTranslateWorkspaceTools } from './translateWorker.tools.js'

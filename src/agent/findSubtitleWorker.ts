@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path'
 import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
-import { makeRunTracer } from '../dashboard/traceBus.js'
+import { makeRunTracer } from '../core/traceBus.js'
 import { languageName } from './languages.js'
 import { makeFindSubtitleSkill } from './skills/findSubtitleSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'

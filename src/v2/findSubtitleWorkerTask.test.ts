@@ -15,7 +15,7 @@ import type {
 } from '../agent/findSubtitleWorker.schemas.js'
 import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { seriesId, episodeId } from './ownIds.js'
-import { traceBus, type TraceEvent } from '../dashboard/traceBus.js'
+import { traceBus, type TraceEvent } from '../core/traceBus.js'
 
 // 2026-07-16 事故修复回归测试：representativeEpisodeId 把季级派活机械降解为单集指令的
 // 架构事故已处决——mapper 现在是纯信使，零目标选择、零顺序决策，缺口事实清单由

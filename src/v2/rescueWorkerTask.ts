@@ -2,7 +2,7 @@ import { dirname } from 'node:path'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { RunsRepo } from './runsRepo.js'
-import { traceBus } from '../dashboard/traceBus.js'
+import { traceBus } from '../core/traceBus.js'
 
 function capDetail(s: string, max = 200): string {
   const trimmed = s.trim()

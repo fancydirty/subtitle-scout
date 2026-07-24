@@ -8,7 +8,7 @@ import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
 import { RunsRepo } from './runsRepo.js'
-import { traceBus } from '../dashboard/traceBus.js'
+import { traceBus } from '../core/traceBus.js'
 
 // Mirrors realignExecutor.test.ts's SEASONS_1x5/statSize/mkFlatLibrary/mkJf/mkDeps helpers
 // (read in full before writing this file, per the phase ⑥ plan note) — trimmed to a 3-episode,

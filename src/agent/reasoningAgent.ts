@@ -5,7 +5,7 @@ import {
 import type { z } from 'zod'
 // 只引类型不引单例——痕迹通道 C 的 TraceEvent 形状活在 dashboard/traceBus.ts，reasoningAgent
 // 对那个模块的单例状态零依赖，onStepEvent 只是把数据递出去，不知道也不关心谁在订阅。
-import type { TraceEvent } from '../dashboard/traceBus.js'
+import type { TraceEvent } from '../core/traceBus.js'
 
 export type ReasoningLevel = 'provider-default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 

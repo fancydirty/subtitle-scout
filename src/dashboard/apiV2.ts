@@ -9,7 +9,7 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import type { JobsRepo, WorkerTaskUpsertOutcome } from '../v2/jobsRepo.js'
 import { canonicalEpisodes } from '../v2/tmdbCatalog.js'
-import { traceBus, type TraceEvent } from './traceBus.js'
+import { traceBus, type TraceEvent } from '../core/traceBus.js'
 // 清算波 R-6（F9b）：只为下面的文档注释引用真实常量，而不是把它的字符串值抄一份陈旧副本
 // （旧值 'self-scan-trigger' 已在去 Jellyfin 化 T4 改名为 INGEST_ORCHESTRATE_SERIES_ID=
 // 'ingest-trigger'——注释里继续写旧值会误导读者去 grep 一个早已不存在的字符串）。
