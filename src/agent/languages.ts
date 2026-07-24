@@ -16,8 +16,9 @@ export function languageName(code: string): string {
 /** Historical Chinese sidecar filename tags (originally scanner.ts's on-disk detection,
  *  pre-generalization; scanner.ts itself has since been deleted in the old-pipeline retirement —
  *  today's on-disk sidecar detection lives in files/sidecar.ts, which keys off this same table via
- *  tagsForLanguage below). Kept verbatim — do not change its contents. */
-const CHINESE_SIDECAR_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho']
+ *  tagsForLanguage below). Kept verbatim — do not change its contents. Exported for reuse in
+ *  translateItemCommand.ts (C6: eliminate duplicate CHINESE_TAGS definition). */
+export const CHINESE_SIDECAR_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'chs', 'cht', 'chi', 'zho']
 
 /** BCP-47 地区变体(P0,zimuku 单源大考前置修复,2026-07-19)。A2 泛化后 agent 可自由选
  *  langTag(findSubtitleWorker H2 白名单),生产实证装出 `.zh-CN.srt` 而领养臂全瞎(Witch

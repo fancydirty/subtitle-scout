@@ -14,8 +14,7 @@ import { containingRoot } from '../core/mediaContext.js'
 import { GlossaryRepo } from '../v2/glossaryRepo.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
-
-const CHINESE_TAGS = ['zh-Hans', 'zh-Hant', 'zh', 'zh-CN', 'zh-TW', 'chs', 'cht', 'chi', 'zho']
+import { CHINESE_SIDECAR_TAGS } from '../agent/languages.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -96,7 +95,7 @@ export function readSeriesTargetSubs(videoPath: string): string | null {
     for (const f of readdirSync(dir)) {
       if (f === self || !/\.(srt|ass|ssa)$/i.test(f)) continue
       const lower = f.toLowerCase()
-      if (!CHINESE_TAGS.some((t) => lower.includes(`.${t.toLowerCase()}.`))) continue
+      if (!CHINESE_SIDECAR_TAGS.some((t) => lower.includes(`.${t.toLowerCase()}.`))) continue
       try { subs.push(`### ${f}\n${readFileSync(join(dir, f), 'utf8').slice(0, 3000)}`) } catch { /* skip */ }
       if (subs.length >= 3) break
     }
@@ -154,7 +153,7 @@ export function makeTranslateAgentDeps(
     },
     install: (v, content) => writeSidecarAtomic(v, content),
     videoDurationSec: (v) => probeDurationSec(v),
-    readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_TAGS, existsSync)?.path ?? null,
+    readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_SIDECAR_TAGS, existsSync)?.path ?? null,
     glossaryStore,
     critic,
     fetchTmdbContext: opts.fetchTmdbContext,
