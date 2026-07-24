@@ -29,9 +29,9 @@ export interface TranslateWorkerDeps {
   critic?: {
     evaluate: (src: string[], tgt: string[], glossary: Array<{ en: string; zh: string }>) => Promise<string>
   }
-  /** @default 500 — windowed protocol needs room; exhaustion maps to held, not a crash. */
+  /** 步数上限（默认 2000,为 pro reasoning 留足余量;2026-07-24 Oppenheimer 压测）。 */
   stepCap?: number
-  /** @default 900_000 */
+  /** 超时毫秒（默认 4h,daemon 可注入有限值;Infinity → 无限;压测 pro reasoning 用）。 */
   timeoutMs?: number
 }
 
@@ -90,7 +90,7 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
       tools,
       instructions,
       schema: TranslateReportSchema,
-      stopWhen: stepCountIs(deps.stepCap ?? 500),
+      stopWhen: stepCountIs(deps.stepCap ?? 2000),
       reasoning: 'high',
       telemetry: { isEnabled: true },
       onStepEvent: (e) => {
@@ -99,10 +99,11 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
       },
     })
 
+    const timeoutMs = deps.timeoutMs ?? 14_400_000 // 默认 4h(Oppenheimer 压测级);undefined → 无限
     try {
       const result = await agent.generate({
         prompt,
-        abortSignal: AbortSignal.timeout(deps.timeoutMs ?? 900_000),
+        abortSignal: timeoutMs === Infinity ? undefined : AbortSignal.timeout(timeoutMs),
       })
       console.error(`[translate-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
       return { ...readFinalized(), llmCalls: result.steps.length }
