@@ -366,6 +366,35 @@ ai_translate_enabled=true → 阻塞监控 ~4h → 多代理验收 → 根因修
 - 修复提交:`6e760d4`(ESM require)、`d9e316c`(24h 复查窗);串行全量 **2009 passed / 1 skipped**
 - 部署:d9e316c 在跑;rollback tag 见各 deploy evidence
 
+### 多代理验收 + 第二轮根因修复(2026-07-24 上午)
+
+**健康代理 PASS**(quick_check ok/33 jobs 全 done/开关已复位/活库字幕=259/无热循环)。
+**质量代理 FAIL**,发现 4 类产出缺陷;**代码复审** 2 Important。修复链:
+
+| 发现 | 根因 | 修复 |
+|---|---|---|
+| EP07 监志→**新月**×20 + 真上圭护(应真神) | mimo 从罗马音 hallucinate 人名,毒词条随 install 写入剧级术语表(P2.1 prior-wins 会向后传播) | 数据修复:db 术语表 74→73,新月→监志/真上圭护→真神圭护;**机制证据:修正后 E07 重翻输出"监志,你说点什么"全对** |
+| 字面 `\n` 残留×4 | 模型把 JSON 转义当文本写 | `004af9b` update_row(s) 净化:字面 `\n`→真换行 |
+| 无 cue 头孤儿块×3 | tgt 内连续空行被 serialize 断块 | 同 commit:空行压单换行 + merge 兜底过滤 |
+| 莫伊×6/守仁×7 同集混用 | 闸 85% 聚合阈值放行少量 per-term miss(gate.violations 已记录但 verdict=pass) | 设计内阈值行为,记录为 critic/阈值调优输入 |
+| GC `.subtitle-translate` 提交信息声称有代码其实没有(P2.4 编辑静默未应用) | 我(主控)批量 edit 时 oldString 未命中且未核验 | `004af9b` gcOrphans 真扫双目录 + 测试 |
+| 耗尽路径 llmCalls=0 | result.steps 在 catch 不可得 | 同 commit:onStepEvent 闭包计数 |
+| 手动 CLI 不传 db → 无术语持久化 | 遗漏 | 同 commit:补 db 参 |
+
+**重翻验证(修复部署 004af9b 后,job32/33 强 wanted)**:
+- **E07:installed(44 calls)**——监志/妮可全对,质量代理判 FAIL 的四项全部消除
+- **E02:held(74 calls,88.8% 术语 + 2 复合名 miss)**——模型自己跑完闸选择不装,**fail-closed 按设计工作**(可疑内容不上盘;held 衰减梯 1 天后重试)
+- 无热循环、无 orphan staging(GC 生效)
+
+**串行全量 2011 passed / 1 skipped,tsc+build 净。**
+
+### 遗留(非阻塞)
+
+- 术语表毒化防御是数据级修复;机制级防再毒化(critic 强判官/冻前对 context 交叉校验)留评审
+- E02 held 的 2 复合名 miss 疑似"修正术语 vs fansub 写法摩擦"(久久美 vs 久久实),衰减重试观察;同签名熔断两次→park 人工
+- 生产翻译模型策略:mimo 可用但有人名 hallucinate 风险;强模型 TRANSLATE_MODEL 切换需用户拍板
+- `#recycle` 3331 + `_scout_realign_test` 30 字幕残留(健康代理观察项)
+
 ## 战役 10:Translate Workspace Agent P2(2026-07-23 深夜)
 
 **目标**:P1 验收暴露的三项真实需求 + GC。
