@@ -75,10 +75,17 @@ function sessionCookie(token: string): string {
   return `scout_session=${token}; HttpOnly; Path=/; Max-Age=2592000; SameSite=Lax`
 }
 
-/** JSON body 读取：解析失败返回 undefined（调用方 400），空 body 视作 {}。 */
+/** JSON body 读取：解析失败返回 undefined（调用方 400），空 body 视作 {}。
+ *  大小上限 1MB——超限抛 413（防内存 DoS，已鉴权管理员才能打到这些端点）。 */
 async function readJsonBody(req: import('node:http').IncomingMessage): Promise<unknown> {
+  const MAX_BODY_SIZE = 1_000_000 // 1MB
   let raw = ''
-  for await (const chunk of req) raw += chunk
+  for await (const chunk of req) {
+    raw += chunk
+    if (raw.length > MAX_BODY_SIZE) {
+      throw new Error('payload too large')
+    }
+  }
   try {
     return JSON.parse(raw || '{}')
   } catch {
@@ -164,7 +171,15 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         if (rawPath === '/api/v2/auth/setup') {
           if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
           if (auth.isInitialized()) { res.writeHead(403, JSON_CT); res.end(JSON.stringify({ error: 'already initialized' })); return }
-          const body = await readJsonBody(req)
+          let body: unknown
+          try {
+            body = await readJsonBody(req)
+          } catch (e) {
+            if (e instanceof Error && e.message === 'payload too large') {
+              res.writeHead(413, JSON_CT); res.end(JSON.stringify({ error: 'payload too large' })); return
+            }
+            throw e
+          }
           if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
           const b = (body ?? {}) as { username?: unknown; password?: unknown }
           const r = auth.setup(
@@ -181,7 +196,15 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
 
         if (rawPath === '/api/v2/auth/login') {
           if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
-          const body = await readJsonBody(req)
+          let body: unknown
+          try {
+            body = await readJsonBody(req)
+          } catch (e) {
+            if (e instanceof Error && e.message === 'payload too large') {
+              res.writeHead(413, JSON_CT); res.end(JSON.stringify({ error: 'payload too large' })); return
+            }
+            throw e
+          }
           if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
           const b = (body ?? {}) as { username?: unknown; password?: unknown }
           const r = auth.login(
@@ -222,7 +245,15 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         }
         if (rawPath === '/api/v2/auth/change-password') {
           if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
-          const body = await readJsonBody(req)
+          let body: unknown
+          try {
+            body = await readJsonBody(req)
+          } catch (e) {
+            if (e instanceof Error && e.message === 'payload too large') {
+              res.writeHead(413, JSON_CT); res.end(JSON.stringify({ error: 'payload too large' })); return
+            }
+            throw e
+          }
           if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
           const b = (body ?? {}) as { oldPassword?: unknown; newPassword?: unknown }
           const r = auth.changePassword(
