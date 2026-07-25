@@ -226,6 +226,8 @@ export const en = {
   settings_deploy_readonly_note: 'deploy-level, read-only — edit via environment/compose',
   settings_deploy_secrets_heading: 'Secrets',
   settings_deploy_nonsecrets_heading: 'Other',
+  // audit R4: MEDIA_ROOTS is a first-boot seed only; the live list lives in the media_roots table
+  settings_deploy_media_roots_seed_note: 'first-boot seed only — see the guarded directories above for what is live',
   settings_deploy_error_prefix: "Couldn't load deploy info: ",
   settings_deploy_present_word: 'configured',
   settings_deploy_absent_word: 'not set',

@@ -57,9 +57,23 @@ function isZip(bytes: Buffer): boolean {
  *  的 zip 可能是炸弹(100MB 外层解压出 GB 级数据),超限视为解不出(换候选,fail-soft)。 */
 const MAX_ZIP_ENTRY_BYTES = 32 * 1024 * 1024 // 32MB,同 subtitleWriter.ts
 
-function subtitleTextFromDownload(dl: DownloadResult): string | null {
+/** zip 条目的最小接口——只暴露这道闸真正需要的三个字段，便于测试注入伪造条目。 */
+export interface ZipEntryLike {
+  entryName: string
+  isDirectory: boolean
+  header: { size: number }
+  getData(): Buffer
+}
+
+/** 导出仅为可测：端到端路径上 AdmZip 会先因 CRC 校验失败抛错并被外层 catch 吞成"跳过候选",
+ *  使得"炸弹被防线拦住"与"炸弹被 CRC 拦住"在黑盒下不可区分(实测:拆掉本函数的 size 闸,
+ *  端到端用例依然全绿=假测试)。直接单测本函数、并用 readEntries 注入伪造条目,才能真正锁住这道闸。 */
+export function subtitleTextFromDownload(
+  dl: DownloadResult,
+  readEntries: (bytes: Buffer) => ZipEntryLike[] = (bytes) => new AdmZip(bytes).getEntries() as unknown as ZipEntryLike[],
+): string | null {
   if (isZip(dl.bytes)) {
-    const entries = new AdmZip(dl.bytes).getEntries().filter((e) =>
+    const entries = readEntries(dl.bytes).filter((e) =>
       !e.isDirectory && extname(e.entryName).toLowerCase() === '.srt' && !basename(e.entryName).startsWith('.'))
     if (entries.length !== 1) return null
     // zip 炸弹防线: header 声明值 + 解压后实际值双重校验(同 subtitleWriter.ts extractEntryCapped)

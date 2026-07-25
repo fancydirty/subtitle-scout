@@ -1,9 +1,10 @@
 // F1 · makeFetchSourceSub 单测:全 mock deps(locate/search/resolve/download 皆注入,零网络)。
 // 锁死设计文档的五道行为:语言门(中继防线)/3 候选截断/坏包跳过/全败 null/定位失败 null,
 // 以及"绝不抛"的吞错纪律。makeDbLocate 用 :memory: 库测真 SQL(episodes JOIN series / movies)。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import AdmZip from 'adm-zip'
-import { makeFetchSourceSub, makeDbLocate, MAX_CANDIDATE_ATTEMPTS, type FetchSourceSubDeps, type LocatedItem } from './fetchSourceSub.js'
+import { makeFetchSourceSub, makeDbLocate, subtitleTextFromDownload, MAX_CANDIDATE_ATTEMPTS, type FetchSourceSubDeps, type LocatedItem, type ZipEntryLike } from './fetchSourceSub.js'
 import { parseSrtCues } from '../translate/qualityGate.js'
 import { openDb } from '../v2/db.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
@@ -182,38 +183,53 @@ describe('makeFetchSourceSub — 下载物解包(zip/raw)', () => {
     const fetch = makeFetchSourceSub(baseDeps({ download: async () => dl('[Script Info]\nTitle: x', 'x.ass') }))
     expect(await fetch('/media/x.mkv')).toBeNull()
   })
+})
 
-  // 审计三轮 R3：zip 上限（32MB，与 subtitleWriter 同一防线）此前零测试。灰色字幕站的 zip
-  // 可能声明极大解压体积（炸弹），这里锁"声明超限 → 跳过该候选 → 落到下一个候选"的 fail-soft 语义。
-  it('zip 条目声明解压体积超 32MB(炸弹) → 跳过该候选并落到下一个候选', async () => {
-    const bomb = zipOf({ 'bomb.srt': SRT })
-    // 篡改 local file header(+22) 与 central directory(+24) 的 uncompressed-size 字段为 64MB
-    const FAKE = 64 * 1024 * 1024
-    for (let i = 0; i + 4 <= bomb.length; i++) {
-      if (bomb[i] === 0x50 && bomb[i + 1] === 0x4b) {
-        if (bomb[i + 2] === 0x03 && bomb[i + 3] === 0x04 && i + 26 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 22)
-        if (bomb[i + 2] === 0x01 && bomb[i + 3] === 0x02 && i + 28 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 24)
-      }
-    }
-    const fetch = makeFetchSourceSub(baseDeps({
-      search: async () => [cand('zimuku', 'bomb'), cand('opensubtitles', 'good')],
-      resolve: async (ref) => ({ url: `https://${ref.providerId}` }),
-      download: async (url) => url === 'https://bomb' ? dl(bomb, 'bomb.zip') : dl(SRT, 'good.srt'),
-    }))
-    expect(await fetch('/media/x.mkv')).toEqual({ srtText: SRT, sourceRef: 'opensubtitles:good' })
+// 审计四轮 R4（mutation 自查）：这道 32MB 闸最初写成端到端用例（篡改 zip 字节 → 期望跳过候选），
+// 但实测拆掉闸之后用例依然全绿——因为 AdmZip 会先因 CRC 校验失败抛错，被 makeFetchSourceSub 的
+// "吞错换候选"纪律吞掉，两条路径的黑盒表现完全相同。改为直接单测 subtitleTextFromDownload：
+// 用 spy 把 header.size 伪造成超限（数据本身合法、CRC 正确），确保红/绿只由这道闸决定。
+describe('subtitleTextFromDownload — zip 32MB 炸弹闸（与 subtitleWriter 同一防线）', () => {
+  const zipDl = (entries: Record<string, string>) => dl(zipOf(entries), 'pack.zip')
+  const fakeEntry = (over: Partial<ZipEntryLike> & { size: number; data?: Buffer }): ZipEntryLike => ({
+    entryName: 'x.srt',
+    isDirectory: false,
+    header: { size: over.size },
+    getData: () => over.data ?? Buffer.from(SRT, 'utf8'),
+    ...(over.entryName ? { entryName: over.entryName } : {}),
   })
 
-  it('唯一候选是炸弹 zip → 全败 null(绝不抛)', async () => {
-    const bomb = zipOf({ 'bomb.srt': SRT })
-    const FAKE = 64 * 1024 * 1024
-    for (let i = 0; i + 4 <= bomb.length; i++) {
-      if (bomb[i] === 0x50 && bomb[i + 1] === 0x4b) {
-        if (bomb[i + 2] === 0x03 && bomb[i + 3] === 0x04 && i + 26 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 22)
-        if (bomb[i + 2] === 0x01 && bomb[i + 3] === 0x02 && i + 28 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 24)
-      }
+  it('正常 zip 能解出文本（对照组，确保下面的 null 不是因为别的原因）', () => {
+    expect(subtitleTextFromDownload(zipDl({ 'ok.srt': SRT }))).toBe(SRT)
+  })
+
+  it('声明解压体积超 32MB → 返回 null（绝不 inflate 进内存）', () => {
+    const getData = vi.fn(() => Buffer.from(SRT, 'utf8'))
+    const entry: ZipEntryLike = {
+      entryName: 'bomb.srt', isDirectory: false,
+      header: { size: 64 * 1024 * 1024 }, // 声称 64MB
+      getData,
     }
-    const fetch = makeFetchSourceSub(baseDeps({ download: async () => dl(bomb, 'bomb.zip') }))
-    expect(await fetch('/media/x.mkv')).toBeNull()
+    expect(subtitleTextFromDownload(zipDl({ 'bomb.srt': SRT }), () => [entry])).toBeNull()
+    // 关键：声明值超限时绝不调用 getData()——炸弹不进内存
+    expect(getData).not.toHaveBeenCalled()
+  })
+
+  it('声明值合法但实际解压后超 32MB → 返回 null（第二道闸）', () => {
+    const entry = fakeEntry({ entryName: 'sneaky.srt', size: 100, data: Buffer.alloc(33 * 1024 * 1024) })
+    expect(subtitleTextFromDownload(zipDl({ 'sneaky.srt': SRT }), () => [entry])).toBeNull()
+  })
+
+  it('刚好等于上限（32MB）放行——闸是 > 不是 >=', () => {
+    const entry = fakeEntry({ entryName: 'edge.srt', size: 32 * 1024 * 1024, data: Buffer.from(SRT, 'utf8') })
+    expect(subtitleTextFromDownload(zipDl({ 'edge.srt': SRT }), () => [entry])).toBe(SRT)
+  })
+
+  it('两处防线的上限常量一致（32MB）——避免一处改了另一处漂移', () => {
+    const fetchSrc = readFileSync('src/cli/fetchSourceSub.ts', 'utf8')
+    const writerSrc = readFileSync('src/files/subtitleWriter.ts', 'utf8')
+    const capOf = (src: string) => /MAX_ZIP_ENTRY_BYTES = ([^\n]+)/.exec(src)?.[1]?.replace(/\s*\/\/.*$/, '').trim()
+    expect(capOf(fetchSrc)).toBe(capOf(writerSrc))
   })
 })
 

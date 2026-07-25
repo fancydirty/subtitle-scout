@@ -92,4 +92,33 @@ describe('DeploySection：只读展示', () => {
     expect(screen.getByText("Couldn't load deploy info: boom")).toBeInTheDocument()
     expect(container.querySelectorAll('input, button, textarea, select')).toHaveLength(0)
   })
+
+  // 审计四轮 R4：MEDIA_ROOTS 是首启种子，真正生效的是 media_roots 表。此前这一行原样展示 env
+  // 值且零注解，用户改 .env 重启后看到数值变了就以为生效（实际扫描行为不变）——dashboard 自己
+  // 的证据在误导用户。这两条锁住"MEDIA_ROOTS 必须带种子注解、其它键不得误加"。
+  it('MEDIA_ROOTS 行带"仅首启种子"注解（指回守备目录列表）', () => {
+    render(
+      <I18nProvider>
+        <DeploySection deploy={asyncOf({
+          secrets: {},
+          nonSecrets: { MEDIA_ROOTS: '/media/movies,/media/tv', LLM_MODEL: 'gpt-5' },
+        })} />
+      </I18nProvider>,
+    )
+    expect(screen.getByText('/media/movies,/media/tv')).toBeInTheDocument()
+    expect(
+      screen.getByText('first-boot seed only — see the guarded directories above for what is live'),
+    ).toBeInTheDocument()
+  })
+
+  it('其它 nonSecrets 键不带该注解（注解只属于 MEDIA_ROOTS）', () => {
+    render(
+      <I18nProvider>
+        <DeploySection deploy={asyncOf({ secrets: {}, nonSecrets: { LLM_MODEL: 'gpt-5' } })} />
+      </I18nProvider>,
+    )
+    expect(
+      screen.queryByText('first-boot seed only — see the guarded directories above for what is live'),
+    ).not.toBeInTheDocument()
+  })
 })

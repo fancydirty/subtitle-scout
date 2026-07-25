@@ -91,9 +91,9 @@ describe('docker-compose deployment contract', () => {
   })
 
   it('compose 透传的变量都在 .env.example 里有文档（反向：不留无人知晓的隐藏开关）', () => {
-    const undocumented = [...passthroughKeys(mainCompose)].filter(
-      (k) => !envExampleKeys.has(k) && k !== 'MEDIA_ROOTS' && k !== 'DASHBOARD_PORT',
-    )
+    // 无豁免：MEDIA_ROOTS / DASHBOARD_PORT 都确实在 .env.example 里有条目，之前给它们开豁免
+    // 是多余的，只会掩盖将来真的漏文档的变量（审计四轮 R4 自查发现）。
+    const undocumented = [...passthroughKeys(mainCompose)].filter((k) => !envExampleKeys.has(k))
     expect(undocumented, `compose 透传但 .env.example 无条目：${undocumented.join(', ')}`).toEqual([])
   })
 
