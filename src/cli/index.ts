@@ -235,6 +235,16 @@ async function cmdWatch() {
   const currentRoots = (): string[] => settingsRepo.listRoots().map(r => r.path)
   if (currentRoots().length === 0) {
     console.log('[watch] no media roots configured（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）— subtitle writes are not root-restricted; 去 dashboard 加一个守备目录，或设 MEDIA_ROOTS 作首启种子')
+  } else {
+    // env/DB roots 不一致告警:MEDIA_ROOTS 只在首启播种一次,之后改 env 不生效,真正的守备目录在 DB
+    const envRoots = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
+    const dbRoots = currentRoots()
+    const envSet = new Set(envRoots)
+    const dbSet = new Set(dbRoots)
+    const mismatch = envRoots.length !== dbRoots.length || ![...envSet].every(r => dbSet.has(r))
+    if (mismatch && envRoots.length > 0) {
+      console.warn(`[watch] ⚠️ MEDIA_ROOTS env (${envRoots.join(',')}) 与当前生效的守备目录 (${dbRoots.join(',')}) 不一致——以 dashboard 设置页为准（env 仅首启种子）`)
+    }
   }
 
   // Construct DaemonDeps
@@ -612,6 +622,16 @@ async function cmdWatch() {
   // 的告警行）。这里只是启动时刻的一次性播报，之后 dashboard 增删根不会回来改这行日志。
   const startupRoots = currentRoots()
   console.log(`subtitle-scout v2 watching (media roots: ${startupRoots.length > 0 ? startupRoots.join(', ') : '(none configured)'})`)
+
+  // 零字幕源告警:所有找字幕任务都会落空(配置缺失的故障和真实的"没找到"在 UI 上不可区分)
+  const hasAssrt = !!process.env.ASSRT_TOKEN
+  const hasOpensubtitles = !!(process.env.OPENSUBTITLES_API_KEY && process.env.OPENSUBTITLES_USERNAME && process.env.OPENSUBTITLES_PASSWORD)
+  const hasZimuku = process.env.ZIMUKU_ENABLED === 'true'
+  const hasSubhd = process.env.SUBHD_ENABLED === 'true'
+  const hasJimaku = !!process.env.JIMAKU_API_KEY
+  if (!hasAssrt && !hasOpensubtitles && !hasZimuku && !hasSubhd && !hasJimaku) {
+    console.warn('[watch] ⚠️ 没有任何字幕源可用——所有找字幕任务都会落空。请至少配置 ASSRT_TOKEN（或启用其他字幕源）')
+  }
 
   const daemon = new ScoutDaemon(daemonDeps)
 

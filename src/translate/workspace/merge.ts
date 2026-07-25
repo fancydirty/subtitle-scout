@@ -5,7 +5,14 @@ import type { BilingualRow, WorkspacePaths } from './types.js'
 function readBilingual(paths: WorkspacePaths): BilingualRow[] {
   const raw = readFileSync(paths.bilingualPath, 'utf8').trim()
   if (!raw) return []
-  return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l) as BilingualRow)
+  return raw.split('\n').filter(Boolean).map((l, i) => {
+    try {
+      return JSON.parse(l) as BilingualRow
+    } catch (e) {
+      // 一行损坏整批抛,但错误信息不带行号,排查困难——附行号重抛
+      throw new Error(`bilingual.jsonl line ${i + 1} invalid JSON: ${l.slice(0, 100)}... (${e instanceof Error ? e.message : String(e)})`)
+    }
+  })
 }
 
 /** Merge bilingual tgt into canonical timing shells. Writes out/target.srt. Fail-closed on empty tgt. */

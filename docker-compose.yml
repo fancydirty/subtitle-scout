@@ -18,6 +18,14 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # 健康检查:watch 进程 hang 住时容器状态仍是 running,restart:unless-stopped 救不了。
+    # 探测 dashboard 端口(如果启用)或 DB 文件可写。
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');const port=process.env.DASHBOARD_PORT||8099;http.get(`http://localhost:${port}/api/v2/auth/status`,(res)=>{process.exit(res.statusCode===200||res.statusCode===401?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     ports:
       - "${DASHBOARD_PORT:-8099}:${DASHBOARD_PORT:-8099}"
     # 让 Linux 上也能用 http://host.docker.internal 访问宿主机（macOS/Windows 默认可用）

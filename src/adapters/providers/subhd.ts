@@ -29,9 +29,15 @@ export interface SubhdSearchResult {
 const A_HREF_ID_RE = /^\/a\/([A-Za-z0-9]+)$/
 
 /** step 2：解析 POST /api/sub/prepare-download 的响应体 `{success:true,url:"/down/<id>"}`，返回
- *  `/down/<id>` 相对路径。success!==true 或缺 url → 抛（携带前 200 字节便于诊断）。 */
+ *  `/down/<id>` 相对路径。success!==true 或缺 url → 抛（携带前 200 字节便于诊断）。
+ *  网关返回 HTML 错误页时 JSON.parse 抛裸 SyntaxError,丢失响应体上下文——包一层带 body 的领域错误。 */
 export function parsePrepareDownload(body: string): string {
-  const d = JSON.parse(body) as { success?: boolean; url?: string }
+  let d: { success?: boolean; url?: string }
+  try {
+    d = JSON.parse(body) as { success?: boolean; url?: string }
+  } catch {
+    throw new Error(`subhd prepare-download invalid JSON: ${body.slice(0, 200)}`)
+  }
   if (d.success !== true || typeof d.url !== 'string' || !d.url) {
     throw new Error(`subhd prepare-download failed: ${body.slice(0, 200)}`)
   }
@@ -41,7 +47,12 @@ export function parsePrepareDownload(body: string): string {
 /** step 4：解析 POST /api/sub/down 的响应体 `{success:true,pass:true,url:"https://dlus…"}`，返回真
  *  CDN 文件 url。success!==true / 缺 url → 携带站点 msg（如"时间过长本临时页面已经失效"）抛。 */
 export function parseApiSubDown(body: string): string {
-  const d = JSON.parse(body) as { success?: boolean; pass?: boolean; url?: string | null; msg?: string }
+  let d: { success?: boolean; pass?: boolean; url?: string | null; msg?: string }
+  try {
+    d = JSON.parse(body) as { success?: boolean; pass?: boolean; url?: string | null; msg?: string }
+  } catch {
+    throw new Error(`subhd api/sub/down invalid JSON: ${body.slice(0, 200)}`)
+  }
   if (d.success !== true || typeof d.url !== 'string' || !d.url) {
     throw new Error(`subhd api/sub/down failed: ${d.msg ?? body.slice(0, 200)}`)
   }

@@ -162,7 +162,9 @@ export class ScoutDaemon {
     const lastIngestRow = lib.db
       .prepare(`SELECT value FROM meta WHERE key = 'last_ingest_at'`)
       .get() as { value: string } | undefined
-    const lastIngest = lastIngestRow ? Number(lastIngestRow.value) : 0
+    const lastIngestRaw = lastIngestRow ? Number(lastIngestRow.value) : 0
+    // meta 行损坏时 NaN >= x 恒 false,ingest 心跳时间门静默永久失效——防御性归零
+    const lastIngest = Number.isFinite(lastIngestRaw) ? lastIngestRaw : 0
     const timeSinceIngest = now() - lastIngest
     const ingestEveryDep = this.deps.ingestEveryMs
     const ingestEveryMs = (typeof ingestEveryDep === 'function' ? ingestEveryDep() : ingestEveryDep) ?? SELF_SCAN_DEFAULT_INTERVAL_MS
@@ -219,7 +221,9 @@ export class ScoutDaemon {
     const lastPruneRow = lib.db
       .prepare(`SELECT value FROM meta WHERE key = 'last_trace_prune_at'`)
       .get() as { value: string } | undefined
-    const lastPrune = lastPruneRow ? Number(lastPruneRow.value) : 0
+    const lastPruneRaw = lastPruneRow ? Number(lastPruneRow.value) : 0
+    // meta 行损坏时 NaN >= x 恒 false,trace-prune 时间门静默永久失效——防御性归零
+    const lastPrune = Number.isFinite(lastPruneRaw) ? lastPruneRaw : 0
     if (now() - lastPrune >= 86_400_000) {
       const retentionDays = this.deps.traceRetentionDays?.() ?? 30
       const pruned = this.deps.runs.pruneTraces(now() - retentionDays * 86_400_000)
@@ -240,7 +244,9 @@ export class ScoutDaemon {
     // INGEST_ORCHESTRATE_SERIES_ID——与 ingest 触发的 orchestrate 落同一 identity 行，天然幂等。
     // 冷启动 meta 缺失 → 立即补一拍：停机期间积累的惰性洞正好接住，属期望行为。
     const hbRow = lib.db.prepare(`SELECT value FROM meta WHERE key = 'last_orchestrate_at'`).get() as { value: string } | undefined
-    const lastOrchestrate = hbRow ? Number(hbRow.value) : 0
+    const lastOrchestrateRaw = hbRow ? Number(hbRow.value) : 0
+    // meta 行损坏时 NaN >= x 恒 false,orchestrate 心跳时间门静默永久失效——防御性归零
+    const lastOrchestrate = Number.isFinite(lastOrchestrateRaw) ? lastOrchestrateRaw : 0
     if (now() - lastOrchestrate >= (this.deps.orchestrateHeartbeatMs ?? ORCHESTRATE_HEARTBEAT_MS)) {
       jobs.upsertWorkerTask(
         { seriesId: INGEST_ORCHESTRATE_SERIES_ID, season: null, movieId: null },

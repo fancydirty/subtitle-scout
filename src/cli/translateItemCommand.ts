@@ -352,6 +352,7 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
     } else {
       console.error(`[translate-item] 库不存在或定位失败 → workspace-agent 无法工作,拒绝执行`)
       console.error(`[translate-item] 解决: 先跑一次 watch 建库,或将视频放入已扫描的媒体根`)
+      db.close() // 与成功分支的 finally close 对齐——exit 前关连接
       process.exit(1)
     }
   }

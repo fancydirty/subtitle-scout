@@ -591,7 +591,16 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         return
       }
 
-      const s = serveStatic(distDir, decodeURIComponent(url.pathname))
+      let decodedPath: string
+      try {
+        decodedPath = decodeURIComponent(url.pathname)
+      } catch (e) {
+        // URIError: 畸形百分号编码(如 %ZZ)——收敛成 400,同 router.ts:53 的 decodeIdSegment 先例
+        res.writeHead(400, JSON_CT)
+        res.end(JSON.stringify({ error: 'invalid URL encoding' }))
+        return
+      }
+      const s = serveStatic(distDir, decodedPath)
       res.writeHead(s.status, { 'content-type': s.type })
       res.end(s.body)
     } catch (e) {
