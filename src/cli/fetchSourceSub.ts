@@ -52,13 +52,22 @@ function isZip(bytes: Buffer): boolean {
 
 /** 从下载物解出字幕文本。zip → 恰好 1 个 .srt 条目才收(多条目=季包,无从机械选集——C-D1 先例:
  *  绝不静默拿 entries[0] 装错集,宁跳过换候选);raw → 编码归一后原文返回,能不能算 SRT 交给
- *  调用方的 parseSrt 闸(v1 只收 parse 得过的,ass/ssa 自然被拦)。解不出 → null。 */
+ *  调用方的 parseSrt 闸(v1 只收 parse 得过的,ass/ssa 自然被拦)。解不出 → null。
+ *  zip 大小上限: 与 subtitleWriter.ts 的 MAX_ZIP_ENTRY_BYTES=32MB 防线一致——不可信字幕站
+ *  的 zip 可能是炸弹(100MB 外层解压出 GB 级数据),超限视为解不出(换候选,fail-soft)。 */
+const MAX_ZIP_ENTRY_BYTES = 32 * 1024 * 1024 // 32MB,同 subtitleWriter.ts
+
 function subtitleTextFromDownload(dl: DownloadResult): string | null {
   if (isZip(dl.bytes)) {
     const entries = new AdmZip(dl.bytes).getEntries().filter((e) =>
       !e.isDirectory && extname(e.entryName).toLowerCase() === '.srt' && !basename(e.entryName).startsWith('.'))
     if (entries.length !== 1) return null
-    return decodeToUtf8(entries[0].getData()).data.toString('utf8')
+    // zip 炸弹防线: header 声明值 + 解压后实际值双重校验(同 subtitleWriter.ts extractEntryCapped)
+    const entry = entries[0]
+    if (entry.header.size > MAX_ZIP_ENTRY_BYTES) return null
+    const data = entry.getData()
+    if (data.length > MAX_ZIP_ENTRY_BYTES) return null
+    return decodeToUtf8(data).data.toString('utf8')
   }
   return decodeToUtf8(dl.bytes).data.toString('utf8')
 }

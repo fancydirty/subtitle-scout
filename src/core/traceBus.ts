@@ -38,10 +38,15 @@ function evictOldestBuffer(): void {
 
 export const traceBus = {
   /** 追加进该 runKey 的环形缓冲（cap 512，溢出丢最旧）+ 广播给全部订阅者。订阅者回调抛错必须
-   *  被吞——直播是增益，绝不能反噬调用方的 agent 循环。键数量超上限时淘汰最久未写入的键。 */
+   *  被吞——直播是增益，绝不能反噬调用方的 agent 循环。键数量超上限时淘汰最久未写入的键（真 LRU：
+   *  写入即刷新 recency）。 */
   publish(e: TraceEvent): void {
     let buf = buffers.get(e.runKey)
-    if (!buf) {
+    if (buf) {
+      // 真 LRU：已存在的键被写入时，删除并重新插入以刷新位置（Map 迭代顺序 = 插入顺序）
+      buffers.delete(e.runKey)
+      buffers.set(e.runKey, buf)
+    } else {
       // 键数量上限：淘汰最久未写入的键（崩溃 run 的缓冲永久残留场景）
       if (buffers.size >= MAX_BUFFERS) evictOldestBuffer()
       buf = []

@@ -20,8 +20,10 @@ services:
         max-file: "3"
     # 健康检查:watch 进程 hang 住时容器状态仍是 running,restart:unless-stopped 救不了。
     # 探测 dashboard 端口(如果启用)或 DB 文件可写。
+    # ⚠️ 注意:docker compose 会对 ${...} 做变量插值,JavaScript 模板字符串里的 ${port} 会被吞掉
+    # (替换成空串),导致健康检查 100% 失败。必须用 $$ 转义($$ = 字面 $)。
     healthcheck:
-      test: ["CMD", "node", "-e", "const http=require('http');const port=process.env.DASHBOARD_PORT||8099;http.get(`http://localhost:${port}/api/v2/auth/status`,(res)=>{process.exit(res.statusCode===200||res.statusCode===401?0:1)}).on('error',()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "const http=require('http');const port=process.env.DASHBOARD_PORT||8099;http.get(`http://localhost:$${port}/api/v2/auth/status`,(res)=>{process.exit(res.statusCode===200||res.statusCode===401?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3

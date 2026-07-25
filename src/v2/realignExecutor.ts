@@ -645,7 +645,7 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   const libRoot = containingRoot(scanDir, candidateRoots)
   if (!libRoot) {
     return park(
-      `待整理目录 ${scanDir} 不在任何已配置库根之下（检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS / Jellyfin 库位置）——` +
+      `待整理目录 ${scanDir} 不在任何已配置库根之下（检查 MEDIA_ROOTS 配置或 dashboard 设置页的守备目录）——` +
       `绝不按目录层数猜库根，拒绝动任何文件`,
     )
   }

@@ -161,7 +161,7 @@ export async function fetchTmdbEnrichment(
  *  message 是既有测试锁（sandbox/unwritable 两类调用方都靠这段文案定位问题）。 */
 function assertDirSafe(dir: string, roots: string[]): void {
   if (!isUnderRoots(dir, roots)) {
-    throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
+    throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS 配置（或 dashboard 设置页的守备目录）`)
   }
   if (!isDirWritable(dir)) {
     throw new Error(`Media dir not writable: ${dir} — sidecar 无法写入，检查挂载读写权限（只读网盘/WebDAV?）`)
@@ -306,7 +306,7 @@ export async function mapWorkerTaskToFindSubtitleTask(
   if (!isUnderRoots(mediaRoot, deps.mediaRoots)) {
     // 逐目标 assertDirSafe 已经过；这里再兜一层是防"目标分散在多个根各自都合规、但公共祖先
     // 越出了全部根"的边界情形（每个单独的 dir 检查无法拦住这种组合态）。
-    throw new Error(`拒绝在媒体根目录之外写入: ${mediaRoot} — 检查 MEDIA_ROOTS / MEDIA_PATH_MAPPINGS 配置`)
+    throw new Error(`拒绝在媒体根目录之外写入: ${mediaRoot} — 检查 MEDIA_ROOTS 配置（或 dashboard 设置页的守备目录）`)
   }
 
   // tmdbId comes from the SERIES row's own id (episodes never carry the series' tmdb id

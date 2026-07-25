@@ -93,6 +93,29 @@ async function readJsonBody(req: import('node:http').IncomingMessage): Promise<u
   }
 }
 
+/** 辅助：读取 JSON body 并处理 413 错误。成功返回 body，失败直接写响应并返回 null。 */
+async function readJsonBodyOrFail(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+): Promise<unknown | null> {
+  try {
+    const body = await readJsonBody(req)
+    if (body === undefined) {
+      res.writeHead(400, JSON_CT)
+      res.end(JSON.stringify({ error: 'invalid JSON body' }))
+      return null
+    }
+    return body
+  } catch (e) {
+    if (e instanceof Error && e.message === 'payload too large') {
+      res.writeHead(413, JSON_CT)
+      res.end(JSON.stringify({ error: 'payload too large' }))
+      return null
+    }
+    throw e
+  }
+}
+
 function serveStatic(distDir: string, pathname: string): { status: number; body: Buffer; type: string } {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
   const base = normalize(distDir)
@@ -322,16 +345,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        let raw = ''
-        for await (const chunk of req) raw += chunk
-        let body: unknown
-        try {
-          body = JSON.parse(raw || '{}')
-        } catch {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid JSON body' }))
-          return
-        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === null) return
         const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown; season?: unknown }
         // P7 disambiguation 补丁：season 未传/null → undefined/null（claimParked 视作"未指定"，
         // 原有行为）；传了但不是 number（如字符串/布尔）→ NaN，claimParked 的
@@ -366,16 +381,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        let raw = ''
-        for await (const chunk of req) raw += chunk
-        let body: unknown
-        try {
-          body = JSON.parse(raw || '{}')
-        } catch {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid JSON body' }))
-          return
-        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === null) return
         const b = (body ?? {}) as { path?: unknown }
         const result = unexclude(db, { path: typeof b.path === 'string' ? b.path : '' })
         // 翻案成功后踢一脚扫描——豁免已写库、park 行已退，重扫让文件立即重回识别流（同 claim
@@ -401,16 +408,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        let raw = ''
-        for await (const chunk of req) raw += chunk
-        let body: unknown
-        try {
-          body = JSON.parse(raw || '{}')
-        } catch {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid JSON body' }))
-          return
-        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === null) return
         const result = updateSettings(settingsRepo, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.settings : { error: result.error }))
@@ -450,16 +449,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         // POST
-        let raw = ''
-        for await (const chunk of req) raw += chunk
-        let body: unknown
-        try {
-          body = JSON.parse(raw || '{}')
-        } catch {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid JSON body' }))
-          return
-        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === null) return
         const b = (body ?? {}) as { path?: unknown }
         const result = addMediaRoot(settingsRepo, b.path, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
@@ -482,16 +473,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'redispatch not configured (jobs repo missing)' }))
           return
         }
-        let raw = ''
-        for await (const chunk of req) raw += chunk
-        let body: unknown
-        try {
-          body = JSON.parse(raw || '{}')
-        } catch {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid JSON body' }))
-          return
-        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === null) return
         const result = redispatch(jobs, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.outcome : { error: result.error }))

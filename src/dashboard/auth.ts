@@ -87,18 +87,33 @@ export class LoginThrottle {
   private counts = new Map<string, { windowStart: number; count: number }>()
   constructor(private limit = 5, private windowMs = 60_000) {}
 
-  /** IPv6 地址归一化为 /64 前缀（同一子网视为同一来源）。IPv4 和域名原样返回。 */
+  /** IPv6 地址归一化为 /64 前缀（同一子网视为同一来源）。IPv4 和域名原样返回。
+   *  处理压缩形式 :: 展开、IPv4-mapped 归一、非标准形状原样返回。 */
   private normalizeKey(key: string): string {
-    // IPv6 格式: xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx 或压缩形式 ::
-    if (key.includes(':')) {
-      const parts = key.split(':').filter(p => p)
-      // 至少 4 段才是 IPv6（避免误判 hostname:port）
-      if (parts.length >= 4) {
-        // 取前 4 段作为 /64 前缀
-        return parts.slice(0, 4).join(':') + '::/64'
-      }
+    // IPv4-mapped IPv6 (::ffff:127.0.0.1) → IPv4 桶
+    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(key)
+    if (mapped) return mapped[1]
+
+    // 非 IPv6（无冒号）原样返回
+    if (!key.includes(':')) return key
+
+    // 展开 :: 压缩形式为完整 8 段
+    let parts: string[]
+    if (key.includes('::')) {
+      const [head, tail] = key.split('::')
+      const h = head ? head.split(':') : []
+      const t = tail ? tail.split(':') : []
+      // :: 代表若干个 0 段，补齐到 8 段
+      parts = [...h, ...Array(8 - h.length - t.length).fill('0'), ...t]
+    } else {
+      parts = key.split(':')
     }
-    return key
+
+    // 非标准形状（段数 != 8）原样返回
+    if (parts.length !== 8) return key
+
+    // 取前 4 段作为 /64 前缀
+    return parts.slice(0, 4).join(':') + '::/64'
   }
 
   /** 惰性清扫：删除所有已过期的窗口条目。 */
