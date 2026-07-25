@@ -146,6 +146,11 @@ export async function install(
       return { conflict: true, path: normalizedFinal }
     }
     try {
+      // H1 承诺"绝不覆盖"——存在即返回 conflict。注意:existsSync→renameSync 之间存在微秒级
+      // TOCTOU 窗口,窗口内出现的同名文件会被 rename 静默覆盖(POSIX rename 语义)。实际风险
+      // 极低(agent 单线程顺序执行,窗口内恰好有人手放同名字幕的概率接近零),且冲突路径已
+      // 有 existsSync 前置短路兜底。未来如需彻底消除窗口,可改用 linkSync(存在即 EEXIST
+      // 失败)+unlinkSync,但会改变函数签名(返回错误而非 InstallConflict),需调用方适配。
       renameSync(stagedPath, normalizedFinal)
       fsyncDirBestEffort(dirname(normalizedFinal))
       return { path: normalizedFinal }
