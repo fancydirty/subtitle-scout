@@ -190,9 +190,14 @@ export async function install(
  *  只看链接本身,断链也能正常 stat 到,进而被 rmSync 删掉。同理,rmSync 对符号链接(哪怕
  *  指向目录)只解链接本身,不会顺着链接递归删目标——指向的真实目录不受影响。 */
 /** 递归取目录内最新 mtime（含子目录）——translate 工作台的持续写入全部在子目录
- *  （work/bilingual.jsonl 等），只看顶层目录 mtime 会在启动几分钟后永久陈旧（R7-1 实锤）。 */
+ *  （work/bilingual.jsonl 等），只看顶层目录 mtime 会在启动几分钟后永久陈旧（R7-1 实锤）。
+ *  R8-1 修复：种子值带目录自身 mtime——刚 allocate、只建了空子目录、还没写任何文件的工作台，
+ *  latest=0 会被误删（无论多新鲜）。入口 seed lstatSync(dir).mtimeMs，递归时目录项也取其自身 mtime。 */
 function latestMtimeMs(dir: string): number {
   let latest = 0
+  try {
+    latest = lstatSync(dir).mtimeMs // R8-1：目录自身 mtime 也计入（空工作台不被误删）
+  } catch { /* 目录不存在 */ }
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name)
@@ -235,11 +240,12 @@ export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>, bootT
         const full = join(stagingRoot, name)
         try {
           const stat = lstatSync(full) // 存在性探测,不跟随链接;断链在这里也不会抛
-          // R7-1：只有目录才用 age-based 活性判断（活跃 CLI 工作台会持续写入子目录）；
-          // 文件/符号链接总是删（它们不是活跃的工作台，只是垃圾）。
+          // R8-1：双条件——① mtime 新于 bootTime（新建未写的工作台，bootTime=0 时不启用）
+          // ② 最近 10 分钟内有写入（活跃的工作台）。两个条件任一满足都跳过（不删）。
+          if (bootTime > 0 && stat.mtimeMs > bootTime) continue // 新建未写的工作台（R6-9 语义）
           if (stat.isDirectory()) {
             const latestMtime = latestMtimeMs(full)
-            if (Date.now() - latestMtime < ACTIVE_WINDOW_MS) continue
+            if (Date.now() - latestMtime < ACTIVE_WINDOW_MS) continue // 活跃的工作台（R7-1 语义）
           }
           rmSync(full, { recursive: true, force: true })
           cleaned++

@@ -1,5 +1,5 @@
 // src/dashboard/auth.test.ts
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { hashPassword, verifyPassword, SessionStore, LoginThrottle, AuthService } from './auth.js'
 import { openDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
@@ -162,33 +162,43 @@ describe('login 只对失败计入节流（审计 #3：成功登录不消耗预�
 
   // R6-2 修复：login 时序侧信道——username !== storedUser 短路时不跑 scrypt（0 次 vs 1 次），
   // R5-10 加的 hashPassword(password) 只是给两条路径各加一次（1 次 vs 2 次），差值同形平移。
-  // 正确做法：无条件 verifyPassword（恒跑），再用非短路方式合并结果。这两条测试锁住"用户名错和
-  // 用户名对时的 scrypt 次数一致"（通过验证两条路径都返回 401，且 throttle 都记录失败——
-  // 如果短路，用户名错时不会记录失败）。
-  it('用户名错时也记录失败（证明 verifyPassword 跑了，没有短路）', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
-    auth.setup('admin', 'hunter2222', NOW)
-    // 用户名错：应该返回 401 且记录失败（throttle 计数）
-    const r1 = auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
-    expect(r1).toMatchObject({ ok: false, status: 401 })
-    // 再试一次：throttle 应该已记录 1 次失败（如果短路，不会记录）
-    const r2 = auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
-    expect(r2).toMatchObject({ ok: false, status: 401 })
-    // 第 5 次失败后应该 429（如果短路，throttle 不会计数，永远 401）
-    for (let i = 0; i < 3; i++) auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
-    const r5 = auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
-    expect(r5).toMatchObject({ ok: false, status: 429 })
-  })
+  // 正确做法：无条件 verifyPassword（恒跑），再用非短路方式合并结果。
+  // R8-3 修复：这两条测试此前是假测试——短路版本下 throttle 计数一样（两条路径都记录失败），
+  // 无法区分。改为 scrypt 调用计数断言：用户名错和用户名对时的 scrypt 次数必须一致（各 1 次）。
+  // 注：vi.mock 拦截 node:crypto 的 scryptSync（auth.ts 用命名导入，spy crypto.scryptSync 无效）。
+  it('用户名错和用户名对时的 scrypt 次数一致（时序侧信道修复）', async () => {
+    // 只包 scryptSync 计数，randomBytes/timingSafeEqual 保持真实实现——整体替换 node:crypto 会让
+    // timingSafeEqual 恒真，连用户名比对都变假，测出来的次数就没有意义了。
+    let scryptCalls = 0
+    vi.doMock('node:crypto', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:crypto')>()
+      return {
+        ...actual,
+        scryptSync: (...args: Parameters<typeof actual.scryptSync>) => {
+          scryptCalls++
+          return actual.scryptSync(...args)
+        },
+      }
+    })
+    vi.resetModules()
+    const { AuthService: FreshAuthService } = await import('./auth.js')
+    const auth = new FreshAuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', NOW) // setup 自己也会跑 scrypt，从这里开始计数
 
-  it('用户名对但密码错时也记录失败（与用户名错时的行为一致）', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
-    auth.setup('admin', 'hunter2222', NOW)
-    const r1 = auth.login('admin', 'wrong', '1.1.1.1', NOW)
-    expect(r1).toMatchObject({ ok: false, status: 401 })
-    // 再记 4 次失败（共 5 次），第 5 次应该 429
-    for (let i = 0; i < 4; i++) auth.login('admin', 'wrong', '1.1.1.1', NOW)
-    const r5 = auth.login('admin', 'wrong', '1.1.1.1', NOW)
-    expect(r5).toMatchObject({ ok: false, status: 429 })
+    scryptCalls = 0
+    auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
+    const wrongUserCalls = scryptCalls // 用户名错：verifyPassword 恒跑 → 1 次
+
+    scryptCalls = 0
+    auth.login('admin', 'wrong', '1.1.1.1', NOW)
+    const wrongPasswordCalls = scryptCalls // 用户名对密码错：同样 1 次
+
+    // 关键断言：两条失败路径的 scrypt 工作量必须相同（短路版本会是 0 vs 1）
+    expect(wrongUserCalls).toBe(1)
+    expect(wrongPasswordCalls).toBe(1)
+
+    vi.doUnmock('node:crypto')
+    vi.resetModules()
   })
 })
 

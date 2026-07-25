@@ -258,6 +258,21 @@ function libRootFromRealignBuildDir(outDir: string): string {
   return outDir.slice(0, idx)
 }
 
+/** R8-2 修复：alreadyDone 条目的 outDir 在 finalTarget 内（不含 .realign-build 段），
+ *  libRootFromRealignBuildDir 必抛。用 containingRoot 从 mediaRoots 推导（仍失败才抛）。 */
+function libRootFromOutDir(outDir: string, mediaRoots: string[]): string {
+  try {
+    return libRootFromRealignBuildDir(outDir)
+  } catch {
+    // alreadyDone 条目：outDir 在 finalTarget 内，用 mediaRoots 推导
+    const root = containingRoot(outDir, mediaRoots)
+    if (!root) {
+      throw new Error(`字幕先行 outDir 不在任何媒体根下（既不含 .realign-build 段，也不在 mediaRoots 内）：${outDir}`)
+    }
+    return root
+  }
+}
+
 /**
  * runEpisode 接线（realign 版，v3 old-pipeline-retirement Wall ②）：不再走旧 callStructured
  * 管线（runPipeline），而是把 ctx 翻译成一个 FindSubtitleTask，直接跑 v3 的 find-subtitle worker
@@ -279,12 +294,18 @@ function libRootFromRealignBuildDir(outDir: string): string {
  * makeFindSubtitleWorker(...)，测试走假函数）永远显式传入，注入点同样清楚。
  */
 export function makeRealignRunEpisode(
-  deps: { runFindSubtitleTask: (task: FindSubtitleTask) => Promise<FindSubtitleBatchReport>; targetLanguage?: string },
+  deps: {
+    runFindSubtitleTask: (task: FindSubtitleTask) => Promise<FindSubtitleBatchReport>
+    targetLanguage?: string
+    /** R8-2：alreadyDone 条目的 outDir 在 finalTarget 内（不含 .realign-build 段），
+     *  用 containingRoot 从 mediaRoots 推导库根（仍失败才抛）。 */
+    mediaRoots: string[]
+  },
 ): (ctx: RealignEpisodeFields, outDir: string, jobId: string) => Promise<unknown> {
   return async (ctx, outDir, jobId) => {
     const task: FindSubtitleTask = {
       jobId,
-      mediaRoot: libRootFromRealignBuildDir(outDir),
+      mediaRoot: libRootFromOutDir(outDir, deps.mediaRoots),
       title: ctx.title,
       originalTitle: ctx.originalTitle,
       year: ctx.year,

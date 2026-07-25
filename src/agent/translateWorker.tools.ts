@@ -1,7 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, existsSync, rmSync, statSync, renameSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, rmSync, statSync, renameSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { evaluateTranslationGate, parseSrtCues } from '../translate/qualityGate.js'
 import { materializeAgentView } from '../translate/workspace/materialize.js'
@@ -184,9 +184,15 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       meta.resolvedAt = Date.now()
       // R7-8 修复：meta.json 原子写（与 bilingual.jsonl 同款 tmp+rename）——SIGKILL/ENOSPC 撕裂后，
       // R6-7 只是让报错文案变好，workspace 依然永久砖化（resolve_source 每次都抛，模型无解）。
+      // R8-5：tmp 写入失败（ENOSPC）要清理半截 tmp，别留垃圾等 gcOrphans 收尸（writeRows 同款纪律）
       const metaTmp = `${paths.metaPath}.${process.pid}.${Date.now()}.tmp`
-      writeFileSync(metaTmp, JSON.stringify(meta, null, 2))
-      renameSync(metaTmp, paths.metaPath)
+      try {
+        writeFileSync(metaTmp, JSON.stringify(meta, null, 2))
+        renameSync(metaTmp, paths.metaPath)
+      } catch (e) {
+        try { unlinkSync(metaTmp) } catch { /* tmp 可能压根没建出来 */ }
+        throw e
+      }
       return r
     },
   })

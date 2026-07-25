@@ -67,7 +67,13 @@ describe('makeRealignLibraryPort · getItemsPage', () => {
     writeFileSync(join(showDir, 'Season 01', 'ep1.mkv'), 'x')
     writeFileSync(join(showDir, 'Season 01', 'ep2.mkv'), 'x')
 
-    const walkSpy = vi.fn(() => [join(showDir, 'Season 01', 'ep1.mkv'), join(showDir, 'Season 01', 'ep2.mkv')])
+    // R8-4：走盘必须真的慢（>100ms 缓存窗口）——瞬时返回的假 walk 让"走盘前打点"与"走盘后打点"
+    // 完全不可区分，此前那版测试对 R6-5 的 mutation 全绿（假测试）。同步 busy-wait 模拟 CIFS/SMB。
+    const walkSpy = vi.fn(() => {
+      const until = Date.now() + 150
+      while (Date.now() < until) { /* busy-wait：getItemsPage 是同步走盘，不能用 await */ }
+      return [join(showDir, 'Season 01', 'ep1.mkv'), join(showDir, 'Season 01', 'ep2.mkv')]
+    })
     const port = makeRealignLibraryPort({
       lib: mkLib(),
       roots: [root],

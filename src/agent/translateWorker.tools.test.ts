@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, afterEach, beforeEach } from 'vitest'
@@ -58,6 +58,23 @@ describe('translate workspace tools', () => {
     expect(r).toMatchObject({ status: 'ok', sourceLangName: '英文' })
     expect(r.sourceRef).toMatch(/embedded/)
     expect(readFileSync(paths.canonicalSourcePath, 'utf8')).toContain('Hello Nico')
+  })
+
+  // R7-8 修复：meta.json 走 tmp+rename（撕裂的 meta.json 会让 resolve_source 每次都抛，workspace
+  // 永久砖化）。这条测试用文件系统语义区分两种写法：rename 覆盖只只只需目录可写，裸 writeFileSync
+  // 写只读文件会 EACCES——所以"只读的旧 meta.json 能被成功覆盖"就是原子写的实证。
+  it('resolve_source 原子覆盖只读的旧 meta.json（tmp+rename，不是裸 writeFileSync）', async () => {
+    if (process.getuid?.() === 0) return // root 无视 mode 位，这条区分在 root 下失效
+    writeFileSync(paths.metaPath, JSON.stringify({ stale: true }), { mode: 0o444 })
+    chmodSync(paths.metaPath, 0o444)
+
+    const tools = makeTranslateWorkspaceTools(baseDeps())
+    const r = await call(tools.resolve_source)
+
+    expect(r.status).toBe('ok')
+    expect(JSON.parse(readFileSync(paths.metaPath, 'utf8'))).toMatchObject({ itemId: 'tmdb:1/s1e1' })
+    // 写完不留 tmp 垃圾
+    expect(readdirSync(paths.jobRoot).filter(n => n.includes('.tmp'))).toEqual([])
   })
 
   it('resolve_source: ja origin with only eng embedded → fallback eng, canonical written', async () => {

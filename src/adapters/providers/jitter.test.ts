@@ -106,4 +106,20 @@ describe('JitteredIntervalLimiter', () => {
     // 5 个并发调用串行化后：第 1 个立即执行，后 4 个各等 100ms，总耗时 >= 400ms
     expect(elapsed).toBeGreaterThanOrEqual(4 * baseMs - 50) // 留 50ms 误差（定时器不精确）
   })
+
+  // R7-6 修复：队列里的回调抛错会让 this.tail 变成 rejected promise，之后每一个 wait() 都拿到
+  // 同一个旧错误（sticky failure，限流器永久报废）。tail 只记"排队位置"，不该继承失败。
+  it('队列内抛错只影响当次调用，后续 wait() 不被 sticky rejection 连坐', async () => {
+    let calls = 0
+    const rng = () => {
+      calls++
+      if (calls === 2) throw new Error('rng exploded')
+      return 0
+    }
+    const limiter = new JitteredIntervalLimiter(1, 1, rng)
+
+    await expect(limiter.wait()).resolves.toBeUndefined() // 第 1 次正常
+    await expect(limiter.wait()).rejects.toThrow('rng exploded') // 第 2 次抛错，错误如实传给当事人
+    await expect(limiter.wait()).resolves.toBeUndefined() // 第 3 次必须恢复（sticky 版本会复读旧错）
+  })
 })

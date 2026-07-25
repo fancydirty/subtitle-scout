@@ -196,7 +196,8 @@ async function cmdReconcileAll() {
 }
 
 async function cmdWatch() {
-  // R6-9：进程启动时间——gcOrphans 用它跳过 mtime 新于它的条目（并发 CLI 正在用的工作台不清）。
+  // R8-1：进程启动时间——gcOrphans 的两条保留条件之一（① mtime 新于 bootTime 的"新建未写"工作台
+  // ② 最近 10 分钟内有写入的活跃工作台），两者任一满足就不清，避免误删并发 CLI 正在用的工作台。
   const bootTimeMs = Date.now()
   // 去 Jellyfin 化 P5/Task 7：realign port 已切到库原生实现（makeRealignLibraryPort，下方），
   // assemble() 不再持有任何 jf/jellyfinClient 句柄；P7 起 JELLYFIN_URL/JELLYFIN_API_KEY 的
@@ -311,6 +312,9 @@ async function cmdWatch() {
     // （realignExecutor 组装是长驻闭包，改语言后需重启才影响 realign 这一条路径——如实注记，
     // 非债务遗漏）。
     targetLanguage: targetLanguages[0],
+    // R8-2：alreadyDone 条目的 outDir 在 finalTarget 内（不含 .realign-build 段），
+    // 用 containingRoot 从 mediaRoots 推导库根（仍失败才抛）。
+    mediaRoots: currentRoots(),
   })
   // 去 Jellyfin 化 P5/Task 7：port 的实现从 JellyfinClient 适配换成库原生实现
   // （src/v2/realignLibraryPort.ts）——realignExecutor.ts 的 5 重安全层（restructuring/
@@ -505,7 +509,8 @@ async function cmdWatch() {
     runs,
     ingestTrigger,
     // dashboard G4：每次 daemon tick 调用时重新取一遍 roots——同 ingestPass，不锁定启动时刻的快照。
-    // R6-9：传进程启动时间，跳过 mtime 新于它的条目（并发 CLI 正在用的工作台不清）。
+    // R8-1：传进程启动时间——gcOrphans 的两条保留条件之一（新建未写 / 最近 10 分钟有写入），
+    // 两者任一满足就不清，避免误删并发 CLI 正在用的工作台。
     gcStaging: () => gcOrphans(currentRoots(), new Set(), bootTimeMs),
     // 清算波 R-6（A-F7）：job.kind==='worker_task' 是 claimNext() 这条 kind 无关队列上唯一的
     // 活执行通路。旧管线的中转层（v2/executor.ts 的 executeJob/executeRealignBranch）与它的

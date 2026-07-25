@@ -25,6 +25,8 @@ export interface RealignLibraryPortDeps {
   /** 一次完整摄取 pass（v2/ingest.ts 的 makeIngestPass 产出）——refreshLibrary 的库原生等价
    *  操作："重新识别 + 写行"顶替 Jellyfin 的 /Items/{id}/Refresh。 */
   runIngest: () => Promise<unknown>
+  /** R8-6：走盘缓存窗口的时钟（默认 Date.now）——此前声明了却没人用（死依赖），
+   *  现在 getItemsPage 的 100ms 缓存窗口两端都走它，测试可注入可控时钟。 */
   now?: () => number
   /** 测试注入：walkVideoFiles 的替换实现（默认 daemon/selfScan.ts 的真实走盘）。 */
   walkVideoFiles?: (root: string) => string[]
@@ -101,8 +103,8 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
      */
     async getItemsPage(startIndex, limit) {
       // 短期缓存：同一轮验收（100ms 窗口内）的连续分页用同一份 walk 结果
-      const now = Date.now()
-      if (walkCache && now - walkCache.at < 100) {
+      const clock = deps.now ?? Date.now // R8-6：缓存窗口两端统一走这个时钟（此前 deps.now 是死依赖）
+      if (walkCache && clock() - walkCache.at < 100) {
         return walkCache.files.slice(startIndex, startIndex + limit).map(path => ({
           Id: path,
           Name: basename(path),
@@ -115,7 +117,7 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
       // R6-5 修复：缓存打点在走盘完成后——此前用走盘开始前的 now，走盘本身 >100ms 时缓存写入即过期，
       // 第二页必然重新全量走盘（正是它要救的 CIFS/SMB 场景）。改为完成后打点，确保 100ms 窗口内
       // 的连续分页命中缓存。
-      walkCache = { at: Date.now(), files }
+      walkCache = { at: clock(), files }
       return files.slice(startIndex, startIndex + limit).map(path => ({
         Id: path,
         Name: basename(path),

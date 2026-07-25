@@ -414,11 +414,15 @@ describe('gcOrphans', () => {
   it('removes every staging dir not in activeJobIds, across multiple media roots', () => {
     const root1 = mediaRoot()
     const root2 = mediaRoot()
-    allocate('job-orphan-1', root1)
+    const orphan1 = allocate('job-orphan-1', root1)
     allocate('job-active', root1)
-    allocate('job-orphan-2', root2)
+    const orphan2 = allocate('job-orphan-2', root2)
+    // R8-1：age-based 活性判断——orphan 条目必须旧于 10 分钟才会被删（刚创建的会被跳过）
+    const oldTime = new Date(Date.now() - 11 * 60 * 1000)
+    utimesSync(orphan1, oldTime, oldTime)
+    utimesSync(orphan2, oldTime, oldTime)
 
-    const cleaned = gcOrphans([root1, root2], new Set(['job-active']), Date.now() + 1000)
+    const cleaned = gcOrphans([root1, root2], new Set(['job-active']), 0)
 
     expect(cleaned).toBe(2)
     expect(existsSync(join(root1, '.subtitle-staging', 'job-orphan-1'))).toBe(false)
@@ -428,31 +432,42 @@ describe('gcOrphans', () => {
 
   it('is a no-op when a media root has no .subtitle-staging dir yet', () => {
     const root = mediaRoot()
-    expect(() => gcOrphans([root], new Set(), Date.now() + 1000)).not.toThrow()
-    expect(gcOrphans([root], new Set(), Date.now() + 1000)).toBe(0)
+    expect(() => gcOrphans([root], new Set(), 0)).not.toThrow()
+    expect(gcOrphans([root], new Set(), 0)).toBe(0)
   })
 
   it('does not treat the .ignore marker file as an orphan directory', () => {
     const root = mediaRoot()
     allocate('job-1', root) // 顺带创建 .ignore
-    gcOrphans([root], new Set(), Date.now() + 1000)
+    gcOrphans([root], new Set(), 0)
     expect(existsSync(join(root, '.subtitle-staging', '.ignore'))).toBe(true)
   })
 
   it('boot semantics: empty activeJobIds nukes everything (mirrors jobsRepo.reapAllActive)', () => {
     const root = mediaRoot()
-    allocate('job-1', root)
-    allocate('job-2', root)
-    mkdirSync(join(root, '.subtitle-staging', 'job-3'), { recursive: true })
-    const cleaned = gcOrphans([root], new Set(), Date.now() + 1000)
+    const job1 = allocate('job-1', root)
+    const job2 = allocate('job-2', root)
+    const job3 = join(root, '.subtitle-staging', 'job-3')
+    mkdirSync(job3, { recursive: true })
+    // R8-1：age-based 活性判断——orphan 条目必须旧于 10 分钟才会被删
+    const oldTime = new Date(Date.now() - 11 * 60 * 1000)
+    utimesSync(job1, oldTime, oldTime)
+    utimesSync(job2, oldTime, oldTime)
+    utimesSync(job3, oldTime, oldTime)
+    const cleaned = gcOrphans([root], new Set(), 0)
     expect(cleaned).toBe(3)
   })
 
   it('P2.4: .subtitle-translate 工作台同法清扫(活跃 jobId 保留)', () => {
     const root = mediaRoot()
-    mkdirSync(join(root, '.subtitle-translate', 'daemon-1'), { recursive: true })
-    mkdirSync(join(root, '.subtitle-translate', 'daemon-2'), { recursive: true })
-    const cleaned = gcOrphans([root], new Set(['daemon-2']), Date.now() + 1000)
+    const daemon1 = join(root, '.subtitle-translate', 'daemon-1')
+    const daemon2 = join(root, '.subtitle-translate', 'daemon-2')
+    mkdirSync(daemon1, { recursive: true })
+    mkdirSync(daemon2, { recursive: true })
+    // R8-1：age-based 活性判断——orphan 条目必须旧于 10 分钟才会被删
+    const oldTime = new Date(Date.now() - 11 * 60 * 1000)
+    utimesSync(daemon1, oldTime, oldTime)
+    const cleaned = gcOrphans([root], new Set(['daemon-2']), 0)
     expect(cleaned).toBe(1)
     expect(existsSync(join(root, '.subtitle-translate', 'daemon-1'))).toBe(false)
     expect(existsSync(join(root, '.subtitle-translate', 'daemon-2'))).toBe(true)
@@ -460,14 +475,15 @@ describe('gcOrphans', () => {
 
   it('removes a stray non-directory file squatting in .subtitle-staging (not just orphan job dirs)', () => {
     const root = mediaRoot()
-    allocate('job-1', root) // 顺带创建 .subtitle-staging/.ignore
+    const jobDir = allocate('job-1', root) // 顺带创建 .subtitle-staging/.ignore
     const junkFile = join(root, '.subtitle-staging', 'not-a-job-dir.txt')
     writeFileSync(junkFile, 'squatter')
-    // R7-1：age-based 活性判断——非目录文件的 mtime 必须旧于 10 分钟才会被删
+    // R8-1：age-based 活性判断——orphan 条目（目录和文件）的 mtime 都必须旧于 10 分钟才会被删
     const oldTime = new Date(Date.now() - 11 * 60 * 1000)
+    utimesSync(jobDir, oldTime, oldTime)
     utimesSync(junkFile, oldTime, oldTime)
 
-    const cleaned = gcOrphans([root], new Set(), Date.now() + 1000)
+    const cleaned = gcOrphans([root], new Set(), 0)
 
     expect(existsSync(junkFile)).toBe(false)
     expect(cleaned).toBe(2) // job-1 dir + the junk file
@@ -483,7 +499,7 @@ describe('gcOrphans', () => {
     const oldTime = new Date(Date.now() - 11 * 60 * 1000)
     try { utimesSync(brokenLink, oldTime, oldTime) } catch { /* 符号链接可能不支持，忽略 */ }
 
-    gcOrphans([root], new Set(), Date.now() + 1000)
+    gcOrphans([root], new Set(), 0)
 
     // existsSync follows the link and would report false for a broken link either way —
     // lstatSync is the only way to tell whether the link entry itself was actually removed.
@@ -499,7 +515,7 @@ describe('gcOrphans', () => {
     const linkPath = join(stagingRoot, 'link-to-dir')
     symlinkSync(targetDir, linkPath)
 
-    gcOrphans([root], new Set(), Date.now() + 1000)
+    gcOrphans([root], new Set(), 0)
 
     expect(() => lstatSync(linkPath)).toThrow() // the link entry itself is gone
     expect(existsSync(targetDir)).toBe(true) // but its target was never touched
@@ -544,5 +560,22 @@ describe('gcOrphans', () => {
     // 陈旧的工作台会被删
     expect(existsSync(jobDir)).toBe(false)
     expect(cleaned).toBe(1)
+  })
+
+  // R8-1 修复：刚 allocate、只建了空子目录、还没写任何文件的工作台，latestMtimeMs 只统计文件
+  // 时 latest=0 会被误删（无论多新鲜）。这条测试锁住"空工作台（零文件）不会被删"。
+  it('空工作台（刚 allocate、零文件）不会被删（R8-1 新回归）', () => {
+    const root = mediaRoot()
+    const jobDir = allocate('cli-job-1', root)
+    // 只建空子目录，不写任何文件
+    mkdirSync(join(jobDir, 'work'), { recursive: true })
+    mkdirSync(join(jobDir, 'glossary'), { recursive: true })
+
+    const cleaned = gcOrphans([root], new Set(), Date.now())
+
+    // 空工作台不会被删（R8-1：latestMtimeMs 种子值带目录自身 mtime）
+    expect(existsSync(jobDir)).toBe(true)
+    expect(existsSync(join(jobDir, 'work'))).toBe(true)
+    expect(cleaned).toBe(0)
   })
 })

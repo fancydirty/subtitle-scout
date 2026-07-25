@@ -287,7 +287,7 @@ describe('makeRealignRunEpisode', () => {
       capturedTask = task
       return report
     })
-    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
 
     const result = await runEpisode(
       ctx,
@@ -322,19 +322,19 @@ describe('makeRealignRunEpisode', () => {
       capturedMediaRoot = task.mediaRoot
       return { installed: [], no_safe_match: [{ itemId: ctx.itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
     })
-    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
 
     await runEpisode(ctx, '/media/tv/.realign-build/Show (2020) [tmdbid-1]/Season 02', 'job-2')
 
     expect(isUnderRoots(dirname(ctx.videoPath), [capturedMediaRoot])).toBe(true)
   })
 
-  it('outDir 不含 .realign-build 段 → 抛错（mediaRoot 推导失败，绝不猜一个不安全的根）', async () => {
-    const ctx = buildRealignEpisodeFields('Show', 2020, '1', item, '/lib/tv/Show/Season 02/y.mkv', NO_ENRICHMENT)
+  it('outDir 不含 .realign-build 段且不在任何媒体根下 → 抛错（mediaRoot 推导失败，绝不猜一个不安全的根）', async () => {
+    const ctx = buildRealignEpisodeFields('Show', 2020, '1', item, '/other/path/Show/Season 02/y.mkv', NO_ENRICHMENT)
     const runFindSubtitleTask = vi.fn()
-    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
 
-    await expect(runEpisode(ctx, '/lib/tv/Show/Season 02', 'job-3')).rejects.toThrow(/\.realign-build/)
+    await expect(runEpisode(ctx, '/other/path/Show/Season 02', 'job-3')).rejects.toThrow(/\.realign-build/)
     expect(runFindSubtitleTask).not.toHaveBeenCalled()
   })
 })
@@ -1014,7 +1014,7 @@ describe('executeRealign（顶层编排，集成）', () => {
       capturedTasks.push(task)
       return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
     })
-    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
     const getDetails = vi.fn(async () => ({
       overview: 'A spy, an assassin, a telepath.', runtimeMinutes: 24,
       posterPath: null, backdropPath: null, originalTitle: 'SPY×FAMILY', year: 2022, genreIds: [],
@@ -1057,7 +1057,7 @@ describe('executeRealign（顶层编排，集成）', () => {
       capturedTasks.push(task)
       return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
     })
-    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask })
+    const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
     const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
       runEpisode,
       tmdb: {
@@ -1333,6 +1333,7 @@ describe('executeRealign（崩溃模拟：kill 在半途 + 重跑幂等）', () 
     // "这一集字幕先行没跑成"来吞掉，绝不能让它冒泡阻断整个整理流程（IMP#7 非阻塞契约）。
     const runEpisode = makeRealignRunEpisode({
       runFindSubtitleTask: vi.fn(async () => { throw new Error('find-subtitle worker exhausted (step cap)') }),
+      mediaRoots: [libRoot],
     })
     const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
       runEpisode, tmdb: { getSeasonTable: vi.fn(async () => [{ seasonNumber: 1, episodeCount: 3, airDate: null }]) },
