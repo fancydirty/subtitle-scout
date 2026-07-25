@@ -282,11 +282,13 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
       console.log(`[translate-item] 源语言外挂搜索腿未启用(${e instanceof Error ? e.message : String(e)}),仅走内嵌轨`)
     }
   } else {
-    console.log(`[translate-item] 未找到库 ${dbPath}(先跑一次 watch 建库),源语言外挂搜索腿未启用,仅走内嵌轨`)
+    console.error(`[translate-item] 未找到库 ${dbPath}(先跑一次 watch 建库)——workspace-agent 需要库定位,拒绝执行`)
+    console.error(`[translate-item] 解决: 先跑一次 watch 建库,或将视频放入已扫描的媒体根`)
+    process.exit(1)
   }
 
   // Workspace agent 主路径(P1):需要库定位拿到 origin_lang/itemId(单跳选源依赖);
-  // 定位不到(库外文件)时诚实回退 legacy,不让 agent 在零身份下乱猜源语言。
+  // 定位不到(库外文件)时诚实拒绝,不让 agent 在零身份下乱猜源语言。
   if (db) {
     const identity = locateTranslateIdentity(db, videoPath)
     if (identity) {

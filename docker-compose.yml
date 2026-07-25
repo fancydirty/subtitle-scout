@@ -54,6 +54,8 @@ services:
       TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}
       LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}
+      # 跳过原产地即目标语言的影视(如目标中文时跳过国产剧,避免为它们空跑找字幕)
+      SKIP_CHINESE_ORIGIN: ${SKIP_CHINESE_ORIGIN:-}
       # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)
       MEDIA_ROOTS: ${MEDIA_ROOTS:-/media}
       SUBTITLE_SCOUT_CACHE_DIR: /cache
@@ -63,6 +65,7 @@ services:
     volumes:
       # 宿主机 Movies/ TV/ → 容器内 movies/ tv/(小写,Linux 容器大小写敏感)
       # MEDIA_ROOTS 应写 /media/movies,/media/tv(对应容器内路径)
-      - ${MEDIA_HOST_PATH}/Movies:/media/movies
-      - ${MEDIA_HOST_PATH}/TV:/media/tv
+      # ⚠️ 强制守卫: MEDIA_HOST_PATH 未设置时直接报错,避免 Docker 静默创建空目录树
+      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录（例如 /data/media）}/Movies:/media/movies
+      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录（例如 /data/media）}/TV:/media/tv
       - ./cache:/cache

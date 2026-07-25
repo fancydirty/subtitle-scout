@@ -783,9 +783,10 @@ async function cmdRealignRollback(archiveDir: string) {
 const USAGE = 'usage: subtitle-scout watch | reconcile-all | doctor | translate-item <videoPath> | realign-rollback <archiveDir> | auth reset'
 
 /** 鉴权 A4 Task 15：`subtitle-scout auth reset`——诚实找回密码。删管理员三键回到未初始化态，
- *  下次访问 dashboard 重进创建管理员向导。复用 SUBTITLE_SCOUT_DB / cmdWatch 同一套 db 定位。 */
+ *  下次访问 dashboard 重进创建管理员向导。复用 cmdWatch 同一套 db 定位（SUBTITLE_SCOUT_CACHE_DIR）。 */
 function cmdAuthReset(): void {
-  const dbPath = process.env.SUBTITLE_SCOUT_DB || join(homedir(), '.subtitle-scout', 'scout.db')
+  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
+  const dbPath = process.env.SUBTITLE_SCOUT_DB || join(cacheRoot, 'scout.db')
   if (!existsSync(dbPath)) {
     console.error(`未找到数据库 ${dbPath}——尚无管理员账号可重置（或先设置 SUBTITLE_SCOUT_DB 指向正确路径）。`)
     process.exit(2)
