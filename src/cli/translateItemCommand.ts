@@ -321,7 +321,9 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
           roots = new SettingsRepo(db).listRoots().map((r) => r.path)
         } catch { /* settings 缺席 → env */ }
         if (roots.length === 0 && process.env.MEDIA_ROOTS) {
-          roots = process.env.MEDIA_ROOTS.split(':').map((s) => s.trim()).filter(Boolean)
+          // 与 cli/index.ts:634 一致,用逗号分隔(不是冒号——多根容器路径含冒号是合法的,如
+          // /media/movies:/data/films,只有逗号才是无歧义的分隔符)
+          roots = process.env.MEDIA_ROOTS.split(',').map((s) => s.trim()).filter(Boolean)
         }
         const videoDir = dirname(videoPath)
         const stagingRoot = containingRoot(videoDir, roots) ?? videoDir
