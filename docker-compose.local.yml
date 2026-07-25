@@ -15,6 +15,14 @@ services:
     # 不具备 init 的孤儿收割职责。旧管线曾 detached 起 subtitle-fetch 子进程（已退役,
     # v3 全部进程内调 adapter），但 init:true 的信号/收割卫生依然正确。
     init: true
+    # 与主 compose 同款健康检查——本地栈也要能验证 healthcheck 回归（$${port} 的 $$ 转义
+    # 就是在主 compose 上踩过一次的坑：compose 会把 ${port} 当自己的变量吞掉）
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');const port=process.env.DASHBOARD_PORT||8099;http.get(`http://localhost:$${port}/api/v2/auth/status`,(res)=>{process.exit(res.statusCode===200||res.statusCode===401?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     ports:
       - "8099:8099"
     environment:
@@ -42,6 +50,7 @@ services:
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}
       LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}
       SKIP_CHINESE_ORIGIN: ${SKIP_CHINESE_ORIGIN:-}
+      REALIGN_ARCHIVE_ROOT: ${REALIGN_ARCHIVE_ROOT:-}
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       MEDIA_ROOTS: /media
       TZ: ${TZ:-Asia/Shanghai}

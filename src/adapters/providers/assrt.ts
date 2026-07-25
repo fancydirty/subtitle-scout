@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync, renameSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync, renameSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import {
@@ -134,8 +134,10 @@ export class AssrtClient {
       try {
         cachedJson = JSON.parse(readFileSync(cacheFile, 'utf8'))
       } catch {
-        // 缓存损坏，视为 miss，继续走 fresh fetch
+        // 缓存损坏（进程崩溃留下半截 JSON），视为 miss 并清掉坏文件——否则 fresh fetch 若也失败，
+        // 24h TTL 内每次调用都会重新读到同一个坏文件。
         cachedJson = null
+        try { unlinkSync(cacheFile) } catch { /* 并发已删或无权限，忽略 */ }
       }
       if (cachedJson !== null) {
         const { data: payload, dropped } = isSubsSchema ? filterMalformedSubs(cachedJson) : { data: cachedJson, dropped: 0 }
@@ -166,10 +168,18 @@ export class AssrtClient {
         // 原子写缓存：tmp + rename（同 zimukuSession.ts 的模式——进程崩溃留下半截 JSON 时，
         // 下次 cache-hit 的 JSON.parse 会抛 SyntaxError，24h TTL 内每次都炸。tmp+rename 保证
         // 要么完整写入要么不存在，不会留下半截文件）。
+        // ⚠️ 必须独立 try/catch：缓存写失败（磁盘满/EACCES/并发 rename 输家的 ENOENT）落进外层
+        // catch 会被当成"网络层错误"→ 2s 后重试一次真实 ASSRT 调用，白烧 5/min 的付费配额。
+        // tmp 名带 pid+时间戳保证并发唯一（CLI 与 daemon 可能同时查同一 endpoint）。
         if (cacheTtlMs !== false) {
-          const tmpFile = `${cacheFile}.tmp`
-          writeFileSync(tmpFile, JSON.stringify(payload))
-          renameSync(tmpFile, cacheFile)
+          const tmpFile = `${cacheFile}.${process.pid}.${Date.now()}.tmp`
+          try {
+            writeFileSync(tmpFile, JSON.stringify(payload))
+            renameSync(tmpFile, cacheFile)
+          } catch {
+            // 缓存写失败不影响本次结果（下次自然 miss 重取）；顺手清 tmp 残留
+            try { unlinkSync(tmpFile) } catch { /* 已不存在或无权限，忽略 */ }
+          }
         }
         return schema.parse(payload)
       } catch (e) {

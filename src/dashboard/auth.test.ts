@@ -4,7 +4,7 @@ import { hashPassword, verifyPassword, SessionStore, LoginThrottle, AuthService 
 import { openDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 
-describe('hashPassword/verifyPassword（scrypt，盐:哈希 hex 格式）', () => {
+describe('hashPassword/verifyPassword（scrypt，盐:哈希 hex 格式）', { timeout: 30_000 }, () => {
   it('同一密码两次哈希产出不同串（随机盐），但都能通过校验', () => {
     const h1 = hashPassword('correct horse')
     const h2 = hashPassword('correct horse')
@@ -79,7 +79,72 @@ describe('LoginThrottle（5 次失败/分钟/来源，只计失败——审计 #
   })
 })
 
-describe('login 只对失败计入节流（审计 #3：成功登录不消耗预算）', () => {
+// 审计三轮 R3：IPv6 归一是这个限流的核心防线——攻击者在同一 /64 内有 2^64 个地址可轮换，
+// 不归一等于没有限流。这一组把"同一 /64 必须共享计数"和"变体写法必须落同一桶"锁死。
+describe('LoginThrottle IPv6 /64 归一（防地址轮换绕过）', () => {
+  const NOW = 1_700_000_000_000
+  const exhaust = (th: LoginThrottle, key: string) => {
+    for (let i = 0; i < 5; i++) th.recordFailure(key, NOW)
+  }
+
+  it('同一 /64 内的不同地址共享计数（压缩短形式也必须归一）', () => {
+    const th = new LoginThrottle()
+    exhaust(th, '2001:db8::1')
+    // 同 /64 的另一个地址：必须已被限流（否则轮换即绕过）
+    expect(th.check('2001:db8::2', NOW)).toBe(false)
+    expect(th.check('2001:db8::dead:beef:cafe:1', NOW)).toBe(false)
+  })
+
+  it('大小写与前导零变体落进同一桶（0DB8 / 0db8 / db8 是同一个 /64）', () => {
+    const th = new LoginThrottle()
+    exhaust(th, '2001:0DB8::1')
+    expect(th.check('2001:db8::9', NOW)).toBe(false)
+    expect(th.check('2001:0db8:0000:0000:0000:0000:0000:0009', NOW)).toBe(false)
+  })
+
+  it('不同 /64 互不影响（不误伤邻居）', () => {
+    const th = new LoginThrottle()
+    exhaust(th, '2001:db8:1111:2222::1')
+    expect(th.check('2001:db8:1111:3333::1', NOW)).toBe(true)
+    // 中间压缩形式不得错位成别人的前缀
+    expect(th.check('2001:db8::cccc:dddd:eeee:ffff', NOW)).toBe(true)
+  })
+
+  it('IPv4-mapped（::ffff:1.2.3.4）与裸 IPv4 落同一桶（dual-stack 同一客户端）', () => {
+    const th = new LoginThrottle()
+    exhaust(th, '::ffff:1.2.3.4')
+    expect(th.check('1.2.3.4', NOW)).toBe(false)
+    expect(th.check('1.2.3.5', NOW)).toBe(true)
+  })
+
+  it('畸形串不抛错（段数超 8 的 Array(负数) 曾会 RangeError）', () => {
+    const th = new LoginThrottle()
+    for (const bad of ['1:2:3:4:5:6:7:8:9::', '::a::b', 'not-an-ip', '', 'localhost:8099']) {
+      expect(() => th.recordFailure(bad, NOW)).not.toThrow()
+      expect(() => th.check(bad, NOW)).not.toThrow()
+    }
+  })
+
+  it('::1 本机地址稳定归一（同一 key 反复命中同一桶）', () => {
+    const th = new LoginThrottle()
+    exhaust(th, '::1')
+    expect(th.check('::1', NOW)).toBe(false)
+    expect(th.check('0:0:0:0:0:0:0:1', NOW)).toBe(false)
+  })
+
+  it('窗口过期条目被惰性清扫（防 Map 无界增长）', () => {
+    const th = new LoginThrottle()
+    for (let i = 0; i < 50; i++) th.recordFailure(`2001:db8:${i.toString(16)}::1`, NOW)
+    // 窗口滚过后再记一次：sweep 应清掉全部过期条目，旧 key 回到放行态
+    th.recordFailure('2001:db8:ffff::1', NOW + 61_000)
+    expect(th.check('2001:db8:0::1', NOW + 61_000)).toBe(true)
+  })
+})
+
+// 审计三轮 R3：这一组每个用例都要跑数次 scrypt（KEY_BYTES=64，设计上就慢），全量并发下
+// 与其他测试文件抢 CPU 会突破 vitest 默认 5s 超时（实测偶发 6s+ 失败，单文件跑恒过）。
+// 显式放宽到 30s：这不是掩盖慢，而是承认"密码哈希本该慢"这一安全属性与默认超时的冲突。
+describe('login 只对失败计入节流（审计 #3：成功登录不消耗预算）', { timeout: 30_000 }, () => {
   const NOW = 1_700_000_000_000
   it('连续 10 次成功登录全部放行——成功不消耗节流预算', () => {
     const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
@@ -96,7 +161,7 @@ describe('login 只对失败计入节流（审计 #3：成功登录不消耗预�
   })
 })
 
-describe('AuthService（settings 三键：auth_username/auth_password_hash/auth_api_key）', () => {
+describe('AuthService（settings 三键：auth_username/auth_password_hash/auth_api_key）', { timeout: 30_000 }, () => {
   const NOW = 1_700_000_000_000
   function mkAuth() {
     return new AuthService(new SettingsRepo(openDb(':memory:')))
@@ -170,7 +235,7 @@ describe('verifyApiKey 多字节边界（主控亲核补）', () => {
   })
 })
 
-describe('A1 硬化（Task 14′：长度阈值 10 + setup 原子性）', () => {
+describe('A1 硬化（Task 14′：长度阈值 10 + setup 原子性）', { timeout: 30_000 }, () => {
   it('MIN_PASSWORD_LEN=10：9 字符拒绝，10 字符通过', () => {
     const a1 = new AuthService(new SettingsRepo(openDb(':memory:')))
     expect(a1.setup('admin', 'x'.repeat(9), 1).ok).toBe(false)
@@ -196,7 +261,7 @@ describe('A1 硬化（Task 14′：长度阈值 10 + setup 原子性）', () => 
   })
 })
 
-describe('AuthService.reset（A4 Task 15：诚实找回密码的后端）', () => {
+describe('AuthService.reset（A4 Task 15：诚实找回密码的后端）', { timeout: 30_000 }, () => {
   it('reset 后回到未初始化态，旧密码/apiKey 全失效', () => {
     const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
     const r = auth.setup('admin', 'hunter2222', 1)
@@ -211,7 +276,7 @@ describe('AuthService.reset（A4 Task 15：诚实找回密码的后端）', () =
   })
 })
 
-describe('改密撤销现有会话（审计 MEDIUM #1：凭据轮换必须让被盗会话失效）', () => {
+describe('改密撤销现有会话（审计 MEDIUM #1：凭据轮换必须让被盗会话失效）', { timeout: 30_000 }, () => {
   const NOW = 1_700_000_000_000
   it('changePassword 成功后，此前签发的所有会话 token 全部失效', () => {
     const auth = new AuthService(new SettingsRepo(openDb(':memory:')))

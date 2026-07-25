@@ -182,6 +182,39 @@ describe('makeFetchSourceSub — 下载物解包(zip/raw)', () => {
     const fetch = makeFetchSourceSub(baseDeps({ download: async () => dl('[Script Info]\nTitle: x', 'x.ass') }))
     expect(await fetch('/media/x.mkv')).toBeNull()
   })
+
+  // 审计三轮 R3：zip 上限（32MB，与 subtitleWriter 同一防线）此前零测试。灰色字幕站的 zip
+  // 可能声明极大解压体积（炸弹），这里锁"声明超限 → 跳过该候选 → 落到下一个候选"的 fail-soft 语义。
+  it('zip 条目声明解压体积超 32MB(炸弹) → 跳过该候选并落到下一个候选', async () => {
+    const bomb = zipOf({ 'bomb.srt': SRT })
+    // 篡改 local file header(+22) 与 central directory(+24) 的 uncompressed-size 字段为 64MB
+    const FAKE = 64 * 1024 * 1024
+    for (let i = 0; i + 4 <= bomb.length; i++) {
+      if (bomb[i] === 0x50 && bomb[i + 1] === 0x4b) {
+        if (bomb[i + 2] === 0x03 && bomb[i + 3] === 0x04 && i + 26 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 22)
+        if (bomb[i + 2] === 0x01 && bomb[i + 3] === 0x02 && i + 28 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 24)
+      }
+    }
+    const fetch = makeFetchSourceSub(baseDeps({
+      search: async () => [cand('zimuku', 'bomb'), cand('opensubtitles', 'good')],
+      resolve: async (ref) => ({ url: `https://${ref.providerId}` }),
+      download: async (url) => url === 'https://bomb' ? dl(bomb, 'bomb.zip') : dl(SRT, 'good.srt'),
+    }))
+    expect(await fetch('/media/x.mkv')).toEqual({ srtText: SRT, sourceRef: 'opensubtitles:good' })
+  })
+
+  it('唯一候选是炸弹 zip → 全败 null(绝不抛)', async () => {
+    const bomb = zipOf({ 'bomb.srt': SRT })
+    const FAKE = 64 * 1024 * 1024
+    for (let i = 0; i + 4 <= bomb.length; i++) {
+      if (bomb[i] === 0x50 && bomb[i + 1] === 0x4b) {
+        if (bomb[i + 2] === 0x03 && bomb[i + 3] === 0x04 && i + 26 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 22)
+        if (bomb[i + 2] === 0x01 && bomb[i + 3] === 0x02 && i + 28 <= bomb.length) bomb.writeUInt32LE(FAKE, i + 24)
+      }
+    }
+    const fetch = makeFetchSourceSub(baseDeps({ download: async () => dl(bomb, 'bomb.zip') }))
+    expect(await fetch('/media/x.mkv')).toBeNull()
+  })
 })
 
 describe('makeDbLocate — 真 SQL 定位(path 精确匹配)', () => {

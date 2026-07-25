@@ -18,7 +18,18 @@ type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'searc
 
 let server: Server | undefined
 let db: ScoutDb
-afterEach(() => server?.close())
+// 审计三轮 R3：原来是 `afterEach(() => server?.close())`——不 await、也不断开 keep-alive
+// 连接。close() 只停止接受新连接，已建立的 keep-alive 连接会让 server 迟迟不真正关闭，上一个
+// 用例的残留连接与下一个用例的新 server 在全量并发下互相干扰（实测：parked/claim 两个用例在
+// `npm test` 下偶发失败，单文件跑 100% 通过，`--no-file-parallelism` 也全绿）。
+// 这里 await 'close' 事件并显式 closeAllConnections()，把每个用例的服务端状态彻底隔离。
+afterEach(async () => {
+  const s = server
+  server = undefined
+  if (!s) return
+  s.closeAllConnections?.() // Node 18.2+：断开 keep-alive，否则 close 等到连接自然超时
+  await new Promise<void>((resolve) => s.close(() => resolve()))
+})
 
 const NOW = 1_700_000_000_000
 
@@ -438,6 +449,39 @@ describe('startDashboard (v2)', () => {
     })
 
     describe('PUT /api/v2/settings', () => {
+      // 审计三轮 R3：readJsonBodyOrFail 的四条 body 边界此前零测试（413 防线从未被验证，
+      // 且 `null` body 曾因与"失败哨兵"撞车导致响应永不结束、请求挂到 requestTimeout）。
+      // 413 用例单独拆出并放宽超时：1MB+ 的请求体在全量并发下传输本身就慢（曾因 5s 默认超时 flaky）。
+      it('body 边界：非法 JSON→400、字面 null→400、空 body→视作 {}', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const put = (body: string) => fetch(`${base}/api/v2/settings?token=tok`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' }, body,
+        })
+
+        const bad = await put('{not json')
+        expect(bad.status).toBe(400)
+        expect(await bad.json()).toEqual({ error: 'invalid JSON body' })
+
+        // 字面 null 是合法 JSON：必须落到正常校验路径（400），而不是无人应答
+        const nullBody = await put('null')
+        expect(nullBody.status).toBe(400)
+
+        // 空 body 视作 {}：白名单校验通过、回显全量 settings
+        const empty = await put('')
+        expect(empty.status).toBe(200)
+      })
+
+      it('body 超 1MB → 413（不是 500，也绝不挂住连接）', { timeout: 20_000 }, async () => {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const huge = await fetch(`${base}/api/v2/settings?token=tok`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ target_languages: 'z'.repeat(1_000_100) }),
+        })
+        expect(huge.status).toBe(413)
+        expect(await huge.json()).toEqual({ error: 'payload too large' })
+      })
+
       it('写入白名单键，回显全量 settings', async () => {
         const { base } = await start(distWith('<!doctype html>'), 'tok')
         const res = await fetch(`${base}/api/v2/settings?token=tok`, {

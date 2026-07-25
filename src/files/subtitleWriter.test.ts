@@ -98,6 +98,31 @@ describe('writeSubtitle', () => {
     expect(existsSync(r.path)).toBe(true)
   })
 
+  // 审计三轮 R3：zip 炸弹双闸（声明值 + 解压后实际值）此前零测试——这是面向灰色字幕站
+  // （zimuku/subhd）的关键防线，被删掉也不会有测试变红。这里在真实 zip 的中央目录里把
+  // "解压后大小"字段改写成 64MB（数据仍然极小），锁住"声明超限即拒绝"的第一道闸。
+  it('rejects a zip entry whose declared uncompressed size exceeds the 32MB cap (zip bomb 第一道闸)', async () => {
+    const zip = new AdmZip()
+    zip.addFile('bomb.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\ntiny\n'))
+    const buf = zip.toBuffer()
+    // 篡改所有 local file header (PK\x03\x04) 与 central directory (PK\x01\x02) 里的
+    // uncompressed-size 字段（分别位于各自签名后 +22 / +24 偏移），伪装成 64MB。
+    const FAKE = 64 * 1024 * 1024
+    for (let i = 0; i + 4 <= buf.length; i++) {
+      if (buf[i] === 0x50 && buf[i + 1] === 0x4b) {
+        if (buf[i + 2] === 0x03 && buf[i + 3] === 0x04 && i + 26 <= buf.length) buf.writeUInt32LE(FAKE, i + 22)
+        if (buf[i + 2] === 0x01 && buf[i + 3] === 0x02 && i + 28 <= buf.length) buf.writeUInt32LE(FAKE, i + 24)
+      }
+    }
+    await expect(writeSubtitle({
+      artifact: buf,
+      artifactFilename: 'pack.zip',
+      videoFilename: 'Movie.mkv',
+      langTag: 'zh-Hans',
+      outDir: outDir(),
+    })).rejects.toThrow(/zip bomb/)
+  })
+
   it('extracts the requested file from a zip by name', async () => {
     const zip = new AdmZip()
     zip.addFile('wrong.ass', Buffer.from('WRONG'))

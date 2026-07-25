@@ -87,10 +87,15 @@ export class LoginThrottle {
   private counts = new Map<string, { windowStart: number; count: number }>()
   constructor(private limit = 5, private windowMs = 60_000) {}
 
-  /** IPv6 地址归一化为 /64 前缀（同一子网视为同一来源）。IPv4 和域名原样返回。
-   *  处理压缩形式 :: 展开、IPv4-mapped 归一、非标准形状原样返回。 */
+  /** IPv6 地址归一化为 /64 桶键（同一子网视为同一来源，防攻击者在 /64 内轮换地址绕过限流）。
+   *  IPv4 与非 IP 串原样返回。
+   *  三个必须做对的点（缺一即为可绕过的假防线）：
+   *   ① `::` 压缩必须展开补零——否则 `2001:db8::1` 只切出 3 段而不归一，轮换即绕过；
+   *   ② 每段必须转数值再格式化——否则 `2001:DB8::1` / `2001:0db8::1` / `2001:db8::1`
+   *      是同一个 /64 却落进三个桶（大小写/前导零变体即绕过）；
+   *   ③ 段数异常（含 h+t>8 的畸形串）原样返回，且 Array 长度不得为负（RangeError）。 */
   private normalizeKey(key: string): string {
-    // IPv4-mapped IPv6 (::ffff:127.0.0.1) → IPv4 桶
+    // IPv4-mapped IPv6（点分十进制形态：::ffff:127.0.0.1）→ 归入 IPv4 桶
     const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(key)
     if (mapped) return mapped[1]
 
@@ -100,11 +105,13 @@ export class LoginThrottle {
     // 展开 :: 压缩形式为完整 8 段
     let parts: string[]
     if (key.includes('::')) {
-      const [head, tail] = key.split('::')
-      const h = head ? head.split(':') : []
-      const t = tail ? tail.split(':') : []
-      // :: 代表若干个 0 段，补齐到 8 段
-      parts = [...h, ...Array(8 - h.length - t.length).fill('0'), ...t]
+      const halves = key.split('::')
+      if (halves.length !== 2) return key // 多个 :: 是非法 IPv6
+      const h = halves[0] ? halves[0].split(':') : []
+      const t = halves[1] ? halves[1].split(':') : []
+      const fill = 8 - h.length - t.length
+      if (fill < 0) return key // 畸形串（段数已超 8）——绝不让 Array(负数) 抛 RangeError
+      parts = [...h, ...Array(fill).fill('0'), ...t]
     } else {
       parts = key.split(':')
     }
@@ -112,8 +119,13 @@ export class LoginThrottle {
     // 非标准形状（段数 != 8）原样返回
     if (parts.length !== 8) return key
 
-    // 取前 4 段作为 /64 前缀
-    return parts.slice(0, 4).join(':') + '::/64'
+    // 前 4 段转数值再格式化：消除大小写与前导零变体（0DB8 / 0db8 / db8 → db8）
+    const prefix: string[] = []
+    for (const seg of parts.slice(0, 4)) {
+      if (!/^[0-9a-fA-F]{1,4}$/.test(seg)) return key // 非法段（如内嵌 IPv4 尾）→ 原样返回
+      prefix.push(parseInt(seg, 16).toString(16))
+    }
+    return prefix.join(':') + '::/64'
   }
 
   /** 惰性清扫：删除所有已过期的窗口条目。 */

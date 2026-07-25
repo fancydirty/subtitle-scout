@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { traceBus, makeRunTracer, type TraceEvent } from './traceBus.js'
+import { traceBus, makeRunTracer, MAX_BUFFERS, type TraceEvent } from './traceBus.js'
 
 // 每个用例用独立 runKey（例如 crypto.randomUUID 前缀）避免跨用例串扰——traceBus 是进程级单例，
 // 测试跑在同一进程内，共享同一份 module-level Map。
@@ -189,5 +189,30 @@ describe('traceBus', () => {
       unsubBad()
       unsubGood()
     }
+  })
+
+  // 审计三轮 R3：键数量上限的 LRU 淘汰此前零测试——退化成 FIFO（活跃 run 被误淘汰、
+  // 崩溃 run 的尸体反而存活）也没人发现。这两条把 evict 与 recency 刷新语义钉住。
+  describe(`键数量上限 MAX_BUFFERS=${MAX_BUFFERS}（LRU 淘汰）`, () => {
+    it('超过上限时最久未写入的键被淘汰（snapshot 拿到空数组）', () => {
+      const victim = freshKey('lru-victim')
+      traceBus.publish(ev(victim, 0))
+      // 灌满上限：victim 是此刻最久未写入的键之一，必被挤掉
+      for (let i = 0; i < MAX_BUFFERS; i++) traceBus.publish(ev(freshKey(`lru-flood-${i}`), 0))
+      expect(traceBus.snapshot(victim)).toEqual([])
+    })
+
+    it('活跃键（持续写入）不被淘汰——真 LRU 而非 FIFO', () => {
+      const active = freshKey('lru-active')
+      traceBus.publish(ev(active, 0))
+      // 边灌边刷新 active 的 recency：FIFO 实现会把 active 挤掉，LRU 不会
+      for (let i = 0; i < MAX_BUFFERS; i++) {
+        traceBus.publish(ev(freshKey(`lru-mix-${i}`), 0))
+        if (i % 10 === 0) traceBus.publish(ev(active, i + 1))
+      }
+      const snap = traceBus.snapshot(active)
+      expect(snap.length).toBeGreaterThan(0)
+      expect(snap.every((e) => e.runKey === active)).toBe(true)
+    })
   })
 })

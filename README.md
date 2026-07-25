@@ -204,7 +204,7 @@ Title (Year)/Season NN/Title SNNENN.ext
 
 | 命令 | 说明 |
 |------|------|
-| `doctor` | 检查接线（ASSRT / OpenSubtitles / zimuku / LLM / 媒体根目录 / 挂载能力 / 数据库） |
+| `doctor` | 检查接线（TMDB / ASSRT / OpenSubtitles / zimuku / LLM / 媒体根目录 / 挂载能力 / 数据库 / 卡住任务）。注：subhd 与 TRANSLATE_* 目前不在探测范围内 |
 | `watch` | 常驻模式（daemon）：自扫描发现 + 编排调度 + 找字幕/整理/翻译 worker |
 | `reconcile-all` | 全仓校验：一次性扫描全库，按当前规则重新判定并派发缺口任务（同监控页"全仓校验"按钮） |
 | `translate-item <videoPath>` | 对单个视频跑 AI 翻译（agent 工作台：选源 → 术语表 → 逐行译 → 质量闸 → 装盘） |
@@ -258,6 +258,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media
 | `DASHBOARD_TOKEN` | **legacy**：老部署的访问 token，等价一个 API key。新部署建议留空，改用首启向导设账号密码 | 空 |
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
 | `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
+| `REALIGN_ARCHIVE_ROOT` | 整理（realign）归档根——旧目录搬到这里可回滚。默认库根上一级；**容器默认挂载下必须显式配**（默认值落在 overlay 层，跨设备 rename 会让整理放弃），配方见 `.env.example` | 空（=库根上一级） |
 | `LLM_EXTRA_BODY` | （高级）强制注入请求体的 JSON，通常无需配置 | 空 |
 | `FFPROBE_PATH` | 内嵌字幕探针用的 ffprobe 二进制路径；官方镜像已内置（apt 装的 ffmpeg），无需配置——只有源码直装且 PATH 上没有 ffmpeg 时才需要手动指定，探测退化为仅靠 sidecar 字幕文件判定 | 空（回退到 `ffprobe-static`） |
 

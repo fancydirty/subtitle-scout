@@ -36,6 +36,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # 与主 compose 同款健康检查（⚠️ $$ 转义：compose 会吞掉 ${...}，见 docker-compose.yml 注释）
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');const port=process.env.DASHBOARD_PORT||8099;http.get(`http://localhost:$${port}/api/v2/auth/status`,(res)=>{process.exit(res.statusCode===200||res.statusCode===401?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     ports:
       - "${DASHBOARD_PORT:-8099}:${DASHBOARD_PORT:-8099}"
     extra_hosts:
@@ -70,6 +77,10 @@ services:
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}
       LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}
       SKIP_CHINESE_ORIGIN: ${SKIP_CHINESE_ORIGIN:-}
+      # ffprobe 路径（镜像已内置 ffmpeg，通常无需配置；源码直装且 PATH 无 ffmpeg 时才用）
+      FFPROBE_PATH: ${FFPROBE_PATH:-}
+      # 整理归档根（默认库根上一级；容器挂载下建议显式配，见 .env.example）
+      REALIGN_ARCHIVE_ROOT: ${REALIGN_ARCHIVE_ROOT:-}
       # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)
       MEDIA_ROOTS: ${MEDIA_ROOTS:-/media}
       SUBTITLE_SCOUT_CACHE_DIR: /cache

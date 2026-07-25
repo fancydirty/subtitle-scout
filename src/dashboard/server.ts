@@ -76,16 +76,27 @@ function sessionCookie(token: string): string {
 }
 
 /** JSON body 读取：解析失败返回 undefined（调用方 400），空 body 视作 {}。
- *  大小上限 1MB——超限抛 413（防内存 DoS，已鉴权管理员才能打到这些端点）。 */
+ *  大小上限 1MB——超限抛 'payload too large'（调用方转 413，防内存 DoS）。
+ *  收 Buffer 再一次性 decode：逐 chunk `raw += chunk` 会把跨 chunk 边界的多字节 UTF-8
+ *  字符切成 U+FFFD（含 CJK 的大 body 偶发 400），且 String.length 按 UTF-16 code unit
+ *  计数会让实际字节上限虚高约 3 倍（防线比声称的宽）。
+ *  ⚠️ 超限时**只停止累积、不 destroy socket**：req.destroy() 会连带毁掉响应通道，
+ *  客户端拿到的是连接重置（fetch failed）而不是 413，反而更难排查。累积上限已经封住
+ *  内存增长，剩余入站字节由 Node 在 res.end() 后自行丢弃。 */
 async function readJsonBody(req: import('node:http').IncomingMessage): Promise<unknown> {
-  const MAX_BODY_SIZE = 1_000_000 // 1MB
-  let raw = ''
+  const MAX_BODY_BYTES = 1_000_000 // 1MB（按字节，不按字符）
+  const chunks: Buffer[] = []
+  let total = 0
   for await (const chunk of req) {
-    raw += chunk
-    if (raw.length > MAX_BODY_SIZE) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string)
+    total += buf.length
+    if (total > MAX_BODY_BYTES) {
+      chunks.length = 0 // 立即释放已累积的内存，不再继续收
       throw new Error('payload too large')
     }
+    chunks.push(buf)
   }
+  const raw = Buffer.concat(chunks).toString('utf8')
   try {
     return JSON.parse(raw || '{}')
   } catch {
@@ -93,24 +104,30 @@ async function readJsonBody(req: import('node:http').IncomingMessage): Promise<u
   }
 }
 
-/** 辅助：读取 JSON body 并处理 413 错误。成功返回 body，失败直接写响应并返回 null。 */
+/** 哨兵：readJsonBodyOrFail 已经写完响应（400/413），调用方必须直接 return。
+ *  不能用 null 表示"已失败"——`JSON.parse('null')` 是合法的 JSON body，会与失败态撞车，
+ *  导致调用方 `if (body === null) return` 直接返回却没人写过响应，请求永久挂到 requestTimeout。 */
+const BODY_FAILED = Symbol('body-failed')
+
+/** 辅助：读取 JSON body，统一 400（非法 JSON）/413（超 1MB）响应。
+ *  失败时**已写完响应**并返回 BODY_FAILED 哨兵；成功返回解析结果（可能是合法的 null）。 */
 async function readJsonBodyOrFail(
   req: import('node:http').IncomingMessage,
   res: import('node:http').ServerResponse,
-): Promise<unknown | null> {
+): Promise<unknown | typeof BODY_FAILED> {
   try {
     const body = await readJsonBody(req)
     if (body === undefined) {
       res.writeHead(400, JSON_CT)
       res.end(JSON.stringify({ error: 'invalid JSON body' }))
-      return null
+      return BODY_FAILED
     }
     return body
   } catch (e) {
     if (e instanceof Error && e.message === 'payload too large') {
       res.writeHead(413, JSON_CT)
       res.end(JSON.stringify({ error: 'payload too large' }))
-      return null
+      return BODY_FAILED
     }
     throw e
   }
@@ -194,16 +211,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         if (rawPath === '/api/v2/auth/setup') {
           if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
           if (auth.isInitialized()) { res.writeHead(403, JSON_CT); res.end(JSON.stringify({ error: 'already initialized' })); return }
-          let body: unknown
-          try {
-            body = await readJsonBody(req)
-          } catch (e) {
-            if (e instanceof Error && e.message === 'payload too large') {
-              res.writeHead(413, JSON_CT); res.end(JSON.stringify({ error: 'payload too large' })); return
-            }
-            throw e
-          }
-          if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
+          const body = await readJsonBodyOrFail(req, res)
+          if (body === BODY_FAILED) return
           const b = (body ?? {}) as { username?: unknown; password?: unknown }
           const r = auth.setup(
             typeof b.username === 'string' ? b.username : '',
@@ -219,16 +228,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
 
         if (rawPath === '/api/v2/auth/login') {
           if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
-          let body: unknown
-          try {
-            body = await readJsonBody(req)
-          } catch (e) {
-            if (e instanceof Error && e.message === 'payload too large') {
-              res.writeHead(413, JSON_CT); res.end(JSON.stringify({ error: 'payload too large' })); return
-            }
-            throw e
-          }
-          if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
+          const body = await readJsonBodyOrFail(req, res)
+          if (body === BODY_FAILED) return
           const b = (body ?? {}) as { username?: unknown; password?: unknown }
           const r = auth.login(
             typeof b.username === 'string' ? b.username : '',
@@ -268,16 +269,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         }
         if (rawPath === '/api/v2/auth/change-password') {
           if (req.method !== 'POST') { res.writeHead(405, JSON_CT); res.end(JSON.stringify({ error: 'method not allowed' })); return }
-          let body: unknown
-          try {
-            body = await readJsonBody(req)
-          } catch (e) {
-            if (e instanceof Error && e.message === 'payload too large') {
-              res.writeHead(413, JSON_CT); res.end(JSON.stringify({ error: 'payload too large' })); return
-            }
-            throw e
-          }
-          if (body === undefined) { res.writeHead(400, JSON_CT); res.end(JSON.stringify({ error: 'invalid JSON body' })); return }
+          const body = await readJsonBodyOrFail(req, res)
+          if (body === BODY_FAILED) return
           const b = (body ?? {}) as { oldPassword?: unknown; newPassword?: unknown }
           const r = auth.changePassword(
             typeof b.oldPassword === 'string' ? b.oldPassword : '',
@@ -346,7 +339,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         const body = await readJsonBodyOrFail(req, res)
-        if (body === null) return
+        if (body === BODY_FAILED) return
         const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown; season?: unknown }
         // P7 disambiguation 补丁：season 未传/null → undefined/null（claimParked 视作"未指定"，
         // 原有行为）；传了但不是 number（如字符串/布尔）→ NaN，claimParked 的
@@ -382,7 +375,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         const body = await readJsonBodyOrFail(req, res)
-        if (body === null) return
+        if (body === BODY_FAILED) return
         const b = (body ?? {}) as { path?: unknown }
         const result = unexclude(db, { path: typeof b.path === 'string' ? b.path : '' })
         // 翻案成功后踢一脚扫描——豁免已写库、park 行已退，重扫让文件立即重回识别流（同 claim
@@ -409,7 +402,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         const body = await readJsonBodyOrFail(req, res)
-        if (body === null) return
+        if (body === BODY_FAILED) return
         const result = updateSettings(settingsRepo, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.settings : { error: result.error }))
@@ -450,7 +443,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         }
         // POST
         const body = await readJsonBodyOrFail(req, res)
-        if (body === null) return
+        if (body === BODY_FAILED) return
         const b = (body ?? {}) as { path?: unknown }
         const result = addMediaRoot(settingsRepo, b.path, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
@@ -474,7 +467,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         const body = await readJsonBodyOrFail(req, res)
-        if (body === null) return
+        if (body === BODY_FAILED) return
         const result = redispatch(jobs, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.outcome : { error: result.error }))

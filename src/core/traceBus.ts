@@ -23,8 +23,8 @@ export interface TraceEvent {
 const RING_CAP = 512
 
 /** runKey 键数量上限——崩溃 run 的缓冲会永久残留（snapshot 未被调用），长期运行下缓慢累积。
- *  超过此上限时淘汰最久未写入的键（LRU 语义）。 */
-const MAX_BUFFERS = 1000
+ *  超过此上限时淘汰最久未写入的键（LRU 语义）。导出供测试锁定淘汰行为。 */
+export const MAX_BUFFERS = 1000
 
 // 进程级单例状态：一个 runKey 一条环形缓冲；订阅者集合不分 runKey（过滤归客户端，见模块头注）。
 const buffers = new Map<string, TraceEvent[]>()

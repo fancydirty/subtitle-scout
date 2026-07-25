@@ -4,6 +4,7 @@ on:
     branches: [main]
   pull_request:
 jobs:
+  # 后端：src/ 的类型检查 + 单测
   test:
     runs-on: ubuntu-latest
     steps:
@@ -13,3 +14,22 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run
+
+  # 前端：web/ 有独立 package.json + vitest，根 tsconfig 的 include 只有 ["src"]——
+  # 不单独起一个 job，web 的 299 个测试和 TypeScript 错误永远进不了 CI（审计三轮 R3 发现：
+  # 这些测试"上次在 CI 里运行的时间从未存在过"）。
+  test-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npx tsc --noEmit
+        working-directory: web
+      - run: npx vitest run
+        working-directory: web
