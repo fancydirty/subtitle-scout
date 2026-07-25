@@ -46,7 +46,7 @@ export function runDbMaintenance(
       backupPath = join(dir, `scout-${day}.db`)
       // VACUUM INTO 目标须不存在(同天重跑先删旧档)
       try { unlinkSync(backupPath) } catch { /* 不存在 */ }
-      db.exec(`VACUUM INTO '${backupPath}'`)
+      db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`)
       state.lastBackupAt = now
       // 保留最近 BACKUP_RETAIN 份
       const files = readdirSync(dir).filter((f) => /^scout-\d{8}\.db$/.test(f)).sort()

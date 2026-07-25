@@ -189,10 +189,14 @@ export async function install(
  *  ENOENT,命中下面的 catch 被当成"清理失败"跳过,断链就永久堆在这里出不去。lstatSync
  *  只看链接本身,断链也能正常 stat 到,进而被 rmSync 删掉。同理,rmSync 对符号链接(哪怕
  *  指向目录)只解链接本身,不会顺着链接递归删目标——指向的真实目录不受影响。 */
-export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>): number {
+export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>, bootTimeMs?: number): number {
   let cleaned = 0
   // P2.4(复审 Important-1):translate 工作台 `.subtitle-translate` 与 find 的 `.subtitle-staging`
   // 同法清扫——daemon translate 每 job 落 `<root>/.subtitle-translate/<jobId>/`,无清扫则无界堆积。
+  // R6-9 修复：跳过 mtime 新于本次进程启动时间的条目——daemon + 手动 CLI 并发场景下，
+  // watch 重启时若一个手动 translate CLI（一场可跑数小时）正在跑，boot GC 会把它的工作台
+  // 整个 rm 掉（运行中的任务工作台消失、LLM 配额白烧）。
+  const bootTime = bootTimeMs ?? Date.now()
   for (const root of mediaRoots) {
     for (const dirname of [STAGING_DIRNAME, '.subtitle-translate']) {
       const stagingRoot = join(root, dirname)
@@ -207,7 +211,9 @@ export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>): numb
         if (name === '.ignore' || activeJobIds.has(name)) continue
         const full = join(stagingRoot, name)
         try {
-          lstatSync(full) // 存在性探测,不跟随链接;断链在这里也不会抛
+          const stat = lstatSync(full) // 存在性探测,不跟随链接;断链在这里也不会抛
+          // R6-9：mtime 新于进程启动时间 → 可能是并发 CLI 正在用，跳过
+          if (stat.mtimeMs > bootTime) continue
           rmSync(full, { recursive: true, force: true })
           cleaned++
         } catch {

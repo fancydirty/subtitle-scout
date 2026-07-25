@@ -555,6 +555,9 @@ const DEPLOY_NONSECRET_KEYS = [
   // AI 翻译部署门三件套之非机密两件 + 判官/超时旋钮（设置页"部署门状态行"的数据源）
   'TRANSLATE_BASE_URL', 'TRANSLATE_MODEL', 'TRANSLATE_CRITIC', 'TRANSLATE_CRITIC_MODEL',
   'TRANSLATE_TIMEOUT_MS', 'SUBHD_ENABLED',
+  // R6-8 修复：TRUST_PROXY（登录限流反代部署下的真实客户端 IP 来源）——部署页可见，
+  // 避免"配了但不知道生没生效"的黑盒（R6 子代理 D18 指出漏收）。
+  'TRUST_PROXY',
 ] as const
 
 export interface DeploySecretDTO { present: boolean; tail: string }

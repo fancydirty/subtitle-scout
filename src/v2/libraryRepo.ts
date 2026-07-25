@@ -1095,7 +1095,10 @@ export class LibraryRepo {
   // ---- P2：磁盘真相移除（T3 摄取层消费：文件从盘上消失 → 行退役） ----
 
   /** 按 path 删 episode 行 + 关联 subtitles（subtitles 未声明外键到 episodes(id)，同属一份账目，
-   *  与 deleteSeriesRows 同样理由一并清理）。路径不存在时是空操作。 */
+   *  与 deleteSeriesRows 同样理由一并清理）。路径不存在时是空操作。
+   *  R6-4 修复：也要删 item_files——deleteSeriesRows 的头注释把"owner 删了但 item_files 留孤儿"
+   *  定性为 SEVERE 数据腐蚀（ingest B3-3 短路命中孤儿 path → ownerPath=null → continue → 盘上
+   *  有视频有字幕却永久不再识别，非自愈），本方法与 deleteSeriesRows 同形，漏了同级清理。 */
   deleteEpisodeByPath(path: string): void {
     const tx = this.db.transaction(() => {
       const row = this.db.prepare(`SELECT id FROM episodes WHERE path = ?`).get(path) as
@@ -1103,12 +1106,14 @@ export class LibraryRepo {
         | undefined
       if (!row) return
       this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`).run(row.id)
+      this.db.prepare(`DELETE FROM item_files WHERE item_id = ?`).run(row.id)
       this.db.prepare(`DELETE FROM episodes WHERE path = ?`).run(path)
     })
     tx()
   }
 
-  /** 按 path 删 movie 行 + 关联 subtitles（同 deleteEpisodeByPath）。 */
+  /** 按 path 删 movie 行 + 关联 subtitles（同 deleteEpisodeByPath）。
+   *  R6-4 修复：也要删 item_files（同 deleteEpisodeByPath 的理由）。 */
   deleteMovieByPath(path: string): void {
     const tx = this.db.transaction(() => {
       const row = this.db.prepare(`SELECT id FROM movies WHERE path = ?`).get(path) as
@@ -1116,6 +1121,7 @@ export class LibraryRepo {
         | undefined
       if (!row) return
       this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`).run(row.id)
+      this.db.prepare(`DELETE FROM item_files WHERE item_id = ?`).run(row.id)
       this.db.prepare(`DELETE FROM movies WHERE path = ?`).run(path)
     })
     tx()

@@ -110,7 +110,10 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
         }))
       }
       const files = deps.roots.flatMap(root => walkVideoFiles(root))
-      walkCache = { at: now, files }
+      // R6-5 修复：缓存打点在走盘完成后——此前用走盘开始前的 now，走盘本身 >100ms 时缓存写入即过期，
+      // 第二页必然重新全量走盘（正是它要救的 CIFS/SMB 场景）。改为完成后打点，确保 100ms 窗口内
+      // 的连续分页命中缓存。
+      walkCache = { at: Date.now(), files }
       return files.slice(startIndex, startIndex + limit).map(path => ({
         Id: path,
         Name: basename(path),

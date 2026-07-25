@@ -21,17 +21,25 @@ export function jitteredDelayMs(baseMs: number, jitterRangeMs: number, rng: Rand
  */
 export class JitteredIntervalLimiter {
   private last = 0
+  private tail: Promise<void> = Promise.resolve()
   constructor(
     private baseMs: number,
     private jitterRangeMs: number,
     private rng: RandomFn = Math.random,
   ) {}
 
+  /** 并发安全：读-睡-写无互斥会让两个并发调用算出同一个 delta、同时睡醒，突破间隔。
+   *  用 promise 队列串行化：每个 wait() 都排到前一个的后面，确保 last 的更新原子性。
+   *  （R6-6 修复：与 MinIntervalLimiter 同款竞态，zimuku/subhd 默认限流器也在用） */
   async wait(): Promise<void> {
-    const now = Date.now()
-    const delta = now - this.last
-    const target = jitteredDelayMs(this.baseMs, this.jitterRangeMs, this.rng)
-    if (delta < target) await new Promise(r => setTimeout(r, target - delta))
-    this.last = Date.now()
+    const myTurn = this.tail.then(async () => {
+      const now = Date.now()
+      const delta = now - this.last
+      const target = jitteredDelayMs(this.baseMs, this.jitterRangeMs, this.rng)
+      if (delta < target) await new Promise(r => setTimeout(r, target - delta))
+      this.last = Date.now()
+    })
+    this.tail = myTurn
+    return myTurn
   }
 }

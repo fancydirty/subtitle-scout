@@ -139,7 +139,16 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
   const full = normalize(join(distDir, rel))
   // 必须用 base + sep 开头：否则兄弟目录 <distDir>-old 仍满足 startsWith(base)，导致 prefix 穿越。
   if (full !== base && !full.startsWith(base + sep)) return { status: 403, body: Buffer.from('forbidden'), type: 'text/plain' }
-  const target = existsSync(full) && statSync(full).isFile() && extname(full) ? full : join(distDir, 'index.html') // SPA 回退
+  // R6-10 修复：statSync TOCTOU——existsSync(full) && statSync(full).isFile() 两步之间文件消失
+  // 时 statSync 抛 ENOENT → 500。try/catch 包住 statSync，失败按"不存在"走 SPA 回退。
+  let target = join(distDir, 'index.html')
+  try {
+    if (existsSync(full) && statSync(full).isFile() && extname(full)) {
+      target = full
+    }
+  } catch {
+    // 文件在 existsSync 和 statSync 之间消失——按不存在处理，走 SPA 回退
+  }
   if (!existsSync(target)) return { status: 404, body: Buffer.from('not found'), type: 'text/plain' }
   return { status: 200, body: readFileSync(target), type: CONTENT_TYPES[extname(target)] ?? 'application/octet-stream' }
 }
@@ -232,10 +241,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           if (body === BODY_FAILED) return
           const b = (body ?? {}) as { username?: unknown; password?: unknown }
           // 登录限流来源：反代部署下 req.socket.remoteAddress 是反代 IP（全 LAN 共享），任何人
-          // 5 次失败会锁死所有管理员（自我 DoS）。TRUST_PROXY=true 时取 x-forwarded-for 首跳
-          // （最左=真实客户端），默认不信任（防伪造）。
+          // 5 次失败会锁死所有管理员（自我 DoS）。TRUST_PROXY=true 时取 x-forwarded-for 最右跳
+          // （自己代理追加的，不是客户端自报的——最左可被伪造）。
+          // ⚠️ 取最右跳：nginx 默认 $proxy_add_x_forwarded_for 是追加而非覆盖，最左是客户端自报值，
+          //    攻击者每次请求换一个伪造 XFF 即可绕过限流。最右是自己代理追加的，更稳。
           const remoteAddr = process.env.TRUST_PROXY === 'true'
-            ? ((req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown')
+            ? ((req.headers['x-forwarded-for'] as string | undefined)?.split(',').pop()?.trim() ?? req.socket.remoteAddress ?? 'unknown')
             : (req.socket.remoteAddress ?? 'unknown')
           const r = auth.login(
             typeof b.username === 'string' ? b.username : '',

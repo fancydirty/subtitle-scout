@@ -418,7 +418,7 @@ describe('gcOrphans', () => {
     allocate('job-active', root1)
     allocate('job-orphan-2', root2)
 
-    const cleaned = gcOrphans([root1, root2], new Set(['job-active']))
+    const cleaned = gcOrphans([root1, root2], new Set(['job-active']), Date.now() + 1000)
 
     expect(cleaned).toBe(2)
     expect(existsSync(join(root1, '.subtitle-staging', 'job-orphan-1'))).toBe(false)
@@ -428,14 +428,14 @@ describe('gcOrphans', () => {
 
   it('is a no-op when a media root has no .subtitle-staging dir yet', () => {
     const root = mediaRoot()
-    expect(() => gcOrphans([root], new Set())).not.toThrow()
-    expect(gcOrphans([root], new Set())).toBe(0)
+    expect(() => gcOrphans([root], new Set(), Date.now() + 1000)).not.toThrow()
+    expect(gcOrphans([root], new Set(), Date.now() + 1000)).toBe(0)
   })
 
   it('does not treat the .ignore marker file as an orphan directory', () => {
     const root = mediaRoot()
     allocate('job-1', root) // 顺带创建 .ignore
-    gcOrphans([root], new Set())
+    gcOrphans([root], new Set(), Date.now() + 1000)
     expect(existsSync(join(root, '.subtitle-staging', '.ignore'))).toBe(true)
   })
 
@@ -444,7 +444,7 @@ describe('gcOrphans', () => {
     allocate('job-1', root)
     allocate('job-2', root)
     mkdirSync(join(root, '.subtitle-staging', 'job-3'), { recursive: true })
-    const cleaned = gcOrphans([root], new Set())
+    const cleaned = gcOrphans([root], new Set(), Date.now() + 1000)
     expect(cleaned).toBe(3)
   })
 
@@ -452,7 +452,7 @@ describe('gcOrphans', () => {
     const root = mediaRoot()
     mkdirSync(join(root, '.subtitle-translate', 'daemon-1'), { recursive: true })
     mkdirSync(join(root, '.subtitle-translate', 'daemon-2'), { recursive: true })
-    const cleaned = gcOrphans([root], new Set(['daemon-2']))
+    const cleaned = gcOrphans([root], new Set(['daemon-2']), Date.now() + 1000)
     expect(cleaned).toBe(1)
     expect(existsSync(join(root, '.subtitle-translate', 'daemon-1'))).toBe(false)
     expect(existsSync(join(root, '.subtitle-translate', 'daemon-2'))).toBe(true)
@@ -464,7 +464,7 @@ describe('gcOrphans', () => {
     const junkFile = join(root, '.subtitle-staging', 'not-a-job-dir.txt')
     writeFileSync(junkFile, 'squatter')
 
-    const cleaned = gcOrphans([root], new Set())
+    const cleaned = gcOrphans([root], new Set(), Date.now() + 1000)
 
     expect(existsSync(junkFile)).toBe(false)
     expect(cleaned).toBe(2) // job-1 dir + the junk file
@@ -477,7 +477,7 @@ describe('gcOrphans', () => {
     const brokenLink = join(stagingRoot, 'broken-link')
     symlinkSync(join(stagingRoot, 'does-not-exist-target'), brokenLink)
 
-    gcOrphans([root], new Set())
+    gcOrphans([root], new Set(), Date.now() + 1000)
 
     // existsSync follows the link and would report false for a broken link either way —
     // lstatSync is the only way to tell whether the link entry itself was actually removed.
@@ -493,7 +493,7 @@ describe('gcOrphans', () => {
     const linkPath = join(stagingRoot, 'link-to-dir')
     symlinkSync(targetDir, linkPath)
 
-    gcOrphans([root], new Set())
+    gcOrphans([root], new Set(), Date.now() + 1000)
 
     expect(() => lstatSync(linkPath)).toThrow() // the link entry itself is gone
     expect(existsSync(targetDir)).toBe(true) // but its target was never touched

@@ -805,50 +805,56 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   // 11–13. 组装 → 字幕先行 → 亮相：任何抛错整体回滚（库回到原样，error 短退避重试）。
   let finalShowDir = finalTarget
   try {
+    // 11. 不可见组装：先记账后 rename（write-ahead），拒绝 clobber（IMP#5）。
+    //     只在有 toMove 时执行；全 alreadyDone 时直接跳到字幕先行（12）。
     if (collision.toMove.length > 0) {
-      // 11. 不可见组装：先记账后 rename（write-ahead），拒绝 clobber（IMP#5）。
       assembleInvisibleTree(libRoot, showDirName, collision.toMove, (from, to) => {
         appendManifestEntry(archiveDir, {
           op: 'rename', from, to, size: deps.getSize(from) ?? 0, mtimeMs: deps.now(), reason: 'realign', ts: deps.now(),
         })
       })
+    }
 
-      // 12. 字幕先行（IMP#7）：在 .realign-build 里、亮相之前跑完——亮相展示的是含字幕的
-      //     完整树。单集失败不阻塞整理（字幕可由常规 season job 事后补），记录在案。
-      // A-F13 处决：TMDB 富化一次性取（series 级数据，本轮全部目标共用同一份，不逐集各打一次
-      // 往返）；getDetails/getChineseTitles 未接线（RealignExecutorDeps.tmdb 的可选字段缺席，
-      // 多见于测试）或 TMDB 请求本身失败，都走 fetchTmdbEnrichment 自己的 gain-path 降级
-      // （null/[]），这里绝不因为它失败而 park/throw。
-      // R5-4 修复：alreadyDone 条目也要走字幕先行——全 alreadyDone 分支（toMove=0）此前跳过
-      // 字幕先行，新树只有视频没有字幕，但 detail 恒称"字幕已就位"（假证据，违背 IMP#7）。
-      const tmdbForEnrichment = deps.tmdb.getDetails && deps.tmdb.getChineseTitles
-        ? (deps.tmdb as unknown as TmdbClient) : null
-      const { details, chineseTitles } = await fetchTmdbEnrichment(tmdbForEnrichment, 'tv', tmdbId)
-      const enrichOriginalTitle = details?.originalTitle ?? null
-      const enrichment = {
-        originalTitle: enrichOriginalTitle,
-        alternativeTitles: chineseTitles.filter((t, i, arr) =>
-          t.trim().length > 0 && t !== seriesTitle && t !== enrichOriginalTitle && arr.indexOf(t) === i),
-        overview: details?.overview ?? null,
-        runtimeMinutes: details?.runtimeMinutes ?? null,
+    // 12. 字幕先行（IMP#7）：在 .realign-build 里、亮相之前跑完——亮相展示的是含字幕的
+    //     完整树。单集失败不阻塞整理（字幕可由常规 season job 事后补），记录在案。
+    // A-F13 处决：TMDB 富化一次性取（series 级数据，本轮全部目标共用同一份，不逐集各打一次
+    // 往返）；getDetails/getChineseTitles 未接线（RealignExecutorDeps.tmdb 的可选字段缺席，
+    // 多见于测试）或 TMDB 请求本身失败，都走 fetchTmdbEnrichment 自己的 gain-path 降级
+    // （null/[]），这里绝不因为它失败而 park/throw。
+    // R5-4 修复：alreadyDone 条目也要走字幕先行——全 alreadyDone 分支（toMove=0）此前跳过
+    // 字幕先行，新树只有视频没有字幕，但 detail 恒称"字幕已就位"（假证据，违背 IMP#7）。
+    // R6-1 修复：字幕先行块挪出 toMove.length > 0 门——否则全 alreadyDone 时整块跳过，
+    // commit 自述修复的场景依然复现（子代理 D20 实锤）。
+    const tmdbForEnrichment = deps.tmdb.getDetails && deps.tmdb.getChineseTitles
+      ? (deps.tmdb as unknown as TmdbClient) : null
+    const { details, chineseTitles } = await fetchTmdbEnrichment(tmdbForEnrichment, 'tv', tmdbId)
+    const enrichOriginalTitle = details?.originalTitle ?? null
+    const enrichment = {
+      originalTitle: enrichOriginalTitle,
+      alternativeTitles: chineseTitles.filter((t, i, arr) =>
+        t.trim().length > 0 && t !== seriesTitle && t !== enrichOriginalTitle && arr.indexOf(t) === i),
+      overview: details?.overview ?? null,
+      runtimeMinutes: details?.runtimeMinutes ?? null,
+    }
+    // alreadyDone 条目的视频路径在 finalTarget 内（不在 .realign-build）
+    const allItems = [...collision.toMove, ...collision.alreadyDone]
+    for (const item of allItems) {
+      const videoPath = collision.toMove.includes(item)
+        ? join(libRoot, '.realign-build', item.targetRelPath)
+        : join(finalTarget, item.targetRelPath)
+      const ctx = buildRealignEpisodeFields(seriesTitle, year, tmdbId, item, videoPath, enrichment)
+      try {
+        await deps.runEpisode(ctx, dirname(videoPath), `${job.id}-${item.absoluteEpisode}`)
+      } catch (e) {
+        const msg = briefError(e)
+        deps.log(`warn: realign 字幕先行失败（abs ${item.absoluteEpisode}，不阻塞整理）：${msg}`)
+        notes.push(`字幕先行失败（abs ${item.absoluteEpisode}）：${msg}`)
       }
-      // alreadyDone 条目的视频路径在 finalTarget 内（不在 .realign-build）
-      const allItems = [...collision.toMove, ...collision.alreadyDone]
-      for (const item of allItems) {
-        const videoPath = collision.toMove.includes(item)
-          ? join(libRoot, '.realign-build', item.targetRelPath)
-          : join(finalTarget, item.targetRelPath)
-        const ctx = buildRealignEpisodeFields(seriesTitle, year, tmdbId, item, videoPath, enrichment)
-        try {
-          await deps.runEpisode(ctx, dirname(videoPath), `${job.id}-${item.absoluteEpisode}`)
-        } catch (e) {
-          const msg = briefError(e)
-          deps.log(`warn: realign 字幕先行失败（abs ${item.absoluteEpisode}，不阻塞整理）：${msg}`)
-          notes.push(`字幕先行失败（abs ${item.absoluteEpisode}）：${msg}`)
-        }
-      }
+    }
 
-      // 13. 亮相记账（IMP#10：reveal 之后回滚才有据可依）→ 目录级原子亮相。
+    // 13. 亮相记账（IMP#10：reveal 之后回滚才有据可依）→ 目录级原子亮相。
+    //     只在有 toMove 时执行；全 alreadyDone 时 finalTarget 已存在，无需 reveal。
+    if (collision.toMove.length > 0) {
       appendManifestEntry(archiveDir, {
         op: 'rename', from: buildShowDir, to: finalTarget, size: 0, mtimeMs: deps.now(), reason: 'reveal', ts: deps.now(),
       })

@@ -857,8 +857,10 @@ describe('executeRealign（顶层编排，集成）', () => {
     // 最终树仍是预置的 5 个文件，其中 abs2 的"不同尺寸"文件原样未动
     const t2 = plan.items.find(i => i.absoluteEpisode === 2)!
     expect(readFileSync(join(libRoot, t2.targetRelPath), 'utf8')).toBe('TOTALLY-DIFFERENT-SIZE')
-    // 本轮没有真实搬动任何文件 → 字幕先行不跑（都已就位），验收只对账 4 集也通过了
-    expect(runEpisode).not.toHaveBeenCalled()
+    // R6-1 修复：alreadyDone 条目也要走字幕先行（全 alreadyDone 分支此前跳过，新树只有视频
+    // 没有字幕，但 detail 恒称"字幕已就位"——假证据）。本轮 runEpisode 会被调用（对已就位的
+    // 4 集补字幕），验收只对账 4 集也通过。
+    expect(runEpisode).toHaveBeenCalled()
     db.close()
   })
 

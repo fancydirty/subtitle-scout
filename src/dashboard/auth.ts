@@ -207,11 +207,13 @@ export class AuthService {
       this.throttle.recordFailure(remoteAddr, now)
       return { ok: false, status: 401, error: 'not initialized' }
     }
-    // R5-10 修复：username !== storedUser 短路时不跑 scrypt，时序可分辨用户名对错。
-    // 先算 hash 再统一比较（无论用户名对错，scrypt 都跑，时序一致）。
-    // 注：inputHash 只为保证时序一致而计算，不参与比较（verifyPassword 内部会重算）。
-    hashPassword(password)
-    if (username !== storedUser || !verifyPassword(password, storedHash)) {
+    // R6-2 修复：login 时序侧信道——此前 `username !== storedUser ||` 短路导致用户名错时
+    // 不跑 scrypt（0 次 vs 1 次），R5-10 加的 `hashPassword(password)` 只是给两条路径各加一次
+    // （1 次 vs 2 次），差值同形平移。正确做法：无条件跑 verifyPassword（用户名错时对库里的
+    // hash 照样跑一遍 scrypt），再用非短路方式合并结果。
+    const passwordOk = verifyPassword(password, storedHash) // 恒跑，不短路
+    const userOk = safeStrEqual(username, storedUser) // 常量时间比较
+    if (!userOk || !passwordOk) {
       this.throttle.recordFailure(remoteAddr, now) // 只对失败计入（审计 #3）
       return { ok: false, status: 401, error: 'invalid username or password' }
     }

@@ -372,7 +372,7 @@ export function openDb(path: string): ScoutDb {
     // VACUUM INTO 在线一致、连 WAL 内容一起收;:memory: 跳过。
     if (path !== ':memory:') {
       try {
-        db.exec(`VACUUM INTO '${path}.pre-v${MIGRATIONS.length}.bak'`)
+        db.exec(`VACUUM INTO '${path.replace(/'/g, "''")}.pre-v${MIGRATIONS.length}.bak'`)
       } catch { /* 快照失败不阻塞迁移(空间不足等),迁移事务本身仍是 all-or-nothing */ }
     }
     // Pre-flight: 历史迁移链的建新表→拷数据→删旧表→改名手法（见上方 pragma 注释）会把存量行

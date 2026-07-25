@@ -196,6 +196,8 @@ async function cmdReconcileAll() {
 }
 
 async function cmdWatch() {
+  // R6-9：进程启动时间——gcOrphans 用它跳过 mtime 新于它的条目（并发 CLI 正在用的工作台不清）。
+  const bootTimeMs = Date.now()
   // 去 Jellyfin 化 P5/Task 7：realign port 已切到库原生实现（makeRealignLibraryPort，下方），
   // assemble() 不再持有任何 jf/jellyfinClient 句柄；P7 起 JELLYFIN_URL/JELLYFIN_API_KEY 的
   // requireEnv 已一并删除（design §P7 代码出口）。
@@ -503,7 +505,8 @@ async function cmdWatch() {
     runs,
     ingestTrigger,
     // dashboard G4：每次 daemon tick 调用时重新取一遍 roots——同 ingestPass，不锁定启动时刻的快照。
-    gcStaging: () => gcOrphans(currentRoots(), new Set()),
+    // R6-9：传进程启动时间，跳过 mtime 新于它的条目（并发 CLI 正在用的工作台不清）。
+    gcStaging: () => gcOrphans(currentRoots(), new Set(), bootTimeMs),
     // 清算波 R-6（A-F7）：job.kind==='worker_task' 是 claimNext() 这条 kind 无关队列上唯一的
     // 活执行通路。旧管线的中转层（v2/executor.ts 的 executeJob/executeRealignBranch）与它的
     // 路由决策（cli/legacyJobRouting.ts 的 routeLegacyJob/tombstoneLegacyJob）已整体删除：
@@ -620,9 +623,6 @@ async function cmdWatch() {
   console.log(`subtitle-scout v2 watching (media roots: ${startupRoots.length > 0 ? startupRoots.join(', ') : '(none configured)'})`)
 
   // 零字幕源告警:所有找字幕任务都会落空(配置缺失的故障和真实的"没找到"在 UI 上不可区分)
-  const hasAssrt = !!process.env.ASSRT_TOKEN
-  const hasOpensubtitles = !!(process.env.OPENSUBTITLES_API_KEY && process.env.OPENSUBTITLES_USERNAME && process.env.OPENSUBTITLES_PASSWORD)
-  const hasZimuku = process.env.ZIMUKU_ENABLED === 'true'
   const subtitleSourcesWarning = zeroSubtitleSourcesWarningLine(process.env)
   if (subtitleSourcesWarning) console.warn(subtitleSourcesWarning)
 

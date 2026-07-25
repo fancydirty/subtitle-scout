@@ -42,6 +42,7 @@ const deploySettingsDTO: DeploySettingsDTO = {
     // Wave0：AI 翻译部署门可见性三角（apiV2.ts）。
     TRANSLATE_BASE_URL: null, TRANSLATE_MODEL: 'mimo-v2.5-pro', TRANSLATE_CRITIC: null,
     TRANSLATE_CRITIC_MODEL: null, TRANSLATE_TIMEOUT_MS: null, SUBHD_ENABLED: null,
+    TRUST_PROXY: null,
   },
 }
 const mediaRoots: MediaRoot[] = [{ path: '/media/tv', type: 'local', addedAt: 1 }]

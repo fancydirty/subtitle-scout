@@ -262,6 +262,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media
 | `SCAN_INTERVAL_MS` | 自扫描间隔（毫秒；设置页 scan_interval_ms 优先） | `900000` |
 | `DASHBOARD_PORT` | 监控页端口 | `8099` |
 | `DASHBOARD_TOKEN` | **legacy**：老部署的访问 token，等价一个 API key。新部署建议留空，改用首启向导设账号密码 | 空 |
+| `TRUST_PROXY` | 反代部署下信任 `x-forwarded-for`（登录限流按真实客户端 IP 而不是反代 IP）。⚠️ 只有在你**自己控制**反向代理时才设 `true`；否则任何人都能伪造 XFF 绕过限流。不设时，所有请求共享反代 IP 一个限流桶：任何人 5 次失败会锁死所有管理员 1 分钟 | `false` |
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
 | `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
 | `REALIGN_ARCHIVE_ROOT` | 整理（realign）归档根——旧目录搬到这里可回滚。默认库根上一级；**容器默认挂载下必须显式配**（默认值落在 overlay 层，跨设备 rename 会让整理放弃），配方见 `.env.example` | 空（=库根上一级） |

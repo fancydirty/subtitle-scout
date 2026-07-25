@@ -167,7 +167,15 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       if (r.status !== 'ok') return r
       writeFileSync(paths.canonicalSourcePath, r.srtText.endsWith('\n') ? r.srtText : r.srtText + '\n')
       const meta = existsSync(paths.metaPath)
-        ? JSON.parse(readFileSync(paths.metaPath, 'utf8'))
+        ? (() => {
+            try {
+              return JSON.parse(readFileSync(paths.metaPath, 'utf8')) as Record<string, unknown>
+            } catch (e) {
+              // R6-7 修复：meta.json 撕裂时 resolve_source 工具抛原始 SyntaxError，模型拿到无上下文错误。
+              // 同 readTerms 模式包一层带路径的错误。
+              throw new Error(`meta.json invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          })()
         : {}
       meta.videoPath = task.videoPath
       meta.itemId = task.itemId
