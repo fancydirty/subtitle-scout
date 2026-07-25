@@ -27,10 +27,8 @@ services:
     container_name: subtitle-scout
     restart: unless-stopped
     # 容器内 PID 1 是 node（Dockerfile CMD 直接跑 dist/cli/index.js）——但普通进程
-    # 不具备 init 的孤儿收割职责。providerPort.ts 里每次字幕抓取都 detached 起一个独立
-    # 进程组的 subtitle-fetch 子进程；主进程若异常退出，该子进程会被重新收养给 PID 1，
-    # 而 node 不会像 tini 那样自动 wait() 收割不认识的子孙进程，久而久之堆成僵尸。
-    # init:true 让 Docker 注入内置 tini 作真正的 PID 1，负责收割 + 正确转发终止信号。
+    # 不具备 init 的孤儿收割职责。旧管线曾 detached 起 subtitle-fetch 子进程（已退役,
+    # v3 全部进程内调 adapter），但 init:true 的信号/收割卫生依然正确。
     init: true
     logging:
       driver: json-file
@@ -39,6 +37,8 @@ services:
         max-file: "3"
     ports:
       - "${DASHBOARD_PORT:-8099}:${DASHBOARD_PORT:-8099}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_API_KEY: ${LLM_API_KEY}
@@ -49,12 +49,35 @@ services:
       OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
       OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
       OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
-      MEDIA_ROOTS: /media
+      # 字幕源开关：默认关（各自需额外配置）
+      ZIMUKU_ENABLED: ${ZIMUKU_ENABLED:-false}
+      SUBHD_ENABLED: ${SUBHD_ENABLED:-false}
+      # TMDB 反代/代理（墙内直连常被墙时用）
+      TMDB_BASE_URL: ${TMDB_BASE_URL:-}
+      TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
+      # jimaku 日字源(F2)
+      JIMAKU_API_KEY: ${JIMAKU_API_KEY:-}
+      # AI 翻译部署门:三件套缺一,daemon 自动翻译整体休眠
+      TRANSLATE_BASE_URL: ${TRANSLATE_BASE_URL:-}
+      TRANSLATE_API_KEY: ${TRANSLATE_API_KEY:-}
+      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-}
+      TRANSLATE_CRITIC: ${TRANSLATE_CRITIC:-}
+      TRANSLATE_CRITIC_MODEL: ${TRANSLATE_CRITIC_MODEL:-}
+      TRANSLATE_TIMEOUT_MS: ${TRANSLATE_TIMEOUT_MS:-}
+      # 目标字幕语言与扫描节奏(dashboard 设置页优先)
+      TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
+      SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}
+      LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}
+      SKIP_CHINESE_ORIGIN: ${SKIP_CHINESE_ORIGIN:-}
+      # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)
+      MEDIA_ROOTS: ${MEDIA_ROOTS:-/media}
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       TZ: ${TZ:-Asia/Shanghai}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
       DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
     volumes:
-      - ${MEDIA_HOST_PATH}/Movies:/media/movies
-      - ${MEDIA_HOST_PATH}/TV:/media/tv
+      # 宿主机 Movies/ TV/ → 容器内 movies/ tv/(小写,Linux 容器大小写敏感)
+      # ⚠️ 强制守卫: MEDIA_HOST_PATH 未设置时直接报错
+      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/Movies:/media/movies
+      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/TV:/media/tv
       - ./cache:/cache

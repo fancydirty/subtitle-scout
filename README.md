@@ -95,13 +95,14 @@ docker compose exec subtitle-scout node dist/cli/index.js doctor
 **示例输出**：
 
 ```
+✓ tmdb  TMDB API key 有效
 ✓ assrt  ASSRT token 有效，当前配额余量 180
 ⊘ opensubtitles  未配置(可选 provider)——设 OPENSUBTITLES_API_KEY 启用
 ⊘ zimuku  未配置(可选 provider,灰色站点条款风险自担)——设 ZIMUKU_ENABLED=true 启用
 ✓ llm  LLM 端点可用，最小对话成功
 ✓ media-roots  2 个媒体根目录全部可写
 ✓ mount-capabilities  挂载能力画像 — /media/movies（硬链接: 支持, 大小写敏感: 是, 可写: 是）...
-✓ database  数据库可用，schema 版本 1
+✓ database  数据库可用，schema 版本 16
 ✓ stuck-jobs  无卡住任务
 
 接线检查通过，可以起 watch 了。
@@ -131,7 +132,7 @@ docker compose exec subtitle-scout node dist/cli/index.js doctor
   curl 'http://<主机IP>:8099/api/v2/library?apikey=<你的-api-key>'
   ```
 
-- **忘记密码**：没有邮件找回（自托管形态），在服务器上运行 `subtitle-scout auth reset` 清除管理员凭据，下次访问重新进入创建向导。
+- **忘记密码**：没有邮件找回（自托管形态），在服务器上运行 `docker compose exec subtitle-scout node dist/cli/index.js auth reset` 清除管理员凭据，下次访问重新进入创建向导。
 
 **旧 `DASHBOARD_TOKEN` 兼容**：已设该变量的老部署继续有效——它等价于一个 API key（`?token=<值>` 或 `X-Dashboard-Token` 头仍被接受）。建议在向导里建好账号后**移除** `DASHBOARD_TOKEN`，改用账号密码。
 
@@ -241,7 +242,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
 | `JIMAKU_API_KEY` | jimaku.cc 日文字幕源 API key（F2 日→中直译日源；空则该源休眠） | 空 |
-| `TRANSLATE_BASE_URL` / `TRANSLATE_API_KEY` / `TRANSLATE_MODEL` | **AI 翻译部署门三件套**——缺一 daemon 自动翻译整体休眠；未配 `TRANSLATE_MODEL` 时回退 `LLM_*`。compose 部署还需确认 compose 的 environment 透传了它们 | 空 |
+| `TRANSLATE_BASE_URL` / `TRANSLATE_API_KEY` / `TRANSLATE_MODEL` | **AI 翻译部署门三件套**——缺一 daemon 自动翻译整体休眠（绝不回退 `LLM_*`，太弱）；三件套配齐后还需在设置页打开"AI 翻译"开关。手动 `translate-item` 命令不受限：未配 `TRANSLATE_MODEL` 时回退 `LLM_*`。compose 部署还需确认 compose 的 environment 透传了它们 | 空 |
 | `TRANSLATE_CRITIC` | 语义判官开关（关闭后仅靠确定性质量闸，仍 fail-closed） | `on` |
 | `TRANSLATE_CRITIC_MODEL` | 判官单指定模型 | 同 `TRANSLATE_MODEL` |
 | `TRANSLATE_TIMEOUT_MS` | 单批翻译超时（毫秒） | `300000` |
@@ -330,7 +331,7 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 **检查**：
 1. `DASHBOARD_PORT` 是否在 compose 的 `ports` 里正确映射
 2. 防火墙是否放行该端口
-3. 忘记管理员密码：在服务器上运行 `subtitle-scout auth reset` 清除凭据，重新走创建向导
+3. 忘记管理员密码：在服务器上运行 `docker compose exec subtitle-scout node dist/cli/index.js auth reset` 清除凭据，重新走创建向导
 4. 老部署设了 `DASHBOARD_TOKEN` 但访问时没带 `?token=<值>` 参数（新部署改用账号密码登录）
 
 ---
