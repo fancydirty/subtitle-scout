@@ -54,7 +54,8 @@ services:
       TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}
       LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}
-      MEDIA_ROOTS: /media
+      # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)
+      MEDIA_ROOTS: ${MEDIA_ROOTS:-/media}
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       TZ: ${TZ:-Asia/Shanghai}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
