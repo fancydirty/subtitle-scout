@@ -19,8 +19,9 @@ services:
       - "8096:8096"
     volumes:
       - ./jellyfin-config:/config
-      - ${MEDIA_HOST_PATH}/Movies:/media/movies
-      - ${MEDIA_HOST_PATH}/TV:/media/tv
+      # ⚠️ 强制守卫: MEDIA_HOST_PATH 未设置时直接报错（与 subtitle-scout 服务一致）
+      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/Movies:/media/movies
+      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/TV:/media/tv
 
   subtitle-scout:
     image: ghcr.io/fancydirty/subtitle-scout:latest

@@ -1,6 +1,7 @@
 # Subtitle Scout 待办事项
 
-**更新日期**: 2026-07-25 (Ralph Loop 完成后)
+**更新日期**: 2026-07-25 (Ralph Loop 完成后)  
+**快照日期**: 2026-07-25 03:30 AM（此后有 7 个新 commits，见 git log）
 
 ---
 

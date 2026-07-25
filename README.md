@@ -241,7 +241,10 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media
 |------|------|--------|
 | `OPENSUBTITLES_API_KEY` | OpenSubtitles key（可选）——ASSRT 之外的第二字幕源，欧美剧集补盲；见「OpenSubtitles」 | 空 |
 | `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` | OpenSubtitles 登录（可选）——免费档下载配额 5→20 次/天 | 空 |
-| `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔） | 空 |
+| `ZIMUKU_ENABLED` | zimuku 字幕站开关（灰色地带，条款风险自担）——需要 LLM 支持多模态识图 | `false` |
+| `SUBHD_ENABLED` | subhd 字幕源开关（通用型中文字幕站，强源）——无验证码/无云锁，不需 LLM | `false` |
+| `TMDB_BASE_URL` / `TMDB_PROXY_URL` | TMDB 反代/代理（墙内直连常被墙时用） | 空 |
+| `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔，容器内路径；**首启种子**，之后以 dashboard 设置页为准） | 空 |
 | `TARGET_LANGUAGES` | 目标字幕语言（逗号分隔 BCP-47；设置页 target_languages 优先于此） | `zh` |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
@@ -332,7 +335,9 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 - 剧集/电影详情页看整体字幕覆盖状态（哪几集缺、哪几集处理中）
 - "运行历史"列表看每次处理的一行人话摘要（选了谁、为什么，或为什么没找到）
 
-逐次 LLM/API 请求-响应明细目前不落盘；程序日志（`docker compose logs subtitle-scout` 或容器内 `cache/logs/`）能看到 provider 报错/提示一类的关键事件，但不是完整调用记录。
+**LLM/API 调用明细**：traceBus 收官快照已落盘到 `runs.trace_json`（默认保留 30 天），Workflow 页可回放每次 agent 运行的工具调用序列（搜索→下载→验证→安装的完整决策链）。
+
+程序日志（`docker compose logs subtitle-scout` 或容器内 `/cache/logs/`）能看到 provider 报错/提示一类的关键事件，但不是完整调用记录。
 
 ### Q: 监控页访问不了
 

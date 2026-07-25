@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import {
@@ -128,10 +128,20 @@ export class AssrtClient {
       // 畸形的响应（或写入时 schema 还没这条防线）会在 TTL 内每次命中缓存都重新炸一次。现在 fresh
       // fetch 和 cache-hit 走同一套 filterMalformedSubs + assertNotAllSubsDropped，行为对齐。
       // 只在 status===0 时才会被写入缓存（见下方 fresh path），所以这里不需要再判 status。
-      const cachedJson = JSON.parse(readFileSync(cacheFile, 'utf8'))
-      const { data: payload, dropped } = isSubsSchema ? filterMalformedSubs(cachedJson) : { data: cachedJson, dropped: 0 }
-      assertNotAllSubsDropped(endpoint, payload, dropped)
-      return schema.parse(payload)
+      // JSON.parse 容错：缓存文件损坏（进程崩溃留下半截 JSON）视为 miss，落到 fresh fetch（同
+      // zimukuSession.ts 的模式——损坏即视为无缓存，不让一次崩溃污染 24h TTL）。
+      let cachedJson: unknown
+      try {
+        cachedJson = JSON.parse(readFileSync(cacheFile, 'utf8'))
+      } catch {
+        // 缓存损坏，视为 miss，继续走 fresh fetch
+        cachedJson = null
+      }
+      if (cachedJson !== null) {
+        const { data: payload, dropped } = isSubsSchema ? filterMalformedSubs(cachedJson) : { data: cachedJson, dropped: 0 }
+        assertNotAllSubsDropped(endpoint, payload, dropped)
+        return schema.parse(payload)
+      }
     }
     const qs = new URLSearchParams({ token: this.opts.token, ...params })
     // 网络层失败（fetch 拒绝、非 JSON）重试一次；API status 非 0 不重试
@@ -153,7 +163,14 @@ export class AssrtClient {
         // CRITICAL fix：全丢弃必须在写缓存之前抛错——既不把这次故障当成功返回给调用方，
         // 也不把一个"内容整体不可用"的响应写进磁盘缓存喂给下一次 cache-hit。
         assertNotAllSubsDropped(endpoint, payload, dropped)
-        if (cacheTtlMs !== false) writeFileSync(cacheFile, JSON.stringify(payload))
+        // 原子写缓存：tmp + rename（同 zimukuSession.ts 的模式——进程崩溃留下半截 JSON 时，
+        // 下次 cache-hit 的 JSON.parse 会抛 SyntaxError，24h TTL 内每次都炸。tmp+rename 保证
+        // 要么完整写入要么不存在，不会留下半截文件）。
+        if (cacheTtlMs !== false) {
+          const tmpFile = `${cacheFile}.tmp`
+          writeFileSync(tmpFile, JSON.stringify(payload))
+          renameSync(tmpFile, cacheFile)
+        }
         return schema.parse(payload)
       } catch (e) {
         // AssrtAllEntriesDroppedError 和 AssrtApiError 同等对待：语义上是"这次调用的结果确定性地

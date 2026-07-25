@@ -12,10 +12,8 @@ services:
     container_name: subtitle-scout-local
     restart: unless-stopped
     # 容器内 PID 1 是 node（Dockerfile CMD 直接跑 dist/cli/index.js）——但普通进程
-    # 不具备 init 的孤儿收割职责。providerPort.ts 里每次字幕抓取都 detached 起一个独立
-    # 进程组的 subtitle-fetch 子进程；主进程若异常退出，该子进程会被重新收养给 PID 1，
-    # 而 node 不会像 tini 那样自动 wait() 收割不认识的子孙进程，久而久之堆成僵尸。
-    # init:true 让 Docker 注入内置 tini 作真正的 PID 1，负责收割 + 正确转发终止信号。
+    # 不具备 init 的孤儿收割职责。旧管线曾 detached 起 subtitle-fetch 子进程（已退役,
+    # v3 全部进程内调 adapter），但 init:true 的信号/收割卫生依然正确。
     init: true
     ports:
       - "8099:8099"
