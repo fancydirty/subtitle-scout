@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync,
-  readdirSync, symlinkSync, lstatSync,
+  readdirSync, symlinkSync, lstatSync, utimesSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -463,6 +463,9 @@ describe('gcOrphans', () => {
     allocate('job-1', root) // 顺带创建 .subtitle-staging/.ignore
     const junkFile = join(root, '.subtitle-staging', 'not-a-job-dir.txt')
     writeFileSync(junkFile, 'squatter')
+    // R7-1：age-based 活性判断——非目录文件的 mtime 必须旧于 10 分钟才会被删
+    const oldTime = new Date(Date.now() - 11 * 60 * 1000)
+    utimesSync(junkFile, oldTime, oldTime)
 
     const cleaned = gcOrphans([root], new Set(), Date.now() + 1000)
 
@@ -476,6 +479,9 @@ describe('gcOrphans', () => {
     const stagingRoot = join(root, '.subtitle-staging')
     const brokenLink = join(stagingRoot, 'broken-link')
     symlinkSync(join(stagingRoot, 'does-not-exist-target'), brokenLink)
+    // R7-1：age-based 活性判断——符号链接的 mtime 必须旧于 10 分钟才会被删
+    const oldTime = new Date(Date.now() - 11 * 60 * 1000)
+    try { utimesSync(brokenLink, oldTime, oldTime) } catch { /* 符号链接可能不支持，忽略 */ }
 
     gcOrphans([root], new Set(), Date.now() + 1000)
 
@@ -498,5 +504,45 @@ describe('gcOrphans', () => {
     expect(() => lstatSync(linkPath)).toThrow() // the link entry itself is gone
     expect(existsSync(targetDir)).toBe(true) // but its target was never touched
     expect(existsSync(join(targetDir, 'keep-me.txt'))).toBe(true)
+  })
+
+  // R7-1 修复：gcOrphans 用 age-based 活性判断（最近 10 分钟内有写入则跳过）——此前只看顶层目录
+  // mtime，CLI 工作台持续写入在子目录（work/bilingual.jsonl），顶层 mtime 在启动几分钟后永久陈旧，
+  // 自述场景（3 小时前创建的 CLI 工作台）照样被删。递归取最新 mtime + 10 分钟活性窗口。
+  // 这条测试锁住"活跃的工作台（最近有写入）不会被删"。
+  it('age-based 活性判断：最近 10 分钟内有写入的工作台不会被删（R7-1 假修复）', () => {
+    const root = mediaRoot()
+    const jobDir = allocate('cli-job-1', root)
+    // 模拟活跃的工作台：在子目录写入（work/bilingual.jsonl）
+    mkdirSync(join(jobDir, 'work'), { recursive: true })
+    writeFileSync(join(jobDir, 'work', 'bilingual.jsonl'), '{"id":1,"src":"hello","tgt":"你好"}\n')
+    // 顶层目录 mtime 设为 3 小时前（模拟 CLI 已跑了 3 小时），但子目录刚写入
+    const oldTime = new Date(Date.now() - 3 * 60 * 60 * 1000)
+    utimesSync(jobDir, oldTime, oldTime)
+
+    const cleaned = gcOrphans([root], new Set(), Date.now())
+
+    // 活跃的工作台不会被删（子目录最近有写入）
+    expect(existsSync(jobDir)).toBe(true)
+    expect(existsSync(join(jobDir, 'work', 'bilingual.jsonl'))).toBe(true)
+    expect(cleaned).toBe(0)
+  })
+
+  it('age-based 活性判断：超过 10 分钟无写入的工作台会被删（陈旧）', () => {
+    const root = mediaRoot()
+    const jobDir = allocate('cli-job-1', root)
+    // 模拟陈旧的工作台：顶层和子目录都是 3 小时前的
+    mkdirSync(join(jobDir, 'work'), { recursive: true })
+    writeFileSync(join(jobDir, 'work', 'bilingual.jsonl'), '{"id":1,"src":"hello","tgt":"你好"}\n')
+    const oldTime = new Date(Date.now() - 3 * 60 * 60 * 1000)
+    utimesSync(jobDir, oldTime, oldTime)
+    utimesSync(join(jobDir, 'work'), oldTime, oldTime)
+    utimesSync(join(jobDir, 'work', 'bilingual.jsonl'), oldTime, oldTime)
+
+    const cleaned = gcOrphans([root], new Set(), Date.now())
+
+    // 陈旧的工作台会被删
+    expect(existsSync(jobDir)).toBe(false)
+    expect(cleaned).toBe(1)
   })
 })

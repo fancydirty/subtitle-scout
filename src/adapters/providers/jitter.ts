@@ -39,7 +39,7 @@ export class JitteredIntervalLimiter {
       if (delta < target) await new Promise(r => setTimeout(r, target - delta))
       this.last = Date.now()
     })
-    this.tail = myTurn
+    this.tail = myTurn.catch(() => {}) // R7-6：防 sticky rejection（回调抛错后 tail 永久 rejected）
     return myTurn
   }
 }

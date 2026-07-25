@@ -49,7 +49,7 @@ export class MinIntervalLimiter {
       if (delta < this.intervalMs) await new Promise(r => setTimeout(r, this.intervalMs - delta))
       this.last = Date.now()
     })
-    this.tail = myTurn
+    this.tail = myTurn.catch(() => {}) // R7-6：防 sticky rejection（回调抛错后 tail 永久 rejected）
     return myTurn
   }
 }

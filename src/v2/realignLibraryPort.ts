@@ -26,6 +26,8 @@ export interface RealignLibraryPortDeps {
    *  操作："重新识别 + 写行"顶替 Jellyfin 的 /Items/{id}/Refresh。 */
   runIngest: () => Promise<unknown>
   now?: () => number
+  /** 测试注入：walkVideoFiles 的替换实现（默认 daemon/selfScan.ts 的真实走盘）。 */
+  walkVideoFiles?: (root: string) => string[]
 }
 
 /** buildTargetSeasonDir（libraryRealign.ts）的产出格式：`Season NN`（全拼零填充，但填充位数
@@ -109,7 +111,7 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
           ParentIndexNumber: seasonFromPath(path) ?? undefined,
         }))
       }
-      const files = deps.roots.flatMap(root => walkVideoFiles(root))
+      const files = deps.roots.flatMap(root => (deps.walkVideoFiles ?? walkVideoFiles)(root))
       // R6-5 修复：缓存打点在走盘完成后——此前用走盘开始前的 now，走盘本身 >100ms 时缓存写入即过期，
       // 第二页必然重新全量走盘（正是它要救的 CIFS/SMB 场景）。改为完成后打点，确保 100ms 窗口内
       // 的连续分页命中缓存。

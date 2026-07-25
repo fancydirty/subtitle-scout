@@ -189,6 +189,25 @@ export async function install(
  *  ENOENT,命中下面的 catch 被当成"清理失败"跳过,断链就永久堆在这里出不去。lstatSync
  *  只看链接本身,断链也能正常 stat 到,进而被 rmSync 删掉。同理,rmSync 对符号链接(哪怕
  *  指向目录)只解链接本身,不会顺着链接递归删目标——指向的真实目录不受影响。 */
+/** 递归取目录内最新 mtime（含子目录）——translate 工作台的持续写入全部在子目录
+ *  （work/bilingual.jsonl 等），只看顶层目录 mtime 会在启动几分钟后永久陈旧（R7-1 实锤）。 */
+function latestMtimeMs(dir: string): number {
+  let latest = 0
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      try {
+        if (entry.isDirectory()) {
+          latest = Math.max(latest, latestMtimeMs(full))
+        } else {
+          latest = Math.max(latest, lstatSync(full).mtimeMs)
+        }
+      } catch { /* 单个条目失败不影响其它 */ }
+    }
+  } catch { /* 目录列不出来 */ }
+  return latest
+}
+
 export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>, bootTimeMs?: number): number {
   let cleaned = 0
   // P2.4(复审 Important-1):translate 工作台 `.subtitle-translate` 与 find 的 `.subtitle-staging`
@@ -196,7 +215,11 @@ export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>, bootT
   // R6-9 修复：跳过 mtime 新于本次进程启动时间的条目——daemon + 手动 CLI 并发场景下，
   // watch 重启时若一个手动 translate CLI（一场可跑数小时）正在跑，boot GC 会把它的工作台
   // 整个 rm 掉（运行中的任务工作台消失、LLM 配额白烧）。
+  // R7-1 修复：用 age-based 活性判断（最近 10 分钟内有写入则跳过）——此前只看顶层目录 mtime，
+  // CLI 工作台持续写入在子目录（work/bilingual.jsonl），顶层 mtime 在启动几分钟后永久陈旧，
+  // 自述场景（3 小时前创建的 CLI 工作台）照样被删。递归取最新 mtime + 10 分钟活性窗口。
   const bootTime = bootTimeMs ?? Date.now()
+  const ACTIVE_WINDOW_MS = 10 * 60 * 1000 // 10 分钟
   for (const root of mediaRoots) {
     for (const dirname of [STAGING_DIRNAME, '.subtitle-translate']) {
       const stagingRoot = join(root, dirname)
@@ -212,8 +235,12 @@ export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>, bootT
         const full = join(stagingRoot, name)
         try {
           const stat = lstatSync(full) // 存在性探测,不跟随链接;断链在这里也不会抛
-          // R6-9：mtime 新于进程启动时间 → 可能是并发 CLI 正在用，跳过
-          if (stat.mtimeMs > bootTime) continue
+          // R7-1：只有目录才用 age-based 活性判断（活跃 CLI 工作台会持续写入子目录）；
+          // 文件/符号链接总是删（它们不是活跃的工作台，只是垃圾）。
+          if (stat.isDirectory()) {
+            const latestMtime = latestMtimeMs(full)
+            if (Date.now() - latestMtime < ACTIVE_WINDOW_MS) continue
+          }
           rmSync(full, { recursive: true, force: true })
           cleaned++
         } catch {

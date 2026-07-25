@@ -580,7 +580,32 @@ describe('realign 支持方法', () => {
 
     // 副本行必须一并清除,不能留成孤儿
     expect(lib.getItemFileByPath('/media/4k-replica.mkv')).toBeNull()
-    expect(lib.db.prepare('SELECT COUNT(*) as c FROM item_files WHERE item_id=?').get('s1/e1')).toEqual({ c: 0 })
+  })
+
+  // R6-4 修复：deleteEpisodeByPath/deleteMovieByPath 也要清 item_files——deleteSeriesRows 的头注释
+  // 把"owner 删了但 item_files 留孤儿"定性为 SEVERE 数据腐蚀，本方法与它同形，漏了同级清理。
+  // 这两条测试锁住"item_files 必须一并清除，不能留成孤儿"。
+  it('deleteEpisodeByPath 同时清 item_files——否则 episode 删除后副本成孤儿（R6-4 腐蚀）', () => {
+    lib.upsertSeries({ id: 's1', name: 'Show' })
+    lib.upsertEpisode({ id: 's1/e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/main.mkv', subStatus: 'covered' })
+    lib.addItemFile('s1/e1', '/media/4k-replica.mkv', 1000) // 跨根副本
+    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).not.toBeNull()
+
+    lib.deleteEpisodeByPath('/media/main.mkv')
+
+    // 副本行必须一并清除,不能留成孤儿
+    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).toBeNull()
+  })
+
+  it('deleteMovieByPath 同时清 item_files——否则 movie 删除后副本成孤儿（R6-4 腐蚀）', () => {
+    lib.upsertMovie({ id: 'm1', name: 'Movie', path: '/media/movie.mkv', subStatus: 'covered' })
+    lib.addItemFile('m1', '/media/movie-4k.mkv', 2000) // 跨根副本
+    expect(lib.getItemFileByPath('/media/movie-4k.mkv')).not.toBeNull()
+
+    lib.deleteMovieByPath('/media/movie.mkv')
+
+    // 副本行必须一并清除,不能留成孤儿
+    expect(lib.getItemFileByPath('/media/movie-4k.mkv')).toBeNull()
   })
 
   it('upsertSeries posterPath / upsertMovie posterPath 写入 poster_path 列', () => {

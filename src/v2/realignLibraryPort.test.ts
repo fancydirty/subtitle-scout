@@ -57,6 +57,34 @@ describe('makeRealignLibraryPort · getItemsPage', () => {
     expect(bySeason.get(2)).toBe(join(showDir, 'Season 02', 'ep2.mkv'))
   })
 
+  // R6-5 修复：walkCache 打点在走盘完成后——此前用走盘开始前的 now，走盘 >100ms 时缓存写入即过期，
+  // 第二页必然重新全量走盘（正是它要救的 CIFS/SMB 场景）。这条测试锁住"同一轮验收内的连续分页
+  // 命中缓存（walk 只被调一次）"。
+  it('同一轮验收内的连续分页命中缓存（walk 只被调一次）', async () => {
+    root = mkdtempSync(join(tmpdir(), 'realign-lib-port-'))
+    const showDir = join(root, 'Spy x Family (2022) [tmdbid-120089]')
+    mkdirSync(join(showDir, 'Season 01'), { recursive: true })
+    writeFileSync(join(showDir, 'Season 01', 'ep1.mkv'), 'x')
+    writeFileSync(join(showDir, 'Season 01', 'ep2.mkv'), 'x')
+
+    const walkSpy = vi.fn(() => [join(showDir, 'Season 01', 'ep1.mkv'), join(showDir, 'Season 01', 'ep2.mkv')])
+    const port = makeRealignLibraryPort({
+      lib: mkLib(),
+      roots: [root],
+      runIngest: vi.fn(),
+      walkVideoFiles: walkSpy,
+    })
+
+    // 连续分页两次（模拟验收的 pageSize=100 场景）
+    const page1 = await port.getItemsPage(0, 1)
+    const page2 = await port.getItemsPage(1, 1)
+
+    expect(page1).toHaveLength(1)
+    expect(page2).toHaveLength(1)
+    // 关键：walk 只被调一次（第二页命中缓存）
+    expect(walkSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('分页语义：对完整走盘结果做数组切片', async () => {
     root = mkdtempSync(join(tmpdir(), 'realign-lib-port-page-'))
     const showDir = join(root, 'Show (2020) [tmdbid-1]', 'Season 01')

@@ -159,6 +159,37 @@ describe('login 只对失败计入节流（审计 #3：成功登录不消耗预�
     expect(auth.login('admin', 'wrong', '2.2.2.2', NOW)).toMatchObject({ ok: false, status: 401 }) // 第 5 次失败
     expect(auth.login('admin', 'hunter2222', '2.2.2.2', NOW)).toMatchObject({ ok: false, status: 429 }) // 触顶
   })
+
+  // R6-2 修复：login 时序侧信道——username !== storedUser 短路时不跑 scrypt（0 次 vs 1 次），
+  // R5-10 加的 hashPassword(password) 只是给两条路径各加一次（1 次 vs 2 次），差值同形平移。
+  // 正确做法：无条件 verifyPassword（恒跑），再用非短路方式合并结果。这两条测试锁住"用户名错和
+  // 用户名对时的 scrypt 次数一致"（通过验证两条路径都返回 401，且 throttle 都记录失败——
+  // 如果短路，用户名错时不会记录失败）。
+  it('用户名错时也记录失败（证明 verifyPassword 跑了，没有短路）', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', NOW)
+    // 用户名错：应该返回 401 且记录失败（throttle 计数）
+    const r1 = auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
+    expect(r1).toMatchObject({ ok: false, status: 401 })
+    // 再试一次：throttle 应该已记录 1 次失败（如果短路，不会记录）
+    const r2 = auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
+    expect(r2).toMatchObject({ ok: false, status: 401 })
+    // 第 5 次失败后应该 429（如果短路，throttle 不会计数，永远 401）
+    for (let i = 0; i < 3; i++) auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
+    const r5 = auth.login('wronguser', 'wrong', '1.1.1.1', NOW)
+    expect(r5).toMatchObject({ ok: false, status: 429 })
+  })
+
+  it('用户名对但密码错时也记录失败（与用户名错时的行为一致）', () => {
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    auth.setup('admin', 'hunter2222', NOW)
+    const r1 = auth.login('admin', 'wrong', '1.1.1.1', NOW)
+    expect(r1).toMatchObject({ ok: false, status: 401 })
+    // 再记 4 次失败（共 5 次），第 5 次应该 429
+    for (let i = 0; i < 4; i++) auth.login('admin', 'wrong', '1.1.1.1', NOW)
+    const r5 = auth.login('admin', 'wrong', '1.1.1.1', NOW)
+    expect(r5).toMatchObject({ ok: false, status: 429 })
+  })
 })
 
 describe('AuthService（settings 三键：auth_username/auth_password_hash/auth_api_key）', { timeout: 30_000 }, () => {

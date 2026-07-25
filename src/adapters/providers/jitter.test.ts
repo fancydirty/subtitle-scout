@@ -87,4 +87,23 @@ describe('JitteredIntervalLimiter', () => {
     const limiter = new JitteredIntervalLimiter(1, 1)
     expect(typeof limiter.wait).toBe('function')
   })
+
+  // R6-6 修复：并发竞态——读-睡-写无互斥会让两个并发调用算出同一个 delta、同时睡醒，突破间隔。
+  // 用 promise 队列串行化：每个 wait() 都排到前一个的后面，确保 last 的更新原子性。
+  // 这条测试锁住"5 个并发 wait() 的总耗时 >= 4 * baseMs"（如果无互斥，它们会同时睡醒，总耗时 ~baseMs）。
+  it('并发 wait() 串行化：5 个并发调用的总耗时 >= 4 * baseMs', async () => {
+    const baseMs = 100
+    const limiter = new JitteredIntervalLimiter(baseMs, 0, () => 0) // 无 jitter，固定 100ms
+    const start = Date.now()
+    await Promise.all([
+      limiter.wait(),
+      limiter.wait(),
+      limiter.wait(),
+      limiter.wait(),
+      limiter.wait(),
+    ])
+    const elapsed = Date.now() - start
+    // 5 个并发调用串行化后：第 1 个立即执行，后 4 个各等 100ms，总耗时 >= 400ms
+    expect(elapsed).toBeGreaterThanOrEqual(4 * baseMs - 50) // 留 50ms 误差（定时器不精确）
+  })
 })
