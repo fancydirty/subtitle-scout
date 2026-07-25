@@ -39,11 +39,19 @@ export function verifyPassword(password: string, stored: string): boolean {
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000
 
 /** session cookie 后端仓：内存 Map（spec 定案——重启全员重登，YAGNI 不落盘）。滚动过期：
- *  verify 通过即续期 30 天。 */
+ *  verify 通过即续期 30 天。create 时顺带惰性清扫过期会话（防长期运行缓慢泄漏）。 */
 export class SessionStore {
   private sessions = new Map<string, number>() // token → expiresAt
 
+  /** 惰性清扫：删除所有已过期的会话。 */
+  private sweep(now: number): void {
+    for (const [token, exp] of this.sessions) {
+      if (now > exp) this.sessions.delete(token)
+    }
+  }
+
   create(now: number): string {
+    this.sweep(now) // 惰性清扫，防 Map 无界增长
     const token = randomBytes(32).toString('hex')
     this.sessions.set(token, now + SESSION_TTL_MS)
     return token
@@ -72,23 +80,51 @@ export class SessionStore {
 
 /** 登录失败节流（spec §2：内存计数 5 次/分钟）。只计**失败**（审计 #3）——成功登录不消耗预算，
  *  否则合法管理员正常登录会白白吃掉配额，且被别人的失败尝试连累锁死。check 只读判定当前窗口是否
- *  还在预算内（不自增），recordFailure 在密码错时显式记一次。 */
+ *  还在预算内（不自增），recordFailure 在密码错时显式记一次。
+ *  清理策略：recordFailure 时顺带惰性清扫过期条目（防 Map 无界增长，IPv6 /64 轮换攻击场景）。
+ *  IPv6 归一：::1 和 2001:db8::1/64 前缀视为同一来源（防攻击者轮换地址绕过限流）。 */
 export class LoginThrottle {
   private counts = new Map<string, { windowStart: number; count: number }>()
   constructor(private limit = 5, private windowMs = 60_000) {}
 
+  /** IPv6 地址归一化为 /64 前缀（同一子网视为同一来源）。IPv4 和域名原样返回。 */
+  private normalizeKey(key: string): string {
+    // IPv6 格式: xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx 或压缩形式 ::
+    if (key.includes(':')) {
+      const parts = key.split(':').filter(p => p)
+      // 至少 4 段才是 IPv6（避免误判 hostname:port）
+      if (parts.length >= 4) {
+        // 取前 4 段作为 /64 前缀
+        return parts.slice(0, 4).join(':') + '::/64'
+      }
+    }
+    return key
+  }
+
+  /** 惰性清扫：删除所有已过期的窗口条目。 */
+  private sweep(now: number): void {
+    for (const [key, entry] of this.counts) {
+      if (now - entry.windowStart >= this.windowMs) {
+        this.counts.delete(key)
+      }
+    }
+  }
+
   /** 当前来源在窗口内是否还允许尝试（不改计数）。窗口已滚过视为重置（放行）。 */
   check(key: string, now: number): boolean {
-    const entry = this.counts.get(key)
+    const normalizedKey = this.normalizeKey(key)
+    const entry = this.counts.get(normalizedKey)
     if (!entry || now - entry.windowStart >= this.windowMs) return true
     return entry.count < this.limit
   }
 
-  /** 记一次失败（密码错时调用）。窗口已滚过则开新窗口。 */
+  /** 记一次失败（密码错时调用）。窗口已滚过则开新窗口。顺带惰性清扫过期条目。 */
   recordFailure(key: string, now: number): void {
-    const entry = this.counts.get(key)
+    this.sweep(now) // 惰性清扫，防 Map 无界增长
+    const normalizedKey = this.normalizeKey(key)
+    const entry = this.counts.get(normalizedKey)
     if (!entry || now - entry.windowStart >= this.windowMs) {
-      this.counts.set(key, { windowStart: now, count: 1 })
+      this.counts.set(normalizedKey, { windowStart: now, count: 1 })
       return
     }
     entry.count++

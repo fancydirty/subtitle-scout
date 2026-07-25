@@ -198,10 +198,11 @@ export class JobsRepo {
     const only = opts?.onlyTaskType
     const exclude = opts?.excludeTaskType
     const taskFilter = only != null
-      ? `AND ifnull(json_extract(payload,'$.taskType'),'') = '${only.replace(/'/g, '')}'`
+      ? `AND ifnull(json_extract(payload,'$.taskType'),'') = ?`
       : exclude != null
-        ? `AND ifnull(json_extract(payload,'$.taskType'),'') != '${exclude.replace(/'/g, '')}'`
+        ? `AND ifnull(json_extract(payload,'$.taskType'),'') != ?`
         : ''
+    const taskFilterParam = only ?? exclude ?? ''
     const job = this.db
       .prepare(
         `UPDATE jobs SET state = 'searching', lease_until = ?, updated_at = ?
@@ -215,7 +216,7 @@ export class JobsRepo {
          )
          RETURNING *`
       )
-      .get(leaseUntil, now, now) as Job | undefined
+      .get(...(taskFilter ? [leaseUntil, now, now, taskFilterParam] : [leaseUntil, now, now])) as Job | undefined
     return job ?? null
   }
 
@@ -225,10 +226,11 @@ export class JobsRepo {
     const only = opts?.onlyTaskType
     const exclude = opts?.excludeTaskType
     const taskFilter = only != null
-      ? `AND ifnull(json_extract(payload,'$.taskType'),'') = '${only.replace(/'/g, '')}'`
+      ? `AND ifnull(json_extract(payload,'$.taskType'),'') = ?`
       : exclude != null
-        ? `AND ifnull(json_extract(payload,'$.taskType'),'') != '${exclude.replace(/'/g, '')}'`
+        ? `AND ifnull(json_extract(payload,'$.taskType'),'') != ?`
         : ''
+    const taskFilterParam = only ?? exclude ?? ''
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS c FROM jobs
@@ -236,7 +238,7 @@ export class JobsRepo {
          AND (next_retry_at IS NULL OR next_retry_at <= ?)
          ${taskFilter}`
       )
-      .get(now) as { c: number }
+      .get(...(taskFilter ? [now, taskFilterParam] : [now])) as { c: number }
     return row.c
   }
 

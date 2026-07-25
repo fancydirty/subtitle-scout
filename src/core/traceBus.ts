@@ -22,16 +22,28 @@ export interface TraceEvent {
  *  全量；直播场景下这已经足够，账目式的完整性从来不是这条通道的职责）。 */
 const RING_CAP = 512
 
+/** runKey 键数量上限——崩溃 run 的缓冲会永久残留（snapshot 未被调用），长期运行下缓慢累积。
+ *  超过此上限时淘汰最久未写入的键（LRU 语义）。 */
+const MAX_BUFFERS = 1000
+
 // 进程级单例状态：一个 runKey 一条环形缓冲；订阅者集合不分 runKey（过滤归客户端，见模块头注）。
 const buffers = new Map<string, TraceEvent[]>()
 const subscribers = new Set<(e: TraceEvent) => void>()
 
+/** 淘汰最久未写入的键（LRU）：Map 的迭代顺序是插入顺序，第一个键就是最久未更新的。 */
+function evictOldestBuffer(): void {
+  const oldest = buffers.keys().next().value
+  if (oldest !== undefined) buffers.delete(oldest)
+}
+
 export const traceBus = {
   /** 追加进该 runKey 的环形缓冲（cap 512，溢出丢最旧）+ 广播给全部订阅者。订阅者回调抛错必须
-   *  被吞——直播是增益，绝不能反噬调用方的 agent 循环。 */
+   *  被吞——直播是增益，绝不能反噬调用方的 agent 循环。键数量超上限时淘汰最久未写入的键。 */
   publish(e: TraceEvent): void {
     let buf = buffers.get(e.runKey)
     if (!buf) {
+      // 键数量上限：淘汰最久未写入的键（崩溃 run 的缓冲永久残留场景）
+      if (buffers.size >= MAX_BUFFERS) evictOldestBuffer()
       buf = []
       buffers.set(e.runKey, buf)
     }
