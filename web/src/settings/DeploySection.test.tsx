@@ -107,7 +107,7 @@ describe('DeploySection：只读展示', () => {
     )
     expect(screen.getByText('/media/movies,/media/tv')).toBeInTheDocument()
     expect(
-      screen.getByText('first-boot seed only — see the guarded directories above for what is live'),
+      screen.getByText('first-boot seed only — see the guarded directories below for what is live'),
     ).toBeInTheDocument()
   })
 
@@ -118,7 +118,7 @@ describe('DeploySection：只读展示', () => {
       </I18nProvider>,
     )
     expect(
-      screen.queryByText('first-boot seed only — see the guarded directories above for what is live'),
+      screen.queryByText('first-boot seed only — see the guarded directories below for what is live'),
     ).not.toBeInTheDocument()
   })
 })

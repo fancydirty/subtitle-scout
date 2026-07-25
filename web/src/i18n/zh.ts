@@ -190,7 +190,7 @@ export const zh = {
   settings_deploy_secrets_heading: '密钥',
   settings_deploy_nonsecrets_heading: '其它',
   // 审计四轮 R4：MEDIA_ROOTS 只是首启种子，真正生效的是 media_roots 表（本页守备目录区）
-  settings_deploy_media_roots_seed_note: '仅首启种子 — 当前生效的守备目录见上方列表',
+  settings_deploy_media_roots_seed_note: '仅首启种子 — 当前生效的守备目录见下方列表',
   settings_deploy_error_prefix: '无法加载部署信息：',
   // 技术状态词——同 Workflow 区 decision 词表的口径永不翻译（DESIGN.md §3/§4：圆点+同色词，
   // 状态词是技术值不是正文）。

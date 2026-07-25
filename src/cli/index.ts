@@ -51,6 +51,7 @@ import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
+import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine } from './watchStartupWarnings.js'
 import { claimParked } from '../v2/triageOps.js'
 
 function requireEnv(name: string): string {
@@ -234,17 +235,12 @@ async function cmdWatch() {
   settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now())
   const currentRoots = (): string[] => settingsRepo.listRoots().map(r => r.path)
   if (currentRoots().length === 0) {
-    console.log('[watch] no media roots configured（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）— subtitle writes are not root-restricted; 去 dashboard 加一个守备目录，或设 MEDIA_ROOTS 作首启种子')
+    console.log(zeroRootsWarningLine())
   } else {
-    // env/DB roots 不一致告警:MEDIA_ROOTS 只在首启播种一次,之后改 env 不生效,真正的守备目录在 DB
     const envRoots = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
     const dbRoots = currentRoots()
-    const envSet = new Set(envRoots)
-    const dbSet = new Set(dbRoots)
-    const mismatch = envRoots.length !== dbRoots.length || ![...envSet].every(r => dbSet.has(r))
-    if (mismatch && envRoots.length > 0) {
-      console.warn(`[watch] ⚠️ MEDIA_ROOTS env (${envRoots.join(',')}) 与当前生效的守备目录 (${dbRoots.join(',')}) 不一致——以 dashboard 设置页为准（env 仅首启种子）`)
-    }
+    const warning = rootsMismatchWarningLine(envRoots, dbRoots)
+    if (warning) console.warn(warning)
   }
 
   // Construct DaemonDeps
@@ -627,11 +623,8 @@ async function cmdWatch() {
   const hasAssrt = !!process.env.ASSRT_TOKEN
   const hasOpensubtitles = !!(process.env.OPENSUBTITLES_API_KEY && process.env.OPENSUBTITLES_USERNAME && process.env.OPENSUBTITLES_PASSWORD)
   const hasZimuku = process.env.ZIMUKU_ENABLED === 'true'
-  const hasSubhd = process.env.SUBHD_ENABLED === 'true'
-  const hasJimaku = !!process.env.JIMAKU_API_KEY
-  if (!hasAssrt && !hasOpensubtitles && !hasZimuku && !hasSubhd && !hasJimaku) {
-    console.warn('[watch] ⚠️ 没有任何字幕源可用——所有找字幕任务都会落空。请至少配置 ASSRT_TOKEN（或启用其他字幕源）')
-  }
+  const subtitleSourcesWarning = zeroSubtitleSourcesWarningLine(process.env)
+  if (subtitleSourcesWarning) console.warn(subtitleSourcesWarning)
 
   const daemon = new ScoutDaemon(daemonDeps)
 
@@ -640,8 +633,20 @@ async function cmdWatch() {
     shutdown.abort()
   }
 
-  process.on('SIGINT', stop)
-  process.on('SIGTERM', stop)
+  // R5-6 修复：daemon 无二次信号强退——SIGINT/SIGTERM 只 shutdown.abort()，shutdown 等 inflight
+  // （30s）或长 ingest 期间再按 Ctrl-C 完全无效。第二次调用时直接 process.exit(1)。
+  let stopCalled = false
+  const gracefulStop = () => {
+    if (stopCalled) {
+      log('received second shutdown signal, force exit')
+      process.exit(1)
+    }
+    stopCalled = true
+    stop()
+  }
+
+  process.on('SIGINT', gracefulStop)
+  process.on('SIGTERM', gracefulStop)
 
   await daemon.run(shutdown.signal)
   // 干净退出:关连接(checkpoint 落 WAL)再走,别把未落盘提交交给运气(软路由断电常态)。

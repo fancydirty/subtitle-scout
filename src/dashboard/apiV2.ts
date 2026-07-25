@@ -628,7 +628,7 @@ export type UpdateSettingsResult = { ok: true; settings: SettingsDTO } | { ok: f
  *  （全有或全无——不做"合法的先写、非法的报错"的部分成功，避免半成品状态混进设置表）。全部
  *  通过才落库，返回写入后的全量 settings（前端直接刷新展示，不用再发一次 GET）。 */
 export function updateSettings(
-  settingsRepo: Pick<SettingsRepo, 'get' | 'set'>, body: unknown, now: number,
+  settingsRepo: SettingsRepo, body: unknown, now: number,
 ): UpdateSettingsResult {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     return { ok: false, error: 'body must be a JSON object of setting key-value pairs' }
@@ -646,7 +646,11 @@ export function updateSettings(
       return { ok: false, error: `setting ${key}: ${parsed.error.issues[0]?.message ?? 'invalid value'}` }
     }
   }
-  for (const [key, value] of entries) settingsRepo.set(key, value as string, now)
+  // R5-7 修复：多键写入无事务——注释声称"全有或全无"，但校验后的写入循环不在事务里，
+  // 崩溃即部分写。包一层 db.transaction 让语义与注释一致。
+  settingsRepo.db.transaction(() => {
+    for (const [key, value] of entries) settingsRepo.set(key, value as string, now)
+  })()
   return { ok: true, settings: buildSettings(settingsRepo) }
 }
 

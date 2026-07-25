@@ -24,10 +24,19 @@ export class GlossaryRepo {
 
   save(seriesKey: string, terms: GlossaryTerm[], updatedAt: number): void {
     const clean = terms.filter((t) => t && typeof t.src === 'string' && t.src && typeof t.zh === 'string' && t.zh)
-    this.db.prepare(
-      `INSERT INTO translate_glossaries (series_key, terms_json, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(series_key) DO UPDATE SET terms_json = excluded.terms_json, updated_at = excluded.updated_at`,
-    ).run(seriesKey, JSON.stringify(clean), updatedAt)
+    // R5-8 修复：跨进程 last-write-wins——daemon 与手动 CLI 同时翻译同剧时，load→merge→save
+    // 非原子，后 save 覆盖先 save 的新术语。把 load 放进同一事务，让 merge 基于最新值。
+    this.db.transaction(() => {
+      const existing = this.load(seriesKey)
+      // 简单 merge：新术语覆盖同 src 的旧术语，旧术语里新列表没有的保留（不删术语）
+      const bySrc = new Map(existing.map((t) => [t.src, t]))
+      for (const t of clean) bySrc.set(t.src, t)
+      const merged = [...bySrc.values()]
+      this.db.prepare(
+        `INSERT INTO translate_glossaries (series_key, terms_json, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(series_key) DO UPDATE SET terms_json = excluded.terms_json, updated_at = excluded.updated_at`,
+      ).run(seriesKey, JSON.stringify(merged), updatedAt)
+    })()
   }
 }
 

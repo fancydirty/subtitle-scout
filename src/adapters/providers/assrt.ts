@@ -37,12 +37,20 @@ export class AssrtAllEntriesDroppedError extends Error {
 
 export class MinIntervalLimiter {
   private last = 0
+  private tail: Promise<void> = Promise.resolve()
   constructor(private intervalMs: number) {}
+
+  /** 并发安全：读-睡-写无互斥会让两个并发调用算出同一个 delta、同时睡醒，突破间隔。
+   *  用 promise 队列串行化：每个 wait() 都排到前一个的后面，确保 last 的更新原子性。 */
   async wait() {
-    const now = Date.now()
-    const delta = now - this.last
-    if (delta < this.intervalMs) await new Promise(r => setTimeout(r, this.intervalMs - delta))
-    this.last = Date.now()
+    const myTurn = this.tail.then(async () => {
+      const now = Date.now()
+      const delta = now - this.last
+      if (delta < this.intervalMs) await new Promise(r => setTimeout(r, this.intervalMs - delta))
+      this.last = Date.now()
+    })
+    this.tail = myTurn
+    return myTurn
   }
 }
 

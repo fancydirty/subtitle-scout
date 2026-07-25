@@ -75,6 +75,7 @@ services:
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       TZ: ${TZ:-Asia/Shanghai}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
       DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
     volumes:
       # 宿主机 Movies/ TV/ → 容器内 movies/ tv/(小写,Linux 容器大小写敏感)

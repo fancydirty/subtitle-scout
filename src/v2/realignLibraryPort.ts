@@ -51,6 +51,10 @@ function seasonFromPath(path: string): number | null {
  * realignExecutor.ts 调用，随本任务一并从接口删除，见 realignExecutor.ts 的唯一批准 hunk）。
  */
 export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLibraryPort {
+  // R5-5 修复：同一轮验收内的连续分页缓存一次 walk 结果——1000 文件的库此前每页都全量递归
+  // 走盘（CIFS/SMB 上极慢），但一次验收内的连续分页用同一份快照完全够（文件在验收期间不变）。
+  let walkCache: { at: number; files: string[] } | null = null
+
   return {
     /**
      * 消费方：realignExecutor.ts:589 `const seriesItem = await deps.jf.getItem(seriesId)`，
@@ -88,11 +92,25 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
      * "诚实来源是磁盘"（design §P5）：验收的目的是"搬动是否真的落地"，这一刻 DB 还没被
      * 下一轮摄取重新扫过（重新识别发生在 refreshLibrary→runIngest，而验收紧跟在它之后），
      * 唯一可信来源是 deps.roots 下的真实文件树，不是自己的库行。ParentIndexNumber 从路径里
-     * 最近的 "Season NN" 段解析（见 seasonFromPath）。分页语义：对完整走盘结果的数组切片
-     * ——每次调用都重新走盘（不做跨调用缓存），确保验收看到的是调用时刻的磁盘现状。
+     * 最近的 "Season NN" 段解析（见 seasonFromPath）。分页语义：对完整走盘结果的数组切片。
+     *
+     * R5-5 修复：同一轮验收内的连续分页缓存一次 walk 结果——1000 文件的库此前每页都全量递归
+     * 走盘（CIFS/SMB 上极慢），但一次验收内的连续分页用同一份快照完全够（文件在验收期间不变）。
      */
     async getItemsPage(startIndex, limit) {
+      // 短期缓存：同一轮验收（100ms 窗口内）的连续分页用同一份 walk 结果
+      const now = Date.now()
+      if (walkCache && now - walkCache.at < 100) {
+        return walkCache.files.slice(startIndex, startIndex + limit).map(path => ({
+          Id: path,
+          Name: basename(path),
+          Type: 'Episode',
+          Path: path,
+          ParentIndexNumber: seasonFromPath(path) ?? undefined,
+        }))
+      }
       const files = deps.roots.flatMap(root => walkVideoFiles(root))
+      walkCache = { at: now, files }
       return files.slice(startIndex, startIndex + limit).map(path => ({
         Id: path,
         Name: basename(path),

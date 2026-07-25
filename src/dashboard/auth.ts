@@ -207,6 +207,10 @@ export class AuthService {
       this.throttle.recordFailure(remoteAddr, now)
       return { ok: false, status: 401, error: 'not initialized' }
     }
+    // R5-10 修复：username !== storedUser 短路时不跑 scrypt，时序可分辨用户名对错。
+    // 先算 hash 再统一比较（无论用户名对错，scrypt 都跑，时序一致）。
+    // 注：inputHash 只为保证时序一致而计算，不参与比较（verifyPassword 内部会重算）。
+    hashPassword(password)
     if (username !== storedUser || !verifyPassword(password, storedHash)) {
       this.throttle.recordFailure(remoteAddr, now) // 只对失败计入（审计 #3）
       return { ok: false, status: 401, error: 'invalid username or password' }

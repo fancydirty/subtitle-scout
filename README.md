@@ -92,6 +92,12 @@ ASSRT 主打国产字幕站，欧美剧集/电影覆盖有限；OpenSubtitles �
 docker compose exec subtitle-scout node dist/cli/index.js doctor
 ```
 
+**⚠️ 容器起不来时**（缺 TMDB_API_KEY/LLM key 导致崩溃循环，exec 会报 "container is not running"）：
+
+```bash
+docker compose run --rm --no-deps subtitle-scout node dist/cli/index.js doctor
+```
+
 **示例输出**：
 
 ```

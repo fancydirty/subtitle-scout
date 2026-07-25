@@ -81,6 +81,8 @@ export interface IngestResult {
   parked: number
   removed: number
   changed: boolean
+  /** ingest 已在跑时早退（dashboard 触发的 reconcile-all/requestIngest 并发保护）。 */
+  skipped?: boolean
 }
 
 /** 本轮摄取 pass 是否正在进行——目前只是一个可观察的进程内标志（无并发保护语义，T4 决定
@@ -484,13 +486,18 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
   const { lib, tmdb, log } = deps
 
   return async function ingestPass(): Promise<IngestResult> {
-    // 债务D5：语言配置每轮 pass 新鲜求值——设置页改 target_languages 后下一轮扫描即生效。
-    const targetLanguages = deps.targetLanguages()
-    const originSkipLanguages = deps.originSkipLanguages?.() ?? targetLanguages
-    const excludeExtras = deps.excludeExtras?.() ?? false
-    const hardsubMode = deps.hardsubMode?.() ?? 'off'
+    // 互斥：dashboard 触发的 reconcile-all 和甄别页 requestIngest 不检查锁，daemon tick 的 ingest
+    // 分支有 hasActiveRealignWorkerTask 互斥——如果 ingest 已在跑，直接早退（不排队，不并发）。
+    if (ingestLock.held) {
+      return { scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false, skipped: true }
+    }
     ingestLock.held = true
     try {
+      // 债务D5：语言配置每轮 pass 新鲜求值——设置页改 target_languages 后下一轮扫描即生效。
+      const targetLanguages = deps.targetLanguages()
+      const originSkipLanguages = deps.originSkipLanguages?.() ?? targetLanguages
+      const excludeExtras = deps.excludeExtras?.() ?? false
+      const hardsubMode = deps.hardsubMode?.() ?? 'off'
       const nowMs = deps.now ? deps.now() : Date.now()
       const result: IngestResult = { scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false }
       const seenPaths = new Set<string>()

@@ -1,5 +1,12 @@
 import '@testing-library/jest-dom'
+import { configure } from '@testing-library/react'
 import { vi } from 'vitest'
+
+// 审计五轮 R5（两个子代理独立确认）：R4 声称的"flaky 根治"是假根治——把 vitest testTimeout
+// 提到 10s，但失败用例全死在 React Testing Library 的 findBy* 内部轮询，它的默认超时是
+// 1000ms（asyncUtilTimeout），vitest 的 testTimeout 根本管不到。这里把 RTL 的异步查询超时
+// 提到 5s，与 vitest 的 worker 并发限制（vitest.config.ts）双管齐下。
+configure({ asyncUtilTimeout: 5000 })
 
 // jsdom 不实现 <dialog> 的 showModal/close（Astryx CommandPalette/Dialog 底层用原生 <dialog>）。
 // 全局垫一层最小 mock：把 open 属性当成"是否显示"的唯一真源，跟 Astryx 自己的测试套件同一手法

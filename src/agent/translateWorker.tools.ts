@@ -1,7 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, rmSync, statSync, renameSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { evaluateTranslationGate, parseSrtCues } from '../translate/qualityGate.js'
 import { materializeAgentView } from '../translate/workspace/materialize.js'
@@ -41,18 +41,35 @@ export interface TranslateToolDeps {
 
 function readRows(paths: WorkspacePaths): BilingualRow[] {
   if (!existsSync(paths.bilingualPath)) return []
-  return readFileSync(paths.bilingualPath, 'utf8')
-    .trim().split('\n').filter(Boolean)
-    .map((l) => JSON.parse(l) as BilingualRow)
+  const raw = readFileSync(paths.bilingualPath, 'utf8').trim()
+  if (!raw) return []
+  return raw.split('\n').filter(Boolean).map((l, i) => {
+    try {
+      return JSON.parse(l) as BilingualRow
+    } catch (e) {
+      // 一行损坏整批抛，但错误信息不带行号，排查困难——附行号重抛（同 merge.ts 模式）
+      throw new Error(`bilingual.jsonl line ${i + 1} invalid JSON: ${l.slice(0, 100)}... (${e instanceof Error ? e.message : String(e)})`)
+    }
+  })
 }
 
 function writeRows(paths: WorkspacePaths, rows: BilingualRow[]): void {
-  writeFileSync(paths.bilingualPath, rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''))
+  // 原子写：tmp+rename（同 zimukuSession.put 的 pid+uuid 先例）——ENOSPC/SIGKILL 打断即留半行，
+  // readRows 对每行裸 JSON.parse 无容错，撕裂后工具链不可恢复（update_row/run_structural_gate
+  // 都抛 Unterminated string，且所有修复路径都先过 readRows，模型对这个状态无解）。
+  const tmp = `${paths.bilingualPath}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmp, rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''))
+  renameSync(tmp, paths.bilingualPath)
 }
 
 function readTerms(paths: WorkspacePaths): GlossaryTerm[] {
   if (!existsSync(paths.glossaryPath)) return []
-  return JSON.parse(readFileSync(paths.glossaryPath, 'utf8')) as GlossaryTerm[]
+  try {
+    return JSON.parse(readFileSync(paths.glossaryPath, 'utf8')) as GlossaryTerm[]
+  } catch (e) {
+    // meta.json 损坏时当作空对象（不让一次崩溃污染整个 workspace，同 assrt 缓存损坏视为 miss 模式）
+    throw new Error(`glossary.json invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 function cueEndSec(timing: string): number {

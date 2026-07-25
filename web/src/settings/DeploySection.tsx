@@ -69,7 +69,7 @@ export function DeploySection({ deploy }: Props) {
                 <span className="settings-deploy-value">
                   {value ?? '—'}
                   {/* 审计四轮 R4：MEDIA_ROOTS 是首启种子，真正生效的守备目录在 media_roots 表
-                      （本页上方 RootsManager）。此前这里原样展示 env 值、零注解——用户改 .env
+                      （本页下方 RootsManager）。此前这里原样展示 env 值、零注解——用户改 .env
                       重启后看到这行变了就以为生效了，实际扫描行为纹丝不动（dashboard 自己的
                       证据在误导用户）。 */}
                   {key === 'MEDIA_ROOTS' ? (

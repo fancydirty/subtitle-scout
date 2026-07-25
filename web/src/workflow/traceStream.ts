@@ -116,7 +116,8 @@ export function subscribeTrace(runKey: string, onEvent: (e: TraceEvent) => void)
   return () => {
     set?.delete(onEvent)
     if (set && set.size === 0) listenersByRunKey.delete(runKey)
-    refCount--
+    // R5-9 修复：同一退订函数被调两次会减成负数，可能提前关闭还有订阅者的连接
+    refCount = Math.max(0, refCount - 1)
     teardownIfUnused()
   }
 }

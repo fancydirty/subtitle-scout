@@ -45,7 +45,8 @@ export function parsePrepareDownload(body: string): string {
 }
 
 /** step 4：解析 POST /api/sub/down 的响应体 `{success:true,pass:true,url:"https://dlus…"}`，返回真
- *  CDN 文件 url。success!==true / 缺 url → 携带站点 msg（如"时间过长本临时页面已经失效"）抛。 */
+ *  CDN 文件 url。success!==true / 缺 url → 携带站点 msg（如"时间过长本临时页面已经失效"）抛。
+ *  URL 校验：https: + host 白名单（防 MITM 指向内网/元数据端点的轻 SSRF）。 */
 export function parseApiSubDown(body: string): string {
   let d: { success?: boolean; pass?: boolean; url?: string | null; msg?: string }
   try {
@@ -55,6 +56,22 @@ export function parseApiSubDown(body: string): string {
   }
   if (d.success !== true || typeof d.url !== 'string' || !d.url) {
     throw new Error(`subhd api/sub/down failed: ${d.msg ?? body.slice(0, 200)}`)
+  }
+  // SSRF 防线：URL 必须是 https: 且 host 属于 subhd 系 CDN（*.subhd.tv / *.subhd.com / *.subhd.me）
+  let url: URL
+  try {
+    url = new URL(d.url)
+  } catch {
+    throw new Error(`subhd api/sub/down invalid URL: ${d.url}`)
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error(`subhd api/sub/down refused non-https URL: ${d.url}`)
+  }
+  const trustedHosts = ['.subhd.tv', '.subhd.com', '.subhd.me']
+  const isTrusted = trustedHosts.some((suffix) => url.hostname.endsWith(suffix)) || 
+                    url.hostname === 'subhd.tv' || url.hostname === 'subhd.com' || url.hostname === 'subhd.me'
+  if (!isTrusted) {
+    throw new Error(`subhd api/sub/down refused untrusted host: ${url.hostname} (expected *.subhd.tv, *.subhd.com, or *.subhd.me)`)
   }
   return d.url
 }

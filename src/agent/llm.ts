@@ -15,10 +15,15 @@ export interface LlmConfig {
   extraBody?: Record<string, unknown>
 }
 
-/** 把 extraBody 合并进 JSON 请求体；非 JSON body 原样放行 */
+/** 把 extraBody 合并进 JSON 请求体；非 JSON body 原样放行（含"是 string 但非合法 JSON"的情况） */
 export function injectExtraBody(init: RequestInit | undefined, extra: Record<string, unknown>): RequestInit | undefined {
   if (!init?.body || typeof init.body !== 'string') return init
-  return { ...init, body: JSON.stringify({ ...JSON.parse(init.body), ...extra }) }
+  try {
+    return { ...init, body: JSON.stringify({ ...JSON.parse(init.body), ...extra }) }
+  } catch {
+    // body 是 string 但非合法 JSON：原样放行（不合并 extra，让调用方按原样发送）
+    return init
+  }
 }
 
 /** True iff the error is a connection-ESTABLISHMENT failure — the request never reached the

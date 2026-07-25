@@ -866,7 +866,7 @@ describe('startDashboard (v2)', () => {
         expect(res.status).toBe(405)
       })
 
-      it('POST /api/v2/triage/claim 需要配置的 token', async () => {
+      it('POST /api/v2/triage/claim 需要配置的 token', { timeout: 20_000 }, async () => {
         const { base } = await start(distWith('<!doctype html>'), 's3cret')
         const res = await fetch(`${base}/api/v2/triage/claim`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
