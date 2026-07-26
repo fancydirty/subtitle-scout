@@ -28,7 +28,7 @@ import type { SubtitleCandidate } from '../core/schemas.js'
  *  itemId lives in own id space (episodes.id/movies.id) — the messenger carries it verbatim, and
  *  harvest ingestion (markCovered/markUnavailable) keys off it. */
 export interface FindSubtitleTargetFact {
-  itemId: string
+  itemId: string | null // null = unidentified (agent must identify first)
   videoPath: string
   videoFilename: string
   season: number | null
@@ -50,6 +50,10 @@ export interface FindSubtitleTargetFact {
    *  必须可选（`?:`）——realignExecutor.ts（圣文件，不可动）的 makeRealignRunEpisode 构造
    *  target 字面量时不带这个键，字段必须允许缺席才能保持零改动兼容；缺席等价于 null。 */
   runtimeMinutes?: number | null
+  // Raw evidence for agent identification (present when itemId is null)
+  dirName?: string | null
+  durationSec?: number | null
+  embeddedLangs?: string[] | null
 }
 
 /** Input to one find-subtitle worker run: a season-level (or single-movie) range + the current

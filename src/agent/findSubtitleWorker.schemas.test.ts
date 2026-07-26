@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { FindSubtitleBatchReportSchema } from './findSubtitleWorker.schemas.js'
+import type { FindSubtitleTask } from './findSubtitleWorker.schemas.js'
 
 describe('FindSubtitleBatchReportSchema', () => {
   it('接受三桶批量报告', () => {
@@ -191,5 +192,45 @@ describe('FindSubtitleBatchReportSchema', () => {
       })
       expect(r.installed).toHaveLength(1)
     })
+  })
+})
+
+describe('FindSubtitleTargetFact with raw evidence', () => {
+  it('accepts targets with raw evidence fields', ({ expect }) => {
+    const task: FindSubtitleTask = {
+      jobId: 'job-1',
+      mediaRoot: '/media',
+      title: 'Test',
+      originalTitle: null,
+      year: null,
+      alternativeTitles: [],
+      overview: null,
+      runtimeMinutes: null,
+      providerIds: {},
+      targetLanguage: 'zh',
+      hardsubMode: 'off' as const,
+      localCandidates: [],
+      targets: [
+        {
+          itemId: null, // Unidentified
+          videoPath: '/media/tv/Show.S01E01.mkv',
+          videoFilename: 'Show.S01E01.mkv',
+          season: 1,
+          episode: 1,
+          absoluteEpisode: null,
+          imdbId: null,
+          runtimeMinutes: 40,
+          // Raw evidence for agent identification
+          dirName: 'tv',
+          durationSec: 2400,
+          embeddedLangs: ['eng', 'jpn'],
+        },
+      ],
+    }
+
+    // TypeScript should accept this
+    expect(task.targets[0].dirName).toBe('tv')
+    expect(task.targets[0].durationSec).toBe(2400)
+    expect(task.targets[0].embeddedLangs).toEqual(['eng', 'jpn'])
   })
 })
