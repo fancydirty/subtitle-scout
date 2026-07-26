@@ -1,16 +1,14 @@
 import { existsSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
 import { tagsForLanguage, langOf } from '../agent/languages.js'
-import { seasonEpisodeForAbsolute } from '../agent/absoluteEpisodes.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { walkVideoFiles } from '../daemon/selfScan.js'
 import { isMechanicalExtra } from './extrasFilter.js'
-import { seriesId, episodeId, tmdbIdFromOwnId } from './ownIds.js'
-import { refreshSeriesCatalog } from './tmdbCatalog.js'
+import { tmdbIdFromOwnId } from './ownIds.js'
 import type { ScoutDb } from './db.js'
 import type { LibraryRepo, SubStatus } from './libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { Recognized, Park } from '../recognition/index.js'
+import type { PathIdentity, Park } from '../recognition/index.js'
 import { isCanonicalEpisodePath } from '../recognition/identifyFromPath.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { propagateSubtitleToReplica } from './subtitlePropagation.js'
@@ -30,8 +28,10 @@ export interface IngestDeps {
   roots: () => string[]
   lib: LibraryRepo
   tmdb: TmdbClient
-  /** 调用方预绑定好 tmdb + findOverride（recognition/index.ts 的 recognize 签名）。 */
-  recognize: (videoPath: string) => Promise<Recognized | Park>
+  /** 纯机械结构解析（recognition/index.ts 的 recognize 签名，PathIdentity=结构提示，
+   *  无 tmdbId）——身份裁决（TMDB 搜索/详情/建行）已上移到 agent 的 write_identified_media
+   *  工具，ingest 只拿结构提示 + 原始探测数据落 parked_paths，等 agent 识别。 */
+  recognize: (videoPath: string) => PathIdentity | Park
   probe: (videoPath: string) => Promise<EmbeddedSubtitleTrack[] | null>
   /** 重复源 P4b（"复制优先"机械通道，v2/subtitlePropagation.ts）：探测一个视频的时长（秒），
    *  失败（ffprobe 缺席/超时/非视频）返回 null——同 probe 一样，调用方永远显式提供，测试永远
@@ -379,31 +379,6 @@ function classify(input: ClassifyInput): ClassifyResult {
   return { status: 'missing', reason: null, sidecar: null }
 }
 
-/** origin_lang 解析 + 缓存写回，一份实现给 series/movie 两条分支复用（回调式 setCached 屏蔽
- *  两表 setSeriesOriginLang/setMovieOriginLang 的签名差异）。已缓存（含哨兵）直接解码返回，
- *  不重新请求 TMDB——"resolve once per series/movie"是已删除的 scanner.ts 当年就有的不变式，
- *  这里保持。
- *  请求瞬时失败（TmdbRequestFailedError）→ 不缓存（下轮重试），返回 lang:null + failed:true，
- *  调用方据此压制 rule 1b 的标题启发式（"数据暂时拿不到"≠"确认无数据"，绝不能被兜底覆盖）。 */
-async function resolveOriginLang(
-  cached: string | null,
-  mediaType: 'tv' | 'movie',
-  tmdbId: string,
-  tmdb: TmdbClient,
-  setCached: (lang: string) => void,
-  log: (msg: string) => void,
-): Promise<{ lang: string | null; failed: boolean }> {
-  if (cached != null) return { lang: decodeOriginLang(cached), failed: false }
-  try {
-    const resolved = await tmdb.getOriginLanguage(mediaType, tmdbId)
-    setCached(resolved ?? ORIGIN_UNKNOWN)
-    return { lang: resolved, failed: false }
-  } catch (e) {
-    log(`ingest: origin resolution failed for ${mediaType}:${tmdbId}, degraded origin gate this pass (retry next pass): ${e instanceof Error ? e.message : String(e)}`)
-    return { lang: null, failed: true }
-  }
-}
-
 /** 新 series/movie 行的一次性 TMDB 元数据补全（poster/year via getDetails；chinese_title 取
  *  getChineseTitles 第一条——D6：见文件底部说明，chinese_title 直接随 upsertSeries/upsertMovie
  *  的既有参数写入，不走任何单独 setter）。只在行首次创建时调用一次（调用方按"行是否已存在"
@@ -607,7 +582,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               continue
             }
 
-            // ---- FULL PATH：无行，或行存在但探针记忆化已过期 → 重新识别 + 补全 + 探测 ----
+            // ---- FULL PATH：无行，或行存在但探针记忆化已过期 → 结构解析 + raw data 落 parked ----
             // parked-path 负缓存（Task 5）：未变 fingerprint 的已 park 路径按 1h→4h→24h 退避，
             // 跳过昂贵 recognize；seenPaths 已登记本 path，收尾清理不会误删。identify override
             // 强制立即 eligible（用户刚认领，必须重走识别）。
@@ -625,298 +600,43 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               continue
             }
 
-            const tmdbId = outcome.tmdbId
-            const title = outcome.title
+            // outcome 是 PathIdentity：纯结构提示（title/year/season/episode/embeddedTmdbId 等
+            // 机械解析信号），没有 tmdbId——身份裁决（TMDB 搜索/详情/建行）已上移到 agent 的
+            // write_identified_media 工具；ingest 只采集原始探测数据并 park，等 agent 识别。
+            const identity = outcome
 
-            if (outcome.isTv) {
-              let resolvedSeason = outcome.season
-              let resolvedEpisode = outcome.episode
+            // 采集 raw data：时长 + 内嵌字幕轨语言。两个探测各自独立 try/catch——一个失败
+            // 不拖垮另一个，也不阻塞 parking（缺哪个字段就缺哪个，agent 侧按 null=未探测处理）。
+            let durationSec: number | null = null
+            let embeddedLangs: string[] | null = null
 
-              // 绝对集号折算（番剧平铺编号：路径只给出整剧绝对集号，无季/集结构）：用
-              // agent/absoluteEpisodes.ts 的 TMDB 编号表（官方 Absolute 型 episode-group 优先，
-              // 季表 concat 兜底——find-subtitle worker 正向折算用的同一套权威表）做逆向查询。
-              // 折算命中 → 当普通集处理（行的 season/episode 就是折算出的对，绝对集号不另存
-              // ——episodeId 形状就是身份）；折算不出（剧无编号表数据/集号越界/TMDB 双路失败）
-              // → park 'absolute-episode-unresolved'（此时是真·"TMDB 说不出来"，不再是"没试过"）。
-              if (resolvedEpisode === null && outcome.absoluteEpisode !== null) {
-                // P7 disambiguation 守卫（零误认红线）：outcome.viaOverrideLenient 标记的
-                // absoluteEpisode 来自 recognize() 的 claim-gated 宽松裸数字救援——认领只回答了
-                // "这是哪部剧"，没回答"这串裸数字在哪季"。单季剧下无所谓（绝对集号==季内集号，
-                // seasonEpisodeForAbsolute 的折算天然无歧义，照常往下走）；多季剧下这串数字可能
-                // 是整剧绝对集号，也可能是当前季/品牌子系列内部编号（真实撞过的例子：High School
-                // DxD 第四季副标题 'Hero'，文件名 'Hero - 01' 的 01 是 Hero 这一季的第 1 集，
-                // 不是全剧绝对第 1 集——当绝对集号折算会错算成 S1E01，一整行错季错集地装错字幕）。
-                // 拿不准就不动手：park 一个诚实的理由，让人类回到救援页把 season 一起补上
-                // （见 identify_overrides.season + recognize() 里"认领带 season → 直接无歧义"
-                // 的那条分支），而不是在这里替它猜。注意 getSeasonTable 本身已经过滤掉
-                // season_number<=0（特别篇不计入"有几季"），"多于一季"就是这里唯一要判的门槛；
-                // 拿不到季表（null/瞬时失败）时不在这里强行下判断——照常落到下面的
-                // seasonEpisodeForAbsolute，它自己会用同一套数据源纪律得出 null，最终仍然诚实地
-                // park('absolute-episode-unresolved')，不会把"查不到"误判成"能安全折算"。
-                if (outcome.viaOverrideLenient) {
-                  const seasonTable = await tmdb.getSeasonTable(tmdbId)
-                  if (seasonTable && seasonTable.length > 1) {
-                    lib.upsertParkedPath(path, 'override-ambiguous-numbering', nowMs, pathFingerprint)
-                    result.parked++
-                    continue
-                  }
-                }
-                const mapped = await seasonEpisodeForAbsolute(outcome.absoluteEpisode, tmdb, tmdbId)
-                if (mapped) {
-                  resolvedSeason = mapped.season
-                  resolvedEpisode = mapped.episode
-                }
-              }
-
-              if (resolvedEpisode === null) {
-                // 无法构造合法的 episodeId（tmdb:<id>/s<N>e<M> 要求具体集号）——absoluteEpisode
-                // 非 null 时是折算失败的番剧编号场景（见上）；absoluteEpisode 也是 null 时是
-                // 路径压根没给出任何集号信号。两种都不猜（"拿不准就不动手"），park——
-                // 且刻意不清理 `existing`（若这条路径此前已经成功入库过一次）：一次识别遇挫
-                // 不该把之前的可用行也搭进去，宁可留一条现在暂时对不上的旧行，也不无端丢数据。
-                const reason = outcome.absoluteEpisode !== null ? 'absolute-episode-unresolved' : 'no-episode-number'
-                lib.upsertParkedPath(path, reason, nowMs, pathFingerprint)
-                result.parked++
-                continue
-              }
-
-              const season = resolvedSeason ?? 0
-              const episode = resolvedEpisode
-              const ownSeriesId = seriesId(tmdbId)
-              const ownEpisodeId = episodeId(tmdbId, season, episode)
-
-              // 同路径前后两轮识别出的"种类"不一致（剧集↔电影，罕见但真实可能——P6 认领可以用
-              // identify_overrides 把一个先前已入库的路径重新认领成另一种 isTv）；或者种类相同
-              // 但**身份变了**（同一条路径被重新识别到另一个 tmdbId——路 A 识别架构下这是常态：
-              // agent 的 identity_correction 落地为一条 override 认领后，下一轮这条路径就换身份）。
-              // 两种情况旧行的 path 都仍然"被本轮看到 + fileExists 为真"，磁盘真相移除阶段的两
-              // 条件永远不会命中它，放着不管就是一条永久鬼影行（错身份还会继续被派活找字幕）。
-              // 只有确认这轮要成功写新行时才清理旧行（park 分支不清理，见上面的注释）。
-              if (existing && (existing.kind !== 'episode' || existing.id !== ownEpisodeId)) {
-                if (existing.kind === 'movie') {
-                  lib.deleteMovieByPath(path)
-                } else {
-                  lib.deleteEpisodeByPath(path)
-                  if (existing.seriesId) lib.deleteSeriesIfEmpty(existing.seriesId)
-                }
-              }
-
-              // P7 真库闸门 Bug 2 修复：own-id（tmdbId+season+episode）幂等性守卫——两个不同磁盘
-              // 路径识别到同一个 own-id 是真实会发生的情况（多质量重复下载、种子机硬链接残留、
-              // 改名前后两份没清理干净），但 episodes 表 path 列是单值，一行只能记一个 path。不
-              // 设防的话，两条路径会在每一轮互相"抢" path 列——每次都把对方刚写的 path 覆盖掉，
-              // findRowByPath 按字面 path 查，谁都找不到自己上一轮写的行，于是永远走不到 CHEAP
-              // PATH、永远当"新文件"重新识别+回写，upserted 计数在完全安静的库上也永远不收敛到
-              // 0（真幂等性泄漏）。规则：这个 own-id 已经有另一条不同 path 的行占着 → 我是本轮
-              // "迟到"的那条，不抢，park 'duplicate-content'（不是猜错，是诚实地报告"重复内容,
-              // 需要人工去重"）；先占住的那条完全不受影响，继续走它自己正常的 CHEAP PATH。谁先
-              // 谁后由 listVideoFiles 的遍历顺序 + 历史上谁先被摄取决定，不是本次修复要解决的
-              // "该留哪份"的判断——那是人的事，不是摄取层的事（YAGNI，同 C3/C4 的"拿不准就不动
-              // 手"哲学）。复用 priorEpisode 这次 DB 读，classify() 的 resolveStatusToWrite 下面
-              // 还要用它，不重复查询。
-              const priorEpisode = lib.getEpisode(ownEpisodeId)
-              if (priorEpisode && priorEpisode.path !== path) {
-                // 重复源 P2：撞既有身份但 path 不同 = 同一集的副本（4K/1080p/不同压制），不再
-                // park duplicate-content，而是登记为一等公民副本（item_files）。clearParkedPath
-                // 顺带自愈存量：此 path 若此前被 park 成 duplicate-content（P2 之前的行为），此刻
-                // 退户口——存量迁移不需要独立脚本，就是这一行 no-op-safe 的清理（非停车路径删无害）。
-                lib.addItemFile(ownEpisodeId, path, nowMs)
-                lib.clearParkedPath(path)
-                result.changed = true
-                // 重复源 P4b："复制优先"机械通道——主文件已有字幕、这个副本还没有，时长够接近就
-                // 直接复制装上（详见 subtitlePropagation.ts 头注释）。best-effort：探测/复制失败
-                // 只落 log，绝不抛出打断这一轮扫描剩下的文件。
-                await propagateSubtitleToReplica(
-                  { lib, probeDuration: deps.probeDuration, log }, ownEpisodeId, priorEpisode.path, path, nowMs,
-                )
-                continue
-              }
-
-              const seriesExisted = lib.getSeries(ownSeriesId) !== null
-              let posterPath: string | null = null
-              let backdropPath: string | null = null
-              let overview: string | null = null
-              let year: number | null = null
-              let chineseTitle: string | null = null
-              let genres: number[] | null = null
-              let imdbId: string | null = null
-              let enrichOriginalTitle: string | null = null
-              if (!seriesExisted) {
-                const enrich = await enrichNewSeriesOrMovie('tv', tmdbId, tmdb, log)
-                posterPath = enrich.posterPath
-                backdropPath = enrich.backdropPath
-                overview = enrich.overview
-                year = enrich.year
-                chineseTitle = enrich.chineseTitle
-                genres = enrich.genres
-                imdbId = enrich.imdbId
-                enrichOriginalTitle = enrich.originalTitle
-                // dashboard G2：三层格阵第一层——新剧首次入库顺手起播应有集缓存（tmdbCatalog.ts）。
-                // fire-and-forget：不 await，失败仅 log，绝不阻塞摄取主流程（该函数自身已是
-                // gain-path 降级，见其头注释）。
-                void refreshSeriesCatalog(lib.db, tmdb, ownSeriesId, nowMs).catch(e =>
-                  log(`ingest: refreshSeriesCatalog failed for ${ownSeriesId}, degraded this pass (retry next pass): ${e instanceof Error ? e.message : String(e)}`)
-                )
-              }
-              lib.upsertSeries({
-                // claim-gated 建行（recognition 只知道 tmdbId，title 恒 ''）时用建行 enrich 已经
-                // 拿到手的 originalTitle 当场回填——名字建行即有，不留"空名 ? 卡"债给富化重试
-                // （收窄后的熄火谓词只看 genres，接不住 genres 已非 NULL 的空名行）。getDetails
-                // 404/抖动时仍空串：前者定论熄火，后者 genres NULL 下轮重试整套回填。
-                id: ownSeriesId, name: title !== '' ? title : (enrichOriginalTitle ?? ''),
-                chineseTitle, posterPath, backdropPath, overview, year, genres,
-                providerIds: imdbId
-                  ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
-                  : JSON.stringify({ tmdb: tmdbId }),
-              })
-
-              const cachedOriginLang = lib.getSeriesOriginLang(ownSeriesId)
-              const origin = await resolveOriginLang(
-                cachedOriginLang, 'tv', tmdbId, tmdb,
-                (lang) => lib.setSeriesOriginLang(ownSeriesId, lang), log,
-              )
-
-              const tracks = await deps.probe(path)
-              const embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
-
-              // priorEpisode 已经在上面的 own-id 幂等性守卫里查过一次，直接复用，不重复查询。
-              const computed = classify({
-                title, originLang: origin.lang, originResolutionFailed: origin.failed,
-                embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists, hardsubMode,
-              })
-              const toWrite = resolveStatusToWrite(computed.status, priorEpisode?.sub_status ?? null)
-
-              lib.upsertEpisode({
-                id: ownEpisodeId, seriesId: ownSeriesId, season, episode,
-                // TMDB 搜索命中只给到剧级标题，没有单集标题（旧版 item.Name 来自 Jellyfin 自己
-                // 的刮削器，直连世界没有等价数据源——需要额外一次
-                // /tv/{id}/season/{s}/episode/{e} 详情调用，T3a 未实现，YAGNI/留给未来）。
-                // 合成一个诚实的占位名，好过留空看起来像 bug。
-                name: `S${season}E${episode}`,
-                path, subStatus: toWrite,
-              })
-              // R-9（判决可稽核）：upsertEpisode 的共享 SQL 不带 status_reason 列，写不进去就在
-              // 它之后补一条窄 UPDATE——只在 rule 1b 真给了 reason 时才发（rule 0/2/3/4 都是
-              // reason:null，不产生这条多余的写）。
-              if (computed.reason) {
-                lib.db.prepare(`UPDATE episodes SET status_reason = ? WHERE id = ?`).run(computed.reason, ownEpisodeId)
-              } else if (toWrite === 'covered' || toWrite === 'embedded') {
-                // B3-2 + 批③a F-B：同 CHEAP PATH（writeSubStatusOnly 头注释）——领养(sidecar)/
-                // 内嵌覆盖(embedded)终局清掉 upsertEpisode 的 ON CONFLICT 分支不会碰、因而可能
-                // 残留的旧 unavailable 叙事。upsertEpisode 全新 INSERT 分支本就默认 NULL，这条
-                // UPDATE 对新行是无害 no-op。
-                lib.db.prepare(`UPDATE episodes SET status_reason = NULL WHERE id = ?`).run(ownEpisodeId)
-              }
-              // B3-1（批③领养记账）：toWrite==='covered' 恒来自 rule 3（sidecar）——补写 subtitles
-              // 行（ON CONFLICT DO NOTHING 幂等，跨 pass 重复命中不重复插）。
-              if (toWrite === 'covered' && computed.sidecar) {
-                lib.recordAdoptedSidecar(ownEpisodeId, computed.sidecar.path, computed.sidecar.language, nowMs)
-              }
-              // 债务D1：full path 的 series_id 从识别结果直接可得（ownSeriesId）。
-              layoutObserved.set(ownSeriesId, (layoutObserved.get(ownSeriesId) ?? false) || !isCanonicalEpisodePath(path))
-              lib.setProbeMemo(ownEpisodeId, stat.mtimeMs, stat.size, embeddedLangs)
-              lib.clearParkedPath(path)
-              result.upserted++
-              result.changed = true
-            } else {
-              const ownMovieId = seriesId(tmdbId) // movies 复用同一构造器（ownIds.ts 头注释）
-
-              // 同路径换种类（剧集→电影）或**同种类换身份**（重新识别到另一个 tmdbId——路 A
-              // 下 agent 纠错认领生效后的常态）：两种都要清旧行，否则永久鬼影。见 TV 分支同名
-              // 注释。movies 分支没有 park 中途退出的子情形，直接清理即可。
-              if (existing && (existing.kind !== 'movie' || existing.id !== ownMovieId)) {
-                if (existing.kind === 'episode') {
-                  lib.deleteEpisodeByPath(path)
-                  if (existing.seriesId) lib.deleteSeriesIfEmpty(existing.seriesId)
-                } else {
-                  lib.deleteMovieByPath(path)
-                }
-              }
-
-              // P7 真库闸门 Bug 2 修复：own-id 幂等性守卫，同 TV 分支同名注释——movies 直接用
-              // tmdbId 当 own-id，同一部电影的两份重复文件（不同质量/硬链接残留）一样会在每一轮
-              // 互相抢 path 列，一样需要挡在这里。priorMovie 这次查询同时替代了原来的
-              // `movieExisted` 判定和下面 classify 前的 prior-状态查询（新电影场景下，原代码是在
-              // 占位插入*之后*才查 priorMovie，拿到的是刚写入的占位值 'missing'；这里提前到占位
-              // 插入*之前*查，拿到 null——resolveStatusToWrite 只特判 'unavailable'，'missing' 和
-              // null 在它眼里等价，行为不变，见下方 toWrite 那行）。
-              const priorMovie = lib.getMovie(ownMovieId)
-              if (priorMovie && priorMovie.path !== path) {
-                // 重复源 P2：同一部电影的副本 → item_files（同 TV 分支，见其注释）。clearParkedPath
-                // 顺带自愈存量 duplicate-content 停车行。
-                lib.addItemFile(ownMovieId, path, nowMs)
-                lib.clearParkedPath(path)
-                result.changed = true
-                // 重复源 P4b：同 TV 分支（见其注释）。
-                await propagateSubtitleToReplica(
-                  { lib, probeDuration: deps.probeDuration, log }, ownMovieId, priorMovie.path, path, nowMs,
-                )
-                continue
-              }
-
-              const movieExisted = priorMovie !== null
-              let posterPath: string | null = null
-              let year: number | null = null
-              let chineseTitle: string | null = null
-              let imdbId: string | null = null
-              if (!movieExisted) {
-                const enrich = await enrichNewSeriesOrMovie('movie', tmdbId, tmdb, log)
-                posterPath = enrich.posterPath
-                year = enrich.year
-                chineseTitle = enrich.chineseTitle
-                imdbId = enrich.imdbId
-                // 占位插入：origin_lang 缓存写回（setMovieOriginLang）是 UPDATE-only，必须先有
-                // 行才能写——movies 表把"series 级元数据"和"episode 级 sub_status"揉进同一行，
-                // 不像 series/episodes 天然分两张表，没有"先写不带 sub_status 的元数据行"这条
-                // 路可走。subStatus 先给个占位值，下面算出真实值后立刻二次 upsert 覆盖。
-                lib.upsertMovie({
-                  id: ownMovieId, name: title, path, subStatus: 'missing',
-                  chineseTitle, posterPath, year, providerIds: imdbId
-                    ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
-                    : JSON.stringify({ tmdb: tmdbId }),
-                })
-              }
-
-              const cachedOriginLang = lib.getMovieOriginLang(ownMovieId)
-              const origin = await resolveOriginLang(
-                cachedOriginLang, 'movie', tmdbId, tmdb,
-                (lang) => lib.setMovieOriginLang(ownMovieId, lang), log,
-              )
-
-              const tracks = await deps.probe(path)
-              const embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
-
-              // priorMovie 已经在上面的 own-id 幂等性守卫里查过一次，直接复用，不重复查询。
-              const computed = classify({
-                title, originLang: origin.lang, originResolutionFailed: origin.failed,
-                embeddedLangs, path, targetLanguages, originSkipLanguages, fileExists, hardsubMode,
-              })
-              const toWrite = resolveStatusToWrite(computed.status, priorMovie?.sub_status ?? null)
-
-              lib.upsertMovie({
-                id: ownMovieId, name: title, path, subStatus: toWrite,
-                chineseTitle, posterPath, year, providerIds: imdbId
-                  ? JSON.stringify({ tmdb: tmdbId, imdb: imdbId })
-                  : JSON.stringify({ tmdb: tmdbId }),
-              })
-              // R-9（判决可稽核）：同 TV 分支——upsertMovie 也不带 status_reason 列，rule 1b 命中
-              // 时补一条窄 UPDATE。
-              if (computed.reason) {
-                lib.db.prepare(`UPDATE movies SET status_reason = ? WHERE id = ?`).run(computed.reason, ownMovieId)
-              } else if (toWrite === 'covered' || toWrite === 'embedded') {
-                // B3-2 + 批③a F-B：同 TV 分支（见其注释）——领养(sidecar)/内嵌覆盖(embedded)
-                // 终局清掉可能残留的旧 unavailable 叙事。
-                lib.db.prepare(`UPDATE movies SET status_reason = NULL WHERE id = ?`).run(ownMovieId)
-              }
-              // B3-1（批③领养记账）：同 TV 分支（见其注释）。
-              if (toWrite === 'covered' && computed.sidecar) {
-                lib.recordAdoptedSidecar(ownMovieId, computed.sidecar.path, computed.sidecar.language, nowMs)
-              }
-              lib.setProbeMemo(ownMovieId, stat.mtimeMs, stat.size, embeddedLangs)
-              lib.clearParkedPath(path)
-              result.upserted++
-              result.changed = true
+            try {
+              durationSec = await deps.probeDuration(path)
+            } catch (err) {
+              deps.log(`probeDuration failed for ${path}: ${err}`)
             }
+
+            try {
+              const tracks = await deps.probe(path)
+              embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
+            } catch (err) {
+              deps.log(`probe failed for ${path}: ${err}`)
+            }
+
+            // Park with raw data for agent identification。fingerprint 的 durationSec/embeddedLangs
+            // 是 optional（undefined=本次未探测，指纹未变时保留库中已有值），故 null → undefined 换算。
+            lib.upsertParkedPath(
+              path,
+              'awaiting-agent-identification',
+              nowMs,
+              {
+                mtimeMs: stat.mtimeMs,
+                size: stat.size,
+                durationSec: durationSec ?? undefined,
+                embeddedLangs: embeddedLangs ?? undefined,
+              }
+            )
+            result.parked++
           } catch (e) {
             // 同 daemon/selfScan.ts 的既有哲学："一个文件/一次 TMDB 抖动不能拖垮整轮 pass"——
             // 记日志，这个文件本轮既不算 upserted 也不算 parked，下一轮 pass 重试。

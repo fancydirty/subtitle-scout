@@ -7,7 +7,7 @@ import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { SettingsRepo } from './settingsRepo.js'
 import { makeIngestPass, ingestLock, looksChineseTitle, classifyStatError, type IngestDeps } from './ingest.js'
-import type { Recognized, Park } from '../recognition/index.js'
+import type { Recognized, Park, PathIdentity } from '../recognition/index.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
 import { TmdbRequestFailedError } from '../adapters/providers/tmdb.js'
@@ -2579,5 +2579,49 @@ describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
 
     // 命中 rule 2（embedded），不会走到 rule 4b
     expect(lib.getEpisode('tmdb:1/s1e1')?.sub_status).toBe('embedded')
+  })
+})
+
+describe('ingest with raw data only', () => {
+  it('parks unidentified file with raw data instead of creating rows', async () => {
+    const disk = fakeDisk()
+    disk.setVideo('/media/Unknown Show/Season 1/e1.mkv', 5000, 12345)
+
+    // PathIdentity：纯结构提示（无 tmdbId）——机械解析层不再做 TMDB 裁决。
+    const recognizeStub = vi.fn((): PathIdentity | Park => ({
+      title: 'Unknown Show',
+      year: null,
+      season: 1,
+      episode: 1,
+      absoluteEpisode: null,
+      isTv: true,
+      embeddedTmdbId: null,
+    }))
+    const probeStub = vi.fn(async (): Promise<EmbeddedSubtitleTrack[] | null> => [
+      track({ lang: 'eng', codec: 'subrip' }),
+    ])
+    const probeDurationStub = vi.fn(async (): Promise<number | null> => 2400)
+
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => ['/media/Unknown Show/Season 1/e1.mkv'],
+      recognize: recognizeStub,
+      probe: probeStub,
+      probeDuration: probeDurationStub,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    // 不应创建任何 series/episode/movie 行（身份写入归 agent 的 write_identified_media）
+    expect(result.upserted).toBe(0)
+    expect(result.parked).toBe(1)
+    expect(lib.getSeries('tmdb:12345')).toBeNull()
+
+    // 应带着 raw data park，等待 agent 识别
+    const parked = lib.listParkedPaths().find(p => p.path.includes('Unknown'))
+    expect(parked).toBeDefined()
+    expect(parked?.park_reason).toBe('awaiting-agent-identification')
+    expect(parked?.duration_sec).toBe(2400)
+    expect(parked?.embedded_langs).toBe('["eng"]') // JSON 格式（Task 3）
   })
 })
