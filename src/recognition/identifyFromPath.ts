@@ -55,7 +55,12 @@ function findEmbeddedTmdbId(segments: string[]): string | null {
  * empty. So season-folder detection runs on the RAW segment with our own regex, and (see below)
  * season-folder-shaped segments are never handed to parseFilename at all.
  */
-const SEASON_FOLDER_PATTERNS: RegExp[] = [/^(?:season|series)[\s._-]*(\d{1,3})$/i, /^s(\d{1,3})$/i]
+const SEASON_FOLDER_PATTERNS: RegExp[] = [
+  /^(?:season|series)[\s._-]*(\d{1,3})$/i,
+  /^s(\d{1,3})$/i,
+  // 中文季目录：第N集 / 第N季 / 第N部（莉可丽丝"第1集"此前被误判成标题，root cause）
+  /^第\s*(\d{1,3})\s*[集季部]$/,
+]
 
 function detectSeasonFolder(rawSegment: string): number | null {
   const trimmed = rawSegment.trim()
@@ -65,6 +70,52 @@ function detectSeasonFolder(rawSegment: string): number | null {
     if (match) return Number(match[1])
   }
   return null
+}
+
+/** 分类目录黑名单——这些段是"装剧的桶"，不是剧名（tv/movies/anime/shows/series/电影/剧集/动漫/电视剧）。
+ *  Rule 5 的 fallback 用目录名当标题前，先过这张表：命中即该目录不提供标题信号。
+ *  （根因：此前 'tv/Witch Watch S01E02.mkv' 把分类目录 "tv" 当标题，系统性误识别。） */
+const CATEGORY_DIR_NAMES = new Set([
+  'tv', 'tvshows', 'tv shows', 'shows', 'series', 'movies', 'movie', 'films', 'film',
+  'anime', 'animation', 'cartoons',
+  '电视剧', '剧集', '电视', '电影', '动漫', '动画', '番剧', '番组', '美剧', '日剧', '韩剧', '英剧',
+])
+
+/** 文件名 title 清洗：剥掉尾部的季/集/质量/来源标记，只留剧名本体。
+ *  "Teach You a Lesson S01E01 2160p WEB-DL" → "Teach You a Lesson"
+ *  "Lycoris Recoil S01E01" → "Lycoris Recoil"
+ *  只剥尾部连续的技术标记段，不动中间的词（"Hero 2002" 的 2002 是 year，由调用方单独处理）。
+ *  清洗后若是裸集数标记（"ep 1"、"第3话"、"01"），返回空串——它们不是剧名，不能当 title。 */
+function cleanFileTitle(title: string): string {
+  let t = title
+  // 反复剥尾部的技术标记，直到没有可剥的（S01E01 / E01 / 2160p / WEB-DL / BluRay / x265 / HDR / REMUX / AAC / 5.1 ...）
+  const techTail = /[\s._-]+(?:s\d{1,2}e\d{1,3}(?:e\d{1,3})?|e\d{1,3}|ep\d{1,3}|\d{3,4}p(?:\d{1,2})?|(?:web[._-]?dl|webrip|bluray|bdrip|remux|hdtv|hdrip|dvdrip|brrip|x26[45]|h\.?26[45]|hevc|avc|hdr10\+?|hdr|dv|10bit|8bit|aac|ac3|ddp?5\.1|dts[._-]?hd|truehd|atmos|lpcm|flac|mp3|repack|proper|internal|limited|complete|multi|dual[._-]?audio|eng|english)\b.*)$/i
+  let prev = ''
+  while (prev !== t) {
+    prev = t
+    t = t.replace(techTail, '')
+  }
+  t = t.trim()
+  // 剥掉可能残留的扩展名（第三方轮子 movie mode 对 "ep 1.mp4" 会把扩展名留在 title 里）
+  t = t.replace(/\.(?:mkv|mp4|avi|ts|m2ts|wmv|flv|webm|mov|mpg|mpeg|m4v)$/i, '').trim()
+  // 裸集数标记（ep 1 / ep1 / 第3话 / 第3集 / 01）不是剧名——返回空串，让调用方走目录 fallback
+  if (/^(?:ep(?:isode)?[\s._-]*\d{1,3}|第\s*\d{1,3}\s*[话集]|\d{1,3})$/i.test(t)) return ''
+  return t
+}
+
+/** 目录名 title 质量闸：太短/纯符号/被轮子截断的垃圾（"铁."）不采纳当标题。
+ *  返回 true = 这个目录名可以当标题候选。 */
+function isUsableDirTitle(title: string | null | undefined): boolean {
+  if (!title) return false
+  const t = title.trim()
+  if (t.length < 2) return false
+  // 分类目录黑名单
+  if (CATEGORY_DIR_NAMES.has(t.toLowerCase())) return false
+  // 去掉首尾标点/符号后，剩下的有效字符（字母/数字/中日韩文字）至少要 2 个——"铁." 这种
+  // 被轮子从"铁拳教育"截断成 1 个有效字 + 尾点的垃圾，有效字符 < 2，拒收。
+  const meaningful = t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+  const meaningfulChars = [...meaningful].filter((c) => /[\p{L}\p{N}]/u.test(c))
+  return meaningfulChars.length >= 2
 }
 
 /**
@@ -135,32 +186,40 @@ export function identifyFromPath(videoPath: string): PathIdentity | Park {
   const grandparentParsed: ParsedName | null =
     grandparentSeg !== null && !grandparentIsSeasonFolder ? parseFilename(grandparentSeg) : null
 
-  // Rule 5: title precedence, structure-conditioned (deliberate deviation from a blind
-  // grandparent > parent > file rule).
+  // Rule 5: title precedence — 文件的 title 优先（清洗季/集/质量后缀），目录名仅作受闸 fallback。
+  //  根因修复（此前系统性误识别）：旧逻辑用 `fileParsed.year !== null` 决定信谁，但所有 TV 文件
+  //  的 fileParsed.year 恒为 null（TV 模式不带 year），于是**所有 TV 文件都掉到"信目录名"分支**，
+  //  而目录名经第三方轮子解析不可靠——'tv'→'tv'、'铁拳教育'→'铁.'、'第1集'→'第1集'，全被当标题。
+  //  修正：①文件 title 清洗后优先（文件名是信息最丰富的段）②目录名仅当文件无 title 时作
+  //  fallback，且必须过质量闸（isUsableDirTitle：滤掉分类目录/被截断的垃圾）。
   let title: string | null
   let year: number | null
+  const fileTitle = fileParsed.title ? (cleanFileTitle(fileParsed.title) || null) : null
+
   if (parentIsSeasonFolder) {
     // Show/Season NN/file layout: the season folder ate the parent slot, so the title lives one
-    // level up. Defensively fall back to the file segment if the grandparent is missing or is
-    // itself season-folder-shaped (e.g. malformed 'Season 1/Season 1/file.mkv' nesting).
-    if (grandparentParsed?.title && !grandparentIsSeasonFolder) {
+    // level up. 优先用文件自身的 title（清洗后）；没有再用 grandparent（须过质量闸）。
+    if (fileTitle) {
+      title = fileTitle
+      year = fileParsed.year ?? grandparentParsed?.year ?? null
+    } else if (grandparentParsed?.title && !grandparentIsSeasonFolder && isUsableDirTitle(grandparentParsed.title)) {
       title = grandparentParsed.title
       year = grandparentParsed.year
     } else {
-      title = fileParsed.title
+      title = fileTitle
       year = fileParsed.year
     }
-  } else if (fileParsed.year !== null && fileParsed.title) {
-    // Flat movie layout ('movies/Hero.2002.1080p.mkv'): the filename is the info-bearing segment;
-    // the parent is often just a category root ('movies') that would misidentify if used as title.
-    title = fileParsed.title
-    year = fileParsed.year
-  } else if (parentParsed?.title) {
-    // Show/file.mkv layout: the parent dir is the show title.
+  } else if (fileTitle) {
+    // 文件有可用 title（电影/剧集通吃）——文件名是信息最丰富的段，优先信它。
+    // year：文件没有就从目录补（TV 文件恒 null，电影文件可能有）。
+    title = fileTitle
+    year = fileParsed.year ?? parentParsed?.year ?? grandparentParsed?.year ?? null
+  } else if (parentParsed?.title && isUsableDirTitle(parentParsed.title)) {
+    // Show/file.mkv layout: 文件无 title，用目录名（须过质量闸，滤掉分类目录/截断垃圾）。
     title = parentParsed.title
     year = parentParsed.year
   } else {
-    title = fileParsed.title
+    title = fileTitle
     year = fileParsed.year
   }
 

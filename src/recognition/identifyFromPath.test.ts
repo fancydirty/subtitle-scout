@@ -84,6 +84,61 @@ describe('identifyFromPath — flat movie layout', () => {
   })
 })
 
+describe('identifyFromPath — 系统性 bug 暴露（这些场景此前全部识别错）', () => {
+  it('分类目录 tv/ 不得当标题——文件的 S01E01 title 优先（此前识别成 "tv"）', () => {
+    const r = identifyFromPath('tv/Witch Watch S01E02.mkv')
+    expect(isPark(r)).toBe(false)
+    const identity = r as PathIdentity
+    expect(identity.title).toBe('Witch Watch')
+    expect(identity.season).toBe(1)
+    expect(identity.episode).toBe(2)
+  })
+
+  it('中文目录名被轮子截断时，文件的 title 优先（此前铁拳教育识别成 "铁."）', () => {
+    const r = identifyFromPath('铁拳教育 (2026) 4K HDR10/Teach.You.a.Lesson.S01E01.2160p.WEB-DL.HDR10.H265.DDP5.1.Atmos.mkv')
+    expect(isPark(r)).toBe(false)
+    const identity = r as PathIdentity
+    expect(identity.title).toBe('Teach You a Lesson')
+    expect(identity.season).toBe(1)
+    expect(identity.episode).toBe(1)
+  })
+
+  it('中文季目录"第N集"被 detectSeasonFolder 识别，不再当标题（此前莉可丽丝识别成"第1集"）', () => {
+    const r = identifyFromPath('莉可丽丝 蓝光原盘REMUX [内封简日双字]/第1集/Lycoris.Recoil.S01E01.2022.1080p.BluRay.REMUX.AVC.DTS-HD.MA.LPCM.2.0.mkv')
+    expect(isPark(r)).toBe(false)
+    const identity = r as PathIdentity
+    expect(identity.title).toBe('Lycoris Recoil')
+    expect(identity.season).toBe(1)
+    expect(identity.episode).toBe(1)
+  })
+
+  it('分类目录 movies/ 下的电影仍用文件 title（flat movie 原有行为不回归）', () => {
+    const r = identifyFromPath('movies/Hero.2002.1080p.BluRay.mkv')
+    expect(isPark(r)).toBe(false)
+    const identity = r as PathIdentity
+    expect(identity.title).toBe('Hero')
+    expect(identity.year).toBe(2002)
+  })
+
+  it('目录名是正确剧名时仍可用（fallback 保留—— Breaking Bad 原有行为）', () => {
+    const r = identifyFromPath('Breaking Bad/Breaking.Bad.S01E05.720p.mkv')
+    expect(isPark(r)).toBe(false)
+    const identity = r as PathIdentity
+    expect(identity.title).toBe('Breaking Bad')
+    expect(identity.season).toBe(1)
+    expect(identity.episode).toBe(5)
+  })
+
+  it('中文季目录"第N季"也被 detectSeasonFolder 识别', () => {
+    const r = identifyFromPath('某剧/第2季/ep 3.mkv')
+    expect(isPark(r)).toBe(false)
+    const identity = r as PathIdentity
+    expect(identity.title).toBe('某剧')
+    expect(identity.season).toBe(2)
+    expect(identity.episode).toBe(3)
+  })
+})
+
 describe('identifyFromPath — park on no signal', () => {
   it('no embedded id, no season/episode/absoluteEpisode, no year anywhere -> parked', () => {
     const r = identifyFromPath('movies/aaa/bbb.mkv')
