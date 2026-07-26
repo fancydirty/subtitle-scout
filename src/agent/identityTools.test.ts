@@ -10,6 +10,8 @@ import type { ScoutDb } from '../v2/db.js'
 // 2. 行形状是 snake_case（series.chinese_title / episode.sub_status）——断言按真实列名写。
 // 3. tool.execute 在 ai SDK v7 类型上需要第二参 ToolExecutionOptions——传 `{} as any`，
 //    同 rescueWorker.tools.test.ts / findSubtitleWorker.tools.test.ts 的既有写法（CI 跑 tsc --noEmit）。
+// 4. embeddedLangs 不是工具输入（agent 可幻觉，权威源是 parked_paths.embedded_langs 的
+//    ffprobe raw 数据）——测试只通过 upsertParkedPath 的 fingerprint 播种。
 
 describe('write_identified_media', () => {
   let db: ScoutDb
@@ -25,7 +27,7 @@ describe('write_identified_media', () => {
   })
 
   it('creates series and episode rows for TV identification', async ({ expect }) => {
-    // Park a path first
+    // Park a path first —— fingerprint 带 ffprobe 探测到的内嵌轨语言
     lib.upsertParkedPath(
       '/media/tv/Show.S01E05.mkv',
       'awaiting-agent-identification',
@@ -56,7 +58,6 @@ describe('write_identified_media', () => {
       season: 1,
       episode: 5,
       path: '/media/tv/Show.S01E05.mkv',
-      embeddedLangs: ['eng'],
     }, {} as any)
 
     expect(result).toContain('tmdb:12345')
@@ -73,7 +74,12 @@ describe('write_identified_media', () => {
     expect(episode?.path).toBe('/media/tv/Show.S01E05.mkv')
     expect(episode?.season).toBe(1)
     expect(episode?.episode).toBe(5)
+    // embedded_langs 权威源是 parked 行（['eng']）→ embedded
     expect(episode?.sub_status).toBe('embedded')
+
+    // 探针记忆化同样来自 parked 行（mtime/size/langs 三元组）
+    const memo = lib.probeMemo('tmdb:12345/s1e5')
+    expect(memo).toEqual({ mtime: 500, size: 1024, langs: ['eng'] })
 
     // Parked path should be cleared
     const parked = lib.listParkedPaths().find(p => p.path === '/media/tv/Show.S01E05.mkv')
@@ -115,7 +121,6 @@ describe('write_identified_media', () => {
       season: null,
       episode: null,
       path: '/media/movies/Film.2021.mkv',
-      embeddedLangs: null,
     }, {} as any)
 
     expect(result).toContain('tmdb:67890')
@@ -125,9 +130,100 @@ describe('write_identified_media', () => {
     expect(movie?.name).toBe('Film')
     expect(movie?.path).toBe('/media/movies/Film.2021.mkv')
     expect(movie?.year).toBe(2021)
+    // parked 行 embedded_langs 为 NULL（未探测）→ missing
+    expect(movie?.sub_status).toBe('missing')
+    // 未探测 → 不落探针记忆
+    expect(lib.probeMemo('tmdb:67890')).toBeNull()
 
     const parked = lib.listParkedPaths().find(p => p.path === '/media/movies/Film.2021.mkv')
     expect(parked).toBeUndefined()
+  })
+
+  it('parked.embedded_langs is authoritative — subStatus follows DB, not agent claims', async ({ expect }) => {
+    // 两条 parked：一条 ffprobe 探到内嵌轨，一条没探到。输入 schema 已无 embeddedLangs
+    // 字段——agent 无法自报，sub_status 只能来自 parked 行。
+    lib.upsertParkedPath(
+      '/media/tv/HasTrack.S01E01.mkv',
+      'awaiting-agent-identification',
+      1000,
+      { mtimeMs: 500, size: 1024, durationSec: 2400, embeddedLangs: ['chi'] }
+    )
+    lib.upsertParkedPath(
+      '/media/tv/NoTrack.S01E02.mkv',
+      'awaiting-agent-identification',
+      1000,
+      { mtimeMs: 500, size: 1024, durationSec: 2400 } // 未探测 → NULL
+    )
+
+    const details = {
+      posterPath: null,
+      backdropPath: null,
+      overview: 'Show',
+      year: 2020,
+      genreIds: [],
+      originalTitle: 'Show',
+    }
+    const tmdb = {
+      getDetails: vi.fn().mockResolvedValue(details),
+      getChineseTitles: vi.fn().mockResolvedValue([]),
+      getExternalIds: vi.fn().mockResolvedValue(null),
+      getOriginLanguage: vi.fn().mockResolvedValue(null),
+    }
+
+    const tool = makeWriteIdentityTool({ lib, tmdb })
+
+    await tool.execute({
+      tmdbId: '111',
+      isTv: true,
+      title: 'HasTrack',
+      season: 1,
+      episode: 1,
+      path: '/media/tv/HasTrack.S01E01.mkv',
+    }, {} as any)
+
+    await tool.execute({
+      tmdbId: '222',
+      isTv: true,
+      title: 'NoTrack',
+      season: 1,
+      episode: 2,
+      path: '/media/tv/NoTrack.S01E02.mkv',
+    }, {} as any)
+
+    expect(lib.getEpisode('tmdb:111/s1e1')?.sub_status).toBe('embedded')
+    expect(lib.probeMemo('tmdb:111/s1e1')).toEqual({ mtime: 500, size: 1024, langs: ['chi'] })
+
+    expect(lib.getEpisode('tmdb:222/s1e2')?.sub_status).toBe('missing')
+    expect(lib.probeMemo('tmdb:222/s1e2')).toBeNull()
+  })
+
+  it('unparked path (no DB row) falls back to missing, never embedded', async ({ expect }) => {
+    const tmdb = {
+      getDetails: vi.fn().mockResolvedValue({
+        posterPath: null,
+        backdropPath: null,
+        overview: 'Film',
+        year: 2021,
+        genreIds: [],
+        originalTitle: 'Film',
+      }),
+      getChineseTitles: vi.fn().mockResolvedValue([]),
+      getExternalIds: vi.fn().mockResolvedValue(null),
+      getOriginLanguage: vi.fn().mockResolvedValue(null),
+    }
+
+    const tool = makeWriteIdentityTool({ lib, tmdb })
+
+    await tool.execute({
+      tmdbId: '333',
+      isTv: false,
+      title: 'Film',
+      season: null,
+      episode: null,
+      path: '/media/movies/NeverParked.mkv',
+    }, {} as any)
+
+    expect(lib.getMovie('tmdb:333')?.sub_status).toBe('missing')
   })
 
   it('REFUSES to create rows when tmdbId does not exist (404) - hallucination defense', async ({ expect }) => {
@@ -154,7 +250,6 @@ describe('write_identified_media', () => {
       season: 1,
       episode: 1,
       path: '/media/tv/Fake.Show.S01E01.mkv',
-      embeddedLangs: ['eng'],
     }, {} as any)).rejects.toThrow(/does not exist/i)
 
     // Verify no rows created
@@ -165,7 +260,7 @@ describe('write_identified_media', () => {
     expect(parked).toBeDefined()
   })
 
-  it('rejects TV identification without season/episode', async ({ expect }) => {
+  it('rejects TV identification without season/episode BEFORE any TMDB call', async ({ expect }) => {
     const tmdb = {
       getDetails: vi.fn().mockResolvedValue({
         posterPath: null,
@@ -189,7 +284,9 @@ describe('write_identified_media', () => {
       season: null, // Missing!
       episode: null,
       path: '/media/tv/Show.mkv',
-      embeddedLangs: null,
     }, {} as any)).rejects.toThrow(/season.*episode/i)
+
+    // 校验在 getDetails 之前——必败的请求不烧 TMDB 配额
+    expect(tmdb.getDetails).not.toHaveBeenCalled()
   })
 })
