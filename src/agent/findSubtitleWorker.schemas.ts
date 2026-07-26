@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { nullableTolerant, nullableJsonTolerant, nullableBooleanTolerant, tolerantArray } from './coerce.js'
+import { nullableTolerant, tolerantArray } from './coerce.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 /** Batch task/report shapes for the find-subtitle worker (phase ③) — see
@@ -129,53 +129,38 @@ export const FindSubtitleBatchReportSchema = z.object({
    *  不需要外挂"。'off'/'aggressive' 模式下 skill 文字不提这个概念，模型不会主动填它，但
    *  schema 层不按模式收紧（tolerantArray 缺省即 []，零填也不炸）——校验只管形状。 */
   hardsub_assumed: tolerantArray(FindSubtitleUnresolvedItemSchema),
-  /** 路 A（2026-07-26 识别架构，Step 0 识别验证）：agent 核验发现库身份（机械文件名解析
-   *  的猜测）错了、并重新识别出正确条目时，在这里报告正确身份（tmdbId/isTv + 证据化判词）。
-   *  整个 task 共享一个身份，故是单值不是桶；缺席/null/"None" = 身份核验通过（或本 run 没
-   *  做验证——tmdb 工具缺席时 skill 不教 Step 0，模型不会填它）。identity_correction 出现
-   *  时 targets 应全部躺在 no_safe_match（身份没纠正前装的字幕会记到错的库行上，skill 明
-   *  确禁止）；runner（findSubtitleWorkerTask.ts）收到后记录待迁行——Phase 1 先只记录
-   *  （runs/log），迁行重派是后续切片。
-   *  nullableJsonTolerant（不是 nullableTolerant）：真模型对 object 字段会把整个对象序列化
-   *  成 JSON 字符串发上来（identityEval 实测四连）——见 coerce.ts 该 helper 的头注释。 */
-  identity_correction: nullableJsonTolerant(z.object({
-    tmdbId: z.string().min(1),
-    isTv: z.boolean(),
-    reason: z.string().min(1),
-  })),
-  /** 路 A 第六轮 auto research 的机制修复（2026-07-26）：给"我核验过了，是对的"一个正当去处。
-   *  此前只有 identity_correction 一个字段，skill 三次加码措辞（"leave it absent"/"never
-   *  announce a confirmation"/"echoing a CORRECT id is a false alarm"）都没能阻止模型把确认
-   *  塞进它——实测两个 case 的 reason 里模型自己写着"No correction needed"却照样填了字段。
-   *  这不是措辞问题：一个孤零零的可选字段，模型天然想填满它来交代自己的工作。
-   *  加一个显式的确认字段后，两种结论各有归宿，identity_correction 回归"仅纠错"的单一语义
-   *  （runner 只认它，这个字段纯做展示/可观测，不驱动任何写操作）。 */
-  //  真模型对 boolean 发字符串（"True" —— Python 风格，实测第七轮）：nullableBooleanTolerant
-  //  折叠这类编码差异，否则一个字段的形态就能炸掉整份 finalize 报告（见 coerce.ts 该 helper）。
-  identity_verified: nullableBooleanTolerant(),
-}).superRefine((report, ctx) => {
-  // 🔴 自相矛盾的报告一律拒收（2026-07-26 审计 BLIND SPOT 1，实测复现）：agent 报了
-  // identity_correction 就意味着它判定"库里这批目标的身份是错的"，此时任何 installed
-  // 都是把字幕装到它自己刚宣布错误的身份上——正是 Peacemaker 事故的形状（整季装成同名
-  // 芬兰剧）。skill 明文禁止这个组合（"Do NOT install subtitles in this run"），但没有
-  // 任何机械约束时模型照样会两个都填：实测跑出过 sub_status='covered' + 一条挂在错 id 上
-  // 的 subtitles 行，下一轮 ingest 换身份把该行连带删掉，磁盘上的 .srt 变成孤儿，job 却
-  // 已 completeDone，没有任何重试。
-  //
-  // 在 schema 层拒（而不是只在 runner 层丢弃）是刻意的：finalize 的 inputSchema 校验失败
-  // 发生在 agent 循环内部，模型能看到错误并自我纠正（重填一份自洽的报告）；runner 层丢弃
-  // 则是事后无声修正，模型学不到东西。runner 侧另有一道防御（见 findSubtitleWorkerTask.ts
-  // 的 installed 循环），两道都上。
-  if (report.identity_correction && report.installed.length > 0) {
-    ctx.addIssue({
-      code: 'custom',
-      message:
-        `contradictory report: identity_correction says the library identity is wrong, ` +
-        `but ${report.installed.length} item(s) were reported as installed. When the identity ` +
-        `is wrong, install nothing — put every target in no_safe_match instead.`,
-      path: ['installed'],
-    })
-  }
+  /** Agent-first 识别架构（取代路 A 的 identity_correction/identity_verified）：整个 task
+   *  共享一个身份，agent 在 finalize 里报告识别结论——identified（带 tmdbId/isTv/season/
+   *  episode + 名称与结构双重证据）或 unidentified（带原因）。TV 识别必须给出 season 与
+   *  episode；null = 本 run 未做识别（tmdb 工具缺席等）。
+   *  语义反转注意：identified 允许 installed（身份已确认，照装不误）；unidentified 要求
+   *  installed 为空（身份未定时装的字幕会记到错的库行上）——后者由 runner 层把关。
+   *  nullableTolerant：真模型对"没有识别结论"会省略键或发 "None"/"null"/""（见本文件头注释
+   *  与 coerce.ts），缺席一律折叠为 null，绝不让哨兵炸掉整份 finalize 报告。 */
+  identity: nullableTolerant(z.discriminatedUnion('outcome', [
+    z.object({
+      outcome: z.literal('identified'),
+      tmdbId: z.string().regex(/^\d+$/),
+      isTv: z.boolean(),
+      season: z.number().int().nullable(),
+      episode: z.number().int().nullable(),
+      nameEvidence: z.string().min(1),
+      structureEvidence: z.string().min(1),
+    }).refine(
+      data => {
+        // TV must have season and episode
+        if (data.isTv) {
+          return data.season !== null && data.episode !== null
+        }
+        return true
+      },
+      { message: 'TV identification requires season and episode' }
+    ),
+    z.object({
+      outcome: z.literal('unidentified'),
+      reason: z.string().min(1),
+    }),
+  ])),
 })
 export type FindSubtitleBatchReport = z.infer<typeof FindSubtitleBatchReportSchema>
 export type FindSubtitleInstalledItem = z.infer<typeof FindSubtitleInstalledItemSchema>
