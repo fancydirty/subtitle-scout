@@ -11,7 +11,7 @@ describe('buildRawEvidence', () => {
       episode: 1,
       absoluteEpisode: null,
       isTv: true,
-      embeddedTmdbId: null,
+      embeddedTmdbId: '12345',
     }
 
     const raw = buildRawEvidence(
@@ -27,6 +27,7 @@ describe('buildRawEvidence', () => {
     expect(raw.embeddedLangs).toEqual(['eng', 'jpn'])
     expect(raw.structureHints.season).toBe(1)
     expect(raw.structureHints.episode).toBe(1)
+    expect(raw.structureHints.embeddedTmdbId).toBe('12345')
   })
 
   it('handles Windows backslash paths', ({ expect }) => {
@@ -49,5 +50,23 @@ describe('buildRawEvidence', () => {
 
     expect(raw.dirName).toBe('Movies')
     expect(raw.fileName).toBe('Movie.2021.mkv')
+  })
+
+  it('yields empty dirName for a single-segment path', ({ expect }) => {
+    const identity: PathIdentity = {
+      title: 'Movie',
+      year: 2021,
+      season: null,
+      episode: null,
+      absoluteEpisode: null,
+      isTv: false,
+      embeddedTmdbId: null,
+    }
+
+    const raw = buildRawEvidence('Movie.2021.mkv', identity, 7200, null)
+
+    expect(raw.dirName).toBe('')
+    expect(raw.fileName).toBe('Movie.2021.mkv')
+    expect(raw.structureHints.embeddedTmdbId).toBeNull()
   })
 })
