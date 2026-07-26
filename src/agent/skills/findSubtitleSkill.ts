@@ -72,56 +72,37 @@ candidate is still genuinely \`no_safe_match\` (you do not know why nothing was 
 \`hardsub_assumed\` (you have no positive evidence subtitles are burned in).`
     : ''
 
-  // 路 A（2026-07-26 识别架构）：Step 0 识别验证——仅在 tmdb 证据工具可用时
-  //  （identityVerification=true，即 deps.tmdb 非 null）才教。工具不在时教了也白教，反而
-  //  引诱模型空谈"我会验证"却没有验证手段（零误触发纪律：模型压根不知道这个步骤存在，
-  //  同 hardsubSection 的既有先例）。
+  // 路 A（2026-07-26 识别架构，2026-07-27 升级为主识别模式）：Step 0 主识别——仅在 tmdb
+  //  证据工具可用时（identityVerification=true，即 deps.tmdb 非 null）才教。工具不在时教了
+  //  也白教，反而引诱模型空谈"我会识别"却没有识别手段（零误触发纪律：模型压根不知道这个
+  //  步骤存在，同 hardsubSection 的既有先例）。
   //
   //  证据先行（用户钦定核心原则）：模型的训练知识里有无数部剧（星球大战/招魂/莉可丽丝），
   //  但"我记得"永远不是证据——判定必须来自本 run 内实际调用 search_tmdb/get_tmdb_details
   //  拿到的返回。two-evidence bar：名字匹配不够，要第二个独立证据（季表/年份/时长）吻合
-  //  才认领——机械解析在版权规避乱写（招z魂z4）、乱码（H）后丨室）、fansub 括号标签、
-  //  中文标题截断上经常给错身份，名字像不等于就是。
+  //  才认领——原始证据在版权规避乱写（招z魂z4）、乱码（H）后丨室）、fansub 括号标签、
+  //  中文标题截断上经常误导，名字像不等于就是。
   const identitySection = identityVerification
     ? `
-## Step 0: Verify the media identity BEFORE you search
+## Step 0: Identify the media from raw evidence BEFORE you search
 
-The identity in your task (guessed title / guessed year / provider ids) comes from a
-MECHANICAL filename parse — a guess, not ground truth. Mechanical parsing misidentifies
-releases regularly: copyright-evasion misspellings (\`招z魂z4\` for 招魂4), mojibake
-(\`H）后丨室\`), fansub bracket tags (\`[诸神字幕组][莉可丽丝]\`), truncated Chinese titles
-(\`铁.\` for 铁拳教育). A wrong identity means every subtitle you install gets filed under
-the wrong show — the worst outcome this system can produce.
+Your task carries NO identity — only raw evidence: the directory names inside the file
+paths, the file names themselves, per-target durations, embedded subtitle languages, and
+structure hints (mechanically-extracted title/year/season/episode candidates — hints, not
+truth). Establishing WHICH WORK this is comes first, before any subtitle search: a wrong
+identity means every subtitle you install gets filed under the wrong show — the worst
+outcome this system can produce.
 
-Before any \`search_source\` call, verify the identity with your TMDB evidence tools:
+The raw evidence is hostile territory. Real titles hide behind copyright evasion
+misspellings (\`招z魂z4\` for 招魂4), mojibake (\`H）后丨室\`), fansub bracket tags
+(\`[诸神字幕组][莉可丽丝]\`), and truncated Chinese titles (\`铁.\` for 铁拳教育). And a
+plausible-looking search hit can be a same-name trap: completely different works share
+names constantly, so name similarity alone never proves identity.
 
-1. Call \`get_tmdb_details\` with the tmdb id from the task's provider ids (strip any
-   \`tmdb:\` prefix — the tool wants bare digits). Check it against the RAW EVIDENCE in
-   your target list: the actual video filenames, the directory names inside the file
-   paths, and the per-target runtimes.
-2. The bar is TWO independent evidence lines, never just a matching name:
-   - Line 1 (name): does the TMDB title/original title plausibly match what the file and
-     directory names suggest? Account for misspellings, romanization, translation —
-     \`Lycoris Recoil\` and \`莉可丽丝\` are the same show; \`招z魂z4\` and \`The Conjuring 4\`
-     may be too.
-   - Line 2 (structure): for TV, the season table must actually contain your targets'
-     seasons/episodes AND the first-air year must fit; for movies, the TMDB runtime must
-     roughly match your target's runtime and the year must fit.
-   A year mismatch is an AUTOMATIC FAIL, no matter how good any other line looks: a
-   runtime that matches to the minute means nothing when the year is off by a decade
-   (a different movie can share your runtime by coincidence — 112 minutes fits both
-   The Conjuring (2013) and an unrelated 2026 release). One strong-looking evidence line
-   never buys back a failed one.
-3. Both lines check out → the identity is CONFIRMED. Set \`identity_verified: true\` in your
-   finalize report and proceed to the search workflow below. Leave \`identity_correction\`
-   ABSENT (or null) — never use it to announce that the guess was right, and never mention
-   the verification in your per-item reasons. A present \`identity_correction\` ALWAYS means
-   "the library identity is wrong", and the system rewrites the library accordingly.
-4. Either line FAILS → the mechanical guess is wrong. Re-identify from the raw evidence:
-   clean the titles yourself (strip bracket tags, release-group names, resolution tags;
-   repair obvious misspellings), then call \`search_tmdb\` with the cleaned candidates
-   (try alternate titles/romanizations — re-searching is expected). Verify any promising
-   hit with \`get_tmdb_details\` under the same two-evidence bar.
+Before any \`search_source\` call, identify the work with your TMDB evidence tools:
+
+1. Clean the title from the raw evidence yourself: strip bracket tags, release-group
+   names, resolution tags; repair obvious misspellings.
 
    Where to look for the title, in this order:
    - The DIRECTORY names in the target's path are very often the ONLY place a real title
@@ -138,66 +119,47 @@ Before any \`search_source\` call, verify the identity with your TMDB evidence t
    - Never search a bare year, a bare resolution, or a codec fragment (\`2026\`, \`iT\`,
      \`2026 movie\`) — those return noise and burn your budget. If you catch yourself
      querying tokens with no title in them, stop and go back to the directory name.
-5. If you find the real entry → report it via the finalize report's
-   \`identity_correction\` field (the correct tmdbId + isTv + your evidence-based reason),
-   and put EVERY target into \`no_safe_match\` with a short reason naming the identity
-   problem. Do NOT install subtitles in this run: the library row still carries the wrong
-   identity, and anything you install now would be filed under the wrong show. The system
-   will correct the row and re-dispatch.
-6. If you cannot find a confident identity at all → no \`identity_correction\`, just put
-   every target into \`no_safe_match\` with your reason. Guessing an identity is strictly
-   worse than admitting you could not verify one.
+2. Call \`search_tmdb\` with the cleaned candidates (try alternate titles/romanizations —
+   re-searching is expected). Pick the most promising hit — then treat it as a SUSPECT,
+   not an answer: the traps above mean the first plausible hit is often a different work
+   wearing your title's name.
+3. Call \`get_tmdb_details\` on the suspect. The bar is TWO independent evidence lines,
+   never just a matching name:
+   - Line 1 (name): does the TMDB title/original title plausibly match what the file and
+     directory names suggest? Account for misspellings, romanization, translation —
+     \`Lycoris Recoil\` and \`莉可丽丝\` are the same show; \`招z魂z4\` and \`The Conjuring 4\`
+     may be too.
+   - Line 2 (structure): for TV, the season table must actually contain your targets'
+     seasons/episodes AND the first-air year must fit; for movies, the TMDB runtime must
+     roughly match your target's duration and the year must fit.
+   A year mismatch is an AUTOMATIC FAIL, no matter how good any other line looks: a
+   runtime that matches to the minute means nothing when the year is off by a decade
+   (a different movie can share your runtime by coincidence — 112 minutes fits both
+   The Conjuring (2013) and an unrelated 2026 release). One strong-looking evidence line
+   never buys back a failed one. A suspect that fails either line is rejected — go back
+   to the search hits (or re-search) and hold the next candidate to the same bar.
+4. Both lines check out → the identity is established. Call \`write_identified_media\`
+   with the verified tmdbId and title, plus each target's own season/episode (movies:
+   none) and path — once per target. It writes the identity to the database and returns
+   the own-id you must use as the itemId for everything below. Then continue to the
+   search workflow with those itemIds.
+5. No candidate passes the bar → install nothing and put every target into
+   \`no_safe_match\` with your reason naming the identification problem.
+   Guessing an identity is strictly worse than admitting you could not establish one.
 
 NEVER identify from your own memory. You may "know" a show well — that knowledge may guide
 which queries you try, but a verdict requires tool-returned evidence: a search hit plus a
 details check that passes the two-evidence bar. If you did not call the tools, you did not
-verify anything.
+identify anything.
 
-This verification costs at most a few calls — get_tmdb_details once, and search_tmdb only
-when the guess fails. Do not skip it even when the guess looks obviously right: a guess
-that "looks right" is exactly how mechanical misparses slip through.
-
-### Filling the identity fields: answer these two questions, in this order
-
-The report has TWO identity fields, and they are not interchangeable:
-- \`identity_verified\` (boolean) — where your CONFIRMATION goes. "I checked the library's
-  id and it holds up" = set this \`true\`. It changes nothing in the library; it is how you
-  show your work.
-- \`identity_correction\` (object) — where a CORRECTION goes. Setting it tells the system
-  "the library identity is wrong, rewrite it to this id". It triggers a real library
-  change.
-
-Before you write the finalize report, decide mechanically — do not improvise:
-
-**Q1. Did the library's own tmdb id (the one in the task's provider ids) pass the
-two-evidence bar?**
-- YES → set \`identity_verified: true\` and leave \`identity_correction\` absent/null.
-  That is the complete, correct way to report a confirmation. Never put a confirmed id
-  into \`identity_correction\` — even with a reason saying "no correction needed": the
-  system reads any value there as "go rewrite the library", so a confirmation placed in
-  that field is a false alarm that triggers a pointless rewrite of a correct row.
-- NO → go to Q2.
-
-**Q2. Did you find a different tmdb id that DOES pass the two-evidence bar?**
-- YES → \`identity_correction\` MUST be set to that id (and leave \`identity_verified\`
-  absent — you did not verify the library's id, you replaced it). Not optional, not "if
-  I'm sure enough" — you already proved it with tool evidence, so report it. Silently
-  keeping a verified correction to yourself is the worst outcome available: the library
-  stays wrong forever, and nobody learns that you found the answer. Every target goes to
-  \`no_safe_match\`; install nothing.
-  Concretely: if your last \`get_tmdb_details\` call was on an id that checked out, and that
-  id is NOT the one in the task's provider ids, then that id belongs in
-  \`identity_correction\`. Finding the answer and then submitting null is a bug, not caution.
-- NO → both fields absent/null, every target to \`no_safe_match\` with a reason naming the
-  identity problem. Guessing is worse than admitting you could not verify.
-
-The field is a one-way signal: present = "library identity is wrong, here is the right
-one". Absent = "either it was right, or I could not establish anything better."
+This identification costs at most a few calls — search_tmdb, get_tmdb_details, then one
+write_identified_media per target. Do not skip the verification even when the answer looks
+obvious: a hit that "looks right" is exactly how same-name traps slip through.
 
 **What is NOT an identity problem.** The two-evidence bar is about WHICH WORK this is, not
-about whether every individual target lines up. These are all normal and must NOT trigger
-a correction — the identity stays confirmed and the odd target is simply handled by the
-usual per-target judgment later:
+about whether every individual target lines up. Once the identity passes the bar, these
+are all normal and must NOT send you back to re-identify — the odd target is simply
+handled by the usual per-target judgment later:
 - A target's episode number is outside the season table (e.g. an S04E13 file when TMDB
   says season 4 has 9 episodes). That is a mislabeled or differently-numbered file, or a
   multi-episode/special release — one target's problem, not the show's identity. Report
@@ -206,9 +168,9 @@ usual per-target judgment later:
   double-length episodes).
 - Some targets are missing from the season table entirely (unaired, specials, numbering
   offsets).
-Changing a whole series' identity because ONE episode looks odd is the single most
-destructive mistake available here: it rewrites every row of a correctly-identified show.
-When the name and year fit, the identity is confirmed — full stop.
+Refusing a whole series' established identity because ONE episode looks odd is the single
+most destructive mistake available here: it strands every target of a correctly-identified
+show. When the name and year fit, the identity stands — full stop.
 `
     : ''
 
@@ -325,10 +287,10 @@ is not a blocker.
 
 ## Workflow
 
-${identityVerification ? `0. FIRST, verify the media identity per the Step 0 section above — the task's
-   identity fields are a mechanical guess, and everything below assumes you have either
-   confirmed that guess or reported an identity_correction instead.
-` : ''}1. Read the task's media identity (${identityVerification ? 'CONFIRMED by your Step 0 verification — until then it is only a guess' : 'title, alternative/native titles, year'}) and the TARGETS
+${identityVerification ? `0. FIRST, identify the media from the raw evidence per the Step 0 section above —
+   search → verify → write to the database via \`write_identified_media\` → continue with
+   the itemId it returns.
+` : ''}1. Read the task's media identity (${identityVerification ? 'ESTABLISHED by your Step 0 identification — until then the task carries only raw evidence' : 'title, alternative/native titles, year'}) and the TARGETS
    fact list from your instructions — they are fixed for this task, you do not re-derive them.
 2. Call \`search_source\` with one or more queries built from the title/native title. It
    returns a result_set_id, a count, and a short top-N preview — NOT the full result set.
@@ -414,7 +376,7 @@ location. \`install_subtitle\` will refuse anything outside this task's director
     descriptor: {
       name: 'find-subtitle-judgment',
       description:
-        `${identityVerification ? 'How to verify the task\'s mechanically-guessed media identity BEFORE searching (Step 0: get_tmdb_details against the raw filename/dirname/runtime evidence under a two-evidence bar — name plus season-table/year/runtime — never from memory; on failure re-identify with search_tmdb and report identity_correction instead of installing), then ' : ''}how to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
+        `${identityVerification ? 'How to identify the media from raw file evidence BEFORE searching (Step 0: clean a title from the directory names / file names / durations / embedded languages / structure hints → search_tmdb → get_tmdb_details under a two-evidence bar — name plus season-table/year/runtime, never from memory → write_identified_media, then continue with the returned itemId), then ' : ''}how to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
     },
     content,
   }

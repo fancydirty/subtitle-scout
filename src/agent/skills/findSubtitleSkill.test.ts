@@ -170,67 +170,48 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
     })
   })
 
-  // 路 A（2026-07-26 识别架构）：identityVerification=true（tmdb 证据工具可用）才教 Step 0
-  // 识别验证；false（默认/TMDB 未配置）时整段文字连"identity verification"概念都不出现——
-  // 零误触发纪律同 hardsubSection：工具不在时教了也白教，反而引诱模型空谈"我会验证"。
-  describe('Step 0 identity verification（路 A 识别架构）', () => {
-    it('默认（identityVerification 缺省=false）：内容与描述完全不提 Step 0 / identity_correction', () => {
+  // 路 A（2026-07-26 识别架构，2026-07-27 升级主识别模式）：identityVerification=true（tmdb
+  // 证据工具可用）才教 Step 0 主识别；false（默认/TMDB 未配置）时整段文字连"识别"概念都不
+  // 出现——零误触发纪律同 hardsubSection：工具不在时教了也白教，反而引诱模型空谈"我会识别"。
+  describe('Step 0 primary identification（路 A 识别架构·主识别模式）', () => {
+    it('默认（identityVerification 缺省=false）：内容与描述完全不提 Step 0 / 识别工具', () => {
       const def = makeFindSubtitleSkill('zh')
-      expect(def.content).not.toMatch(/Step 0|identity_correction|get_tmdb_details|search_tmdb/)
-      expect(def.descriptor.description).not.toMatch(/Step 0|identity_correction/)
+      expect(def.content).not.toMatch(/Step 0|identity_correction|identity_verified|get_tmdb_details|search_tmdb|write_identified_media/)
+      expect(def.descriptor.description).not.toMatch(/Step 0|identity_correction|write_identified_media/)
     })
 
-    it('显式 false 同缺省：零识别验证字样', () => {
+    it('显式 false 同缺省：零识别字样', () => {
       const off = makeFindSubtitleSkill('zh', 'off', false)
-      expect(off.content).not.toMatch(/Step 0|identity_correction|get_tmdb_details/)
+      expect(off.content).not.toMatch(/Step 0|identity_correction|identity_verified|get_tmdb_details|write_identified_media/)
     })
 
-    it('identityVerification=true：Step 0 section 教完整验证流程', () => {
+    it('identityVerification=true：Step 0 section 教完整主识别流程', () => {
       const on = makeFindSubtitleSkill('zh', 'off', true)
-      // 机械猜测定性 + 验证先于搜索
-      expect(on.content).toMatch(/Step 0: Verify the media identity BEFORE you search/)
-      expect(on.content).toMatch(/MECHANICAL filename parse|mechanical guess/i)
+      // 无身份前提 + 识别先于搜索
+      expect(on.content).toMatch(/Step 0: Identify the media from raw evidence BEFORE you search/)
+      expect(on.content).toMatch(/NO identity — only raw evidence/)
       // two-evidence bar：名字 + 第二独立证据（季表/年份/时长）
       expect(on.content).toMatch(/TWO independent evidence lines/i)
       expect(on.content).toMatch(/season table/i)
       // 反脑补红线：模型知识不算证据，必须调工具
       expect(on.content).toMatch(/NEVER identify from your own memory/i)
-      expect(on.content).toMatch(/did not call the tools, you did not\s+verify/i)
-      // 验证失败 → 重新识别 → identity_correction + 不装字幕（身份错时装的字幕记到错库行）
-      expect(on.content).toMatch(/identity_correction/)
-      expect(on.content).toMatch(/Do NOT install subtitles in this run/i)
-      // 识别不出 → no_safe_match，不许乱猜
+      expect(on.content).toMatch(/did not call the tools, you did not\s+identify/i)
+      // 核验通过 → write_identified_media 写库 → 拿 itemId 继续；识别不出 → no_safe_match 不乱猜
+      expect(on.content).toMatch(/write_identified_media/)
       expect(on.content).toMatch(/Guessing an identity is strictly\s+worse/i)
-      // 2026-07-26 identityEval 实测暴露的两个模型行为，skill 措辞必须钉死：
-      // ① year 矛盾一票否决——模型曾因 runtime 接近（111 vs 112min）放过 2026 vs 2013 的
-      //    年份矛盾（The Conjuring 骗过 Backrooms）
+      // year 矛盾一票否决——一条漂亮证据线救不回一条失败的
       expect(on.content).toMatch(/year mismatch is an AUTOMATIC FAIL/i)
       expect(on.content).toMatch(/never buys back a failed one/i)
-      // ② 核验通过不许用 identity_correction"宣布确认"——模型曾把确认写成 correction 对象
-      expect(on.content).toMatch(/never use it to announce that the guess was right/i)
-      expect(on.content).toMatch(/ALWAYS means\s+"the library identity is wrong"/i)
-      // ③ 第五轮 auto research 暴露的两条退化，做成填字段那一刻的机械决策表（流程描述里
-      //    的一句话兜不住——模型填字段时看不见它）：核验通过必须留空（招魂 case 又把确认
-      //    写成了 correction）；已验证的纠错必须上报（Peacemaker case 查全了两个 id 的季表、
-      //    判对了却把结论咽回去，identity_correction 交了 null）。
-      expect(on.content).toMatch(/answer these two questions/i)
-      expect(on.content).toMatch(/a false alarm that triggers a pointless rewrite/i)
-      expect(on.content).toMatch(/Silently\s+keeping\s+a\s+verified\s+correction/i)
-      // ④ 第六轮暴露：模型分不清"身份错"与"某一集对不上"——S04E13 越界时把整部剧的身份
-      //    改掉（红线 case 直接失守），后室 case 则相反：证据齐了却交 null。两条边界规则。
+      // 边界规则：某一集对不上 ≠ 整部剧身份错（红线：永不因一集否定全剧身份）
       expect(on.content).toMatch(/What is NOT an identity problem/i)
       expect(on.content).toMatch(/one target's problem, not the show's identity/i)
-      expect(on.content).toMatch(/Finding the answer and then submitting null is a bug/i)
-      // ⑤ 第六轮机制修复：措辞加了三遍都拦不住模型把"确认"塞进 identity_correction
-      //    （reason 里自己写着 No correction needed 却照样填）——不是措辞问题，是一个孤零零
-      //    的可选字段天然会被填满。给确认一个正当去处：identity_verified。
-      expect(on.content).toMatch(/identity_verified/)
-      expect(on.content).toMatch(/where your CONFIRMATION goes/i)
+      // 已删除的旧 verify 模式概念绝迹（identity_verified/identity_correction 见 Task 10 删除）
+      expect(on.content).not.toMatch(/identity_verified|identity_correction/)
       // Workflow 第 0 步锚定
-      expect(on.content).toMatch(/FIRST, verify the media identity/)
+      expect(on.content).toMatch(/FIRST, identify the media/)
       // descriptor 让模型从索引就知道有 Step 0
       expect(on.descriptor.description).toMatch(/Step 0/)
-      expect(on.descriptor.description).toMatch(/identity_correction/)
+      expect(on.descriptor.description).toMatch(/write_identified_media/)
     })
 
     it('identityVerification=true 时真实误判案例作为教材留在文中', () => {
@@ -272,5 +253,35 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
     expect(c).toMatch(/evidence of packaging, never of identity/i)
     // 身份不明时的验证动作:先下一份抽对白锚点再批量装
     expect(c).toMatch(/download ONE entry first|sample its\s+dialogue/i)
+  })
+})
+
+// Task 8（2026-07-27 主识别模式）：skill 从"核验机械猜测"改写为"从原始证据自己识别"——
+// 任务不再带身份，只带 raw evidence（目录名/文件名/时长/内嵌字幕语言/结构提示），agent
+// 自己 clean title → search_tmdb → two-evidence bar → write_identified_media → 拿 itemId 继续。
+describe('identification instructions (primary mode)', () => {
+  it('teaches agent to identify from raw data first', ({ expect }) => {
+    const skill = makeFindSubtitleSkill('zh-Hans', 'off', true)
+
+    // Should mention raw evidence
+    expect(skill.content).toMatch(/raw evidence/)
+    expect(skill.content).toMatch(/directory names/)
+
+    // Should teach search_tmdb first
+    expect(skill.content).toMatch(/search_tmdb/)
+
+    // Should teach write_identified_media
+    expect(skill.content).toMatch(/write_identified_media/)
+
+    // Should NOT mention "mechanical parse" or "guessed identity"
+    expect(skill.content).not.toMatch(/mechanical parse/)
+    expect(skill.content).not.toMatch(/guessed identity/)
+
+    // Should maintain two-evidence bar
+    expect(skill.content).toMatch(/two.*evidence/i)
+
+    // Should maintain traps
+    expect(skill.content).toMatch(/copyright evasion/i)
+    expect(skill.content).toMatch(/mojibake/i)
   })
 })
