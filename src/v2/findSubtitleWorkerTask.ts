@@ -569,16 +569,30 @@ export async function runFindSubtitleWorkerTask(
       // imdb id"的前科，skill 也专门叮嘱过 strip 'tmdb:' 前缀（说明带前缀是已知模型行为）。
       // 人工认领入口（triageOps）本就有 /^\d+$/ 守卫，agent 入口必须同款：非纯数字一律拒收，
       // 否则会把一个不存在的身份永久钉在一个目录前缀上（认领表无 UI 可删）。
-      const claim = /^\d+$/.test(correction.tmdbId)
+      let claim: { ok: true; prefix: string } | { ok: false; reason: string } = /^\d+$/.test(correction.tmdbId)
         ? safeClaimPrefix(task.targets.map((t) => t.videoPath), deps.mediaRoots)
         : { ok: false as const, reason: `tmdbId must be a bare numeric string, got "${correction.tmdbId}"` }
 
       if (claim.ok) {
-        deps.lib.addOverride(claim.prefix, correction.tmdbId, correction.isTv, now())
-        console.error(
-          `[find-subtitle-harvest] job ${job.id}: identity_correction — claimed ${claim.prefix} ` +
-            `as tmdb:${correction.tmdbId} (isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
+        // v24（审计 B）：source='agent'——addOverride 的不对称覆盖规则据此拒绝改写人工认领
+        // （人在救援页的明确点选是终局判断，且可能携带 agent 无从得知的 season 消歧信息）。
+        // 返回 false = 被人工认领挡下，如实记账，不假装成功。
+        const written = deps.lib.addOverride(
+          claim.prefix, correction.tmdbId, correction.isTv, now(), null, 'agent',
         )
+        if (written) {
+          console.error(
+            `[find-subtitle-harvest] job ${job.id}: identity_correction — claimed ${claim.prefix} ` +
+              `as tmdb:${correction.tmdbId} (isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
+          )
+        } else {
+          console.error(
+            `[find-subtitle-harvest] job ${job.id}: identity_correction NOT applied ` +
+              `(${claim.prefix} carries a HUMAN claim — agent may not overwrite it) — ` +
+              `agent proposed tmdb:${correction.tmdbId}: ${capDetail(correction.reason)}`,
+          )
+          claim = { ok: false, reason: `prefix ${claim.prefix} carries a human claim; agent claims may not overwrite it` }
+        }
       } else {
         // 拒写不是静默丢弃：console + runs 都留痕（下面 recordRun 按 claim 结果分词），
         // 人能从时间线看到"agent 判出了正确身份，但认领范围/形状不安全没敢落地"。

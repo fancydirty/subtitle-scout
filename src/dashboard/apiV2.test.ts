@@ -301,8 +301,8 @@ describe('buildParked / claimParked（P6 park 救援）', () => {
     expect(result).toEqual({ ok: true })
 
     // 目录前缀命中，兄弟集也会命中（最长前缀匹配）
-    expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null })
-    expect(lib.findOverride('/media/tv/Unknown Show/S01/e1.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null })
+    expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null, source: 'human' })
+    expect(lib.findOverride('/media/tv/Unknown Show/S01/e1.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null, source: 'human' })
   })
 
   // P7 disambiguation 补丁：可选 season 入参。
@@ -310,11 +310,11 @@ describe('buildParked / claimParked（P6 park 救援）', () => {
     lib.upsertParkedPath('/media/TV/High School D×D/Hero - 01.mkv', 'no-signal', NOW)
 
     const result = claimParked(db, {
-      path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4,
+      path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4, source: 'human',
     })
     expect(result).toEqual({ ok: true })
     expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({
-      tmdbId: '24240', isTv: true, season: 4,
+      tmdbId: '24240', isTv: true, season: 4, source: 'human',
     })
   })
 
@@ -331,7 +331,7 @@ describe('buildParked / claimParked（P6 park 救援）', () => {
     lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
     const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: null })
     expect(result).toEqual({ ok: true })
-    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toEqual({ tmdbId: '1', isTv: true, season: null })
+    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toEqual({ tmdbId: '1', isTv: true, season: null, source: 'human' })
   })
 
   it('claimParked：认领不立即清 parked_paths——那一行等下一轮巡检 recognize 命中 override 后由摄取层自己清', () => {

@@ -119,7 +119,11 @@ CREATE TABLE identify_overrides (   -- P6 认领写入；识别层消歧前查�
                                    -- 路径末尾数字当"该季内集号"直接采信（无歧义）；为空时只能当绝对
                                    -- 集号，多季剧下 ingest 层会 park('override-ambiguous-numbering')
                                    -- 而不是瞎猜（见 src/v2/ingest.ts、src/recognition/index.ts）。
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- v24（识别架构路 A）：认领来源。'human'=P6 救援页手工认领（终局判断），'agent'=
+  -- find-subtitle worker 的 identity_correction 落地（会出错的启发式）。addOverride 的
+  -- ON CONFLICT 据此实现"人写的行 agent 不许覆盖"，dashboard 据此区分展示来源。
+  source TEXT NOT NULL DEFAULT 'human'
 );
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_reconcile_at 等
   `.trim(),
@@ -314,6 +318,25 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
     terms_json TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
+  // v24（识别架构路 A，2026-07-26 审计 B）：identify_overrides 加来源列。这张表原本只有人写
+  // （P6 救援页手工认领），现在 find-subtitle agent 的 identity_correction 也落地成认领——
+  // 两者权威等级不同：人在 dashboard 上明确点选是终局判断，agent 的 Step 0 核验是会出错的
+  // 启发式。没有这一列就无法表达"人写的行 agent 不许覆盖"，也无法在 UI 上区分来源（triage
+  // 页的空态文案至今还写着"手动认领会出现在这里"）。DEFAULT 'human' 让存量行语义正确——
+  // 历史上确实只有人写过。条件式补齐（fresh install 的 CREATE TABLE 已含该列）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'identify_overrides'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(identify_overrides)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('source')) {
+      db.exec(`ALTER TABLE identify_overrides ADD COLUMN source TEXT NOT NULL DEFAULT 'human'`)
+    }
+  },
 ]
 
 export function openDb(path: string): ScoutDb {

@@ -1470,6 +1470,28 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask }), jobsRepo, () => Date.now())
         expect(lib.findOverride(videoPath)!.tmdbId).toBe('276161')
       })
+
+      // v24（审计 B）：人工认领是终局判断，agent 不许改写——runner 侧必须如实记账被拒，
+      // 不能假装成功（否则 dashboard 上看起来纠错生效了，实际库里还是人工那条）。
+      it('目标前缀已有人工认领 → agent 认领被拒，人工值不变，runs 记 skipped', async () => {
+        const { lib, jobsRepo, job, videoPath, root, db } = setup()
+        const runs = new RunsRepo(db)
+        const humanDir = dirname(videoPath)
+        lib.addOverride(humanDir, '999', true, Date.now(), 3, 'human')
+
+        const runTask = vi.fn(async () => report({
+          no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
+          identity_correction: { tmdbId: '276161', isTv: true, reason: 'agent evidence' },
+        }))
+        await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask, runs }), jobsRepo, () => Date.now())
+
+        // 人工认领纹丝不动（含用户特意填的 season=3）
+        expect(lib.findOverride(videoPath)).toEqual({ tmdbId: '999', isTv: true, season: 3, source: 'human' })
+        // 如实记账
+        const skipped = runs.getByJobId(job.id).find((r) => r.decision === 'identity_correction_skipped')
+        expect(skipped).toBeDefined()
+        expect(skipped!.detail).toContain('276161')
+      })
     })
   })
 

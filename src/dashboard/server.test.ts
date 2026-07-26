@@ -185,7 +185,7 @@ describe('startDashboard (v2)', () => {
       })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ ok: true })
-      expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null })
+      expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null, source: 'human' })
     })
 
     // P7 disambiguation 补丁：可选 season 入参走完整 HTTP round-trip。
@@ -200,7 +200,7 @@ describe('startDashboard (v2)', () => {
       })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ ok: true })
-      expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({ tmdbId: '24240', isTv: true, season: 4 })
+      expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({ tmdbId: '24240', isTv: true, season: 4, source: 'human' })
     })
 
     it('POST /api/parked/claim rejects a non-positive-integer season (400)', async () => {
@@ -862,7 +862,7 @@ describe('startDashboard (v2)', () => {
         })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ ok: true })
-        expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null })
+        expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null, source: 'human' })
       })
 
       it('POST /api/v2/triage/claim 校验失败 → 400', async () => {
