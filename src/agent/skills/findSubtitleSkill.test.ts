@@ -201,6 +201,14 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
       expect(on.content).toMatch(/Do NOT install subtitles in this run/i)
       // 识别不出 → no_safe_match，不许乱猜
       expect(on.content).toMatch(/Guessing an identity is strictly\s+worse/i)
+      // 2026-07-26 identityEval 实测暴露的两个模型行为，skill 措辞必须钉死：
+      // ① year 矛盾一票否决——模型曾因 runtime 接近（111 vs 112min）放过 2026 vs 2013 的
+      //    年份矛盾（The Conjuring 骗过 Backrooms）
+      expect(on.content).toMatch(/year mismatch is an AUTOMATIC FAIL/i)
+      expect(on.content).toMatch(/never buys back a failed one/i)
+      // ② 核验通过不许用 identity_correction"宣布确认"——模型曾把确认写成 correction 对象
+      expect(on.content).toMatch(/never use it to announce that the guess was right/i)
+      expect(on.content).toMatch(/ALWAYS means "the library identity is wrong"/i)
       // Workflow 第 0 步锚定
       expect(on.content).toMatch(/FIRST, verify the media identity/)
       // descriptor 让模型从索引就知道有 Step 0

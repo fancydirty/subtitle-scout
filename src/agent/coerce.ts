@@ -72,3 +72,28 @@ export const tolerantArray = <T extends z.ZodTypeAny>(item: T) =>
     (v) => (v === undefined || v === null || v === 'None' || v === 'null' || v === '' ? [] : v),
     z.array(item),
   )
+
+/** nullableTolerant 的嵌套对象版：真模型对 object 字段还有另一类编码——把整个对象序列化成
+ *  JSON 字符串发上来（identity_correction:"{\"tmdbId\":\"276161\",...}"——2026-07-26
+ *  identityEval 实测，mimo-v2.5 在四个 case 里全部这么发）。preprocess 先把 JSON 字符串
+ *  parse 回对象，再走哨兵/缺席折叠；parse 失败的字符串原样留给 inner 拒绝（不吞错——
+ *  非法形状该炸还得炸，容错只针对"编码层"问题，不针对"内容层"问题）。 */
+export function nullableJsonTolerant<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.output<T> | null> {
+  return z.preprocess(
+    (v) => {
+      if (isNullishOrOmitted(v)) return null
+      if (typeof v === 'string') {
+        const trimmed = v.trim()
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          try {
+            return JSON.parse(trimmed)
+          } catch {
+            return v
+          }
+        }
+      }
+      return v
+    },
+    inner.nullable(),
+  ) as unknown as z.ZodType<z.output<T> | null>
+}

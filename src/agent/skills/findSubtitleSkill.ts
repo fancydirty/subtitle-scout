@@ -107,8 +107,17 @@ Before any \`search_source\` call, verify the identity with your TMDB evidence t
    - Line 2 (structure): for TV, the season table must actually contain your targets'
      seasons/episodes AND the first-air year must fit; for movies, the TMDB runtime must
      roughly match your target's runtime and the year must fit.
+   A year mismatch is an AUTOMATIC FAIL, no matter how good any other line looks: a
+   runtime that matches to the minute means nothing when the year is off by a decade
+   (a different movie can share your runtime by coincidence — 112 minutes fits both
+   The Conjuring (2013) and an unrelated 2026 release). One strong-looking evidence line
+   never buys back a failed one.
 3. Both lines check out → the identity is CONFIRMED. Proceed to the search workflow
-   below and never mention the verification in your reasons.
+   below. Leave \`identity_correction\` ABSENT (or null): that field exists ONLY to
+   report a corrected identity — never use it to announce that the guess was right,
+   and never mention the verification in your per-item reasons. A present
+   \`identity_correction\` ALWAYS means "the library identity is wrong", and the system
+   treats it as such.
 4. Either line FAILS → the mechanical guess is wrong. Re-identify from the raw evidence:
    clean the titles yourself (strip bracket tags, release-group names, resolution tags;
    repair obvious misspellings), then call \`search_tmdb\` with the cleaned candidates

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { nullableTolerant, tolerantArray } from './coerce.js'
+import { nullableTolerant, nullableJsonTolerant, tolerantArray } from './coerce.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 /** Batch task/report shapes for the find-subtitle worker (phase ③) — see
@@ -131,8 +131,10 @@ export const FindSubtitleBatchReportSchema = z.object({
    *  做验证——tmdb 工具缺席时 skill 不教 Step 0，模型不会填它）。identity_correction 出现
    *  时 targets 应全部躺在 no_safe_match（身份没纠正前装的字幕会记到错的库行上，skill 明
    *  确禁止）；runner（findSubtitleWorkerTask.ts）收到后记录待迁行——Phase 1 先只记录
-   *  （runs/log），迁行重派是后续切片。 */
-  identity_correction: nullableTolerant(z.object({
+   *  （runs/log），迁行重派是后续切片。
+   *  nullableJsonTolerant（不是 nullableTolerant）：真模型对 object 字段会把整个对象序列化
+   *  成 JSON 字符串发上来（identityEval 实测四连）——见 coerce.ts 该 helper 的头注释。 */
+  identity_correction: nullableJsonTolerant(z.object({
     tmdbId: z.string().min(1),
     isTv: z.boolean(),
     reason: z.string().min(1),

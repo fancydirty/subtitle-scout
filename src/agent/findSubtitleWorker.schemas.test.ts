@@ -109,6 +109,30 @@ describe('FindSubtitleBatchReportSchema', () => {
       }
     })
 
+    // 2026-07-26 identityEval 实测暴露：mimo-v2.5 对 object 字段会把整个对象序列化成
+    // JSON 字符串发上来（四个 case 全这么发），schema 不容错则 finalize 验证失败、整个
+    // 纠错报告丢失——这是 plumbing 不是模型问题，与 coercibleInt 容错 "10"→10 同一类。
+    it('真模型编码容错：JSON 字符串编码的对象 parse 回对象', () => {
+      const r = FindSubtitleBatchReportSchema.parse({
+        installed: [],
+        no_safe_match: [{ itemId: 'x', reason: 'r' }],
+        retry_later: [],
+        identity_correction: '{"tmdbId": "276161", "isTv": true, "reason": "season table fits"}',
+      } as unknown)
+      expect(r.identity_correction).toEqual({ tmdbId: '276161', isTv: true, reason: 'season table fits' })
+    })
+
+    it('非法 JSON 字符串原样拒绝（容错只针对编码层，不吞内容层错误）', () => {
+      expect(() =>
+        FindSubtitleBatchReportSchema.parse({
+          installed: [],
+          no_safe_match: [],
+          retry_later: [],
+          identity_correction: '{not json',
+        } as unknown),
+      ).toThrow()
+    })
+
     it('缺字段（reason 空/tmdbId 空）硬拒——纠错报告不许空判词', () => {
       expect(() =>
         FindSubtitleBatchReportSchema.parse({
