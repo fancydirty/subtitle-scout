@@ -151,5 +151,45 @@ describe('FindSubtitleBatchReportSchema', () => {
         }),
       ).toThrow()
     })
+
+    // 🔴 审计 BLIND SPOT 1（实测复现）：报了 correction 就意味着 agent 判定这批目标的库身份
+    // 是错的，此时任何 installed 都是把字幕装到它自己刚宣布错误的身份上（Peacemaker 事故
+    // 形状）。在 schema 层拒是刻意的——finalize 校验失败发生在 agent 循环内，模型能看到
+    // 错误并重填一份自洽报告；只在 runner 层丢弃则是事后无声修正，模型学不到。
+    it('自相矛盾：identity_correction + 非空 installed → 硬拒', () => {
+      expect(() =>
+        FindSubtitleBatchReportSchema.parse({
+          installed: [{
+            itemId: 'tmdb:1/s1e1', installedPath: '/m/a.srt', installedLanguage: 'zh-Hans',
+            candidateProvider: 'assrt', candidateProviderId: '1', reason: 'looks right',
+          }],
+          no_safe_match: [],
+          retry_later: [],
+          identity_correction: { tmdbId: '276161', isTv: true, reason: 'identity is wrong' },
+        }),
+      ).toThrow(/contradictory report/)
+    })
+
+    it('correction + 全部 targets 在 no_safe_match（skill 约定的正确形态）→ 放行', () => {
+      const r = FindSubtitleBatchReportSchema.parse({
+        installed: [],
+        no_safe_match: [{ itemId: 'tmdb:1/s1e1', reason: 'identity mismatch' }],
+        retry_later: [],
+        identity_correction: { tmdbId: '276161', isTv: true, reason: 'season table fits' },
+      })
+      expect(r.identity_correction!.tmdbId).toBe('276161')
+    })
+
+    it('无 correction 时 installed 照常放行（不误伤正常收割）', () => {
+      const r = FindSubtitleBatchReportSchema.parse({
+        installed: [{
+          itemId: 'tmdb:1/s1e1', installedPath: '/m/a.srt', installedLanguage: 'zh-Hans',
+          candidateProvider: 'assrt', candidateProviderId: '1', reason: 'looks right',
+        }],
+        no_safe_match: [],
+        retry_later: [],
+      })
+      expect(r.installed).toHaveLength(1)
+    })
   })
 })

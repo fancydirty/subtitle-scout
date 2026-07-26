@@ -1395,10 +1395,14 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     // agent 从未核验过的兄弟条目一起改身份（下一轮 ingest 删旧行建新行 + 可能触发副本字幕
     // 传播，撞北极星红线）。宁可拒写等人处理，也不敢用过宽的认领。
     describe('认领安全闸（拒绝过宽/危险的前缀）', () => {
-      it('targets 跨多个目录（多季 task）→ 拒写认领，只留痕', async () => {
+      // 2026-07-26 第二轮审计修正：第一版安全闸把"targets 跨多个目录"一律拒写，而**多季剧
+      // 是最常见的 TV 布局**——多季 task 的 targets 天然跨 Season 01/Season 02，于是 agent
+      // 每轮判对、每轮被拒、每轮烧钱、库里身份永远错，拒写记录只是时间线上一行滚动消失的
+      // 灰字。锁死最常见场景不是保守，是把功能废掉。现在改为认领公共祖先（剧根——正是
+      // "这批文件是哪部剧"这个判断的作用域），只要它严格深于配置根。
+      it('targets 跨多个季目录（多季 task）→ 认领落在剧根，正常生效', async () => {
         const { lib, jobsRepo, db, root, job, episodeIds } = setupBatch(2)
         const runs = new RunsRepo(db)
-        // 把第二个 target 挪到另一个季目录，制造"跨目录"形态
         const s2dir = join(root, 'Show', 'Season 02')
         mkdirSync(s2dir, { recursive: true })
         const movedPath = join(s2dir, 'Show.S02E01.mkv')
@@ -1406,6 +1410,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         db.prepare(`UPDATE episodes SET path = ? WHERE id = ?`).run(movedPath, episodeIds[1])
 
         const runTask = vi.fn(async (t: FindSubtitleTask) => {
+          // 前提校验：夹具确实造出了跨目录形态
           expect(new Set(t.targets.map((x) => dirname(x.videoPath))).size).toBeGreaterThan(1)
           return report({
             no_safe_match: t.targets.map((x) => unresolvedItem(x.itemId, 'identity mismatch')),
@@ -1414,12 +1419,16 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         })
         await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask, runs }), jobsRepo, () => Date.now())
 
-        // 认领没落地
-        expect(db.prepare(`SELECT COUNT(*) AS n FROM identify_overrides`).get()).toEqual({ n: 0 })
-        // 但留了痕（拒写不是静默丢弃）
-        const skipped = runs.getByJobId(job.id).find((r) => r.decision === 'identity_correction_skipped')
-        expect(skipped).toBeDefined()
-        expect(skipped!.detail).toContain('276161')
+        // 认领落在两个季目录的公共祖先（剧根），且对两季的文件都生效
+        const showDir = join(root, 'Show')
+        const claimed = lib.findOverride(join(showDir, 'Season 01', 'Show.S01E01.mkv'))
+        expect(claimed).not.toBeNull()
+        expect(claimed!.tmdbId).toBe('276161')
+        expect(lib.findOverride(movedPath)!.tmdbId).toBe('276161')
+        // 落地了就该记 identity_correction（不是 skipped）
+        const decisions = runs.getByJobId(job.id).map((r) => r.decision)
+        expect(decisions).toContain('identity_correction')
+        expect(decisions).not.toContain('identity_correction_skipped')
       })
 
       it('target 目录就是配置媒体根本身（扁平库）→ 拒写认领', async () => {
@@ -1491,6 +1500,47 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         const skipped = runs.getByJobId(job.id).find((r) => r.decision === 'identity_correction_skipped')
         expect(skipped).toBeDefined()
         expect(skipped!.detail).toContain('276161')
+      })
+
+      // 🔴 审计 BLIND SPOT 2（实测复现）：/^\d+$/ 只管形状。一个合法数字的幻觉 id 会让
+      // ingest 建出永久鬼影行——TMDB 富化全 404 → genres 落 '[]'（404 熄火哨兵）→ 该行永久
+      // 退出富化重试、永不自愈，而认领表没有删除 UI。落地前必须实证这个 id 真的存在。
+      it('合法数字但 TMDB 上不存在（幻觉 id）→ 拒写认领', async () => {
+        const { lib, jobsRepo, job, videoPath, root } = setup()
+        const tmdb = {
+          getDetails: vi.fn(async () => null), // 404
+          getChineseTitles: vi.fn(async () => []),
+          getSeasonTable: vi.fn(async () => null),
+          getSeasonEpisodeRuntimes: vi.fn(async () => null),
+        } as unknown as TmdbClient
+        const runTask = vi.fn(async () => report({
+          no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
+          identity_correction: { tmdbId: '99999999', isTv: true, reason: 'evidence' },
+        }))
+        await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask, tmdb }), jobsRepo, () => Date.now())
+
+        expect(lib.findOverride(videoPath)).toBeNull()
+      })
+    })
+
+    // 🔴 审计 BLIND SPOT 1（实测复现）：agent 同时报 correction 和 installed 时，字幕会被
+    // 记到它自己刚宣布错误的身份上（Peacemaker 事故形状）——下一轮 ingest 换身份把那条
+    // subtitles 行连带删掉，磁盘 .srt 变孤儿，job 却已 completeDone 无人重试。
+    // schema 的 superRefine 在 agent 循环内就拒收这种自相矛盾的报告（模型可自我纠正），
+    // runner 这道是即使 schema 被绕过也绝不入账的兜底。
+    describe('自相矛盾报告防御（correction + installed 共存）', () => {
+      it('runner 丢弃 installed，不把装机记到已知错误的身份上', async () => {
+        const { lib, jobsRepo, job, root, db } = setup()
+        const runs = new RunsRepo(db)
+        const runTask = vi.fn(async () => report({
+          installed: [installedItem(SHOW_EPISODE_ID)],
+          identity_correction: { tmdbId: '276161', isTv: true, reason: 'identity is wrong' },
+        }))
+        await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask, runs }), jobsRepo, () => Date.now())
+
+        expect(lib.getEpisode(SHOW_EPISODE_ID)!.sub_status).toBe('missing')
+        expect(db.prepare(`SELECT COUNT(*) AS n FROM subtitles`).get()).toEqual({ n: 0 })
+        expect(runs.getByJobId(job.id).map((r) => r.decision)).not.toContain('installed')
       })
     })
   })

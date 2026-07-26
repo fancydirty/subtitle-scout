@@ -139,6 +139,29 @@ export const FindSubtitleBatchReportSchema = z.object({
     isTv: z.boolean(),
     reason: z.string().min(1),
   })),
+}).superRefine((report, ctx) => {
+  // 🔴 自相矛盾的报告一律拒收（2026-07-26 审计 BLIND SPOT 1，实测复现）：agent 报了
+  // identity_correction 就意味着它判定"库里这批目标的身份是错的"，此时任何 installed
+  // 都是把字幕装到它自己刚宣布错误的身份上——正是 Peacemaker 事故的形状（整季装成同名
+  // 芬兰剧）。skill 明文禁止这个组合（"Do NOT install subtitles in this run"），但没有
+  // 任何机械约束时模型照样会两个都填：实测跑出过 sub_status='covered' + 一条挂在错 id 上
+  // 的 subtitles 行，下一轮 ingest 换身份把该行连带删掉，磁盘上的 .srt 变成孤儿，job 却
+  // 已 completeDone，没有任何重试。
+  //
+  // 在 schema 层拒（而不是只在 runner 层丢弃）是刻意的：finalize 的 inputSchema 校验失败
+  // 发生在 agent 循环内部，模型能看到错误并自我纠正（重填一份自洽的报告）；runner 层丢弃
+  // 则是事后无声修正，模型学不到东西。runner 侧另有一道防御（见 findSubtitleWorkerTask.ts
+  // 的 installed 循环），两道都上。
+  if (report.identity_correction && report.installed.length > 0) {
+    ctx.addIssue({
+      code: 'custom',
+      message:
+        `contradictory report: identity_correction says the library identity is wrong, ` +
+        `but ${report.installed.length} item(s) were reported as installed. When the identity ` +
+        `is wrong, install nothing — put every target in no_safe_match instead.`,
+      path: ['installed'],
+    })
+  }
 })
 export type FindSubtitleBatchReport = z.infer<typeof FindSubtitleBatchReportSchema>
 export type FindSubtitleInstalledItem = z.infer<typeof FindSubtitleInstalledItemSchema>

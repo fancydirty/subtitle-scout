@@ -201,39 +201,52 @@ function commonDir(dirs: string[]): string {
   return candidate
 }
 
-/** 认领安全闸（2026-07-26 审计 P0-A）：agent 的 identity_correction 落地成一条 path_prefix
- *  认领，而 findOverride 是前缀匹配——前缀取宽了，一次纠错就能把整个目录树下**agent 从未
- *  核验过**的兄弟条目一起改身份（下一轮 ingest 会按新身份删旧行建新行，还可能触发副本字幕
- *  传播，撞北极星红线"绝不误认"）。
+/** 认领安全闸（2026-07-26 审计 P0-A，同日第二轮审计修正）：agent 的 identity_correction
+ *  落地成一条 path_prefix 认领，而 findOverride 是前缀匹配——前缀取宽了，一次纠错就能把整个
+ *  目录树下**agent 从未核验过**的兄弟条目一起改身份（下一轮 ingest 会按新身份删旧行建新行，
+ *  还可能触发副本字幕传播，撞北极星红线"绝不误认"）。
  *
- *  task.mediaRoot 不能直接当认领前缀，它是 commonDir 上探出来的**沙盒**边界，两种真实布局
- *  下会过宽：
- *  ① 多季 task：commonDir(['…/Show/Season 01','…/Show/Season 02']) → '…/Show'（剧根），
- *     连 agent 没看过的 S03/Specials 一起认领；
- *  ② 扁平库（番剧/电影常态）：全部文件同一目录 → mediaRoot 就是那个目录，可能恰好等于配置
- *     媒体根，一条认领钉死整库。
+ *  第一版把"targets 跨多个目录"一律拒写，这条规则本身造成了更坏的稳态失效：**多季剧是最
+ *  常见的 TV 布局**，多季 task 的 targets 天然跨 Season 01/Season 02，于是 agent 每轮判对、
+ *  每轮被拒、每轮烧钱，库里身份永远错——而拒写记录只是时间线上一行滚动消失的灰字，没人会
+ *  发现。锁死最常见的场景不是保守，是把功能废掉。
  *
- *  故认领前缀独立求值：只有当本批 targets 全部落在**同一个目录**、且那个目录不是配置根本身
- *  时，才认领该目录；否则返回 null（拒写认领，调用方只记录不落地——宁可让这次纠错不生效等
- *  人处理，也不敢用一条过宽的认领去改一片没核验过的条目）。 */
+ *  现在的规则：认领前缀取全部 targets 的**公共祖先目录**（多季剧自然落在剧根，正是该认领的
+ *  粒度——agent 核验的是"这批文件是哪部剧"，剧根就是这个判断的作用域），但必须同时满足：
+ *  ① 严格深于每一个配置媒体根（不能等于根，否则一条认领钉死整库——扁平库的致命形态）；
+ *  ② 全部 targets 确实在它之下（commonDir 的自洽性复核，防御磁盘布局异常导致的越界上探）。
+ *  两条任一不满足就拒写并留痕——那些形态（散落在媒体根一级的扁平库）确实没有安全的认领
+ *  粒度可选，宁可等人处理。 */
 export function safeClaimPrefix(
   targetPaths: string[], mediaRoots: string[],
 ): { ok: true; prefix: string } | { ok: false; reason: string } {
   const dirs = [...new Set(targetPaths.map((p) => dirname(p)))]
   if (dirs.length === 0) return { ok: false, reason: 'no targets' }
-  if (dirs.length > 1) {
-    return {
-      ok: false,
-      reason: `targets span ${dirs.length} directories (${dirs.slice(0, 3).join(', ')}…) — a prefix claim would cover unverified siblings`,
+
+  const prefix = commonDir(dirs)
+
+  // ① 严格深于每一个配置根：等于根（或在根之外）都不许认领。配置根为空（开发/测试态）时
+  // 这条检查退化为"只要不是文件系统根就行"——isUnderRoots 的"空=不限制"语义在这里不适用，
+  // 认领是写操作，缺省必须收紧不能放宽。
+  for (const root of mediaRoots) {
+    if (resolve(prefix) === resolve(root)) {
+      return {
+        ok: false,
+        reason: `prefix ${prefix} IS a configured media root — claiming it would pin the whole library`,
+      }
     }
   }
-  const dir = dirs[0]
-  // 认领配置根本身 = 钉死整库；containingRoot 命中自身即判定为根级。
-  const root = containingRoot(dir, mediaRoots)
-  if (root !== null && resolve(root) === resolve(dir)) {
-    return { ok: false, reason: `directory ${dir} IS a configured media root — claiming it would pin the whole library` }
+  if (resolve(prefix) === resolve(dirname(prefix))) {
+    return { ok: false, reason: `prefix ${prefix} is a filesystem root` }
   }
-  return { ok: true, prefix: dir }
+
+  // ② 自洽性复核：commonDir 声称它包住了全部 dirs，这里实证一遍（磁盘布局异常/跨根组合时
+  // 上探可能越出预期）。
+  if (!dirs.every((d) => isUnderRoots(d, [prefix]))) {
+    return { ok: false, reason: `computed prefix ${prefix} does not contain every target directory` }
+  }
+
+  return { ok: true, prefix }
 }
 
 /** Maps a claimed worker_task row to a batch FindSubtitleTask, or null if there is nothing left
@@ -510,7 +523,22 @@ export async function runFindSubtitleWorkerTask(
     const hardsubAssumed = dropAlien(report.hardsub_assumed, 'hardsub_assumed')
 
     // 事实先入账（installed 永远先记——磁盘上字幕已经在了，队列怎么转都不改变这个事实）
-    for (const item of installed) {
+    //
+    // 🔴 例外（2026-07-26 审计 BLIND SPOT 1）：报告自带 identity_correction 时，agent 已经
+    // 判定这批目标的库身份是错的——此时任何 installed 都是把字幕记到它自己刚宣布错误的身份
+    // 上（Peacemaker 事故形状）。schema 的 superRefine 已经在 agent 循环内拒收这种自相矛盾
+    // 的报告（模型能看到错误并自我纠正），这里是第二道：即使将来 schema 那道被绕过/改动，
+    // runner 也绝不把装机记到一个已知错误的身份上。丢弃要吼出来，不静默。
+    const installedToRecord = report.identity_correction ? [] : installed
+    if (report.identity_correction && installed.length > 0) {
+      console.error(
+        `[find-subtitle-harvest] job ${job.id}: DROPPING ${installed.length} installed item(s) — ` +
+          `report also carries identity_correction (tmdb:${report.identity_correction.tmdbId}), ` +
+          `so the library identity these installs would be recorded against is known-wrong: ` +
+          installed.map((i) => i.itemId).join(', '),
+      )
+    }
+    for (const item of installedToRecord) {
       // W2（装机记账修复批，2026-07-18，审计实证 DxD/HOTD/Gracie 遍地）：candidateProviderId 全链
       // 唯一来源是 finalize 工具的 inputSchema（findSubtitleWorker.schemas.ts），agent 填它时手上
       // 唯一见过的候选标识就是 candidateKey() 复合形态（"provider:providerId"，见
@@ -573,6 +601,26 @@ export async function runFindSubtitleWorkerTask(
         ? safeClaimPrefix(task.targets.map((t) => t.videoPath), deps.mediaRoots)
         : { ok: false as const, reason: `tmdbId must be a bare numeric string, got "${correction.tmdbId}"` }
 
+      // 🔴 存在性校验（2026-07-26 审计 BLIND SPOT 2，实测复现）：/^\d+$/ 只管形状，不管这个
+      // id 在 TMDB 上是否真的存在。实测 agent 报一个合法数字的幻觉 id（99999999）后：ingest
+      // 照样建行，TMDB 富化全 404 → genres 落 '[]'（那是 404 熄火哨兵），该行从此永久退出富化
+      // 重试候选、永不自愈，而认领表没有任何删除 UI —— 一个幻觉数字换来永久的库污染。
+      // 落地前拿 deps.tmdb 实证一次（它已在本函数其他处使用）；TMDB 未配置（null）时保持原
+      // 行为不引入新的失败模式。
+      if (claim.ok && deps.tmdb) {
+        const exists = await deps.tmdb
+          .getDetails(correction.isTv ? 'tv' : 'movie', correction.tmdbId)
+          .catch(() => null)
+        if (!exists) {
+          claim = {
+            ok: false,
+            reason:
+              `tmdb:${correction.tmdbId} (${correction.isTv ? 'tv' : 'movie'}) does not exist on TMDB ` +
+              `— refusing to pin a hallucinated identity onto ${claim.prefix}`,
+          }
+        }
+      }
+
       if (claim.ok) {
         // v24（审计 B）：source='agent'——addOverride 的不对称覆盖规则据此拒绝改写人工认领
         // （人在救援页的明确点选是终局判断，且可能携带 agent 无从得知的 season 消歧信息）。
@@ -603,7 +651,7 @@ export async function runFindSubtitleWorkerTask(
       }
       identityClaim = claim
     }
-    if (installed.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
+    if (installedToRecord.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
       jobs.completeError(job.id, 'worker returned an empty batch report', now())
       recordRun('error', 'empty batch report')
     } else if (retryLater.length > 0) {
@@ -615,8 +663,8 @@ export async function runFindSubtitleWorkerTask(
     }
 
     // runs：按非空桶各记一行，词表沿用（dashboard 时间线口径不破）
-    if (installed.length) {
-      recordRun('installed', `${installed.length} 集入账: ${installed.map((i) => i.itemId).join(', ')}`)
+    if (installedToRecord.length) {
+      recordRun('installed', `${installedToRecord.length} 集入账: ${installedToRecord.map((i) => i.itemId).join(', ')}`)
     }
     if (noMatch.length) {
       recordRun('no_safe_match', `${noMatch.length} 集判无: ${noMatch.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
