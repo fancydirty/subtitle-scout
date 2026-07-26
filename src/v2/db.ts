@@ -109,7 +109,11 @@ CREATE TABLE blacklist (            -- 借鉴 Bazarr：已确认坏/错的候选
 );
 CREATE TABLE parked_paths (         -- 未识别文件的正式户口（不混进 episodes/movies）；每轮巡检重试，供 P6 救援页读取
   path TEXT PRIMARY KEY, park_reason TEXT NOT NULL,
-  first_seen INTEGER NOT NULL, last_attempt INTEGER NOT NULL
+  first_seen INTEGER NOT NULL, last_attempt INTEGER NOT NULL,
+  -- v25（agent-first identification）：agent 识别所需的 raw 数据——机械探测只写 raw 数据，
+  -- agent 从 parked_paths 读取做识别。NULL=未探测。retry_count/next_retry_at/probe_* 四列
+  -- 不在此终态定义里——它们由 v21 的裸 ALTER 迁移追加，fresh install 走完整 MIGRATIONS 链一次到位。
+  duration_sec INTEGER, embedded_langs TEXT
 );
 CREATE TABLE identify_overrides (   -- P6 认领写入；识别层消歧前查（最长前缀匹配）
   path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL,
@@ -335,6 +339,26 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
     )
     if (!columns.has('source')) {
       db.exec(`ALTER TABLE identify_overrides ADD COLUMN source TEXT NOT NULL DEFAULT 'human'`)
+    }
+  },
+  // v25（agent-first identification）：parked_paths 承载 agent 识别所需的 raw 数据
+  // （duration_sec, embedded_langs）。spec：机械只给 raw 数据，agent 从 parked_paths 读取。
+  // 条件式补齐（fresh install 的 v9 终态 CREATE TABLE 已含这两列——同 v22/v24 的教训：
+  // 新库已有列，必须条件式补齐，不能裸 ALTER 让 fresh install 撞 duplicate column name）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'parked_paths'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(parked_paths)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('duration_sec')) {
+      db.exec(`ALTER TABLE parked_paths ADD COLUMN duration_sec INTEGER`)
+    }
+    if (!columns.has('embedded_langs')) {
+      db.exec(`ALTER TABLE parked_paths ADD COLUMN embedded_langs TEXT`)
     }
   },
 ]
