@@ -780,7 +780,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       //
       // 剧名来源：这条重试路径手上只有 tmdbId（listSeriesNeedingEnrich 只给 id），没有
       // recognize() 才有的原始文件名/路径可查——首次入库路径的 name 来自 outcome.title
-      // （recognition/resolveToTmdb.ts 的 TMDB /search/tv 命中标题 adopted.title，见该文件），
+      // （历史上的机械识别层由 TMDB /search/tv 命中标题给出；该层已随 resolveToTmdb 一并删除），
       // 这条查询词驱动的搜索在这里用不上。getDetails 的 originalTitle 字段（tv: original_name）
       // 是这个端点唯一能给出的标题字段，虽是"原语言标题"而非展示标题，但好过永久空着——沿用
       // enrichNewSeriesOrMovie 同一套 fail-soft 手法，并复用它采集 imdbId（验收修复轮一：

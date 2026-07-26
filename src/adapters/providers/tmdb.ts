@@ -272,7 +272,7 @@ export class TmdbClient {
   }
 
   /**
-   * 标题搜索——C3(resolveToTmdb)消歧的唯一数据源。tv→/search/tv(取 name/first_air_date),
+   * 标题搜索——agent 身份识别（search+verify）与 dashboard 手工搜索的数据源。tv→/search/tv(取 name/first_air_date),
    * movie→/search/movie(取 title/release_date;year 查询参数名两端点不同——tv 是
    * first_air_date_year,movie 是 year,这是 TMDB 自己的 API 形状,不是本函数的选择)。
    * 404 与"查无结果"同等对待,按空数组处理(TMDB search 端点正常不会 404,但形状收敛到
