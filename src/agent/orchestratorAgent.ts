@@ -6,7 +6,7 @@ import { makeReadDocTool, systemPromptSkillIndex } from './skills/registry.js'
 import { ORCHESTRATOR_SKILL } from './skills/orchestratorSkill.js'
 import {
   makeListMissingCoverageTool, makeCheckSeriesLayoutTool, makeDispatchFindSubtitleTaskTool,
-  makeDispatchRealignTaskTool, makeDispatchRescueTaskTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter,
+  makeDispatchRealignTaskTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter,
 } from './orchestratorAgent.tools.js'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
@@ -86,9 +86,6 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
         { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
       ),
       dispatch_realign_task: makeDispatchRealignTaskTool(
-        { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
-      ),
-      dispatch_rescue_task: makeDispatchRescueTaskTool(
         { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
       ),
       spawn_sibling_orchestrator: makeSpawnSiblingOrchestratorTool(dispatchDeps),

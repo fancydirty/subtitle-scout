@@ -4,7 +4,7 @@ import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
   makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeDispatchRealignTaskTool,
-  makeDispatchRescueTaskTool, makeCheckSeriesLayoutTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter, type MissingCoveragePage,
+  makeCheckSeriesLayoutTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter, type MissingCoveragePage,
 } from './orchestratorAgent.tools.js'
 
 const fakeOpts = { toolCallId: 't1', messages: [] } as any
@@ -498,58 +498,6 @@ describe('dispatch_find_subtitle_task / dispatch_realign_task 如实转告 upser
       note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
     })
     expect(counter.count).toBe(0)
-  })
-
-  // 救援R3：dispatch_rescue_task 固定单例身份，共享 dispatch 预算，四态回执与 realign 工具同形。
-  it('dispatch_rescue_task: created → {dispatched:true, outcome:created, remainingCapacity}，耗 1 个 cap 名额', async () => {
-    const counter: DispatchCounter = { count: 0 }
-    const calls: unknown[][] = []
-    const dispatchRescue = makeDispatchRescueTaskTool(
-      {
-        jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args); return { outcome: 'created' } as const } },
-        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
-      },
-      counter,
-    )
-    const result = await dispatchRescue.execute!({ reason: 'parked backlog looks worth a rescue pass' }, fakeOpts)
-    expect(result).toEqual({ dispatched: true, outcome: 'created', remainingCapacity: 4 })
-    expect(counter.count).toBe(1)
-    expect(calls).toHaveLength(1)
-    const [ident, payload] = calls[0]
-    expect(ident).toEqual({ seriesId: 'rescue-backlog', season: null, movieId: null })
-    expect(payload).toEqual({ taskType: 'rescue_identify', reason: 'parked backlog looks worth a rescue pass' })
-  })
-
-  it('dispatch_rescue_task: second call coalesces into the singleton identity without consuming cap', async () => {
-    const counter: DispatchCounter = { count: 1 }
-    const dispatchRescue = makeDispatchRescueTaskTool(
-      {
-        jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true }) },
-        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 5,
-      },
-      counter,
-    )
-    const result = await dispatchRescue.execute!({ reason: 'still worth a rescue pass' }, fakeOpts)
-    expect(result).toEqual({
-      dispatched: false, outcome: 'coalesced', pendingState: 'wanted',
-      note: 'merged into the pending task and its scope/reason was refreshed to yours',
-    })
-    expect(counter.count).toBe(1)
-  })
-
-  it('dispatch_rescue_task: cap reached returns error before upsertWorkerTask', async () => {
-    const counter: DispatchCounter = { count: 2 }
-    const dispatchRescue = makeDispatchRescueTaskTool(
-      {
-        jobs: { upsertWorkerTask: () => { throw new Error('must never be called — cap must reject first') } },
-        now: () => 1000, parentJobId: null, maxDispatchesPerOrchestrator: 2,
-      },
-      counter,
-    )
-    const result = await dispatchRescue.execute!({ reason: 'cap full' }, fakeOpts)
-    expect(result).toEqual({
-      error: 'dispatch cap (2) reached for this orchestrator — call spawn_sibling_orchestrator to hand off the rest instead of dispatching more directly',
-    })
   })
 })
 

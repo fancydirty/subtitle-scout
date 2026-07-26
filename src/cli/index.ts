@@ -40,10 +40,8 @@ import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
 import { replayRollback } from '../files/realignManifest.js'
 import { runRealignWorkerTask } from '../v2/realignWorkerTask.js'
 import { runFindSubtitleWorkerTask } from '../v2/findSubtitleWorkerTask.js'
-import { runRescueWorkerTask } from '../v2/rescueWorkerTask.js'
 import { runReconcileAll, runOrchestrateWorkerTask } from '../v2/reconcileAll.js'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
-import { makeRescueWorker } from '../agent/rescueWorker.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
 import { identifyFromPath } from '../recognition/identifyFromPath.js'
@@ -52,7 +50,6 @@ import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
 import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine } from './watchStartupWarnings.js'
-import { claimParked } from '../v2/triageOps.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -454,21 +451,6 @@ async function cmdWatch() {
       } else if (payload.taskType === 'orchestrate') {
         // 同上：orchestrateWorkerTaskDeps 恒非空，"未接线"停车分支不可达，随之删除。
         await runOrchestrateWorkerTask(job, orchestrateWorkerTaskDeps, jobs)
-      } else if (payload.taskType === 'rescue_identify') {
-        // 救援R2：agent 清停车场——runTask 每次 claim 现建（同 find_subtitle 分支的 adapters
-        // 现建口径；rescue 无 adapters，只有 tmdb 只读三方法）。claimParked 走 apiV2 同一实现
-        // 路径（防漂移铁律），requestIngest 沿甄别页认领的踢扫描先例（复用同一个 ingestTrigger
-        // 闭包，fire-and-forget 并兜底未捕获 rejection）。
-        await runRescueWorkerTask(job, {
-          lib,
-          probeDuration: (p) => probeDurationSec(p),
-          claimParked: (input) => claimParked(db, input),
-          requestIngest: () => {
-            void ingestTrigger().catch((e) => log(`warn: rescue identify 后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
-          },
-          runs,
-          runTask: makeRescueWorker({ model: reasoningModel, tmdb }),
-        }, jobs, () => Date.now())
       } else if (payload.taskType === 'translate') {
         // E AI 翻译:daemon 自动翻一个可译候选。**双重 env 门控**——tryAutoTranslateCfg 只认显式
         // TRANSLATE_* 三件套(绝不回退 LLM_*=mimo 烧配额),不全则拒跑走 completeError(等用户配齐;

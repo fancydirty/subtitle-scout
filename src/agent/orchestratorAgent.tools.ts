@@ -6,7 +6,7 @@ import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { tmdbIdFromOwnId } from '../v2/ownIds.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 import { coercibleInt, nullableTolerant } from './coerce.js'
-import { isRescueEligible } from '../v2/rescueWorkerTask.js'
+import { isParkedPathEligible } from '../v2/libraryRepo.js'
 
 /** Task 8c（裁决 R-3 呈现面）：行形状增 throttled/nextRecheckAt/sampleReason——停牌中的缺口
  *  现在是可见事实，不再被 SQL 谓词整行吃掉（见 libraryRepo.ts missingBySeason 头注释）。
@@ -26,8 +26,8 @@ export interface MissingCoveragePage {
   total: number
   offset: number
   hasMore: boolean
-  /** 救援R3（spec §1）：停车场事实块——机械事实不是指令（北极星④）。count=救援资格行数
-   *  （谓词=rescueWorkerTask.isRescueEligible，与 rescue mapper 同源防漂移）；sample=前 5 条
+  /** 停车场事实块——机械事实不是指令（北极星④）。count=agent 可处理的资格行数
+   *  （谓词=libraryRepo.isParkedPathEligible）；sample=前 5 条
    *  {path, reason}。excluded-extra/duplicate-content 不进这个数（各归其役）。 */
   parked: { count: number; sample: Array<{ path: string; reason: string }> }
 }
@@ -50,7 +50,7 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
       'row is worth re-dispatching early is YOUR judgment. Paginated: returns at most `limit` ' +
       'rows per call (default 50, max 200) starting at `offset`. When `hasMore` is true, call ' +
       'again with a higher `offset` to see the rest — do not assume one call returned the whole ' +
-      'backlog. The response also carries a `parked` fact block (rescue-eligible unidentified files); see the playbook for when a rescue dispatch is warranted.',
+      'backlog. The response also carries a `parked` fact block (unidentified files eligible for agent processing) — facts only; no dispatch tool acts on it.',
     inputSchema: z.object({
       offset: z.number().int().min(0).default(0),
       limit: z.number().int().min(1).max(MAX_MISSING_COVERAGE_LIMIT).default(DEFAULT_MISSING_COVERAGE_LIMIT),
@@ -67,7 +67,7 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
       const all = [...seasonRows, ...movieRows]
       const total = all.length
       const rows = all.slice(offset, offset + limit)
-      const eligible = lib.listParkedPaths().filter(p => isRescueEligible(p.park_reason))
+      const eligible = lib.listParkedPaths().filter(p => isParkedPathEligible(p.park_reason))
       const parked = {
         count: eligible.length,
         sample: eligible.slice(0, 5).map(p => ({ path: p.path, reason: p.park_reason })),
@@ -301,35 +301,6 @@ export function makeDispatchRealignTaskTool(deps: DispatchDeps, counter: Dispatc
       if (capped) return capped
       const result = deps.jobs.upsertWorkerTask(
         { seriesId, season: null, movieId: null }, { taskType: 'realign', reason }, deps.parentJobId, deps.now(),
-      )
-      return reportDispatchOutcome(result, counter, cap)
-    },
-  })
-}
-
-export function makeDispatchRescueTaskTool(deps: DispatchDeps, counter: DispatchCounter) {
-  const cap = deps.maxDispatchesPerOrchestrator ?? 100
-  return tool({
-    description:
-      'Dispatch a rescue-identify worker task to clear the entire parked-files backlog: ' +
-      'unidentified files that are eligible for rescue (i.e. not already adjudicated as ' +
-      'excluded-extra or duplicate-content) will be grouped and re-identified in one pass. ' +
-      'This identity is a fixed singleton (`rescue-backlog`) — a second dispatch while one is ' +
-      'already pending will coalesce into the existing row rather than create a duplicate. ' +
-      'The result tells you truthfully what happened: outcome created/revived means a new or ' +
-      'revived worker_task row landed and it counts against your shared dispatch cap; outcome ' +
-      'coalesced means one was already pending (no new row, no budget — the note says whether ' +
-      'your reason was refreshed onto it); outcome blocked_dormant means this identity is parked ' +
-      'and nothing was written.',
-    inputSchema: z.object({ reason: z.string().min(1) }),
-    execute: async ({ reason }) => {
-      const capped = capCheck(counter, cap)
-      if (capped) return capped
-      const result = deps.jobs.upsertWorkerTask(
-        { seriesId: 'rescue-backlog', season: null, movieId: null },
-        { taskType: 'rescue_identify', reason },
-        deps.parentJobId,
-        deps.now(),
       )
       return reportDispatchOutcome(result, counter, cap)
     },

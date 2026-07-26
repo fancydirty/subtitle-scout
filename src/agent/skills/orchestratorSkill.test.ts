@@ -55,15 +55,4 @@ describe('ORCHESTRATOR_SKILL', () => {
   it('carries no hardcoded target-language assumption (A-generalization)', () => {
     expect(ORCHESTRATOR_SKILL.content).not.toMatch(/Chinese/i)
   })
-
-  // 救援R3 锚：parked 事实块读法 + 救援派发礼仪（一趟一单/预算共享/识别判断归 rescue worker）。
-  it('teaches the parked fact block and rescue dispatch etiquette', () => {
-    const c = ORCHESTRATOR_SKILL.content
-    expect(c).toMatch(/parked/)
-    expect(c).toMatch(/dispatch_rescue_task/)
-    expect(c).toMatch(/once per pass|never dispatch it more than once/i)
-    expect(c).toMatch(/same 100-dispatch budget/i)
-    // 识别判断归 rescue worker，orchestrator 不许自己猜停车路径是什么
-    expect(c).toMatch(/belongs to that\s+worker|not to you/i)
-  })
 })
