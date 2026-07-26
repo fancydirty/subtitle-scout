@@ -46,7 +46,7 @@ import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { makeRescueWorker } from '../agent/rescueWorker.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
-import { recognize } from '../recognition/index.js'
+import { identifyFromPath } from '../recognition/identifyFromPath.js'
 import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
@@ -100,8 +100,10 @@ async function assemble(): Promise<Assembled> {
   return { cacheRoot, mappings, tmdb, reasoningModel }
 }
 
-/** 去 Jellyfin 化 T4：cmdWatch 与 cmdReconcileAll 共用的摄取 pass 组装——recognize 预绑定 tmdb +
- *  lib.findOverride（P6 认领消歧，消歧前查），probe 绑定 ffprobe 探针（files/streamProbe.ts）。
+/** 去 Jellyfin 化 T4：cmdWatch 与 cmdReconcileAll 共用的摄取 pass 组装——recognize 是纯路径结构
+ *  解析 identifyFromPath（同步，无 TMDB/override 查询；身份裁决已上移到 agent 的
+ *  write_identified_media，ingest 只落 raw data 等 agent 识别，见 v2/ingest.ts 的
+ *  IngestDeps.recognize 注释），probe 绑定 ffprobe 探针（files/streamProbe.ts）。
  *  两个调用点各自决定 roots/targetLanguages/originSkipLanguages/log 的具体来源，其余接线逐字
  *  相同，不重复两份。
  *  dashboard G4：roots 从静态数组换成惰性提供者——两个调用点都传
@@ -121,7 +123,7 @@ function buildIngestPass(opts: {
     roots: opts.roots,
     lib: opts.lib,
     tmdb: opts.tmdb,
-    recognize: (videoPath: string) => recognize(videoPath, opts.tmdb, { findOverride: (p) => opts.lib.findOverride(p) }),
+    recognize: (videoPath: string) => identifyFromPath(videoPath),
     probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
     // 重复源 P4b："复制优先"机械通道（v2/subtitlePropagation.ts）接线——同 realign 那处既有接线
     // 复用同一个 probeDurationSec，不是新引入的探针实现。
