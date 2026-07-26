@@ -156,6 +156,8 @@ export const api = {
   claimTriage: (input: ClaimParkedInput) => post<{ ok: true }>('/api/v2/triage/claim', input),
   // 救援R4c：excluded-extra 停车行翻案——取消排除，让文件回到 pending 池重新参与 ingest。
   unexclude: (path: string) => post<{ ok: true }>('/api/v2/triage/unexclude', { path }),
+  // 审计 A-5：撤销一条认领（agent 写权限的唯一逃生阀，见 ClaimedBox 头注释）。
+  unclaim: (pathPrefix: string) => post<{ ok: true }>('/api/v2/triage/unclaim', { pathPrefix }),
   // dashboard-F5：ClaimDialog 的 TMDB 搜索代理（只读）——type 与 q 都做 URI 编码，q 可能含
   // CJK/空格/斜杠等需要转义的字符。
   tmdbSearch: (type: 'tv' | 'movie', q: string, signal?: AbortSignal) =>

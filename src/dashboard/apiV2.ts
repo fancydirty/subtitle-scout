@@ -504,7 +504,7 @@ export function buildParked(db: ScoutDb): ParkedItemDTO[] {
   }))
 }
 
-export { claimParked, unexclude, type ClaimParkedResult } from '../v2/triageOps.js'
+export { claimParked, unexclude, unclaim, type ClaimParkedResult } from '../v2/triageOps.js'
 
 // ---- Settings（dashboard 重建战役 G4：settings 表 + 守备目录 + 部署层只读展示） ----
 
@@ -1216,6 +1216,9 @@ export interface ClaimedOverrideDTO {
   isTv: boolean
   season: number | null
   createdAt: number
+  /** 审计 A-3：认领来源（'human' 手动 / 'agent' 字幕 agent 身份纠错）——权威等级不同，
+   *  UI 必须可区分，见 web/src/api/types.ts 同名字段注释。 */
+  source: 'human' | 'agent'
 }
 export interface TriageDTO {
   pending: ParkedItemDTO[]
@@ -1228,16 +1231,20 @@ interface IdentifyOverrideRow {
   is_tv: number
   season: number | null
   created_at: number
+  source: string
 }
 
 /** identify_overrides 全行直译（created_at desc——最近认领的排最前，同 buildParked 的
  *  "越紧急/越新越靠前"呈现习惯）。 */
 function buildClaimedOverrides(db: ScoutDb): ClaimedOverrideDTO[] {
   const rows = db
-    .prepare(`SELECT path_prefix, tmdb_id, is_tv, season, created_at FROM identify_overrides ORDER BY created_at DESC`)
+    .prepare(`SELECT path_prefix, tmdb_id, is_tv, season, created_at, source FROM identify_overrides ORDER BY created_at DESC`)
     .all() as IdentifyOverrideRow[]
   return rows.map((r) => ({
     pathPrefix: r.path_prefix, tmdbId: r.tmdb_id, isTv: r.is_tv === 1, season: r.season, createdAt: r.created_at,
+    // 审计 A-3：source 必须透到 UI——DB 里已忠实记录权威等级，此前从 SQL 这一步就丢了，
+    // 用户无法审阅 agent 的判断，也看不出哪些行受 addOverride 的不对称覆盖规则保护。
+    source: r.source === 'agent' ? 'agent' : 'human',
   }))
 }
 

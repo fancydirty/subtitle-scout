@@ -53,8 +53,8 @@ function triageWithData(): TriageDTO {
       { path: '/media/tv/Show B/b-ep1.mkv', parkReason: 'no tmdb hit', firstSeen: NOW - 120_000, lastAttempt: NOW },
     ],
     claimed: [
-      { pathPrefix: '/media/tv/Old Show', tmdbId: '4242', isTv: true, season: 2, createdAt: NOW - 3 * 24 * 60 * 60_000 - 60_000 },
-      { pathPrefix: '/media/movies/Old Movie', tmdbId: '77', isTv: false, season: null, createdAt: NOW - 60_000 },
+      { pathPrefix: '/media/tv/Old Show', tmdbId: '4242', isTv: true, season: 2, createdAt: NOW - 3 * 24 * 60 * 60_000 - 60_000, source: 'human' as const },
+      { pathPrefix: '/media/movies/Old Movie', tmdbId: '77', isTv: false, season: null, createdAt: NOW - 60_000, source: 'agent' as const },
     ],
   }
 }

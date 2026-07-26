@@ -54,6 +54,13 @@ const DECISION_PHRASES: Record<string, DecisionPhrase> = {
   'translate:extract-failed': { text: 'could not extract subtitles', tone: 'bad' },
   'translate:probe-failed': { text: 'could not probe the video', tone: 'bad' },
   'translate:already-covered': { text: 'already covered', tone: 'ok' },
+  // 识别架构路 A（2026-07-26 审计 A-4）：身份纠错全家——此前两个词都不在表里，时间线上渲染
+  // 成裸下划线机器词（和 UX-P0 那轮修过的翻译决策同一个坑）。identity_correction 是本系统最
+  // 重要的正面事件（agent 抓到一次机械误认，正撞在北极星"绝不误认"上），给 ok（绿）不是灰；
+  // skipped 是"判对了但没落地"的待办信号，按铁律④给 neutral（灰）不红，但文案要能读出
+  // "这里有事没做完"，否则会和一堆中性事实一起沉底没人看（审计 D-2 的静默失效链的一环）。
+  identity_correction: { text: 'corrected the media identity', tone: 'ok' },
+  identity_correction_skipped: { text: 'identity correction held back — needs a look', tone: 'neutral' },
 }
 
 /** recent 完成行的 decision → 人话句 + 语义 tone。未登记的 decision 词（如历史遗留的

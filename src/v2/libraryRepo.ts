@@ -1082,6 +1082,15 @@ export class LibraryRepo {
     }
   }
 
+  /** 撤销一条认领（2026-07-26 审计 A-5：agent 写权限的唯一逃生阀）。此前这张表只有写入口
+   *  没有删除口——agent 认错身份后那条错误认领永久钉死在目录前缀上，每轮 ingest 都按它重建
+   *  行、删掉正确的旧行，用户除了手动 sqlite3 改库没有任何出路。返回是否真的删掉了一行
+   *  （false = 该前缀本来就没有认领），调用方据此如实回执。 */
+  removeOverride(pathPrefix: string): boolean {
+    const result = this.db.prepare(`DELETE FROM identify_overrides WHERE path_prefix = ?`).run(pathPrefix)
+    return result.changes > 0
+  }
+
   // ---- P2：ffprobe 探针记忆化（episodes/movies 共用列，见 db.ts P1 注释） ----
 
   /** 两表 UPDATE 尝试模式（同 markCovered/markUnavailable 的既有写法）：itemId

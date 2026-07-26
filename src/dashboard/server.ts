@@ -9,7 +9,7 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { refreshSeriesCatalog } from '../v2/tmdbCatalog.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked, unexclude,
+  buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked, unexclude, unclaim,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
@@ -397,6 +397,33 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = unexclude(db, { path: typeof b.path === 'string' ? b.path : '' })
         // 翻案成功后踢一脚扫描——豁免已写库、park 行已退，重扫让文件立即重回识别流（同 claim
         // 先例：fire-and-forget，同步抛错吞掉，下一个自然周期还会再扫）。
+        if (result.ok && requestIngest) {
+          try {
+            requestIngest()
+          } catch {
+            // swallow — 见 claim 分支同款注释。
+          }
+        }
+        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(result))
+        return
+      }
+
+      // 审计 A-5（2026-07-26）：POST /api/v2/triage/unclaim——撤销一条认领。这是 agent 写
+      // 权限的唯一逃生阀：路 A 让 find-subtitle agent 也能写 identify_overrides，认错了那条
+      // 错误身份会每轮被 ingest 拿去重建行、删掉正确的旧行，此前用户除了手动改库没有出路。
+      // 照 unexclude 分支的薄转发形状：method 门 → 解析 body → unclaim(db) 判断层 → 成功
+      // 踢一脚扫描（撤销后该路径回到纯机械识别，重扫让它立即重走识别流）。
+      if (rawPath === '/api/v2/triage/unclaim') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === BODY_FAILED) return
+        const b = (body ?? {}) as { pathPrefix?: unknown }
+        const result = unclaim(db, { pathPrefix: typeof b.pathPrefix === 'string' ? b.pathPrefix : '' })
         if (result.ok && requestIngest) {
           try {
             requestIngest()

@@ -7,7 +7,7 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, claimParked, unexclude,
+  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, claimParked, unexclude, unclaim,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
@@ -386,6 +386,54 @@ describe('unexclude（救援R4b 特典翻案）', () => {
     // 普通停车行原样保留，未被误退、未被误豁免
     expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(true)
     expect(lib.isExtrasExempt(path)).toBe(false)
+  })
+})
+
+// 审计 A-5（2026-07-26）：撤销认领是 agent 写权限的唯一逃生阀——此前这张表只有写入口没有
+// 删除口，agent 认错身份后那条错误认领永久钉死在目录前缀上，每轮 ingest 都按它重建行、删掉
+// 正确的旧行，用户除了手动 sqlite3 改库没有任何出路。
+describe('unclaim（审计 A-5：撤销认领）', () => {
+  it('撤销 agent 写的认领：行被删，findOverride 不再命中', () => {
+    const dir = '/media/tv/Show'
+    lib.addOverride(dir, '276161', true, NOW, null, 'agent')
+    expect(lib.findOverride('/media/tv/Show/S01/e1.mkv')).not.toBeNull()
+
+    expect(unclaim(db, { pathPrefix: dir })).toEqual({ ok: true })
+    expect(lib.findOverride('/media/tv/Show/S01/e1.mkv')).toBeNull()
+  })
+
+  it('人也能撤销自己写的认领（改主意）——刻意不按 source 设限，人始终是最终裁量者', () => {
+    const dir = '/media/tv/Human'
+    lib.addOverride(dir, '999', true, NOW, 3, 'human')
+    expect(unclaim(db, { pathPrefix: dir })).toEqual({ ok: true })
+    expect(lib.findOverride('/media/tv/Human/e1.mkv')).toBeNull()
+  })
+
+  it('拒绝空 pathPrefix', () => {
+    expect(unclaim(db, { pathPrefix: '' })).toEqual({ ok: false, error: expect.any(String) })
+  })
+
+  it('拒绝不存在的前缀（如实回执，不假装成功）', () => {
+    expect(unclaim(db, { pathPrefix: '/media/never/claimed' })).toEqual({ ok: false, error: expect.any(String) })
+  })
+
+  it('只删指定前缀，同库其他认领不受影响', () => {
+    lib.addOverride('/media/tv/A', '1', true, NOW, null, 'agent')
+    lib.addOverride('/media/tv/B', '2', true, NOW, null, 'human')
+    expect(unclaim(db, { pathPrefix: '/media/tv/A' })).toEqual({ ok: true })
+    expect(lib.findOverride('/media/tv/B/e1.mkv')!.tmdbId).toBe('2')
+  })
+})
+
+describe('buildTriage claimed.source 透出（审计 A-3）', () => {
+  it('human / agent 两种来源都原样带到 DTO——UI 据此让用户审阅 agent 的判断', () => {
+    lib.addOverride('/media/tv/ByHuman', '11', true, NOW, null, 'human')
+    lib.addOverride('/media/tv/ByAgent', '22', false, NOW + 1, null, 'agent')
+    const claimed = buildTriage(db).claimed
+    const byHuman = claimed.find((c) => c.pathPrefix === '/media/tv/ByHuman')!
+    const byAgent = claimed.find((c) => c.pathPrefix === '/media/tv/ByAgent')!
+    expect(byHuman.source).toBe('human')
+    expect(byAgent.source).toBe('agent')
   })
 })
 
@@ -905,7 +953,7 @@ describe('buildTriage（GET /api/v2/triage：pending=buildParked + claimed=ident
       { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
     ])
     expect(triage.claimed).toEqual([
-      { pathPrefix: '/media/tv/Claimed Show/', tmdbId: '555', isTv: true, season: 2, createdAt: NOW },
+      { pathPrefix: '/media/tv/Claimed Show/', tmdbId: '555', isTv: true, season: 2, createdAt: NOW, source: 'human' },
     ])
   })
 

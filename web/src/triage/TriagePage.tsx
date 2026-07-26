@@ -59,6 +59,12 @@ export function TriagePage() {
     triage.reload()
   }
 
+  // 审计 A-5：撤销认领后立即重查——该路径回到纯机械识别，服务端已踢了一脚扫描。
+  const handleUnclaim = async (pathPrefix: string) => {
+    await api.unclaim(pathPrefix)
+    triage.reload()
+  }
+
   return (
     <>
       <div className="triage-boxes">
@@ -68,7 +74,7 @@ export function TriagePage() {
           onClaimGroup={setClaimGroup}
         />
         <ExcludedBox excluded={excluded} onRestore={handleRestore} />
-        <ClaimedBox claimed={triage.data.claimed} now={now} />
+        <ClaimedBox claimed={triage.data.claimed} now={now} onUnclaim={handleUnclaim} />
       </div>
       <ClaimDialog
         group={claimGroup}

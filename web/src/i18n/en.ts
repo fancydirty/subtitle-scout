@@ -132,14 +132,18 @@ export const en = {
   // （triage_empty_title/desc 这两个键最早是 F2 占位期借用的，F5 填肉后原样留作真实空态用，
   // 同 library_empty_title 在 F3 落地时的既有先例）。
   triage_empty_title: 'Every file found its identifier',
-  triage_empty_desc: 'Nothing needs a manual claim right now — the recognizer placed every file with confidence.',
+  triage_empty_desc: 'Nothing needs a manual claim right now. (That does not mean every identity is right — the subtitle agent re-verifies each one before it works, and any corrections show up below and in the timeline.)',
   triage_error_prefix: "Couldn't load the triage queue: ",
   triage_retry_label: 'Retry',
 
   triage_pending_heading: 'Pending',
   triage_claimed_heading: 'Claimed',
   triage_claimed_empty_title: 'No claims yet',
-  triage_claimed_empty_desc: 'Manual claims will show up here once you resolve a parked file.',
+  triage_claimed_source_human: 'you',
+  triage_claimed_source_agent: 'agent',
+  triage_claimed_unclaim_label: 'Remove',
+  triage_unclaim_error_prefix: 'could not remove the claim: ',
+  triage_claimed_empty_desc: 'Claims show up here — the ones you make on this page, and the ones the subtitle agent makes after re-verifying an identity.',
   // 验收修复轮一 Task V2：PendingBox 从逐行 checkbox 多选改成目录组卡——这个键是每张组卡上的
   // Claim 按钮（挂在整个目录组上，见 PendingBox.tsx 文件头注释），不再是箱头的"批量认领所选"。
   triage_claim_group_label: 'Claim',

@@ -110,14 +110,18 @@ export const zh = {
   workflow_outcome_blocked_dormant: en.workflow_outcome_blocked_dormant,
 
   triage_empty_title: '所有文件都已找到归属',
-  triage_empty_desc: '暂时没有需要人工认领的文件——识别器已经确信地归位了每一个文件。',
+  triage_empty_desc: '暂时没有需要人工认领的文件。（这不等于识别都对了——字幕 agent 每次开工前还会核验一遍身份，纠正结果见下方「已认领」和时间线。）',
   triage_error_prefix: '无法加载甄别队列：',
   triage_retry_label: '重试',
 
   triage_pending_heading: '待甄别',
   triage_claimed_heading: '已认领',
   triage_claimed_empty_title: '暂无认领记录',
-  triage_claimed_empty_desc: '手动认领一个停车文件后，记录会出现在这里。',
+  triage_claimed_source_human: '手动',
+  triage_claimed_source_agent: 'agent',
+  triage_claimed_unclaim_label: '撤销',
+  triage_unclaim_error_prefix: '撤销认领失败：',
+  triage_claimed_empty_desc: '认领记录会出现在这里——你在这一页手动认领的，以及字幕 agent 核验身份后自动纠正的。',
   triage_claim_group_label: '认领',
   triage_claimed_badge: '已认领 · 等待重新扫描',
   // triage_duplicates_heading 已退役——见 en.ts 同位置注释。

@@ -238,6 +238,10 @@ export interface ClaimedOverrideDTO {
   isTv: boolean
   season: number | null
   createdAt: number
+  /** 识别架构路 A（审计 A-3）：认领来源——'human'=甄别页手动认领，'agent'=字幕 agent 核验
+   *  身份后自动纠正。两者权威等级不同（agent 是会出错的启发式），UI 必须让用户看出区别，
+   *  否则无法审阅 agent 的判断，也看不出哪些行受"agent 不许覆盖人工认领"规则保护。 */
+  source: 'human' | 'agent'
 }
 /** dashboard-F5：GET /api/v2/triage 响应体——甄别台一页看全"待认领"（pending，转发
  *  buildParked）与"已认领"（claimed）两份事实，与 src/dashboard/apiV2.ts 的 TriageDTO 一致。 */

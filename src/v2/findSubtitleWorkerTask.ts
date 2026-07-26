@@ -682,16 +682,20 @@ export async function runFindSubtitleWorkerTask(
     // 词区分，否则"agent 判对了但没生效"会变成一次静默丢弃。
     if (report.identity_correction && identityClaim) {
       const c = report.identity_correction
+      // 审计 D-1：detail 必须带**旧身份**——原来只写"改判为 tmdb:X"，事后连"从什么改的"都
+      // 查不到，"agent 纠对了没有"这个核心风控指标无法核。旧 tmdbId 从这批目标所属的
+      // own-id 里取（tmdbIdFromOwnId 是纯字符串解析，零 I/O）。
+      const oldTmdbId = tmdbIdFromOwnId(task.targets[0]?.itemId ?? '') ?? 'unknown'
       if (identityClaim.ok) {
         recordRun(
           'identity_correction',
-          `库身份核验失败，agent 重新识别为 tmdb:${c.tmdbId} (isTv=${c.isTv})；` +
+          `库身份核验失败：tmdb:${oldTmdbId} → tmdb:${c.tmdbId} (isTv=${c.isTv})；` +
             `已认领前缀 ${identityClaim.prefix}：${c.reason}`,
         )
       } else {
         recordRun(
           'identity_correction_skipped',
-          `agent 判定正确身份为 tmdb:${c.tmdbId} (isTv=${c.isTv})，但认领未落地` +
+          `agent 判定 tmdb:${oldTmdbId} → tmdb:${c.tmdbId} (isTv=${c.isTv})，但认领未落地` +
             `（${identityClaim.reason}）：${c.reason}`,
         )
       }
