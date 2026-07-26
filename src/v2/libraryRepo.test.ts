@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { join, sep } from 'node:path'
 import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
-import { LibraryRepo } from './libraryRepo.js'
+import { LibraryRepo, isParkedPathEligible } from './libraryRepo.js'
 
 let lib: LibraryRepo
 let db: ScoutDb
@@ -1265,5 +1265,27 @@ describe('listMissingEpisodesForSeries (R-11：派活范围裁量化)', () => {
 
     const rows = lib.listMissingEpisodesForSeries('tmdb:9', null, NOW_BEFORE_RECHECK)
     expect(rows).toEqual([])
+  })
+})
+
+describe('isParkedPathEligible', () => {
+  it('returns true for awaiting-agent-identification', ({ expect }) => {
+    expect(isParkedPathEligible('awaiting-agent-identification')).toBe(true)
+  })
+
+  it('returns false for excluded-extra', ({ expect }) => {
+    expect(isParkedPathEligible('excluded-extra')).toBe(false)
+  })
+
+  it('returns false for duplicate-content', ({ expect }) => {
+    expect(isParkedPathEligible('duplicate-content')).toBe(false)
+  })
+
+  it('returns true for no-episode-number', ({ expect }) => {
+    expect(isParkedPathEligible('no-episode-number')).toBe(true)
+  })
+
+  it('returns true for no-signal', ({ expect }) => {
+    expect(isParkedPathEligible('no-signal')).toBe(true)
   })
 })

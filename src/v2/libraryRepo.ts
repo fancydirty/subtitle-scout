@@ -1209,3 +1209,10 @@ export class LibraryRepo {
     }
   }
 }
+
+/** Determines if a parked path is eligible for agent processing.
+ * Excludes mechanical verdicts that are final (excluded-extra, duplicate-content).
+ * Used by orchestrator to decide which parked paths to dispatch to the agent. */
+export function isParkedPathEligible(parkReason: string): boolean {
+  return parkReason !== 'excluded-extra' && parkReason !== 'duplicate-content'
+}
