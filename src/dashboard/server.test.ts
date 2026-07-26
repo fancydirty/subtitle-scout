@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { connect } from 'node:net'
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici'
 import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -23,12 +24,26 @@ let db: ScoutDb
 // 用例的残留连接与下一个用例的新 server 在全量并发下互相干扰（实测：parked/claim 两个用例在
 // `npm test` 下偶发失败，单文件跑 100% 通过，`--no-file-parallelism` 也全绿）。
 // 这里 await 'close' 事件并显式 closeAllConnections()，把每个用例的服务端状态彻底隔离。
+//
+// 2026-07-26 补第二层（服务端断连不够，客户端连接池也得清）：R3 只处理了 server 侧。fetch
+// 用的 undici 全局 dispatcher 按 `host:port` 缓存连接，`port: 0` 又让 OS 在端口回收后很快把
+// 同一个号分配给下一个用例/下一个 worker 的 server——池里那条指向已关闭 server 的陈旧连接
+// 于是把请求送到了新 server 上。表现就是随机一条 API 用例拿到别人的响应：实测复现过
+// `expected 200 to be 400`（打到另一个已喂过合法 body 的 server）和
+// `SyntaxError: Unexpected token '<', "<!DOCTYPE "`（打到静态文件兜底，返回 index.html）。
+// 单文件跑永远绿、全量偶发红，正是"跨 worker 端口复用"的指纹。每个用例结束时销毁全局
+// dispatcher 并换一个新的，池子里不留任何跨用例的连接。
 afterEach(async () => {
   const s = server
   server = undefined
-  if (!s) return
-  s.closeAllConnections?.() // Node 18.2+：断开 keep-alive，否则 close 等到连接自然超时
-  await new Promise<void>((resolve) => s.close(() => resolve()))
+  if (s) {
+    s.closeAllConnections?.() // Node 18.2+：断开 keep-alive，否则 close 等到连接自然超时
+    await new Promise<void>((resolve) => s.close(() => resolve()))
+  }
+  // 客户端侧：丢弃当前 dispatcher（连同它缓存的所有 keep-alive 连接），换一个干净的。
+  const prev = getGlobalDispatcher()
+  setGlobalDispatcher(new Agent())
+  await prev.close().catch(() => {})
 })
 
 const NOW = 1_700_000_000_000

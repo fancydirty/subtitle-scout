@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { JobsRepo } from './jobsRepo.js'
@@ -1336,24 +1336,14 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       expect(override!.isTv).toBe(true)
     })
 
-    it('清停车户口：纠错后该路径的 parked 行被清掉，下一轮 ingest 必重新识别（不被退避挡住）', async () => {
-      const { lib, jobsRepo, job, videoPath } = setup()
-      // 模拟这条路径身上残留的停车户口（旧身份时代累积的）
-      lib.upsertParkedPath(videoPath, 'no-episode-number', Date.now(), { mtimeMs: 1, size: 2 })
-      expect(lib.listParkedPaths().some((p) => p.path === videoPath)).toBe(true)
+    // 审计 H1（2026-07-26）：这里原本有一条"清停车户口"的测试，测的是 runner 对每个 target
+    // 调 clearParkedPath。该调用已删除——它对 find_subtitle target **恒为 no-op**：target 一律
+    // 来自 episodes/movies 行（见 mapper 的 targets 构造），而 park 的语义就是"没能建行"，
+    // 两者互斥，parked_paths 里永远不会有 target 的 path。原测试靠手动插一条 parked 行造出了
+    // 生产不可能出现的前提，属于自证式假测试。真正的"让纠错立刻生效"靠的是 ingest 的认领
+    // 穿透（见 identityCorrectionLoop.test.ts 的生产条件回归锁），不是清停车户口。
 
-      const runTask = vi.fn(async () => report({
-        no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
-        identity_correction: { tmdbId: '276161', isTv: true, reason: 'evidence' },
-      }))
-      const deps = baseDeps({ lib, mediaRoots: [], runTask })
-
-      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
-
-      expect(lib.listParkedPaths().some((p) => p.path === videoPath)).toBe(false)
-    })
-
-    it('核验通过（无 correction）：不写任何认领，不碰停车户口', async () => {
+    it('核验通过（无 correction）：不写任何认领', async () => {
       const { lib, jobsRepo, job, videoPath } = setup()
       const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
       const deps = baseDeps({ lib, mediaRoots: [], runTask })
@@ -1398,6 +1388,88 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       expect(lib.findOverride(videoPath)!.tmdbId).toBe('222')
       const count = db.prepare(`SELECT COUNT(*) AS n FROM identify_overrides`).get() as { n: number }
       expect(count.n).toBe(1)
+    })
+
+    // 🔴 审计 P0-A（2026-07-26）：认领前缀必须独立走安全闸，不能直接用 task.mediaRoot——
+    // 后者是 commonDir 上探出的沙盒边界，多季/扁平布局下会宽到剧根甚至媒体根，一条认领就把
+    // agent 从未核验过的兄弟条目一起改身份（下一轮 ingest 删旧行建新行 + 可能触发副本字幕
+    // 传播，撞北极星红线）。宁可拒写等人处理，也不敢用过宽的认领。
+    describe('认领安全闸（拒绝过宽/危险的前缀）', () => {
+      it('targets 跨多个目录（多季 task）→ 拒写认领，只留痕', async () => {
+        const { lib, jobsRepo, db, root, job, episodeIds } = setupBatch(2)
+        const runs = new RunsRepo(db)
+        // 把第二个 target 挪到另一个季目录，制造"跨目录"形态
+        const s2dir = join(root, 'Show', 'Season 02')
+        mkdirSync(s2dir, { recursive: true })
+        const movedPath = join(s2dir, 'Show.S02E01.mkv')
+        writeFileSync(movedPath, 'video')
+        db.prepare(`UPDATE episodes SET path = ? WHERE id = ?`).run(movedPath, episodeIds[1])
+
+        const runTask = vi.fn(async (t: FindSubtitleTask) => {
+          expect(new Set(t.targets.map((x) => dirname(x.videoPath))).size).toBeGreaterThan(1)
+          return report({
+            no_safe_match: t.targets.map((x) => unresolvedItem(x.itemId, 'identity mismatch')),
+            identity_correction: { tmdbId: '276161', isTv: true, reason: 'evidence' },
+          })
+        })
+        await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask, runs }), jobsRepo, () => Date.now())
+
+        // 认领没落地
+        expect(db.prepare(`SELECT COUNT(*) AS n FROM identify_overrides`).get()).toEqual({ n: 0 })
+        // 但留了痕（拒写不是静默丢弃）
+        const skipped = runs.getByJobId(job.id).find((r) => r.decision === 'identity_correction_skipped')
+        expect(skipped).toBeDefined()
+        expect(skipped!.detail).toContain('276161')
+      })
+
+      it('target 目录就是配置媒体根本身（扁平库）→ 拒写认领', async () => {
+        const flatRoot = mkdtempSync(join(tmpdir(), 'find-subtitle-flat-'))
+        const videoPath = join(flatRoot, 'Movie.2019.mkv')
+        writeFileSync(videoPath, 'video')
+        const db = openDb(':memory:')
+        const lib = new LibraryRepo(db)
+        const jobsRepo = new JobsRepo(db)
+        const mId = seriesId('42')
+        lib.upsertMovie({ id: mId, name: 'Movie', path: videoPath, subStatus: 'missing' })
+        jobsRepo.upsertWorkerTask({ seriesId: null, season: null, movieId: mId }, { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now())
+        const job = jobsRepo.claimNext(Date.now())!
+
+        const runTask = vi.fn(async () => report({
+          no_safe_match: [unresolvedItem(mId, 'identity mismatch')],
+          identity_correction: { tmdbId: '1083381', isTv: false, reason: 'evidence' },
+        }))
+        // mediaRoots 里就是这个扁平根——target 的 dirname 恰好等于它
+        await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [flatRoot], runTask }), jobsRepo, () => Date.now())
+
+        expect(db.prepare(`SELECT COUNT(*) AS n FROM identify_overrides`).get()).toEqual({ n: 0 })
+        rmSync(flatRoot, { recursive: true, force: true })
+      })
+
+      // 审计 C3：ingest 早有"LLM 把 tmdb id 幻觉成 imdb id"的前科，skill 也专门叮嘱过 strip
+      // 'tmdb:' 前缀（说明带前缀是已知模型行为）。人工认领入口本就有 /^\d+$/ 守卫，agent
+      // 入口必须同款——否则把一个不存在的身份永久钉在目录前缀上（认领表无 UI 可删）。
+      it.each(['tmdb:276161', 'tt1234567', '276161abc', ' 276161'])(
+        '幻觉/带前缀的 tmdbId「%s」→ 拒写认领',
+        async (badId) => {
+          const { lib, jobsRepo, job, videoPath, root } = setup()
+          const runTask = vi.fn(async () => report({
+            no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
+            identity_correction: { tmdbId: badId, isTv: true, reason: 'evidence' },
+          }))
+          await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask }), jobsRepo, () => Date.now())
+          expect(lib.findOverride(videoPath)).toBeNull()
+        },
+      )
+
+      it('合法形状（单目录 + 纯数字 id + 非根）→ 正常落地', async () => {
+        const { lib, jobsRepo, job, videoPath, root } = setup()
+        const runTask = vi.fn(async () => report({
+          no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
+          identity_correction: { tmdbId: '276161', isTv: true, reason: 'evidence' },
+        }))
+        await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask }), jobsRepo, () => Date.now())
+        expect(lib.findOverride(videoPath)!.tmdbId).toBe('276161')
+      })
     })
   })
 

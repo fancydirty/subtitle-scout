@@ -116,6 +116,52 @@ describe('身份纠错闭环端到端（agent 认领 → 真 recognize 消歧前
     expect(seriesRows.map((s) => s.id)).toEqual(['tmdb:276161'])
   })
 
+  // 🔴 生产条件回归锁（2026-07-26 审计 C1）：认领落地**不会改动视频文件本身**的 mtime/size，
+  // 所以下一轮 ingest 对这条已入库路径必然命中 CHEAP PATH（ingest.ts 的 probeMemo 分支）并
+  // `continue`——而 recognize()（唯一查认领的地方）和"同路径换身份"清旧行分支都在 CHEAP PATH
+  // 之后的 FULL PATH 里。上面那条闭环测试之所以绿，是因为它用 statFile 伪造了 mtime 变化；
+  // 生产里没有人会去改视频文件的 mtime，闭环因此在最常见路径上根本不通（认领永久悬空，
+  // 且无自愈——全库没有任何清 probe memo 的写口）。本测试用**真实 statSync**（不伪造）跑，
+  // 钉死"认领必须能穿透 CHEAP PATH"。
+  it('🔴 生产条件（视频文件 mtime 不变）：认领仍必须生效，不被 CHEAP PATH 吞掉', async () => {
+    const showDir = join(root, 'Show', 'Season 01')
+    mkdirSync(showDir, { recursive: true })
+    const videoPath = join(showDir, 'Teach.You.a.Lesson.S01E01.1080p.mkv')
+    writeFileSync(videoPath, 'video')
+    const tmdb = fakeTmdb()
+    const realStat = statSync(videoPath)
+
+    // 错身份行 + **与当前文件完全一致**的 probe memo（这正是任何成功入库过的行的常态）
+    lib.upsertSeries({ id: 'tmdb:154494', name: 'Lycoris Recoil' })
+    lib.upsertEpisode({
+      id: 'tmdb:154494/s1e1', seriesId: 'tmdb:154494', season: 1, episode: 1,
+      name: 'E1', path: videoPath, subStatus: 'missing',
+    })
+    lib.setProbeMemo('tmdb:154494/s1e1', realStat.mtimeMs, realStat.size, [])
+
+    lib.addOverride(showDir, '276161', true, 1_700_000_001_000)
+
+    const pass = makeIngestPass({
+      roots: () => [root],
+      lib,
+      tmdb,
+      recognize: (p: string) => recognize(p, tmdb, { findOverride: (path) => lib.findOverride(path) }),
+      probe: async () => [],
+      probeDuration: async () => null,
+      listVideoFiles: () => [videoPath],
+      fileExists: () => true,
+      statFile: (p: string) => statSync(p), // 真实 stat——不伪造任何变化
+      targetLanguages: () => ['zh'],
+      log: () => {},
+      now: () => 1_700_000_002_000,
+    })
+
+    await pass()
+
+    const rows = db.prepare(`SELECT id FROM episodes`).all() as { id: string }[]
+    expect(rows.map((r) => r.id)).toEqual(['tmdb:276161/s1e1'])
+  })
+
   it('认领是保守的：只影响被认领的目录前缀，同名文件在别的目录仍走机械识别', async () => {
     const claimedDir = join(root, 'Claimed', 'Season 01')
     const otherDir = join(root, 'Other', 'Season 01')

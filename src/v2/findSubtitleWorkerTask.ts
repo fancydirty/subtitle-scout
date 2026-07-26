@@ -1,4 +1,4 @@
-import { dirname, basename } from 'node:path'
+import { dirname, basename, resolve } from 'node:path'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { RunsRepo } from './runsRepo.js'
@@ -199,6 +199,41 @@ function commonDir(dirs: string[]): string {
     candidate = parent
   }
   return candidate
+}
+
+/** 认领安全闸（2026-07-26 审计 P0-A）：agent 的 identity_correction 落地成一条 path_prefix
+ *  认领，而 findOverride 是前缀匹配——前缀取宽了，一次纠错就能把整个目录树下**agent 从未
+ *  核验过**的兄弟条目一起改身份（下一轮 ingest 会按新身份删旧行建新行，还可能触发副本字幕
+ *  传播，撞北极星红线"绝不误认"）。
+ *
+ *  task.mediaRoot 不能直接当认领前缀，它是 commonDir 上探出来的**沙盒**边界，两种真实布局
+ *  下会过宽：
+ *  ① 多季 task：commonDir(['…/Show/Season 01','…/Show/Season 02']) → '…/Show'（剧根），
+ *     连 agent 没看过的 S03/Specials 一起认领；
+ *  ② 扁平库（番剧/电影常态）：全部文件同一目录 → mediaRoot 就是那个目录，可能恰好等于配置
+ *     媒体根，一条认领钉死整库。
+ *
+ *  故认领前缀独立求值：只有当本批 targets 全部落在**同一个目录**、且那个目录不是配置根本身
+ *  时，才认领该目录；否则返回 null（拒写认领，调用方只记录不落地——宁可让这次纠错不生效等
+ *  人处理，也不敢用一条过宽的认领去改一片没核验过的条目）。 */
+export function safeClaimPrefix(
+  targetPaths: string[], mediaRoots: string[],
+): { ok: true; prefix: string } | { ok: false; reason: string } {
+  const dirs = [...new Set(targetPaths.map((p) => dirname(p)))]
+  if (dirs.length === 0) return { ok: false, reason: 'no targets' }
+  if (dirs.length > 1) {
+    return {
+      ok: false,
+      reason: `targets span ${dirs.length} directories (${dirs.slice(0, 3).join(', ')}…) — a prefix claim would cover unverified siblings`,
+    }
+  }
+  const dir = dirs[0]
+  // 认领配置根本身 = 钉死整库；containingRoot 命中自身即判定为根级。
+  const root = containingRoot(dir, mediaRoots)
+  if (root !== null && resolve(root) === resolve(dir)) {
+    return { ok: false, reason: `directory ${dir} IS a configured media root — claiming it would pin the whole library` }
+  }
+  return { ok: true, prefix: dir }
 }
 
 /** Maps a claimed worker_task row to a batch FindSubtitleTask, or null if there is nothing left
@@ -525,21 +560,34 @@ export async function runFindSubtitleWorkerTask(
     // 认领者从人（P6 救援页）变成 agent，机制原样复用——幂等（ON CONFLICT 覆盖）、崩溃安全
     // （一条 INSERT）、零新代码路径。
     //
-    // path_prefix 用 task.mediaRoot（这批 targets 的公共祖先目录，mapper 已验证在
-    // MEDIA_ROOTS 内）：agent 只核验了它实际看到的这批目标，认领范围就止于此——task 只覆盖
-    // 某一季时其他季不受影响，这是正确的保守行为，不是缺陷。
+    // 认领前缀不用 task.mediaRoot（那是 commonDir 上探出的沙盒边界，多季/扁平布局下会宽到
+    // 剧根甚至媒体根）——独立走 safeClaimPrefix 的安全闸，不安全就拒写只留痕，见该函数注释。
+    let identityClaim: { ok: true; prefix: string } | { ok: false; reason: string } | null = null
     if (report.identity_correction) {
       const correction = report.identity_correction
-      console.error(
-        `[find-subtitle-harvest] job ${job.id}: identity_correction — ` +
-          `claiming ${task.mediaRoot} as tmdb:${correction.tmdbId} ` +
-          `(isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
-      )
-      deps.lib.addOverride(task.mediaRoot, correction.tmdbId, correction.isTv, now())
-      // 让纠错立刻生效，不等退避：这批 target 的 item 行马上要被 ingest 换身份重建（旧 id
-      // 的行会被删），它们身上的 search_attempts/recheck_after 阶梯是"旧身份找不到字幕"
-      // 累积的，对新身份毫无意义——清掉停车户口让这条路径下一轮 ingest 必被重新识别。
-      for (const t of task.targets) deps.lib.clearParkedPath(t.videoPath)
+      // C3（审计）：tmdbId 零校验直落库是既有事故的复刻——ingest 早有"LLM 把 tmdb id 幻觉成
+      // imdb id"的前科，skill 也专门叮嘱过 strip 'tmdb:' 前缀（说明带前缀是已知模型行为）。
+      // 人工认领入口（triageOps）本就有 /^\d+$/ 守卫，agent 入口必须同款：非纯数字一律拒收，
+      // 否则会把一个不存在的身份永久钉在一个目录前缀上（认领表无 UI 可删）。
+      const claim = /^\d+$/.test(correction.tmdbId)
+        ? safeClaimPrefix(task.targets.map((t) => t.videoPath), deps.mediaRoots)
+        : { ok: false as const, reason: `tmdbId must be a bare numeric string, got "${correction.tmdbId}"` }
+
+      if (claim.ok) {
+        deps.lib.addOverride(claim.prefix, correction.tmdbId, correction.isTv, now())
+        console.error(
+          `[find-subtitle-harvest] job ${job.id}: identity_correction — claimed ${claim.prefix} ` +
+            `as tmdb:${correction.tmdbId} (isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
+        )
+      } else {
+        // 拒写不是静默丢弃：console + runs 都留痕（下面 recordRun 按 claim 结果分词），
+        // 人能从时间线看到"agent 判出了正确身份，但认领范围/形状不安全没敢落地"。
+        console.error(
+          `[find-subtitle-harvest] job ${job.id}: identity_correction NOT applied (${claim.reason}) — ` +
+            `agent proposed tmdb:${correction.tmdbId} (isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
+        )
+      }
+      identityClaim = claim
     }
     if (installed.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
       jobs.completeError(job.id, 'worker returned an empty batch report', now())
@@ -566,13 +614,25 @@ export async function runFindSubtitleWorkerTask(
       recordRun('hardsub_assumed', `${hardsubAssumed.length} 集判定硬字幕假定: ${hardsubAssumed.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
     }
     // 路 A：identity_correction 单独一行 runs（dashboard 时间线可见——这是识别架构最重要
-    // 的可观测面：agent 发现机械识别判错了多少次、纠成了什么）。
-    if (report.identity_correction) {
-      recordRun(
-        'identity_correction',
-        `库身份核验失败，agent 重新识别为 tmdb:${report.identity_correction.tmdbId} ` +
-          `(isTv=${report.identity_correction.isTv}): ${report.identity_correction.reason}`,
-      )
+    // 的可观测面：agent 发现机械识别判错了多少次、纠成了什么、认领落到哪个前缀）。
+    // 审计 E：detail 必须带 path_prefix——事后查"这条认领改了哪个范围"只能靠这里（认领表
+    // 自身被 ON CONFLICT 覆盖后原始信息就没了）；被安全闸拒写的也要留痕，用不同 decision
+    // 词区分，否则"agent 判对了但没生效"会变成一次静默丢弃。
+    if (report.identity_correction && identityClaim) {
+      const c = report.identity_correction
+      if (identityClaim.ok) {
+        recordRun(
+          'identity_correction',
+          `库身份核验失败，agent 重新识别为 tmdb:${c.tmdbId} (isTv=${c.isTv})；` +
+            `已认领前缀 ${identityClaim.prefix}：${c.reason}`,
+        )
+      } else {
+        recordRun(
+          'identity_correction_skipped',
+          `agent 判定正确身份为 tmdb:${c.tmdbId} (isTv=${c.isTv})，但认领未落地` +
+            `（${identityClaim.reason}）：${c.reason}`,
+        )
+      }
     }
     return report
   } catch (error) {

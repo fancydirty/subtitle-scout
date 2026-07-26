@@ -530,7 +530,20 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             const existing = findRowByPath(lib.db, path)
 
             // ---- CHEAP PATH：行存在 + 探针记忆化命中当前 (mtime,size) → 只重跑覆盖分类 ----
-            if (existing) {
+            // 🔴 认领穿透（2026-07-26 审计 C1）：override 命中且与当前行身份不一致时，绝不能
+            // 走 CHEAP PATH。认领（人工 P6 / agent identity_correction）落地不会改动视频文件
+            // 本身的 mtime/size，而 recognize()（唯一咨询 findOverride 的地方）和"同路径换身份"
+            // 的清旧行分支都在下面的 FULL PATH 里——不设这道穿透的话，任何已成功入库过的行
+            // 都会永远命中 memo 而 continue，认领永久悬空、新身份永远建不出来，且没有任何
+            // 自愈路径（全库无清 probe memo 的写口）。只在"身份确实不一致"时穿透：认领与现行
+            // 身份一致（认领已生效后的每一轮）照常走 CHEAP PATH，不为一条已兑现的认领反复付
+            // 全量识别的代价。
+            const overrideForPath = existing ? lib.findOverride(path) : null
+            const overrideDisagrees =
+              overrideForPath != null &&
+              existing != null &&
+              tmdbIdFromOwnId(existing.id) !== overrideForPath.tmdbId
+            if (existing && !overrideDisagrees) {
               const memo = lib.probeMemo(existing.id)
               if (memo && memo.mtime === stat.mtimeMs && memo.size === stat.size) {
                 // 债务D1：cheap path 也是一次真实的磁盘观察——series_id 从既有行直接可得。
