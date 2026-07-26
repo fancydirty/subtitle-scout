@@ -32,8 +32,10 @@ export interface DownloadCandidateDeps {
   /** Parallel to targetFilenames (same index) — each target's itemId, used only to disambiguate a
    *  videoFilename that collides across two-or-more targets (cross-season batch, same basename;
    *  see resolveTarget). Optional: pre-fix callers/tests with no collision in play need not supply
-   *  it, and makeFindSubtitleWorker always passes it explicitly from task.targets. */
-  targetItemIds?: string[]
+   *  it, and makeFindSubtitleWorker always passes it explicitly from task.targets. Elements may be
+   *  null — FindSubtitleTargetFact.itemId is null for an unidentified target (agent must identify
+   *  first); resolveTarget already treats a null itemId like a missing one. */
+  targetItemIds?: (string | null)[]
   /** task.targetLanguage (BCP-47 primary code, e.g. 'zh'/'en') — drives the provisional langTag
    *  this staging write uses (see execute below). Optional/defaulted to 'zh' only so existing
    *  callers/tests that predate A2 keep working unchanged; makeFindSubtitleWorker always passes
@@ -92,10 +94,12 @@ export function resolveTargetFilename(videoFilename: string | null, filenames: s
 /** A target object resolveTarget can disambiguate between. `itemId` is optional at the type level
  *  so callers that never see a basename collision (single-target tasks, or batches where every
  *  target's filename happens to be distinct) don't have to supply it — see resolveTarget below for
- *  when it actually matters. */
+ *  when it actually matters. Nullable because FindSubtitleTargetFact.itemId is null for an
+ *  unidentified target; null is handled exactly like an absent itemId (see the `??` fallbacks in
+ *  resolveTarget and the install tool's fingerprintKey). */
 interface DisambiguatableTarget {
   videoFilename: string
-  itemId?: string
+  itemId?: string | null
 }
 
 /** Post-audit correctness fix (batch②, 2026-07-18): shared by download_candidate and
@@ -288,7 +292,7 @@ export interface InstallSubtitleDeps {
    *  `itemId` is optional here only so pre-fix test fixtures with no basename collision in play
    *  don't have to supply it — makeFindSubtitleWorker always passes it from task.targets, and it
    *  becomes REQUIRED at runtime the moment two targets share a basename (see resolveTarget). */
-  targets: { videoFilename: string; outDir: string; itemId?: string }[]
+  targets: { videoFilename: string; outDir: string; itemId?: string | null }[]
   /** The ONE sandbox root for this task — checked again here even though each target's outDir is
    *  already fixed (defense-in-depth, mirrors realignExecutor.ts's containingRoot/isUnderRoots use). */
   mediaRoot: string

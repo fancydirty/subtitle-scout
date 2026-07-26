@@ -1413,7 +1413,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
           // 前提校验：夹具确实造出了跨目录形态
           expect(new Set(t.targets.map((x) => dirname(x.videoPath))).size).toBeGreaterThan(1)
           return report({
-            no_safe_match: t.targets.map((x) => unresolvedItem(x.itemId, 'identity mismatch')),
+            no_safe_match: t.targets.map((x) => unresolvedItem(x.itemId!, 'identity mismatch')),
             identity_correction: { tmdbId: '276161', isTv: true, reason: 'evidence' },
           })
         })
