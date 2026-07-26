@@ -106,6 +106,54 @@ const CASES: IdentityCase[] = [
     guessedTitle: 'Lycoris Recoil', guessedYear: 2022, guessedTmdbId: '154494', isTv: true,
     expectedVerdict: { kind: 'confirmed' },
   },
+  {
+    // 真实生产事故 A（The Rig，已防住的那个）：同名不同 kind 不同年——2023 剧集 vs 2010
+    // 电影。机械把剧集认领成了电影 46368（2010）。agent 该发现 kind/year 都不对
+    // （目标有 S01E01 结构 + 2023）→ 纠正为 tv/112581。
+    name: 'The Rig 同名陷阱（机械认领成 2010 电影 46368）→ 纠正为 2023 剧集 112581',
+    dirName: 'The.Rig.S01.2023.1080p.AMZN.WEB-DL',
+    fileName: 'The.Rig.S01E01.2023.1080p.AMZN.WEB-DL.DDP5.1.H.264.mkv',
+    runtimeMinutes: 58, season: 1, episode: 1,
+    guessedTitle: 'The Rig', guessedYear: 2010, guessedTmdbId: '46368', isTv: false,
+    expectedVerdict: { kind: 'corrected', tmdbId: '112581', isTv: true },
+  },
+  {
+    // 真实生产事故 B（Peacemaker，栽了的那个——整季 8 集被装成芬兰同名剧的字幕）：
+    // tv/108886 是 Rauhantekijä (2020, 芬兰)，tv/110492 才是 DC 的 Peacemaker (2022)。
+    // 机械认领成了芬兰剧。agent 该发现 year 2020≠2022 + 原名 Rauhantekijä 不是本剧
+    // → 纠正为 110492。季表两者都是 8 集（结构陷阱完美，必须靠 year/原名判）。
+    name: 'Peacemaker 同名不同国（机械认领成芬兰 Rauhantekijä 108886）→ 纠正为 DC 110492',
+    dirName: 'Peacemaker.S01.2022.1080p.HMAX.WEB-DL',
+    fileName: 'Peacemaker.S01E01.2022.1080p.HMAX.WEB-DL.DD5.1.H.264-NTb.mkv',
+    runtimeMinutes: 40, season: 1, episode: 1,
+    guessedTitle: 'Peacemaker', guessedYear: 2020, guessedTmdbId: '108886', isTv: true,
+    expectedVerdict: { kind: 'corrected', tmdbId: '110492', isTv: true },
+  },
+  {
+    // 中文名搜 TMDB 命中错条目的陷阱：搜"怪奇物语"TMDB 第一条返回的是 Osoroshi
+    // （おそろし～三島屋変調百物語, 2014），Stranger Things (66732) 排第二——考验 agent
+    // 会不会"取第一条就跑"。机械认领成了 Osoroshi 108262；目标是 S04E09（Stranger
+    // Things S04 确有 9 集），agent 该靠季表 + 年份纠正为 66732。
+    name: '怪奇物语 S04E09（机械认领成同名日剧 Osoroshi 108262）→ 纠正为 Stranger Things 66732',
+    dirName: '怪奇物语.Stranger.Things.S04.2160p',
+    fileName: '怪奇物语.S04E09.1080p.mkv',
+    runtimeMinutes: 139, season: 4, episode: 9,
+    guessedTitle: '怪奇物语', guessedYear: 2014, guessedTmdbId: '108262', isTv: true,
+    expectedVerdict: { kind: 'corrected', tmdbId: '66732', isTv: true },
+  },
+  {
+    // 🔴 北极星红线 case（零误认）：机械身份就是对的，但 raw 数据里的季/集结构**超出**
+    // TMDB 季表（Stranger Things S04 只有 9 集，这里给 S04E13）。这不是身份问题——身份
+    // 核验该通过（名字/年份都对），agent 不该因为单集号越界就去纠正整个身份（那会把一部
+    // 正确的剧改成别的剧，是灾难性误纠）。期望：confirmed（不报 correction），越界的单集
+    // 由后续找字幕环节自己处理（找不到就 no_safe_match）。
+    name: '🔴 Stranger Things S04E13（集号越界但身份正确）→ 不许误纠身份',
+    dirName: 'Stranger.Things.S04.2160p.NF.WEB-DL',
+    fileName: 'Stranger.Things.S04E13.2160p.NF.WEB-DL.mkv',
+    runtimeMinutes: 78, season: 4, episode: 13,
+    guessedTitle: 'Stranger Things', guessedYear: 2016, guessedTmdbId: '66732', isTv: true,
+    expectedVerdict: { kind: 'confirmed' },
+  },
 ]
 
 /** 包装真 TmdbClient，记录每次调用（评估"证据先行"的凭证——没调 get_tmdb_details 就是

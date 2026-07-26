@@ -222,6 +222,22 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
       expect(on.content).toMatch(/招z魂z4/)
       expect(on.content).toMatch(/fansub bracket tags/i)
     })
+
+    // 2026-07-26 identityEval 第三轮暴露：文件名是纯技术 token（2026.2160p.iT.WEB-DL...）时，
+    // 模型盯着文件名瞎搜六次（"2026"/"iT"/"2026 movie"…）从没看目录名里的真标题，最终放弃。
+    // skill 必须把"目录名常是标题唯一来源"和"按字形修复乱码后搜修复形"钉死。
+    it('identityVerification=true：教从目录名找标题 + 乱码字形修复 + 禁搜纯技术 token', () => {
+      const on = makeFindSubtitleSkill('zh', 'off', true)
+      // 目录名是主证据（不是 fallback）
+      expect(on.content).toMatch(/directory name is your primary\s+evidence, not a fallback/i)
+      expect(on.content).toMatch(/NO title at all/i)
+      // 乱码按字形修复，搜修复后的原文标题
+      expect(on.content).toMatch(/H）后丨室/)
+      expect(on.content).toMatch(/reads as .*后室/)
+      expect(on.content).toMatch(/do not only search romanizations/i)
+      // 禁搜纯技术 token
+      expect(on.content).toMatch(/Never search a bare year/i)
+    })
   })
 
   // 2026-07-18 生产事故回归锁(装机内容审计雷C-1):Peacemaker S1 整季 8 集被装成芬兰同名剧

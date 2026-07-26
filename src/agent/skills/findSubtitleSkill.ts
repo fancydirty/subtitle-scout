@@ -123,6 +123,22 @@ Before any \`search_source\` call, verify the identity with your TMDB evidence t
    repair obvious misspellings), then call \`search_tmdb\` with the cleaned candidates
    (try alternate titles/romanizations — re-searching is expected). Verify any promising
    hit with \`get_tmdb_details\` under the same two-evidence bar.
+
+   Where to look for the title, in this order:
+   - The DIRECTORY names in the target's path are very often the ONLY place a real title
+     appears. A file named \`2026.2160p.iT.WEB-DL.DDP.5.1.Atmos.DV.HDR10+.H.265.mkv\` carries
+     NO title at all — every token in it is a year, a resolution, a source, a codec. Its
+     parent directory \`H）后丨室（2026）4K DV HDR 高码率 简英特效\` is where the title lives.
+     When the filename is pure technical tokens, the directory name is your primary
+     evidence, not a fallback.
+   - Repair mangled titles by shape, then search the REPAIRED form: stray full-width
+     brackets, a leading letter left over from a codec token, and vertical-bar-like
+     characters (丨 ｜ | ) wedged INSIDE a word are noise — \`H）后丨室\` reads as \`后室\`,
+     which is a real title you can search. Search the repaired native-language title
+     itself; do not only search romanizations or English guesses.
+   - Never search a bare year, a bare resolution, or a codec fragment (\`2026\`, \`iT\`,
+     \`2026 movie\`) — those return noise and burn your budget. If you catch yourself
+     querying tokens with no title in them, stop and go back to the directory name.
 5. If you find the real entry → report it via the finalize report's
    \`identity_correction\` field (the correct tmdbId + isTv + your evidence-based reason),
    and put EVERY target into \`no_safe_match\` with a short reason naming the identity
