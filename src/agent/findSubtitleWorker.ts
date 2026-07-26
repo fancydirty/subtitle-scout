@@ -1,4 +1,4 @@
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, basename } from 'node:path'
 import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { makeRunTracer } from '../core/traceBus.js'
@@ -138,6 +138,13 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     // Presented as FACT (a mechanical pre-cleaning output), not instruction — see
     // FindSubtitleTargetFact's own doc comment. List order is fact-list order, not an
     // execution-order instruction to the model.
+    //
+    // 🔴 2026-07-26 第九轮 auto research 修复的 plumbing 缺口：此前这里只给 basename
+    // （`file: xxx.mkv`），**目录名从未进过 prompt**。而 Step 0 的 skill 明确教"文件名是纯
+    // 技术 token 时，标题只在目录名里"——教了一个模型根本拿不到的证据。实测后室 case 里
+    // 模型直接写下 "No directory names were provided, so re-identification is impossible"，
+    // 诚实地卡死在缺料上（它的判断没错，是喂的事实缺了一块）。
+    // 给相对沙盒根的目录段：既补上标题证据，又不泄漏 mediaRoot 以外的路径（沙盒纪律）。
     const targetsBlock = task.targets.map(t => {
       const se = t.season != null ? `S${t.season}E${t.episode}` : '(movie)'
       const abs = t.absoluteEpisode != null ? ` | absolute episode: ${t.absoluteEpisode}` : ''
@@ -148,6 +155,19 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       const runtime = t.runtimeMinutes != null ? ` | runtime ~${t.runtimeMinutes} min` : ''
       return `- itemId: ${t.itemId} | ${se}${abs}${imdb}${runtime} | file: ${t.videoFilename}`
     }).join('\n')
+
+    // 沙盒根自身的目录名 + 每个 target 相对它的子目录段——两者合起来就是"路径里的目录名"
+    // 这份证据（绝大多数布局下标题就写在其中之一）。去重后逐行列出，空段（文件直接躺在
+    // 沙盒根下）省略。
+    const dirNames = [...new Set(
+      task.targets
+        .map(t => relative(task.mediaRoot, dirname(t.videoPath)))
+        .filter(d => d.length > 0),
+    )]
+    const dirBlock = [
+      `containing directory: ${basename(task.mediaRoot)}`,
+      ...(dirNames.length ? [`subdirectories: ${dirNames.join(' | ')}`] : []),
+    ].join('\n')
 
     const prompt = [
       // "a subtitle in X" rather than "a X subtitle": sidesteps the a/an article problem
@@ -176,6 +196,8 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // 别把这行当单集事实用：加长集/季终集的实际时长可能远高于这个数字。
       `typical episode runtime (series-level fallback, minutes): ${task.runtimeMinutes ?? 'unknown'}`,
       `provider ids: ${JSON.stringify(task.providerIds)}`,
+      '',
+      dirBlock,
       '',
       `targets (${task.targets.length} item(s), current gaps in this scope):`,
       targetsBlock,

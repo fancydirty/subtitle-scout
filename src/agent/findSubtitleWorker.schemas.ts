@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { nullableTolerant, nullableJsonTolerant, tolerantArray } from './coerce.js'
+import { nullableTolerant, nullableJsonTolerant, nullableBooleanTolerant, tolerantArray } from './coerce.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 /** Batch task/report shapes for the find-subtitle worker (phase ③) — see
@@ -139,6 +139,16 @@ export const FindSubtitleBatchReportSchema = z.object({
     isTv: z.boolean(),
     reason: z.string().min(1),
   })),
+  /** 路 A 第六轮 auto research 的机制修复（2026-07-26）：给"我核验过了，是对的"一个正当去处。
+   *  此前只有 identity_correction 一个字段，skill 三次加码措辞（"leave it absent"/"never
+   *  announce a confirmation"/"echoing a CORRECT id is a false alarm"）都没能阻止模型把确认
+   *  塞进它——实测两个 case 的 reason 里模型自己写着"No correction needed"却照样填了字段。
+   *  这不是措辞问题：一个孤零零的可选字段，模型天然想填满它来交代自己的工作。
+   *  加一个显式的确认字段后，两种结论各有归宿，identity_correction 回归"仅纠错"的单一语义
+   *  （runner 只认它，这个字段纯做展示/可观测，不驱动任何写操作）。 */
+  //  真模型对 boolean 发字符串（"True" —— Python 风格，实测第七轮）：nullableBooleanTolerant
+  //  折叠这类编码差异，否则一个字段的形态就能炸掉整份 finalize 报告（见 coerce.ts 该 helper）。
+  identity_verified: nullableBooleanTolerant(),
 }).superRefine((report, ctx) => {
   // 🔴 自相矛盾的报告一律拒收（2026-07-26 审计 BLIND SPOT 1，实测复现）：agent 报了
   // identity_correction 就意味着它判定"库里这批目标的身份是错的"，此时任何 installed

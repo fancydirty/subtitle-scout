@@ -1045,6 +1045,27 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       lib.deleteSeriesIfEmpty('s1')
       expect(lib.getSeries('s1')).toBeNull()
     })
+
+    // 审计 M4：tmdb_seasons 是 series 级联的一部分（settingsRepo 删守备目录时就是这么清的），
+    // 此前漏清 → 身份纠错频繁删空 series 行时孤儿季表无上界累积；更实际的危害是同一
+    // series_id 回归时 tmdbCatalog 的 TTL 门读 MAX(fetched_at) 7 天内早退，静默跳过刷缓存。
+    it('deleteSeriesIfEmpty 连带清 tmdb_seasons（不留孤儿季表）', () => {
+      lib.upsertSeries({ id: 's1', name: 'A' })
+      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a.mkv', subStatus: 'missing' })
+      lib.db
+        .prepare(`INSERT INTO tmdb_seasons (series_id, season, episode, air_date, fetched_at) VALUES (?, 1, 1, NULL, ?)`)
+        .run('s1', 1000)
+      expect(lib.db.prepare(`SELECT COUNT(*) as c FROM tmdb_seasons WHERE series_id=?`).get('s1')).toEqual({ c: 1 })
+
+      // 还有集时不动
+      lib.deleteSeriesIfEmpty('s1')
+      expect(lib.db.prepare(`SELECT COUNT(*) as c FROM tmdb_seasons WHERE series_id=?`).get('s1')).toEqual({ c: 1 })
+
+      lib.deleteEpisodeByPath('/a.mkv')
+      lib.deleteSeriesIfEmpty('s1')
+      expect(lib.getSeries('s1')).toBeNull()
+      expect(lib.db.prepare(`SELECT COUNT(*) as c FROM tmdb_seasons WHERE series_id=?`).get('s1')).toEqual({ c: 0 })
+    })
   })
 })
 

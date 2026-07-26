@@ -1502,6 +1502,21 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         expect(skipped!.detail).toContain('276161')
       })
 
+      // 🔴 第八轮 auto research：correction 的 tmdbId 与库里现有身份相同 = 模型把"我核验过
+      // 了，是对的"塞进了纠错字段（实测 reason 明写 Identity confirmed 却照样填）。措辞加了
+      // 四轮 + 新增 identity_verified 字段都拦不住，用机制拦：同 id 不写认领——落地只会触发
+      // 一次毫无意义的整剧重写（删旧行建同 id 新行），纯风险零收益。
+      it('提议身份与库里现有身份相同（空转纠错）→ 不写认领', async () => {
+        const { lib, jobsRepo, job, videoPath, root } = setup()
+        // SHOW_EPISODE_ID 的 own-id 里编码的就是 SHOW_TMDB_ID
+        const runTask = vi.fn(async () => report({
+          no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'x')],
+          identity_correction: { tmdbId: SHOW_TMDB_ID, isTv: true, reason: 'Identity confirmed' },
+        }))
+        await runFindSubtitleWorkerTask(job, baseDeps({ lib, mediaRoots: [root], runTask }), jobsRepo, () => Date.now())
+        expect(lib.findOverride(videoPath)).toBeNull()
+      })
+
       // 🔴 审计 BLIND SPOT 2（实测复现）：/^\d+$/ 只管形状。一个合法数字的幻觉 id 会让
       // ingest 建出永久鬼影行——TMDB 富化全 404 → genres 落 '[]'（404 熄火哨兵）→ 该行永久
       // 退出富化重试、永不自愈，而认领表没有删除 UI。落地前必须实证这个 id 真的存在。

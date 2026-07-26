@@ -601,6 +601,22 @@ export async function runFindSubtitleWorkerTask(
         ? safeClaimPrefix(task.targets.map((t) => t.videoPath), deps.mediaRoots)
         : { ok: false as const, reason: `tmdbId must be a bare numeric string, got "${correction.tmdbId}"` }
 
+      // 🔴 空转纠错拦截（2026-07-26 第八轮 auto research）：correction 的 tmdbId 与库里已有的
+      // 身份**相同**时，这在语义上根本不是纠错——是模型把"我核验过了，是对的"塞进了纠错字段
+      // （实测 reason 里明写 "Identity confirmed" 却照样填了字段）。skill 加了四轮措辞、又加了
+      // identity_verified 字段给确认一个正当去处，仍拦不住"某一集越界"这类让模型不安的场景。
+      // 措辞救不了的用机制：同 id 一律不写认领——真让它落地会触发一次毫无意义的整剧重写
+      // （删旧行建同 id 新行），纯风险零收益。
+      const currentTmdbId = tmdbIdFromOwnId(task.targets[0]?.itemId ?? '')
+      if (claim.ok && currentTmdbId !== null && currentTmdbId === correction.tmdbId) {
+        claim = {
+          ok: false,
+          reason:
+            `proposed identity tmdb:${correction.tmdbId} is IDENTICAL to the library's current ` +
+            `identity — that is a confirmation, not a correction (use identity_verified)`,
+        }
+      }
+
       // 🔴 存在性校验（2026-07-26 审计 BLIND SPOT 2，实测复现）：/^\d+$/ 只管形状，不管这个
       // id 在 TMDB 上是否真的存在。实测 agent 报一个合法数字的幻觉 id（99999999）后：ingest
       // 照样建行，TMDB 富化全 404 → genres 落 '[]'（那是 404 熄火哨兵），该行从此永久退出富化

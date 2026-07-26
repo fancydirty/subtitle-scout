@@ -73,6 +73,23 @@ export const tolerantArray = <T extends z.ZodTypeAny>(item: T) =>
     z.array(item),
   )
 
+/** nullableTolerant 的布尔版：真模型对 boolean 字段常发字符串——"True"/"true"/"False"/
+ *  "false"（Python 风格首字母大写是 mimo-v2.5 的实测形态，2026-07-26 identityEval 第七轮），
+ *  偶尔也发 "1"/"0"。z.boolean() 一律拒收，一个字段的编码差异就能炸掉整份 finalize 报告
+ *  （readFinalized 抛错 → 整个 run 白跑）。与 coercibleInt 容错 "10"→10 同一类问题、同一个
+ *  解法：在 preprocess 里把这些编码折叠成真布尔，认不出的原样交给 inner 拒绝（不吞错）。 */
+export function nullableBooleanTolerant(): z.ZodType<boolean | null> {
+  return z.preprocess((v) => {
+    if (isNullishOrOmitted(v)) return null
+    if (typeof v === 'string') {
+      const t = v.trim().toLowerCase()
+      if (t === 'true' || t === '1' || t === 'yes') return true
+      if (t === 'false' || t === '0' || t === 'no') return false
+    }
+    return v
+  }, z.boolean().nullable()) as unknown as z.ZodType<boolean | null>
+}
+
 /** nullableTolerant 的嵌套对象版：真模型对 object 字段还有另一类编码——把整个对象序列化成
  *  JSON 字符串发上来（identity_correction:"{\"tmdbId\":\"276161\",...}"——2026-07-26
  *  identityEval 实测，mimo-v2.5 在四个 case 里全部这么发）。preprocess 先把 JSON 字符串

@@ -1170,6 +1170,11 @@ export class LibraryRepo {
       .get(seriesId) as { c: number }
     if (row.c === 0) {
       this.db.prepare(`DELETE FROM series WHERE id = ?`).run(seriesId)
+      // 审计 M4（2026-07-26）：tmdb_seasons 是 series 级联的一部分（settingsRepo 删守备目录
+      // 时就是这么清的），此前这里漏了——身份纠错会频繁删空 series 行，孤儿季表随之无上界
+      // 累积且无 GC。更实际的危害：同一个 series_id 日后若回归，tmdbCatalog 的 TTL 门读
+      // MAX(fetched_at)，7 天内直接早退，那次"新剧首次入库刷应有集缓存"被静默跳过。
+      this.db.prepare(`DELETE FROM tmdb_seasons WHERE series_id = ?`).run(seriesId)
     }
   }
 }

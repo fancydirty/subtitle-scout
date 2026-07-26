@@ -112,12 +112,11 @@ Before any \`search_source\` call, verify the identity with your TMDB evidence t
    (a different movie can share your runtime by coincidence — 112 minutes fits both
    The Conjuring (2013) and an unrelated 2026 release). One strong-looking evidence line
    never buys back a failed one.
-3. Both lines check out → the identity is CONFIRMED. Proceed to the search workflow
-   below. Leave \`identity_correction\` ABSENT (or null): that field exists ONLY to
-   report a corrected identity — never use it to announce that the guess was right,
-   and never mention the verification in your per-item reasons. A present
-   \`identity_correction\` ALWAYS means "the library identity is wrong", and the system
-   treats it as such.
+3. Both lines check out → the identity is CONFIRMED. Set \`identity_verified: true\` in your
+   finalize report and proceed to the search workflow below. Leave \`identity_correction\`
+   ABSENT (or null) — never use it to announce that the guess was right, and never mention
+   the verification in your per-item reasons. A present \`identity_correction\` ALWAYS means
+   "the library identity is wrong", and the system rewrites the library accordingly.
 4. Either line FAILS → the mechanical guess is wrong. Re-identify from the raw evidence:
    clean the titles yourself (strip bracket tags, release-group names, resolution tags;
    repair obvious misspellings), then call \`search_tmdb\` with the cleaned candidates
@@ -157,6 +156,59 @@ verify anything.
 This verification costs at most a few calls — get_tmdb_details once, and search_tmdb only
 when the guess fails. Do not skip it even when the guess looks obviously right: a guess
 that "looks right" is exactly how mechanical misparses slip through.
+
+### Filling the identity fields: answer these two questions, in this order
+
+The report has TWO identity fields, and they are not interchangeable:
+- \`identity_verified\` (boolean) — where your CONFIRMATION goes. "I checked the library's
+  id and it holds up" = set this \`true\`. It changes nothing in the library; it is how you
+  show your work.
+- \`identity_correction\` (object) — where a CORRECTION goes. Setting it tells the system
+  "the library identity is wrong, rewrite it to this id". It triggers a real library
+  change.
+
+Before you write the finalize report, decide mechanically — do not improvise:
+
+**Q1. Did the library's own tmdb id (the one in the task's provider ids) pass the
+two-evidence bar?**
+- YES → set \`identity_verified: true\` and leave \`identity_correction\` absent/null.
+  That is the complete, correct way to report a confirmation. Never put a confirmed id
+  into \`identity_correction\` — even with a reason saying "no correction needed": the
+  system reads any value there as "go rewrite the library", so a confirmation placed in
+  that field is a false alarm that triggers a pointless rewrite of a correct row.
+- NO → go to Q2.
+
+**Q2. Did you find a different tmdb id that DOES pass the two-evidence bar?**
+- YES → \`identity_correction\` MUST be set to that id (and leave \`identity_verified\`
+  absent — you did not verify the library's id, you replaced it). Not optional, not "if
+  I'm sure enough" — you already proved it with tool evidence, so report it. Silently
+  keeping a verified correction to yourself is the worst outcome available: the library
+  stays wrong forever, and nobody learns that you found the answer. Every target goes to
+  \`no_safe_match\`; install nothing.
+  Concretely: if your last \`get_tmdb_details\` call was on an id that checked out, and that
+  id is NOT the one in the task's provider ids, then that id belongs in
+  \`identity_correction\`. Finding the answer and then submitting null is a bug, not caution.
+- NO → both fields absent/null, every target to \`no_safe_match\` with a reason naming the
+  identity problem. Guessing is worse than admitting you could not verify.
+
+The field is a one-way signal: present = "library identity is wrong, here is the right
+one". Absent = "either it was right, or I could not establish anything better."
+
+**What is NOT an identity problem.** The two-evidence bar is about WHICH WORK this is, not
+about whether every individual target lines up. These are all normal and must NOT trigger
+a correction — the identity stays confirmed and the odd target is simply handled by the
+usual per-target judgment later:
+- A target's episode number is outside the season table (e.g. an S04E13 file when TMDB
+  says season 4 has 9 episodes). That is a mislabeled or differently-numbered file, or a
+  multi-episode/special release — one target's problem, not the show's identity. Report
+  that target as \`no_safe_match\` if you cannot place it; leave the identity alone.
+- A target's runtime differs from the show's typical runtime (extended finales, recaps,
+  double-length episodes).
+- Some targets are missing from the season table entirely (unaired, specials, numbering
+  offsets).
+Changing a whole series' identity because ONE episode looks odd is the single most
+destructive mistake available here: it rewrites every row of a correctly-identified show.
+When the name and year fit, the identity is confirmed — full stop.
 `
     : ''
 

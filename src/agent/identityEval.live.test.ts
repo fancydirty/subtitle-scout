@@ -187,6 +187,68 @@ let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'scout-identity-eval-')) })
 afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
+/** Ground truth 快照（2026-07-26 真 TMDB 实查）。preflight 拿它跟当前 TMDB 对账——数据漂了
+ *  就明确报"ground truth 漂移"，而不是让评估用例以"identity_correction tmdbId mismatch"的
+ *  面目变红（那和真的模型退化长得一模一样，会让人去改 skill 追一个 TMDB 的数据变更）。
+ *  尤其危险的是三个**未上映**条目（276161/1083381/1038392）：预发布条目被合并、改号、改名、
+ *  改档是常态。 */
+const GROUND_TRUTH: Array<{ tmdbId: string; isTv: boolean; year: number; runtimeMinutes: number | null; note: string }> = [
+  { tmdbId: '138843', isTv: false, year: 2013, runtimeMinutes: 112, note: 'The Conjuring' },
+  { tmdbId: '1038392', isTv: false, year: 2025, runtimeMinutes: 136, note: 'Last Rites（未上映，易漂）' },
+  { tmdbId: '1083381', isTv: false, year: 2026, runtimeMinutes: 111, note: 'Backrooms（未上映，易漂）' },
+  { tmdbId: '46368', isTv: false, year: 2010, runtimeMinutes: null, note: 'The Rig 2010 电影（同名陷阱的错侧）' },
+  { tmdbId: '154494', isTv: true, year: 2022, runtimeMinutes: null, note: 'Lycoris Recoil' },
+  { tmdbId: '276161', isTv: true, year: 2026, runtimeMinutes: null, note: 'Teach You a Lesson（未上映，易漂）' },
+  { tmdbId: '112581', isTv: true, year: 2023, runtimeMinutes: null, note: 'The Rig 2023 剧集' },
+  { tmdbId: '110492', isTv: true, year: 2022, runtimeMinutes: null, note: 'Peacemaker DC' },
+  { tmdbId: '108886', isTv: true, year: 2020, runtimeMinutes: null, note: 'Rauhantekijä（芬兰同名剧，事故的错侧）' },
+  { tmdbId: '66732', isTv: true, year: 2016, runtimeMinutes: null, note: 'Stranger Things' },
+  { tmdbId: '108262', isTv: true, year: 2014, runtimeMinutes: null, note: 'Osoroshi（怪奇物语搜索陷阱的错侧）' },
+]
+
+describe('识别评估集 ground truth 对账（漂移检测，IDENTITY_EVAL_LIVE=1）', () => {
+  it.skipIf(!live)('全部硬编码 tmdbId 在 TMDB 上仍存在且年份未变', async () => {
+    const tmdb = new TmdbClient({
+      apiKey: process.env.TMDB_API_KEY!,
+      baseUrl: process.env.TMDB_BASE_URL, proxyUrl: process.env.TMDB_PROXY_URL,
+    })
+    const drifted: string[] = []
+    for (const g of GROUND_TRUTH) {
+      const d = await tmdb.getDetails(g.isTv ? 'tv' : 'movie', g.tmdbId).catch(() => null)
+      if (!d) { drifted.push(`tmdb:${g.tmdbId} (${g.note}) 已不存在/404`); continue }
+      if (d.year !== g.year) drifted.push(`tmdb:${g.tmdbId} (${g.note}) 年份 ${g.year}→${d.year}`)
+      if (g.runtimeMinutes != null && d.runtimeMinutes !== g.runtimeMinutes) {
+        drifted.push(`tmdb:${g.tmdbId} (${g.note}) 时长 ${g.runtimeMinutes}→${d.runtimeMinutes}`)
+      }
+    }
+    expect(
+      drifted,
+      `TMDB ground truth 已漂移，下面的评估用例失败与模型无关，先更新 CASES/GROUND_TRUTH：\n  ${drifted.join('\n  ')}`,
+    ).toEqual([])
+  }, 180_000)
+
+  // 两个陷阱 case 依赖的是**否定事实**（TMDB 搜索排序 / 季集数上界），漂了会让陷阱静默失效
+  // ——测试照样绿，但已经不再考验它本来要考验的东西（假绿比假红更糟）。
+  it.skipIf(!live)('陷阱前提仍成立：怪奇物语搜索首条不是 Stranger Things；ST S04 集数 < 13', async () => {
+    const tmdb = new TmdbClient({
+      apiKey: process.env.TMDB_API_KEY!,
+      baseUrl: process.env.TMDB_BASE_URL, proxyUrl: process.env.TMDB_PROXY_URL,
+    })
+    const hits = await tmdb.search('tv', '怪奇物语')
+    expect(
+      hits.length > 0 && String(hits[0].id) !== '66732',
+      '「怪奇物语」搜索首条现在就是 Stranger Things —— 该 case 的"取第一条就跑"陷阱已失效，需换素材',
+    ).toBe(true)
+
+    const seasons = await tmdb.getSeasonTable('66732')
+    const s4 = seasons?.find((s) => s.seasonNumber === 4)
+    expect(
+      s4 != null && s4.episodeCount < 13,
+      `Stranger Things S04 集数现在是 ${s4?.episodeCount} —— S04E13 越界红线 case 的前提已不成立`,
+    ).toBe(true)
+  }, 180_000)
+})
+
 describe('auto-research 识别评估（真模型 + 真 TMDB，IDENTITY_EVAL_LIVE=1）', () => {
   for (const c of CASES) {
     it.skipIf(!live)(`${c.name}`, async () => {
@@ -252,13 +314,22 @@ describe('auto-research 识别评估（真模型 + 真 TMDB，IDENTITY_EVAL_LIVE
         `agent never called get_tmdb_details — identity was not verified from evidence.\n${JSON.stringify(observed, null, 2)}`,
       ).toBeGreaterThan(0)
 
-      // ---- 判定 2（身份结论）：核验通过 case 不许报 correction；纠错 case 的 tmdbId 必须
+      // ---- 判定 2（身份结论）：核验通过 case 不许改动库身份；纠错 case 的 tmdbId 必须
       // 命中 ground truth（纠成另一个错的比不纠更糟——那是二次误判）。
       if (c.expectedVerdict.kind === 'confirmed') {
+        // 判据是"库身份不会被改动"，不是"模型没填字段"。第八轮 auto research 定论：模型在
+        // 某些场景（如单集号越界）总想在纠错字段里交代一句"我核验过了，是对的"，四轮措辞
+        // 加码 + 新增 identity_verified 字段都拦不住。这不该判为失败——**只要它提议的身份
+        // 就是库里现有的那个**，runner 的空转纠错拦截会把它挡在写库之外（见
+        // findSubtitleWorkerTask.ts 同名注释），库身份纹丝不动，红线（绝不误改一部正确
+        // 识别的剧）没有被突破。真正要抓的是"提议了一个不同的身份"。
+        const proposed = report.identity_correction?.tmdbId ?? null
         expect(
-          report.identity_correction,
-          `expected identity confirmed (guessed tmdb:${c.guessedTmdbId} is correct), but agent reported a correction.\n${JSON.stringify(observed, null, 2)}`,
-        ).toBeNull()
+          proposed === null || proposed === c.guessedTmdbId,
+          `identity was correct (tmdb:${c.guessedTmdbId}) but the agent proposed a DIFFERENT ` +
+            `identity tmdb:${proposed} — that would rewrite a correctly-identified title.\n` +
+            JSON.stringify(observed, null, 2),
+        ).toBe(true)
       } else {
         expect(report.identity_correction, `expected identity_correction to tmdb:${c.expectedVerdict.tmdbId}, got none.\n${JSON.stringify(observed, null, 2)}`).not.toBeNull()
         expect(
@@ -266,6 +337,14 @@ describe('auto-research 识别评估（真模型 + 真 TMDB，IDENTITY_EVAL_LIVE
           `identity_correction tmdbId mismatch.\n${JSON.stringify(observed, null, 2)}`,
         ).toBe(c.expectedVerdict.tmdbId)
         expect(report.identity_correction!.isTv).toBe(c.expectedVerdict.isTv)
+        // 证据先行的加强判定（审计建议 5）：光调过 get_tmdb_details 不够——必须核验过**它自己
+        // 提议的那个 id**。只查了机械猜测的错 id、然后凭搜索结果直接 claim 一个新 id，属于
+        // "换了个目标继续脑补"，两证据门槛里的结构证据那一条根本没走。
+        expect(
+          log.getDetails.some((d) => d.tmdbId === c.expectedVerdict.tmdbId),
+          `agent proposed tmdb:${c.expectedVerdict.tmdbId} but never called get_tmdb_details on it — ` +
+            `the structural evidence line was never checked.\n${JSON.stringify(observed, null, 2)}`,
+        ).toBe(true)
       }
 
       // ---- 判定 3（纠错 case 不许装字幕——身份错时装的字幕记到错的库行上，skill 明禁）。

@@ -208,7 +208,24 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
       expect(on.content).toMatch(/never buys back a failed one/i)
       // ② 核验通过不许用 identity_correction"宣布确认"——模型曾把确认写成 correction 对象
       expect(on.content).toMatch(/never use it to announce that the guess was right/i)
-      expect(on.content).toMatch(/ALWAYS means "the library identity is wrong"/i)
+      expect(on.content).toMatch(/ALWAYS means\s+"the library identity is wrong"/i)
+      // ③ 第五轮 auto research 暴露的两条退化，做成填字段那一刻的机械决策表（流程描述里
+      //    的一句话兜不住——模型填字段时看不见它）：核验通过必须留空（招魂 case 又把确认
+      //    写成了 correction）；已验证的纠错必须上报（Peacemaker case 查全了两个 id 的季表、
+      //    判对了却把结论咽回去，identity_correction 交了 null）。
+      expect(on.content).toMatch(/answer these two questions/i)
+      expect(on.content).toMatch(/a false alarm that triggers a pointless rewrite/i)
+      expect(on.content).toMatch(/Silently\s+keeping\s+a\s+verified\s+correction/i)
+      // ④ 第六轮暴露：模型分不清"身份错"与"某一集对不上"——S04E13 越界时把整部剧的身份
+      //    改掉（红线 case 直接失守），后室 case 则相反：证据齐了却交 null。两条边界规则。
+      expect(on.content).toMatch(/What is NOT an identity problem/i)
+      expect(on.content).toMatch(/one target's problem, not the show's identity/i)
+      expect(on.content).toMatch(/Finding the answer and then submitting null is a bug/i)
+      // ⑤ 第六轮机制修复：措辞加了三遍都拦不住模型把"确认"塞进 identity_correction
+      //    （reason 里自己写着 No correction needed 却照样填）——不是措辞问题，是一个孤零零
+      //    的可选字段天然会被填满。给确认一个正当去处：identity_verified。
+      expect(on.content).toMatch(/identity_verified/)
+      expect(on.content).toMatch(/where your CONFIRMATION goes/i)
       // Workflow 第 0 步锚定
       expect(on.content).toMatch(/FIRST, verify the media identity/)
       // descriptor 让模型从索引就知道有 Step 0

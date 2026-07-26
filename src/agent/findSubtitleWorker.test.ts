@@ -258,6 +258,59 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     expect(capturedPromptText).not.toContain('runtime minutes: 58')
   })
 
+  // 🔴 第九轮 auto research 修复的 plumbing 缺口：Step 0 的 skill 明确教"文件名是纯技术
+  // token 时标题只在目录名里"，但 prompt 此前只给 basename，目录名从未进过 prompt——教了一份
+  // 模型拿不到的证据。实测后室 case 里模型写下 "No directory names were provided, so
+  // re-identification is impossible"，诚实卡死在缺料上。
+  it('prompt 携带目录名证据（沙盒根目录名 + 相对子目录段），不只是 basename', async () => {
+    const mediaRoot = join(root, 'media', 'H）后丨室（2026）4K DV HDR')
+    const seasonDir = join(mediaRoot, 'Season 01')
+    mkdirSync(seasonDir, { recursive: true })
+
+    let capturedPromptText = ''
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options: LanguageModelV4CallOptions) => {
+        const userMessage = options.prompt.find(m => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        return finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'x' }], retry_later: [] })
+      },
+    })
+
+    const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
+    await runTask(baseTask(mediaRoot, [
+      { itemId: 'ep-1', videoPath: join(seasonDir, '2026.2160p.iT.WEB-DL.H.265.mkv'), videoFilename: '2026.2160p.iT.WEB-DL.H.265.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+    ], { jobId: 'job-dirname' }))
+
+    // 沙盒根目录名（标题就在这里）+ 相对子目录段
+    expect(capturedPromptText).toContain('containing directory: H）后丨室（2026）4K DV HDR')
+    expect(capturedPromptText).toContain('subdirectories: Season 01')
+    // 沙盒纪律：不泄漏 mediaRoot 以外的路径
+    expect(capturedPromptText).not.toContain(root)
+  })
+
+  it('文件直接躺在沙盒根下时省略 subdirectories 段（不虚报空值）', async () => {
+    const mediaRoot = join(root, 'media', 'Show')
+    mkdirSync(mediaRoot, { recursive: true })
+
+    let capturedPromptText = ''
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options: LanguageModelV4CallOptions) => {
+        const userMessage = options.prompt.find(m => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        return finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'x' }], retry_later: [] })
+      },
+    })
+    const runTask = makeFindSubtitleWorker({ model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10 })
+    await runTask(baseTask(mediaRoot, [
+      { itemId: 'ep-1', videoPath: join(mediaRoot, 'a.mkv'), videoFilename: 'a.mkv', season: null, episode: null, absoluteEpisode: null, imdbId: null },
+    ], { jobId: 'job-flat' }))
+
+    expect(capturedPromptText).toContain('containing directory: Show')
+    expect(capturedPromptText).not.toContain('subdirectories:')
+  })
+
   // 路 A（2026-07-26 识别架构）：deps.tmdb 决定识别证据工具是否挂载 + prompt 是否教
   // Step 0 验证——同开同关，不许出现"教了验证但没工具"或"有工具但没教"的分裂态。
   describe('identity evidence tools（路 A：tmdb 工具挂载与 prompt 标注）', () => {
