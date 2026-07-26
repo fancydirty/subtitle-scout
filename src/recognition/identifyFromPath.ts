@@ -195,21 +195,25 @@ export function identifyFromPath(videoPath: string): PathIdentity | Park {
   let title: string | null
   let year: number | null
   const fileTitle = fileParsed.title ? (cleanFileTitle(fileParsed.title) || null) : null
+  // 文件 title 质量闸：纯数字（"2025"）或含技术标记（"2026 2160p"）的文件 title 不采纳——
+  //  这种文件是技术命名（'2025.HDR...'/'2026.2160p...'），剧名在目录段（'招z魂z4'/'后室'），
+  //  不该用文件的数字/技术串当 title。（招z魂z4/H）后丨室 实测暴露）
+  const fileTitleUsable = fileTitle !== null && !/^\d{4}$/.test(fileTitle) && !/\d{3,4}p|web[ _-]?dl|bluray|hdtv|remux|hdr|x26[45]/i.test(fileTitle)
 
   if (parentIsSeasonFolder) {
     // Show/Season NN/file layout: the season folder ate the parent slot, so the title lives one
-    // level up. 优先用文件自身的 title（清洗后）；没有再用 grandparent（须过质量闸）。
-    if (fileTitle) {
+    // level up. 优先用文件自身的 title（清洗后且过质量闸）；没有再用 grandparent（须过质量闸）。
+    if (fileTitleUsable) {
       title = fileTitle
       year = fileParsed.year ?? grandparentParsed?.year ?? null
     } else if (grandparentParsed?.title && !grandparentIsSeasonFolder && isUsableDirTitle(grandparentParsed.title)) {
       title = grandparentParsed.title
       year = grandparentParsed.year
     } else {
-      title = fileTitle
+      title = fileTitleUsable ? fileTitle : null
       year = fileParsed.year
     }
-  } else if (fileTitle) {
+  } else if (fileTitleUsable) {
     // 文件有可用 title（电影/剧集通吃）——文件名是信息最丰富的段，优先信它。
     // year：文件没有就从目录补（TV 文件恒 null，电影文件可能有）。
     title = fileTitle
@@ -219,7 +223,7 @@ export function identifyFromPath(videoPath: string): PathIdentity | Park {
     title = parentParsed.title
     year = parentParsed.year
   } else {
-    title = fileTitle
+    title = fileTitleUsable ? fileTitle : null
     year = fileParsed.year
   }
 
@@ -236,7 +240,15 @@ export function identifyFromPath(videoPath: string): PathIdentity | Park {
   if (fileParsed.episode !== null) {
     episode = fileParsed.episode
   } else if (fileParsed.absoluteEpisode !== null) {
-    absoluteEpisode = fileParsed.absoluteEpisode
+    // 只有**明确的季目录标记**（detectSeasonFolder 识别的 'Season 1'/'第2季'/'Specials'）才把
+    //  absoluteEpisode 折算成 episode——'ep 1.mp4' in Season 1 → S01E01，季目录给了毫无疑问的
+    //  context。文件名里的季名（'Hero' in 'Hero - 01'）不折算——'01' 是 Hero 季内还是全剧绝对，
+    //  有歧义，归 ingest 层的多季守卫判定（北极星红线"绝不误认"）。
+    if (parentSeasonFolder !== null) {
+      episode = fileParsed.absoluteEpisode
+    } else {
+      absoluteEpisode = fileParsed.absoluteEpisode
+    }
   } else if (!fileParsed.isTv) {
     const bare = parseBareEpisode(posix.parse(fileSeg).name)
     if (bare !== null) {

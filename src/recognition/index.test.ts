@@ -149,7 +149,7 @@ describe('recognize — Bug 1 fix: identify_overrides rescues a no-signal park (
     const findOverride = vi.fn(() => ({ tmdbId: '24240', isTv: true, season: null }))
     const result = await recognize(path, tmdb, { findOverride })
     expect(result).toEqual({
-      tmdbId: '24240', title: '', isTv: true, season: null, episode: null, absoluteEpisode: 1,
+      tmdbId: '24240', title: 'High School DxD Hero', isTv: true, season: null, episode: null, absoluteEpisode: 1,
       viaOverrideLenient: true,
     })
     expect(findOverride).toHaveBeenCalledWith(path)
@@ -183,7 +183,7 @@ describe('recognize — Bug 1 fix: identify_overrides rescues a no-signal park (
     const findOverride = vi.fn(() => ({ tmdbId: '24240', isTv: true, season: 4 }))
     const result = await recognize(path, tmdb, { findOverride })
     expect(result).toEqual({
-      tmdbId: '24240', title: '', isTv: true, season: 4, episode: 1, absoluteEpisode: null,
+      tmdbId: '24240', title: 'High School DxD Hero', isTv: true, season: 4, episode: 1, absoluteEpisode: null,
     })
     expect(fetchImpl).not.toHaveBeenCalled()
   })

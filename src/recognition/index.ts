@@ -130,13 +130,30 @@ export async function recognize(
   if (identity.embeddedTmdbId === null) {
     const override = opts?.findOverride?.(videoPath)
     if (override) {
+      // override 给了 season 且 identity 只有 absoluteEpisode（无 episode）——折算：override 的 season
+      //  给了毫无疑问的季 context，identity 的 absoluteEpisode 就是该季第几集（'Hero - 01' + season=4
+      //  → S04E01）。override 没给 season 时保留 absoluteEpisode，归 ingest 层多季守卫判定。
+      let season = identity.season
+      let episode = identity.episode
+      let absoluteEpisode = identity.absoluteEpisode
+      let viaOverrideLenient: true | undefined
+      if (override.season != null && identity.episode === null && identity.absoluteEpisode !== null) {
+        season = override.season
+        episode = identity.absoluteEpisode
+        absoluteEpisode = null
+      } else if (identity.episode === null && identity.absoluteEpisode !== null) {
+        // identity 只有 absoluteEpisode（无 episode 无明确季目录）——'01' 是季内还是全剧绝对，
+        //  多季剧下有歧义，带 viaOverrideLenient 标记告诉 ingest 层多季守卫去判定（同 park 分支语义）。
+        viaOverrideLenient = true
+      }
       return {
         tmdbId: override.tmdbId,
         title: identity.title ?? '',
         isTv: override.isTv,
-        season: identity.season,
-        episode: identity.episode,
-        absoluteEpisode: identity.absoluteEpisode,
+        season,
+        episode,
+        absoluteEpisode,
+        ...(viaOverrideLenient ? { viaOverrideLenient } : {}),
       }
     }
   }
