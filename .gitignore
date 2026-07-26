@@ -18,9 +18,8 @@ deploy/*
 # router.env.example 是纯模板（不含真值），应入库：否则对它的修复只存在于本机
 !deploy/router.env.example
 worker/
-docs/superpowers/
-docs/cloudflare-worker.md
-docs/product-shape.md
+# 内部设计/战役/事故记录整目录不随公开仓（开源时不带内部过程文档）
+docs/
 jellyfin-config/
 cache/
 
