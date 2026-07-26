@@ -1,7 +1,8 @@
 # Spec: Subtitle Agent 接管识别（删 rescue agent，机械识别降级为 raw 数据提供者）
 
 **日期**: 2026-07-26
-**状态**: 待实施（spec + plan 已对齐，等 compact 后实施）
+**状态**: 路 A Phase 1 + 1b **已实施**（commits 1fe4b9a…3fb9609）；Phase 2（删 rescue + 机械降级 + 清 parked）未开工。
+**⚠️ 正文写于实施前，多处与最终实现不符——先读文末「实施偏离记录」。**
 
 ---
 
@@ -184,3 +185,37 @@ subtitle agent 被唤起（findSubtitleWorker，一个真 agent 一气呵成）
 ---
 
 **下一步**：compact 后按此 plan 实施。先 Phase 1（findSubtitleWorker 加识别能力），再 Phase 2（删 rescue + 机械降级），最后 Phase 3（auto research 打磨）。
+
+---
+
+# 实施偏离记录（2026-07-26，实施完成后补记）
+
+正文是实施前的设计稿。用户裁决走**路 A**（机械识别照旧建行，agent 核验+纠正），
+外加两轮子代理审计的修正，最终实现与正文有以下偏离：
+
+| 正文描述 | 实际实现 |
+|---|---|
+| 删 rescueWorker / rescueWorkerTask / rescueSkill | **未删**，Phase 2 未开工。只抽出了共享的 TMDB 证据工具（`src/agent/tmdbTools.ts`）给两边复用 |
+| `resolveToTmdb` 不再写库当真相 | **未做**（路 A 的定义就是机械识别照旧建行） |
+| `FindSubtitleTask` 加 `rawEvidence` 字段 | **未加**。raw 数据本就在 targets 里（path/filename/season/episode/runtime），补的是 prompt 侧的目录名两行（第九轮 auto research 发现目录名从未进过 prompt） |
+| 识别对了调 `confirm_identity` 工具回填库 | **无此工具**。落地方式是写一条 `identify_overrides` 认领，下一轮 ingest 的 `recognize()` 消歧前查命中后按新身份建行、清旧行——刻意不手写 id 迁移（own-id 链 + 五张表外键，中途崩溃无幂等恢复点） |
+
+正文完全没提、但实现里最重要的三件安全设计：
+
+1. **认领安全闸**（`safeClaimPrefix`）：认领前缀取 targets 的公共祖先，且必须严格深于每个
+   配置媒体根。第一版曾一刀切拒绝"跨目录"，反而把多季剧（最常见的 TV 布局）永久锁死——
+   agent 每轮判对每轮被拒，是更坏的失效形态。
+2. **`identify_overrides.source` 列**（schema v24）：区分 human/agent 认领，
+   ON CONFLICT 的 WHERE 子句实现"agent 永不覆盖人工认领"。人的判断是终局，agent 的核验是
+   会出错的启发式，两者权威等级不同。
+3. **三道落地前校验**：tmdbId 必须是纯数字（堵幻觉 `tmdb:`/`tt` 前缀）、必须在 TMDB 上真实
+   存在（堵合法数字的幻觉 id 建出永久鬼影剧）、不能等于库里现有 id（空转纠错=把确认塞进
+   纠错字段）。
+
+另外 finalize 报告多了 `identity_verified` 布尔字段——给"我核验过了，是对的"一个正当去处。
+措辞加了四轮都拦不住模型把确认塞进 `identity_correction`，根因不是措辞：一个孤零零的可选
+字段，模型天然想填满它来交代工作。
+
+识别质量由 `src/agent/identityEval.live.test.ts` 把关（真模型 + 真 TMDB，9 个真实命名 case
++ 2 道 ground truth 防腐 preflight，`IDENTITY_EVAL_LIVE=1` 开门跑，CI 默认跳过）。
+经十轮 auto research 迭代后 11/11 全绿。
