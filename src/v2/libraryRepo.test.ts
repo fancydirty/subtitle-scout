@@ -766,6 +766,45 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
     })
   })
 
+  describe('upsertParkedPath with raw data', () => {
+    it('stores duration_sec and embedded_langs', () => {
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        1000,
+        { mtimeMs: 500, size: 1024, durationSec: 3600, embeddedLangs: ['eng', 'chi'] },
+      )
+
+      const rows = lib.listParkedPaths()
+      const row = rows.find((r) => r.path === '/test/video.mkv')
+
+      expect(row).toBeDefined()
+      expect(row?.duration_sec).toBe(3600)
+      expect(row?.embedded_langs).toBe('eng,chi')
+    })
+
+    it('preserves existing raw data on update when not provided', () => {
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        1000,
+        { mtimeMs: 500, size: 1024, durationSec: 3600, embeddedLangs: ['eng'] },
+      )
+
+      // Update with same reason but no raw data
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        2000,
+        { mtimeMs: 600, size: 1024 },
+      )
+
+      const row = lib.listParkedPaths().find((r) => r.path === '/test/video.mkv')
+      expect(row?.duration_sec).toBe(3600) // Preserved
+      expect(row?.embedded_langs).toBe('eng') // Preserved
+    })
+  })
+
   describe('item_files（重复源 P1，schema v16）', () => {
     beforeEach(() => {
       lib.upsertSeries({ id: 's1', name: 'A' })

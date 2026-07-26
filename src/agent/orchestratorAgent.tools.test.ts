@@ -120,7 +120,7 @@ describe('makeListMissingCoverageTool', () => {
       missingBySeason: () => [],
       missingMovies: () => [],
       listParkedPaths: () => {
-        const base = { first_seen: 1000, last_attempt: 1000, retry_count: 0, next_retry_at: null, probe_mtime: null, probe_size: null }
+        const base = { first_seen: 1000, last_attempt: 1000, retry_count: 0, next_retry_at: null, probe_mtime: null, probe_size: null, duration_sec: null, embedded_langs: null }
         return [
           { path: '/media/A/a.mkv', park_reason: 'no tmdb match', ...base },
           { path: '/media/A/b.mkv', park_reason: 'ambiguous', ...base },

@@ -144,12 +144,18 @@ export interface ParkedPath {
   next_retry_at: number | null
   probe_mtime: number | null
   probe_size: number | null
+  /** 探测时长（秒）；NULL=未探测。agent 从 parked_paths 读取做识别的 raw 数据（schema v25）。 */
+  duration_sec: number | null
+  /** 原始 ffprobe 语言 tag 逗号串（如 'eng,chi'）；NULL=未探测。 */
+  embedded_langs: string | null
 }
 
-/** parked-path 负缓存：文件指纹（stat mtimeMs + size）。 */
+/** parked-path 负缓存：文件指纹（stat mtimeMs + size）+ 可选探测 raw 数据（duration/内嵌轨语言）。 */
 export interface ParkedPathFingerprint {
   mtimeMs: number
   size: number
+  durationSec?: number | null
+  embeddedLangs?: string[] | null
 }
 
 /** 退避阶梯：retry_count 0→1h，1→4h，≥2→24h（封顶）。单位 ms。 */
@@ -770,16 +776,25 @@ export class LibraryRepo {
   upsertParkedPath(path: string, reason: string, now: number, fingerprint?: ParkedPathFingerprint): void {
     const existing = this.db
       .prepare(
-        `SELECT park_reason, retry_count, probe_mtime, probe_size FROM parked_paths WHERE path = ?`
+        `SELECT park_reason, retry_count, probe_mtime, probe_size, duration_sec, embedded_langs FROM parked_paths WHERE path = ?`
       )
       .get(path) as
-      | { park_reason: string; retry_count: number; probe_mtime: number | null; probe_size: number | null }
+      | {
+          park_reason: string
+          retry_count: number
+          probe_mtime: number | null
+          probe_size: number | null
+          duration_sec: number | null
+          embedded_langs: string | null
+        }
       | undefined
 
     let retryCount = 0
     let nextRetryAt: number | null = now + parkedRetryDelayMs(0)
     let probeMtime: number | null = fingerprint?.mtimeMs ?? null
     let probeSize: number | null = fingerprint?.size ?? null
+    let durationSec: number | null = fingerprint?.durationSec ?? null
+    let embeddedLangs: string | null = fingerprint?.embeddedLangs ? fingerprint.embeddedLangs.join(',') : null
 
     if (existing && fingerprint) {
       const sameReason = existing.park_reason === reason
@@ -796,6 +811,9 @@ export class LibraryRepo {
       }
       probeMtime = fingerprint.mtimeMs
       probeSize = fingerprint.size
+      // raw 数据本次调用未提供 → 保留库中已有值（agent 识别依赖这些列，不被无探测的重 park 冲掉）
+      if (durationSec === null) durationSec = existing.duration_sec
+      if (embeddedLangs === null) embeddedLangs = existing.embedded_langs
     } else if (existing && !fingerprint) {
       // 无指纹的旧调用：只覆写 reason/last_attempt，保留退避列
       retryCount = existing.retry_count
@@ -817,17 +835,20 @@ export class LibraryRepo {
       .prepare(
         `INSERT INTO parked_paths (
            path, park_reason, first_seen, last_attempt,
-           retry_count, next_retry_at, probe_mtime, probe_size
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           retry_count, next_retry_at, probe_mtime, probe_size,
+           duration_sec, embedded_langs
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            park_reason = excluded.park_reason,
            last_attempt = excluded.last_attempt,
            retry_count = excluded.retry_count,
            next_retry_at = excluded.next_retry_at,
            probe_mtime = excluded.probe_mtime,
-           probe_size = excluded.probe_size`
+           probe_size = excluded.probe_size,
+           duration_sec = excluded.duration_sec,
+           embedded_langs = excluded.embedded_langs`
       )
-      .run(path, reason, now, now, retryCount, nextRetryAt, probeMtime, probeSize)
+      .run(path, reason, now, now, retryCount, nextRetryAt, probeMtime, probeSize, durationSec, embeddedLangs)
   }
 
   /**
@@ -867,7 +888,8 @@ export class LibraryRepo {
     return this.db
       .prepare(
         `SELECT path, park_reason, first_seen, last_attempt,
-                retry_count, next_retry_at, probe_mtime, probe_size
+                retry_count, next_retry_at, probe_mtime, probe_size,
+                duration_sec, embedded_langs
          FROM parked_paths ORDER BY first_seen DESC`
       )
       .all() as ParkedPath[]
