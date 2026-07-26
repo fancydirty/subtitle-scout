@@ -125,6 +125,18 @@ export const FindSubtitleBatchReportSchema = z.object({
    *  不需要外挂"。'off'/'aggressive' 模式下 skill 文字不提这个概念，模型不会主动填它，但
    *  schema 层不按模式收紧（tolerantArray 缺省即 []，零填也不炸）——校验只管形状。 */
   hardsub_assumed: tolerantArray(FindSubtitleUnresolvedItemSchema),
+  /** 路 A（2026-07-26 识别架构，Step 0 识别验证）：agent 核验发现库身份（机械文件名解析
+   *  的猜测）错了、并重新识别出正确条目时，在这里报告正确身份（tmdbId/isTv + 证据化判词）。
+   *  整个 task 共享一个身份，故是单值不是桶；缺席/null/"None" = 身份核验通过（或本 run 没
+   *  做验证——tmdb 工具缺席时 skill 不教 Step 0，模型不会填它）。identity_correction 出现
+   *  时 targets 应全部躺在 no_safe_match（身份没纠正前装的字幕会记到错的库行上，skill 明
+   *  确禁止）；runner（findSubtitleWorkerTask.ts）收到后记录待迁行——Phase 1 先只记录
+   *  （runs/log），迁行重派是后续切片。 */
+  identity_correction: nullableTolerant(z.object({
+    tmdbId: z.string().min(1),
+    isTv: z.boolean(),
+    reason: z.string().min(1),
+  })),
 })
 export type FindSubtitleBatchReport = z.infer<typeof FindSubtitleBatchReportSchema>
 export type FindSubtitleInstalledItem = z.infer<typeof FindSubtitleInstalledItemSchema>

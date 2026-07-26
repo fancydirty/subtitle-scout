@@ -305,6 +305,9 @@ async function cmdWatch() {
       model: reasoningModel,
       adapters: await buildAdapters(emitProviderEvent),
       cacheRoot,
+      // 路 A（2026-07-26 识别架构）：Step 0 识别验证的证据源——cmdWatch 顶部已把
+      // TMDB_API_KEY 做成 requireEnv 硬前置，tmdb 在此函数体内恒非空，工具恒挂载。
+      tmdb,
     }),
     // A4: the PRIMARY configured target language — FindSubtitleTask.targetLanguage is
     // single-valued; multi-language per-item tasking is future work.
@@ -412,6 +415,8 @@ async function cmdWatch() {
           model: reasoningModel,
           adapters: await buildAdapters(emitProviderEvent),
           cacheRoot,
+          // 路 A：Step 0 识别验证的证据源（同 realignRunEpisode 处的注释——tmdb 恒非空）。
+          tmdb,
         })
         // dashboard G4：mediaRoots 在每次派发时用新鲜的 currentRoots() 覆写——POST 加根后不需要
         // 重启 watch 进程，下一个被 claim 的 find_subtitle 行就能写进新根（否则 outer 沙盒检查

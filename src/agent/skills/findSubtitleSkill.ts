@@ -16,7 +16,7 @@
 import type { Skill } from './types.js'
 import { languageName } from '../languages.js'
 
-export function makeFindSubtitleSkill(targetLanguage: string, hardsubMode: 'off' | 'agent' | 'aggressive' = 'off'): Skill {
+export function makeFindSubtitleSkill(targetLanguage: string, hardsubMode: 'off' | 'agent' | 'aggressive' = 'off', identityVerification = false): Skill {
   const name = languageName(targetLanguage)
   const isChinese = targetLanguage === 'zh'
 
@@ -72,6 +72,69 @@ candidate is still genuinely \`no_safe_match\` (you do not know why nothing was 
 \`hardsub_assumed\` (you have no positive evidence subtitles are burned in).`
     : ''
 
+  // 路 A（2026-07-26 识别架构）：Step 0 识别验证——仅在 tmdb 证据工具可用时
+  //  （identityVerification=true，即 deps.tmdb 非 null）才教。工具不在时教了也白教，反而
+  //  引诱模型空谈"我会验证"却没有验证手段（零误触发纪律：模型压根不知道这个步骤存在，
+  //  同 hardsubSection 的既有先例）。
+  //
+  //  证据先行（用户钦定核心原则）：模型的训练知识里有无数部剧（星球大战/招魂/莉可丽丝），
+  //  但"我记得"永远不是证据——判定必须来自本 run 内实际调用 search_tmdb/get_tmdb_details
+  //  拿到的返回。two-evidence bar：名字匹配不够，要第二个独立证据（季表/年份/时长）吻合
+  //  才认领——机械解析在版权规避乱写（招z魂z4）、乱码（H）后丨室）、fansub 括号标签、
+  //  中文标题截断上经常给错身份，名字像不等于就是。
+  const identitySection = identityVerification
+    ? `
+## Step 0: Verify the media identity BEFORE you search
+
+The identity in your task (guessed title / guessed year / provider ids) comes from a
+MECHANICAL filename parse — a guess, not ground truth. Mechanical parsing misidentifies
+releases regularly: copyright-evasion misspellings (\`招z魂z4\` for 招魂4), mojibake
+(\`H）后丨室\`), fansub bracket tags (\`[诸神字幕组][莉可丽丝]\`), truncated Chinese titles
+(\`铁.\` for 铁拳教育). A wrong identity means every subtitle you install gets filed under
+the wrong show — the worst outcome this system can produce.
+
+Before any \`search_source\` call, verify the identity with your TMDB evidence tools:
+
+1. Call \`get_tmdb_details\` with the tmdb id from the task's provider ids (strip any
+   \`tmdb:\` prefix — the tool wants bare digits). Check it against the RAW EVIDENCE in
+   your target list: the actual video filenames, the directory names inside the file
+   paths, and the per-target runtimes.
+2. The bar is TWO independent evidence lines, never just a matching name:
+   - Line 1 (name): does the TMDB title/original title plausibly match what the file and
+     directory names suggest? Account for misspellings, romanization, translation —
+     \`Lycoris Recoil\` and \`莉可丽丝\` are the same show; \`招z魂z4\` and \`The Conjuring 4\`
+     may be too.
+   - Line 2 (structure): for TV, the season table must actually contain your targets'
+     seasons/episodes AND the first-air year must fit; for movies, the TMDB runtime must
+     roughly match your target's runtime and the year must fit.
+3. Both lines check out → the identity is CONFIRMED. Proceed to the search workflow
+   below and never mention the verification in your reasons.
+4. Either line FAILS → the mechanical guess is wrong. Re-identify from the raw evidence:
+   clean the titles yourself (strip bracket tags, release-group names, resolution tags;
+   repair obvious misspellings), then call \`search_tmdb\` with the cleaned candidates
+   (try alternate titles/romanizations — re-searching is expected). Verify any promising
+   hit with \`get_tmdb_details\` under the same two-evidence bar.
+5. If you find the real entry → report it via the finalize report's
+   \`identity_correction\` field (the correct tmdbId + isTv + your evidence-based reason),
+   and put EVERY target into \`no_safe_match\` with a short reason naming the identity
+   problem. Do NOT install subtitles in this run: the library row still carries the wrong
+   identity, and anything you install now would be filed under the wrong show. The system
+   will correct the row and re-dispatch.
+6. If you cannot find a confident identity at all → no \`identity_correction\`, just put
+   every target into \`no_safe_match\` with your reason. Guessing an identity is strictly
+   worse than admitting you could not verify one.
+
+NEVER identify from your own memory. You may "know" a show well — that knowledge may guide
+which queries you try, but a verdict requires tool-returned evidence: a search hit plus a
+details check that passes the two-evidence bar. If you did not call the tools, you did not
+verify anything.
+
+This verification costs at most a few calls — get_tmdb_details once, and search_tmdb only
+when the guess fails. Do not skip it even when the guess looks obviously right: a guess
+that "looks right" is exactly how mechanical misparses slip through.
+`
+    : ''
+
   const content = `
 # Find-Subtitle Judgment Playbook
 
@@ -88,7 +151,7 @@ its cue count and time span is fine (that is structural inspection, not judging 
 content); reasoning about what the characters say is not your job and is not necessary.
 You MUST NOT compute or report a numeric confidence score anywhere — report a verdict and a
 plain-language reason, never a number claiming certainty.
-
+${identitySection}
 ## Your task is a BATCH: harvest every target you safely can
 
 Your task carries a list of TARGET items — the current subtitle gaps of one series (possibly
@@ -185,7 +248,10 @@ is not a blocker.
 
 ## Workflow
 
-1. Read the task's media identity (title, alternative/native titles, year) and the TARGETS
+${identityVerification ? `0. FIRST, verify the media identity per the Step 0 section above — the task's
+   identity fields are a mechanical guess, and everything below assumes you have either
+   confirmed that guess or reported an identity_correction instead.
+` : ''}1. Read the task's media identity (${identityVerification ? 'CONFIRMED by your Step 0 verification — until then it is only a guess' : 'title, alternative/native titles, year'}) and the TARGETS
    fact list from your instructions — they are fixed for this task, you do not re-derive them.
 2. Call \`search_source\` with one or more queries built from the title/native title. It
    returns a result_set_id, a count, and a short top-N preview — NOT the full result set.
@@ -271,7 +337,7 @@ location. \`install_subtitle\` will refuse anything outside this task's director
     descriptor: {
       name: 'find-subtitle-judgment',
       description:
-        `How to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
+        `${identityVerification ? 'How to verify the task\'s mechanically-guessed media identity BEFORE searching (Step 0: get_tmdb_details against the raw filename/dirname/runtime evidence under a two-evidence bar — name plus season-table/year/runtime — never from memory; on failure re-identify with search_tmdb and report identity_correction instead of installing), then ' : ''}how to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
     },
     content,
   }

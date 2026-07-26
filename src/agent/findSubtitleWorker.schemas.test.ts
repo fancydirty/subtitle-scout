@@ -73,4 +73,59 @@ describe('FindSubtitleBatchReportSchema', () => {
       }),
     ).toThrow()
   })
+
+  // 路 A（2026-07-26 识别架构）：identity_correction 字段——agent Step 0 核验发现库身份
+  // 错了时的纠错报告通道。单值不是桶（整个 task 共享一个身份），nullableTolerant 折叠
+  // 缺席/None/null 为 null（输出统一 null 不是 undefined，下游不用区分两种"没有"）。
+  describe('identity_correction（路 A 识别纠错报告）', () => {
+    it('接受合法纠错报告（tmdbId/isTv/reason）', () => {
+      const r = FindSubtitleBatchReportSchema.parse({
+        installed: [],
+        no_safe_match: [{ itemId: 'tmdb:1/s1e1', reason: 'identity mismatch' }],
+        retry_later: [],
+        identity_correction: { tmdbId: '999', isTv: true, reason: 'season table fits' },
+      })
+      expect(r.identity_correction).toEqual({ tmdbId: '999', isTv: true, reason: 'season table fits' })
+    })
+
+    it('键缺席折叠为 null（核验通过的绝大多数 run）', () => {
+      const r = FindSubtitleBatchReportSchema.parse({
+        installed: [],
+        no_safe_match: [],
+        retry_later: [],
+      })
+      expect(r.identity_correction).toBeNull()
+    })
+
+    it('真模型哨兵容错："None"/"" 折叠为 null', () => {
+      for (const sentinel of ['None', 'null', '']) {
+        const r = FindSubtitleBatchReportSchema.parse({
+          installed: [],
+          no_safe_match: [],
+          retry_later: [],
+          identity_correction: sentinel,
+        } as unknown)
+        expect(r.identity_correction).toBeNull()
+      }
+    })
+
+    it('缺字段（reason 空/tmdbId 空）硬拒——纠错报告不许空判词', () => {
+      expect(() =>
+        FindSubtitleBatchReportSchema.parse({
+          installed: [],
+          no_safe_match: [],
+          retry_later: [],
+          identity_correction: { tmdbId: '999', isTv: true, reason: '' },
+        }),
+      ).toThrow()
+      expect(() =>
+        FindSubtitleBatchReportSchema.parse({
+          installed: [],
+          no_safe_match: [],
+          retry_later: [],
+          identity_correction: { tmdbId: '', isTv: false, reason: 'r' },
+        }),
+      ).toThrow()
+    })
+  })
 })

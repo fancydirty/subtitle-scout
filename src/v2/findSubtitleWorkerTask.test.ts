@@ -1272,6 +1272,44 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       expect(rows[0].detail).toContain(SHOW_EPISODE_ID)
     })
 
+    // 路 A（2026-07-26 识别架构）：identity_correction——agent Step 0 核验发现库身份错了
+    // 并重新识别出正确条目。Phase 1 只记录不迁行：runs 单独一行（dashboard 时间线可见），
+    // targets 按 skill 约定全在 no_safe_match（那行 runs 照旧记），队列语义不被纠错报告扭曲。
+    it('identity_correction: writes a dedicated runs row alongside the no_safe_match row, does not distort queue semantics', async () => {
+      const { lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => report({
+        no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch: season table does not contain S03')],
+        identity_correction: { tmdbId: '271828', isTv: true, reason: 'raw dir name 后室 matches Backrooms (2022), season table fits' },
+      }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      const decisions = rows.map((r) => r.decision)
+      expect(decisions).toContain('no_safe_match')
+      expect(decisions).toContain('identity_correction')
+      const correctionRow = rows.find((r) => r.decision === 'identity_correction')!
+      expect(correctionRow.detail).toContain('tmdb:271828')
+      expect(correctionRow.detail).toContain('Backrooms')
+      // 队列语义：no_safe_match 非空 → completeDone（纠错报告不该让 job 走 error 轨）
+      const jobRow = db.prepare(`SELECT state FROM jobs WHERE id = ?`).get(job.id) as { state: string }
+      expect(jobRow.state).toBe('done')
+    })
+
+    it('identity_correction 缺席（核验通过的常规 run）：不多记任何行', async () => {
+      const { lib, jobsRepo, job, db } = setup()
+      const runs = new RunsRepo(db)
+      const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      const rows = runs.getByJobId(job.id)
+      expect(rows.map((r) => r.decision)).toEqual(['installed'])
+    })
+
     it('worker-throw: writes one runs row with decision "error" and the thrown message as detail', async () => {
       const { lib, jobsRepo, job, db } = setup()
       const runs = new RunsRepo(db)

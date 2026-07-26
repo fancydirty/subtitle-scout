@@ -513,6 +513,18 @@ export async function runFindSubtitleWorkerTask(
     // completeError 节流轨（R-10 豁免：30s→15min→日，永不 dormant）。completeNoMatch 已死。
     // 救援R5：hardsub_assumed 非空视为"这批已完成"的一种（同 installed/noMatch），走
     // completeDone——它不是失败判决，不该被"报告为空"或"待重试"两个分支误吞。
+    // 路 A（2026-07-26 识别架构）：identity_correction——agent Step 0 核验发现库身份错了
+    // 并重新识别出正确条目。Phase 1 只记录不迁行（runs/log 留痕，迁行重派是后续切片）：
+    // 这个 job 的 targets 已按 skill 约定全部躺在 no_safe_match（身份没纠正前不装字幕），
+    // 队列侧按 noMatch 的既有语义入账（item 自己的 search_attempts 阶梯决定何时再看）——
+    // 待迁行机制落地后，迁行会重置这些 item 的退避，让它们立刻重派。
+    if (report.identity_correction) {
+      console.error(
+        `[find-subtitle-harvest] job ${job.id}: identity_correction reported — ` +
+          `correct identity tmdb:${report.identity_correction.tmdbId} ` +
+          `(isTv=${report.identity_correction.isTv}): ${capDetail(report.identity_correction.reason)}`,
+      )
+    }
     if (installed.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
       jobs.completeError(job.id, 'worker returned an empty batch report', now())
       recordRun('error', 'empty batch report')
@@ -536,6 +548,15 @@ export async function runFindSubtitleWorkerTask(
     }
     if (hardsubAssumed.length) {
       recordRun('hardsub_assumed', `${hardsubAssumed.length} 集判定硬字幕假定: ${hardsubAssumed.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
+    }
+    // 路 A：identity_correction 单独一行 runs（dashboard 时间线可见——这是识别架构最重要
+    // 的可观测面：agent 发现机械识别判错了多少次、纠成了什么）。
+    if (report.identity_correction) {
+      recordRun(
+        'identity_correction',
+        `库身份核验失败，agent 重新识别为 tmdb:${report.identity_correction.tmdbId} ` +
+          `(isTv=${report.identity_correction.isTv}): ${report.identity_correction.reason}`,
+      )
     }
     return report
   } catch (error) {

@@ -170,6 +170,52 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
     })
   })
 
+  // 路 A（2026-07-26 识别架构）：identityVerification=true（tmdb 证据工具可用）才教 Step 0
+  // 识别验证；false（默认/TMDB 未配置）时整段文字连"identity verification"概念都不出现——
+  // 零误触发纪律同 hardsubSection：工具不在时教了也白教，反而引诱模型空谈"我会验证"。
+  describe('Step 0 identity verification（路 A 识别架构）', () => {
+    it('默认（identityVerification 缺省=false）：内容与描述完全不提 Step 0 / identity_correction', () => {
+      const def = makeFindSubtitleSkill('zh')
+      expect(def.content).not.toMatch(/Step 0|identity_correction|get_tmdb_details|search_tmdb/)
+      expect(def.descriptor.description).not.toMatch(/Step 0|identity_correction/)
+    })
+
+    it('显式 false 同缺省：零识别验证字样', () => {
+      const off = makeFindSubtitleSkill('zh', 'off', false)
+      expect(off.content).not.toMatch(/Step 0|identity_correction|get_tmdb_details/)
+    })
+
+    it('identityVerification=true：Step 0 section 教完整验证流程', () => {
+      const on = makeFindSubtitleSkill('zh', 'off', true)
+      // 机械猜测定性 + 验证先于搜索
+      expect(on.content).toMatch(/Step 0: Verify the media identity BEFORE you search/)
+      expect(on.content).toMatch(/MECHANICAL filename parse|mechanical guess/i)
+      // two-evidence bar：名字 + 第二独立证据（季表/年份/时长）
+      expect(on.content).toMatch(/TWO independent evidence lines/i)
+      expect(on.content).toMatch(/season table/i)
+      // 反脑补红线：模型知识不算证据，必须调工具
+      expect(on.content).toMatch(/NEVER identify from your own memory/i)
+      expect(on.content).toMatch(/did not call the tools, you did not\s+verify/i)
+      // 验证失败 → 重新识别 → identity_correction + 不装字幕（身份错时装的字幕记到错库行）
+      expect(on.content).toMatch(/identity_correction/)
+      expect(on.content).toMatch(/Do NOT install subtitles in this run/i)
+      // 识别不出 → no_safe_match，不许乱猜
+      expect(on.content).toMatch(/Guessing an identity is strictly\s+worse/i)
+      // Workflow 第 0 步锚定
+      expect(on.content).toMatch(/FIRST, verify the media identity/)
+      // descriptor 让模型从索引就知道有 Step 0
+      expect(on.descriptor.description).toMatch(/Step 0/)
+      expect(on.descriptor.description).toMatch(/identity_correction/)
+    })
+
+    it('identityVerification=true 时真实误判案例作为教材留在文中', () => {
+      const on = makeFindSubtitleSkill('zh', 'off', true)
+      // 版权规避乱写/乱码/fansub 标签/中文截断——真实库里的四类误判来源
+      expect(on.content).toMatch(/招z魂z4/)
+      expect(on.content).toMatch(/fansub bracket tags/i)
+    })
+  })
+
   // 2026-07-18 生产事故回归锁(装机内容审计雷C-1):Peacemaker S1 整季 8 集被装成芬兰同名剧
   // Rauhantekijä(2020)的字幕——候选自述身份(标题里的"芬兰剧集"、年份 2020 vs 任务 2022)
   // 就摆在元数据里,agent 没核就按 fileList 结构配集。本锁钉死 skill 必须教"先验证候选是

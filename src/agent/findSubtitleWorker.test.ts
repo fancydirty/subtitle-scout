@@ -258,6 +258,119 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     expect(capturedPromptText).not.toContain('runtime minutes: 58')
   })
 
+  // 路 A（2026-07-26 识别架构）：deps.tmdb 决定识别证据工具是否挂载 + prompt 是否教
+  // Step 0 验证——同开同关，不许出现"教了验证但没工具"或"有工具但没教"的分裂态。
+  describe('identity evidence tools（路 A：tmdb 工具挂载与 prompt 标注）', () => {
+    const fakeTmdb = () => ({
+      search: vi.fn(async () => []),
+      getDetails: vi.fn(async () => null),
+      getSeasonTable: vi.fn(async () => null),
+    })
+
+    /** Captures the tools object the reasoning agent was assembled with, plus the prompt. */
+    function captureModel(onCaptured: (options: LanguageModelV4CallOptions) => void) {
+      return new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          onCaptured(options)
+          return finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'x' }], retry_later: [] })
+        },
+      })
+    }
+
+    it('deps.tmdb 提供时：search_tmdb/get_tmdb_details 挂上且可调用，prompt 标注机械猜测', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+      const tmdb = fakeTmdb()
+
+      let capturedPromptText = ''
+      let capturedTools: string[] = []
+      const model = captureModel((options) => {
+        const userMessage = options.prompt.find(m => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        capturedTools = (options.tools ?? []).map((t: any) => t.name)
+      })
+
+      const runTask = makeFindSubtitleWorker({
+        model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10, tmdb,
+      })
+      const task = baseTask(mediaRoot, [
+        { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+      ], { jobId: 'job-tmdb-1' })
+
+      await runTask(task)
+
+      expect(capturedTools).toContain('search_tmdb')
+      expect(capturedTools).toContain('get_tmdb_details')
+      // prompt 把机械身份标注为猜测 + 指向 Step 0 验证
+      expect(capturedPromptText).toContain('MECHANICAL GUESS')
+      expect(capturedPromptText).toContain('verify it first per the skill document (Step 0)')
+      expect(capturedPromptText).toContain('guessed title: Show')
+    })
+
+    it('deps.tmdb 缺席（TMDB 未配置）：识别工具不挂，prompt 明示无验证手段', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+
+      let capturedPromptText = ''
+      let capturedTools: string[] = []
+      const model = captureModel((options) => {
+        const userMessage = options.prompt.find(m => m.role === 'user')
+        const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+        capturedPromptText = textPart?.text ?? ''
+        capturedTools = (options.tools ?? []).map((t: any) => t.name)
+      })
+
+      const runTask = makeFindSubtitleWorker({
+        model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
+      })
+      const task = baseTask(mediaRoot, [
+        { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+      ], { jobId: 'job-tmdb-2' })
+
+      await runTask(task)
+
+      expect(capturedTools).not.toContain('search_tmdb')
+      expect(capturedTools).not.toContain('get_tmdb_details')
+      expect(capturedPromptText).toContain('MECHANICAL GUESS')
+      expect(capturedPromptText).toContain('no verification tools are available')
+      expect(capturedPromptText).not.toContain('Step 0')
+    })
+
+    it('tmdb 工具真实可执行：search_tmdb 透传 search 调用', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+      const tmdb = {
+        search: vi.fn(async () => [{ id: 42, title: 'Real Show', originalTitle: null, year: 2020, posterPath: null }]),
+        getDetails: vi.fn(async () => null),
+        getSeasonTable: vi.fn(async () => null),
+      }
+
+      let call = 0
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          call++
+          if (call === 1) {
+            // agent 第一步就调 search_tmdb 做识别（Step 0 行为）
+            return toolCallResult('t1', 'search_tmdb', { query: 'Show', mediaType: 'tv' })
+          }
+          return finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'identity could not be verified' }], retry_later: [] })
+        },
+      })
+
+      const runTask = makeFindSubtitleWorker({
+        model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10, tmdb,
+      })
+      const task = baseTask(mediaRoot, [
+        { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+      ], { jobId: 'job-tmdb-3' })
+
+      await runTask(task)
+
+      expect(tmdb.search).toHaveBeenCalledWith('tv', 'Show', undefined)
+    })
+  })
+
   it('finalize returns a batch report keyed by installed/no_safe_match/retry_later buckets', async () => {
     const mediaRoot = join(root, 'media')
     mkdirSync(join(mediaRoot, 'Show'), { recursive: true })

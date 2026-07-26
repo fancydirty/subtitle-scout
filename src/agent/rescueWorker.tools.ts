@@ -1,6 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
+import { makeTmdbEvidenceTools } from './tmdbTools.js'
 
 export interface RescueWorkerToolsDeps {
   tmdb: Pick<TmdbClient, 'search' | 'getDetails' | 'getSeasonTable'>
@@ -12,45 +13,9 @@ const RECORDED_NOTE =
 
 export function makeRescueWorkerTools(deps: RescueWorkerToolsDeps) {
   return {
-    search_tmdb: tool({
-      description:
-        'Search TMDB for a tv or movie title. Returns a list of hits with id, title, ' +
-        'originalTitle and year. Use this to gather name evidence.',
-      inputSchema: z.object({
-        query: z.string().min(1),
-        mediaType: z.enum(['tv', 'movie']),
-        year: z.number().int().positive().optional(),
-      }),
-      execute: async ({ query, mediaType, year }) => {
-        const hits = await deps.tmdb.search(mediaType, query, year)
-        return {
-          hits: hits.map((h) => ({
-            id: String(h.id),
-            title: h.title,
-            originalTitle: h.originalTitle,
-            year: h.year,
-          })),
-        }
-      },
-    }),
-
-    get_tmdb_details: tool({
-      description:
-        'Fetch full TMDB details for a numeric tmdbId. For TV entries, also returns the ' +
-        'season table (episode count per season). Use this to verify structure and year evidence.',
-      inputSchema: z.object({
-        tmdbId: z.string().regex(/^\d+$/),
-        isTv: z.boolean(),
-      }),
-      execute: async ({ tmdbId, isTv }) => {
-        const mediaType = isTv ? 'tv' : 'movie'
-        const [details, seasons] = await Promise.all([
-          deps.tmdb.getDetails(mediaType, tmdbId),
-          isTv ? deps.tmdb.getSeasonTable(tmdbId) : Promise.resolve(null),
-        ])
-        return { details, seasons }
-      },
-    }),
+    // 共享身份证据工具（tmdbTools.ts）——search_tmdb/get_tmdb_details 与 findSubtitleWorker
+    // 的 Step 0 识别验证共用同一实现，行为漂移零容忍。
+    ...makeTmdbEvidenceTools(deps),
 
     claim_directory: tool({
       description:

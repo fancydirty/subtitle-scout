@@ -11,17 +11,25 @@ import {
 import {
   makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool,
 } from './findSubtitleWorker.tools.js'
+import { makeTmdbEvidenceTools } from './tmdbTools.js'
 import {
   FindSubtitleBatchReportSchema, type FindSubtitleTask, type FindSubtitleBatchReport,
 } from './findSubtitleWorker.schemas.js'
 import { allocate, cleanup } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
 import type { FetchAdapter } from '../adapters/fetchLib.js'
+import type { TmdbClient } from '../adapters/providers/tmdb.js'
 
 export interface FindSubtitleWorkerDeps {
   model: LanguageModel
   adapters: FetchAdapter[]
   cacheRoot: string
+  /** 识别架构路 A（2026-07-26）：TMDB 身份证据工具的数据源。提供时 worker 多两个工具
+   *  （search_tmdb/get_tmdb_details），skill 多一节 Step 0 识别验证——机械识别给的库身份
+   *  （title/providerIds）只是候选猜测，agent 先调 TMDB 佐证（two-evidence bar），猜错了
+   *  自己重新识别并在 finalize 报 identity_correction。null/缺席（TMDB 未配置）时工具与
+   *  skill 章节整体降级——agent 照旧按机械身份找字幕（旧行为），不新增任何识别动作。 */
+  tmdb?: Pick<TmdbClient, 'search' | 'getDetails' | 'getSeasonTable'> | null
   /** Test phase per spec: no production step cap yet — observe actual step counts first.
    *  @default 500 */
   stepCap?: number
@@ -71,10 +79,15 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const installedFingerprints = new Map<string, string>()
     // A5: the judgment playbook is parameterized by the task's target language (Chinese keeps
     // the canonical Hans/Hant-equivalence wording; other languages get language-neutral text).
-    const skill = makeFindSubtitleSkill(task.targetLanguage, task.hardsubMode)
+    // 路 A（2026-07-26）：第三个参数 identityVerification——tmdb 工具可用时 skill 才教
+    // Step 0 识别验证（工具不在时教了也白教，反而引诱模型空谈"我会验证"）。
+    const skill = makeFindSubtitleSkill(task.targetLanguage, task.hardsubMode, deps.tmdb != null)
 
     const tools = {
       read_doc: makeReadDocTool([skill]),
+      // 路 A：身份证据工具——tmdb 配置时才挂上（deps.tmdb 为 null 时整个 spread 为空对象，
+      // 模型连工具名都看不到，与 skill 的 identityVerification 分支严格同开同关）。
+      ...(deps.tmdb ? makeTmdbEvidenceTools({ tmdb: deps.tmdb }) : {}),
       search_source: makeSearchSourceTool({
         adapters: deps.adapters, store, targetLanguage: task.targetLanguage,
         localCandidates: task.localCandidates,
@@ -145,9 +158,17 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       'Report per-item outcomes via finalize exactly once (see the skill document).',
       '',
       `target subtitle language: ${languageName(task.targetLanguage)}`,
-      `title: ${task.title}`,
-      `original title: ${task.originalTitle ?? 'unknown'}`,
-      `year: ${task.year ?? 'unknown'}`,
+      // 路 A（2026-07-26 识别架构）：以下身份字段全部来自机械文件名解析——是候选猜测，
+      // 不是事实。机械解析在版权规避乱写（招z魂z4）、乱码（H）后丨室）、fansub 括号标签、
+      // 中文标题截断上经常误判。tmdb 工具在时 skill 会教 Step 0 识别验证；工具不在
+      // （TMDB 未配置）时保持旧语义（按机械身份直接找字幕），但这行标注依然诚实。
+      'media identity below is a MECHANICAL GUESS from filename parsing, not verified fact —',
+      deps.tmdb
+        ? 'verify it first per the skill document (Step 0) before searching.'
+        : 'no verification tools are available in this run; proceed on this identity.',
+      `guessed title: ${task.title}`,
+      `guessed original title: ${task.originalTitle ?? 'unknown'}`,
+      `guessed year: ${task.year ?? 'unknown'}`,
       `alternative/native titles: ${task.alternativeTitles.length ? task.alternativeTitles.join(', ') : 'none'}`,
       `overview: ${task.overview ?? 'none'}`,
       // 2026-07-18 事故修复（True Detective S02E08）：措辞明示这是剧级典型值/fallback，不是

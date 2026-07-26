@@ -1,127 +1,83 @@
 # Subtitle Scout 待办事项
 
-**更新日期**: 2026-07-25 (Ralph Loop 完成后)  
-**快照日期**: 2026-07-25 03:30 AM（此后有 7 个新 commits，见 git log）
+**更新日期**: 2026-07-26 (识别架构大改 spec 完成，等 compact 后实施)
 
 ---
 
-## ✅ 已完成（本次 Ralph Loop）
+## 🔥 当前进行中：识别架构大改
 
-### Wave 3 审计验收
-- [x] TranslateSection UI 测试（6/6 passed）
-- [x] Workflow 页翻译观测性测试（109/109 passed）
-- [x] CLI 库内/库外行为测试（库外正确拒绝）
-- [x] 全量测试（1930/1931 passed）
+**Spec 已完成**: `docs/design/2026-07-26-subtitle-agent-identity-spec.md`
 
-### 架构债务清理
-- [x] **C6**: 消除中文 tag 表重复（`c6b7500`）
-- [x] **C5**: 验证 sidecar 写路径已统一（文档 `ea8cc5a`）
-- [x] **C1-C3**: fetchLib/traceBus/triageOps 倒挂（Wave 2）
-- [x] **C7**: 翻译双轨漂移（Wave 3-D，legacy 退役）
-- [x] **C8**: gatherSeriesContext 重复（Wave 3-D）
-- [x] **C9**: mappings 僵尸参数（刻意留痕，不处理）
+**核心架构（已对齐）**:
+- 机械解析只给 raw 数据（文件路径/目录名/资源名/时长/结构提示/imdb hint），不做最终判定
+- subtitle agent 被唤起时**自己识别**（脑中清洗 raw 数据 → 调 TMDB search/details 佐证 → two-evidence bar → 识别对了立刻回填库）
+- 然后基于识别的身份找字幕（原有工作流）
+- **rescue agent 干掉**（它是"无状态 API 调用器"，不是真 agent，逻辑并进找字幕 agent）
+- **数据库是状态机**：识别/install 每步立刻落库，断了读库接续
 
-### 代码质量检查
-- [x] CSS 结构检查（1574 行，结构清晰，设计文档完备）
-- [x] apiV2 评估（1245 行，纯数据层，无明显问题）
-- [x] 未使用代码检查（TypeScript clean，无未使用导入）
-- [x] 错误处理检查（合理使用 console.error，空 catch 块有意为之）
+**两个核心原则（用户钦定）**:
+1. **证据先行**：绝不脑补（模型知识库有星球大战/招魂/莉可丽丝也不能用"我记得"判定，必须调 TMDB 拿证据，two-evidence bar）
+2. **auto research 打磨识别 skill**：识别 skill 是活的文档，用真实命名压力测试集喂 agent 迭代措辞
 
-### 文档更新
-- [x] Wave 3 完成报告（`2026-07-25-wave3-audit-completion.md`）
-- [x] C5 sidecar 验证文档（`2026-07-25-C5-sidecar-write-paths-verification.md`）
-- [x] 工作会话总结（`2026-07-25-session-work-summary.md`）
-- [x] 添加 .opencode/ 到 gitignore
+**实施计划（3 个 Phase）**:
+- Phase 1: findSubtitleWorker 加识别能力（识别工具 + raw 数据 task + skill 识别步骤）
+- Phase 2: 删 rescue agent + 机械识别降级（不写库当真相）
+- Phase 3: auto research 打磨识别 skill（真实命名压力测试集）
 
 ---
 
-## 📊 代码库状态
+## ✅ 已完成（最近几轮）
 
-**Git HEAD**: `859f6e4`  
-**总 commits**: 10 个（Wave 0-3 + C6 + 文档）  
-**测试状态**: 1930 passed / 1 skipped (1931 total)  
-**TypeScript**: 无错误  
-**构建**: 成功  
+### 网盘挂载测试（Openlist + 阿里云盘）
+- ✅ Openlist FTP 挂载成功（扫描 27 mkv 5.48s，davfs 卡死做不到）
+- ✅ subtitle-scout 完整跑通：扫描识别（招魂/2001）→ 找中文字幕 → 装到阿里云盘（.zh-Hans.srt 原子写）
+- ✅ PGS 图形字幕正确识别为"不可用"，找文本字幕装上
+- ⚠️ Openlist 登录限流：密码错误累积 429，重启容器清（不是 scout 问题）
 
-**净变化**（自 Wave 0 起）:
-- Wave 0-3: -1346 行（删除 legacy 管道）
-- C6: +6/-6 行（消除重复定义）
-- 文档: +369 行（3 个设计文档）
+### 识别层重写（Emby.Naming 架构）
+- ✅ 按 Emby.Naming 架构重写 parseFilename/identifyFromPath（一组带优先级/防截断/防错闸的正则库）
+- ✅ 真实命名压力测试全过（招z魂z4/H）后丨室/fansub/BT站/季包/中文季目录）
+- ✅ 全量 1994/1994 全绿（commit cea02b1）
 
----
-
-## 🎯 下一步建议
-
-### 立即可做
-1. **部署到生产环境**
-   - 检查 TRANSLATE_* 三件套配置
-   - 重建容器让 deploy gate 就位
-   - Settings 页打开 AI 翻译开关
-   - 观察 Workflow 页翻译 trace
-
-2. **生产监控**（可选）
-   - LLM 调用数趋势
-   - Held 队列积压
-   - 翻译成功率
-
-### Wave 4（如需要时）
-- apiV2 拆分方案设计
-- 术语表 UI 原型
-- ⌘K 搜索需求澄清
-- CSS 模块化（当前已足够好）
+### 架构债务清理（R1-R8 审计）
+- ✅ 多轮子代理审计，修复 80+ 问题（安全/SQL注入/内存泄漏/部署坑点/文档一致性）
+- ✅ 所有修复经 mutation 验证（回退实现→测试变红）
 
 ---
 
-## 📝 架构债务完整清单
+## 📋 下一步（compact 后）
 
-| 编号 | 描述 | 状态 | 备注 |
-|------|------|------|------|
-| C1 | fetchLib 住 cli 层 | ✅ 已解决 | Wave 2 移至 adapters |
-| C2 | traceBus 住 dashboard | ✅ 已解决 | Wave 2 移至 core |
-| C3 | claimParked 住 apiV2 | ✅ 已解决 | Wave 2 移至 triageOps |
-| C4 | apiV2 平行 SQL 层 | ⏸️ 待设计 | 需架构级重构 |
-| C5 | sidecar 三写路径 | ✅ 已统一 | 只有一个 writeSidecarAtomic |
-| C6 | 中文 tag 表×5 | ✅ 已解决 | 导出 CHINESE_SIDECAR_TAGS |
-| C7 | 翻译双轨漂移 | ✅ 已解决 | Wave 3-D legacy 退役 |
-| C8 | gatherSeriesContext 重复 | ✅ 已解决 | Wave 3-D 随 legacy 删除 |
-| C9 | mappings 僵尸参数 | ✅ 留痕 | 刻意保留，不处理 |
+**Phase 1: findSubtitleWorker 加识别能力**
+- [ ] 抽共享 TMDB 工具（search_tmdb / get_tmdb_details）给 findSubtitleWorker 和 rescue 共用
+- [ ] FindSubtitleWorkerDeps 加 tmdb 依赖
+- [ ] findSubtitleWorkerTask.ts 的 task 改 raw 数据（文件路径/目录名/资源名/时长/结构提示/imdb hint）
+- [ ] findSubtitleSkill 加识别步骤（清洗→佐证→two-evidence bar→立刻回填库→找字幕）
 
----
+**Phase 2: 删 rescue agent + 机械降级 + 清 parked 行**
+- [ ] 删 rescueWorker/rescueWorkerTask/rescueSkill/rescueWorker.tools + 测试 + daemon 调度
+- [ ] resolveToTmdb 不再写库当真相（series.name/tmdb_id 只在 agent 识别回填后写）
+- [ ] **清空 parked_paths 表**（旧架构"机械识别搞不定才停车"的产物，新架构下每个文件都该由 agent 自己识别，不该继承"识别不出"的标签）
 
-## 🚀 已交付功能
-
-### Wave 3 主要功能
-1. **Dashboard 翻译观测性**
-   - LLM 调用数显示
-   - Held 队列 badge
-   - 决策短语显示
-   - Trace 快照渲染
-
-2. **TranslateSection 设置 UI**
-   - 部署门三件套状态显示
-   - 开关确认对话框（配额警告）
-   - 休眠警示 Banner
-   - Workflow 页链接
-
-3. **Legacy 管道退役**
-   - 删除 8 个文件（-1730 行）
-   - workspace agent 成为唯一路径
-   - 库外文件诚实拒绝
+**Phase 3: auto research 打磨识别 skill**
+- [ ] 建真实命名压力测试集（招z魂z4/H）后丨室/fansub/BT站/季包/中文季目录）
+- [ ] 喂 agent 跑，看识别质量（对不对/佐证链/有没有乱 claim），迭代 skill 措辞
 
 ---
 
-## 🎉 总结
+## 🧹 技术债（低优先级）
 
-**Ralph Loop 成果**:
-- ✅ 完成 Wave 3 全部验收
-- ✅ 清理 6 个架构矛盾（C1-C3, C6-C8）
-- ✅ 验证代码质量（CSS/apiV2/未使用代码/错误处理）
-- ✅ 更新 3 篇设计文档
-- ✅ 所有测试通过，TypeScript clean
-
-**代码库状态**: 健康，可随时部署  
-**剩余工作**: 仅 C4（apiV2 平行层）需要架构级设计，属于 Wave 4 范畴  
+- [ ] 生产库识别错误评估：扫 NAS 看多少条目 title 是 "tv"/"movies"/分类目录/单字符垃圾（旧 bug 误识别的），需要重识别
+- [ ] worker/（Cloudflare ASSRT 中继）孤儿组件，已标退役，可考虑删
+- [ ] docs/product-shape.md 已加退役标记，docs/cloudflare-worker.md 已加退役标记
 
 ---
 
-**最后更新**: 2026-07-25 02:30 AM
+## 📝 备注
+
+- **上下文快满了**：spec + plan 已写到 `docs/design/2026-07-26-subtitle-agent-identity-spec.md`，compact 后从 Phase 1 开始实施。
+- **121 个 parked 文件**（谍战深海/重庆谍战/黑三角/莉可丽丝/铁拳教育等）：**清空 parked 行**，让它们重新走新 findSubtitleWorker 流程（机械识别再扫给 raw 数据，agent 自己识别）。这些行是旧架构"机械识别搞不定才停车"的产物，新架构下每个文件都该由 agent 自己识别，不该继承"识别不出"的标签。
+- **rescue agent 的 two-evidence bar**：并进 findSubtitleSkill 的识别步骤（证据先行的核心逻辑）。
+
+---
+
+**下次更新**: Phase 1 完成后
