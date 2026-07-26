@@ -18,7 +18,9 @@ import {
 import { allocate, cleanup } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
 import type { FetchAdapter } from '../adapters/fetchLib.js'
-import type { TmdbClient } from '../adapters/providers/tmdb.js'
+import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
+import type { LibraryRepo } from '../v2/libraryRepo.js'
+import { makeWriteIdentityTool } from './identityTools.js'
 
 export interface FindSubtitleWorkerDeps {
   model: LanguageModel
@@ -35,6 +37,19 @@ export interface FindSubtitleWorkerDeps {
   stepCap?: number
   timeoutMs?: number
   fetchImpl?: typeof fetch
+  /** For write_identified_media tool (agent-first identification, Task 9): when provided, the
+   *  worker gets the write_identified_media tool so the agent can persist a TMDB-verified
+   *  identity (series/episode or movie row) itself. Shape mirrors WriteIdentityDeps in
+   *  identityTools.ts; absent → the tool is not mounted at all (model never sees its name). */
+  identityDeps?: {
+    lib: LibraryRepo
+    tmdb: {
+      getDetails: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<TmdbDetails | null>
+      getChineseTitles: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string[]>
+      getExternalIds: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null } | null>
+      getOriginLanguage: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string | null>
+    }
+  }
 }
 
 /** Glue-layer repair (2026-07-16): a worker run now covers a whole season-level (or
@@ -88,6 +103,10 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // 路 A：身份证据工具——tmdb 配置时才挂上（deps.tmdb 为 null 时整个 spread 为空对象，
       // 模型连工具名都看不到，与 skill 的 identityVerification 分支严格同开同关）。
       ...(deps.tmdb ? makeTmdbEvidenceTools({ tmdb: deps.tmdb }) : {}),
+      // write_identified_media（Task 9，agent-first 识别落地）：identityDeps 提供时才挂上——
+      // agent 用 TMDB 证据（two-evidence bar）验证身份后亲自把识别结果写进库；缺席时整个
+      // spread 为空对象，与 tmdb 证据工具同一个"依赖不在则工具不可见"的纪律。
+      ...(deps.identityDeps ? { write_identified_media: makeWriteIdentityTool(deps.identityDeps) } : {}),
       search_source: makeSearchSourceTool({
         adapters: deps.adapters, store, targetLanguage: task.targetLanguage,
         localCandidates: task.localCandidates,

@@ -6,6 +6,8 @@ import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/provider'
 import type { FetchAdapter } from '../adapters/fetchLib.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
+import { openDb } from '../v2/db.js'
+import { LibraryRepo } from '../v2/libraryRepo.js'
 import {
   makeFindSubtitleWorker, BATCH_BASE_TIMEOUT_MS, PER_TARGET_TIMEOUT_MS, BATCH_TIMEOUT_CAP_MS,
 } from './findSubtitleWorker.js'
@@ -421,6 +423,64 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
       await runTask(task)
 
       expect(tmdb.search).toHaveBeenCalledWith('tv', 'Show', undefined)
+    })
+  })
+
+  // Task 9（agent-first 识别落地）：identityDeps 决定 write_identified_media 是否挂载——与
+  // tmdb 证据工具同一纪律（依赖缺席时模型连工具名都看不到）。与任务书原文的两处最小偏差，
+  // 均被 repo 现实强制：① makeFindSubtitleWorker 返回的是 run 函数，tools 在每个 run 内部
+  // 现建（不在返回值上），只能由 mock model 在 doGenerate 里捕获 options.tools 断言，与上方
+  // identity evidence tools 组同法；② 本 repo 的 mock 模型是 MockLanguageModelV4。
+  describe('findSubtitleWorker with identityDeps', () => {
+    const fakeIdentityTmdb = () => ({
+      getDetails: vi.fn(),
+      getChineseTitles: vi.fn(),
+      getExternalIds: vi.fn(),
+      getOriginLanguage: vi.fn(),
+    })
+
+    function captureToolsModel(captured: { tools: string[] }) {
+      return new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          captured.tools = (options.tools ?? []).map((t: any) => t.name)
+          return finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'x' }], retry_later: [] })
+        },
+      })
+    }
+
+    it('includes write_identified_media tool when identityDeps provided', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+      const db = openDb(':memory:')
+      try {
+        const lib = new LibraryRepo(db)
+        const captured: { tools: string[] } = { tools: [] }
+        const runTask = makeFindSubtitleWorker({
+          model: captureToolsModel(captured), adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
+          identityDeps: { lib, tmdb: fakeIdentityTmdb() },
+        })
+        await runTask(baseTask(mediaRoot, [
+          { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+        ], { jobId: 'job-identity-1' }))
+
+        expect(captured.tools).toContain('write_identified_media')
+      } finally {
+        db.close()
+      }
+    })
+
+    it('omits write_identified_media tool when identityDeps not provided', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+      const captured: { tools: string[] } = { tools: [] }
+      const runTask = makeFindSubtitleWorker({
+        model: captureToolsModel(captured), adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
+      })
+      await runTask(baseTask(mediaRoot, [
+        { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null },
+      ], { jobId: 'job-identity-2' }))
+
+      expect(captured.tools).not.toContain('write_identified_media')
     })
   })
 
