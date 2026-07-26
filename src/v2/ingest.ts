@@ -667,19 +667,26 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
                 continue
               }
 
-              // 同路径前后两轮识别出的"种类"不一致（剧集↔电影，罕见但真实可能——P6 认领可以用
-              // identify_overrides 把一个先前已入库的路径重新认领成另一种 isTv）：旧行的 path
-              // 仍然"被本轮看到 + fileExists 为真"，磁盘真相移除阶段的两条件永远不会命中它，
-              // 放着不管就是一条永久性的错种类鬼影行。只有确认这轮要成功写新行时才清理旧行
-              // （park 分支不清理，见上面的注释）。
-              if (existing && existing.kind !== 'episode') {
-                lib.deleteMovieByPath(path)
-              }
-
               const season = resolvedSeason ?? 0
               const episode = resolvedEpisode
               const ownSeriesId = seriesId(tmdbId)
               const ownEpisodeId = episodeId(tmdbId, season, episode)
+
+              // 同路径前后两轮识别出的"种类"不一致（剧集↔电影，罕见但真实可能——P6 认领可以用
+              // identify_overrides 把一个先前已入库的路径重新认领成另一种 isTv）；或者种类相同
+              // 但**身份变了**（同一条路径被重新识别到另一个 tmdbId——路 A 识别架构下这是常态：
+              // agent 的 identity_correction 落地为一条 override 认领后，下一轮这条路径就换身份）。
+              // 两种情况旧行的 path 都仍然"被本轮看到 + fileExists 为真"，磁盘真相移除阶段的两
+              // 条件永远不会命中它，放着不管就是一条永久鬼影行（错身份还会继续被派活找字幕）。
+              // 只有确认这轮要成功写新行时才清理旧行（park 分支不清理，见上面的注释）。
+              if (existing && (existing.kind !== 'episode' || existing.id !== ownEpisodeId)) {
+                if (existing.kind === 'movie') {
+                  lib.deleteMovieByPath(path)
+                } else {
+                  lib.deleteEpisodeByPath(path)
+                  if (existing.seriesId) lib.deleteSeriesIfEmpty(existing.seriesId)
+                }
+              }
 
               // P7 真库闸门 Bug 2 修复：own-id（tmdbId+season+episode）幂等性守卫——两个不同磁盘
               // 路径识别到同一个 own-id 是真实会发生的情况（多质量重复下载、种子机硬链接残留、
@@ -799,14 +806,19 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               result.upserted++
               result.changed = true
             } else {
-              // 同路径前后两轮识别出的"种类"不一致（剧集↔电影）：见 TV 分支同名注释——movies
-              // 分支没有 park 中途退出的子情形，直接清理即可。
-              if (existing && existing.kind !== 'movie') {
-                lib.deleteEpisodeByPath(path)
-                if (existing.seriesId) lib.deleteSeriesIfEmpty(existing.seriesId)
-              }
-
               const ownMovieId = seriesId(tmdbId) // movies 复用同一构造器（ownIds.ts 头注释）
+
+              // 同路径换种类（剧集→电影）或**同种类换身份**（重新识别到另一个 tmdbId——路 A
+              // 下 agent 纠错认领生效后的常态）：两种都要清旧行，否则永久鬼影。见 TV 分支同名
+              // 注释。movies 分支没有 park 中途退出的子情形，直接清理即可。
+              if (existing && (existing.kind !== 'movie' || existing.id !== ownMovieId)) {
+                if (existing.kind === 'episode') {
+                  lib.deleteEpisodeByPath(path)
+                  if (existing.seriesId) lib.deleteSeriesIfEmpty(existing.seriesId)
+                } else {
+                  lib.deleteMovieByPath(path)
+                }
+              }
 
               // P7 真库闸门 Bug 2 修复：own-id 幂等性守卫，同 TV 分支同名注释——movies 直接用
               // tmdbId 当 own-id，同一部电影的两份重复文件（不同质量/硬链接残留）一样会在每一轮

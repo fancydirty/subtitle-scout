@@ -1309,6 +1309,98 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       const rows = runs.getByJobId(job.id)
       expect(rows.map((r) => r.decision)).toEqual(['installed'])
     })
+  })
+
+  // 路 A Phase 1b（2026-07-26）：identity_correction 的**真正落地**——写一条 identify_overrides
+  // 认领（复用 P6 人工认领的同一机制，认领者从人变成 agent），下一轮 ingest 的 recognize()
+  // 消歧前查命中它按正确身份建行，旧错身份行由 ingest 的"同路径换身份"分支清理。刻意不手写
+  // id 迁移（own-id 链 + 五张表外键，中途崩溃无幂等恢复点）——见 runner 实现处的长注释。
+  describe('identity_correction 落地为 identify_overrides 认领（Phase 1b）', () => {
+    it('写入认领：findOverride(目标路径) 能查到 agent 纠正后的身份', async () => {
+      const { lib, jobsRepo, job, videoPath } = setup()
+      const runTask = vi.fn(async () => report({
+        no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
+        identity_correction: { tmdbId: '276161', isTv: true, reason: 'season table + runtime fit' },
+      }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+      // 前置：没有任何认领
+      expect(lib.findOverride(videoPath)).toBeNull()
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      // 认领已落地，且对这批 target 的路径可查（path_prefix = task.mediaRoot，即目标公共祖先）
+      const override = lib.findOverride(videoPath)
+      expect(override).not.toBeNull()
+      expect(override!.tmdbId).toBe('276161')
+      expect(override!.isTv).toBe(true)
+    })
+
+    it('清停车户口：纠错后该路径的 parked 行被清掉，下一轮 ingest 必重新识别（不被退避挡住）', async () => {
+      const { lib, jobsRepo, job, videoPath } = setup()
+      // 模拟这条路径身上残留的停车户口（旧身份时代累积的）
+      lib.upsertParkedPath(videoPath, 'no-episode-number', Date.now(), { mtimeMs: 1, size: 2 })
+      expect(lib.listParkedPaths().some((p) => p.path === videoPath)).toBe(true)
+
+      const runTask = vi.fn(async () => report({
+        no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
+        identity_correction: { tmdbId: '276161', isTv: true, reason: 'evidence' },
+      }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(lib.listParkedPaths().some((p) => p.path === videoPath)).toBe(false)
+    })
+
+    it('核验通过（无 correction）：不写任何认领，不碰停车户口', async () => {
+      const { lib, jobsRepo, job, videoPath } = setup()
+      const runTask = vi.fn(async () => report({ installed: [installedItem(SHOW_EPISODE_ID)] }))
+      const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+      await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+      expect(lib.findOverride(videoPath)).toBeNull()
+    })
+
+    it('认领幂等：同一 mediaRoot 二次纠错覆盖旧认领（ON CONFLICT），不堆重复行', async () => {
+      const { lib, jobsRepo, job, videoPath, db } = setup()
+      const runCorrection = async (
+        currentJob: typeof job, jobsFor: JobsRepo, tmdbId: string, reason: string,
+      ) => {
+        const deps = baseDeps({
+          lib, mediaRoots: [],
+          runTask: vi.fn(async () => report({
+            no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, 'identity mismatch')],
+            identity_correction: { tmdbId, isTv: true, reason },
+          })),
+        })
+        await runFindSubtitleWorkerTask(currentJob, deps, jobsFor, () => Date.now())
+      }
+
+      await runCorrection(job, jobsRepo, '111', 'first')
+      expect(lib.findOverride(videoPath)!.tmdbId).toBe('111')
+
+      // 二次纠错：把 e1 的缺口恢复（上一轮 no_safe_match 把它标成了 unavailable），再派一个
+      // 同 season 的新 job——mediaRoot 相同，认领应被覆盖而非新增一行。
+      lib.upsertEpisode({
+        id: SHOW_EPISODE_ID, seriesId: SHOW_SERIES_ID, season: 1, episode: 1, name: 'E1',
+        path: videoPath, subStatus: 'missing',
+      })
+      const jobsRepo2 = new JobsRepo(db)
+      jobsRepo2.upsertWorkerTask(
+        { seriesId: SHOW_SERIES_ID, season: 1, movieId: null },
+        { taskType: 'find_subtitle', reason: 'missing' }, null, Date.now() + 1,
+      )
+      const jobAgain = jobsRepo2.claimNext(Date.now() + 1)!
+      await runCorrection(jobAgain, jobsRepo2, '222', 'second')
+
+      expect(lib.findOverride(videoPath)!.tmdbId).toBe('222')
+      const count = db.prepare(`SELECT COUNT(*) AS n FROM identify_overrides`).get() as { n: number }
+      expect(count.n).toBe(1)
+    })
+  })
+
 
     it('worker-throw: writes one runs row with decision "error" and the thrown message as detail', async () => {
       const { lib, jobsRepo, job, db } = setup()
@@ -1442,5 +1534,4 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         expect(traceBus.snapshot(runKey)).toHaveLength(0) // 无残留
       })
     })
-  })
 })

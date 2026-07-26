@@ -513,17 +513,33 @@ export async function runFindSubtitleWorkerTask(
     // completeError 节流轨（R-10 豁免：30s→15min→日，永不 dormant）。completeNoMatch 已死。
     // 救援R5：hardsub_assumed 非空视为"这批已完成"的一种（同 installed/noMatch），走
     // completeDone——它不是失败判决，不该被"报告为空"或"待重试"两个分支误吞。
-    // 路 A（2026-07-26 识别架构）：identity_correction——agent Step 0 核验发现库身份错了
-    // 并重新识别出正确条目。Phase 1 只记录不迁行（runs/log 留痕，迁行重派是后续切片）：
-    // 这个 job 的 targets 已按 skill 约定全部躺在 no_safe_match（身份没纠正前不装字幕），
-    // 队列侧按 noMatch 的既有语义入账（item 自己的 search_attempts 阶梯决定何时再看）——
-    // 待迁行机制落地后，迁行会重置这些 item 的退避，让它们立刻重派。
+    // 路 A（2026-07-26 识别架构）：identity_correction 落地——agent Step 0 核验发现库身份
+    // （机械文件名解析的猜测）错了并重新识别出正确条目。
+    //
+    // 落地方式刻意**不是**手写 id 迁移（own-id 空间里 series.id='tmdb:<id>'、
+    // episodes.id='tmdb:<id>/s<N>e<M>'，改身份等于重写整条 id 链 + subtitles/item_files/
+    // tmdb_seasons 五张表的外键，且中途崩溃没有幂等恢复点）——而是复用既有的
+    // identify_overrides 认领机制：写一条 path_prefix → 正确 tmdbId 的认领，下一轮 ingest
+    // 的 recognize() 消歧前查命中它（见 recognition/index.ts 的 opts.findOverride），按正确
+    // 身份建新行；旧错身份行由 ingest 的"同路径换身份"清理分支删掉（见 ingest.ts 该分支）。
+    // 认领者从人（P6 救援页）变成 agent，机制原样复用——幂等（ON CONFLICT 覆盖）、崩溃安全
+    // （一条 INSERT）、零新代码路径。
+    //
+    // path_prefix 用 task.mediaRoot（这批 targets 的公共祖先目录，mapper 已验证在
+    // MEDIA_ROOTS 内）：agent 只核验了它实际看到的这批目标，认领范围就止于此——task 只覆盖
+    // 某一季时其他季不受影响，这是正确的保守行为，不是缺陷。
     if (report.identity_correction) {
+      const correction = report.identity_correction
       console.error(
-        `[find-subtitle-harvest] job ${job.id}: identity_correction reported — ` +
-          `correct identity tmdb:${report.identity_correction.tmdbId} ` +
-          `(isTv=${report.identity_correction.isTv}): ${capDetail(report.identity_correction.reason)}`,
+        `[find-subtitle-harvest] job ${job.id}: identity_correction — ` +
+          `claiming ${task.mediaRoot} as tmdb:${correction.tmdbId} ` +
+          `(isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
       )
+      deps.lib.addOverride(task.mediaRoot, correction.tmdbId, correction.isTv, now())
+      // 让纠错立刻生效，不等退避：这批 target 的 item 行马上要被 ingest 换身份重建（旧 id
+      // 的行会被删），它们身上的 search_attempts/recheck_after 阶梯是"旧身份找不到字幕"
+      // 累积的，对新身份毫无意义——清掉停车户口让这条路径下一轮 ingest 必被重新识别。
+      for (const t of task.targets) deps.lib.clearParkedPath(t.videoPath)
     }
     if (installed.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
       jobs.completeError(job.id, 'worker returned an empty batch report', now())

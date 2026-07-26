@@ -701,8 +701,57 @@ describe('makeIngestPass — memo-hit cheap path', () => {
     expect(lib.getMovie('tmdb:999')).toMatchObject({ path })
   })
 
-  it('park after a prior successful ingest does NOT delete the previously-working row (graceful degradation, not data loss)', async () => {
+  // 路 A（2026-07-26 识别架构）：agent 的 identity_correction 落地为 identify_overrides 认领后，
+  // 同一条路径会被重新识别到**另一个 tmdbId**（kind 不变）。此前只有"kind 翻转"才清理旧行
+  // （见上两条测试），同 kind 换身份的旧行 path 仍在磁盘上、fileExists 恒真，磁盘真相移除阶段
+  // 的两条件永不命中 → 永久鬼影行（错身份的 episodes/series 行留在库里，dashboard 上是一部
+  // 根本不存在的剧，还会继续被派活找字幕）。这是纠错落地的必补洞。
+  it('re-recognition keeps kind but changes tmdbId (agent identity_correction → override) → stale wrong-identity row is cleaned up', async () => {
     const path = '/media/Show/Season 1/ep1.mkv'
+    // 机械误判建的旧行：tmdb:154494（Lycoris Recoil）
+    lib.upsertSeries({ id: 'tmdb:154494', name: 'Lycoris Recoil' })
+    lib.upsertEpisode({ id: 'tmdb:154494/s1e1', seriesId: 'tmdb:154494', season: 1, episode: 1, name: 'x', path, subStatus: 'covered' })
+    lib.setProbeMemo('tmdb:154494/s1e1', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 9999, 12345) // mtime 变 → memo 失效 → 走完整识别路径
+    // agent 纠错后的认领生效：同一路径现在识别为 tmdb:276161（Teach You a Lesson）
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '276161', season: 1, episode: 1 }))
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    // 新身份建行
+    expect(lib.getEpisode('tmdb:276161/s1e1')).toMatchObject({ path })
+    // 旧错身份行必须被清掉——否则是永久鬼影（path 占着磁盘真相，永不被移除阶段命中）
+    expect(lib.getEpisode('tmdb:154494/s1e1')).toBeNull()
+    // 旧 series 行空了也该一并清（同 kind 翻转分支的既有纪律）
+    expect(lib.getSeries('tmdb:154494')).toBeNull()
+  })
+
+  it('movie 侧同款：同 kind 换 tmdbId → 旧错身份 movie 行清理', async () => {
+    const path = '/media/movie.mkv'
+    lib.upsertMovie({ id: 'tmdb:138843', name: 'The Conjuring', path, subStatus: 'covered' })
+    lib.setProbeMemo('tmdb:138843', 5000, 12345, [])
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 9999, 12345)
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '1083381' })) // Backrooms
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], recognize,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.getMovie('tmdb:1083381')).toMatchObject({ path })
+    expect(lib.getMovie('tmdb:138843')).toBeNull()
+  })
+
+  it('park after a prior successful ingest does NOT delete the previously-working row (graceful degradation, not data loss)', async () => {    const path = '/media/Show/Season 1/ep1.mkv'
     lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
     lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'x', path, subStatus: 'covered' })
     lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, [])
