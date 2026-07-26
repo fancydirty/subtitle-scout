@@ -767,7 +767,7 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
   })
 
   describe('upsertParkedPath with raw data', () => {
-    it('stores duration_sec and embedded_langs', () => {
+    it('stores duration_sec and embedded_langs as JSON', () => {
       lib.upsertParkedPath(
         '/test/video.mkv',
         'awaiting-agent-identification',
@@ -780,10 +780,25 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
 
       expect(row).toBeDefined()
       expect(row?.duration_sec).toBe(3600)
-      expect(row?.embedded_langs).toBe('eng,chi')
+      // 与 episodes/movies.embedded_langs 同构：JSON 数组串，非逗号串
+      expect(row?.embedded_langs).toBe('["eng","chi"]')
+      expect(JSON.parse(row!.embedded_langs!)).toEqual(['eng', 'chi'])
     })
 
-    it('preserves existing raw data on update when not provided', () => {
+    it('empty embeddedLangs array stores NULL, not a phantom empty language', () => {
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        1000,
+        { mtimeMs: 500, size: 1024, durationSec: 3600, embeddedLangs: [] },
+      )
+
+      const row = lib.listParkedPaths().find((r) => r.path === '/test/video.mkv')
+      expect(row?.duration_sec).toBe(3600)
+      expect(row?.embedded_langs).toBeNull()
+    })
+
+    it('preserves existing raw data on re-park when fingerprint unchanged and raw data omitted', () => {
       lib.upsertParkedPath(
         '/test/video.mkv',
         'awaiting-agent-identification',
@@ -791,7 +806,28 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
         { mtimeMs: 500, size: 1024, durationSec: 3600, embeddedLangs: ['eng'] },
       )
 
-      // Update with same reason but no raw data
+      // Re-park with same fingerprint but no raw data (probe skipped this round)
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        2000,
+        { mtimeMs: 500, size: 1024 },
+      )
+
+      const row = lib.listParkedPaths().find((r) => r.path === '/test/video.mkv')
+      expect(row?.duration_sec).toBe(3600) // Preserved
+      expect(row?.embedded_langs).toBe('["eng"]') // Preserved
+    })
+
+    it('clears stale raw data when fingerprint changed and raw data omitted', () => {
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        1000,
+        { mtimeMs: 500, size: 1024, durationSec: 3600, embeddedLangs: ['eng'] },
+      )
+
+      // File changed on disk (mtime bumped) but no fresh probe data → old raw data is invalid
       lib.upsertParkedPath(
         '/test/video.mkv',
         'awaiting-agent-identification',
@@ -800,8 +836,29 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       )
 
       const row = lib.listParkedPaths().find((r) => r.path === '/test/video.mkv')
-      expect(row?.duration_sec).toBe(3600) // Preserved
-      expect(row?.embedded_langs).toBe('eng') // Preserved
+      expect(row?.probe_mtime).toBe(600)
+      expect(row?.duration_sec).toBeNull()
+      expect(row?.embedded_langs).toBeNull()
+    })
+
+    it('overwrites old raw data when new data arrives with a changed fingerprint', () => {
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        1000,
+        { mtimeMs: 500, size: 1024, durationSec: 3600, embeddedLangs: ['eng'] },
+      )
+
+      lib.upsertParkedPath(
+        '/test/video.mkv',
+        'awaiting-agent-identification',
+        2000,
+        { mtimeMs: 600, size: 2048, durationSec: 5400, embeddedLangs: ['eng', 'jpn'] },
+      )
+
+      const row = lib.listParkedPaths().find((r) => r.path === '/test/video.mkv')
+      expect(row?.duration_sec).toBe(5400)
+      expect(row?.embedded_langs).toBe('["eng","jpn"]')
     })
   })
 

@@ -690,17 +690,17 @@ describe('v25 migration: parked_paths raw data columns', () => {
     // MIGRATIONS 追加 v25 后是 18 条 entry（落库 meta.schema_version 随之是 '18'）。
     expect(MIGRATIONS.length).toBe(18)
 
-    // Insert a parked path with raw data
+    // Insert a parked path with raw data（embedded_langs 与 episodes/movies 同构：JSON 数组串）
     db.prepare(`
       INSERT INTO parked_paths (path, park_reason, first_seen, last_attempt, retry_count, duration_sec, embedded_langs)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run('/test/path.mkv', 'awaiting-agent-identification', 1000, 1000, 0, 3600, 'eng,jpn')
+    `).run('/test/path.mkv', 'awaiting-agent-identification', 1000, 1000, 0, 3600, '["eng","jpn"]')
 
     const row = db.prepare('SELECT duration_sec, embedded_langs FROM parked_paths WHERE path = ?')
       .get('/test/path.mkv') as { duration_sec: number; embedded_langs: string }
 
     expect(row.duration_sec).toBe(3600)
-    expect(row.embedded_langs).toBe('eng,jpn')
+    expect(row.embedded_langs).toBe('["eng","jpn"]')
   })
 
   it('existing parked_paths get null for new columns', () => {

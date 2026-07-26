@@ -146,16 +146,18 @@ export interface ParkedPath {
   probe_size: number | null
   /** 探测时长（秒）；NULL=未探测。agent 从 parked_paths 读取做识别的 raw 数据（schema v25）。 */
   duration_sec: number | null
-  /** 原始 ffprobe 语言 tag 逗号串（如 'eng,chi'）；NULL=未探测。 */
+  /** 原始 ffprobe 语言 tag 的 JSON 数组串（如 '["eng","chi"]'，与 episodes/movies.embedded_langs 同构）；NULL=未探测。 */
   embedded_langs: string | null
 }
 
-/** parked-path 负缓存：文件指纹（stat mtimeMs + size）+ 可选探测 raw 数据（duration/内嵌轨语言）。 */
+/** parked-path 负缓存：文件指纹（stat mtimeMs + size）+ 可选探测 raw 数据（duration/内嵌轨语言）。
+ *  durationSec/embeddedLangs 省略（undefined）= 本次未探测，指纹未变时保留库中已有值；
+ *  embeddedLangs 空数组与省略同义（存 NULL，不落 '[]'）。 */
 export interface ParkedPathFingerprint {
   mtimeMs: number
   size: number
-  durationSec?: number | null
-  embeddedLangs?: string[] | null
+  durationSec?: number
+  embeddedLangs?: string[]
 }
 
 /** 退避阶梯：retry_count 0→1h，1→4h，≥2→24h（封顶）。单位 ms。 */
@@ -794,7 +796,11 @@ export class LibraryRepo {
     let probeMtime: number | null = fingerprint?.mtimeMs ?? null
     let probeSize: number | null = fingerprint?.size ?? null
     let durationSec: number | null = fingerprint?.durationSec ?? null
-    let embeddedLangs: string | null = fingerprint?.embeddedLangs ? fingerprint.embeddedLangs.join(',') : null
+    // 与 episodes/movies.embedded_langs 同构：JSON 数组串。空数组/省略 → NULL（避免 ''.split(',')
+    // 式的幻影空语言；JSON.parse('[]') 虽安全，但 NULL 才是本列"未探测"的唯一语义）。
+    let embeddedLangs: string | null = fingerprint?.embeddedLangs?.length
+      ? JSON.stringify(fingerprint.embeddedLangs)
+      : null
 
     if (existing && fingerprint) {
       const sameReason = existing.park_reason === reason
@@ -811,9 +817,12 @@ export class LibraryRepo {
       }
       probeMtime = fingerprint.mtimeMs
       probeSize = fingerprint.size
-      // raw 数据本次调用未提供 → 保留库中已有值（agent 识别依赖这些列，不被无探测的重 park 冲掉）
-      if (durationSec === null) durationSec = existing.duration_sec
-      if (embeddedLangs === null) embeddedLangs = existing.embedded_langs
+      // raw 数据本次调用未提供 → 保留库中已有值（agent 识别依赖这些列，不被无探测的重 park 冲掉）。
+      // 仅指纹未变才保留——文件变了则旧 duration/langs 已失效，必须随 !sameFp 重置路径一起清掉。
+      if (sameFp) {
+        if (durationSec === null) durationSec = existing.duration_sec
+        if (embeddedLangs === null) embeddedLangs = existing.embedded_langs
+      }
     } else if (existing && !fingerprint) {
       // 无指纹的旧调用：只覆写 reason/last_attempt，保留退避列
       retryCount = existing.retry_count
