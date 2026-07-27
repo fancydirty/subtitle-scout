@@ -5,6 +5,7 @@ import { makeRunTracer } from '../core/traceBus.js'
 import { languageName } from './languages.js'
 import { makeFindSubtitleSkill } from './skills/findSubtitleSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
+import { IDENTIFY_MEDIA_SKILL } from './skills/identifyMediaSkill.js'
 import {
   makeFileResultSetStore, makeSearchSourceTool, makeListCandidatesTool, makeGetCandidateTool,
 } from './resultHandles.js'
@@ -59,6 +60,7 @@ export interface FindSubtitleWorkerDeps {
         getExternalIds: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null } | null>
         getOriginLanguage: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string | null>
       }
+      resolveTargetPath: (file: string) => string | null
     }) => ReturnType<typeof makeWriteIdentityTool>
   }
 }
@@ -108,16 +110,27 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     // 路 A（2026-07-26）：第三个参数 identityVerification——tmdb 工具可用时 skill 才教
     // Step 0 识别验证（工具不在时教了也白教，反而引诱模型空谈"我会验证"）。
     const skill = makeFindSubtitleSkill(task.targetLanguage, task.hardsubMode, deps.tmdb != null)
+    // progressive disclosure（2026-07-27 拆分）：识别文档独立成篇，只在识别工具真的挂载时
+    // 才进 read_doc 索引——工具不在时模型连文档名都看不到（零误触发纪律）。
+    const skillDocs = deps.tmdb != null ? [skill, IDENTIFY_MEDIA_SKILL] : [skill]
 
     // 🔴 写库门（identityEval 第三轮实测：识别全对但跳过 write_identified_media 反复发生，
     // skill 硬门措辞时好时坏 —— 措辞治不了的用机制）：记录 write 工具是否真的被调过，
     // finalize 校验时据此拒收"报了 identified 却没写库"的自相矛盾报告。拒收发生在 agent
     // 循环内，模型能看到错误并补调工具，比事后 runner 丢弃更有教育意义。
     let writeIdentityCalled = false
+    // 🔴 identityEval 第七轮修复：write_identified_media 原本要 agent 交绝对路径，而 prompt
+    // 出于沙盒纪律只给相对目录段+basename——模型只能编（实测 14 次调用 13 次是
+    // `../../../../..` 拼接幻觉）。改成模型报 file 名、代码在这里按 basename 解析真实路径。
+    // 与 season/episode 血案同一个教训：不向模型索要它按设计拿不到的数据。
+    const resolveTargetPath = (file: string): string | null => {
+      const wanted = basename(file)
+      return task.targets.find(t => basename(t.videoPath) === wanted)?.videoPath ?? null
+    }
     const identityWriteTool = deps.identityDeps
       ? (deps.identityDeps.writeToolFactory
-          ? deps.identityDeps.writeToolFactory(deps.identityDeps)
-          : makeWriteIdentityTool(deps.identityDeps))
+          ? deps.identityDeps.writeToolFactory({ ...deps.identityDeps, resolveTargetPath })
+          : makeWriteIdentityTool({ ...deps.identityDeps, resolveTargetPath }))
       : null
     const trackedIdentityWriteTool = identityWriteTool
       ? tool({
@@ -131,7 +144,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       : null
 
     const tools = {
-      read_doc: makeReadDocTool([skill]),
+      read_doc: makeReadDocTool(skillDocs),
       // 路 A：身份证据工具——tmdb 配置时才挂上（deps.tmdb 为 null 时整个 spread 为空对象，
       // 模型连工具名都看不到，与 skill 的 identityVerification 分支严格同开同关）。
       ...(deps.tmdb ? makeTmdbEvidenceTools({ tmdb: deps.tmdb }) : {}),
@@ -183,7 +196,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       '(shown on its line below) as well so the correct one is used.',
       '',
       'Available skill documents (call read_doc(name) to load the full text of one):',
-      systemPromptSkillIndex([skill]),
+      systemPromptSkillIndex(skillDocs),
     ].join('\n')
 
     // Presented as FACT (a mechanical pre-cleaning output), not instruction — see

@@ -243,7 +243,7 @@ function wrapTmdbWithLog(tmdb: TmdbClient) {
 
 /** 写库调用记录（评估 agent 有没有真的调 write_identified_media）。 */
 interface WriteCallLog {
-  calls: Array<{ tmdbId: string; isTv: boolean; title: string; season: number | null; episode: number | null; path: string }>
+  calls: Array<{ tmdbId: string; isTv: boolean; title: string; season: number | null; episode: number | null; file: string }>
 }
 
 /** 包装 makeWriteIdentityTool，记录每次调用（评估 agent 有没有真的调写库工具）。 */
@@ -252,10 +252,10 @@ function wrapWriteIdentityToolWithLog(deps: Parameters<typeof makeWriteIdentityT
   return tool({
     description: realTool.description,
     inputSchema: realTool.inputSchema,
-    execute: async (input, opts) => {
-      const { tmdbId, isTv, title, season, episode, path } = input as { tmdbId: string; isTv: boolean; title: string; season: number | null; episode: number | null; path: string }
-      log.calls.push({ tmdbId, isTv, title, season, episode, path })
-      return realTool.execute(input, opts)
+    execute: async (input: unknown, opts: unknown) => {
+      const { tmdbId, isTv, title, season, episode, file } = input as { tmdbId: string; isTv: boolean; title: string; season: number | null; episode: number | null; file: string }
+      log.calls.push({ tmdbId, isTv, title, season, episode, file })
+      return (realTool.execute as (i: unknown, o: unknown) => Promise<unknown>)(input, opts)
     },
   })
 }
@@ -300,7 +300,7 @@ async function runCase(c: IdentityCase) {
         getExternalIds: tmdbWithLog.getExternalIds,
         getOriginLanguage: tmdbWithLog.getOriginLanguage,
       },
-      writeToolFactory: (deps) => wrapWriteIdentityToolWithLog(deps, writeLog),
+      writeToolFactory: (deps) => wrapWriteIdentityToolWithLog(deps, writeLog) as ReturnType<typeof makeWriteIdentityTool>,
     },
     stepCap: 30, // 写库步骤加进来后步数变多（第三轮实测 2 个 case 烧完 20 步没到 finalize）
     timeoutMs: 600_000,

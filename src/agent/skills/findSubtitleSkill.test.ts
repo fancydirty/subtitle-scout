@@ -170,92 +170,38 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
     })
   })
 
-  // 路 A（2026-07-26 识别架构，2026-07-27 升级主识别模式）：identityVerification=true（tmdb
-  // 证据工具可用）才教 Step 0 主识别；false（默认/TMDB 未配置）时整段文字连"识别"概念都不
-  // 出现——零误触发纪律同 hardsubSection：工具不在时教了也白教，反而引诱模型空谈"我会识别"。
-  describe('Step 0 primary identification（路 A 识别架构·主识别模式）', () => {
-    // identityEval 第二轮实测：7/8 失败是"识别全对但没调 write_identified_media"——
-    // 模型觉得"我在 finalize 报告里说了就够了"。措辞必须把写库做成硬门：不调就等于没识别。
-    it('write_identified_media 是硬门，不是可选记账', () => {
+  // 路 A（2026-07-26 识别架构 → 2026-07-27 拆成独立文档）：识别的完整教法搬到
+  // identifyMediaSkill.ts（progressive disclosure），本文件只保留"指路段"的锚点；识别内容
+  // 本身的锚点见 identifyMediaSkill.test.ts。零误触发纪律不变：identityVerification=false
+  // 时正文连"识别"概念都不出现。
+  describe('Step 0 指路段（识别文档拆分后）', () => {
+    it('identityVerification=true：正文交代无身份前提并指向 identify-media 文档', () => {
       const on = makeFindSubtitleSkill('zh', 'off', true)
-      expect(on.content).toMatch(/This call is not optional bookkeeping — it IS the identification/i)
-      expect(on.content).toMatch(/is a FAILED\s+run/i)
-      expect(on.content).toMatch(/Sequence, no exceptions/i)
-    })
-
-    // identityEval 第五轮实测：8/9 失败全是"识别 100% 正确但不调 write_identified_media"——
-    // 空 adapters 下没字幕可装，agent 觉得"后续没事干，写库也没意义"（skill 原措辞把写库
-    // 动机绑在"拿 itemId 给后续字幕操作用"上，没字幕时动机消失）。措辞必须把识别与找字幕
-    // 解耦：识别本身就有永久价值。
-    it('识别与找字幕解耦：没字幕可装也必须写库', () => {
-      const on = makeFindSubtitleSkill('zh', 'off', true)
-      expect(on.content).toMatch(/Call it even when no subtitles turn out to be available/i)
-      expect(on.content).toMatch(/two independent jobs/i)
-      expect(on.content).toMatch(/permanently valuable on its own/i)
-      expect(on.content).toMatch(/there is nothing to install, so writing\s+the identity is pointless/i)
+      expect(on.content).toMatch(/Step 0: identify the media before you search/i)
+      expect(on.content).toMatch(/NO identity — only raw evidence/)
+      // 指路到独立文档（而不是内联 100+ 行）
+      expect(on.content).toMatch(/read_doc\("identify-media"\)/)
+      // 写库产出的 own-id 就是后续字幕操作的 itemId——这条衔接必须留在本篇
+      expect(on.content).toMatch(/write_identified_media/)
+      expect(on.content).toMatch(/itemId for every subtitle operation/i)
+      // Workflow 第 0 步锚定
+      expect(on.content).toMatch(/FIRST, identify the media/)
+      // descriptor 让模型从索引就知道要先识别、且识别在另一篇
+      expect(on.descriptor.description).toMatch(/Step 0/)
+      expect(on.descriptor.description).toMatch(/identify-media/)
+      // 已删除的旧 verify 模式概念绝迹（identity_verified/identity_correction 见 Task 10 删除）
+      expect(on.content).not.toMatch(/identity_verified|identity_correction/)
     })
 
     it('默认（identityVerification 缺省=false）：内容与描述完全不提 Step 0 / 识别工具', () => {
       const def = makeFindSubtitleSkill('zh')
-      expect(def.content).not.toMatch(/Step 0|identity_correction|identity_verified|get_tmdb_details|search_tmdb|write_identified_media/)
-      expect(def.descriptor.description).not.toMatch(/Step 0|identity_correction|write_identified_media/)
+      expect(def.content).not.toMatch(/Step 0|identity_correction|identity_verified|get_tmdb_details|search_tmdb|write_identified_media|identify-media/)
+      expect(def.descriptor.description).not.toMatch(/Step 0|identity_correction|write_identified_media|identify-media/)
     })
 
     it('显式 false 同缺省：零识别字样', () => {
       const off = makeFindSubtitleSkill('zh', 'off', false)
-      expect(off.content).not.toMatch(/Step 0|identity_correction|identity_verified|get_tmdb_details|write_identified_media/)
-    })
-
-    it('identityVerification=true：Step 0 section 教完整主识别流程', () => {
-      const on = makeFindSubtitleSkill('zh', 'off', true)
-      // 无身份前提 + 识别先于搜索
-      expect(on.content).toMatch(/Step 0: Identify the media from raw evidence BEFORE you search/)
-      expect(on.content).toMatch(/NO identity — only raw evidence/)
-      // two-evidence bar：名字 + 第二独立证据（季表/年份/时长）
-      expect(on.content).toMatch(/TWO independent evidence lines/i)
-      expect(on.content).toMatch(/season table/i)
-      // 反脑补红线：模型知识不算证据，必须调工具
-      expect(on.content).toMatch(/NEVER identify from your own memory/i)
-      expect(on.content).toMatch(/did not call the tools, you did not\s+identify/i)
-      // 核验通过 → write_identified_media 写库 → 拿 itemId 继续；识别不出 → no_safe_match 不乱猜
-      expect(on.content).toMatch(/write_identified_media/)
-      expect(on.content).toMatch(/Guessing an identity is strictly\s+worse/i)
-      // year 矛盾一票否决——一条漂亮证据线救不回一条失败的
-      expect(on.content).toMatch(/year mismatch is an AUTOMATIC FAIL/i)
-      expect(on.content).toMatch(/never buys back a failed one/i)
-      // 边界规则：某一集对不上 ≠ 整部剧身份错（红线：永不因一集否定全剧身份）
-      expect(on.content).toMatch(/What is NOT an identity problem/i)
-      expect(on.content).toMatch(/one target's problem, not the show's identity/i)
-      // 已删除的旧 verify 模式概念绝迹（identity_verified/identity_correction 见 Task 10 删除）
-      expect(on.content).not.toMatch(/identity_verified|identity_correction/)
-      // Workflow 第 0 步锚定
-      expect(on.content).toMatch(/FIRST, identify the media/)
-      // descriptor 让模型从索引就知道有 Step 0
-      expect(on.descriptor.description).toMatch(/Step 0/)
-      expect(on.descriptor.description).toMatch(/write_identified_media/)
-    })
-
-    it('identityVerification=true 时真实误判案例作为教材留在文中', () => {
-      const on = makeFindSubtitleSkill('zh', 'off', true)
-      // 版权规避乱写/乱码/fansub 标签/中文截断——真实库里的四类误判来源
-      expect(on.content).toMatch(/招z魂z4/)
-      expect(on.content).toMatch(/fansub bracket tags/i)
-    })
-
-    // 2026-07-26 identityEval 第三轮暴露：文件名是纯技术 token（2026.2160p.iT.WEB-DL...）时，
-    // 模型盯着文件名瞎搜六次（"2026"/"iT"/"2026 movie"…）从没看目录名里的真标题，最终放弃。
-    // skill 必须把"目录名常是标题唯一来源"和"按字形修复乱码后搜修复形"钉死。
-    it('identityVerification=true：教从目录名找标题 + 乱码字形修复 + 禁搜纯技术 token', () => {
-      const on = makeFindSubtitleSkill('zh', 'off', true)
-      // 目录名是主证据（不是 fallback）
-      expect(on.content).toMatch(/directory name is your primary\s+evidence, not a fallback/i)
-      expect(on.content).toMatch(/NO title at all/i)
-      // 乱码按字形修复，搜修复后的原文标题
-      expect(on.content).toMatch(/H）后丨室/)
-      expect(on.content).toMatch(/reads as .*后室/)
-      expect(on.content).toMatch(/do not only search romanizations/i)
-      // 禁搜纯技术 token
-      expect(on.content).toMatch(/Never search a bare year/i)
+      expect(off.content).not.toMatch(/Step 0|identity_correction|identity_verified|get_tmdb_details|write_identified_media|identify-media/)
     })
   })
 
@@ -274,35 +220,5 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
     expect(c).toMatch(/evidence of packaging, never of identity/i)
     // 身份不明时的验证动作:先下一份抽对白锚点再批量装
     expect(c).toMatch(/download ONE entry first|sample its\s+dialogue/i)
-  })
-})
-
-// Task 8（2026-07-27 主识别模式）：skill 从"核验机械猜测"改写为"从原始证据自己识别"——
-// 任务不再带身份，只带 raw evidence（目录名/文件名/时长/内嵌字幕语言/结构提示），agent
-// 自己 clean title → search_tmdb → two-evidence bar → write_identified_media → 拿 itemId 继续。
-describe('identification instructions (primary mode)', () => {
-  it('teaches agent to identify from raw data first', ({ expect }) => {
-    const skill = makeFindSubtitleSkill('zh-Hans', 'off', true)
-
-    // Should mention raw evidence
-    expect(skill.content).toMatch(/raw evidence/)
-    expect(skill.content).toMatch(/directory names/)
-
-    // Should teach search_tmdb first
-    expect(skill.content).toMatch(/search_tmdb/)
-
-    // Should teach write_identified_media
-    expect(skill.content).toMatch(/write_identified_media/)
-
-    // Should NOT mention "mechanical parse" or "guessed identity"
-    expect(skill.content).not.toMatch(/mechanical parse/)
-    expect(skill.content).not.toMatch(/guessed identity/)
-
-    // Should maintain two-evidence bar
-    expect(skill.content).toMatch(/two.*evidence/i)
-
-    // Should maintain traps
-    expect(skill.content).toMatch(/copyright evasion/i)
-    expect(skill.content).toMatch(/mojibake/i)
   })
 })

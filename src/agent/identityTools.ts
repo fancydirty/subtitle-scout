@@ -21,13 +21,25 @@ import { coercibleNullableInt } from './coerce.js'
  *  本仓早有现成解法：coerce.ts 的 coercibleNullableInt 就是为"模型把数字发成字符串/发
  *  None/省略键"写的（见该常量的头注释）。新工具写 schema 时必须复用它，不要重新发明一个
  *  更窄的门。 */
-const WriteIdentityInputSchema = z.object({
+/** 🔴 identityEval 第七轮发现的第二个同类缺陷（2026-07-27）：这个参数原本叫 `path`，要求
+ *  agent 交出视频文件的**绝对路径**——而 prompt 出于沙盒纪律**刻意只给相对目录段和
+ *  basename**（findSubtitleWorker 的 dirBlock/targetsBlock 都走 relative(task.mediaRoot, …)，
+ *  就是为了不泄漏 mediaRoot 以外的路径）。于是 agent 拿不到绝对路径却被要求提供，只能编：
+ *  实测 14 次写库调用里 13 次的 path 是 `../../../../../../../../../../Users/...` 这种拼接
+ *  幻觉，唯一"对"的那次也是碰巧。
+ *
+ *  这与 season/episode 的血案是**同一个缺陷类**：向模型索要它按设计根本没有的数据。措辞
+ *  再强也补不出信息——所以改成让它报**文件名**（prompt 里确实给了的事实），真实路径由
+ *  worker 从 task.targets 解析（resolveTargetPath）。模型只报它知道的，路径由代码给。 */
+export const WriteIdentityInputSchema = z.object({
   tmdbId: z.string().regex(/^\d+$/),
   isTv: z.boolean(),
   title: z.string().min(1),
   season: coercibleNullableInt,
   episode: coercibleNullableInt,
-  path: z.string().min(1),
+  /** 视频文件名（prompt 的 `file:` 段原文）。容忍模型多给路径前缀——resolveTargetPath 按
+   *  basename 匹配 task.targets，绝对路径永远来自代码而非模型。 */
+  file: z.string().min(1),
 })
 
 interface WriteIdentityDeps {
@@ -38,15 +50,25 @@ interface WriteIdentityDeps {
     getExternalIds: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null } | null>
     getOriginLanguage: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string | null>
   }
+  /** 本次 run 的 target 路径表（真实绝对路径，来自 task.targets）。模型报 file 名，代码
+   *  在这里解析出路径——绝对路径永不经过模型。 */
+  resolveTargetPath: (file: string) => string | null
 }
 
 export function makeWriteIdentityTool(deps: WriteIdentityDeps) {
   return tool({
-    description: 'Write the identified media to the database. Call this immediately after you have verified the identity through TMDB evidence (search + details with two-evidence bar). Embedded subtitle languages are read from the parked row (ffprobe data), not from your input. Returns the own-id you must use for subsequent subtitle installation.',
+    description: 'Write the identified media to the database. Call this immediately after you have verified the identity through TMDB evidence (search + details with two-evidence bar). Pass the video file name exactly as shown in the task facts ("file:"). Embedded subtitle languages are read from the parked row (ffprobe data), not from your input. Returns the own-id you must use for subsequent subtitle installation.',
     inputSchema: WriteIdentityInputSchema,
     execute: async (input) => {
-      const { tmdbId, isTv, title, season, episode, path } = input
+      const { tmdbId, isTv, title, season, episode, file } = input
       const { lib, tmdb } = deps
+
+      // 路径由代码解析（模型只报文件名）——报了本 run 不存在的文件名时明确拒绝，
+      // 不去猜"它大概是指哪个 target"。
+      const path = deps.resolveTargetPath(file)
+      if (path === null) {
+        throw new Error(`no target in this task matches file "${file}" - pass the file name exactly as shown in the task facts`)
+      }
 
       const mediaType = isTv ? 'tv' : 'movie'
 

@@ -82,114 +82,22 @@ candidate is still genuinely \`no_safe_match\` (you do not know why nothing was 
   //  拿到的返回。two-evidence bar：名字匹配不够，要第二个独立证据（季表/年份/时长）吻合
   //  才认领——原始证据在版权规避乱写（招z魂z4）、乱码（H）后丨室）、fansub 括号标签、
   //  中文标题截断上经常误导，名字像不等于就是。
+  // 路 A（2026-07-26 识别架构，2026-07-27 拆分为独立文档）：识别的完整教法搬到
+  //  identifyMediaSkill.ts（progressive disclosure——两个独立阶段两篇文档，模型按需
+  //  read_doc('identify-media') 加载；原地内联版本长到 100+ 行，还把关键步骤埋在中间的
+  //  "lost in the middle" 位置）。这里只留一个指路段：仅在 tmdb 证据工具可用时
+  //  （identityVerification=true）出现——工具不在时模型连"有识别这回事"都不知道（零误触发
+  //  纪律，同 hardsubSection 的先例）。
   const identitySection = identityVerification
     ? `
-## Step 0: Identify the media from raw evidence BEFORE you search
+## Step 0: identify the media before you search
 
-Your task carries NO identity — only raw evidence: the directory names inside the file
-paths, the file names themselves, per-target durations, embedded subtitle languages, and
-structure hints (mechanically-extracted title/year/season/episode candidates — hints, not
-truth). Establishing WHICH WORK this is comes first, before any subtitle search: a wrong
-identity means every subtitle you install gets filed under the wrong show — the worst
-outcome this system can produce.
+Your task carries NO identity — only raw evidence (directory names, file name, duration,
+embedded subtitle languages, structure hints). Establishing which work this is comes first;
+subtitle search below is meaningless until it is done.
 
-The raw evidence is hostile territory. Real titles hide behind copyright evasion
-misspellings (\`招z魂z4\` for 招魂4), mojibake (\`H）后丨室\`), fansub bracket tags
-(\`[诸神字幕组][莉可丽丝]\`), and truncated Chinese titles (\`铁.\` for 铁拳教育). And a
-plausible-looking search hit can be a same-name trap: completely different works share
-names constantly, so name similarity alone never proves identity.
-
-Before any \`search_source\` call, identify the work with your TMDB evidence tools:
-
-1. Clean the title from the raw evidence yourself: strip bracket tags, release-group
-   names, resolution tags; repair obvious misspellings.
-
-   Where to look for the title, in this order:
-   - The DIRECTORY names in the target's path are very often the ONLY place a real title
-     appears. A file named \`2026.2160p.iT.WEB-DL.DDP.5.1.Atmos.DV.HDR10+.H.265.mkv\` carries
-     NO title at all — every token in it is a year, a resolution, a source, a codec. Its
-     parent directory \`H）后丨室（2026）4K DV HDR 高码率 简英特效\` is where the title lives.
-     When the filename is pure technical tokens, the directory name is your primary
-     evidence, not a fallback.
-   - Repair mangled titles by shape, then search the REPAIRED form: stray full-width
-     brackets, a leading letter left over from a codec token, and vertical-bar-like
-     characters (丨 ｜ | ) wedged INSIDE a word are noise — \`H）后丨室\` reads as \`后室\`,
-     which is a real title you can search. Search the repaired native-language title
-     itself; do not only search romanizations or English guesses.
-   - Never search a bare year, a bare resolution, or a codec fragment (\`2026\`, \`iT\`,
-     \`2026 movie\`) — those return noise and burn your budget. If you catch yourself
-     querying tokens with no title in them, stop and go back to the directory name.
-2. Call \`search_tmdb\` with the cleaned candidates (try alternate titles/romanizations —
-   re-searching is expected). Pick the most promising hit — then treat it as a SUSPECT,
-   not an answer: the traps above mean the first plausible hit is often a different work
-   wearing your title's name.
-3. Call \`get_tmdb_details\` on the suspect. The bar is TWO independent evidence lines,
-   never just a matching name:
-   - Line 1 (name): does the TMDB title/original title plausibly match what the file and
-     directory names suggest? Account for misspellings, romanization, translation —
-     \`Lycoris Recoil\` and \`莉可丽丝\` are the same show; \`招z魂z4\` and \`The Conjuring 4\`
-     may be too.
-   - Line 2 (structure): for TV, the season table must actually contain your targets'
-     seasons/episodes AND the first-air year must fit; for movies, the TMDB runtime must
-     roughly match your target's duration and the year must fit.
-   A year mismatch is an AUTOMATIC FAIL, no matter how good any other line looks: a
-   runtime that matches to the minute means nothing when the year is off by a decade
-   (a different movie can share your runtime by coincidence — 112 minutes fits both
-   The Conjuring (2013) and an unrelated 2026 release). One strong-looking evidence line
-   never buys back a failed one. A suspect that fails either line is rejected — go back
-   to the search hits (or re-search) and hold the next candidate to the same bar.
-4. Both lines check out → the identity is established. **Now you MUST call
-   \`write_identified_media\`** with the verified tmdbId and title, plus each target's own
-   season/episode (movies: none) and path — once per target.
-
-   **This call is not optional bookkeeping — it IS the identification.** Until you call it,
-   nothing exists: no database row, no itemId, and the \`identity\` field you put in your
-   finalize report is a claim with nothing behind it. A finalize that reports
-   \`outcome: "identified"\` without a preceding \`write_identified_media\` call is a FAILED
-   run — the system has no record of what you found, and the file stays parked forever.
-
-   **Call it even when no subtitles turn out to be available.** Identification and subtitle
-   search are two independent jobs. Discovering "this file is Breaking Bad S01E01" is
-   permanently valuable on its own: the library gets a correct row, the file leaves the
-   parked queue, and every future run starts from a known identity instead of re-identifying
-   from scratch. If the subtitle search later comes up empty, that is a separate outcome
-   (\`no_safe_match\`) reported for an item that is now *correctly identified* — not a reason
-   to throw the identification away. Never reason "there is nothing to install, so writing
-   the identity is pointless": you would be discarding the one thing this run did accomplish.
-
-   The tool returns the own-id (e.g. \`tmdb:1396/s1e1\`). **That returned own-id is the
-   itemId** you must use for every subtitle operation below. You cannot invent it.
-
-   Sequence, no exceptions: \`search_tmdb\` → \`get_tmdb_details\` →
-   \`write_identified_media\` → (then subtitle search with the returned itemId) → \`finalize\`.
-5. No candidate passes the bar → install nothing and put every target into
-   \`no_safe_match\` with your reason naming the identification problem.
-   Guessing an identity is strictly worse than admitting you could not establish one.
-
-NEVER identify from your own memory. You may "know" a show well — that knowledge may guide
-which queries you try, but a verdict requires tool-returned evidence: a search hit plus a
-details check that passes the two-evidence bar. If you did not call the tools, you did not
-identify anything.
-
-This identification costs at most a few calls — search_tmdb, get_tmdb_details, then one
-write_identified_media per target. Do not skip the verification even when the answer looks
-obvious: a hit that "looks right" is exactly how same-name traps slip through.
-
-**What is NOT an identity problem.** The two-evidence bar is about WHICH WORK this is, not
-about whether every individual target lines up. Once the identity passes the bar, these
-are all normal and must NOT send you back to re-identify — the odd target is simply
-handled by the usual per-target judgment later:
-- A target's episode number is outside the season table (e.g. an S04E13 file when TMDB
-  says season 4 has 9 episodes). That is a mislabeled or differently-numbered file, or a
-  multi-episode/special release — one target's problem, not the show's identity. Report
-  that target as \`no_safe_match\` if you cannot place it; leave the identity alone.
-- A target's runtime differs from the show's typical runtime (extended finales, recaps,
-  double-length episodes).
-- Some targets are missing from the season table entirely (unaired, specials, numbering
-  offsets).
-Refusing a whole series' established identity because ONE episode looks odd is the single
-most destructive mistake available here: it strands every target of a correctly-identified
-show. When the name and year fit, the identity stands — full stop.
+Load \`read_doc("identify-media")\` and follow it. It ends with \`write_identified_media\`
+returning the own-id you use as the itemId for every subtitle operation in this document.
 `
     : ''
 
@@ -395,7 +303,7 @@ location. \`install_subtitle\` will refuse anything outside this task's director
     descriptor: {
       name: 'find-subtitle-judgment',
       description:
-        `${identityVerification ? 'How to identify the media from raw file evidence BEFORE searching (Step 0: clean a title from the directory names / file names / durations / embedded languages / structure hints → search_tmdb → get_tmdb_details under a two-evidence bar — name plus season-table/year/runtime, never from memory → write_identified_media, then continue with the returned itemId), then ' : ''}how to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
+        `${identityVerification ? 'That the task carries no identity and Step 0 is to identify the media first via the separate identify-media document (read_doc), whose write_identified_media call returns the itemId used below; then ' : ''}how to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
     },
     content,
   }

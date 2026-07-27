@@ -1,8 +1,12 @@
 import { describe, it, vi, beforeEach, afterEach } from 'vitest'
 import { openDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
-import { makeWriteIdentityTool } from './identityTools.js'
+import { makeWriteIdentityTool, WriteIdentityInputSchema } from './identityTools.js'
 import type { ScoutDb } from '../v2/db.js'
+
+/** 单测里的路径解析桩：worker 生产实现按 basename 在 task.targets 里查真实绝对路径，
+ *  单测直接把模型报的 file 当路径回传（等价于"该 target 存在且匹配"）。 */
+const identityResolver = (file: string): string | null => file
 
 // 注（与任务书原文的两处最小偏差，均被 repo 现实强制）：
 // 1. lib.getSeries/getMovie/getEpisode 未命中返回 null（非 undefined）——ghost 断言用 toBeNull()；
@@ -49,7 +53,7 @@ describe('write_identified_media', () => {
       getOriginLanguage: vi.fn().mockResolvedValue('en-US'),
     }
 
-    const tool = makeWriteIdentityTool({ lib, tmdb })
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver })
 
     const result = await tool.execute({
       tmdbId: '12345',
@@ -57,7 +61,7 @@ describe('write_identified_media', () => {
       title: 'Show',
       season: 1,
       episode: 5,
-      path: '/media/tv/Show.S01E05.mkv',
+      file: '/media/tv/Show.S01E05.mkv',
     }, {} as any)
 
     expect(result).toContain('tmdb:12345')
@@ -112,7 +116,7 @@ describe('write_identified_media', () => {
       getOriginLanguage: vi.fn().mockResolvedValue('en-US'),
     }
 
-    const tool = makeWriteIdentityTool({ lib, tmdb })
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver })
 
     const result = await tool.execute({
       tmdbId: '67890',
@@ -120,7 +124,7 @@ describe('write_identified_media', () => {
       title: 'Film',
       season: null,
       episode: null,
-      path: '/media/movies/Film.2021.mkv',
+      file: '/media/movies/Film.2021.mkv',
     }, {} as any)
 
     expect(result).toContain('tmdb:67890')
@@ -170,7 +174,7 @@ describe('write_identified_media', () => {
       getOriginLanguage: vi.fn().mockResolvedValue(null),
     }
 
-    const tool = makeWriteIdentityTool({ lib, tmdb })
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver })
 
     await tool.execute({
       tmdbId: '111',
@@ -178,7 +182,7 @@ describe('write_identified_media', () => {
       title: 'HasTrack',
       season: 1,
       episode: 1,
-      path: '/media/tv/HasTrack.S01E01.mkv',
+      file: '/media/tv/HasTrack.S01E01.mkv',
     }, {} as any)
 
     await tool.execute({
@@ -187,7 +191,7 @@ describe('write_identified_media', () => {
       title: 'NoTrack',
       season: 1,
       episode: 2,
-      path: '/media/tv/NoTrack.S01E02.mkv',
+      file: '/media/tv/NoTrack.S01E02.mkv',
     }, {} as any)
 
     expect(lib.getEpisode('tmdb:111/s1e1')?.sub_status).toBe('embedded')
@@ -212,7 +216,7 @@ describe('write_identified_media', () => {
       getOriginLanguage: vi.fn().mockResolvedValue(null),
     }
 
-    const tool = makeWriteIdentityTool({ lib, tmdb })
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver })
 
     await tool.execute({
       tmdbId: '333',
@@ -220,10 +224,36 @@ describe('write_identified_media', () => {
       title: 'Film',
       season: null,
       episode: null,
-      path: '/media/movies/NeverParked.mkv',
+      file: '/media/movies/NeverParked.mkv',
     }, {} as any)
 
     expect(lib.getMovie('tmdb:333')?.sub_status).toBe('missing')
+  })
+
+  // 🔴 identityEval 第七轮修复的第二个同类缺陷：参数原本是绝对 `path`，而 prompt 出于沙盒
+  // 纪律只给相对目录段+basename——模型拿不到绝对路径只能编（实测 14 次调用 13 次是
+  // `../../../../../..` 拼接幻觉）。现在模型报 file 名、真实路径由 worker 的
+  // resolveTargetPath 解析；报了本 run 不存在的文件名必须明确拒绝，不猜"大概是哪个"。
+  it('拒绝本 run 里不存在的 file 名（不猜、不建幽灵行）', async ({ expect }) => {
+    const tmdb = {
+      getDetails: vi.fn(),
+      getChineseTitles: vi.fn(),
+      getExternalIds: vi.fn(),
+      getOriginLanguage: vi.fn(),
+    }
+    // 解析器只认识真 target；模型报别的名字一律 null
+    const tool = makeWriteIdentityTool({
+      lib, tmdb,
+      resolveTargetPath: (f) => (f === 'Real.mkv' ? '/media/movies/Real.mkv' : null),
+    })
+
+    await expect(tool.execute({
+      tmdbId: '14161', isTv: false, title: '2012', season: null, episode: null,
+      file: '../../../../../../Users/x/幻觉拼接.mkv',
+    }, {} as any)).rejects.toThrow(/no target in this task matches file/)
+
+    // 早退在任何网络调用之前——不为必败的写入烧 TMDB 配额
+    expect(tmdb.getDetails).not.toHaveBeenCalled()
   })
 
   it('REFUSES to create rows when tmdbId does not exist (404) - hallucination defense', async ({ expect }) => {
@@ -241,7 +271,7 @@ describe('write_identified_media', () => {
       getOriginLanguage: vi.fn(),
     }
 
-    const tool = makeWriteIdentityTool({ lib, tmdb })
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver })
 
     await expect(tool.execute({
       tmdbId: '99999999',
@@ -249,7 +279,7 @@ describe('write_identified_media', () => {
       title: 'Fake Show',
       season: 1,
       episode: 1,
-      path: '/media/tv/Fake.Show.S01E01.mkv',
+      file: '/media/tv/Fake.Show.S01E01.mkv',
     }, {} as any)).rejects.toThrow(/does not exist/i)
 
     // Verify no rows created
@@ -275,7 +305,7 @@ describe('write_identified_media', () => {
       getOriginLanguage: vi.fn(),
     }
 
-    const tool = makeWriteIdentityTool({ lib, tmdb })
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver })
 
     await expect(tool.execute({
       tmdbId: '12345',
@@ -283,7 +313,7 @@ describe('write_identified_media', () => {
       title: 'Show',
       season: null, // Missing!
       episode: null,
-      path: '/media/tv/Show.mkv',
+      file: '/media/tv/Show.mkv',
     }, {} as any)).rejects.toThrow(/season.*episode/i)
 
     // 校验在 getDetails 之前——必败的请求不烧 TMDB 配额
@@ -307,9 +337,9 @@ describe('write_identified_media inputSchema 的真模型编码容错（六轮�
 
   for (const [label, seasonEpisode, expected] of variants) {
     it(`收得下：${label}`, ({ expect }) => {
-      const tool = makeWriteIdentityTool({ lib: {} as never, tmdb: {} as never })
-      const parsed = tool.inputSchema!.safeParse({
-        tmdbId: '14161', isTv: false, title: '2012', path: '/media/movies/2012.mkv',
+      // 直接校 schema（不经 tool 包装——ai 包的 FlexibleSchema 类型会遮掉 zod 的 safeParse）
+      const parsed = WriteIdentityInputSchema.safeParse({
+        tmdbId: '14161', isTv: false, title: '2012', file: '/media/movies/2012.mkv',
         ...seasonEpisode,
       })
       expect(parsed.success, `被拒了：${label}`).toBe(true)

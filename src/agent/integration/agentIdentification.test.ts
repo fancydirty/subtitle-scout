@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { MockLanguageModelV4 } from 'ai/test'
 import { openDb } from '../../v2/db.js'
 import { LibraryRepo } from '../../v2/libraryRepo.js'
@@ -120,7 +120,9 @@ describe('agent identification integration', () => {
             title: 'Breaking Bad',
             season: 1,
             episode: 1,
-            path: videoPath,
+            // 2026-07-27：契约从绝对 path 改为 file 名（prompt 只给相对段+basename，
+            // 索要绝对路径必然逼出幻觉）——真实路径由 worker 的 resolveTargetPath 解析。
+            file: basename(videoPath),
           })
         }
         // Final: finalize report
