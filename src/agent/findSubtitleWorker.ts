@@ -164,16 +164,43 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     // 模型直接写下 "No directory names were provided, so re-identification is impossible"，
     // 诚实地卡死在缺料上（它的判断没错，是喂的事实缺了一块）。
     // 给相对沙盒根的目录段：既补上标题证据，又不泄漏 mediaRoot 以外的路径（沙盒纪律）。
-    const targetsBlock = task.targets.map(t => {
-      const se = t.season != null ? `S${t.season}E${t.episode}` : '(movie)'
-      const abs = t.absoluteEpisode != null ? ` | absolute episode: ${t.absoluteEpisode}` : ''
-      const imdb = t.imdbId ? ` | imdb: ${t.imdbId}` : ' | imdb: unknown'
-      // 2026-07-18 事故修复（True Detective S02E08）：这是该 target 自己的实际时长事实
-      // （FindSubtitleTargetFact.runtimeMinutes），区别于下方 task 级那行的剧级典型 fallback
-      // 值——只有取到值才附加这一段，取不到（null/缺席）时整段省略，不虚报一个 unknown。
-      const runtime = t.runtimeMinutes != null ? ` | runtime ~${t.runtimeMinutes} min` : ''
-      return `- itemId: ${t.itemId} | ${se}${abs}${imdb}${runtime} | file: ${t.videoFilename}`
-    }).join('\n')
+    //
+    // Task 12（agent-first 识别主链路）：unidentified scope——targets 全部 itemId=null
+    // （parked_paths 的未识别文件，由 cli/unidentifiedFindSubtitle.ts 从 parked_paths 的
+    // raw data 建成）。此时整份 prompt 没有任何"猜到的身份"可报（task.title 等都是空值），
+    // 改报每个 target 的 raw evidence：结构提示（identifyFromPath 的 season/episode/
+    // absoluteEpisode，标注为 hint 不是事实）、时长（durationSec，ffprobe raw 值）、
+    // 内嵌字幕语言（embeddedLangs）、目录段——识别动作全归 agent（Step 0 →
+    // write_identified_media），机械层只递证据不递结论。
+    const unidentified = task.targets.every((t) => t.itemId === null)
+    const targetsBlock = unidentified
+      ? task.targets.map((t) => {
+          const hints = [
+            t.season != null ? `season ${t.season}` : null,
+            t.episode != null ? `episode ${t.episode}` : null,
+            t.absoluteEpisode != null ? `absolute episode ${t.absoluteEpisode}` : null,
+          ].filter((h): h is string => h !== null).join(', ')
+          // durationSec 是 ffprobe raw 值（agent 识别证据）；只有它缺席时才退用
+          // runtimeMinutes 派生值，两值同源于 parked_paths.duration_sec，绝不并排重复。
+          const duration = t.durationSec != null
+            ? ` | duration: ${t.durationSec}s`
+            : (t.runtimeMinutes != null ? ` | runtime ~${t.runtimeMinutes} min` : '')
+          const langs = t.embeddedLangs?.length ? ` | embedded langs: ${t.embeddedLangs.join(', ')}` : ''
+          // 目录段相对沙盒根（同 dirBlock 的既有纪律）；文件直躺沙盒根下时省略该段。
+          const relDir = relative(task.mediaRoot, t.dirName ?? dirname(t.videoPath))
+          const dir = relDir.length > 0 ? ` | dir: ${relDir}` : ''
+          return `- itemId: null (unidentified — identify first, then write_identified_media) | structure hint: ${hints || 'none'}${duration}${langs}${dir} | file: ${t.videoFilename}`
+        }).join('\n')
+      : task.targets.map(t => {
+          const se = t.season != null ? `S${t.season}E${t.episode}` : '(movie)'
+          const abs = t.absoluteEpisode != null ? ` | absolute episode: ${t.absoluteEpisode}` : ''
+          const imdb = t.imdbId ? ` | imdb: ${t.imdbId}` : ' | imdb: unknown'
+          // 2026-07-18 事故修复（True Detective S02E08）：这是该 target 自己的实际时长事实
+          // （FindSubtitleTargetFact.runtimeMinutes），区别于下方 task 级那行的剧级典型 fallback
+          // 值——只有取到值才附加这一段，取不到（null/缺席）时整段省略，不虚报一个 unknown。
+          const runtime = t.runtimeMinutes != null ? ` | runtime ~${t.runtimeMinutes} min` : ''
+          return `- itemId: ${t.itemId} | ${se}${abs}${imdb}${runtime} | file: ${t.videoFilename}`
+        }).join('\n')
 
     // 沙盒根自身的目录名 + 每个 target 相对它的子目录段——两者合起来就是"路径里的目录名"
     // 这份证据（绝大多数布局下标题就写在其中之一）。去重后逐行列出，空段（文件直接躺在
@@ -188,37 +215,67 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       ...(dirNames.length ? [`subdirectories: ${dirNames.join(' | ')}`] : []),
     ].join('\n')
 
+    // Task 12（agent-first 识别主链路）：unidentified scope 的任务级身份块——没有任何
+    // "guessed title"可报（整批 target 都是 parked_paths 的未识别文件，机械层只递 raw
+    // 证据不递结论），改成明示"无身份、先识别"。tmdb 缺席时（识别工具与
+    // write_identified_media 双双未挂）诚实标注本 run 做不了识别——同库行分支的
+    // tmdb-conditional 口径，不教模型空谈"我会验证"。
+    const identityBlock = unidentified
+      ? [
+          'This task carries NO identity — every target below is an unidentified parked file.',
+          ...(deps.tmdb
+            ? [
+                'Identify each target from its raw evidence (directory names, file name, duration,',
+                'embedded subtitle languages, structure hints) per the skill document (Step 0): clean',
+                'a title, verify against TMDB under the two-evidence bar, then call',
+                'write_identified_media for the target BEFORE searching for its subtitles.',
+              ]
+            : [
+                'No identification tools are available in this run — do not guess an identity;',
+                'report every target unresolved instead of installing on an unverified one.',
+              ]),
+        ]
+      : [
+          // 路 A（2026-07-26 识别架构）：以下身份字段全部来自机械文件名解析——是候选猜测，
+          // 不是事实。机械解析在版权规避乱写（招z魂z4）、乱码（H）后丨室）、fansub 括号标签、
+          // 中文标题截断上经常误判。tmdb 工具在时 skill 会教 Step 0 识别验证；工具不在
+          // （TMDB 未配置）时保持旧语义（按机械身份直接找字幕），但这行标注依然诚实。
+          'media identity below is a MECHANICAL GUESS from filename parsing, not verified fact —',
+          deps.tmdb
+            ? 'verify it first per the skill document (Step 0) before searching.'
+            : 'no verification tools are available in this run; proceed on this identity.',
+          `guessed title: ${task.title}`,
+          `guessed original title: ${task.originalTitle ?? 'unknown'}`,
+          `guessed year: ${task.year ?? 'unknown'}`,
+          `alternative/native titles: ${task.alternativeTitles.length ? task.alternativeTitles.join(', ') : 'none'}`,
+          `overview: ${task.overview ?? 'none'}`,
+          // 2026-07-18 事故修复（True Detective S02E08）：措辞明示这是剧级典型值/fallback，不是
+          // 单集事实——真正的单集实际时长（有的话）在下方每个 target 行自己的 "runtime ~N min"。
+          // 别把这行当单集事实用：加长集/季终集的实际时长可能远高于这个数字。
+          `typical episode runtime (series-level fallback, minutes): ${task.runtimeMinutes ?? 'unknown'}`,
+          `provider ids: ${JSON.stringify(task.providerIds)}`,
+        ]
+
     const prompt = [
       // "a subtitle in X" rather than "a X subtitle": sidesteps the a/an article problem
       // ("a English subtitle") no matter what languageName() returns.
-      `Find and install subtitles in ${languageName(task.targetLanguage)} for the target items ` +
-      'listed below — they all belong to the same series/scope, so ONE season pack will often ' +
-      'cover many of them.',
+      unidentified
+        ? `Find and install subtitles in ${languageName(task.targetLanguage)} for the target items ` +
+          'listed below — they are unidentified parked files: identify each one first (Step 0), ' +
+          'then search on its established identity.'
+        : `Find and install subtitles in ${languageName(task.targetLanguage)} for the target items ` +
+          'listed below — they all belong to the same series/scope, so ONE season pack will often ' +
+          'cover many of them.',
       'Report per-item outcomes via finalize exactly once (see the skill document).',
       '',
       `target subtitle language: ${languageName(task.targetLanguage)}`,
-      // 路 A（2026-07-26 识别架构）：以下身份字段全部来自机械文件名解析——是候选猜测，
-      // 不是事实。机械解析在版权规避乱写（招z魂z4）、乱码（H）后丨室）、fansub 括号标签、
-      // 中文标题截断上经常误判。tmdb 工具在时 skill 会教 Step 0 识别验证；工具不在
-      // （TMDB 未配置）时保持旧语义（按机械身份直接找字幕），但这行标注依然诚实。
-      'media identity below is a MECHANICAL GUESS from filename parsing, not verified fact —',
-      deps.tmdb
-        ? 'verify it first per the skill document (Step 0) before searching.'
-        : 'no verification tools are available in this run; proceed on this identity.',
-      `guessed title: ${task.title}`,
-      `guessed original title: ${task.originalTitle ?? 'unknown'}`,
-      `guessed year: ${task.year ?? 'unknown'}`,
-      `alternative/native titles: ${task.alternativeTitles.length ? task.alternativeTitles.join(', ') : 'none'}`,
-      `overview: ${task.overview ?? 'none'}`,
-      // 2026-07-18 事故修复（True Detective S02E08）：措辞明示这是剧级典型值/fallback，不是
-      // 单集事实——真正的单集实际时长（有的话）在下方每个 target 行自己的 "runtime ~N min"。
-      // 别把这行当单集事实用：加长集/季终集的实际时长可能远高于这个数字。
-      `typical episode runtime (series-level fallback, minutes): ${task.runtimeMinutes ?? 'unknown'}`,
-      `provider ids: ${JSON.stringify(task.providerIds)}`,
+      ...identityBlock,
       '',
       dirBlock,
       '',
-      `targets (${task.targets.length} item(s), current gaps in this scope):`,
+      unidentified
+        ? `targets (${task.targets.length} item(s), unidentified parked files):`
+        : `targets (${task.targets.length} item(s), current gaps in this scope):`,
       targetsBlock,
     ].join('\n')
 

@@ -40,6 +40,9 @@ import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
 import { replayRollback } from '../files/realignManifest.js'
 import { runRealignWorkerTask } from '../v2/realignWorkerTask.js'
 import { runFindSubtitleWorkerTask } from '../v2/findSubtitleWorkerTask.js'
+import {
+  makeUnidentifiedFindSubtitleWorker, runUnidentifiedFindSubtitleWorkerTask,
+} from './unidentifiedFindSubtitle.js'
 import { runReconcileAll, runOrchestrateWorkerTask } from '../v2/reconcileAll.js'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
@@ -401,7 +404,7 @@ async function cmdWatch() {
   // 把 daemon 的 claim 循环带崩（daemon.dispatch 是最后一道网，这里的 try/catch 是它前面一道，
   // 不依赖它兜底）。
   const handleWorkerTask = async (job: Job): Promise<void> => {
-    let payload: { taskType?: unknown } = {}
+    let payload: { taskType?: unknown; scope?: unknown } = {}
     try {
       payload = JSON.parse(job.payload ?? '{}')
     } catch {
@@ -410,6 +413,34 @@ async function cmdWatch() {
     }
     try {
       if (payload.taskType === 'find_subtitle') {
+        if (payload.scope === 'unidentified') {
+          // Task 12（agent-first 识别主链路）：scope='unidentified' 的 find_subtitle 行——目标
+          // 不是库行（既有下方分支的世界），而是 parked_paths 里的未识别文件。从 parked_paths
+          // 读 raw data（duration_sec/embedded_langs）+ identifyFromPath 结构提示建 targets；
+          // worker 额外挂 identityDeps（write_identified_media），agent 用 TMDB 证据验证身份后
+          // 亲自写库，拿 own-id 继续找字幕。runner 与类型细节见 cli/unidentifiedFindSubtitle.ts。
+          const runTask = makeUnidentifiedFindSubtitleWorker({
+            model: reasoningModel,
+            adapters: await buildAdapters(emitProviderEvent),
+            cacheRoot,
+            tmdb,
+            lib,
+          })
+          // dashboard G4 / 债务D5：mediaRoots/targetLanguage/hardsubMode 每次派发新鲜读取——
+          // 同下方库行分支的既有口径，不锁定 watch 启动时刻的快照。
+          await runUnidentifiedFindSubtitleWorkerTask(
+            job, {
+              lib, mediaRoots: currentRoots(),
+              targetLanguage: languagesNow().targetLanguages[0],
+              hardsubMode: (() => {
+                const v = settingsRepo.get('hardsub_mode')
+                return v === 'agent' || v === 'aggressive' ? v : 'off'
+              })(),
+              runTask, runs,
+            }, jobs, () => Date.now(),
+          )
+          return
+        }
         const runTask = makeFindSubtitleWorker({
           model: reasoningModel,
           adapters: await buildAdapters(emitProviderEvent),

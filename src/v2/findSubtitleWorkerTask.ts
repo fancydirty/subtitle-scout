@@ -12,8 +12,9 @@ import { tmdbIdFromOwnId } from './ownIds.js'
 
 /** runs.detail is a human-readable summary the dashboard shows directly (src/v2/runsRepo.ts) —
  *  trim/cap so a raw agent reason or thrown error message (which can run long) doesn't blow out
- *  the timeline UI. */
-function capDetail(s: string, max = 200): string {
+ *  the timeline UI. Exported (Task 12): the unidentified-scope runner (cli/unidentifiedFindSubtitle.ts)
+ *  shares the same dashboard-detail discipline. */
+export function capDetail(s: string, max = 200): string {
   const trimmed = s.trim()
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed
 }
@@ -31,6 +32,11 @@ export interface FindSubtitleWorkerTaskPayload {
   reason: string
   seasons?: number[] | null
   includeThrottled?: boolean
+  /** Task 12（agent-first 识别主链路）：'unidentified' = 目标不是库行（已识别条目），而是
+   *  parked_paths 里的未识别文件——CLI 的 find_subtitle 分支据此改走
+   *  cli/unidentifiedFindSubtitle.ts（从 parked_paths 读 raw data 建 targets，worker 挂
+   *  write_identified_media 让 agent 自己识别写库）。缺席/其它值 = 既有库行缺口语义。 */
+  scope?: 'unidentified'
 }
 
 /** Deps needed to turn a claimed `worker_task` row (payload.taskType==='find_subtitle') into a
@@ -158,8 +164,9 @@ export async function fetchTmdbEnrichment(
 
 /** OUTER (MEDIA_ROOTS) 沙盒边界检查 + 写权限探测，两连 throw——processed 前的既有防线，从
  *  movie/series 两个分支各自的重复代码里抽出的模块内私有 helper。错误文案逐字保留：两条
- *  message 是既有测试锁（sandbox/unwritable 两类调用方都靠这段文案定位问题）。 */
-function assertDirSafe(dir: string, roots: string[]): void {
+ *  message 是既有测试锁（sandbox/unwritable 两类调用方都靠这段文案定位问题）。
+ *  Exported (Task 12): the unidentified-scope runner applies the same gate to parked-path dirs. */
+export function assertDirSafe(dir: string, roots: string[]): void {
   if (!isUnderRoots(dir, roots)) {
     throw new Error(`拒绝在媒体根目录之外写入: ${dir} — 检查 MEDIA_ROOTS 配置（或 dashboard 设置页的守备目录）`)
   }
@@ -175,8 +182,9 @@ function assertDirSafe(dir: string, roots: string[]): void {
  *  这个场景写的）而不是另起一个同类 helper。找不到匹配根（典型场景：deps.mediaRoots 为空——
  *  未配置 MEDIA_ROOTS 的开发态/测试态，此时 isUnderRoots 自己也把"空=不限制"当特例，containingRoot
  *  在这种输入下必然返回 null）——安全退化为 dir 本身并 console.error 告警：这批任务的 staging
- *  目录不再受 gcOrphans 保护，但不阻塞派发（宁可退化保护，不阻塞主流程）。 */
-function stagingRootFor(dir: string, roots: string[], jobId: number): string {
+ *  目录不再受 gcOrphans 保护，但不阻塞派发（宁可退化保护，不阻塞主流程）。
+ *  Exported (Task 12): the unidentified-scope runner derives its stagingRoot identically. */
+export function stagingRootFor(dir: string, roots: string[], jobId: number): string {
   const root = containingRoot(dir, roots)
   if (!root) {
     console.error(
@@ -190,8 +198,9 @@ function stagingRootFor(dir: string, roots: string[], jobId: number): string {
 
 /** 全部目标目录的公共祖先（INNER 沙盒根推导）。目录相等视为 under（isUnderRoots 既有语义）——
  *  同季目标通常共享同一 Season 目录，一步命中；只有磁盘布局不规范（同季文件散落多个子目录）
- *  时才需要真的逐级上探。 */
-function commonDir(dirs: string[]): string {
+ *  时才需要真的逐级上探。Exported (Task 12): the unidentified-scope runner derives the INNER
+ *  sandbox root from its parked targets' dirs with the same rule. */
+export function commonDir(dirs: string[]): string {
   let candidate = dirs[0]
   while (!dirs.every((d) => isUnderRoots(d, [candidate]))) {
     const parent = dirname(candidate)
