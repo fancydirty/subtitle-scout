@@ -54,6 +54,11 @@ export interface FindSubtitleTargetFact {
   dirName?: string | null
   durationSec?: number | null
   embeddedLangs?: string[] | null
+  /** 路径里的 `[tmdbid-N]` 标签。null = 路径无标签（绝大多数）。
+   *  **这是 hint 不是判决**：标签由上一轮 run 或外部整理工具写下，可能过期或错误，
+   *  agent 必须 get_tmdb_details 核验通过才能认领——否则等于重开一个绕过
+   *  two-evidence bar 的后门。 */
+  embeddedTmdbId: string | null
 }
 
 /** Input to one find-subtitle worker run: a season-level (or single-movie) range + the current

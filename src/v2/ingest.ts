@@ -490,9 +490,11 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       // true=本轮至少一集路径不合规范形。movies 豁免（没有规范形概念）、parked 路径不参与
       // （没有 series 归属），pass 收尾处全量重写（见文件底部）。
       const layoutObserved = new Map<string, boolean>()
-      // FULL PATH 的探针待办：path → 该文件本轮的 stat 指纹。走盘循环里只登记，真探测推迟到
-      // 走盘结束后统一按 probeConcurrency 并发跑（云盘单文件探针 12-16s，收益全在并发）。
-      const pendingProbes = new Map<string, { mtimeMs: number; size: number }>()
+      // FULL PATH 的探针待办：path → 该文件本轮的 stat 指纹 + 路径解析出的 [tmdbid-N] 标签。
+      // 走盘循环里只登记，真探测推迟到走盘结束后统一按 probeConcurrency 并发跑（云盘单文件探针
+      // 12-16s，收益全在并发）。embeddedTmdbId 必须搭这趟车跨过"循环内算出 / 循环后落库"这道
+      // 边界——它是 recognize() 在循环内产出的结构提示，而 upsertParkedPath 已被推迟到循环之后。
+      const pendingProbes = new Map<string, { mtimeMs: number; size: number; embeddedTmdbId: string | null }>()
 
       for (const root of deps.roots()) {
         for (const path of listVideoFiles(root)) {
@@ -615,8 +617,11 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
             // outcome 是 PathIdentity：纯结构提示（title/year/season/episode/embeddedTmdbId 等
             // 机械解析信号），没有 tmdbId——身份裁决（TMDB 搜索/详情/建行）已上移到 agent 的
-            // write_identified_media 工具；ingest 只采集原始探测数据并 park，等 agent 识别
-            // （故这里不再需要绑定 outcome：结构提示本身不参与下面的 raw-data 采集）。
+            // write_identified_media 工具；ingest 只采集原始探测数据并 park，等 agent 识别。
+            // 唯一从 outcome 取用的字段是 embeddedTmdbId（路径里的 `[tmdbid-N]` 标签）：它是
+            // agent 能拿到的最强起点，必须随文件落进 parked_paths 交给 agent 核验——此前它在
+            // 这里被整体丢弃，导致本项目 buildTargetShowDir 写下的规范布局，下一轮扫描自己都
+            // 认不出来。仍只是 hint：agent 必须过 TMDB 核验才能认领（见 identifyMediaSkill）。
 
             // 采集 raw data：时长 + 内嵌字幕轨语言。**跨文件**并发（见 pendingProbes 与循环
             // 之后的 mapWithConcurrency 一段）：云盘上单文件探针 12-16s 是 CDN 延迟地板，串行
@@ -625,7 +630,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             // 按 path 去重（Map 而非数组）：原先探测与 parking 就在这条分支内联完成，若同一
             // path 在走盘里出现两次，第二次会撞上刚写的 park 行的负缓存而跳过、探针只跑一遍；
             // 推迟之后不去重就会跑两遍。走盘实现本不产生重复路径，这只是把等价性钉死。
-            pendingProbes.set(path, stat)
+            // embeddedTmdbId 一并登记：outcome 只在这个作用域里存在，parking 已在循环之外。
+            pendingProbes.set(path, { ...stat, embeddedTmdbId: outcome.embeddedTmdbId })
             continue
           } catch (e) {
             // 同 daemon/selfScan.ts 的既有哲学："一个文件/一次 TMDB 抖动不能拖垮整轮 pass"——
@@ -648,7 +654,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       //    实参、日志措辞全部不变（"probeDuration failed for …" / "probe failed for …" 有既成的
       //    运维习惯依赖）。
       //  · 结果按下标归属（mapWithConcurrency 保序 + 任务自带 path），绝不按完成顺序——每个文件
-      //    的 upsertParkedPath 只拿它自己那份 durationSec/embeddedLangs。
+      //    的 upsertParkedPath 只拿它自己那份 durationSec/embeddedLangs。走盘循环内算出的
+      //    embeddedTmdbId 同样按下标归属（它随 pendingProbes 的 value 一起过界，与 stat 同行，
+      //    天然不会串台）。
       // parking 与 result.parked 计数留在这个串行的 for 里（DB 写入是同步的 better-sqlite3，
       // 并发化没有收益，串行也保证了计数与写序确定）。
       const probeTargets = [...pendingProbes]
@@ -692,6 +700,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
           // Park with raw data for agent identification。fingerprint 的 durationSec/embeddedLangs
           // 是 optional（undefined=本次未探测，指纹未变时保留库中已有值），故 null → undefined 换算。
+          // embeddedTmdbId 不做这个换算：它不是"探测"结果而是路径解析产物，null 就是权威的
+          // "这条路径没有标签"，直接透传（列语义见 db.ts v26 迁移注释）。
           lib.upsertParkedPath(
             path,
             'awaiting-agent-identification',
@@ -701,6 +711,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               size: stat.size,
               durationSec: raw.durationSec ?? undefined,
               embeddedLangs: raw.embeddedLangs ?? undefined,
+              embeddedTmdbId: stat.embeddedTmdbId,
             }
           )
           result.parked++

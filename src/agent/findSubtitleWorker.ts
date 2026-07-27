@@ -234,7 +234,14 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
           // 目录段相对沙盒根（同 dirBlock 的既有纪律）；文件直躺沙盒根下时省略该段。
           const relDir = relative(task.mediaRoot, t.dirName ?? dirname(t.videoPath))
           const dir = relDir.length > 0 ? ` | dir: ${relDir}` : ''
-          return `- itemId: null (unidentified — identify first, then write_identified_media) | structure hint: ${hints || 'none'}${duration}${langs}${dir} | file: ${t.videoFilename}`
+          // Task 2（[tmdbid-N] 证据通道的呈现面）：路径里的显式 TMDB id——最强起点（可以直接
+          // get_tmdb_details，跳过搜索）。措辞必须同时把"可能过期/写错"钉在同一行：这条标签由
+          // 上一轮 run 或外部整理工具写下，若只报"STRONGEST hint"而不报它会骗人，等于给模型开
+          // 一个绕过 two-evidence bar 的后门（skill 里的完整纪律见 identifyMediaSkill）。
+          const tag = t.embeddedTmdbId
+            ? ` | path carries [tmdbid-${t.embeddedTmdbId}] (STRONGEST hint — but it may be stale or wrong; verify with get_tmdb_details before claiming it)`
+            : ''
+          return `- itemId: null (unidentified — identify first, then write_identified_media) | structure hint: ${hints || 'none'}${duration}${langs}${dir}${tag} | file: ${t.videoFilename}`
         }).join('\n')
       : task.targets.map(t => {
           const se = t.season != null ? `S${t.season}E${t.episode}` : '(movie)'

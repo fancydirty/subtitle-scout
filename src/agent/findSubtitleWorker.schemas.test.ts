@@ -182,6 +182,7 @@ describe('FindSubtitleTargetFact with raw evidence', () => {
           episode: 1,
           absoluteEpisode: null,
           imdbId: null,
+          embeddedTmdbId: null,
           runtimeMinutes: 40,
           // Raw evidence for agent identification
           dirName: 'tv',

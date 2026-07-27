@@ -373,6 +373,14 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
   // TMDB 核验后才能认领，否则等于重开一个绕过 two-evidence bar 的后门。
   // NULL = 路径里没有标签（绝大多数情况），不是"未探测"——它是纯路径解析产物，同步、零 I/O。
   (db: ScoutDb) => {
+    // 表存在性守卫（同 v24/v25 的既有口径，不是多余）：老库（v22/v23 等形状的 seeded 测试库、
+    // 历史真实库）里 parked_paths 可能压根不存在，而 PRAGMA table_info 对不存在的表返回空集——
+    // 只判 !columns.has(...) 会让守卫恒为真，裸 ALTER 直接炸 "no such table: parked_paths"，
+    // 整条迁移链在事务里回滚，老库永远打不开。
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'parked_paths'")
+      .get()
+    if (!exists) return
     const columns = new Set(
       (db.prepare('PRAGMA table_info(parked_paths)').all() as Array<{ name: string }>).map((c) => c.name)
     )

@@ -318,6 +318,7 @@ async function runCase(c: IdentityCase) {
       season: c.structureHints.season, episode: c.structureHints.episode,
       absoluteEpisode: c.structureHints.absoluteEpisode,
       imdbId: null,
+      embeddedTmdbId: null,
       runtimeMinutes: c.durationSec ? Math.round(c.durationSec / 60) : null,
       dirName: c.dirName,
       durationSec: c.durationSec,

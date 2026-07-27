@@ -68,6 +68,10 @@ export function buildUnidentifiedTargets(
         dirName: dirname(p.path),
         durationSec: p.duration_sec,
         embeddedLangs,
+        // Task 2（[tmdbid-N] 证据通道）：取 DB 列，**不**用上面的 identity 重算——这一列是
+        // ingest 当时记录下的事实（schema v26），identifyFromPath 只是它的来源之一；DB 值是
+        // 单一真相，重算等于让呈现面与落库面各说各话。null=路径无标签（绝大多数情况）。
+        embeddedTmdbId: p.embedded_tmdb_id,
       }
     })
 }

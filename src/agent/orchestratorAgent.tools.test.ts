@@ -121,7 +121,7 @@ describe('makeListMissingCoverageTool', () => {
       missingBySeason: () => [],
       missingMovies: () => [],
       listParkedPaths: () => {
-        const base = { first_seen: 1000, last_attempt: 1000, retry_count: 0, next_retry_at: null, probe_mtime: null, probe_size: null, duration_sec: null, embedded_langs: null }
+        const base = { first_seen: 1000, last_attempt: 1000, retry_count: 0, next_retry_at: null, probe_mtime: null, probe_size: null, duration_sec: null, embedded_langs: null, embedded_tmdb_id: null }
         return [
           { path: '/media/A/a.mkv', park_reason: 'no tmdb match', ...base },
           { path: '/media/A/b.mkv', park_reason: 'ambiguous', ...base },
@@ -563,7 +563,7 @@ describe('spawn_sibling_orchestrator 如实转告 upsertWorkerTask 回执 (F-R2-
 describe('makeDispatchUnidentifiedIdentificationTool (Task 13)', () => {
   const parkedRow = (path: string, park_reason: string) => ({
     path, park_reason, first_seen: 1000, last_attempt: 1000, retry_count: 0,
-    next_retry_at: null, probe_mtime: null, probe_size: null, duration_sec: null, embedded_langs: null,
+    next_retry_at: null, probe_mtime: null, probe_size: null, duration_sec: null, embedded_langs: null, embedded_tmdb_id: null,
   })
 
   it('no parked paths at all → {outcome:"none"}, upsertWorkerTask never called', async () => {

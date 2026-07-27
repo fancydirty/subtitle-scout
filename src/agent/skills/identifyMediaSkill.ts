@@ -69,6 +69,19 @@ cross-checking evidence: a numeric-only name like \`2012\` under a \`movies\` di
 158-minute duration is worth searching as the literal title \`2012\` — TMDB's 2009 disaster
 film runs 158 minutes, and that runtime agreement is the second evidence line.
 
+## When the path carries a [tmdbid-N] tag
+
+Some paths carry an explicit TMDB id — either written by a previous run of this system or by an
+external organizer (Sonarr/Radarr and similar). It is the strongest starting point you will get:
+skip searching and call \`get_tmdb_details\` on that id directly.
+
+It is a starting point, not a verdict. The tag may be stale or simply wrong — a previous run may
+have misidentified the show, or whoever renamed the directory may have typed the wrong number.
+So the two-evidence bar still applies in full: the details you get back must match the name
+evidence AND the structure evidence. If the tagged id fails the bar, discard it and identify from
+scratch (clean a title, search, verify) — do not claim an identity just because a number was
+written in the path.
+
 ## Identification comes from tools, never from memory
 
 You may know a show well. That knowledge guides which queries you try; it is never a verdict.
@@ -119,7 +132,9 @@ target of a correctly-identified show. When name and year fit, the identity stan
         'subtitles: find the title in the directory names when the file name is pure technical ' +
         'tokens, repair copyright-evasion/mojibake/fansub-tag/truncation distortions, search_tmdb ' +
         'then get_tmdb_details under a two-evidence bar (name plus season-table/year/runtime, a ' +
-        'year mismatch is an automatic fail, never from memory), write_identified_media per target ' +
+        'year mismatch is an automatic fail, never from memory), how to treat an explicit ' +
+        '[tmdbid-N] path tag as the strongest starting point but never a verdict (it may be stale ' +
+        'or wrong — verify it against the same bar), write_identified_media per target ' +
         'and continue with the itemId it returns, no_safe_match when nothing passes the bar, and ' +
         'which per-target oddities (out-of-range episode, unusual runtime, missing from season ' +
         'table) are NOT reasons to re-identify.',

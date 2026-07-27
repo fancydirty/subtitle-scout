@@ -332,7 +332,7 @@ describe('makeUnidentifiedFindSubtitleWorker (identityDeps wiring)', () => {
       localCandidates: [],
       targets: [{
         itemId: null, videoPath: epPath, videoFilename: '2026.2160p.iT.WEB-DL.H.265.mkv',
-        season: 1, episode: null, absoluteEpisode: null, imdbId: null,
+        season: 1, episode: null, absoluteEpisode: null, imdbId: null, embeddedTmdbId: null,
         runtimeMinutes: 42, dirName: showDir, durationSec: 2530, embeddedLangs: ['eng'],
       }],
     }

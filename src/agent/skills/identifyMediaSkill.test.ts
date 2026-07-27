@@ -62,6 +62,18 @@ describe('identify-media skill', () => {
     expect(skill.content).toMatch(/SUSPECT/)
   })
 
+  // Task 2（接回 [tmdbid-N] 证据通道）：标签是**起点不是判决**。这条不是措辞偏好——
+  // 标签由上一轮 run 或外部整理工具写下，可能过期/写错，若教成"有标签就认领"等于给模型
+  // 开一个绕过 two-evidence bar 的后门（本项目 buildTargetShowDir 自己就在产出该标签，
+  // 一次误判会被下一轮当权威读回来，错误自我固化）。
+  it('[tmdbid-N] 标签是起点不是判决（红线）', ({ expect }) => {
+    expect(skill.content).toMatch(/\[tmdbid-N\] tag/i)
+    expect(skill.content).toMatch(/starting point, not a verdict/i)
+    expect(skill.content).toMatch(/stale or simply wrong/i)
+    expect(skill.content).toMatch(/identify from\s+scratch/i)
+    expect(skill.content).toMatch(/not claim an identity just because a number/i)
+  })
+
   it('反脑补红线：模型知识不算证据，必须调工具', ({ expect }) => {
     expect(skill.content).toMatch(/never from memory|never from your own memory|never a verdict/i)
     expect(skill.content).toMatch(/requires a search hit plus a details check/i)

@@ -65,6 +65,7 @@ function buildTask(fixture: EvalFixture, mediaRoot: string, videoPath: string): 
     targets: [{
       itemId: fixture.jobId, videoPath, videoFilename: t.videoFilename,
       season: t.season, episode: t.episode, absoluteEpisode: t.absoluteEpisode, imdbId: null,
+      embeddedTmdbId: null,
     }],
   }
 }
@@ -326,11 +327,11 @@ describe('find-subtitle worker offline eval: batch (multi-target within one seri
 
     const target1: FindSubtitleTargetFact = {
       itemId: 'ep-1', videoPath: join(showDir, 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv',
-      season: 1, episode: 1, absoluteEpisode: 1, imdbId: null,
+      season: 1, episode: 1, absoluteEpisode: 1, imdbId: null, embeddedTmdbId: null,
     }
     const target2: FindSubtitleTargetFact = {
       itemId: 'ep-2', videoPath: join(showDir, 'Show.S01E02.mkv'), videoFilename: 'Show.S01E02.mkv',
-      season: 1, episode: 2, absoluteEpisode: 2, imdbId: null,
+      season: 1, episode: 2, absoluteEpisode: 2, imdbId: null, embeddedTmdbId: null,
     }
 
     const pack: SubtitleCandidate = {

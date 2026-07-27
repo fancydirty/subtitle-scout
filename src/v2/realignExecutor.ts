@@ -340,6 +340,10 @@ export function makeRealignRunEpisode(
         // provider_ids，无 imdb 可传——显式 null（worker 靠标题/季集判断归属，同上一字段的
         // 缺席语义；不许在这里编造或反查，宁缺毋假）。
         imdbId: null,
+        // Task 2（[tmdbid-N] 证据通道）：该标签的事实来源是 ingest 落进 parked_paths 的
+        // embedded_tmdb_id 列，而 realign 字幕先行走的是"已识别条目搬完立即找字幕"，itemId
+        // 非空、压根没有 parked 行可读——显式 null（同上面两个字段的缺席语义：不编造、不反查）。
+        embeddedTmdbId: null,
       }],
     }
     return deps.runFindSubtitleTask(task)

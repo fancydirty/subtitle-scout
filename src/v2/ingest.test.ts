@@ -2009,3 +2009,64 @@ describe('ingest with raw data only', () => {
     expect(parked?.embedded_langs).toBe('["eng"]') // JSON 格式（Task 3）
   })
 })
+
+// Task 2（接回 [tmdbid-N] 证据通道）：identifyFromPath 一直在解析 `[tmdbid-N]` 标签并作为
+// PathIdentity.embeddedTmdbId 返回，但 agent-first 重构把 FULL PATH 砍到 37 行时丢了落库那一步
+// ——于是"本项目 buildTargetShowDir 整理过的库，再次扫描时认不出自己写下的 id"。这条锁住落库。
+// 注意探针阶段是并发的（commit 885be70）：outcome 在走盘循环内算出，upsertParkedPath 在循环后
+// 才调用，该值必须随 pendingProbes 一起跨过这个边界（见 ingest.ts 的 pendingProbes 类型）。
+describe('makeIngestPass — [tmdbid-N] 路径标签落库（embedded_tmdb_id）', () => {
+  it('带 [tmdbid-1396] 的路径 park 后 embedded_tmdb_id === "1396"', async () => {
+    const disk = fakeDisk()
+    const path = '/media/tv/Breaking Bad (2008) [tmdbid-1396]/Season 01/S01E01.mkv'
+    disk.setVideo(path, 5000, 12345)
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize: vi.fn((): PathIdentity | Park => tvResult({ embeddedTmdbId: '1396', title: 'Breaking Bad' })),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const parked = lib.listParkedPaths().find(p => p.path === path)
+    expect(parked?.park_reason).toBe('awaiting-agent-identification')
+    expect(parked?.embedded_tmdb_id).toBe('1396')
+  })
+
+  it('无标签路径的 embedded_tmdb_id 保持 NULL（绝大多数情况）', async () => {
+    const disk = fakeDisk()
+    const path = '/media/tv/Plain Show/Season 01/S01E01.mkv'
+    disk.setVideo(path, 5000, 12345)
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize: vi.fn((): PathIdentity | Park => tvResult({ embeddedTmdbId: null })),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    expect(lib.listParkedPaths().find(p => p.path === path)?.embedded_tmdb_id).toBeNull()
+  })
+
+  // 并发探针边界的归属锁：多文件同轮入库时，每个 park 行只能拿到**它自己**那份标签，
+  // 绝不能因为按完成顺序错配而串台（同 durationSec/embeddedLangs 的按下标归属要求）。
+  it('多文件同轮：标签按文件各自归属，不串台', async () => {
+    const disk = fakeDisk()
+    const tagged = '/media/tv/Show A (2008) [tmdbid-1396]/Season 01/S01E01.mkv'
+    const plain = '/media/tv/Show B/Season 01/S01E01.mkv'
+    disk.setVideo(tagged, 5000, 111)
+    disk.setVideo(plain, 6000, 222)
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [tagged, plain],
+      recognize: vi.fn((p: string): PathIdentity | Park =>
+        tvResult({ embeddedTmdbId: p === tagged ? '1396' : null })),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    await pass()
+
+    const rows = lib.listParkedPaths()
+    expect(rows.find(p => p.path === tagged)?.embedded_tmdb_id).toBe('1396')
+    expect(rows.find(p => p.path === plain)?.embedded_tmdb_id).toBeNull()
+  })
+})

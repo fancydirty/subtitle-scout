@@ -285,6 +285,10 @@ export async function mapWorkerTaskToFindSubtitleTask(
         // "剧级典型 vs 单集实际"的分裂）——details.runtimeMinutes 直接就是这部电影自己的
         // 实际时长，原样透传即正确，无需另开一条查询。
         runtimeMinutes: details?.runtimeMinutes ?? null,
+        // Task 2（[tmdbid-N] 证据通道）：库行 scope 的 target 身份已定（itemId 非空），标签
+        // 这条起点提示对它无意义；且事实来源是 parked_paths.embedded_tmdb_id，已识别的行没有
+        // parked 行可读——恒 null，不从路径重算（不编造，同 imdbId 的既有纪律）。
+        embeddedTmdbId: null,
       }],
     }
   }
@@ -354,6 +358,8 @@ export async function mapWorkerTaskToFindSubtitleTask(
     // 该集实际时长——区别于本函数返回值顶层 runtimeMinutes 的剧级典型值（见下方 return 的
     // 同名字段，那个保持现状作 fallback）。Map 缺席/该集不在 Map 里 → null。
     runtimeMinutes: seasonRuntimes.get(g.season)?.get(g.episode) ?? null,
+    // Task 2：同 movie 分支——库行身份已定，标签起点提示无意义，恒 null（不从路径重算）。
+    embeddedTmdbId: null,
   }))
 
   return {

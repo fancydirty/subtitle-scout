@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { openDb, MIGRATIONS } from './db.js'
+import type { ScoutDb } from './db.js'
 import { JobsRepo } from './jobsRepo.js'
 
 describe('db 基座', () => {
@@ -34,12 +35,12 @@ describe('db 基座', () => {
     // parked-path 负缓存（Task 5）追加 v21（parked_paths retry 退避列）entry 后 MIGRATIONS.length=14，落库值是 '14'；
     // v22 补齐存量 runs 的 LLM/provider 账本列后是 '16'；v24（identify_overrides.source）后是 '17'；
     // v25（agent-first identification：parked_paths 加 duration_sec/embedded_langs raw 数据列）后是 '18'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
   })
 
   it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
@@ -71,10 +72,12 @@ describe('db 基座', () => {
     const db = openDb(':memory:')
     const parkedCols = (db.prepare('PRAGMA table_info(parked_paths)').all() as { name: string }[]).map((c) => c.name)
     // v25 的 duration_sec/embedded_langs 在 v9 终态 CREATE TABLE 里（fresh 库声明序），
+    // v26 的 embedded_tmdb_id 紧随其后同样在终态声明里（fresh install 直接拿到该列，
+    // 老库走 v26 迁移条件式 ALTER 补齐）；
     // v21 的 retry 负缓存列再由迁移 ALTER 追加（fresh open 走完整 MIGRATIONS，列一次到位）。
     expect(parkedCols).toEqual([
       'path', 'park_reason', 'first_seen', 'last_attempt',
-      'duration_sec', 'embedded_langs',
+      'duration_sec', 'embedded_langs', 'embedded_tmdb_id',
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ])
 
@@ -91,7 +94,7 @@ describe('db 基座', () => {
     expect(freshCols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '18' })
+    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
     fresh.close()
 
     // migrate from prior (schema_version 13 = v20 终态，无负缓存列)
@@ -114,7 +117,7 @@ describe('db 基座', () => {
     expect(cols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
     // 存量行默认：retry_count=0，其余可空
     expect(db.prepare('SELECT retry_count, next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?')
       .get('/media/a.mkv')).toEqual({
@@ -151,7 +154,7 @@ describe('db 基座', () => {
     expect(db.prepare('SELECT id, started_at, decision, llm_calls, assrt_calls FROM runs').get()).toEqual({
       id: 1, started_at: 123, decision: 'translate:held', llm_calls: null, assrt_calls: null,
     })
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
   })
 
   it('v23：translate_glossaries 表存在;v15 老库升级后可用', () => {
@@ -163,7 +166,7 @@ describe('db 基座', () => {
     const cols = (db.prepare('PRAGMA table_info(translate_glossaries)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(['series_key', 'terms_json', 'updated_at'])
     db.prepare("INSERT INTO translate_glossaries VALUES ('tmdb:1', '[]', 1)").run()
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
     db.close()
   })
 
@@ -320,7 +323,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19+详情页富化 六条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -444,7 +447,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19+详情页富化 四条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -538,7 +541,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19+详情页富化 三条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -643,7 +646,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19+详情页富化 两条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '18' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
 
     // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
     expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())
@@ -687,8 +690,9 @@ describe('v25 migration: parked_paths raw data columns', () => {
   })
 
   it('adds duration_sec and embedded_langs columns', () => {
-    // MIGRATIONS 追加 v25 后是 18 条 entry（落库 meta.schema_version 随之是 '18'）。
-    expect(MIGRATIONS.length).toBe(18)
+    // MIGRATIONS 追加 v25 后是 18 条 entry；v26（parked_paths.embedded_tmdb_id）后是 19 条
+    // （落库 meta.schema_version 随之是 '19'）。
+    expect(MIGRATIONS.length).toBe(19)
 
     // Insert a parked path with raw data（embedded_langs 与 episodes/movies 同构：JSON 数组串）
     db.prepare(`
@@ -737,5 +741,65 @@ describe('v25 migration: parked_paths raw data columns', () => {
 
     expect(row.duration_sec).toBeNull()
     expect(row.embedded_langs).toBeNull()
+  })
+})
+
+// v26（接回 [tmdbid-N] 证据通道）：parked_paths.embedded_tmdb_id。
+describe('v26 migration: parked_paths.embedded_tmdb_id', () => {
+  it('fresh 库直接带该列，且可存取 [tmdbid-N] 标签值', () => {
+    const db = openDb(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(parked_paths)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toContain('embedded_tmdb_id')
+
+    db.prepare(`
+      INSERT INTO parked_paths (path, park_reason, first_seen, last_attempt, retry_count, embedded_tmdb_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('/media/tv/Show (2020) [tmdbid-1396]/S01E01.mkv', 'awaiting-agent-identification', 1000, 1000, 0, '1396')
+
+    const row = db.prepare('SELECT embedded_tmdb_id FROM parked_paths WHERE path LIKE ?')
+      .get('%tmdbid-1396%') as { embedded_tmdb_id: string | null }
+    expect(row.embedded_tmdb_id).toBe('1396')
+    db.close()
+  })
+
+  // 🔴 回归锁（本次实现真踩到过）：PRAGMA table_info 对**不存在**的表返回空集，所以只判
+  // !columns.has('embedded_tmdb_id') 的守卫对"压根没有 parked_paths 的老库"恒为真，裸 ALTER
+  // 直接炸 no such table，整条迁移链在事务里回滚 → 老库永远打不开。v26 必须先查 sqlite_master
+  // （同 v24/v25 的既有口径）。
+  it('parked_paths 不存在的老库：v26 静默跳过，不炸 no such table', () => {
+    const db = new Database(':memory:') as unknown as ScoutDb
+    db.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)`)
+    const v26 = MIGRATIONS[18]
+    expect(typeof v26).toBe('function')
+    expect(() => (v26 as (d: ScoutDb) => void)(db)).not.toThrow()
+    db.close()
+  })
+
+  it('存量 parked_paths 行升级后该列为 NULL（不是"未探测"，是"路径无标签"）', () => {
+    const db = new Database(':memory:') as unknown as ScoutDb
+    db.exec(`
+      CREATE TABLE parked_paths (
+        path TEXT PRIMARY KEY,
+        park_reason TEXT NOT NULL,
+        first_seen INTEGER NOT NULL,
+        last_attempt INTEGER NOT NULL
+      );
+      INSERT INTO parked_paths (path, park_reason, first_seen, last_attempt)
+      VALUES ('/old/path.mkv', 'no-signal', 500, 500);
+    `)
+    ;(MIGRATIONS[18] as (d: ScoutDb) => void)(db)
+
+    const cols = (db.prepare('PRAGMA table_info(parked_paths)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toContain('embedded_tmdb_id')
+    const row = db.prepare('SELECT embedded_tmdb_id FROM parked_paths WHERE path = ?')
+      .get('/old/path.mkv') as { embedded_tmdb_id: string | null }
+    expect(row.embedded_tmdb_id).toBeNull()
+    db.close()
+  })
+
+  it('幂等：v26 连跑两次不炸 duplicate column name', () => {
+    const db = openDb(':memory:')
+    expect(() => (MIGRATIONS[18] as (d: ScoutDb) => void)(db)).not.toThrow()
+    db.close()
   })
 })

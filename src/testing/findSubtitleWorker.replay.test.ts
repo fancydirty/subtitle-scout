@@ -27,6 +27,7 @@ function buildTask(cell: LoadedCell, jobId: string, mediaRoot: string, videoPath
     targets: [{
       itemId: jobId, videoPath, videoFilename: t.videoFilename,
       season: t.season, episode: t.episode, absoluteEpisode: t.absoluteEpisode, imdbId: null,
+      embeddedTmdbId: null,
     }],
   }
 }
