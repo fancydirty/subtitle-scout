@@ -1289,3 +1289,35 @@ describe('isParkedPathEligible', () => {
     expect(isParkedPathEligible('no-signal')).toBe(true)
   })
 })
+
+// Task 2（接回 [tmdbid-N] 证据通道，schema v26）：路径里的 TMDB id 标签本项目自己就在产出
+// （libraryRealign 的 buildTargetShowDir 输出 `Show (Year) [tmdbid-N]/Season NN/`），此前
+// parked_paths 缺这一列，等于"本项目整理过的库，再次扫描时认不出自己写下的 id"。
+// 存的是 hint 不是判决——agent 仍须 TMDB 核验后才能认领。
+describe('parked_paths.embedded_tmdb_id（[tmdbid-N] 路径标签，schema v26）', () => {
+  it('parked_paths 存取 embedded_tmdb_id（[tmdbid-N] 路径标签）', () => {
+    const lib = new LibraryRepo(db)
+    lib.upsertParkedPath('/media/tv/Show (2020) [tmdbid-1396]/S01E01.mkv', 'awaiting-agent-identification', 1000, {
+      mtimeMs: 500, size: 1024, embeddedTmdbId: '1396',
+    })
+    const row = lib.listParkedPaths().find((p) => p.path.includes('tmdbid-1396'))
+    expect(row?.embedded_tmdb_id).toBe('1396')
+  })
+
+  it('无标签路径的 embedded_tmdb_id 为 NULL（绝大多数情况的回归锁）', () => {
+    const lib = new LibraryRepo(db)
+    lib.upsertParkedPath('/media/tv/Plain/S01E01.mkv', 'awaiting-agent-identification', 1000, {
+      mtimeMs: 500, size: 1024,
+    })
+    const row = lib.listParkedPaths().find((p) => p.path.includes('Plain'))
+    expect(row?.embedded_tmdb_id).toBeNull()
+  })
+
+  it('指纹未变的重 park 保留已有 embedded_tmdb_id（不被无标签的重 park 冲掉）', () => {
+    const lib = new LibraryRepo(db)
+    const p = '/media/tv/Show (2020) [tmdbid-1396]/S01E01.mkv'
+    lib.upsertParkedPath(p, 'awaiting-agent-identification', 1000, { mtimeMs: 500, size: 1024, embeddedTmdbId: '1396' })
+    lib.upsertParkedPath(p, 'awaiting-agent-identification', 2000, { mtimeMs: 500, size: 1024 })
+    expect(lib.listParkedPaths().find((r) => r.path === p)?.embedded_tmdb_id).toBe('1396')
+  })
+})

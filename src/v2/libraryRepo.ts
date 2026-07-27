@@ -148,16 +148,23 @@ export interface ParkedPath {
   duration_sec: number | null
   /** 原始 ffprobe 语言 tag 的 JSON 数组串（如 '["eng","chi"]'，与 episodes/movies.embedded_langs 同构）；NULL=未探测。 */
   embedded_langs: string | null
+  /** 路径里的 `[tmdbid-N]` 标签（schema v26）。NULL=路径无标签（绝大多数情况）。
+   *  来源：本项目 buildTargetShowDir 的规范布局 或 外部整理工具（*arr 生态）。
+   *  hint 不是判决——agent 仍须 TMDB 核验后才能认领。 */
+  embedded_tmdb_id: string | null
 }
 
 /** parked-path 负缓存：文件指纹（stat mtimeMs + size）+ 可选探测 raw 数据（duration/内嵌轨语言）。
  *  durationSec/embeddedLangs 省略（undefined）= 本次未探测，指纹未变时保留库中已有值；
- *  embeddedLangs 空数组与省略同义（存 NULL，不落 '[]'）。 */
+ *  embeddedLangs 空数组与省略同义（存 NULL，不落 '[]'）。
+ *  embeddedTmdbId 省略同理保留（指纹未变时）——它来自路径解析（identifyFromPath 的
+ *  TMDB_ID_PATTERN），park 分支不带该字段时传 undefined，"NULL = 路径无标签"由此守住。 */
 export interface ParkedPathFingerprint {
   mtimeMs: number
   size: number
   durationSec?: number
   embeddedLangs?: string[]
+  embeddedTmdbId?: string | null
 }
 
 /** 退避阶梯：retry_count 0→1h，1→4h，≥2→24h（封顶）。单位 ms。 */
@@ -778,7 +785,7 @@ export class LibraryRepo {
   upsertParkedPath(path: string, reason: string, now: number, fingerprint?: ParkedPathFingerprint): void {
     const existing = this.db
       .prepare(
-        `SELECT park_reason, retry_count, probe_mtime, probe_size, duration_sec, embedded_langs FROM parked_paths WHERE path = ?`
+        `SELECT park_reason, retry_count, probe_mtime, probe_size, duration_sec, embedded_langs, embedded_tmdb_id FROM parked_paths WHERE path = ?`
       )
       .get(path) as
       | {
@@ -788,6 +795,7 @@ export class LibraryRepo {
           probe_size: number | null
           duration_sec: number | null
           embedded_langs: string | null
+          embedded_tmdb_id: string | null
         }
       | undefined
 
@@ -801,6 +809,8 @@ export class LibraryRepo {
     let embeddedLangs: string | null = fingerprint?.embeddedLangs?.length
       ? JSON.stringify(fingerprint.embeddedLangs)
       : null
+    // 路径标签（schema v26）：纯路径解析产物，NULL=路径无标签。
+    let embeddedTmdbId: string | null = fingerprint?.embeddedTmdbId ?? null
 
     if (existing && fingerprint) {
       const sameReason = existing.park_reason === reason
@@ -822,6 +832,9 @@ export class LibraryRepo {
       if (sameFp) {
         if (durationSec === null) durationSec = existing.duration_sec
         if (embeddedLangs === null) embeddedLangs = existing.embedded_langs
+        // 同上：本次未带标签的重 park 不该冲掉库中已记下的标签（park 分支的 outcome 就不带
+        // 该字段）。指纹变了则路径可能已被改名/移动，旧标签同样失效，随重置路径清掉。
+        if (embeddedTmdbId === null) embeddedTmdbId = existing.embedded_tmdb_id
       }
     } else if (existing && !fingerprint) {
       // 无指纹的旧调用：只覆写 reason/last_attempt，保留退避列
@@ -845,8 +858,8 @@ export class LibraryRepo {
         `INSERT INTO parked_paths (
            path, park_reason, first_seen, last_attempt,
            retry_count, next_retry_at, probe_mtime, probe_size,
-           duration_sec, embedded_langs
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           duration_sec, embedded_langs, embedded_tmdb_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            park_reason = excluded.park_reason,
            last_attempt = excluded.last_attempt,
@@ -855,9 +868,10 @@ export class LibraryRepo {
            probe_mtime = excluded.probe_mtime,
            probe_size = excluded.probe_size,
            duration_sec = excluded.duration_sec,
-           embedded_langs = excluded.embedded_langs`
+           embedded_langs = excluded.embedded_langs,
+           embedded_tmdb_id = excluded.embedded_tmdb_id`
       )
-      .run(path, reason, now, now, retryCount, nextRetryAt, probeMtime, probeSize, durationSec, embeddedLangs)
+      .run(path, reason, now, now, retryCount, nextRetryAt, probeMtime, probeSize, durationSec, embeddedLangs, embeddedTmdbId)
   }
 
   /**
@@ -898,7 +912,7 @@ export class LibraryRepo {
       .prepare(
         `SELECT path, park_reason, first_seen, last_attempt,
                 retry_count, next_retry_at, probe_mtime, probe_size,
-                duration_sec, embedded_langs
+                duration_sec, embedded_langs, embedded_tmdb_id
          FROM parked_paths ORDER BY first_seen DESC`
       )
       .all() as ParkedPath[]

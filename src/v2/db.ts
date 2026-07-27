@@ -113,7 +113,12 @@ CREATE TABLE parked_paths (         -- 未识别文件的正式户口（不混�
   -- v25（agent-first identification）：agent 识别所需的 raw 数据——机械探测只写 raw 数据，
   -- agent 从 parked_paths 读取做识别。NULL=未探测。retry_count/next_retry_at/probe_* 四列
   -- 不在此终态定义里——它们由 v21 的裸 ALTER 迁移追加，fresh install 走完整 MIGRATIONS 链一次到位。
-  duration_sec INTEGER, embedded_langs TEXT
+  duration_sec INTEGER, embedded_langs TEXT,
+  -- v26（接回 [tmdbid-N] 证据通道）：路径里的 TMDB id 标签。来源有两个：①本项目自己产出的
+  -- 规范布局（buildTargetShowDir: "Show (Year) [tmdbid-N]"）；②外部整理工具（*arr 生态）。
+  -- 它是最强 hint，但仍只是 hint——agent 必须 TMDB 核验后才能认领。NULL=路径里没有标签
+  -- （绝大多数情况），不是"未探测"：它是纯路径解析产物，同步、零 I/O。
+  embedded_tmdb_id TEXT
 );
 CREATE TABLE identify_overrides (   -- P6 认领写入；识别层消歧前查（最长前缀匹配）
   path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL,
@@ -359,6 +364,20 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
     }
     if (!columns.has('embedded_langs')) {
       db.exec(`ALTER TABLE parked_paths ADD COLUMN embedded_langs TEXT`)
+    }
+  },
+  // v26（接回 [tmdbid-N] 证据通道）：parked_paths 加一列存路径里的 TMDB id 标签。
+  // 来源有两个：①本项目自己产出的规范布局（buildTargetShowDir: `Show (Year) [tmdbid-N]`）
+  // ——此前这一列缺失意味着"本项目整理过的库，再次扫描时认不出自己写下的 id"；②外部整理
+  // 工具（*arr 生态）。它是**最强 hint**，但仍只是 hint：标签可能过期或写错，agent 必须
+  // TMDB 核验后才能认领，否则等于重开一个绕过 two-evidence bar 的后门。
+  // NULL = 路径里没有标签（绝大多数情况），不是"未探测"——它是纯路径解析产物，同步、零 I/O。
+  (db: ScoutDb) => {
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(parked_paths)').all() as Array<{ name: string }>).map((c) => c.name)
+    )
+    if (!columns.has('embedded_tmdb_id')) {
+      db.exec(`ALTER TABLE parked_paths ADD COLUMN embedded_tmdb_id TEXT`)
     }
   },
 ]
