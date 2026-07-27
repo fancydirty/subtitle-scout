@@ -1,5 +1,5 @@
 import { dirname, join, relative, basename } from 'node:path'
-import { stepCountIs, type LanguageModel } from 'ai'
+import { stepCountIs, tool, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { makeRunTracer } from '../core/traceBus.js'
 import { languageName } from './languages.js'
@@ -49,6 +49,17 @@ export interface FindSubtitleWorkerDeps {
       getExternalIds: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null } | null>
       getOriginLanguage: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string | null>
     }
+    /** Test seam (identityEval): optional factory to wrap/replace the write tool (e.g. to log
+     *  calls). Production omits this — the default is makeWriteIdentityTool(identityDeps). */
+    writeToolFactory?: (deps: {
+      lib: LibraryRepo
+      tmdb: {
+        getDetails: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<TmdbDetails | null>
+        getChineseTitles: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string[]>
+        getExternalIds: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null } | null>
+        getOriginLanguage: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string | null>
+      }
+    }) => ReturnType<typeof makeWriteIdentityTool>
   }
 }
 
@@ -98,6 +109,27 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     // Step 0 识别验证（工具不在时教了也白教，反而引诱模型空谈"我会验证"）。
     const skill = makeFindSubtitleSkill(task.targetLanguage, task.hardsubMode, deps.tmdb != null)
 
+    // 🔴 写库门（identityEval 第三轮实测：识别全对但跳过 write_identified_media 反复发生，
+    // skill 硬门措辞时好时坏 —— 措辞治不了的用机制）：记录 write 工具是否真的被调过，
+    // finalize 校验时据此拒收"报了 identified 却没写库"的自相矛盾报告。拒收发生在 agent
+    // 循环内，模型能看到错误并补调工具，比事后 runner 丢弃更有教育意义。
+    let writeIdentityCalled = false
+    const identityWriteTool = deps.identityDeps
+      ? (deps.identityDeps.writeToolFactory
+          ? deps.identityDeps.writeToolFactory(deps.identityDeps)
+          : makeWriteIdentityTool(deps.identityDeps))
+      : null
+    const trackedIdentityWriteTool = identityWriteTool
+      ? tool({
+          description: identityWriteTool.description!,
+          inputSchema: identityWriteTool.inputSchema!,
+          execute: async (input: unknown, opts: unknown) => {
+            writeIdentityCalled = true
+            return (identityWriteTool.execute as (i: unknown, o: unknown) => Promise<unknown>)(input, opts)
+          },
+        })
+      : null
+
     const tools = {
       read_doc: makeReadDocTool([skill]),
       // 路 A：身份证据工具——tmdb 配置时才挂上（deps.tmdb 为 null 时整个 spread 为空对象，
@@ -106,7 +138,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // write_identified_media（Task 9，agent-first 识别落地）：identityDeps 提供时才挂上——
       // agent 用 TMDB 证据（two-evidence bar）验证身份后亲自把识别结果写进库；缺席时整个
       // spread 为空对象，与 tmdb 证据工具同一个"依赖不在则工具不可见"的纪律。
-      ...(deps.identityDeps ? { write_identified_media: makeWriteIdentityTool(deps.identityDeps) } : {}),
+      ...(trackedIdentityWriteTool ? { write_identified_media: trackedIdentityWriteTool } : {}),
       search_source: makeSearchSourceTool({
         adapters: deps.adapters, store, targetLanguage: task.targetLanguage,
         localCandidates: task.localCandidates,
@@ -288,6 +320,11 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       model: deps.model,
       tools,
       instructions,
+      // 写库门的教训（identityEval 第四轮）：曾在这里挂 superRefine 拒收"报了 identified 却
+      // 没写库"的报告，指望模型在循环内看到错误后补调工具——**错的**。hasToolCall('finalize')
+      // 一调就停循环（见 reasoningAgent.ts），schema 校验失败直接抛错，模型根本没有重试机会，
+      // 结果把 5 个识别全对的 case 生生炸成失败。约束改到 runner 层软记录（见下方
+      // writeIdentityCalled 的消费处）+ skill 措辞硬门，不在这里拦。
       schema: FindSubtitleBatchReportSchema,
       stopWhen: stepCountIs(deps.stepCap ?? 500),
       reasoning: 'high',
@@ -309,7 +346,19 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // (result.steps.length, per the stepCountIs(500) test-phase ceiling) is ever observable,
       // since runFindSubtitleTask's return type is deliberately just the batch report.
       console.error(`[find-subtitle-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
-      return readFinalized()
+      const report = readFinalized()
+      // 写库门（软记录，identityEval 第四轮的教训——见上方 schema 处的注释）：报了
+      // identified 却没调过 write_identified_media = 识别没落地（库里没行、没有 itemId、
+      // 文件还停在 parked）。不炸报告（那会把识别正确的 run 也毁掉），但必须吼出来：
+      // 这是"agent 说识别了但实际没生效"的唯一可观测信号，静默会让整条链路看起来在工作。
+      if (trackedIdentityWriteTool && report.identity?.outcome === 'identified' && !writeIdentityCalled) {
+        console.error(
+          `[find-subtitle-worker] job ${task.jobId}: 🔴 identity reported as identified ` +
+            `(tmdb:${report.identity.tmdbId}) but write_identified_media was NEVER called — ` +
+            `the identification did NOT persist: no library row, no itemId, file stays parked.`,
+        )
+      }
+      return report
     } finally {
       // Try-error sandbox cleanup runs even on a thrown error — the staging dir never
       // survives a run, matching stagingSandbox's own "job ends, sandbox is deleted" contract.

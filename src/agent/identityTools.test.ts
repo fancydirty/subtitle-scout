@@ -290,3 +290,33 @@ describe('write_identified_media', () => {
     expect(tmdb.getDetails).not.toHaveBeenCalled()
   })
 })
+
+// 🔴 identityEval 六轮血案的回归锁（2026-07-27）：原 schema 用
+// z.number().int().nullable() 收 season/episode，真模型六种发法五种被拒 —— agent 想调
+// 写库工具却调不进去，把失败写进 finalize 的 reason，而我误判成"agent 不听话"，
+// 往 skill 里加了三轮措辞全打在空处。这组测试钉死六种发法都必须收得下。
+describe('write_identified_media inputSchema 的真模型编码容错（六轮血案回归锁）', () => {
+  const variants: Array<[string, Record<string, unknown>, { season: number | null; episode: number | null }]> = [
+    ['JSON null（标准）', { season: null, episode: null }, { season: null, episode: null }],
+    ['省略键（真模型对 nullable 最常见的发法）', {}, { season: null, episode: null }],
+    ['"None"（Python 风格字符串）', { season: 'None', episode: 'None' }, { season: null, episode: null }],
+    ['"null"（JS 风格字符串）', { season: 'null', episode: 'null' }, { season: null, episode: null }],
+    ['空字符串', { season: '', episode: '' }, { season: null, episode: null }],
+    ['字符串数字（TV case 常见）', { season: '4', episode: '9' }, { season: 4, episode: 9 }],
+  ]
+
+  for (const [label, seasonEpisode, expected] of variants) {
+    it(`收得下：${label}`, ({ expect }) => {
+      const tool = makeWriteIdentityTool({ lib: {} as never, tmdb: {} as never })
+      const parsed = tool.inputSchema!.safeParse({
+        tmdbId: '14161', isTv: false, title: '2012', path: '/media/movies/2012.mkv',
+        ...seasonEpisode,
+      })
+      expect(parsed.success, `被拒了：${label}`).toBe(true)
+      if (parsed.success) {
+        expect((parsed.data as { season: number | null }).season).toBe(expected.season)
+        expect((parsed.data as { episode: number | null }).episode).toBe(expected.episode)
+      }
+    })
+  }
+})

@@ -138,11 +138,30 @@ Before any \`search_source\` call, identify the work with your TMDB evidence too
    The Conjuring (2013) and an unrelated 2026 release). One strong-looking evidence line
    never buys back a failed one. A suspect that fails either line is rejected — go back
    to the search hits (or re-search) and hold the next candidate to the same bar.
-4. Both lines check out → the identity is established. Call \`write_identified_media\`
-   with the verified tmdbId and title, plus each target's own season/episode (movies:
-   none) and path — once per target. It writes the identity to the database and returns
-   the own-id you must use as the itemId for everything below. Then continue to the
-   search workflow with those itemIds.
+4. Both lines check out → the identity is established. **Now you MUST call
+   \`write_identified_media\`** with the verified tmdbId and title, plus each target's own
+   season/episode (movies: none) and path — once per target.
+
+   **This call is not optional bookkeeping — it IS the identification.** Until you call it,
+   nothing exists: no database row, no itemId, and the \`identity\` field you put in your
+   finalize report is a claim with nothing behind it. A finalize that reports
+   \`outcome: "identified"\` without a preceding \`write_identified_media\` call is a FAILED
+   run — the system has no record of what you found, and the file stays parked forever.
+
+   **Call it even when no subtitles turn out to be available.** Identification and subtitle
+   search are two independent jobs. Discovering "this file is Breaking Bad S01E01" is
+   permanently valuable on its own: the library gets a correct row, the file leaves the
+   parked queue, and every future run starts from a known identity instead of re-identifying
+   from scratch. If the subtitle search later comes up empty, that is a separate outcome
+   (\`no_safe_match\`) reported for an item that is now *correctly identified* — not a reason
+   to throw the identification away. Never reason "there is nothing to install, so writing
+   the identity is pointless": you would be discarding the one thing this run did accomplish.
+
+   The tool returns the own-id (e.g. \`tmdb:1396/s1e1\`). **That returned own-id is the
+   itemId** you must use for every subtitle operation below. You cannot invent it.
+
+   Sequence, no exceptions: \`search_tmdb\` → \`get_tmdb_details\` →
+   \`write_identified_media\` → (then subtitle search with the returned itemId) → \`finalize\`.
 5. No candidate passes the bar → install nothing and put every target into
    \`no_safe_match\` with your reason naming the identification problem.
    Guessing an identity is strictly worse than admitting you could not establish one.

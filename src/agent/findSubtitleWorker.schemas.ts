@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { nullableTolerant, tolerantArray } from './coerce.js'
+import { nullableTolerant, nullableJsonTolerant, tolerantArray } from './coerce.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 /** Batch task/report shapes for the find-subtitle worker (phase ③) — see
@@ -135,9 +135,10 @@ export const FindSubtitleBatchReportSchema = z.object({
    *  episode；null = 本 run 未做识别（tmdb 工具缺席等）。
    *  语义反转注意：identified 允许 installed（身份已确认，照装不误）；unidentified 要求
    *  installed 为空（身份未定时装的字幕会记到错的库行上）——后者由 runner 层把关。
-   *  nullableTolerant：真模型对"没有识别结论"会省略键或发 "None"/"null"/""（见本文件头注释
-   *  与 coerce.ts），缺席一律折叠为 null，绝不让哨兵炸掉整份 finalize 报告。 */
-  identity: nullableTolerant(z.discriminatedUnion('outcome', [
+   *  nullableJsonTolerant：真模型对 object 字段会把整个对象序列化成 JSON 字符串发上来
+   *  （identityEval 第一轮实测：15/15 全这么发），先 JSON.parse 回对象再走哨兵/缺席折叠——
+   *  见 coerce.ts 该 helper 的头注释。 */
+  identity: nullableJsonTolerant(z.discriminatedUnion('outcome', [
     z.object({
       outcome: z.literal('identified'),
       tmdbId: z.string().regex(/^\d+$/),

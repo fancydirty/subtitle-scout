@@ -196,4 +196,20 @@ describe('FindSubtitleTargetFact with raw evidence', () => {
     expect(task.targets[0].durationSec).toBe(2400)
     expect(task.targets[0].embeddedLangs).toEqual(['eng', 'jpn'])
   })
+
+describe('identity 字段的真模型编码容错（identityEval 第一轮实测）', () => {
+  it('JSON 字符串编码的 identity 对象 parse 回对象', () => {
+    const r = FindSubtitleBatchReportSchema.parse({
+      installed: [],
+      no_safe_match: [],
+      retry_later: [],
+      identity: '{"outcome": "identified", "tmdbId": "1038392", "isTv": false, "season": null, "episode": null, "nameEvidence": "name matches", "structureEvidence": "runtime fits"}',
+    } as unknown)
+    expect(r.identity).toMatchObject({
+      outcome: 'identified',
+      tmdbId: '1038392',
+      isTv: false,
+    })
+  })
+})
 })

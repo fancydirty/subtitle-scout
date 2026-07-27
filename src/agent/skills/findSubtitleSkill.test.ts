@@ -174,6 +174,27 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
   // 证据工具可用）才教 Step 0 主识别；false（默认/TMDB 未配置）时整段文字连"识别"概念都不
   // 出现——零误触发纪律同 hardsubSection：工具不在时教了也白教，反而引诱模型空谈"我会识别"。
   describe('Step 0 primary identification（路 A 识别架构·主识别模式）', () => {
+    // identityEval 第二轮实测：7/8 失败是"识别全对但没调 write_identified_media"——
+    // 模型觉得"我在 finalize 报告里说了就够了"。措辞必须把写库做成硬门：不调就等于没识别。
+    it('write_identified_media 是硬门，不是可选记账', () => {
+      const on = makeFindSubtitleSkill('zh', 'off', true)
+      expect(on.content).toMatch(/This call is not optional bookkeeping — it IS the identification/i)
+      expect(on.content).toMatch(/is a FAILED\s+run/i)
+      expect(on.content).toMatch(/Sequence, no exceptions/i)
+    })
+
+    // identityEval 第五轮实测：8/9 失败全是"识别 100% 正确但不调 write_identified_media"——
+    // 空 adapters 下没字幕可装，agent 觉得"后续没事干，写库也没意义"（skill 原措辞把写库
+    // 动机绑在"拿 itemId 给后续字幕操作用"上，没字幕时动机消失）。措辞必须把识别与找字幕
+    // 解耦：识别本身就有永久价值。
+    it('识别与找字幕解耦：没字幕可装也必须写库', () => {
+      const on = makeFindSubtitleSkill('zh', 'off', true)
+      expect(on.content).toMatch(/Call it even when no subtitles turn out to be available/i)
+      expect(on.content).toMatch(/two independent jobs/i)
+      expect(on.content).toMatch(/permanently valuable on its own/i)
+      expect(on.content).toMatch(/there is nothing to install, so writing\s+the identity is pointless/i)
+    })
+
     it('默认（identityVerification 缺省=false）：内容与描述完全不提 Step 0 / 识别工具', () => {
       const def = makeFindSubtitleSkill('zh')
       expect(def.content).not.toMatch(/Step 0|identity_correction|identity_verified|get_tmdb_details|search_tmdb|write_identified_media/)

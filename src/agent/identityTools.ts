@@ -3,16 +3,30 @@ import { z } from 'zod'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbDetails } from '../adapters/providers/tmdb.js'
 import { seriesId, episodeId } from '../v2/ownIds.js'
+import { coercibleNullableInt } from './coerce.js'
 
 // 注意：embeddedLangs 刻意**不是**输入参数——agent 可能幻觉出 ['chi'] 把条目永久打成
 // 'embedded'（terminal covered 态，字幕搜索从此沉默）。权威源是 parked_paths.embedded_langs
 // （摄取层 ffprobe raw 数据），由 execute 内部读取。
+/** 🔴 identityEval 六轮血案的真根因（2026-07-27）：这个 schema 原本用
+ *  `z.number().int().nullable()` 收 season/episode——只接受 JSON null 和真数字。真模型的
+ *  实际发法有六种，五种被拒（省略键 / "None"（Python 风格）/ "null" / "" / 字符串数字），
+ *  于是 agent **想调写库工具却调不进去**：它试了、被 schema 拒了、把失败写进 finalize 的
+ *  reason（实测原话："write_identified_media could not be called because the season/episode
+ *  null parameters fail serialization (Python None becomes ...)"）。
+ *
+ *  我连续六轮把这个现象误判为"agent 不听话"，往 skill 里加了三轮措辞（"不是可选记账"/
+ *  "是 FAILED run"/"没字幕也必须写库"），全打在空处——工具的门本来就是关着的。
+ *
+ *  本仓早有现成解法：coerce.ts 的 coercibleNullableInt 就是为"模型把数字发成字符串/发
+ *  None/省略键"写的（见该常量的头注释）。新工具写 schema 时必须复用它，不要重新发明一个
+ *  更窄的门。 */
 const WriteIdentityInputSchema = z.object({
   tmdbId: z.string().regex(/^\d+$/),
   isTv: z.boolean(),
   title: z.string().min(1),
-  season: z.number().int().nullable(),
-  episode: z.number().int().nullable(),
+  season: coercibleNullableInt,
+  episode: coercibleNullableInt,
   path: z.string().min(1),
 })
 
