@@ -21,10 +21,10 @@ beforeEach(() => {
 })
 
 function tvResult(overrides: Partial<Recognized> = {}): Recognized {
-  return { tmdbId: '1', title: 'Show', isTv: true, season: 1, episode: 1, absoluteEpisode: null, ...overrides }
+  return { tmdbId: '1', title: 'Show', isTv: true, season: 1, episode: 1, absoluteEpisode: null, embeddedTmdbId: null, ...overrides }
 }
 function movieResult(overrides: Partial<Recognized> = {}): Recognized {
-  return { tmdbId: '603', title: 'Movie', isTv: false, season: null, episode: null, absoluteEpisode: null, ...overrides }
+  return { tmdbId: '603', title: 'Movie', isTv: false, season: null, episode: null, absoluteEpisode: null, embeddedTmdbId: null, ...overrides }
 }
 function track(overrides: Partial<EmbeddedSubtitleTrack> = {}): EmbeddedSubtitleTrack {
   return { lang: null, codec: null, isImageBased: false, ...overrides }
@@ -99,7 +99,7 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
       getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: '/bd.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
     })
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', title: 'Spy x Family', season: 1, episode: 2 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', title: 'Spy x Family', season: 1, episode: 2 , absoluteEpisode: null, embeddedTmdbId: null}))
     const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/Show/Season 1/ep1.mkv'],
@@ -109,19 +109,14 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true })
-    const series = lib.getSeries('tmdb:108964')
-    expect(series).toMatchObject({
-      id: 'tmdb:108964', name: 'Spy x Family', chinese_title: '演出',
-      poster_path: '/poster.jpg', year: 2020, provider_ids: JSON.stringify({ tmdb: '108964' }),
-      // 详情页重设计 item B：新剧 enrich 落 series overview/backdrop_path。
-      overview: 'x', backdrop_path: '/bd.jpg',
-    })
-    const episode = lib.getEpisode('tmdb:108964/s1e2')
-    expect(episode).toMatchObject({
-      id: 'tmdb:108964/s1e2', series_id: 'tmdb:108964', season: 1, episode: 2,
-      path: '/media/Show/Season 1/ep1.mkv', sub_status: 'missing',
-    })
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
+    // 不建行：ingest 只发 raw 数据
+    expect(lib.getSeries('tmdb:108964')).toBeNull()
+    expect(lib.getEpisode('tmdb:108964/s1e2')).toBeNull()
+    // 停车带 raw 数据
+    const parked = lib.listParkedPaths().find(p => p.path === '/media/Show/Season 1/ep1.mkv')
+    expect(parked).toBeDefined()
+    expect(parked?.park_reason).toBe('awaiting-agent-identification')
     expect(recognize).toHaveBeenCalledWith('/media/Show/Season 1/ep1.mkv')
     expect(probe).toHaveBeenCalledWith('/media/Show/Season 1/ep1.mkv')
   })
@@ -135,7 +130,7 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
       getDetails: async () => ({ overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', backdropPath: null, originalTitle: null, year: 1999, genreIds: [] }),
       getChineseTitles: async () => ['黑客帝国', '駭客任務'],
     })
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' }))
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/movies/hero.mkv'],
       recognize, tmdb,
@@ -144,13 +139,13 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true })
-    const movie = lib.getMovie('tmdb:603')
-    expect(movie).toMatchObject({
-      id: 'tmdb:603', name: 'The Matrix', chinese_title: '黑客帝国', poster_path: '/matrix.jpg',
-      year: 1999, path: '/media/movies/hero.mkv', provider_ids: JSON.stringify({ tmdb: '603' }),
-      sub_status: 'missing',
-    })
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
+    // 不建行：ingest 只发 raw 数据
+    expect(lib.getMovie('tmdb:603')).toBeNull()
+    // 停车带 raw 数据
+    const parked = lib.listParkedPaths().find(p => p.path === '/media/movies/hero.mkv')
+    expect(parked).toBeDefined()
+    expect(parked?.park_reason).toBe('awaiting-agent-identification')
   })
 })
 
@@ -169,10 +164,11 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
 
     await pass()
 
-    const series = lib.getSeries('tmdb:1')
-    expect(series).toMatchObject({
-      provider_ids: JSON.stringify({ tmdb: '1', imdb: 'tt10872600' }),
-    })
+    // 不建行：ingest 只发 raw 数据，external_ids 采集归 agent 的 write_identified_media
+    expect(lib.getSeries('tmdb:1')).toBeNull()
+    const parked = lib.listParkedPaths().find(p => p.path === '/media/Show/Season 1/ep1.mkv')
+    expect(parked).toBeDefined()
+    expect(parked?.park_reason).toBe('awaiting-agent-identification')
   })
 
   it('movie 首次入库：external_ids 有 imdb 时 provider_ids 同时写入 tmdb + imdb', async () => {
@@ -183,7 +179,7 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
     })
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/movies/hero.mkv'],
-      recognize: vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' })),
+      recognize: vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' , absoluteEpisode: null, embeddedTmdbId: null})),
       tmdb,
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
@@ -329,7 +325,7 @@ describe('makeIngestPass — park', () => {
       lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
       lib.addOverride(path, '108964', true, t0)
 
-      const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', season: 1, episode: 1 }))
+      const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
       const pass = makeIngestPass(makeDeps({
         listVideoFiles: () => [path],
         recognize,
@@ -410,7 +406,7 @@ describe('makeIngestPass — absolute-episode resolution (anime flat numbering)'
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true })
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     const episode = lib.getEpisode('tmdb:65930/s2e1') // absolute 26 = S2E1 under 25+12 concat
     expect(episode).toMatchObject({
       id: 'tmdb:65930/s2e1', series_id: 'tmdb:65930', season: 2, episode: 1, path,
@@ -523,7 +519,7 @@ describe('makeIngestPass — P7 disambiguation guard: claim-gated lenient absolu
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true })
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     expect(lib.getEpisode('tmdb:99/s1e3')).not.toBeNull()
   })
 
@@ -570,7 +566,7 @@ describe('makeIngestPass — P7 disambiguation guard: claim-gated lenient absolu
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true })
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     expect(lib.getEpisode('tmdb:65930/s2e1')).not.toBeNull()
   })
 })
@@ -661,96 +657,6 @@ describe('makeIngestPass — memo-hit cheap path', () => {
     expect(recognize).toHaveBeenCalledTimes(1)
   })
 
-  it('re-recognition flips kind (movie row → recognize() now says TV, e.g. a P6 override correction) → stale movie row is cleaned up, no duplicate-kind ghost row survives', async () => {
-    const path = '/media/reclaimed.mkv'
-    lib.upsertMovie({ id: 'tmdb:999', name: 'Old Guess', path, subStatus: 'covered' })
-    lib.setProbeMemo('tmdb:999', 5000, 12345, [])
-
-    const disk = fakeDisk()
-    disk.setVideo(path, 9999, 12345) // mtime changed → memo stale → full path re-runs
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '999', season: 1, episode: 1 }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    await pass()
-
-    expect(lib.getMovie('tmdb:999')).toBeNull()
-    expect(lib.getEpisode('tmdb:999/s1e1')).toMatchObject({ path })
-  })
-
-  it('re-recognition flips kind (episode row → recognize() now says movie) → stale episode row cleaned up, series dropped if it becomes empty', async () => {
-    const path = '/media/reclaimed2.mkv'
-    lib.upsertSeries({ id: 'tmdb:999', name: 'Old Guess' })
-    lib.upsertEpisode({ id: 'tmdb:999/s1e1', seriesId: 'tmdb:999', season: 1, episode: 1, name: 'x', path, subStatus: 'covered' })
-    lib.setProbeMemo('tmdb:999/s1e1', 5000, 12345, [])
-
-    const disk = fakeDisk()
-    disk.setVideo(path, 9999, 12345)
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '999' }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    await pass()
-
-    expect(lib.getEpisode('tmdb:999/s1e1')).toBeNull()
-    expect(lib.getSeries('tmdb:999')).toBeNull()
-    expect(lib.getMovie('tmdb:999')).toMatchObject({ path })
-  })
-
-  // 路 A（2026-07-26 识别架构）：agent 的 identity_correction 落地为 identify_overrides 认领后，
-  // 同一条路径会被重新识别到**另一个 tmdbId**（kind 不变）。此前只有"kind 翻转"才清理旧行
-  // （见上两条测试），同 kind 换身份的旧行 path 仍在磁盘上、fileExists 恒真，磁盘真相移除阶段
-  // 的两条件永不命中 → 永久鬼影行（错身份的 episodes/series 行留在库里，dashboard 上是一部
-  // 根本不存在的剧，还会继续被派活找字幕）。这是纠错落地的必补洞。
-  it('re-recognition keeps kind but changes tmdbId (agent identity_correction → override) → stale wrong-identity row is cleaned up', async () => {
-    const path = '/media/Show/Season 1/ep1.mkv'
-    // 机械误判建的旧行：tmdb:154494（Lycoris Recoil）
-    lib.upsertSeries({ id: 'tmdb:154494', name: 'Lycoris Recoil' })
-    lib.upsertEpisode({ id: 'tmdb:154494/s1e1', seriesId: 'tmdb:154494', season: 1, episode: 1, name: 'x', path, subStatus: 'covered' })
-    lib.setProbeMemo('tmdb:154494/s1e1', 5000, 12345, [])
-
-    const disk = fakeDisk()
-    disk.setVideo(path, 9999, 12345) // mtime 变 → memo 失效 → 走完整识别路径
-    // agent 纠错后的认领生效：同一路径现在识别为 tmdb:276161（Teach You a Lesson）
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '276161', season: 1, episode: 1 }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    await pass()
-
-    // 新身份建行
-    expect(lib.getEpisode('tmdb:276161/s1e1')).toMatchObject({ path })
-    // 旧错身份行必须被清掉——否则是永久鬼影（path 占着磁盘真相，永不被移除阶段命中）
-    expect(lib.getEpisode('tmdb:154494/s1e1')).toBeNull()
-    // 旧 series 行空了也该一并清（同 kind 翻转分支的既有纪律）
-    expect(lib.getSeries('tmdb:154494')).toBeNull()
-  })
-
-  it('movie 侧同款：同 kind 换 tmdbId → 旧错身份 movie 行清理', async () => {
-    const path = '/media/movie.mkv'
-    lib.upsertMovie({ id: 'tmdb:138843', name: 'The Conjuring', path, subStatus: 'covered' })
-    lib.setProbeMemo('tmdb:138843', 5000, 12345, [])
-
-    const disk = fakeDisk()
-    disk.setVideo(path, 9999, 12345)
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '1083381' })) // Backrooms
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    await pass()
-
-    expect(lib.getMovie('tmdb:1083381')).toMatchObject({ path })
-    expect(lib.getMovie('tmdb:138843')).toBeNull()
-  })
-
   it('park after a prior successful ingest does NOT delete the previously-working row (graceful degradation, not data loss)', async () => {    const path = '/media/Show/Season 1/ep1.mkv'
     lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
     lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'x', path, subStatus: 'covered' })
@@ -768,203 +674,6 @@ describe('makeIngestPass — memo-hit cheap path', () => {
 
     expect(result.parked).toBe(1)
     expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull() // old row survives the park
-  })
-})
-
-// P7 真库闸门 Bug 2：两个不同磁盘路径识别到同一个 own-id（同 tmdbId+season/episode，movies 同 tmdbId）
-// ——重复内容（多质量版本、种子机硬链接残留常见）。episodes/movies 的 path 列是单值，一行只能记
-// 一个 path；不设防的话两条路径会在每一轮互相"抢" path 列。**重复源 P2 起**：后来者不再 park
-// duplicate-content，而是登记为一等公民副本（item_files）——条目=文件集合，主文件（最早入库者）
-// 占 episodes/movies.path，副本进 item_files。幂等性仍然成立：安静盘上主文件走 CHEAP PATH 不
-// re-upsert，副本每轮命中撞身份守卫 addItemFile（ON CONFLICT 幂等）不 upsert。
-describe('makeIngestPass — duplicate identity → item_files 副本入册（重复源 P2）', () => {
-  it('two TV paths to the same tmdbId/season/episode: 主文件占 episodes.path，后来者进 item_files（不 park）；安静盘不 re-upsert', async () => {
-    const pathA = '/media/Show/Season 1/ep1-copyA.mkv'
-    const pathB = '/media/Show (dup)/Season 1/ep1-copyB.mkv'
-    const disk = fakeDisk()
-    disk.setVideo(pathA, 5000, 111)
-    disk.setVideo(pathB, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
-    const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathA, pathB],
-      recognize, probe,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    const r1 = await pass()
-    expect(r1.upserted).toBe(1)
-    expect(r1.parked).toBe(0) // P2：不再 park
-
-    const r2 = await pass()
-    expect(r2.upserted).toBe(0) // quiet disk — must NOT re-upsert
-    expect(r2.parked).toBe(0)
-
-    const episode = lib.getEpisode('tmdb:1/s1e1')
-    expect(episode).not.toBeNull()
-    // 一个 path 稳定占主文件行，另一个作为副本入 item_files（无 ping-pong）。
-    expect([pathA, pathB]).toContain(episode!.path)
-    const replicas = lib.listItemFiles('tmdb:1/s1e1')
-    expect(replicas).toHaveLength(1)
-    expect([pathA, pathB]).toContain(replicas[0].path)
-    expect(replicas[0].path).not.toBe(episode!.path)
-    // 停车场干净——副本不占停车位。
-    expect(lib.listParkedPaths()).toEqual([])
-  })
-
-  it('movie 副本同理入 item_files（不 park duplicate-content）', async () => {
-    const pathA = '/media/Movies/Hero (2002).mkv'
-    const pathB = '/media/Movies (dup)/Hero (2002) [1080p].mkv'
-    const disk = fakeDisk()
-    disk.setVideo(pathA, 5000, 111)
-    disk.setVideo(pathB, 5000, 222)
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '603' }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathA, pathB], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    await pass()
-
-    expect(lib.listParkedPaths()).toEqual([])
-    expect(lib.getMovie('tmdb:603')).not.toBeNull()
-    const replicas = lib.listItemFiles('tmdb:603')
-    expect(replicas).toHaveLength(1)
-    expect([pathA, pathB]).toContain(replicas[0].path)
-  })
-
-  it('存量自愈：既有 duplicate-content 停车行下一轮命中撞身份守卫 → 转副本入册 + 退户口', async () => {
-    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
-    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
-    const disk = fakeDisk()
-    disk.setVideo(pathMain, 5000, 111)
-    disk.setVideo(pathDup, 5000, 222)
-    // 先让主文件入库
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
-    const passMainOnly = makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathMain], recognize,
-      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-    await passMainOnly()
-    // 手工模拟 P2 之前遗留的 duplicate-content 停车行
-    lib.upsertParkedPath(pathDup, 'duplicate-content', 5000)
-    expect(lib.listParkedPaths().map((p) => p.path)).toContain(pathDup)
-
-    // 现在全量扫描（含 dup）→ dup 命中撞身份守卫 → addItemFile + clearParkedPath
-    const passAll = makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathMain, pathDup], recognize,
-      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-    await passAll()
-
-    expect(lib.listParkedPaths()).toEqual([]) // 自愈退户口
-    expect(lib.listItemFiles('tmdb:1/s1e1').map((f) => f.path)).toEqual([pathDup])
-  })
-
-  it('主文件消失但有存活副本 → 最年长副本晋升，条目不退役', async () => {
-    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
-    const pathDup = '/media/Show/Season 1/ep1-dup.mkv'
-    const disk = fakeDisk()
-    disk.setVideo(pathMain, 5000, 111)
-    disk.setVideo(pathDup, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
-    const deps = makeDeps({
-      listVideoFiles: () => [pathMain, pathDup], recognize,
-      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    })
-    await makeIngestPass(deps)()
-    const mainBefore = lib.getEpisode('tmdb:1/s1e1')!.path
-
-    // 主文件从盘上消失（只留副本）
-    disk.removeVideo(mainBefore)
-    const survivingReplica = [pathMain, pathDup].find((p) => p !== mainBefore)!
-    await makeIngestPass(makeDeps({
-      listVideoFiles: () => [survivingReplica], recognize,
-      probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))()
-
-    // 条目没退役（removed 不因它 +1），主文件 path 顶替成存活副本，item_files 清空
-    const ep = lib.getEpisode('tmdb:1/s1e1')
-    expect(ep).not.toBeNull()
-    expect(ep!.path).toBe(survivingReplica)
-    expect(lib.listItemFiles('tmdb:1/s1e1')).toEqual([])
-  })
-
-  // 重复源 P4b："复制优先"机械通道接线验证——只验证 ingest.ts 在 addItemFile 分支正确调用
-  // propagateSubtitleToReplica（正确的 itemId/mainPath/replicaPath），不重新验证复制/时长判断
-  // 本身的逻辑（那部分已经在 subtitlePropagation.test.ts 用真实临时文件+真实 DB 独立覆盖）。
-  it('TV 副本入册时，若主文件已有字幕，会用主副两个 path 调用 probeDuration（复制优先通道被正确触发）', async () => {
-    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
-    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
-    const disk = fakeDisk()
-    disk.setVideo(pathMain, 5000, 111)
-    disk.setVideo(pathDup, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
-    await makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathMain], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))()
-    // 主文件已有一份字幕（无 file_path=挂主文件，既有兼容语义）。
-    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
-      .run('tmdb:1/s1e1', '/media/Show/Season 1/ep1-main.zh-Hans.srt', 'zh-Hans', 'scout-download', 1000)
-
-    const probeDuration = vi.fn(async () => null) // 虚拟磁盘上没有真实视频文件——探测失败即可，只看接线
-    await makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathMain, pathDup], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-      probeDuration,
-    }))()
-
-    expect(probeDuration).toHaveBeenCalledWith(pathMain)
-    expect(probeDuration).toHaveBeenCalledWith(pathDup)
-  })
-
-  it('movie 副本入册时同理会触发复制优先通道的探测调用', async () => {
-    const pathA = '/media/Movies/Hero (2002).mkv'
-    const pathB = '/media/Movies (dup)/Hero (2002) [1080p].mkv'
-    const disk = fakeDisk()
-    disk.setVideo(pathA, 5000, 111)
-    disk.setVideo(pathB, 5000, 222)
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '603' }))
-    await makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathA], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))()
-    db.prepare(`INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`)
-      .run('tmdb:603', '/media/Movies/Hero (2002).zh-Hans.srt', 'zh-Hans', 'scout-download', 1000)
-
-    const probeDuration = vi.fn(async () => null)
-    await makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathA, pathB], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-      probeDuration,
-    }))()
-
-    expect(probeDuration).toHaveBeenCalledWith(pathA)
-    expect(probeDuration).toHaveBeenCalledWith(pathB)
-  })
-
-  it('主文件还没有字幕时，副本入册不会触发探测调用（最常见情形，零额外开销）', async () => {
-    const pathMain = '/media/Show/Season 1/ep1-main.mkv'
-    const pathDup = '/media/Show (dup)/Season 1/ep1-dup.mkv'
-    const disk = fakeDisk()
-    disk.setVideo(pathMain, 5000, 111)
-    disk.setVideo(pathDup, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
-    const probeDuration = vi.fn(async () => 1420)
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [pathMain, pathDup], recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-      probeDuration,
-    }))
-
-    await pass()
-
-    expect(probeDuration).not.toHaveBeenCalled()
   })
 })
 
@@ -1004,7 +713,7 @@ describe('makeIngestPass — B3-1 领养(sidecar)记账：covered 判定同时�
     const disk = fakeDisk()
     disk.setVideo(path)
     disk.addSidecar('/media/Show/Season 1/ep2.zh.srt')
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 2 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 2 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path], recognize,
       fileExists: disk.fileExists, statFile: disk.statFile,
@@ -1059,7 +768,7 @@ describe('makeIngestPass — B3-1 领养(sidecar)记账：covered 判定同时�
       writeFileSync(dupPath, 'video-dup')
       writeFileSync(sidecarPath, '1\n00:00:01,000 --> 00:00:02,000\nadopted sub\n')
 
-      const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+      const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
 
       // 第一轮：只扫主文件——命中磁盘 sidecar，领养 covered，B3-1 补写 subtitles 行。
       await makeIngestPass(makeDeps({
@@ -1175,7 +884,7 @@ describe('makeIngestPass — B3-2 领养(sidecar)清理 stale status_reason', ()
     const disk = fakeDisk()
     disk.setVideo(path)
     disk.addSidecar('/media/movies/hero.zh.srt')
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' }))
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path], recognize,
       fileExists: disk.fileExists, statFile: disk.statFile,
@@ -1250,7 +959,7 @@ describe('makeIngestPass — B3-3 已登记副本免重识别（配额止血）'
     const disk = fakeDisk()
     disk.setVideo(pathMain, 5000, 111)
     disk.setVideo(pathDup, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [pathMain, pathDup], recognize,
       probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
@@ -1272,7 +981,7 @@ describe('makeIngestPass — B3-3 已登记副本免重识别（配额止血）'
     const disk = fakeDisk()
     disk.setVideo(pathMain, 5000, 111)
     disk.setVideo(pathDup, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     // 首轮：只扫主文件入库。
     await makeIngestPass(makeDeps({
       listVideoFiles: () => [pathMain], recognize,
@@ -1310,7 +1019,7 @@ describe('makeIngestPass — B3-3 已登记副本免重识别（配额止血）'
     const disk = fakeDisk()
     disk.setVideo(pathMain, 5000, 111)
     disk.setVideo(pathDup, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     await makeIngestPass(makeDeps({
       listVideoFiles: () => [pathMain, pathDup], recognize,
       probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
@@ -1440,7 +1149,7 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
     disk.setVideo(path)
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
-      recognize: vi.fn(async () => tvResult({ title: '甲剧标题' })),
+      recognize: vi.fn(async () => tvResult({ title: '甲剧标题' , absoluteEpisode: null, embeddedTmdbId: null})),
       tmdb: fakeTmdb({ getOriginLanguage: async () => null }),
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
@@ -1458,7 +1167,7 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
     disk.setVideo(path)
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
-      recognize: vi.fn(async () => tvResult({ title: 'スパイファミリー' })),
+      recognize: vi.fn(async () => tvResult({ title: 'スパイファミリー' , absoluteEpisode: null, embeddedTmdbId: null})),
       tmdb: fakeTmdb({ getOriginLanguage: async () => null }),
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
@@ -1474,7 +1183,7 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
     disk.setVideo(path)
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
-      recognize: vi.fn(async () => tvResult({ title: '甲剧标题' })),
+      recognize: vi.fn(async () => tvResult({ title: '甲剧标题' , absoluteEpisode: null, embeddedTmdbId: null})),
       tmdb: fakeTmdb({ getOriginLanguage: async () => null }),
       targetLanguages: () => ['en'],
       originSkipLanguages: () => ['en'],
@@ -1492,7 +1201,7 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
     disk.setVideo(path)
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
-      recognize: vi.fn(async () => tvResult({ title: '甲剧标题' })),
+      recognize: vi.fn(async () => tvResult({ title: '甲剧标题' , absoluteEpisode: null, embeddedTmdbId: null})),
       tmdb: fakeTmdb({ getOriginLanguage: async () => { throw new Error('ECONNRESET') } }),
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
@@ -1510,7 +1219,7 @@ describe('makeIngestPass — TMDB origin gate (rule 0) and Chinese-title heurist
     disk.setVideo(p1)
     disk.setVideo(p2)
     const getOriginLanguage = vi.fn(async () => 'zh')
-    const recognize = vi.fn(async (path: string) => tvResult({ episode: path === p1 ? 1 : 2 }))
+    const recognize = vi.fn(async (path: string) => tvResult({ episode: path === p1 ? 1 : 2 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [p1, p2],
       recognize,
@@ -1575,7 +1284,7 @@ describe('makeIngestPass — disk-truth removal', () => {
     disk.setVideo('/media/stays.mkv')
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/stays.mkv'],
-      recognize: vi.fn(async () => tvResult({ episode: 2 })),
+      recognize: vi.fn(async () => tvResult({ episode: 2 , absoluteEpisode: null, embeddedTmdbId: null})),
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
 
@@ -1903,8 +1612,8 @@ describe('makeIngestPass — layout_nonstandard fact (debt D1)', () => {
     disk.setVideo(canonicalPath)
     const recognize = vi.fn(async (path: string) =>
       path === flatPath
-        ? tvResult({ tmdbId: '11', season: 1, episode: 1 })
-        : tvResult({ tmdbId: '22', season: 1, episode: 1 })
+        ? tvResult({ tmdbId: '11', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null})
+        : tvResult({ tmdbId: '22', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null})
     )
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [flatPath, canonicalPath],
@@ -1923,7 +1632,7 @@ describe('makeIngestPass — layout_nonstandard fact (debt D1)', () => {
     const canonicalPath = '/media/Show Flat (2020) [tmdbid-33]/Season 01/ep1.mkv'
     const disk = fakeDisk()
     disk.setVideo(flatPath, 5000, 12345)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '33', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '33', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [flatPath],
       recognize,
@@ -1957,7 +1666,7 @@ describe('makeIngestPass — fault isolation', () => {
     disk.setVideo('/media/ok.mkv')
     const recognize = vi.fn(async (path: string): Promise<Recognized | Park> => {
       if (path === '/media/flaky.mkv') throw new Error('transient TMDB blip')
-      return tvResult({ tmdbId: '2', episode: 1 })
+      return tvResult({ tmdbId: '2', episode: 1 , absoluteEpisode: null, embeddedTmdbId: null})
     })
     const log = vi.fn()
     const pass = makeIngestPass(makeDeps({
@@ -2038,7 +1747,7 @@ describe('makeIngestPass — search_attempts 归零 (F-R2-6, R-3 不变式：覆
     const disk = fakeDisk()
     disk.setVideo(path)
     disk.addSidecar('/media/movies/hero.zh.srt')
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' }))
+    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2255,7 +1964,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     // 非 NULL，收窄后的候选谓词接不住它，名字将永远空着。治源头：建行当场回填。
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv', 5000, 12345)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '24240', title: '', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '24240', title: '', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     // overview 必须由建行 enrich 一并落库（build path 已 upsertSeries overview/backdrop）——否则
     // overview 留 NULL，同一轮 pass 的富化重试段会经放宽后的 overview IS NULL 臂把它重新捞起，
     // 白烧第二次 getDetails。这正是本测试守的"建行已拿全、不许同轮二次 TMDB"不变式。
@@ -2413,7 +2122,7 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     const disk = fakeDisk()
     const path = '/media/Show - NCOP01.mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2432,7 +2141,7 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     const disk = fakeDisk()
     const path = '/media/Show - NCOP01.mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2450,7 +2159,7 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     const path = '/media/Show - NCOP01.mkv'
     disk.setVideo(path)
     lib.addExtrasExemption(path, 1000) // 用户此前翻过案
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2474,7 +2183,7 @@ describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
     const disk = fakeDisk()
     const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2494,7 +2203,7 @@ describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
     const disk = fakeDisk()
     const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2512,7 +2221,7 @@ describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
     const disk = fakeDisk()
     const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2529,7 +2238,7 @@ describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
     const disk = fakeDisk()
     const path = '/media/Show - 01.mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2547,7 +2256,7 @@ describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
     const disk = fakeDisk()
     const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -2565,7 +2274,7 @@ describe('makeIngestPass — hardsub-assumed 机械直判 (R5 rule 4b)', () => {
     const disk = fakeDisk()
     const path = '/media/[SubsPlease] Show - 01 [1080p].mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 }))
+    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
