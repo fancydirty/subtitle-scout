@@ -12,6 +12,7 @@ import type { PathIdentity, Park } from '../recognition/index.js'
 import { isCanonicalEpisodePath } from '../recognition/identifyFromPath.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { propagateSubtitleToReplica } from './subtitlePropagation.js'
+import { mapWithConcurrency } from './probeConcurrency.js'
 
 /**
  * 去 Jellyfin 化 P3（design: docs/design/2026-07-16-de-jellyfin-design.md §P3）的核心：
@@ -37,6 +38,13 @@ export interface IngestDeps {
    *  失败（ffprobe 缺席/超时/非视频）返回 null——同 probe 一样，调用方永远显式提供，测试永远
    *  注入固定值/null，从不在测试里真的 spawn ffprobe。 */
   probeDuration: (videoPath: string) => Promise<number | null>
+  /** FULL PATH raw-data 采集阶段**跨文件**的探针并发上限（同一文件的 duration+轨道两个探针仍
+   *  串行，见下方 pendingProbes 一段）。默认 2：阿里云盘经 rclone WebDAV 单文件 ffprobe 是
+   *  12-16s（~12s 是阿里云 CDN 延迟地板，绕过 FUSE 直读签名 URL 同样 12.1s，串行无从优化），
+   *  27 个云盘文件串行约 6 分钟，并发 2 即降到约 3 分钟；而 CIFS/SMB NAS 上探针只 1.09s，
+   *  并发在那边买不到什么，还白白放大挂载压力——故默认值取保守的 2，真正的调优值留给部署后
+   *  按各根的实测延迟分别配。 */
+  probeConcurrency?: number
   /** 默认 daemon/selfScan.ts 导出的 walkVideoFiles（B1 的同一份遍历实现，见该文件顶部注释）。 */
   listVideoFiles?: (root: string) => string[]
   fileExists?: (p: string) => boolean
@@ -458,6 +466,8 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
   const removalConfirmPasses = deps.removalConfirmPasses ?? (Number(process.env.REMOVAL_CONFIRM_PASSES) || 2)
   const scanCollapseRatio = deps.scanCollapseRatio ?? (Number(process.env.SCAN_COLLAPSE_RATIO) || 0.5)
   const statFile = deps.statFile ?? defaultStatFile
+  // 跨文件探针并发上限，默认 2（保守值的完整理由见 IngestDeps.probeConcurrency 头注释）。
+  const probeConcurrency = deps.probeConcurrency ?? 2
   const { lib, tmdb, log } = deps
 
   return async function ingestPass(): Promise<IngestResult> {
@@ -480,6 +490,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       // true=本轮至少一集路径不合规范形。movies 豁免（没有规范形概念）、parked 路径不参与
       // （没有 series 归属），pass 收尾处全量重写（见文件底部）。
       const layoutObserved = new Map<string, boolean>()
+      // FULL PATH 的探针待办：path → 该文件本轮的 stat 指纹。走盘循环里只登记，真探测推迟到
+      // 走盘结束后统一按 probeConcurrency 并发跑（云盘单文件探针 12-16s，收益全在并发）。
+      const pendingProbes = new Map<string, { mtimeMs: number; size: number }>()
 
       for (const root of deps.roots()) {
         for (const path of listVideoFiles(root)) {
@@ -602,41 +615,18 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
             // outcome 是 PathIdentity：纯结构提示（title/year/season/episode/embeddedTmdbId 等
             // 机械解析信号），没有 tmdbId——身份裁决（TMDB 搜索/详情/建行）已上移到 agent 的
-            // write_identified_media 工具；ingest 只采集原始探测数据并 park，等 agent 识别。
-            const identity = outcome
+            // write_identified_media 工具；ingest 只采集原始探测数据并 park，等 agent 识别
+            // （故这里不再需要绑定 outcome：结构提示本身不参与下面的 raw-data 采集）。
 
-            // 采集 raw data：时长 + 内嵌字幕轨语言。两个探测各自独立 try/catch——一个失败
-            // 不拖垮另一个，也不阻塞 parking（缺哪个字段就缺哪个，agent 侧按 null=未探测处理）。
-            let durationSec: number | null = null
-            let embeddedLangs: string[] | null = null
-
-            try {
-              durationSec = await deps.probeDuration(path)
-            } catch (err) {
-              deps.log(`probeDuration failed for ${path}: ${err}`)
-            }
-
-            try {
-              const tracks = await deps.probe(path)
-              embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
-            } catch (err) {
-              deps.log(`probe failed for ${path}: ${err}`)
-            }
-
-            // Park with raw data for agent identification。fingerprint 的 durationSec/embeddedLangs
-            // 是 optional（undefined=本次未探测，指纹未变时保留库中已有值），故 null → undefined 换算。
-            lib.upsertParkedPath(
-              path,
-              'awaiting-agent-identification',
-              nowMs,
-              {
-                mtimeMs: stat.mtimeMs,
-                size: stat.size,
-                durationSec: durationSec ?? undefined,
-                embeddedLangs: embeddedLangs ?? undefined,
-              }
-            )
-            result.parked++
+            // 采集 raw data：时长 + 内嵌字幕轨语言。**跨文件**并发（见 pendingProbes 与循环
+            // 之后的 mapWithConcurrency 一段）：云盘上单文件探针 12-16s 是 CDN 延迟地板，串行
+            // 无从优化，唯一的收益来源是并发。这里只登记"这个文件要探针"，真探测与随后的
+            // parking 推迟到走盘循环结束后统一做——本文件在这条分支上后续没有任何工作。
+            // 按 path 去重（Map 而非数组）：原先探测与 parking 就在这条分支内联完成，若同一
+            // path 在走盘里出现两次，第二次会撞上刚写的 park 行的负缓存而跳过、探针只跑一遍；
+            // 推迟之后不去重就会跑两遍。走盘实现本不产生重复路径，这只是把等价性钉死。
+            pendingProbes.set(path, stat)
+            continue
           } catch (e) {
             // 同 daemon/selfScan.ts 的既有哲学："一个文件/一次 TMDB 抖动不能拖垮整轮 pass"——
             // 记日志，这个文件本轮既不算 upserted 也不算 parked，下一轮 pass 重试。
@@ -645,6 +635,82 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
           }
         }
       }
+
+      // ---- FULL PATH 第二阶段：raw data 探针（跨文件有界并发）+ parking ----
+      // 走盘循环里每个待 park 的文件只登记进 pendingProbes，真探测集中在这里做——因为唯一能
+      // 压缩云盘探针墙钟的手段是并发（阿里云盘经 rclone WebDAV 单文件 12-16s，其中 ~12s 是
+      // CDN 延迟地板，绕过 FUSE 直读签名 URL 同样 12.1s，串行无从优化；4 并发实测 16.1s 墙钟）。
+      // 语义必须与内联版逐字等价：
+      //  · allSettled（mapWithConcurrency）而非 Promise.all——ingest 的铁律是"一个文件/一次抖动
+      //    不能拖垮整轮 pass"，Promise.all 一个 reject 会连带丢弃其余已完成的探测结果，把单文件
+      //    探针失败升级成整批 raw data 丢失（正是本层最不能出的错：raw evidence 被污染）。
+      //  · 同一文件内 duration 与轨道两个探针仍各自独立 try/catch 且**顺序**执行，调用次数、
+      //    实参、日志措辞全部不变（"probeDuration failed for …" / "probe failed for …" 有既成的
+      //    运维习惯依赖）。
+      //  · 结果按下标归属（mapWithConcurrency 保序 + 任务自带 path），绝不按完成顺序——每个文件
+      //    的 upsertParkedPath 只拿它自己那份 durationSec/embeddedLangs。
+      // parking 与 result.parked 计数留在这个串行的 for 里（DB 写入是同步的 better-sqlite3，
+      // 并发化没有收益，串行也保证了计数与写序确定）。
+      const probeTargets = [...pendingProbes]
+      const probed = await mapWithConcurrency(
+        probeTargets,
+        probeConcurrency,
+        async ([path]) => {
+          let durationSec: number | null = null
+          let embeddedLangs: string[] | null = null
+
+          try {
+            durationSec = await deps.probeDuration(path)
+          } catch (err) {
+            deps.log(`probeDuration failed for ${path}: ${err}`)
+          }
+
+          try {
+            const tracks = await deps.probe(path)
+            embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
+          } catch (err) {
+            deps.log(`probe failed for ${path}: ${err}`)
+          }
+
+          return { durationSec, embeddedLangs }
+        },
+      )
+
+      for (let i = 0; i < probeTargets.length; i++) {
+        const [path, stat] = probeTargets[i]
+        const settled = probed[i]
+        try {
+          // rejected 理论不可达（探针任务体自身把两个探测都 try/catch 兜住了，不会向外抛），
+          // 但真出了意料外的抛错（如 usableEmbeddedLangs 遇到畸形轨道数据）也绝不能让这个文件
+          // 拖走其余文件的 parking——按"两个字段都没探到"处理，照常落 park 行，下一轮重探。
+          const raw = settled.status === 'fulfilled'
+            ? settled.value
+            : { durationSec: null, embeddedLangs: null }
+          if (settled.status === 'rejected') {
+            log(`ingest: probe stage failed for ${path}, parking without raw data this pass: ${settled.reason}`)
+          }
+
+          // Park with raw data for agent identification。fingerprint 的 durationSec/embeddedLangs
+          // 是 optional（undefined=本次未探测，指纹未变时保留库中已有值），故 null → undefined 换算。
+          lib.upsertParkedPath(
+            path,
+            'awaiting-agent-identification',
+            nowMs,
+            {
+              mtimeMs: stat.mtimeMs,
+              size: stat.size,
+              durationSec: raw.durationSec ?? undefined,
+              embeddedLangs: raw.embeddedLangs ?? undefined,
+            }
+          )
+          result.parked++
+        } catch (e) {
+          // 同走盘循环的既有哲学：一个文件的 parking 失败不拖垮整轮 pass，下一轮重试。
+          const msg = e instanceof Error ? e.message : String(e)
+          log(`ingest: failed for ${path}, will retry next pass: ${msg}`)
+        }
+      }
+
 
       // ---- 磁盘真相移除：本轮走盘没见到 + 磁盘复核确认真的不在了 → 行退役 ----
       // 三层防线（CIFS 挂载抖动误删修复——审计头号遗留，2026-07-18）：原先的"双重条件"
