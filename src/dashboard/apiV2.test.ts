@@ -310,7 +310,7 @@ describe('buildParked / claimParked（P6 park 救援）', () => {
     lib.upsertParkedPath('/media/TV/High School D×D/Hero - 01.mkv', 'no-signal', NOW)
 
     const result = claimParked(db, {
-      path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4, source: 'human',
+      path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4,
     })
     expect(result).toEqual({ ok: true })
     expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({

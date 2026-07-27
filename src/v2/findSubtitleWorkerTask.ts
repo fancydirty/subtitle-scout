@@ -1,4 +1,4 @@
-import { dirname, basename, resolve } from 'node:path'
+import { dirname, basename } from 'node:path'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { RunsRepo } from './runsRepo.js'
@@ -208,54 +208,6 @@ export function commonDir(dirs: string[]): string {
     candidate = parent
   }
   return candidate
-}
-
-/** 认领安全闸（2026-07-26 审计 P0-A，同日第二轮审计修正）：agent 的 identity_correction
- *  落地成一条 path_prefix 认领，而 findOverride 是前缀匹配——前缀取宽了，一次纠错就能把整个
- *  目录树下**agent 从未核验过**的兄弟条目一起改身份（下一轮 ingest 会按新身份删旧行建新行，
- *  还可能触发副本字幕传播，撞北极星红线"绝不误认"）。
- *
- *  第一版把"targets 跨多个目录"一律拒写，这条规则本身造成了更坏的稳态失效：**多季剧是最
- *  常见的 TV 布局**，多季 task 的 targets 天然跨 Season 01/Season 02，于是 agent 每轮判对、
- *  每轮被拒、每轮烧钱，库里身份永远错——而拒写记录只是时间线上一行滚动消失的灰字，没人会
- *  发现。锁死最常见的场景不是保守，是把功能废掉。
- *
- *  现在的规则：认领前缀取全部 targets 的**公共祖先目录**（多季剧自然落在剧根，正是该认领的
- *  粒度——agent 核验的是"这批文件是哪部剧"，剧根就是这个判断的作用域），但必须同时满足：
- *  ① 严格深于每一个配置媒体根（不能等于根，否则一条认领钉死整库——扁平库的致命形态）；
- *  ② 全部 targets 确实在它之下（commonDir 的自洽性复核，防御磁盘布局异常导致的越界上探）。
- *  两条任一不满足就拒写并留痕——那些形态（散落在媒体根一级的扁平库）确实没有安全的认领
- *  粒度可选，宁可等人处理。 */
-export function safeClaimPrefix(
-  targetPaths: string[], mediaRoots: string[],
-): { ok: true; prefix: string } | { ok: false; reason: string } {
-  const dirs = [...new Set(targetPaths.map((p) => dirname(p)))]
-  if (dirs.length === 0) return { ok: false, reason: 'no targets' }
-
-  const prefix = commonDir(dirs)
-
-  // ① 严格深于每一个配置根：等于根（或在根之外）都不许认领。配置根为空（开发/测试态）时
-  // 这条检查退化为"只要不是文件系统根就行"——isUnderRoots 的"空=不限制"语义在这里不适用，
-  // 认领是写操作，缺省必须收紧不能放宽。
-  for (const root of mediaRoots) {
-    if (resolve(prefix) === resolve(root)) {
-      return {
-        ok: false,
-        reason: `prefix ${prefix} IS a configured media root — claiming it would pin the whole library`,
-      }
-    }
-  }
-  if (resolve(prefix) === resolve(dirname(prefix))) {
-    return { ok: false, reason: `prefix ${prefix} is a filesystem root` }
-  }
-
-  // ② 自洽性复核：commonDir 声称它包住了全部 dirs，这里实证一遍（磁盘布局异常/跨根组合时
-  // 上探可能越出预期）。
-  if (!dirs.every((d) => isUnderRoots(d, [prefix]))) {
-    return { ok: false, reason: `computed prefix ${prefix} does not contain every target directory` }
-  }
-
-  return { ok: true, prefix }
 }
 
 /** Maps a claimed worker_task row to a batch FindSubtitleTask, or null if there is nothing left
@@ -533,17 +485,16 @@ export async function runFindSubtitleWorkerTask(
 
     // 事实先入账（installed 永远先记——磁盘上字幕已经在了，队列怎么转都不改变这个事实）
     //
-    // 🔴 例外（2026-07-26 审计 BLIND SPOT 1）：报告自带 identity_correction 时，agent 已经
-    // 判定这批目标的库身份是错的——此时任何 installed 都是把字幕记到它自己刚宣布错误的身份
-    // 上（Peacemaker 事故形状）。schema 的 superRefine 已经在 agent 循环内拒收这种自相矛盾
-    // 的报告（模型能看到错误并自我纠正），这里是第二道：即使将来 schema 那道被绕过/改动，
-    // runner 也绝不把装机记到一个已知错误的身份上。丢弃要吼出来，不静默。
-    const installedToRecord = report.identity_correction ? [] : installed
-    if (report.identity_correction && installed.length > 0) {
+    // 🔴 例外（语义反转闸，findSubtitleWorker.schemas.ts 的 identity 字段文档："后者由 runner
+    // 层把关"）：identity.outcome==='unidentified' 时 installed 必须为空——agent 自己承认了
+    // 身份未定，此时任何 installed 都是把字幕记到一个未核验的身份上（Peacemaker 事故形状，
+    // 同 2026-07-26 审计 BLIND SPOT 1 的既有纪律）。丢弃要吼出来，不静默。
+    const installedToRecord = report.identity?.outcome === 'unidentified' ? [] : installed
+    if (report.identity?.outcome === 'unidentified' && installed.length > 0) {
       console.error(
         `[find-subtitle-harvest] job ${job.id}: DROPPING ${installed.length} installed item(s) — ` +
-          `report also carries identity_correction (tmdb:${report.identity_correction.tmdbId}), ` +
-          `so the library identity these installs would be recorded against is known-wrong: ` +
+          `report's identity outcome is 'unidentified' (${report.identity.reason}), ` +
+          `so installs would be recorded against no verified identity: ` +
           installed.map((i) => i.itemId).join(', '),
       )
     }
@@ -585,97 +536,6 @@ export async function runFindSubtitleWorkerTask(
     // completeError 节流轨（R-10 豁免：30s→15min→日，永不 dormant）。completeNoMatch 已死。
     // 救援R5：hardsub_assumed 非空视为"这批已完成"的一种（同 installed/noMatch），走
     // completeDone——它不是失败判决，不该被"报告为空"或"待重试"两个分支误吞。
-    // 路 A（2026-07-26 识别架构）：identity_correction 落地——agent Step 0 核验发现库身份
-    // （机械文件名解析的猜测）错了并重新识别出正确条目。
-    //
-    // 落地方式刻意**不是**手写 id 迁移（own-id 空间里 series.id='tmdb:<id>'、
-    // episodes.id='tmdb:<id>/s<N>e<M>'，改身份等于重写整条 id 链 + subtitles/item_files/
-    // tmdb_seasons 五张表的外键，且中途崩溃没有幂等恢复点）——而是复用既有的
-    // identify_overrides 认领机制：写一条 path_prefix → 正确 tmdbId 的认领，下一轮 ingest
-    // 的 recognize() 消歧前查命中它（见 recognition/index.ts 的 opts.findOverride），按正确
-    // 身份建新行；旧错身份行由 ingest 的"同路径换身份"清理分支删掉（见 ingest.ts 该分支）。
-    // 认领者从人（P6 救援页）变成 agent，机制原样复用——幂等（ON CONFLICT 覆盖）、崩溃安全
-    // （一条 INSERT）、零新代码路径。
-    //
-    // 认领前缀不用 task.mediaRoot（那是 commonDir 上探出的沙盒边界，多季/扁平布局下会宽到
-    // 剧根甚至媒体根）——独立走 safeClaimPrefix 的安全闸，不安全就拒写只留痕，见该函数注释。
-    let identityClaim: { ok: true; prefix: string } | { ok: false; reason: string } | null = null
-    if (report.identity_correction) {
-      const correction = report.identity_correction
-      // C3（审计）：tmdbId 零校验直落库是既有事故的复刻——ingest 早有"LLM 把 tmdb id 幻觉成
-      // imdb id"的前科，skill 也专门叮嘱过 strip 'tmdb:' 前缀（说明带前缀是已知模型行为）。
-      // 人工认领入口（triageOps）本就有 /^\d+$/ 守卫，agent 入口必须同款：非纯数字一律拒收，
-      // 否则会把一个不存在的身份永久钉在一个目录前缀上（认领表无 UI 可删）。
-      let claim: { ok: true; prefix: string } | { ok: false; reason: string } = /^\d+$/.test(correction.tmdbId)
-        ? safeClaimPrefix(task.targets.map((t) => t.videoPath), deps.mediaRoots)
-        : { ok: false as const, reason: `tmdbId must be a bare numeric string, got "${correction.tmdbId}"` }
-
-      // 🔴 空转纠错拦截（2026-07-26 第八轮 auto research）：correction 的 tmdbId 与库里已有的
-      // 身份**相同**时，这在语义上根本不是纠错——是模型把"我核验过了，是对的"塞进了纠错字段
-      // （实测 reason 里明写 "Identity confirmed" 却照样填了字段）。skill 加了四轮措辞、又加了
-      // identity_verified 字段给确认一个正当去处，仍拦不住"某一集越界"这类让模型不安的场景。
-      // 措辞救不了的用机制：同 id 一律不写认领——真让它落地会触发一次毫无意义的整剧重写
-      // （删旧行建同 id 新行），纯风险零收益。
-      const currentTmdbId = tmdbIdFromOwnId(task.targets[0]?.itemId ?? '')
-      if (claim.ok && currentTmdbId !== null && currentTmdbId === correction.tmdbId) {
-        claim = {
-          ok: false,
-          reason:
-            `proposed identity tmdb:${correction.tmdbId} is IDENTICAL to the library's current ` +
-            `identity — that is a confirmation, not a correction (use identity_verified)`,
-        }
-      }
-
-      // 🔴 存在性校验（2026-07-26 审计 BLIND SPOT 2，实测复现）：/^\d+$/ 只管形状，不管这个
-      // id 在 TMDB 上是否真的存在。实测 agent 报一个合法数字的幻觉 id（99999999）后：ingest
-      // 照样建行，TMDB 富化全 404 → genres 落 '[]'（那是 404 熄火哨兵），该行从此永久退出富化
-      // 重试候选、永不自愈，而认领表没有任何删除 UI —— 一个幻觉数字换来永久的库污染。
-      // 落地前拿 deps.tmdb 实证一次（它已在本函数其他处使用）；TMDB 未配置（null）时保持原
-      // 行为不引入新的失败模式。
-      if (claim.ok && deps.tmdb) {
-        const exists = await deps.tmdb
-          .getDetails(correction.isTv ? 'tv' : 'movie', correction.tmdbId)
-          .catch(() => null)
-        if (!exists) {
-          claim = {
-            ok: false,
-            reason:
-              `tmdb:${correction.tmdbId} (${correction.isTv ? 'tv' : 'movie'}) does not exist on TMDB ` +
-              `— refusing to pin a hallucinated identity onto ${claim.prefix}`,
-          }
-        }
-      }
-
-      if (claim.ok) {
-        // v24（审计 B）：source='agent'——addOverride 的不对称覆盖规则据此拒绝改写人工认领
-        // （人在救援页的明确点选是终局判断，且可能携带 agent 无从得知的 season 消歧信息）。
-        // 返回 false = 被人工认领挡下，如实记账，不假装成功。
-        const written = deps.lib.addOverride(
-          claim.prefix, correction.tmdbId, correction.isTv, now(), null, 'agent',
-        )
-        if (written) {
-          console.error(
-            `[find-subtitle-harvest] job ${job.id}: identity_correction — claimed ${claim.prefix} ` +
-              `as tmdb:${correction.tmdbId} (isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
-          )
-        } else {
-          console.error(
-            `[find-subtitle-harvest] job ${job.id}: identity_correction NOT applied ` +
-              `(${claim.prefix} carries a HUMAN claim — agent may not overwrite it) — ` +
-              `agent proposed tmdb:${correction.tmdbId}: ${capDetail(correction.reason)}`,
-          )
-          claim = { ok: false, reason: `prefix ${claim.prefix} carries a human claim; agent claims may not overwrite it` }
-        }
-      } else {
-        // 拒写不是静默丢弃：console + runs 都留痕（下面 recordRun 按 claim 结果分词），
-        // 人能从时间线看到"agent 判出了正确身份，但认领范围/形状不安全没敢落地"。
-        console.error(
-          `[find-subtitle-harvest] job ${job.id}: identity_correction NOT applied (${claim.reason}) — ` +
-            `agent proposed tmdb:${correction.tmdbId} (isTv=${correction.isTv}): ${capDetail(correction.reason)}`,
-        )
-      }
-      identityClaim = claim
-    }
     if (installedToRecord.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
       jobs.completeError(job.id, 'worker returned an empty batch report', now())
       recordRun('error', 'empty batch report')
@@ -700,29 +560,18 @@ export async function runFindSubtitleWorkerTask(
     if (hardsubAssumed.length) {
       recordRun('hardsub_assumed', `${hardsubAssumed.length} 集判定硬字幕假定: ${hardsubAssumed.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
     }
-    // 路 A：identity_correction 单独一行 runs（dashboard 时间线可见——这是识别架构最重要
-    // 的可观测面：agent 发现机械识别判错了多少次、纠成了什么、认领落到哪个前缀）。
-    // 审计 E：detail 必须带 path_prefix——事后查"这条认领改了哪个范围"只能靠这里（认领表
-    // 自身被 ON CONFLICT 覆盖后原始信息就没了）；被安全闸拒写的也要留痕，用不同 decision
-    // 词区分，否则"agent 判对了但没生效"会变成一次静默丢弃。
-    if (report.identity_correction && identityClaim) {
-      const c = report.identity_correction
-      // 审计 D-1：detail 必须带**旧身份**——原来只写"改判为 tmdb:X"，事后连"从什么改的"都
-      // 查不到，"agent 纠对了没有"这个核心风控指标无法核。旧 tmdbId 从这批目标所属的
-      // own-id 里取（tmdbIdFromOwnId 是纯字符串解析，零 I/O）。
-      const oldTmdbId = tmdbIdFromOwnId(task.targets[0]?.itemId ?? '') ?? 'unknown'
-      if (identityClaim.ok) {
+    // agent-first 识别的可观测面：识别结论单独一行 runs（dashboard 时间线可见 agent 每轮
+    // 识别出了什么/为什么识别不出）——同 runUnidentifiedFindSubtitleWorkerTask 的口径。
+    if (report.identity) {
+      if (report.identity.outcome === 'identified') {
         recordRun(
-          'identity_correction',
-          `库身份核验失败：tmdb:${oldTmdbId} → tmdb:${c.tmdbId} (isTv=${c.isTv})；` +
-            `已认领前缀 ${identityClaim.prefix}：${c.reason}`,
+          'identity',
+          `agent 识别结论：tmdb:${report.identity.tmdbId} (isTv=${report.identity.isTv}, ` +
+            `season=${report.identity.season}, episode=${report.identity.episode})；` +
+            `名称证据：${report.identity.nameEvidence}；结构证据：${report.identity.structureEvidence}`,
         )
       } else {
-        recordRun(
-          'identity_correction_skipped',
-          `agent 判定 tmdb:${oldTmdbId} → tmdb:${c.tmdbId} (isTv=${c.isTv})，但认领未落地` +
-            `（${identityClaim.reason}）：${c.reason}`,
-        )
+        recordRun('identity_unidentified', `agent 未能识别：${report.identity.reason}`)
       }
     }
     return report

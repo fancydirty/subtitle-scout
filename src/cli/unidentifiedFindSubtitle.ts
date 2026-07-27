@@ -76,6 +76,9 @@ export interface UnidentifiedFindSubtitleWorkerDeps {
   model: LanguageModel
   adapters: FetchAdapter[]
   cacheRoot: string
+  /** Test phase per spec: no production step cap yet — observe actual step counts first.
+   *  @default 500 */
+  stepCap?: number
   /** 全量 TmdbClient——既喂 Step 0 证据工具（search/getDetails/getSeasonTable），也喂
    *  identityDeps（write_identified_media 需要 getDetails/getChineseTitles/getExternalIds/
    *  getOriginLanguage 四面富化）。cmdWatch 顶部已把 TMDB_API_KEY 做成硬前置，恒非空。 */

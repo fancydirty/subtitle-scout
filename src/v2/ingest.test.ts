@@ -7,7 +7,7 @@ import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { SettingsRepo } from './settingsRepo.js'
 import { makeIngestPass, ingestLock, looksChineseTitle, classifyStatError, type IngestDeps } from './ingest.js'
-import type { Recognized, Park, PathIdentity } from '../recognition/index.js'
+import type { Park, PathIdentity } from '../recognition/index.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
 import { TmdbRequestFailedError } from '../adapters/providers/tmdb.js'
@@ -20,11 +20,11 @@ beforeEach(() => {
   lib = new LibraryRepo(db)
 })
 
-function tvResult(overrides: Partial<Recognized> = {}): Recognized {
-  return { tmdbId: '1', title: 'Show', isTv: true, season: 1, episode: 1, absoluteEpisode: null, embeddedTmdbId: null, ...overrides }
+function tvResult(overrides: Partial<PathIdentity> = {}): PathIdentity {
+  return { title: 'Show', year: null, isTv: true, season: 1, episode: 1, absoluteEpisode: null, embeddedTmdbId: null, ...overrides }
 }
-function movieResult(overrides: Partial<Recognized> = {}): Recognized {
-  return { tmdbId: '603', title: 'Movie', isTv: false, season: null, episode: null, absoluteEpisode: null, embeddedTmdbId: null, ...overrides }
+function movieResult(overrides: Partial<PathIdentity> = {}): PathIdentity {
+  return { title: 'Movie', year: null, isTv: false, season: null, episode: null, absoluteEpisode: null, embeddedTmdbId: null, ...overrides }
 }
 function track(overrides: Partial<EmbeddedSubtitleTrack> = {}): EmbeddedSubtitleTrack {
   return { lang: null, codec: null, isImageBased: false, ...overrides }
@@ -76,7 +76,7 @@ function makeDeps(over: Partial<IngestDeps> = {}): IngestDeps {
     roots: () => ['/media'],
     lib,
     tmdb: fakeTmdb(),
-    recognize: vi.fn(async (): Promise<Recognized | Park> => tvResult()),
+    recognize: vi.fn((): PathIdentity | Park => tvResult()),
     probe: vi.fn(async (): Promise<EmbeddedSubtitleTrack[] | null> => []),
     // 重复源 P4b：默认 null——从不在测试里真的 spawn ffprobe（同 probe 的既有约定），需要机械
     // 复制通道真正触发的测试自己覆写。
@@ -99,7 +99,7 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
       getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: '/bd.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
     })
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', title: 'Spy x Family', season: 1, episode: 2 , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '108964', title: 'Spy x Family', season: 1, episode: 2 }))
     const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/Show/Season 1/ep1.mkv'],
@@ -130,7 +130,7 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
       getDetails: async () => ({ overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', backdropPath: null, originalTitle: null, year: 1999, genreIds: [] }),
       getChineseTitles: async () => ['黑客帝国', '駭客任務'],
     })
-    const recognize = vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => movieResult({ embeddedTmdbId: '603', title: 'The Matrix' }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/movies/hero.mkv'],
       recognize, tmdb,
@@ -179,7 +179,7 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
     })
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/movies/hero.mkv'],
-      recognize: vi.fn(async () => movieResult({ tmdbId: '603', title: 'The Matrix' , absoluteEpisode: null, embeddedTmdbId: null})),
+      recognize: vi.fn(() => movieResult({ embeddedTmdbId: '603', title: 'The Matrix' })),
       tmdb,
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
@@ -220,7 +220,7 @@ describe('makeIngestPass — park', () => {
   it('a Park outcome writes a parked_paths row, not an episode/movie row', async () => {
     const disk = fakeDisk()
     disk.setVideo('/media/junk.mkv')
-    const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-match' }))
+    const recognize = vi.fn((): PathIdentity | Park => ({ park: 'no-match' }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/junk.mkv'],
       recognize,
@@ -252,7 +252,7 @@ describe('makeIngestPass — park', () => {
       // also park a vanished path that should still be cleaned if not seen
       lib.upsertParkedPath('/media/gone-other.mkv', 'no-match', t0, { mtimeMs: 1, size: 1 })
 
-      const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-match' }))
+      const recognize = vi.fn((): PathIdentity | Park => ({ park: 'no-match' }))
       const pass = makeIngestPass(makeDeps({
         listVideoFiles: () => [path],
         recognize,
@@ -275,7 +275,7 @@ describe('makeIngestPass — park', () => {
       disk.setVideo(path, 100, 200)
       lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
 
-      const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-match' }))
+      const recognize = vi.fn((): PathIdentity | Park => ({ park: 'no-match' }))
       const due = t0 + HOUR
       const pass = makeIngestPass(makeDeps({
         listVideoFiles: () => [path],
@@ -300,7 +300,7 @@ describe('makeIngestPass — park', () => {
       disk.setVideo(path, 999, 200) // mtime changed
       lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
 
-      const recognize = vi.fn(async (): Promise<Recognized | Park> => ({ park: 'no-match' }))
+      const recognize = vi.fn((): PathIdentity | Park => ({ park: 'no-match' }))
       const pass = makeIngestPass(makeDeps({
         listVideoFiles: () => [path],
         recognize,
@@ -324,7 +324,7 @@ describe('makeIngestPass — park', () => {
       lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
       lib.addOverride(path, '108964', true, t0)
 
-      const recognize = vi.fn(async () => tvResult({ tmdbId: '108964', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+      const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '108964', season: 1, episode: 1 }))
       const pass = makeIngestPass(makeDeps({
         listVideoFiles: () => [path],
         recognize,
@@ -360,7 +360,7 @@ describe('makeIngestPass — memo-hit cheap path', () => {
 
     const disk = fakeDisk()
     disk.setVideo(path, 5000, 12345)
-    const recognize = vi.fn(async () => tvResult())
+    const recognize = vi.fn(() => tvResult())
     const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path], recognize, probe,
@@ -385,7 +385,7 @@ describe('makeIngestPass — memo-hit cheap path', () => {
     const disk = fakeDisk()
     disk.setVideo(path, 5000, 12345) // video itself unchanged — memo still matches
     // sidecar NOT registered → simulates "user deleted the installed subtitle file"
-    const recognize = vi.fn(async () => tvResult())
+    const recognize = vi.fn(() => tvResult())
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path], recognize,
       fileExists: disk.fileExists, statFile: disk.statFile,
@@ -426,7 +426,7 @@ describe('makeIngestPass — memo-hit cheap path', () => {
 
     const disk = fakeDisk()
     disk.setVideo(path, 9999, 12345) // mtime changed → memo stale
-    const recognize = vi.fn(async () => tvResult())
+    const recognize = vi.fn(() => tvResult())
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path], recognize,
       fileExists: disk.fileExists, statFile: disk.statFile,
@@ -444,7 +444,7 @@ describe('makeIngestPass — memo-hit cheap path', () => {
 
     const disk = fakeDisk()
     disk.setVideo(path, 9999, 12345) // stale memo → full path
-    const recognize = vi.fn(async () => tvResult({ season: 1, episode: null, absoluteEpisode: null }))
+    const recognize = vi.fn(() => tvResult({ season: 1, episode: null, absoluteEpisode: null }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path], recognize,
       fileExists: disk.fileExists, statFile: disk.statFile,
@@ -686,7 +686,7 @@ describe('makeIngestPass — B3-3 已登记副本免重识别（配额止血）'
     const disk = fakeDisk()
     disk.setVideo(pathMain, 5000, 111)
     disk.setVideo(pathDup, 5000, 222)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '1', season: 1, episode: 1 }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [pathMain, pathDup], recognize,
       probe: vi.fn(async () => [] as EmbeddedSubtitleTrack[]),
@@ -719,7 +719,7 @@ describe('makeIngestPass — B3-3 已登记副本免重识别（配额止血）'
       .run('tmdb:1/s1e1', '/media/Show/Season 1/ep1-main.zh-Hans.srt', 'zh-Hans', 'scout-download', 1000)
     disk.addSidecar('/media/Show/Season 1/ep1-main.zh-Hans.srt')
 
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '1', season: 1, episode: 1 }))
     const probeDuration = vi.fn(async () => null) // 虚拟磁盘没有真实视频文件——只看接线，不看复制结果
     await makeIngestPass(makeDeps({
       listVideoFiles: () => [pathMain, pathDup], recognize,
@@ -747,7 +747,7 @@ describe('makeIngestPass — B3-3 已登记副本免重识别（配额止血）'
     lib.addItemFile('tmdb:1/s1e1', pathDup, 1000)
 
     // 确认副本这轮已经在走 B3-3 短路（不再重识别）——晋升测试建立在这个前提上。
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '1', season: 1, episode: 1 }))
     await makeIngestPass(makeDeps({
       listVideoFiles: () => [pathMain, pathDup], recognize,
       fileExists: disk.fileExists, statFile: disk.statFile,
@@ -818,7 +818,7 @@ describe('makeIngestPass — probe contract (streamProbe.ts: null=unavailable, d
     const probe = vi.fn(async () => [track({ lang: 'chi', codec: 'hdmv_pgs_subtitle', isImageBased: true })])
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
-      recognize: vi.fn(async () => tvResult()),
+      recognize: vi.fn(() => tvResult()),
       probe,
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
@@ -985,7 +985,7 @@ describe('makeIngestPass — disk-truth removal', () => {
     disk.setVideo('/media/stays.mkv')
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => ['/media/stays.mkv'],
-      recognize: vi.fn(async () => tvResult({ episode: 2 , absoluteEpisode: null, embeddedTmdbId: null})),
+      recognize: vi.fn(() => tvResult({ episode: 2 , absoluteEpisode: null, embeddedTmdbId: null})),
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
 
@@ -1277,7 +1277,7 @@ describe('makeIngestPass — ingestLock', () => {
     disk.setVideo('/media/x.mkv')
     expect(ingestLock.held).toBe(false)
     let observedDuring: boolean | null = null
-    const recognize = vi.fn(async () => {
+    const recognize = vi.fn(() => {
       observedDuring = ingestLock.held
       return tvResult()
     })
@@ -1369,9 +1369,9 @@ describe('makeIngestPass — fault isolation', () => {
     const disk = fakeDisk()
     disk.setVideo('/media/flaky.mkv')
     disk.setVideo('/media/ok.mkv')
-    const recognize = vi.fn(async (path: string): Promise<Recognized | Park> => {
+    const recognize = vi.fn((path: string): PathIdentity | Park => {
       if (path === '/media/flaky.mkv') throw new Error('transient TMDB blip')
-      return tvResult({ tmdbId: '2', episode: 1 , absoluteEpisode: null, embeddedTmdbId: null})
+      return tvResult({ embeddedTmdbId: '2', episode: 1 })
     })
     const log = vi.fn()
     const pass = makeIngestPass(makeDeps({
@@ -1391,7 +1391,7 @@ describe('makeIngestPass — fault isolation', () => {
 
     // 下一轮重试：flaky 恢复——它上轮没留下任何 park 户口，负缓存不挡它，自然重新识别；
     // ok.mkv 指纹未变且退避未到期，本轮跳过。
-    recognize.mockImplementation(async () => tvResult({ tmdbId: '2', episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+    recognize.mockImplementation(() => tvResult({ embeddedTmdbId: '2', episode: 1 }))
     recognize.mockClear()
     const result2 = await pass()
     expect(recognize).toHaveBeenCalledTimes(1)
@@ -1782,7 +1782,7 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     const disk = fakeDisk()
     const path = '/media/Show - NCOP01.mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult())
+    const recognize = vi.fn(() => tvResult())
     const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
@@ -1805,7 +1805,7 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     const disk = fakeDisk()
     const path = '/media/Show - NCOP01.mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '1', season: 1, episode: 1 }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -1826,7 +1826,7 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     const disk = fakeDisk()
     const path = '/media/Show - NCOP01.mkv'
     disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '1', season: 1, episode: 1 }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,
@@ -1845,7 +1845,7 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
     const path = '/media/Show - NCOP01.mkv'
     disk.setVideo(path)
     lib.addExtrasExemption(path, 1000) // 用户此前翻过案
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '1', season: 1, episode: 1 , absoluteEpisode: null, embeddedTmdbId: null}))
+    const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '1', season: 1, episode: 1 }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path],
       recognize,

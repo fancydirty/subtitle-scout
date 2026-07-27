@@ -276,6 +276,7 @@ describe('makeRealignRunEpisode', () => {
     )
     let capturedTask: FindSubtitleTask | undefined
     const report: FindSubtitleBatchReport = {
+      identity: null,
       installed: [{
         itemId: ctx.itemId,
         installedPath: '/lib/tv/.realign-build/Show (2022) [tmdbid-120089]/Season 02/y.zh.srt',
@@ -320,7 +321,7 @@ describe('makeRealignRunEpisode', () => {
     let capturedMediaRoot = ''
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedMediaRoot = task.mediaRoot
-      return { installed: [], no_safe_match: [{ itemId: ctx.itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
+      return { installed: [], no_safe_match: [{ itemId: ctx.itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [], identity: null }
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
 
@@ -1012,7 +1013,7 @@ describe('executeRealign（顶层编排，集成）', () => {
     const capturedTasks: FindSubtitleTask[] = []
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedTasks.push(task)
-      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
+      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [], identity: null } as FindSubtitleBatchReport
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
     const getDetails = vi.fn(async () => ({
@@ -1055,7 +1056,7 @@ describe('executeRealign（顶层编排，集成）', () => {
     const capturedTasks: FindSubtitleTask[] = []
     const runFindSubtitleTask = vi.fn(async (task: FindSubtitleTask) => {
       capturedTasks.push(task)
-      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [] }
+      return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [], identity: null } as FindSubtitleBatchReport
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
     const deps = mkDeps({ lib, jobsRepo, jf, libRoot }, {
