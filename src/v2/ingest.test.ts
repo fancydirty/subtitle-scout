@@ -186,10 +186,11 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
 
     await pass()
 
-    const movie = lib.getMovie('tmdb:603')
-    expect(movie).toMatchObject({
-      provider_ids: JSON.stringify({ tmdb: '603', imdb: 'tt0133093' }),
-    })
+    // 不建行：ingest 只发 raw 数据，external_ids 采集归 agent 的 write_identified_media
+    expect(lib.getMovie('tmdb:603')).toBeNull()
+    const parked = lib.listParkedPaths().find(p => p.path === '/media/movies/hero.mkv')
+    expect(parked).toBeDefined()
+    expect(parked?.park_reason).toBe('awaiting-agent-identification')
   })
 
   it('external_ids 瞬时失败时，其余富化照常、provider_ids 仍写 tmdb（不拖垮）', async () => {
@@ -208,13 +209,11 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
 
     await pass()
 
-    const series = lib.getSeries('tmdb:1')
-    expect(series).toMatchObject({
-      provider_ids: JSON.stringify({ tmdb: '1' }),
-      poster_path: '/poster.jpg',
-      chinese_title: '演出',
-      year: 2020,
-    })
+    // 不建行：ingest 只发 raw 数据，瞬时失败更不拖垮 parking
+    expect(lib.getSeries('tmdb:1')).toBeNull()
+    const parked = lib.listParkedPaths().find(p => p.path === '/media/Show/Season 1/ep1.mkv')
+    expect(parked).toBeDefined()
+    expect(parked?.park_reason).toBe('awaiting-agent-identification')
   })
 })
 describe('makeIngestPass — park', () => {
@@ -341,127 +340,6 @@ describe('makeIngestPass — park', () => {
     })
   })
 
-  it('TV recognition with no episode number at all (no season structure, no absolute) → park no-episode-number', async () => {
-    const disk = fakeDisk()
-    disk.setVideo('/media/Show/Season 1/junk.mkv')
-    const recognize = vi.fn(async () => tvResult({ season: 1, episode: null, absoluteEpisode: null }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => ['/media/Show/Season 1/junk.mkv'],
-      recognize,
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-    const result = await pass()
-    expect(result.parked).toBe(1)
-    expect(lib.listParkedPaths()[0].park_reason).toBe('no-episode-number')
-  })
-
-  it('absolute-only recognition where TMDB genuinely cannot map it (no episode group, no season table) → park absolute-episode-unresolved', async () => {
-    const disk = fakeDisk()
-    disk.setVideo('/media/Anime/ep-1050.mkv')
-    const recognize = vi.fn(async () => tvResult({ season: null, episode: null, absoluteEpisode: 1050 }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => ['/media/Anime/ep-1050.mkv'],
-      recognize,
-      tmdb: fakeTmdb({ getSeasonTable: async () => null, getAbsoluteOrder: async () => null }),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-    const result = await pass()
-    expect(result.parked).toBe(1)
-    expect(lib.listParkedPaths()[0].park_reason).toBe('absolute-episode-unresolved')
-  })
-
-  it('absolute number beyond the resolvable range → park absolute-episode-unresolved (never guesses)', async () => {
-    const disk = fakeDisk()
-    disk.setVideo('/media/Anime/ep-1050.mkv')
-    const recognize = vi.fn(async () => tvResult({ season: null, episode: null, absoluteEpisode: 1050 }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => ['/media/Anime/ep-1050.mkv'],
-      recognize,
-      tmdb: fakeTmdb({ getSeasonTable: async () => [{ seasonNumber: 1, episodeCount: 12, airDate: null }] }),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-    const result = await pass()
-    expect(result.parked).toBe(1)
-    expect(lib.listParkedPaths()[0].park_reason).toBe('absolute-episode-unresolved')
-  })
-})
-
-describe('makeIngestPass — absolute-episode resolution (anime flat numbering)', () => {
-  it('absolute-only recognition resolved via season-table concat → normal episode row with the mapped (season, episode) own-id', async () => {
-    const path = '/media/Anime/My Hero Academia/ep 26.mkv'
-    const disk = fakeDisk()
-    disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '65930', title: 'My Hero Academia', season: null, episode: null, absoluteEpisode: 26 }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path],
-      recognize,
-      tmdb: fakeTmdb({
-        getSeasonTable: async () => [
-          { seasonNumber: 1, episodeCount: 25, airDate: null },
-          { seasonNumber: 2, episodeCount: 12, airDate: null },
-        ],
-      }),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    const result = await pass()
-
-    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
-    const episode = lib.getEpisode('tmdb:65930/s2e1') // absolute 26 = S2E1 under 25+12 concat
-    expect(episode).toMatchObject({
-      id: 'tmdb:65930/s2e1', series_id: 'tmdb:65930', season: 2, episode: 1, path,
-    })
-    expect(lib.listParkedPaths()).toEqual([])
-  })
-
-  it('official absolute episode-group order wins over season concat (same discipline as the forward direction)', async () => {
-    const path = '/media/Anime/Show/ep 2.mkv'
-    const disk = fakeDisk()
-    disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '42', season: null, episode: null, absoluteEpisode: 2 }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path],
-      recognize,
-      tmdb: fakeTmdb({
-        // concat 会把绝对 2 折算成 S1E2；官方表说绝对 2 = S2E1——必须采信官方表。
-        getSeasonTable: async () => [
-          { seasonNumber: 1, episodeCount: 25, airDate: null },
-          { seasonNumber: 2, episodeCount: 12, airDate: null },
-        ],
-        getAbsoluteOrder: async () => [{ season: 1, episode: 1 }, { season: 2, episode: 1 }],
-      }),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    await pass()
-
-    expect(lib.getEpisode('tmdb:42/s2e1')).not.toBeNull()
-    expect(lib.getEpisode('tmdb:42/s1e2')).toBeNull()
-  })
-
-  it('a previously-parked absolute-numbered path exits parked_paths once resolution succeeds', async () => {
-    const path = '/media/Anime/ep 26.mkv'
-    lib.upsertParkedPath(path, 'absolute-episode-unresolved', 1000)
-    const disk = fakeDisk()
-    disk.setVideo(path)
-    const recognize = vi.fn(async () => tvResult({ tmdbId: '65930', season: null, episode: null, absoluteEpisode: 26 }))
-    const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path],
-      recognize,
-      tmdb: fakeTmdb({
-        getSeasonTable: async () => [
-          { seasonNumber: 1, episodeCount: 25, airDate: null },
-          { seasonNumber: 2, episodeCount: 12, airDate: null },
-        ],
-      }),
-      fileExists: disk.fileExists, statFile: disk.statFile,
-    }))
-
-    await pass()
-
-    expect(lib.listParkedPaths()).toEqual([])
-    expect(lib.getEpisode('tmdb:65930/s2e1')).not.toBeNull()
-  })
 })
 
 // P7 disambiguation 补丁（零误认红线）：viaOverrideLenient 标记的 absoluteEpisode 来自
