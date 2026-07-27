@@ -148,6 +148,47 @@ describe('makeOrchestratorAgent', () => {
     expect(movieTask.parent_job_id).toBeNull()
   })
 
+  // Task 13: dispatch_unidentified_identification is registered and lands ONE scope:'unidentified'
+  // find_subtitle worker_task for the whole eligible parked backlog (claim side = Task 12).
+  it('dispatches one scope:unidentified find_subtitle worker_task when the parked fact block shows eligible paths', async () => {
+    lib.upsertParkedPath('/media/A/a.mkv', 'no tmdb match', 1000)
+    lib.upsertParkedPath('/media/B/b.mkv', 'ambiguous', 1000)
+    lib.upsertParkedPath('/media/C/c.mkv', 'excluded-extra', 1000) // final verdict — not eligible
+
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        if (call === 1) return toolCallResult('c1', 'list_missing_coverage', {})
+        if (call === 2) {
+          return toolCallResult('c2', 'dispatch_unidentified_identification', {
+            reason: 'parked block showed 2 eligible paths',
+          })
+        }
+        return finalizeResult({
+          dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0,
+          summary: 'dispatched the unidentified backlog for agent identification',
+        })
+      },
+    })
+
+    const runPass = makeOrchestratorAgent({
+      model, lib, tmdb: fakeTmdb, jobs, now: () => 1000, orchestratorJobId: null, stepCap: 10,
+    })
+
+    await runPass()
+
+    const dispatched = listWanted().filter(j => j.kind === 'worker_task')
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].series_id).toBe('unidentified-backlog')
+    expect(dispatched[0].season).toBeNull()
+    expect(dispatched[0].movie_id).toBeNull()
+    expect(JSON.parse(dispatched[0].payload!)).toEqual({
+      taskType: 'find_subtitle', scope: 'unidentified', reason: 'parked block showed 2 eligible paths',
+    })
+    expect(dispatched[0].parent_job_id).toBeNull()
+  })
+
   it('enforces the hard 100-dispatch cap (seeded low for the test) — a 3rd dispatch attempt is refused and only 2 worker_task rows land', async () => {
     let call = 0
     const model = new MockLanguageModelV4({

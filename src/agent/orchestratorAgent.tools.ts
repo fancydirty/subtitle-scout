@@ -50,7 +50,7 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
       'row is worth re-dispatching early is YOUR judgment. Paginated: returns at most `limit` ' +
       'rows per call (default 50, max 200) starting at `offset`. When `hasMore` is true, call ' +
       'again with a higher `offset` to see the rest — do not assume one call returned the whole ' +
-      'backlog. The response also carries a `parked` fact block (unidentified files eligible for agent processing) — facts only; no dispatch tool acts on it.',
+      'backlog. The response also carries a `parked` fact block (unidentified files eligible for agent processing) — when its count is non-zero, dispatch_unidentified_identification is the tool that acts on it.',
     inputSchema: z.object({
       offset: z.number().int().min(0).default(0),
       limit: z.number().int().min(1).max(MAX_MISSING_COVERAGE_LIMIT).default(DEFAULT_MISSING_COVERAGE_LIMIT),
@@ -279,6 +279,61 @@ export function makeDispatchFindSubtitleTaskTool(deps: DispatchDeps, counter: Di
         deps.parentJobId, deps.now(),
       )
       return reportDispatchOutcome(result, counter, cap)
+    },
+  })
+}
+
+/** Task 13: deps for dispatch_unidentified_identification — DispatchDeps plus lib, because the
+ *  tool re-checks parked-path eligibility itself at dispatch time (the parked fact block the
+ *  model saw in list_missing_coverage may be stale by the time it decides). */
+export interface OrchestratorToolDeps {
+  lib: Pick<LibraryRepo, 'listParkedPaths'>
+  jobs: Pick<JobsRepo, 'upsertWorkerTask'>
+  now: () => number
+  parentJobId: number | null
+}
+
+/** Task 13（unidentified 主链路的派发侧）：Task 12 wired the claim side (find_subtitle jobs with
+ *  payload.scope==='unidentified' read raw data from parked_paths, cli/index.ts); this tool is
+ *  the missing dispatch side — the parked fact block could SHOW eligible paths but nothing could
+ *  act on them. One call dispatches ONE find_subtitle worker_task for the ENTIRE eligible
+ *  backlog (never per-path): the synthetic 'unidentified-backlog' seriesId gives the whole
+ *  backlog a single dedup identity, so repeat dispatches coalesce into the same pending row
+ *  instead of piling up duplicates.
+ *
+ *  Same honesty discipline as reportDispatchOutcome (R-2): upsertWorkerTask returns a four-state
+ *  WorkerTaskUpsertOutcome (no jobId exists to report), so the receipt surfaces that outcome
+ *  verbatim under upsertOutcome rather than claiming an unconditional success. */
+export function makeDispatchUnidentifiedIdentificationTool(deps: OrchestratorToolDeps) {
+  return tool({
+    description:
+      'Dispatch a find_subtitle worker task (scope: unidentified) to identify and subtitle the ' +
+      'currently-eligible unidentified parked paths. Use this when the parked fact block in ' +
+      'list_missing_coverage shows eligible paths (count > 0) that need agent identification. ' +
+      'One dispatch hands the worker the ENTIRE eligible backlog — never dispatch per path. ' +
+      'The receipt truthfully reports the upsert outcome: created/revived means a worker will ' +
+      'run; coalesced means the backlog task was already pending (your reason was refreshed ' +
+      'onto it if it had not been claimed yet); blocked_dormant means it is parked and nothing ' +
+      'was written.',
+    inputSchema: z.object({
+      reason: z.string().min(1),
+    }),
+    execute: async ({ reason }) => {
+      const eligible = deps.lib.listParkedPaths().filter(p => isParkedPathEligible(p.park_reason))
+      if (eligible.length === 0) {
+        return { outcome: 'none' as const, message: 'No eligible parked paths' }
+      }
+      const result = deps.jobs.upsertWorkerTask(
+        { seriesId: 'unidentified-backlog', season: null, movieId: null },
+        { taskType: 'find_subtitle', scope: 'unidentified', reason },
+        deps.parentJobId,
+        deps.now(),
+      )
+      return {
+        outcome: 'dispatched' as const,
+        upsertOutcome: result.outcome,
+        parkedCount: eligible.length,
+      }
     },
   })
 }

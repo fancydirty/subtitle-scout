@@ -6,7 +6,8 @@ import { makeReadDocTool, systemPromptSkillIndex } from './skills/registry.js'
 import { ORCHESTRATOR_SKILL } from './skills/orchestratorSkill.js'
 import {
   makeListMissingCoverageTool, makeCheckSeriesLayoutTool, makeDispatchFindSubtitleTaskTool,
-  makeDispatchRealignTaskTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter,
+  makeDispatchRealignTaskTool, makeDispatchUnidentifiedIdentificationTool,
+  makeSpawnSiblingOrchestratorTool, type DispatchCounter,
 } from './orchestratorAgent.tools.js'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
@@ -88,6 +89,12 @@ export function makeOrchestratorAgent(deps: OrchestratorAgentDeps) {
       dispatch_realign_task: makeDispatchRealignTaskTool(
         { ...dispatchDeps, maxDispatchesPerOrchestrator: deps.maxDispatchesPerOrchestrator }, counter,
       ),
+      // Task 13: dispatch side of the unidentified backlog (claim side was Task 12). Not part of
+      // the shared dispatch-cap counter — one call dispatches exactly ONE worker_task for the
+      // whole eligible parked backlog, regardless of how many paths that backlog holds.
+      dispatch_unidentified_identification: makeDispatchUnidentifiedIdentificationTool({
+        lib: deps.lib, jobs: deps.jobs, now: deps.now, parentJobId: deps.orchestratorJobId,
+      }),
       spawn_sibling_orchestrator: makeSpawnSiblingOrchestratorTool(dispatchDeps),
     }
 

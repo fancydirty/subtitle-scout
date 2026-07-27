@@ -36,6 +36,21 @@ carries the FULL coverage picture, nothing pre-filtered for you:
   dispatch has nothing actionable to hand the worker.
 - \`seriesName\` is on every row so you can reason about what the show actually is.
 
+## The parked fact block: dispatching agent identification
+
+\`list_missing_coverage\`'s \`parked\` block is the unidentified backlog — files ingest could
+not identify, parked with a reason (\`count\` = currently eligible rows, \`sample\` = the first
+5 with their reasons). Final mechanical verdicts (excluded-extra, duplicate-content) are already
+excluded from that count; what remains is work only an agent can do.
+
+When \`parked.count\` is non-zero, call \`dispatch_unidentified_identification\` once. It hands
+the ENTIRE eligible backlog to one find_subtitle worker (scope \`unidentified\`) that identifies
+each file against TMDB evidence, writes the identity itself, then finds subtitles for it. One
+dispatch covers everything eligible — never dispatch per path, and do not use
+\`dispatch_find_subtitle_task\` for parked files (that tool dispatches against identified library
+rows, which parked files by definition are not). Re-dispatching while the backlog task is still
+pending just coalesces into it, so one call per pass is enough.
+
 ## Scoping a find-subtitle dispatch: judge from the on-disk reality
 
 \`dispatch_find_subtitle_task\` takes a \`seasons\` array — the scope is YOUR judgment from what
@@ -123,7 +138,7 @@ export const ORCHESTRATOR_SKILL: Skill = {
   descriptor: {
     name: 'orchestrator-dispatch',
     description:
-      'How to read the living-doc (missing vs throttled coverage facts, plus the parked backlog), scope find-subtitle dispatches by the on-disk reality (single season, several seasons, or a whole series — your judgment), weigh the two independent layout facts when considering realign (evidence for judgment, not gates), read dispatch receipts (created/revived/coalesced/blocked_dormant), scale effort to the backlog, and hand off to a sibling orchestrator at the 100-dispatch cap.',
+      'How to read the living-doc (missing vs throttled coverage facts, plus the parked backlog), dispatch one unidentified-identification task when the parked block shows eligible paths, scope find-subtitle dispatches by the on-disk reality (single season, several seasons, or a whole series — your judgment), weigh the two independent layout facts when considering realign (evidence for judgment, not gates), read dispatch receipts (created/revived/coalesced/blocked_dormant), scale effort to the backlog, and hand off to a sibling orchestrator at the 100-dispatch cap.',
   },
   content: CONTENT,
 }

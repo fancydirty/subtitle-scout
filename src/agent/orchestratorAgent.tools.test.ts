@@ -4,7 +4,8 @@ import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
   makeListMissingCoverageTool, makeDispatchFindSubtitleTaskTool, makeDispatchRealignTaskTool,
-  makeCheckSeriesLayoutTool, makeSpawnSiblingOrchestratorTool, type DispatchCounter, type MissingCoveragePage,
+  makeCheckSeriesLayoutTool, makeDispatchUnidentifiedIdentificationTool, makeSpawnSiblingOrchestratorTool,
+  type DispatchCounter, type MissingCoveragePage,
 } from './orchestratorAgent.tools.js'
 
 const fakeOpts = { toolCallId: 't1', messages: [] } as any
@@ -551,6 +552,89 @@ describe('spawn_sibling_orchestrator 如实转告 upsertWorkerTask 回执 (F-R2-
       spawned: false, outcome: 'blocked_dormant', reason: 'config defect',
       note: 'this identity is parked dormant (a configuration-class defect was recorded) — dispatching cannot revive it; surface this to the operator if it matters',
     })
+  })
+})
+
+// Task 13（unidentified 主链路的派发侧）：parked 事实块此前只能看不能动——这个工具是它的
+// 派发出口。一次调用对整个资格积压派 ONE 行 find_subtitle worker_task（scope:'unidentified'，
+// 合成身份 'unidentified-backlog' 天然去重），资格谓词与 parked 事实块同源
+// （isParkedPathEligible）。回执如实转告 upsertWorkerTask 的 outcome（upsertWorkerTask 返回
+// 四态 WorkerTaskUpsertOutcome，没有 jobId 可报——同 R-2 的诚实纪律，不谎报无条件成功）。
+describe('makeDispatchUnidentifiedIdentificationTool (Task 13)', () => {
+  const parkedRow = (path: string, park_reason: string) => ({
+    path, park_reason, first_seen: 1000, last_attempt: 1000, retry_count: 0,
+    next_retry_at: null, probe_mtime: null, probe_size: null, duration_sec: null, embedded_langs: null,
+  })
+
+  it('no parked paths at all → {outcome:"none"}, upsertWorkerTask never called', async () => {
+    const dispatchUnidentified = makeDispatchUnidentifiedIdentificationTool({
+      lib: { listParkedPaths: () => [] },
+      jobs: { upsertWorkerTask: () => { throw new Error('must never be called — nothing eligible') } },
+      now: () => 1000, parentJobId: null,
+    })
+    const result = await dispatchUnidentified.execute!({ reason: 'parked block showed paths' }, fakeOpts)
+    expect(result).toEqual({ outcome: 'none', message: 'No eligible parked paths' })
+  })
+
+  it('only final mechanical verdicts parked (excluded-extra/duplicate-content) → {outcome:"none"}, upsertWorkerTask never called', async () => {
+    const dispatchUnidentified = makeDispatchUnidentifiedIdentificationTool({
+      lib: {
+        listParkedPaths: () => [
+          parkedRow('/media/B/c.mkv', 'excluded-extra'),
+          parkedRow('/media/C/d.mkv', 'duplicate-content'),
+        ],
+      },
+      jobs: { upsertWorkerTask: () => { throw new Error('must never be called — nothing eligible') } },
+      now: () => 1000, parentJobId: null,
+    })
+    const result = await dispatchUnidentified.execute!({ reason: 'x' }, fakeOpts)
+    expect(result).toEqual({ outcome: 'none', message: 'No eligible parked paths' })
+  })
+
+  it('eligible paths → ONE find_subtitle worker_task, scope:unidentified, synthetic unidentified-backlog identity; ineligible verdicts excluded from parkedCount', async () => {
+    const calls: unknown[][] = []
+    const dispatchUnidentified = makeDispatchUnidentifiedIdentificationTool({
+      lib: {
+        listParkedPaths: () => [
+          parkedRow('/media/A/a.mkv', 'no tmdb match'),
+          parkedRow('/media/A/b.mkv', 'ambiguous'),
+          parkedRow('/media/B/c.mkv', 'excluded-extra'),
+          parkedRow('/media/C/d.mkv', 'duplicate-content'),
+        ],
+      },
+      jobs: { upsertWorkerTask: (...args: unknown[]) => { calls.push(args); return { outcome: 'created' } as const } },
+      now: () => 4242, parentJobId: 7,
+    })
+    const result = await dispatchUnidentified.execute!({ reason: 'parked block showed 2 eligible paths' }, fakeOpts)
+    expect(calls).toHaveLength(1)
+    const [ident, payload, parentJobId, now] = calls[0]
+    expect(ident).toEqual({ seriesId: 'unidentified-backlog', season: null, movieId: null })
+    expect(payload).toEqual({
+      taskType: 'find_subtitle', scope: 'unidentified', reason: 'parked block showed 2 eligible paths',
+    })
+    expect(parentJobId).toBe(7)
+    expect(now).toBe(4242)
+    expect(result).toEqual({ outcome: 'dispatched', upsertOutcome: 'created', parkedCount: 2 })
+  })
+
+  it('receipt truthfully reports a coalesced upsert (backlog task already pending) — no false "dispatched a fresh row" claim', async () => {
+    const dispatchUnidentified = makeDispatchUnidentifiedIdentificationTool({
+      lib: { listParkedPaths: () => [parkedRow('/media/A/a.mkv', 'no tmdb match')] },
+      jobs: { upsertWorkerTask: () => ({ outcome: 'coalesced', pendingState: 'wanted', intentRefreshed: true }) as const },
+      now: () => 1000, parentJobId: null,
+    })
+    const result = await dispatchUnidentified.execute!({ reason: 'x' }, fakeOpts)
+    expect(result).toEqual({ outcome: 'dispatched', upsertOutcome: 'coalesced', parkedCount: 1 })
+  })
+
+  it('schema rejects an empty reason (min 1)', async () => {
+    const dispatchUnidentified = makeDispatchUnidentifiedIdentificationTool({
+      lib: { listParkedPaths: () => [] },
+      jobs: { upsertWorkerTask: () => ({ outcome: 'created' }) as const },
+      now: () => 1000, parentJobId: null,
+    })
+    const result = await validate(dispatchUnidentified.inputSchema, { reason: '' })
+    expect(result.success).toBe(false)
   })
 })
 
