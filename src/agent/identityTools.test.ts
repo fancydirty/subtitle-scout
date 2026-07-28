@@ -136,8 +136,12 @@ describe('write_identified_media', () => {
     expect(movie?.year).toBe(2021)
     // parked 行 embedded_langs 为 NULL（未探测）→ missing
     expect(movie?.sub_status).toBe('missing')
-    // 未探测 → 不落探针记忆
-    expect(lib.probeMemo('tmdb:67890')).toBeNull()
+    // 🔴 挂车修复（2026-07-28 生产实证）：此前这里断言"未探测 → 不落探针记忆"——正是缺陷 A。
+    // 无 memo 的行下一轮 ingest CHEAP PATH 必然 miss → FULL PATH 无条件 park → agent 重新
+    // 识别 → 无限空转（tmdb:154494/s1e1 covered 行与 parked 行同时存在，parked 33→43）。
+    // 现在只要 parked 行有 probe_mtime/probe_size 就必须落 memo；langs=null 诚实表达
+    // "语言轨未探测"（与 probeMemo 既有语义一致：null=不知道，[]=探过确认零轨）。
+    expect(lib.probeMemo('tmdb:67890')).toEqual({ mtime: 500, size: 2048, langs: null })
 
     const parked = lib.listParkedPaths().find(p => p.path === '/media/movies/Film.2021.mkv')
     expect(parked).toBeUndefined()
@@ -198,7 +202,39 @@ describe('write_identified_media', () => {
     expect(lib.probeMemo('tmdb:111/s1e1')).toEqual({ mtime: 500, size: 1024, langs: ['chi'] })
 
     expect(lib.getEpisode('tmdb:222/s1e2')?.sub_status).toBe('missing')
-    expect(lib.probeMemo('tmdb:222/s1e2')).toBeNull()
+    // 🔴 挂车修复：见上方 movie 测试同款注释——无 embeddedLangs 也必须落 memo（langs=null），
+    // 否则下一轮 ingest 把刚识别完的行重新 park，识别→park→识别无限空转。
+    expect(lib.probeMemo('tmdb:222/s1e2')).toEqual({ mtime: 500, size: 1024, langs: null })
+  })
+
+  // 🔴 挂车修复的正面锁（缺陷 A，2026-07-28 生产实证 tmdb:154494/s1e1）：parked 行带
+  // probe_mtime/probe_size 但 embedded_langs 为 NULL（云盘探针失败/未探测——生产大多数文件）
+  // 时，写库工具**必须**落探针记忆，且 (mtime,size) 与 parked 指纹逐字一致——下一轮 ingest
+  // 对未变文件必须命中 CHEAP PATH，绝不再 park。
+  it('parked 行有指纹但无 embedded langs → memo 仍必须落地且命中 parked 指纹（挂车锁）', async ({ expect }) => {
+    lib.upsertParkedPath(
+      '/media/tv/Churn.S01E01.mkv',
+      'awaiting-agent-identification',
+      1000,
+      { mtimeMs: 777_000, size: 888_999, durationSec: 1440 } // embeddedLangs 省略 = NULL（未探测）
+    )
+    const tmdb = {
+      getDetails: vi.fn().mockResolvedValue({
+        posterPath: null, backdropPath: null, overview: 'x', year: 2024, genreIds: [], originalTitle: 'Churn',
+      }),
+      getChineseTitles: vi.fn().mockResolvedValue([]),
+      getExternalIds: vi.fn().mockResolvedValue(null),
+      getOriginLanguage: vi.fn().mockResolvedValue(null),
+    }
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver })
+
+    await tool.execute({
+      tmdbId: '154494', isTv: true, title: 'Churn', season: 1, episode: 1,
+      file: '/media/tv/Churn.S01E01.mkv',
+    }, {} as any)
+
+    expect(lib.probeMemo('tmdb:154494/s1e1')).toEqual({ mtime: 777_000, size: 888_999, langs: null })
+    expect(lib.listParkedPaths().find(p => p.path === '/media/tv/Churn.S01E01.mkv')).toBeUndefined()
   })
 
   it('unparked path (no DB row) falls back to missing, never embedded', async ({ expect }) => {

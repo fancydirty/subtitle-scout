@@ -494,7 +494,55 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       // 走盘循环里只登记，真探测推迟到走盘结束后统一按 probeConcurrency 并发跑（云盘单文件探针
       // 12-16s，收益全在并发）。embeddedTmdbId 必须搭这趟车跨过"循环内算出 / 循环后落库"这道
       // 边界——它是 recognize() 在循环内产出的结构提示，而 upsertParkedPath 已被推迟到循环之后。
-      const pendingProbes = new Map<string, { mtimeMs: number; size: number; embeddedTmdbId: string | null }>()
+      // repair 字段（挂车修复缺陷 B，2026-07-28 生产实证）：非 null = 这条不是"探完 park"而是
+      // "探完修 memo"——行已存在（身份已立）但探针记忆缺失/过期，探完后 setProbeMemo + 重跑
+      // 覆盖分类，绝不 park。复用同一套 pendingProbes 并发机制（云盘探针慢的物理事实对两种
+      // 用途一视同仁），只在收尾分流。
+      const pendingProbes = new Map<string, { mtimeMs: number; size: number; embeddedTmdbId: string | null; repair: ExistingRow | null }>()
+
+      // CHEAP PATH 与 memo-repair 共用的覆盖重分类（挂车修复缺陷 B 抽出）：身份已立的行，
+      // 拿当前 langs 证据重跑 classify + resolveStatusToWrite + writeSubStatusOnly + B3-1
+      // sidecar 领养记账 + 债务D1 布局观察。两个调用点的语义必须逐字一致（不许漂移）——这正是
+      // 抽出它的理由：repair 分支若手抄一份，日后 CHEAP PATH 改分类规则时必然漏改这里。
+      // 不是身份裁决（机械层禁区）：existing 行是 path 绑定的 DB 权威身份，这里只刷新探针事实。
+      const reclassifyExistingRow = (existing: ExistingRow, path: string, embeddedLangs: string[] | null): void => {
+        // 债务D1：这也是一次真实的磁盘观察——series_id 从既有行直接可得。
+        if (existing.kind === 'episode' && existing.seriesId) {
+          layoutObserved.set(
+            existing.seriesId,
+            (layoutObserved.get(existing.seriesId) ?? false) || !isCanonicalEpisodePath(path)
+          )
+        }
+        const originLangCached = existing.kind === 'episode'
+          ? (existing.seriesId ? lib.getSeriesOriginLang(existing.seriesId) : null)
+          : lib.getMovieOriginLang(existing.id)
+        const title = existing.kind === 'episode'
+          ? (existing.seriesId ? (lib.getSeries(existing.seriesId)?.name ?? '') : '')
+          : (lib.getMovie(existing.id)?.name ?? '')
+
+        const computed = classify({
+          title,
+          originLang: decodeOriginLang(originLangCached),
+          originResolutionFailed: false,
+          embeddedLangs,
+          path,
+          targetLanguages,
+          originSkipLanguages,
+          fileExists,
+          hardsubMode,
+        })
+        const toWrite = resolveStatusToWrite(computed.status, existing.subStatus)
+        if (toWrite !== existing.subStatus) {
+          writeSubStatusOnly(lib.db, existing.kind, existing.id, toWrite, nowMs, computed.reason)
+          result.changed = true
+        }
+        // B3-1（批③领养记账）：toWrite==='covered' 恒来自 rule 3（sidecar），无关这次
+        // if 是否真的改了 sub_status——已经是 covered 的行（上一轮已领养过）也要保证
+        // subtitles 行存在（ON CONFLICT DO NOTHING 天然幂等，不重复插）。
+        if (toWrite === 'covered' && computed.sidecar) {
+          lib.recordAdoptedSidecar(existing.id, computed.sidecar.path, computed.sidecar.language, nowMs)
+        }
+      }
 
       for (const root of deps.roots()) {
         for (const path of listVideoFiles(root)) {
@@ -523,44 +571,20 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             if (existing) {
               const memo = lib.probeMemo(existing.id)
               if (memo && memo.mtime === stat.mtimeMs && memo.size === stat.size) {
-                // 债务D1：cheap path 也是一次真实的磁盘观察——series_id 从既有行直接可得。
-                if (existing.kind === 'episode' && existing.seriesId) {
-                  layoutObserved.set(
-                    existing.seriesId,
-                    (layoutObserved.get(existing.seriesId) ?? false) || !isCanonicalEpisodePath(path)
-                  )
-                }
-                const originLangCached = existing.kind === 'episode'
-                  ? (existing.seriesId ? lib.getSeriesOriginLang(existing.seriesId) : null)
-                  : lib.getMovieOriginLang(existing.id)
-                const title = existing.kind === 'episode'
-                  ? (existing.seriesId ? (lib.getSeries(existing.seriesId)?.name ?? '') : '')
-                  : (lib.getMovie(existing.id)?.name ?? '')
-
-                const computed = classify({
-                  title,
-                  originLang: decodeOriginLang(originLangCached),
-                  originResolutionFailed: false,
-                  embeddedLangs: memo.langs,
-                  path,
-                  targetLanguages,
-                  originSkipLanguages,
-                  fileExists,
-                  hardsubMode,
-                })
-                const toWrite = resolveStatusToWrite(computed.status, existing.subStatus)
-                if (toWrite !== existing.subStatus) {
-                  writeSubStatusOnly(lib.db, existing.kind, existing.id, toWrite, nowMs, computed.reason)
-                  result.changed = true
-                }
-                // B3-1（批③领养记账）：toWrite==='covered' 恒来自 rule 3（sidecar），无关这次
-                // if 是否真的改了 sub_status——已经是 covered 的行（上一轮已领养过）也要保证
-                // subtitles 行存在（ON CONFLICT DO NOTHING 天然幂等，不重复插）。
-                if (toWrite === 'covered' && computed.sidecar) {
-                  lib.recordAdoptedSidecar(existing.id, computed.sidecar.path, computed.sidecar.language, nowMs)
-                }
+                reclassifyExistingRow(existing, path, memo.langs)
                 continue
               }
+              // ---- memo-repair（挂车修复缺陷 B，2026-07-28 生产实证）：行存在但 memo 缺失/
+              // 过期 → 绝不落进下面的 FULL PATH（那条路的终点是 park，而 parked_paths 语义上
+              // 是"身份未立"文件的队列——这条路径有 DB 行，身份早已裁决过（生产实证：
+              // tmdb:154494/s1e1 sub_status='covered' 却同时躺在 parked_paths
+              // awaiting-agent-identification 里，parked 33→43，agent 每批重识别 ~10 个
+              // 已识别文件无限烧 token）。正确动作：重探文件、setProbeMemo 让下一轮命中
+              // CHEAP PATH。探测搭 pendingProbes 并发车（云盘单文件 12-16s 的物理事实对
+              // repair 与 park 两种用途一视同仁），repair 字段非 null 标记收尾走修 memo
+              // 分流而非 park。不需要 recognize()/负缓存（那些都是给身份未立文件的）。
+              pendingProbes.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, embeddedTmdbId: null, repair: existing })
+              continue
             }
 
             // ---- B3-3（配额止血）：已登记副本——item_files 命中该 path → 跳过 recognize() ----
@@ -584,7 +608,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
               continue
             }
 
-            // ---- FULL PATH：无行，或行存在但探针记忆化已过期 → 结构解析 + raw data 落 parked ----
+            // ---- FULL PATH：无行（身份未立）→ 结构解析 + raw data 落 parked ----
+            // （行存在但 memo 过期的情况已在上方 memo-repair 分支拦截——那不是身份问题，
+            // 只是探针事实过期，绝不进 parked_paths 这条"身份未立"队列。）
             // parked-path 负缓存（Task 5）：未变 fingerprint 的已 park 路径按 1h→4h→24h 退避，
             // 跳过昂贵 recognize；seenPaths 已登记本 path，收尾清理不会误删。
             const pathFingerprint = { mtimeMs: stat.mtimeMs, size: stat.size }
@@ -614,7 +640,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             // path 在走盘里出现两次，第二次会撞上刚写的 park 行的负缓存而跳过、探针只跑一遍；
             // 推迟之后不去重就会跑两遍。走盘实现本不产生重复路径，这只是把等价性钉死。
             // embeddedTmdbId 一并登记：outcome 只在这个作用域里存在，parking 已在循环之外。
-            pendingProbes.set(path, { ...stat, embeddedTmdbId: outcome.embeddedTmdbId })
+            pendingProbes.set(path, { ...stat, embeddedTmdbId: outcome.embeddedTmdbId, repair: null })
             continue
           } catch (e) {
             // 同 daemon/selfScan.ts 的既有哲学："一个文件/一次 TMDB 抖动不能拖垮整轮 pass"——
@@ -646,24 +672,30 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       const probed = await mapWithConcurrency(
         probeTargets,
         probeConcurrency,
-        async ([path]) => {
+        async ([path, pending]) => {
           let durationSec: number | null = null
           let embeddedLangs: string[] | null = null
+          let probeFailed = false
 
-          try {
-            durationSec = await deps.probeDuration(path)
-          } catch (err) {
-            deps.log(`probeDuration failed for ${path}: ${err}`)
+          // duration 只服务 parked raw data（喂 agent 识别 + 副本时长比对）；memo-repair 行
+          // 身份已立，memo 也不存 duration——跳过这次探测，别在云盘上多等一次 12-16s。
+          if (pending.repair === null) {
+            try {
+              durationSec = await deps.probeDuration(path)
+            } catch (err) {
+              deps.log(`probeDuration failed for ${path}: ${err}`)
+            }
           }
 
           try {
             const tracks = await deps.probe(path)
             embeddedLangs = tracks === null ? null : usableEmbeddedLangs(tracks)
           } catch (err) {
+            probeFailed = true
             deps.log(`probe failed for ${path}: ${err}`)
           }
 
-          return { durationSec, embeddedLangs }
+          return { durationSec, embeddedLangs, probeFailed }
         },
       )
 
@@ -673,12 +705,30 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
         try {
           // rejected 理论不可达（探针任务体自身把两个探测都 try/catch 兜住了，不会向外抛），
           // 但真出了意料外的抛错（如 usableEmbeddedLangs 遇到畸形轨道数据）也绝不能让这个文件
-          // 拖走其余文件的 parking——按"两个字段都没探到"处理，照常落 park 行，下一轮重探。
+          // 拖走其余文件的 parking/repair——按"两个字段都没探到"处理，下一轮重探。
           const raw = settled.status === 'fulfilled'
             ? settled.value
-            : { durationSec: null, embeddedLangs: null }
+            : { durationSec: null, embeddedLangs: null, probeFailed: true }
           if (settled.status === 'rejected') {
-            log(`ingest: probe stage failed for ${path}, parking without raw data this pass: ${settled.reason}`)
+            log(`ingest: probe stage failed for ${path}: ${settled.reason}`)
+          }
+
+          // ---- memo-repair 分流（挂车修复缺陷 B）：行已存在，只修探针事实，绝不 park ----
+          if (stat.repair !== null) {
+            if (raw.probeFailed) {
+              // 失败隔离：本轮不写半截 memo（写了会让下一轮 CHEAP PATH 拿着假 langs 分类），
+              // 只记日志跳过——行仍无 memo，下一轮 pass 自然重进 repair 分支重试。
+              log(`ingest: memo repair probe failed for ${path}, will retry next pass`)
+              continue
+            }
+            // langs 语义同 setProbeMemo 契约：null=探针不可用（deps.probe 返回 null 的既有
+            // 契约，降级 sidecar-only），[]=确认零轨。memo 落地后下一轮未变文件命中 CHEAP PATH。
+            lib.setProbeMemo(stat.repair.id, stat.mtimeMs, stat.size, raw.embeddedLangs)
+            // 立即重跑覆盖分类（与 CHEAP PATH 共用 reclassifyExistingRow，不许语义漂移）——
+            // 不等下一轮：新 langs 证据可能当场翻 missing→embedded。
+            reclassifyExistingRow(stat.repair, path, raw.embeddedLangs)
+            result.changed = true
+            continue
           }
 
           // Park with raw data for agent identification。fingerprint 的 durationSec/embeddedLangs
@@ -699,7 +749,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
           )
           result.parked++
         } catch (e) {
-          // 同走盘循环的既有哲学：一个文件的 parking 失败不拖垮整轮 pass，下一轮重试。
+          // 同走盘循环的既有哲学：一个文件的 parking/repair 失败不拖垮整轮 pass，下一轮重试。
           const msg = e instanceof Error ? e.message : String(e)
           log(`ingest: failed for ${path}, will retry next pass: ${msg}`)
         }

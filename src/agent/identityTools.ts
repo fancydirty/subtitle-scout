@@ -166,11 +166,16 @@ export function makeWriteIdentityTool(deps: WriteIdentityDeps) {
             subStatus,
           })
 
-          // Set probe memo if we have embedded langs
-          if (embeddedLangs && embeddedLangs.length > 0) {
-            if (parked?.probe_mtime && parked?.probe_size) {
-              lib.setProbeMemo(ownEpisodeId, parked.probe_mtime, parked.probe_size, embeddedLangs)
-            }
+          // 🔴 探针记忆必须无条件落地（挂车修复缺陷 A，2026-07-28 生产实证）：此前只在
+          // embeddedLangs 非空时才 setProbeMemo——无内嵌轨/未探测（生产大多数文件）的行建出来
+          // 就没有 memo，下一轮 ingest CHEAP PATH 必然 miss → FULL PATH 把刚识别完的路径重新
+          // park → agent 重新识别 → 无限空转（tmdb:154494/s1e1 covered 行与 parked 行同时
+          // 存在，parked 33→43，每批白烧 ~10 个文件的 LLM token）。
+          // langs 语义（见 libraryRepo.setProbeMemo/probeMemo）：null=语言轨未探测（诚实），
+          // []=探过确认零轨——embeddedLangs 变量本身就是 parked.embedded_langs 的忠实解析
+          // （NULL→null，'[]'→[]），直接透传即是诚实映射。
+          if (parked?.probe_mtime && parked?.probe_size) {
+            lib.setProbeMemo(ownEpisodeId, parked.probe_mtime, parked.probe_size, embeddedLangs)
           }
 
           // Clear from parked
@@ -197,10 +202,9 @@ export function makeWriteIdentityTool(deps: WriteIdentityDeps) {
             lib.setMovieOriginLang(ownMovieId, originLang)
           }
 
-          if (embeddedLangs && embeddedLangs.length > 0) {
-            if (parked?.probe_mtime && parked?.probe_size) {
-              lib.setProbeMemo(ownMovieId, parked.probe_mtime, parked.probe_size, embeddedLangs)
-            }
+          // 同 TV 分支：memo 无条件落地（挂车修复缺陷 A，langs 直接透传 parked 行的诚实解析）。
+          if (parked?.probe_mtime && parked?.probe_size) {
+            lib.setProbeMemo(ownMovieId, parked.probe_mtime, parked.probe_size, embeddedLangs)
           }
 
           lib.clearParkedPath(path)

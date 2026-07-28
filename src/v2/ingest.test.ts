@@ -401,7 +401,11 @@ describe('makeIngestPass — memo-hit cheap path', () => {
     expect(lib.getEpisode('tmdb:1/s1e1')!.sub_status).toBe('unavailable')
   })
 
-  it('memo present but stale (mtime changed) → treated as full path, recognize() IS called again', async () => {
+  // 🔴 挂车修复缺陷 B（2026-07-28）改写：原测试锁"memo 过期 → 走 FULL PATH → recognize()
+  // 被再次调用"——正是无限空转的半边引擎（行存在还去 park）。新行为：行存在（身份已立）时
+  // memo 过期只触发 memo-repair（重探 + setProbeMemo），身份来自既有行，recognize（结构提示，
+  // 服务身份未立文件）不再参与。
+  it('memo present but stale (mtime changed) + 行存在 → memo-repair：重探 + memo 刷新，recognize 不调用、不 park', async () => {
     const path = '/media/Show/Season 1/ep1.mkv'
     lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
     lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'S1E1', path, subStatus: 'missing' })
@@ -410,23 +414,32 @@ describe('makeIngestPass — memo-hit cheap path', () => {
     const disk = fakeDisk()
     disk.setVideo(path, 9999, 12345) // mtime changed → memo stale
     const recognize = vi.fn(() => tvResult())
+    const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
     const pass = makeIngestPass(makeDeps({
-      listVideoFiles: () => [path], recognize,
+      listVideoFiles: () => [path], recognize, probe,
       fileExists: disk.fileExists, statFile: disk.statFile,
     }))
 
-    await pass()
+    const result = await pass()
 
-    expect(recognize).toHaveBeenCalledTimes(1)
+    expect(recognize).not.toHaveBeenCalled()
+    expect(probe).toHaveBeenCalledWith(path)
+    expect(result.parked).toBe(0)
+    expect(lib.listParkedPaths()).toEqual([])
+    expect(lib.probeMemo('tmdb:1/s1e1')).toEqual({ mtime: 9999, size: 12345, langs: [] })
   })
 
-  it('park after a prior successful ingest does NOT delete the previously-working row (graceful degradation, not data loss)', async () => {    const path = '/media/Show/Season 1/ep1.mkv'
+  // 🔴 挂车修复缺陷 B 改写：原测试名"park after a prior successful ingest does NOT delete the
+  // previously-working row"——锁的是"行存在 + memo 过期 → park 但行存活"。park 这半边已被
+  // 判定为语义错误（parked_paths 是身份未立队列），"行存活"这半边升级成"行存活且被修好 memo"。
+  it('行存在 + memo 过期 → 不 park、行存活、memo 修复（graceful repair, not churn）', async () => {
+    const path = '/media/Show/Season 1/ep1.mkv'
     lib.upsertSeries({ id: 'tmdb:1', name: 'Show' })
     lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'x', path, subStatus: 'covered' })
     lib.setProbeMemo('tmdb:1/s1e1', 5000, 12345, [])
 
     const disk = fakeDisk()
-    disk.setVideo(path, 9999, 12345) // stale memo → full path
+    disk.setVideo(path, 9999, 12345) // stale memo
     const recognize = vi.fn(() => tvResult({ season: 1, episode: null, absoluteEpisode: null }))
     const pass = makeIngestPass(makeDeps({
       listVideoFiles: () => [path], recognize,
@@ -435,8 +448,129 @@ describe('makeIngestPass — memo-hit cheap path', () => {
 
     const result = await pass()
 
+    expect(result.parked).toBe(0)
+    expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull() // old row survives
+    expect(lib.probeMemo('tmdb:1/s1e1')).toEqual({ mtime: 9999, size: 12345, langs: [] })
+  })
+})
+
+// 🔴 挂车修复（2026-07-28 生产实证）：识别过的文件被反复重新 park 的无限空转。live 证据：
+// episodes 有 tmdb:154494/s1e1（sub_status='covered'，probe_mtime=NULL），同一 path 却同时
+// 躺在 parked_paths（awaiting-agent-identification）；parked 33→43，agent 每批重识别 ~10 个
+// 已识别文件，LLM token 无限烧。两个缺陷合谋：A) write_identified_media 只在有 embeddedLangs
+// 时落 memo（大多数文件建行无 memo，锁在 identityTools.test.ts）；B) FULL PATH 对"行存在但
+// memo 缺失/过期"的 path 无条件 park——而 parked_paths 语义是"身份未立"文件的队列，有 DB 行
+// 的 path 身份早已裁决，park 它就是让 agent 重做已做完的裁决。
+describe('makeIngestPass — 挂车修复缺陷 B：行存在的 path 绝不进 parked_paths', () => {
+  it('THE CHURN LOCK：行存在但无 memo（write_identified_media 旧版产物）→ 不 park + memo 修复', async () => {
+    const path = '/media/tv/Churn.S01E01.mkv'
+    // 模拟旧版 write_identified_media 的产物：行存在、无 memo、无 parked 行。
+    lib.upsertSeries({ id: 'tmdb:154494', name: 'Churn Show' })
+    lib.upsertEpisode({ id: 'tmdb:154494/s1e1', seriesId: 'tmdb:154494', season: 1, episode: 1, name: 'E1', path, subStatus: 'covered' })
+    expect(lib.probeMemo('tmdb:154494/s1e1')).toBeNull()
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345) // 盘上未变
+    disk.addSidecar('/media/tv/Churn.S01E01.zh.srt') // covered 的现实依据，重分类后不翻状态
+    const recognize = vi.fn(() => tvResult())
+    const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
+    const pass = makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], recognize, probe,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))
+
+    const result = await pass()
+
+    // 绝不 park：parked_paths 是身份未立队列，这条 path 有行=身份已立。
+    expect(result.parked).toBe(0)
+    expect(lib.listParkedPaths()).toEqual([])
+    // memo 修复落地——下一轮未变文件命中 CHEAP PATH，空转终止。
+    expect(lib.probeMemo('tmdb:154494/s1e1')).toEqual({ mtime: 5000, size: 12345, langs: [] })
+    // 身份不重新裁决：recognize（结构提示，身份未立文件专用）不参与。
+    expect(recognize).not.toHaveBeenCalled()
+    // 探针事实来自真探测。
+    expect(probe).toHaveBeenCalledWith(path)
+    // 行毫发无损。
+    expect(lib.getEpisode('tmdb:154494/s1e1')!.sub_status).toBe('covered')
+  })
+
+  it('memo 修复后的下一轮 pass 命中 CHEAP PATH（空转终止的闭环验证）', async () => {
+    const path = '/media/tv/Churn.S01E01.mkv'
+    lib.upsertSeries({ id: 'tmdb:154494', name: 'Churn Show' })
+    lib.upsertEpisode({ id: 'tmdb:154494/s1e1', seriesId: 'tmdb:154494', season: 1, episode: 1, name: 'E1', path, subStatus: 'missing' })
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    const probe = vi.fn(async () => [] as EmbeddedSubtitleTrack[])
+    const deps = makeDeps({
+      listVideoFiles: () => [path], probe,
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    })
+
+    await makeIngestPass(deps)() // 第一轮：memo-repair（真探测一次）
+    expect(probe).toHaveBeenCalledTimes(1)
+
+    await makeIngestPass(deps)() // 第二轮：CHEAP PATH，不再探测
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(lib.listParkedPaths()).toEqual([])
+  })
+
+  it('修复分支拿到新 langs 证据当场重分类：missing → embedded（与 CHEAP PATH 共用分类逻辑）', async () => {
+    const path = '/media/tv/Churn.S01E01.mkv'
+    lib.upsertSeries({ id: 'tmdb:154494', name: 'Churn Show' })
+    lib.upsertEpisode({ id: 'tmdb:154494/s1e1', seriesId: 'tmdb:154494', season: 1, episode: 1, name: 'E1', path, subStatus: 'missing' })
+
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    const probe = vi.fn(async () => [track({ lang: 'chi' })])
+    const result = await makeIngestPass(makeDeps({
+      listVideoFiles: () => [path], probe,
+      targetLanguages: () => ['zh'],
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+
+    expect(result.parked).toBe(0)
+    expect(lib.getEpisode('tmdb:154494/s1e1')!.sub_status).toBe('embedded')
+    expect(lib.probeMemo('tmdb:154494/s1e1')).toEqual({ mtime: 5000, size: 12345, langs: ['chi'] })
+  })
+
+  it('修复分支探针失败 → 失败隔离：本轮不写 memo 不 park 不炸 pass，同轮其它文件照常处理', async () => {
+    const pathBroken = '/media/tv/Broken.S01E01.mkv'
+    const pathNew = '/media/tv/Brand.New.S01E01.mkv'
+    lib.upsertSeries({ id: 'tmdb:1', name: 'Broken Show' })
+    lib.upsertEpisode({ id: 'tmdb:1/s1e1', seriesId: 'tmdb:1', season: 1, episode: 1, name: 'E1', path: pathBroken, subStatus: 'missing' })
+
+    const disk = fakeDisk()
+    disk.setVideo(pathBroken, 5000, 12345)
+    disk.setVideo(pathNew, 6000, 999)
+    const probe = vi.fn(async (p: string) => {
+      if (p === pathBroken) throw new Error('ffprobe timeout')
+      return [] as EmbeddedSubtitleTrack[]
+    })
+    const result = await makeIngestPass(makeDeps({
+      listVideoFiles: () => [pathBroken, pathNew], probe,
+      recognize: vi.fn(() => tvResult()),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+
+    // 失败文件：无 memo（下一轮重试）、不 park。
+    expect(lib.probeMemo('tmdb:1/s1e1')).toBeNull()
+    expect(lib.listParkedPaths().map(p => p.path)).toEqual([pathNew]) // 新文件照常 park
     expect(result.parked).toBe(1)
-    expect(lib.getEpisode('tmdb:1/s1e1')).not.toBeNull() // old row survives the park
+  })
+
+  it('回归：无行的 path 照常 park（身份未立队列的既有语义不变）', async () => {
+    const path = '/media/tv/Unknown.S01E01.mkv'
+    const disk = fakeDisk()
+    disk.setVideo(path, 5000, 12345)
+    const result = await makeIngestPass(makeDeps({
+      listVideoFiles: () => [path],
+      recognize: vi.fn(() => tvResult()),
+      fileExists: disk.fileExists, statFile: disk.statFile,
+    }))()
+
+    expect(result.parked).toBe(1)
+    expect(lib.listParkedPaths()[0]).toMatchObject({ path, park_reason: 'awaiting-agent-identification' })
   })
 })
 
