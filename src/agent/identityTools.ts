@@ -1,5 +1,6 @@
 import { tool } from 'ai'
 import { z } from 'zod'
+import { existsSync } from 'node:fs'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
 import type { TmdbDetails } from '../adapters/providers/tmdb.js'
 import { seriesId, episodeId } from '../v2/ownIds.js'
@@ -53,6 +54,31 @@ interface WriteIdentityDeps {
   /** 本次 run 的 target 路径表（真实绝对路径，来自 task.targets）。模型报 file 名，代码
    *  在这里解析出路径——绝对路径永不经过模型。 */
   resolveTargetPath: (file: string) => string | null
+  /** 行劫持三分支（下方 classifyExistingRow）里"旧文件是否还在磁盘"的判据。测试注入点；
+   *  默认真实 existsSync（同 ingest/subtitlePropagation 的既有 fileExists 注入口径）。 */
+  fileExists?: (path: string) => boolean
+}
+
+/** 行劫持防御（2026-07-28，全库跑前夜）：同一作品的第二份物理文件（NAS + 云盘双持，如
+ *  The Conjuring）被识别时，upsertMovie/upsertEpisode 的 ON CONFLICT(id) DO UPDATE SET
+ *  path=excluded.path 会静默把既有行的 path 改写成新文件——旧文件从台账消失 → 下轮 ingest
+ *  认不出旧路径 → park → agent 重识别 → path 又翻回去……两个文件互相劫持同一行，每轮白烧
+ *  一次 LLM 识别（与 1919f86 修的 re-park 空转同病类：账目内耗永动机）。三分支裁决：
+ *    'fresh-or-same' —— 无既有行 / path 相同（幂等重识别）→ 照常 upsert
+ *    'promote'       —— 有行但旧 path 的文件已从磁盘消失（删除/改名）→ 新 path 合法继承行,
+ *                       照常 upsert（这是晋升，不是劫持）
+ *    'replica'       —— 有行且旧文件还在 → 这是同一作品的第二份文件：绝不改行,
+ *                       addItemFile 入册副本 + 清 park。字幕传播不在这里直接调
+ *                       propagateSubtitleToReplica（那要往写库工具穿 probeDuration，
+ *                       不成比例）——ingest 的 B3-3 分支每轮按 getItemFileByPath 命中
+ *                       已入册副本并幂等触发同一个传播函数，下一轮 pass 必然补上。 */
+function classifyExistingRow(
+  existingPath: string | undefined,
+  newPath: string,
+  fileExists: (p: string) => boolean,
+): 'fresh-or-same' | 'promote' | 'replica' {
+  if (existingPath === undefined || existingPath === newPath) return 'fresh-or-same'
+  return fileExists(existingPath) ? 'replica' : 'promote'
 }
 
 export function makeWriteIdentityTool(deps: WriteIdentityDeps) {
@@ -135,6 +161,27 @@ export function makeWriteIdentityTool(deps: WriteIdentityDeps) {
         const ownSeriesId = seriesId(tmdbId)
         const ownEpisodeId = episodeId(tmdbId, season!, episode!)
 
+        // 行劫持检查只针对 EPISODE 行（path 在 episodes 上；series 行没有 path 列，series 级
+        // upsert 永远只是元数据刷新，无劫持可言）。episode 行存在 ⇒ series 行必然存在（FK），
+        // replica 分支跳过 series upsert 也不会缺元数据。
+        const existingEp = lib.getEpisode(ownEpisodeId)
+        const verdict = classifyExistingRow(existingEp?.path, path, deps.fileExists ?? existsSync)
+        if (verdict === 'replica') {
+          lib.db.transaction(() => {
+            lib.addItemFile(ownEpisodeId, path, Date.now())
+            lib.clearParkedPath(path)
+          })()
+          return (
+            `This file is a duplicate copy of existing library row ${ownEpisodeId} ` +
+            `(main file: ${existingEp!.path}). It has been registered as a replica; subtitles ` +
+            `will be propagated from the main copy automatically. Do NOT search or install ` +
+            `subtitles for this target — report it in no_safe_match with reason ` +
+            `"duplicate of ${ownEpisodeId}" and proceed to other targets.`
+          )
+        }
+        // verdict === 'promote'（旧文件已消失，新 path 合法继承行）或 'fresh-or-same'
+        // （新行/同 path 幂等）→ 照常 upsert。
+
         // 多语句写入包在一个事务里：parked 清除与建行同生共死，不留"建了一半"的中间态
         lib.db.transaction(() => {
           // Upsert series
@@ -185,6 +232,23 @@ export function makeWriteIdentityTool(deps: WriteIdentityDeps) {
         return `Created series ${ownSeriesId} and episode ${ownEpisodeId}. Use "${ownEpisodeId}" as the itemId for subtitle operations.`
       } else {
         const ownMovieId = seriesId(tmdbId) // movies 复用 seriesId 构造器
+
+        // 行劫持检查（movie 行自带 path）——三分支语义见 classifyExistingRow 头注释。
+        const existingMovie = lib.getMovie(ownMovieId)
+        const movieVerdict = classifyExistingRow(existingMovie?.path, path, deps.fileExists ?? existsSync)
+        if (movieVerdict === 'replica') {
+          lib.db.transaction(() => {
+            lib.addItemFile(ownMovieId, path, Date.now())
+            lib.clearParkedPath(path)
+          })()
+          return (
+            `This file is a duplicate copy of existing library row ${ownMovieId} ` +
+            `(main file: ${existingMovie!.path}). It has been registered as a replica; subtitles ` +
+            `will be propagated from the main copy automatically. Do NOT search or install ` +
+            `subtitles for this target — report it in no_safe_match with reason ` +
+            `"duplicate of ${ownMovieId}" and proceed to other targets.`
+          )
+        }
 
         lib.db.transaction(() => {
           lib.upsertMovie({

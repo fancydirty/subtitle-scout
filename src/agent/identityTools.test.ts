@@ -326,6 +326,112 @@ describe('write_identified_media', () => {
     expect(parked).toBeDefined()
   })
 
+  // ---- 行劫持锁（2026-07-28，全库跑前夜）：同一作品的第二份物理文件（NAS + 云盘双持）----
+  // upsertMovie/upsertEpisode 是 ON CONFLICT(id) DO UPDATE SET path=excluded.path——识别云盘
+  // 副本会静默改写既有行的 path，NAS 文件从台账消失 → 下轮 ingest 认不出 NAS 路径 → park →
+  // agent 重识别 → path 又翻回去……两个文件互相劫持同一行，每轮白烧一次 LLM 识别（与 1919f86
+  // 修的 re-park 空转同病类）。正确动作三分支：
+  //   同 path         → 幂等重识别（既有行为不变）
+  //   旧 path 文件已消失 → 晋升：新 path 合法继承行（照常 upsert）
+  //   旧 path 文件还在   → 副本：不动行，addItemFile 入册 + 清 park，字幕传播交给
+  //                        ingest B3-3（getItemFileByPath 命中 → propagateSubtitleToReplica，
+  //                        幂等，下一轮 pass 必然触发——不在写库工具里穿 probeDuration）。
+
+  const dupTmdb = () => ({
+    getDetails: vi.fn().mockResolvedValue({
+      posterPath: null, backdropPath: null, overview: 'x', year: 2013, genreIds: [], originalTitle: 'The Conjuring',
+    }),
+    getChineseTitles: vi.fn().mockResolvedValue([]),
+    getExternalIds: vi.fn().mockResolvedValue(null),
+    getOriginLanguage: vi.fn().mockResolvedValue(null),
+  })
+
+  it('🔴 行劫持锁（movie）：既有行的文件还在磁盘 → 不改 path，云盘副本入册 item_files + 清 park', async ({ expect }) => {
+    const nasPath = '/media/movies/Conjuring/c.mkv'
+    const aliyunPath = '/media/aliyun/Movie/conjuring-copy.mkv'
+    const tmdb = dupTmdb()
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver, fileExists: () => true })
+
+    // 第一次识别：NAS 文件建行
+    await tool.execute({
+      tmdbId: '138843', isTv: false, title: 'The Conjuring', season: null, episode: null, file: nasPath,
+    }, {} as any)
+    expect(lib.getMovie('tmdb:138843')?.path).toBe(nasPath)
+
+    // 云盘副本被 park 后送来识别——撞同一个 tmdbId
+    lib.upsertParkedPath(aliyunPath, 'awaiting-agent-identification', 2000, { mtimeMs: 9, size: 9 })
+    const result = await tool.execute({
+      tmdbId: '138843', isTv: false, title: 'The Conjuring', season: null, episode: null, file: aliyunPath,
+    }, {} as any)
+
+    // 行的 path 纹丝不动（NAS 主文件不失册）
+    expect(lib.getMovie('tmdb:138843')?.path).toBe(nasPath)
+    // 云盘 path 以副本身份入册（B3-3 下轮按 getItemFileByPath 命中并触发字幕传播）
+    expect(lib.getItemFileByPath(aliyunPath)?.item_id).toBe('tmdb:138843')
+    // parked 行已清（这条 path 有归宿了）
+    expect(lib.listParkedPaths().find(p => p.path === aliyunPath)).toBeUndefined()
+    // 返回信息告诉 agent：这是重复文件，别单独装字幕
+    expect(result).toContain('duplicate')
+    expect(result).toContain('tmdb:138843')
+  })
+
+  it('🔴 行劫持锁（TV episode）：episode 行不被云盘副本改写 path，series 级元数据刷新无妨', async ({ expect }) => {
+    const nasPath = '/media/tv/Show/S01E05.mkv'
+    const aliyunPath = '/media/aliyun/TV/Show.S01E05.mkv'
+    const tmdb = dupTmdb()
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver, fileExists: () => true })
+
+    await tool.execute({
+      tmdbId: '555', isTv: true, title: 'Show', season: 1, episode: 5, file: nasPath,
+    }, {} as any)
+    expect(lib.getEpisode('tmdb:555/s1e5')?.path).toBe(nasPath)
+
+    lib.upsertParkedPath(aliyunPath, 'awaiting-agent-identification', 2000, { mtimeMs: 9, size: 9 })
+    const result = await tool.execute({
+      tmdbId: '555', isTv: true, title: 'Show', season: 1, episode: 5, file: aliyunPath,
+    }, {} as any)
+
+    expect(lib.getEpisode('tmdb:555/s1e5')?.path).toBe(nasPath)
+    expect(lib.getItemFileByPath(aliyunPath)?.item_id).toBe('tmdb:555/s1e5')
+    expect(lib.listParkedPaths().find(p => p.path === aliyunPath)).toBeUndefined()
+    expect(result).toContain('duplicate')
+    expect(result).toContain('tmdb:555/s1e5')
+  })
+
+  it('晋升：既有行的旧文件已从磁盘消失 → 新 path 合法继承行，不入 item_files', async ({ expect }) => {
+    const oldPath = '/media/movies/Old/gone.mkv'
+    const newPath = '/media/aliyun/Movie/renamed.mkv'
+    const tmdb = dupTmdb()
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver, fileExists: () => false })
+
+    await tool.execute({
+      tmdbId: '700', isTv: false, title: 'Gone Film', season: null, episode: null, file: oldPath,
+    }, {} as any)
+
+    await tool.execute({
+      tmdbId: '700', isTv: false, title: 'Gone Film', season: null, episode: null, file: newPath,
+    }, {} as any)
+
+    expect(lib.getMovie('tmdb:700')?.path).toBe(newPath) // 晋升，不是劫持
+    expect(lib.getItemFileByPath(newPath)).toBeNull() // 不是副本
+  })
+
+  it('同 path 重识别 → 幂等，不入 item_files（回归锁）', async ({ expect }) => {
+    const path = '/media/movies/Same/same.mkv'
+    const tmdb = dupTmdb()
+    const tool = makeWriteIdentityTool({ lib, tmdb, resolveTargetPath: identityResolver, fileExists: () => true })
+
+    await tool.execute({
+      tmdbId: '800', isTv: false, title: 'Same Film', season: null, episode: null, file: path,
+    }, {} as any)
+    await tool.execute({
+      tmdbId: '800', isTv: false, title: 'Same Film', season: null, episode: null, file: path,
+    }, {} as any)
+
+    expect(lib.getMovie('tmdb:800')?.path).toBe(path)
+    expect(lib.getItemFileByPath(path)).toBeNull()
+  })
+
   it('rejects TV identification without season/episode BEFORE any TMDB call', async ({ expect }) => {
     const tmdb = {
       getDetails: vi.fn().mockResolvedValue({
