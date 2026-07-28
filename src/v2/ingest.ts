@@ -8,7 +8,7 @@ import { tmdbIdFromOwnId } from './ownIds.js'
 import type { ScoutDb } from './db.js'
 import type { LibraryRepo, SubStatus } from './libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { PathIdentity, Park } from '../recognition/index.js'
+import type { PathIdentity, Park } from '../recognition/identifyFromPath.js'
 import { isCanonicalEpisodePath } from '../recognition/identifyFromPath.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { propagateSubtitleToReplica } from './subtitlePropagation.js'
@@ -29,8 +29,8 @@ export interface IngestDeps {
   roots: () => string[]
   lib: LibraryRepo
   tmdb: TmdbClient
-  /** 纯机械结构解析（recognition/index.ts 的 recognize 签名，PathIdentity=结构提示，
-   *  无 tmdbId）——身份裁决（TMDB 搜索/详情/建行）已上移到 agent 的 write_identified_media
+  /** 纯机械结构解析（recognition/identifyFromPath.ts，PathIdentity=结构提示，无 tmdbId）——
+   *  身份裁决（TMDB 搜索/详情/建行）已上移到 agent 的 write_identified_media
    *  工具，ingest 只拿结构提示 + 原始探测数据落 parked_paths，等 agent 识别。 */
   recognize: (videoPath: string) => PathIdentity | Park
   probe: (videoPath: string) => Promise<EmbeddedSubtitleTrack[] | null>
@@ -520,20 +520,7 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
             const existing = findRowByPath(lib.db, path)
 
             // ---- CHEAP PATH：行存在 + 探针记忆化命中当前 (mtime,size) → 只重跑覆盖分类 ----
-            // 🔴 认领穿透（2026-07-26 审计 C1）：override 命中且与当前行身份不一致时，绝不能
-            // 走 CHEAP PATH。认领（人工 P6 / agent identity_correction）落地不会改动视频文件
-            // 本身的 mtime/size，而 recognize()（唯一咨询 findOverride 的地方）和"同路径换身份"
-            // 的清旧行分支都在下面的 FULL PATH 里——不设这道穿透的话，任何已成功入库过的行
-            // 都会永远命中 memo 而 continue，认领永久悬空、新身份永远建不出来，且没有任何
-            // 自愈路径（全库无清 probe memo 的写口）。只在"身份确实不一致"时穿透：认领与现行
-            // 身份一致（认领已生效后的每一轮）照常走 CHEAP PATH，不为一条已兑现的认领反复付
-            // 全量识别的代价。
-            const overrideForPath = existing ? lib.findOverride(path) : null
-            const overrideDisagrees =
-              overrideForPath != null &&
-              existing != null &&
-              tmdbIdFromOwnId(existing.id) !== overrideForPath.tmdbId
-            if (existing && !overrideDisagrees) {
+            if (existing) {
               const memo = lib.probeMemo(existing.id)
               if (memo && memo.mtime === stat.mtimeMs && memo.size === stat.size) {
                 // 债务D1：cheap path 也是一次真实的磁盘观察——series_id 从既有行直接可得。
@@ -599,13 +586,9 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
 
             // ---- FULL PATH：无行，或行存在但探针记忆化已过期 → 结构解析 + raw data 落 parked ----
             // parked-path 负缓存（Task 5）：未变 fingerprint 的已 park 路径按 1h→4h→24h 退避，
-            // 跳过昂贵 recognize；seenPaths 已登记本 path，收尾清理不会误删。identify override
-            // 强制立即 eligible（用户刚认领，必须重走识别）。
+            // 跳过昂贵 recognize；seenPaths 已登记本 path，收尾清理不会误删。
             const pathFingerprint = { mtimeMs: stat.mtimeMs, size: stat.size }
-            if (
-              !lib.shouldRetryParkedPath(path, pathFingerprint, nowMs) &&
-              !lib.findOverride(path)
-            ) {
+            if (!lib.shouldRetryParkedPath(path, pathFingerprint, nowMs)) {
               continue
             }
             const outcome = await deps.recognize(path)
@@ -854,22 +837,22 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
       for (const [sid, bad] of layoutObserved) lib.setSeriesLayoutNonstandard(sid, bad)
 
       // ---- 富化重试（验收修复轮一 Task V1，design §A，用户裁决，一石二鸟）----
-      // 治愈空名 ? 卡与存量 genres 回填：P6 认领写入的 override 分支只知道 tmdbId，写不出
-      // series.name（recognition/index.ts 的 claim-gated 分支恒 title:''），留下"空名 ? 卡"
-      // 债务；旧库存量剧也从未拉过 genres（schema v13 新列，NULL=尚未富化）。两个缺口用同一
-      // 条重试机制治愈：每轮 pass 收尾捞 lib.listSeriesNeedingEnrich 给出的候选（cap 10/轮，
-      // 防 TMDB 抖动期连环空转把整轮 pass 拖垮），逐剧补拍 TMDB 详情，只回填缺失
+      // 治愈空名 ? 卡与存量 genres 回填：历史上认领（override，已随 identify_overrides 退役）
+      // 写入的行只知道 tmdbId，写不出 series.name（当年的 claim-gated 分支恒 title:''），留下
+      // "空名 ? 卡"债务；旧库存量剧也从未拉过 genres（schema v13 新列，NULL=尚未富化）。两个
+      // 缺口用同一条重试机制治愈：每轮 pass 收尾捞 lib.listSeriesNeedingEnrich 给出的候选
+      // （cap 10/轮，防 TMDB 抖动期连环空转把整轮 pass 拖垮），逐剧补拍 TMDB 详情，只回填缺失
       // （lib.applyEnrichment 的"宁可不写不可覆盖"语义，见该方法头注释）。
       //
       // 剧名来源：这条重试路径手上只有 tmdbId（listSeriesNeedingEnrich 只给 id），没有
-      // recognize() 才有的原始文件名/路径可查——首次入库路径的 name 来自 outcome.title
+      // 识别层才有的原始文件名/路径可查——首次入库路径的 name 来自 outcome.title
       // （历史上的机械识别层由 TMDB /search/tv 命中标题给出；该层已随 resolveToTmdb 一并删除），
       // 这条查询词驱动的搜索在这里用不上。getDetails 的 originalTitle 字段（tv: original_name）
       // 是这个端点唯一能给出的标题字段，虽是"原语言标题"而非展示标题，但好过永久空着——沿用
       // enrichNewSeriesOrMovie 同一套 fail-soft 手法，并复用它采集 imdbId（验收修复轮一：
       // 把真 imdb 回填空名/未富化剧，从源头封杀 LLM 把 tmdb id 幻觉成 imdb 的 bug）。
       // 这里只查 series 表（listSeriesNeedingEnrich 的 SQL 范围），故 mediaType 恒 'tv'。
-      // 没有这条债务（P6 override 的 movie 分支同样写空 title，但 movies 表没有 genres 列，
+      // 没有这条债务（历史 override 的 movie 分支同样写空 title，但 movies 表没有 genres 列，
       // 分区判据不需要它富化；空名 movie 留给未来若有需要再补，不在本轮范围内，YAGNI）。
       // 单剧失败（TMDB 抖动/getDetails 抛错）只 log 继续，不炸整轮 pass、不写任何字段——下一轮
       // pass 该剧仍在候选清单里，自然重试。

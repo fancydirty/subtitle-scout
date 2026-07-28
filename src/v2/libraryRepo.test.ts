@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { join, sep } from 'node:path'
 import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
 import { LibraryRepo, isParkedPathEligible, PARK_REASON } from './libraryRepo.js'
@@ -998,93 +997,6 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       lib.addReplicaSubtitle('s1/e1', '/media/4k.mkv', '/media/4k.zh-Hans.srt', 'zh-Hans', 'scout-propagate', 2000)
       lib.addReplicaSubtitle('s1/e1', '/media/4k.mkv', '/media/4k.zh-Hans.srt', 'zh-Hans', 'scout-propagate', 3000)
       expect(lib.listSubtitlesForFile('s1/e1', '/media/4k.mkv', false)).toHaveLength(1)
-    })
-  })
-
-  describe('identify_overrides', () => {
-    it('addOverride + findOverride：单条命中', () => {
-      lib.addOverride('/media/anime/Show', '209867', true, 1000)
-      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true, season: null, source: 'human' })
-    })
-
-    it('findOverride 无命中返回 null', () => {
-      lib.addOverride('/media/anime/Show', '209867', true, 1000)
-      expect(lib.findOverride('/media/other/x.mkv')).toBeNull()
-    })
-
-    it('findOverride 最长前缀匹配：两条嵌套前缀，更长者胜出', () => {
-      lib.addOverride('/media/anime', '1', true, 1000)
-      lib.addOverride('/media/anime/Show', '209867', true, 2000)
-      expect(lib.findOverride('/media/anime/Show/S01/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true, season: null, source: 'human' })
-      expect(lib.findOverride('/media/anime/Other/e1.mkv')).toEqual({ tmdbId: '1', isTv: true, season: null, source: 'human' })
-    })
-
-    it('addOverride 对同一 path_prefix 幂等更新（PRIMARY KEY upsert）', () => {
-      lib.addOverride('/media/x', '1', true, 1000)
-      lib.addOverride('/media/x', '2', false, 2000)
-      expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '2', isTv: false, season: null, source: 'human' })
-    })
-
-    // P7 disambiguation 补丁：认领时人类一并给出季号——见 db.ts identify_overrides 头注释、
-    // recognition/index.ts recognize() 的 claim-gated 宽松救援分支。
-    it('addOverride 带 season → findOverride 原样带回', () => {
-      lib.addOverride('/media/TV/High School D×D', '24240', true, 1000, 4)
-      expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({
-        tmdbId: '24240', isTv: true, season: 4, source: 'human',
-      })
-    })
-
-    it('addOverride 不传 season（省略实参）默认为 null，不是遗留 undefined', () => {
-      lib.addOverride('/media/anime/Show', '209867', true, 1000)
-      expect(lib.findOverride('/media/anime/Show/e1.mkv')).toEqual({ tmdbId: '209867', isTv: true, season: null, source: 'human' })
-    })
-
-    it('addOverride 幂等更新同样覆盖 season（重新认领可以补上此前没给的季号）', () => {
-      lib.addOverride('/media/x', '1', true, 1000)
-      lib.addOverride('/media/x', '1', true, 2000, 4)
-      expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '1', isTv: true, season: 4, source: 'human' })
-    })
-
-    // v24（识别架构路 A，审计 B）：人写的认领是终局判断（且可能携带 agent 无从得知的 season
-    // 消歧信息），agent 的 Step 0 核验是会出错的启发式——不对称覆盖规则钉死于此。
-    describe('source 不对称覆盖（human 权威高于 agent）', () => {
-      it('agent 认领不许覆盖人工认领：写入被拒，返回 false，原行纹丝不动', () => {
-        lib.addOverride('/media/x', '111', true, 1000, 4, 'human')
-        const written = lib.addOverride('/media/x', '222', true, 2000, null, 'agent')
-        expect(written).toBe(false)
-        // tmdbId 没变，尤其 season=4（用户为消歧特意填的）没被抹成 null
-        expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '111', isTv: true, season: 4, source: 'human' })
-      })
-
-      it('人工认领可以覆盖 agent 认领（人永远有最终裁量权）', () => {
-        lib.addOverride('/media/x', '111', true, 1000, null, 'agent')
-        const written = lib.addOverride('/media/x', '222', true, 2000, 4, 'human')
-        expect(written).toBe(true)
-        expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '222', isTv: true, season: 4, source: 'human' })
-      })
-
-      it('agent 可以覆盖 agent 自己的旧认领（同级，后来者胜）', () => {
-        lib.addOverride('/media/x', '111', true, 1000, null, 'agent')
-        const written = lib.addOverride('/media/x', '222', true, 2000, null, 'agent')
-        expect(written).toBe(true)
-        expect(lib.findOverride('/media/x/a.mkv')).toEqual({ tmdbId: '222', isTv: true, season: null, source: 'agent' })
-      })
-
-      it('默认 source 为 human（既有调用方零改动即保持人工语义）', () => {
-        lib.addOverride('/media/x', '111', true, 1000)
-        expect(lib.findOverride('/media/x/a.mkv')!.source).toBe('human')
-      })
-    })
-
-    // v24（审计 A-3）：裸 startsWith 会让 '/media/tv/Show' 的认领吞掉兄弟目录
-    // '/media/tv/Showgirls 1995'、'/media/tv/Show Business'——前缀匹配必须落在路径边界上。
-    it('前缀匹配落在路径边界：Show 的认领不吞 Showgirls / Show Business', () => {
-      lib.addOverride(join(sep, 'media', 'tv', 'Show'), '111', true, 1000)
-      expect(lib.findOverride(join(sep, 'media', 'tv', 'Show', 'S01', 'e1.mkv'))).not.toBeNull()
-      expect(lib.findOverride(join(sep, 'media', 'tv', 'Showgirls 1995', 'x.mkv'))).toBeNull()
-      expect(lib.findOverride(join(sep, 'media', 'tv', 'Show Business', 'S01', 'e1.mkv'))).toBeNull()
-      // 认领目录自身（相等）仍算命中
-      expect(lib.findOverride(join(sep, 'media', 'tv', 'Show'))).not.toBeNull()
     })
   })
 

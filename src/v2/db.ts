@@ -120,20 +120,6 @@ CREATE TABLE parked_paths (         -- 未识别文件的正式户口（不混�
   -- （绝大多数情况），不是"未探测"：它是纯路径解析产物，同步、零 I/O。
   embedded_tmdb_id TEXT
 );
-CREATE TABLE identify_overrides (   -- P6 认领写入；识别层消歧前查（最长前缀匹配）
-  path_prefix TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL,
-  is_tv INTEGER NOT NULL,
-  season INTEGER,                 -- P7 disambiguation 补丁：认领时人类一并给出的季号（可空=未指定）。
-                                   -- 仅 is_tv 时有意义——非空时 recognize() 的 claim-gated 宽松救援把
-                                   -- 路径末尾数字当"该季内集号"直接采信（无歧义）；为空时只能当绝对
-                                   -- 集号，多季剧下 ingest 层会 park('override-ambiguous-numbering')
-                                   -- 而不是瞎猜（见 src/v2/ingest.ts、src/recognition/index.ts）。
-  created_at INTEGER NOT NULL,
-  -- v24（识别架构路 A）：认领来源。'human'=P6 救援页手工认领（终局判断），'agent'=
-  -- find-subtitle worker 的 identity_correction 落地（会出错的启发式）。addOverride 的
-  -- ON CONFLICT 据此实现"人写的行 agent 不许覆盖"，dashboard 据此区分展示来源。
-  source TEXT NOT NULL DEFAULT 'human'
-);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_reconcile_at 等
   `.trim(),
   // v10（胶水层修复战役，2026-07-16）：三列事实增量。layout_nonstandard=摄取层观察到的
@@ -388,6 +374,14 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
       db.exec(`ALTER TABLE parked_paths ADD COLUMN embedded_tmdb_id TEXT`)
     }
   },
+  // v27（认领退役，2026-07-28 产品裁决）：DROP identify_overrides。认领允许用户/agent 对一条
+  // 路径零证据指派 TMDB 身份，直接违反系统的两证据红线（识别必须凑齐两路独立证据）；且
+  // override 的覆盖单元是目录前缀——对一个文件认领一次，该目录未来落进来的每个文件都被
+  // 投毒成同一身份。识别现在完全 agent-owned（write_identified_media），正确的人类修复动作
+  // 是改文件名，不是在面板里指派身份。DROP IF EXISTS：fresh install（v9 折叠终态已不再
+  // CREATE 这张表）与老库两条路径都安全。存量认领行不迁移到任何地方——它们本就是零证据
+  // 判断；openDb 的 pre-migration VACUUM 备份（.pre-vN.bak）保留了表内容，供考古取证。
+  `DROP TABLE IF EXISTS identify_overrides`,
 ]
 
 export function openDb(path: string): ScoutDb {

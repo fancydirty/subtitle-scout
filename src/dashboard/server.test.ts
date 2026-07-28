@@ -174,81 +174,6 @@ describe('startDashboard (v2)', () => {
       ])
     })
 
-    it('POST /api/parked/claim writes an override for the parked path and returns ok', async () => {
-      const lib = new LibraryRepo(db)
-      lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '999', isTv: true }),
-      })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ ok: true })
-      expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null, source: 'human' })
-    })
-
-    // P7 disambiguation 补丁：可选 season 入参走完整 HTTP round-trip。
-    it('POST /api/parked/claim with a season carries it through to identify_overrides.season', async () => {
-      const lib = new LibraryRepo(db)
-      lib.upsertParkedPath('/media/TV/High School D×D/Hero - 01.mkv', 'no-signal', NOW)
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4 }),
-      })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ ok: true })
-      expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({ tmdbId: '24240', isTv: true, season: 4, source: 'human' })
-    })
-
-    it('POST /api/parked/claim rejects a non-positive-integer season (400)', async () => {
-      const lib = new LibraryRepo(db)
-      lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: 0 }),
-      })
-      expect(res.status).toBe(400)
-      expect((await res.json()).error).toEqual(expect.any(String))
-      expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toBeNull()
-    })
-
-    it('POST /api/parked/claim returns 400 on validation failure (e.g. unparked path)', async () => {
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
-      })
-      expect(res.status).toBe(400)
-      expect((await res.json()).error).toEqual(expect.any(String))
-    })
-
-    it('POST /api/parked/claim rejects non-POST methods with 405', async () => {
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const res = await fetch(`${base}/api/parked/claim?token=tok`, { method: 'GET' })
-      expect(res.status).toBe(405)
-    })
-
-    it('POST /api/parked/claim requires the configured token', async () => {
-      const lib = new LibraryRepo(db)
-      lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-      const { base } = await start(distWith('<!doctype html>'), 's3cret')
-      const unauthed = await fetch(`${base}/api/parked/claim`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: false }),
-      })
-      expect(unauthed.status).toBe(401)
-      const authed = await fetch(`${base}/api/parked/claim?token=s3cret`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: false }),
-      })
-      expect(authed.status).toBe(200)
-    })
   })
 
   describe('POST /api/v2/reconcile-all (v3 phase ⑦)', () => {
@@ -837,136 +762,29 @@ describe('startDashboard (v2)', () => {
       })
     })
 
-    describe('GET /api/v2/triage + POST /api/v2/triage/claim', () => {
-      it('GET /api/v2/triage 返回 pending + claimed', async () => {
+    describe('GET /api/v2/triage（认领端点已随两证据红线退役，只剩 pending 事实）', () => {
+      it('GET /api/v2/triage 返回 pending', async () => {
         const lib = new LibraryRepo(db)
         lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
         const { base } = await start(distWith('<!doctype html>'), 'tok')
         const res = await fetch(`${base}/api/v2/triage?token=tok`)
         expect(res.status).toBe(200)
         const body = await res.json()
-        expect(body.pending).toEqual([
-          { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
-        ])
-        expect(body.claimed).toEqual([])
+        expect(body).toEqual({
+          pending: [
+            { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
+          ],
+        })
       })
 
-      it('POST /api/v2/triage/claim 复用 claimParked 逻辑（与 /api/parked/claim 同一实现）', async () => {
-        const lib = new LibraryRepo(db)
-        lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
+      it('退役的认领端点如实 404：POST /api/parked/claim、/api/v2/triage/claim、/api/v2/triage/unclaim', async () => {
         const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '999', isTv: true }),
-        })
-        expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ ok: true })
-        expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '999', isTv: true, season: null, source: 'human' })
-      })
-
-      it('POST /api/v2/triage/claim 校验失败 → 400', async () => {
-        const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
-        })
-        expect(res.status).toBe(400)
-      })
-
-      it('POST /api/v2/triage/claim 非 POST 方法 405', async () => {
-        const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, { method: 'GET' })
-        expect(res.status).toBe(405)
-      })
-
-      it('POST /api/v2/triage/claim 需要配置的 token', { timeout: 20_000 }, async () => {
-        const { base } = await start(distWith('<!doctype html>'), 's3cret')
-        const res = await fetch(`${base}/api/v2/triage/claim`, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
-        })
-        expect(res.status).toBe(401)
-      })
-    })
-
-    // 验收修复轮一 Task V2：认领成功后踢一脚扫描——认领只写 override（见 claimParked 注释），
-    // 停车行真正退户口要等下一轮 ingest pass。requestIngest 让这一刻立即请求一次扫描，不用
-    // 等 daemon 自己的时间门。
-    describe('claim 成功后的 requestIngest 踢扫描（验收修复轮一 Task V2）', () => {
-      it('成功（result.ok）→ requestIngest 被调用一次', async () => {
-        const lib = new LibraryRepo(db)
-        lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-        let calls = 0
-        const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
-        )
-        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
-        })
-        expect(res.status).toBe(200)
-        expect(calls).toBe(1)
-      })
-
-      it('/api/v2/triage/claim 分支同样触发（两条路径共用同一个 claimParked 实现）', async () => {
-        const lib = new LibraryRepo(db)
-        lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-        let calls = 0
-        const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
-        )
-        const res = await fetch(`${base}/api/v2/triage/claim?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
-        })
-        expect(res.status).toBe(200)
-        expect(calls).toBe(1)
-      })
-
-      it('校验失败（400）→ requestIngest 不被调用', async () => {
-        let calls = 0
-        const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
-        )
-        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: '/never/parked.mkv', tmdbId: '1', isTv: false }),
-        })
-        expect(res.status).toBe(400)
-        expect(calls).toBe(0)
-      })
-
-      it('未配置 requestIngest → claim 仍正常响应，不炸（同 reconcileAll/jobs/tmdb 三个既有可选依赖的缺席先例）', async () => {
-        const lib = new LibraryRepo(db)
-        lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-        const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
-        })
-        expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ ok: true })
-      })
-
-      it('requestIngest 同步抛错 → 吞掉，不影响响应（fire-and-forget，DESIGN.md §8 数据已经写对了）', async () => {
-        const lib = new LibraryRepo(db)
-        lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-        const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined,
-          () => { throw new Error('boom') },
-        )
-        const res = await fetch(`${base}/api/parked/claim?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true }),
-        })
-        expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ ok: true })
+        for (const p of ['/api/parked/claim', '/api/v2/triage/claim', '/api/v2/triage/unclaim']) {
+          const res = await fetch(`${base}${p}?token=tok`, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+          })
+          expect(res.status).toBe(404)
+        }
       })
     })
 

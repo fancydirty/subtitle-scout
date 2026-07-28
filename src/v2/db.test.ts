@@ -15,8 +15,10 @@ describe('db 基座', () => {
     const tables = db.prepare("select name from sqlite_master where type='table' order by name").all().map((r: any) => r.name)
     for (const t of [
       'series', 'episodes', 'movies', 'jobs', 'runs', 'subtitles', 'blacklist', 'meta',
-      'parked_paths', 'identify_overrides', 'extras_exemptions', 'item_files', 'pending_removals',
+      'parked_paths', 'extras_exemptions', 'item_files', 'pending_removals',
     ]) expect(tables).toContain(t)
+    // v27（认领退役）：identify_overrides 已 DROP，fresh install 不再创建。
+    expect(tables).not.toContain('identify_overrides')
     // meta.schema_version = MIGRATIONS.length（数组下标+1，不是设计文档里的语义版本号 v9/v10/v11/v12
     // 本身）：v9 终态折叠成 1 条 entry 后是 '1'；胶水层修复战役追加 v10 entry 后 MIGRATIONS.length=2，
     // 落库值随之是 '2'；R-11 派活范围裁量化追加 v11 entry 后 MIGRATIONS.length=3，落库值是 '3'；
@@ -34,13 +36,14 @@ describe('db 基座', () => {
     // SRE 审计 F1 追加 v20（jobs.reap_count）entry 后 MIGRATIONS.length=13，落库值是 '13'；
     // parked-path 负缓存（Task 5）追加 v21（parked_paths retry 退避列）entry 后 MIGRATIONS.length=14，落库值是 '14'；
     // v22 补齐存量 runs 的 LLM/provider 账本列后是 '16'；v24（identify_overrides.source）后是 '17'；
-    // v25（agent-first identification：parked_paths 加 duration_sec/embedded_langs raw 数据列）后是 '18'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
+    // v25（agent-first identification：parked_paths 加 duration_sec/embedded_langs raw 数据列）后是 '18'；
+    // v26（parked_paths.embedded_tmdb_id）后是 '19'；v27（认领退役，DROP identify_overrides）后是 '20'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '20' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '20' })
   })
 
   it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
@@ -68,7 +71,7 @@ describe('db 基座', () => {
     expect(episodeCols).toEqual(expect.arrayContaining(['probe_mtime', 'probe_size', 'embedded_langs']))
   })
 
-  it('v9 终态：parked_paths / identify_overrides 列形状齐全', () => {
+  it('v9 终态：parked_paths 列形状齐全；identify_overrides 已随 v27 退役', () => {
     const db = openDb(':memory:')
     const parkedCols = (db.prepare('PRAGMA table_info(parked_paths)').all() as { name: string }[]).map((c) => c.name)
     // v25 的 duration_sec/embedded_langs 在 v9 终态 CREATE TABLE 里（fresh 库声明序），
@@ -81,10 +84,8 @@ describe('db 基座', () => {
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ])
 
-    const overrideCols = (db.prepare('PRAGMA table_info(identify_overrides)').all() as { name: string }[]).map((c) => c.name)
-    // v24（识别架构路 A）：source 列——区分人工认领(终局判断)与 agent 认领(会出错的启发式)，
-    // addOverride 据此实现"agent 不许覆盖人写的认领"。
-    expect(overrideCols).toEqual(['path_prefix', 'tmdb_id', 'is_tv', 'season', 'created_at', 'source'])
+    // v27（认领退役）：PRAGMA table_info 对不存在的表返回空集。
+    expect(db.prepare('PRAGMA table_info(identify_overrides)').all()).toEqual([])
   })
 
   it('v21：parked_paths 负缓存列 fresh + 从 v13 迁移都存在', () => {
@@ -94,7 +95,7 @@ describe('db 基座', () => {
     expect(freshCols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
+    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '20' })
     fresh.close()
 
     // migrate from prior (schema_version 13 = v20 终态，无负缓存列)
@@ -117,7 +118,7 @@ describe('db 基座', () => {
     expect(cols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '20' })
     // 存量行默认：retry_count=0，其余可空
     expect(db.prepare('SELECT retry_count, next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?')
       .get('/media/a.mkv')).toEqual({
@@ -154,7 +155,7 @@ describe('db 基座', () => {
     expect(db.prepare('SELECT id, started_at, decision, llm_calls, assrt_calls FROM runs').get()).toEqual({
       id: 1, started_at: 123, decision: 'translate:held', llm_calls: null, assrt_calls: null,
     })
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '20' })
   })
 
   it('v23：translate_glossaries 表存在;v15 老库升级后可用', () => {
@@ -166,7 +167,7 @@ describe('db 基座', () => {
     const cols = (db.prepare('PRAGMA table_info(translate_glossaries)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(['series_key', 'terms_json', 'updated_at'])
     db.prepare("INSERT INTO translate_glossaries VALUES ('tmdb:1', '[]', 1)").run()
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '20' })
     db.close()
   })
 
@@ -323,7 +324,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19+详情页富化 六条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '20' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -447,7 +448,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19+详情页富化 四条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '20' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -541,7 +542,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19+详情页富化 三条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '20' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -646,7 +647,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19+详情页富化 两条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '19' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '20' })
 
     // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
     expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())
@@ -690,9 +691,9 @@ describe('v25 migration: parked_paths raw data columns', () => {
   })
 
   it('adds duration_sec and embedded_langs columns', () => {
-    // MIGRATIONS 追加 v25 后是 18 条 entry；v26（parked_paths.embedded_tmdb_id）后是 19 条
-    // （落库 meta.schema_version 随之是 '19'）。
-    expect(MIGRATIONS.length).toBe(19)
+    // MIGRATIONS 追加 v25 后是 18 条 entry；v26（parked_paths.embedded_tmdb_id）后是 19 条；
+    // v27（认领退役，DROP identify_overrides）后是 20 条（落库 meta.schema_version 随之是 '20'）。
+    expect(MIGRATIONS.length).toBe(20)
 
     // Insert a parked path with raw data（embedded_langs 与 episodes/movies 同构：JSON 数组串）
     db.prepare(`

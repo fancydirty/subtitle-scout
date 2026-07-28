@@ -7,7 +7,7 @@ import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { SettingsRepo } from './settingsRepo.js'
 import { makeIngestPass, ingestLock, looksChineseTitle, classifyStatError, type IngestDeps } from './ingest.js'
-import type { Park, PathIdentity } from '../recognition/index.js'
+import type { Park, PathIdentity } from '../recognition/identifyFromPath.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
 import { TmdbRequestFailedError } from '../adapters/providers/tmdb.js'
@@ -325,32 +325,6 @@ describe('makeIngestPass — park', () => {
         probe_mtime: 999,
         probe_size: 200,
       })
-    })
-
-    it('identify override: eligible immediately (do not skip recognize)', async () => {
-      const disk = fakeDisk()
-      disk.setVideo(path, 100, 200)
-      lib.upsertParkedPath(path, 'no-match', t0, { mtimeMs: 100, size: 200 })
-      lib.addOverride(path, '108964', true, t0)
-
-      const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '108964', season: 1, episode: 1 }))
-      const pass = makeIngestPass(makeDeps({
-        listVideoFiles: () => [path],
-        recognize,
-        fileExists: disk.fileExists,
-        statFile: disk.statFile,
-        now: () => t0 + 1000,
-      }))
-
-      const result = await pass()
-      expect(recognize).toHaveBeenCalledWith(path)
-      // override 让 parked 路径立即重走识别（结构提示照常产出），但 FULL PATH 不再建行——
-      // 只带 raw data 重新 park，等 agent 的 write_identified_media 认领建行。
-      expect(result.upserted).toBe(0)
-      expect(result.parked).toBe(1)
-      const parked = lib.listParkedPaths().find(p => p.path === path)
-      expect(parked).toBeDefined()
-      expect(parked?.park_reason).toBe('awaiting-agent-identification')
     })
   })
 

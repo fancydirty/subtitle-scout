@@ -7,7 +7,7 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, claimParked, unexclude, unclaim,
+  buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
@@ -281,8 +281,9 @@ describe('活动/时间线双源兼容 worker_task（退役 T2）', () => {
   })
 })
 
-// 去 Jellyfin 化 P6：park 救援页——一次性脚手架，不做搜索/候选/批量。
-describe('buildParked / claimParked（P6 park 救援）', () => {
+// 去 Jellyfin 化 P6：park 救援页（认领动作已随两证据红线裁决退役，见 triageOps.ts 头注释——
+// 只剩"看见待识别文件"这一份事实呈现）。
+describe('buildParked（P6 park 救援清单）', () => {
   it('buildParked 转发 listParkedPaths（first_seen desc），DTO 字段驼峰化', () => {
     lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW - 5000)
     lib.upsertParkedPath('/media/tv/Another Show/e1.mkv', 'no match', NOW - 1000)
@@ -292,69 +293,6 @@ describe('buildParked / claimParked（P6 park 救援）', () => {
       { path: '/media/tv/Another Show/e1.mkv', parkReason: 'no match', firstSeen: NOW - 1000, lastAttempt: NOW - 1000 },
       { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW - 5000, lastAttempt: NOW - 5000 },
     ])
-  })
-
-  it('claimParked：合法认领写入 identify_overrides，覆盖目标是 path 所在的目录（dirname），不是文件本身', () => {
-    lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
-
-    const result = claimParked(db, { path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '12345', isTv: true })
-    expect(result).toEqual({ ok: true })
-
-    // 目录前缀命中，兄弟集也会命中（最长前缀匹配）
-    expect(lib.findOverride('/media/tv/Unknown Show/S01/e2.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null, source: 'human' })
-    expect(lib.findOverride('/media/tv/Unknown Show/S01/e1.mkv')).toEqual({ tmdbId: '12345', isTv: true, season: null, source: 'human' })
-  })
-
-  // P7 disambiguation 补丁：可选 season 入参。
-  it('claimParked：带 season 的认领原样写入 identify_overrides.season', () => {
-    lib.upsertParkedPath('/media/TV/High School D×D/Hero - 01.mkv', 'no-signal', NOW)
-
-    const result = claimParked(db, {
-      path: '/media/TV/High School D×D/Hero - 01.mkv', tmdbId: '24240', isTv: true, season: 4,
-    })
-    expect(result).toEqual({ ok: true })
-    expect(lib.findOverride('/media/TV/High School D×D/Hero - 01.mkv')).toEqual({
-      tmdbId: '24240', isTv: true, season: 4, source: 'human',
-    })
-  })
-
-  it('claimParked：拒绝非正整数 season（0/负数/小数）', () => {
-    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-    for (const bad of [0, -1, 1.5]) {
-      const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: bad })
-      expect(result).toEqual({ ok: false, error: expect.any(String) })
-    }
-    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toBeNull()
-  })
-
-  it('claimParked：season 省略/null 等价——不指定即为未知（原有行为）', () => {
-    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-    const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: '1', isTv: true, season: null })
-    expect(result).toEqual({ ok: true })
-    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toEqual({ tmdbId: '1', isTv: true, season: null, source: 'human' })
-  })
-
-  it('claimParked：认领不立即清 parked_paths——那一行等下一轮巡检 recognize 命中 override 后由摄取层自己清', () => {
-    lib.upsertParkedPath('/media/tv/Unknown Show/S01/e1.mkv', 'ambiguous match', NOW)
-    claimParked(db, { path: '/media/tv/Unknown Show/S01/e1.mkv', tmdbId: '12345', isTv: false })
-    expect(lib.listParkedPaths().some(p => p.path === '/media/tv/Unknown Show/S01/e1.mkv')).toBe(true)
-  })
-
-  it('claimParked：拒绝空 path', () => {
-    const result = claimParked(db, { path: '', tmdbId: '1', isTv: false })
-    expect(result).toEqual({ ok: false, error: expect.any(String) })
-  })
-
-  it('claimParked：拒绝不在 parked_paths 里的 path（未挂 park 户口/已被清）', () => {
-    const result = claimParked(db, { path: '/media/tv/Never Parked/e1.mkv', tmdbId: '1', isTv: false })
-    expect(result).toEqual({ ok: false, error: expect.any(String) })
-  })
-
-  it('claimParked：拒绝非数字 tmdbId', () => {
-    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-    const result = claimParked(db, { path: '/media/tv/Unknown Show/e1.mkv', tmdbId: 'abc', isTv: false })
-    expect(result).toEqual({ ok: false, error: expect.any(String) })
-    expect(lib.findOverride('/media/tv/Unknown Show/e1.mkv')).toBeNull()
   })
 })
 
@@ -386,54 +324,6 @@ describe('unexclude（救援R4b 特典翻案）', () => {
     // 普通停车行原样保留，未被误退、未被误豁免
     expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(true)
     expect(lib.isExtrasExempt(path)).toBe(false)
-  })
-})
-
-// 审计 A-5（2026-07-26）：撤销认领是 agent 写权限的唯一逃生阀——此前这张表只有写入口没有
-// 删除口，agent 认错身份后那条错误认领永久钉死在目录前缀上，每轮 ingest 都按它重建行、删掉
-// 正确的旧行，用户除了手动 sqlite3 改库没有任何出路。
-describe('unclaim（审计 A-5：撤销认领）', () => {
-  it('撤销 agent 写的认领：行被删，findOverride 不再命中', () => {
-    const dir = '/media/tv/Show'
-    lib.addOverride(dir, '276161', true, NOW, null, 'agent')
-    expect(lib.findOverride('/media/tv/Show/S01/e1.mkv')).not.toBeNull()
-
-    expect(unclaim(db, { pathPrefix: dir })).toEqual({ ok: true })
-    expect(lib.findOverride('/media/tv/Show/S01/e1.mkv')).toBeNull()
-  })
-
-  it('人也能撤销自己写的认领（改主意）——刻意不按 source 设限，人始终是最终裁量者', () => {
-    const dir = '/media/tv/Human'
-    lib.addOverride(dir, '999', true, NOW, 3, 'human')
-    expect(unclaim(db, { pathPrefix: dir })).toEqual({ ok: true })
-    expect(lib.findOverride('/media/tv/Human/e1.mkv')).toBeNull()
-  })
-
-  it('拒绝空 pathPrefix', () => {
-    expect(unclaim(db, { pathPrefix: '' })).toEqual({ ok: false, error: expect.any(String) })
-  })
-
-  it('拒绝不存在的前缀（如实回执，不假装成功）', () => {
-    expect(unclaim(db, { pathPrefix: '/media/never/claimed' })).toEqual({ ok: false, error: expect.any(String) })
-  })
-
-  it('只删指定前缀，同库其他认领不受影响', () => {
-    lib.addOverride('/media/tv/A', '1', true, NOW, null, 'agent')
-    lib.addOverride('/media/tv/B', '2', true, NOW, null, 'human')
-    expect(unclaim(db, { pathPrefix: '/media/tv/A' })).toEqual({ ok: true })
-    expect(lib.findOverride('/media/tv/B/e1.mkv')!.tmdbId).toBe('2')
-  })
-})
-
-describe('buildTriage claimed.source 透出（审计 A-3）', () => {
-  it('human / agent 两种来源都原样带到 DTO——UI 据此让用户审阅 agent 的判断', () => {
-    lib.addOverride('/media/tv/ByHuman', '11', true, NOW, null, 'human')
-    lib.addOverride('/media/tv/ByAgent', '22', false, NOW + 1, null, 'agent')
-    const claimed = buildTriage(db).claimed
-    const byHuman = claimed.find((c) => c.pathPrefix === '/media/tv/ByHuman')!
-    const byAgent = claimed.find((c) => c.pathPrefix === '/media/tv/ByAgent')!
-    expect(byHuman.source).toBe('human')
-    expect(byAgent.source).toBe('agent')
   })
 })
 
@@ -943,23 +833,21 @@ describe('buildLibrarySeriesDetail（GET /api/v2/library/series/:id：三层格�
   })
 })
 
-describe('buildTriage（GET /api/v2/triage：pending=buildParked + claimed=identify_overrides 全行直译）', () => {
-  it('形状：pending 转发 buildParked（含 reason），claimed 直译 identify_overrides', () => {
+describe('buildTriage（GET /api/v2/triage：pending=buildParked——认领半边已退役）', () => {
+  it('形状：pending 转发 buildParked（含 reason）', () => {
     lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-    lib.addOverride('/media/tv/Claimed Show/', '555', true, NOW, 2)
 
     const triage = buildTriage(db)
-    expect(triage.pending).toEqual([
-      { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
-    ])
-    expect(triage.claimed).toEqual([
-      { pathPrefix: '/media/tv/Claimed Show/', tmdbId: '555', isTv: true, season: 2, createdAt: NOW, source: 'human' },
-    ])
+    expect(triage).toEqual({
+      pending: [
+        { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
+      ],
+    })
   })
 
-  it('空表：pending/claimed 皆空数组', () => {
+  it('空表：pending 空数组', () => {
     const freshDb = openDb(':memory:')
-    expect(buildTriage(freshDb)).toEqual({ pending: [], claimed: [] })
+    expect(buildTriage(freshDb)).toEqual({ pending: [] })
   })
 })
 

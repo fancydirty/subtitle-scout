@@ -1289,10 +1289,10 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     })
   })
 
-  // 路 A Phase 1b（2026-07-26）：identity_correction 的**真正落地**——写一条 identify_overrides
-  // 认领（复用 P6 人工认领的同一机制，认领者从人变成 agent），下一轮 ingest 的 recognize()
-  // 消歧前查命中它按正确身份建行，旧错身份行由 ingest 的"同路径换身份"分支清理。刻意不手写
-  // id 迁移（own-id 链 + 五张表外键，中途崩溃无幂等恢复点）——见 runner 实现处的长注释。
+  // 路 A Phase 1b（2026-07-26）identity_correction 的落地曾在此处有测试——写 identify_overrides
+  // 认领（复用 P6 人工认领机制，认领者从人变成 agent）。整套认领机制已于 2026-07-28 随两证据
+  // 红线裁决退役（见 src/v2/triageOps.ts 头注释），identity_correction 现走 agent-first 识别
+  // （write_identified_media）。
 
 
     it('worker-throw: writes one runs row with decision "error" and the thrown message as detail', async () => {

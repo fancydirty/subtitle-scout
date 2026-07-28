@@ -504,7 +504,7 @@ export function buildParked(db: ScoutDb): ParkedItemDTO[] {
   }))
 }
 
-export { claimParked, unexclude, unclaim, type ClaimParkedResult } from '../v2/triageOps.js'
+export { unexclude, type UnexcludeResult } from '../v2/triageOps.js'
 
 // ---- Settings（dashboard 重建战役 G4：settings 表 + 守备目录 + 部署层只读展示） ----
 
@@ -610,7 +610,7 @@ export function listMediaSubdirs(rawPath: string): FsListResult {
 
 // ---- Settings 写入（PUT /api/v2/settings、POST/DELETE /api/v2/settings/roots）----
 // server.ts 的独立 rawPath 分支只做 method/token 门 + body 解析，业务校验与写入收在这里
-// （同 claimParked 的既有分层：server.ts 薄，判断逻辑集中在这一层可单测）。
+// （同 triageOps 的既有分层：server.ts 薄，判断逻辑集中在这一层可单测）。
 
 /** spec §7 权威值域——每个白名单键各自的取值校验（"repo 只管字符串存取，值域校验在调用方
  *  边界做"，这里就是那个边界）。 */
@@ -691,7 +691,7 @@ export function addMediaRoot(
 }
 
 // ---- dashboard 重建战役 G5：workflow/library/甄别聚合 API ----
-// 北极星约束：这些端点是纯读聚合 + 两个人类扳手（redispatch/claim）——全部走既有 repo/模块，
+// 北极星约束：这些端点是纯读聚合 + 一个人类扳手（redispatch）——全部走既有 repo/模块，
 // 不新增任何判断逻辑。机械层产出事实，不产出指令。
 
 // ---- workflow/pending：缺口事实 + parked 计数 + 顶栏新鲜度行 ----
@@ -1208,50 +1208,18 @@ export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeries
   }
 }
 
-// ---- triage（甄别台）：pending=park 救援清单 + claimed=已认领 override 清单 ----
+// ---- triage（甄别台）：pending=park 救援清单 ----
+// claimed 半边（buildClaimedOverrides / ClaimedOverrideDTO）已随 identify_overrides 表退役
+// （两证据红线裁决，见 src/v2/triageOps.ts 头注释）：甄别页只剩"看见待识别文件"这一个职能，
+// 修复动作是改文件名，不是在面板里指派身份。
 
-export interface ClaimedOverrideDTO {
-  pathPrefix: string
-  tmdbId: string
-  isTv: boolean
-  season: number | null
-  createdAt: number
-  /** 审计 A-3：认领来源（'human' 手动 / 'agent' 字幕 agent 身份纠错）——权威等级不同，
-   *  UI 必须可区分，见 web/src/api/types.ts 同名字段注释。 */
-  source: 'human' | 'agent'
-}
 export interface TriageDTO {
   pending: ParkedItemDTO[]
-  claimed: ClaimedOverrideDTO[]
 }
 
-interface IdentifyOverrideRow {
-  path_prefix: string
-  tmdb_id: string
-  is_tv: number
-  season: number | null
-  created_at: number
-  source: string
-}
-
-/** identify_overrides 全行直译（created_at desc——最近认领的排最前，同 buildParked 的
- *  "越紧急/越新越靠前"呈现习惯）。 */
-function buildClaimedOverrides(db: ScoutDb): ClaimedOverrideDTO[] {
-  const rows = db
-    .prepare(`SELECT path_prefix, tmdb_id, is_tv, season, created_at, source FROM identify_overrides ORDER BY created_at DESC`)
-    .all() as IdentifyOverrideRow[]
-  return rows.map((r) => ({
-    pathPrefix: r.path_prefix, tmdbId: r.tmdb_id, isTv: r.is_tv === 1, season: r.season, createdAt: r.created_at,
-    // 审计 A-3：source 必须透到 UI——DB 里已忠实记录权威等级，此前从 SQL 这一步就丢了，
-    // 用户无法审阅 agent 的判断，也看不出哪些行受 addOverride 的不对称覆盖规则保护。
-    source: r.source === 'agent' ? 'agent' : 'human',
-  }))
-}
-
-/** GET /api/v2/triage：pending 转发 buildParked（含 reason），claimed 转发 identify_overrides
- *  全行直译——甄别台一页看全"待认领"与"已认领"两份事实。 */
+/** GET /api/v2/triage：pending 转发 buildParked（含 reason）——甄别台看全"待认领"事实。 */
 export function buildTriage(db: ScoutDb): TriageDTO {
-  return { pending: buildParked(db), claimed: buildClaimedOverrides(db) }
+  return { pending: buildParked(db) }
 }
 
 // ---- workflow/redispatch（人类扳手①：手动重派）----

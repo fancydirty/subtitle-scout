@@ -1,25 +1,22 @@
-// Manual live-verification runner — NOT wired into `npm test`. Requires TMDB_API_KEY and real
-// filesystem roots; refuses to run under `vitest`/CI. Walks one or more root directories, runs
-// C4's recognize() on every video file found, and prints one JSON line per file plus a final
-// summary line. Judging whether the recognitions/parks are actually CORRECT is the operator's
-// job — this script only collects evidence, it is not a pass/fail gate.
+// Manual live-verification runner — NOT wired into `npm test`. Walks one or more real
+// filesystem roots, runs identifyFromPath() (the recognition layer's single entry point —
+// pure mechanical path parse, no TMDB/network) on every video file found, and prints one JSON
+// line per file plus a final summary line. Judging whether the identities/parks are actually
+// CORRECT is the operator's job — this script only collects evidence, it is not a pass/fail gate.
+//
+// （2026-07-28 认领退役随手修：本脚本此前 import 的 `recognize`/`Recognized` 早已不存在于
+// recognition 层的导出面——识别层退化成纯路径解析后脚本一直是坏的。现直接调 identifyFromPath，
+// 顺带不再需要 TMDB_API_KEY——本层从不联网。）
 //
 // Usage:
 //   npx tsx scripts/live-recognize.ts <root...> [--ext mkv,mp4,avi]
-//
-// Env:
-//   TMDB_API_KEY   required (same construction as src/cli/index.ts's `new TmdbClient({ apiKey })`
-//                  — NOT mirrored from live-accept-find-subtitle.ts, which never builds a
-//                  TmdbClient at all; that script only wires subtitle-provider adapters + an LLM).
 import { parseArgs } from 'node:util'
 import { readdirSync } from 'node:fs'
 import { join, extname } from 'node:path'
-import 'dotenv/config'
-import { recognize, type Recognized, type Park } from '../src/recognition/index.js'
-import { TmdbClient } from '../src/adapters/providers/tmdb.js'
+import { identifyFromPath, type PathIdentity, type Park } from '../src/recognition/identifyFromPath.js'
 
 if (process.env.VITEST) {
-  throw new Error('live-recognize.ts must not run under vitest — it hits real TMDB network')
+  throw new Error('live-recognize.ts must not run under vitest — it walks real filesystem roots')
 }
 
 /**
@@ -70,43 +67,29 @@ function walk(dir: string, out: string[]): void {
   }
 }
 
-function isPark(result: Recognized | Park): result is Park {
+function isPark(result: PathIdentity | Park): result is Park {
   return 'park' in result
 }
 
-function requireEnv(name: string): string {
-  const v = process.env[name]
-  if (!v) throw new Error(`live-recognize.ts requires ${name}`)
-  return v
-}
-
-async function main() {
-  const tmdb = new TmdbClient({ apiKey: requireEnv('TMDB_API_KEY') })
-
+function main() {
   const files: string[] = []
   for (const root of positionals) walk(root, files)
   console.error(`live-recognize: found ${files.length} video file(s) under ${positionals.length} root(s)`)
 
-  let recognizedCount = 0
+  let identifiedCount = 0
   const parked: Record<string, number> = {}
 
-  // Sequential on purpose: TMDB rate limits, and this is a one-shot evidence pass, not a
-  // performance-sensitive path — no concurrency policy is part of C4's (deliberately thin) scope.
-  // recognize()'s own contract lets a transient TmdbRequestFailedError propagate rather than
-  // silently downgrading it to a park (see src/recognition/index.ts); that propagation is left
-  // intact here too, so a network blip aborts the run (exit 1) instead of being misreported as a
-  // park the operator would otherwise mistake for a real TMDB answer.
   for (const path of files) {
-    const result = await recognize(path, tmdb)
+    const result = identifyFromPath(path)
     console.log(JSON.stringify({ path, result }))
     if (isPark(result)) {
       parked[result.park] = (parked[result.park] ?? 0) + 1
     } else {
-      recognizedCount++
+      identifiedCount++
     }
   }
 
-  console.log(JSON.stringify({ files: files.length, recognized: recognizedCount, parked }))
+  console.log(JSON.stringify({ files: files.length, identified: identifiedCount, parked }))
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+main()

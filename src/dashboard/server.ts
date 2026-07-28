@@ -9,7 +9,7 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { refreshSeriesCatalog } from '../v2/tmdbCatalog.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, buildParked, claimParked, unexclude, unclaim,
+  buildLibrary, buildSeriesDetail, buildRuns, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
@@ -40,13 +40,13 @@ export interface DashboardOpts {
   /** dashboard G5：GET /api/v2/library/series/:id 命中时的惰性 TMDB 应有集缓存刷新（G2 遗留的
    *  触发点）——undefined（TMDB_API_KEY 未配置）时跳过，端点本身照常返回磁盘现状，不因为缺
    *  TMDB 而报错。
-   *  dashboard-F5：'search' 供 GET /api/v2/tmdb/search（ClaimDialog 的只读搜索代理）转调——
+   *  dashboard-F5：'search' 供 GET /api/v2/tmdb/search（只读搜索代理；原为 ClaimDialog 而设，
+   *  认领退役后前端不再调用，端点保留为无害的只读代理）转调——
    *  同一个 tmdb 依赖，缺席时两个消费点各自独立降级（这里 503，series/:id 那边跳过刷新）。 */
   tmdb?: Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
-  /** 验收修复轮一 Task V2：甄别台目录组认领成功后踢一脚扫描——认领只写 override（见
-   *  claimParked 注释），停车行真正退户口要等下一轮 ingest pass 命中这条 override 重新识别
-   *  成功。不等 daemon 自己的时间门（ingestEveryMs），认领这一刻立即请求一次扫描，让用户体感
-   *  "认领后很快消失"而不是等到下一个自然扫描周期。undefined（watch 进程未接线，或纯只读
+  /** 验收修复轮一 Task V2（原为甄别台认领后踢扫描；认领已随两证据红线退役——见 triageOps.ts
+   *  头注释——本回调保留给 unexclude 翻案分支：翻案写库后立即请求一次扫描，让用户体感"翻案后
+   *  文件很快重回识别流"而不是等下一个自然扫描周期）。undefined（watch 进程未接线，或纯只读
    *  测试场景）＝无事发生，同 reconcileAll/jobs/tmdb 三个既有可选依赖的缺席降级先例——不强制
    *  startDashboard 的调用方必须提供这个回调。 */
   requestIngest?: () => void
@@ -344,12 +344,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         return
       }
 
-      // 去 Jellyfin 化 P6："park 救援页"认领——POST + JSON body，同 reconcile-all 一样独立于
-      // 下面纯同步的 handleApiRoute 分发（body 解析需要 await，handleApiRoute 保持纯函数）。
-      // dashboard G5：/api/v2/triage/claim 是同一个 claimParked 实现的第二个入口——两条路径
-      // 并存（v2 前缀给新前端一个自洽面，旧路径不动），合并成一个分支而不是复制两份，
-      // 避免两份一样的代码日后各改各的悄悄漂移。
-      if (rawPath === '/api/parked/claim' || rawPath === '/api/v2/triage/claim') {
+      // 认领端点（POST /api/parked/claim、/api/v2/triage/claim）已退役（两证据红线裁决，
+      // 见 src/v2/triageOps.ts 头注释）：正确的用户动作是改文件名，不是零证据指派身份。
+
+      // 救援R4b：POST /api/v2/triage/unexclude——甄别页「Excluded extras」箱翻案。薄转发
+      // 形状：method 门 → 解析 body → unexclude(db) 判断层 → 成功踢一脚扫描（鉴权在统一前置门）。
+      if (rawPath === '/api/v2/triage/unexclude') {
         if (req.method !== 'POST') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'method not allowed' }))
@@ -357,20 +357,11 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         }
         const body = await readJsonBodyOrFail(req, res)
         if (body === BODY_FAILED) return
-        const b = (body ?? {}) as { path?: unknown; tmdbId?: unknown; isTv?: unknown; season?: unknown }
-        // P7 disambiguation 补丁：season 未传/null → undefined/null（claimParked 视作"未指定"，
-        // 原有行为）；传了但不是 number（如字符串/布尔）→ NaN，claimParked 的
-        // Number.isInteger 校验会诚实拒绝，而不是静默丢弃一个格式错误的输入。
-        const result = claimParked(db, {
-          path: typeof b.path === 'string' ? b.path : '',
-          tmdbId: typeof b.tmdbId === 'string' ? b.tmdbId : String(b.tmdbId ?? ''),
-          isTv: Boolean(b.isTv),
-          season: typeof b.season === 'number' ? b.season : (b.season == null ? b.season as null | undefined : NaN),
-        })
-        // 验收修复轮一 Task V2：认领成功后踢一脚扫描（DashboardOpts.requestIngest 注释）——
-        // fire-and-forget：不 await（不让扫描拖慢这个端点的响应），同步抛错也吞掉（认领这个
-        // 动作本身已经写对了数据，触发扫描失败不该让它对用户显示失败；下一个自然周期还会再扫
-        // 一次，不会永久错过）。
+        const b = (body ?? {}) as { path?: unknown }
+        const result = unexclude(db, { path: typeof b.path === 'string' ? b.path : '' })
+        // 翻案成功后踢一脚扫描——豁免已写库、park 行已退，重扫让文件立即重回识别流
+        // （fire-and-forget：不 await，同步抛错吞掉——翻案本身已经写对了数据，触发扫描失败
+        // 不该让它对用户显示失败；下一个自然周期还会再扫一次，不会永久错过）。
         if (result.ok && requestIngest) {
           try {
             requestIngest()
@@ -383,62 +374,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         return
       }
 
-      // 救援R4b：POST /api/v2/triage/unexclude——甄别页「Excluded extras」箱翻案。照 claim 分支
-      // 的薄转发先例：method 门 → 解析 body → unexclude(db) 判断层 → 成功踢一脚扫描（鉴权在统一前置门）。
-      if (rawPath === '/api/v2/triage/unexclude') {
-        if (req.method !== 'POST') {
-          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        const body = await readJsonBodyOrFail(req, res)
-        if (body === BODY_FAILED) return
-        const b = (body ?? {}) as { path?: unknown }
-        const result = unexclude(db, { path: typeof b.path === 'string' ? b.path : '' })
-        // 翻案成功后踢一脚扫描——豁免已写库、park 行已退，重扫让文件立即重回识别流（同 claim
-        // 先例：fire-and-forget，同步抛错吞掉，下一个自然周期还会再扫）。
-        if (result.ok && requestIngest) {
-          try {
-            requestIngest()
-          } catch {
-            // swallow — 见 claim 分支同款注释。
-          }
-        }
-        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(result))
-        return
-      }
-
-      // 审计 A-5（2026-07-26）：POST /api/v2/triage/unclaim——撤销一条认领。这是 agent 写
-      // 权限的唯一逃生阀：路 A 让 find-subtitle agent 也能写 identify_overrides，认错了那条
-      // 错误身份会每轮被 ingest 拿去重建行、删掉正确的旧行，此前用户除了手动改库没有出路。
-      // 照 unexclude 分支的薄转发形状：method 门 → 解析 body → unclaim(db) 判断层 → 成功
-      // 踢一脚扫描（撤销后该路径回到纯机械识别，重扫让它立即重走识别流）。
-      if (rawPath === '/api/v2/triage/unclaim') {
-        if (req.method !== 'POST') {
-          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        const body = await readJsonBodyOrFail(req, res)
-        if (body === BODY_FAILED) return
-        const b = (body ?? {}) as { pathPrefix?: unknown }
-        const result = unclaim(db, { pathPrefix: typeof b.pathPrefix === 'string' ? b.pathPrefix : '' })
-        if (result.ok && requestIngest) {
-          try {
-            requestIngest()
-          } catch {
-            // swallow — 见 claim 分支同款注释。
-          }
-        }
-        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(result))
-        return
-      }
+      // POST /api/v2/triage/unclaim（审计 A-5 的认领撤销扳手）已随 identify_overrides 表
+      // 一并退役——没有认领，就没有可撤销的认领。
 
       // dashboard G4：PUT /api/v2/settings——GET 同路径的展示走下面纯同步的 handleApiRoute
       // 分发（RouterDeps.settings），这里只截 method !== 'GET' 的写路径：PUT 之外一律 405
-      // （同 parked/claim 先例：PUT 需要解析 JSON body，不能是纯函数；鉴权在统一前置门）。
+      // （PUT 需要解析 JSON body，不能是纯函数；鉴权在统一前置门）。
       if (rawPath === '/api/v2/settings' && req.method !== 'GET') {
         if (req.method !== 'PUT') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
@@ -558,12 +499,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         return
       }
 
-      // dashboard-F5：GET /api/v2/tmdb/search?q=…&type=tv|movie——ClaimDialog 的 TMDB 搜索代理
-      // （只读）。独立分支（不是 router.ts 纯函数）：需要 await tmdb.search，同
+      // dashboard-F5：GET /api/v2/tmdb/search?q=…&type=tv|movie——TMDB 搜索代理（只读）。
+      // 原为 ClaimDialog 而设；认领退役（见 triageOps.ts 头注释）后前端不再调用，保留为
+      // 无害的只读代理。独立分支（不是 router.ts 纯函数）：需要 await tmdb.search，同
       // reconcile-all/redispatch 先例——method 门 → tmdb 缺席门（503，同 reconcile-all
       // 缺 TMDB_API_KEY 的既有先例）→ query 校验 → 转调真实 TmdbClient.search，结果映射成
-      // {results:[{id,name,year,posterPath}]}（TmdbSearchHit.title → name，对齐 ClaimDialog
-      // "海报缩略+名+年份"的呈现用词）。tmdb.search 本身失败（网络/超时/非 2xx，
+      // {results:[{id,name,year,posterPath}]}。tmdb.search 本身失败（网络/超时/非 2xx，
       // TmdbRequestFailedError）如实报 502，不吞成空结果数组——瞬时故障要如实转告使用者
       // （DESIGN.md §8：数据诚实），不能让"TMDB 抽风"和"真的查无结果"在 UI 上长一个样。
       if (rawPath === '/api/v2/tmdb/search') {

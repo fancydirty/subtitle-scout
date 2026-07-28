@@ -70,7 +70,6 @@ const librarySeriesDetailDTO: LibrarySeriesDetailDTO = {
 }
 const triageDTO: TriageDTO = {
   pending: [parkedItem],
-  claimed: [{ pathPrefix: '/media/tv/X/', tmdbId: '1', isTv: true, season: null, createdAt: 1, source: 'human' as const }],
 }
 const runTraceDTO: RunTraceDTO = {
   events: [{ runKey: 'job-1', seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: 1 }],

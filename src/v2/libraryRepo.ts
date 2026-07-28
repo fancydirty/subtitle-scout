@@ -1,4 +1,3 @@
-import { sep } from 'node:path'
 import type { ScoutDb } from './db.js'
 
 export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored' | 'hardsub-assumed'
@@ -131,7 +130,8 @@ export interface Series {
   genres: string | null
 }
 
-// ---- P2 新面：parked_paths / identify_overrides / probe memo（去 Jellyfin 化 schema v9） ----
+// ---- P2 新面：parked_paths / probe memo（去 Jellyfin 化 schema v9；identify_overrides
+// 曾同批出生，已随认领退役 DROP——见 db.ts 尾部迁移） ----
 
 /** park 原因的权威值域。列本身是自由文本；本战役新增/触及的判定逻辑一律用这些常量。
  *  历史散落的裸字符串（recognition 层的 'no-signal'、ingest 的 'awaiting-agent-identification'
@@ -208,17 +208,6 @@ export interface ItemFileCoverage {
   path: string
   isMain: boolean
   covered: boolean
-}
-
-export interface IdentifyOverride {
-  tmdbId: string
-  isTv: boolean
-  /** v24（识别架构路 A）：认领来源——'human'=P6 救援页手工认领，'agent'=find-subtitle worker
-   *  的 identity_correction 落地。消费方据此判断权威等级（见 addOverride 的不对称覆盖规则）。 */
-  source: 'human' | 'agent'
-  /** P7 disambiguation 补丁：认领时人类一并给出的季号；未指定 = null（见 db.ts identify_overrides
-   *  头注释）。始终存在于返回形状里（不是可选键）——DB 行本身总有这一列，值域是 number | null。 */
-  season: number | null
 }
 
 export interface ProbeMemo {
@@ -317,9 +306,9 @@ export class LibraryRepo {
   /** 富化重试的落笔处（验收修复轮一 Task V1，design §A）——宁可不写不可覆盖：这是"回填"，
    *  不是"覆盖"，任何字段只在当前列真的缺失时才被本次给出的新值填上，绝不用新值覆盖一个
    *  已经有效的旧值（哪怕旧值本身就是这次 enrich 想改进的东西——那不是这个方法的职责，
-   *  identify_overrides/P6 认领才有权强改）。
+   *  改身份走 agent 的 write_identified_media）。
    *  - name：只在当前是空串且本次给出非 null 新值时才写（CASE 手法）——空串是"从未识别成功
-   *    过"的占位语义（同 P6 override 写入时的空名占位），非空 name 不会被这里改写。
+   *    过"的占位语义（历史 P6 override 写入时的空名占位），非空 name 不会被这里改写。
    *  - chinese_title/poster_path/year/genres：COALESCE(现列, 新值)——现列非 NULL 就原样保留，
    *    现列 NULL 才落新值。调用方给的字段用 undefined/null 表示"这次没查到"，转成 SQL NULL，
    *    COALESCE 对它是 no-op，天然满足"没查到就不动"。 */
@@ -913,13 +902,13 @@ export class LibraryRepo {
     return now >= row.next_retry_at
   }
 
-  /** 认领成功（identify_overrides 命中）后调用，路径退出 park 户口。 */
+  /** 识别成功（agent write_identified_media / unexclude 翻案）后调用，路径退出 park 户口。 */
   clearParkedPath(path: string): void {
     this.db.prepare(`DELETE FROM parked_paths WHERE path = ?`).run(path)
   }
 
   /** 救援R1：改写停车理由（agent keep_parked 的人话理由 / excluded-extra 裁决落档）。
-   *  行不存在=无事发生（幽灵防御：收割时文件可能已被认领退户口）。 */
+   *  行不存在=无事发生（幽灵防御：收割时文件可能已被识别退户口）。 */
   updateParkReason(path: string, reason: string, now: number): void {
     this.db.prepare(`UPDATE parked_paths SET park_reason = ?, last_attempt = ? WHERE path = ?`).run(reason, now, path)
   }
@@ -1085,73 +1074,6 @@ export class LibraryRepo {
          ON CONFLICT(item_id, path) DO NOTHING`
       )
       .run(itemId, subtitlePath, language, source, filePath, now)
-  }
-
-  // ---- P2：identify_overrides（P6 认领写入，识别层消歧前查） ----
-
-  /** P6 手工认领写入：ON CONFLICT 幂等更新（同一前缀重新认领覆盖旧值）。P7：新增可选 season
-   *  形参（默认 null=未指定，向后兼容既有调用方）——认领时人类一并给出季号，见 db.ts 头注释。
-   *
-   *  v24（识别架构路 A，2026-07-26 审计 B）：新增 source 形参（默认 'human'，向后兼容全部
-   *  既有调用方）。**agent 写的认领永不覆盖人写的认领**——两者权威等级不同：人在救援页明确
-   *  点选是终局判断，agent 的 Step 0 核验是会出错的启发式；且人工认领可能携带 agent 侧无从
-   *  得知的 season 消歧信息（见 db.ts 该列注释），被 agent 的四参调用覆盖会连 season 一起
-   *  抹成 NULL，把路径重新推回 override-ambiguous-numbering 停车——用户为解决歧义做的操作
-   *  被静默撤销。WHERE 子句实现这条不对称规则：human 覆盖一切，agent 只能覆盖 agent 自己的。
-   *  返回是否真的写入，调用方据此如实记账（拒写不是静默丢弃）。 */
-  addOverride(
-    pathPrefix: string, tmdbId: string, isTv: boolean, now: number,
-    season: number | null = null, source: 'human' | 'agent' = 'human',
-  ): boolean {
-    const result = this.db
-      .prepare(
-        `INSERT INTO identify_overrides (path_prefix, tmdb_id, is_tv, season, created_at, source)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(path_prefix) DO UPDATE SET
-           tmdb_id = excluded.tmdb_id,
-           is_tv = excluded.is_tv,
-           season = excluded.season,
-           created_at = excluded.created_at,
-           source = excluded.source
-         WHERE NOT (identify_overrides.source = 'human' AND excluded.source = 'agent')
-`
-      )
-      .run(pathPrefix, tmdbId, isTv ? 1 : 0, season, now, source)
-    return result.changes > 0
-  }
-
-  /** 最长前缀匹配：candidates = path 以 path_prefix 开头的全部 override 行，取 path_prefix
-   *  最长者（嵌套前缀时更具体的那条胜出）。实现为 SQL 全表扫描 + JS 过滤而非 LIKE/GLOB
-   *  通配符匹配——path_prefix 本身可能含 % / * / ? 等对 LIKE/GLOB 有特殊含义的字符，字面量
-   *  startsWith 比较不会误判，正确性优先于取巧。identify_overrides 是 P6 手工认领写入的表，
-   *  预期行数很小（几十到几百量级），全表扫描代价可忽略。 */
-  findOverride(path: string): IdentifyOverride | null {
-    const rows = this.db
-      .prepare(`SELECT path_prefix, tmdb_id, is_tv, season, source FROM identify_overrides`)
-      .all() as { path_prefix: string; tmdb_id: string; is_tv: number; season: number | null; source: string }[]
-    let best: { path_prefix: string; tmdb_id: string; is_tv: number; season: number | null; source: string } | null = null
-    for (const row of rows) {
-      // v24（审计 A-3）：路径**边界**匹配，不是裸 startsWith——后者让 '/media/tv/Show' 的认领
-      // 吞掉 '/media/tv/Showgirls 1995/...' 和 '/media/tv/Show Business/...' 这类兄弟目录。
-      // 相等视为命中（认领目录自身），否则要求下一个字符是路径分隔符。
-      const isMatch = path === row.path_prefix || path.startsWith(row.path_prefix.endsWith(sep) ? row.path_prefix : row.path_prefix + sep)
-      if (!isMatch) continue
-      if (!best || row.path_prefix.length > best.path_prefix.length) best = row
-    }
-    if (!best) return null
-    return {
-      tmdbId: best.tmdb_id, isTv: best.is_tv === 1, season: best.season,
-      source: best.source === 'agent' ? 'agent' : 'human',
-    }
-  }
-
-  /** 撤销一条认领（2026-07-26 审计 A-5：agent 写权限的唯一逃生阀）。此前这张表只有写入口
-   *  没有删除口——agent 认错身份后那条错误认领永久钉死在目录前缀上，每轮 ingest 都按它重建
-   *  行、删掉正确的旧行，用户除了手动 sqlite3 改库没有任何出路。返回是否真的删掉了一行
-   *  （false = 该前缀本来就没有认领），调用方据此如实回执。 */
-  removeOverride(pathPrefix: string): boolean {
-    const result = this.db.prepare(`DELETE FROM identify_overrides WHERE path_prefix = ?`).run(pathPrefix)
-    return result.changes > 0
   }
 
   // ---- P2：ffprobe 探针记忆化（episodes/movies 共用列，见 db.ts P1 注释） ----
