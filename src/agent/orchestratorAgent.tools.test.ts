@@ -145,6 +145,26 @@ describe('makeListMissingCoverageTool', () => {
       { path: '/media/F/g.mkv', reason: 'no tmdb match' },
     ])
   })
+
+  // insufficient-evidence（等用户改名）不计入 parked 事实块——否则主代理看见非零 count 就
+  // 派发，批次组装侧（buildUnidentifiedTargets）又滤掉它，空转烧钱。
+  it('🔴 insufficient-evidence 的行不计入 parked 事实块（与批次组装同一经济门）', async () => {
+    const base = { first_seen: 1000, last_attempt: 1000, retry_count: 0, next_retry_at: null, probe_mtime: null, probe_size: null, duration_sec: null, embedded_langs: null, embedded_tmdb_id: null }
+    const lib: Pick<LibraryRepo, 'missingBySeason' | 'missingMovies' | 'listParkedPaths'> = {
+      missingBySeason: () => [],
+      missingMovies: () => [],
+      listParkedPaths: () => [
+        { path: '/media/A/a.mkv', park_reason: 'awaiting-agent-identification', ...base },
+        { path: '/media/random/1.mp4', park_reason: 'insufficient-evidence', ...base },
+      ],
+    }
+    const listMissingCoverage = makeListMissingCoverageTool(lib, () => 1000)
+    const page = await listMissingCoverage.execute!({ offset: 0, limit: 50 }, fakeOpts) as MissingCoveragePage
+    expect(page.parked.count).toBe(1)
+    expect(page.parked.sample).toEqual([
+      { path: '/media/A/a.mkv', reason: 'awaiting-agent-identification' },
+    ])
+  })
 })
 
 // R-11（用户裁决 2026-07-16，原文锚点：「到底按季还是按剧，是根据具体情况具体分析的」）：派活
@@ -635,6 +655,33 @@ describe('makeDispatchUnidentifiedIdentificationTool (Task 13)', () => {
     })
     const result = await validate(dispatchUnidentified.inputSchema, { reason: '' })
     expect(result.success).toBe(false)
+  })
+
+  // insufficient-evidence（等用户改名）不算可派发积压——否则主代理反复派发，批次组装侧
+  // （buildUnidentifiedTargets）又滤掉它，空批次空转。
+  it('🔴 only insufficient-evidence parked → {outcome:"none"}, upsertWorkerTask never called', async () => {
+    const dispatchUnidentified = makeDispatchUnidentifiedIdentificationTool({
+      lib: { listParkedPaths: () => [parkedRow('/media/random/1.mp4', 'insufficient-evidence')] },
+      jobs: { upsertWorkerTask: () => { throw new Error('must never be called — nothing eligible') } },
+      now: () => 1000, parentJobId: null,
+    })
+    const result = await dispatchUnidentified.execute!({ reason: 'x' }, fakeOpts)
+    expect(result).toEqual({ outcome: 'none', message: 'No eligible parked paths' })
+  })
+
+  it('identification-failed parked → dispatchable（可自愈，照常派发）', async () => {
+    const dispatchUnidentified = makeDispatchUnidentifiedIdentificationTool({
+      lib: {
+        listParkedPaths: () => [
+          parkedRow('/media/A/a.mkv', 'identification-failed'),
+          parkedRow('/media/random/1.mp4', 'insufficient-evidence'),
+        ],
+      },
+      jobs: { upsertWorkerTask: () => ({ outcome: 'created' }) as const },
+      now: () => 1000, parentJobId: null,
+    })
+    const result = await dispatchUnidentified.execute!({ reason: 'x' }, fakeOpts)
+    expect(result).toEqual({ outcome: 'dispatched', upsertOutcome: 'created', parkedCount: 1 })
   })
 })
 

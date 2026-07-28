@@ -6,7 +6,18 @@ import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { tmdbIdFromOwnId } from '../v2/ownIds.js'
 import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 import { coercibleInt, nullableTolerant } from './coerce.js'
-import { isParkedPathEligible } from '../v2/libraryRepo.js'
+import { isParkedPathEligible, PARK_REASON } from '../v2/libraryRepo.js'
+
+/** 主代理眼里的"可派发 parked 积压"谓词——与批次组装侧（buildUnidentifiedTargets）同一
+ *  经济门：isParkedPathEligible 滤终局机械裁决（excluded-extra/duplicate-content），再单独
+ *  滤 insufficient-evidence（等用户改名——是"等用户行动"不是"机械终局判决"，两个概念分开，
+ *  故不进 isParkedPathEligible）。不重查指纹：行的 reason 是 insufficient-evidence 就意味着
+ *  证据没变过——改名走磁盘真相清理+新行，原地换内容走 ingest 指纹检查重 park 为
+ *  awaiting-agent-identification，两条自愈链都会先把 reason 洗掉。若不滤，主代理看见非零
+ *  count 就派发，批次侧又滤掉它 → 空批次空转烧 token。 */
+function isDispatchableParkReason(parkReason: string): boolean {
+  return isParkedPathEligible(parkReason) && parkReason !== PARK_REASON.insufficientEvidence
+}
 
 /** Task 8c（裁决 R-3 呈现面）：行形状增 throttled/nextRecheckAt/sampleReason——停牌中的缺口
  *  现在是可见事实，不再被 SQL 谓词整行吃掉（见 libraryRepo.ts missingBySeason 头注释）。
@@ -67,7 +78,7 @@ export function makeListMissingCoverageTool(lib: Pick<LibraryRepo, 'missingBySea
       const all = [...seasonRows, ...movieRows]
       const total = all.length
       const rows = all.slice(offset, offset + limit)
-      const eligible = lib.listParkedPaths().filter(p => isParkedPathEligible(p.park_reason))
+      const eligible = lib.listParkedPaths().filter(p => isDispatchableParkReason(p.park_reason))
       const parked = {
         count: eligible.length,
         sample: eligible.slice(0, 5).map(p => ({ path: p.path, reason: p.park_reason })),
@@ -319,7 +330,7 @@ export function makeDispatchUnidentifiedIdentificationTool(deps: OrchestratorToo
       reason: z.string().min(1),
     }),
     execute: async ({ reason }) => {
-      const eligible = deps.lib.listParkedPaths().filter(p => isParkedPathEligible(p.park_reason))
+      const eligible = deps.lib.listParkedPaths().filter(p => isDispatchableParkReason(p.park_reason))
       if (eligible.length === 0) {
         return { outcome: 'none' as const, message: 'No eligible parked paths' }
       }

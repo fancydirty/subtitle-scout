@@ -89,6 +89,26 @@ describe('buildUnidentifiedTargets (parked_paths → raw-evidence targets)', () 
     expect(movie.season).toBeNull()
     expect(movie.episode).toBeNull()
   })
+
+  it('🔴 insufficient-evidence 的行不上 agent 批次（LLM 路径的经济门）', () => {
+    const okPath = join(root, 'media', 'Show', 'ep1.mkv')
+    const deadPath = join(root, 'media', 'random', '1.mp4')
+    lib.upsertParkedPath(okPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
+    lib.upsertParkedPath(deadPath, PARK_REASON.insufficientEvidence, NOW, { mtimeMs: 100, size: 10 })
+
+    const targets = buildUnidentifiedTargets(lib)
+
+    expect(targets.map((t) => t.videoPath)).toEqual([okPath])
+  })
+
+  it('identification-failed 的行照常上批次（可自愈，继续尝试）', () => {
+    const failedPath = join(root, 'media', 'Show', 'ep2.mkv')
+    lib.upsertParkedPath(failedPath, PARK_REASON.identificationFailed, NOW, { mtimeMs: 100, size: 10 })
+
+    const targets = buildUnidentifiedTargets(lib)
+
+    expect(targets.map((t) => t.videoPath)).toEqual([failedPath])
+  })
 })
 
 describe('runUnidentifiedFindSubtitleWorkerTask', () => {

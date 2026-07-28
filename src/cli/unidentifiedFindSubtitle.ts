@@ -2,7 +2,7 @@ import { basename, dirname } from 'node:path'
 import type { LanguageModel } from 'ai'
 import type { Job, JobsRepo } from '../v2/jobsRepo.js'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
-import { isParkedPathEligible } from '../v2/libraryRepo.js'
+import { isParkedPathEligible, PARK_REASON } from '../v2/libraryRepo.js'
 import type { RunsRepo } from '../v2/runsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { FetchAdapter } from '../adapters/fetchLib.js'
@@ -34,12 +34,20 @@ import {
  *     来源从"task.targets 自带"换成"识别落地后库里有、路径属于本批目标"）。 */
 
 /** parked_paths（eligible）→ raw-evidence 目标清单。park_reason 终局机械裁决
- *  （excluded-extra/duplicate-content）由 isParkedPathEligible 滤掉，不上车。 */
+ *  （excluded-extra/duplicate-content）由 isParkedPathEligible 滤掉，不上车。
+ *
+ *  insufficient-evidence（等用户改名）单独滤——这是"等用户行动"，不是"机械终局判决"，
+ *  所以不进 isParkedPathEligible，两个概念分开放。不重查指纹：行的 reason 是
+ *  insufficient-evidence 就意味着证据没变过——用户改名走磁盘真相清理+新行（reason=
+ *  awaiting-agent-identification），原地换内容走 ingest 指纹检查（shouldRetryParkedPath）
+ *  重 park 为 awaiting-agent-identification，两条自愈链都会先把 reason 洗掉；还挂着
+ *  insufficient-evidence 的行 = 证据未变的行，重跑识别是确定性浪费（烧 token）。 */
 export function buildUnidentifiedTargets(
   lib: Pick<LibraryRepo, 'listParkedPaths'>,
 ): FindSubtitleTargetFact[] {
   return lib.listParkedPaths()
     .filter((p) => isParkedPathEligible(p.park_reason))
+    .filter((p) => p.park_reason !== PARK_REASON.insufficientEvidence)
     .map((p) => {
       // 结构提示（纯路径解析，同步、零 I/O）——'no-signal' park 时全部 null。
       const identity = identifyFromPath(p.path)
