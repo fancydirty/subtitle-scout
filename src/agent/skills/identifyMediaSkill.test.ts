@@ -104,6 +104,28 @@ describe('identify-media skill', () => {
     expect(skill.content).toMatch(/Guessing an identity is strictly worse/i)
   })
 
+  // Task 3（park 原因二分）：识别不出后必须分类 WHY——insufficient-evidence 停止重试
+  // （等用户改名），identification-failed 照常退避。最大风险是模型把"我没查到"当"证据
+  // 不足"永久钉死可自愈文件——四条反例 + "不确定时选 identification-failed" 是安全阀。
+  // 三种 insufficient-evidence 形态来自 vague-naming research（2026-07-27）：reason 文本
+  // 会被 UI 展示给用户，错误建议（叫家庭录像的主人改名）有害。
+  it('二分判据 + 三种形态 + 四条反例', ({ expect }) => {
+    expect(skill.content).toMatch(/insufficient-evidence/)
+    expect(skill.content).toMatch(/identification-failed/)
+    expect(skill.content).toMatch(/1\.mp4/)
+    // R2：改名同词无用，要指明集数或嵌 id 标签
+    expect(skill.content).toMatch(/Renaming with the same words would NOT help/i)
+    // R3：家庭录像不许叫用户改名（错误建议）
+    expect(skill.content).toMatch(/IMG_4821\.MOV/)
+    expect(skill.content).toMatch(/Do NOT tell this user to rename/i)
+    // 四条反例
+    expect(skill.content).toMatch(/TMDB has no entry/i)
+    expect(skill.content).toMatch(/network or TMDB error/i)
+    expect(skill.content).toMatch(/episode number is out of range/i)
+    // 不确定时偏向重试
+    expect(skill.content).toMatch(/When unsure which case applies, choose `identification-failed`/)
+  })
+
   it('边界红线：某一集对不上 ≠ 整部剧身份错', ({ expect }) => {
     expect(skill.content).toMatch(/What is NOT an identity problem/i)
     expect(skill.content).toMatch(/S04E13/)

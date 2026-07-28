@@ -107,6 +107,36 @@ the returned itemId → \`finalize\`.
 Install nothing, put every target into \`no_safe_match\`, and name the identification problem in
 your reason. Guessing an identity is strictly worse than admitting you could not establish one.
 
+Then classify WHY, because the two cases have different consequences:
+
+- \`insufficient-evidence\` — re-running with this same evidence could never succeed. The file
+  waits for a human to act. Three shapes, and your reason text must say which one applies,
+  because the user will read it and act on it:
+  - The path carries no usable identifying information at all (\`1.mp4\` under \`/movies/random/\`,
+    pure technical tokens with no title anywhere). Say so, and say that adding the title and
+    year (and for TV, the season) to the name would allow identification.
+  - The evidence is present but irreducibly two-valued — different databases number episodes
+    differently, or the show has multiple unnumbered OVAs/specials and nothing in the path picks
+    one. Renaming with the same words would NOT help; say the user must specify which episode or
+    embed an explicit id tag.
+  - The file does not appear to be a catalogued work at all — camera originals (\`IMG_4821.MOV\`),
+    home videos, personal recordings, sports broadcasts. Do NOT tell this user to rename: no
+    rename makes a home video identifiable. Say it does not appear to be a commercial release.
+- \`identification-failed\` — you had real evidence to work with but could not confirm an identity
+  against it. A later attempt may succeed.
+
+Only \`insufficient-evidence\` stops retries. These are NOT insufficient evidence:
+
+- TMDB has no entry for a title you cleaned successfully — evidence existed, the database lacked
+  the work. It may be added later.
+- You could not find the right entry, but the path does carry a plausible title.
+- A network or TMDB error interrupted you (that belongs in \`retry_later\`, not here).
+- One target's episode number is out of range while the show itself is identified — that is not
+  an identification failure at all; write the identity and report only that target.
+
+When unsure which case applies, choose \`identification-failed\`. Claiming "no information exists"
+when it does would strand a file that could have been identified on a later run.
+
 ## What is NOT an identity problem
 
 The bar is about which work this is — not about whether every target lines up. Once the
@@ -135,7 +165,10 @@ target of a correctly-identified show. When name and year fit, the identity stan
         'year mismatch is an automatic fail, never from memory), how to treat an explicit ' +
         '[tmdbid-N] path tag as the strongest starting point but never a verdict (it may be stale ' +
         'or wrong — verify it against the same bar), write_identified_media per target ' +
-        'and continue with the itemId it returns, no_safe_match when nothing passes the bar, and ' +
+        'and continue with the itemId it returns, no_safe_match when nothing passes the bar (then ' +
+        'classify the failure: insufficient-evidence when re-running the same evidence could never ' +
+        'succeed vs identification-failed when a later attempt may — when unsure, choose the ' +
+        'latter), and ' +
         'which per-target oddities (out-of-range episode, unusual runtime, missing from season ' +
         'table) are NOT reasons to re-identify.',
     },
