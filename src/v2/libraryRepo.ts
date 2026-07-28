@@ -133,7 +133,10 @@ export interface Series {
 
 // ---- P2 新面：parked_paths / identify_overrides / probe memo（去 Jellyfin 化 schema v9） ----
 
-/** park 原因的权威值域。列本身是自由文本，但代码内一律用这些常量，杜绝散落的裸字符串。 */
+/** park 原因的权威值域。列本身是自由文本；本战役新增/触及的判定逻辑一律用这些常量。
+ *  历史散落的裸字符串（recognition 层的 'no-signal'、ingest 的 'awaiting-agent-identification'
+ *  等）尚未全量迁移——它们分布在多个"圣文件"里，收敛留到有理由动那些文件时再做，不在本
+ *  战役范围（migration 前不为纯改名触碰识别核心）。 */
 export const PARK_REASON = {
   awaitingAgent: 'awaiting-agent-identification',
   insufficientEvidence: 'insufficient-evidence',
@@ -1243,5 +1246,5 @@ export class LibraryRepo {
  * Excludes mechanical verdicts that are final (excluded-extra, duplicate-content).
  * Used by orchestrator to decide which parked paths to dispatch to the agent. */
 export function isParkedPathEligible(parkReason: string): boolean {
-  return parkReason !== 'excluded-extra' && parkReason !== 'duplicate-content'
+  return parkReason !== PARK_REASON.excludedExtra && parkReason !== PARK_REASON.duplicateContent
 }
