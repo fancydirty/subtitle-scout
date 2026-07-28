@@ -109,7 +109,10 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
+    // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
+    // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
+    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     // 不建行：ingest 只发 raw 数据
     expect(lib.getSeries('tmdb:108964')).toBeNull()
     expect(lib.getEpisode('tmdb:108964/s1e2')).toBeNull()
@@ -139,7 +142,10 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
+    // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
+    // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
+    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     // 不建行：ingest 只发 raw 数据
     expect(lib.getMovie('tmdb:603')).toBeNull()
     // 停车带 raw 数据
@@ -229,7 +235,10 @@ describe('makeIngestPass — park', () => {
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
+    // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
+    // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
+    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     const parked = lib.listParkedPaths()
     expect(parked).toHaveLength(1)
     expect(parked[0]).toMatchObject({
@@ -1793,7 +1802,10 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
 
     const result = await pass()
 
-    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: false })
+    // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
+    // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
+    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     expect(recognize).not.toHaveBeenCalled()
     expect(probe).not.toHaveBeenCalled()
     const parked = lib.listParkedPaths()

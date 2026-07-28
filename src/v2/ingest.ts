@@ -842,6 +842,12 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
         }
       }
       if (result.removed > 0) result.changed = true
+      // Agent-first 识别的触发缺口（2026-07-28 真库阶段一实测发现）：旧世界里新文件建行
+      // （upserted++ → changed → orchestrate 入队），重构后新文件只 park 不建行，而 park
+      // 从未接入 changed——于是 73 个新 park 的文件安静地躺着，orchestrator 要等 24h 兜底
+      // 心跳才知道有活干。新 park（本轮把从未见过/证据已变的文件停进户口）就是库状态变化，
+      // 必须触发编排；负缓存跳过的既有 parked 行不计入 result.parked，不会造成每轮空触发。
+      if (result.parked > 0) result.changed = true
 
       // 债务D1：每轮全量重写本轮观察到的每个 series 的布局事实——磁盘真相语义（state=disk,
       // DB=index），realign 整理完成后下一轮观察自然回落 0，无需任何显式清除。
