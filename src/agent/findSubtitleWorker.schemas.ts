@@ -165,6 +165,23 @@ export const FindSubtitleBatchReportSchema = z.object({
     z.object({
       outcome: z.literal('unidentified'),
       reason: z.string().min(1),
+      /** 两种失败在物理上不同——`insufficient-evidence`（证据集合为空或不可判，重跑必然
+       *  同样结果，**指纹未变则永不重试**，等用户改名）vs `identification-failed`（有证据
+       *  但未过 two-evidence bar，可能 TMDB 后来收录/模型这轮不行/网络抖动 → 照常退避）。
+       *
+       *  🔴 安全默认是 identification-failed：省略键或发了无法识别的值时，宁可多跑一轮，
+       *  也不可把一个可自愈的文件永久钉死。偏向"继续尝试"是刻意的不对称。
+       *
+       *  🔴 容错口径同 identityTools.ts 顶部记录的六轮血案：真模型对枚举会发下划线/大写/
+       *  省略等变体，schema 太窄会让 agent"想报却报不进来"。preprocess 折叠变体。 */
+      kind: z.preprocess(
+        (v) => {
+          if (typeof v !== 'string') return 'identification-failed'
+          const norm = v.trim().toLowerCase().replace(/_/g, '-')
+          return norm === 'insufficient-evidence' ? 'insufficient-evidence' : 'identification-failed'
+        },
+        z.enum(['insufficient-evidence', 'identification-failed']),
+      ),
     }),
   ])),
 })

@@ -220,7 +220,7 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
           reason: 'contradictory report',
         }],
         no_safe_match: [], retry_later: [], hardsub_assumed: [],
-        identity: { outcome: 'unidentified', reason: 'no TMDB candidate survived the two-evidence bar' },
+        identity: { outcome: 'unidentified', reason: 'no TMDB candidate survived the two-evidence bar', kind: 'identification-failed' },
       }
     })
 

@@ -158,6 +158,48 @@ describe('FindSubtitleBatchReportSchema with new identity', () => {
   })
 })
 
+describe('identity.unidentified 的 kind 分类容错（六轮血案纪律）', () => {
+  const base = { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+  const parse = (identity: unknown) =>
+    FindSubtitleBatchReportSchema.safeParse({ ...base, identity })
+
+  it('标准值：insufficient-evidence', () => {
+    const r = parse({ outcome: 'unidentified', reason: '路径无任何片名信息', kind: 'insufficient-evidence' })
+    expect(r.success).toBe(true)
+    if (r.success) expect((r.data.identity as any).kind).toBe('insufficient-evidence')
+  })
+
+  it('标准值：identification-failed', () => {
+    const r = parse({ outcome: 'unidentified', reason: 'TMDB 无此条目', kind: 'identification-failed' })
+    expect(r.success).toBe(true)
+    if (r.success) expect((r.data.identity as any).kind).toBe('identification-failed')
+  })
+
+  it('下划线变体折叠为连字符', () => {
+    const r = parse({ outcome: 'unidentified', reason: 'x', kind: 'insufficient_evidence' })
+    expect(r.success).toBe(true)
+    if (r.success) expect((r.data.identity as any).kind).toBe('insufficient-evidence')
+  })
+
+  it('大写变体折叠', () => {
+    const r = parse({ outcome: 'unidentified', reason: 'x', kind: 'INSUFFICIENT-EVIDENCE' })
+    expect(r.success).toBe(true)
+    if (r.success) expect((r.data.identity as any).kind).toBe('insufficient-evidence')
+  })
+
+  it('🔴 省略 kind → 安全默认 identification-failed（宁可多跑一轮，不可永久钉死文件）', () => {
+    const r = parse({ outcome: 'unidentified', reason: 'x' })
+    expect(r.success).toBe(true)
+    if (r.success) expect((r.data.identity as any).kind).toBe('identification-failed')
+  })
+
+  it('🔴 无法识别的值 → 安全默认 identification-failed，不炸报告', () => {
+    const r = parse({ outcome: 'unidentified', reason: 'x', kind: 'i-have-no-idea' })
+    expect(r.success).toBe(true)
+    if (r.success) expect((r.data.identity as any).kind).toBe('identification-failed')
+  })
+})
+
 describe('FindSubtitleTargetFact with raw evidence', () => {
   it('accepts targets with raw evidence fields', ({ expect }) => {
     const task: FindSubtitleTask = {
