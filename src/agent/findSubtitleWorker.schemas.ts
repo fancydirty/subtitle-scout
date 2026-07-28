@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { nullableTolerant, nullableJsonTolerant, tolerantArray } from './coerce.js'
+import { nullableTolerant, nullableJsonTolerantCaught, tolerantArray } from './coerce.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
 /** Batch task/report shapes for the find-subtitle worker (phase ③) — see
@@ -155,8 +155,18 @@ export const FindSubtitleBatchReportSchema = z.object({
    *  installed 为空（身份未定时装的字幕会记到错的库行上）——后者由 runner 层把关。
    *  nullableJsonTolerant：真模型对 object 字段会把整个对象序列化成 JSON 字符串发上来
    *  （identityEval 第一轮实测：15/15 全这么发），先 JSON.parse 回对象再走哨兵/缺席折叠——
-   *  见 coerce.ts 该 helper 的头注释。 */
-  identity: nullableJsonTolerant(z.discriminatedUnion('outcome', [
+   *  见 coerce.ts 该 helper 的头注释。
+   *
+   *  🔴 升级为 nullableJsonTolerantCaught（2026-07-28，job 34 第二次实测失败）：内层校验
+   *  失败（identified+isTv:true+season:null 撞 refine、未知 outcome 字面量等）不再炸掉整份
+   *  报告，折叠为 null。排除链：四个桶是 tolerantArray（垃圾项被丢弃）、itemId 等全
+   *  nullable-tolerant，identity 的内层 discriminatedUnion 是唯一还能硬炸整份报告的面——
+   *  而 43 次 write_identified_media 早已逐文件事务落库，identity 只是 advisory 元数据。
+   *  设计错配让这必然发生：identity 建模"一个 task 一个身份"，混合批合法横跨 12 个作品，
+   *  单一 identity 对这种批语义上就是胡话。advisory 元数据绝不许炸掉收割入账；null 本就是
+   *  两个消费方（cli/unidentifiedFindSubtitle.ts、v2/findSubtitleWorkerTask.ts）处理的合法
+   *  状态。折叠无声，runner 层负责在丢失时大声告警。详见 coerce.ts 该 helper 头注释。 */
+  identity: nullableJsonTolerantCaught(z.discriminatedUnion('outcome', [
     z.object({
       outcome: z.literal('identified'),
       tmdbId: z.string().regex(/^\d+$/),

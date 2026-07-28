@@ -348,6 +348,16 @@ export async function runUnidentifiedFindSubtitleWorkerTask(
       } else {
         recordRun('identity_unidentified', `agent 未能识别：${report.identity.reason}`)
       }
+    } else {
+      // job 34 第二次失败的配套告警：identity 为 null 有两种来源——模型确实没做识别，或
+      // schema 层把内层校验失败的 identity 折叠成了 null（nullableJsonTolerantCaught，见
+      // coerce.ts）。折叠是无声的，这里必须吼一声：advisory 元数据丢失，park 原因回写本轮
+      // 跳过——parked 行保持现有 reason 照常退避重试，这是安全默认。仅告警，零行为改变。
+      console.error(
+        `[find-subtitle-unidentified] job ${job.id}: report.identity is null ` +
+          `(absent or folded from an inner validation failure) — advisory identity metadata lost; ` +
+          `park-reason writeback skipped this round (parked rows keep their current reason and will retry).`,
+      )
     }
     return report
   } catch (error) {

@@ -114,3 +114,49 @@ export function nullableJsonTolerant<T extends z.ZodTypeAny>(inner: T): z.ZodTyp
     inner.nullable(),
   ) as unknown as z.ZodType<z.output<T> | null>
 }
+
+/** nullableJsonTolerant 的"内层失败折叠 null"版——advisory 字段专用（2026-07-28，job 34
+ *  第二次实测失败）。
+ *
+ *  事故链：混合批（12 个不同作品）里 agent 43 次 write_identified_media 全对、字幕照装，
+ *  finalize 却整份报告校验失败，20+ 分钟收割成果无账可入，job 落 failed——第一次是
+ *  itemId:null（03a6372 已修），这次结构排除法定位到 identity：四个桶全是 tolerantArray
+ *  （垃圾项被丢弃、绝不炸整体），itemId/installedLanguage 等全 nullable-tolerant，唯一还能
+ *  硬炸整份报告的面就是 identity 的内层 discriminatedUnion——nullableJsonTolerant 只折叠
+ *  编码层问题（JSON 字符串/哨兵），内层校验失败（如 identified+isTv:true+season:null 撞上
+ *  'TV identification requires season and episode' 的 refine，或未知 outcome 字面量）照样
+ *  向上传播，一个 advisory 字段杀掉全部收割账目。
+ *
+ *  设计错配是它必然发生的原因：identity 建模"一个 task 一个身份"，而混合未识别批合法地
+ *  横跨多个作品（本次 12 个）——模型对 12 作品批报出的任何单一 identity 语义上都是胡话
+ *  （比如报成一部 TV 但 season:null，因为集数横跨多部剧 → refine 全灭）。
+ *
+ *  关键架构事实：finalize 时真正的工作已经落库——write_identified_media 逐文件事务执行
+ *  （行已建、parked 已清）。identity 只剩 advisory 元数据，仅有的消费方
+ *  （cli/unidentifiedFindSubtitle.ts、v2/findSubtitleWorkerTask.ts）都把 identity:null 当
+ *  合法状态（"本 run 未做识别"）处理。advisory 元数据的丢失绝不许摧毁收割入账——内层校验
+ *  失败折叠为 null，报告存活。折叠是无声的，所以 runner 层在 identity 为 null 且明显做过
+ *  识别时要大声告警（见 cli/unidentifiedFindSubtitle.ts）。
+ *
+ *  组合顺序（与 nullableJsonTolerant 完全一致，只多最后一步）：JSON 字符串折叠 → 哨兵/缺席
+ *  折叠 → 内层校验 → 校验失败 catch 到 null。故意开新 helper 而非给 nullableJsonTolerant
+ *  加参数：吞错误对"必须炸"的字段是灾难，这个行为必须在调用点显式选择，绝不默认。 */
+export function nullableJsonTolerantCaught<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.output<T> | null> {
+  return z.preprocess(
+    (v) => {
+      if (isNullishOrOmitted(v)) return null
+      if (typeof v === 'string') {
+        const trimmed = v.trim()
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          try {
+            return JSON.parse(trimmed)
+          } catch {
+            return v
+          }
+        }
+      }
+      return v
+    },
+    inner.nullable().catch(null),
+  ) as unknown as z.ZodType<z.output<T> | null>
+}

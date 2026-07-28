@@ -117,7 +117,9 @@ describe('FindSubtitleBatchReportSchema with new identity', () => {
     expect(result.success).toBe(true)
   })
 
-  it('rejects identified without required season/episode for TV', ({ expect }) => {
+  // job 34 第二次失败后语义反转：identity 内层校验失败不再拒绝整份报告（旧断言是
+  // success:false），改为折叠 null——advisory 元数据不许炸掉收割账目。见下方专门 describe。
+  it('identified 但 TV 缺 season/episode → identity 折叠 null（不再拒绝整份报告）', ({ expect }) => {
     const report = {
       targets: [],
       installed: [],
@@ -135,10 +137,11 @@ describe('FindSubtitleBatchReportSchema with new identity', () => {
     }
 
     const result = FindSubtitleBatchReportSchema.safeParse(report)
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.identity).toBeNull()
   })
 
-  it('rejects identified with non-numeric tmdbId', ({ expect }) => {
+  it('identified 但 tmdbId 非数字 → identity 折叠 null（不再拒绝整份报告）', ({ expect }) => {
     const report = {
       targets: [],
       installed: [],
@@ -156,7 +159,51 @@ describe('FindSubtitleBatchReportSchema with new identity', () => {
     }
 
     const result = FindSubtitleBatchReportSchema.safeParse(report)
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.identity).toBeNull()
+  })
+})
+
+describe('identity 内层校验失败折叠为 null（job 34 第二次实测：advisory 元数据不许炸掉收割）', () => {
+  const base = { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+  it('🔴 identified 但 TV 缺 season（12 作品混合批的语义错配）→ identity 折叠 null，报告存活', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base, identity: { outcome: 'identified', tmdbId: '241002', isTv: true, season: null, episode: null, nameEvidence: 'x', structureEvidence: 'y' } })
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.identity).toBeNull()
+  })
+  it('未知 outcome 字面量 → 折叠 null，报告存活', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base, identity: { outcome: 'partially-identified', reason: 'x' } })
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.identity).toBeNull()
+  })
+  it('合法 identified 原样通过（回归锁）', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base, identity: {
+      outcome: 'identified', tmdbId: '1038392', isTv: false, season: null, episode: null,
+      nameEvidence: 'name matches', structureEvidence: 'runtime fits',
+    } })
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.identity).toMatchObject({ outcome: 'identified', tmdbId: '1038392', isTv: false })
+  })
+  it('合法 unidentified + kind 原样通过（回归锁）', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base, identity: {
+      outcome: 'unidentified', reason: 'TMDB 无此条目', kind: 'insufficient-evidence',
+    } })
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.identity).toMatchObject({ outcome: 'unidentified', kind: 'insufficient-evidence' })
+  })
+  it('JSON 字符串编码的合法 identity 仍被折叠回对象（既有行为回归锁）', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base,
+      identity: '{"outcome": "identified", "tmdbId": "1038392", "isTv": false, "season": null, "episode": null, "nameEvidence": "name matches", "structureEvidence": "runtime fits"}',
+    })
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.identity).toMatchObject({ outcome: 'identified', tmdbId: '1038392' })
+  })
+  it('哨兵/缺席仍折叠 null（既有行为回归锁）', () => {
+    for (const identity of ['None', 'null', '', undefined, null]) {
+      const r = FindSubtitleBatchReportSchema.safeParse({ ...base, identity })
+      expect(r.success).toBe(true)
+      if (r.success) expect(r.data.identity).toBeNull()
+    }
   })
 })
 

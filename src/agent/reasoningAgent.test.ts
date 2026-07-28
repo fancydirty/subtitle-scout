@@ -143,6 +143,39 @@ describe('makeReasoningAgent (finalize-tool mode)', () => {
     expect(thrown!.message).toContain('verdict')
   })
 
+  // 法证升级（job 34 第二次失败的直接教训）：raw-args dump 截断在 500 字符，真正炸掉校验的
+  // 字段在截断线之外不可见——排障成了考古。现在错误信息必须自带 zod issues（路径 + 消息），
+  // 下一次同类 bug 一眼定位。
+  it('readFinalized() 的 invalid-finalize 错误信息包含 zod issue 路径（法证：定位炸掉校验的字段）', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+        usage: {
+          inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: 3, text: undefined, reasoning: undefined },
+        },
+        // 'reason' 缺席 + verdict 是非法字面量：两个 issue，路径都要出现在错误信息里。
+        content: [
+          { type: 'tool-call' as const, toolCallId: 'f1', toolName: 'finalize', input: JSON.stringify({ verdict: 'kinda-match' }) },
+        ],
+        warnings: [],
+      }),
+    })
+    const { agent, readFinalized } = makeReasoningAgent({ model, tools: {}, schema: DecisionSchema })
+    await agent.generate({ prompt: 'p' })
+    let thrown: Error | undefined
+    try {
+      readFinalized()
+    } catch (err) {
+      thrown = err as Error
+    }
+    expect(thrown).toBeDefined()
+    // zod issues 必须点名失败字段的路径。
+    expect(thrown!.message).toMatch(/schema issues/i)
+    expect(thrown!.message).toContain('verdict')
+    expect(thrown!.message).toContain('reason')
+  })
+
   // Factory-boundary regression guard: proves reasoning:'high' becomes the model's `reasoning`
   // call option even when driven THROUGH makeReasoningAgent (not just generateText directly), so
   // it can't silently regress if the `?? 'high'` default is dropped or the settings cast eats it.

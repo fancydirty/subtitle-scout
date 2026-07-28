@@ -186,11 +186,29 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
           } catch {
             rawArgs = String(invalidFinalizeCall.input)
           }
-          const truncated = rawArgs.length > 500 ? `${rawArgs.slice(0, 500)}…(truncated)` : rawArgs
+          // 法证升级（job 34 第二次失败的直接教训）：raw-args 截断线以外的失败字段完全不可见，
+          // 排障成了考古。现场重新 safeParse 一次，把 zod issues（路径 + 消息，前 5 条）直接
+          // 写进错误——下一次同类 bug 一眼定位。截断线同步 500 → 2000。
+          let issuesText: string
+          const reparse = opts.schema.safeParse(invalidFinalizeCall.input)
+          if (reparse.success) {
+            // invalid 标记来自 SDK 层（多半是 JSON parse 失败），不是我们 schema 拒的。
+            issuesText =
+              'NOTE: SDK marked the call invalid but the input passes our schema — ' +
+              'likely malformed JSON at the SDK layer.'
+          } else {
+            const issues = reparse.error.issues.slice(0, 5)
+            const more = reparse.error.issues.length - issues.length
+            issuesText =
+              `Schema issues (first ${issues.length}${more > 0 ? ` of ${reparse.error.issues.length}` : ''}): ` +
+              issues.map((i) => `[${i.path.join('.') || '(root)'}] ${i.message}`).join('; ')
+          }
+          const truncated = rawArgs.length > 2000 ? `${rawArgs.slice(0, 2000)}…(truncated)` : rawArgs
           throw new Error(
             `reasoning agent DID call the finalize tool, but its arguments failed schema validation — ` +
             `execute() never ran, so no structured decision was captured. (The loop still stopped: ` +
             `hasToolCall('${FINALIZE_TOOL_NAME}') fires on the call's presence, not its validity.) ` +
+            `${issuesText} ` +
             `Raw finalize args: ${truncated}`,
           )
         }
