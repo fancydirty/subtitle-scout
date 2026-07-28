@@ -3,25 +3,19 @@
 // library/text.ts 的既有分工：t() 故意不支持插值）。
 import type { Lang } from '../i18n/useT.js'
 import type { ParkedItemDTO } from '../api/types.js'
-import { formatDuration } from '../library/text.js'
 
-/** 目录组头文件计数——"12 files" / "12 个文件"（PendingBox 的组卡头 + ClaimDialog 副标题共用）。 */
+/** 目录组头文件计数——"12 files" / "12 个文件"（PendingBox 的组卡头）。 */
 export function fileCountLabel(n: number, lang: Lang): string {
   return lang === 'zh' ? `${n} 个文件` : `${n} file${n === 1 ? '' : 's'}`
 }
 
-/** 折叠列表的展开提示——">5 条折叠显示 +N more"（组卡文件列表 + ClaimDialog 路径列表共用）。 */
+/** 折叠列表的展开提示——">5 条折叠显示 +N more"（PendingBox 组卡文件列表用）。 */
 export function moreLabel(n: number, lang: Lang): string {
   return lang === 'zh' ? `还有 ${n} 个…` : `+${n} more`
 }
 
-/** 已认领箱的相对认领时间——复用 library/text.ts 的 formatDuration（mono 技术单位 s/m/h/d，
- *  跟路径/ID 一样"技术值不翻译"的口径），只有前后缀跟着语言走（同 formatDuration 自身文档注释
- *  里点名的分工：那份是特意为双语正文场景准备的算法）。 */
-export function relativeClaimedAgo(deltaMs: number, lang: Lang): string {
-  const d = formatDuration(deltaMs)
-  return lang === 'zh' ? `${d} 前` : `${d} ago`
-}
+// relativeClaimedAgo（已认领箱的相对时间）已随认领退役删除——唯一消费方是已退役的 ClaimedBox。
+// settings/text.ts 的 relativeTimeLabel 是同手法的独立实现，不受影响。
 
 /** 最后一个 '/' 之后的那一段——文件路径给"文件名"，目录路径给"目录尾段"（dirTail），同一个
  *  函数天然覆盖两种输入形状，不需要为目录单独写一份。mono 展示用，full path 走 title 属性
@@ -43,11 +37,10 @@ export function dirnameOf(path: string): string {
 
 // ---- 验收修复轮一 Task V2：目录组分组（spec §C.1/§C.3）----
 
-/** 待甄别箱的一个目录组——claimParked 的 override 覆盖粒度是 dirname(path) 前缀（见
- *  src/dashboard/apiV2.ts claimParked 注释），所以"目录=认领单元"与后端语义一比一：一次认领
- *  顺带救活整目录的兄弟集。UI 因此按目录分组、一组一个认领对话框，不是逐文件多选。 */
+/** 待甄别箱的一个目录组——同一目录下的兄弟集大概率属于同一部剧，按目录分组呈现事实最贴近
+ *  用户心智（历史上这也是认领的覆盖单元；认领已退役，分组呈现本身仍然成立）。 */
 export interface DirGroup {
-  /** 目录绝对路径（POSIX），claimParked 的 override 前缀本体。 */
+  /** 目录绝对路径（POSIX）。 */
   dir: string
   /** 目录尾段（mono 展示用），dir 本身走 title 属性兜底全路径。 */
   dirTail: string
@@ -61,7 +54,7 @@ export interface DirGroup {
  *
  *  保守边界：DB 里若还有老版本 ingest 留下的历史 duplicate-content 行，退役后不再特殊分桶、也
  *  不该凭空从 UI 消失——下面 groupPending 不再过滤这个 reason，历史行就随其余非 excluded-extra
- *  的行一起落进 actionable，跟其他"待人工认领"的行同等对待、正常展示、正常可认领。 */
+ *  的行一起落进 actionable，跟其他"待识别"的行同等对待、正常展示。 */
 
 /** excluded-extra 停车行的 park reason（见 src/v2/ingest.ts 的 upsertParkedPath(path,
  *  'excluded-extra', ...) 调用点）——被 exclude_extras 设置当作"特典"排除的文件，可在此

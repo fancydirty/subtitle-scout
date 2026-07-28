@@ -53,7 +53,7 @@ function standardHandlers() {
     // dashboard-F5：TriagePage（Triage tab 真页面）挂载即打 /api/v2/triage——同上面 passes/
     // workers 的既有理由：F4 及以前 Triage 还是占位态不发请求，现在不给会 404 → error 态，
     // 下面"切到 Triage tab 看空态"的断言永远等不到。
-    { path: '/api/v2/triage', body: { pending: [], claimed: [] } },
+    { path: '/api/v2/triage', body: { pending: [] } },
     // dashboard-F6：SettingsPage（Settings tab 真页面）挂载即打三个端点——同上面历次先例，
     // 不给会让三个 section 各自落进 error 态（各自独立降级，不会白屏，但下面"切到 Settings
     // tab"的断言需要真数据才能命中）。

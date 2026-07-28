@@ -708,7 +708,7 @@
   outline-offset: 2px;
 }
 
-/* dashboard-F5（Triage tab）：两箱 + 认领对话框——原子 CSS 集中区，同上面几段一样的理由
+/* dashboard-F5（Triage tab）：两箱——原子 CSS 集中区，同上面几段一样的理由
    （mono 路径行/箱内密集行/进度行是"组件语言表达不了"的技术级原子 UI），颜色一律读 scout.ts
    已定义的 token，不新起配色（DESIGN.md §10）。 */
 
@@ -733,8 +733,8 @@
   min-width: 0;
 }
 
-/* ---- 待甄别箱目录组卡（PendingBox，验收修复轮一 Task V2：checkbox 多选撤，改按目录分组认领
-   ——组头=目录尾段 mono + 文件计数 + Claim 按钮，组体=文件名只读列表。 ---- */
+/* ---- 待甄别箱目录组卡（PendingBox）——组头=目录尾段 mono + 文件计数，组体=文件名只读列表
+   （Claim 按钮已随认领退役，见 src/v2/triageOps.ts 头注释）。 ---- */
 .triage-dirgroup {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-inner, 4px);
@@ -764,24 +764,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.triage-dirgroup-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10.5px;
-  color: var(--color-text-gray);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-/* 认领后置灰过渡态——下一轮扫描前的诚实中间态，不是错误也不是禁用（DESIGN.md §8：数据诚实）。 */
-.triage-dirgroup-claimed {
-  opacity: 0.55;
-}
-.triage-dirgroup-claimed .triage-dirgroup-tail,
-.triage-dirgroup-claimed .triage-dirgroup-file {
-  color: var(--color-text-disabled);
-}
-
 /* ---- excluded-extra 翻案箱（Collapsible，默认折叠，救援R4c）——每行一个文件名 + Restore 按钮。 ---- */
 .triage-excluded-row {
   display: flex;
@@ -818,72 +800,8 @@
   color: var(--color-text-secondary);
 }
 
-/* ---- 已认领箱行（ClaimedBox）——只读，一行读完：prefix → tmdbId + 词 + S{n} + 时间。 ---- */
-.triage-claimed-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 2px;
-  font-size: 11.5px;
-  min-width: 0;
-}
-.triage-claimed-prefix {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-.triage-claimed-arrow {
-  color: var(--color-text-disabled);
-  flex-shrink: 0;
-}
-.triage-claimed-tmdbid {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--color-text-primary);
-  flex-shrink: 0;
-}
-.triage-claimed-kind {
-  font-size: 11px;
-  color: var(--color-text-gray);
-  flex-shrink: 0;
-}
-.triage-claimed-season {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-}
-.triage-claimed-time {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  color: var(--color-text-gray);
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-/* ---- 认领对话框（ClaimDialog）---- */
-.triage-dialog-path-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
-  padding: 8px 10px;
-}
-.triage-dialog-path-item {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10.5px;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* "+N more" 折叠展开按钮（PendingBox 组卡文件列表用；类名的 dialog 前缀是历史遗留——它
+   最初为已退役的认领对话框而写，PendingBox 复用同一形状，认领退役后它就是唯一消费方）。 */
 .triage-dialog-more {
   align-self: flex-start;
   border: none;
@@ -900,67 +818,6 @@
 .triage-dialog-more:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
-}
-.triage-search-poster {
-  width: 32px;
-  height: 46px;
-  flex-shrink: 0;
-  border-radius: var(--radius-inner, 4px);
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
-}
-.triage-search-poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.triage-search-poster .library-poster-fallback {
-  font-size: 14px;
-}
-
-/* ---- 提交进度行（逐 path ✓/✗+error）---- */
-.triage-progress-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 3px 0;
-  min-width: 0;
-}
-/* 状态词——同色词（DESIGN.md §4：圆点+一个同色词；语义色只给状态，pending=中性灰）。 */
-.triage-progress-word {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10.5px;
-  flex-shrink: 0;
-}
-.triage-progress-word-pending {
-  color: var(--color-text-gray);
-}
-.triage-progress-word-ok {
-  color: var(--color-text-green);
-}
-.triage-progress-word-error {
-  color: var(--color-text-red);
-}
-.triage-progress-path {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex-shrink: 0;
-  max-width: 45%;
-}
-.triage-progress-error {
-  font-size: 10.5px;
-  color: var(--color-text-red);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
 }
 
 /* dashboard-F6（Settings tab）：行为区/部署区/守备目录管理器——原子 CSS 集中区，同上面几段

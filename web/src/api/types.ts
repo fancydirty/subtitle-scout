@@ -82,14 +82,7 @@ export interface ParkedItemDTO {
   lastAttempt: number
 }
 
-/** POST /api/parked/claim 请求体。season 为 P7 disambiguation 补丁：多季剧下裸集号有歧义，
- *  认领时可选一并给出季号（省略=未指定，走原有单季/绝对集号折算路径）。 */
-export interface ClaimParkedInput {
-  path: string
-  tmdbId: string
-  isTv: boolean
-  season?: number
-}
+// ClaimParkedInput（POST /api/parked/claim 请求体）已随认领退役删除——见 TriageDTO 注释。
 
 /** dashboard-F2：GET /api/v2/workflow/pending 响应体——与 src/dashboard/apiV2.ts 的
  *  WorkflowPendingDTO 一族保持一致。顶栏新鲜度行与侧栏甄别角标共用同一个请求（meta+parked）。 */
@@ -230,37 +223,15 @@ export interface RedispatchInput {
   includeThrottled?: boolean
 }
 
-/** dashboard-F5：GET /api/v2/triage 响应体——已认领 override 清单，与 src/dashboard/apiV2.ts 的
- *  ClaimedOverrideDTO 一族保持一致（identify_overrides 全行直译）。 */
-export interface ClaimedOverrideDTO {
-  pathPrefix: string
-  tmdbId: string
-  isTv: boolean
-  season: number | null
-  createdAt: number
-  /** 识别架构路 A（审计 A-3）：认领来源——'human'=甄别页手动认领，'agent'=字幕 agent 核验
-   *  身份后自动纠正。两者权威等级不同（agent 是会出错的启发式），UI 必须让用户看出区别，
-   *  否则无法审阅 agent 的判断，也看不出哪些行受"agent 不许覆盖人工认领"规则保护。 */
-  source: 'human' | 'agent'
-}
-/** dashboard-F5：GET /api/v2/triage 响应体——甄别台一页看全"待认领"（pending，转发
- *  buildParked）与"已认领"（claimed）两份事实，与 src/dashboard/apiV2.ts 的 TriageDTO 一致。 */
+/** dashboard-F5：GET /api/v2/triage 响应体——待识别（pending，转发 buildParked）事实清单，
+ *  与 src/dashboard/apiV2.ts 的 TriageDTO 一致。claimed 半边（ClaimedOverrideDTO）已随认领
+ *  退役（2026-07-28 两证据红线裁决，见 src/v2/triageOps.ts 头注释）。 */
 export interface TriageDTO {
   pending: ParkedItemDTO[]
-  claimed: ClaimedOverrideDTO[]
 }
 
-/** dashboard-F5：GET /api/v2/tmdb/search 响应体——ClaimDialog 的 TMDB 搜索代理（只读）。字段名
- *  对齐 server.ts 独立分支的映射（TmdbSearchHit.title → name，见该文件该端点注释）。 */
-export interface TmdbSearchResultDTO {
-  id: number
-  name: string
-  year: number | null
-  posterPath: string | null
-}
-export interface TmdbSearchResponseDTO {
-  results: TmdbSearchResultDTO[]
-}
+// TmdbSearchResultDTO/TmdbSearchResponseDTO（GET /api/v2/tmdb/search 响应体）已随认领退役
+// 删除——唯一消费方是已退役的 ClaimDialog。服务端只读代理端点仍在（无害），前端不再调用。
 
 /** dashboard-F6：GET /api/v2/settings 响应体——行为级设置白名单五键，与 src/dashboard/apiV2.ts
  *  的 SETTINGS_KEYS/SettingsDTO 一致。每键 string|null，null=未设置（前端自行显示默认占位，

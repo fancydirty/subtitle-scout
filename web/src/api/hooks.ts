@@ -361,9 +361,9 @@ export function useWorkflowWorkers(): Async<WorkflowWorkersDTO> {
   return { data, loading, error, reload }
 }
 
-/** dashboard-F5：甄别台（Triage tab）——pending（park 救援清单）+ claimed（已认领 override
- *  清单）。同 useParked 的既有先例：一次性 + 手动 reload（不轮询，ClaimDialog 提交成功后调用方
- *  自己 reload——认领是低频人工动作，不像 workflow 那样需要常驻轮询感知后台变化）。 */
+/** dashboard-F5：甄别台（Triage tab）——pending（park 救援清单）。同 useParked 的既有先例：
+ *  一次性 + 手动 reload（不轮询——翻案是低频人工动作，不像 workflow 那样需要常驻轮询感知
+ *  后台变化）。 */
 export function useTriage(): Async<TriageDTO> {
   const [data, setData] = useState<TriageDTO | null>(null)
   const [loading, setLoading] = useState(true)

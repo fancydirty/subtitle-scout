@@ -132,27 +132,17 @@ export const en = {
   // （triage_empty_title/desc 这两个键最早是 F2 占位期借用的，F5 填肉后原样留作真实空态用，
   // 同 library_empty_title 在 F3 落地时的既有先例）。
   triage_empty_title: 'Every file found its identifier',
-  triage_empty_desc: 'Nothing needs a manual claim right now. (That does not mean every identity is right — the subtitle agent re-verifies each one before it works, and any corrections show up below and in the timeline.)',
+  // 认领退役（2026-07-28 两证据红线裁决，见 src/v2/triageOps.ts 头注释）：空态文案不再提
+  // "manual claim"——正确的用户修复动作是改文件名。
+  triage_empty_desc: 'Nothing is waiting to be identified right now. (That does not mean every identity is right — the subtitle agent re-verifies each one before it works, and any corrections show up in the timeline.)',
   triage_error_prefix: "Couldn't load the triage queue: ",
   triage_retry_label: 'Retry',
 
   triage_pending_heading: 'Pending',
-  triage_claimed_heading: 'Claimed',
-  triage_claimed_empty_title: 'No claims yet',
-  triage_claimed_source_human: 'you',
-  triage_claimed_source_agent: 'agent',
-  triage_claimed_unclaim_label: 'Remove',
-  triage_unclaim_error_prefix: 'could not remove the claim: ',
-  triage_claimed_empty_desc: 'Claims show up here — the ones you make on this page, and the ones the subtitle agent makes after re-verifying an identity.',
-  // 验收修复轮一 Task V2：PendingBox 从逐行 checkbox 多选改成目录组卡——这个键是每张组卡上的
-  // Claim 按钮（挂在整个目录组上，见 PendingBox.tsx 文件头注释），不再是箱头的"批量认领所选"。
-  triage_claim_group_label: 'Claim',
-  // 认领后的置灰过渡态角标——认领只写 override，parked_paths 那一行要等下一轮 ingest pass 才
-  // 真的退户口（TriagePage.tsx claimedDirs 注释），这条文案如实说明"已经点过认领，正在等扫描"，
-  // 不假装文件已经消失。
-  triage_claimed_badge: 'claimed · awaiting rescan',
-  // triage_duplicates_heading 已退役（P2 起 ingest 不再产 duplicate-content 停车行，duplicates
-  // 折叠箱是纯死代码，见 PendingBox.tsx 文件头注释）——连同键一起删掉，不留一个不再被引用的字符串。
+  // 认领一族键（triage_claimed_* / triage_claim_group_label / triage_dialog_* / triage_search_* /
+  // triage_tmdbid_label / triage_season_* / triage_submit/cancel/close/results/partial_failure）
+  // 已随认领退役整体删除（2026-07-28 两证据红线裁决）——不留不再被引用的字符串。
+  // triage_duplicates_heading 更早退役（P2 起 ingest 不再产 duplicate-content 停车行）。
   triage_excluded_heading: 'Excluded extras',
   triage_excluded_restore_label: 'Restore',
   triage_restore_error_prefix: "Couldn't restore: ",
@@ -160,21 +150,6 @@ export const en = {
   // 是技术值，组件层拼接成 mono 片段，不进这条 i18n 文案（DESIGN.md §3：mono 是技术层专属声音）。
   triage_naming_hint_prefix: 'Correct naming skips manual triage — best practice: ',
 
-  triage_type_tv: 'TV',
-  triage_type_movie: 'Movie',
-
-  triage_dialog_title: 'Claim this folder',
-  triage_search_placeholder: 'Search TMDB…',
-  triage_search_unreachable: 'TMDB unreachable — you can still paste a tmdb id',
-  triage_search_no_results: 'No matches',
-  triage_tmdbid_label: 'TMDB ID',
-  triage_season_label: 'Season',
-  triage_season_placeholder: 'auto',
-  triage_submit_label: 'Claim',
-  triage_cancel_label: 'Cancel',
-  triage_close_label: 'Close',
-  triage_results_heading: 'Results',
-  triage_partial_failure_desc: 'This claim failed — see the error below.',
 
   // Settings tab（dashboard-F6）——正常双语区（DESIGN.md §7 只豁免 Workflow 区）。F2 占位期的
   // settings_empty_title/desc（"coming soon"）随 F6 落地真内容一并退役——不像 triage_empty_*

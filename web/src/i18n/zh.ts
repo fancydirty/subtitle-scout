@@ -110,41 +110,18 @@ export const zh = {
   workflow_outcome_blocked_dormant: en.workflow_outcome_blocked_dormant,
 
   triage_empty_title: '所有文件都已找到归属',
-  triage_empty_desc: '暂时没有需要人工认领的文件。（这不等于识别都对了——字幕 agent 每次开工前还会核验一遍身份，纠正结果见下方「已认领」和时间线。）',
+  // 认领退役（2026-07-28 两证据红线裁决）：空态文案不再提"人工认领"——正确的修复动作是改文件名。
+  triage_empty_desc: '暂时没有等待识别的文件。（这不等于识别都对了——字幕 agent 每次开工前还会核验一遍身份，纠正结果见时间线。）',
   triage_error_prefix: '无法加载甄别队列：',
   triage_retry_label: '重试',
 
   triage_pending_heading: '待甄别',
-  triage_claimed_heading: '已认领',
-  triage_claimed_empty_title: '暂无认领记录',
-  triage_claimed_source_human: '手动',
-  triage_claimed_source_agent: 'agent',
-  triage_claimed_unclaim_label: '撤销',
-  triage_unclaim_error_prefix: '撤销认领失败：',
-  triage_claimed_empty_desc: '认领记录会出现在这里——你在这一页手动认领的，以及字幕 agent 核验身份后自动纠正的。',
-  triage_claim_group_label: '认领',
-  triage_claimed_badge: '已认领 · 等待重新扫描',
-  // triage_duplicates_heading 已退役——见 en.ts 同位置注释。
+  // 认领一族键已随认领退役整体删除——见 en.ts 同位置注释。
   triage_excluded_heading: '已排除的特典',
   triage_excluded_restore_label: '恢复',
   triage_restore_error_prefix: '恢复失败：',
   triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',
 
-  triage_type_tv: '剧集',
-  triage_type_movie: '电影',
-
-  triage_dialog_title: '认领此目录',
-  triage_search_placeholder: '搜索 TMDB…',
-  triage_search_unreachable: '无法连接 TMDB——你仍可以手动填写 tmdb id',
-  triage_search_no_results: '无匹配结果',
-  triage_tmdbid_label: 'TMDB ID',
-  triage_season_label: '季',
-  triage_season_placeholder: 'auto',
-  triage_submit_label: '认领',
-  triage_cancel_label: '取消',
-  triage_close_label: '关闭',
-  triage_results_heading: '结果',
-  triage_partial_failure_desc: '认领失败——详情见下方错误。',
 
   settings_behavior_heading: '行为',
   settings_deploy_heading: '部署',

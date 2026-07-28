@@ -1,8 +1,8 @@
 // web/src/triage/text.test.ts：甄别区纯函数——路径处理（pathTail/dirnameOf）、目录分组
-// （groupPending，验收修复轮一 Task V2）与双语动态文案（fileCountLabel/moreLabel/relativeClaimedAgo）。
+// （groupPending，验收修复轮一 Task V2）与双语动态文案（fileCountLabel/moreLabel）。
 import { describe, it, expect } from 'vitest'
 import {
-  pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel, relativeClaimedAgo,
+  pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel,
 } from './text.js'
 import type { ParkedItemDTO } from '../api/types.js'
 
@@ -31,7 +31,7 @@ function row(path: string, parkReason = 'ambiguous match'): ParkedItemDTO {
   return { path, parkReason, firstSeen: 0, lastAttempt: 0 }
 }
 
-describe('groupPending——按 dirname 分组 + excluded-extra 翻案桶（claimParked 的 override 粒度=目录前缀）', () => {
+describe('groupPending——按 dirname 分组 + excluded-extra 翻案桶', () => {
   it('actionable：按目录分组，组内按 path 排序、组间按文件数降序', () => {
     const { actionable, excluded } = groupPending([
       row('/media/tv/Show B/ep1.mkv'),
@@ -55,7 +55,7 @@ describe('groupPending——按 dirname 分组 + excluded-extra 翻案桶（clai
 
   // duplicates 桶已退役（P2 起 ingest 不再产 duplicate-content 停车行，见 text.ts 头注释）——
   // 历史遗留的 duplicate-content 行不再单独分桶，随其余非 excluded-extra 的行一起落进
-  // actionable，跟其他待认领行同等对待，不会凭空消失于 UI。
+  // actionable，跟其他待识别行同等对待，不会凭空消失于 UI。
   it('历史遗留的 duplicate-content 行 → 不再单独分桶，随其余行一起进 actionable（duplicates 桶退役）', () => {
     const { actionable, excluded } = groupPending([
       row('/media/tv/Show A/ep1.mkv', 'ambiguous match'),
@@ -115,8 +115,5 @@ describe('双语动态文案', () => {
     expect(moreLabel(4, 'en')).toBe('+4 more')
     expect(moreLabel(4, 'zh')).toBe('还有 4 个…')
   })
-  it('relativeClaimedAgo：时长单位是技术值（两种语言同一套 s/m/h/d），只有前后缀跟语言走', () => {
-    expect(relativeClaimedAgo(3 * 24 * 60 * 60_000 + 60_000, 'en')).toBe('3d ago')
-    expect(relativeClaimedAgo(3 * 24 * 60 * 60_000 + 60_000, 'zh')).toBe('3d 前')
-  })
+  // relativeClaimedAgo 测试已随该函数退役删除（唯一消费方是已退役的 ClaimedBox）。
 })
