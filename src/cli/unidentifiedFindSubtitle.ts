@@ -222,6 +222,20 @@ export async function runUnidentifiedFindSubtitleWorkerTask(
       )
     }
 
+    // Task 3（park 原因二分回写）：agent 报 unidentified 时把 kind 落回 parked_paths，
+    // 负缓存的指纹门（shouldRetryParkedPath）由此分得开"确定不自愈（insufficient-evidence，
+    // 指纹未变永不重试）"和"可能自愈（identification-failed，照常退避）"。
+    // 🔴 必须用 updateParkReason 而非 upsertParkedPath——后者在 reason 变化时把退避阶梯
+    // 重置回 1h 档，identification-failed 会每轮归零永远停在 1h。
+    // 🔴 只回写本 task 的目标路径（targetPaths，同上方 itemId 幻觉防线的纪律）；识别成功
+    // 的路径已被 write_identified_media 的事务 clearParkedPath 清出 parked——
+    // updateParkReason 对不存在的行无事发生（幽灵防御），不会复活户口。
+    if (report.identity?.outcome === 'unidentified') {
+      for (const path of targetPaths) {
+        deps.lib.updateParkReason(path, report.identity.kind, now())
+      }
+    }
+
     // 事实先入账（同 runFindSubtitleWorkerTask 的 R-3 终局口径）。
     for (const item of installedToRecord) {
       // candidateProviderId 已含 "provider:" 前缀（candidateKey 复合形态）则原样使用——同

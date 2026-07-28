@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path'
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModelV4CallOptions } from '@ai-sdk/provider'
 import { openDb, type ScoutDb } from '../v2/db.js'
-import { LibraryRepo } from '../v2/libraryRepo.js'
+import { LibraryRepo, PARK_REASON } from '../v2/libraryRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { seriesId, episodeId } from '../v2/ownIds.js'
@@ -276,6 +276,110 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
     expect(jobs.get(job.id)!.state).toBe('failed') // 过滤后空报告 → completeError
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining(`dropping itemId ${otherEpisode}`))
     errSpy.mockRestore()
+  })
+
+  // Task 3（park 原因二分）：unidentified 收割时把 agent 报的 kind 回写 parked_paths，
+  // 让负缓存的指纹门（libraryRepo.shouldRetryParkedPath）分得开"确定不自愈"和"可能自愈"。
+  it('unidentified + kind=insufficient-evidence → 回写 park 原因', async () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'random')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, '1.mp4')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
+    const job = claimUnidentifiedJob()
+
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'unidentified', reason: '路径无片名信息', kind: 'insufficient-evidence' },
+    }))
+
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    const row = db.prepare(`SELECT park_reason FROM parked_paths WHERE path = ?`).get(epPath) as
+      | { park_reason: string } | undefined
+    expect(row?.park_reason).toBe('insufficient-evidence')
+  })
+
+  it('回写不重置退避阶梯（updateParkReason 而非 upsertParkedPath）', async () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'Show')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, 'ep1.mkv')
+    writeFileSync(epPath, 'video')
+    // 同 reason 同指纹 upsert 两次 → retry_count=1（4h 档）
+    lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
+    lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW + 1, { mtimeMs: 100, size: 10 })
+    const before = db.prepare(`SELECT retry_count FROM parked_paths WHERE path = ?`).get(epPath) as
+      { retry_count: number }
+    expect(before.retry_count).toBe(1)
+    const job = claimUnidentifiedJob()
+
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'unidentified', reason: 'TMDB 暂无此条目', kind: 'identification-failed' },
+    }))
+
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    const after = db.prepare(`SELECT park_reason, retry_count FROM parked_paths WHERE path = ?`).get(epPath) as
+      { park_reason: string; retry_count: number }
+    expect(after.park_reason).toBe('identification-failed')
+    // upsertParkedPath 在 reason 变化时会把 retry_count 归零重置 1h 档——回写必须用
+    // updateParkReason，阶梯不动。
+    expect(after.retry_count).toBeGreaterThanOrEqual(1)
+  })
+
+  it('identified 成功时不回写（clearParkedPath 已在写库事务里发生）', async () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'Show')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, 'ep1.mkv')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
+    const job = claimUnidentifiedJob()
+
+    const ownSeriesId = seriesId('271828')
+    const ownEpisodeId = episodeId('271828', 1, 1)
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      // 模拟 write_identified_media：建库行 + 清 parked 户口。
+      lib.upsertSeries({ id: ownSeriesId, name: 'Backrooms' })
+      lib.upsertEpisode({
+        id: ownEpisodeId, seriesId: ownSeriesId, season: 1, episode: 1,
+        name: 'Backrooms', path: epPath, subStatus: 'missing',
+      })
+      lib.clearParkedPath(epPath)
+      return {
+        installed: [{
+          itemId: ownEpisodeId, installedPath: join(showDir, 'ep1.zh.srt'),
+          installedLanguage: 'zh-Hans', candidateProvider: null, candidateProviderId: null,
+          reason: 'ok',
+        }],
+        no_safe_match: [], retry_later: [], hardsub_assumed: [],
+        identity: {
+          outcome: 'identified', tmdbId: '271828', isTv: true, season: 1, episode: 1,
+          nameEvidence: 'name matches', structureEvidence: 'season table fits',
+        },
+      }
+    })
+
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    // 已被 write_identified_media 清出 parked——收割回写不得复活这一行。
+    const row = db.prepare(`SELECT park_reason FROM parked_paths WHERE path = ?`).get(epPath)
+    expect(row).toBeUndefined()
   })
 })
 
