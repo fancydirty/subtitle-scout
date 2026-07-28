@@ -52,7 +52,9 @@ describe('identify-media skill', () => {
   it('two-evidence bar：名字 + 第二独立证据，year 矛盾一票否决', ({ expect }) => {
     expect(skill.content).toMatch(/two independent lines/i)
     expect(skill.content).toMatch(/season table/i)
-    expect(skill.content).toMatch(/runtime roughly matches/i)
+    // 电影结构线：runtime 一致是强正证据（原"roughly matches"对称门措辞已改为不对称——
+    // 见下方 runtime-不合弱负证据锚点，不再锚死对称门口径）
+    expect(skill.content).toMatch(/runtime agreement is a strong second/i)
     // 生产事故锚点（Peacemaker 芬兰同名剧）
     expect(skill.content).toMatch(/year mismatch is an automatic fail/i)
     expect(skill.content).toMatch(/never buys back a failed one/i)
@@ -82,6 +84,36 @@ describe('identify-media skill', () => {
   it('时长交叉印证：纯数字标题靠 runtime 锚定（2012 case）', ({ expect }) => {
     expect(skill.content).toMatch(/numeric-only name like `2012`/)
     expect(skill.content).toMatch(/158/)
+  })
+
+  // 调研结论（docs/superpowers/research/2026-07-27-vague-naming-cases.md，Group G / M10a–M10e）：
+  // "runtime agreement is meaningful positive evidence; runtime disagreement is weak negative
+  // evidence and must never alone defeat a strong title match — because M10a/M10b make it fail
+  // precisely on correct answers." runtime 是唯一一条会**在正确答案上失败**的第二证据线
+  // （TMDB 每部电影只存一个 runtime；导演剪辑/加长版/分卷 CD1/PAL 提速都让文件时长偏离该值）。
+  // 锚点锁"不对称"这个约束本身，不锁措辞：runtime 不合单独不足以否掉 title+year 双强的候选，
+  // agent 要推断偏差成因；但 year 矛盾仍是一票否决（上面的 year-fail 锚点不变，此处再确认共存）。
+  it('runtime 不合是弱负证据，单独不能否掉 title+year 双强（M10a/M10b 会在正确答案上失败）', ({ expect }) => {
+    // runtime 一致仍是强正证据（2012/158-min 例子保留在上一条锚点，此处不重复）
+    // runtime 不合单独不足以拒绝
+    expect(skill.content).toMatch(/never alone/i)
+    // 要 agent 推断偏差成因，而不是套阈值：标注剪辑版 / 分卷文件 / 预告样片 / 双集
+    expect(skill.content).toMatch(/director.?s cut|extended|CD1|part file/i)
+    expect(skill.content).toMatch(/trailer|sample|double|concat/i)
+    // year 一票否决与这条不对称共存——不是"忽略 runtime"，也不是放松 year 门
+    expect(skill.content).toMatch(/year mismatch is an automatic fail/i)
+  })
+
+  // 调研结论（同上，M9 / F1 + "missing evidence dimension"）：bare episode number（`102`）是
+  // 绝对编号还是季内编号，单看一个文件无解——同目录 sibling 文件是唯一判据。plumbing 现状：
+  // 全量未识别 run 里同目录的 parked 文件已各自作为 target 行出现（共享 dir: 段），agent 本就
+  // 能横向读它们；skill 教 agent 用这份既有可见性。真不可判时归 insufficient-evidence 的 R2
+  // "irreducibly two-valued"形态（skill 既有的 park 二分分类）。
+  it('裸集号 → 查同目录 siblings 判绝对/季内编号（M9），不可判归 R2', ({ expect }) => {
+    expect(skill.content).toMatch(/absolute/i)
+    expect(skill.content).toMatch(/sibling|other files|same directory/i)
+    // 与既有 R2 分类交叉引用（irreducibly two-valued → insufficient-evidence）
+    expect(skill.content).toMatch(/irreducibly two-valued/i)
   })
 
   it('写库 → 拿 own-id 当 itemId；识别与找字幕解耦', ({ expect }) => {

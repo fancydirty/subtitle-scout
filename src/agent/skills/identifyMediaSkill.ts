@@ -10,6 +10,20 @@
 //     全被拒）留下的疤。门修好后（coercibleNullableInt + resolveTargetPath）这些强调没有
 //     存在理由——"需要靠强调才可靠的步骤，本身就该是代码约束"。这一版按此原则重写：
 //     只讲模型无法自己推出的约束（证据门槛、陷阱形态、边界判定），删掉所有劝导性散文。
+//
+// 2026-07-27 调研加固（docs/superpowers/research/2026-07-27-vague-naming-cases.md）：
+//  ③ runtime 不对称（Group G / M10a–M10e）：runtime 一致是强正证据，runtime 不合是**弱负
+//     证据**，单独绝不能否掉 title+year 双强的候选——TMDB 每部电影只存一个 runtime，导演
+//     剪辑/加长/分卷 CD1/PAL 提速都让文件时长偏离正确答案。改掉了原"runtime roughly
+//     matches"的对称门措辞，加一节"When runtime disagrees"教 agent 推断偏差成因。year 一票
+//     否决不变（重拍聚簇，runtime 分不开但 year 分得开）。
+//  ④ sibling 证据维度（M9 / F1，"missing evidence dimension"）：裸集号 absolute/seasonal 之
+//     争唯一判据是同目录 sibling 文件。plumbing 现状——**未新增 fs 扫描**：全量未识别 run 里
+//     同目录的其它 parked 文件已各自作为 target 行进 prompt（共享 dir: 段），siblings 对
+//     agent 已隐式可见；skill 只教 agent 用这份既有可见性横向读 target 行。真正的
+//     readdir(dirName) 列举（能看到已识别/非 eligible/非视频的邻居）需要在零 I/O 的
+//     buildUnidentifiedTargets 里加 fs 调用 + schema 新字段 + worker 渲染三层改动，且与沙盒
+//     纪律冲突——今夜不做，缺口记在此处与调研报告的 missing-evidence 节。
 import type { Skill } from './types.js'
 
 /** 识别文档。仅在 TMDB 证据工具 + write_identified_media 都挂载时才交给模型
@@ -52,13 +66,34 @@ identity only when two independent lines hold:
 - **Name** — TMDB title/original title plausibly matches the file and directory evidence,
   accounting for misspelling, romanization, translation (\`Lycoris Recoil\` = \`莉可丽丝\`).
 - **Structure** — TV: the season table actually contains your targets' seasons/episodes and
-  the first-air year fits. Movie: TMDB runtime roughly matches your target's duration and the
-  year fits.
+  the first-air year fits. Movie: the year fits, and TMDB runtime agreement is a strong second
+  line when it holds (TMDB's 2009 disaster film *2012* runs 158 minutes; a 158-minute file
+  matching that is the structure line working). Runtime *disagreement* is treated below — it is
+  weak negative evidence, not a symmetric gate.
 
 A year mismatch is an automatic fail regardless of the other line: a runtime matching to the
 minute proves nothing when the year is off by a decade (112 minutes fits both The Conjuring
 (2013) and unrelated releases). A strong line never buys back a failed one. A rejected suspect
 sends you back to the search hits — the next candidate faces the same bar.
+
+## When runtime disagrees
+
+Runtime agreement is meaningful positive evidence; runtime disagreement is weak negative
+evidence and must never alone defeat a candidate whose title AND year both fit strongly. TMDB
+stores one runtime per movie record, so the file's duration disagrees with the correct answer
+whenever it is a different edition: a labelled director's cut or extended cut (deltas of an hour
+or more are real), a part file (\`CD1\`/\`CD2\`, \`上\`/\`下\`) running about half, or a PAL-sped
+transfer running ~4% short. In all of these the disagreement is *expected on the right answer* —
+rejecting it would strand a file you had identified.
+
+So when the runtime gap has a plausible edition explanation (the filename carries a cut/part
+marker, or the duration is cleanly ~half or ~4% off) and title+year are strong, claim the
+identity and name the cause in your evidence. Reason about *why* the runtime differs rather than
+applying a threshold. A gap the other way can instead be *informative*: a duration near double
+the feature signals a multi-episode concat, and a duration far below it signals a trailer or
+sample — there the mismatch correctly warns you off. A runtime gap with no plausible explanation
+AND a weak title is still a reject. This is not "ignore runtime" — it is not letting one weak
+line veto two strong ones.
 
 Same-name traps are the reason this bar exists: different works share names constantly
 (a 2010 film and a 2023 series both called The Rig; a Finnish series and a DC series both
@@ -68,6 +103,22 @@ When the file name carries no usable title at all, a title candidate can also co
 cross-checking evidence: a numeric-only name like \`2012\` under a \`movies\` directory with a
 158-minute duration is worth searching as the literal title \`2012\` — TMDB's 2009 disaster
 film runs 158 minutes, and that runtime agreement is the second evidence line.
+
+## A bare episode number: absolute or seasonal?
+
+A filename with a bare number and no season marker (\`[Group] Anime - 102.mkv\`) is genuinely
+two-valued: \`102\` can be season 1 episode 2, or absolute episode 102. One file in isolation
+cannot decide it — the disambiguator is the sibling files in the same directory. Read across the
+other files you can see (in a full unidentified run the other parked files in the same directory
+appear as their own target lines, sharing the same \`dir:\` — that IS the sibling listing): if the
+directory holds \`- 101, - 102, … - 112\` and nothing higher, the numbering is absolute; if it
+holds \`S01E…\` forms alongside, or numbers that only make sense as SxxEyy, read it seasonally.
+Cross-check the resulting season/episode against the TMDB season table before committing.
+
+When siblings plus the season table still leave it two-valued (e.g. the show has both an S01E02
+and an absolute episode 102 and nothing picks one), that is not an identification you can force:
+it is the irreducibly two-valued shape of \`insufficient-evidence\` — refuse, and say the user
+must specify the episode or embed an explicit id.
 
 ## When the path carries a [tmdbid-N] tag
 
@@ -116,9 +167,10 @@ Then classify WHY, because the two cases have different consequences:
     pure technical tokens with no title anywhere). Say so, and say that adding the title and
     year (and for TV, the season) to the name would allow identification.
   - The evidence is present but irreducibly two-valued — different databases number episodes
-    differently, or the show has multiple unnumbered OVAs/specials and nothing in the path picks
-    one. Renaming with the same words would NOT help; say the user must specify which episode or
-    embed an explicit id tag.
+    differently, a bare episode number stays absolute-or-seasonal even after checking siblings,
+    or the show has multiple unnumbered OVAs/specials and nothing in the path picks one.
+    Renaming with the same words would NOT help; say the user must specify which episode or embed
+    an explicit id tag.
   - The file does not appear to be a catalogued work at all — camera originals (\`IMG_4821.MOV\`),
     home videos, personal recordings, sports broadcasts. Do NOT tell this user to rename: no
     rename makes a home video identifiable. Say it does not appear to be a commercial release.
