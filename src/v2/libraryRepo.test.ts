@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { join, sep } from 'node:path'
 import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
-import { LibraryRepo, isParkedPathEligible } from './libraryRepo.js'
+import { LibraryRepo, isParkedPathEligible, PARK_REASON } from './libraryRepo.js'
 
 let lib: LibraryRepo
 let db: ScoutDb
@@ -1319,5 +1319,28 @@ describe('parked_paths.embedded_tmdb_id（[tmdbid-N] 路径标签，schema v26�
     lib.upsertParkedPath(p, 'awaiting-agent-identification', 1000, { mtimeMs: 500, size: 1024, embeddedTmdbId: '1396' })
     lib.upsertParkedPath(p, 'awaiting-agent-identification', 2000, { mtimeMs: 500, size: 1024 })
     expect(lib.listParkedPaths().find((r) => r.path === p)?.embedded_tmdb_id).toBe('1396')
+  })
+})
+
+describe('shouldRetryParkedPath 与 insufficient-evidence', () => {
+  it('🔴 insufficient-evidence + 指纹未变 → 不重试（等用户改名）', () => {
+    const lib = new LibraryRepo(db)
+    const fp = { mtimeMs: 500, size: 1024 }
+    lib.upsertParkedPath('/media/movies/random/1.mp4', PARK_REASON.insufficientEvidence, 1000, fp)
+    expect(lib.shouldRetryParkedPath('/media/movies/random/1.mp4', fp, 1000 + 999 * 3600_000)).toBe(false)
+  })
+
+  it('🔴 指纹变了（用户动了文件）→ 重试，优先级高于 insufficient-evidence', () => {
+    const lib = new LibraryRepo(db)
+    lib.upsertParkedPath('/media/movies/random/1.mp4', PARK_REASON.insufficientEvidence, 1000, { mtimeMs: 500, size: 1024 })
+    expect(lib.shouldRetryParkedPath('/media/movies/random/1.mp4', { mtimeMs: 999, size: 1024 }, 2000)).toBe(true)
+  })
+
+  it('identification-failed 照常按时间退避', () => {
+    const lib = new LibraryRepo(db)
+    const fp = { mtimeMs: 500, size: 1024 }
+    lib.upsertParkedPath('/media/tv/x.mkv', PARK_REASON.identificationFailed, 1000, fp)
+    expect(lib.shouldRetryParkedPath('/media/tv/x.mkv', fp, 1000)).toBe(false)
+    expect(lib.shouldRetryParkedPath('/media/tv/x.mkv', fp, 1000 + 3700_000)).toBe(true)
   })
 })

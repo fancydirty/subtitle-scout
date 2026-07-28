@@ -133,6 +133,16 @@ export interface Series {
 
 // ---- P2 新面：parked_paths / identify_overrides / probe memo（去 Jellyfin 化 schema v9） ----
 
+/** park 原因的权威值域。列本身是自由文本，但代码内一律用这些常量，杜绝散落的裸字符串。 */
+export const PARK_REASON = {
+  awaitingAgent: 'awaiting-agent-identification',
+  insufficientEvidence: 'insufficient-evidence',
+  identificationFailed: 'identification-failed',
+  excludedExtra: 'excluded-extra',
+  duplicateContent: 'duplicate-content',
+  noSignal: 'no-signal',
+} as const
+
 export interface ParkedPath {
   path: string
   park_reason: string
@@ -884,13 +894,18 @@ export class LibraryRepo {
   shouldRetryParkedPath(path: string, fingerprint: ParkedPathFingerprint, now: number): boolean {
     const row = this.db
       .prepare(
-        `SELECT next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?`
+        `SELECT park_reason, next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?`
       )
       .get(path) as
-      | { next_retry_at: number | null; probe_mtime: number | null; probe_size: number | null }
+      | { park_reason: string; next_retry_at: number | null; probe_mtime: number | null; probe_size: number | null }
       | undefined
     if (!row) return true
     if (row.probe_mtime !== fingerprint.mtimeMs || row.probe_size !== fingerprint.size) return true
+    // 可自愈的终局：证据集合为空，指纹未变时重跑必然同样结果，纯浪费。用户改名 →
+    // path 变 → 旧行随磁盘真相清理消失（ingest 收尾的 gone 清理）→ 新路径无 parked 行
+    // → 上方 `if (!row) return true` 自然重走识别。本门优先级刻意低于指纹变化：
+    // 用户动了文件就该立刻重试，不受本条约束。
+    if (row.park_reason === PARK_REASON.insufficientEvidence) return false
     if (row.next_retry_at == null) return true
     return now >= row.next_retry_at
   }
