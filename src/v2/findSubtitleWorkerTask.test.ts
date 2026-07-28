@@ -778,6 +778,18 @@ function setup() {
 
 /** 批量收割测试用：同一季 episodeCount 集全部 missing，一次 claim 拿到携带全部目标的批量任务
  *  （镜像上方 mapper 测试"季级 job 映射为携带全部缺口的批量任务"的夹具形状）。 */
+/** B2 反编造审计（2026-07-28）测试配套：harvest 会校验"no_safe_match 判词前有真的
+ *  search_source 调查证据"。系列级测试的 series 名恒为 'Show'，这里给本 job 的 runKey
+ *  发布一条含 'Show' 的 search_source 事件——模拟 agent 判无之前确实搜过本剧。
+ *  movie scope 走另一条规则（trace 里任何 search_source 即算证据），本 helper 同样适用。 */
+function publishSearchEvidence(jobId: number): void {
+  traceBus.publish({
+    runKey: `job-${jobId}`, seq: 0, tool: 'search_source',
+    argsSummary: '{"queries":["Show S01","Show 中文字幕"],"season":1}',
+    resultSummary: '{"count":0,"top":[]}', tookMs: 5, at: 1,
+  })
+}
+
 function setupBatch(episodeCount: number) {
   const root = mkdtempSync(join(tmpdir(), 'find-subtitle-worker-task-batch-'))
   const showDir = join(root, 'Show', 'Season 01')
@@ -862,6 +874,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     }))
     const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
+    publishSearchEvidence(job.id)
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
     for (const id of episodeIds) {
@@ -881,6 +894,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     const runTask = vi.fn(async () => report({ no_safe_match: episodeIds.map((id) => unresolvedItem(id)) }))
     const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
+    publishSearchEvidence(job.id)
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
     expect(jobsRepo.get(job.id)!.state).toBe('done')
@@ -1036,6 +1050,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       installed: [installedItem(SHOW_EPISODE_ID, { reason: '装机判词' })],
     }))
     const deps1 = baseDeps({ lib, mediaRoots: [], runTask: runTask1 })
+    publishSearchEvidence(job.id)
     await runFindSubtitleWorkerTask(job, deps1, jobsRepo, () => Date.now())
     expect(lib.getEpisode(SHOW_EPISODE_ID)!.status_reason).toBe('装机判词')
 
@@ -1048,6 +1063,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       no_safe_match: [unresolvedItem(SHOW_EPISODE_ID, '搜索穷尽（新一轮）')],
     }))
     const deps2 = baseDeps({ lib, mediaRoots: [], runTask: runTask2 })
+    publishSearchEvidence(job2.id)
     await runFindSubtitleWorkerTask(job2, deps2, jobsRepo, () => Date.now())
 
     expect(lib.getEpisode(SHOW_EPISODE_ID)!.status_reason).toBe('搜索穷尽（新一轮）')
@@ -1138,6 +1154,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     }))
     const deps = baseDeps({ lib, mediaRoots: [], runTask })
 
+    publishSearchEvidence(job.id)
     await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
     expect(lib.getEpisode(installedId)!.sub_status).toBe('covered')
@@ -1251,6 +1268,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       }))
       const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
+      publishSearchEvidence(job.id)
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
       const rows = runs.getByJobId(job.id)
@@ -1351,6 +1369,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
       }))
       const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
+      publishSearchEvidence(job.id)
       await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
       const rows = runs.getByJobId(job.id)
@@ -1398,7 +1417,10 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         const { lib, jobsRepo, job, db, episodeIds } = setupBatch(3)
         const runs = new RunsRepo(db)
         const runKey = `job-${job.id}`
-        traceBus.publish({ runKey, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 5, at: 1 })
+        // 本测试已有 trace 事件（上方 seq:0 那条）——但核账的 token 匹配要求 args 里含
+        // series 名的 ≥4 字符 token，空 args '{}' 会被拒。把 args 填上含 'Show' 的 queries，
+        // 与真实 search_source 事件形状一致，核账认它。
+        traceBus.publish({ runKey, seq: 0, tool: 'search_source', argsSummary: '{"queries":["Show S01"]}', resultSummary: '{}', tookMs: 5, at: 1 })
         const [installedId, noMatchId, retryId] = episodeIds
         const runTask = vi.fn(async () => report({
           installed: [installedItem(installedId)],
@@ -1407,6 +1429,7 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
         }))
         const deps = baseDeps({ lib, mediaRoots: [], runTask, runs })
 
+        // 本测试已自行发布 search_source 证据（上方 seq:0 的那条）——核账认它，不需额外补。
         await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
 
         const rows = runs.getByJobId(job.id)

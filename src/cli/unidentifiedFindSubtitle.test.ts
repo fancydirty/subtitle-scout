@@ -9,6 +9,7 @@ import { LibraryRepo, PARK_REASON } from '../v2/libraryRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { seriesId, episodeId } from '../v2/ownIds.js'
+import { traceBus } from '../core/traceBus.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
 import {
@@ -353,7 +354,10 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
 
   // Task 3（park 原因二分）：unidentified 收割时把 agent 报的 kind 回写 parked_paths，
   // 让负缓存的指纹门（libraryRepo.shouldRetryParkedPath）分得开"确定不自愈"和"可能自愈"。
-  it('unidentified + kind=insufficient-evidence → 回写 park 原因', async () => {
+  // B1（2026-07-28 反编造审计）：回写现在有证据门——trace 里必须真的有 search_tmdb 调用，
+  // 无证据的 unidentified 主张不作数（park 原因不动，路径照常退避重试）。夹具因此要往
+  // traceBus 发布一条 search_tmdb 事件（runKey 拼法 `job-${job.id}`，同 runner 的收官快照）。
+  it('unidentified + kind=insufficient-evidence → 回写 park 原因（trace 有 search_tmdb 证据）', async () => {
     const mediaRoot = join(root, 'media')
     const showDir = join(mediaRoot, 'random')
     mkdirSync(showDir, { recursive: true })
@@ -361,6 +365,10 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
     writeFileSync(epPath, 'video')
     lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
     const job = claimUnidentifiedJob()
+    traceBus.publish({
+      runKey: `job-${job.id}`, seq: 0, tool: 'search_tmdb',
+      argsSummary: '{"query":"1","mediaType":"movie"}', resultSummary: '[]', tookMs: 5, at: 1,
+    })
 
     const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
       installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
@@ -378,6 +386,73 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
     expect(row?.park_reason).toBe('insufficient-evidence')
   })
 
+  // B1（2026-07-28 反编造审计，同夜事故：agent 步数烧尽后凭空报 unidentified/no_safe_match）：
+  // trace 里 ZERO search_tmdb 调用 = 这个 unidentified 结论从未被调查过——回写不执行，
+  // park 原因不动（路径照常退避重试），大声告警。
+  it('🔴 B1：unidentified 但 trace 零 search_tmdb → 回写被拒（park 原因不动）+ 大声告警', async () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'random')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, '1.mp4')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
+    const job = claimUnidentifiedJob()
+    // trace 非空但没有任何 search_tmdb——模拟"步数烧尽后直接 finalize 编结论"的形状。
+    traceBus.publish({
+      runKey: `job-${job.id}`, seq: 0, tool: 'read_doc',
+      argsSummary: '{"name":"identify-media"}', resultSummary: '{}', tookMs: 5, at: 1,
+    })
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'unidentified', reason: '（编造）无法识别', kind: 'insufficient-evidence' },
+    }))
+
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    // 回写被拒：park 原因保持 awaiting-agent-identification（照常退避重试），
+    // 不落 insufficient-evidence（那会把路径永久钉死）。
+    const row = db.prepare(`SELECT park_reason FROM parked_paths WHERE path = ?`).get(epPath) as
+      | { park_reason: string } | undefined
+    expect(row?.park_reason).toBe(PARK_REASON.awaitingAgent)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('search_tmdb'))
+    errSpy.mockRestore()
+  })
+
+  it('B1：trace 整体缺席（null）同样拒回写——零证据主张不作数', async () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'random')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, '1.mp4')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
+    const job = claimUnidentifiedJob()
+    // 不发布任何 trace 事件——snapshot 为空，traceJson null。
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'unidentified', reason: '（编造）无法识别', kind: 'identification-failed' },
+    }))
+
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    const row = db.prepare(`SELECT park_reason FROM parked_paths WHERE path = ?`).get(epPath) as
+      | { park_reason: string } | undefined
+    expect(row?.park_reason).toBe(PARK_REASON.awaitingAgent)
+    expect(errSpy).toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
   it('回写不重置退避阶梯（updateParkReason 而非 upsertParkedPath）', async () => {
     const mediaRoot = join(root, 'media')
     const showDir = join(mediaRoot, 'Show')
@@ -391,6 +466,11 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
       { retry_count: number }
     expect(before.retry_count).toBe(1)
     const job = claimUnidentifiedJob()
+    // B1 证据门：回写要过门就得有 search_tmdb 痕迹（本测试的对象是阶梯不重置，不是门本身）。
+    traceBus.publish({
+      runKey: `job-${job.id}`, seq: 0, tool: 'search_tmdb',
+      argsSummary: '{"query":"ep1","mediaType":"tv"}', resultSummary: '[]', tookMs: 5, at: 1,
+    })
 
     const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
       installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],

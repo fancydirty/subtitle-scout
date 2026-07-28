@@ -310,9 +310,30 @@ export async function runUnidentifiedFindSubtitleWorkerTask(
     // 🔴 只回写本 task 的目标路径（targetPaths，同上方 itemId 幻觉防线的纪律）；识别成功
     // 的路径已被 write_identified_media 的事务 clearParkedPath 清出 parked——
     // updateParkReason 对不存在的行无事发生（幽灵防御），不会复活户口。
+    //
+    // 🔴 B1 反编造审计（2026-07-28 同夜事故：识别阶段烧尽步数后，agent 把 384 个目标
+    // 凭空报成 no_safe_match/unidentified，理由写"searched all providers"——实际从没搜过）：
+    // unidentified 结论必须有调查证据——trace 里至少一条 search_tmdb 调用。零搜索的
+    // unidentified 主张不作数：不回写 park 原因（insufficient-evidence 会把路径永久钉死，
+    // 那等于把编造落库成"确定不自愈"），park 保持 awaiting-agent-identification 照常退避，
+    // 大声告警。这是防御层的粗门（exactly 今夜事故的复盘形状），不误伤正常情况——正常
+    // 识别流程必然至少 search 一次（two-evidence bar 的 Step 1）。
     if (report.identity?.outcome === 'unidentified') {
-      for (const path of targetPaths) {
-        deps.lib.updateParkReason(path, report.identity.kind, now())
+      // peek 非破坏性读——snapshot() 会清空缓冲，提前抽干 runs 行的 trace 快照（见
+      // traceBus.ts snapshot 注释："重复调用第二次起只会拿到空数组"）。
+      const traceTools = traceBus.peek(runKey, 512).map((e) => e.tool)
+      const hasSearchEvidence = traceTools.includes('search_tmdb')
+      if (!hasSearchEvidence) {
+        console.error(
+          `[find-subtitle-unidentified] job ${job.id}: report claims unidentified ` +
+            `(${report.identity.reason}) but the trace contains ZERO search_tmdb calls — ` +
+            `the claim is unsubstantiated fabrication (steps-exhausted give-up shape). ` +
+            `REFUSING park-reason writeback; ${targetPaths.size} path(s) keep awaiting-agent-identification and will retry.`,
+        )
+      } else {
+        for (const path of targetPaths) {
+          deps.lib.updateParkReason(path, report.identity.kind, now())
+        }
       }
     }
 

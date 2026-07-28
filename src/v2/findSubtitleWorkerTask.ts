@@ -499,11 +499,16 @@ export async function runFindSubtitleWorkerTask(
     // 层把关"）：identity.outcome==='unidentified' 时 installed 必须为空——agent 自己承认了
     // 身份未定，此时任何 installed 都是把字幕记到一个未核验的身份上（Peacemaker 事故形状，
     // 同 2026-07-26 审计 BLIND SPOT 1 的既有纪律）。丢弃要吼出来，不静默。
-    const installedToRecord = report.identity?.outcome === 'unidentified' ? [] : installed
-    if (report.identity?.outcome === 'unidentified' && installed.length > 0) {
+    // 语义反转闸（同 findSubtitleWorker.schemas.ts 的 identity 字段文档）：identity.outcome===
+    // 'unidentified' 时 installed 必须为空。附带的语义：判无/待重试与身份结论互斥——身份都没
+    // 定下来，"判无"和"待重试"都是无稽之谈，对应的 runs 行与落账都跳过。
+    const identityUnidentified = report.identity?.outcome === 'unidentified'
+    const installedToRecord = identityUnidentified ? [] : installed
+    if (identityUnidentified && installed.length > 0) {
+      const reason = report.identity?.outcome === 'unidentified' ? report.identity.reason : ''
       console.error(
         `[find-subtitle-harvest] job ${job.id}: DROPPING ${installed.length} installed item(s) — ` +
-          `report's identity outcome is 'unidentified' (${report.identity.reason}), ` +
+          `report's identity outcome is 'unidentified' (${reason}), ` +
           `so installs would be recorded against no verified identity: ` +
           installed.map((i) => i.itemId).join(', '),
       )
@@ -536,20 +541,62 @@ export async function runFindSubtitleWorkerTask(
     }
     // R-3：no_safe_match 是 worker 的语义判决，落账为 item 事实；"何时再看"由 item 自己的
     // search_attempts 阶梯决定——jobs 状态机从此不持有任何内容判决。
-    for (const item of noMatch) deps.lib.markUnavailable(item.itemId, item.reason, now())
+    //
+    // 🔴 B2 反编造审计（2026-07-28 同夜事故：unidentified scope 的 agent 步数烧尽后把 384
+    // 个目标凭空报成 no_safe_match，理由写"searched all providers"——实际从没搜过）：库行
+    // scope 以单一 series 为 job 粒度，所以核账规则可以很硬——报了 no_safe_match 但 trace
+    // 里对本剧零 search_source 调用 = 编造。编造条目不 markUnavailable（假 unavailable 会
+    // 让后续巡检跳过真正从未被搜过的集），改记 retry_later 走重试，大声告警。
+    // 检查点在 harvest 入账前（任何 recordRun 之前），用 peek 非破坏性读 trace——
+    // snapshot() 有清空副作用，会提前抽干 traceJsonForThisRun() 赖以拍快照的缓冲
+    // （traceBus.ts snapshot 注释："重复调用第二次起只会拿到空数组"）。
+    const traceSearchCalls = traceBus.peek(runKey, 512).filter((e) => e.tool === 'search_source')
+    const seriesName = job.series_id ? (deps.lib.getSeries(job.series_id)?.name ?? '') : ''
+    const searchedSeries = seriesName
+      ? traceSearchCalls.some((e) => {
+          try {
+            const args = JSON.parse(e.argsSummary) as { queries?: string[] }
+            const hay = JSON.stringify(args).toLowerCase()
+            return seriesName.toLowerCase().split(/\s+/).some((tok) => tok.length >= 4 && hay.includes(tok))
+          } catch {
+            return true // args 解析失败=当作有证据（防御层宁可放过，不可错杀）
+          }
+        })
+      : traceSearchCalls.length > 0 // movie scope：无 series 概念，trace 里有任何 search 就算有证据
+    const substantiated = searchedSeries ? noMatch : []
+    const fabricated = searchedSeries ? [] : noMatch
+    if (fabricated.length > 0) {
+      console.error(
+        `[find-subtitle-harvest] job ${job.id}: ${fabricated.length} no_safe_match item(s) for ` +
+          `${seriesName || job.movie_id || 'movie'} have ZERO search_source activity in the trace — ` +
+          `unsubstantiated fabrication. Recording as retry_later instead of markUnavailable; ` +
+          `these items were never actually searched: ${fabricated.map((i) => i.itemId).join(', ')}`,
+      )
+    }
+    // 语义反转闸同样约束落账（不只在 runs 行）：identity 未定时，判无/硬字幕判定都是
+    // 无稽之谈——别把无稽之谈写进库。
+    if (!identityUnidentified) {
+      for (const item of substantiated) deps.lib.markUnavailable(item.itemId, item.reason, now())
+    }
+    const retryLaterFromFabrication = fabricated
     // 救援R5：hardsub_assumed 是 agent 档的正面判决——诚实标注为覆盖的一种，不进
     // markUnavailable 的内容退避阶梯（markHardsubAssumed 自己的两表尝试模式不碰 search_attempts/
     // recheck_after，见 libraryRepo.ts 该方法头注释）。
-    for (const item of hardsubAssumed) deps.lib.markHardsubAssumed(item.itemId, item.reason, now())
+    if (!identityUnidentified) {
+      for (const item of hardsubAssumed) deps.lib.markHardsubAssumed(item.itemId, item.reason, now())
+    }
 
     // 队列语义（R-3 终局）：报告落地即入账收官；仅 retry_later（瞬时故障的季剩余）走
     // completeError 节流轨（R-10 豁免：30s→15min→日，永不 dormant）。completeNoMatch 已死。
     // 救援R5：hardsub_assumed 非空视为"这批已完成"的一种（同 installed/noMatch），走
     // completeDone——它不是失败判决，不该被"报告为空"或"待重试"两个分支误吞。
-    if (installedToRecord.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
+    // 编造的条目并入 retry_later——与瞬时故障同一待遇：走 completeError 节流轨，下轮再来。
+    // 空报告判定用"有证据的 noMatch"而非被编造污染的原始 noMatch——否则编造条目会把
+    // empty-report 分支也骗过去。
+    if (installedToRecord.length === 0 && substantiated.length === 0 && retryLater.length === 0 && retryLaterFromFabrication.length === 0 && hardsubAssumed.length === 0) {
       jobs.completeError(job.id, 'worker returned an empty batch report', now())
       recordRun('error', 'empty batch report')
-    } else if (retryLater.length > 0) {
+    } else if (retryLater.length > 0 || retryLaterFromFabrication.length > 0) {
       jobs.completeError(
         job.id, `retry_later ${retryLater.length} item(s): ${capDetail(retryLater[0].reason)}`, now(),
       )
@@ -557,15 +604,20 @@ export async function runFindSubtitleWorkerTask(
       jobs.completeDone(job.id, now())
     }
 
-    // runs：按非空桶各记一行，词表沿用（dashboard 时间线口径不破）
+    // runs：按非空桶各记一行，词表沿用（dashboard 时间线口径不破）——noMatch 行用
+    // substantiated（有证据的判无），编造的条目不在 runs 里冒充"判无"，否则会误导审计。
     if (installedToRecord.length) {
       recordRun('installed', `${installedToRecord.length} 集入账: ${installedToRecord.map((i) => i.itemId).join(', ')}`)
     }
-    if (noMatch.length) {
-      recordRun('no_safe_match', `${noMatch.length} 集判无: ${noMatch.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
+    if (substantiated.length && !identityUnidentified) {
+      recordRun('no_safe_match', `${substantiated.length} 集判无: ${substantiated.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
     }
-    if (retryLater.length) {
-      recordRun('retry_later', `${retryLater.length} 集待重试: ${retryLater.map((i) => i.itemId).join(', ')}`)
+    if ((retryLater.length || retryLaterFromFabrication.length) && !identityUnidentified) {
+      // 编造的条目与瞬时故障同桶记 retry_later，前缀标注来源——dashboard 时间线能看到
+      // 哪部分是 worker 报的、哪部分是审计拒收的编造。
+      const all = [...retryLater, ...retryLaterFromFabrication]
+      const note = retryLaterFromFabrication.length > 0 ? `（含审计拒收编造 ${retryLaterFromFabrication.length} 项）` : ''
+      recordRun('retry_later', `${all.length} 集待重试${note}: ${all.map((i) => i.itemId).join(', ')}`)
     }
     if (hardsubAssumed.length) {
       recordRun('hardsub_assumed', `${hardsubAssumed.length} 集判定硬字幕假定: ${hardsubAssumed.map((i) => `${i.itemId}(${i.reason})`).join('; ')}`)
