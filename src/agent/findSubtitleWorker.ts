@@ -38,6 +38,17 @@ export interface FindSubtitleWorkerDeps {
   stepCap?: number
   timeoutMs?: number
   fetchImpl?: typeof fetch
+  /** 管线拆分（2026-07-28 事故裁决：一晚 446 文件全量批，agent 烧 ~450/500 步在识别上——
+   *  424 次 write_identified_media 对 7 次 search_source——步数见底后凭空编造 384 条
+   *  no_safe_match、242 集被假 unavailable。裁决：识别归识别，找字幕归找字幕，DB 为状态机）。
+   *  true = 识别专用 worker：只挂 read_doc/search_tmdb/get_tmdb_details/write_identified_media/
+   *  finalize，字幕工具（search_source/download_candidate/install_subtitle/…）零挂载——零误触发
+   *  纪律：模型连字幕工具名都不许看到。skill 索引只含 identify-media 文档。找字幕由既有库行
+   *  管线接手（orchestrator 见 sub_status=missing 后派 per-series find_subtitle worker），两个
+   *  agent 之间从不直接交接。显式 flag 而非从 adapters 空推导——魔法推导会让"忘了传 adapters"
+   *  静默变成识别专用 worker。要求 tmdb + identityDeps 同时在场（没有识别工具的识别专用
+   *  worker 是自相矛盾，构造期直接抛）。 */
+  identifyOnly?: boolean
   /** For write_identified_media tool (agent-first identification, Task 9): when provided, the
    *  worker gets the write_identified_media tool so the agent can persist a TMDB-verified
    *  identity (series/episode or movie row) itself. Shape mirrors WriteIdentityDeps in
@@ -83,6 +94,16 @@ const timeoutFor = (n: number) =>
  *  tests and production. Returns a function that runs exactly one BATCH task (a season-level or
  *  single-movie range of targets) end to end, reporting a per-target outcome bucket for each. */
 export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
+  // identifyOnly 的构造期防线：识别专用 worker 缺识别工具（tmdb 证据面）或缺落地通道
+  // （identityDeps 的 write_identified_media）是自相矛盾的组装——静默降级会复刻"模型空谈
+  // 我会识别"的旧病，这里直接拒绝构造（同 task 目标越沙盒的 fail-before-model 纪律）。
+  if (deps.identifyOnly && (!deps.tmdb || !deps.identityDeps)) {
+    throw new Error(
+      'identifyOnly worker requires both tmdb (search_tmdb/get_tmdb_details evidence tools) and ' +
+        'identityDeps (write_identified_media) — an identification-only worker without ' +
+        'identification tools cannot exist',
+    )
+  }
   return async function runFindSubtitleTask(task: FindSubtitleTask): Promise<FindSubtitleBatchReport> {
     // Sandbox layer 1 (code): verified BEFORE any tool exists or any model call happens — a
     // misconfigured task never even gets to try. Per-target (Task 6 / batch): every target in
@@ -112,7 +133,11 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const skill = makeFindSubtitleSkill(task.targetLanguage, task.hardsubMode, deps.tmdb != null)
     // progressive disclosure（2026-07-27 拆分）：识别文档独立成篇，只在识别工具真的挂载时
     // 才进 read_doc 索引——工具不在时模型连文档名都看不到（零误触发纪律）。
-    const skillDocs = deps.tmdb != null ? [skill, IDENTIFY_MEDIA_SKILL] : [skill]
+    // 管线拆分（2026-07-28）：identifyOnly 模式反向应用同一纪律——只有识别文档，找字幕
+    // playbook 整篇不进索引（模型连 'find-subtitle-judgment' 这个名字都看不到）。
+    const skillDocs = deps.identifyOnly
+      ? [IDENTIFY_MEDIA_SKILL]
+      : deps.tmdb != null ? [skill, IDENTIFY_MEDIA_SKILL] : [skill]
 
     // 🔴 写库门（identityEval 第三轮实测：识别全对但跳过 write_identified_media 反复发生，
     // skill 硬门措辞时好时坏 —— 措辞治不了的用机制）：记录 write 工具是否真的被调过，
@@ -143,15 +168,10 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
         })
       : null
 
-    const tools = {
-      read_doc: makeReadDocTool(skillDocs),
-      // 路 A：身份证据工具——tmdb 配置时才挂上（deps.tmdb 为 null 时整个 spread 为空对象，
-      // 模型连工具名都看不到，与 skill 的 identityVerification 分支严格同开同关）。
-      ...(deps.tmdb ? makeTmdbEvidenceTools({ tmdb: deps.tmdb }) : {}),
-      // write_identified_media（Task 9，agent-first 识别落地）：identityDeps 提供时才挂上——
-      // agent 用 TMDB 证据（two-evidence bar）验证身份后亲自把识别结果写进库；缺席时整个
-      // spread 为空对象，与 tmdb 证据工具同一个"依赖不在则工具不可见"的纪律。
-      ...(trackedIdentityWriteTool ? { write_identified_media: trackedIdentityWriteTool } : {}),
+    // 管线拆分（2026-07-28）：identifyOnly 模式下字幕工具整组不建不挂——不是"挂了不让用"，
+    // 是模型的工具清单里根本没有这些名字（零误触发纪律，同 tmdb/identityDeps 缺席时的
+    // "依赖不在则工具不可见"先例）。
+    const subtitleTools = () => ({
       search_source: makeSearchSourceTool({
         adapters: deps.adapters, store, targetLanguage: task.targetLanguage,
         localCandidates: task.localCandidates,
@@ -175,29 +195,56 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
         targets: task.targets.map(t => ({ videoFilename: t.videoFilename, outDir: dirname(t.videoPath), itemId: t.itemId })),
       }),
       check_episode_code_safety: makeCheckEpisodeCodeSafetyTool(),
+    })
+
+    const tools = {
+      read_doc: makeReadDocTool(skillDocs),
+      // 路 A：身份证据工具——tmdb 配置时才挂上（deps.tmdb 为 null 时整个 spread 为空对象，
+      // 模型连工具名都看不到，与 skill 的 identityVerification 分支严格同开同关）。
+      ...(deps.tmdb ? makeTmdbEvidenceTools({ tmdb: deps.tmdb }) : {}),
+      // write_identified_media（Task 9，agent-first 识别落地）：identityDeps 提供时才挂上——
+      // agent 用 TMDB 证据（two-evidence bar）验证身份后亲自把识别结果写进库；缺席时整个
+      // spread 为空对象，与 tmdb 证据工具同一个"依赖不在则工具不可见"的纪律。
+      ...(trackedIdentityWriteTool ? { write_identified_media: trackedIdentityWriteTool } : {}),
+      ...(deps.identifyOnly ? {} : subtitleTools()),
     }
 
     // Sandbox layer 2 (prompt/skill): this instructions string is the ENTIRE system prompt —
     // no other directory name is ever mentioned anywhere in it. Batch (Task 6): the sandbox
     // worldview widens from ONE media item to the target items of this ONE task — it must NOT
     // widen any further than that (still no OTHER task/directory/series is ever nameable).
-    const instructions = [
-      'You are the find-subtitle worker for the target items of exactly ONE series/scope. You have',
-      "no knowledge of any other directory or media item outside this task's targets — do not ask",
-      'about or reference one.',
-      '',
-      // Post-audit fix (batch②, 2026-07-18): a cross-season batch can legitimately contain two
-      // targets with the exact same file name (e.g. "Season 1/01.mkv" and "Season 2/01.mkv") — a
-      // videoFilename alone can no longer tell download_candidate/install_subtitle which target
-      // you mean in that case. Mechanical, not a judgment call: if the target list below shows
-      // more than one target with the same file name, pass that target's itemId too.
-      "If more than one target below shares the exact same file name, download_candidate and",
-      "install_subtitle cannot tell them apart from videoFilename alone — pass that target's itemId",
-      '(shown on its line below) as well so the correct one is used.',
-      '',
-      'Available skill documents (call read_doc(name) to load the full text of one):',
-      systemPromptSkillIndex(skillDocs),
-    ].join('\n')
+    // 管线拆分（2026-07-28）：identifyOnly 分支的措辞里没有任何字幕工具名（basename 冲突段
+    // 讲的是 download_candidate/install_subtitle 的消歧，识别 worker 用不上也不许看见）。
+    const instructions = deps.identifyOnly
+      ? [
+          'You are the media-identification worker for the target items of exactly ONE batch. You',
+          "have no knowledge of any other directory or media item outside this task's targets — do",
+          'not ask about or reference one.',
+          '',
+          'Your ONLY job is identification: establish what each target file actually is, verify it',
+          'with evidence, and persist it via write_identified_media. You do not handle subtitles in',
+          'any way — another pipeline picks up from the database after you.',
+          '',
+          'Available skill documents (call read_doc(name) to load the full text of one):',
+          systemPromptSkillIndex(skillDocs),
+        ].join('\n')
+      : [
+          'You are the find-subtitle worker for the target items of exactly ONE series/scope. You have',
+          "no knowledge of any other directory or media item outside this task's targets — do not ask",
+          'about or reference one.',
+          '',
+          // Post-audit fix (batch②, 2026-07-18): a cross-season batch can legitimately contain two
+          // targets with the exact same file name (e.g. "Season 1/01.mkv" and "Season 2/01.mkv") — a
+          // videoFilename alone can no longer tell download_candidate/install_subtitle which target
+          // you mean in that case. Mechanical, not a judgment call: if the target list below shows
+          // more than one target with the same file name, pass that target's itemId too.
+          "If more than one target below shares the exact same file name, download_candidate and",
+          "install_subtitle cannot tell them apart from videoFilename alone — pass that target's itemId",
+          '(shown on its line below) as well so the correct one is used.',
+          '',
+          'Available skill documents (call read_doc(name) to load the full text of one):',
+          systemPromptSkillIndex(skillDocs),
+        ].join('\n')
 
     // Presented as FACT (a mechanical pre-cleaning output), not instruction — see
     // FindSubtitleTargetFact's own doc comment. List order is fact-list order, not an
@@ -272,7 +319,18 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     // 证据不递结论），改成明示"无身份、先识别"。tmdb 缺席时（识别工具与
     // write_identified_media 双双未挂）诚实标注本 run 做不了识别——同库行分支的
     // tmdb-conditional 口径，不教模型空谈"我会验证"。
-    const identityBlock = unidentified
+    // 管线拆分（2026-07-28）：identifyOnly 分支——工作流措辞里没有任何字幕动作：识别 →
+    // write_identified_media → finalize，仅此而已。证据行措辞（embedded subtitle languages）
+    // 保留：那是识别证据（语言构成暗示产地），不是字幕工具。
+    const identityBlock = deps.identifyOnly
+      ? [
+          'This task carries NO identity — every target below is an unidentified parked file.',
+          'Workflow: identify each target from its raw evidence (directory names, file name,',
+          'duration, embedded subtitle languages, structure hints) per the identify-media skill',
+          'document, then call write_identified_media for that target. When every target is done',
+          '(identified, or honestly could not be identified), call finalize.',
+        ]
+      : unidentified
       ? [
           'This task carries NO identity — every target below is an unidentified parked file.',
           ...(deps.tmdb
@@ -308,28 +366,41 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
           `provider ids: ${JSON.stringify(task.providerIds)}`,
         ]
 
-    const prompt = [
-      // "a subtitle in X" rather than "a X subtitle": sidesteps the a/an article problem
-      // ("a English subtitle") no matter what languageName() returns.
-      unidentified
-        ? `Find and install subtitles in ${languageName(task.targetLanguage)} for the target items ` +
-          'listed below — they are unidentified parked files: identify each one first (Step 0), ' +
-          'then search on its established identity.'
-        : `Find and install subtitles in ${languageName(task.targetLanguage)} for the target items ` +
-          'listed below — they all belong to the same series/scope, so ONE season pack will often ' +
-          'cover many of them.',
-      'Report per-item outcomes via finalize exactly once (see the skill document).',
-      '',
-      `target subtitle language: ${languageName(task.targetLanguage)}`,
-      ...identityBlock,
-      '',
-      dirBlock,
-      '',
-      unidentified
-        ? `targets (${task.targets.length} item(s), unidentified parked files):`
-        : `targets (${task.targets.length} item(s), current gaps in this scope):`,
-      targetsBlock,
-    ].join('\n')
+    const prompt = deps.identifyOnly
+      ? [
+          'Identify each of the unidentified parked files listed below: establish what each one',
+          'actually is per the identify-media skill document, write_identified_media per target,',
+          'and call finalize exactly once when all targets are done (identified or honestly not).',
+          '',
+          ...identityBlock,
+          '',
+          dirBlock,
+          '',
+          `targets (${task.targets.length} item(s), unidentified parked files):`,
+          targetsBlock,
+        ].join('\n')
+      : [
+          // "a subtitle in X" rather than "a X subtitle": sidesteps the a/an article problem
+          // ("a English subtitle") no matter what languageName() returns.
+          unidentified
+            ? `Find and install subtitles in ${languageName(task.targetLanguage)} for the target items ` +
+              'listed below — they are unidentified parked files: identify each one first (Step 0), ' +
+              'then search on its established identity.'
+            : `Find and install subtitles in ${languageName(task.targetLanguage)} for the target items ` +
+              'listed below — they all belong to the same series/scope, so ONE season pack will often ' +
+              'cover many of them.',
+          'Report per-item outcomes via finalize exactly once (see the skill document).',
+          '',
+          `target subtitle language: ${languageName(task.targetLanguage)}`,
+          ...identityBlock,
+          '',
+          dirBlock,
+          '',
+          unidentified
+            ? `targets (${task.targets.length} item(s), unidentified parked files):`
+            : `targets (${task.targets.length} item(s), current gaps in this scope):`,
+          targetsBlock,
+        ].join('\n')
 
     // finalize-tool mode (NOT Output.object): the model reports its FindSubtitleBatchReport by
     // calling the injected `finalize` tool as its terminal step, and readFinalized() returns those
@@ -345,6 +416,12 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // 一调就停循环（见 reasoningAgent.ts），schema 校验失败直接抛错，模型根本没有重试机会，
       // 结果把 5 个识别全对的 case 生生炸成失败。约束改到 runner 层软记录（见下方
       // writeIdentityCalled 的消费处）+ skill 措辞硬门，不在这里拦。
+      //
+      // 管线拆分（2026-07-28）：identifyOnly 模式沿用同一份 FindSubtitleBatchReportSchema，
+      // 不另起 schema——installed 桶在识别专用 run 里天然恒空（没有任何安装工具可产出它），
+      // no_safe_match = "无法识别"的逐 target 判决。identity 字段保持 advisory 语义
+      // （e2bff84：内层校验失败折叠 null）——真正的识别结果早已由 write_identified_media
+      // 的逐文件事务持久化，finalize 报告丢了也不丢账。
       schema: FindSubtitleBatchReportSchema,
       stopWhen: stepCountIs(deps.stepCap ?? 500),
       reasoning: 'high',

@@ -109,6 +109,59 @@ describe('buildUnidentifiedTargets (parked_paths → raw-evidence targets)', () 
 
     expect(targets.map((t) => t.videoPath)).toEqual([failedPath])
   })
+
+  // 管线拆分（2026-07-28 事故）：446 文件一批全上车 → agent 500 步烧尽在识别上。批次上限
+  // 默认 60（识别 3-5 步/文件，60×5=300 < 500 stepCap 留余量）；取挂得最久的行先上
+  // （listParkedPaths 按 first_seen DESC，挂最久=排最前），余量留 park，orchestrator 下轮再派。
+  describe('批次上限（limit，默认 60，最久 parked 先上）', () => {
+    it('100 行 parked → 只取 60 行挂得最久的；其余留 park 不动', () => {
+      // first_seen 越早=挂得越久。path 编号 0..99，first_seen 递增——0 号挂最久。
+      for (let i = 0; i < 100; i++) {
+        lib.upsertParkedPath(
+          join(root, 'media', 'Show', `ep${String(i).padStart(3, '0')}.mkv`),
+          PARK_REASON.awaitingAgent, NOW + i, { mtimeMs: 100, size: 10 },
+        )
+      }
+
+      const targets = buildUnidentifiedTargets(lib)
+
+      expect(targets).toHaveLength(60)
+      // 挂得最久的 60 行 = first_seen 最小的 0..59 号
+      const nums = targets.map((t) => Number(/ep(\d+)\.mkv$/.exec(t.videoPath)![1])).sort((a, b) => a - b)
+      expect(nums).toEqual(Array.from({ length: 60 }, (_, i) => i))
+      // 其余 40 行仍在 parked_paths（buildUnidentifiedTargets 是纯读，本就不动行——这里锁语义）
+      expect(lib.listParkedPaths()).toHaveLength(100)
+    })
+
+    it('limit 参数可覆盖默认值', () => {
+      for (let i = 0; i < 5; i++) {
+        lib.upsertParkedPath(
+          join(root, 'media', 'Show', `ep${i}.mkv`),
+          PARK_REASON.awaitingAgent, NOW + i, { mtimeMs: 100, size: 10 },
+        )
+      }
+      expect(buildUnidentifiedTargets(lib, 2)).toHaveLength(2)
+      expect(buildUnidentifiedTargets(lib, 2).map((t) => t.videoPath)).toEqual([
+        join(root, 'media', 'Show', 'ep0.mkv'),
+        join(root, 'media', 'Show', 'ep1.mkv'),
+      ])
+    })
+
+    it('cap 在 eligibility 过滤之后生效（不许被 ineligible 行挤占名额）', () => {
+      // 3 行 ineligible（挂得最久）+ 3 行 eligible——limit 2 必须取到 2 行 eligible。
+      for (let i = 0; i < 3; i++) {
+        lib.upsertParkedPath(join(root, 'media', 'x', `dead${i}.mkv`), 'excluded-extra', NOW + i, { mtimeMs: 1, size: 1 })
+      }
+      for (let i = 0; i < 3; i++) {
+        lib.upsertParkedPath(join(root, 'media', 'Show', `ok${i}.mkv`), PARK_REASON.awaitingAgent, NOW + 10 + i, { mtimeMs: 1, size: 1 })
+      }
+      const targets = buildUnidentifiedTargets(lib, 2)
+      expect(targets.map((t) => t.videoPath)).toEqual([
+        join(root, 'media', 'Show', 'ok0.mkv'),
+        join(root, 'media', 'Show', 'ok1.mkv'),
+      ])
+    })
+  })
 })
 
 describe('runUnidentifiedFindSubtitleWorkerTask', () => {
@@ -514,8 +567,8 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
   })
 })
 
-describe('makeUnidentifiedFindSubtitleWorker (identityDeps wiring)', () => {
-  it('assembles the worker with write_identified_media mounted (and TMDB evidence tools)', async () => {
+describe('makeUnidentifiedFindSubtitleWorker (identify-only wiring)', () => {
+  it('assembles an identify-only worker: identification tools mounted, subtitle tools absent', async () => {
     const mediaRoot = join(root, 'media')
     const showDir = join(mediaRoot, '后室', 'Season 01')
     mkdirSync(showDir, { recursive: true })
@@ -524,12 +577,17 @@ describe('makeUnidentifiedFindSubtitleWorker (identityDeps wiring)', () => {
 
     let capturedTools: string[] = []
     let capturedPromptText = ''
+    let capturedSystemText = ''
     const model = new MockLanguageModelV4({
       doGenerate: async (options: LanguageModelV4CallOptions) => {
         capturedTools = (options.tools ?? []).map((t: any) => t.name)
         const userMessage = options.prompt.find((m) => m.role === 'user')
         const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
         capturedPromptText = textPart?.text ?? ''
+        const systemMessage = options.prompt.find((m) => m.role === 'system')
+        capturedSystemText = typeof systemMessage?.content === 'string'
+          ? systemMessage.content
+          : ((systemMessage?.content as unknown as any[]) ?? []).map((p: any) => p.text ?? '').join('')
         return {
           finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
           usage: {
@@ -557,7 +615,7 @@ describe('makeUnidentifiedFindSubtitleWorker (identityDeps wiring)', () => {
     }
 
     const runTask = makeUnidentifiedFindSubtitleWorker({
-      model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
+      model, cacheRoot: join(root, 'cache'), stepCap: 10,
       tmdb: fakeTmdb as unknown as TmdbClient, lib,
     })
     const task: FindSubtitleTask = {
@@ -574,17 +632,24 @@ describe('makeUnidentifiedFindSubtitleWorker (identityDeps wiring)', () => {
 
     await runTask(task)
 
-    // identityDeps 已接线：write_identified_media 挂上（agent-first 识别的落地通道）；
-    // tmdb 证据工具同挂（Step 0 的 search_tmdb/get_tmdb_details）。
-    expect(capturedTools).toContain('write_identified_media')
-    expect(capturedTools).toContain('search_tmdb')
-    expect(capturedTools).toContain('get_tmdb_details')
-    // prompt 是 unidentified 形态：raw evidence，不是 "guessed title"
+    // 管线拆分（2026-07-28 事故裁决）：识别专用 worker——识别工具全挂，字幕工具零挂载
+    // （零误触发纪律：模型连工具名都看不到）。
+    expect([...capturedTools].sort()).toEqual(
+      ['finalize', 'get_tmdb_details', 'read_doc', 'search_tmdb', 'write_identified_media'].sort(),
+    )
+    // skill 索引只含识别文档；找字幕 playbook 不出现
+    expect(capturedSystemText).toContain('identify-media')
+    expect(capturedSystemText).not.toContain('find-subtitle-judgment')
+    // prompt 是 unidentified 形态：raw evidence 保留（embedded langs 证据行必须在），
+    // 不出现任何字幕工具名。
     expect(capturedPromptText).toContain('This task carries NO identity')
     expect(capturedPromptText).not.toContain('guessed title')
-    expect(capturedPromptText).toContain('unidentified parked files')
     expect(capturedPromptText).toContain(
       '- itemId: null (unidentified — identify first, then write_identified_media) | structure hint: season 1 | duration: 2530s | embedded langs: eng | file: 2026.2160p.iT.WEB-DL.H.265.mkv',
     )
+    for (const name of ['search_source', 'list_candidates', 'get_candidate', 'download_candidate', 'install_subtitle', 'check_episode_code_safety']) {
+      expect(capturedPromptText).not.toContain(name)
+      expect(capturedSystemText).not.toContain(name)
+    }
   })
 })

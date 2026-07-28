@@ -414,14 +414,17 @@ async function cmdWatch() {
     try {
       if (payload.taskType === 'find_subtitle') {
         if (payload.scope === 'unidentified') {
-          // Task 12（agent-first 识别主链路）：scope='unidentified' 的 find_subtitle 行——目标
-          // 不是库行（既有下方分支的世界），而是 parked_paths 里的未识别文件。从 parked_paths
-          // 读 raw data（duration_sec/embedded_langs）+ identifyFromPath 结构提示建 targets；
-          // worker 额外挂 identityDeps（write_identified_media），agent 用 TMDB 证据验证身份后
-          // 亲自写库，拿 own-id 继续找字幕。runner 与类型细节见 cli/unidentifiedFindSubtitle.ts。
+          // 管线拆分（2026-07-28 事故裁决：424 写库/7 搜索/384 编造/242 假 unavailable——
+          // 识别归识别，找字幕归找字幕，DB 为状态机）：scope='unidentified' 的 find_subtitle
+          // 行从此是**识别专用** job。从 parked_paths 读 raw data（duration_sec/embedded_langs）
+          // + identifyFromPath 结构提示建 targets（批次上限 60，最久 parked 先上）；worker 是
+          // identifyOnly 形态（只挂识别工具，字幕工具零挂载）——识别结果由
+          // write_identified_media 落库为 sub_status=missing 的库行，找字幕由既有库行管线
+          // （orchestrator 见 missing → 派 per-series worker）接手。不再 buildAdapters：
+          // 识别 run 用不到任何字幕 provider，省掉整套 provider 组装。
+          // runner 与类型细节见 cli/unidentifiedFindSubtitle.ts。
           const runTask = makeUnidentifiedFindSubtitleWorker({
             model: reasoningModel,
-            adapters: await buildAdapters(emitProviderEvent),
             cacheRoot,
             tmdb,
             lib,

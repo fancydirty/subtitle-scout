@@ -484,6 +484,139 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     })
   })
 
+  // 管线拆分（2026-07-28 事故裁决：一晚 446 文件全量批里 agent 烧 ~450 步做识别——424 次
+  // write_identified_media 对 7 次 search_source——步数见底后凭空编造 384 条 no_safe_match、
+  // 242 集被假 unavailable。裁决：识别归识别，找字幕归找字幕，DB 为状态机）。identifyOnly
+  // 模式下 worker 是纯识别工人：字幕工具连名字都不许出现在模型面前（零误触发纪律）。
+  describe('identifyOnly mode（管线拆分：识别专用 worker）', () => {
+    const fakeTmdb = () => ({
+      search: vi.fn(async () => []),
+      getDetails: vi.fn(async () => null),
+      getSeasonTable: vi.fn(async () => null),
+    })
+    const fakeIdentityTmdb = () => ({
+      getDetails: vi.fn(),
+      getChineseTitles: vi.fn(),
+      getExternalIds: vi.fn(),
+      getOriginLanguage: vi.fn(),
+    })
+    const SUBTITLE_TOOL_NAMES = [
+      'search_source', 'list_candidates', 'get_candidate',
+      'download_candidate', 'install_subtitle', 'check_episode_code_safety',
+    ]
+
+    function unidentifiedTask(mediaRoot: string): FindSubtitleTask {
+      return baseTask(mediaRoot, [
+        {
+          itemId: null, videoPath: join(mediaRoot, 'Show', '2026.2160p.WEB-DL.mkv'),
+          videoFilename: '2026.2160p.WEB-DL.mkv', season: 1, episode: null, absoluteEpisode: null,
+          imdbId: null, embeddedTmdbId: null, durationSec: 2530, embeddedLangs: ['eng'],
+          dirName: join(mediaRoot, 'Show'), runtimeMinutes: 42,
+        },
+      ], { jobId: 'job-identify-only', title: '', year: null, runtimeMinutes: null })
+    }
+
+    function capture() {
+      const captured = { tools: [] as string[], promptText: '', systemText: '' }
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          captured.tools = (options.tools ?? []).map((t: any) => t.name)
+          const userMessage = options.prompt.find(m => m.role === 'user')
+          const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+          captured.promptText = textPart?.text ?? ''
+          const systemMessage = options.prompt.find(m => m.role === 'system')
+          captured.systemText = typeof systemMessage?.content === 'string'
+            ? systemMessage.content
+            : ((systemMessage?.content as unknown as any[]) ?? []).map((p: any) => p.text ?? '').join('')
+          return finalizeResult({
+            installed: [],
+            no_safe_match: [{ itemId: null, reason: 'could not identify' }],
+            retry_later: [],
+            identity: { outcome: 'unidentified', reason: 'no candidate passed the bar' },
+          })
+        },
+      })
+      return { captured, model }
+    }
+
+    it('mounted tool names = exactly the identification set (finalize included, zero subtitle tools)', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+      const db = openDb(':memory:')
+      try {
+        const lib = new LibraryRepo(db)
+        const { captured, model } = capture()
+        const runTask = makeFindSubtitleWorker({
+          model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
+          tmdb: fakeTmdb(), identityDeps: { lib, tmdb: fakeIdentityTmdb() }, identifyOnly: true,
+        })
+        await runTask(unidentifiedTask(mediaRoot))
+
+        expect([...captured.tools].sort()).toEqual(
+          ['finalize', 'get_tmdb_details', 'read_doc', 'search_tmdb', 'write_identified_media'].sort(),
+        )
+      } finally {
+        db.close()
+      }
+    })
+
+    it('skill index lists ONLY identify-media; the find-subtitle playbook never appears', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+      const db = openDb(':memory:')
+      try {
+        const lib = new LibraryRepo(db)
+        const { captured, model } = capture()
+        const runTask = makeFindSubtitleWorker({
+          model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
+          tmdb: fakeTmdb(), identityDeps: { lib, tmdb: fakeIdentityTmdb() }, identifyOnly: true,
+        })
+        await runTask(unidentifiedTask(mediaRoot))
+
+        expect(captured.systemText).toContain('identify-media')
+        expect(captured.systemText).not.toContain('find-subtitle-judgment')
+      } finally {
+        db.close()
+      }
+    })
+
+    it('prompt + system prompt contain NO subtitle tool names; evidence line "embedded langs" stays', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
+      const db = openDb(':memory:')
+      try {
+        const lib = new LibraryRepo(db)
+        const { captured, model } = capture()
+        const runTask = makeFindSubtitleWorker({
+          model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
+          tmdb: fakeTmdb(), identityDeps: { lib, tmdb: fakeIdentityTmdb() }, identifyOnly: true,
+        })
+        await runTask(unidentifiedTask(mediaRoot))
+
+        for (const name of SUBTITLE_TOOL_NAMES) {
+          expect(captured.promptText).not.toContain(name)
+          expect(captured.systemText).not.toContain(name)
+        }
+        // workflow wording: identify per doc → write_identified_media per target → finalize
+        expect(captured.promptText).toContain('write_identified_media')
+        expect(captured.promptText).toContain('finalize')
+        // raw-evidence target block stays intact (embedded subtitle languages line included)
+        expect(captured.promptText).toContain('embedded langs: eng')
+        expect(captured.promptText).toContain('This task carries NO identity')
+        expect(captured.promptText).not.toContain('guessed title')
+      } finally {
+        db.close()
+      }
+    })
+
+    it('identifyOnly without tmdb/identityDeps is a construction error (never a silently degraded worker)', () => {
+      const model = new MockLanguageModelV4({ doGenerate: async () => { throw new Error('never') } })
+      expect(() => makeFindSubtitleWorker({
+        model, adapters: [], cacheRoot: join(root, 'cache'), identifyOnly: true,
+      })).toThrow()
+    })
+  })
+
   it('finalize returns a batch report keyed by installed/no_safe_match/retry_later buckets', async () => {
     const mediaRoot = join(root, 'media')
     mkdirSync(join(mediaRoot, 'Show'), { recursive: true })

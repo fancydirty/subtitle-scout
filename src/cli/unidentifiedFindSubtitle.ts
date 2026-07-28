@@ -5,7 +5,6 @@ import type { LibraryRepo } from '../v2/libraryRepo.js'
 import { isParkedPathEligible, PARK_REASON } from '../v2/libraryRepo.js'
 import type { RunsRepo } from '../v2/runsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import type { FetchAdapter } from '../adapters/fetchLib.js'
 import { identifyFromPath } from '../recognition/identifyFromPath.js'
 import { isUnderRoots } from '../core/mediaContext.js'
 import { candidateKey } from '../core/schemas.js'
@@ -18,20 +17,30 @@ import {
   assertDirSafe, capDetail, commonDir, stagingRootFor,
 } from '../v2/findSubtitleWorkerTask.js'
 
-/** Task 12（agent-first 识别主链路的 CLI 接线）：payload.scope==='unidentified' 的
- *  find_subtitle worker_task——目标不是库行（那是既有 findSubtitleWorkerTask.ts 的 mapper
- *  世界：series/movies 行已带身份，缺口清单整批上车），而是 parked_paths 里的未识别文件。
+/** Task 12（agent-first 识别主链路的 CLI 接线）→ 管线拆分（2026-07-28 事故裁决）：
+ *  payload.scope==='unidentified' 的 find_subtitle worker_task——目标不是库行（那是既有
+ *  findSubtitleWorkerTask.ts 的 mapper 世界：series/movies 行已带身份，缺口清单整批上车），
+ *  而是 parked_paths 里的未识别文件。
+ *
+ *  🔴 2026-07-28 事故（一晚 446 文件全量批）：识别+找字幕挤在同一个 agent run 里，agent
+ *  烧 ~450/500 步做识别（424 次 write_identified_media 对 7 次 search_source），步数见底后
+ *  凭空编造 384 条 no_safe_match（理由写着 "no Chinese subtitles found via any provider"
+ *  ——其实从未搜过），242 集被假 unavailable。裁决：识别归识别，找字幕归找字幕，DB 为
+ *  状态机。本 job（②）从此是**识别专用**：agent 识别 → write_identified_media 写库
+ *  （sub_status=missing 的新库行）→ 既有库行字幕管线（orchestrator 见 missing → 派
+ *  per-series/season find_subtitle worker）接手。两个 agent 从不直接交接。
+ *
  *  这里负责三件事：
  *  ① 从 parked_paths 读 raw data（duration_sec/embedded_langs，schema v25 起由 ingest 落）
  *     + identifyFromPath 的结构提示（season/episode/absoluteEpisode），建成 itemId=null 的
- *     FindSubtitleTargetFact 清单；
- *  ② 组装的 worker 额外挂 identityDeps（write_identified_media 工具）——agent 用 TMDB
- *     证据（two-evidence bar）验证身份后亲自把识别结果写进库（见 agent/identityTools.ts），
- *     拿到 own-id 再继续找字幕；
- *  ③ 收割入账——agent 上报的 itemId 只能是"本次 task 的 parked 目标路径上刚被
- *     write_identified_media 建出来的库行"（getEpisode/getMovie 解析 + path 比对），其余
- *     一律丢弃告警（同 runFindSubtitleWorkerTask 的 itemId 幻觉防线纪律，只是有效 id 的
- *     来源从"task.targets 自带"换成"识别落地后库里有、路径属于本批目标"）。 */
+ *     FindSubtitleTargetFact 清单（批次上限默认 60、最久 parked 先上——见
+ *     buildUnidentifiedTargets）；
+ *  ② 组装 identifyOnly worker——只挂识别工具（read_doc/search_tmdb/get_tmdb_details/
+ *     write_identified_media/finalize），字幕工具零挂载（零误触发纪律，见
+ *     findSubtitleWorker.ts 的 identifyOnly 文档）；
+ *  ③ 收割入账——识别专用 run 里 installed 天然恒空（没有安装工具可产出它），但 itemId
+ *     幻觉防线整套保留（防御纵深）；unidentified 结局的 park-reason 回写照旧（Task 3 的
+ *     二分语义）。 */
 
 /** parked_paths（eligible）→ raw-evidence 目标清单。park_reason 终局机械裁决
  *  （excluded-extra/duplicate-content）由 isParkedPathEligible 滤掉，不上车。
@@ -44,10 +53,21 @@ import {
  *  insufficient-evidence 的行 = 证据未变的行，重跑识别是确定性浪费（烧 token）。 */
 export function buildUnidentifiedTargets(
   lib: Pick<LibraryRepo, 'listParkedPaths'>,
+  limit = 60,
 ): FindSubtitleTargetFact[] {
   return lib.listParkedPaths()
     .filter((p) => isParkedPathEligible(p.park_reason))
     .filter((p) => p.park_reason !== PARK_REASON.insufficientEvidence)
+    // 批次上限（管线拆分，2026-07-28 事故：446 文件一批直接烧穿 500 stepCap）：识别 3-5
+    // 步/文件，60×5=300 < 500 留余量。最久 parked 的行先上（first_seen 最小=挂得最久）。
+    // 🔴 不能直接吃 listParkedPaths 的顺序：它是 first_seen DESC——**最新的排最前**（其
+    // 头注释写"挂得最久的排最前"是错的，libraryRepo.test.ts 的排序测试锁死了 DESC=新→旧
+    // 语义；那是救援页"新问题先看"的口径，不是本处要的公平队列）。这里显式按 first_seen
+    // ASC 重排后掐头 limit 条；eligibility 过滤在前，ineligible 行不挤占名额。余量留 park
+    // 不动——orchestrator 的固定 identity（'unidentified-backlog'）upsert 会把 done 行复活
+    // 成 wanted（jobsRepo.upsertWorkerTask 的 done→revived 分支），下一轮自然接着派。
+    .sort((a, b) => a.first_seen - b.first_seen)
+    .slice(0, limit)
     .map((p) => {
       // 结构提示（纯路径解析，同步、零 I/O）——'no-signal' park 时全部 null。
       const identity = identifyFromPath(p.path)
@@ -86,27 +106,30 @@ export function buildUnidentifiedTargets(
 
 export interface UnidentifiedFindSubtitleWorkerDeps {
   model: LanguageModel
-  adapters: FetchAdapter[]
   cacheRoot: string
   /** Test phase per spec: no production step cap yet — observe actual step counts first.
    *  @default 500 */
   stepCap?: number
-  /** 全量 TmdbClient——既喂 Step 0 证据工具（search/getDetails/getSeasonTable），也喂
+  /** 全量 TmdbClient——既喂识别证据工具（search/getDetails/getSeasonTable），也喂
    *  identityDeps（write_identified_media 需要 getDetails/getChineseTitles/getExternalIds/
    *  getOriginLanguage 四面富化）。cmdWatch 顶部已把 TMDB_API_KEY 做成硬前置，恒非空。 */
   tmdb: TmdbClient
   lib: LibraryRepo
 }
 
-/** 组装未识别 scope 的 worker：与库行 scope 同一份 model/adapters/cacheRoot/tmdb，差别只在
- *  identityDeps——write_identified_media 工具因此挂载（agent-first 识别的落地通道）。 */
+/** 组装未识别 scope 的 worker（管线拆分，2026-07-28）：identifyOnly——只做识别，字幕工具
+ *  零挂载。adapters 从此不进这条链（省掉 provider 组装成本，也让"识别 run 绝不可能碰
+ *  字幕工具"成为构造期事实而非运行期约定）。identifyOnly flag 是权威开关，不从 adapters
+ *  空数组魔法推导。 */
 export function makeUnidentifiedFindSubtitleWorker(deps: UnidentifiedFindSubtitleWorkerDeps) {
   return makeFindSubtitleWorker({
     model: deps.model,
-    adapters: deps.adapters,
+    adapters: [],
     cacheRoot: deps.cacheRoot,
+    stepCap: deps.stepCap,
     tmdb: deps.tmdb,
     identityDeps: { lib: deps.lib, tmdb: deps.tmdb },
+    identifyOnly: true,
   })
 }
 
