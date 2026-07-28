@@ -477,10 +477,14 @@ export async function runFindSubtitleWorkerTask(
     // itemId 幻觉防线：清单外 id 一律丢弃告警——markCovered/markUnavailable 都是两表盲 UPDATE，
     // 幻觉 id 可能砸中任何行；宁可漏记一条真报告，不可错标一个非本任务目标（零误触发在入账层
     // 的镜像，同 T4/T4b 事实清单"呈事实不做选择"的既有纪律）。
+    // 六轮血案第三例余波（job 34，见 findSubtitleWorker.schemas.ts 的 itemId 头注释）：schema
+    // 层现在容忍 itemId:null——本 scope 的 targets 恒带非空 id，模型仍可能漏报；null 不在
+    // validIds 里（Set 只装真 id），下面的 filter 天然把它当 alien 丢弃告警，绝不带着 null
+    // 进 DB 更新。过滤后的桶类型收窄回 itemId: string。
     const validIds = new Set(task.targets.map((t) => t.itemId))
-    const dropAlien = <T extends { itemId: string }>(bucket: T[], name: string): T[] =>
-      bucket.filter((x) => {
-        if (validIds.has(x.itemId)) return true
+    const dropAlien = <T extends { itemId: string | null }>(bucket: T[], name: string): (T & { itemId: string })[] =>
+      bucket.filter((x): x is T & { itemId: string } => {
+        if (x.itemId != null && validIds.has(x.itemId)) return true
         console.error(`[find-subtitle-harvest] job ${job.id}: dropping alien itemId ${x.itemId} from ${name}`)
         return false
       })

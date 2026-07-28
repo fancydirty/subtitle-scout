@@ -401,6 +401,117 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
     const row = db.prepare(`SELECT park_reason FROM parked_paths WHERE path = ?`).get(epPath)
     expect(row).toBeUndefined()
   })
+
+  // 六轮血案第三例（job 34，2026-07-28）：混合批里 agent 对 installed 项报 itemId:null——
+  // 工具层自己就容忍 null itemId（resolveTarget）、prompt 的 target 行明写 itemId: null，
+  // finalize 却拒收系统亲手递给模型的值。schema 放行后，runner 用 installedPath 反解归属：
+  // dirname(installedPath) === dirname(target.videoPath) 且字幕名以视频 stem 为前缀
+  // （install_subtitle 的命名约定 `<video-stem>.<langTag><ext>`）→ 查该 videoPath 的库行。
+  it('🔴 installed 项 itemId:null → 从 installedPath 反解出库行入账（job34 形态）', async () => {
+    const mediaRoot = join(root, 'media')
+    const seasonDir = join(mediaRoot, '后室', 'Season 01')
+    mkdirSync(seasonDir, { recursive: true })
+    const epPath = join(seasonDir, '2026.2160p.iT.WEB-DL.H.265.mkv')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, 'awaiting-agent-identification', NOW, { mtimeMs: 100, size: 10 })
+    const job = claimUnidentifiedJob()
+
+    const ownSeriesId = seriesId('271828')
+    const ownEpisodeId = episodeId('271828', 1, 1)
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      // 模拟真实 agent：write_identified_media 建库行 + 清 parked，install 成功，
+      // 但 finalize 时 installed 项漏报 itemId（弱模型实测形态）。
+      lib.upsertSeries({ id: ownSeriesId, name: 'Backrooms' })
+      lib.upsertEpisode({
+        id: ownEpisodeId, seriesId: ownSeriesId, season: 1, episode: 1,
+        name: 'Backrooms', path: epPath, subStatus: 'missing',
+      })
+      lib.clearParkedPath(epPath)
+      return {
+        installed: [{
+          itemId: null,
+          installedPath: join(seasonDir, '2026.2160p.iT.WEB-DL.H.265.zh-Hans.srt'),
+          installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: 'assrt:1',
+          reason: 'season pack cue alignment',
+        }],
+        no_safe_match: [], retry_later: [], hardsub_assumed: [],
+        identity: {
+          outcome: 'identified', tmdbId: '271828', isTv: true, season: 1, episode: 1,
+          nameEvidence: 'name matches', structureEvidence: 'season table fits',
+        },
+      }
+    })
+
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    // 反解成功：installedPath 落在 epPath 的目录、字幕名以视频 stem 为前缀 → 归属该库行。
+    expect(lib.getEpisode(ownEpisodeId)!.sub_status).toBe('covered')
+    expect(jobs.get(job.id)!.state).toBe('done')
+  })
+
+  it('installed 项 itemId:null 且反解失败（无库行）→ 丢弃告警，不炸不误账', async () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'Show')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, 'ep1.mkv')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, 'awaiting-agent-identification', NOW, { mtimeMs: 100, size: 10 })
+    const job = claimUnidentifiedJob()
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      // 没有任何库行被建出来——null itemId 无从反解。
+      installed: [{
+        itemId: null, installedPath: join(showDir, 'ep1.zh-Hans.srt'),
+        installedLanguage: 'zh-Hans', candidateProvider: null, candidateProviderId: null,
+        reason: 'installed but no row exists',
+      }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null,
+    }))
+
+    const report = await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    expect(report).not.toBeNull()
+    expect(jobs.get(job.id)!.state).toBe('failed') // 丢弃后空报告 → completeError
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('itemId:null'))
+    errSpy.mockRestore()
+  })
+
+  it('unresolved 桶（no_safe_match）itemId:null 无 installedPath 可反解 → 丢弃告警，不炸', async () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'Show')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, 'ep1.mkv')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, 'awaiting-agent-identification', NOW, { mtimeMs: 100, size: 10 })
+    const job = claimUnidentifiedJob()
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [],
+      no_safe_match: [{ itemId: null, reason: 'nothing matched' }],
+      retry_later: [], hardsub_assumed: [], identity: null,
+    }))
+
+    const report = await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW,
+    )
+
+    expect(report).not.toBeNull()
+    expect(jobs.get(job.id)!.state).toBe('failed') // 丢弃后空报告 → completeError（不 crash）
+    expect(errSpy).toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
 })
 
 describe('makeUnidentifiedFindSubtitleWorker (identityDeps wiring)', () => {

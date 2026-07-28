@@ -886,6 +886,28 @@ describe('runFindSubtitleWorkerTask (R-3: 批量收割入账 + 队列语义终�
     expect(jobsRepo.get(job.id)!.state).toBe('done')
   })
 
+  // 六轮血案第三例余波（job 34）：schema 层放行 itemId:null 之后，库行 scope 的 runner 也
+  // 可能收到 null（targets 恒带非空 id，但模型仍可漏报）——null 必须被幻觉防线丢弃告警，
+  // 绝不能带着 null 进 markCovered/markUnavailable 的两表盲 UPDATE。
+  it('itemId:null 的报告项被丢弃告警，不进 DB 更新，不炸 run', async () => {
+    const { lib, jobsRepo, job, episodeIds } = setupBatch(2)
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async () => report({
+      installed: [installedItem(episodeIds[0]), { ...installedItem(episodeIds[1]), itemId: null }],
+      no_safe_match: [{ itemId: null, reason: 'null-id noise' }],
+    }))
+    const deps = baseDeps({ lib, mediaRoots: [], runTask })
+
+    await runFindSubtitleWorkerTask(job, deps, jobsRepo, () => Date.now())
+
+    // 非空 id 照常入账；null id 项被丢弃（既不 markCovered 也不 markUnavailable）。
+    expect(lib.getEpisode(episodeIds[0])!.sub_status).toBe('covered')
+    expect(lib.getEpisode(episodeIds[1])!.sub_status).toBe('missing')
+    expect(jobsRepo.get(job.id)!.state).toBe('done')
+    expect(errSpy).toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
   // 救援R5：hardsub_assumed 是 agent 档的正面判决——markHardsubAssumed 落 sub_status，不进
   // markUnavailable 的内容退避阶梯（search_attempts/recheck_after 都不动）。
   it('hardsub_assumed: 批量逐项 markHardsubAssumed（不进退避阶梯），job 走 completeDone', async () => {

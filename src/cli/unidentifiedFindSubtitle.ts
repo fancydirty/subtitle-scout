@@ -203,6 +203,55 @@ export async function runUnidentifiedFindSubtitleWorkerTask(
       if (mv) return targetPaths.has(mv.path)
       return false
     }
+    // 六轮血案第三例（job 34，见 findSubtitleWorker.schemas.ts 的 itemId 头注释）：schema 已
+    // 容忍 installed 项 itemId:null（工具层容忍、prompt 明示 null，finalize 不得拒收）。null
+    // 的归属由这里反解：install_subtitle 把字幕装在视频旁（`<video-stem>.<langTag><ext>`，
+    // 见 findSubtitleWorker.tools.ts finalPath），所以 dirname(installedPath) 恒等于归属
+    // target 的 dirname(videoPath)，且字幕 basename 以视频 stem + '.' 为前缀。命中唯一
+    // target 后查该 videoPath 的库行（write_identified_media 刚建的），行的 id 即真 itemId。
+    // 反解失败 → 丢弃告警（同 dropAlien 的口径），绝不猜。
+    const rowIdByPath = (videoPath: string): string | null => {
+      const ep = deps.lib.db.prepare(`SELECT id FROM episodes WHERE path = ?`).get(videoPath) as
+        | { id: string } | undefined
+      if (ep) return ep.id
+      const mv = deps.lib.db.prepare(`SELECT id FROM movies WHERE path = ?`).get(videoPath) as
+        | { id: string } | undefined
+      return mv?.id ?? null
+    }
+    const resolveNullItemId = (installedPath: string): string | null => {
+      const subDir = dirname(installedPath)
+      const subBase = basename(installedPath)
+      const owner = targets.filter((t) => {
+        if (dirname(t.videoPath) !== subDir) return false
+        const stem = basename(t.videoPath).replace(/\.[^.]+$/, '')
+        return subBase.startsWith(`${stem}.`)
+      })
+      if (owner.length !== 1) return null // 零命中或歧义都不猜
+      return rowIdByPath(owner[0].videoPath)
+    }
+    const resolvedInstalled = report.installed.flatMap((x) => {
+      if (x.itemId != null) return [{ ...x, itemId: x.itemId }]
+      const resolved = resolveNullItemId(x.installedPath)
+      if (resolved) return [{ ...x, itemId: resolved }]
+      console.error(
+        `[find-subtitle-unidentified] job ${job.id}: dropping installed entry with itemId:null — ` +
+          `could not resolve owning library row from installedPath ${x.installedPath}`,
+      )
+      return []
+    })
+    // unresolved 桶的 null itemId 没有 installedPath 可反解——无法归属任何行，丢弃告警。
+    // （unidentified 结局的 park-reason 回写走 targetPaths 整批覆盖，丢这条不损失账目。）
+    const dropNullUnresolved = <T extends { itemId: string | null; reason: string }>(
+      bucket: T[], name: string,
+    ): (T & { itemId: string })[] =>
+      bucket.flatMap((x) => {
+        if (x.itemId != null) return [{ ...x, itemId: x.itemId }]
+        console.error(
+          `[find-subtitle-unidentified] job ${job.id}: dropping ${name} entry with itemId:null ` +
+            `(no installedPath to resolve from; reason was: ${x.reason})`,
+        )
+        return []
+      })
     const dropAlien = <T extends { itemId: string }>(bucket: T[], name: string): T[] =>
       bucket.filter((x) => {
         if (isOwnedItemId(x.itemId)) return true
@@ -212,10 +261,10 @@ export async function runUnidentifiedFindSubtitleWorkerTask(
         )
         return false
       })
-    const installed = dropAlien(report.installed, 'installed')
-    const noMatch = dropAlien(report.no_safe_match, 'no_safe_match')
-    const retryLater = dropAlien(report.retry_later, 'retry_later')
-    const hardsubAssumed = dropAlien(report.hardsub_assumed, 'hardsub_assumed')
+    const installed = dropAlien(resolvedInstalled, 'installed')
+    const noMatch = dropAlien(dropNullUnresolved(report.no_safe_match, 'no_safe_match'), 'no_safe_match')
+    const retryLater = dropAlien(dropNullUnresolved(report.retry_later, 'retry_later'), 'retry_later')
+    const hardsubAssumed = dropAlien(dropNullUnresolved(report.hardsub_assumed, 'hardsub_assumed'), 'hardsub_assumed')
 
     // 语义反转闸（findSubtitleWorker.schemas.ts 的 identity 字段文档："后者由 runner 层把关"）：
     // identity.outcome==='unidentified' 时 installed 必须为空——身份未定时装的字幕会记到错的

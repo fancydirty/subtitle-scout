@@ -108,8 +108,19 @@ export interface FindSubtitleTask {
   targets: FindSubtitleTargetFact[]
 }
 
+/** 🔴 itemId 可空（2026-07-28，job 34 实测——identityTools.ts 头注释那个缺陷类的第三例）：
+ *  混合批（73 个未识别 parked 文件 + 24 个库行目标）里，弱模型 74 次 write_identified_media
+ *  全对、68 次 install_subtitle 全成，finalize 却对部分 installed 项报了 itemId:null——
+ *  原 `z.string().min(1)` 拒收，整份报告校验失败，execute 永不运行，152 秒收割成果全灭，
+ *  job 落 failed。这不是模型的错：工具层自己就容忍 null itemId（resolveTarget 明文处理
+ *  未识别目标的 itemId:null，见 findSubtitleWorker.tools.ts），prompt 的 target 行也明写
+ *  `itemId: null`——系统亲手把 null 递给模型，finalize 却拒收它递回来。绝不向模型索要
+ *  系统没给它的数据。null 的归属由 runner 层反解：installed 项从 installedPath（字幕装在
+ *  视频旁，`<video-stem>.<langTag><ext>` 命名约定）匹配 target 目录 + 视频 stem 前缀，再查
+ *  该 videoPath 的库行；unresolved 项无路径可反解，null 一律丢弃告警（park-reason 回写已
+ *  按 targetPaths 整批覆盖 unidentified 结局，丢弃不损失任何账目）。 */
 export const FindSubtitleInstalledItemSchema = z.object({
-  itemId: z.string().min(1),
+  itemId: nullableTolerant(z.string().min(1)),
   installedPath: z.string().min(1),
   installedLanguage: nullableTolerant(z.string().min(1)),
   candidateProvider: nullableTolerant(z.string()),
@@ -117,7 +128,9 @@ export const FindSubtitleInstalledItemSchema = z.object({
   reason: z.string().min(1),
 })
 export const FindSubtitleUnresolvedItemSchema = z.object({
-  itemId: z.string().min(1),
+  // 同上（第三例）：no_safe_match/retry_later/hardsub_assumed 桶里一个 null itemId 同样会
+  // 炸掉整份报告——容忍进来，runner 层丢弃告警（无 installedPath 可反解归属）。
+  itemId: nullableTolerant(z.string().min(1)),
   reason: z.string().min(1),
 })
 

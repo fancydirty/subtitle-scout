@@ -58,14 +58,16 @@ describe('FindSubtitleBatchReportSchema', () => {
     expect(r.installed[0].candidateProviderId).toBeNull()
   })
 
-  it('no_safe_match / retry_later 项要求 itemId 与 reason 非空', () => {
-    expect(() =>
-      FindSubtitleBatchReportSchema.parse({
-        installed: [],
-        no_safe_match: [{ itemId: '', reason: 'x' }],
-        retry_later: [],
-      }),
-    ).toThrow()
+  it('no_safe_match / retry_later 项要求 reason 非空；itemId 空串哨兵折叠为 null（第三例容错后不再炸）', () => {
+    // 第三例（job 34）之前 itemId:'' 会炸整份报告——现在 '' 是 nullish 哨兵，折叠为 null
+    // 进入 runner 层丢弃告警轨（归属反解/丢弃），不再让一个空 id 炸掉整批收割。
+    const r = FindSubtitleBatchReportSchema.safeParse({
+      installed: [],
+      no_safe_match: [{ itemId: '', reason: 'x' }],
+      retry_later: [],
+    })
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.no_safe_match[0].itemId).toBeNull()
     expect(() =>
       FindSubtitleBatchReportSchema.parse({
         installed: [],
@@ -197,6 +199,28 @@ describe('identity.unidentified 的 kind 分类容错（六轮血案纪律）', 
     const r = parse({ outcome: 'unidentified', reason: 'x', kind: 'i-have-no-idea' })
     expect(r.success).toBe(true)
     if (r.success) expect((r.data.identity as any).kind).toBe('identification-failed')
+  })
+})
+
+describe('installed/unresolved 的 itemId 容错（六轮血案第三例：混合批 finalize null itemId）', () => {
+  const base = { no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null }
+  it('🔴 installed 项 itemId:null 不炸整个报告（job34 实测：152 秒收割成果全灭）', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base, installed: [
+      { itemId: null, installedPath: '/x/y.zh-Hans.srt', installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: '1', reason: 'ok' },
+    ]})
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.installed[0].itemId).toBeNull()
+  })
+  it('installed 项 itemId 省略 → null', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base, installed: [
+      { installedPath: '/x/y.zh-Hans.srt', installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: '1', reason: 'ok' },
+    ]})
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.installed[0].itemId).toBeNull()
+  })
+  it('no_safe_match 项 itemId:null 同样不炸', () => {
+    const r = FindSubtitleBatchReportSchema.safeParse({ ...base, installed: [], no_safe_match: [{ itemId: null, reason: 'x' }] })
+    expect(r.success).toBe(true)
   })
 })
 
