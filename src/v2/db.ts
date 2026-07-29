@@ -434,88 +434,85 @@ export function openDb(path: string): ScoutDb {
     // meta 表不存在，currentVersion 保持为 0
   }
 
-  // 执行未应用的迁移
-  if (currentVersion < MIGRATIONS.length) {
-    // DB 审计🔴:迁移前自动快照(任何进程 openDb 触发迁移都有恢复点,不靠运维记得手动备份)。
-    // VACUUM INTO 在线一致、连 WAL 内容一起收;:memory: 跳过。
-    if (path !== ':memory:') {
-      try {
-        db.exec(`VACUUM INTO '${path.replace(/'/g, "''")}.pre-v${MIGRATIONS.length}.bak'`)
-      } catch { /* 快照失败不阻塞迁移(空间不足等),迁移事务本身仍是 all-or-nothing */ }
-    }
-    // Pre-flight: 历史迁移链的建新表→拷数据→删旧表→改名手法（见上方 pragma 注释）会把存量行
-    // 原样拷进重建的表——若库里蛰伏着孤儿行（外键引用的父行已不存在，比如父行曾被手工删除、
-    // 或数据是在 foreign_keys=OFF 时代写入的从未被真正验证过），拷贝期间这行数据本身就是脏
-    // 的，不修就永远是脏的（与本连接这一刻 foreign_keys 开关无关，迁移期间这个开关本就故意
-    // 关着）。这里在动手改表之前先体检一遍，把违例行（表名+rowid）摊开写进报错，一步到位可
-    // 操作，避免守护进程日后拿一句晦涩的 FOREIGN KEY constraint failed 反复重启也炸不出头绪。
-    // v9 起 MIGRATIONS 只剩一条纯 CREATE TABLE 的终态 entry（不做拷贝重建），体检当前不会
-    // 命中，但机制原样保留供未来的增量迁移复用。
-    const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
-      table: string
-      rowid: number | string | null
-      parent: string
-      fkid: number
-    }>
-    if (violations.length > 0) {
-      const detail = violations
-        .map((v) => {
-          let idNote = ''
-          try {
-            const row = db.prepare(`SELECT id FROM "${v.table}" WHERE rowid = ?`).get(v.rowid) as
-              | { id: unknown }
-              | undefined
-            if (row?.id !== undefined) idNote = ` (id=${JSON.stringify(row.id)})`
-          } catch {
-            // 表没有 id 列或查询失败——rowid 已足够定位，静默降级
-          }
-          return `${v.table} rowid=${v.rowid ?? '?'}${idNote} → 缺失 ${v.parent} 的外键引用`
-        })
-        .join('; ')
-      const message =
-        `数据库存在外键违例，无法安全迁移（schema v${currentVersion} → v${MIGRATIONS.length}）：${detail}。` +
-        `请先手工修复（删除孤儿行或补全被引用的父行）后再重启 —— 迁移未执行，数据库仍停留在 v${currentVersion}。`
-      db.close() // 不留半开连接：修复者接下来大概率要用另一个连接直接改数据
-      throw new Error(message)
-    }
-
-    const migrate = db.transaction(() => {
-      for (let i = currentVersion; i < MIGRATIONS.length; i++) {
-        const migration = MIGRATIONS[i]
-        if (typeof migration === 'string') db.exec(migration)
-        else migration(db)
-        const newVersion = i + 1
-        db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)").run(
-          String(newVersion)
-        )
+  // 迁移前置防线：包装在 try...catch 里，确保**任何**阶段抛错（FK 体检/VACUUM/迁移事务）
+  // 都能正确关闭连接，绝不残留句柄与 -wal/-shm 锁阻碍重启或修复。
+  try {
+    // 执行未应用的迁移
+    if (currentVersion < MIGRATIONS.length) {
+      // DB 审计🔴:迁移前自动快照(任何进程 openDb 触发迁移都有恢复点,不靠运维记得手动备份)。
+      // VACUUM INTO 在线一致、连 WAL 内容一起收;:memory: 跳过。
+      if (path !== ':memory:') {
+        try {
+          db.exec(`VACUUM INTO '${path.replace(/'/g, "''")}.pre-v${MIGRATIONS.length}.bak'`)
+        } catch { /* 快照失败不阻塞迁移(空间不足等),迁移事务本身仍是 all-or-nothing */ }
       }
-    })
-    try {
+      // Pre-flight: 历史迁移链的建新表→拷数据→删旧表→改名手法（见上方 pragma 注释）会把存量行
+      // 原样拷进重建的表——若库里蛰伏着孤儿行（外键引用的父行已不存在，比如父行曾被手工删除、
+      // 或数据是在 foreign_keys=OFF 时代写入的从未被真正验证过），拷贝期间这行数据本身就是脏
+      // 的，不修就永远是脏的（与本连接这一刻 foreign_keys 开关无关，迁移期间这个开关本就故意
+      // 关着）。这里在动手改表之前先体检一遍，把违例行（表名+rowid）摊开写进报错，一步到位可
+      // 操作，避免守护进程日后拿一句晦涩的 FOREIGN KEY constraint failed 反复重启也炸不出头绪。
+      // v9 起 MIGRATIONS 只剩一条纯 CREATE TABLE 的终态 entry（不做拷贝重建），体检当前不会
+      // 命中，但机制原样保留供未来的增量迁移复用。
+      const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
+        table: string
+        rowid: number | string | null
+        parent: string
+        fkid: number
+      }>
+      if (violations.length > 0) {
+        const detail = violations
+          .map((v) => {
+            let idNote = ''
+            try {
+              const row = db.prepare(`SELECT id FROM "${v.table}" WHERE rowid = ?`).get(v.rowid) as
+                | { id: unknown }
+                | undefined
+              if (row?.id !== undefined) idNote = ` (id=${JSON.stringify(row.id)})`
+            } catch {
+              // 表没有 id 列或查询失败——rowid 已足够定位，静默降级
+            }
+            return `${v.table} rowid=${v.rowid ?? '?'}${idNote} → 缺失 ${v.parent} 的外键引用`
+          })
+          .join('; ')
+        const message =
+          `数据库存在外键违例，无法安全迁移（schema v${currentVersion} → v${MIGRATIONS.length}）：${detail}。` +
+          `请先手工修复（删除孤儿行或补全被引用的父行）后再重启 —— 迁移未执行，数据库仍停留在 v${currentVersion}。`
+        throw new Error(message)
+      }
+
+      const migrate = db.transaction(() => {
+        for (let i = currentVersion; i < MIGRATIONS.length; i++) {
+          const migration = MIGRATIONS[i]
+          if (typeof migration === 'string') db.exec(migration)
+          else migration(db)
+          const newVersion = i + 1
+          db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)").run(
+            String(newVersion)
+          )
+        }
+      })
       migrate()
-    } catch (err) {
-      // D-review #4：迁移失败时事务已整体回滚（库仍停留在旧版本），但句柄不能泄漏——
-      // openDb 抛错后调用方拿不到 db，无从 close；残留的打开连接会占着 -wal/-shm 和
-      // 文件锁，妨碍修复者（同上方 FK 体检失败路径的 close 语义）。
-      db.close()
-      // v9 起 MIGRATIONS 折叠：v1–v8 时代的老库(schema_version 落在 1–8 的 de-Jellyfin 之前世界)
-      // 与折叠后的增量链不兼容——会在 v17+ 的 ALTER item_files 上撞 "no such table"(item_files
-      // 建在被跳过的 v9 折叠 entry 里)。产品已裁决老库作废、操作者自删。给一句人话而不是裸 SQL 错。
-      const msg = String((err as Error)?.message ?? err)
-      if (currentVersion >= 1 && currentVersion < 9 && /no such (table|column)/i.test(msg)) {
-        throw new Error(
-          `数据库 schema v${currentVersion} 是 de-Jellyfin 化(v9)之前的旧版本,与当前折叠后的迁移链不兼容` +
-          `(底层错误：${msg})。这类开发期老库已作废——请备份后删除 scout.db(及 -wal/-shm)让程序重新` +
-          `初始化,重启后会从零重扫媒体库、重新识别与找字幕。`,
-        )
-      }
-      throw err
     }
-  }
 
-  // 迁移（如果跑了）已经全部提交——现在才打开运行期外键强校验，覆盖有迁移和无迁移两条
-  // 路径（无迁移路径同样需要它，只是从未被上面 if 分支覆盖到）。见顶部 pragma 注释：
-  // 提前打开会导致历史上"建新表→删旧表→改名"手法的 DROP TABLE（含被引用的真实外键）无法完成。
-  db.pragma('foreign_keys = ON')
+    // 迁移（如果跑了）已经全部提交——现在才打开运行期外键强校验，覆盖有迁移和无迁移两条
+    // 路径（无迁移路径同样需要它，只是从未被上面 if 分支覆盖到）。见顶部 pragma 注释：
+    // 提前打开会导致历史上"建新表→删旧表→改名"手法的 DROP TABLE（含被引用的真实外键）无法完成。
+    db.pragma('foreign_keys = ON')
+  } catch (err) {
+    // AUDIT-02 兜底：openDb 的任何迁移/体检/PRAGMA 错误路径均在抛错前统一 close，
+    // 彻底防止死锁/句柄残留妨碍修复或守护进程重启。
+    try { db.close() } catch { /* 忽略重复 close */ }
+    const msg = String((err as Error)?.message ?? err)
+    if (currentVersion >= 1 && currentVersion < 9 && /no such (table|column)/i.test(msg)) {
+      throw new Error(
+        `数据库 schema v${currentVersion} 是 de-Jellyfin 化(v9)之前的旧版本,与当前折叠后的迁移链不兼容` +
+        `(底层错误：${msg})。这类开发期老库已作废——请备份后删除 scout.db(及 -wal/-shm)让程序重新` +
+        `初始化,重启后会从零重扫媒体库、重新识别与找字幕。`,
+      )
+    }
+    throw err
+  }
 
   return db
 }
