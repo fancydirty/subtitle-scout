@@ -46,18 +46,71 @@ export function containingRoot(path: string, roots: string[]): string | null {
 let writeProbeCounter = 0
 
 /**
- * 目录是否可写:在 dir 下真实试写一个隐藏临时文件再删除。成功→true,任何异常→false
- * (目录不存在也会因写失败返回 false)。不用 fs.access(W_OK)——网络挂载(WebDAV/rclone/CIFS)
- * 上 W_OK 会撒谎,且容器内 root 会绕过权限位;真实试写走 sidecar 将来同一条写路径,是唯一可信信号。
+ * 目录是否可写:在 dir 下真实试写一个隐藏临时文件再删除。不用 fs.access(W_OK)——网络挂载
+ * (WebDAV/rclone/CIFS)上 W_OK 会撒谎,且容器内 root 会绕过权限位;真实试写走 sidecar 将来同
+ * 一条写路径,是唯一可信信号。
+ *
+ * 🔴 2026-07-29 生产事故修复（云盘误判 + 175 个残留垃圾文件）：旧实现把「写成功」与「删成功」
+ * 绑成一个成功条件——`writeFileSync` 后紧跟 `unlinkSync`，只有两个都成功才 return true。
+ * 在 rclone WebDAV 云盘上，写入是最终一致的：writeFileSync 立刻返回，紧接着的 unlinkSync
+ * 可能撞上「文件还没在远端落地」而抛错，于是：
+ *   ① 函数返回 false → 上层 assertDirSafe 报「Media dir not writable」，云盘目标全线拒装
+ *     （昨夜 job 34 的真实错误就是它，而手工 touch 测试证明云盘明明可写）；
+ *   ② catch 里的补救 unlink 同样失败 → 每次探测留一个 0 字节垃圾文件。实测全库残留 175 个
+ *     （铁拳教育那个目录 50 个 —— 同一 job 每次重试各留一个）。
+ *
+ * 修正后的语义：**可写性只由「写」决定，删除是清理而非判据**。删不掉不影响结论，只记一次
+ * 告警（探针文件是隐藏文件、0 字节，且下面的 sweepWriteProbes 会在后续巡检里兜底收走）。
+ *
+ * @param unlink 删除实现的可测接缝（ESM 下无法 spyOn 模块导出）。生产省略=真实 fs.unlinkSync。
  */
-export function isDirWritable(dir: string): boolean {
+export function isDirWritable(dir: string, unlink: (p: string) => void = unlinkSync): boolean {
   const probe = resolve(dir, `.subtitle-scout-writetest-${process.pid}-${writeProbeCounter++}`)
   try {
     writeFileSync(probe, '')
-    unlinkSync(probe)
-    return true
   } catch {
-    try { unlinkSync(probe) } catch { /* 写失败时无残留;写成功删失败的边界尽力清理 */ }
-    return false
+    return false // 写不进去 = 真的不可写，无残留可清
   }
+  // 写成功即判定可写；删除是尽力而为的清理，失败不改变结论（云盘最终一致性）。
+  try {
+    unlink(probe)
+  } catch {
+    // 云盘延迟导致的删除失败：留一个 0 字节隐藏文件，由 sweepWriteProbes 兜底清理。
+    console.error(
+      `[media-context] write probe left behind at ${probe} (unlink failed — likely eventual-consistency ` +
+      `on a network mount). Directory IS writable; sweepWriteProbes will clean it up later.`,
+    )
+  }
+  return true
+}
+
+/**
+ * 清理残留的写探针文件（上面 unlink 失败时留下的 0 字节隐藏文件）。
+ * 幂等、尽力而为：任何单个文件删不掉都只记日志，不抛错、不中断调用方。
+ * 返回真正删掉的数量，供调用方记账。
+ *
+ * @param unlink 同 isDirWritable 的可测接缝。
+ */
+export function sweepWriteProbes(
+  dir: string,
+  readdir: (d: string) => string[],
+  unlink: (p: string) => void = unlinkSync,
+): number {
+  let removed = 0
+  let names: string[]
+  try {
+    names = readdir(dir)
+  } catch {
+    return 0 // 目录读不了（死挂载/权限）——不是本函数该处理的问题
+  }
+  for (const name of names) {
+    if (!name.startsWith('.subtitle-scout-writetest-')) continue
+    try {
+      unlink(resolve(dir, name))
+      removed++
+    } catch {
+      // 删不掉就留着——0 字节隐藏文件无害，下一轮再试
+    }
+  }
+  return removed
 }

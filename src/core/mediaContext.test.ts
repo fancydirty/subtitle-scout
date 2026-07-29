@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
-import { mkdtempSync, chmodSync, readdirSync } from 'node:fs'
+import { describe, it, expect, vi } from 'vitest'
+import * as fs from 'node:fs'
+import { mkdtempSync, chmodSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parsePathMappings, mapPath, isUnderRoots, containingRoot, isDirWritable } from './mediaContext.js'
+import { parsePathMappings, mapPath, isUnderRoots, containingRoot, isDirWritable, sweepWriteProbes } from './mediaContext.js'
 
 describe('parsePathMappings', () => {
   it('parses comma-separated pairs', () => {
@@ -81,5 +82,55 @@ describe('isDirWritable', () => {
     // 以 root 运行时权限位被绕过,该断言不成立 → 条件跳过
     if (process.getuid && process.getuid() === 0) return
     expect(isDirWritable(dir)).toBe(false)
+  })
+
+  // 🔴 2026-07-29 生产事故回归锁（云盘误判 + 175 个残留垃圾）：旧实现把「删成功」当成可写的
+  // 必要条件——云盘（rclone WebDAV）最终一致性下 writeFileSync 成功但紧随的 unlinkSync 抛错，
+  // 于是①误报不可写（昨夜 job 34 全线拒装云盘目标，而手工 touch 证明可写）②每次留一个垃圾。
+  // 正确语义：**写成功即可写，删除只是清理**。
+  //
+  // ESM 下无法 spyOn 模块导出（Cannot redefine property），改用注入式的可测接缝：
+  // isDirWritable 接受可选的 unlink 实现，生产走真实 fs，测试注入一个会抛错的。
+  it('🔴 写成功但删除失败时仍判定可写（云盘最终一致性形状）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wp-unlinkfail-'))
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const writable = isDirWritable(dir, () => { throw new Error('EAGAIN: eventual consistency') })
+      expect(writable).toBe(true) // 旧实现在这里返回 false
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('write probe left behind'))
+      // 探针文件确实残留了（这正是云盘上发生的），留给 sweepWriteProbes 兜底
+      expect(readdirSync(dir).some(f => f.startsWith('.subtitle-scout-writetest'))).toBe(true)
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+})
+
+describe('sweepWriteProbes', () => {
+  it('清掉残留的写探针文件，返回删除数量', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wp-sweep-'))
+    writeFileSync(join(dir, '.subtitle-scout-writetest-7-1'), '')
+    writeFileSync(join(dir, '.subtitle-scout-writetest-7-2'), '')
+    writeFileSync(join(dir, 'real-subtitle.srt'), 'keep me')
+    const removed = sweepWriteProbes(dir, readdirSync)
+    expect(removed).toBe(2)
+    expect(readdirSync(dir)).toEqual(['real-subtitle.srt'])
+  })
+
+  it('目录读不了时返回 0，不抛错', () => {
+    expect(sweepWriteProbes(join(tmpdir(), 'wp-nope-zzz'), readdirSync)).toBe(0)
+  })
+
+  it('单个文件删不掉不影响其余（尽力而为）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wp-sweep-partial-'))
+    writeFileSync(join(dir, '.subtitle-scout-writetest-9-1'), '')
+    writeFileSync(join(dir, '.subtitle-scout-writetest-9-2'), '')
+    // 注入式 unlink：对 -9-1 抛错，其余走真实删除
+    const removed = sweepWriteProbes(dir, readdirSync, (p) => {
+      if (p.endsWith('-9-1')) throw new Error('EPERM')
+      fs.unlinkSync(p)
+    })
+    expect(removed).toBe(1) // 只删掉了能删的那个
+    expect(readdirSync(dir)).toEqual(['.subtitle-scout-writetest-9-1'])
   })
 })

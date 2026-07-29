@@ -1,5 +1,5 @@
-import { existsSync, statSync } from 'node:fs'
-import { basename } from 'node:path'
+import { existsSync, statSync, readdirSync } from 'node:fs'
+import { basename, dirname } from 'node:path'
 import { tagsForLanguage, langOf } from '../agent/languages.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { walkVideoFiles } from '../daemon/selfScan.js'
@@ -10,6 +10,7 @@ import type { LibraryRepo, SubStatus } from './libraryRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { PathIdentity, Park } from '../recognition/identifyFromPath.js'
 import { isCanonicalEpisodePath } from '../recognition/identifyFromPath.js'
+import { sweepWriteProbes } from '../core/mediaContext.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { propagateSubtitleToReplica } from './subtitlePropagation.js'
 import { mapWithConcurrency } from './probeConcurrency.js'
@@ -455,6 +456,10 @@ function mergeProviderIds(existingJson: string | null, newImdbId: string | null,
 
 export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
   const listVideoFiles = deps.listVideoFiles ?? walkVideoFiles
+  // 写探针清扫用的目录读取——失败返回空数组（死挂载/权限不是清扫该处理的问题）。
+  const defaultReaddir = (d: string): string[] => {
+    try { return readdirSync(d) } catch { return [] }
+  }
   const fileExists = deps.fileExists ?? ((p: string) => existsSync(p))
   // 三层防线①：checkFileGone 优先用注入值；否则若注入了旧 fileExists，从它派生（布尔只有
   // present/gone 两态，不产生 unknown——保持所有从未涉及这次改动的既有测试的行为不变）；两者
@@ -874,6 +879,24 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
           lib.clearParkedPath(p.path)
         }
       }
+
+      // 🔴 写探针残留清扫（2026-07-29 生产事故：云盘上 175 个 0 字节垃圾文件）：
+      // isDirWritable 在网络挂载上会遇到「写成功但立刻删不掉」（最终一致性），残留一个
+      // 隐藏探针文件。修好判定语义后（写成功即可写）残留仍会产生，故在这里兜底收走——
+      // 本轮走盘见过的每个目录扫一遍。零风险（只删自己前缀的 0 字节隐藏文件）、幂等、
+      // 尽力而为（删不掉的下一轮再试）。
+      const sweptDirs = new Set<string>()
+      let sweptProbes = 0
+      for (const path of seenPaths) {
+        const dir = dirname(path)
+        if (sweptDirs.has(dir)) continue
+        sweptDirs.add(dir)
+        sweptProbes += sweepWriteProbes(dir, defaultReaddir)
+      }
+      if (sweptProbes > 0) {
+        log(`ingest: swept ${sweptProbes} leftover write-probe file(s) across ${sweptDirs.size} dir(s)`)
+      }
+
       if (result.removed > 0) result.changed = true
       // Agent-first 识别的触发缺口（2026-07-28 真库阶段一实测发现）：旧世界里新文件建行
       // （upserted++ → changed → orchestrate 入队），重构后新文件只 park 不建行，而 park
