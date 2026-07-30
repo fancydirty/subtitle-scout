@@ -7,6 +7,7 @@ import type {
   LibrarySeriesDetailDTO, WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, TriageDTO,
   SettingsDTO, DeploySettingsDTO, MediaRootDTO,
   SubtitleVerifyListDTO,
+  SubtitleCompareDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -548,6 +549,40 @@ export function useSubtitleVerify(itemIds: readonly string[]): Async<SubtitleVer
       })
     return () => ctrl.abort()
   }, [key, nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** 对照图数据（2026-07-30）：itemId 为 null 时不发请求（面板关着）。 */
+export function useSubtitleCompare(itemId: string | null): Async<SubtitleCompareDTO> {
+  const [data, setData] = useState<SubtitleCompareDTO | null>(null)
+  const [loading, setLoading] = useState(itemId !== null)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    if (itemId === null) {
+      // 关面板时清掉旧数据：否则下次打开另一集会先闪一帧上一集的时间轴
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .subtitleCompare(itemId, ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [itemId, nonce])
 
   return { data, loading, error, reload }
 }

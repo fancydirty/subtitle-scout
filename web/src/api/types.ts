@@ -320,6 +320,8 @@ export interface LibraryCanonicalEpisodeDTO {
   stillPath: string | null
 }
 export interface LibraryOnDiskEpisodeDTO {
+  /** episodes.id——前端按它查字幕校验结论与对照数据（2026-07-30）。 */
+  itemId: string
   episode: number
   path: string
   subStatus: string

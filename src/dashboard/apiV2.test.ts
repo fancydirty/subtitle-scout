@@ -790,6 +790,21 @@ describe('buildLibrarySeriesDetail（GET /api/v2/library/series/:id：三层格�
     ).run('e1', '/media/tv/Series A/S01/e1.zh-Hans.srt', 'zh-Hans', 'scout-download', NOW)
   })
 
+  // 2026-07-30（字幕校验）：onDisk 必须带 episodes.id。校验结论按 item_id 索引，
+  // 前端不给 itemId 就无从关联——此前 DTO 只有 episode 号 + path，芯片压根接不上。
+  it('onDisk 每条带 itemId（= episodes.id），前端据此查校验结论', () => {
+    const detail = buildLibrarySeriesDetail(db, 's1')!
+    const all = detail.seasons.flatMap((sn) => sn.onDisk)
+    expect(all.length).toBeGreaterThan(0)
+    for (const ep of all) {
+      expect(typeof ep.itemId).toBe('string')
+      expect(ep.itemId.length).toBeGreaterThan(0)
+    }
+    // 与库里的真实 id 对得上（不是编出来的）
+    const ids = new Set(all.map((e) => e.itemId))
+    expect(ids.has('e1')).toBe(true)
+  })
+
   it('形状：series 行直译 + 季号并集升序 + 各季 canonical/onDisk/coverage', () => {
     const detail = buildLibrarySeriesDetail(db, 's1')!
     expect(detail.series).toEqual({

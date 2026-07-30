@@ -49,12 +49,12 @@ describe('SeriesPage：三层合成渲染（行式）', () => {
           season: 1,
           canonical: Array.from({ length: 8 }, (_, i) => canon(i + 1)),
           onDisk: [
-            { episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
-            { episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
-            { episode: 3, path: '/m/e3.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
-            { episode: 4, path: '/m/e4.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
-            { episode: 5, path: '/m/e5.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
-            { episode: 6, path: '/m/e6.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
+            { itemId: 'ep1', episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { itemId: 'ep2', episode: 2, path: '/m/e2.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { itemId: 'ep3', episode: 3, path: '/m/e3.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { itemId: 'ep4', episode: 4, path: '/m/e4.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+            { itemId: 'ep5', episode: 5, path: '/m/e5.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
+            { itemId: 'ep6', episode: 6, path: '/m/e6.mkv', subStatus: 'missing', statusReason: null, recheckAfter: null, files: [] },
           ],
           coverage: [
             { episode: 1, lang: 'zh-Hans', path: '/m/e1.zh-Hans.ass' },
@@ -86,7 +86,7 @@ describe('SeriesPage：覆盖句文案（季手风琴头）', () => {
           season: 1,
           canonical: Array.from({ length: 28 }, (_, i) => canon(i + 1, { title: null })),
           onDisk: Array.from({ length: 24 }, (_, i) => ({
-            episode: i + 1, path: `/m/e${i + 1}.mkv`, subStatus: 'covered', statusReason: null, recheckAfter: null, files: [],
+            itemId: `ep${i + 1}`, episode: i + 1, path: `/m/e${i + 1}.mkv`, subStatus: 'covered', statusReason: null, recheckAfter: null, files: [],
           })),
           coverage: [],
         },
@@ -130,7 +130,7 @@ describe('SeriesPage：canonical 缓存未建', () => {
         {
           season: 1,
           canonical: [],
-          onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] }],
+          onDisk: [{ itemId: 'ep1', episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] }],
           coverage: [],
         },
       ],
@@ -150,7 +150,7 @@ describe('SeriesPage：逐集行内展开（无右侧面板）', () => {
         {
           season: 1,
           canonical: [canon(1, { title: 'Pilot', overview: '哈蒙一家搬进凶宅', airDate: '2011-10-05' })],
-          onDisk: [{ episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] }],
+          onDisk: [{ itemId: 'ep1', episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] }],
           coverage: [],
         },
       ],

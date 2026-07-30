@@ -1097,6 +1097,8 @@ export interface LibraryCanonicalEpisodeDTO {
   stillPath: string | null
 }
 export interface LibraryOnDiskEpisodeDTO {
+  /** episodes.id——前端按它查字幕校验结论与对照数据（2026-07-30）。 */
+  itemId: string
   episode: number
   path: string
   subStatus: string
@@ -1189,6 +1191,10 @@ export function buildLibrarySeriesDetail(db: ScoutDb, id: string): LibrarySeries
     onDisk: onDiskRows
       .filter((r) => r.season === season)
       .map((r) => ({
+        // itemId（2026-07-30 字幕校验）：episodes.id。前端按它查校验结论（GET
+        // /api/v2/subtitle/verify?itemIds=）与对照数据——此前 DTO 只给 episode 号 + path，
+        // 而校验结果是按 item_id 索引的，前端无从关联。SQL 早已 SELECT 了 id，只是没带出来。
+        itemId: r.id,
         episode: r.episode, path: r.path, subStatus: r.sub_status,
         statusReason: r.status_reason, recheckAfter: r.recheck_after,
         files: lib.itemFileCoverage(r.id),

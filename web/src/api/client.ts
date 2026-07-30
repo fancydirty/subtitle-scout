@@ -3,6 +3,7 @@ import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
   ParkedItemDTO, WorkflowPendingDTO, LibrarySeriesDetailDTO,
   SubtitleVerifyListDTO,
+  SubtitleCompareDTO,
   WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
   TriageDTO,
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
@@ -136,6 +137,15 @@ export const api = {
   // encodeURIComponent 编码后由 router.ts 的 decodeIdSegment 解回。
   librarySeriesDetail: (id: string, signal?: AbortSignal) =>
     get<LibrarySeriesDetailDTO>(`/api/v2/library/series/${encodeURIComponent(id)}`, signal),
+  // 对照图数据（2026-07-30）：单条，供检视面板画双轨时间轴。
+  subtitleCompare: (itemId: string, signal?: AbortSignal) =>
+    get<SubtitleCompareDTO>(`/api/v2/subtitle/compare?itemId=${encodeURIComponent(itemId)}`, signal),
+  // 唯二写扳手之一：校正时间轴。后端在这一步里已重新检测并覆盖落库，调用方只需刷新视图。
+  subtitleCorrect: (itemId: string) =>
+    post<{ ok: boolean; state: string; error?: string }>('/api/v2/subtitle/correct', { itemId }),
+  // 撤销校正，恢复备份。
+  subtitleRevert: (itemId: string) =>
+    post<{ ok: boolean; state: string; error?: string }>('/api/v2/subtitle/revert', { itemId }),
   // 字幕校验（2026-07-30）：批量拿一季的校验结论。单条也走这个（items 恒为数组，
   // 后端刻意只给一种响应形状，免得前端写两条解析分支）。上限 500 个 id 由后端把关。
   subtitleVerify: (itemIds: readonly string[], signal?: AbortSignal) =>
