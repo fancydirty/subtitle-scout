@@ -1,5 +1,10 @@
 .serena/
 node_modules/
+# 不带斜杠的那条也要：符号链接不是目录，`node_modules/` 匹配不到它。
+# 2026-07-30 真实事故——worktree 里 `ln -s` 指向主仓的 node_modules，那个链接被当成普通
+# 文件提交了（314f95a），随后 merge 到 main 时把主仓真实的 node_modules 目录替换成一个
+# 指向自己的循环链接，vitest 直接 exit 194 零输出。
+node_modules
 .wrangler/
 .dev.vars
 scratch/
