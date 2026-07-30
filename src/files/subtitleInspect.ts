@@ -35,7 +35,10 @@ function truncateSignalText(s: string): string {
   return s.length > MAX_SIGNAL_TEXT_LEN ? s.slice(0, MAX_SIGNAL_TEXT_LEN) : s
 }
 
-interface Cue { startMs: number; endMs: number; text: string }
+/** 导出供 src/subtitleVerify/referenceSource.ts 复用解析结果：对齐检测需要拿到 cue 的
+ *  说话时段（startMs/endMs），字段名与 alignDetect.ts 的 SpeechSpan 兼容，可直接传入 detectOffset。
+ *  两处共用同一份解析器而非各写一份，避免解析行为漂移（体检认得的 cue 与对齐认得的 cue 必须一致）。 */
+export interface Cue { startMs: number; endMs: number; text: string }
 
 function isLikelyUndecodable(text: string): boolean {
   if (text.trim().length === 0) return true
@@ -57,7 +60,7 @@ function srtTimeToMs(h: string, m: string, s: string, ms: string): number {
   return (Number(h) * 3600 + Number(m) * 60 + Number(s)) * 1000 + Number(ms)
 }
 
-function parseSrtCues(text: string): Cue[] {
+export function parseSrtCues(text: string): Cue[] {
   const cues: Cue[] = []
   const blocks = text.split(/\r?\n\r?\n/)
   for (const block of blocks) {
@@ -81,7 +84,7 @@ function assTimeToMs(raw: string): number | null {
   return (Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000 + Number(m[4]) * 10
 }
 
-function parseAssCues(text: string): { cues: Cue[]; title: string | null; headerComment: string | null } {
+export function parseAssCues(text: string): { cues: Cue[]; title: string | null; headerComment: string | null } {
   const lines = text.split(/\r?\n/)
   const cues: Cue[] = []
   let title: string | null = null
