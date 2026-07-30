@@ -358,3 +358,20 @@ export interface SubtitleVerifyDTO {
 export interface SubtitleVerifyListDTO {
   items: SubtitleVerifyDTO[]
 }
+
+/** 对照图数据（2026-07-30）：与 src/dashboard/subtitleCompareApi.ts 的同名 DTO 一致。
+ *  同样不含 score/offsetMs/referenceTier/detail——时间戳是定位坐标（画图必需），
+ *  分数是质量评分（铁律②禁止）。 */
+export interface CompareBlock {
+  startMs: number
+  endMs: number
+  text: string | null
+}
+export interface SubtitleCompareDTO {
+  itemId: string
+  reference: CompareBlock[]
+  ours: CompareBlock[]
+  durationMs: number
+  waveformAvailable: boolean
+  mountKind: 'local' | 'lan' | 'cloud'
+}

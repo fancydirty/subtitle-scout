@@ -74,6 +74,23 @@ export const en = {
   verify_track_ours_sub: 'to fix',
   verify_track_audio: 'sound',
   verify_timeline_hint: 'scroll to zoom · drag to pan',
+  // 检视面板（2026-07-30 spec §4.2）。结论文案的三档对应 diagnose() 的三个返回值。
+  // 措辞纪律：说"画面"不说"参考轨"，说"这份字幕"不说"sidecar"，不提帧率/互相关/agent。
+  verify_inspect_loading: 'Loading…',
+  verify_verdict_shift_head: 'The subtitles run behind the picture',
+  verify_verdict_shift_body: 'Everything is off by the same amount, so shifting the whole track lines it back up. Usually this means the subtitle was made for a different release of this episode.',
+  verify_verdict_drift_head: 'The gap grows as the episode goes on',
+  verify_verdict_drift_body: 'It starts out close and drifts further apart — shifting the whole track cannot fix that. You will need a subtitle made for this particular file.',
+  verify_verdict_unknown_head: 'Cannot tell what is going on here',
+  verify_verdict_unknown_body: 'There is not enough to compare against, so nothing is being claimed. Have a look at the lines below to check they belong to this episode.',
+  verify_correct_action: 'Fix the timing',
+  verify_correcting: 'Fixing…',
+  verify_keep_action: 'Leave it alone',
+  verify_got_it: 'Got it',
+  verify_cues_heading: 'Subtitle lines',
+  verify_cloud_title: 'No comparison for files on cloud storage',
+  verify_cloud_body: 'Reading even a short stretch takes tens of seconds, so the timeline cannot be drawn. Everything else works as usual.',
+  verify_cloud_blind_fix: 'You can still fix the timing — you just will not see the chart.',
   library_facts_coverage: 'covered',
   library_facts_embedded_unit: 'embedded',
 
