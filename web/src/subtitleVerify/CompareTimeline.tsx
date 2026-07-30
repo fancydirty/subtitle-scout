@@ -105,7 +105,10 @@ export function CompareTimeline({ reference, ours, durationMs, waveformPeaks }: 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (vp === null) return
     dragRef.current = { startX: e.clientX, startVp: vp }
-    e.currentTarget.setPointerCapture(e.pointerId)
+    // setPointerCapture 在 jsdom 里不存在（不是 no-op，是压根没这个方法）。捕获只是
+    // "拖到元素外面也别丢事件"的增益，拿不到就算了——绝不能让它把 pointerdown 炸掉，
+    // 那会让整个面板在测试环境里抛错、并在真实浏览器的老引擎上留同一个坑。
+    e.currentTarget.setPointerCapture?.(e.pointerId)
   }, [vp])
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
@@ -116,8 +119,8 @@ export function CompareTimeline({ reference, ours, durationMs, waveformPeaks }: 
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     dragRef.current = null
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId) === true) {
+      e.currentTarget.releasePointerCapture?.(e.pointerId)
     }
   }, [])
 

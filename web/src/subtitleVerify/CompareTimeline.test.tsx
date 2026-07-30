@@ -209,6 +209,29 @@ describe('CompareTimeline：滚轮缩放（spec I3）', () => {
 })
 
 describe('CompareTimeline：拖拽平移（spec I4）', () => {
+  // 回归锁：setPointerCapture 在 jsdom 里压根不存在（不是 no-op）。裸调它会让 pointerdown
+  // 抛错——测试里表现为 vitest 的 "unhandled errors / may cause false positive tests"，
+  // 真实浏览器的老引擎上是同一个坑。捕获只是"拖到元素外也别丢事件"的增益，拿不到就算了。
+  // fireEvent 会把 React 事件处理器里的抛错吞进 error boundary/控制台，所以不能用
+  // expect(...).not.toThrow() 验——那样变异体（去掉可选链）会照绿。改为直接监听
+  // window 的 error 事件：React 18+ 把未捕获的事件处理器异常重新抛到 window 上。
+  it('setPointerCapture 缺席时 pointerdown 不产生未捕获异常（可选链保护）', () => {
+    const { container } = renderTL()
+    const host = container.querySelector('.cmptl')!
+    expect((host as HTMLElement).setPointerCapture).toBeUndefined()
+    const errors: unknown[] = []
+    const onErr = (e: ErrorEvent) => { errors.push(e.error ?? e.message); e.preventDefault() }
+    window.addEventListener('error', onErr)
+    try {
+      fireEvent.pointerDown(host, { clientX: 400, pointerId: 1 })
+      fireEvent.pointerMove(host, { clientX: 200, pointerId: 1 })
+      fireEvent.pointerUp(host, { clientX: 200, pointerId: 1 })
+    } finally {
+      window.removeEventListener('error', onErr)
+    }
+    expect(errors).toEqual([])
+  })
+
   it('拖拽改变可见窗（刻度标签随之变化）', () => {
     const { container } = renderTL({ reference: cues(60), ours: [], durationMs: 600_000 })
     const host = container.querySelector('.cmptl')!
