@@ -7,6 +7,7 @@ import {
   revertSubtitleTiming,
   BACKUP_SUFFIX,
   META_SUFFIX,
+  MAX_ABS_OFFSET_MS,
 } from './shiftTiming.js'
 
 const FIXTURE_TORTURE = resolve(__dirname, '__fixtures__/torture.ass')
@@ -356,6 +357,21 @@ describe('shiftSubtitleTiming — 备份与幂等', () => {
     expect(dialogueTimes(readFileSync(p))).toEqual([['0:00:18.00', '0:00:20.00']])
   })
 
+  it('shift-existing-backup-not-rewritten: 备份已存在时对备份的写次数为 0（不只是内容等价）', async () => {
+    // 审计 I6：只断言备份**内容**时，把 `if (!backupExisted)` 改成 `if (true)` 全套照绿——
+    // 内容等价，但每次调用都对不可替代的备份多做一次 rename 覆盖（多一次损坏窗口）。
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    await shiftSubtitleTiming(p, 2000)
+    const backupPath = `${resolve(p)}${BACKUP_SUFFIX}`
+    const target = resolve(p)
+    const writes: string[] = []
+    await shiftSubtitleTiming(p, 2500, {
+      writeFileImpl: (path, data) => { writes.push(path); writeFileSync(path, data) },
+    })
+    expect(writes.filter(w => w === backupPath)).toEqual([])
+    expect(writes).toContain(target)
+  })
+
   it('shift-meta-reports-previous-offset: meta 记录累计平移量，供调用方做残差叠加', async () => {
     const p = stage(FIXTURE_TORTURE, 'torture.ass')
     const r1 = await shiftSubtitleTiming(p, 2000)
@@ -395,6 +411,250 @@ describe('shiftSubtitleTiming — 备份与幂等', () => {
     expect(r.ok).toBe(false)
     expect(r.detail).toContain('no backup')
     expect(readFileSync(p)).toEqual(before)
+  })
+})
+
+/**
+ * 三文件状态机（target × backup × meta）守卫。
+ * 审计 C1：`backupExisted` 这一个布尔位曾承担本该由两位信息共同决定的判断，
+ * 导致"备份被删但 meta 尚存"时把已平移文件当原始基准，静默双倍平移且原始永久丢失。
+ */
+describe('shiftSubtitleTiming — 三文件状态机守卫', () => {
+  it('shift-c1-backup-missing-but-meta-nonzero-refused: 备份被删而 meta 记着非零平移 → 拒绝，文件与备份都不动', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const backupPath = `${resolve(p)}${BACKUP_SUFFIX}`
+    const metaPath = `${resolve(p)}${META_SUFFIX}`
+
+    // t1：正常平移一次
+    const r1 = await shiftSubtitleTiming(p, 2000)
+    expect(r1.ok).toBe(true)
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:08.50', '0:00:10.30'],
+      ['0:00:13.00', '0:00:15.00'],
+    ])
+
+    // 模拟清理脚本只删了 .scout-backup、漏删 .scout-backup.json
+    rmSync(backupPath)
+    expect(existsSync(metaPath)).toBe(true)
+    const afterDelete = readFileSync(p)
+
+    // t2：必须拒绝——磁盘上的文件已被平移过，却没有原始字节副本可作基准。
+    // 修复前这里会 ok:true 并把 08.50 平移成 06.50（双倍），同时把 08.50 存成"原始"备份。
+    const r2 = await shiftSubtitleTiming(p, 2000)
+    expect(r2.ok).toBe(false)
+    expect(r2.detail).toContain('backup missing')
+    expect(r2.detail).toContain('2000')
+    // 目标文件一个字节都没动（没有双倍平移）
+    expect(readFileSync(p)).toEqual(afterDelete)
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:08.50', '0:00:10.30'],
+      ['0:00:13.00', '0:00:15.00'],
+    ])
+    // 绝不能拿已平移的文件生成一个假"原始"备份
+    expect(existsSync(backupPath)).toBe(false)
+    // 拒绝时也如实回报 meta 的值，供调用方诊断
+    expect(r2.previousOffsetMs).toBe(2000)
+  })
+
+  it('shift-c1-backup-missing-meta-zero-treated-as-never-shifted: meta 记 0 是退化的合法态，按首次平移处理', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    // meta 记 0ms = 等价于未平移，不该被 C1 守卫拦住
+    writeFileSync(`${resolve(p)}${META_SUFFIX}`, JSON.stringify({ appliedOffsetMs: 0 }))
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:08.50', '0:00:10.30'],
+      ['0:00:13.00', '0:00:15.00'],
+    ])
+  })
+
+  it('shift-c1-backup-missing-meta-corrupt-allowed: 备份无 + meta 损坏 → 不拦（损坏 meta 读作未知，当首次平移）', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    writeFileSync(`${resolve(p)}${META_SUFFIX}`, 'not json at all')
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(readFileSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toEqual(readFileSync(FIXTURE_TORTURE))
+  })
+
+  it('shift-c2-previous-offset-matches-detail: previousOffsetMs 与 detail 的 prevOffsetMs= 恒等（四种状态组合）', async () => {
+    // 审计 C2：曾经 `backupExisted ? previousOffsetMs : 0` 让返回值与 detail 自相矛盾。
+    const readPrevFromDetail = (d: string): string => /prevOffsetMs=(\S+)/.exec(d)![1]!
+    const assertConsistent = (r: Awaited<ReturnType<typeof shiftSubtitleTiming>>) => {
+      const shown = readPrevFromDetail(r.detail)
+      const expected = r.previousOffsetMs == null ? 'unknown' : String(r.previousOffsetMs)
+      expect(shown, `detail says prevOffsetMs=${shown} but field is ${String(r.previousOffsetMs)}`).toBe(expected)
+    }
+
+    // ① 备份无 + meta 无 = 确定从未平移过 → 0（事实，非猜测）
+    const a = stage(FIXTURE_TORTURE, 'a.ass')
+    const r1 = await shiftSubtitleTiming(a, 2000)
+    expect(r1.previousOffsetMs).toBe(0)
+    assertConsistent(r1)
+
+    // ② 备份有 + meta 有 = 正常再次调用 → meta 的值
+    const r2 = await shiftSubtitleTiming(a, 2500)
+    expect(r2.previousOffsetMs).toBe(2000)
+    assertConsistent(r2)
+
+    // ③ 备份有 + meta 无 = 手工备份/老版本 → null（未知，不猜 0）
+    const b = stage(FIXTURE_TORTURE, 'b.ass')
+    writeFileSync(`${resolve(b)}${BACKUP_SUFFIX}`, readFileSync(b))
+    const r3 = await shiftSubtitleTiming(b, 2000)
+    expect(r3.previousOffsetMs).toBeNull()
+    assertConsistent(r3)
+
+    // ④ 备份有 + meta 损坏 → null
+    const c = stage(FIXTURE_TORTURE, 'c.ass')
+    writeFileSync(`${resolve(c)}${BACKUP_SUFFIX}`, readFileSync(c))
+    writeFileSync(`${resolve(c)}${META_SUFFIX}`, '{broken')
+    const r4 = await shiftSubtitleTiming(c, 2000)
+    expect(r4.previousOffsetMs).toBeNull()
+    assertConsistent(r4)
+  })
+
+  it('shift-c2-never-reports-zero-when-meta-says-otherwise: 只要 meta 有非零值，previousOffsetMs 绝不报 0', async () => {
+    // 这是 C2 实害的直接钉子：调用方按 previousOffsetMs + R 叠加，报 0 会欠校正。
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    await shiftSubtitleTiming(p, 2000)
+    const r = await shiftSubtitleTiming(p, 3000)
+    expect(r.previousOffsetMs).not.toBe(0)
+    expect(r.previousOffsetMs).toBe(2000)
+  })
+})
+
+describe('shiftSubtitleTiming — revert 守卫（与 shift 对称）', () => {
+  it('revert-garbage-backup-refused: 截断/垃圾备份不得覆盖用户文件', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    // 模拟 SIGKILL 留下的截断备份 / 用户手工放错的文件
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.from('TRUNCATE'))
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('does not look like a valid')
+    // 修复前这里会把用户文件覆盖成 8 字节垃圾并报 ok:true
+    expect(readFileSync(p)).toEqual(before)
+  })
+
+  it('revert-empty-backup-refused: 空备份被拒绝', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.alloc(0))
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('empty file')
+    expect(readFileSync(p)).toEqual(before)
+  })
+
+  it('revert-unsupported-extension-refused: revert 不得成为绕过 shift 扩展名检查的后门', async () => {
+    const p = join(dir, 'x.vtt')
+    writeFileSync(p, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n')
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, 'WEBVTT\n')
+    const before = readFileSync(p)
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('unsupported extension')
+    expect(readFileSync(p)).toEqual(before)
+  })
+
+  it('revert-nonexistent-target-refused: 目标不存在时不得凭备份凭空造出文件', async () => {
+    const p = join(dir, 'gone.ass')
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, readFileSync(FIXTURE_TORTURE))
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('target does not exist')
+    // 修复前 revert 会在这里创建出 gone.ass
+    expect(existsSync(p)).toBe(false)
+  })
+
+  it('revert-valid-srt-backup-accepted: 合法 SRT 备份能正常 revert（合理性检查不误拒真文件）', async () => {
+    const srt = '1\n00:00:10,500 --> 00:00:12,300\nhello\n'
+    const p = stageBytes(Buffer.from(srt, 'utf8'), 'a.srt')
+    await shiftSubtitleTiming(p, 2000)
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(true)
+    expect(readFileSync(p).toString('utf8')).toBe(srt)
+  })
+
+  it('revert-minimal-ass-backup-accepted: 缺 section 头但 Dialogue 完好的 ASS 不被误拒', async () => {
+    // 字幕组文件千奇百怪，合理性检查必须宽松：只区分"字幕"与"垃圾"，不做格式完整性审查
+    const minimal = 'Dialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,x\n'
+    const p = stageBytes(Buffer.from(minimal, 'utf8'), 'min.ass')
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.from(minimal, 'utf8'))
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(true)
+  })
+})
+
+describe('shiftSubtitleTiming — offset 上界与静默无操作', () => {
+  it('shift-absurd-offset-refused: |offsetMs| 超过 ±6h 理智上界即拒绝，文件不动', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    for (const bad of [1e15, Number.MAX_SAFE_INTEGER, -1e12, MAX_ABS_OFFSET_MS + 1]) {
+      const r = await shiftSubtitleTiming(p, bad)
+      expect(r.ok, `offset ${bad} should be refused`).toBe(false)
+      expect(r.detail).toContain('exceeds sanity bound')
+    }
+    expect(readFileSync(p)).toEqual(before)
+    expect(existsSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toBe(false)
+  })
+
+  it('shift-at-sanity-bound-accepted: 恰好等于上界的偏移仍被接受（边界不是 off-by-one）', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const r = await shiftSubtitleTiming(p, MAX_ABS_OFFSET_MS)
+    expect(r.ok).toBe(true)
+    // 全部钳到 0（6 小时远超这个 fixture 的时长），但这是合法的用户意图
+    expect(r.clampedCount).toBe(4)
+  })
+
+  it('shift-bomless-utf16-refused-not-silent-noop: 无 BOM 的 UTF-16 被拒绝，而非报 ok 却什么都没改', async () => {
+    // 审计 I7：BOM 检测抓不到它，字节级正则全失配 → 曾经返回 ok:true / shiftedLines:0，
+    // 调用方看不出"这文件我没能处理"。
+    const p = stageBytes(
+      Buffer.from('[Events]\nDialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,x\n', 'utf16le'),
+      'bomless.ass',
+    )
+    const before = readFileSync(p)
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(false)
+    expect(readFileSync(p)).toEqual(before)
+    expect(existsSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toBe(false)
+  })
+
+  it('shift-all-timestamps-malformed-refused: 有 Dialogue 行但没一条时间戳能解析 → 拒绝而非静默报成功', async () => {
+    // I7 守卫的另一条到达路径（无 BOM UTF-16 已被 NUL 检测提前拦掉）：
+    // 时间戳格式整体不对（这里是 SSA v4 的 h:mm:ss.cc 被写成了 mm:ss 形式）。
+    // 这种文件字节级正则全失配，若不拦就是 ok:true / shiftedLines:0 的静默无操作。
+    const src = [
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Dialogue: 0,10:50,12:30,Default,,0,0,0,,坏时间戳一',
+      'Dialogue: 0,15:00,17:00,Default,,0,0,0,,坏时间戳二',
+      '',
+    ].join('\n')
+    const p = stageBytes(Buffer.from(src, 'utf8'), 'allbad.ass')
+    const before = readFileSync(p)
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('rewrote 0 timestamp(s)')
+    expect(readFileSync(p)).toEqual(before)
+    expect(existsSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toBe(false)
+  })
+
+  it('shift-no-dialogue-file-is-not-an-error: 本来就没有生效字幕行的文件不报错（0 行是正常的）', async () => {
+    // 与上一条区分：eligible=0 时的 shiftedLines=0 是正常状态，不该被 I7 守卫误伤
+    const p = stageBytes(Buffer.from('[Script Info]\nTitle: empty\n\n[Events]\n', 'utf8'), 'empty.ass')
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(0)
+  })
+
+  it('shift-comment-only-file-is-not-an-error: 只有 Comment: 行的文件不报错', async () => {
+    const src = '[Events]\nComment: 0,0:00:05.00,0:00:06.00,Default,,0,0,0,,废弃\n'
+    const p = stageBytes(Buffer.from(src, 'utf8'), 'conly.ass')
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(0)
+    expect(readFileSync(p).toString('utf8')).toBe(src)
   })
 })
 

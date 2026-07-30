@@ -1,5 +1,13 @@
-# 字幕体检的测试 fixture 必须逐字节保真：shiftTiming.test.ts 断言"CRLF 不被转成 LF"，
-# 而 torture.ass 正是那个带 UTF-8 BOM + CRLF 的严苛样本。若让 git 做行尾归一化，
-# 新克隆出来的 fixture 会变成 LF，测试就会去验证一个不再存在的性质（假通过/假失败）。
+# 字幕 fixture 必须逐字节保真，不能让 git 做行尾归一化。
+#
+# shiftTiming.test.ts 的字节保真断言直接依赖 fixture 的真实字节：
+#   - torture.ass 断言 CRLF 不被转成 LF（17 处）+ UTF-8 BOM 原样保留
+#   - subhd/down-2BNs4Y.ass 断言"无 BOM""无 CRLF""[Events] 之前逐字节不变"
+# 若 git 归一化行尾，新克隆出来的 fixture 字节就变了，测试会去验证一个不再存在的性质——
+# 在类 Unix 上表现为假通过，在 Windows checkout 上 down-2BNs4Y.ass 会变成 CRLF
+# 从而让 shift-lf-preserved 变红。两种都是坏结果。
+#
+# 规则按目录而非单个文件名：纪律的本质是"所有字幕 fixture 都按二进制对待"，
+# 逐个文件名列举必然会漏（down-2BNs4Y.ass 就漏过一次）。
 # -text = 当二进制处理，不做任何行尾转换。
-src/subtitleVerify/__fixtures__/torture.ass -text
+src/**/__fixtures__/** -text

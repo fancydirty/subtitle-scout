@@ -72,6 +72,31 @@
  *   - 备份已存在 → 说明之前改过。**绝不覆盖备份**（那会毁掉原始版本），
  *     而是**从备份读原始字节重新计算**再写目标文件。
  *
+ * ### 三文件状态机：target × backup × meta 的合法组合
+ *
+ * 这个模块管三个文件：目标字幕 `T`、备份 `B`（=`T.scout-backup`）、meta `M`
+ * （=`T.scout-backup.json`）。**`B` 存在与否这一个布尔位不足以决定该怎么做**——
+ * 必须连同"`M` 说了什么"一起判断。曾经把两位信息压成一个 `backupExisted` 布尔，
+ * 结果是"备份被删但 meta 尚存"时把**已平移的文件当原始字节**读进去当新备份，
+ * 静默双倍平移且原始字节永久丢失（审计 C1）。所以合法组合在此穷举，改动前先对照：
+ *
+ * | B | M | 含义 | 行为 |
+ * |---|---|---|---|
+ * | 无 | 无 | 从未平移过（正常首次调用） | 备份 T → 基于 T 平移。prev=0 |
+ * | 有 | 有(N) | 已平移 N（正常再次调用） | **基于 B 重算**，B 不覆盖。prev=N |
+ * | 有 | 无 | 备份在但 meta 缺失：老版本留下的、或用户手工放的备份 | 基于 B 重算（B 仍是可信基准）。prev=null=未知，不猜 |
+ * | 有 | 有但损坏 | 同上 | 同上。prev=null |
+ * | **无** | **有(N≠0)** | **非法**：正常流程不可能产生 | **拒绝** |
+ * | 无 | 有(0) | 退化的合法态：记录着"平移 0ms"，等价于未平移 | 按"从未平移过"处理 |
+ *
+ * 为什么"B 无 + M 有非零"必然非法：meta 只在备份写成功之后才写（见落盘阶段的顺序），
+ * 所以这个组合只可能来自外部干预——最典型的是清理脚本只删了 `.scout-backup`
+ * 却漏删 `.scout-backup.json`（而本模块的注释正明确说"清理备份是独立的显式操作"，
+ * 所以这条路径是设计上可达的，不是边角）。此时磁盘上的 T 已经被平移过 N ms，
+ * 却没有任何原始字节的副本——**无法确定原始基准**。
+ * 唯一安全的行为是拒绝：宁可要求人工介入，也不能把已平移文件当原始基准存成新备份
+ * （那会让 revert 也救不回原始版本）。这与 UTF-16 的处理同源——诚实拒绝好过损坏文件。
+ *
  * 所以 `offsetMs` 的基准恒为**原始文件**，不是"当前磁盘上的文件"。这带来真幂等：
  * 同参数连调 N 次，结果字节完全一致，不会双倍平移。代价是调用方必须自己做残差累加——
  * 若在已平移 +A 的文件上又检出残差 R，要传的是 `A + R`，不是 `R`。为此我们把已应用的
@@ -120,9 +145,19 @@ export interface ShiftResult {
   /** 本次实际应用的平移量（相对**原始文件**）。等于入参 offsetMs，冗余回报是为了让调用方
    *  在拿到 previousOffsetMs 后能确认基准一致。仅成功时有值。 */
   appliedOffsetMs?: number
-  /** 本次调用**之前**已应用的累计平移量（相对原始文件），来自 meta 文件。
-   *  首次平移为 0；meta 缺失或损坏（老备份/手工备份）时为 null = 未知，不猜。
-   *  调用方要在已平移文件上叠加残差 R 时，应传 previousOffsetMs + R。 */
+  /** 本次调用**之前**已应用的累计平移量（相对原始文件）。
+   *
+   *  语义严格跟随 meta 文件，**绝不猜**：
+   *    - meta 有合法值 → 该值（首次平移前无 meta，见下）
+   *    - meta 缺失或损坏（老备份/手工备份/meta 写失败过）→ `null` = 未知
+   *    - 确定处于"从未平移过"状态（备份与 meta 皆无）→ `0`
+   *
+   *  曾经在"备份不存在"时一律硬报 0，于是 meta 明明记着 2000 却回报 0——与同一次调用的
+   *  detail 自相矛盾，且调用方按下面的公式叠加会欠校正 2000ms（审计 C2）。
+   *  现在这个字段与 detail 里的 `prevOffsetMs=` 恒等，可交叉验证。
+   *
+   *  调用方要在已平移文件上叠加残差 R 时，应传 `previousOffsetMs + R`；
+   *  拿到 `null`（未知）时**不要**假设 0——那正是上面那个 bug 的形状。 */
   previousOffsetMs?: number | null
   /** 被钳到 0 的时间戳个数（单个时间戳计一次，一行 Start+End 都越界记 2）。仅成功时有值。 */
   clampedCount?: number
@@ -141,6 +176,34 @@ export const BACKUP_SUFFIX = '.scout-backup'
  *  meta 是**辅助**信息，不是正确性依赖——它缺失/损坏只会让 previousOffsetMs 变 null，
  *  绝不影响"基于备份重算"这条主路径的正确性（那条只依赖备份文件本身）。 */
 export const META_SUFFIX = '.scout-backup.json'
+
+/** `|offsetMs|` 的理智上界（±6 小时）。超出即拒绝。
+ *
+ *  真实的字幕不同步从来不会这么大：常见成因是版本差异（片头 logo 长度、导演剪辑版）、
+ *  帧率换算（23.976 vs 25，整片累积也就分钟级）、或时区式的整段错位。±6h 已经远宽于
+ *  任何真实场景，所以越界必然是上游 bug 而非用户的真实意图。
+ *
+ *  为什么要有这道闸：实测 offsetMs=1e15 会把整片每条 cue 全部钳到 0（时间轴被"写平"，
+ *  字幕全挤在开头），-1e12 会产出 `277777:46:50,500` 这种没有播放器认得的时间戳。
+ *  两者都是"成功写入"、ok:true，用户拿到一个彻底废掉的文件。
+ *
+ *  刻意比 alignDetect 的 MAX_SHIFT_MS（60s）宽松得多：那个是**检测侧**的搜索窗上界
+ *  （超过 60s 的偏移它不去找），而这里是**写入侧**的理智性检查。人工指定的大幅平移
+ *  （比如给整季字幕补一个几分钟的片头差）是合法用法，不该被检测侧的窗口限制卡死。 */
+export const MAX_ABS_OFFSET_MS = 6 * 3600_000
+
+/** 支持的后缀。与 shift/revert 两侧共用——守卫必须对称，否则 revert 会成为绕过
+ *  shift 全部前置检查的后门（审计 I2：revert 曾能给一个 shift 明确拒绝的 .vtt
+ *  创建出原本不存在的文件）。 */
+const SUPPORTED_EXTS = ['.ass', '.ssa', '.srt'] as const
+
+function extOf(path: string): string {
+  return (path.match(/\.[^.\\/]+$/)?.[0] ?? '').toLowerCase()
+}
+
+function isSupportedExt(ext: string): boolean {
+  return (SUPPORTED_EXTS as readonly string[]).includes(ext)
+}
 
 export interface ShiftOptions {
   /** 注入点：写文件。ESM 无法 spy 模块导出，外部 IO 必须可注入才能测"写失败"这类路径。
@@ -243,6 +306,11 @@ interface TransformOutcome {
   latin1: string
   clampedCount: number
   shiftedLines: number
+  /** 本该被平移的生效字幕行数（ASS 的 `Dialogue:` 行 / SRT 的疑似时间行），
+   *  无论其时间戳是否解析成功。用来区分两种 shiftedLines===0：
+   *  "文件里本来就没有生效字幕"（正常）vs "有字幕但一条都没改成"（编码问题，须报错）。
+   *  见主函数里的 I7 守卫。 */
+  eligibleLines: number
 }
 
 /**
@@ -262,6 +330,7 @@ function transformAss(latin1: string, offsetMs: number): TransformOutcome {
   let endIdx = 2
   let clampedCount = 0
   let shiftedLines = 0
+  let eligibleLines = 0
   const out: string[] = []
 
   for (const line of lines) {
@@ -288,6 +357,8 @@ function transformAss(latin1: string, offsetMs: number): TransformOutcome {
       continue
     }
 
+    // 到这里已确认是 [Events] 里的 Dialogue 行 = 生效字幕行，无论时间戳能否解析。
+    eligibleLines += 1
     const colon = line.text.indexOf(':')
     const head = line.text.slice(0, colon + 1)
     const rest = line.text.slice(colon + 1)
@@ -321,7 +392,7 @@ function transformAss(latin1: string, offsetMs: number): TransformOutcome {
     shiftedLines += 1
     out.push(head + fields.join(',') + line.eol)
   }
-  return { latin1: out.join(''), clampedCount, shiftedLines }
+  return { latin1: out.join(''), clampedCount, shiftedLines, eligibleLines }
 }
 
 /**
@@ -333,8 +404,13 @@ function transformSrt(latin1: string, offsetMs: number): TransformOutcome {
   const lines = splitLinesKeepEol(latin1)
   let clampedCount = 0
   let shiftedLines = 0
+  let eligibleLines = 0
   const out: string[] = []
   for (const line of lines) {
+    // 生效行判据用宽松的"含 -->"：严格正则失配的行（时间戳格式坏了、或整个文件编码不对）
+    // 也要计入 eligible，否则 I7 守卫看到 eligible=0 会把"有字幕但一条没改成"误判成
+    // "本来就没字幕"而静默放过。
+    if (line.text.includes('-->')) eligibleLines += 1
     const m = SRT_TIME_LINE.exec(line.text)
     if (!m) {
       out.push(line.text + line.eol)
@@ -353,15 +429,26 @@ function transformSrt(latin1: string, offsetMs: number): TransformOutcome {
     shiftedLines += 1
     out.push(`${m[1]}${msToSrtTime(sa.ms)}${m[3]}${msToSrtTime(sb.ms)}${m[5]}${line.eol}`)
   }
-  return { latin1: out.join(''), clampedCount, shiftedLines }
+  return { latin1: out.join(''), clampedCount, shiftedLines, eligibleLines }
 }
 
-/** UTF-16 BOM 检测。UTF-16 的 ASCII 是双字节，字节级正则必然失配 → 拒绝处理。见文件头。 */
+/** UTF-16/UTF-32 检测 → 拒绝处理。见文件头。
+ *
+ *  两条判据：
+ *  ① BOM（FF FE / FE FF）——有 BOM 的好办。
+ *  ② **NUL 字节**——抓无 BOM 的 UTF-16/UTF-32。这类文件 BOM 检测抓不到，但字节级正则
+ *     对它全部失配，结果是"字节原样不变却 ok:true"的静默无操作（审计 I7）。
+ *     判据很干净：任何 ASCII 兼容编码（UTF-8/GBK/GB18030/BIG5/Shift_JIS/latin1…）的
+ *     **文本**字幕文件都不含 0x00——NUL 在这些编码里不是合法文本字符，也不出现在任何
+ *     多字节序列的 lead/trail 范围内。而 UTF-16 的 ASCII 部分每个字符都带一个 NUL。
+ *     所以"含 NUL"⇒"不是我们能按字节安全处理的文本字幕"，无误判风险。 */
 function isUtf16(buf: Buffer): boolean {
-  if (buf.length < 2) return false
-  const b0 = buf[0]
-  const b1 = buf[1]
-  return (b0 === 0xff && b1 === 0xfe) || (b0 === 0xfe && b1 === 0xff)
+  if (buf.length >= 2) {
+    const b0 = buf[0]
+    const b1 = buf[1]
+    if ((b0 === 0xff && b1 === 0xfe) || (b0 === 0xfe && b1 === 0xff)) return true
+  }
+  return buf.includes(0x00)
 }
 
 /** 原子写：tmp + fsync + rename。照抄 src/files/subtitleWriter.ts:117-149 的既有纪律。
@@ -445,17 +532,39 @@ export async function shiftSubtitleTiming(
   if (!Number.isFinite(offsetMs)) {
     return { ok: false, detail: `refused: offsetMs is not a finite number (${String(offsetMs)})` }
   }
+  if (Math.abs(offsetMs) > MAX_ABS_OFFSET_MS) {
+    // 上游 bug 传进离谱值（实测 1e15 会把整片钳到 0，-1e12 产出 277777:46:50）会把整条
+    // 时间轴写平/写飞。本函数是 public export，不能假设调用方一定给了合理值。见常量注释。
+    return {
+      ok: false,
+      detail: `refused: |offsetMs| ${Math.abs(offsetMs)}ms exceeds sanity bound ${MAX_ABS_OFFSET_MS}ms (±6h); a real subtitle sync error is never this large, so this is almost certainly a caller bug`,
+    }
+  }
   if (!exists(path)) {
     return { ok: false, detail: `refused: subtitle file does not exist: ${path}` }
   }
 
-  const ext = (path.match(/\.[^.\\/]+$/)?.[0] ?? '').toLowerCase()
-  if (ext !== '.ass' && ext !== '.ssa' && ext !== '.srt') {
+  const ext = extOf(path)
+  if (!isSupportedExt(ext)) {
     return { ok: false, detail: `refused: unsupported extension ${ext || '(none)'} (only .ass/.ssa/.srt)` }
   }
 
   const previousOffsetMs = readMeta(metaPath, opts)
   const backupExisted = exists(backupPath)
+
+  // ── C1 守卫：备份缺失但 meta 记录着非零平移 = 三文件状态机里的非法组合。 ──
+  // 见文件头状态机表。此时磁盘上的文件已被平移过，却没有任何原始字节副本，
+  // 无法确定原始基准。若照常往下走，会把**已平移的文件当原始字节**存成新备份
+  // （双倍平移 + 原始永久丢失 + revert 也救不回）。宁可拒绝、要求人工介入。
+  // 检测所需信息本来就在手边：previousOffsetMs 刚从 meta 读到。
+  // meta 记 0 不算：那等价于"未平移过"，按正常首次调用处理（退化的合法态）。
+  if (!backupExisted && previousOffsetMs != null && previousOffsetMs !== 0) {
+    return {
+      ok: false,
+      previousOffsetMs,
+      detail: `refused: backup missing at ${backupPath} but meta records an applied shift of ${previousOffsetMs}ms — cannot determine the original baseline, and treating the already-shifted file as the original would double-shift it and destroy the original bytes irrecoverably. Restore the backup, or (after confirming the file is unshifted) delete ${metaPath} manually.`,
+    }
+  }
 
   // ── 阶段一：纯计算，无副作用。任何失败在这里返回，磁盘一个字节都没动。 ──
   let source: Buffer
@@ -471,7 +580,8 @@ export async function shiftSubtitleTiming(
     // 诚实拒绝好过损坏文件：UTF-16 的 ASCII 是双字节，字节级正则会失配。见文件头。
     return {
       ok: false,
-      detail: 'refused: UTF-16 BOM detected; byte-level timestamp rewriting is unsafe for UTF-16 (not supported this release), original file untouched',
+      previousOffsetMs,
+      detail: 'refused: UTF-16/UTF-32 detected (BOM or NUL bytes); byte-level timestamp rewriting is unsafe for these encodings (not supported this release), original file untouched',
     }
   }
 
@@ -485,6 +595,18 @@ export async function shiftSubtitleTiming(
       : transformAss(latin1, offsetMs)
   } catch (e) {
     return { ok: false, detail: `refused: transform failed: ${errText(e)}, original file untouched` }
+  }
+  // ── I7：一条都没改却报成功 = 静默无操作，调用方看不出"这文件我没能处理"。 ──
+  // 最典型是**无 BOM 的 UTF-16**：它不构成损坏（字节级正则全失配 → 字节原样不变），
+  // 但 ok:true / shiftedLines:0 会让调用方以为校正已生效。BOM 检测抓不到这种文件。
+  // 判据用"源文件里确实存在生效字幕行"——空的 [Events]、纯注释文件（只有 Comment:）
+  // 本来就无可平移，那种 0 行是正常的，不该报错。
+  if (outcome.shiftedLines === 0 && outcome.eligibleLines > 0) {
+    return {
+      ok: false,
+      previousOffsetMs,
+      detail: `refused: found ${outcome.eligibleLines} subtitle line(s) but rewrote 0 timestamp(s) — the file's timestamps are not byte-level ASCII as required (BOM-less UTF-16/UTF-32 is the usual cause; BOM-less encodings cannot be detected up front). Original file untouched rather than silently reporting success.`,
+    }
   }
   const next = Buffer.from(outcome.latin1, 'latin1')
 
@@ -517,11 +639,25 @@ export async function shiftSubtitleTiming(
     metaOk = false
   }
 
+  // ── C2：previousOffsetMs 必须如实反映 meta，且与 detail 里的 prevOffsetMs= 恒等。 ──
+  // 曾经写成 `backupExisted ? previousOffsetMs : 0`——把"备份在否 × meta 说什么"两位信息
+  // 压成一个布尔，于是备份不存在时一律硬报 0。后果有两种，都被审计实测到：
+  //   ① 备份被删但 meta 记着 2000 → 返回 0 而 detail 写 2000（自相矛盾，且调用方按
+  //      previousOffsetMs + R 叠加会欠校正 2000ms）。该状态现在已被 C1 守卫提前拒掉。
+  //   ② 正常首次调用（备份无 + meta 无）→ 返回 0 而 detail 写 unknown（同样自相矛盾）。
+  // 现在两者同源于 effectivePrevOffsetMs，不可能再打架。
+  //
+  // "备份与 meta 皆无" ⇒ 确定处于从未平移过的状态 ⇒ 报 0 是事实而非猜测；
+  // 其余一切情况都如实转述 meta（含 null=未知）。见文件头状态机表。
+  const neverShifted = !backupExisted && previousOffsetMs == null
+  const effectivePrevOffsetMs = neverShifted ? 0 : previousOffsetMs
+  const prevText = effectivePrevOffsetMs == null ? 'unknown' : String(effectivePrevOffsetMs)
+
   const parts = [
     `shifted ${outcome.shiftedLines} line(s) by ${offsetMs}ms (newTime = oldTime - offsetMs)`,
     `format=${ext}`,
     backupExisted ? 'recomputed from existing backup (idempotent)' : 'created backup',
-    `prevOffsetMs=${previousOffsetMs == null ? 'unknown' : previousOffsetMs}`,
+    `prevOffsetMs=${prevText}`,
   ]
   if (outcome.clampedCount > 0) parts.push(`clamped ${outcome.clampedCount} timestamp(s) to 0`)
   if (!metaOk) parts.push('meta write failed (previousOffsetMs will read as unknown next time)')
@@ -530,7 +666,7 @@ export async function shiftSubtitleTiming(
     ok: true,
     backupPath,
     appliedOffsetMs: offsetMs,
-    previousOffsetMs: backupExisted ? previousOffsetMs : 0,
+    previousOffsetMs: effectivePrevOffsetMs,
     clampedCount: outcome.clampedCount,
     shiftedLines: outcome.shiftedLines,
     detail: parts.join('; '),
@@ -542,6 +678,15 @@ export async function shiftSubtitleTiming(
  *
  * **备份本身不删**——用户可能想再校正一次，而删除原始字节副本是不可逆的。
  * 清理备份是独立的显式操作（人工/清理脚本），刻意不放在这里。
+ *
+ * **守卫必须与 shiftSubtitleTiming 对称**（审计 I1/I2）。曾经这里一道守卫都没有，
+ * 而备份是本模块刻意设计成"用户可见可动"的普通文件，于是：
+ *   - 手工放 8 字节垃圾当备份 → revert 直接把用户文件覆盖成 8 字节垃圾，还报 ok:true。
+ *     一个 SIGKILL 留下的截断备份就够触发（备份自身走原子写，但用户/脚本放的不走）。
+ *   - `revert('/x/gone.vtt')` 在只有 `.vtt.scout-backup` 时**创建**出原本不存在的文件——
+ *     而 shift 对 `.vtt` 是明确拒绝的。少了守卫的 revert 成了绕过 shift 全部前置检查的后门。
+ * 所以这里补齐三道：扩展名白名单、目标必须已存在（revert 是"还原"，不是"凭备份造文件"）、
+ * 备份内容基本合理性（能看出是字幕，不是任意字节）。
  */
 export async function revertSubtitleTiming(
   subtitlePath: string,
@@ -553,6 +698,17 @@ export async function revertSubtitleTiming(
   const exists = opts?.existsImpl ?? existsSync
   const read = opts?.readFileImpl ?? readFileSync
 
+  // 守卫①：扩展名。与 shift 同一份白名单，否则 revert 成为 shift 检查的后门。
+  const ext = extOf(path)
+  if (!isSupportedExt(ext)) {
+    return { ok: false, detail: `refused: unsupported extension ${ext || '(none)'} (only .ass/.ssa/.srt)` }
+  }
+  // 守卫②：目标必须已存在。revert 的语义是"把改过的文件还原回去"，不是"凭一个备份
+  // 无中生有地造出文件"。目标不存在时备份多半是别的东西的残留（或路径写错了），
+  // 照着写会在用户目录里凭空生出文件。
+  if (!exists(path)) {
+    return { ok: false, detail: `refused: target does not exist: ${path}; revert restores a modified file, it does not create one from a stray backup` }
+  }
   if (!exists(backupPath)) {
     return { ok: false, detail: `refused: no backup at ${backupPath}; nothing to revert` }
   }
@@ -561,6 +717,16 @@ export async function revertSubtitleTiming(
     original = read(backupPath)
   } catch (e) {
     return { ok: false, detail: `refused: cannot read backup: ${errText(e)}, target untouched` }
+  }
+  // 守卫③：备份内容合理性。宁可拒绝一个可疑的备份，也不能用它覆盖用户的文件——
+  // 覆盖是不可逆的，而"拒绝"只是让用户手工确认一下。
+  const sanity = looksLikeSubtitle(original, ext)
+  if (!sanity.ok) {
+    return {
+      ok: false,
+      backupPath,
+      detail: `refused: backup at ${backupPath} does not look like a valid ${ext} subtitle (${sanity.why}); refusing to overwrite the target with it — inspect the backup manually. Target untouched.`,
+    }
   }
   try {
     atomicWrite(path, original, opts)
@@ -574,6 +740,41 @@ export async function revertSubtitleTiming(
     // 而那个字段是信息性的；撤销本身（字节已写回）已经成功，不该因此报失败。
   }
   return { ok: true, backupPath, detail: `reverted from backup (${original.length} bytes); backup kept at ${backupPath}` }
+}
+
+/**
+ * 备份内容的基本合理性检查——只用于 revert 前，防止拿一个截断/垃圾备份覆盖用户文件。
+ *
+ * **刻意宽松**：这里的失败模式是不对称的。误拒一个真字幕 = 用户手工改个名就能绕过（烦但无损）；
+ * 误放一个垃圾备份 = 用户的文件被不可逆覆盖。所以只拒"明显不是字幕"的东西：
+ *   - 空文件 / 极短文件
+ *   - 含 NUL（UTF-16/UTF-32/二进制——本模块按字节处理不了，也不该写回去）
+ *   - 一条时间戳都找不到
+ * 不检查的东西：section 完整性、Format 行、cue 数量、编码合法性。字幕组的文件千奇百怪
+ * （无 [Script Info] 的、只有 [Events] 的、自定义 section 的都真实存在），
+ * 把那些判成"不合理"会误拒真文件。判据只要能区分"字幕"和"垃圾"就够了。
+ */
+function looksLikeSubtitle(buf: Buffer, ext: string): { ok: true } | { ok: false; why: string } {
+  if (buf.length === 0) return { ok: false, why: 'empty file' }
+  if (buf.includes(0x00)) return { ok: false, why: 'contains NUL bytes (binary or UTF-16/UTF-32)' }
+  const s = buf.toString('latin1')
+  if (ext === '.srt') {
+    // SRT 的最小可信特征：一个 `-->` 时间行。
+    // 这里刻意不复用 SRT_TIME_LINE——它是 ^...$ 行锚定且无 /m，对整份多行文本永远失配。
+    if (!/\d+:[0-5]\d:[0-5]\d,\d{3}\s*-->/.test(s)) {
+      return { ok: false, why: 'no SRT timestamp line (hh:mm:ss,mmm --> hh:mm:ss,mmm) found' }
+    }
+    return { ok: true }
+  }
+  // ASS/SSA 的最小可信特征：一条带合法时间戳的 Dialogue/Comment 行。
+  // 不要求 [Events] 头——真实文件里见过缺 section 头但 Dialogue 完好的。
+  if (!/^\s*(?:Dialogue|Comment)\s*:/im.test(s)) {
+    return { ok: false, why: 'no Dialogue:/Comment: line found' }
+  }
+  if (!/\d+:[0-5]\d:[0-5]\d\.\d{2}/.test(s)) {
+    return { ok: false, why: 'no ASS timestamp (h:mm:ss.cc) found' }
+  }
+  return { ok: true }
 }
 
 function errText(e: unknown): string {
