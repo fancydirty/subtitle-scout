@@ -165,7 +165,17 @@ export function selectVerifyCandidates(db: SweepDb, limit: number): VerifyCandid
            LEFT JOIN subtitle_verify v ON v.item_id = m.id
           WHERE m.sub_status = 'covered' AND v.item_id IS NULL
        )
-       ORDER BY item_id, subtitle_path`,
+       ORDER BY item_id,
+         -- 同一条目挂多份字幕时（生产实测 282 个 covered 里有 10 个），优先选**和视频
+         -- 同目录**的那份。理由：参考源的 ② 层就是扫字幕所在目录，字幕跟视频不在一起时
+         -- 那一层必然空手而归；而且跨目录的那份常常在云盘上（生产上 The Conjuring 的
+         -- 4 份字幕里 2 份在 /media/aliyun），云盘既抽不了内嵌轨也没有同目录同伴，
+         -- 结果是白判一次 unverifiable —— 明明另一份就在视频旁边、能验。
+         -- rtrim(video_path, replace(video_path,'/','')) 取出视频路径的目录前缀（含尾斜杠），
+         -- 这是 SQLite 里没有 dirname() 时取目录的惯用法。
+         CASE WHEN subtitle_path LIKE rtrim(video_path, replace(video_path, '/', '')) || '%'
+              THEN 0 ELSE 1 END,
+         subtitle_path`,
     )
     .all() as Array<{ item_id: string; video_path: string; subtitle_path: string }>
 

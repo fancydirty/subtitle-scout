@@ -77,6 +77,47 @@ describe('verifySweep', () => {
 
   // ---- 候选选取 ----
 
+  // 生产实测（2026-07-30）：The Conjuring 挂 4 份字幕，2 份在云盘、1 份与视频同目录。
+  // 原排序按路径字典序，'/media/aliyun' < '/media/movies'，于是每轮都挑中云盘那份——
+  // 而云盘既抽不了内嵌轨（>120s 超时）也没有同目录同伴，白判一次 unverifiable，
+  // 明明另一份就在视频旁边、能验。282 个 covered 里有 10 个挂多份字幕。
+  describe('selectVerifyCandidates：优先选与视频同目录的字幕', () => {
+    const insSub = (itemId: string, path: string) => db.prepare(
+      `INSERT INTO subtitles (item_id, path, language, source, created_at) VALUES (?,?,?,?,?)`,
+    ).run(itemId, path, 'zh-Hans', 'scout-download', 1)
+
+    it('云盘那份排序更靠前，但仍选与视频同目录的那份', () => {
+      db.prepare(`INSERT INTO movies (id, name, path, sub_status, updated_at) VALUES (?,?,?,?,?)`)
+        .run('mvC', 'Conjuring', '/media/movies/The Conjuring/x.mkv', 'covered', 1)
+      insSub('mvC', '/media/aliyun/Movie/zhaohun/a.chi.ass')       // 字典序在前
+      insSub('mvC', '/media/aliyun/Movie/zhaohun/a.zh-Hans.ass')
+      insSub('mvC', '/media/movies/The Conjuring/x.zh-Hant.srt')   // 与视频同目录
+      const picked = selectVerifyCandidates(db, 20).filter((c) => c.itemId === 'mvC')
+      expect(picked).toHaveLength(1)
+      expect(picked[0]!.subtitlePath).toBe('/media/movies/The Conjuring/x.zh-Hant.srt')
+    })
+
+    it('全都不在视频目录时仍选一份（不凭空丢候选）', () => {
+      db.prepare(`INSERT INTO movies (id, name, path, sub_status, updated_at) VALUES (?,?,?,?,?)`)
+        .run('mvD', 'D', '/media/movies/D/d.mkv', 'covered', 1)
+      insSub('mvD', '/media/aliyun/x/d.zh-Hans.ass')
+      const picked = selectVerifyCandidates(db, 20).filter((c) => c.itemId === 'mvD')
+      expect(picked).toHaveLength(1)
+      expect(picked[0]!.subtitlePath).toBe('/media/aliyun/x/d.zh-Hans.ass')
+    })
+
+    it('同目录内有多份（简繁）时按字典序稳定选同一份（跨 pass 不漂移）', () => {
+      db.prepare(`INSERT INTO movies (id, name, path, sub_status, updated_at) VALUES (?,?,?,?,?)`)
+        .run('mvE', 'E', '/media/movies/E/e.mkv', 'covered', 1)
+      insSub('mvE', '/media/movies/E/e.zh-Hant.srt')
+      insSub('mvE', '/media/movies/E/e.zh-Hans.srt')
+      const a = selectVerifyCandidates(db, 20).filter((c) => c.itemId === 'mvE')[0]!.subtitlePath
+      const b = selectVerifyCandidates(db, 20).filter((c) => c.itemId === 'mvE')[0]!.subtitlePath
+      expect(a).toBe(b)
+      expect(a).toBe('/media/movies/E/e.zh-Hans.srt')
+    })
+  })
+
   describe('selectVerifyCandidates：状态白名单', () => {
     it('选中 covered 条目，带上片源路径与字幕路径', () => {
       seedEpisode('ep1', 'covered')
