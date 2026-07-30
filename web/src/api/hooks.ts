@@ -6,6 +6,7 @@ import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
   LibrarySeriesDetailDTO, WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, TriageDTO,
   SettingsDTO, DeploySettingsDTO, MediaRootDTO,
+  SubtitleVerifyListDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -506,6 +507,47 @@ export function useRunTrace(runId: number | null): Async<RunTraceDTO> {
       })
     return () => ctrl.abort()
   }, [runId, nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** 字幕校验（2026-07-30）：一次拿一批条目的校验结论，供剧集页整季渲染芯片。
+ *
+ *  为什么 key 是 join 后的字符串而不是数组本身：调用方几乎必然在 render 里现算这个
+ *  id 列表（`season.onDisk.map(e => e.id)`），每次 render 都是新引用 —— 直接放进
+ *  useEffect 依赖数组会无限重发请求。join 成字符串让依赖变成值比较。
+ *
+ *  空列表不发请求（省一次必然返回空的往返），data 给 `{items:[]}` 而非 null——
+ *  调用方因此不需要区分"还没加载"和"没有条目"两种空。 */
+export function useSubtitleVerify(itemIds: readonly string[]): Async<SubtitleVerifyListDTO> {
+  const key = itemIds.join(',')
+  const [data, setData] = useState<SubtitleVerifyListDTO | null>(null)
+  const [loading, setLoading] = useState(key.length > 0)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    if (key.length === 0) {
+      setData({ items: [] })
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .subtitleVerify(key.split(','), ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [key, nonce])
 
   return { data, loading, error, reload }
 }

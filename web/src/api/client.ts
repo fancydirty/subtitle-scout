@@ -2,6 +2,7 @@
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
   ParkedItemDTO, WorkflowPendingDTO, LibrarySeriesDetailDTO,
+  SubtitleVerifyListDTO,
   WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
   TriageDTO,
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
@@ -135,6 +136,13 @@ export const api = {
   // encodeURIComponent 编码后由 router.ts 的 decodeIdSegment 解回。
   librarySeriesDetail: (id: string, signal?: AbortSignal) =>
     get<LibrarySeriesDetailDTO>(`/api/v2/library/series/${encodeURIComponent(id)}`, signal),
+  // 字幕校验（2026-07-30）：批量拿一季的校验结论。单条也走这个（items 恒为数组，
+  // 后端刻意只给一种响应形状，免得前端写两条解析分支）。上限 500 个 id 由后端把关。
+  subtitleVerify: (itemIds: readonly string[], signal?: AbortSignal) =>
+    get<SubtitleVerifyListDTO>(
+      `/api/v2/subtitle/verify?itemIds=${itemIds.map((id) => encodeURIComponent(id)).join(',')}`,
+      signal,
+    ),
   // dashboard-F4：Workflow 三泳道——中泳道 pass 记录 + 右泳道跑中/近期 worker。
   workflowPasses: (limit: number, signal?: AbortSignal) =>
     get<WorkflowPassDTO[]>(`/api/v2/workflow/passes?limit=${limit}`, signal),

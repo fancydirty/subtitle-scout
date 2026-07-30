@@ -343,3 +343,18 @@ export interface LibrarySeriesDetailDTO {
   series: LibrarySeriesSummaryDTO
   seasons: LibrarySeasonDTO[]
 }
+
+/** 字幕校验（2026-07-30 spec）：与 src/dashboard/subtitleVerifyApi.ts 的同名 DTO 一致。
+ *  **恰好三个键**——offsetMs/score/referenceTier/detail 是内部诊断字段，故意不在这里
+ *  （铁律②：UI 不展示任何数字。前端拿不到就不可能误显示成"偏移 2.4 秒"）。 */
+export type SubtitleVisualState = 'ok' | 'shifted'
+export interface SubtitleVerifyDTO {
+  itemId: string
+  /** 'ok' = 绿（含"验过没问题"与"没能验证"两档）；'shifted' = 红，可点校正。 */
+  state: SubtitleVisualState
+  /** false = 还没查过 → 不显示芯片（既不是绿也不是红）。 */
+  checked: boolean
+}
+export interface SubtitleVerifyListDTO {
+  items: SubtitleVerifyDTO[]
+}
