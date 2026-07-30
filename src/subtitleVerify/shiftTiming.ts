@@ -557,9 +557,23 @@ interface BackupMeta {
   appliedOffsetMs: number | null
   /** 写备份时目标文件的内容指纹。缺失 → null = 未知（老版本 meta / 手工 meta）。 */
   targetFingerprint: string | null
+  /**
+   * 备份文件自身的内容指纹。
+   *
+   * 为什么 target 的指纹不够（复审 I-1/I-2 实测发现）：只给 target 上指纹是不对称的——
+   * 备份被外力改坏时，target 指纹照样匹配、守卫一路放行，revert 就把污染内容写进用户文件，
+   * 而且事后 meta 会被改写成污染内容的指纹，看起来完全合法、再也不报警。
+   * 实测过的两种坏法：① 备份被换成任意内容 → revert ok:true 且 target 变成注入内容；
+   * ② 备份被截断（SIGKILL 留下的半截文件正是这样）→ 实测截断到 1%/10%/50% 时
+   * `looksLikeSubtitle` 全部放行（它只要求"找到一条时间戳"），写出半截字幕。
+   * 那条注释原本声称防住了截断备份，实际没有——这个字段才是真的防线。
+   */
+  backupFingerprint: string | null
 }
 
-const UNKNOWN_META: BackupMeta = { appliedOffsetMs: null, targetFingerprint: null }
+const UNKNOWN_META: BackupMeta = {
+  appliedOffsetMs: null, targetFingerprint: null, backupFingerprint: null,
+}
 
 /** meta 读取。任何异常/字段不合法都读成"未知"，绝不猜。
  *  `appliedOffsetMs` 只影响 previousOffsetMs 这个信息性字段；而 `targetFingerprint`
@@ -571,7 +585,9 @@ function readMeta(path: string, opts?: ShiftOptions): BackupMeta {
     const read = opts?.readFileImpl ?? readFileSync
     const parsed: unknown = JSON.parse(read(path).toString('utf8'))
     if (parsed == null || typeof parsed !== 'object') return UNKNOWN_META
-    const o = parsed as { appliedOffsetMs?: unknown; targetFingerprint?: unknown }
+    const o = parsed as {
+      appliedOffsetMs?: unknown; targetFingerprint?: unknown; backupFingerprint?: unknown
+    }
     return {
       appliedOffsetMs:
         typeof o.appliedOffsetMs === 'number' && Number.isFinite(o.appliedOffsetMs)
@@ -580,6 +596,10 @@ function readMeta(path: string, opts?: ShiftOptions): BackupMeta {
       targetFingerprint:
         typeof o.targetFingerprint === 'string' && o.targetFingerprint !== ''
           ? o.targetFingerprint
+          : null,
+      backupFingerprint:
+        typeof o.backupFingerprint === 'string' && o.backupFingerprint !== ''
+          ? o.backupFingerprint
           : null,
     }
   } catch {
@@ -772,7 +792,13 @@ export async function shiftSubtitleTiming(
   let metaOk = true
   try {
     const payload = Buffer.from(
-      JSON.stringify({ appliedOffsetMs: offsetMs, targetFingerprint: fingerprint(next) }),
+      JSON.stringify({
+        appliedOffsetMs: offsetMs,
+        targetFingerprint: fingerprint(next),
+        // 备份指纹（复审 I-1/I-2）：记的是**备份文件此刻的字节**。它让 revert 能发现
+        // 备份被外力改坏（换内容/截断），而 targetFingerprint 对此完全无感。
+        backupFingerprint: fingerprint(source),
+      }),
       'utf8',
     )
     if (opts?.writeFileImpl) opts.writeFileImpl(metaPath, payload)
@@ -871,7 +897,9 @@ export async function revertSubtitleTiming(
   } catch (e) {
     return { ok: false, backupPath, detail: `refused: cannot read target to verify it still matches the backup: ${errText(e)}, nothing touched` }
   }
-  const bound = checkFingerprint(targetBytes, readMeta(metaPath, opts), metaPath, backupPath)
+  // meta 提成变量：守卫② 与下方守卫③a 都要读它，内联调用会读两次盘。
+  const meta = readMeta(metaPath, opts)
+  const bound = checkFingerprint(targetBytes, meta, metaPath, backupPath)
   if (!bound.ok) return { ok: false, backupPath, detail: bound.detail }
 
   let original: Buffer
@@ -879,6 +907,21 @@ export async function revertSubtitleTiming(
     original = read(backupPath)
   } catch (e) {
     return { ok: false, detail: `refused: cannot read backup: ${errText(e)}, target untouched` }
+  }
+  // 守卫③a：备份自身的指纹（复审 I-1/I-2）。放在 looksLikeSubtitle 之前，因为它更强——
+  // 后者只要求"能找到一条时间戳"，实测截断到 1% 的备份都能通过；而指纹能抓住任何一个
+  // 字节的改动，包括"换成另一份完全合法的字幕"这种 looksLikeSubtitle 永远看不出的情况。
+  //
+  // meta 没记备份指纹（老版本 meta）时不在这里拒绝：那会让存量用户的撤销全部失效，而
+  // 守卫②（target 指纹）已经保守拒绝了这一类；这里只在**记了却不匹配**时拦。
+  if (meta.backupFingerprint !== null && fingerprint(original) !== meta.backupFingerprint) {
+    return {
+      ok: false,
+      backupPath,
+      detail: `refused: the backup at ${backupPath} has been modified since it was written `
+        + `(its content fingerprint no longer matches the one recorded in ${metaPath}); `
+        + `refusing to overwrite the target with a backup of unknown provenance. Target untouched.`,
+    }
   }
   // 守卫③：备份内容合理性。宁可拒绝一个可疑的备份，也不能用它覆盖用户的文件——
   // 覆盖是不可逆的，而"拒绝"只是让用户手工确认一下。
@@ -908,7 +951,14 @@ export async function revertSubtitleTiming(
   let metaOk = true
   try {
     const payload = Buffer.from(
-      JSON.stringify({ appliedOffsetMs: 0, targetFingerprint: fingerprint(original) }),
+      JSON.stringify({
+        appliedOffsetMs: 0,
+        targetFingerprint: fingerprint(original),
+        // 还原后 target 与 backup 字节相同，所以两个指纹此刻相等——但仍然分别写出，
+        // 因为它们回答的是不同问题（"target 被换过吗" vs "备份被改坏了吗"），
+        // 下一次 shift 之后它们就会不同。
+        backupFingerprint: fingerprint(original),
+      }),
       'utf8',
     )
     if (opts?.writeFileImpl) opts.writeFileImpl(metaPath, payload)

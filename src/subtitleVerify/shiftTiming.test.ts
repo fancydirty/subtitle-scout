@@ -590,7 +590,9 @@ describe('shiftSubtitleTiming — revert 守卫（与 shift 对称）', () => {
     writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.from('TRUNCATE'))
     const r = await revertSubtitleTiming(p)
     expect(r.ok).toBe(false)
-    expect(r.detail).toContain('does not look like a valid')
+    // 两道守卫都能拦它，措辞取决于哪道先到：③a 备份指纹（更强，任何一个字节的改动都抓得住）
+    // 或 ③ 合理性检查（只看"有没有一条时间戳"）。指纹守卫在前，所以现在走的是它。
+    expect(r.detail).toMatch(/has been modified since it was written|does not look like a valid/)
     // 修复前这里会把用户文件覆盖成 8 字节垃圾并报 ok:true
     expect(readFileSync(p)).toEqual(before)
   })
@@ -601,8 +603,60 @@ describe('shiftSubtitleTiming — revert 守卫（与 shift 对称）', () => {
     writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.alloc(0))
     const r = await revertSubtitleTiming(p)
     expect(r.ok).toBe(false)
-    expect(r.detail).toContain('empty file')
+    expect(r.detail).toMatch(/has been modified since it was written|empty file/)
     expect(readFileSync(p)).toEqual(before)
+  })
+
+  // ── 复审 I-1/I-2：备份自身的指纹 ──────────────────────────────────────────
+  // 只给 target 上指纹是不对称的：备份被外力改坏时 target 指纹照样匹配、守卫一路放行，
+  // revert 就把污染内容写进用户文件，而且事后 meta 会被改写成污染内容的指纹，
+  // 看起来完全合法、再也不报警。
+
+  it('i1-backup-swapped-refused: 备份被换成另一份合法字幕 → 拒绝（looksLikeSubtitle 看不出）', async () => {
+    const p = await shiftedState(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    const metaBefore = readFileSync(`${resolve(p)}${META_SUFFIX}`)
+    // 关键：注入的是一份**完全合法**的 ass —— 合理性检查永远拦不住它，只有指纹能
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.from(
+      '[Script Info]\n\n[Events]\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,injected\n', 'utf8'))
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('has been modified since it was written')
+    // 零副作用：目标与 meta 都没动（修复前 target 会变成 injected，meta 被改写成它的指纹）
+    expect(readFileSync(p)).toEqual(before)
+    expect(readFileSync(`${resolve(p)}${META_SUFFIX}`)).toEqual(metaBefore)
+  })
+
+  it('i2-backup-truncated-refused: 备份被截断（SIGKILL 场景）→ 拒绝，不写半截文件', async () => {
+    // 用一条足够长的真 SRT：截断后仍含多条完整 cue，looksLikeSubtitle 会放行
+    const long = Array.from({ length: 60 }, (_, i) =>
+      `${i + 1}\n00:0${Math.floor(i / 10)}:${String(i % 10 * 6).padStart(2, '0')},000 --> `
+      + `00:0${Math.floor(i / 10)}:${String(i % 10 * 6 + 3).padStart(2, '0')},000\nline ${i}\n`).join('\n')
+    const p = join(dir, 'long.srt')
+    writeFileSync(p, long)
+    expect((await shiftSubtitleTiming(p, 1000)).ok).toBe(true)
+    const before = readFileSync(p)
+    const bak = `${resolve(p)}${BACKUP_SUFFIX}`
+    const full = readFileSync(bak)
+    for (const pct of [0.1, 0.5, 0.9]) {
+      writeFileSync(bak, full.subarray(0, Math.floor(full.length * pct)))
+      const r = await revertSubtitleTiming(p)
+      expect(r.ok, `截断到 ${pct * 100}% 必须被拒绝`).toBe(false)
+      expect(readFileSync(p), `截断到 ${pct * 100}% 时目标必须不变`).toEqual(before)
+    }
+  })
+
+  it('i1-old-meta-without-backup-fingerprint: 老版本 meta（无备份指纹）不因此失效', async () => {
+    const p = await shiftedState(FIXTURE_TORTURE, 'torture.ass')
+    const metaPath = `${resolve(p)}${META_SUFFIX}`
+    // 模拟存量：meta 只有 offset + target 指纹，没有 backupFingerprint
+    const cur = JSON.parse(readFileSync(metaPath, 'utf8')) as Record<string, unknown>
+    writeFileSync(metaPath, JSON.stringify({
+      appliedOffsetMs: cur.appliedOffsetMs, targetFingerprint: cur.targetFingerprint,
+    }))
+    // 备份未被改动 → 应当照常 revert 成功（不能因为少一个字段就把存量用户的撤销全废掉）
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(true)
   })
 
   it('revert-unsupported-extension-refused: revert 不得成为绕过 shift 扩展名检查的后门', async () => {
