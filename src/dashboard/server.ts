@@ -26,7 +26,7 @@ import {
   buildCompareDTO, type SubtitleCompareDeps,
 } from './subtitleCompareApi.js'
 import { findReferenceSource } from '../subtitleVerify/referenceSource.js'
-import { readSubtitleText, parseCues } from '../subtitleVerify/subtitleSpans.js'
+import { readSubtitleText, parseCues, hashSubtitleContent } from '../subtitleVerify/subtitleSpans.js'
 import { probeDurationSec } from '../files/streamProbe.js'
 import { classifyPath, canRenderWaveform } from '../core/mountKind.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -204,6 +204,10 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     shift: (p, off) => shiftSubtitleTiming(p, off),
     revert: (p) => revertSubtitleTiming(p),
     exists: (p) => existsSync(p),
+    // 审计 C-A1：判"库里这行结论还说的是磁盘上这个文件吗"。同名 re-download 之后
+    // 路径不变、巡检又永不重查已有记录，所以没有这一句两个写扳手都会拿一份作废的结论
+    // 去动用户的文件（撤销尤其会用旧备份覆盖新字幕）。
+    hashSubtitle: (p) => hashSubtitleContent(p),
     // 重新检测走 verifyAndRecord（而不是裸 verifySubtitleAlignment）：落库是这一步的**目的**，
     // 不是副作用——UI 只读 DB，不覆盖那行结论用户就会一直看到旧的红芯片。
     reverify: (itemId, videoPath, subtitlePath) =>

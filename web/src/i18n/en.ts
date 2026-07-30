@@ -76,9 +76,12 @@ export const en = {
   verify_timeline_hint: 'scroll to zoom · drag to pan',
   // 检视面板（2026-07-30 spec §4.2）。结论文案的三档对应 diagnose() 的三个返回值。
   // 措辞纪律：说"画面"不说"参考轨"，说"这份字幕"不说"sidecar"，不提帧率/互相关/agent。
+  verify_inspect_failed: "Something went wrong showing this comparison. Nothing on disk was changed.",
   verify_inspect_loading: 'Loading…',
-  verify_verdict_shift_head: 'The subtitles run behind the picture',
-  verify_verdict_shift_body: 'Everything is off by the same amount, so shifting the whole track lines it back up. Usually this means the subtitle was made for a different release of this episode.',
+  verify_verdict_behind_head: 'The subtitles run behind the picture',
+  verify_verdict_behind_body: 'Everything is off by the same amount, so shifting the whole track lines it back up. Usually this means the subtitle was made for a different release of this episode.',
+  verify_verdict_ahead_head: 'The subtitles run ahead of the picture',
+  verify_verdict_ahead_body: 'The lines show up too early, all by the same amount, so shifting the whole track lines it back up. Usually this means the subtitle was made for a different release of this episode.',
   verify_verdict_drift_head: 'The gap grows as the episode goes on',
   verify_verdict_drift_body: 'It starts out close and drifts further apart — shifting the whole track cannot fix that. You will need a subtitle made for this particular file.',
   verify_verdict_unknown_head: 'Cannot tell what is going on here',

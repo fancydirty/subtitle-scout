@@ -1,12 +1,14 @@
-// web/src/subtitleVerify/InspectPanel.test.tsx：检视面板 + diagnose() 的形状判据。
+// web/src/subtitleVerify/InspectPanel.test.tsx：检视面板的渲染。
 //
-// diagnose 是这个面板最要紧的逻辑：它决定**给不给校正按钮**。判错的代价是让用户点一个
-// 修不好的按钮（drift 被当成 shift），或者藏起一个本该有的按钮（反之）。所以它的测试
-// 直接用两轨时间戳构造四种真实形态，不 mock。
+// **判定已不在这里**（审计 I-B1/I-B2）：面板曾自己用 diagnose() 从两轨时间戳做几何推断，
+// 既丢了符号（偏早的字幕拿到"字幕比画面慢了"这句说反的话），又按下标配对（两条完全同步
+// 但开头少 3 条 cue 的轨被误判成需要平移），而且它是**第二个判定引擎**、把着写按钮的闸。
+// 现在 diagnosis/fixable 由后端在 compare DTO 里给出（src/dashboard/subtitleCompareApi.ts
+// 的 diagnoseRow，那里有针对符号与配对的回归锁），本文件只测"给定判读，面板渲染成什么"。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
-import { InspectPanel, diagnose } from './InspectPanel.js'
+import { InspectPanel } from './InspectPanel.js'
 import type { SubtitleCompareDTO, CompareBlock } from '../api/types.js'
 
 const DUR = 600_000
@@ -27,6 +29,10 @@ function dto(over: Partial<SubtitleCompareDTO> = {}): SubtitleCompareDTO {
     durationMs: DUR,
     waveformAvailable: true,
     mountKind: 'lan',
+    // 默认是"字幕偏晚、平移可修"那一档（打开面板最常见的情形）。
+    // 判读来自后端，测试里显式给——这正是"前端不再自己推断"的体现。
+    diagnosis: 'behind',
+    fixable: true,
     ...over,
   }
 }
@@ -67,53 +73,33 @@ function renderPanel(over: Partial<Parameters<typeof InspectPanel>[0]> = {}, lan
   )
 }
 
-// ── diagnose：决定给不给校正按钮 ────────────────────────────────────────────
-describe('diagnose：从两轨形状判断平移能否修好', () => {
-  it('整体等量偏移 → shift（可校正）', () => {
-    expect(diagnose(blocks(20), blocks(20, 8_300))).toBe('shift')
-  })
-
-  it('负向整体偏移（字幕偏早）同样是 shift', () => {
-    expect(diagnose(blocks(20), blocks(20, -5_000))).toBe('shift')
-  })
-
-  // 帧率不匹配的形态：偏移随集数线性增长。平移修不好，所以必须判 drift 而不是 shift——
-  // 判错会让用户点一个修不好的按钮。
-  it('偏移越往后越大 → drift（平移修不好，不给按钮）', () => {
-    expect(diagnose(blocks(30), blocks(30, 1_000, 400))).toBe('drift')
-  })
-
-  it('cue 太少（< 6）→ unknown，不敢判', () => {
-    expect(diagnose(blocks(3), blocks(3, 8_300))).toBe('unknown')
-  })
-
-  it('两端都几乎无偏移 → unknown（数据可能已过期，不谎报有问题）', () => {
-    expect(diagnose(blocks(20), blocks(20, 50))).toBe('unknown')
-  })
-
-  it('空数组不崩', () => {
-    expect(diagnose([], [])).toBe('unknown')
-  })
-
-  it('两轨长度不等时按较短的算，不崩', () => {
-    expect(diagnose(blocks(20), blocks(8, 8_300))).toBe('shift')
-  })
-
-  // 阈值留了余量（1.5 倍 + 200ms）：字幕组手工微调会让单条 cue 有噪声，
-  // 一两条不该翻转整体结论。
-  it('轻微噪声不足以从 shift 翻成 drift', () => {
-    const ours = blocks(20, 8_300)
-    ours[7] = { ...ours[7]!, startMs: ours[7]!.startMs + 900 }   // 单条抖 900ms
-    expect(diagnose(blocks(20), ours)).toBe('shift')
-  })
-})
-
 // ── 结论条与按钮 ──────────────────────────────────────────────────────────
 describe('InspectPanel：结论条', () => {
-  it('shift → 显示校正按钮 + 保留原样', () => {
+  it("behind（字幕偏晚，可修）→ 显示校正按钮 + 保留原样", () => {
     renderPanel()
     expect(screen.getByText('校正时间轴')).toBeInTheDocument()
     expect(screen.getByText('保留原样')).toBeInTheDocument()
+    expect(screen.getByText(/字幕比画面慢了/)).toBeInTheDocument()
+  })
+
+  // 审计 I-B1：符号是白拿的（后端 offsetMs 本来就带符号），而旧的 diagnose() 只比较
+  // **绝对值**，于是一个偏早的字幕拿到"字幕比画面慢了"这句**说反了**的话。
+  // 说反方向和不说一样糟：用户会按错的方向去理解那张对照图。
+  it("ahead（字幕偏早，可修）→ 文案说的是'快了'而不是'慢了'【I-B1】", () => {
+    renderPanel({ data: dto({ diagnosis: 'ahead', fixable: true }) })
+    expect(screen.getByText(/字幕比画面快了/)).toBeInTheDocument()
+    expect(screen.queryByText(/字幕比画面慢了/)).not.toBeInTheDocument()
+    // 偏早同样是平移能修好的，按钮照给
+    expect(screen.getByText('校正时间轴')).toBeInTheDocument()
+  })
+
+  it('两个方向的文案确实不同（不是同一句话换了个 key）【I-B1】', () => {
+    const { container: behind } = renderPanel({ data: dto({ diagnosis: 'behind', fixable: true }) })
+    const behindText = behind.querySelector('.vinspect-verdict')!.textContent
+    cleanup()
+    const { container: ahead } = renderPanel({ data: dto({ diagnosis: 'ahead', fixable: true }) })
+    const aheadText = ahead.querySelector('.vinspect-verdict')!.textContent
+    expect(aheadText).not.toBe(behindText)
   })
 
   it('点校正按钮触发 onCorrect', () => {
@@ -123,17 +109,33 @@ describe('InspectPanel：结论条', () => {
     expect(onCorrect).toHaveBeenCalledTimes(1)
   })
 
-  // spec §5：帧率不匹配检出后如实告知"平移修不了"，**不提供按钮**。
-  it('drift → 不给校正按钮，只有"知道了"', () => {
-    renderPanel({ data: dto({ reference: blocks(30), ours: blocks(30, 1_000, 400) }) })
+  // spec §5：平移修不好的（帧率不匹配、装错剧集）如实告知，**不提供按钮**。
+  it('not-a-shift → 不给校正按钮，只有"知道了"', () => {
+    renderPanel({ data: dto({ diagnosis: 'not-a-shift', fixable: false }) })
     expect(screen.queryByText('校正时间轴')).not.toBeInTheDocument()
     expect(screen.getByText('知道了')).toBeInTheDocument()
     expect(screen.getByText(/越往后偏得越多/)).toBeInTheDocument()
   })
 
   it('unknown → 同样不给校正按钮', () => {
-    renderPanel({ data: dto({ reference: blocks(3), ours: blocks(3, 8_300) }) })
+    renderPanel({ data: dto({ diagnosis: 'unknown', fixable: false }) })
     expect(screen.queryByText('校正时间轴')).not.toBeInTheDocument()
+    expect(screen.getByText(/看不出问题在哪/)).toBeInTheDocument()
+  })
+
+  // 面板只渲染、不推断：给按钮的唯一依据是后端的 fixable，前端不再从两轨形状自己算。
+  // 这条同时是 I-B2 的前端侧锁——两轨长度/条数怎么样都不影响按钮的去留。
+  it('按钮只看后端的 fixable，与两轨的条数/形状无关【I-B2】', () => {
+    // 两轨完全同步、且 ours 少了开头 3 条（旧 diagnose 会按下标配对误判成需要平移）
+    const ref = blocks(30)
+    const ours = blocks(30).slice(3)
+    // 后端说不可修 → 无论形状如何，都不给按钮
+    renderPanel({ data: dto({ reference: ref, ours, diagnosis: 'not-a-shift', fixable: false }) })
+    expect(screen.queryByText('校正时间轴')).not.toBeInTheDocument()
+    cleanup()
+    // 后端说可修 → 给按钮
+    renderPanel({ data: dto({ reference: ref, ours, diagnosis: 'behind', fixable: true }) })
+    expect(screen.getByText('校正时间轴')).toBeInTheDocument()
   })
 
   it('onCorrect 缺席时不渲染校正按钮（父组件还没接线）', () => {
@@ -164,7 +166,7 @@ describe('InspectPanel：云盘条目', () => {
   })
 
   // 云盘照样能校正——检测只读字幕文件，偏移量后端已算出。这条是"仍然可做的事"。
-  it('cloud 且 shift → 校正按钮仍在，并说明没有图可看', () => {
+  it('cloud 且可修 → 校正按钮仍在，并说明没有图可看', () => {
     renderPanel({ data: dto({ mountKind: 'cloud' }) })
     expect(screen.getByText('校正时间轴')).toBeInTheDocument()
     expect(screen.getByText(/仍然可以直接校正/)).toBeInTheDocument()
@@ -241,5 +243,11 @@ describe('InspectPanel：i18n', () => {
     renderPanel({}, 'en')
     expect(screen.getByText('Fix the timing')).toBeInTheDocument()
     expect(screen.getByText(/The subtitles run behind the picture/)).toBeInTheDocument()
+  })
+
+  it('英文的两个方向也是两句不同的话【I-B1】', () => {
+    renderPanel({ data: dto({ diagnosis: 'ahead', fixable: true }) }, 'en')
+    expect(screen.getByText(/The subtitles run ahead of the picture/)).toBeInTheDocument()
+    expect(screen.queryByText(/run behind the picture/)).not.toBeInTheDocument()
   })
 })

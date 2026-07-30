@@ -152,7 +152,7 @@ export type WriteResult =
  * 这条主路径。形状同 shiftTiming.ts 的 ShiftOptions / referenceSource.ts 的 opts。
  */
 export interface SubtitleWriteDeps {
-  repo: Pick<SubtitleVerifyRepo, 'getVerifyResult'>
+  repo: Pick<SubtitleVerifyRepo, 'getVerifyResult' | 'needsRecheck'>
   lib: Pick<LibraryRepo, 'getEpisode' | 'getMovie'>
   /** 注入点：平移。默认接 shiftSubtitleTiming。 */
   shift: (subtitlePath: string, offsetMs: number) => Promise<ShiftResult>
@@ -160,6 +160,9 @@ export interface SubtitleWriteDeps {
   revert: (subtitlePath: string) => Promise<ShiftResult>
   /** 注入点：判文件存在（用于"备份是否已存在"的门）。默认 existsSync。 */
   exists: (path: string) => boolean
+  /** 注入点：算字幕内容哈希，用于判断"库里这行结论还说的是磁盘上这个文件吗"（审计 C-A1）。
+   *  默认接 hashSubtitleContent。算不出返回 null → needsRecheck 保守判"需重检"。 */
+  hashSubtitle: (path: string) => Promise<string | null>
   /** 注入点：重新检测并覆盖落库。默认接 verifyAndRecord（它自带 needsRecheck 跳过判据）。 */
   reverify: (itemId: string, videoPath: string, subtitlePath: string) => Promise<VerifyOutcome | null>
   now: () => number
@@ -218,6 +221,42 @@ export interface CorrectOpts {
 }
 
 /**
+ * 库里这行结论还说的是磁盘上现在这个文件吗？（审计 C-A1 的链路修复）
+ *
+ * ## 为什么两个写扳手都必须先问这一句
+ *
+ * 巡检**永不重查已有记录的条目**（verifySweep.ts 的 `LEFT JOIN ... v.item_id IS NULL`
+ * 过滤，它自己的头注释也承认了）。而字幕落盘用的是**确定性文件名**
+ * （subtitleWriter.ts:104-107），所以"用户重新下载一份字幕、同名覆盖"之后：
+ * 路径没变 → 巡检不会重查 → DB 里一直留着**旧字幕**的 `shifted` 判定 → 红芯片一直亮。
+ * 用户点校正，拿到的是一个**为另一份内容算出来的 offsetMs**。
+ *
+ * 修复前这里的 409 文案是"先撤销再校正"，而在这个状态下**撤销正是那条销毁文件的路**
+ * （revert 会用旧字幕的备份覆盖用户刚下载的新字幕）。系统亲手把用户引向事故。
+ * shiftTiming 那边的指纹守卫已经能兜住"文件真的被写坏"，但它只能给出一句拒绝；
+ * 这一层要做的是**不让用户走到那一步**，并给出正确的下一步。
+ *
+ * 判据直接复用 `repo.needsRecheck`（路径 + 内容哈希，subtitleVerifyRepo.ts:113-119）——
+ * 那是既有的、唯一的"结论是否作废"真相来源，不在这里发明第二套。哈希算不出（文件被删/
+ * 无权限）时 needsRecheck 保守判 true，同样拦下：对一个读不动的文件动写扳手没有意义。
+ */
+async function isRecordStale(deps: SubtitleWriteDeps, row: SubtitleVerifyRow): Promise<boolean> {
+  const hash = await deps.hashSubtitle(row.subtitle_path)
+  return deps.repo.needsRecheck(row.item_id, row.subtitle_path, hash)
+}
+
+/** 结论已作废时的统一回执。**如实说明"文件已被换过"并要求重新检测**，
+ *  绝不建议"撤销"——在这个状态下撤销会用旧备份覆盖用户的新字幕（审计 C-A1）。
+ *  409（冲突）而非 400：请求本身没问题，是服务端这行结论与磁盘状态冲突了。 */
+function staleRecordResult(): WriteResult {
+  return {
+    ok: false,
+    status: 409,
+    error: 'this subtitle file has been replaced since it was last checked — check it again to see where it stands now',
+  }
+}
+
+/**
  * POST /api/v2/subtitle/correct 的实现：平移 → 重新检测 → 覆盖落库 → 回报新状态。
  *
  * ## 只有 shifted 能校正（铁律④）
@@ -235,11 +274,14 @@ export interface CorrectOpts {
  * 而"已应用量"只存在于 `.scout-backup.json` 里，读它的 `readMeta` 是 shiftTiming 的模块
  * 私有函数；`shiftSubtitleTiming` 虽然回报 `previousOffsetMs`，但那是**写盘之后**的事，
  * 拿到时已经晚了。所以这里不猜、不试探，直接拒绝并告诉用户走"撤销 → 重新校正"：
- * 撤销会把文件还原、删掉 meta，下一次校正就又是一次干净的首次校正，基准明确。
+ * 撤销会把文件还原、把 meta 归零，下一次校正就又是一次干净的首次校正，基准明确。
  *
  * 代价是用户多点一次撤销；换来的是**永远不会把用户的字幕文件改得比校正前更错**。
  * 在本仓库风险最高的写入路径上，这个交换比划得来。日后若 shiftTiming 导出读 meta 的能力，
  * 这道门可以换成 `shift(path, previousOffsetMs + residual)`，改动限于本函数。
+ *
+ * **但"先撤销"这个建议只在结论仍然有效时才成立**——文件被换过时撤销会销毁新字幕，
+ * 所以那道门之前先有 isRecordStale 那道（审计 C-A1）。顺序不能颠倒。
  */
 export async function correctSubtitle(
   deps: SubtitleWriteDeps,
@@ -260,6 +302,11 @@ export async function correctSubtitle(
   if (row.offset_ms === null) {
     return { ok: false, status: 409, error: 'this result is incomplete — re-check this item first' }
   }
+
+  // ── C-A1：字幕被换过 → 这行结论（含 offset_ms）说的是另一份内容。 ──
+  // **必须在下面那道 409 之前**：那道门建议"先撤销"，而在这个状态下撤销会用旧备份
+  // 覆盖用户刚下载的新字幕。见 isRecordStale 的大段论证。
+  if (await isRecordStale(deps, row)) return staleRecordResult()
 
   // 已校正过一次 → 拒。见上方大段论证。
   if (deps.exists(`${row.subtitle_path}${opts.backupSuffix}`)) {
@@ -290,8 +337,18 @@ export async function correctSubtitle(
  * 只在校正失败时才可用，与 spec §3.4"支持撤销"的意图相反。唯一的前置是**有备份可还原**。
  *
  * 备份本身由 revertSubtitleTiming 保留不删（见那边注释：删除原始字节副本不可逆）。但它会
- * 删掉 meta，所以撤销后再校正是一次基准明确的干净首次校正——正是 correctSubtitle 那道
+ * 把 meta 归零，所以撤销后再校正是一次基准明确的干净首次校正——正是 correctSubtitle 那道
  * 409 门指望的出路。
+ *
+ * ## 但"有备份"不足以放行（审计 C-A1）
+ *
+ * 备份靠**文件名**绑定。用户重新下载一份同名字幕之后，备份里躺着的是**旧字幕**，
+ * 而磁盘上是新的那份——此时撤销 = 用旧字幕覆盖新字幕，用户不可替代的文件被销毁。
+ * 审计实测这条路径修复前返回 `ok:true`，且 `looksLikeSubtitle` 拦不住（旧备份**是**
+ * 一个合法字幕，只是错的那份）。所以这里与 correctSubtitle 用同一道 isRecordStale 门。
+ *
+ * shiftTiming 的指纹守卫是最后一道（真到写盘前还会再拒一次），本层这道是为了
+ * **给用户一句正确的话**而不是一个 500。
  */
 export async function revertSubtitle(
   deps: SubtitleWriteDeps,
@@ -307,6 +364,9 @@ export async function revertSubtitle(
   if (!deps.exists(`${row.subtitle_path}${opts.backupSuffix}`)) {
     return { ok: false, status: 400, error: "there's nothing to undo for this subtitle" }
   }
+
+  // ── C-A1：字幕被换过 → 备份对应的是另一份内容，撤销会销毁磁盘上这份。 ──
+  if (await isRecordStale(deps, row)) return staleRecordResult()
 
   const reverted = await deps.revert(row.subtitle_path)
   if (!reverted.ok) {

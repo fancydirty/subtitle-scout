@@ -16,6 +16,7 @@ import { EpisodeRow } from './EpisodeRow.js'
 import { SeasonGridBody } from './SeasonGridBody.js'
 import { useSubtitleVerify, useSubtitleCompare } from '../api/hooks.js'
 import { InspectPanel } from '../subtitleVerify/InspectPanel.js'
+import { InspectBoundary } from '../subtitleVerify/InspectBoundary.js'
 import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 
@@ -107,16 +108,26 @@ export function SeasonAccordion({ season, now, defaultOpen = true }: Props) {
         )
       ) : null}
       {inspecting !== null ? (
-        <InspectPanel
-          isOpen
-          onOpenChange={(o) => { if (!o) setInspecting(null) }}
+        // 错误边界（审计 I-D1）：面板路径上任何抛错都曾白屏**整个应用**（实测整棵树被卸载，
+        // 用户点一下红芯片就失去整个 dashboard）。面板是附加视图，它坏掉的正确降级是
+        // "这一个面板显示一句人话"，不是拖垮 dashboard。key 绑 inspecting：换一集时
+        // 重建边界，否则前一集的失败态会粘在下一集上（boundary 的 failed 不会自己复位）。
+        <InspectBoundary
+          key={inspecting}
           title={inspectTitle}
-          data={compare.data}
-          loading={compare.loading}
-          error={compare.error}
-          onCorrect={onCorrect}
-          correcting={correcting}
-        />
+          onClose={() => setInspecting(null)}
+        >
+          <InspectPanel
+            isOpen
+            onOpenChange={(o) => { if (!o) setInspecting(null) }}
+            title={inspectTitle}
+            data={compare.data}
+            loading={compare.loading}
+            error={compare.error}
+            onCorrect={onCorrect}
+            correcting={correcting}
+          />
+        </InspectBoundary>
       ) : null}
     </VStack>
   )

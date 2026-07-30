@@ -7,7 +7,7 @@ import type { Cue } from '../files/subtitleInspect.js'
 import type { MountKind } from '../core/mountKind.js'
 import type { ReferenceSource } from '../subtitleVerify/referenceSource.js'
 import {
-  buildCompareDTO, resolveDurationMs, MAX_CUE_TEXT_CHARS,
+  buildCompareDTO, resolveDurationMs, MAX_CUE_TEXT_CHARS, diagnoseRow, isFixable,
   type SubtitleCompareDeps, type SubtitleCompareDTO,
 } from './subtitleCompareApi.js'
 
@@ -197,11 +197,12 @@ describe('waveformAvailable × mountKind（spec 验收判据 14）', () => {
 describe('铁律②回归锁：DTO 键集合封闭', () => {
   /** 键集合断言而不是逐个 `not.toHaveProperty`：将来有人往 DTO 里加字段，这条立刻红，
    *  而逐个断言只能挡住我们此刻想到的那四个名字。 */
-  it('DTO 恰好只有六个键——内部诊断字段一个都不漏出去', async () => {
+  it('DTO 恰好只有八个键——内部诊断字段一个都不漏出去', async () => {
     seedVerdict()
     const dto = await dtoOf(makeDeps().deps)
     expect(Object.keys(dto).sort()).toEqual([
-      'durationMs', 'itemId', 'mountKind', 'ours', 'reference', 'waveformAvailable',
+      'diagnosis', 'durationMs', 'fixable', 'itemId', 'mountKind', 'ours', 'reference',
+      'waveformAvailable',
     ])
   })
 
@@ -466,5 +467,108 @@ describe('纯读纪律（铁律④）', () => {
     expect(Object.keys(makeDeps().deps).sort()).toEqual([
       'canWaveform', 'classify', 'findReference', 'lib', 'loadCues', 'probeDuration', 'repo',
     ])
+  })
+})
+
+/**
+ * 结论判读（审计 I-B1/I-B2）。这里是**唯一**的判读点——前端曾自己从两轨时间戳做几何推断，
+ * 那份实现有两个正确性问题，且它是第二个判定引擎、把着写按钮的闸。
+ *
+ * 判读的全部输入都来自**同一行**检测结论（也正是 correctSubtitle 用来决定允不允许写盘的
+ * 那一行），所以"面板给不给按钮"与"后端允不允许写"在结构上不可能再矛盾。
+ */
+describe('diagnoseRow：单行结论 → 四档判读', () => {
+  const row = (over: Partial<{ verdict: SubtitleVerdict; offset_ms: number | null; reference_tier: string | null }>) => ({
+    verdict: 'shifted' as SubtitleVerdict, offset_ms: 2400, reference_tier: 'embedded', ...over,
+  })
+
+  // ── I-B1：符号 ──
+  // 旧的前端 diagnose() 只比较偏移的**绝对值**，于是偏早与偏晚拿到完全相同的文案
+  // （"字幕比画面慢了"），审计实测一个偏早的字幕同样得到那句话——说反了。
+  // 符号本来就在 offset_ms 里，是白拿的。
+  it('offset_ms > 0（字幕比画面晚）→ behind【I-B1】', () => {
+    expect(diagnoseRow(row({ offset_ms: 2400 }))).toBe('behind')
+  })
+
+  it('offset_ms < 0（字幕比画面早）→ ahead，绝不与 behind 混为一谈【I-B1】', () => {
+    expect(diagnoseRow(row({ offset_ms: -2400 }))).toBe('ahead')
+  })
+
+  it('大小相同、符号相反的两个偏移得到不同的判读【I-B1】', () => {
+    // 这条是"只看绝对值"这个 bug 的直接钉子：|−2400| === |2400|，
+    // 任何丢掉符号的实现都会让这两个相等。
+    expect(diagnoseRow(row({ offset_ms: -2400 }))).not.toBe(diagnoseRow(row({ offset_ms: 2400 })))
+  })
+
+  it('两个方向都是"平移能修好" → fixable 恒 true', () => {
+    expect(isFixable(diagnoseRow(row({ offset_ms: 2400 })))).toBe(true)
+    expect(isFixable(diagnoseRow(row({ offset_ms: -2400 })))).toBe(true)
+  })
+
+  // ── 不可修的两档 ──
+  it('有参考源但没判 shifted（帧率不匹配/装错剧集）→ not-a-shift，不给按钮', () => {
+    const d = diagnoseRow(row({ verdict: 'unverifiable', offset_ms: null }))
+    expect(d).toBe('not-a-shift')
+    expect(isFixable(d)).toBe(false)
+  })
+
+  it('压根没有参考源 → unknown（没有可比对的东西，不下结论）', () => {
+    const d = diagnoseRow(row({ verdict: 'unverifiable', offset_ms: null, reference_tier: null }))
+    expect(d).toBe('unknown')
+    expect(isFixable(d)).toBe(false)
+  })
+
+  it('aligned（验过没问题）→ not-a-shift，没有要修的东西', () => {
+    expect(isFixable(diagnoseRow(row({ verdict: 'aligned', offset_ms: null })))).toBe(false)
+  })
+
+  it('没有检测记录 → unknown', () => {
+    expect(diagnoseRow(null)).toBe('unknown')
+    expect(isFixable(diagnoseRow(null))).toBe(false)
+  })
+
+  // 坏数据：schema 允许 offset_ms 为 NULL，而 shifted 行按约定必带偏移量。
+  // 不猜方向——correctSubtitle 对这种行也是拒绝的（409），两处口径一致。
+  it('shifted 但 offset_ms 为 NULL（坏数据）→ unknown，不猜方向也不给按钮', () => {
+    const d = diagnoseRow(row({ offset_ms: null }))
+    expect(d).toBe('unknown')
+    expect(isFixable(d)).toBe(false)
+  })
+
+  /**
+   * I-B2：判读**不看两轨的 cue 条数/下标配对**。
+   *
+   * 旧的前端实现用 `a[i]` 对 `b[i]`，于是两条完全同步但开头少 3 条 cue 的轨被判成 shift。
+   * 这不只是误报——它是第二个判定引擎，可能与后端的 Jaccard 结论矛盾，而且它把着写按钮
+   * 的闸：判错会在真能修的字幕上藏起校正按钮。
+   *
+   * 现在判读只读那一行结论，两轨的形状压根不是输入。下面用"cue 条数差得极多"的两轨
+   * 证明这一点：DTO 的 diagnosis/fixable 完全由库里那行决定。
+   */
+  it('两轨 cue 条数悬殊也不影响判读（判读不按下标配对）【I-B2】', async () => {
+    seedVerdict('e1', 'shifted')
+    // ours 两条、reference 三十条——旧实现的下标配对在这里最容易翻车
+    const manyRef = Array.from({ length: 30 }, (_, i) => cue(i * 10_000, i * 10_000 + 3_000, `r${i}`))
+    const dto = await dtoOf(makeDeps({ findReference: async () => refSource(manyRef) }).deps)
+    // 库里那行是 shifted / offset 2400 → 恒判 behind + fixable
+    expect(dto.diagnosis).toBe('behind')
+    expect(dto.fixable).toBe(true)
+  })
+
+  it('DTO 的 fixable 恒等于 isFixable(diagnosis)（不是两个独立算出来的字段）', async () => {
+    for (const verdict of ['shifted', 'aligned', 'unverifiable'] as SubtitleVerdict[]) {
+      seedVerdict('e1', verdict)
+      const dto = await dtoOf(makeDeps().deps)
+      expect(dto.fixable, `verdict=${verdict}`).toBe(isFixable(dto.diagnosis))
+    }
+  })
+
+  it('判读与 correctSubtitle 的放行条件同源：只有 shifted 行 fixable', async () => {
+    // correctSubtitle 只允许 verdict='shifted' 且 offset_ms 非 null 的行写盘（铁律④）。
+    // 面板的按钮必须与它一致，否则用户点了按钮却拿到 400/409。
+    seedVerdict('e1', 'aligned')
+    expect((await dtoOf(makeDeps().deps)).fixable).toBe(false)
+    seedVerdict('e1', 'shifted')
+    expect((await dtoOf(makeDeps().deps)).fixable).toBe(true)
   })
 })

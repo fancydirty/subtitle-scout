@@ -34,7 +34,7 @@
 import type { Cue } from '../files/subtitleInspect.js'
 import type { MountKind } from '../core/mountKind.js'
 import type { LibraryRepo } from '../v2/libraryRepo.js'
-import type { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
+import type { SubtitleVerifyRepo, SubtitleVerifyRow } from '../v2/subtitleVerifyRepo.js'
 import type { ReferenceSource } from '../subtitleVerify/referenceSource.js'
 
 /**
@@ -56,9 +56,71 @@ export interface CompareBlock {
 }
 
 /**
- * 前端画一张对照图所需的全部数据，**就这六个键**。
+ * 结论：这条字幕**是不是"整体平移就能修好"**，以及往哪边偏。
+ *
+ * ## 为什么这个判断必须在后端（审计 I-B1/I-B2）
+ *
+ * 前端曾自己从两轨时间戳做几何推断（`InspectPanel.diagnose`），有两个正确性问题：
+ * ① 只比较偏移的**绝对值**，于是一个"偏早"的字幕拿到与"偏晚"完全相同的文案（说反了）；
+ * ② 按**下标**配对（`a[i]` 对 `b[i]`），于是两条完全同步但开头少 3 条 cue 的轨被判成
+ *    需要平移——而它压根不需要。
+ *
+ * 但更要紧的不是这两个 bug，是**它是第二个判定引擎**：后端已经用 Jaccard 互相关得出了
+ * 结论（verifySubtitle.ts 的三值 verdict），前端再用一套几何启发式算一遍，两者随时可能
+ * 矛盾。而前端那个引擎**把着写按钮的闸**——判错就会在一条真能修的字幕上藏起校正按钮，
+ * 或在修不好的字幕上给出按钮。同一件事必须只有一个真相来源。
+ *
+ * 所以判断挪到这里，直接读**同一行**检测结论（那也正是 correctSubtitle 用来决定
+ * 允不允许写盘的同一行），前端不再推断、只渲染。两个引擎的矛盾在结构上不可能再发生。
+ *
+ * ## 四档的由来，全部源自那一行的既有字段
+ *
+ *   'behind'        verdict='shifted' 且 offset_ms > 0：字幕比画面**晚**，可平移修好
+ *   'ahead'         verdict='shifted' 且 offset_ms < 0：字幕比画面**早**，可平移修好
+ *   'not-a-shift'   有参考源（reference_tier 非 null）但分数不够：比过了、对不上，
+ *                   任何单一位移都修不好（帧率不匹配、装错剧集都落这里）
+ *   'unknown'       压根没有参考源（reference_tier 为 null），或没有检测记录：
+ *                   没有可比对的东西，不下结论
+ *
+ * `not-a-shift` 与 `unknown` 的区分是白拿的（reference_tier 本来就在库里），而它决定了
+ * 用户看到的是"平移修不好这种"还是"看不出问题在哪"——两句话的可操作性完全不同。
+ *
+ * ## 铁律②：这是布尔/枚举，不是数字
+ *
+ * 回报的是**方向与可修性**，不是"偏移 2400ms"。`offsetMs` / `score` / `referenceTier`
+ * 仍然一个都不出 DTO——本类型只把它们**判读**成一个用户能理解的档位。审计明确认可
+ * 这条路径不违反铁律②。
+ */
+export type CompareDiagnosis = 'behind' | 'ahead' | 'not-a-shift' | 'unknown'
+
+/** 单行结论 → 四档判读。**唯一**的判读点（前端不再有第二个）。 */
+export function diagnoseRow(row: Pick<SubtitleVerifyRow, 'verdict' | 'offset_ms' | 'reference_tier'> | null): CompareDiagnosis {
+  if (row === null) return 'unknown'
+  if (row.verdict === 'shifted') {
+    // offset_ms 为 NULL 的 shifted 行是坏数据（verifySubtitle 的约定是必带偏移量），
+    // 此时不猜方向——correctSubtitle 对这种行也是拒绝的（409），两处口径一致。
+    if (row.offset_ms === null) return 'unknown'
+    // 符号语义与 alignDetect/shiftTiming 完全一致：正数 = 我们的字幕比参考**晚**。
+    // 这个符号本来就在库里，前端那套只看绝对值才把两个方向说成同一句话（审计 I-B1）。
+    return row.offset_ms > 0 ? 'behind' : 'ahead'
+  }
+  // aligned 也落这里：它是"验过没问题"，没有要修的东西。
+  // 有参考源但没判 shifted ⇒ 比过了、平移解决不了（或本来就是对的）。
+  if (row.reference_tier !== null) return 'not-a-shift'
+  return 'unknown'
+}
+
+/** 平移能不能修好它 = 给不给「校正时间轴」按钮。
+ *  从 diagnosis **派生**而不是独立算一遍——两个字段各算一次就是给同一件事开两个真相来源。 */
+export function isFixable(diagnosis: CompareDiagnosis): boolean {
+  return diagnosis === 'behind' || diagnosis === 'ahead'
+}
+
+/**
+ * 前端画一张对照图所需的全部数据，**就这八个键**。
  *
  * `offsetMs` / `score` / `referenceTier` / `detail` 绝不出现在这里——见文件头「坐标 ≠ 评分」。
+ * `diagnosis` / `fixable` 是对它们的**判读**（枚举与布尔），不是它们本身，见 CompareDiagnosis。
  */
 export interface SubtitleCompareDTO {
   itemId: string
@@ -77,6 +139,10 @@ export interface SubtitleCompareDTO {
    *  这不是"数字"也不是评分，是一个解释**为什么某个功能不可用**的事实——
    *  没有它，灰掉的波形轨对用户是无从理解的哑巴失败。 */
   mountKind: MountKind
+  /** 结论判读：偏晚/偏早/平移修不好/不下结论。见 CompareDiagnosis 的大段论证。 */
+  diagnosis: CompareDiagnosis
+  /** 平移能不能修好它 = 前端给不给校正按钮。恒等于 `isFixable(diagnosis)`。 */
+  fixable: boolean
 }
 
 /**
@@ -249,8 +315,9 @@ export async function buildCompareDTO(
   // 字幕可能在本地而视频在云盘（sidecar 装在别处），那种情况下波形一样抽不动。
   const mountKind = deps.classify(item.path)
 
-  // 显式列六个键，绝不 `{...row}` / `{...ref}` 展开——后者会把 offset_ms/score/
+  // 显式列八个键，绝不 `{...row}` / `{...ref}` 展开——后者会把 offset_ms/score/
   // reference_tier/detail 一并漏给前端，正是铁律②要防的事故。这个函数的形状本身是防线。
+  const diagnosis = diagnoseRow(row)
   return {
     ok: true,
     dto: {
@@ -260,6 +327,10 @@ export async function buildCompareDTO(
       durationMs,
       waveformAvailable: deps.canWaveform(mountKind),
       mountKind,
+      // 判读来自**同一行**检测结论（也正是 correctSubtitle 用来决定允不允许写盘的那一行），
+      // 所以"面板给不给按钮"与"后端允不允许写"不可能再矛盾。见 CompareDiagnosis。
+      diagnosis,
+      fixable: isFixable(diagnosis),
     },
   }
 }

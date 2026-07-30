@@ -12,17 +12,13 @@
 // 用 Dialog 而不是 AlertDialog：后者没有 children 插槽（只有 title/description 两个
 // 字符串 prop，见其 d.ts），装不下时间轴。AlertDialog 留给"破坏性操作的二次确认"
 // 那个场景（DESIGN.md §5），而这里是一个信息面板 + 一个明确的动作按钮。
-import { useMemo } from 'react'
 import { Dialog } from '@astryxdesign/core/Dialog'
 import { DialogHeader } from '@astryxdesign/core/Dialog'
 import { Text } from '@astryxdesign/core/Text'
 import { CompareTimeline, type TimelineCue } from './CompareTimeline.js'
 import { formatTick } from './viewport.js'
-import { useT } from '../i18n/useT.js'
-import type { SubtitleCompareDTO } from '../api/types.js'
-
-/** 结论的三种形态。**没有第四种，也永远不会有黄色档**（用户裁决）。 */
-export type Diagnosis = 'shift' | 'drift' | 'unknown'
+import { useT, type TKey } from '../i18n/useT.js'
+import type { SubtitleCompareDTO, CompareDiagnosis } from '../api/types.js'
 
 interface Props {
   isOpen: boolean
@@ -32,64 +28,43 @@ interface Props {
   data: SubtitleCompareDTO | null
   loading: boolean
   error: string | null
-  /** 点「校正时间轴」。drift/unknown 时不渲染这个按钮，所以可以缺席 */
+  /** 点「校正时间轴」。后端判 fixable=false 时不渲染这个按钮，所以可以缺席 */
   onCorrect?: () => void
   correcting?: boolean
 }
 
 /**
- * 从两轨形状推断"平移能不能修好"。
+ * 结论条的文案 key。四档判读 → 两个 key，**判定不在这里做**。
  *
- * 判据：比较序列**前段**与**后段**的平均偏移。纯平移的话两者相等；帧率不匹配的话
- * 后段偏移显著大于前段（越往后拉越开）。
- *
- * 为什么在前端算而不用后端的 score：后端的分数是**内部诊断字段**，铁律②不让它上界面
- * （连 DTO 里都没有）。而"修得了修不了"这个判断需要的信息，两轨的时间戳本身就够了——
- * 前端从已有的展示数据里就能推出来，不需要多要一个数字。
- *
- * 阈值 1.5：后段偏移超过前段 1.5 倍才判 drift。留足余量是因为字幕组的手工微调会让
- * 单条 cue 偏移有噪声，一两条不该翻转整体结论。
+ * 审计 I-B1/I-B2 之前这里有一个 `diagnose()`：从两轨时间戳做几何推断，只看偏移的绝对值
+ * （于是偏早的字幕拿到"字幕比画面慢了"这句说反的话），且按下标配对（于是两条完全同步
+ * 但开头少 3 条 cue 的轨被判成需要平移）。更要紧的是它是**第二个判定引擎**，与后端的
+ * Jaccard 结论随时可能矛盾，而它把着写按钮的闸。现在判定只在
+ * src/dashboard/subtitleCompareApi.ts 的 diagnoseRow 里做一次，前端只做 key 映射。
  */
-export function diagnose(reference: readonly TimelineCue[], ours: readonly TimelineCue[]): Diagnosis {
-  const n = Math.min(reference.length, ours.length)
-  // 少于 6 条没法分前后段比较——不敢判，如实说不知道
-  if (n < 6) return 'unknown'
-  const third = Math.floor(n / 3)
-  const head = avgDelta(reference, ours, 0, third)
-  const tail = avgDelta(reference, ours, n - third, n)
-  if (head === null || tail === null) return 'unknown'
-  const absHead = Math.abs(head)
-  const absTail = Math.abs(tail)
-  // 两端都几乎无偏移 → 本来就是对的（理论上不该走到这个面板，但数据可能已过期）
-  if (absHead < 200 && absTail < 200) return 'unknown'
-  // 后段显著大于前段 = 渐进漂移，平移修不好
-  if (absTail > absHead * 1.5 + 200) return 'drift'
-  return 'shift'
+function headKeyOf(diagnosis: CompareDiagnosis): TKey {
+  switch (diagnosis) {
+    // 符号有了之后必须分开说：说反方向和不说一样糟——用户会按错的方向去理解那张图。
+    case 'behind': return 'verify_verdict_behind_head'
+    case 'ahead': return 'verify_verdict_ahead_head'
+    case 'not-a-shift': return 'verify_verdict_drift_head'
+    default: return 'verify_verdict_unknown_head'
+  }
 }
 
-function avgDelta(
-  a: readonly TimelineCue[], b: readonly TimelineCue[], from: number, to: number,
-): number | null {
-  let sum = 0
-  let count = 0
-  for (let i = from; i < to; i++) {
-    const x = a[i]
-    const y = b[i]
-    if (x === undefined || y === undefined) continue
-    sum += y.startMs - x.startMs
-    count++
+function bodyKeyOf(diagnosis: CompareDiagnosis): TKey {
+  switch (diagnosis) {
+    case 'behind': return 'verify_verdict_behind_body'
+    case 'ahead': return 'verify_verdict_ahead_body'
+    case 'not-a-shift': return 'verify_verdict_drift_body'
+    default: return 'verify_verdict_unknown_body'
   }
-  return count === 0 ? null : sum / count
 }
 
 export function InspectPanel({
   isOpen, onOpenChange, title, data, loading, error, onCorrect, correcting,
 }: Props) {
   const { t } = useT()
-  const diag = useMemo<Diagnosis>(
-    () => (data === null ? 'unknown' : diagnose(data.reference, data.ours)),
-    [data],
-  )
   // 云盘：检测照常做（只读字幕文件），但对照图画不出来（抽音频要 >120s，
   // 每次 seek 付 CDN 延迟地板）。这是网盘的物理限制，不是功能没做——文案要说清这个区别。
   const cloudBlocked = data !== null && data.mountKind === 'cloud'
@@ -105,7 +80,8 @@ export function InspectPanel({
         ) : data === null ? null : (
           <>
             <Verdict
-              diag={diag}
+              diagnosis={data.diagnosis}
+              fixable={data.fixable}
               cloudBlocked={cloudBlocked}
               onCorrect={onCorrect}
               correcting={correcting === true}
@@ -135,29 +111,25 @@ export function InspectPanel({
 }
 
 interface VerdictProps {
-  diag: Diagnosis
+  diagnosis: CompareDiagnosis
+  fixable: boolean
   cloudBlocked: boolean
   onCorrect?: () => void
   correcting: boolean
   onDismiss: () => void
 }
 
-function Verdict({ diag, cloudBlocked, onCorrect, correcting, onDismiss }: VerdictProps) {
+function Verdict({ diagnosis, fixable, cloudBlocked, onCorrect, correcting, onDismiss }: VerdictProps) {
   const { t } = useT()
-  // drift（帧率不匹配）**不给校正按钮**——平移修不好它，给了按钮就是骗人。
+  // 平移修不好的（帧率不匹配、装错剧集）**不给校正按钮**——给了按钮就是骗人。
   // 这正是对照时间轴存在的价值：用户能从形状自己确认这个结论。
-  const canCorrect = diag === 'shift' && onCorrect !== undefined
-  const headKey = diag === 'drift' ? 'verify_verdict_drift_head'
-    : diag === 'shift' ? 'verify_verdict_shift_head'
-      : 'verify_verdict_unknown_head'
-  const bodyKey = diag === 'drift' ? 'verify_verdict_drift_body'
-    : diag === 'shift' ? 'verify_verdict_shift_body'
-      : 'verify_verdict_unknown_body'
+  // `fixable` 来自后端那一行结论，与 correctSubtitle 允不允许写盘同源。
+  const canCorrect = fixable && onCorrect !== undefined
 
   return (
-    <div className={`vinspect-verdict${diag === 'shift' ? '' : ' vinspect-verdict-neutral'}`}>
-      <Text type="label" color="primary">{t(headKey)}</Text>
-      <Text type="body" color="secondary">{t(bodyKey)}</Text>
+    <div className={`vinspect-verdict${fixable ? '' : ' vinspect-verdict-neutral'}`}>
+      <Text type="label" color="primary">{t(headKeyOf(diagnosis))}</Text>
+      <Text type="body" color="secondary">{t(bodyKeyOf(diagnosis))}</Text>
       <div className="vinspect-btns">
         {canCorrect ? (
           <button

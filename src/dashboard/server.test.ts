@@ -1167,6 +1167,10 @@ describe('字幕校验三端点', () => {
       shift: async () => ({ ok: true, detail: 'shifted' }),
       revert: async () => ({ ok: true, detail: 'reverted' }),
       exists: (p) => present.has(p),
+      // 与 seedVerdict 落的 subtitle_hash 一致 = "字幕文件没被换过"（正常路径）。
+      // 不打这个桩会走真实的 hashSubtitleContent 去读 /media/... 这个不存在的路径，
+      // 得到 null → C-A1 守卫保守拒绝（那是对的行为，但不是本组用例想测的东西）。
+      hashSubtitle: async () => 'hash-a',
       reverify: async (itemId, _v, subtitlePath) => {
         new SubtitleVerifyRepo(db).upsertVerifyResult({
           itemId, verdict: 'aligned', offsetMs: null, score: 0.99, referenceTier: 'embedded',
@@ -1490,13 +1494,19 @@ describe('字幕校验三端点', () => {
     })
 
     // 铁律②的 HTTP 层回归锁：键集合断言，将来有人加字段立刻红。
-    it('响应体恰好六个键——内部诊断字段一个都不漏出去【铁律②】', async () => {
+    it('响应体恰好八个键——内部诊断字段一个都不漏出去【铁律②】', async () => {
       seedVerdict('shifted')
       const { base } = await startCompare()
       const body = await (await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)).json()
+      // diagnosis/fixable 是对 offset_ms/score/reference_tier 的**判读**（枚举与布尔），
+      // 不是它们本身——判定挪到后端是审计 I-B1/I-B2 的修法（前端曾有第二个判定引擎）。
+      // 下面那条字符串级锁仍然钉住原始数字一个都不出去。
       expect(Object.keys(body).sort()).toEqual([
-        'durationMs', 'itemId', 'mountKind', 'ours', 'reference', 'waveformAvailable',
+        'diagnosis', 'durationMs', 'fixable', 'itemId', 'mountKind', 'ours', 'reference',
+        'waveformAvailable',
       ])
+      expect(body.diagnosis).toBe('behind')
+      expect(body.fixable).toBe(true)
     })
 
     it('序列化后的字节里不含 score/offsetMs/referenceTier/detail【铁律②字符串级锁】', async () => {
@@ -1509,7 +1519,7 @@ describe('字幕校验三端点', () => {
       // 刻意只断言字段名，不断言"2400"/"0.93"这类**数值子串**：时间戳与时长是合法的
       // 定位坐标，它们的十进制表示会天然包含任意数字子串（实测 durationMs=1424000 里
       // 就含 "2400"，让这条断言假红过一次）。数值层面的封闭由上面那条键集合断言保证——
-      // DTO 只有六个键，多出来的任何字段都会被它当场抓住，不需要在字节里猜数字。
+      // DTO 只有八个键，多出来的任何字段都会被它当场抓住，不需要在字节里猜数字。
       for (const forbidden of ['score', 'offsetMs', 'offset_ms', 'referenceTier', 'reference_tier', 'detail', 'tier', 'embedded']) {
         expect(raw).not.toContain(forbidden)
       }

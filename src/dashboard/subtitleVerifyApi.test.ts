@@ -67,6 +67,9 @@ function makeDeps(over?: Partial<SubtitleWriteDeps> & { existing?: Set<string> }
     shift: async (p, off) => { calls.shift.push([p, off]); return okShift },
     revert: async (p) => { calls.revert.push(p); return okShift },
     exists: (p) => present.has(p),
+    // 默认哈希与 seedVerdict 落的 subtitle_hash 一致 = "文件没被换过"（正常路径）。
+    // 想模拟"用户重新下载了一份同名字幕"就覆盖成别的值（审计 C-A1）。
+    hashSubtitle: async () => 'hash-a',
     // 桩要如实模仿 verifyAndRecord 的契约：**既落库又返回**。只返回不落库的桩会让
     // "校正后 DB 结论被更新"这条断言变成对桩的断言而非对被测代码的断言。
     reverify: async (itemId, videoPath, subtitlePath) => {
@@ -492,15 +495,16 @@ describe('revertSubtitle（POST revert）', () => {
     expect(err).not.toContain('/media/')
   })
 
-  // 撤销 → 重新校正是 correctSubtitle 那道 409 门指望的出路：revertSubtitleTiming 会删掉
-  // meta，所以撤销后的校正是一次基准明确的干净首次校正。这条钉住这条出路真的通。
+  // 撤销 → 重新校正是 correctSubtitle 那道 409 门指望的出路：revertSubtitleTiming 会把
+  // meta 归零（C-A1 之后改成归零而非删除），所以撤销后的校正是一次基准明确的干净首次校正。
+  // 这条钉住这条出路真的通。
   it('撤销后再校正走得通（409 门的出路不是死胡同）', async () => {
     seedVerdict('e1', 'shifted', { offsetMs: 2400 })
     const backup = `${SUB}${BACKUP_SUFFIX}`
     const present = new Set([backup])
     const { deps, calls } = makeDeps({
       existing: present,
-      // 模仿 revertSubtitleTiming：备份保留不删，但 meta 被删 → 下次校正基准干净。
+      // 模仿 revertSubtitleTiming：备份保留不删，meta 归零 → 下次校正基准干净。
       revert: async () => ({ ok: true, detail: 'reverted' }),
     })
 
@@ -514,5 +518,85 @@ describe('revertSubtitle（POST revert）', () => {
     const again = await correctSubtitle(deps, 'e1', OPTS)
     expect(again).toEqual({ ok: true, state: 'ok' })
     expect(calls.shift).toEqual([[SUB, 2400]])
+  })
+})
+
+/**
+ * C-A1（审计 Critical）的链路修复：**系统不许把用户引向那条销毁文件的路**。
+ *
+ * 背景链条：字幕落盘用确定性文件名（subtitleWriter.ts）→ 用户重新下载一份同名字幕
+ * → 路径不变 → 巡检永不重查已有记录的条目（verifySweep.ts 的 LEFT JOIN ... IS NULL 过滤）
+ * → DB 里一直留着**旧字幕**的 shifted 判定、红芯片一直亮 → 用户点校正。
+ *
+ * 修复前这里回 409 "先撤销再校正"，而撤销恰恰会用旧字幕的备份覆盖用户刚下载的新字幕。
+ * 判据复用既有的 repo.needsRecheck（路径 + 内容哈希），不发明第二套。
+ */
+describe('C-A1：字幕被换过之后，写扳手必须拒绝且给出正确指引', () => {
+  /** 用户重新下载了一份同名字幕：路径不变，内容哈希与库里那行不一致。 */
+  const SWAPPED = { hashSubtitle: async () => 'hash-of-the-new-file' }
+
+  it('校正：字幕被换过 → 409，且文案绝不建议"撤销"（那会销毁新字幕）', async () => {
+    seedVerdict('e1', 'shifted', { offsetMs: 2400 })
+    const { deps, calls } = makeDeps(SWAPPED)
+    const r = await correctSubtitle(deps, 'e1', OPTS)
+
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.status).toBe(409)
+    const err = r.ok === false ? r.error : ''
+    // 如实说明"文件已被替换"并要求重新检测
+    expect(err).toContain('has been replaced')
+    // 这是本条测试的核心：**不许**再出现"先撤销"这个有害建议
+    expect(err).not.toMatch(/undo/i)
+    expect(err).not.toMatch(/撤销/)
+    // 一个字节都没动
+    expect(calls.shift).toEqual([])
+    expect(calls.reverify).toEqual([])
+  })
+
+  it('撤销：字幕被换过 → 409 拒绝，绝不用旧备份覆盖新字幕（审计路径 ①）', async () => {
+    seedVerdict('e1', 'shifted', { offsetMs: 2400 })
+    const { deps, calls } = makeDeps({ ...SWAPPED, existing: new Set([`${SUB}${BACKUP_SUFFIX}`]) })
+    const r = await revertSubtitle(deps, 'e1', OPTS)
+
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.status).toBe(409)
+    expect(r.ok === false ? r.error : '').toContain('has been replaced')
+    // revert 压根没被调用 → 用户的新字幕安全
+    expect(calls.revert).toEqual([])
+    expect(calls.reverify).toEqual([])
+  })
+
+  it('C-A1 门在"已校正过一次"那道 409 之前（否则用户仍会收到有害的撤销建议）', async () => {
+    // 两个条件同时成立：备份已存在 **且** 字幕被换过。
+    // 若顺序颠倒，用户拿到的是"already been corrected once — undo first"，
+    // 照做就会销毁新字幕。顺序正确时拿到的是"has been replaced"。
+    seedVerdict('e1', 'shifted', { offsetMs: 400 })
+    const { deps } = makeDeps({ ...SWAPPED, existing: new Set([`${SUB}${BACKUP_SUFFIX}`]) })
+    const r = await correctSubtitle(deps, 'e1', OPTS)
+
+    const err = r.ok === false ? r.error : ''
+    expect(err).toContain('has been replaced')
+    expect(err).not.toMatch(/undo/i)
+  })
+
+  it('哈希算不出（文件被删/无权限）→ 保守拒绝，不对读不动的文件动写扳手', async () => {
+    seedVerdict('e1', 'shifted', { offsetMs: 2400 })
+    const { deps, calls } = makeDeps({ hashSubtitle: async () => null })
+    const r = await correctSubtitle(deps, 'e1', OPTS)
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.status).toBe(409)
+    expect(calls.shift).toEqual([])
+  })
+
+  it('字幕没被换过 → 两个扳手都照常放行（守卫不误伤主路径）', async () => {
+    seedVerdict('e1', 'shifted', { offsetMs: 2400 })
+    const { deps, calls } = makeDeps()
+    expect(await correctSubtitle(deps, 'e1', OPTS)).toEqual({ ok: true, state: 'ok' })
+    expect(calls.shift).toEqual([[SUB, 2400]])
+
+    seedVerdict('e1', 'shifted', { offsetMs: 2400 })
+    const { deps: d2, calls: c2 } = makeDeps({ existing: new Set([`${SUB}${BACKUP_SUFFIX}`]) })
+    expect(await revertSubtitle(d2, 'e1', OPTS)).toEqual({ ok: true, state: 'ok' })
+    expect(c2.revert).toEqual([SUB])
   })
 })

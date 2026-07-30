@@ -89,6 +89,47 @@
  * | **无** | **有(N≠0)** | **非法**：正常流程不可能产生 | **拒绝** |
  * | 无 | 有(0) | 退化的合法态：记录着"平移 0ms"，等价于未平移 | 按"从未平移过"处理 |
  *
+ * ### 第四位信息：备份与目标的**内容绑定**（审计 C-A1）
+ *
+ * 上面那张表只问"文件在不在"，从不问**"target 还是当初备份的那个文件吗？"**
+ * 备份靠**文件名**绑定（`T` → `T.scout-backup`），而 subtitleWriter.ts:104-107 用的是
+ * **确定性文件名**——同一集重新下载一份字幕会落在同一个路径上。于是"用户换了字幕"这件
+ * 极普通的事，会让备份指向一份**与磁盘上的 target 毫无关系**的内容，而三文件状态机对此
+ * 一无所知，照常按"备份已存在"走幂等路径。审计实测两条 `ok:true` 静默销毁用户文件的路径：
+ *
+ *   ① revert 覆盖新字幕：写入 A → shift(2000)（备份=A）→ 用户换新字幕 B（同名覆盖）
+ *      → revert() → ok:true，磁盘变回 A，**B 被销毁**。
+ *   ② 幂等逻辑用旧备份替换新字幕：写入 A → shift(2000) → 用户换 B
+ *      → 再 shift(3000) → ok:true，detail 写 "recomputed from existing backup (idempotent)"，
+ *      文件变成**由旧备份 A 算出的内容**，**B 彻底消失**。
+ *
+ * 两条都不是边角：巡检永不重查已有记录的条目（verifySweep.ts:160,166 的
+ * `LEFT JOIN ... v.item_id IS NULL` 过滤），所以 DB 里会一直留着**旧字幕**的 `shifted`
+ * 判定、红芯片一直亮，用户点校正 → 撞上 correctSubtitle 那道 409，而它的文案曾是
+ * "先撤销再校正"——**系统亲手把用户引向路径 ①**。`looksLikeSubtitle` 也拦不住：
+ * 旧备份**是**一个合法字幕，只是错的那一份。
+ *
+ * 所以备份写出时**连同目标文件的内容指纹一起记进 meta**，shift 与 revert 都先校验
+ * "当前 target 的指纹 == meta 记的那个"，不等就拒绝（`ok:false`，零副作用）。
+ *
+ * #### 指纹用原始字节的 sha256，且**刻意不复用** hashSubtitleContent
+ *
+ * `subtitleSpans.hashSubtitleContent`（subtitleSpans.ts:66）已经存在，但它哈希的是
+ * **解码后的 UTF-8 文本**——刻意做编码归一化，让同一份字幕以 GBK 与 UTF-8 存盘时哈希相同。
+ * 那个口径服务的是"结论要不要作废"（内容没变就别白跑检测），对本模块**恰好是错的**：
+ * 本模块按字节原地改写、revert 按字节写回，所以"同内容不同编码"对我们**就是另一个文件**——
+ * 拿归一化哈希放行，revert 会把用户刚做的一次编码转换悄悄退回去。这里要问的是
+ * **字节同一性**，就得用字节回答。
+ *
+ * 另两条理由：① 走 decodeToUtf8 等于把本模块刻意绕开的整个编码问题（见硬约束一）重新
+ * 引进来，而且 UTF-16 那类文件在 decode 侧的行为与我们的 isUtf16 拒绝口径不一致；
+ * ② `hashSubtitleContent` 是 async 且**自己按路径读文件**，会绕开 `readFileImpl` 注入点，
+ * 让"读失败""内容被换"这些路径彻底测不了。本模块的 `fingerprint()` 吃 Buffer、同步、
+ * 就在已经读进来的字节上算，零额外 IO。
+ *
+ * 不用 size+mtime：mtime 在本仓库真实关心的 NAS/SMB/rclone 挂载上不可靠（rename 与
+ * 时钟偏移都会动它），而"重新下载一份同样大小的字幕"是完全可能的——两者都会漏判。
+ *
  * 为什么"B 无 + M 有非零"必然非法：meta 只在备份写成功之后才写（见落盘阶段的顺序），
  * 所以这个组合只可能来自外部干预——最典型的是清理脚本只删了 `.scout-backup`
  * 却漏删 `.scout-backup.json`（而本模块的注释正明确说"清理备份是独立的显式操作"，
@@ -135,6 +176,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { writeAll } from '../files/fsUtil.js'
 
@@ -493,20 +535,91 @@ function atomicWrite(path: string, data: Buffer, opts?: ShiftOptions): void {
   }
 }
 
-/** meta 读取。任何异常/字段不合法都返回 null = "未知"，绝不猜。
- *  meta 只影响 previousOffsetMs 这个信息性字段，不参与正确性。 */
-function readMeta(path: string, opts?: ShiftOptions): number | null {
+/**
+ * 内容指纹：**原始字节**的 sha256（全文，十六进制）。
+ *
+ * 刻意不复用 subtitleSpans.hashSubtitleContent——它哈希解码后的 UTF-8 文本（编码归一化），
+ * 那对"结论要不要作废"是对的口径，对"这还是同一串字节吗"是错的。完整论证见文件头
+ * 「第四位信息」。
+ *
+ * 全文而非前若干字节：字幕文件是 KB~百KB 量级，sha256 全文的成本在这条路径上完全不可测
+ * （我们本来就已经把整个文件读进内存了）。而"只哈希前 N 字节"会漏掉一整类真实情形——
+ * 同一字幕组的两个版本共享片头几 KB 的 [Script Info]/[V4+ Styles]/署名，正文才开始分岔。
+ * 省不下的成本换来一个真实的漏判窗口，不划算。
+ */
+function fingerprint(buf: Buffer): string {
+  return createHash('sha256').update(buf).digest('hex')
+}
+
+/** meta 的内容。两个字段都可能"未知"（老版本留下的 meta 只有 offset、没有指纹）。 */
+interface BackupMeta {
+  /** 已应用的累计平移量。缺失/不合法 → null = 未知，绝不猜。 */
+  appliedOffsetMs: number | null
+  /** 写备份时目标文件的内容指纹。缺失 → null = 未知（老版本 meta / 手工 meta）。 */
+  targetFingerprint: string | null
+}
+
+const UNKNOWN_META: BackupMeta = { appliedOffsetMs: null, targetFingerprint: null }
+
+/** meta 读取。任何异常/字段不合法都读成"未知"，绝不猜。
+ *  `appliedOffsetMs` 只影响 previousOffsetMs 这个信息性字段；而 `targetFingerprint`
+ *  参与正确性判断（见 checkFingerprint），但它的**缺失**同样被保守处理而非当作"匹配"。 */
+function readMeta(path: string, opts?: ShiftOptions): BackupMeta {
   const exists = opts?.existsImpl ?? existsSync
-  if (!exists(path)) return null
+  if (!exists(path)) return UNKNOWN_META
   try {
     const read = opts?.readFileImpl ?? readFileSync
     const parsed: unknown = JSON.parse(read(path).toString('utf8'))
-    if (parsed == null || typeof parsed !== 'object') return null
-    const v = (parsed as { appliedOffsetMs?: unknown }).appliedOffsetMs
-    return typeof v === 'number' && Number.isFinite(v) ? v : null
+    if (parsed == null || typeof parsed !== 'object') return UNKNOWN_META
+    const o = parsed as { appliedOffsetMs?: unknown; targetFingerprint?: unknown }
+    return {
+      appliedOffsetMs:
+        typeof o.appliedOffsetMs === 'number' && Number.isFinite(o.appliedOffsetMs)
+          ? o.appliedOffsetMs
+          : null,
+      targetFingerprint:
+        typeof o.targetFingerprint === 'string' && o.targetFingerprint !== ''
+          ? o.targetFingerprint
+          : null,
+    }
   } catch {
-    return null
+    return UNKNOWN_META
   }
+}
+
+/**
+ * C-A1 守卫：当前磁盘上的 target 还是当初备份时那份内容吗？
+ *
+ * 只在**备份存在**时有意义（备份不存在 = 我们从没动过这个文件 = 没有绑定关系可校验）。
+ * 三种结果：
+ *   - meta 记着指纹且与当前 target 一致 → 放行
+ *   - meta 记着指纹但不一致 → **拒绝**：字幕文件已被换过，备份对应的是另一份内容
+ *   - 备份存在但 meta 缺失/损坏/没有指纹字段 → **保守拒绝**，沿用 C1 那条守卫的口径
+ *     （宁可要求人工介入，也不能拿一个来源不明的备份去覆盖/重算用户的文件）
+ *
+ * 第三种是这道守卫唯一有行为代价的地方：老版本留下的备份、用户手工放的备份，从此需要人工
+ * 处理一次。这是刻意的取舍——那正是"备份与目标毫无关系"风险最高的状态（我们对它的来源
+ * 一无所知），而代价只是删一个文件；反向的代价是不可逆地销毁用户不可替代的字幕。
+ */
+function checkFingerprint(
+  targetBytes: Buffer,
+  meta: BackupMeta,
+  metaPath: string,
+  backupPath: string,
+): { ok: true } | { ok: false; detail: string } {
+  if (meta.targetFingerprint === null) {
+    return {
+      ok: false,
+      detail: `refused: a backup exists at ${backupPath} but ${metaPath} records no content fingerprint for it (old-version backup, hand-placed backup, or corrupt meta) — cannot prove the backup belongs to the subtitle file currently on disk, and using it would risk overwriting an unrelated subtitle. Inspect the backup manually: if it is the right original, delete ${metaPath} and re-run; if not, delete the backup.`,
+    }
+  }
+  if (fingerprint(targetBytes) !== meta.targetFingerprint) {
+    return {
+      ok: false,
+      detail: `refused: the subtitle file at this path has been replaced since it was backed up (content fingerprint no longer matches the one recorded in ${metaPath}) — the backup at ${backupPath} corresponds to a different piece of content, so restoring or recomputing from it would destroy the subtitle currently on disk. Nothing was touched. Re-check this item to pick up the new file; delete the backup and meta if the old original is no longer wanted.`,
+    }
+  }
+  return { ok: true }
 }
 
 /**
@@ -549,7 +662,8 @@ export async function shiftSubtitleTiming(
     return { ok: false, detail: `refused: unsupported extension ${ext || '(none)'} (only .ass/.ssa/.srt)` }
   }
 
-  const previousOffsetMs = readMeta(metaPath, opts)
+  const meta = readMeta(metaPath, opts)
+  const previousOffsetMs = meta.appliedOffsetMs
   const backupExisted = exists(backupPath)
 
   // ── C1 守卫：备份缺失但 meta 记录着非零平移 = 三文件状态机里的非法组合。 ──
@@ -571,9 +685,27 @@ export async function shiftSubtitleTiming(
   try {
     // 幂等的核心：备份已存在 → 从**备份**（原始字节）重算，而不是在当前文件上再平移一次。
     // 这样连点两次校正不会双倍平移。备份绝不覆盖（那会毁掉原始版本）。
+    //
+    // 备份不存在时 target 自己就是 source，省掉第二次读盘；备份存在时**两个都要读**——
+    // source 用来重算，target 用来验指纹（C-A1）。
     source = read(backupExisted ? backupPath : path)
   } catch (e) {
     return { ok: false, detail: `refused: cannot read source (${backupExisted ? 'backup' : 'original'}): ${errText(e)}` }
+  }
+
+  // ── C-A1 守卫：备份存在时，先确认磁盘上的 target 还是当初备份的那份内容。 ──
+  // 见文件头「第四位信息」。备份靠文件名绑定，而字幕是确定性文件名（同名 re-download
+  // 会命中同一路径），所以"备份对应另一份内容"是一条极普通的可达路径，不是边角。
+  // 拒绝时零副作用：target 不动、backup 不动、meta 不写。
+  if (backupExisted) {
+    let targetBytes: Buffer
+    try {
+      targetBytes = read(path)
+    } catch (e) {
+      return { ok: false, previousOffsetMs, detail: `refused: cannot read target to verify it still matches the backup: ${errText(e)}, nothing touched` }
+    }
+    const bound = checkFingerprint(targetBytes, meta, metaPath, backupPath)
+    if (!bound.ok) return { ok: false, previousOffsetMs, detail: bound.detail }
   }
 
   if (isUtf16(source)) {
@@ -630,9 +762,19 @@ export async function shiftSubtitleTiming(
 
   // meta 是辅助信息：写失败不该让一次成功的平移变成失败（时间轴已经正确落盘了）。
   // 代价只是下次调用 previousOffsetMs 变 null（如实报"未知"），主路径不受影响。
+  //
+  // **指纹记的是刚写出去的 `next`，不是备份的字节**：C-A1 守卫问的是"磁盘上的 target 还是
+  // 我上次留下的那个吗"，所以基准必须是我们自己最后写下的那份内容。记成备份的指纹会让
+  // 紧接着的第二次调用当场判"被换过"（因为 target 已经是平移后的了），把幂等路径堵死。
+  //
+  // meta 写失败 ⇒ 下次调用读不到指纹 ⇒ checkFingerprint 保守拒绝。这与旧行为（只是
+  // previousOffsetMs 变 unknown）相比更严格，所以 detail 里如实说明后果，不让人以为无害。
   let metaOk = true
   try {
-    const payload = Buffer.from(JSON.stringify({ appliedOffsetMs: offsetMs }), 'utf8')
+    const payload = Buffer.from(
+      JSON.stringify({ appliedOffsetMs: offsetMs, targetFingerprint: fingerprint(next) }),
+      'utf8',
+    )
     if (opts?.writeFileImpl) opts.writeFileImpl(metaPath, payload)
     else writeFileSync(metaPath, payload)
   } catch {
@@ -660,7 +802,7 @@ export async function shiftSubtitleTiming(
     `prevOffsetMs=${prevText}`,
   ]
   if (outcome.clampedCount > 0) parts.push(`clamped ${outcome.clampedCount} timestamp(s) to 0`)
-  if (!metaOk) parts.push('meta write failed (previousOffsetMs will read as unknown next time)')
+  if (!metaOk) parts.push('meta write failed (previousOffsetMs will read as unknown, and the next shift/revert will refuse until the backup+meta are sorted out by hand)')
 
   return {
     ok: true,
@@ -674,7 +816,11 @@ export async function shiftSubtitleTiming(
 }
 
 /**
- * 撤销：把 `.scout-backup` 的原始字节原子写回，并删掉 meta。
+ * 撤销：把 `.scout-backup` 的原始字节原子写回，并把 meta 改写成"已平移 0ms + 还原后的指纹"。
+ *
+ * meta **改写而非删除**：删除会留下"备份有 + meta 无"，而 C-A1 的指纹守卫对那个状态是
+ * 保守拒绝的（没有指纹就无从证明备份与磁盘上的文件相关），于是 correctSubtitle 那道 409
+ * 指望的出路"撤销 → 重新校正"会变成死胡同。见落盘处的注释。
  *
  * **备份本身不删**——用户可能想再校正一次，而删除原始字节副本是不可逆的。
  * 清理备份是独立的显式操作（人工/清理脚本），刻意不放在这里。
@@ -687,6 +833,11 @@ export async function shiftSubtitleTiming(
  *     而 shift 对 `.vtt` 是明确拒绝的。少了守卫的 revert 成了绕过 shift 全部前置检查的后门。
  * 所以这里补齐三道：扩展名白名单、目标必须已存在（revert 是"还原"，不是"凭备份造文件"）、
  * 备份内容基本合理性（能看出是字幕，不是任意字节）。
+ *
+ * **第四道（审计 C-A1）：目标必须还是当初备份的那份内容**。这是本函数最要紧的一道——
+ * 审计实测的销毁路径 ① 就走在这里：备份=旧字幕 A，用户换了新字幕 B（同名覆盖），
+ * revert 照常把 A 写回去、报 `ok:true`，**B 永久消失**。`looksLikeSubtitle` 拦不住它，
+ * 因为 A **是**一个合法字幕——只是错的那一份。判据见 checkFingerprint。
  */
 export async function revertSubtitleTiming(
   subtitlePath: string,
@@ -712,6 +863,17 @@ export async function revertSubtitleTiming(
   if (!exists(backupPath)) {
     return { ok: false, detail: `refused: no backup at ${backupPath}; nothing to revert` }
   }
+  // 守卫④（C-A1）：目标还是当初备份的那份内容吗？**必须在读备份/写盘之前**，
+  // 且失败时零副作用（target 不动、backup 不动、meta 不删）。见函数头与文件头。
+  let targetBytes: Buffer
+  try {
+    targetBytes = read(path)
+  } catch (e) {
+    return { ok: false, backupPath, detail: `refused: cannot read target to verify it still matches the backup: ${errText(e)}, nothing touched` }
+  }
+  const bound = checkFingerprint(targetBytes, readMeta(metaPath, opts), metaPath, backupPath)
+  if (!bound.ok) return { ok: false, backupPath, detail: bound.detail }
+
   let original: Buffer
   try {
     original = read(backupPath)
@@ -733,13 +895,34 @@ export async function revertSubtitleTiming(
   } catch (e) {
     return { ok: false, detail: `revert write failed: ${errText(e)}, target untouched (backup at ${backupPath})` }
   }
+  // meta：**改写而非删除**（C-A1 的直接后果）。
+  //
+  // 曾经这里 unlink 掉 meta，留下"备份有 + meta 无"。加了指纹守卫之后那个状态会被下一次
+  // shift 保守拒绝，于是 correctSubtitle 那道 409 指望的出路（撤销 → 重新校正）
+  // 变成死胡同——测试 ca1-revert-then-correct-again-works 正是钉这个。
+  //
+  // 改写成 `appliedOffsetMs: 0` + 还原后字节的指纹，比删除更准确地描述现在的状态：
+  // "备份在、目标等于备份、累计平移 0"。下一次 shift 读到 0 会按退化的合法态
+  // （等价于未平移）处理，基准明确；而指纹仍然在岗——撤销之后用户再换字幕，
+  // 照样会被守卫拦住。
+  let metaOk = true
   try {
-    if (exists(metaPath)) unlinkSync(metaPath)
+    const payload = Buffer.from(
+      JSON.stringify({ appliedOffsetMs: 0, targetFingerprint: fingerprint(original) }),
+      'utf8',
+    )
+    if (opts?.writeFileImpl) opts.writeFileImpl(metaPath, payload)
+    else writeFileSync(metaPath, payload)
   } catch {
-    // swallow: 陈旧的 meta 只会让下次 previousOffsetMs 读到一个已撤销的值，
-    // 而那个字段是信息性的；撤销本身（字节已写回）已经成功，不该因此报失败。
+    // 撤销本身（字节已写回）已经成功，不该因为一个辅助文件写失败而报失败。
+    // 代价是下次 shift 会因读不到指纹而保守拒绝——detail 里如实说明。
+    metaOk = false
   }
-  return { ok: true, backupPath, detail: `reverted from backup (${original.length} bytes); backup kept at ${backupPath}` }
+  const parts = [`reverted from backup (${original.length} bytes)`, `backup kept at ${backupPath}`]
+  if (!metaOk) {
+    parts.push(`meta rewrite failed at ${metaPath} (the next correction will refuse until the backup+meta are sorted out by hand)`)
+  }
+  return { ok: true, backupPath, detail: parts.join('; ') }
 }
 
 /**

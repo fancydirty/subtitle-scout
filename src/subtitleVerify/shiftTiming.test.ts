@@ -346,15 +346,23 @@ describe('shiftSubtitleTiming — 备份与幂等', () => {
   })
 
   it('shift-existing-backup-never-overwritten: 备份已存在时绝不被覆盖', async () => {
-    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    // 备份必须经**真实的一次 shift** 建立（不是手工放），否则 C-A1 守卫会保守拒绝
+    // ——手工备份没有内容指纹，无从证明它与磁盘上的文件相关。这里要测的是
+    // "备份即基准、绝不覆盖"，用 srt 起一个已知时间点便于验算。
+    const src = '1\n00:00:20,000 --> 00:00:22,000\n原始版本\n'
+    const p = stageBytes(Buffer.from(src, 'utf8'), 'base.srt')
     const backupPath = `${resolve(p)}${BACKUP_SUFFIX}`
-    // 手工放一个"原始版本"备份，内容与当前文件不同
-    const sentinel = Buffer.from('[Events]\nDialogue: 0,0:00:20.00,0:00:22.00,Default,,0,0,0,,原始版本\n', 'utf8')
-    writeFileSync(backupPath, sentinel)
-    await shiftSubtitleTiming(p, 2000)
-    expect(readFileSync(backupPath)).toEqual(sentinel)
-    // 且平移是基于这个备份重算的（20s - 2s = 18s），证明"备份即基准"
-    expect(dialogueTimes(readFileSync(p))).toEqual([['0:00:18.00', '0:00:20.00']])
+    const r1 = await shiftSubtitleTiming(p, 5000)
+    expect(r1.ok).toBe(true)
+    const backupAfterFirst = readFileSync(backupPath)
+    expect(backupAfterFirst).toEqual(Buffer.from(src, 'utf8'))
+
+    // 第二次换个 offset：备份字节必须一个都不变，且平移是基于**备份**重算的
+    // （20s - 2s = 18s，而不是在已平移的 15s 上再减）
+    const r2 = await shiftSubtitleTiming(p, 2000)
+    expect(r2.ok).toBe(true)
+    expect(readFileSync(backupPath)).toEqual(backupAfterFirst)
+    expect(readFileSync(p).toString('utf8')).toContain('00:00:18,000 --> 00:00:20,000')
   })
 
   it('shift-existing-backup-not-rewritten: 备份已存在时对备份的写次数为 0（不只是内容等价）', async () => {
@@ -382,10 +390,33 @@ describe('shiftSubtitleTiming — 备份与幂等', () => {
     expect(r2.appliedOffsetMs).toBe(2500)
   })
 
-  it('shift-meta-missing-reports-unknown: meta 缺失（手工备份/老版本）时 previousOffsetMs 为 null，不猜', async () => {
+  it('shift-meta-missing-with-backup-refused: 备份在而 meta 缺失（手工/老版本备份）→ 保守拒绝，不猜也不动文件', async () => {
+    // 审计 C-A1：备份靠**文件名**绑定，没有指纹就无从证明"这个备份对应磁盘上这份内容"。
+    // 旧行为是照常基于备份重算并只把 previousOffsetMs 报成 null——而那正是销毁路径 ②
+    // 的形状（备份是旧字幕、磁盘上是用户换的新字幕）。沿用 C1 的口径：宁可要求人工介入。
     const p = stage(FIXTURE_TORTURE, 'torture.ass')
-    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, readFileSync(p))
+    const before = readFileSync(p)
+    const backup = Buffer.from(readFileSync(p))
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, backup)
     const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('records no content fingerprint')
+    // 零副作用：目标与备份都一个字节没动
+    expect(readFileSync(p)).toEqual(before)
+    expect(readFileSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toEqual(backup)
+  })
+
+  it('shift-meta-without-offset-reports-unknown: meta 有指纹但没有合法 offset → previousOffsetMs 为 null，不猜 0', async () => {
+    // previousOffsetMs=null（未知）这一档在加了指纹守卫后仍然可达：meta 被手工编辑过、
+    // 或将来某个写入方只记了指纹。此时指纹能证明绑定关系（放行），但累计平移量确实未知，
+    // 必须如实报 null 而不是猜 0——调用方按 previousOffsetMs + R 叠加，猜 0 会欠校正。
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    await shiftSubtitleTiming(p, 2000)
+    const metaPath = `${resolve(p)}${META_SUFFIX}`
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as { targetFingerprint: string }
+    // 只留指纹，抹掉 appliedOffsetMs
+    writeFileSync(metaPath, JSON.stringify({ targetFingerprint: meta.targetFingerprint }))
+    const r = await shiftSubtitleTiming(p, 2500)
     expect(r.ok).toBe(true)
     expect(r.previousOffsetMs).toBeNull()
     expect(r.detail).toContain('prevOffsetMs=unknown')
@@ -399,9 +430,17 @@ describe('shiftSubtitleTiming — 备份与幂等', () => {
     const r = await revertSubtitleTiming(p)
     expect(r.ok).toBe(true)
     expect(readFileSync(p)).toEqual(original)
-    // 备份保留（可能还要再校正一次），meta 清掉
+    // 备份保留（可能还要再校正一次）。meta **改写**而非删除（C-A1）：删掉会留下
+    // "备份有 + meta 无"，而那个状态会被指纹守卫保守拒绝，把"撤销 → 重新校正"
+    // 这条出路堵死。改写成 offset=0 + 还原后字节的指纹，如实描述当前状态。
     expect(existsSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toBe(true)
-    expect(existsSync(`${resolve(p)}${META_SUFFIX}`)).toBe(false)
+    const metaPath = `${resolve(p)}${META_SUFFIX}`
+    expect(existsSync(metaPath)).toBe(true)
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as {
+      appliedOffsetMs: number; targetFingerprint: string
+    }
+    expect(meta.appliedOffsetMs).toBe(0)
+    expect(meta.targetFingerprint).toEqual(expect.any(String))
   })
 
   it('shift-revert-without-backup-refused: 无备份时 revert 拒绝，不动目标文件', async () => {
@@ -496,18 +535,28 @@ describe('shiftSubtitleTiming — 三文件状态机守卫', () => {
     expect(r2.previousOffsetMs).toBe(2000)
     assertConsistent(r2)
 
-    // ③ 备份有 + meta 无 = 手工备份/老版本 → null（未知，不猜 0）
+    // ③ 备份有 + meta 只有指纹（无 offset）→ null（未知，不猜 0）
+    // 注：原先这一档用"手工放备份 + 无 meta"构造，那个状态现在被 C-A1 守卫保守拒绝
+    // （没有指纹就无从证明备份与磁盘上的文件相关）。改用"指纹在、offset 缺"——
+    // 同样是 previousOffsetMs=null 这一档，且仍能走到成功路径。
     const b = stage(FIXTURE_TORTURE, 'b.ass')
-    writeFileSync(`${resolve(b)}${BACKUP_SUFFIX}`, readFileSync(b))
+    await shiftSubtitleTiming(b, 1000)
+    const bMetaPath = `${resolve(b)}${META_SUFFIX}`
+    const bfp = (JSON.parse(readFileSync(bMetaPath, 'utf8')) as { targetFingerprint: string }).targetFingerprint
+    writeFileSync(bMetaPath, JSON.stringify({ targetFingerprint: bfp }))
     const r3 = await shiftSubtitleTiming(b, 2000)
+    expect(r3.ok).toBe(true)
     expect(r3.previousOffsetMs).toBeNull()
     assertConsistent(r3)
 
-    // ④ 备份有 + meta 损坏 → null
+    // ④ 备份有 + meta 里 offset 类型不合法（字符串）但指纹合法 → null
     const c = stage(FIXTURE_TORTURE, 'c.ass')
-    writeFileSync(`${resolve(c)}${BACKUP_SUFFIX}`, readFileSync(c))
-    writeFileSync(`${resolve(c)}${META_SUFFIX}`, '{broken')
+    await shiftSubtitleTiming(c, 1000)
+    const cMetaPath = `${resolve(c)}${META_SUFFIX}`
+    const cfp = (JSON.parse(readFileSync(cMetaPath, 'utf8')) as { targetFingerprint: string }).targetFingerprint
+    writeFileSync(cMetaPath, JSON.stringify({ appliedOffsetMs: 'nope', targetFingerprint: cfp }))
     const r4 = await shiftSubtitleTiming(c, 2000)
+    expect(r4.ok).toBe(true)
     expect(r4.previousOffsetMs).toBeNull()
     assertConsistent(r4)
   })
@@ -523,10 +572,21 @@ describe('shiftSubtitleTiming — 三文件状态机守卫', () => {
 })
 
 describe('shiftSubtitleTiming — revert 守卫（与 shift 对称）', () => {
+  /** 建立一个**合法的**已平移状态（真实备份 + 带指纹的 meta），供各条 revert 守卫测试
+   *  在此基础上单独破坏它们各自要测的那一样东西。手工放备份会先撞上 C-A1 守卫，
+   *  那样后面的守卫（合理性检查等）就永远测不到了。 */
+  async function shiftedState(fixture: string, name: string): Promise<string> {
+    const p = stage(fixture, name)
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok, 'precondition: initial shift must succeed').toBe(true)
+    return p
+  }
+
   it('revert-garbage-backup-refused: 截断/垃圾备份不得覆盖用户文件', async () => {
-    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const p = await shiftedState(FIXTURE_TORTURE, 'torture.ass')
     const before = readFileSync(p)
-    // 模拟 SIGKILL 留下的截断备份 / 用户手工放错的文件
+    // 模拟 SIGKILL 留下的截断备份 / 备份事后被别的东西改坏
+    // （目标与 meta 指纹仍一致，所以 C-A1 守卫放行，能走到合理性检查这一道）
     writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.from('TRUNCATE'))
     const r = await revertSubtitleTiming(p)
     expect(r.ok).toBe(false)
@@ -536,7 +596,7 @@ describe('shiftSubtitleTiming — revert 守卫（与 shift 对称）', () => {
   })
 
   it('revert-empty-backup-refused: 空备份被拒绝', async () => {
-    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const p = await shiftedState(FIXTURE_TORTURE, 'torture.ass')
     const before = readFileSync(p)
     writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.alloc(0))
     const r = await revertSubtitleTiming(p)
@@ -576,12 +636,153 @@ describe('shiftSubtitleTiming — revert 守卫（与 shift 对称）', () => {
   })
 
   it('revert-minimal-ass-backup-accepted: 缺 section 头但 Dialogue 完好的 ASS 不被误拒', async () => {
-    // 字幕组文件千奇百怪，合理性检查必须宽松：只区分"字幕"与"垃圾"，不做格式完整性审查
+    // 字幕组文件千奇百怪，合理性检查必须宽松：只区分"字幕"与"垃圾"，不做格式完整性审查。
+    // 备份走真实 shift 建立（手工备份会先被 C-A1 守卫拒绝，测不到合理性检查这一道）。
     const minimal = 'Dialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,x\n'
     const p = stageBytes(Buffer.from(minimal, 'utf8'), 'min.ass')
-    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, Buffer.from(minimal, 'utf8'))
+    expect((await shiftSubtitleTiming(p, 2000)).ok).toBe(true)
     const r = await revertSubtitleTiming(p)
     expect(r.ok).toBe(true)
+    expect(readFileSync(p).toString('utf8')).toBe(minimal)
+  })
+})
+
+/**
+ * C-A1（审计 Critical）：备份与目标只靠**文件名**绑定，换了字幕就销毁用户文件。
+ *
+ * 三文件状态机枚举了 target/backup/meta 的在与不在，但从不问"target 还是当初备份的那个
+ * 文件吗"。而 subtitleWriter.ts 用**确定性文件名**——同一集重新下载一份字幕落在同一路径，
+ * 于是"用户换了字幕"这件极普通的事会让备份指向一份与磁盘上的 target 毫无关系的内容。
+ *
+ * 巡检永不重查已有记录的条目（verifySweep.ts 的 `LEFT JOIN ... IS NULL` 过滤），
+ * 所以 DB 里一直留着旧字幕的 shifted 判定、红芯片一直亮，用户点校正 → 撞 409 →
+ * 照文案"先撤销再校正" → 走进路径 ①。两条路径修复前都是 `ok:true` 静默销毁。
+ *
+ * 下面两条测试逐字复刻审计的复现步骤，断言"拒绝 + 三个文件一个字节都不变"。
+ */
+describe('shiftSubtitleTiming — C-A1：备份与目标的内容绑定', () => {
+  const A = '1\n00:00:10,000 --> 00:00:12,000\nVERSION-A\n'
+  const B = '1\n00:00:30,000 --> 00:00:32,000\nVERSION-B\n'
+
+  /** 写入 A → shift → 用户换成 B（同名 re-download）。返回换字幕后的三份快照。 */
+  async function swappedAfterShift(name: string): Promise<{
+    p: string; backupPath: string; metaPath: string
+    targetBefore: Buffer; backupBefore: Buffer; metaBefore: Buffer
+  }> {
+    const p = stageBytes(Buffer.from(A, 'utf8'), name)
+    const backupPath = `${resolve(p)}${BACKUP_SUFFIX}`
+    const metaPath = `${resolve(p)}${META_SUFFIX}`
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok, 'precondition').toBe(true)
+    // 备份里确实是 A
+    expect(readFileSync(backupPath).toString('utf8')).toBe(A)
+    // 用户换新字幕：同名覆盖（确定性文件名 → 命中同一路径）
+    writeFileSync(p, B)
+    return {
+      p, backupPath, metaPath,
+      targetBefore: readFileSync(p),
+      backupBefore: readFileSync(backupPath),
+      metaBefore: readFileSync(metaPath),
+    }
+  }
+
+  it('ca1-revert-after-subtitle-swap-refused: 换过字幕后 revert 必须拒绝，绝不用旧备份覆盖新字幕', async () => {
+    // 审计路径 ①：修复前 revert 返回 ok:true，磁盘变回 A，**B 被销毁**。
+    // looksLikeSubtitle 拦不住——A 是一个合法字幕，只是错的那一份。
+    const s = await swappedAfterShift('swap-revert.srt')
+    const r = await revertSubtitleTiming(s.p)
+
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('has been replaced since it was backed up')
+    // 新字幕 B 完好无损（这是本条测试的全部意义）
+    expect(readFileSync(s.p)).toEqual(s.targetBefore)
+    expect(readFileSync(s.p).toString('utf8')).toBe(B)
+    // 拒绝时零副作用：备份与 meta 都没动（meta 尤其不能被删——revert 成功路径会删它）
+    expect(readFileSync(s.backupPath)).toEqual(s.backupBefore)
+    expect(readFileSync(s.metaPath)).toEqual(s.metaBefore)
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('ca1-shift-after-subtitle-swap-refused: 换过字幕后再 shift 必须拒绝，绝不拿旧备份重算', async () => {
+    // 审计路径 ②：修复前返回 ok:true 且 detail 写
+    // "recomputed from existing backup (idempotent); prevOffsetMs=2000"，
+    // 文件变成由旧备份 A 算出的内容，**B 彻底消失**。
+    const s = await swappedAfterShift('swap-shift.srt')
+    const r = await shiftSubtitleTiming(s.p, 3000)
+
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('has been replaced since it was backed up')
+    // 绝不能出现"基于备份重算"的成功回执
+    expect(r.detail).not.toContain('idempotent')
+    // 新字幕 B 完好无损，且**没有**被算成 A-3000（修复前的实测结果是 00:00:07,000）
+    expect(readFileSync(s.p)).toEqual(s.targetBefore)
+    expect(readFileSync(s.p).toString('utf8')).toBe(B)
+    expect(readFileSync(s.p).toString('utf8')).not.toContain('VERSION-A')
+    // 零副作用
+    expect(readFileSync(s.backupPath)).toEqual(s.backupBefore)
+    expect(readFileSync(s.metaPath)).toEqual(s.metaBefore)
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('ca1-fingerprint-is-of-bytes-not-normalized-text: 同内容不同编码算"被换过"（指纹是字节口径，不是 hashSubtitleContent 的归一化文本口径）', async () => {
+    // 这条钉住指纹方案的选择：subtitleSpans.hashSubtitleContent 刻意做编码归一化
+    // （GBK 与 UTF-8 的同一份字幕哈希相同），那个口径服务"结论要不要作废"。
+    // 本模块按**字节**原地改写、revert 按**字节**写回，所以"同内容不同编码"对我们就是
+    // 另一个文件——拿归一化哈希放行，revert 会把用户刚做的一次编码转换悄悄退回去。
+    const utf8 = '[Events]\nDialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,中文\n'
+    const p = stageBytes(Buffer.from(utf8, 'utf8'), 'enc.ass')
+    expect((await shiftSubtitleTiming(p, 1000)).ok).toBe(true)
+
+    // 把目标转成 GBK（内容相同、字节不同）——归一化文本哈希会认为"没变"
+    const shiftedText = readFileSync(p).toString('utf8')
+    const gbk = Buffer.concat([
+      Buffer.from(shiftedText.slice(0, shiftedText.indexOf('中文')), 'latin1'),
+      Buffer.from([0xd6, 0xd0, 0xce, 0xc4]),
+      Buffer.from('\n', 'latin1'),
+    ])
+    writeFileSync(p, gbk)
+
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('has been replaced since it was backed up')
+    expect(readFileSync(p)).toEqual(gbk)
+  })
+
+  it('ca1-untouched-file-still-shifts-and-reverts: 没被换过的文件照常可 shift、可重算、可 revert（守卫不误伤主路径）', async () => {
+    // 守卫的价值取决于它不挡住正常用法：首次平移 → 换 offset 重算（幂等）→ revert 还原。
+    const p = stageBytes(Buffer.from(A, 'utf8'), 'clean.srt')
+    const r1 = await shiftSubtitleTiming(p, 2000)
+    expect(r1.ok).toBe(true)
+    expect(readFileSync(p).toString('utf8')).toContain('00:00:08,000')
+
+    // 第二次：基准仍是原始文件（10s - 3s = 7s），不是在 8s 上再减
+    const r2 = await shiftSubtitleTiming(p, 3000)
+    expect(r2.ok).toBe(true)
+    expect(r2.previousOffsetMs).toBe(2000)
+    expect(readFileSync(p).toString('utf8')).toContain('00:00:07,000')
+
+    // 同参数连调仍幂等（指纹每次都被更新成刚写下的内容）
+    const r3 = await shiftSubtitleTiming(p, 3000)
+    expect(r3.ok).toBe(true)
+    expect(readFileSync(p).toString('utf8')).toContain('00:00:07,000')
+
+    const r4 = await revertSubtitleTiming(p)
+    expect(r4.ok).toBe(true)
+    expect(readFileSync(p).toString('utf8')).toBe(A)
+  })
+
+  it('ca1-revert-then-correct-again-works: 撤销 → 再校正走得通（409 门的出路没被守卫堵死）', async () => {
+    // revert 成功后会删 meta 并保留备份，形成"备份有 + meta 无"。若下一次 shift 撞上
+    // C-A1 的保守拒绝，correctSubtitle 那道 409 指望的出路就成了死胡同。
+    // 所以 revert 成功时必须把备份也清理掉/或让状态可继续——这条钉住实际行为。
+    const p = stageBytes(Buffer.from(A, 'utf8'), 'again.srt')
+    expect((await shiftSubtitleTiming(p, 2000)).ok).toBe(true)
+    expect((await revertSubtitleTiming(p)).ok).toBe(true)
+    expect(readFileSync(p).toString('utf8')).toBe(A)
+
+    const r = await shiftSubtitleTiming(p, 4000)
+    expect(r.ok, `revert→correct must not be a dead end: ${r.detail}`).toBe(true)
+    expect(readFileSync(p).toString('utf8')).toContain('00:00:06,000')
   })
 })
 
@@ -701,24 +902,32 @@ describe('shiftSubtitleTiming — 拒绝与失败路径', () => {
 
   it('shift-real-atomicwrite-failure-cleans-up-tmp: 真实 tmp+rename 路径失败时不留 .tmp 残留', async () => {
     // 上一条用 writeFileImpl 注入，会**绕过**真实的 tmp/rename 逻辑，因此测不到孤儿 tmp 清理
-    // （变异验证第 6 个变异体——砍掉 atomicWrite finally 里的 tmp 清理——正是靠这条才被杀掉）。
-    // 这里让 renameSync 真的失败：把目标路径做成一个非空目录，openSync/writeAll/fsync 全部
-    // 成功（tmp 文件真的被创建了），只有最后 rename 到目录时抛错——精确覆盖
-    // "写到一半失败必须清 tmp" 这个场景。
+    // （变异验证：砍掉 atomicWrite finally 里的 tmp 清理，正是靠这条才被杀掉）。
+    //
+    // 要精确覆盖"写到一半失败必须清 tmp"，需要 openSync/writeAll/fsync 全部成功
+    // （tmp 文件真的被创建了）而只有最后的 renameSync 抛错。做法：把**目标路径做成非空目录**，
+    // rename 到它必失败（ENOTEMPTY/EISDIR）。
+    //
+    // 首次平移（无备份）时 source 就是目标自己，而目标是个目录 → readFileSync 会 EISDIR，
+    // 压根走不到写盘。所以这里给目标目录**旁边**放一个合法的源：用 existsImpl/readFileImpl
+    // 让前置检查与读取都看到一份真字幕，而真正的 atomicWrite 仍写向那个非空目录。
     const targetDir = join(dir, 'blocked.ass')
-    const backupPath = `${targetDir}${BACKUP_SUFFIX}`
-    writeFileSync(backupPath, readFileSync(FIXTURE_TORTURE))
-    rmSync(targetDir, { recursive: true, force: true })
     const { mkdirSync } = await import('node:fs')
     mkdirSync(targetDir)
-    writeFileSync(join(targetDir, 'keep.txt'), 'x') // 非空 → rename 必失败（ENOTEMPTY/EISDIR）
+    writeFileSync(join(targetDir, 'keep.txt'), 'x') // 非空 → rename 必失败
+    const realSubtitle = readFileSync(FIXTURE_TORTURE)
 
-    const r = await shiftSubtitleTiming(targetDir, 2000)
+    const r = await shiftSubtitleTiming(targetDir, 2000, {
+      existsImpl: (path) => path === resolve(targetDir), // 目标存在、备份与 meta 都不存在
+      readFileImpl: () => realSubtitle,
+    })
     expect(r.ok).toBe(false)
+    // 首次平移的第一次落盘是**备份**，它的 rename 目标是 blocked.ass.scout-backup（普通路径，
+    // 会成功）；接着写目标（那个非空目录）时 rename 失败。
     expect(r.detail).toContain('write failed')
     // 关键断言：tmp 文件必须已被清掉，不能在用户媒体目录旁堆垃圾
     expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
-    // 目标（及其内容）完好
+    // 目标目录及其内容完好
     expect(existsSync(join(targetDir, 'keep.txt'))).toBe(true)
   })
 

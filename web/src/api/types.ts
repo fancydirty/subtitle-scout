@@ -369,6 +369,19 @@ export interface CompareBlock {
   endMs: number
   text: string | null
 }
+/** 结论判读（2026-07-31，审计 I-B1/I-B2）：与 src/dashboard/subtitleCompareApi.ts 的
+ *  同名类型一致。**判定只在后端做**——前端曾自己从两轨时间戳做几何推断，既把符号丢了
+ *  （偏早说成偏晚），又按下标配对（少几条 cue 就误判），而且它是第二个判定引擎、
+ *  把着写按钮的闸，随时可能与后端的结论矛盾。现在前端只渲染，不推断。
+ *
+ *    'behind'      字幕比画面晚，平移可修
+ *    'ahead'       字幕比画面早，平移可修
+ *    'not-a-shift' 比过了、对不上，任何单一位移都修不好（帧率不匹配、装错剧集）
+ *    'unknown'     没有可比对的东西，不下结论
+ *
+ *  这是枚举而非数字，不违反铁律②（offsetMs/score/referenceTier 仍然不出 DTO）。 */
+export type CompareDiagnosis = 'behind' | 'ahead' | 'not-a-shift' | 'unknown'
+
 export interface SubtitleCompareDTO {
   itemId: string
   reference: CompareBlock[]
@@ -376,4 +389,7 @@ export interface SubtitleCompareDTO {
   durationMs: number
   waveformAvailable: boolean
   mountKind: 'local' | 'lan' | 'cloud'
+  diagnosis: CompareDiagnosis
+  /** 平移能不能修好它 = 给不给校正按钮。后端判，前端不再自己算。 */
+  fixable: boolean
 }
