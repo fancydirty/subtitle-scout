@@ -58,6 +58,12 @@ export const zh = {
   library_episode_no_overview: '暂无本集简介（TMDB 未提供）',
   library_verify_ok: '字幕时间轴对得上',
   library_verify_shifted: '时间轴对不上',
+  verify_track_reference: '画面里说话',
+  verify_track_reference_sub: '参考',
+  verify_track_ours: '这份字幕',
+  verify_track_ours_sub: '待校正',
+  verify_track_audio: '声音',
+  verify_timeline_hint: '滚轮缩放 · 拖拽平移',
   library_facts_coverage: '覆盖',
   library_facts_embedded_unit: '集内嵌',
 

@@ -10,10 +10,6 @@
   },
   "dependencies": {
     "@astryxdesign/core": "^0.1.6",
-    "d3-scale": "^4.0.2",
-    "d3-selection": "^3.0.0",
-    "d3-shape": "^3.2.0",
-    "d3-zoom": "^3.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -21,10 +17,6 @@
     "@astryxdesign/cli": "^0.1.6",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
-    "@types/d3-scale": "^4.0.9",
-    "@types/d3-selection": "^3.0.11",
-    "@types/d3-shape": "^3.1.8",
-    "@types/d3-zoom": "^3.0.8",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",

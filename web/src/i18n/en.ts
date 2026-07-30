@@ -66,6 +66,14 @@ export const en = {
   // 红态是芯片上的可见文字。两句都不提机械（不说内嵌轨/比对/参考源）。
   library_verify_ok: 'Subtitle timing looks right',
   library_verify_shifted: 'timing looks off',
+  // 对照时间轴（2026-07-30）：轨道名与操作提示。措辞不提机械——说"画面里说话"而不是
+  // "内嵌字幕轨"，说"这份字幕"而不是"待检 sidecar"。
+  verify_track_reference: 'spoken in the video',
+  verify_track_reference_sub: 'reference',
+  verify_track_ours: 'this subtitle',
+  verify_track_ours_sub: 'to fix',
+  verify_track_audio: 'sound',
+  verify_timeline_hint: 'scroll to zoom · drag to pan',
   library_facts_coverage: 'covered',
   library_facts_embedded_unit: 'embedded',
 
