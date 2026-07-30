@@ -166,15 +166,27 @@
 .library-eprow {
   border-top: 1px solid var(--color-border);
 }
+/* 2026-07-30（字幕校验）：.library-eprow-head 从 button 变成 div——校验芯片需要独立可点，
+   button 套 button 是非法 HTML。容器保留 flex/padding/左边框/hover 底色（视觉不变），
+   把"可点击展开"的那部分职责交给内部的 .library-eprow-toggle。 */
 .library-eprow-head {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
   padding: 9px 4px 9px 10px;
+  border-left: 2px solid transparent;
+}
+/* 展开按钮：铺满除芯片外的整个宽度，视觉上完全透明——用户感知到的仍然是"点这一行"。 */
+.library-eprow-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
   background: transparent;
   border: 0;
-  border-left: 2px solid transparent;
   color: inherit;
   cursor: pointer;
   font: inherit;
@@ -1119,4 +1131,36 @@
   color: var(--color-text-primary);
   background: var(--color-background-surface);
   border: 1px solid var(--color-border);
+}
+
+/* 字幕校验芯片（2026-07-30 spec）——几何复用 .library-eprow-tag（mono 10px / 1px 边框 /
+   4px 圆角），只换颜色。只有绿和红两种，永远不会有第三种（用户裁决：不给黄色）。 */
+.library-eprow-verify {
+  flex: none;
+  font-family: var(--font-code, ui-monospace);
+  font-size: 10px;
+  border-radius: 4px;
+}
+/* 绿态：一个 5px 圆点，与行首的 .ep-dot 同尺寸同语言，不占文字宽度。
+   绿是"安静"——它的存在感应该低到用户扫一整季时视线不被任何一行拦住。 */
+.library-eprow-verify-ok {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-text-green);
+}
+/* 红态：可点的文字芯片。红只染文字与边框，不铺底色块（用户裁决：红只给点不给块）。 */
+.library-eprow-verify-shifted {
+  color: var(--color-text-red);
+  border: 1px solid color-mix(in srgb, var(--color-text-red) 40%, transparent);
+  background: transparent;
+  padding: 0 5px;
+  cursor: pointer;
+}
+.library-eprow-verify-shifted:hover:not(:disabled) {
+  border-color: var(--color-text-red);
+}
+.library-eprow-verify-shifted:disabled {
+  cursor: default;
 }

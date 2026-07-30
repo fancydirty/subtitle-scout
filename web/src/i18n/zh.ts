@@ -56,6 +56,8 @@ export const zh = {
   // 详情页重设计 item B（Phase 5）：hero + FactsRail + 季手风琴 + 逐集行内展开。
   library_detail_embedded_short: '内嵌',
   library_episode_no_overview: '暂无本集简介（TMDB 未提供）',
+  library_verify_ok: '字幕时间轴对得上',
+  library_verify_shifted: '时间轴对不上',
   library_facts_coverage: '覆盖',
   library_facts_embedded_unit: '集内嵌',
 

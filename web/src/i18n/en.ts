@@ -62,6 +62,10 @@ export const en = {
   // 详情页重设计 item B（Phase 5）：hero + FactsRail + 季手风琴 + 逐集行内展开。
   library_detail_embedded_short: 'embedded',
   library_episode_no_overview: 'No synopsis for this episode (not provided by TMDB).',
+  // 字幕校验（2026-07-30）：绿态只给 aria-label（视觉上是个点，见 VerifyChip.tsx）；
+  // 红态是芯片上的可见文字。两句都不提机械（不说内嵌轨/比对/参考源）。
+  library_verify_ok: 'Subtitle timing looks right',
+  library_verify_shifted: 'timing looks off',
   library_facts_coverage: 'covered',
   library_facts_embedded_unit: 'embedded',
 
