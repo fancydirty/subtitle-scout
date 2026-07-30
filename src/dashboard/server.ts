@@ -18,6 +18,16 @@ import {
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from '../core/traceBus.js'
 import { AuthService, AUTH_KEYS, safeStrEqual } from './auth.js'
+import {
+  buildVerifyDTOs, correctSubtitle, revertSubtitle, parseItemIds, parseItemIdBody,
+  type SubtitleWriteDeps,
+} from './subtitleVerifyApi.js'
+import { LibraryRepo } from '../v2/libraryRepo.js'
+import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
+import {
+  shiftSubtitleTiming, revertSubtitleTiming, BACKUP_SUFFIX,
+} from '../subtitleVerify/shiftTiming.js'
+import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -50,6 +60,18 @@ export interface DashboardOpts {
    *  测试场景）＝无事发生，同 reconcileAll/jobs/tmdb 三个既有可选依赖的缺席降级先例——不强制
    *  startDashboard 的调用方必须提供这个回调。 */
   requestIngest?: () => void
+  /** 字幕校验三端点（GET verify / POST correct / POST revert）的依赖注入口。
+   *
+   *  与 reconcileAll/jobs/tmdb 那几个"缺席就 503"的可选依赖**不同**：这三个端点的默认实现
+   *  完全由 db + 真实模块拼出来（下方 wiring），生产环境无需任何额外接线就能用，所以缺席
+   *  不降级。这个字段**只为测试而存在**：`shift`/`revert` 会真的改写磁盘上的字幕文件、
+   *  `reverify` 会真的 spawn ffmpeg 找参考源，ESM 又无法 spy 模块导出——不给注入口就没法测
+   *  "校正后重新检测并覆盖落库"这条主路径（同 shiftTiming.ShiftOptions /
+   *  referenceSource opts 的既有注入惯例）。
+   *
+   *  部分覆盖：给出的字段替换默认实现，未给出的沿用默认（测试通常只想换掉 shift 与 reverify
+   *  两个真会产生副作用的，repo/lib/now 让它照常打真库）。 */
+  subtitleWriteDeps?: Partial<SubtitleWriteDeps>
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -155,9 +177,26 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest } = opts
+  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps } = opts
   const settingsRepo = new SettingsRepo(db)
   const auth = new AuthService(settingsRepo)
+  // 字幕校验三端点的依赖：默认全部接真实模块，测试可通过 opts.subtitleWriteDeps 部分覆盖
+  // （见 DashboardOpts.subtitleWriteDeps 注释——这是"为可测性而设"的注入口，不是降级开关）。
+  const verifyRepo = new SubtitleVerifyRepo(db)
+  const libRepo = new LibraryRepo(db)
+  const subDeps: SubtitleWriteDeps = {
+    repo: verifyRepo,
+    lib: libRepo,
+    shift: (p, off) => shiftSubtitleTiming(p, off),
+    revert: (p) => revertSubtitleTiming(p),
+    exists: (p) => existsSync(p),
+    // 重新检测走 verifyAndRecord（而不是裸 verifySubtitleAlignment）：落库是这一步的**目的**，
+    // 不是副作用——UI 只读 DB，不覆盖那行结论用户就会一直看到旧的红芯片。
+    reverify: (itemId, videoPath, subtitlePath) =>
+      verifyAndRecord(verifyRepo, itemId, videoPath, subtitlePath, Date.now()),
+    now: () => Date.now(),
+    ...subtitleWriteDeps,
+  }
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
     series: (id) => buildSeriesDetail(db, id),
@@ -540,6 +579,57 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'tmdb search failed' }))
         }
+        return
+      }
+
+      // ---- 字幕时间轴校验三端点（spec §3.4）----
+      // GET verify 是**纯读**（只查 repo，不碰文件系统、不触发检测），本可以塞进下方同步的
+      // handleApiRoute；但它与两个 POST 扳手是同一族语义、共用同一份 DTO 映射与参数解析，
+      // 拆在两处会让"三值→两色"的映射离它的两个兄弟很远。放在一起，且刻意保持纯读。
+      //
+      // 铁律②的执行点在 subtitleVerifyApi.toVerifyDTO：响应体只含 itemId/state/checked，
+      // offsetMs/score/referenceTier/detail 一律不出这一层。别在这里 `{...row}`。
+      if (rawPath === '/api/v2/subtitle/verify') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const result = buildVerifyDTOs(subDeps.repo, parseItemIds({
+          itemId: url.searchParams.get('itemId') ?? undefined,
+          itemIds: url.searchParams.get('itemIds') ?? undefined,
+        }))
+        res.writeHead(result.ok ? 200 : 400, JSON_CT)
+        res.end(JSON.stringify(result.ok ? result.dto : { error: result.error }))
+        return
+      }
+
+      // POST correct / revert：**唯二的写扳手**（铁律④⑤ + web/DESIGN.md §8——写操作必须是
+      // 显式 POST）。异步（真的跑 ffmpeg + 改写用户文件）故走这里而非同步的 handleApiRoute，
+      // 形状照 /api/v2/workflow/redispatch 先例：method 门 → body 解析 → 判断层 → 写响应。
+      // 无依赖缺席门：subDeps 恒有默认实现（见上方 wiring），不存在"未配置"这一态。
+      if (rawPath === '/api/v2/subtitle/correct' || rawPath === '/api/v2/subtitle/revert') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === BODY_FAILED) return
+        const itemId = parseItemIdBody(body)
+        if (itemId === null) {
+          res.writeHead(400, JSON_CT)
+          res.end(JSON.stringify({ ok: false, error: 'itemId is required' }))
+          return
+        }
+        const run = rawPath === '/api/v2/subtitle/correct' ? correctSubtitle : revertSubtitle
+        const result = await run(subDeps, itemId, { backupSuffix: BACKUP_SUFFIX })
+        res.writeHead(result.ok ? 200 : result.status, JSON_CT)
+        // 成功体零数字（铁律②）：只有 ok + state。失败体是 ok:false + 人话 error
+        // （不是 shiftTiming 的内部 detail——那里带路径与毫秒数）。
+        res.end(JSON.stringify(
+          result.ok ? { ok: true, state: result.state } : { ok: false, error: result.error },
+        ))
         return
       }
 

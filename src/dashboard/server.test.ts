@@ -13,6 +13,8 @@ import { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { startDashboard } from './server.js'
 import { traceBus, type TraceEvent } from '../core/traceBus.js'
+import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
+import type { SubtitleWriteDeps } from './subtitleVerifyApi.js'
 
 // dashboard-F5：'search' 加入 Pick——GET /api/v2/tmdb/search 的 fake tmdb 注入复用同一个类型。
 type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
@@ -82,6 +84,9 @@ async function start(
   // 验收修复轮一 Task V2：甄别认领成功后踢一脚扫描的回调（缺席→无事发生，照 reconcileAll/jobs/
   // tmdb 三个既有可选依赖的先例）。
   requestIngest?: () => void,
+  // 字幕校验三端点的依赖注入（缺席→接真实模块：真会改写磁盘字幕 + spawn ffmpeg，所以下面
+  // 的用例一律注入桩；见 DashboardOpts.subtitleWriteDeps 注释）。
+  subtitleWriteDeps?: Partial<SubtitleWriteDeps>,
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
@@ -90,6 +95,7 @@ async function start(
     jobs,
     tmdb,
     requestIngest,
+    subtitleWriteDeps,
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
@@ -1126,5 +1132,279 @@ describe('改密撤销会话 + 补发当前 cookie（审计 MEDIUM #1）', () =>
     expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie1 } })).status).toBe(401)
     expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie2 } })).status).toBe(401)
     expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie3 } })).status).toBe(200)
+  })
+})
+
+// ---- 字幕时间轴校验三端点（spec §3.4）----
+// HTTP 层用例：只钉住"路由/method/status/响应体形状"这一层。verdict→颜色的映射、写扳手的
+// 前置判断等业务规则在 subtitleVerifyApi.test.ts（纯函数层）里钉，这里不重复。
+// 三个端点都注入桩依赖：真实实现会改写磁盘上的字幕文件并 spawn ffmpeg 找参考源。
+describe('字幕校验三端点', () => {
+  const SUB = '/media/Show/s1e1.zh.srt'
+  const BACKUP = `${SUB}.scout-backup`
+
+  /** 给 e1 落一行检测结论。内部字段一律给真值——要证明它们在库里却不出响应体（铁律②）。 */
+  function seedVerdict(verdict: 'aligned' | 'shifted' | 'unverifiable'): void {
+    new SubtitleVerifyRepo(db).upsertVerifyResult({
+      itemId: 'e1', verdict,
+      offsetMs: verdict === 'shifted' ? 2400 : null,
+      score: 0.93, referenceTier: 'embedded',
+      subtitlePath: SUB, subtitleHash: 'hash-a', checkedAt: NOW,
+      detail: 'ref=embedded: track 3 (chi)',
+    })
+  }
+
+  /** 写扳手桩：shift/revert 恒成功，reverify 落一行 aligned（模仿 verifyAndRecord 的
+   *  "既落库又返回"契约）。`backups` 决定 exists() 认为哪些备份存在。 */
+  function stubDeps(backups: string[] = []): Partial<SubtitleWriteDeps> {
+    const present = new Set(backups)
+    return {
+      shift: async () => ({ ok: true, detail: 'shifted' }),
+      revert: async () => ({ ok: true, detail: 'reverted' }),
+      exists: (p) => present.has(p),
+      reverify: async (itemId, _v, subtitlePath) => {
+        new SubtitleVerifyRepo(db).upsertVerifyResult({
+          itemId, verdict: 'aligned', offsetMs: null, score: 0.99, referenceTier: 'embedded',
+          subtitlePath, subtitleHash: 'hash-b', checkedAt: NOW + 1, detail: 're-checked',
+        })
+        return {
+          verdict: 'aligned', offsetMs: null, score: 0.99,
+          referenceTier: 'embedded', detail: 're-checked', subtitleHash: 'hash-b',
+        }
+      },
+    }
+  }
+
+  async function startSub(backups: string[] = []): Promise<{ base: string }> {
+    return start(distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined, stubDeps(backups))
+  }
+
+  describe('GET /api/v2/subtitle/verify', () => {
+    it('未检测过 → checked:false', async () => {
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/verify?itemId=e1&token=tok`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ items: [{ itemId: 'e1', state: 'ok', checked: false }] })
+    })
+
+    it("aligned → state:'ok'", async () => {
+      seedVerdict('aligned')
+      const { base } = await startSub()
+      const body = await (await fetch(`${base}/api/v2/subtitle/verify?itemId=e1&token=tok`)).json()
+      expect(body.items[0]).toEqual({ itemId: 'e1', state: 'ok', checked: true })
+    })
+
+    // 铁律③的 HTTP 层回归锁：unverifiable 是绿，不是黄也不是红。
+    it("unverifiable → state:'ok'【铁律③】", async () => {
+      seedVerdict('unverifiable')
+      const { base } = await startSub()
+      const body = await (await fetch(`${base}/api/v2/subtitle/verify?itemId=e1&token=tok`)).json()
+      expect(body.items[0]).toEqual({ itemId: 'e1', state: 'ok', checked: true })
+    })
+
+    it("shifted → state:'shifted'", async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub()
+      const body = await (await fetch(`${base}/api/v2/subtitle/verify?itemId=e1&token=tok`)).json()
+      expect(body.items[0]).toEqual({ itemId: 'e1', state: 'shifted', checked: true })
+    })
+
+    // 铁律②的 HTTP 层回归锁：断言精确键集合 + 原始响应文本不含任何内部字段。
+    it('响应体恰好只有三个键，且原始 JSON 不含 offset/score/tier/detail【铁律②】', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub()
+      const raw = await (await fetch(`${base}/api/v2/subtitle/verify?itemId=e1&token=tok`)).text()
+      expect(Object.keys(JSON.parse(raw).items[0]).sort()).toEqual(['checked', 'itemId', 'state'])
+      for (const banned of ['offset', 'score', 'tier', 'detail', 'hash', 'embedded', '2400', '0.93']) {
+        expect(raw.toLowerCase()).not.toContain(banned.toLowerCase())
+      }
+    })
+
+    it('批量 ?itemIds=a,b,c 一次拿整季', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub()
+      const body = await (await fetch(`${base}/api/v2/subtitle/verify?itemIds=e1,e2&token=tok`)).json()
+      expect(body.items).toEqual([
+        { itemId: 'e1', state: 'shifted', checked: true },
+        { itemId: 'e2', state: 'ok', checked: false },
+      ])
+    })
+
+    it('缺 itemId/itemIds → 400', async () => {
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/verify?token=tok`)
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('required')
+    })
+
+    it('非 GET 方法 → 405', async () => {
+      const { base } = await startSub()
+      for (const method of ['POST', 'PUT', 'DELETE']) {
+        expect((await fetch(`${base}/api/v2/subtitle/verify?itemId=e1&token=tok`, { method })).status).toBe(405)
+      }
+    })
+
+    it('未鉴权 → 401（统一前置门，不是端点自己做的）', async () => {
+      const { base } = await startSub()
+      expect((await fetch(`${base}/api/v2/subtitle/verify?itemId=e1`)).status).toBe(401)
+    })
+  })
+
+  describe('POST /api/v2/subtitle/correct', () => {
+    it('shifted → 200 + 新状态，且 DB 结论被覆盖（不再是 shifted）', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/correct?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, state: 'ok' })
+      // 重检落库回归锁：不覆盖这行，UI 会一直显示红芯片。
+      expect(new SubtitleVerifyRepo(db).getVerifyResult('e1')!.verdict).toBe('aligned')
+    })
+
+    it('非 shifted 状态被拒 → 400 + 人话', async () => {
+      seedVerdict('aligned')
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/correct?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.ok).toBe(false)
+      expect(body.error).toContain("isn't out of sync")
+      // 库里那行没被动过。
+      expect(new SubtitleVerifyRepo(db).getVerifyResult('e1')!.verdict).toBe('aligned')
+    })
+
+    it('已校正过一次（备份已存在）→ 409', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub([BACKUP])
+      const res = await fetch(`${base}/api/v2/subtitle/correct?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })
+      expect(res.status).toBe(409)
+      expect((await res.json()).error).toContain('undo first')
+    })
+
+    it('缺 itemId → 400', async () => {
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/correct?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ ok: false, error: 'itemId is required' })
+    })
+
+    it('itemId 不存在 → 404', async () => {
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/correct?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'nope' }),
+      })
+      expect(res.status).toBe(404)
+    })
+
+    it('非法 JSON body → 400（走 readJsonBodyOrFail 的既有口径）', async () => {
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/correct?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{not json',
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('非 POST 方法 → 405', async () => {
+      const { base } = await startSub()
+      for (const method of ['GET', 'PUT', 'DELETE']) {
+        expect((await fetch(`${base}/api/v2/subtitle/correct?token=tok`, { method })).status).toBe(405)
+      }
+    })
+
+    it('成功响应体恰好只有 ok/state 两个键，零数字【铁律②】', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub()
+      const raw = await (await fetch(`${base}/api/v2/subtitle/correct?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })).text()
+      expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['ok', 'state'])
+      expect(raw).not.toMatch(/\d/)
+    })
+
+    it('未鉴权 → 401，且不改任何文件', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/correct`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })
+      expect(res.status).toBe(401)
+      expect(new SubtitleVerifyRepo(db).getVerifyResult('e1')!.verdict).toBe('shifted')
+    })
+  })
+
+  describe('POST /api/v2/subtitle/revert', () => {
+    it('有备份 → 200 + 新状态，且 DB 结论被覆盖', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub([BACKUP])
+      const res = await fetch(`${base}/api/v2/subtitle/revert?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, state: 'ok' })
+      const row = new SubtitleVerifyRepo(db).getVerifyResult('e1')!
+      expect(row.verdict).toBe('aligned')
+      expect(row.checked_at).toBe(NOW + 1)
+    })
+
+    it('无备份 → 400', async () => {
+      seedVerdict('aligned')
+      const { base } = await startSub()
+      const res = await fetch(`${base}/api/v2/subtitle/revert?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('nothing to undo')
+    })
+
+    it('缺 itemId → 400', async () => {
+      const { base } = await startSub([BACKUP])
+      const res = await fetch(`${base}/api/v2/subtitle/revert?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ ok: false, error: 'itemId is required' })
+    })
+
+    it('itemId 不存在 → 404', async () => {
+      const { base } = await startSub([BACKUP])
+      const res = await fetch(`${base}/api/v2/subtitle/revert?token=tok`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'nope' }),
+      })
+      expect(res.status).toBe(404)
+    })
+
+    it('非 POST 方法 → 405', async () => {
+      const { base } = await startSub([BACKUP])
+      for (const method of ['GET', 'PUT', 'DELETE']) {
+        expect((await fetch(`${base}/api/v2/subtitle/revert?token=tok`, { method })).status).toBe(405)
+      }
+    })
+
+    it('未鉴权 → 401', async () => {
+      seedVerdict('shifted')
+      const { base } = await startSub([BACKUP])
+      const res = await fetch(`${base}/api/v2/subtitle/revert`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: 'e1' }),
+      })
+      expect(res.status).toBe(401)
+    })
   })
 })
