@@ -3,6 +3,7 @@ import {
   detectOffset,
   BIN_MS,
   MAX_SHIFT_MS,
+  MAX_TIMELINE_MS,
   CONFIDENT_THRESHOLD,
   UNCONFIDENT_THRESHOLD,
   type SpeechSpan,
@@ -226,5 +227,123 @@ describe('detectOffset：边界情况', () => {
       expect(score).toBeGreaterThanOrEqual(0)
       expect(score).toBeLessThanOrEqual(1)
     }
+  })
+})
+
+describe('时间轴上界护栏（MAX_TIMELINE_MS）', () => {
+  it('上界是 12 小时', () => {
+    expect(MAX_TIMELINE_MS).toBe(12 * 60 * 60 * 1000)
+  })
+
+  /** SRT 时间戳格式合法接受 99:59:59,999 = 359,999,999ms = 360 万 bins。
+   *  修复前实测：跑一遍 ±60s 互相关阻塞事件循环 6.5 秒，而触发只需一个 2KB 文件
+   *  （文件大小闸拦不住——文件很小，只是时间戳很大）。Node 单线程 → 全服务停摆。 */
+  it('合法但荒谬的时间戳（99:59:59,999）被跳过，不产生 360 万 bins', () => {
+    const sane = mkCues(30, 7)
+    const withAbsurd: SpeechSpan[] = [{ startMs: 0, endMs: 359_999_999 }, ...sane]
+
+    const t0 = Date.now()
+    const result = detectOffset(withAbsurd, sane)
+    const elapsedMs = Date.now() - t0
+
+    // 修复前这里要 6500ms 上下；给足余量仍能牢牢区分"跳过"与"真去烧 360 万 bins"
+    expect(elapsedMs).toBeLessThan(1000)
+    // 那条荒谬 cue 被丢掉后，剩下的 sane 与自己完全吻合
+    expect(result.score).toBe(1)
+    expect(result.offsetMs).toBe(0)
+  })
+
+  /** endMs = 1e15 仍是有限数，能通过 isFinite 检查，但要求分配 10TB。
+   *  修复前实测 V8 直接 abort（Check failed: change_in_bytes < kMaxReasonableBytes），
+   *  不是可捕获的 RangeError——进程当场死亡，绕过 try/catch 与 finally。 */
+  it('极端值（endMs=1e15）不崩不 abort，该 cue 被跳过', () => {
+    const sane = mkCues(20, 11)
+    expect(() => detectOffset([{ startMs: 0, endMs: 1e15 }], sane)).not.toThrow()
+
+    // 参考侧只有那一条被跳过的 cue → 无说话时段 → 无证据
+    expect(detectOffset([{ startMs: 0, endMs: 1e15 }], sane)).toEqual({ offsetMs: 0, score: 0 })
+  })
+
+  it('恰好超过上界一毫秒即被跳过；恰好在上界内则保留', () => {
+    const justOver: SpeechSpan[] = [{ startMs: 0, endMs: MAX_TIMELINE_MS + 1 }]
+    expect(detectOffset(justOver, justOver)).toEqual({ offsetMs: 0, score: 0 })
+
+    const justUnder: SpeechSpan[] = [{ startMs: MAX_TIMELINE_MS - 1000, endMs: MAX_TIMELINE_MS }]
+    expect(detectOffset(justUnder, justUnder).score).toBe(1)
+  })
+
+  it('正常时长（45 分钟剧集）行为不变——回归保护', () => {
+    const ref = mkCues(300, 13, 30_000)
+    const lastEnd = ref[ref.length - 1].endMs
+    expect(lastEnd).toBeLessThan(MAX_TIMELINE_MS) // 前提：这批 cue 确实在上界内
+
+    expect(detectOffset(ref, ref)).toEqual({ offsetMs: 0, score: 1 })
+    expect(detectOffset(ref, shiftedBy(ref, 3400)).offsetMs).toBe(3400)
+  })
+
+  it('坏 cue 与好 cue 混杂时，只丢坏的那条', () => {
+    const sane = mkCues(25, 17)
+    const polluted: SpeechSpan[] = [
+      { startMs: 0, endMs: Number.POSITIVE_INFINITY },
+      { startMs: 0, endMs: 1e15 },
+      { startMs: 500, endMs: 500 },
+      { startMs: -9000, endMs: -8000 },
+      ...sane,
+    ]
+    expect(detectOffset(polluted, sane)).toEqual({ offsetMs: 0, score: 1 })
+  })
+})
+
+describe('负时间戳（跳过，不钳位）', () => {
+  /** 修复前：负 start 被 Math.max(0, ...) 钳到 bin 0，把该 cue 的时段抹到时间轴开头，
+   *  凭空造出"有人说话"而污染分数——实测一条 -3000→500 的 cue 让分数从 1.0 掉到 0.8。
+   *  注释当时写的是"跳过"，与实际行为不符。现改代码兑现注释。 */
+  it('跨零的 cue（start<0, end>0）被整条跳过，不污染分数', () => {
+    const ref = [{ startMs: 5000, endMs: 6000 }, { startMs: 8000, endMs: 9000 }]
+    const withStraddling = [{ startMs: -3000, endMs: 500 }, ...ref]
+
+    expect(detectOffset(ref, withStraddling)).toEqual(detectOffset(ref, ref))
+  })
+
+  it('全负的 cue 被跳过', () => {
+    const ref = mkCues(20, 19)
+    const withNegative: SpeechSpan[] = [{ startMs: -5000, endMs: -1000 }, ...ref]
+
+    expect(detectOffset(ref, withNegative)).toEqual(detectOffset(ref, ref))
+  })
+
+  it('start 恰为 0 是合法的（不是负数，不该被跳过）', () => {
+    const atZero: SpeechSpan[] = [{ startMs: 0, endMs: 1000 }, { startMs: 3000, endMs: 4000 }]
+    expect(detectOffset(atZero, atZero).score).toBe(1)
+  })
+})
+
+describe('并列位移的取舍（绝对值更小者胜）', () => {
+  /** 修复前：只用 `score > bestScore`，靠"从负向正扫"定平手，结果留下的是**最负**的位移
+   *  （实测得 -5000 而非同样合法的 +5000），与注释声称的"保留绝对值更小的"相反。 */
+  it('两个方向证据对称时，不会挑出比另一候选绝对值更大的位移', () => {
+    // ref 有两条 cue，ours 一条正落在中点 → 左移 5s 与右移 5s 同分
+    const ref = [{ startMs: 10_000, endMs: 11_000 }, { startMs: 20_000, endMs: 21_000 }]
+    const ours = [{ startMs: 15_000, endMs: 16_000 }]
+
+    const { offsetMs } = detectOffset(ref, ours)
+    expect(Math.abs(offsetMs)).toBe(5000) // 两个候选绝对值相同，任一皆可
+  })
+
+  it('一个候选绝对值更小时必选它（不被更负的平手挤掉）', () => {
+    // ref 两条：一条离 ours 近（+2s），一条远（-30s）；构造成两处同分
+    const ref = [{ startMs: 2000, endMs: 4000 }, { startMs: 34_000, endMs: 36_000 }]
+    const ours = [{ startMs: 4000, endMs: 6000 }]
+
+    const { offsetMs } = detectOffset(ref, ours)
+    // 近的那个（|2000|）必须胜过远的那个（|-30000|）
+    expect(Math.abs(offsetMs)).toBeLessThanOrEqual(2000)
+  })
+
+  it('并列取舍是确定性的（同输入必同输出）', () => {
+    const ref = [{ startMs: 10_000, endMs: 11_000 }, { startMs: 20_000, endMs: 21_000 }]
+    const ours = [{ startMs: 15_000, endMs: 16_000 }]
+
+    expect(detectOffset(ref, ours)).toEqual(detectOffset(ref, ours))
   })
 })

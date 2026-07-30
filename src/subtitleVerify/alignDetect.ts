@@ -21,6 +21,25 @@ export const BIN_MS = 100
  *  再放大只会增加"在噪声里捞到高分"的误报机会，收益递减。 */
 export const MAX_SHIFT_MS = 60_000
 
+/** 单个字幕文件的最大可信时长——超出即视为损坏/恶意输入，该 cue 被跳过。
+ *
+ *  依据：最长商业电影约 5 小时（《浩劫》566 分钟），留足余量取 12 小时。
+ *
+ *  为什么必须有这道闸（两个后果都实测过）：
+ *  - SRT 时间戳格式**合法**接受 `99:59:59,999` = 359,999,999ms = 360 万 bins。
+ *    实测跑一遍 ±60s 互相关阻塞事件循环 **6.5 秒**——Node 单线程，这几秒整个服务
+ *    不响应任何请求。而触发它只需一个 **2KB 文件**：文件大小闸
+ *    （subtitleInspect 的 MAX_INSPECT_BYTES = 16MB）对此完全无效，文件很小，
+ *    只是时间戳很大。
+ *  - 更极端的值（`endMs = 1e15`，仍是有限数、能通过 isFinite 检查）要求分配 10TB，
+ *    实测 V8 直接 abort（`Check failed: change_in_bytes < kMaxReasonableBytes`），
+ *    **不是可捕获的 RangeError**：进程当场死亡，try/catch 抓不住，绕过所有 finally
+ *    （正是 f38f88b 修的"DB 迁移连接句柄泄露"那类场景会被重新打开）。
+ *
+ *  刻意**跳过**而非钳位到上界：钳位会把一条坏 cue 的影响抹到整条时间轴末尾，
+ *  凭空造出几小时的"有人说话"，静默污染分数；跳过则是如实丢弃不可信的一条。 */
+export const MAX_TIMELINE_MS = 12 * 60 * 60 * 1000
+
 /** ≥ 此分数视为可信：偏移量可以拿去校正。 */
 export const CONFIDENT_THRESHOLD = 0.9
 
@@ -53,35 +72,55 @@ export interface AlignDetectResult {
 const NO_EVIDENCE: AlignDetectResult = { offsetMs: 0, score: 0 }
 
 /**
+ * 一条 cue 是否可用于对齐。**唯一的合法性判据**——toSpeechBins 与 requiredBinCount
+ * 必须共用它，否则"算长度时认得的 cue"与"烧 bin 时认得的 cue"不一致，会烧出越界写入
+ * （静默被 Uint8Array 丢弃）或凭空多出的空白尾巴。
+ *
+ * 字幕文件是外部输入，手写/工具生成的垃圾条目很常见，为一条坏 cue 让整次检测抛错不值得，
+ * 故一律静默跳过而非报错。四类被拒：
+ * - 非有限数（NaN/Infinity）：算不出 bin 下标
+ * - end <= start：零长或倒挂，没有时段可言
+ * - 负时间：SRT/ASS 格式都无法合法表达负时间戳，出现即为损坏。**跳过而非钳到 0**——
+ *   钳位会把这条 cue 的时段抹到时间轴开头，在 bin 0 附近凭空造出"有人说话"而污染分数
+ *   （实测：给一条 -3000→500 的 cue，分数从 1.0 掉到 0.8）。
+ * - 超过 MAX_TIMELINE_MS：见该常量注释（性能与进程存活）
+ */
+function isUsableSpan(span: SpeechSpan): boolean {
+  const { startMs, endMs } = span
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false
+  if (endMs <= startMs) return false
+  if (startMs < 0) return false
+  if (endMs > MAX_TIMELINE_MS) return false
+  return true
+}
+
+/**
  * 把 cue 序列烧成布尔占位序列：覆盖到的 bin 置 1。
  *
  * start 向下取整、end 向上取整（宁可把边界 bin 算作"有人说话"）：
  * 两边用同一套取整规则，系统性偏差会互相抵消，而向内取整则会在短 cue 上
  * 直接丢掉整条（时长 < 100ms 的 cue 会烧不出任何 bin）。
  *
- * 非法 cue（end <= start、负时间、非有限数）静默跳过——字幕文件是外部输入，
- * 手写/工具生成的垃圾条目很常见，为一条坏 cue 让整次检测抛错不值得。
+ * 不合法的 cue 静默跳过，判据见 isUsableSpan。
  */
 function toSpeechBins(spans: readonly SpeechSpan[], binCount: number): Uint8Array {
   const bins = new Uint8Array(binCount)
   for (const span of spans) {
-    const { startMs, endMs } = span
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue
-    if (endMs <= startMs) continue
-    const from = Math.max(0, Math.floor(startMs / BIN_MS))
-    const to = Math.min(binCount, Math.ceil(endMs / BIN_MS))
+    if (!isUsableSpan(span)) continue
+    const from = Math.max(0, Math.floor(span.startMs / BIN_MS))
+    const to = Math.min(binCount, Math.ceil(span.endMs / BIN_MS))
     for (let i = from; i < to; i++) bins[i] = 1
   }
   return bins
 }
 
-/** 序列需要多少个 bin 才装得下（忽略非法 cue，与 toSpeechBins 的判定保持一致）。 */
+/** 序列需要多少个 bin 才装得下（跳过不合法 cue，与 toSpeechBins 共用 isUsableSpan）。
+ *  返回值直接当 Uint8Array 长度用，所以上界由 isUsableSpan 的 MAX_TIMELINE_MS 保证。 */
 function requiredBinCount(spans: readonly SpeechSpan[]): number {
   let maxEndMs = 0
-  for (const { startMs, endMs } of spans) {
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue
-    if (endMs <= startMs) continue
-    if (endMs > maxEndMs) maxEndMs = endMs
+  for (const span of spans) {
+    if (!isUsableSpan(span)) continue
+    if (span.endMs > maxEndMs) maxEndMs = span.endMs
   }
   return Math.ceil(maxEndMs / BIN_MS)
 }
@@ -120,8 +159,16 @@ function findBestShift(
       if (ourSpeech | refSpeech) union++
     }
     const score = union === 0 ? 0 : intersection / union
-    // 严格大于：并列时保留绝对值更小的位移（shift 从负向正扫，先到的更接近 0 侧不会被平手挤掉）。
-    if (score > bestScore) {
+    // 并列时保留**绝对值更小**的位移：证据一样强时，更小的校正是更保守的主张
+    // （断言"字幕晚了 2 秒"比断言"晚了 60 秒"需要更少的额外假设）。
+    //
+    // 不能只用 `score > bestScore` 靠扫描顺序定平手：shift 从 -maxShiftBins 向正扫，
+    // 那样平手时留下的是**最负**的位移（实测会得 -5000 而非 +2000 这样更小的候选），
+    // 与上述意图相反。故平手时显式比 |shift|。
+    // |shift| 也相同时（如 -5000 vs +5000）保留先到的负位移，纯为确定性——
+    // 两个方向的证据完全对称，无从取舍，但结果必须可复现。
+    if (score > bestScore
+      || (score === bestScore && Math.abs(shift) < Math.abs(bestShiftBins))) {
       bestScore = score
       bestShiftBins = shift
     }
