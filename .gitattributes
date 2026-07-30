@@ -1,0 +1,5 @@
+# 字幕体检的测试 fixture 必须逐字节保真：shiftTiming.test.ts 断言"CRLF 不被转成 LF"，
+# 而 torture.ass 正是那个带 UTF-8 BOM + CRLF 的严苛样本。若让 git 做行尾归一化，
+# 新克隆出来的 fixture 会变成 LF，测试就会去验证一个不再存在的性质（假通过/假失败）。
+# -text = 当二进制处理，不做任何行尾转换。
+src/subtitleVerify/__fixtures__/torture.ass -text

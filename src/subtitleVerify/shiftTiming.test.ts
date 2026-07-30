@@ -1,0 +1,585 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import {
+  shiftSubtitleTiming,
+  revertSubtitleTiming,
+  BACKUP_SUFFIX,
+  META_SUFFIX,
+} from './shiftTiming.js'
+
+const FIXTURE_TORTURE = resolve(__dirname, '__fixtures__/torture.ass')
+const FIXTURE_REAL_ASS = resolve(__dirname, '../adapters/providers/__fixtures__/subhd/down-2BNs4Y.ass')
+
+let dir: string
+beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'shift-timing-')) })
+afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+/** 把 fixture 复制进临时目录（测试自包含，不改 fixture 本身） */
+function stage(fixturePath: string, name: string): string {
+  const p = join(dir, name)
+  writeFileSync(p, readFileSync(fixturePath))
+  return p
+}
+
+function stageBytes(bytes: Buffer, name: string): string {
+  const p = join(dir, name)
+  writeFileSync(p, bytes)
+  return p
+}
+
+/**
+ * 逐字节 diff：返回所有不同字节的偏移量。
+ * 这是本套测试的核心工具——"只有时间戳字节变了"这个断言必须落在字节层，
+ * 不能用字符串比较（那会掩盖 BOM/行尾/编码的变化）。
+ */
+function byteDiffOffsets(a: Buffer, b: Buffer): number[] {
+  const out: number[] = []
+  const n = Math.max(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== b[i]) out.push(i)
+  }
+  return out
+}
+
+/** 提取所有 Dialogue 行的 Start/End 字符串（latin1 视角，不解码） */
+function dialogueTimes(buf: Buffer): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  for (const line of buf.toString('latin1').split(/\r\n|\n|\r/)) {
+    const m = /^Dialogue\s*:\s*[^,]*,([^,]*),([^,]*),/.exec(line.trim())
+    if (m) out.push([(m[1] ?? '').trim(), (m[2] ?? '').trim()])
+  }
+  return out
+}
+
+function commentTimes(buf: Buffer): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  for (const line of buf.toString('latin1').split(/\r\n|\n|\r/)) {
+    const m = /^Comment\s*:\s*[^,]*,([^,]*),([^,]*),/.exec(line.trim())
+    if (m) out.push([(m[1] ?? '').trim(), (m[2] ?? '').trim()])
+  }
+  return out
+}
+
+describe('shiftSubtitleTiming — 字节保真', () => {
+  it('shift-byte-fidelity-only-dialogue-timestamps-change: 平移后只有 Dialogue 行时间戳字节不同，其余每个字节都相同', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    const after = readFileSync(p)
+
+    // 长度必须完全一致：这个 fixture 的平移不改变时间戳的字符宽度
+    // （0:00:10.50 → 0:00:08.50），所以任何长度变化都意味着我们动了不该动的东西。
+    expect(after.length).toBe(before.length)
+
+    const diffs = byteDiffOffsets(before, after)
+    expect(diffs.length).toBeGreaterThan(0)
+
+    // 每一个变化的字节都必须落在某个 Dialogue 行的 Start/End 字段区间内。
+    // 用原始字节独立定位这些区间——不依赖被测代码的任何输出。
+    const s = before.toString('latin1')
+    const allowed: Array<[number, number]> = []
+    let pos = 0
+    for (const rawLine of s.split('\n')) {
+      const lineStart = pos
+      pos += rawLine.length + 1
+      const t = rawLine.replace(/\r$/, '')
+      if (!/^Dialogue\s*:/.test(t)) continue
+      const colon = t.indexOf(':')
+      const rest = t.slice(colon + 1)
+      // 字段 1 和 2 = Start / End（本 fixture 无 Format 行，用默认列位）
+      const f = rest.split(',')
+      let off = lineStart + colon + 1 + (f[0]?.length ?? 0) + 1
+      allowed.push([off, off + (f[1]?.length ?? 0)])
+      off += (f[1]?.length ?? 0) + 1
+      allowed.push([off, off + (f[2]?.length ?? 0)])
+    }
+    for (const d of diffs) {
+      const inside = allowed.some(([lo, hi]) => d >= lo && d < hi)
+      expect(inside, `byte at offset ${d} changed but is outside any Dialogue Start/End field`).toBe(true)
+    }
+  })
+
+  it('shift-bom-preserved: UTF-8 BOM 原样保留，不丢不加', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    expect(readFileSync(p).subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]))
+    await shiftSubtitleTiming(p, 1500)
+    expect(readFileSync(p).subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]))
+  })
+
+  it('shift-no-bom-stays-no-bom: 无 BOM 的文件不会被加上 BOM', async () => {
+    const p = stage(FIXTURE_REAL_ASS, 'real.ass')
+    const before = readFileSync(p)
+    expect(before.subarray(0, 3)).not.toEqual(Buffer.from([0xef, 0xbb, 0xbf]))
+    await shiftSubtitleTiming(p, 1000)
+    const after = readFileSync(p)
+    expect(after.subarray(0, 3)).not.toEqual(Buffer.from([0xef, 0xbb, 0xbf]))
+    expect(after.subarray(0, 13).toString('latin1')).toBe('[Script Info]')
+  })
+
+  it('shift-crlf-preserved: CRLF 行尾不被转成 LF', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const crlfBefore = (readFileSync(p).toString('latin1').match(/\r\n/g) ?? []).length
+    expect(crlfBefore).toBe(17)
+    await shiftSubtitleTiming(p, 3000)
+    const afterStr = readFileSync(p).toString('latin1')
+    expect((afterStr.match(/\r\n/g) ?? []).length).toBe(17)
+    // 不能有任何裸 LF（不带前导 CR）
+    expect(/[^\r]\n/.test(afterStr)).toBe(false)
+  })
+
+  it('shift-lf-preserved: LF 行尾文件不被转成 CRLF', async () => {
+    const p = stage(FIXTURE_REAL_ASS, 'real.ass')
+    await shiftSubtitleTiming(p, 1000)
+    expect(readFileSync(p).toString('latin1')).not.toMatch(/\r\n/)
+  })
+
+  it('shift-other-sections-untouched: [Fonts] base64 / [Aegisub Project Garbage] / 字幕组注释行 逐字节不变', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    await shiftSubtitleTiming(p, 2000)
+    const after = readFileSync(p)
+    // [Events] 之前的所有字节必须逐字节相同——涵盖 BOM、注释行、Script Info、
+    // Aegisub Project Garbage、V4+ Styles、Fonts 的 base64 垃圾
+    const eventsAt = before.toString('latin1').indexOf('[Events]')
+    expect(eventsAt).toBeGreaterThan(0)
+    expect(after.subarray(0, eventsAt)).toEqual(before.subarray(0, eventsAt))
+    // 具体几个标志串仍在
+    const a = after.toString('latin1')
+    expect(a).toContain('BASE64GARBAGE==')
+    expect(a).toContain('Last Style Storage: Default')
+    expect(a).toContain('fontname: AOV38813.ttf')
+    // 字幕组中文注释行（UTF-8 字节原样）
+    expect(after.includes(Buffer.from('; 字幕组注释', 'utf8'))).toBe(true)
+  })
+
+  it('shift-inline-tags-bytes-unchanged: {\\move} {\\pos} {\\fad} 内联标签字节完全不变', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    await shiftSubtitleTiming(p, 2000)
+    const a = readFileSync(p).toString('latin1')
+    // 内联标签的时间参数是相对该行 Start 的，整行同量平移后必须原样不动
+    expect(a).toContain('{\\move(100,200,300,400)}')
+    expect(a).toContain('{\\pos(640,600)\\fad(200,200)}')
+  })
+})
+
+describe('shiftSubtitleTiming — 平移语义', () => {
+  it('shift-sign-direction: 正 offsetMs = 字幕晚了 = 时间戳变小（减）', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:10.50', '0:00:12.30'],
+      ['0:00:15.00', '0:00:17.00'],
+    ])
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(2)
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:08.50', '0:00:10.30'],
+      ['0:00:13.00', '0:00:15.00'],
+    ])
+  })
+
+  it('shift-negative-offset: 负 offsetMs = 字幕早了 = 时间戳变大（加）', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const r = await shiftSubtitleTiming(p, -2500)
+    expect(r.ok).toBe(true)
+    expect(r.clampedCount).toBe(0)
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:13.00', '0:00:14.80'],
+      ['0:00:17.50', '0:00:19.50'],
+    ])
+  })
+
+  it('shift-comment-lines-time-unchanged: Comment: 行的时间不变、字节不动，Dialogue 行照常平移', async () => {
+    const src = [
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Comment: 0,0:00:05.00,0:00:06.00,Default,,0,0,0,,废弃的翻译草稿',
+      'Dialogue: 0,0:00:10.00,0:00:11.00,Default,,0,0,0,,生效台词',
+      '',
+    ].join('\n')
+    const p = stageBytes(Buffer.from(src, 'utf8'), 'withcomment.ass')
+    const r = await shiftSubtitleTiming(p, 3000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(1) // 只有 Dialogue 被算作生效字幕行
+    const after = readFileSync(p)
+    // Comment 时间原封不动
+    expect(commentTimes(after)).toEqual([['0:00:05.00', '0:00:06.00']])
+    // Comment 整行字节原样（含文本）
+    expect(after.includes(Buffer.from('Comment: 0,0:00:05.00,0:00:06.00,Default,,0,0,0,,废弃的翻译草稿', 'utf8'))).toBe(true)
+    // Dialogue 已平移
+    expect(dialogueTimes(after)).toEqual([['0:00:07.00', '0:00:08.00']])
+  })
+
+  it('shift-clamp-negative-to-zero: 平移致时间戳变负 → 钳到 0，仅影响越界行，detail 报告条数', async () => {
+    const src = [
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,开头署名',
+      'Dialogue: 0,0:01:00.00,0:01:02.00,Default,,0,0,0,,正常台词',
+      '',
+    ].join('\n')
+    const p = stageBytes(Buffer.from(src, 'utf8'), 'clamp.ass')
+    const r = await shiftSubtitleTiming(p, 5000)
+    expect(r.ok).toBe(true)
+    // 第一行 Start(1s) 和 End(2s) 都 <5s → 两个时间戳都被钳
+    expect(r.clampedCount).toBe(2)
+    expect(r.detail).toContain('clamped 2 timestamp(s) to 0')
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:00.00', '0:00:00.00'],
+      // 越界不影响其他行：这一行照常减 5s
+      ['0:00:55.00', '0:00:57.00'],
+    ])
+  })
+
+  it('shift-format-line-decides-columns: Start/End 列位由 Format 行决定，不写死 fields[1]/[2]', async () => {
+    // 非规范列序：Start/End 在第 3、4 列
+    const src = [
+      '[Events]',
+      'Format: Layer, Style, Start, End, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Dialogue: 0,Default,0:00:10.00,0:00:12.00,,0,0,0,,台词',
+      '',
+    ].join('\n')
+    const p = stageBytes(Buffer.from(src, 'utf8'), 'cols.ass')
+    const r = await shiftSubtitleTiming(p, 4000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(1)
+    const a = readFileSync(p).toString('utf8')
+    expect(a).toContain('Dialogue: 0,Default,0:00:06.00,0:00:08.00,,0,0,0,,台词')
+  })
+})
+
+describe('shiftSubtitleTiming — SRT', () => {
+  const SRT = [
+    '1',
+    '00:00:10,500 --> 00:00:12,300',
+    'first line',
+    '',
+    '2',
+    '00:00:15,000 --> 00:00:17,000',
+    'second line',
+    '',
+  ].join('\r\n')
+
+  it('shift-srt-timestamps: 逗号毫秒格式的时间行被正确平移', async () => {
+    const p = stageBytes(Buffer.from(SRT, 'utf8'), 'a.srt')
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(2)
+    const a = readFileSync(p).toString('utf8')
+    expect(a).toContain('00:00:08,500 --> 00:00:10,300')
+    expect(a).toContain('00:00:13,000 --> 00:00:15,000')
+  })
+
+  it('shift-srt-byte-fidelity: 序号/文本/空行/CRLF 逐字节不变，只有时间行的时间戳变', async () => {
+    const p = stageBytes(Buffer.from(SRT, 'utf8'), 'a.srt')
+    const before = readFileSync(p)
+    await shiftSubtitleTiming(p, 2000)
+    const after = readFileSync(p)
+    expect(after.length).toBe(before.length)
+    // CRLF 保持
+    expect((after.toString('latin1').match(/\r\n/g) ?? []).length).toBe(
+      (before.toString('latin1').match(/\r\n/g) ?? []).length,
+    )
+    // 所有变化的字节都必须在时间行上
+    const beforeLines = before.toString('latin1').split('\r\n')
+    const timeLineRanges: Array<[number, number]> = []
+    let off = 0
+    for (const l of beforeLines) {
+      if (l.includes('-->')) timeLineRanges.push([off, off + l.length])
+      off += l.length + 2
+    }
+    for (const d of byteDiffOffsets(before, after)) {
+      expect(timeLineRanges.some(([lo, hi]) => d >= lo && d < hi), `offset ${d} outside time lines`).toBe(true)
+    }
+    // 文本与序号原样
+    expect(after.toString('utf8')).toContain('first line')
+    expect(after.toString('utf8')).toContain('second line')
+  })
+
+  it('shift-srt-clamp: SRT 时间戳变负同样钳到 0', async () => {
+    const p = stageBytes(Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nx\n', 'utf8'), 'b.srt')
+    const r = await shiftSubtitleTiming(p, 5000)
+    expect(r.ok).toBe(true)
+    expect(r.clampedCount).toBe(2)
+    expect(readFileSync(p).toString('utf8')).toContain('00:00:00,000 --> 00:00:00,000')
+  })
+})
+
+describe('shiftSubtitleTiming — 备份与幂等', () => {
+  it('shift-idempotent-double-call: 连续两次同参数调用，最终时间轴只平移一次', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    await shiftSubtitleTiming(p, 2000)
+    const afterFirst = readFileSync(p)
+    const r2 = await shiftSubtitleTiming(p, 2000)
+    expect(r2.ok).toBe(true)
+    const afterSecond = readFileSync(p)
+    // 逐字节一致 = 真幂等，不是"看起来差不多"
+    expect(afterSecond).toEqual(afterFirst)
+    expect(dialogueTimes(afterSecond)).toEqual([
+      ['0:00:08.50', '0:00:10.30'],
+      ['0:00:13.00', '0:00:15.00'],
+    ])
+    expect(r2.detail).toContain('recomputed from existing backup')
+  })
+
+  it('shift-idempotent-different-offset-rebases-from-original: 换一个 offset 时基准仍是原始文件，不叠加', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    await shiftSubtitleTiming(p, 2000)
+    await shiftSubtitleTiming(p, 5000)
+    // 若基准是"当前文件"会得到 10.50-2-5=3.50；正确行为是相对原始文件 10.50-5=5.50
+    expect(dialogueTimes(readFileSync(p))).toEqual([
+      ['0:00:05.50', '0:00:07.30'],
+      ['0:00:10.00', '0:00:12.00'],
+    ])
+  })
+
+  it('shift-backup-created-with-original-bytes: 备份内容 = 原始文件字节', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const original = readFileSync(p)
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.backupPath).toBe(`${resolve(p)}${BACKUP_SUFFIX}`)
+    expect(readFileSync(r.backupPath!)).toEqual(original)
+  })
+
+  it('shift-existing-backup-never-overwritten: 备份已存在时绝不被覆盖', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const backupPath = `${resolve(p)}${BACKUP_SUFFIX}`
+    // 手工放一个"原始版本"备份，内容与当前文件不同
+    const sentinel = Buffer.from('[Events]\nDialogue: 0,0:00:20.00,0:00:22.00,Default,,0,0,0,,原始版本\n', 'utf8')
+    writeFileSync(backupPath, sentinel)
+    await shiftSubtitleTiming(p, 2000)
+    expect(readFileSync(backupPath)).toEqual(sentinel)
+    // 且平移是基于这个备份重算的（20s - 2s = 18s），证明"备份即基准"
+    expect(dialogueTimes(readFileSync(p))).toEqual([['0:00:18.00', '0:00:20.00']])
+  })
+
+  it('shift-meta-reports-previous-offset: meta 记录累计平移量，供调用方做残差叠加', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const r1 = await shiftSubtitleTiming(p, 2000)
+    expect(r1.previousOffsetMs).toBe(0)
+    expect(r1.appliedOffsetMs).toBe(2000)
+    const r2 = await shiftSubtitleTiming(p, 2500)
+    expect(r2.previousOffsetMs).toBe(2000)
+    expect(r2.appliedOffsetMs).toBe(2500)
+  })
+
+  it('shift-meta-missing-reports-unknown: meta 缺失（手工备份/老版本）时 previousOffsetMs 为 null，不猜', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    writeFileSync(`${resolve(p)}${BACKUP_SUFFIX}`, readFileSync(p))
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(r.previousOffsetMs).toBeNull()
+    expect(r.detail).toContain('prevOffsetMs=unknown')
+  })
+
+  it('shift-revert-restores-original-bytes: revert 逐字节还原且保留备份', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const original = readFileSync(p)
+    await shiftSubtitleTiming(p, 2000)
+    expect(readFileSync(p)).not.toEqual(original)
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(true)
+    expect(readFileSync(p)).toEqual(original)
+    // 备份保留（可能还要再校正一次），meta 清掉
+    expect(existsSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toBe(true)
+    expect(existsSync(`${resolve(p)}${META_SUFFIX}`)).toBe(false)
+  })
+
+  it('shift-revert-without-backup-refused: 无备份时 revert 拒绝，不动目标文件', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    const r = await revertSubtitleTiming(p)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('no backup')
+    expect(readFileSync(p)).toEqual(before)
+  })
+})
+
+describe('shiftSubtitleTiming — 拒绝与失败路径', () => {
+  it('shift-utf16-refused: UTF-16 BOM 文件被拒绝，原文件一个字节不变、无备份、无残留', async () => {
+    // UTF-16LE：'[Events]' 的 ASCII 是双字节
+    const utf16 = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('[Events]\nDialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,x\n', 'utf16le'),
+    ])
+    const p = stageBytes(utf16, 'u16.ass')
+    const before = readFileSync(p)
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('UTF-16')
+    expect(readFileSync(p)).toEqual(before)
+    expect(existsSync(`${resolve(p)}${BACKUP_SUFFIX}`)).toBe(false)
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('shift-utf16be-refused: UTF-16BE BOM 同样被拒绝', async () => {
+    const p = stageBytes(Buffer.from([0xfe, 0xff, 0x00, 0x5b]), 'u16be.ass')
+    const r = await shiftSubtitleTiming(p, 1000)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('UTF-16')
+  })
+
+  it('shift-write-failure-leaves-original-intact: 写 tmp 失败时原文件完好、无 tmp 残留', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    const target = resolve(p)
+    const r = await shiftSubtitleTiming(p, 2000, {
+      // 备份写成功，目标文件写失败（模拟磁盘满/权限）
+      writeFileImpl: (path, data) => {
+        if (path === target) throw new Error('ENOSPC: simulated disk full')
+        writeFileSync(path, data)
+      },
+    })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('write failed')
+    expect(readFileSync(p)).toEqual(before)
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('shift-real-atomicwrite-failure-cleans-up-tmp: 真实 tmp+rename 路径失败时不留 .tmp 残留', async () => {
+    // 上一条用 writeFileImpl 注入，会**绕过**真实的 tmp/rename 逻辑，因此测不到孤儿 tmp 清理
+    // （变异验证第 6 个变异体——砍掉 atomicWrite finally 里的 tmp 清理——正是靠这条才被杀掉）。
+    // 这里让 renameSync 真的失败：把目标路径做成一个非空目录，openSync/writeAll/fsync 全部
+    // 成功（tmp 文件真的被创建了），只有最后 rename 到目录时抛错——精确覆盖
+    // "写到一半失败必须清 tmp" 这个场景。
+    const targetDir = join(dir, 'blocked.ass')
+    const backupPath = `${targetDir}${BACKUP_SUFFIX}`
+    writeFileSync(backupPath, readFileSync(FIXTURE_TORTURE))
+    rmSync(targetDir, { recursive: true, force: true })
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(targetDir)
+    writeFileSync(join(targetDir, 'keep.txt'), 'x') // 非空 → rename 必失败（ENOTEMPTY/EISDIR）
+
+    const r = await shiftSubtitleTiming(targetDir, 2000)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('write failed')
+    // 关键断言：tmp 文件必须已被清掉，不能在用户媒体目录旁堆垃圾
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+    // 目标（及其内容）完好
+    expect(existsSync(join(targetDir, 'keep.txt'))).toBe(true)
+  })
+
+  it('shift-backup-failure-leaves-original-intact: 备份写失败时原文件完好、不进入目标写', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    let targetWrites = 0
+    const target = resolve(p)
+    const r = await shiftSubtitleTiming(p, 2000, {
+      writeFileImpl: (path) => {
+        if (path === target) targetWrites += 1
+        throw new Error('EACCES: simulated permission denied')
+      },
+    })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('backup write failed')
+    expect(targetWrites).toBe(0)
+    expect(readFileSync(p)).toEqual(before)
+  })
+
+  it('shift-read-failure-refused: 读源失败时如实返回失败，磁盘未动', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    const r = await shiftSubtitleTiming(p, 2000, {
+      readFileImpl: () => { throw new Error('EIO: simulated read error') },
+    })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('cannot read source')
+    expect(readFileSync(p)).toEqual(before)
+  })
+
+  it('shift-missing-file-refused: 文件不存在时拒绝', async () => {
+    const r = await shiftSubtitleTiming(join(dir, 'nope.ass'), 2000)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('does not exist')
+  })
+
+  it('shift-unsupported-extension-refused: .vtt/.sub 等不支持的后缀被拒绝', async () => {
+    const p = stageBytes(Buffer.from('WEBVTT\n', 'utf8'), 'x.vtt')
+    const before = readFileSync(p)
+    const r = await shiftSubtitleTiming(p, 1000)
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('unsupported extension')
+    expect(readFileSync(p)).toEqual(before)
+  })
+
+  it('shift-non-finite-offset-refused: NaN/Infinity 偏移被拒绝', async () => {
+    const p = stage(FIXTURE_TORTURE, 'torture.ass')
+    const before = readFileSync(p)
+    for (const bad of [NaN, Infinity, -Infinity]) {
+      const r = await shiftSubtitleTiming(p, bad)
+      expect(r.ok).toBe(false)
+      expect(r.detail).toContain('not a finite number')
+    }
+    expect(readFileSync(p)).toEqual(before)
+  })
+
+  it('shift-malformed-timestamp-line-preserved: 时间戳不合法的 Dialogue 行整行原样保留，不半改', async () => {
+    const src = [
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Dialogue: 0,GARBAGE,0:00:12.00,Default,,0,0,0,,坏行',
+      'Dialogue: 0,0:00:20.00,0:00:22.00,Default,,0,0,0,,好行',
+      '',
+    ].join('\n')
+    const p = stageBytes(Buffer.from(src, 'utf8'), 'bad.ass')
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(1)
+    const a = readFileSync(p).toString('utf8')
+    // 坏行完全原样：End 也没被改（不能出现 Start 未变 End 已变的自相矛盾行）
+    expect(a).toContain('Dialogue: 0,GARBAGE,0:00:12.00,Default,,0,0,0,,坏行')
+    expect(a).toContain('Dialogue: 0,0:00:18.00,0:00:20.00,Default,,0,0,0,,好行')
+  })
+})
+
+describe('shiftSubtitleTiming — 真实样本', () => {
+  it('shift-real-fixture-all-dialogues-shifted: 真实 subhd 样本全部 Dialogue 平移正确，其余字节不变', async () => {
+    const p = stage(FIXTURE_REAL_ASS, 'real.ass')
+    const before = readFileSync(p)
+    const beforeTimes = dialogueTimes(before)
+    expect(beforeTimes.length).toBeGreaterThan(10)
+
+    const r = await shiftSubtitleTiming(p, 1000)
+    expect(r.ok).toBe(true)
+    expect(r.shiftedLines).toBe(beforeTimes.length)
+
+    const after = readFileSync(p)
+    // header（[Events] 之前）逐字节不变
+    const eventsAt = before.toString('latin1').indexOf('[Events]')
+    expect(after.subarray(0, eventsAt)).toEqual(before.subarray(0, eventsAt))
+
+    // 每条 Dialogue 恰好减 1000ms
+    const toMs = (s: string) => {
+      const m = /^(\d+):(\d\d):(\d\d)\.(\d\d)$/.exec(s)!
+      return Number(m[1]) * 3600_000 + Number(m[2]) * 60_000 + Number(m[3]) * 1000 + Number(m[4]) * 10
+    }
+    const afterTimes = dialogueTimes(after)
+    expect(afterTimes.length).toBe(beforeTimes.length)
+    for (let i = 0; i < beforeTimes.length; i++) {
+      expect(toMs(afterTimes[i]![0])).toBe(Math.max(0, toMs(beforeTimes[i]![0]) - 1000))
+      expect(toMs(afterTimes[i]![1])).toBe(Math.max(0, toMs(beforeTimes[i]![1]) - 1000))
+    }
+  })
+})
+
+describe('shiftSubtitleTiming — 非 UTF-8 编码', () => {
+  it('shift-gbk-bytes-preserved: GBK 文件的中文字节原样保留（不解码不转码）', async () => {
+    // 手工构造 GBK 字节：'中文' = D6 D0 CE C4。若实现走了 decodeToUtf8 往返，这些字节会变。
+    const gbkText = Buffer.concat([
+      Buffer.from('[Events]\r\nDialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,', 'latin1'),
+      Buffer.from([0xd6, 0xd0, 0xce, 0xc4]),
+      Buffer.from('\r\n', 'latin1'),
+    ])
+    const p = stageBytes(gbkText, 'gbk.ass')
+    const r = await shiftSubtitleTiming(p, 2000)
+    expect(r.ok).toBe(true)
+    const after = readFileSync(p)
+    expect(after.includes(Buffer.from([0xd6, 0xd0, 0xce, 0xc4]))).toBe(true)
+    expect(dialogueTimes(after)).toEqual([['0:00:08.00', '0:00:10.00']])
+    // 长度不变 = 没有发生编码膨胀
+    expect(after.length).toBe(gbkText.length)
+  })
+})

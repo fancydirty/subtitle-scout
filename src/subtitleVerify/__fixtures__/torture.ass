@@ -1,0 +1,17 @@
+﻿[Script Info]
+; 字幕组注释
+Title: Test
+
+[Aegisub Project Garbage]
+Last Style Storage: Default
+
+[V4+ Styles]
+Style: Default,Arial,20
+
+[Fonts]
+fontname: AOV38813.ttf
+BASE64GARBAGE==
+
+[Events]
+Dialogue: 0,0:00:10.50,0:00:12.30,Default,,0,0,0,,{\move(100,200,300,400)}你好
+Dialogue: 0,0:00:15.00,0:00:17.00,Default,,0,0,0,,{\pos(640,600)\fad(200,200)}世界
