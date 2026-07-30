@@ -32,6 +32,9 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { makeMaintenanceState, runDbMaintenance } from '../v2/dbMaintenance.js'
+import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
+import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
+import { runVerifySweep } from '../subtitleVerify/verifySweep.js'
 import { makeIngestPass } from '../v2/ingest.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
@@ -228,6 +231,9 @@ async function cmdWatch() {
   const jobs = new JobsRepo(db)
   const lib = new LibraryRepo(db)
   const runs = new RunsRepo(db)
+  // 字幕校验巡检（Task 6）的持久层。dashboard 那侧（server.ts）自己也建一个实例——两者
+  // 无状态（只包一个 db 引用），共享同一个 sqlite 连接，各建一个与共用一个等价。
+  const verifyRepo = new SubtitleVerifyRepo(db)
 
   // dashboard G4：守备目录 DB 化——spec 裁决照抄 Jellyfin 分界：挂载是部署层（compose volume），
   // 守备目录是产品层（media_roots 表，dashboard 里增删）。MEDIA_ROOTS env 降级为首启种子值：
@@ -580,6 +586,34 @@ async function cmdWatch() {
     ingestEveryMs: () => Number(settingsRepo.get('scan_interval_ms')) || Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
     // 债务D5：trace 保留天数同款惰性读，默认 30 天。
     traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 30,
+    // 字幕校验巡检（Task 6）：让校验功能对用户真正可见的唯一通道——correct/revert 两条写
+    // 路径只能给**已有结论**的条目重检，没有任何地方给"从未检测过"的条目做首次检测
+    // （见 subtitleVerify/verifySweep.ts 头注释）。低频（6h）+ 双预算（5 条 / 5 分钟）+ 串行。
+    //
+    // **只检测，绝不校正**（spec 铁律③"是否校正是用户的选择"）：verifyAndRecord 唯一的写
+    // 动作是往 subtitle_verify 落一行结论；发现偏移只把红芯片点亮，等用户点校正。
+    // 这里没有、也绝不能出现 shiftSubtitleTiming 的调用点。
+    //
+    // 无 env 门控（对照 dispatchTranslate 的 TRANSLATE_* 门）：校验不依赖任何外部凭据或
+    // 付费服务，成本是本地 ffmpeg 的几十秒，而它是这个功能可见性的唯一来源——做成开关
+    // 意味着默认世界里功能依然不可见，那本任务就白做了。
+    verifySweep: () =>
+      runVerifySweep({
+        db,
+        repo: verifyRepo,
+        verify: (c) => verifyAndRecord(verifyRepo, c.itemId, c.videoPath, c.subtitlePath, Date.now()),
+        log,
+        now: () => Date.now(),
+      }).then(({ checked, skipped, failed, budgetSkipped }) => {
+        // 一行统计只在真做过事时打——稳态下候选集合为空（检过的不再是候选），
+        // 每 6h 一行 "0/0/0" 的噪声对排障没有价值。
+        if (checked + skipped + failed + budgetSkipped > 0) {
+          log(
+            `verify sweep: checked=${checked} skipped=${skipped} ` +
+            `failed=${failed} budgetSkipped=${budgetSkipped}`,
+          )
+        }
+      }),
   }
 
   // "全仓校验"触发器（v3 phase ⑦ Task 3）：与 cmdReconcileAll（独立 CLI 命令，自己开一份 db 连接）

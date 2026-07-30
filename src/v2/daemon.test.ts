@@ -6,6 +6,7 @@ import { RunsRepo } from './runsRepo.js'
 import { ScoutDaemon, type DaemonDeps, MAX_CONSECUTIVE_TICK_FAILURES } from './daemon.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { INGEST_ORCHESTRATE_SERIES_ID, type IngestTriggerResult } from '../daemon/ingestTrigger.js'
+import { VERIFY_SWEEP_EVERY_MS, VERIFY_SWEEP_META_KEY } from '../subtitleVerify/verifySweep.js'
 
 function fakeIngestTriggerResult(over: Partial<IngestTriggerResult['ingest']> = {}): IngestTriggerResult {
   return {
@@ -958,6 +959,136 @@ describe('ScoutDaemon', () => {
       const daemon = new ScoutDaemon(makeDeps({ dispatchTranslate, executeJob }))
       await expect(daemon.tick()).resolves.toBeUndefined()
       expect(logs.some((l) => l.includes('translate dispatch failed'))).toBe(true)
+    })
+  })
+
+  // Task 6：字幕校验巡检接线。这条分支是校验功能对用户可见的唯一通道——correct/revert
+  // 两条写路径的前置都是"库里已有一行结论"，没有任何地方给"从未检测过"的条目做首次检测
+  // （见 subtitleVerify/verifySweep.ts 头注释）。
+  describe('字幕校验巡检:verifySweep 钩子(低频时间门 + optional)', () => {
+    const readSweepMeta = (): number | null => {
+      const row = lib.db.prepare(`SELECT value FROM meta WHERE key = ?`)
+        .get(VERIFY_SWEEP_META_KEY) as { value: string } | undefined
+      return row ? Number(row.value) : null
+    }
+
+    it('未注入(既有测试/CLI 调用点不传)时整个分支跳过,不写 meta,tick 不崩', async () => {
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep: undefined }))
+      await expect(daemon.tick()).resolves.toBeUndefined()
+      expect(readSweepMeta()).toBeNull()
+    })
+
+    it('meta 缺失(冷启动)→ 立即扫一拍,并写下时间戳', async () => {
+      const verifySweep = vi.fn(async () => {})
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep }))
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      expect(readSweepMeta()).toBe(now)
+    })
+
+    // 时间门回归锁：去掉时间门（每 tick 都跑）时这个断言必红。6h 间隔 vs 15s 一拍，
+    // 每拍都扫会让 ffmpeg 抽轨成为主循环的常态成本。
+    it('时间门未到点 → 不扫(不是每 tick 都跑)', async () => {
+      const verifySweep = vi.fn(async () => {})
+      const deps = makeDeps({ verifySweep, verifySweepEveryMs: 6 * 3_600_000 })
+      const daemon = new ScoutDaemon(deps)
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      // 第二拍：15s 后，远未到 6h
+      now += 15_000
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      // 到点后才第二次
+      now += 6 * 3_600_000
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledTimes(2)
+    })
+
+    it('默认间隔 = VERIFY_SWEEP_EVERY_MS(6h)', async () => {
+      const verifySweep = vi.fn(async () => {})
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep }))
+      await daemon.tick()
+      now += VERIFY_SWEEP_EVERY_MS - 1
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      now += 1
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledTimes(2)
+    })
+
+    it('间隔支持函数形式(惰性求值,同 ingestEveryMs 的债务D5 口径)', async () => {
+      const verifySweep = vi.fn(async () => {})
+      let every = 6 * 3_600_000
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep, verifySweepEveryMs: () => every }))
+      await daemon.tick()
+      now += 60_000
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      // 运行中把间隔改小 → 下一拍即生效，不用重启进程
+      every = 30_000
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledTimes(2)
+    })
+
+    it('meta 行损坏(NaN)→ 防御性归零,时间门不静默永久失效', async () => {
+      lib.db.prepare(`INSERT INTO meta (key, value) VALUES (?, 'garbage')`).run(VERIFY_SWEEP_META_KEY)
+      const verifySweep = vi.fn(async () => {})
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep }))
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+    })
+
+    // 失败隔离回归锁：去掉这一层 catch 时 tick 会 reject（或冒成 unhandled rejection），
+    // 断言必红。
+    it('扫描抛错只 warn 不炸 tick(增益路径不拖垮主循环)', async () => {
+      const verifySweep = vi.fn(async () => { throw new Error('sweep boom') })
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep }))
+      await expect(daemon.tick()).resolves.toBeUndefined()
+      // fire-and-forget：等 microtask 队列排空后 catch 才落到 log
+      await new Promise((r) => setTimeout(r, 0))
+      expect(logs.some((l) => l.includes('verify sweep failed'))).toBe(true)
+    })
+
+    it('fire-and-forget:不 await 扫描(5 分钟预算不能堵住 dispatch)', async () => {
+      let release = (): void => {}
+      const verifySweep = vi.fn(() => new Promise<void>((r) => { release = r }))
+      const executeJob = vi.fn(async () => {})
+      seedJob('s1', 1, now)
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep, executeJob }))
+      // 扫描还挂着没结算，tick 就该返回、且 dispatch 已经派过活
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      expect(executeJob).toHaveBeenCalledOnce()
+      release()
+    })
+
+    // 并发防线：一次扫描墙钟预算 5 分钟 ≈ 20 拍。若重入锁失效，20 路 ffmpeg 并发抽轨——
+    // 正是"绝不并行"要防的事。
+    it('上一轮扫描仍在跑时不重入(即便时间门到点)', async () => {
+      let release = (): void => {}
+      const verifySweep = vi.fn(() => new Promise<void>((r) => { release = r }))
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep, verifySweepEveryMs: 1 }))
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      now += 3_600_000
+      await daemon.tick()
+      now += 3_600_000
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledOnce()
+      // 结算后才允许下一轮
+      release()
+      await new Promise((r) => setTimeout(r, 0))
+      now += 3_600_000
+      await daemon.tick()
+      expect(verifySweep).toHaveBeenCalledTimes(2)
+    })
+
+    it('boot ingest 未完成时不扫(同 dispatch 的 boot 守卫之后)', async () => {
+      const verifySweep = vi.fn(async () => {})
+      const ingestTrigger = vi.fn(async () => { throw new Error('ingest down') })
+      const daemon = new ScoutDaemon(makeDeps({ verifySweep, ingestTrigger }))
+      await daemon.tick()
+      expect(verifySweep).not.toHaveBeenCalled()
     })
   })
 })

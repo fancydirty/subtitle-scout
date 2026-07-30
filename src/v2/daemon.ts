@@ -3,6 +3,7 @@ import type { JobsRepo, Job } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { INGEST_ORCHESTRATE_SERIES_ID, type IngestTriggerResult } from '../daemon/ingestTrigger.js'
+import { VERIFY_SWEEP_EVERY_MS, VERIFY_SWEEP_META_KEY } from '../subtitleVerify/verifySweep.js'
 
 /** 债务D2（胶水层修复战役）：orchestrate 低频兜底心跳间隔。无变化世界里 ingest 恒
  *  changed=0、永不触发 orchestrate——"识别晚到/pending 屏蔽"类惰性收敛洞永不愈合
@@ -51,6 +52,20 @@ export interface DaemonDeps {
   /** 沙盒孤儿 GC：daemon 启动时调用一次，镜像 jobs.reapAllActive 的"单实例前提，无条件
    *  回收"语义——旧进程遗留的 .subtitle-staging/<jobId> 目录全部视为孤儿垃圾。 */
   gcStaging?: () => number
+  /** 字幕校验巡检（Task 6）：低频、有预算上限地给"已有字幕但从未校验过"的条目做**首次**
+   *  检测。cli 接线侧预绑定 db/repo/verifyAndRecord（见 subtitleVerify/verifySweep.ts 的
+   *  runVerifySweep）。
+   *
+   *  **必须 optional**：既有 daemon 测试与其它 ScoutDaemon 调用点不传这个字段，不注入时
+   *  整个分支（含时间门的 meta 读写）完全不执行——功能休眠零成本，同 dispatchTranslate /
+   *  dbMaintenance 的既有门控模式。
+   *
+   *  为什么返回 void 而不是统计对象：daemon 不消费统计（日志由 sweep 内部打），
+   *  这里只负责"到点了、踢一脚"。 */
+  verifySweep?: () => Promise<void>
+  /** 巡检间隔（测试注入）。默认 VERIFY_SWEEP_EVERY_MS(6h)。函数形式沿 ingestEveryMs 的
+   *  惰性求值先例（债务D5），便于日后接 settings 而不用重启进程。 */
+  verifySweepEveryMs?: number | (() => number)
 }
 
 /** tick() 连续意外抛错（reap/meta读/dispatch 里未被内层 try/catch 覆盖的异常，如磁盘满）
@@ -95,6 +110,11 @@ export class ScoutDaemon {
   // tick() 连续意外失败计数——任何一次 tick 顺利跑完（tickInner 不抛）就清零；
   // 达 MAX_CONSECUTIVE_TICK_FAILURES 时 fail-fast 退出进程（daemon.ts:249 审计修正）。
   private consecutiveTickFailures = 0
+  // 字幕校验巡检（Task 6）是 fire-and-forget 的长活（墙钟预算 5 分钟 ≈ 20 拍）。进程内的
+  // 重入锁：只靠 meta 时间门不够——时间门在开跑前写，但"读 meta → 写 meta"之间若有另一拍
+  // 挤进来（或将来有人把写移到跑完之后），就会并发 spawn 多路 ffmpeg 抢 IO，正是软路由上
+  // 最该避免的事。这一道锁是即时的、不依赖任何持久化可见性。
+  private verifySweepInflight = false
 
   constructor(private deps: DaemonDeps) {}
 
@@ -267,6 +287,45 @@ export class ScoutDaemon {
     // 2d. DB 耐久运维（周期 checkpoint/在线备份，内部时间门控，见 dbMaintenance.ts）。
     if (this.deps.dbMaintenance) {
       try { this.deps.dbMaintenance() } catch (e) { log(`warn: db maintenance failed: ${String(e)}`) }
+    }
+
+    // 2e. 字幕校验巡检（Task 6）：给"已有字幕但从未校验过"的条目做首次检测——这是让校验功能
+    //     对用户可见的唯一通道（correct/revert 两条写路径的前置都是"库里已有结论"，见
+    //     verifySweep.ts 头注释）。时间门同 last_ingest_at 的 meta 手法，间隔 6h。
+    //
+    //     **fire-and-forget，不 await**（同 claimAndRun 对 executeJob 的处理）：一次扫描的
+    //     墙钟预算是 5 分钟，await 会让下面的 dispatch 整整推迟 5 分钟——用户在等的找字幕
+    //     任务被一个纯增益的背景检测堵住，这个交换不划算。校验只落库、不建 job、不碰
+    //     jobs 表，与 dispatch 没有共享状态，并发跑是安全的。
+    //
+    //     时间门在**开跑前**就写（不是跑完写）：否则 5 分钟的扫描期间每 15s 一拍的后续 tick
+    //     都会看到陈旧的 last_verify_sweep_at 而各自再踢一脚，20 个扫描并发 spawn ffmpeg，
+    //     正是"绝不并行"要防的事。verifySweepInflight 是同一防线的第二道（进程内即时生效，
+    //     不依赖 meta 写入的可见性）。
+    if (this.deps.verifySweep && !this.verifySweepInflight) {
+      const lastSweepRow = lib.db
+        .prepare(`SELECT value FROM meta WHERE key = ?`)
+        .get(VERIFY_SWEEP_META_KEY) as { value: string } | undefined
+      const lastSweepRaw = lastSweepRow ? Number(lastSweepRow.value) : 0
+      // meta 行损坏时 NaN >= x 恒 false，时间门静默永久失效——防御性归零（同上面三处）。
+      const lastSweep = Number.isFinite(lastSweepRaw) ? lastSweepRaw : 0
+      const everyDep = this.deps.verifySweepEveryMs
+      const everyMs = (typeof everyDep === 'function' ? everyDep() : everyDep) ?? VERIFY_SWEEP_EVERY_MS
+      if (now() - lastSweep >= everyMs) {
+        lib.db
+          .prepare(
+            `INSERT INTO meta (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          )
+          .run(VERIFY_SWEEP_META_KEY, String(now()))
+        this.verifySweepInflight = true
+        // 失败只记一行不炸 tick：校验是增益路径（同 dispatchTranslate 的口径）。sweep 内部
+        // 已经逐条 try/catch，这一层兜的是它自己的组装阶段抛错（如 db 查询失败）。
+        void this.deps
+          .verifySweep()
+          .catch((e) => log(`warn: verify sweep failed (isolated): ${String(e)}`))
+          .finally(() => { this.verifySweepInflight = false })
+      }
     }
 
     // 3. Dispatch: claim jobs up to concurrency limit
