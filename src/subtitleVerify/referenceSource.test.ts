@@ -586,3 +586,87 @@ describe('findReferenceSource — detail 字段（内部诊断，不上 UI）', 
     expect(typeof result!.detail).toBe('string')
   })
 })
+
+// ── 集号闸（2026-07-30 生产实测发现的真 bug）─────────────────────────────────
+// 整季常平铺在同一个目录。原实现只按"cue 数最多"择优，于是 S01E01/E02/E03 三集
+// 全都挑中了 S01E04 那份最长的字幕当参考源——参考的是另一集的内容，Jaccard 必然低分，
+// 三集一起落进 unverifiable。生产 detail 里三条不同的集共用同一个 ref 文件名，
+// 表现是"功能看起来在跑但什么都验不出来"。
+describe('② 层集号闸：不许拿别集的字幕当参考', () => {
+  const noEmbedded = { probeEmbedded: async (): Promise<EmbeddedSubtitleTrack[]> => [] }
+  const PLAIN = [
+    'Peacemaker S02E01 The Ties That Grind 1080p AMZN.mkv',
+    'Peacemaker S02E01 The Ties That Grind 1080p AMZN.zh-Hans.ass',
+    'Peacemaker S02E02 A Man Is Only as Good as His Bird 1080p AMZN.mkv',
+    'Peacemaker S02E02 A Man Is Only as Good as His Bird 1080p AMZN.zh-Hans.ass',
+    'Peacemaker S02E04 Need I Say Door 1080p AMZN.mkv',
+    'Peacemaker S02E04 Need I Say Door 1080p AMZN.zh-Hans.ass',
+  ]
+
+  it('同目录有别集字幕时不采纳（哪怕它 cue 更多）', async () => {
+    const touched: string[] = []
+    const r = await findReferenceSource(
+      '/media/tv/Peacemaker/Peacemaker S02E01 The Ties That Grind 1080p AMZN.mkv',
+      '/media/tv/Peacemaker/Peacemaker S02E01 The Ties That Grind 1080p AMZN.zh-Hant.ass',
+      {
+        ...noEmbedded,
+        readDir: async () => PLAIN,
+        readSubtitleText: async (p) => { touched.push(p); return SRT_20 },
+      },
+    )
+    // E02/E04 的字幕根本不该被读（连打开都不该）
+    expect(touched.some((p) => p.includes('S02E02'))).toBe(false)
+    expect(touched.some((p) => p.includes('S02E04'))).toBe(false)
+    // 只有同集那份 zh-Hans 是合法候选
+    expect(touched.every((p) => p.includes('S02E01'))).toBe(true)
+    expect(r?.tier).toBe('sibling')
+  })
+
+  it('同一集的另一份字幕（简繁双份）正常采纳', async () => {
+    const r = await findReferenceSource(
+      '/media/tv/Peacemaker/Peacemaker S02E01 x.mkv',
+      '/media/tv/Peacemaker/Peacemaker S02E01 x.zh-Hant.ass',
+      {
+        ...noEmbedded,
+        readDir: async () => ['Peacemaker S02E01 x.zh-Hant.ass', 'Peacemaker S02E01 x.zh-Hans.ass'],
+        readSubtitleText: async () => SRT_20,
+      },
+    )
+    expect(r?.tier).toBe('sibling')
+  })
+
+  it('同目录只有别集字幕 → 返回 null，detail 说清原因', async () => {
+    const r = await findReferenceSource(
+      '/media/tv/P/P S02E01 x.mkv',
+      '/media/tv/P/P S02E01 x.zh-Hans.ass',
+      {
+        ...noEmbedded,
+        readDir: async () => ['P S02E01 x.zh-Hans.ass', 'P S02E04 y.zh-Hans.ass', 'P S02E05 z.ass'],
+        readSubtitleText: async () => SRT_20,
+      },
+    )
+    expect(r).toBeNull()
+  })
+
+  it('NxM 写法（2x05）同样被识别', async () => {
+    const touched: string[] = []
+    await findReferenceSource('/m/Show 2x05.mkv', '/m/Show 2x05.zh-Hant.ass', {
+      ...noEmbedded,
+      readDir: async () => ['Show 2x05.zh-Hant.ass', 'Show 2x05.zh-Hans.ass', 'Show 2x06.zh-Hans.ass'],
+      readSubtitleText: async (p) => { touched.push(p); return SRT_20 },
+    })
+    expect(touched.some((p) => p.includes('2x06'))).toBe(false)
+    expect(touched.some((p) => p.includes('2x05'))).toBe(true)
+  })
+
+  // 电影没有集号——那时退回原行为（只排除自己），因为没有更好的判据，
+  // 而多数电影目录里本来就只有一部片子的字幕。
+  it('解析不出集号（电影）→ 退回原行为，同目录字幕仍可用', async () => {
+    const r = await findReferenceSource('/m/Dune 2021 2160p.mkv', '/m/Dune 2021 2160p.zh-Hant.ass', {
+      ...noEmbedded,
+      readDir: async () => ['Dune 2021 2160p.zh-Hant.ass', 'Dune 2021 2160p.zh-Hans.ass'],
+      readSubtitleText: async () => SRT_20,
+    })
+    expect(r?.tier).toBe('sibling')
+  })
+})

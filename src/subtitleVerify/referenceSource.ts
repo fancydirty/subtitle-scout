@@ -39,6 +39,7 @@ import {
 } from '../files/streamProbe.js'
 import { extractEmbeddedSubtitle as defaultExtractEmbeddedSubtitle } from '../files/extractEmbeddedSub.js'
 import type { Cue } from '../files/subtitleInspect.js'
+import { matchesEpisodeCode } from '../core/episode.js'
 import type { SpeechSpan } from './alignDetect.js'
 // 读+解码+解析+剥 spans 四件事与待检侧（verifySubtitle.ts）共用同一份实现——
 // 口径分裂会直接污染分数，见 subtitleSpans.ts 头注释。
@@ -240,6 +241,21 @@ async function tryEmbedded(
   return { hit: best, note: notes.join('; ') }
 }
 
+/**
+ * 从文件名抽出规范集号（`s<N>e<M>`），抽不出返回 null。
+ *
+ * 只认 SxxEyy 与 NxM 两种写法——与 core/episode.ts 的 matchesEpisodeCode 是同一套口径，
+ * 这里负责"从待检文件名读出集号"，那边负责"候选文件名是否含这个集号"。
+ * 故意不接绝对集号（`- 05`）与纯数字：那些形式在同目录里歧义太大（`1080p` 里的数字、
+ * 发布组编号），误判会把同一集的字幕排除掉，比放过别集更糟。
+ */
+function episodeCodeOf(name: string): string | null {
+  const m = /(?<![0-9])s(\d{1,3})[\s._-]*e(\d{1,4})(?![0-9])/i.exec(name)
+    ?? /(?<![0-9])(\d{1,2})x(\d{1,3})(?![0-9])/i.exec(name)
+  if (m === null) return null
+  return `s${Number(m[1])}e${Number(m[2])}`
+}
+
 /** ② 同目录其他字幕文件。返回命中的候选，或 null。 */
 async function trySibling(
   ourSubtitlePath: string,
@@ -259,12 +275,37 @@ async function trySibling(
     return { hit: null, note: 'sibling dir unreadable' }
   }
 
+  // 集号闸（2026-07-30 生产实测发现的真 bug）：整季常平铺在同一个目录，于是 S01E01 的
+  // 同目录扫描会把 S01E04 甚至 S02 的字幕当候选。原来只按"cue 数最多"择优，结果三集
+  // 全都挑中了别集那份最长的字幕 —— 参考源是另一集的内容，Jaccard 必然低分，全部落进
+  // unverifiable。生产上的表现是"功能看起来在跑但什么都验不出来"，detail 里能看到
+  // 三条不同的集共用同一个 ref 文件名。
+  //
+  // 所以：能从待检文件名解析出集号时，候选**必须**含同一个集号；解析不出来（电影、
+  // 或命名太怪）时退回原行为（只排除自己），因为那时没有更好的判据，而多数电影目录
+  // 里本来就只有一部片子的字幕。
+  const ourEpisodeCode = episodeCodeOf(basename(ourResolved))
+  const extOk = (name: string) =>
+    (SIBLING_SUBTITLE_EXTS as readonly string[]).includes(extname(name).toLowerCase())
+
+  let rejectedByEpisode = 0
   const candidatePaths = entries
-    .filter((name) => (SIBLING_SUBTITLE_EXTS as readonly string[]).includes(extname(name).toLowerCase()))
+    .filter(extOk)
+    .filter((name) => {
+      if (ourEpisodeCode === null) return true
+      if (matchesEpisodeCode(name, ourEpisodeCode)) return true
+      rejectedByEpisode++
+      return false
+    })
     .map((name) => join(dir, name))
     .filter((path) => resolve(path) !== ourResolved)
 
-  if (candidatePaths.length === 0) return { hit: null, note: 'no sibling subtitle' }
+  if (candidatePaths.length === 0) {
+    const why = rejectedByEpisode > 0
+      ? `no sibling subtitle for the same episode (${rejectedByEpisode} belonged to other episodes)`
+      : 'no sibling subtitle'
+    return { hit: null, note: why }
+  }
 
   const candidates: Candidate[] = []
   let unreadable = 0
