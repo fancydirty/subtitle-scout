@@ -28,7 +28,6 @@
  * 返回 null = 无可用参考源。调用方据此判"无法验证"（UI 显示绿色而非黄色：
  * 我们没发现问题，不等于我们发现了问题）。
  */
-import { readFileSync } from 'node:fs'
 import { readdir as nodeReaddir } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import {
@@ -36,9 +35,15 @@ import {
   type EmbeddedSubtitleTrack,
 } from '../files/streamProbe.js'
 import { extractEmbeddedSubtitle as defaultExtractEmbeddedSubtitle } from '../files/extractEmbeddedSub.js'
-import { parseSrtCues, parseAssCues, type Cue } from '../files/subtitleInspect.js'
-import { decodeToUtf8 } from '../files/subtitleEncoding.js'
+import type { Cue } from '../files/subtitleInspect.js'
 import type { SpeechSpan } from './alignDetect.js'
+// 读+解码+解析+剥 spans 四件事与待检侧（verifySubtitle.ts）共用同一份实现——
+// 口径分裂会直接污染分数，见 subtitleSpans.ts 头注释。
+import {
+  parseCues,
+  toSpans,
+  readSubtitleText as defaultReadSubtitleText,
+} from './subtitleSpans.js'
 
 export type ReferenceTier = 'embedded' | 'sibling'
 
@@ -109,35 +114,11 @@ export interface FindReferenceSourceOpts {
   now?: () => number
 }
 
-/** 把已解码文本解析成 cue：先按 SRT，得 0 条再按 ASS。
- *
- *  与 subtitleDialogueFingerprint（subtitleInspect.ts:161）同一套判定顺序，而不是按扩展名分派——
- *  ① 层的输入来自 ffmpeg `-f srt` 管道，没有文件名可看；② 层的扩展名也不总可信
- *  （.srt 里装 ASS 内容是字幕站常见的错贴）。按内容试探对两者都正确。 */
-function parseCues(text: string): Cue[] {
-  const srtCues = parseSrtCues(text)
-  if (srtCues.length > 0) return srtCues
-  return parseAssCues(text).cues
-}
-
-/** cue → SpeechSpan：丢掉 text，只留时段。
- *
- *  参考源的文本内容一律不参与对齐（跨语言天然对不上），显式剥掉可以让
- *  "参考源不看内容"这条语义在类型层面成立，而不是靠调用方自觉不去读 text。 */
-function toSpans(cues: readonly Cue[]): SpeechSpan[] {
-  return cues.map(({ startMs, endMs }) => ({ startMs, endMs }))
-}
+/** 把已解码文本解析成 cue、以及 cue → SpeechSpan 的剥离，都在 ./subtitleSpans.ts
+ *  （parseCues / toSpans），与待检侧共用。此处不再各写一份。 */
 
 function defaultReadDir(dir: string): Promise<string[]> {
   return nodeReaddir(dir)
-}
-
-async function defaultReadSubtitleText(path: string): Promise<string | null> {
-  try {
-    return decodeToUtf8(readFileSync(path)).data.toString('utf8')
-  } catch {
-    return null
-  }
 }
 
 /** 候选：来源标签（进 detail）+ 解析出的 cue 数（用于择优）。 */

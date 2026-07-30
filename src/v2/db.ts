@@ -120,6 +120,28 @@ CREATE TABLE parked_paths (         -- 未识别文件的正式户口（不混�
   -- （绝大多数情况），不是"未探测"：它是纯路径解析产物，同步、零 I/O。
   embedded_tmdb_id TEXT
 );
+CREATE TABLE subtitle_verify (      -- v28（字幕时间轴校验）：检测结论。刻意独立成表而不是往
+                                    -- episodes/movies 加列——校验结论是**可重算的派生数据**
+                                    -- （删掉整表只损失一次重算的代价），与 episodes 的身份/覆盖
+                                    -- 状态是不同生命周期：后者是磁盘真相的索引，不可从别处重建。
+  item_id TEXT PRIMARY KEY,         -- episodes.id 或 movies.id（同 runs/subtitles 的 item_id 惯例）
+  -- 三值封闭，CHECK 锁死。铁律①"只有绿和红，绝不给黄"：aligned 与 unverifiable 在 UI 上
+  -- **都是绿色**（前者=验过没问题，后者=没能验证；诚实体现在"不假装验证过"，而非打黄标让
+  -- 用户焦虑），只有 shifted 是红色且可校正。刻意**没有**"警告/可疑"这第四档——多一档就会
+  -- 有人把它渲染成黄色，铁律当场破防，所以在 schema 层就把它变成不可表达。
+  verdict TEXT NOT NULL CHECK(verdict IN ('aligned','shifted','unverifiable')),
+  offset_ms INTEGER,                -- 仅 verdict='shifted' 时有意义（内部字段）
+  score REAL,                       -- 内部诊断（内部字段）
+  reference_tier TEXT,              -- 'embedded' | 'sibling' | NULL=无参考源（内部字段）
+  -- offset_ms / score / reference_tier 三列是**内部字段**：铁律②——UI 不展示任何数字。
+  -- 它们只进 DB 与 trace 供排障，API/UI 层不得读出来做面向用户的文案。
+  subtitle_path TEXT NOT NULL,      -- 本次检测的对象（一个 item 挂多个字幕时，记的是最后检的那个）
+  subtitle_hash TEXT,               -- 内容哈希：字幕文件被替换后据此判定旧结论作废需重检。
+                                    -- NULL=当时算不出（文件读不动）→ needsRecheck 一律判 true
+  checked_at INTEGER NOT NULL,
+  detail TEXT                       -- 内部诊断字符串（参考源选中了谁、其余为何落选）
+);
+CREATE INDEX subtitle_verify_verdict ON subtitle_verify(verdict);  -- listShifted 的批量查询
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_reconcile_at 等
   `.trim(),
   // v10（胶水层修复战役，2026-07-16）：三列事实增量。layout_nonstandard=摄取层观察到的
@@ -382,6 +404,37 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
   // CREATE 这张表）与老库两条路径都安全。存量认领行不迁移到任何地方——它们本就是零证据
   // 判断；openDb 的 pre-migration VACUUM 备份（.pre-vN.bak）保留了表内容，供考古取证。
   `DROP TABLE IF EXISTS identify_overrides`,
+  // v28（字幕时间轴校验落库）：新增 subtitle_verify 表，承载"这条字幕的时间轴对不对"的检测
+  // 结论，供 UI 读取（红=shifted 可校正，绿=aligned/unverifiable）。为什么要它：前置的三个
+  // 纯模块（alignDetect/referenceSource/shiftTiming）此前零生产调用方，结论无处可存也就无人
+  // 可读；编排层（subtitleVerify/verifySubtitle.ts）算完必须落到某处才成为可用功能。
+  //
+  // 为什么独立成表而不是往 episodes/movies 加列：校验结论是可重算的派生数据（丢了只损失一次
+  // 重算），而 episodes 的身份/覆盖状态是磁盘真相的索引、不可从别处重建——两者生命周期不同，
+  // 混在一张表里会让"清空重算校验结论"这个正常运维动作变成危险操作。
+  //
+  // 纯 CREATE TABLE + CREATE INDEX，无 CHECK 约束变更，不触发 12 步建新表。IF NOT EXISTS 是
+  // **必需**而非防御性冗余：fresh install 从 currentVersion=0 起跑**完整** MIGRATIONS 链
+  // （不是"只落 v9 终态"——见 v25 注释同一口径），因此新库会先由 v9 终态建出这张表、再流经
+  // 本条 entry；裸 CREATE 会在这里撞 "table already exists"，整条链在事务里回滚，新库压根
+  // 打不开。同 v22/v24/v25 的既有教训。
+  //
+  // 反过来说，正因为 fresh install 会跑到这条 entry，v9 终态里那份 CREATE TABLE 对"新库有没有
+  // 这张表"其实不是必要条件（删掉它新库照样能建出表，实测如此）。保留它是为了让终态那段
+  // schema 仍是一份**可读的完整现状**——它是全仓唯一能一眼看全表结构的地方，漏一张表会让
+  // 后来者以为不存在。两份必须同步改动。
+  `CREATE TABLE IF NOT EXISTS subtitle_verify (
+  item_id TEXT PRIMARY KEY,
+  verdict TEXT NOT NULL CHECK(verdict IN ('aligned','shifted','unverifiable')),
+  offset_ms INTEGER,
+  score REAL,
+  reference_tier TEXT,
+  subtitle_path TEXT NOT NULL,
+  subtitle_hash TEXT,
+  checked_at INTEGER NOT NULL,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS subtitle_verify_verdict ON subtitle_verify(verdict)`,
 ]
 
 export function openDb(path: string): ScoutDb {
