@@ -1,13 +1,26 @@
 /**
  * 参考源提供者——给时间轴对齐检测（alignDetect.ts）供一份可信的"说话时段序列"。
  *
- * 两层降级，都是亚秒级、都不碰音频：
+ * 两层降级，都不碰音频：
  *   ① 内嵌字幕轨（ffprobe 探测 + ffmpeg 抽成 SRT）——实测 380/394 项有轨，全 subrip 文本格式
- *   ② 同目录其他字幕文件（简繁两份、旁边的 .eng.srt 之类）——补 ① 未命中的部分
+ *   ② 同目录其他字幕文件（简繁两份、旁边的 .eng.srt 之类）——补 ① 未命中的部分，纯读文件，快
  *
- * **刻意不做第三层音频 VAD**：本地虽只需 ~14s，但云盘随机读每次 seek 要付 ~12s CDN 延迟
- * （实测局部解码 20s 音频耗 223s）。云盘且 ①② 皆无时如实返回 null，让调用方判"无法验证"，
- * 而不是花几分钟换一个可能仍不可信的答案。
+ * **耗时：典型亚秒级，但 ① 层最坏情况可达数分钟。** 别把"亚秒级"当成无条件的性质：
+ * ② 层只是读文件解析，确实恒快；① 层要串行 spawn ffmpeg，最多试
+ * MAX_EMBEDDED_TRACKS_TRIED 条轨，而 extractEmbeddedSub.ts:42 注明"4K 长片真机可超 30s
+ * （Astronaut ~90s+）"、默认超时 5 分钟。理论最坏 = 轨数 × 单轨超时。实测 380/394 项是
+ * subrip 文本轨、抽取很快，所以典型路径亚秒级——但"典型"不是"保证"。
+ * 串行是刻意的：并行会同时 spawn 多个 ffmpeg 抢 IO，在软路由/NAS 这类弱 IO 环境更糟。
+ *
+ * ⚠️ 这条更正推翻了一个曾用来支撑架构决策的错误前提。原注释断言"两层皆亚秒级"，
+ * 而这正是 spec 论证"不做 VAD"的依据之一（"①② 已覆盖大部分且亚秒级，故不需要 VAD"）。
+ * 但实测本地音频 VAD 整轨解码只需 ~14s，比 ① 层的最坏情况**快得多**。
+ * 本期仍不做 VAD（云盘那条路确实不可行，见下），但后续若重新权衡，
+ * 必须基于"① 层最坏可达数分钟"这个真实数字，而不是"亚秒级"。
+ *
+ * **刻意不做第三层音频 VAD**：本地整轨解码 ~14s 尚可，但云盘随机读每次 seek 要付 ~12s
+ * CDN 延迟（实测局部解码 20s 音频耗 223s）。云盘且 ①② 皆无时如实返回 null，
+ * 让调用方判"无法验证"，而不是花几分钟换一个可能仍不可信的答案。
  *
  * **关键语义：只取说话时段，不看文本内容。** 所以内嵌轨是什么语言都行——英日中皆可，
  * 跨语言字幕的文本天然对不上，对齐要的只是"何时有人在说话"这条时间轴骨架。
@@ -63,6 +76,20 @@ export const MIN_REFERENCE_CUES = 10
  *  位图轨在探测阶段就被排掉，不占这个额度。 */
 export const MAX_EMBEDDED_TRACKS_TRIED = 5
 
+/** ① 层**所有轨加起来**的总时间预算。超预算后不再开新的抽取，拿手上已有的候选择优；
+ *  一条都没拿到就降级到 ②。
+ *
+ *  为什么需要它：MAX_EMBEDDED_TRACKS_TRIED 只封住"试几条"，没封住"总共多久"。
+ *  extractEmbeddedSub 默认单轨超时 5 分钟，5 条串行 = 理论最坏 25 分钟——
+ *  对一个"顺手校验一下时间轴"的增益功能来说完全不成比例（调用方多半在等一个响应）。
+ *  60s 的取法：实测典型 subrip 抽取远快于此，够跑完常见的 3~5 条轨；而真撞上
+ *  4K 长片那种单轨 30~90s 的情况，也能在赔掉一两分钟前止损。
+ *
+ *  只在**开新抽取之前**检查，不中断已在跑的那条：中断需要传 AbortSignal 进
+ *  extractEmbeddedSubtitle（它当前不收），而单轨自身已有 5 分钟超时兜底。
+ *  所以这是"软预算"——最坏仍可能超出一个单轨时长，但不再是 N 倍。 */
+export const EMBEDDED_TOTAL_BUDGET_MS = 60_000
+
 export interface FindReferenceSourceOpts {
   probeEmbedded?: (
     videoPath: string,
@@ -77,6 +104,9 @@ export interface FindReferenceSourceOpts {
    *  朴素按 utf-8 读会把合法中文变成乱码，解析出 0 条 cue 而误判"无参考源"）。
    *  任何失败（不存在/无权限/解不出）返回 null，不抛。 */
   readSubtitleText?: (path: string) => Promise<string | null>
+  /** 单调时钟，用于 ① 层总预算计时。默认 Date.now；测试注入假时钟以免依赖真实耗时
+   *  （靠 sleep 把测试跑满 60s 是不可接受的）。 */
+  now?: () => number
 }
 
 /** 把已解码文本解析成 cue：先按 SRT，得 0 条再按 ASS。
@@ -133,6 +163,7 @@ async function tryEmbedded(
   videoPath: string,
   probeEmbedded: NonNullable<FindReferenceSourceOpts['probeEmbedded']>,
   extractEmbedded: NonNullable<FindReferenceSourceOpts['extractEmbedded']>,
+  now: NonNullable<FindReferenceSourceOpts['now']>,
 ): Promise<{ hit: Candidate | null; note: string }> {
   let tracks: EmbeddedSubtitleTrack[] | null
   try {
@@ -164,7 +195,17 @@ async function tryEmbedded(
   const tried = textTrackIndexes.slice(0, MAX_EMBEDDED_TRACKS_TRIED)
   const candidates: Candidate[] = []
   let extractFailures = 0
-  for (const index of tried) {
+  let budgetExhaustedAfter: number | null = null
+  const startedAt = now()
+  for (const [attempt, index] of tried.entries()) {
+    // 只在开新抽取之前检查预算，不中断已在跑的那条（见 EMBEDDED_TOTAL_BUDGET_MS 注释）。
+    // 第一条轨天然无条件被试：startedAt 就在循环前一行取，attempt 0 时 elapsed 恒为 0，
+    // 必然小于预算。这是刻意依赖的性质——预算是防"多轨累加成几分钟"，不是防"单轨慢"，
+    // 一条都不试就降级会把①层在慢盘上彻底废掉。
+    if (now() - startedAt >= EMBEDDED_TOTAL_BUDGET_MS) {
+      budgetExhaustedAfter = attempt
+      break
+    }
     let srt: string | null
     try {
       srt = await extractEmbedded(videoPath, index)
@@ -184,6 +225,9 @@ async function tryEmbedded(
     notes.push(`${textTrackIndexes.length - tried.length} track(s) not tried (cap ${MAX_EMBEDDED_TRACKS_TRIED})`)
   }
   if (extractFailures > 0) notes.push(`${extractFailures} extraction failed`)
+  if (budgetExhaustedAfter !== null) {
+    notes.push(`budget ${EMBEDDED_TOTAL_BUDGET_MS}ms exhausted after ${budgetExhaustedAfter} track(s)`)
+  }
 
   const best = pickRichest(candidates)
   if (best === null) {
@@ -279,8 +323,9 @@ export async function findReferenceSource(
     ?? ((path: string, index: number) => defaultExtractEmbeddedSubtitle(path, index))
   const readDir = opts?.readDir ?? defaultReadDir
   const readSubtitleText = opts?.readSubtitleText ?? defaultReadSubtitleText
+  const now = opts?.now ?? Date.now
 
-  const embedded = await tryEmbedded(videoPath, probeEmbedded, extractEmbedded)
+  const embedded = await tryEmbedded(videoPath, probeEmbedded, extractEmbedded, now)
   if (embedded.hit !== null) {
     return {
       tier: 'embedded',

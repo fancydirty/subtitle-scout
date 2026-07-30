@@ -4,6 +4,7 @@ import {
   findReferenceSource,
   MIN_REFERENCE_CUES,
   MAX_EMBEDDED_TRACKS_TRIED,
+  EMBEDDED_TOTAL_BUDGET_MS,
   SIBLING_SUBTITLE_EXTS,
 } from './referenceSource.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
@@ -79,6 +80,10 @@ describe('referenceSource 常量', () => {
   it('cue 下限与轨数上限是正整数', () => {
     expect(MIN_REFERENCE_CUES).toBeGreaterThan(0)
     expect(MAX_EMBEDDED_TRACKS_TRIED).toBeGreaterThan(0)
+  })
+
+  it('① 层总预算是正数毫秒', () => {
+    expect(EMBEDDED_TOTAL_BUDGET_MS).toBeGreaterThan(0)
   })
 })
 
@@ -232,6 +237,67 @@ describe('findReferenceSource — ① 内嵌字幕轨', () => {
     expect(extractCalls).toBe(MAX_EMBEDDED_TRACKS_TRIED)
   })
 
+  it('总预算耗尽后不再开新抽取，拿手上的候选择优', async () => {
+    // 假时钟：每次抽取"耗时" 25s，第 3 次开始前累计 50s... 第 4 次前 75s > 60s 预算
+    let clock = 0
+    const extracted: number[] = []
+    const result = await findReferenceSource(VIDEO, OURS, {
+      probeEmbedded: async () => Array.from({ length: 5 }, (_, i) => textTrack(`l${i}`)),
+      extractEmbedded: async (_v, index) => {
+        extracted.push(index)
+        clock += 25_000
+        return SRT_20
+      },
+      now: () => clock,
+      ...forbidSiblingIo(),
+    })
+    // 第 1 条无条件试；此后每次开新的都查预算 → 25s、50s 时仍可开，75s 时超预算
+    expect(extracted).toEqual([0, 1, 2])
+    expect(result!.tier).toBe('embedded')
+    expect(result!.detail).toContain('budget')
+  })
+
+  it('第一条轨无条件尝试（预算已超也要试，否则慢盘上①层彻底废掉）', async () => {
+    let clock = 0
+    const extracted: number[] = []
+    const result = await findReferenceSource(VIDEO, OURS, {
+      probeEmbedded: async () => [textTrack('eng'), textTrack('jpn')],
+      extractEmbedded: async (_v, index) => {
+        extracted.push(index)
+        clock += EMBEDDED_TOTAL_BUDGET_MS * 10 // 一条就远超预算
+        return SRT_20
+      },
+      now: () => clock,
+      ...forbidSiblingIo(),
+    })
+    expect(extracted).toEqual([0]) // 试了第一条，没试第二条
+    expect(result!.tier).toBe('embedded')
+  })
+
+  it('预算内不受影响（典型快速抽取，全部轨都试）', async () => {
+    let clock = 0
+    const extracted: number[] = []
+    await findReferenceSource(VIDEO, OURS, {
+      probeEmbedded: async () => Array.from({ length: 3 }, (_, i) => textTrack(`l${i}`)),
+      extractEmbedded: async (_v, index) => { extracted.push(index); clock += 50; return SRT_20 },
+      now: () => clock,
+      ...forbidSiblingIo(),
+    })
+    expect(extracted).toEqual([0, 1, 2])
+  })
+
+  it('预算耗尽且一条候选都没拿到 → 降级到 ②', async () => {
+    let clock = 0
+    const result = await findReferenceSource(VIDEO, OURS, {
+      probeEmbedded: async () => [textTrack('eng'), textTrack('jpn')],
+      extractEmbedded: async () => { clock += EMBEDDED_TOTAL_BUDGET_MS * 2; return null },
+      now: () => clock,
+      readDir: async () => ['Show.S01E01.mkv', 'Show.S01E01.zh-Hans.srt', 'Show.S01E01.eng.srt'],
+      readSubtitleText: async (p) => (p.endsWith('eng.srt') ? SRT_20 : null),
+    })
+    expect(result!.tier).toBe('sibling')
+  })
+
   it('抽取抛错（注入实现不守 null 契约）也不炸，降级到 ②', async () => {
     const result = await findReferenceSource(VIDEO, OURS, {
       probeEmbedded: async () => [textTrack('eng')],
@@ -278,18 +344,23 @@ describe('findReferenceSource — ② 同目录字幕文件', () => {
   })
 
   it('排除自己：待检路径给相对路径也能正确排除（path.resolve 归一后比较）', async () => {
-    // readDir 返回绝对路径（真实 fs.readdir 不会，但测试注入可能返回任意形式），
-    // 待检字幕给相对路径 → 只有 resolve() 归一后比较才能正确排除自己
+    // 待检字幕给**相对**路径，readDir 返回**裸文件名**（与真实 fs.readdir 一致）。
+    // 实现内部 join(dirname(resolve(ours)), name) 得绝对路径，与 resolve(ours) 相等，
+    // 故只有 resolve() 归一后比较才排得掉；朴素比字符串会漏判（'./x.srt' !== 绝对路径）。
+    //
+    // 用 process.cwd() 的 basename 反推一个真实存在的相对路径前缀：相对路径必须能
+    // resolve 到与 join(dir, name) 相同的位置，这个关系是本测试的全部要害。
     const ourRelative = './Show.S01E01.zh-Hans.srt'
-    const ourAbsolute = resolve(ourRelative)
-    const result = await findReferenceSource('/video/Show.S01E01.mkv', ourRelative, {
+    const videoInCwd = `${resolve('.')}/Show.S01E01.mkv`
+
+    const touched: string[] = []
+    const result = await findReferenceSource(videoInCwd, ourRelative, {
       ...noEmbedded,
-      readDir: async () => [
-        'Show.S01E01.mkv',
-        ourAbsolute, // 绝对路径形式
-      ],
-      readSubtitleText: async () => { throw new Error('不该读待检字幕自己') },
+      readDir: async () => ['Show.S01E01.mkv', 'Show.S01E01.zh-Hans.srt'],
+      readSubtitleText: async (p) => { touched.push(p); return null },
     })
+    // 断言"根本没去读自己"——只断言结果为 null 是不够的：读了自己再因故失败也得 null
+    expect(touched).toEqual([])
     expect(result).toBeNull()
   })
 
