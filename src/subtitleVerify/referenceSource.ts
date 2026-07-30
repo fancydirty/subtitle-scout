@@ -22,8 +22,11 @@
  * CDN 延迟（实测局部解码 20s 音频耗 223s）。云盘且 ①② 皆无时如实返回 null，
  * 让调用方判"无法验证"，而不是花几分钟换一个可能仍不可信的答案。
  *
- * **关键语义：只取说话时段，不看文本内容。** 所以内嵌轨是什么语言都行——英日中皆可，
+ * **关键语义：对齐只取说话时段，不看文本内容。** 所以内嵌轨是什么语言都行——英日中皆可，
  * 跨语言字幕的文本天然对不上，对齐要的只是"何时有人在说话"这条时间轴骨架。
+ * 这条不变量的执行点是 `spans` 字段（已 toSpans 剥文本）——detectOffset 只收它。
+ * 返回值另带一份 `cues`（带文本）供**字幕对照图渲染台词**：那是给人看的展示用途，
+ * 与对齐算法无关，两个字段刻意分开正是为了让"谁能看到文本"在类型层一目了然。
  *
  * 返回 null = 无可用参考源。调用方据此判"无法验证"（UI 显示绿色而非黄色：
  * 我们没发现问题，不等于我们发现了问题）。
@@ -49,7 +52,24 @@ export type ReferenceTier = 'embedded' | 'sibling'
 
 export interface ReferenceSource {
   tier: ReferenceTier
+  /** 对齐用的时间轴骨架，**已剥掉文本**（toSpans）。detectOffset 只收这个字段，
+   *  所以"对齐不看内容"这条语义仍在类型层成立——见 subtitleSpans.toSpans 注释。 */
   spans: SpeechSpan[]
+  /**
+   * 同一批 cue 的**带文本**原始形态，供字幕对照图渲染台词（subtitleCompareApi.ts）。
+   *
+   * 为什么带出来而不是让对照图自己再解析一遍：① 层的文本来自 `ffmpeg` 抽内嵌轨，
+   * 重新解析意味着**再 spawn 一次 ffmpeg**（本文件头注释：4K 长片单轨可 30~90s，
+   * 默认超时 5 分钟）。为了拿一份我们刚刚已经握在手里的文本付这个代价是不可接受的。
+   * ② 层虽然只是重读文件，但"哪个同目录文件被选中"的择优逻辑（pickRichest + 各种
+   * 落选规则）只存在于本模块内部，对照图要复现它就得把那套规则抄一遍——口径分裂的
+   * 老问题（见 subtitleSpans.ts 头注释）。
+   *
+   * **与 spans 逐项一一对应且同序**（两者由同一个 cues 数组在同一处派生，不存在漂移的
+   * 可能）。spans 保留而非让调用方自己 map，是为了上面那条类型层的不变量：
+   * 拿 spans 的人拿不到文本。
+   */
+  cues: Cue[]
   /** 内部诊断用（trace/审计），绝不上 UI——铁律②要求置信度/偏移量/参考源层级只存内部。
    *  内容是给排障的人看的技术事实（"哪条轨/哪个文件被选中、其余为何落选"），
    *  不是给终端用户看的文案。单行，便于原样塞进结构化痕迹字段。 */
@@ -311,6 +331,8 @@ export async function findReferenceSource(
     return {
       tier: 'embedded',
       spans: toSpans(embedded.hit.cues),
+      // 同一个 cues 数组派生 spans 与 cues 两个视图，故二者必然同序等长（见 ReferenceSource.cues）
+      cues: embedded.hit.cues,
       detail: joinNotes([
         `embedded ${embedded.hit.label} (${embedded.hit.cues.length} cues)`,
         embedded.note,
@@ -323,6 +345,7 @@ export async function findReferenceSource(
     return {
       tier: 'sibling',
       spans: toSpans(sibling.hit.cues),
+      cues: sibling.hit.cues,
       detail: joinNotes([
         `sibling ${sibling.hit.label} (${sibling.hit.cues.length} cues)`,
         // ① 为何落选也要留痕：否则事后无法区分"没内嵌轨"与"内嵌轨全是位图/抽取失败"

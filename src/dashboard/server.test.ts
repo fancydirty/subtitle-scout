@@ -15,6 +15,7 @@ import { startDashboard } from './server.js'
 import { traceBus, type TraceEvent } from '../core/traceBus.js'
 import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
 import type { SubtitleWriteDeps } from './subtitleVerifyApi.js'
+import type { SubtitleCompareDeps } from './subtitleCompareApi.js'
 
 // dashboard-F5：'search' 加入 Pick——GET /api/v2/tmdb/search 的 fake tmdb 注入复用同一个类型。
 type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
@@ -87,6 +88,9 @@ async function start(
   // 字幕校验三端点的依赖注入（缺席→接真实模块：真会改写磁盘字幕 + spawn ffmpeg，所以下面
   // 的用例一律注入桩；见 DashboardOpts.subtitleWriteDeps 注释）。
   subtitleWriteDeps?: Partial<SubtitleWriteDeps>,
+  // 字幕对照图端点的依赖注入（缺席→接真实模块：会 spawn ffmpeg 抽内嵌轨 + spawn ffprobe
+  // 探时长 + 读 /proc/self/mountinfo，后者在 macOS 开发机上恒判 cloud）。
+  subtitleCompareDeps?: Partial<SubtitleCompareDeps>,
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
@@ -96,6 +100,7 @@ async function start(
     tmdb,
     requestIngest,
     subtitleWriteDeps,
+    subtitleCompareDeps,
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
@@ -1405,6 +1410,173 @@ describe('字幕校验三端点', () => {
         body: JSON.stringify({ itemId: 'e1' }),
       })
       expect(res.status).toBe(401)
+    })
+  })
+
+  // GET /api/v2/subtitle/compare——对照图数据供给。业务规则在 subtitleCompareApi.test.ts
+  // （纯函数层）里钉，这里只钉 HTTP 层：接线是否真的通、method/参数门、以及铁律②在
+  // **序列化后的字节**上仍然成立。
+  describe('GET /api/v2/subtitle/compare', () => {
+    /** 对照图桩：待检轨两块、参考轨两块、时长 24 分钟、挂载类型由参数定。
+     *  canWaveform 接真实语义（kind !== 'cloud'）而不是写死，否则下面两条回归锁自证。 */
+    function stubCompare(kind: 'local' | 'lan' | 'cloud' = 'lan'): Partial<SubtitleCompareDeps> {
+      return {
+        loadCues: async () => [
+          { startMs: 1000, endMs: 3000, text: '这是第一句' },
+          { startMs: 5000, endMs: 7000, text: '这是第二句' },
+        ],
+        findReference: async () => ({
+          tier: 'embedded',
+          spans: [{ startMs: 1400, endMs: 3400 }, { startMs: 5400, endMs: 7400 }],
+          cues: [
+            { startMs: 1400, endMs: 3400, text: 'the first line' },
+            { startMs: 5400, endMs: 7400, text: 'the second line' },
+          ],
+          detail: 'embedded track 3 (500 cues)',
+        }),
+        probeDuration: async () => 1424,
+        classify: () => kind,
+        canWaveform: (k) => k !== 'cloud',
+      }
+    }
+
+    async function startCompare(kind: 'local' | 'lan' | 'cloud' = 'lan'): Promise<{ base: string }> {
+      return start(
+        distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined,
+        stubDeps(), stubCompare(kind),
+      )
+    }
+
+    it('两条轨都带台词文字返回（对照图的全部意义）', async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare()
+      const res = await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.ours).toEqual([
+        { startMs: 1000, endMs: 3000, text: '这是第一句' },
+        { startMs: 5000, endMs: 7000, text: '这是第二句' },
+      ])
+      expect(body.reference).toEqual([
+        { startMs: 1400, endMs: 3400, text: 'the first line' },
+        { startMs: 5400, endMs: 7400, text: 'the second line' },
+      ])
+      expect(body.durationMs).toBe(1_424_000)
+    })
+
+    it("mountKind='cloud' → waveformAvailable:false（前端据此不渲染声音轨）", async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare('cloud')
+      const body = await (await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)).json()
+      expect(body.mountKind).toBe('cloud')
+      expect(body.waveformAvailable).toBe(false)
+    })
+
+    // spec 验收判据 14 的 HTTP 层回归锁：cifs（lan）不被误禁。实测抽整轨 8 秒，
+    // 而生产库 492 个条目全在 cifs 上——"网络挂载就禁用"会禁掉全部。
+    it("mountKind='lan' → waveformAvailable:true【cifs 不被误禁的回归锁】", async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare('lan')
+      const body = await (await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)).json()
+      expect(body.mountKind).toBe('lan')
+      expect(body.waveformAvailable).toBe(true)
+    })
+
+    it("mountKind='local' → waveformAvailable:true", async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare('local')
+      const body = await (await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)).json()
+      expect(body.waveformAvailable).toBe(true)
+    })
+
+    // 铁律②的 HTTP 层回归锁：键集合断言，将来有人加字段立刻红。
+    it('响应体恰好六个键——内部诊断字段一个都不漏出去【铁律②】', async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare()
+      const body = await (await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)).json()
+      expect(Object.keys(body).sort()).toEqual([
+        'durationMs', 'itemId', 'mountKind', 'ours', 'reference', 'waveformAvailable',
+      ])
+    })
+
+    it('序列化后的字节里不含 score/offsetMs/referenceTier/detail【铁律②字符串级锁】', async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare()
+      const raw = await (await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)).text()
+      // 库里确实有这些值（seedVerdict 落了 score 0.93 / offsetMs 2400 / detail），
+      // 且参考源桩也带了 tier 与 detail——这些**字段名**都不该出现在这串字节里。
+      //
+      // 刻意只断言字段名，不断言"2400"/"0.93"这类**数值子串**：时间戳与时长是合法的
+      // 定位坐标，它们的十进制表示会天然包含任意数字子串（实测 durationMs=1424000 里
+      // 就含 "2400"，让这条断言假红过一次）。数值层面的封闭由上面那条键集合断言保证——
+      // DTO 只有六个键，多出来的任何字段都会被它当场抓住，不需要在字节里猜数字。
+      for (const forbidden of ['score', 'offsetMs', 'offset_ms', 'referenceTier', 'reference_tier', 'detail', 'tier', 'embedded']) {
+        expect(raw).not.toContain(forbidden)
+      }
+    })
+
+    it('每个块恰好三个键（startMs/endMs/text）', async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare()
+      const body = await (await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)).json()
+      for (const block of [...body.reference, ...body.ours]) {
+        expect(Object.keys(block).sort()).toEqual(['endMs', 'startMs', 'text'])
+      }
+    })
+
+    it('无参考源 → 200 + 空 reference（不是 404：资源存在，缺的只是"拿什么比"）', async () => {
+      seedVerdict('shifted')
+      const { base } = await start(
+        distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined,
+        stubDeps(), { ...stubCompare(), findReference: async () => null },
+      )
+      const res = await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.reference).toEqual([])
+      expect(body.ours).toHaveLength(2)
+    })
+
+    it('未检测过 → 404', async () => {
+      const { base } = await startCompare()
+      const res = await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)
+      expect(res.status).toBe(404)
+    })
+
+    it('itemId 缺失 → 400', async () => {
+      const { base } = await startCompare()
+      const res = await fetch(`${base}/api/v2/subtitle/compare?token=tok`)
+      expect(res.status).toBe(400)
+    })
+
+    it('itemId 是纯空白 → 400（不拿空串去查库）', async () => {
+      const { base } = await startCompare()
+      const res = await fetch(`${base}/api/v2/subtitle/compare?itemId=%20%20&token=tok`)
+      expect(res.status).toBe(400)
+    })
+
+    it('待检字幕读不出来 → 500', async () => {
+      seedVerdict('shifted')
+      const { base } = await start(
+        distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined,
+        stubDeps(), { ...stubCompare(), loadCues: async () => null },
+      )
+      const res = await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)
+      expect(res.status).toBe(500)
+    })
+
+    it('非 GET 方法 → 405', async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare()
+      for (const method of ['POST', 'PUT', 'DELETE']) {
+        expect((await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`, { method })).status).toBe(405)
+      }
+    })
+
+    it('未鉴权 → 401', async () => {
+      seedVerdict('shifted')
+      const { base } = await startCompare()
+      expect((await fetch(`${base}/api/v2/subtitle/compare?itemId=e1`)).status).toBe(401)
     })
   })
 })

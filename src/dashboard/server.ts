@@ -22,6 +22,13 @@ import {
   buildVerifyDTOs, correctSubtitle, revertSubtitle, parseItemIds, parseItemIdBody,
   type SubtitleWriteDeps,
 } from './subtitleVerifyApi.js'
+import {
+  buildCompareDTO, type SubtitleCompareDeps,
+} from './subtitleCompareApi.js'
+import { findReferenceSource } from '../subtitleVerify/referenceSource.js'
+import { readSubtitleText, parseCues } from '../subtitleVerify/subtitleSpans.js'
+import { probeDurationSec } from '../files/streamProbe.js'
+import { classifyPath, canRenderWaveform } from '../core/mountKind.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
 import {
@@ -72,6 +79,13 @@ export interface DashboardOpts {
    *  部分覆盖：给出的字段替换默认实现，未给出的沿用默认（测试通常只想换掉 shift 与 reverify
    *  两个真会产生副作用的，repo/lib/now 让它照常打真库）。 */
   subtitleWriteDeps?: Partial<SubtitleWriteDeps>
+  /** GET /api/v2/subtitle/compare（字幕对照图数据）的依赖注入。与 subtitleWriteDeps 同一
+   *  性质：默认实现由 db + 真实模块拼出（下方 wiring），缺席不降级，**只为测试而存在**。
+   *
+   *  这里的副作用比写扳手更隐蔽但同样真实：`findReference` 会 spawn ffmpeg 抽内嵌轨、
+   *  `probeDuration` 会 spawn ffprobe、`classify` 会读 /proc/self/mountinfo（macOS 开发机上
+   *  恒读不到 → 恒判 cloud，那样"lan 不被误禁"这条回归锁在开发机上压根跑不起来）。 */
+  subtitleCompareDeps?: Partial<SubtitleCompareDeps>
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -177,7 +191,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps } = opts
+  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps } = opts
   const settingsRepo = new SettingsRepo(db)
   const auth = new AuthService(settingsRepo)
   // 字幕校验三端点的依赖：默认全部接真实模块，测试可通过 opts.subtitleWriteDeps 部分覆盖
@@ -196,6 +210,23 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       verifyAndRecord(verifyRepo, itemId, videoPath, subtitlePath, Date.now()),
     now: () => Date.now(),
     ...subtitleWriteDeps,
+  }
+  // 字幕对照图的依赖：同上，默认全接真实模块。
+  const compareDeps: SubtitleCompareDeps = {
+    repo: verifyRepo,
+    lib: libRepo,
+    // 刻意走 readSubtitleText + parseCues 而**不是** loadSpans：后者会剥掉 text
+    // （见 subtitleSpans.toSpans），而带文本给前端画在块上正是这个端点的全部意义。
+    loadCues: async (p) => {
+      const text = await readSubtitleText(p)
+      if (text === null) return null
+      return parseCues(text)
+    },
+    findReference: (videoPath, subtitlePath) => findReferenceSource(videoPath, subtitlePath),
+    probeDuration: (videoPath) => probeDurationSec(videoPath),
+    classify: (p) => classifyPath(p),
+    canWaveform: (kind) => canRenderWaveform(kind),
+    ...subtitleCompareDeps,
   }
   const deps: RouterDeps = {
     library: () => buildLibrary(db),
@@ -630,6 +661,34 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         res.end(JSON.stringify(
           result.ok ? { ok: true, state: result.state } : { ok: false, error: result.error },
         ))
+        return
+      }
+
+      // GET /api/v2/subtitle/compare——字幕对照图的数据供给。**异步**（读字幕文件、可能
+      // spawn ffmpeg 抽内嵌轨、spawn ffprobe 探时长）故走这里而非下方同步的 handleApiRoute，
+      // 形状照上面 correct/revert 的先例：method 门 → 参数门 → 判断层 → 写响应。鉴权在统一前置门。
+      //
+      // 铁律②的执行点在 subtitleCompareApi.buildCompareDTO：响应体只含
+      // itemId/reference/ours/durationMs/waveformAvailable/mountKind。时间戳是**定位坐标**
+      // （画图必需、用户可自行按播放键验证）而 offsetMs/score 是**质量评分**（禁止）——
+      // 这个区别在那边的文件头有完整论证。别在这里 `{...row}`。
+      if (rawPath === '/api/v2/subtitle/compare') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        // 单条 itemId，刻意不做 verify 那种批量：一张对照图对应一集，批量拉整季的台词文本
+        // 是几 MB 的响应，而前端一次只画一张图。
+        const itemId = (url.searchParams.get('itemId') ?? '').trim()
+        if (itemId === '') {
+          res.writeHead(400, JSON_CT)
+          res.end(JSON.stringify({ error: 'itemId query param is required' }))
+          return
+        }
+        const result = await buildCompareDTO(compareDeps, itemId)
+        res.writeHead(result.ok ? 200 : result.status, JSON_CT)
+        res.end(JSON.stringify(result.ok ? result.dto : { error: result.error }))
         return
       }
 

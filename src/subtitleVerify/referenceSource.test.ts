@@ -101,6 +101,27 @@ describe('findReferenceSource — ① 内嵌字幕轨', () => {
     expect(result!.spans[19]).toEqual({ startMs: 39_000, endMs: 40_000 })
   })
 
+  /** 对照图要在参考轨的块上显示台词，所以 cues 必须带着文本一起出来；而 spans 必须
+   *  仍然是剥了文本的（detectOffset 只收 spans，"对齐不看内容"这条不变量的执行点）。
+   *  两者同序等长也一并钉住——对照图按下标把文本贴到时段上，错序就是贴错台词。 */
+  it('cues 带文本一起返回，spans 仍剥掉文本，且二者同序等长', async () => {
+    const result = await findReferenceSource(VIDEO, OURS, {
+      probeEmbedded: async () => [textTrack('eng')],
+      extractEmbedded: async () => SRT_20,
+      ...forbidSiblingIo(),
+    })
+    expect(result!.cues).toHaveLength(result!.spans.length)
+    expect(result!.cues[0]).toEqual({ startMs: 1000, endMs: 2000, text: 'line 1' })
+    expect(result!.cues[19]).toEqual({ startMs: 39_000, endMs: 40_000, text: 'line 20' })
+    // spans 侧恰好只有两个键——文本没从这条通道漏过去
+    expect(Object.keys(result!.spans[0]).sort()).toEqual(['endMs', 'startMs'])
+    // 同序：逐项时间戳对齐
+    for (const [i, span] of result!.spans.entries()) {
+      expect({ startMs: span.startMs, endMs: span.endMs })
+        .toEqual({ startMs: result!.cues[i].startMs, endMs: result!.cues[i].endMs })
+    }
+  })
+
   it('内嵌轨语言无关：日语轨同样可用（只看说话时段，不看内容）', async () => {
     const result = await findReferenceSource(VIDEO, OURS, {
       probeEmbedded: async () => [textTrack('jpn')],

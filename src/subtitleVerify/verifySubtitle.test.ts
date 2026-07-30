@@ -8,6 +8,7 @@ import {
 } from './verifySubtitle.js'
 import { CONFIDENT_THRESHOLD, UNCONFIDENT_THRESHOLD, BIN_MS, type SpeechSpan } from './alignDetect.js'
 import type { ReferenceSource } from './referenceSource.js'
+import type { Cue } from '../files/subtitleInspect.js'
 
 /**
  * 编排层：三个纯模块 → 三值判读 → 落库。
@@ -22,9 +23,17 @@ const someSpans: SpeechSpan[] = [
   { startMs: 3000, endMs: 4000 },
 ]
 
+/** 与 someSpans 同序等长的带文本形态（ReferenceSource.cues 的契约）。本层压根不读它
+ *  ——对齐不看文本——放在这里只为满足类型，顺带钉住"cues 存在不影响本层任何判读"。 */
+const someCues: Cue[] = [
+  { startMs: 1000, endMs: 2000, text: 'first line' },
+  { startMs: 3000, endMs: 4000, text: 'second line' },
+]
+
 const embeddedRef: ReferenceSource = {
   tier: 'embedded',
   spans: someSpans,
+  cues: someCues,
   detail: 'embedded track 0 (500 cues)',
 }
 
@@ -243,7 +252,7 @@ describe('verifySubtitleAlignment — 三值判读', () => {
 
     it('sibling 层参考源的 tier 如实带出', async () => {
       const r = await verifySubtitleAlignment('/v.mkv', '/s.srt', opts({
-        ref: { tier: 'sibling', spans: someSpans, detail: 'sibling ep1.eng.srt (400 cues)' },
+        ref: { tier: 'sibling', spans: someSpans, cues: someCues, detail: 'sibling ep1.eng.srt (400 cues)' },
         score: 1, offsetMs: 3000,
       }))
       expect(r.referenceTier).toBe('sibling')
