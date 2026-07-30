@@ -244,6 +244,10 @@ describe('Lanes：Now working 卡 + SSE 直播流入 TraceRows（phraseMode 人�
     expect(screen.getByTestId('wf-trace-active')).toBeInTheDocument()
   })
 
+  // 2026-07-30：这条原先拿 download_candidate 当"未映射工具名"的样本，断言它渲染成裸蛇形词。
+  // 那其实是在锁一个 bug——download_candidate 是真实注册的高频工具（src/agent/findSubtitleWorker.ts:181），
+  // 只是漏登记在 phrases.ts 里。补上译文后这里改断言人话短语；"未映射兜底"这条语义仍然要验，
+  // 换成一个真正不存在的工具名（some_future_tool）来验，与 TraceRows.test.tsx 的口径一致。
   it('SSE 事件流入后新增一行痕迹（未映射工具名原样 mono 兜底，按 seq 追加不重复）', async () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     vi.stubGlobal(
@@ -261,9 +265,16 @@ describe('Lanes：Now working 卡 + SSE 直播流入 TraceRows（phraseMode 人�
     FakeEventSource.instances[0].emit({
       runKey: 'job-42', seq: 1, tool: 'download_candidate', argsSummary: 'E07 · unpacking…', resultSummary: 'ok', tookMs: 4000, at: NOW + 1,
     })
+    FakeEventSource.instances[0].emit({
+      runKey: 'job-42', seq: 2, tool: 'some_future_tool', argsSummary: 'x', resultSummary: 'ok', tookMs: 100, at: NOW + 2,
+    })
 
-    expect(await screen.findByText('download_candidate')).toBeInTheDocument()
+    // 已登记工具 → 人话短语（不再是裸 download_candidate）。
+    expect(await screen.findByText('Downloading a subtitle')).toBeInTheDocument()
+    expect(screen.queryByText('download_candidate')).not.toBeInTheDocument()
     expect(screen.getByText('4.0s')).toBeInTheDocument()
+    // 未登记工具 → 原样 mono 兜底（诚实降级，不编造短语）。
+    expect(await screen.findByText('some_future_tool')).toBeInTheDocument()
     // 原有那条痕迹还在——是追加不是替换。
     expect(screen.getByText('Searching providers')).toBeInTheDocument()
   })

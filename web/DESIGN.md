@@ -82,10 +82,24 @@
 
 ## 7. 语言（i18n）铁律
 
-- **Workflow 区永不本地化**（用户裁决）：泳道名/状态词/工具名/痕迹行全部英文，zh 文案表中
-  Workflow 键直接引用 en 值。
+- **运行态展示区跟随 UI 语言**（2026-07-30 用户裁决，取代旧裁决）：痕迹行/人话短语/decision 句
+  按用户选的语言走——选中文走中文，选英文走英文。实现在 `workflow/phrases.ts`
+  （`toolPhrase(tool, lang)` / `decisionPhrase(decision, lang)`，中英双表 + 兜底）。
+  - **旧裁决已废止**：原文是"Workflow 区永不本地化，泳道名/状态词/工具名/痕迹行全部英文"。
+    那条是在这个界面还是**工程排障页**时定的；界面重新定义为"缓解焦虑的运行态展示"
+    （Steam 式活动页，绝不暴露机械）之后，让中文用户读 `Reviewing candidates` 来安心不成立。
+  - **技术值仍然永不翻译**（这条没变，且是上面那条的边界）：原始工具名、路径、ID、
+    decision 枚举词本身。所以 `TraceRows` 的 `phraseMode=false` 路径（RunDetail 快照回放，
+    显示的是原始工具名 + argsSummary）**不受语言影响**——回放给的是证据，不是安抚。
+  - **兜底不翻译**：未登记的工具名/decision 词原样回显，中文语境下同样回显原词——
+    诚实呈现"这个还没有人话翻译"，不编造一个可能文不对题的短语。
+  - **tone 与语言无关**：`DecisionTone`（ok/neutral/bad）是语义分类不是文案，中英必须一致，
+    所以铁律④（等待/失败不许染红）在两种语言下自动同时成立。
 - Triage 的中文名 = **甄别**（用户钦定）。
-- 技术值（路径/ID/decision 词表 installed/no_safe_match/retry_later/error）永不翻译。
+- 短语表的键必须与**真实注册的工具名**一致（`src/agent/findSubtitleWorker.ts` 的工具表 +
+  编排层 `orchestratorAgent.tools.ts`）。2026-07-30 校对发现过两类脱节，`phrases.test.ts`
+  已加回归锁：死条目（表里有、源码里无，永不触发）与漏登记（真实高频工具落到兜底、
+  在直播里糊裸蛇形命名）。**新增后端工具时必须同步两张表**，否则中英任一边会糊裸词。
 
 ## 8. 数据诚实（北极星④在前端的投影）
 

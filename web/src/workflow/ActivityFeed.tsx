@@ -111,7 +111,10 @@ function subjectOf(row: WorkflowRecentRunDTO): string {
 }
 
 function ActivityRow({ row, count, now, onOpen }: { row: WorkflowRecentRunDTO; count: number; now: number; onOpen: (row: WorkflowRecentRunDTO) => void }) {
-  const phrase = decisionPhrase(row.decision ?? 'unknown')
+  // 2026-07-30 用户裁决（DESIGN.md §7）：decision 人话句跟随 UI 语言。tone 与语言无关，
+  // 圆点色因此不受语言影响（铁律④在中英两边同样成立）。
+  const { lang } = useT()
+  const phrase = decisionPhrase(row.decision ?? 'unknown', lang)
   const at = row.finishedAt ?? now
   return (
     <button type="button" className="wf-activity-row" onClick={() => onOpen(row)}>

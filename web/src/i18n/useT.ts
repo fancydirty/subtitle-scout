@@ -36,8 +36,11 @@ interface I18nContextValue {
 
 const I18nContext = createContext<I18nContextValue | null>(null)
 
-export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>(() => readStoredLang() ?? detectDefaultLang())
+export function I18nProvider({ children, initialLang }: { children: ReactNode; initialLang?: Lang }) {
+  // initialLang 是显式注入的初始语言，优先级高于 localStorage 与 navigator 探测——供测试锁定
+  // 语言用（jsdom 下 window.localStorage 拿不到，靠环境 navigator.language 的话语言会变成隐式
+  // 环境依赖）。生产不传这个参数，行为与此前逐字节一致：localStorage ?? navigator 探测。
+  const [lang, setLangState] = useState<Lang>(() => initialLang ?? readStoredLang() ?? detectDefaultLang())
 
   const setLang = useCallback((next: Lang) => {
     setLangState(next)

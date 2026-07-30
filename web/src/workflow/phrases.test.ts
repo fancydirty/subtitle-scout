@@ -7,13 +7,33 @@ import { describe, it, expect } from 'vitest'
 import { toolPhrase, decisionPhrase } from './phrases.js'
 
 describe('toolPhrase：工具名 → 人话动词短语', () => {
-  it('七个静态映射', () => {
+  it('静态映射（键与真实注册工具名一一对应）', () => {
     expect(toolPhrase('read_doc')).toBe('Reading the playbook')
     expect(toolPhrase('search_source')).toBe('Searching providers')
     expect(toolPhrase('list_candidates')).toBe('Reviewing candidates')
-    expect(toolPhrase('probe_candidate')).toBe('Inspecting a candidate')
+    expect(toolPhrase('get_candidate')).toBe('Inspecting a candidate')
+    expect(toolPhrase('download_candidate')).toBe('Downloading a subtitle')
     expect(toolPhrase('install_subtitle')).toBe('Installing a subtitle')
+    expect(toolPhrase('check_episode_code_safety')).toBe('Double-checking episode numbers')
     expect(toolPhrase('finalize')).toBe('Wrapping up')
+  })
+
+  // 回归锁：表的键必须是**真实注册**的工具名。此前 probe_candidate 是死条目（非测试源码里不
+  // 存在这个工具），而 get_candidate/download_candidate/check_episode_code_safety 三个真实高频
+  // 工具反而漏登记、在直播里糊裸蛇形命名。这条测试锁住"死条目不许回来"。
+  it('probe_candidate 不是真实工具，不许在表里（走兜底原样回显）', () => {
+    expect(toolPhrase('probe_candidate')).toBe('probe_candidate')
+  })
+
+  it('src/agent/findSubtitleWorker.ts 注册的每个工具都有人话短语（中英都有）', () => {
+    const registered = [
+      'read_doc', 'search_source', 'list_candidates', 'get_candidate',
+      'download_candidate', 'install_subtitle', 'check_episode_code_safety', 'finalize',
+    ]
+    for (const tool of registered) {
+      expect(toolPhrase(tool, 'en'), `en 缺 ${tool}`).not.toBe(tool)
+      expect(toolPhrase(tool, 'zh'), `zh 缺 ${tool}`).not.toBe(tool)
+    }
   })
 
   it('dispatch_ 前缀（含 dispatch_find_subtitle_task/dispatch_realign_task）→ Planning work', () => {
@@ -28,10 +48,58 @@ describe('toolPhrase：工具名 → 人话动词短语', () => {
     expect(toolPhrase('list_missing_coverage')).toBe('Planning work')
   })
 
-  it('未映射工具名原样返回（mono 兜底，诚实——不许编造一个假短语）', () => {
-    expect(toolPhrase('get_candidate')).toBe('get_candidate')
-    expect(toolPhrase('download_candidate')).toBe('download_candidate')
+  it('未映射工具名原样返回（mono 兜底，诚实——不许编造一个假短语；中文语境下同样不翻译，'
+    + '裸工具名是技术值，§7 技术值永不翻译）', () => {
     expect(toolPhrase('some_future_tool')).toBe('some_future_tool')
+    expect(toolPhrase('some_future_tool', 'zh')).toBe('some_future_tool')
+  })
+})
+
+// 2026-07-30 用户裁决（DESIGN.md §7 改版）：痕迹/活动区**跟随 UI 语言**，不再恒英文。
+describe('按语言返回（用户裁决：选中文走中文，选英文走英文）', () => {
+  it('lang 缺省为 en——保证既有调用点行为不变', () => {
+    expect(toolPhrase('search_source')).toBe(toolPhrase('search_source', 'en'))
+    expect(decisionPhrase('installed')).toEqual(decisionPhrase('installed', 'en'))
+  })
+
+  it('zh 返回中文，且与 en 不同', () => {
+    expect(toolPhrase('download_candidate', 'zh')).toBe('正在下载字幕')
+    expect(toolPhrase('search_source', 'zh')).toBe('正在搜字幕来源')
+    expect(toolPhrase('dispatch_find_subtitle_task', 'zh')).toBe('正在安排工作')
+    expect(decisionPhrase('installed', 'zh').text).toBe('字幕已装好')
+  })
+
+  it('tone 与语言无关（语义分类不是文案）——同一 decision 中英 tone 必须一致', () => {
+    for (const d of ['installed', 'no_safe_match', 'retry_later', 'error',
+      'translate:extract-failed', 'identity_correction']) {
+      expect(decisionPhrase(d, 'zh').tone, d).toBe(decisionPhrase(d, 'en').tone)
+    }
+  })
+
+  it('铁律④在中文下同样成立：retry_later 不许染红', () => {
+    expect(decisionPhrase('retry_later', 'zh').tone).toBe('neutral')
+  })
+
+  // 通过公开 API 探测（不为测试导出内部表）：每个已登记的 decision 在中英都必须有译文，
+  // 判据是"返回的 text 不等于原词"（等于原词即落到了兜底）。防止只补一边导致另一语言糊裸词。
+  it('已登记 decision 在中英两边都有译文（防止只补一边）', () => {
+    const known = [
+      'installed', 'no_safe_match', 'retry_later', 'error',
+      'realign:done', 'realign:parked', 'realign:error',
+      'translate:installed', 'translate:held', 'translate:held-parked',
+      'translate:no-source', 'translate:extract-failed', 'translate:probe-failed',
+      'translate:already-covered',
+      'identity_correction', 'identity_correction_skipped',
+    ]
+    for (const d of known) {
+      expect(decisionPhrase(d, 'en').text, `en 缺 ${d}`).not.toBe(d)
+      expect(decisionPhrase(d, 'zh').text, `zh 缺 ${d}`).not.toBe(d)
+    }
+  })
+
+  it('未知 decision 在中文下同样原样回显 + neutral', () => {
+    expect(decisionPhrase('some_future_decision', 'zh'))
+      .toEqual({ text: 'some_future_decision', tone: 'neutral' })
   })
 })
 
