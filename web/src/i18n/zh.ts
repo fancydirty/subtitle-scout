@@ -96,25 +96,7 @@ export const zh = {
   library_legend_dashed: '磁盘无此文件',
 
   // Workflow 区永不本地化（用户裁决）：直接引用 en 值，禁止改成中文。
-  workflow_empty_title: en.workflow_empty_title,
-  workflow_empty_desc: en.workflow_empty_desc,
-
-  workflow_lane_pending: en.workflow_lane_pending,
-  workflow_lane_activity: en.workflow_lane_activity,
-
-  workflow_pending_series_heading: en.workflow_pending_series_heading,
-  workflow_pending_movies_heading: en.workflow_pending_movies_heading,
-  workflow_pending_lane_empty: en.workflow_pending_lane_empty,
   workflow_pending_rerun_label: en.workflow_pending_rerun_label,
-
-  workflow_passes_lane_empty: en.workflow_passes_lane_empty,
-  workflow_passes_open_label: en.workflow_passes_open_label,
-  workflow_orchestrator_log_heading: en.workflow_orchestrator_log_heading,
-
-  workflow_workers_running_heading: en.workflow_workers_running_heading,
-  workflow_workers_recent_heading: en.workflow_workers_recent_heading,
-  workflow_workers_running_empty: en.workflow_workers_running_empty,
-  workflow_workers_recent_empty: en.workflow_workers_recent_empty,
 
   workflow_rundetail_close_label: en.workflow_rundetail_close_label,
   workflow_rundetail_detail_heading: en.workflow_rundetail_detail_heading,
@@ -126,7 +108,6 @@ export const zh = {
   workflow_rerun_confirm_title: en.workflow_rerun_confirm_title,
   workflow_rerun_confirm_desc: en.workflow_rerun_confirm_desc,
   workflow_rerun_include_throttled_label: en.workflow_rerun_include_throttled_label,
-  workflow_rerun_include_throttled_desc: en.workflow_rerun_include_throttled_desc,
   workflow_rerun_action_label: en.workflow_rerun_action_label,
   workflow_rerun_error_prefix: en.workflow_rerun_error_prefix,
   workflow_rerun_result_title: en.workflow_rerun_result_title,

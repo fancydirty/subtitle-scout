@@ -11,7 +11,7 @@
 //     直接读 CSS 源文件——这样把 CSS 改成 16/9 也会红，而不是只有改 tsx 才红）。
 //  2) 不加载外部 CSS：getComputedStyle 拿不到 styles.css 的规则，故上面那条走读文件而非算样式。
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import { I18nProvider, type Lang } from '../i18n/useT.js'
 import type { TraceEvent, WorkflowRunningWorkerDTO } from '../api/types.js'
 import { ActivityHero } from './ActivityHero.js'
@@ -608,4 +608,48 @@ describe('ActivityHero：双语各渲染一次（DESIGN.md §7 运行态跟随 U
     expect(screen.getByText('9 episodes missing subtitles')).toBeInTheDocument()
     expect(screen.getByText('Reviewing candidates')).toBeInTheDocument()
   })
+})
+
+// ── SSE 直播接线（2026-07-31）────────────────────────────────────────────────
+// `running.trail` 只是 15 秒一拍的轮询快照。传送带的目的是缓解焦虑——一条 15 秒不动的
+// 传送带看起来像卡住了，恰好制造它本该消除的那种焦虑。所以 hero 走 useLiveTrail：
+// 轮询快照当种子 + SSE 增量按 seq 去重追加。
+describe('ActivityHero：传送带走 SSE 直播而非轮询快照', () => {
+  class FakeES {
+    static instances: FakeES[] = []
+    onmessage: ((e: { data: string }) => void) | null = null
+    onerror: (() => void) | null = null
+    readyState = 1
+    constructor(public url: string) { FakeES.instances.push(this) }
+    close() { this.readyState = 2 }
+    addEventListener() {}
+    removeEventListener() {}
+    emit(ev: TraceEvent) { this.onmessage?.({ data: JSON.stringify(ev) }) }
+  }
+
+  it('SSE 事件到达后传送带多一行', async () => {
+    FakeES.instances = []
+    vi.stubGlobal('EventSource', FakeES)
+    const { container } = renderHero({ jobId: 7, trail: trail(['search_source']) })
+    expect(container.textContent).toContain('正在搜字幕来源')
+
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    FakeES.instances[0]!.emit({
+      runKey: 'job-7', seq: 1, tool: 'download_candidate',
+      argsSummary: 'x', resultSummary: 'y', tookMs: 100, at: T0 + 5000,
+    })
+    await waitFor(() => expect(container.textContent).toContain('正在下载字幕'))
+    vi.unstubAllGlobals()
+  })
+
+  // hook 顺序这件事**没有测试锁，只有静态约束**——这是诚实的记录而不是遗漏。
+  //
+  // 我试过两个方向都抓不到：`if (mode === 'hidden') return null` 在 hook 之前时，React 把
+  // 提前返回当成"这个组件这次不渲染"，两个方向的切换（hidden→staged、staged→hidden）
+  // 都不抛 "Rendered fewer hooks than expected"、也不打 console.error（实测确认）。
+  // 真正会炸的是"同一次渲染里 hook 数量随分支变化"，而 early return 恰好不构成那种情况。
+  //
+  // 所以这条约束靠三样东西守：① 源码里 useLiveTrail 上方那段注释写明了为什么它必须在
+  // early return 之前；② eslint 的 react-hooks/rules-of-hooks（如果 lint 在 CI 里跑）；
+  // ③ 这段说明本身。留一条永绿的假测试比没有测试更糟——它会让下一个人以为这里被保护着。
 })

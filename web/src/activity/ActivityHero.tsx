@@ -70,6 +70,7 @@ import { useT } from '../i18n/useT.js'
 import type { WorkflowRunningWorkerDTO } from '../api/types.js'
 import { PosterThumb } from '../library/PosterThumb.js'
 import { ConveyorFeed } from './ConveyorFeed.js'
+import { useLiveTrail } from '../workflow/useLiveTrail.js'
 import { stageFromTrail, stageModeOf } from './stage.js'
 import { formatElapsed, heroSubtitle, missingLine, type TargetKind } from './text.js'
 
@@ -89,8 +90,23 @@ interface Props {
 export function ActivityHero({ running, missingCount, now }: Props) {
   const { lang } = useT()
   const mode = stageModeOf(running.taskType)
-  // 'hidden'（orchestrate）→ 整个 hero 不渲染。**在读任何其它字段之前就返回**：编排层的 run
-  // 没有可展示的"当前这一件事"，它是机械。
+  // 直播痕迹（2026-07-31 接线）：`running.trail` 只是**轮询快照**（15 秒一拍，来自
+  // traceBus.peek 的补拉）。传送带的目的是缓解焦虑——一条 15 秒不动的传送带看起来像卡住了，
+  // 恰好制造它本该消除的那种焦虑。useLiveTrail 把这份快照当种子、再按 seq 去重追加 SSE
+  // 增量，于是每一步工具调用即时出现。
+  //
+  // 复用 workflow/useLiveTrail 而不是新写：它已处理两个易错点——① 轮询刷新时不能丢掉
+  // 直播已追加、轮询还没反映的事件（mergeTrail 按 seq 去重）；② 断线重连后的补拉。
+  const trail = useLiveTrail(running.jobId, running.trail)
+
+  // 'hidden'（orchestrate）→ 整个 hero 不渲染。编排层的 run 没有可展示的"当前这一件事"，
+  // 它是机械。
+  //
+  // ⚠️ 这个 early return 必须在**所有 hook 之后**（上面那个 useLiveTrail 就是为此提到这里的）。
+  // React 的 hook 规则要求每次渲染的 hook 调用序列一致；把 hook 放在条件返回之后，
+  // taskType 从 orchestrate 变成 find_subtitle 的那一帧就会 hook 数量突变。
+  // 代价是 hidden 模式下也会订阅一次 SSE——subscribeTrace 是按 runKey 过滤的轻量订阅，
+  // 且 orchestrate 的 job 本来就有 trail，订阅它无副作用。
   if (mode === 'hidden') return null
 
   const bd = backdropUrl(running.backdropPath)
@@ -109,7 +125,7 @@ export function ActivityHero({ running, missingCount, now }: Props) {
   const elapsed = formatElapsed(now - running.startedAtLease, lang)
   // 条宽：**只喂给 CSS 的 width**，绝不进文本节点（裁决 L10 + 铁律②）。indeterminate 族不算
   // 宽度——CSS 用一条来回扫的动画表达"在干活但不谎报走到哪了"。
-  const width = mode === 'staged' ? stageFromTrail(running.trail) : null
+  const width = mode === 'staged' ? stageFromTrail(trail) : null
 
   return (
     // data-art 让 CSS 知道走的是哪条美术路径：'backdrop' 正常出血、'blur-poster' 模糊海报降级、
@@ -150,7 +166,7 @@ export function ActivityHero({ running, missingCount, now }: Props) {
               <Text type="body" color="secondary">{subtitle}</Text>
             </HStack>
           </VStack>
-          <ConveyorFeed events={running.trail} rows={3} />
+          <ConveyorFeed events={trail} rows={3} />
           {/* 进度条：无 role="progressbar"、无 aria-valuenow。这是刻意的——
               progressbar 的无障碍契约要求可读的 value/百分比，而裁决 L10 恰恰是"UI 层面把百分
               比这个麻烦事消掉"。给屏幕阅读器念一个百分比会从后门把它加回来，且那个数字对"agent

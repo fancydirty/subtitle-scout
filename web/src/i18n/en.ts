@@ -114,32 +114,16 @@ export const en = {
   // 句、trace 行的等宽工具名+耗时）故意不进这张表，走 web/src/workflow/text.ts 的纯函数——
   // 同 shell/freshness.ts 的既有先例：那些是技术读数，天生不需要翻译，也用不上 t() 不支持的
   // 插值。这里只收静态、不带运行期数据的 UI 文案（泳道头/空态/对话框/按钮）。
-  workflow_empty_title: 'No active work',
-  workflow_empty_desc: 'Pending passes and worker traces will show up here once the orchestrator has something to do.',
 
   // 验收修复轮一 Task V4（design §B）：三泳道→两列重排，Gaps | Activity。workflow_lane_pending
   // 键名不变（PendingLane 组件/测试仍叫 pending），显示文案改"Gaps"——泳道标题改名，不是重命名
   // 概念。workflow_lane_passes/workflow_lane_workers 随三泳道布局一起废弃（Passes/Workers 折进
   // ActivityFeed，不再各自有一条独立泳道标题）。
-  workflow_lane_pending: 'Gaps',
-  workflow_lane_activity: 'Activity',
-
-  workflow_pending_series_heading: 'Series',
-  workflow_pending_movies_heading: 'Movies',
-  workflow_pending_lane_empty: 'Nothing pending — the library is fully covered.',
   workflow_pending_rerun_label: 'Rerun',
-
-  workflow_passes_lane_empty: 'No orchestrator passes yet.',
-  workflow_passes_open_label: 'Open',
   // Orchestrator log 折叠区（design §B）：原三泳道之一的 Passes，现降级为 Activity 列底部默认
   // 收起的 Collapsible——回执 chip 只在展开后可见，工程师内容零删除。
-  workflow_orchestrator_log_heading: 'Orchestrator log',
 
   // "Now working" 即原 Running 泳道小标题——改名对齐 design §B 的叙事称呼（Now working 卡）。
-  workflow_workers_running_heading: 'Now working',
-  workflow_workers_recent_heading: 'Recent',
-  workflow_workers_running_empty: 'No workers running right now.',
-  workflow_workers_recent_empty: 'No recent completions yet.',
 
   workflow_rundetail_close_label: 'Close pass details',
   workflow_rundetail_detail_heading: 'Detail',
@@ -151,7 +135,6 @@ export const en = {
   workflow_rerun_confirm_title: 'Rerun this series?',
   workflow_rerun_confirm_desc: 'This dispatches a find_subtitle task for the series.',
   workflow_rerun_include_throttled_label: 'Include throttled episodes',
-  workflow_rerun_include_throttled_desc: 'Also include throttled episodes that would otherwise wait for their next recheck.',
   workflow_rerun_action_label: 'Rerun',
   workflow_rerun_error_prefix: "Couldn't dispatch this rerun: ",
   workflow_rerun_result_title: 'Rerun result',
