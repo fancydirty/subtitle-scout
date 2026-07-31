@@ -17,7 +17,7 @@
 // 有 held 记录时先给卡死态，即使同时有别的 job 在跑。理由：L7 的张力是「不给排查入口，
 // 但问题必须看得见」——如果一条正常运行的 hero 把故障挤到屏幕下方，那就等于没看见。
 // 故障是这一屏唯一「需要用户知道」的事，其余都是「让他放心不管」。
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { VStack } from '@astryxdesign/core/VStack'
 import { useWorkflowPending, useWorkflowWorkers } from '../api/hooks.js'
 import type { WorkflowRecentRunDTO } from '../api/types.js'
@@ -34,9 +34,22 @@ import type { RerunRequest } from '../workflow/rerun.js'
 export function ActivityPage() {
   const pending = useWorkflowPending()
   const workers = useWorkflowWorkers()
-  // 渲染时刻统一从这里取一次，往下透传。子组件一律不读 Date.now（时间是入参而非副作用，
+  // 渲染时刻统一从这里取，往下透传。子组件一律不读 Date.now（时间是入参而非副作用，
   // 这样测试能确定性地断言"已进行 2 分 14 秒"这类读数）——五个子组件都遵守这条。
-  const now = Date.now()
+  //
+  // 每秒自增一次（2026-07-31 实机盯页面时发现）：原来只在渲染时取一次，而这一页的重渲染
+  // 只由 15 秒轮询触发——"已进行 3 秒"于是在屏上**卡住 15 秒不动**，而它恰恰是这一屏
+  // 用来表达"系统还活着"的元件之一。一个不动的秒表比没有秒表更糟：它看起来像卡死了。
+  //
+  // 只在**有活在跑**时才开这个 interval（下面那个依赖）——空态的"最近检查 3 分钟前"是
+  // 分钟量级读数，每秒重渲染整棵树纯属浪费。
+  const [now, setNow] = useState(() => Date.now())
+  const hasLiveWork = (workers.data?.running.length ?? 0) > 0
+  useEffect(() => {
+    if (!hasLiveWork) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [hasLiveWork])
 
   // 「查看」落到既有的 RunDetail（痕迹快照回放）。它是**独立路由式的排障视图**，
   // 不是 L7 禁止的那个「点开看 trace」——后者指的是在活动页内嵌一个半深度的展开区

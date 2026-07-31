@@ -159,3 +159,37 @@ describe('铁律②：本层不导出任何格式化函数', () => {
     )
   })
 })
+
+// ── 两张表必须一致（2026-07-31 实机盯页面时发现的真 bug）────────────────────
+// stage.ts 给 search_tmdb / get_tmdb_details / write_identified_media 定了 14% 的阶段权重，
+// 但 phrases.ts 当时没有它们的人话映射——于是它们在传送带上**显示成裸机器名**
+// （屏上真的看到了 `search_tmdb`），违反铁律③「不暴露机械」。
+//
+// 根因是我做阶段表时只改了一侧。这条锁住：凡是**推进阶段**的工具，必须有人话短语。
+// 反向不要求（read_doc 不推进阶段但有短语，那是对的——它仍要出现在传送带上）。
+describe('stage 表与 phrases 表的一致性', () => {
+  it('每个推进阶段的工具都有人话短语（中英都有）', async () => {
+    const { toolPhrase } = await import('../workflow/phrases.js')
+    const staged = [
+      'search_tmdb', 'get_tmdb_details', 'write_identified_media',
+      'search_source', 'list_candidates', 'get_candidate',
+      'download_candidate', 'install_subtitle', 'finalize',
+    ]
+    for (const tool of staged) {
+      // stageOf 非 null 即"推进阶段"
+      expect(stageOf(tool), `${tool} 应当推进阶段`).not.toBeNull()
+      // 有短语的判据：返回值不等于工具名本身（等于就是走了兜底）
+      expect(toolPhrase(tool, 'en'), `en 缺 ${tool} 的人话`).not.toBe(tool)
+      expect(toolPhrase(tool, 'zh'), `zh 缺 ${tool} 的人话`).not.toBe(tool)
+    }
+  })
+
+  // 不推进阶段的辅助工具同样要有短语——它们仍然出现在传送带上。
+  it('不推进阶段的辅助工具也有人话短语', async () => {
+    const { toolPhrase } = await import('../workflow/phrases.js')
+    for (const tool of ['read_doc', 'check_episode_code_safety']) {
+      expect(stageOf(tool)).toBeNull()
+      expect(toolPhrase(tool, 'zh'), `zh 缺 ${tool}`).not.toBe(tool)
+    }
+  })
+})

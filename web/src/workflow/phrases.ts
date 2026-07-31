@@ -22,6 +22,9 @@ import type { Lang } from '../i18n/useT.js'
 const TOOL_PHRASES: Record<Lang, Record<string, string>> = {
   en: {
     read_doc: 'Reading the playbook',
+    search_tmdb: 'Looking up the show',
+    get_tmdb_details: 'Reading the episode list',
+    write_identified_media: 'Filing what it is',
     search_source: 'Searching providers',
     list_candidates: 'Reviewing candidates',
     get_candidate: 'Inspecting a candidate',
@@ -36,6 +39,9 @@ const TOOL_PHRASES: Record<Lang, Record<string, string>> = {
   },
   zh: {
     read_doc: '正在看操作手册',
+    search_tmdb: '正在查这是哪部片子',
+    get_tmdb_details: '正在核对集目',
+    write_identified_media: '正在记下它是什么',
     search_source: '正在搜字幕来源',
     list_candidates: '正在核对候选',
     get_candidate: '正在细看一个候选',
