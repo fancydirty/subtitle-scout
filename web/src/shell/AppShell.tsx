@@ -6,7 +6,11 @@
 // #/library/:id 命中时，剧集详情请求在这一层发起并同时喂给 Topbar（面包屑二级：剧名）和
 // SeriesPage（页面主体）——避免面包屑和页面各发一次 GET /api/v2/library/series/:id。
 //
-// dashboard-F4：Workflow tab 落地为真页面（Lanes：三泳道桌面主视图 + 移动端折叠 stack），
+// 2026-07-31：Workflow tab 换成活动页（ActivityPage）。旧的 Lanes 三泳道是**账目**视图
+// （回答"系统都干了什么"）；用户裁决把这个 tab 重新定义为**运行态展示**（回答"现在怎么样了，
+// 我可以不管了吗"，Steam 下载页那种）。Lanes 一族暂时保留在 workflow/ 下未删——RunDetail 与
+// RerunDialog 仍被活动页复用，且删除是独立的清理动作，不该和上线混在一个改动里。
+// 历史注释（Lanes：三泳道桌面主视图 + 移动端折叠 stack），
 // 自己发三个请求（workflow/pending 复用上面这一份、workflow/passes、workflow/workers），
 // 不像 Library 详情那样需要 Shell 这一层协调共享——三份数据只服务 Workflow 区自己，跟 Topbar/
 // Sidebar 无关，因此整个组件收在 workflow/Lanes.tsx 内部自洽。
@@ -23,7 +27,7 @@ import { Topbar } from './Topbar.js'
 import { CommandK } from './CommandK.js'
 import { SeriesGrid } from '../library/SeriesGrid.js'
 import { SeriesPage } from '../library/SeriesPage.js'
-import { Lanes } from '../workflow/Lanes.js'
+import { ActivityPage } from '../activity/ActivityPage.js'
 import { TriagePage } from '../triage/TriagePage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
 
@@ -61,7 +65,7 @@ export function Shell() {
           ) : (
             <SeriesGrid />
           ))}
-        {route.tab === 'workflow' && <Lanes />}
+        {route.tab === 'workflow' && <ActivityPage />}
         {route.tab === 'triage' && <TriagePage />}
         {route.tab === 'settings' && <SettingsPage />}
       </AstryxAppShell>

@@ -44,10 +44,9 @@ function standardHandlers() {
     { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
     { path: '/api/v2/workflow/pending', body: WORKFLOW },
     { path: '/api/v2/library', body: EMPTY_LIBRARY },
-    // dashboard-F4：Lanes.tsx（Workflow tab 真页面）额外发的两个端点——F2 时代 Workflow tab
-    // 还是占位态，不发这两个请求；现在真页面挂载就会打，不给会 404 → passes/workers 两个
-    // Async 一直卡在 error 态、data 恒 null，"三泳道皆空 → No active work"那条判定永远凑不齐
-    // （见 Lanes.tsx 的 allEmpty：三份 data 都要非 null 才判定为空）。
+    // Workflow tab 真页面额外发的端点。活动页只用 workers（passes 是旧 Lanes 的中泳道），
+    // 但两个都留着：RunDetail 仍被活动页复用，且多给一个 handler 无害。不给 workers 会 404
+    // → data 恒 null → 空态判定永远凑不齐（ActivityPage 首载两源皆 null 时渲染 null）。
     { path: '/api/v2/workflow/passes', body: [] },
     { path: '/api/v2/workflow/workers', body: { running: [], recent: [] } },
     // dashboard-F5：TriagePage（Triage tab 真页面）挂载即打 /api/v2/triage——同上面 passes/
@@ -101,7 +100,10 @@ describe('App 外壳冒烟', () => {
     expect(await screen.findByText('No library yet')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Workflow' }))
-    await waitFor(() => expect(screen.getByText('No active work')).toBeInTheDocument())
+    // 2026-07-31：这个 tab 从旧的 Lanes 三泳道换成了活动页（ActivityPage）。空态文案随之
+    // 从 'No active work'（账目视角：没有活）变成 'No subtitles in progress'（运行态视角：
+    // 现在没有在处理的字幕）——后者是这一页新的定位，见 AppShell.tsx 的那段注释。
+    await waitFor(() => expect(screen.getByText('No subtitles in progress')).toBeInTheDocument())
     expect(location.hash).toBe('#/workflow')
     expect(screen.queryByText('No library yet')).not.toBeInTheDocument()
 
