@@ -50,7 +50,7 @@ function mockFetchRouted(handlers: Handler[]) {
 }
 
 const EMPTY_PENDING: WorkflowPendingDTO = {
-  series: [], movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
+  series: [], movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
 }
 const EMPTY_WORKERS: WorkflowWorkersDTO = { running: [], recent: [], installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }
 
@@ -106,7 +106,7 @@ describe('Lanes：Gaps 列（PendingLane 原样）——throttled 行事实呈�
           nextRecheckAt: Date.now() + 3 * 24 * 60 * 60_000 + 60 * 60_000, sampleReason: 'no candidates found',
         },
       ],
-      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
+      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
     }
     vi.stubGlobal(
       'fetch',
@@ -133,7 +133,7 @@ describe('Lanes：Gaps 列（PendingLane 原样）——throttled 行事实呈�
       series: [
         { seriesId: 's1', seriesName: 'Silo', season: 1, missing: 3, throttled: 0, nextRecheckAt: null, sampleReason: null },
       ],
-      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
+      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
     }
     vi.stubGlobal(
       'fetch',
@@ -338,7 +338,7 @@ describe('Lanes：PendingLane series 行 Rerun includeThrottled 开关按事实�
   function pendingSeries(missing: number, throttled: number): WorkflowPendingDTO {
     return {
       series: [{ seriesId: 's1', seriesName: 'Silo', season: 1, missing, throttled, nextRecheckAt: null, sampleReason: null }],
-      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
+      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
     }
   }
 
@@ -517,7 +517,7 @@ describe('Lanes：Rerun 确认流（Gaps 列 PendingLane 发起）——AlertDia
   function pendingWithSeries(): WorkflowPendingDTO {
     return {
       series: [{ seriesId: 's1', seriesName: 'Silo', season: 1, missing: 3, throttled: 0, nextRecheckAt: null, sampleReason: null }],
-      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 },
+      movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
     }
   }
 

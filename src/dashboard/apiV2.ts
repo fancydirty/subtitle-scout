@@ -722,6 +722,19 @@ export interface WorkflowFreshnessDTO {
   lastScanAt: number | null
   /** episodes + movies 两表行数之和——库内文件总量的机械计数。 */
   files: number
+  /**
+   * 字幕校验巡检的上次运行时刻（meta 表 `last_verify_sweep_at`，verifySweep 写入）。
+   * 从未跑过时 null。
+   *
+   * 为什么需要它：巡检此前只在容器日志里打一行 `verify sweep: checked=N`，界面上完全看不见。
+   * 一个"全是绿点"的库有两种可能——真的都没问题，或者巡检根本没在跑——而用户无从分辨。
+   * 时间戳是唯一"崩掉的系统 produce 不出来"的廉价元件（同 lastScanAt 的既有理由）。
+   */
+  lastVerifySweepAt: number | null
+  /** 已出校验结论的条目数 / 该被校验的条目数（sub_status='covered'）。
+   *  两个裸计数，不是百分比——铺量期用它能看出"还在推进"，稳态下两者相等。 */
+  verifiedItems: number
+  verifiableItems: number
 }
 export interface WorkflowPendingDTO {
   series: WorkflowPendingSeriesDTO[]
@@ -755,12 +768,27 @@ export function buildWorkflowPending(
     .prepare(`SELECT (SELECT COUNT(*) FROM episodes) + (SELECT COUNT(*) FROM movies) AS c`)
     .get() as { c: number }
 
+  // 字幕校验的新鲜度与推进度（2026-07-31）。键名与 verifySweep.VERIFY_SWEEP_META_KEY 一致。
+  const lastVerifyRow = db
+    .prepare(`SELECT value FROM meta WHERE key = 'last_verify_sweep_at'`)
+    .get() as { value: string } | undefined
+  const verifyCounts = db
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM subtitle_verify) AS done,
+              (SELECT COUNT(*) FROM episodes WHERE sub_status = 'covered')
+            + (SELECT COUNT(*) FROM movies   WHERE sub_status = 'covered') AS total`,
+    )
+    .get() as { done: number; total: number }
+
   return {
     series, movies, parked,
     meta: {
       roots: settingsRepo.listRoots().map((r) => r.path),
       lastScanAt: lastScanRow ? Number(lastScanRow.value) : null,
       files: filesRow.c,
+      lastVerifySweepAt: lastVerifyRow ? Number(lastVerifyRow.value) : null,
+      verifiedItems: verifyCounts.done,
+      verifiableItems: verifyCounts.total,
     },
   }
 }

@@ -459,6 +459,31 @@ describe('listMediaSubdirs（GET /api/v2/fs/list：只列子目录名，绝不�
 // 北极星约束：全部走既有 repo/模块，不新增任何判断逻辑——机械层只产出事实。
 
 describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/missingMovies/parked/meta 直译聚合）', () => {
+  // 2026-07-31：巡检可观测性。此前巡检只在容器日志里打一行，界面完全看不见——
+  // 一个"全是绿点"的库有两种可能（真没问题 / 巡检没在跑），用户无从分辨。
+  it('meta 带字幕校验的新鲜度与推进度', () => {
+    const settings = new SettingsRepo(db)
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_verify_sweep_at', ?)`).run(String(NOW - 600_000))
+    // 两条 covered（e1 已有结论、e2 还没）
+    db.prepare(
+      `INSERT INTO subtitle_verify (item_id, verdict, subtitle_path, checked_at) VALUES (?,?,?,?)`,
+    ).run('e1', 'aligned', '/media/tv/a.srt', NOW)
+
+    const r = buildWorkflowPending(db, settings, NOW)
+    expect(r.meta.lastVerifySweepAt).toBe(NOW - 600_000)
+    expect(r.meta.verifiedItems).toBe(1)
+    // verifiableItems = sub_status='covered' 的条目总数，与 fixture 一致即可（>0）
+    expect(r.meta.verifiableItems).toBeGreaterThan(0)
+    expect(r.meta.verifiedItems).toBeLessThanOrEqual(r.meta.verifiableItems)
+  })
+
+  it('从未跑过巡检时 lastVerifySweepAt 为 null（不编造一个时刻）', () => {
+    const settings = new SettingsRepo(db)
+    const r = buildWorkflowPending(db, settings, NOW)
+    expect(r.meta.lastVerifySweepAt).toBeNull()
+    expect(r.meta.verifiedItems).toBe(0)
+  })
+
   it('camelCase 直译 + meta 新鲜度行（roots/lastScanAt/files）', () => {
     // e4（s1 season2, unavailable）经 markUnavailable 建立真实退避窗口，制造 throttled 事实
     // （plain upsertEpisode 不落 recheck_after，NULL 比较恒 falsy，missingBySeason 两桶都是 0）。
@@ -483,14 +508,24 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
       { id: 'm1', name: 'Movie Z', missing: 1, throttled: 0, nextRecheckAt: null, sampleReason: null },
     ])
     expect(result.parked).toBe(1)
-    expect(result.meta).toEqual({ roots: ['/media/tv'], lastScanAt: NOW, files: 5 }) // episodes(4)+movies(1)
+    expect(result.meta).toEqual({
+      roots: ['/media/tv'], lastScanAt: NOW, files: 5, // episodes(4)+movies(1)
+      // 2026-07-31 新增：巡检还没跑过 → null + 0；covered 计数来自 fixture
+      lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: result.meta.verifiableItems,
+    })
   })
 
   it('空库：series/movies 空数组，parked 0，lastScanAt null（meta 表从未写过 last_ingest_at）', () => {
     const freshDb = openDb(':memory:')
     const settings = new SettingsRepo(freshDb)
     const result = buildWorkflowPending(freshDb, settings, NOW)
-    expect(result).toEqual({ series: [], movies: [], parked: 0, meta: { roots: [], lastScanAt: null, files: 0 } })
+    expect(result).toEqual({
+      series: [], movies: [], parked: 0,
+      meta: {
+        roots: [], lastScanAt: null, files: 0,
+        lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0,
+      },
+    })
   })
 })
 

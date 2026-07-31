@@ -21,7 +21,7 @@ function pendingWith(seriesCount: number, movieCount: number): WorkflowPendingDT
       id: `m${i}`, name: `M${i}`, missing: 1 as const, throttled: 0 as const, nextRecheckAt: null, sampleReason: null,
     })),
     parked: 0,
-    meta: { roots: [], lastScanAt: null, files: 0 },
+    meta: { roots: [], lastScanAt: null, files: 0 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
   }
 }
 
@@ -78,5 +78,47 @@ describe('SummaryLine：数据源未到 → 省略对应片段（不编造 0 占
   it('两个数据源都未到 → 整行不渲染', () => {
     render(<SummaryLine pending={asyncOf<WorkflowPendingDTO>(null)} workers={asyncOf<WorkflowWorkersDTO>(null)} />)
     expect(screen.queryByTestId('wf-summary-line')).not.toBeInTheDocument()
+  })
+})
+
+// ── 字幕校验推进度（2026-07-31）────────────────────────────────────────────
+// 巡检此前只在容器日志里可见，界面上一个"全是绿点"的库有两种可能（真没问题 / 巡检没在跑），
+// 用户无从分辨。这个片段让推进度可见，但只在铺量期出现。
+describe('SummaryLine：字幕校验推进度', () => {
+  const withVerify = (over: Partial<WorkflowPendingDTO['meta']>) =>
+    asyncOf<WorkflowPendingDTO>({
+      series: [], movies: [], parked: 0,
+      meta: { roots: [], lastScanAt: null, files: 0,
+        lastVerifySweepAt: 1_700_000_000_000, verifiedItems: 40, verifiableItems: 282, ...over },
+    })
+
+  it('铺量期显示 checked N of M', () => {
+    render(<SummaryLine pending={withVerify({})} workers={asyncOf<WorkflowWorkersDTO>(null)} />)
+    const t = screen.getByTestId('wf-summary-line').textContent!
+    expect(t).toContain('subtitle timing checked on')
+    expect(t).toContain('40')
+    expect(t).toContain('282')
+  })
+
+  // 铺满之后这个片段消失——"282 / 282" 是一句没有信息的废话，而 SummaryLine 的既有哲学
+  // 就是不给不携带信息的占位。
+  it('全部检完（done === total）→ 片段消失', () => {
+    render(<SummaryLine pending={withVerify({ verifiedItems: 282 })} workers={asyncOf<WorkflowWorkersDTO>(null)} />)
+    expect(screen.queryByTestId('wf-summary-line')?.textContent ?? '').not.toContain('subtitle timing')
+  })
+
+  // 从未跑过时不显示：0/282 会被读成"这功能坏了"，而真相是还没到第一个时间门。
+  it('巡检从未跑过（lastVerifySweepAt=null）→ 不显示，不谎报 0', () => {
+    render(<SummaryLine
+      pending={withVerify({ lastVerifySweepAt: null, verifiedItems: 0 })}
+      workers={asyncOf<WorkflowWorkersDTO>(null)} />)
+    expect(screen.queryByTestId('wf-summary-line')?.textContent ?? '').not.toContain('subtitle timing')
+  })
+
+  it('没有可校验条目（空库）→ 不显示', () => {
+    render(<SummaryLine
+      pending={withVerify({ verifiedItems: 0, verifiableItems: 0 })}
+      workers={asyncOf<WorkflowWorkersDTO>(null)} />)
+    expect(screen.queryByTestId('wf-summary-line')?.textContent ?? '').not.toContain('subtitle timing')
   })
 })

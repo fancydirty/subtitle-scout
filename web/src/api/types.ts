@@ -107,6 +107,11 @@ export interface WorkflowFreshnessDTO {
   roots: string[]
   lastScanAt: number | null
   files: number
+  /** 字幕校验巡检上次运行时刻（2026-07-31）。null=从未跑过。 */
+  lastVerifySweepAt: number | null
+  /** 已出校验结论 / 该被校验的条目数。裸计数不是百分比。 */
+  verifiedItems: number
+  verifiableItems: number
 }
 export interface WorkflowPendingDTO {
   series: WorkflowPendingSeriesDTO[]

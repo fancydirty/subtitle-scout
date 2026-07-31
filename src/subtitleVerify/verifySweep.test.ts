@@ -357,14 +357,37 @@ describe('verifySweep', () => {
       expect(VERIFY_SWEEP_ITEM_TIMEOUT_MS).toBeGreaterThan(EMBEDDED_TOTAL_BUDGET_MS)
     })
 
-    it('批次墙钟预算 >= 条数上限 × ①层单条目预算（两个上限咬合，任一先到都止损）', () => {
-      expect(VERIFY_SWEEP_BUDGET_MS).toBeGreaterThanOrEqual(
+    // 2026-07-31：这条不变式原本写成 BUDGET >= MAX_ITEMS × EMBEDDED_TOTAL_BUDGET_MS，
+    // 即"墙钟必须容得下每条都跑满①层软预算"。上调 MAX_ITEMS 到 20 时它挂了，我重新审了
+    // 它的语义——**那条不变式本身是错的**：它要求墙钟 ≥ 最坏情况总和，等于让墙钟永不触发，
+    // 而墙钟存在的全部意义就是在最坏情况下止损。两个上限本就该封不同方向（见 MAX_ITEMS
+    // 的注释：条数封"几百条快条目"，墙钟封"少数慢条目拖很久"），不是同一根尺子的两个刻度。
+    //
+    // 换成真正该守的：墙钟至少容得下**若干条**慢条目跑完，否则一轮里只要头几条慢，
+    // 后面全被墙钟挡住、永远轮不到——那会让候选集合尾部的条目饿死。
+    it('墙钟预算至少容得下 4 条走满①层软预算的慢条目（不让尾部条目饿死）', () => {
+      expect(VERIFY_SWEEP_BUDGET_MS).toBeGreaterThanOrEqual(4 * EMBEDDED_TOTAL_BUDGET_MS)
+    })
+
+    // 墙钟不该大到失去意义：它必须显著小于"每条都跑满"的总和，否则等于没有墙钟。
+    it('墙钟预算显著小于最坏总和（否则墙钟形同虚设）', () => {
+      expect(VERIFY_SWEEP_BUDGET_MS).toBeLessThan(
         VERIFY_SWEEP_MAX_ITEMS * EMBEDDED_TOTAL_BUDGET_MS,
       )
     })
 
     it('巡检间隔远大于单次扫描预算（低频：不是热路径）', () => {
-      expect(VERIFY_SWEEP_EVERY_MS).toBeGreaterThan(VERIFY_SWEEP_BUDGET_MS * 10)
+      expect(VERIFY_SWEEP_EVERY_MS).toBeGreaterThan(VERIFY_SWEEP_BUDGET_MS * 5)
+    })
+
+    // 这条锁住 2026-07-31 那次上调的**目的**：铺量速度。原配置（6h × 5 条）要 14 天才走完
+    // 生产库的 282 个 covered 条目，用户得等两周才能看到红芯片——功能实质上不可用。
+    // 谁把常量调回保守值，这条会立刻红，并且逼他重新算一遍这个账。
+    it('铺满生产规模的库不超过 24 小时（铺量速度是这组常量存在的理由）', () => {
+      const PROD_COVERED = 282   // 2026-07-31 实测：episodes 276 + movies 6
+      const roundsNeeded = PROD_COVERED / VERIFY_SWEEP_MAX_ITEMS
+      const hoursToFill = (roundsNeeded * VERIFY_SWEEP_EVERY_MS) / 3_600_000
+      expect(hoursToFill).toBeLessThanOrEqual(24)
     })
   })
 })

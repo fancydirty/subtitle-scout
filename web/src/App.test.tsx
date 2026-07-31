@@ -33,7 +33,7 @@ const WORKFLOW: WorkflowPendingDTO = {
   series: [],
   movies: [],
   parked: 3,
-  meta: { roots: ['/media'], lastScanAt: Date.now() - 2 * 60_000, files: 568 },
+  meta: { roots: ['/media'], lastScanAt: Date.now() - 2 * 60_000, files: 568 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
 }
 const EMPTY_LIBRARY: LibraryItemDTO[] = []
 

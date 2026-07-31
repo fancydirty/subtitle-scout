@@ -50,7 +50,7 @@ const mediaRoots: MediaRoot[] = [{ path: '/media/tv', type: 'local', addedAt: 1 
 // dashboard G5：workflow/library/甄别聚合 API 的路由层 stub DTO。
 const workflowPendingDTO: WorkflowPendingDTO = {
   series: [{ seriesId: 's1', seriesName: 'A', season: 1, missing: 1, throttled: 0, nextRecheckAt: null, sampleReason: null }],
-  movies: [], parked: 0, meta: { roots: ['/media/tv'], lastScanAt: 1, files: 1 },
+  movies: [], parked: 0, meta: { roots: ['/media/tv'], lastScanAt: 1, files: 1 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
 }
 const workflowPassDTO: WorkflowPassDTO = {
   id: 1, jobId: 1, startedAt: 1, finishedAt: 2, detail: 'x',

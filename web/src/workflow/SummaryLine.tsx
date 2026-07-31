@@ -61,6 +61,20 @@ export function SummaryLine({ pending, workers }: Props) {
       </span>,
     )
   }
+  // 字幕校验的推进度（2026-07-31）。只在**铺量期**显示（done < total）——铺满之后这个片段
+  // 消失，因为"282 / 282 已检查"是一句没有信息的废话，而 SummaryLine 的既有哲学就是
+  // 不给不携带信息的占位。检验从未跑过（lastVerifySweepAt === null）时也不显示：
+  // 那时 0/282 会读成"这功能坏了"，而真相是它还没到第一个时间门。
+  const vDone = pending.data ? pending.data.meta.verifiedItems : null
+  const vTotal = pending.data ? pending.data.meta.verifiableItems : null
+  const vSweptAt = pending.data ? pending.data.meta.lastVerifySweepAt : null
+  if (vDone != null && vTotal != null && vSweptAt != null && vTotal > 0 && vDone < vTotal) {
+    segments.push(
+      <span key="verify">
+        subtitle timing checked on <Num>{vDone}</Num> of <Num>{vTotal}</Num>
+      </span>,
+    )
+  }
 
   if (segments.length === 0) return null
 
