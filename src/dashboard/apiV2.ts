@@ -937,6 +937,16 @@ export interface WorkflowHeldJobDTO {
   reason: string | null
   nextRetryAt: number | null
   errorAttempt: number
+  /** 剧名 / 片名（2026-07-31 审计 C-3）。此前前端靠 recent[] 按 jobId 反查名字与海报，
+   *  但 held 停留是**天级**（heldBackoffMs +1d/+3d/+7d），recent 是 ORDER BY finished_at
+   *  DESC LIMIT 20 的滑动窗口——生产节奏（每小时 20 条）下一小时内就被挤出，此后 join 恒
+   *  MISS：卡死态没有图（违反 L4「必须有图」），且降级显示 tmdb:1396/s12e04 这种技术
+   *  标识符（违反 L3「不暴露机械」）。 */
+  seriesName: string | null
+  movieName: string | null
+  posterPath: string | null
+  /** 仅 series 有值——movies 表没有 backdrop_path 列。电影恒 null，前端据此走模糊海报降级。 */
+  backdropPath: string | null
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]
@@ -1069,14 +1079,27 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
 
   // 审计 UX-P0:held 队列——failed + 未来重试时刻的 worker_task;payload.itemId(translate 合成行)
   // 优先,缺省回退 series_id。同 parseWorkerTaskPayload 的容错口径:payload 坏了 itemId 降级 null。
+  // 名字与海报（2026-07-31 审计 C-3）：LEFT JOIN 照抄 running/recent 那两处，不新增查询。
+  // 前端原先靠 recent[] 按 jobId 反查，一小时后必然 MISS——理由见 DTO 字段注释。
   const heldRows = db
     .prepare(
-      `SELECT id, series_id, payload, last_error, next_retry_at, error_attempt FROM jobs
-       WHERE state = 'failed' AND kind = 'worker_task' AND next_retry_at IS NOT NULL AND next_retry_at > ?`,
+      `SELECT j.id, j.series_id, j.movie_id, j.payload, j.last_error, j.next_retry_at,
+              j.error_attempt,
+              s.name AS series_name, m.name AS movie_name,
+              s.poster_path AS series_poster_path, s.backdrop_path AS series_backdrop_path,
+              m.poster_path AS movie_poster_path
+       FROM jobs j
+       LEFT JOIN series s ON s.id = j.series_id
+       LEFT JOIN movies m ON m.id = j.movie_id
+       WHERE j.state = 'failed' AND j.kind = 'worker_task'
+         AND j.next_retry_at IS NOT NULL AND j.next_retry_at > ?`,
     )
     .all(now) as {
-      id: number; series_id: string | null; payload: string | null
+      id: number; series_id: string | null; movie_id: string | null; payload: string | null
       last_error: string | null; next_retry_at: number | null; error_attempt: number
+      series_name: string | null; movie_name: string | null
+      series_poster_path: string | null; series_backdrop_path: string | null
+      movie_poster_path: string | null
     }[]
   const held: WorkflowHeldJobDTO[] = heldRows.map((r) => {
     let itemId: string | null = null
@@ -1087,6 +1110,10 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
     return {
       jobId: r.id, itemId: itemId ?? r.series_id,
       reason: r.last_error, nextRetryAt: r.next_retry_at, errorAttempt: r.error_attempt,
+      // series 优先、movie 兜底（同 running/recent 的既有扁平化口径）。都查无 → null。
+      seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
+      posterPath: nullIfEmpty(r.series_poster_path) ?? nullIfEmpty(r.movie_poster_path),
+      backdropPath: nullIfEmpty(r.series_backdrop_path),
     }
   })
 

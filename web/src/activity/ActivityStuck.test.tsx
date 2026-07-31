@@ -49,6 +49,12 @@ function held(over: Partial<WorkflowHeldJobDTO> = {}): WorkflowHeldJobDTO {
     reason: REAL_REASON,
     nextRetryAt: T0 + 4 * 3_600_000, // 4 小时后
     errorAttempt: 3,
+    // 名字与海报（2026-07-31 审计 C-3）：后端 held DTO 现在自带这四个字段，
+    // 不再靠接线层去 recent[] join（那个 join 一小时后必然过期）。
+    seriesName: null,
+    movieName: null,
+    posterPath: null,
+    backdropPath: null,
     ...over,
   }
 }
@@ -113,13 +119,22 @@ describe('ActivityStuck：问题看得见（红点 + 红字事实）', () => {
     expect(screen.getByText('风骚律师')).toBeInTheDocument()
   })
 
-  it('主语：title 在场用剧名；查无时降级 itemId，**不退回 jobId**（那是工程值）', () => {
-    renderStuck()
-    expect(screen.getByText('绝命毒师')).toBeInTheDocument()
-    cleanup()
-    const { container } = renderStuck([item({ title: null })])
-    expect(screen.getByText('tmdb:1396/s12e04')).toBeInTheDocument()
-    expect(container.textContent).not.toContain('41')
+  it('主语：title 在场用剧名；查无时给空占位，**绝不退回 itemId**', () => {
+    const { container, rerender } = render(
+      <I18nProvider initialLang="zh"><ActivityStuck items={[item({ title: '绝命毒师' })]} now={T0} /></I18nProvider>,
+    )
+    expect(container.textContent).toContain('绝命毒师')
+
+    // 2026-07-31 审计 C-3：这条原本断言"查无时降级 itemId"，而那正是违反铁律③的行为——
+    // 本组件自己的文件头（:85）就写着 itemId「形如 tmdb:1396/s12e04，一个技术标识符，
+    // 铁律③不许直接上界面」。两句话不能同时成立，铁律那句是对的：显示那串东西不是诚实，
+    // 是把内部标识符当人话糊给用户。改成空占位——屏上仍有图（L4）+ 红字事实（L7），
+    // 少的只是一个用户看不懂的字符串。
+    rerender(
+      <I18nProvider initialLang="zh"><ActivityStuck items={[item({ title: null })]} now={T0} /></I18nProvider>,
+    )
+    expect(container.textContent).not.toContain('tmdb:1396')
+    expect(container.textContent).not.toContain('41')      // 也不退回 jobId（铁律②工程值）
   })
 })
 

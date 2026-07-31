@@ -205,6 +205,16 @@ export interface WorkflowHeldJobDTO {
   reason: string | null
   nextRetryAt: number | null
   errorAttempt: number
+  /** 剧名 / 片名（2026-07-31 审计 C-3）。此前前端靠 recent[] 按 jobId 反查名字与海报，
+   *  但 held 停留是**天级**（heldBackoffMs +1d/+3d/+7d），recent 是 ORDER BY finished_at
+   *  DESC LIMIT 20 的滑动窗口——生产节奏（每小时 20 条）下一小时内就被挤出，此后 join 恒
+   *  MISS：卡死态没有图（违反 L4「必须有图」），且降级显示 tmdb:1396/s12e04 这种技术
+   *  标识符（违反 L3「不暴露机械」）。 */
+  seriesName: string | null
+  movieName: string | null
+  posterPath: string | null
+  /** 仅 series 有值——movies 表没有 backdrop_path 列。电影恒 null，前端据此走模糊海报降级。 */
+  backdropPath: string | null
 }
 export interface WorkflowWorkersDTO {
   running: WorkflowRunningWorkerDTO[]

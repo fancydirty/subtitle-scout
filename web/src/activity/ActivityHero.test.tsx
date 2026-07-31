@@ -570,24 +570,57 @@ describe('ActivityHero：裁决回归锁', () => {
   // 补一条全局黄色扫描（铁律①）：活动页命名空间内的**声明**不许出现琥珀/黄系。
   // 比逐个选择器断言更耐改——将来新增元件自动被覆盖。
   //
-  // 必须先剥注释再扫（2026-07-31 踩过）：第一版直接扫原文，命中了一句中文注释
-  // （"--color-text-orange，用它报'一切正常'会和真警示撞语义"）——那句话恰恰是在解释
-  // 为什么**不**用橙色，把它当违规是误报。注释里提某个颜色名是正当的技术讨论。
-  it('铁律①：活动页 CSS 的声明里无黄/琥珀色', () => {
+  // 两次修正的合并版（2026-07-31）。这条锁保护的是铁律①——活动页只有绿和红，永不用黄。
+  //
+  // 第一版：直接扫原文 → 命中一句中文注释（"--color-text-orange，用它报'一切正常'会撞语义"），
+  //   那句话恰恰在解释为什么**不**用橙色。误报。→ 加了剥注释。
+  //
+  // 第二版：按**行**扫，只收 /^\s*(background|color|…)\s*:/ 开头的行 → 单行写法
+  //   `.foo { color: X; }` 里颜色与选择器同行，整条规则进不了扫描。审计实测：传送带的
+  //   5 条亮度声明（styles.css 的 .conveyor-row:nth-last-child 全是单行）100% 在盲区，
+  //   把最亮那行染成 #d29922 后 216 条测试全绿。我复现确认了这一点。
+  //
+  // 这一版换两个做法：
+  //  ① **按规则块扫，不按行**：用 } 切块，块内同时含选择器与声明，单行/多行/@media 一视同仁。
+  //  ② **色值白名单，不用黑名单**：活动页允许的颜色是可枚举的（几个 --color-* token +
+  //     一个中性紫 + 若干 rgba/color-mix）。黄色有无数种写法（#d29922 / #fbbf24 / goldenrod /
+  //     hsl(45…)），黑名单永远漏；白名单则让**任何**新色值变红，逼人显式加进来并说明理由。
+  it('铁律①：活动页 CSS 只用白名单里的颜色（黄/琥珀一律进不来）', () => {
     const noComments = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
-    const scoped: string[] = []
-    let inAct = false
-    for (const line of noComments.split('\n')) {
-      if (/^\.(act-|activity-|conveyor)/.test(line)) inAct = true
-      else if (/^\.[a-z]/.test(line)) inAct = /^\.(act-|activity-|conveyor)/.test(line)
-      if (inAct) scoped.push(line)
+    // 按 } 切成规则块。每块形如 "选择器 { 声明; 声明 }"，@media 的外层块也会被切开，
+    // 其内部规则各自成块——所以嵌套规则同样被覆盖。
+    const blocks = noComments.split('}')
+      .map((b) => b.trim())
+      .filter((b) => /(^|[\s,>+~])\.(act-|activity-|conveyor)/.test(b.split('{')[0] ?? ''))
+    expect(blocks.length).toBeGreaterThan(10)   // 防空扫：活动页规则远多于 10 条
+
+    // 活动页允许出现的颜色。每一项都是刻意的：
+    //  - var(--color-*)：设计 token，主题层已保证不含黄（那是全站约定，不在这条锁的范围）
+    //  - #8b7cf6：live 脉动的中性紫。铁律①管**状态色**（绿=好/红=有问题），
+    //    "在动"不表达好坏，所以它不占那两个色位
+    //  - transparent / currentColor / inherit / none：非颜色
+    //  - rgb/rgba/color-mix：都必须包着上面这些，正则会递归检查里面的裸色值
+    const ALLOWED = /^(var\(--color-[a-z-]+\)|#8b7cf6|transparent|currentColor|inherit|none|0)$/
+    const offenders: string[] = []
+    for (const block of blocks) {
+      const body = block.split('{').slice(1).join('{')
+      for (const decl of body.split(';')) {
+        const m = /^\s*(background|background-color|color|border|border-color|fill|stroke|box-shadow)\s*:\s*(.+)$/
+          .exec(decl)
+        if (m === null) continue
+        // 从值里挖出所有"看起来像颜色"的片段：hex、颜色关键字、var()
+        const value = (m[2] ?? '').trim()
+        const atoms = value.match(/#[0-9a-f]{3,8}|\bvar\(--[a-z-]+\)|\b[a-z]{3,20}\b/gi) ?? []
+        for (const atom of atoms) {
+          // 跳过 CSS 函数名与长度/关键字（它们不是颜色）
+          if (/^(rgba?|hsla?|color-mix|in|srgb|solid|dashed|none|inset|px|em|rem|to|bottom|top|left|right|transparent|currentColor|inherit|initial|unset)$/i.test(atom)) continue
+          if (ALLOWED.test(atom)) continue
+          offenders.push(`${(block.split('{')[0] ?? '').trim()} → ${atom}`)
+        }
+      }
     }
-    // 只看真正的颜色声明行，不看选择器/花括号
-    const decls = scoped.filter((l) => /^\s*(background|color|border(-color)?|fill|stroke)\s*:/.test(l))
-    expect(decls.length).toBeGreaterThan(0)   // 确认扫到了东西，不是空扫（否则这条永绿）
-    const text = decls.join('\n')
-    expect(text).not.toMatch(/#(d2|e8|f0|ff)[0-9a-f]{2}(0[0-9a-f]|1[0-9a-f]|2[0-9a-f]|3[0-9a-f])/i)
-    expect(text).not.toMatch(/\b(gold|yellow|amber|orange)\b/i)
+    // 任何不在白名单里的色值都要在这里显式登记（附理由），否则这条会红——包括黄色。
+    expect(offenders).toEqual([])
   })
 })
 

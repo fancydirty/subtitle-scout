@@ -49,33 +49,32 @@ export function ActivityPage() {
     [],
   )
 
-  // held → StuckItem：后端 held DTO 只有 jobId/itemId/reason，名字与海报都得从别处 join。
-  // recent[] 里有同一批 job 的 seriesName/posterPath（held 的 job 走完一轮才进 recent），
-  // 所以按 jobId 对。join 不上时传 null——ActivityStuck 会诚实降级，不编造。
+  // held → StuckItem（2026-07-31 审计 C-3 后简化）。
+  //
+  // 曾经这里按 jobId 去 recent[] 反查名字与海报——那个 join 的**设计假设是对的**
+  // （held 与 recent 由同一次收官连续写入，审计用真 DB 复刻确认命中），但它**会过期**：
+  // held 停留天级（heldBackoffMs +1d/+3d/+7d），recent 是 20 条滑动窗口，生产节奏
+  // （每小时 20 条）下一小时内就被挤出。此后卡死态没有图（违反 L4）、退化成显示
+  // `tmdb:1396/s12e04` 这种技术标识符（违反 L3）。
+  //
+  // 后端已给 held DTO 补上名字与海报（apiV2.ts 的那处 LEFT JOIN），所以这里直接用，
+  // 不再有跨集合 join，也就没有过期问题。
   //
   // stageAtFailure 恒传 null：held 记录**没有 trail**（后端 held 是 state='failed'、
-  // running 是 state='searching'，两者互斥，见 apiV2.ts 的两个查询），所以"故障时的阶段"
-  // 在服务端根本不存在。要它非 null 得让前端跨轮次记住每个 jobId 最后见到的 stage，
-  // 那是客户端状态而非事实——ActivityStuck 的文件头论证过 null 时整条不渲染，
-  // 那比渲染一个空条（读作 0%，正是禁止的清零）或扫动条（谎称在干活）都诚实。
-  const stuck = useMemo<StuckItem[]>(() => {
-    const held = workers.data?.held ?? []
-    if (held.length === 0) return []
-    const byJob = new Map<number, WorkflowRecentRunDTO>()
-    for (const r of workers.data?.recent ?? []) {
-      if (r.jobId !== null && !byJob.has(r.jobId)) byJob.set(r.jobId, r)
-    }
-    return held.map((h) => {
-      const r = byJob.get(h.jobId)
-      return {
-        held: h,
-        title: r?.seriesName ?? r?.movieName ?? null,
-        posterPath: r?.posterPath ?? null,
-        backdropPath: r?.backdropPath ?? null,
-        stageAtFailure: null,
-      }
-    })
-  }, [workers.data])
+  // running 是 state='searching'，两者互斥），所以"故障时的阶段"在服务端根本不存在。
+  // 要它非 null 得让前端跨轮次记住每个 jobId 最后见到的 stage——那是客户端状态而非事实。
+  // ActivityStuck 论证过 null 时整条不渲染，比渲染空条（读作 0%，正是禁止的清零）
+  // 或扫动条（谎称在干活）都诚实。
+  const stuck = useMemo<StuckItem[]>(
+    () => (workers.data?.held ?? []).map((h) => ({
+      held: h,
+      title: h.seriesName ?? h.movieName ?? null,
+      posterPath: h.posterPath,
+      backdropPath: h.backdropPath,
+      stageAtFailure: null,
+    })),
+    [workers.data],
+  )
 
   const running = workers.data?.running ?? []
   const recent = workers.data?.recent ?? []

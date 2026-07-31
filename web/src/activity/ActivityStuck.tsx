@@ -110,9 +110,18 @@ function StuckHero({ item, now }: { item: StuckItem; now: number }) {
   const bd = backdropUrl(item.backdropPath)
   // 模糊海报降级：同 hero 的既有判据（`backdropPath === null`，不是"这是不是电影"）。
   const blurred = bd ? null : posterUrl(item.posterPath)
-  // 主语。title 查无时降级 itemId——诚实兜底，同 hero 的口径。两者都没有时给空串（PosterThumb
-  // 走 '?' 占位），**不退回 jobId**：那是铁律②禁的工程值。
-  const title = item.title ?? item.held.itemId ?? ''
+  // 主语。title 查无时**给空串，不退回 itemId**（2026-07-31 审计 C-3 修正）。
+  //
+  // 原实现是 `item.title ?? item.held.itemId ?? ''`，理由写的是"诚实兜底，同 hero 的口径"。
+  // 但那和本文件第 85 行自己写的话直接矛盾——那里说 itemId「形如 tmdb:1396/s12e04，
+  // 一个技术标识符，铁律③不许直接上界面」。两句话不能同时成立，而铁律那句是对的：
+  // 显示 `tmdb:1396/s12e04` 不是诚实，是把内部标识符当人话糊给用户。
+  //
+  // 与 hero 的口径也不冲突：hero 降级到的是 `seriesId`（`tmdb:1396` 这种），本身同样是
+  // 技术值——那处该一并收拾，但不在这次改动范围里（它有独立的测试锁着现行为）。
+  // 这里空串会让 PosterThumb 走 '?' 占位，屏上仍有一张图（L4）+ 一句红字事实（L7），
+  // 少的只是一个用户看不懂的字符串。
+  const title = item.title ?? ''
 
   return (
     // 复用 hero 的几何（.act-hero*）：这一屏说的还是"当前这一件事"，只是那件事停住了。

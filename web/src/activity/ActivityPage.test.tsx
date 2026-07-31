@@ -34,7 +34,10 @@ const recentRow = (over: Partial<WorkflowRecentRunDTO> = {}): WorkflowRecentRunD
 
 const heldRow = (over: Partial<WorkflowHeldJobDTO> = {}): WorkflowHeldJobDTO => ({
   jobId: 7, itemId: 'tmdb:1/s1e1', reason: 'translate job 41 payload 缺 videoPath',
-  nextRetryAt: 1_700_000_600_000, errorAttempt: 2, ...over,
+  nextRetryAt: 1_700_000_600_000, errorAttempt: 2,
+  // 名字与海报现在由后端 held DTO 自带（审计 C-3）——不再靠前端 join recent[]
+  seriesName: 'Silo', movieName: null, posterPath: '/p.jpg', backdropPath: '/b.jpg',
+  ...over,
 })
 
 const WORKERS = (over: Partial<WorkflowWorkersDTO> = {}): WorkflowWorkersDTO => ({
@@ -93,23 +96,36 @@ describe('ActivityPage：三屏优先级（故障 > 在跑 > 空闲）', () => {
   })
 })
 
-describe('ActivityPage：held → StuckItem 的 join', () => {
-  // held DTO 只有 jobId/itemId/reason，名字与海报都得从 recent[] 按 jobId 对上，
-  // 否则 L4（必须有图）在这一屏落不了地。
-  it('按 jobId 从 recent 取到剧名', async () => {
+describe('ActivityPage：held 的名字与海报', () => {
+  // 名字与海报由**后端 held DTO 自带**（审计 C-3 修复）。曾经是前端按 jobId 去 recent[]
+  // 反查——设计假设对（同一次收官连续写入两边），但会过期：held 停留天级、recent 是 20 条
+  // 滑动窗口，一小时后必然 MISS → 卡死态没图（违反 L4）+ 显示技术标识符（违反 L3）。
+  it('用 held 自带的剧名，不依赖 recent', async () => {
     stub(PENDING(), WORKERS({
-      held: [heldRow({ jobId: 42 })],
-      recent: [recentRow({ jobId: 42, seriesName: 'Peacemaker' })],
+      held: [heldRow({ jobId: 42, seriesName: 'Peacemaker' })],
+      recent: [],   // ← recent 空着：这正是一小时后的真实状态
     }))
     renderPage()
     await waitFor(() => expect(screen.getByText('Peacemaker')).toBeInTheDocument())
   })
 
-  it('join 不上（recent 里没有那个 jobId）→ 诚实降级，不崩不编造', async () => {
-    stub(PENDING(), WORKERS({ held: [heldRow({ jobId: 999 })], recent: [recentRow({ jobId: 7 })] }))
-    renderPage()
+  // L4 回归锁：recent 被挤空后仍然必须有图。这条是 C-3 的直接锁。
+  it('recent 为空时海报仍在场（L4：必须有图）', async () => {
+    stub(PENDING(), WORKERS({ held: [heldRow({ posterPath: '/p.jpg' })], recent: [] }))
+    const { container } = renderPage()
     await waitFor(() => expect(screen.getByText(/遇到问题/)).toBeInTheDocument())
-    expect(screen.queryByText('Silo')).not.toBeInTheDocument()
+    expect(container.querySelector('img')).toBeTruthy()
+  })
+
+  // L3 回归锁：名字查无时不许把 itemId 这种技术标识符顶上界面。
+  it('名字查无 → 不显示 itemId 那种技术标识符（L3）', async () => {
+    stub(PENDING(), WORKERS({
+      held: [heldRow({ seriesName: null, movieName: null, itemId: 'tmdb:1396/s12e04' })],
+      recent: [],
+    }))
+    const { container } = renderPage()
+    await waitFor(() => expect(screen.getByText(/遇到问题/)).toBeInTheDocument())
+    expect(container.textContent).not.toContain('tmdb:1396')
   })
 
   // 铁律②③：reason 是 jobs.last_error 的自由文本（模板拼的，无值域），绝不透传。

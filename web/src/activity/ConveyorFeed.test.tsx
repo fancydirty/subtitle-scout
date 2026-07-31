@@ -22,6 +22,21 @@ import { I18nProvider, type Lang } from '../i18n/useT.js'
 import type { TraceEvent } from '../api/types.js'
 import { ConveyorFeed, ROW_H } from './ConveyorFeed.js'
 
+// styles.css 原文（vitest.config.ts 的 define 注入，见那边注释）。用来锁 JS↔CSS 的耦合不变量。
+declare const __STYLES_CSS__: string
+const CSS = __STYLES_CSS__
+
+/** 从 CSS 里读某个选择器块的某条声明（剥注释，兼容单行/多行写法）。 */
+function cssDecl(selector: string, prop: string): string | null {
+  const noComments = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = new RegExp(`(?:^|[\\s,}])${esc}\\s*\\{([^}]*)\\}`, 'm').exec(noComments)?.[1]
+  if (block === undefined) return null
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(block)
+  return m?.[1]?.trim() ?? null
+}
+
+
 /** 造 n 条事件，工具名循环取自真实注册表（都在 toolPhrase 表里登记过）。 */
 function events(n: number, tools = ['search_source', 'list_candidates', 'download_candidate']): TraceEvent[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -281,5 +296,25 @@ describe('ConveyorFeed：key 稳定性与边界', () => {
     expect(screen.getByRole('log')).toBeInTheDocument()
     expect(rowsOf(container.querySelector<HTMLElement>('.conveyor')!)).toHaveLength(0)
     expect(container.querySelector<HTMLElement>('.conveyor')!.style.height).toBe(`${4 * ROW_H}px`)
+  })
+})
+
+// ── JS↔CSS 耦合不变量（2026-07-31 审计 C-2 补）────────────────────────────────
+// ConveyorFeed.tsx 的文件头写明「改一处不改另一处会立刻切出半行」，但那条不变量原本
+// **不可测**：下面那批位移断言用的 getBoundingClientRect 垫片，行高取的就是 JS 侧的
+// ROW_H（`rect(top + shift + idx*ROW_H, ROW_H)`），从不读 CSS。于是垫片验证的是
+// 「JS 与自己一致」——审计实测把 CSS 的 .conveyor-row height 从 20px 改成 21px
+// （那才是真会在浏览器里切半行的一改），全部测试照绿。
+//
+// 这两条把 CSS 侧的真实值拉进来对账。一行断言就把耦合变成真锁。
+describe('ConveyorFeed：JS 的 ROW_H 必须与 CSS 的行高一致', () => {
+  it('.conveyor-row 的 height 等于 ROW_H', () => {
+    expect(cssDecl('.conveyor-row', 'height')).toBe(`${ROW_H}px`)
+  })
+
+  // line-height 也要跟上：只改 height 不改 line-height，文字会在行内偏移，
+  // 视觉上同样是「切了一半」（只是切的是文字而非行框）。
+  it('.conveyor-row 的 line-height 也等于 ROW_H', () => {
+    expect(cssDecl('.conveyor-row', 'line-height')).toBe(`${ROW_H}px`)
   })
 })

@@ -576,6 +576,29 @@ describe('buildWorkflowPasses（GET /api/v2/workflow/passes：orchestrate runs +
 })
 
 describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_task + 近期非 orchestrate runs）', () => {
+  // 2026-07-31 审计 C-3：held 必须自带名字与海报。此前前端靠 recent[] 按 jobId 反查——
+  // 设计假设对（同一次收官连续写两边），但 held 停留天级、recent 是 20 条滑动窗口，
+  // 生产节奏（每小时 20 条）下一小时内就被挤出 → 卡死态没图（违反 L4「必须有图」）+
+  // 退化显示 tmdb:1396/s12e04 这种技术标识符（违反 L3「不暴露机械」）。
+  it('held 自带 seriesName/posterPath/backdropPath，不依赖 recent 反查', () => {
+    // 裸 SQL 造 held 行（同本文件既有 held 用例的手法）：series_id 指向 fixture 里的 s1，
+    // 那一行有 name='Series A' 与 poster_path='ptag-s1'。
+    const heldJobId = Number(db.prepare(
+      `INSERT INTO jobs (kind, series_id, payload, state, priority, last_error, next_retry_at, error_attempt, created_at, updated_at)
+       VALUES ('worker_task', 's1', ?, 'failed', 0, 'extract failed', ?, 2, ?, ?)`,
+    ).run(JSON.stringify({ taskType: 'find_subtitle', seriesId: 's1' }), NOW + 86_400_000, NOW, NOW)
+      .lastInsertRowid)
+
+    const r = buildWorkflowWorkers(db, NOW)
+    const h = r.held.find((x) => x.jobId === heldJobId)!
+    // 关键：recent 里没有这个 jobId（它从没走完一轮），名字与海报仍然要在——
+    // 这正是一小时后的真实状态，旧的前端 join 在这里会 MISS。
+    expect(r.recent.some((x) => x.jobId === heldJobId)).toBe(false)
+    expect(h.seriesName).toBe('Series A')
+    expect(h.posterPath).toBe('ptag-s1')
+    expect('backdropPath' in h).toBe(true)
+  })
+
   it('running：state=searching 的 worker_task，payload 解析出 taskType/seasons，trail 来自 traceBus.peek', () => {
     const jobId = insertWorkerTaskJob(db, { seriesId: 's1', season: null, taskType: 'find_subtitle', state: 'searching', priority: 50, seasons: [1, 2] })
     traceBus.publish({ runKey: `job-${jobId}`, seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '{}', tookMs: 1, at: NOW })
