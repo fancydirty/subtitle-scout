@@ -670,3 +670,77 @@ describe('② 层集号闸：不许拿别集的字幕当参考', () => {
     expect(r?.tier).toBe('sibling')
   })
 })
+
+// ── 择优判据：cue 数最接近，不是最多（2026-07-31 生产实测驱动）──────────────
+// Peacemaker S02E04 有 31 条内嵌轨，逐一当参考源实测分数：
+//   轨 0  eng  729 条 → 0.610   ← 旧逻辑（选 cue 最多）必选它，恰好最差
+//   轨 1  bul  513 条 → 0.906
+//   轨 7  spa  464 条 → 0.905
+//   轨 10 heb  515 条 → 0.909
+//   （我们的中文字幕 473 条）
+// eng 是 SDH（含音效标注）→ cue 偏多、时段分布与纯对话不同 → 掉到阈值下 → 判 unverifiable。
+describe('择优：cue 数最接近待检字幕（避开 SDH 轨）', () => {
+  const mkTrack = (): EmbeddedSubtitleTrack => ({ lang: null, codec: 'subrip', isImageBased: false })
+
+  it('SDH 轨（cue 最多）不被选中，选与待检字幕接近的那条', async () => {
+    const r = await findReferenceSource('/v/x.mkv', '/v/x.zh-Hans.ass', {
+      probeEmbedded: async () => [mkTrack(), mkTrack()],
+      // 轨 0 = SDH 729 条；轨 1 = 纯对话 513 条
+      extractEmbedded: async (_v, i) => mkSrt(i === 0 ? 729 : 513),
+      loadOurCueCount: async () => 473,          // 我们的字幕 473 条
+      readDir: async () => [],
+      readSubtitleText: async () => null,
+    })
+    expect(r?.tier).toBe('embedded')
+    // 选中的必须是 513 条那条（|513-473|=40 < |729-473|=256）
+    expect(r?.cues.length).toBe(513)
+  })
+
+  it('待检 cue 数未知（读不出）→ 退回"最多"（那时没有更好判据）', async () => {
+    const r = await findReferenceSource('/v/x.mkv', '/v/x.zh-Hans.ass', {
+      probeEmbedded: async () => [mkTrack(), mkTrack()],
+      extractEmbedded: async (_v, i) => mkSrt(i === 0 ? 729 : 513),
+      loadOurCueCount: async () => null,
+      readDir: async () => [],
+      readSubtitleText: async () => null,
+    })
+    expect(r?.cues.length).toBe(729)
+  })
+
+  // MIN_REFERENCE_CUES 独立封住强制字幕轨，所以"最接近"不会因为选了极少 cue 的轨而失守。
+  it('强制字幕轨（cue 极少）即使数值最接近也被 MIN_REFERENCE_CUES 挡住', async () => {
+    const r = await findReferenceSource('/v/x.mkv', '/v/x.zh-Hans.ass', {
+      probeEmbedded: async () => [mkTrack(), mkTrack()],
+      // 轨 0 = 强制字幕 8 条（数值上最接近 target=9，但低于下限 10）；轨 1 = 正常 500 条
+      extractEmbedded: async (_v, i) => mkSrt(i === 0 ? 8 : 500),
+      loadOurCueCount: async () => 9,
+      readDir: async () => [],
+      readSubtitleText: async () => null,
+    })
+    expect(r?.cues.length).toBe(500)
+  })
+
+  it('② 层同样按"最接近"择优（简繁双份里挑条数吻合的那份）', async () => {
+    const r = await findReferenceSource('/v/S01E01.mkv', '/v/S01E01.zh-Hant.ass', {
+      probeEmbedded: async () => [],
+      loadOurCueCount: async () => 470,
+      readDir: async () => ['S01E01.zh-Hant.ass', 'S01E01.sdh.ass', 'S01E01.zh-Hans.ass'],
+      readSubtitleText: async (p) => mkSrt(p.includes('sdh') ? 800 : 480),
+    })
+    expect(r?.tier).toBe('sibling')
+    expect(r?.cues.length).toBe(480)
+  })
+
+  it('数自己的条数走独立注入点，不经候选读取通道（不许把自己当候选）', async () => {
+    const candidateReads: string[] = []
+    let countedSelf = false
+    await findReferenceSource('/v/x.mkv', '/v/x.zh-Hans.ass', {
+      probeEmbedded: async () => [],
+      loadOurCueCount: async () => { countedSelf = true; return 400 },
+      readDir: async () => ['x.zh-Hans.ass'],           // 目录里只有自己
+      readSubtitleText: async (p) => { candidateReads.push(p); return null },
+    })
+    expect(countedSelf).toBe(true)
+    expect(candidateReads).toEqual([])                   // 自己没被当候选读过
+  })
+})

@@ -62,7 +62,7 @@ export interface ReferenceSource {
    * 为什么带出来而不是让对照图自己再解析一遍：① 层的文本来自 `ffmpeg` 抽内嵌轨，
    * 重新解析意味着**再 spawn 一次 ffmpeg**（本文件头注释：4K 长片单轨可 30~90s，
    * 默认超时 5 分钟）。为了拿一份我们刚刚已经握在手里的文本付这个代价是不可接受的。
-   * ② 层虽然只是重读文件，但"哪个同目录文件被选中"的择优逻辑（pickRichest + 各种
+   * ② 层虽然只是重读文件，但"哪个同目录文件被选中"的择优逻辑（pickClosest + 各种
    * 落选规则）只存在于本模块内部，对照图要复现它就得把那套规则抄一遍——口径分裂的
    * 老问题（见 subtitleSpans.ts 头注释）。
    *
@@ -117,6 +117,9 @@ export const MAX_EMBEDDED_TRACKS_TRIED = 5
 export const EMBEDDED_TOTAL_BUDGET_MS = 60_000
 
 export interface FindReferenceSourceOpts {
+  /** 注入点：数待检字幕自己有多少条 cue（择优判据，见 pickClosest）。
+   *  刻意与 readSubtitleText 分开——见 findReferenceSource 里的说明。 */
+  loadOurCueCount?: (path: string) => Promise<number | null>
   probeEmbedded?: (
     videoPath: string,
   ) => Promise<EmbeddedSubtitleTrack[] | null>
@@ -148,16 +151,66 @@ interface Candidate {
   cues: Cue[]
 }
 
-/** 从若干候选里挑 cue 数最多的；并列时保留先到的（稳定、可预期）。
- *  低于 MIN_REFERENCE_CUES 的一律不返回——见该常量注释。 */
-function pickRichest(candidates: readonly Candidate[]): Candidate | null {
-  let best: Candidate | null = null
-  for (const c of candidates) {
-    // 严格大于：并列时不替换，先到的胜出
-    if (best === null || c.cues.length > best.cues.length) best = c
+/**
+ * 从若干候选里挑最合适的参考源。
+ *
+ * **判据是"cue 数最接近待检字幕"，不是"cue 数最多"**（2026-07-31 按生产实测改，原为最多）。
+ *
+ * 为什么改：Peacemaker S02E04 有 31 条内嵌轨，我把前 11 条逐一当参考源实测了分数：
+ *
+ *   轨 0  eng  729 条 → 0.610   ← 原逻辑必选它（cue 最多），恰好是最差的
+ *   轨 1  bul  513 条 → 0.906
+ *   轨 2  cze  512 条 → 0.902
+ *   轨 4  est  511 条 → 0.901
+ *   轨 7  spa  464 条 → 0.905
+ *   轨 10 heb  515 条 → 0.909
+ *   （我们的中文字幕 473 条）
+ *
+ * eng 轨是 **SDH**（含 [door creaks] 这类音效标注），所以 cue 数显著偏多、说话时段分布
+ * 与纯对话字幕不同 → Jaccard 掉到阈值以下 → 整条判 unverifiable。而 cue 数与我们接近的
+ * 那些（纯对话）全部 0.90+ 且 offset 0。
+ *
+ * "最多"这个判据的原始理由是"防强制字幕轨（forced subs，cue 极少）",那个顾虑是真的,
+ * 但 MIN_REFERENCE_CUES 已经独立封住了它——不需要再用"最多"来兼职防它,而"最多"恰好会
+ * 系统性地选中 SDH。用"最接近"同时躲开两个坑。
+ *
+ * targetCueCount 为 null 时（调用方不知道待检字幕有多少条）退回"最多"——那时没有更好的
+ * 判据，而"最多"至少不会选中强制字幕轨。
+ *
+ * 低于 MIN_REFERENCE_CUES 的一律不返回——见该常量注释。
+ */
+function pickClosest(
+  candidates: readonly Candidate[],
+  targetCueCount: number | null,
+): Candidate | null {
+  const usable = candidates.filter((c) => c.cues.length >= MIN_REFERENCE_CUES)
+  if (usable.length === 0) return null
+  if (targetCueCount === null) {
+    let best = usable[0] as Candidate
+    for (const c of usable) if (c.cues.length > best.cues.length) best = c
+    return best
   }
-  if (best === null || best.cues.length < MIN_REFERENCE_CUES) return null
+  let best = usable[0] as Candidate
+  let bestDist = Math.abs(best.cues.length - targetCueCount)
+  for (const c of usable) {
+    const dist = Math.abs(c.cues.length - targetCueCount)
+    // 严格小于：并列时保留先到的（稳定、可预期，同原实现的并列语义）
+    if (dist < bestDist) { best = c; bestDist = dist }
+  }
   return best
+}
+
+/** 数待检字幕的 cue 条数。任何失败归一为 null（择优退回"最多"），绝不阻断——
+ *  参考源查找是增益路径。 */
+async function defaultLoadOurCueCount(path: string): Promise<number | null> {
+  try {
+    const text = await defaultReadSubtitleText(path)
+    if (text === null) return null
+    const n = parseCues(text).length
+    return n > 0 ? n : null
+  } catch {
+    return null
+  }
 }
 
 /** ① 内嵌字幕轨。返回命中的候选，或 null（附落选原因供 detail 记录）。 */
@@ -166,6 +219,7 @@ async function tryEmbedded(
   probeEmbedded: NonNullable<FindReferenceSourceOpts['probeEmbedded']>,
   extractEmbedded: NonNullable<FindReferenceSourceOpts['extractEmbedded']>,
   now: NonNullable<FindReferenceSourceOpts['now']>,
+  targetCueCount: number | null,
 ): Promise<{ hit: Candidate | null; note: string }> {
   let tracks: EmbeddedSubtitleTrack[] | null
   try {
@@ -231,7 +285,7 @@ async function tryEmbedded(
     notes.push(`budget ${EMBEDDED_TOTAL_BUDGET_MS}ms exhausted after ${budgetExhaustedAfter} track(s)`)
   }
 
-  const best = pickRichest(candidates)
+  const best = pickClosest(candidates, targetCueCount)
   if (best === null) {
     const why = candidates.length === 0
       ? 'no usable embedded track'
@@ -261,6 +315,7 @@ async function trySibling(
   ourSubtitlePath: string,
   readDir: NonNullable<FindReferenceSourceOpts['readDir']>,
   readSubtitleText: NonNullable<FindReferenceSourceOpts['readSubtitleText']>,
+  targetCueCount: number | null,
 ): Promise<{ hit: Candidate | null; note: string }> {
   const dir = dirname(resolve(ourSubtitlePath))
   // 必须归一后比较，不能比字符串：同一个文件可能以相对/绝对路径、含 ./ 冗余段等
@@ -330,7 +385,7 @@ async function trySibling(
   if (unreadable > 0) notes.push(`${unreadable} unreadable`)
   if (unparsable > 0) notes.push(`${unparsable} unparsable`)
 
-  const best = pickRichest(candidates)
+  const best = pickClosest(candidates, targetCueCount)
   if (best === null) {
     const why = candidates.length === 0
       ? 'no usable sibling subtitle'
@@ -366,8 +421,19 @@ export async function findReferenceSource(
   const readDir = opts?.readDir ?? defaultReadDir
   const readSubtitleText = opts?.readSubtitleText ?? defaultReadSubtitleText
   const now = opts?.now ?? Date.now
+  const loadOurCueCount = opts?.loadOurCueCount ?? defaultLoadOurCueCount
 
-  const embedded = await tryEmbedded(videoPath, probeEmbedded, extractEmbedded, now)
+  // 待检字幕的 cue 数——择优判据（见 pickClosest）。读不出来时为 null，那时 pickClosest
+  // 退回"最多"。这一次读盘是必要成本：不知道目标条数就会系统性选中 SDH 轨（实测 0.610
+  // vs 0.90+），那比多读一个文件贵得多。
+  //
+  // **走独立的注入点 loadOurCueCount，不复用 readSubtitleText**：后者的语义是"读一个
+  // **候选**参考源"，而这里读的是待检字幕自己。混用会让测试无法区分"读自己数条数"（正当）
+  // 与"把自己当候选读"（致命——必然算出 offset 0 / score 1.0，掩盖一切偏移），
+  // 而那批 touched 断言正是守着后者。
+  const targetCueCount = await loadOurCueCount(ourSubtitlePath)
+
+  const embedded = await tryEmbedded(videoPath, probeEmbedded, extractEmbedded, now, targetCueCount)
   if (embedded.hit !== null) {
     return {
       tier: 'embedded',
@@ -381,7 +447,7 @@ export async function findReferenceSource(
     }
   }
 
-  const sibling = await trySibling(ourSubtitlePath, readDir, readSubtitleText)
+  const sibling = await trySibling(ourSubtitlePath, readDir, readSubtitleText, targetCueCount)
   if (sibling.hit !== null) {
     return {
       tier: 'sibling',
