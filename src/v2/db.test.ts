@@ -38,13 +38,14 @@ describe('db 基座', () => {
     // v22 补齐存量 runs 的 LLM/provider 账本列后是 '16'；v24（identify_overrides.source）后是 '17'；
     // v25（agent-first identification：parked_paths 加 duration_sec/embedded_langs raw 数据列）后是 '18'；
     // v26（parked_paths.embedded_tmdb_id）后是 '19'；v27（认领退役，DROP identify_overrides）后是 '20'；
-    // v28（字幕时间轴校验落库：subtitle_verify 表）后是 '21'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '21' })
+    // v28（字幕时间轴校验落库：subtitle_verify 表）后是 '21'；v29（jobs.lease_started_at
+    // 稳定 claim 锚点，修活动页秒表冻结）后是 '22'。
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '22' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '22' })
   })
 
   it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
@@ -96,7 +97,7 @@ describe('db 基座', () => {
     expect(freshCols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '21' })
+    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '22' })
     fresh.close()
 
     // migrate from prior (schema_version 13 = v20 终态，无负缓存列)
@@ -119,7 +120,7 @@ describe('db 基座', () => {
     expect(cols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '22' })
     // 存量行默认：retry_count=0，其余可空
     expect(db.prepare('SELECT retry_count, next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?')
       .get('/media/a.mkv')).toEqual({
@@ -156,7 +157,7 @@ describe('db 基座', () => {
     expect(db.prepare('SELECT id, started_at, decision, llm_calls, assrt_calls FROM runs').get()).toEqual({
       id: 1, started_at: 123, decision: 'translate:held', llm_calls: null, assrt_calls: null,
     })
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
   })
 
   it('v23：translate_glossaries 表存在;v15 老库升级后可用', () => {
@@ -168,7 +169,7 @@ describe('db 基座', () => {
     const cols = (db.prepare('PRAGMA table_info(translate_glossaries)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(['series_key', 'terms_json', 'updated_at'])
     db.prepare("INSERT INTO translate_glossaries VALUES ('tmdb:1', '[]', 1)").run()
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
     db.close()
   })
 
@@ -225,7 +226,7 @@ describe('db 基座', () => {
     raw.close()
 
     const db = openDb(p)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
     // 表建出来且可写
     expect(() =>
       db.prepare(
@@ -241,7 +242,59 @@ describe('db 基座', () => {
 
     // 幂等：重开不重跑（版本门），且即便重跑 IF NOT EXISTS 也不炸
     const db2 = openDb(p)
-    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
+    db2.close()
+  })
+
+  // 迁移安全性（同 v24/v28 的既有口径）：真造一个 v28 形状的老库（schema_version '21'，jobs
+  // 表**无** lease_started_at 列），塞入一条正在 searching 的 worker_task（活动页 running 集合
+  // 就是这种行），openDb() 触发 v29，断言列被补出来、存量在飞行中的行原样存活且新列为 NULL
+  // （没有 claim 时刻可回填，apiV2 端 ?? updated_at 兜底）。另测幂等——v29 的 guard（PRAGMA
+  // table_info 先探）若写成裸 ALTER，db.test.ts 的"i=17 起重跑尾部迁移"用例会在已含该列的库上
+  // 再跑一遍而撞 duplicate column name；这里的重开断言把这条幂等锁死在迁移层。
+  it('v29 迁移安全性：v28 形状老库（jobs 无 lease_started_at）升级后补出该列，在飞行中的 job 行不受影响', () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'scout-lease-mig-')), 'scout.db')
+    const raw = new Database(p)
+    raw.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        series_id TEXT, season INTEGER, movie_id TEXT,
+        plan_ref TEXT, payload TEXT, parent_job_id INTEGER REFERENCES jobs(id),
+        state TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 0,
+        target_episodes TEXT, attempt INTEGER NOT NULL DEFAULT 0,
+        error_attempt INTEGER NOT NULL DEFAULT 0, reap_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at INTEGER, lease_until INTEGER,
+        last_error TEXT, journal_ref TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      INSERT INTO meta (key, value) VALUES ('schema_version', '21');
+      INSERT INTO jobs (kind, series_id, payload, state, priority, lease_until, created_at, updated_at)
+        VALUES ('worker_task', 's1', '{"taskType":"find_subtitle"}', 'searching', 0, 9000, 5000, 7000);
+    `)
+    raw.close()
+
+    const db = openDb(p)
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
+    // 列被补出来
+    const cols = new Set(
+      (db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((c) => c.name),
+    )
+    expect(cols.has('lease_started_at')).toBe(true)
+    // 存量在飞行中的行原样存活，新列为 NULL（v29 是纯增量 ADD COLUMN，不回填、不碰既有列）
+    expect(
+      db.prepare(`SELECT state, lease_until, updated_at, lease_started_at FROM jobs WHERE series_id = 's1'`).get(),
+    ).toEqual({ state: 'searching', lease_until: 9000, updated_at: 7000, lease_started_at: null })
+    // 列可写（后续新 claim 会往里写 claim 时刻）
+    expect(() =>
+      db.prepare(`UPDATE jobs SET lease_started_at = 8000 WHERE series_id = 's1'`).run(),
+    ).not.toThrow()
+    db.close()
+
+    // 幂等：重开不重跑（版本门到 '22' 就停），即便 guard 再跑一遍也因列已存在而跳过 ALTER，不炸
+    const db2 = openDb(p)
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
     db2.close()
   })
 
@@ -398,7 +451,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19+详情页富化 六条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -522,7 +575,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19+详情页富化 四条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -616,7 +669,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19+详情页富化 三条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -721,7 +774,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19+详情页富化 两条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '21' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '22' })
 
     // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
     expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())
@@ -767,8 +820,8 @@ describe('v25 migration: parked_paths raw data columns', () => {
   it('adds duration_sec and embedded_langs columns', () => {
     // MIGRATIONS 追加 v25 后是 18 条 entry；v26（parked_paths.embedded_tmdb_id）后是 19 条；
     // v27（认领退役，DROP identify_overrides）后是 20 条；v28（subtitle_verify 校验结论表）
-    // 后是 21 条（落库 meta.schema_version 随之是 '21'）。
-    expect(MIGRATIONS.length).toBe(21)
+    // 后是 21 条；v29（jobs.lease_started_at）后是 22 条（落库 meta.schema_version 随之是 '22'）。
+    expect(MIGRATIONS.length).toBe(22)
 
     // Insert a parked path with raw data（embedded_langs 与 episodes/movies 同构：JSON 数组串）
     db.prepare(`

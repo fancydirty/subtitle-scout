@@ -81,6 +81,11 @@ export interface Job {
   reap_count: number
   next_retry_at: number | null
   lease_until: number | null
+  /** 本次 claim 发生的时刻（claimNext 置 now）。**renewLease 绝不触碰它**——这是它与
+   *  lease_until/updated_at 的关键区别：心跳续租会把那两个刷到 ~now，而这个恒为 claim 时刻。
+   *  dashboard 活动页 hero 的"已进行 N 秒"秒表拿它当稳定锚点（见 apiV2.buildWorkflowWorkers
+   *  与 db.ts v29 迁移；存量在飞行中的行此列为 null，apiV2 端 ?? updated_at 兜底）。 */
+  lease_started_at: number | null
   last_error: string | null
   journal_ref: string | null
   created_at: number
@@ -205,7 +210,7 @@ export class JobsRepo {
     const taskFilterParam = only ?? exclude ?? ''
     const job = this.db
       .prepare(
-        `UPDATE jobs SET state = 'searching', lease_until = ?, updated_at = ?
+        `UPDATE jobs SET state = 'searching', lease_until = ?, updated_at = ?, lease_started_at = ?
          WHERE id = (
            SELECT id FROM jobs
            WHERE state IN ('wanted', 'failed')
@@ -216,7 +221,7 @@ export class JobsRepo {
          )
          RETURNING *`
       )
-      .get(...(taskFilter ? [leaseUntil, now, now, taskFilterParam] : [leaseUntil, now, now])) as Job | undefined
+      .get(...(taskFilter ? [leaseUntil, now, now, now, taskFilterParam] : [leaseUntil, now, now, now])) as Job | undefined
     return job ?? null
   }
 
@@ -511,11 +516,11 @@ export class JobsRepo {
     const job = this.db
       .prepare(
         `UPDATE jobs
-         SET state = 'searching', lease_until = ?, updated_at = ?
+         SET state = 'searching', lease_until = ?, updated_at = ?, lease_started_at = ?
          WHERE kind = 'series_season' AND series_id = ? AND season = ?
          RETURNING *`
       )
-      .get(leaseUntil, now, seriesId, season) as Job | undefined
+      .get(leaseUntil, now, now, seriesId, season) as Job | undefined
     return job ?? null
   }
 

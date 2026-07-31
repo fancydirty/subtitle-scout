@@ -888,8 +888,11 @@ export interface WorkflowRunningWorkerDTO {
    *    - LEFT JOIN 两边都未命中（name 也是 null 的那种行）→ 两个字段都 null */
   posterPath: string | null
   backdropPath: string | null
-  /** jobs.updated_at——本轮 claim/续租发生的时刻，jobs 表没有独立的 started_at 列，这是最接近
-   *  "这个租约/尝试何时开始"的既有字段（同 claimNext/renewLease 都会刷新它）。 */
+  /** jobs.lease_started_at——本轮 claim 发生的时刻，作为"这个尝试何时开始"的**稳定**锚点。
+   *  关键：它不同于 updated_at——renewLease 心跳每 tick 把 updated_at 刷到 ~now，而
+   *  lease_started_at 只在 claimNext 落一次、续租绝不触碰。活动页 hero 的"已进行 N 秒"秒表
+   *  据此计算 now-startedAtLease；早先错锚 updated_at 时，秒表每 15s 轮询后归零、在屏上冻住
+   *  （2026-08-01 实机盯页面发现，见 db.ts v29 迁移与 buildWorkflowWorkers 的兜底注释）。 */
   startedAtLease: number
   /** traceBus.peek(`job-${jobId}`, 20) 的直播补拉——非破坏性读尾部 20 条，不影响该 job 收官时
    *  的 snapshot。 */
@@ -997,7 +1000,7 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
   // recent 加了 name join，跑中行漏了同款待遇）。LEFT JOIN 手法与下方 recent 查询一致。
   const runningRows = db
     .prepare(
-      `SELECT j.id, j.series_id, j.movie_id, j.payload, j.updated_at,
+      `SELECT j.id, j.series_id, j.movie_id, j.payload, j.updated_at, j.lease_started_at,
               s.name AS series_name, m.name AS movie_name,
               s.poster_path AS series_poster_path, s.backdrop_path AS series_backdrop_path,
               m.poster_path AS movie_poster_path
@@ -1008,7 +1011,7 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
     )
     .all() as {
       id: number; series_id: string | null; movie_id: string | null; payload: string | null
-      updated_at: number; series_name: string | null; movie_name: string | null
+      updated_at: number; lease_started_at: number | null; series_name: string | null; movie_name: string | null
       series_poster_path: string | null; series_backdrop_path: string | null
       movie_poster_path: string | null
     }[]
@@ -1029,7 +1032,10 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
       // 来自 series——movies 表没有 backdrop_path 列，movie 目标恒 null（见 DTO 注释的不对称说明）。
       posterPath: nullIfEmpty(r.series_poster_path) ?? nullIfEmpty(r.movie_poster_path),
       backdropPath: nullIfEmpty(r.series_backdrop_path),
-      startedAtLease: r.updated_at, trail,
+      // 秒表锚点：lease_started_at（claim 时刻，心跳续租不动它）。?? updated_at 兜底存量在飞行中
+      // 的行——v29 迁移前就 searching 的 job 此列为 null，退回旧口径（会略有前移，但只影响那批
+      // 一次性的存量行，且容器重启后它们会被 reap 重新 claim 而填上真值）。见 db.ts v29 迁移注释。
+      startedAtLease: r.lease_started_at ?? r.updated_at, trail,
     }
   })
 

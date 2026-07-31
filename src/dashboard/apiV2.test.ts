@@ -610,6 +610,35 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
     traceBus.snapshot(`job-${jobId}`) // 测试卫生：清空本用例写入的进程级单例缓冲，不留给别的用例
   })
 
+  // 回归锁（2026-08-01，实机盯页面发现 hero "已进行 N 秒" 秒表在屏上冻住不动）：
+  // startedAtLease 必须锚定 **claim 时刻**，绝不能锚 jobs.updated_at——daemon 心跳每 tick 调
+  // renewLease 把 updated_at 刷到 ~now，若 startedAtLease 取 updated_at，则 now-startedAtLease
+  // 每次 15s 轮询后又缩回极小值，秒表在屏上冻结（看起来像卡死，恰好破掉这一屏"系统还活着"的
+  // 唯一信号）。必须走真实的 upsertWorkerTask→claimNext→renewLease 链路复现——上面那些用
+  // insertWorkerTaskJob 裸 SQL 造行的用例把 updated_at 硬编码成 NOW，claim 与续租发生在同一
+  // 时刻，天然复刻不出"续租把锚点往前拖"这个 bug。
+  it('running：startedAtLease 锚定 claim 时刻，不随 renewLease 心跳前移（秒表冻结回归锁）', () => {
+    const jobs = new JobsRepo(db)
+    const T0 = NOW
+    jobs.upsertWorkerTask(
+      { seriesId: 's1', season: null, movieId: null },
+      { taskType: 'find_subtitle', reason: 'x' },
+      null,
+      T0,
+    )
+    const claimed = jobs.claimNext(T0, { onlyTaskType: 'find_subtitle' })!
+    expect(claimed.state).toBe('searching')
+
+    // daemon 跑了 5 分钟，其间心跳续租刷了 lease_until + updated_at（生产每 tick 都发生）。
+    const T5 = T0 + 5 * 60_000
+    jobs.renewLease(claimed.id, T5)
+
+    // 此刻页面轮询（now=T5）：秒表该读"已进行 5 分"——startedAtLease 必须是 T0（claim 时刻），
+    // 不是 T5（最近一次续租时刻）。锚 updated_at 时这里会读到 T5，秒表归零。
+    const running = buildWorkflowWorkers(db, T5).running.find(r => r.jobId === claimed.id)!
+    expect(running.startedAtLease).toBe(T0)
+  })
+
   it('recent：非 orchestrate 的 runs 行，finished_at desc（beforeEach 已插入 no_safe_match/download 两条）', () => {
     const result = buildWorkflowWorkers(db, NOW)
     expect(result.recent.map(r => r.decision)).toEqual(['download', 'no_safe_match'])

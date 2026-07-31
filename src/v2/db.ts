@@ -70,6 +70,7 @@ CREATE TABLE jobs (
   error_attempt INTEGER NOT NULL DEFAULT 0, -- 瞬时错误轨：30s..15min 短退避梯（与 attempt 分账，见 jobsRepo.ts 顶部注释）
   next_retry_at INTEGER,            -- 指数退避
   lease_until INTEGER,              -- 租约: 领取时置 now+30min；超租视为死亡可重领（防挂死锁死）
+  lease_started_at INTEGER,         -- 本次 claim 发生的时刻，claimNext 置 now、renewLease 绝不触碰（与 lease_until/updated_at 不同，心跳不前移它）——活动页秒表"已进行 N 秒"的稳定锚点，见 v29 迁移
   last_error TEXT, journal_ref TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
@@ -435,6 +436,28 @@ UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded'
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS subtitle_verify_verdict ON subtitle_verify(verdict)`,
+  // v29（2026-08-01，活动页 hero 秒表"已进行 N 秒"实机冻结）：jobs 加 lease_started_at——
+  // 本次 claim 发生的时刻。根因：dashboard 的 buildWorkflowWorkers 把 startedAtLease 映射成
+  // jobs.updated_at，而 renewLease 心跳每 tick 把 updated_at 刷到 ~now，于是 now-startedAtLease
+  // 每次 15s 轮询后又缩回极小值，秒表在屏上冻住（看起来像卡死，恰好破掉这一屏"系统还活着"的
+  // 信号）。修法：claimNext 置这个稳定锚点、renewLease 绝不触碰它，apiV2 读它（?? updated_at
+  // 兜底存量在飞行中的行）。同 v24/v25/v26：fresh install 的终态 CREATE TABLE 已含该列，这里
+  // 只补存量库——条件式 ALTER（PRAGMA table_info 先探）保证幂等：新库/已迁库列已在→跳过，
+  // 旧库列缺→补。**必须**幂等而非裸 ALTER：db.test.ts 的"迁移可在已迁库上重跑"用例会把尾部
+  // 迁移在已含该列的库上再跑一遍，裸 ALTER 会抛 duplicate column name。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('lease_started_at')) {
+      db.exec('ALTER TABLE jobs ADD COLUMN lease_started_at INTEGER')
+    }
+  },
 ]
 
 export function openDb(path: string): ScoutDb {
