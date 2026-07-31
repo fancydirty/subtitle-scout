@@ -47,7 +47,7 @@ describe('ActivityFeed：Now working 卡——人话卡头 + phraseMode 直播',
   function runningWorker(overrides: Partial<WorkflowRunningWorkerDTO> = {}): WorkflowRunningWorkerDTO {
     return {
       jobId: 42, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: [1],
-      seriesName: null, movieName: null,
+      seriesName: null, movieName: null, posterPath: null, backdropPath: null,
       startedAtLease: NOW - 5 * 60_000,
       trail: [{ runKey: 'job-42', seq: 0, tool: 'search_source', argsSummary: '"silo 中字"', resultSummary: '41 candidates', tookMs: 1200, at: NOW }],
       ...overrides,
@@ -93,7 +93,7 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
   function recentRow(overrides: Partial<WorkflowRecentRunDTO> = {}): WorkflowRecentRunDTO {
     return {
       id: 5, jobId: 10, decision: 'installed', detail: '3 集入账', finishedAt: NOW - 60_000,
-      seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null, llmCalls: null,
+      seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null, posterPath: null, backdropPath: null, llmCalls: null,
       ...overrides,
     }
   }
@@ -138,7 +138,7 @@ describe('ActivityFeed：recent 完成行——人话句 + tone 圆点', () => {
     const rows = Array.from({ length: 12 }, (_, i) => ({
       id: i + 1, jobId: 46, decision: 'error' as const, detail: 'retry', finishedAt: NOW - i * 60_000,
       seriesId: 's1', movieId: null, seriesName: 'Silo', movieName: null,
-      llmCalls: null,
+      posterPath: null, backdropPath: null, llmCalls: null,
     }))
     const { onOpenRun } = renderFeed({ workers: asyncOf({ running: [], recent: rows, installedLast24h: 0, translatedLast24h: 0, held: [], providerQuota: [] }) })
     expect(screen.getAllByRole('button', { name: /hit a problem/ })).toHaveLength(1)

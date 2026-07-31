@@ -73,6 +73,8 @@ describe('collapseRecentRuns（Activity 流连续重试折叠：同 jobId 同 de
       movieId: null,
       seriesName: 'Silo',
       movieName: null,
+      posterPath: null,
+      backdropPath: null,
       llmCalls: null,
       ...overrides,
     }

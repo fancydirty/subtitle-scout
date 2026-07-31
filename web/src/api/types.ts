@@ -163,6 +163,14 @@ export interface WorkflowRunningWorkerDTO {
    *  显示 id，诚实兜底）。 */
   seriesName: string | null
   movieName: string | null
+  /** 活动页铁律「必须有图」：TMDB 图片 path（URL 由 client.ts 的 posterUrl/backdropUrl 自拼，
+   *  免 key 直连 TMDB）。series 命中取 series 的，movie 命中取 movies 的。
+   *
+   *  ⚠️ 不对称（不是 bug）：`movies` 表没有 backdrop_path 列（只有 series 有），所以 movie 目标的
+   *  backdropPath 恒为 null——此时走「模糊海报当背景」的降级路径，不要当数据缺失报障。两边都查无
+   *  （name 也 null 的行）时两字段都 null。 */
+  posterPath: string | null
+  backdropPath: string | null
   startedAtLease: number
   /** traceBus.peek 的直播补拉——非破坏性尾部 20 条，供 TraceRows 首屏渲染的初始 trail。 */
   trail: TraceEvent[]
@@ -183,6 +191,10 @@ export interface WorkflowRecentRunDTO {
   seriesName: string | null
   /** 同 seriesName，movieId 对应行的 movies.name。 */
   movieName: string | null
+  /** 活动页铁律「必须有图」：同 WorkflowRunningWorkerDTO 的同名两字段，口径一致——只给 path。
+   *  ⚠️ movie 目标的 backdropPath 恒为 null（movies 表没有 backdrop_path 列），走模糊海报降级。 */
+  posterPath: string | null
+  backdropPath: string | null
   /** 审计 UX-P0：LLM 调用账本（翻译 run 写入；find/realign 为 null）——ActivityRow 成本后缀。 */
   llmCalls: number | null
 }

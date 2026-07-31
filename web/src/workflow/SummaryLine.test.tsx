@@ -28,7 +28,7 @@ function pendingWith(seriesCount: number, movieCount: number): WorkflowPendingDT
 function workersWith(installedLast24h: number, runningCount: number): WorkflowWorkersDTO {
   return {
     running: Array.from({ length: runningCount }, (_, i) => ({
-      jobId: i, seriesId: `s${i}`, movieId: null, taskType: 'find_subtitle', seasons: null, seriesName: null, movieName: null, startedAtLease: 1, trail: [],
+      jobId: i, seriesId: `s${i}`, movieId: null, taskType: 'find_subtitle', seasons: null, seriesName: null, movieName: null, posterPath: null, backdropPath: null, startedAtLease: 1, trail: [],
     })),
     recent: [],
     translatedLast24h: 0,

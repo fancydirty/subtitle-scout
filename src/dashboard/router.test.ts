@@ -57,8 +57,8 @@ const workflowPassDTO: WorkflowPassDTO = {
   receipts: { created: 1, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 },
 }
 const workflowWorkersDTO: WorkflowWorkersDTO = {
-  running: [{ jobId: 1, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: null, seriesName: null, movieName: null, startedAtLease: 1, trail: [] }],
-  recent: [{ id: 1, jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2, seriesId: 's1', movieId: null, seriesName: 'A', movieName: null, llmCalls: null }],
+  running: [{ jobId: 1, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: null, seriesName: null, movieName: null, posterPath: null, backdropPath: null, startedAtLease: 1, trail: [] }],
+  recent: [{ id: 1, jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2, seriesId: 's1', movieId: null, seriesName: 'A', movieName: null, posterPath: null, backdropPath: null, llmCalls: null }],
   installedLast24h: 3,
   translatedLast24h: 1,
   held: [],

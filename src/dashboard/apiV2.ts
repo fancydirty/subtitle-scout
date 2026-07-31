@@ -875,6 +875,19 @@ export interface WorkflowRunningWorkerDTO {
    *  取 name（空名/查无→null，前端降级显示 id——诚实兜底）。 */
   seriesName: string | null
   movieName: string | null
+  /** 活动页铁律「必须有图」：同 name 那对，从已经 LEFT JOIN 上的 series/movies 顺手多 SELECT 两
+   *  列（不新增查询/端点）。只给 TMDB path，URL 由前端自拼（web/src/api/client.ts 的 posterUrl/
+   *  backdropUrl 免 key 直连 TMDB），同 LibraryItemDTO/SeriesDetailDTO 的既有分工。
+   *
+   *  ⚠️ 不对称（不是 bug，别当 bug 修）：`series` 表有 poster_path + backdrop_path，`movies` 表
+   *  只有 poster_path，没有 backdrop 列（src/v2/db.ts：backdrop_path 只在 v16 那条 ALTER 给
+   *  series 加过；movies 建表与两次 v15 重建都没有这一列）。所以：
+   *    - series 命中 → posterPath 可能有值，backdropPath 可能有值
+   *    - movies 命中 → posterPath 可能有值，backdropPath **恒为 null**（前端据此走「模糊海报当
+   *      背景」的降级路径，不要以为是数据缺失事故）
+   *    - LEFT JOIN 两边都未命中（name 也是 null 的那种行）→ 两个字段都 null */
+  posterPath: string | null
+  backdropPath: string | null
   /** jobs.updated_at——本轮 claim/续租发生的时刻，jobs 表没有独立的 started_at 列，这是最接近
    *  "这个租约/尝试何时开始"的既有字段（同 claimNext/renewLease 都会刷新它）。 */
   startedAtLease: number
@@ -904,6 +917,14 @@ export interface WorkflowRecentRunDTO {
   seriesName: string | null
   /** 同 seriesName，movieId 对应行的 movies.name（LEFT JOIN movies）。 */
   movieName: string | null
+  /** 活动页铁律「必须有图」：同 WorkflowRunningWorkerDTO 的同名两字段，口径一字不差——从已经
+   *  LEFT JOIN 上的 series/movies 多 SELECT 两列，只给 path 不给 URL。
+   *
+   *  ⚠️ 同一处不对称（不是 bug）：`movies` 表没有 backdrop_path 列（只有 series 有），所以 movie
+   *  目标的 backdropPath **恒为 null**，前端据此走「模糊海报当背景」降级；两边都未命中时两个字段
+   *  都 null。详见 WorkflowRunningWorkerDTO.posterPath 上方的完整说明。 */
+  posterPath: string | null
+  backdropPath: string | null
   /** 审计 UX-P0:LLM 调用账本（runs.llm_calls,翻译 run 写入;find/realign 为 null）——Workflow
    *  ActivityRow 的"· N calls"成本后缀数据源。 */
   llmCalls: number | null
@@ -967,7 +988,9 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
   const runningRows = db
     .prepare(
       `SELECT j.id, j.series_id, j.movie_id, j.payload, j.updated_at,
-              s.name AS series_name, m.name AS movie_name
+              s.name AS series_name, m.name AS movie_name,
+              s.poster_path AS series_poster_path, s.backdrop_path AS series_backdrop_path,
+              m.poster_path AS movie_poster_path
        FROM jobs j
        LEFT JOIN series s ON s.id = j.series_id
        LEFT JOIN movies m ON m.id = j.movie_id
@@ -976,6 +999,8 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
     .all() as {
       id: number; series_id: string | null; movie_id: string | null; payload: string | null
       updated_at: number; series_name: string | null; movie_name: string | null
+      series_poster_path: string | null; series_backdrop_path: string | null
+      movie_poster_path: string | null
     }[]
 
   const running: WorkflowRunningWorkerDTO[] = runningRows.map((r) => {
@@ -990,6 +1015,10 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
     return {
       jobId: r.id, seriesId: r.series_id, movieId: r.movie_id, taskType, seasons,
       seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
+      // 铁律「必须有图」：series 优先、movie 兜底（一行 job 只会命中其中一边）。backdrop 只可能
+      // 来自 series——movies 表没有 backdrop_path 列，movie 目标恒 null（见 DTO 注释的不对称说明）。
+      posterPath: nullIfEmpty(r.series_poster_path) ?? nullIfEmpty(r.movie_poster_path),
+      backdropPath: nullIfEmpty(r.series_backdrop_path),
       startedAtLease: r.updated_at, trail,
     }
   })
@@ -1005,7 +1034,9 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
       `SELECT r.id AS id, r.job_id AS job_id, r.decision AS decision, r.detail AS detail,
               r.finished_at AS finished_at, r.llm_calls AS llm_calls,
               j.series_id AS series_id, j.movie_id AS movie_id,
-              s.name AS series_name, m.name AS movie_name
+              s.name AS series_name, m.name AS movie_name,
+              s.poster_path AS series_poster_path, s.backdrop_path AS series_backdrop_path,
+              m.poster_path AS movie_poster_path
        FROM runs r LEFT JOIN jobs j ON r.job_id = j.id
        LEFT JOIN series s ON j.series_id = s.id
        LEFT JOIN movies m ON j.movie_id = m.id
@@ -1016,11 +1047,16 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
       id: number; job_id: number | null; decision: string | null; detail: string | null
       finished_at: number | null; llm_calls: number | null; series_id: string | null; movie_id: string | null
       series_name: string | null; movie_name: string | null
+      series_poster_path: string | null; series_backdrop_path: string | null
+      movie_poster_path: string | null
     }[]
   const recent: WorkflowRecentRunDTO[] = recentRows.map((r) => ({
     id: r.id, jobId: r.job_id, decision: r.decision, detail: r.detail, finishedAt: r.finished_at,
     seriesId: r.series_id, movieId: r.movie_id,
     seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
+    // 同 running 的口径：series 优先、movie 兜底；backdrop 只可能来自 series（movies 无此列）。
+    posterPath: nullIfEmpty(r.series_poster_path) ?? nullIfEmpty(r.movie_poster_path),
+    backdropPath: nullIfEmpty(r.series_backdrop_path),
     llmCalls: r.llm_calls,
   }))
 

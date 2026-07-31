@@ -214,7 +214,7 @@ describe('Lanes：Now working 卡 + SSE 直播流入 TraceRows（phraseMode 人�
       running: [
         {
           jobId: 42, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: [1],
-          seriesName: null, movieName: null,
+          seriesName: null, movieName: null, posterPath: null, backdropPath: null,
           startedAtLease: NOW,
           trail: [{ runKey: 'job-42', seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: NOW }],
         },
@@ -385,6 +385,7 @@ describe('Lanes：recent 人话句子行点开 → RunDetail（worker run 详情
     const recentRow = {
       id: 5, jobId: 10, decision: 'installed', detail: '3 集入账: e1, e2, e3', finishedAt: NOW,
       seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null,
+      posterPath: null, backdropPath: null,
       llmCalls: null,
     }
     const trace: RunTraceDTO = {
@@ -417,6 +418,7 @@ describe('Lanes：recent 人话句子行点开 → RunDetail（worker run 详情
     const recentRow = {
       id: 6, jobId: 11, decision: 'installed', detail: 'movie 装好了', finishedAt: NOW,
       seriesId: null, movieId: 'm1', seriesName: null, movieName: 'Movie Z',
+      posterPath: null, backdropPath: null,
       llmCalls: null,
     }
     vi.stubGlobal(
@@ -438,6 +440,7 @@ describe('Lanes：recent 人话句子行点开 → RunDetail（worker run 详情
     const recentRow = {
       id: 9, jobId: 12, decision: 'no_safe_match', detail: null, finishedAt: NOW,
       seriesId: 's-empty', movieId: null, seriesName: null, movieName: null,
+      posterPath: null, backdropPath: null,
       llmCalls: null,
     }
     vi.stubGlobal(
@@ -457,11 +460,13 @@ describe('Lanes：recent 人话句子行点开 → RunDetail（worker run 详情
     const rowA = {
       id: 21, jobId: 30, decision: 'installed', detail: 'first row', finishedAt: NOW - 100,
       seriesId: 's1', movieId: null, seriesName: 'Silo', movieName: null,
+      posterPath: null, backdropPath: null,
       llmCalls: null,
     }
     const rowB = {
       id: 22, jobId: 30, decision: 'error', detail: 'second row', finishedAt: NOW,
       seriesId: 's1', movieId: null, seriesName: 'Silo', movieName: null,
+      posterPath: null, backdropPath: null,
       llmCalls: null,
     }
     vi.stubGlobal(
@@ -487,6 +492,7 @@ describe('Lanes：recent 人话句子行点开 → RunDetail（worker run 详情
     const recentRow = {
       id: 5, jobId: 10, decision: 'installed', detail: '3 集入账', finishedAt: NOW,
       seriesId: 's9', movieId: null, seriesName: 'Silo', movieName: null,
+      posterPath: null, backdropPath: null,
       llmCalls: null,
     }
     const fetchMock = mockFetchRouted([

@@ -673,6 +673,56 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
     expect(movieRow).toMatchObject({ seriesName: null, movieName: 'Movie Y' })
   })
 
+  // 活动页铁律「必须有图」：running/recent 两个 DTO 都带 posterPath/backdropPath（从已 LEFT JOIN
+  // 上的 series/movies 多 SELECT 两列，不新增查询）。
+  it('running/recent：series 条目带出 posterPath 与 backdropPath', () => {
+    // s1 已在 beforeEach 建行（posterPath='ptag-s1'）；补 backdrop（upsertSeries 的 COALESCE
+    // 语义允许后续调用补齐既有行的空列）。
+    lib.upsertSeries({ id: 's1', name: 'Series A', posterPath: 'ptag-s1', backdropPath: 'btag-s1', year: 2021 })
+    const jobId = insertWorkerTaskJob(db, { seriesId: 's1', season: null, taskType: 'find_subtitle', state: 'searching', priority: 50 })
+
+    const result = buildWorkflowWorkers(db, NOW)
+    const running = result.running.find(r => r.jobId === jobId)!
+    expect(running).toMatchObject({ posterPath: 'ptag-s1', backdropPath: 'btag-s1' })
+    // recent：beforeEach 的两条 runs 挂在 series_id='s1' 的 job 上
+    expect(result.recent.every(r => r.posterPath === 'ptag-s1' && r.backdropPath === 'btag-s1')).toBe(true)
+  })
+
+  // 不对称的回归锁（见 WorkflowRunningWorkerDTO.posterPath 注释）：`movies` 表没有 backdrop_path
+  // 列（src/v2/db.ts 只给 series 加过），所以 movie 目标的 backdropPath 恒为 null——前端据此走
+  // 「模糊海报当背景」的降级路径。若哪天有人给 movie 也变出了 backdrop，这条必须变红。
+  it('running/recent：movies 条目带出 posterPath，且 backdropPath 恒为 null（表无此列的不对称）', () => {
+    // m1 已在 beforeEach 建行（posterPath='ptag-m1'）
+    const jobId = insertWorkerTaskJob(db, { movieId: 'm1', taskType: 'find_subtitle', state: 'searching', priority: 50 })
+
+    const result = buildWorkflowWorkers(db, NOW)
+    const running = result.running.find(r => r.jobId === jobId)!
+    expect(running).toMatchObject({ movieName: 'Movie Z', posterPath: 'ptag-m1', backdropPath: null })
+
+    // recent 侧同款（新开一部电影，避开 m1 的 jobs_identity 身份占用）
+    lib.upsertMovie({ id: 'm3', name: 'Movie W', path: '/media/movies/Movie W/w.mkv', subStatus: 'missing', posterPath: 'ptag-m3' })
+    const movieJobId = insertJob(db, { kind: 'movie', movieId: 'm3', state: 'wanted', priority: 0 })
+    insertRun(db, movieJobId, NOW - 200, 'installed', 'movie installed')
+    const recentRow = buildWorkflowWorkers(db, NOW).recent.find(r => r.jobId === movieJobId)!
+    expect(recentRow).toMatchObject({ movieName: 'Movie W', posterPath: 'ptag-m3', backdropPath: null })
+  })
+
+  it('running/recent：LEFT JOIN 两边都未命中时 posterPath/backdropPath 皆 null，不崩', () => {
+    // series_id/movie_id 都为 NULL 的 worker_task（name 也查无的那种行）
+    const jobId = insertWorkerTaskJob(db, { taskType: 'find_subtitle', state: 'searching', priority: 50 })
+    // recent 侧：job_id 为 NULL 的孤儿 run
+    db.prepare(
+      `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, journal_path)
+       VALUES (NULL, ?, ?, 'error', 'no job', '/j/orphan-img/decision.json')`
+    ).run(NOW - 500, NOW - 400)
+
+    const result = buildWorkflowWorkers(db, NOW)
+    const running = result.running.find(r => r.jobId === jobId)!
+    expect(running).toMatchObject({ seriesName: null, movieName: null, posterPath: null, backdropPath: null })
+    const orphan = result.recent.find(r => r.jobId === null)!
+    expect(orphan).toMatchObject({ seriesName: null, movieName: null, posterPath: null, backdropPath: null })
+  })
+
   // installedLast24h：runs 里 decision='installed' 且 finished_at > now-86400e3 的计数——独立
   // COUNT 查询，now 由调用方传入（沿 buildWorkflowPending 的既有 now 传参先例）。
   it('installedLast24h：仅计入 24h 窗口内 decision=installed 的行，窗口外/其它 decision 不计', () => {    const dayMs = 86_400_000
