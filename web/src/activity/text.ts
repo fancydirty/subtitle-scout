@@ -202,3 +202,92 @@ export function relativeFinished(deltaMs: number, lang: Lang): string {
   const d = Math.floor(h / 24)
   return lang === 'zh' ? `${d} 天前` : `${d}d ago`
 }
+
+// ── 任务 7：空态（§7.1）与卡死态（§7.2）的文案 ────────────────────────────────
+
+/** 空态那行**诚实状态行**。
+ *
+ *  L6 的落地点，也是这个函数存在的全部理由：这句话说的是**观测到的事**（此刻没有在跑的活、
+ *  队列也空——这正是调用方决定渲染空态的判据本身），**不是对库的评价**。用户原话是「Steam
+ *  只显示完成列表」，明确否掉了"字幕都齐了/全部完成/一切正常"那一族**断言句**。
+ *
+ *  两者的区别不是修辞洁癖，是真假：
+ *   - "都齐了" 断言的是**整个库的完备性**——而前端手上只有 running/pending/recent 三个窗口，
+ *     压根看不到"库里还缺不缺"（缺口数在 pending 里，但 pending 空只意味着"没有待办"，
+ *     不意味着"没有缺口"：被 park/dormant 的条目就不在 pending 里）。说"齐了"是编造。
+ *   - "现在没有在处理的字幕" 断言的是**此刻的运行态**——这个前端看得见，且它就是真的。
+ *
+ *  所以这句是空态里唯一**无条件渲染**的元素：它保证空态永远不是一张白页（recent 为空 +
+ *  从未扫过的全新装机也有这一行 + 下面那行时间戳）。
+ *
+ *  措辞刻意与 heroSubtitle 的"正在找…的字幕"同族（同一个词汇场的正反面），而不是另起一套
+ *  "系统空闲"之类的机械腔——铁律③。 */
+export function idleLine(lang: Lang): string {
+  return lang === 'zh' ? '现在没有在处理的字幕' : 'No subtitles in progress'
+}
+
+/** 空态的**新鲜度时间戳**——"最近检查 3 分钟前" / "Last checked 3m ago"。
+ *
+ *  为什么空态**必须**有这一行（spec §7.1，NN/G）：时间戳是唯一「崩掉的系统 produce 不出来」的
+ *  廉价元件。一个只说"没有在处理"的空态有两种可能——真的没活可干，或者守护进程死了——而用户
+ *  无从分辨。未加限定的空态是最伤信任的设计。加上"3 分钟前刚检查过"，它就从一句可能是谎话的
+ *  安慰变成一个可核对的事实。
+ *
+ *  ⚠️ `lastScanAt === null`（从未摄取过）时**绝不编一个时刻出来**。这是本函数最容易被改坏的
+ *  地方：`relativeFinished(now - (lastScanAt ?? now))` 会输出"刚刚"——一句纯谎话，且恰好谎在
+ *  上面那段论证说的要害上（它把"这台机器从没扫过盘"伪装成"刚刚检查过，一切正常"）。全新装机
+ *  与守护进程死了这两种状态**都**会走进这个分支，两者都不该读作"刚刚"。
+ *  既有先例：shell/freshness.ts 的同一处判断输出 'awaiting first scan'（那份是顶栏 mono 英文
+ *  技术读数，永不翻译；这里是活动页正文人话句，跟随 UI 语言——同 formatElapsed 的既有理由）。 */
+export function lastCheckedLine(lastScanAt: number | null, now: number, lang: Lang): string {
+  if (lastScanAt === null) return lang === 'zh' ? '还没扫过' : 'Not scanned yet'
+  const rel = relativeFinished(now - lastScanAt, lang)
+  // "最近检查 刚刚" / "Last checked just now" 读起来别扭——这一档换成成句。注意这里认的是
+  // relativeFinished 的 <5s 档位输出本身，档位口径因此只有一处定义。
+  if (rel === '刚刚') return '刚刚检查过'
+  if (rel === 'just now') return 'Checked just now'
+  return lang === 'zh' ? `最近检查 ${rel}` : `Last checked ${rel}`
+}
+
+/** 字幕校验巡检的推进度——"12 / 282 已检查"。
+ *
+ *  铁律②允许这个数字：它是**裸计数**（多少个条目已出校验结论），不是分数/置信度/百分比。
+ *  刻意**不换算成百分比**——那才是铁律②禁的东西，且 L10 已把百分比从这一页整体消掉。
+ *
+ *  调用方的显示条件抄 SummaryLine.tsx:71 的既有裁决（那条已过审计），不在本函数里判：
+ *   - 巡检从未跑过（lastVerifySweepAt === null）→ 不显示。此时 "0 / 282" 会读成"这功能坏了"，
+ *     而真相是它还没到第一个时间门。
+ *   - 已铺满（done >= total）→ 不显示。"282 / 282 已检查"是一句没有信息的废话。 */
+export function checkedCountLine(done: number, total: number, lang: Lang): string {
+  return lang === 'zh' ? `${done} / ${total} 已检查` : `${done} / ${total} checked`
+}
+
+/** 时长量级——"3 分钟" / "3m"，**不带方向后缀**。
+ *
+ *  只给 formatRetryIn 用。为什么不去改 relativeFinished 复用它：那个函数的档位里嵌着 "前"/
+ *  "ago" 后缀与一个 <5s 的"刚刚"特例，抽公共层要动它的签名，而它已有 6 条测试与两个调用点
+ *  （ActivityDone、lastCheckedLine）依赖当前口径。为一个新调用点重构一个已锁死的函数不值得。 */
+function magnitude(deltaMs: number, lang: Lang): string {
+  const s = Math.max(0, Math.floor(deltaMs / 1000))
+  if (s < 60) return lang === 'zh' ? `${s} 秒` : `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return lang === 'zh' ? `${m} 分钟` : `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return lang === 'zh' ? `${h} 小时` : `${h}h`
+  return lang === 'zh' ? `${Math.floor(h / 24)} 天` : `${Math.floor(h / 24)}d`
+}
+
+/** 卡死态的重试时刻——"4 小时后重试" / "retries in 4h"。
+ *
+ *  为什么卡死态**要**这行，而队列段刻意**不要**同类读数（queuedLabel 的注释里那条裁决：
+ *  "下次复查 4 小时后"会让一个**正常等待**的条目读起来像出了问题）——两处的语境正好相反：
+ *  队列行本就没出事，加一个倒计时是无端制造焦虑；卡死行确实出了事，此时"会重试"这句承诺
+ *  **需要一个可核对的时刻**，否则它就是一句空安慰（同上面时间戳那段论证：可核对的事实才
+ *  缓解焦虑）。它是时间事实，铁律②允许。
+ *
+ *  已到点但还没被捞起（delta <= 0，轮询间隙里的正常状态）时不报负数、也不说"4 小时后"，
+ *  给"即将重试"。nextRetryAt 为 null 时调用方**整行不渲染**（不编一个时刻，同上）。 */
+export function formatRetryIn(deltaMs: number, lang: Lang): string {
+  if (deltaMs <= 0) return lang === 'zh' ? '即将重试' : 'retrying shortly'
+  return lang === 'zh' ? `${magnitude(deltaMs, lang)}后重试` : `retries in ${magnitude(deltaMs, lang)}`
+}

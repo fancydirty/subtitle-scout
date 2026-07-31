@@ -1672,3 +1672,57 @@
 .act-row-dot[data-tone='neutral'] {
   background: var(--color-text-gray);
 }
+
+/* ── 活动页的空态（ActivityEmpty，任务 7 / spec §7.1）─────────────────────────
+   这一屏是本产品**最常见的状态**（守护大部分时间无事可做），不是边缘兜底。
+
+   L6：不写"字幕都齐了"。所以这一段里没有任何横幅/插画/绿勾的样式——连一个能被填上那句话的
+   容器都不该存在。用户原话：Steam 只显示完成列表。
+
+   铁律①：这一屏**一个状态色都不用**。空态不是"好"也不是"坏"，它是中性事实，所以全走灰。
+   "空 = 一切正常 = 打个绿勾"是 L6 的同型错误（绿勾同样在断言库的完备性），黄更是禁区。 */
+.act-empty {
+  display: flex;
+  flex-direction: column;
+}
+.act-empty-facts {
+  padding: 22px 4px 18px;
+}
+/* 新鲜度时间戳 + "N / M 已检查"：mono 弱色小字。
+   它是这一屏唯一"崩掉的系统 produce 不出来"的元件（NN/G：未加限定的空态最伤信任），所以它
+   **必须在场**——但它是给人核对的背景事实，不是主角，故用 ink 最弱的一档。 */
+.act-empty-stamp {
+  color: var(--color-text-gray);
+}
+
+/* ── 活动页的卡死态（ActivityStuck，任务 7 / spec §7.2）───────────────────────
+   L7 的张力落在 CSS 上就是一条：**红只给点不给块**（铁律①）。
+
+   所以下面**只有一条**红色声明——那行红字事实（.act-stuck-fact 的 color）。红点走的是
+   .act-hero-pulse[data-tone='bad']（就在下面一条），也是一个 6px 的点。
+
+   ⚠️ 这里刻意**没有**：
+     - 红色的进度条填充规则（进度条保持在故障阶段、走中性色。ActivityStuck.test.tsx 有回归锁
+       断言条上没有红——把条染红是这条裁决最可能被改坏的方式）
+     - 红色的卡片底色 / 红边框 / 红底 banner（那都是"铺块"）
+   几何整套复用 hero 的 .act-hero*（这一屏说的还是"当前这一件事"，只是那件事停住了）。 */
+.act-stuck {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* 卡死态那 6px 脉动点转红。hero 里给它留的色彩钩子（data-tone）在这里兑现——组件层不写死
+   任何色值，颜色只在 CSS 里按属性选。
+   同时**停掉脉动动画**：脉动的语义是"在动"，而这活停着，让它继续呼吸是假话。 */
+.act-hero-pulse[data-tone='bad'] {
+  background: var(--color-text-red);
+  animation: none;
+}
+/* 红字事实（"遇到问题——会重试"）。这是整个卡死态里唯一的一处红色文字——问题看得见的全部
+   载体，不需要任何展开入口（L7）。 */
+.act-stuck-fact {
+  color: var(--color-text-red);
+}
+/* "4 小时后重试" 那行走弱色 mono——它继承 hero 既有的 .act-hero-facts > * 那条 gray 规则，
+   这里刻意**不为它另写一条颜色**（尤其不给红）：那句"会重试"的承诺需要一个可核对的时刻，
+   但它是背景事实不是警示。 */
