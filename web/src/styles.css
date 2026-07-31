@@ -1347,3 +1347,21 @@
   flex: none;
 }
 .vinspect-cue-x { color: var(--color-text-secondary); }
+
+/* 展开区里的"看字幕时间轴"入口（2026-07-31）。低墨排：它是次要动作，不该抢简介的注意力。
+   放这里而不是绿芯片上——绿芯片必须保持零焦点，否则 Tab 键在整季 24 个绿点上空转。 */
+.library-eprow-inspect {
+  align-self: flex-start;
+  font-family: var(--font-code, ui-monospace);
+  font-size: 10.5px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.library-eprow-inspect:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-text-gray);
+}

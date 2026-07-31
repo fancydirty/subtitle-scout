@@ -251,3 +251,45 @@ describe('InspectPanel：i18n', () => {
     expect(screen.queryByText(/run behind the picture/)).not.toBeInTheDocument()
   })
 })
+
+// ── 无参考源：单轨模式（2026-07-31）──────────────────────────────────────
+// 约一半条目是这一档（PGS 位图字幕 / 无同目录参考）。后端返回 200 + 空 reference 数组，
+// 不是错误。单轨视图仍有用：能看出"只翻了前半集"，且用户对着画面能自己判断偏没偏。
+describe('InspectPanel：无参考源', () => {
+  const noRef = () => dto({ reference: [], diagnosis: 'unknown', fixable: false })
+
+  it('结论条说"没东西可比"，而不是含糊的"看不出问题在哪"', () => {
+    renderPanel({ data: noRef() })
+    expect(screen.getByText('没有可以对比的东西')).toBeInTheDocument()
+    expect(screen.queryByText('这里看不出问题在哪')).not.toBeInTheDocument()
+  })
+
+  // 这条是关键：文案必须告诉用户**下一步做什么**（自己放一下看看），
+  // 否则"没东西可比"只是又一句没用的话。
+  it('文案给出可执行的下一步（让用户自己看画面）', () => {
+    renderPanel({ data: noRef() })
+    expect(screen.getByText(/放一下这集/)).toBeInTheDocument()
+  })
+
+  it('仍然渲染时间轴（单轨——自己那条字幕的分布有诊断价值）', () => {
+    const { container } = renderPanel({ data: noRef() })
+    expect(container.querySelector('.cmptl')).toBeTruthy()
+  })
+
+  it('不给校正按钮（没有基准，任何偏移量都是编的）', () => {
+    renderPanel({ data: noRef() })
+    expect(screen.queryByText('校正时间轴')).not.toBeInTheDocument()
+    expect(screen.getByText('知道了')).toBeInTheDocument()
+  })
+
+  it('台词列表仍在（装错剧时扫一眼就能发现）', () => {
+    renderPanel({ data: noRef() })
+    expect(screen.getByText('台词0')).toBeInTheDocument()
+  })
+
+  // 有参考源时不该走这套文案。
+  it('有参考源 → 用正常的判读文案', () => {
+    renderPanel({ data: dto({ diagnosis: 'behind', fixable: true }) })
+    expect(screen.queryByText('没有可以对比的东西')).not.toBeInTheDocument()
+  })
+})

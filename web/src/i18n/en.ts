@@ -66,6 +66,7 @@ export const en = {
   // 红态是芯片上的可见文字。两句都不提机械（不说内嵌轨/比对/参考源）。
   library_verify_ok: 'Subtitle timing looks right',
   library_verify_shifted: 'timing looks off',
+  library_verify_inspect: 'Show subtitle timeline',
   // 对照时间轴（2026-07-30）：轨道名与操作提示。措辞不提机械——说"画面里说话"而不是
   // "内嵌字幕轨"，说"这份字幕"而不是"待检 sidecar"。
   verify_track_reference: 'spoken in the video',
@@ -86,6 +87,9 @@ export const en = {
   verify_verdict_drift_body: 'It starts out close and drifts further apart — shifting the whole track cannot fix that. You will need a subtitle made for this particular file.',
   verify_verdict_unknown_head: 'Cannot tell what is going on here',
   verify_verdict_unknown_body: 'There is not enough to compare against, so nothing is being claimed. Have a look at the lines below to check they belong to this episode.',
+  // 无参考源：说清"没东西可比"而不是"查过了没发现问题"——这个区别决定用户下一步做什么。
+  verify_verdict_noref_head: 'Nothing to compare this against',
+  verify_verdict_noref_body: "This release only carries picture-based subtitles (they have no readable timings), and there is no second subtitle for this episode next to it. The timeline below still shows your own subtitle — play the episode and see whether the lines land with the dialogue.",
   verify_correct_action: 'Fix the timing',
   verify_correcting: 'Fixing…',
   verify_keep_action: 'Leave it alone',

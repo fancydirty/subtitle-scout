@@ -58,6 +58,20 @@ export function EpisodeRow({ cell, expanded, onToggle, verify, onInspect }: Prop
       {expanded ? (
         <VStack gap={1} className="library-eprow-body">
           <Text type="body" color="secondary">{cell.overview ?? t('library_episode_no_overview')}</Text>
+          {/* 时间轴入口放在展开区，不放在绿芯片上（2026-07-31）。
+              两个理由：
+              ① 绿芯片必须保持零焦点——做成 button 会让 Tab 键在一整季 24 个绿点上空转。
+              ② 但用户需要一个入口：约一半条目是"无法验证"（内嵌轨全是 PGS 位图字幕、
+                 同目录也没有第二份同集字幕），它们判绿是诚实的沉默，可对照图本身仍然有用
+                 ——单轨视图能看出"字幕只翻了前半集"这类问题，而且用户对着画面就能自己
+                 判断偏没偏。音频 VAD 那条路实测走不通（偏移量准但相似度只有 0.5，
+                 见 alignDetect.ts 的阈值注释），所以"让用户自己看"是这批条目的唯一出路。
+              展开区这个 button 本来就存在，不新增焦点。 */}
+          {onInspect ? (
+            <button type="button" className="library-eprow-inspect" onClick={onInspect}>
+              {t('library_verify_inspect')}
+            </button>
+          ) : null}
         </VStack>
       ) : null}
     </div>

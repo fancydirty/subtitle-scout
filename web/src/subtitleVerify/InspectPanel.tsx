@@ -68,6 +68,16 @@ export function InspectPanel({
   // 云盘：检测照常做（只读字幕文件），但对照图画不出来（抽音频要 >120s，
   // 每次 seek 付 CDN 延迟地板）。这是网盘的物理限制，不是功能没做——文案要说清这个区别。
   const cloudBlocked = data !== null && data.mountKind === 'cloud'
+  // 无参考源（2026-07-31）：约一半条目是这一档——内嵌轨全是 PGS 位图字幕（抽不出文本
+  // 时间轴）、同目录也没有第二份同集字幕。后端此时返回 200 + 空 reference 数组
+  // （见 subtitleCompareApi 头注释里那三条理由），不是错误。
+  //
+  // 单轨视图仍然有用，这也是"让用户自己看"这条产品承诺的落点：
+  //  - 能看出"字幕只翻了前半集"这类分布问题（后半段一片空白）
+  //  - 用户对着画面就能自己判断偏没偏——这是我们无法自动完成的那部分
+  // 音频 VAD 那条路实测走不通：偏移量准（±100ms）但相似度只有 0.36~0.54，因为
+  // silencedetect 把音乐/音效都算成说话（实测音频 1953s vs 字幕 1470s）。
+  const noReference = data !== null && data.reference.length === 0
 
   return (
     <Dialog isOpen={isOpen} onOpenChange={onOpenChange} width="min(1080px, 94vw)" maxHeight="88vh">
@@ -80,6 +90,7 @@ export function InspectPanel({
         ) : data === null ? null : (
           <>
             <Verdict
+              noReference={noReference}
               diagnosis={data.diagnosis}
               fixable={data.fixable}
               cloudBlocked={cloudBlocked}
@@ -111,6 +122,8 @@ export function InspectPanel({
 }
 
 interface VerdictProps {
+  /** 无参考源——结论条改说"没东西可比，你自己看"，而不是含糊的"看不出问题在哪"。 */
+  noReference: boolean
   diagnosis: CompareDiagnosis
   fixable: boolean
   cloudBlocked: boolean
@@ -119,7 +132,7 @@ interface VerdictProps {
   onDismiss: () => void
 }
 
-function Verdict({ diagnosis, fixable, cloudBlocked, onCorrect, correcting, onDismiss }: VerdictProps) {
+function Verdict({ noReference, diagnosis, fixable, cloudBlocked, onCorrect, correcting, onDismiss }: VerdictProps) {
   const { t } = useT()
   // 平移修不好的（帧率不匹配、装错剧集）**不给校正按钮**——给了按钮就是骗人。
   // 这正是对照时间轴存在的价值：用户能从形状自己确认这个结论。
@@ -128,8 +141,14 @@ function Verdict({ diagnosis, fixable, cloudBlocked, onCorrect, correcting, onDi
 
   return (
     <div className={`vinspect-verdict${fixable ? '' : ' vinspect-verdict-neutral'}`}>
-      <Text type="label" color="primary">{t(headKeyOf(diagnosis))}</Text>
-      <Text type="body" color="secondary">{t(bodyKeyOf(diagnosis))}</Text>
+      {/* 无参考源时给专门的文案：泛泛的"看不出问题在哪"会让用户以为我们查过了没发现问题，
+          而真相是**压根没东西可比**。这个区别决定了他接下来该做什么（自己看一眼画面）。 */}
+      <Text type="label" color="primary">
+        {noReference ? t('verify_verdict_noref_head') : t(headKeyOf(diagnosis))}
+      </Text>
+      <Text type="body" color="secondary">
+        {noReference ? t('verify_verdict_noref_body') : t(bodyKeyOf(diagnosis))}
+      </Text>
       <div className="vinspect-btns">
         {canCorrect ? (
           <button

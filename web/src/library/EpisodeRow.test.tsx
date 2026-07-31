@@ -147,3 +147,43 @@ describe('EpisodeRow：字幕校验芯片', () => {
     expect(onInspect).not.toHaveBeenCalled()
   })
 })
+
+// ── 时间轴入口（2026-07-31）──────────────────────────────────────────────
+// 约一半条目是"无法验证"（PGS 位图字幕 / 无同目录参考），它们判绿是诚实的沉默，
+// 但对照图本身仍有用——用户对着画面能自己判断偏没偏。音频 VAD 实测走不通
+// （偏移量准但相似度只有 0.5），所以"让用户自己看"是这批条目的唯一出路。
+describe('EpisodeRow：时间轴入口', () => {
+  it('展开后出现入口，点击触发 onInspect', () => {
+    const onInspect = vi.fn()
+    renderRow({ verify: verify({ state: 'ok' }), onInspect })
+    // 折叠时不该有
+    expect(screen.queryByText('看字幕时间轴')).not.toBeInTheDocument()
+    cleanup()
+    renderRow({ verify: verify({ state: 'ok' }), onInspect, expanded: true }, 'zh')
+    const btn = screen.getByText('看字幕时间轴')
+    fireEvent.click(btn)
+    expect(onInspect).toHaveBeenCalledTimes(1)
+  })
+
+  // 关键：绿态也要有入口。这条锁住"用户能自己看"这个产品承诺。
+  it('绿芯片（含无法验证）同样有入口——不是只有红的能点', () => {
+    renderRow({ verify: verify({ state: 'ok' }), onInspect: () => {}, expanded: true }, 'zh')
+    expect(screen.getByText('看字幕时间轴')).toBeInTheDocument()
+  })
+
+  it('没检测过的条目展开后也有入口（对照图不依赖检测结论）', () => {
+    renderRow({ verify: verify({ checked: false }), onInspect: () => {}, expanded: true }, 'zh')
+    expect(screen.getByText('看字幕时间轴')).toBeInTheDocument()
+  })
+
+  it('onInspect 缺席（父组件未接线）→ 不渲染入口', () => {
+    renderRow({ verify: verify({ state: 'ok' }), expanded: true }, 'zh')
+    expect(screen.queryByText('看字幕时间轴')).not.toBeInTheDocument()
+  })
+
+  // 绿芯片必须保持零焦点：做成 button 会让 Tab 在整季 24 个绿点上空转。
+  it('绿芯片仍然不是 button（入口在展开区，不在芯片上）', () => {
+    renderRow({ verify: verify({ state: 'ok' }), onInspect: () => {}, expanded: true })
+    expect(screen.getByTestId('verify-chip-ok').tagName).not.toBe('BUTTON')
+  })
+})
