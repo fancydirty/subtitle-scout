@@ -45,9 +45,28 @@ describe('alignDetect 常量', () => {
   })
 
   it('可信/不可信阈值按规格导出，供上层 API 复用同一份定义', () => {
-    expect(CONFIDENT_THRESHOLD).toBe(0.9)
+    // 0.75 而非初版的 0.9：见 alignDetect.ts 的常量注释。简述——分数度量的是
+    // "参考源内容有多像"，不是"对齐好不好"；生产实测一对**时间轴完全正确**的跨语言字幕
+    // 只有 0.886，而 0.9 会把它判成不可信。
+    expect(CONFIDENT_THRESHOLD).toBe(0.75)
     expect(UNCONFIDENT_THRESHOLD).toBe(0.7)
     expect(CONFIDENT_THRESHOLD).toBeGreaterThan(UNCONFIDENT_THRESHOLD)
+  })
+
+  // 这三条把生产实测的分数区间钉成不变式。它们守的是阈值的**可分辨性**：
+  // 谁再调阈值，必须让"时间轴正确的跨语言字幕"仍在可信侧、"帧率不匹配"仍在不可信侧。
+  describe('阈值必须能分辨的三档（生产实测值，Peacemaker S02E02）', () => {
+    it('跨语言字幕对（时间轴正确）实测 0.886 → 判可信', () => {
+      expect(0.886).toBeGreaterThanOrEqual(CONFIDENT_THRESHOLD)
+    })
+
+    it('帧率不匹配 24/23.976 实测 0.733 → 判不可信（平移修不好，绝不能给校正按钮）', () => {
+      expect(0.733).toBeLessThan(CONFIDENT_THRESHOLD)
+    })
+
+    it('完全无关的另一集字幕实测 0.279 → 远低于灰区下界', () => {
+      expect(0.279).toBeLessThan(UNCONFIDENT_THRESHOLD)
+    })
   })
 })
 
