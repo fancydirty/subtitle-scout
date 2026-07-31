@@ -1365,3 +1365,61 @@
   color: var(--color-text-primary);
   border-color: var(--color-text-gray);
 }
+
+/* ── 活动页传送带（ConveyorFeed，任务 3）─────────────────────────────────────
+   为什么写在这个文件的末尾：styles.css 是本项目唯一的手写 CSS 落点，既有惯例是"组件语言
+   表达不了的原子级样式追加在文件尾部"（见文件顶部的说明与 .wf-trace-* / .cmptl-* / .vinspect-*
+   几段先例）。Astryx 组件没有 className/xstyle 逃生口，而传送带需要 overflow 裁剪 + transform
+   位移 + :nth-last-child 分级，这三样都只有手写 CSS 能表达。
+
+   整行步进（用户裁决 L9：硬出、不做渐隐遮罩）：.conveyor 的高度由 JS 给成 rows × 20px，
+   .conveyor-row 的 height/line-height 恒为 20px —— **这个 20 必须与 ConveyorFeed.tsx 的
+   ROW_H 常量一致**。两者一致时行要么完整可见、要么完全在 overflow:hidden 之外，永不被上边界
+   切成半行（半个字浮在边界上很难看，这是硬出唯一需要处理的细节）。
+   因此这里刻意**没有** mask-image / linear-gradient 渐隐遮罩。 */
+.conveyor {
+  overflow: hidden;
+  /* 列 bottom-pinned：新行进底部，旧行被顶上去（裁决 L8：不是原地淡出）。bottom-pin 由
+     ConveyorFeed.tsx 的 translateY((rows-n)×20px) 独家负责，这里**故意不写
+     justify-content:flex-end**——两者叠加会双重位移（实测 7 行/4 行窗口时只剩 1 行 + 底部三行
+     空白），详见 ConveyorFeed.tsx 文件头的 ⚠️ 段。 */
+  display: flex;
+  flex-direction: column;
+}
+/* track 故意**没有 transition**：位移是瞬时的，动画只给新行（assistant-ui reasoning.tsx 的
+   做法）。若给 track 加 transition，"被顶走"的旧行也会跟着动，那是另一种效果，不是本裁决。 */
+.conveyor-track {
+  display: flex;
+  flex-direction: column;
+}
+.conveyor-row {
+  height: 20px;
+  line-height: 20px;
+  flex: none;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* slide-in-from-top-2 风格：新行从上方 2px 处落位。200ms，缓动同 spec 指定值。
+     CSS 动画在挂载时跑一次就结束，旧行不会重播——这正是"只动新行"的落地方式。
+     注：这 2px 位移意味着动画进行中（≤200ms）最上面那行会短暂探出容器上边界 2px。这是
+     slide-in-from-top-2 的固有代价，不是整行步进失效——headless Chromium 实测动画结束后
+     halfCut=false、末行底边严格贴合容器底边。整行步进保证的是**稳态**永不切半行。 */
+  animation: conveyor-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* 亮度分级：由亮到暗，**用颜色不是 opacity**（状态→颜色，同 ai-elements ChainOfThought 的
+   口径。opacity 会连带把行的背景/边框一起淡掉，且和硬出叠在一起会读成"渐隐遮罩"——正是裁决
+   L9 要去掉的东西）。最新一行最亮，往上逐级变暗，第 5 行及更旧统一压到最暗。 */
+.conveyor-row:nth-last-child(1) { color: var(--color-text-primary); }
+.conveyor-row:nth-last-child(2) { color: var(--color-text-secondary); }
+.conveyor-row:nth-last-child(3) { color: var(--color-text-gray); }
+.conveyor-row:nth-last-child(4) { color: var(--color-text-disabled); }
+.conveyor-row:nth-last-child(n + 5) { color: var(--color-text-disabled); }
+@keyframes conveyor-in {
+  from { transform: translateY(-2px); }
+  to { transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conveyor-row { animation: none; }
+}
