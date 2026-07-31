@@ -1423,3 +1423,132 @@
 @media (prefers-reduced-motion: reduce) {
   .conveyor-row { animation: none; }
 }
+
+/* ── 活动页 hero（ActivityHero，任务 4：剧集路径）────────────────────────────
+   落点理由同上一段：styles.css 是本项目唯一的手写 CSS 落点，而 hero 需要出血背景层、
+   渐变 scrim、aspect-ratio 竖版海报框、进度条的不定态动画——都是 Astryx 组件语言表达不了的
+   原子级样式。板式仍然走组件（HStack/VStack/Text），这里只补组件补不了的那几样。
+
+   为什么不复用 .library-hero 那一套：那套是详情页头部（scrim 从上往下压到 body 色，为的是
+   跟下方的季手风琴无缝接续），而活动页 hero 是「当前这一件事」的**卡片**，占约 36% 视口、
+   渐变从左往右压暗（排印在左半边，右半边留出背景图本身）。两者的渐变方向与用途都不一样，
+   共用一个类会让任一边的调整污染另一边。 */
+.act-hero {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  padding: 20px;
+  /* 约 36% 视口（用户裁决的比例）。min-height 而不是固定 height：传送带 3 行 + 两条事实行在
+     窄屏下可能更高，压死高度会切掉内容。 */
+  min-height: 36vh;
+  background: var(--color-background-card);
+}
+.act-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  /* center 20%：TMDB backdrop 的主体通常在上三分之一，居中裁会切掉人脸。同 .library-hero-backdrop
+     的既有取值。 */
+  background-position: center 20%;
+  z-index: 0;
+}
+/* 左侧渐变压暗（不是上下）：排印全在左半边，右半边把背景图本身露出来——这就是 Steam 下载页
+   的读法。两段式：左侧近乎全黑保证正文对比度，右侧只压一层薄的（背景图再亮也不会盖过排印，
+   但也不会被压成一块死黑）。 */
+.act-hero-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    linear-gradient(90deg, rgba(11, 12, 15, 0.96) 0%, rgba(11, 12, 15, 0.82) 46%, rgba(11, 12, 15, 0.42) 100%),
+    linear-gradient(0deg, rgba(11, 12, 15, 0.55) 0%, rgba(11, 12, 15, 0) 60%);
+}
+.act-hero-body {
+  position: relative;
+  z-index: 2;
+  height: 100%;
+}
+/* L5 海报必须 2:3 竖版（用户明确纠正过 16:9）。aspect-ratio 是这条裁决的落地点，
+   ActivityHero.test.tsx 对着这个比值有回归锁——改成 16/9 会立刻变红。 */
+.act-hero-poster {
+  aspect-ratio: 2 / 3;
+  width: 132px;
+  flex: none;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+}
+.act-hero-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.act-hero-poster .library-poster-fallback {
+  font-size: 34px;
+}
+.act-hero-main {
+  min-width: 0;
+  flex: 1;
+}
+/* 脉动点：正常运行态唯一的"活着"信号。中性紫——**不是黄**（黄在本设计系统里是警示色
+   --color-text-orange，用它报"一切正常"会和真警示撞语义），也不是 accent lime（每屏至多一处
+   亮色的配额留给别处，DESIGN.md §2）。
+   data-tone 是给下一个任务（卡死态转红）留的色彩钩子：颜色按属性选，组件层不写死任何红。 */
+.act-hero-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: #8b7cf6;
+  animation: act-hero-pulse 1.6s ease-in-out infinite;
+}
+@keyframes act-hero-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+/* 进度条。L10：条读的是 agent 工作阶段，**且界面上没有百分比数字**——所以这里只有一个填充块，
+   没有任何 ::after content 计数器（写 content: attr(...) 会从后门把百分比加回界面上，
+   那正是裁决要消掉的东西）。 */
+.act-hero-bar {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.09);
+}
+.act-hero-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-text-secondary);
+  /* 阶段推进时平滑滑过去而不是跳。stage 是单调不倒退的（stage.ts 的 advanceStage），
+     所以这个 transition 永远只往右走。 */
+  transition: width 400ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* 不定态族（realign/translate——工具序列未调研，凭空给权重就是编造）：一段固定宽度的亮块
+   来回扫，表达"在干活"而不谎报"走到哪了"。宽度由这里的 CSS 给，组件层刻意**不给 style.width**。 */
+.act-hero-bar[data-mode='indeterminate'] .act-hero-bar-fill {
+  width: 34%;
+  transition: none;
+  animation: act-hero-sweep 1.8s ease-in-out infinite;
+}
+@keyframes act-hero-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(294%); }
+}
+.act-hero-facts {
+  width: 100%;
+}
+.act-hero-facts > * {
+  /* ink 弱（DESIGN.md §2 的 --color-text-gray）。Text 的 color 枚举里没有 gray，
+     所以这一档只能在 CSS 里给——不是绕过设计系统，是补它没暴露的那一档。 */
+  color: var(--color-text-gray);
+}
+@media (prefers-reduced-motion: reduce) {
+  .act-hero-pulse,
+  .act-hero-bar[data-mode='indeterminate'] .act-hero-bar-fill {
+    animation: none;
+  }
+  .act-hero-bar-fill { transition: none; }
+}

@@ -1,8 +1,24 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
+// styles.css 的原文注入编译期常量（2026-07-31）。
+//
+// 为什么需要：几条产品裁决的**真身在 CSS 里**（海报 2:3、不定态动画、脉动点非黄色），
+// 只断言"类名在场"锁不住它们——把 CSS 改成 16/9 不会让任何测试变红，那是假保护。
+//
+// 为什么走 define 而不是别的：
+//  - `import '…css?raw'` 在 vitest 里**恒返回空字符串**（它对 CSS 走 css:false 的处理链）。
+//    实测踩过：三条断言因此全部变成永假。
+//  - 测试里 `node:fs` 会破 tsconfig 的 `types` 白名单（web 是浏览器侧工程，只放
+//    vitest/globals 与 jest-dom）。
+// define 在构建期完成替换，运行时不需要任何模块，也不碰类型白名单。
+const STYLES_CSS = readFileSync(resolve(__dirname, 'src/styles.css'), 'utf8')
+
 export default defineConfig({
   plugins: [react()],
+  define: { __STYLES_CSS__: JSON.stringify(STYLES_CSS) },
   test: {
     environment: 'jsdom',
     globals: true,
