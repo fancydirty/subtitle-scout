@@ -4,8 +4,9 @@
 //
 // 用户对这块的每个细节都亲自定过。下面每条裁决都写死在代码里，**不许自行放宽**：
 //
-// L4 必须有图：backdropPath 有值就用 backdropUrl() 做出血背景。（为 null 时这一版只保证不崩，
-//    真正的降级——模糊海报当背景——归下一个任务。）
+// L4 必须有图：backdropPath 有值就用 backdropUrl() 做出血背景。为 null 时走**模糊海报降级**
+//    （任务 5 / spec §8.3 缺口②）：把海报自身放大模糊当背景。判据是 `backdropPath === null`
+//    而**不是**"这是不是一部电影"——见下方 §8.3 段的完整论证。
 //
 // L5 海报必须 2:3 竖版，不是 16:9。用户明确纠正过这一点。落地在 CSS 的
 //    .act-hero-poster{aspect-ratio:2/3}，测试对着这个比值断言。
@@ -37,16 +38,40 @@
 //
 // 铁律③不暴露机械：文案里不出现 agent/orchestrator/worker/pass/asset/ledger。人话由
 //    activity/text.ts 与 workflow/phrases.ts（传送带内部）负责，本层只组装。
+//
+// ── spec §8.3 缺口②：电影没有 backdrop（真实的数据不对称，不是 bug）──────────────
+//
+// 已核实：`series` 表有 poster_path + backdrop_path（src/v2/db.ts:301 的 v-migration 加的），
+// 但 `movies` 表**只有 poster_path**（db.ts:49 建表、:221 的 v15 重建都没有 backdrop 列）。
+// 所以电影条目的 backdropPath **恒为 null**，DTO 注释（api/types.ts:171）里已写明这不是缺失。
+//
+// 裁决：电影 hero **不用背景大图**，改为海报自身的模糊放大版当背景（CSS 里
+// `filter: blur(40px) saturate(1.4)` + `transform: scale(1.2)`），海报本体也放得比剧集路径更大
+// （160px vs 132px），仍是 2:3。
+//
+// 为什么不去补 schema：为一个字段改 migration + 回填全库 TMDB backdrop 是后端工程，而模糊海报
+// 做背景是 Spotify / Apple Music 的成熟做法——视觉上成立，且**零后端改动**。
+//
+// ⚠️ 判据是 `backdropPath === null`，**不是** "movieName 非空"。这个区别是刻意的：
+//  - 缺的是**图片**这个资源，不是"电影"这个种类。将来若给 movies 补了 backdrop，这段代码自动
+//    切回正常出血背景，不需要有人回来改判据（也就不会漏改）。
+//  - 反向也成立：某部剧集 backdrop 查无（TMDB 没有图/未富化）时，它同样该拿模糊海报兜底，
+//    而不是留一块死黑。按 movieName 判会让这类剧集掉进"没有背景层"的空洞。
+//  - 文案分族（"第 N 季" vs "这部电影"）走的是另一个判据（movieId/movieName，见 text.ts 的
+//    TargetKind 注释）——两件事两个判据，任一侧演化不拖坏另一侧。
+//
+// 海报也为 null（图都没有）时：不渲染任何背景层（模糊一个不存在的 URL 没有意义），海报框由
+// PosterThumb 走首字母占位。hero 本体完整，不崩。
 import { Text } from '@astryxdesign/core/Text'
 import { VStack } from '@astryxdesign/core/VStack'
 import { HStack } from '@astryxdesign/core/HStack'
-import { backdropUrl } from '../api/client.js'
+import { backdropUrl, posterUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import type { WorkflowRunningWorkerDTO } from '../api/types.js'
 import { PosterThumb } from '../library/PosterThumb.js'
 import { ConveyorFeed } from './ConveyorFeed.js'
 import { stageFromTrail, stageModeOf } from './stage.js'
-import { formatElapsed, heroSubtitle, missingLine } from './text.js'
+import { formatElapsed, heroSubtitle, missingLine, type TargetKind } from './text.js'
 
 interface Props {
   running: WorkflowRunningWorkerDTO
@@ -69,22 +94,43 @@ export function ActivityHero({ running, missingCount, now }: Props) {
   if (mode === 'hidden') return null
 
   const bd = backdropUrl(running.backdropPath)
-  // 剧名缺失（空名/查无）时降级显示 seriesId——诚实兜底，同 DTO 注释里写明的口径。
-  const title = running.seriesName ?? running.seriesId ?? ''
-  const subtitle = heroSubtitle(running.taskType, running.seasons, lang)
+  // 模糊海报降级：backdropPath 为 null 时（电影恒如此，见文件头 §8.3）用海报自身当背景。
+  // 两者互斥——bd 有值就绝不走模糊分支，反之亦然。
+  const blurred = bd ? null : posterUrl(running.posterPath)
+  // 目标种类：文案分族用（"第 N 季" vs "这部电影"）。**独立于**上面那个图片判据。
+  // movieId 优先于 movieName：id 是身份键（恒在场），name 可能因未富化而为 null。
+  const kind: TargetKind = running.movieId !== null || running.movieName !== null ? 'movie' : 'series'
+  // 剧名缺失（空名/查无）时降级显示 id——诚实兜底，同 DTO 注释里写明的口径。电影路径取
+  // movieName/movieId，否则会给一部电影显示 seriesId（恒 null → 空标题）。
+  const title = kind === 'movie'
+    ? (running.movieName ?? running.movieId ?? '')
+    : (running.seriesName ?? running.seriesId ?? '')
+  const subtitle = heroSubtitle(running.taskType, running.seasons, lang, kind)
   const elapsed = formatElapsed(now - running.startedAtLease, lang)
   // 条宽：**只喂给 CSS 的 width**，绝不进文本节点（裁决 L10 + 铁律②）。indeterminate 族不算
   // 宽度——CSS 用一条来回扫的动画表达"在干活但不谎报走到哪了"。
   const width = mode === 'staged' ? stageFromTrail(running.trail) : null
 
   return (
-    <div className="act-hero" data-testid="activity-hero">
+    // data-art 让 CSS 知道走的是哪条美术路径：'backdrop' 正常出血、'blur-poster' 模糊海报降级、
+    // 'none' 图都没有。海报尺寸按它选（模糊分支下海报更大，因为背景不再承担叙事）。
+    <div className="act-hero" data-testid="activity-hero" data-art={bd ? 'backdrop' : blurred ? 'blur-poster' : 'none'}>
       {bd ? (
         <div
           className="act-hero-backdrop"
           style={{ backgroundImage: `url(${bd})` }}
           aria-hidden="true"
           data-testid="activity-hero-backdrop"
+        />
+      ) : null}
+      {/* 模糊海报背景（spec §8.3 电影降级）。blur/scale 全在 CSS 里——比例与滤镜是这条裁决的
+          真身，测试对着 CSS 源文件断言 blur 确实在场。 */}
+      {blurred ? (
+        <div
+          className="act-hero-blur-poster"
+          style={{ backgroundImage: `url(${blurred})` }}
+          aria-hidden="true"
+          data-testid="activity-hero-blur-poster"
         />
       ) : null}
       {/* 左侧渐变遮罩压暗：让排印在任何一张背景图上都可读。纯装饰，aria-hidden。 */}

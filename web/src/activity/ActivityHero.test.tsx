@@ -84,12 +84,20 @@ const CSS = __STYLES_CSS__
 
 /** 从 styles.css 里读某个选择器块的某条声明——jsdom 不加载外部 CSS，而海报比例这条裁决的真身
  *  就写在 CSS 里，必须直接读源文件才锁得住。 */
+/** 从 styles.css 里读某个选择器块的某条声明——jsdom 不加载外部 CSS，而海报比例这条裁决的真身
+ *  就写在 CSS 里，必须直接读源文件才锁得住。
+ *
+ *  先剥注释（2026-07-31 补）：原版直接扫原文，于是**声明前面隔着一条注释就读不到**——
+ *  `background-position: …;` + 注释 + `filter: …` 这种（styles.css 里到处都是这个写法）会让
+ *  `(?:^|;)\s*filter` 匹配不上，返回 null 被误读成"这条声明不存在"。剥注释同时也堵掉反向的
+ *  坑：注释里写一句 `aspect-ratio: 16/9` 不该被当成真声明。 */
 function cssDecl(selector: string, prop: string): string | null {
   const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const block = new RegExp(`${esc}\\s*\\{([^}]*)\\}`).exec(CSS)?.[1]
   if (!block) return null
+  const bare = block.replace(/\/\*[\s\S]*?\*\//g, '')
   // `(?:^|;)`：只认声明起始位置的属性名，避免 background 撞上 background-position 之类的前缀同名。
-  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(block)
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(bare)
   return m ? m[1]!.trim() : null
 }
 
@@ -143,10 +151,10 @@ describe('ActivityHero：背景大图（用户裁决 L4「必须有图」）', (
     expect(bd!.style.backgroundImage).toContain('w1280')
   })
 
-  it('backdropPath 为 null → 不崩，剧名/传送带/进度条仍在（真正的降级归下一个任务）', () => {
+  it('backdropPath 为 null → 不走出血层（改走模糊海报，见下一组），hero 本体完整', () => {
     const { container } = renderHero({ backdropPath: null })
     expect(container.querySelector('.act-hero-backdrop')).toBeNull()
-    // 不留灰空图，但 hero 本体完整——这一版只保证不崩。
+    // 不留灰空图，且 hero 本体完整。
     expect(screen.getByText('绝命毒师')).toBeInTheDocument()
     expect(screen.getByRole('log')).toBeInTheDocument()
     expect(screen.getByTestId('activity-hero-bar')).toBeInTheDocument()
@@ -155,6 +163,129 @@ describe('ActivityHero：背景大图（用户裁决 L4「必须有图」）', (
   it('poster 与 backdrop 同时为 null → 仍不崩（PosterThumb 走首字母占位）', () => {
     expect(() => renderHero({ posterPath: null, backdropPath: null })).not.toThrow()
     expect(screen.getByTestId('activity-hero')).toBeInTheDocument()
+  })
+})
+
+// ── 任务 5：电影 hero 的降级路径（spec §8.3 缺口②）─────────────────────────────
+//
+// 真实约束：`movies` 表没有 backdrop_path 列（src/v2/db.ts:49/221），所以电影条目的
+// backdropPath **恒为 null**。裁决是走"海报自身的模糊放大版当背景"。
+//
+// 这一组用例锁的核心是**判据本身**：走模糊分支的条件是 `backdropPath === null`，而不是
+// "这是不是一部电影"。所以下面既有"电影 → 模糊"，也有反向的两条：
+//   - 电影**有了** backdrop（将来补了列）→ 必须走正常出血，不是模糊；
+//   - 剧集**没有** backdrop（TMDB 查无）→ 也走模糊，不是留一块死黑。
+// 把判据改成看 movieName 的话，后两条会红——那正是这组用例存在的理由。
+describe('ActivityHero：电影降级路径（模糊海报当背景，spec §8.3）', () => {
+  /** 一部电影：movieId/movieName 在场，seriesId/seriesName 为 null，backdropPath 恒 null。 */
+  const movie: Partial<WorkflowRunningWorkerDTO> = {
+    seriesId: null,
+    seriesName: null,
+    movieId: 'tmdb:27205',
+    movieName: '盗梦空间',
+    posterPath: '/inception.jpg',
+    backdropPath: null,
+    seasons: null,
+  }
+
+  it('backdropPath 为 null → 走模糊海报分支（背景图是海报本身，不是 backdrop）', () => {
+    const { container } = renderHero(movie)
+    const blur = container.querySelector<HTMLElement>('.act-hero-blur-poster')
+    expect(blur).toBeTruthy()
+    expect(blur!.style.backgroundImage).toContain('/inception.jpg')
+    // 走 posterUrl（w400）而不是 backdropUrl（w1280）——模糊背景不需要大图，且 movie 压根
+    // 没有 backdrop 可取。
+    expect(blur!.style.backgroundImage).toContain('w400')
+    // 正常出血层必须**不在场**：两条路径互斥，同时渲染会叠成一团糊。
+    expect(container.querySelector('.act-hero-backdrop')).toBeNull()
+    expect(container.querySelector<HTMLElement>('.act-hero')!.dataset.art).toBe('blur-poster')
+  })
+
+  it('CSS 里模糊分支确有 blur 滤镜与放大（这条裁决的真身在 CSS，只锁类名是假保护）', () => {
+    const filter = cssDecl('.act-hero-blur-poster', 'filter')
+    expect(filter).not.toBeNull()
+    expect(filter!).toContain('blur(40px)')
+    expect(filter!).toContain('saturate(1.4)')
+    expect(cssDecl('.act-hero-blur-poster', 'transform')).toBe('scale(1.2)')
+  })
+
+  it('电影海报仍是 2:3 竖版（L5 不因分支而变），只是更大（160px）', () => {
+    const { container } = renderHero(movie)
+    expect(container.querySelector('.act-hero-poster')).toBeTruthy()
+    // aspect-ratio 由 .act-hero-poster 统一给，模糊分支不覆盖它——所以这里断言的是同一条规则。
+    expect(cssDecl('.act-hero-poster', 'aspect-ratio')!.replace(/\s+/g, '')).toBe('2/3')
+    // 模糊分支的宽度覆盖：背景不再承担叙事，主视觉重量交给海报本体。
+    expect(cssDecl(".act-hero[data-art='blur-poster'] .act-hero-poster", 'width')).toBe('160px')
+    // 反向锁：这条覆盖规则里**不许**出现 aspect-ratio——写了就意味着有第二个比例来源，
+    // 它随时可能被改成 16/9 而上面那条 2:3 断言照绿。
+    expect(cssDecl(".act-hero[data-art='blur-poster'] .act-hero-poster", 'aspect-ratio')).toBeNull()
+  })
+
+  it('电影副标题说「这部电影」，不说季（电影没有季，说「有缺口的每一季」是假话）', () => {
+    const { container } = renderHero(movie)
+    expect(screen.getByText('正在找这部电影的字幕')).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/每一季|第 .* 季|season/i)
+    cleanup()
+    renderHero(movie, { lang: 'en' })
+    expect(screen.getByText('Looking for subtitles for this movie')).toBeInTheDocument()
+  })
+
+  it('电影标题走 movieName（不是恒 null 的 seriesName），缺名时降级 movieId', () => {
+    renderHero(movie)
+    expect(screen.getByText('盗梦空间')).toBeInTheDocument()
+    cleanup()
+    renderHero({ ...movie, movieName: null })
+    expect(screen.getByText('tmdb:27205')).toBeInTheDocument()
+  })
+
+  // ── 判据反向锁：分支条件是 backdropPath，不是「是不是电影」──────────────────
+  it('电影**有** backdropPath（将来补了列）→ 自动切回正常出血，不走模糊', () => {
+    // 这条是判据选择的全部理由：数据一旦补上，代码不需要有人回来改。
+    const { container } = renderHero({ ...movie, backdropPath: '/inception-bd.jpg' })
+    const bd = container.querySelector<HTMLElement>('.act-hero-backdrop')
+    expect(bd).toBeTruthy()
+    expect(bd!.style.backgroundImage).toContain('/inception-bd.jpg')
+    expect(bd!.style.backgroundImage).toContain('w1280')
+    expect(container.querySelector('.act-hero-blur-poster')).toBeNull()
+    expect(container.querySelector<HTMLElement>('.act-hero')!.dataset.art).toBe('backdrop')
+    // 文案仍走电影分族——图片判据与文案判据是**两件事**，切了图不该切文案。
+    expect(screen.getByText('正在找这部电影的字幕')).toBeInTheDocument()
+  })
+
+  it('剧集**没有** backdropPath（TMDB 查无）→ 同样走模糊海报，不留一块死黑', () => {
+    // 缺的是图片这个资源，不是"电影"这个种类——所以剧集查无 backdrop 时也该拿海报兜底。
+    const { container } = renderHero({ backdropPath: null, posterPath: '/poster.jpg' })
+    const blur = container.querySelector<HTMLElement>('.act-hero-blur-poster')
+    expect(blur).toBeTruthy()
+    expect(blur!.style.backgroundImage).toContain('/poster.jpg')
+    // 但文案仍是剧集分族（有季）——再次证明两个判据独立。
+    expect(screen.getByText('正在找第 12 季的字幕')).toBeInTheDocument()
+  })
+
+  it('poster 也为 null（图都没有）→ 不崩，不渲染任何背景层，海报框走首字母占位', () => {
+    const { container } = renderHero({ ...movie, posterPath: null })
+    expect(container.querySelector('.act-hero-backdrop')).toBeNull()
+    // 模糊一个不存在的 URL 没有意义——background-image:url(null) 会打一个 404 请求，
+    // 且模糊后是一块纯色，不如干净地不渲染。
+    expect(container.querySelector('.act-hero-blur-poster')).toBeNull()
+    expect(container.querySelector<HTMLElement>('.act-hero')!.dataset.art).toBe('none')
+    // hero 本体完整：标题/传送带/进度条都在，海报框由 PosterThumb 走首字母占位。
+    expect(screen.getByText('盗梦空间')).toBeInTheDocument()
+    expect(screen.getByRole('log')).toBeInTheDocument()
+    expect(screen.getByTestId('activity-hero-bar')).toBeInTheDocument()
+    expect(container.querySelector('.act-hero-poster .library-poster-fallback')).toBeTruthy()
+  })
+
+  it('电影路径同样不暴露机械、不显示工程值（铁律②③在两条美术路径上都成立）', () => {
+    for (const lang of ['zh', 'en'] as const) {
+      const { container } = renderHero(movie, { lang })
+      const text = (container.textContent ?? '').toLowerCase()
+      for (const word of ['agent', 'orchestrator', 'worker', 'pass', 'asset', 'ledger']) {
+        expect(text).not.toContain(word)
+      }
+      expect(text).not.toContain('%')
+      cleanup()
+    }
   })
 })
 

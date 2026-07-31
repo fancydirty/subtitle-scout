@@ -1552,3 +1552,123 @@
   }
   .act-hero-bar-fill { transition: none; }
 }
+
+/* ── 活动页 hero 的电影降级路径（ActivityHero 任务 5 / spec §8.3 缺口②）──────────
+   已核实的真实约束：`series` 表有 poster_path + backdrop_path，但 `movies` 表**只有
+   poster_path**（src/v2/db.ts:49 建表、:221 的 v15 重建都没有 backdrop 列，只有 :301 给
+   series 加过）。所以电影条目的 backdropPath 恒为 null——那不是数据缺失，是 schema 的真实不
+   对称。
+
+   裁决：电影 hero 不用背景大图，改用**海报自身的模糊放大版**当背景。Spotify / Apple Music
+   的成熟做法（"Now Playing" 背景就是这么来的），视觉上成立，且零后端改动——不为一个缺失字段
+   去改 migration + 回填全库 TMDB。
+
+   判据在 tsx 里是 `backdropPath === null`（不是"这是不是电影"）：将来给 movies 补了
+   backdrop 就自动切回上面那条 .act-hero-backdrop，不需要有人回来改判据。 */
+.act-hero-blur-poster {
+  position: absolute;
+  /* inset 为负 + scale：模糊会把边缘晕成半透明，露出底色是一圈脏边。往外撑一圈把边缘推出
+     可视区，overflow:hidden（.act-hero 已有）负责裁掉。 */
+  inset: -12%;
+  background-size: cover;
+  background-position: center center;
+  /* 这两个值是 spec §8.3 逐字指定的。blur 40px 把海报化成纯色场（不再能辨认内容——背景不该
+     跟前景的海报抢注意力），saturate 1.4 补回模糊吃掉的彩度。 */
+  filter: blur(40px) saturate(1.4);
+  transform: scale(1.2);
+  z-index: 0;
+}
+/* 模糊分支下海报放得更大（160px vs 剧集路径的 132px）：背景已经不承担叙事（它只是一块色场），
+   所以主视觉的重量必须由海报本体接过来。**仍然是 2:3**——L5 那条裁决不因分支而变，
+   aspect-ratio 由 .act-hero-poster 统一给，这里只改宽度。 */
+.act-hero[data-art='blur-poster'] .act-hero-poster {
+  width: 160px;
+}
+
+/* ── 活动页的队列段 / 刚刚完成段（ActivityQueue + ActivityDone，任务 6）───────────
+   spec §3 骨架的下两块。两段共用一套行几何（.act-row*）：hero:队列的图片尺寸比 ≈ 5:1
+   （hero 132~160px vs 这里 38px）—— **层级靠图片大小编码**，这条裁决的直接推论是队列行
+   不需要徽章/状态列/术语，所以下面没有任何 badge/chip 样式，只有一行灰字。 */
+.act-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 0 4px;
+  /* 段与段之间一条发丝线（spec 骨架图里那道 ├───┤）。低墨排：分隔靠线不靠底色块。 */
+  border-top: 1px solid var(--color-border);
+}
+.act-section-head {
+  width: 100%;
+  padding: 0 4px 6px;
+}
+/* 「自动检查已开启」小标签：发丝线胶囊 + mono 小字，同 .cmdk-trigger 的既有语言。
+   中性色——它报的是"一切照常"，不是警示（L1：黄是警示色，这里绝不能用）。 */
+.act-auto-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-gray);
+}
+.act-row {
+  width: 100%;
+  padding: 5px 4px;
+  border-radius: 8px;
+}
+.act-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+/* L5 队列/完成行的海报：**2:3 竖版、38px 宽**（用户明确纠正过 16:9）。这两个值是这条裁决的
+   真身，ActivityQueue.test.tsx 直接读 CSS 源文件断言它们——改成 16/9 或改宽度会立刻变红。 */
+.act-row-poster {
+  aspect-ratio: 2 / 3;
+  width: 38px;
+  flex: none;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+}
+.act-row-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.act-row-poster .library-poster-fallback {
+  font-size: 13px;
+}
+.act-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.act-row-fact {
+  color: var(--color-text-gray);
+}
+.act-row-status,
+.act-row-time {
+  flex: none;
+  color: var(--color-text-gray);
+}
+/* 完成行的 6px 语义点——**只有绿和红，没有黄**（铁律①）。neutral 是灰（spec §6 的三档），
+   不是黄不是蓝；"没找到能放心用的字幕"落在这一档（铁律④：等待/失败是面向下一步的中性事实）。
+   红只染这个点，**不铺块**——所以这里没有任何 background 是红色的行/卡片规则。
+   tone 由 decisionPhrase 给，与语言无关，故这三条在中英同时成立。 */
+.act-row-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--color-text-gray);
+}
+.act-row-dot[data-tone='ok'] {
+  background: var(--color-text-green);
+}
+.act-row-dot[data-tone='bad'] {
+  background: var(--color-text-red);
+}
+.act-row-dot[data-tone='neutral'] {
+  background: var(--color-text-gray);
+}

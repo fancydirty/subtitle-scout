@@ -25,6 +25,16 @@ function verbOf(taskType: string | null): Verb {
   }
 }
 
+/** 目标是剧还是电影。
+ *
+ *  为什么这个分族与「图片走 backdrop 还是模糊海报」是**两个独立判据**（任务 5 的关键区分）：
+ *   - 图片路径看 `backdropPath === null`（数据可得性）——将来给 movies 补了 backdrop 就自动切回
+ *     正常出血背景，不需要改代码。
+ *   - 文案分族看**目标种类**（这是不是一部电影）——电影永远没有"第 N 季"，就算某天它有了
+ *     backdrop，说"有缺口的每一季"照样是假话。
+ *  把两者绑在一个判据上，任一侧演化都会拖坏另一侧。 */
+export type TargetKind = 'series' | 'movie'
+
 /** 季范围的人话措辞。
  *
  *  `seasons` 的语义**不是字面全季**（orchestratorAgent.tools.ts:247 的工具描述原文：omit
@@ -54,8 +64,13 @@ export function heroSubtitle(
   taskType: string | null,
   seasons: readonly number[] | null,
   lang: Lang,
+  kind: TargetKind = 'series',
 ): string {
-  const scope = seasonScope(seasons, lang)
+  // 电影没有季。`seasons` 对 movie 目标恒无意义（编排层给 movie 派活时不带季），说
+  // "有缺口的每一季"是**假话**——所以这里换成"这部电影"，与季语义彻底分开。
+  const scope = kind === 'movie'
+    ? (lang === 'zh' ? '这部电影' : 'this movie')
+    : seasonScope(seasons, lang)
   if (lang === 'zh') {
     switch (verbOf(taskType)) {
       case 'find': return `正在找${scope}的字幕`
@@ -106,4 +121,84 @@ export function formatElapsed(deltaMs: number, lang: Lang): string {
 export function missingLine(count: number, lang: Lang): string {
   if (lang === 'zh') return `${count} 集缺字幕`
   return `${count} episode${count === 1 ? '' : 's'} missing subtitles`
+}
+
+/** 电影队列行的事实句——"缺字幕" / "missing subtitles"，**不带数字**。
+ *
+ *  为什么不复用 missingLine：`WorkflowPendingMovieDTO.missing` 是 `0 | 1`（一部电影只有一条
+ *  字幕轨，要么缺要么不缺），套进 missingLine 会输出"1 集缺字幕"——**电影没有集**，那是假话
+ *  （DESIGN.md §8）。这里给不带量词的事实句。
+ *
+ *  missing===0（该行只因停牌在队列里）时返回 null → 调用方**不渲染那句**：说"缺字幕"是假话，
+ *  编一句"等待复查"又会给队列段加出第二档状态词（文件头论证过队列不该有状态列）。 */
+export function movieMissingLine(missing: number, lang: Lang): string | null {
+  if (missing <= 0) return null
+  return lang === 'zh' ? '缺字幕' : 'missing subtitles'
+}
+
+// ── 任务 6：队列段 + 刚刚完成段的文案 ─────────────────────────────────────────
+//
+// 同上面三句的理由留在 text.ts 而不进 i18n 表：全部要嵌运行期数字（季号、条目数、相对时间），
+// 而 useT 的 t() 故意不支持插值。
+
+/** 单季标签——队列行的"第 N 季"。
+ *
+ *  与 seasonScope 分开是刻意的：那个说的是"这次 run 覆盖哪几季"（可能多季、可能是"有缺口的
+ *  每一季"），这个说的是**队列里这一行对应的那一季**（pending 的 series[] 是逐季一行，
+ *  `WorkflowPendingSeriesDTO.season` 是单个 number）。两个概念共用一个函数会逼其中一边
+ *  接受它不需要的 null/数组语义。 */
+export function seasonLabel(season: number, lang: Lang): string {
+  return lang === 'zh' ? `第 ${season} 季` : `Season ${season}`
+}
+
+/** 队列段/完成段的小标题——"接下来 (3)" / "刚刚完成 (2)"。
+ *
+ *  括号里的计数是**条目数事实**（铁律②允许：不是分数/偏移量/百分比），且它是 Steam 下载页
+ *  "Up next (n)" 的既有读法——用户看的就是"还剩几件事"。 */
+export function queueHeading(count: number, lang: Lang): string {
+  return lang === 'zh' ? `接下来 (${count})` : `Up next (${count})`
+}
+export function doneHeading(count: number, lang: Lang): string {
+  return lang === 'zh' ? `刚刚完成 (${count})` : `Just finished (${count})`
+}
+
+/** 队列行右侧的状态词——**只有一档**："等待中"。
+ *
+ *  为什么不分档（不写"已停牌"/"稍后重试"之类）：spec §3 的裁决是 hero:队列图片尺寸比 ~5:1，
+ *  **层级靠图片大小编码**，所以队列行"不需要徽章/状态列/术语"。队列里的每一行客观上都只是
+ *  "还没轮到"，再细分就是把 hero 的信息密度搬到低墨排区。
+ *
+ *  颜色是灰（spec §6 的三档里的中性档），**不是黄**——铁律①只有绿和红，等待是中性事实。 */
+export function queuedLabel(lang: Lang): string {
+  return lang === 'zh' ? '等待中' : 'queued'
+}
+
+/** 完成行的"查看"动作标签。spec §3 里它对位 Steam 的 `▶ Play`——一个**有用的动作**
+ *  （去看这个条目现在什么样），不是"忽略/关掉"。 */
+export function openLabel(lang: Lang): string {
+  return lang === 'zh' ? '查看' : 'View'
+}
+
+/** 完成行的相对时间——"2 分钟前" / "2m ago"。
+ *
+ *  为什么不复用 workflow/time.ts 的 relativeAgo：那份**全英文且文件头明写"故意不进 i18n 表"**
+ *  ——它是 Workflow 三泳道那个工程排障页的读数口径。活动页是"缓解焦虑的运行态展示"，
+ *  2026-07-30 用户裁决（DESIGN.md §7）已把它改成跟随 UI 语言。给它加 lang 参数会把 Workflow 区
+ *  那一族全部拖进双语化（那些调用点的既有裁决恰恰是"永不本地化"），所以这里独立一份——同
+ *  formatElapsed 的既有理由。
+ *
+ *  英文档位与 relativeAgo 逐字一致（just now / Ns / Nm / Nh / Nd ago），中文对应平移：
+ *  同一个概念在两个区域读起来不该是两套刻度。
+ *
+ *  负 delta（finishedAt 晚于 now——时钟漂移）clamp 到 0，同 formatElapsed 的防御口径。 */
+export function relativeFinished(deltaMs: number, lang: Lang): string {
+  const s = Math.max(0, Math.floor(deltaMs / 1000))
+  if (s < 5) return lang === 'zh' ? '刚刚' : 'just now'
+  if (s < 60) return lang === 'zh' ? `${s} 秒前` : `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return lang === 'zh' ? `${m} 分钟前` : `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return lang === 'zh' ? `${h} 小时前` : `${h}h ago`
+  const d = Math.floor(h / 24)
+  return lang === 'zh' ? `${d} 天前` : `${d}d ago`
 }
