@@ -13,7 +13,7 @@ import { makeZimukuAdapter } from './fetch/zimukuAdapter.js'
 import { makeSubhdAdapter } from './fetch/subhdAdapter.js'
 import { makeJimakuAdapter } from './fetch/jimakuAdapter.js'
 import { makeModel } from '../agent/llm.js'
-import { solveNumericCaptcha } from '../agent/solveNumericCaptcha.js'
+import { makeCaptchaSolver } from './captchaSolver.js'
 
 function requireEnvForZimuku(name: string): string {
   const v = process.env[name]
@@ -52,18 +52,23 @@ export async function buildAdapters(emit: (e: FetchEvent) => void = () => {}): P
   }
 
   if (process.env.ZIMUKU_ENABLED === 'true') {
-    // 验证码破解需要多模态 LLM——一次朴素 generateText 调用(solveNumericCaptcha 内部自带
-    // fail-fast + 单次重试),不再走强制 tool-call 的 LlmRuntime/探测/档案磁盘缓存那一整套
-    // (v3 old-pipeline-retirement Wall ①:captcha 是 v3 唯一还挂在那个栈上的调用点)。只在真的
-    // 撞见挑战页时才会被调用,不是每次 search/resolve 都要打一次 LLM。
+    // 验证码破解：优先模板匹配（0 token），未命中时降级到多模态 LLM。
+    // 只在真的撞见挑战页时才会被调用，不是每次 search/resolve 都要打一次 LLM。
     const model = makeModel({
       baseUrl: requireEnvForZimuku('LLM_BASE_URL'),
       apiKey: requireEnvForZimuku('LLM_API_KEY'),
       model: requireEnvForZimuku('LLM_MODEL'),
     })
+    const solve = makeCaptchaSolver({ model, emit })
     const client = new ZimukuClient({
       sessionStore: new ZimukuSessionStore(join(cacheRoot, 'zimuku-session')),
-      solve: async png => solveNumericCaptcha(model, png),
+      solve: async png => {
+        const result = await solve(png)
+        if (result.digits === null) {
+          throw new Error('验证码识别失败：模板未命中且 LLM 也无法识别')
+        }
+        return { digits: result.digits }
+      },
       onApiCall: r => emit({ event: 'api_call', provider: 'zimuku', ...r }),
     })
     adapters.push(makeZimukuAdapter(client))
