@@ -23,7 +23,8 @@ describe('captchaTemplateSolver', () => {
   ]
 
   test.each(fixtures)('识别 $file → $expected', ({ file, expected }) => {
-    const bytes = readFileSync(`/tmp/zimuku-captcha-fixtures/${file}`)
+    // 与 yunsuo.test.ts 同一惯例：vitest cwd=仓库根，相对路径读 fixture
+    const bytes = readFileSync(`fixtures/zimuku/captcha/${file}`)
     const result = solveByTemplate(new Uint8Array(bytes))
     expect(result).toBe(expected)
   })
