@@ -264,9 +264,17 @@ export interface TriageDTO {
  *  的 SETTINGS_KEYS/SettingsDTO 一致。每键 string|null，null=未设置（前端自行显示默认占位，
  *  见 web/src/settings/text.ts）。 */
 export type SettingsKey =
-  | 'target_languages' | 'hardsub_mode' | 'exclude_extras' | 'trace_retention_days' | 'scan_interval_ms'
+  | 'target_languages'
   | 'ai_translate_enabled'
-export type SettingsDTO = Record<SettingsKey, string | null>
+  | 'hardsub_mode'
+  | 'exclude_extras'
+  | 'scan_interval_ms'
+  | 'trace_retention_days'
+  | 'engine_enabled'
+  | 'provider:SUBHD_ENABLED'
+  | 'provider:ZIMUKU_ENABLED'
+
+export type SettingsDTO = Record<SettingsKey, string | null> & { engineEnabled: boolean }
 
 /** dashboard-F6：PUT /api/v2/settings 请求体——部分键值对象（全 string），与
  *  src/dashboard/apiV2.ts 的 updateSettings 输入形状一致（未列出的键不改动）。 */
@@ -420,3 +428,51 @@ export interface SubtitleCompareDTO {
   /** 平移能不能修好它 = 给不给校正按钮。后端判，前端不再自己算。 */
   fixable: boolean
 }
+
+// ---------- Spec A 启动面 DTO（镜像 src/dashboard/setupApi.ts 的线形；键集合与 spec A §4.4 示例 JSON 逐键对齐） ----------
+
+export type SecretSource = 'env' | 'db' | 'none'
+
+/** 9 个密钥白名单（spec §4.1 枚举值；正文"10 个"系笔误）。与后端 SECRET_NAMES 同序。 */
+export const SECRET_NAMES = [
+  'TMDB_API_KEY',
+  'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
+  'ASSRT_TOKEN',
+  'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD',
+  'JIMAKU_API_KEY',
+] as const
+export type SecretName = (typeof SECRET_NAMES)[number]
+
+export type ValidateTarget = 'tmdb' | 'llm' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
+
+export interface ValidateResultDTO { ok: boolean; detail?: string; error?: string }
+
+export interface SetupSecretStateDTO { satisfied: boolean; source: SecretSource; masked: string | null }
+
+export interface SetupStatusDTO {
+  bootstrapComplete: boolean
+  tmdb: SetupSecretStateDTO
+  llm: { satisfied: boolean; source: SecretSource; model: string | null }
+  providers: {
+    assrt: SetupSecretStateDTO
+    opensubtitles: { satisfied: boolean; source: SecretSource; hasUsername: boolean; masked: string | null }
+    jimaku: SetupSecretStateDTO
+    subhd: { enabled: boolean; source: SecretSource }
+    zimuku: { enabled: boolean; source: SecretSource; captchaReady: boolean }
+  }
+  roots: { count: number }
+  engineEnabled: boolean
+}
+
+export interface SecretTestDTO { ok: boolean; at: number; error?: string }
+
+export interface ProviderRowDTO {
+  id: ValidateTarget
+  secrets: { name: SecretName; set: boolean; source: SecretSource; masked: string | null }[]
+  lastTest: SecretTestDTO | null
+}
+
+export interface ProvidersDTO { providers: ProviderRowDTO[] }
+
+/** PUT /api/v2/settings/secrets 的 200 体；400 时走 client.ts 既有 {error} 抽取，进不了本类型。 */
+export interface PutSecretResultDTO { ok: boolean; name?: SecretName; action?: 'set' | 'deleted' }

@@ -11,6 +11,8 @@ vi.mock('../api/client.js', () => ({
       target_languages: null, hardsub_mode: null, exclude_extras: null,
       trace_retention_days: null, scan_interval_ms: null,
       ai_translate_enabled: body.ai_translate_enabled ?? null,
+      engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+      engineEnabled: false,
     } satisfies SettingsDTO)),
   },
 }))
@@ -23,6 +25,8 @@ function asyncOf<T>(data: T): Async<T> {
 const baseSettings: SettingsDTO = {
   target_languages: null, hardsub_mode: null, exclude_extras: null,
   trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+  engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+  engineEnabled: false,
 }
 
 function deployWith(gate: { baseUrl?: boolean; model?: boolean; key?: boolean }): DeploySettingsDTO {

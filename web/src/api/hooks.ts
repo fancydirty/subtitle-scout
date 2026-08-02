@@ -8,6 +8,7 @@ import type {
   SettingsDTO, DeploySettingsDTO, MediaRootDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
+  SetupStatusDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -583,6 +584,61 @@ export function useSubtitleCompare(itemId: string | null): Async<SubtitleCompare
       })
     return () => ctrl.abort()
   }, [itemId, nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** setup/status：BootstrapGate 与 EngineBanner 共用。15s 轮询——engineEnabled 翻转 ≤15s 上屏
+ *  （spec A §5.5 的"下 tick 生效"在前端侧的镜像）；可见性暂停与 useLibrary 同样板。 */
+export function useSetupStatus(): Async<SetupStatusDTO> {
+  const [data, setData] = useState<SetupStatusDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.setupStatus()
+      setData(rows)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
 
   return { data, loading, error, reload }
 }

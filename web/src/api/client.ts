@@ -8,6 +8,7 @@ import type {
   TriageDTO,
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
   AuthStatusDTO, AuthSecurityDTO,
+  SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -128,6 +129,14 @@ export const api = {
   runs: (offset: number, limit: number, signal?: AbortSignal) =>
     get<RunHistoryDTO[]>(`/api/v2/runs?offset=${offset}&limit=${limit}`, signal),
   reconcileAll: () => post<ReconcileAllResultDTO>('/api/v2/reconcile-all'),
+  // ---------- Spec A 启动面（BootstrapGate / wizard / Settings Providers 区共用） ----------
+  setupStatus: (signal?: AbortSignal) => get<SetupStatusDTO>('/api/v2/setup/status', signal),
+  setupProviders: (signal?: AbortSignal) => get<ProvidersDTO>('/api/v2/setup/providers', signal),
+  putSecret: (name: SecretName, value: string) =>
+    put<PutSecretResultDTO>('/api/v2/settings/secrets', { name, value }),
+  // credentials 提供 = wizard"先测后存"（服务端测请求体凭据、不落库）；省略 = 测已解析的 env/db 凭据。
+  validateSetup: (target: ValidateTarget, credentials?: Partial<Record<SecretName, string>>) =>
+    post<ValidateResultDTO>('/api/v2/setup/validate', credentials === undefined ? { target } : { target, credentials }),
   // 去 Jellyfin 化 P6：park 救援页——一次性脚手架。
   parked: (signal?: AbortSignal) => get<ParkedItemDTO[]>('/api/parked', signal),
   // dashboard-F2：顶栏新鲜度行 + 侧栏甄别角标共用同一份响应（meta + parked）。

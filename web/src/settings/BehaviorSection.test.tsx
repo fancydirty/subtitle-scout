@@ -12,6 +12,8 @@ import type { SettingsDTO } from '../api/types.js'
 const NULL_SETTINGS: SettingsDTO = {
   target_languages: null, hardsub_mode: null, exclude_extras: null,
   trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+  engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+  engineEnabled: false,
 }
 
 function asyncOf(data: SettingsDTO | null, error: string | null = null): Async<SettingsDTO> {
@@ -82,6 +84,8 @@ describe('BehaviorSection：null 值默认占位', () => {
       asyncOf({
         target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: 'true',
         trace_retention_days: '14', scan_interval_ms: '600000', ai_translate_enabled: 'true',
+        engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+        engineEnabled: false,
       }),
     )
     expect(screen.getByRole('textbox', { name: 'Target languages' })).toHaveValue('zh,en')
