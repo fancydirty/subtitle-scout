@@ -1,6 +1,6 @@
 // src/cli/watchClients.test.ts：spec A §4.2/§4.7 热重建与闸谓词契约。
 import { describe, it, expect, vi } from 'vitest'
-import { makeSecretsWatcher, setupSatisfied, engineEnabled } from './watchClients.js'
+import { makeSecretsWatcher, setupSatisfied, engineEnabled, makeSatisfactionTracker } from './watchClients.js'
 import { makeAdapterConfigResolver } from '../v2/secrets.js'
 
 describe('makeSecretsWatcher（spec §4.2：版本变了才重建）', () => {
@@ -63,5 +63,29 @@ describe('engineEnabled（spec §4.6：fail-open）', () => {
     expect(engineEnabled(() => 'false')).toBe(false)
     expect(engineEnabled(() => '0')).toBe(true)
     expect(engineEnabled(() => 'FALSE')).toBe(true)   // 只有精确 'false' 才关
+  })
+})
+
+describe('makeSatisfactionTracker（spec §4.7 步 4：点火日志）', () => {
+  it('false→true 记一次 engine live；保持 true 不重复；true→false→true 再记', () => {
+    let s = false
+    const logs: string[] = []
+    const track = makeSatisfactionTracker({ satisfied: () => s, log: (m) => logs.push(m) })
+    track()
+    expect(logs).toHaveLength(0)
+    s = true; track()
+    expect(logs.filter((l) => l.includes('engine live'))).toHaveLength(1)
+    track()
+    expect(logs.filter((l) => l.includes('engine live'))).toHaveLength(1)
+    s = false; track()
+    s = true; track()
+    expect(logs.filter((l) => l.includes('engine live'))).toHaveLength(2)
+  })
+
+  it('初始即 true（现有 env 部署升级）→ 永不记（零打扰：不该有假点火行）', () => {
+    const logs: string[] = []
+    const track = makeSatisfactionTracker({ satisfied: () => true, log: (m) => logs.push(m) })
+    track(); track()
+    expect(logs).toHaveLength(0)
   })
 })

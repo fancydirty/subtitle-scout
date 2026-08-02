@@ -35,6 +35,7 @@ import {
   shiftSubtitleTiming, revertSubtitleTiming, BACKUP_SUFFIX,
 } from '../subtitleVerify/shiftTiming.js'
 import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
+import type { SetupDeps } from './setupApi.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -47,7 +48,8 @@ export interface DashboardOpts {
    *  +一次编排器过（src/v2/reconcileAll.ts 的 runReconcileAll，cmdReconcileAll CLI 命令共用
    *  同一个函数，不重复实现）。undefined（TMDB_API_KEY 未配置，或纯只读测试场景）时该端点
    *  返回 503，而不是让请求悬空或让 startDashboard 强制要求这个回调。 */
-  reconcileAll?: () => Promise<ReconcileAllResultDTO>
+  /** spec A §4.2：reconcileAll 改 getter 注入，返回执行体或 null（setup 未满足 → 503，同既有先例）。 */
+  reconcileAll?: () => (() => Promise<ReconcileAllResultDTO>) | null
   /** dashboard G4：GET /api/v2/settings/deploy 脱敏展示的 env 来源——默认 process.env，测试
    *  注入固定值以避免依赖跑测试的机器/CI 实际配了什么。 */
   env?: Record<string, string | undefined>
@@ -60,7 +62,13 @@ export interface DashboardOpts {
    *  dashboard-F5：'search' 供 GET /api/v2/tmdb/search（只读搜索代理；原为 ClaimDialog 而设，
    *  认领退役后前端不再调用，端点保留为无害的只读代理）转调——
    *  同一个 tmdb 依赖，缺席时两个消费点各自独立降级（这里 503，series/:id 那边跳过刷新）。 */
-  tmdb?: Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
+  /** spec A §4.2：tmdb 改 getter 注入（holder 覆盖 dashboard 注入面）——消费处现取现判空,
+   *  缺席语义不变（series 详情惰性刷新跳过、tmdb/search 503）。 */
+  tmdb?: () => Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'> | null
+  /** spec A：setupApi 的默认实现需要 cacheRoot（assrt 探测的缓存目录）；测试可注入临时目录。 */
+  cacheRoot?: string
+  /** spec A：setup 三端点的依赖注入（缺席→接真实实现，同 subtitleWriteDeps 的既有注入口惯例）。 */
+  setupDeps?: Partial<SetupDeps>
   /** 验收修复轮一 Task V2（原为甄别台认领后踢扫描；认领已随两证据红线退役——见 triageOps.ts
    *  头注释——本回调保留给 unexclude 翻案分支：翻案写库后立即请求一次扫描，让用户体感"翻案后
    *  文件很快重回识别流"而不是等下一个自然扫描周期）。undefined（watch 进程未接线，或纯只读
@@ -250,7 +258,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     // 白打一次早退调用。
     librarySeriesDetail: (id) => {
       const detail = buildLibrarySeriesDetail(db, id)
-      if (detail && tmdb) void refreshSeriesCatalog(db, tmdb, id, Date.now()).catch(() => {})
+      const tmdbClient = tmdb?.()
+      if (detail && tmdbClient) void refreshSeriesCatalog(db, tmdbClient, id, Date.now()).catch(() => {})
       return detail
     },
     triage: () => buildTriage(db),
@@ -391,7 +400,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        if (!reconcileAll) {
+        const runReconcileAll = reconcileAll?.()
+        if (!runReconcileAll) {
           res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'reconcile-all not configured (TMDB_API_KEY missing?)' }))
           return
@@ -406,7 +416,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         }
         reconcileInFlight = true
         try {
-          const result = await reconcileAll()
+          const result = await runReconcileAll()
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify(result))
         } catch (e) {
@@ -587,7 +597,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        if (!tmdb) {
+        const tmdbClient = tmdb?.()
+        if (!tmdbClient) {
           res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'tmdb search not configured (TMDB_API_KEY missing?)' }))
           return
@@ -605,7 +616,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         try {
-          const hits = await tmdb.search(mediaType, q)
+          const hits = await tmdbClient.search(mediaType, q)
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({
             results: hits.map((h) => ({ id: h.id, name: h.title, year: h.year, posterPath: h.posterPath })),

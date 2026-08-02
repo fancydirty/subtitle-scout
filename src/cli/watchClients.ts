@@ -48,3 +48,18 @@ export function setupSatisfied(cfg: AdapterConfigResolver): boolean {
 export function engineEnabled(get: (key: string) => string | null): boolean {
   return get('engine_enabled') !== 'false'
 }
+
+/** 点火日志追踪（spec §4.7 步 4）：setup 闸从"不满足"翻成"满足"的那一刻记一行
+ *  'setup complete — engine live'——同进程点火的唯一可观测标志。初始即满足（现有 env
+ *  部署升级）时永不记——那一行对老部署是假新闻。 */
+export function makeSatisfactionTracker(opts: {
+  satisfied: () => boolean
+  log: (msg: string) => void
+}): () => void {
+  let was = opts.satisfied()
+  return () => {
+    const now = opts.satisfied()
+    if (!was && now) opts.log('setup complete — engine live')
+    was = now
+  }
+}

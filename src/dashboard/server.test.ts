@@ -94,10 +94,10 @@ async function start(
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
-    reconcileAll,
+    reconcileAll: reconcileAll ? () => reconcileAll : undefined,
     env,
     jobs,
-    tmdb,
+    tmdb: tmdb ? () => tmdb : undefined,
     requestIngest,
     subtitleWriteDeps,
     subtitleCompareDeps,
