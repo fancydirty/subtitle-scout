@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
+import { checkAssrt, checkOpenSubtitles, checkZimuku, checkJimaku, checkSubhd, checkLlm, checkTmdb, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
 import { MIGRATIONS } from '../v2/db.js'
 
 describe('doctor 远端三项', () => {
@@ -240,5 +240,28 @@ describe('checkMountCapabilities', () => {
     expect(result.detail).toContain('大小写敏感: 未知')
     expect(result.detail).toContain('可写: 否')
     expect(result.detail).not.toContain('不支持')
+  })
+})
+
+describe('checkJimaku / checkSubhd（spec A §4.5 新原语）', () => {
+  it('checkJimaku：probe 成功 → ok', async () => {
+    const r = await checkJimaku(async () => [{ title: 'x' }])
+    expect(r).toMatchObject({ name: 'jimaku', ok: true })
+  })
+  it('checkJimaku：probe 抛错 → !ok + hint', async () => {
+    const r = await checkJimaku(async () => { throw new Error('HTTP 401') })
+    expect(r.name).toBe('jimaku')
+    expect(r.ok).toBe(false)
+    expect(r.hint).toBeDefined()
+  })
+  it('checkSubhd：2xx/3xx → ok', async () => {
+    expect((await checkSubhd(async () => 200)).ok).toBe(true)
+    expect((await checkSubhd(async () => 301)).ok).toBe(true)
+  })
+  it('checkSubhd：5xx → !ok；抛错 → !ok + hint', async () => {
+    expect((await checkSubhd(async () => 503)).ok).toBe(false)
+    const r = await checkSubhd(async () => { throw new Error('ECONNREFUSED') })
+    expect(r.ok).toBe(false)
+    expect(r.hint).toBeDefined()
   })
 })
