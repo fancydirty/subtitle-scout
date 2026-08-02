@@ -19,7 +19,8 @@ export interface DaemonDeps {
    *  recognize/probe/tmdb。取代了旧的机械 scan()（镜像 Jellyfin library）+ B2 self-scan
    *  refresh-bridge 两条分支——ingest 是"检测即摄取"的单步直写，不再需要分两条时间门。
    *  非 optional：cmdWatch 现在把 TMDB_API_KEY 做成硬性前置（watch 依赖 ingest 层的真实
-   *  TmdbClient 才能识别文件），不再有"缺 key 时整个分支跳过"的降级世界。 */
+   *  TmdbClient 才能识别文件），不再有"缺 key 时整个分支跳过"的降级世界。
+   *  （2026-08-02 spec A 修订：硬性前置于 setup 模式废止——缺 key 时 cmdWatch 注入兜底空实现并由 workPermitted 闸住本分支。） */
   ingestTrigger: () => Promise<IngestTriggerResult>
   /** 闭包：执行一个 job（fire-and-forget，daemon 不 await） */
   executeJob: (job: Job) => Promise<void>
@@ -66,6 +67,14 @@ export interface DaemonDeps {
   /** 巡检间隔（测试注入）。默认 VERIFY_SWEEP_EVERY_MS(6h)。函数形式沿 ingestEveryMs 的
    *  惰性求值先例（债务D5），便于日后接 settings 而不用重启进程。 */
   verifySweepEveryMs?: number | (() => number)
+  /** 启动面（spec A §4.7）：每 tick 最先执行的钩子——cmdWatch 接 secrets_version watcher
+   *  （密钥落库 → 同进程热重建长命客户端）。optional：缺省不跑。 */
+  preTick?: () => Promise<void>
+  /** 启动面（spec A §4.6/§4.7）：产工作许可——engine_enabled(fail-open) ∧ setup 闸(TMDB+LLM 可解析)。
+   *  返回 false 时本 tick 跳过全部产工作循环（ingest/orchestrate 心跳/dispatchTranslate/verifySweep/
+   *  dispatch）；维护循环（续租/孤儿回收/过期租约回收/trace 修剪/dbMaintenance）不闸。
+   *  optional：缺省视为恒 true（今天的行为）。 */
+  workPermitted?: () => boolean
 }
 
 /** tick() 连续意外抛错（reap/meta读/dispatch 里未被内层 try/catch 覆盖的异常，如磁盘满）
@@ -116,6 +125,10 @@ export class ScoutDaemon {
   // 最该避免的事。这一道锁是即时的、不依赖任何持久化可见性。
   private verifySweepInflight = false
 
+  // 启动面（spec A §4.6/§4.7）：上一 tick 的 workPermitted 结果——用于只在翻转时记一行
+  // 日志。null 初始 = 首个 tick 不记翻转日志（没有"上一次"可比）。
+  private lastWorkPermitted: boolean | null = null
+
   constructor(private deps: DaemonDeps) {}
 
   /**
@@ -147,6 +160,15 @@ export class ScoutDaemon {
 
   private async tickInner(): Promise<void> {
     const { jobs, lib, log, now } = this.deps
+
+    // 启动面（spec A §4.7）：preTick 每 tick 最先跑——secrets_version 变了在这里完成热重建，
+    // 下面的许可评估与所有闭包就能立刻看到新客户端。
+    if (this.deps.preTick) await this.deps.preTick()
+    const permitted = this.deps.workPermitted?.() ?? true
+    if (this.lastWorkPermitted !== null && this.lastWorkPermitted !== permitted) {
+      log(permitted ? 'engine on — work loops resumed' : 'engine off — polling and dispatch are paused')
+    }
+    this.lastWorkPermitted = permitted
 
     // 0. Heartbeat: 为本进程仍在跑的 job 续租，早于 reap 执行——防止合法长跑（如季包
     //    多集下载合法跑超 30min 租约）被误判死亡回收、被 dispatch 并发重领（starvation 审计修正）。
@@ -189,7 +211,7 @@ export class ScoutDaemon {
     const ingestEveryDep = this.deps.ingestEveryMs
     const ingestEveryMs = (typeof ingestEveryDep === 'function' ? ingestEveryDep() : ingestEveryDep) ?? SELF_SCAN_DEFAULT_INTERVAL_MS
 
-    if (this.bootIngestPending || timeSinceIngest >= ingestEveryMs) {
+    if (permitted && (this.bootIngestPending || timeSinceIngest >= ingestEveryMs)) {
       // D4（design §P3 "Ingest-vs-realign exclusion"）：ingest 的磁盘真相 walker 与 realign
       // 的整理搬移在同一批路径上跑会互相踩脚——realign 正在搬的文件，中途状态对 walker
       // 而言像是"路径变了"，可能被误判成新文件重新识别，或误判成真的消失而删行。开跑前
@@ -267,7 +289,7 @@ export class ScoutDaemon {
     const lastOrchestrateRaw = hbRow ? Number(hbRow.value) : 0
     // meta 行损坏时 NaN >= x 恒 false,orchestrate 心跳时间门静默永久失效——防御性归零
     const lastOrchestrate = Number.isFinite(lastOrchestrateRaw) ? lastOrchestrateRaw : 0
-    if (now() - lastOrchestrate >= (this.deps.orchestrateHeartbeatMs ?? ORCHESTRATE_HEARTBEAT_MS)) {
+    if (permitted && now() - lastOrchestrate >= (this.deps.orchestrateHeartbeatMs ?? ORCHESTRATE_HEARTBEAT_MS)) {
       jobs.upsertWorkerTask(
         { seriesId: INGEST_ORCHESTRATE_SERIES_ID, season: null, movieId: null },
         { taskType: 'orchestrate', reason: 'heartbeat: periodic no-change-world convergence pass' },
@@ -280,7 +302,7 @@ export class ScoutDaemon {
 
     // 2c. E AI 翻译：机械派 translate 任务（见 DaemonDeps.dispatchTranslate 的门控/时机注释）。
     // 失败只记一行 warn 不炸 tick——翻译是增益路径，绝不拖垮主循环。
-    if (this.deps.dispatchTranslate) {
+    if (permitted && this.deps.dispatchTranslate) {
       try { this.deps.dispatchTranslate() } catch (e) { log(`warn: translate dispatch failed: ${String(e)}`) }
     }
 
@@ -302,7 +324,7 @@ export class ScoutDaemon {
     //     都会看到陈旧的 last_verify_sweep_at 而各自再踢一脚，20 个扫描并发 spawn ffmpeg，
     //     正是"绝不并行"要防的事。verifySweepInflight 是同一防线的第二道（进程内即时生效，
     //     不依赖 meta 写入的可见性）。
-    if (this.deps.verifySweep && !this.verifySweepInflight) {
+    if (permitted && this.deps.verifySweep && !this.verifySweepInflight) {
       const lastSweepRow = lib.db
         .prepare(`SELECT value FROM meta WHERE key = ?`)
         .get(VERIFY_SWEEP_META_KEY) as { value: string } | undefined
@@ -329,7 +351,7 @@ export class ScoutDaemon {
     }
 
     // 3. Dispatch: claim jobs up to concurrency limit
-    await this.dispatch()
+    if (permitted) await this.dispatch()
   }
 
   /**
