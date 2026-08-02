@@ -1,0 +1,57 @@
+/* web/src/tw.css：Tailwind v4 + 新栈 token 层（token 逐值取自 spec C §5.1 映射表，Plan A 落
+   底座、Plan C 四屏直接消费）。
+   Astryx 并存期纪律：不引 preflight——Astryx reset.css 已是全局 reset，双 reset 互踩；
+   只取 theme（设计令牌，无级联影响）与 utilities（@layer utilities，只有新组件用到才生效）。
+   本文件在 main.tsx 里于 styles.css 之后 import：Astryx 具名层在前、utilities 层在后，
+   冲突时 utilities 赢——这正是新组件要的方向。 */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme {
+  /* ---- spec C §5.1 token 表（恒暗色单主题，无 light 变体） ---- */
+  --color-background: #0b0c0f;            /* 页面底 */
+  --color-card: #111318;                  /* 卡片底 */
+  --color-accent: #16181f;                /* 面：hover/活跃 */
+  --color-border: rgba(255, 255, 255, 0.07);
+  --color-border-subtle: rgba(255, 255, 255, 0.05);
+  --color-foreground: #e6e8ec;
+  --color-muted-foreground: #9aa1ac;
+  --color-weak: #6b7280;                  /* 传送带旧行、辅助行 */
+  --color-faint: #4b5563;                 /* 最弱辅助 */
+  --color-fn-purple: #8b7cf6;             /* hero 脉动点 */
+  --color-fn-red: #e11d48;                /* 只给卡死点/事实句（draft-6 铁律 1） */
+  --color-fn-green: #28bf5c;              /* covered/on */
+  --color-sidebar-active: #a3e635;        /* 侧栏当前项 lime */
+
+  /* ---- shadcn 语义别名（指同一批值；copy-in 组件消费这套名字） ---- */
+  --color-primary: #e6e8ec;
+  --color-primary-foreground: #0b0c0f;
+  --color-secondary: #16181f;
+  --color-secondary-foreground: #e6e8ec;
+  --color-muted: #16181f;
+  --color-accent-foreground: #e6e8ec;
+  --color-destructive: #e11d48;
+  --color-destructive-foreground: #ffffff;
+  --color-input: rgba(255, 255, 255, 0.14);
+  --color-ring: #8b7cf6;
+  --color-card-foreground: #e6e8ec;
+  --color-popover: #111318;
+  --color-popover-foreground: #e6e8ec;
+
+  /* v4 命名空间：--radius-* → rounded-* 工具类（卡 12 / 钮与输入 8，spec C §5.1） */
+  --radius-card: 12px;
+  --radius-control: 8px;
+
+  --font-sans: -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  /* 无 preflight 的最小补丁：shadcn 组件假定默认边框色不是 currentColor。
+     只设边框色——body/排版在 Astryx 退役前仍归 styles.css/scout.css 管，这里不碰。 */
+  *, ::before, ::after {
+    border-color: var(--color-border);
+  }
+}
