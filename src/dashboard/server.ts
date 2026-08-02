@@ -2,6 +2,7 @@
 import { createServer, type Server } from 'node:http'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join, normalize, extname, resolve, sep } from 'node:path'
+import { homedir } from 'node:os'
 import { URL } from 'node:url'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
@@ -36,6 +37,7 @@ import {
 } from '../subtitleVerify/shiftTiming.js'
 import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
 import type { SetupDeps } from './setupApi.js'
+import { buildSetupStatus, buildProviders, putSecret, validateSetupTarget } from './setupApi.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -199,8 +201,20 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps } = opts
+  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride } = opts
   const settingsRepo = new SettingsRepo(db)
+  // spec A §4.4：setup 面依赖——默认接真实实现（cfg 的 dbGet 惰性读库，wizard 落库后下一次
+  // status/validate 调用自然反映），测试经 opts.setupDeps 部分覆盖（同 subDeps 先例）。
+  const setupDeps: SetupDeps = {
+    env,
+    settingsRepo,
+    cacheRoot: cacheRoot ?? (env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')),
+    // SettingsRepo 上的方法名是 listRoots（不是 listMediaRoots）——见 src/v2/settingsRepo.ts:59。
+    // 每次调用现取，守备目录增删后 status 立刻反映，不缓存。
+    rootsCount: () => settingsRepo.listRoots().length,
+    now: () => Date.now(),
+    ...setupDepsOverride,
+  }
   const auth = new AuthService(settingsRepo)
   // 字幕校验三端点的依赖：默认全部接真实模块，测试可通过 opts.subtitleWriteDeps 部分覆盖
   // （见 DashboardOpts.subtitleWriteDeps 注释——这是"为可测性而设"的注入口，不是降级开关）。
@@ -264,6 +278,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     },
     triage: () => buildTriage(db),
     runTrace: (id) => buildRunTrace(db, id),
+    setupStatus: () => buildSetupStatus(setupDeps),
+    providers: () => buildProviders(setupDeps),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
@@ -475,6 +491,40 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = updateSettings(settingsRepo, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.settings : { error: result.error }))
+        return
+      }
+
+      // spec A §4.4：PUT /api/v2/settings/secrets——wizard/Providers 区的密钥写入通道。
+      // 白名单/空值删除/审计日志（只记 name）/版本自增全部收在 setupApi.putSecret 内。
+      if (rawPath === '/api/v2/settings/secrets') {
+        if (req.method !== 'PUT') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === BODY_FAILED) return
+        // putSecret 是同步函数（不用 await），签名 (deps, body, log) → { status, body }：
+        // log 是第三个形参，不是 deps 的字段。审计日志只记 name/action，永不记 value。
+        const out = putSecret(setupDeps, body, (msg) => console.error(`[setup] ${msg}`))
+        res.writeHead(out.status, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(out.body))
+        return
+      }
+
+      // spec A §4.4：POST /api/v2/setup/validate——先测后存。未知 target → 400；
+      // 测试真的跑了（含失败/未配置）→ 200，结果分类在 body。
+      if (rawPath === '/api/v2/setup/validate') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === BODY_FAILED) return
+        const outcome = await validateSetupTarget(setupDeps, body)
+        res.writeHead(outcome.status, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(outcome.body))
         return
       }
 

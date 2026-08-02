@@ -4,6 +4,7 @@ import type {
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
 } from './apiV2.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
+import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 
 export interface RouterDeps {
   library: () => LibraryItemDTO[]
@@ -38,6 +39,10 @@ export interface RouterDeps {
    *  workflowWorkers 的 traceBus.peek 直播补拉：这里是收官后落库的完整快照，供 RunDetail
    *  右侧板"快照回放"用）。id 已在本文件里做纯数字校验+转 number 后再传入。 */
   runTrace: (id: number) => RunTraceDTO | null
+  /** spec A §4.4：GET /api/v2/setup/status——bootstrap 完成度推导（wizard 入口判定）。 */
+  setupStatus: () => SetupStatusDTO
+  /** spec A §4.4/§5.4：GET /api/v2/setup/providers——Providers 区行数据（打码值/source/上次测试点）。 */
+  providers: () => ProvidersDTO
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -140,6 +145,10 @@ export function handleApiRoute(
   }
 
   if (pathname === '/api/v2/triage') return { status: 200, json: deps.triage() }
+
+  // ---- setup（spec A：bootstrap wizard 与 Providers 区）----
+  if (pathname === '/api/v2/setup/status') return { status: 200, json: deps.setupStatus() }
+  if (pathname === '/api/v2/setup/providers') return { status: 200, json: deps.providers() }
 
   return { status: 404, json: { error: 'not found' } }
 }

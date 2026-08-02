@@ -16,6 +16,7 @@ import { traceBus, type TraceEvent } from '../core/traceBus.js'
 import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
 import type { SubtitleWriteDeps } from './subtitleVerifyApi.js'
 import type { SubtitleCompareDeps } from './subtitleCompareApi.js'
+import type { SetupDeps } from './setupApi.js'
 
 // dashboard-F5：'search' 加入 Pick——GET /api/v2/tmdb/search 的 fake tmdb 注入复用同一个类型。
 type FakeTmdb = Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
@@ -91,16 +92,26 @@ async function start(
   // 字幕对照图端点的依赖注入（缺席→接真实模块：会 spawn ffmpeg 抽内嵌轨 + spawn ffprobe
   // 探时长 + 读 /proc/self/mountinfo，后者在 macOS 开发机上恒判 cloud）。
   subtitleCompareDeps?: Partial<SubtitleCompareDeps>,
+  // spec A §4.2/§4.4：新依赖统一走末尾选项对象。tmdbGetter / reconcileAllGetter 专供"点火语义"
+  // 用例——同一个进程里让 getter 从 null 翻成实体，断言 503 → 200，不重启 dashboard。
+  extra?: {
+    setupDeps?: Partial<SetupDeps>
+    cacheRoot?: string
+    tmdbGetter?: () => FakeTmdb | null
+    reconcileAllGetter?: () => (() => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>) | null
+  },
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
-    reconcileAll: reconcileAll ? () => reconcileAll : undefined,
+    reconcileAll: extra?.reconcileAllGetter ?? (reconcileAll ? () => reconcileAll : undefined),
     env,
     jobs,
-    tmdb: tmdb ? () => tmdb : undefined,
+    tmdb: extra?.tmdbGetter ?? (tmdb ? () => tmdb : undefined),
     requestIngest,
     subtitleWriteDeps,
     subtitleCompareDeps,
+    cacheRoot: extra?.cacheRoot,
+    setupDeps: extra?.setupDeps,
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
@@ -1592,5 +1603,98 @@ describe('字幕校验三端点', () => {
       const { base } = await startCompare()
       expect((await fetch(`${base}/api/v2/subtitle/compare?itemId=e1`)).status).toBe(401)
     })
+  })
+})
+
+describe('setup 面端点（spec A §4.4）', () => {
+  it('GET /api/v2/setup/status：全新零配置 → bootstrapComplete=false、engineEnabled=true（fail-open）', async () => {
+    const { base } = await start(distWith('<!doctype html>'), 'tok')
+    const r = await fetch(`${base}/api/v2/setup/status?token=tok`)
+    expect(r.status).toBe(200)
+    const body = await r.json()
+    expect(body.bootstrapComplete).toBe(false)
+    expect(body.engineEnabled).toBe(true)
+    expect(body.tmdb.satisfied).toBe(false)
+  })
+
+  it('PUT /api/v2/settings/secrets：白名单外 400、合法写入后 status 反映 source=db + 打码、空值删除', async () => {
+    const { base } = await start(distWith('<!doctype html>'), 'tok')
+    const bad = await fetch(`${base}/api/v2/settings/secrets?token=tok`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'AWS_SECRET', value: 'x' }),
+    })
+    expect(bad.status).toBe(400)
+    const put = await fetch(`${base}/api/v2/settings/secrets?token=tok`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'TMDB_API_KEY', value: 'abcdefghij' }),
+    })
+    expect(put.status).toBe(200)
+    const status = await (await fetch(`${base}/api/v2/setup/status?token=tok`)).json()
+    expect(status.tmdb.satisfied).toBe(true)
+    expect(status.tmdb.source).toBe('db')
+    expect(status.tmdb.masked).not.toContain('abcdefghij')   // 永不回读明文
+    const del = await fetch(`${base}/api/v2/settings/secrets?token=tok`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'TMDB_API_KEY', value: '' }),
+    })
+    expect(del.status).toBe(200)
+    const after = await (await fetch(`${base}/api/v2/setup/status?token=tok`)).json()
+    expect(after.tmdb.satisfied).toBe(false)
+  })
+
+  it('POST /api/v2/setup/validate：未知 target → 400；未配置 target → 200 + ok:false', async () => {
+    const { base } = await start(distWith('<!doctype html>'), 'tok')
+    const unknown = await fetch(`${base}/api/v2/setup/validate?token=tok`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'github' }),
+    })
+    expect(unknown.status).toBe(400)
+    const r = await fetch(`${base}/api/v2/setup/validate?token=tok`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'assrt' }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json()
+    expect(body.ok).toBe(false)
+    expect(body.error).toContain('not configured')
+  })
+
+  it('两新 GET 无 token → 401（统一前置门覆盖）', async () => {
+    const { base } = await start(distWith('<!doctype html>'), 'tok')
+    expect((await fetch(`${base}/api/v2/setup/status`)).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/setup/providers`)).status).toBe(401)
+  })
+
+  it('点火语义 · GET /api/v2/tmdb/search：同进程内 getter 从 null 翻成客户端 → 503 变 200', async () => {
+    const tmdbStub: FakeTmdb = {
+      getSeasonTable: async () => [],
+      getSeasonEpisodes: async () => [],
+      search: async () => [{ id: 1, title: 'X', originalTitle: 'X', year: 2020, posterPath: null }],
+    }
+    let ignited = false
+    // 位置参数：distDir, token, reconcileAll, env, jobs, tmdb, requestIngest,
+    // subtitleWriteDeps, subtitleCompareDeps, extra —— 中间七个一律 undefined。
+    const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
+      tmdbGetter: () => (ignited ? tmdbStub : null),
+    })
+    expect((await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv&token=tok`)).status).toBe(503)
+    ignited = true   // = wizard 落库 + holder 热重建的等价物：消费点现取现判空
+    const after = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv&token=tok`)
+    expect(after.status).toBe(200)
+    expect(await after.json()).toEqual({ results: [{ id: 1, name: 'X', year: 2020, posterPath: null }] })
+  })
+
+  it('点火语义 · POST /api/v2/reconcile-all：同进程内 getter 从 null 翻成执行体 → 503 变 200', async () => {
+    let ignited = false
+    const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
+      reconcileAllGetter: () => (ignited
+        ? async () => ({ dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'dispatched 1 task' })
+        : null),
+    })
+    expect((await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })).status).toBe(503)
+    ignited = true
+    const after = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
+    expect(after.status).toBe(200)
+    expect((await after.json()).summary).toBe('dispatched 1 task')
   })
 })

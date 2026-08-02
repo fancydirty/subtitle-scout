@@ -6,6 +6,7 @@ import type {
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
 } from './apiV2.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
+import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 
 const libItem: LibraryItemDTO = {
   id: 's1', kind: 'series', name: 'A', chineseTitle: null, year: null, posterPath: null, section: '剧集',
@@ -76,6 +77,24 @@ const triageDTO: TriageDTO = {
 const runTraceDTO: RunTraceDTO = {
   events: [{ runKey: 'job-1', seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: 1 }],
 }
+const setupStatusDTO = {
+  bootstrapComplete: false,
+  tmdb: { satisfied: false, source: 'none', masked: null },
+  llm: { satisfied: false, source: 'none', model: null },
+  providers: {
+    assrt: { satisfied: false, source: 'none', masked: null },
+    // masked 是必填字段（Task 5 的 opensubtitles 形状是 satisfied/source/hasUsername/masked
+    // 四件套），漏了它 satisfies 直接报错。
+    opensubtitles: { satisfied: false, source: 'none', hasUsername: false, masked: null },
+    jimaku: { satisfied: false, source: 'none', masked: null },
+    subhd: { enabled: false, source: 'none' },
+    zimuku: { enabled: false, source: 'none', captchaReady: false },
+  },
+  roots: { count: 0 },
+  engineEnabled: true,
+} satisfies SetupStatusDTO
+// ProvidersDTO 的字段名是 providers（不是 rows）——见 Task 5 的 `interface ProvidersDTO`。
+const providersDTO = { providers: [] } satisfies ProvidersDTO
 
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
@@ -101,6 +120,8 @@ const deps: RouterDeps = {
   librarySeriesDetail: (id) => { lastLibrarySeriesId = id; return id === 's1' || id === 'tmdb:71' ? librarySeriesDetailDTO : null },
   triage: () => triageDTO,
   runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
+  setupStatus: () => setupStatusDTO,
+  providers: () => providersDTO,
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string> } = {}) =>
@@ -276,5 +297,17 @@ describe('handleApiRoute (v2)', () => {
     it('非数字 id → 404（路由本身不匹配，不是 400）', () => {
       expect(call('/api/v2/workflow/runs/abc/trace').status).toBe(404)
     })
+  })
+
+  it('GET /api/v2/setup/status → 200 + DTO 直出', () => {
+    const r = call('/api/v2/setup/status')
+    expect(r.status).toBe(200)
+    expect(r.json).toBe(setupStatusDTO)
+  })
+
+  it('GET /api/v2/setup/providers → 200 + DTO 直出', () => {
+    const r = call('/api/v2/setup/providers')
+    expect(r.status).toBe(200)
+    expect(r.json).toBe(providersDTO)
   })
 })
