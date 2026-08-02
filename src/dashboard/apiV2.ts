@@ -515,16 +515,20 @@ export { unexclude, type UnexcludeResult } from '../v2/triageOps.js'
 export const SETTINGS_KEYS = [
   'target_languages', 'hardsub_mode', 'exclude_extras', 'trace_retention_days', 'scan_interval_ms',
   'ai_translate_enabled',
+  // spec A §4.6：发动机总开关（fail-open，脏值视为开——布尔别名见 buildSettings）。
+  'engine_enabled',
+  // spec A §4.4：免费源开关与 engine_enabled 同款通道（PUT 白名单 + zod enum），不另起端点。
+  'provider:SUBHD_ENABLED', 'provider:ZIMUKU_ENABLED',
 ] as const
 export type SettingsKey = typeof SETTINGS_KEYS[number]
-export type SettingsDTO = Record<SettingsKey, string | null>
+export type SettingsDTO = Record<SettingsKey, string | null> & { engineEnabled: boolean }
 
 /** GET /api/v2/settings：白名单五键各自 get()，未设置=null（前端自行显示默认值，不由后端
  *  编造一份"默认值"跟真实存量状态混在一起）。 */
 export function buildSettings(settingsRepo: Pick<SettingsRepo, 'get'>): SettingsDTO {
   const result = {} as SettingsDTO
   for (const key of SETTINGS_KEYS) result[key] = settingsRepo.get(key)
-  return result
+  return { ...result, engineEnabled: settingsRepo.get('engine_enabled') !== 'false' }
 }
 
 // ---- Deploy settings（GET /api/v2/settings/deploy：env 脱敏只读，Jellyfin 式部署/产品分界）----
@@ -585,6 +589,10 @@ export function buildDeploySettings(env: Record<string, string | undefined>): De
 
 export type FsListResult = { ok: true; dirs: string[] } | { ok: false; error: string }
 
+/** spec A §11-1：绝对路径判定——POSIX 的 `/` 或 win32 的盘符（`C:\`/`D:/`）。resolve/existsSync
+ *  在各平台原生处理盘符；POSIX 上盘符路径过不了存在性检查，诚实报"不存在"而不是冤杀形状。 */
+const isAbsoluteMediaPath = (p: string): boolean => p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p)
+
 /** 只列子**目录**名（排序），绝不列文件、绝不读文件内容——容器挂载本身就是可见性边界，这里
  *  不设额外白名单（同 Jellyfin 的目录选择器思路：能挂进容器的目录才可能被看到，配置只是在
  *  已挂载范围内挑选，不是打开一个任意读盘接口）。path 必须是绝对路径；resolve 后
@@ -592,7 +600,7 @@ export type FsListResult = { ok: true; dirs: string[] } | { ok: false; error: st
  *  复审修复 2：statSync/readdirSync 对权限拒绝（EACCES，NAS 挂载常态）会同步抛错——这是用户
  *  点目录浏览器时的正常路况，不是服务器故障，同样收敛成 ok:false，不许炸到 server.ts 变 500。 */
 export function listMediaSubdirs(rawPath: string): FsListResult {
-  if (!rawPath.startsWith('/')) return { ok: false, error: 'path must be an absolute path' }
+  if (!isAbsoluteMediaPath(rawPath)) return { ok: false, error: 'path must be an absolute path' }
   const resolved = resolve(rawPath)
   if (!existsSync(resolved)) return { ok: false, error: 'path does not exist' }
   try {
@@ -623,6 +631,9 @@ const SETTINGS_VALUE_SCHEMAS: Record<SettingsKey, z.ZodType<string>> = {
   trace_retention_days: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
   scan_interval_ms: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
   ai_translate_enabled: z.enum(['true', 'false']),
+  engine_enabled: z.enum(['true', 'false']),
+  'provider:SUBHD_ENABLED': z.enum(['true', 'false']),
+  'provider:ZIMUKU_ENABLED': z.enum(['true', 'false']),
 }
 
 export type UpdateSettingsResult = { ok: true; settings: SettingsDTO } | { ok: false; error: string }
@@ -670,7 +681,7 @@ export function addMediaRoot(
   if (typeof rawPath !== 'string' || rawPath.length === 0) {
     return { ok: false, error: 'path is required' }
   }
-  if (!rawPath.startsWith('/')) {
+  if (!isAbsoluteMediaPath(rawPath)) {
     return { ok: false, error: 'path must be an absolute path' }
   }
   const resolved = resolve(rawPath)

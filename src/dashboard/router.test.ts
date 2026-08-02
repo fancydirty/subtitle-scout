@@ -23,6 +23,8 @@ const parkedItem: ParkedItemDTO = {
 const settingsDTO: SettingsDTO = {
   target_languages: 'zh,en', hardsub_mode: null, exclude_extras: null,
   trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+  engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+  engineEnabled: true,
 }
 const deploySettingsDTO: DeploySettingsDTO = {
   secrets: {

@@ -8,7 +8,7 @@ import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import {
   buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, unexclude,
-  buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
+  buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
   buildTriage, redispatch, buildRunTrace,
 } from './apiV2.js'
@@ -340,11 +340,14 @@ describe('buildRuns', () => {
 
 // dashboard G4：settings/deploy/fs 三个只读端点的纯函数底座。
 describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null）', () => {
-  it('全部未设置时六键皆 null', () => {
+  it('全部未设置时九键皆 null + engineEnabled 兜底为 true', () => {
     const settings = new SettingsRepo(db)
     expect(buildSettings(settings)).toEqual({
       target_languages: null, hardsub_mode: null, exclude_extras: null,
       trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+      engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+      // engine_enabled 未设置 → fail-open 兜底为 true（本任务 ③ 的布尔别名）。
+      engineEnabled: true,
     })
   })
 
@@ -355,6 +358,8 @@ describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null�
     expect(buildSettings(settings)).toEqual({
       target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: null,
       trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+      engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+      engineEnabled: true,
     })
   })
 
@@ -362,7 +367,46 @@ describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null�
     const settings = new SettingsRepo(db)
     settings.set('not_a_real_setting', 'sneaky', NOW)
     const dto = buildSettings(settings)
-    expect(Object.keys(dto).sort()).toEqual([...SETTINGS_KEYS].sort())
+    expect(Object.keys(dto).sort()).toEqual([...SETTINGS_KEYS, 'engineEnabled'].sort())
+  })
+})
+
+describe('settings · 启动面三键（spec A §4.4/§4.6）', () => {
+  it('PUT 接受 engine_enabled/provider:SUBHD_ENABLED/provider:ZIMUKU_ENABLED 的 true/false', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    const r = updateSettings(repo, { engine_enabled: 'false', 'provider:SUBHD_ENABLED': 'true', 'provider:ZIMUKU_ENABLED': 'true' }, NOW)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.settings.engine_enabled).toBe('false')
+      expect(r.settings['provider:SUBHD_ENABLED']).toBe('true')
+    }
+  })
+
+  it('三键拒绝非 true/false 值（全有或全无）', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    expect(updateSettings(repo, { engine_enabled: 'yes' }, NOW).ok).toBe(false)
+    expect(updateSettings(repo, { 'provider:ZIMUKU_ENABLED': '1' }, NOW).ok).toBe(false)
+    expect(updateSettings(repo, { engine_enabled: 'true', 'provider:SUBHD_ENABLED': 'on' }, NOW).ok).toBe(false)
+    expect(repo.get('engine_enabled')).toBeNull()   // 非法批次不落任何键
+  })
+
+  it('GET DTO 的 engineEnabled 布尔别名：null→true（fail-open）、false→false、脏值→true', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    expect(buildSettings(repo).engineEnabled).toBe(true)
+    repo.set('engine_enabled', 'false', NOW)
+    expect(buildSettings(repo).engineEnabled).toBe(false)
+    repo.set('engine_enabled', '0', NOW)
+    expect(buildSettings(repo).engineEnabled).toBe(true)
+  })
+})
+
+describe('媒体根路径形状（spec A §11-1：win32 绝对路径不冤杀）', () => {
+  it('listMediaSubdirs/addMediaRoot 接受 C:\\ 形状进入存在性检查（POSIX 上诚实报不存在），相对路径仍拒', () => {
+    expect(listMediaSubdirs('C:\\media')).toEqual({ ok: false, error: 'path does not exist' })
+    expect(listMediaSubdirs('relative/path')).toEqual({ ok: false, error: 'path must be an absolute path' })
+    const repo = new SettingsRepo(openDb(':memory:'))
+    expect(addMediaRoot(repo, 'D:/media', NOW)).toEqual({ ok: false, error: 'path does not exist' })
+    expect(addMediaRoot(repo, 'media', NOW)).toEqual({ ok: false, error: 'path must be an absolute path' })
   })
 })
 
