@@ -194,3 +194,144 @@ export interface ValidateResultDTO { ok: boolean; detail?: string; error?: strin
 
 /** 与 doctor DoctorResult 同构的最小面（ok/skip/detail/hint）。 */
 export type ValidateProbe = () => Promise<{ ok: boolean; skip?: boolean; detail?: string; hint?: string }>
+
+/** 每个 target 的静态英文下一步提示（spec §4.4 "detail 给用户可执行的下一步"；不回原始异常串）。 */
+const NEXT_STEP_HINT: Record<ValidateTarget, string> = {
+  tmdb: 'Get a key at themoviedb.org → account Settings → API → API Key (v3 auth).',
+  llm: 'All three fields must come from the same provider; the base URL usually ends with /v1.',
+  assrt: 'Copy your API token from assrt.net → user center.',
+  opensubtitles: 'Create an API key at opensubtitles.com → your profile → API consumers.',
+  jimaku: 'Copy your API key from jimaku.cc account settings.',
+  subhd: 'subhd.me must be reachable from this host — check the network/proxy.',
+  zimuku: 'zimuku.org must be reachable; some networks block or throttle it.',
+}
+
+/** spec §4.4 错误三分类。只模式匹配，永不回显原始串（spec §8：异常消息可能 echo 凭据）。 */
+export function classifyFailure(rawDetail: string | undefined): string {
+  const d = rawDetail ?? ''
+  if (/401|403|unauthorized|forbidden|invalid api key|incorrect api key/i.test(d)) {
+    return 'Invalid credentials — check the key and try again.'
+  }
+  if (/404|not found/i.test(d)) {
+    return 'Not found — check the base URL and model name.'
+  }
+  if (/timeout|timed out|ECONNREFUSED|ECONNRESET|ENOTFOUND|fetch failed|network|socket/i.test(d)) {
+    return 'Connection problem — check the network and base URL.'
+  }
+  return 'Test failed — check the credentials and try again.'
+}
+
+/** credentials 入参清洗：只留白名单内的非空字符串键（防注入任意配置）。 */
+export function sanitizeCredentials(input: unknown): Partial<Record<SecretName, string>> {
+  const out: Partial<Record<SecretName, string>> = {}
+  if (input === null || typeof input !== 'object') return out
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (isSecretName(k) && typeof v === 'string' && v !== '') out[k] = v
+  }
+  return out
+}
+
+const VALIDATE_TIMEOUT_MS = 10_000
+
+/** 真实 probe 组（cmdDoctor 同款构造，逐字复刻 cli/index.ts:727-788 的探测形状）。 */
+function defaultProbe(
+  deps: SetupDeps,
+  target: ValidateTarget,
+  creds: Partial<Record<SecretName, string>>,
+): ValidateProbe {
+  const { env, settingsRepo, cacheRoot } = deps
+  const notConfigured: ReturnType<ValidateProbe> = Promise.resolve({ ok: true, skip: true, detail: 'not configured' })
+  // credentials 优先，其次 env/db 已解析值——"先测后存"与"测已配的"共用一个解析口。
+  const cred = (n: SecretName): string | null =>
+    creds[n] ?? resolveSecret(n, env, (x) => settingsRepo.get(`secret:${x}`)).value
+
+  switch (target) {
+    case 'tmdb': {
+      const key = cred('TMDB_API_KEY')
+      if (!key) return () => notConfigured
+      const tmdb = new TmdbClient({ apiKey: key, baseUrl: env.TMDB_BASE_URL, proxyUrl: env.TMDB_PROXY_URL })
+      return () => checkTmdb(() => withTimeout(tmdb.search('movie', 'The Matrix', 1999), VALIDATE_TIMEOUT_MS, 'TMDB').then((h) => h.length))
+    }
+    case 'llm': {
+      const baseUrl = cred('LLM_BASE_URL'); const apiKey = cred('LLM_API_KEY'); const modelName = cred('LLM_MODEL')
+      if (!baseUrl || !apiKey || !modelName) return () => notConfigured
+      const model = makeModel({ baseUrl, apiKey, model: modelName })
+      return () => checkLlm(async () =>
+        (await generateText({ model, prompt: '回复"ok"两个字母即可', maxOutputTokens: 1, abortSignal: AbortSignal.timeout(VALIDATE_TIMEOUT_MS) })).text)
+    }
+    case 'assrt': {
+      const token = cred('ASSRT_TOKEN')
+      if (!token) return () => notConfigured
+      const assrt = new AssrtClient({ token, cacheDir: join(cacheRoot, 'assrt-responses') })
+      return () => checkAssrt({ quota: () => withTimeout(assrt.quota(), VALIDATE_TIMEOUT_MS, 'ASSRT') })
+    }
+    case 'opensubtitles': {
+      const apiKey = cred('OPENSUBTITLES_API_KEY')
+      if (!apiKey) return () => notConfigured
+      const os = new OpenSubtitlesClient({
+        apiKey, appUserAgent: 'subtitlescout v0.2.0',
+        username: cred('OPENSUBTITLES_USERNAME') ?? undefined,
+        password: cred('OPENSUBTITLES_PASSWORD') ?? undefined,
+      })
+      // The Matrix：配额免费的探测目标（cmdDoctor 同款）。
+      return () => checkOpenSubtitles({
+        search: () => withTimeout(os.search({ imdbId: 133093, languages: ['zh-cn'] }), VALIDATE_TIMEOUT_MS, 'OpenSubtitles'),
+      })
+    }
+    case 'jimaku': {
+      const apiKey = cred('JIMAKU_API_KEY')
+      if (!apiKey) return () => notConfigured
+      const jk = new JimakuClient({ apiKey })
+      return () => checkJimaku(() => withTimeout(jk.search({ query: 'test' }), VALIDATE_TIMEOUT_MS, 'Jimaku'))
+    }
+    case 'subhd':
+      // 无 key 服务，无条件探测可达性（spec §4.4）。必须 curlFetch——Node 原生 fetch 的
+      // TLS 指纹会被 subhd 拒（subhd.ts:224 注释）。
+      return () => checkSubhd(() =>
+        withTimeout(curlFetch(env.SUBHD_BASE_URL ?? SUBHD_BASE, { signal: AbortSignal.timeout(VALIDATE_TIMEOUT_MS) }).then((r) => r.status), VALIDATE_TIMEOUT_MS, 'subhd'))
+    case 'zimuku':
+      // 同上：无条件探测可达性 + 云锁挑战页识别（cmdDoctor 同款构造）。
+      return () => checkZimuku({
+        fetchHomepage: async () => {
+          const res = await withTimeout(fetch(`${ZIMUKU_BASE}/`, { signal: AbortSignal.timeout(VALIDATE_TIMEOUT_MS) }), VALIDATE_TIMEOUT_MS, 'zimuku')
+          const html = await res.text()
+          return { ok: res.ok, challenged: detectChallenge(html) }
+        },
+      })
+  }
+}
+
+function toValidateDTO(target: ValidateTarget, r: { ok: boolean; skip?: boolean; detail?: string; hint?: string }): ValidateResultDTO {
+  // doctor 的 skip（未配置不算失败）在 HTTP 层译为红：对 wizard 而言"没配"就该是红（spec §4.4）。
+  if (r.skip) return { ok: false, error: `${target} is not configured` }
+  if (r.ok) return { ok: true, ...(r.detail ? { detail: r.detail } : {}) }
+  return { ok: false, error: classifyFailure(r.detail), detail: NEXT_STEP_HINT[target] }
+}
+
+export async function validateSetupTarget(
+  deps: SetupDeps,
+  body: unknown,
+): Promise<{ status: number; body: ValidateResultDTO }> {
+  const b = (body ?? {}) as { target?: unknown; credentials?: unknown }
+  if (typeof b.target !== 'string' || !(VALIDATE_TARGETS as readonly string[]).includes(b.target)) {
+    return { status: 400, body: { ok: false, error: 'unknown validate target' } }
+  }
+  const target = b.target as ValidateTarget
+  const probe = deps.probes?.[target] ?? defaultProbe(deps, target, sanitizeCredentials(b.credentials))
+  let r: { ok: boolean; skip?: boolean; detail?: string; hint?: string }
+  try {
+    r = await probe()
+  } catch (e) {
+    r = { ok: false, detail: `probe threw: ${e instanceof Error ? e.name : 'Error'}` }
+  }
+  const dto = toValidateDTO(target, r)
+  // 上次测试点落库（settingsRepo.set 直写——不 bump secrets_version，测试不是配置变更）。
+  try {
+    deps.settingsRepo.set(
+      `secret_test:${target}`,
+      JSON.stringify({ ok: dto.ok, at: deps.now(), ...(dto.error ? { error: dto.error } : {}) }),
+      deps.now(),
+    )
+  } catch { /* 落库失败不挡响应——测试点只是展示面 */ }
+  return { status: 200, body: dto }
+}

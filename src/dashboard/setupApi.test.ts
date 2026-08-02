@@ -2,7 +2,10 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
-import { buildSetupStatus, buildProviders, putSecret, type SetupDeps } from './setupApi.js'
+import {
+  buildSetupStatus, buildProviders, putSecret, sanitizeCredentials, validateSetupTarget,
+  type SetupDeps, type ValidateProbe,
+} from './setupApi.js'
 
 let db: ScoutDb
 let settings: SettingsRepo
@@ -162,5 +165,73 @@ describe('buildProviders（Providers 区读面）', () => {
   it('secret_test:* 脏 JSON → lastTest=null（防御性解析）', () => {
     settings.set('secret_test:assrt', '{broken', NOW)
     expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'assrt')!.lastTest).toBeNull()
+  })
+})
+
+describe('validateSetupTarget（spec §4.4）', () => {
+  it('未知 target → 400', async () => {
+    const r = await validateSetupTarget(makeDeps(), { target: 'plex' })
+    expect(r.status).toBe(400)
+    expect(r.body).toEqual({ ok: false, error: 'unknown validate target' })
+  })
+
+  it('probe 绿 → {ok:true}，且 secret_test:tmdb 落库（不 bump secrets_version）', async () => {
+    const v0 = settings.secretsVersion()
+    const r = await validateSetupTarget(makeDeps({}, {
+      probes: { tmdb: async () => ({ ok: true, detail: 'probe ok' }) },
+    }), { target: 'tmdb' })
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ ok: true, detail: 'probe ok' })
+    const row = JSON.parse(settings.get('secret_test:tmdb')!)
+    expect(row).toEqual({ ok: true, at: NOW })
+    expect(settings.secretsVersion()).toBe(v0)
+  })
+
+  it('probe skip → {ok:false, error: "tmdb is not configured"}', async () => {
+    const r = await validateSetupTarget(makeDeps({}, {
+      probes: { tmdb: async () => ({ ok: true, skip: true, detail: '未配置' }) },
+    }), { target: 'tmdb' })
+    expect(r.body).toEqual({ ok: false, error: 'tmdb is not configured' })
+  })
+
+  it('失败分类：401/403 → Invalid credentials；404 → base URL·model；超时 → Connection problem；detail 给静态提示不回原文', async () => {
+    const cases: [string, string][] = [
+      ['HTTP 401 Unauthorized', 'Invalid credentials'],
+      ['status 403', 'Invalid credentials'],
+      ['404 Not Found', 'check the base URL and model'],
+      ['timed out after 10000ms', 'Connection problem'],
+      ['fetch failed ECONNREFUSED', 'Connection problem'],
+    ]
+    for (const [raw, expected] of cases) {
+      const r = await validateSetupTarget(makeDeps({}, {
+        probes: { llm: async () => ({ ok: false, detail: raw }) },
+      }), { target: 'llm' })
+      expect(r.body.ok).toBe(false)
+      expect(r.body.error).toContain(expected)
+      expect(r.body.error).not.toContain(raw)   // spec §8：原始串不回前端
+      expect(r.body.detail).toBeTruthy()        // 静态下一步提示
+    }
+  })
+
+  it('probe 自身抛错 → {ok:false}，不炸路由', async () => {
+    const r = await validateSetupTarget(makeDeps({}, {
+      probes: { assrt: async () => { throw new Error('boom') } },
+    }), { target: 'assrt' })
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(false)
+  })
+
+  it('credentials 白名单外键被丢弃；非字符串/空串被丢弃', async () => {
+    let seen: Record<string, string> | null = null
+    const probe: ValidateProbe = async () => ({ ok: true })
+    const r = await validateSetupTarget(makeDeps({}, {
+      probes: { jimaku: probe },
+    }), { target: 'jimaku', credentials: { JIMAKU_API_KEY: 'jk-1', HACK: 'x', TMDB_API_KEY: 42, ASSRT_TOKEN: '' } })
+    expect(r.status).toBe(200)
+    // sanitize 行为由内部 defaultProbe 使用——注入 probe 时只断言路由不炸、不 400。
+    // sanitize 本身的单元断言：
+    expect(sanitizeCredentials({ JIMAKU_API_KEY: 'jk-1', HACK: 'x', TMDB_API_KEY: 42 as never, ASSRT_TOKEN: '' }))
+      .toEqual({ JIMAKU_API_KEY: 'jk-1' })
+    void seen
   })
 })
