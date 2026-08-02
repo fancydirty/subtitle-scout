@@ -21,11 +21,15 @@ import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { dispatchTranslateTasks, runTranslateWorkerTask } from '../v2/translateWorkerTask.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
-  checkDatabase, checkStuckJobs, checkMountCapabilities,
+  checkDatabase, checkStuckJobs, checkMountCapabilities, checkJimaku, checkSubhd,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
 import { detectChallenge } from '../adapters/providers/yunsuo.js'
 import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
+import { JimakuClient } from '../adapters/providers/jimaku.js'
+import { curlFetch, SUBHD_BASE } from '../adapters/providers/subhd.js'
+import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
+import { setupSatisfied } from './watchClients.js'
 import { openDb } from '../v2/db.js'
 import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -63,6 +67,10 @@ function requireEnv(name: string): string {
   return v
 }
 
+/** 进程级长命客户端的组装产物。setup 模式（spec A §4.7）：LLM/TMDB 任一不可解析 → 对应字段
+ *  null + 一行 warn，**不再 exit**——硬性要求上提到门禁层（cmdWatch setup 闸 /
+ *  cmdReconcileAll 双钥匙门），由它们决定"拒启动"还是"gated 存活"。
+ *  （cacheRoot/mappings 两键的既有注释逐字保留，此处不重抄。） */
 export interface Assembled {
   cacheRoot: string
   /** 去 Jellyfin 化 P7（design §P7 代码出口）：MEDIA_PATH_MAPPINGS 环境变量退役，恒为
@@ -73,15 +81,18 @@ export interface Assembled {
   tmdb: TmdbClient | null
   /** v3 phase ⑦：orchestrator/find-subtitle 两个新 ToolLoopAgent-based 子代理要的是一个真实
    *  `LanguageModel`（ai@7 的 `agent.generate()` 接口）。同一组 LLM_* env var，走 llm.ts 的
-   *  makeModel() 建一个 LanguageModel 实例。 */
-  reasoningModel: LanguageModel
+   *  makeModel() 建一个 LanguageModel 实例（setup 模式下 LLM 未配置 → null）。 */
+  reasoningModel: LanguageModel | null
 }
 
-async function assemble(): Promise<Assembled> {
+async function assemble(cfg: AdapterConfigResolver, warn: (msg: string) => void): Promise<Assembled> {
   const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
   // 去 Jellyfin 化 P7：MEDIA_PATH_MAPPINGS 不再读取——mediaRoots() 的唯一根来源是 MEDIA_ROOTS
   // 环境变量（见下方）；mappings 恒为空数组，realign port 以 identity 操作消费它（D2）。
   const mappings: PathMapping[] = []
+  // LLM_EXTRA_BODY 维持 env-only 高级项（spec §12 明确不收进 wizard）。**畸形 JSON 维持
+  // exit 2**——缺的放行、错的照死：显式写错的部署配置不是 setup 模式要救的"缺 key"，
+  // 行为与今天逐字一致。
   let extraBody: Record<string, unknown> | undefined
   if (process.env.LLM_EXTRA_BODY) {
     try { extraBody = JSON.parse(process.env.LLM_EXTRA_BODY) } catch {
@@ -89,17 +100,18 @@ async function assemble(): Promise<Assembled> {
       process.exit(2)
     }
   }
-  const llmBaseUrl = requireEnv('LLM_BASE_URL')
-  const llmApiKey = requireEnv('LLM_API_KEY')
-  const llmModelName = requireEnv('LLM_MODEL')
-  // v3 phase ⑦：a real LanguageModel for the new ToolLoopAgent-based orchestrator/find-subtitle
-  // subagents — same LLM_* env.
-  const reasoningModel = makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModelName, extraBody })
-  // 可选：TMDB 中文标题变体数据源（key 用户自备，见 README「第三把钥匙」）。增益路径，无 key
-  // 时为 null——watch/reconcile-all 各自的硬性前置检查会因此报错退出（见 cmdWatch/cmdReconcileAll）。
-  const tmdb = process.env.TMDB_API_KEY
-    ? new TmdbClient({ apiKey: process.env.TMDB_API_KEY, baseUrl: process.env.TMDB_BASE_URL, proxyUrl: process.env.TMDB_PROXY_URL })
+  const llmBaseUrl = cfg.secret('LLM_BASE_URL').value
+  const llmApiKey = cfg.secret('LLM_API_KEY').value
+  const llmModelName = cfg.secret('LLM_MODEL').value
+  const reasoningModel = (llmBaseUrl && llmApiKey && llmModelName)
+    ? makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModelName, extraBody })
     : null
+  if (!reasoningModel) warn('LLM is not fully configured (env or dashboard) — reasoning work stays gated until setup completes')
+  const tmdbKey = cfg.secret('TMDB_API_KEY').value
+  const tmdb = tmdbKey
+    ? new TmdbClient({ apiKey: tmdbKey, baseUrl: process.env.TMDB_BASE_URL, proxyUrl: process.env.TMDB_PROXY_URL })
+    : null
+  if (!tmdb) warn('TMDB_API_KEY is not configured (env or dashboard) — engine stays gated until setup completes')
   return { cacheRoot, mappings, tmdb, reasoningModel }
 }
 
@@ -145,26 +157,38 @@ function buildIngestPass(opts: {
  *  daemon 每 15min 一次的 ingest 心跳相互独立、并存——这是新 v3 链路的手动触发入口。命令跑完
  *  即退出，写下的 worker_task 行要等一个正在跑的 `watch` daemon 进程认领执行（本命令自己从不
  *  认领任何行）。
- *  TMDB_API_KEY 是硬性前置——不同于 cmdWatch 里 realign 那种"没配置就静默
+ *  TMDB_API_KEY 与 LLM 三件套是硬性前置（spec A §4.7 步 6，env 或库皆可）——不同于 cmdWatch 里 realign 那种"没配置就静默
  *  跳过"（那是给日常 watch 循环的容错，缺检测能力不该拦住找字幕主线）：orchestrator 的
  *  check_series_layout 工具需要真实 TmdbClient 才能判断"季数是否超出 TMDB 季表"，摄取层本身
  *  也需要真实 TmdbClient 才能识别文件——手动触发的全仓校验若因为缺 key 而悄悄只做一半，
  *  会让使用者误以为已经跑过完整校验——所以这里直接报错退出，同 requireEnv 的硬依赖语义一致。 */
 async function cmdReconcileAll() {
-  const { tmdb, reasoningModel, cacheRoot } = await assemble()
-  if (!tmdb) {
-    console.error('reconcile-all requires TMDB_API_KEY（orchestrator 的 check_series_layout 工具与摄取层都需要真实 TMDB 数据）— 请在 .env 里配置')
-    process.exit(2)
-  }
+  // spec A §4.3：assemble 的密钥解析走 cfg，cfg 的 dbGet 需要 settingsRepo，
+  // settingsRepo 需要 db——cacheRoot 的计算不依赖密钥（与 assemble 内同一表达式），先算。
+  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
   const dbPath = join(cacheRoot, 'scout.db')
   const db = openDb(dbPath)
+  const settingsRepo = new SettingsRepo(db)
+  // spec A §4.7 步 6：一次性命令不寄居 dashboard，缺 TMDB **或 LLM** 仍 exit 2——
+  // assemble 改 null 耐受后这里必须同时查两把钥匙，否则拿 null reasoningModel 跑
+  // orchestrator 会运行时炸而非人话拒启动。
+  const cfgGate = makeAdapterConfigResolver(process.env, (k) => settingsRepo.get(k))
+  if (!setupSatisfied(cfgGate)) {
+    console.error('reconcile-all needs TMDB_API_KEY and the LLM triple (base URL, API key, model) — set them in the environment, or finish the setup wizard in the dashboard first.')
+    process.exit(2)
+  }
+  const { tmdb, reasoningModel } = await assemble(cfgGate, (m) => console.error(`warn: ${m}`))
+  if (!tmdb || !reasoningModel) {
+    // 与门禁同条件的 TS 收窄兜底（闸门评估后密钥被并发删除的竞态），文案与门禁一致。
+    console.error('reconcile-all needs TMDB_API_KEY and the LLM triple (base URL, API key, model) — set them in the environment, or finish the setup wizard in the dashboard first.')
+    process.exit(2)
+  }
   const jobs = new JobsRepo(db)
   const lib = new LibraryRepo(db)
   // dashboard G4：守备目录 DB 化——settingsRepo 是 roots 的权威来源，MEDIA_ROOTS env 只在
   // media_roots 表为空时充当首启种子（见 SettingsRepo.seedRootsFromEnv）。这是一次性命令
   // （跑完即退出），不需要惰性求值带来的"运行期加根即时生效"收益，但仍然统一走同一套接线，
   // 不再维护第二套"从 env 直读"的旧逻辑。
-  const settingsRepo = new SettingsRepo(db)
   settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now())
   const currentRoots = () => settingsRepo.listRoots().map(r => r.path)
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
@@ -207,13 +231,16 @@ async function cmdWatch() {
   // 去 Jellyfin 化 P5/Task 7：realign port 已切到库原生实现（makeRealignLibraryPort，下方），
   // assemble() 不再持有任何 jf/jellyfinClient 句柄；P7 起 JELLYFIN_URL/JELLYFIN_API_KEY 的
   // requireEnv 已一并删除（design §P7 代码出口）。
-  const { cacheRoot, mappings, tmdb, reasoningModel } = await assemble()
+  // Task 9 过渡桥：assemble 改两参了，这里先喂 env-only resolver——cmdWatch 的 db 要到 :230
+  // 才打开（settingsRepo 在 :245），此处拿不到库背书的 cfg。**Task 10 会把整个 cmdWatch 重构掉**
+  // （holder 化 + dashboard 先行 + buildCurrent 内的库背书 cfg），这座桥到那时一起消失。
+  const { cacheRoot, mappings, tmdb, reasoningModel } = await assemble(envOnlyAdapterConfig(process.env), (m) => console.error(`warn: ${m}`))
   // 去 Jellyfin 化 T4：TMDB_API_KEY 从"realign/orchestrate 才需要，缺了静默降级"升级成 watch
   // 的硬性前置——v2/ingest.ts 的 makeIngestPass 不再有 Jellyfin fallback 世界，识别文件、
   // 拉 origin_lang/poster 全靠真实 TmdbClient。requireEnv-style：缺 key 直接报错退出（exit 2），
   // 不悄悄跑一个"什么都摄取不了"的 watch 进程。
-  if (!tmdb) {
-    console.error('missing required env var: TMDB_API_KEY（watch 现在依赖 v2/ingest.ts 直连 TMDB 识别文件——不再有 Jellyfin fallback 世界）')
+  if (!tmdb || !reasoningModel) {
+    console.error('missing required env var: TMDB_API_KEY / LLM_BASE_URL / LLM_API_KEY / LLM_MODEL（watch 现在依赖 v2/ingest.ts 直连 TMDB 识别文件——不再有 Jellyfin fallback 世界；LLM 三件套缺任一则推理腿无法组装）')
     process.exit(2)
   }
   const shutdown = new AbortController()
@@ -721,13 +748,39 @@ async function cmdDoctor() {
   const roots = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
   const results: DoctorResult[] = []
 
+  // 启动面（spec A §4.3）：密钥来源无关化——env 与库里的 secret:*/provider:* 都算。doctor 是
+  // 一次性快照式体检，这里开一条短命连接把两个键空间读进内存就立刻 close，后面所有检查项都读
+  // 这份快照，绝不持有活 handle（下方每个 dbExists 块各自 openDb/close，持 handle 必炸）。
+  const dbPath = join(cacheRoot, 'scout.db')
+  const dbExists = existsSync(dbPath)
+  const secretSnap = new Map<string, string | null>()
+  if (dbExists) {
+    try {
+      const { openDb } = await import('../v2/db.js')
+      const snapDb = openDb(dbPath)
+      try {
+        const repo = new SettingsRepo(snapDb)
+        for (const name of SECRET_NAMES) secretSnap.set(`secret:${name}`, repo.get(`secret:${name}`))
+        for (const flag of ['SUBHD_ENABLED', 'ZIMUKU_ENABLED']) secretSnap.set(`provider:${flag}`, repo.get(`provider:${flag}`))
+      } finally {
+        snapDb.close()
+      }
+    } catch {
+      // openDb 抛错（迁移失败/外键违例）时快照留空 → 本次体检退化成 env-only。同一种抛错由下方
+      // checkDatabase 转成 ✗ 诊断行，这里不重复报（R2D-20 的既有口径）。
+    }
+  }
+  const cfg = dbExists
+    ? makeAdapterConfigResolver(process.env, (k) => secretSnap.get(k) ?? null)
+    : envOnlyAdapterConfig(process.env)
+
   // env 缺失走诊断项（✗ + hint、exit 1），不 requireEnv 急切崩溃（那是 exit 2 的”用法错误”通道）
   // TMDB 排最前:它是 watch/reconcile-all 的硬前置(缺 key 直接拒绝启动),缺它 doctor 必须 ✗ 而非
   // 假装全绿——修复"doctor 通过但 watch 立刻因缺 TMDB_API_KEY 退出"的假信心。
-  const tmdbKey = process.env.TMDB_API_KEY
+  const tmdbKey = cfg.secret('TMDB_API_KEY').value
   if (!tmdbKey) {
     results.push({
-      name: 'tmdb', ok: false, detail: 'TMDB_API_KEY 未配置（watch/reconcile-all 的硬前置，缺它直接拒绝启动）',
+      name: 'tmdb', ok: false, detail: 'TMDB_API_KEY 未配置（watch/reconcile-all 的硬前置，缺它直接拒绝启动）（也可在 dashboard 的 setup wizard 里配置）',
       hint: '获取：https://www.themoviedb.org → 账户设置 → API → 复制 API Key(v3 auth)。墙内环境可配 TMDB_PROXY_URL 或 TMDB_BASE_URL 走反代。',
     })
   } else {
@@ -735,7 +788,7 @@ async function cmdDoctor() {
     results.push(await checkTmdb(() => withTimeout(tmdb.search('movie', 'The Matrix', 1999), 10_000, 'TMDB').then(h => h.length)))
   }
 
-  const assrtToken = process.env.ASSRT_TOKEN
+  const assrtToken = cfg.secret('ASSRT_TOKEN').value
   if (!assrtToken) {
     results.push({
       name: 'assrt', ok: false, detail: 'ASSRT_TOKEN 未配置',
@@ -746,13 +799,13 @@ async function cmdDoctor() {
     results.push(await checkAssrt({ quota: () => withTimeout(assrt.quota(), 10_000, 'ASSRT') }))
   }
 
-  const osKey = process.env.OPENSUBTITLES_API_KEY
+  const osKey = cfg.secret('OPENSUBTITLES_API_KEY').value
   if (!osKey) {
     results.push(await checkOpenSubtitles(null))
   } else {
     const os = new OpenSubtitlesClient({
       apiKey: osKey, appUserAgent: 'subtitlescout v0.2.0',
-      username: process.env.OPENSUBTITLES_USERNAME, password: process.env.OPENSUBTITLES_PASSWORD,
+      username: cfg.secret('OPENSUBTITLES_USERNAME').value ?? undefined, password: cfg.secret('OPENSUBTITLES_PASSWORD').value ?? undefined,
     })
     // The Matrix：配额免费的探测目标，只验证 key/网络，不耗下载配额
     results.push(await checkOpenSubtitles({
@@ -760,7 +813,15 @@ async function cmdDoctor() {
     }))
   }
 
-  const zimukuEnabled = process.env.ZIMUKU_ENABLED === 'true'
+  const jimakuKey = cfg.secret('JIMAKU_API_KEY').value
+  if (!jimakuKey) {
+    results.push({ name: 'jimaku', ok: true, skip: true, detail: '未配置(可选 provider)', hint: '设 JIMAKU_API_KEY 启用（jimaku.cc 账号设置复制）。' })
+  } else {
+    const jk = new JimakuClient({ apiKey: jimakuKey })
+    results.push(await checkJimaku(() => withTimeout(jk.search({ query: 'test' }), 10_000, 'Jimaku')))
+  }
+
+  const zimukuEnabled = cfg.flag('ZIMUKU_ENABLED').enabled
   if (!zimukuEnabled) {
     results.push(await checkZimuku(null))
   } else {
@@ -773,9 +834,12 @@ async function cmdDoctor() {
     }))
   }
 
-  const llmBase = process.env.LLM_BASE_URL
-  const llmKey = process.env.LLM_API_KEY
-  const llmModel = process.env.LLM_MODEL
+  results.push(await checkSubhd(() =>
+    withTimeout(curlFetch(process.env.SUBHD_BASE_URL ?? SUBHD_BASE, { signal: AbortSignal.timeout(10_000) }).then((r) => r.status), 10_000, 'subhd')))
+
+  const llmBase = cfg.secret('LLM_BASE_URL').value
+  const llmKey = cfg.secret('LLM_API_KEY').value
+  const llmModel = cfg.secret('LLM_MODEL').value
   if (!llmBase || !llmKey || !llmModel) {
     results.push({
       name: 'llm', ok: false, detail: 'LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 未配置',
@@ -792,10 +856,7 @@ async function cmdDoctor() {
   // settingsRepo.seedRootsFromEnv 的既有注释）。db 文件存在时读该表（沿用下方既有的动态 import
   // 手法，doctor 在数据库尚未初始化时不该白白 import 一整个 v2/db.js）并标注来源（db）；db
   // 尚未初始化（全新部署，一次 watch 都没跑过）时回落 env 首启种子并标注（env seed）——不假装
-  // 这就是"真正生效"的清单。dbPath/dbExists 提前到这里算，下方 v2 database checks 复用同一份
-  // 判定，不重复 existsSync。
-  const dbPath = join(cacheRoot, 'scout.db')
-  const dbExists = existsSync(dbPath)
+  // 这就是"真正生效"的清单。dbPath/dbExists 已在函数顶部的密钥快照块里算好，这里复用。
   let mediaRootsForDoctor = roots
   let mediaRootsSource: 'db' | 'env seed' = 'env seed'
   if (dbExists) {
