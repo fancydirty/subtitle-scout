@@ -1,0 +1,105 @@
+// src/v2/secrets.test.ts：spec A §4.1/§4.2 解析优先级、打码、provider flag 语义的纯函数契约。
+import { describe, it, expect } from 'vitest'
+import {
+  SECRET_NAMES, isSecretName, resolveSecret, maskSecretValue,
+  resolveProviderFlag, makeAdapterConfigResolver, envOnlyAdapterConfig,
+} from './secrets.js'
+
+describe('SECRET_NAMES 白名单（spec §4.1）', () => {
+  // 9 而非 10：spec §4.1 散文写"10 个名字"但枚举只列了 9 个，**以枚举为准**（下面这份列表
+  // 就是 spec 的枚举原文）。这是一处已知的 spec 笔误，不要"补"第 10 个名字出来。
+  it('恰为 9 键', () => {
+    expect([...SECRET_NAMES].sort()).toEqual([
+      'ASSRT_TOKEN', 'JIMAKU_API_KEY', 'LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL',
+      'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_PASSWORD', 'OPENSUBTITLES_USERNAME',
+      'TMDB_API_KEY',
+    ].sort())
+    expect(SECRET_NAMES).toHaveLength(9)
+  })
+  it('isSecretName 放行白名单、拒绝其他', () => {
+    expect(isSecretName('TMDB_API_KEY')).toBe(true)
+    expect(isSecretName('ADMIN_TOKEN')).toBe(false)
+    expect(isSecretName('')).toBe(false)
+  })
+})
+
+describe('resolveSecret 优先级（spec §4.2：env > db > none）', () => {
+  it('env 非空 → env 胜（库里同名值被无视）', () => {
+    expect(resolveSecret('TMDB_API_KEY', { TMDB_API_KEY: 'env-key' }, () => 'db-key'))
+      .toEqual({ value: 'env-key', source: 'env' })
+  })
+  it('env 缺席 → db 兜底', () => {
+    expect(resolveSecret('TMDB_API_KEY', {}, () => 'db-key'))
+      .toEqual({ value: 'db-key', source: 'db' })
+  })
+  it('空字符串 env 视为未设（手滑 export X= 不挡库里的真 key）', () => {
+    expect(resolveSecret('TMDB_API_KEY', { TMDB_API_KEY: '' }, () => 'db-key'))
+      .toEqual({ value: 'db-key', source: 'db' })
+  })
+  it('env/db 都没有 → none；db 空串同样视为 none', () => {
+    expect(resolveSecret('TMDB_API_KEY', {}, () => null)).toEqual({ value: null, source: 'none' })
+    expect(resolveSecret('TMDB_API_KEY', {}, () => '')).toEqual({ value: null, source: 'none' })
+  })
+})
+
+describe('maskSecretValue（spec §4.1）', () => {
+  it('长度 ≥8 → 前3+••••+后3', () => {
+    expect(maskSecretValue('abcdefghij')).toBe('abc••••hij')
+    expect(maskSecretValue('12345678')).toBe('123••••678')
+  })
+  it('长度 <8 → 全 ••••', () => {
+    expect(maskSecretValue('abcdefg')).toBe('••••')
+    expect(maskSecretValue('')).toBe('••••')
+  })
+  it('打码结果不含任何长度≥4 的明文子串', () => {
+    for (const v of ['sk-live-9f8e7d6c5b4a', 'abcdefgh']) {
+      const masked = maskSecretValue(v)
+      for (let i = 0; i + 4 <= v.length; i++) {
+        expect(masked.includes(v.slice(i, i + 4))).toBe(false)
+      }
+    }
+  })
+})
+
+describe('resolveProviderFlag（spec §4.4：env 显式 > 库 > 关；=== 精确，fail-closed）', () => {
+  it('env 显式 true → 开/env', () => {
+    expect(resolveProviderFlag('SUBHD_ENABLED', { SUBHD_ENABLED: 'true' }, () => null))
+      .toEqual({ enabled: true, source: 'env' })
+  })
+  it('env 显式 false → 关/env（压过库里的 true）', () => {
+    expect(resolveProviderFlag('SUBHD_ENABLED', { SUBHD_ENABLED: 'false' }, () => 'true'))
+      .toEqual({ enabled: false, source: 'env' })
+  })
+  it('env 缺席 → 库 provider:<flag>', () => {
+    expect(resolveProviderFlag('ZIMUKU_ENABLED', {}, (k) => (k === 'provider:ZIMUKU_ENABLED' ? 'true' : null)))
+      .toEqual({ enabled: true, source: 'db' })
+  })
+  it('都没有 → 关/none（与今天 env-only 缺省一致）', () => {
+    expect(resolveProviderFlag('SUBHD_ENABLED', {}, () => null))
+      .toEqual({ enabled: false, source: 'none' })
+  })
+  it.each(['1', 'TRUE', 'True', 'yes', ' true'])('脏值 %s → 一律关（fail-closed）', (dirty) => {
+    expect(resolveProviderFlag('SUBHD_ENABLED', { SUBHD_ENABLED: dirty }, () => null).enabled).toBe(false)
+    expect(resolveProviderFlag('SUBHD_ENABLED', {}, () => dirty).enabled).toBe(false)
+  })
+  it('空串 env 视为未设，落库值', () => {
+    expect(resolveProviderFlag('SUBHD_ENABLED', { SUBHD_ENABLED: '' }, () => 'true'))
+      .toEqual({ enabled: true, source: 'db' })
+  })
+})
+
+describe('AdapterConfigResolver 工厂', () => {
+  it('makeAdapterConfigResolver：secret 读 secret:<name>、flag 读 provider:<flag>', () => {
+    const store = new Map([['secret:TMDB_API_KEY', 'db-tmdb'], ['provider:ZIMUKU_ENABLED', 'true']])
+    const cfg = makeAdapterConfigResolver({}, (k) => store.get(k) ?? null)
+    expect(cfg.secret('TMDB_API_KEY')).toEqual({ value: 'db-tmdb', source: 'db' })
+    expect(cfg.flag('ZIMUKU_ENABLED')).toEqual({ enabled: true, source: 'db' })
+  })
+  it('envOnlyAdapterConfig 永远不看库（一次性命令的 env-only 退化，语义与今天逐字一致）', () => {
+    const cfg = envOnlyAdapterConfig({ ASSRT_TOKEN: 'tok', SUBHD_ENABLED: 'true' })
+    expect(cfg.secret('ASSRT_TOKEN')).toEqual({ value: 'tok', source: 'env' })
+    expect(cfg.secret('JIMAKU_API_KEY')).toEqual({ value: null, source: 'none' })
+    expect(cfg.flag('SUBHD_ENABLED')).toEqual({ enabled: true, source: 'env' })
+    expect(cfg.flag('ZIMUKU_ENABLED')).toEqual({ enabled: false, source: 'none' })
+  })
+})
