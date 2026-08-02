@@ -1,5 +1,6 @@
 // src/v2/settingsRepo.ts
 import type { ScoutDb } from './db.js'
+import { SECRET_NAMES, isSecretName, maskSecretValue, resolveSecret, type SecretName } from './secrets.js'
 
 /** dashboard 重建战役 G4（spec §7，照抄 Jellyfin 分界）：settings 表是行为级设置的薄封装——
  *  挂载（compose volume）是部署层，守备目录（media_roots）与行为键（settings）都是产品层，
@@ -52,6 +53,50 @@ export class SettingsRepo {
 
   delete(key: string): void {
     this.db.prepare('DELETE FROM settings WHERE key = ?').run(key)
+  }
+
+  // ── 启动面（spec A §4.1）：secret:* 键空间。明文存 settings 表（决策与理由见 spec §4.1），
+  // 任何读回都走 listSecretMeta 打码；getSecret 只供进程内消费（buildAdapters/assemble/setupApi）。
+  // 每次写入/删除都 bump secrets_version 计数行——watch 每 tick 比对它决定要不要热重建长命客户端。
+
+  getSecret(name: SecretName): string | null {
+    return this.get(`secret:${name}`)
+  }
+
+  setSecret(name: SecretName, value: string, now: number): void {
+    if (!isSecretName(name)) throw new Error(`unknown secret name: ${name}`)
+    this.set(`secret:${name}`, value, now)
+    this.bumpSecretsVersion(now)
+  }
+
+  deleteSecret(name: SecretName, now: number): void {
+    if (!isSecretName(name)) throw new Error(`unknown secret name: ${name}`)
+    this.delete(`secret:${name}`)
+    this.bumpSecretsVersion(now)
+  }
+
+  /** 任何 secret 写入自增的计数器；无行/脏值视为 0。 */
+  secretsVersion(): number {
+    const raw = this.get('secrets_version')
+    const n = raw === null ? 0 : Number(raw)
+    return Number.isFinite(n) ? n : 0
+  }
+
+  private bumpSecretsVersion(now: number): void {
+    this.set('secrets_version', String(this.secretsVersion() + 1), now)
+  }
+
+  /** 只回哪些已设置 + 打码预览 + source；永不回明文（Providers 区/setup status 的唯一读面）。 */
+  listSecretMeta(env: NodeJS.ProcessEnv): SecretMeta[] {
+    return SECRET_NAMES.map((name) => {
+      const r = resolveSecret(name, env, (n) => this.getSecret(n))
+      return {
+        name,
+        set: r.source !== 'none',
+        source: r.source,
+        masked: r.value === null ? null : maskSecretValue(r.value),
+      }
+    })
   }
 
   // ---- media_roots(path,type,added_at)：守备目录 ----
@@ -167,4 +212,11 @@ export class SettingsRepo {
 
     return tx.immediate()
   }
+}
+
+export interface SecretMeta {
+  name: SecretName
+  set: boolean
+  source: 'env' | 'db' | 'none'
+  masked: string | null
 }
