@@ -1059,11 +1059,25 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
     ac.abort()
     expect((await fetch(`${base}/api/v2/workflow/trace-stream`)).status).toBe(401)
   })
-  it('两个 Plan C 只读端点都在统一鉴权门之后（无凭据 → 401）', async () => {
+  it('两个 Plan C 只读端点：无凭据 401，带 session 200 且为空清单', async () => {
     const { base } = await start(distWith('<!doctype html>'), 's3cret')
     for (const path of ['/api/v2/subtitle/shifted', '/api/v2/workflow/dormant']) {
       const res = await fetch(`${base}${path}`)
       expect(res.status).toBe(401)
+    }
+    // 鉴权后 200：让锁自证路由存在于门后（未知路径过门后是 404），而非仅仅门会拒。
+    // setup 成功即登录、直接签发 session（server.ts 统一前置门的 setup 分支），
+    // cookie 夹取法同上文 auth/status 用例。
+    const setup = await fetch(`${base}/api/v2/auth/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
+    })
+    expect(setup.status).toBe(200)
+    const cookie = (setup.headers.get('set-cookie') ?? '').split(';')[0]
+    for (const path of ['/api/v2/subtitle/shifted', '/api/v2/workflow/dormant']) {
+      const res = await fetch(`${base}${path}`, { headers: { cookie } })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
     }
   })
 })
