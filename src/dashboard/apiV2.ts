@@ -1155,6 +1155,108 @@ export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersD
   return { running, recent, installedLast24h: installedRow.c, translatedLast24h: translatedRow.c, held, providerQuota }
 }
 
+/** Plan C（spec §4.2）：GET /api/v2/workflow/dormant 的行 DTO。**四键封闭。**
+ *  刻意缺席的字段与理由：
+ *   - `reason`/`last_error`：现网该串是中文且含内部措辞（`src/v2/jobsRepo.ts:110`），
+ *     不透传；英文句子由前端用 attempts 组（spec §5.7 新拟 #3）。
+ *   - 任何时刻字段：草稿 6 的 dormant 行不渲染时刻，jobs 表也没有 `last_error_at` 列；
+ *     `updated_at` 虽然冻结在 park 时刻可以推导，但没有 UI 消费方，不进 DTO（R1 审计裁决）。
+ *     它只用于 ORDER BY（最近停车的排前面），不序列化。 */
+export interface DormantTaskDTO {
+  jobId: number
+  /** 裸工具名（如 `find_subtitle`），前端 mono 弱显。payload 无 taskType 时回落 jobs.kind。 */
+  task: string
+  /** 后端组好的目标标签（"The Rig, Season 2" 粒度），前端不拼。 */
+  targetLabel: string
+  /** 实际把这行推到 dormant 的失败次数 = max(内容轨 attempt, 崩溃轨 reap_count)。 */
+  attempts: number
+}
+
+/** buildDormantTasks 的 join 行（导出仅为让 dormantTargetLabel 可独立单测）。 */
+export interface DormantJobRow {
+  id: number
+  series_id: string | null
+  movie_id: string | null
+  season: number | null
+  series_name: string | null
+  movie_name: string | null
+  /** `json_extract(payload,'$.seasons')` 的原样结果：数组时是 JSON 文本（如 `'[2]'`），
+   *  payload 里是 null / 缺席 / 根本没有 payload 时是 SQL NULL。 */
+  seasons_json: string | null
+}
+
+/** 目标标签组装（纯函数，无 I/O，可直接单测）。
+ *
+ *  季号有两个来源且**顺序不能颠倒**：`payload.seasons` 优先，`jobs.season` 兜底。理由：
+ *  R-11 裁决（`src/v2/jobsRepo.ts:56` 区域）之后，`jobs.season` 对 find_subtitle 任务**恒为
+ *  null**，派活范围搬到了 payload；只看列的话现网所有 worker_task 都会退化成"只有系列名"。
+ *
+ *  名字查不到时如实回落 id（合成 series_id 如 `orchestrator-shard-42-1` 本来就不在 series
+ *  表里，`src/v2/db.ts:76` 区域注释）——**不伪造名字**，让人看到一个能拿去查库的真串。 */
+export function dormantTargetLabel(row: DormantJobRow): string {
+  const name = row.series_name
+    ?? row.movie_name
+    ?? row.series_id
+    ?? row.movie_id
+    ?? `job #${row.id}`
+  const seasons = parseSeasonsJson(row.seasons_json)
+  if (seasons !== null && seasons.length === 1) return `${name}, Season ${seasons[0]}`
+  if (seasons !== null && seasons.length > 1) return `${name}, Seasons ${seasons.join(', ')}`
+  if (row.season !== null) return `${name}, Season ${row.season}`
+  return name
+}
+
+/** `json_extract` 出来的 seasons 文本 → 升序数字数组；不是数组/畸形 JSON/空数组一律 null
+ *  （按"没有季信息"处理，让 dormantTargetLabel 走 jobs.season 或纯名字分支）。
+ *  不抛保证只覆盖这一段：抽出来的 seasons 文本畸形 → null。注意若 **payload 本身**畸形，
+ *  json_extract 在 SQL 层就先抛 SqliteError，根本走不到这里——但应用内所有 payload 写入
+ *  都过 JSON.stringify（jobsRepo），只有手工改库才能造出畸形 payload，实践中不可达，
+ *  不为它加防御层。 */
+function parseSeasonsJson(raw: string | null): number[] | null {
+  if (raw === null) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return null
+    const nums = parsed.filter((n): n is number => typeof n === 'number')
+    return nums.length > 0 ? [...nums].sort((a, b) => a - b) : null
+  } catch {
+    return null
+  }
+}
+
+/** Plan C（spec §4.2）：dormant 任务清单。纯读、零状态机改动。
+ *  ORDER BY updated_at DESC = 最近停车的排前面（updated_at 在 park 时冻结，见 jobsRepo
+ *  的 park/reap SQL）——**它只参与排序，不进 DTO**。 */
+export function buildDormantTasks(db: ScoutDb): DormantTaskDTO[] {
+  const rows = db
+    .prepare(
+      `SELECT j.id          AS id,
+              j.kind        AS kind,
+              j.series_id   AS series_id,
+              j.movie_id    AS movie_id,
+              j.season      AS season,
+              j.attempt     AS attempt,
+              j.reap_count  AS reap_count,
+              json_extract(j.payload, '$.taskType') AS task_type,
+              json_extract(j.payload, '$.seasons')  AS seasons_json,
+              s.name        AS series_name,
+              m.name        AS movie_name
+         FROM jobs j
+         LEFT JOIN series s ON s.id = j.series_id
+         LEFT JOIN movies m ON m.id = j.movie_id
+        WHERE j.state = 'dormant'
+        ORDER BY j.updated_at DESC`,
+    )
+    .all() as Array<DormantJobRow & { kind: string; attempt: number; reap_count: number; task_type: string | null }>
+
+  return rows.map((row) => ({
+    jobId: row.id,
+    task: row.task_type ?? row.kind,
+    targetLabel: dormantTargetLabel(row),
+    attempts: Math.max(row.attempt, row.reap_count),
+  }))
+}
+
 // ---- workflow/runs/:id/trace（dashboard-F4 后端例外口子：单 run 痕迹快照回放）----
 // 北极星④：纯解析呈现，不新增判断——runs.trace_json 原样解析成事件列表，供 RunDetail 右侧板
 // 的"快照回放"渲染（回放≠直播：这里不接 traceBus，只读已经落库的收官快照，同 G3 注释的

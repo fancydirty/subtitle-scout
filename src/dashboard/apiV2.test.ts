@@ -10,7 +10,7 @@ import {
   buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch, buildRunTrace,
+  buildTriage, redispatch, buildRunTrace, buildDormantTasks, dormantTargetLabel,
 } from './apiV2.js'
 // 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
@@ -1083,5 +1083,120 @@ describe('redispatch（POST /api/v2/workflow/redispatch：转调 upsertWorkerTas
     const jobs = new JobsRepo(db)
     const result = redispatch(jobs, { seriesId: 's1', seasons: [0, -1] }, NOW)
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('dormantTargetLabel（Plan C spec §4.2：后端组标签，前端不拼）', () => {
+  const base = {
+    id: 1, series_id: 'tmdb:100', movie_id: null, season: null,
+    series_name: 'The Rig', movie_name: null, seasons_json: null as string | null,
+  }
+
+  it('payload.seasons 单季 → "名, Season N"', () => {
+    expect(dormantTargetLabel({ ...base, seasons_json: '[2]' })).toBe('The Rig, Season 2')
+  })
+
+  it('payload.seasons 多季 → "名, Seasons a, b"（升序）', () => {
+    expect(dormantTargetLabel({ ...base, seasons_json: '[2,1]' })).toBe('The Rig, Seasons 1, 2')
+  })
+
+  it('payload.seasons 缺席但 jobs.season 有值 → 回落用列（存量 series_season 行）', () => {
+    expect(dormantTargetLabel({ ...base, season: 3 })).toBe('The Rig, Season 3')
+  })
+
+  it('两处季信息都没有 → 只给系列名（全剧任务）', () => {
+    expect(dormantTargetLabel(base)).toBe('The Rig')
+  })
+
+  it('电影行 → 电影名', () => {
+    expect(dormantTargetLabel({
+      ...base, series_id: null, series_name: null, movie_id: 'tmdb:777', movie_name: 'Dune',
+    })).toBe('Dune')
+  })
+
+  it('join 不中（合成 series_id 的通用任务）→ 如实回落 id 本身，不伪造名字', () => {
+    expect(dormantTargetLabel({
+      ...base, series_id: 'orchestrator-shard-42-1', series_name: null,
+    })).toBe('orchestrator-shard-42-1')
+  })
+
+  it('连 id 都没有 → 回落 job 号', () => {
+    expect(dormantTargetLabel({ ...base, id: 77, series_id: null, series_name: null })).toBe('job #77')
+  })
+
+  it('seasons_json 是畸形 JSON 时不抛，按"没有季信息"处理', () => {
+    expect(dormantTargetLabel({ ...base, seasons_json: '{oops' })).toBe('The Rig')
+  })
+})
+
+describe('buildDormantTasks（Plan C spec §4.2）', () => {
+  let db: ScoutDb
+  beforeEach(() => { db = openDb(':memory:') })
+
+  const insertJob = (over: Record<string, unknown> = {}) => {
+    const row = {
+      kind: 'worker_task', series_id: 'tmdb:100', season: null, movie_id: null,
+      payload: JSON.stringify({ taskType: 'find_subtitle', reason: 'gaps', seasons: [2] }),
+      state: 'dormant', attempt: 5, reap_count: 0,
+      last_error: '连续 5 次进程崩溃/租约死亡回收未竟全功——疑确定性崩溃(poison task)',
+      created_at: NOW, updated_at: NOW,
+      ...over,
+    }
+    db.prepare(
+      `INSERT INTO jobs (kind, series_id, season, movie_id, payload, state, attempt, reap_count,
+                         last_error, created_at, updated_at)
+       VALUES (@kind, @series_id, @season, @movie_id, @payload, @state, @attempt, @reap_count,
+               @last_error, @created_at, @updated_at)`,
+    ).run(row)
+  }
+
+  it('DTO 键集合封闭为四键，中文 reason 串不泄漏', () => {
+    db.prepare(`INSERT INTO series (id, name, year) VALUES ('tmdb:100', 'The Rig', 2023)`).run()
+    insertJob()
+    const dto = buildDormantTasks(db)
+    expect(dto).toHaveLength(1)
+    expect(Object.keys(dto[0]).sort()).toEqual(['attempts', 'jobId', 'targetLabel', 'task'])
+    expect(dto[0]).toEqual({ jobId: 1, task: 'find_subtitle', targetLabel: 'The Rig, Season 2', attempts: 5 })
+    const serialized = JSON.stringify(dto)
+    expect(serialized).not.toContain('崩溃')
+    expect(serialized).not.toContain('poison')
+    expect(serialized).not.toMatch(/"(reason|lastError|last_error|updatedAt|updated_at)":/)
+  })
+
+  it('只出 dormant——其余六态一律不出', () => {
+    for (const state of ['wanted', 'searching', 'downloading', 'verifying', 'done', 'failed'] as const) {
+      insertJob({ state, series_id: `tmdb:${state}` })
+    }
+    insertJob({ state: 'dormant', series_id: 'tmdb:parked', payload: JSON.stringify({ taskType: 'find_subtitle' }) })
+    const dto = buildDormantTasks(db)
+    expect(dto).toHaveLength(1)
+    expect(dto[0].targetLabel).toBe('tmdb:parked')
+  })
+
+  it('attempts 取两个计数器的大者——崩溃循环轨（reap_count=5, attempt=0）也报 5', () => {
+    insertJob({ attempt: 0, reap_count: 5 })
+    expect(buildDormantTasks(db)[0].attempts).toBe(5)
+  })
+
+  it('attempts 取两个计数器的大者——内容失败轨（attempt=5, reap_count=1）报 5', () => {
+    insertJob({ attempt: 5, reap_count: 1 })
+    expect(buildDormantTasks(db)[0].attempts).toBe(5)
+  })
+
+  it('payload 无 taskType 时 task 回落 kind，不给空串', () => {
+    insertJob({ kind: 'realign', payload: null })
+    expect(buildDormantTasks(db)[0].task).toBe('realign')
+  })
+
+  it('空表返回空数组', () => {
+    expect(buildDormantTasks(db)).toEqual([])
+  })
+
+  it('排序钉死 ORDER BY updated_at DESC：最近停车的排前面', () => {
+    insertJob({ series_id: 'tmdb:old', updated_at: NOW - 1000, payload: JSON.stringify({ taskType: 'find_subtitle' }) })
+    insertJob({ series_id: 'tmdb:new', updated_at: NOW, payload: JSON.stringify({ taskType: 'find_subtitle' }) })
+    const dto = buildDormantTasks(db)
+    expect(dto).toHaveLength(2)
+    expect(dto.map((d) => d.targetLabel)).toEqual(['tmdb:new', 'tmdb:old'])
   })
 })
