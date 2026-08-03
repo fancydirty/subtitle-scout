@@ -1447,7 +1447,7 @@
   /* 约 36% 视口（用户裁决的比例）。min-height 而不是固定 height：传送带 3 行 + 两条事实行在
      窄屏下可能更高，压死高度会切掉内容。 */
   min-height: 36vh;
-  background: var(--color-background-card);
+  background: var(--color-card);
 }
 .act-hero-backdrop {
   position: absolute;
@@ -1479,11 +1479,19 @@
 .act-hero-poster {
   aspect-ratio: 2 / 3;
   width: 132px;
+  /* flex:none / .act-hero-main 的 flex:1 都在这里，但**父元素的 display:flex 不在 CSS 里**
+     ——它由 ActivityHero.tsx 的 `.act-hero-body flex` 类给（迁移前是 Astryx HStack）。
+     删了那个类这两行就一起失效，而 jsdom 不做布局、测试照绿。 */
   flex: none;
   border-radius: 8px;
   overflow: hidden;
+  /* --color-border 新旧两栈同名同值（rgba(255,255,255,0.07)），故沿用不改名：
+     Task 31 删掉 scout.css 后由 tw.css 的那条声明接管。 */
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* 面色用 --color-secondary（#16181f，与旧 --color-background-surface 同值）。
+     **不用 --color-accent**：它在 scout.css:86 被遮蔽成柠檬绿（#96DA26）——那是高位强调色，
+     不是底色。换栈过渡期铁律：背景类迁移一律去 secondary，不去 accent。 */
+  background: var(--color-secondary);
 }
 .act-hero-poster img {
   width: 100%;
@@ -1498,10 +1506,10 @@
   min-width: 0;
   flex: 1;
 }
-/* 脉动点：正常运行态唯一的"活着"信号。中性紫——**不是黄**（黄在本设计系统里是警示色
-   --color-text-orange，用它报"一切正常"会和真警示撞语义），也不是 accent lime（每屏至多一处
-   亮色的配额留给别处，DESIGN.md §2）。
-   data-tone 是给下一个任务（卡死态转红）留的色彩钩子：颜色按属性选，组件层不写死任何红。 */
+/* 脉动点：正常运行态唯一的"活着"信号。中性紫——**不是黄**（黄是警示色，用它报"一切正常"会
+   和真警示撞语义。旧 Astryx 主题里那个黄叫 --color-text-orange，新栈的 tw.css 索性一个黄
+   token 都不提供），也不是 accent lime（每屏至多一处亮色的配额留给别处，DESIGN.md §2）。
+   data-tone 是给卡死态（ActivityStuck）留的色彩钩子：颜色按属性选，组件层不写死任何红。 */
 .act-hero-pulse {
   width: 6px;
   height: 6px;
@@ -1527,7 +1535,7 @@
 .act-hero-bar-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--color-text-secondary);
+  background: var(--color-muted-foreground);
   /* 阶段推进时平滑滑过去而不是跳。stage 是单调不倒退的（stage.ts 的 advanceStage），
      所以这个 transition 永远只往右走。 */
   transition: width 400ms cubic-bezier(0.32, 0.72, 0, 1);
@@ -1547,9 +1555,18 @@
   width: 100%;
 }
 .act-hero-facts > * {
-  /* ink 弱（DESIGN.md §2 的 --color-text-gray）。Text 的 color 枚举里没有 gray，
-     所以这一档只能在 CSS 里给——不是绕过设计系统，是补它没暴露的那一档。 */
-  color: var(--color-text-gray);
+  /* ink 弱那一档。**hero 与 ActivityStuck 共用这一条**（stuck 的事实行也套
+     .act-hero-facts，见 :1749 的注释：它刻意不另写颜色，就吃这条）。
+     组件层一律**不给颜色类**。迁移前这里有第二个颜色来源（Astryx Text 的 color="secondary"
+     → scout.css 的 .astryx-text.secondary），本规则赢它靠的**不是特异性**（`.act-hero-facts > *`
+     是 0-1-0，输给 0-2-0），而是 **cascade layer**：那条在 @layer astryx-theme 里
+     （scout.css:79 开层、:275 那行），而 styles.css 全文没有 @layer——未分层声明优先于任何
+     分层声明。所以这一档 ink 一直是 --color-text-gray 而不是 secondary，迁移后颜色只剩这
+     一个来源，那场架不存在了。
+     ⚠️ 同一条 layer 规则也意味着：在套了本类的元素上加 text-* 颜色工具类是**无效**的
+     （Tailwind utilities 也在 @layer utilities 里，照样输给未分层的本条）。
+     ⚠️ 本条的 token 迁移属于 Task 13，Task 16 不要再迁一次。 */
+  color: var(--color-weak);
 }
 @media (prefers-reduced-motion: reduce) {
   .act-hero-pulse,

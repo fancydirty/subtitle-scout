@@ -62,9 +62,6 @@
 //
 // 海报也为 null（图都没有）时：不渲染任何背景层（模糊一个不存在的 URL 没有意义），海报框由
 // PosterThumb 走首字母占位。hero 本体完整，不崩。
-import { Text } from '@astryxdesign/core/Text'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
 import { backdropUrl, posterUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import type { WorkflowRunningWorkerDTO } from '../api/types.js'
@@ -151,21 +148,32 @@ export function ActivityHero({ running, missingCount, now }: Props) {
       ) : null}
       {/* 左侧渐变遮罩压暗：让排印在任何一张背景图上都可读。纯装饰，aria-hidden。 */}
       <div className="act-hero-scrim" aria-hidden="true" />
-      <HStack gap={4} className="act-hero-body">
+      {/* `flex gap-4` 替代原来的 <HStack gap={4}>。两件事记牢：
+          ① Astryx HStack 的默认 vAlign 是 'stretch'，与 flex 的 align-items 默认值同义，
+             所以这里**不补** items-* 类（补了才是改设计）。
+          ② 这个 flex 是**承重**的：.act-hero-poster 的 flex:none 与 .act-hero-main 的 flex:1
+             写在 styles.css 里，但 display:flex 从来只由这里给。删掉它 → 海报横向铺满、主栏
+             掉行，而 jsdom 不做布局，测试不会红。 */}
+      <div className="act-hero-body flex gap-4">
         <div className="act-hero-poster" data-testid="activity-hero-poster">
           <PosterThumb posterPath={running.posterPath} name={title} />
         </div>
-        <VStack gap={2} className="act-hero-main">
-          <VStack gap={1}>
-            <Text type="large" weight="semibold">{title}</Text>
-            <HStack gap={2} vAlign="center">
+        <div className="act-hero-main flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
+            <span className="text-base font-semibold">{title}</span>
+            {/* ⚠️ 这个 flex 是**承重**的，不是装饰：.act-hero-pulse 在 CSS 里只有
+                width/height/border-radius/flex/background/animation，**没有 display**
+                （styles.css:1513-1520）。<span> 默认 inline，而 inline 元素忽略 width/height——
+                这个点能是个 6px 的圆，全靠它作为 flex item 被 blockify。删掉这里的 flex，
+                点会**整个消失**，而 jsdom 不做布局、测试照绿。 */}
+            <div className="flex items-center gap-2">
               {/* 脉动点：正常运行态的唯一"活着"信号。中性紫，不是黄/蓝（铁律①）。
                   data-tone 是给下一个任务（卡死态转红）留的钩子——这里恒 'live'，
                   颜色分支在 CSS 里按 data-tone 选，本组件不写死任何红。 */}
               <span className="act-hero-pulse" data-tone="live" aria-hidden="true" />
-              <Text type="body" color="secondary">{subtitle}</Text>
-            </HStack>
-          </VStack>
+              <span className="text-[13px] leading-5 text-muted-foreground">{subtitle}</span>
+            </div>
+          </div>
           <ConveyorFeed events={trail} rows={3} />
           {/* 进度条：无 role="progressbar"、无 aria-valuenow。这是刻意的——
               progressbar 的无障碍契约要求可读的 value/百分比，而裁决 L10 恰恰是"UI 层面把百分
@@ -186,17 +194,23 @@ export function ActivityHero({ running, missingCount, now }: Props) {
               style={width === null ? undefined : { width: `${width}%` }}
             />
           </div>
-          <HStack className="act-hero-facts" vAlign="center" hAlign="between">
-            <Text type="code" color="secondary">{elapsed}</Text>
+          {/* 两行事实。font-mono + text-[13px] + leading-5 = 原 Text type="code" 的等价三件
+              （字族/字号/行高）。**颜色刻意不给类**：弱色那一档由 styles.css 的
+              `.act-hero-facts > *` 统一给，那条规则与 ActivityStuck 共用。
+              这里不是"少写一个类"，是**写了也没用**——styles.css 全文未分层，而 Tailwind
+              utilities 在 @layer utilities 里，未分层声明赢任何分层声明（跟特异性无关）。
+              想改这一档 ink 只能改 CSS 那一条。 */}
+          <div className="act-hero-facts flex items-center justify-between">
+            <span className="font-mono text-[13px] leading-5">{elapsed}</span>
             {/* 右下角背景信息。missingCount 缺席（undefined/null）→ 整行不渲染。 */}
             {typeof missingCount === 'number' ? (
-              <Text type="code" color="secondary" data-testid="activity-hero-missing">
+              <span className="font-mono text-[13px] leading-5" data-testid="activity-hero-missing">
                 {missingLine(missingCount, lang)}
-              </Text>
+              </span>
             ) : null}
-          </HStack>
-        </VStack>
-      </HStack>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
