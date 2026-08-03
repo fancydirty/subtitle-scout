@@ -6,6 +6,7 @@ import { StepTmdb } from './StepTmdb.js'
 import { StepLlm } from './StepLlm.js'
 import { StepProviders } from './StepProviders.js'
 import { StepFreeSources } from './StepFreeSources.js'
+import { StepRoots } from './StepRoots.js'
 
 export const WIZARD_STEPS: WizardStepDef[] = [
   { id: 'language', titleKey: 'wizard_step_language_title', descKey: 'wizard_step_language_desc', optional: false, Component: StepLanguage },
@@ -13,5 +14,6 @@ export const WIZARD_STEPS: WizardStepDef[] = [
   { id: 'llm', titleKey: 'wizard_step_llm_title', descKey: 'wizard_step_llm_desc', optional: false, Component: StepLlm },
   { id: 'providers', titleKey: 'wizard_step_providers_title', descKey: 'wizard_step_providers_desc', optional: true, Component: StepProviders },
   { id: 'free', titleKey: 'wizard_step_free_title', descKey: 'wizard_step_free_desc', optional: false, Component: StepFreeSources },
-  // Task 21: roots / Task 22: launch
+  { id: 'roots', titleKey: 'wizard_step_roots_title', descKey: 'wizard_step_roots_desc', optional: true, Component: StepRoots },
+  // Task 22: launch
 ]
