@@ -47,8 +47,9 @@ describe('SeasonAccordion', () => {
 describe('SeasonAccordion：字幕校验接线', () => {
   const originalFetch = globalThis.fetch
 
-  // jsdom 没有 ResizeObserver，而 CompareTimeline 用它测容器宽度。不打这个桩，
-  // 面板一渲染就抛 ReferenceError —— 那是**测试环境**的缺口，不是产品行为，
+  // setupTests 自 Plan C Task 7 起垫了一个 no-op ResizeObserver，但 CompareTimeline 靠
+  // observe 回调拿容器宽度——no-op 桩永不回调，宽度恒 0，时间轴画不出来。所以本文件另
+  // stub 一个会回调 800×120 的功能版。这仍是**测试环境**的缺口，不是产品行为，
   // 用它来"证明"错误边界有效等于拿一个假故障糊弄自己（真实浏览器里 ResizeObserver 恒在）。
   // 同 InspectPanel.test.tsx 的既有口径。
   beforeEach(() => {

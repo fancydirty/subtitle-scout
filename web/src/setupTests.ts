@@ -41,3 +41,19 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     dispatchEvent: vi.fn(),
   }))
 }
+
+// ── Radix 在 jsdom 里缺的五个 DOM 能力。Radix 的 Select/Dialog 一族会无条件调用它们，
+// 不补的话测试会抛 "target.hasPointerCapture is not a function" 之类的错，
+// 而不是给出一个和组件行为有关的失败信息。
+// 这里用无条件赋值（而不是 `if (!Element.prototype.x)` 守卫）：本仓 tsconfig 下读取
+// 一个 TS 认为"必然存在"的属性做真值判断会触发 TS2774（把方法引用当条件用），
+// 无条件覆盖既躲开它，语义上也无损——jsdom 里没有真实现可覆盖。
+Element.prototype.hasPointerCapture = () => false
+Element.prototype.setPointerCapture = () => {}
+Element.prototype.releasePointerCapture = () => {}
+Element.prototype.scrollIntoView = () => {}
+globalThis.ResizeObserver = class ResizeObserverMock {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver

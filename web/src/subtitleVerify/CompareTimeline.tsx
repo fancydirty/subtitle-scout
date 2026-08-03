@@ -105,9 +105,9 @@ export function CompareTimeline({ reference, ours, durationMs, waveformPeaks }: 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (vp === null) return
     dragRef.current = { startX: e.clientX, startVp: vp }
-    // setPointerCapture 在 jsdom 里不存在（不是 no-op，是压根没这个方法）。捕获只是
-    // "拖到元素外面也别丢事件"的增益，拿不到就算了——绝不能让它把 pointerdown 炸掉，
-    // 那会让整个面板在测试环境里抛错、并在真实浏览器的老引擎上留同一个坑。
+    // setPointerCapture 在 jsdom 里如今是 setupTests 垫的无操作桩，但真实老引擎上仍可能
+    // 压根没这个方法。捕获只是"拖到元素外面也别丢事件"的增益，拿不到就算了——绝不能让它
+    // 把 pointerdown 炸掉：缺方法的引擎上裸调就是同一个坑，可选链是留给那条路径的。
     e.currentTarget.setPointerCapture?.(e.pointerId)
   }, [vp])
 
