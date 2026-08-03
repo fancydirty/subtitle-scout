@@ -1630,7 +1630,9 @@
   padding: 2px 8px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
-  color: var(--color-text-gray);
+  /* 未分层声明，赢过组件层任何 text-* 工具类（Tailwind utilities 在 @layer utilities 里）。
+     所以组件层不给颜色类——给了也不生效。 */
+  color: var(--color-weak);
 }
 .act-row {
   width: 100%;
@@ -1645,11 +1647,16 @@
 .act-row-poster {
   aspect-ratio: 2 / 3;
   width: 38px;
+  /* flex:none 指望父级 .act-row 是 flex 容器，而那个 display:flex **不在 CSS 里**——
+     它由 ActivityQueue.tsx 的 `.act-row flex` 类给。删了那个类这行就失效，
+     且 jsdom 不做布局、测试照绿。 */
   flex: none;
   border-radius: 4px;
   overflow: hidden;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* 用 --color-secondary 不用 --color-accent：scout.css:86 把 --color-accent 遮蔽成
+     柠檬绿 #96DA26（@scope Theme 全 app 生效直到 Task 31），过渡期铁律。 */
+  background: var(--color-secondary);
 }
 .act-row-poster img {
   width: 100%;
@@ -1668,12 +1675,14 @@
   flex: 1;
 }
 .act-row-fact {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .act-row-status,
 .act-row-time {
   flex: none;
-  color: var(--color-text-gray);
+  /* ⚠️ 这一条**队列段与完成段共用**（.act-row-time 是 ActivityDone 的类）。
+     token 迁移在 Task 14 做一次，Task 15 不要再迁它。 */
+  color: var(--color-weak);
 }
 /* 完成行的 6px 语义点——**只有绿和红，没有黄**（铁律①）。neutral 是灰（spec §6 的三档），
    不是黄不是蓝；"没找到能放心用的字幕"落在这一档（铁律④：等待/失败是面向下一步的中性事实）。
