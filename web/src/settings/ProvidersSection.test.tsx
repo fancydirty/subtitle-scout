@@ -129,4 +129,80 @@ describe('ProvidersSection', () => {
     expect(zimuku.getByRole('switch')).toBeDisabled()
     expect(zimuku.getByText('Set by environment — locked')).toBeInTheDocument()
   })
+
+  // 评审遗留补测①（Important）：多密钥家的"选择存"钉——onSave 逐键跳过空草稿，只 PUT 填了的键。
+  // llm 桩三键（db/none/db），只填 LLM_API_KEY → put 恰好一次、参数恰为该键。
+  it('多密钥家：只填一个输入 → Save 只 PUT 该键（选择存，空输入不碰其余键）', async () => {
+    const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
+    const { providersReload } = renderSection()
+    const llm = within(screen.getByTestId('providers-llm'))
+    fireEvent.click(llm.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(llm.getByLabelText('LLM_API_KEY'), { target: { value: 'sk-new' } })
+    fireEvent.click(llm.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    expect(put.mock.calls).toEqual([['LLM_API_KEY', 'sk-new']])
+    await waitFor(() => expect(providersReload).toHaveBeenCalled())
+  })
+
+  // 评审遗留补测②：保存失败路径——行内错误展示、编辑态不退出（Save 还在）、草稿不丢（可改完重试）。
+  it('Edit 保存失败 → 行内错误 + 编辑态保留 + 草稿不丢', async () => {
+    vi.spyOn(api, 'putSecret').mockRejectedValue(new Error('boom'))
+    renderSection()
+    const assrt = within(screen.getByTestId('providers-assrt'))
+    fireEvent.click(assrt.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(assrt.getByLabelText('ASSRT_TOKEN'), { target: { value: 'new-tok' } })
+    fireEvent.click(assrt.getByRole('button', { name: 'Save' }))
+    expect(await assrt.findByText(/Couldn't save: /)).toBeInTheDocument()
+    expect(assrt.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+    expect(assrt.getByLabelText('ASSRT_TOKEN')).toHaveValue('new-tok')
+  })
+
+  // 评审遗留补测③：混合源编辑——env 行在编辑态下仍只读（不出输入框、打码与锁定注原样），
+  // 只有 db/none 行变输入框（KeyedRow 的 editing 分支按行级 source 分流，不是整家一刀切）。
+  it('混合源编辑：env 行保持只读，db 行变输入框', () => {
+    const mixed: ProvidersDTO = {
+      providers: [
+        { id: 'llm', secrets: [
+          { name: 'LLM_BASE_URL', set: true, source: 'env', masked: 'htt••••/v1' },
+          { name: 'LLM_API_KEY', set: true, source: 'db', masked: 'sk••••ey' },
+        ], lastTest: null },
+        { id: 'subhd', secrets: [], lastTest: null },
+        { id: 'zimuku', secrets: [], lastTest: null },
+      ],
+    }
+    renderSection({ providers: { data: mixed } })
+    const llm = within(screen.getByTestId('providers-llm'))
+    fireEvent.click(llm.getByRole('button', { name: 'Edit' }))
+    expect(llm.queryByLabelText('LLM_BASE_URL')).not.toBeInTheDocument()
+    expect(llm.getByText('htt••••/v1')).toBeInTheDocument()
+    expect(llm.getByText('Set by environment — locked')).toBeInTheDocument()
+    expect(llm.getByLabelText('LLM_API_KEY')).toBeInTheDocument()
+  })
+
+  // 评审遗留补测④：lastTest 负向——ok 行不渲染失败文案与错误段；fail 但无 error 字段时
+  // 失败行照常、错误段不渲染（错误段渲染的是 error 原文，没有原文就没有段）。
+  it('lastTest 负向：ok 行无失败/错误文案；fail 无 error 字段 → 只有失败行没有错误段', () => {
+    renderSection()
+    const okRow = screen.getByTestId('providers-assrt')
+    expect(within(okRow).getByText(/Last test passed/)).toBeInTheDocument()
+    expect(within(okRow).queryByText(/Last test failed/)).not.toBeInTheDocument()
+    // 结构钉（VStack/Stack 不包裹子节点，直接子节点数即行数）：assrt ok 行 = 头部行 +
+    // 1 密钥行 = 2；对照 llm（fail + error）= 头部行 + 错误段 + 3 密钥行 = 5——证明
+    // 错误段在场时这个计数确实会 +1，下面的 2 不是"数错了也碰巧过"。
+    expect(okRow.children).toHaveLength(2)
+    expect(screen.getByTestId('providers-llm').children).toHaveLength(5)
+
+    cleanup()
+    const noErr: ProvidersDTO = {
+      providers: [
+        { id: 'assrt', secrets: [{ name: 'ASSRT_TOKEN', set: true, source: 'db', masked: 'ass••••123' }], lastTest: { ok: false, at: 1700000000000 } },
+        { id: 'subhd', secrets: [], lastTest: null },
+        { id: 'zimuku', secrets: [], lastTest: null },
+      ],
+    }
+    renderSection({ providers: { data: noErr } })
+    const failRow = screen.getByTestId('providers-assrt')
+    expect(within(failRow).getByText(/Last test failed/)).toBeInTheDocument()
+    expect(failRow.children).toHaveLength(2)
+  })
 })

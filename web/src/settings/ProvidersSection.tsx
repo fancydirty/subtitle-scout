@@ -55,6 +55,8 @@ function KeyedRow({ row, reload }: { row: ProviderRowDTO; reload: () => void }) 
       setDrafts({})
       reload()
     } catch (e) {
+      // 评审注：多密钥家循环中途抛错 = 前面的键已逐键落库（PUT 是单键语义，不回滚）——
+      // 这条路径不 reload，已写键的打码展示会旧到下一拍 15s 轮询自愈，属已知可接受口径。
       setError(t('settings_save_error_prefix') + String(e))
     } finally {
       setBusy(false)
