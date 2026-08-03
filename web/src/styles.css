@@ -1747,13 +1747,13 @@
    任何色值，颜色只在 CSS 里按属性选。
    同时**停掉脉动动画**：脉动的语义是"在动"，而这活停着，让它继续呼吸是假话。 */
 .act-hero-pulse[data-tone='bad'] {
-  background: var(--color-text-red);
+  background: var(--color-fn-red);
   animation: none;
 }
 /* 红字事实（"遇到问题——会重试"）。这是整个卡死态里唯一的一处红色文字——问题看得见的全部
    载体，不需要任何展开入口（L7）。 */
 .act-stuck-fact {
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 /* "4 小时后重试" 那行走弱色 mono——它继承 hero 既有的 .act-hero-facts > * 那条 gray 规则，
    这里刻意**不为它另写一条颜色**（尤其不给红）：那句"会重试"的承诺需要一个可核对的时刻，

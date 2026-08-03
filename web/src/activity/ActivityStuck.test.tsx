@@ -94,15 +94,15 @@ describe('ActivityStuck：问题看得见（红点 + 红字事实）', () => {
     expect(screen.getByText('遇到问题——会重试')).toBeInTheDocument()
   })
 
-  it('那行事实确实是红的（CSS 里 .act-stuck-fact 走 --color-text-red）', () => {
+  it('那行事实确实是红的（CSS 里 .act-stuck-fact 走 --color-fn-red）', () => {
     // 这条裁决的真身在 CSS——只断言类名在场的话，把颜色改成灰会全绿。
-    expect(cssDecl('.act-stuck-fact', 'color')).toBe('var(--color-text-red)')
+    expect(cssDecl('.act-stuck-fact', 'color')).toBe('var(--color-fn-red)')
     const { container } = renderStuck()
     expect(container.querySelector('.act-stuck-fact')).toBeTruthy()
   })
 
   it('红点在 CSS 里确实转红，且脉动停掉（活停着，让它继续呼吸是假话）', () => {
-    expect(cssDecl(".act-hero-pulse[data-tone='bad']", 'background')).toBe('var(--color-text-red)')
+    expect(cssDecl(".act-hero-pulse[data-tone='bad']", 'background')).toBe('var(--color-fn-red)')
     expect(cssDecl(".act-hero-pulse[data-tone='bad']", 'animation')).toBe('none')
   })
 
@@ -175,7 +175,10 @@ describe('ActivityStuck：进度条保持在故障阶段（铁律① 红只给�
     const blocks = noComments.match(/[^}]*act-hero-bar[^{]*\{[^}]*\}/g) ?? []
     expect(blocks.length).toBeGreaterThan(0) // 确认扫到了东西，不是空扫
     for (const block of blocks) {
-      expect(block).not.toMatch(/color-text-red/)
+      // ⚠️ 同时覆盖 legacy 名与新名。只写一个的话，token 改名会让这条 not.toMatch 变成
+      // 永真断言——不变红，只是从此不再保护任何东西（下面那条 /\bred\b/i 才是真正兜住
+      // 这一族的锁：`--color-fn-red` 里 red 前后都是非词字符，它抓得住）。
+      expect(block).not.toMatch(/color-(?:fn-|text-)?red/)
       expect(block).not.toMatch(/#f8[0-9a-f]{4}/i)
       expect(block).not.toMatch(/\bred\b/i)
     }
