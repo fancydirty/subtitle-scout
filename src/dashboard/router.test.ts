@@ -4,7 +4,9 @@ import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
+  DormantTaskDTO,
 } from './apiV2.js'
+import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 
@@ -96,6 +98,15 @@ const setupStatusDTO = {
 // ProvidersDTO 的字段名是 providers（不是 rows）——见 Task 5 的 `interface ProvidersDTO`。
 const providersDTO = { providers: [] } satisfies ProvidersDTO
 
+// Plan C（spec §4）：两个只读 GET 的路由层 stub DTO。
+const shiftedRow: ShiftedItemDTO = {
+  itemId: 'tmdb:100/s2e3', seriesId: 'tmdb:100', seriesName: 'The Rig',
+  season: 2, episode: 3, checkedAt: 3000, hasPriorCorrection: true,
+}
+const dormantRow: DormantTaskDTO = {
+  jobId: 1, task: 'find_subtitle', targetLabel: 'The Rig, Season 2', attempts: 5,
+}
+
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
 let lastPassesLimit: number | null = null
@@ -120,6 +131,8 @@ const deps: RouterDeps = {
   librarySeriesDetail: (id) => { lastLibrarySeriesId = id; return id === 's1' || id === 'tmdb:71' ? librarySeriesDetailDTO : null },
   triage: () => triageDTO,
   runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
+  shiftedSubtitles: () => [shiftedRow],
+  dormantTasks: () => [dormantRow],
   setupStatus: () => setupStatusDTO,
   providers: () => providersDTO,
 }
@@ -309,5 +322,18 @@ describe('handleApiRoute (v2)', () => {
     const r = call('/api/v2/setup/providers')
     expect(r.status).toBe(200)
     expect(r.json).toBe(providersDTO)
+  })
+
+  // Plan C（spec §4）：两个只读 GET——纯透传 deps，零写路径、零状态机改动。
+  it('GET /api/v2/subtitle/shifted → 200 + 透传 deps.shiftedSubtitles()', () => {
+    const r = call('/api/v2/subtitle/shifted')
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual([shiftedRow])
+  })
+
+  it('GET /api/v2/workflow/dormant → 200 + 透传 deps.dormantTasks()', () => {
+    const r = call('/api/v2/workflow/dormant')
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual([dormantRow])
   })
 })

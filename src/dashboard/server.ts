@@ -13,7 +13,7 @@ import {
   buildLibrary, buildSeriesDetail, buildRuns, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch, buildRunTrace,
+  buildTriage, redispatch, buildRunTrace, buildDormantTasks,
   type ReconcileAllResultDTO,
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
@@ -21,6 +21,7 @@ import { traceBus } from '../core/traceBus.js'
 import { AuthService, AUTH_KEYS, safeStrEqual } from './auth.js'
 import {
   buildVerifyDTOs, correctSubtitle, revertSubtitle, parseItemIds, parseItemIdBody,
+  buildShiftedDTOs,
   type SubtitleWriteDeps,
 } from './subtitleVerifyApi.js'
 import {
@@ -278,6 +279,14 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     },
     triage: () => buildTriage(db),
     runTrace: (id) => buildRunTrace(db, id),
+    // Plan C：两个只读 GET。shifted 复用 subDeps 的 repo + exists（同一份 existsSync 实现，
+    // 见上方 subDeps 的 wiring），backupSuffix 用与两个写扳手同一个常量——三处必须同源，
+    // 否则 UI 上"可撤销"与后端"撤销会成功"会错位。
+    shiftedSubtitles: () => buildShiftedDTOs(
+      { repo: verifyRepo, exists: subDeps.exists },
+      { backupSuffix: BACKUP_SUFFIX },
+    ),
+    dormantTasks: () => buildDormantTasks(db),
     setupStatus: () => buildSetupStatus(setupDeps),
     providers: () => buildProviders(setupDeps),
   }

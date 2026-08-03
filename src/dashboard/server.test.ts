@@ -1059,6 +1059,13 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
     ac.abort()
     expect((await fetch(`${base}/api/v2/workflow/trace-stream`)).status).toBe(401)
   })
+  it('两个 Plan C 只读端点都在统一鉴权门之后（无凭据 → 401）', async () => {
+    const { base } = await start(distWith('<!doctype html>'), 's3cret')
+    for (const path of ['/api/v2/subtitle/shifted', '/api/v2/workflow/dormant']) {
+      const res = await fetch(`${base}${path}`)
+      expect(res.status).toBe(401)
+    }
+  })
 })
 
 describe('fs/list 收口（R2D-2：未鉴权全盘枚举关闭）', () => {
