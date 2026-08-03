@@ -71,4 +71,16 @@ describe('EngineBanner', () => {
     await waitFor(() => expect(api.setupStatus).toHaveBeenCalled())
     expect(screen.queryByText(/Engine off/)).not.toBeInTheDocument()
   })
+
+  it('Turn on PUT 失败 → 行内错误文案 + banner 不消 + 按钮复活（不静默）', async () => {
+    // setupStatus 恒给"关"：PUT 失败没有 reload 的理由，banner 必须留在原地。
+    vi.spyOn(api, 'setupStatus').mockResolvedValue(status(false))
+    vi.spyOn(api, 'updateSettings').mockRejectedValue(new Error('boom'))
+    renderBanner()
+    const btn = await screen.findByRole('button', { name: 'Turn on' })
+    fireEvent.click(btn)
+    expect(await screen.findByText(/boom/)).toBeInTheDocument()
+    expect(screen.getByText('Engine off — polling and dispatch are paused.')).toBeInTheDocument()
+    await waitFor(() => expect(btn).toBeEnabled())
+  })
 })

@@ -12,14 +12,20 @@ export function EngineBanner() {
   const { t } = useT()
   const { data, reload } = useSetupStatus()
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   if (!data || data.engineEnabled) return null
 
   const turnOn = async () => {
     setBusy(true)
+    setError(null)
     try {
       await api.updateSettings({ engine_enabled: 'true' })
       reload()
+    } catch (e) {
+      // PUT 失败不能静默——banner 留着、按钮复活、行内红字告知（同 wizard 步件的
+      // saveError 先例）。reload 只在成功路径调，失败时状态未变，不需要重拉。
+      setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -31,6 +37,7 @@ export function EngineBanner() {
       <Button variant="ghost" size="sm" disabled={busy} onClick={() => void turnOn()}>
         {t('engine_banner_turn_on')}
       </Button>
+      {error && <span className="text-fn-red">{error}</span>}
     </div>
   )
 }

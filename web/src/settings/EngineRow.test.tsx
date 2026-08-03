@@ -55,5 +55,8 @@ describe('EngineRow', () => {
     // 裸 `getByRole('switch')` 会因多重匹配直接抛错。
     fireEvent.click(screen.getByRole('switch', { name: 'Engine' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith({ engine_enabled: 'true' }))
+    // 响应回写本地：mock 响应带 engineEnabled: true，useFieldCommit 用响应体更新 settings，
+    // 开关必须跟着翻成开——用例名承诺的"响应回写本地"此前没有断言兜底。
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Engine' })).toBeChecked())
   })
 })
