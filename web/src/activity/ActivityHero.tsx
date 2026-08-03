@@ -63,6 +63,7 @@
 // 海报也为 null（图都没有）时：不渲染任何背景层（模糊一个不存在的 URL 没有意义），海报框由
 // PosterThumb 走首字母占位。hero 本体完整，不崩。
 import { backdropUrl, posterUrl } from '../api/client.js'
+import { Switch } from '../components/ui/switch.js'
 import { useT } from '../i18n/useT.js'
 import type { WorkflowRunningWorkerDTO } from '../api/types.js'
 import { PosterThumb } from '../library/PosterThumb.js'
@@ -82,10 +83,20 @@ interface Props {
   /** 渲染时刻，算"已进行"用。由调用方注入（不在组件内读 Date.now）——时间是入参而非副作用，
    *  测试才能确定性地断言读数。 */
   now: number
+  /** 发动机总开关的当前状态（`SettingsDTO.engineEnabled` / `SetupStatusDTO.engineEnabled`）。
+   *
+   *  **由调用方注入**，本组件不调 `useSetupStatus()`——那是 15 秒自轮询的 hook，塞进来会让本
+   *  文件既有的五十多条用例集体收到 act() 外的异步 setState 并挂上 interval。同 `now` 的口径：
+   *  外部世界的事实从上面流下来。写入侧（PUT settings + reload）在 ActivityPage。
+   *
+   *  与 `onEngineChange` 两者都缺席时**整块开关不渲染**——既有调用方一行不改也不会多出控件。 */
+  engineEnabled?: boolean
+  /** 用户拨动开关时回调，参数是**目标态**（true=开）。本组件只报告"用户拨了它"，不自己写库。 */
+  onEngineChange?: (next: boolean) => void
 }
 
-export function ActivityHero({ running, missingCount, now }: Props) {
-  const { lang } = useT()
+export function ActivityHero({ running, missingCount, now, engineEnabled, onEngineChange }: Props) {
+  const { t, lang } = useT()
   const mode = stageModeOf(running.taskType)
   // 直播痕迹（2026-07-31 接线）：`running.trail` 只是**轮询快照**（15 秒一拍，来自
   // traceBus.peek 的补拉）。传送带的目的是缓解焦虑——一条 15 秒不动的传送带看起来像卡住了，
@@ -148,6 +159,32 @@ export function ActivityHero({ running, missingCount, now }: Props) {
       ) : null}
       {/* 左侧渐变遮罩压暗：让排印在任何一张背景图上都可读。纯装饰，aria-hidden。 */}
       <div className="act-hero-scrim" aria-hidden="true" />
+      {/* 发动机总开关（Spec C §5.2：用户要它在最常盯的这一屏的右上角）。
+          - 定位：.act-hero 是 position:relative + padding:20px，所以 top-5/right-5（=20px）
+            正好贴在内容边界上；z-[3] 压在 scrim(z-1) 与 body(z-2) 之上。
+          - 文案：复用既有键 settings_engine_label，**不新拟文案**。"关了会怎样"那句解释
+            （engine_banner_off）由全局横幅唯一承担——同一屏上说两遍是重复，不是强调。
+          - 无障碍：可见文案挂 id，开关用 aria-labelledby 指过去（不用 aria-label 复述一遍，
+            避免读屏念两次）。项目没有 label 组件，也不为这一处引一个。
+          - 两个 prop 缺一个就整块不渲染：调用方要么两个都给，要么都不给。 */}
+      {typeof engineEnabled === 'boolean' && onEngineChange !== undefined ? (
+        <div
+          className="absolute top-5 right-5 z-[3] flex items-center gap-2"
+          data-testid="activity-hero-engine"
+        >
+          <span
+            id="activity-hero-engine-label"
+            className="text-[13px] leading-5 text-muted-foreground"
+          >
+            {t('settings_engine_label')}
+          </span>
+          <Switch
+            aria-labelledby="activity-hero-engine-label"
+            checked={engineEnabled}
+            onCheckedChange={onEngineChange}
+          />
+        </div>
+      ) : null}
       {/* `flex gap-4` 替代原来的 <HStack gap={4}>。两件事记牢：
           ① Astryx HStack 的默认 vAlign 是 'stretch'，与 flex 的 align-items 默认值同义，
              所以这里**不补** items-* 类（补了才是改设计）。
