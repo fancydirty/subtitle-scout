@@ -1,6 +1,7 @@
-// web/src/App.tsx：dashboard-F2 新外壳入口 + 鉴权 A2 Task 11 门。I18nProvider 包 AuthGate——
-// AuthGate 据 /auth/status 三态分流：未初始化→SetupWizard、已初始化未登录→LoginPage、已登录→
-// Shell（侧栏/顶栏/⌘K + 四 tab hash 路由）。Theme 包在 main.tsx（真正的渲染根）。
+// web/src/App.tsx：dashboard-F2 新外壳入口 + 鉴权 A2 Task 11 门 + spec A §5.1 bootstrap 闸。
+// I18nProvider 包 AuthGate——AuthGate 据 /auth/status 三态分流：未初始化→SetupWizard、
+// 已初始化未登录→LoginPage、已登录→BootstrapGate 包 Shell（bootstrap 未完成 → 全屏 wizard
+// 接管；推导式无标志位，老部署 env/库有 LLM+TMDB 永不进）。Theme 包在 main.tsx。
 //
 // 结构性白赚（调研 *arr 两 bug）：#6144 stale-cookie 死循环——AuthGate 每次读 auth/status，
 // cookie 失效即 authenticated:false→LoginPage，无循环；#6454 deep-link 丢失——AuthGate 包裹
@@ -11,6 +12,7 @@ import { SetupWizard } from './auth/SetupWizard.js'
 import { LoginPage } from './auth/LoginPage.js'
 import { ConnectionError } from './auth/ConnectionError.js'
 import { useAuthStatus } from './auth/useAuthStatus.js'
+import { BootstrapGate } from './setup/BootstrapGate.js'
 
 function AuthGate() {
   const { status, error, reload } = useAuthStatus()
@@ -19,7 +21,11 @@ function AuthGate() {
   if (status === null) return null // 首探未回：加载空拍（<100ms），不闪任何内容
   if (!status.initialized) return <SetupWizard onDone={reload} />
   if (!status.authenticated) return <LoginPage onDone={reload} />
-  return <Shell />
+  return (
+    <BootstrapGate>
+      <Shell />
+    </BootstrapGate>
+  )
 }
 
 export function App() {
