@@ -16,8 +16,10 @@
 //    （getBoundingClientRect / offsetHeight 那类读取会强制同步 layout，是 layout thrash 的常见
 //    来源；这里一次都不读）。
 //
-// 亮度分级用 :nth-last-child(1..4) 由亮到暗、n+5 最暗，且**用颜色不是 opacity**（状态→颜色，
-//    同 ai-elements ChainOfThought 的口径）。分级规则整个在 CSS 里，见 styles.css 末尾。
+// 亮度分级：最新行（数组末位）常态下用 AI Elements Shimmer 渲染，高光扫动即"正在发生"的线索；
+//    往上三档由 styles.css 的 :nth-last-child(2..4) 递弱上色（用颜色不是 opacity，口径同
+//    ai-elements ChainOfThought）。prefers-reduced-motion 下最新行退回纯文本，取
+//    :nth-last-child(1) 的 --color-foreground 兜底色（那条 CSS 规则因此不是死代码）。
 //
 // 只动新行：容器 bottom-pinned + 行走正常文档流，旧行由 compositor 随 track 的 transform 自然
 //    上移，**不对"被顶走"做动画**（assistant-ui reasoning.tsx 的做法——动画只给新行）。落地方式
@@ -42,7 +44,9 @@
 // 铁律③（不暴露机械）由 toolPhrase 负责，本层只管调用。注意它对**未登记工具原样返回裸工具名**，
 // 那是故意的诚实降级（见 phrases.ts 的说明），不要在这一层"美化"掉。
 import type { TraceEvent } from '../api/types.js'
+import { Shimmer } from '../components/ai/shimmer.js'
 import { useT } from '../i18n/useT.js'
+import { usePrefersReducedMotion } from '../lib/usePrefersReducedMotion.js'
 import { toolPhrase } from '../workflow/phrases.js'
 
 /** 一行的高度，px。CSS 里的 .conveyor-row{height/line-height} 必须与这个常量一致——两边一起
@@ -57,9 +61,11 @@ interface Props {
 
 export function ConveyorFeed({ events, rows = 4 }: Props) {
   const { lang } = useT()
+  const reducedMotion = usePrefersReducedMotion()
   // 取整并至少 1 行：容器高度必须是 ROW_H 的整数倍（整行步进的前提），调用方传 4.5 或 0
   // 不该把这个不变量破掉。这里静默夹紧而不抛错——传送带是安抚性装饰，不值得炸掉整个 hero。
   const visible = Math.max(1, Math.floor(rows))
+  const latest = events.length - 1
   // 位移：负值 = 把溢出行顶出上边界（-ROW_H × 溢出行数，同裁决口径）；正值 = 把不满屏的列压到
   // 容器底部（bottom-pin）。纯算术，零 DOM 测量（见文件头 L9 与 ⚠️ 段）。
   const offset = (visible - events.length) * ROW_H
@@ -74,15 +80,19 @@ export function ConveyorFeed({ events, rows = 4 }: Props) {
         className="conveyor-track"
         style={{ transform: `translateY(${offset}px)` }}
       >
-        {events.map((e) => (
-          // key 必须带 runKey（同 web/src/workflow/TraceRows.tsx:36 的既有口径）：realign 的
-          // 混流合法地含多个 seq=0（各子集 runKey 的 seq 都从 0 起算），纯 seq 会撞 React key。
-          // 更要紧的是**不许用数组下标**：事件流是滑动窗口（前端会掐掉过老的行），下标 key 会让
-          // 同一条事件在重渲染后落到另一个 DOM 节点上，于是入场动画对着一堆旧行重播。
-          <div className="conveyor-row" key={`${e.runKey}#${e.seq}`}>
-            {toolPhrase(e.tool, lang)}
-          </div>
-        ))}
+        {events.map((e, i) => {
+          const phrase = toolPhrase(e.tool, lang)
+          return (
+            // key 必须带 runKey（同 web/src/workflow/TraceRows.tsx:36 的既有口径）：realign 的
+            // 混流合法地含多个 seq=0（各子集 runKey 的 seq 都从 0 起算），纯 seq 会撞 React key。
+            // 更要紧的是**不许用数组下标**：事件流是滑动窗口（前端会掐掉过老的行），下标 key 会让
+            // 同一条事件在重渲染后落到另一个 DOM 节点上，于是入场动画对着一堆旧行重播。
+            // key 仍然是 runKey#seq —— i 只用来判"是不是最新行"，绝不进 key
+            <div className="conveyor-row" key={`${e.runKey}#${e.seq}`}>
+              {i === latest && !reducedMotion ? <Shimmer>{phrase}</Shimmer> : phrase}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
