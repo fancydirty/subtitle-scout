@@ -25,6 +25,7 @@ import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
 import { CommandK } from './CommandK.js'
+import { EngineBanner } from './EngineBanner.js'
 import { SeriesGrid } from '../library/SeriesGrid.js'
 import { SeriesPage } from '../library/SeriesPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
@@ -57,6 +58,9 @@ export function Shell() {
           />
         }
         sideNav={<Sidebar tab={route.tab} parked={workflow.data?.parked} />}>
+        {/* 引擎关闭 banner 压所有主屏顶（spec A §5.6）；library 的 contentPadding=0 下
+            它就是全宽出血细条，正好。 */}
+        <EngineBanner />
         {route.tab === 'library' &&
           (route.libraryId ? (
             // key=libraryId：切换到另一部剧时强制重挂载，SeriesPage 内部的格阵选中态

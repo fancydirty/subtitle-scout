@@ -9,6 +9,7 @@ import type {
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
   SetupStatusDTO,
+  ProvidersDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -616,6 +617,68 @@ export function useSetupStatus(): Async<SetupStatusDTO> {
   useEffect(() => {
     void load()
     const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/**
+ * useSetupProviders：Settings Providers 区的行数据（打码/source/上次测试点）。15s 轮询与
+ * useSetupStatus 同节拍；编辑/测试动作后组件直接调 reload 立即刷新，不等下一拍。
+ */
+export function useSetupProviders(): Async<ProvidersDTO> {
+  const [data, setData] = useState<ProvidersDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const dto = await api.setupProviders()
+      setData(dto)
+      setError(null)
+    } catch (e) {
+      // String(e) 而非 e instanceof Error ? e.message : String(e)——本文件 12 个既有 hook
+      // 一律 String(e)，同文件同层的 useSetupStatus（Task 14 Step 5）也是。
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      // 守卫写法照抄既有轮询 hook（本文件 useLibrary/useWorkflowPending/useWorkflowPasses/
+      // useWorkflowWorkers/useSetupStatus 五处一模一样）：visibilitychange 连发或 effect 复跑时，
+      // 没这道判断会叠出第二个 setInterval，旧句柄被覆盖后再也 clear 不掉——越切标签页轮询越快。
       if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
     }
     const stop = () => {

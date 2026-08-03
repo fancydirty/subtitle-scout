@@ -157,6 +157,27 @@ function ExcludeExtrasRow({ settings, onUpdated }: RowProps) {
   )
 }
 
+function EngineRow({ settings, onUpdated }: RowProps) {
+  const { t } = useT()
+  const { saving, error, commit } = useFieldCommit(onUpdated)
+  // settings.engineEnabled 是后端序列化的布尔别名（apiV2 settings GET 的 engineEnabled），
+  // 不经字符串解析；PUT 走 SettingsPatch 的 engine_enabled 键，响应回写同一别名。
+  return (
+    <VStack gap={2}>
+      <Switch
+        label={t('settings_engine_label')}
+        value={settings.engineEnabled}
+        onChange={(checked) => void commit('engine_enabled', checked ? 'true' : 'false')}
+        isLoading={saving}
+        status={error ? { type: 'error', message: error } : undefined}
+      />
+      <Text type="supporting" color="secondary">
+        {t('settings_engine_desc')}
+      </Text>
+    </VStack>
+  )
+}
+
 function NumberSettingRow({
   settings, onUpdated, settingKey, label, placeholder, note,
 }: RowProps & { settingKey: SettingsKey; label: string; placeholder: string; note: string }) {
@@ -240,6 +261,7 @@ export function BehaviorSection({ settings }: Props) {
     <section className="settings-section">
       <Text type="label">{t('settings_behavior_heading')}</Text>
       <VStack gap={5}>
+        <EngineRow settings={local} onUpdated={setLocal} />
         <TargetLanguagesRow settings={local} onUpdated={setLocal} />
         <HardsubModeRow settings={local} onUpdated={setLocal} />
         <ExcludeExtrasRow settings={local} onUpdated={setLocal} />
