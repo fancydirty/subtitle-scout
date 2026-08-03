@@ -246,10 +246,10 @@ describe('ActivityDone：裁决回归锁', () => {
     const block = /\.act-row-dot[\s\S]{0,400}?\}\s*\.act-row-dot\[data-tone='ok'\][\s\S]{0,600}?neutral'\][^}]*\}/.exec(noComments)?.[0] ?? ''
     expect(block.length).toBeGreaterThan(0)
     expect(block).not.toMatch(/\b(gold|yellow|amber|orange)\b/i)
-    expect(block).toContain('--color-text-green')
-    expect(block).toContain('--color-text-red')
+    expect(block).toContain('--color-fn-green')
+    expect(block).toContain('--color-fn-red')
     // neutral 必须是灰（spec §6 的三档），不是黄不是蓝。
-    expect(block).toMatch(/data-tone='neutral'\][^}]*--color-text-gray/)
+    expect(block).toMatch(/data-tone='neutral'\][^}]*--color-weak/)
   })
 
   it('铁律①：红只染点不铺块（没有任何红底色的行/卡片规则）', () => {
@@ -261,7 +261,9 @@ describe('ActivityDone：裁决回归锁', () => {
       // 尺寸 6px——"铺块"指的是给整行/整卡加红底。这里断言除了 dot 之外没有任何 background
       // 用到红色 token。
       if (b.includes('.act-row-dot')) continue
-      expect(b).not.toMatch(/background[^;]*--color-text-red/)
+      // ⚠️ 正则同时覆盖 legacy 名（--color-text-red）与新名（--color-fn-red）。只写一个的话，
+      // token 改名会让这条 not.toMatch 变成永真断言——不变红，只是从此不再保护任何东西。
+      expect(b).not.toMatch(/background[^;]*--color-(?:fn-|text-)?red/)
     }
   })
 })

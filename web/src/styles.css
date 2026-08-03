@@ -1693,16 +1693,16 @@
   height: 6px;
   border-radius: 50%;
   flex: none;
-  background: var(--color-text-gray);
+  background: var(--color-weak);
 }
 .act-row-dot[data-tone='ok'] {
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 .act-row-dot[data-tone='bad'] {
-  background: var(--color-text-red);
+  background: var(--color-fn-red);
 }
 .act-row-dot[data-tone='neutral'] {
-  background: var(--color-text-gray);
+  background: var(--color-weak);
 }
 
 /* ── 活动页的空态（ActivityEmpty，任务 7 / spec §7.1）─────────────────────────
