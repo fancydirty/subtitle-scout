@@ -137,6 +137,12 @@ describe('StepProviders', () => {
       ['OPENSUBTITLES_USERNAME', 'alice'],
       ['OPENSUBTITLES_PASSWORD', 'pw-1'],
     ])
+    // inclusion 侧钉子：成对填满时 validate 必须收到**三键全量**凭据（不只 apiKey）——
+    // 后端 OS 成对校验吃的是 username+password，漏传会把绿灯误判成半残。
+    expect(vi.mocked(api.validateSetup).mock.calls[0]).toEqual([
+      'opensubtitles',
+      { OPENSUBTITLES_API_KEY: 'osk-1', OPENSUBTITLES_USERNAME: 'alice', OPENSUBTITLES_PASSWORD: 'pw-1' },
+    ])
     expect(patchStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         providers: expect.objectContaining({

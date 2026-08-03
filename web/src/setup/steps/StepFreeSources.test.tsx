@@ -111,4 +111,35 @@ describe('StepFreeSources', () => {
     )
     expect(screen.getByRole('switch', { name: 'subhd' })).toHaveAttribute('data-state', 'checked')
   })
+
+  it('可达性探针直接抛异常（网络断）→ 失败行展示但开关保持 ON（不拦截）', async () => {
+    vi.spyOn(api, 'validateSetup').mockRejectedValue(new Error('network down'))
+    renderStep()
+    await waitFor(() =>
+      expect(screen.getAllByText('Unreachable — stays on, retried at runtime.')).toHaveLength(2),
+    )
+    expect(screen.getByRole('switch', { name: 'subhd' })).toHaveAttribute('data-state', 'checked')
+  })
+
+  it('双 env 锁定 → Continue 零写库，直接前进', async () => {
+    vi.spyOn(api, 'validateSetup').mockResolvedValue({ ok: true })
+    const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({} as never)
+    const onAdvance = vi.fn()
+    renderStep({
+      onAdvance,
+      status: {
+        ...BASE,
+        providers: {
+          ...BASE.providers,
+          subhd: { enabled: true, source: 'env' },
+          zimuku: { enabled: true, source: 'env', captchaReady: true },
+        },
+      },
+    })
+    expect(screen.getByRole('switch', { name: 'subhd' })).toBeDisabled()
+    expect(screen.getByRole('switch', { name: 'zimuku' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(onAdvance).toHaveBeenCalledTimes(1))
+    expect(update).not.toHaveBeenCalled()
+  })
 })
