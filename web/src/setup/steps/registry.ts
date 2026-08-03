@@ -1,5 +1,4 @@
-// web/src/setup/steps/registry.ts：七步登记处。顺序即 spec A §5.2 的步序，不许乱；
-// Tasks 17-22 每落地一步在此追加一行，Task 23 才接进 App——任何中间态可构建、不可达生产。
+// web/src/setup/steps/registry.ts：七步登记处，全员到齐。顺序即 spec A §5.2 的步序，不许乱。
 import type { WizardStepDef } from './types.js'
 import { StepLanguage } from './StepLanguage.js'
 import { StepTmdb } from './StepTmdb.js'
@@ -7,6 +6,7 @@ import { StepLlm } from './StepLlm.js'
 import { StepProviders } from './StepProviders.js'
 import { StepFreeSources } from './StepFreeSources.js'
 import { StepRoots } from './StepRoots.js'
+import { StepLaunch } from './StepLaunch.js'
 
 export const WIZARD_STEPS: WizardStepDef[] = [
   { id: 'language', titleKey: 'wizard_step_language_title', descKey: 'wizard_step_language_desc', optional: false, Component: StepLanguage },
@@ -15,5 +15,5 @@ export const WIZARD_STEPS: WizardStepDef[] = [
   { id: 'providers', titleKey: 'wizard_step_providers_title', descKey: 'wizard_step_providers_desc', optional: true, Component: StepProviders },
   { id: 'free', titleKey: 'wizard_step_free_title', descKey: 'wizard_step_free_desc', optional: false, Component: StepFreeSources },
   { id: 'roots', titleKey: 'wizard_step_roots_title', descKey: 'wizard_step_roots_desc', optional: true, Component: StepRoots },
-  // Task 22: launch
+  { id: 'launch', titleKey: 'wizard_step_launch_title', descKey: 'wizard_step_launch_desc', optional: false, Component: StepLaunch },
 ]
