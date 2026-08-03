@@ -3,9 +3,11 @@
 import type { WizardStepDef } from './types.js'
 import { StepLanguage } from './StepLanguage.js'
 import { StepTmdb } from './StepTmdb.js'
+import { StepLlm } from './StepLlm.js'
 
 export const WIZARD_STEPS: WizardStepDef[] = [
   { id: 'language', titleKey: 'wizard_step_language_title', descKey: 'wizard_step_language_desc', optional: false, Component: StepLanguage },
   { id: 'tmdb', titleKey: 'wizard_step_tmdb_title', descKey: 'wizard_step_tmdb_desc', optional: false, Component: StepTmdb },
-  // Task 18: llm / Task 19: providers / Task 20: free / Task 21: roots / Task 22: launch
+  { id: 'llm', titleKey: 'wizard_step_llm_title', descKey: 'wizard_step_llm_desc', optional: false, Component: StepLlm },
+  // Task 19: providers / Task 20: free / Task 21: roots / Task 22: launch
 ]
