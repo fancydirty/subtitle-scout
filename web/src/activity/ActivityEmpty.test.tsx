@@ -334,3 +334,56 @@ describe('ActivityEmpty：时间戳的 ink 档位（真身在 CSS）', () => {
     }
   })
 })
+
+// ── 迁移锁（Astryx → Tailwind，Task 17）
+//
+// 这一屏的两档 ink 分居两侧，而"哪一档在哪儿"是级联分层决定的：未分层的 styles.css 赢过
+// @layer utilities。所以下面每条类名断言都配一个"CSS 侧到底管不管这个属性"的取证断言——
+// 只断言类名在场的锁，改错哪一侧都是全绿。
+describe('ActivityEmpty：迁移锁', () => {
+  it('两行事实区带 flex flex-col（CSS 里它只有 padding，这两个类就是布局本体）', () => {
+    const { container } = renderEmpty()
+    const facts = container.querySelector('.act-empty-facts')!
+    const classes = facts.className.split(/\s+/)
+    expect(classes).toContain('flex')
+    expect(classes).toContain('flex-col')
+    expect(classes).toContain('gap-1')
+    // 配对取证：CSS 侧确实没有 display——这才是上面两条断言承重的原因。若将来有人往 CSS 补了
+    // display:flex，这一条会红，提醒把组件层的冗余类一并收拾。
+    expect(cssDecl('.act-empty-facts', 'display')).toBeNull()
+    expect(cssDecl('.act-empty-facts', 'padding')).toBe('22px 4px 18px')
+    // 时间戳与裸计数的并排容器同理（裸 div，没有 CSS 类可查——它的 flex 只能在这里锁）。
+    const row = screen.getByTestId('activity-empty-stamp').parentElement!
+    expect(row.className.split(/\s+/)).toContain('flex')
+    expect(row.className.split(/\s+/)).toContain('items-center')
+    expect(row.className.split(/\s+/)).toContain('gap-2')
+  })
+
+  it('诚实状态行的灰由工具类给（这一屏唯一一处颜色类真生效的地方），时间戳那两个不给', () => {
+    renderEmpty()
+    // 给：这行字没有 CSS 类，CSS 侧没人管它的颜色 ⇒ 工具类是唯一来源。漏了它，这行会从
+    // #9aa1ac 跳回 <body> 继承的 primary #e6e8ec，而 jsdom 不算 computed style。
+    expect(screen.getByTestId('activity-empty-idle').className.split(/\s+/))
+      .toContain('text-muted-foreground')
+    expect(cssDecl('.act-empty-facts', 'color')).toBeNull()
+    expect(cssDecl('.act-empty', 'color')).toBeNull()
+    // 不给：.act-empty-stamp 有 color 且未分层，赢任何工具类——加了不生效，只会骗人。
+    // （上面那个 describe 已断言它确实是 var(--color-weak)。）
+    for (const testId of ['activity-empty-stamp', 'activity-empty-checked']) {
+      expect(screen.getByTestId(testId).className).not.toMatch(/\btext-(muted-foreground|weak|faint)\b/)
+    }
+  })
+
+  it('DOM 里不再有 astryx-* 类名，且既有的"零按钮 / 零插画"契约没被顺手破坏', () => {
+    const { container } = renderEmpty({ recent: [recentRow()] })
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 迁移不该引入任何可点控件（换标签时最容易顺手写成 <button>）。onOpen 缺席 ⇒ 完成行也不给。
+    expect(container.querySelectorAll('button')).toHaveLength(0)
+    expect(container.querySelector('[role="button"]')).toBeNull()
+    // 也不该顺手加图标（L6：空态一个装饰都不要）。
+    expect(container.querySelectorAll('.act-empty-facts svg')).toHaveLength(0)
+    // 两行事实仍在场——迁移不该让任何一行消失。
+    expect(screen.getByTestId('activity-empty-idle')).toBeInTheDocument()
+    expect(screen.getByTestId('activity-empty-stamp')).toBeInTheDocument()
+  })
+})
