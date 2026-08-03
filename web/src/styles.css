@@ -1724,7 +1724,7 @@
    它是这一屏唯一"崩掉的系统 produce 不出来"的元件（NN/G：未加限定的空态最伤信任），所以它
    **必须在场**——但它是给人核对的背景事实，不是主角，故用 ink 最弱的一档。 */
 .act-empty-stamp {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 
 /* ── 活动页的卡死态（ActivityStuck，任务 7 / spec §7.2）───────────────────────
