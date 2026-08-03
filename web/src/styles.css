@@ -1396,7 +1396,7 @@
   height: 20px;
   line-height: 20px;
   flex: none;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   white-space: nowrap;
   overflow: hidden;
@@ -1410,12 +1410,18 @@
 }
 /* 亮度分级：由亮到暗，**用颜色不是 opacity**（状态→颜色，同 ai-elements ChainOfThought 的
    口径。opacity 会连带把行的背景/边框一起淡掉，且和硬出叠在一起会读成"渐隐遮罩"——正是裁决
-   L9 要去掉的东西）。最新一行最亮，往上逐级变暗，第 5 行及更旧统一压到最暗。 */
-.conveyor-row:nth-last-child(1) { color: var(--color-text-primary); }
-.conveyor-row:nth-last-child(2) { color: var(--color-text-secondary); }
-.conveyor-row:nth-last-child(3) { color: var(--color-text-gray); }
-.conveyor-row:nth-last-child(4) { color: var(--color-text-disabled); }
-.conveyor-row:nth-last-child(n + 5) { color: var(--color-text-disabled); }
+   L9 要去掉的东西）。
+   最新行（nth-last-child(1)）常态下由 AI Elements Shimmer 渲染（bg-clip-text，自带高光
+   扫动）；往上三档 muted-foreground → weak → faint 递弱，第 5 行起与第 4 档同色。
+   reduced-motion 下最新行退回纯文本，取 :nth-last-child(1) 的 --color-foreground 兜底色。 */
+/* 第 1 档（最新行）在常态下由 Shimmer 用 bg-clip-text 自己画字，不吃这里的 color；
+   这条规则是 prefers-reduced-motion 下退回纯文本时的兜底色——不要因为"看起来没用"删掉。
+   值 #e6e8ec 与 Shimmer 高光色 var(--color-foreground) 相同，两条路径峰值亮度一致。 */
+.conveyor-row:nth-last-child(1) { color: var(--color-foreground); }
+.conveyor-row:nth-last-child(2) { color: var(--color-muted-foreground); }
+.conveyor-row:nth-last-child(3) { color: var(--color-weak); }
+.conveyor-row:nth-last-child(4) { color: var(--color-faint); }
+.conveyor-row:nth-last-child(n + 5) { color: var(--color-faint); }
 @keyframes conveyor-in {
   from { transform: translateY(-2px); }
   to { transform: translateY(0); }

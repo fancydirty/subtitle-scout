@@ -12,7 +12,12 @@
    Tailwind v4 核心不含它们；shadcn 的 dialog/alert-dialog/select 与 AI Elements 的 task/tool 全靠它。 */
 @import "tw-animate-css";
 
-@theme {
+/* static：无条件发射全部 token。Tailwind v4 默认只发射"被 utility 用到"的变量，
+   而手写 CSS（styles.css）里的 var(--color-weak) 这类引用对它是不可见的
+   ——官方文档原话 "By default only used CSS variables will be generated in the
+   final CSS output."。传送带等自绘件从 styles.css 直接读 token，不加 static
+   会静默失效（不报错、测试还全绿、只有真人看页面才发现颜色糊了）。 */
+@theme static {
   /* ---- spec C §5.1 token 表（恒暗色单主题，无 light 变体） ---- */
   --color-background: #0b0c0f;            /* 页面底 */
   --color-card: #111318;                  /* 卡片底 */
