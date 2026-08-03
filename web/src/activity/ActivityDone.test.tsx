@@ -322,3 +322,48 @@ describe('ActivityDone：双语各渲染一次（DESIGN.md §7 运行态跟随 U
     expect(screen.getByRole('button', { name: 'View' })).toBeInTheDocument()
   })
 })
+
+// ── 迁移锁（Astryx → Tailwind，Task 15）
+//
+// 破例断言类名的理由：本段的行布局与那个 6px 圆点从 Astryx HStack 换成了工具类，而
+// .act-row-dot / .act-row-poster / .act-row-main 三条 CSS 都指望父级是 flex 容器。
+// 在这个点上**类名就是机制本身**，没有别的 CSS 声明可以断言。
+describe('ActivityDone：迁移锁', () => {
+  it('语义点的父级带 flex——点是 inline span，靠 blockify 才有 6px 圆形', () => {
+    renderDone()
+    const parent = screen.getByTestId('activity-done-dot').parentElement!
+    const classes = parent.className.split(/\s+/)
+    expect(classes).toContain('flex')
+    expect(classes).toContain('items-center')
+    // 上面那条为什么值得存在：.act-row-dot 在 CSS 里**没有 display**，而它是个 <span>。
+    // inline 元素忽略 width/height，所以那个圆全靠 flex item 的 blockify。父级掉了 flex，
+    // 点直接消失，而 L1 那 8 条 data-tone 断言照绿（它们只读 dataset.tone）。
+    const noComments = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+    const dotBlock = /\.act-row-dot\s*\{([^}]*)\}/.exec(noComments)?.[1] ?? ''
+    expect(dotBlock).toContain('border-radius')   // 确认扫到了正确的块，不是空扫
+    expect(dotBlock).not.toMatch(/\bdisplay\b/)
+  })
+
+  it('行容器带 flex（.act-row-main 的 flex:1 把时间与「查看」推到右侧全靠它）', () => {
+    renderDone({ onOpen: () => {} })
+    expect(screen.getByTestId('activity-done-row').className.split(/\s+/)).toContain('flex')
+    // 配对记录一个**不对称**：.act-row-main 的 display:flex 在 CSS 里，所以组件层不给它
+    // flex 类。将来谁想把 CSS 那行"挪到组件层"，会先看见这条。
+    const noComments = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(noComments).toMatch(/\.act-row-main\s*\{[^}]*display:\s*flex/)
+  })
+
+  it('DOM 里不再有 astryx-* 类名，且「查看」仍是原生 <button>', () => {
+    const { container } = renderDone({
+      recent: [recentRow(), recentRow({ id: 902, decision: 'error' })],
+      onOpen: () => {},
+    })
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // shadcn Button 渲染原生 <button>，不是 div[role=button]——上面三条按钮用例与整套
+    // 键盘可及性都依赖这一点。
+    expect(container.querySelector('button')).toBeInstanceOf(HTMLButtonElement)
+    // 行/点/时间/按钮四层都渲染过了才算扫全。
+    expect(screen.getAllByTestId('activity-done-row')).toHaveLength(2)
+    expect(screen.getAllByTestId('activity-done-dot')).toHaveLength(2)
+  })
+})
