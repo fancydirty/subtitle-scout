@@ -9,6 +9,7 @@ import type {
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
   AuthStatusDTO, AuthSecurityDTO,
   SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
+  ShiftedItemDTO, DormantTaskDTO,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -162,6 +163,12 @@ export const api = {
       `/api/v2/subtitle/verify?itemIds=${itemIds.map((id) => encodeURIComponent(id)).join(',')}`,
       signal,
     ),
+  // Plan C（spec §4.1）：偏移清单——Triage 第三区与 Library 详情偏移行共用同一份数据。
+  subtitleShifted: (signal?: AbortSignal) =>
+    get<ShiftedItemDTO[]>('/api/v2/subtitle/shifted', signal),
+  // Plan C（spec §4.2）：停车任务清单——只读，零动作。
+  workflowDormant: (signal?: AbortSignal) =>
+    get<DormantTaskDTO[]>('/api/v2/workflow/dormant', signal),
   // dashboard-F4：Workflow 三泳道——中泳道 pass 记录 + 右泳道跑中/近期 worker。
   workflowPasses: (limit: number, signal?: AbortSignal) =>
     get<WorkflowPassDTO[]>(`/api/v2/workflow/passes?limit=${limit}`, signal),

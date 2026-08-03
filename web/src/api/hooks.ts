@@ -10,6 +10,8 @@ import type {
   SubtitleCompareDTO,
   SetupStatusDTO,
   ProvidersDTO,
+  ShiftedItemDTO,
+  DormantTaskDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -679,6 +681,115 @@ export function useSetupProviders(): Async<ProvidersDTO> {
       // 守卫写法照抄既有轮询 hook（本文件 useLibrary/useWorkflowPending/useWorkflowPasses/
       // useWorkflowWorkers/useSetupStatus 五处一模一样）：visibilitychange 连发或 effect 复跑时，
       // 没这道判断会叠出第二个 setInterval，旧句柄被覆盖后再也 clear 不掉——越切标签页轮询越快。
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** Plan C（spec §4.1）：偏移清单。15s 轮询同既有节律——偏移是"检出后静置"的事实，
+ *  不需要更快的刷新（SSE 只喂在跑任务的痕迹，与这里无关）。 */
+export function useShiftedSubtitles(): Async<ShiftedItemDTO[]> {
+  const [data, setData] = useState<ShiftedItemDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.subtitleShifted()
+      setData(rows)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** Plan C（spec §4.2）：停车任务清单。同 15s 节律。 */
+export function useDormantTasks(): Async<DormantTaskDTO[]> {
+  const [data, setData] = useState<DormantTaskDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.workflowDormant()
+      setData(rows)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
       if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
     }
     const stop = () => {
