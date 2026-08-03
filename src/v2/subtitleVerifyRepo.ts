@@ -31,6 +31,22 @@ export interface SubtitleVerifyRow {
   detail: string | null
 }
 
+/** Plan C（spec §4.1）：shifted 行 + 媒体标识的 join 行。**刻意不是 `SubtitleVerifyRow` 的
+ *  超集**——`offset_ms`/`score`/`reference_tier`/`detail` 四个禁出字段从 SELECT 列表里就不选，
+ *  这样 DTO 层即使写错（比如手滑 spread）也无从泄漏。`subtitle_path` 是唯一一个"进得来、
+ *  出不去"的字段：DTO 层要用它探备份文件是否存在（hasPriorCorrection），但它自己不进 DTO。
+ *  四个媒体字段可 null：item_id 是电影 id（movies.id）或库里已被删掉的集时 LEFT JOIN 不中，
+ *  行仍然要出（用户仍该看到这条偏移事实），前端按既有降级惯例回落 mono itemId 占位。 */
+export interface ShiftedMediaRow {
+  item_id: string
+  checked_at: number
+  subtitle_path: string
+  series_id: string | null
+  series_name: string | null
+  season: number | null
+  episode: number | null
+}
+
 export interface UpsertVerifyParams {
   itemId: string
   verdict: SubtitleVerdict
@@ -96,6 +112,28 @@ export class SubtitleVerifyRepo {
     return this.db
       .prepare(`SELECT * FROM subtitle_verify WHERE verdict = 'shifted' ORDER BY checked_at DESC`)
       .all() as SubtitleVerifyRow[]
+  }
+
+  /** Plan C（spec §4.1）：shifted 行连媒体标识一起取，供 Triage 第三区与 Library 详情偏移行。
+   *  与 listShifted() 并存而不是取代它——后者是既有调用方的契约，签名不动。
+   *  纯读，无写路径。verdict 索引（src/v2/db.ts:145）已覆盖 WHERE，无需新索引。 */
+  listShiftedWithMedia(): ShiftedMediaRow[] {
+    return this.db
+      .prepare(
+        `SELECT v.item_id       AS item_id,
+                v.checked_at    AS checked_at,
+                v.subtitle_path AS subtitle_path,
+                e.series_id     AS series_id,
+                s.name          AS series_name,
+                e.season        AS season,
+                e.episode       AS episode
+           FROM subtitle_verify v
+           LEFT JOIN episodes e ON e.id = v.item_id
+           LEFT JOIN series   s ON s.id = e.series_id
+          WHERE v.verdict = 'shifted'
+          ORDER BY v.checked_at DESC`,
+      )
+      .all() as ShiftedMediaRow[]
   }
 
   /**
