@@ -370,3 +370,50 @@ describe('ActivityStuck：双语各渲染一次（DESIGN.md §7）', () => {
     expect(screen.getByText('retries in 4h')).toBeInTheDocument()
   })
 })
+
+// ── 迁移锁（Astryx → Tailwind，Task 16）
+//
+// 这一屏的几何整套复用 .act-hero*，而那几条 CSS 规则**故意没有 display**（Astryx 的
+// HStack/VStack 曾是唯一来源）。迁移后类名就是机制本身，没有别的 CSS 声明可以断言——
+// 所以这里破例断言类名，并且每条都配一个"CSS 侧确实缺 display"的取证断言。
+describe('ActivityStuck：迁移锁', () => {
+  it('hero 几何的两个容器都带 flex（CSS 里它们没有 display，这两个类就是布局本体）', () => {
+    const { container } = renderStuck()
+    const body = container.querySelector('.act-hero-body')!
+    const main = container.querySelector('.act-hero-main')!
+    expect(body.className.split(/\s+/)).toContain('flex')
+    expect(main.className.split(/\s+/)).toContain('flex')
+    expect(main.className.split(/\s+/)).toContain('flex-col')
+    // 配对取证：CSS 侧确实没有 display——这才是上面三条断言承重的原因。
+    // 若将来有人往 CSS 补了 display:flex，这两条会红，提醒把组件层的冗余类一并收拾
+    // （注意：那两个类是 hero 与本屏**共用**的，改 CSS 会同时改另一屏）。
+    expect(cssDecl('.act-hero-body', 'display')).toBeNull()
+    expect(cssDecl('.act-hero-main', 'display')).toBeNull()
+  })
+
+  it('红点的父级带 flex——点是 inline span，靠 blockify 才有 6px 圆形', () => {
+    renderStuck()
+    const parent = screen.getByTestId('activity-stuck-dot').parentElement!
+    const classes = parent.className.split(/\s+/)
+    expect(classes).toContain('flex')
+    expect(classes).toContain('items-center')
+    // .act-hero-pulse 在 CSS 里没有 display，而 inline 元素忽略 width/height。父级掉了 flex，
+    // 红点整个消失，而上面那条 dataset.tone === 'bad' 照绿。
+    expect(cssDecl('.act-hero-pulse', 'display')).toBeNull()
+    expect(cssDecl('.act-hero-pulse', 'width')).toBe('6px')
+  })
+
+  it('DOM 里不再有 astryx-* 类名，且 L7 没被顺手破坏', () => {
+    const { container } = renderStuck([
+      item(),
+      item({ held: held({ jobId: 42 }), title: '风骚律师' }),
+    ])
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 迁移不该引入任何可点控件（换标签时最容易顺手写成 <button>）。
+    expect(container.querySelectorAll('button')).toHaveLength(0)
+    expect(container.querySelector('[role="button"]')).toBeNull()
+    // 两屏都渲染过了才算扫全（单屏扫不到"只在第二条上写错"的情况）。
+    expect(screen.getAllByTestId('activity-stuck-hero')).toHaveLength(2)
+    expect(screen.getAllByTestId('activity-stuck-fact')).toHaveLength(2)
+  })
+})
