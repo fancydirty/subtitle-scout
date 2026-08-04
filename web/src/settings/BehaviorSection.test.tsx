@@ -5,6 +5,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
+import { openRadixSelect } from '../testSupport/radix.js'
 import { BehaviorSection } from './BehaviorSection.js'
 import type { Async } from '../api/hooks.js'
 import type { SettingsDTO } from '../api/types.js'
@@ -122,7 +123,7 @@ describe('BehaviorSection：单键即时 PUT', () => {
     vi.stubGlobal('fetch', fetchMock)
     renderSection(asyncOf(NULL_SETTINGS))
 
-    fireEvent.click(screen.getByRole('combobox', { name: 'Hardsub assumption' }))
+    openRadixSelect(screen.getByRole('combobox', { name: 'Hardsub assumption' }))
     fireEvent.click(await screen.findByRole('option', { name: 'Off', hidden: true }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
@@ -222,5 +223,29 @@ describe('BehaviorSection：三态', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(reload).toHaveBeenCalled()
+  })
+})
+
+describe('BehaviorSection：迁移锁', () => {
+  it('六个控件的可及名与既有契约逐字一致（aria-label 手写对齐 Astryx label 提升）', () => {
+    renderSection(asyncOf(NULL_SETTINGS))
+    expect(screen.getByRole('switch', { name: 'Engine' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Target languages' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Hardsub assumption' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeInTheDocument()
+    expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toBeInTheDocument()
+    expect(screen.getByRole('spinbutton', { name: 'Scan interval (ms)' })).toBeInTheDocument()
+  })
+
+  it('DOM 里不再有 astryx-* 类名', () => {
+    const { container } = renderSection(asyncOf(NULL_SETTINGS))
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+  })
+
+  it('Selector 换成 Radix Select 后 option 语义照旧（关闭不可及、pointerdown 可开）', async () => {
+    renderSection(asyncOf(NULL_SETTINGS))
+    expect(screen.queryByRole('option', { name: 'Off', hidden: true })).toBeNull()
+    openRadixSelect(screen.getByRole('combobox', { name: 'Hardsub assumption' }))
+    expect(await screen.findByRole('option', { name: 'Off', hidden: true })).toBeInTheDocument()
   })
 })

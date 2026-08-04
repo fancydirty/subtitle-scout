@@ -3,7 +3,6 @@
 // System 区（Re-run wizard）+ 安全区。各数据面独立拉取（useSettings/useDeploySettings/
 // useRoots/useSetupProviders/useSetupStatus，一次性或 15s 轮询，见各 hook 头注），
 // 各 section 组件各自处理自己的 loading/empty/error 三态（DESIGN.md 铁律），互不阻塞彼此渲染。
-import { VStack } from '@astryxdesign/core/VStack'
 import { useState } from 'react'
 import { useSettings, useDeploySettings, useRoots, useSetupProviders, useSetupStatus } from '../api/hooks.js'
 import { BehaviorSection } from './BehaviorSection.js'
@@ -27,7 +26,7 @@ export function SettingsPage() {
   const settingsData = updated != null ? { ...settings, data: updated } : settings
 
   return (
-    <VStack gap={8}>
+    <div className="flex flex-col gap-8">
       <BehaviorSection settings={settingsData} />
       <TranslateSection settings={settingsData} deploy={deploy} onUpdated={setUpdated} />
       <ProvidersSection providers={providers} setupStatus={setupStatus} />
@@ -36,6 +35,6 @@ export function SettingsPage() {
       <SystemSection />
       {/* 安全区排最后——低频人工操作（改密/换 key），不抢常用设置的视觉序位。 */}
       <SecuritySection />
-    </VStack>
+    </div>
   )
 }
