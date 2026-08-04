@@ -10,7 +10,7 @@ import {
   buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch, buildRunTrace, buildDormantTasks, dormantTargetLabel,
+  buildTriage, redispatch, buildRunTrace, buildDormantTasks, dormantTargetLabel, buildLibraryMovieDetail,
 } from './apiV2.js'
 // 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
@@ -1227,5 +1227,82 @@ describe('buildDormantTasks（Plan C spec §4.2）', () => {
     const dto = buildDormantTasks(db)
     expect(dto).toHaveLength(2)
     expect(dto.map((d) => d.targetLabel)).toEqual(['tmdb:new', 'tmdb:old'])
+  })
+})
+
+describe('buildLibraryMovieDetail', () => {
+  it('返回 null 当电影不存在（404 语义）', () => {
+    const settingsRepo = new SettingsRepo(db)
+    expect(buildLibraryMovieDetail(db, settingsRepo, 'nonexistent')).toBeNull()
+  })
+
+  it('全部 14 键齐全：id/name/chineseTitle/year/posterPath/path/subStatus/statusReason/recheckAfter/originLang/nativeAudio/files/subtitles/recentJobs', () => {
+    const settingsRepo = new SettingsRepo(db)
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm1')!
+    expect(detail).toHaveProperty('id')
+    expect(detail).toHaveProperty('name')
+    expect(detail).toHaveProperty('chineseTitle')
+    expect(detail).toHaveProperty('year')
+    expect(detail).toHaveProperty('posterPath')
+    expect(detail).toHaveProperty('path')
+    expect(detail).toHaveProperty('subStatus')
+    expect(detail).toHaveProperty('statusReason')
+    expect(detail).toHaveProperty('recheckAfter')
+    expect(detail).toHaveProperty('originLang')
+    expect(detail).toHaveProperty('nativeAudio')
+    expect(detail).toHaveProperty('files')
+    expect(detail).toHaveProperty('subtitles')
+    expect(detail).toHaveProperty('recentJobs')
+    expect(Object.keys(detail)).toHaveLength(14)
+  })
+
+  it('键集合封闭：恰好 14 键，不多不少（无 backdropPath/overview/genres）', () => {
+    const settingsRepo = new SettingsRepo(db)
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm1')!
+    const keys = Object.keys(detail).sort()
+    expect(keys).toEqual([
+      'chineseTitle', 'files', 'id', 'name', 'nativeAudio', 'originLang',
+      'path', 'posterPath', 'recentJobs', 'recheckAfter', 'statusReason',
+      'subStatus', 'subtitles', 'year',
+    ])
+    expect(detail).not.toHaveProperty('backdropPath')
+    expect(detail).not.toHaveProperty('overview')
+    expect(detail).not.toHaveProperty('genres')
+  })
+
+  it('nativeAudio=true 当 originLang=zh 且默认 TARGET_LANGUAGES=zh', () => {
+    const settingsRepo = new SettingsRepo(db)
+    lib.upsertMovie({ id: 'm-zh', name: 'Chinese Film', path: '/media/movies/Film/f.mkv', subStatus: 'covered', originLang: 'zh' })
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm-zh')!
+    expect(detail.originLang).toBe('zh')
+    expect(detail.nativeAudio).toBe(true)
+  })
+
+  it('recentJobs 最近五个：movie_id 命中且 series_id IS NULL（过滤掉 series 目标的 worker_task）', () => {
+    const settingsRepo = new SettingsRepo(db)
+
+    // 使用新的 movie id 来避免与 beforeEach 中的 m1 job 冲突
+    lib.upsertMovie({ id: 'm-jobs', name: 'Movie Jobs Test', path: '/media/movies/Test/test.mkv', subStatus: 'missing' })
+
+    // 插入 2 个 movie job：1 个旧 kind='movie' + 1 个新 kind='worker_task' find_subtitle
+    // （jobs_identity 约束：kind + series_id + season + movie_id + taskType 必须唯一，
+    //  所以同一 movieId 只能有一个 worker_task/find_subtitle 组合）
+    const jobId1 = insertJob(db, { kind: 'movie', movieId: 'm-jobs', state: 'wanted', priority: 10 })
+    const jobId2 = insertWorkerTaskJob(db, { movieId: 'm-jobs', taskType: 'find_subtitle', state: 'searching', priority: 20 })
+
+    // 干扰项：series_id 非空的 worker_task（应被 series_id IS NULL 过滤掉）
+    insertWorkerTaskJob(db, { seriesId: 's1', season: 3, taskType: 'find_subtitle', state: 'searching', priority: 50 })
+
+    // 干扰项：不同 movieId 的 job
+    insertWorkerTaskJob(db, { movieId: 'm-other', taskType: 'find_subtitle', state: 'wanted', priority: 0 })
+
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm-jobs')!
+    // 2 个 m-jobs 的 job（旧 kind='movie' + 新 kind='worker_task'）
+    expect(detail.recentJobs).toHaveLength(2)
+    const jobIds = detail.recentJobs.map(j => j.id).sort((a, b) => b - a)
+    expect(jobIds).toEqual([jobId2, jobId1])
+    expect(detail.recentJobs.every(j => j.state && typeof j.priority === 'number')).toBe(true)
+    // 验证干扰项被正确过滤：series_id 非空的不在结果里
+    expect(detail.recentJobs.every(j => j.id !== 50)).toBe(true)
   })
 })

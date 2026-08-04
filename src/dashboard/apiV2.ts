@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
-import { LibraryRepo } from '../v2/libraryRepo.js'
+import { LibraryRepo, type ItemFileCoverage } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import type { JobsRepo, WorkerTaskUpsertOutcome } from '../v2/jobsRepo.js'
 import { canonicalEpisodes } from '../v2/tmdbCatalog.js'
@@ -446,6 +446,109 @@ export function buildSeriesDetail(db: ScoutDb, id: string): SeriesDetailDTO | nu
     posterPath: series.poster_path,
     seasons,
     runs,
+  }
+}
+
+// ---- Movie detail (电影详情) ----
+
+export interface MovieSubtitleDTO {
+  language: string
+  path: string
+}
+export interface MovieJobDTO {
+  id: number
+  state: string
+  priority: number
+  startedAt: number
+  finishedAt: number | null
+}
+export interface MovieDetailDTO {
+  id: string
+  name: string
+  chineseTitle: string | null
+  year: number | null
+  posterPath: string | null
+  path: string
+  subStatus: string
+  statusReason: string | null
+  recheckAfter: number | null
+  originLang: string | null
+  nativeAudio: boolean
+  files: ItemFileCoverage[]
+  subtitles: MovieSubtitleDTO[]
+  recentJobs: MovieJobDTO[]
+}
+
+interface MovieDetailRow {
+  id: string
+  name: string
+  chinese_title: string | null
+  year: number | null
+  poster_path: string | null
+  path: string
+  sub_status: string
+  status_reason: string | null
+  recheck_after: number | null
+  origin_lang: string | null
+}
+
+/** 电影详情：电影行基本信息 + itemFileCoverage + subtitles 清单 + 最近 5 个 jobs。未找到返回 null。 */
+export function buildLibraryMovieDetail(db: ScoutDb, settingsRepo: SettingsRepo, id: string): MovieDetailDTO | null {
+  // Plan B Task 1: 计算 originSkipLanguages（复用与 buildLibrary 同一条求值式）
+  const { originSkipLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
+
+  const movie = db
+    .prepare(
+      `SELECT id, name, chinese_title, year, poster_path, path, sub_status, status_reason, recheck_after, origin_lang
+       FROM movies WHERE id = ?`
+    )
+    .get(id) as MovieDetailRow | undefined
+  if (!movie) return null
+
+  const lib = new LibraryRepo(db)
+  const files = lib.itemFileCoverage(id)
+
+  const subtitles = db
+    .prepare(`SELECT language, path FROM subtitles WHERE item_id = ? ORDER BY language`)
+    .all(id) as Array<{ language: string; path: string }>
+
+  // recentJobs 最近五个（movie_id 命中 + series_id IS NULL，ORDER BY id DESC LIMIT 5）
+  // 双源同 buildLibrary：旧 kind='movie' 与 v3 kind='worker_task'（payload.taskType='find_subtitle'）
+  const jobRows = db
+    .prepare(
+      `SELECT j.id, j.state, j.priority, r.started_at, r.finished_at
+       FROM jobs j
+       LEFT JOIN runs r ON r.job_id = j.id AND r.id = (SELECT MAX(id) FROM runs WHERE job_id = j.id)
+       WHERE (j.kind = 'movie'
+              OR (j.kind = 'worker_task'
+                  AND json_extract(j.payload,'$.taskType') = 'find_subtitle'))
+         AND j.movie_id = ?
+         AND j.series_id IS NULL
+       ORDER BY j.id DESC LIMIT 5`
+    )
+    .all(id) as Array<{ id: number; state: string; priority: number; started_at: number | null; finished_at: number | null }>
+
+  return {
+    id: movie.id,
+    name: movie.name,
+    chineseTitle: movie.chinese_title,
+    year: movie.year,
+    posterPath: movie.poster_path,
+    path: movie.path,
+    subStatus: movie.sub_status,
+    statusReason: movie.status_reason,
+    recheckAfter: movie.recheck_after,
+    originLang: movie.origin_lang,
+    nativeAudio: movie.origin_lang != null && originSkipLanguages.includes(langOf(movie.origin_lang)),
+    files,
+    subtitles: subtitles.map((s) => ({ language: s.language, path: s.path })),
+    recentJobs: jobRows.map((j) => ({
+      id: j.id,
+      state: j.state,
+      priority: j.priority,
+      startedAt: j.started_at ?? 0,
+      finishedAt: j.finished_at,
+    })),
   }
 }
 
