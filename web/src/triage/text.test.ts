@@ -2,7 +2,8 @@
 // （groupPending，验收修复轮一 Task V2）与双语动态文案（fileCountLabel/moreLabel）。
 import { describe, it, expect } from 'vitest'
 import {
-  pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel, groupParkTimeLine, type DirGroup,
+  pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel, groupParkTimeLine,
+  checkedAgoLine, timingRowLabel, type DirGroup,
 } from './text.js'
 import type { ParkedItemDTO } from '../api/types.js'
 
@@ -138,5 +139,24 @@ describe('groupParkTimeLine', () => {
   it('zh 平移', () => {
     const g = grp([{ firstSeen: NOW - 2 * 3_600_000, lastAttempt: NOW - 1000 }])
     expect(groupParkTimeLine(g, NOW, 'zh')).toBe('首次发现 2 小时前，最近尝试 刚刚。')
+  })
+})
+
+describe('checkedAgoLine', () => {
+  const NOW = 1_000_000_000_000
+  it('en: checked Nh ago', () => {
+    expect(checkedAgoLine(NOW - 2 * 3_600_000, NOW, 'en')).toBe('checked 2h ago')
+  })
+  it('zh: N小时前检查', () => {
+    expect(checkedAgoLine(NOW - 2 * 3_600_000, NOW, 'zh')).toBe('2 小时前检查')
+  })
+})
+
+describe('timingRowLabel', () => {
+  it('媒体齐 → SeriesName SxxExx（集号补零）', () => {
+    expect(timingRowLabel({ seriesName: 'Peacemaker', season: 2, episode: 3, itemId: 'it-1' })).toBe('Peacemaker S2E03')
+  })
+  it('任一 null → 降级 mono itemId', () => {
+    expect(timingRowLabel({ seriesName: null, season: 2, episode: 3, itemId: 'it-1' })).toBe('it-1')
   })
 })

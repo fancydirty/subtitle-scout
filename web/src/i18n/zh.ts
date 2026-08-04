@@ -133,6 +133,9 @@ export const zh = {
   triage_excluded_heading: '已排除的特典',
   triage_excluded_restore_label: '恢复',
   triage_restore_error_prefix: '恢复失败：',
+  // Timing looks off 区两键——见 en.ts 同位置注释。
+  triage_timing_heading: '时间轴对不上',
+  triage_timing_undo: '撤销',
   triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',
 
 

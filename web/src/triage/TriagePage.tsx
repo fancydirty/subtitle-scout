@@ -9,6 +9,7 @@ import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import { PendingBox } from './PendingBox.js'
 import { ExcludedBox } from './ExcludedBox.js'
+import { TimingBox } from './TimingBox.js'
 import { groupPending } from './text.js'
 
 export function TriagePage() {
@@ -62,6 +63,7 @@ export function TriagePage() {
           <PendingBox actionable={actionable} />
           <ExcludedBox excluded={excluded} onRestore={handleRestore} />
         </div>
+        <TimingBox />
       </div>
     </Section>
   )

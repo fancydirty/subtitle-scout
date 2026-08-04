@@ -118,3 +118,17 @@ export function groupParkTimeLine(group: DirGroup, now: number, lang: Lang): str
     ? `首次发现 ${first}，最近尝试 ${last}。`
     : `First seen ${first}, last attempt ${last}.`
 }
+
+/** "checked 2h ago" / "2 小时前检查"——偏移行的新鲜度（§5.5 新拟，checkedAt 真实字段）。 */
+export function checkedAgoLine(checkedAt: number, now: number, lang: Lang): string {
+  const ago = agoLabel(now - checkedAt, lang)
+  return lang === 'zh' ? `${ago}检查` : `checked ${ago}`
+}
+
+/** 偏移行标签——"Peacemaker S2E03"；媒体字段任一 null 时降级 mono itemId（spec §8）。 */
+export function timingRowLabel(row: {
+  seriesName: string | null; season: number | null; episode: number | null; itemId: string
+}): string {
+  if (row.seriesName === null || row.season === null || row.episode === null) return row.itemId
+  return `${row.seriesName} S${row.season}E${String(row.episode).padStart(2, '0')}`
+}
