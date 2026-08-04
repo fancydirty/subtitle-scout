@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel, groupParkTimeLine,
-  checkedAgoLine, timingRowLabel, type DirGroup,
+  checkedAgoLine, timingRowLabel, dormantReasonLine, type DirGroup,
 } from './text.js'
 import type { ParkedItemDTO } from '../api/types.js'
 
@@ -159,4 +159,9 @@ describe('timingRowLabel', () => {
   it('任一 null → 降级 mono itemId', () => {
     expect(timingRowLabel({ seriesName: null, season: 2, episode: 3, itemId: 'it-1' })).toBe('it-1')
   })
+})
+
+describe('dormantReasonLine', () => {
+  it('en', () => { expect(dormantReasonLine(5, 'en')).toBe('Failed 5 times, automatic retries stopped.') })
+  it('zh', () => { expect(dormantReasonLine(5, 'zh')).toBe('失败 5 次，已停止自动重试。') })
 })

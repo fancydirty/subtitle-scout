@@ -172,6 +172,9 @@ export const en = {
   // 走 triage/text.ts，不进扁平表；"Fix the timing" 复用既有 verify_correct_action。
   triage_timing_heading: 'Timing looks off',
   triage_timing_undo: 'Undo',
+  // Dormant tasks 区一键（§5.5/§5.7，Task 24）——"Failed N times…" 带运行期数字，走
+  // triage/text.ts 的 dormantReasonLine，不进扁平表；区行零按钮（唤醒通道 §3 决策 1 不补）。
+  triage_dormant_heading: 'Dormant tasks',
   // 改名指引——README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）。路径形状本身
   // 是技术值，组件层拼接成 mono 片段，不进这条 i18n 文案（DESIGN.md §3：mono 是技术层专属声音）。
   triage_naming_hint_prefix: 'Correct naming skips manual triage — best practice: ',

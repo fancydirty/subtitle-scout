@@ -132,3 +132,10 @@ export function timingRowLabel(row: {
   if (row.seriesName === null || row.season === null || row.episode === null) return row.itemId
   return `${row.seriesName} S${row.season}E${String(row.episode).padStart(2, '0')}`
 }
+
+/** dormant 行的英文事实句（§4.2/§5.5 新拟，前端用 attempts 组；中文 reason 内部串不透传）。 */
+export function dormantReasonLine(attempts: number, lang: Lang): string {
+  return lang === 'zh'
+    ? `失败 ${attempts} 次，已停止自动重试。`
+    : `Failed ${attempts} times, automatic retries stopped.`
+}

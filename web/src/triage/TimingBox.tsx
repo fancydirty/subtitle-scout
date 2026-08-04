@@ -33,7 +33,7 @@ function TimingRow({ row, now, onChanged }: { row: ShiftedItemDTO; now: number; 
   return (
     <div className="flex items-center gap-3 rounded-[4px] border border-border bg-secondary px-3 py-2">
       <span className="size-[5px] shrink-0 rounded-full bg-fn-red" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate text-[13px] leading-5 text-foreground">{timingRowLabel(row)}</span>
+      <span className="min-w-0 flex-1 truncate text-[13px] leading-5 text-foreground" title={timingRowLabel(row)}>{timingRowLabel(row)}</span>
       <span className="shrink-0 font-mono text-[11px] leading-4 text-muted-foreground">{checkedAgoLine(row.checkedAt, now, lang)}</span>
       <Button size="sm" variant="secondary" disabled={busy} onClick={() => run('fix')}>
         {t('verify_correct_action')}

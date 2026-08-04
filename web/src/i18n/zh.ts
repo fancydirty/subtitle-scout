@@ -136,6 +136,8 @@ export const zh = {
   // Timing looks off 区两键——见 en.ts 同位置注释。
   triage_timing_heading: '时间轴对不上',
   triage_timing_undo: '撤销',
+  // Dormant tasks 区一键——见 en.ts 同位置注释。
+  triage_dormant_heading: '停摆任务',
   triage_naming_hint_prefix: '正确命名可免人工甄别——最佳实践：',
 
 
