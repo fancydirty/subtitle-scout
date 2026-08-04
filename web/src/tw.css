@@ -62,6 +62,13 @@
   *, ::before, ::after {
     border-color: var(--color-border);
   }
+
+  /* 全局背景 + 文字色：Astryx 退役后 preflight 顶替 reset.css，但 preflight 不带配色。
+     body 背景走 --color-background（#0b0c0f 页面底色），前景色走 --color-foreground（#e6e8ec）。 */
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+  }
 }
 
 /* ── 第二个 @theme：Tailwind v4 会合并同一文件里的多个 @theme 块，所以上面 Plan A 那块
