@@ -2,7 +2,7 @@
 // 三态（loading 由骨架屏覆盖，不额外断言像素；error/empty 断言文案）。沿 F2 的 fetch mock 手法
 // （App.test.tsx 的 mockFetchRouted），这里只有一个端点（/api/v2/library），不需要按 URL 路由。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { SeriesGrid } from './SeriesGrid.js'
 import type { LibraryItemDTO } from '../api/types.js'
@@ -78,8 +78,8 @@ describe('SeriesGrid', () => {
 
     expect(await screen.findByText('Series One')).toBeInTheDocument()
     expect(screen.getByText('Movie One')).toBeInTheDocument()
-    expect(screen.getByText('Series')).toBeInTheDocument()
-    expect(screen.getByText('Movies')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Series' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Movies' })).toBeInTheDocument()
     expect(screen.getByText('2 titles')).toBeInTheDocument()
   })
 
@@ -113,6 +113,22 @@ describe('SeriesGrid', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Fully covered' }))
 
     expect(await screen.findByText('Nothing matches this filter')).toBeInTheDocument()
+  })
+
+  it('renders kind filter chip with three options', async () => {
+    const data: LibraryItemDTO[] = [
+      item({ id: 's1', name: 'Series One', kind: 'series' }),
+      item({ id: 'm1', name: 'Movie One', kind: 'movie' }),
+    ]
+    vi.stubGlobal('fetch', mockFetch(data))
+    renderGrid()
+
+    await screen.findByText('Series One')
+    const typeFilter = screen.getByRole('radiogroup', { name: /type filter/i })
+    expect(typeFilter).toBeInTheDocument()
+    expect(within(typeFilter).getByRole('radio', { name: 'All' })).toBeInTheDocument()
+    expect(within(typeFilter).getByRole('radio', { name: 'Series' })).toBeInTheDocument()
+    expect(within(typeFilter).getByRole('radio', { name: 'Movies' })).toBeInTheDocument()
   })
 
   it('系列海报卡指向 #/library/:id（series id 经 encodeURIComponent）', async () => {
@@ -178,7 +194,7 @@ describe('SeriesGrid：DOM 侧迁移锁', () => {
     await screen.findByText('Series One')
     expect(container.querySelector('[class*="astryx"]')).toBeNull()
     // 分段仍是 radiogroup（既有 :63/:75/:90 靠 role=radio，这里补一条外层 role 的正向锁）。
-    expect(screen.getByRole('radiogroup')).toBeInTheDocument()
+    expect(screen.getAllByRole('radiogroup')).toHaveLength(2)
     // 加载态的海报墙也走 .library-grid 类（不是 Astryx Grid 的行内模板）——骨架那条只锁了 loading 分支。
     expect(container.querySelectorAll('.library-grid').length).toBeGreaterThanOrEqual(1)
   })
