@@ -2,7 +2,7 @@
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
-  DormantTaskDTO,
+  DormantTaskDTO, MovieDetailDTO,
 } from './apiV2.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
@@ -52,6 +52,9 @@ export interface RouterDeps {
   setupStatus: () => SetupStatusDTO
   /** spec A §4.4/§5.4：GET /api/v2/setup/providers——Providers 区行数据（打码值/source/上次测试点）。 */
   providers: () => ProvidersDTO
+  /** spec B §2/§4：GET /api/v2/library/movies/:id——movie 详情（单体对象；三层格阵合并：
+   *  canonical ∪ 磁盘 ∪ 覆盖）。 */
+  movieDetail: (id: string) => MovieDetailDTO | null
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -154,6 +157,14 @@ export function handleApiRoute(
     const id = decodeIdSegment(lsm[1])
     if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
     const detail = deps.librarySeriesDetail(id)
+    return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
+  }
+
+  const mm = pathname.match(/^\/api\/v2\/library\/movies\/([^/]+)$/)
+  if (mm) {
+    const id = decodeIdSegment(mm[1])
+    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
+    const detail = deps.movieDetail(id)
     return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
   }
 

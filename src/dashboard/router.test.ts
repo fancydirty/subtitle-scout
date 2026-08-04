@@ -4,7 +4,7 @@ import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
-  DormantTaskDTO,
+  DormantTaskDTO, MovieDetailDTO,
 } from './apiV2.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
@@ -107,6 +107,11 @@ const shiftedRow: ShiftedItemDTO = {
 const dormantRow: DormantTaskDTO = {
   jobId: 1, task: 'find_subtitle', targetLabel: 'The Rig, Season 2', attempts: 5,
 }
+const movieDetailDTO: MovieDetailDTO = {
+  id: 'm1', name: 'The Movie', chineseTitle: null, year: 2024, posterPath: null,
+  path: '/media/movies/The Movie.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null,
+  originLang: 'en', nativeAudio: true, files: [], subtitles: [], recentJobs: [],
+}
 
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
@@ -114,6 +119,7 @@ let lastPassesLimit: number | null = null
 let lastSeriesId: string | null = null
 let lastLibrarySeriesId: string | null = null
 let lastRunTraceId: number | null = null
+let lastMovieId: string | null = null
 const deps: RouterDeps = {
   library: () => [libItem],
   series: (id) => { lastSeriesId = id; return id === 's1' || id === 'tmdb:71' ? seriesDetail : null },
@@ -136,6 +142,7 @@ const deps: RouterDeps = {
   dormantTasks: () => [dormantRow],
   setupStatus: () => setupStatusDTO,
   providers: () => providersDTO,
+  movieDetail: (id) => { lastMovieId = id; return id === 'm1' || id === 'tmdb:1234' ? movieDetailDTO : null },
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string> } = {}) =>
@@ -336,5 +343,30 @@ describe('handleApiRoute (v2)', () => {
     const r = call('/api/v2/workflow/dormant')
     expect(r.status).toBe(200)
     expect(r.json).toEqual([dormantRow])
+  })
+
+  // spec B Task 4：GET /api/v2/library/movies/:id——movie 详情端点（三层格阵合并）。
+  it('GET /api/v2/library/movies/:id returns detail', () => {
+    const r = call('/api/v2/library/movies/m1')
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual(movieDetailDTO)
+    expect(lastMovieId).toBe('m1')
+  })
+
+  it('GET /api/v2/library/movies/nonexistent returns 404', () => {
+    const r = call('/api/v2/library/movies/nonexistent')
+    expect(r.status).toBe(404)
+    expect((r.json as { error: string }).error).toBe('not found')
+  })
+
+  it('GET /api/v2/library/movies/:id accepts tmdb: ids', () => {
+    const r = call('/api/v2/library/movies/tmdb:1234')
+    expect(r.status).toBe(200)
+    expect(lastMovieId).toBe('tmdb:1234')
+  })
+
+  it('GET /api/v2/library/movies/:id rejects bad ids with 400', () => {
+    expect(call('/api/v2/library/movies/a..b').status).toBe(400)
+    expect(call('/api/v2/library/movies/bad/path').status).toBe(404) // doesn't match route pattern
   })
 })

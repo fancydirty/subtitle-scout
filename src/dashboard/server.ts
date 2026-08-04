@@ -15,7 +15,7 @@ import {
   buildLibrary, buildSeriesDetail, buildRuns, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch, buildRunTrace, buildDormantTasks,
+  buildTriage, redispatch, buildRunTrace, buildDormantTasks, buildLibraryMovieDetail,
   type ReconcileAllResultDTO,
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
@@ -291,6 +291,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     dormantTasks: () => buildDormantTasks(db),
     setupStatus: () => buildSetupStatus(setupDeps),
     providers: () => buildProviders(setupDeps),
+    movieDetail: (id) => buildLibraryMovieDetail(db, settingsRepo, id),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
