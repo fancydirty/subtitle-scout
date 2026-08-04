@@ -3,15 +3,20 @@
 // PUT secrets API 语义，界面不开放，防占位空串误删）、Test；无 key 的 subhd/zimuku 两家
 // 以 toggle 行呈现（同一 PUT settings 通道）。编辑/测试后直接 reload 刷新打码与测试点。
 // 与 wizard 的不对称是有意的：wizard 先测后存是首跑纪律；Settings 保存不强制测试，
-// 靠上次测试点展示兜底（测试按钮常备）。Astryx 栈与邻区一致——整页随 Spec C 迁新栈。
+// 靠上次测试点展示兜底（测试按钮常备）。
+//
+// 控件栈（Plan C Task 26 迁移）：Astryx Text/TextInput/Button/Switch/VStack/HStack/StatusDot
+// 全卸——Button children 化（isLoading→disabled，既有用例不断言 spinner）；TextInput 换
+// shadcn Input（aria-label 手写对齐 getByLabelText 锚；Astryx onChange 直接吃新值，shadcn 是
+// (e) => e.target.value）；Switch 的 value/onChange 改名 checked/onCheckedChange + aria-label
+// 手写；StatusDot 同名零改件；VStack/HStack 换裸 flex div（不包裹子节点——children 计数结构钉
+// okRow 2 / llm 5 / failRow 2 在 ProvidersSection.test.tsx 钉死）。行内错误换
+// <p role="alert">（条件插入即 SR 自动播报，同 BehaviorSection 口径）。
 import { useState } from 'react'
-import { Text } from '@astryxdesign/core/Text'
-import { TextInput } from '@astryxdesign/core/TextInput'
-import { Button } from '@astryxdesign/core/Button'
-import { Switch } from '@astryxdesign/core/Switch'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
-import { StatusDot } from '@astryxdesign/core/StatusDot'
+import { Button } from '../components/ui/button.js'
+import { Input } from '../components/ui/input.js'
+import { StatusDot } from '../components/ui/status-dot.js'
+import { Switch } from '../components/ui/switch.js'
 import { api } from '../api/client.js'
 import type { Async } from '../api/hooks.js'
 import type { ProvidersDTO, ProviderRowDTO, SetupStatusDTO } from '../api/types.js'
@@ -77,64 +82,71 @@ function KeyedRow({ row, reload }: { row: ProviderRowDTO; reload: () => void }) 
   }
 
   return (
-    <VStack gap={2} data-testid={`providers-${row.id}`}>
-      <HStack gap={2} vAlign="center">
-        <Text type="label">{PROVIDER_NAME[row.id]}</Text>
-        <Button size="sm" variant="secondary" label={t('settings_provider_test')} isLoading={busy && !editing} onClick={() => void onTest()} />
+    <div className="flex flex-col gap-2" data-testid={`providers-${row.id}`}>
+      <div className="flex items-center gap-2">
+        <span className="text-[13px] font-medium leading-5 text-foreground">{PROVIDER_NAME[row.id]}</span>
+        <Button size="sm" variant="secondary" disabled={busy && !editing} onClick={() => void onTest()}>
+          {t('settings_provider_test')}
+        </Button>
         {editable && !editing && (
-          <Button size="sm" variant="secondary" label={t('settings_provider_edit')} onClick={() => setEditing(true)} />
+          <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
+            {t('settings_provider_edit')}
+          </Button>
         )}
         {row.lastTest && (
           <>
             <StatusDot
-              // StatusDotVariant 的域是 success|warning|error|accent|neutral 五个，**没有 danger**
-              //（写 danger 是 TS2322，Step 5 的 `npx tsc --noEmit` 会直接拦下）。
+              // StatusDotVariant 的域是 success|error|neutral 三档（Astryx 五档随主题退役）。
               variant={row.lastTest.ok ? 'success' : 'error'}
               label={row.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')}
             />
-            <Text type="supporting" color="secondary">
+            <span className="text-[11px] leading-4 text-muted-foreground">
               {row.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')}
               {` · ${new Date(row.lastTest.at).toLocaleString()}`}
-            </Text>
+            </span>
           </>
         )}
-      </HStack>
+      </div>
       {row.lastTest && !row.lastTest.ok && row.lastTest.error && (
-        <Text type="supporting" color="secondary">{row.lastTest.error}</Text>
+        <span className="text-[11px] leading-4 text-muted-foreground">{row.lastTest.error}</span>
       )}
       {row.secrets.map((s) => (
-        <HStack key={s.name} gap={2} vAlign="center">
-          <Text type="code">{s.name}</Text>
+        <div key={s.name} className="flex items-center gap-2">
+          <span className="font-mono text-[13px] leading-5">{s.name}</span>
           {editing && s.source !== 'env' ? (
-            <TextInput
-              label={s.name}
+            <Input
+              aria-label={s.name}
               value={drafts[s.name] ?? ''}
-              onChange={(v) => setDrafts((d) => ({ ...d, [s.name]: v }))}
+              onChange={(e) => setDrafts((d) => ({ ...d, [s.name]: e.target.value }))}
               placeholder={s.masked ?? ''}
             />
           ) : (
             <>
-              <Text type="supporting">{s.set ? s.masked ?? '••••' : t('settings_provider_not_set')}</Text>
+              <span className="text-[11px] leading-4">{s.set ? s.masked ?? '••••' : t('settings_provider_not_set')}</span>
               {s.set && (
-                <Text type="supporting" color="secondary">
+                <span className="text-[11px] leading-4 text-muted-foreground">
                   {s.source === 'env' ? t('settings_provider_source_env') : t('settings_provider_source_db')}
-                </Text>
+                </span>
               )}
               {s.source === 'env' && (
-                <Text type="supporting" color="secondary">{t('settings_provider_env_locked')}</Text>
+                <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_provider_env_locked')}</span>
               )}
             </>
           )}
-        </HStack>
+        </div>
       ))}
       {editing && (
-        <HStack gap={2}>
-          <Button size="sm" variant="primary" label={t('settings_provider_save')} isLoading={busy} onClick={() => void onSave()} />
-          <Button size="sm" variant="secondary" label={t('settings_provider_cancel')} onClick={() => { setEditing(false); setDrafts({}) }} />
-        </HStack>
+        <div className="flex items-center gap-2">
+          <Button size="sm" disabled={busy} onClick={() => void onSave()}>
+            {t('settings_provider_save')}
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => { setEditing(false); setDrafts({}) }}>
+            {t('settings_provider_cancel')}
+          </Button>
+        </div>
       )}
-      {error && <Text type="supporting">{error}</Text>}
-    </VStack>
+      {error && <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p>}
+    </div>
   )
 }
 
@@ -165,19 +177,19 @@ function ToggleRow({
   }
 
   return (
-    <VStack gap={1} data-testid={`providers-${id}`}>
-      <HStack gap={2} vAlign="center">
+    <div className="flex flex-col gap-1" data-testid={`providers-${id}`}>
+      <div className="flex items-center gap-2">
         <Switch
-          label={PROVIDER_NAME[id]}
-          value={state.enabled}
-          onChange={(next) => void onToggle(next)}
-          isLoading={busy}
-          isDisabled={locked}
+          aria-label={PROVIDER_NAME[id]}
+          checked={state.enabled}
+          onCheckedChange={(next) => void onToggle(next)}
+          disabled={busy || locked}
         />
-        {locked && <Text type="supporting" color="secondary">{t('settings_provider_env_locked')}</Text>}
-      </HStack>
-      {error && <Text type="supporting">{error}</Text>}
-    </VStack>
+        <span className="text-[13px] font-medium leading-5 text-foreground">{PROVIDER_NAME[id]}</span>
+        {locked && <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_provider_env_locked')}</span>}
+      </div>
+      {error && <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p>}
+    </div>
   )
 }
 
@@ -185,13 +197,13 @@ export function ProvidersSection({ providers, setupStatus }: Props) {
   const { t } = useT()
   return (
     <section className="settings-section">
-      <Text type="label">{t('settings_providers_title')}</Text>
+      <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_providers_title')}</span>
       {providers.loading && !providers.data ? (
-        <Text type="code" color="secondary">loading…</Text>
+        <span className="font-mono text-[13px] leading-5 text-muted-foreground">loading…</span>
       ) : providers.error && !providers.data ? (
-        <Text type="supporting" color="secondary">{t('settings_error_prefix') + providers.error}</Text>
+        <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_error_prefix') + providers.error}</span>
       ) : providers.data ? (
-        <VStack gap={5}>
+        <div className="flex flex-col gap-5">
           {providers.data.providers.filter((r) => r.secrets.length > 0).map((row) => (
             <KeyedRow key={row.id} row={row} reload={providers.reload} />
           ))}
@@ -201,7 +213,7 @@ export function ProvidersSection({ providers, setupStatus }: Props) {
               <ToggleRow id="zimuku" state={setupStatus.data.providers.zimuku} reload={setupStatus.reload} />
             </>
           )}
-        </VStack>
+        </div>
       ) : null}
     </section>
   )

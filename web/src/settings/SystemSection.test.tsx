@@ -23,3 +23,10 @@ describe('SystemSection', () => {
     expect(requestWizardRerun).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('SystemSection：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', () => {
+    render(<I18nProvider initialLang="en"><SystemSection /></I18nProvider>)
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

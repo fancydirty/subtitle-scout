@@ -8,7 +8,7 @@
 //               （两个 px 与那个 leading 都走 scout.css 覆盖后的值——见本 task 开头那张表。
 //                 Astryx 源码注释写的是 14 / 12 / 1.6667，那是它自己默认主题的一套。）
 //   图标        **{icon ?? <Icon icon={默认状态图标} …/>}——未传 icon 时有默认图标**。
-//               本仓唯一调用点（TranslateSection.tsx:88-122）就没传 icon，所以今天屏幕上
+//               本仓唯一调用点（TranslateSection.tsx:116-122）就没传 icon，所以今天屏幕上
 //               有一个警告三角；不复刻它，Task 31 就等于静默删掉一个可见字形。
 //               图标容器 aria-hidden="true"（源码如此）。
 //

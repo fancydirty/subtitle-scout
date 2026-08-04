@@ -1,7 +1,8 @@
 // web/src/components/ui/alert-dialog.tsx：shadcn/ui AlertDialog copy-in。
 // 本仓改造：相对 import + .js；删 dark:；内容面 rounded-lg → rounded-card、bg-background → bg-card
 // （同 dialog.tsx 的理由）；Action/Cancel 复用 Plan A Task 14 已落地的 buttonVariants，
-// 不重复声明一套按钮样式（DRY）。唯一调用点是 Task 30 的 RerunDialog。
+// 不重复声明一套按钮样式（DRY）。现调用点是 Task 26 的 TranslateSection（首个 Caller）；
+// Task 30 的 RerunDialog 是预定 Caller（在那之前它仍骑 Astryx AlertDialog）。
 import * as React from 'react'
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog'
 import { buttonVariants } from './button.js'

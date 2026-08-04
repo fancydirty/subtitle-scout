@@ -206,3 +206,10 @@ describe('ProvidersSection', () => {
     expect(failRow.children).toHaveLength(2)
   })
 })
+
+describe('ProvidersSection：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名（既有 PROVIDERS/SETUP fixture 全量子树）', () => {
+    renderSection()
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

@@ -115,8 +115,9 @@ describe('TranslateSection（AI 翻译区：部署门 + 烧钱开关确认流 + 
     )
     fireEvent.click(screen.getByRole('switch'))
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ ai_translate_enabled: 'false' }))
-    // AlertDialog 关闭态标题仍在 DOM(动画挂载),判"未打开"要用 dialog role 而不是标题文本。
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // 判"未打开"用 role 缺席而不是标题文本；role 是 alertdialog（Astryx/Radix 两版同），
+    // Radix 关闭即整棵卸载——这条断言因此真的区分开/关两态。
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 
   it('开关开但部署门缺失 → 休眠警示 Banner', () => {
@@ -143,5 +144,20 @@ describe('TranslateSection（AI 翻译区：部署门 + 烧钱开关确认流 + 
       </I18nProvider>,
     )
     expect(screen.queryByTestId('translate-dormant-warning')).not.toBeInTheDocument()
+  })
+})
+
+describe('TranslateSection：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名（gate 三行 + Switch 子树）', () => {
+    render(
+      <I18nProvider>
+      <TranslateSection
+        settings={asyncOf(baseSettings)}
+        deploy={asyncOf(deployWith({ baseUrl: true, model: true, key: false }))}
+        onUpdated={() => {}}
+      />
+      </I18nProvider>,
+    )
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
   })
 })
