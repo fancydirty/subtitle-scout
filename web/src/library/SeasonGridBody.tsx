@@ -2,8 +2,6 @@
 // 重设计 item B）——复用 A 式 EpisodeCell 格阵，点某格在格阵下方行内展开该集简介（不逐集铺行，
 // 适配国产长剧上百集）。同一时刻至多一格选中，再点同格收起。
 import { useState } from 'react'
-import { VStack } from '@astryxdesign/core/VStack'
-import { Text } from '@astryxdesign/core/Text'
 import type { GridCell } from './episodeState.js'
 import { EpisodeCell } from './EpisodeCell.js'
 import { useT } from '../i18n/useT.js'
@@ -13,7 +11,7 @@ export function SeasonGridBody({ cells }: { cells: GridCell[] }) {
   const [sel, setSel] = useState<number | null>(null)
   const active = cells.find((c) => c.episode === sel) ?? null
   return (
-    <VStack gap={2}>
+    <div className="flex flex-col gap-2">
       <div className="ep-grid">
         {cells.map((cell) => (
           <EpisodeCell
@@ -25,11 +23,11 @@ export function SeasonGridBody({ cells }: { cells: GridCell[] }) {
         ))}
       </div>
       {active ? (
-        <VStack gap={1} className="library-eprow-body" style={{ paddingLeft: 10 }}>
-          <Text type="supporting" color="secondary">{`S·E${String(active.episode).padStart(2, '0')}`} {active.title ?? ''}</Text>
-          <Text type="body" color="secondary">{active.overview ?? t('library_episode_no_overview')}</Text>
-        </VStack>
+        <div className="library-eprow-body flex flex-col gap-1" style={{ paddingLeft: 10 }}>
+          <span className="text-[11px] leading-4 text-muted-foreground">{`S·E${String(active.episode).padStart(2, '0')}`} {active.title ?? ''}</span>
+          <span className="text-[13px] leading-5 text-muted-foreground">{active.overview ?? t('library_episode_no_overview')}</span>
+        </div>
       ) : null}
-    </VStack>
+    </div>
   )
 }

@@ -7,8 +7,6 @@
 // 端点），而不是让每个 EpisodeRow 各发一个请求（24 集就是 24 个往返）。EpisodeRow 保持纯展示，
 // 校验状态作为 prop 传下去；点红芯片打开的检视面板也挂在这一层，因为同一时刻只该有一个面板。
 import { useCallback, useMemo, useState } from 'react'
-import { VStack } from '@astryxdesign/core/VStack'
-import { Text } from '@astryxdesign/core/Text'
 import type { LibrarySeasonDTO, SubtitleVerifyDTO } from '../api/types.js'
 import { buildGridCells, tallyGridCells, isCanonicalPending, EPISODE_ROW_CAP } from './episodeState.js'
 import { seasonCoverageSentence } from './text.js'
@@ -79,15 +77,15 @@ export function SeasonAccordion({ season, now, defaultOpen = true }: Props) {
   }, [inspecting, cells])
 
   return (
-    <VStack gap={2}>
+    <div className="flex flex-col gap-2">
       <button type="button" className="library-season-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className={`library-season-chev${open ? ' open' : ''}`} aria-hidden="true">›</span>
-        <Text type="body" color="secondary">
-          {sentence.prefix} <Text as="span" weight="semibold" color="primary" size="lg">{sentence.emphasis}</Text> {sentence.suffix}
-          {sentence.clause ? <Text as="span" color="secondary"> — {sentence.clause}</Text> : null}
-        </Text>
+        <span className="text-[13px] leading-5 text-muted-foreground">
+          {sentence.prefix} <span className="text-[16px] font-semibold leading-[1.5385] text-foreground">{sentence.emphasis}</span> {sentence.suffix}
+          {sentence.clause ? <span className="text-muted-foreground"> — {sentence.clause}</span> : null}
+        </span>
       </button>
-      {isCanonicalPending(season) ? <Text type="code" color="secondary">{t('library_detail_canonical_pending')}</Text> : null}
+      {isCanonicalPending(season) ? <span className="font-mono text-[13px] leading-5 text-muted-foreground">{t('library_detail_canonical_pending')}</span> : null}
       {open ? (
         useGrid ? <SeasonGridBody cells={cells} /> : (
           <div>
@@ -129,6 +127,6 @@ export function SeasonAccordion({ season, now, defaultOpen = true }: Props) {
           />
         </InspectBoundary>
       ) : null}
-    </VStack>
+    </div>
   )
 }

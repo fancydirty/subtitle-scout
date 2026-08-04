@@ -225,3 +225,20 @@ describe('EpisodeRow / 季手风琴组：CSS 侧迁移锁', () => {
     expect(CSS).not.toContain('var(--color-text-orange)')
   })
 })
+
+// ── DOM 侧迁移锁（Task 21）
+describe('EpisodeRow：DOM 侧迁移锁', () => {
+  it('子树无 astryx-* 类名；集号 mono、标题在场', () => {
+    const cell: GridCell = {
+      episode: 1, state: 'covered', title: 'Pilot', overview: 'ov', airDate: '2011-10-05', stillPath: null,
+      onDisk: { itemId: 'ep1', episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+    }
+    const { container } = render(
+      <I18nProvider><EpisodeRow cell={cell} expanded={false} onToggle={() => {}} /></I18nProvider>,
+    )
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 集号走 font-mono（type="code" 迁移后的证据）。
+    expect(container.querySelector('span.font-mono')).toBeTruthy()
+    expect(screen.getByText('Pilot')).toBeInTheDocument()
+  })
+})

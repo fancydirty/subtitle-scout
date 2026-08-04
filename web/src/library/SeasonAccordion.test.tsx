@@ -241,4 +241,19 @@ describe('SeasonAccordion：字幕校验接线', () => {
     expect(container.querySelector('.library-season-head')).toBeTruthy()
     spy.mockRestore()
   })
+
+  // ── DOM 侧迁移锁（Task 21）——只在不开面板的渲染上锁；点开红芯片会渲染 Astryx 的 InspectPanel（Task 30）。
+  it('默认展开、不点开面板 → 子树无 astryx-* 类名（EpisodeRow + VerifyChip 均已在新栈）', async () => {
+    stubVerify([
+      { itemId: 'ep1', state: 'ok', checked: true },
+      { itemId: 'ep2', state: 'shifted', checked: true },
+      { itemId: 'ep3', state: 'ok', checked: true },
+    ])
+    const { container } = render(
+      <I18nProvider initialLang="zh"><SeasonAccordion season={seasonDTO(3)} now={NOW} defaultOpen /></I18nProvider>,
+    )
+    // 等芯片渲染出来（验证请求回来），确认没点开面板时子树干净。
+    await screen.findByTestId('verify-chip-shifted')
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+  })
 })

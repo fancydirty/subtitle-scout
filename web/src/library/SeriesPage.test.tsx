@@ -226,5 +226,31 @@ describe('SeriesPage：DOM 侧迁移锁', () => {
       </I18nProvider>,
     )
     expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    // Task 20 评审遗留（Task 21 收口补）：error 分支不渲染 SeasonAccordion，全树无 astryx 安全——
+    // 有它，Retry 按钮 children 形的 pin 才真正可判别（Astryx 的 label prop 也出同一个可及名）。
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+  })
+
+  // Task 20 评审遗留（Task 21 收口补）：SeasonAccordion 子树已干净，完整 detail 全树锁成立。
+  // 用例不得点开任何面板——点开红芯片会渲染 Astryx 的 InspectPanel（Task 30 才迁）。
+  it('完整 detail（不点开任何面板）→ 全树无 astryx-* 类名', async () => {
+    const detail: LibrarySeriesDetailDTO = {
+      series: baseSeries(),
+      seasons: [
+        {
+          season: 1,
+          canonical: Array.from({ length: 3 }, (_, i) => canon(i + 1)),
+          onDisk: [
+            { itemId: 'ep1', episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+          ],
+          coverage: [],
+        },
+      ],
+    }
+    const { container } = renderPage(asyncData(detail))
+    await screen.findByText('Series A')
+    // 季手风琴子树确实渲染出来了（锁才有意义——不是对着空树查无 astryx）。
+    expect(container.querySelectorAll('.library-eprow-head').length).toBeGreaterThan(0)
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
   })
 })
