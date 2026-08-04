@@ -25,6 +25,9 @@ export interface SeriesParams {
    *  ingest 首次入库才可能真的给出 genres，后续每轮重跑 upsertSeries 不重新查 TMDB，传 undefined
    *  即可，既有值原样保留）。 */
   genres?: number[] | null
+  /** Plan B Task 1: TMDB original_language（schema v14）。undefined/null→NULL 绑定，同 genres
+   *  的 COALESCE 语义（不清空既有值）。 */
+  originLang?: string | null
 }
 
 export interface EpisodeParams {
@@ -46,6 +49,9 @@ export interface MovieParams {
   posterPath?: string | null
   year?: number | null
   providerIds?: string | null // JSON
+  /** Plan B Task 1: TMDB original_language（schema v14）。undefined/null→NULL 绑定，同
+   *  chineseTitle/posterPath 的 COALESCE 语义（不清空既有值）。 */
+  originLang?: string | null
 }
 
 export interface Episode {
@@ -248,10 +254,11 @@ export class LibraryRepo {
     const genresJson = params.genres != null ? JSON.stringify(params.genres) : null
     const overview = params.overview ?? null
     const backdropPath = params.backdropPath ?? null
+    const originLang = params.originLang ?? null
     this.db
       .prepare(
-        `INSERT INTO series (id, name, chinese_title, poster_path, overview, backdrop_path, year, provider_ids, genres)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO series (id, name, chinese_title, poster_path, overview, backdrop_path, year, provider_ids, genres, origin_lang)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END,
            chinese_title = COALESCE(excluded.chinese_title, chinese_title),
@@ -260,7 +267,8 @@ export class LibraryRepo {
            backdrop_path = COALESCE(excluded.backdrop_path, backdrop_path),
            year = excluded.year,
            provider_ids = excluded.provider_ids,
-           genres = COALESCE(excluded.genres, genres)
+           genres = COALESCE(excluded.genres, genres),
+           origin_lang = COALESCE(excluded.origin_lang, origin_lang)
          WHERE (excluded.name != '' AND name != excluded.name)
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
             OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
@@ -268,7 +276,8 @@ export class LibraryRepo {
             OR (excluded.backdrop_path IS NOT NULL AND backdrop_path IS NOT excluded.backdrop_path)
             OR year IS NOT excluded.year
             OR provider_ids IS NOT excluded.provider_ids
-            OR (excluded.genres IS NOT NULL AND genres IS NOT excluded.genres)`
+            OR (excluded.genres IS NOT NULL AND genres IS NOT excluded.genres)
+            OR (excluded.origin_lang IS NOT NULL AND origin_lang IS NOT excluded.origin_lang)`
       )
       .run(
         params.id,
@@ -279,7 +288,8 @@ export class LibraryRepo {
         backdropPath,
         params.year ?? null,
         params.providerIds ?? null,
-        genresJson
+        genresJson,
+        originLang
       )
   }
 
@@ -399,10 +409,11 @@ export class LibraryRepo {
   upsertMovie(params: MovieParams): void {
     const now = Date.now()
     const posterPath = params.posterPath ?? null
+    const originLang = params.originLang ?? null
     this.db
       .prepare(
-        `INSERT INTO movies (id, name, path, sub_status, chinese_title, poster_path, year, provider_ids, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO movies (id, name, path, sub_status, chinese_title, poster_path, year, provider_ids, origin_lang, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            path = excluded.path,
@@ -412,6 +423,7 @@ export class LibraryRepo {
            poster_path = COALESCE(excluded.poster_path, poster_path),
            year = excluded.year,
            provider_ids = excluded.provider_ids,
+           origin_lang = COALESCE(excluded.origin_lang, origin_lang),
            updated_at = excluded.updated_at
          WHERE name != excluded.name
             OR path != excluded.path
@@ -419,7 +431,8 @@ export class LibraryRepo {
             OR (excluded.chinese_title IS NOT NULL AND chinese_title IS NOT excluded.chinese_title)
             OR (excluded.poster_path IS NOT NULL AND poster_path IS NOT excluded.poster_path)
             OR year IS NOT excluded.year
-            OR provider_ids IS NOT excluded.provider_ids`
+            OR provider_ids IS NOT excluded.provider_ids
+            OR (excluded.origin_lang IS NOT NULL AND origin_lang IS NOT excluded.origin_lang)`
       )
       .run(
         params.id,
@@ -430,6 +443,7 @@ export class LibraryRepo {
         posterPath,
         params.year ?? null,
         params.providerIds ?? null,
+        originLang,
         now
       )
   }

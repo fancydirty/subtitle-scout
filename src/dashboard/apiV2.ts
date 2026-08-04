@@ -14,6 +14,9 @@ import { traceBus, type TraceEvent } from '../core/traceBus.js'
 // （旧值 'self-scan-trigger' 已在去 Jellyfin 化 T4 改名为 INGEST_ORCHESTRATE_SERIES_ID=
 // 'ingest-trigger'——注释里继续写旧值会误导读者去 grep 一个早已不存在的字符串）。
 import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
+// Plan B Task 1: originLang + nativeAudio 计算依赖
+import { langOf } from '../agent/languages.js'
+import { resolveTargetLanguages } from '../cli/targetLanguages.js'
 
 // ---- Library (海报墙) ----
 
@@ -47,6 +50,10 @@ export interface LibraryItemDTO {
   section: string
   coverage: CoverageDTO
   job: LibraryJobDTO | null
+  /** Plan B Task 1: TMDB original_language（series.origin_lang / movies.origin_lang），未富化为 null */
+  originLang: string | null
+  /** Plan B Task 1: 本土音轨判定——originLang 非空且经 langOf 规范化后命中 originSkipLanguages */
+  nativeAudio: boolean
 }
 
 interface SeriesRow {
@@ -58,6 +65,8 @@ interface SeriesRow {
   /** 验收修复轮一 Task V1（design §A，schema v13）：TMDB genre id 的 JSON 数组字符串；
    *  NULL=尚未富化。sectionForItem 据此判"动漫 vs 剧集"。 */
   genres: string | null
+  /** Plan B Task 1: TMDB original_language（schema v14），未富化为 null */
+  origin_lang: string | null
 }
 interface MovieRow extends SeriesRow {
   path: string
@@ -172,9 +181,13 @@ export function sectionForItem(
 
 /** 库视图：series（按剧聚合集数）+ movies（单行），各带覆盖聚合与最新 job。 */
 export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
+  // Plan B Task 1: 计算 originSkipLanguages（复用 resolveTargetLanguages 逻辑）
+  const settingsRepo = new SettingsRepo(db)
+  const { originSkipLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
+
   const seriesRows = db
     .prepare(
-      `SELECT id, name, chinese_title, year, poster_path, genres FROM series ORDER BY name ASC`
+      `SELECT id, name, chinese_title, year, poster_path, genres, origin_lang FROM series ORDER BY name ASC`
     )
     .all() as SeriesRow[]
 
@@ -227,7 +240,7 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
 
   const movieRows = db
     .prepare(
-      `SELECT id, name, chinese_title, year, poster_path, path, sub_status FROM movies ORDER BY name ASC`
+      `SELECT id, name, chinese_title, year, poster_path, path, sub_status, origin_lang FROM movies ORDER BY name ASC`
     )
     .all() as MovieRow[]
 
@@ -276,6 +289,8 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
     section: sectionForItem('series', s.genres, pathBySeriesId.get(s.id) ?? '', rootDepth),
     coverage: coverageBySeriesId.get(s.id) ?? emptyCoverage(),
     job: jobBySeriesId.get(s.id) ?? null,
+    originLang: s.origin_lang,
+    nativeAudio: s.origin_lang != null && originSkipLanguages.includes(langOf(s.origin_lang)),
   }))
 
   // movie 的最新 job：同理双源。makeDispatchFindSubtitleTaskTool → upsertWorkerTask 把
@@ -313,6 +328,8 @@ export function buildLibrary(db: ScoutDb): LibraryItemDTO[] {
       section: sectionForItem('movie', null, m.path, rootDepth),
       coverage,
       job: jobByMovieId.get(m.id) ?? null,
+      originLang: m.origin_lang,
+      nativeAudio: m.origin_lang != null && originSkipLanguages.includes(langOf(m.origin_lang)),
     }
   })
 

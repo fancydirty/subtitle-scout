@@ -13,6 +13,7 @@ import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 const libItem: LibraryItemDTO = {
   id: 's1', kind: 'series', name: 'A', chineseTitle: null, year: null, posterPath: null, section: '剧集',
   coverage: { covered: 0, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 }, job: null,
+  originLang: null, nativeAudio: false,
 }
 const seriesDetail: SeriesDetailDTO = {
   id: 's1', name: 'A', chineseTitle: null, year: null, posterPath: null, seasons: [], runs: [],

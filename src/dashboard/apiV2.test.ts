@@ -166,6 +166,35 @@ describe('buildLibrary', () => {
     expect(item.job).toBeNull()
     expect(item.coverage).toEqual({ covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
   })
+
+  // Plan B Task 1: originLang + nativeAudio 两键
+  it('series: originLang=null 未富化 → nativeAudio=false', () => {
+    const item = buildLibrary(db).find(x => x.id === 's1')!
+    expect(item.originLang).toBeNull()
+    expect(item.nativeAudio).toBe(false)
+  })
+
+  it('series: originLang=zh 且默认 TARGET_LANGUAGES=zh → nativeAudio=true', () => {
+    lib.upsertSeries({ id: 's-zh', name: 'Chinese Show', originLang: 'zh' })
+    lib.upsertEpisode({ id: 'e-zh', seriesId: 's-zh', season: 1, episode: 1, name: 'E1', path: '/media/tv/Show/e1.mkv', subStatus: 'missing' })
+    const item = buildLibrary(db).find(x => x.id === 's-zh')!
+    expect(item.originLang).toBe('zh')
+    expect(item.nativeAudio).toBe(true)
+  })
+
+  it('movie: originLang=en 且默认 TARGET_LANGUAGES=zh → nativeAudio=false（en 不在 originSkipLanguages）', () => {
+    lib.upsertMovie({ id: 'm-en', name: 'English Movie', path: '/media/movies/Movie/m.mkv', subStatus: 'missing', originLang: 'en' })
+    const item = buildLibrary(db).find(x => x.id === 'm-en')!
+    expect(item.originLang).toBe('en')
+    expect(item.nativeAudio).toBe(false)
+  })
+
+  it('movie: originLang=zh-CN（地区变体）→ langOf 规范化为 zh → nativeAudio=true', () => {
+    lib.upsertMovie({ id: 'm-zhcn', name: 'Chinese Movie', path: '/media/movies/Movie/m.mkv', subStatus: 'missing', originLang: 'zh-CN' })
+    const item = buildLibrary(db).find(x => x.id === 'm-zhcn')!
+    expect(item.originLang).toBe('zh-CN')
+    expect(item.nativeAudio).toBe(true)
+  })
 })
 
 describe('section 派生（纯函数）', () => {
