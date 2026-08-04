@@ -14,7 +14,7 @@
 // 快照回放（GET runs/:id/trace 拿事件列表，静态 TraceRows 渲染，live=false——回放≠直播，
 // 无蓝点延展）两种来源完全一致，只是 id 的取值不同（pass.id vs run.id，都是 runs 表的行 id）。
 import { useState } from 'react'
-import { useHotkeys } from '@astryxdesign/core/hooks'
+import { useHotkeys } from '../lib/useHotkeys.js'
 import { Kbd } from '@astryxdesign/core/Kbd'
 import { Switch } from '@astryxdesign/core/Switch'
 import { Text } from '@astryxdesign/core/Text'
