@@ -335,22 +335,97 @@ export async function buildCompareDTO(
   }
 }
 
-// ---- 波形峰值（第三轨的实际数据）留到下一个任务 ----
-//
-// 本端点只回报 `waveformAvailable` 这个布尔值，不带峰值数组。拆开的理由是响应形状：
-// 峰值是一个大数组（或二进制），跟这份 JSON 混在一起会让一个"画图元数据"请求的体积
-// 随视频长度线性膨胀，且无法单独缓存/单独失败。它需要自己的端点。
-//
-// 已实测的数字，供下一个任务定超时与预期（同一台机器、同一条命令）：
-//
-//   局域网 cifs（23.7 分钟文件，整轨）：
-//     ffmpeg -i F -map 0:a:0 -ac 1 -ar 100 -f s16le -
-//     → 8 秒，产出 284KB
-//     （-ar 100 = 每秒 100 个采样点，正是画波形要的分辨率；不需要原始采样率）
-//
-//   云盘 fuse.rclone（只抽 60 秒音频）：
-//     → >120 秒，超时掐断
-//
-// 所以下一个任务的形状大致是：cloud 直接拒（本端点的 waveformAvailable 已经让前端
-// 不会发这个请求，但端点自己仍要有门——前端不可信）；lan/local 走整轨抽取，
-// 超时按"8 秒实测 + 几倍余量"取，不要按云盘那个数字取。
+// ---- 波形峰值抽取（第三轨的实际数据）----
+
+/**
+ * 波形峰值结果：itemId + 峰值数组 + 采样率 + 时长。
+ *
+ * `peaks` 是归一化的振幅（0..1），每秒 `sampleRate` 个点。前端用它画声音轨的包络线。
+ */
+export interface WaveformPeaksResult {
+  itemId: string
+  peaks: number[]
+  sampleRate: number
+  durationMs: number
+}
+
+/**
+ * extractWaveformPeaks 的注入依赖。
+ *
+ * 与 SubtitleCompareDeps 部分重叠（classifyPath / resolveDurationMs 两者都要），但**不继承**：
+ * 这个函数是独立端点，可以单独测、单独注入。让它依赖 SubtitleCompareDeps 会强制调用方
+ * 构造那边的全部七个字段（包括 loadCues / findReference 这些波形压根不需要的）。
+ */
+export interface ExtractPeaksDeps {
+  /** spawn ffmpeg 抽音频。返回 Buffer（s16le 二进制）或 null（失败）。 */
+  spawn: (args: readonly string[]) => Promise<Buffer | null>
+  /** 判存储类型。默认接 classifyPath。 */
+  classifyPath: (path: string) => MountKind
+  /** 探时长。默认接同名函数（依赖 probeDuration，本模块已有）。 */
+  resolveDurationMs: (videoPath: string, tracks: readonly (readonly CompareBlock[])[]) => Promise<number>
+}
+
+/**
+ * 抽取视频音频轨的波形峰值。
+ *
+ * ## cloud 拒绝（403）
+ *
+ * 与 buildCompareDTO 里的 `waveformAvailable` 同一个判断：云盘上抽波形要 >120 秒（实测），
+ * 不可用。但这里**必须有自己的门**——前端不可信，`waveformAvailable: false` 不能阻止前端
+ * 发这个请求（可能是恶意的，也可能是版本不匹配）。
+ *
+ * ## lan/local 抽取
+ *
+ * ffmpeg -i <path> -map 0:a:0 -ac 1 -ar 100 -f s16le -
+ *   -map 0:a:0   第一条音轨（多音轨文件常见，我们只要第一条）
+ *   -ac 1        混成单声道（立体声的左右声道对画波形没意义，混成一条减半数据量）
+ *   -ar 100      重采样到每秒 100 个点（原始采样率 44.1k/48k 对画包络线是浪费）
+ *   -f s16le     输出格式：signed 16-bit little-endian PCM
+ *
+ * s16le Buffer → Int16Array → 归一化到 0..1（取绝对值 / 32767）保留 3 位小数。
+ * 为什么归一化而不是原始 PCM：前端要的是"这段声音有多响"，不是具体采样值。
+ * 归一化让前端直接用它做 SVG 路径的 y 坐标（`height * (1 - peak)`），不需要再做一遍范围映射。
+ *
+ * ## 实测数字（见文件头）
+ *
+ * 局域网 cifs（23.7 分钟文件）：8 秒，产出 284KB。
+ * 云盘 fuse.rclone：>120 秒，超时。
+ *
+ * 所以调用方的超时应该按"8 秒实测 + 几倍余量"取（比如 30~60 秒），不要按云盘数字取。
+ */
+export async function extractWaveformPeaks(
+  deps: ExtractPeaksDeps,
+  itemId: string,
+  videoPath: string,
+): Promise<WaveformPeaksResult> {
+  const kind = deps.classifyPath(videoPath)
+  if (kind === 'cloud') {
+    throw new Error('waveform is not available for cloud-mounted media')
+  }
+
+  const SAMPLE_RATE = 100
+  const args = [
+    '-nostdin', '-v', 'error',
+    '-i', videoPath,
+    '-map', '0:a:0',
+    '-ac', '1',
+    '-ar', String(SAMPLE_RATE),
+    '-f', 's16le',
+    'pipe:1',
+  ] as const
+
+  const buf = await deps.spawn(args)
+  if (buf === null) {
+    throw new Error('ffmpeg failed to extract audio')
+  }
+
+  // s16le: 每个采样点是 2 字节的有符号 16 位整数
+  const samples = new Int16Array(buf.buffer, buf.byteOffset, buf.length / 2)
+  // 归一化到 0..1：取绝对值（振幅不分正负）/ 32767（int16 最大值），保留 3 位小数
+  const peaks = Array.from(samples, (s) => Math.round((Math.abs(s) / 32767) * 1000) / 1000)
+
+  // 时长从视频探测，不从音频长度推算：音频可能比视频短（片尾无声）或长（隐藏轨）
+  const durationMs = await deps.resolveDurationMs(videoPath, [])
+
+  return { itemId, peaks, sampleRate: SAMPLE_RATE, durationMs }
+}

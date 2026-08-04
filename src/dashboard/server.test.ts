@@ -183,6 +183,12 @@ describe('startDashboard (v2)', () => {
     expect((await fetch(`${base}/api/v2/library?token=s3cret`)).status).toBe(200)
   })
 
+  it('GET /api/v2/subtitle/waveform-peaks without token → 401', async () => {
+    const { base } = await start(distWith('<!doctype html>'), 's3cret')
+    const res = await fetch(`${base}/api/v2/subtitle/waveform-peaks?itemId=e1`)
+    expect(res.status).toBe(401)
+  })
+
   describe('park 救援页 (去 Jellyfin 化 P6)', () => {
     it('GET /api/parked lists parked_paths', async () => {
       const lib = new LibraryRepo(db)

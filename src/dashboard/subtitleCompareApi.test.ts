@@ -8,7 +8,7 @@ import type { MountKind } from '../core/mountKind.js'
 import type { ReferenceSource } from '../subtitleVerify/referenceSource.js'
 import {
   buildCompareDTO, resolveDurationMs, MAX_CUE_TEXT_CHARS, diagnoseRow, isFixable,
-  type SubtitleCompareDeps, type SubtitleCompareDTO,
+  type SubtitleCompareDeps, type SubtitleCompareDTO, extractWaveformPeaks, type ExtractPeaksDeps,
 } from './subtitleCompareApi.js'
 
 const NOW = 1_700_000_000_000
@@ -570,5 +570,69 @@ describe('diagnoseRow：单行结论 → 四档判读', () => {
     expect((await dtoOf(makeDeps().deps)).fixable).toBe(false)
     seedVerdict('e1', 'shifted')
     expect((await dtoOf(makeDeps().deps)).fixable).toBe(true)
+  })
+})
+
+describe('extractWaveformPeaks', () => {
+  function makePeaksDeps(over?: Partial<ExtractPeaksDeps>): ExtractPeaksDeps {
+    return {
+      spawn: async () => {
+        // 模拟 ffmpeg 输出：4 个采样点的 s16le 二进制（Int16Array）
+        const samples = new Int16Array([0, 16383, -32767, 8191])
+        return Buffer.from(samples.buffer)
+      },
+      classifyPath: () => 'lan',
+      resolveDurationMs: async () => 1424_000,
+      ...over,
+    }
+  }
+
+  it('cloud 路径拒绝（throw 错误消息）', async () => {
+    const deps = makePeaksDeps({ classifyPath: () => 'cloud' })
+    await expect(extractWaveformPeaks(deps, 'e1', VIDEO)).rejects.toThrow('waveform is not available for cloud-mounted media')
+  })
+
+  it('lan 路径正常抽取：spawn ffmpeg + 归一化 + 返回结构', async () => {
+    const calls: string[][] = []
+    const deps = makePeaksDeps({
+      classifyPath: () => 'lan',
+      spawn: async (args) => {
+        calls.push([...args])
+        const samples = new Int16Array([0, 16383, -32767, 8191])
+        return Buffer.from(samples.buffer)
+      },
+    })
+    const result = await extractWaveformPeaks(deps, 'e1', VIDEO)
+    expect(result.itemId).toBe('e1')
+    expect(result.sampleRate).toBe(100)
+    expect(result.durationMs).toBe(1424_000)
+    // 归一化检查：0 → 0, 16383/32767 ≈ 0.5, 32767/32767 = 1, 8191/32767 ≈ 0.25
+    expect(result.peaks).toHaveLength(4)
+    expect(result.peaks[0]).toBe(0)
+    expect(result.peaks[1]).toBeCloseTo(0.5, 1)
+    expect(result.peaks[2]).toBe(1)
+    expect(result.peaks[3]).toBeCloseTo(0.25, 1)
+    // 检查 spawn 调用参数
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain('-map')
+    expect(calls[0]).toContain('0:a:0')
+    expect(calls[0]).toContain('-ar')
+    expect(calls[0]).toContain('100')
+  })
+
+  it('全零音轨（静音）→ 全零峰值数组', async () => {
+    const deps = makePeaksDeps({
+      spawn: async () => {
+        const samples = new Int16Array([0, 0, 0, 0])
+        return Buffer.from(samples.buffer)
+      },
+    })
+    const result = await extractWaveformPeaks(deps, 'e1', VIDEO)
+    expect(result.peaks).toEqual([0, 0, 0, 0])
+  })
+
+  it('ffmpeg 失败（spawn 返回 null）→ throw 错误', async () => {
+    const deps = makePeaksDeps({ spawn: async () => null })
+    await expect(extractWaveformPeaks(deps, 'e1', VIDEO)).rejects.toThrow('ffmpeg failed to extract audio')
   })
 })

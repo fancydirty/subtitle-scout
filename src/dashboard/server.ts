@@ -4,6 +4,8 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join, normalize, extname, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { URL } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
@@ -25,7 +27,7 @@ import {
   type SubtitleWriteDeps,
 } from './subtitleVerifyApi.js'
 import {
-  buildCompareDTO, type SubtitleCompareDeps,
+  buildCompareDTO, type SubtitleCompareDeps, extractWaveformPeaks, type ExtractPeaksDeps,
 } from './subtitleCompareApi.js'
 import { findReferenceSource } from '../subtitleVerify/referenceSource.js'
 import { readSubtitleText, parseCues, hashSubtitleContent } from '../subtitleVerify/subtitleSpans.js'
@@ -763,6 +765,69 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = await buildCompareDTO(compareDeps, itemId)
         res.writeHead(result.ok ? 200 : result.status, JSON_CT)
         res.end(JSON.stringify(result.ok ? result.dto : { error: result.error }))
+        return
+      }
+
+      // GET /api/v2/subtitle/waveform-peaks——对照图第三轨（音频波形）的实际数据。
+      // 拆开的理由见 subtitleCompareApi.ts 文件尾注释：峰值数组大（23.7 分钟 → 284KB），
+      // 跟元数据混在一起会让画图请求的体积随视频长度线性膨胀、且无法单独缓存/单独失败。
+      // **异步**（spawn ffmpeg 抽音频，局域网实测 8 秒）故走这里。形状同 compare。
+      if (rawPath === '/api/v2/subtitle/waveform-peaks') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const itemId = (url.searchParams.get('itemId') ?? '').trim()
+        if (itemId === '') {
+          res.writeHead(400, JSON_CT)
+          res.end(JSON.stringify({ error: 'itemId query param is required' }))
+          return
+        }
+        // 查找 item（episodes / movies 两表共用 item_id 空间）
+        const item = lib.getEpisode(itemId) ?? lib.getMovie(itemId)
+        if (item === null) {
+          res.writeHead(404, JSON_CT)
+          res.end(JSON.stringify({ error: 'item not found' }))
+          return
+        }
+        // extractWaveformPeaks 的依赖注入：spawn 用 promisify(execFile) + encoding: 'buffer'
+        const execFileAsync = promisify(execFile)
+        const peaksDeps: ExtractPeaksDeps = {
+          spawn: async (args) => {
+            try {
+              const { stdout } = await execFileAsync('ffmpeg', [...args], {
+                timeout: 60_000,
+                maxBuffer: 50 * 1024 * 1024,
+                encoding: 'buffer',
+              })
+              return stdout as Buffer
+            } catch {
+              return null
+            }
+          },
+          classifyPath,
+          resolveDurationMs: async (videoPath) => resolveDurationMs(
+            { probeDuration: probeDurationSec },
+            videoPath,
+            [],
+          ),
+        }
+        try {
+          const result = await extractWaveformPeaks(peaksDeps, itemId, item.path)
+          res.writeHead(200, JSON_CT)
+          res.end(JSON.stringify(result))
+        } catch (err) {
+          // cloud 路径 → 'waveform is not available for cloud-mounted media'
+          if (err instanceof Error && err.message.includes('not available for cloud')) {
+            res.writeHead(403, JSON_CT)
+            res.end(JSON.stringify({ error: err.message }))
+            return
+          }
+          // ffmpeg 失败或其他错误 → 502
+          res.writeHead(502, JSON_CT)
+          res.end(JSON.stringify({ error: 'failed to extract waveform' }))
+        }
         return
       }
 
