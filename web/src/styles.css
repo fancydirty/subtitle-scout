@@ -137,10 +137,11 @@
   width: 72px;
   height: 104px;
   flex-shrink: 0;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   overflow: hidden;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* --color-secondary（#16181f），不是 --color-accent：后者被 scout 遮蔽成柠檬绿，过渡期会刷绿。 */
+  background: var(--color-secondary);
 }
 .library-detail-header-poster img {
   width: 100%;
@@ -170,7 +171,7 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: linear-gradient(180deg, rgba(11, 12, 15, 0.35) 0%, var(--color-background-body) 82%);
+  background: linear-gradient(180deg, rgba(11, 12, 15, 0.35) 0%, var(--color-background) 82%);
 }
 .library-hero-body {
   position: relative;
