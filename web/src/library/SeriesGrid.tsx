@@ -1,12 +1,13 @@
 // web/src/library/SeriesGrid.tsx：海报墙列表页（#/library）——顶部筛选 chip 排 + 结果计数
 // （mono）+ 分区海报墙（剧集/动漫/电影/其他）。三态齐（loading/error/empty）+ 筛选后零结果
 // 单独一态（区别于"库本身是空的"）。
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Section } from '../components/ui/section.js'
 import { Segmented } from '../components/ui/segmented.js'
 import { Skeleton } from '../components/ui/skeleton.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
+import { Switch } from '../components/ui/switch.js'
 import { useLibrary } from '../api/hooks.js'
 import { useT, type TKey } from '../i18n/useT.js'
 import {
@@ -52,9 +53,19 @@ export function SeriesGrid() {
   const { t, lang } = useT()
   const [filter, setFilter] = useState<LibraryFilter>('all')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
+  const [showNative, setShowNative] = useState(() => {
+    const stored = localStorage.getItem('scout-show-native')
+    return stored !== 'false' // fail-open：非 'false' 一律视为 ON
+  })
+
+  useEffect(() => {
+    localStorage.setItem('scout-show-native', String(showNative))
+  }, [showNative])
 
   const coverageFiltered = (data ?? []).filter((it) => matchesLibraryFilter(it.coverage, filter))
-  const visible = applyKindFilter(coverageFiltered, kindFilter)
+  const kindFiltered = applyKindFilter(coverageFiltered, kindFilter)
+  const nativeFiltered = showNative ? kindFiltered : kindFiltered.filter((x) => !x.nativeAudio)
+  const visible = nativeFiltered
   const sections = groupBySection(visible)
 
   return (
@@ -73,6 +84,10 @@ export function SeriesGrid() {
             onChange={(v) => setKindFilter(v as KindFilter)}
             label="Type filter"
           />
+          <div className="flex items-center gap-2">
+            <Switch checked={showNative} onCheckedChange={setShowNative} aria-label="Show native-language titles" />
+            <span className="text-sm">Show native-language titles</span>
+          </div>
           {data ? (
             <span className="font-mono text-[13px] leading-5 text-muted-foreground">
               {formatResultCount(visible.length, lang)}
@@ -93,6 +108,11 @@ export function SeriesGrid() {
           />
         ) : data && data.length === 0 ? (
           <EmptyState title={t('library_empty_title')} description={t('library_empty_desc')} />
+        ) : visible.length === 0 && !showNative && data && data.some((x) => x.nativeAudio) ? (
+          <EmptyState
+            title="All titles are native-language"
+            description='Turn on "Show native-language titles" to see them.'
+          />
         ) : visible.length === 0 ? (
           <EmptyState title={t('library_filtered_empty_title')} description={t('library_filtered_empty_desc')} />
         ) : (

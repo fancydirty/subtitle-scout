@@ -52,6 +52,9 @@ export function PosterCard({ item }: { item: LibraryItemDTO }) {
           :234 无行夹取），标题今天自由换行。翻译成 truncate 会改成单行截断——那是新增行为。 */}
       <span className="block text-[13px] font-medium leading-5 text-foreground">{title}</span>
       <span className="block text-[11px] leading-4 text-muted-foreground">{subline}</span>
+      {item.nativeAudio && (
+        <p className="text-xs text-weak">Native audio — no subtitles needed</p>
+      )}
     </div>
   )
 
