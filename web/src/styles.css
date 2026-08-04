@@ -252,6 +252,11 @@
   font: inherit;
   text-align: left;
 }
+/* 键盘焦点环（Task 23 焦点环清扫）——原生 button 季头此前只有浏览器默认虚框。 */
+.library-season-head:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
 .library-season-chev {
   color: var(--color-weak);
   transition: transform 0.18s ease;
@@ -801,14 +806,14 @@
   gap: 8px;
   padding: 6px 8px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   min-width: 0;
 }
 .triage-excluded-file {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
