@@ -15,7 +15,8 @@
 // 不像 Library 详情那样需要 Shell 这一层协调共享——三份数据只服务 Workflow 区自己，跟 Topbar/
 // Sidebar 无关，因此整个组件收在 workflow/Lanes.tsx 内部自洽。
 //
-// dashboard-F5：Triage tab 落地为真页面（TriagePage：两箱 + 认领对话框），同 Lanes 的自洽
+// dashboard-F5：Triage tab 落地为真页面（TriagePage：四区单列收件箱 Pending/Excluded/Timing/
+// Dormant；认领已退役，见 src/v2/triageOps.ts 头注释），同 Lanes 的自洽
 // 口径——自己发 GET /api/v2/triage，跟外壳共享的只有侧栏角标（那份 parked 计数来自
 // workflow/pending，不是 triage 端点，两者的数据源不同步是可接受的：15s 轮询 vs 手动 reload）。
 import { useState } from 'react'

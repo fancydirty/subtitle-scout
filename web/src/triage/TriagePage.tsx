@@ -1,6 +1,7 @@
-// web/src/triage/TriagePage.tsx：甄别 tab 主体（dashboard-F5）——收件箱：页头 + 两箱（Pending |
-// Excluded）。四区重排（+Timing +Dormant）见 Task 23-24。数据面：GET /api/v2/triage 一次拿全 pending，
-// 翻案后手动 reload（useTriage 不轮询）。认领已退役（见 src/v2/triageOps.ts 头注释）。
+// web/src/triage/TriagePage.tsx：甄别 tab 主体（dashboard-F5）——单列收件箱：页头 + 四区竖排
+// （Pending → Excluded → Timing → Dormant，spec §5.5；后三区空则各自渲染 null，单列自然略过）。
+// 数据面：GET /api/v2/triage 一次拿全 pending，翻案后手动 reload（useTriage 不轮询）；Timing/Dormant
+// 两区组件自取数。认领已退役（见 src/v2/triageOps.ts 头注释）。
 import { Section } from '../components/ui/section.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
@@ -10,6 +11,7 @@ import { useT } from '../i18n/useT.js'
 import { PendingBox } from './PendingBox.js'
 import { ExcludedBox } from './ExcludedBox.js'
 import { TimingBox } from './TimingBox.js'
+import { DormantBox } from './DormantBox.js'
 import { groupPending } from './text.js'
 
 export function TriagePage() {
@@ -62,8 +64,9 @@ export function TriagePage() {
         <div className="triage-boxes">
           <PendingBox actionable={actionable} />
           <ExcludedBox excluded={excluded} onRestore={handleRestore} />
+          <TimingBox />
+          <DormantBox />
         </div>
-        <TimingBox />
       </div>
     </Section>
   )

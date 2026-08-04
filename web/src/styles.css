@@ -742,22 +742,16 @@
   outline-offset: 2px;
 }
 
-/* dashboard-F5（Triage tab）：两箱——原子 CSS 集中区，同上面几段一样的理由
+/* dashboard-F5（Triage tab）：四区单列收件箱——原子 CSS 集中区，同上面几段一样的理由
    （mono 路径行/箱内密集行/进度行是"组件语言表达不了"的技术级原子 UI），颜色一律读 scout.ts
    已定义的 token，不新起配色（DESIGN.md §10）。 */
 
-/* ---- 两箱布局（TriagePage）——桌面双列（中间给未来 excluded-extra 箱留的是代码位不是视觉
-   空位，见 TriagePage.tsx 头注释），窄屏单列堆叠。 ---- */
+/* ---- 四区单列收件箱（TriagePage，§5.5）——Pending → Excluded → Timing → Dormant 竖排。
+   （原两箱 1.2fr 1fr 双列已随四区升级退役。） ---- */
 .triage-boxes {
-  display: grid;
-  grid-template-columns: 1.2fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  align-items: start;
-}
-@media (max-width: 767px) {
-  .triage-boxes {
-    grid-template-columns: 1fr;
-  }
 }
 .triage-box {
   border: 1px solid var(--color-border);
