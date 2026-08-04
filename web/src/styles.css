@@ -756,25 +756,25 @@
 }
 .triage-box {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-element, 8px);
-  background: var(--color-background-card);
+  border-radius: var(--radius-control);
+  background: var(--color-card);
   padding: 14px;
   min-width: 0;
 }
 
-/* ---- 待甄别箱目录组卡（PendingBox）——组头=目录尾段 mono + 文件计数，组体=文件名只读列表
-   （Claim 按钮已随认领退役，见 src/v2/triageOps.ts 头注释）。 ---- */
+/* ---- 待甄别箱目录组卡（PendingBox）——组头=目录尾段 mono + 文件计数 + 首末行，组体=文件名
+   只读列表（Claim 按钮已随认领退役，见 src/v2/triageOps.ts 头注释）。 ---- */
 .triage-dirgroup {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 10px 12px;
   min-width: 0;
 }
 .triage-dirgroup-tail {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -788,7 +788,7 @@
 .triage-dirgroup-file {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -819,14 +819,14 @@
 /* 改名指引——箱底常驻灰字一条；路径形状本身 mono（技术值，DESIGN.md §3）。 */
 .triage-naming-hint {
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   padding-top: 8px;
   border-top: 1px solid var(--color-border);
 }
 .triage-naming-hint-code {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 
 /* "+N more" 折叠展开按钮（PendingBox 组卡文件列表用；类名的 dialog 前缀是历史遗留——它
@@ -839,13 +839,14 @@
   cursor: pointer;
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .triage-dialog-more:hover {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .triage-dialog-more:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：--color-accent 被 scout 遮蔽成柠檬绿，过渡期焦点环变绿、卸载后与背景同调。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 

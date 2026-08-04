@@ -14,6 +14,21 @@ import { I18nProvider } from '../i18n/useT.js'
 import { TriagePage } from './TriagePage.js'
 import type { TriageDTO } from '../api/types.js'
 
+// CSS 断言走 vitest.config.ts:21 的 define 编译期替换（同 Task 19-21 各测试文件的既有底座）。
+// 本屏读 CSS 是因为 .triage-box/.triage-dirgroup 底色与 "+N more" 焦点环踩在跨栈撞车上
+// （--color-accent 被 scout 遮蔽成柠檬绿），只看 DOM 改错了也全绿。
+declare const __STYLES_CSS__: string
+const CSS = __STYLES_CSS__
+
+function cssDecl(selector: string, prop: string): string | null {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = new RegExp(`${esc}\\s*\\{([^}]*)\\}`).exec(CSS)?.[1]
+  if (!block) return null
+  const bare = block.replace(/\/\*[\s\S]*?\*\//g, '')
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(bare)
+  return m ? m[1]!.trim() : null
+}
+
 const NOW = Date.now()
 
 function requestInfo(input: RequestInfo | URL): { path: string; url: string } {
@@ -128,5 +143,18 @@ describe('TriagePage：目录分组渲染', () => {
     vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: EMPTY_TRIAGE }]))
     renderPage()
     expect(await screen.findByText('Every file found its identifier')).toBeInTheDocument()
+  })
+})
+
+// ── CSS 侧迁移锁（Task 22）
+describe('TriagePage / Pending 区：CSS 侧迁移锁', () => {
+  it('箱底/组底走新栈 token（card/secondary），不是被 scout 遮蔽的 --color-accent', () => {
+    expect(cssDecl('.triage-box', 'background')).toBe('var(--color-card)')
+    expect(cssDecl('.triage-dirgroup', 'background')).toBe('var(--color-secondary)')
+    expect(cssDecl('.triage-box', 'border-radius')).toBe('var(--radius-control)')
+  })
+  it('"+N more" 折叠钮焦点环走 --color-ring（不是过渡期变绿的 --color-accent）', () => {
+    expect(cssDecl('.triage-dialog-more:focus-visible', 'outline')).toBe('2px solid var(--color-ring)')
+    expect(cssDecl('.triage-dirgroup-tail', 'color')).toBe('var(--color-foreground)')
   })
 })
