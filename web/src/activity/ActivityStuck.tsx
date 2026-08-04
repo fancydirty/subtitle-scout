@@ -80,11 +80,12 @@ import { formatRetryIn } from './text.js'
  *
  *  为什么 title/posterPath/backdropPath 是**外部补的**而不是从 held 里读：held 只有
  *  `itemId`（own-id，形如 `tmdb:1396/s12e04`——一个技术标识符，铁律③不许直接上界面）。
- *  剧名与海报要靠 jobId 去 `recent[]` 里对上那一行才拿得到（ActivityFeed.tsx:153 的既有手法：
- *  `recent.find((r) => r.jobId === h.jobId)`）。那次 join 是接线层的事，本组件不做数据查找。 */
+ *  剧名与海报现在由后端 held DTO 自带（apiV2.ts 的那处 LEFT JOIN，ActivityPage 透传）——
+ *  早年按 jobId 去 recent[] 反查的 join 已退役：recent 是 20 条滑动窗口，held 停留天级，
+ *  join 会过期（详见 ActivityPage.tsx 的 held → StuckItem 段）。本组件不做数据查找。 */
 export interface StuckItem {
   held: WorkflowHeldJobDTO
-  /** 剧名/片名。接线层从 recent[] join 得到；查无时它会传 null。 */
+  /** 剧名/片名。后端 held DTO 自带（LEFT JOIN 富化）；查无时接线层传 null。 */
   title: string | null
   posterPath: string | null
   backdropPath: string | null

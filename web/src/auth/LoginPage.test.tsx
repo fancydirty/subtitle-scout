@@ -55,3 +55,11 @@ describe('LoginPage（鉴权 A2 Task 10+10′）', () => {
     expect(screen.getByText(/subtitle-scout auth reset/)).toBeInTheDocument()
   })
 })
+
+// ── 迁移锁（Astryx → shadcn，Plan C Task 30）────────────────────────────────
+describe('LoginPage：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', () => {
+    wrap()
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

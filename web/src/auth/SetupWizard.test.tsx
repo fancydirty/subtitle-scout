@@ -69,11 +69,12 @@ describe('SetupWizard（鉴权 A2 Task 9+9′：首启向导，单屏建管理�
     fireEvent.change(screen.getByLabelText(/confirm|确认/i), { target: { value: 'hunter2222!!' } })
     fireEvent.click(screen.getByRole('button', { name: /create account|创建账号/i }))
     const cont = await screen.findByRole('button', { name: /continue to dashboard|进入仪表盘/i })
-    expect(cont.getAttribute('data-variant')).not.toBe('primary') // 复制前 Continue 非 primary
+    // shadcn Button 不写 data-variant（Astryx 才写）——改锁 cva 类名：复制前 Continue 是 secondary 面
+    expect(cont).toHaveClass('bg-secondary')
     fireEvent.click(screen.getByRole('button', { name: /^copy$|^复制$/i }))
     await screen.findByRole('button', { name: /copied|已复制/i })
-    // 复制后 Continue 成为 primary
-    expect(screen.getByRole('button', { name: /continue to dashboard|进入仪表盘/i }).getAttribute('data-variant')).toBe('primary')
+    // 复制后 Continue 升为 primary 面
+    expect(screen.getByRole('button', { name: /continue to dashboard|进入仪表盘/i })).toHaveClass('bg-primary')
   })
 
   it('服务端 400（密码太短等）→ 错误行内展示', async () => {
@@ -84,5 +85,13 @@ describe('SetupWizard（鉴权 A2 Task 9+9′：首启向导，单屏建管理�
     fireEvent.change(screen.getByLabelText(/confirm|确认/i), { target: { value: 'shortpw1234' } })
     fireEvent.click(screen.getByRole('button', { name: /create account|创建账号/i }))
     await screen.findByText(/at least 10/i)
+  })
+})
+
+// ── 迁移锁（Astryx → shadcn，Plan C Task 30）────────────────────────────────
+describe('SetupWizard：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', () => {
+    renderWizard()
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
   })
 })

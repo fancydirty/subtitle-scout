@@ -1,6 +1,6 @@
 // web/src/workflow/text.ts：Workflow 区的动态文案组装——纯函数，全部英文（DESIGN.md §7：
 // Workflow 区永不本地化），带运行期数字/技术枚举值的拼句故意不进 i18n 表（同 time.ts 的既有
-// 理由），集中收纳供 PendingLane/ActivityFeed/RunDetail 共用同一份口径，避免多处各拼一套措辞。
+// 理由），集中收纳供 RerunDialog/TraceRows/RunDetail 共用同一份口径，避免多处各拼一套措辞。
 import type { DispatchReceiptsDTO, WorkflowRecentRunDTO } from '../api/types.js'
 import type { TKey } from '../i18n/useT.js'
 import { formatNextRecheck } from './time.js'
@@ -54,7 +54,8 @@ export function decisionVariant(decision: string | null): DecisionVariant {
 
 /** recent 完成行流：输入按 finished_at 降序，连续且 jobId 相同且 decision 相同的行折叠为
  *  一条（row=最新那条，count=折叠数量）；不同 jobId/decision 交错时不跨段折叠。
- *  ActivityFeed 用它把同一任务连续失败重试刷屏的 N 行压成一条 ×N 角标。 */
+ *  原消费方是 ActivityFeed（把同一任务连续失败重试刷屏的 N 行压成一条 ×N 角标）——它随活动页
+ *  重建在 2bb6d10 退役，本函数暂留且有测试钉着；删除是独立清理，不与注释刷新同改。 */
 export function collapseRecentRuns(
   rows: WorkflowRecentRunDTO[],
 ): { row: WorkflowRecentRunDTO; count: number }[] {

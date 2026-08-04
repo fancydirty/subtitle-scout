@@ -115,10 +115,9 @@ export const en = {
   // 同 shell/freshness.ts 的既有先例：那些是技术读数，天生不需要翻译，也用不上 t() 不支持的
   // 插值。这里只收静态、不带运行期数据的 UI 文案（泳道头/空态/对话框/按钮）。
 
-  // 验收修复轮一 Task V4（design §B）：三泳道→两列重排，Gaps | Activity。workflow_lane_pending
-  // 键名不变（PendingLane 组件/测试仍叫 pending），显示文案改"Gaps"——泳道标题改名，不是重命名
-  // 概念。workflow_lane_passes/workflow_lane_workers 随三泳道布局一起废弃（Passes/Workers 折进
-  // ActivityFeed，不再各自有一条独立泳道标题）。
+  // 三泳道→两列（Gaps | Activity）的重排已随活动页重建整体退役（泳道组件与 ActivityFeed
+  // 在 2bb6d10 删除，workflow_lane_* 键同亡）。Rerun 一族键的现存消费方是 workflow/ 下的
+  // RunDetail（发起）与 RerunDialog（确认+回执）。
   workflow_pending_rerun_label: 'Rerun',
   // Orchestrator log 折叠区（design §B）：原三泳道之一的 Passes，现降级为 Activity 列底部默认
   // 收起的 Collapsible——回执 chip 只在展开后可见，工程师内容零删除。

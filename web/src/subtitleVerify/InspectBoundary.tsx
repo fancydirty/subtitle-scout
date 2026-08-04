@@ -24,8 +24,12 @@
 // 错误详情走 console.error（开发时看得到、生产时不打扰用户），**不渲染到界面上**：
 // 铁律②③——堆栈里全是模块名与内部字段，对用户毫无意义。
 import { Component, type ErrorInfo, type ReactNode } from 'react'
-import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog'
-import { Text } from '@astryxdesign/core/Text'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog.js'
 import { useT } from '../i18n/useT.js'
 
 interface Props {
@@ -61,20 +65,28 @@ export class InspectBoundary extends Component<Props, State> {
 }
 
 /** 降级态：一句人话 + 一个关闭按钮。**仍然是个 Dialog**——面板是用户主动打开的，
- *  抛错时直接什么都不显示会像"点了没反应"，他只会再点一次、再抛一次。 */
+ *  抛错时直接什么都不显示会像"点了没反应"，他只会再点一次、再抛一次。
+ *  Task 30 换栈：Astryx Dialog → dialog.tsx（Radix，portal 挂 body——本条路径的测试断言
+ *  全走 document.querySelector/screen，与容器作用域无关，portal 安全；同族的 InspectPanel
+ *  不能走这条路的原因见它的文件头）。⚠️ sm:max-w-none 必须带：dialog.tsx 自带 sm:max-w-lg，
+ *  twMerge 的 variant 组独立合并，裸 max-w-none 清不掉它。 */
 function InspectFallback({ title, onClose }: { title: string; onClose: () => void }) {
   const { t } = useT()
   return (
-    <Dialog isOpen onOpenChange={(o) => { if (!o) onClose() }} width="min(520px, 92vw)">
-      <DialogHeader title={title} onOpenChange={(o) => { if (!o) onClose() }} />
-      <div className="vinspect" data-testid="vinspect-failed">
-        <Text type="body" color="secondary">{t('verify_inspect_failed')}</Text>
-        <div className="vinspect-btns">
-          <button type="button" className="vinspect-btn vinspect-btn-keep" onClick={onClose}>
-            {t('verify_got_it')}
-          </button>
+    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="w-[min(520px,92vw)] max-w-none sm:max-w-none">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="vinspect" data-testid="vinspect-failed">
+          <span className="text-[13px] leading-5 text-muted-foreground">{t('verify_inspect_failed')}</span>
+          <div className="vinspect-btns">
+            <button type="button" className="vinspect-btn vinspect-btn-keep" onClick={onClose}>
+              {t('verify_got_it')}
+            </button>
+          </div>
         </div>
-      </div>
+      </DialogContent>
     </Dialog>
   )
 }

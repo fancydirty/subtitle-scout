@@ -70,7 +70,7 @@
    跟上面 .cmdk-trigger 同一个理由：这几处是"组件语言表达不了"的原子级 UI（格阵网格、
    海报卡 hover 发丝线抬升、EpisodeCell 的 5px 语义点 + 斜体、固定右侧板），Card/
    ClickableCard/Text 都没留 xstyle 之外的样式逃生口（项目没装 @stylexjs/stylex 编译插件，
-   xstyle prop 本身也用不了），颜色一律读 scout.ts 已定义的 token，不新起配色
+   xstyle prop 本身也用不了），颜色/字族一律读 tw.css @theme 新栈 token，不新起配色
    （DESIGN.md §10）。 */
 
 /* ---- 海报卡（SeriesGrid / PosterCard）---- */
@@ -334,7 +334,7 @@
   background: color-mix(in srgb, var(--color-fn-red) 6%, transparent);
 }
 .ep-num {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
   color: var(--color-muted-foreground);
 }
@@ -396,13 +396,14 @@
   border: 1px dashed var(--color-faint);
 }
 
-/* dashboard-F4（Workflow tab）：两列（Gaps | Activity，验收修复轮一 Task V4 design §B 叙事化
-   重排，原三泳道 Pending/Passes/Workers 收拢——Passes/Workers 折进右列 ActivityFeed 一个组件）
-   + Inngest 式痕迹行——原子 CSS 集中区，同上面几段一样的理由（密集技术网格/hover 揭示工具条，
-   组件语言表达不了）。颜色一律读 scout.ts 已定义的 token；蓝点/延展动画例外——DESIGN.md §5
-   明确把"active（在跑行的蓝点延展）"列为动效 allowlist 里唯一带颜色语义的一条，scout.ts 的
-   色表（§2）本身没有蓝，用的是 Astryx 基础主题自带的 --color-icon-blue（未被 scout.ts 覆盖，
-   见该文件），不是新起一个硬编码色值，也没有碰 scout.ts。 */
+/* dashboard-F4（Workflow 一族）：原子 CSS 集中区，同上面几段一样的理由（密集技术网格/hover
+   揭示工具条，组件语言表达不了）。泳道一族（Pending/Passes/Workers → 两列 Gaps|Activity 的
+   ActivityFeed）已随活动页重建退役（ActivityFeed.tsx 在 2bb6d10 删除），段内仍在服役的是
+   TraceRows/RunDetail 消费的 .wf-trace-* / .wf-rundetail-* / .wf-chip*；其余死类的删除是
+   独立清理，不混进 token 迁移。颜色一律读 tw.css @theme 新栈 token；蓝点/延展动画例外——
+   DESIGN.md §5 明确把"active（在跑行的蓝点延展）"列为动效 allowlist 里唯一带颜色语义的
+   一条，新栈色表（spec §5.1）本身没有蓝，用的是 tw.css 缺口区的 --color-fn-blue（#2694FE，
+   逐值取自 Astryx 基础主题 --color-icon-blue 暗色档，scout 未遮蔽），不是新起硬编码色值。 */
 
 /* ---- 两列 grid（Lanes）：窄列 Gaps | 宽列 Activity ---- */
 .wf-lanes {
@@ -418,11 +419,11 @@
   min-width: 0;
 }
 .wf-lane-heading {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 
 /* ---- Pending 泳道行 ---- */
@@ -438,8 +439,8 @@
 }
 .wf-pending-row {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
@@ -453,22 +454,22 @@
 }
 .wf-pending-row-title {
   font-size: 12.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   font-weight: 500;
 }
 .wf-pending-row-badge {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   flex-shrink: 0;
 }
 .wf-pending-row-throttled {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 /* 排队/中性=灰铁律（DESIGN.md §2）——throttled 是"停牌"不是"警报"，圆点固定读中性灰 token，
    不是黄不是蓝不是红。 */
@@ -476,25 +477,25 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-text-gray);
+  background: var(--color-weak);
   flex-shrink: 0;
 }
 .wf-pending-row-reason {
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* R2D-4：甄别计数入口——mono 灰事实句（不是按钮不是 CTA，不占 accent 预算），hover 才升半档。 */
 .wf-parked-note a {
-  font-family: var(--font-family-code);
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   text-decoration: none;
 }
 .wf-parked-note a:hover {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 /* Rerun 工具条（Switch + Button）——hover/focus-within 才揭示（DESIGN 任务规格："Pending 泳道
    每 series 行 hover 出 Rerun"），键盘用户 Tab 进开关/按钮时 focus-within 同样揭示，不靠
@@ -518,8 +519,8 @@
   width: 100%;
   text-align: left;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
   cursor: pointer;
   font: inherit;
@@ -530,20 +531,21 @@
   border-color: rgba(255, 255, 255, 0.14);
 }
 .wf-pass-card:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring（紫焦点环），不是 --color-accent：后者被 scout.css:86 遮蔽成柠檬绿。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .wf-pass-time {
   display: block;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .wf-pass-detail {
   display: block;
   margin-top: 3px;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -555,10 +557,10 @@
   margin-top: 6px;
 }
 .wf-chip {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
-  background: var(--color-background-body);
+  color: var(--color-weak);
+  background: var(--color-background);
   border: 1px solid var(--color-border);
   border-radius: 999px;
   padding: 1px 7px;
@@ -567,8 +569,8 @@
 /* ---- Now working 卡（design §B：原 WorkerCard 的替身，人话卡头 + phraseMode 直播）---- */
 .wf-now-card {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
 }
 .wf-now-header {
@@ -580,20 +582,20 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--color-icon-blue);
+  background: var(--color-fn-blue);
   flex-shrink: 0;
 }
 .wf-now-title {
   font-size: 12.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   font-weight: 500;
   flex: 1;
   min-width: 0;
 }
 .wf-now-elapsed {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 
@@ -608,16 +610,16 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.8;
 }
 .wf-trace-tool {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   flex-shrink: 0;
 }
 .wf-trace-args {
-  color: var(--color-text-disabled);
+  color: var(--color-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -625,7 +627,7 @@
   min-width: 0;
 }
 .wf-trace-took {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -638,14 +640,14 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-icon-blue);
+  background: var(--color-fn-blue);
   animation: wf-pulse 1.2s ease-in-out infinite;
 }
 .wf-trace-active-bar {
   margin-left: 6px;
   height: 1px;
   flex: 1;
-  background: linear-gradient(90deg, var(--color-icon-blue), transparent);
+  background: linear-gradient(90deg, var(--color-fn-blue), transparent);
   animation: wf-extend 1.6s ease-in-out infinite;
   transform-origin: left;
 }
@@ -677,7 +679,7 @@
   padding: 4px 6px;
   width: 100%;
   border: none;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   background: none;
   text-align: left;
   font: inherit;
@@ -689,11 +691,12 @@
   background: rgba(255, 255, 255, 0.04);
 }
 .wf-activity-row:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：同 .wf-pass-card 的理由。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .wf-activity-subject {
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -702,11 +705,11 @@
   max-width: 40%;
 }
 .wf-activity-sep {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 .wf-activity-phrase {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -714,15 +717,15 @@
   min-width: 0;
 }
 .wf-activity-count {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 .wf-activity-time {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 
@@ -732,10 +735,10 @@
   align-items: center;
   gap: 7px;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .wf-quota-text {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 
 /* ---- RunDetail 右侧板——固定、不跳页不弹 modal（DESIGN.md §5/§6，同 .library-detail-panel
@@ -748,7 +751,7 @@
   width: 400px;
   max-width: 90vw;
   overflow-y: auto;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border-left: 1px solid var(--color-border);
   z-index: 20;
 }
@@ -760,19 +763,20 @@
   color: inherit;
   cursor: pointer;
   padding: 2px;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
 }
 .wf-rundetail-close:hover {
-  background: var(--color-background-surface);
+  background: var(--color-secondary);
 }
 .wf-rundetail-close:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：同 .wf-pass-card 的理由。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 
 /* dashboard-F5（Triage tab）：四区单列收件箱——原子 CSS 集中区，同上面几段一样的理由
-   （mono 路径行/箱内密集行/进度行是"组件语言表达不了"的技术级原子 UI），颜色一律读 scout.ts
-   已定义的 token，不新起配色（DESIGN.md §10）。 */
+   （mono 路径行/箱内密集行/进度行是"组件语言表达不了"的技术级原子 UI），颜色/字族一律读
+   tw.css @theme 新栈 token，不新起配色（DESIGN.md §10）。 */
 
 /* ---- 四区单列收件箱（TriagePage，§5.5）——Pending → Excluded → Timing → Dormant 竖排。
    （原两箱 1.2fr 1fr 双列已随四区升级退役。） ---- */
@@ -799,7 +803,7 @@
   min-width: 0;
 }
 .triage-dirgroup-tail {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-foreground);
   overflow: hidden;
@@ -813,7 +817,7 @@
   margin-top: 8px;
 }
 .triage-dirgroup-file {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-muted-foreground);
   overflow: hidden;
@@ -833,7 +837,7 @@
   min-width: 0;
 }
 .triage-excluded-file {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-muted-foreground);
   overflow: hidden;
@@ -851,7 +855,7 @@
   border-top: 1px solid var(--color-border);
 }
 .triage-naming-hint-code {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--color-muted-foreground);
 }
@@ -864,7 +868,7 @@
   background: transparent;
   padding: 0;
   cursor: pointer;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--color-weak);
 }
@@ -1046,15 +1050,15 @@
 
 /* ── 鉴权 A2/A3（AuthShell + auth 表单）：setup 向导 / 一次性 API key 屏 / 登录页 / Security 区。
    auth 界面是脱离常规 dashboard chrome 的独立面，输入框用原生 <input>（Astryx TextInput 不透传
-   autocomplete，而密码管理器契约不可谈判——见 design-recon）。所有配色一律读 scout.ts 已定义
-   token，不新起配色（DESIGN.md §10）。serif 全站仅此 auth-shell__title 一处。 ── */
+   autocomplete，而密码管理器契约不可谈判——见 design-recon）。所有配色一律读 tw.css @theme
+   新栈 token（Task 30 迁移），不新起配色（DESIGN.md §10）。serif 全站仅此 auth-shell__title 一处。 ── */
 .auth-shell {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: var(--color-background-body);
+  background: var(--color-background);
 }
 .auth-shell__card {
   width: 100%;
@@ -1064,11 +1068,11 @@
   gap: 16px;
 }
 .auth-shell__wordmark {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 /* 全站唯一衬线：web-safe serif 栈，绝不引 webfont。 */
 .auth-shell__title {
@@ -1077,7 +1081,7 @@
   font-weight: 500;
   line-height: 1.15;
   letter-spacing: -0.01em;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   margin: 0 0 4px;
 }
 .auth-form {
@@ -1092,7 +1096,7 @@
 }
 .auth-field__label {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .auth-field__input-wrap {
   position: relative;
@@ -1104,8 +1108,8 @@
   box-sizing: border-box;
   font-size: 13px;
   padding: 9px 11px;
-  color: var(--color-text-primary);
-  background: var(--color-background-surface);
+  color: var(--color-foreground);
+  background: var(--color-secondary);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   outline: none;
@@ -1115,14 +1119,16 @@
 .auth-field__input--pw {
   padding-right: 96px;
 }
-/* 焦点指示（审计前端 #9）：不只靠 1px 色变——加 2px 描边环（DESIGN 禁 drop-shadow，outline 允许）。 */
+/* 焦点指示（审计前端 #9）：不只靠 1px 色变——加 2px 描边环（DESIGN 禁 drop-shadow，outline 允许）。
+   Task 30：--color-accent（带 #96da26 硬编码回退）→ --color-ring——accent 被 scout.css:86 遮蔽成
+   柠檬绿，而那个硬编码回退本身就是同一个柠檬绿字面量，两处一起退役，焦点环统一走新栈紫。 */
 .auth-field__input:focus-visible {
-  border-color: var(--color-accent, #96da26);
-  outline: 2px solid var(--color-accent, #96da26);
+  border-color: var(--color-ring);
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .auth-field__input:focus {
-  border-color: var(--color-accent, #96da26);
+  border-color: var(--color-ring);
 }
 .auth-field__toggle {
   position: absolute;
@@ -1131,53 +1137,54 @@
   border: none;
   cursor: pointer;
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   padding: 2px 4px;
 }
 .auth-field__hint {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   /* 未满足态用 secondary（~7.5:1）而非 gray（~4:1，11px 下低于 AA）——这正是用户需要读的规则状态
      （审计前端 #4）。 */
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .auth-field__hint--met {
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
 }
 .auth-intro {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   margin: 0;
 }
-/* 错误行：≤6% 红染做背景，绝不大红块（DESIGN.md §5）。文字用更亮的红（#fb7185，~5:1 达 AA），
-   而不是深红 token（#e11d48 在近黑上仅 ~4.2:1，13px 下低于 AA）——背景仍用 token 的 6% 染色
-   （审计前端 #3）。 */
+/* 错误行：≤6% 红染做背景，绝不大红块（DESIGN.md §5）；背景仍用 token 的 6% 染色（审计前端 #3）。
+   Task 30 有意改值：文字色 #fb7185（近黑上 ~5:1）→ var(--color-fn-red)（#e11d48，~4.2:1，
+   13px 下略低于 AA）——消灭全仓最后一个栈外硬编码色，错误文字统一走新栈语义红 token；
+   对比度让步是已知取舍，实机核对归 Task 33。 */
 .auth-error {
   font-size: 13px;
   padding: 8px 11px;
   border-radius: 4px;
-  color: #fb7185;
-  background: color-mix(in srgb, var(--color-text-red) 6%, transparent);
+  color: var(--color-fn-red);
+  background: color-mix(in srgb, var(--color-fn-red) 6%, transparent);
 }
 .auth-forgot {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   margin: 4px 0 0;
 }
 .auth-forgot code {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
 }
 /* 一次性 API key 屏：key 全宽 mono，作屏上唯一技术物件的仪式感。 */
 .auth-apikey {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 15px;
   word-break: break-all;
   padding: 12px;
   border-radius: 4px;
-  color: var(--color-text-primary);
-  background: var(--color-background-surface);
+  color: var(--color-foreground);
+  background: var(--color-secondary);
   border: 1px solid var(--color-border);
 }
 
@@ -1236,9 +1243,9 @@
 .cmptl-tick {
   position: absolute;
   top: 0;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 9.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   border-left: 1px solid var(--color-border);
   padding-left: 3px;
   height: 16px;
@@ -1249,22 +1256,22 @@
   width: 78px;
   flex: none;
   text-align: right;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   line-height: 1.3;
 }
 .cmptl-trk-n em {
   display: block;
   font-style: normal;
   font-size: 9.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .cmptl-lane {
   flex: 1;
   position: relative;
   height: 30px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   overflow: hidden;
@@ -1289,41 +1296,41 @@
   overflow: hidden;
 }
 /* 参考轨用中性灰：它是"事实基准"，不该抢戏。 */
-.cmptl-blk-ref { background: var(--color-border); color: var(--color-text-secondary); }
+.cmptl-blk-ref { background: var(--color-border); color: var(--color-muted-foreground); }
 /* 待检轨用红：这是有问题的那一条。红只染块本身，不铺整轨底色（铁律：红只给点不给块）。 */
 .cmptl-blk-our {
-  background: color-mix(in srgb, var(--color-text-red) 20%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-text-red) 47%, transparent);
-  color: var(--color-text-red);
+  background: color-mix(in srgb, var(--color-fn-red) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fn-red) 47%, transparent);
+  color: var(--color-fn-red);
   top: 3px;
 }
 .cmptl-blk:hover { filter: brightness(1.45); }
 .cmptl-pop {
   position: absolute;
   z-index: 20;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border: 1px solid var(--color-border);
   border-radius: 6px;
   padding: 8px 11px;
   max-width: 280px;
   font-size: 11.5px;
   line-height: 1.55;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.55);
   pointer-events: none;        /* 浮层不该拦住指针，否则移出块的事件收不到 */
 }
 .cmptl-pop-time {
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   margin-bottom: 4px;
 }
 .cmptl-hint {
   margin-left: 88px;
   margin-top: 7px;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 
 /* ── 检视面板（spec §4.2）────────────────────────────────────────────────── */
@@ -1332,9 +1339,9 @@
    铁律④：不可行动的事实不该染红，红留给"点这里能解决"。 */
 .vinspect-verdict {
   padding: 13px 15px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border-radius: 8px;
-  border-left: 2px solid var(--color-text-red);
+  border-left: 2px solid var(--color-fn-red);
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1351,20 +1358,20 @@
   font-size: 12px;
 }
 .vinspect-btn-fix {
-  background: var(--color-text-green);
-  border-color: var(--color-text-green);
+  background: var(--color-fn-green);
+  border-color: var(--color-fn-green);
   color: var(--color-background);
 }
 .vinspect-btn-fix:disabled { opacity: 0.6; cursor: default; }
 .vinspect-btn-keep {
   background: transparent;
   border-color: var(--color-border);
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 /* 云盘说明块：不是警告（没有红/黄），是一条关于存储限制的事实。 */
 .vinspect-cloud {
   padding: 15px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border: 1px dashed var(--color-border);
   border-radius: 8px;
   display: flex;
@@ -1374,10 +1381,10 @@
 .vinspect-cues { border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
 .vinspect-cues-h {
   padding: 8px 13px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border-bottom: 1px solid var(--color-border);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .vinspect-cues-body { max-height: 220px; overflow-y: auto; }
 .vinspect-cue {
@@ -1389,12 +1396,12 @@
 }
 .vinspect-cue:last-child { border-bottom: none; }
 .vinspect-cue-t {
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex: none;
 }
-.vinspect-cue-x { color: var(--color-text-secondary); }
+.vinspect-cue-x { color: var(--color-muted-foreground); }
 
 /* 展开区里的"看字幕时间轴"入口（2026-07-31）。低墨排：它是次要动作，不该抢简介的注意力。
    放这里而不是绿芯片上——绿芯片必须保持零焦点，否则 Tab 键在整季 24 个绿点上空转。 */

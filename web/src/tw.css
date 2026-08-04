@@ -67,8 +67,11 @@
 /* ── 第二个 @theme：Tailwind v4 会合并同一文件里的多个 @theme 块，所以上面 Plan A 那块
       保持逐字节不动，新增全部落在这里（这样 Task 32 的回归对照能一眼看出本 spec 加了什么）。
       追加到文件末尾而不是插在上一块后面：@theme 的先后顺序不影响结果，末尾追加就不必依赖
-      上一块的精确缩进做锚点。 */
-@theme {
+      上一块的精确缩进做锚点。
+      Task 30 起改 static：本块的 --color-fn-blue 只被 styles.css 手写规则消费、无 utility
+      引用，非 static 会被当未用变量丢弃；static 对本块其余 token 无影响（它们本就有
+      utility 消费方，发射集合不变）。 */
+@theme static {
   /* accordion 展开/收起：shadcn accordion 的 data-state 动画消费这两个变量，Tailwind 会
      据此生成 animate-accordion-down / animate-accordion-up。
      tw-animate-css@1.4.0 其实已自带这一对 token + keyframes（还白送 collapsible-down/up，
@@ -100,7 +103,7 @@
     to { opacity: 1; }
   }
 
-  /* Astryx 退役前补齐的三个缺口 token。三个值全部有出处，零发明：
+  /* Astryx 退役前补齐的缺口 token。值全部有出处，零发明：
      --color-fn-amber       = Astryx 暗色 --color-warning       #F2C00B
      --color-fn-amber-muted = Astryx 暗色 --color-warning-muted #E2A4003F
        （这两个是 Task 8 banner.tsx 的 warning 态用色；spec §5.1 的表里没有琥珀色是因为
@@ -111,8 +114,15 @@
         #E1E4DA33）复用同一个值，不为"轨道"和"底槽"发明两个近似值。
         前缀 stage- 是换栈过渡期 token 迁移铁律逼出来的：裸名 --color-track 已被
         scout.css:110 / scout.js:43 / astryx.css:48 三方占用，同名会被 Astryx 产品面反遮蔽，
-        改名前已 grep 验证两处均无 stage-track。 */
+        改名前已 grep 验证两处均无 stage-track。
+     --color-fn-blue = #2694FE（Task 30 加）= Astryx 基础主题 --color-icon-blue 的暗色档
+       （dist/astryx.css `:root` 块：light-dark(#0064E0, #2694FE)），scout.ts 未遮蔽它
+       （grep 打 0）。workflow 在跑行的蓝点/延展渐变条（styles.css 的 .wf-dot-active /
+       .wf-trace-active-*）是唯一消费方——DESIGN.md §5 动效 allowlist 里"active"那条的蓝。
+       ⚠️ 消费方全是 styles.css 手写规则、没有任何 utility 引用它，非 static 的 @theme 会
+       把它当未用变量丢弃（同首块 static 注释引的官方文档口径）——所以本块改成 static。 */
   --color-fn-amber: #f2c00b;
   --color-fn-amber-muted: #e2a4003f;
   --color-stage-track: rgba(255, 255, 255, 0.09);
+  --color-fn-blue: #2694fe;
 }

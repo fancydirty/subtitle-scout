@@ -12,9 +12,16 @@
 // 用 Dialog 而不是 AlertDialog：后者没有 children 插槽（只有 title/description 两个
 // 字符串 prop，见其 d.ts），装不下时间轴。AlertDialog 留给"破坏性操作的二次确认"
 // 那个场景（DESIGN.md §5），而这里是一个信息面板 + 一个明确的动作按钮。
-import { Dialog } from '@astryxdesign/core/Dialog'
-import { DialogHeader } from '@astryxdesign/core/Dialog'
-import { Text } from '@astryxdesign/core/Text'
+//
+// Plan C Task 30 换栈：Astryx Dialog → Radix 直接组合（@radix-ui/react-dialog），
+// **不走 dialog.tsx 的 DialogContent**——它内含 DialogPortal（挂 document.body），而
+// InspectPanel.test.tsx 有 container.querySelector('.cmptl'/'.vinspect-verdict') 断言
+// （portal 后渲染容器里查不到）且测试零改动纪律不许动它们。类串逐值对齐 dialog.tsx 的
+// DialogContent/Overlay 配方（居中定位/rounded-card/bg-card/p-6/shadow-lg/进出动画），
+// 宽度治理换 Astryx 的几何 prop 值：width="min(1080px,94vw)" maxHeight="88vh" →
+// w-[min(1080px,94vw)] max-h-[88vh] overflow-y-auto。改了 dialog.tsx 的配方要同步这边。
+import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { XIcon } from 'lucide-react'
 import { CompareTimeline, type TimelineCue } from './CompareTimeline.js'
 import { formatTick } from './viewport.js'
 import { useT, type TKey } from '../i18n/useT.js'
@@ -80,44 +87,55 @@ export function InspectPanel({
   const noReference = data !== null && data.reference.length === 0
 
   return (
-    <Dialog isOpen={isOpen} onOpenChange={onOpenChange} width="min(1080px, 94vw)" maxHeight="88vh">
-      <DialogHeader title={title} onOpenChange={onOpenChange} />
-      <div className="vinspect">
-        {loading && data === null ? (
-          <Text type="body" color="secondary">{t('verify_inspect_loading')}</Text>
-        ) : error !== null ? (
-          <Text type="body" color="secondary">{error}</Text>
-        ) : data === null ? null : (
-          <>
-            <Verdict
-              noReference={noReference}
-              diagnosis={data.diagnosis}
-              fixable={data.fixable}
-              cloudBlocked={cloudBlocked}
-              onCorrect={onCorrect}
-              correcting={correcting === true}
-              onDismiss={() => onOpenChange(false)}
-            />
-
-            {cloudBlocked ? (
-              <div className="vinspect-cloud">
-                <Text type="label" color="primary">{t('verify_cloud_title')}</Text>
-                <Text type="body" color="secondary">{t('verify_cloud_body')}</Text>
-              </div>
-            ) : (
-              <CompareTimeline
-                reference={data.reference}
-                ours={data.ours}
-                durationMs={data.durationMs}
-                waveformPeaks={null}
+    <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
+      {/* 无 Portal：渲染必须留在调用方容器里（container.querySelector 断言 + 测试零改动纪律，
+          见文件头）。Overlay/Content 类串逐值对齐 dialog.tsx。 */}
+      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+      <DialogPrimitive.Content className="fixed top-1/2 left-1/2 z-50 grid max-h-[88vh] w-[min(1080px,94vw)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-card border bg-card p-6 shadow-lg duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
+        <DialogPrimitive.Title className="text-lg leading-none font-semibold">
+          {title}
+        </DialogPrimitive.Title>
+        <div className="vinspect">
+          {loading && data === null ? (
+            <span className="text-[13px] leading-5 text-muted-foreground">{t('verify_inspect_loading')}</span>
+          ) : error !== null ? (
+            <span className="text-[13px] leading-5 text-muted-foreground">{error}</span>
+          ) : data === null ? null : (
+            <>
+              <Verdict
+                noReference={noReference}
+                diagnosis={data.diagnosis}
+                fixable={data.fixable}
+                cloudBlocked={cloudBlocked}
+                onCorrect={onCorrect}
+                correcting={correcting === true}
+                onDismiss={() => onOpenChange(false)}
               />
-            )}
 
-            <CueList cues={data.ours} />
-          </>
-        )}
-      </div>
-    </Dialog>
+              {cloudBlocked ? (
+                <div className="vinspect-cloud">
+                  <span className="text-[13px] font-medium leading-5 text-foreground">{t('verify_cloud_title')}</span>
+                  <span className="text-[13px] leading-5 text-muted-foreground">{t('verify_cloud_body')}</span>
+                </div>
+              ) : (
+                <CompareTimeline
+                  reference={data.reference}
+                  ours={data.ours}
+                  durationMs={data.durationMs}
+                  waveformPeaks={null}
+                />
+              )}
+
+              <CueList cues={data.ours} />
+            </>
+          )}
+        </div>
+        <DialogPrimitive.Close className="absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none [&_svg:not([class*='size-'])]:size-4">
+          <XIcon />
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Root>
   )
 }
 
@@ -143,12 +161,12 @@ function Verdict({ noReference, diagnosis, fixable, cloudBlocked, onCorrect, cor
     <div className={`vinspect-verdict${fixable ? '' : ' vinspect-verdict-neutral'}`}>
       {/* 无参考源时给专门的文案：泛泛的"看不出问题在哪"会让用户以为我们查过了没发现问题，
           而真相是**压根没东西可比**。这个区别决定了他接下来该做什么（自己看一眼画面）。 */}
-      <Text type="label" color="primary">
+      <span className="text-[13px] font-medium leading-5 text-foreground">
         {noReference ? t('verify_verdict_noref_head') : t(headKeyOf(diagnosis))}
-      </Text>
-      <Text type="body" color="secondary">
+      </span>
+      <span className="text-[13px] leading-5 text-muted-foreground">
         {noReference ? t('verify_verdict_noref_body') : t(bodyKeyOf(diagnosis))}
-      </Text>
+      </span>
       <div className="vinspect-btns">
         {canCorrect ? (
           <button
@@ -165,7 +183,7 @@ function Verdict({ noReference, diagnosis, fixable, cloudBlocked, onCorrect, cor
         </button>
       </div>
       {cloudBlocked && canCorrect ? (
-        <Text type="supporting" color="secondary">{t("verify_cloud_blind_fix")}</Text>
+        <span className="text-[11px] leading-4 text-muted-foreground">{t("verify_cloud_blind_fix")}</span>
       ) : null}
     </div>
   )
