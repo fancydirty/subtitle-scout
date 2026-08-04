@@ -40,3 +40,24 @@ describe('Sidebar 登出入口（鉴权 A2 Task 14）', () => {
     window.removeEventListener(UNAUTHORIZED_EVENT, seen)
   })
 })
+
+// Plan C Task 28 迁移锁（自绘 SideNav 换 Astryx SideNav）——以下三条只追加、不改上面的存量。
+describe('Sidebar 迁移锁（Task 28：自绘 SideNav）', () => {
+  it('选中项带 aria-current="page"，未选中项没有——选中态语义锚点（不再是 data-selected）', () => {
+    wrap() // tab="library"
+    expect(screen.getByRole('link', { name: 'Library' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Workflow' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('甄别角标计数渲染在 Triage 链接内（parked=7 → 可及名 "Triage 7"）', () => {
+    render(<I18nProvider><Sidebar tab="library" parked={7} /></I18nProvider>)
+    const triage = screen.getByRole('link', { name: /^Triage/ })
+    expect(triage).toHaveTextContent('7')
+  })
+
+  it('子树不再有任何 astryx 类名——自绘件不输出 .astryx-* DOM', () => {
+    const { container } = wrap()
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

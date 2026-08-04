@@ -265,3 +265,19 @@ describe('App bootstrap 闸（spec A §5.1）', () => {
     expect(screen.queryByRole('link', { name: 'Library' })).not.toBeInTheDocument()
   })
 })
+
+// Plan C Task 28 复审折叠：skip-to-content 的 href 与 <main> 的 id 是字符串耦合——任何一边
+// 改名/打错字，键盘跳转静默失效且无任何测试变红。这一条把契约钉死（纯追加，存量断言不动）。
+describe('App 外壳无障碍契约（Task 28）', () => {
+  it('skip-to-content 链接指向 #scout-app-main，role=main 主区同 id 在场', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
+    render(<App />)
+    // 等 Shell 落地（侧栏链接出现）再断言，避开 auth/status 探测的空拍。
+    await screen.findByRole('link', { name: 'Library' })
+    expect(screen.getByRole('link', { name: /skip to content/i })).toHaveAttribute(
+      'href',
+      '#scout-app-main',
+    )
+    expect(screen.getByRole('main')).toHaveAttribute('id', 'scout-app-main')
+  })
+})

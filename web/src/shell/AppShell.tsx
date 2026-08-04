@@ -1,6 +1,6 @@
-// web/src/shell/AppShell.tsx：新外壳组装——Astryx AppShell + Sidebar + Topbar + CommandK +
-// 四 tab 路由分发。数据面只发一次 GET /api/v2/workflow/pending，顶栏新鲜度行与侧栏甄别角标
-// 共享同一份响应（后端契约：meta.roots/lastScanAt/files + parked，见 api/types.ts 注释）。
+// web/src/shell/AppShell.tsx：新外壳组装——自绘壳（Task 28 卸 AstryxAppShell）+ Sidebar + Topbar
+// + CommandK + 四 tab 路由分发。数据面只发一次 GET /api/v2/workflow/pending，顶栏新鲜度行与
+// 侧栏甄别角标共享同一份响应（后端契约：meta.roots/lastScanAt/files + parked，见 api/types.ts 注释）。
 //
 // dashboard-F3：Library tab 落地为真页面（SeriesGrid 列表 / SeriesPage 详情），二级路由
 // #/library/:id 命中时，剧集详情请求在这一层发起并同时喂给 Topbar（面包屑二级：剧名）和
@@ -20,7 +20,6 @@
 // 口径——自己发 GET /api/v2/triage，跟外壳共享的只有侧栏角标（那份 parked 计数来自
 // workflow/pending，不是 triage 端点，两者的数据源不同步是可接受的：15s 轮询 vs 手动 reload）。
 import { useState } from 'react'
-import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell'
 import { useWorkflowPending, useLibrarySeriesDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
@@ -32,6 +31,7 @@ import { SeriesPage } from '../library/SeriesPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
 import { TriagePage } from '../triage/TriagePage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
+import { cn } from '../lib/utils.js'
 
 export function Shell() {
   const route = useShellRoute()
@@ -48,32 +48,47 @@ export function Shell() {
 
   return (
     <>
-      <AstryxAppShell
-        contentPadding={route.tab === 'library' ? 0 : 4}
-        topNav={
-          <Topbar
-            tab={route.tab}
-            workflow={workflow}
-            seriesDetail={activeSeriesDetail}
-            onOpenCmdK={() => setCmdKOpen(true)}
-          />
-        }
-        sideNav={<Sidebar tab={route.tab} parked={workflow.data?.parked} />}>
-        {/* 引擎关闭 banner 压所有主屏顶（spec A §5.6）；library 的 contentPadding=0 下
-            它就是全宽出血细条，正好。 */}
-        <EngineBanner />
-        {route.tab === 'library' &&
-          (route.libraryId ? (
-            // key=libraryId：切换到另一部剧时强制重挂载，SeriesPage 内部的格阵选中态
-            // （EpisodeDetail 开合）不会带着上一部剧的选中集号跨剧残留。
-            <SeriesPage key={route.libraryId} detail={seriesDetail} />
-          ) : (
-            <SeriesGrid />
-          ))}
-        {route.tab === 'workflow' && <ActivityPage />}
-        {route.tab === 'triage' && <TriagePage />}
-        {route.tab === 'settings' && <SettingsPage />}
-      </AstryxAppShell>
+      {/* 自绘壳，结构逐值复刻 AstryxAppShell（node_modules/@astryxdesign/core/src/AppShell/
+          AppShell.tsx:769-811 + Layout.tsx:283-296，height="fill" 路径）：根 flex column
+          满高（h-screen；Astryx 用 100dvh，桌面端等价，本应用桌面优先）→ 顶栏全宽在最前
+          （DOM 序＝焦点序）→ 中间行 [侧栏 | 内容]。
+          skip-to-content 链接与 role="main" 是 Astryx 壳的真实无障碍件（无测试覆盖），
+          保留成本一行；样式在 styles.css 的 shell 段（.skip-to-content）。 */}
+      <div className="flex h-screen flex-col">
+        <a href="#scout-app-main" className="skip-to-content">
+          Skip to content
+        </a>
+        <Topbar
+          tab={route.tab}
+          workflow={workflow}
+          seriesDetail={activeSeriesDetail}
+          onOpenCmdK={() => setCmdKOpen(true)}
+        />
+        <div className="flex flex-1 overflow-hidden">
+          <Sidebar tab={route.tab} parked={workflow.data?.parked} />
+          {/* contentPadding 0/4 → p-0/p-4 条件类（Astryx --spacing-4=16px=Tailwind 4）。
+              library 的 p-0 下 EngineBanner 就是全宽出血细条，正好。 */}
+          <main
+            id="scout-app-main"
+            role="main"
+            className={cn('flex-1 overflow-y-auto', route.tab === 'library' ? 'p-0' : 'p-4')}
+          >
+            {/* 引擎关闭 banner 压所有主屏顶（spec A §5.6）。 */}
+            <EngineBanner />
+            {route.tab === 'library' &&
+              (route.libraryId ? (
+                // key=libraryId：切换到另一部剧时强制重挂载，SeriesPage 内部的格阵选中态
+                // （EpisodeDetail 开合）不会带着上一部剧的选中集号跨剧残留。
+                <SeriesPage key={route.libraryId} detail={seriesDetail} />
+              ) : (
+                <SeriesGrid />
+              ))}
+            {route.tab === 'workflow' && <ActivityPage />}
+            {route.tab === 'triage' && <TriagePage />}
+            {route.tab === 'settings' && <SettingsPage />}
+          </main>
+        </div>
+      </div>
       <CommandK isOpen={isCmdKOpen} onOpenChange={setCmdKOpen} />
     </>
   )

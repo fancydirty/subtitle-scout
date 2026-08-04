@@ -1,11 +1,9 @@
 // web/src/shell/Sidebar.tsx：左侧栏——产品名 + 三个 uppercase mono 分区（LIBRARY/AGENTS/SYSTEM）
-// + 四个 tab 项。当前项高亮＝本屏唯一 accent 使用点：SideNavItem 的 isSelected 默认只给中性灰底
-// （组件自己的 navItemStyles.selected 读 --color-neutral，不是 accent），组件又没留 xstyle
-// 逃生口（BaseProps 类型上有但渲染函数逐参数解构、运行时吞掉）——只能在 styles.css 里用
-// Astryx 自己输出的稳定 data-selected 选择器把文字色点成 --color-accent，见该文件底部注释。
-import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav'
-import { Text } from '@astryxdesign/core/Text'
-import { Button } from '@astryxdesign/core/Button'
+// + 四个 tab 项。Task 28 卸 Astryx：SideNav 一族换成本目录的自绘件（./SideNav.js），选中态
+// 走 aria-current="page" 属性选择器（文字色 --color-sidebar-active，lime 语义），styles.css
+// 底部的 .astryx-side-nav-item 覆写随之退役。登出钮走 shadcn ghost Button。
+import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from './SideNav.js'
+import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
 import { SECTIONS, TABS } from './tabs.js'
 import type { Tab } from './route.js'
@@ -33,7 +31,11 @@ export function Sidebar({ tab, parked }: Props) {
   return (
     <SideNav
       header={<SideNavHeading heading="subtitle-scout" />}
-      footer={<Button size="sm" variant="ghost" label={t('nav_logout')} onClick={logout} />}
+      footer={
+        <Button variant="ghost" size="sm" onClick={logout}>
+          {t('nav_logout')}
+        </Button>
+      }
     >
       {SECTIONS.map((section) => (
         <SideNavSection key={section} title={section}>
@@ -42,12 +44,10 @@ export function Sidebar({ tab, parked }: Props) {
               key={m.id}
               label={t(m.labelKey)}
               href={`#/${m.id}`}
-              isSelected={tab === m.id}
+              selected={tab === m.id}
               endContent={
                 m.id === 'triage' && parked != null ? (
-                  <Text type="supporting" color="secondary">
-                    {parked}
-                  </Text>
+                  <span className="text-xs text-muted-foreground">{parked}</span>
                 ) : undefined
               }
             />
