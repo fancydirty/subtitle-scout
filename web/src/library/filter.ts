@@ -10,6 +10,30 @@ export type LibraryFilter = 'all' | 'gap' | 'throttled' | 'full'
 
 export const LIBRARY_FILTERS: readonly LibraryFilter[] = ['all', 'gap', 'throttled', 'full']
 
+export type KindFilter = 'all' | 'series' | 'movies'
+
+export const KIND_FILTERS: readonly KindFilter[] = ['all', 'series', 'movies']
+
+export function kindFilterLabel(f: KindFilter): string {
+  switch (f) {
+    case 'all':
+      return 'All'
+    case 'series':
+      return 'Series'
+    case 'movies':
+      return 'Movies'
+  }
+}
+
+export function applyKindFilter(items: LibraryItemDTO[], filter: KindFilter): LibraryItemDTO[] {
+  if (filter === 'all') return items
+  return items.filter((item) => {
+    if (filter === 'series') return item.kind === 'series'
+    if (filter === 'movies') return item.kind === 'movie'
+    return true
+  })
+}
+
 /** 全覆盖：无缺口无停牌，且确有已处理集数（covered/embedded 任一 > 0）。海报卡的角标
  *  （posterAngle.ts）复用这同一条判定，两处不许各算一套"什么叫全覆盖"。 */
 export function isFullyCovered(cov: CoverageDTO): boolean {

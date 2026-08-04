@@ -9,7 +9,16 @@ import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
 import { useLibrary } from '../api/hooks.js'
 import { useT, type TKey } from '../i18n/useT.js'
-import { LIBRARY_FILTERS, type LibraryFilter, matchesLibraryFilter, groupBySection } from './filter.js'
+import {
+  LIBRARY_FILTERS,
+  KIND_FILTERS,
+  type LibraryFilter,
+  type KindFilter,
+  matchesLibraryFilter,
+  applyKindFilter,
+  kindFilterLabel,
+  groupBySection,
+} from './filter.js'
 import { sectionLabel } from './sectionLabel.js'
 import { formatResultCount } from './text.js'
 import { PosterCard } from './PosterCard.js'
@@ -42,8 +51,10 @@ export function SeriesGrid() {
   const { data, loading, error, reload } = useLibrary()
   const { t, lang } = useT()
   const [filter, setFilter] = useState<LibraryFilter>('all')
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all')
 
-  const visible = (data ?? []).filter((it) => matchesLibraryFilter(it.coverage, filter))
+  const coverageFiltered = (data ?? []).filter((it) => matchesLibraryFilter(it.coverage, filter))
+  const visible = applyKindFilter(coverageFiltered, kindFilter)
   const sections = groupBySection(visible)
 
   return (
@@ -55,6 +66,12 @@ export function SeriesGrid() {
             value={filter}
             onChange={(v) => setFilter(v as LibraryFilter)}
             label="Library filter"
+          />
+          <Segmented
+            items={KIND_FILTERS.map((f) => ({ value: f, label: kindFilterLabel(f) }))}
+            value={kindFilter}
+            onChange={(v) => setKindFilter(v as KindFilter)}
+            label="Type filter"
           />
           {data ? (
             <span className="font-mono text-[13px] leading-5 text-muted-foreground">
