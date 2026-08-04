@@ -1,12 +1,12 @@
 /* web/src/tw.css：Tailwind v4 + 新栈 token 层（token 逐值取自 spec C §5.1 映射表，Plan A 落
    底座、Plan C 四屏直接消费）。
-   Astryx 并存期纪律：不引 preflight——Astryx reset.css 已是全局 reset，双 reset 互踩；
-   只取 theme（设计令牌，无级联影响）与 utilities（@layer utilities，只有新组件用到才生效）。
-   本文件在 main.tsx 里于 styles.css 之后 import：Astryx 具名层在前、utilities 层在后，
-   冲突时 utilities 赢——这正是新组件要的方向。 */
+   Plan C Task 31 起引入 preflight：Astryx 退役后不再有 reset.css，preflight 顶替其职能。
+   本文件在 main.tsx 里于 styles.css 之后 import：层序 theme→base→components→utilities，
+   具名样式在前、utilities 在后，冲突时 utilities 赢——这正是新组件要的方向。 */
 @layer theme, base, components, utilities;
 
 @import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
 /* tw-animate-css：animate-in / animate-out / fade-* / zoom-* / slide-* 这一族 enter-exit 动画 utility。
    Tailwind v4 核心不含它们；shadcn 的 dialog/alert-dialog/select 与 AI Elements 的 task/tool 全靠它。 */

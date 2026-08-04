@@ -310,9 +310,9 @@ function WaveTrack({ label, peaks, durationMs, vp, width }: WaveTrackProps) {
         <svg viewBox={`0 0 ${Math.max(1, width)} ${H}`} preserveAspectRatio="none" aria-hidden="true">
           <defs>
             <linearGradient id="cmptl-wg" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-accent, #58a6ff)" stopOpacity="0.8" />
-              <stop offset="50%" stopColor="var(--color-accent, #1f6feb)" stopOpacity="0.45" />
-              <stop offset="100%" stopColor="var(--color-accent, #58a6ff)" stopOpacity="0.8" />
+              <stop offset="0%" stopColor="var(--color-fn-blue)" stopOpacity="0.8" />
+              <stop offset="50%" stopColor="var(--color-fn-blue)" stopOpacity="0.45" />
+              <stop offset="100%" stopColor="var(--color-fn-blue)" stopOpacity="0.8" />
             </linearGradient>
           </defs>
           <path d={path} fill="url(#cmptl-wg)" />

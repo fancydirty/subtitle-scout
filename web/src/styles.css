@@ -1,12 +1,6 @@
-/* web/src/styles.css：全局 CSS 入口——只允许三行 import（reset → astryx 基础 → scout 主题产物），
-   顺序对 cascade layers 敏感，不可调换（DESIGN.md §1 / `astryx docs migration` 的
-   Cascade Layer Safety：reset 必须落在最底层，否则会静默盖掉组件样式）。
-   版式一律走组件/主题 token；shell 段只留两处原子级补充——⌘K 触发器的发丝线胶囊
-   （DESIGN.md §5：键帽用 mono 小字 + 发丝线框）与 skip-to-content 链接（Task 28 自绘壳
-   保留的无障碍件），颜色全部读已定义的 token，不新起配色。 */
-@import "@astryxdesign/core/reset.css";
-@import "@astryxdesign/core/astryx.css";
-@import "./theme/scout.css";
+/* web/src/styles.css：全局 CSS 入口——基础样式 + 各屏自绘规则。
+   Plan C Task 31 起完全 Astryx-free：reset 由 tw.css 的 preflight 顶替，
+   颜色全部读新栈 token（tw.css @theme），不新起配色。 */
 
 .cmdk-trigger {
   display: inline-flex;
@@ -60,11 +54,6 @@
   font-weight: 600;
   text-decoration: none;
 }
-
-/* Task 28：侧栏选中态改由 SideNavItem 的 aria-[current=page] 属性选择器接管
-   （文字 --color-sidebar-active lime + bg-secondary），此处原有的
-   .astryx-side-nav-item[data-selected] 覆写规则随之删除——自绘件不再输出那个类名，
-   留着只是一条死规则。 */
 
 /* dashboard-F3（Library tab）：三层格阵 + 海报墙 + 右侧详情板——原子 CSS 集中区。
    跟上面 .cmdk-trigger 同一个理由：这几处是"组件语言表达不了"的原子级 UI（格阵网格、
