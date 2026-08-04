@@ -20,12 +20,14 @@
 // DialogContent/Overlay 配方（居中定位/rounded-card/bg-card/p-6/shadow-lg/进出动画），
 // 宽度治理换 Astryx 的几何 prop 值：width="min(1080px,94vw)" maxHeight="88vh" →
 // w-[min(1080px,94vw)] max-h-[88vh] overflow-y-auto。改了 dialog.tsx 的配方要同步这边。
+import { useState, useEffect } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { CompareTimeline, type TimelineCue } from './CompareTimeline.js'
 import { formatTick } from './viewport.js'
 import { useT, type TKey } from '../i18n/useT.js'
 import type { SubtitleCompareDTO, CompareDiagnosis } from '../api/types.js'
+import { api } from '../api/client.js'
 
 interface Props {
   isOpen: boolean
@@ -86,6 +88,35 @@ export function InspectPanel({
   // silencedetect 把音乐/音效都算成说话（实测音频 1953s vs 字幕 1470s）。
   const noReference = data !== null && data.reference.length === 0
 
+  // Plan B Task 14：第三轨（波形）接线——waveformAvailable=true 时发 peaks 请求，
+  // 成功 → 传 peaks 数组，loading → 骨架轨，失败 → 静默回退双轨。
+  const [peaks, setPeaks] = useState<number[] | null>(null)
+  const [peaksLoading, setPeaksLoading] = useState(false)
+
+  useEffect(() => {
+    if (data?.waveformAvailable === true) {
+      setPeaksLoading(true)
+      const controller = new AbortController()
+      api
+        .waveformPeaks(data.itemId, controller.signal)
+        .then((res) => {
+          setPeaks(res.peaks)
+        })
+        .catch(() => {
+          // 静默回退双轨——不弹 toast，失败时就当波形不可用
+          setPeaks(null)
+        })
+        .finally(() => {
+          setPeaksLoading(false)
+        })
+      return () => controller.abort()
+    } else {
+      // waveformAvailable=false 时清空状态
+      setPeaks(null)
+      setPeaksLoading(false)
+    }
+  }, [data?.itemId, data?.waveformAvailable])
+
   return (
     <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
       {/* 无 Portal：渲染必须留在调用方容器里（container.querySelector 断言 + 测试零改动纪律，
@@ -122,7 +153,7 @@ export function InspectPanel({
                   reference={data.reference}
                   ours={data.ours}
                   durationMs={data.durationMs}
-                  waveformPeaks={null}
+                  waveformPeaks={peaksLoading ? 'loading' : peaks}
                 />
               )}
 

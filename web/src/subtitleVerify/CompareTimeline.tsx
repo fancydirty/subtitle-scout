@@ -32,8 +32,9 @@ interface Props {
   /** 待检字幕轨 */
   ours: readonly TimelineCue[]
   durationMs: number
-  /** 波形峰值（0~1，等间隔）。缺席=云盘或还没抽 → 不渲染声音轨 */
-  waveformPeaks?: readonly number[] | null
+  /** 波形峰值（0~1，等间隔）。缺席=云盘或还没抽 → 不渲染声音轨；
+   *  'loading' → 渲染骨架轨（shimmer）；失败时静默回退不渲染。 */
+  waveformPeaks?: readonly number[] | null | 'loading'
 }
 
 /** 滚轮一格的缩放倍率。1.2 是试出来的手感：太大（2）一格就跳一个数量级、
@@ -175,7 +176,10 @@ export function CompareTimeline({ reference, ours, durationMs, waveformPeaks }: 
           onHover={setHover}
         />
 
-        {waveformPeaks && waveformPeaks.length > 0 ? (
+        {waveformPeaks === 'loading' ? (
+          <div className="h-[60px] animate-pulse bg-secondary" />
+        ) : null}
+        {Array.isArray(waveformPeaks) && waveformPeaks.length > 0 ? (
           <WaveTrack
             label={t('verify_track_audio')}
             peaks={waveformPeaks}
