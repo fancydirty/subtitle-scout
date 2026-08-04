@@ -50,7 +50,7 @@
   display: block;
   color: inherit;
   text-decoration: none;
-  border-radius: var(--radius-element, 8px);
+  border-radius: var(--radius-control);
   transition: transform 120ms ease, border-color 120ms ease;
 }
 .library-poster-card:hover,
@@ -58,15 +58,20 @@
   transform: translateY(-2px);
 }
 .library-poster-card:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring（#8b7cf6），不是 --color-accent：后者两栈同名值不同（新 #16181f / 旧 scout 柠檬绿），
+     且旧值 @scope 到 [data-astryx-theme]，过渡期解析成绿、Task 31 卸载后又与框底 #16181f 同色 → 隐形。
+     --color-ring 是新栈统一的焦点可供性 token（button/input/select/segmented 都用它）。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 .library-poster-frame {
   position: relative;
-  border-radius: var(--radius-element, 8px);
+  border-radius: var(--radius-control);
   overflow: hidden;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* --color-secondary（#16181f），不是 --color-accent：--color-accent 被 scout 遮蔽成柠檬绿，
+     过渡期会把整墙海报框刷绿；--color-secondary 两栈都不遮蔽、恒 #16181f。 */
+  background: var(--color-secondary);
   transition: border-color 120ms ease;
 }
 .library-poster-card:hover .library-poster-frame {
@@ -84,8 +89,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-background-surface);
-  color: var(--color-text-gray);
+  background: var(--color-secondary);
+  color: var(--color-weak);
   font-size: 22px;
   font-weight: 600;
 }
@@ -99,7 +104,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 .library-poster-count {
   position: absolute;
@@ -107,14 +112,24 @@
   bottom: 6px;
   padding: 1px 4px;
   border-radius: 3px;
-  /* 海报底图深浅不定，角标需要一层不透明衬底才能保证可读——颜色仍读 --color-background-body
-     token（color-mix 派生半透明版本），不是新起一个硬编码色值。 */
-  background: color-mix(in srgb, var(--color-background-body) 72%, transparent);
+  /* 海报底图深浅不定，角标需要一层不透明衬底才能保证可读——颜色仍读页面底 token（color-mix 派生
+     半透明版本），不是新起硬编码色值。--color-background = #0b0c0f（scout --color-background-body
+     的等值 @theme 名，scout 不遮蔽 bare --color-background）。 */
+  background: color-mix(in srgb, var(--color-background) 72%, transparent);
 }
 .library-poster-skel-frame {
   aspect-ratio: 2 / 3;
-  border-radius: var(--radius-element, 8px);
+  border-radius: var(--radius-control);
   overflow: hidden;
+}
+.library-grid {
+  /* Astryx Grid columns=minWidth:150,max:8 gap=4 的逐值等价（buildCappedTemplate 解码）：
+     max:8 靠抬高每条轨道最小值来封顶列数；7*1rem 是 8 列之间的 7 道缝；--spacing-4=16px=1rem。
+     几何落 CSS 而非 Tailwind 任意值：本区段段头显式认领"格阵网格"（与 Activity 段"只管 padding
+     与 ink"相反）。 */
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, calc((100% - 7 * 1rem) / 8))), 1fr));
 }
 
 /* ---- 剧集页头部海报缩略（SeriesPage）---- */
