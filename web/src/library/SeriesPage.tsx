@@ -3,13 +3,10 @@
 // 该集简介，超长季回落格阵）。详情页重设计 item B：移除旧的右侧滑入详情面板（EpisodeDetail）与
 // 点格选中态。detail 数据由 Shell 传入（跟 Topbar 面包屑共用同一次 GET /api/v2/library/series/:id，
 // 见 shell/AppShell.tsx 顶部注释），这里不自己再发一次请求。
-import { Section } from '@astryxdesign/core/Section'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
-import { Text } from '@astryxdesign/core/Text'
-import { EmptyState } from '@astryxdesign/core/EmptyState'
-import { Skeleton } from '@astryxdesign/core/Skeleton'
-import { Button } from '@astryxdesign/core/Button'
+import { Section } from '../components/ui/section.js'
+import { Skeleton } from '../components/ui/skeleton.js'
+import { EmptyState } from '../components/ui/empty-state.js'
+import { Button } from '../components/ui/button.js'
 import type { Async } from '../api/hooks.js'
 import type { LibrarySeriesDetailDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
@@ -32,15 +29,15 @@ function isNotFoundError(error: string): boolean {
 
 function HeaderSkeleton() {
   return (
-    <HStack gap={4} aria-busy="true" aria-label="loading series">
+    <div className="flex gap-4" aria-busy="true" aria-label="loading series">
       <div className="library-detail-header-poster">
-        <Skeleton radius={2} />
+        <Skeleton className="h-full w-full rounded-control" />
       </div>
-      <VStack gap={2} width="100%">
-        <Skeleton height={20} width="40%" radius={1} />
-        <Skeleton height={13} width="60%" radius={1} />
-      </VStack>
-    </HStack>
+      <div className="flex w-full flex-col gap-2">
+        <Skeleton className="h-5 w-[40%] rounded-[4px]" />
+        <Skeleton className="h-[13px] w-[60%] rounded-[4px]" />
+      </div>
+    </div>
   )
 }
 
@@ -49,7 +46,7 @@ export function SeriesPage({ detail }: Props) {
 
   if (detail.loading && !detail.data) {
     return (
-      <Section padding={4}>
+      <Section>
         <HeaderSkeleton />
       </Section>
     )
@@ -58,16 +55,20 @@ export function SeriesPage({ detail }: Props) {
   if (detail.error && !detail.data) {
     if (isNotFoundError(detail.error)) {
       return (
-        <Section padding={4}>
+        <Section>
           <EmptyState title={t('library_detail_not_found_title')} description={t('library_detail_not_found_desc')} />
         </Section>
       )
     }
     return (
-      <Section padding={4}>
+      <Section>
         <EmptyState
           title={t('library_detail_error_prefix') + detail.error}
-          actions={<Button label={t('library_retry')} variant="secondary" onClick={detail.reload} />}
+          actions={
+            <Button variant="secondary" onClick={detail.reload}>
+              {t('library_retry')}
+            </Button>
+          }
         />
       </Section>
     )
@@ -90,8 +91,8 @@ export function SeriesPage({ detail }: Props) {
   const langs = [...new Set(seasons.flatMap((s) => s.coverage.map((c) => c.lang)))].sort()
 
   return (
-    <Section padding={4}>
-      <VStack gap={6}>
+    <Section>
+      <div className="flex flex-col gap-6">
         <SeriesHero
           name={title}
           originalName={originalName}
@@ -102,15 +103,15 @@ export function SeriesPage({ detail }: Props) {
           overview={series.overview}
         />
         {series.layoutNonstandard ? (
-          <Text type="supporting" color="secondary">{t('library_detail_layout_nonstandard')}</Text>
+          <span className="text-[11px] leading-4 text-muted-foreground">{t('library_detail_layout_nonstandard')}</span>
         ) : null}
         <FactsRail covered={totals.covered} total={totals.total} embedded={totals.embedded} langs={langs} />
-        <VStack gap={6}>
+        <div className="flex flex-col gap-6">
           {seasons.map((season) => (
             <SeasonAccordion key={season.season} season={season} now={now} defaultOpen={seasons.length === 1} />
           ))}
-        </VStack>
-      </VStack>
+        </div>
+      </div>
     </Section>
   )
 }

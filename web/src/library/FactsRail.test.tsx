@@ -28,3 +28,18 @@ describe('FactsRail', () => {
     expect(screen.queryByText(/embedded/)).not.toBeInTheDocument()
   })
 })
+
+// ── DOM 侧迁移锁（Task 20）
+describe('FactsRail：DOM 侧迁移锁', () => {
+  it('读数走 font-mono、子树无 astryx-* 类名', () => {
+    const { container } = render(
+      <I18nProvider>
+        <FactsRail covered={8} total={8} embedded={8} langs={['zh-Hans', 'en']} />
+      </I18nProvider>,
+    )
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 三段 mono 读数（覆盖/语言/内嵌）都在场且带 font-mono。
+    const monos = container.querySelectorAll('.library-facts-rail > span.font-mono')
+    expect(monos.length).toBe(3)
+  })
+})

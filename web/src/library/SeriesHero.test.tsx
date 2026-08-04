@@ -80,3 +80,16 @@ describe('SeriesHero / 详情头部：CSS 侧迁移锁', () => {
     expect(scrim).not.toContain('--color-background-body')
   })
 })
+
+// ── DOM 侧迁移锁（Task 20）
+describe('SeriesHero：DOM 侧迁移锁', () => {
+  it('hero 子树无 astryx-* 类名，剧名/seriesId 仍在场', () => {
+    const { container } = wrap(
+      <SeriesHero name="美国恐怖故事" originalName="American Horror Story" year={2011}
+        seriesId="tmdb:1413" posterPath={null} backdropPath="/bd.jpg" overview="每季一个独立恐怖故事" />,
+    )
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    expect(screen.getByText('美国恐怖故事')).toBeInTheDocument()
+    expect(screen.getByText('tmdb:1413')).toBeInTheDocument()
+  })
+})
