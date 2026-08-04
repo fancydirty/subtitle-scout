@@ -193,7 +193,6 @@
   padding: 9px 4px 9px 10px;
   border-left: 2px solid transparent;
 }
-/* 展开按钮：铺满除芯片外的整个宽度，视觉上完全透明——用户感知到的仍然是"点这一行"。 */
 .library-eprow-toggle {
   display: flex;
   align-items: center;
@@ -209,11 +208,13 @@
   text-align: left;
 }
 .library-eprow-head:hover {
-  background: var(--color-background-card);
+  background: var(--color-card);
 }
 .library-eprow-active > .library-eprow-head {
-  border-left-color: var(--color-accent);
-  background: var(--color-background-card);
+  /* --color-ring（紫），不是 --color-accent：后者被 scout 遮蔽成柠檬绿，过渡期是绿、卸载后变
+     #16181f 与卡底同色 → 左强调条隐形。三处可见强调（本条 + 焦点环 + 选中格）统一走 --color-ring。 */
+  border-left-color: var(--color-ring);
+  background: var(--color-card);
 }
 .library-eprow-spacer {
   flex: 1;
@@ -226,9 +227,9 @@
   border: 1px solid var(--color-border);
 }
 .library-eprow-tag {
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 0 5px;
@@ -252,7 +253,7 @@
   text-align: left;
 }
 .library-season-chev {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   transition: transform 0.18s ease;
   display: inline-block;
 }
@@ -274,9 +275,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* --color-secondary（#16181f），不是 --color-accent（后者过渡期柠檬绿）。 */
+  background: var(--color-secondary);
   cursor: pointer;
   font: inherit;
 }
@@ -284,45 +286,46 @@
   border-color: rgba(255, 255, 255, 0.14);
 }
 .ep-cell:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：见 .library-eprow-active 注释（三处可见强调统一）。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .ep-cell-selected {
-  border-color: var(--color-accent);
+  border-color: var(--color-ring);
 }
 .ep-cell-dashed {
   background: transparent;
   border-style: dashed;
 }
 .ep-cell-error {
-  background: color-mix(in srgb, var(--color-text-red) 6%, transparent);
+  background: color-mix(in srgb, var(--color-fn-red) 6%, transparent);
 }
 .ep-num {
   font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 9.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .ep-cell-dashed .ep-num {
-  color: var(--color-text-disabled);
+  color: var(--color-faint);
 }
 .ep-cell-throttled .ep-num {
   font-style: italic;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .ep-cell-hardsub .ep-num {
-  /* 救援R5：硬字幕假定——独立样式非绿点。defineTheme 的 TokenName 是第三方设计系统的封闭
-     枚举，不能注册新主 token；灰绿间调直接用 color-mix 混两个既有合法 token 达成，同样表意
-     "已覆盖但不是外挂字幕已确认"，不占用/不冒充 --color-text-green。 */
-  color: color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%);
+  /* 救援R5：硬字幕假定——灰绿间调（已覆盖但非外挂确认），color-mix 混两个既有合法 token，
+     不占用/不冒充 --color-fn-green。 */
+  color: color-mix(in srgb, var(--color-fn-green) 55%, var(--color-weak) 45%);
 }
 .ep-cell-error .ep-num {
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 .ep-cell-partial .ep-num {
-  color: var(--color-text-orange);
+  /* 半覆盖：新栈无橙档，沿用唯一暖色 --color-fn-amber（#f2c00b，有意改值自旧 --color-text-orange #e8a33d）。 */
+  color: var(--color-fn-amber);
 }
 
-/* 5px 语义点——左上角，跟 mono 集号并排读（任务规格：EpisodeCell = 灰格 + 左上 5px 语义点）。 */
+/* 5px 语义点——左上角，跟 mono 集号并排读。 */
 .ep-dot {
   position: absolute;
   left: 3px;
@@ -332,34 +335,32 @@
   border-radius: 50%;
 }
 .ep-dot-covered {
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 .ep-dot-hardsub {
-  /* 灰绿间调，理由同上方 .ep-cell-hardsub .ep-num 注释。 */
-  background: color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%);
+  background: color-mix(in srgb, var(--color-fn-green) 55%, var(--color-weak) 45%);
 }
 .ep-dot-partial {
-  /* 分体态：半覆盖——左半绿（有字幕）右半灰（缺字幕），用既有 token，不注册新 defineTheme token。 */
-  background: linear-gradient(90deg, var(--color-text-green) 50%, var(--color-text-gray) 50%);
+  background: linear-gradient(90deg, var(--color-fn-green) 50%, var(--color-weak) 50%);
 }
 .ep-dot-missing {
   background: transparent;
-  border: 1px solid var(--color-text-gray);
+  border: 1px solid var(--color-weak);
   width: 4px;
   height: 4px;
 }
 .ep-dot-throttled {
-  background: var(--color-text-gray);
+  background: var(--color-weak);
 }
 .ep-dot-error {
-  background: var(--color-text-red);
+  background: var(--color-fn-red);
 }
 .ep-cell-dashed-swatch {
   display: inline-block;
   width: 9px;
   height: 9px;
   border-radius: 2px;
-  border: 1px dashed var(--color-text-disabled);
+  border: 1px dashed var(--color-faint);
 }
 
 /* dashboard-F4（Workflow tab）：两列（Gaps | Activity，验收修复轮一 Task V4 design §B 叙事化
@@ -1153,7 +1154,7 @@
    4px 圆角），只换颜色。只有绿和红两种，永远不会有第三种（用户裁决：不给黄色）。 */
 .library-eprow-verify {
   flex: none;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
   border-radius: 4px;
 }
@@ -1164,18 +1165,18 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 /* 红态：可点的文字芯片。红只染文字与边框，不铺底色块（用户裁决：红只给点不给块）。 */
 .library-eprow-verify-shifted {
-  color: var(--color-text-red);
-  border: 1px solid color-mix(in srgb, var(--color-text-red) 40%, transparent);
+  color: var(--color-fn-red);
+  border: 1px solid color-mix(in srgb, var(--color-fn-red) 40%, transparent);
   background: transparent;
   padding: 0 5px;
   cursor: pointer;
 }
 .library-eprow-verify-shifted:hover:not(:disabled) {
-  border-color: var(--color-text-red);
+  border-color: var(--color-fn-red);
 }
 .library-eprow-verify-shifted:disabled {
   cursor: default;
@@ -1368,9 +1369,9 @@
    放这里而不是绿芯片上——绿芯片必须保持零焦点，否则 Tab 键在整季 24 个绿点上空转。 */
 .library-eprow-inspect {
   align-self: flex-start;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   background: transparent;
   border: 1px solid var(--color-border);
   border-radius: 4px;
@@ -1378,8 +1379,8 @@
   cursor: pointer;
 }
 .library-eprow-inspect:hover {
-  color: var(--color-text-primary);
-  border-color: var(--color-text-gray);
+  color: var(--color-foreground);
+  border-color: var(--color-weak);
 }
 
 /* ── 活动页传送带（ConveyorFeed，任务 3）─────────────────────────────────────
