@@ -18,7 +18,6 @@
 // 但问题必须看得见」——如果一条正常运行的 hero 把故障挤到屏幕下方，那就等于没看见。
 // 故障是这一屏唯一「需要用户知道」的事，其余都是「让他放心不管」。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { VStack } from '@astryxdesign/core/VStack'
 import { useSetupStatus, useWorkflowPending, useWorkflowWorkers } from '../api/hooks.js'
 import { api } from '../api/client.js'
 import type { WorkflowRecentRunDTO } from '../api/types.js'
@@ -160,8 +159,12 @@ export function ActivityPage() {
         ? null
         : <ActivityEmpty meta={pending.data.meta} recent={recent} now={now} onOpen={onOpen} />
 
+  // 三块之间 12px。这个 VStack 是**裸的**（没有 className），CSS 里没有任何选择器命中它——
+  // flex flex-col gap-3 就是布局的唯一来源，掉了整页会贴成一坨。逐值等价：Astryx 的
+  // gap={3} → --spacing-3 = 12px（tokens.stylex.ts:158），Tailwind gap-3 = 0.75rem，
+  // 而 styles.css 与 theme/scout.css 都没有改根字号，所以也是 12px。
   return (
-    <VStack gap={3}>
+    <div className="flex flex-col gap-3">
       {body}
       {openRun !== null ? (
         <RunDetail
@@ -177,6 +180,6 @@ export function ActivityPage() {
         request={rerunRequest}
         onClose={() => { setRerunRequest(null); workers.reload() }}
       />
-    </VStack>
+    </div>
   )
 }
