@@ -2,15 +2,11 @@
 // （mono）+ 分区海报墙（剧集/动漫/电影/其他）。三态齐（loading/error/empty）+ 筛选后零结果
 // 单独一态（区别于"库本身是空的"）。
 import { useState } from 'react'
-import { Section } from '@astryxdesign/core/Section'
-import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl'
-import { Grid } from '@astryxdesign/core/Grid'
-import { Heading, Text } from '@astryxdesign/core/Text'
-import { HStack } from '@astryxdesign/core/HStack'
-import { VStack } from '@astryxdesign/core/VStack'
-import { EmptyState } from '@astryxdesign/core/EmptyState'
-import { Skeleton } from '@astryxdesign/core/Skeleton'
-import { Button } from '@astryxdesign/core/Button'
+import { Section } from '../components/ui/section.js'
+import { Segmented } from '../components/ui/segmented.js'
+import { Skeleton } from '../components/ui/skeleton.js'
+import { EmptyState } from '../components/ui/empty-state.js'
+import { Button } from '../components/ui/button.js'
 import { useLibrary } from '../api/hooks.js'
 import { useT, type TKey } from '../i18n/useT.js'
 import { LIBRARY_FILTERS, type LibraryFilter, matchesLibraryFilter, groupBySection } from './filter.js'
@@ -25,21 +21,19 @@ const FILTER_LABEL_KEY: Record<LibraryFilter, TKey> = {
   full: 'library_filter_full',
 }
 
-const GRID_COLUMNS = { minWidth: 150, max: 8 } as const
-
 function SkeletonGrid() {
   return (
     <div aria-busy="true" aria-label="loading library">
-      <Grid columns={GRID_COLUMNS} gap={4}>
+      <div className="library-grid">
         {Array.from({ length: 12 }).map((_, i) => (
-          <VStack key={i} gap={2}>
+          <div className="flex flex-col gap-2" key={i}>
             <div className="library-poster-skel-frame">
-              <Skeleton radius={2} index={i} />
+              <Skeleton index={i} className="h-full w-full rounded-control" />
             </div>
-            <Skeleton height={12} width="70%" radius={1} index={i} />
-          </VStack>
+            <Skeleton index={i} className="h-3 w-[70%] rounded-[4px]" />
+          </div>
         ))}
-      </Grid>
+      </div>
     </div>
   )
 }
@@ -53,49 +47,54 @@ export function SeriesGrid() {
   const sections = groupBySection(visible)
 
   return (
-    <Section padding={4}>
-      <VStack gap={4}>
-        <HStack gap={3} vAlign="center" wrap="wrap">
-          <SegmentedControl value={filter} onChange={(v) => setFilter(v as LibraryFilter)} label="Library filter">
-            {LIBRARY_FILTERS.map((f) => (
-              <SegmentedControlItem key={f} value={f} label={t(FILTER_LABEL_KEY[f])} />
-            ))}
-          </SegmentedControl>
+    <Section>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Segmented
+            items={LIBRARY_FILTERS.map((f) => ({ value: f, label: t(FILTER_LABEL_KEY[f]) }))}
+            value={filter}
+            onChange={(v) => setFilter(v as LibraryFilter)}
+            label="Library filter"
+          />
           {data ? (
-            <Text type="code" color="secondary">
+            <span className="font-mono text-[13px] leading-5 text-muted-foreground">
               {formatResultCount(visible.length, lang)}
-            </Text>
+            </span>
           ) : null}
-        </HStack>
+        </div>
 
         {loading && !data ? (
           <SkeletonGrid />
         ) : error && !data ? (
           <EmptyState
             title={t('library_error_prefix') + error}
-            actions={<Button label={t('library_retry')} variant="secondary" onClick={reload} />}
+            actions={
+              <Button variant="secondary" onClick={reload}>
+                {t('library_retry')}
+              </Button>
+            }
           />
         ) : data && data.length === 0 ? (
           <EmptyState title={t('library_empty_title')} description={t('library_empty_desc')} />
         ) : visible.length === 0 ? (
           <EmptyState title={t('library_filtered_empty_title')} description={t('library_filtered_empty_desc')} />
         ) : (
-          <VStack gap={6}>
+          <div className="flex flex-col gap-6">
             {sections.map(({ section, items }) => (
-              <VStack gap={3} key={section}>
-                <Heading level={3} color="secondary">
+              <div className="flex flex-col gap-3" key={section}>
+                <h3 className="m-0 text-[16px] font-semibold leading-6 text-muted-foreground">
                   {sectionLabel(section, t)}
-                </Heading>
-                <Grid columns={GRID_COLUMNS} gap={4}>
+                </h3>
+                <div className="library-grid">
                   {items.map((it) => (
                     <PosterCard key={it.id} item={it} />
                   ))}
-                </Grid>
-              </VStack>
+                </div>
+              </div>
             ))}
-          </VStack>
+          </div>
         )}
-      </VStack>
+      </div>
     </Section>
   )
 }

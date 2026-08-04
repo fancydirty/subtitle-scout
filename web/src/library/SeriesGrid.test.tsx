@@ -156,6 +156,7 @@ describe('SeriesGrid：CSS 侧迁移锁', () => {
     expect(CSS).toContain('color-mix(in srgb, var(--color-background) 72%, transparent)')
     // 三处圆角统一到 --radius-control（8px）。
     expect(cssDecl('.library-poster-card', 'border-radius')).toBe('var(--radius-control)')
+    expect(cssDecl('.library-poster-frame', 'border-radius')).toBe('var(--radius-control)')
     expect(cssDecl('.library-poster-skel-frame', 'border-radius')).toBe('var(--radius-control)')
   })
 
@@ -164,5 +165,39 @@ describe('SeriesGrid：CSS 侧迁移锁', () => {
     expect(CSS).toContain(
       'repeat(auto-fill, minmax(min(100%, max(150px, calc((100% - 7 * 1rem) / 8))), 1fr))',
     )
+  })
+})
+
+// ── DOM 侧迁移锁（Task 19）
+describe('SeriesGrid：DOM 侧迁移锁', () => {
+  it('渲染后 DOM 里没有任何 astryx-* 类名（Section/Segmented/Skeleton/EmptyState 全换了新件）', async () => {
+    const data: LibraryItemDTO[] = [item({ id: 's1', name: 'Series One', section: '剧集' })]
+    vi.stubGlobal('fetch', mockFetch(data))
+    const { container } = renderGrid()
+    await screen.findByText('Series One')
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 分段仍是 radiogroup（既有 :63/:75/:90 靠 role=radio，这里补一条外层 role 的正向锁）。
+    expect(screen.getByRole('radiogroup')).toBeInTheDocument()
+    // 加载态的海报墙也走 .library-grid 类（不是 Astryx Grid 的行内模板）——骨架那条只锁了 loading 分支。
+    expect(container.querySelectorAll('.library-grid').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('海报标题不被截断成单行——hasTruncateTooltip 丢掉、没翻译成 truncate/title（背景四的漂移陷阱）', async () => {
+    const data: LibraryItemDTO[] = [item({ id: 's1', name: 'A Very Long Series Title That Would Wrap' })]
+    vi.stubGlobal('fetch', mockFetch(data))
+    renderGrid()
+    const titleEl = await screen.findByText('A Very Long Series Title That Would Wrap')
+    // block（display:block）保留，但**不能**有 truncate（那会 overflow:hidden + nowrap + 省略号）。
+    expect(titleEl.className.split(/\s+/)).toContain('block')
+    expect(titleEl.className).not.toMatch(/\btruncate\b/)
+    expect(titleEl).not.toHaveAttribute('title')
+  })
+
+  it('骨架屏走 .library-grid + .library-poster-skel-frame（网格类落地、不是 Astryx Grid 的行内模板）', () => {
+    // loading 且无 data：mockFetch 永不 resolve 才能停在 loading——这里用一个挂起的 fetch。
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})))
+    const { container } = renderGrid()
+    expect(container.querySelector('.library-grid')).toBeInTheDocument()
+    expect(container.querySelectorAll('.library-poster-skel-frame').length).toBe(12)
   })
 })
