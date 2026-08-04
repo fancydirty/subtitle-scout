@@ -54,12 +54,20 @@ export function SeriesGrid() {
   const [filter, setFilter] = useState<LibraryFilter>('all')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const [showNative, setShowNative] = useState(() => {
-    const stored = localStorage.getItem('scout-show-native')
-    return stored !== 'false' // fail-open：非 'false' 一律视为 ON
+    try {
+      const stored = localStorage.getItem('scout-show-native')
+      return stored !== 'false' // fail-open：非 'false' 一律视为 ON
+    } catch {
+      return true // localStorage 不可用时默认 ON
+    }
   })
 
   useEffect(() => {
-    localStorage.setItem('scout-show-native', String(showNative))
+    try {
+      localStorage.setItem('scout-show-native', String(showNative))
+    } catch {
+      // localStorage 不可用时静默忽略
+    }
   }, [showNative])
 
   const coverageFiltered = (data ?? []).filter((it) => matchesLibraryFilter(it.coverage, filter))
