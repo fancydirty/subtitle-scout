@@ -28,6 +28,7 @@ import {
 } from './subtitleVerifyApi.js'
 import {
   buildCompareDTO, type SubtitleCompareDeps, extractWaveformPeaks, type ExtractPeaksDeps,
+  resolveDurationMs,
 } from './subtitleCompareApi.js'
 import { findReferenceSource } from '../subtitleVerify/referenceSource.js'
 import { readSubtitleText, parseCues, hashSubtitleContent } from '../subtitleVerify/subtitleSpans.js'
@@ -786,7 +787,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         // 查找 item（episodes / movies 两表共用 item_id 空间）
-        const item = lib.getEpisode(itemId) ?? lib.getMovie(itemId)
+        const item = libRepo.getEpisode(itemId) ?? libRepo.getMovie(itemId)
         if (item === null) {
           res.writeHead(404, JSON_CT)
           res.end(JSON.stringify({ error: 'item not found' }))
