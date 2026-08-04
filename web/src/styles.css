@@ -850,8 +850,11 @@
 }
 
 /* dashboard-F6（Settings tab）：行为区/部署区/守备目录管理器——原子 CSS 集中区，同上面几段
-   一样的理由（mono 键值行/面包屑/目录浏览器列表是"组件语言表达不了"的技术级原子 UI），颜色
-   一律读 scout.ts 已定义的 token，不新起配色（DESIGN.md §10）。 */
+   一样的理由（mono 键值行/面包屑/目录浏览器列表是"组件语言表达不了"的技术级原子 UI）。
+   Plan C Task 27 token 迁移：本段颜色/字体一律读 tw.css @theme 新栈 token（foreground/
+   muted-foreground/weak/faint/fn-green/fn-red/secondary/card 已核对 scout.css 零遮蔽；
+   --color-accent 被 scout 遮蔽成柠檬绿，本段不碰），旧 Astryx token 引用段内清零；
+   --color-border 两栈同值，不动（DESIGN.md §10：不新起配色）。 */
 
 .settings-section {
   display: flex;
@@ -874,17 +877,17 @@
   min-width: 0;
 }
 .settings-deploy-key {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   min-width: 220px;
   flex-shrink: 0;
 }
 .settings-deploy-tail,
 .settings-deploy-value {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -892,18 +895,18 @@
 /* 圆点旁的同色词——DESIGN.md §4：状态=圆点+一个同色词，不能只靠点色。present/absent 是技术
    状态词，不翻译（同 Workflow decision 词表口径）。 */
 .settings-deploy-status-word {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
 }
 .settings-deploy-status-word-present {
-  color: var(--color-text-green);
+  color: var(--color-fn-green);
 }
 .settings-deploy-status-word-absent {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .settings-deploy-error {
   font-size: 12px;
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 
 /* ---- 守备目录管理器（RootsManager）：现有根列表行。 ---- */
@@ -912,15 +915,15 @@
   align-items: center;
   gap: 12px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
   min-width: 0;
 }
 .settings-root-path {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -928,15 +931,15 @@
   min-width: 0;
 }
 .settings-root-type {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 .settings-root-added {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -947,7 +950,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 2px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
 }
 .settings-dirbrowser-breadcrumb-segment {
@@ -961,32 +964,32 @@
   padding: 2px 3px;
   font: inherit;
   font-family: inherit;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   cursor: pointer;
   border-radius: 3px;
 }
 .settings-dirbrowser-breadcrumb-item:hover {
-  color: var(--color-text-primary);
-  background: var(--color-background-card);
+  color: var(--color-foreground);
+  background: var(--color-card);
 }
 .settings-dirbrowser-breadcrumb-current {
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   padding: 2px 3px;
 }
 .settings-dirbrowser-breadcrumb-sep {
-  color: var(--color-text-disabled);
+  color: var(--color-faint);
 }
 .settings-dirbrowser-entry {
   display: block;
   width: 100%;
   text-align: left;
-  background: var(--color-background-surface);
+  background: var(--color-secondary);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   padding: 6px 10px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   cursor: pointer;
 }
 .settings-dirbrowser-entry:hover {
@@ -994,12 +997,12 @@
 }
 .settings-dirbrowser-list-error {
   font-size: 11.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .settings-dirbrowser-current {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1010,7 +1013,7 @@
    不可读目录是正常路况，加根被拒是真错误）。 */
 .settings-error-text {
   font-size: 11.5px;
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 
 /* ── 鉴权 A2/A3（AuthShell + auth 表单）：setup 向导 / 一次性 API key 屏 / 登录页 / Security 区。

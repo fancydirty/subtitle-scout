@@ -111,3 +111,14 @@ describe('DeploySection：只读展示', () => {
     ).not.toBeInTheDocument()
   })
 })
+
+describe('DeploySection：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', () => {
+    render(
+      <I18nProvider>
+        <DeploySection deploy={asyncOf(DATA)} />
+      </I18nProvider>,
+    )
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

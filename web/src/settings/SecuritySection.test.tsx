@@ -67,3 +67,12 @@ describe('SecuritySection（鉴权 A3 Task 13）', () => {
     expect(regenerated).toBe(false)
   })
 })
+
+describe('SecuritySection：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ username: 'admin', apiKey: 'a'.repeat(28) + 'beef' }) }) as unknown as Response))
+    wrap()
+    await screen.findByText('admin')
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

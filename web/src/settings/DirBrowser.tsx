@@ -4,13 +4,15 @@
 // error（DESIGN.md §8：诚实呈现事实，不是警报）；当前路径一行 mono + "Add this directory" 按钮
 // → POST 成功后提示"已加入，下一轮扫描将自动摄取"（后端 roots 已动态化，这句是真的）。
 //
-// 面包屑与目录项都用自建 mono 按钮而不是 Astryx Breadcrumbs 组件——路径段是技术值，DESIGN.md
+// 面包屑与目录项都用自建 mono 按钮而不是现成 Breadcrumbs 组件——路径段是技术值，DESIGN.md
 // §3 铁律"mono 是技术层专属声音"，自建能精确控制成 mono 且方便测试定位。
+//
+// 控件栈（Plan C Task 27 迁移）：Astryx Text/Button/VStack/HStack 全卸——Button children 化
+// （label prop 退役；isLoading 期间 Astryx 本就 disable 按钮，故 disabled={adding} 守住同一语义，
+// spinner 不迁），VStack/HStack 换裸 flex div，Text 按控件事典映射到手写 span。自绘
+// breadcrumb/entry（原生 button + CSS 类）一个不动。
 import { useEffect, useState } from 'react'
-import { Text } from '@astryxdesign/core/Text'
-import { Button } from '@astryxdesign/core/Button'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
+import { Button } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import { breadcrumbSegments, joinDir } from './text.js'
@@ -102,23 +104,23 @@ export function DirBrowser({ startPath, onAdded }: Props) {
   }
 
   return (
-    <VStack gap={3}>
-      <Text type="supporting" color="secondary">
+    <div className="flex flex-col gap-3">
+      <span className="text-[11px] leading-4 text-muted-foreground">
         {t('settings_dirbrowser_description')}
-      </Text>
+      </span>
 
       <PathBreadcrumb path={currentPath} onNavigate={navigate} />
 
       {loading ? (
-        <Text type="code" color="secondary">
+        <span className="font-mono text-[13px] leading-5 text-muted-foreground">
           loading…
-        </Text>
+        </span>
       ) : listError ? (
         // 不可读目录如实灰字 error（DESIGN.md §8：这是路况事实，不是告警——NAS 挂载权限拒绝
         // 是正常路况）。
         <div className="settings-dirbrowser-list-error">{t('settings_dirbrowser_error_prefix') + listError}</div>
       ) : dirs && dirs.length > 0 ? (
-        <VStack gap={1}>
+        <div className="flex flex-col gap-1">
           {dirs.map((name) => (
             <button
               type="button"
@@ -128,31 +130,32 @@ export function DirBrowser({ startPath, onAdded }: Props) {
               {name}
             </button>
           ))}
-        </VStack>
+        </div>
       ) : (
-        <Text type="supporting" color="secondary">
+        <span className="text-[11px] leading-4 text-muted-foreground">
           {t('settings_dirbrowser_empty')}
-        </Text>
+        </span>
       )}
 
-      <HStack gap={2} vAlign="center">
+      <div className="flex items-center gap-2">
         <span className="settings-dirbrowser-current" title={currentPath}>
           {currentPath}
         </span>
         <Button
           size="sm"
-          variant="primary"
-          label={t('settings_dirbrowser_add_button')}
-          isLoading={adding}
+          variant="default"
+          disabled={adding}
           onClick={handleAdd}
-        />
-      </HStack>
+        >
+          {t('settings_dirbrowser_add_button')}
+        </Button>
+      </div>
       {addError ? <div className="settings-error-text">{t('settings_dirbrowser_add_error_prefix') + addError}</div> : null}
       {addedMsg ? (
-        <Text type="supporting" color="secondary">
+        <span className="text-[11px] leading-4 text-muted-foreground">
           {addedMsg}
-        </Text>
+        </span>
       ) : null}
-    </VStack>
+    </div>
   )
 }

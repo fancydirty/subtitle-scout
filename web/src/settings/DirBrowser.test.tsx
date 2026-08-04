@@ -134,3 +134,13 @@ describe('DirBrowser：加根', () => {
     expect(await screen.findByText(/path is not a directory/)).toBeInTheDocument()
   })
 })
+
+describe('DirBrowser：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', async () => {
+    const fetchMock = mockFetchRouted([{ path: '/api/v2/fs/list', body: { dirs: ['media'] } }])
+    vi.stubGlobal('fetch', fetchMock)
+    renderBrowser('/')
+    await screen.findByText('media')
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})
