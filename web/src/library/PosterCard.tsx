@@ -57,7 +57,7 @@ export function PosterCard({ item }: { item: LibraryItemDTO }) {
 
   if (item.kind === 'series') {
     return (
-      <a className="library-poster-card" href={libraryItemHref(item.id)} aria-label={title}>
+      <a className="library-poster-card" href={libraryItemHref({ kind: item.kind, libraryId: item.id })} aria-label={title}>
         <PosterFrame item={item} title={title} />
         {meta}
       </a>
