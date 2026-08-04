@@ -25,6 +25,8 @@ export interface LibraryItemDTO {
   section: string
   coverage: CoverageDTO
   job: LibraryJobDTO | null
+  originLang: string | null
+  nativeAudio: boolean
 }
 
 export interface SeriesEpisodeDTO {
@@ -504,4 +506,37 @@ export interface DormantTaskDTO {
   task: string
   targetLabel: string
   attempts: number
+}
+
+/** Plan B：文件级副本与字幕覆盖的明细行——MovieDetailDTO 的嵌套子类型。 */
+export interface ItemFileCoverage {
+  path: string
+  isMain: boolean
+  covered: boolean
+}
+
+/** Plan B：电影详情——14 键，与后端 MovieDetailDTO 手抄同步。 */
+export interface MovieDetailDTO {
+  id: string
+  name: string
+  chineseTitle: string | null
+  year: number | null
+  posterPath: string | null
+  path: string
+  subStatus: SubStatus
+  statusReason: string | null
+  recheckAfter: number | null
+  originLang: string | null
+  nativeAudio: boolean
+  files: ItemFileCoverage[]
+  subtitles: { language: string; path: string }[]
+  recentJobs: { id: number; state: string; priority: number; updatedAt: number }[]
+}
+
+/** Plan B：波形 peaks 响应——音频对齐可视化数据。 */
+export interface WaveformPeaksResponse {
+  itemId: string
+  peaks: number[]
+  sampleRate: number
+  durationMs: number
 }

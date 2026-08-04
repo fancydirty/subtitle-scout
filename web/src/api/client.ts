@@ -10,6 +10,7 @@ import type {
   AuthStatusDTO, AuthSecurityDTO,
   SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
   ShiftedItemDTO, DormantTaskDTO,
+  MovieDetailDTO, WaveformPeaksResponse,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -212,4 +213,12 @@ export const api = {
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: true }>('/api/v2/auth/change-password', { oldPassword, newPassword }),
   regenerateApiKey: () => post<{ apiKey: string }>('/api/v2/auth/regenerate-api-key'),
+
+  // Plan B: 电影详情
+  movieDetail: (id: string, signal?: AbortSignal) =>
+    get<MovieDetailDTO>(`/api/v2/library/movies/${id}`, signal),
+
+  // Plan B: 波形 peaks
+  waveformPeaks: (itemId: string, signal?: AbortSignal) =>
+    get<WaveformPeaksResponse>(`/api/v2/subtitle/waveform-peaks?itemId=${itemId}`, signal),
 }

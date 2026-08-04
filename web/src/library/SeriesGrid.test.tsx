@@ -37,6 +37,7 @@ function item(overrides: Partial<LibraryItemDTO>): LibraryItemDTO {
   return {
     id: 'tmdb:1', kind: 'series', name: 'Series A', chineseTitle: null, year: 2021, posterPath: null,
     section: '剧集', coverage: { covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 }, job: null,
+    originLang: null, nativeAudio: false,
     ...overrides,
   }
 }

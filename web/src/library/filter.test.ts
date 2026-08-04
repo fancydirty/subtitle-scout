@@ -38,6 +38,7 @@ describe('groupBySection', () => {
     return {
       id, kind: 'series', name: id, chineseTitle: null, year: null, posterPath: null,
       section, coverage: cov({}), job: null,
+      originLang: null, nativeAudio: false,
     }
   }
 
