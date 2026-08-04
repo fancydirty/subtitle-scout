@@ -158,6 +158,9 @@ export const en = {
   triage_retry_label: 'Retry',
 
   triage_pending_heading: 'Pending',
+  // 页头两键（§5.5/§5.7，Task 22）——副标题定调：parked 不是错误，不挡自动流程。
+  triage_page_title: 'Triage',
+  triage_subtitle: 'Items the system parked instead of guessing. Nothing here blocks automatic work.',
   // 认领一族键（triage_claimed_* / triage_claim_group_label / triage_dialog_* / triage_search_* /
   // triage_tmdbid_label / triage_season_* / triage_submit/cancel/close/results/partial_failure）
   // 已随认领退役整体删除（2026-07-28 两证据红线裁决）——不留不再被引用的字符串。

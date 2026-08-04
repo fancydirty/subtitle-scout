@@ -158,3 +158,39 @@ describe('TriagePage / Pending 区：CSS 侧迁移锁', () => {
     expect(cssDecl('.triage-dirgroup-tail', 'color')).toBe('var(--color-foreground)')
   })
 })
+
+// ── DOM 侧迁移锁（Task 22）——只锁 Pending 侧；ExcludedBox 子树仍是 Astryx（Task 23），不查全树。
+describe('TriagePage / Pending：DOM 侧迁移锁', () => {
+  it('页头标题+副标题在场；目录组头渲染首末行；Pending 侧无 astryx 类名', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: triageWithData() }]))
+    const { container } = renderPage()
+    await screen.findByText('S01')
+    // 页头（新拟副标题）。
+    expect(screen.getByText('Triage')).toBeInTheDocument()
+    expect(screen.getByText(/Nothing here blocks automatic work/)).toBeInTheDocument()
+    // 首末行（fixture: firstSeen=NOW-60s、lastAttempt=NOW → "First seen 1m ago, last attempt just now."）。
+    // 两个目录组各一条 → getAllByText + 长度断言（getByText 遇多匹配会抛）。
+    expect(screen.getAllByText(/First seen .* ago, last attempt/)).toHaveLength(2)
+    // Pending 箱（.triage-actionable-groups 子树）无 astryx——ExcludedBox 空桶时不渲染，故此处全树也净，
+    // 但为稳妥只查 Pending 箱子树。
+    const pendingBox = container.querySelector('.triage-actionable-groups')!.closest('.triage-box')!
+    expect(pendingBox.querySelector('[class*="astryx"]')).toBeNull()
+  })
+
+  it('目录组触发器是原生 button（不是 div——Radix Slot 不补 role/tabIndex），data-state 落在它身上锚 chevron', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: triageWithData() }]))
+    const { container } = renderPage()
+    await screen.findByText('S01')
+    // 可访问名查询：组头三段文本都在按钮内容里——div 触发器拿不到 role=button，这条当场红。
+    expect(screen.getByRole('button', { name: /S01/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Show B/ })).toBeInTheDocument()
+    // data-state 落在 button（Slot 合并子=触发器）上：chevron 的 group-data-[state=open] 选择器
+    // 前提成立——button 同时是 group 锚与 data-state 载体。数量=组数（2），每组一枚。
+    const triggers = container.querySelectorAll('.triage-dirgroup button[data-state]')
+    expect(triggers).toHaveLength(2)
+    for (const trig of triggers) {
+      expect(trig.classList.contains('group')).toBe(true)
+      expect(trig.getAttribute('data-state')).toBe('open') // Task defaultOpen
+    }
+  })
+})

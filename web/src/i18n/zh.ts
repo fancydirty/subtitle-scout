@@ -126,6 +126,9 @@ export const zh = {
   triage_retry_label: '重试',
 
   triage_pending_heading: '待甄别',
+  // 页头两键（§5.5/§5.7，Task 22）——副标题定调：parked 不是错误，不挡自动流程。
+  triage_page_title: '甄别',
+  triage_subtitle: '系统拿不准、宁可停放也不瞎猜的文件。这里的东西都不挡自动流程。',
   // 认领一族键已随认领退役整体删除——见 en.ts 同位置注释。
   triage_excluded_heading: '已排除的特典',
   triage_excluded_restore_label: '恢复',

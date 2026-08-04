@@ -13,7 +13,9 @@ export const Task = ({ defaultOpen = true, className, ...props }: TaskProps) => 
 )
 
 export type TaskTriggerProps = ComponentProps<typeof CollapsibleTrigger> & {
-  title: string
+  // title 只喂默认逃生口（children ?? …）——传了自定义 children 的接线方（Task 22-24 的组头）
+  // 不需要它，故 optional：必填会把"给一个死 prop"的义务推给每个接线点。
+  title?: string
 }
 
 export const TaskTrigger = ({ children, className, title, ...props }: TaskTriggerProps) => (

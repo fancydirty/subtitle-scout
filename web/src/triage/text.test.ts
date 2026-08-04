@@ -2,7 +2,7 @@
 // （groupPending，验收修复轮一 Task V2）与双语动态文案（fileCountLabel/moreLabel）。
 import { describe, it, expect } from 'vitest'
 import {
-  pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel,
+  pathTail, dirnameOf, groupPending, fileCountLabel, moreLabel, groupParkTimeLine, type DirGroup,
 } from './text.js'
 import type { ParkedItemDTO } from '../api/types.js'
 
@@ -116,4 +116,27 @@ describe('双语动态文案', () => {
     expect(moreLabel(4, 'zh')).toBe('还有 4 个…')
   })
   // relativeClaimedAgo 测试已随该函数退役删除（唯一消费方是已退役的 ClaimedBox）。
+})
+
+function grp(files: Array<{ firstSeen: number; lastAttempt: number }>): DirGroup {
+  return {
+    dir: '/media/tv/Show',
+    dirTail: 'Show',
+    files: files.map((f, i) => ({ path: `/media/tv/Show/e${i}.mkv`, parkReason: 'x', firstSeen: f.firstSeen, lastAttempt: f.lastAttempt })),
+  }
+}
+
+describe('groupParkTimeLine', () => {
+  const NOW = 1_000_000_000_000
+  it('取组内最早 firstSeen + 最晚 lastAttempt，档位同 relativeFinished（en）', () => {
+    const g = grp([
+      { firstSeen: NOW - 3 * 86_400_000, lastAttempt: NOW - 2 * 3_600_000 },
+      { firstSeen: NOW - 1 * 86_400_000, lastAttempt: NOW - 30 * 60_000 },
+    ])
+    expect(groupParkTimeLine(g, NOW, 'en')).toBe('First seen 3d ago, last attempt 30m ago.')
+  })
+  it('zh 平移', () => {
+    const g = grp([{ firstSeen: NOW - 2 * 3_600_000, lastAttempt: NOW - 1000 }])
+    expect(groupParkTimeLine(g, NOW, 'zh')).toBe('首次发现 2 小时前，最近尝试 刚刚。')
+  })
 })
