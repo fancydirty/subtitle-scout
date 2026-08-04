@@ -12,6 +12,7 @@ import type {
   ProvidersDTO,
   ShiftedItemDTO,
   DormantTaskDTO,
+  MovieDetailDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -186,6 +187,39 @@ export function useLibrarySeriesDetail(id: string | null): Async<LibrarySeriesDe
     setError(null)
     api
       .librarySeriesDetail(id, ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [id, nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** Plan B：电影详情——一次性（详情不轮询），id 为 null 时不发请求（同 useLibrarySeriesDetail 口径）。 */
+export function useLibraryMovieDetail(id: string | null): Async<MovieDetailDTO> {
+  const [data, setData] = useState<MovieDetailDTO | null>(null)
+  const [loading, setLoading] = useState(id != null)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    if (id == null) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .movieDetail(id, ctrl.signal)
       .then((d) => setData(d))
       .catch((e) => {
         if (!ctrl.signal.aborted) setError(String(e))

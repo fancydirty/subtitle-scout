@@ -20,7 +20,7 @@
 // 口径——自己发 GET /api/v2/triage，跟外壳共享的只有侧栏角标（那份 parked 计数来自
 // workflow/pending，不是 triage 端点，两者的数据源不同步是可接受的：15s 轮询 vs 手动 reload）。
 import { useState } from 'react'
-import { useWorkflowPending, useLibrarySeriesDetail } from '../api/hooks.js'
+import { useWorkflowPending, useLibrarySeriesDetail, useLibraryMovieDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
@@ -28,6 +28,7 @@ import { CommandK } from './CommandK.js'
 import { EngineBanner } from './EngineBanner.js'
 import { SeriesGrid } from '../library/SeriesGrid.js'
 import { SeriesPage } from '../library/SeriesPage.js'
+import { MovieDetailPage } from '../library/MovieDetailPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
 import { TriagePage } from '../triage/TriagePage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
@@ -45,6 +46,9 @@ export function Shell() {
   // "还在 loading"，第二级面包屑永远转圈）——用 route.libraryId 再收一道口子传给它。
   const seriesDetail = useLibrarySeriesDetail(route.libraryId)
   const activeSeriesDetail = route.libraryId ? seriesDetail : null
+
+  // Plan B：电影详情——同 seriesDetail 的口径，route.movieId 为 null 时 hook 不发请求。
+  const movieDetail = useLibraryMovieDetail(route.movieId ?? null)
 
   return (
     <>
@@ -76,7 +80,10 @@ export function Shell() {
             {/* 引擎关闭 banner 压所有主屏顶（spec A §5.6）。 */}
             <EngineBanner />
             {route.tab === 'library' &&
-              (route.libraryId ? (
+              (route.page === 'movie-detail' && route.movieId ? (
+                // Plan B：电影详情页（key=movieId 同 SeriesPage 的强制重挂载口径）
+                <MovieDetailPage key={route.movieId} detail={movieDetail} />
+              ) : route.libraryId ? (
                 // key=libraryId：切换到另一部剧时强制重挂载，SeriesPage 内部的格阵选中态
                 // （EpisodeDetail 开合）不会带着上一部剧的选中集号跨剧残留。
                 <SeriesPage key={route.libraryId} detail={seriesDetail} />
