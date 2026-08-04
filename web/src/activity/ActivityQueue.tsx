@@ -28,8 +28,6 @@
 // ⚠️ 数据字段名是 `pending.series`，**不是 `missingBySeason`**——后者是后端 LibraryRepo 的方法名
 //    （libraryRepo.ts:532），buildWorkflowPending 已把它译成 `series`（apiV2.ts:741）。spec
 //    判据 12 对前端代码 grep `missingBySeason` 有回归锁，必须为空。
-import { Text } from '@astryxdesign/core/Text'
-import { HStack } from '@astryxdesign/core/HStack'
 import { useT } from '../i18n/useT.js'
 import type { WorkflowPendingMovieDTO, WorkflowPendingSeriesDTO } from '../api/types.js'
 import { PosterThumb } from '../library/PosterThumb.js'
@@ -60,7 +58,10 @@ interface Props {
 function QueueRow({ posterPath, title, fact }: { posterPath: string | null; title: string; fact: string | null }) {
   const { lang } = useT()
   return (
-    <HStack gap={3} vAlign="center" className="act-row" data-testid="activity-queue-row">
+    // `flex` 是**承重**的：.act-row-poster 的 flex:none 与 .act-row-main 的 flex:1 写在
+    // styles.css 里，但 display:flex 只由这里给（CSS 的 .act-row 只有 width/padding/圆角）。
+    // gap-3 = 原 HStack gap={3}；items-center = 原 vAlign="center"。
+    <div className="act-row flex items-center gap-3" data-testid="activity-queue-row">
       {/* pending 的两个 DTO 里都**没有** posterPath（apiV2.ts:699-714 的两个形状只到
           sampleReason）。补一个后端字段不在本任务范围内，所以这里恒传 null——PosterThumb 走
           首字母占位，几何（38px 2:3）与真有图时逐像素一致，L5 的裁决落在框上而不落在图上。
@@ -69,16 +70,23 @@ function QueueRow({ posterPath, title, fact }: { posterPath: string | null; titl
         <PosterThumb posterPath={posterPath} name={title} />
       </div>
       <div className="act-row-main">
-        <Text type="body">{title}</Text>
+        {/* 原 Text type="body"（13px / 20px / 400）。**不给颜色**：body 的默认 ink 是
+            primary，由 <body> 继承而来，工具类里不需要复述。 */}
+        <span className="text-[13px] leading-5">{title}</span>
         {fact ? (
-          <Text type="code" color="secondary" className="act-row-fact">{fact}</Text>
+          // 颜色不给类：.act-row-fact 已在 styles.css 里给 --color-weak，且它未分层，
+          // 赢过任何 text-* 工具类（给了不生效，不是"多写一个"）。
+          <span className="act-row-fact font-mono text-[13px] leading-5">{fact}</span>
         ) : null}
       </div>
       {/* "等待中"：中性灰，不是徽章也不是黄。整个队列段只有这一档状态词（见文件头的尺寸比论证）。 */}
-      <Text type="code" color="secondary" className="act-row-status" data-testid="activity-queue-status">
+      <span
+        className="act-row-status font-mono text-[13px] leading-5"
+        data-testid="activity-queue-status"
+      >
         {queuedLabel(lang)}
-      </Text>
-    </HStack>
+      </span>
+    </div>
   )
 }
 
@@ -92,16 +100,24 @@ export function ActivityQueue({ series, movies, autoCheck }: Props) {
 
   return (
     <section className="act-section" data-testid="activity-queue">
-      <HStack vAlign="center" hAlign="between" className="act-section-head">
-        <Text type="body" color="secondary">{queueHeading(count, lang)}</Text>
+      {/* .act-section-head 在 CSS 里只有 width/padding，没有 display——这三个类是它的布局本体。
+          （注意 .act-section 与 .act-row-main 相反：那两个的 display:flex 在 CSS 里，
+          组件层一个 flex 类都不给。） */}
+      <div className="act-section-head flex items-center justify-between">
+        {/* 这一处**要**给颜色类：.act-section-head 里没人管颜色，原来的 color="secondary"
+            是真在生效的 #9aa1ac = text-muted-foreground。与上面那三处的区别就在这儿。 */}
+        <span className="text-[13px] leading-5 text-muted-foreground">{queueHeading(count, lang)}</span>
         {/* autoCheck 缺席时整枚标签不在场（见 Props 上方的论证）。给 false 时也**不写**
             "自动检查已关闭"——那是个警示语义，本段是低墨排的等待清单，不该在这里报警。 */}
         {autoCheck === true ? (
-          <Text type="code" color="secondary" className="act-auto-chip" data-testid="activity-auto-chip">
+          <span
+            className="act-auto-chip font-mono text-[13px] leading-5"
+            data-testid="activity-auto-chip"
+          >
             {lang === 'zh' ? '自动检查已开启' : 'auto-check on'}
-          </Text>
+          </span>
         ) : null}
-      </HStack>
+      </div>
       {series.map((row) => (
         // key 带 season：pending 的 series[] 是**逐季一行**，同一 seriesId 合法地出现多次
         // （S1 缺 3 集、S2 缺 5 集是两行），纯 seriesId 会撞 React key。

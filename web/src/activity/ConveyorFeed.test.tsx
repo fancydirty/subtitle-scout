@@ -318,3 +318,62 @@ describe('ConveyorFeed：JS 的 ROW_H 必须与 CSS 的行高一致', () => {
     expect(cssDecl('.conveyor-row', 'line-height')).toBe(`${ROW_H}px`)
   })
 })
+
+/** 把 window.matchMedia 临时换成"用户要求减少动效"，跑完立刻还原。
+ *  不用 vi.spyOn：window.matchMedia 在 setupTests.ts 里是直接赋值的普通属性，
+ *  spy 的 configurability 与 restoreAllMocks 的交互容易出玄学问题；显式存/还原更好懂。 */
+function withReducedMotion<T>(fn: () => T): T {
+  const real = window.matchMedia
+  window.matchMedia = ((q: string) => ({
+    matches: /prefers-reduced-motion/.test(q),
+    media: q,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
+  try {
+    return fn()
+  } finally {
+    window.matchMedia = real
+  }
+}
+
+describe('ConveyorFeed 最新行的 shimmer', () => {
+  it('最新一行的文字包在 Shimmer 的 span 里', () => {
+    const { container } = renderFeed(events(3))
+    const rows = rowsOf(container)
+    const last = rows[rows.length - 1]
+    // Shimmer 渲染 motion.span；文字不再是 .conveyor-row 的直接文本节点
+    const span = last.querySelector('span')
+    expect(span).not.toBeNull()
+    expect(span?.textContent).toBe(last.textContent)
+    expect(last.textContent).not.toBe('')
+  })
+
+  it('旧行不套 span，文字直接坐在 .conveyor-row 上', () => {
+    const { container } = renderFeed(events(3))
+    const rows = rowsOf(container)
+    for (const row of Array.from(rows).slice(0, -1)) {
+      expect(row.querySelector('span')).toBeNull()
+      expect(row.textContent).not.toBe('')
+    }
+  })
+
+  it('reduced-motion 下最新行退回纯文本', () => {
+    const { container } = withReducedMotion(() => renderFeed(events(3)))
+    const rows = rowsOf(container)
+    const last = rows[rows.length - 1]
+    expect(last.querySelector('span')).toBeNull()
+    expect(last.textContent).not.toBe('')
+  })
+
+  it('只有一条事件时，那一条就是最新行（走 shimmer）', () => {
+    const { container } = renderFeed(events(1))
+    const rows = rowsOf(container)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].querySelector('span')).not.toBeNull()
+  })
+})

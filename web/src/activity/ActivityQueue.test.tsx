@@ -265,3 +265,43 @@ describe('ActivityQueue：双语各渲染一次（DESIGN.md §7 运行态跟随 
     expect(screen.getByText('1 episode missing subtitles')).toBeInTheDocument()
   })
 })
+
+// ── 迁移锁（Astryx → Tailwind，Task 14）
+//
+// 为什么值得为"一个类名"加锁：本段的行布局从 Astryx HStack 换成了工具类，而
+// .act-row-poster{flex:none} / .act-row-main{flex:1} 两行留在 CSS 里指望父级是 flex 容器。
+// 删掉 .act-row 上的 `flex` 会让海报横向铺开、事实句掉行——**而 jsdom 不做布局，上面 20 条
+// 全绿**。所以这里破例断言类名：在这个点上类名就是机制本身，没有 CSS 声明可断言。
+describe('ActivityQueue：迁移锁', () => {
+  it('.act-row 带 flex（承重：海报的 flex:none 与主栏的 flex:1 全靠它）', () => {
+    const { container } = renderQueue({ series: [seriesRow()] })
+    const row = container.querySelector('.act-row')
+    expect(row).toBeTruthy()
+    expect(row!.className.split(/\s+/)).toContain('flex')
+    // 配对记录一个**不对称**：.act-row-main 的 display:flex 在 CSS 里，所以组件层不给
+    // flex 类。这条断言在这里的作用是：将来谁把 CSS 那行删了想"挪到组件层"，会先看见它。
+    expect(cssDecl('.act-row-main', 'display')).toBe('flex')
+  })
+
+  it('.act-section-head 带 flex + justify-between（CSS 里没有 display，布局全在类上）', () => {
+    const { container } = renderQueue({ series: [seriesRow()], autoCheck: true })
+    const head = container.querySelector('.act-section-head')
+    expect(head).toBeTruthy()
+    const classes = head!.className.split(/\s+/)
+    expect(classes).toContain('flex')
+    expect(classes).toContain('justify-between')
+    expect(cssDecl('.act-section-head', 'display')).toBeNull()
+  })
+
+  it('DOM 里不再有任何 astryx-* 类名（迁移完成锁）', () => {
+    const { container } = renderQueue({
+      series: [seriesRow()],
+      movies: [movieRow()],
+      autoCheck: true,
+    })
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 行/段/标签三层都渲染过了才算扫全（上面那份数据把三条分支都覆盖了）。
+    expect(screen.getAllByTestId('activity-queue-row')).toHaveLength(2)
+    expect(screen.getByTestId('activity-auto-chip')).toBeInTheDocument()
+  })
+})

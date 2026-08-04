@@ -69,9 +69,6 @@
 //   - 渲染不定态扫动条 = 那条动画的语义是"在干活"，而 held 的活恰恰**停着**——假话。
 //   - 不渲染 = 如实表达"这一屏不知道它走到哪了"。上面那句红字事实是完整的，缺一条装饰条
 //     不影响"问题看得见"这个唯一目的。
-import { Text } from '@astryxdesign/core/Text'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
 import { backdropUrl, posterUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import type { WorkflowHeldJobDTO } from '../api/types.js'
@@ -83,11 +80,12 @@ import { formatRetryIn } from './text.js'
  *
  *  为什么 title/posterPath/backdropPath 是**外部补的**而不是从 held 里读：held 只有
  *  `itemId`（own-id，形如 `tmdb:1396/s12e04`——一个技术标识符，铁律③不许直接上界面）。
- *  剧名与海报要靠 jobId 去 `recent[]` 里对上那一行才拿得到（ActivityFeed.tsx:153 的既有手法：
- *  `recent.find((r) => r.jobId === h.jobId)`）。那次 join 是接线层的事，本组件不做数据查找。 */
+ *  剧名与海报现在由后端 held DTO 自带（apiV2.ts 的那处 LEFT JOIN，ActivityPage 透传）——
+ *  早年按 jobId 去 recent[] 反查的 join 已退役：recent 是 20 条滑动窗口，held 停留天级，
+ *  join 会过期（详见 ActivityPage.tsx 的 held → StuckItem 段）。本组件不做数据查找。 */
 export interface StuckItem {
   held: WorkflowHeldJobDTO
-  /** 剧名/片名。接线层从 recent[] join 得到；查无时它会传 null。 */
+  /** 剧名/片名。后端 held DTO 自带（LEFT JOIN 富化）；查无时接线层传 null。 */
   title: string | null
   posterPath: string | null
   backdropPath: string | null
@@ -148,14 +146,24 @@ function StuckHero({ item, now }: { item: StuckItem; now: number }) {
         />
       ) : null}
       <div className="act-hero-scrim" aria-hidden="true" />
-      <HStack gap={4} className="act-hero-body">
+      {/* .act-hero-body 在 CSS 里只有 position/z-index/height，**没有 display**
+          （styles.css:1472-1476）——Astryx 的 HStack 曾是它 flex 的唯一来源。Task 13 给
+          ActivityHero.tsx 补的类**不作用于本文件**（CSS 类共用、组件不共用），所以这里要
+          原样再给一遍。 */}
+      <div className="act-hero-body flex gap-4">
         <div className="act-hero-poster" data-testid="activity-stuck-poster">
           <PosterThumb posterPath={item.posterPath} name={title} />
         </div>
-        <VStack gap={2} className="act-hero-main">
-          <VStack gap={1}>
-            <Text type="large" weight="semibold">{title}</Text>
-            <HStack gap={2} vAlign="center">
+        {/* 同上：.act-hero-main（styles.css:1505-1508）只有 min-width/flex，没有 display。 */}
+        <div className="act-hero-main flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
+            <span className="text-base font-semibold">{title}</span>
+            {/* ⚠️ 这个 flex 是**红点存亡**所系，不是装饰：.act-hero-pulse 在 CSS 里没有 display
+                （styles.css:1513-1520 只有 width/height/border-radius/flex/background/animation），
+                而它在下面是个裸 <span>。inline 元素忽略 width/height——那个 6px 红点全靠它作为
+                flex item 被 blockify。删掉这个 flex，"问题看得见"这一屏最核心的视觉信号直接
+                消失，而那条 dataset.tone === 'bad' 的断言照绿（jsdom 不做布局）。 */}
+            <div className="flex items-center gap-2">
               {/* 红点。复用 hero 那个 6px 脉动点的类，data-tone 走 phrase.tone（'bad'）——
                   颜色分支全在 CSS 里按属性选，本组件不写死任何色值（同 hero/ActivityDone
                   的既有手法）。红**只染这个 6px 点**。 */}
@@ -166,11 +174,17 @@ function StuckHero({ item, now }: { item: StuckItem; now: number }) {
                 data-testid="activity-stuck-dot"
               />
               {/* 红字事实。这就是"问题看得见"的全部——不需要点开任何东西。 */}
-              <Text type="body" className="act-stuck-fact" data-testid="activity-stuck-fact">
+              {/* 不给颜色类：红由 .act-stuck-fact 那条 CSS 给，而 styles.css 全文未分层，赢过
+                  @layer utilities 里的任何 text-* 工具类（给了不生效，只会骗人）。原文也
+                  本来没有 color prop——它一直是靠那条 CSS 变红的。 */}
+              <span
+                className="act-stuck-fact text-[13px] leading-5"
+                data-testid="activity-stuck-fact"
+              >
                 {phrase.text}
-              </Text>
-            </HStack>
-          </VStack>
+              </span>
+            </div>
+          </div>
           {/* 进度条：**保持在故障发生时的阶段**。
               - 不清零：width 就是故障时那个 stage 值。
               - 不变红条（铁律①红只给点不给块）：这里**刻意不给 data-tone**，条走的仍是
@@ -192,19 +206,24 @@ function StuckHero({ item, now }: { item: StuckItem; now: number }) {
               />
             </div>
           ) : null}
-          <HStack className="act-hero-facts" vAlign="center" hAlign="between">
+          <div className="act-hero-facts flex items-center justify-between">
             {/* "4 小时后重试"——那句"会重试"的承诺需要一个可核对的时刻，否则它是空安慰。
                 nextRetryAt 为 null 时**整行不渲染**：不编一个时刻（同空态 lastScanAt 的口径）。
                 ⚠️ 这里**不显示 errorAttempt**（"第 3 次重试"）——铁律②零数字，且那个计数是
                 内部退避梯的状态，对"我能不管了吗"这个问题没有任何帮助，只会放大焦虑。 */}
+            {/* 不给颜色类：.act-hero-facts > * 那条（Task 13 已迁成 --color-weak）未分层，
+                赢任何工具类。那一条是 hero 与本屏**共用**的，别在这里再迁一次。 */}
             {item.held.nextRetryAt !== null ? (
-              <Text type="code" data-testid="activity-stuck-retry">
+              <span
+                className="font-mono text-[13px] leading-5"
+                data-testid="activity-stuck-retry"
+              >
                 {formatRetryIn(item.held.nextRetryAt - now, lang)}
-              </Text>
+              </span>
             ) : null}
-          </HStack>
-        </VStack>
-      </HStack>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

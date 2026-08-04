@@ -1,21 +1,24 @@
 // web/src/settings/BehaviorSection.tsx：行为区（dashboard-F6）——五项行为级设置，逐项改动即时
-// 单键 PUT（成功以响应回写本地状态；失败行内红字 error，不弹窗，见 TextInput/Selector/
-// NumberInput/Switch 各自的 status 属性）。三态由这一个组件自理（DESIGN.md 铁律：Loading/
-// Empty/Error 三态每屏全覆盖），local 是这份状态的唯一写手——settings hook 的 data 只作首载
-// 种子，之后每次单键 PUT 成功都直接拿响应体覆盖 local，不需要重新 GET。
+// 单键 PUT（成功以响应回写本地状态；失败行内红字 error（各行末尾的 <p className="text-fn-red">），
+// 不弹窗）。三态由这一个组件自理（DESIGN.md 铁律：Loading/Empty/Error 三态每屏全覆盖），local 是
+// 这份状态的唯一写手——settings hook 的 data 只作首载种子，之后每次单键 PUT 成功都直接拿响应体
+// 覆盖 local，不需要重新 GET。
 //
 // 已知债务如实标注（DESIGN.md §8）：target_languages/scan_interval_ms/trace_retention_days 已真
 // 消费；hardsub_mode/exclude_extras 均已保存且被消费（cli/index.ts live getter，下一轮扫描/派发
 // 生效——救援官战役已上线）。ai_translate_enabled 行已迁至 TranslateSection.tsx（Wave 3）。
+//
+// 控件栈（Plan C Task 25 迁移）：Astryx Switch/TextInput/Selector/NumberInput/Button 全卸——
+// Switch/Input/Select/Button 走 components/ui 的 shadcn copy-in（Switch 的 value/onChange 改名
+// checked/onCheckedChange；Selector 换 Radix Select 五件；NumberInput 换 Input type="number"）。
+// 可及名契约：Astryx 把 label prop 提升为可及名，shadcn/Radix 件没有 label prop——全部手写
+// aria-label 对齐既有 12 条 role+name 测试契约（见 BehaviorSection.test.tsx 末尾迁移锁）。
 import { useEffect, useRef, useState } from 'react'
-import { Text } from '@astryxdesign/core/Text'
-import { TextInput } from '@astryxdesign/core/TextInput'
-import { NumberInput } from '@astryxdesign/core/NumberInput'
-import { Selector } from '@astryxdesign/core/Selector'
-import { Switch } from '@astryxdesign/core/Switch'
-import { Button } from '@astryxdesign/core/Button'
-import { VStack } from '@astryxdesign/core/VStack'
-import { EmptyState } from '@astryxdesign/core/EmptyState'
+import { Button } from '../components/ui/button.js'
+import { EmptyState } from '../components/ui/empty-state.js'
+import { Input } from '../components/ui/input.js'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select.js'
+import { Switch } from '../components/ui/switch.js'
 import { api } from '../api/client.js'
 import type { Async } from '../api/hooks.js'
 import type { SettingsDTO, SettingsKey } from '../api/types.js'
@@ -31,7 +34,7 @@ interface RowProps {
 }
 
 /** 单键提交共用的 saving/error 态——每行各自持有一份，互不干扰（改 target_languages 出错不会
- *  把 hardsub_mode 行也标红）。inFlightRef 是同步去重闸：TargetLanguagesRow 把 TextInput 和
+ *  把 hardsub_mode 行也标红）。inFlightRef 是同步去重闸：TargetLanguagesRow 把 Input 和
  *  Save 按钮包在同一个 onBlur 边界里（失焦或回车提交，见该行注释），点击 Save 时鼠标按下会先
  *  让输入框失焦（触发 onBlur→trySave），再是按钮 onClick（也调 trySave）——两次调用在同一个
  *  事件循环内背靠背发生，React state 还没来得及重渲染，仅凭 saving 这个 state 判断挡不住第二
@@ -80,59 +83,88 @@ function TargetLanguagesRow({ settings, onUpdated }: RowProps) {
   }
 
   return (
-    <VStack gap={2}>
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-medium leading-5 text-foreground">
+        {t('settings_target_languages_label')}
+      </span>
       {/* 失焦或回车提交（原生事件冒泡：React 的 onBlur/onKeyDown 挂在外层 div 上同样能捕获
           内部 <input> 触发的 blur/keydown），旁边另配一个显式 Save 按钮——两条路径调用同一个
           trySave，值未变时是空操作，不会发多余的 PUT。 */}
       <div onBlur={trySave} onKeyDown={(e) => { if (e.key === 'Enter') trySave() }}>
-        <VStack gap={2}>
-          <TextInput
-            label={t('settings_target_languages_label')}
+        <div className="flex flex-col gap-2">
+          <Input
+            aria-label={t('settings_target_languages_label')}
             value={draft}
-            onChange={setDraft}
+            onChange={(e) => setDraft(e.target.value)}
             placeholder={DEFAULT_TARGET_LANGUAGES}
-            description={t('settings_target_languages_description')}
-            status={error ? { type: 'error', message: error } : undefined}
           />
-          <Button
-            size="sm"
-            variant="secondary"
-            label={t('settings_target_languages_save_label')}
-            isLoading={saving}
-            onClick={trySave}
-          />
-        </VStack>
+          <div>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={saving}
+              onClick={trySave}
+            >
+              {t('settings_target_languages_save_label')}
+            </Button>
+          </div>
+        </div>
       </div>
-      <Text type="supporting" color="secondary">
+      <span className="text-[11px] leading-4 text-muted-foreground">
+        {t('settings_target_languages_description')}
+      </span>
+      <span className="text-[11px] leading-4 text-muted-foreground">
         {t('settings_target_languages_restart_note')}
-      </Text>
-    </VStack>
+      </span>
+      {error ? <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p> : null}
+    </div>
   )
 }
 
 function HardsubModeRow({ settings, onUpdated }: RowProps) {
   const { t } = useT()
   const { saving, error, commit } = useFieldCommit(onUpdated)
+  // settings 值可 null（未设）——后端 cli/index.ts 对未设/脏值一律降级 'off'，现网 Astryx 版
+  // 就用 text.ts 的 DEFAULT_HARDSUB_MODE（='off'）兜底显示，这里照原口径保留同一常量。
   const value = settings.hardsub_mode ?? DEFAULT_HARDSUB_MODE
 
   return (
-    <VStack gap={2}>
-      <Selector
-        label={t('settings_hardsub_mode_label')}
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-medium leading-5 text-foreground">
+        {t('settings_hardsub_mode_label')}
+      </span>
+      <Select
         value={value}
-        onChange={(v) => void commit('hardsub_mode', v)}
-        isDisabled={saving}
-        options={[
-          { value: 'off', label: t('settings_hardsub_mode_option_off') },
-          { value: 'agent', label: t('settings_hardsub_mode_option_agent') },
-          { value: 'aggressive', label: t('settings_hardsub_mode_option_aggressive') },
-        ]}
-        status={error ? { type: 'error', message: error } : undefined}
-      />
-      <Text type="supporting" color="secondary">
+        onValueChange={(v) => void commit('hardsub_mode', v)}
+        disabled={saving}
+      >
+        <SelectTrigger aria-label={t('settings_hardsub_mode_label')} className="max-w-[280px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {/* 每个 SelectItem 额外挂 onClick 提交：Astryx Selector 对"重选同一个值"也照常
+              onChange（既有用例就是在 null→'off' 兜底下重选 'Off' 并断言 PUT {hardsub_mode:'off'}），
+              而受控 Radix Select 的 onValueChange 对同值重选去重不发——鼠标提交因此走 item onClick
+              对齐 Astryx 语义；onValueChange 保留给键盘选择（Enter/Space 只触发它）。改值时两条
+              路径同拍各调一次 commit，第二次被 useFieldCommit 的 inFlightRef 同步闸挡掉。键盘同值
+              重选则提交零次（Enter→onValueChange 去重不发、item onClick 键盘不触发）——这条路径
+              在 Astryx/Radix 两版实现里都无测试覆盖，差异良性，别为它"修"出什么来。 */}
+          <SelectItem value="off" onClick={() => void commit('hardsub_mode', 'off')}>
+            {t('settings_hardsub_mode_option_off')}
+          </SelectItem>
+          <SelectItem value="agent" onClick={() => void commit('hardsub_mode', 'agent')}>
+            {t('settings_hardsub_mode_option_agent')}
+          </SelectItem>
+          <SelectItem value="aggressive" onClick={() => void commit('hardsub_mode', 'aggressive')}>
+            {t('settings_hardsub_mode_option_aggressive')}
+          </SelectItem>
+        </SelectContent>
+      </Select>
+      <span className="text-[11px] leading-4 text-muted-foreground">
         {t('settings_hardsub_mode_note')}
-      </Text>
-    </VStack>
+      </span>
+      {error ? <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p> : null}
+    </div>
   )
 }
 
@@ -142,18 +174,49 @@ function ExcludeExtrasRow({ settings, onUpdated }: RowProps) {
   const value = settings.exclude_extras === 'true'
 
   return (
-    <VStack gap={2}>
-      <Switch
-        label={t('settings_exclude_extras_label')}
-        value={value}
-        onChange={(checked) => void commit('exclude_extras', checked ? 'true' : 'false')}
-        isLoading={saving}
-        status={error ? { type: 'error', message: error } : undefined}
-      />
-      <Text type="supporting" color="secondary">
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <Switch
+          aria-label={t('settings_exclude_extras_label')}
+          checked={value}
+          onCheckedChange={(checked) => void commit('exclude_extras', checked ? 'true' : 'false')}
+          disabled={saving}
+        />
+        <span className="text-[13px] font-medium leading-5 text-foreground">
+          {t('settings_exclude_extras_label')}
+        </span>
+      </div>
+      <span className="text-[11px] leading-4 text-muted-foreground">
         {t('settings_exclude_extras_restart_note')}
-      </Text>
-    </VStack>
+      </span>
+      {error ? <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p> : null}
+    </div>
+  )
+}
+
+function EngineRow({ settings, onUpdated }: RowProps) {
+  const { t } = useT()
+  const { saving, error, commit } = useFieldCommit(onUpdated)
+  // settings.engineEnabled 是后端序列化的布尔别名（apiV2 settings GET 的 engineEnabled），
+  // 不经字符串解析；PUT 走 SettingsPatch 的 engine_enabled 键，响应回写同一别名。
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <Switch
+          aria-label={t('settings_engine_label')}
+          checked={settings.engineEnabled}
+          onCheckedChange={(checked) => void commit('engine_enabled', checked ? 'true' : 'false')}
+          disabled={saving}
+        />
+        <span className="text-[13px] font-medium leading-5 text-foreground">
+          {t('settings_engine_label')}
+        </span>
+      </div>
+      <span className="text-[11px] leading-4 text-muted-foreground">
+        {t('settings_engine_desc')}
+      </span>
+      {error ? <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p> : null}
+    </div>
   )
 }
 
@@ -174,29 +237,33 @@ function NumberSettingRow({
 
   const trySave = () => {
     if (draft == null) return
+    // NaN 闸：真实浏览器 type=number 会把非法输入清成 ''（走上面的 null 早退），jsdom 不拦——
+    // Number('12abc')=NaN 一旦漏进草稿，String(NaN)='NaN' 会被当成合法值发 PUT，这里永久关死。
+    if (Number.isNaN(draft)) return
     if (String(draft) === committedStr) return
     void commit(settingKey, String(draft))
   }
 
   return (
-    <VStack gap={2}>
-      <NumberInput
-        label={label}
-        value={draft}
-        onChange={setDraft}
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-medium leading-5 text-foreground">{label}</span>
+      {/* Input type="number"：role="spinbutton" 由 type 自动提供；空串↔null 互换保留既有
+          "清空即删"语义（jsdom 不拦非数字输入，但测试只填合法值，现状语义保持）。 */}
+      <Input
+        type="number"
+        aria-label={label}
+        value={draft ?? ''}
+        onChange={(e) => setDraft(e.target.value === '' ? null : Number(e.target.value))}
         onBlur={trySave}
-        onEnter={trySave}
-        isIntegerOnly
+        onKeyDown={(e) => { if (e.key === 'Enter') trySave() }}
         min={1}
+        step={1}
         placeholder={placeholder}
-        hasClear
-        isDisabled={saving}
-        status={error ? { type: 'error', message: error } : undefined}
+        disabled={saving}
       />
-      <Text type="supporting" color="secondary">
-        {note}
-      </Text>
-    </VStack>
+      <span className="text-[11px] leading-4 text-muted-foreground">{note}</span>
+      {error ? <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p> : null}
+    </div>
   )
 }
 
@@ -215,21 +282,25 @@ export function BehaviorSection({ settings }: Props) {
   if (settings.loading && !local) {
     return (
       <section className="settings-section">
-        <Text type="label">{t('settings_behavior_heading')}</Text>
-        <Text type="code" color="secondary">
+        <span className="text-[13px] font-medium leading-5 text-foreground">
+          {t('settings_behavior_heading')}
+        </span>
+        <span className="font-mono text-[13px] leading-5 text-muted-foreground">
           loading…
-        </Text>
+        </span>
       </section>
     )
   }
   if (settings.error && !local) {
     return (
       <section className="settings-section">
-        <Text type="label">{t('settings_behavior_heading')}</Text>
+        <span className="text-[13px] font-medium leading-5 text-foreground">
+          {t('settings_behavior_heading')}
+        </span>
         <EmptyState
           isCompact
           title={t('settings_error_prefix') + settings.error}
-          actions={<Button label={t('settings_retry_label')} variant="secondary" onClick={settings.reload} />}
+          actions={<Button variant="secondary" onClick={settings.reload}>{t('settings_retry_label')}</Button>}
         />
       </section>
     )
@@ -238,8 +309,11 @@ export function BehaviorSection({ settings }: Props) {
 
   return (
     <section className="settings-section">
-      <Text type="label">{t('settings_behavior_heading')}</Text>
-      <VStack gap={5}>
+      <span className="text-[13px] font-medium leading-5 text-foreground">
+        {t('settings_behavior_heading')}
+      </span>
+      <div className="flex flex-col gap-5">
+        <EngineRow settings={local} onUpdated={setLocal} />
         <TargetLanguagesRow settings={local} onUpdated={setLocal} />
         <HardsubModeRow settings={local} onUpdated={setLocal} />
         <ExcludeExtrasRow settings={local} onUpdated={setLocal} />
@@ -259,7 +333,7 @@ export function BehaviorSection({ settings }: Props) {
           placeholder={PLACEHOLDER_SCAN_INTERVAL_MS}
           note={t('settings_scan_interval_note')}
         />
-      </VStack>
+      </div>
     </section>
   )
 }

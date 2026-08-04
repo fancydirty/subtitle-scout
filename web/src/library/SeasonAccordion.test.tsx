@@ -47,8 +47,9 @@ describe('SeasonAccordion', () => {
 describe('SeasonAccordion：字幕校验接线', () => {
   const originalFetch = globalThis.fetch
 
-  // jsdom 没有 ResizeObserver，而 CompareTimeline 用它测容器宽度。不打这个桩，
-  // 面板一渲染就抛 ReferenceError —— 那是**测试环境**的缺口，不是产品行为，
+  // setupTests 自 Plan C Task 7 起垫了一个 no-op ResizeObserver，但 CompareTimeline 靠
+  // observe 回调拿容器宽度——no-op 桩永不回调，宽度恒 0，时间轴画不出来。所以本文件另
+  // stub 一个会回调 800×120 的功能版。这仍是**测试环境**的缺口，不是产品行为，
   // 用它来"证明"错误边界有效等于拿一个假故障糊弄自己（真实浏览器里 ResizeObserver 恒在）。
   // 同 InspectPanel.test.tsx 的既有口径。
   beforeEach(() => {
@@ -239,5 +240,20 @@ describe('SeasonAccordion：字幕校验接线', () => {
     })
     expect(container.querySelector('.library-season-head')).toBeTruthy()
     spy.mockRestore()
+  })
+
+  // ── DOM 侧迁移锁（Task 21）——只在不开面板的渲染上锁；点开红芯片会渲染 Astryx 的 InspectPanel（Task 30）。
+  it('默认展开、不点开面板 → 子树无 astryx-* 类名（EpisodeRow + VerifyChip 均已在新栈）', async () => {
+    stubVerify([
+      { itemId: 'ep1', state: 'ok', checked: true },
+      { itemId: 'ep2', state: 'shifted', checked: true },
+      { itemId: 'ep3', state: 'ok', checked: true },
+    ])
+    const { container } = render(
+      <I18nProvider initialLang="zh"><SeasonAccordion season={seasonDTO(3)} now={NOW} defaultOpen /></I18nProvider>,
+    )
+    // 等芯片渲染出来（验证请求回来），确认没点开面板时子树干净。
+    await screen.findByTestId('verify-chip-shifted')
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
   })
 })

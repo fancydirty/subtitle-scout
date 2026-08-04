@@ -25,6 +25,8 @@ export interface LibraryItemDTO {
   section: string
   coverage: CoverageDTO
   job: LibraryJobDTO | null
+  originLang: string | null
+  nativeAudio: boolean
 }
 
 export interface SeriesEpisodeDTO {
@@ -264,9 +266,17 @@ export interface TriageDTO {
  *  的 SETTINGS_KEYS/SettingsDTO 一致。每键 string|null，null=未设置（前端自行显示默认占位，
  *  见 web/src/settings/text.ts）。 */
 export type SettingsKey =
-  | 'target_languages' | 'hardsub_mode' | 'exclude_extras' | 'trace_retention_days' | 'scan_interval_ms'
+  | 'target_languages'
   | 'ai_translate_enabled'
-export type SettingsDTO = Record<SettingsKey, string | null>
+  | 'hardsub_mode'
+  | 'exclude_extras'
+  | 'scan_interval_ms'
+  | 'trace_retention_days'
+  | 'engine_enabled'
+  | 'provider:SUBHD_ENABLED'
+  | 'provider:ZIMUKU_ENABLED'
+
+export type SettingsDTO = Record<SettingsKey, string | null> & { engineEnabled: boolean }
 
 /** dashboard-F6：PUT /api/v2/settings 请求体——部分键值对象（全 string），与
  *  src/dashboard/apiV2.ts 的 updateSettings 输入形状一致（未列出的键不改动）。 */
@@ -419,4 +429,114 @@ export interface SubtitleCompareDTO {
   diagnosis: CompareDiagnosis
   /** 平移能不能修好它 = 给不给校正按钮。后端判，前端不再自己算。 */
   fixable: boolean
+}
+
+// ---------- Spec A 启动面 DTO（镜像 src/dashboard/setupApi.ts 的线形；键集合与 spec A §4.4 示例 JSON 逐键对齐） ----------
+
+export type SecretSource = 'env' | 'db' | 'none'
+
+/** 9 个密钥白名单（spec §4.1 枚举值；正文"10 个"系笔误）。与后端 SECRET_NAMES 同序。 */
+export const SECRET_NAMES = [
+  'TMDB_API_KEY',
+  'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
+  'ASSRT_TOKEN',
+  'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD',
+  'JIMAKU_API_KEY',
+] as const
+export type SecretName = (typeof SECRET_NAMES)[number]
+
+export type ValidateTarget = 'tmdb' | 'llm' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
+
+export interface ValidateResultDTO { ok: boolean; detail?: string; error?: string }
+
+export interface SetupSecretStateDTO { satisfied: boolean; source: SecretSource; masked: string | null }
+
+export interface SetupStatusDTO {
+  bootstrapComplete: boolean
+  tmdb: SetupSecretStateDTO
+  llm: { satisfied: boolean; source: SecretSource; model: string | null }
+  providers: {
+    assrt: SetupSecretStateDTO
+    opensubtitles: { satisfied: boolean; source: SecretSource; hasUsername: boolean; masked: string | null }
+    jimaku: SetupSecretStateDTO
+    subhd: { enabled: boolean; source: SecretSource }
+    zimuku: { enabled: boolean; source: SecretSource; captchaReady: boolean }
+  }
+  roots: { count: number }
+  engineEnabled: boolean
+}
+
+export interface SecretTestDTO { ok: boolean; at: number; error?: string }
+
+export interface ProviderRowDTO {
+  id: ValidateTarget
+  secrets: { name: SecretName; set: boolean; source: SecretSource; masked: string | null }[]
+  lastTest: SecretTestDTO | null
+}
+
+export interface ProvidersDTO { providers: ProviderRowDTO[] }
+
+/** PUT /api/v2/settings/secrets 的 200 体；400 时走 client.ts 既有 {error} 抽取，进不了本类型。 */
+export interface PutSecretResultDTO { ok: boolean; name?: SecretName; action?: 'set' | 'deleted' }
+
+/** Plan C（spec §4.1）：GET /api/v2/subtitle/shifted 的行。后端 `ShiftedItemDTO` 的手抄件。
+ *  **七键封闭**——`offsetMs`/`score`/`referenceTier`/`detail` 在 API 层就被剥掉了（铁律②），
+ *  前端想犯错也拿不到字段。四个媒体字段可 null（电影行或库里已无此集），此时降级 mono
+ *  itemId 占位（spec §8）。 */
+export interface ShiftedItemDTO {
+  itemId: string
+  seriesId: string | null
+  seriesName: string | null
+  season: number | null
+  episode: number | null
+  checkedAt: number
+  /** 有没有可还原的在先校正 = Undo 按钮给不给点。后端探的是备份文件存在性，与 revert
+   *  自己的前置门同源，所以"能点"与"点了会成功"天然一致。仍可能被 C-A1 陈旧门拒
+   *  （保护性拒绝，非按钮状态错误）。 */
+  hasPriorCorrection: boolean
+}
+
+/** Plan C（spec §4.2）：GET /api/v2/workflow/dormant 的行。后端 `DormantTaskDTO` 的手抄件。
+ *  **四键封闭。** 刻意没有 reason（现网是中文内部串，不透传——英文句子前端用 attempts 组）
+ *  也没有任何时刻字段（草稿 6 的 dormant 行不渲染时刻）。**零按钮**：唤醒通道 spec 明确
+ *  不补（§3 决策 1），别在 UI 上画一个打不通的按钮。 */
+export interface DormantTaskDTO {
+  jobId: number
+  /** 裸工具名（如 `find_subtitle`），mono 弱显。 */
+  task: string
+  targetLabel: string
+  attempts: number
+}
+
+/** Plan B：文件级副本与字幕覆盖的明细行——MovieDetailDTO 的嵌套子类型。 */
+export interface ItemFileCoverage {
+  path: string
+  isMain: boolean
+  covered: boolean
+}
+
+/** Plan B：电影详情——14 键，与后端 MovieDetailDTO 手抄同步。 */
+export interface MovieDetailDTO {
+  id: string
+  name: string
+  chineseTitle: string | null
+  year: number | null
+  posterPath: string | null
+  path: string
+  subStatus: SubStatus
+  statusReason: string | null
+  recheckAfter: number | null
+  originLang: string | null
+  nativeAudio: boolean
+  files: ItemFileCoverage[]
+  subtitles: { language: string; path: string }[]
+  recentJobs: { id: number; state: string; priority: number; updatedAt: number }[]
+}
+
+/** Plan B：波形 peaks 响应——音频对齐可视化数据。 */
+export interface WaveformPeaksResponse {
+  itemId: string
+  peaks: number[]
+  sampleRate: number
+  durationMs: number
 }

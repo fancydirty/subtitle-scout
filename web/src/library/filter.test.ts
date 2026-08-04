@@ -1,6 +1,6 @@
 // web/src/library/filter.test.ts
 import { describe, it, expect } from 'vitest'
-import { matchesLibraryFilter, groupBySection } from './filter.js'
+import { matchesLibraryFilter, groupBySection, applyKindFilter } from './filter.js'
 import type { CoverageDTO, LibraryItemDTO } from '../api/types.js'
 
 function cov(partial: Partial<CoverageDTO>): CoverageDTO {
@@ -33,11 +33,45 @@ describe('matchesLibraryFilter', () => {
   })
 })
 
+describe('applyKindFilter', () => {
+  function item(id: string, kind: 'series' | 'movie'): LibraryItemDTO {
+    return {
+      id, kind, name: id, chineseTitle: null, year: null, posterPath: null,
+      section: '剧集', coverage: cov({}), job: null,
+      originLang: null, nativeAudio: false,
+    }
+  }
+
+  const items: LibraryItemDTO[] = [
+    item('s1', 'series'),
+    item('m1', 'movie'),
+    item('s2', 'series'),
+  ]
+
+  it('all 返回全部', () => {
+    const result = applyKindFilter(items, 'all')
+    expect(result).toHaveLength(3)
+  })
+
+  it('series 只返回 series 行', () => {
+    const result = applyKindFilter(items, 'series')
+    expect(result).toHaveLength(2)
+    expect(result.every((x) => x.kind === 'series')).toBe(true)
+  })
+
+  it('movies 只返回 movie 行', () => {
+    const result = applyKindFilter(items, 'movies')
+    expect(result).toHaveLength(1)
+    expect(result[0].id).toBe('m1')
+  })
+})
+
 describe('groupBySection', () => {
   function item(id: string, section: string): LibraryItemDTO {
     return {
       id, kind: 'series', name: id, chineseTitle: null, year: null, posterPath: null,
       section, coverage: cov({}), job: null,
+      originLang: null, nativeAudio: false,
     }
   }
 

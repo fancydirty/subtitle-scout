@@ -153,6 +153,77 @@ describe('SubtitleVerifyRepo', () => {
     })
   })
 
+  describe('listShiftedWithMedia (Plan C：Triage/Library 偏移行的数据源)', () => {
+    it('把 shifted 行 join 到 episodes/series，按 checked_at 倒序', () => {
+      db.prepare(`INSERT INTO series (id, name, year) VALUES ('tmdb:100', 'The Rig', 2023)`).run()
+      db.prepare(
+        `INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+         VALUES ('tmdb:100/s2e3', 'tmdb:100', 2, 3, 'Ep3', '/media/rig.s02e03.mkv', 'covered', 1)`,
+      ).run()
+      db.prepare(
+        `INSERT INTO episodes (id, series_id, season, episode, name, path, sub_status, updated_at)
+         VALUES ('tmdb:100/s1e1', 'tmdb:100', 1, 1, 'Ep1', '/media/rig.s01e01.mkv', 'covered', 1)`,
+      ).run()
+      repo.upsertVerifyResult({
+        itemId: 'tmdb:100/s1e1', verdict: 'shifted', subtitlePath: '/media/rig.s01e01.zh.srt',
+        checkedAt: 1000, offsetMs: 2000, score: 0.9, referenceTier: 'embedded', subtitleHash: 'h1',
+      })
+      repo.upsertVerifyResult({
+        itemId: 'tmdb:100/s2e3', verdict: 'shifted', subtitlePath: '/media/rig.s02e03.zh.srt',
+        checkedAt: 3000, offsetMs: -1500, score: 0.8, referenceTier: 'embedded', subtitleHash: 'h2',
+      })
+
+      const rows = repo.listShiftedWithMedia()
+
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).toEqual({
+        item_id: 'tmdb:100/s2e3',
+        checked_at: 3000,
+        subtitle_path: '/media/rig.s02e03.zh.srt',
+        series_id: 'tmdb:100',
+        series_name: 'The Rig',
+        season: 2,
+        episode: 3,
+      })
+      expect(rows[1].item_id).toBe('tmdb:100/s1e1')
+    })
+
+    it('只出 shifted——aligned/unverifiable 一律不出', () => {
+      for (const [itemId, verdict] of [
+        ['tmdb:1/s1e1', 'aligned'],
+        ['tmdb:1/s1e2', 'unverifiable'],
+        ['tmdb:1/s1e3', 'shifted'],
+      ] as const) {
+        repo.upsertVerifyResult({
+          itemId, verdict, subtitlePath: `/media/${itemId}.srt`, checkedAt: 100, subtitleHash: 'h',
+        })
+      }
+      expect(repo.listShiftedWithMedia().map((r) => r.item_id)).toEqual(['tmdb:1/s1e3'])
+    })
+
+    it('join 不中（电影行 / 库里已无此集）时四个媒体字段为 null，行本身仍然出', () => {
+      repo.upsertVerifyResult({
+        itemId: 'tmdb:777', verdict: 'shifted', subtitlePath: '/media/movie.zh.srt',
+        checkedAt: 500, subtitleHash: 'h',
+      })
+      const rows = repo.listShiftedWithMedia()
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toEqual({
+        item_id: 'tmdb:777',
+        checked_at: 500,
+        subtitle_path: '/media/movie.zh.srt',
+        series_id: null,
+        series_name: null,
+        season: null,
+        episode: null,
+      })
+    })
+
+    it('空表返回空数组', () => {
+      expect(repo.listShiftedWithMedia()).toEqual([])
+    })
+  })
+
   describe('deleteForItem', () => {
     it('删除该 item 的结论行，返回删除行数', () => {
       repo.upsertVerifyResult(shifted)

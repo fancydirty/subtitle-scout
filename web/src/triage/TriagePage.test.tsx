@@ -9,10 +9,25 @@
 // duplicates 折叠箱更早退役（P2 起 ingest 不再产 duplicate-content 停车行，PendingBox.tsx
 // 文件头注释）——历史遗留的 duplicate-content 行不再单独分桶，随其余行进 actionable 分组区。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { TriagePage } from './TriagePage.js'
 import type { TriageDTO } from '../api/types.js'
+
+// CSS 断言走 vitest.config.ts:21 的 define 编译期替换（同 Task 19-21 各测试文件的既有底座）。
+// 本屏读 CSS 是因为 .triage-box/.triage-dirgroup 底色与 "+N more" 焦点环踩在跨栈撞车上
+// （--color-accent 被 scout 遮蔽成柠檬绿），只看 DOM 改错了也全绿。
+declare const __STYLES_CSS__: string
+const CSS = __STYLES_CSS__
+
+function cssDecl(selector: string, prop: string): string | null {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = new RegExp(`${esc}\\s*\\{([^}]*)\\}`).exec(CSS)?.[1]
+  if (!block) return null
+  const bare = block.replace(/\/\*[\s\S]*?\*\//g, '')
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(bare)
+  return m ? m[1]!.trim() : null
+}
 
 const NOW = Date.now()
 
@@ -128,5 +143,104 @@ describe('TriagePage：目录分组渲染', () => {
     vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: EMPTY_TRIAGE }]))
     renderPage()
     expect(await screen.findByText('Every file found its identifier')).toBeInTheDocument()
+  })
+})
+
+// ── CSS 侧迁移锁（Task 22）
+describe('TriagePage / Pending 区：CSS 侧迁移锁', () => {
+  it('箱底/组底走新栈 token（card/secondary），不是被 scout 遮蔽的 --color-accent', () => {
+    expect(cssDecl('.triage-box', 'background')).toBe('var(--color-card)')
+    expect(cssDecl('.triage-dirgroup', 'background')).toBe('var(--color-secondary)')
+    expect(cssDecl('.triage-box', 'border-radius')).toBe('var(--radius-control)')
+  })
+  it('"+N more" 折叠钮焦点环走 --color-ring（不是过渡期变绿的 --color-accent）', () => {
+    expect(cssDecl('.triage-dialog-more:focus-visible', 'outline')).toBe('2px solid var(--color-ring)')
+    expect(cssDecl('.triage-dirgroup-tail', 'color')).toBe('var(--color-foreground)')
+  })
+})
+
+// ── DOM 侧迁移锁（Task 22）——只锁 Pending 侧；ExcludedBox 子树仍是 Astryx（Task 23），不查全树。
+describe('TriagePage / Pending：DOM 侧迁移锁', () => {
+  it('页头标题+副标题在场；目录组头渲染首末行；Pending 侧无 astryx 类名', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: triageWithData() }]))
+    const { container } = renderPage()
+    await screen.findByText('S01')
+    // 页头（新拟副标题）。
+    expect(screen.getByText('Triage')).toBeInTheDocument()
+    expect(screen.getByText(/Nothing here blocks automatic work/)).toBeInTheDocument()
+    // 首末行（fixture: firstSeen=NOW-60s、lastAttempt=NOW → "First seen 1m ago, last attempt just now."）。
+    // 两个目录组各一条 → getAllByText + 长度断言（getByText 遇多匹配会抛）。
+    expect(screen.getAllByText(/First seen .* ago, last attempt/)).toHaveLength(2)
+    // Pending 箱（.triage-actionable-groups 子树）无 astryx——ExcludedBox 空桶时不渲染，故此处全树也净，
+    // 但为稳妥只查 Pending 箱子树。
+    const pendingBox = container.querySelector('.triage-actionable-groups')!.closest('.triage-box')!
+    expect(pendingBox.querySelector('[class*="astryx"]')).toBeNull()
+  })
+
+  it('目录组触发器是原生 button（不是 div——Radix Slot 不补 role/tabIndex），data-state 落在它身上锚 chevron', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([{ path: '/api/v2/triage', body: triageWithData() }]))
+    const { container } = renderPage()
+    await screen.findByText('S01')
+    // 可访问名查询：组头三段文本都在按钮内容里——div 触发器拿不到 role=button，这条当场红。
+    expect(screen.getByRole('button', { name: /S01/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Show B/ })).toBeInTheDocument()
+    // data-state 落在 button（Slot 合并子=触发器）上：chevron 的 group-data-[state=open] 选择器
+    // 前提成立——button 同时是 group 锚与 data-state 载体。数量=组数（2），每组一枚。
+    const triggers = container.querySelectorAll('.triage-dirgroup button[data-state]')
+    expect(triggers).toHaveLength(2)
+    for (const trig of triggers) {
+      expect(trig.classList.contains('group')).toBe(true)
+      expect(trig.getAttribute('data-state')).toBe('open') // Task defaultOpen
+    }
+  })
+})
+
+// ── 四区集成锁（Task 24：Triage 收口）
+describe('TriagePage：四区收件箱集成', () => {
+  const NOW2 = Date.now()
+  it('三端点齐 → Pending/Excluded/Timing/Dormant 四区齐渲染；dormant 零按钮；Restore 仅 excluded 桶', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([
+      { path: '/api/v2/triage', body: { pending: [
+        { path: '/media/tv/Show A/S01/a-ep1.mkv', parkReason: 'ambiguous match', firstSeen: NOW2 - 60_000, lastAttempt: NOW2 },
+        { path: '/media/tv/Extras/x.mkv', parkReason: 'excluded-extra', firstSeen: NOW2 - 60_000, lastAttempt: NOW2 },
+      ] } },
+      { path: '/api/v2/subtitle/shifted', body: [
+        { itemId: 'it-1', seriesId: 'tmdb:1', seriesName: 'Peacemaker', season: 2, episode: 3, checkedAt: NOW2 - 2 * 3_600_000, hasPriorCorrection: true },
+      ] },
+      { path: '/api/v2/workflow/dormant', body: [
+        { jobId: 1, task: 'find_subtitle', targetLabel: 'The Rig, Season 2', attempts: 5 },
+      ] },
+    ]))
+    const { container } = renderPage()
+
+    // 四区标题齐（Pending 恒在；Excluded/Timing/Dormant 有数据故在场）。
+    expect(await screen.findByText('Pending')).toBeInTheDocument()
+    expect(screen.getByText('Excluded extras')).toBeInTheDocument()
+    expect(await screen.findByText('Timing looks off')).toBeInTheDocument()
+    expect(await screen.findByText('Dormant tasks')).toBeInTheDocument()
+
+    // 四区按 §5.5 序竖排——DOM 顺序锁（Pending → Excluded → Timing → Dormant）。
+    const boxes = [...container.querySelectorAll('.triage-box')].map((el) => el.textContent ?? '')
+    expect(boxes).toHaveLength(4)
+    expect(boxes[0]).toContain('Pending')
+    expect(boxes[1]).toContain('Excluded extras')
+    expect(boxes[2]).toContain('Timing looks off')
+    expect(boxes[3]).toContain('Dormant tasks')
+
+    // Timing 行可 Fix；Dormant 行零按钮（唤醒通道不补）。
+    expect(screen.getByRole('button', { name: 'Fix the timing' })).toBeInTheDocument()
+    const dormantRow = screen.getByText('The Rig, Season 2').closest('.triage-box')!
+    expect(dormantRow.querySelectorAll('button')).toHaveLength(0)
+
+    // Restore 只出现在 excluded 桶（本集成锁名下三约之一，之前只写在名字里）——
+    // excluded 箱默认折叠（defaultOpen=false），Radix Collapsible 闭合时内容不挂载，
+    // 先展开再断言（评审 Fix 1 的机械适配：原句 getAllByRole 在折叠态找不到按钮）。
+    fireEvent.click(screen.getByRole('button', { name: /Excluded extras/ }))
+    const restoreButtons = await screen.findAllByRole('button', { name: 'Restore' })
+    expect(restoreButtons).toHaveLength(1)
+    expect(restoreButtons[0]!.closest('.triage-box')!.textContent).toContain('Excluded extras')
+
+    // C3（Task 23/24 评审携带，controller 裁决）：截断兜底平齐锁——Timing 行标签带 title。
+    expect(screen.getByText('Peacemaker S2E03')).toHaveAttribute('title', 'Peacemaker S2E03')
   })
 })

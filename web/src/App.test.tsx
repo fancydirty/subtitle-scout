@@ -232,3 +232,52 @@ describe('App 鉴权门（A2 Task 11）', () => {
     await waitFor(() => expect(screen.getByText('Behavior')).toBeInTheDocument())
   })
 })
+
+// spec A §5.1：AuthGate → BootstrapGate → wizard 接管接缝。上面所有用例的 setup/status 都是
+// 404（mockFetchRouted 未列）→ 只练过 fail-open 那条缝；接管路径此前只有 gate 单测（wizard 是
+// 打桩的）在看。这里用真 wizard 钉闭环：步组件挂载不发请求（StepLanguage 仅 Continue 时 PUT），
+// 两个 handler 就够。
+describe('App bootstrap 闸（spec A §5.1）', () => {
+  it('已登录但 bootstrapComplete:false → 真 wizard 步 1 接管，Shell 侧栏不渲染', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted([
+      { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
+      {
+        path: '/api/v2/setup/status',
+        body: {
+          bootstrapComplete: false,
+          tmdb: { satisfied: false, source: 'none', masked: null },
+          llm: { satisfied: false, source: 'none', model: null },
+          providers: {
+            assrt: { satisfied: false, source: 'none', masked: null },
+            opensubtitles: { satisfied: false, source: 'none', hasUsername: false, masked: null },
+            jimaku: { satisfied: false, source: 'none', masked: null },
+            subhd: { enabled: false, source: 'none' },
+            zimuku: { enabled: false, source: 'none', captchaReady: false },
+          },
+          roots: { count: 0 },
+          engineEnabled: false,
+        },
+      },
+    ]))
+    render(<App />)
+    // 真 wizard 步 1（Language）的 h1——i18n 默认 en，钉字面量。
+    expect(await screen.findByRole('heading', { name: 'Subtitle language' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Library' })).not.toBeInTheDocument()
+  })
+})
+
+// Plan C Task 28 复审折叠：skip-to-content 的 href 与 <main> 的 id 是字符串耦合——任何一边
+// 改名/打错字，键盘跳转静默失效且无任何测试变红。这一条把契约钉死（纯追加，存量断言不动）。
+describe('App 外壳无障碍契约（Task 28）', () => {
+  it('skip-to-content 链接指向 #scout-app-main，role=main 主区同 id 在场', async () => {
+    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
+    render(<App />)
+    // 等 Shell 落地（侧栏链接出现）再断言，避开 auth/status 探测的空拍。
+    await screen.findByRole('link', { name: 'Library' })
+    expect(screen.getByRole('link', { name: /skip to content/i })).toHaveAttribute(
+      'href',
+      '#scout-app-main',
+    )
+    expect(screen.getByRole('main')).toHaveAttribute('id', 'scout-app-main')
+  })
+})

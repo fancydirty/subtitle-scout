@@ -1091,4 +1091,74 @@ describe('ScoutDaemon', () => {
       expect(verifySweep).not.toHaveBeenCalled()
     })
   })
+
+describe('ScoutDaemon · 发动机闸（spec A §4.6/§4.7）', () => {
+  it('permitted=false → 产工作全闸、dbMaintenance 照跑、队列原样保留', async () => {
+    let permitted = true
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+    const executeJob = vi.fn(async () => {})
+    const dispatchTranslate = vi.fn()
+    const dbMaintenance = vi.fn()
+    const verifySweep = vi.fn(async () => {})
+    const daemon = new ScoutDaemon(makeDeps({
+      ingestTrigger, executeJob, dispatchTranslate, dbMaintenance, verifySweep,
+      workPermitted: () => permitted,
+    }))
+    await daemon.tick()   // tick1：permitted → boot ingest 成功，bootIngestPending 清掉
+    expect(ingestTrigger).toHaveBeenCalledOnce()
+    ingestTrigger.mockClear(); executeJob.mockClear(); dispatchTranslate.mockClear()
+    verifySweep.mockClear(); dbMaintenance.mockClear()
+
+    seedJob('s1', 1, now)
+    permitted = false
+    now += 7 * 3_600_000   // ingest（15min）与 verifySweep（6h）双双到点——不到点没法区分"闸"与"门"
+    await daemon.tick()    // tick2：全闸
+    expect(ingestTrigger).not.toHaveBeenCalled()
+    expect(dispatchTranslate).not.toHaveBeenCalled()
+    expect(verifySweep).not.toHaveBeenCalled()
+    expect(executeJob).not.toHaveBeenCalled()            // dispatch 被闸 → 无人 claim
+    expect(findJob('s1', 1)!.state).toBe('wanted')       // 暂停语义：队列原样保留，重开后续跑
+    expect(dbMaintenance).toHaveBeenCalledOnce()         // 维护循环不闸
+  })
+
+  it('workPermitted 缺省 → 一切照旧（回归：今天的行为）', async () => {
+    const ingestTrigger = vi.fn(async () => fakeIngestTriggerResult())
+    const executeJob = vi.fn(async () => {})
+    seedJob('s1', 1, now)
+    const daemon = new ScoutDaemon(makeDeps({ ingestTrigger, executeJob }))
+    await daemon.tick()
+    expect(ingestTrigger).toHaveBeenCalledOnce()
+    expect(executeJob).toHaveBeenCalledTimes(1)
+  })
+
+  it('off→on→off 翻转各记一行日志；首个 tick 不记（null 初始）', async () => {
+    let permitted = true
+    const daemon = new ScoutDaemon(makeDeps({
+      ingestTrigger: vi.fn(async () => fakeIngestTriggerResult()),
+      executeJob: vi.fn(async () => {}),
+      workPermitted: () => permitted,
+    }))
+    await daemon.tick()
+    expect(logs.filter((l) => l.startsWith('engine '))).toHaveLength(0)
+    permitted = false
+    await daemon.tick()
+    expect(logs.some((l) => l.includes('engine off'))).toBe(true)
+    expect(logs.some((l) => l.includes('engine on'))).toBe(false)
+    permitted = true
+    await daemon.tick()
+    expect(logs.some((l) => l.includes('engine on'))).toBe(true)
+  })
+
+  it('preTick 每 tick 最先被调用（先于 ingest/dispatch）', async () => {
+    const order: string[] = []
+    const daemon = new ScoutDaemon(makeDeps({
+      ingestTrigger: vi.fn(async () => { order.push('ingest'); return fakeIngestTriggerResult() }),
+      executeJob: vi.fn(async () => {}),
+      preTick: async () => { order.push('preTick') },
+    }))
+    await daemon.tick()
+    expect(order[0]).toBe('preTick')
+    expect(order).toContain('ingest')
+  })
+})
 })

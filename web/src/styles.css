@@ -1,20 +1,14 @@
-/* web/src/styles.css：全局 CSS 入口——只允许三行 import（reset → astryx 基础 → scout 主题产物），
-   顺序对 cascade layers 敏感，不可调换（DESIGN.md §1 / `astryx docs migration` 的
-   Cascade Layer Safety：reset 必须落在最底层，否则会静默盖掉组件样式）。
-   版式一律走 Astryx 组件/主题 token；这里只留一处无法用现成组件表达的原子级补充——⌘K 触发器
-   的发丝线胶囊（DESIGN.md §5：键帽用 mono 小字 + 发丝线框），颜色全部读 scout.ts 已定义的
-   token，不新起配色。 */
-@import "@astryxdesign/core/reset.css";
-@import "@astryxdesign/core/astryx.css";
-@import "./theme/scout.css";
+/* web/src/styles.css：全局 CSS 入口——基础样式 + 各屏自绘规则。
+   Plan C Task 31 起完全 Astryx-free：reset 由 tw.css 的 preflight 顶替，
+   颜色全部读新栈 token（tw.css @theme），不新起配色。 */
 
 .cmdk-trigger {
   display: inline-flex;
   align-items: center;
-  gap: var(--spacing-2, 8px);
+  gap: 8px;
   padding: 4px 10px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-element, 8px);
+  border-radius: var(--radius-control);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -24,25 +18,48 @@
   border-color: rgba(255, 255, 255, 0.14);
 }
 .cmdk-trigger:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring（#8b7cf6），不是 --color-accent：后者被 scout.css:86 遮蔽成柠檬绿，
+     过渡期焦点环会变绿；--color-ring 是新栈统一的焦点可供性 token（两查打 0）。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 
-/* 当前项高亮＝本屏唯一 accent 使用点（DESIGN.md §2/§6 铁律）。SideNavItem 的 isSelected
-   默认只读主题的 --color-neutral（中性灰底），组件源码逐参数解构、没留 xstyle/className
-   透传口（BaseProps 类型上有但运行时被吞掉），选不到组件层/主题层的口子，只能在这一层用
-   Astryx 自己输出的稳定 data 属性精确点名文字色。因为 astryx.css/scout.css 的组件样式都在
-   具名 @layer 里（astryx-base/astryx-theme），这条不带 @layer 的规则天然盖过它们，不需要
-   !important，也不影响其它任何组件。 */
-.astryx-side-nav-item[data-selected] {
-  color: var(--color-accent);
+/* skip-to-content 链接（自绘壳保留的 Astryx 无障碍件，AppShell.tsx）——常态视觉隐藏，
+   键盘聚焦时浮现为左上角胶囊。几何/配色读新栈 token，不新起配色。 */
+.skip-to-content {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.skip-to-content:focus {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  width: auto;
+  height: auto;
+  padding: 8px 16px;
+  margin: 0;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
+  z-index: 9999;
+  border-radius: var(--radius-control);
+  background: var(--color-secondary);
+  color: var(--color-foreground);
+  font-weight: 600;
+  text-decoration: none;
 }
 
 /* dashboard-F3（Library tab）：三层格阵 + 海报墙 + 右侧详情板——原子 CSS 集中区。
    跟上面 .cmdk-trigger 同一个理由：这几处是"组件语言表达不了"的原子级 UI（格阵网格、
    海报卡 hover 发丝线抬升、EpisodeCell 的 5px 语义点 + 斜体、固定右侧板），Card/
    ClickableCard/Text 都没留 xstyle 之外的样式逃生口（项目没装 @stylexjs/stylex 编译插件，
-   xstyle prop 本身也用不了），颜色一律读 scout.ts 已定义的 token，不新起配色
+   xstyle prop 本身也用不了），颜色/字族一律读 tw.css @theme 新栈 token，不新起配色
    （DESIGN.md §10）。 */
 
 /* ---- 海报卡（SeriesGrid / PosterCard）---- */
@@ -50,7 +67,7 @@
   display: block;
   color: inherit;
   text-decoration: none;
-  border-radius: var(--radius-element, 8px);
+  border-radius: var(--radius-control);
   transition: transform 120ms ease, border-color 120ms ease;
 }
 .library-poster-card:hover,
@@ -58,15 +75,20 @@
   transform: translateY(-2px);
 }
 .library-poster-card:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring（#8b7cf6），不是 --color-accent：后者两栈同名值不同（新 #16181f / 旧 scout 柠檬绿），
+     且旧值 @scope 到 [data-astryx-theme]，过渡期解析成绿、Task 31 卸载后又与框底 #16181f 同色 → 隐形。
+     --color-ring 是新栈统一的焦点可供性 token（button/input/select/segmented 都用它）。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 .library-poster-frame {
   position: relative;
-  border-radius: var(--radius-element, 8px);
+  border-radius: var(--radius-control);
   overflow: hidden;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* --color-secondary（#16181f），不是 --color-accent：--color-accent 被 scout 遮蔽成柠檬绿，
+     过渡期会把整墙海报框刷绿；--color-secondary 两栈都不遮蔽、恒 #16181f。 */
+  background: var(--color-secondary);
   transition: border-color 120ms ease;
 }
 .library-poster-card:hover .library-poster-frame {
@@ -84,8 +106,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-background-surface);
-  color: var(--color-text-gray);
+  background: var(--color-secondary);
+  color: var(--color-weak);
   font-size: 22px;
   font-weight: 600;
 }
@@ -99,7 +121,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 .library-poster-count {
   position: absolute;
@@ -107,14 +129,24 @@
   bottom: 6px;
   padding: 1px 4px;
   border-radius: 3px;
-  /* 海报底图深浅不定，角标需要一层不透明衬底才能保证可读——颜色仍读 --color-background-body
-     token（color-mix 派生半透明版本），不是新起一个硬编码色值。 */
-  background: color-mix(in srgb, var(--color-background-body) 72%, transparent);
+  /* 海报底图深浅不定，角标需要一层不透明衬底才能保证可读——颜色仍读页面底 token（color-mix 派生
+     半透明版本），不是新起硬编码色值。--color-background = #0b0c0f（scout --color-background-body
+     的等值 @theme 名，scout 不遮蔽 bare --color-background）。 */
+  background: color-mix(in srgb, var(--color-background) 72%, transparent);
 }
 .library-poster-skel-frame {
   aspect-ratio: 2 / 3;
-  border-radius: var(--radius-element, 8px);
+  border-radius: var(--radius-control);
   overflow: hidden;
+}
+.library-grid {
+  /* Astryx Grid columns=minWidth:150,max:8 gap=4 的逐值等价（buildCappedTemplate 解码）：
+     max:8 靠抬高每条轨道最小值来封顶列数；7*1rem 是 8 列之间的 7 道缝；--spacing-4=16px=1rem。
+     几何落 CSS 而非 Tailwind 任意值：本区段段头显式认领"格阵网格"（与 Activity 段"只管 padding
+     与 ink"相反）。 */
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, calc((100% - 7 * 1rem) / 8))), 1fr));
 }
 
 /* ---- 剧集页头部海报缩略（SeriesPage）---- */
@@ -122,10 +154,11 @@
   width: 72px;
   height: 104px;
   flex-shrink: 0;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   overflow: hidden;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* --color-secondary（#16181f），不是 --color-accent：后者被 scout 遮蔽成柠檬绿，过渡期会刷绿。 */
+  background: var(--color-secondary);
 }
 .library-detail-header-poster img {
   width: 100%;
@@ -155,7 +188,7 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: linear-gradient(180deg, rgba(11, 12, 15, 0.35) 0%, var(--color-background-body) 82%);
+  background: linear-gradient(180deg, rgba(11, 12, 15, 0.35) 0%, var(--color-background) 82%);
 }
 .library-hero-body {
   position: relative;
@@ -177,7 +210,6 @@
   padding: 9px 4px 9px 10px;
   border-left: 2px solid transparent;
 }
-/* 展开按钮：铺满除芯片外的整个宽度，视觉上完全透明——用户感知到的仍然是"点这一行"。 */
 .library-eprow-toggle {
   display: flex;
   align-items: center;
@@ -193,11 +225,13 @@
   text-align: left;
 }
 .library-eprow-head:hover {
-  background: var(--color-background-card);
+  background: var(--color-card);
 }
 .library-eprow-active > .library-eprow-head {
-  border-left-color: var(--color-accent);
-  background: var(--color-background-card);
+  /* --color-ring（紫），不是 --color-accent：后者被 scout 遮蔽成柠檬绿，过渡期是绿、卸载后变
+     #16181f 与卡底同色 → 左强调条隐形。三处可见强调（本条 + 焦点环 + 选中格）统一走 --color-ring。 */
+  border-left-color: var(--color-ring);
+  background: var(--color-card);
 }
 .library-eprow-spacer {
   flex: 1;
@@ -210,9 +244,9 @@
   border: 1px solid var(--color-border);
 }
 .library-eprow-tag {
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 0 5px;
@@ -235,8 +269,13 @@
   font: inherit;
   text-align: left;
 }
+/* 键盘焦点环（Task 23 焦点环清扫）——原生 button 季头此前只有浏览器默认虚框。 */
+.library-season-head:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
 .library-season-chev {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   transition: transform 0.18s ease;
   display: inline-block;
 }
@@ -258,9 +297,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* --color-secondary（#16181f），不是 --color-accent（后者过渡期柠檬绿）。 */
+  background: var(--color-secondary);
   cursor: pointer;
   font: inherit;
 }
@@ -268,45 +308,46 @@
   border-color: rgba(255, 255, 255, 0.14);
 }
 .ep-cell:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：见 .library-eprow-active 注释（三处可见强调统一）。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .ep-cell-selected {
-  border-color: var(--color-accent);
+  border-color: var(--color-ring);
 }
 .ep-cell-dashed {
   background: transparent;
   border-style: dashed;
 }
 .ep-cell-error {
-  background: color-mix(in srgb, var(--color-text-red) 6%, transparent);
+  background: color-mix(in srgb, var(--color-fn-red) 6%, transparent);
 }
 .ep-num {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .ep-cell-dashed .ep-num {
-  color: var(--color-text-disabled);
+  color: var(--color-faint);
 }
 .ep-cell-throttled .ep-num {
   font-style: italic;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .ep-cell-hardsub .ep-num {
-  /* 救援R5：硬字幕假定——独立样式非绿点。defineTheme 的 TokenName 是第三方设计系统的封闭
-     枚举，不能注册新主 token；灰绿间调直接用 color-mix 混两个既有合法 token 达成，同样表意
-     "已覆盖但不是外挂字幕已确认"，不占用/不冒充 --color-text-green。 */
-  color: color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%);
+  /* 救援R5：硬字幕假定——灰绿间调（已覆盖但非外挂确认），color-mix 混两个既有合法 token，
+     不占用/不冒充 --color-fn-green。 */
+  color: color-mix(in srgb, var(--color-fn-green) 55%, var(--color-weak) 45%);
 }
 .ep-cell-error .ep-num {
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 .ep-cell-partial .ep-num {
-  color: var(--color-text-orange);
+  /* 半覆盖：新栈无橙档，沿用唯一暖色 --color-fn-amber（#f2c00b，有意改值自旧 --color-text-orange #e8a33d）。 */
+  color: var(--color-fn-amber);
 }
 
-/* 5px 语义点——左上角，跟 mono 集号并排读（任务规格：EpisodeCell = 灰格 + 左上 5px 语义点）。 */
+/* 5px 语义点——左上角，跟 mono 集号并排读。 */
 .ep-dot {
   position: absolute;
   left: 3px;
@@ -316,43 +357,42 @@
   border-radius: 50%;
 }
 .ep-dot-covered {
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 .ep-dot-hardsub {
-  /* 灰绿间调，理由同上方 .ep-cell-hardsub .ep-num 注释。 */
-  background: color-mix(in srgb, var(--color-text-green) 55%, var(--color-text-gray) 45%);
+  background: color-mix(in srgb, var(--color-fn-green) 55%, var(--color-weak) 45%);
 }
 .ep-dot-partial {
-  /* 分体态：半覆盖——左半绿（有字幕）右半灰（缺字幕），用既有 token，不注册新 defineTheme token。 */
-  background: linear-gradient(90deg, var(--color-text-green) 50%, var(--color-text-gray) 50%);
+  background: linear-gradient(90deg, var(--color-fn-green) 50%, var(--color-weak) 50%);
 }
 .ep-dot-missing {
   background: transparent;
-  border: 1px solid var(--color-text-gray);
+  border: 1px solid var(--color-weak);
   width: 4px;
   height: 4px;
 }
 .ep-dot-throttled {
-  background: var(--color-text-gray);
+  background: var(--color-weak);
 }
 .ep-dot-error {
-  background: var(--color-text-red);
+  background: var(--color-fn-red);
 }
 .ep-cell-dashed-swatch {
   display: inline-block;
   width: 9px;
   height: 9px;
   border-radius: 2px;
-  border: 1px dashed var(--color-text-disabled);
+  border: 1px dashed var(--color-faint);
 }
 
-/* dashboard-F4（Workflow tab）：两列（Gaps | Activity，验收修复轮一 Task V4 design §B 叙事化
-   重排，原三泳道 Pending/Passes/Workers 收拢——Passes/Workers 折进右列 ActivityFeed 一个组件）
-   + Inngest 式痕迹行——原子 CSS 集中区，同上面几段一样的理由（密集技术网格/hover 揭示工具条，
-   组件语言表达不了）。颜色一律读 scout.ts 已定义的 token；蓝点/延展动画例外——DESIGN.md §5
-   明确把"active（在跑行的蓝点延展）"列为动效 allowlist 里唯一带颜色语义的一条，scout.ts 的
-   色表（§2）本身没有蓝，用的是 Astryx 基础主题自带的 --color-icon-blue（未被 scout.ts 覆盖，
-   见该文件），不是新起一个硬编码色值，也没有碰 scout.ts。 */
+/* dashboard-F4（Workflow 一族）：原子 CSS 集中区，同上面几段一样的理由（密集技术网格/hover
+   揭示工具条，组件语言表达不了）。泳道一族（Pending/Passes/Workers → 两列 Gaps|Activity 的
+   ActivityFeed）已随活动页重建退役（ActivityFeed.tsx 在 2bb6d10 删除），段内仍在服役的是
+   TraceRows/RunDetail 消费的 .wf-trace-* / .wf-rundetail-* / .wf-chip*；其余死类的删除是
+   独立清理，不混进 token 迁移。颜色一律读 tw.css @theme 新栈 token；蓝点/延展动画例外——
+   DESIGN.md §5 明确把"active（在跑行的蓝点延展）"列为动效 allowlist 里唯一带颜色语义的
+   一条，新栈色表（spec §5.1）本身没有蓝，用的是 tw.css 缺口区的 --color-fn-blue（#2694FE，
+   逐值取自 Astryx 基础主题 --color-icon-blue 暗色档，scout 未遮蔽），不是新起硬编码色值。 */
 
 /* ---- 两列 grid（Lanes）：窄列 Gaps | 宽列 Activity ---- */
 .wf-lanes {
@@ -368,11 +408,11 @@
   min-width: 0;
 }
 .wf-lane-heading {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 
 /* ---- Pending 泳道行 ---- */
@@ -388,8 +428,8 @@
 }
 .wf-pending-row {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
@@ -403,22 +443,22 @@
 }
 .wf-pending-row-title {
   font-size: 12.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   font-weight: 500;
 }
 .wf-pending-row-badge {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   flex-shrink: 0;
 }
 .wf-pending-row-throttled {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 /* 排队/中性=灰铁律（DESIGN.md §2）——throttled 是"停牌"不是"警报"，圆点固定读中性灰 token，
    不是黄不是蓝不是红。 */
@@ -426,25 +466,25 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-text-gray);
+  background: var(--color-weak);
   flex-shrink: 0;
 }
 .wf-pending-row-reason {
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* R2D-4：甄别计数入口——mono 灰事实句（不是按钮不是 CTA，不占 accent 预算），hover 才升半档。 */
 .wf-parked-note a {
-  font-family: var(--font-family-code);
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   text-decoration: none;
 }
 .wf-parked-note a:hover {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 /* Rerun 工具条（Switch + Button）——hover/focus-within 才揭示（DESIGN 任务规格："Pending 泳道
    每 series 行 hover 出 Rerun"），键盘用户 Tab 进开关/按钮时 focus-within 同样揭示，不靠
@@ -468,8 +508,8 @@
   width: 100%;
   text-align: left;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
   cursor: pointer;
   font: inherit;
@@ -480,20 +520,21 @@
   border-color: rgba(255, 255, 255, 0.14);
 }
 .wf-pass-card:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring（紫焦点环），不是 --color-accent：后者被 scout.css:86 遮蔽成柠檬绿。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .wf-pass-time {
   display: block;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .wf-pass-detail {
   display: block;
   margin-top: 3px;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -505,10 +546,10 @@
   margin-top: 6px;
 }
 .wf-chip {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
-  background: var(--color-background-body);
+  color: var(--color-weak);
+  background: var(--color-background);
   border: 1px solid var(--color-border);
   border-radius: 999px;
   padding: 1px 7px;
@@ -517,8 +558,8 @@
 /* ---- Now working 卡（design §B：原 WorkerCard 的替身，人话卡头 + phraseMode 直播）---- */
 .wf-now-card {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
 }
 .wf-now-header {
@@ -530,20 +571,20 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--color-icon-blue);
+  background: var(--color-fn-blue);
   flex-shrink: 0;
 }
 .wf-now-title {
   font-size: 12.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   font-weight: 500;
   flex: 1;
   min-width: 0;
 }
 .wf-now-elapsed {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 
@@ -558,16 +599,16 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.8;
 }
 .wf-trace-tool {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   flex-shrink: 0;
 }
 .wf-trace-args {
-  color: var(--color-text-disabled);
+  color: var(--color-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -575,7 +616,7 @@
   min-width: 0;
 }
 .wf-trace-took {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -588,14 +629,14 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-icon-blue);
+  background: var(--color-fn-blue);
   animation: wf-pulse 1.2s ease-in-out infinite;
 }
 .wf-trace-active-bar {
   margin-left: 6px;
   height: 1px;
   flex: 1;
-  background: linear-gradient(90deg, var(--color-icon-blue), transparent);
+  background: linear-gradient(90deg, var(--color-fn-blue), transparent);
   animation: wf-extend 1.6s ease-in-out infinite;
   transform-origin: left;
 }
@@ -627,7 +668,7 @@
   padding: 4px 6px;
   width: 100%;
   border: none;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   background: none;
   text-align: left;
   font: inherit;
@@ -639,11 +680,12 @@
   background: rgba(255, 255, 255, 0.04);
 }
 .wf-activity-row:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：同 .wf-pass-card 的理由。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .wf-activity-subject {
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -652,11 +694,11 @@
   max-width: 40%;
 }
 .wf-activity-sep {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 .wf-activity-phrase {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -664,15 +706,15 @@
   min-width: 0;
 }
 .wf-activity-count {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 .wf-activity-time {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 
@@ -682,10 +724,10 @@
   align-items: center;
   gap: 7px;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .wf-quota-text {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 
 /* ---- RunDetail 右侧板——固定、不跳页不弹 modal（DESIGN.md §5/§6，同 .library-detail-panel
@@ -698,7 +740,7 @@
   width: 400px;
   max-width: 90vw;
   overflow-y: auto;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border-left: 1px solid var(--color-border);
   z-index: 20;
 }
@@ -710,54 +752,49 @@
   color: inherit;
   cursor: pointer;
   padding: 2px;
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
 }
 .wf-rundetail-close:hover {
-  background: var(--color-background-surface);
+  background: var(--color-secondary);
 }
 .wf-rundetail-close:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：同 .wf-pass-card 的理由。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 
-/* dashboard-F5（Triage tab）：两箱——原子 CSS 集中区，同上面几段一样的理由
-   （mono 路径行/箱内密集行/进度行是"组件语言表达不了"的技术级原子 UI），颜色一律读 scout.ts
-   已定义的 token，不新起配色（DESIGN.md §10）。 */
+/* dashboard-F5（Triage tab）：四区单列收件箱——原子 CSS 集中区，同上面几段一样的理由
+   （mono 路径行/箱内密集行/进度行是"组件语言表达不了"的技术级原子 UI），颜色/字族一律读
+   tw.css @theme 新栈 token，不新起配色（DESIGN.md §10）。 */
 
-/* ---- 两箱布局（TriagePage）——桌面双列（中间给未来 excluded-extra 箱留的是代码位不是视觉
-   空位，见 TriagePage.tsx 头注释），窄屏单列堆叠。 ---- */
+/* ---- 四区单列收件箱（TriagePage，§5.5）——Pending → Excluded → Timing → Dormant 竖排。
+   （原两箱 1.2fr 1fr 双列已随四区升级退役。） ---- */
 .triage-boxes {
-  display: grid;
-  grid-template-columns: 1.2fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  align-items: start;
-}
-@media (max-width: 767px) {
-  .triage-boxes {
-    grid-template-columns: 1fr;
-  }
 }
 .triage-box {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-element, 8px);
-  background: var(--color-background-card);
+  border-radius: var(--radius-control);
+  background: var(--color-card);
   padding: 14px;
   min-width: 0;
 }
 
-/* ---- 待甄别箱目录组卡（PendingBox）——组头=目录尾段 mono + 文件计数，组体=文件名只读列表
-   （Claim 按钮已随认领退役，见 src/v2/triageOps.ts 头注释）。 ---- */
+/* ---- 待甄别箱目录组卡（PendingBox）——组头=目录尾段 mono + 文件计数 + 首末行，组体=文件名
+   只读列表（Claim 按钮已随认领退役，见 src/v2/triageOps.ts 头注释）。 ---- */
 .triage-dirgroup {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 10px 12px;
   min-width: 0;
 }
 .triage-dirgroup-tail {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -769,9 +806,9 @@
   margin-top: 8px;
 }
 .triage-dirgroup-file {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -784,14 +821,14 @@
   gap: 8px;
   padding: 6px 8px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   min-width: 0;
 }
 .triage-excluded-file {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -802,14 +839,14 @@
 /* 改名指引——箱底常驻灰字一条；路径形状本身 mono（技术值，DESIGN.md §3）。 */
 .triage-naming-hint {
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   padding-top: 8px;
   border-top: 1px solid var(--color-border);
 }
 .triage-naming-hint-code {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 
 /* "+N more" 折叠展开按钮（PendingBox 组卡文件列表用；类名的 dialog 前缀是历史遗留——它
@@ -820,21 +857,25 @@
   background: transparent;
   padding: 0;
   cursor: pointer;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .triage-dialog-more:hover {
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .triage-dialog-more:focus-visible {
-  outline: 2px solid var(--color-accent);
+  /* --color-ring：--color-accent 被 scout 遮蔽成柠檬绿，过渡期焦点环变绿、卸载后与背景同调。 */
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 
 /* dashboard-F6（Settings tab）：行为区/部署区/守备目录管理器——原子 CSS 集中区，同上面几段
-   一样的理由（mono 键值行/面包屑/目录浏览器列表是"组件语言表达不了"的技术级原子 UI），颜色
-   一律读 scout.ts 已定义的 token，不新起配色（DESIGN.md §10）。 */
+   一样的理由（mono 键值行/面包屑/目录浏览器列表是"组件语言表达不了"的技术级原子 UI）。
+   Plan C Task 27 token 迁移：本段颜色/字体一律读 tw.css @theme 新栈 token（foreground/
+   muted-foreground/weak/faint/fn-green/fn-red/secondary/card 已核对 scout.css 零遮蔽；
+   --color-accent 被 scout 遮蔽成柠檬绿，本段不碰），旧 Astryx token 引用段内清零；
+   --color-border 两栈同值，不动（DESIGN.md §10：不新起配色）。 */
 
 .settings-section {
   display: flex;
@@ -857,17 +898,17 @@
   min-width: 0;
 }
 .settings-deploy-key {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   min-width: 220px;
   flex-shrink: 0;
 }
 .settings-deploy-tail,
 .settings-deploy-value {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -875,18 +916,18 @@
 /* 圆点旁的同色词——DESIGN.md §4：状态=圆点+一个同色词，不能只靠点色。present/absent 是技术
    状态词，不翻译（同 Workflow decision 词表口径）。 */
 .settings-deploy-status-word {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
 }
 .settings-deploy-status-word-present {
-  color: var(--color-text-green);
+  color: var(--color-fn-green);
 }
 .settings-deploy-status-word-absent {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .settings-deploy-error {
   font-size: 12px;
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 
 /* ---- 守备目录管理器（RootsManager）：现有根列表行。 ---- */
@@ -895,15 +936,15 @@
   align-items: center;
   gap: 12px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
-  background: var(--color-background-surface);
+  border-radius: 4px;
+  background: var(--color-secondary);
   padding: 8px 10px;
   min-width: 0;
 }
 .settings-root-path {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -911,15 +952,15 @@
   min-width: 0;
 }
 .settings-root-type {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
 }
 .settings-root-added {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -930,7 +971,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 2px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
 }
 .settings-dirbrowser-breadcrumb-segment {
@@ -944,32 +985,32 @@
   padding: 2px 3px;
   font: inherit;
   font-family: inherit;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   cursor: pointer;
   border-radius: 3px;
 }
 .settings-dirbrowser-breadcrumb-item:hover {
-  color: var(--color-text-primary);
-  background: var(--color-background-card);
+  color: var(--color-foreground);
+  background: var(--color-card);
 }
 .settings-dirbrowser-breadcrumb-current {
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   padding: 2px 3px;
 }
 .settings-dirbrowser-breadcrumb-sep {
-  color: var(--color-text-disabled);
+  color: var(--color-faint);
 }
 .settings-dirbrowser-entry {
   display: block;
   width: 100%;
   text-align: left;
-  background: var(--color-background-surface);
+  background: var(--color-secondary);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-inner, 4px);
+  border-radius: 4px;
   padding: 6px 10px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   cursor: pointer;
 }
 .settings-dirbrowser-entry:hover {
@@ -977,12 +1018,12 @@
 }
 .settings-dirbrowser-list-error {
   font-size: 11.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .settings-dirbrowser-current {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -993,20 +1034,20 @@
    不可读目录是正常路况，加根被拒是真错误）。 */
 .settings-error-text {
   font-size: 11.5px;
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 
 /* ── 鉴权 A2/A3（AuthShell + auth 表单）：setup 向导 / 一次性 API key 屏 / 登录页 / Security 区。
    auth 界面是脱离常规 dashboard chrome 的独立面，输入框用原生 <input>（Astryx TextInput 不透传
-   autocomplete，而密码管理器契约不可谈判——见 design-recon）。所有配色一律读 scout.ts 已定义
-   token，不新起配色（DESIGN.md §10）。serif 全站仅此 auth-shell__title 一处。 ── */
+   autocomplete，而密码管理器契约不可谈判——见 design-recon）。所有配色一律读 tw.css @theme
+   新栈 token（Task 30 迁移），不新起配色（DESIGN.md §10）。serif 全站仅此 auth-shell__title 一处。 ── */
 .auth-shell {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: var(--color-background-body);
+  background: var(--color-background);
 }
 .auth-shell__card {
   width: 100%;
@@ -1016,11 +1057,11 @@
   gap: 16px;
 }
 .auth-shell__wordmark {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 /* 全站唯一衬线：web-safe serif 栈，绝不引 webfont。 */
 .auth-shell__title {
@@ -1029,7 +1070,7 @@
   font-weight: 500;
   line-height: 1.15;
   letter-spacing: -0.01em;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   margin: 0 0 4px;
 }
 .auth-form {
@@ -1044,7 +1085,7 @@
 }
 .auth-field__label {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .auth-field__input-wrap {
   position: relative;
@@ -1056,8 +1097,8 @@
   box-sizing: border-box;
   font-size: 13px;
   padding: 9px 11px;
-  color: var(--color-text-primary);
-  background: var(--color-background-surface);
+  color: var(--color-foreground);
+  background: var(--color-secondary);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   outline: none;
@@ -1067,14 +1108,16 @@
 .auth-field__input--pw {
   padding-right: 96px;
 }
-/* 焦点指示（审计前端 #9）：不只靠 1px 色变——加 2px 描边环（DESIGN 禁 drop-shadow，outline 允许）。 */
+/* 焦点指示（审计前端 #9）：不只靠 1px 色变——加 2px 描边环（DESIGN 禁 drop-shadow，outline 允许）。
+   Task 30：--color-accent（带 #96da26 硬编码回退）→ --color-ring——accent 被 scout.css:86 遮蔽成
+   柠檬绿，而那个硬编码回退本身就是同一个柠檬绿字面量，两处一起退役，焦点环统一走新栈紫。 */
 .auth-field__input:focus-visible {
-  border-color: var(--color-accent, #96da26);
-  outline: 2px solid var(--color-accent, #96da26);
+  border-color: var(--color-ring);
+  outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
 .auth-field__input:focus {
-  border-color: var(--color-accent, #96da26);
+  border-color: var(--color-ring);
 }
 .auth-field__toggle {
   position: absolute;
@@ -1083,53 +1126,54 @@
   border: none;
   cursor: pointer;
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   padding: 2px 4px;
 }
 .auth-field__hint {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   /* 未满足态用 secondary（~7.5:1）而非 gray（~4:1，11px 下低于 AA）——这正是用户需要读的规则状态
      （审计前端 #4）。 */
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .auth-field__hint--met {
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
 }
 .auth-intro {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   margin: 0;
 }
-/* 错误行：≤6% 红染做背景，绝不大红块（DESIGN.md §5）。文字用更亮的红（#fb7185，~5:1 达 AA），
-   而不是深红 token（#e11d48 在近黑上仅 ~4.2:1，13px 下低于 AA）——背景仍用 token 的 6% 染色
-   （审计前端 #3）。 */
+/* 错误行：≤6% 红染做背景，绝不大红块（DESIGN.md §5）；背景仍用 token 的 6% 染色（审计前端 #3）。
+   Task 30 有意改值：文字色 #fb7185（近黑上 ~5:1）→ var(--color-fn-red)（#e11d48，~4.2:1，
+   13px 下略低于 AA）——消灭全仓最后一个栈外硬编码色，错误文字统一走新栈语义红 token；
+   对比度让步是已知取舍，实机核对归 Task 33。 */
 .auth-error {
   font-size: 13px;
   padding: 8px 11px;
   border-radius: 4px;
-  color: #fb7185;
-  background: color-mix(in srgb, var(--color-text-red) 6%, transparent);
+  color: var(--color-fn-red);
+  background: color-mix(in srgb, var(--color-fn-red) 6%, transparent);
 }
 .auth-forgot {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   margin: 4px 0 0;
 }
 .auth-forgot code {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
 }
 /* 一次性 API key 屏：key 全宽 mono，作屏上唯一技术物件的仪式感。 */
 .auth-apikey {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 15px;
   word-break: break-all;
   padding: 12px;
   border-radius: 4px;
-  color: var(--color-text-primary);
-  background: var(--color-background-surface);
+  color: var(--color-foreground);
+  background: var(--color-secondary);
   border: 1px solid var(--color-border);
 }
 
@@ -1137,7 +1181,7 @@
    4px 圆角），只换颜色。只有绿和红两种，永远不会有第三种（用户裁决：不给黄色）。 */
 .library-eprow-verify {
   flex: none;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
   border-radius: 4px;
 }
@@ -1148,18 +1192,18 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 /* 红态：可点的文字芯片。红只染文字与边框，不铺底色块（用户裁决：红只给点不给块）。 */
 .library-eprow-verify-shifted {
-  color: var(--color-text-red);
-  border: 1px solid color-mix(in srgb, var(--color-text-red) 40%, transparent);
+  color: var(--color-fn-red);
+  border: 1px solid color-mix(in srgb, var(--color-fn-red) 40%, transparent);
   background: transparent;
   padding: 0 5px;
   cursor: pointer;
 }
 .library-eprow-verify-shifted:hover:not(:disabled) {
-  border-color: var(--color-text-red);
+  border-color: var(--color-fn-red);
 }
 .library-eprow-verify-shifted:disabled {
   cursor: default;
@@ -1188,9 +1232,9 @@
 .cmptl-tick {
   position: absolute;
   top: 0;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 9.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   border-left: 1px solid var(--color-border);
   padding-left: 3px;
   height: 16px;
@@ -1201,22 +1245,22 @@
   width: 78px;
   flex: none;
   text-align: right;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   line-height: 1.3;
 }
 .cmptl-trk-n em {
   display: block;
   font-style: normal;
   font-size: 9.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .cmptl-lane {
   flex: 1;
   position: relative;
   height: 30px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   overflow: hidden;
@@ -1241,41 +1285,41 @@
   overflow: hidden;
 }
 /* 参考轨用中性灰：它是"事实基准"，不该抢戏。 */
-.cmptl-blk-ref { background: var(--color-border); color: var(--color-text-secondary); }
+.cmptl-blk-ref { background: var(--color-border); color: var(--color-muted-foreground); }
 /* 待检轨用红：这是有问题的那一条。红只染块本身，不铺整轨底色（铁律：红只给点不给块）。 */
 .cmptl-blk-our {
-  background: color-mix(in srgb, var(--color-text-red) 20%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-text-red) 47%, transparent);
-  color: var(--color-text-red);
+  background: color-mix(in srgb, var(--color-fn-red) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fn-red) 47%, transparent);
+  color: var(--color-fn-red);
   top: 3px;
 }
 .cmptl-blk:hover { filter: brightness(1.45); }
 .cmptl-pop {
   position: absolute;
   z-index: 20;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border: 1px solid var(--color-border);
   border-radius: 6px;
   padding: 8px 11px;
   max-width: 280px;
   font-size: 11.5px;
   line-height: 1.55;
-  color: var(--color-text-primary);
+  color: var(--color-foreground);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.55);
   pointer-events: none;        /* 浮层不该拦住指针，否则移出块的事件收不到 */
 }
 .cmptl-pop-time {
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   margin-bottom: 4px;
 }
 .cmptl-hint {
   margin-left: 88px;
   margin-top: 7px;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 
 /* ── 检视面板（spec §4.2）────────────────────────────────────────────────── */
@@ -1284,9 +1328,9 @@
    铁律④：不可行动的事实不该染红，红留给"点这里能解决"。 */
 .vinspect-verdict {
   padding: 13px 15px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border-radius: 8px;
-  border-left: 2px solid var(--color-text-red);
+  border-left: 2px solid var(--color-fn-red);
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1303,20 +1347,20 @@
   font-size: 12px;
 }
 .vinspect-btn-fix {
-  background: var(--color-text-green);
-  border-color: var(--color-text-green);
+  background: var(--color-fn-green);
+  border-color: var(--color-fn-green);
   color: var(--color-background);
 }
 .vinspect-btn-fix:disabled { opacity: 0.6; cursor: default; }
 .vinspect-btn-keep {
   background: transparent;
   border-color: var(--color-border);
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 /* 云盘说明块：不是警告（没有红/黄），是一条关于存储限制的事实。 */
 .vinspect-cloud {
   padding: 15px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border: 1px dashed var(--color-border);
   border-radius: 8px;
   display: flex;
@@ -1326,10 +1370,10 @@
 .vinspect-cues { border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
 .vinspect-cues-h {
   padding: 8px 13px;
-  background: var(--color-background-card);
+  background: var(--color-card);
   border-bottom: 1px solid var(--color-border);
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
 }
 .vinspect-cues-body { max-height: 220px; overflow-y: auto; }
 .vinspect-cue {
@@ -1341,20 +1385,20 @@
 }
 .vinspect-cue:last-child { border-bottom: none; }
 .vinspect-cue-t {
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--color-text-gray);
+  color: var(--color-weak);
   flex: none;
 }
-.vinspect-cue-x { color: var(--color-text-secondary); }
+.vinspect-cue-x { color: var(--color-muted-foreground); }
 
 /* 展开区里的"看字幕时间轴"入口（2026-07-31）。低墨排：它是次要动作，不该抢简介的注意力。
    放这里而不是绿芯片上——绿芯片必须保持零焦点，否则 Tab 键在整季 24 个绿点上空转。 */
 .library-eprow-inspect {
   align-self: flex-start;
-  font-family: var(--font-code, ui-monospace);
+  font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--color-text-secondary);
+  color: var(--color-muted-foreground);
   background: transparent;
   border: 1px solid var(--color-border);
   border-radius: 4px;
@@ -1362,8 +1406,8 @@
   cursor: pointer;
 }
 .library-eprow-inspect:hover {
-  color: var(--color-text-primary);
-  border-color: var(--color-text-gray);
+  color: var(--color-foreground);
+  border-color: var(--color-weak);
 }
 
 /* ── 活动页传送带（ConveyorFeed，任务 3）─────────────────────────────────────
@@ -1396,7 +1440,7 @@
   height: 20px;
   line-height: 20px;
   flex: none;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   white-space: nowrap;
   overflow: hidden;
@@ -1410,12 +1454,18 @@
 }
 /* 亮度分级：由亮到暗，**用颜色不是 opacity**（状态→颜色，同 ai-elements ChainOfThought 的
    口径。opacity 会连带把行的背景/边框一起淡掉，且和硬出叠在一起会读成"渐隐遮罩"——正是裁决
-   L9 要去掉的东西）。最新一行最亮，往上逐级变暗，第 5 行及更旧统一压到最暗。 */
-.conveyor-row:nth-last-child(1) { color: var(--color-text-primary); }
-.conveyor-row:nth-last-child(2) { color: var(--color-text-secondary); }
-.conveyor-row:nth-last-child(3) { color: var(--color-text-gray); }
-.conveyor-row:nth-last-child(4) { color: var(--color-text-disabled); }
-.conveyor-row:nth-last-child(n + 5) { color: var(--color-text-disabled); }
+   L9 要去掉的东西）。
+   最新行（nth-last-child(1)）常态下由 AI Elements Shimmer 渲染（bg-clip-text，自带高光
+   扫动）；往上三档 muted-foreground → weak → faint 递弱，第 5 行起与第 4 档同色。
+   reduced-motion 下最新行退回纯文本，取 :nth-last-child(1) 的 --color-foreground 兜底色。 */
+/* 第 1 档（最新行）在常态下由 Shimmer 用 bg-clip-text 自己画字，不吃这里的 color；
+   这条规则是 prefers-reduced-motion 下退回纯文本时的兜底色——不要因为"看起来没用"删掉。
+   值 #e6e8ec 与 Shimmer 高光色 var(--color-foreground) 相同，两条路径峰值亮度一致。 */
+.conveyor-row:nth-last-child(1) { color: var(--color-foreground); }
+.conveyor-row:nth-last-child(2) { color: var(--color-muted-foreground); }
+.conveyor-row:nth-last-child(3) { color: var(--color-weak); }
+.conveyor-row:nth-last-child(4) { color: var(--color-faint); }
+.conveyor-row:nth-last-child(n + 5) { color: var(--color-faint); }
 @keyframes conveyor-in {
   from { transform: translateY(-2px); }
   to { transform: translateY(0); }
@@ -1441,7 +1491,7 @@
   /* 约 36% 视口（用户裁决的比例）。min-height 而不是固定 height：传送带 3 行 + 两条事实行在
      窄屏下可能更高，压死高度会切掉内容。 */
   min-height: 36vh;
-  background: var(--color-background-card);
+  background: var(--color-card);
 }
 .act-hero-backdrop {
   position: absolute;
@@ -1473,11 +1523,19 @@
 .act-hero-poster {
   aspect-ratio: 2 / 3;
   width: 132px;
+  /* flex:none / .act-hero-main 的 flex:1 都在这里，但**父元素的 display:flex 不在 CSS 里**
+     ——它由 ActivityHero.tsx 的 `.act-hero-body flex` 类给（迁移前是 Astryx HStack）。
+     删了那个类这两行就一起失效，而 jsdom 不做布局、测试照绿。 */
   flex: none;
   border-radius: 8px;
   overflow: hidden;
+  /* --color-border 新旧两栈同名同值（rgba(255,255,255,0.07)），故沿用不改名：
+     Task 31 删掉 scout.css 后由 tw.css 的那条声明接管。 */
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* 面色用 --color-secondary（#16181f，与旧 --color-background-surface 同值）。
+     **不用 --color-accent**：它在 scout.css:86 被遮蔽成柠檬绿（#96DA26）——那是高位强调色，
+     不是底色。换栈过渡期铁律：背景类迁移一律去 secondary，不去 accent。 */
+  background: var(--color-secondary);
 }
 .act-hero-poster img {
   width: 100%;
@@ -1492,10 +1550,10 @@
   min-width: 0;
   flex: 1;
 }
-/* 脉动点：正常运行态唯一的"活着"信号。中性紫——**不是黄**（黄在本设计系统里是警示色
-   --color-text-orange，用它报"一切正常"会和真警示撞语义），也不是 accent lime（每屏至多一处
-   亮色的配额留给别处，DESIGN.md §2）。
-   data-tone 是给下一个任务（卡死态转红）留的色彩钩子：颜色按属性选，组件层不写死任何红。 */
+/* 脉动点：正常运行态唯一的"活着"信号。中性紫——**不是黄**（黄是警示色，用它报"一切正常"会
+   和真警示撞语义。旧 Astryx 主题里那个黄叫 --color-text-orange，新栈的 tw.css 索性一个黄
+   token 都不提供），也不是 accent lime（每屏至多一处亮色的配额留给别处，DESIGN.md §2）。
+   data-tone 是给卡死态（ActivityStuck）留的色彩钩子：颜色按属性选，组件层不写死任何红。 */
 .act-hero-pulse {
   width: 6px;
   height: 6px;
@@ -1521,7 +1579,7 @@
 .act-hero-bar-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--color-text-secondary);
+  background: var(--color-muted-foreground);
   /* 阶段推进时平滑滑过去而不是跳。stage 是单调不倒退的（stage.ts 的 advanceStage），
      所以这个 transition 永远只往右走。 */
   transition: width 400ms cubic-bezier(0.32, 0.72, 0, 1);
@@ -1541,9 +1599,18 @@
   width: 100%;
 }
 .act-hero-facts > * {
-  /* ink 弱（DESIGN.md §2 的 --color-text-gray）。Text 的 color 枚举里没有 gray，
-     所以这一档只能在 CSS 里给——不是绕过设计系统，是补它没暴露的那一档。 */
-  color: var(--color-text-gray);
+  /* ink 弱那一档。**hero 与 ActivityStuck 共用这一条**（stuck 的事实行也套
+     .act-hero-facts，见 :1749 的注释：它刻意不另写颜色，就吃这条）。
+     组件层一律**不给颜色类**。迁移前这里有第二个颜色来源（Astryx Text 的 color="secondary"
+     → scout.css 的 .astryx-text.secondary），本规则赢它靠的**不是特异性**（`.act-hero-facts > *`
+     是 0-1-0，输给 0-2-0），而是 **cascade layer**：那条在 @layer astryx-theme 里
+     （scout.css:79 开层、:275 那行），而 styles.css 全文没有 @layer——未分层声明优先于任何
+     分层声明。所以这一档 ink 一直是 --color-text-gray 而不是 secondary，迁移后颜色只剩这
+     一个来源，那场架不存在了。
+     ⚠️ 同一条 layer 规则也意味着：在套了本类的元素上加 text-* 颜色工具类是**无效**的
+     （Tailwind utilities 也在 @layer utilities 里，照样输给未分层的本条）。
+     ⚠️ 本条的 token 迁移属于 Task 13，Task 16 不要再迁一次。 */
+  color: var(--color-weak);
 }
 @media (prefers-reduced-motion: reduce) {
   .act-hero-pulse,
@@ -1607,7 +1674,9 @@
   padding: 2px 8px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
-  color: var(--color-text-gray);
+  /* 未分层声明，赢过组件层任何 text-* 工具类（Tailwind utilities 在 @layer utilities 里）。
+     所以组件层不给颜色类——给了也不生效。 */
+  color: var(--color-weak);
 }
 .act-row {
   width: 100%;
@@ -1622,11 +1691,16 @@
 .act-row-poster {
   aspect-ratio: 2 / 3;
   width: 38px;
+  /* flex:none 指望父级 .act-row 是 flex 容器，而那个 display:flex **不在 CSS 里**——
+     它由 ActivityQueue.tsx 的 `.act-row flex` 类给。删了那个类这行就失效，
+     且 jsdom 不做布局、测试照绿。 */
   flex: none;
   border-radius: 4px;
   overflow: hidden;
   border: 1px solid var(--color-border);
-  background: var(--color-background-surface);
+  /* 用 --color-secondary 不用 --color-accent：scout.css:86 把 --color-accent 遮蔽成
+     柠檬绿 #96DA26（@scope Theme 全 app 生效直到 Task 31），过渡期铁律。 */
+  background: var(--color-secondary);
 }
 .act-row-poster img {
   width: 100%;
@@ -1645,12 +1719,14 @@
   flex: 1;
 }
 .act-row-fact {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 .act-row-status,
 .act-row-time {
   flex: none;
-  color: var(--color-text-gray);
+  /* ⚠️ 这一条**队列段与完成段共用**（.act-row-time 是 ActivityDone 的类）。
+     token 迁移在 Task 14 做一次，Task 15 不要再迁它。 */
+  color: var(--color-weak);
 }
 /* 完成行的 6px 语义点——**只有绿和红，没有黄**（铁律①）。neutral 是灰（spec §6 的三档），
    不是黄不是蓝；"没找到能放心用的字幕"落在这一档（铁律④：等待/失败是面向下一步的中性事实）。
@@ -1661,16 +1737,16 @@
   height: 6px;
   border-radius: 50%;
   flex: none;
-  background: var(--color-text-gray);
+  background: var(--color-weak);
 }
 .act-row-dot[data-tone='ok'] {
-  background: var(--color-text-green);
+  background: var(--color-fn-green);
 }
 .act-row-dot[data-tone='bad'] {
-  background: var(--color-text-red);
+  background: var(--color-fn-red);
 }
 .act-row-dot[data-tone='neutral'] {
-  background: var(--color-text-gray);
+  background: var(--color-weak);
 }
 
 /* ── 活动页的空态（ActivityEmpty，任务 7 / spec §7.1）─────────────────────────
@@ -1692,7 +1768,7 @@
    它是这一屏唯一"崩掉的系统 produce 不出来"的元件（NN/G：未加限定的空态最伤信任），所以它
    **必须在场**——但它是给人核对的背景事实，不是主角，故用 ink 最弱的一档。 */
 .act-empty-stamp {
-  color: var(--color-text-gray);
+  color: var(--color-weak);
 }
 
 /* ── 活动页的卡死态（ActivityStuck，任务 7 / spec §7.2）───────────────────────
@@ -1715,13 +1791,13 @@
    任何色值，颜色只在 CSS 里按属性选。
    同时**停掉脉动动画**：脉动的语义是"在动"，而这活停着，让它继续呼吸是假话。 */
 .act-hero-pulse[data-tone='bad'] {
-  background: var(--color-text-red);
+  background: var(--color-fn-red);
   animation: none;
 }
 /* 红字事实（"遇到问题——会重试"）。这是整个卡死态里唯一的一处红色文字——问题看得见的全部
    载体，不需要任何展开入口（L7）。 */
 .act-stuck-fact {
-  color: var(--color-text-red);
+  color: var(--color-fn-red);
 }
 /* "4 小时后重试" 那行走弱色 mono——它继承 hero 既有的 .act-hero-facts > * 那条 gray 规则，
    这里刻意**不为它另写一条颜色**（尤其不给红）：那句"会重试"的承诺需要一个可核对的时刻，

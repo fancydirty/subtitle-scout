@@ -13,16 +13,21 @@
 //
 // 快照回放（GET runs/:id/trace 拿事件列表，静态 TraceRows 渲染，live=false——回放≠直播，
 // 无蓝点延展）两种来源完全一致，只是 id 的取值不同（pass.id vs run.id，都是 runs 表的行 id）。
+//
+// Plan C Task 30 换栈：Kbd/Switch/Divider/Button/StatusDot 换 components/ui 件，Text/VStack/
+// HStack 换标签+工具类（事典逐值映射：code=font-mono text-[13px] leading-5、supporting=
+// text-[11px] leading-4、secondary=muted-foreground、primary=foreground；VStack/HStack gap
+// 刻度两栈相同；Switch 的 labelSpacing="hug" 是 Astryx 排印 prop，丢掉——开关与标签的 8px
+// 间距由行内 flex gap-2 给出，与 Astryx 容器 gap --spacing-2=8px 同值）。自管 role="dialog"
+// 与 .wf-rundetail-panel 固定面板几何不动（它从来不是 Astryx 件）。回放错误行有意改值：
+// 灰字 → text-fn-red + role="alert"（事典继承——错误事实句要让读屏器播报，朴素 span 是静默的）。
 import { useState } from 'react'
-import { useHotkeys } from '@astryxdesign/core/hooks'
-import { Kbd } from '@astryxdesign/core/Kbd'
-import { Switch } from '@astryxdesign/core/Switch'
-import { Text } from '@astryxdesign/core/Text'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
-import { Divider } from '@astryxdesign/core/Divider'
-import { Button } from '@astryxdesign/core/Button'
-import { StatusDot } from '@astryxdesign/core/StatusDot'
+import { useHotkeys } from '../lib/useHotkeys.js'
+import { Kbd } from '../components/ui/kbd.js'
+import { Switch } from '../components/ui/switch.js'
+import { Separator } from '../components/ui/separator.js'
+import { Button } from '../components/ui/button.js'
+import { StatusDot } from '../components/ui/status-dot.js'
 import { useRunTrace } from '../api/hooks.js'
 import { useT } from '../i18n/useT.js'
 import { relativeAgo } from './time.js'
@@ -66,15 +71,15 @@ export function RunDetail({ source, now, onClose, onRerun }: Props) {
 
   return (
     <div className="wf-rundetail-panel" role="dialog" aria-label={`${kindLabel} ${id}`}>
-      <HStack gap={2} vAlign="center" justify="between" padding={4}>
-        <VStack gap={0.5}>
-          <Text type="code" color="secondary">
+      <div className="flex items-center justify-between gap-2 p-4">
+        <div className="flex flex-col gap-0.5">
+          <span className="font-mono text-[13px] leading-5 text-muted-foreground">
             {kindLabel} #{id}
-          </Text>
-          <Text type="supporting" color="secondary">
+          </span>
+          <span className="text-[11px] leading-4 text-muted-foreground">
             {relativeAgo(now - at)}
-          </Text>
-        </VStack>
+          </span>
+        </div>
         <button
           type="button"
           className="wf-rundetail-close"
@@ -83,44 +88,44 @@ export function RunDetail({ source, now, onClose, onRerun }: Props) {
         >
           <Kbd keys="escape" />
         </button>
-      </HStack>
-      <Divider />
+      </div>
+      <Separator />
 
-      <VStack gap={4} padding={4}>
+      <div className="flex flex-col gap-4 p-4">
         {decision ? (
           // 状态=圆点+同色词（DESIGN.md §4）——StatusDot 本身只落 aria-label，可见的 decision 词
-          // 是紧跟着的独立文本节点，同 Lanes.tsx RecentRunRow 的既有呈现口径一致。
-          <HStack gap={2} vAlign="center">
+          // 是紧跟着的独立文本节点，同活动页完成行的既有呈现口径一致。
+          <div className="flex items-center gap-2">
             <StatusDot variant={decisionVariant(decision)} label={decision} />
-            <Text type="code" color="primary">
+            <span className="font-mono text-[13px] leading-5 text-foreground">
               {decision}
-            </Text>
-          </HStack>
+            </span>
+          </div>
         ) : null}
 
         {/* 审计 UX-P0:LLM 成本事实句(翻译 run 的 llm_calls 账本,mono-fact 口径) */}
         {source.kind === 'worker' && source.run.llmCalls != null && source.run.llmCalls > 0 ? (
-          <Text type="supporting" color="secondary">
+          <span className="text-[11px] leading-4 text-muted-foreground">
             llm calls · {source.run.llmCalls}
-          </Text>
+          </span>
         ) : null}
 
         {detail ? (
-          <VStack gap={1}>
-            <Text type="supporting" color="secondary">
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px] leading-4 text-muted-foreground">
               {t('workflow_rundetail_detail_heading')}
-            </Text>
-            <Text type="code" wordBreak="break-word">
+            </span>
+            <span className="font-mono text-[13px] leading-5 text-foreground break-words">
               {detail}
-            </Text>
-          </VStack>
+            </span>
+          </div>
         ) : null}
 
         {chips.length > 0 ? (
-          <VStack gap={1}>
-            <Text type="supporting" color="secondary">
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px] leading-4 text-muted-foreground">
               {t('workflow_rundetail_receipts_heading')}
-            </Text>
+            </span>
             <div className="wf-chip-row">
               {chips.map((c) => (
                 <span className="wf-chip" key={c}>
@@ -128,48 +133,53 @@ export function RunDetail({ source, now, onClose, onRerun }: Props) {
                 </span>
               ))}
             </div>
-          </VStack>
+          </div>
         ) : null}
 
         {seriesId != null ? (
-          <HStack gap={2} vAlign="center">
+          <div className="flex items-center gap-2">
             <Switch
-              label={t('workflow_rerun_include_throttled_label')}
-              value={includeThrottled}
-              onChange={setIncludeThrottled}
-              labelSpacing="hug"
+              aria-label={t('workflow_rerun_include_throttled_label')}
+              checked={includeThrottled}
+              onCheckedChange={setIncludeThrottled}
             />
+            <span className="text-[13px] font-medium leading-5 text-foreground">
+              {t('workflow_rerun_include_throttled_label')}
+            </span>
             <Button
               size="sm"
               variant="secondary"
-              label={t('workflow_pending_rerun_label')}
               onClick={handleRerun}
-            />
-          </HStack>
+            >
+              {t('workflow_pending_rerun_label')}
+            </Button>
+          </div>
         ) : null}
 
-        <VStack gap={1}>
-          <Text type="supporting" color="secondary">
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] leading-4 text-muted-foreground">
             {t('workflow_rundetail_replay_heading')}
-          </Text>
+          </span>
           {trace.loading && !trace.data ? (
-            <Text type="code" color="secondary">
+            <span className="font-mono text-[13px] leading-5 text-muted-foreground">
               loading…
-            </Text>
+            </span>
           ) : trace.error && !trace.data ? (
-            <Text type="body" color="secondary">
+            // 有意改值（事典继承）：错误事实句灰→fn-red + role="alert"——条件插入即播报，
+            // 朴素 span 对读屏器是静默的。
+            <p role="alert" className="text-[13px] leading-5 text-fn-red">
               {t('workflow_rundetail_replay_error_prefix')}
               {trace.error}
-            </Text>
+            </p>
           ) : trace.data && trace.data.events.length === 0 ? (
-            <Text type="body" color="secondary">
+            <span className="text-[13px] leading-5 text-muted-foreground">
               {t('workflow_rundetail_replay_empty')}
-            </Text>
+            </span>
           ) : trace.data ? (
             <TraceRows events={trace.data.events} />
           ) : null}
-        </VStack>
-      </VStack>
+        </div>
+      </div>
     </div>
   )
 }

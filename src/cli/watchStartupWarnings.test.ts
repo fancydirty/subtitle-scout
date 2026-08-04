@@ -1,6 +1,6 @@
 // watch 启动告警纯函数测试（同 dashboardTokenWarning.test.ts 模式）
 import { describe, it, expect } from 'vitest'
-import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine } from './watchStartupWarnings.js'
+import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine } from './watchStartupWarnings.js'
 
 describe('watchStartupWarnings', () => {
   describe('zeroRootsWarningLine（零守备目录告警）', () => {
@@ -82,6 +82,15 @@ describe('watchStartupWarnings', () => {
 
     it('多源同时配置 → 不告警', () => {
       expect(zeroSubtitleSourcesWarningLine({ ASSRT_TOKEN: 'tok', JIMAKU_API_KEY: 'key' })).toBeNull()
+    })
+  })
+
+  describe('setupModeWarningLine（setup 模式警告）', () => {
+    it('setupModeWarningLine：含 dashboard 指路 + gated 事实', () => {
+      const line = setupModeWarningLine()
+      expect(line).toContain('SETUP MODE')
+      expect(line).toContain('setup wizard')
+      expect(line).toContain('gated')
     })
   })
 })

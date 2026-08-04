@@ -73,6 +73,34 @@ export async function checkZimuku(
   }
 }
 
+/** spec A §4.5：jimaku 最便宜的鉴权调用——带 key 做一次 search。probe 由调用方组（CLI 真打、
+ *  validate 端点带凭据组、测试喂假），本函数只负责结果翻译。 */
+export async function checkJimaku(probe: () => Promise<unknown>): Promise<DoctorResult> {
+  const name = 'jimaku'
+  try {
+    await probe()
+    return { name, ok: true, detail: '带 key 搜索探测通过' }
+  } catch (e) {
+    return {
+      name, ok: false, detail: `搜索探测失败:${String(e)}`,
+      hint: '确认 JIMAKU_API_KEY 正确（jimaku.cc 账号设置里复制）；检查网络能否直连 jimaku.cc。',
+    }
+  }
+}
+
+/** spec A §4.5：subhd 首页可达性（无 key 服务，HTTP 2xx/3xx 即通）。probe 返回状态码——
+ *  调用方必须用 curlFetch（subhd.ts:224，Node 原生 fetch 的 TLS 指纹会被 subhd 拒）。 */
+export async function checkSubhd(probe: () => Promise<number>): Promise<DoctorResult> {
+  const name = 'subhd'
+  try {
+    const status = await probe()
+    if (status >= 200 && status < 400) return { name, ok: true, detail: `首页可达（HTTP ${status}）` }
+    return { name, ok: false, detail: `首页返回 HTTP ${status}`, hint: 'subhd.me 可达性异常——检查本机网络/代理。' }
+  } catch (e) {
+    return { name, ok: false, detail: `首页探测失败:${String(e)}`, hint: '检查本机能否直连 subhd.me（注意必须走 curlFetch，Node fetch 的 TLS 指纹会被拒）。' }
+  }
+}
+
 /** TMDB 是 watch/reconcile-all 的**硬前置**(识别文件、拉 origin_lang/季表全靠它——缺 key 时
  *  cmdWatch/cmdReconcileAll 直接 requireEnv 崩溃退出)。故它不是可选 provider:cmdDoctor 在缺 key 时
  *  直接推一条 ✗(而非 skip),配了 key 才走这里用零成本搜索探测 key/网络可用。这条检查的存在本身

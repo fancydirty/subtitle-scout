@@ -14,6 +14,8 @@ import { containingRoot } from '../core/mediaContext.js'
 import { GlossaryRepo } from '../v2/glossaryRepo.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
+import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
+import { SettingsRepo } from '../v2/settingsRepo.js'
 import { CHINESE_SIDECAR_TAGS } from '../agent/languages.js'
 
 function requireEnv(name: string): string {
@@ -39,11 +41,19 @@ export function sourceLangDisplayName(originLang: string | null | undefined): st
 
 /** E 翻译用的 LLM 配置。TRANSLATE_MODEL 一旦设置 → 走 TRANSLATE_* 三件套(让 E 用强模型,与
  *  captcha 用的 LLM_MODEL=mimo 分开——真机实测 mimo 对翻译太弱);否则回退 LLM_*。 */
-function translateLlmCfg(): { baseUrl: string; apiKey: string; model: string } {
+function translateLlmCfg(secrets: AdapterConfigResolver): { baseUrl: string; apiKey: string; model: string } {
   if (process.env.TRANSLATE_MODEL) {
+    // TRANSLATE_MODEL 分支是 env-only 高级项（spec §12，wizard 不收）——逐字不动。
     return { baseUrl: requireEnv('TRANSLATE_BASE_URL'), apiKey: requireEnv('TRANSLATE_API_KEY'), model: process.env.TRANSLATE_MODEL }
   }
-  return { baseUrl: requireEnv('LLM_BASE_URL'), apiKey: requireEnv('LLM_API_KEY'), model: requireEnv('LLM_MODEL') }
+  // spec A §4.3：来源无关化——env 或库都行；缺值仍报错，语义不变。
+  const baseUrl = secrets.secret('LLM_BASE_URL').value
+  const apiKey = secrets.secret('LLM_API_KEY').value
+  const model = secrets.secret('LLM_MODEL').value
+  if (!baseUrl || !apiKey || !model) {
+    throw new Error('LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 未配置（env 或 dashboard setup wizard 均可）')
+  }
+  return { baseUrl, apiKey, model }
 }
 
 /** sidecar 输出路径:有扩展名→替换;无扩展名/以点结尾→追加(绝不原样返回 videoPath 本身——
@@ -256,7 +266,29 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
     console.error(`文件不存在: ${videoPath}`)
     process.exit(2)
   }
-  const cfg = translateLlmCfg()
+  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
+  const dbPath = join(cacheRoot, 'scout.db')
+  // 启动面（spec A §4.3）：密钥可能只在库里。开一条短命连接快照 secret:* 后立刻 close——
+  // 下方 :272 区 openDb 拿到的那个 db 要活到命令结束，两者互不干扰。
+  const secretSnap = new Map<string, string | null>()
+  if (existsSync(dbPath)) {
+    try {
+      const { openDb } = await import('../v2/db.js')
+      const snapDb = openDb(dbPath)
+      try {
+        const repo = new SettingsRepo(snapDb)
+        for (const name of SECRET_NAMES) secretSnap.set(`secret:${name}`, repo.get(`secret:${name}`))
+      } finally {
+        snapDb.close()
+      }
+    } catch {
+      // 库打不开就退化成 env-only；:272 区既有的 existsSync 分支照原样报它该报的错。
+    }
+  }
+  const secrets = secretSnap.size > 0
+    ? makeAdapterConfigResolver(process.env, (k) => secretSnap.get(k) ?? null)
+    : envOnlyAdapterConfig(process.env)
+  const cfg = translateLlmCfg(secrets)
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
   console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'} 路径=workspace-agent`)
 
@@ -266,15 +298,13 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
   // db/adapters 组装失败(如 ZIMUKU_ENABLED=true 缺 LLM_*)同样降级关腿,不拦手动翻译主线。
   let fetchSourceSub: import('../translate/workspace/resolveSource.js').ResolveSourceDeps['fetchSourceSub']
   let db: import('../v2/db.js').ScoutDb | undefined
-  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
-  const dbPath = join(cacheRoot, 'scout.db')
   let locateOriginLang: ((videoPath: string) => string | null) | undefined
   if (existsSync(dbPath)) {
     try {
       const { openDb } = await import('../v2/db.js')
       const { makeDbLocate } = await import('./fetchSourceSub.js')
       db = openDb(dbPath)
-      const adapters = await buildAdapters()
+      const adapters = await buildAdapters(() => {}, secrets, (m) => console.log('[translate-item] ' + m))
       fetchSourceSub = makeRealFetchSourceSub(db, adapters)
       const locate = makeDbLocate(db)
       locateOriginLang = (p) => locate(p)?.originLang ?? null
@@ -297,10 +327,11 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
       try {
         // TMDB 富化(可选):getDetails overview;无 key/失败 → 空文档,不拦主线。
         let fetchTmdbContext: TranslateWorkerDeps['fetchTmdbContext']
-        if (process.env.TMDB_API_KEY && identity.tmdbId && identity.mediaType) {
+        const tmdbKey = secrets.secret('TMDB_API_KEY').value
+        if (tmdbKey && identity.tmdbId && identity.mediaType) {
           const { TmdbClient } = await import('../adapters/providers/tmdb.js')
           const tmdb = new TmdbClient({
-            apiKey: process.env.TMDB_API_KEY,
+            apiKey: tmdbKey,
             baseUrl: process.env.TMDB_BASE_URL,
             proxyUrl: process.env.TMDB_PROXY_URL,
           })

@@ -115,10 +115,9 @@ export const en = {
   // 同 shell/freshness.ts 的既有先例：那些是技术读数，天生不需要翻译，也用不上 t() 不支持的
   // 插值。这里只收静态、不带运行期数据的 UI 文案（泳道头/空态/对话框/按钮）。
 
-  // 验收修复轮一 Task V4（design §B）：三泳道→两列重排，Gaps | Activity。workflow_lane_pending
-  // 键名不变（PendingLane 组件/测试仍叫 pending），显示文案改"Gaps"——泳道标题改名，不是重命名
-  // 概念。workflow_lane_passes/workflow_lane_workers 随三泳道布局一起废弃（Passes/Workers 折进
-  // ActivityFeed，不再各自有一条独立泳道标题）。
+  // 三泳道→两列（Gaps | Activity）的重排已随活动页重建整体退役（泳道组件与 ActivityFeed
+  // 在 2bb6d10 删除，workflow_lane_* 键同亡）。Rerun 一族键的现存消费方是 workflow/ 下的
+  // RunDetail（发起）与 RerunDialog（确认+回执）。
   workflow_pending_rerun_label: 'Rerun',
   // Orchestrator log 折叠区（design §B）：原三泳道之一的 Passes，现降级为 Activity 列底部默认
   // 收起的 Collapsible——回执 chip 只在展开后可见，工程师内容零删除。
@@ -158,6 +157,9 @@ export const en = {
   triage_retry_label: 'Retry',
 
   triage_pending_heading: 'Pending',
+  // 页头两键（§5.5/§5.7，Task 22）——副标题定调：parked 不是错误，不挡自动流程。
+  triage_page_title: 'Triage',
+  triage_subtitle: 'Items the system parked instead of guessing. Nothing here blocks automatic work.',
   // 认领一族键（triage_claimed_* / triage_claim_group_label / triage_dialog_* / triage_search_* /
   // triage_tmdbid_label / triage_season_* / triage_submit/cancel/close/results/partial_failure）
   // 已随认领退役整体删除（2026-07-28 两证据红线裁决）——不留不再被引用的字符串。
@@ -165,6 +167,13 @@ export const en = {
   triage_excluded_heading: 'Excluded extras',
   triage_excluded_restore_label: 'Restore',
   triage_restore_error_prefix: "Couldn't restore: ",
+  // Timing looks off 区两键（§5.5/§5.7，Task 23）——"checked …ago" 与行标签带运行期值，
+  // 走 triage/text.ts，不进扁平表；"Fix the timing" 复用既有 verify_correct_action。
+  triage_timing_heading: 'Timing looks off',
+  triage_timing_undo: 'Undo',
+  // Dormant tasks 区一键（§5.5/§5.7，Task 24）——"Failed N times…" 带运行期数字，走
+  // triage/text.ts 的 dormantReasonLine，不进扁平表；区行零按钮（唤醒通道 §3 决策 1 不补）。
+  triage_dormant_heading: 'Dormant tasks',
   // 改名指引——README 命名最佳实践同文（docs/design 的 dashboard 重建设计 §6）。路径形状本身
   // 是技术值，组件层拼接成 mono 片段，不进这条 i18n 文案（DESIGN.md §3：mono 是技术层专属声音）。
   triage_naming_hint_prefix: 'Correct naming skips manual triage — best practice: ',
@@ -299,4 +308,93 @@ export const en = {
   settings_security_change_button: 'Change password',
   settings_security_change_success: 'Password updated.',
   settings_security_password_hint: 'At least 10 characters',
+  // ---------- Spec A 启动面（wizard_* 区 + providers/engine/banner；wizard 区 en/zh 双写，§5.3） ----------
+  wizard_back: 'Back',
+  wizard_continue: 'Continue',
+  wizard_save_continue: 'Save & continue',
+  wizard_skip_step: 'Skip this step',
+  wizard_test: 'Test',
+  wizard_testing: 'Testing…',
+  wizard_test_passed: 'Connected',
+  wizard_test_failed: 'Connection failed',
+  // 端点自身 5xx / 网络断（spec §7）——与"凭据不对"分开的第四态，不回显原始异常串。
+  wizard_test_unavailable: 'Test unavailable, retry',
+  wizard_launch: 'Launch',
+  wizard_env_locked: 'Configured via environment',
+  wizard_retest: 'Re-test',
+
+  wizard_step_language_title: 'Subtitle language',
+  wizard_step_language_desc: 'Which languages should Scout fetch subtitles in? Your first pick also sets the UI language.',
+  wizard_step_tmdb_title: 'TMDB',
+  wizard_step_tmdb_desc: 'Scout identifies your shows and movies with TMDB.',
+  wizard_step_llm_title: 'Language model',
+  wizard_step_llm_desc: 'Powers subtitle search decisions and the zimuku captcha solver.',
+  wizard_step_providers_title: 'Subtitle providers',
+  wizard_step_providers_desc: 'Optional — more sources, better hit rate.',
+  wizard_step_free_title: 'Free sources',
+  wizard_step_free_desc: 'Built in, no account needed.',
+  wizard_step_roots_title: 'Media roots',
+  wizard_step_roots_desc: 'The folders Scout watches.',
+  wizard_step_launch_title: 'Launch',
+  wizard_step_launch_desc: 'Review your setup and start the engine.',
+
+  wizard_language_custom_placeholder: 'Add another — e.g. fr, pt-BR',
+  wizard_language_add: 'Add',
+  wizard_language_invalid: 'Use a BCP-47 code, like "fr" or "pt-BR".',
+
+  wizard_tmdb_label: 'API key',
+  wizard_tmdb_placeholder: 'TMDB API key or read access token',
+  wizard_tmdb_hint: 'Free at themoviedb.org → Settings → API. No key, no Scout — this step has no skip.',
+
+  wizard_llm_base_label: 'Base URL',
+  wizard_llm_base_hint: 'Usually ends with /v1.',
+  wizard_llm_key_label: 'API key',
+  wizard_llm_model_label: 'Model',
+  wizard_llm_model_placeholder: 'Model name, as your provider calls it',
+  wizard_llm_required_note: 'Search decisions and the zimuku captcha solver need a working model — this step has no skip.',
+
+  wizard_providers_banner: 'subhd and zimuku are built-in free sources and stay on as fallback.',
+  wizard_assrt_label: 'ASSRT token',
+  wizard_os_apikey_label: 'OpenSubtitles API key',
+  wizard_os_user_label: 'OpenSubtitles username (optional)',
+  wizard_os_pass_label: 'OpenSubtitles password (optional)',
+  wizard_jimaku_label: 'Jimaku API key',
+  wizard_consequence_assrt: 'Without ASSRT, one fewer subtitle source.',
+  wizard_consequence_os: 'Without OpenSubtitles, one fewer subtitle source.',
+  wizard_consequence_jimaku: 'Without Jimaku, one fewer subtitle source.',
+  wizard_providers_save_note: 'Only keys that pass the test are saved.',
+
+  wizard_subhd_label: 'subhd',
+  wizard_zimuku_label: 'zimuku',
+  wizard_free_reach_checking: 'Checking reachability…',
+  wizard_free_reach_ok: 'Reachable',
+  wizard_free_reach_fail: 'Unreachable — stays on, retried at runtime.',
+  wizard_zimuku_captcha_ready: 'Captcha solver: ready (LLM configured)',
+  wizard_zimuku_captcha_not_ready: 'Captcha solver needs the LLM from step 3.',
+
+  wizard_roots_skip_note: 'Library will stay empty until you add roots — you can do this later in Settings.',
+
+  wizard_launch_configured: 'Configured',
+  wizard_launch_skipped: 'Skipped',
+  wizard_launch_engine_label: 'Engine',
+  wizard_launch_engine_desc: 'Start scanning and fetching as soon as Scout launches.',
+
+  engine_banner_off: 'Engine off — polling and dispatch are paused.',
+  engine_banner_turn_on: 'Turn on',
+
+  settings_engine_label: 'Engine',
+  settings_engine_desc: 'Master switch for scanning, fetching and all automatic work.',
+  settings_providers_title: 'Providers',
+  settings_provider_env_locked: 'Set by environment — locked',
+  settings_provider_source_env: 'environment',
+  settings_provider_source_db: 'database',
+  settings_provider_not_set: 'Not set',
+  settings_provider_edit: 'Edit',
+  settings_provider_save: 'Save',
+  settings_provider_cancel: 'Cancel',
+  settings_provider_test: 'Test',
+  settings_provider_last_test_ok: 'Last test passed',
+  settings_provider_last_test_fail: 'Last test failed',
+  settings_system_rerun_wizard: 'Re-run setup wizard',
+  settings_system_rerun_wizard_desc: 'Walk through bootstrap again. Steps configured via environment stay locked.',
 } as const

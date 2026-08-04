@@ -2,11 +2,25 @@
 // 拉 api.authSecurity()，只有本区用，不进全局 hooks）。api key 脱敏展示尾 4 位（调研：*arr 明文
 // 常驻会在每张设置截图里泄露）+ 复制 + 重生成（确认弹窗陈述爆炸半径，即时生效无需重启）。改密
 // 三输入复用 AuthField（密码管理器契约 + show-password）。三态齐全（DESIGN.md 铁律）。
+//
+// 控件栈（Plan C Task 27 迁移）：Astryx Text/Button/VStack/AlertDialog 全卸——Button children 化
+// （label prop 退役；isLoading 期间 Astryx 本就 disable 按钮，故 disabled={busy} 守住同一语义，
+// spinner 不迁），VStack 换裸 flex div，Text 按控件事典映射到手写 span。重生成 AlertDialog 换
+// Radix 组合式：Action 默认 click 即关，现网语义是 regenerate 的 finally 手动关（飞行中保持
+// 开启），故 Action onClick 必须 e.preventDefault() 拦住默认关闭。改密真 <form> + AuthField
+// 本来就是原生，不动。
 import { useEffect, useState } from 'react'
-import { Text } from '@astryxdesign/core/Text'
-import { Button } from '@astryxdesign/core/Button'
-import { VStack } from '@astryxdesign/core/VStack'
-import { AlertDialog } from '@astryxdesign/core/AlertDialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../components/ui/alert-dialog.js'
+import { Button, buttonVariants } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import type { AuthSecurityDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
@@ -32,7 +46,7 @@ export function SecuritySection() {
   if (error && !data) {
     return (
       <section className="settings-section">
-        <Text type="label">{t('settings_security_heading')}</Text>
+        <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_security_heading')}</span>
         <div className="auth-error" role="alert">{error}</div>
       </section>
     )
@@ -40,23 +54,23 @@ export function SecuritySection() {
   if (!data) {
     return (
       <section className="settings-section">
-        <Text type="label">{t('settings_security_heading')}</Text>
-        <Text type="code" color="secondary">{t('settings_security_loading')}</Text>
+        <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_security_heading')}</span>
+        <span className="font-mono text-[13px] leading-5 text-muted-foreground">{t('settings_security_loading')}</span>
       </section>
     )
   }
 
   return (
     <section className="settings-section">
-      <Text type="label">{t('settings_security_heading')}</Text>
-      <VStack gap={5}>
-        <VStack gap={2}>
-          <Text type="supporting" color="secondary">{t('settings_security_username_label')}</Text>
+      <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_security_heading')}</span>
+      <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-2">
+          <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_security_username_label')}</span>
           <span className="settings-deploy-key">{data.username}</span>
-        </VStack>
+        </div>
         <ApiKeyRow data={data} onRegenerated={(apiKey) => setData({ ...data, apiKey })} />
         <ChangePasswordRow />
-      </VStack>
+      </div>
     </section>
   )
 }
@@ -78,7 +92,8 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
 
   async function regenerate() {
     // 破坏性动作：AlertDialog 陈述爆炸半径（审计前端 #5：DESIGN §5 铁律，destructive 用 AlertDialog
-    // 而非 window.confirm——同 RemoveRootDialog 先例）。onAction 不自动关闭，这里手动收尾。
+    // 而非 window.confirm——同 RemoveRootDialog 先例）。Action 已 preventDefault 拦住默认关闭，
+    // 这里 finally 手动收尾（飞行中对话框保持开启，busy 守住 Action）。
     setBusy(true)
     try {
       const r = await api.regenerateApiKey()
@@ -93,24 +108,42 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
   }
 
   return (
-    <VStack gap={2}>
-      <Text type="supporting" color="secondary">{t('settings_security_apikey_label')}</Text>
+    <div className="flex flex-col gap-2">
+      <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_security_apikey_label')}</span>
       <div className="settings-deploy-row">
         <span className="settings-deploy-key">{maskKey(data.apiKey)}</span>
-        <Button size="sm" variant="secondary" label={copied ? t('settings_security_copied') : t('settings_security_copy')} onClick={copy} />
-        <Button size="sm" variant="destructive" label={t('settings_security_regenerate')} onClick={() => setConfirmOpen(true)} />
+        <Button size="sm" variant="secondary" onClick={copy}>
+          {copied ? t('settings_security_copied') : t('settings_security_copy')}
+        </Button>
+        <Button size="sm" variant="destructive" onClick={() => setConfirmOpen(true)}>
+          {t('settings_security_regenerate')}
+        </Button>
       </div>
-      <AlertDialog
-        isOpen={confirmOpen}
-        onOpenChange={(open) => { if (!open) setConfirmOpen(false) }}
-        title={t('settings_security_regenerate')}
-        description={t('settings_security_regen_confirm')}
-        actionLabel={t('settings_security_regenerate')}
-        actionVariant="destructive"
-        isActionLoading={busy}
-        onAction={() => void regenerate()}
-      />
-    </VStack>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('settings_security_regenerate')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('settings_security_regen_confirm')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            {/* Cancel 用字面量——i18n 表无此键，不为它加键（Task 26 铁规）。 */}
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: 'destructive' })}
+              disabled={busy}
+              onClick={(e) => {
+                // Radix Action 默认 click 即关闭；现网语义是 regenerate 的 finally 手动关
+                // （飞行中保持开启、busy 守住重复点击），这里必须拦住默认关闭。
+                e.preventDefault()
+                void regenerate()
+              }}
+            >
+              {t('settings_security_regenerate')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   )
 }
 
@@ -150,8 +183,12 @@ function ChangePasswordRow() {
         hint={t('settings_security_password_hint')} hintMet={next.length >= MIN_PASSWORD_LEN}
       />
       {error && <div className="auth-error" role="alert">{error}</div>}
-      {success && <Text type="supporting" color="secondary">{t('settings_security_change_success')}</Text>}
-      <Button type="submit" size="sm" variant="primary" label={t('settings_security_change_button')} isLoading={busy} isDisabled={busy} />
+      {success && <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_security_change_success')}</span>}
+      <div>
+        <Button type="submit" size="sm" variant="default" disabled={busy}>
+          {t('settings_security_change_button')}
+        </Button>
+      </div>
     </form>
   )
 }

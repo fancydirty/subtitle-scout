@@ -89,3 +89,53 @@ describe('auth api（A2 Task 8）', () => {
     window.removeEventListener('scout:unauthorized', seen)
   })
 })
+
+describe('client.ts 启动面方法（spec A §4.4 线形）', () => {
+  it('validateSetup 带 credentials 时请求体原样透传（"先测后存"的落库裁决在服务端，这里只锁线形）', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ ok: true, detail: 'connected' }),
+    }) as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    const r = await api.validateSetup('tmdb', { TMDB_API_KEY: 'k' })
+    expect(r).toEqual({ ok: true, detail: 'connected' })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url).startsWith('/api/v2/setup/validate')).toBe(true)
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({ target: 'tmdb', credentials: { TMDB_API_KEY: 'k' } })
+  })
+
+  it('validateSetup 省略 credentials 时请求体只有 target（测已解析 env/db 凭据）', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ ok: true }),
+    }) as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    await api.validateSetup('subhd')
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({ target: 'subhd' })
+  })
+
+  it('putSecret 走 PUT /api/v2/settings/secrets（空值=删除的语义裁决同样在服务端）', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ ok: true, name: 'ASSRT_TOKEN', action: 'deleted' }),
+    }) as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    const r = await api.putSecret('ASSRT_TOKEN', '')
+    expect(r).toEqual({ ok: true, name: 'ASSRT_TOKEN', action: 'deleted' })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url).startsWith('/api/v2/settings/secrets')).toBe(true)
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(String(init.body))).toEqual({ name: 'ASSRT_TOKEN', value: '' })
+  })
+
+  it('setupStatus / setupProviders 路径正确、走 get（失败响应也吃 errorMessage 抽取）', async () => {
+    const fetchMock = vi.fn(async () => ({
+      // **故意用 500、不用 401**：`client.ts:58-70` 的 errorMessage 对 401 有硬编码中文兜底
+      //（`return '会话未授权或已失效，请重新登录'`，早于 body.error 抽取 return），
+      // 走 401 这条用例永远拿不到 'unauthorized'，下面的 rejects.toThrow 必红。
+      ok: false, status: 500, json: async () => ({ error: 'unauthorized' }),
+    }) as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(api.setupStatus()).rejects.toThrow('unauthorized')
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0]).startsWith('/api/v2/setup/status')).toBe(true)
+  })
+})

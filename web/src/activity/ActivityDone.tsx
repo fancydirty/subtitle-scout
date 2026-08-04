@@ -33,9 +33,7 @@
 //    样），而不是"忽略/关掉"。本任务只负责触发 onOpen 回调；具体跳去哪由接线任务决定
 //    （RunDetail 仍在、Library 详情页也在，选哪个是接线时的路由决策，不是这一层的事）。
 //    onOpen 缺席时**整个按钮不渲染**——一个点不动的按钮比没有按钮更糟（同 L11 的精神）。
-import { Button } from '@astryxdesign/core/Button'
-import { Text } from '@astryxdesign/core/Text'
-import { HStack } from '@astryxdesign/core/HStack'
+import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
 import type { WorkflowRecentRunDTO } from '../api/types.js'
 import { PosterThumb } from '../library/PosterThumb.js'
@@ -59,16 +57,23 @@ function DoneRow({ row, now, onOpen }: { row: WorkflowRecentRunDTO; now: number;
   // 'null' 这个字符串糊到界面上，所以这里直接不渲染短语与语义点，只留主语 + 时间。
   const phrase = row.decision === null ? null : decisionPhrase(row.decision, lang)
   return (
-    <HStack gap={3} vAlign="center" className="act-row" data-testid="activity-done-row">
+    // flex 承重：.act-row-poster{flex:none} 与 .act-row-main{flex:1} 写在 CSS 里、指望父级是
+    // flex 容器，而 .act-row 自己在 CSS 里没有 display（Task 14 已核实）。.act-row-main 的
+    // flex:1 就是把时间与「查看」推到右侧的那股力。
+    <div className="act-row flex items-center gap-3" data-testid="activity-done-row">
       {/* 与队列行同一个几何（38px 2:3，.act-row-poster）——spec §7.1 要求完成列表"用与 hero
           同几何的海报"，而 hero:队列的 5:1 尺寸比是靠这一档 38px 建立的。 */}
       <div className="act-row-poster" data-testid="activity-done-poster">
         <PosterThumb posterPath={row.posterPath} name={title} />
       </div>
       <div className="act-row-main">
-        <Text type="body">{title}</Text>
+        <span className="text-[13px] leading-5">{title}</span>
         {phrase ? (
-          <HStack gap={2} vAlign="center">
+          // ⚠️ 这个 flex 是**承重**的，不是装饰：.act-row-dot 在 CSS 里没有 display
+          // （styles.css:1659 起只有 width/height/border-radius/flex/background），而它是个
+          // <span>。inline 元素忽略 width/height——那个 6px 的圆全靠它作为 flex item 被
+          // blockify。删掉 flex，点会整个消失，而 L1 那 8 条 data-tone 断言照绿。
+          <div className="flex items-center gap-2">
             {/* 语义点：绿/红/灰三档，**没有黄**（L1）。颜色按 data-tone 在 CSS 里选，
                 组件层不写死色值——同 hero 脉动点的既有手法。红只染这个 6px 点，不铺块。 */}
             <span
@@ -77,25 +82,29 @@ function DoneRow({ row, now, onOpen }: { row: WorkflowRecentRunDTO; now: number;
               aria-hidden="true"
               data-testid="activity-done-dot"
             />
-            <Text type="code" color="secondary" className="act-row-fact">{phrase.text}</Text>
-          </HStack>
+            {/* 不给颜色类：.act-row-fact 已在 styles.css 里给 --color-weak，且 styles.css 全文
+                未分层，赢过 @layer utilities 里的任何 text-* 工具类（给了不生效）。 */}
+            <span className="act-row-fact font-mono text-[13px] leading-5">{phrase.text}</span>
+          </div>
         ) : null}
       </div>
       {/* 相对时间。finishedAt 为 null（理论上不该出现在 recent 里）时不渲染——不编"刚刚"。 */}
       {row.finishedAt !== null ? (
-        <Text type="code" color="secondary" className="act-row-time" data-testid="activity-done-time">
+        <span
+          className="act-row-time font-mono text-[13px] leading-5"
+          data-testid="activity-done-time"
+        >
           {relativeFinished(now - row.finishedAt, lang)}
-        </Text>
+        </span>
       ) : null}
       {onOpen ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          label={openLabel(lang)}
-          onClick={() => onOpen(row)}
-        />
+        // shadcn Button 的文案走 children，**没有 label prop**（Astryx 有）。忘了搬会得到一个
+        // 空按钮——好在那是"自己会喊"的：按可及名取按钮的两条用例当场变红。
+        <Button size="sm" variant="ghost" onClick={() => onOpen(row)}>
+          {openLabel(lang)}
+        </Button>
       ) : null}
-    </HStack>
+    </div>
   )
 }
 
@@ -107,9 +116,13 @@ export function ActivityDone({ recent, now, onOpen }: Props) {
   return (
     // ⚠️ 这个 section 里**只有**标题 + 列表。没有横幅、没有总结句、没有"全部完成"——L6。
     <section className="act-section" data-testid="activity-done">
-      <HStack vAlign="center" className="act-section-head">
-        <Text type="body" color="secondary">{doneHeading(recent.length, lang)}</Text>
-      </HStack>
+      {/* .act-section-head 在 CSS 里只有 width/padding，没有 display。注意这里**没有**
+          justify-between（原文也没有 hAlign）——本段头只有一个子元素，队列段那个才是两端对齐。 */}
+      <div className="act-section-head flex items-center">
+        {/* 这一处**要**给颜色类：.act-section-head 里没人管颜色，原 color="secondary" 是真在
+            生效的 #9aa1ac = text-muted-foreground。 */}
+        <span className="text-[13px] leading-5 text-muted-foreground">{doneHeading(recent.length, lang)}</span>
+      </div>
       {recent.map((row) => (
         // key 走 row.id（run 的身份键，恒唯一）。**不用数组下标**：recent 是滑动窗口，
         // 新 run 从头部进来会把每个下标对应的数据整体错位一格，React 会把旧 DOM 节点连同

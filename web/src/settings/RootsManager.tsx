@@ -2,11 +2,13 @@
 // type + 相对时间 + Remove）+ 删根 AlertDialog（destructive，见 RemoveRootDialog.tsx）+ 加根
 // 目录浏览器（DirBrowser.tsx）。roots 为空（首启无 env 种子）时空态引导一句话并直接展开浏览器
 // （spec 任务规格：不让用户先点一个"添加"按钮才能看到浏览器，空库时浏览器本来就是唯一动作）。
+//
+// 控件栈（Plan C Task 27 迁移）：Astryx Text/Button/VStack/EmptyState 全卸——Button children 化
+// （label prop 退役），EmptyState 走 components/ui 同名零改件，VStack 换裸 flex div，Text 按
+// 控件事典映射到手写 span。
 import { useMemo, useState } from 'react'
-import { Text } from '@astryxdesign/core/Text'
-import { Button } from '@astryxdesign/core/Button'
-import { VStack } from '@astryxdesign/core/VStack'
-import { EmptyState } from '@astryxdesign/core/EmptyState'
+import { Button } from '../components/ui/button.js'
+import { EmptyState } from '../components/ui/empty-state.js'
 import type { Async } from '../api/hooks.js'
 import type { MediaRootDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
@@ -29,21 +31,25 @@ export function RootsManager({ roots }: Props) {
   if (roots.loading && !roots.data) {
     return (
       <section className="settings-section">
-        <Text type="label">{t('settings_roots_heading')}</Text>
-        <Text type="code" color="secondary">
+        <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_roots_heading')}</span>
+        <span className="font-mono text-[13px] leading-5 text-muted-foreground">
           loading…
-        </Text>
+        </span>
       </section>
     )
   }
   if (roots.error && !roots.data) {
     return (
       <section className="settings-section">
-        <Text type="label">{t('settings_roots_heading')}</Text>
+        <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_roots_heading')}</span>
         <EmptyState
           isCompact
           title={t('settings_roots_error_prefix') + roots.error}
-          actions={<Button label={t('settings_roots_retry_label')} variant="secondary" onClick={roots.reload} />}
+          actions={
+            <Button variant="secondary" onClick={roots.reload}>
+              {t('settings_roots_retry_label')}
+            </Button>
+          }
         />
       </section>
     )
@@ -54,14 +60,14 @@ export function RootsManager({ roots }: Props) {
 
   return (
     <section className="settings-section">
-      <Text type="label">{t('settings_roots_heading')}</Text>
+      <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_roots_heading')}</span>
 
       {isEmpty ? (
-        <Text type="supporting" color="secondary">
+        <span className="text-[11px] leading-4 text-muted-foreground">
           {t('settings_roots_empty_hint')}
-        </Text>
+        </span>
       ) : (
-        <VStack gap={2}>
+        <div className="flex flex-col gap-2">
           {list.map((root) => (
             <div className="settings-root-row" key={root.path}>
               <span className="settings-root-path" title={root.path}>
@@ -72,21 +78,25 @@ export function RootsManager({ roots }: Props) {
               <Button
                 size="sm"
                 variant="secondary"
-                label={t('settings_roots_remove_label')}
                 onClick={() => setRemoveTarget(root.path)}
-              />
+              >
+                {t('settings_roots_remove_label')}
+              </Button>
             </div>
           ))}
-        </VStack>
+        </div>
       )}
 
       {!isEmpty && !browserOpen ? (
-        <Button
-          size="sm"
-          variant="secondary"
-          label={t('settings_roots_add_button_label')}
-          onClick={() => setBrowserOpen(true)}
-        />
+        <div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setBrowserOpen(true)}
+          >
+            {t('settings_roots_add_button_label')}
+          </Button>
+        </div>
       ) : null}
 
       {isEmpty || browserOpen ? <DirBrowser startPath={startPath} onAdded={roots.reload} /> : null}

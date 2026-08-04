@@ -8,6 +8,11 @@ import type {
   SettingsDTO, DeploySettingsDTO, MediaRootDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
+  SetupStatusDTO,
+  ProvidersDTO,
+  ShiftedItemDTO,
+  DormantTaskDTO,
+  MovieDetailDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -182,6 +187,39 @@ export function useLibrarySeriesDetail(id: string | null): Async<LibrarySeriesDe
     setError(null)
     api
       .librarySeriesDetail(id, ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [id, nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** Plan B：电影详情——一次性（详情不轮询），id 为 null 时不发请求（同 useLibrarySeriesDetail 口径）。 */
+export function useLibraryMovieDetail(id: string | null): Async<MovieDetailDTO> {
+  const [data, setData] = useState<MovieDetailDTO | null>(null)
+  const [loading, setLoading] = useState(id != null)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    if (id == null) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .movieDetail(id, ctrl.signal)
       .then((d) => setData(d))
       .catch((e) => {
         if (!ctrl.signal.aborted) setError(String(e))
@@ -583,6 +621,232 @@ export function useSubtitleCompare(itemId: string | null): Async<SubtitleCompare
       })
     return () => ctrl.abort()
   }, [itemId, nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** setup/status：BootstrapGate 与 EngineBanner 共用。15s 轮询——engineEnabled 翻转 ≤15s 上屏
+ *  （spec A §5.5 的"下 tick 生效"在前端侧的镜像）；可见性暂停与 useLibrary 同样板。 */
+export function useSetupStatus(): Async<SetupStatusDTO> {
+  const [data, setData] = useState<SetupStatusDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.setupStatus()
+      setData(rows)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/**
+ * useSetupProviders：Settings Providers 区的行数据（打码/source/上次测试点）。15s 轮询与
+ * useSetupStatus 同节拍；编辑/测试动作后组件直接调 reload 立即刷新，不等下一拍。
+ */
+export function useSetupProviders(): Async<ProvidersDTO> {
+  const [data, setData] = useState<ProvidersDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const dto = await api.setupProviders()
+      setData(dto)
+      setError(null)
+    } catch (e) {
+      // String(e) 而非 e instanceof Error ? e.message : String(e)——本文件 12 个既有 hook
+      // 一律 String(e)，同文件同层的 useSetupStatus（Task 14 Step 5）也是。
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      // 守卫写法照抄既有轮询 hook（本文件 useLibrary/useWorkflowPending/useWorkflowPasses/
+      // useWorkflowWorkers/useSetupStatus 五处一模一样）：visibilitychange 连发或 effect 复跑时，
+      // 没这道判断会叠出第二个 setInterval，旧句柄被覆盖后再也 clear 不掉——越切标签页轮询越快。
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** Plan C（spec §4.1）：偏移清单。15s 轮询同既有节律——偏移是"检出后静置"的事实，
+ *  不需要更快的刷新（SSE 只喂在跑任务的痕迹，与这里无关）。 */
+export function useShiftedSubtitles(): Async<ShiftedItemDTO[]> {
+  const [data, setData] = useState<ShiftedItemDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.subtitleShifted()
+      setData(rows)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/** Plan C（spec §4.2）：停车任务清单。同 15s 节律。 */
+export function useDormantTasks(): Async<DormantTaskDTO[]> {
+  const [data, setData] = useState<DormantTaskDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.workflowDormant()
+      setData(rows)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    void load()
+    const start = () => {
+      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
+    }
+    const stop = () => {
+      if (timer.current != null) {
+        clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void load()
+        start()
+      } else {
+        stop()
+      }
+    }
+    if (document.visibilityState === 'visible') start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [load])
 
   return { data, loading, error, reload }
 }

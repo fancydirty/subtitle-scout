@@ -4,12 +4,16 @@ import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
+  DormantTaskDTO, MovieDetailDTO,
 } from './apiV2.js'
+import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
+import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 
 const libItem: LibraryItemDTO = {
   id: 's1', kind: 'series', name: 'A', chineseTitle: null, year: null, posterPath: null, section: '剧集',
   coverage: { covered: 0, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 }, job: null,
+  originLang: null, nativeAudio: false,
 }
 const seriesDetail: SeriesDetailDTO = {
   id: 's1', name: 'A', chineseTitle: null, year: null, posterPath: null, seasons: [], runs: [],
@@ -23,6 +27,8 @@ const parkedItem: ParkedItemDTO = {
 const settingsDTO: SettingsDTO = {
   target_languages: 'zh,en', hardsub_mode: null, exclude_extras: null,
   trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+  engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+  engineEnabled: true,
 }
 const deploySettingsDTO: DeploySettingsDTO = {
   secrets: {
@@ -74,6 +80,38 @@ const triageDTO: TriageDTO = {
 const runTraceDTO: RunTraceDTO = {
   events: [{ runKey: 'job-1', seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: 1 }],
 }
+const setupStatusDTO = {
+  bootstrapComplete: false,
+  tmdb: { satisfied: false, source: 'none', masked: null },
+  llm: { satisfied: false, source: 'none', model: null },
+  providers: {
+    assrt: { satisfied: false, source: 'none', masked: null },
+    // masked 是必填字段（Task 5 的 opensubtitles 形状是 satisfied/source/hasUsername/masked
+    // 四件套），漏了它 satisfies 直接报错。
+    opensubtitles: { satisfied: false, source: 'none', hasUsername: false, masked: null },
+    jimaku: { satisfied: false, source: 'none', masked: null },
+    subhd: { enabled: false, source: 'none' },
+    zimuku: { enabled: false, source: 'none', captchaReady: false },
+  },
+  roots: { count: 0 },
+  engineEnabled: true,
+} satisfies SetupStatusDTO
+// ProvidersDTO 的字段名是 providers（不是 rows）——见 Task 5 的 `interface ProvidersDTO`。
+const providersDTO = { providers: [] } satisfies ProvidersDTO
+
+// Plan C（spec §4）：两个只读 GET 的路由层 stub DTO。
+const shiftedRow: ShiftedItemDTO = {
+  itemId: 'tmdb:100/s2e3', seriesId: 'tmdb:100', seriesName: 'The Rig',
+  season: 2, episode: 3, checkedAt: 3000, hasPriorCorrection: true,
+}
+const dormantRow: DormantTaskDTO = {
+  jobId: 1, task: 'find_subtitle', targetLabel: 'The Rig, Season 2', attempts: 5,
+}
+const movieDetailDTO: MovieDetailDTO = {
+  id: 'm1', name: 'The Movie', chineseTitle: null, year: 2024, posterPath: null,
+  path: '/media/movies/The Movie.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null,
+  originLang: 'en', nativeAudio: true, files: [], subtitles: [], recentJobs: [],
+}
 
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
@@ -81,6 +119,7 @@ let lastPassesLimit: number | null = null
 let lastSeriesId: string | null = null
 let lastLibrarySeriesId: string | null = null
 let lastRunTraceId: number | null = null
+let lastMovieId: string | null = null
 const deps: RouterDeps = {
   library: () => [libItem],
   series: (id) => { lastSeriesId = id; return id === 's1' || id === 'tmdb:71' ? seriesDetail : null },
@@ -99,6 +138,11 @@ const deps: RouterDeps = {
   librarySeriesDetail: (id) => { lastLibrarySeriesId = id; return id === 's1' || id === 'tmdb:71' ? librarySeriesDetailDTO : null },
   triage: () => triageDTO,
   runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
+  shiftedSubtitles: () => [shiftedRow],
+  dormantTasks: () => [dormantRow],
+  setupStatus: () => setupStatusDTO,
+  providers: () => providersDTO,
+  movieDetail: (id) => { lastMovieId = id; return id === 'm1' || id === 'tmdb:1234' ? movieDetailDTO : null },
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string> } = {}) =>
@@ -274,5 +318,55 @@ describe('handleApiRoute (v2)', () => {
     it('非数字 id → 404（路由本身不匹配，不是 400）', () => {
       expect(call('/api/v2/workflow/runs/abc/trace').status).toBe(404)
     })
+  })
+
+  it('GET /api/v2/setup/status → 200 + DTO 直出', () => {
+    const r = call('/api/v2/setup/status')
+    expect(r.status).toBe(200)
+    expect(r.json).toBe(setupStatusDTO)
+  })
+
+  it('GET /api/v2/setup/providers → 200 + DTO 直出', () => {
+    const r = call('/api/v2/setup/providers')
+    expect(r.status).toBe(200)
+    expect(r.json).toBe(providersDTO)
+  })
+
+  // Plan C（spec §4）：两个只读 GET——纯透传 deps，零写路径、零状态机改动。
+  it('GET /api/v2/subtitle/shifted → 200 + 透传 deps.shiftedSubtitles()', () => {
+    const r = call('/api/v2/subtitle/shifted')
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual([shiftedRow])
+  })
+
+  it('GET /api/v2/workflow/dormant → 200 + 透传 deps.dormantTasks()', () => {
+    const r = call('/api/v2/workflow/dormant')
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual([dormantRow])
+  })
+
+  // spec B Task 4：GET /api/v2/library/movies/:id——movie 详情端点（三层格阵合并）。
+  it('GET /api/v2/library/movies/:id returns detail', () => {
+    const r = call('/api/v2/library/movies/m1')
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual(movieDetailDTO)
+    expect(lastMovieId).toBe('m1')
+  })
+
+  it('GET /api/v2/library/movies/nonexistent returns 404', () => {
+    const r = call('/api/v2/library/movies/nonexistent')
+    expect(r.status).toBe(404)
+    expect((r.json as { error: string }).error).toBe('not found')
+  })
+
+  it('GET /api/v2/library/movies/:id accepts tmdb: ids', () => {
+    const r = call('/api/v2/library/movies/tmdb:1234')
+    expect(r.status).toBe(200)
+    expect(lastMovieId).toBe('tmdb:1234')
+  })
+
+  it('GET /api/v2/library/movies/:id rejects bad ids with 400', () => {
+    expect(call('/api/v2/library/movies/a..b').status).toBe(400)
+    expect(call('/api/v2/library/movies/bad/path').status).toBe(404) // doesn't match route pattern
   })
 })

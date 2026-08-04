@@ -2,7 +2,10 @@
 import { createServer, type Server } from 'node:http'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join, normalize, extname, resolve, sep } from 'node:path'
+import { homedir } from 'node:os'
 import { URL } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
@@ -12,7 +15,7 @@ import {
   buildLibrary, buildSeriesDetail, buildRuns, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch, buildRunTrace,
+  buildTriage, redispatch, buildRunTrace, buildDormantTasks, buildLibraryMovieDetail,
   type ReconcileAllResultDTO,
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
@@ -20,10 +23,12 @@ import { traceBus } from '../core/traceBus.js'
 import { AuthService, AUTH_KEYS, safeStrEqual } from './auth.js'
 import {
   buildVerifyDTOs, correctSubtitle, revertSubtitle, parseItemIds, parseItemIdBody,
+  buildShiftedDTOs,
   type SubtitleWriteDeps,
 } from './subtitleVerifyApi.js'
 import {
-  buildCompareDTO, type SubtitleCompareDeps,
+  buildCompareDTO, type SubtitleCompareDeps, extractWaveformPeaks, type ExtractPeaksDeps,
+  resolveDurationMs,
 } from './subtitleCompareApi.js'
 import { findReferenceSource } from '../subtitleVerify/referenceSource.js'
 import { readSubtitleText, parseCues, hashSubtitleContent } from '../subtitleVerify/subtitleSpans.js'
@@ -35,6 +40,8 @@ import {
   shiftSubtitleTiming, revertSubtitleTiming, BACKUP_SUFFIX,
 } from '../subtitleVerify/shiftTiming.js'
 import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
+import type { SetupDeps } from './setupApi.js'
+import { buildSetupStatus, buildProviders, putSecret, validateSetupTarget } from './setupApi.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -47,7 +54,8 @@ export interface DashboardOpts {
    *  +一次编排器过（src/v2/reconcileAll.ts 的 runReconcileAll，cmdReconcileAll CLI 命令共用
    *  同一个函数，不重复实现）。undefined（TMDB_API_KEY 未配置，或纯只读测试场景）时该端点
    *  返回 503，而不是让请求悬空或让 startDashboard 强制要求这个回调。 */
-  reconcileAll?: () => Promise<ReconcileAllResultDTO>
+  /** spec A §4.2：reconcileAll 改 getter 注入，返回执行体或 null（setup 未满足 → 503，同既有先例）。 */
+  reconcileAll?: () => (() => Promise<ReconcileAllResultDTO>) | null
   /** dashboard G4：GET /api/v2/settings/deploy 脱敏展示的 env 来源——默认 process.env，测试
    *  注入固定值以避免依赖跑测试的机器/CI 实际配了什么。 */
   env?: Record<string, string | undefined>
@@ -60,7 +68,13 @@ export interface DashboardOpts {
    *  dashboard-F5：'search' 供 GET /api/v2/tmdb/search（只读搜索代理；原为 ClaimDialog 而设，
    *  认领退役后前端不再调用，端点保留为无害的只读代理）转调——
    *  同一个 tmdb 依赖，缺席时两个消费点各自独立降级（这里 503，series/:id 那边跳过刷新）。 */
-  tmdb?: Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'>
+  /** spec A §4.2：tmdb 改 getter 注入（holder 覆盖 dashboard 注入面）——消费处现取现判空,
+   *  缺席语义不变（series 详情惰性刷新跳过、tmdb/search 503）。 */
+  tmdb?: () => Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'> | null
+  /** spec A：setupApi 的默认实现需要 cacheRoot（assrt 探测的缓存目录）；测试可注入临时目录。 */
+  cacheRoot?: string
+  /** spec A：setup 三端点的依赖注入（缺席→接真实实现，同 subtitleWriteDeps 的既有注入口惯例）。 */
+  setupDeps?: Partial<SetupDeps>
   /** 验收修复轮一 Task V2（原为甄别台认领后踢扫描；认领已随两证据红线退役——见 triageOps.ts
    *  头注释——本回调保留给 unexclude 翻案分支：翻案写库后立即请求一次扫描，让用户体感"翻案后
    *  文件很快重回识别流"而不是等下一个自然扫描周期）。undefined（watch 进程未接线，或纯只读
@@ -191,8 +205,20 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps } = opts
+  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride } = opts
   const settingsRepo = new SettingsRepo(db)
+  // spec A §4.4：setup 面依赖——默认接真实实现（cfg 的 dbGet 惰性读库，wizard 落库后下一次
+  // status/validate 调用自然反映），测试经 opts.setupDeps 部分覆盖（同 subDeps 先例）。
+  const setupDeps: SetupDeps = {
+    env,
+    settingsRepo,
+    cacheRoot: cacheRoot ?? (env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')),
+    // SettingsRepo 上的方法名是 listRoots（不是 listMediaRoots）——见 src/v2/settingsRepo.ts:59。
+    // 每次调用现取，守备目录增删后 status 立刻反映，不缓存。
+    rootsCount: () => settingsRepo.listRoots().length,
+    now: () => Date.now(),
+    ...setupDepsOverride,
+  }
   const auth = new AuthService(settingsRepo)
   // 字幕校验三端点的依赖：默认全部接真实模块，测试可通过 opts.subtitleWriteDeps 部分覆盖
   // （见 DashboardOpts.subtitleWriteDeps 注释——这是"为可测性而设"的注入口，不是降级开关）。
@@ -250,11 +276,23 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     // 白打一次早退调用。
     librarySeriesDetail: (id) => {
       const detail = buildLibrarySeriesDetail(db, id)
-      if (detail && tmdb) void refreshSeriesCatalog(db, tmdb, id, Date.now()).catch(() => {})
+      const tmdbClient = tmdb?.()
+      if (detail && tmdbClient) void refreshSeriesCatalog(db, tmdbClient, id, Date.now()).catch(() => {})
       return detail
     },
     triage: () => buildTriage(db),
     runTrace: (id) => buildRunTrace(db, id),
+    // Plan C：两个只读 GET。shifted 复用 subDeps 的 repo + exists（同一份 existsSync 实现，
+    // 见上方 subDeps 的 wiring），backupSuffix 用与两个写扳手同一个常量——三处必须同源，
+    // 否则 UI 上"可撤销"与后端"撤销会成功"会错位。
+    shiftedSubtitles: () => buildShiftedDTOs(
+      { repo: verifyRepo, exists: subDeps.exists },
+      { backupSuffix: BACKUP_SUFFIX },
+    ),
+    dormantTasks: () => buildDormantTasks(db),
+    setupStatus: () => buildSetupStatus(setupDeps),
+    providers: () => buildProviders(setupDeps),
+    movieDetail: (id) => buildLibraryMovieDetail(db, settingsRepo, id),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
@@ -391,7 +429,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        if (!reconcileAll) {
+        const runReconcileAll = reconcileAll?.()
+        if (!runReconcileAll) {
           res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'reconcile-all not configured (TMDB_API_KEY missing?)' }))
           return
@@ -406,7 +445,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         }
         reconcileInFlight = true
         try {
-          const result = await reconcileAll()
+          const result = await runReconcileAll()
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify(result))
         } catch (e) {
@@ -465,6 +504,40 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = updateSettings(settingsRepo, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.settings : { error: result.error }))
+        return
+      }
+
+      // spec A §4.4：PUT /api/v2/settings/secrets——wizard/Providers 区的密钥写入通道。
+      // 白名单/空值删除/审计日志（只记 name）/版本自增全部收在 setupApi.putSecret 内。
+      if (rawPath === '/api/v2/settings/secrets') {
+        if (req.method !== 'PUT') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === BODY_FAILED) return
+        // putSecret 是同步函数（不用 await），签名 (deps, body, log) → { status, body }：
+        // log 是第三个形参，不是 deps 的字段。审计日志只记 name/action，永不记 value。
+        const out = putSecret(setupDeps, body, (msg) => console.error(`[setup] ${msg}`))
+        res.writeHead(out.status, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(out.body))
+        return
+      }
+
+      // spec A §4.4：POST /api/v2/setup/validate——先测后存。未知 target → 400；
+      // 测试真的跑了（含失败/未配置）→ 200，结果分类在 body。
+      if (rawPath === '/api/v2/setup/validate') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === BODY_FAILED) return
+        const outcome = await validateSetupTarget(setupDeps, body)
+        res.writeHead(outcome.status, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(outcome.body))
         return
       }
 
@@ -587,7 +660,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        if (!tmdb) {
+        const tmdbClient = tmdb?.()
+        if (!tmdbClient) {
           res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'tmdb search not configured (TMDB_API_KEY missing?)' }))
           return
@@ -605,7 +679,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           return
         }
         try {
-          const hits = await tmdb.search(mediaType, q)
+          const hits = await tmdbClient.search(mediaType, q)
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({
             results: hits.map((h) => ({ id: h.id, name: h.title, year: h.year, posterPath: h.posterPath })),
@@ -693,6 +767,69 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = await buildCompareDTO(compareDeps, itemId)
         res.writeHead(result.ok ? 200 : result.status, JSON_CT)
         res.end(JSON.stringify(result.ok ? result.dto : { error: result.error }))
+        return
+      }
+
+      // GET /api/v2/subtitle/waveform-peaks——对照图第三轨（音频波形）的实际数据。
+      // 拆开的理由见 subtitleCompareApi.ts 文件尾注释：峰值数组大（23.7 分钟 → 284KB），
+      // 跟元数据混在一起会让画图请求的体积随视频长度线性膨胀、且无法单独缓存/单独失败。
+      // **异步**（spawn ffmpeg 抽音频，局域网实测 8 秒）故走这里。形状同 compare。
+      if (rawPath === '/api/v2/subtitle/waveform-peaks') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const itemId = (url.searchParams.get('itemId') ?? '').trim()
+        if (itemId === '') {
+          res.writeHead(400, JSON_CT)
+          res.end(JSON.stringify({ error: 'itemId query param is required' }))
+          return
+        }
+        // 查找 item（episodes / movies 两表共用 item_id 空间）
+        const item = libRepo.getEpisode(itemId) ?? libRepo.getMovie(itemId)
+        if (item === null) {
+          res.writeHead(404, JSON_CT)
+          res.end(JSON.stringify({ error: 'item not found' }))
+          return
+        }
+        // extractWaveformPeaks 的依赖注入：spawn 用 promisify(execFile) + encoding: 'buffer'
+        const execFileAsync = promisify(execFile)
+        const peaksDeps: ExtractPeaksDeps = {
+          spawn: async (args) => {
+            try {
+              const { stdout } = await execFileAsync('ffmpeg', [...args], {
+                timeout: 60_000,
+                maxBuffer: 50 * 1024 * 1024,
+                encoding: 'buffer',
+              })
+              return stdout as Buffer
+            } catch {
+              return null
+            }
+          },
+          classifyPath,
+          resolveDurationMs: async (videoPath) => resolveDurationMs(
+            { probeDuration: probeDurationSec },
+            videoPath,
+            [],
+          ),
+        }
+        try {
+          const result = await extractWaveformPeaks(peaksDeps, itemId, item.path)
+          res.writeHead(200, JSON_CT)
+          res.end(JSON.stringify(result))
+        } catch (err) {
+          // cloud 路径 → 'waveform is not available for cloud-mounted media'
+          if (err instanceof Error && err.message.includes('not available for cloud')) {
+            res.writeHead(403, JSON_CT)
+            res.end(JSON.stringify({ error: err.message }))
+            return
+          }
+          // ffmpeg 失败或其他错误 → 502
+          res.writeHead(502, JSON_CT)
+          res.end(JSON.stringify({ error: 'failed to extract waveform' }))
+        }
         return
       }
 

@@ -1,15 +1,13 @@
-// web/src/settings/DeploySection.tsx：部署区（dashboard-F6，只读）——env 脱敏展示，Jellyfin 式
-// 部署/产品分界（DESIGN.md §1/§9："挂载=部署层，UI 变不出"）。零输入控件：这个组件树里不渲染
-// 任何 <input>/<button> 或其它可交互元素——secrets 只给 present 圆点 + 尾 4 位，nonSecrets 只给
-// 原样字符串，改动一律走 environment/compose，不在这里开一个"编辑部署配置"的口子。
-import { Text } from '@astryxdesign/core/Text'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
-import { StatusDot } from '@astryxdesign/core/StatusDot'
+// web/src/settings/DeploySection.tsx：部署区（只读）——非密 env 原样展示，Jellyfin 式部署/产品
+// 分界（DESIGN.md §1/§9）。secrets 展示 2026-08-02 起归 ProvidersSection（可编辑+测试，
+// spec A §5.4）；本区零输入控件的传统不变：改动一律走 environment/compose。
+//
+// 控件栈（Plan C Task 27 迁移）：Astryx Text/VStack 全卸——Text 按控件事典映射到手写 span，
+// VStack 换裸 flex div。本区只读零控件（测试锁 querySelectorAll('input, button, …') 长度 0），
+// 迁移一个控件都不许引入。
 import type { Async } from '../api/hooks.js'
 import type { DeploySettingsDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
-import { secretDisplay } from './text.js'
 
 interface Props {
   deploy: Async<DeploySettingsDTO>
@@ -20,68 +18,39 @@ export function DeploySection({ deploy }: Props) {
 
   return (
     <section className="settings-section">
-      <Text type="label">{t('settings_deploy_heading')}</Text>
-      <Text type="supporting" color="secondary">
+      <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_deploy_heading')}</span>
+      <span className="text-[11px] leading-4 text-muted-foreground">
         {t('settings_deploy_readonly_note')}
-      </Text>
+      </span>
 
       {deploy.loading && !deploy.data ? (
-        <Text type="code" color="secondary">
+        <span className="font-mono text-[13px] leading-5 text-muted-foreground">
           loading…
-        </Text>
+        </span>
       ) : deploy.error && !deploy.data ? (
         <div className="settings-deploy-error">{t('settings_deploy_error_prefix') + deploy.error}</div>
       ) : deploy.data ? (
-        <VStack gap={4}>
-          <VStack gap={2}>
-            <Text type="supporting" color="secondary">
-              {t('settings_deploy_secrets_heading')}
-            </Text>
-            {Object.entries(deploy.data.secrets).map(([key, secret]) => (
-              <div className="settings-deploy-row" key={key}>
-                <span className="settings-deploy-key">{key}</span>
-                <HStack gap={1.5} vAlign="center">
-                  <StatusDot
-                    variant={secret.present ? 'success' : 'neutral'}
-                    label={secret.present ? t('settings_deploy_present_word') : t('settings_deploy_absent_word')}
-                  />
-                  {/* 可见同色词——不能只靠圆点色（DESIGN.md §4：色盲/截图场景）。 */}
-                  <span
-                    className={
-                      secret.present
-                        ? 'settings-deploy-status-word settings-deploy-status-word-present'
-                        : 'settings-deploy-status-word settings-deploy-status-word-absent'
-                    }>
-                    {secret.present ? t('settings_deploy_present_word') : t('settings_deploy_absent_word')}
+        <div className="flex flex-col gap-2">
+          <span className="text-[11px] leading-4 text-muted-foreground">
+            {t('settings_deploy_nonsecrets_heading')}
+          </span>
+          {Object.entries(deploy.data.nonSecrets).map(([key, value]) => (
+            <div className="settings-deploy-row" key={key}>
+              <span className="settings-deploy-key">{key}</span>
+              <span className="settings-deploy-value">
+                {value ?? '—'}
+                {/* MEDIA_ROOTS 是首启种子，真正生效的守备目录在 media_roots 表（本页下方
+                    RootsManager）——原样展示 env 值必须带这句注解，否则用户改 .env 重启后
+                    看到这行变了就以为生效了（审计四轮 R4 抓获的既有误导）。 */}
+                {key === 'MEDIA_ROOTS' ? (
+                  <span className="text-[11px] leading-4 text-muted-foreground">
+                    {t('settings_deploy_media_roots_seed_note')}
                   </span>
-                </HStack>
-                <span className="settings-deploy-tail">{secretDisplay(secret)}</span>
-              </div>
-            ))}
-          </VStack>
-          <VStack gap={2}>
-            <Text type="supporting" color="secondary">
-              {t('settings_deploy_nonsecrets_heading')}
-            </Text>
-            {Object.entries(deploy.data.nonSecrets).map(([key, value]) => (
-              <div className="settings-deploy-row" key={key}>
-                <span className="settings-deploy-key">{key}</span>
-                <span className="settings-deploy-value">
-                  {value ?? '—'}
-                  {/* 审计四轮 R4：MEDIA_ROOTS 是首启种子，真正生效的守备目录在 media_roots 表
-                      （本页下方 RootsManager）。此前这里原样展示 env 值、零注解——用户改 .env
-                      重启后看到这行变了就以为生效了，实际扫描行为纹丝不动（dashboard 自己的
-                      证据在误导用户）。 */}
-                  {key === 'MEDIA_ROOTS' ? (
-                    <Text type="supporting" color="secondary">
-                      {t('settings_deploy_media_roots_seed_note')}
-                    </Text>
-                  ) : null}
-                </span>
-              </div>
-            ))}
-          </VStack>
-        </VStack>
+                ) : null}
+              </span>
+            </div>
+          ))}
+        </div>
       ) : null}
     </section>
   )

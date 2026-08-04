@@ -1,11 +1,12 @@
 // web/src/shell/Topbar.tsx：顶栏——面包屑（当前 tab 名，dashboard-F3 起 Library 剧集页有二级
 // 面包屑：Library / 剧名）+ mono 灰新鲜度行（DESIGN.md §0：存活感来自数据新鲜度，不是"● 守护
 // 运行中"式标语）+ ⌘K 键帽触发器。
-import { TopNav } from '@astryxdesign/core/TopNav'
-import { Breadcrumbs, BreadcrumbItem } from '@astryxdesign/core/Breadcrumbs'
-import { HStack } from '@astryxdesign/core/HStack'
-import { Text } from '@astryxdesign/core/Text'
-import { Kbd } from '@astryxdesign/core/Kbd'
+//
+// Task 28 卸 Astryx：TopNav/Breadcrumbs/HStack/Text 换成语义标记 + Tailwind 类，Kbd 换
+// Task 8 自绘件（components/ui/kbd.tsx，keys="mod+k" 零改）。min-h-[46px] 是现网 TopNav 的
+// 实测量（padding 8px×2 + 内容 30px），styles.css 的 .wf-rundetail-panel{top:46px} 钉死了
+// 这条契约——顶栏矮一像素，RunDetail 固定面板顶上就漏一条滚动内容的缝。
+import { Kbd } from '../components/ui/kbd.js'
 import type { Async } from '../api/hooks.js'
 import type { WorkflowPendingDTO, LibrarySeriesDetailDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
@@ -52,31 +53,45 @@ export function Topbar({ tab, workflow, seriesDetail, onOpenCmdK }: Props) {
   }
 
   return (
-    <TopNav
-      label="Breadcrumb and status"
-      startContent={
-        <Breadcrumbs>
+    <div className="flex min-h-[46px] items-center justify-between border-b border-border px-4 py-2">
+      {/* aria-current 落在 <li> 上的前提：两个分支的当前页面包屑都是纯文本（无链接）——
+          Astryx navigation-11 的形状（焦点落在链接上、aria-current 却在父级 li 时不播报）
+          在这里不可能发生。哪天有人把当前页包成 <a>，aria-current 必须跟着移到那个 <a> 上。
+          min-w-0 + truncate：长剧名（CJK 无空格、min-content 极宽）在窄视口下允许 nav 收缩、
+          当前级省略号截断，右组（新鲜度行 + ⌘K 触发器）不被推出屏外——等价于 Astryx TopNav
+          左段的 flex:1 1 0 + minWidth:0。truncate 保 textContent 全文，getByText 断言不受影响。 */}
+      <nav aria-label="Breadcrumb" className="min-w-0">
+        <ol className="flex items-center gap-1 text-sm leading-5">
           {seriesCrumb ? (
-            <BreadcrumbItem href="#/library">{rootLabel}</BreadcrumbItem>
+            <li>
+              <a href="#/library" className="text-muted-foreground hover:underline">
+                {rootLabel}
+              </a>
+            </li>
           ) : (
-            <BreadcrumbItem isCurrent>{rootLabel}</BreadcrumbItem>
+            <li aria-current="page" className="truncate text-foreground">
+              {rootLabel}
+            </li>
           )}
-          {seriesCrumb ? <BreadcrumbItem isCurrent>{seriesCrumb}</BreadcrumbItem> : null}
-        </Breadcrumbs>
-      }
-      endContent={
-        <HStack gap={3} vAlign="center">
-          <Text type="code" color="secondary">
-            {freshness}
-          </Text>
-          <button type="button" className="cmdk-trigger" onClick={onOpenCmdK}>
-            <Text type="supporting" color="secondary" as="span">
-              {t('cmdk_trigger')}
-            </Text>
-            <Kbd keys="mod+k" />
-          </button>
-        </HStack>
-      }
-    />
+          {seriesCrumb ? (
+            <>
+              <li aria-hidden="true" className="select-none text-muted-foreground">
+                /
+              </li>
+              <li aria-current="page" className="truncate text-foreground">
+                {seriesCrumb}
+              </li>
+            </>
+          ) : null}
+        </ol>
+      </nav>
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-[13px] leading-5 text-muted-foreground">{freshness}</span>
+        <button type="button" className="cmdk-trigger" onClick={onOpenCmdK}>
+          <span className="text-xs text-muted-foreground">{t('cmdk_trigger')}</span>
+          <Kbd keys="mod+k" />
+        </button>
+      </div>
+    </div>
   )
 }

@@ -18,15 +18,14 @@
 // 但问题必须看得见」——如果一条正常运行的 hero 把故障挤到屏幕下方，那就等于没看见。
 // 故障是这一屏唯一「需要用户知道」的事，其余都是「让他放心不管」。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { VStack } from '@astryxdesign/core/VStack'
-import { useWorkflowPending, useWorkflowWorkers } from '../api/hooks.js'
+import { useSetupStatus, useWorkflowPending, useWorkflowWorkers } from '../api/hooks.js'
+import { api } from '../api/client.js'
 import type { WorkflowRecentRunDTO } from '../api/types.js'
 import { ActivityHero } from './ActivityHero.js'
 import { ActivityQueue } from './ActivityQueue.js'
 import { ActivityDone } from './ActivityDone.js'
 import { ActivityEmpty } from './ActivityEmpty.js'
 import { ActivityStuck, type StuckItem } from './ActivityStuck.js'
-import { stageFromTrail } from './stage.js'
 import { RunDetail, type RunDetailSource } from '../workflow/RunDetail.js'
 import { RerunDialog } from '../workflow/RerunDialog.js'
 import type { RerunRequest } from '../workflow/rerun.js'
@@ -34,6 +33,10 @@ import type { RerunRequest } from '../workflow/rerun.js'
 export function ActivityPage() {
   const pending = useWorkflowPending()
   const workers = useWorkflowWorkers()
+  // 发动机开关的状态源（spec A §5.5 出数据、spec C §5.3 定位置）。这是 useSetupStatus 的第二个
+  // 实例（另一个在 EngineBanner 里）——本仓没有 react-query/swr，每个 hook 实例各自 15 秒轮询，
+  // 与 banner 同频，是既有约定（Spec C §6-2 只禁止**更快**的轮询，不禁止同频的第二个实例）。
+  const setup = useSetupStatus()
   // 渲染时刻统一从这里取，往下透传。子组件一律不读 Date.now（时间是入参而非副作用，
   // 这样测试能确定性地断言"已进行 2 分 14 秒"这类读数）——五个子组件都遵守这条。
   //
@@ -107,17 +110,39 @@ export function ActivityPage() {
   // 理由同 SummaryLine 的既有哲学：宁可空白一瞬，也不显示一个可能立刻被推翻的状态。
   if (pending.data === null && workers.data === null) return null
 
+  // 失败开放：只有 data === null（还没回来 / 拉取失败）才回落成「开」。写成 `?? false` 会在
+  // 拉取失败时把正在干活的后端画成「已停工」；写成 `|| true` 会让真的关掉也显示成开——两种都
+  // 不会被 hero 那边的测试抓住（那边是直接喂 prop 的），所以本页测试里各有一条锁守着。
+  const engineEnabled = setup.data ? setup.data.engineEnabled : true
+
+  const onEngineChange = async (next: boolean) => {
+    try {
+      await api.updateSettings({ engine_enabled: next ? 'true' : 'false' })
+    } catch {
+      // 不吞：受控件不位移——checked={engineEnabled}，真值只在 setup.data.engineEnabled，
+      // 拨动后拇指**不会立刻动**，要等下面这次回读把服务端值拉回来才动；PUT 失败则纹丝不动，
+      // 「拨了没反应」本身就是诚实的失败信号（本屏无 toast 承接错误文案，L7：不给排查入口）。
+      // catch 不能省：不 catch，rejection 就是控制台里一条 unhandled rejection——那才真的没人看见。
+    }
+    setup.reload()
+  }
+
   const body = stuck.length > 0
     ? <ActivityStuck items={stuck} now={now} />
     : running.length > 0
       ? (
         <>
-          {running.map((r) => (
+          {running.map((r, i) => (
             <ActivityHero
               key={r.jobId}
               running={r}
               missingCount={r.seriesId === null ? null : missingBySeries.get(r.seriesId) ?? null}
               now={now}
+              // 发动机是**全局**开关，只挂第一条。并发在跑时每条 hero 各挂一个的话，同一个状态
+              // 在屏上出现两次、拨一个另一个跟着变，读起来像「每个任务各有一台发动机」。
+              // hero 的两个 prop 都是 optional，给 undefined 就是那一块不渲染，组件侧不用改。
+              engineEnabled={i === 0 ? engineEnabled : undefined}
+              onEngineChange={i === 0 ? onEngineChange : undefined}
             />
           ))}
           <ActivityQueue
@@ -133,8 +158,12 @@ export function ActivityPage() {
         ? null
         : <ActivityEmpty meta={pending.data.meta} recent={recent} now={now} onOpen={onOpen} />
 
+  // 三块之间 12px。这个 VStack 是**裸的**（没有 className），CSS 里没有任何选择器命中它——
+  // flex flex-col gap-3 就是布局的唯一来源，掉了整页会贴成一坨。逐值等价：Astryx 的
+  // gap={3} → --spacing-3 = 12px（tokens.stylex.ts:158），Tailwind gap-3 = 0.75rem，
+  // 而 styles.css 与 theme/scout.css 都没有改根字号，所以也是 12px。
   return (
-    <VStack gap={3}>
+    <div className="flex flex-col gap-3">
       {body}
       {openRun !== null ? (
         <RunDetail
@@ -150,6 +179,6 @@ export function ActivityPage() {
         request={rerunRequest}
         onClose={() => { setRerunRequest(null); workers.reload() }}
       />
-    </VStack>
+    </div>
   )
 }

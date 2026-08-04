@@ -36,7 +36,7 @@
 // ── 铁律 ────────────────────────────────────────────────────────────────
 //
 // 铁律①只有绿和红，没有黄：这一屏**一个状态色都不用**。空态不是"好"也不是"坏"，它是中性
-//    事实——所以全屏走灰（--color-text-gray / secondary），没有绿钩、没有红点，尤其没有黄。
+//    事实——所以全屏走灰（--color-weak / text-muted-foreground），没有绿钩、没有红点，尤其没有黄。
 //    "空 = 一切正常 = 打个绿勾"是另一版同型的错误：绿勾也是在断言库的完备性。
 //
 // 铁律②零数字：不显示百分比、不显示分数。在场的数字只有相对时间（"3 分钟前"——时间事实）
@@ -48,9 +48,6 @@
 //    spec §7.1 逐字要求"用与 hero 同几何的海报"，ActivityDone 用的正是 .act-row-poster 那一档。
 //    recent 为空时这一段整个不渲染：此刻**没有任何主语可以配图**，凭空放一张图/一个插画空态
 //    是装饰而不是信息（且 L4 那条裁决讲的是"活动页不能没有内容图"，不是"必须填满像素"）。
-import { Text } from '@astryxdesign/core/Text'
-import { VStack } from '@astryxdesign/core/VStack'
-import { HStack } from '@astryxdesign/core/HStack'
 import { useT } from '../i18n/useT.js'
 import type { WorkflowFreshnessDTO, WorkflowRecentRunDTO } from '../api/types.js'
 import { ActivityDone } from './ActivityDone.js'
@@ -83,25 +80,47 @@ export function ActivityEmpty({ meta, recent, now, onOpen }: Props) {
     // ⚠️ 这一段里**只有**两行事实（+ 可选的裸计数）+ 完成列表。没有横幅、没有插画、没有绿勾、
     //    没有"全部完成"——L6。也没有任何按钮：空态没有需要用户做的决定。
     <section className="act-empty" data-testid="activity-empty">
-      <VStack gap={1} className="act-empty-facts">
+      {/* .act-empty-facts 在 CSS 里**只有一条 padding**，没有 display——Astryx 的 VStack 曾是
+          它 flex 的唯一来源。掉了这两个类：两行事实的 gap 消失、行距不对（时间戳贴着上一行），
+          而 jsdom 不做布局，全部既有断言照绿。 */}
+      <div className="act-empty-facts flex flex-col gap-1">
         {/* 诚实状态行。**无条件渲染**——它是空态永不为白页的第一道保证。 */}
-        <Text type="body" color="secondary" data-testid="activity-empty-idle">
+        {/* ⚠️ 这一处**要给颜色类**，和这一屏别处相反：这行字没有 className，CSS 里没有任何
+            选择器命中它（.act-empty / .act-empty-facts 都不含 color，全库也没有裸元素选择器），
+            所以 color="secondary" 一直是真在生效的 #9aa1ac。漏了 text-muted-foreground，
+            它会跳回 <body> 继承的 primary #e6e8ec，而 jsdom 不算 computed style——全绿。
+            值核对：--color-text-secondary #9aa1ac === --color-muted-foreground #9aa1ac。 */}
+        <span
+          className="text-[13px] leading-5 text-muted-foreground"
+          data-testid="activity-empty-idle"
+        >
           {idleLine(lang)}
-        </Text>
-        <HStack gap={2} vAlign="center">
+        </span>
+        {/* 时间戳与裸计数并排。掉了 gap-2 两句话会贴成一句（"最近检查 3 分钟前12 / 282 已检查"）
+            ——span 是 inline，所以不像别处那样元素消失，但同样全绿。 */}
+        <div className="flex items-center gap-2">
           {/* 新鲜度时间戳。同样**无条件渲染**（lastScanAt 为 null 时如实说"还没扫过"，
               不是不渲染也不是编一个时刻）——见文件头那段论证：这是唯一崩掉的系统
               produce 不出来的元件，它不能有"缺席"这个状态。 */}
-          <Text type="code" className="act-empty-stamp" data-testid="activity-empty-stamp">
+          {/* 不给颜色类：.act-empty-stamp 那条 color（Step 4 已迁成 --color-weak）在未分层的
+              styles.css 里，赢过 @layer utilities 里的任何 text-* 工具类。给了不生效，只会骗人。
+              与上面 idle 那行的区别就在这儿：CSS 里有没有人已经管了颜色。 */}
+          <span
+            className="act-empty-stamp font-mono text-[13px] leading-5"
+            data-testid="activity-empty-stamp"
+          >
             {lastCheckedLine(meta.lastScanAt, now, lang)}
-          </Text>
+          </span>
           {showChecked ? (
-            <Text type="code" className="act-empty-stamp" data-testid="activity-empty-checked">
+            <span
+              className="act-empty-stamp font-mono text-[13px] leading-5"
+              data-testid="activity-empty-checked"
+            >
               {checkedCountLine(meta.verifiedItems, meta.verifiableItems, lang)}
-            </Text>
+            </span>
           ) : null}
-        </HStack>
-      </VStack>
+        </div>
+      </div>
       {/* 完成列表：复用 ActivityDone（38px 2:3 海报 = spec §7.1 要求的"与 hero 同几何"）。
           它自己在 recent 为空时返回 null——空态因此优雅退化成上面那两行事实，而不是一段
           带标题的空壳。 */}

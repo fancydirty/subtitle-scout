@@ -15,6 +15,27 @@ import { I18nProvider, type Lang } from '../i18n/useT.js'
 import type { WorkflowFreshnessDTO, WorkflowRecentRunDTO } from '../api/types.js'
 import { ActivityEmpty } from './ActivityEmpty.js'
 
+// CSS 断言的取值方式同 ActivityHero / ActivityDone / ActivityStuck 三个测试文件（那里有完整
+// 论证）：`?raw` 在 vitest 里恒返回空串（断言会全部变成永假），`node:fs` 会撞 tsconfig 的
+// types 白名单——所以走 vitest.config.ts:21 的 `define` 在编译期把文件内容替换进来。
+//
+// 这一屏为什么需要读 CSS：它的两档 ink 分居两侧——时间戳那档在 CSS（.act-empty-stamp），
+// 诚实状态行那档在组件层（text-muted-foreground，因为 CSS 里没人管那行的颜色）。哪一档在哪儿
+// 是**级联分层**决定的，不是风格选择；只看 DOM 的话，把任意一档改错都是全绿。
+declare const __STYLES_CSS__: string
+const CSS = __STYLES_CSS__
+
+/** 从 styles.css 里读某个选择器块的某条声明。先剥注释（同上述三个文件的既有实现：声明前隔着
+ *  一条注释会读不到，且注释里提到的颜色名不该被当成真声明）。 */
+function cssDecl(selector: string, prop: string): string | null {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = new RegExp(`${esc}\\s*\\{([^}]*)\\}`).exec(CSS)?.[1]
+  if (!block) return null
+  const bare = block.replace(/\/\*[\s\S]*?\*\//g, '')
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(bare)
+  return m ? m[1]!.trim() : null
+}
+
 const T0 = 1_700_000_000_000
 
 /** 最常见的形状：扫过盘、巡检铺量中。 */
@@ -295,5 +316,74 @@ describe('ActivityEmpty：双语各渲染一次（DESIGN.md §7 运行态跟随 
     expect(screen.getByText('12 / 282 checked')).toBeInTheDocument()
     expect(screen.getByText('subtitles installed')).toBeInTheDocument()
     expect(screen.getByText('2m ago')).toBeInTheDocument()
+  })
+})
+
+// ── 时间戳的 ink 档位：这一档的真身在 CSS，不在组件里 ──────────────────────────
+//
+// .act-empty-stamp 那条 color 是这一屏 CSS 侧**唯一**的颜色声明（.act-empty 与
+// .act-empty-facts 都不管颜色）。组件层给不了它：styles.css 全文未分层，赢过 @layer utilities
+// 里的任何 text-* 工具类——所以这一档只能在这里锁。
+describe('ActivityEmpty：时间戳的 ink 档位（真身在 CSS）', () => {
+  it('.act-empty-stamp 走 --color-weak（ink 最弱的一档：它是给人核对的背景事实，不是主角）', () => {
+    expect(cssDecl('.act-empty-stamp', 'color')).toBe('var(--color-weak)')
+    // 配对取证：DOM 侧那两个元素确实套着这个类，否则上面锁的是一条没人用的规则。
+    renderEmpty()
+    for (const testId of ['activity-empty-stamp', 'activity-empty-checked']) {
+      expect(screen.getByTestId(testId).className.split(/\s+/)).toContain('act-empty-stamp')
+    }
+  })
+})
+
+// ── 迁移锁（Astryx → Tailwind，Task 17）
+//
+// 这一屏的两档 ink 分居两侧，而"哪一档在哪儿"是级联分层决定的：未分层的 styles.css 赢过
+// @layer utilities。所以下面每条类名断言都配一个"CSS 侧到底管不管这个属性"的取证断言——
+// 只断言类名在场的锁，改错哪一侧都是全绿。
+describe('ActivityEmpty：迁移锁', () => {
+  it('两行事实区带 flex flex-col（CSS 里它只有 padding，这两个类就是布局本体）', () => {
+    const { container } = renderEmpty()
+    const facts = container.querySelector('.act-empty-facts')!
+    const classes = facts.className.split(/\s+/)
+    expect(classes).toContain('flex')
+    expect(classes).toContain('flex-col')
+    expect(classes).toContain('gap-1')
+    // 配对取证：CSS 侧确实没有 display——这才是上面两条断言承重的原因。若将来有人往 CSS 补了
+    // display:flex，这一条会红，提醒把组件层的冗余类一并收拾。
+    expect(cssDecl('.act-empty-facts', 'display')).toBeNull()
+    expect(cssDecl('.act-empty-facts', 'padding')).toBe('22px 4px 18px')
+    // 时间戳与裸计数的并排容器同理（裸 div，没有 CSS 类可查——它的 flex 只能在这里锁）。
+    const row = screen.getByTestId('activity-empty-stamp').parentElement!
+    expect(row.className.split(/\s+/)).toContain('flex')
+    expect(row.className.split(/\s+/)).toContain('items-center')
+    expect(row.className.split(/\s+/)).toContain('gap-2')
+  })
+
+  it('诚实状态行的灰由工具类给（这一屏唯一一处颜色类真生效的地方），时间戳那两个不给', () => {
+    renderEmpty()
+    // 给：这行字没有 CSS 类，CSS 侧没人管它的颜色 ⇒ 工具类是唯一来源。漏了它，这行会从
+    // #9aa1ac 跳回 <body> 继承的 primary #e6e8ec，而 jsdom 不算 computed style。
+    expect(screen.getByTestId('activity-empty-idle').className.split(/\s+/))
+      .toContain('text-muted-foreground')
+    expect(cssDecl('.act-empty-facts', 'color')).toBeNull()
+    expect(cssDecl('.act-empty', 'color')).toBeNull()
+    // 不给：.act-empty-stamp 有 color 且未分层，赢任何工具类——加了不生效，只会骗人。
+    // （上面那个 describe 已断言它确实是 var(--color-weak)。）
+    for (const testId of ['activity-empty-stamp', 'activity-empty-checked']) {
+      expect(screen.getByTestId(testId).className).not.toMatch(/\btext-(muted-foreground|weak|faint)\b/)
+    }
+  })
+
+  it('DOM 里不再有 astryx-* 类名，且既有的"零按钮 / 零插画"契约没被顺手破坏', () => {
+    const { container } = renderEmpty({ recent: [recentRow()] })
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 迁移不该引入任何可点控件（换标签时最容易顺手写成 <button>）。onOpen 缺席 ⇒ 完成行也不给。
+    expect(container.querySelectorAll('button')).toHaveLength(0)
+    expect(container.querySelector('[role="button"]')).toBeNull()
+    // 也不该顺手加图标（L6：空态一个装饰都不要）。
+    expect(container.querySelectorAll('.act-empty-facts svg')).toHaveLength(0)
+    // 两行事实仍在场——迁移不该让任何一行消失。
+    expect(screen.getByTestId('activity-empty-idle')).toBeInTheDocument()
+    expect(screen.getByTestId('activity-empty-stamp')).toBeInTheDocument()
   })
 })

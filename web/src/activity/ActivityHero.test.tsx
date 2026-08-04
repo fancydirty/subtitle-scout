@@ -11,7 +11,7 @@
 //     直接读 CSS 源文件——这样把 CSS 改成 16/9 也会红，而不是只有改 tsx 才红）。
 //  2) 不加载外部 CSS：getComputedStyle 拿不到 styles.css 的规则，故上面那条走读文件而非算样式。
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import { I18nProvider, type Lang } from '../i18n/useT.js'
 import type { TraceEvent, WorkflowRunningWorkerDTO } from '../api/types.js'
 import { ActivityHero } from './ActivityHero.js'
@@ -685,4 +685,93 @@ describe('ActivityHero：传送带走 SSE 直播而非轮询快照', () => {
   // 所以这条约束靠三样东西守：① 源码里 useLiveTrail 上方那段注释写明了为什么它必须在
   // early return 之前；② eslint 的 react-hooks/rules-of-hooks（如果 lint 在 CI 里跑）；
   // ③ 这段说明本身。留一条永绿的假测试比没有测试更糟——它会让下一个人以为这里被保护着。
+})
+
+// ── hero 发动机开关（Spec C §5.2：用户原话"放在活动页 hero 的右上角，因为那是我最常盯的一屏"）
+//
+// 两个 prop 都是可选的，且**都缺席时整块不渲染**——所以上面那 55 条用例（renderHero 只传
+// running/missingCount/now）一行不用改，`无暂停按钮` 那条 L11 锁的
+// querySelectorAll('button')).toHaveLength(0) 也逐字保留。开关在场时的按钮唯一性由本段
+// 自己的锁负责（下面第 2 条）。
+//
+// 为什么状态是 props 而不是组件内 useSetupStatus()：那是个 15 秒自轮询的 hook，55 条用例没有
+// 一条 mock 过 fetch，引进来等于给整个文件挂上 act() 外的异步 setState + 一个 interval。
+// 这个文件对 `now` 早就是同一手法（见 Props 的注释）。写入侧（PUT settings + reload）在
+// ActivityPage（Task 18）。
+function renderEngineHero(opts: {
+  engineEnabled: boolean
+  onEngineChange?: (next: boolean) => void
+  lang?: Lang
+  over?: Partial<WorkflowRunningWorkerDTO>
+}) {
+  const lang: Lang = opts.lang ?? 'zh'
+  return render(
+    <I18nProvider initialLang={lang}>
+      <ActivityHero
+        running={running(opts.over)}
+        missingCount={9}
+        now={T0 + 134_000}
+        engineEnabled={opts.engineEnabled}
+        onEngineChange={opts.onEngineChange ?? (() => {})}
+      />
+    </I18nProvider>,
+  )
+}
+
+describe('ActivityHero：发动机开关', () => {
+  it('不传发动机 props → 开关整块不渲染（既有调用方一行不改也不会多出控件）', () => {
+    const { container } = renderHero({}, { missingCount: 9 })
+    expect(container.querySelector('[data-testid="activity-hero-engine"]')).toBeNull()
+    expect(container.querySelectorAll('button')).toHaveLength(0)
+    expect(screen.queryByRole('switch')).toBeNull()
+  })
+
+  it('engineEnabled=true → 开关在场、aria-checked=true，且它是整屏唯一的可点控件', () => {
+    const { container } = renderEngineHero({ engineEnabled: true })
+    const sw = screen.getByRole('switch')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    // L11 的"无暂停按钮"在开关在场时演化成"只有这一个控件"：多出第二个就是有人偷偷加了
+    // 暂停/重试之类的入口。顺带把 pause 的文案与类名锁一起重复一遍。
+    const buttons = container.querySelectorAll('button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]).toBe(sw)
+    expect(container.innerHTML.toLowerCase()).not.toContain('pause')
+    expect(container.textContent).not.toContain('暂停')
+  })
+
+  it('engineEnabled=false → aria-checked=false（关态照实渲染，不是不渲染）', () => {
+    renderEngineHero({ engineEnabled: false })
+    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('开态点一下 → onEngineChange(false)', () => {
+    const calls: boolean[] = []
+    renderEngineHero({ engineEnabled: true, onEngineChange: (n) => calls.push(n) })
+    fireEvent.click(screen.getByRole('switch'))
+    expect(calls).toEqual([false])
+  })
+
+  it('关态点一下 → onEngineChange(true)', () => {
+    const calls: boolean[] = []
+    renderEngineHero({ engineEnabled: false, onEngineChange: (n) => calls.push(n) })
+    fireEvent.click(screen.getByRole('switch'))
+    expect(calls).toEqual([true])
+  })
+
+  it('开关旁的可见文案取既有 i18n 键 settings_engine_label（不新拟文案）', () => {
+    renderEngineHero({ engineEnabled: true, lang: 'en' })
+    expect(screen.getByText('Engine')).toBeInTheDocument()
+    cleanup()
+    renderEngineHero({ engineEnabled: true, lang: 'zh' })
+    expect(screen.getByText('发动机')).toBeInTheDocument()
+  })
+
+  it('hidden 模式（orchestrate）→ 整个 hero 不渲染，开关随之缺席（Spec C §9）', () => {
+    const { container } = renderEngineHero({
+      engineEnabled: true,
+      over: { taskType: 'orchestrate' },
+    })
+    expect(container.querySelector('.act-hero')).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
+  })
 })

@@ -43,3 +43,17 @@ describe('ExcludedBox Restore 健壮性（dashboard 审计 #2：静默失败 + �
     expect(screen.queryByText(/boom/)).not.toBeInTheDocument()
   })
 })
+
+describe('ExcludedBox：DOM 侧迁移锁（Task 23）', () => {
+  it('展开后子树无 astryx 类名；Restore 是 children 版按钮', async () => {
+    const onRestore = vi.fn(() => Promise.resolve())
+    const { container } = wrap(onRestore)
+    const btn = await openBox()
+    expect(btn).toHaveTextContent(/Restore|恢复/)
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 焦点环钉（Task 22 评审 Minor 清扫）：原生 button 触发器的 class 里必须带
+    // focus-visible 焦点环 utility，防回归成"只有浏览器默认框"。
+    const trigger = screen.getByText(/excluded extras|已排除/i).closest('button')!
+    expect(trigger.className).toContain('focus-visible:outline')
+  })
+})

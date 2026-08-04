@@ -35,3 +35,9 @@ export function zeroSubtitleSourcesWarningLine(env: {
   if (hasAssrt || hasOpensubtitles || hasZimuku || hasSubhd || hasJimaku) return null
   return '[watch] ⚠️ 没有任何字幕源可用——所有找字幕任务都会落空。请至少配置 ASSRT_TOKEN（或启用其他字幕源）'
 }
+
+/** setup 模式警告（spec A §4.7 步 2）：零 key 首启时 dashboard 已起、引擎闸全关，指路 wizard——
+ *  进程不 exit，这行是用户能在日志里找到的唯一路标。 */
+export function setupModeWarningLine(): string {
+  return '[watch] SETUP MODE: TMDB and LLM are not configured — dashboard is up, finish the setup wizard there; engine stays gated (no scanning, no dispatch) until both are configured'
+}

@@ -2,12 +2,9 @@
 // 或全覆盖绿点，不做彩色大 badge）+ 底部标题行。系列可点进详情页；电影没有详情端点（G5 只做
 // series/:id），非交互展示。
 //
-// hover 发丝线抬升（DESIGN.md §2：深色下零 drop-shadow）：ClickableCard/Card 都没留 className/
-// hover 的 xstyle 逃生口（xstyle 本身也没接 stylex 编译插件，见 web/package.json——项目里唯一
-// 用它的地方是 Sidebar.tsx 的 data-selected 全局选择器手法），所以外层卡片壳用一个原生
-// <a>/<div> + styles.css 里集中的一小段原子 CSS（.library-poster-card 家族），颜色全读 token。
-import { AspectRatio } from '@astryxdesign/core/AspectRatio'
-import { Text } from '@astryxdesign/core/Text'
+// hover 发丝线抬升（DESIGN.md §2：深色下零 drop-shadow）：卡片壳是原生 <a>/<div> +
+// styles.css 里集中的一小段原子 CSS（.library-poster-card 家族），颜色全读 token。
+import { AspectRatio } from '../components/ui/aspect-ratio.js'
 import type { LibraryItemDTO } from '../api/types.js'
 import { posterAngle } from './posterAngle.js'
 import { PosterThumb } from './PosterThumb.js'
@@ -22,9 +19,10 @@ function PosterBadge({ item }: { item: LibraryItemDTO }) {
   if (angle.kind === 'gap') {
     return (
       <span className="library-poster-count">
-        <Text type="code" size="2xs" color="secondary">
+        {/* type="code" size="2xs"：size 只覆盖 fontSize（8px），leading 仍是 code 的 1.5385 —— */}
+        <span className="font-mono text-[8px] leading-[1.5385] text-muted-foreground">
           {angle.text}
-        </Text>
+        </span>
       </span>
     )
   }
@@ -50,18 +48,19 @@ export function PosterCard({ item }: { item: LibraryItemDTO }) {
 
   const meta = (
     <div className="library-poster-meta">
-      <Text type="label" color="primary" hasTruncateTooltip display="block">
-        {title}
-      </Text>
-      <Text type="supporting" color="secondary" display="block">
-        {subline}
-      </Text>
+      {/* hasTruncateTooltip 丢掉：它没配 maxLines，本就是死 prop（Text.tsx:245 tooltipEnabled 恒 false、
+          :234 无行夹取），标题今天自由换行。翻译成 truncate 会改成单行截断——那是新增行为。 */}
+      <span className="block text-[13px] font-medium leading-5 text-foreground">{title}</span>
+      <span className="block text-[11px] leading-4 text-muted-foreground">{subline}</span>
+      {item.nativeAudio && (
+        <p className="text-xs text-weak">Native audio — no subtitles needed</p>
+      )}
     </div>
   )
 
   if (item.kind === 'series') {
     return (
-      <a className="library-poster-card" href={libraryItemHref(item.id)} aria-label={title}>
+      <a className="library-poster-card" href={libraryItemHref({ kind: item.kind, libraryId: item.id })} aria-label={title}>
         <PosterFrame item={item} title={title} />
         {meta}
       </a>
@@ -69,9 +68,9 @@ export function PosterCard({ item }: { item: LibraryItemDTO }) {
   }
 
   return (
-    <div className="library-poster-card library-poster-card-static">
+    <a className="library-poster-card" href={libraryItemHref({ kind: item.kind, libraryId: item.id })} aria-label={title}>
       <PosterFrame item={item} title={title} />
       {meta}
-    </div>
+    </a>
   )
 }

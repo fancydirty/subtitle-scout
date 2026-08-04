@@ -261,3 +261,50 @@ describe('SettingsRepo · removeRoot（单事务级联；磁盘文件不动，�
     expect(settings.listRoots().map(r => r.path)).toEqual(['/media/tv'])
   })
 })
+
+describe('SettingsRepo · secret:* 键空间（spec A §4.1）', () => {
+  it('setSecret/getSecret round-trip，明文落在 settings 表 secret: 前缀下', () => {
+    settings.setSecret('TMDB_API_KEY', 'plain-key', NOW)
+    expect(settings.getSecret('TMDB_API_KEY')).toBe('plain-key')
+    expect(settings.get('secret:TMDB_API_KEY')).toBe('plain-key')
+  })
+
+  it('白名单外的名字抛错，settings 表不出现任何行', () => {
+    expect(() => settings.setSecret('ADMIN_TOKEN' as never, 'x', NOW)).toThrow('unknown secret name')
+    expect(settings.get('secret:ADMIN_TOKEN')).toBeNull()
+    expect(() => settings.deleteSecret('ADMIN_TOKEN' as never, NOW)).toThrow('unknown secret name')
+  })
+
+  it('deleteSecret 后 getSecret → null', () => {
+    settings.setSecret('LLM_API_KEY', 'k', NOW)
+    settings.deleteSecret('LLM_API_KEY', NOW + 1)
+    expect(settings.getSecret('LLM_API_KEY')).toBeNull()
+  })
+
+  it('每次写入/删除 bump secrets_version；无行视为 0；普通 set 不 bump', () => {
+    expect(settings.secretsVersion()).toBe(0)
+    settings.setSecret('ASSRT_TOKEN', 'a', NOW)
+    expect(settings.secretsVersion()).toBe(1)
+    settings.setSecret('ASSRT_TOKEN', 'b', NOW + 1)
+    expect(settings.secretsVersion()).toBe(2)
+    settings.deleteSecret('ASSRT_TOKEN', NOW + 2)
+    expect(settings.secretsVersion()).toBe(3)
+    settings.set('target_languages', 'zh', NOW + 3)
+    expect(settings.secretsVersion()).toBe(3)
+  })
+
+  it('listSecretMeta 只回 set/source/masked，永不回明文', () => {
+    settings.setSecret('JIMAKU_API_KEY', 'jimaku-plain-key-123', NOW)
+    const meta = settings.listSecretMeta({ TMDB_API_KEY: 'env-tmdb-key-456' })
+    // 9 = SECRET_NAMES.length（Task 1 已定：spec 枚举 9 个，散文的"10"是笔误）。
+    expect(meta).toHaveLength(9)
+    expect(meta.find((m) => m.name === 'JIMAKU_API_KEY'))
+      .toEqual({ name: 'JIMAKU_API_KEY', set: true, source: 'db', masked: 'jim••••123' })
+    expect(meta.find((m) => m.name === 'TMDB_API_KEY'))
+      .toEqual({ name: 'TMDB_API_KEY', set: true, source: 'env', masked: 'env••••456' })
+    expect(meta.find((m) => m.name === 'LLM_API_KEY'))
+      .toEqual({ name: 'LLM_API_KEY', set: false, source: 'none', masked: null })
+    expect(JSON.stringify(meta)).not.toContain('jimaku-plain-key-123')
+    expect(JSON.stringify(meta)).not.toContain('env-tmdb-key-456')
+  })
+})

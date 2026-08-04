@@ -1,12 +1,28 @@
 // web/src/settings/RemoveRootDialog.tsx：删根的 AlertDialog 确认流——DESIGN.md §5 铁律
 // （destructive/有实际后果的操作才用 AlertDialog）。同 workflow/RerunDialog.tsx 的既有先例：
-// 一个 AlertDialog 元素复用成两阶段（先问确认，DELETE 完成后把 title/description/actionLabel
-// 换成结果态），因为 AlertDialog 本身没有 children 插槽，title/description 只接受字符串。
+// 一个对话框元素复用成两阶段（先问确认，DELETE 完成后把 title/description/action 换成结果态）。
 //
 // 成功后展示"removed 42 episodes · 3 series · 1 parked"式事实计数（DESIGN.md §8：数据诚实，
 // 不许笼统说"已删除"糊弄过去）；404（path 不是登记在册的守备目录）如实展示那句 error。
+//
+// 控件栈（Plan C Task 27 迁移）：Astryx AlertDialog（无插槽、title/description 只收字符串）
+// 换 Radix 组合式——phase 状态机不变，Content 按 phase 条件渲染 Title/Description/Action 文案；
+// actionVariant destructive→secondary 的相位切换走 Action className（buttonVariants 参数化）；
+// isActionLoading → disabled。⚠️ Radix Action 默认 click 即关：confirm→submitting 相位推进期间
+// 必须 e.preventDefault() 拦住默认关闭（结果态文本还在对话框里），done/error 相位才放默认关闭
+// （onOpenChange(false) → onClose）。Cancel 用字面量——i18n 表无此键，不为它加键（Task 26 铁规）。
 import { useEffect, useRef, useState } from 'react'
-import { AlertDialog } from '@astryxdesign/core/AlertDialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../components/ui/alert-dialog.js'
+import { buttonVariants } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import { removeRootConfirmTitle, removeRootResultLabel } from './text.js'
@@ -38,11 +54,9 @@ export function RemoveRootDialog({ path, onClose, onRemoved }: Props) {
 
   if (!path) return null
 
+  const finished = phase === 'done' || phase === 'error'
+
   const handleAction = async () => {
-    if (phase === 'done' || phase === 'error') {
-      onClose()
-      return
-    }
     const target = path
     setPhase('submitting')
     try {
@@ -77,16 +91,31 @@ export function RemoveRootDialog({ path, onClose, onRemoved }: Props) {
 
   return (
     <AlertDialog
-      isOpen
+      open
       onOpenChange={(open) => {
         if (!open) onClose()
       }}
-      title={title}
-      description={description}
-      actionLabel={actionLabel}
-      actionVariant={phase === 'done' || phase === 'error' ? 'secondary' : 'destructive'}
-      isActionLoading={phase === 'submitting'}
-      onAction={handleAction}
-    />
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className={buttonVariants({ variant: finished ? 'secondary' : 'destructive' })}
+            disabled={phase === 'submitting'}
+            onClick={(e) => {
+              if (finished) return // 结果相位：放默认关闭 → onOpenChange(false) → onClose
+              e.preventDefault() // confirm→submitting 相位推进期间保持打开（结果文本还在对话框里）
+              void handleAction()
+            }}
+          >
+            {actionLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }

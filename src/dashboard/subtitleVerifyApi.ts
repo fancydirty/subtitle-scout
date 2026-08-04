@@ -36,7 +36,7 @@
  * 一次刷新页面就改写用户的字幕文件，那是本仓库最不能出的事故。
  */
 import type { LibraryRepo } from '../v2/libraryRepo.js'
-import type { SubtitleVerifyRepo, SubtitleVerifyRow } from '../v2/subtitleVerifyRepo.js'
+import type { SubtitleVerifyRepo, SubtitleVerifyRow, ShiftedMediaRow } from '../v2/subtitleVerifyRepo.js'
 import type { ShiftResult } from '../subtitleVerify/shiftTiming.js'
 import type { VerifyOutcome } from '../subtitleVerify/verifySubtitle.js'
 
@@ -87,6 +87,48 @@ export function toVerifyDTO(itemId: string, row: SubtitleVerifyRow | null): Subt
  *  写两条解析分支，而剧集页拿整季与详情页拿单条本来就是同一个渲染逻辑。 */
 export interface SubtitleVerifyListDTO {
   items: SubtitleVerifyDTO[]
+}
+
+/** Plan C（spec §4.1）：GET /api/v2/subtitle/shifted 的行 DTO。**七键封闭**——加字段走新 spec。
+ *  四个媒体字段可 null（item_id 是电影或库里已无此集），前端降级 mono itemId 占位（spec §8）。 */
+export interface ShiftedItemDTO {
+  itemId: string
+  seriesId: string | null
+  seriesName: string | null
+  season: number | null
+  episode: number | null
+  checkedAt: number
+  /** 有没有可还原的在先校正 = 前端 Undo 按钮给不给点。**推导源就是 revertSubtitle 自己的
+   *  前置门**（本文件 :406 revert / :354 correct 同一道 `exists(subtitle_path + backupSuffix)`）
+   *  ——仓库里不存在 correction 记录表，这是唯一诚实的事实来源。用同一个探测，UI 上的
+   *  "可撤销"就与后端"撤销会成功"天然一致，不会出现按钮能点但请求必败的错位。
+   *  撤销仍可能被 C-A1 陈旧门拒（isRecordStale：字幕被换过时的保护性拒绝，非按钮状态错误）。 */
+  hasPriorCorrection: boolean
+}
+
+/** buildShiftedDTOs 的依赖：repo 只读查询 + 文件存在性探测。形状是 SubtitleWriteDeps 的
+ *  真子集，server.ts 直接拿既有的 subDeps 喂它（同一个 exists 实现，见 server.ts:228）。 */
+export interface ShiftedListDeps {
+  repo: { listShiftedWithMedia: () => ShiftedMediaRow[] }
+  exists: (p: string) => boolean
+}
+
+/** 铁律②的第二个执行点（第一个是 toVerifyDTO）：**显式列键，禁止 `{...row}`。**
+ *  `subtitle_path` 在这里用完就丢——它进得来（探备份路径要用），出不去（DTO 里没有它）。
+ *  `offset_ms`/`score`/`reference_tier`/`detail` 在 SQL 的 SELECT 列表里就没选，双层设防。 */
+export function buildShiftedDTOs(
+  deps: ShiftedListDeps,
+  opts: { backupSuffix: string },
+): ShiftedItemDTO[] {
+  return deps.repo.listShiftedWithMedia().map((row) => ({
+    itemId: row.item_id,
+    seriesId: row.series_id,
+    seriesName: row.series_name,
+    season: row.season,
+    episode: row.episode,
+    checkedAt: row.checked_at,
+    hasPriorCorrection: deps.exists(`${row.subtitle_path}${opts.backupSuffix}`),
+  }))
 }
 
 /** 一次批查的 id 上限。一整季约 10~50 集，500 已远宽于任何真实用法；越界即拒，

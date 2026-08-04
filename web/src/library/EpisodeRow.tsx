@@ -7,8 +7,6 @@
 // 面板），而 button 套 button 是非法 HTML——屏幕阅读器行为未定义、键盘 Tab 顺序错乱。
 // 视觉上完全不变：flex 布局、hover 底色、active 左边框都还挂在 .library-eprow-head 上，
 // 只是那个类现在长在 div 而不是 button 上。
-import { Text } from '@astryxdesign/core/Text'
-import { VStack } from '@astryxdesign/core/VStack'
 import type { GridCell } from './episodeState.js'
 import type { SubtitleVerifyDTO } from '../api/types.js'
 import { stillUrl } from '../api/client.js'
@@ -46,18 +44,18 @@ export function EpisodeRow({ cell, expanded, onToggle, verify, onInspect }: Prop
       <div className="library-eprow-head">
         <button type="button" className="library-eprow-toggle" onClick={onToggle} aria-expanded={expanded}>
           <span className={`ep-dot ${DOT_CLASS[cell.state] ?? 'ep-dot-missing'}`} aria-hidden="true" />
-          <Text type="code" color="secondary">{epLabel}</Text>
-          <Text type="label" color="primary">{cell.title ?? epLabel}</Text>
+          <span className="font-mono text-[13px] leading-5 text-muted-foreground">{epLabel}</span>
+          <span className="text-[13px] font-medium leading-5 text-foreground">{cell.title ?? epLabel}</span>
           {isEmbedded ? <span className="library-eprow-tag">{t('library_detail_embedded_short')}</span> : null}
           <span className="library-eprow-spacer" />
           {still ? <img className="library-eprow-still" src={still} alt="" loading="lazy" /> : null}
-          {cell.airDate ? <Text type="code" color="secondary">{cell.airDate}</Text> : null}
+          {cell.airDate ? <span className="font-mono text-[13px] leading-5 text-muted-foreground">{cell.airDate}</span> : null}
         </button>
         {verify ? <VerifyChip state={verify.state} checked={verify.checked} onInspect={onInspect} /> : null}
       </div>
       {expanded ? (
-        <VStack gap={1} className="library-eprow-body">
-          <Text type="body" color="secondary">{cell.overview ?? t('library_episode_no_overview')}</Text>
+        <div className="library-eprow-body flex flex-col gap-1">
+          <span className="text-[13px] leading-5 text-muted-foreground">{cell.overview ?? t('library_episode_no_overview')}</span>
           {/* 时间轴入口放在展开区，不放在绿芯片上（2026-07-31）。
               两个理由：
               ① 绿芯片必须保持零焦点——做成 button 会让 Tab 键在一整季 24 个绿点上空转。
@@ -72,7 +70,7 @@ export function EpisodeRow({ cell, expanded, onToggle, verify, onInspect }: Prop
               {t('library_verify_inspect')}
             </button>
           ) : null}
-        </VStack>
+        </div>
       ) : null}
     </div>
   )

@@ -293,3 +293,14 @@ describe('InspectPanel：无参考源', () => {
     expect(screen.queryByText('没有可以对比的东西')).not.toBeInTheDocument()
   })
 })
+
+// ── 迁移锁（Astryx → Radix 直接组合，Plan C Task 30）────────────────────────
+// Radix Content 刻意不走 Portal（渲染留在本容器内——上面的 container.querySelector 断言
+// 就靠这个），这条顺手把"无 astryx 类名"与"role=dialog 仍在"一起钉死。
+describe('InspectPanel：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名，且面板仍是 role="dialog"', () => {
+    renderPanel()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

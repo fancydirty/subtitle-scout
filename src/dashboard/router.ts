@@ -2,8 +2,11 @@
 import type {
   LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
+  DormantTaskDTO, MovieDetailDTO,
 } from './apiV2.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
+import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
+import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 
 export interface RouterDeps {
   library: () => LibraryItemDTO[]
@@ -38,6 +41,20 @@ export interface RouterDeps {
    *  workflowWorkers 的 traceBus.peek 直播补拉：这里是收官后落库的完整快照，供 RunDetail
    *  右侧板"快照回放"用）。id 已在本文件里做纯数字校验+转 number 后再传入。 */
   runTrace: (id: number) => RunTraceDTO | null
+  /** Plan C（spec §4.1）：GET /api/v2/subtitle/shifted——Triage 第三区 + Library 详情偏移行。
+   *  纯读。备份文件存在性探测（hasPriorCorrection）关在 server.ts 的注入闭包里，这一层
+   *  和 fsList 一样不碰文件系统。 */
+  shiftedSubtitles: () => ShiftedItemDTO[]
+  /** Plan C（spec §4.2）：GET /api/v2/workflow/dormant——Triage 第四区。纯读，零按钮语义
+   *  （唤醒通道本 spec 明确不补，见 spec §3 决策 1）。 */
+  dormantTasks: () => DormantTaskDTO[]
+  /** spec A §4.4：GET /api/v2/setup/status——bootstrap 完成度推导（wizard 入口判定）。 */
+  setupStatus: () => SetupStatusDTO
+  /** spec A §4.4/§5.4：GET /api/v2/setup/providers——Providers 区行数据（打码值/source/上次测试点）。 */
+  providers: () => ProvidersDTO
+  /** spec B §2/§4：GET /api/v2/library/movies/:id——movie 详情（单体对象；三层格阵合并：
+   *  canonical ∪ 磁盘 ∪ 覆盖）。 */
+  movieDetail: (id: string) => MovieDetailDTO | null
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -115,6 +132,10 @@ export function handleApiRoute(
   // server.ts 的独立 rawPath 分支。
   if (pathname === '/api/v2/workflow/pending') return { status: 200, json: deps.workflowPending() }
 
+  // ---- Plan C 两个只读 GET（spec §4）：零写路径、零状态机改动 ----
+  if (pathname === '/api/v2/subtitle/shifted') return { status: 200, json: deps.shiftedSubtitles() }
+  if (pathname === '/api/v2/workflow/dormant') return { status: 200, json: deps.dormantTasks() }
+
   if (pathname === '/api/v2/workflow/passes') {
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100)
     return { status: 200, json: deps.workflowPasses(limit) }
@@ -139,7 +160,19 @@ export function handleApiRoute(
     return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
   }
 
+  const mm = pathname.match(/^\/api\/v2\/library\/movies\/([^/]+)$/)
+  if (mm) {
+    const id = decodeIdSegment(mm[1])
+    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
+    const detail = deps.movieDetail(id)
+    return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
+  }
+
   if (pathname === '/api/v2/triage') return { status: 200, json: deps.triage() }
+
+  // ---- setup（spec A：bootstrap wizard 与 Providers 区）----
+  if (pathname === '/api/v2/setup/status') return { status: 200, json: deps.setupStatus() }
+  if (pathname === '/api/v2/setup/providers') return { status: 200, json: deps.providers() }
 
   return { status: 404, json: { error: 'not found' } }
 }

@@ -1,19 +1,25 @@
 // web/src/library/SeriesGrid.tsx：海报墙列表页（#/library）——顶部筛选 chip 排 + 结果计数
 // （mono）+ 分区海报墙（剧集/动漫/电影/其他）。三态齐（loading/error/empty）+ 筛选后零结果
 // 单独一态（区别于"库本身是空的"）。
-import { useState } from 'react'
-import { Section } from '@astryxdesign/core/Section'
-import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl'
-import { Grid } from '@astryxdesign/core/Grid'
-import { Heading, Text } from '@astryxdesign/core/Text'
-import { HStack } from '@astryxdesign/core/HStack'
-import { VStack } from '@astryxdesign/core/VStack'
-import { EmptyState } from '@astryxdesign/core/EmptyState'
-import { Skeleton } from '@astryxdesign/core/Skeleton'
-import { Button } from '@astryxdesign/core/Button'
+import { useState, useEffect } from 'react'
+import { Section } from '../components/ui/section.js'
+import { Segmented } from '../components/ui/segmented.js'
+import { Skeleton } from '../components/ui/skeleton.js'
+import { EmptyState } from '../components/ui/empty-state.js'
+import { Button } from '../components/ui/button.js'
+import { Switch } from '../components/ui/switch.js'
 import { useLibrary } from '../api/hooks.js'
 import { useT, type TKey } from '../i18n/useT.js'
-import { LIBRARY_FILTERS, type LibraryFilter, matchesLibraryFilter, groupBySection } from './filter.js'
+import {
+  LIBRARY_FILTERS,
+  KIND_FILTERS,
+  type LibraryFilter,
+  type KindFilter,
+  matchesLibraryFilter,
+  applyKindFilter,
+  kindFilterLabel,
+  groupBySection,
+} from './filter.js'
 import { sectionLabel } from './sectionLabel.js'
 import { formatResultCount } from './text.js'
 import { PosterCard } from './PosterCard.js'
@@ -25,21 +31,19 @@ const FILTER_LABEL_KEY: Record<LibraryFilter, TKey> = {
   full: 'library_filter_full',
 }
 
-const GRID_COLUMNS = { minWidth: 150, max: 8 } as const
-
 function SkeletonGrid() {
   return (
     <div aria-busy="true" aria-label="loading library">
-      <Grid columns={GRID_COLUMNS} gap={4}>
+      <div className="library-grid">
         {Array.from({ length: 12 }).map((_, i) => (
-          <VStack key={i} gap={2}>
+          <div className="flex flex-col gap-2" key={i}>
             <div className="library-poster-skel-frame">
-              <Skeleton radius={2} index={i} />
+              <Skeleton index={i} className="h-full w-full rounded-control" />
             </div>
-            <Skeleton height={12} width="70%" radius={1} index={i} />
-          </VStack>
+            <Skeleton index={i} className="h-3 w-[70%] rounded-[4px]" />
+          </div>
         ))}
-      </Grid>
+      </div>
     </div>
   )
 }
@@ -48,54 +52,94 @@ export function SeriesGrid() {
   const { data, loading, error, reload } = useLibrary()
   const { t, lang } = useT()
   const [filter, setFilter] = useState<LibraryFilter>('all')
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all')
+  const [showNative, setShowNative] = useState(() => {
+    try {
+      const stored = localStorage.getItem('scout-show-native')
+      return stored !== 'false' // fail-open：非 'false' 一律视为 ON
+    } catch {
+      return true // localStorage 不可用时默认 ON
+    }
+  })
 
-  const visible = (data ?? []).filter((it) => matchesLibraryFilter(it.coverage, filter))
+  useEffect(() => {
+    try {
+      localStorage.setItem('scout-show-native', String(showNative))
+    } catch {
+      // localStorage 不可用时静默忽略
+    }
+  }, [showNative])
+
+  const coverageFiltered = (data ?? []).filter((it) => matchesLibraryFilter(it.coverage, filter))
+  const kindFiltered = applyKindFilter(coverageFiltered, kindFilter)
+  const nativeFiltered = showNative ? kindFiltered : kindFiltered.filter((x) => !x.nativeAudio)
+  const visible = nativeFiltered
   const sections = groupBySection(visible)
 
   return (
-    <Section padding={4}>
-      <VStack gap={4}>
-        <HStack gap={3} vAlign="center" wrap="wrap">
-          <SegmentedControl value={filter} onChange={(v) => setFilter(v as LibraryFilter)} label="Library filter">
-            {LIBRARY_FILTERS.map((f) => (
-              <SegmentedControlItem key={f} value={f} label={t(FILTER_LABEL_KEY[f])} />
-            ))}
-          </SegmentedControl>
+    <Section>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Segmented
+            items={LIBRARY_FILTERS.map((f) => ({ value: f, label: t(FILTER_LABEL_KEY[f]) }))}
+            value={filter}
+            onChange={(v) => setFilter(v as LibraryFilter)}
+            label="Library filter"
+          />
+          <Segmented
+            items={KIND_FILTERS.map((f) => ({ value: f, label: kindFilterLabel(f) }))}
+            value={kindFilter}
+            onChange={(v) => setKindFilter(v as KindFilter)}
+            label="Type filter"
+          />
+          <div className="flex items-center gap-2">
+            <Switch checked={showNative} onCheckedChange={setShowNative} aria-label="Show native-language titles" />
+            <span className="text-sm">Show native-language titles</span>
+          </div>
           {data ? (
-            <Text type="code" color="secondary">
+            <span className="font-mono text-[13px] leading-5 text-muted-foreground">
               {formatResultCount(visible.length, lang)}
-            </Text>
+            </span>
           ) : null}
-        </HStack>
+        </div>
 
         {loading && !data ? (
           <SkeletonGrid />
         ) : error && !data ? (
           <EmptyState
             title={t('library_error_prefix') + error}
-            actions={<Button label={t('library_retry')} variant="secondary" onClick={reload} />}
+            actions={
+              <Button variant="secondary" onClick={reload}>
+                {t('library_retry')}
+              </Button>
+            }
           />
         ) : data && data.length === 0 ? (
           <EmptyState title={t('library_empty_title')} description={t('library_empty_desc')} />
+        ) : visible.length === 0 && !showNative && data && data.some((x) => x.nativeAudio) ? (
+          <EmptyState
+            title="All titles are native-language"
+            description='Turn on "Show native-language titles" to see them.'
+          />
         ) : visible.length === 0 ? (
           <EmptyState title={t('library_filtered_empty_title')} description={t('library_filtered_empty_desc')} />
         ) : (
-          <VStack gap={6}>
+          <div className="flex flex-col gap-6">
             {sections.map(({ section, items }) => (
-              <VStack gap={3} key={section}>
-                <Heading level={3} color="secondary">
+              <div className="flex flex-col gap-3" key={section}>
+                <h3 className="m-0 text-[16px] font-semibold leading-6 text-muted-foreground">
                   {sectionLabel(section, t)}
-                </Heading>
-                <Grid columns={GRID_COLUMNS} gap={4}>
+                </h3>
+                <div className="library-grid">
                   {items.map((it) => (
                     <PosterCard key={it.id} item={it} />
                   ))}
-                </Grid>
-              </VStack>
+                </div>
+              </div>
             ))}
-          </VStack>
+          </div>
         )}
-      </VStack>
+      </div>
     </Section>
   )
 }

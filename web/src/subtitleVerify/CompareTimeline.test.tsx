@@ -216,20 +216,29 @@ describe('CompareTimeline：拖拽平移（spec I4）', () => {
   // expect(...).not.toThrow() 验——那样变异体（去掉可选链）会照绿。改为直接监听
   // window 的 error 事件：React 18+ 把未捕获的事件处理器异常重新抛到 window 上。
   it('setPointerCapture 缺席时 pointerdown 不产生未捕获异常（可选链保护）', () => {
-    const { container } = renderTL()
-    const host = container.querySelector('.cmptl')!
-    expect((host as HTMLElement).setPointerCapture).toBeUndefined()
-    const errors: unknown[] = []
-    const onErr = (e: ErrorEvent) => { errors.push(e.error ?? e.message); e.preventDefault() }
-    window.addEventListener('error', onErr)
+    // setupTests.ts 自 Plan C Task 7 起给 Element.prototype 全局垫了 setPointerCapture
+    // （Radix Select/Dialog 一族需要）。本用例测的恰恰是"它没有"的路径——用例内临时摘掉
+    // 这个垫片、跑完恢复，其余套件继续享受全局垫片。
+    const savedSetPointerCapture = Element.prototype.setPointerCapture
+    Reflect.deleteProperty(Element.prototype, 'setPointerCapture')
     try {
-      fireEvent.pointerDown(host, { clientX: 400, pointerId: 1 })
-      fireEvent.pointerMove(host, { clientX: 200, pointerId: 1 })
-      fireEvent.pointerUp(host, { clientX: 200, pointerId: 1 })
+      const { container } = renderTL()
+      const host = container.querySelector('.cmptl')!
+      expect((host as HTMLElement).setPointerCapture).toBeUndefined()
+      const errors: unknown[] = []
+      const onErr = (e: ErrorEvent) => { errors.push(e.error ?? e.message); e.preventDefault() }
+      window.addEventListener('error', onErr)
+      try {
+        fireEvent.pointerDown(host, { clientX: 400, pointerId: 1 })
+        fireEvent.pointerMove(host, { clientX: 200, pointerId: 1 })
+        fireEvent.pointerUp(host, { clientX: 200, pointerId: 1 })
+      } finally {
+        window.removeEventListener('error', onErr)
+      }
+      expect(errors).toEqual([])
     } finally {
-      window.removeEventListener('error', onErr)
+      Element.prototype.setPointerCapture = savedSetPointerCapture
     }
-    expect(errors).toEqual([])
   })
 
   it('拖拽改变可见窗（刻度标签随之变化）', () => {

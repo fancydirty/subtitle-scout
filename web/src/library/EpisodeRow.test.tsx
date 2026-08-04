@@ -7,6 +7,21 @@ import { I18nProvider } from '../i18n/useT.js'
 import { EpisodeRow } from './EpisodeRow.js'
 import type { GridCell } from './episodeState.js'
 
+// CSS 断言取值同 Task 19/20 与 src/activity 四文件：走 vitest.config.ts:21 的 define 编译期替换。
+// 这一屏读 CSS 是因为 3 处 --color-accent（活跃行左条/格子焦点环/选中格边框）和 .ep-cell 面底
+// 都踩在跨栈撞车上（Task 19 背景一 / 本 task 背景二），只看 DOM 改错了也全绿。
+declare const __STYLES_CSS__: string
+const CSS = __STYLES_CSS__
+
+function cssDecl(selector: string, prop: string): string | null {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = new RegExp(`${esc}\\s*\\{([^}]*)\\}`).exec(CSS)?.[1]
+  if (!block) return null
+  const bare = block.replace(/\/\*[\s\S]*?\*\//g, '')
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(bare)
+  return m ? m[1]!.trim() : null
+}
+
 afterEach(cleanup)
 
 function cell(over: Partial<GridCell> = {}): GridCell {
@@ -185,5 +200,45 @@ describe('EpisodeRow：时间轴入口', () => {
   it('绿芯片仍然不是 button（入口在展开区，不在芯片上）', () => {
     renderRow({ verify: verify({ state: 'ok' }), onInspect: () => {}, expanded: true })
     expect(screen.getByTestId('verify-chip-ok').tagName).not.toBe('BUTTON')
+  })
+})
+
+// ── CSS 侧迁移锁（Task 21）——三处可见强调避开 --color-accent 撞车 + 面底/圆角/绿点/橙→琥珀
+describe('EpisodeRow / 季手风琴组：CSS 侧迁移锁', () => {
+  it('三处可见强调走 --color-ring（不是 --color-accent：后者过渡期柠檬绿、卸载后与背景同色 → 隐形）', () => {
+    expect(cssDecl('.ep-cell:focus-visible', 'outline')).toBe('2px solid var(--color-ring)')
+    expect(cssDecl('.ep-cell-selected', 'border-color')).toBe('var(--color-ring)')
+    // 活跃行左条：选择器含 `>`，用整串 includes 断言更稳。
+    expect(CSS).toContain('border-left-color: var(--color-ring)')
+    expect(CSS).not.toContain('border-left-color: var(--color-accent)')
+  })
+
+  it('格子面底走 --color-secondary（不是 --color-accent），圆角字面 4px', () => {
+    expect(cssDecl('.ep-cell', 'background')).toBe('var(--color-secondary)')
+    expect(cssDecl('.ep-cell', 'border-radius')).toBe('4px')
+  })
+
+  it('语义色迁到新栈：绿点 --color-fn-green、半覆盖集号橙→琥珀 --color-fn-amber（有意改值）', () => {
+    expect(cssDecl('.ep-dot-covered', 'background')).toBe('var(--color-fn-green)')
+    // 半覆盖集号：新栈无橙档，沿用唯一暖色 --color-fn-amber（#f2c00b）。
+    expect(CSS).toContain('var(--color-fn-amber)')
+    expect(CSS).not.toContain('var(--color-text-orange)')
+  })
+})
+
+// ── DOM 侧迁移锁（Task 21）
+describe('EpisodeRow：DOM 侧迁移锁', () => {
+  it('子树无 astryx-* 类名；集号 mono、标题在场', () => {
+    const cell: GridCell = {
+      episode: 1, state: 'covered', title: 'Pilot', overview: 'ov', airDate: '2011-10-05', stillPath: null,
+      onDisk: { itemId: 'ep1', episode: 1, path: '/m/e1.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null, files: [] },
+    }
+    const { container } = render(
+      <I18nProvider><EpisodeRow cell={cell} expanded={false} onToggle={() => {}} /></I18nProvider>,
+    )
+    expect(container.querySelector('[class*="astryx"]')).toBeNull()
+    // 集号走 font-mono（type="code" 迁移后的证据）。
+    expect(container.querySelector('span.font-mono')).toBeTruthy()
+    expect(screen.getByText('Pilot')).toBeInTheDocument()
   })
 })

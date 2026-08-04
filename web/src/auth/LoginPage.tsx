@@ -2,8 +2,10 @@
 // 登录页夸的是构图与"不跟密码管理器打架"，从不是功能。一个 method 一个 form，无 remember-me、无
 // method 选择器。错误精确文案 + 保留 username + 清空 password + 聚焦（避 Overseerr "Something
 // went wrong" / *arr `?loginFailed=true` reload）。
+// Plan C Task 30：Astryx Button 卸（label prop 退役、children 化；isLoading 期间 Astryx 本就
+// disable 按钮，disabled={busy} 守住同一语义）。form/autocomplete 语义一寸不动。
 import { useRef, useState } from 'react'
-import { Button } from '@astryxdesign/core/Button'
+import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
 import { api } from '../api/client.js'
 import { AuthShell } from './AuthShell.js'
@@ -47,11 +49,9 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
           type="password" autoComplete="current-password" inputRef={passwordRef}
         />
         {error && <div className="auth-error" role="alert">{error}</div>}
-        <Button
-          type="submit" variant="primary"
-          label={busy ? t('login_submitting') : t('login_submit')}
-          isLoading={busy} isDisabled={busy}
-        />
+        <Button type="submit" variant="default" disabled={busy}>
+          {busy ? t('login_submitting') : t('login_submit')}
+        </Button>
       </form>
       {/* 诚实找回密码：命令真实存在（A4 的 auth reset CLI 背书），mono 展示。前缀与命令分成两段
           （审计前端 #8：避免 .replace 依赖译文含某字面量，译文一改就重复渲染）。 */}

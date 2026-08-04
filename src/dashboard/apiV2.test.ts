@@ -8,9 +8,9 @@ import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import {
   buildLibrary, buildSeriesDetail, buildRuns, sectionOf, sectionForItem, commonRootDepth, buildParked, unexclude,
-  buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS,
+  buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch, buildRunTrace,
+  buildTriage, redispatch, buildRunTrace, buildDormantTasks, dormantTargetLabel, buildLibraryMovieDetail,
 } from './apiV2.js'
 // 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
@@ -165,6 +165,35 @@ describe('buildLibrary', () => {
     const item = buildLibrary(db).find(x => x.id === 's9')!
     expect(item.job).toBeNull()
     expect(item.coverage).toEqual({ covered: 0, missing: 0, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
+  })
+
+  // Plan B Task 1: originLang + nativeAudio 两键
+  it('series: originLang=null 未富化 → nativeAudio=false', () => {
+    const item = buildLibrary(db).find(x => x.id === 's1')!
+    expect(item.originLang).toBeNull()
+    expect(item.nativeAudio).toBe(false)
+  })
+
+  it('series: originLang=zh 且默认 TARGET_LANGUAGES=zh → nativeAudio=true', () => {
+    lib.upsertSeries({ id: 's-zh', name: 'Chinese Show', originLang: 'zh' })
+    lib.upsertEpisode({ id: 'e-zh', seriesId: 's-zh', season: 1, episode: 1, name: 'E1', path: '/media/tv/Show/e1.mkv', subStatus: 'missing' })
+    const item = buildLibrary(db).find(x => x.id === 's-zh')!
+    expect(item.originLang).toBe('zh')
+    expect(item.nativeAudio).toBe(true)
+  })
+
+  it('movie: originLang=en 且默认 TARGET_LANGUAGES=zh → nativeAudio=false（en 不在 originSkipLanguages）', () => {
+    lib.upsertMovie({ id: 'm-en', name: 'English Movie', path: '/media/movies/Movie/m.mkv', subStatus: 'missing', originLang: 'en' })
+    const item = buildLibrary(db).find(x => x.id === 'm-en')!
+    expect(item.originLang).toBe('en')
+    expect(item.nativeAudio).toBe(false)
+  })
+
+  it('movie: originLang=zh-CN（地区变体）→ langOf 规范化为 zh → nativeAudio=true', () => {
+    lib.upsertMovie({ id: 'm-zhcn', name: 'Chinese Movie', path: '/media/movies/Movie/m.mkv', subStatus: 'missing', originLang: 'zh-CN' })
+    const item = buildLibrary(db).find(x => x.id === 'm-zhcn')!
+    expect(item.originLang).toBe('zh-CN')
+    expect(item.nativeAudio).toBe(true)
   })
 })
 
@@ -340,11 +369,14 @@ describe('buildRuns', () => {
 
 // dashboard G4：settings/deploy/fs 三个只读端点的纯函数底座。
 describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null）', () => {
-  it('全部未设置时六键皆 null', () => {
+  it('全部未设置时九键皆 null + engineEnabled 兜底为 true', () => {
     const settings = new SettingsRepo(db)
     expect(buildSettings(settings)).toEqual({
       target_languages: null, hardsub_mode: null, exclude_extras: null,
       trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+      engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+      // engine_enabled 未设置 → fail-open 兜底为 true（本任务 ③ 的布尔别名）。
+      engineEnabled: true,
     })
   })
 
@@ -355,6 +387,8 @@ describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null�
     expect(buildSettings(settings)).toEqual({
       target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: null,
       trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+      engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
+      engineEnabled: true,
     })
   })
 
@@ -362,7 +396,46 @@ describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null�
     const settings = new SettingsRepo(db)
     settings.set('not_a_real_setting', 'sneaky', NOW)
     const dto = buildSettings(settings)
-    expect(Object.keys(dto).sort()).toEqual([...SETTINGS_KEYS].sort())
+    expect(Object.keys(dto).sort()).toEqual([...SETTINGS_KEYS, 'engineEnabled'].sort())
+  })
+})
+
+describe('settings · 启动面三键（spec A §4.4/§4.6）', () => {
+  it('PUT 接受 engine_enabled/provider:SUBHD_ENABLED/provider:ZIMUKU_ENABLED 的 true/false', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    const r = updateSettings(repo, { engine_enabled: 'false', 'provider:SUBHD_ENABLED': 'true', 'provider:ZIMUKU_ENABLED': 'true' }, NOW)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.settings.engine_enabled).toBe('false')
+      expect(r.settings['provider:SUBHD_ENABLED']).toBe('true')
+    }
+  })
+
+  it('三键拒绝非 true/false 值（全有或全无）', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    expect(updateSettings(repo, { engine_enabled: 'yes' }, NOW).ok).toBe(false)
+    expect(updateSettings(repo, { 'provider:ZIMUKU_ENABLED': '1' }, NOW).ok).toBe(false)
+    expect(updateSettings(repo, { engine_enabled: 'true', 'provider:SUBHD_ENABLED': 'on' }, NOW).ok).toBe(false)
+    expect(repo.get('engine_enabled')).toBeNull()   // 非法批次不落任何键
+  })
+
+  it('GET DTO 的 engineEnabled 布尔别名：null→true（fail-open）、false→false、脏值→true', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    expect(buildSettings(repo).engineEnabled).toBe(true)
+    repo.set('engine_enabled', 'false', NOW)
+    expect(buildSettings(repo).engineEnabled).toBe(false)
+    repo.set('engine_enabled', '0', NOW)
+    expect(buildSettings(repo).engineEnabled).toBe(true)
+  })
+})
+
+describe('媒体根路径形状（spec A §11-1：win32 绝对路径不冤杀）', () => {
+  it('listMediaSubdirs/addMediaRoot 接受 C:\\ 形状进入存在性检查（POSIX 上诚实报不存在），相对路径仍拒', () => {
+    expect(listMediaSubdirs('C:\\media')).toEqual({ ok: false, error: 'path does not exist' })
+    expect(listMediaSubdirs('relative/path')).toEqual({ ok: false, error: 'path must be an absolute path' })
+    const repo = new SettingsRepo(openDb(':memory:'))
+    expect(addMediaRoot(repo, 'D:/media', NOW)).toEqual({ ok: false, error: 'path does not exist' })
+    expect(addMediaRoot(repo, 'media', NOW)).toEqual({ ok: false, error: 'path must be an absolute path' })
   })
 })
 
@@ -1039,5 +1112,197 @@ describe('redispatch（POST /api/v2/workflow/redispatch：转调 upsertWorkerTas
     const jobs = new JobsRepo(db)
     const result = redispatch(jobs, { seriesId: 's1', seasons: [0, -1] }, NOW)
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('dormantTargetLabel（Plan C spec §4.2：后端组标签，前端不拼）', () => {
+  const base = {
+    id: 1, series_id: 'tmdb:100', movie_id: null, season: null,
+    series_name: 'The Rig', movie_name: null, seasons_json: null as string | null,
+  }
+
+  it('payload.seasons 单季 → "名, Season N"', () => {
+    expect(dormantTargetLabel({ ...base, seasons_json: '[2]' })).toBe('The Rig, Season 2')
+  })
+
+  it('payload.seasons 多季 → "名, Seasons a, b"（升序）', () => {
+    expect(dormantTargetLabel({ ...base, seasons_json: '[2,1]' })).toBe('The Rig, Seasons 1, 2')
+  })
+
+  it('payload.seasons 缺席但 jobs.season 有值 → 回落用列（存量 series_season 行）', () => {
+    expect(dormantTargetLabel({ ...base, season: 3 })).toBe('The Rig, Season 3')
+  })
+
+  it('两处季信息都没有 → 只给系列名（全剧任务）', () => {
+    expect(dormantTargetLabel(base)).toBe('The Rig')
+  })
+
+  it('电影行 → 电影名', () => {
+    expect(dormantTargetLabel({
+      ...base, series_id: null, series_name: null, movie_id: 'tmdb:777', movie_name: 'Dune',
+    })).toBe('Dune')
+  })
+
+  it('join 不中（合成 series_id 的通用任务）→ 如实回落 id 本身，不伪造名字', () => {
+    expect(dormantTargetLabel({
+      ...base, series_id: 'orchestrator-shard-42-1', series_name: null,
+    })).toBe('orchestrator-shard-42-1')
+  })
+
+  it('连 id 都没有 → 回落 job 号', () => {
+    expect(dormantTargetLabel({ ...base, id: 77, series_id: null, series_name: null })).toBe('job #77')
+  })
+
+  it('seasons_json 是畸形 JSON 时不抛，按"没有季信息"处理', () => {
+    expect(dormantTargetLabel({ ...base, seasons_json: '{oops' })).toBe('The Rig')
+  })
+})
+
+describe('buildDormantTasks（Plan C spec §4.2）', () => {
+  let db: ScoutDb
+  beforeEach(() => { db = openDb(':memory:') })
+
+  const insertJob = (over: Record<string, unknown> = {}) => {
+    const row = {
+      kind: 'worker_task', series_id: 'tmdb:100', season: null, movie_id: null,
+      payload: JSON.stringify({ taskType: 'find_subtitle', reason: 'gaps', seasons: [2] }),
+      state: 'dormant', attempt: 5, reap_count: 0,
+      last_error: '连续 5 次进程崩溃/租约死亡回收未竟全功——疑确定性崩溃(poison task)',
+      created_at: NOW, updated_at: NOW,
+      ...over,
+    }
+    db.prepare(
+      `INSERT INTO jobs (kind, series_id, season, movie_id, payload, state, attempt, reap_count,
+                         last_error, created_at, updated_at)
+       VALUES (@kind, @series_id, @season, @movie_id, @payload, @state, @attempt, @reap_count,
+               @last_error, @created_at, @updated_at)`,
+    ).run(row)
+  }
+
+  it('DTO 键集合封闭为四键，中文 reason 串不泄漏', () => {
+    db.prepare(`INSERT INTO series (id, name, year) VALUES ('tmdb:100', 'The Rig', 2023)`).run()
+    insertJob()
+    const dto = buildDormantTasks(db)
+    expect(dto).toHaveLength(1)
+    expect(Object.keys(dto[0]).sort()).toEqual(['attempts', 'jobId', 'targetLabel', 'task'])
+    expect(dto[0]).toEqual({ jobId: 1, task: 'find_subtitle', targetLabel: 'The Rig, Season 2', attempts: 5 })
+    const serialized = JSON.stringify(dto)
+    expect(serialized).not.toContain('崩溃')
+    expect(serialized).not.toContain('poison')
+    expect(serialized).not.toMatch(/"(reason|lastError|last_error|updatedAt|updated_at)":/)
+  })
+
+  it('只出 dormant——其余六态一律不出', () => {
+    for (const state of ['wanted', 'searching', 'downloading', 'verifying', 'done', 'failed'] as const) {
+      insertJob({ state, series_id: `tmdb:${state}` })
+    }
+    insertJob({ state: 'dormant', series_id: 'tmdb:parked', payload: JSON.stringify({ taskType: 'find_subtitle' }) })
+    const dto = buildDormantTasks(db)
+    expect(dto).toHaveLength(1)
+    expect(dto[0].targetLabel).toBe('tmdb:parked')
+  })
+
+  it('attempts 取两个计数器的大者——崩溃循环轨（reap_count=5, attempt=0）也报 5', () => {
+    insertJob({ attempt: 0, reap_count: 5 })
+    expect(buildDormantTasks(db)[0].attempts).toBe(5)
+  })
+
+  it('attempts 取两个计数器的大者——内容失败轨（attempt=5, reap_count=1）报 5', () => {
+    insertJob({ attempt: 5, reap_count: 1 })
+    expect(buildDormantTasks(db)[0].attempts).toBe(5)
+  })
+
+  it('payload 无 taskType 时 task 回落 kind，不给空串', () => {
+    insertJob({ kind: 'realign', payload: null })
+    expect(buildDormantTasks(db)[0].task).toBe('realign')
+  })
+
+  it('空表返回空数组', () => {
+    expect(buildDormantTasks(db)).toEqual([])
+  })
+
+  it('排序钉死 ORDER BY updated_at DESC：最近停车的排前面', () => {
+    insertJob({ series_id: 'tmdb:old', updated_at: NOW - 1000, payload: JSON.stringify({ taskType: 'find_subtitle' }) })
+    insertJob({ series_id: 'tmdb:new', updated_at: NOW, payload: JSON.stringify({ taskType: 'find_subtitle' }) })
+    const dto = buildDormantTasks(db)
+    expect(dto).toHaveLength(2)
+    expect(dto.map((d) => d.targetLabel)).toEqual(['tmdb:new', 'tmdb:old'])
+  })
+})
+
+describe('buildLibraryMovieDetail', () => {
+  it('返回 null 当电影不存在（404 语义）', () => {
+    const settingsRepo = new SettingsRepo(db)
+    expect(buildLibraryMovieDetail(db, settingsRepo, 'nonexistent')).toBeNull()
+  })
+
+  it('全部 14 键齐全：id/name/chineseTitle/year/posterPath/path/subStatus/statusReason/recheckAfter/originLang/nativeAudio/files/subtitles/recentJobs', () => {
+    const settingsRepo = new SettingsRepo(db)
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm1')!
+    expect(detail).toHaveProperty('id')
+    expect(detail).toHaveProperty('name')
+    expect(detail).toHaveProperty('chineseTitle')
+    expect(detail).toHaveProperty('year')
+    expect(detail).toHaveProperty('posterPath')
+    expect(detail).toHaveProperty('path')
+    expect(detail).toHaveProperty('subStatus')
+    expect(detail).toHaveProperty('statusReason')
+    expect(detail).toHaveProperty('recheckAfter')
+    expect(detail).toHaveProperty('originLang')
+    expect(detail).toHaveProperty('nativeAudio')
+    expect(detail).toHaveProperty('files')
+    expect(detail).toHaveProperty('subtitles')
+    expect(detail).toHaveProperty('recentJobs')
+    expect(Object.keys(detail)).toHaveLength(14)
+  })
+
+  it('键集合封闭：恰好 14 键，不多不少（无 backdropPath/overview/genres）', () => {
+    const settingsRepo = new SettingsRepo(db)
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm1')!
+    const keys = Object.keys(detail).sort()
+    expect(keys).toEqual([
+      'chineseTitle', 'files', 'id', 'name', 'nativeAudio', 'originLang',
+      'path', 'posterPath', 'recentJobs', 'recheckAfter', 'statusReason',
+      'subStatus', 'subtitles', 'year',
+    ])
+    expect(detail).not.toHaveProperty('backdropPath')
+    expect(detail).not.toHaveProperty('overview')
+    expect(detail).not.toHaveProperty('genres')
+  })
+
+  it('nativeAudio=true 当 originLang=zh 且默认 TARGET_LANGUAGES=zh', () => {
+    const settingsRepo = new SettingsRepo(db)
+    lib.upsertMovie({ id: 'm-zh', name: 'Chinese Film', path: '/media/movies/Film/f.mkv', subStatus: 'covered', originLang: 'zh' })
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm-zh')!
+    expect(detail.originLang).toBe('zh')
+    expect(detail.nativeAudio).toBe(true)
+  })
+
+  it('recentJobs 最近五个：movie_id 命中且 series_id IS NULL（过滤掉 series 目标的 worker_task）', () => {
+    const settingsRepo = new SettingsRepo(db)
+
+    // 使用新的 movie id 来避免与 beforeEach 中的 m1 job 冲突
+    lib.upsertMovie({ id: 'm-jobs', name: 'Movie Jobs Test', path: '/media/movies/Test/test.mkv', subStatus: 'missing' })
+
+    // 插入 2 个 movie job：1 个旧 kind='movie' + 1 个新 kind='worker_task' find_subtitle
+    // （jobs_identity 约束：kind + series_id + season + movie_id + taskType 必须唯一，
+    //  所以同一 movieId 只能有一个 worker_task/find_subtitle 组合）
+    const jobId1 = insertJob(db, { kind: 'movie', movieId: 'm-jobs', state: 'wanted', priority: 10 })
+    const jobId2 = insertWorkerTaskJob(db, { movieId: 'm-jobs', taskType: 'find_subtitle', state: 'searching', priority: 20 })
+
+    // 干扰项：series_id 非空的 worker_task（应被 series_id IS NULL 过滤掉）
+    insertWorkerTaskJob(db, { seriesId: 's1', season: 3, taskType: 'find_subtitle', state: 'searching', priority: 50 })
+
+    // 干扰项：不同 movieId 的 job
+    insertWorkerTaskJob(db, { movieId: 'm-other', taskType: 'find_subtitle', state: 'wanted', priority: 0 })
+
+    const detail = buildLibraryMovieDetail(db, settingsRepo, 'm-jobs')!
+    // 2 个 m-jobs 的 job（旧 kind='movie' + 新 kind='worker_task'）
+    expect(detail.recentJobs).toHaveLength(2)
+    const jobIds = detail.recentJobs.map(j => j.id).sort((a, b) => b - a)
+    expect(jobIds).toEqual([jobId2, jobId1])
+    expect(detail.recentJobs.every(j => j.state && typeof j.priority === 'number')).toBe(true)
+    // 验证干扰项被正确过滤：series_id 非空的不在结果里
+    expect(detail.recentJobs.every(j => j.id !== 50)).toBe(true)
   })
 })

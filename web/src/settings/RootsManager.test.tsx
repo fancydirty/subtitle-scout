@@ -157,3 +157,17 @@ describe('RootsManager：三态', () => {
     expect(reload).toHaveBeenCalled()
   })
 })
+
+describe('RootsManager：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', () => {
+    renderManager(asyncOf(ROOTS))
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+
+  it('RemoveRootDialog 打开态：DOM 里不再有 astryx-* 类名（对话框 portal 在 body 下）', async () => {
+    renderManager(asyncOf(ROOTS))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await screen.findByRole('alertdialog')
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
+  })
+})

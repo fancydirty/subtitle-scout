@@ -8,6 +8,9 @@ import type {
   TriageDTO,
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
   AuthStatusDTO, AuthSecurityDTO,
+  SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
+  ShiftedItemDTO, DormantTaskDTO,
+  MovieDetailDTO, WaveformPeaksResponse,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -128,6 +131,14 @@ export const api = {
   runs: (offset: number, limit: number, signal?: AbortSignal) =>
     get<RunHistoryDTO[]>(`/api/v2/runs?offset=${offset}&limit=${limit}`, signal),
   reconcileAll: () => post<ReconcileAllResultDTO>('/api/v2/reconcile-all'),
+  // ---------- Spec A 启动面（BootstrapGate / wizard / Settings Providers 区共用） ----------
+  setupStatus: (signal?: AbortSignal) => get<SetupStatusDTO>('/api/v2/setup/status', signal),
+  setupProviders: (signal?: AbortSignal) => get<ProvidersDTO>('/api/v2/setup/providers', signal),
+  putSecret: (name: SecretName, value: string) =>
+    put<PutSecretResultDTO>('/api/v2/settings/secrets', { name, value }),
+  // credentials 提供 = wizard"先测后存"（服务端测请求体凭据、不落库）；省略 = 测已解析的 env/db 凭据。
+  validateSetup: (target: ValidateTarget, credentials?: Partial<Record<SecretName, string>>) =>
+    post<ValidateResultDTO>('/api/v2/setup/validate', credentials === undefined ? { target } : { target, credentials }),
   // 去 Jellyfin 化 P6：park 救援页——一次性脚手架。
   parked: (signal?: AbortSignal) => get<ParkedItemDTO[]>('/api/parked', signal),
   // dashboard-F2：顶栏新鲜度行 + 侧栏甄别角标共用同一份响应（meta + parked）。
@@ -153,6 +164,12 @@ export const api = {
       `/api/v2/subtitle/verify?itemIds=${itemIds.map((id) => encodeURIComponent(id)).join(',')}`,
       signal,
     ),
+  // Plan C（spec §4.1）：偏移清单——Triage 第三区与 Library 详情偏移行共用同一份数据。
+  subtitleShifted: (signal?: AbortSignal) =>
+    get<ShiftedItemDTO[]>('/api/v2/subtitle/shifted', signal),
+  // Plan C（spec §4.2）：停车任务清单——只读，零动作。
+  workflowDormant: (signal?: AbortSignal) =>
+    get<DormantTaskDTO[]>('/api/v2/workflow/dormant', signal),
   // dashboard-F4：Workflow 三泳道——中泳道 pass 记录 + 右泳道跑中/近期 worker。
   workflowPasses: (limit: number, signal?: AbortSignal) =>
     get<WorkflowPassDTO[]>(`/api/v2/workflow/passes?limit=${limit}`, signal),
@@ -196,4 +213,12 @@ export const api = {
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: true }>('/api/v2/auth/change-password', { oldPassword, newPassword }),
   regenerateApiKey: () => post<{ apiKey: string }>('/api/v2/auth/regenerate-api-key'),
+
+  // Plan B: 电影详情
+  movieDetail: (id: string, signal?: AbortSignal) =>
+    get<MovieDetailDTO>(`/api/v2/library/movies/${id}`, signal),
+
+  // Plan B: 波形 peaks
+  waveformPeaks: (itemId: string, signal?: AbortSignal) =>
+    get<WaveformPeaksResponse>(`/api/v2/subtitle/waveform-peaks?itemId=${itemId}`, signal),
 }

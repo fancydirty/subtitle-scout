@@ -32,8 +32,9 @@ interface Props {
   /** 待检字幕轨 */
   ours: readonly TimelineCue[]
   durationMs: number
-  /** 波形峰值（0~1，等间隔）。缺席=云盘或还没抽 → 不渲染声音轨 */
-  waveformPeaks?: readonly number[] | null
+  /** 波形峰值（0~1，等间隔）。缺席=云盘或还没抽 → 不渲染声音轨；
+   *  'loading' → 渲染骨架轨（shimmer）；失败时静默回退不渲染。 */
+  waveformPeaks?: readonly number[] | null | 'loading'
 }
 
 /** 滚轮一格的缩放倍率。1.2 是试出来的手感：太大（2）一格就跳一个数量级、
@@ -105,9 +106,9 @@ export function CompareTimeline({ reference, ours, durationMs, waveformPeaks }: 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (vp === null) return
     dragRef.current = { startX: e.clientX, startVp: vp }
-    // setPointerCapture 在 jsdom 里不存在（不是 no-op，是压根没这个方法）。捕获只是
-    // "拖到元素外面也别丢事件"的增益，拿不到就算了——绝不能让它把 pointerdown 炸掉，
-    // 那会让整个面板在测试环境里抛错、并在真实浏览器的老引擎上留同一个坑。
+    // setPointerCapture 在 jsdom 里如今是 setupTests 垫的无操作桩，但真实老引擎上仍可能
+    // 压根没这个方法。捕获只是"拖到元素外面也别丢事件"的增益，拿不到就算了——绝不能让它
+    // 把 pointerdown 炸掉：缺方法的引擎上裸调就是同一个坑，可选链是留给那条路径的。
     e.currentTarget.setPointerCapture?.(e.pointerId)
   }, [vp])
 
@@ -175,7 +176,10 @@ export function CompareTimeline({ reference, ours, durationMs, waveformPeaks }: 
           onHover={setHover}
         />
 
-        {waveformPeaks && waveformPeaks.length > 0 ? (
+        {waveformPeaks === 'loading' ? (
+          <div className="h-[60px] animate-pulse bg-secondary" />
+        ) : null}
+        {Array.isArray(waveformPeaks) && waveformPeaks.length > 0 ? (
           <WaveTrack
             label={t('verify_track_audio')}
             peaks={waveformPeaks}
@@ -310,9 +314,9 @@ function WaveTrack({ label, peaks, durationMs, vp, width }: WaveTrackProps) {
         <svg viewBox={`0 0 ${Math.max(1, width)} ${H}`} preserveAspectRatio="none" aria-hidden="true">
           <defs>
             <linearGradient id="cmptl-wg" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-accent, #58a6ff)" stopOpacity="0.8" />
-              <stop offset="50%" stopColor="var(--color-accent, #1f6feb)" stopOpacity="0.45" />
-              <stop offset="100%" stopColor="var(--color-accent, #58a6ff)" stopOpacity="0.8" />
+              <stop offset="0%" stopColor="var(--color-fn-blue)" stopOpacity="0.8" />
+              <stop offset="50%" stopColor="var(--color-fn-blue)" stopOpacity="0.45" />
+              <stop offset="100%" stopColor="var(--color-fn-blue)" stopOpacity="0.8" />
             </linearGradient>
           </defs>
           <path d={path} fill="url(#cmptl-wg)" />

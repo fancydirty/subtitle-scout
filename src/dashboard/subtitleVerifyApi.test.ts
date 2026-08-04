@@ -2,12 +2,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
-import { SubtitleVerifyRepo, type SubtitleVerdict } from '../v2/subtitleVerifyRepo.js'
+import { SubtitleVerifyRepo, type SubtitleVerdict, type ShiftedMediaRow } from '../v2/subtitleVerifyRepo.js'
 import type { ShiftResult } from '../subtitleVerify/shiftTiming.js'
 import type { VerifyOutcome } from '../subtitleVerify/verifySubtitle.js'
 import {
   toVerifyDTO, buildVerifyDTOs, parseItemIds, parseItemIdBody,
-  correctSubtitle, revertSubtitle, MAX_BATCH_ITEM_IDS,
+  correctSubtitle, revertSubtitle, MAX_BATCH_ITEM_IDS, buildShiftedDTOs,
   type SubtitleWriteDeps,
 } from './subtitleVerifyApi.js'
 
@@ -598,5 +598,102 @@ describe('C-A1：字幕被换过之后，写扳手必须拒绝且给出正确指
     const { deps: d2, calls: c2 } = makeDeps({ existing: new Set([`${SUB}${BACKUP_SUFFIX}`]) })
     expect(await revertSubtitle(d2, 'e1', OPTS)).toEqual({ ok: true, state: 'ok' })
     expect(c2.revert).toEqual([SUB])
+  })
+})
+
+describe('buildShiftedDTOs（Plan C spec §4.1）', () => {
+  const row = (over: Partial<ShiftedMediaRow> = {}): ShiftedMediaRow => ({
+    item_id: 'tmdb:100/s2e3',
+    checked_at: 3000,
+    subtitle_path: '/media/rig.s02e03.zh.srt',
+    series_id: 'tmdb:100',
+    series_name: 'The Rig',
+    season: 2,
+    episode: 3,
+    ...over,
+  })
+  const deps = (rows: ShiftedMediaRow[], exists: (p: string) => boolean) => ({
+    repo: { listShiftedWithMedia: () => rows },
+    exists,
+  })
+
+  it('DTO 键集合封闭为七键——四个禁出字段一个都不许出现（铁律②回归锁）', () => {
+    const dto = buildShiftedDTOs(deps([row()], () => false), { backupSuffix: '.scout-backup' })
+    expect(Object.keys(dto[0]).sort()).toEqual(
+      ['checkedAt', 'episode', 'hasPriorCorrection', 'itemId', 'season', 'seriesId', 'seriesName'],
+    )
+    // 显式再钉一遍：这四个键（以及承载它们的 snake_case 原名）永远不该在响应体里。
+    // 扫的是 JSON 键形（"key":）而非裸词——裸词会被 fixture 文案里的 'Filmscore'/'detailed' 误伤。
+    const serialized = JSON.stringify(dto)
+    for (const forbidden of [
+      '"offsetMs":', '"offset_ms":', '"score":', '"referenceTier":',
+      '"reference_tier":', '"detail":', '"subtitlePath":', '"subtitle_path":',
+    ]) {
+      expect(serialized).not.toContain(forbidden)
+    }
+  })
+
+  it('逐字段映射 snake_case → camelCase', () => {
+    const dto = buildShiftedDTOs(deps([row()], () => false), { backupSuffix: '.scout-backup' })
+    expect(dto[0]).toEqual({
+      itemId: 'tmdb:100/s2e3',
+      seriesId: 'tmdb:100',
+      seriesName: 'The Rig',
+      season: 2,
+      episode: 3,
+      checkedAt: 3000,
+      hasPriorCorrection: false,
+    })
+  })
+
+  it('hasPriorCorrection 探的是 subtitle_path + backupSuffix 这个确切路径', () => {
+    const probed: string[] = []
+    const dto = buildShiftedDTOs(
+      deps([row()], (p) => { probed.push(p); return true }),
+      { backupSuffix: '.scout-backup' },
+    )
+    expect(probed).toEqual(['/media/rig.s02e03.zh.srt.scout-backup'])
+    expect(dto[0].hasPriorCorrection).toBe(true)
+  })
+
+  it('join 不中的行（电影 / 已删集）四个媒体字段为 null，行仍然出', () => {
+    const dto = buildShiftedDTOs(
+      deps([row({ item_id: 'tmdb:777', series_id: null, series_name: null, season: null, episode: null })], () => false),
+      { backupSuffix: '.scout-backup' },
+    )
+    expect(dto).toHaveLength(1)
+    expect(dto[0].seriesName).toBeNull()
+    expect(dto[0].itemId).toBe('tmdb:777')
+  })
+
+  it('空表返回空数组（不是 null、不 404）', () => {
+    expect(buildShiftedDTOs(deps([], () => false), { backupSuffix: '.scout-backup' })).toEqual([])
+  })
+
+  it('多行：逐行探测且行序原样透传（repo 的 checked_at DESC 不打乱）', () => {
+    const probed: string[] = []
+    const rows = [
+      row(), // rig.s02e03，checked_at 3000（较近，排前）
+      row({ item_id: 'tmdb:100/s1e1', checked_at: 1000, subtitle_path: '/media/rig.s01e01.zh.srt', season: 1, episode: 1 }),
+    ]
+    const dto = buildShiftedDTOs(
+      deps(rows, (p) => { probed.push(p); return false }),
+      { backupSuffix: '.scout-backup' },
+    )
+    expect(probed).toEqual([
+      '/media/rig.s02e03.zh.srt.scout-backup',
+      '/media/rig.s01e01.zh.srt.scout-backup',
+    ])
+    expect(dto[0].itemId).toBe('tmdb:100/s2e3')
+    expect(dto[1].itemId).toBe('tmdb:100/s1e1')
+  })
+
+  it('backupSuffix 由调用方注入：探测路径跟着 opts 走（不硬编码 .scout-backup）', () => {
+    const probed: string[] = []
+    buildShiftedDTOs(
+      deps([row()], (p) => { probed.push(p); return false }),
+      { backupSuffix: '.bak' },
+    )
+    expect(probed).toEqual(['/media/rig.s02e03.zh.srt.bak'])
   })
 })

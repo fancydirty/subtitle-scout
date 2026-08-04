@@ -1,6 +1,7 @@
-// web/src/settings/DeploySection.test.tsx：部署区（只读）——secrets present/absent 圆点+同色词+
-// 尾 4 位、nonSecrets 原样字符串/em dash、顶部只读注记在场、零输入控件（无 input/button/其它
-// 可交互元素）。
+// web/src/settings/DeploySection.test.tsx：部署区（只读）——nonSecrets 原样字符串/em dash、
+// 顶部只读注记在场、零输入控件（无 input/button/其它可交互元素）。secrets 打码展示
+// 2026-08-02 起归 ProvidersSection（spec A §5.4），本文件不再断言任何 secret 渲染；
+// DATA 里的 secrets 字段保留只因 DeploySettingsDTO 声明它 required（类型食粮，无断言消费）。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
@@ -35,19 +36,6 @@ describe('DeploySection：只读展示', () => {
     expect(screen.getByText('deploy-level, read-only — edit via environment/compose')).toBeInTheDocument()
   })
 
-  it('secrets：present 圆点+同色词+尾4位；absent 圆点+同色词+em dash', () => {
-    render(
-      <I18nProvider>
-        <DeploySection deploy={asyncOf(DATA)} />
-      </I18nProvider>,
-    )
-    expect(screen.getByText('TMDB_API_KEY')).toBeInTheDocument()
-    expect(screen.getByText('····abcd')).toBeInTheDocument()
-    expect(screen.getByText('DASHBOARD_TOKEN')).toBeInTheDocument()
-    expect(screen.getAllByText('configured')).toHaveLength(1)
-    expect(screen.getAllByText('not set').length).toBeGreaterThanOrEqual(1)
-  })
-
   it('nonSecrets：原样字符串；null 显示 em dash', () => {
     render(
       <I18nProvider>
@@ -57,8 +45,9 @@ describe('DeploySection：只读展示', () => {
     expect(screen.getByText('LLM_MODEL')).toBeInTheDocument()
     expect(screen.getByText('gpt-5')).toBeInTheDocument()
     expect(screen.getByText('DASHBOARD_PORT')).toBeInTheDocument()
-    // 两处 em dash：DASHBOARD_PORT 的 nonSecret 值 + DASHBOARD_TOKEN 的 absent secret tail。
-    expect(screen.getAllByText('—')).toHaveLength(2)
+    // 一处 em dash：DASHBOARD_PORT 的 null nonSecret。secrets 打码展示 2026-08-02 起归
+    // ProvidersSection，本区不再渲染 absent secret tail 的那个 em dash。
+    expect(screen.getAllByText('—')).toHaveLength(1)
   })
 
   it('零输入控件：加载完成后的整个区域没有任何 input/button/textbox/switch/combobox', () => {
@@ -120,5 +109,16 @@ describe('DeploySection：只读展示', () => {
     expect(
       screen.queryByText('first-boot seed only — see the guarded directories below for what is live'),
     ).not.toBeInTheDocument()
+  })
+})
+
+describe('DeploySection：迁移锁', () => {
+  it('DOM 里不再有 astryx-* 类名', () => {
+    render(
+      <I18nProvider>
+        <DeploySection deploy={asyncOf(DATA)} />
+      </I18nProvider>,
+    )
+    expect(document.body.querySelector('[class*="astryx"]')).toBeNull()
   })
 })
