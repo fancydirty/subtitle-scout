@@ -5,7 +5,7 @@
 // 优先级（spec §4.2）：env 非空 → env 胜（deploy-locked，现有部署零迁移零打扰）；否则读库；
 // 都没有 → none。空字符串 env 视为未设（手滑 `export TMDB_API_KEY=` 不该挡住库里的真 key）。
 
-/** 白名单（spec §4.1/§8.2）：允许这 12 个名字进 settings 表的 `secret:*` 键空间。 */
+/** 白名单（spec §4.1/§8.2）：允许这 15 个名字进 settings 表的 `secret:*` 键空间。 */
 export const SECRET_NAMES = [
   'TMDB_API_KEY',
   'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
@@ -13,6 +13,7 @@ export const SECRET_NAMES = [
   'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD',
   'JIMAKU_API_KEY',
   'TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL',
+  'ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_MODEL',
 ] as const
 export type SecretName = (typeof SECRET_NAMES)[number]
 

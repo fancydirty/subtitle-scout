@@ -2,6 +2,12 @@ import { ZIMUKU_HEADERS, type ZimukuClient, type ZimukuSearchResult } from '../.
 import type { SubtitleCandidate } from '../../core/schemas.js'
 import type { FetchAdapter } from '../fetchLib.js'
 
+/** zimuku.org 是中文字幕专属源——当目标语言非中文时必须排除，避免污染非中文任务的候选池。
+ *  前缀匹配（无尾锚 $）对齐 assrtAdapter.ts 的 CHINESE_LANGUAGE_PREFIX：裸 'zh'/'cn'、
+ *  ISO 639-2 'chi'/'zho'、简繁 shorthands 'chs'/'cht'、以及任意带这些前缀的形式
+ *  （'zh-cn'/'zh-tw' 等）均命中。 */
+const CHINESE_LANGUAGE_PREFIX = /^(zh|chi|zho|chs|cht|cn)/i
+
 function toCandidate(r: ZimukuSearchResult): SubtitleCandidate {
   return {
     provider: 'zimuku',
@@ -28,7 +34,7 @@ export function makeZimukuAdapter(
 ): FetchAdapter {
   return {
     name: 'zimuku',
-    enabled: () => true,
+    enabled: (args) => (args.languages ?? []).some(l => CHINESE_LANGUAGE_PREFIX.test(l)),
     search: async (args) => {
       // v1 只用首条 query(礼貌节流:zimuku 每次搜索都可能撞见验证码破解开销,不像 assrt 那样
       // 廉价到可以并发打多条 query——够用就好,见设计文档)。

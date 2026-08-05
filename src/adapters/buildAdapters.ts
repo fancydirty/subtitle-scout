@@ -53,31 +53,42 @@ export async function buildAdapters(
   }
 
   if (cfg.flag('ZIMUKU_ENABLED').enabled) {
-    // spec A §4.3：入列守卫下沉到组装层——LLM 三件套不可解析时跳过本 adapter + 一行 warn，
-    // 不再像 requireEnvForZimuku 时代那样在任务执行点 throw（那会把任务打成失败）。
-    const llmBaseUrl = cfg.secret('LLM_BASE_URL').value
-    const llmApiKey = cfg.secret('LLM_API_KEY').value
-    const llmModel = cfg.secret('LLM_MODEL').value
-    if (!llmBaseUrl || !llmApiKey || !llmModel) {
-      warn('zimuku is enabled but the LLM triple (base URL / API key / model) is not fully configured — skipping the zimuku adapter (captcha solving needs it)')
-    } else {
-      // 验证码破解：优先模板匹配（0 token），未命中时降级到多模态 LLM。
-      // 只在真的撞见挑战页时才会被调用，不是每次 search/resolve 都要打一次 LLM。
-      const model = makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModel })
-      const solve = makeCaptchaSolver({ model, emit })
-      const client = new ZimukuClient({
-        sessionStore: new ZimukuSessionStore(join(cacheRoot, 'zimuku-session')),
-        solve: async png => {
-          const result = await solve(png)
-          if (result.digits === null) {
-            throw new Error('验证码识别失败：模板未命中且 LLM 也无法识别')
-          }
-          return { digits: result.digits }
-        },
-        onApiCall: r => emit({ event: 'api_call', provider: 'zimuku', ...r }),
-      })
-      adapters.push(makeZimukuAdapter(client))
-    }
+    // zimuku 验证码破解：优先模板匹配（纯算法，0 token，~100ms），未命中时降级到多模态 LLM
+    // 兜底。模板匹配命中率高时（实测 zimuku.org 现行验证码基本全中），完全无需视觉模型就能正常
+    // 运行。ZIMUKU_VISION_* 三件套可选——缺席时模板未命中直接失败，不会尝试 LLM；配置时作为
+    // fallback（仅在模板失效或站点改版导致字形漂移时才调用，发出 captcha_template_miss notice）。
+    const visionBaseUrl = cfg.secret('ZIMUKU_VISION_BASE_URL').value
+    const visionApiKey = cfg.secret('ZIMUKU_VISION_API_KEY').value
+    const visionModel = cfg.secret('ZIMUKU_VISION_MODEL').value
+    const hasVision = visionBaseUrl && visionApiKey && visionModel
+
+    const solve = hasVision
+      ? (() => {
+          const model = makeModel({ baseUrl: visionBaseUrl, apiKey: visionApiKey, model: visionModel })
+          return makeCaptchaSolver({ model, emit })
+        })()
+      : makeCaptchaSolver({
+          model: makeModel({ baseUrl: 'http://localhost', apiKey: 'dummy', model: 'none' }),
+          emit,
+          solveVision: async () => { throw new Error('视觉兜底未配置') }
+        })
+
+    const client = new ZimukuClient({
+      sessionStore: new ZimukuSessionStore(join(cacheRoot, 'zimuku-session')),
+      solve: async png => {
+        const result = await solve(png)
+        if (result.digits === null) {
+          throw new Error(
+            hasVision
+              ? '验证码识别失败：模板未命中且视觉 LLM 也无法识别'
+              : '验证码识别失败：模板未命中，且未配置 ZIMUKU_VISION_* 兜底（通常模板匹配已够用）'
+          )
+        }
+        return { digits: result.digits }
+      },
+      onApiCall: r => emit({ event: 'api_call', provider: 'zimuku', ...r }),
+    })
+    adapters.push(makeZimukuAdapter(client))
   }
 
   if (cfg.flag('SUBHD_ENABLED').enabled) {

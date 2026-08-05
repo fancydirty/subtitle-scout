@@ -2,6 +2,10 @@ import { SUBHD_HEADERS, type SubhdClient, type SubhdSearchResult } from '../../a
 import type { SubtitleCandidate } from '../../core/schemas.js'
 import type { FetchAdapter } from '../fetchLib.js'
 
+/** subhd.tv 是中文字幕专属源——当目标语言非中文时必须排除，避免污染非中文任务的候选池。
+ *  前缀匹配（无尾锚 $）对齐 assrtAdapter.ts / zimukuAdapter.ts 的 CHINESE_LANGUAGE_PREFIX。 */
+const CHINESE_LANGUAGE_PREFIX = /^(zh|chi|zho|chs|cht|cn)/i
+
 /** 从 CDN 文件 url 派生带真实扩展名的文件名（`.../1782478768658.ass` → `1782478768658.ass`）。
  *  这个扩展名是 writeSubtitle 分派的权威依据：.ass/.srt/.ssa 裸存、.zip 解包、.rar/.7z 诚实抛
  *  UnsupportedArchiveError（"only zip in v1"）。不派生（无扩展名）时返回 undefined——绝不硬编一个
@@ -47,7 +51,7 @@ export function makeSubhdAdapter(
 ): FetchAdapter {
   return {
     name: 'subhd',
-    enabled: () => true,
+    enabled: (args) => (args.languages ?? []).some(l => CHINESE_LANGUAGE_PREFIX.test(l)),
     search: async (args) => {
       // v1 只用首条 query（礼貌节流：subhd 每次 resolve 都要走 curl mint 三步 + 临时页时间窗，
       // 不像 assrt 廉价到可并发多条 query——够用就好，同 zimukuAdapter）。
