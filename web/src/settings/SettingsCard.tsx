@@ -26,11 +26,12 @@ interface Props {
   status?: Status
   children: ReactNode
   className?: string
+  'data-testid'?: string
 }
 
-export function SettingsCard({ title, description, status, children, className }: Props) {
+export function SettingsCard({ title, description, status, children, className, 'data-testid': dataTestId }: Props) {
   return (
-    <Card className={className}>
+    <Card className={className} data-testid={dataTestId}>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <div className="flex flex-col gap-1">
           <CardTitle>{title}</CardTitle>
