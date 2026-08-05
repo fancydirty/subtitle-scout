@@ -541,3 +541,17 @@ export interface WaveformPeaksResponse {
   sampleRate: number
   durationMs: number
 }
+
+/** zimuku vision 能力测试请求——Settings → Providers 区的 ZimukuVisionCard 测试按钮。 */
+export interface TestVisionRequest {
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+
+/** zimuku vision 能力测试响应——成功 { success: true, digits }；失败 { success: false, error }。 */
+export interface TestVisionResponse {
+  success: boolean
+  digits?: string
+  error?: string
+}

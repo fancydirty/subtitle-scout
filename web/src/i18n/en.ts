@@ -395,6 +395,21 @@ export const en = {
   settings_provider_test: 'Test',
   settings_provider_last_test_ok: 'Last test passed',
   settings_provider_last_test_fail: 'Last test failed',
+
+  // zimuku vision fallback card
+  settings_zimuku_vision_heading: 'zimuku vision fallback (optional)',
+  settings_zimuku_vision_description: 'Template matching handles most captchas without LLM. Configure a vision-capable model here only as fallback for template misses (rare). Unset = template-only.',
+  settings_zimuku_vision_model_label: 'Vision model',
+  settings_zimuku_vision_base_url_label: 'Vision base URL',
+  settings_zimuku_vision_api_key_label: 'Vision API key',
+  settings_zimuku_vision_test_label: 'Test vision',
+  settings_zimuku_vision_testing: 'Testing…',
+  settings_zimuku_vision_test_ok: 'Vision capable — can recognize digits in images',
+  settings_zimuku_vision_test_fail: 'Not a vision model — test image was not recognized',
+  settings_zimuku_vision_clear_confirm_title: 'Clear vision fallback?',
+  settings_zimuku_vision_clear_confirm_body: 'Template matching will still work. Vision LLM is only called when templates miss (rare).',
+  settings_zimuku_vision_clear_action: 'Clear',
+
   settings_system_rerun_wizard: 'Re-run setup wizard',
   settings_system_rerun_wizard_desc: 'Walk through bootstrap again. Steps configured via environment stay locked.',
 } as const

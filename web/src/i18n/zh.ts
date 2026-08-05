@@ -341,6 +341,21 @@ export const zh = {
   settings_provider_test: '测试',
   settings_provider_last_test_ok: '上次测试通过',
   settings_provider_last_test_fail: '上次测试失败',
+
+  // zimuku 视觉兜底卡片
+  settings_zimuku_vision_heading: 'zimuku 视觉兜底（可选）',
+  settings_zimuku_vision_description: '模板匹配已能处理绝大多数验证码，无需 LLM。这里配置的视觉模型仅在模板未命中时作为兜底（罕见）。不配置 = 纯模板模式。',
+  settings_zimuku_vision_model_label: '视觉模型',
+  settings_zimuku_vision_base_url_label: '视觉 API 地址',
+  settings_zimuku_vision_api_key_label: '视觉 API 密钥',
+  settings_zimuku_vision_test_label: '测试视觉能力',
+  settings_zimuku_vision_testing: '测试中…',
+  settings_zimuku_vision_test_ok: '具备视觉能力 — 能识别图片中的数字',
+  settings_zimuku_vision_test_fail: '非视觉模型 — 无法识别测试图片',
+  settings_zimuku_vision_clear_confirm_title: '清除视觉兜底配置？',
+  settings_zimuku_vision_clear_confirm_body: '模板匹配依然有效。视觉 LLM 仅在模板未命中时调用（罕见情况）。',
+  settings_zimuku_vision_clear_action: '清除',
+
   settings_system_rerun_wizard: '重跑设置向导',
   settings_system_rerun_wizard_desc: '重新走一遍启动配置。环境变量配置的步骤保持锁定。',
 } as const

@@ -541,6 +541,24 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         return
       }
 
+      // zimuku vision 能力测试：POST /api/v2/test-vision——Settings → Providers 区的
+      // ZimukuVisionCard 测试按钮调用。发送测试图片给模型，验证其是否具备视觉能力（能识别图片中数字）。
+      // 成功 → 200 { success: true, digits: string }；失败 → 200 { success: false, error: string }。
+      if (rawPath === '/api/v2/test-vision') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const body = await readJsonBodyOrFail(req, res)
+        if (body === BODY_FAILED) return
+        const { testVision } = await import('./testVision.js')
+        const outcome = await testVision(body)
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(outcome))
+        return
+      }
+
       // dashboard G4：POST/DELETE /api/v2/settings/roots——GET（listRoots 展示）同样走下面纯
       // 同步的 handleApiRoute 分发，这里只截 method !== 'GET' 的写路径。DELETE 用 query 传参
       // （?path=...），不用 body——同 GET 端点的传参习惯一致，且删除是幂等操作不需要 JSON body。
