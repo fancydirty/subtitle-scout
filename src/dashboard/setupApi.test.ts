@@ -151,7 +151,7 @@ describe('buildProviders（Providers 区读面）', () => {
     settings.setSecret('TMDB_API_KEY', 'tmdb-plain-123456', NOW)
     settings.set(`secret_test:tmdb`, JSON.stringify({ ok: true, at: NOW - 60_000 }), NOW)
     const p = buildProviders(makeDeps())
-    expect(p.providers.map((r) => r.id)).toEqual(['tmdb', 'llm', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku'])
+    expect(p.providers.map((r) => r.id)).toEqual(['tmdb', 'llm', 'translate', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku'])
     const tmdb = p.providers[0]!
     expect(tmdb.secrets).toEqual([{ name: 'TMDB_API_KEY', set: true, source: 'db', masked: 'tmd••••456' }])
     expect(tmdb.lastTest).toEqual({ ok: true, at: NOW - 60_000 })
@@ -159,6 +159,8 @@ describe('buildProviders（Providers 区读面）', () => {
       .toEqual(['LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL'])
     expect(p.providers.find((r) => r.id === 'subhd')!.secrets).toEqual([])
     expect(p.providers.find((r) => r.id === 'zimuku')!.lastTest).toBeNull()
+    expect(p.providers.find((r) => r.id === 'translate')!.secrets.map((s) => s.name))
+      .toEqual(['TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL'])
     expect(JSON.stringify(p)).not.toContain('tmdb-plain-123456')
   })
 

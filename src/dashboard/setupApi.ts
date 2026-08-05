@@ -46,7 +46,7 @@ export interface SetupStatusDTO {
 export interface SecretTestDTO { ok: boolean; at: number; error?: string }
 
 export interface ProviderRowDTO {
-  id: 'tmdb' | 'llm' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
+  id: 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
   secrets: { name: SecretName; set: boolean; source: SecretSource; masked: string | null }[]
   lastTest: SecretTestDTO | null
 }
@@ -156,6 +156,7 @@ export function putSecret(
 const PROVIDER_SECRETS: Record<ProviderRowDTO['id'], SecretName[]> = {
   tmdb: ['TMDB_API_KEY'],
   llm: ['LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL'],
+  translate: ['TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL'],
   assrt: ['ASSRT_TOKEN'],
   opensubtitles: ['OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD'],
   jimaku: ['JIMAKU_API_KEY'],
@@ -187,7 +188,7 @@ export function buildProviders(deps: SetupDeps): ProvidersDTO {
 
 // ---------- POST validate ----------
 
-export const VALIDATE_TARGETS = ['tmdb', 'llm', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku'] as const
+export const VALIDATE_TARGETS = ['tmdb', 'llm', 'translate', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku'] as const
 export type ValidateTarget = (typeof VALIDATE_TARGETS)[number]
 
 export interface ValidateResultDTO { ok: boolean; detail?: string; error?: string }
@@ -199,6 +200,7 @@ export type ValidateProbe = () => Promise<{ ok: boolean; skip?: boolean; detail?
 const NEXT_STEP_HINT: Record<ValidateTarget, string> = {
   tmdb: 'Get a key at themoviedb.org → account Settings → API → API Key (v3 auth).',
   llm: 'All three fields must come from the same provider; the base URL usually ends with /v1.',
+  translate: 'All three fields must come from the same provider; the base URL usually ends with /v1.',
   assrt: 'Copy your API token from assrt.net → user center.',
   opensubtitles: 'Create an API key at opensubtitles.com → your profile → API consumers.',
   jimaku: 'Copy your API key from jimaku.cc account settings.',
@@ -254,6 +256,13 @@ function defaultProbe(
     }
     case 'llm': {
       const baseUrl = cred('LLM_BASE_URL'); const apiKey = cred('LLM_API_KEY'); const modelName = cred('LLM_MODEL')
+      if (!baseUrl || !apiKey || !modelName) return () => notConfigured
+      const model = makeModel({ baseUrl, apiKey, model: modelName })
+      return () => checkLlm(async () =>
+        (await generateText({ model, prompt: '回复"ok"两个字母即可', maxOutputTokens: 1, abortSignal: AbortSignal.timeout(VALIDATE_TIMEOUT_MS) })).text)
+    }
+    case 'translate': {
+      const baseUrl = cred('TRANSLATE_BASE_URL'); const apiKey = cred('TRANSLATE_API_KEY'); const modelName = cred('TRANSLATE_MODEL')
       if (!baseUrl || !apiKey || !modelName) return () => notConfigured
       const model = makeModel({ baseUrl, apiKey, model: modelName })
       return () => checkLlm(async () =>
