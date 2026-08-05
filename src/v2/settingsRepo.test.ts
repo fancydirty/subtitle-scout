@@ -296,8 +296,8 @@ describe('SettingsRepo · secret:* 键空间（spec A §4.1）', () => {
   it('listSecretMeta 只回 set/source/masked，永不回明文', () => {
     settings.setSecret('JIMAKU_API_KEY', 'jimaku-plain-key-123', NOW)
     const meta = settings.listSecretMeta({ TMDB_API_KEY: 'env-tmdb-key-456' })
-    // 9 = SECRET_NAMES.length（Task 1 已定：spec 枚举 9 个，散文的"10"是笔误）。
-    expect(meta).toHaveLength(9)
+    // 12 = SECRET_NAMES.length（阶段 0 扩入 TRANSLATE_* 三凭证，spec §8.2）。
+    expect(meta).toHaveLength(12)
     expect(meta.find((m) => m.name === 'JIMAKU_API_KEY'))
       .toEqual({ name: 'JIMAKU_API_KEY', set: true, source: 'db', masked: 'jim••••123' })
     expect(meta.find((m) => m.name === 'TMDB_API_KEY'))
