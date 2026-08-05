@@ -26,6 +26,7 @@ import { useT } from '../i18n/useT.js'
 const PROVIDER_NAME: Record<ProviderRowDTO['id'], string> = {
   tmdb: 'TMDB',
   llm: 'LLM',
+  translate: 'Translate',
   assrt: 'ASSRT',
   opensubtitles: 'OpenSubtitles',
   jimaku: 'Jimaku',
