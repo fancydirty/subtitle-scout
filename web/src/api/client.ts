@@ -11,6 +11,7 @@ import type {
   SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
   ShiftedItemDTO, DormantTaskDTO,
   MovieDetailDTO, WaveformPeaksResponse,
+  TestVisionRequest, TestVisionResponse,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -221,4 +222,8 @@ export const api = {
   // Plan B: 波形 peaks
   waveformPeaks: (itemId: string, signal?: AbortSignal) =>
     get<WaveformPeaksResponse>(`/api/v2/subtitle/waveform-peaks?itemId=${itemId}`, signal),
+
+  // zimuku vision 能力测试：Settings → Providers 区的 ZimukuVisionCard 测试按钮调用
+  testVision: (req: TestVisionRequest) =>
+    post<TestVisionResponse>('/api/v2/test-vision', req),
 }

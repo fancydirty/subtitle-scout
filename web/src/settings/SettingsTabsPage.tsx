@@ -11,6 +11,7 @@ import { BehaviorSection } from './BehaviorSection.js'
 import { ProviderCard } from './ProviderCard.js'
 import { ProviderToggleCard } from './ProviderToggleCard.js'
 import { TranslateCard } from './TranslateCard.js'
+import { ZimukuVisionCard } from './ZimukuVisionCard.js'
 import { RootsManager } from './RootsManager.js'
 import { SecuritySection } from './SecuritySection.js'
 import { DeploySection } from './DeploySection.js'
@@ -83,6 +84,9 @@ export function SettingsTabsPage() {
           <>
             <ProviderToggleCard id="subhd" state={setupStatus.data.providers.subhd} reload={setupStatus.reload} />
             <ProviderToggleCard id="zimuku" state={setupStatus.data.providers.zimuku} reload={setupStatus.reload} />
+            {setupStatus.data.providers.zimuku.enabled && (
+              <ZimukuVisionCard reload={setupStatus.reload} />
+            )}
           </>
         )}
       </TabsContent>
