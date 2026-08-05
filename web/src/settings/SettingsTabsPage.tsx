@@ -14,7 +14,8 @@ export function SettingsTabsPage() {
   const setupStatus = useSetupStatus()
 
   // providers badge: n/8（八张卡片：TMDB/LLM/AI翻译/ASSRT/OpenSubtitles/Jimaku/subhd/zimuku）
-  const configuredCount = 0 // 阶段 3 接入后实算
+  // 阶段 2 占位 0；阶段 3 接入六区后实算。const + 类型标注避开 const-0 与 8 无 overlap 的 TS2367。
+  const configuredCount: number = 0
   const providerBadgeVariant = configuredCount === 8 ? 'success' : configuredCount === 0 ? 'destructive' : 'warning'
   const mediaUnconfigured = (roots.data?.length ?? 0) === 0
 
