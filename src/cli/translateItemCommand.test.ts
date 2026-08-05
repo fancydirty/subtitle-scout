@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { translateTimeoutMs, sourceLangDisplayName, sidecarPathFor, readSeriesTargetSubs, locateTranslateIdentity, makeDaemonTranslateRunItem } from './translateItemCommand.js'
+import { translateTimeoutMs, sourceLangDisplayName, sidecarPathFor, readSeriesTargetSubs, locateTranslateIdentity, makeDaemonTranslateRunItem, tryAutoTranslateCfg } from './translateItemCommand.js'
 import { openDb } from '../v2/db.js'
+import { makeAdapterConfigResolver, envOnlyAdapterConfig } from '../v2/secrets.js'
 
 // 真机逼出(F1 验收):34-cue 大批经慢端点 120s(LLM_TIMEOUT_MS)必然超时 → 整档 false-held。
 // 翻译批的超时独立可配且默认更宽(300s),不与 captcha 等快路径共享 120s。
@@ -165,5 +166,36 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
     deps.glossaryStore!.save('tmdb:1', [{ src: 'Nico', zh: '妮可' }], 1)
     expect(deps.glossaryStore!.load('tmdb:1')).toEqual([{ src: 'Nico', zh: '妮可' }])
     db.close()
+  })
+})
+
+describe('tryAutoTranslateCfg — 来源无关 + 绝不回落 LLM_*', () => {
+  const baseEnv = { TRANSLATE_BASE_URL: 'https://api.example.com/v1', TRANSLATE_API_KEY: 'sk-t', TRANSLATE_MODEL: 'gpt-4o-mini' }
+
+  it('env 三凭证全有 → 返回 env 值', () => {
+    const cfg = envOnlyAdapterConfig(baseEnv)
+    expect(tryAutoTranslateCfg(cfg)).toEqual({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-t', model: 'gpt-4o-mini' })
+  })
+
+  it('db 三凭证全有 → 返回 db 值（env 缺席）', () => {
+    const cfg = makeAdapterConfigResolver({}, (k) => {
+      const map: Record<string, string> = {
+        'secret:TRANSLATE_BASE_URL': 'https://db.example.com/v1',
+        'secret:TRANSLATE_API_KEY': 'sk-db',
+        'secret:TRANSLATE_MODEL': 'db-model',
+      }
+      return map[k] ?? null
+    })
+    expect(tryAutoTranslateCfg(cfg)).toEqual({ baseUrl: 'https://db.example.com/v1', apiKey: 'sk-db', model: 'db-model' })
+  })
+
+  it('env 缺一 → 返回 null（绝不回落 LLM_*）', () => {
+    const cfg = envOnlyAdapterConfig({ ...baseEnv, TRANSLATE_API_KEY: '' })
+    expect(tryAutoTranslateCfg(cfg)).toBeNull()
+  })
+
+  it('三凭证全无 → null', () => {
+    const cfg = envOnlyAdapterConfig({})
+    expect(tryAutoTranslateCfg(cfg)).toBeNull()
   })
 })
