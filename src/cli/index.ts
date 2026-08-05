@@ -517,19 +517,19 @@ async function cmdWatch() {
         // TRANSLATE_* 三件套(绝不回退 LLM_*=mimo 烧配额),不全则拒跑走 completeError(等用户配齐;
         // 与 dispatch 侧门控对称,即便有残留 translate 行也不会误用弱模型)。deps 与手动 CLI 共用
         // makeDaemonTranslateRunItem→makeTranslateAgentDeps(workspace agent 主路径)防漂移。
-        const cfg = tryAutoTranslateCfg()
-        if (!cfg) {
+        const translateCfg = tryAutoTranslateCfg(cfg)
+        if (!translateCfg) {
           jobs.completeError(job.id, 'translate 未启用:需配 TRANSLATE_MODEL/TRANSLATE_BASE_URL/TRANSLATE_API_KEY 三件套', Date.now())
         } else {
           // P3:translate 分支从 legacy translateItem 切到 workspace agent。库内定位身份
           // (origin_lang/itemId) → 工作台翻译;glossaryStore/critic/TMDB 与手动 CLI 同门接线。
           // adapters 每次 claim 现建(同 find_subtitle 分支口径),fetchSourceSub 防漂移共用。
-          // 注意：此处 cfg 是 tryAutoTranslateCfg() 的局部值（遮蔽外层 AdapterConfigResolver），
-          // 不能喂给 buildAdapters——保持既有单参形态（TypeScript 与今天行为一致）。
+          // translateCfg 是 tryAutoTranslateCfg(cfg) 的返回值（专用翻译三凭证），与外层
+          // AdapterConfigResolver 同名 cfg 不再遮蔽——重命名为 translateCfg 消除歧义。
           const adapters = await buildAdapters(emitProviderEvent)
           const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
           const runItem = makeDaemonTranslateRunItem({
-            db, cfg, fetchSourceSub, tmdb: c.tmdb, roots: currentRoots,
+            db, cfg: translateCfg, fetchSourceSub, tmdb: c.tmdb, roots: currentRoots,
           })
           await runTranslateWorkerTask(job, {
             runItem,
@@ -665,7 +665,7 @@ async function cmdWatch() {
     // 派活纯机械(SQL 筛候选 + 幂等 upsert,无 LLM);worker claim 端仍只认 TRANSLATE_*(开关只断派活,
     // 存量行不受影响)。失败只记一行 warn 不炸 tick。
     dispatchTranslate: () => {
-      if (tryAutoTranslateCfg() && settingsRepo.get('ai_translate_enabled') === 'true') {
+      if (tryAutoTranslateCfg(cfg) && settingsRepo.get('ai_translate_enabled') === 'true') {
         dispatchTranslateTasks(db, jobs, () => Date.now())
       }
     },

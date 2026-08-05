@@ -39,12 +39,15 @@ export function sourceLangDisplayName(originLang: string | null | undefined): st
 /** 扫同目录既有中文 sidecar 当上下文播种术语表(库内直读、零网络;取前 3 份各截断 3000 字)。
  *  F2:可选 originLang 注入 sourceLangName,驱动日/英 prompt 文案。 */
 
-/** E 翻译用的 LLM 配置。TRANSLATE_MODEL 一旦设置 → 走 TRANSLATE_* 三件套(让 E 用强模型,与
- *  captcha 用的 LLM_MODEL=mimo 分开——真机实测 mimo 对翻译太弱);否则回退 LLM_*。 */
+/** E 翻译用的 LLM 配置。专用模型（TRANSLATE_* 三凭证齐全，来源无关：env 非空 > db > none）
+ *  → 走 TRANSLATE_* 三件套(让 E 用强模型,与 captcha 用的 LLM_MODEL=mimo 分开——真机实测 mimo
+ *  对翻译太弱);否则回退 LLM_*。spec §8.2：用户拍板推翻 env-only 限制，专用凭证可入库可编辑。 */
 function translateLlmCfg(secrets: AdapterConfigResolver): { baseUrl: string; apiKey: string; model: string } {
-  if (process.env.TRANSLATE_MODEL) {
-    // TRANSLATE_MODEL 分支是 env-only 高级项（spec §12，wizard 不收）——逐字不动。
-    return { baseUrl: requireEnv('TRANSLATE_BASE_URL'), apiKey: requireEnv('TRANSLATE_API_KEY'), model: process.env.TRANSLATE_MODEL }
+  const tBase = secrets.secret('TRANSLATE_BASE_URL').value
+  const tKey = secrets.secret('TRANSLATE_API_KEY').value
+  const tModel = secrets.secret('TRANSLATE_MODEL').value
+  if (tBase && tKey && tModel) {
+    return { baseUrl: tBase, apiKey: tKey, model: tModel }
   }
   // spec A §4.3：来源无关化——env 或库都行；缺值仍报错，语义不变。
   const baseUrl = secrets.secret('LLM_BASE_URL').value
@@ -71,13 +74,16 @@ export function translateTimeoutMs(env: NodeJS.ProcessEnv = process.env): number
   return Number.isFinite(v) && v > 0 ? v : 300_000
 }
 
-/** daemon 自动翻译的配置门(与上面手动 CLI 的区别):**只认显式 TRANSLATE_* 三件套,绝不回退
+/** daemon 自动翻译的配置门(与上面手动 CLI 的区别):**只认 TRANSLATE_* 三件套齐全,绝不回退
  *  LLM_***——自动路径拿 LLM_MODEL(mimo,太弱且非用户对本功能的 opt-in)烧配额是事故。三件套
- *  不全 → null = 功能休眠(daemon 不注入派活钩子,translate 任务也拒跑),同 SUBHD_ENABLED 模式。 */
-export function tryAutoTranslateCfg(env: NodeJS.ProcessEnv = process.env): { baseUrl: string; apiKey: string; model: string } | null {
-  const { TRANSLATE_MODEL, TRANSLATE_BASE_URL, TRANSLATE_API_KEY } = env
-  if (!TRANSLATE_MODEL || !TRANSLATE_BASE_URL || !TRANSLATE_API_KEY) return null
-  return { baseUrl: TRANSLATE_BASE_URL, apiKey: TRANSLATE_API_KEY, model: TRANSLATE_MODEL }
+ *  不全 → null = 功能休眠(daemon 不注入派活钩子,translate 任务也拒跑),同 SUBHD_ENABLED 模式。
+ *  spec §8.2：来源无关化——env 非空 > db > none,UI 存库的专用凭证对 daemon 可见。 */
+export function tryAutoTranslateCfg(cfg: AdapterConfigResolver): { baseUrl: string; apiKey: string; model: string } | null {
+  const baseUrl = cfg.secret('TRANSLATE_BASE_URL').value
+  const apiKey = cfg.secret('TRANSLATE_API_KEY').value
+  const model = cfg.secret('TRANSLATE_MODEL').value
+  if (!baseUrl || !apiKey || !model) return null
+  return { baseUrl, apiKey, model }
 }
 
 /** 组装 translateItem 的真实 I/O deps(probe/extract/LM/critic/sidecar 读写/同剧上下文)。

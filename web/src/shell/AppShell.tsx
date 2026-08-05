@@ -31,7 +31,7 @@ import { SeriesPage } from '../library/SeriesPage.js'
 import { MovieDetailPage } from '../library/MovieDetailPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
 import { TriagePage } from '../triage/TriagePage.js'
-import { SettingsPage } from '../settings/SettingsPage.js'
+import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
 import { cn } from '../lib/utils.js'
 
 export function Shell() {
@@ -92,7 +92,7 @@ export function Shell() {
               ))}
             {route.tab === 'workflow' && <ActivityPage />}
             {route.tab === 'triage' && <TriagePage />}
-            {route.tab === 'settings' && <SettingsPage />}
+            {route.tab === 'settings' && <SettingsTabsPage />}
           </main>
         </div>
       </div>

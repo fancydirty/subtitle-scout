@@ -8,13 +8,14 @@ import {
 describe('SECRET_NAMES 白名单（spec §4.1）', () => {
   // 9 而非 10：spec §4.1 散文写"10 个名字"但枚举只列了 9 个，**以枚举为准**（下面这份列表
   // 就是 spec 的枚举原文）。这是一处已知的 spec 笔误，不要"补"第 10 个名字出来。
-  it('恰为 9 键', () => {
+  it('恰为 12 键（含 TRANSLATE_* 三凭证，spec §8.2）', () => {
     expect([...SECRET_NAMES].sort()).toEqual([
       'ASSRT_TOKEN', 'JIMAKU_API_KEY', 'LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL',
       'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_PASSWORD', 'OPENSUBTITLES_USERNAME',
       'TMDB_API_KEY',
+      'TRANSLATE_API_KEY', 'TRANSLATE_BASE_URL', 'TRANSLATE_MODEL',
     ].sort())
-    expect(SECRET_NAMES).toHaveLength(9)
+    expect(SECRET_NAMES).toHaveLength(12)
   })
   it('isSecretName 放行白名单、拒绝其他', () => {
     expect(isSecretName('TMDB_API_KEY')).toBe(true)
