@@ -3,11 +3,14 @@
 // media badge roots.length===0 时 ⚠ Not configured。默认 general tab。
 // 阶段 2：骨架 + badge；阶段 3：接入六区。
 import { useState } from 'react'
-import type { SettingsDTO } from '../api/types.js'
+import type { SettingsDTO, ProviderRowDTO } from '../api/types.js'
 import { useSettings, useDeploySettings, useRoots, useSetupProviders, useSetupStatus } from '../api/hooks.js'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs.js'
 import { Badge } from '../components/ui/badge.js'
 import { BehaviorSection } from './BehaviorSection.js'
+import { ProviderCard } from './ProviderCard.js'
+import { ProviderToggleCard } from './ProviderToggleCard.js'
+import { TranslateCard } from './TranslateCard.js'
 
 export function SettingsTabsPage() {
   const settings = useSettings()
@@ -21,9 +24,19 @@ export function SettingsTabsPage() {
   const [updated, setUpdated] = useState<SettingsDTO | null>(null)
   const settingsData = updated != null ? { ...settings, data: updated } : settings
 
-  // providers badge: n/8（八张卡片：TMDB/LLM/AI翻译/ASSRT/OpenSubtitles/Jimaku/subhd/zimuku）
-  // 阶段 2 占位 0；阶段 3 接入六区后实算。const + 类型标注避开 const-0 与 8 无 overlap 的 TS2367。
-  const configuredCount: number = 0
+  // providers tab：八卡片（spec §4.2 顺序 TMDB/LLM/AI翻译/ASSRT/OpenSubtitles/Jimaku/subhd/zimuku）
+  const rows = providers.data?.providers ?? []
+  const translateRow = rows.find((r) => r.id === 'translate')
+  const llmRow = rows.find((r) => r.id === 'llm')
+  const keyedRows = rows.filter((r) => r.secrets.length > 0 && r.id !== 'translate')
+
+  // badge n/8 实算（spec §2 已配置判据）
+  const keyedConfigured = (r: ProviderRowDTO) => r.secrets.length > 0 && r.secrets.every((s) => s.set)
+  const keyedCount = keyedRows.filter(keyedConfigured).length
+  const translateConfigured = settingsData.data?.ai_translate_enabled === 'true'
+  const subhdConfigured = setupStatus.data?.providers.subhd.enabled ?? false
+  const zimukuConfigured = setupStatus.data?.providers.zimuku.enabled ?? false
+  const configuredCount: number = keyedCount + (translateConfigured ? 1 : 0) + (subhdConfigured ? 1 : 0) + (zimukuConfigured ? 1 : 0)
   const providerBadgeVariant = configuredCount === 8 ? 'success' : configuredCount === 0 ? 'destructive' : 'warning'
   const mediaUnconfigured = (roots.data?.length ?? 0) === 0
 
@@ -47,7 +60,27 @@ export function SettingsTabsPage() {
         <BehaviorSection settings={settingsData} />
       </TabsContent>
       <TabsContent value="providers" className="p-6 space-y-6">
-        {/* 阶段 3：ProviderCard × 6 + TranslateCard + ProviderToggleCard × 2 */}
+        {keyedRows.map((row) => (
+          <div key={row.id} className="space-y-6">
+            <ProviderCard row={row} reload={providers.reload} />
+            {row.id === 'llm' && translateRow && llmRow && (
+              <TranslateCard
+                translate={translateRow}
+                llm={llmRow}
+                settings={settingsData.data ?? ({} as SettingsDTO)}
+                deploy={deploy.data}
+                onUpdated={setUpdated}
+                reload={providers.reload}
+              />
+            )}
+          </div>
+        ))}
+        {setupStatus.data && (
+          <>
+            <ProviderToggleCard id="subhd" state={setupStatus.data.providers.subhd} reload={setupStatus.reload} />
+            <ProviderToggleCard id="zimuku" state={setupStatus.data.providers.zimuku} reload={setupStatus.reload} />
+          </>
+        )}
       </TabsContent>
       <TabsContent value="media" className="p-6 space-y-6">
         {/* 阶段 3：RootsManager */}
