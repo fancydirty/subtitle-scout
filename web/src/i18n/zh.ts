@@ -148,8 +148,8 @@ export const zh = {
   settings_error_prefix: '无法加载设置：',
   settings_retry_label: '重试',
 
-  settings_target_languages_label: '目标语言',
-  settings_target_languages_description: '逗号分隔的 BCP-47 代码，如 "zh,en"。未设置时默认为 "zh"。',
+  settings_target_languages_label: '目标字幕语言',
+  settings_target_languages_description: '要搜索和下载的字幕语言。未设置时默认为中文。',
   settings_target_languages_save_label: '保存',
   // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
   settings_target_languages_restart_note: '下一轮扫描生效。',

@@ -111,6 +111,7 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
     setError(null)
     try {
       for (const name of TRANSLATE_FIELDS) await api.putSecret(name, '')
+      setUserSeg('default')  // 立即切换 UI，不等 reload 数据回来
       reload()
       setConfirmOpen(false)
     } catch (e) {

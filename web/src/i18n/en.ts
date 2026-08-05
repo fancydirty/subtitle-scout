@@ -191,8 +191,8 @@ export const en = {
   settings_retry_label: 'Retry',
 
   // 行为区（BehaviorSection）——五项，逐项改动即时单键 PUT。
-  settings_target_languages_label: 'Target languages',
-  settings_target_languages_description: 'Comma-separated BCP-47 codes, e.g. "zh,en". Unset defaults to "zh".',
+  settings_target_languages_label: 'Target subtitle language',
+  settings_target_languages_description: 'The subtitle language to search for and download. Unset defaults to Chinese.',
   settings_target_languages_save_label: 'Save',
   // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
   settings_target_languages_restart_note:

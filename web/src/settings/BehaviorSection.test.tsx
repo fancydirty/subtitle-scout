@@ -52,8 +52,8 @@ describe('BehaviorSection：null 值默认占位', () => {
   it('target_languages 空占位=zh；hardsub_mode 默认 off（PM 审计对齐后端口径）；生效注记在场', () => {
     renderSection(asyncOf(NULL_SETTINGS))
 
-    const input = screen.getByRole('textbox', { name: 'Target languages' })
-    expect(input).toHaveAttribute('placeholder', 'zh')
+    const select = screen.getByRole('combobox', { name: 'Target subtitle language' })
+    expect(select.textContent).toContain('中文')
 
     const mode = screen.getByRole('combobox', { name: 'Hardsub assumption' })
     expect(mode.textContent).toContain('Off')
@@ -83,13 +83,13 @@ describe('BehaviorSection：null 值默认占位', () => {
   it('已设置值原样回显（非默认占位）', () => {
     renderSection(
       asyncOf({
-        target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: 'true',
+        target_languages: 'en', hardsub_mode: 'aggressive', exclude_extras: 'true',
         trace_retention_days: '14', scan_interval_ms: '600000', ai_translate_enabled: 'true',
         engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
         engineEnabled: false,
       }),
     )
-    expect(screen.getByRole('textbox', { name: 'Target languages' })).toHaveValue('zh,en')
+    expect(screen.getByRole('combobox', { name: 'Target subtitle language' }).textContent).toContain('英语')
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' }).textContent).toContain('Aggressive')
     expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeChecked()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toHaveValue(14)
@@ -103,19 +103,18 @@ describe('BehaviorSection：null 值默认占位', () => {
 })
 
 describe('BehaviorSection：单键即时 PUT', () => {
-  it('target_languages 失焦提交，body 只含这一个键，成功后以响应回写', async () => {
-    const fetchMock = mockPut(200, { ...NULL_SETTINGS, target_languages: 'zh,en' })
+  it('target_languages 选中即刻单键 PUT，body 只含这一个键，成功后以响应回写', async () => {
+    const fetchMock = mockPut(200, { ...NULL_SETTINGS, target_languages: 'en' })
     vi.stubGlobal('fetch', fetchMock)
     renderSection(asyncOf(NULL_SETTINGS))
 
-    const input = screen.getByRole('textbox', { name: 'Target languages' })
-    fireEvent.change(input, { target: { value: 'zh,en' } })
-    fireEvent.blur(input)
+    openRadixSelect(screen.getByRole('combobox', { name: 'Target subtitle language' }))
+    fireEvent.click(await screen.findByRole('option', { name: '英语 (English)', hidden: true }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
     expect(init.method).toBe('PUT')
-    expect(JSON.parse(String(init.body))).toEqual({ target_languages: 'zh,en' })
+    expect(JSON.parse(String(init.body))).toEqual({ target_languages: 'en' })
   })
 
   it('hardsub_mode 选中即刻单键 PUT', async () => {
@@ -157,47 +156,31 @@ describe('BehaviorSection：单键即时 PUT', () => {
     expect(JSON.parse(String(init.body))).toEqual({ trace_retention_days: '14' })
   })
 
-  it('同一草稿背靠背触发两次失焦（未等前一次响应落地）也只发一次 PUT', async () => {
-    // 复现的真实场景：真实浏览器里点击 Save 按钮时，鼠标按下会先让输入框失焦（触发 trySave
-    // 调用①），React 18 的自动批处理不保证 saving=true 这次重渲染在同一个原生事件里赶在按钮
-    // 自己的 click 之前提交，按钮可能还没来得及变 disabled，onClick 又调用一次 trySave（调用
-    // ②）。这里不经过按钮（按钮一旦 disabled 会天然挡掉第二次点击，测不出问题），直接对同一个
-    // 输入框背靠背派发两次 blur，绕开按钮的 disabled 闸门，直接施压 useFieldCommit 的
-    // inFlightRef 同步去重闸本身。
-    const fetchMock = mockPut(200, { ...NULL_SETTINGS, target_languages: 'zh,en' })
+  it('TargetLanguagesRow 同值重选单键提交（同步闸对齐 HardsubModeRow）', async () => {
+    // Select 同值重选行为：onValueChange 去重不发，鼠标提交走 SelectItem onClick（每个 item
+    // 挂了显式 onClick 调 commit），第二次被 useFieldCommit 的 inFlightRef 同步闸挡住。
+    const fetchMock = mockPut(200, { ...NULL_SETTINGS, target_languages: 'zh' })
     vi.stubGlobal('fetch', fetchMock)
-    renderSection(asyncOf(NULL_SETTINGS))
+    renderSection(asyncOf({ ...NULL_SETTINGS, target_languages: 'zh' }))
 
-    const input = screen.getByRole('textbox', { name: 'Target languages' })
-    fireEvent.change(input, { target: { value: 'zh,en' } })
-    fireEvent.blur(input)
-    fireEvent.blur(input)
+    await openRadixSelect(screen.getByRole('combobox', { name: 'Target subtitle language' }))
+    fireEvent.click(screen.getByRole('option', { name: '中文 (Chinese)' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({ target_languages: 'zh' })
   })
 
-  it('未改动直接失焦不发请求', () => {
-    const fetchMock = mockPut(200, NULL_SETTINGS)
+  it('target_languages 改值提交失败 → 行内红字 error，不弹窗', async () => {
+    const fetchMock = mockPut(400, { error: 'invalid language code' })
     vi.stubGlobal('fetch', fetchMock)
     renderSection(asyncOf(NULL_SETTINGS))
 
-    const input = screen.getByRole('textbox', { name: 'Target languages' })
-    fireEvent.blur(input)
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('400 失败 → 行内红字 error，不弹窗', async () => {
-    const fetchMock = mockPut(400, { error: 'must be comma-separated BCP-47 primary codes, e.g. "zh,en"' })
-    vi.stubGlobal('fetch', fetchMock)
-    renderSection(asyncOf(NULL_SETTINGS))
-
-    const input = screen.getByRole('textbox', { name: 'Target languages' })
-    fireEvent.change(input, { target: { value: 'not-valid!!' } })
-    fireEvent.blur(input)
+    await openRadixSelect(screen.getByRole('combobox', { name: 'Target subtitle language' }))
+    fireEvent.click(screen.getByRole('option', { name: '英语 (English)' }))
 
     expect(
-      await screen.findByText(/Couldn't save: .*must be comma-separated BCP-47/),
+      await screen.findByText(/Couldn't save: .*invalid language code/),
     ).toBeInTheDocument()
     // 没有弹出对话框——错误就地行内展示（DESIGN.md §8：不弹窗）。
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -230,7 +213,7 @@ describe('BehaviorSection：迁移锁', () => {
   it('六个控件的可及名与既有契约逐字一致（aria-label 手写对齐 Astryx label 提升）', () => {
     renderSection(asyncOf(NULL_SETTINGS))
     expect(screen.getByRole('switch', { name: 'Engine' })).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: 'Target languages' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Target subtitle language' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' })).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeInTheDocument()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toBeInTheDocument()

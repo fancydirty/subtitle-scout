@@ -64,52 +64,60 @@ function useFieldCommit(onUpdated: (settings: SettingsDTO) => void) {
 
 function TargetLanguagesRow({ settings, onUpdated }: RowProps) {
   const { t } = useT()
-  const committed = settings.target_languages ?? ''
-  const [draft, setDraft] = useState(committed)
   const { saving, error, commit } = useFieldCommit(onUpdated)
-  // 服务端值变化时重同步草稿，但不覆盖用户正在输入、尚未提交的内容——只在草稿仍等于上一个
-  // 已知已提交值时才跟随刷新（同侧栏其它表单的既有谨慎口径）。
-  const lastCommittedRef = useRef(committed)
-  useEffect(() => {
-    if (draft === lastCommittedRef.current) setDraft(committed)
-    lastCommittedRef.current = committed
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [committed])
-
-  const trySave = () => {
-    const trimmed = draft.trim()
-    if (trimmed === committed) return
-    void commit('target_languages', trimmed)
-  }
+  // settings 值可 null（未设）——后端 cli/targetLanguages.ts 对未设降级 'zh'（历史默认），
+  // 这里照同一口径用 DEFAULT_TARGET_LANGUAGES（='zh'）兜底显示。
+  const value = settings.target_languages ?? DEFAULT_TARGET_LANGUAGES
 
   return (
     <div className="flex flex-col gap-2">
       <span className="text-[13px] font-medium leading-5 text-foreground">
         {t('settings_target_languages_label')}
       </span>
-      {/* 失焦或回车提交（原生事件冒泡：React 的 onBlur/onKeyDown 挂在外层 div 上同样能捕获
-          内部 <input> 触发的 blur/keydown），旁边另配一个显式 Save 按钮——两条路径调用同一个
-          trySave，值未变时是空操作，不会发多余的 PUT。 */}
-      <div onBlur={trySave} onKeyDown={(e) => { if (e.key === 'Enter') trySave() }}>
-        <div className="flex flex-col gap-2">
-          <Input
-            aria-label={t('settings_target_languages_label')}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={DEFAULT_TARGET_LANGUAGES}
-          />
-          <div>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={saving}
-              onClick={trySave}
-            >
-              {t('settings_target_languages_save_label')}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <Select
+        value={value}
+        onValueChange={(v) => void commit('target_languages', v)}
+        disabled={saving}
+      >
+        <SelectTrigger aria-label={t('settings_target_languages_label')} className="max-w-[280px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {/* 同值重选提交：每个 SelectItem 额外挂 onClick 提交（对齐 HardsubModeRow 的既有模式：
+              Radix Select 的 onValueChange 对同值重选去重不发，鼠标提交走 item onClick 对齐
+              Astryx 语义；改值时两条路径同拍各调一次 commit，第二次被 inFlightRef 同步闸挡掉）。 */}
+          <SelectItem value="zh" onClick={() => void commit('target_languages', 'zh')}>
+            中文 (Chinese)
+          </SelectItem>
+          <SelectItem value="en" onClick={() => void commit('target_languages', 'en')}>
+            英语 (English)
+          </SelectItem>
+          <SelectItem value="ja" onClick={() => void commit('target_languages', 'ja')}>
+            日语 (Japanese)
+          </SelectItem>
+          <SelectItem value="ko" onClick={() => void commit('target_languages', 'ko')}>
+            韩语 (Korean)
+          </SelectItem>
+          <SelectItem value="es" onClick={() => void commit('target_languages', 'es')}>
+            西班牙语 (Spanish)
+          </SelectItem>
+          <SelectItem value="fr" onClick={() => void commit('target_languages', 'fr')}>
+            法语 (French)
+          </SelectItem>
+          <SelectItem value="de" onClick={() => void commit('target_languages', 'de')}>
+            德语 (German)
+          </SelectItem>
+          <SelectItem value="pt" onClick={() => void commit('target_languages', 'pt')}>
+            葡萄牙语 (Portuguese)
+          </SelectItem>
+          <SelectItem value="ru" onClick={() => void commit('target_languages', 'ru')}>
+            俄语 (Russian)
+          </SelectItem>
+          <SelectItem value="it" onClick={() => void commit('target_languages', 'it')}>
+            意大利语 (Italian)
+          </SelectItem>
+        </SelectContent>
+      </Select>
       <span className="text-[11px] leading-4 text-muted-foreground">
         {t('settings_target_languages_description')}
       </span>

@@ -103,18 +103,20 @@ interface Secret {
 
 // 卡片状态判断
 const hasEnvSource = secrets.some(s => s.source === 'env')
-const allConfigured = secrets.every(s => s.value !== '')
+const allConfigured = secrets.length > 0 && secrets.every(s => s.set)
 
 // 状态 badge 逻辑
-// 优先级：已配置 > 部分 env 锁定 > 未配置
+// 优先级：env 锁定 > 已配置 > 未配置
+// env 源卡片不可编辑（部署层锁死），显示 configured 会误导用户以为可在 UI 改，
+// 故 env 源一律 locked（与 §3.3 subhd env=locked 同口径）。
 const getProviderStatus = () => {
+  if (hasEnvSource) return 'locked'
   if (allConfigured) return 'configured'
-  if (hasEnvSource && !allConfigured) return 'locked'  // 部分 env，部分空
   return 'unconfigured'
 }
 
-// 注：mixed 场景（env + db）的 badge 显示 'configured' 或 'locked'
-// 取决于是否所有字段都有值
+// 注：ProviderRowDTO 字段是 set/masked/source（无 value）；allConfigured 用 s.set。
+// 既有 ProvidersSection 的 source 徽标（environment/database 文字）由 ProviderSecretField 行内保留。
 ```
 
 **UI 行为：**
