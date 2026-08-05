@@ -11,6 +11,10 @@ import { BehaviorSection } from './BehaviorSection.js'
 import { ProviderCard } from './ProviderCard.js'
 import { ProviderToggleCard } from './ProviderToggleCard.js'
 import { TranslateCard } from './TranslateCard.js'
+import { RootsManager } from './RootsManager.js'
+import { SecuritySection } from './SecuritySection.js'
+import { DeploySection } from './DeploySection.js'
+import { SystemSection } from './SystemSection.js'
 
 export function SettingsTabsPage() {
   const settings = useSettings()
@@ -83,13 +87,14 @@ export function SettingsTabsPage() {
         )}
       </TabsContent>
       <TabsContent value="media" className="p-6 space-y-6">
-        {/* 阶段 3：RootsManager */}
+        <RootsManager roots={roots} />
       </TabsContent>
       <TabsContent value="security" className="p-6 space-y-6">
-        {/* 阶段 3：SecuritySection */}
+        <SecuritySection />
       </TabsContent>
       <TabsContent value="advanced" className="p-6 space-y-6">
-        {/* 阶段 3：DeploySection + SystemSection */}
+        <DeploySection deploy={deploy} />
+        <SystemSection />
       </TabsContent>
     </Tabs>
   )
