@@ -29,9 +29,12 @@ export function isSystemDir(path: string): boolean {
   return false
 }
 
-/** 过滤系统目录：给定目录列表，返回去除系统目录后的列表。 */
-export function filterSystemDirs(dirs: string[]): string[] {
-  return dirs.filter((name) => !isSystemDir(name))
+/** 过滤系统目录：给定目录名列表和父路径，返回去除系统目录后的列表。 */
+export function filterSystemDirs(dirNames: string[], parentPath: string): string[] {
+  return dirNames.filter((name) => {
+    const fullPath = parentPath === '/' ? `/${name}` : `${parentPath}/${name}`
+    return !isSystemDir(fullPath)
+  })
 }
 
 /** 默认浏览起点：根目录 /，让用户自由导航整个文件系统。

@@ -79,7 +79,7 @@ export function DirBrowser({ startPath, onAdded }: Props) {
       .fsList(currentPath, ctrl.signal)
       .then((res) => {
         // R6 UX 改进：过滤系统目录（/dev /proc /sys 等），避免在根目录展示大量无用条目
-        const filtered = filterSystemDirs(res.dirs)
+        const filtered = filterSystemDirs(res.dirs, currentPath)
         setDirs(filtered)
       })
       .catch((e) => {

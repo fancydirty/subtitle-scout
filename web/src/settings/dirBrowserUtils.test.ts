@@ -42,26 +42,37 @@ describe('dirBrowserUtils', () => {
   })
 
   describe('filterSystemDirs', () => {
-    it('filters out system directories from list', () => {
-      const input = ['/dev', '/home', '/proc', '/media', '/sys', '/mnt']
-      const expected = ['/home', '/media', '/mnt']
-      expect(filterSystemDirs(input)).toEqual(expected)
+    it('filters out system directories from root list', () => {
+      const input = ['dev', 'home', 'proc', 'media', 'sys', 'mnt']
+      const expected = ['home', 'media', 'mnt']
+      expect(filterSystemDirs(input, '/')).toEqual(expected)
     })
 
     it('keeps all directories if none are system dirs', () => {
-      const input = ['/home', '/media', '/data', '/mnt']
-      expect(filterSystemDirs(input)).toEqual(input)
+      const input = ['home', 'media', 'data', 'mnt']
+      expect(filterSystemDirs(input, '/')).toEqual(input)
     })
 
     it('returns empty array if all are system dirs', () => {
-      const input = ['/dev', '/proc', '/sys', '/tmp']
-      expect(filterSystemDirs(input)).toEqual([])
+      const input = ['dev', 'proc', 'sys', 'tmp']
+      expect(filterSystemDirs(input, '/')).toEqual([])
     })
 
-    it('handles macOS directories', () => {
-      const input = ['/System', '/Users', '/Library', '/Applications', '/private']
-      const expected = ['/Users', '/Applications']
-      expect(filterSystemDirs(input)).toEqual(expected)
+    it('handles macOS directories at root', () => {
+      const input = ['System', 'Users', 'Library', 'Applications', 'private']
+      const expected = ['Users', 'Applications']
+      expect(filterSystemDirs(input, '/')).toEqual(expected)
+    })
+
+    it('does not filter subdirectories with system-like names', () => {
+      const input = ['dev-tools', 'system-config', 'tmp-backup']
+      expect(filterSystemDirs(input, '/home/user')).toEqual(input)
+    })
+
+    it('handles nested paths correctly', () => {
+      const input = ['var', 'data', 'logs']
+      // /home/user/var is NOT a system directory
+      expect(filterSystemDirs(input, '/home/user')).toEqual(input)
     })
   })
 
