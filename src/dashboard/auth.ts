@@ -38,43 +38,55 @@ export function verifyPassword(password: string, stored: string): boolean {
 
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000
 
-/** session cookie 后端仓：内存 Map（spec 定案——重启全员重登，YAGNI 不落盘）。滚动过期：
- *  verify 通过即续期 30 天。create 时顺带惰性清扫过期会话（防长期运行缓慢泄漏）。 */
+/** session cookie 后端仓：持久化到 settings 表（重启保持登录态）。滚动过期：
+ *  verify 通过即续期 30 天。create 时顺带惰性清扫过期会话（防长期运行缓慢泄漏）。
+ *  存储格式：settings 表 key=session:${token}, value=expiresAt（Unix 毫秒时间戳）。 */
 export class SessionStore {
-  private sessions = new Map<string, number>() // token → expiresAt
+  constructor(private settings: SettingsRepo) {}
 
   /** 惰性清扫：删除所有已过期的会话。 */
   private sweep(now: number): void {
-    for (const [token, exp] of this.sessions) {
-      if (now > exp) this.sessions.delete(token)
+    const sessions = this.settings.listByPrefix('session:')
+    for (const { key, value } of sessions) {
+      const exp = parseInt(value, 10)
+      if (isNaN(exp) || now > exp) {
+        this.settings.delete(key)
+      }
     }
   }
 
   create(now: number): string {
-    this.sweep(now) // 惰性清扫，防 Map 无界增长
+    this.sweep(now) // 惰性清扫，防 settings 表无界增长
     const token = randomBytes(32).toString('hex')
-    this.sessions.set(token, now + SESSION_TTL_MS)
+    const expiresAt = now + SESSION_TTL_MS
+    this.settings.set(`session:${token}`, String(expiresAt), now)
     return token
   }
 
   verify(token: string, now: number): boolean {
-    const exp = this.sessions.get(token)
-    if (exp === undefined) return false
-    if (now > exp) {
-      this.sessions.delete(token)
+    const key = `session:${token}`
+    const value = this.settings.get(key)
+    if (value === null) return false
+    const exp = parseInt(value, 10)
+    if (isNaN(exp) || now > exp) {
+      this.settings.delete(key)
       return false
     }
-    this.sessions.set(token, now + SESSION_TTL_MS)
+    // 续期 30 天
+    this.settings.set(key, String(now + SESSION_TTL_MS), now)
     return true
   }
 
   revoke(token: string): void {
-    this.sessions.delete(token)
+    this.settings.delete(`session:${token}`)
   }
 
   /** 全员下线：清空所有会话（改密时用——凭据轮换必须让任何被盗会话立即失效）。 */
   clear(): void {
-    this.sessions.clear()
+    const sessions = this.settings.listByPrefix('session:')
+    for (const { key } of sessions) {
+      this.settings.delete(key)
+    }
   }
 }
 
@@ -175,10 +187,12 @@ export type ChangePasswordResult = { ok: true } | { ok: false; error: string }
 /** settings 三键之上的鉴权编排。会话/节流自带默认实例（server.ts 一个 AuthService 就是一套
  *  完整状态），测试可直接摸 .sessions 断言。 */
 export class AuthService {
-  readonly sessions = new SessionStore()
+  readonly sessions: SessionStore
   private throttle = new LoginThrottle()
 
-  constructor(private settings: SettingsRepo) {}
+  constructor(private settings: SettingsRepo) {
+    this.sessions = new SessionStore(settings)
+  }
 
   isInitialized(): boolean {
     return this.settings.get(AUTH_KEYS.passwordHash) !== null

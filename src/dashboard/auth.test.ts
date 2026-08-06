@@ -23,33 +23,51 @@ describe('hashPassword/verifyPassword（scrypt，盐:哈希 hex 格式）', { ti
   })
 })
 
-describe('SessionStore（内存 Map，30 天滚动过期）', () => {
+describe('SessionStore（持久化到 settings 表，30 天滚动过期）', () => {
   const NOW = 1_700_000_000_000
   const DAY = 24 * 3600 * 1000
+
+  function makeStore() {
+    const db = openDb(':memory:')
+    const repo = new SettingsRepo(db)
+    return new SessionStore(repo)
+  }
+
   it('create 签发 64 hex token，verify 通过', () => {
-    const s = new SessionStore()
+    const s = makeStore()
     const t = s.create(NOW)
     expect(t).toMatch(/^[0-9a-f]{64}$/)
     expect(s.verify(t, NOW + 1000)).toBe(true)
   })
   it('过期后 verify false 且条目被清', () => {
-    const s = new SessionStore()
+    const s = makeStore()
     const t = s.create(NOW)
     expect(s.verify(t, NOW + 31 * DAY)).toBe(false)
     expect(s.verify(t, NOW + 1000)).toBe(false) // 已删，回到过期前的时刻也不行
   })
   it('滚动过期：每次 verify 续期 30 天', () => {
-    const s = new SessionStore()
+    const s = makeStore()
     const t = s.create(NOW)
     expect(s.verify(t, NOW + 29 * DAY)).toBe(true)  // 续期到 +59d
     expect(s.verify(t, NOW + 58 * DAY)).toBe(true)  // 仍活着
   })
   it('revoke 后 verify false；未知 token false', () => {
-    const s = new SessionStore()
+    const s = makeStore()
     const t = s.create(NOW)
     s.revoke(t)
     expect(s.verify(t, NOW)).toBe(false)
     expect(s.verify('deadbeef', NOW)).toBe(false)
+  })
+  it('持久化：重启后（新实例）会话仍有效', () => {
+    const db = openDb(':memory:')
+    const repo1 = new SettingsRepo(db)
+    const s1 = new SessionStore(repo1)
+    const t = s1.create(NOW)
+
+    // 模拟重启：新建 SessionStore 实例，复用同一个 db
+    const repo2 = new SettingsRepo(db)
+    const s2 = new SessionStore(repo2)
+    expect(s2.verify(t, NOW + 1000)).toBe(true)
   })
 })
 
@@ -338,7 +356,7 @@ describe('改密撤销现有会话（审计 MEDIUM #1：凭据轮换必须让被
     expect(auth.sessions.verify(s1, NOW + 3)).toBe(true) // 没成功就不撤销
   })
   it('SessionStore.clear 清空全部会话', () => {
-    const s = new SessionStore()
+    const s = new SessionStore(new SettingsRepo(openDb(':memory:')))
     const a = s.create(NOW), b = s.create(NOW)
     s.clear()
     expect(s.verify(a, NOW + 1)).toBe(false)
