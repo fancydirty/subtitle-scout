@@ -7,10 +7,11 @@ import { ZimukuVisionCard } from './ZimukuVisionCard.js'
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 function renderCard(reload = vi.fn(), secrets: Array<{ name: string; set: boolean; source: 'env' | 'db' | 'none'; masked: string | null }> = []) {
-  // Mock setupProviders with provided secrets or empty array (not configured state)
+  // Mock setupProviders with zimuku_vision provider containing the provided secrets
   vi.spyOn(api, 'setupProviders').mockResolvedValue({
-    providers: [],
-    secrets,
+    providers: [
+      { id: 'zimuku_vision', secrets, lastTest: null },
+    ],
   })
   render(<I18nProvider initialLang="en"><ZimukuVisionCard reload={reload} /></I18nProvider>)
   return reload
@@ -120,9 +121,9 @@ describe('ZimukuVisionCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => {
       expect(putSecret).toHaveBeenCalledTimes(3)
-      expect(putSecret).toHaveBeenCalledWith({ name: 'ZIMUKU_VISION_MODEL', value: 'gpt-4o' })
-      expect(putSecret).toHaveBeenCalledWith({ name: 'ZIMUKU_VISION_BASE_URL', value: 'https://api.example.com/v1' })
-      expect(putSecret).toHaveBeenCalledWith({ name: 'ZIMUKU_VISION_API_KEY', value: 'sk-test' })
+      expect(putSecret).toHaveBeenCalledWith('ZIMUKU_VISION_MODEL', 'gpt-4o')
+      expect(putSecret).toHaveBeenCalledWith('ZIMUKU_VISION_BASE_URL', 'https://api.example.com/v1')
+      expect(putSecret).toHaveBeenCalledWith('ZIMUKU_VISION_API_KEY', 'sk-test')
       expect(reload).toHaveBeenCalled()
     })
   })
@@ -161,9 +162,9 @@ describe('ZimukuVisionCard', () => {
 
     await waitFor(() => {
       expect(putSecret).toHaveBeenCalledTimes(3)
-      expect(putSecret).toHaveBeenCalledWith({ name: 'ZIMUKU_VISION_MODEL', value: '' })
-      expect(putSecret).toHaveBeenCalledWith({ name: 'ZIMUKU_VISION_BASE_URL', value: '' })
-      expect(putSecret).toHaveBeenCalledWith({ name: 'ZIMUKU_VISION_API_KEY', value: '' })
+      expect(putSecret).toHaveBeenCalledWith('ZIMUKU_VISION_MODEL', '')
+      expect(putSecret).toHaveBeenCalledWith('ZIMUKU_VISION_BASE_URL', '')
+      expect(putSecret).toHaveBeenCalledWith('ZIMUKU_VISION_API_KEY', '')
       expect(reload).toHaveBeenCalled()
     })
   })

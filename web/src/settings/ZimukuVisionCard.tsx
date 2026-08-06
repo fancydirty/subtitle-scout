@@ -39,13 +39,16 @@ export function ZimukuVisionCard({ reload }: Props) {
   useEffect(() => {
     void (async () => {
       try {
-        const providers = await api.setupProviders()
-        // setupProviders 返回的 secrets 里包含所有已配置的 secret
-        // 从中筛选出 ZIMUKU_VISION_* 的三个
-        const visionSecrets = providers.secrets.filter((s) =>
-          VISION_FIELDS.includes(s.name as typeof VISION_FIELDS[number])
-        )
-        setSecrets(visionSecrets)
+        const data = await api.setupProviders()
+        // setupProviders 返回 providers 数组，找到 zimuku_vision provider
+        const visionProvider = data.providers.find((p) => p.id === 'zimuku_vision')
+        if (visionProvider) {
+          // 从该 provider 的 secrets 中筛选出 ZIMUKU_VISION_* 的三个
+          const visionSecrets = visionProvider.secrets.filter((s) =>
+            VISION_FIELDS.includes(s.name as typeof VISION_FIELDS[number])
+          )
+          setSecrets(visionSecrets)
+        }
       } catch {
         // 加载失败不阻塞 UI
       }
@@ -106,7 +109,7 @@ export function ZimukuVisionCard({ reload }: Props) {
       for (const name of VISION_FIELDS) {
         if (touched[name]) {
           const value = drafts[name]?.trim() ?? ''
-          await api.putSecret({ name, value })
+          await api.putSecret(name, value)
         }
       }
       reload()
@@ -125,7 +128,7 @@ export function ZimukuVisionCard({ reload }: Props) {
     try {
       // 清空三个 secret（PUT 空串 = DELETE）
       for (const name of VISION_FIELDS) {
-        await api.putSecret({ name, value: '' })
+        await api.putSecret(name, '')
       }
       setDrafts({})
       setTouched({})
