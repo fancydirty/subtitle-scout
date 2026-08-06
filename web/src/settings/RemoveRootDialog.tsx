@@ -31,8 +31,9 @@ interface Props {
   /** null＝对话框关闭；非空＝待删除的守备目录路径。 */
   path: string | null
   onClose: () => void
-  /** DELETE 成功后调用——父级借此刷新根列表（RootsManager 传 roots.reload）。 */
-  onRemoved: () => void
+  /** DELETE 成功后调用——父级借此刷新根列表（RootsManager 传 handleRemoved）+ 取消该路径的待扫请求。
+   *  R6 改：回调现在接收删除的路径，RootsManager 据此通知 scanDebouncer.cancelScan(path)。 */
+  onRemoved: (path: string) => void
 }
 
 type Phase = 'confirm' | 'submitting' | 'done' | 'error'
@@ -64,7 +65,7 @@ export function RemoveRootDialog({ path, onClose, onRemoved }: Props) {
       if (pathRef.current !== target) return
       setResultText(removeRootResultLabel(result, lang))
       setPhase('done')
-      onRemoved()
+      onRemoved(target)  // R6：传递删除的路径给父级（取消防抖扫描）
     } catch (e) {
       if (pathRef.current !== target) return
       setResultText(t('settings_roots_remove_error_prefix') + String(e))

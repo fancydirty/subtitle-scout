@@ -598,6 +598,30 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = addMediaRoot(settingsRepo, b.path, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? { ok: true } : { error: result.error }))
+        // R6：添加根成功后自动触发一次扫描（研究结论：Sonarr/Radarr 模式，无需等下一轮轮询）
+        if (result.ok && requestIngest) requestIngest()
+        return
+      }
+
+      // POST /api/v2/library/scan：手动触发扫描端点（用户添加目录后前端防抖触发，或
+      // Settings 页"立即扫描"按钮直接调）。同 requestIngest 可选依赖先例（watch 未接线
+      // 或纯只读测试 → 503），method 门在前。研究结论（DIRBROWSER_RESEARCH.md）：
+      // Plex/Sonarr/Radarr 成熟方案是 webhook 触发部分扫描，我们的 ingest 是全库扫但有
+      // 增量逻辑，防抖 2 秒累积多次请求避免"猴子动作"（快速增删目录）重复触发。
+      if (rawPath === '/api/v2/library/scan') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (!requestIngest) {
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'scan trigger not configured (watch daemon not running)' }))
+          return
+        }
+        requestIngest()
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ ok: true }))
         return
       }
 

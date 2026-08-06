@@ -3,10 +3,14 @@
 // 目录浏览器（DirBrowser.tsx）。roots 为空（首启无 env 种子）时空态引导一句话并直接展开浏览器
 // （spec 任务规格：不让用户先点一个"添加"按钮才能看到浏览器，空库时浏览器本来就是唯一动作）。
 //
+// R6：集成扫描防抖器（DIRBROWSER_RESEARCH.md 推荐方案）——添加目录后 2 秒防抖触发扫描、
+// 删除目录时取消该路径的待扫请求。DirBrowser 的 onAdded 回调现在会调 debouncer.requestScan，
+// RemoveRootDialog 成功删除后调 debouncer.cancelScan。
+//
 // 控件栈（Plan C Task 27 迁移）：Astryx Text/Button/VStack/EmptyState 全卸——Button children 化
 // （label prop 退役），EmptyState 走 components/ui 同名零改件，VStack 换裸 flex div，Text 按
 // 控件事典映射到手写 span。
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useRef, useEffect } from 'react'
 import { Button } from '../components/ui/button.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import type { Async } from '../api/hooks.js'
@@ -15,6 +19,8 @@ import { useT } from '../i18n/useT.js'
 import { addedAgoLabel, commonRootStart } from './text.js'
 import { DirBrowser } from './DirBrowser.js'
 import { RemoveRootDialog } from './RemoveRootDialog.js'
+import { api } from '../api/client.js'
+import { createScanDebouncer, type ScanDebouncer } from './scanDebouncer.js'
 
 interface Props {
   roots: Async<MediaRootDTO[]>
@@ -25,8 +31,26 @@ export function RootsManager({ roots }: Props) {
   const [browserOpen, setBrowserOpen] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<string | null>(null)
 
+  // R6：防抖器实例——useRef 保持稳定引用（组件重渲染不重建），传给 DirBrowser 和 RemoveRootDialog
+  const debouncerRef = useRef<ScanDebouncer | null>(null)
+  if (!debouncerRef.current) {
+    debouncerRef.current = createScanDebouncer(api.triggerScan)
+  }
+
   const list = roots.data ?? []
   const startPath = useMemo(() => commonRootStart(list.map((r) => r.path)), [list])
+
+  // R6：添加根成功的回调——刷新列表 + 请求防抖扫描（2 秒后无新操作才真正触发）
+  const handleAdded = (path: string) => {
+    roots.reload()
+    debouncerRef.current?.requestScan(path)
+  }
+
+  // R6：删除根成功的回调——刷新列表 + 取消该路径的待扫请求
+  const handleRemoved = (path: string) => {
+    roots.reload()
+    debouncerRef.current?.cancelScan(path)
+  }
 
   if (roots.loading && !roots.data) {
     return (
@@ -99,9 +123,9 @@ export function RootsManager({ roots }: Props) {
         </div>
       ) : null}
 
-      {isEmpty || browserOpen ? <DirBrowser startPath={startPath} onAdded={roots.reload} /> : null}
+      {isEmpty || browserOpen ? <DirBrowser startPath={startPath} onAdded={handleAdded} /> : null}
 
-      <RemoveRootDialog path={removeTarget} onClose={() => setRemoveTarget(null)} onRemoved={roots.reload} />
+      <RemoveRootDialog path={removeTarget} onClose={() => setRemoveTarget(null)} onRemoved={handleRemoved} />
     </section>
   )
 }

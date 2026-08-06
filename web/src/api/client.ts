@@ -226,4 +226,7 @@ export const api = {
   // zimuku vision 能力测试：Settings → Providers 区的 ZimukuVisionCard 测试按钮调用
   testVision: (req: TestVisionRequest) =>
     post<TestVisionResponse>('/api/v2/test-vision', req),
+
+  // R6：手动触发扫描——添加目录后防抖触发、或 Settings 页"立即扫描"按钮直接调。
+  triggerScan: () => post<{ ok: true }>('/api/v2/library/scan'),
 }

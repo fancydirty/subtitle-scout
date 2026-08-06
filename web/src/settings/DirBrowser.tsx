@@ -19,8 +19,9 @@ import { breadcrumbSegments, joinDir } from './text.js'
 
 interface Props {
   startPath: string
-  /** 加根成功后调用——父级借此刷新根列表（RootsManager 传 roots.reload）。 */
-  onAdded: () => void
+  /** 加根成功后调用——父级借此刷新根列表（RootsManager 传 handleAdded）+ 触发防抖扫描。R6 改：
+   *  回调现在接收添加的路径，RootsManager 据此通知 scanDebouncer.requestScan(path)。 */
+  onAdded: (path: string) => void
 }
 
 function PathBreadcrumb({ path, onNavigate }: { path: string; onNavigate: (p: string) => void }) {
@@ -95,7 +96,7 @@ export function DirBrowser({ startPath, onAdded }: Props) {
     try {
       await api.addRoot(currentPath)
       setAddedMsg(t('settings_dirbrowser_add_success'))
-      onAdded()
+      onAdded(currentPath)  // R6：传递添加的路径给父级（触发防抖扫描）
     } catch (e) {
       setAddError(String(e))
     } finally {
