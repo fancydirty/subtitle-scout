@@ -1,6 +1,9 @@
 name: release
 on:
   push:
+    # main 每次推送刷新 :latest（预发布期让容器跟主干；这也是开源后用户 docker compose pull 吃到的那条流）
+    # tag v* 额外产出版本号镜像（type=semver）+ latest
+    branches: [main]
     tags: ['v*']
 permissions:
   contents: read
