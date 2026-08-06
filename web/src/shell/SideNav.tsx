@@ -34,39 +34,25 @@ export function SideNavHeading({ heading }: { heading: string }) {
   return <div className="px-3 py-1 text-[17px] font-semibold leading-6 text-foreground">{heading}</div>
 }
 
-/** 分区 eyebrow（LIBRARY/AGENTS/SYSTEM）——DESIGN.md §6 铁律：英文大写 mono 小标（tabs.ts
- *  头注释同口径）。role="group" + aria-labelledby 对齐 Astryx SideNavSection 的无障碍结构。 */
-export function SideNavSection({ title, children }: { title: string; children?: ReactNode }) {
-  const titleId = useId()
-  return (
-    <div role="group" aria-labelledby={titleId} className="flex flex-col gap-0.5 py-1">
-      <div
-        id={titleId}
-        className="px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-weak"
-      >
-        {title}
-      </div>
-      {children}
-    </div>
-  )
-}
-
 interface SideNavItemProps {
   href: string
   label: string
   selected?: boolean
+  /** 行首图标（2026-08-06：极简点线风格）。 */
+  icon?: ReactNode
   /** 行尾槽（甄别角标等）。无数据时调用方传 undefined——"无数据不显示角标"是规格降级形态。 */
   endContent?: ReactNode
 }
 
-export function SideNavItem({ href, label, selected, endContent }: SideNavItemProps) {
+export function SideNavItem({ href, label, selected, icon, endContent }: SideNavItemProps) {
   return (
     <a
       href={href}
       aria-current={selected ? 'page' : undefined}
-      className="flex items-center justify-between rounded-control px-3 py-1.5 text-[13px] leading-5 text-muted-foreground transition-colors hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-ring aria-[current=page]:bg-secondary aria-[current=page]:text-[var(--color-sidebar-active)]"
+      className="flex items-center gap-3 rounded-control px-3 py-1.5 text-[13px] leading-5 text-muted-foreground transition-colors hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-ring aria-[current=page]:bg-secondary aria-[current=page]:text-[var(--color-sidebar-active)]"
     >
-      <span>{label}</span>
+      {icon && <span className="flex-shrink-0">{icon}</span>}
+      <span className="flex-1">{label}</span>
       {endContent}
     </a>
   )

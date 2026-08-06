@@ -1,9 +1,11 @@
 // web/src/shell/SideNav.test.tsx：自绘 SideNav 件的契约测试（Task 28 新档）——
 // 选中态（aria-current="page"）与行尾徽标槽是本件的两个规格锚点；链接契约
 // （<a href> + 可及名 = label）是 App.test.tsx findByRole('link', {name}) 的底层保证。
+//
+// 2026-08-06 重设计：SideNavSection 已退役（扁平四条 + 图标），测试改为纯 wordmark + items。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
-import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from './SideNav.js'
+import { SideNav, SideNavHeading, SideNavItem } from './SideNav.js'
 
 afterEach(() => cleanup())
 
@@ -37,18 +39,16 @@ describe('SideNavItem（自绘导航项）', () => {
 })
 
 describe('SideNav 骨架（自绘）', () => {
-  it('nav 地标 + wordmark + 分区 group（aria-labelledby 指向分区标题）', () => {
+  it('nav 地标 + wordmark + 扁平条目（无分区）', () => {
     render(
       <SideNav header={<SideNavHeading heading="subtitle-scout" />}>
-        <SideNavSection title="LIBRARY">
-          <SideNavItem href="#/library" label="Library" selected />
-        </SideNavSection>
+        <SideNavItem href="#/library" label="Library" selected />
+        <SideNavItem href="#/workflow" label="Workflow" />
       </SideNav>,
     )
     expect(screen.getByRole('navigation', { name: 'Side navigation' })).toBeInTheDocument()
     expect(screen.getByText('subtitle-scout')).toBeInTheDocument()
-    const group = screen.getByRole('group')
-    const title = screen.getByText('LIBRARY')
-    expect(group).toHaveAttribute('aria-labelledby', title.id)
+    expect(screen.getByRole('link', { name: 'Library' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Workflow' })).toBeInTheDocument()
   })
 })

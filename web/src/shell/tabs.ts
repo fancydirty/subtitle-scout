@@ -1,27 +1,23 @@
-// web/src/shell/tabs.ts：四 tab 常量表——顺序/文案 key/所属侧栏分区，Sidebar 与 CommandK
-// 共用同一份，避免两处各写一份映射、漂移出两套顺序。
+// web/src/shell/tabs.ts：四 tab 常量表——顺序/文案 key，Sidebar 与 CommandK 共用同一份，
+// 避免两处各写一份映射、漂移出两套顺序。
 //
-// 分区 eyebrow（LIBRARY / AGENTS / SYSTEM）按 DESIGN.md §6 铁律固定英文大写 mono 小标，
-// 不进 i18n 表——它们是外壳骨架的一部分，不是随语言变化的文案（类比 Workflow 区技术值
-// 永不本地化的精神，只是这里管的是"分区名"而不是"技术词表"）。
+// 2026-08-06 重设计：去掉分区（LIBRARY / AGENTS / SYSTEM），改为扁平四条 + 图标。
+// 旧分区 eyebrow（按 DESIGN.md §6 铁律固定英文大写 mono 小标）已退役——扁平结构下
+// 单条目分组冗余消失，四项一目了然无需额外层级。
 import type { Tab } from './route.js'
 
 export type NavLabelKey = 'nav_library' | 'nav_workflow' | 'nav_triage' | 'nav_settings'
-export type Section = 'LIBRARY' | 'AGENTS' | 'SYSTEM'
 
 export interface TabMeta {
   id: Tab
   labelKey: NavLabelKey
-  section: Section
 }
 
-/** 四项：Library（LIBRARY 区）、Workflow（AGENTS 区）、Triage（AGENTS 区，角标=甄别站
- *  待认领计数）、Settings（SYSTEM 区）——顺序即侧栏渲染顺序。 */
+/** 四项：Library（媒体库）、Workflow（工作流）、Triage（甄别，角标=甄别站待认领计数）、
+ *  Settings（设置）——顺序即侧栏渲染顺序。 */
 export const TABS: TabMeta[] = [
-  { id: 'library', labelKey: 'nav_library', section: 'LIBRARY' },
-  { id: 'workflow', labelKey: 'nav_workflow', section: 'AGENTS' },
-  { id: 'triage', labelKey: 'nav_triage', section: 'AGENTS' },
-  { id: 'settings', labelKey: 'nav_settings', section: 'SYSTEM' },
+  { id: 'library', labelKey: 'nav_library' },
+  { id: 'workflow', labelKey: 'nav_workflow' },
+  { id: 'triage', labelKey: 'nav_triage' },
+  { id: 'settings', labelKey: 'nav_settings' },
 ]
-
-export const SECTIONS: Section[] = ['LIBRARY', 'AGENTS', 'SYSTEM']
