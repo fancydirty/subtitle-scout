@@ -7,6 +7,9 @@
 // 删除目录时取消该路径的待扫请求。DirBrowser 的 onAdded 回调现在会调 debouncer.requestScan，
 // RemoveRootDialog 成功删除后调 debouncer.cancelScan。
 //
+// R6 UX 改进：移除 commonRootStart 动态计算（导致"添加 /media 后无法回到 / 再添加 /data"），
+// 改用固定起点（用户主目录）+ 自由向上导航 + 系统目录过滤（见 dirBrowserUtils.ts）。
+//
 // 控件栈（Plan C Task 27 迁移）：Astryx Text/Button/VStack/EmptyState 全卸——Button children 化
 // （label prop 退役），EmptyState 走 components/ui 同名零改件，VStack 换裸 flex div，Text 按
 // 控件事典映射到手写 span。
@@ -16,11 +19,12 @@ import { EmptyState } from '../components/ui/empty-state.js'
 import type { Async } from '../api/hooks.js'
 import type { MediaRootDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
-import { addedAgoLabel, commonRootStart } from './text.js'
+import { addedAgoLabel } from './text.js'
 import { DirBrowser } from './DirBrowser.js'
 import { RemoveRootDialog } from './RemoveRootDialog.js'
 import { api } from '../api/client.js'
 import { createScanDebouncer, type ScanDebouncer } from './scanDebouncer.js'
+import { getDefaultStartPath } from './dirBrowserUtils.js'
 
 interface Props {
   roots: Async<MediaRootDTO[]>
@@ -38,7 +42,9 @@ export function RootsManager({ roots }: Props) {
   }
 
   const list = roots.data ?? []
-  const startPath = useMemo(() => commonRootStart(list.map((r) => r.path)), [list])
+  // R6 UX 改进：固定起点（用户主目录），不再用 commonRootStart 动态计算——那会导致
+  // "添加 /media 后只能浏览其子目录，无法回到 / 再添加 /data"的 UX 问题。
+  const startPath = useMemo(() => getDefaultStartPath(), [])
 
   // R6：添加根成功的回调——刷新列表 + 请求防抖扫描（2 秒后无新操作才真正触发）
   const handleAdded = (path: string) => {

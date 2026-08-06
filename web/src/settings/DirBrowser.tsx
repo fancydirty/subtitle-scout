@@ -1,8 +1,9 @@
 // web/src/settings/DirBrowser.tsx：加根流程——目录浏览器（Jellyfin 同款"挂载即可见"选择器，
-// spec §7/§10 用户裁决："照抄 Jellyfin 等巨人轮子，不自己发明"）。起点由父级传入（现有根的公共
-// 父目录，见 text.ts 的 commonRootStart），面包屑逐级 + 子目录列表逐级下钻；不可读目录如实灰字
-// error（DESIGN.md §8：诚实呈现事实，不是警报）；当前路径一行 mono + "Add this directory" 按钮
-// → POST 成功后提示"已加入，下一轮扫描将自动摄取"（后端 roots 已动态化，这句是真的）。
+// spec §7/§10 用户裁决："照抄 Jellyfin 等巨人轮子，不自己发明"）。R6 UX 改进：移除 startPath
+// 向上导航限制（现在可以一路向上到 /），过滤系统目录（/dev /proc /sys 等不展示），面包屑
+// 逐级 + 子目录列表逐级下钻；不可读目录如实灰字 error（DESIGN.md §8：诚实呈现事实，不是警报）；
+// 当前路径一行 mono + "Add this directory" 按钮 → POST 成功后提示"已加入，下一轮扫描将自动摄取"
+// （R6：实际上会立即触发防抖扫描，2 秒后执行，不再依赖轮询）。
 //
 // 面包屑与目录项都用自建 mono 按钮而不是现成 Breadcrumbs 组件——路径段是技术值，DESIGN.md
 // §3 铁律"mono 是技术层专属声音"，自建能精确控制成 mono 且方便测试定位。
@@ -16,6 +17,7 @@ import { Button } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import { breadcrumbSegments, joinDir } from './text.js'
+import { filterSystemDirs } from './dirBrowserUtils.js'
 
 interface Props {
   startPath: string
@@ -75,7 +77,11 @@ export function DirBrowser({ startPath, onAdded }: Props) {
     setAddedMsg(null)
     api
       .fsList(currentPath, ctrl.signal)
-      .then((res) => setDirs(res.dirs))
+      .then((res) => {
+        // R6 UX 改进：过滤系统目录（/dev /proc /sys 等），避免在根目录展示大量无用条目
+        const filtered = filterSystemDirs(res.dirs)
+        setDirs(filtered)
+      })
       .catch((e) => {
         if (ctrl.signal.aborted) return
         setListError(String(e))
