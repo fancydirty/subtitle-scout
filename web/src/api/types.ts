@@ -435,7 +435,7 @@ export interface SubtitleCompareDTO {
 
 export type SecretSource = 'env' | 'db' | 'none'
 
-/** 12 个密钥白名单（spec §4.1 枚举 + §8.2 TRANSLATE_* 三凭证）。与后端 SECRET_NAMES 同序。 */
+/** 15 个密钥白名单（spec §4.1 枚举 + §8.2 TRANSLATE_* 三凭证 + ZIMUKU_VISION_* 三凭证）。与后端 SECRET_NAMES 同序。 */
 export const SECRET_NAMES = [
   'TMDB_API_KEY',
   'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
@@ -443,10 +443,11 @@ export const SECRET_NAMES = [
   'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD',
   'JIMAKU_API_KEY',
   'TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL',
+  'ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_MODEL',
 ] as const
 export type SecretName = (typeof SECRET_NAMES)[number]
 
-export type ValidateTarget = 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
+export type ValidateTarget = 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku' | 'zimuku_vision'
 
 export interface ValidateResultDTO { ok: boolean; detail?: string; error?: string }
 
