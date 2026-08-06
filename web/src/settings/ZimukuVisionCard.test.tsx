@@ -2,15 +2,16 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { api } from '../api/client.js'
+import type { ProviderRowDTO } from '../api/types.js'
 import { ZimukuVisionCard } from './ZimukuVisionCard.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
-function renderCard(reload = vi.fn(), secrets: Array<{ name: string; set: boolean; source: 'env' | 'db' | 'none'; masked: string | null }> = []) {
+function renderCard(reload = vi.fn(), secrets: ProviderRowDTO['secrets'] = []) {
   // Mock setupProviders with zimuku_vision provider containing the provided secrets
   vi.spyOn(api, 'setupProviders').mockResolvedValue({
     providers: [
-      { id: 'zimuku_vision', secrets, lastTest: null },
+      { id: 'zimuku_vision' as const, secrets, lastTest: null },
     ],
   })
   render(<I18nProvider initialLang="en"><ZimukuVisionCard reload={reload} /></I18nProvider>)

@@ -26,7 +26,7 @@ const PLACEHOLDERS: Record<string, string> = {
 
 export function ZimukuVisionCard({ reload }: Props) {
   const { t } = useT()
-  const [secrets, setSecrets] = useState<Array<{ name: string; set: boolean; source: 'env' | 'db' }>>([])
+  const [secrets, setSecrets] = useState<Array<{ name: string; set: boolean; source: 'env' | 'db' | 'none'; masked: string | null }>>([])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [touched, setTouched] = useState<Record<string, boolean>>({})
   const [busy, setBusy] = useState(false)

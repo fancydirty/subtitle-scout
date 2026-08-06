@@ -20,6 +20,7 @@ const PROVIDER_NAME: Record<ProviderRowDTO['id'], string> = {
   jimaku: 'Jimaku',
   subhd: 'subhd',
   zimuku: 'zimuku',
+  zimuku_vision: 'Zimuku Vision',
 }
 
 function ProviderSecretField({ secret, editing, draft, onDraft }: {
