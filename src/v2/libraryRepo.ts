@@ -957,6 +957,59 @@ export class LibraryRepo {
       .run(nextRetryCount, now + parkedRetryDelayMs(nextRetryCount), now, path)
   }
 
+  /** 判据用：这批路径里还有几条留在 parked_paths。纯读、零副作用、单次查询（分片除外）。
+   *
+   *  消费方（方案 2026-08-07-identity-decoupling-plan §3）：unidentifiedFindSubtitle 的
+   *  identityProgress —— `stillParked < targets.length` 即"身份落库发生了"。为什么要它：
+   *  identifyOnly worker 字幕工具零挂载（findSubtitleWorker.ts:209），识别成功的单元必然
+   *  四个字幕桶全空，拿字幕产出当唯一成功判据会把识别成功判成"空报告"→ completeError →
+   *  error_attempt 单调累积到天级退避。判据必须是机械事实，不能问 agent：identity 是
+   *  advisory schema（findSubtitleWorker.schemas.ts:172-177）。
+   *
+   *  为什么"还剩几条"能等价于"识别落库了"：write_identified_media 的事务无条件
+   *  clearParkedPath（identityTools.ts:172/229/242/274），而已识别路径不会被 ingest 重新
+   *  park —— fresh/promote 分支被 findRowByPath+probe memo 短路（ingest.ts:573-593），
+   *  replica 分支被 getItemFileByPath 短路（ingest.ts:604-613）。
+   *  🔴 本方法的判据价值依赖这两条短路：日后改 ingest 打破任一条，计数会虚高 →
+   *  判据静默失效（回到刷红 + 累积退避）。
+   *
+   *  空数组 → 直接 0，不发查询：SQLite 的 `IN ()` 是语法错误。
+   *
+   *  🔴 绝不用 LIKE 做路径匹配 —— 媒体路径合法含 % 和 _（"100% Pascal-sensei"、
+   *  "Look_Back"），LIKE 会把它们当通配符展开造成计数虚高。这是 settingsRepo.ts:138-141
+   *  的 removeRoot 当年改用 substr 的同一个陷阱；这里用参数化 IN 的字面量相等，天然免疫。 */
+  countParked(paths: readonly string[]): number {
+    if (paths.length === 0) return 0
+    // 🔴 路径形态是**外部不变量**（审计 S-1，实测定罪）：本方法做**字面量**相等匹配，不做
+    // 任何归一化。实测 parked 行为 '/media/tv/Show/E01.mkv' 时，'/media/tv/Show/../Show/E01.mkv'
+    // 与 '/media/tv//Show/E01.mkv' 都返回 0。
+    // 今天两侧同源所以一致：videoPath ← listParkedPaths().path ← upsertParkedPath ←
+    // ingest.ts:627 ← walkVideoFiles 的 join()（selfScan.ts:78，join 会折叠 './' 与 '//'）。
+    // 🔴 失效方向是最坏的那侧：若哪天一侧多/少一次归一化 → 命中数虚低 → 判据
+    // (stillParked < targets.length) 恒真 → 失败单元永不记 failure、退避轨永不前进 →
+    // **活锁**，正是本轮要修的病。任何把 target 路径改成"根 + 相对路径"重建的重构都会踩中。
+    //
+    // 入参重复不影响返回值（path 是 PRIMARY KEY，IN 是集合成员判定，实测重复 2 次仍返回 1）。
+    // 消费方的分母 targets.length **不**去重，所以它假定 targets 无重复路径——该不变量由
+    // listParkedPaths 的 PK 保证（审计 I-3）。
+    //
+    // 分片：SQLite 绑定变量上限实测 **32766**（SQLite ≥3.32；999 是 3.32 之前的旧默认值，
+    // 本项目 3.53.2）。MAX_TARGETS_PER_JOB=60 远低于此，spec §3.3.2 的"单元自身超限时整单元
+    // 上车"也到不了；取 500 是保守值，留 65× 余量。
+    const CHUNK = 500
+    let total = 0
+    for (let i = 0; i < paths.length; i += CHUNK) {
+      const chunk = paths.slice(i, i + CHUNK)
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM parked_paths WHERE path IN (${chunk.map(() => '?').join(',')})`
+        )
+        .get(...chunk) as { n: number }
+      total += row.n
+    }
+    return total
+  }
+
   /** P6 救援页读取；first_seen DESC——挂得最久的排最前，救援优先级天然对齐。 */
   listParkedPaths(): ParkedPath[] {
     return this.db

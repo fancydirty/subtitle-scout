@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
 import { LibraryRepo, isParkedPathEligible, PARK_REASON } from './libraryRepo.js'
@@ -705,6 +705,74 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       lib.updateParkReason('/a', 'identification-failed', 2500)
       lib.bumpParkedRetry('/a', 3000)
       expect(lib.listParkedPaths()[0].retry_count).toBe(3)
+    })
+
+    // ---- countParked（身份产出判据，方案 2026-08-07-identity-decoupling-plan §3/§4 改动 1，
+    // 回归锁 #8）----
+    // bumpParkedRetry 的姊妹方法：那个推退避轨（写），这个只回答"这批路径还剩几条在 park"
+    // （读）。判据要的是机械事实——识别落库时 identityTools 会 clearParkedPath，所以
+    // stillParked < targets.length 就等价于"身份落库发生了"，不必问 advisory 的 identity。
+    it('countParked 空数组 → 0，且不发查询（SQLite 的 IN () 是语法错误）', () => {
+      const spy = vi.spyOn(db, 'prepare')
+      expect(lib.countParked([])).toBe(0)
+      expect(spy).not.toHaveBeenCalled()
+      spy.mockRestore()
+    })
+
+    it('countParked 混合存在/不存在 → 只数存在的', () => {
+      lib.upsertParkedPath('/a.mkv', 'r', 1000, fp())
+      lib.upsertParkedPath('/b.mkv', 'r', 1000, fp())
+      expect(lib.countParked(['/a.mkv', '/b.mkv', '/gone.mkv'])).toBe(2)
+      expect(lib.countParked(['/gone.mkv'])).toBe(0)
+      // 识别落库（clearParkedPath）后差值出现 —— 这就是判据消费的信号。
+      lib.clearParkedPath('/a.mkv')
+      expect(lib.countParked(['/a.mkv', '/b.mkv'])).toBe(1)
+    })
+
+    it('🔴 countParked 不做路径归一化——这是显式契约，不是巧合（审计 S-1）', () => {
+      // 失效方向是最坏那侧：若哪天一侧多/少一次归一化 → 命中数虚低 → 判据
+      // (stillParked < targets.length) 恒真 → 失败单元永不记 failure → 活锁。
+      // 把"字面量匹配"钉成契约：谁将来给 countParked 加 resolve()，这条会红，
+      // 迫使他同时确认 targets 侧的形态来源（unidentifiedFindSubtitle.ts:117 裸取 DB 列）。
+      lib.upsertParkedPath('/media/tv/Show/E01.mkv', 'r', 1000, fp())
+      expect(lib.countParked(['/media/tv/Show/E01.mkv'])).toBe(1)
+      // 以下三种等价但非规范的形态一律不命中（实测行为，锁死）
+      expect(lib.countParked(['/media/tv/Show/../Show/E01.mkv'])).toBe(0)
+      expect(lib.countParked(['/media/tv//Show/E01.mkv'])).toBe(0)
+      expect(lib.countParked(['/media/tv/./Show/E01.mkv'])).toBe(0)
+    })
+
+    it('countParked 入参重复不重复计数（path 是 PK，IN 是集合判定；审计 I-3）', () => {
+      // 消费方的分母 targets.length 不去重，所以它假定 targets 无重复路径——
+      // 该不变量由 listParkedPaths 的 PK 保证。这条锁住"分子侧去重"这个事实。
+      lib.upsertParkedPath('/a.mkv', 'r', 1000, fp())
+      expect(lib.countParked(['/a.mkv', '/a.mkv', '/a.mkv'])).toBe(1)
+    })
+
+    it('🔴 countParked 路径含 % 与 _ 字面量 → 精确匹配，不当通配符（防 LIKE 回归）', () => {
+      // 真实媒体路径合法含这两个字符（"100% Pascal-sensei"、"Look_Back"）。若实现用了 LIKE，
+      // '%' 会匹配任意串、'_' 会匹配任意单字符 → 计数虚高。见 settingsRepo.ts:138-141 的
+      // removeRoot 同款陷阱记录（那里为此改用 substr）。
+      lib.upsertParkedPath('/media/100% Pascal-sensei/E01.mkv', 'r', 1000, fp())
+      lib.upsertParkedPath('/media/Look_Back/E01.mkv', 'r', 1000, fp())
+      // 只查这两条本身 → 恰好 2
+      expect(lib.countParked(['/media/100% Pascal-sensei/E01.mkv', '/media/Look_Back/E01.mkv'])).toBe(2)
+      // 通配符形状的查询串：LIKE 下会命中上面两行，精确匹配下必须是 0。
+      expect(lib.countParked(['/media/100%/E01.mkv'])).toBe(0)
+      expect(lib.countParked(['/media/Look_Back/E01.mkv'.replace('_', 'X')])).toBe(0)
+      expect(lib.countParked(['%'])).toBe(0)
+      expect(lib.countParked(['/media/Look?Back/E01.mkv'])).toBe(0)
+    })
+
+    it('🔴 countParked 超 500 条 → 分片正确（SQLite 变量上限 999）', () => {
+      // 1200 = 2 整片 + 200 余，专抓"最后一片漏了"这类差一错误。超限单元确实可能这么大：
+      // spec §3.3.2 允许单元自身超 MAX_TARGETS_PER_JOB 时整单元上车。
+      const paths = Array.from({ length: 1200 }, (_, i) => `/media/x/${i}.mkv`)
+      for (const p of paths.slice(0, 700)) lib.upsertParkedPath(p, 'r', 1000, fp())
+      expect(lib.countParked(paths)).toBe(700)
+      // 全部存在的一整片 + 余数形状也要对
+      expect(lib.countParked(paths.slice(0, 600))).toBe(600)
+      expect(lib.countParked(paths.slice(700))).toBe(0)
     })
 
     it('负缓存：新 park → retry_count=0, next_retry_at=now+1h，存 fingerprint', () => {
