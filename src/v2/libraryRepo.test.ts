@@ -662,6 +662,51 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       expect(lib.listParkedPaths()).toHaveLength(1)
     })
 
+    // ---- bumpParkedRetry（活锁防线，spec 2026-08-07 §3.3.1）----
+    // 二轮审计 R2-B1 定罪：identify 失败的三条路径全都不推进退避轨——updateParkReason 只写
+    // park_reason+last_attempt，而唯一推进 retry_count/next_retry_at 的 upsertParkedPath 只被
+    // ingest 调用。结果坏单元的 next_retry_at 永久停在首次 park 的 now+1h，一小时后退避窗恒开，
+    // 组批时它恒排队首 → 活锁。本方法是那条缺失的接线。
+    it('bumpParkedRetry 推进退避阶梯 0→1h，不动 park_reason', () => {
+      lib.upsertParkedPath('/a', 'awaiting-agent-identification', 10_000, fp())
+      lib.bumpParkedRetry('/a', 20_000)
+      const row = lib.listParkedPaths()[0]
+      expect(row.retry_count).toBe(1)
+      expect(row.next_retry_at).toBe(20_000 + 4 * HOUR)  // retry_count 已变 1 → 下一档 4h
+      expect(row.last_attempt).toBe(20_000)
+      // 🔴 park_reason 绝不能被动：反幻觉红线要求"编造被拒时保持
+      // awaiting-agent-identification"，bump 只记"尝试过一次"这个机械事实。
+      expect(row.park_reason).toBe('awaiting-agent-identification')
+    })
+
+    it('bumpParkedRetry 阶梯封顶 24h，且与 upsertParkedPath 共用同一组常量', () => {
+      lib.upsertParkedPath('/a', 'r', 0, fp())
+      lib.bumpParkedRetry('/a', 1000)   // rc 0→1，下次 4h
+      expect(lib.listParkedPaths()[0].next_retry_at).toBe(1000 + 4 * HOUR)
+      lib.bumpParkedRetry('/a', 2000)   // rc 1→2，下次 24h
+      expect(lib.listParkedPaths()[0].next_retry_at).toBe(2000 + 24 * HOUR)
+      lib.bumpParkedRetry('/a', 3000)   // rc 2→3，封顶仍 24h
+      expect(lib.listParkedPaths()[0].next_retry_at).toBe(3000 + 24 * HOUR)
+      expect(lib.listParkedPaths()[0].retry_count).toBe(3)
+    })
+
+    it('bumpParkedRetry 对不存在的行是空操作（幽灵防御：文件可能已被识别退户口）', () => {
+      lib.bumpParkedRetry('/nope', 1000)
+      expect(lib.listParkedPaths()).toEqual([])
+    })
+
+    it('bumpParkedRetry 不重置阶梯（与 upsertParkedPath 的 reason-变化重置语义相反）', () => {
+      lib.upsertParkedPath('/a', 'r', 0, fp())
+      lib.bumpParkedRetry('/a', 1000)
+      lib.bumpParkedRetry('/a', 2000)
+      expect(lib.listParkedPaths()[0].retry_count).toBe(2)
+      // 换 reason 也不该让 bump 回到 0——那是 upsertParkedPath 的语义（给 ingest 的），
+      // 不是这里要的（见 unidentifiedFindSubtitle.ts:308 的既有注释）。
+      lib.updateParkReason('/a', 'identification-failed', 2500)
+      lib.bumpParkedRetry('/a', 3000)
+      expect(lib.listParkedPaths()[0].retry_count).toBe(3)
+    })
+
     it('负缓存：新 park → retry_count=0, next_retry_at=now+1h，存 fingerprint', () => {
       lib.upsertParkedPath('/a', 'no-match', 10_000, fp(111, 222))
       const row = lib.listParkedPaths()[0]

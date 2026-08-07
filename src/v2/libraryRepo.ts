@@ -927,6 +927,36 @@ export class LibraryRepo {
     this.db.prepare(`UPDATE parked_paths SET park_reason = ?, last_attempt = ? WHERE path = ?`).run(reason, now, path)
   }
 
+  /** 活锁防线（作品单元管线 §3.3.1，2026-08-07）：只推进退避轨，不碰 park_reason。
+   *
+   *  为什么必须有这个方法（二轮审计 R2-B1 定罪的缺失接线）：identify 失败的三条路径
+   *  ——拒识（updateParkReason）、编造被拒（只 console.error）、空报告（只 completeError）
+   *  ——**没有一条**推进 retry_count/next_retry_at。而唯一推进它们的 upsertParkedPath 只被
+   *  ingest 调用（ingest.ts:569,627,743）。后果：坏路径的 next_retry_at 永久停在首次 park 时
+   *  写的 now+1h，一小时后该值恒为过去 → 退避窗恒开 → 组批时它恒在候选里；叠加
+   *  last_attempt 也不动（编造/空报告两条路径），它还恒排队首 → 整个队列被单个坏单元卡死。
+   *
+   *  与 upsertParkedPath 的分工：那个是 ingest 的"重新发现这个文件"语义，reason 或 fingerprint
+   *  变化时会把阶梯**重置**回 1h 档（见该方法注释）；这里是"agent 试过一次没成"语义，只加一档，
+   *  绝不重置、绝不改 reason。reason 不改是反幻觉红线的要求：编造被拒时必须保持
+   *  awaiting-agent-identification（不能让编造的结论污染 reason），但"试过一次"是与 agent 说了
+   *  什么无关的机械事实，必须记。
+   *
+   *  阶梯复用 parkedRetryDelayMs（同 upsertParkedPath），不写第二份字面量。
+   *  行不存在=空操作（同 updateParkReason 的幽灵防御口径）。 */
+  bumpParkedRetry(path: string, now: number): void {
+    const existing = this.db
+      .prepare(`SELECT retry_count FROM parked_paths WHERE path = ?`)
+      .get(path) as { retry_count: number } | undefined
+    if (!existing) return
+    const nextRetryCount = existing.retry_count + 1
+    this.db
+      .prepare(
+        `UPDATE parked_paths SET retry_count = ?, next_retry_at = ?, last_attempt = ? WHERE path = ?`,
+      )
+      .run(nextRetryCount, now + parkedRetryDelayMs(nextRetryCount), now, path)
+  }
+
   /** P6 救援页读取；first_seen DESC——挂得最久的排最前，救援优先级天然对齐。 */
   listParkedPaths(): ParkedPath[] {
     return this.db

@@ -62,7 +62,15 @@ const SEASON_FOLDER_PATTERNS: RegExp[] = [
   /^第\s*(\d{1,3})\s*[集季部]$/,
 ]
 
-function detectSeasonFolder(rawSegment: string): number | null {
+/** 季目录形态判定：`Season NN`/`Series NN`/`S01`/`第N季|集|部` → 季号，`Specials` → 0，
+ *  其余 → null。
+ *
+ *  Exported（作品单元管线 B0，2026-08-07）：`v2/workUnit.ts` 的作品根推导要判"这一层是不是
+ *  季目录，是就继续上爬"，必须与识别层用**同一份**形态定义。复制一份正则必然漂移（本项目
+ *  已有先例：VIDEO_EXT 在三处各写一份，见 daemon/selfScan.ts 头注释的自陈），故这里加导出而
+ *  不是让调用方另写。加 export 是零行为改动：三个既有内部调用点（下方 isCanonicalEpisodePath
+ *  与 identifyFromPath 主体）逐字不动。 */
+export function detectSeasonFolder(rawSegment: string): number | null {
   const trimmed = rawSegment.trim()
   if (/^specials?$/i.test(trimmed)) return 0
   for (const pattern of SEASON_FOLDER_PATTERNS) {
@@ -75,7 +83,10 @@ function detectSeasonFolder(rawSegment: string): number | null {
 /** 分类目录黑名单——这些段是"装剧的桶"，不是剧名（tv/movies/anime/shows/series/电影/剧集/动漫/电视剧）。
  *  Rule 5 的 fallback 用目录名当标题前，先过这张表：命中即该目录不提供标题信号。
  *  （根因：此前 'tv/Witch Watch S01E02.mkv' 把分类目录 "tv" 当标题，系统性误识别。） */
-const CATEGORY_DIR_NAMES = new Set([
+/** 分类目录名（"装剧的桶"，不是作品名）。
+ *  Exported（作品单元管线 B2c，2026-08-07）：作品根推导要跳过这些层——`TV/Show/E01.mkv` 的
+ *  作品根是 `TV/Show` 而不是 `TV`。与识别层共用同一份名单，不复制第二份（复制必漂移）。 */
+export const CATEGORY_DIR_NAMES = new Set([
   'tv', 'tvshows', 'tv shows', 'shows', 'series', 'movies', 'movie', 'films', 'film',
   'anime', 'animation', 'cartoons',
   '电视剧', '剧集', '电视', '电影', '动漫', '动画', '番剧', '番组', '美剧', '日剧', '韩剧', '英剧',
