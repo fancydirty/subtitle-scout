@@ -439,6 +439,57 @@ describe('媒体根路径形状（spec A §11-1：win32 绝对路径不冤杀）
   })
 })
 
+describe('addMediaRoot 重叠校验（业界标准 overlapping-paths validation）', () => {
+  // 真实目录（存在性检查在重叠检查之前，所以测试必须用磁盘上真的存在的路径）
+  let tmp: string
+  let child: string
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'scout-roots-'))
+    child = join(tmp, 'movies')
+    mkdirSync(child)
+  })
+
+  it('已登记某根后，其子目录被拒（子树已在扫描范围内）', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    repo.addRoot(tmp, NOW)
+    const r = addMediaRoot(repo, child, NOW)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.error).toContain('already covered by media root')
+      expect(r.error).toContain(tmp)
+    }
+  })
+
+  it('已登记某根后，其父目录被拒（会把已有根重复扫一遍）', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    repo.addRoot(child, NOW)
+    const r = addMediaRoot(repo, tmp, NOW)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.error).toContain('contains existing media root')
+      expect(r.error).toContain(child)
+    }
+  })
+
+  it('重复提交同一路径仍幂等放行（既有 INSERT OR IGNORE 语义不变）', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    repo.addRoot(tmp, NOW)
+    expect(addMediaRoot(repo, tmp, NOW)).toEqual({ ok: true })
+    expect(repo.listRoots()).toHaveLength(1)
+  })
+
+  it('同名前缀的兄弟目录不算重叠（/media/tv 不挡 /media/tv2）', () => {
+    const repo = new SettingsRepo(openDb(':memory:'))
+    const tv = join(tmp, 'tv')
+    const tv2 = join(tmp, 'tv2')
+    mkdirSync(tv)
+    mkdirSync(tv2)
+    repo.addRoot(tv, NOW)
+    expect(addMediaRoot(repo, tv2, NOW)).toEqual({ ok: true })
+    expect(repo.listRoots()).toHaveLength(2)
+  })
+})
+
 describe('buildDeploySettings（GET /api/v2/settings/deploy：env 脱敏只读）', () => {
   it('secrets 未配置 → present:false，tail 空', () => {
     const dto = buildDeploySettings({})

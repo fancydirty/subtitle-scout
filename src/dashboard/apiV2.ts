@@ -1,7 +1,7 @@
 // src/dashboard/apiV2.ts
 // v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报直接暴露 TMDB
 // poster_path，前端自行拼 CDN URL（image.tmdb.org，公开、免 key）——不再经服务端代理。
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, sep } from 'node:path'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
@@ -790,13 +790,44 @@ export function updateSettings(
 
 export type AddMediaRootResult = { ok: true } | { ok: false; error: string }
 
-/** POST /api/v2/settings/roots body={path} 处理：绝对路径 + 磁盘上存在 + 是目录才收——同
- *  listMediaSubdirs 的判定口径（Jellyfin 式"挂载即可见"边界，这里只是收窄到"必须先能列出来
- *  才能加"）。路径经 resolve() 归一化后落库（去掉冗余的尾斜杠/`.`/`..` 片段），避免同一个
- *  目录因写法不同（"/media/tv" vs "/media/tv/"）被误判成两个不同的根。addRoot 本身幂等
- *  （INSERT OR IGNORE），重复提交同一归一化路径直接 200，不报错。 */
+/** 重叠校验（业界标准 overlapping-paths validation，同 Docker volume / rsync / 备份工具的既有
+ *  做法）：一个路径进了守备目录，它的父目录与子目录都不能再进。
+ *
+ *  为什么两个方向都要挡：
+ *   · 子目录重叠 → 该子树已在既有根的扫描范围内，再加一个根只会让 walkVideoFiles 把同一批
+ *     文件走两遍（本项目实测：4 个重叠根让 scanned 从 492 涨到 3140），并让同一文件在两个根
+ *     下各自登记，覆盖分类与移除防线全部按"两份不同事实"处理。
+ *   · 父目录重叠 → 同上，且更糟：父目录通常还装着非媒体杂物（本项目生产实例：nas_media 根下
+ *     混着 .apk/.iso/Backup_ 目录/node_modules），一次误加就把整堆垃圾拉进识别队列烧 token。
+ *
+ *  边界感知（同 SettingsRepo.removeRoot 的既有手法）：比较时给两侧都补 sep，避免 "/media/tv"
+ *  被判成 "/media/tv2" 的父目录。相等不算重叠——那是重复提交同一根，交给下游 addRoot 的
+ *  INSERT OR IGNORE 幂等语义（既有行为，不因本校验改变）。
+ *
+ *  返回命中的既有根（而不只是布尔）：错误文案要指名道姓说"跟哪个根撞了"，否则用户面对
+ *  一串路径无从判断该删哪个。 */
+function findOverlappingRoot(
+  candidate: string, existing: readonly string[],
+): { root: string; relation: 'parent' | 'child' } | null {
+  for (const root of existing) {
+    if (candidate === root) continue // 相等=重复提交，非重叠（幂等交给 addRoot）
+    if (candidate.startsWith(root + sep)) return { root, relation: 'child' }
+    if (root.startsWith(candidate + sep)) return { root, relation: 'parent' }
+  }
+  return null
+}
+
+/** POST /api/v2/settings/roots body={path} 处理：绝对路径 + 磁盘上存在 + 是目录 + 与既有根
+ *  不重叠才收——前三项同 listMediaSubdirs 的判定口径（Jellyfin 式"挂载即可见"边界，这里只是
+ *  收窄到"必须先能列出来才能加"），第四项见 findOverlappingRoot 的论证。路径经 resolve()
+ *  归一化后落库（去掉冗余的尾斜杠/`.`/`..` 片段），避免同一个目录因写法不同（"/media/tv" vs
+ *  "/media/tv/"）被误判成两个不同的根。addRoot 本身幂等（INSERT OR IGNORE），重复提交同一
+ *  归一化路径直接 200，不报错。
+ *
+ *  校验顺序刻意是"形状 → 存在性 → 重叠"：重叠检查要拿 resolve 后的规范路径跟库里的规范路径
+ *  比，放在归一化之前会被写法差异骗过（"/data/media/" 与 "/data/media" 字符串不等）。 */
 export function addMediaRoot(
-  settingsRepo: Pick<SettingsRepo, 'addRoot'>, rawPath: unknown, now: number,
+  settingsRepo: Pick<SettingsRepo, 'addRoot' | 'listRoots'>, rawPath: unknown, now: number,
 ): AddMediaRootResult {
   if (typeof rawPath !== 'string' || rawPath.length === 0) {
     return { ok: false, error: 'path is required' }
@@ -816,6 +847,16 @@ export function addMediaRoot(
     }
   } catch {
     return { ok: false, error: 'path is not readable (permission denied?)' }
+  }
+  // 重叠校验（见 findOverlappingRoot 的论证）——放在归一化与存在性之后，用规范路径比对。
+  const hit = findOverlappingRoot(resolved, settingsRepo.listRoots().map((r) => r.path))
+  if (hit) {
+    return {
+      ok: false,
+      error: hit.relation === 'child'
+        ? `path is already covered by media root ${hit.root} — remove that root first if you want to guard this subdirectory instead`
+        : `path contains existing media root ${hit.root} — remove that root first if you want to guard the parent directory instead`,
+    }
   }
   settingsRepo.addRoot(resolved, now)
   return { ok: true }
