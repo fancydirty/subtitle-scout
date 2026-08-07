@@ -684,6 +684,233 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
     expect(dirname(second[0].videoPath)).toContain('GoodShow')
   })
 
+  // ---- 身份产出判据（方案 2026-08-07-identity-decoupling-plan §8 回归锁 #1-7）----
+  // 病：identifyOnly worker 字幕工具零挂载（findSubtitleWorker.ts:209），识别成功的单元
+  // **必然**四个字幕桶全空 → 旧判据判成"空报告" → completeError → error_attempt 单调
+  // 累积（30s → 15min → 每天，jobsRepo.ts:402-405），而 orchestrator 重派走 coalesced
+  // 分支不动 next_retry_at（jobsRepo.ts:185-188）→ 自加速退化：识别越顺，退避越长。
+  // 治：加一个只读的"还有几条没被识别走"维度（lib.countParked），有产出就不记 failure。
+  const mkParkedIn = (abs: string, firstSeen: number) => {
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, 'v')
+    lib.upsertParkedPath(abs, PARK_REASON.awaitingAgent, firstSeen, { mtimeMs: 100, size: 10 })
+    return abs
+  }
+  /** 模拟 write_identified_media 的落地事务：建库行 + clearParkedPath（identityTools.ts:172/229）。 */
+  const identifyInto = (tmdb: string, epNo: number, path: string) => {
+    const sid = seriesId(tmdb)
+    const eid = episodeId(tmdb, 1, epNo)
+    lib.upsertSeries({ id: sid, name: `Show ${tmdb}` })
+    lib.upsertEpisode({
+      id: eid, seriesId: sid, season: 1, episode: epNo, name: `E0${epNo}`, path, subStatus: 'missing',
+    })
+    lib.clearParkedPath(path)
+    return eid
+  }
+  const identifiedReport = (tmdbId: string): FindSubtitleBatchReport => ({
+    installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    identity: {
+      outcome: 'identified', tmdbId, isTv: true, season: 1, episode: 1,
+      nameEvidence: 'dir name matches TMDB title', structureEvidence: 'season layout fits',
+    },
+  })
+
+  it('🔴 锁#1：有产出（两文件都识别成功）+ 四桶全空 → completeDone、runs 无 error 行', async () => {
+    const mediaRoot = join(root, 'media')
+    const a = mkParkedIn(join(mediaRoot, 'Show', 'E01.mkv'), NOW)
+    const b = mkParkedIn(join(mediaRoot, 'Show', 'E02.mkv'), NOW + 1)
+    // 🔴 污染行（对抗审计 M-1）：三条**与本单元无关**的 parked 路径，全程不清。
+    // 它们让"分子取自本单元 targets"这个语义可被区分——若哪天有人把判据的分子写成
+    // countParked(全库 parked)，这里会变成 3 < 2 = false → 走失败分支 → 本条红。
+    // 没有这几行时两个数值在夹具里恒等（2 targets / 2 parked），那个改动 39 条全绿放行，
+    // 而它在生产（492 行 parked）会让判据恒假 → 100% 静默退回旧病。实测存活过。
+    // 放在另一个目录：workRootOf 会把它们分到别的作品单元，不进本单元的 targets。
+    mkParkedIn(join(mediaRoot, 'Unrelated', 'X01.mkv'), NOW + 100)
+    mkParkedIn(join(mediaRoot, 'Unrelated', 'X02.mkv'), NOW + 101)
+    mkParkedIn(join(mediaRoot, 'Unrelated', 'X03.mkv'), NOW + 102)
+    const job = claimUnidentifiedJob()
+
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      identifyInto('4242', 1, a)
+      identifyInto('4242', 2, b)
+      // identifyOnly worker 无字幕工具 → 四桶必然全空。这是正常终局。
+      return identifiedReport('4242')
+    })
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      {
+        lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs,
+        // unitLimit:1 → 只处理最老的单元（Show/），三条污染行留在库里不上车。
+        // 这正是本锁要的形状：本单元 2 个 target 全清，但全库仍有 3 条 parked。
+        groupOpts: { roots: [mediaRoot], unitLimit: 1 },
+      },
+      jobs, () => NOW + 5000,
+    )
+
+    expect(runTask).toHaveBeenCalledTimes(1)
+    expect(jobs.get(job.id)!.state).toBe('done')
+    expect(jobs.get(job.id)!.last_error ?? '').not.toContain('empty batch report')
+    expect(runs.getByJobId(job.id).map((r) => r.decision)).not.toContain('error')
+  })
+
+  it('🔴 锁#2：无产出（两文件都没识别）+ 四桶全空 → completeError + runs 有 error + retry_count +1', async () => {
+    const mediaRoot = join(root, 'media')
+    const a = mkParkedIn(join(mediaRoot, 'Show', 'E01.mkv'), NOW)
+    const b = mkParkedIn(join(mediaRoot, 'Show', 'E02.mkv'), NOW + 1)
+    const rcA = parkedRow(a).retry_count
+    const rcB = parkedRow(b).retry_count
+    const job = claimUnidentifiedJob()
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null,
+    }))
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+    errSpy.mockRestore()
+
+    expect(jobs.get(job.id)!.state).toBe('failed')
+    expect(jobs.get(job.id)!.last_error).toContain('empty batch report')
+    expect(runs.getByJobId(job.id).map((r) => r.decision)).toContain('error')
+    expect(parkedRow(a).retry_count).toBe(rcA + 1)
+    expect(parkedRow(b).retry_count).toBe(rcB + 1)
+  })
+
+  it('🔴 锁#3：部分成功（1 成功 1 失败）+ 四桶全空 → 不记 failure，失败那个 retry_count 恰好 +0', async () => {
+    const mediaRoot = join(root, 'media')
+    const ok = mkParkedIn(join(mediaRoot, 'Show', 'E01.mkv'), NOW)
+    const bad = mkParkedIn(join(mediaRoot, 'Show', 'E02.mkv'), NOW + 1)
+    const rcBad = parkedRow(bad).retry_count
+    const job = claimUnidentifiedJob()
+
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      identifyInto('4243', 1, ok)   // 只识别出一个
+      return identifiedReport('4243')
+    })
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+
+    expect(jobs.get(job.id)!.state).toBe('done')
+    expect(runs.getByJobId(job.id).map((r) => r.decision)).not.toContain('error')
+    // 🔴 有产出走成功分支 → 一次 bump 都不发生。失败那条路径下一轮自然重来
+    // （它的 parked 行还在，退避窗未被推后）。
+    expect(parkedRow(bad).retry_count).toBe(rcBad)
+    expect(parkedRow(bad).retry_count).toBe(0)
+  })
+
+  it('🔴 锁#4：identity=null + 四桶全空 + 零产出 → retry_count 恰好 +1（锁死不双重 bump）', async () => {
+    // identity===null 时 `:468`（identity 分支）整段不执行，只有新判据的失败分支 bump。
+    // 若把 bump 写成无条件（不留守卫）本条仍绿；真正锁死守卫位置的是本条 + 锁#5 的组合。
+    const { mediaRoot, epPath } = setupOneParked()
+    expect(parkedRow(epPath).retry_count).toBe(0)
+    const job = claimUnidentifiedJob()
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null,
+    }))
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+    errSpy.mockRestore()
+
+    expect(jobs.get(job.id)!.last_error).toContain('empty batch report')
+    expect(parkedRow(epPath).retry_count).toBe(1)   // 恰好 +1，不是 +2
+  })
+
+  it('🔴 锁#5：outcome=unidentified + 四桶全空 + 零产出 → retry_count 恰好 +1（锁死 `:468` 与新判据不重复）', async () => {
+    // 这是"守卫位置正确"的唯一证据：`:468` 对 unidentified 形状无条件 bump，新判据的失败
+    // 分支必须靠 `outcome !== 'unidentified'` 守卫让开，否则这条会看到 +2。
+    const { mediaRoot, epPath } = setupOneParked()
+    expect(parkedRow(epPath).retry_count).toBe(0)
+    const job = claimUnidentifiedJob()
+    traceBus.publish({
+      runKey: `job-${job.id}`, seq: 0, tool: 'search_tmdb',
+      argsSummary: '{}', resultSummary: '[]', tookMs: 5, at: 1,
+    })
+
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'unidentified', reason: 'TMDB 无此条目', kind: 'identification-failed' },
+    }))
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+
+    expect(jobs.get(job.id)!.last_error).toContain('empty batch report')
+    expect(parkedRow(epPath).retry_count).toBe(1)   // 🔴 恰好 +1，不是 +2
+  })
+
+  it('🔴 锁#6：replica 分支（库中已有 tmdb:X 行 + 旧文件在）→ stillParked=0 → 不记 failure', async () => {
+    // replica 分支（identityTools.ts:169-181）**不建库行**，只 clearParkedPath —— 所以
+    // "查 episodes/movies 判产出"会漏报（方案 §9 v1 错设计 2），而 countParked 照样看得见。
+    const mediaRoot = join(root, 'media')
+    const oldPath = join(mediaRoot, 'Show', 'E01.1080p.mkv')
+    mkdirSync(dirname(oldPath), { recursive: true })
+    writeFileSync(oldPath, 'v')
+    const existing = episodeId('4244', 1, 1)
+    lib.upsertSeries({ id: seriesId('4244'), name: 'Show 4244' })
+    lib.upsertEpisode({
+      id: existing, seriesId: seriesId('4244'), season: 1, episode: 1,
+      name: 'E01', path: oldPath, subStatus: 'covered',
+    })
+    const replica = mkParkedIn(join(mediaRoot, 'Show', 'E01.2160p.mkv'), NOW)
+    const job = claimUnidentifiedJob()
+
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      // replica：同一 tmdbId 且库行已在 → 不建新行，只把 parked 户口清掉。
+      lib.clearParkedPath(replica)
+      return identifiedReport('4244')
+    })
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+
+    expect(jobs.get(job.id)!.state).toBe('done')
+    expect(jobs.get(job.id)!.last_error ?? '').not.toContain('empty batch report')
+    expect(runs.getByJobId(job.id).map((r) => r.decision)).not.toContain('error')
+    // 判据不依赖库行数量：replica 没建行，产出仍被看见。
+    expect(lib.getEpisode(existing)!.path).toBe(oldPath)
+  })
+
+  it('🔴 锁#7：1 成功 + agent 报 outcome=unidentified（混合单元的自然报法）→ 不记 failure', async () => {
+    // 混合单元里 agent 识别出一部分、对剩下的报 unidentified 是**正常**报法。此时机械事实
+    // （parked 少了一条）优先于 agent 的 advisory 结论 —— 不记 failure。
+    const mediaRoot = join(root, 'media')
+    const ok = mkParkedIn(join(mediaRoot, 'Show', 'E01.mkv'), NOW)
+    const bad = mkParkedIn(join(mediaRoot, 'Show', 'E02.mkv'), NOW + 1)
+    const job = claimUnidentifiedJob()
+    traceBus.publish({
+      runKey: `job-${job.id}`, seq: 0, tool: 'search_tmdb',
+      argsSummary: '{}', resultSummary: '[]', tookMs: 5, at: 1,
+    })
+
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      identifyInto('4245', 1, ok)
+      return {
+        installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+        identity: { outcome: 'unidentified', reason: 'E02 路径无片名信息', kind: 'identification-failed' },
+      }
+    })
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+
+    expect(jobs.get(job.id)!.state).toBe('done')
+    expect(jobs.get(job.id)!.last_error ?? '').not.toContain('empty batch report')
+    expect(runs.getByJobId(job.id).map((r) => r.decision)).not.toContain('error')
+    // `:468` 仍按"agent 明确拒识"推进未识别路径的退避轨（这条与新判据无关，不许回退）。
+    expect(parkedRow(bad).retry_count).toBe(1)
+  })
+
   // ---- 逐单元派活（spec 2026-08-07 §2 / §3.2.1，改动 A）----
   // 事故（2026-08-06 夜，生产实测）：干净库 + 全绿 doctor + 492 个真媒体文件，
   // unidentified-backlog job 连续 10 次以同一错误失败、agent 一次都没跑起来：

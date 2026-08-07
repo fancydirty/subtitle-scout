@@ -490,17 +490,57 @@ export async function runUnidentifiedFindSubtitleWorkerTask(
         merged.no_safe_match.push(...noMatch)
         merged.retry_later.push(...retryLater)
         merged.hardsub_assumed.push(...hardsubAssumed)
+        // 🔴 `merged.identity` **零消费方**，不承载任何控制流（方案 2026-08-07-identity-decoupling-plan
+        // §4 改动 4）：唯一读点是本函数末尾 `return sawAnyReport ? merged : null`，而唯一调用方
+        // cli/index.ts:462 是裸 `await` 丢弃返回值。多单元 job 里它恒为 null（units.length !== 1），
+        // 那是**正常状态**不是 bug —— 每个单元的识别结论都已各自落一行 runs（见下方 recordRun
+        // ('identity'/'identity_unidentified')），账目不因这里是 null 而丢失。
+        // 本文件所有读 identity 的控制流（装盘门 :423、反编造门 :450、下方失败分支的守卫）读的
+        // 都是循环内的 `report.identity`（单元级正常值）。方案 v1 正是误把这两者混为一谈才误诊出
+        // "三处控制流失效"，整套修复建立在不存在的病上（方案 §9）。改这行前先确认读点仍是零。
         if (units.length === 1) merged.identity = report.identity
 
         if (installedToRecord.length === 0 && noMatch.length === 0 && retryLater.length === 0 && hardsubAssumed.length === 0) {
-          // 🔴 活锁防线（spec §3.3.1）：空报告是"这个单元一无所获"，退避轨必须前进——否则本
-          // 单元的目标下一轮原样重来。典型来路是 agent 步数耗尽后交了一份空报告；**超时/抛错
-          // 不走这里**（那些跳过全部分支直接落 catch，见该处的第四条路径注释）。
-          // identity 分支已经 bump 过的路径这里会被二次 bump：那只是多推一档退避，语义无害
-          // （对照：漏 bump 是活锁，代价不对称），换来的是"三条路径各自独立完备"这个更好守的性质。
-          if (report.identity?.outcome !== 'unidentified') bumpUnit()
-          failures.push('worker returned an empty batch report')
-          recordRun('error', 'empty batch report')
+          // 🔴 身份产出维度（方案 2026-08-07-identity-decoupling-plan §3/§4 改动 2）：四个桶全是
+          // **字幕**结果，而 identifyOnly worker 字幕工具零挂载（findSubtitleWorker.ts:209，
+          // 2026-07-28 管线拆分事故的修复措施）——识别成功的单元**必然**四桶全空。拿"字幕产出"
+          // 当唯一成功判据去衡量一个不负责找字幕的 worker，是判据用错了对象。
+          // 后果不是"日志刷红"：每条误判都走 completeError → error_attempt 单调累积
+          // （30s → 15min → 每天，jobsRepo.ts:402-405），而 orchestrator 下一轮重派**缩不短它**
+          // （upsertWorkerTask 对 failed 态走 coalesced，只刷 payload 不动 next_retry_at，
+          // jobsRepo.ts:185-188）→ 自加速退化：识别越顺 → 红得越多 → 退避越长。
+          //
+          // 判据必须是**机械事实**，不能问 agent（identity 是 advisory schema，
+          // findSubtitleWorker.schemas.ts:172-177，且会被 nullableJsonTolerantCaught 静默折叠）。
+          // 显式 const 而不是内联进 if：调试时要看得见这个中间值（计划自审 ①）。
+          const stillParked = deps.lib.countParked(targets.map((t) => t.videoPath))
+          if (stillParked < targets.length) {
+            // **有产出**：差值 > 0 ⇒ 至少一条路径被清出 parked ⇒ 身份落库发生了
+            // （write_identified_media 的事务无条件 clearParkedPath，identityTools.ts:172/229/242/274）。
+            // 识别成功但没找到字幕 —— 这是本 worker 形态下的**正常终局**，不是失败。
+            // 字幕由 orchestrator 下一轮派 per-series find_subtitle 去找：identityTools.ts:158 落
+            // sub_status='missing' → libraryRepo missingBySeason/missingMovies 都计入 →
+            // orchestratorAgent.tools.ts 的 list_missing_coverage 读得到（方案 §6 已验证该链通）。
+            // 🔴 不 bump：已识别的路径**已不在 parked 表里**（bump 对它是空操作），而剩下未识别的
+            // 路径下一轮自然重来 —— 这个单元整体是"有进展"，不该被推退避。
+            // completeDone 也不会卡住：unidentified-backlog 是固定合成 identity，upsertWorkerTask
+            // 的 done 分支把 state 改回 wanted 且 attempt/error_attempt/next_retry_at 全部归零
+            // （jobsRepo.ts:167-177）→ 下一轮立刻可跑。这正是"completeDone 严格优于 completeError"。
+          } else {
+            // 🔴 活锁防线（spec §3.3.1）：真的一无所获——退避轨必须前进，否则本单元的目标下一轮
+            // 原样重来。典型来路是 agent 步数耗尽后交了一份空报告；**超时/抛错不走这里**
+            // （那些跳过全部分支直接落 catch，见该处的第四条路径注释）。
+            // 🔴 守卫（`!== 'unidentified'`）是**防与 `:468` 重复**，不是可有可无的装饰：
+            // identity 分支对 outcome==='unidentified' 已无条件 bump 过一次（那是"agent 明确拒识"
+            // 的路径）。三个形状各恰好 bump 一次（方案 §4 改动 3 的表）：
+            //   有产出                              → 不进本分支，0 或 1（视 :468）
+            //   无产出 + outcome==='unidentified'    → :468 一次，守卫在此拦住 = 1
+            //   无产出 + 其它（含 identity===null）  → :468 不执行，本行一次     = 1
+            // 回归锁 #4/#5（"retry_count 恰好 +1"）是这个位置正确性的唯一证据。
+            if (report.identity?.outcome !== 'unidentified') bumpUnit()
+            failures.push('worker returned an empty batch report')
+            recordRun('error', 'empty batch report')
+          }
         } else if (retryLater.length > 0) {
           // retry_later 同理：agent 明确说"这批现在做不了，稍后再来"，退避轨前进才是"稍后"的落点。
           if (report.identity?.outcome !== 'unidentified') bumpUnit()
