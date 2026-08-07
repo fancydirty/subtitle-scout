@@ -115,7 +115,7 @@ describe('buildUnidentifiedTargets (parked_paths → raw-evidence targets)', () 
   // 默认 60（识别 3-5 步/文件，60×5=300 < 500 stepCap 留余量）；取挂得最久的行先上
   // （listParkedPaths 按 first_seen DESC，挂最久=排最前），余量留 park，orchestrator 下轮再派。
   describe('批次上限（limit，默认 60，最久 parked 先上）', () => {
-    it('100 行 parked → 只取 60 行挂得最久的；其余留 park 不动', () => {
+    it('同一作品目录 100 行 → 整单元上车（§3.3.2：单元自身超限不切半）', () => {
       // first_seen 越早=挂得越久。path 编号 0..99，first_seen 递增——0 号挂最久。
       for (let i = 0; i < 100; i++) {
         lib.upsertParkedPath(
@@ -124,28 +124,26 @@ describe('buildUnidentifiedTargets (parked_paths → raw-evidence targets)', () 
         )
       }
 
-      const targets = buildUnidentifiedTargets(lib)
-
-      expect(targets).toHaveLength(60)
-      // 挂得最久的 60 行 = first_seen 最小的 0..59 号
-      const nums = targets.map((t) => Number(/ep(\d+)\.mkv$/.exec(t.videoPath)![1])).sort((a, b) => a - b)
-      expect(nums).toEqual(Array.from({ length: 60 }, (_, i) => i))
-      // 其余 40 行仍在 parked_paths（buildUnidentifiedTargets 是纯读，本就不动行——这里锁语义）
+      // 作品单元语义（spec §3.3.2）：这 100 个文件同属一个作品目录，切半会把兄弟证据切散
+      // （正是本轮要修的问题），所以整单元上车、接受超 MAX_TARGETS_PER_JOB。
+      const targets = buildUnidentifiedTargets(lib, { roots: [join(root, 'media')], now: NOW + 999_999 })
+      expect(targets).toHaveLength(100)
+      // buildUnidentifiedTargets 是纯读，不动 parked 行
       expect(lib.listParkedPaths()).toHaveLength(100)
     })
 
-    it('limit 参数可覆盖默认值', () => {
+    it('unitLimit 截断单元数；maxTargets 截断文件数（回滚语义 unitLimit=0）', () => {
+      // 五部不同的剧各一集 → 五个单元
       for (let i = 0; i < 5; i++) {
         lib.upsertParkedPath(
-          join(root, 'media', 'Show', `ep${i}.mkv`),
+          join(root, 'media', `Show${i}`, `ep${i}.mkv`),
           PARK_REASON.awaitingAgent, NOW + i, { mtimeMs: 100, size: 10 },
         )
       }
-      expect(buildUnidentifiedTargets(lib, 2)).toHaveLength(2)
-      expect(buildUnidentifiedTargets(lib, 2).map((t) => t.videoPath)).toEqual([
-        join(root, 'media', 'Show', 'ep0.mkv'),
-        join(root, 'media', 'Show', 'ep1.mkv'),
-      ])
+      const opts = { roots: [join(root, 'media')], now: NOW + 999_999 }
+      expect(buildUnidentifiedTargets(lib, { ...opts, unitLimit: 2 })).toHaveLength(2)
+      // unitLimit=0 是回滚开关：退回旧扁平语义，按 maxTargets 掐头
+      expect(buildUnidentifiedTargets(lib, { ...opts, unitLimit: 0, maxTargets: 2 })).toHaveLength(2)
     })
 
     it('cap 在 eligibility 过滤之后生效（不许被 ineligible 行挤占名额）', () => {
@@ -156,14 +154,59 @@ describe('buildUnidentifiedTargets (parked_paths → raw-evidence targets)', () 
       for (let i = 0; i < 3; i++) {
         lib.upsertParkedPath(join(root, 'media', 'Show', `ok${i}.mkv`), PARK_REASON.awaitingAgent, NOW + 10 + i, { mtimeMs: 1, size: 1 })
       }
-      const targets = buildUnidentifiedTargets(lib, 2)
-      expect(targets.map((t) => t.videoPath)).toEqual([
-        join(root, 'media', 'Show', 'ok0.mkv'),
-        join(root, 'media', 'Show', 'ok1.mkv'),
-      ])
+      const targets = buildUnidentifiedTargets(lib, { unitLimit: 0, maxTargets: 2 })
+      // 选集正确即可（顺序不是本测试的对象——这几行 last_attempt 相同）：两行都必须是 eligible 的
+      expect(targets).toHaveLength(2)
+      expect(targets.every((t) => /ok\d\.mkv$/.test(t.videoPath))).toBe(true)
     })
   })
 })
+
+
+  // ---- 作品单元分组（spec §3.2/§3.3，B2c）----
+  describe('作品单元分组', () => {
+    const parkFile = (rel: string, firstSeen: number) => {
+      const p = join(root, 'media', rel)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, 'v')
+      lib.upsertParkedPath(p, PARK_REASON.awaitingAgent, firstSeen, { mtimeMs: 100, size: 10 })
+      return p
+    }
+    const roots = () => [join(root, 'media')]
+
+    it('🔴 同一部剧的集数必在同一批（本轮核心收益：sibling 证据不被切散）', () => {
+      // 三部剧各 3 集，交错 first_seen —— 旧的扁平取 N 会把它们切散。
+      for (let i = 0; i < 3; i++) {
+        parkFile(`TV/AlphaShow/S01E0${i}.mkv`, NOW + i * 10)
+        parkFile(`TV/BetaShow/S01E0${i}.mkv`, NOW + i * 10 + 1)
+        parkFile(`TV/GammaShow/S01E0${i}.mkv`, NOW + i * 10 + 2)
+      }
+      const targets = buildUnidentifiedTargets(lib, { roots: roots(), now: NOW + 99999, unitLimit: 1 })
+
+      // 只取一个单元 → 全部 target 必属同一部剧
+      const dirs = new Set(targets.map((t) => dirname(t.videoPath)))
+      expect(dirs.size).toBe(1)
+      expect(targets).toHaveLength(3)   // 该剧的 3 集完整上车
+    })
+
+    it('🔴 跨季目录的集数仍归同一单元', () => {
+      parkFile('TV/SpyFamily/Season 01/E01.mkv', NOW)
+      parkFile('TV/SpyFamily/Season 02/E01.mkv', NOW + 1)
+      const targets = buildUnidentifiedTargets(lib, { roots: roots(), now: NOW + 99999, unitLimit: 1 })
+      expect(targets).toHaveLength(2)
+    })
+
+    it('MAX_TARGETS_PER_JOB 生效：单元累加不超上限', () => {
+      // 两部剧各 40 集 = 80 > 60 → 第二部留下一轮（整单元不切半）
+      for (let i = 0; i < 40; i++) {
+        parkFile(`TV/BigA/E${String(i).padStart(2, '0')}.mkv`, NOW + i)
+        parkFile(`TV/BigB/E${String(i).padStart(2, '0')}.mkv`, NOW + 1000 + i)
+      }
+      const targets = buildUnidentifiedTargets(lib, { roots: roots(), now: NOW + 99999, unitLimit: 3 })
+      expect(targets).toHaveLength(40)   // 只装得下 BigA
+      expect(new Set(targets.map((t) => dirname(t.videoPath))).size).toBe(1)
+    })
+  })
 
 describe('runUnidentifiedFindSubtitleWorkerTask', () => {
   function claimUnidentifiedJob() {
@@ -228,8 +271,14 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
       season: 1, episode: null, durationSec: 2530, runtimeMinutes: 42,
       embeddedLangs: ['eng'], dirName: seasonDir,
     })
-    // INNER 沙盒根 = parked 目标目录的公共祖先；stagingRoot = 配置根（gcOrphans 可及）
-    expect(seenTask!.mediaRoot).toBe(seasonDir)
+    // INNER 沙盒根 = **该单元的作品根**（spec 2026-08-07 §2 改动 A）。
+    // 🔴 语义变更：此前这里断言的是 seasonDir——那是旧 commonDir（全批目标的公共祖先）的产物，
+    // 也正是 2026-08-06 夜生产事故的根因（多根部署下公共祖先必越出配置根 → 每次派发都抛
+    // "拒绝在媒体根目录之外写入"）。现在 mediaRoot 由 workRootOf 推导：Season 01 是作品**内部**
+    // 结构，作品根在它之上，即 `<media>/后室`。spec §2 的回归锁明文要求"单个作品单元内的目标 →
+    // mediaRoot 恰为作品根"。
+    expect(seenTask!.mediaRoot).toBe(join(mediaRoot, '后室'))
+    // stagingRoot 仍是配置根一级（gcOrphans 可及，H4 防线不受本次改动影响）
     expect(seenTask!.stagingRoot).toBe(mediaRoot)
     // 无身份可猜——task 级身份字段全空，不虚构 title
     expect(seenTask!.title).toBe('')
@@ -480,7 +529,9 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
     await runUnidentifiedFindSubtitleWorkerTask(
       job,
       { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
-      jobs, () => NOW,
+      // now 取足够大让退避窗已过——本测试的对象是"回写不重置阶梯"，不是退避窗本身
+      // （retry_count 已是 1，受窗约束，见 workUnit.ts 的退避 filter）。
+      jobs, () => NOW + 10 * 3600_000,
     )
 
     const after = db.prepare(`SELECT park_reason, retry_count FROM parked_paths WHERE path = ?`).get(epPath) as
@@ -489,6 +540,319 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
     // upsertParkedPath 在 reason 变化时会把 retry_count 归零重置 1h 档——回写必须用
     // updateParkReason，阶梯不动。
     expect(after.retry_count).toBeGreaterThanOrEqual(1)
+  })
+
+
+  // ---- 活锁防线（spec 2026-08-07 §3.3.1，二轮审计 R2-B1）----
+  // 三条 identify 失败路径必须**全部**推进退避轨，缺一条就漏一个活锁入口：坏单元的
+  // next_retry_at 不前进 → 退避窗恒开；last_attempt 不前进 → 恒排队首 → 整队列被它卡死。
+  const parkedRow = (p: string) =>
+    db.prepare(`SELECT retry_count, next_retry_at, last_attempt, park_reason FROM parked_paths WHERE path = ?`)
+      .get(p) as { retry_count: number; next_retry_at: number; last_attempt: number; park_reason: string }
+
+  const setupOneParked = () => {
+    const mediaRoot = join(root, 'media')
+    const showDir = join(mediaRoot, 'Show')
+    mkdirSync(showDir, { recursive: true })
+    const epPath = join(showDir, 'ep1.mkv')
+    writeFileSync(epPath, 'video')
+    lib.upsertParkedPath(epPath, PARK_REASON.awaitingAgent, NOW, { mtimeMs: 100, size: 10 })
+    return { mediaRoot, epPath }
+  }
+
+  it('🔴 活锁防线①：拒识（有 search 证据）推进退避轨', async () => {
+    const { mediaRoot, epPath } = setupOneParked()
+    const rcBefore = parkedRow(epPath).retry_count
+    const job = claimUnidentifiedJob()
+    traceBus.publish({
+      runKey: `job-${job.id}`, seq: 0, tool: 'search_tmdb',
+      argsSummary: '{}', resultSummary: '[]', tookMs: 5, at: 1,
+    })
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'unidentified', reason: 'TMDB 无此条目', kind: 'identification-failed' },
+    }))
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+    const after = parkedRow(epPath)
+    expect(after.retry_count).toBeGreaterThan(rcBefore)
+    expect(after.next_retry_at).toBeGreaterThan(NOW + 5000)   // 退避窗真的往前推了
+    expect(after.last_attempt).toBe(NOW + 5000)
+    expect(after.park_reason).toBe('identification-failed')   // 有证据 → reason 照常回写
+  })
+
+  it('🔴 活锁防线②：编造被拒（零 search 证据）仍推进退避轨，但 reason 不动', async () => {
+    // 这是二轮审计定罪的最隐蔽一条：分支体原本只有 console.error，零 DB 写 →
+    // last_attempt/retry_count 双双不动 → 该单元永远是"最老且窗口恒开"，恒排队首。
+    const { mediaRoot, epPath } = setupOneParked()
+    const rcBefore = parkedRow(epPath).retry_count
+    const job = claimUnidentifiedJob()
+    // 刻意不 publish 任何 search_tmdb → 触发反编造门
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'unidentified', reason: 'searched all providers', kind: 'identification-failed' },
+    }))
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+    const after = parkedRow(epPath)
+    // 退避轨必须前进（机械事实：确实试过一次）
+    expect(after.retry_count).toBeGreaterThan(rcBefore)
+    expect(after.next_retry_at).toBeGreaterThan(NOW + 5000)
+    expect(after.last_attempt).toBe(NOW + 5000)
+    // 🔴 但 reason 绝不能被编造的结论污染——反幻觉红线
+    expect(after.park_reason).toBe(PARK_REASON.awaitingAgent)
+  })
+
+  it('🔴 活锁防线③：空报告（completeError 路径）也推进退避轨', async () => {
+    const { mediaRoot, epPath } = setupOneParked()
+    const rcBefore = parkedRow(epPath).retry_count
+    const job = claimUnidentifiedJob()
+    // 全空报告且无 identity → 走 'worker returned an empty batch report' 那条 completeError
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null,
+    }))
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+    expect(jobs.get(job.id)!.last_error).toContain('empty batch report')
+    const after = parkedRow(epPath)
+    expect(after.retry_count).toBeGreaterThan(rcBefore)
+    expect(after.next_retry_at).toBeGreaterThan(NOW + 5000)
+    expect(after.park_reason).toBe(PARK_REASON.awaitingAgent)
+  })
+
+
+  it('🔴 活锁防线④：runTask 抛错（超时/沙盒）也推进退避轨（审计 B-2，生产最高频失败形态）', async () => {
+    // AbortSignal.timeout 的 1h 硬顶、沙盒断言、worker 内部未捕获异常都落 catch，会**跳过**
+    // 上方全部分支。此前这条路径零 parked 写 → 下一轮原样重来。
+    const { mediaRoot, epPath } = setupOneParked()
+    const rcBefore = parkedRow(epPath).retry_count
+    const job = claimUnidentifiedJob()
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      throw new Error('The operation was aborted due to timeout')
+    })
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job, { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+      jobs, () => NOW + 5000,
+    )
+    expect(jobs.get(job.id)!.last_error).toContain('timeout')
+    const after = parkedRow(epPath)
+    expect(after.retry_count).toBeGreaterThan(rcBefore)
+    expect(after.next_retry_at).toBeGreaterThan(NOW + 5000)
+    expect(after.last_attempt).toBe(NOW + 5000)
+    expect(after.park_reason).toBe(PARK_REASON.awaitingAgent)
+  })
+
+
+  it('🔴 端到端活锁防线：坏单元失败后退出候选，后续单元能被处理（spec §3.3.1 综合锁）', async () => {
+    // "活锁真的被修掉了"这个核心命题的唯一证明——写入侧(bumpParkedRetry)与消费侧
+    // (groupIntoWorkUnits 的退避窗 filter)必须真的接上。审计 B-3 指出此前两侧零测试跨接。
+    const mediaRoot = join(root, 'media')
+    const mk = (rel: string, firstSeen: number) => {
+      const p = join(mediaRoot, rel)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, 'v')
+      lib.upsertParkedPath(p, PARK_REASON.awaitingAgent, firstSeen, { mtimeMs: 100, size: 10 })
+      return p
+    }
+    mk('TV/BadShow/E01.mkv', NOW)            // 最老 → 队首
+    mk('TV/GoodShow/E01.mkv', NOW + 1000)
+
+    const groupOpts = { roots: [mediaRoot], unitLimit: 1 }
+    const first = buildUnidentifiedTargets(lib, { ...groupOpts, now: NOW + 5000 })
+    expect(dirname(first[0].videoPath)).toContain('BadShow')
+
+    // 坏单元失败（catch 路径＝超时形态，生产最高频）
+    const job = claimUnidentifiedJob()
+    const runTask = vi.fn(async (): Promise<FindSubtitleBatchReport> => {
+      throw new Error('The operation was aborted due to timeout')
+    })
+    await runUnidentifiedFindSubtitleWorkerTask(
+      job,
+      { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs, groupOpts },
+      jobs, () => NOW + 5000,
+    )
+
+    // 🔴 下一轮队首换人＝活锁被打破
+    const second = buildUnidentifiedTargets(lib, { ...groupOpts, now: NOW + 6000 })
+    expect(second.length).toBeGreaterThan(0)
+    expect(dirname(second[0].videoPath)).toContain('GoodShow')
+  })
+
+  // ---- 逐单元派活（spec 2026-08-07 §2 / §3.2.1，改动 A）----
+  // 事故（2026-08-06 夜，生产实测）：干净库 + 全绿 doctor + 492 个真媒体文件，
+  // unidentified-backlog job 连续 10 次以同一错误失败、agent 一次都没跑起来：
+  //   拒绝在媒体根目录之外写入: /hostroot/mnt/nvme0n1-4/nas_media
+  // 根因：runner 曾对**全批**目标求 commonDir 再校验该祖先在配置根内。目标散落
+  // Movies/TV/anime 三个配置根时，公共祖先必是它们的父目录（nas_media），而 MEDIA_ROOTS 里
+  // 只有那三个子目录 → 必抛。多根部署下"全局公共祖先在配置根内"逻辑上不可满足（spec §2）。
+  describe('🔴 逐单元派活（修 commonDir 越界事故）', () => {
+    const mkParked = (abs: string, firstSeen: number) => {
+      mkdirSync(dirname(abs), { recursive: true })
+      writeFileSync(abs, 'v')
+      lib.upsertParkedPath(abs, PARK_REASON.awaitingAgent, firstSeen, { mtimeMs: 100, size: 10 })
+      return abs
+    }
+    const emptyReport = async (): Promise<FindSubtitleBatchReport> => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null,
+    })
+
+    it('目标散落三个配置根 → 不再抛越界错；每单元各派一次 runTask，mediaRoot 恰为其作品根', async () => {
+      // 事故的最小复现形状：三个平级配置根，父目录（root）不在 MEDIA_ROOTS 里。
+      const movies = join(root, 'Movies')
+      const tv = join(root, 'TV')
+      const anime = join(root, 'anime')
+      const moviePath = mkParked(join(movies, 'Pulp Fiction (1994)', 'movie.mkv'), NOW)
+      const tvPath = mkParked(join(tv, 'Constellation', 'S01E03.mkv'), NOW + 1)
+      const animePath = mkParked(join(anime, 'SpyFamily', 'Season 01', 'E01.mkv'), NOW + 2)
+      const job = claimUnidentifiedJob()
+
+      const seen: FindSubtitleTask[] = []
+      const runTask = vi.fn(async (task: FindSubtitleTask) => {
+        seen.push(task)
+        return emptyReport()
+      })
+      await runUnidentifiedFindSubtitleWorkerTask(
+        job,
+        {
+          lib, mediaRoots: [movies, tv, anime], targetLanguage: 'zh', hardsubMode: 'off',
+          runTask, runs, groupOpts: { unitLimit: 3 },
+        },
+        jobs, () => NOW + 5000,
+      )
+
+      // 🔴 事故断言：越界错误绝不再出现
+      expect(jobs.get(job.id)!.last_error ?? '').not.toContain('拒绝在媒体根目录之外写入')
+      // 三个单元 → 三次派活（每单元一次 runTask）
+      expect(runTask).toHaveBeenCalledTimes(3)
+      const byTarget = new Map(seen.map((t) => [t.targets[0].videoPath, t]))
+      // 每个单元的 mediaRoot 恰为其作品根（§3.2 的推导：作品目录层，不是季目录、不是公共祖先）
+      expect(byTarget.get(moviePath)!.mediaRoot).toBe(join(movies, 'Pulp Fiction (1994)'))
+      expect(byTarget.get(tvPath)!.mediaRoot).toBe(join(tv, 'Constellation'))
+      expect(byTarget.get(animePath)!.mediaRoot).toBe(join(anime, 'SpyFamily'))
+      // stagingRoot 仍是配置根一级（gcOrphans 可及，H4 防线不回退）
+      expect(byTarget.get(moviePath)!.stagingRoot).toBe(movies)
+      expect(byTarget.get(tvPath)!.stagingRoot).toBe(tv)
+      expect(byTarget.get(animePath)!.stagingRoot).toBe(anime)
+    })
+
+    it('同一作品的跨季文件归一个单元；mediaRoot = 作品目录（不是季目录）', async () => {
+      const mediaRoot = join(root, 'media')
+      const a = mkParked(join(mediaRoot, 'TV', 'SpyFamily', 'Season 01', 'E01.mkv'), NOW)
+      const b = mkParked(join(mediaRoot, 'TV', 'SpyFamily', 'Season 02', 'E01.mkv'), NOW + 1)
+      const job = claimUnidentifiedJob()
+
+      let seen: FindSubtitleTask | null = null
+      const runTask = vi.fn(async (task: FindSubtitleTask) => {
+        seen = task
+        return emptyReport()
+      })
+      await runUnidentifiedFindSubtitleWorkerTask(
+        job,
+        { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+        jobs, () => NOW + 5000,
+      )
+
+      expect(runTask).toHaveBeenCalledTimes(1)
+      expect(seen!.mediaRoot).toBe(join(mediaRoot, 'TV', 'SpyFamily'))
+      expect(seen!.targets.map((t) => t.videoPath).sort()).toEqual([a, b].sort())
+      expect(seen!.workUnitKind).toBe('work-dir')
+    })
+
+    it('🔴 安全性不回退：目标目录真的越出全部配置根 → ① assertDirSafe 仍抛', async () => {
+      const mediaRoot = join(root, 'media')
+      mkdirSync(mediaRoot, { recursive: true })
+      const outside = mkParked(join(root, 'outside', 'Show', 'ep1.mkv'), NOW)
+      const job = claimUnidentifiedJob()
+
+      const runTask = vi.fn(emptyReport)
+      await runUnidentifiedFindSubtitleWorkerTask(
+        job,
+        { lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+        jobs, () => NOW + 5000,
+      )
+
+      // OUTER 沙盒门（①）是真正的边界，删 ②③ 不许把它一起删掉
+      expect(runTask).not.toHaveBeenCalled()
+      expect(jobs.get(job.id)!.state).toBe('failed')
+      expect(jobs.get(job.id)!.last_error).toContain('拒绝在媒体根目录之外写入')
+      expect(jobs.get(job.id)!.last_error).toContain(dirname(outside))
+      // 活锁防线：越界单元也要推进退避轨（否则下一轮原样重来）
+      expect(parkedRow(outside).retry_count).toBeGreaterThan(0)
+    })
+
+    it('🔴 一个单元失败只 bump 该单元；成功单元的 parked 行不被牵连', async () => {
+      const mediaRoot = join(root, 'media')
+      const bad = mkParked(join(mediaRoot, 'TV', 'BadShow', 'E01.mkv'), NOW)
+      const good = mkParked(join(mediaRoot, 'TV', 'GoodShow', 'E01.mkv'), NOW + 1000)
+      const job = claimUnidentifiedJob()
+
+      const goodEpisode = episodeId('999', 1, 1)
+      const runTask = vi.fn(async (task: FindSubtitleTask): Promise<FindSubtitleBatchReport> => {
+        if (task.mediaRoot.includes('BadShow')) throw new Error('The operation was aborted due to timeout')
+        lib.upsertSeries({ id: seriesId('999'), name: 'Good' })
+        lib.upsertEpisode({
+          id: goodEpisode, seriesId: seriesId('999'), season: 1, episode: 1,
+          name: 'Good', path: good, subStatus: 'missing',
+        })
+        lib.clearParkedPath(good)
+        return {
+          installed: [{
+            itemId: goodEpisode, installedPath: join(dirname(good), 'E01.zh-Hans.srt'),
+            installedLanguage: 'zh-Hans', candidateProvider: null, candidateProviderId: null,
+            reason: 'ok',
+          }],
+          no_safe_match: [], retry_later: [], hardsub_assumed: [],
+          identity: {
+            outcome: 'identified', tmdbId: '999', isTv: true, season: 1, episode: 1,
+            nameEvidence: 'n', structureEvidence: 's',
+          },
+        }
+      })
+      await runUnidentifiedFindSubtitleWorkerTask(
+        job,
+        {
+          lib, mediaRoots: [mediaRoot], targetLanguage: 'zh', hardsubMode: 'off',
+          runTask, runs, groupOpts: { unitLimit: 3 },
+        },
+        jobs, () => NOW + 5000,
+      )
+
+      expect(runTask).toHaveBeenCalledTimes(2)
+      // 坏单元的退避轨前进
+      expect(parkedRow(bad).retry_count).toBeGreaterThan(0)
+      // 好单元：write_identified_media 已清出 parked（不许被 bump 复活/牵连）
+      expect(db.prepare(`SELECT path FROM parked_paths WHERE path = ?`).get(good)).toBeUndefined()
+      expect(lib.getEpisode(goodEpisode)!.sub_status).toBe('covered')
+      // 一个单元失败 → job 落 failed（错误信息可诊断），但成功单元的入账已落库
+      expect(jobs.get(job.id)!.state).toBe('failed')
+      expect(jobs.get(job.id)!.last_error).toContain('timeout')
+    })
+
+    it('扁平文件合成单元：mediaRoot = 配置根，workUnitKind = flat-batch（prompt 措辞分支）', async () => {
+      const movies = join(root, 'Movies')
+      mkParked(join(movies, 'some.movie.2024.mkv'), NOW)
+      const job = claimUnidentifiedJob()
+
+      let seen: FindSubtitleTask | null = null
+      const runTask = vi.fn(async (task: FindSubtitleTask) => {
+        seen = task
+        return emptyReport()
+      })
+      await runUnidentifiedFindSubtitleWorkerTask(
+        job,
+        { lib, mediaRoots: [movies], targetLanguage: 'zh', hardsubMode: 'off', runTask, runs },
+        jobs, () => NOW + 5000,
+      )
+
+      expect(seen!.mediaRoot).toBe(movies)
+      expect(seen!.workUnitKind).toBe('flat-batch')
+    })
   })
 
   it('identified 成功时不回写（clearParkedPath 已在写库事务里发生）', async () => {

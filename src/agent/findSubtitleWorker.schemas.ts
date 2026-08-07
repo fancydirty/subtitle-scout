@@ -84,6 +84,15 @@ export interface FindSubtitleTask {
    *  mediaRoot——安全退化（沙盒目录不受 gcOrphans 保护），不阻塞派发。
    *  实际 fallback 逻辑在消费方（agent/findSubtitleWorker.ts）：`task.stagingRoot ?? task.mediaRoot`。 */
   stagingRoot?: string
+  /** 作品单元管线（spec 2026-08-07 §3.4）：这批 target 是"同一个作品目录的完整文件集"
+   *  （work-dir），还是"配置根下彼此无关的扁平文件凑的一批"（flat-batch）。前者可以告诉 agent
+   *  "当一部作品来识别，一次搜索覆盖全部"，后者绝不能——那批 target 彼此不是同一部作品。
+   *
+   *  可选（`?:`）——新增可选字段对既有构造点零影响，这是刻意选的最小触碰面：
+   *  🔴 绝不能把这个信息加到 `FindSubtitleTargetFact` 上——那个类型被 realignExecutor.ts
+   *  （圣文件，不可动）的 makeRealignRunEpisode 复用（见本文件 :50-52 的同款说明）。
+   *  缺席 = 未知，消费方按"不做任何单元级断言"的保守措辞处理。 */
+  workUnitKind?: 'work-dir' | 'flat-batch'
   title: string
   originalTitle: string | null
   year: number | null

@@ -253,6 +253,8 @@ async function cmdWatch() {
   const runs = new RunsRepo(db)
   // 字幕校验巡检（Task 6）的持久层。dashboard 那侧（server.ts）自己也建一个实例——两者
   // 无状态（只包一个 db 引用），共享同一个 sqlite 连接，各建一个与共用一个等价。
+  // 2026-08-07（spec §5）：巡检注入本轮雪藏（见下面 daemonDeps 里注释掉的那段），这个实例
+  // 目前只剩"恢复注入时现成可用"的意义——按用户裁决不删。
   const verifyRepo = new SubtitleVerifyRepo(db)
 
   // dashboard G4：守备目录 DB 化——spec 裁决照抄 Jellyfin 分界：挂载是部署层（compose volume），
@@ -447,6 +449,13 @@ async function cmdWatch() {
             cacheRoot,
             tmdb: c.tmdb,
             lib,
+            // 作品单元管线（spec 2026-08-07 §4）：识别 job 的步数上限从共享兜底 500 提到 2000。
+            // 一个作品单元现在可能带整部剧的全部集数（§3.2 的分组收益），按 5 步/文件估算，
+            // MAX_TARGETS_PER_JOB=60 的批次约 300 步，2000 留足余量。
+            // 🔴 必须在这里显式传，绝不改 findSubtitleWorker.ts 的 `deps.stepCap ?? 500`——
+            // 那是识别与字幕两个 scope 共享的兜底，改它会把库行 scope 的字幕 worker 一起放开，
+            // 那是不同的活（审计 M10）。2000 不是无限：无限意味着一个死循环 agent 能烧到配额见底。
+            stepCap: 2000,
           })
           // dashboard G4 / 债务D5：mediaRoots/targetLanguage/hardsubMode 每次派发新鲜读取——
           // 同下方库行分支的既有口径，不锁定 watch 启动时刻的快照。
@@ -683,34 +692,37 @@ async function cmdWatch() {
     ingestEveryMs: () => Number(settingsRepo.get('scan_interval_ms')) || Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
     // 债务D5：trace 保留天数同款惰性读，默认 30 天。
     traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 30,
-    // 字幕校验巡检（Task 6）：让校验功能对用户真正可见的唯一通道——correct/revert 两条写
-    // 路径只能给**已有结论**的条目重检，没有任何地方给"从未检测过"的条目做首次检测
-    // （见 subtitleVerify/verifySweep.ts 头注释）。低频（6h）+ 双预算（5 条 / 5 分钟）+ 串行。
+    // 字幕校验巡检（Task 6）：**本轮雪藏（spec §5/§10）——不再注入 verifySweep**。
+    // DaemonDeps.verifySweep 是 optional，daemon.ts:327 的 `this.deps.verifySweep &&` 短路让
+    // 整个分支休眠，零成本（不查候选、不 spawn ffmpeg、不写 meta 时间门）。
+    // runVerifySweep / verifyAndRecord 的实现与 import 全部保留（用户裁决"代码可以不删"）；
+    // 将来重启用时，把下面注释掉的这一段注入原样恢复即可，不需要动 daemon 侧任何代码。
     //
-    // **只检测，绝不校正**（spec 铁律③"是否校正是用户的选择"）：verifyAndRecord 唯一的写
-    // 动作是往 subtitle_verify 落一行结论；发现偏移只把红芯片点亮，等用户点校正。
-    // 这里没有、也绝不能出现 shiftSubtitleTiming 的调用点。
+    // 历史注释（原注入的设计理由，恢复时一并参考）：让校验功能对用户真正可见的唯一通道——
+    // correct/revert 两条写路径只能给**已有结论**的条目重检，没有任何地方给"从未检测过"的
+    // 条目做首次检测（见 subtitleVerify/verifySweep.ts 头注释）。低频（6h）+ 双预算
+    // （5 条 / 5 分钟）+ 串行。**只检测，绝不校正**（spec 铁律③"是否校正是用户的选择"）：
+    // verifyAndRecord 唯一的写动作是往 subtitle_verify 落一行结论；发现偏移只把红芯片点亮，
+    // 等用户点校正。这里没有、也绝不能出现 shiftSubtitleTiming 的调用点。无 env 门控
+    // （对照 dispatchTranslate 的 TRANSLATE_* 门）：校验不依赖任何外部凭据或付费服务。
     //
-    // 无 env 门控（对照 dispatchTranslate 的 TRANSLATE_* 门）：校验不依赖任何外部凭据或
-    // 付费服务，成本是本地 ffmpeg 的几十秒，而它是这个功能可见性的唯一来源——做成开关
-    // 意味着默认世界里功能依然不可见，那本任务就白做了。
-    verifySweep: () =>
-      runVerifySweep({
-        db,
-        repo: verifyRepo,
-        verify: (c) => verifyAndRecord(verifyRepo, c.itemId, c.videoPath, c.subtitlePath, Date.now()),
-        log,
-        now: () => Date.now(),
-      }).then(({ checked, skipped, failed, budgetSkipped }) => {
-        // 一行统计只在真做过事时打——稳态下候选集合为空（检过的不再是候选），
-        // 每 6h 一行 "0/0/0" 的噪声对排障没有价值。
-        if (checked + skipped + failed + budgetSkipped > 0) {
-          log(
-            `verify sweep: checked=${checked} skipped=${skipped} ` +
-            `failed=${failed} budgetSkipped=${budgetSkipped}`,
-          )
-        }
-      }),
+    // verifySweep: () =>
+    //   runVerifySweep({
+    //     db,
+    //     repo: verifyRepo,
+    //     verify: (c) => verifyAndRecord(verifyRepo, c.itemId, c.videoPath, c.subtitlePath, Date.now()),
+    //     log,
+    //     now: () => Date.now(),
+    //   }).then(({ checked, skipped, failed, budgetSkipped }) => {
+    //     // 一行统计只在真做过事时打——稳态下候选集合为空（检过的不再是候选），
+    //     // 每 6h 一行 "0/0/0" 的噪声对排障没有价值。
+    //     if (checked + skipped + failed + budgetSkipped > 0) {
+    //       log(
+    //         `verify sweep: checked=${checked} skipped=${skipped} ` +
+    //         `failed=${failed} budgetSkipped=${budgetSkipped}`,
+    //       )
+    //     }
+    //   }),
     // spec A §4.2/§4.7：preTick 每 tick 最先跑——secrets_version 变了在这里完成热重建
     // （整体换 clients.current），随后 satisfaction tracker 在"点火"那一刻记 engine live。
     preTick: async () => {
