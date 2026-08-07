@@ -72,20 +72,23 @@ describe('docker-compose deployment contract', () => {
     }
   })
 
-  it('MEDIA_HOST_PATH 在所有挂载点都带 :? 守卫（未设置时报错，而非让 Docker 静默创建空目录）', () => {
+  // 旧断言锁的是"MEDIA_HOST_PATH 在所有挂载点都带 :? 守卫"，意图是防止 Docker 在变量未设时
+  // 静默创建空目录树。改挂宿主机根目录后该风险消失（`/` 恒存在，无需守卫），MEDIA_HOST_PATH
+  // 随之退役。本锁改为钉死新契约：媒体入口恒为 /hostroot，且不得复活 MEDIA_HOST_PATH。
+  it('媒体挂载恒为宿主机根目录 /hostroot（用户在 UI 里自选扫描目录），且 MEDIA_HOST_PATH 已退役', () => {
     for (const [name, compose] of [['main', mainCompose], ['bundle', bundleCompose]] as const) {
-      const mounts = [...compose.matchAll(/\$\{MEDIA_HOST_PATH([^}]*)\}/g)].map((m) => m[1])
-      expect(mounts.length, `${name} 没有 MEDIA_HOST_PATH 挂载`).toBeGreaterThan(0)
-      for (const modifier of mounts) {
-        expect(modifier.startsWith(':?'), `${name} 有一处 MEDIA_HOST_PATH 缺 :? 守卫`).toBe(true)
-      }
+      expect(compose, `${name} 缺 /:/hostroot 挂载`).toMatch(/^\s*-\s*\/:\/hostroot\s*$/m)
+      expect(compose, `${name} 仍引用已退役的 MEDIA_HOST_PATH`).not.toContain('MEDIA_HOST_PATH')
+      // 硬编码子目录挂载不得复活——用户目录结构千奇百怪，Movies/TV 不是通用形态
+      expect(compose, `${name} 残留硬编码媒体子目录挂载`).not.toMatch(/:\/media\/(movies|tv)\s*$/m)
+      expect(compose, `${name} 缺 ./cache:/cache 挂载`).toMatch(/^\s*-\s*\.\/cache:\/cache\s*$/m)
     }
   })
 
   it('主 compose 透传了 .env.example 里声明的全部行为级变量（漏一个就是"配置静默无效"事故）', () => {
     const passed = passthroughKeys(mainCompose)
     // 仅 compose 自用（不进容器）或容器内固定值的变量豁免
-    const composeOnly = new Set(['MEDIA_HOST_PATH', 'SUBTITLE_SCOUT_CACHE_DIR'])
+    const composeOnly = new Set(['SUBTITLE_SCOUT_CACHE_DIR'])
     const missing = [...envExampleKeys].filter((k) => !passed.has(k) && !composeOnly.has(k))
     expect(missing, `.env.example 声明但 compose 未透传：${missing.join(', ')}`).toEqual([])
   })
@@ -100,8 +103,7 @@ describe('docker-compose deployment contract', () => {
   it('bundle/local 与主 compose 的 env 透传集合一致（避免"某份 compose 配了没用"）', () => {
     const main = passthroughKeys(mainCompose)
     const bundle = passthroughKeys(bundleCompose)
-    const behavioral = [...main].filter((k) => k !== 'MEDIA_HOST_PATH')
-    const bundleMissing = behavioral.filter((k) => !bundle.has(k))
+    const bundleMissing = [...main].filter((k) => !bundle.has(k))
     expect(bundleMissing, `bundle 缺透传：${bundleMissing.join(', ')}`).toEqual([])
   })
 })

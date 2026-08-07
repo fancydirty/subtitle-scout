@@ -71,16 +71,15 @@ services:
       # 整理归档根（默认库根上一级；高级配置，dashboard 部署页可见）
       REALIGN_ARCHIVE_ROOT: ${REALIGN_ARCHIVE_ROOT:-}
       # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)
-      MEDIA_ROOTS: ${MEDIA_ROOTS:-/media}
+      # 默认留空：宿主机根挂在 /hostroot 下，目录结构因人而异，无通用默认值可猜。
+      # 留空时首启不播种，去 dashboard 设置页用目录浏览器从 /hostroot 里选。
+      MEDIA_ROOTS: ${MEDIA_ROOTS:-}
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       TZ: ${TZ:-Asia/Shanghai}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
     volumes:
-      # 宿主机 Movies/ TV/ → 容器内 movies/ tv/(小写,Linux 容器大小写敏感)
-      # MEDIA_ROOTS 应写 /media/movies,/media/tv(对应容器内路径)
-      # ⚠️ 强制守卫: MEDIA_HOST_PATH 未设置时直接报错,避免 Docker 静默创建空目录树
-      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录（例如 /data/media）}/Movies:/media/movies
-      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录（例如 /data/media）}/TV:/media/tv
+      # 宿主机根目录挂载到 /hostroot——用户通过 UI 自由选择要扫描的目录，不再硬编码 Movies/TV
+      - /:/hostroot
       - ./cache:/cache

@@ -12,9 +12,11 @@ subtitle-scout 盯着你的媒体库，自动找到、验证并放好最合适�
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入三把钥匙（见下一节）与 MEDIA_HOST_PATH
+# 编辑 .env，填入三把钥匙（见下一节）
 docker compose up -d
 ```
+
+**关于媒体目录**：compose 把你的**宿主机根目录**以 `/:/hostroot` 挂进容器，所以不需要在 `.env` 里配任何宿主机路径。起来之后到监控页 Settings → Media，用目录浏览器从 `/hostroot` 里点选要扫描的目录即可（容器内路径 = `/hostroot` + 宿主机绝对路径，例：宿主机 `/mnt/media/Movies` → `/hostroot/mnt/media/Movies`）。这样设计是因为大家的目录结构千差万别，硬编码 `Movies/` `TV/` 只适配了作者一个人。
 
 想同时跑一个 Jellyfin 当播放器（和 scout 的字幕功能完全无关，纯粹图省事）？见 `docker-compose.bundle.yml`。
 
@@ -107,7 +109,7 @@ docker compose run --rm --no-deps subtitle-scout node dist/cli/index.js doctor
 ⊘ zimuku  未配置(可选 provider,灰色站点条款风险自担)——设 ZIMUKU_ENABLED=true 启用
 ✓ llm  LLM 端点可用，最小对话成功
 ✓ media-roots  2 个媒体根目录全部可写
-✓ mount-capabilities  挂载能力画像 — /media/movies（硬链接: 支持, 大小写敏感: 是, 可写: 是）...
+✓ mount-capabilities  挂载能力画像 — /hostroot/mnt/media/Movies（硬链接: 支持, 大小写敏感: 是, 可写: 是）...
 ✓ database  数据库可用，schema 版本 <N>
 ✓ stuck-jobs  无卡住任务
 
@@ -236,7 +238,7 @@ agent 的认领**永远不会覆盖你手动认领的**（人的判断是终局�
 
 ```bash
 docker compose exec subtitle-scout node dist/cli/index.js watch
-docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media/tv/Show/ep.mkv"
+docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostroot/mnt/media/TV/Show/ep.mkv"
 ```
 
 ---
@@ -254,7 +256,6 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media
 | `LLM_MODEL` | 模型名 |
 | `ASSRT_TOKEN` | [assrt.net](https://assrt.net) 用户中心获取 |
 | `TMDB_API_KEY` | 识别文件/判定季集排布/取全部中文译名变体都靠它；缺失 `watch`/`reconcile-all` 直接报错退出；见「第三把钥匙」 |
-| `MEDIA_HOST_PATH` | （仅 compose）宿主机媒体库根目录，如 `/mnt/media` |
 
 ### 可选
 
@@ -265,7 +266,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media
 | `ZIMUKU_ENABLED` | zimuku 字幕站开关（灰色地带，条款风险自担）——需要 LLM 支持多模态识图 | `false` |
 | `SUBHD_ENABLED` | subhd 字幕源开关（通用型中文字幕站，强源）——无验证码/无云锁，不需 LLM | `false` |
 | `TMDB_BASE_URL` / `TMDB_PROXY_URL` | TMDB 反代/代理（墙内直连常被墙时用） | 空 |
-| `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔，容器内路径；**首启种子**，之后以 dashboard 设置页为准） | 空 |
+| `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔，**容器内**路径 = `/hostroot` + 宿主机绝对路径，如 `/hostroot/mnt/media/Movies`；**首启种子**，之后以 dashboard 设置页为准）。留空即推荐做法——在设置页用目录浏览器点选 | 空 |
 | `TARGET_LANGUAGES` | 目标字幕语言（逗号分隔 BCP-47；设置页 target_languages 优先于此） | `zh` |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
@@ -280,7 +281,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/media
 | `TRUST_PROXY` | 反代部署下信任 `x-forwarded-for`（登录限流按真实客户端 IP 而不是反代 IP）。⚠️ 只有在你**自己控制**反向代理时才设 `true`；否则任何人都能伪造 XFF 绕过限流。不设时，所有请求共享反代 IP 一个限流桶：任何人 5 次失败会锁死所有管理员 1 分钟 | `false` |
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
 | `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
-| `REALIGN_ARCHIVE_ROOT` | 整理（realign）归档根——旧目录搬到这里可回滚。默认库根上一级；**容器默认挂载下必须显式配**（默认值落在 overlay 层，跨设备 rename 会让整理放弃），配方见 `.env.example` | 空（=库根上一级） |
+| `REALIGN_ARCHIVE_ROOT` | 整理（realign）归档根——旧目录搬到这里可回滚。默认库根上一级。`/hostroot` 挂载形态下通常无需配（库根上一级与库同属一个 bind mount，rename 合法）；想集中存放时配一个 `/hostroot` 下、与媒体库同一文件系统的路径 | 空（=库根上一级） |
 | `LLM_EXTRA_BODY` | （高级）强制注入请求体的 JSON，通常无需配置 | 空 |
 | `FFPROBE_PATH` | 内嵌字幕探针用的 ffprobe 二进制路径；官方镜像已内置（apt 装的 ffmpeg），无需配置——只有源码直装且 PATH 上没有 ffmpeg 时才需要手动指定，探测退化为仅靠 sidecar 字幕文件判定 | 空（回退到 `ffprobe-static`） |
 
@@ -326,6 +327,17 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 **注意**：容器以 root 运行，写入的 sidecar 字幕文件属主是 root。如果其他服务（如 Jellyfin 以不同 UID 运行）或宿主机用户需要管理这些文件，可能遇到权限问题。解决方案：
 - 在 docker-compose.yml 添加 `user: "${PUID:-1000}:${PGID:-1000}"`（需确保该 UID 对挂载目录有写权限）
 - 或接受 root 属主（644 权限，其他用户可读）
+
+### Q: 升级后 doctor 显示"媒体根目录不可写" / 存量部署的挂载迁移
+
+**背景**：v(next) 起 compose 改挂宿主机根目录 `/:/hostroot`（用户目录结构千差万别，不再硬编码 `Movies/TV`）。存量部署数据库里 `media_roots` 表存的旧值（如 `/media/movies`）在新挂载下不存在 → doctor 报 media-roots 不可写。
+
+**迁移动作**（一次性，全在监控页里做，不需要碰数据库）：
+1. 打开监控页 Settings → Media，把旧的守备目录（`/media/movies`、`/media/tv` 这类）**删掉**
+2. 用同一页的目录浏览器**重选**：从 `/hostroot` 往下点到你的真实媒体目录（例：宿主机 `/mnt/media/Movies` → 选中 `/hostroot/mnt/media/Movies`）
+3. 跑 `docker compose exec subtitle-scout node dist/cli/index.js doctor` 确认 media-roots 与 mount-capabilities 都是绿灯
+
+**数据库无损**：媒体库元数据（识别记录、字幕历史）不受影响——只是守备目录的路径表达形式变了，文件本身一直在原处。
 
 ### Q: "暂时没找到合适的字幕"是 bug 吗
 

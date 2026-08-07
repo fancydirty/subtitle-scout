@@ -2,7 +2,7 @@
 # 不再打任何媒体服务器的 API。这份"全家桶"因此不再有功能上的特殊性：下面的 jellyfin
 # 服务纯粹是"顺手给你一个播放器"的可选附赠，与 scout 找字幕/整理这条主线完全无关——
 # 只想跑 scout 本体，直接用 docker-compose.yml 即可，效果等价且少一个容器。
-# 用法：cp .env.example .env 填好三把钥匙与 MEDIA_HOST_PATH，然后
+# 用法：cp .env.example .env 填好三把钥匙，然后
 #   docker compose -f docker-compose.bundle.yml up -d
 # 注意：Jellyfin（如果你要用它当播放器）首次运行需先完成初始向导（http://<主机>:8096）。
 services:
@@ -19,9 +19,9 @@ services:
       - "8096:8096"
     volumes:
       - ./jellyfin-config:/config
-      # ⚠️ 强制守卫: MEDIA_HOST_PATH 未设置时直接报错（与 subtitle-scout 服务一致）
-      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/Movies:/media/movies
-      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/TV:/media/tv
+      # 宿主机根目录挂载到 /hostroot（与 subtitle-scout 服务一致）——在 Jellyfin 的媒体库
+      # 向导里按 /hostroot/<宿主机绝对路径> 添加目录，不再硬编码 Movies/TV
+      - /:/hostroot
 
   subtitle-scout:
     image: ghcr.io/fancydirty/subtitle-scout:latest
@@ -82,15 +82,13 @@ services:
       # 整理归档根（默认库根上一级；容器挂载下建议显式配，见 .env.example）
       REALIGN_ARCHIVE_ROOT: ${REALIGN_ARCHIVE_ROOT:-}
       # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)
-      MEDIA_ROOTS: ${MEDIA_ROOTS:-/media}
+      MEDIA_ROOTS: ${MEDIA_ROOTS:-}
       SUBTITLE_SCOUT_CACHE_DIR: /cache
       TZ: ${TZ:-Asia/Shanghai}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8099}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
     volumes:
-      # 宿主机 Movies/ TV/ → 容器内 movies/ tv/(小写,Linux 容器大小写敏感)
-      # ⚠️ 强制守卫: MEDIA_HOST_PATH 未设置时直接报错
-      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/Movies:/media/movies
-      - ${MEDIA_HOST_PATH:?MEDIA_HOST_PATH 未设置，请在 .env 里填宿主机媒体库根目录}/TV:/media/tv
+      # 宿主机根目录挂载到 /hostroot——用户通过 UI 自由选择要扫描的目录，不再硬编码 Movies/TV
+      - /:/hostroot
       - ./cache:/cache

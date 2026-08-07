@@ -44,7 +44,7 @@ function isVideoFile(path: string): boolean {
  * a fresh, self-scan-local helper.
  */
 function isJunkDir(name: string): boolean {
-  return name.startsWith('.') || name.startsWith('@')
+  return name.startsWith('.') || name.startsWith('@') || name.startsWith('#')
 }
 
 /**

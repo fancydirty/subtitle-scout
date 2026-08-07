@@ -37,9 +37,9 @@ export function filterSystemDirs(dirNames: string[], parentPath: string): string
   })
 }
 
-/** 默认浏览起点：根目录 /，让用户自由导航整个文件系统。
+/** 默认浏览起点：/hostroot（容器内宿主机根目录挂载点），让用户自由导航整个文件系统。
  *  研究结论：不再用 commonRootStart 动态计算——那会导致"添加 /media 后只能浏览 /media
  *  子目录，无法回到 / 再添加 /data"的问题。固定起点让用户自由探索。 */
 export function getDefaultStartPath(): string {
-  return '/'
+  return '/hostroot'
 }
