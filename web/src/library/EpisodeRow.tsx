@@ -2,25 +2,22 @@
 // 在左，剧照 + 首播日在右，点击整行行内展开该集 TMDB 简介（同一时刻至多一行开，由父组件管状态）。
 // overview 缺失时展开区显示占位文案而非空白。内嵌集在标题旁挂 mono "内嵌" 角标。
 //
-// 2026-07-30（字幕校验）：外层从 <button> 改成 <div>，展开动作收进内部那个铺满主区域的
+// 2026-08-07（spec §5）：字幕校验本轮雪藏——verify/onInspect 两个 prop、VerifyChip 渲染点、
+// 展开区的"看字幕时间轴"入口一并摘掉（留着会是 TS 未使用告警 + 孤儿 i18n 键）。VerifyChip.tsx
+// 与 web/src/subtitleVerify/** 的源码测试全部保留，将来重启用时把这三处加回即可。
+// 历史注释（2026-07-30 字幕校验）：外层从 <button> 改成 <div>，展开动作收进内部那个铺满主区域的
 // <button>，校验芯片作为它的**兄弟**节点。原因是芯片在 shifted 态本身要可点（打开检视
 // 面板），而 button 套 button 是非法 HTML——屏幕阅读器行为未定义、键盘 Tab 顺序错乱。
 // 视觉上完全不变：flex 布局、hover 底色、active 左边框都还挂在 .library-eprow-head 上，
-// 只是那个类现在长在 div 而不是 button 上。
+// 只是那个类现在长在 div 而不是 button 上（芯片下架后这个 div 保持不动，避免无关的结构回归）。
 import type { GridCell } from './episodeState.js'
-import type { SubtitleVerifyDTO } from '../api/types.js'
 import { stillUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
-import { VerifyChip } from './VerifyChip.js'
 
 interface Props {
   cell: GridCell
   expanded: boolean
   onToggle: () => void
-  /** 字幕校验结论。缺席=父组件还没拿到（或这一格没有磁盘行）→ 不渲染芯片。 */
-  verify?: SubtitleVerifyDTO
-  /** 点红芯片打开检视面板。缺席时红芯片降级为不可点。 */
-  onInspect?: () => void
 }
 
 // grid 语义态 → 5px 点样式类（复用 EpisodeCell 家族的 .ep-dot-* 原子样式）。未知态兜底灰点。
@@ -34,7 +31,7 @@ const DOT_CLASS: Record<string, string> = {
   dashed: 'ep-dot-missing',
 }
 
-export function EpisodeRow({ cell, expanded, onToggle, verify, onInspect }: Props) {
+export function EpisodeRow({ cell, expanded, onToggle }: Props) {
   const { t } = useT()
   const isEmbedded = cell.onDisk?.subStatus === 'embedded'
   const still = stillUrl(cell.stillPath)
@@ -51,25 +48,13 @@ export function EpisodeRow({ cell, expanded, onToggle, verify, onInspect }: Prop
           {still ? <img className="library-eprow-still" src={still} alt="" loading="lazy" /> : null}
           {cell.airDate ? <span className="font-mono text-[13px] leading-5 text-muted-foreground">{cell.airDate}</span> : null}
         </button>
-        {verify ? <VerifyChip state={verify.state} checked={verify.checked} onInspect={onInspect} /> : null}
       </div>
       {expanded ? (
         <div className="library-eprow-body flex flex-col gap-1">
           <span className="text-[13px] leading-5 text-muted-foreground">{cell.overview ?? t('library_episode_no_overview')}</span>
-          {/* 时间轴入口放在展开区，不放在绿芯片上（2026-07-31）。
-              两个理由：
-              ① 绿芯片必须保持零焦点——做成 button 会让 Tab 键在一整季 24 个绿点上空转。
-              ② 但用户需要一个入口：约一半条目是"无法验证"（内嵌轨全是 PGS 位图字幕、
-                 同目录也没有第二份同集字幕），它们判绿是诚实的沉默，可对照图本身仍然有用
-                 ——单轨视图能看出"字幕只翻了前半集"这类问题，而且用户对着画面就能自己
-                 判断偏没偏。音频 VAD 那条路实测走不通（偏移量准但相似度只有 0.5，
-                 见 alignDetect.ts 的阈值注释），所以"让用户自己看"是这批条目的唯一出路。
-              展开区这个 button 本来就存在，不新增焦点。 */}
-          {onInspect ? (
-            <button type="button" className="library-eprow-inspect" onClick={onInspect}>
-              {t('library_verify_inspect')}
-            </button>
-          ) : null}
+          {/* 时间轴入口（library_verify_inspect 按钮）随字幕校验下架移除（spec §5）——原设计把它
+              放在展开区而不是绿芯片上，是为了让绿芯片保持零焦点（一整季 24 个绿点不该让 Tab 空转），
+              同时给"无法验证"的条目一个自己看对照图的入口。重启用时把那个 button 加回这里。 */}
         </div>
       ) : null}
     </div>

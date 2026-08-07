@@ -1,5 +1,9 @@
-// web/src/App.test.tsx：新外壳冒烟测试。覆盖：外壳渲染（四 tab 项在场）、tab 切换、fetch mock
+// web/src/App.test.tsx：新外壳冒烟测试。覆盖：外壳渲染（三 tab 项在场）、tab 切换、fetch mock
 // 下新鲜度行渲染、fetch 失败降级不白屏、⌘K 开合。
+//
+// 2026-08-07（spec §5）：甄别页下架——本文件里所有 Triage 链接/hash/空态断言与侧栏 parked
+// 角标断言随之移除。TriagePage 源码与它自己的测试保留在 web/src/triage/ 下，将来重启用时
+// 恢复这些断言即可。
 // i18n 完整性测试在 web/src/i18n/i18n.test.ts（不需要挂组件树，纯表对比更快更直接）。
 // Library tab 自己的三层格阵/筛选/详情板测试在 web/src/library/SeriesGrid.test.tsx 与
 // SeriesPage.test.tsx（dashboard-F3）——这里只保证外壳级别的路由/新鲜度行/⌘K 没被 F3 带崩。
@@ -82,14 +86,15 @@ afterEach(() => {
 })
 
 describe('App 外壳冒烟', () => {
-  it('渲染四个 tab 项', async () => {
+  it('渲染三个 tab 项', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
 
     expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workflow' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /^Triage/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    // 甄别项已下架（spec §5）：断言它不在场，这就是本轮的回归锁。
+    expect(screen.queryByRole('link', { name: /^Triage/ })).not.toBeInTheDocument()
   })
 
   it('点击侧栏 tab 切换 hash 路由，对应内容跟着换（Library 落地页是空库态）', async () => {
@@ -107,10 +112,12 @@ describe('App 外壳冒烟', () => {
     expect(location.hash).toBe('#/workflow')
     expect(screen.queryByText('No library yet')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('link', { name: /^Triage/ }))
-    // dashboard-F5：Triage 真页面的待甄别箱空态（好事文案，见 i18n triage_empty_title）。
-    await waitFor(() => expect(screen.getByText('Every file found its identifier')).toBeInTheDocument())
-    expect(location.hash).toBe('#/triage')
+    // 原本这里还有一段"点 Triage → hash 变 #/triage → 待甄别箱空态"，随甄别页下架移除
+    // （spec §5）；重启用时按上面 Workflow 那段的手法恢复。
+
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }))
+    await waitFor(() => expect(location.hash).toBe('#/settings'))
+    expect(screen.queryByText('No library yet')).not.toBeInTheDocument()
   })
 
   it('fetch 成功时顶栏渲染 mono 新鲜度行（watching/scanned/files 三段）', async () => {
@@ -120,11 +127,10 @@ describe('App 外壳冒烟', () => {
     expect(
       await screen.findByText('watching /media · scanned 2m ago · 568 files'),
     ).toBeInTheDocument()
-    // 甄别角标：parked=3 时应该出现在侧栏 Triage 项旁边。
-    expect(screen.getByText('3')).toBeInTheDocument()
+    // 原本这里断言侧栏 Triage 项旁的甄别角标（parked=3）；角标随甄别页下架移除（spec §5）。
   })
 
-  it('已登录但后端端点失败时外壳骨架仍在，不白屏——新鲜度行降级显示，甄别角标不渲染', async () => {
+  it('已登录但后端端点失败时外壳骨架仍在，不白屏——新鲜度行降级显示', async () => {
     // 鉴权 A2 后：只给 auth/status（放行到 Shell），其余端点一律 404（mockFetchRouted 未列即 404）
     // → workflow/pending 失败 → 新鲜度行降级 offline。验证"已登录时后端抖动不白屏"仍成立。
     vi.stubGlobal('fetch', mockFetchRouted([
@@ -132,15 +138,13 @@ describe('App 外壳冒烟', () => {
     ]))
     render(<App />)
 
-    // 外壳本身（四 tab 项）必须完整渲染，不能因为后端请求失败就整屏空白。
+    // 外壳本身（三 tab 项）必须完整渲染，不能因为后端请求失败就整屏空白。
     expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workflow' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /^Triage/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     // 新鲜度行降级为冷静的 mono 灰字，不是报错弹窗。
     await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument())
-    // 无数据时不显示甄别角标。
-    expect(screen.queryByText('3')).not.toBeInTheDocument()
+    // 原本这里还断言"无数据时不显示甄别角标"，角标随甄别页下架移除（spec §5）。
   })
 })
 

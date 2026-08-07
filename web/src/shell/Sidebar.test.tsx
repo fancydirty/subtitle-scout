@@ -6,7 +6,7 @@ import { UNAUTHORIZED_EVENT } from '../api/client.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-const wrap = () => render(<I18nProvider><Sidebar tab="library" parked={undefined} /></I18nProvider>)
+const wrap = () => render(<I18nProvider><Sidebar tab="library" /></I18nProvider>)
 
 describe('Sidebar 登出入口（鉴权 A2 Task 14）', () => {
   it('渲染登出钮', () => {
@@ -41,19 +41,17 @@ describe('Sidebar 登出入口（鉴权 A2 Task 14）', () => {
   })
 })
 
-// Plan C Task 28 迁移锁（自绘 SideNav 换 Astryx SideNav）——以下三条只追加、不改上面的存量。
+// Plan C Task 28 迁移锁（自绘 SideNav 换 Astryx SideNav）——以下只追加、不改上面的存量。
+//
+// 2026-08-07（spec §5）：本 describe 里原有的 "甄别角标计数渲染在 Triage 链接内
+// （parked=7 → 可及名 'Triage 7'）" 一条，随甄别页/字幕校验下架删除——Sidebar 已不再有
+// parked prop。源码保留在 web/src/triage 下，将来重启用时恢复本用例。
 describe('Sidebar 迁移锁（Task 28：自绘 SideNav）', () => {
   it('选中项带 aria-current="page"，未选中项没有——选中态语义锚点（不再是 data-selected）', () => {
     wrap() // tab="library"
     expect(screen.getByRole('link', { name: 'Library' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Workflow' })).not.toHaveAttribute('aria-current')
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
-  })
-
-  it('甄别角标计数渲染在 Triage 链接内（parked=7 → 可及名 "Triage 7"）', () => {
-    render(<I18nProvider><Sidebar tab="library" parked={7} /></I18nProvider>)
-    const triage = screen.getByRole('link', { name: /^Triage/ })
-    expect(triage).toHaveTextContent('7')
   })
 
   it('子树不再有任何 astryx 类名——自绘件不输出 .astryx-* DOM', () => {

@@ -1,6 +1,7 @@
 // web/src/shell/AppShell.tsx：新外壳组装——自绘壳（Task 28 卸 AstryxAppShell）+ Sidebar + Topbar
-// + CommandK + 四 tab 路由分发。数据面只发一次 GET /api/v2/workflow/pending，顶栏新鲜度行与
-// 侧栏甄别角标共享同一份响应（后端契约：meta.roots/lastScanAt/files + parked，见 api/types.ts 注释）。
+// + CommandK + tab 路由分发。数据面只发一次 GET /api/v2/workflow/pending，顶栏新鲜度行用它
+// （后端契约：meta.roots/lastScanAt/files，见 api/types.ts 注释；响应里的 parked 随甄别角标
+// 一起雪藏，字段本身仍在）。
 //
 // dashboard-F3：Library tab 落地为真页面（SeriesGrid 列表 / SeriesPage 详情），二级路由
 // #/library/:id 命中时，剧集详情请求在这一层发起并同时喂给 Topbar（面包屑二级：剧名）和
@@ -15,10 +16,11 @@
 // 不像 Library 详情那样需要 Shell 这一层协调共享——三份数据只服务 Workflow 区自己，跟 Topbar/
 // Sidebar 无关，因此整个组件收在 workflow/Lanes.tsx 内部自洽。
 //
-// dashboard-F5：Triage tab 落地为真页面（TriagePage：四区单列收件箱 Pending/Excluded/Timing/
-// Dormant；认领已退役，见 src/v2/triageOps.ts 头注释），同 Lanes 的自洽
-// 口径——自己发 GET /api/v2/triage，跟外壳共享的只有侧栏角标（那份 parked 计数来自
-// workflow/pending，不是 triage 端点，两者的数据源不同步是可接受的：15s 轮询 vs 手动 reload）。
+// 2026-08-07（spec §5）：Triage tab 本轮雪藏——这一层的 route.tab === 'triage' 分支与
+// TriagePage import 移除，侧栏也不再收 parked 角标。TriagePage 源码仍在 web/src/triage/ 下
+// （测试也全留着），将来重启用时把 import + 分支 + Sidebar 的 parked={workflow.data?.parked}
+// 三处加回即可。历史注释（dashboard-F5：TriagePage 四区单列收件箱 Pending/Excluded/Timing/
+// Dormant，自己发 GET /api/v2/triage，跟外壳只共享侧栏 parked 角标）。
 import { useState } from 'react'
 import { useWorkflowPending, useLibrarySeriesDetail, useLibraryMovieDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
@@ -30,7 +32,6 @@ import { SeriesGrid } from '../library/SeriesGrid.js'
 import { SeriesPage } from '../library/SeriesPage.js'
 import { MovieDetailPage } from '../library/MovieDetailPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
-import { TriagePage } from '../triage/TriagePage.js'
 import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
 import { cn } from '../lib/utils.js'
 
@@ -69,7 +70,7 @@ export function Shell() {
           onOpenCmdK={() => setCmdKOpen(true)}
         />
         <div className="flex flex-1 overflow-hidden">
-          <Sidebar tab={route.tab} parked={workflow.data?.parked} />
+          <Sidebar tab={route.tab} />
           {/* contentPadding 0/4 → p-0/p-4 条件类（Astryx --spacing-4=16px=Tailwind 4）。
               library 的 p-0 下 EngineBanner 就是全宽出血细条，正好。 */}
           <main
@@ -91,7 +92,6 @@ export function Shell() {
                 <SeriesGrid />
               ))}
             {route.tab === 'workflow' && <ActivityPage />}
-            {route.tab === 'triage' && <TriagePage />}
             {route.tab === 'settings' && <SettingsTabsPage />}
           </main>
         </div>

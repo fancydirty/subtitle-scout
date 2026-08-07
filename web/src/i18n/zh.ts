@@ -3,11 +3,11 @@
 import { en } from './en.js'
 
 export const zh = {
-  // Triage 的中文=甄别（用户钦定，DESIGN.md §7）。Workflow 沿用视觉基准
+  // Workflow 沿用视觉基准
   // full-design-v2.html 里的"工作流"（外壳导航标签，不属于"Workflow 区"内容本身）。
   nav_library: '媒体库',
   nav_workflow: '工作流',
-  nav_triage: '甄别',
+  // nav_triage（'甄别'，中文名用户钦定 DESIGN.md §7）随甄别页下架移除（spec §5，2026-08-07）。
   nav_settings: '设置',
   nav_logout: '登出',
 
@@ -58,7 +58,7 @@ export const zh = {
   library_episode_no_overview: '暂无本集简介（TMDB 未提供）',
   library_verify_ok: '字幕时间轴对得上',
   library_verify_shifted: '时间轴对不上',
-  library_verify_inspect: '看字幕时间轴',
+  // library_verify_inspect（'看字幕时间轴'）随字幕校验渲染点下架移除（spec §5，2026-08-07）。
   verify_track_reference: '画面里说话',
   verify_track_reference_sub: '参考',
   verify_track_ours: '这份字幕',

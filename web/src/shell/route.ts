@@ -1,13 +1,17 @@
-// web/src/shell/route.ts：新外壳的 hash 路由——四 tab（#/library #/workflow #/triage #/settings），
+// web/src/shell/route.ts：新外壳的 hash 路由——三 tab（#/library #/workflow #/settings），
 // 浏览器原生前进后退可用（location.hash 变化即触发 hashchange，无需自己维护历史栈）。
 // 故意与旧 lib/hashRoute.ts（海报墙/详情/历史/park 那一套，dashboard-F3 已随老 components/
-// 一并退役）分开设计过：新外壳的路由表只认四 tab + Library 的二级路由（#/library/:id 剧集页），
+// 一并退役）分开设计过：新外壳的路由表只认 tab + Library 的二级路由（#/library/:id 剧集页），
 // 别的 tab 目前都只有一层。
+//
+// 2026-08-07（spec §5）：甄别 tab 本轮雪藏，'triage' 从 Tab 联合与 TAB_IDS 移除。旧书签
+// #/triage 由下面 isTab() 的兜底自动降级到 library（不白屏、不 404）。将来重启用把
+// 'triage' 加回这两处即可。
 import { useEffect, useState } from 'react'
 
-export type Tab = 'library' | 'workflow' | 'triage' | 'settings'
+export type Tab = 'library' | 'workflow' | 'settings'
 
-const TAB_IDS: readonly Tab[] = ['library', 'workflow', 'triage', 'settings']
+const TAB_IDS: readonly Tab[] = ['library', 'workflow', 'settings']
 
 function isTab(value: string): value is Tab {
   return (TAB_IDS as readonly string[]).includes(value)

@@ -44,15 +44,18 @@ describe('CommandK（自绘 ⌘K 面板）', () => {
     expect(screen.getByRole('listbox')).toHaveAttribute('id', 'cmdk-list')
   })
 
-  it('空查询：四个 tab 全列出（bootstrap 语义）', async () => {
+  // 2026-08-07（spec §5）：甄别 tab 下架，TABS 从四项减为三项——CommandK 源码直接 TABS.map，
+  // 所以只有下面这些"列表恰为哪几项 / 箭头走到第几项是谁"的断言需要跟着改（Triage 从列表
+  // 里消失，两次 ArrowDown 的落点从 cmdk-option-triage 变成末项 cmdk-option-settings）。
+  it('空查询：三个 tab 全列出（bootstrap 语义）', async () => {
     render(<Harness />)
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
     const options = within(screen.getByRole('listbox')).getAllByRole('option')
-    expect(options.map((o) => o.textContent)).toEqual(['Library', 'Workflow', 'Triage', 'Settings'])
+    expect(options.map((o) => o.textContent)).toEqual(['Library', 'Workflow', 'Settings'])
   })
 
-  it('输入过滤：子串匹配（work → Workflow 在，Library/Triage/Settings 不在）', async () => {
+  it('输入过滤：子串匹配（work → Workflow 在，Library/Settings 不在）', async () => {
     render(<Harness />)
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
@@ -99,7 +102,7 @@ describe('CommandK（自绘 ⌘K 面板）', () => {
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
     expect(screen.getByRole('combobox')).toHaveValue('')
-    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(4)
+    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(3)
   })
 })
 
@@ -127,7 +130,7 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-workflow')
     expect(screen.getByRole('option', { name: 'Workflow' })).toHaveAttribute('aria-selected', 'true')
 
-    fireEvent.keyDown(combobox, { key: 'ArrowDown' })
+    // 三项（甄别下架后）：再按一次即到末项 Settings。
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
     expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-settings')
     // 末项再按 → 回卷首项（clamp 语义下这里会停在 settings，这条断言就是 wrap/clamp 的分界线）。
@@ -163,7 +166,8 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     const combobox = screen.getByRole('combobox')
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
-    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-triage')
+    // 三项下两次 ArrowDown 落在末项 Settings（甄别下架前这里是 cmdk-option-triage）。
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-settings')
 
     fireEvent.change(combobox, { target: { value: 'work' } })
     expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-workflow')
@@ -185,7 +189,7 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
 
   // 回归（2026-08-04 质量审抓获）：纯键盘路径——全程不输入，query 恒为 ''，setQuery('') 是
   // no-op、items 引用不变、重置 effect 不触发；若关闭分支不显式重置 activeIndex，重开会
-  // 残留上次箭头位（activedescendant=triage 而非 library）。既有"关掉重开"用例先输了 'work'，
+  // 残留上次箭头位（activedescendant=末项 而非 library）。既有"关掉重开"用例先输了 'work'，
   // items 引用变了、effect 兜住了，恰好掩盖这条缝。
   it('回归：纯键盘路径（不输入）关掉重开 → 高亮回首项，不残留上次的箭头位', async () => {
     render(<Harness />)
@@ -194,7 +198,8 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     const combobox = screen.getByRole('combobox')
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
-    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-triage')
+    // 三项下两次 ArrowDown 落在末项 Settings（甄别下架前这里是 cmdk-option-triage）。
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-settings')
     fireEvent.keyDown(combobox, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 

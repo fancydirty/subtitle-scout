@@ -1,4 +1,5 @@
-// web/src/library/MovieDetailPage.tsx：电影详情页——hero（模糊海报降级）+ 六段（状态/副本/字幕/校验/对照/活动）。
+// web/src/library/MovieDetailPage.tsx：电影详情页——hero（模糊海报降级）+ 四段（状态/副本/字幕/活动）。
+// （校验段与对照图入口随字幕校验下架，spec §5 2026-08-07——见下面正文里的注释。）
 // 用 Spec C 栈（Tailwind/shadcn 自绘件），仿 SeriesPage 布局粒度，无 backdrop（恒降级）、
 // 无 overview、无 genres。subStatus 七值人话句映射（复用活动页措辞族）。
 import { posterUrl } from '../api/client.js'
@@ -198,15 +199,9 @@ export function MovieDetailPage({ detail }: Props) {
           </div>
         ) : null}
 
-        {/* 校验段（TODO 占位，spec B §5.3 + Task 11） */}
-        {/* itemId 查 verify 结论：shifted → 红点 + Fix/Undo；aligned/unverifiable → 绿点；无记录 → 不渲染本段 */}
-
-        {/* 对照图入口（TODO 接 InspectPanel，Task 14） */}
-        <div>
-          <Button variant="secondary" disabled>
-            {lang === 'zh' ? '检查' : 'Inspect'}
-          </Button>
-        </div>
+        {/* 校验段与对照图入口随字幕校验下架移除（spec §5，2026-08-07）。原本这里是两个 TODO
+            占位（spec B §5.3 / Task 11 的 verify 结论段 + Task 14 的 InspectPanel 入口，后者
+            是个 disabled 的"检查"钮）。重启用时按 SeasonAccordion 的取数口径把两段加回。 */}
 
         {/* 最近活动段 */}
         {movie.recentJobs.length > 0 ? (

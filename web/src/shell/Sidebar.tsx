@@ -2,13 +2,17 @@
 // 全中文 + 极简点线图标）。Task 28 卸 Astryx：SideNav 一族换成本目录的自绘件（./SideNav.js），
 // 选中态走 aria-current="page" 属性选择器（文字色 --color-sidebar-active，lime 语义），styles.css
 // 底部的 .astryx-side-nav-item 覆写随之退役。登出钮走 shadcn ghost Button。
+//
+// 2026-08-07（spec §5）：甄别 tab 本轮雪藏——TAB_ICONS 的 triage 键、parked 角标 prop 与
+// endContent 一并移除（TAB_ICONS 是 Record<Tab, …>，留着 triage 键会被 TS 判为多余属性）。
+// 将来重启用时把 triage 图标键与 parked 角标加回即可（图标组件 TriageIcon 仍在 NavIcons 里）。
 import { SideNav, SideNavHeading, SideNavItem } from './SideNav.js'
 import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
 import { TABS } from './tabs.js'
 import type { Tab } from './route.js'
 import { api, UNAUTHORIZED_EVENT } from '../api/client.js'
-import { LibraryIcon, WorkflowIcon, TriageIcon, SettingsIcon } from './NavIcons.js'
+import { LibraryIcon, WorkflowIcon, SettingsIcon } from './NavIcons.js'
 
 /** 登出：POST /auth/logout 清 cookie，无论成败都派发 scout:unauthorized——AuthGate 据此重探
  *  auth/status（cookie 已清 → authenticated:false → LoginPage）。finally 保证服务器宕了也切回
@@ -21,20 +25,16 @@ function logout(): void {
 
 interface Props {
   tab: Tab
-  /** 甄别角标（parked 计数）：undefined＝还没有数据（loading/error/未知），此时不渲染角标——
-   *  "无数据时不显示角标"是任务规格明确要求的降级形态，不是漏写。 */
-  parked: number | undefined
 }
 
 /** tab → 图标组件映射（2026-08-06：极简点线风格） */
 const TAB_ICONS: Record<Tab, React.ComponentType> = {
   library: LibraryIcon,
   workflow: WorkflowIcon,
-  triage: TriageIcon,
   settings: SettingsIcon,
 }
 
-export function Sidebar({ tab, parked }: Props) {
+export function Sidebar({ tab }: Props) {
   const { t } = useT()
 
   return (
@@ -55,11 +55,6 @@ export function Sidebar({ tab, parked }: Props) {
             href={`#/${m.id}`}
             selected={tab === m.id}
             icon={<Icon />}
-            endContent={
-              m.id === 'triage' && parked != null ? (
-                <span className="text-xs text-muted-foreground">{parked}</span>
-              ) : undefined
-            }
           />
         )
       })}

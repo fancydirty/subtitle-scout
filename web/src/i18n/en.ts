@@ -5,11 +5,12 @@ export const en = {
   // 不进这张表——见 web/src/shell/tabs.ts 顶部注释。
   nav_library: 'Library',
   nav_workflow: 'Workflow',
-  nav_triage: 'Triage',
+  // nav_triage（'Triage'）随甄别页下架移除（spec §5，2026-08-07）——留着就是孤儿死代码。
+  //   重启用时把这个键加回本文件与 zh.ts（i18n.test.ts 只测两侧键集一致）。
   nav_settings: 'Settings',
   nav_logout: 'Log out',
 
-  // ⌘K 命令面板：F2 只做四 tab 导航，不做搜索。
+  // ⌘K 命令面板：F2 只做 tab 导航，不做搜索。
   cmdk_trigger: 'Find anything',
   cmdk_label: 'Command palette',
   cmdk_placeholder: 'Jump to a page…',
@@ -66,7 +67,8 @@ export const en = {
   // 红态是芯片上的可见文字。两句都不提机械（不说内嵌轨/比对/参考源）。
   library_verify_ok: 'Subtitle timing looks right',
   library_verify_shifted: 'timing looks off',
-  library_verify_inspect: 'Show subtitle timeline',
+  // library_verify_inspect（'Show subtitle timeline'）随字幕校验渲染点下架移除（spec §5，
+  //   2026-08-07）；上面两句仍被 VerifyChip.tsx 引用（组件本身保留，只是暂时无人挂载）。
   // 对照时间轴（2026-07-30）：轨道名与操作提示。措辞不提机械——说"画面里说话"而不是
   // "内嵌字幕轨"，说"这份字幕"而不是"待检 sidecar"。
   verify_track_reference: 'spoken in the video',
