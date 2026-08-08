@@ -1,0 +1,352 @@
+# 旧世界血统申报登记册（R3 首次全仓执行 · 2026-07-16）
+
+状态：造册完成（机械横扫，子代理执行、主控收录）。裁决列由主控在阶段〇 Task 0.3 填写——
+每条必须裁决为 **处决**（列入本战役任务）/ **改造**（本战役或立项）/ **哲学豁免**（理由必须
+援引北极星条款，"改起来麻烦"不是理由）。审计官 A/B/C 的语义发现随后并入第三节。
+
+检索式：`grep -rn "旧管线|old pipeline|同 executor|抄自|remainingTargets|旧逻辑|历史行为|沿用历史|historical|legacy" src/ --include="*.ts"`
+
+## 一、生产代码命中（39 条）
+
+| # | 文件:行号 | 原文（截一行） | 守护的代码在做什么 | 调用方 | 裁决 |
+|---|---|---|---|---|---|
+| 1 | core/seasonShape.ts:2-4 | legacy season diagnosis / extracted out of diagnoseSeason.ts (legacy-pipeline module) | mirrorExceedsSeasonTable() 纯函数：镜像季集数 vs TMDB 季表 | orchestratorAgent.tools.ts | 待裁决 |
+| 2 | agent/reasoningAgent.ts:30 | fix for the old pipeline's thinking-disable illness | makeReasoningAgent 的 reasoning 默认 'high' | findSubtitleWorker.ts、orchestratorAgent.ts | 待裁决 |
+| 3 | agent/resultHandles.ts:118 | legacy callers without it fall through to runSearch's own ['zh'] | SearchSourceDeps.targetLanguage 缺省回退 | findSubtitleWorker.ts | 待裁决 |
+| 4 | agent/findSubtitleWorker.tools.ts:36 | staging langTag 占位（zh→'zh-Hans'） | stagingLangTag()：下载暂存名 | 本文件 download_candidate | 待裁决 |
+| 5 | agent/findSubtitleWorker.schemas.ts:29 | rather than the full legacy MediaContext | FindSubtitleTask 形状与旧 MediaContext 解耦声明 | 多处 | 待裁决 |
+| 6 | agent/orchestratorAgent.tools.ts:78 | old "provider_ids is an unreliable historical mirror" caveat | check_series_layout 内部 tmdbId 解析说明 | orchestratorAgent.ts | 待裁决 |
+| 7 | cli/legacyJobRouting.ts:18,28 | 旧管线执行器已切断，体面收场 | tombstoneLegacyJob()：存量旧 kind 行退休 | cli/index.ts cmdWatch | 待裁决 |
+| 8 | cli/fetchLib.ts:51 | historical per-provider default ['zh'] | DEFAULT_ENABLED_CHECK_LANGUAGES：未指定语言时的 adapter enabled 计算 | resultHandles.ts、subtitle-fetch.ts | 待裁决 |
+| 9 | cli/adapters/opensubtitlesAdapter.ts:45 | 旧逻辑把 imdb 误传 parent_imdb_id，实测 0 命中 | OS adapter 修复注记 | buildAdapters.ts | 待裁决 |
+| 10 | cli/targetLanguages.ts:3,25,30 | historical single-target 默认 ['zh']；legacy SKIP_CHINESE_ORIGIN 兼容 | parseTargetLanguages/resolveTargetLanguages | cli/index.ts | 待裁决 |
+| 11 | cli/index.ts:45,144,199 | legacy 分流导入 + SKIP_CHINESE_ORIGIN 兼容注记 | cmd 入口的语言解析与旧 job 分流接线 | cmdWatch/cmdReconcileAll | 待裁决 |
+| 12 | cli/index.ts:211 | 这条新链路没有旧管线的（journal 记账） | emitProviderEvent：provider 事件→日志 | cmdWatch | 待裁决 |
+| 13 | cli/index.ts:275,287-288 | 同旧管线每次子进程重建 adapters；RunsRepo 复用 | worker_task deps 组装注记 | cmdWatch | 待裁决 |
+| 14 | v2/executor.ts:22-27 | 旧管线执行内部已删，realign 独苗 + 旧 kind throw 前置分流 | executeJob() 残躯 | cli/index.ts、daemon.ts | 待裁决 |
+| 15 | v2/findSubtitleWorkerTask.ts:49 | 'zh' historical default | mapper targetLanguage 缺省 | 本文件 | 待裁决 |
+| 16 | v2/findSubtitleWorkerTask.ts:94-97 | **事故样本**：same query remainingTargets() … LIMIT 1 | representativeEpisodeId()——季级意图机械降解点 | mapWorkerTaskToFindSubtitleTask | **处决**（本战役 Task 4，已裁） |
+| 17 | v2/findSubtitleWorkerTask.ts:112 | mirrors remainingTargets()'s movie branch | representativeMovieId() | 同上 | **处决**（随 Task 4 一并，已裁） |
+| 18 | v2/findSubtitleWorkerTask.ts:245,247 | RunsRepo 复用自旧管线构造；退役后时间线断供警告 | runs 可选依赖注记 | cli/index.ts | 待裁决 |
+| 19 | v2/libraryRepo.ts:296 | 旧管线的聚合层（已删）历史指涉 | missingBySeason() 注释 | orchestratorAgent.tools.ts | 待裁决 |
+| 20 | v2/libraryRepo.ts:340 | 默认 'zh-Hans' 沿用历史行为；注释还指涉已死的 executor.ts 调用方 | markCovered() language 参数 | findSubtitleWorkerTask.ts | 待裁决 |
+| 21 | v2/jobsRepo.ts:406-407 | 原旧管线聚合层 cleanup；注释自供零生产调用点 | retire()——纯测试供养的活方法 | 仅测试 | 待裁决 |
+| 22 | v2/jobsRepo.ts:432 | 旧管线执行器不再接线 | retireClaimed() | legacyJobRouting.ts | 待裁决 |
+| 23 | v2/realignExecutor.ts:246 | 旧管线 callStructured 记账机制不再需要 | makeRealignRunEpisode 注记 | cli/index.ts | 待裁决 |
+| 24 | files/subtitleWriter.ts:20 | historically only zh-Hans/zh-Hant，已泛化 | langTag 字段文档 | tools.ts、zimukuAdapter.ts | 待裁决 |
+
+（同一函数的多行命中已并组；原始逐行清单见本文件 git 首版提交的子代理原始报告，此表为主控收录版。）
+
+## 二、测试文件命中（16 条，只列坐标）
+
+core/schemas.test.ts:228；agent/languages.test.ts:19,37；agent/resultHandles.test.ts:168；
+cli/targetLanguages.test.ts:34,55；cli/legacyJobRouting.test.ts:2,31,45,56；
+v2/executor.test.ts:28；v2/recovery.test.ts:50；v2/findSubtitleWorkerTask.test.ts:111,277；
+v2/libraryRepo.test.ts:70；v2/realignWorkerTask.test.ts:192
+
+测试命中不单独裁决——随其生产对应项的裁决联动（处决生产代码时其锁测试同死或改锚）。
+
+## 三、审计官语义发现（A=队列缝 / B=工具面 / C=摄取识别）
+
+### B 区（agent 工具面与技能）——15 条，主控已逐条复核，全部成立
+
+| # | 现场 | 发现 | 北极星 | 主控复核 | 建议裁决 |
+|---|---|---|---|---|---|
+| B1 | orchestratorAgent.tools.ts:33-38 + libraryRepo.ts:305,317 | list_missing_coverage 自称"factual bookkeeping only"，但数据源谓词把退避窗口内的缺口整行隐藏——"放弃30天"由系统敲计算器决定，主代理不知情 | ④②⑤ | 成立（谓词亲读） | 改造：unavailable/recheck_after/status_reason 作为列呈现，重试判断上交 agent |
+| B2 | orchestratorAgent.ts:64-82 + jobsRepo.ts:146-165 | 主代理对已派未完成任务零可见；upsert 静默合并与新建折叠成同一个 dispatched:true 回执——差额事实不存在于 agent 世界 | ②④⑥ | 成立（两处亲读） | 改造：dispatch 返回 created/coalesced 事实 + pending 任务事实源 |
+| B3 | tools.ts:198-215 + reconcileAll.ts:66-82 | spawn_sibling 的 remainingWorkSummary 写入 payload 后从未被读——sibling 拿固定 prompt，父代理意图黑洞；与 representativeEpisodeId 同构。连带：sibling 重复 dispatch 静默 no-op 却消耗 cap，结构性连锁空转 | ② | 成立（runOrchestrateWorkerTask 亲读，不读 payload） | 改造：summary 注入 sibling prompt（或诚实处决该参数）+ 修 cap/no-op 交互 |
+| B4 | findSubtitleWorker.schemas/worker/skill | worker 侧胶水层整体单集世界观（事故另一半的接口容器）；除此三处无第四个暗桩 | ③② | 成立 | 已立项（本战役阶段一） |
+| B5 | orchestratorSkill.ts:26-38 + orchestratorAgent.ts:88-90 | "MUST call check_series_layout…only proceed if true…never dispatch"——确定性布尔当派活守门人，且该信号 own-ingest 世界近死→realign 结构性永派不出 | ① | 成立（skill 原文亲读；措辞系主控上战役亲写，记 R1） | 改造（并入债务D1：换布局事实列，MUST/never 改为事实+理由式教导） |
+| B6 | tools.ts:96-103 | 查询失败折叠成 exceedsSeasonTable:false——报结论不报事实；false 偏置方向符合⑥但事实层应报"TMDB 不可达" | ④ | 成立（写计划时已亲读） | 改造（轻）：返回 tmdbUnavailable 字段 |
+| B7 | tools.ts:90,:66-68 | 工具描述向活模型引用已删除的 diagnoseSeason.ts——幻觉参照系 | R3 | 成立（ls 确认文件不存在） | 改造：随 B5/B6 重写 |
+| B8 | agent/playbooks/realignPlaybook.ts | 生产零引用的旧世界手册尸体，靠自测试全绿续命；内容通体旧魂（Jellyfin 刮削/旧退避梯/旧 identify/旧 journal） | R3 | 成立（grep 零命中） | 处决（连同其测试） |
+| B9 | resultHandles.ts:149 + fetchLib.ts:62-87 | search_source emit 传空函数吞掉 provider 局部失败——agent 被要求做 retry_later/no_safe_match 判断却没有事实输入 | ④①⑤ | 成立（亲读） | 改造：返回 providerFailures 列表 |
+| B10 | resultHandles.ts:145-148 | languages 省略时静默注入 targetLanguage 过滤，描述未申报 | ④轻 | 成立 | 改造（描述一句话申报） |
+| B11 | orchestratorAgent.ts:14-18 | OrchestratorDecision 模型自报数非 DB 复核数（自供已知债） | ④轻 | 成立 | 登记，随 B2 顺手转 DB-authoritative |
+| B12 | tools.ts:10-12 | 季级缺口行无剧名，orchestrator 对"哪部剧"零感知 | ②轻 | 成立 | 改造（顺手）：行内带 series name |
+| B13 | fetchLib.ts:11 | FetchArgs.deep 全仓 adapters 零消费死字段 | R3 | 成立（grep 确认） | 处决 |
+| B14 | agent/llm.ts:10-13 | extraBody 注释以已退役旧栈之病为例，机制本身健康 | 陈旧提及 | 成立 | 哲学豁免，顺手改注释 |
+| B15 | orchestratorSkill.ts:42-43 | "one call per row" 与③"一个工作流配齐三季"张力：同剧多缺失季拆成多个独立 worker，跨季合集协同被丢弃 | ③张力 | 成立（哲学问题） | 上报用户/主控裁决（季=下限还是终态） |
+
+B 区无发现区域（已质询确认干净）：coerce.ts、reasoningAgent.ts、solveNumericCaptcha.ts、absoluteEpisodes.ts、languages.ts、skills/registry.ts、findSubtitleWorker.tools.ts（沙盒检查属事实盘点豁免）、findSubtitleSkill 教导内容（除单集世界观）、llm.ts 机制层。
+
+### A 区（v2 队列与执行缝）——15 条，主控已逐条复核（F4 加重情节之一有异议，其余成立）
+
+| # | 现场 | 发现 | 北极星 | 主控复核 | 建议裁决 |
+|---|---|---|---|---|---|
+| F1 | jobsRepo.ts:146-165 + tools.ts:166-172 | **dormant/failed 行静默吞噬主代理新派发且谎报 dispatched:true**——5次no_safe_match→dormant→缺口重现→每轮派发每轮被吞→永久活锁。比事故本体更深的暗桩 | ②⑥ | 成立（两处代码写计划时已亲读，活锁链推演成立） | 改造（最高优先级）：upsert 返回 created/revived/coalesced/blocked_dormant 事实，dispatch 工具如实转告 |
+| F2 | jobsRepo.ts:505-536,:389-404 | "dormant 不是死刑是停车"是谎言——wake/boostPriority 零生产调用，park 注释承诺的唤醒通道全是断头路 | ⑤② | 成立（grep 亲验零调用） | wake/boostPriority 处决；真 wake 通道=F1 的事实可见+复活语义 |
+| F3 | jobsRepo.ts:294-322 + libraryRepo.ts:298-320 | "放弃"由系统判决（第5次机械升 dormant），agent 双侧均失明；dormant/unavailable/attempt 连作为事实都不可见（spec 嫌疑 #3 裁决实体） | ①②④ | 成立（亲读） | 改造：判决降格为事实列入活文档；瞬时错误轨（30s→15min）哲学豁免（故障自愈机械） |
+| F4 | findSubtitleWorkerTask.ts:100-151,277-284 | 事故本体在役+两条加重：不仅降解粒度还选择目标与顺序；全季被 recheck 遮蔽时 !mapped→completeDone 单方面收工 | ②③① | 本体成立；**加重情节二主控有异议**：!mapped→completeDone 是幂等 no-op+done→wanted 可复活，与 spec"报告已入账"队列语义一致，裁定保留 | 本体处决（阶段一 Task 4，含 representativeMovieId 与 claim 时目标重推导概念整体消失） |
+| F5 | findSubtitleWorkerTask.ts:302-304 | agent 的 retry_later 判断蹭瞬时错误退避梯（共用 error_attempt，20次后降为日试） | ①② | 成立（亲读） | 部分豁免：completeError 轨保留为节流事实（永不 dormant，封顶日试可辩）；"agent 表达何时再试"登记为后续演化，R4 观察 |
+| F6 | findSubtitleWorkerTask.ts:306-313 | jobs 调度态倒灌事实层：recheck_after 抄自 job 退避梯，停牌期条目对 orchestrator 隐形（spec 嫌疑 #2 裁决实体）。unavailable+recheck_after 概念本身哲学兼容，当前实现不兼容 | ④① | 成立（亲读） | 改造：recheck 阶梯移到 item 事实层（见裁决 R-3），停牌条目以事实形态可见（随 B1） |
+| F7 | cli/legacyJobRouting.ts + v2/executor.ts 全文件 | legacy 通路服务不可能非空的集合：upsertWanted 零调用+v9 空库直落终态→旧 kind 无出生点无存量；连带 hasActiveRealignWorkerTask 的 D4 互斥漏洞 | R3② | 成立（grep+db.ts:1-15 亲读） | 处决：两文件+cli 接线整体删除，daemon 收敛 worker_task 单通路；删后互斥窄查询自动成立 |
+| F8 | jobsRepo.ts 死器官群 | upsertWanted/completePartial+PARTIAL_RETRY_MS/quotaRetryAt+QUOTA_RESET_MARGIN_MS+quotaResetAt 形参/boostPriority/wake/find/findMovie/listByState/setJournalRef/target_episodes 列——零生产调用；**quota resetAt 精确排期能力在换代中被静默丢失** | R3④ | 成立（grep 逐一亲验） | 死器官处决；quota 呈报通道改造**立项**（批量 finalize 落地后补 resetAt 呈报路径） |
+| F9 | libraryRepo.ts 死器官 + apiV2 陈旧 id | resetRecheck/hasSubtitleRecord/setMovieChineseTitle/knownPaths（+makeSelfScanPass 链）零生产调用；deleteSeriesRows/markCovered 注释引用已死世界；apiV2.ts:153 过滤合成 id 仍写 'self-scan-trigger'（现实为 'ingest-trigger'） | R3 | 成立（grep 亲验；apiV2 陈旧 id 亲验） | 死器官处决；注释改造；apiV2 改用 INGEST_ORCHESTRATE_SERIES_ID 常量 |
+| F10 | jobsRepo.ts:461-469 | retireAllForSeries 只作废已无出生点的 series_season kind；真正携带旧判决的 worker_task dormant/failed 行 realign 后原样存活卡死新结构（representativeEpisodeId 同款病理） | ②R3 | 成立（亲读） | 改造：退休范围改为该 series 的 worker_task 行 |
+| F11 | ingest.ts:167-206 rule 1b | TMDB origin 缺席时汉字正则启发式直接判 'ignored' 且不落 status_reason——正则猜测代替停车，无从稽核；误判方向保守（漏配不误配） | ⑤④边缘 | 成立（引文与 T3 设计记录一致） | 有条件豁免+改造-lite：写入 status_reason 使判决可稽核 |
+| F12 | jobsRepo.ts:167-183 claimNext | ORDER BY priority DESC, created_at ASC——生产中 priority 恒0，实际 FIFO=orchestrator 派发序原样保序 | 无违反 | 成立 | 哲学豁免（到达序是事实）；priority 盲肠随 F8 登记 |
+| F13 | realignExecutor.ts:186-211,257-282 | realign 字幕先行任务硬编码空富化（no TMDB 佐证）——文件刚被重编号最需佐证的场景拿最少证据 | ⑥边际 | 成立 | 改造-lite：复用 fetchTmdbEnrichment 补面（五重安全层依既有定论豁免，零改动） |
+| F14 | findSubtitleWorkerTask.ts:44-50 | 多语言配置机械截断为首项（A4 已申报债务） | ②边缘 | 成立 | 豁免（已申报），登记防跨战役失忆 |
+| F15 | cli/index.ts:295-345 | tmdb 硬前置后不可达的降级分支；若真触发，park 出的 dormant 行按 F1/F2 永不复活（含 'ingest-trigger' 编排行→全系统停摆） | 登记 | 成立 | 随 F7 顺手清理 |
+
+A 区无发现区域（已质询确认干净）：daemon.ts（故障机械+事实记账）、reconcileAll.ts（干净信使）、realignWorkerTask.ts（薄桥 1:1）、ownIds/runsRepo/db.ts（纯事实层）、realignLibraryPort.ts（换代工艺正面样板）、libraryRepo P2 面、ingest.ts 除 rule 1b 外（park 纪律模范）。
+
+**A 区总裁决意见（主控采纳）**：representativeEpisodeId 只是同一具旧灵魂最显眼的一根手指。完整暗线：mapper 选目标（F4）→退避梯定放弃（F3/F6）→dormant 吞新意图谎报成功（F1）→上诉通道断头（F2）→realign 判决作废错位（F10）。**若 F1/F2/F3/F6 不与 F4 同刀处理，批量任务修好后第一个吃满 5 次 no_safe_match 的季照样掉进永久失明区，事故换符号名重演。**全部并入本战役。
+
+### C 区（摄取/识别/整理/CLI）——主控已复核（C-B5 修正主控先前判断）
+
+| # | 现场 | 发现 | 北极星 | 主控复核 | 建议裁决 |
+|---|---|---|---|---|---|
+| C-A1~A3 | findSubtitleWorkerTask:310 + libraryRepo 谓词 + jobsRepo dormant | 嫌疑#2 主裁决：语义判决被记账✓、时间判决被系统窃取✗；dormant=意图黑洞（与 A-F1/F3/F6 独立复现，双审吻合） | ①②⑥ | 成立（与 A 区交叉验证一致） | 并入 R-2/R-3 统一裁决 |
+| C-A4 | libraryRepo.ts:390-412 resetRecheck | 退避窗唯一逃生舱零生产引用（播放触发已死）——退避无任何 agent/人为覆盖通道 | R3 | 成立（grep 亲验，A-F9 同报） | 处决；等价能力由活文档事实+orchestrator 判断替代 |
+| C-A5 | ingest.ts:100-108 resolveStatusToWrite | missing 新事实被旧 unavailable 判决否决（护住退避窗口） | ④边缘 | 成立 | 有条件豁免：R-3 落地后它是诚实的状态记忆 |
+| C-B1 | realignExecutor.ts:704-709 | 时长抽查死枝（getDurationSeconds 从未接线）+ expectedRuntime=24 动漫硬编码——若被好心激活会整剧误 park 45分钟剧 | ①近死 | 成立 | 登记为债：本战役不激活不删除（神圣文件最小改动），注释加"禁止带24硬编码激活"警示 |
+| C-B2 | realignExecutor.ts:596-598 + port:126 | enableRealtimeMonitor 恒死分支（纯 Jellyfin 残肢） | 近死 | 成立 | 随 T9c 窄 diff 处决（含接口字段） |
+| C-B3 | realignExecutor waitForJellyfinIdle | 互斥机制活着（D4 双向排他亲核成立），但命名/威胁模型主语是死掉的 Jellyfin；原威胁（外部媒体服务器共库扫描）失去观测手段 | 灵魂错位 | 成立 | 机制哲学豁免；改名/注释改造随 T9c；共库扫描风险书面登记入部署文档 |
+| C-B4 | realignExecutor buildRealignMediaContext + core/schemas MediaContextSchema | 旧管线 MediaContext 类型当传声筒（恒空旧字段），生产消费仅剩此链 | R3 | 成立 | 改造：直接构造 FindSubtitleTask；MediaContextSchema 随之处决出 core |
+| C-B5 | seasonShape + tools | **修正主控先前判断**：exceedsSeasonTable 并非全死——"Season NN 文件夹+裸数字文件"误刮形态下镜像仍可超表；真·平铺才被摄取规范化。布局事实列是补充信号不是替代 | 链路事实 | 成立（identifyFromPath 规则 3/4 亲核） | 债务D1 修订：diskLayoutNonstandard 与 exceedsSeasonTable 并列为两个事实信号，均不守门 |
+| C-B6/B7 | realignExecutor:353,:600-601 | 验收文案"Jellyfin 报告 N 集"撒谎；provider_ids"从未被写入"断言已失实 | 表述/R3 | 成立 | 随 T9c 注释改造 |
+| C-C1 | ingest.ts:167-190 rule 1b + ORIGIN_UNKNOWN | 标题启发式猜测→永久静默 ignored，零申诉通道（C 主张处决；A-F11 主张有条件豁免） | ①⑤⑥ | 成立 | **合議裁决**：本战役改造-lite（status_reason='ignored-by-heuristic' 落库可稽核）；曝光/申诉通道归 dashboard 战役救援页；永久性（ORIGIN_UNKNOWN 不回查）登记为债 |
+| C-D1 | subtitleWriter pickFromZip + zimukuAdapter fileList:[] + download_candidate 返回值 | **zip 包内选择被机械层偷走**：zimuku 恰是季包大户，agent 不能选也不知道包里有什么，只能盲拿第一个文件——③被废掉一半；批量收割的直接障碍 | ②③ | 成立（zimuku fileList:[] 注释引已删 pipeline.ts 为据） | 改造并入阶段一（T5 扩展）：download_candidate 返回压缩包内清单事实+支持按名选取 |
+| C-E1~E3 | adapters 层 | 无隐藏排序过滤（清白）；assrt slice(0,2)/zimuku 只用 queries[0] 未申报；陈旧引用两处 | ②边缘/R3 | 成立 | 截断申报（工具描述一句话）；注释随清洗波 |
+| C-F1 | cli report.ts + core/ledger.ts | report 命令给死人记账：Ledger 零生产写入，汇报 journal/llmProfile/queue 全是已删世界 | R3 典型 | 成立（grep 亲验零 .append 生产调用） | 处决（cmdReport+report.ts+ledger.ts 连测试） |
+| C-F2 | core/schemas.ts | 九个已处决 agent 的 schema 尸体零生产引用，靠测试供养 | R3 | 成立 | 处决（SearchPlan/RankDecision/RankedCandidate/VerifyDecision/FinalDecision/OrphanDecision/IdentityMatch/SeasonMap/LooseEpisodesMap/MediaContext + IDENTITY_MATCHES，连专属测试；SubtitleCandidate/candidateKey 等活体保留） |
+| C-F3 | core/episode.ts SeasonEpisode | PlayerAdapter 已死，接口零引用 | R3 | 成立 | 处决；matchesEpisodeCode 活体保留、注释改造 |
+| C-F4 | 全仓 17 文件陈旧血统注释 | scanner/providerPort/pipeline/rankCandidates/diagnoseSeason/triggers 幽灵坐标 | R3 | 成立 | 批量注释清洗波（T12b，sonnet 机械执行，零行为改动） |
+
+C 区无发现区域：recognition 四文件（全仓最贴近北极星⑤的子系统）、daemon 两文件、doctor/subtitle-fetch/buildAdapters/targetLanguages、mediaContext/fileLogger、streamProbe/subtitleInspect/stagingSandbox 等安全机械层。
+
+## 四、裁决记录（Task 0.3 · 主控终审，2026-07-16）
+
+三审合流后的统一裁决。**总方针（采纳审计官A总意见）：旧灵魂是一条贯穿暗线，F1/F2/F3/F6 与事故本体同刀，否则事故换符号名重演。**
+
+| 裁决号 | 内容 | 落点 |
+|---|---|---|
+| R-1 | **批量胶水层**（事故本体 F4/B4-worker侧）：处决 representativeEpisodeId/representativeMovieId/claim时目标重推导概念；任务形状=季级事实清单 | 阶段一 T1-T7（原计划） |
+| R-2 | **dispatch 事实回执**（F1/F2/B2/B3/B11）：upsertWorkerTask 返回 created/revived/coalesced/blocked_dormant 事实；dispatch 工具如实转告且 coalesced/blocked 不耗 cap；wake/boostPriority 处决；sibling 的 remainingWorkSummary 注入 prompt | 阶段一新任务 T8b/T8d |
+| R-3 | **退避梯下沉事实层**（F3/F6/C-A1~A5/F5 部分）：内容退避从 jobs 状态机整体迁到 item 事实列（episodes/movies 新列 search_attempts，v10）；recheck=CONTENT_BACKOFF_DAYS 阶梯、第5次起 30d——仍是事实、永不隐形；worker_task 永不再 dormant；completeNoMatch 处决；retry_later→completeError 保留为节流豁免；活文档呈现停牌事实（unavailable 数/nextRecheckAt/原因样本/剧名） | 阶段一 T8（语义重写）/T8c、阶段二 T10（v10 扩容） |
+| R-4 | **工具面事实诚实化**（B6/B7/B9/B10/B12/C-E2）：check_series_layout 报 tmdbUnavailable、描述去 diagnoseSeason 幽灵；search_source 报 providerFailures+申报默认语言过滤；缺口行带剧名；provider 查询截断申报 | 阶段一新任务 T8c |
+| R-5 | **zip 清单事实**（C-D1）：download_candidate 返回压缩包内字幕清单，支持按名/序选取，pickFromZip 升级——季包批量收割的直接前提 | 阶段一 T5 扩展 |
+| R-6 | **清算波**（F7/F8/F9/F10/F15/B8/B13/C-A4/C-F1/C-F2/C-F3）：legacyJobRouting+executor.ts 整体处决；jobsRepo/libraryRepo 死器官群处决（含 completeNoMatch/completePartial/quota管道/wake/boost/find/findMovie/listByState/setJournalRef/retire/resetRecheck/hasSubtitleRecord/setMovieChineseTitle/knownPaths+selfScan死链）；retireAllForSeries 改指 worker_task；realignPlaybook+deep字段+report/ledger+schemas尸体+SeasonEpisode 处决；apiV2 合成 id 改用常量 | 阶段一新任务 T9a（收绿前执行） |
+| R-7 | **realign 窄 diff**（C-B2/B3/B4/B6/B7 + A-F13）：批量 FindSubtitleTask 适配、MediaContext 传声筒处决、TMDB 富化补面、恒死监视分支处决、命名/注释主语纠正；**五重安全层字节不动，主控逐 hunk 亲验**（P5 纪律）；C-B1 时长死枝不激活不删除仅加警示注释 | 阶段一新任务 T9c |
+| R-8 | **债务D1 修订**（C-B5）：exceedsSeasonTable 保留（仍可点火），diskLayoutNonstandard 并列第二信号，skill 的 MUST/never 守门措辞改为事实+理由式教导（B5） | 阶段二 T11（修订） |
+| R-9 | **血统注释清洗波**（C-F4/E3/B14/F9注释）：17 文件幽灵坐标批量改写，零行为改动 | 阶段三前 T12b（sonnet） |
+| R-10 | **豁免与登记**：瞬时错误轨（30s→15min→日）=故障自愈机械豁免；claimNext FIFO=事实豁免；rule 1b=改造-lite+债登记；ingest resolveStatusToWrite=R-3 后诚实豁免；realign 五重安全层+16MB fail-closed+沙盒检查=既有定论豁免；C-B1 时长死枝/quota 呈报通道/多语言单值截断/ORIGIN_UNKNOWN 不回查/外部媒体服务器共库扫描风险=登记立项 | 本册+spec |
+| R-11 | **用户已裁决（2026-07-16）**（B15）：派活范围既不恒为季也不恒为剧——**主代理按刮削出的磁盘实际情况具体裁量**（"进击的巨人有三季资源分别缺字幕→一个任务带全剧缺口清单告诉子代理找什么资源哪些季各缺多少集及路径；只有 S3 资源→任务自然就是 S3"）。落地：taskType 进 jobs 身份元组（v11 索引重建，消灭 find/realign 同 identity 碰撞——原 null-season 拒绝守卫随之处决）；dispatch_find_subtitle_task 输入改 seriesId+可选 seasons 数组（null=全部有缺口的季）；mapper 加全剧清单推导；orchestrator skill 教范围裁量（主控亲改）。并入本战役阶段一（T4b/T8b 扩容） | 阶段一 T4b（新）/T8b（扩）/T7/T11 skill |
+
+裁决完毕。计划修订随本次提交（docs/superpowers/plans/2026-07-16-glue-layer-repair-campaign.md，本地文档不入库）。
+
+## 五、R1 架构灵魂验收对照表（Task 13 · 主控亲笔，2026-07-16 收官）
+
+对照面=本战役全部改动（a1a2cac..HEAD，含清算波）。逐条质询：
+
+| 北极星条款 | 改动面质询 | 判定 |
+|---|---|---|
+| ①agent 像人判断，确定性检查绝不守门（事实盘点除外） | completeNoMatch 的第 5 次机械 dormant 判决已处决；退避降为 item 事实阶梯（永不隐形）；check_series_layout 双信号+tmdbUnavailable 均为事实；orchestratorSkill 的 MUST/never 守门措辞处决，改事实+理由式；活文档谓词守门人处决（throttled 可见）。**主动质询甲：三桶队列映射是否重新引入确定性守门？**——否：completeDone/completeError 只登记 worker 已作出的判断类别（报告入账 vs 瞬时重试），不产生任何"值不值得做"的判决；内容判决全部在 worker（no_safe_match per item）与 orchestrator（差额再派）手里。**主动质询乙：itemId 幻觉防线是否越权？**——属事实盘点豁免：它是入账层的账实核对（报告条目 ∈ 任务清单），等价于会计拒绝为不存在的科目记账，不评判任何字幕对错；且方向是漏记不错标（⑥同向） | 符合 |
+| ②主代理意图原样抵达执行者 | representativeEpisodeId/representativeMovieId 处决（mapper 纯信使）；dormant 吞噬+谎报处决（四态回执）；sibling remainingWorkSummary 注入 prompt（明示 context-not-command）；retireAllForSeries 归位 worker_task；R-11 范围裁量进 payload.seasons 原样抵达 | 符合 |
+| ③子代理粒度=季/批，合集是最高效命中 | 任务形状=范围事实清单（单季/多季/全剧由主代理裁量）；worker skill 教批量收割+跨季认知+"最高效命中"原文；zip 包内清单归 agent（zimuku 季包不再盲拿首文件）；超时按目标数缩放 | 符合 |
+| ④机械层只产事实永不产指令 | 缺口清单 ORDER BY 注明"清单排序非执行指令"；活文档 missing/throttled/nextRecheckAt/sampleReason/seriesName 全事实化；providerFailures/archiveEntries/tmdbUnavailable/四态回执均为事实呈报；recheck_after 不再从 jobs 调度态倒灌（item 自算自持）。残留豁免：claimNext FIFO（到达序=事实，R-10）；worker timeout/stepCap/cap=资源自卫机械 | 符合 |
+| ⑤拿不准就停车，错认比停车糟 | skill 逐集"跳过该集不弃整包"教导；rule 1b 启发式判决已可稽核（status_reason 落库，T12b）+曝光债登记 dashboard 战役；recognize/ingest park 纪律未动（审计 C 区认证的模范子系统）；dormant"停车即死刑"悖论消解（blocked_dormant 事实回执 + find 任务永不 dormant） | 符合 |
+| ⑥零误触发 | realign 五重安全层字节未动（T9c 逐 hunk 亲验声明在案）；exceedsSeasonTable 保留（仍可点火的形态存在，C-B5）+diskLayoutNonstandard 并列，判断归 orchestrator，灾难防线在 executeRealign；itemId 幻觉防线为⑥在入账层的镜像；realign 富化补面降低字幕先行误认边际（A-F13） | 符合 |
+| skill 修订权只在人+主控 | 本战役两次 skill 重写（findSubtitleSkill/orchestratorSkill）均主控亲笔（bd2c675/a1b720f），实现子代理 prompt 中明令禁区，无违例 | 符合 |
+
+**"待核/TODO/暂时"零存活检查**：grep 零命中（两处"暂时"为正常语句非搁置标签）。
+**跨战役登记（非搁置，已裁决立项/记录在案）**：quota 呈报通道（R-6 发现，立项）；ORIGIN_UNKNOWN 不回查（C-C1 债）；C-B1 时长死枝（警示注释在案）；多语言单值截断（A4 已申报）；外部媒体服务器共库扫描窗口风险（C-B3，部署文档责任）；retireClaimed 孤儿化+MediaIdentitySchema 零外引（T9a 新发现，下轮清算候选）；B-15 剧级合集终态（R-11 已裁"按事实裁量"，形已留）。
+
+## 六、R2 复审双签记录（Task 14）
+
+**第一轮复审（2026-07-16）：FAIL。** 审计官全项目复审推翻了 R1 对照表①行的"符合"判定：
+
+- **F-R2-1（阻断）**：orchestratorAgent.ts:97-99 的 system prompt 仍留 "you MUST … only proceed
+  if exceedsSeasonTable is true — never dispatch" 守门原文——B5 定罪现场是两处（skill+agent
+  instructions），a1b720f 只处决了 skill 那半。每轮必达的权威信道与主控亲笔 skill 直接冲突，
+  且在指令层判死 D1 第二信号。**主控认领：这是主控本人的漏改**——正是反省书"活着但灵魂是
+  旧的"的定义，R2 纪律因此存在。已亲手处决（92bb23f），守门措辞全仓 grep 仅存死刑记录注释。
+- **收官前修五项**（修复中，完成后追记）：F-R2-2 spawn_sibling 盲报成功；F-R2-3 orchestrator
+  最终汇报黑洞（blocked_dormant"上报人类"无落地通道，与 R10 叠加=操作员零知情）；F-R2-4
+  skill 教的"停牌提前重派"权力管道不存在（新违例：主控亲笔教导了不存在的能力）；F-R2-5
+  coalesced 谎报 identical+新意图丢弃；F-R2-6 ingest 覆盖路径绕过阶梯归零。
+- **登记十条**（移交下轮清算/立项）：park() 注释残留 wake 谎言；completeNoMatch 幽灵指针；
+  db.ts v9 注释教旧灵魂（attempt/dormant/priority=100）；跨桶重复 itemId 无守卫（⑥边际，
+  ingest 自愈兜底）；realign 崩溃恢复 detail 的 Jellyfin 主语残留；B11 决策数 DB-authoritative
+  改判显式立项；seasons:[] 静默归一未申报；fetchLib 两处未墓碑幽灵；deleteSeriesRows 注释
+  Jellyfin 叙事；**R10 结构性**：realign park 后无带内复活通道（wake 已删+upsert 拒绝+
+  retireAllForSeries 循环依赖），F-R2-3 修复补上知情权后，复活通道归 dashboard 救援页战役。
+- 审计官同时**确认**：五重安全层零改动宣称属实（git diff 亲验）；两项主动质询判定同意；
+  清算波无删漏删错；v11 身份无错位；R-5/B9/B10/C-E2/F9/F10/F15 足额交付。
+
+**第一轮修复闭环**：阻断 F-R2-1（92bb23f，主控亲改）；五项收官前修（11b06ce，TDD 全绿）；
+skill 措辞同步+spawn 回执张力主控裁决收口（b598a3b）。
+
+**第二轮复验（2026-07-16）：行为层六项全 PASS，新阻断 B-R3-1**——三个派发工具的静态
+description 未与 intentRefreshed 分叉同步（"nothing new was written / NOT delivered"对
+intentRefreshed:true 是平直假话，每轮必达面，会诱导模型换 shardIndex 重 spawn 白烧 sibling
+run）。复验官确认：修复真实性经真 sqlite 断言核验非 mock 到绿；五重安全层/边界语义/默认
+窗口语义全部未破坏；并预授权"改完这约五行文案可径直进真站闸门，无需再动行为代码"。
+存档级备注三条随录：ingestTrigger 注释引用机制不严谨（结论成立）；coalesce 不刷
+parent_job_id（语义选择，留档）；心跳忽略回执（orchestrate 无 dormant 结局，不可达）。
+
+**B-R3-1 修复**：2e41a67（主控亲改，三处 description 与回执对齐，46/46 绿，"NOT delivered"
+仅存 note 在跑分支=真话，与死刑记录注释）。
+
+**双签**：复验官预授权 + 主控复核签字（2026-07-16）——**R2 PASS，准入真站闸门**。
+本环节全程：两轮对抗复审共揪出 1+5+1 处战役自身交付缝隙（含主控本人漏改的半个定罪现场），
+全部闭环。R2 制度在其首次全流程执行中即证明了自身价值。
+
+## 七、真站闸门报告（Task 15 · 主控亲跑，2026-07-16，tunnel）
+
+用户升级令执行：双容器实战，生产容器全删字幕重测，配额不设限。**判定：PASS。**
+
+**测试腿**（scout-test，tsx 源码，冷部署 rsync@2e41a67 后代码）：
+- v10+v11 迁移在带存量数据的真库自动升级（schema_version 1→3）✓
+- D2 心跳冷启动补拍（meta 缺失→立即收敛 pass）✓；F-R2-3 orchestrate 汇报落 runs ✓
+- **零误触发新体制首考**：27/28 剧 diskLayoutNonstandard=1 的诱惑下，真模型派 20 find /
+  0 realign（守门指令已废、判断归 agent 的世界里⑥依然成立）✓
+- R-11 剧级裁量派发（20 单全剧范围）✓；**批量收割决定性一击**：job 297 一轮 run 19 集入账
+  （事故形态=一 claim 一集的正面否定）；job 296 一轮 6 集判无+item 阶梯逐集 +1 ✓
+
+**生产腿**（subtitle-scout 容器，Dockerfile dist 构建 + apt ffmpeg）：
+- 化石库（v9 前旧管线 schema）按 D7 裁决归档重生，空库直落终态 schema ✓
+- 全删 52 个 sidecar（manifest 亲验零视频文件）→ 冷摄取 → orchestrate（2 轮汇报入 runs）→
+  dist 构建 worker 收割：**四结局词表全亮相**（4 installed / 1 no_safe_match / 1 retry_later /
+  2 error），删除的字幕由 agent 重新装回中 ✓
+- **TMDB 间歇超时（国内直连环境问题，非代码）下的韧性=设计预期**：fail-soft 降级、逐 pass
+  重试、census 单调收敛（108→170→408 集），守护全程无停摆无崩溃 ✓。部署债登记：TmdbClient
+  代理/镜像配置口（老容器同病，非本战役引入）。
+
+**B-matrix 复跑（债务 D3）**：7 形态真模型矩阵。首轮 ×2=14 局：**零误触发 14/14**（realign
+仅现于两个应派形态，且每局 layout 事实先于 dispatch_realign_task）；12/14 PASS，2 FAIL 为
+over-cap-spillover 形态前提死于 R-11（全剧单+coalesced 不耗预算→撞不到 cap，与 plumbing cap
+fixture 同病理）——修形为五剧各一季（7d4b30a）后复跑 **3/3 PASS**。escape valve
+（spawn_sibling）在新语义下验证成立。矩阵 runner 同步适配（1463532：listByState 处决善后 +
+R-11 季覆盖比较器）。
+
+**闸门后续观察项**（不阻断判定）：生产腿长尾收敛继续（TMDB 晚高峰抖动下 daemon 自主磨合，
+missing 220 排队消化中）；quota 打满行为未在本轮触发（配额未耗尽），留待日常浸泡观察。
+
+**胶水层修复 + 全仓语义考古 + 债务清算战役至此全部收官。dashboard 讨论与生产切换解冻。**
+
+## 八、dashboard 重建战役收官报告（F7 · 主控，2026-07-17）
+
+**范围**：`78f8093..8df4a85`（18 commits：G1-G6 后端半场 + F0-F6 前端半场 + R2 双签修复两轮）。
+spec=2026-07-16-dashboard-rebuild-design.md；宪法=web/DESIGN.md；F0 裁决（采用 Astryx）落于计划文件。
+终态：root 84 文件/1357 测试 + web 21 文件/181 测试全绿，双侧 tsc 零错。
+
+### R1 北极星对照表（主控亲笔）
+
+| 北极星 | 判定 | 依据 |
+|---|---|---|
+| ① 判断归 agent，确定性检查不守门 | ✓ | dashboard 零新增门；settings 五键中仅 target_languages 被消费（配置非门）；hardsub/extras 只存取待救援官战役 |
+| ② 意图原文送达 | ✓ | redispatch 与 dispatch_find_subtitle_task 工具逐字段同形（identity 元组/taskType/seasons/includeThrottled），仅 reason 标注人工来源 |
+| ③ 颗粒=季/批 | ✓ | redispatch 剧级+seasons 数组，与 R-11 世界同构 |
+| ④ 机械层产出事实不产出指令 | ✓（R2 维度二"未能推翻"）| 全部端点=repo 直译聚合；receipts=trace_json 纯解析（截断诚实计 unparsed）；唯二写扳手 Rerun/claim=HITL 合法 |
+| ⑤ 拿不准就停车 | ✓ | 甄别台=停车事实呈现+人工认领，无自动裁决面 |
+| ⑥ 零误触发 | ✓ | dashboard 无 realign 扳手；重派仅 find_subtitle |
+
+### R2 复审双签（对抗审计官全项目复审）
+
+- **一轮 FAIL**（3 MAJOR / 8 MINOR / 6 NIT）：R2D-13 realign 痕迹缓冲永久泄漏+直播空转（审计官脚本实证——G3 复审漏掉的整条腿）；R2D-1+9 worker run 的 trace_json 在 UI 无入口+React key 撞车；R2D-5 无 token+0.0.0.0 下写面质变。
+- **修复轮**（91851fd）：traceBus 加 snapshotPrefix/peekPrefix（前缀带尾连字符防 job-420 误吞）、realign runs 补收官快照+全终局排空、recent DTO 加 id/seriesId→RunDetail 泛化（worker run 详情+回放+Rerun）、无 token 三行高声告警（**真站活体验证打印**）、清扫 R2D-6/8/10/11/12/17。
+- **二轮 PASS（有条件）**：三 MAJOR 全 CONFIRMED-FIXED、无新 MAJOR；条件项 R2D-18/19/20+残留 R2D-4 由主控亲修四刀（8df4a85）清零。
+- **主控改判落字**：R2D-5 不做 403 硬拒（保无 token 家用部署），连同 R2D-2（fs/list 裸机全盘枚举）归档进 **Sonarr 式单管理员鉴权立项**（发布前必做）；「pass 卡无 Rerun」维持——pass≠series，Rerun 语义挂 worker run 详情+Pending 行。
+
+### 真站腿（router 测试容器，串行窗口：停产→测试→复产，2026-07-17 午）
+
+- v12 迁移真库自动升级（schema 3→4）+ media_roots env 种子（4 根）✓；无 token 告警活体打印 ✓
+- **四 tab 真数据过目**：Library 海报墙（36 部/筛选 chip/覆盖角标）；Workflow 三泳道（The Rig 停牌行含真实原因+next recheck、passes 回执 chip `1 created·2 revived·19 coalesced·42 unparsed`、`110 parked · triage →` 入口）；甄别两箱（110 真停车+P6 存量认领）；Settings 三区+诚实效果注记逐条在场 ✓
+- **SSE 直播实锤**：真 worker（tmdb:112581）痕迹行从 1 条实时涨到 3 条（read_doc 2.7s→search_source 34.6s→30.3s）+蓝点 ✓
+- **三层格阵皇冠**：访问触发惰性 TMDB 目录刷新（canonical 0→6），S2 第 5 集渲染 dashed 磁盘缺档格，覆盖句自动升级"3/6 集——1 集停牌中，1 集磁盘缺档" ✓
+- 底线核查：视频文件零触碰、无关容器零触碰、生产容器窗口后复跑 ✓
+
+### 登记（债务与立项）
+
+- **鉴权立项（发布前必做）**：Sonarr 式单管理员 + R2D-5/R2D-2 归档（无 token 写面靠告警过渡）。
+- **债务**：target_languages 改后需重启（spec"即时生效"降级，UI 已如实标注）；trace_retention_days/scan_interval_ms 零消费（纯存取，UI 已标注）；receipts 解析受 resultSummary 200 字符截断（真站 42/64 unparsed——考虑 dispatch 工具结果加长 cap 或结构化回执面）；serveStatic 前缀穿越（战役前遗留，另立小修）；R2D-16 双 accent 同屏（真站看=可接受，暂维持）。
+- **生产切换**：生产容器仍跑 78f8093 dist 构建（无 dashboard）。切换=compose build 重建（用户过目本报告后择机执行）。
+
+**dashboard 重建战役至此收官。四 tab 真数据+SSE 直播+双签全绿，待用户过目。**
+
+## 九、债务清扫波收官报告（四战役第一役 · 主控+K3 执行器，2026-07-17 晚）
+
+六件独立小刀（spec：docs/design/2026-07-17-debt-sweep-design.md），K3 一单一件共 7 派单
+（D3/D5 各拆前后半场）、主控每单逐 diff 亲核+鲜验，全程零返工单：
+
+- **D1**（2481d2e）：dispatch_* 工具 resultSummary cap 200→400，回执 JSON 完整存活；其余工具
+  与 argsSummary 维持 200。§八登记的"42/64 unparsed"债务从机制上拔根，真站命中率待下次部署观测。
+- **D2**（a55b4c2）：serveStatic 判定改 `base 恰等 ∨ startsWith(base+sep)`，兄弟目录同前缀穿越
+  封堵；回归探针用 `%2e%2e%2f`（WHATWG URL 解析连编码点段都归一化，裸/整段编码 `..` 根本
+  到不了 serveStatic——K3 实测发现，主控核实收录）。
+- **D3**（cdbeac3+e142a7d）：quota 事实链贯通——`applyQuotaEvent` 纯函数（quota 事件写
+  `quota_state_<provider>` 旁路键、`/download` 端点 200 清键，成功+预警的事件顺序天然自洽）
+  → workers 端点 `providerQuota`（读侧滤过期+fail-soft）→ Activity 顶部灰点中性事实句
+  `{provider} quota exhausted · resets in Xh`（英文区铁律，不进 i18n）。
+- **D4**（da008e8）：TmdbClient 开 `TMDB_BASE_URL`/`TMDB_PROXY_URL` 两配置口（镜像域末尾斜杠
+  剥离；undici ProxyAgent 惰性挂载，import 失败告警降级直连）；缺省零行为变化有断言锁死
+  （init 不含 dispatcher 键）；部署区 nonSecrets 展示两键。
+- **D5**（9af8eba+c07395a）：settings 零装饰品——scan_interval_ms 每 tick 惰性读（行为级>部署级
+  >默认）；trace_retention_days 驱动 daemon 2c 每日修剪（runs 行保留只清 trace_json，meta 时间
+  门）；target_languages 提供者化（ingest 每轮 pass 起点新鲜求值 + find_subtitle 每次派发覆写
+  ——G4 currentRoots 同款手法；realign 字幕先行维持启动快照，代码注释如实标注非债务遗漏）；
+  设置页三条注记归真（settings_backend_unconsumed_note 整键退役）。§八登记的两条 settings 债
+  全部清偿。
+- **D6**（2f6570a）：富化重试空转击穿拔根——主控备料时核实 spec 预想的"`[]` 落不了库"并不存在
+  （两条写路 `!= null` 判空数组为真），真洞是 getDetails 404（权威无数据，永久态）与瞬时失败被
+  `?? null` 拍平：404 死 id 永久占据每轮 10 个重试槽。修法=404 落 `[]` 退出候选谓词、瞬时失败
+  维持 null 保重试语义；三条护栏测试（fixture 沿用 24240 悬案的死 id 本尊）。
+
+**收官核查**：root 85 文件 1422 tests 全绿；web 24 文件 227 tests 全绿；双侧 tsc 零错。真站腿
+（D1 unparsed 回落、D3 事实句活体、D4 镜像实配）待下次生产重部署跟车观测——测试台已停役且与
+生产共 nas_media（串行纪律），不为验收单独复活。
+
+**K3 执行器第二役战报**：7 派单全部一次交付零返工（对比验收轮一的两次溜号），任务书"自带全上下文
++强制汇报格式"纪律显效；两处自主偏离（D2 探针编码、D3 router.test 涟漪修复）皆正确且如实申报。
+
+## 十、救援官战役收官报告（R1-R6 · 主控+K3 执行器，2026-07-18 凌晨）
+
+**背景**：spec=docs/design/2026-07-17-rescue-officer-design.md；四战役队列第二役，紧接债务清扫波（登记册 §九）。执行纪律沿用：K3（opencode company/kimi-k3）一单一件+任务书全上下文自带，主控逐 diff 亲核+亲跑测试；`src/agent/skills/` 改动=主控亲笔铁律；`realignExecutor.ts` 圣文件恒禁触（本役一次单字段类型加字段例外，同 imdbId 先例）。
+
+### 六单落地
+
+- **R1**（1e08aff）：机械层管道——mapper 按目录分组备料（duplicate-content/excluded-extra 过滤，谓词 `isRescueEligible` 单源）、ffprobe 时长探针、runner 三桶收割（trace 排空纪律逐形照 find-subtitle 先例）。
+- **R2**：rescueSkill 判断纪律主控亲笔（8af2576，双证据门槛/宁停不猜/特典灰区 S0-or-15min/finalize 单一生效通道——决策工具只验证登记不落库，agent 中途死掉零副作用，主控安全化定夺）+K3 工具面/factory/cmdWatch 路由（82c4448）。
+- **R3**：orchestratorSkill 补 parked 事实块+救援派发礼仪主控亲笔（78cf195，一趟一单/共享 100 预算/识别判断归 worker）+K3 接线（cdfcf2b，`dispatch_rescue_task` 单例身份`rescue-backlog`+B-matrix；熔断重派一次，零脏活）。
+- **R4**：K3 机械铁案层（30719c3，正则红线 SP/OVA/OAD/Special 绝不入表；K3 溜号一次，测试 describe 块错位嵌套，主控 surgical 修复）+**主控亲手**发现并补上翻案死循环坑（e346e82：spec 原案"删 parked 行触发重识别"是 no-op——机械过滤按文件名判定，删了下一轮又命中；独立豁免表 `extras_exemptions` 破局）+K3 翻案箱前端（fb7bfa3）。
+- **R5**：**主控亲手四刀**——schema v15 CHECK 约束建新表重建（e310c5f，SQLite 不能 ALTER CHECK，spec"无新列"低估了难度；自己写的迁移安全性测试当场抓出手抄列表漏了 v10 才加的 search_attempts）/ markHardsubAssumed+CoverageDTO 新桶（0e12991）/ findSubtitleSkill hardsub_assumed 判断段主控亲笔（6c334b7，双证据：括号组名+搜索已穷尽，`hardsubMode==='off'` 时整段文字零"hardsub"字样）/ rule 4b aggressive 档机械直判（e832e66，探针 null≠证据）。+K3 前端主体与主控收尾接线（63841bf：finalize 第四桶/mapper 透传/harvest 路由/cli 派发覆写；K3 该单两次熔断杀死，第二次死前已写 21 web 文件零 commit，验尸只发现一处真错——注册了不合法的 `defineTheme` token，第三方设计系统 TokenName 是封闭枚举，改用 `color-mix` 混两个既有 token 达成同一视觉效果；其余前端工作完整正确直接采用）。
+- **R6**：README 命名最佳实践新节+甄别/设置页文案对齐（0d9e311，含清理孤儿 i18n 键 `settings_rescue_officer_pending_note`）+本节真站验收。
+
+root 1497/web 232 全绿，双侧 tsc 清（每单落地即验，非收官一次性补测）。
+
+### 真站验收（生产容器，2026-07-18 凌晨，用户已授权"可切生产/媒体目录内可折腾"）
+
+**部署**：rsync 全量代码 → `docker compose build && up -d` → schema 迁移 5→7（v14 extras_exemptions + v15 hardsub CHECK 重建）在真实生产库上一次成功，**census 零丢失**（26 剧/408 集/8 影/1 根，与迁移前逐字节一致），CHECK 约束真机验证接受 `hardsub-assumed` 新值。这是本役最高风险操作（两次 12 步建新表重建，episodes 表还有外键），在真实数据上验证通过。
+
+**口径①②（真机停车场跑一轮救援 pass）**：真实 76 条停车（40 duplicate-content 不算/24 ambiguous/12 no-signal），直接构造 `rescue_identify` worker_task（同 `dispatch_rescue_task` 工具同一代码路径，跳过 orchestrator 自主择时）触发真实 agent 跑——5 组：
+- **Peacemaker**（tmdb 110492）单强证据+get_tmdb_details 验证 → 认领 → requestIngest 自动踢扫描 → 3+ 集正确入 S02E0x。
+- **Cassandra**（tmdb 248982，双候选辨识后选中年份匹配的一个）→ 认领 → 6 集正确入 S01E01-06。
+- **The Fantastic 4 - First Steps**（tmdb 617126）→ 认领 → 电影正确入库，探针命中 embedded。
+- **High School D×D**（tmdb 45950）→ agent 正确识别出"是哪部剧"（search 三次改写查询词验证），但**未指定季**去认领——P7 disambiguation 守卫接管，12 个 Hero 文件从 `no-signal` 转 `override-ambiguous-numbering` 诚实停留，不是错误，是"识别出剧、季留给人工"的正确谦逊（当年 Prickly Heat/24240 悬案的反面教材在此正面验证：宁可少做一步也不猜错）。
+- **The Astronaut (2025)**：TMDB 上真有两部同名 2025 电影，agent 正确识别出冲突并 keep_parked——**发现一处真实质量瑕疵**：agent 在中间 `keep_parked` 工具调用时写了丰富理由（"Multiple 2025 movies with the same title on TMDB..."），但最终 `finalize` 报告里对同一目录的 reason 退化成了机械层原有的"ambiguous"三字——skill 只教"repeating the decisions you recorded"，没强制"逐字复制"，模型有权限但没照做。**功能安全性未受影响**（没有误认领、没有死循环），是文案质量而非正确性问题，留作 skill 未来润色项，已如实记录不掩盖。
+
+**口径③（特典排除开关）**：真实媒体库扫描确认零 NC 类文件存量（用户库很干净）——无法用真数据演示。改用用户已授权的媒体目录内合成文件测试：`/media/tv/ZZ-Rescue-Test-Synthetic/` 隔离目录放一个真实 `[TestGroup] Synthetic Show - NCOP01.mkv`（ffmpeg 生成的合法最小 MKV），打开 `exclude_extras` 设置，下一轮 ingest **通过** ✓——机械铁案层正确将其 park 成 `excluded-extra`（词边界正则命中 NCOP，归甄别页 Excluded extras 箱）。
+
+**口径④（hardsub 三档）**：aggressive 档机械直判。首次合成测试暴露一个测试设计教训（如实记录）：rule 4b 活在 `classify()` 里，只对 `recognize()` 识别成功的文件运行——用 TMDB 认不出的假剧名做测试，文件在识别阶段就 park 成 no-match，根本到不了 rule 4b（这是正确行为：没有 episodes 行就无处写 hardsub-assumed 状态，hardsub-assumed 是 recognized 文件的一种覆盖态）。改用真实可识别剧名（`[TestGroup] Dandadan S01E01.mkv`，TMDB 240411）+ 发布组标记 + ffprobe 确认零字幕流 + aggressive 档重测，下一轮 ingest **通过** ✓——episodes 行落 `sub_status='hardsub-assumed'`，status_reason 精确为"aggressive 档机械直判：发布组标记 + 探针确认零内嵌字幕轨"。（rule 4b 逻辑本身已被 6 条单测穷尽覆盖，含探针 null≠证据、有内嵌轨则 rule2 优先等边界。）
+
+### 真站验收总账
+
+四条口径全部真站通过。验收后 census 从迁移前 26 剧/408 集/8 影**合理增长**到 28/430/9——增量全部是救援 pass 真实认领入库的内容（Peacemaker +16 集、Cassandra +6 集、The Fantastic Four First Steps +1 电影），不是测试残留。两个隔离合成测试目录（ZZ-Rescue-Test-Synthetic / Dandadan 2024）+ 合成产生的 series/episodes/parked/exemption 行全部清理干净（residue 三处查零），我为测试临时打开的 `exclude_extras`/`hardsub_mode` 两设置已复位到未设置态（用户没主动配过，恢复测试前状态）。High School D×D 12 集仍正确停在 `override-ambiguous-numbering`（识别出剧、季待人工）。
+
+**辐射范围核查**：本次真站验收全程仅动 subtitle-scout 容器 + 两个隔离合成测试目录（用后即删）+ 我临时改的两个测试设置（已复位），Jellyfin 容器与用户真实媒体文件全程零触碰。
+
+**救援官战役至此收官**：R1-R6 六单落地，四条真站口径全绿，双侧 1497+232 测试全绿。下一役=重复源 P1-P5。
+
+### K3 三役战报（R1-R5 累计）
+
+多次熔断杀死（会话外部因素，非任务本身问题）但**零脏活损失**——被杀单要么零 commit（探索阶段），要么留下可修的小错（一次 describe 嵌套错位、一次非法主题 token），从未留下语义错误或已提交的半成品破坏代码正确性。派单节奏=主控趁跑单预写下张任务书，零空转；被杀单=原样重派或主控直接续完，视剩余量取舍。
+
+### 登记
+
+- **待办**：重复源 P1-P5 → 鉴权 A1-A4（specs 已在册，计划本地未入库）。
+- **技术债**：Astronaut 案例暴露的 finalize-reason 与 tool-call-reason 一致性未强制，留给未来 skill 润色（非阻塞项）。
+- **辐射范围核查**：本次真站验收全程仅动 subtitle-scout 容器+两个隔离合成测试目录，Jellyfin 容器与真实媒体文件全程零触碰。
+

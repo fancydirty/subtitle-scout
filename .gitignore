@@ -25,6 +25,10 @@ deploy/*
 worker/
 # 内部设计/战役/事故记录整目录不随公开仓（开源时不带内部过程文档）
 docs/
+# 例外：docs/design/ 是重构的唯一依据（spec + 审计报告），丢了无法复原，必须入库。
+# 开源时如需剥离，删这两行即可（用户裁决 2026-08-08）
+!docs/
+!docs/design/
 jellyfin-config/
 cache/
 
