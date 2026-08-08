@@ -144,6 +144,27 @@ CREATE TABLE subtitle_verify (      -- v28（字幕时间轴校验）：检测�
 );
 CREATE INDEX subtitle_verify_verdict ON subtitle_verify(verdict);  -- listShifted 的批量查询
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- schema_version, last_reconcile_at 等
+-- v30（2026-08-08 新架构）：files/works 表。机械扫描的产出与识别 agent 的产出。
+-- （fresh install 走完整 MIGRATIONS 链，v30 entry 的 CREATE TABLE IF NOT EXISTS 会跳过；
+-- 留在这里是为了让终态 schema 可读完整——同 v28 注释的口径。）
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT NOT NULL UNIQUE, dir TEXT NOT NULL, filename TEXT NOT NULL,
+  size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+  duration_sec INTEGER, embedded_langs TEXT, audio_langs TEXT,
+  work_dir TEXT, season INTEGER, episode INTEGER, parse_confidence TEXT,
+  work_id TEXT, needs_subtitle INTEGER, sub_status TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0, next_retry_at INTEGER, last_error TEXT,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
+CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
+CREATE INDEX IF NOT EXISTS files_needs_subtitle ON files(needs_subtitle);
+CREATE TABLE IF NOT EXISTS works (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, original_title TEXT, year INTEGER,
+  media_type TEXT NOT NULL, origin_lang TEXT, overview TEXT, poster_path TEXT,
+  chinese_titles TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
   `.trim(),
   // v10（胶水层修复战役，2026-07-16）：三列事实增量。layout_nonstandard=摄取层观察到的
   // "磁盘布局不合规范形"series 级事实（债务D1，realign 出生信号之一）；search_attempts=
@@ -456,6 +477,75 @@ CREATE INDEX IF NOT EXISTS subtitle_verify_verdict ON subtitle_verify(verdict)`,
     )
     if (!columns.has('lease_started_at')) {
       db.exec('ALTER TABLE jobs ADD COLUMN lease_started_at INTEGER')
+    }
+  },
+  // v30（2026-08-08 新架构，spec docs/design/2026-08-08-new-architecture-design.md）：
+  // 新增 files/works 两张表，承载"机械扫描 → 识别 agent → 传送带 → 字幕 agent"的新管线。
+  //
+  // 为什么新表而非改旧表：旧表（series/episodes/movies）是"按集建行"模型，新架构是
+  // "文件级事实 + 作品级身份"模型——两者生命周期不同，混在一张表里会让迁移变成危险操作。
+  // 旧表**保留不删**（新架构 spec-gap M6：subtitles.provider_ref 来源证据、unavailable 穷尽
+  // 结论无法从磁盘重建，需在阶段 4 嫁接）。新表与旧表并行，前端切到新表后旧表冻结。
+  //
+  // files：机械扫描的产出，每行一个媒体文件，零身份判断（work_id NULL=未识别）。
+  // works：识别 agent 的产出，每行一个作品（TMDB 身份）。
+  //
+  // 纯 CREATE TABLE + ADD COLUMN，无 CHECK 约束变更，不触发 12 步建新表。
+  // CREATE TABLE IF NOT EXISTS 是**必需**：fresh install 从 v0 起跑完整 MIGRATIONS 链，
+  // 新库会先由 v9 终态建出（见 v28 注释的同口径），裸 CREATE 会撞 "table already exists"。
+  `
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT NOT NULL UNIQUE,          -- 绝对路径
+  dir TEXT NOT NULL,                  -- 所在目录
+  filename TEXT NOT NULL,             -- 文件名
+  size INTEGER NOT NULL,              -- 字节
+  mtime INTEGER NOT NULL,             -- 毫秒
+  duration_sec INTEGER,               -- ffprobe 探测，可空（探测失败/未探测）
+  embedded_langs TEXT,                -- JSON 数组，ffprobe 内嵌字幕轨语言
+  audio_langs TEXT,                   -- JSON 数组，ffprobe 音轨语言
+  work_dir TEXT,                      -- 作品根目录（扫描时算好，见 spec-gap M1）
+  season INTEGER,                     -- 季号（按 Jellyfin 约定解析，可空）
+  episode INTEGER,                    -- 集号（同上）
+  parse_confidence TEXT,              -- 'high'/'low'/'none'（spec-gap M5）
+  work_id TEXT,                       -- NULL=未识别；'tmdb:<id>'=已识别
+  needs_subtitle INTEGER,             -- NULL=未判定；0=不需要；1=需要
+  sub_status TEXT,                    -- NULL=未处理；'missing'/'covered'/'embedded'/'unavailable'
+  attempt INTEGER NOT NULL DEFAULT 0, -- 识别尝试次数（spec-gap B2）
+  next_retry_at INTEGER,              -- 下次可重试时刻；NULL=立即
+  last_error TEXT,                    -- 最近失败原因（'tmdb-404'/'timeout'/...）
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
+CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
+CREATE INDEX IF NOT EXISTS files_needs_subtitle ON files(needs_subtitle);
+CREATE TABLE IF NOT EXISTS works (
+  id TEXT PRIMARY KEY,                -- 'tmdb:<id>'
+  title TEXT NOT NULL,                -- TMDB 主标题
+  original_title TEXT,                -- 原名
+  year INTEGER,                       -- 首映年
+  media_type TEXT NOT NULL,           -- 'tv' / 'movie'
+  origin_lang TEXT,                   -- TMDB origin language（判定国产片用）
+  overview TEXT,                      -- 简介
+  poster_path TEXT,
+  chinese_titles TEXT,                -- JSON 数组，中文译名变体
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)`,
+  // v30（续）：media_roots 加 content_type 列——照 Jellyfin 的库级类型定义
+  // （spec-gap M2）。'movies'/'tv'/'mixed'，默认 'mixed'（agent 判断）。
+  // 条件式 ALTER 保证幂等（同 v29 的 lease_started_at 口径）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_roots'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(media_roots)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('content_type')) {
+      db.exec("ALTER TABLE media_roots ADD COLUMN content_type TEXT DEFAULT 'mixed'")
     }
   },
 ]
