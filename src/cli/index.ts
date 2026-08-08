@@ -59,7 +59,7 @@ import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
-import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine } from './watchStartupWarnings.js'
+import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning } from './watchStartupWarnings.js'
 import type { ReconcileAllResultDTO } from '../dashboard/apiV2.js'
 
 function requireEnv(name: string): string {
@@ -190,7 +190,11 @@ async function cmdReconcileAll() {
   // media_roots 表为空时充当首启种子（见 SettingsRepo.seedRootsFromEnv）。这是一次性命令
   // （跑完即退出），不需要惰性求值带来的"运行期加根即时生效"收益，但仍然统一走同一套接线，
   // 不再维护第二套"从 env 直读"的旧逻辑。
-  settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now())
+  // D7（2026-08-08）：种子现在过嵌套闸门，冲突的会被跳过。env 顺序静默决定守备范围
+  // （先写的赢），必须打告警——否则"为什么少了一个根"无从排查。
+  for (const r of settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now()).rejected) {
+    console.warn(nestedRootSkipWarning(r.path, r.conflict))
+  }
   const currentRoots = () => settingsRepo.listRoots().map(r => r.path)
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
   // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
@@ -265,7 +269,10 @@ async function cmdWatch() {
   // ingestPass；handleWorkerTask 的 realign/find_subtitle 分支也各自在派发时重新调用它，
   // 不复用一份旧闭包捕获的数组（见各自分支的注释）。
   const settingsRepo = new SettingsRepo(db)
-  settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now())
+  // D7（2026-08-08）：同上，种子过嵌套闸门，跳过的要让运维看见。
+  for (const r of settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now()).rejected) {
+    console.warn(nestedRootSkipWarning(r.path, r.conflict))
+  }
   const currentRoots = (): string[] => settingsRepo.listRoots().map(r => r.path)
   if (currentRoots().length === 0) {
     console.log(zeroRootsWarningLine())

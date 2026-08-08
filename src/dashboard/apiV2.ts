@@ -850,7 +850,18 @@ export function addMediaRoot(
         : `path contains existing media root ${hit.root} — remove that root first if you want to guard the parent directory instead`,
     }
   }
-  settingsRepo.addRoot(resolved, now)
+  // D7（2026-08-08）：addRoot 自己也是嵌套闸门（堵 seedRootsFromEnv 那条旁路）。这里的
+  // 上游校验保留——它能给出指名道姓的文案；闸门是双保险，理论上不该命中。真命中说明上游
+  // 校验与闸门口径漂移了，必须让调用方看见而不是静默丢弃。
+  const added = settingsRepo.addRoot(resolved, now)
+  if (!added.ok) {
+    return {
+      ok: false,
+      error: added.conflict.relation === 'child'
+        ? `path is already covered by media root ${added.conflict.root} — remove that root first if you want to guard this subdirectory instead`
+        : `path contains existing media root ${added.conflict.root} — remove that root first if you want to guard the parent directory instead`,
+    }
+  }
   return { ok: true }
 }
 

@@ -6,6 +6,20 @@ export function zeroRootsWarningLine(): string {
   return '[watch] no media roots configured（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）— subtitle writes are not root-restricted; 去 dashboard 加一个守备目录，或设 MEDIA_ROOTS 作首启种子'
 }
 
+/** MEDIA_ROOTS 种子里某条因嵌套被闸门跳过（D7，2026-08-08）。
+ *
+ *  为什么必须告警：env 顺序静默决定守备范围（先写的赢）。运维配了 3 个根却只生效 2 个时，
+ *  没有这行日志就只能靠猜。文案要说清"跳了谁、跟谁撞、哪个方向"，以及为什么不能留着——
+ *  嵌套根会让扫描重复走同一批文件，且 D1 的逐根差集会把子根的行当成"消失的文件"清掉（C29）。 */
+export function nestedRootSkipWarning(
+  path: string, conflict: { root: string; relation: 'parent' | 'child' },
+): string {
+  const dir = conflict.relation === 'child' ? '它是后者的子目录' : '它包含后者'
+  return `[watch] ⚠️ MEDIA_ROOTS 跳过 ${path}——与守备目录 ${conflict.root} 嵌套（${dir}）。`
+    + '嵌套根会让扫描重复走同一批文件；且删除逻辑按守备目录逐个比对差集，'
+    + '子根的行会被当成"消失的文件"清掉。只保留其中一个。'
+}
+
 /** env/DB roots 不一致告警：MEDIA_ROOTS 只在首启播种一次，之后改 env 不生效，真正的守备目录在 DB。
  *  env 为空时不告警（清空 env 是合法操作，DB 是唯一真相）。 */
 export function rootsMismatchWarningLine(envRoots: string[], dbRoots: string[]): string | null {

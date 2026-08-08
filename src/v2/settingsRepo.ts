@@ -1,5 +1,5 @@
 // src/v2/settingsRepo.ts
-import { sep } from 'node:path'
+import { resolve, sep } from 'node:path'
 import type { ScoutDb } from './db.js'
 import { SECRET_NAMES, isSecretName, maskSecretValue, resolveSecret, type SecretName } from './secrets.js'
 
@@ -68,6 +68,24 @@ export interface RemoveRootResult {
   movies: number
   series: number
   parked: number
+}
+
+/** 嵌套冲突事实：撞上的既有根（原始形态，未剥尾斜杠——错误文案要跟用户在配置里
+ *  看到的字符串对得上）+ 方向。 */
+export interface RootConflict {
+  root: string
+  relation: 'parent' | 'child'
+}
+
+/** addRoot 的结果（D7）。用返回值而非抛异常，因为 seedRootsFromEnv 批量种入时
+ *  单条冲突不该中断整批。 */
+export type AddRootResult = { ok: true } | { ok: false; conflict: RootConflict }
+
+/** seedRootsFromEnv 的结果（D7）：调用方据此打告警——env 顺序会静默决定守备范围
+ *  （先写的赢），不让运维看见的话"为什么少了一个根"无从排查。 */
+export interface SeedRootsResult {
+  seeded: string[]
+  rejected: Array<{ path: string; conflict: RootConflict }>
 }
 
 export class SettingsRepo {
@@ -157,24 +175,68 @@ export class SettingsRepo {
     ).map((r) => ({ path: r.path, type: r.type, addedAt: r.added_at }))
   }
 
-  /** 重复加同一路径是幂等的（INSERT OR IGNORE：path 是主键，已存在则什么都不改，包括
-   *  不刷新 added_at——"何时首次加入"是该行的出生事实，不因为重复提交同一路径而改写）。 */
-  addRoot(path: string, now: number): void {
-    this.db
-      .prepare("INSERT OR IGNORE INTO media_roots (path, type, added_at) VALUES (?, 'local', ?)")
-      .run(path, now)
+  /** 加一个守备目录。**嵌套闸门在此**（D7，2026-08-08）。
+   *
+   *  返回值而非抛异常：seedRootsFromEnv 是批量种入，单条冲突不该中断整批——env 里配了
+   *  3 个根、第 2 个跟第 1 个嵌套时，第 3 个（好的那个）必须还能进。
+   *
+   *  为什么闸门必须在这一层：apiV2.addMediaRoot 早就有重叠校验，但它只护住 HTTP 这一个
+   *  入口；seedRootsFromEnv 那条 env 种子路零规范化、零校验直接写库。而 D1 的删除逻辑是
+   *  「逐守备目录比对差集」——/media 与 /media/115 并存时，115 挂载掉线后 /media 的 walk
+   *  仍成功，115 下的 files 行落进 /media 的差集被当成"消失的文件"全删（C29 = R8 要防的灾难）。
+   *
+   *  重复加同一路径仍是幂等的（INSERT OR IGNORE：path 是主键，已存在则什么都不改，包括
+   *  不刷新 added_at——"何时首次加入"是该行的出生事实，不因为重复提交同一路径而改写）。
+   *  尾斜杠形态的重复提交（'/media/tv/' vs 已有 '/media/tv'）经 findOverlappingRoot 的
+   *  归一化判为"相等"→ 落到 INSERT OR IGNORE，同样幂等。
+   *
+   *  **入库前归一化**（resolve）：数据库存规范形态，否则 '/media/tv/' 与 '/media/tv' 会各插一行
+   *  ——INSERT OR IGNORE 的主键是原始字符串，两者不等，幂等根本不生效（本 task TDD 抓到的真 bug）。
+   *  只在比较侧归一化是不够的。resolve 同时收拾尾斜杠、重复斜杠、'..'，与 apiV2 入口的既有
+   *  归一化口径一致（那边一直在 addRoot 前 resolve，env 种子那条路没有——正是要堵的旁路）。
+   *
+   *  事务：读既有根 + 写新根包进 immediate 事务（照 removeRoot 的既有手法），
+   *  否则两个并发 addRoot 各自读到"无冲突"的旧快照，双写出一对嵌套根。 */
+  addRoot(path: string, now: number): AddRootResult {
+    const canonical = resolve(path)
+    const tx = this.db.transaction((): AddRootResult => {
+      const existing = (
+        this.db.prepare('SELECT path FROM media_roots').all() as { path: string }[]
+      ).map((r) => r.path)
+      const conflict = findOverlappingRoot(canonical, existing)
+      if (conflict) return { ok: false, conflict }
+      this.db
+        .prepare("INSERT OR IGNORE INTO media_roots (path, type, added_at) VALUES (?, 'local', ?)")
+        .run(canonical, now)
+      return { ok: true }
+    })
+    return tx.immediate()
   }
 
   /** 首启种子：media_roots **当前为空**且 envRaw 解析非空（逗号分隔，trim+filter，沿
    *  cli/index.ts 旧 mediaRoots() 同一套解析法）时逐条写入；否则空操作。注意判据是"当前
    *  count=0"而非"从未有过根"——在 dashboard 里删光全部根后重启进程，env 值会重新种入。
    *  这是可接受的（复审修复 3 确认，符合计划原文"空→种子"）：零守备目录的守护进程本无事
-   *  可做，env 种子是合理的恢复路径；部署层想彻底清空应同时清掉 MEDIA_ROOTS env。 */
-  seedRootsFromEnv(envRaw: string | undefined, now: number): void {
+   *  可做，env 种子是合理的恢复路径；部署层想彻底清空应同时清掉 MEDIA_ROOTS env。
+   *
+   *  D7（2026-08-08）：逐条过 addRoot 的嵌套闸门，冲突的**跳过并收集**，不中断整批也不抛。
+   *  返回 {seeded, rejected} 供调用方打告警——env 顺序会静默决定守备范围（先写的赢），
+   *  这个事实必须让运维看见，否则"为什么少了一个根"无从排查。
+   *
+   *  冲突判定针对**累积集合**：因为闸门在 addRoot 内部按当次实际库状态判，
+   *  第 3 条与第 2 条嵌套时同样会被挡（不是只跟初始空快照比）。 */
+  seedRootsFromEnv(envRaw: string | undefined, now: number): SeedRootsResult {
     const existing = this.db.prepare('SELECT COUNT(*) as c FROM media_roots').get() as { c: number }
-    if (existing.c > 0) return
+    if (existing.c > 0) return { seeded: [], rejected: [] }
     const roots = (envRaw ?? '').split(',').map((s) => s.trim()).filter(Boolean)
-    for (const root of roots) this.addRoot(root, now)
+    const seeded: string[] = []
+    const rejected: Array<{ path: string; conflict: RootConflict }> = []
+    for (const root of roots) {
+      const r = this.addRoot(root, now)
+      if (r.ok) seeded.push(root)
+      else rejected.push({ path: root, conflict: r.conflict })
+    }
+    return { seeded, rejected }
   }
 
   /** 移除一个守备目录：单事务级联清理该根下的索引行——**磁盘文件不动，只清索引行**（用户

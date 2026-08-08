@@ -1,6 +1,6 @@
 // watch 启动告警纯函数测试（同 dashboardTokenWarning.test.ts 模式）
 import { describe, it, expect } from 'vitest'
-import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine } from './watchStartupWarnings.js'
+import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning } from './watchStartupWarnings.js'
 
 describe('watchStartupWarnings', () => {
   describe('zeroRootsWarningLine（零守备目录告警）', () => {
@@ -91,6 +91,28 @@ describe('watchStartupWarnings', () => {
       expect(line).toContain('SETUP MODE')
       expect(line).toContain('setup wizard')
       expect(line).toContain('gated')
+    })
+  })
+
+  // D7（2026-08-08）：env 顺序静默决定守备范围（先写的赢）。运维配 3 个根只生效 2 个时，
+  // 没这行日志只能靠猜——所以文案必须说清跳了谁、跟谁撞、哪个方向、为什么不能留。
+  describe('nestedRootSkipWarning（MEDIA_ROOTS 嵌套跳过告警）', () => {
+    it('child 方向：点名被跳的路径与撞上的根，并说明方向', () => {
+      const line = nestedRootSkipWarning('/media/tv/anime', { root: '/media/tv', relation: 'child' })
+      expect(line).toContain('/media/tv/anime')
+      expect(line).toContain('/media/tv')
+      expect(line).toContain('子目录')
+    })
+
+    it('parent 方向：方向描述反过来', () => {
+      const line = nestedRootSkipWarning('/media', { root: '/media/tv', relation: 'parent' })
+      expect(line).toContain('包含后者')
+    })
+
+    it('说明后果——重复扫描 + 子根的行会被删除清理误清（C29 的用户可见表述）', () => {
+      const line = nestedRootSkipWarning('/a/b', { root: '/a', relation: 'child' })
+      expect(line).toContain('重复')
+      expect(line).toContain('消失的文件')
     })
   })
 })
