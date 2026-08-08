@@ -20,8 +20,10 @@ export interface SubtitleQueueItem {
   files: Array<{ path: string; filename: string; season: number | null; episode: number | null; dir: string; durationSec: number | null; embeddedLangs: string[] | null }>
 }
 
-/** 字幕队列：一个作品的一簇（needs_subtitle=1 的全部文件）。 */
-export function listSubtitleQueue(db: ScoutDb): SubtitleQueueItem[] {
+/** 字幕队列：一个作品的一簇（needs_subtitle=1 的全部文件）。
+ *  🔴 2026-08-08 实测：必须按守备目录过滤——files 表可能含已移除根的残留数据
+ *  （如 115 测试目录），只读挂载上建 staging 沙盒会 ENOENT。 */
+export function listSubtitleQueue(db: ScoutDb, roots?: string[]): SubtitleQueueItem[] {
   const rows = db.prepare(`
     SELECT w.id AS work_id, w.title, w.original_title, w.year, w.overview, w.chinese_titles, w.media_type,
            f.path, f.filename, f.season, f.episode, f.dir, f.duration_sec, f.embedded_langs
@@ -36,6 +38,10 @@ export function listSubtitleQueue(db: ScoutDb): SubtitleQueueItem[] {
 
   const byWork = new Map<string, SubtitleQueueItem>()
   for (const r of rows) {
+    if (roots && roots.length > 0) {
+      const inside = roots.some((root) => r.path === root || r.path.startsWith(root + '/'))
+      if (!inside) continue
+    }
     let item = byWork.get(r.work_id)
     if (!item) {
       let chinese: string[] = []
