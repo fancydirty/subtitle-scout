@@ -264,25 +264,38 @@ export class SettingsRepo {
         { path: string; added_at: number }[]
       const del = this.db.prepare('DELETE FROM media_roots WHERE path = ?')
       const upd = this.db.prepare('UPDATE media_roots SET path = ?, added_at = ? WHERE path = ?')
-      // canonical → 该规范形态下最早的 added_at（含已规范的行，用于和别名比对）
+      const fixAddedAt = this.db
+        .prepare('UPDATE media_roots SET added_at = ? WHERE path = ? AND added_at > ?')
+
+      // canonical → 该规范形态下最早的 added_at（含已规范的行）。
+      // "何时首次加入"是该目录的出生事实，不因为存在过一个非规范别名而改写。
       const earliest = new Map<string, number>()
       for (const r of rows) {
         const c = resolve(r.path)
         const prev = earliest.get(c)
         if (prev === undefined || r.added_at < prev) earliest.set(c, r.added_at)
       }
+
+      // 审校 F7 修复：live 集合而非一次性快照。原实现用循环前的 rows 判"规范形态是否已存在"，
+      // 当两个不同别名（'/media/tv/' 与 '/media//tv'）指向同一规范形态、且规范形态本身不在库里时，
+      // 两条都判"不存在"、都走 UPDATE → 第二条撞 UNIQUE → 事务全回滚，脏数据一行不修。
+      // 而两处调用点都没有 try/catch，daemon 启动即死且重启不自愈。
+      const present = new Set(rows.map((r) => r.path))
       for (const r of rows) {
         const c = resolve(r.path)
         if (c === r.path) continue // 已是规范形态
-        const canonicalExists = rows.some((x) => x.path === c)
-        if (canonicalExists) del.run(r.path)          // 规范形态已在 → 删别名
-        else upd.run(c, earliest.get(c)!, r.path)     // 否则原地改写，带上最早的出生时间
+        if (present.has(c)) {
+          del.run(r.path)          // 规范形态已在（原本就有，或前一轮迭代刚改出来）→ 删别名
+        } else {
+          upd.run(c, earliest.get(c)!, r.path)
+          present.add(c)           // ← 关键：让后续别名看见它，避免重复 UPDATE 撞 UNIQUE
+        }
+        present.delete(r.path)
       }
-      // 规范形态本身的 added_at 可能晚于被删掉的别名——补正为最早的
-      for (const [c, at] of earliest) {
-        this.db.prepare('UPDATE media_roots SET added_at = ? WHERE path = ? AND added_at > ?')
-          .run(at, c, at)
-      }
+
+      // 规范形态本身的 added_at 可能晚于被删掉的别名——补正为最早的。
+      // 条件 `added_at > ?` 是必要的：只在当前值确实更晚时才改，避免把已经正确的更早值写坏。
+      for (const [c, at] of earliest) fixAddedAt.run(at, c, at)
     })
     tx.immediate()
   }
@@ -373,17 +386,38 @@ export class SettingsRepo {
 
     const prefix = path.endsWith('/') ? path : `${path}/`
 
+    // 审校 F8 修复（2026-08-08）：根目录 '/' 的 prefix 补完还是 '/'，而
+    // `substr(path,1,1) = '/'` 对**每一条绝对路径都为真** → files/episodes/movies/parked
+    // 全表清空，包括属于其他仍然有效的守备目录的行。
+    //
+    // 实测的真实剧本：存量库里 '/' 与 '/media/tv' 并存（闸门上线前配的），而 1a-3 的告警
+    // 正好引导用户去删 '/'——照着警告操作，/media/tv 下所有行被清空，可它还是守备目录 →
+    // 下轮巡检全库重识别 + 重找字幕，烧一整轮 LLM。
+    //
+    // 修法：一个根"自己管的行" = 在它前缀下、且**不在任何更深守备目录前缀下**的行。
+    // 闸门（D7）禁止嵌套，故正常情况 siblingPrefixes 为空、退化成纯 prefix 匹配，
+    // 与改动前行为完全一致；只有存量嵌套（含 '/'）才会走排除分支。
+    const siblingPrefixes = (
+      this.db.prepare('SELECT path FROM media_roots WHERE path != ?').all(path) as
+        { path: string }[]
+    )
+      .map((r) => (r.path.endsWith('/') ? r.path : `${r.path}/`))
+      .filter((p) => p !== prefix && p.startsWith(prefix))
+    const scopeSql = `substr(path,1,length(?)) = ?`
+      + siblingPrefixes.map(() => ' AND substr(path,1,length(?)) != ?').join('')
+    const scopeArgs: string[] = [prefix, prefix, ...siblingPrefixes.flatMap((p) => [p, p])]
+
     const tx = this.db.transaction((): RemoveRootResult => {
       const affectedSeries = this.db
-        .prepare('SELECT DISTINCT series_id FROM episodes WHERE substr(path,1,length(?)) = ?')
-        .all(prefix, prefix) as { series_id: string }[]
+        .prepare(`SELECT DISTINCT series_id FROM episodes WHERE ${scopeSql}`)
+        .all(...scopeArgs) as { series_id: string }[]
 
       const episodeIds = this.db
-        .prepare('SELECT id FROM episodes WHERE substr(path,1,length(?)) = ?')
-        .all(prefix, prefix) as { id: string }[]
+        .prepare(`SELECT id FROM episodes WHERE ${scopeSql}`)
+        .all(...scopeArgs) as { id: string }[]
       const movieIds = this.db
-        .prepare('SELECT id FROM movies WHERE substr(path,1,length(?)) = ?')
-        .all(prefix, prefix) as { id: string }[]
+        .prepare(`SELECT id FROM movies WHERE ${scopeSql}`)
+        .all(...scopeArgs) as { id: string }[]
 
       const delSub = this.db.prepare('DELETE FROM subtitles WHERE item_id = ?')
       for (const e of episodeIds) delSub.run(e.id)
@@ -396,14 +430,14 @@ export class SettingsRepo {
       const delFiles = this.db.prepare('DELETE FROM item_files WHERE item_id = ?')
       for (const e of episodeIds) delFiles.run(e.id)
       for (const m of movieIds) delFiles.run(m.id)
-      this.db.prepare('DELETE FROM pending_removals WHERE substr(path,1,length(?)) = ?').run(prefix, prefix)
+      this.db.prepare(`DELETE FROM pending_removals WHERE ${scopeSql}`).run(...scopeArgs)
 
       const episodesResult = this.db
-        .prepare('DELETE FROM episodes WHERE substr(path,1,length(?)) = ?')
-        .run(prefix, prefix)
+        .prepare(`DELETE FROM episodes WHERE ${scopeSql}`)
+        .run(...scopeArgs)
       const moviesResult = this.db
-        .prepare('DELETE FROM movies WHERE substr(path,1,length(?)) = ?')
-        .run(prefix, prefix)
+        .prepare(`DELETE FROM movies WHERE ${scopeSql}`)
+        .run(...scopeArgs)
 
       let seriesDeleted = 0
       const delCatalog = this.db.prepare('DELETE FROM tmdb_seasons WHERE series_id = ?')
@@ -419,17 +453,17 @@ export class SettingsRepo {
       }
 
       const parkedResult = this.db
-        .prepare('DELETE FROM parked_paths WHERE substr(path,1,length(?)) = ?')
-        .run(prefix, prefix)
+        .prepare(`DELETE FROM parked_paths WHERE ${scopeSql}`)
+        .run(...scopeArgs)
 
       // D11 / C33（2026-08-08）：files 表必须一起清。上面 8 张是旧架构的表；新架构的数据
       // 在 files/works 里，留下的行会成为孤儿——识别流的队列谓词只看 work_id IS NULL、
       // 不按守备目录过滤（C18 幽灵队列），于是会永远为一个已不在任何守备目录内的文件跑
       // 识别 agent，每天烧 TMDB + LLM，永不终止。
-      // 沿用同一个 substr 前缀比较（不用 LIKE：媒体路径可含 % 和 _，见上方论证）。
+      // 沿用同一套 scope 条件（不用 LIKE：媒体路径可含 % 和 _，见上方论证）。
       const filesResult = this.db
-        .prepare('DELETE FROM files WHERE substr(path,1,length(?)) = ?')
-        .run(prefix, prefix)
+        .prepare(`DELETE FROM files WHERE ${scopeSql}`)
+        .run(...scopeArgs)
 
       this.db.prepare('DELETE FROM media_roots WHERE path = ?').run(path)
 

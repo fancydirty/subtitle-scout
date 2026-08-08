@@ -85,4 +85,51 @@ describe('存量非规范守备目录迁移（F2）', () => {
     expect(() => new SettingsRepo(db).normalizeRoots()).not.toThrow()
     expect(new SettingsRepo(db).listRoots()).toEqual([])
   })
+
+  // ── 审校 F7（2026-08-08）：两个不同别名指向同一规范形态 → UNIQUE 冲突 → daemon 启动即死 ──
+  // 原实现的 canonicalExists 查的是事务开始时的一次性快照，循环内不更新。当库里有两个别名
+  // （'/media/tv/' 与 '/media//tv'）且规范形态本身不在库里时，两条都判"规范形态不存在"、
+  // 都走 UPDATE → 第二条撞 UNIQUE → 事务全回滚，脏数据一行不修。
+  // 而两处调用点（cli/index.ts）都没有 try/catch → cmdWatch/cmdReconcileAll 直接死，
+  // 重启不自愈。原有 6 条测试只造了"单别名"和"别名+规范并存"，系统性绕过了这个形态。
+  it('两个别名指向同一规范形态 → 合并成一行，不抛 UNIQUE（F7）', () => {
+    const db = openDb(':memory:')
+    db.prepare('DELETE FROM media_roots').run()
+    seedRaw(db, '/media/tv/', 100)
+    seedRaw(db, '/media//tv', 200)
+    const repo = new SettingsRepo(db)
+    expect(() => repo.normalizeRoots()).not.toThrow()
+    const roots = repo.listRoots()
+    expect(roots).toHaveLength(1)
+    expect(roots[0].path).toBe('/media/tv')
+    expect(roots[0].addedAt).toBe(100) // 取最早的出生事实
+  })
+
+  it('三个别名 + 规范形态混杂 → 全部收敛成一行（F7 加强）', () => {
+    const db = openDb(':memory:')
+    db.prepare('DELETE FROM media_roots').run()
+    seedRaw(db, '/media//tv', 300)
+    seedRaw(db, '/media/tv/', 200)
+    seedRaw(db, '/media/tv', 400)
+    seedRaw(db, '/media/tv///', 100)
+    const repo = new SettingsRepo(db)
+    expect(() => repo.normalizeRoots()).not.toThrow()
+    const roots = repo.listRoots()
+    expect(roots).toHaveLength(1)
+    expect(roots[0].path).toBe('/media/tv')
+    expect(roots[0].addedAt).toBe(100)
+  })
+
+  it('多组别名互不干扰（F7：每组各自收敛）', () => {
+    const db = openDb(':memory:')
+    db.prepare('DELETE FROM media_roots').run()
+    seedRaw(db, '/media/tv/', 100)
+    seedRaw(db, '/media//tv', 200)
+    seedRaw(db, '/data/anime/', 300)
+    seedRaw(db, '/data//anime', 400)
+    const repo = new SettingsRepo(db)
+    expect(() => repo.normalizeRoots()).not.toThrow()
+    expect(repo.listRoots().map((r) => `${r.path}@${r.addedAt}`))
+      .toEqual(['/data/anime@300', '/media/tv@100'])
+  })
 })

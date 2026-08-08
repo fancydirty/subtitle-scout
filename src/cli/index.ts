@@ -199,6 +199,13 @@ async function cmdReconcileAll() {
     console.warn(nestedRootSkipWarning(r))
   }
   const currentRoots = () => settingsRepo.listRoots().map(r => r.path)
+  // D7 附加（2026-08-08）：存量嵌套根告警。这里也要有——normalizeRoots 展开 '..' 时能
+  // **自己造出**嵌套（'/media/tv/..' + '/media/tv' → '/media' ⊃ '/media/tv'），
+  // 而本命令跑的是全量重算，正是最该看见这个事实的地方（审校 F9）。
+  {
+    const w = existingNestedRootsWarning(settingsRepo.detectNestedRoots())
+    if (w) console.warn(w)
+  }
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
   // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
   // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
