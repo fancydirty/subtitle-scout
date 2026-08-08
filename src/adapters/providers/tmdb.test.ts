@@ -492,6 +492,7 @@ describe('TmdbClient.getDetails', () => {
     })
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.getDetails('tv', '108964')).toEqual({
+      title: 'SPY×FAMILY',
       overview: 'A family of spies.',
       runtimeMinutes: 24,
       posterPath: '/abc123.jpg',
@@ -515,6 +516,7 @@ describe('TmdbClient.getDetails', () => {
     })
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.getDetails('movie', '603')).toEqual({
+      title: 'The Matrix',
       overview: 'A computer hacker learns...',
       runtimeMinutes: 136,
       posterPath: '/matrix.jpg',
@@ -529,7 +531,7 @@ describe('TmdbClient.getDetails', () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
     const client = new TmdbClient({ apiKey: 'a'.repeat(32), fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.getDetails('tv', '1')).toEqual({
-      overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: null, year: null,
+      title: '', overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: null, year: null,
       genreIds: [],
     })
   })
