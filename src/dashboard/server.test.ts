@@ -615,12 +615,20 @@ describe('startDashboard (v2)', () => {
           id: 'tmdb:99/s1e1', seriesId: 'tmdb:99', season: 1, episode: 1, name: 'E1',
           path: '/media/tv/Show/Season 01/e1.mkv', subStatus: 'missing',
         })
+        // D11 / C33（2026-08-08）：新架构 files 行也必须被级联清掉，且计数要如实回显。
+        // 放一行进去，证明清理穿透到 HTTP 层——留下的孤儿行会让识别流永远为一个已不在
+        // 任何守备目录内的文件跑 agent（C18 幽灵队列）。
+        db.prepare(
+          `INSERT INTO files (path, dir, filename, size, mtime, updated_at)
+           VALUES (?, '/media/tv/Show', 'e1.mkv', 100, 1, ?)`,
+        ).run('/media/tv/Show/e1.mkv', NOW)
         const { base } = await start(distWith('<!doctype html>'), 'tok')
         const res = await fetch(`${base}/api/v2/settings/roots?path=${encodeURIComponent('/media/tv')}&token=tok`, { method: 'DELETE' })
         expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ episodes: 1, movies: 0, series: 1, parked: 0 })
+        expect(await res.json()).toEqual({ episodes: 1, movies: 0, series: 1, parked: 0, files: 1 })
         expect(settings.listRoots()).toEqual([])
         expect(lib.getSeries('tmdb:99')).toBeNull()
+        expect(db.prepare('SELECT COUNT(*) c FROM files').get()).toEqual({ c: 0 })
       })
 
       it('缺 path 查询参数 → 400', async () => {

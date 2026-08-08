@@ -79,6 +79,9 @@ export interface RemoveRootResult {
   movies: number
   series: number
   parked: number
+  /** D11 / C33（2026-08-08）：新架构 files 表的清理数。旧表计数保留是因为迁移未完成，
+   *  第 7 步清掉旧表后这里只剩 files。 */
+  files: number
 }
 
 /** 嵌套冲突事实：撞上的既有根（原始形态，未剥尾斜杠——错误文案要跟用户在配置里
@@ -419,6 +422,15 @@ export class SettingsRepo {
         .prepare('DELETE FROM parked_paths WHERE substr(path,1,length(?)) = ?')
         .run(prefix, prefix)
 
+      // D11 / C33（2026-08-08）：files 表必须一起清。上面 8 张是旧架构的表；新架构的数据
+      // 在 files/works 里，留下的行会成为孤儿——识别流的队列谓词只看 work_id IS NULL、
+      // 不按守备目录过滤（C18 幽灵队列），于是会永远为一个已不在任何守备目录内的文件跑
+      // 识别 agent，每天烧 TMDB + LLM，永不终止。
+      // 沿用同一个 substr 前缀比较（不用 LIKE：媒体路径可含 % 和 _，见上方论证）。
+      const filesResult = this.db
+        .prepare('DELETE FROM files WHERE substr(path,1,length(?)) = ?')
+        .run(prefix, prefix)
+
       this.db.prepare('DELETE FROM media_roots WHERE path = ?').run(path)
 
       return {
@@ -426,6 +438,7 @@ export class SettingsRepo {
         movies: moviesResult.changes,
         series: seriesDeleted,
         parked: parkedResult.changes,
+        files: filesResult.changes,
       }
     })
 
