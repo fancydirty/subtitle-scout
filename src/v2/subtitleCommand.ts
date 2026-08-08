@@ -29,7 +29,7 @@ async function main() {
   console.log(`字幕队列 ${queue.length} 个作品，处理：`)
   console.log(`  ${target.title} (${target.workId}) ${target.files.length} 文件`)
 
-  const report = await runSubtitleWorkDir(worker, target, 'zh')
+  const report = await runSubtitleWorkDir(db, worker, target, 'zh')
   console.log(`结果: installed=${report.installed.length} no_safe_match=${report.no_safe_match.length} retry_later=${report.retry_later.length}`)
   for (const i of report.installed.slice(0, 5)) {
     console.log(`  装盘: ${i.installedPath}`)

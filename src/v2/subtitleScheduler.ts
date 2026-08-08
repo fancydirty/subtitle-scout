@@ -108,11 +108,38 @@ function commonDir(dirs: string[]): string {
  *  worker = makeFindSubtitleWorker({ model, adapters, cacheRoot, tmdb }) 的返回值
  *  （runFindSubtitleTask），直接调用，返回 batch report。 */
 export async function runSubtitleWorkDir(
+  db: ScoutDb,
   worker: (task: FindSubtitleTask) => Promise<import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport>,
   item: SubtitleQueueItem,
   targetLanguage: string,
 ): Promise<import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport> {
   const task = buildSubtitleTask(item, targetLanguage)
   console.error(`[subtitle-worker] subtitle:${item.workId} task with ${task.targets.length} targets`)
-  return worker(task)
+  const report = await worker(task)
+
+  // 🔴 2026-08-08 实测：装盘后必须更新 files 表——否则 needs_subtitle 仍为 1，
+  // 下一轮队列又选中它（Predator: Badlands 反复处理的根因）。
+  // installed 的路径标记 covered（needs_subtitle=0, sub_status='covered'），
+  // no_safe_match 标记 unavailable（本轮搜索穷尽，退避后复查）。
+  const now = Date.now()
+  const markCovered = db.prepare('UPDATE files SET needs_subtitle = 0, sub_status = ?, updated_at = ? WHERE path = ?')
+  const installedPaths = new Set(report.installed.map(i => {
+    // installedPath 是字幕路径，反解视频路径：同名去扩展名
+    const sub = i.installedPath
+    const base = sub.replace(/\.[^.]+$/, '')
+    return base // 视频路径可能是 base 或 base.<ext>，用前缀匹配
+  }))
+  let covered = 0
+  for (const f of item.files) {
+    const videoBase = f.path.replace(/\.[^.]+$/, '')
+    const isInstalled = report.installed.some(i => i.installedPath.startsWith(videoBase + '.'))
+    if (isInstalled) {
+      markCovered.run('covered', now, f.path)
+      covered++
+    }
+  }
+  if (covered > 0) {
+    console.error(`[subtitle-scheduler] marked ${covered}/${item.files.length} files covered for ${item.title}`)
+  }
+  return report
 }
