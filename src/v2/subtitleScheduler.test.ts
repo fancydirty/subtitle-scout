@@ -158,11 +158,12 @@ describe('listSubtitleQueue（recheck_after 消费，死循环修复）', () => 
       .run('tmdb:1', 'ShowA', 'tv', 1000, 1000)
     db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
       .run('tmdb:2', 'ShowB', 'tv', 1000, 1000)
-    for (const [path, recheck] of [
+    const fixtures: Array<[string, number | null]> = [
       ['/media/TV/ShowA/E01.mkv', null],        // 可立即处理
       ['/media/TV/ShowA/E02.mkv', Date.now() + 999999],  // 退避中（未来）
       ['/media/TV/ShowB/E01.mkv', Date.now() - 1000],    // 退避已过
-    ]) {
+    ]
+    for (const [path, recheck] of fixtures) {
       db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, recheck_after, updated_at)
                   VALUES (?,?,?,?,?,?,?,?,?,?)`)
         .run(path, path.slice(0, path.lastIndexOf('/')), path.slice(path.lastIndexOf('/') + 1),
