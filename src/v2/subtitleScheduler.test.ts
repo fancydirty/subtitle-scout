@@ -59,8 +59,8 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     await runSubtitleWorkDir(db, worker as any, item, 'zh')
     const row = db.prepare('SELECT sub_status, recheck_after FROM files WHERE path = ?').get(item.files[0].path) as any
     expect(row.sub_status).toBe('unavailable')
-    expect(row.recheck_after).toBeGreaterThan(Date.now() + 5 * 60 * 60 * 1000)
-    expect(row.recheck_after).toBeLessThan(Date.now() + 7 * 60 * 60 * 1000)
+    expect(row.recheck_after).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
+    expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)
   })
 
   it('🔴 no_safe_match + 零 search_source 证据（编造）→ 不标 unavailable，短退避', async () => {
@@ -71,7 +71,7 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     await runSubtitleWorkDir(db, worker as any, item, 'zh')
     const row = db.prepare('SELECT sub_status, recheck_after, last_error FROM files WHERE path = ?').get(item.files[0].path) as any
     expect(row.sub_status).toBeNull()  // 不标 unavailable
-    expect(row.recheck_after).toBeLessThan(Date.now() + 60 * 60 * 1000)  // 短退避
+    expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)  // 明天
     expect(row.last_error).toBe('fabricated-no-match')
   })
 
@@ -80,8 +80,8 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     await runSubtitleWorkDir(db, worker as any, item, 'zh')
     for (const f of item.files) {
       const row = db.prepare('SELECT recheck_after, last_error FROM files WHERE path = ?').get(f.path) as any
-      expect(row.recheck_after).toBeGreaterThan(Date.now() + 10 * 60 * 1000)
-      expect(row.recheck_after).toBeLessThan(Date.now() + 20 * 60 * 1000)
+      expect(row.recheck_after).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
+      expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)
       expect(row.last_error).toBe('timeout')
     }
   })
@@ -115,8 +115,8 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     await runSubtitleWorkDir(db, worker as any, item, 'zh')
     const row = db.prepare('SELECT recheck_after, attempt FROM files WHERE path = ?').get(item.files[0].path) as any
     expect(row.attempt).toBe(1)
-    expect(row.recheck_after).toBeGreaterThan(Date.now() + 10 * 60 * 1000)
-    expect(row.recheck_after).toBeLessThan(Date.now() + 20 * 60 * 1000)
+    expect(row.recheck_after).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
+    expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)
   })
 
   it('🔴 B-1：run 前 snapshot 清缓冲——第二次 run 的旧事件不污染', async () => {
@@ -144,7 +144,7 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     const worker = async () => { throw Object.assign(new Error('aborted'), { name: 'TimeoutError' }) }
     await runSubtitleWorkDir(db, worker as any, item, 'zh')
     const row = db.prepare('SELECT recheck_after FROM files WHERE path = ?').get(item.files[0].path) as any
-    // old attempt=3 → 第 4 次失败 → 24h 封顶档
+    // 巡检模型：全部 24h，attempt 只记录次数不改变间隔
     expect(row.recheck_after).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
     expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)
   })

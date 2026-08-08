@@ -202,9 +202,8 @@ export async function runIdentifyWorkDir(
   return report
 }
 
-/** 退避阶梯（spec-gap B2）：1h → 4h → 24h。 */
-function retryDelayMs(attempt: number): number {
-  if (attempt <= 0) return 60 * 60 * 1000
-  if (attempt === 1) return 4 * 60 * 60 * 1000
+/** 退避（巡检模型 spec 2026-08-08）：识别不出的统一"明天"（24h，对齐巡检周期）。
+ *  不再有 1h/4h 短退避——那是旧 30s tick 思维的残留，与"每天巡检一次"矛盾。 */
+function retryDelayMs(_attempt: number): number {
   return 24 * 60 * 60 * 1000
 }

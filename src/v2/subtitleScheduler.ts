@@ -133,12 +133,9 @@ export async function runSubtitleWorkDir(
   const task = buildSubtitleTask(item, targetLanguage)
   const runKey = `job-subtitle:${item.workId}`
   const now = Date.now()
-  const backoffFor = (attempt: number) => {
-    if (attempt <= 0) return 15 * 60 * 1000
-    if (attempt === 1) return 60 * 60 * 1000
-    if (attempt === 2) return 4 * 60 * 60 * 1000
-    return 24 * 60 * 60 * 1000
-  }
+  // 🔴 巡检模型（spec 2026-08-08）：全部"明天"（24h）——瞬时故障在日巡检下
+  // 也是等下一轮，1h/15min 短退避是旧 30s tick 思维的残留，与模型矛盾（M-1）。
+  const backoffFor = (_attempt: number) => 24 * 60 * 60 * 1000
   // 退避回写：attempt+1 + recheck_after
   const bump = (f: SubtitleQueueItem['files'][number], reason: string) => {
     const row = db.prepare('SELECT attempt FROM files WHERE path = ?').get(f.path) as { attempt: number } | undefined
@@ -228,7 +225,7 @@ export async function runSubtitleWorkDir(
       for (const f of item.files) {
         if (noSafePaths.has(f.path)) {
           db.prepare('UPDATE files SET sub_status = ?, recheck_after = ?, updated_at = ? WHERE path = ?')
-            .run('unavailable', now2 + 6 * 60 * 60 * 1000, now2, f.path)
+            .run('unavailable', now2 + 24 * 60 * 60 * 1000, now2, f.path)
         }
       }
     }

@@ -28,8 +28,8 @@ describe('runIdentifyWorkDir（识别轨 catch-all）', () => {
     })
     const row = db.prepare('SELECT attempt, next_retry_at, last_error FROM files WHERE work_dir = ?').get(workDir) as any
     expect(row.attempt).toBe(1)
-    expect(row.next_retry_at).toBeGreaterThan(Date.now() + 30 * 60 * 1000)
-    expect(row.next_retry_at).toBeLessThan(Date.now() + 2 * 60 * 60 * 1000)
+    expect(row.next_retry_at).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
+    expect(row.next_retry_at).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)
     expect(row.last_error).toContain('LLM timeout')
     expect(report.tmdbId).toBeNull()
     db.close()
@@ -46,8 +46,8 @@ describe('runIdentifyWorkDir（识别轨 catch-all）', () => {
     await runIdentifyWorkDir(deps, { workDir, dirName: 'Show', fileCount: 1, seasons: [], hasSeasonDirs: false })
     const row = db.prepare('SELECT attempt, next_retry_at FROM files WHERE work_dir = ?').get(workDir) as any
     expect(row.attempt).toBe(2)
-    // 第二次失败 → 4h 档
-    expect(row.next_retry_at).toBeGreaterThan(Date.now() + 3 * 60 * 60 * 1000)
+    // 巡检模型：全部 24h
+    expect(row.next_retry_at).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
     db.close()
   })
 })
