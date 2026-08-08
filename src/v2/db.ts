@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS files (
   work_dir TEXT, season INTEGER, episode INTEGER, parse_confidence TEXT,
   work_id TEXT, needs_subtitle INTEGER, sub_status TEXT,
   attempt INTEGER NOT NULL DEFAULT 0, next_retry_at INTEGER, last_error TEXT,
-  updated_at INTEGER NOT NULL
+  recheck_after INTEGER, updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
 CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
@@ -546,6 +546,28 @@ CREATE TABLE IF NOT EXISTS works (
     )
     if (!columns.has('content_type')) {
       db.exec("ALTER TABLE media_roots ADD COLUMN content_type TEXT DEFAULT 'mixed'")
+    }
+  },
+  // v31（2026-08-08 死循环修复，spec docs/design/2026-08-08-deadloop-fix-v2.md §2.1）：
+  // files 表加 recheck_after——字幕"找不到"的退避标记。
+  //
+  // 死循环根因：no_safe_match 的文件保持 needs_subtitle=1、sub_status=null，
+  // 字幕队列永远选中它（Peacemaker S01E08 实测反复重试）。
+  // 修法：找不到 → 标 recheck_after=now+6h，队列 SQL 消费它，到期才重新入队。
+  //
+  // 与识别轨的 next_retry_at 分列不混淆：识别只挑 work_id IS NULL，字幕只挑
+  // needs_subtitle=1——两队列天然不相交（审计确认）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('recheck_after')) {
+      db.exec('ALTER TABLE files ADD COLUMN recheck_after INTEGER')
     }
   },
 ]

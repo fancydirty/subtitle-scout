@@ -30,6 +30,7 @@ async function main() {
   console.log(`  ${target.title} (${target.workId}) ${target.files.length} 文件`)
 
   const report = await runSubtitleWorkDir(db, worker, target, 'zh')
+  if (!report) { console.log('任务失败（超时/抛错，已回写退避）'); db.close(); return }
   console.log(`结果: installed=${report.installed.length} no_safe_match=${report.no_safe_match.length} retry_later=${report.retry_later.length}`)
   for (const i of report.installed.slice(0, 5)) {
     console.log(`  装盘: ${i.installedPath}`)

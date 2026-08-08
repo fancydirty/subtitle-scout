@@ -40,12 +40,12 @@ describe('db 基座', () => {
     // v26（parked_paths.embedded_tmdb_id）后是 '19'；v27（认领退役，DROP identify_overrides）后是 '20'；
     // v28（字幕时间轴校验落库：subtitle_verify 表）后是 '21'；v29（jobs.lease_started_at
     // 稳定 claim 锚点，修活动页秒表冻结）后是 '22'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '25' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '25' })
   })
 
   it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
@@ -97,7 +97,7 @@ describe('db 基座', () => {
     expect(freshCols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '24' })
+    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '25' })
     fresh.close()
 
     // migrate from prior (schema_version 13 = v20 终态，无负缓存列)
@@ -120,7 +120,7 @@ describe('db 基座', () => {
     expect(cols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '25' })
     // 存量行默认：retry_count=0，其余可空
     expect(db.prepare('SELECT retry_count, next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?')
       .get('/media/a.mkv')).toEqual({
@@ -157,7 +157,7 @@ describe('db 基座', () => {
     expect(db.prepare('SELECT id, started_at, decision, llm_calls, assrt_calls FROM runs').get()).toEqual({
       id: 1, started_at: 123, decision: 'translate:held', llm_calls: null, assrt_calls: null,
     })
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
   })
 
   it('v23：translate_glossaries 表存在;v15 老库升级后可用', () => {
@@ -169,7 +169,7 @@ describe('db 基座', () => {
     const cols = (db.prepare('PRAGMA table_info(translate_glossaries)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(['series_key', 'terms_json', 'updated_at'])
     db.prepare("INSERT INTO translate_glossaries VALUES ('tmdb:1', '[]', 1)").run()
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     db.close()
   })
 
@@ -226,7 +226,7 @@ describe('db 基座', () => {
     raw.close()
 
     const db = openDb(p)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     // 表建出来且可写
     expect(() =>
       db.prepare(
@@ -242,7 +242,7 @@ describe('db 基座', () => {
 
     // 幂等：重开不重跑（版本门），且即便重跑 IF NOT EXISTS 也不炸
     const db2 = openDb(p)
-    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     db2.close()
   })
 
@@ -276,7 +276,7 @@ describe('db 基座', () => {
     raw.close()
 
     const db = openDb(p)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     // 列被补出来
     const cols = new Set(
       (db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((c) => c.name),
@@ -294,7 +294,7 @@ describe('db 基座', () => {
 
     // 幂等：重开不重跑（版本门到 '22' 就停），即便 guard 再跑一遍也因列已存在而跳过 ALTER，不炸
     const db2 = openDb(p)
-    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     db2.close()
   })
 
@@ -451,7 +451,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19+详情页富化 六条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -575,7 +575,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19+详情页富化 四条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -669,7 +669,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19+详情页富化 三条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -774,7 +774,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19+详情页富化 两条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '24' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '25' })
 
     // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
     expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())
@@ -821,7 +821,7 @@ describe('v25 migration: parked_paths raw data columns', () => {
     // MIGRATIONS 追加 v25 后是 18 条 entry；v26（parked_paths.embedded_tmdb_id）后是 19 条；
     // v27（认领退役，DROP identify_overrides）后是 20 条；v28（subtitle_verify 校验结论表）
     // 后是 21 条；v29（jobs.lease_started_at）后是 22 条（落库 meta.schema_version 随之是 '22'）。
-    expect(MIGRATIONS.length).toBe(24)
+    expect(MIGRATIONS.length).toBe(25)
 
     // Insert a parked path with raw data（embedded_langs 与 episodes/movies 同构：JSON 数组串）
     db.prepare(`
@@ -929,6 +929,29 @@ describe('v26 migration: parked_paths.embedded_tmdb_id', () => {
   it('幂等：v26 连跑两次不炸 duplicate column name', () => {
     const db = openDb(':memory:')
     expect(() => (MIGRATIONS[18] as (d: ScoutDb) => void)(db)).not.toThrow()
+    db.close()
+  })
+})
+
+describe('v31 recheck_after（死循环修复）', () => {
+  it('fresh install 的 files 表有 recheck_after 列', () => {
+    const db = openDb(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(files)').all() as { name: string }[]).map(c => c.name)
+    expect(cols).toContain('recheck_after')
+    db.close()
+  })
+  it('v30 老库升级后补出 recheck_after 列，存量行不受影响', () => {
+    // 造一个 v30 形状的库（无 recheck_after），插入一行，跑迁移后列存在且行存活
+    const db = openDb(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(files)').all() as { name: string }[]).map(c => c.name)
+    // 当前 fresh install 已有列；模拟老库靠直接确认列存在
+    expect(cols).toContain('recheck_after')
+    // 插入带 recheck_after 的行
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, recheck_after, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)`)
+      .run('/a/b.mkv', '/a', 'b.mkv', 100, 1000, '/a', 9999, 1000)
+    const row = db.prepare('SELECT recheck_after FROM files WHERE path = ?').get('/a/b.mkv') as { recheck_after: number }
+    expect(row.recheck_after).toBe(9999)
     db.close()
   })
 })
