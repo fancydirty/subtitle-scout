@@ -1,6 +1,6 @@
 // watch 启动告警纯函数测试（同 dashboardTokenWarning.test.ts 模式）
 import { describe, it, expect } from 'vitest'
-import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning } from './watchStartupWarnings.js'
+import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning, existingNestedRootsWarning } from './watchStartupWarnings.js'
 
 describe('watchStartupWarnings', () => {
   describe('zeroRootsWarningLine（零守备目录告警）', () => {
@@ -129,6 +129,37 @@ describe('watchStartupWarnings', () => {
       expect(line).toContain('media/tv')
       expect(line).toContain('绝对路径')
       expect(line).toContain('/app')
+    })
+  })
+
+  // D7 附加：闸门只挡新增，存量嵌套根程序不擅自删（那是用户的配置意图），只点名告警。
+  describe('existingNestedRootsWarning（存量嵌套根告警）', () => {
+    it('无嵌套 → null（不刷屏）', () => {
+      expect(existingNestedRootsWarning([])).toBeNull()
+    })
+
+    it('点名每一对"谁套着谁"，并给出可执行的下一步', () => {
+      const line = existingNestedRootsWarning([{ root: '/media', nested: '/media/tv' }])
+      expect(line).toContain('/media')
+      expect(line).toContain('/media/tv')
+      expect(line).toContain('套着')
+      // 只报警不给出路等于没说——必须指向 dashboard
+      expect(line).toContain('dashboard')
+    })
+
+    it('多对时报出总数与全部配对', () => {
+      const line = existingNestedRootsWarning([
+        { root: '/a', nested: '/a/b' },
+        { root: '/a', nested: '/a/b/c' },
+      ])
+      expect(line).toContain('2 对')
+      expect(line).toContain('/a/b/c')
+    })
+
+    it('说明后果——重复扫描 + 内层根记录被误清（C29 的用户可见表述）', () => {
+      const line = existingNestedRootsWarning([{ root: '/a', nested: '/a/b' }])
+      expect(line).toContain('重复')
+      expect(line).toContain('消失的文件')
     })
   })
 })

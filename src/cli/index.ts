@@ -59,7 +59,7 @@ import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
-import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning } from './watchStartupWarnings.js'
+import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning, existingNestedRootsWarning } from './watchStartupWarnings.js'
 import type { ReconcileAllResultDTO } from '../dashboard/apiV2.js'
 
 function requireEnv(name: string): string {
@@ -279,6 +279,10 @@ async function cmdWatch() {
     console.warn(nestedRootSkipWarning(r))
   }
   const currentRoots = (): string[] => settingsRepo.listRoots().map(r => r.path)
+  // D7 附加（2026-08-08）：存量嵌套根告警。放在 normalizeRoots + seed 之后——非规范形态
+  // 归一化前会因 '//' 拼接漏检（F1 同一漏洞面）。程序不擅自删用户的配置，只点名报出来。
+  const nestedWarning = existingNestedRootsWarning(settingsRepo.detectNestedRoots())
+  if (nestedWarning) console.warn(nestedWarning)
   if (currentRoots().length === 0) {
     console.log(zeroRootsWarningLine())
   } else {

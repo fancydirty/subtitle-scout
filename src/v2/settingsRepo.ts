@@ -109,6 +109,14 @@ export type SeedRootRejection =
   | { path: string; reason: 'nested'; conflict: RootConflict }
   | { path: string; reason: 'not-absolute' }
 
+/** 一对存量嵌套守备目录（D7 附加）：root 是外层、nested 是内层，与插入顺序无关。
+ *  每一对单独就足以让 D1 的逐根差集把内层的 files 行当成"消失的文件"清掉（C29）。 */
+export interface NestedRootPair {
+  root: string
+  nested: string
+  relation: 'child'
+}
+
 export class SettingsRepo {
   readonly db: ScoutDb
 
@@ -274,6 +282,35 @@ export class SettingsRepo {
       }
     })
     tx.immediate()
+  }
+
+  /** 检出存量的嵌套守备目录对（D7 附加，2026-08-08）。
+   *
+   *  闸门（addRoot）只挡新增。库里可能已有闸门上线前配好的嵌套根——程序**不擅自删**
+   *  （守备目录是用户的配置意图），但必须让运维看见：每一对嵌套都会让 D1 的逐根差集
+   *  把内层根的 files 行当成"消失的文件"清掉（C29）。
+   *
+   *  报**全部成对关系**而非只报相邻层：三层嵌套 /a ⊃ /a/b ⊃ /a/b/c 里三对都要报，
+   *  因为每一对单独就足以让 D1 删错。
+   *
+   *  返回 root=外层、nested=内层，与插入顺序无关——文案要能直接说"X 套着 Y"。
+   *
+   *  注意调用时机：应在 normalizeRoots() 之后。非规范形态（'/media/tv/'）在归一化前
+   *  会因 '//' 拼接而漏检（F1 同一漏洞面），归一化后才看得见。 */
+  detectNestedRoots(): NestedRootPair[] {
+    const paths = (
+      this.db.prepare('SELECT path FROM media_roots ORDER BY path').all() as { path: string }[]
+    ).map((r) => r.path)
+    const pairs: NestedRootPair[] = []
+    for (const a of paths) {
+      for (const b of paths) {
+        if (a === b) continue
+        // 只在 a 是 b 的祖先时记一次——这样每对关系恰好产出一条，且 root 恒为外层
+        const hit = findOverlappingRoot(b, [a])
+        if (hit?.relation === 'child') pairs.push({ root: a, nested: b, relation: 'child' })
+      }
+    }
+    return pairs
   }
 
   /** 首启种子：media_roots **当前为空**且 envRaw 解析非空（逗号分隔，trim+filter，沿

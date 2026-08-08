@@ -6,6 +6,24 @@ export function zeroRootsWarningLine(): string {
   return '[watch] no media roots configured（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）— subtitle writes are not root-restricted; 去 dashboard 加一个守备目录，或设 MEDIA_ROOTS 作首启种子'
 }
 
+/** 存量嵌套守备目录告警（D7 附加，2026-08-08）。
+ *
+ *  闸门只挡新增；库里闸门上线前配好的嵌套根，程序不擅自删（那是用户的配置意图），
+ *  但必须点名报出来——每一对嵌套都会让删除逻辑按守备目录比对差集时，把内层根的行
+ *  当成"消失的文件"清掉（C29）。
+ *
+ *  文案要给出**可执行的下一步**（去 dashboard 删掉其中一个），否则用户看见警告
+ *  也不知道该做什么。 */
+export function existingNestedRootsWarning(
+  pairs: ReadonlyArray<{ root: string; nested: string }>,
+): string | null {
+  if (pairs.length === 0) return null
+  const list = pairs.map((p) => `${p.root} 套着 ${p.nested}`).join('；')
+  return `[watch] ⚠️ 检测到 ${pairs.length} 对嵌套的守备目录：${list}。`
+    + '嵌套根会让扫描重复走同一批文件；且删除逻辑按守备目录逐个比对差集，'
+    + '内层根的记录会被当成"消失的文件"清掉。请去 dashboard 设置页删掉其中一个。'
+}
+
 /** MEDIA_ROOTS 种子里某条被闸门跳过（D7，2026-08-08）。
  *
  *  为什么必须告警：env 顺序静默决定守备范围（先写的赢）。运维配了 3 个根却只生效 2 个时，
