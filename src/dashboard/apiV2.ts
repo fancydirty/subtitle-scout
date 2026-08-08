@@ -1,12 +1,12 @@
 // src/dashboard/apiV2.ts
 // v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报直接暴露 TMDB
 // poster_path，前端自行拼 CDN URL（image.tmdb.org，公开、免 key）——不再经服务端代理。
-import { dirname, resolve, sep } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
 import { LibraryRepo, type ItemFileCoverage } from '../v2/libraryRepo.js'
-import { SettingsRepo } from '../v2/settingsRepo.js'
+import { SettingsRepo, findOverlappingRoot } from '../v2/settingsRepo.js'
 import type { JobsRepo, WorkerTaskUpsertOutcome } from '../v2/jobsRepo.js'
 import { canonicalEpisodes } from '../v2/tmdbCatalog.js'
 import { traceBus, type TraceEvent } from '../core/traceBus.js'
@@ -806,16 +806,8 @@ export type AddMediaRootResult = { ok: true } | { ok: false; error: string }
  *
  *  返回命中的既有根（而不只是布尔）：错误文案要指名道姓说"跟哪个根撞了"，否则用户面对
  *  一串路径无从判断该删哪个。 */
-function findOverlappingRoot(
-  candidate: string, existing: readonly string[],
-): { root: string; relation: 'parent' | 'child' } | null {
-  for (const root of existing) {
-    if (candidate === root) continue // 相等=重复提交，非重叠（幂等交给 addRoot）
-    if (candidate.startsWith(root + sep)) return { root, relation: 'child' }
-    if (root.startsWith(candidate + sep)) return { root, relation: 'parent' }
-  }
-  return null
-}
+// D7（2026-08-08）：实现已下移到 v2/settingsRepo.ts —— addRoot 本身要成为闸门，堵住
+// seedRootsFromEnv 那条绕过 HTTP 层的旁路（缺口 C29）。此处改 import 同一份，避免两份漂移。
 
 /** POST /api/v2/settings/roots body={path} 处理：绝对路径 + 磁盘上存在 + 是目录 + 与既有根
  *  不重叠才收——前三项同 listMediaSubdirs 的判定口径（Jellyfin 式"挂载即可见"边界，这里只是

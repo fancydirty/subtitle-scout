@@ -1,6 +1,55 @@
 // src/v2/settingsRepo.ts
+import { sep } from 'node:path'
 import type { ScoutDb } from './db.js'
 import { SECRET_NAMES, isSecretName, maskSecretValue, resolveSecret, type SecretName } from './secrets.js'
+
+/** 候选路径与既有守备目录是否重叠（父/子双向），命中则返回撞上的那个根。
+ *
+ *  为什么两个方向都要挡：
+ *   · 子目录重叠 → 该子树已在既有根的扫描范围内，再加一个根只会让 walkVideoFiles 把同一批
+ *     文件走两遍（本项目实测：4 个重叠根让 scanned 从 492 涨到 3140），并让同一文件在两个根
+ *     下各自登记，覆盖分类与移除防线全部按"两份不同事实"处理。
+ *   · 父目录重叠 → 同上，且更糟：父目录通常还装着非媒体杂物（本项目生产实例：nas_media 根下
+ *     混着 .apk/.iso/Backup_ 目录/node_modules），一次误加就把整堆垃圾拉进识别队列烧 token。
+ *
+ *  D7（2026-08-08）：本函数原在 dashboard/apiV2.ts 内私有，只护住 HTTP 端点这一个入口。
+ *  下移到此处是因为 D1 的删除逻辑（逐守备目录比对差集）在嵌套配置下会删库——/media 与
+ *  /media/115 并存时，115 挂载掉线后 /media 的 walk 仍成功，115 下的行落进 /media 的差集
+ *  被当成"消失的文件"全删（缺口 C29，正是 R8 保护要防的灾难）。故 addRoot 本身必须成为闸门，
+ *  连 seedRootsFromEnv 这条绕过 HTTP 层的旁路一起堵上。apiV2 改 import 同一份实现——
+ *  两份会漂移。
+ *
+ *  边界感知（同 removeRoot 的既有手法）：比较时给两侧都补 sep，避免 "/media/tv" 被判成
+ *  "/media/tv2" 的父目录。相等不算重叠——那是重复提交同一根，交给 addRoot 的幂等语义。
+ *
+ *  尾部斜杠归一化（审校 F3，2026-08-08）：比较前剥掉尾部分隔符。不做这步的话
+ *  `'/media/tv/' + sep` 会变成 `'//'`，startsWith 永不命中——而带尾斜杠的根**真实可达**：
+ *  seedRootsFromEnv 只做 trim()、零路径规范化，`MEDIA_ROOTS=/media/tv/` 就能种进库。
+ *  此后加子目录绕过本闸门，D1 的逐根差集就把子根的行当成"消失的文件"全删（C29）。
+ *  HTTP 入口有 resolve() 兜住，但 env 种子这条旁路没有——而 D7 的全部意义正是堵旁路。
+ *
+ *  返回命中的既有根（而不只是布尔）：错误文案要指名道姓说"跟哪个根撞了"，否则用户面对
+ *  一串路径无从判断该删哪个。返回的是**原始形态**的根（未剥尾斜杠），因为文案要跟用户在
+ *  配置里看到的字符串对得上。 */
+export function findOverlappingRoot(
+  candidate: string, existing: readonly string[],
+): { root: string; relation: 'parent' | 'child' } | null {
+  const c = stripTrailingSep(candidate)
+  for (const root of existing) {
+    const r = stripTrailingSep(root)
+    if (c === r) continue // 相等=重复提交，非重叠（幂等交给 addRoot）
+    if (c.startsWith(r + sep)) return { root, relation: 'child' }
+    if (r.startsWith(c + sep)) return { root, relation: 'parent' }
+  }
+  return null
+}
+
+/** 剥掉路径尾部的分隔符，但保留根目录本身（'/' 剥成 '' 会让后续拼接全错）。 */
+function stripTrailingSep(p: string): string {
+  let end = p.length
+  while (end > 1 && p[end - 1] === sep) end--
+  return p.slice(0, end)
+}
 
 /** dashboard 重建战役 G4（spec §7，照抄 Jellyfin 分界）：settings 表是行为级设置的薄封装——
  *  挂载（compose volume）是部署层，守备目录（media_roots）与行为键（settings）都是产品层，
