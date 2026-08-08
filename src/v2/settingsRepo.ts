@@ -234,6 +234,48 @@ export class SettingsRepo {
     return tx.immediate()
   }
 
+  /** 把存量守备目录归一化成规范形态（审校 F2，2026-08-08）。
+   *
+   *  为什么必须有这一步：Task 1a-2 给 addRoot 加了入库前 resolve()，但那只管**新写入**。
+   *  闸门上线前写进库的非规范形态（尾斜杠 '/media/tv/'、重复斜杠 '/media//tv'）会留下三个病：
+   *   1. findOverlappingRoot 比较时剥尾斜杠所以能识别嵌套，但 INSERT OR IGNORE 的幂等靠
+   *      **主键字符串相等**——存量 '/media/tv/' 与新写的 '/media/tv' 不等 → 两行共存
+   *      （实测确认），逻辑同一个目录，此后每轮扫描把同一批文件走两遍
+   *   2. 这行用户**从 UI 删不掉**：removeRoot 按 path 精确匹配，而 dashboard 传下来的路径
+   *      已经 resolve() 过，与库里的非规范字符串对不上
+   *   3. D1 的删除逻辑按守备目录逐个比对差集——两行"同一目录"各算一次
+   *
+   *  去重时 added_at 取较早的：'何时首次加入'是该目录的出生事实，不因为存在过一个
+   *  非规范别名而改写。 */
+  normalizeRoots(): void {
+    const tx = this.db.transaction(() => {
+      const rows = this.db.prepare('SELECT path, added_at FROM media_roots').all() as
+        { path: string; added_at: number }[]
+      const del = this.db.prepare('DELETE FROM media_roots WHERE path = ?')
+      const upd = this.db.prepare('UPDATE media_roots SET path = ?, added_at = ? WHERE path = ?')
+      // canonical → 该规范形态下最早的 added_at（含已规范的行，用于和别名比对）
+      const earliest = new Map<string, number>()
+      for (const r of rows) {
+        const c = resolve(r.path)
+        const prev = earliest.get(c)
+        if (prev === undefined || r.added_at < prev) earliest.set(c, r.added_at)
+      }
+      for (const r of rows) {
+        const c = resolve(r.path)
+        if (c === r.path) continue // 已是规范形态
+        const canonicalExists = rows.some((x) => x.path === c)
+        if (canonicalExists) del.run(r.path)          // 规范形态已在 → 删别名
+        else upd.run(c, earliest.get(c)!, r.path)     // 否则原地改写，带上最早的出生时间
+      }
+      // 规范形态本身的 added_at 可能晚于被删掉的别名——补正为最早的
+      for (const [c, at] of earliest) {
+        this.db.prepare('UPDATE media_roots SET added_at = ? WHERE path = ? AND added_at > ?')
+          .run(at, c, at)
+      }
+    })
+    tx.immediate()
+  }
+
   /** 首启种子：media_roots **当前为空**且 envRaw 解析非空（逗号分隔，trim+filter，沿
    *  cli/index.ts 旧 mediaRoots() 同一套解析法）时逐条写入；否则空操作。注意判据是"当前
    *  count=0"而非"从未有过根"——在 dashboard 里删光全部根后重启进程，env 值会重新种入。
