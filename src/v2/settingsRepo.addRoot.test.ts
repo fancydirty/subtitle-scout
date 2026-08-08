@@ -93,8 +93,12 @@ describe('seedRootsFromEnv 受闸门保护（D7 旁路封堵）', () => {
     const r = settings.seedRootsFromEnv('/media/tv,/media/tv/anime,/media/movies', NOW)
     expect(r.seeded).toEqual(['/media/tv', '/media/movies'])
     expect(r.rejected).toHaveLength(1)
-    expect(r.rejected[0].path).toBe('/media/tv/anime')
-    expect(r.rejected[0].conflict.root).toBe('/media/tv')
+    const rej = r.rejected[0]
+    expect(rej.path).toBe('/media/tv/anime')
+    // 判别联合：先断言 reason 再取 conflict——顺手证明 nested 分支带得出冲突事实
+    expect(rej.reason).toBe('nested')
+    if (rej.reason !== 'nested') throw new Error('unreachable')
+    expect(rej.conflict.root).toBe('/media/tv')
     expect(settings.listRoots().map((x) => x.path).sort()).toEqual(['/media/movies', '/media/tv'])
   })
 
@@ -127,5 +131,33 @@ describe('seedRootsFromEnv 受闸门保护（D7 旁路封堵）', () => {
     expect(settings.seedRootsFromEnv(undefined, NOW)).toEqual({ seeded: [], rejected: [] })
     expect(settings.seedRootsFromEnv('', NOW)).toEqual({ seeded: [], rejected: [] })
     expect(settings.seedRootsFromEnv('  ,  ', NOW)).toEqual({ seeded: [], rejected: [] })
+  })
+
+  // ── 审校 F6（2026-08-08）：相对路径必须挡在门外，不许静默落成 <cwd>/... ──
+  // addRoot 内部的 resolve() 是相对 process.cwd() 解析的。apiV2 上游有 isAbsoluteMediaPath
+  // 门（apiV2.ts:723,827）挡住相对路径，但 env 种子这条路没有——MEDIA_ROOTS=media/tv
+  // 会静默落库成 /app/media/tv（容器里 cwd=/app），rejected 为空、零告警，
+  // 运维完全看不出守备目录跑到了哪。宁可拒绝也不要猜。
+  it('相对路径被拒绝且计入 rejected（不静默落成 cwd 下的路径）', () => {
+    const r = settings.seedRootsFromEnv('media/tv', NOW)
+    expect(r.seeded).toEqual([])
+    expect(r.rejected).toHaveLength(1)
+    expect(r.rejected[0].path).toBe('media/tv')
+    expect(r.rejected[0].reason).toBe('not-absolute')
+    expect(settings.listRoots()).toHaveLength(0)
+  })
+
+  it('相对路径与绝对路径混配 → 只收绝对的，相对的进 rejected', () => {
+    const r = settings.seedRootsFromEnv('/media/tv,rel/path,/media/movies', NOW)
+    expect(r.seeded).toEqual(['/media/tv', '/media/movies'])
+    expect(r.rejected).toHaveLength(1)
+    expect(r.rejected[0].path).toBe('rel/path')
+  })
+
+  it('. 与 .. 这类相对形态同样被拒', () => {
+    const r = settings.seedRootsFromEnv('.,..,./media', NOW)
+    expect(r.seeded).toEqual([])
+    expect(r.rejected).toHaveLength(3)
+    expect(settings.listRoots()).toHaveLength(0)
   })
 })

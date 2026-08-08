@@ -190,10 +190,10 @@ async function cmdReconcileAll() {
   // media_roots 表为空时充当首启种子（见 SettingsRepo.seedRootsFromEnv）。这是一次性命令
   // （跑完即退出），不需要惰性求值带来的"运行期加根即时生效"收益，但仍然统一走同一套接线，
   // 不再维护第二套"从 env 直读"的旧逻辑。
-  // D7（2026-08-08）：种子现在过嵌套闸门，冲突的会被跳过。env 顺序静默决定守备范围
-  // （先写的赢），必须打告警——否则"为什么少了一个根"无从排查。
+  // D7（2026-08-08）：种子现在过嵌套闸门 + 绝对路径门，被跳过的会进 rejected。env 顺序
+  // 静默决定守备范围（先写的赢），必须打告警——否则"为什么少了一个根"无从排查。
   for (const r of settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now()).rejected) {
-    console.warn(nestedRootSkipWarning(r.path, r.conflict))
+    console.warn(nestedRootSkipWarning(r))
   }
   const currentRoots = () => settingsRepo.listRoots().map(r => r.path)
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
@@ -269,9 +269,9 @@ async function cmdWatch() {
   // ingestPass；handleWorkerTask 的 realign/find_subtitle 分支也各自在派发时重新调用它，
   // 不复用一份旧闭包捕获的数组（见各自分支的注释）。
   const settingsRepo = new SettingsRepo(db)
-  // D7（2026-08-08）：同上，种子过嵌套闸门，跳过的要让运维看见。
+  // D7（2026-08-08）：同上，种子过嵌套闸门 + 绝对路径门，跳过的要让运维看见。
   for (const r of settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now()).rejected) {
-    console.warn(nestedRootSkipWarning(r.path, r.conflict))
+    console.warn(nestedRootSkipWarning(r))
   }
   const currentRoots = (): string[] => settingsRepo.listRoots().map(r => r.path)
   if (currentRoots().length === 0) {

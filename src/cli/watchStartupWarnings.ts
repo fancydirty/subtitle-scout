@@ -6,16 +6,28 @@ export function zeroRootsWarningLine(): string {
   return '[watch] no media roots configured（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）— subtitle writes are not root-restricted; 去 dashboard 加一个守备目录，或设 MEDIA_ROOTS 作首启种子'
 }
 
-/** MEDIA_ROOTS 种子里某条因嵌套被闸门跳过（D7，2026-08-08）。
+/** MEDIA_ROOTS 种子里某条被闸门跳过（D7，2026-08-08）。
  *
  *  为什么必须告警：env 顺序静默决定守备范围（先写的赢）。运维配了 3 个根却只生效 2 个时，
- *  没有这行日志就只能靠猜。文案要说清"跳了谁、跟谁撞、哪个方向"，以及为什么不能留着——
- *  嵌套根会让扫描重复走同一批文件，且 D1 的逐根差集会把子根的行当成"消失的文件"清掉（C29）。 */
+ *  没有这行日志就只能靠猜。文案要说清"跳了谁、为什么"。
+ *
+ *  两种原因（审校 F6）：
+ *   · nested       —— 嵌套根会让扫描重复走同一批文件，且删除逻辑按守备目录逐个比对差集，
+ *                     子根的行会被当成"消失的文件"清掉（C29）
+ *   · not-absolute —— 相对路径若 resolve() 会静默落成 <cwd>/... （容器里 = /app/...），
+ *                     守备目录跑到哪运维完全看不出。宁可拒绝也不要猜。 */
 export function nestedRootSkipWarning(
-  path: string, conflict: { root: string; relation: 'parent' | 'child' },
+  rejection:
+    | { path: string; reason: 'nested'; conflict: { root: string; relation: 'parent' | 'child' } }
+    | { path: string; reason: 'not-absolute' },
 ): string {
-  const dir = conflict.relation === 'child' ? '它是后者的子目录' : '它包含后者'
-  return `[watch] ⚠️ MEDIA_ROOTS 跳过 ${path}——与守备目录 ${conflict.root} 嵌套（${dir}）。`
+  if (rejection.reason === 'not-absolute') {
+    return `[watch] ⚠️ MEDIA_ROOTS 跳过 ${rejection.path}——不是绝对路径。`
+      + '相对路径会被解析成进程工作目录下的路径（容器里通常是 /app/...），'
+      + '守备范围会跑到你想不到的地方。请写完整的绝对路径。'
+  }
+  const dir = rejection.conflict.relation === 'child' ? '它是后者的子目录' : '它包含后者'
+  return `[watch] ⚠️ MEDIA_ROOTS 跳过 ${rejection.path}——与守备目录 ${rejection.conflict.root} 嵌套（${dir}）。`
     + '嵌套根会让扫描重复走同一批文件；且删除逻辑按守备目录逐个比对差集，'
     + '子根的行会被当成"消失的文件"清掉。只保留其中一个。'
 }

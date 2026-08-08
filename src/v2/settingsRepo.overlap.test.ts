@@ -75,6 +75,25 @@ describe('findOverlappingRoot · 嵌套守备目录检测（D7）', () => {
     expect(findOverlappingRoot('/media/tv2', ['/media/tv/'])).toBeNull()
   })
 
+  // ── 审校 F1（2026-08-08）：根目录 / 双向逃过闸门，直通 C29 ──
+  // 成因就在 stripTrailingSep 的 `while (end > 1)`——它刻意保留 '/' 本身（对的，剥成 ''
+  // 会让后续拼接全错），但下游 `r + sep` 于是变成 '//'，startsWith 永不命中。
+  // 而 '/' 是 100% 的嵌套配置：它覆盖所有其他根。库里有 /media/tv 再加 / 之后，
+  // /media/tv 挂载掉线时 / 的 walk 仍成功 → /media/tv 下的行落进 / 的差集被全删。
+  it('候选是根目录 / 时，须判为既有根的父目录（F1 防 C29）', () => {
+    expect(findOverlappingRoot('/', ['/media/tv']))
+      .toEqual({ root: '/media/tv', relation: 'parent' })
+  })
+
+  it('既有根是 / 时，任何候选都须判为它的子目录（F1 对称面）', () => {
+    expect(findOverlappingRoot('/media/tv', ['/']))
+      .toEqual({ root: '/', relation: 'child' })
+  })
+
+  it('/ 与 / 仍是相等（重复提交，非重叠）', () => {
+    expect(findOverlappingRoot('/', ['/'])).toBeNull()
+  })
+
   it('既有根为空 → null', () => {
     expect(findOverlappingRoot('/media/tv', [])).toBeNull()
   })

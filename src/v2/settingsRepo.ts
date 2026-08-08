@@ -1,5 +1,5 @@
 // src/v2/settingsRepo.ts
-import { resolve, sep } from 'node:path'
+import { isAbsolute, resolve, sep } from 'node:path'
 import type { ScoutDb } from './db.js'
 import { SECRET_NAMES, isSecretName, maskSecretValue, resolveSecret, type SecretName } from './secrets.js'
 
@@ -38,8 +38,8 @@ export function findOverlappingRoot(
   for (const root of existing) {
     const r = stripTrailingSep(root)
     if (c === r) continue // 相等=重复提交，非重叠（幂等交给 addRoot）
-    if (c.startsWith(r + sep)) return { root, relation: 'child' }
-    if (r.startsWith(c + sep)) return { root, relation: 'parent' }
+    if (c.startsWith(withSep(r))) return { root, relation: 'child' }
+    if (r.startsWith(withSep(c))) return { root, relation: 'parent' }
   }
   return null
 }
@@ -49,6 +49,17 @@ function stripTrailingSep(p: string): string {
   let end = p.length
   while (end > 1 && p[end - 1] === sep) end--
   return p.slice(0, end)
+}
+
+/** 给路径补一个尾部分隔符用于前缀比较，**根目录不重复补**（审校 F1，2026-08-08）。
+ *
+ *  为什么单独一个函数：裸写 `r + sep` 在 r='/' 时得到 '//'，startsWith 永不命中 →
+ *  根目录 '/' 双向逃过嵌套闸门。而 '/' 是 100% 的嵌套配置（它覆盖所有其他根）：
+ *  库里有 /media/tv 再加 '/' 之后，/media/tv 挂载掉线时 '/' 的 walk 仍成功，
+ *  /media/tv 下的 files 行落进 '/' 的差集被当成"消失的文件"全删（C29）。
+ *  成因正是 stripTrailingSep 刻意保留 '/' 那一步——保留是对的，补 sep 时必须配套判断。 */
+function withSep(p: string): string {
+  return p.endsWith(sep) ? p : p + sep
 }
 
 /** dashboard 重建战役 G4（spec §7，照抄 Jellyfin 分界）：settings 表是行为级设置的薄封装——
@@ -82,11 +93,21 @@ export interface RootConflict {
 export type AddRootResult = { ok: true } | { ok: false; conflict: RootConflict }
 
 /** seedRootsFromEnv 的结果（D7）：调用方据此打告警——env 顺序会静默决定守备范围
- *  （先写的赢），不让运维看见的话"为什么少了一个根"无从排查。 */
+ *  （先写的赢），不让运维看见的话"为什么少了一个根"无从排查。
+ *
+ *  rejected 分两种原因（审校 F6）：
+ *   · 'nested'      —— 与既有根嵌套，conflict 说明撞上谁、哪个方向
+ *   · 'not-absolute' —— 相对路径。必须拒绝而非 resolve()，否则 MEDIA_ROOTS=media/tv 会
+ *     静默落成 <cwd>/media/tv（容器里 = /app/media/tv），运维完全看不出守备目录跑哪去了。
+ *     apiV2 那条路早有 isAbsoluteMediaPath 门，env 这条路一直没有——宁可拒绝也不要猜。 */
 export interface SeedRootsResult {
   seeded: string[]
-  rejected: Array<{ path: string; conflict: RootConflict }>
+  rejected: SeedRootRejection[]
 }
+
+export type SeedRootRejection =
+  | { path: string; reason: 'nested'; conflict: RootConflict }
+  | { path: string; reason: 'not-absolute' }
 
 export class SettingsRepo {
   readonly db: ScoutDb
@@ -223,6 +244,10 @@ export class SettingsRepo {
    *  返回 {seeded, rejected} 供调用方打告警——env 顺序会静默决定守备范围（先写的赢），
    *  这个事实必须让运维看见，否则"为什么少了一个根"无从排查。
    *
+   *  相对路径直接拒绝（审校 F6）：addRoot 内部的 resolve() 是相对 process.cwd() 解析的，
+   *  MEDIA_ROOTS=media/tv 会静默落成 <cwd>/media/tv（容器里 = /app/media/tv）。
+   *  apiV2 那条路早有 isAbsoluteMediaPath 门，env 这条一直没有。宁可拒绝也不要猜。
+   *
    *  冲突判定针对**累积集合**：因为闸门在 addRoot 内部按当次实际库状态判，
    *  第 3 条与第 2 条嵌套时同样会被挡（不是只跟初始空快照比）。 */
   seedRootsFromEnv(envRaw: string | undefined, now: number): SeedRootsResult {
@@ -230,11 +255,15 @@ export class SettingsRepo {
     if (existing.c > 0) return { seeded: [], rejected: [] }
     const roots = (envRaw ?? '').split(',').map((s) => s.trim()).filter(Boolean)
     const seeded: string[] = []
-    const rejected: Array<{ path: string; conflict: RootConflict }> = []
+    const rejected: SeedRootRejection[] = []
     for (const root of roots) {
+      if (!isAbsolute(root)) {
+        rejected.push({ path: root, reason: 'not-absolute' })
+        continue
+      }
       const r = this.addRoot(root, now)
       if (r.ok) seeded.push(root)
-      else rejected.push({ path: root, conflict: r.conflict })
+      else rejected.push({ path: root, reason: 'nested', conflict: r.conflict })
     }
     return { seeded, rejected }
   }
