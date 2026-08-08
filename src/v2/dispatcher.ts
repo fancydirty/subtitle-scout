@@ -9,6 +9,7 @@
 import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, type SubtitleQueueItem } from './subtitleScheduler.js'
+import { isDirWritable } from '../core/mediaContext.js'
 
 export interface DispatcherDeps {
   db: ScoutDb
@@ -17,6 +18,9 @@ export interface DispatcherDeps {
   targetLanguage: string
   /** 守备目录白名单——字幕队列只处理这些根内的文件（排除已移除根的残留数据）。 */
   roots: string[]
+  /** 只读根缓存（115 测试目录是只读的——字幕派发会 ENOENT，识别照常）。
+   *  🔴 检测一次缓存，不每 tick 探测（网络挂载上试写慢且有最终一致性残留）。 */
+  writableRoots?: Map<string, boolean>
   now?: () => number
 }
 
@@ -27,28 +31,64 @@ export interface DispatchResult {
   subtitleTitle: string | null
 }
 
-/** 一拍：识别队列有活就派识别，字幕队列有活就派字幕。各自最多处理一项。 */
-export async function dispatchOnce(deps: DispatcherDeps): Promise<DispatchResult> {
+/** 一拍：识别/字幕各最多一项。轮转（奇偶 tick 交替）——识别长跑不阻塞字幕（M-4）。 */
+export async function dispatchOnce(deps: DispatcherDeps, tick: number): Promise<DispatchResult> {
   const now = deps.now?.() ?? Date.now()
   const result: DispatchResult = { identifyDispatched: false, subtitleDispatched: false, identifyWorkDir: null, subtitleTitle: null }
 
-  // ① 识别队列
-  const identifyQueue = listIdentifyQueue(deps.db, now)
-  if (identifyQueue.length > 0) {
-    const report = await runIdentifyWorkDir(deps.identify, identifyQueue[0])
-    result.identifyDispatched = true
-    result.identifyWorkDir = identifyQueue[0].workDir
-    console.error(`[dispatcher] identify: ${identifyQueue[0].workDir} → tmdbId=${report.tmdbId}`)
+  // 只读根检测（缓存）：字幕派发只在可写根内进行（115 只读 → 跳过字幕，识别照常）
+  const writableCache = deps.writableRoots ?? new Map<string, boolean>()
+  const writableRoots = () => {
+    const out: string[] = []
+    for (const root of deps.roots) {
+      if (!writableCache.has(root)) {
+        writableCache.set(root, isDirWritable(root))
+      }
+      if (writableCache.get(root)) out.push(root)
+    }
+    return out
   }
 
-  // ② 字幕队列（按守备目录过滤——排除已移除根的残留）
-  const subtitleQueue = listSubtitleQueue(deps.db, deps.roots)
-  if (subtitleQueue.length > 0) {
-    const item = subtitleQueue[0]
-    await runSubtitleWorkDir(deps.db, deps.subtitleWorker, item, deps.targetLanguage)
-    result.subtitleDispatched = true
-    result.subtitleTitle = item.title
-    console.error(`[dispatcher] subtitle: ${item.title} (${item.files.length} files)`)
+  // 轮转：奇数 tick 先识别，偶数 tick 先字幕（M-4——识别 30min 长跑不阻塞字幕）
+  const identifyFirst = tick % 2 === 1
+  const wRoots = writableRoots()
+
+  if (identifyFirst) {
+    const identifyQueue = listIdentifyQueue(deps.db, now)
+    if (identifyQueue.length > 0) {
+      const report = await runIdentifyWorkDir(deps.identify, identifyQueue[0])
+      result.identifyDispatched = true
+      result.identifyWorkDir = identifyQueue[0].workDir
+      console.error(`[dispatcher] identify: ${identifyQueue[0].workDir} → tmdbId=${report.tmdbId}`)
+    }
+    if (wRoots.length > 0) {
+      const subtitleQueue = listSubtitleQueue(deps.db, wRoots)
+      if (subtitleQueue.length > 0) {
+        const item = subtitleQueue[0]
+        await runSubtitleWorkDir(deps.db, deps.subtitleWorker, item, deps.targetLanguage)
+        result.subtitleDispatched = true
+        result.subtitleTitle = item.title
+        console.error(`[dispatcher] subtitle: ${item.title} (${item.files.length} files)`)
+      }
+    }
+  } else {
+    if (wRoots.length > 0) {
+      const subtitleQueue = listSubtitleQueue(deps.db, wRoots)
+      if (subtitleQueue.length > 0) {
+        const item = subtitleQueue[0]
+        await runSubtitleWorkDir(deps.db, deps.subtitleWorker, item, deps.targetLanguage)
+        result.subtitleDispatched = true
+        result.subtitleTitle = item.title
+        console.error(`[dispatcher] subtitle: ${item.title} (${item.files.length} files)`)
+      }
+    }
+    const identifyQueue = listIdentifyQueue(deps.db, now)
+    if (identifyQueue.length > 0) {
+      const report = await runIdentifyWorkDir(deps.identify, identifyQueue[0])
+      result.identifyDispatched = true
+      result.identifyWorkDir = identifyQueue[0].workDir
+      console.error(`[dispatcher] identify: ${identifyQueue[0].workDir} → tmdbId=${report.tmdbId}`)
+    }
   }
 
   return result

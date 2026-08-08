@@ -150,11 +150,25 @@ export async function runIdentifyWorkDir(
     return { ok: true as const, written }
   }
 
-  const report = await deps.runIdentify(
-    { ...deps.worker, writeIdentified },
-    facts,
-    runKey,
-  )
+  let report: IdentifyReport
+  try {
+    report = await deps.runIdentify(
+      { ...deps.worker, writeIdentified },
+      facts,
+      runKey,
+    )
+  } catch (e) {
+    // 🔴 B2（对抗审计）：识别抛错（超时/步数耗尽/LLM 5xx）必须回写退避——
+    // 否则 next_retry_at 不动 → 每 30s 重选 → 烧钱死循环。
+    const attempt = (deps.db.prepare('SELECT MAX(attempt) a FROM files WHERE work_dir = ?').get(facts.workDir) as { a: number }).a
+    const err = e instanceof Error ? e.message.slice(0, 100) : String(e)
+    deps.db.prepare(`
+      UPDATE files SET attempt = ?, next_retry_at = ?, last_error = ?, updated_at = ?
+      WHERE work_dir = ?
+    `).run(attempt + 1, now + retryDelayMs(attempt), err, now, facts.workDir)
+    console.error(`[identify-scheduler] ${facts.workDir} 抛错: ${err}（已推进退避轨）`)
+    return { tmdbId: null, title: null, reason: `error: ${err}` }
+  }
 
   // 🔴 自动绑定：report 确认身份后，scheduler 用文件列表 + TMDB 详情自动绑定所有文件。
   // （agent 的 write_identified_media 工具保留供它主动修正集号，但绑定不再依赖它被调用。）

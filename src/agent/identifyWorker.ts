@@ -138,7 +138,8 @@ You MUST call write_identified_media with ALL files before finalize. The system 
 - If a directory truly cannot be identified (no TMDB match), call finalize with tmdbId=null and reason explaining why.
 - Movies have no season/episode — set them null for movie files.
 - Bind ALL files, not just some.`,
-    stopWhen: stepCountIs(deps.stepCap ?? 200),
+    // 用户裁决：不设步数上限（stepCap=100000 等效无限——实际先撞 context 上限）。
+    stopWhen: stepCountIs(deps.stepCap ?? 100000),
     reasoning: 'high',
     telemetry: { isEnabled: true },
     onStepEvent: makeRunTracer(runKey),
@@ -158,7 +159,13 @@ ${fileLines}
 
 Determine the TMDB identity of this directory and bind all files.`
 
-  const result = await agent.generate({ prompt })
+  // 🔴 M-3（复审）：超时随 fileCount 伸缩——大目录（海贼王 1000 文件）30min 平值必超时。
+  // '识别通常更快'对大目录不成立，且识别是一个 work_dir 一个 session（无分包）。
+  const timeoutMs = Math.min(5 * 60 * 1000 + facts.fileCount * 2000, 2 * 60 * 60 * 1000)
+  const result = await agent.generate({
+    prompt,
+    abortSignal: AbortSignal.timeout(timeoutMs),
+  })
   console.error(`[identify-worker] ${runKey} finished in ${result.steps.length} step(s)`)
   const final = readFinalized()
   return { tmdbId: final.identity?.tmdbId ?? null, title: final.identity?.title ?? null, reason: final.identity?.reason ?? '' }

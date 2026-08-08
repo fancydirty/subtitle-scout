@@ -20,6 +20,7 @@ export class ScoutDaemonV2 {
   private lastScanAt = 0
   private stopping = false
   private scanInFlight = false
+  private tickCount = 0
 
   constructor(private deps: DaemonV2Deps) {}
 
@@ -29,6 +30,7 @@ export class ScoutDaemonV2 {
     const scanEveryMs = this.deps.scanEveryMs ?? 15 * 60_000
 
     while (!this.stopping) {
+      this.tickCount++
       try {
         await this.tick(scanEveryMs)
       } catch (e) {
@@ -51,8 +53,8 @@ export class ScoutDaemonV2 {
         this.scanInFlight = false
       }
     }
-    // 2. 派活（机械）——识别/字幕各最多一项
-    await dispatchOnce(this.deps)
+    // 2. 派活（机械）——轮转（奇偶 tick 交替），识别/字幕各最多一项
+    await dispatchOnce(this.deps, this.tickCount)
   }
 
   private async scanOnce(): Promise<void> {

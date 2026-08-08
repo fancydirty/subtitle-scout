@@ -423,7 +423,8 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // （e2bff84：内层校验失败折叠 null）——真正的识别结果早已由 write_identified_media
       // 的逐文件事务持久化，finalize 报告丢了也不丢账。
       schema: FindSubtitleBatchReportSchema,
-      stopWhen: stepCountIs(deps.stepCap ?? 500),
+      // 用户裁决：不设步数上限（100000 等效无限——实际先撞 context）。
+      stopWhen: stepCountIs(deps.stepCap ?? 100000),
       reasoning: 'high',
       telemetry: { isEnabled: true },
       // 痕迹通道 C：task.jobId 总是真实的（String(job.id)，见 findSubtitleWorkerTask.ts 的
