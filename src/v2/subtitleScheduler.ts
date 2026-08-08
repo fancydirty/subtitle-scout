@@ -17,21 +17,21 @@ export interface SubtitleQueueItem {
   overview: string | null
   chineseTitles: string[]
   mediaType: string
-  files: Array<{ path: string; filename: string; season: number | null; episode: number | null; dir: string }>
+  files: Array<{ path: string; filename: string; season: number | null; episode: number | null; dir: string; durationSec: number | null; embeddedLangs: string[] | null }>
 }
 
 /** 字幕队列：一个作品的一簇（needs_subtitle=1 的全部文件）。 */
 export function listSubtitleQueue(db: ScoutDb): SubtitleQueueItem[] {
   const rows = db.prepare(`
     SELECT w.id AS work_id, w.title, w.original_title, w.year, w.overview, w.chinese_titles, w.media_type,
-           f.path, f.filename, f.season, f.episode, f.dir
+           f.path, f.filename, f.season, f.episode, f.dir, f.duration_sec, f.embedded_langs
     FROM files f JOIN works w ON f.work_id = w.id
     WHERE f.needs_subtitle = 1
     ORDER BY w.id, f.season, f.episode
   `).all() as Array<{
     work_id: string; title: string; original_title: string | null; year: number | null;
     overview: string | null; chinese_titles: string | null; media_type: string;
-    path: string; filename: string; season: number | null; episode: number | null; dir: string
+    path: string; filename: string; season: number | null; episode: number | null; dir: string; duration_sec: number | null; embedded_langs: string | null
   }>
 
   const byWork = new Map<string, SubtitleQueueItem>()
@@ -46,7 +46,9 @@ export function listSubtitleQueue(db: ScoutDb): SubtitleQueueItem[] {
       }
       byWork.set(r.work_id, item)
     }
-    item.files.push({ path: r.path, filename: r.filename, season: r.season, episode: r.episode, dir: r.dir })
+    let langs: string[] | null = null
+    if (r.embedded_langs) { try { langs = JSON.parse(r.embedded_langs) } catch { langs = null } }
+    item.files.push({ path: r.path, filename: r.filename, season: r.season, episode: r.episode, dir: r.dir, durationSec: r.duration_sec, embeddedLangs: langs })
   }
   return [...byWork.values()]
 }
@@ -56,8 +58,12 @@ export function buildSubtitleTask(item: SubtitleQueueItem, targetLanguage: strin
   // INNER 沙盒根：所有文件所在目录的公共祖先（同一作品通常同根，安全）
   const dirs = item.files.map(f => f.dir)
   const mediaRoot = commonDir(dirs)
+  // 🔴 2026-08-08 实测修正：itemId 必须从 work_id 派生（tmdb:95897/s1e1），不能传 null——
+  // findSubtitleWorker 的 prompt 对 itemId:null 渲染"unidentified — identify first"，worker 会
+  // 直接 no_safe_match 跳过而不搜索（Overflow 2 步退出的根因）。新架构里文件已识别（work_id
+  // 有值），itemId 是"已识别"的信号。
   const targets: FindSubtitleTargetFact[] = item.files.map(f => ({
-    itemId: null,
+    itemId: item.workId + (f.season != null && f.episode != null ? `/s${f.season}e${f.episode}` : ''),
     videoPath: f.path,
     videoFilename: f.filename,
     season: f.season,
@@ -66,8 +72,8 @@ export function buildSubtitleTask(item: SubtitleQueueItem, targetLanguage: strin
     imdbId: null,
     runtimeMinutes: null,
     dirName: f.dir,
-    durationSec: null,
-    embeddedLangs: null,
+    durationSec: f.durationSec,
+    embeddedLangs: f.embeddedLangs,
     embeddedTmdbId: null,
   }))
   return {

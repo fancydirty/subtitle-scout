@@ -22,12 +22,14 @@ async function main() {
     tmdb: null, // 字幕 worker 不需要识别工具
   })
 
+  const filter = process.argv[2]
   const queue = listSubtitleQueue(db)
-  if (queue.length === 0) { console.log('字幕队列为空'); db.close(); return }
-  console.log(`字幕队列 ${queue.length} 个作品，处理第一个：`)
-  console.log(`  ${queue[0].title} (${queue[0].workId}) ${queue[0].files.length} 文件`)
+  const target = filter ? queue.find(q => q.title.includes(filter)) : queue[0]
+  if (!target) { console.log(`没有匹配的作品（过滤: ${filter ?? '(无)'}）`); db.close(); return }
+  console.log(`字幕队列 ${queue.length} 个作品，处理：`)
+  console.log(`  ${target.title} (${target.workId}) ${target.files.length} 文件`)
 
-  const report = await runSubtitleWorkDir(worker, queue[0], 'zh')
+  const report = await runSubtitleWorkDir(worker, target, 'zh')
   console.log(`结果: installed=${report.installed.length} no_safe_match=${report.no_safe_match.length} retry_later=${report.retry_later.length}`)
   for (const i of report.installed.slice(0, 5)) {
     console.log(`  装盘: ${i.installedPath}`)

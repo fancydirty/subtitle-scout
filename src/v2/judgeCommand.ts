@@ -3,7 +3,7 @@
 // 对已识别文件跑 judgeSubtitle，更新 needs_subtitle。
 import { openDb } from './db.js'
 import { judgeSubtitle } from './subtitleJudge.js'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { dirname, basename } from 'node:path'
 
 async function main() {
@@ -25,11 +25,18 @@ async function main() {
   for (const r of rows) {
     let embedded: string[] | null = null
     if (r.embedded_langs) { try { embedded = JSON.parse(r.embedded_langs) } catch { embedded = null } }
-    // sidecar 探测：同目录同名前缀的 .srt/.ass
+    // sidecar 探测：同目录同名前缀的中文字幕（.zh / .zh-Hans / .chs / .zh-CN 等 language tag）
+    // 🔴 2026-08-08 实测：真实字幕是 .zh-Hans.ass（BCP-47 变体），只查 .zh/.chs 会漏判。
+    // 用前缀 + 语言标签正则：stem.zh* 或 stem.chs* 且扩展名是字幕。
     const dir = dirname(r.path)
     const stem = basename(r.filename).replace(/\.[^.]+$/, '')
-    const sidecar = existsSync(`${dir}/${stem}.zh.srt`) || existsSync(`${dir}/${stem}.zh.ass`)
-      || existsSync(`${dir}/${stem}.chs.srt`) || existsSync(`${dir}/${stem}.chs.ass`)
+    const dirEntries = (() => { try { return readdirSync(dir) } catch { return [] } })()
+    const sidecar = dirEntries.some((e) =>
+      e !== r.filename
+      && e.startsWith(stem + '.')
+      && /\.(srt|ass|ssa|vtt)$/i.test(e)
+      && /[.-](zh|chs|chi|zho)([.-]|$)/i.test(e)
+    )
 
     const verdict = judgeSubtitle(
       { originLang: r.origin_lang, embeddedLangs: embedded, hasSidecarSubtitle: sidecar },
