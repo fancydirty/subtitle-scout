@@ -89,6 +89,7 @@ describe('agent identification integration', () => {
         year: 2008,
         genreIds: [18, 80],
         originalTitle: 'Breaking Bad',
+        title: 'Breaking Bad',
       })),
       getChineseTitles: vi.fn(async () => ['绝命毒师']),
       getExternalIds: vi.fn(async () => ({ imdbId: 'tt0903747' })),

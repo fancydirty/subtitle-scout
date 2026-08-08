@@ -40,6 +40,7 @@ describe('makeTmdbEvidenceTools', () => {
 
   it('get_tmdb_details returns details and season table for tv', async () => {
     const details: TmdbDetails = {
+      title: 'Show',
       overview: 'Overview',
       runtimeMinutes: 24,
       posterPath: null,

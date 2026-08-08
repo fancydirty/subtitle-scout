@@ -96,7 +96,7 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv', 5000, 12345)
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: '/bd.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
+      getDetails: async () => ({ title: 'Show', overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: '/bd.jpg', originalTitle: 'Show OT', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
     })
     const recognize = vi.fn(() => tvResult({ embeddedTmdbId: '108964', title: 'Spy x Family', season: 1, episode: 2 }))
@@ -130,7 +130,7 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
     const disk = fakeDisk()
     disk.setVideo('/media/movies/hero.mkv')
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', backdropPath: null, originalTitle: null, year: 1999, genreIds: [] }),
+      getDetails: async () => ({ title: 'The Matrix', overview: null, runtimeMinutes: 136, posterPath: '/matrix.jpg', backdropPath: null, originalTitle: null, year: 1999, genreIds: [] }),
       getChineseTitles: async () => ['黑客帝国', '駭客任務'],
     })
     const recognize = vi.fn(() => movieResult({ embeddedTmdbId: '603', title: 'The Matrix' }))
@@ -203,7 +203,7 @@ describe('makeIngestPass — 摄取采集 imdb id（验收修复轮一）', () =
     const disk = fakeDisk()
     disk.setVideo('/media/Show/Season 1/ep1.mkv')
     const tmdb = fakeTmdb({
-      getDetails: async () => ({ overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null, originalTitle: 'Show', year: 2020, genreIds: [] }),
+      getDetails: async () => ({ title: 'Show', overview: 'x', runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null, originalTitle: 'Show', year: 2020, genreIds: [] }),
       getChineseTitles: async () => ['演出'],
       getExternalIds: async () => { throw new TmdbRequestFailedError(new Error('ECONNREFUSED')) },
     })
@@ -1683,7 +1683,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('空名/未富化 series 被补拍 name/chineseTitle/posterPath/year/genres', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '' }) // 空名 ? 卡（模拟 P6 认领债务）
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
+      title: 'Rescued Show', overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getChineseTitles = vi.fn(async () => ['救回剧'])
@@ -1712,7 +1712,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     // pass 连带补齐"，但那条 pass 接不住它们——这正是本次要堵的缺口）。候选放宽 overview IS NULL
     // （限真名剧，见下方 D6 护栏测试）+ retry 路径把 overview/backdrop 穿进 applyEnrichment。
     lib.upsertSeries({ id: 'tmdb:777', name: 'Enriched Show', genres: [18] }) // 已富化真名剧；overview/backdrop 恒 NULL
-    const getDetails = vi.fn(async () => ({
+    const getDetails = vi.fn(async () => ({ title: 'Enriched Show',
       overview: 'ov', runtimeMinutes: 42, posterPath: '/p.jpg', backdropPath: '/bd.jpg',
       originalTitle: 'Enriched Show', year: 2021, genreIds: [18],
     }))
@@ -1733,7 +1733,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     // genres 已有但 overview 仍空的真名剧拉回候选（存量回填），故此处必须连 overview/backdrop
     // 一并落齐才算真·已富化、才不再被重跑。
     lib.upsertSeries({ id: 'tmdb:1', name: 'Already Good', genres: [35], overview: 'has overview', backdropPath: '/bd.jpg' })
-    const getDetails = vi.fn(async () => ({
+    const getDetails = vi.fn(async () => ({ title: 'x',
       overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: 'x', year: null, genreIds: [],
     }))
     const pass = makeIngestPass(makeDeps({
@@ -1748,7 +1748,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
 
   it('每轮 cap 10：候选超过 10 个时只补拍前 10 个（防 TMDB 抖动期连环空转）', async () => {
     for (let i = 0; i < 15; i++) lib.upsertSeries({ id: `tmdb:${i}`, name: '' })
-    const getDetails = vi.fn(async () => ({
+    const getDetails = vi.fn(async () => ({ title: 'x',
       overview: null, runtimeMinutes: null, posterPath: null, backdropPath: null, originalTitle: 'x', year: null, genreIds: [],
     }))
     const pass = makeIngestPass(makeDeps({
@@ -1801,7 +1801,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('富化重试回填 imdb：现 provider_ids 无 imdb 时，external_ids 采到后并入', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '' }) // 空名/未富化 → 进候选
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
+      title: 'Rescued Show', overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
@@ -1822,7 +1822,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
   it('富化重试回填 imdb：现 provider_ids 已含 imdb 时，不再覆盖/改写', async () => {
     lib.upsertSeries({ id: 'tmdb:24240', name: '', providerIds: JSON.stringify({ tmdb: '24240', imdb: 'tt99999' }) })
     const getDetails = vi.fn(async () => ({
-      overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
+      title: 'Rescued Show', overview: null, runtimeMinutes: 24, posterPath: '/poster.jpg', backdropPath: null,
       originalTitle: 'Rescued Show', year: 2023, genreIds: [16, 35],
     }))
     const getExternalIds = vi.fn(async () => ({ imdbId: 'tt24240' }))
@@ -1843,7 +1843,7 @@ describe('makeIngestPass — 富化重试（pass 收尾，spec §A 一石二鸟�
     lib.upsertSeries({ id: 'tmdb:24240', name: 'Stub Name' })
     // 真名剧退出候选现需 overview 也落齐（详情页重设计后候选谓词加了 overview IS NULL 臂）：
     // 空 genres 的定论靠 genres='[]' 熄火 genres 臂，overview 落值熄火 overview 臂，两臂皆灭方退。
-    const getDetails = vi.fn(async () => ({
+    const getDetails = vi.fn(async () => ({ title: 'Rescued Show',
       overview: 'ov', runtimeMinutes: null, posterPath: null, backdropPath: null,
       originalTitle: 'Rescued Show', year: null, genreIds: [] as number[],
     }))

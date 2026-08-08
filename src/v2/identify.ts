@@ -41,6 +41,7 @@ export function searchCandidates(dirName: string): string[] {
 export interface TmdbEvidence {
   id: string
   title: string
+  originalTitle: string | null
   year: number | null
   mediaType: 'tv' | 'movie'
   episodeCount?: number
@@ -59,12 +60,29 @@ export function verifyEvidence(
   targetTitle: string,
   chineseTitles: string[] = [],
 ): { ok: true } | { ok: false; reason: string } {
-  // 证据 1：名字匹配（candidate.title 或 TMDB 中文别名 与目录名清洗后的标题）
-  const titleOk = normalize(candidate.title) === normalize(targetTitle)
-    || candidate.title.includes(targetTitle)
-    || targetTitle.includes(candidate.title)
-    || chineseTitles.some((c) =>
-      normalize(c) === normalize(targetTitle) || c.includes(targetTitle) || targetTitle.includes(c))
+  // 🔴 2026-08-08 实测修正（PLUR1BUS/High School D×D）：纯 normalize 相等太严格，
+  // 真实世界的命名变体（leetspeak 1→i、×→x、缩写、粉丝写法）会让合法匹配被拒。
+  // 标题匹配降级为"模糊相关性"（显著子串重叠 ≥ 5 字符 或 首词相等）——
+  // 机械层只拦"完全无关的标题"（防幻觉），不拦"合法变体"（那是 agent 双证据的职责）。
+  const titleCandidates = [normalize(candidate.title)]
+  if (candidate.originalTitle != null) titleCandidates.push(normalize(candidate.originalTitle))
+  for (const c of chineseTitles) titleCandidates.push(normalize(c))
+  const normTarget = normalize(targetTitle)
+  const titleOk = titleCandidates.some((nc) => {
+    if (nc === '' || normTarget === '') return false
+    if (nc === normTarget) return true
+    // 显著子串重叠（≥5 字符）——覆盖 PLUR1BUS vs Pluribus 这种部分匹配
+    if (nc.length >= 5 && normTarget.length >= 5) {
+      if (nc.includes(normTarget) || normTarget.includes(nc)) return true
+      // 最长公共子串（简化：取短串的前 5+ 字符在长串里找）
+      const short = nc.length <= normTarget.length ? nc : normTarget
+      const long = nc.length <= normTarget.length ? normTarget : nc
+      for (let i = 0; i <= short.length - 5; i++) {
+        if (long.includes(short.slice(i, i + 5))) return true
+      }
+    }
+    return false
+  })
   if (!titleOk) {
     return { ok: false, reason: `title mismatch: candidate="${candidate.title}" vs dir="${targetTitle}"` }
   }
@@ -84,7 +102,15 @@ export function verifyEvidence(
 }
 
 function normalize(s: string): string {
-  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '').trim()
+  // 命名变体归一（2026-08-08 实测踩中三类）：
+  //  ×（U+00D7）→ x："D×D" 是 "DxD" 的粉丝写法
+  //  leetspeak 数字 → 字母：PLUR1BUS → Pluribus（1→i）、M4TRIX → Matrix（4→a）
+  //  之后再删非字母数字（空格/标点/年份分隔符）
+  return s.toLowerCase()
+    .replace(/×/g, 'x')
+    .replace(/1/g, 'i').replace(/4/g, 'a').replace(/3/g, 'e')
+    .replace(/0/g, 'o').replace(/5/g, 's').replace(/7/g, 't')
+    .replace(/[^\p{L}\p{N}]+/gu, '').trim()
 }
 
 export function yearFromDir(dirName: string): number | null {

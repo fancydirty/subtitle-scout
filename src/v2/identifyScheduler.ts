@@ -4,7 +4,7 @@
 // 写库门（防幻觉）：agent 报的 tmdbId 必须通过 verifyEvidence 机械核验才落库。
 // 404 终态：getDetails 返回 null → last_error='tmdb-404'，永不重试（spec-gap B2）。
 import type { ScoutDb } from './db.js'
-import { verifyEvidence, type TmdbEvidence } from './identify.js'
+import { verifyEvidence, titleFromDir, type TmdbEvidence } from './identify.js'
 import type { IdentifyWorkerDeps, IdentifyReport, WorkDirFacts } from '../agent/identifyWorker.js'
 
 export interface IdentifySchedulerDeps {
@@ -82,7 +82,10 @@ export async function runIdentifyWorkDir(
   const runKey = deps.runKey?.(item.workDir) ?? `identify:${item.workDir}`
   const facts = buildFacts(deps.db, item)
 
-  // writeIdentified 执行体：verifyEvidence 机械核验 + 事务写库
+  // writeIdentified 执行体：verifyEvidence 机械核验 + 事务写库。
+  // 🔴 2026-08-08 实测修正：agent 经常搜了 TMDB 但不调 write 工具（9 步只 search+details）。
+  // 绑定不应依赖 agent 自觉——改为 scheduler 自动执行：report 确认身份后，用文件列表 + TMDB
+  // 详情自动绑定（season/episode 取 confidence 值 + 单季推导）。agent 只负责"确认身份"。
   const writeIdentified = async (input: { tmdbId: string; isTv: boolean; title: string; files: Array<{ filename: string; season: number | null; episode: number | null }> }) => {
     // 先查 TMDB 详情做核验
     const mediaType = input.isTv ? 'tv' : 'movie'
@@ -94,6 +97,7 @@ export async function runIdentifyWorkDir(
     const evidence: TmdbEvidence = {
       id: input.tmdbId,
       title: details.title,
+      originalTitle: details.originalTitle ?? null,
       year: details.year,
       mediaType,
     }
@@ -102,7 +106,10 @@ export async function runIdentifyWorkDir(
       fileCount: facts.fileCount,
       seasons: facts.seasons,
       hasSeasonDirs: facts.hasSeasonDirs,
-    }, facts.dirName, details.chineseTitles)
+      // 🔴 2026-08-08 实测：必须用 titleFromDir 清洗后的标题（去掉年份/花括号），
+      // 不能传原始 dirName——带年份的目录名会让 normalize 后的字符串多出年份数字导致
+      // 永不匹配（Chainsaw Man Reze Arc 的 ': ' vs '- ' 差异 + 年份 2025 实测踩中）。
+    }, titleFromDir(facts.dirName), details.chineseTitles)
     if (!check.ok) {
       return { ok: false as const, error: `evidence-fail: ${check.reason}` }
     }
@@ -148,6 +155,26 @@ export async function runIdentifyWorkDir(
     facts,
     runKey,
   )
+
+  // 🔴 自动绑定：report 确认身份后，scheduler 用文件列表 + TMDB 详情自动绑定所有文件。
+  // （agent 的 write_identified_media 工具保留供它主动修正集号，但绑定不再依赖它被调用。）
+  if (report.tmdbId !== null) {
+    const writeResult = await writeIdentified({
+      tmdbId: report.tmdbId,
+      isTv: facts.hasSeasonDirs || facts.seasons.length > 0,
+      title: report.title ?? '',
+      files: facts.files.map(f => ({ filename: f.filename, season: f.season, episode: f.episode })),
+    })
+    if (!writeResult.ok) {
+      const attempt = (deps.db.prepare('SELECT MAX(attempt) a FROM files WHERE work_dir = ?').get(facts.workDir) as { a: number }).a
+      deps.db.prepare(`
+        UPDATE files SET attempt = ?, next_retry_at = ?, last_error = ?, updated_at = ?
+        WHERE work_dir = ?
+      `).run(attempt + 1, now + retryDelayMs(attempt + 1), writeResult.error, now, facts.workDir)
+      return { ...report, reason: `${report.reason} [bind failed: ${writeResult.error}]` }
+    }
+    console.error(`[identify-scheduler] bound ${writeResult.written}/${facts.fileCount} files of ${facts.workDir} to tmdb:${report.tmdbId}`)
+  }
 
   // 写库结果落回 files（成功/失败/404）
   if (report.tmdbId === null) {

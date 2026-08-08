@@ -97,11 +97,13 @@ export async function runIdentify(
     },
   })
 
+  let writeCalls = 0
   const writeTool = tool({
     description: `Write the identified media binding: assign this directory's files to a TMDB work. Call this once per directory after confirming identity with get_tmdb_details. files is the full list of files in this directory with their season/episode (use the mechanical parse values, correcting them where they are clearly wrong).`,
     inputSchema: WriteIdentifiedInputSchema,
     execute: async (input) => {
       if (!deps.writeIdentified) return { ok: false as const, error: 'writeIdentified not wired' }
+      writeCalls++
       return deps.writeIdentified(input)
     },
   })
@@ -127,6 +129,9 @@ A directory contains media files. Determine the TMDB identity (movie or TV serie
 3. Call get_tmdb_details on the best candidate. VERIFY it matches: title (or Chinese title) must match the directory name, AND at least one of: year, media type, episode count. This is the two-evidence bar — never skip it.
 4. Call write_identified_media with the tmdbId and ALL files in the directory. For each file, use the season/episode from the task facts if present (confidence high), or determine them yourself (confidence low/none — e.g. "S2 - 07" means season 2 episode 7; bare numbers under a single Season directory belong to that season).
 5. Call finalize with the identity you confirmed.
+
+## CRITICAL
+You MUST call write_identified_media with ALL files before finalize. The system only records files that are bound via write_identified_media — calling search and details but NOT write_identified_media means NOTHING is recorded. A finalize without a write_identified_media call is a failed identification.
 
 ## Rules
 - NEVER claim an identity without calling get_tmdb_details (two-evidence bar).

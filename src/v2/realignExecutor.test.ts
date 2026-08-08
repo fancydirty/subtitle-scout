@@ -1016,7 +1016,7 @@ describe('executeRealign（顶层编排，集成）', () => {
       return { installed: [], no_safe_match: [{ itemId: task.targets[0].itemId, reason: 'x' }], retry_later: [], hardsub_assumed: [], identity: null } as FindSubtitleBatchReport
     })
     const runEpisode = makeRealignRunEpisode({ runFindSubtitleTask, mediaRoots: ['/lib/tv', '/media/tv'] })
-    const getDetails = vi.fn(async () => ({
+    const getDetails = vi.fn(async () => ({ title: 'SPY×FAMILY',
       overview: 'A spy, an assassin, a telepath.', runtimeMinutes: 24,
       posterPath: null, backdropPath: null, originalTitle: 'SPY×FAMILY', year: 2022, genreIds: [],
     }))

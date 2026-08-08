@@ -31,7 +31,7 @@ async function main() {
           const chinese = await tmdb.getChineseTitles(mediaType, tmdbId).catch(() => [])
           const originLang = await tmdb.getOriginLanguage(mediaType, tmdbId).catch(() => null)
           return {
-            id: Number(tmdbId), title: d.originalTitle ?? String(tmdbId), originalTitle: d.originalTitle ?? null,
+            id: Number(tmdbId), title: d.title || d.originalTitle || String(tmdbId), originalTitle: d.originalTitle ?? null,
             year: d.year, overview: d.overview, posterPath: d.posterPath,
             genreIds: d.genreIds, originLanguage: originLang, chineseTitles: chinese,
           }
@@ -40,16 +40,19 @@ async function main() {
     },
   }
 
+  // 可选：指定 work_dir 过滤（argv[2] 是子串匹配）
+  const filter = process.argv[2]
   const queue = listIdentifyQueue(db, now)
-  if (queue.length === 0) {
-    console.log('识别队列为空')
+  const target = filter ? queue.find(q => q.workDir.includes(filter)) : queue[0]
+  if (!target) {
+    console.log(`没有匹配 work_dir 的待识别项（过滤: ${filter ?? '(无)'}）`)
     db.close()
     return
   }
-  console.log(`识别队列 ${queue.length} 个 work_dir，处理第一个：`)
-  console.log(`  ${queue[0].workDir} (${queue[0].fileCount} 文件)`)
+  console.log(`识别队列 ${queue.length} 个 work_dir，处理：`)
+  console.log(`  ${target.workDir} (${target.fileCount} 文件)`)
 
-  const report = await runIdentifyWorkDir(deps, queue[0])
+  const report = await runIdentifyWorkDir(deps, target)
   console.log(`结果: tmdbId=${report.tmdbId} title=${report.title} reason=${report.reason.slice(0, 100)}`)
 
   // 落库状态

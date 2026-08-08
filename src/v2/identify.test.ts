@@ -19,21 +19,21 @@ describe('titleFromDir（目录名 → 标题）', () => {
 describe('verifyEvidence（双证据核验）', () => {
   it('名字 + 年份吻合 → 通过', () => {
     expect(verifyEvidence(
-      { id: 'tmdb:680', title: 'Pulp Fiction', year: 1994, mediaType: 'movie' },
+      { id: 'tmdb:680', title: 'Pulp Fiction', originalTitle: 'Pulp Fiction', year: 1994, mediaType: 'movie' },
       { dirName: 'Pulp Fiction (1994)', fileCount: 1, seasons: [], hasSeasonDirs: false },
       'Pulp Fiction',
     )).toEqual({ ok: true })
   })
   it('名字 + 类型（TV 目录 + 季目录）→ 通过', () => {
     expect(verifyEvidence(
-      { id: 'tmdb:1396', title: 'Breaking Bad', year: 2008, mediaType: 'tv' },
+      { id: 'tmdb:1396', title: 'Breaking Bad', originalTitle: 'Breaking Bad', year: 2008, mediaType: 'tv' },
       { dirName: 'Breaking Bad (2008)', fileCount: 62, seasons: [1, 2, 3, 4, 5], hasSeasonDirs: true },
       'Breaking Bad',
     )).toEqual({ ok: true })
   })
   it('中文目录名配 TMDB 中文别名 → 通过', () => {
     expect(verifyEvidence(
-      { id: 'tmdb:1396', title: 'Breaking Bad', year: 2008, mediaType: 'tv' },
+      { id: 'tmdb:1396', title: 'Breaking Bad', originalTitle: 'Breaking Bad', year: 2008, mediaType: 'tv' },
       { dirName: '绝命毒师 (2008)', fileCount: 62, seasons: [1, 2, 3, 4, 5], hasSeasonDirs: true },
       '绝命毒师',
       ['绝命毒师', '绝命毒师 第一季'],
@@ -41,14 +41,14 @@ describe('verifyEvidence（双证据核验）', () => {
   })
   it('名字不匹配 → 拒绝', () => {
     expect(verifyEvidence(
-      { id: 'tmdb:999', title: 'Wrong Show', year: 2008, mediaType: 'tv' },
+      { id: 'tmdb:999', title: 'Wrong Show', originalTitle: 'Wrong Show', year: 2008, mediaType: 'tv' },
       { dirName: '绝命毒师 (2008)', fileCount: 62, seasons: [1, 2, 3, 4, 5], hasSeasonDirs: true },
       '绝命毒师',
     )).toEqual({ ok: false, reason: expect.stringContaining('title mismatch') })
   })
   it('名字匹配但无独立证据 → 拒绝', () => {
     expect(verifyEvidence(
-      { id: 'tmdb:680', title: 'Pulp Fiction', year: null, mediaType: 'movie' },
+      { id: 'tmdb:680', title: 'Pulp Fiction', originalTitle: null, year: null, mediaType: 'movie' },
       { dirName: 'Pulp Fiction', fileCount: 50, seasons: [], hasSeasonDirs: false },
       'Pulp Fiction',
     )).toEqual({ ok: false, reason: expect.stringContaining('no independent') })
@@ -62,5 +62,32 @@ describe('yearFromDir', () => {
   })
   it('无年份 → null', () => {
     expect(yearFromDir('SPY x FAMILY')).toBeNull()
+  })
+})
+
+describe('normalize 的 × 变体（D×D vs DxD）', () => {
+  it('High School D×D 与 High School DxD 匹配', () => {
+    expect(verifyEvidence(
+      { id: 'tmdb:45950', title: 'High School DxD', originalTitle: 'High School DxD', year: 2012, mediaType: 'tv' },
+      { dirName: 'High School D×D', fileCount: 48, seasons: [1, 2, 3, 4], hasSeasonDirs: true },
+      'High School D×D',
+    )).toEqual({ ok: true })
+  })
+})
+
+describe('verifyEvidence 的命名变体（模糊匹配）', () => {
+  it('leetspeak：PLUR1BUS vs Pluribus → 通过', () => {
+    expect(verifyEvidence(
+      { id: 'tmdb:225171', title: 'Pluribus', originalTitle: 'Pluribus', year: 2025, mediaType: 'tv' },
+      { dirName: 'PLUR1BUS', fileCount: 8, seasons: [1], hasSeasonDirs: true },
+      'PLUR1BUS',
+    )).toEqual({ ok: true })
+  })
+  it('完全无关的标题 → 拒绝（防幻觉）', () => {
+    expect(verifyEvidence(
+      { id: 'tmdb:999', title: 'SpongeBob', originalTitle: 'SpongeBob', year: 2024, mediaType: 'tv' },
+      { dirName: 'Breaking Bad', fileCount: 62, seasons: [1, 2, 3, 4, 5], hasSeasonDirs: true },
+      'Breaking Bad',
+    )).toEqual({ ok: false, reason: expect.stringContaining('title mismatch') })
   })
 })

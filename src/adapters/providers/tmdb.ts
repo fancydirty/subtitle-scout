@@ -55,6 +55,10 @@ export interface TmdbSearchHit {
  *  tv: episode_run_time?.[0]/first_air_date 年份/original_name；movie: runtime/release_date
  *  年份/original_title——TMDB 两端点自己的字段名分裂，不是本类型的选择。 */
 export interface TmdbDetails {
+  /** TMDB 主标题（原语言 local title，movie 的 title / tv 的 name）——如日语作品的英文名。
+   *  2026-08-08 新架构补：此前只留 originalTitle，英文主标题（title）被丢弃，导致
+   *  verifyEvidence 对"日文 original + 英文目录名"无法匹配（Chainsaw Man Reze Arc 实测）。 */
+  title: string
   overview: string | null
   runtimeMinutes: number | null
   posterPath: string | null
@@ -344,8 +348,11 @@ export class TmdbClient {
       year = typeof dateStr === 'string' && dateStr.length >= 4 ? Number(dateStr.slice(0, 4)) : null
     }
 
+    const rawTitle = mediaType === 'tv' ? d.name : d.title
+    const title = typeof rawTitle === 'string' && rawTitle ? rawTitle : originalTitle ?? ''
+
     return {
-      overview, runtimeMinutes, posterPath, backdropPath, originalTitle,
+      title, overview, runtimeMinutes, posterPath, backdropPath, originalTitle,
       year: Number.isFinite(year) ? year : null, genreIds,
     }
   }
