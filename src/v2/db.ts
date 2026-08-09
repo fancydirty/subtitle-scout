@@ -155,7 +155,9 @@ CREATE TABLE IF NOT EXISTS files (
   work_dir TEXT, season INTEGER, episode INTEGER, parse_confidence TEXT,
   work_id TEXT, needs_subtitle INTEGER, sub_status TEXT,
   attempt INTEGER NOT NULL DEFAULT 0, next_retry_at INTEGER, last_error TEXT,
-  recheck_after INTEGER, updated_at INTEGER NOT NULL
+  recheck_after INTEGER, sub_recheck_at INTEGER, updated_at INTEGER NOT NULL
+  -- sub_recheck_at（v32/D12）="下次该复核字幕存在性的时刻"，勿与 recheck_after 混淆（审计 F5）：
+  -- recheck_after = 字幕流"再去找一次"的重试调度；sub_recheck_at = B 档"磁盘上有没有"的事实复核。
 );
 CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
 CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
@@ -569,6 +571,52 @@ CREATE TABLE IF NOT EXISTS works (
     if (!columns.has('recheck_after')) {
       db.exec('ALTER TABLE files ADD COLUMN recheck_after INTEGER')
     }
+  },
+  // v32（2026-08-08 流水线 spec，docs/design/2026-08-08-PIPELINE-SPEC.md §5 + 裁决 D12/D16/D18）：
+  // files 表加 sub_recheck_at——语义="下次该复核字幕存在性的时刻"（毫秒）。
+  //
+  // 为什么需要这一列：R24 把 sub_status='covered' 的唯一写入者收归扫描（"磁盘上真有同名中字"
+  // 这个事实观察），不再由 worker 的成功报告代写。但全量检测代价是 15 语言标签 × 3 扩展名
+  // = 45 次 stat/文件，而生产的守备目录是 115 网盘的 rclone FUSE 挂载，stat 代价放大约 46 倍。
+  // 故 D12 分两档：A 档（新增/指纹变化）全量检测；B 档（未变化）按本列到点轮转，
+  // 每轮只查 `sub_recheck_at <= now` 的那批 → 单轮开销 ≈ 全库 1/7。
+  //
+  // 为什么迁移必须**打散**而不能留 NULL（D18，这才是本条迁移的实质内容，加列只是顺带）：
+  // 存量行由 ALTER 加入时全是 NULL，而 SQL 三值逻辑下 `NULL <= now` 不为真，于是
+  //   · 照字面写谓词 `sub_recheck_at <= now` → NULL 行永不命中 → **静默失效**。本仓已经
+  //     栽过三次同型缺陷（C12 → C35 → D17：写了某列却没定谁来重读它），不能有第四次。
+  //   · 补成 `IS NULL OR sub_recheck_at <= now` → 首轮全库命中 → 几万文件 × 45 次 stat
+  //     在 FUSE 挂载上**雪崩**，正是 D12 要避免的那件事。
+  // 故走第三条路：迁移当场把存量行随机打散到未来 7 天内，一行不留 NULL，让谓词保持纯粹的
+  // `sub_recheck_at <= now`（不带 `IS NULL OR`）。全库因此从第一轮起就是摊平的每周复核。
+  //
+  // `random() % N` 先取模再 abs 的顺序**不可交换**：random() 返回 64 位有符号整数，直接
+  // abs() 撞上 INT64_MIN 会整数溢出报错；先取模把值收进 (-N, N) 再 abs 才安全。
+  // random() 是非确定性函数，UPDATE 时逐行重算——这正是"散开"的来源，若被写成单个常量
+  // （如先算好一个 JS 随机数再绑定）就退化成"全库同一时刻"，只是把雪崩推迟 7 天。
+  //
+  // `WHERE sub_recheck_at IS NULL` 双重把关：既保证迁移可重跑（幂等，不重置已经排好的复核
+  // 时刻），也保证新库路径下（v9 终态 CREATE TABLE 已含该列、条件式 ALTER 跳过）这条
+  // UPDATE 不会去动扫描逻辑写好的值。新插入行的这一列由后续 task 的扫描逻辑负责写。
+  //
+  // 纯 ADD COLUMN + UPDATE，无 CHECK 约束、无列类型变更 → 不触发 SQLite 的 12 步建表流程。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('sub_recheck_at')) {
+      db.exec('ALTER TABLE files ADD COLUMN sub_recheck_at INTEGER')
+    }
+    db.prepare(
+      `UPDATE files
+          SET sub_recheck_at = ? + abs(random() % (7 * 86400 * 1000))
+        WHERE sub_recheck_at IS NULL`,
+    ).run(Date.now())
   },
 ]
 
