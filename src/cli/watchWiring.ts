@@ -48,6 +48,13 @@ export interface WatchWiringArgs {
   // ── 切换时同样不许丢的（与 4 器官同一类伤害）──
   preTick: () => Promise<void>
   workPermitted: () => boolean
+  /** 翻译总开关的**双门控**（TRANSLATE_* 凭证 ∧ settings.ai_translate_enabled==='true'）。
+   *  阶段 2.6 停牌复查闸的取件范围靠它分流（D14 / C41）。
+   *
+   *  必须惰性（同 targetLanguage / rootsProvider 的既有口径）：`ai_translate_enabled` 是行为级
+   *  开关，用户在 dashboard 里改。求值一次 = 把 watch 启动那一刻的开关冻死在进程里，用户关掉
+   *  翻译后 handoff_translate 行要等容器重启才恢复复查——而它们正是最需要被放回来的那批。 */
+  translateEnabled: () => boolean
   probe: (videoPath: string) => Promise<EmbeddedSubtitleTrack[] | null>
   probeDuration: (videoPath: string) => Promise<number | null>
 }
@@ -84,6 +91,8 @@ export function buildDaemonV2Deps(args: WatchWiringArgs): DaemonV2Deps {
 
     preTick: args.preTick,
     workPermitted: args.workPermitted,
+    // D14：传函数本身（不是 `args.translateEnabled()` 求值一次）——daemonV2 每轮巡检现取。
+    translateEnabled: args.translateEnabled,
     // C12：复用 files/streamProbe.ts 的既有实现（cli 给旧 ingest 接的是同一对函数），不写第二份。
     // 漏了这两行的后果是"测试绿、生产漏"：files.embedded_langs 继续全 NULL，
     // judge 规则 2 与 D9 的 translatable 预判照旧静默失效。

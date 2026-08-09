@@ -881,6 +881,15 @@ async function cmdWatch() {
     traceRetentionDays: daemonDeps.traceRetentionDays!,
     preTick: daemonDeps.preTick!,
     workPermitted: daemonDeps.workPermitted!,
+    // D14 / C41：阶段 2.6 停牌复查闸的取件范围。**与上方 dispatchTranslate 逐字同源的双门控**
+    // （TRANSLATE_* 三凭证部署层 ∧ settings.ai_translate_enabled 行为级，默认关）——两处若各写
+    // 一份判据，用户眼里"翻译开着"这一件事会在派活与复查两条路上得到相反答案，而本仓已因
+    // "留两份漂移实现"栽过多次（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。
+    //
+    // 惰性求值（每轮巡检现取，同 dispatchTranslate 的每 tick 口径）：用户在 dashboard 里关掉
+    // 翻译后，停在 handoff_translate 的行下一轮就该恢复复查，不用重启容器——它们正是 C41
+    // 那批"翻译不启动就永久卡死"的行，最不该等一次重启。
+    translateEnabled: () => !!tryAutoTranslateCfg(cfg) && settingsRepo.get('ai_translate_enabled') === 'true',
     // C12：探针复用 files/streamProbe.ts 的既有实现（旧 ingest 接的是同一对函数），不写第二份。
     probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
     probeDuration: (videoPath: string) => probeDurationSec(videoPath),

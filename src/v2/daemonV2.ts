@@ -143,6 +143,25 @@ export interface DaemonV2Deps {
    *  一次 stat 都不许发"这条性能红线（115 FUSE 上全量复核是几万文件 × 60 次 stat）。 */
   fileExists?: (path: string) => boolean
 
+  /** 翻译总开关的**双门控**（TRANSLATE_* 凭证 ∧ settings.ai_translate_enabled==='true'），
+   *  阶段 2.6 复查闸的取件范围靠它分流（D14 / C41）。接线点在 cli/watchWiring.ts。
+   *
+   *  为什么必须是**函数**而不是布尔值（照 rootsProvider / targetLanguage / traceRetentionDays
+   *  的既有惰性口径）：`ai_translate_enabled` 是行为级开关，用户在 dashboard 里改。求值一次
+   *  会把 watch 启动那一刻的开关冻死在进程里——用户关掉翻译后，handoff_translate 行要等容器
+   *  重启才恢复复查，而它们正是最需要被放回来的那批（C41 的永久卡死）。
+   *
+   *  **未注入时默认 false（"翻译未启用"）**，两种默认的伤害不对称：
+   *   · 默认 true → handoff_translate 永远不被复查 → C41 的永久卡死在**缺省接线下复活**，
+   *     而缺省接线正是最常见形态（watchV2 那条独立入口 + 几十条既有测试的构造点）。
+   *     伤害是永久且静默的：那批文件再也不补字幕，界面上什么异常都看不出来。
+   *   · 默认 false → 复查闸可能碰到飞行中的翻译。但**翻译流第 4 步才接入 daemonV2**
+   *     （C3：本文件里 translate 零命中；spec §4 明记"翻译从第 2 步起饿死"），
+   *     故今天不存在飞行中的翻译，这条伤害的前提为假。
+   *  取伤害小的那个。第 4 步接翻译流时真实双门控必须同时接上（watchWiring 已接），
+   *  届时缺省值只影响没接线的构造点，而那些构造点也不跑翻译流——自洽。 */
+  translateEnabled?: () => boolean
+
   // ───────────────────────────────────────────────────────────────────────────
   // 运维器官（D5 / C16）。签名照 DaemonDeps 的既有形态，接线点仍在 cmdWatch（切换方式是
   // "cmdWatch 内部把 ScoutDaemon 换成 daemonV2"，不是换入口文件——这样这些接线天然留在原处，
@@ -389,6 +408,22 @@ export class ScoutDaemonV2 {
     // 阶段 2.5：judge（B-1）——识别绑定后判 needs_subtitle
     await this.judgeOnce()
 
+    // 阶段 2.6：停牌复查闸（D13 / C35）——把到点的停牌行放回 NULL。
+    //
+    // 位置在 2.5 与 3 **之间**是刚性要求，不是风格：放回来的行本轮就能被下面的字幕工作台
+    // 捞走，不用白等一整天（24h 时间闸）。放在阶段 3 之后的话，状态列的终值一模一样、
+    // 单元用例照样全绿，只是每次复查都白亏一天——这类"顺序错了但列对了"的缺陷，只有端到端
+    // 跑真实 listSubtitleQueue 的用例才看得见（daemonV2.test.ts 用例 7）。
+    //
+    // 整支 try/catch 隔离，口径与 gcStaging / 回填 pass / 各运维器官一致：复查是增益，它挂了
+    // 顶多是停牌行晚一天被放回；做成阻塞项就是"一次库锁停掉整条流水线"，而流水线里还有
+    // 扫描的删除清理（R6/R7 的地基）与两条工作台。
+    try {
+      this.reviewParkedOnce()
+    } catch (e) {
+      this.deps.log(`warn: 停牌复查闸失败（隔离，不阻塞本轮巡检，下轮重试）: ${String(e)}`)
+    }
+
     // 阶段 3：字幕工作流（下游）——有活跑到空
     let subtitleRounds = 0
     while (!this.stopping) {
@@ -489,9 +524,92 @@ export class ScoutDaemonV2 {
     }
   }
 
+  /** 阶段 2.6 停牌复查闸（D13 + D14 + D15 / 缺口 C35 + C41 + C36）。
+   *
+   *  用户原话：「可以改成每周一次，但是页面上还是显示停牌吧，除非哪天字幕真找到了」
+   *  即**停牌 ≠ 系统放弃**（R25/R26）：后台继续每周找一次，但界面在字幕真出现前一直显示停牌
+   *  （界面语义不由这里负责——停牌的解除凭据只有"扫描发现同名字幕"这一条，见 observeSubtitle）。
+   *
+   *  ── 为什么必须是独立阶段，不能塞给字幕流（D13 / C35 的鸡生蛋）──
+   *  字幕工作台的谓词是 `sub_status IS NULL`（listSubtitleQueue，3-2 已收紧）→ 停牌行根本不在
+   *  它的视野内，它看不见也就改不了。3-2 实现了"满 7 次 → 写停牌态 + recheck_after=+7天"这个
+   *  写入者，却没有任何代码把它们读回来——与 C12（embedded_langs 从未被写入）、C35、D17 完全
+   *  同型的第五次形态："写了某列却没定谁来读它"。
+   *  更糟的是若强行让字幕流去改：它会掀掉**正在被翻译流处理**的 handoff_translate 行 →
+   *  翻译回写时 D10 的乐观守卫 `WHERE sub_status='handoff_translate'` 匹配 0 行 →
+   *  tr_recheck_after 不写 → D6 要防的付费 LLM 热循环从侧门放回来。
+   *
+   *  ── 取件范围取决于翻译开关（D14，用户裁决 a / C41）──
+   *   · `unsolvable` —— **恒参与**。它 translatable=0，翻译流对它无能为力（R21 明令不给第 8 次
+   *     机会），不存在"打断飞行中的翻译"这回事。
+   *   · `handoff_translate` —— **仅当翻译未启用时**参与。默认场景下用户并没开翻译（双门控），
+   *     于是满 7 次 → judge 判可翻译 → 写 handoff_translate → 翻译流不启动 → 若复查闸也不管它
+   *     就是**永久卡死**（C41，上一轮刚修掉的"永久判死"原地复活）。反之翻译开着时它归翻译流管、
+   *     有自己的 tr_recheck_after 节奏，复查会打断飞行中的翻译，故不参与。
+   *  这个设计保住了 R23"开关与文件状态解耦"的好性质：开关变化时**不需要批量改库**，
+   *  只是取件范围随开关变；开关一开，停在 handoff_translate 的行自然被翻译流领走。
+   *
+   *  ── sub_attempt 保持不动（D15 / C36 的成本红线）──
+   *  归零后要重新攒 7 次才再停牌 → 一个永远找不到字幕的文件变成 **7 次 / 14 天 ≈ 182 session/年**；
+   *  不归零则回 NULL 后下次失败立即判 `>= 7` → 直接回停牌 → 稳定 **1 次/周 ≈ 52 session/年**。
+   *  差 3.5 倍，而这个退化是**完全静默**的：状态流转看起来一模一样，只有账单会说话。
+   *  3-2 已把移交判据写成 `>= 7` 而非 `== 7`（见 subtitleScheduler 的 bump），正是为了配合这里——
+   *  两半咬合才等于"每周一次"，任一半错了都变 182 次/年，而两半各自单测都能全绿。
+   *
+   *  ── 为什么 recheck_after 也一起清（**不是** load-bearing，别照抄这条当范例）──
+   *  诚实记账：这一列清不清，**今天的行为完全一样**。本闸门的取件条件是
+   *  `recheck_after IS NOT NULL AND recheck_after <= now`，而字幕工作台的是
+   *  `recheck_after IS NULL OR recheck_after <= now`——前者成立**蕴含**后者成立，
+   *  故放回来的行无论留不留那个旧时刻，本轮都照样能被工作台捞走。
+   *  （写这段时我一度在注释里断言"不清就白等一整周"，变异验证 M4 打掉了它：把这一句删掉
+   *  跑全套测试 0 红。留着那句错话比留着这行代码更危险——后人会据此推断出一条不存在的约束。）
+   *
+   *  那为什么还是清：**与既有的"回到出厂值"语义保持一致**。recheck_after 的含义是"字幕流的
+   *  重试退避到点时刻"，停牌期间它被借去当本闸门的取件凭据；放回 NULL 态之后那个值就是一段
+   *  无主的陈旧历史，而 fingerprintResetColumns 对同一列的处置也是清成 NULL（换片源时）。
+   *  一列的"无待退避"只该有一种表示，否则下一个读它的人得先分辨"这个过去时刻是谁写的"。
+   *  代价为零，故取一致性。若将来有人收紧工作台谓词（去掉 `IS NULL OR`），这行会从
+   *  "无所谓"变成"有害"——那时该改的是这里，本段注释是入口。
+   *
+   *  ── 单条 UPDATE 而不是"先 SELECT 再逐行改"──
+   *  一条语句 = 一个原子写。分两步的话进程在中间被杀（软路由掉电是本项目常态，见 db.ts 的
+   *  synchronous=FULL 论证）会留下"选出来了但没改"的半状态；且 WHERE 里的 `sub_status IN (...)`
+   *  天然表达了"只有这两态会被碰"这条隔离语义——covered 与 NULL 一列都不许动
+   *  （covered 归扫描独占 / R24；NULL 行的 recheck_after 是它自己的失败退避凭据，清掉就等于
+   *  次日重选，退避机制整个失效）。 */
+  private reviewParkedOnce(): void {
+    const db = this.deps.db
+    const now = this.deps.now?.() ?? Date.now()
+    // 惰性求值（见 DaemonV2Deps.translateEnabled 的论证）：每轮巡检现取，dashboard 改完
+    // 下一轮即生效。未注入时默认 false = "翻译未启用"——两种默认的伤害不对称，取小的那个。
+    const translateOn = this.deps.translateEnabled?.() ?? false
+
+    // 取件范围随开关变（D14）。handoff_translate 只在翻译未启用时进这个名单。
+    const statuses = translateOn ? ['unsolvable'] : ['unsolvable', 'handoff_translate']
+
+    const res = db.prepare(
+      `UPDATE files SET sub_status = NULL, recheck_after = NULL, updated_at = ?`
+      + ` WHERE sub_status IN (${statuses.map(() => '?').join(',')})`
+      + ` AND recheck_after IS NOT NULL AND recheck_after <= ?`,
+    ).run(now, ...statuses, now)
+
+    // `recheck_after IS NOT NULL` 是刻意的（不是漏了 `IS NULL OR`）：停牌态的行**必然**带着
+    // 3-2 写下的 +7 天时刻，NULL 只可能来自手工改库或将来某条没写全的路径。照字面只收到点的，
+    // 宁可漏放一行（下轮人工可见）也不要把"时刻未知"当成"已到点"——后者会让一个刚停牌的行
+    // 在同一天就被放回，复查退化成日频，正是 D15 在成本上要避免的那件事。
+
+    if (res.changes > 0) {
+      this.deps.log(
+        `停牌复查: ${res.changes} 行放回字幕工作台（sub_attempt 不归零 / D15，`
+        + `翻译${translateOn ? '已启用→只收 unsolvable' : '未启用→含 handoff_translate'} / D14）`,
+      )
+    }
+  }
+
   private async scanOnce(): Promise<void> {
     const db = this.deps.db
     const now = this.deps.now?.() ?? Date.now()
+
     // 本轮的守备目录：巡检内是 runInspection 冻结的快照，直接 scanOnce（既有测试口径）时现取。
     // 整个 scanOnce **只在这里取一次**：扫描作用域与删除作用域必须是同一份名单，中途换名单
     // 就是让 deleteMissing 的 deeperPrefixes 与刚扫过的路径集对不上（D21 同一漏洞面）。

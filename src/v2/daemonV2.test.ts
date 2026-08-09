@@ -2356,3 +2356,321 @@ describe('🔴 C27 端到端：装盘 → 字幕没落地/被手删 → 该行�
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 阶段 2.6 停牌复查闸（D13 + D14 + D15 / 缺口 C35 + C41 + C36）
+//
+// 用户原话：「可以改成每周一次，但是页面上还是显示停牌吧，除非哪天字幕真找到了」
+// 即：停牌 ≠ 系统放弃。后台继续每周找一次，界面在字幕真出现前一直显示停牌。
+//
+// 这个洞的形状与 C12/C35/D17 完全同型（本仓已栽四次）：**有裁决、有写入者、没有读回来的人**。
+// 3-2 已实现"满 7 次 → 写停牌态 + recheck_after=+7天"，但没有任何代码把它们放回来：
+// 字幕工作台谓词是 `sub_status IS NULL`，停牌行根本不在它视野内 → 它看不见也就改不了（鸡生蛋）。
+//
+// 为什么必须是独立阶段而不能塞给字幕流（D13）：强行让字幕流改状态会掀掉**正在被翻译流处理**的
+// handoff_translate 行 → 翻译回写时 D10 的乐观守卫 `WHERE sub_status='handoff_translate'`
+// 匹配 0 行 → tr_recheck_after 不写 → D6 要防的付费 LLM 热循环从侧门放回来。
+//
+// 这一组里有两条**成本红线**，它们是本 task 唯一会静默退化的地方（错了照样全绿）：
+//   · sub_attempt 归零 → 重新攒 7 次才停牌 → 7 次/14 天 ≈ 182 session/年（D15 要防的 3.5 倍）
+//   · 取件不看翻译开关 → handoff_translate 在"翻译未启用"时成永久终态（C41 / 上一轮刚修掉的洞）
+// 故两条都用**变异验证**钉过（改成错的实现必须红），不只靠"看起来断言了"。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 直接驱动阶段 2.6，绕开识别/字幕两个 agent 阶段的噪音。
+ *  端到端的"阶段顺序对不对"另有专门用例走完整 runInspection，不靠这个捷径。 */
+async function reviewParked(daemon: ScoutDaemonV2): Promise<void> {
+  await (daemon as any).reviewParkedOnce()
+}
+
+/** 造一行"已停牌"的 files 行：满 7 次未果、3-2 写下了停牌态 + recheck_after=+7天。
+ *
+ *  sub_attempt 默认播种 7 而不是 0：这是生产上停牌行的**真实形态**（它正是攒到 7 次才停牌的），
+ *  而 D15 那条红线（不归零）只有在播种值非 0 时才看得见——播 0 的话"归零"与"不动"结果一样，
+ *  用例就是个假绿。needs_subtitle=1 是刚性前置：放回 NULL 之后要能被字幕工作台谓词
+ *  （needs_subtitle=1 AND sub_status IS NULL）捞走，少了它端到端那条用例测的就是别的东西。 */
+function seedParked(
+  db: ReturnType<typeof openDb>,
+  path: string,
+  opts: {
+    sub_status: string | null
+    recheck_after?: number | null
+    sub_attempt?: number
+    translatable?: number | null
+    needs_subtitle?: number | null
+  },
+): void {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  const workId = 'tmdb:42'
+  if (!db.prepare('SELECT id FROM works WHERE id = ?').get(workId)) {
+    db.prepare('INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .run(workId, 'Show', 'tv', 'en', 1000, 1000)
+  }
+  db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                 season, episode, needs_subtitle, sub_status, sub_attempt,
+                                 translatable, recheck_after, sub_recheck_at, updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(path, dir, path.slice(path.lastIndexOf('/') + 1), BIG, 1000, dir, workId,
+      1, 1,
+      opts.needs_subtitle === undefined ? 1 : opts.needs_subtitle,
+      opts.sub_status,
+      opts.sub_attempt === undefined ? 7 : opts.sub_attempt,
+      opts.translatable === undefined ? 0 : opts.translatable,
+      opts.recheck_after === undefined ? NOW - 1 : opts.recheck_after,
+      NOW + 5 * DAY,   // 未到点：让 B 档不来搅局（本组测的是复查闸，不是字幕存在性观察）
+      1000)
+}
+
+function attemptOf(db: ReturnType<typeof openDb>, path: string): number {
+  return (db.prepare('SELECT sub_attempt FROM files WHERE path = ?').get(path) as { sub_attempt: number }).sub_attempt
+}
+
+function recheckAfterOf(db: ReturnType<typeof openDb>, path: string): number | null {
+  return (db.prepare('SELECT recheck_after FROM files WHERE path = ?').get(path) as { recheck_after: number | null }).recheck_after
+}
+
+describe('ScoutDaemonV2.reviewParkedOnce · 阶段 2.6 停牌复查闸（D13）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴 用例1: unsolvable 且 recheck_after 到点 → sub_status 放回 NULL（R25/R26：无永久终态）', async () => {
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW - 1 })
+    expect(subStatusOf(db, V)).toBe('unsolvable')   // 前置：确实停牌着，否则用例空转
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    db.close()
+  })
+
+  it('🔴 用例2: unsolvable 但 recheck_after 未到点 → 一列不动（防退化成日频，R25「每周一次」）', async () => {
+    // 这一条守的是节奏而不是终态：少了它，实现可以写成"无脑把所有停牌行放回 NULL"，
+    // 用例 1 照样绿，而生产上停牌行每天被字幕流重选一次 → 365 session/年（R25 要的是 52）。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW + 3 * DAY })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBe('unsolvable')
+    db.close()
+  })
+
+  it('🔴🔴 用例3: 放回时 sub_attempt **保持不动**（D15 成本红线：归零 = 182 session/年 vs 52）', async () => {
+    // 归零后要重新攒 7 次才再停牌 → 一个永远找不到字幕的文件变成 7 次/14 天 ≈ 182 session/年；
+    // 不归零则回 NULL 后下次失败立即判 >=7 → 直接回停牌 → 稳定 1 次/周 ≈ 52 session/年。
+    // 差 3.5 倍，且这个退化**完全静默**：状态流转看起来一模一样，只有账单会说话。
+    // 播种值刻意是 7（生产真实形态）——播 0 的话"归零"与"不动"结果相同，用例就是假绿。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW - 1, sub_attempt: 7 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBeNull()   // 放回确实发生了，否则下一行是空转的假绿
+    expect(attemptOf(db, V)).toBe(7)
+    db.close()
+  })
+
+  it('🔴 用例3b: sub_attempt=9 的行（超过 7）同样不归零（D15 与 `>= 7` 分流谓词的咬合）', async () => {
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW - 1, sub_attempt: 9 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await reviewParked(daemon)
+    expect(attemptOf(db, V)).toBe(9)
+    db.close()
+  })
+
+  it('🔴🔴 用例4: 翻译**未启用** + handoff_translate 到点 → 放回 NULL（D14a / C41 永久终态红线）', async () => {
+    // C41：默认场景下用户并没开翻译（双门控：TRANSLATE_* 凭证 + ai_translate_enabled==='true'）。
+    // 于是满 7 次 → judge 判可翻译 → 写 handoff_translate → 翻译流不启动 → 复查闸又不管它
+    // → **永久卡死**。这正是上一轮刚修掉的"永久判死"原地复活。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'handoff_translate', recheck_after: NOW - 1, translatable: 1 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], translateEnabled: () => false }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    expect(attemptOf(db, V)).toBe(7)   // D15 对这条支路同样成立
+    db.close()
+  })
+
+  it('🔴🔴 用例5: 翻译**已启用** + handoff_translate 到点 → **一列不动**（D14：不许打断飞行中的翻译）', async () => {
+    // 翻译流是 SELECT → await LLM（数分钟）→ 带守卫 UPDATE。复查闸若在这几分钟里把状态清成
+    // NULL，D10 的乐观守卫 `WHERE sub_status='handoff_translate'` 就匹配 0 行 →
+    // tr_recheck_after 不写 → 下一圈立刻重领同一行 → **付费 LLM 热循环**（D6 要防的那个，
+    // 从侧门回来）。这也是 D13 坚持"复查闸必须独立、且取件范围随开关变"的全部理由。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'handoff_translate', recheck_after: NOW - 1, translatable: 1 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], translateEnabled: () => true }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBe('handoff_translate')
+    db.close()
+  })
+
+  it('🔴 用例5b: 翻译已启用时 unsolvable **仍然**参与（D14「unsolvable 恒参与」）', async () => {
+    // 防实现写成"翻译开着就整个阶段跳过"——那样 unsolvable 会跟着被误伤成永久终态，
+    // 而它压根不归翻译流管（translatable=0，翻译流对它无能为力，R21 明令不给第 8 次机会）。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW - 1, translatable: 0 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], translateEnabled: () => true }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    db.close()
+  })
+
+  it.each([['covered'], [null]])(
+    '🔴 用例6: sub_status=%s 的行不被这个闸门碰（隔离性：复查闸只管停牌两态）',
+    async (status) => {
+      // covered 被碰 = 磁盘上明明有字幕却重进字幕工作台白烧付费 LLM，且违背 R24
+      // （covered 的唯一写入/回退者是扫描，复查闸无权碰它）。
+      // NULL 行被碰 = 它的 recheck_after 是"失败退避到明天"的凭据，被清掉就等于同轮/次日
+      // 立刻重选 → 退避机制整个失效。故这条用例连 recheck_after 一起断言。
+      const db = openDb(':memory:')
+      seedParked(db, V, { sub_status: status as string | null, recheck_after: NOW - 1 })
+      const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+      await reviewParked(daemon)
+      expect(subStatusOf(db, V)).toBe(status)
+      expect(recheckAfterOf(db, V)).toBe(NOW - 1)   // 退避凭据也不许被顺手动
+      db.close()
+    })
+
+  it('🔴 用例10: 复查闸抛错不拖垮整轮巡检（与其他阶段一致的隔离口径）', async () => {
+    // 口径与 gcStaging / 回填 pass / 各运维器官一致：复查是增益，它挂了顶多是停牌行晚一天
+    // 被放回；做成阻塞项就是"一次库锁/一条坏 SQL 停掉整条流水线"——而流水线里还有扫描的
+    // 删除清理（R6/R7 的地基）与两条工作台。
+    //
+    // 故障注入打在 db.prepare 上（复查闸唯一的外部依赖），而不是 monkey-patch 私有方法：
+    // 后者会连"实现到底调没调这个方法"一起被替换掉，测出来的是替身的行为。
+    //
+    // 判据取 SQL 里的字面量 `unsolvable`——它在 daemonV2 里**只出现在复查闸的取件谓词中**。
+    // 第一版写的是 `/sub_status\s*=\s*NULL/`，那同时命中了 scanOnce 的指纹重置子句
+    // （C11 的 `sub_status=NULL`）→ 炸的是阶段 1 而不是 2.6，用例red 得理由都是假的。
+    // 这正是"只看红不看红的理由"会漏掉的那类假红/假绿。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW - 1 })
+    const real = db.prepare.bind(db)
+    const boom = {
+      ...db,
+      prepare: (sql: string) => {
+        if (/unsolvable/.test(sql)) throw new Error('database is locked')
+        return real(sql as any)
+      },
+    } as any
+    const logs: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      db: boom, roots: ['/media'], ...fakeFs({ '/media': [] }),
+      log: (m: string) => logs.push(m),
+    }))
+    // 整轮巡检（不是只跑 2.6）：要证明的正是"它抛错也不掀翻别的阶段"。
+    await expect((daemon as any).runInspection(new AbortController().signal)).resolves.toBeUndefined()
+    expect(logs.some(l => l.includes('停牌复查'))).toBe(true)
+    db.close()
+  })
+})
+
+describe('阶段 2.6 · translateEnabled 未注入时的默认语义（C41 vs 飞行中的翻译）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴 用例9: translateEnabled 未注入 → 默认「翻译未启用」，handoff_translate 参与复查', async () => {
+    // 论证（两种默认各有伤害，取伤害小的那个）：
+    //  · 默认"已启用" → handoff_translate 永远不被复查 → C41 的永久卡死**在缺省接线下复活**。
+    //    而缺省接线正是最常见的形态（watchV2 那条独立入口、以及几十条既有测试的 mkDeps）。
+    //    伤害是**永久的、静默的**：文件再也不补字幕，界面上什么异常都看不出来。
+    //  · 默认"未启用" → 复查闸可能碰到飞行中的翻译。但翻译流**第 4 步才接入 daemonV2**
+    //    （C3：daemonV2 里 translate 零命中，spec §4 明记"翻译从第 2 步起饿死"），
+    //    所以**今天不存在飞行中的翻译**，这条伤害的前提为假。
+    // 故默认"未启用"。第 4 步接入翻译流时，真实双门控必须同时接上（watchWiring 已接），
+    // 那时缺省值只影响没接线的构造点，而那些构造点也不会跑翻译流——自洽。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'handoff_translate', recheck_after: NOW - 1, translatable: 1 })
+    const deps = mkDeps(db, { roots: ['/media'] })
+    delete (deps as any).translateEnabled   // 显式表达"没接线"，而不是靠 mkDeps 恰好没给
+    const daemon = new ScoutDaemonV2(deps)
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    db.close()
+  })
+
+  it('🔴 translateEnabled 是**惰性求值**（dashboard 改开关后下一轮巡检即生效，不用重启容器）', async () => {
+    // 仓库既有约定（rootsProvider / targetLanguage / traceRetentionDays 全是这个口径）。
+    // 写成布尔值会把"启动那一刻的开关"冻死在进程里：用户在 dashboard 关掉翻译后，
+    // handoff_translate 行要等容器重启才恢复复查——而它们正是最需要被放回来的那批。
+    const db = openDb(':memory:')
+    seedParked(db, '/media/Show/E01.mkv', { sub_status: 'handoff_translate', recheck_after: NOW - 1, translatable: 1 })
+    let enabled = true
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], translateEnabled: () => enabled }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, '/media/Show/E01.mkv')).toBe('handoff_translate')   // 开着 → 不碰
+    enabled = false                                                            // 用户在 dashboard 关掉
+    await reviewParked(daemon)
+    expect(subStatusOf(db, '/media/Show/E01.mkv')).toBeNull()                   // 同一个实例，无需重启
+    db.close()
+  })
+})
+
+describe('🔴 阶段 2.6 端到端：放回来的行本轮就能被字幕流捞走（D13 的阶段位置）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴🔴 用例7: 复查闸放回 → **同一轮**巡检的字幕工作台就能取到它（2.6 必须在 3 之前）', async () => {
+    // 为什么必须端到端跑**真实的 listSubtitleQueue** 而不是断言 sub_status 列：
+    // 阶段顺序错了（2.6 放在阶段 3 之后）时，列的终值一模一样、用例 1 照样绿，
+    // 只是放回来的行要白等一整天（24h 时间闸）才被捞走。这一条是唯一能看见阶段位置的断言。
+    //
+    // 同时它也顺带钉住了"放回后的行确实满足工作台的**完整**谓词"——needs_subtitle=1 +
+    // sub_status IS NULL + recheck_after 过门，三条缺一不可。
+    // 诚实备注（变异验证 M4 的结论）：这三条里 recheck_after 那条**今天钉不住**——闸门的取件
+    // 条件 `recheck_after IS NOT NULL AND <= now` 蕴含工作台的 `IS NULL OR <= now`，故实现里
+    // 清不清那一列，本用例都绿。删掉实现里的 `recheck_after = NULL` 跑全套是 0 红，已确认。
+    // 不为它编一条假用例（造一个"闸门触发了但工作台谓词不满足"的库状态，在今天的谓词组合下
+    // 根本构造不出来，硬造只能靠直接 SQL 违反不变量——那测的是不存在的生产场景）。
+    // 若将来有人收紧工作台谓词（去掉 `IS NULL OR`），这一条就会自动变成真红线。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW - 1 })
+    // 前置：它现在**不在**工作台里（谓词 sub_status IS NULL 看不见停牌行）——这正是 C35 的鸡生蛋
+    expect(listSubtitleQueue(db, ['/media'], NOW).flatMap(q => q.files.map(f => f.path))).not.toContain(V)
+
+    const seenByWorker: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [V] }),
+      writableRoots: new Map([['/media', true]]),
+      // 字幕 worker 只记录它看到了哪些 target，不改库——避免 bump 的真实时钟与假 NOW 打架，
+      // 那是另一条用例（用例 8）专门处理的耦合点。
+      subtitleWorker: async (task: any) => {
+        for (const t of task.targets) seenByWorker.push(t.videoPath)
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+
+    // 🔴 load-bearing：阶段 2.6 若在阶段 3 之后（或不存在），worker 这一轮什么也看不到。
+    expect(seenByWorker).toContain(V)
+    db.close()
+  })
+
+  it('🔴🔴 用例8: 放回后下次失败**立即**回停牌（`>= 7` 而非重新攒 7 次 / D15 的另一半）', async () => {
+    // 走真实的 runSubtitleWorkDir（即 bump 的真实路径），证明 D15 的两半是咬合的：
+    // "复查闸不归零" + "分流谓词 >= 7" 合起来才等于"每周 1 次"。任何一半错了都变 182 次/年，
+    // 而两半各自单测都能全绿——这正是本仓栽过四次的那种"组合缺陷"。
+    const db = openDb(':memory:')
+    seedParked(db, V, { sub_status: 'unsolvable', recheck_after: NOW - 1, sub_attempt: 7, translatable: 0 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await reviewParked(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    expect(attemptOf(db, V)).toBe(7)
+
+    // 下一次字幕尝试失败（no_safe_match，最常见的失败路径 / R17）。
+    // 时钟口径：runSubtitleWorkDir 内部用真实 Date.now()（无注入点），故取件也用真实时钟 +
+    // 余量跨过退避——与 C27 端到端那组同一套论证，不把余量硬编码成两个时钟的差值。
+    const item = listSubtitleQueue(db, ['/media'], Date.now() + 2 * DAY)[0]
+    expect(item).toBeDefined()   // 前置：放回后它真的在工作台里
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [],
+      no_safe_match: [{ itemId: 'tmdb:42/s1e1', reason: 'searched, nothing' }],
+      retry_later: [], hardsub_assumed: [],
+    })) as any, item, 'zh')
+
+    // 🔴 一次失败就回停牌（8 >= 7），不是"重新攒 7 次"。
+    expect(attemptOf(db, V)).toBe(8)
+    expect(subStatusOf(db, V)).toBe('unsolvable')
+    // 且退避是 +7 天（供下一次复查取件），不是"明天"——否则复查退化成日频。
+    const ra = recheckAfterOf(db, V)!
+    expect(ra).toBeGreaterThan(Date.now() + 6 * DAY)
+    db.close()
+  })
+})

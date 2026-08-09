@@ -34,6 +34,7 @@ function mkArgs(over: Record<string, any> = {}) {
       traceRetentionDays: () => 30,
       preTick: async () => {},
       workPermitted: () => true,
+      translateEnabled: () => false,
       probe: async () => null,
       probeDuration: async () => null,
       ...over,
@@ -137,6 +138,28 @@ describe('buildDaemonV2Deps · D5 四个运维器官全部接上', () => {
     db.close()
   })
 
+  it('🔴 translateEnabled 被接上（D14：阶段 2.6 的取件范围靠它分流）', () => {
+    const { db, args } = mkArgs({ translateEnabled: () => true })
+    const deps = buildDaemonV2Deps(args)
+    // 不接线的后果是**静默**的：daemonV2 侧缺省 false → handoff_translate 恒参与复查 →
+    // 用户真开了翻译时，复查闸会去碰飞行中的翻译（D10 守卫匹配 0 行 → 热循环）。
+    expect(deps.translateEnabled).toBeDefined()
+    expect(deps.translateEnabled!()).toBe(true)
+    db.close()
+  })
+
+  it('🔴 translateEnabled 是**惰性求值**（dashboard 改 ai_translate_enabled 后下一轮生效，不用重启）', () => {
+    // 与 targetLanguage / rootsProvider / identify 同一条既有口径。求值一次会把 watch 启动
+    // 那一刻的开关冻死在进程里：用户关掉翻译后，handoff_translate 行要等容器重启才恢复复查——
+    // 而它们正是最需要被放回来的那批（C41 的永久卡死）。
+    let on = false
+    const { db, args } = mkArgs({ translateEnabled: () => on })
+    const deps = buildDaemonV2Deps(args)
+    on = true
+    expect(deps.translateEnabled!()).toBe(true)
+    db.close()
+  })
+
   it('preTick / workPermitted 被接上（wizard 落库同进程点火 + setup 模式不空烧）', () => {
     const { db, args } = mkArgs()
     const deps = buildDaemonV2Deps(args)
@@ -167,5 +190,23 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
 
   it('cmdWatch 经 buildDaemonV2Deps 组装（防"绕过被测的接线函数、就地手写第二份"）', () => {
     expect(src).toContain('buildDaemonV2Deps(')
+  })
+
+  it('🔴 cmdWatch 传的 translateEnabled 是**真实双门控**，不是硬编码的常量', () => {
+    // 为什么这一条必须是源码断言：buildDaemonV2Deps 的那两条用例注入的是**测试自己写的**
+    // 替身函数，`translateEnabled: () => false` 这种硬编码在它们眼里与真实双门控完全等价，
+    // 全绿。而生产上接错的后果是静默且相反的两种伤害：
+    //   · 硬编码 false → 用户开了翻译，复查闸照旧去碰飞行中的翻译（D10 守卫 0 行 → 热循环）
+    //   · 硬编码 true  → 用户没开翻译，handoff_translate 永不复查 → C41 永久卡死
+    // 弱证据（不执行代码）但守的东西很窄很硬，与本文件末尾那条"入口是不是 V2"同一手法。
+    //
+    // 口径必须与 cli/index.ts:767 的 dispatchTranslate 逐字同源（TRANSLATE_* 凭证 ∧
+    // settings 行为级开关）：两处若各写一份判据，用户眼里"翻译开着"这一件事会在派活与复查
+    // 两条路上得到相反答案——本仓已因"留两份漂移实现"栽过多次（D7 / C30）。
+    const m = src.match(/translateEnabled:\s*\(\)\s*=>([\s\S]{0,200}?)\n/)
+    expect(m).not.toBeNull()
+    const body = m![1]
+    expect(body).toContain('tryAutoTranslateCfg')
+    expect(body).toContain('ai_translate_enabled')
   })
 })
