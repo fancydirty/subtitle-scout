@@ -62,6 +62,14 @@ const TRACE_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000
  *  秒级的机械扫描"变成跑一整天，期间删除清理与识别/字幕工作台全被堵在后面。 */
 const SUB_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
 
+/** D17 回填 pass 的每批上限（spec §4 第 3 步前置迁移 2 明写 200）。
+ *
+ *  这是**硬上限而不是调优参数**：生产有个守备目录是 115 网盘的 rclone FUSE 挂载，单文件
+ *  ffprobe 实测 12-16s。一次探完全库（存量 248 行只是今天的量级）就是把 boot 拖成几小时，
+ *  期间删除清理、识别、字幕三条主路全被堵在后面——而回填只是让存量行**重新被 judge 看一眼**，
+ *  晚一天完成没有任何实质损失。剩余行留 NULL，下次启动继续，靠谓词自然收敛、不丢活。 */
+const BACKFILL_BATCH_SIZE = 200
+
 export interface DaemonV2Deps {
   db: ScoutDb
   /** 守备目录的**启动快照**。保留是为了不动既有构造点/测试；运行期真相请走 rootsProvider。 */
@@ -243,6 +251,20 @@ export class ScoutDaemonV2 {
       if (cleaned > 0) this.deps.log(`boot: 清理了 ${cleaned} 个上个进程遗留的孤儿工作台`)
     } catch (e) {
       this.deps.log(`warn: boot 孤儿工作台回收失败（隔离，不阻塞启动）: ${String(e)}`)
+    }
+
+    // D17 存量回填（C38 + C43）：boot 一次，**不进下面的 while 循环**。
+    // 位置在巡检之前是刚性要求（见 backfillEmbeddedLangs 的分区论证）：先回填、后扫描，
+    // 两个 pass 才不会重复探同一批文件。
+    //
+    // 整支 try/catch 隔离，与 gcStaging 同一口径：回填是增益，它挂了顶多是存量行晚一天重判，
+    // 做成阻塞项就是"一次 ffprobe 故障停掉整条流水线"。这条 catch 是"不阻塞主巡检"
+    // （spec 明写）在实现层的唯一保证者——mapWithConcurrency 是 allSettled，单文件失败进不到
+    // 这里，但 pass 级别的爆炸（库被锁、PRAGMA 读不出）会。
+    try {
+      await this.backfillEmbeddedLangs()
+    } catch (e) {
+      this.deps.log(`warn: boot embedded_langs 回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
     }
 
     while (!this.stopping) {
@@ -779,6 +801,124 @@ export class ScoutDaemonV2 {
     if (ok > 0 || failed > 0) {
       this.deps.log(`scan: probe ok=${ok} failed=${failed}`)
     }
+  }
+
+  /** D17 加强版（C38 + C43）：embedded_langs 存量回填 pass。
+   *
+   *  为什么非有不可：1b-3 已让扫描对新增/指纹变化的文件写 embedded_langs，但存量行是在 probe
+   *  上线前入库的（115 上那 248 行），这一列全 NULL——而它是三样东西的共同前提：judge 规则 2
+   *  （已有内嵌中文轨 → 跳过找字幕）、D9 的 translatable 判定（日漫有日文内嵌轨 = 纯本地抽取、
+   *  可救）、以及 C12 本身。存量行的**指纹不会变**，扫描那条路径永远探不到它们
+   *  （probeNewOrChanged 之前那行 `continue` 就走了），故本 pass 是它们唯一的通路。
+   *
+   *  ── 为什么"探完就完"是错的（这是本仓第三次栽在同一模式上：C12 → C35 → 本条）──
+   *  回填 embedded_langs **不会改 needs_subtitle**，而 judgeOnce 的谓词是
+   *  `needs_subtitle IS NULL` → judge 永不再看存量行 → 刚探出来的那一列一辈子没人读 →
+   *  几万次 12s 的 ffprobe 换来零行为变化，日志上却是一片"回填成功"。故必须**同一条 UPDATE**
+   *  里把 needs_subtitle 与 translatable 一起置 NULL，打通重判通路。
+   *  同一条语句而不是两条：进程在两条之间被杀（软路由掉电是常态）会留下"证据已补、判决还是
+   *  旧的"的行，而它已不在 `embedded_langs IS NULL` 的重试范围里 → 永久冻结，比不回填更糟。
+   *
+   *  translatable 列**今天还不存在**（归后续 task 加），故按 PRAGMA 取交集动态拼列，
+   *  照 fingerprintResetColumns 的同一条既有口径：硬编码进 SQL 会让本 pass 在今天的库上抛
+   *  `no such column` → boot 阶段就炸、daemon 起不来；而只写"今天有的列"则会在加列那天静默
+   *  漏清——那正是本条要修的缺陷本身。
+   *
+   *  ── 执行位置与分批（spec §4 第 3 步前置迁移 2 的第 3 项）──
+   *  boot 时跑一次，**不是每轮巡检的常驻阶段**。谓词 `embedded_langs IS NULL` 让它自然收敛：
+   *  回填完的行选不中，全库探完后每次 boot 只剩一条 SELECT 的成本。
+   *
+   *  与 1b-3 的 probeNewOrChanged **零重复**，靠"这一行当前有没有 embedded_langs"天然分区：
+   *   · 新增文件 boot 时还没有 files 行 → 本 pass 的谓词看不见 → 只被扫描探
+   *   · 指纹变化的行 boot 时 embedded_langs 还是旧的非 NULL 值 → 本 pass 跳过 → 只被扫描探
+   *   · 存量行指纹不变 → 扫描提前 continue → 只被本 pass 探
+   *  boot（在 while 循环之前）这个位置是 load-bearing 的：若挪到扫描之后的同一轮内，
+   *  刚被 upsert 清成 NULL、探针又恰好失败的行会在同轮里立刻被重探一次，FUSE 上成本翻倍。
+   *
+   *  每批 200 是硬上限而非调优参数：生产有个守备目录是 115 网盘的 rclone FUSE 挂载，
+   *  单文件 ffprobe 12-16s。一次探完全库就是把 boot 拖成几小时，期间主巡检（删除清理、
+   *  识别、字幕）全被堵在后面。剩下的行留 NULL，下次启动继续，不丢活。
+   *
+   *  失败行记 last_error 并**留 NULL**：NULL 是下轮重探的唯一凭据（streamProbe 的三态契约），
+   *  last_error 让运维能分辨"这片子真没内嵌轨"与"这台机器的 ffprobe 坏了"。
+   *  值带 `probe:` 前缀而不是裸字符串：last_error 是与识别轨**共用**的列，而
+   *  identifyScheduler 的队列谓词是 `last_error IS NULL OR last_error != 'tmdb-404'`——
+   *  往这一列写识别轨的终态值会让一次 ffprobe 超时把文件永久踢出识别队列（跨轨串味）。
+   *
+   *  探针未注入时整支休眠（同 probeNewOrChanged 的既有约定），且**一列都不动**：
+   *  若先无条件置 NULL 再探测，探针缺席时就会把全库判决清空却没有任何新证据，
+   *  下一轮 judge 拿着同一批 NULL 的 embedded_langs 重判一遍——纯白烧，且每次启动重复一次。 */
+  private async backfillEmbeddedLangs(): Promise<void> {
+    const probe = this.deps.probe
+    const probeDuration = this.deps.probeDuration
+    if (!probe && !probeDuration) return
+
+    const db = this.deps.db
+    let rows: Array<{ path: string }> = []
+    try {
+      rows = db.prepare(
+        `SELECT path FROM files WHERE embedded_langs IS NULL ORDER BY id LIMIT ${BACKFILL_BATCH_SIZE}`,
+      ).all() as Array<{ path: string }>
+    } catch { return }   // 无 files 表/无该列的旧库：回填是增益，不许阻断启动
+    if (rows.length === 0) return
+
+    // 重判通路的那两列按 PRAGMA 实际存在的取（见上方论证）。
+    const have = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map((c) => c.name),
+    )
+    const rejudge = ['needs_subtitle', 'translatable'].filter((c) => have.has(c))
+    // 成功时只清**自己写的**失败叙事（`probe:` 前缀），不碰识别轨的值。
+    // 无条件 `last_error = NULL` 是跨轨越界：`tmdb-404` 是识别轨的**终态凭据**
+    // （identifyScheduler 的队列谓词靠它把 404 的目录永久排除），被字幕轨的一次
+    // probe 成功洗掉，那个目录就重进识别队列白烧一次 TMDB。
+    // 留着旧的失败叙事会误导排障（libraryRepo.ts:642 有同型血案），但那是两条轨
+    // 各自的账——本轨只销自己的。
+    const write = db.prepare(
+      `UPDATE files SET embedded_langs = ?, duration_sec = ?, updated_at = ?,`
+      + ` last_error = CASE WHEN last_error LIKE 'probe:%' THEN NULL ELSE last_error END`
+      + rejudge.map((c) => `, ${c} = NULL`).join('')
+      + ` WHERE path = ?`,
+    )
+    const markError = db.prepare('UPDATE files SET last_error = ?, updated_at = ? WHERE path = ?')
+
+    this.deps.log(`回填: embedded_langs 存量回填开始（本批 ${rows.length} 行 / 上限 ${BACKFILL_BATCH_SIZE}，D17）`)
+    let ok = 0, failed = 0
+
+    const paths = rows.map((r) => r.path)
+    const results = await mapWithConcurrency(paths, this.deps.probeConcurrency ?? 2, async (p) => {
+      // 同一文件的两个探针串行（沿用 probeNewOrChanged / ingest 的既有口径）：并发只在跨文件
+      // 那一层买得到吞吐，同文件并发两次 ffprobe 只是把同一份网络读放大一倍。
+      let langs: string[] | null = null
+      let duration: number | null = null
+      if (probe) {
+        const tracks = await probe(p)
+        // 剔图形字幕轨与无语言标签的轨，复用 probeNewOrChanged 的同一套裁决（不剔的话 judge
+        // 规则 2 会把一条读不了的 PGS 中文轨当成"已有内嵌中字"，永久跳过找字幕）。
+        // tracks 为 null（探测不可用）时保持 langs=null，绝不折叠成 []。
+        if (tracks !== null) {
+          langs = [...new Set(tracks.filter((t) => !t.isImageBased && t.lang !== null).map((t) => t.lang as string))]
+        }
+      }
+      if (probeDuration) duration = await probeDuration(p)
+      // langs 仍为 null（探针不可用）时**不写**：写了就等于把这一行从 `embedded_langs IS NULL`
+      // 的重试范围里删掉，而我们其实什么也没探到。留着 NULL 下次 boot 再试。
+      // 反过来 langs 为 [] 必须写：那是"探过、确认零轨"，不写就是每次启动重探，永不收敛。
+      if (langs === null) return { path: p, wrote: false }
+      write.run(JSON.stringify(langs), duration, Date.now(), p)
+      return { path: p, wrote: true }
+    })
+
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      if (r.status === 'fulfilled') { if (r.value.wrote) ok++; continue }
+      failed++
+      // 逐个记日志 + 落 last_error：事后排障要能分辨"这片子真没内嵌轨"与"ffprobe 坏了"。
+      const reason = `probe: ${String(r.reason).slice(0, 200)}`
+      try { markError.run(reason, Date.now(), paths[i]) } catch { /* 记账失败不许拖垮回填 */ }
+      this.deps.log(`回填: probe 失败（隔离，留 NULL 待下轮重探）: ${paths[i]}: ${String(r.reason)}`)
+    }
+    this.deps.log(`回填: embedded_langs ok=${ok} failed=${failed}`
+      + `（重判通路已置 NULL: ${rejudge.join('/')}，D17 / C43）`)
   }
 
   /** 出现在任何一对嵌套关系里的守备目录（内层外层都算）——D20 的跳过名单。

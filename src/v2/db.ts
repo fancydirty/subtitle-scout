@@ -618,6 +618,38 @@ CREATE TABLE IF NOT EXISTS works (
         WHERE sub_recheck_at IS NULL`,
     ).run(Date.now())
   },
+  // v33（2026-08-08 流水线 spec，裁决 D19 / 缺口 C44）：废止 sub_status 第五态 'unavailable'
+  // 的**存量行**，洗回 NULL。
+  //
+  // 为什么这条迁移必须**先于**"字幕工作台谓词收紧成 `sub_status IS NULL`"落地：
+  // 顺序调整后第 2 步（daemonV2 接容器）先上线，而 `subtitleScheduler.ts` 至今仍在为
+  // "搜过确实没有"这条**最常见的失败路径**写 `sub_status='unavailable'`。等到后续 task 把
+  // 字幕工作台谓词从"排除 covered"收紧成 `IS NULL` 的那一刻，这批存量行会同时满足两条：
+  //   · sub_status 非 NULL → 不在字幕工作台的取件范围里
+  //   · 那条失败路径不递增 sub_attempt → 永远攒不到 7 次，进不了停牌复查闸
+  // 于是它们**永久出局**，字幕再也不会被补，而 UI 上看不出任何异常（C44）。
+  //
+  // 反过来的顺序是无害的：写入点还活着时先洗，洗完又被写脏——脏行只是回到今天的状态，
+  // 而今天的谓词（排除 covered）本来就能取到它们。故"先迁移、后删写入点"是唯一安全的顺序，
+  // 也是本条独立于删写入点那个 task 的全部理由。**这里刻意不碰写入点**：那是另一个 task 的
+  // 范围，在这条迁移上线与写入点删除之间的窗口里，新写的脏行由下一次迁移重跑…… 不会重跑
+  // （迁移只跑一次），窗口内的脏行由那个 task 自己负责，本条只保证"历史存量清零"。
+  //
+  // 谓词写 `= 'unavailable'` 而不是 `IS NOT NULL`：后者在今天的库上完全测得过（库里只有
+  // covered 和 unavailable），却会在停牌态（handoff_translate / unsolvable，后续 task 才写）
+  // 上线那天把飞行中的翻译整个掀掉——D10 的乐观守卫 `WHERE sub_status='handoff_translate'`
+  // 匹配 0 行 → 退避不写 → 付费 LLM 热循环从侧门回来。精确值匹配同时让本条天然幂等
+  // （第二次跑匹配 0 行）。
+  //
+  // 条件式 files 表存在性检查照抄 v30/v31/v32：v29 及更早的库升级上来时 files 表还不存在
+  // （v30 才建），裸 UPDATE 会 `no such table: files` 把 openDb 整个炸掉 → 用户的库再也打不开。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    db.prepare(`UPDATE files SET sub_status = NULL WHERE sub_status = 'unavailable'`).run()
+  },
 ]
 
 export function openDb(path: string): ScoutDb {

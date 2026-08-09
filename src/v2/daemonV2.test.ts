@@ -1828,3 +1828,294 @@ describe('ScoutDaemonV2 · 切换入口时同样不许丢的另外三样（与 4
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第 3 步前置迁移 2：embedded_langs 存量回填 pass（D17 加强版 / C38 + C43）
+//
+// 背景（为什么这个 pass 非有不可）：1b-3 已让扫描对**新增/指纹变化**的文件跑 probe 写
+// embedded_langs。但存量行是在 probe 上线前入库的，这一列全是 NULL——而它是三样东西的共同
+// 前提：subtitleJudge 规则 2（已有内嵌中文轨 → 跳过）、D9 的 translatable 判定（日漫有日文
+// 内嵌轨时可翻译）、以及 C12 本身。存量行的指纹不会变，扫描那条路径**永远不会**探到它们
+// （probeNewOrChanged 之前那行 `continue` 就走了），所以回填是它们唯一的通路。
+//
+// 第四轮审计发现"只写一个回填 pass"不够（这是本仓第三次栽在同一模式上：C12 → C35 → 本条）：
+// 回填 embedded_langs **不会改 needs_subtitle**，而 judge 的谓词是 `needs_subtitle IS NULL`
+// （judgeOnce）→ judge 永不再看存量行 → **回填等于白跑 ffprobe**，几万次 12s 的探测换来零行为
+// 变化，且日志上一片"回填成功"。故三者缺一不可，下面每一条都各有一个用例钉住：
+//   ① 回填内容：probe 写 embedded_langs + duration_sec
+//   ② 同时置 NULL：needs_subtitle 与 translatable ← **重判通路**，缺了①就是白跑
+//   ③ 执行位置：boot 一次性 pass，分批 200，失败记 last_error，不阻塞主巡检
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 造存量行：embedded_langs IS NULL（probe 上线前入库的形态），且**已经被 judge 判过**。
+ *  needs_subtitle 必须是非 NULL 的既有判决——这正是重判通路要打通的那把锁。
+ *  播种成 NULL 的话用例 6 会变成空转的假绿（断言"是 NULL"而它一开始就是 NULL）。 */
+function seedLegacyFile(
+  db: ReturnType<typeof openDb>,
+  path: string,
+  over: Partial<{ needs_subtitle: number | null; embedded_langs: string | null; translatable: number | null }> = {},
+): void {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  const have = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
+  const row: Record<string, unknown> = {
+    path, dir, filename: path.slice(path.lastIndexOf('/') + 1), size: BIG, mtime: 1000,
+    work_dir: dir, work_id: 'tmdb:42',
+    needs_subtitle: over.needs_subtitle === undefined ? 1 : over.needs_subtitle,
+    embedded_langs: over.embedded_langs === undefined ? null : over.embedded_langs,
+    updated_at: 1000,
+  }
+  if (have.has('translatable')) row.translatable = over.translatable === undefined ? 0 : over.translatable
+  const cols = Object.keys(row)
+  db.prepare(`INSERT INTO files (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`)
+    .run(...cols.map(c => row[c]))
+}
+
+/** 直接驱动回填 pass（绕开整轮 run()：boot 顺序另有专门用例钉）。 */
+async function backfill(daemon: ScoutDaemonV2): Promise<void> {
+  await (daemon as any).backfillEmbeddedLangs()
+}
+
+describe('ScoutDaemonV2 · D17 embedded_langs 存量回填 pass（C38 + C43）', () => {
+  const P = '/media/Show/E01.mkv'
+
+  it('🔴 存量 embedded_langs IS NULL 的行 → 回填后非 NULL（含 duration_sec）', async () => {
+    const db = openDb(':memory:')
+    seedLegacyFile(db, P)
+    const fs = fakeFsWithProbe({}, {},
+      async () => [{ lang: 'jpn', codec: 'subrip', isImageBased: false }], async () => 1423)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+
+    expect(fs.probeCalls).toEqual([P])
+    const s = stateOf(db, P)
+    expect(JSON.parse(s.embedded_langs as string)).toEqual(['jpn'])
+    expect(s.duration_sec).toBe(1423)
+    db.close()
+  })
+
+  it('🔴🔴 回填后 needs_subtitle 被置 NULL —— 重判通路红线（C43 的核心）', async () => {
+    const db = openDb(':memory:')
+    db.exec('ALTER TABLE files ADD COLUMN translatable INTEGER')
+    seedLegacyFile(db, P, { needs_subtitle: 0, translatable: 0 })
+    // 前置条件：这一行**已经被判过**（needs_subtitle=0），否则本用例是空转的假绿。
+    expect(stateOf(db, P).needs_subtitle).toBe(0)
+    expect(stateOf(db, P).translatable).toBe(0)
+
+    const fs = fakeFsWithProbe({}, {},
+      async () => [{ lang: 'jpn', codec: 'subrip', isImageBased: false }], async () => 1400)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+
+    // 这两条是全套改动里唯一真正 load-bearing 的断言：
+    //  · needs_subtitle 留着旧值 → judgeOnce 的谓词 `needs_subtitle IS NULL` 永不选中它 →
+    //    刚探出来的 embedded_langs 一辈子没人读 → 几万次 ffprobe 白跑，行为零变化
+    //  · translatable 留着旧值 → D9 的可救性判决是基于"没有 embedded_langs"算出来的，
+    //    证据刚补上、判决却冻结着 → 一个有日文内嵌轨的日漫仍被当作不可救判死
+    expect(stateOf(db, P).needs_subtitle).toBeNull()
+    expect(stateOf(db, P).translatable).toBeNull()
+    db.close()
+  })
+
+  it('🔴 重判通路真的通了：回填后 judgeOnce 能重新判到这一行（端到端，不只断言列值）', async () => {
+    // 为什么要有这条而不是只有上面那条：上面断言的是"列被置 NULL"，那是**手段**；
+    // 真正的承诺是"judge 会再看一眼这一行"。前六轮子代理踩过的假绿正是这类——
+    // 声称守某条通路、实际只钉了通路上的一个中间变量。故这里把真实的 judgeOnce 接上跑。
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at)
+                VALUES (?,?,?,?,?,?)`).run('tmdb:42', 'Anime', 'tv', 'ja', 1000, 1000)
+    // 存量行的旧判决：judge 在没有 embedded_langs 的年代判了"需要中文字幕"。
+    seedLegacyFile(db, P, { needs_subtitle: 1 })
+    // 探针揭示的真相：容器里本来就有一条中文内嵌轨 → 规则 2 应当判 needs=0，本不该找字幕。
+    const fs = fakeFsWithProbe({}, {},
+      async () => [{ lang: 'chi', codec: 'subrip', isImageBased: false }], async () => 1400)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+    await (daemon as any).judgeOnce()
+
+    // 判决被真实修正 = 回填不是白跑。缺了"置 NULL"那一步，这里会停在 1（judge 没看它），
+    // 系统继续为一个自带中文内嵌轨的片子每天烧一轮付费 LLM 找字幕。
+    expect(stateOf(db, P).needs_subtitle).toBe(0)
+    db.close()
+  })
+
+  it('🔴 已有 embedded_langs 的行不被重复 probe（性能红线：115 是 rclone FUSE，12-16s/文件）', async () => {
+    const db = openDb(':memory:')
+    seedLegacyFile(db, '/media/Show/done.mkv', { embedded_langs: '["eng"]' })
+    seedLegacyFile(db, '/media/Show/empty.mkv', { embedded_langs: '[]' })   // "探过、确认零轨"
+    seedLegacyFile(db, '/media/Show/todo.mkv')                              // 真正的存量行
+    const fs = fakeFsWithProbe({}, {})
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+    await backfill(daemon)   // 跑两遍：自然收敛也一起钉住（见下一条的论证）
+
+    // '[]' 必须与 NULL 区分对待：把"确认零轨"当成"没探过"就是每次启动重探全库，
+    // 在 115 上永不收敛（streamProbe.ts 的三态契约，C12 的既有裁决）。
+    expect(fs.probeCalls).toEqual(['/media/Show/todo.mkv'])
+    db.close()
+  })
+
+  it('🔴 全部回填完后再启动 → 一次 probe 都不发（靠 `embedded_langs IS NULL` 谓词自然收敛）', async () => {
+    const db = openDb(':memory:')
+    seedLegacyFile(db, P)
+    const fs = fakeFsWithProbe({}, {}, async () => [], async () => 900)   // 返回 [] 而非 null
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+    expect(fs.probeCalls).toEqual([P])
+    // 第二次启动（新进程同一个库）：谓词已选不中它 → 零 probe。
+    // 这条与上一条不同：上面验的是"别人的行不碰"，这里验的是"自己刚回填的行不再碰"——
+    // 探针返回 [] 时若实现把它写成 NULL，收敛就失效，而列值断言看不出来（NULL 本来也是 NULL）。
+    const daemon2 = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon2)
+    expect(fs.probeCalls).toEqual([P])   // 仍是 1 次，没有第 2 次
+    db.close()
+  })
+
+  it('🔴 分批：250 行存量，一轮只处理 200（每批上限，FUSE 挂载上的硬要求）', async () => {
+    const db = openDb(':memory:')
+    for (let i = 0; i < 250; i++) seedLegacyFile(db, `/media/Show/E${String(i).padStart(3, '0')}.mkv`)
+    const fs = fakeFsWithProbe({}, {})
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+    // 用调用次数断言而不是"还有多少行是 NULL"：后者在"实现一次探完 250 行但只写回 200 行"
+    // 这种形态下同样为真，而真实成本（250 × 12s 的 FUSE IO）一分不少。
+    expect(fs.probeCalls.length).toBe(200)
+    // 剩下的 50 行留在 NULL，下次启动继续（不丢活）。
+    const left = db.prepare('SELECT COUNT(*) AS n FROM files WHERE embedded_langs IS NULL').get() as { n: number }
+    expect(left.n).toBe(50)
+    db.close()
+  })
+
+  it('🔴 probe 失败的行 → 记 last_error，不阻塞其他行，整轮不炸', async () => {
+    const db = openDb(':memory:')
+    const bad = '/media/Show/BROKEN.mkv'
+    const good = '/media/Show/OK.mkv'
+    seedLegacyFile(db, bad)
+    seedLegacyFile(db, good)
+    const fs = fakeFsWithProbe({}, {},
+      async (p) => { if (p === bad) throw new Error('ffprobe timeout'); return [{ lang: 'eng', codec: 'subrip', isImageBased: false }] },
+      async (p) => { if (p === bad) throw new Error('ffprobe timeout'); return 1200 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await expect(backfill(daemon)).resolves.toBeUndefined()
+
+    // 失败行：留 NULL（下轮重探的唯一凭据）+ 记 last_error（留待下轮，且让运维能分辨
+    // "这片子真没内嵌轨"与"这台机器的 ffprobe 坏了"）。
+    expect(stateOf(db, bad).embedded_langs).toBeNull()
+    const err = db.prepare('SELECT last_error FROM files WHERE path = ?').get(bad) as { last_error: string | null }
+    expect(err.last_error).not.toBeNull()
+    // 兄弟行照常完成——一个损坏文件不许让整批 200 行的回填白跑。
+    expect(JSON.parse(stateOf(db, good).embedded_langs as string)).toEqual(['eng'])
+    expect(stateOf(db, good).duration_sec).toBe(1200)
+    db.close()
+  })
+
+  it('🔴 last_error 不许写死识别轨的终态值（否则回填会把文件踢出识别队列）', async () => {
+    // last_error 是**共用列**：identifyScheduler 的队列谓词是
+    // `last_error IS NULL OR last_error != 'tmdb-404'`。回填若往这一列写 'tmdb-404'，
+    // 一次 ffprobe 超时就把文件永久踢出识别队列——跨轨串味的静默灾难。
+    const db = openDb(':memory:')
+    const bad = '/media/Show/BROKEN.mkv'
+    seedLegacyFile(db, bad)
+    const fs = fakeFsWithProbe({}, {}, async () => { throw new Error('boom') }, async () => { throw new Error('boom') })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+    const err = db.prepare('SELECT last_error FROM files WHERE path = ?').get(bad) as { last_error: string | null }
+    expect(err.last_error).not.toBe('tmdb-404')
+    db.close()
+  })
+
+  // 上一条守的是"回填**写**这列时不许串味"。这一条守反方向：回填**成功清**这列时
+  // 同样不许跨轨——`tmdb-404` 是识别轨的终态凭据（identifyScheduler 靠它把 404 目录
+  // 永久排除），被字幕轨的一次 probe 成功洗掉，那个目录就重进识别队列白烧一次 TMDB。
+  // 两条轨共用一列，各自只许销自己的账。
+  it('🔴 回填成功只清自己写的 probe: 失败叙事，不碰识别轨的 tmdb-404', async () => {
+    const db = openDb(':memory:')
+    const own = '/media/Show/own.mkv'      // 自己上轮 probe 失败留下的
+    const other = '/media/Show/other.mkv'  // 识别轨写的终态
+    seedLegacyFile(db, own)
+    seedLegacyFile(db, other)
+    db.prepare("UPDATE files SET last_error = 'probe: boom' WHERE path = ?").run(own)
+    db.prepare("UPDATE files SET last_error = 'tmdb-404' WHERE path = ?").run(other)
+
+    const fs = fakeFsWithProbe({}, {},
+      async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }],
+      async () => 1200)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await backfill(daemon)
+
+    const read = (p: string) => (db.prepare('SELECT last_error FROM files WHERE path = ?')
+      .get(p) as { last_error: string | null }).last_error
+    expect(read(own)).toBeNull()          // 自己的账，销掉
+    expect(read(other)).toBe('tmdb-404')  // 别人的账，原样留着
+    db.close()
+  })
+
+  it('🔴 translatable 列不存在时（3-2 之前的 schema）→ 回填照常进行，不抛错', async () => {
+    const db = openDb(':memory:')
+    // 今天的 schema 里就没有 translatable 列。硬编码进 SQL 会让整个回填 pass 抛
+    // `no such column: translatable` → boot 阶段就炸 → daemon 起不来。
+    const cols = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
+    expect(cols.has('translatable')).toBe(false)   // 前置条件成立，否则本用例无意义
+    seedLegacyFile(db, P, { needs_subtitle: 1 })
+    const fs = fakeFsWithProbe({}, {}, async () => [{ lang: 'jpn', codec: 'subrip', isImageBased: false }], async () => 1400)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...fs.deps }))
+    await expect(backfill(daemon)).resolves.toBeUndefined()
+
+    expect(JSON.parse(stateOf(db, P).embedded_langs as string)).toEqual(['jpn'])
+    expect(stateOf(db, P).needs_subtitle).toBeNull()   // 重判通路照样打通
+    db.close()
+  })
+
+  it('🔴 探针未注入 → 回填整支休眠，一列不动（不许把 needs_subtitle 白清一遍）', async () => {
+    // 反向灾难：若实现先无条件置 NULL 再探测，探针缺注入时就会把全库判决清空却没有任何新证据
+    // → 下一轮 judge 拿着同一批 NULL 的 embedded_langs 重判一遍，纯白烧，且每次启动重复一次。
+    const db = openDb(':memory:')
+    seedLegacyFile(db, P, { needs_subtitle: 1 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { probe: undefined, probeDuration: undefined }))
+    await expect(backfill(daemon)).resolves.toBeUndefined()
+    expect(stateOf(db, P).needs_subtitle).toBe(1)
+    db.close()
+  })
+
+  it('🔴 boot 时被调用，且**不阻塞主巡检**（失败也照样进巡检）', async () => {
+    const db = openDb(':memory:')
+    seedLegacyFile(db, P)
+    const identifySpy = vi.fn(async () => ({ tmdbId: null, title: null, reason: 'noop' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [],
+      // 回填整支抛错（不是单文件失败，是 pass 级别的爆炸，比如库被锁）。
+      probe: async () => { throw new Error('probe exploded') },
+      probeDuration: async () => { throw new Error('probe exploded') },
+      identify: { db, runIdentify: identifySpy, worker: {} as any },
+      listVideoFiles: () => [],
+    }))
+    await oneLoop(daemon)
+    // 巡检照常发生（meta 被写）= 回填不是主巡检的前置条件。回填是增益，它挂了
+    // 顶多是存量行晚一天重判；把它做成阻塞项就是"一个 ffprobe 故障停掉整条流水线"。
+    expect(lastInspectAt(db)).not.toBeNull()
+    db.close()
+  })
+
+  it('🔴 回填与 1b-3 的 probeNewOrChanged 不重复探同一批文件（boot 先跑，扫描后跑）', async () => {
+    // 两个 pass 靠"这一行当前有没有 embedded_langs"天然分区：
+    //  · 新增文件 boot 时还没有 files 行 → 回填的谓词看不见它 → 只被扫描探
+    //  · 指纹变化的行 boot 时 embedded_langs 还是**旧的非 NULL 值** → 回填跳过 → 只被扫描探
+    //  · 存量行指纹不变 → 扫描那条路径的 `continue` 提前走掉 → 只被回填探
+    // 若把回填挪到扫描之后（同一轮内），第三类之外还会多探一批：刚被 upsert 清成 NULL、
+    // 探针又恰好失败的行会在同一轮里被立刻重探一次，FUSE 上的成本直接翻倍。
+    const db = openDb(':memory:')
+    const legacy = '/media/Show/legacy.mkv'
+    const fresh = '/media/Show/fresh.mkv'
+    seedLegacyFile(db, legacy)                       // 存量行，磁盘上也在（指纹不变）
+    const fs = fakeFsWithProbe({ '/media': [legacy, fresh] }, {
+      [legacy]: { mtimeMs: 1000, size: BIG },        // 与播种值一致 → 指纹未变
+      [fresh]: { mtimeMs: 2000, size: BIG },
+    })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await backfill(daemon)
+    await scan(daemon)
+    // 每个文件恰好被探一次：legacy 归回填，fresh 归扫描。任何一方多探一次这里就红。
+    expect(fs.probeCalls.filter(p => p === legacy).length).toBe(1)
+    expect(fs.probeCalls.filter(p => p === fresh).length).toBe(1)
+    db.close()
+  })
+})
