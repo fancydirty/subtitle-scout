@@ -17,15 +17,24 @@ import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, type SubtitleQueueItem } from './subtitleScheduler.js'
 import { judgeSubtitle } from './subtitleJudge.js'
-import { langOf } from '../agent/languages.js'
-import { existsSync, readdirSync } from 'node:fs'
-import { dirname, basename } from 'node:path'
+import { langOf, tagsForLanguage } from '../agent/languages.js'
+import { findExternalSidecar } from '../files/sidecar.js'
+import { existsSync } from 'node:fs'
 import { isDirWritable } from '../core/mediaContext.js'
 import { SettingsRepo } from './settingsRepo.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { mapWithConcurrency } from './probeConcurrency.js'
 
 export const INSPECT_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/** B 档轮转复核的周期（D12）：每次检测后把 `sub_recheck_at` 推到 now + 这个间隔，
+ *  于是全库自然摊平成"每个文件每周复核一次"，单轮开销 ≈ 全库 1/7。
+ *
+ *  为什么是"检测后推 7 天"而不是"每轮扫全库"：R24 让扫描承担"每个视频当前有没有同名中文
+ *  字幕"这项事实观察，代价是 21 个中文标签 × 4 种扩展名 = 84 次 stat/文件，而生产上有个守备
+ *  目录是 115 网盘的 rclone FUSE 挂载（stat 代价放大约 46 倍）。几万文件全量复核就是把"本该
+ *  秒级的机械扫描"变成跑一整天，期间删除清理与识别/字幕工作台全被堵在后面。 */
+const SUB_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
 
 export interface DaemonV2Deps {
   db: ScoutDb
@@ -58,6 +67,9 @@ export interface DaemonV2Deps {
    *  rclone WebDAV 的单文件 ffprobe 是 12-16s（~12s 是 CDN 延迟地板，串行不可优化），
    *  并发才买得到吞吐；而 CIFS NAS 上探针只 1.09s，高并发只是白白放大挂载压力。 */
   probeConcurrency?: number
+  /** R24：字幕存在性探针。测试用注入点——测试要能数 stat 调用次数才能守住"未到点的文件
+   *  一次 stat 都不许发"这条性能红线（115 FUSE 上全量复核是几万文件 × 60 次 stat）。 */
+  fileExists?: (path: string) => boolean
 }
 
 /** C11 换片源时该清空的状态列（**意图声明**，不是 schema 快照）。
@@ -176,17 +188,28 @@ export class ScoutDaemonV2 {
 
     if (rows.length === 0) return
     const update = db.prepare('UPDATE files SET needs_subtitle = ?, updated_at = ? WHERE path = ?')
+    const fileExists = this.deps.fileExists ?? existsSync
+    const tags = tagsForLanguage(this.deps.targetLanguage)
     let judged = 0
 
     for (const r of rows) {
       let embedded: string[] | null = null
       if (r.embedded_langs) { try { embedded = JSON.parse(r.embedded_langs) } catch { embedded = null } }
-      const dir = dirname(r.path)
-      const stem = basename(r.filename).replace(/\.[^.]+$/, '')
-      const dirEntries = (() => { try { return readdirSync(dir) } catch { return [] } })()
-      const sidecar = dirEntries.some((e) =>
-        e !== r.filename && e.startsWith(stem + '.') &&
-        /\.(srt|ass|ssa|vtt)$/i.test(e) && /[.-](zh|chs|chi|zho)([.-]|$)/i.test(e))
+      // C30：sidecar 探测收敛到 findExternalSidecar 这一份。此前这里是一份独立手写的
+      // `/\.(srt|ass|ssa|vtt)$/i` + `/[.-](zh|chs|chi|zho)([.-]|$)/i` 双正则 readdir 扫描，
+      // 与 sidecar.ts 各漏一半：正则漏 cht（繁体的明确信号）与全部 BCP-47 地区变体
+      // （zh-CN/zh-TW/zh-cn…，agent H2 白名单生产实测装出过、Bazarr 存量是小写形态），
+      // sidecar.ts 漏 .vtt。同一个磁盘事实在 judge 与扫描两条路径上得到相反结论。
+      // 本项目已因"留两份漂移实现"栽过（第 1a 步的 findOverlappingRoot），故只留一份。
+      //
+      // 顺带修掉误归属（C30）：旧实现用 `startsWith(stem + '.')` 判同名，
+      // `E01.1080p.zh.srt` 的前缀确实是 `E01.` → 被当成 `E01.mkv` 的字幕。真实剧本是同目录
+      // 并存 `E01.mkv`（无字幕）与 `E01.1080p.mkv`（有字幕），前者被误判成"已有 sidecar"
+      // 永远不补字幕。findExternalSidecar 是"构造 `<stem>.<tag><ext>` 再探存在性"，精确到字符。
+      let sidecar = false
+      try {
+        sidecar = findExternalSidecar(r.path, tags, fileExists) !== null
+      } catch { sidecar = false }
 
       const verdict = judgeSubtitle(
         { originLang: r.origin_lang, embeddedLangs: embedded, hasSidecarSubtitle: sidecar },
@@ -202,18 +225,31 @@ export class ScoutDaemonV2 {
 
   private async scanOnce(): Promise<void> {
     const db = this.deps.db
+    const now = this.deps.now?.() ?? Date.now()
     const resetCols = this.fingerprintResetColumns()
     // 清空子句拼进 upsert 的 DO UPDATE 而不是事后另发一条 UPDATE：一条语句 = 一个原子写。
     // 分两条的话，进程在两条之间被杀（软路由掉电是常态，见 db.ts 的 synchronous=FULL 论证）
     // 会留下"机械事实已是新文件、状态列还是旧文件"的库——那正是 C11 要修的那个状态本身。
     const resetSql = resetCols.map((c) => `, ${c.name}=${c.value}`).join('')
+    // sub_recheck_at 写在 upsert 里（C42 的**兜底地板**，不是主路径）。
+    //
+    // 主路径是下面的 detectSubtitles：它对每个新增/指纹变化的文件观察完就写 now+7 天。
+    // 那为什么还要在这里再写一次？因为 observeSubtitle 的 stat 可能抖动抛错（FUSE 挂载常态），
+    // 那条路径上我们**故意**不推 sub_recheck_at（好让下一轮重试）。若这一列只由观察写，
+    // 一个在首次观察时恰好抖了一下的新文件就会永久停在 NULL——而 B 档谓词 `<= now` 在 NULL 上
+    // 是三值逻辑的 unknown，**永远选不中它** → 这一行的字幕存在性从此再没人复核过，
+    // 界面上却什么异常都看不出来。这正是 D18 花一整条迁移去消灭的那个静默失效，
+    // 只不过换从"新文件"这条侧门进来（C42）。
+    //
+    // 值取 now 而不是 Date.now()：与观察路径写的值同源，否则同一行会在两个时刻之间反复漂移。
     const upsert = db.prepare(`
-      INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, parse_confidence, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, parse_confidence, sub_recheck_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(path) DO UPDATE SET
         dir=excluded.dir, filename=excluded.filename, size=excluded.size, mtime=excluded.mtime,
         work_dir=excluded.work_dir, season=excluded.season, episode=excluded.episode,
-        parse_confidence=excluded.parse_confidence, updated_at=excluded.updated_at${resetSql}
+        parse_confidence=excluded.parse_confidence, sub_recheck_at=excluded.sub_recheck_at,
+        updated_at=excluded.updated_at${resetSql}
     `)
     const findExisting = db.prepare('SELECT mtime, size FROM files WHERE path = ?')
     const walk = this.deps.listVideoFiles ?? walkVideoFiles
@@ -231,6 +267,11 @@ export class ScoutDaemonV2 {
     // 逐个 await：探针是 12-16s 级别的重 IO（115 是 rclone FUSE 挂载），在循环里串行会把
     // "机械扫描"这个本该秒级的阶段拖成几小时，且期间删除逻辑迟迟不生效。
     const toProbe: string[] = []
+    // R24 A 档名单：新增 / 指纹变化的文件。与 toProbe 同批但**必须是独立的两个名单**——
+    // toProbe 会在探针未注入时整批空转（probeNewOrChanged 直接 return），而字幕存在性观察
+    // 不依赖 ffprobe，凭一个 fileExists 就能做。合成一个名单就等于"没装 ffprobe 的机器
+    // 连字幕都不认了"。
+    const toDetect: string[] = []
 
     for (const root of this.deps.roots) {
       // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
@@ -257,12 +298,14 @@ export class ScoutDaemonV2 {
         if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
         const row = toMediaFileRow(f, st, this.deps.roots)
         upsert.run(row.path, row.dir, row.filename, row.size, row.mtime,
-          row.workDir, row.season, row.episode, row.parseConfidence, Date.now())
+          row.workDir, row.season, row.episode, row.parseConfidence,
+          now + SUB_RECHECK_INTERVAL_MS, Date.now())
         upserted++
         // 只有走到这里（新增 or 指纹变化）才排进探测队列。指纹未变的文件在上面那行
         // `continue` 就走了，**一次 ffprobe 都不会发**——这是性能红线而非优化：
         // 生产上一个守备目录是 115 网盘的 rclone FUSE 挂载，全库重探是几万 × 12s。
         toProbe.push(f)
+        toDetect.push(f)
       }
 
       // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录**不报错、
@@ -286,7 +329,116 @@ export class ScoutDaemonV2 {
       this.deps.log(`scan: scanned=${scanned} upserted=${upserted} skipped=${skipped}`)
     }
 
+    // 字幕存在性观察（R24）**必须在删除清理跑完之后**：对一个已经从磁盘消失的文件跑 84 次
+    // stat 是纯浪费，在 FUSE 挂载上尤其贵（ENOENT 也要过一趟网络）。顺序在这里是硬要求，
+    // 不是风格问题——B 档是从库里挑行，删除没跑完的话幽灵行就在挑选范围里。
+    this.detectSubtitles(toDetect, now)
+
     await this.probeNewOrChanged(toProbe)
+  }
+
+  /** R24 + D12：字幕存在性观察的两档调度。
+   *
+   *  A 档 = 本轮新增/指纹变化的文件（调用方传进来的 aPaths），无条件全量检测——这些文件的
+   *  字幕状态必然未知（新文件）或已失效（换了片源，旧字幕对不上新时长/分段）。
+   *  B 档 = 库里 `sub_recheck_at <= now` 的行，到点轮转。
+   *
+   *  为什么 A 先跑 B 后跑：A 档检测完就把 `sub_recheck_at` 推到 now+7 天，于是 B 档的
+   *  `<= now` 谓词天然选不中它们，不需要额外去重（spec §5「A/B 档不重复检测」）。
+   *  反过来（B 先 A 后）也不会错，但会白扫一遍刚被 A 档扫过的文件。
+   *
+   *  fileExists 未注入时整个观察退化成 no-op（同 probe 的既有约定）：观察是增益，不是阶段 1
+   *  的前提，绝不能因为某个构造点忘了接线就让机械扫描/删除清理整个失效。 */
+  private detectSubtitles(aPaths: string[], now: number): void {
+    const fileExists = this.deps.fileExists ?? existsSync
+    const db = this.deps.db
+
+    // A 档：本轮新增/指纹变化。用 Set 去重——同一路径不该在名单里出现两次（今天不会，但
+    // 多根重叠配置下曾经出过同一文件被两个根各扫一次的形态）。
+    const detected = new Set<string>()
+    for (const p of aPaths) {
+      if (detected.has(p)) continue
+      detected.add(p)
+      this.observeSubtitle(p, fileExists, now)
+    }
+
+    // B 档：到点轮转。谓词**只看 sub_recheck_at**，不带 sub_status 过滤（D16 铁律 / C37）：
+    // 用户手放字幕**不改视频文件指纹** → 这类文件永远进不了 A 档 → 若 B 档只抽样 covered，
+    // 则 unsolvable / handoff_translate 的行永远不被检测 → R23/R24 承诺的"用户手放的也认"
+    // "停牌自然解除"对停牌态永不生效。而停牌态恰恰是最需要它的那批（用户看到系统搞不定，
+    // 才会自己去手放一个字幕）。两条单独看都对，合起来废掉整个 R23 设计意图。
+    //
+    // 谓词也不带 `IS NULL OR`（D18 / C42）：NULL 行由 v32 迁移打散过、新插入行由下面的
+    // markRechecked 写死，故库里不该有 NULL。补 `IS NULL OR` 反而会在首轮把全库一起命中，
+    // 正是 D12 要避免的那场雪崩。
+    let due: Array<{ path: string }> = []
+    try {
+      due = db.prepare('SELECT path FROM files WHERE sub_recheck_at <= ?').all(now) as Array<{ path: string }>
+    } catch { return }   // 无该列的旧库：观察退化成只做 A 档，不阻断扫描
+
+    let checked = detected.size
+    for (const row of due) {
+      if (detected.has(row.path)) continue   // A 档本轮已看过（正常情况下谓词已排除，双保险）
+      detected.add(row.path)
+      this.observeSubtitle(row.path, fileExists, now)
+      checked++
+    }
+    if (checked > 0) {
+      this.deps.log(`scan: 字幕存在性观察 A档=${aPaths.length} B档=${checked - aPaths.length}（R24 / D12）`)
+    }
+  }
+
+  /** 观察单个视频：磁盘上现在有没有同名中文字幕，据此写 sub_status（R24 的本体）。
+   *
+   *  **唯一有权写 covered 的是这里**（R24 / spec §5）——不是字幕/翻译 worker 的成功报告。
+   *  worker 只负责把文件放到磁盘上，磁盘上有没有由扫描说了算。三个连带收益：
+   *   ① worker 声称装盘成功但文件其实没落地 → 系统不会误认为搞定
+   *   ② 用户嫌翻译质量差手删字幕 → 下次扫描自然回退 NULL 重新去找（C19 从根上消解，
+   *      **不需要任何额外的"回滚"逻辑**——这正是把 covered 建模成"事实观察"的全部价值）
+   *   ③ 用户自己手放一个字幕 → 扫到就认（系统从未为它跑过字幕流也认）
+   *
+   *  没扫到字幕时的两种情况**必须分开处理**（状态转换表 §5）：
+   *   · 原本 covered → 回退 NULL（字幕消失了，重进字幕工作台）
+   *   · 原本是别的状态 → **一列不动**。扫描没有被授权把停牌写回 NULL：那是阶段 2.6 复查闸
+   *     的职责（D13），节奏是周频。若扫描顺手把 handoff_translate 清成 NULL，就会掀掉飞行中
+   *     的翻译（D10 的守卫匹配 0 行 → 退避不写 → 付费 LLM 热循环从侧门回来）。
+   *
+   *  标签集/扩展名集统一走 findExternalSidecar（C30）：此前 judgeOnce 里另有一份手写正则，
+   *  与 sidecar.ts 各漏一半（正则漏 cht 与全部 BCP-47 地区变体，sidecar.ts 漏 .vtt），
+   *  同一个磁盘事实在两条代码路径上得到相反结论。本项目已因"留两份漂移实现"栽过
+   *  （第 1a 步的 findOverlappingRoot），故收敛到一份。
+   *  顺带修掉误归属：findExternalSidecar 是"构造 `<stem>.<tag><ext>` 再探存在性"，精确到
+   *  字符；旧的 `startsWith(stem + '.')` 会把 `X.1080p.zh.srt` 误归给 `X.mkv`（C30）。 */
+  private observeSubtitle(videoPath: string, fileExists: (p: string) => boolean, now: number): void {
+    const db = this.deps.db
+    const tags = tagsForLanguage(this.deps.targetLanguage)
+    let found: { path: string } | null = null
+    try {
+      found = findExternalSidecar(videoPath, tags, fileExists)
+    } catch (e) {
+      // 单个文件的 stat 抖动（FUSE 挂载常态）不许掀翻整轮扫描。跳过 = 不改状态列，
+      // 且**不推 sub_recheck_at**，于是下一轮它还在 B 档名单里，天然重试。
+      this.deps.log(`scan: 字幕存在性观察失败（隔离，下轮重试）: ${videoPath}: ${String(e)}`)
+      return
+    }
+
+    if (found) {
+      // 无条件写 covered：不论原状态是 NULL 还是停牌态。停牌的解除凭据就是这个（R23）。
+      db.prepare(`UPDATE files SET sub_status = 'covered', sub_recheck_at = ?, updated_at = ?
+                  WHERE path = ?`).run(now + SUB_RECHECK_INTERVAL_MS, now, videoPath)
+      return
+    }
+
+    // 没扫到：只把 covered 回退成 NULL，其余状态一列不动（见上方论证）。
+    // 用 `WHERE sub_status = 'covered'` 做条件而不是先读后写：一条语句 = 一个原子写，
+    // 且天然表达了"只有 covered 会被回退"这条语义。
+    db.prepare(`UPDATE files SET sub_status = NULL, updated_at = ?
+                WHERE path = ? AND sub_status = 'covered'`).run(now, videoPath)
+    // sub_recheck_at 单独推：无论状态改没改，"这一行本轮已经复核过"这件事都成立。
+    // 合进上面那条的话，非 covered 的行（停牌态）永远推不动 sub_recheck_at → 每轮都被
+    // B 档重新选中 → B 档对停牌态退化成全量扫描，D12 的性能收益在最需要它的那批上归零。
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?')
+      .run(now + SUB_RECHECK_INTERVAL_MS, videoPath)
   }
 
   /** C11 的清空名单 ∩ 库里实际有的列，且每列的"清空值"取**该列自己声明的 DEFAULT**而不是

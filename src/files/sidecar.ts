@@ -9,7 +9,24 @@ import { dirname, basename } from 'node:path'
  * scanner.ts 本身已随 T4（去 Jellyfin 化）整体退役删除，今天的唯一消费方是 v2/ingest.ts。
  */
 
-const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
+/** 探测面的扩展名集。
+ *
+ *  为什么这里含 `.vtt` 而 subtitleWriter.ts / referenceSource.ts 的同名常量不含（C30 收敛决策）：
+ *  三处问的**不是同一个问题**，此前却因为"看起来同名同值"被当成必须一致，于是 daemonV2 那边
+ *  自己另写了一份带 .vtt 的正则 → 两份实现漂移，各漏一半（本函数漏 .vtt，那份正则漏 cht 与
+ *  全部 BCP-47 地区变体），同一个磁盘事实在两条代码路径上得到相反结论。
+ *
+ *   · subtitleWriter（"我们能装什么"）：装的是自己抓来的 artifact，产物形态由我们决定，
+ *     没有理由主动生产 .vtt。
+ *   · referenceSource（"什么能当对齐参考源"）：受 parseSrtCues/parseAssCues 的能力硬约束，
+ *     .vtt 解析不了，收进来只会得到 0 条 cue 的假参考源（见该文件 SIBLING_SUBTITLE_EXTS 注释）。
+ *   · 本函数（"磁盘上现在有没有这个语言的字幕"）：这是**事实观察**（R24），判据是用户/播放器
+ *     视角的"有没有可用的中文字幕"，与我们能不能装、能不能解析无关。用户手放一份 .vtt
+ *     （R23 明写"用户手放的也认"），系统若因为自己不生产 .vtt 就视而不见，就会一直去重复找
+ *     一份用户已经有了的字幕——这正是 R24 要消解的那类"库与磁盘不一致"。
+ *
+ *  故此处放宽是有意的语义分歧，不是漂移；三处不再有"必须一致"的约束，各自的注释都写明了理由。 */
+const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa', '.vtt']
 
 export type SubtitleLanguage = string
 

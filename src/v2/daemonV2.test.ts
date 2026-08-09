@@ -720,3 +720,395 @@ describe('ScoutDaemonV2.scanOnce · C12 embedded_langs / duration_sec 写入', (
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第 1b 步（收尾）：字幕存在性观察（R24 / R23 / C19）+ 两档机制（D12 / D16 / D18 / C42）
+//                  + 两份漂移的标签集统一（C30）
+//
+// 用户原话（R24 的本体）："停牌恢复的前提是翻译 agent 确实翻译出了字幕，这样扫的时候发现了
+// 与资源同名的字幕后就自然从停牌变成已获取了，也就是说在实际字幕出现在磁盘中前，显示都是
+// 保持停牌。"
+//
+// 这句话把 covered 从"流程结果"改成了"事实观察"：**唯一有权写 covered 的是扫描**，
+// 不是字幕/翻译 worker 的成功报告。worker 只负责把文件放到磁盘上，磁盘上有没有由扫描说了算。
+// 三个连带收益（都是这批用例要钉住的东西）：
+//   ① worker 声称装盘成功但文件其实没落地 → 系统不会误认为搞定
+//   ② 用户嫌翻译质量差手删字幕 → 下次扫描自然回退 NULL 重新去找（C19 从根上消解，
+//      **不需要任何额外的"回滚"逻辑**——这正是"事实观察"这个建模的全部价值）
+//   ③ 用户自己手放一个字幕 → 扫描扫到就认（系统从未为它跑过字幕流也认）
+//
+// 而 R24 的代价是每个视频 15 中文标签 × 4 扩展名 = 60 次 stat，生产上有个守备目录是 115
+// 网盘的 rclone FUSE 挂载（放大约 46 倍）→ 故有 D12 的两档机制。这批用例里**最贵的一条**
+// 不是"能不能扫到字幕"，而是「未到点的文件一次 stat 都不许发」那条性能红线。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DAY = 24 * 60 * 60 * 1000
+const NOW = 1_000_000_000_000   // mkDeps 注入的 now，与之保持一致
+
+/** 磁盘上的字幕文件集合 + **低层** fileExists 探测日志。
+ *
+ *  为什么 spy 打在 fileExists 这一层，而不是注入一个 per-video 的 `hasChineseSubtitle()`：
+ *  注入点越高层，测试就越测不到"这一轮到底发了多少次 stat"——而 D12 整套两档机制存在的
+ *  唯一理由就是这个次数（115 FUSE 上 60 次/文件 × 46 倍放大）。高层 spy 会让"B 档退化成
+ *  全量扫描"这种性能灾难在测试里完全隐形：状态列结果一模一样，全绿。 */
+function fakeSubtitleDisk(subtitles: string[]) {
+  const present = new Set(subtitles)
+  const calls: string[] = []
+  return {
+    calls,
+    fileExists: (p: string) => { calls.push(p); return present.has(p) },
+    /** 往磁盘上放/删一个字幕（模拟用户手动操作、或 worker 装盘）。 */
+    put: (p: string) => { present.add(p) },
+    remove: (p: string) => { present.delete(p) },
+    /** 从探测日志反推「本轮真的被检测过的视频」——性能红线断言的凭据。 */
+    checkedVideos: (videos: string[]) => videos.filter((v) => {
+      const prefix = v.replace(/\.[^.]+$/, '') + '.'
+      return calls.some((c) => c.startsWith(prefix))
+    }),
+  }
+}
+
+/** 造一行"指纹与磁盘一致"的既有行，可指定 sub_status 与 sub_recheck_at。
+ *  指纹一致是关键前置：否则它会落进 A 档，B 档的用例就测不到自己想测的东西了。 */
+function seedRow(
+  db: ReturnType<typeof openDb>,
+  path: string,
+  opts: { sub_status?: string | null; sub_recheck_at?: number | null; needs_subtitle?: number | null } = {},
+): void {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                 needs_subtitle, sub_status, sub_recheck_at, updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(path, dir, path.slice(path.lastIndexOf('/') + 1), BIG, 1000, dir, 'tmdb:42',
+      opts.needs_subtitle === undefined ? 1 : opts.needs_subtitle,
+      opts.sub_status === undefined ? null : opts.sub_status,
+      opts.sub_recheck_at === undefined ? NOW + 5 * DAY : opts.sub_recheck_at,   // 默认「未到点」
+      1000)
+}
+
+function subStatusOf(db: ReturnType<typeof openDb>, path: string): string | null {
+  return (db.prepare('SELECT sub_status FROM files WHERE path = ?').get(path) as { sub_status: string | null }).sub_status
+}
+
+function recheckAtOf(db: ReturnType<typeof openDb>, path: string): number | null {
+  return (db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(path) as { sub_recheck_at: number | null }).sub_recheck_at
+}
+
+describe('ScoutDaemonV2.scanOnce · R24 字幕存在性观察（covered 是事实观察，不是流程结果）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('视频旁有同名中文字幕 → covered（**系统从未为它跑过字幕流也认**，用户手放的也认）', async () => {
+    const db = openDb(':memory:')
+    // 刻意不播种任何行：这是一个全新文件，系统从来没为它跑过字幕流、没装过盘。
+    // R24 的建模下这不重要——covered 的判据是"磁盘上现在有没有"，不是"我们做过什么"。
+    const sub = fakeSubtitleDisk([`/media/Show/E01.zh-Hans.srt`])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBe('covered')
+    db.close()
+  })
+
+  it('原为 covered 但字幕被用户删了 → 回退 NULL，重进字幕工作台（C19 从根上消解）', async () => {
+    const db = openDb(':memory:')
+    // C19 的血案：用户嫌翻译质量差手删 .zh-Hans.srt → 视频 mtime/size **一点没变** →
+    // 旧实现的扫描整行跳过 → judge 不看 → 字幕流谓词 sub_status IS NULL 看不见它
+    // → 永久失覆盖，而界面上写着"已获取"。
+    // R24 之下不需要写任何"回滚"逻辑：每轮复核就是重新观察一次事实，事实变了结论自然跟着变。
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])   // 字幕已被删
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    db.close()
+  })
+
+  it('原为 covered 且字幕仍在 → 保持 covered，不重复排队', async () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk(['/media/Show/E01.zh-Hans.srt'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBe('covered')
+    db.close()
+  })
+
+  it.each([['handoff_translate'], ['unsolvable']])(
+    '停牌态（%s）的文件突然出现字幕 → 变 covered，停牌自然解除（R23）',
+    async (stalled) => {
+      const db = openDb(':memory:')
+      // R23 的本体：「停牌」不是流程状态，而是"磁盘上当前没有中文字幕"这一事实。
+      // 解除停牌的唯一凭据就是扫描发现同名字幕——翻译流领走了/在跑/跑失败期间一律仍显示停牌。
+      // 这一条同时是 unsolvable「无永久终态」（R26）的实现证据。
+      seedRow(db, V, { sub_status: stalled, sub_recheck_at: NOW - 1 })
+      const sub = fakeSubtitleDisk(['/media/Show/E01.zh-Hans.srt'])   // 翻译 agent 刚装盘 / 用户手放
+      const daemon = new ScoutDaemonV2(mkDeps(db, {
+        roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+      }))
+      await scan(daemon)
+      expect(subStatusOf(db, V)).toBe('covered')
+      db.close()
+    })
+
+  it('字幕不在、且原状态不是 covered → 不动那个状态（停牌不许被扫描擅自解除）', async () => {
+    const db = openDb(':memory:')
+    // 反向红线：R24 只授权扫描做两件事——发现字幕写 covered、发现字幕消失把 covered 回退。
+    // 它**没有**被授权把停牌写回 NULL：那是阶段 2.6 复查闸的职责（D13），且节奏是周频。
+    // 若扫描顺手把 handoff_translate 清成 NULL，就会掀掉飞行中的翻译（D10 守卫匹配 0 行
+    // → 退避不写 → 付费 LLM 热循环从侧门回来）。
+    seedRow(db, V, { sub_status: 'handoff_translate', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBe('handoff_translate')
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2.scanOnce · C30 两份漂移标签集统一', () => {
+  const V = '/media/Show/E01.mkv'
+
+  // 改动前**两套标签集互不兼容**，各漏一半（这正是 C30）：
+  //   · files/sidecar.ts   ：15 个中文 tag（含 cht 与全部 BCP-47 地区变体），但 **缺 .vtt**
+  //   · daemonV2.ts:189 正则：有 .vtt，但只认 zh|chs|chi|zho，**缺 cht 与全部地区变体**
+  // 于是同一个磁盘事实在两条代码路径上得到相反的结论。本项目已因"留两份漂移实现"栽过
+  // （第 1a 步的 findOverlappingRoot），故统一到 sidecar.ts 这一份。
+  it.each([
+    ['.zh.srt', '/media/Show/E01.zh.srt'],
+    ['.zh-Hans.srt', '/media/Show/E01.zh-Hans.srt'],
+    ['.chs.ass', '/media/Show/E01.chs.ass'],
+    ['.cht.ass（旧正则漏的：cht 是繁体的明确信号）', '/media/Show/E01.cht.ass'],
+    ['.zh-TW.srt（旧正则漏的：BCP-47 地区变体，agent 白名单实测装出过）', '/media/Show/E01.zh-TW.srt'],
+    ['.zh-cn.srt（Bazarr 遗留小写形态，NAS #recycle 实锤）', '/media/Show/E01.zh-cn.srt'],
+    ['.zh-Hant.ssa', '/media/Show/E01.zh-Hant.ssa'],
+    ['.zh.vtt（旧 sidecar.ts 漏的扩展名）', '/media/Show/E01.zh.vtt'],
+  ])('认得 %s', async (_label, subtitlePath) => {
+    const db = openDb(':memory:')
+    const sub = fakeSubtitleDisk([subtitlePath])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBe('covered')
+    db.close()
+  })
+
+  it('非中文字幕（.en.srt）不得误判为 covered', async () => {
+    const db = openDb(':memory:')
+    // 误判的代价是永久性的：covered 让字幕流谓词永远看不见这一行，
+    // 而用户看到的是界面写着"已获取"、播放器里只有英文字幕。
+    const sub = fakeSubtitleDisk(['/media/Show/E01.en.srt', '/media/Show/E01.eng.ass'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    db.close()
+  })
+
+  it('`X.1080p.zh.srt` 不得误归给 `X.mkv`（C30 误归属）', async () => {
+    const db = openDb(':memory:')
+    // 旧实现用 `startsWith(stem + '.')` 判同名 → `E01.1080p.zh.srt` 的前缀确实是 `E01.`，
+    // 于是它被当成 `E01.mkv` 的字幕。真实剧本：同目录并存 `E01.mkv`（无字幕）与
+    // `E01.1080p.mkv`（有字幕）→ 前者被误判 covered，永远不补字幕。
+    // 收敛到 findExternalSidecar 后判据变成"构造 `<stem>.<tag><ext>` 再探测存在性"，
+    // 精确到字符，这个洞在机制上就不存在了。
+    const sub = fakeSubtitleDisk(['/media/Show/E01.1080p.zh.srt'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, '/media/Show/E01.mkv')).toBeNull()
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2.scanOnce · D12/D18 A 档：新增/指纹变化全量检测', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('新增文件 → 检测字幕 + 写 sub_recheck_at = now + 7 天', async () => {
+    const db = openDb(':memory:')
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(sub.checkedVideos([V])).toEqual([V])
+    expect(recheckAtOf(db, V)).toBe(NOW + 7 * DAY)
+    db.close()
+  })
+
+  it('**新插入的行 sub_recheck_at 非 NULL**（C42 从侧门复活的防线）', async () => {
+    const db = openDb(':memory:')
+    // 这一条是整批用例里最容易被漏掉、后果最静默的一条（三个前序子代理都点出了这个缺口）：
+    // v32 迁移把**存量**行随机打散到未来 7 天内、不留 NULL（D18），但如果 scanOnce 的 upsert
+    // 不写这一列，**此后每一个新文件都是 NULL 起步** → B 档谓词 `sub_recheck_at <= now`
+    // 在 NULL 上是三值逻辑的 unknown → **永远选不中它们** → D18 防的那个静默失效原样从
+    // "新文件"这条侧门回来了，而且只影响新文件，存量库全绿、看不出任何异常。
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(recheckAtOf(db, V)).not.toBeNull()
+    db.close()
+  })
+
+  // 上面那条**测不到它声称要防的东西**（第四个子代理的变异验证抓到的假绿）：
+  // sub_recheck_at 有两个写入者——upsert 的兜底地板、以及 observeSubtitle 的观察路径。
+  // 上面那条走的是观察路径正常工作的路子，所以把 upsert 里的 sub_recheck_at 整条摘掉
+  // （列 + 占位符 + DO UPDATE 子句 + run 参数）之后，它**依然全绿**（已亲手变异复现）。
+  // 它以为自己在钉 upsert，实际钉的是 detectSubtitles，而后者早被同块的另一条钉住了。
+  //
+  // 这一条把观察路径打断（fileExists 抛错模拟 FUSE stat 抖动），只留 upsert 这一条通路，
+  // 才真正钉住"地板"的存在。地板存在的意义：观察路径任何原因没跑到（探针缺席、网盘抖动、
+  // 未来有人给 detectSubtitles 加了提前 return），新行也不该留 NULL 起步。
+  it('观察路径抖动时 upsert 地板仍保证 sub_recheck_at 非 NULL（C42 真防线）', async () => {
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [V] }),
+      fileExists: () => { throw new Error('FUSE stat 抖动') },
+    }))
+    await scan(daemon)
+    expect(recheckAtOf(db, V)).not.toBeNull()
+    db.close()
+  })
+
+  it('指纹变化的行 → 同样写 sub_recheck_at（换片源后旧的复核排期作废）', async () => {
+    const db = openDb(':memory:')
+    // 换片源意味着"这个文件旁边有没有中文字幕"这件事的答案可能变了（老片源的字幕对不上新片源
+    // 的时长/分段也算变了）。若沿用旧的 sub_recheck_at，最坏情况是再等 7 天才复核。
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW + 6 * DAY })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => [V],
+      statFile: () => ({ mtimeMs: 9999, size: BIG }),   // 指纹变了
+      fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(recheckAtOf(db, V)).toBe(NOW + 7 * DAY)
+    expect(sub.checkedVideos([V])).toEqual([V])
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2.scanOnce · D12 B 档：到点轮转复核', () => {
+  it('只挑 sub_recheck_at <= now 的行——**未到点的一次 stat 都不许发**（性能红线）', async () => {
+    const db = openDb(':memory:')
+    const due = '/media/Show/DUE.mkv'
+    const notDue = '/media/Show/LATER.mkv'
+    seedRow(db, due, { sub_recheck_at: NOW - 1 })
+    seedRow(db, notDue, { sub_recheck_at: NOW + 3 * DAY })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [due, notDue] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    // 用**调用次数**断言而不是"状态列没变"：两者在结果上完全一致（都没字幕、都是 NULL），
+    // 状态断言对"B 档退化成全量扫描"这个性能灾难完全瞎。而这正是 D12 存在的唯一理由——
+    // 生产上一个守备目录是 115 网盘的 rclone FUSE 挂载，60 次 stat/文件 × 46 倍放大，
+    // 全库几万文件全量复核就是把"秒级的机械扫描"变成跑一整天。
+    expect(sub.checkedVideos([due, notDue])).toEqual([due])
+    db.close()
+  })
+
+  it.each([['covered'], ['unsolvable'], ['handoff_translate'], [null]])(
+    'B 档谓词**不按 sub_status 过滤**：sub_status=%s 的行同样轮到（D16 / C37）',
+    async (status) => {
+      const db = openDb(':memory:')
+      // D16 是铁律，不是优化。C37 的推理链：用户手放字幕**不改视频文件指纹** → 这类文件
+      // 永远进不了 A 档 → 若 B 档只抽样 covered，则 unsolvable / handoff_translate 的行
+      // **永远不被检测** → R23/R24 承诺的"用户手放的也认""停牌自然解除"对停牌态永不生效。
+      // 而停牌态恰恰是最需要它的那批（用户看到系统搞不定，才会自己去手放一个字幕）。
+      const V = '/media/Show/E01.mkv'
+      seedRow(db, V, { sub_status: status, sub_recheck_at: NOW - 1 })
+      const sub = fakeSubtitleDisk([])
+      const daemon = new ScoutDaemonV2(mkDeps(db, {
+        roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+      }))
+      await scan(daemon)
+      expect(sub.checkedVideos([V])).toEqual([V])
+      db.close()
+    })
+
+  it('停牌态文件被用户手放字幕 → B 档轮到时发现并转 covered（防 C37 回归的端到端形态）', async () => {
+    const db = openDb(':memory:')
+    // 上一条证明"轮到了"，这一条证明"轮到之后真的改了状态"——两条都要有：
+    // 只断言 checkedVideos 的话，一个"检测了但不写 covered"的实现照样全绿。
+    const V = '/media/Anime/E05.mkv'
+    seedRow(db, V, { sub_status: 'unsolvable', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk(['/media/Anime/E05.cht.ass'])   // 用户手放了一份繁体
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBe('covered')
+    db.close()
+  })
+
+  it('B 档检测后写 sub_recheck_at = now + 7 天（否则下一轮又选中它 → 每轮全量）', async () => {
+    const db = openDb(':memory:')
+    const V = '/media/Show/E01.mkv'
+    seedRow(db, V, { sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(recheckAtOf(db, V)).toBe(NOW + 7 * DAY)
+    db.close()
+  })
+
+  it('A 档已检测的文件本轮不被 B 档重复检测（先 A 后 B，靠 <= now 谓词天然排除）', async () => {
+    const db = openDb(':memory:')
+    // 断言"无重复探测路径"而不是"探测次数 == 60"：后者会随标签集/扩展名集扩容而假红，
+    // 于是维护者只会把数字改大，最后测不到任何东西。重复路径才是"同一个文件被扫了两遍"的
+    // 直接证据，且与标签集大小无关。
+    const V = '/media/Show/NEW.mkv'
+    const sub = fakeSubtitleDisk([])   // 一个都不命中 → 整个 tag×ext 笛卡尔积都会被探一遍
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(sub.calls.length).toBeGreaterThan(0)                      // 前置：A 档确实扫了
+    expect(new Set(sub.calls).size).toBe(sub.calls.length)           // 无任何一条路径被探两次
+    db.close()
+  })
+
+  it('已从磁盘删除的行不参与 B 档检测（删除清理先于字幕检测）', async () => {
+    const db = openDb(':memory:')
+    const gone = '/media/Show/GONE.mkv'
+    const stay = '/media/Show/STAY.mkv'
+    seedRow(db, gone, { sub_recheck_at: NOW - 1 })
+    seedRow(db, stay, { sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [stay] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    // 对已经不存在的文件跑 60 次 stat 是纯浪费，在 FUSE 挂载上尤其贵（ENOENT 也要过网络）。
+    expect(sub.checkedVideos([gone, stay])).toEqual([stay])
+    expect(pathsInDb(db)).toEqual([stay])
+    db.close()
+  })
+
+  it('fileExists 注入缺席 → 扫描照常不炸（同 probe：观察是增益，不是阶段 1 的前提）', async () => {
+    const db = openDb(':memory:')
+    const V = '/media/Show/E01.mkv'
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: undefined,
+    }))
+    await expect(scan(daemon)).resolves.toBeUndefined()
+    expect(pathsInDb(db)).toEqual([V])
+    db.close()
+  })
+})
