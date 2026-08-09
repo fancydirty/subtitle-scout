@@ -7,6 +7,9 @@ import { materializeAgentView } from '../translate/workspace/materialize.js'
 import { makeTranslateWorkspaceTools, type TranslateToolDeps } from './translateWorker.tools.js'
 import type { TranslateTask } from './translateWorker.schemas.js'
 import type { WorkspacePaths } from '../translate/workspace/types.js'
+// C20 红线用真实的形态构造器现造 itemId（不写死一个恰好可解的字面量——写死的话，
+// 生产形态退化成裸路径的那天这些用例照样绿）。
+import { translateItemId } from '../v2/ownIds.js'
 
 const SAMPLE_SRT = [
   '1',
@@ -337,6 +340,84 @@ describe('translate workspace tools', () => {
     expect(saved).toHaveLength(1)
     expect(saved[0].key).toBe('tmdb:1')
     expect(saved[0].terms).toHaveLength(2)
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // C20 红线：itemId 换成新架构形态（work_id + file）后，这两个工具仍必须把同剧两集
+  // 归到**同一个** glossary key。
+  //
+  // 为什么这条要放在这里、而不是只有 ownIds.test.ts 那份：那份验的是"形态本身可解"，
+  // 走的是 ownIds 自己的 workIdFromTranslateItemId 与 glossaryRepo 的 seriesKeyOf。
+  // 而真正会退化的是**这两个工具里的那两行**（tools.ts:346 load / :663 save）——
+  // 它们是 C20 点名的隐藏消费者。只有让真实的 freeze_glossary / install_sidecar 跑一遍、
+  // 观察它们实际请求/写入的 key，才能证明"术语表跨集继承"这件事真的成立。
+  //
+  // 上一条（P2）用的是旧世界形态 `tmdb:1/s1e1`，它在 seriesKeyOf 下当然可解——
+  // 所以它**不能**充当 C20 的守卫者：itemId 改成裸路径的那天它照样绿（因为它自己就写死了
+  // 一个 tmdb: 开头的 itemId）。这条则用 translateItemId 现造，形态一退化立刻红。
+  // ───────────────────────────────────────────────────────────────────────────
+  it('🔴🔴 C20: 新架构 itemId（work_id+file）下同剧两集共享同一 glossary key（真实工具路径）', async () => {
+    const workId = 'tmdb:1'
+    const loadedKeys: string[] = []
+    const savedKeys: string[] = []
+    const store = {
+      load: (key: string) => { loadedKeys.push(key); return [{ src: 'Nico', zh: '妮可' }] },
+      save: (key: string) => { savedKeys.push(key) },
+    }
+
+    // 同一部剧的两个不同文件（不同季，且 basename 相同——basename-only 的实现会在这里撞车）
+    for (const p of ['/mnt/media/Show/Season 01/E01.mkv', '/mnt/media/Show/Season 02/E01.mkv']) {
+      const dir = mkdtempSync(join(tmpdir(), 'tw-c20-'))
+      const jobPaths = ensureWorkspaceLayout(dir, 'job-c20')
+      const t: TranslateTask = {
+        jobId: 'job-c20', videoPath: join(dir, 'x.mkv'),
+        itemId: translateItemId(workId, p),          // ← 新架构形态，现造不写死
+        originLang: 'en', title: 'Show', mediaRoot: dir,
+      }
+      const tools = makeTranslateWorkspaceTools({
+        task: t, paths: jobPaths,
+        resolveDeps: { probe: async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }], extract: async () => SAMPLE_SRT },
+        install: () => join(dir, 'out.srt'),
+        glossaryStore: store,
+      })
+      await call(tools.freeze_glossary, { terms: [{ src: 'Moi', zh: '莫伊' }] })
+      await call(tools.resolve_source)
+      await call(tools.materialize_agent_view)
+      await call(tools.update_rows, { rows: [{ id: '1', tgt: '你好妮可', status: 'ok' }, { id: '2', tgt: '再见', status: 'ok' }] })
+      await call(tools.merge_to_srt)
+      expect((await call(tools.run_structural_gate)).verdict).toBe('pass')
+      expect(await call(tools.install_sidecar)).toMatchObject({ ok: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+
+    // 前置：两集确实各跑了一轮 load 与 save（否则下面的相等断言在空数组上也"成立"，假绿）
+    expect(loadedKeys).toHaveLength(2)
+    expect(savedKeys).toHaveLength(2)
+    // 红线本体：两集的 key 相同，且就是 work_id。
+    // itemId 一旦改成裸路径开头 → seriesKeyOf 返回整串 → 这里立刻变成两个不同的 key，
+    // 而在真实生产里这一步不会报错，只会让第 2 集从空术语表重新决一次"东国 / 奥斯塔尼亚"。
+    expect(new Set(loadedKeys)).toEqual(new Set([workId]))
+    expect(new Set(savedKeys)).toEqual(new Set([workId]))
+  })
+
+  it('🔴 C20: 电影（单文件作品）的 key 也落在 work_id 上', async () => {
+    const loaded: string[] = []
+    const dir = mkdtempSync(join(tmpdir(), 'tw-c20m-'))
+    const jobPaths = ensureWorkspaceLayout(dir, 'job-c20m')
+    const t: TranslateTask = {
+      jobId: 'job-c20m', videoPath: join(dir, 'x.mkv'),
+      itemId: translateItemId('tmdb:9', '/mnt/media/Movies/Shelby Oaks (2025)/movie.mkv'),
+      originLang: 'en', title: 'Shelby Oaks', mediaRoot: dir,
+    }
+    const tools = makeTranslateWorkspaceTools({
+      task: t, paths: jobPaths,
+      resolveDeps: { probe: async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }], extract: async () => SAMPLE_SRT },
+      install: () => join(dir, 'out.srt'),
+      glossaryStore: { load: (k) => { loaded.push(k); return [] }, save: () => {} },
+    })
+    await call(tools.freeze_glossary, { terms: [{ src: 'Nico', zh: '妮可' }] })
+    expect(loaded).toEqual(['tmdb:9'])
+    rmSync(dir, { recursive: true, force: true })
   })
 
   it('run_structural_gate: 检测行错位(possibleRowShift)——奥本海默实案:译文整体偏移', async () => {

@@ -4,6 +4,9 @@ import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
 // 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
 // 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
 import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir } from './subtitleScheduler.js'
+// C21 用例 7b 端到端：用真实的抓源腿 locate 验"回填的产出真能被消费方读出来"，
+// 而不是只断言列被写上（列值断言在"写了个 {} "的实现下同样为真）。
+import { makeDbLocate } from '../cli/fetchSourceSub.js'
 
 interface TestDeps {
   db?: ReturnType<typeof openDb>
@@ -2144,6 +2147,270 @@ describe('ScoutDaemonV2 · D17 embedded_langs 存量回填 pass（C38 + C43）',
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C21：works.provider_ids 存量回填 pass。
+//
+// 为什么必须有一条**独立于识别队列**的回填通路（这是 C21 的全部内容）：识别成功后
+// `files.work_id` 非 NULL，而 identifyScheduler 的队列谓词是 `work_id IS NULL`
+// → 那个作品目录**永不再进识别队列**。于是"识别时顺手采 imdb"这条改动只覆盖**今后**新识别的
+// 作品；CURRENT-STATE 记录的 83 个已识别作品的 provider_ids 会永远是 NULL，
+// 翻译抓源腿对它们退化成纯文本 query（假阴性多），而第 6 步的 e2e 恰好就在这批存量上跑
+// → 会在退化状态下量出一个偏低的命中率，并被当成"真实命中率"。
+//
+// 这是本仓栽过四次的同型缺陷（C12 → C35 → D17 → D18：写了某列却没定谁来写/谁来重读）。
+// 手法照 3-1 已落地的 embedded_langs 回填 pass：boot 一次性 pass、分批、失败不阻塞、
+// 靠 `IS NULL` 谓词自然收敛。
+//
+// 与 embedded_langs 那个 pass 的一处关键差别：**这里没有"重判通路"要打通**。
+// embedded_langs 回填必须额外置 `needs_subtitle=NULL`/`translatable=NULL`（D17/C43），
+// 因为那两列是**据旧证据做出的判决**，证据换了判决必须重来。provider_ids 不是判决的输入，
+// 它只是搜索时的一个可选增益参数 —— 补上之后下一次抓源自然就带上了，无需推动任何状态机。
+// 这个差别是**论证过的**，不是遗漏：若日后 provider_ids 变成 judge 的判据（例如"有 imdb
+// 才算可抓源"），这条论证即失效，那时必须同步加重判通路。
+// ─────────────────────────────────────────────────────────────────────────────
+async function backfillIds(daemon: ScoutDaemonV2): Promise<void> {
+  await (daemon as any).backfillProviderIds()
+}
+
+function providerIdsOf(db: ReturnType<typeof openDb>, id: string): string | null {
+  return (db.prepare('SELECT provider_ids FROM works WHERE id = ?').get(id) as { provider_ids: string | null }).provider_ids
+}
+
+function seedWork(db: ReturnType<typeof openDb>, id: string, over: {
+  mediaType?: 'tv' | 'movie'; providerIds?: string | null
+} = {}) {
+  db.prepare(`INSERT INTO works (id, title, media_type, provider_ids, created_at, updated_at)
+              VALUES (?,?,?,?,?,?)`)
+    .run(id, `Work ${id}`, over.mediaType ?? 'tv', over.providerIds ?? null, 1000, 1000)
+}
+
+/** 只注入 getExternalIds 的最小 identify deps（回填只用得到它一个方法）。 */
+function idDeps(db: ReturnType<typeof openDb>, impl?: (mt: 'tv' | 'movie', id: string) => Promise<{ imdbId: string | null }>) {
+  const calls: Array<[string, string]> = []
+  return {
+    calls,
+    deps: {
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: {
+          model: {} as any,
+          tmdb: {
+            search: async () => [],
+            getDetails: async () => null,
+            getExternalIds: impl
+              ? async (mt: 'tv' | 'movie', id: string) => { calls.push([mt, id]); return impl(mt, id) }
+              : async (mt: 'tv' | 'movie', id: string) => { calls.push([mt, id]); return { imdbId: `tt${id}` } },
+          } as any,
+        },
+      },
+    },
+  }
+}
+
+describe('ScoutDaemonV2 · C21 works.provider_ids 存量回填 pass', () => {
+  it('🔴🔴 用例 7：provider_ids IS NULL 的存量行被补上（C21 红线）', async () => {
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:83')
+    // 前置条件：这一行确实是 NULL，否则本用例空转（假绿的最常见形态）
+    expect(providerIdsOf(db, 'tmdb:83')).toBeNull()
+    const ids = idDeps(db, async () => ({ imdbId: 'tt14827638' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon)
+
+    // 断言解析后的内容而不是"非 NULL"：写进去一个 '{}' 同样满足"非 NULL"，
+    // 而抓源腿拿到的 imdb 仍是 undefined —— 列有值、功能照旧退化，最难查的那种假绿。
+    expect(JSON.parse(providerIdsOf(db, 'tmdb:83')!)).toEqual({ tmdb: '83', imdb: 'tt14827638' })
+    // mediaType 从 works.media_type 取（tv/movie 是两个不同的 TMDB 端点，猜错就是 404）
+    expect(ids.calls).toEqual([['tv', '83']])
+    db.close()
+  })
+
+  it('🔴 用例 7b：真正到达 fetchSourceSub 的抓源腿（端到端，不只断言列值）', async () => {
+    // 为什么要有这条而不是只有上面那条：上面断言的是"列被写上"，那是**手段**；
+    // 真正的承诺是"抓源搜索会带上 imdb"。3-1 的子代理在 embedded_langs 那个 pass 上
+    // 被要求补过同型的端到端用例（"声称守某条通路、实际只钉了通路上的一个中间变量"）。
+    // 故这里把真实的 makeDbLocate 接上，验回填的产出真能被消费方读出来。
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:83', { mediaType: 'tv' })
+    db.prepare(`UPDATE works SET origin_lang = 'en' WHERE id = 'tmdb:83'`).run()
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, work_id, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('/media/TV/S01E01.mkv', '/media/TV', 'S01E01.mkv', 100, 1000, '/media/TV', 1, 1, 'tmdb:83', 1000)
+    // 回填前：抓源腿拿不到 imdb（这就是 C21 描述的退化状态）
+    expect(makeDbLocate(db)('/media/TV/S01E01.mkv')?.imdb).toBeUndefined()
+
+    const ids = idDeps(db, async () => ({ imdbId: 'tt14827638' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon)
+
+    // 回填后：同一个消费方、同一条 path，imdb 出现了
+    expect(makeDbLocate(db)('/media/TV/S01E01.mkv')?.imdb).toBe('tt14827638')
+    db.close()
+  })
+
+  it('🔴 用例 8a：分批——250 行存量，一轮只处理 200（每批上限）', async () => {
+    const db = openDb(':memory:')
+    for (let i = 0; i < 250; i++) seedWork(db, `tmdb:${i}`)
+    const ids = idDeps(db)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon)
+    // 用**调用次数**断言而不是"还有多少行是 NULL"：后者在"一次拉完 250 行但只写回 200 行"
+    // 这种形态下同样为真，而真实成本（250 次 TMDB 往返、配额敏感）一分不少。
+    expect(ids.calls.length).toBe(200)
+    const left = db.prepare('SELECT COUNT(*) AS n FROM works WHERE provider_ids IS NULL').get() as { n: number }
+    expect(left.n).toBe(50)   // 剩下的下次启动继续，不丢活
+    db.close()
+  })
+
+  it('🔴 用例 8b：单个 work 失败 → 留 NULL 待下轮，兄弟行照常完成，整轮不炸', async () => {
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:bad')
+    seedWork(db, 'tmdb:good')
+    const ids = idDeps(db, async (_mt, id) => {
+      if (id === 'bad') throw new Error('TMDB 503')
+      return { imdbId: 'tt999' }
+    })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await expect(backfillIds(daemon)).resolves.toBeUndefined()
+
+    // 失败行留 NULL —— 这是下轮重试的唯一凭据。写成 '{}' 就永久放弃这一行。
+    expect(providerIdsOf(db, 'tmdb:bad')).toBeNull()
+    expect(JSON.parse(providerIdsOf(db, 'tmdb:good')!).imdb).toBe('tt999')
+    db.close()
+  })
+
+  it('🔴 用例 8c：pass 级爆炸不阻塞主巡检（boot 调用点被 try/catch 隔离）', async () => {
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:83')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [],
+      listVideoFiles: () => [],
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        // 不是单个 work 失败，是 pass 级别的爆炸（deps 结构本身坏了）
+        worker: { model: {} as any, tmdb: { get getExternalIds(): never { throw new Error('deps exploded') } } as any },
+      },
+    }))
+    await oneLoop(daemon)
+    // 巡检照常发生 = 回填不是主巡检的前置条件。回填是增益，它挂了顶多是抓源腿多退化一天；
+    // 做成阻塞项就是"一次 TMDB 故障停掉整条流水线"。
+    expect(lastInspectAt(db)).not.toBeNull()
+    db.close()
+  })
+
+  it('🔴 用例 9：回填完成后不再触发（靠 `provider_ids IS NULL` 谓词自然收敛）', async () => {
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:83')
+    seedWork(db, 'tmdb:84', { providerIds: '{"tmdb":"84","imdb":"tt1"}' })   // 已有值，不该被碰
+    const ids = idDeps(db, async () => ({ imdbId: 'tt14827638' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon)
+    expect(ids.calls).toEqual([['tv', '83']])
+    // 第二次启动（新进程同一个库）：谓词已选不中它 → 零 TMDB 调用。
+    const daemon2 = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon2)
+    expect(ids.calls).toEqual([['tv', '83']])   // 仍是 1 次，没有第 2 次
+    db.close()
+  })
+
+  it('🔴 用例 9b：TMDB 确认无 imdb（imdbId=null）→ 也写非 NULL，否则永不收敛', async () => {
+    // 这条与用例 9 不同：那条验的是"成功采到的行不再碰"，这里验"查过但确实没有"的行。
+    // 若实现只在 imdbId 非空时才写，这批作品每次 boot 都会重查一遍 —— 永不收敛，
+    // 而列值断言看不出来（NULL 本来也是 NULL），正是 3-1 那个 pass 上同型的坑。
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:83')
+    const ids = idDeps(db, async () => ({ imdbId: null }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon)
+    expect(JSON.parse(providerIdsOf(db, 'tmdb:83')!)).toEqual({ tmdb: '83' })
+    const daemon2 = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon2)
+    expect(ids.calls.length).toBe(1)
+    db.close()
+  })
+
+  it('🔴 getExternalIds 未注入 → 整支休眠，一行不动（不许把 works 写成 {} 假收敛）', async () => {
+    // 反向灾难：若实现在探针缺席时也照写（比如 `{tmdb:id}`），一次"忘接线的启动"就把全库
+    // 83 个作品标成"查过、没有 imdb"，而其实一次 TMDB 都没打 —— 抓源腿永久退化且再无人重试。
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:83')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: { model: {} as any, tmdb: { search: async () => [], getDetails: async () => null } as any },
+      },
+    }))
+    await expect(backfillIds(daemon)).resolves.toBeUndefined()
+    expect(providerIdsOf(db, 'tmdb:83')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 老库无 works 表 / 无该列 → 回填静默跳过，不抛（照 backfillEmbeddedLangs 口径）', async () => {
+    // 容器滚更时新代码可能先于迁移跑起来；用户也可能从 v30 之前的备份恢复。
+    const noTable = openDb(':memory:')
+    noTable.exec('DROP TABLE works')
+    const d1 = new ScoutDaemonV2(mkDeps(noTable, { ...idDeps(noTable).deps }))
+    await expect(backfillIds(d1)).resolves.toBeUndefined()
+    noTable.close()
+
+    const noCol = openDb(':memory:')
+    noCol.exec('ALTER TABLE works DROP COLUMN provider_ids')
+    seedWorkNoIds(noCol, 'tmdb:83')
+    const d2 = new ScoutDaemonV2(mkDeps(noCol, { ...idDeps(noCol).deps }))
+    await expect(backfillIds(d2)).resolves.toBeUndefined()
+    noCol.close()
+  })
+
+  it('🔴 media_type=movie 的作品走 movie 端点（tv/movie 是两个不同 TMDB 端点，猜错就 404）', async () => {
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:9', { mediaType: 'movie' })
+    const ids = idDeps(db)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon)
+    expect(ids.calls).toEqual([['movie', '9']])
+    db.close()
+  })
+
+  it('🔴 非 tmdb: 形状的 id 被跳过（不拿一个解析不出 TMDB id 的串去打端点）', async () => {
+    // works.id 的形状由 ownIds.ts 收口成 'tmdb:<id>'，但库里历史上存在过合成 id
+    // （ownIds.tmdbIdFromOwnId 的注释点名 'self-scan-trigger' 这类）。拿它去打
+    // `/tv/self-scan-trigger/external_ids` 是保证 404 的白烧，且会把这一行写成
+    // "查过没有"从而永久放弃它 —— 真正该做的是留 NULL 等人修数据。
+    const db = openDb(':memory:')
+    seedWork(db, 'weird-legacy-id')
+    const ids = idDeps(db)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...ids.deps }))
+    await backfillIds(daemon)
+    expect(ids.calls).toEqual([])
+    expect(providerIdsOf(db, 'weird-legacy-id')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 boot 时被真实调用（不是"写了个方法没人叫"——本仓四次同型缺陷的形状）', async () => {
+    const db = openDb(':memory:')
+    seedWork(db, 'tmdb:83')
+    const ids = idDeps(db, async () => ({ imdbId: 'tt777' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [], listVideoFiles: () => [], ...ids.deps,
+    }))
+    await oneLoop(daemon)
+    // 走的是完整 run()，没有任何测试专用的直接调用 —— 这条是 C21 真正的验收点：
+    // 前面所有用例都可以在"方法存在但 boot 里没人调"的情况下全绿。
+    expect(ids.calls).toEqual([['tv', '83']])
+    expect(JSON.parse(providerIdsOf(db, 'tmdb:83')!).imdb).toBe('tt777')
+    db.close()
+  })
+})
+
+/** 无 provider_ids 列的旧 schema 下播种（上面那个 seedWork 会撞 no such column）。 */
+function seedWorkNoIds(db: ReturnType<typeof openDb>, id: string) {
+  db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+    .run(id, `Work ${id}`, 'tv', 1000, 1000)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // judgeOnce 写 translatable（R21 + D9 / 缺口 C24·C31·C40）。

@@ -114,11 +114,39 @@ export async function runIdentifyWorkDir(
       return { ok: false as const, error: `evidence-fail: ${check.reason}` }
     }
 
+    // C5：顺手采 imdb 落进 works.provider_ids。位置在 verifyEvidence **之后**——
+    // 身份还没核验过就去打 external_ids 是白烧配额（evidence-fail 的目录不会写 works 行）。
+    //
+    // 三层结果各有不同语义，不许折叠（这三态直接决定回填 pass 会不会回来重查这一行）：
+    //   · 拿到 imdb        → {tmdb, imdb}，抓源腿从此走 imdb 精确定位
+    //   · TMDB 确认没有    → {tmdb}，**非 NULL**：这是"查过、确实没有"的凭据，
+    //                        否则回填 pass 的 `provider_ids IS NULL` 谓词每天把它捡回来重查，
+    //                        永不收敛（同 3-1 那个 pass 上 `[]` 与 NULL 必须分开的坑）
+    //   · 调用失败/未接线  → null，留给回填 pass 下次重试
+    // 写成 '{}' 或无条件 `{tmdb}` 都会让第三种伪装成第二种 → 一次 TMDB 抖动就永久放弃这一行。
+    let providerIds: string | null = null
+    if (deps.worker.tmdb.getExternalIds) {
+      try {
+        const ext = await deps.worker.tmdb.getExternalIds(mediaType, input.tmdbId)
+        const ids: Record<string, string> = { tmdb: input.tmdbId }
+        if (ext.imdbId) ids.imdb = ext.imdbId
+        providerIds = JSON.stringify(ids)
+      } catch {
+        providerIds = null   // 增益缺席不是 blocker；回填 pass 会回来补
+      }
+    }
+
     // 写库：works 行 + files.work_id 批量更新（同一事务）
     const tx = deps.db.transaction(() => {
+      // `INSERT OR REPLACE` 是**整行替换**：本次采不到时若直接绑定 null，会把上一次成功采到的
+      // imdb 抹掉（用户重命名目录/手动重跑识别的路径上真实可达）。故先读一次现值兜底——
+      // 丢了不至于永久缺失（回填 pass 的 `IS NULL` 谓词会把它捡回来），但那是白烧一次 TMDB，
+      // 且抓源腿在两轮之间退化回文本 query。读在事务内，与写同一把锁。
+      const kept = providerIds ?? ((deps.db.prepare('SELECT provider_ids FROM works WHERE id = ?')
+        .get(`tmdb:${input.tmdbId}`) as { provider_ids: string | null } | undefined)?.provider_ids ?? null)
       deps.db.prepare(`
-        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, chinese_titles, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, chinese_titles, provider_ids, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         `tmdb:${input.tmdbId}`,
         details.title,
@@ -129,6 +157,7 @@ export async function runIdentifyWorkDir(
         details.overview,
         details.posterPath,
         JSON.stringify(details.chineseTitles ?? []),
+        kept,
         now, now,
       )
       // 按文件名匹配绑定（同一 work_dir 下的文件）

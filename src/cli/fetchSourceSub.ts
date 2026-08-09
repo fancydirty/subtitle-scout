@@ -15,13 +15,16 @@ import { downloadDirect, type DownloadResult } from '../adapters/download/direct
 import { decodeToUtf8 } from '../files/subtitleEncoding.js'
 import { parseSrtCues, type SrtCue } from '../translate/qualityGate.js'
 
-/** 库定位结果:videoPath → 条目身份(episodes JOIN series / movies,path 精确匹配)。 */
+/** 库定位结果:videoPath → 条目身份(files JOIN works,path 精确匹配 / C4)。 */
 export interface LocatedItem {
   title: string
-  /** series/movies.provider_ids JSON 里的 imdb id(如 'tt14827638');缺失=undefined。
-   *  兜底搜索必须带上(可行性验证:文本 query 有假阴性,imdb 命中率高得多)。 */
+  /** works.provider_ids JSON 里的 imdb id(如 'tt14827638');缺失=undefined。
+   *  兜底搜索必须带上(可行性验证:文本 query 有假阴性,imdb 命中率高得多)。
+   *  这一列由识别时的 getExternalIds 落库,存量作品由 daemon boot 的回填 pass 补齐(C5 + C21)。 */
   imdb?: string
   year?: number
+  /** 电影为 undefined（`files.season`/`episode` 对电影是 NULL）——见 makeDbLocate 里
+   *  "NULL→undefined 是契约"那段论证：`season: null` 与"不带 season 参数"对 provider 不等价。 */
   season?: number
   episode?: number
   /** TMDB original_language 小写码('en'/'ja');NULL=未解析。语言门比对前 lower+trim 防脏值。 */
@@ -124,36 +127,52 @@ export function makeFetchSourceSub(deps: FetchSourceSubDeps): FetchSourceSub {
   }
 }
 
-/** 真实 locate:接 ScoutDb 按 path 精确匹配。episodes 无 origin_lang 列,JOIN series 取
- *  (origin_lang/provider_ids/name/year 都是剧级属性);movies 直取自身列。查无此 path → null。 */
+/** 真实 locate：接 ScoutDb 按 path 精确匹配 **files JOIN works**（C4）。
+ *
+ *  为什么是这两张表而不是 episodes/series/movies（这就是 C4 本身）：新架构的数据全在
+ *  files/works 里，而这个函数历史上查的是旧表——按 path 查旧表**查无此行返回 null**，
+ *  于是"没有内嵌轨时去 OpenSubtitles 抓源语言字幕再翻"这条杀手锏腿在新架构下从未通过一次。
+ *  这解释了 spec 记录的那句"AI 翻译链路在新架构下从未验证过"：它根本接不上。
+ *
+ *  **INNER JOIN 而非 LEFT JOIN**（work_id IS NULL 的行必须查不到）：没有 work_id 就没有
+ *  title/originLang，而搜索 query 与语言门全靠它们。LEFT JOIN 会让未识别的文件带着
+ *  `title=undefined` 进 search——今天恰好被语言门（originLang 为 null）先挡住，看似无害，
+ *  但语言门是 MVP 的临时形态（R20 明写后续要扩语言），它一放宽就是真实的坏查询。
+ *
+ *  **不 UNION 旧表兜底**（C10 第 7 步才清理旧表，但本函数从此不看它们）：加兜底有两重害——
+ *  ① 新架构的数据缺失会被旧表陈旧行掩盖（旧 episodes 行的 season/episode 可能与今天磁盘上的
+ *  文件早已不符，而"按集建行 vs 文件级事实"正是新架构另起 files 表的原因）；
+ *  ② 第 7 步删旧表那天，这条腿会在没有任何测试变红的情况下静默退回 C4 状态。
+ *
+ *  season/episode 直取 `files` 自身列（电影为 NULL → undefined）。NULL→undefined 的转换是
+ *  **契约**而非风格：这两个字段直接进 FetchArgs 喂 provider，`season: null` 与"不带 season
+ *  参数"对 OpenSubtitles 是两种查询（前者可能 400 或零命中），LocatedItem 把它们声明成
+ *  optional 正是为此。 */
 export function makeDbLocate(db: ScoutDb): FetchSourceSubDeps['locate'] {
   return (videoPath) => {
-    const ep = db.prepare(
-      `SELECT e.season AS season, e.episode AS episode, s.name AS title, s.year AS year,
-              s.provider_ids AS provider_ids, s.origin_lang AS origin_lang
-         FROM episodes e JOIN series s ON e.series_id = s.id
-        WHERE e.path = ?`,
-    ).get(videoPath) as { season: number; episode: number; title: string; year: number | null; provider_ids: string | null; origin_lang: string | null } | undefined
-    if (ep) {
-      return {
-        title: ep.title, imdb: imdbFromProviderIds(ep.provider_ids), year: ep.year ?? undefined,
-        season: ep.season, episode: ep.episode, originLang: ep.origin_lang,
-      }
+    const row = db.prepare(
+      `SELECT f.season AS season, f.episode AS episode,
+              w.title AS title, w.year AS year,
+              w.provider_ids AS provider_ids, w.origin_lang AS origin_lang
+         FROM files f JOIN works w ON f.work_id = w.id
+        WHERE f.path = ?`,
+    ).get(videoPath) as {
+      season: number | null; episode: number | null; title: string
+      year: number | null; provider_ids: string | null; origin_lang: string | null
+    } | undefined
+    if (!row) return null
+    return {
+      title: row.title,
+      imdb: imdbFromProviderIds(row.provider_ids),
+      year: row.year ?? undefined,
+      season: row.season ?? undefined,
+      episode: row.episode ?? undefined,
+      originLang: row.origin_lang,
     }
-    const mv = db.prepare(
-      `SELECT name AS title, year, provider_ids, origin_lang FROM movies WHERE path = ?`,
-    ).get(videoPath) as { title: string; year: number | null; provider_ids: string | null; origin_lang: string | null } | undefined
-    if (mv) {
-      return {
-        title: mv.title, imdb: imdbFromProviderIds(mv.provider_ids), year: mv.year ?? undefined,
-        season: undefined, episode: undefined, originLang: mv.origin_lang,
-      }
-    }
-    return null
   }
 }
 
-/** series/movies.provider_ids(JSON,ingest 写成小写键 record,如 {"tmdb":"1","imdb":"tt..."})
+/** works.provider_ids(JSON,识别时写成小写键 record,如 {"tmdb":"1","imdb":"tt..."})
  *  → imdb id。NULL/坏 JSON/非对象/缺键 → undefined(imdb 是搜索增益,缺席不是 blocker——
  *  口径同 v2/findSubtitleWorkerTask.ts 的 parseProviderIds)。 */
 function imdbFromProviderIds(json: string | null): string | undefined {

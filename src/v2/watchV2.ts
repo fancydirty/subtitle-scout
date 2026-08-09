@@ -48,6 +48,9 @@ async function main() {
           const ol = await tmdb.getOriginLanguage(mt, id).catch(() => null)
           return { id: Number(id), title: d.title || d.originalTitle || String(id), originalTitle: d.originalTitle ?? null, year: d.year, overview: d.overview, posterPath: d.posterPath, genreIds: d.genreIds, originLanguage: ol, chineseTitles: chinese }
         },
+        // C5 接线：与 cli/index.ts 的 identifyDeps 同一份（**两处都得接**——这是本仓
+        // "两个独立入口各建一份 deps"的既有形态，probe/probeDuration 已经因为漏一处栽过一次）。
+        getExternalIds: (mt, id) => tmdb.getExternalIds(mt, id),
       },
     },
   }

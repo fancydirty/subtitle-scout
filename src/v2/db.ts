@@ -543,6 +543,10 @@ CREATE TABLE IF NOT EXISTS works (
   chinese_titles TEXT,                -- JSON 数组，中文译名变体
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
+  -- provider_ids（v36/C5+C21）**不在此终态定义里**，由 v36 的条件式 ALTER 追加——
+  -- 同 files 表的 recheck_after/sub_recheck_at/sub_attempt/translatable 的既有分工（见上方
+  -- files 定义末尾的同款注记）：一列一条迁移 entry，fresh install 走完整链一次到位，
+  -- 存量库靠同一条 entry 原地补齐。两处都写会让"改一处忘另一处"变成可能。
 )`,
   // v30（续）：media_roots 加 content_type 列——照 Jellyfin 的库级类型定义
   // （spec-gap M2）。'movies'/'tv'/'mixed'，默认 'mixed'（agent 判断）。
@@ -737,6 +741,53 @@ CREATE TABLE IF NOT EXISTS works (
     )
     if (!columns.has('translatable')) {
       db.exec('ALTER TABLE files ADD COLUMN translatable INTEGER')
+    }
+  },
+  // v36（2026-08-08 流水线 spec §4 第 4 步 · 缺口 C5 + C21）：works 表加 provider_ids
+  // ——JSON 形如 `{"tmdb":"1","imdb":"tt14827638"}`，照旧表 series/movies.provider_ids 的既有口径。
+  //
+  // 为什么这一列是翻译抓源腿的命门而不是"顺手加的备用 id"：`cli/fetchSourceSub.ts` 顶部注释
+  // 明写"兜底搜索**必须**带上 imdb（可行性验证：文本 query 有假阴性，imdb 命中率高得多）"。
+  // OpenSubtitles 按 imdb 精确定位，按标题文本搜同名剧/重制版/不同年份的同名片会大量假阴性。
+  // 缺这一列，抓源腿即便接通 files/works（C4）也只剩退化的文本查询——而第 6 步的 e2e 恰好
+  // 就在这批存量作品上跑，会在退化状态下量出一个偏低的命中率并被当成"真实命中率"（C21 原话）。
+  //
+  // 为什么**可空**、且刻意不给 DEFAULT（这是本条的实质，加列只是顺带）：
+  // NULL 在这里同时承担两个语义，缺一不可——
+  //   ① "还没采过"，也就是 C21 存量回填 pass 的**唯一取件谓词**（`provider_ids IS NULL`）
+  //   ② 因此也是这个 pass 的**收敛条件**：采过就非 NULL，谓词自然选不中，不需要额外的
+  //      "回填完成"标记位（那种标记位本身又是一个"谁来写/谁来重读"的新洞）
+  // 若照 sub_attempt 的样子建成 `NOT NULL DEFAULT '{}'`，存量行升级上来全是 '{}' → 回填一行
+  // 都选不中 → CURRENT-STATE 里那 83 个已识别作品的 imdb 永远补不上，而这正是 C21 要修的
+  // 那件事本身。这与 D18（sub_recheck_at 留 NULL）/ D22（sub_attempt 必须 NOT NULL）是
+  // **同一族权衡的相反解**：那两列的 NULL 会让谓词求值成 unknown 从而静默失效，
+  // 这一列的 NULL 恰恰是谓词赖以工作的信号。判据是"NULL 对这一列意味着什么"，不是"照抄上一条"。
+  //
+  // 与 sub_recheck_at（D18）的另一处相反：那条必须在迁移里把存量行**打散到未来**，因为
+  // 它的谓词是 `<= now`（NULL 永不命中）且首轮全量会在 FUSE 挂载上雪崩。这一列不需要：
+  // 谓词是 `IS NULL`（存量行天然命中），而回填 pass 自带每批 200 的上限，不会雪崩。
+  //
+  // 存量行**不做任何回填 UPDATE**，纯 ADD COLUMN：采 imdb 需要一次 TMDB 往返
+  // （`getExternalIds`，tmdb.ts:365），而 openDb 是同步的、且在每个进程启动路径上——
+  // 在迁移里打网络就是把"打开数据库"变成一个可能挂几分钟或失败的操作。采集归 boot 时的
+  // 回填 pass（daemonV2.backfillProviderIds，有分批/失败隔离/不阻塞主巡检）。
+  //
+  // 纯 ADD COLUMN，无 CHECK 约束、无列类型变更 → 不触发 SQLite 的 12 步建表流程。
+  // 条件式 works 表存在性检查照抄 v30–v35：v29 及更早的库升级上来时 works 表还不存在
+  // （v30 才建），裸 ALTER 会 `no such table: works` 把 openDb 整个炸掉 → 用户的库再也打不开。
+  // 列存在性检查保证幂等：db.test.ts 的"迁移可在已迁库上重跑"会把尾部迁移再跑一遍，
+  // 裸 ALTER 会抛 duplicate column name。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'works'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(works)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('provider_ids')) {
+      db.exec('ALTER TABLE works ADD COLUMN provider_ids TEXT')
     }
   },
 ]

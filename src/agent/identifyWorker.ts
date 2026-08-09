@@ -25,6 +25,19 @@ export interface IdentifyWorkerDeps {
       overview: string | null; posterPath: string | null; genreIds: number[] | null;
       originLanguage: string | null; chineseTitles: string[]
     } | null>
+    /** 外部 id 端点（`/{tv|movie}/{id}/external_ids`，tmdb.ts:365）——采**真** imdb id 落进
+     *  works.provider_ids（C5）。语义：404→{imdbId:null}（真无数据），其余失败→抛。
+     *
+     *  **可选**是刻意的（不是偷懒）：这个 deps 有几十个既有构造点（cli/index.ts、
+     *  dispatcher.test、daemonV2.test、unidentifiedFindSubtitle…），做成必填会让它们全部
+     *  编译不过；而"生产漏接线"是静默的，故按本仓既有分工——类型层留宽、接线层单钉
+     *  （watchWiring.test.ts 逐个器官钉住接线）。
+     *
+     *  它的产出**只喂 provider_ids，绝不参与身份认定**：身份只依赖 getDetails 本体，
+     *  同 cli/index.ts 里 getChineseTitles/getOriginLanguage 的既有 `.catch(() => …)` 口径。
+     *  让 external_ids 的一次 5xx 把整次识别打回退避轨，代价是一整个作品目录明天才重试、
+     *  外加一次白烧的付费 LLM session。 */
+    getExternalIds?: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null }>
   }
   /** 批量绑定工具的执行体（写库由调用方实现——可单测）。
    *  可选：scheduler 调用时注入（见 identifyScheduler.ts 的 writeIdentified 覆盖）。 */

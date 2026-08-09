@@ -24,6 +24,9 @@ import { isDirWritable } from '../core/mediaContext.js'
 import { SettingsRepo } from './settingsRepo.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { mapWithConcurrency } from './probeConcurrency.js'
+// C21 回填 pass 用它把 works.id（'tmdb:<id>'）解回 TMDB id。复用 ownIds 这一份唯一解析入口，
+// 不在这里另写一遍 slice(5)——本仓已因"两份实现漂移"栽过（D7 的 findOverlappingRoot）。
+import { tmdbIdFromOwnId } from './ownIds.js'
 
 export const INSPECT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -302,6 +305,19 @@ export class ScoutDaemonV2 {
       await this.backfillEmbeddedLangs()
     } catch (e) {
       this.deps.log(`warn: boot embedded_langs 回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
+    }
+
+    // C21 存量回填（works.provider_ids）：同一 boot 阶段、同一 try/catch 隔离口径。
+    // 位置在 embedded_langs 回填**之后**、巡检之前——两者互不依赖（一个探本地文件、一个打
+    // TMDB），顺序只取"都在扫描之前"这一条：本 pass 与扫描无交集，但放进 while 循环就会
+    // 每 5 分钟去打一轮 TMDB（谓词收敛后是 0 行、代价为零，但那是靠运气而不是设计）。
+    //
+    // 独立 try/catch 而不是与上面共用一个：共用时 embedded_langs 那支的 pass 级爆炸会
+    // **跳过**本支，于是"ffprobe 二进制缺失"这种与 TMDB 毫不相干的故障会连带让 imdb 永远补不上。
+    try {
+      await this.backfillProviderIds()
+    } catch (e) {
+      this.deps.log(`warn: boot provider_ids 回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
     }
 
     while (!this.stopping) {
@@ -1208,6 +1224,81 @@ export class ScoutDaemonV2 {
     }
     this.deps.log(`回填: embedded_langs ok=${ok} failed=${failed}`
       + `（重判通路已置 NULL: ${rejudge.join('/')}，D17 / C43）`)
+  }
+
+  /** C21 存量回填 pass：给 `works.provider_ids IS NULL` 的作品补 imdb（boot 一次，不进主循环）。
+   *
+   *  为什么必须有这条**独立于识别队列**的通路（这就是 C21 的全部内容）：识别成功后
+   *  `files.work_id` 非 NULL，而 identifyScheduler 的队列谓词是 `work_id IS NULL`
+   *  → 那个作品目录**永不再进识别队列**。于是"识别时顺手采 imdb"（C5）只覆盖**今后**新识别的
+   *  作品；CURRENT-STATE 记录的 83 个已识别作品的 provider_ids 会永远是 NULL，抓源腿对它们
+   *  退化成纯文本 query（假阴性多），而第 6 步的 e2e 恰好就在这批存量上跑——会量出一个偏低的
+   *  命中率并被当成"真实命中率"。这是本仓栽过四次的同型缺陷（C12 → C35 → D17 → D18：
+   *  写了某列却没定谁来写/谁来重读），手法照 3-1 已落地的 embedded_langs 回填 pass。
+   *
+   *  **与 embedded_langs 那个 pass 的关键差别：这里没有"重判通路"要打通。**
+   *  那边必须额外置 `needs_subtitle = NULL` / `translatable = NULL`（D17 / C43），因为那两列是
+   *  **据旧证据做出的判决**——证据换了，判决必须重来。provider_ids 不是任何判决的输入，它只是
+   *  搜索时的一个可选增益参数（`FetchArgs.imdb`），补上之后下一次抓源自然就带上了，不需要
+   *  推动任何状态机。这个差别是**论证过的**，不是遗漏：若日后 provider_ids 变成 judge 的判据
+   *  （例如"有 imdb 才算可抓源"），这条论证即失效，那时必须同步加重判通路。
+   *
+   *  三态写入语义（决定这一行会不会被下轮捡回来重查，不许折叠）：
+   *   · 拿到 imdb       → `{tmdb, imdb}`
+   *   · TMDB 确认没有   → `{tmdb}`，**非 NULL**——"查过、确实没有"，靠非 NULL 收敛。
+   *                       只在拿到 imdb 时才写的话，这批作品每次 boot 都重查一遍、永不收敛，
+   *                       而列值断言看不出来（NULL 本来也是 NULL）。
+   *   · 调用失败        → 留 NULL，下次 boot 重试。
+   *
+   *  探针（getExternalIds）未注入时整支休眠且**一行不动**：若在缺席时也照写 `{tmdb}`，
+   *  一次"忘接线的启动"就把全库标成"查过、没有 imdb"而其实一次 TMDB 都没打 → 抓源腿永久
+   *  退化且再无人重试。同 backfillEmbeddedLangs 的"探针缺席不动列"论证。 */
+  private async backfillProviderIds(): Promise<void> {
+    const getExternalIds = this.deps.identify?.worker?.tmdb?.getExternalIds
+    if (!getExternalIds) return
+
+    const db = this.deps.db
+    let rows: Array<{ id: string; media_type: string }> = []
+    try {
+      rows = db.prepare(
+        `SELECT id, media_type FROM works WHERE provider_ids IS NULL ORDER BY id LIMIT ${BACKFILL_BATCH_SIZE}`,
+      ).all() as Array<{ id: string; media_type: string }>
+    } catch { return }   // 无 works 表/无该列的旧库：回填是增益，不许阻断启动
+    if (rows.length === 0) return
+
+    const write = db.prepare('UPDATE works SET provider_ids = ?, updated_at = ? WHERE id = ?')
+    this.deps.log(`回填: works.provider_ids 存量回填开始（本批 ${rows.length} 行 / 上限 ${BACKFILL_BATCH_SIZE}，C21）`)
+    let ok = 0, failed = 0, skipped = 0
+
+    // **串行**，与 embedded_langs 那个 pass 的并发 2 刻意不同：那边是本地 ffprobe（瓶颈在
+    // FUSE IO，并发才买得到吞吐），这边是 TMDB HTTP——配额敏感，且 identifyScheduler 的既有
+    // 口径就是"一次一个 work_dir（串行，TMDB 配额敏感）"。200 次串行请求在 TMDB 上是秒级，
+    // 而并发打满换来的一次 429 会让整批白跑。
+    for (const r of rows) {
+      const tmdbId = tmdbIdFromOwnId(r.id)
+      if (tmdbId === null) {
+        // 非 `tmdb:<id>` 形状（ownIds 注释点名的历史合成 id，如 'self-scan-trigger'）：
+        // 拿它去打 `/tv/self-scan-trigger/external_ids` 是保证 404 的白烧，且会把这一行写成
+        // "查过没有"从而永久放弃它。留 NULL 等人修数据才是诚实的处置。
+        skipped++
+        continue
+      }
+      const mediaType = r.media_type === 'movie' ? 'movie' : 'tv'
+      try {
+        const ext = await getExternalIds(mediaType, tmdbId)
+        const ids: Record<string, string> = { tmdb: tmdbId }
+        if (ext.imdbId) ids.imdb = ext.imdbId
+        write.run(JSON.stringify(ids), Date.now(), r.id)
+        ok++
+      } catch (e) {
+        // 留 NULL（下轮重试的唯一凭据）。**不往 works 写任何失败叙事**：works 表没有
+        // last_error 列，而 files.last_error 是识别/字幕两轨共用的（3-1 那个 pass 的
+        // 跨轨串味教训）——一个作品级的 TMDB 故障没有理由去污染文件级的失败账。
+        failed++
+        this.deps.log(`回填: provider_ids 失败（隔离，留 NULL 待下轮）: ${r.id}: ${String(e)}`)
+      }
+    }
+    this.deps.log(`回填: works.provider_ids ok=${ok} failed=${failed} skipped=${skipped}（C21）`)
   }
 
   /** 出现在任何一对嵌套关系里的守备目录（内层外层都算）——D20 的跳过名单。

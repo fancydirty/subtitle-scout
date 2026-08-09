@@ -233,31 +233,127 @@ describe('subtitleTextFromDownload — zip 32MB 炸弹闸（与 subtitleWriter �
   })
 })
 
-describe('makeDbLocate — 真 SQL 定位(path 精确匹配)', () => {
-  it('episode:JOIN series 取 origin_lang/provider_ids(imdb)/name + 自身 season/episode', () => {
+// ─────────────────────────────────────────────────────────────────────────────
+// makeDbLocate 改读 files/works（C4）。
+//
+// 为什么这一整个 describe 被重写而不是新增一份：C4 的实质是"这条腿接在旧表上、新架构的数据
+// 在 files/works 里、按 path 查旧表查无此行返回 null → 整条腿静默失效"。旧的三条用例断言的
+// 正是**旧表**契约（`FROM episodes JOIN series` / `FROM movies`），它们全绿恰恰是 C4 能潜伏
+// 到今天的原因——测试忠实地锁死了一个接错表的实现。保留它们等于要求实现同时读两套表，
+// 那不是"修断链"，是把断链固化成需求。故整体迁移到 files/works 口径。
+//
+// 旧表本身**不删**（spec C10：旧表留待第 7 步清理），但本函数从此不再看它们——
+// "旧表有行、files/works 无行 → 必须 null"这条由下方专门一条用例钉住，防有人图省事
+// 加个 UNION 兜底，把新架构的数据完整性问题掩盖成"总能查到点什么"。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('makeDbLocate — 真 SQL 定位(files/works,path 精确匹配 / C4)', () => {
+  /** files 行的最小播种（列清单照 daemonV2 的 upsert：机械事实 + work_id）。 */
+  function seedFile(db: ReturnType<typeof openDb>, over: {
+    path: string; workId: string | null; season?: number | null; episode?: number | null
+  }) {
+    const dir = over.path.slice(0, over.path.lastIndexOf('/'))
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, work_id, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(over.path, dir, over.path.slice(over.path.lastIndexOf('/') + 1), 100, 1000, dir,
+        over.season ?? null, over.episode ?? null, over.workId, 1000)
+  }
+
+  function seedWork(db: ReturnType<typeof openDb>, over: {
+    id: string; title: string; mediaType: 'tv' | 'movie'; year?: number | null
+    originLang?: string | null; providerIds?: string | null
+  }) {
+    db.prepare(`INSERT INTO works (id, title, original_title, year, media_type, origin_lang, provider_ids, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(over.id, over.title, null, over.year ?? null, over.mediaType,
+        over.originLang ?? null, over.providerIds ?? null, 1000, 1000)
+  }
+
+  it('🔴 用例 1：剧集从 files/works 查到（title/year/season/episode/originLang 全对）', () => {
     const db = openDb(':memory:')
-    db.prepare(`INSERT INTO series (id, name, year, provider_ids, origin_lang) VALUES ('tmdb:1', 'The Rig', 2023, '{"tmdb":"1","imdb":"tt14827638"}', 'en')`).run()
-    db.prepare(`INSERT INTO episodes (id, series_id, season, episode, path, sub_status, updated_at)
-                VALUES ('tmdb:1/s2e6', 'tmdb:1', 2, 6, '/media/tv/rig.mkv', 'unavailable', 0)`).run()
+    seedWork(db, { id: 'tmdb:1', title: 'The Rig', mediaType: 'tv', year: 2023, originLang: 'en' })
+    seedFile(db, { path: '/media/tv/rig.mkv', workId: 'tmdb:1', season: 2, episode: 6 })
+    // 全字段 toEqual（不是 toMatchObject）：season/episode 走 files、其余走 works，
+    // 部分匹配会让"某一列忘接"这类漏接静默通过。
     expect(makeDbLocate(db)('/media/tv/rig.mkv')).toEqual({
-      title: 'The Rig', imdb: 'tt14827638', year: 2023, season: 2, episode: 6, originLang: 'en',
+      title: 'The Rig', imdb: undefined, year: 2023, season: 2, episode: 6, originLang: 'en',
     })
+    db.close()
   })
 
-  it('movie:直取自身 origin_lang/provider_ids;provider_ids 缺 imdb/坏 JSON → imdb undefined', () => {
+  it('🔴 用例 2：电影从 files/works 查到，season/episode 为 undefined（files 里是 NULL）', () => {
     const db = openDb(':memory:')
-    db.prepare(`INSERT INTO movies (id, name, path, sub_status, updated_at, year, provider_ids, origin_lang)
-                VALUES ('tmdb:9', 'Shelby Oaks', '/media/movies/so.mkv', 'unavailable', 0, 2025, '{"tmdb":"9"}', 'en')`).run()
-    db.prepare(`INSERT INTO movies (id, name, path, sub_status, updated_at, provider_ids, origin_lang)
-                VALUES ('tmdb:10', 'Bad JSON', '/media/movies/bad.mkv', 'unavailable', 0, 'not json', 'en')`).run()
+    seedWork(db, { id: 'tmdb:9', title: 'Shelby Oaks', mediaType: 'movie', year: 2025, originLang: 'en' })
+    seedFile(db, { path: '/media/movies/so.mkv', workId: 'tmdb:9' })   // season/episode 均 NULL
+    // undefined 而不是 null 是**契约**：这两个字段直接进 FetchArgs 喂 provider 搜索，
+    // OpenSubtitles 的 season=null 与"不带 season 参数"是两种查询（前者可能 400/零命中）。
+    // LocatedItem 把它们声明成 optional 正是为此。
     expect(makeDbLocate(db)('/media/movies/so.mkv')).toEqual({
       title: 'Shelby Oaks', imdb: undefined, year: 2025, season: undefined, episode: undefined, originLang: 'en',
     })
-    expect(makeDbLocate(db)('/media/movies/bad.mkv')).toMatchObject({ title: 'Bad JSON', imdb: undefined, originLang: 'en' })
+    db.close()
   })
 
-  it('库里查无此 path → null', () => {
+  it('🔴 用例 3：files/works 查不到该 path → null', () => {
     const db = openDb(':memory:')
     expect(makeDbLocate(db)('/media/nowhere.mkv')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 用例 4：imdb 从 works.provider_ids 带出（兜底搜索的命中率命门）', () => {
+    const db = openDb(':memory:')
+    seedWork(db, {
+      id: 'tmdb:1', title: 'The Rig', mediaType: 'tv', year: 2023, originLang: 'en',
+      providerIds: '{"tmdb":"1","imdb":"tt14827638"}',
+    })
+    seedFile(db, { path: '/media/tv/rig.mkv', workId: 'tmdb:1', season: 2, episode: 6 })
+    expect(makeDbLocate(db)('/media/tv/rig.mkv')?.imdb).toBe('tt14827638')
+    db.close()
+  })
+
+  it('provider_ids 缺 imdb / 坏 JSON / NULL → imdb undefined（增益缺席不是 blocker）', () => {
+    const db = openDb(':memory:')
+    seedWork(db, { id: 'tmdb:9', title: 'No Imdb', mediaType: 'movie', originLang: 'en', providerIds: '{"tmdb":"9"}' })
+    seedWork(db, { id: 'tmdb:10', title: 'Bad JSON', mediaType: 'movie', originLang: 'en', providerIds: 'not json' })
+    seedWork(db, { id: 'tmdb:11', title: 'Null Ids', mediaType: 'movie', originLang: 'en', providerIds: null })
+    seedFile(db, { path: '/media/movies/a.mkv', workId: 'tmdb:9' })
+    seedFile(db, { path: '/media/movies/b.mkv', workId: 'tmdb:10' })
+    seedFile(db, { path: '/media/movies/c.mkv', workId: 'tmdb:11' })
+    expect(makeDbLocate(db)('/media/movies/a.mkv')?.imdb).toBeUndefined()
+    expect(makeDbLocate(db)('/media/movies/b.mkv')?.imdb).toBeUndefined()
+    expect(makeDbLocate(db)('/media/movies/c.mkv')?.imdb).toBeUndefined()
+    db.close()
+  })
+
+  it('🔴 files 行未识别（work_id IS NULL）→ null，不许拿一个没身份的行去搜', () => {
+    // 没有 work_id 就没有 title/originLang，而语言门与搜索 query 全靠它们。
+    // 若实现用 LEFT JOIN 又不判 NULL，title 会是 undefined → search 拿着 `queries:[undefined]`
+    // 去打 provider，而语言门那一关因 originLang 为 null 恰好先挡住 → 表面无害。
+    // 但语言门是 MVP 的临时形态（R20 说后续要扩语言），它一放宽这就是真实的坏查询。
+    const db = openDb(':memory:')
+    seedFile(db, { path: '/media/tv/unknown.mkv', workId: null, season: 1, episode: 1 })
+    expect(makeDbLocate(db)('/media/tv/unknown.mkv')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 旧表有行、files/works 无行 → 仍是 null（不许 UNION 兜回旧表 / C10）', () => {
+    // C4 的修法是"改读新表"，不是"两张表都读"。若加旧表兜底：
+    //  · 新架构的数据缺失会被旧表的陈旧行掩盖（旧 episodes 行的 season/episode 可能与
+    //    今天磁盘上的文件早已不符——这正是新架构另起 files 表的原因）
+    //  · 第 7 步删旧表那天，这条腿会在没有任何测试变红的情况下静默退回 C4 状态
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO series (id, name, year, provider_ids, origin_lang) VALUES ('tmdb:1', 'The Rig', 2023, '{"imdb":"tt14827638"}', 'en')`).run()
+    db.prepare(`INSERT INTO episodes (id, series_id, season, episode, path, sub_status, updated_at)
+                VALUES ('tmdb:1/s2e6', 'tmdb:1', 2, 6, '/media/tv/rig.mkv', 'unavailable', 0)`).run()
+    expect(makeDbLocate(db)('/media/tv/rig.mkv')).toBeNull()
+    db.close()
+  })
+
+  it('originLang 为 NULL（TMDB 未刮到）→ 原样传 null，不臆断成 en（R18 / C17）', () => {
+    // 4-1 已废止"origin 空值当英语"。locate 只做忠实搬运，判定归语言门。
+    const db = openDb(':memory:')
+    seedWork(db, { id: 'tmdb:5', title: 'Unknown Lang', mediaType: 'movie', originLang: null })
+    seedFile(db, { path: '/media/movies/u.mkv', workId: 'tmdb:5' })
+    expect(makeDbLocate(db)('/media/movies/u.mkv')?.originLang).toBeNull()
+    db.close()
   })
 })

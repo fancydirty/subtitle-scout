@@ -459,6 +459,13 @@ async function cmdWatch() {
                   originLanguage: ol, chineseTitles: chinese,
                 }
               },
+              // C5 接线：采真 imdb 落 works.provider_ids。**这一行不接就是本仓第五次同型缺陷**
+              // （写了列却没人写值）——deps 上它是 optional（几十个既有构造点的编译成本），
+              // 故生产漏接线是静默的：抓源腿照旧退化成文本 query，界面上什么都看不出来。
+              // 不加 catch：identifyScheduler 内部已经把这次调用整个 try 住并退化成
+              // provider_ids=null（留给回填 pass 重试）。在这里再兜一层会把"失败"伪装成
+              // "TMDB 确认没有"，那一行从此永久收敛、永不重试。
+              getExternalIds: (mt, id) => tmdb.getExternalIds(mt, id),
             },
           },
         }

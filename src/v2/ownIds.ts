@@ -4,6 +4,7 @@
 // id 即身份：库行 id 本身就能换回 TMDB id，不再需要 jf.getItem 这类"拿 id 换身份"的缝。
 // 命名锁定给下游消费：T3 摄取层用 seriesId/episodeId 写行；T5 orchestrator 缝、T7 realign
 // port 用 tmdbIdFromOwnId 读行——三处都复用这里，不允许各写各的解析逻辑。
+import { createHash } from 'node:crypto'
 
 /** series/movies 的自有主键：tmdb:<id>（TMDB id 原样嵌入，不做零填充/格式化）。 */
 export function seriesId(tmdbId: string): string {
@@ -32,4 +33,80 @@ export function tmdbIdFromOwnId(ownId: string): string | null {
   const seriesMatch = ownId.match(SERIES_ID_RE)
   if (seriesMatch) return seriesMatch[1]
   return null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TranslateTask.itemId 的形态（spec §4 第 4 步 · 缺口 C20）。
+//
+// 新架构的翻译流按 **work_id + 文件** 定位一个活（旧世界是 episodes.id / movies.id）。
+// 形态定为 `<work_id>/<稳定file标识>`，其中 work_id 形如 `tmdb:123`（内无 `/`）。
+//
+// **为什么必须是这个形态、而不是"work_id + 绝对路径"（这就是 C20 的实质）**：
+// 有一个隐藏消费者——`agent/translateWorker.tools.ts:346/663` 用 `seriesKeyOf(task.itemId)`
+// 加载/保存**剧级术语表**，而 `v2/glossaryRepo.ts` 的 seriesKeyOf 实现是：
+//     const idx = itemId.indexOf('/'); return idx > 0 ? itemId.slice(0, idx) : itemId
+// 若 itemId 以绝对路径开头（`/mnt/...`）→ `indexOf('/') === 0` → `idx > 0` 为假 →
+// **返回整个字符串** → 每个文件一个 glossary key。
+//
+// 后果（db.ts 的 translate_glossaries 注释记有实案）：同剧第 2 集拿不到第 1 集冻结的术语表，
+// 人名地名每集换译法——实案是同一模型同剧两 run 分别选出"东国 / 奥斯塔尼亚"。
+// 功能"能跑"、字幕"能出"，只是质量逐集漂移，**没有任何断言会红**。故这是 spec 里唯一被标成
+// "测试抓不到"的缺口，也是把形态收进本文件（自有 id 空间的唯一构造/解析入口）的理由：
+// 让 `work_id` 落在第一个 `/` 之前是一条**结构不变量**，不是某个调用点的自觉。
+//
+// 为什么不改 glossaryRepo.seriesKeyOf 去直接取 work_id：那是"改消费者迁就生产者"。
+// seriesKeyOf 同时还服务旧世界的 episodes own-id（`tmdb:123/s1e2`），改它要同时兼容两种形状；
+// 而让新形态**天然满足既有契约**是零风险的一侧。新旧形态在 seriesKeyOf 眼里完全同构，
+// 存量 translate_glossaries 行（key 是 `tmdb:<id>`）因此可以被新形态直接继承——
+// 这是白捡的：换个形态就等于把已冻结的术语表全部作废、每部剧重决一次译名。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 文件在 itemId 里的稳定标识。
+ *
+ *  三条硬要求，各自堵一个具体的坑：
+ *   ① **内不含 `/`** —— 否则 itemId 里出现第二个 `/`，反解 work_id/file 段变歧义。
+ *   ② **不同 path 不相撞** —— 只取 basename 会让 `Season 01/E01.mkv` 与 `Season 02/E01.mkv`
+ *      撞成同一个 itemId，而 itemId 就是 job identity（`translate:<itemId>` 的 upsert 键）
+ *      → 第二季第一集永远派不出活，静默少翻一批文件。故按**全路径**取摘要。
+ *   ③ **稳定可重现** —— itemId 若含时间戳/随机量，每轮 upsert 出一行新 job → 同一集被反复
+ *      翻译，付费 LLM 热循环。
+ *
+ *  用短 sha1（12 hex）而不是把路径转义进去：路径里有空格/中文/括号/连字符（生产守备目录
+ *  全是这些形状），塞进 id 会让 jobs 表里的 identity 长到不可读、且转义规则本身成为第二个
+ *  需要维护的契约。作为补偿，itemId 的第一段仍是人可读的 work_id，排障时 work_id + path 能
+ *  重算出同一个 key（见 ownIds.test.ts 的反解用例）。
+ *
+ *  为什么不用 `files.id`（4-2 实现时提出、编排侧裁决保留 sha1，2026-08-08）：
+ *  files.id 直接可 join、排障更方便，但它是 AUTOINCREMENT —— 行被删除重建后 id 会变，
+ *  而 sha1 只认路径、不认行的生命周期。翻译工作台是 `.subtitle-translate/<jobId>/`，
+ *  里面存着冻结的术语表与半成品行；id 一漂移，重建后的行就认不出自己上次跑到哪，
+ *  那正是 GC 误删（gcOrphans 按 jobId 判在飞行）与重复翻译（同一集付费翻两遍）的入口。
+ *  可 join 是排障便利，身份稳定是正确性——后者优先。 */
+export function translateFileKey(videoPath: string): string {
+  return createHash('sha1').update(videoPath).digest('hex').slice(0, 12)
+}
+
+/** TranslateTask.itemId：`<work_id>/<translateFileKey(path)>`。
+ *
+ *  work_id 原样嵌入（不校验形状）：库里的 work_id 由 identifyScheduler 写成 `tmdb:<id>`，
+ *  而 C20 要守的不变量只有一条——**第一个 `/` 之前是完整的 work_id**。这对任何内部无 `/`
+ *  的 work_id 都成立，无需把 tmdb: 前缀硬编码进这里（那样将来接第二个 provider 就得改这一行）。 */
+export function translateItemId(workId: string, videoPath: string): string {
+  return `${workId}/${translateFileKey(videoPath)}`
+}
+
+/** itemId → work_id（第一个 `/` 之前）。语义与 glossaryRepo.seriesKeyOf 对同一输入完全一致
+ *  ——**刻意的重复**：这里是翻译流自己的反解入口，那边是 glossary 的 key 推导。
+ *  两者同值这件事本身就是 C20 的不变量，由 ownIds.test.ts 的红线用例跨模块钉住；
+ *  把这里改成直接调 seriesKeyOf 会让那条红线退化成同一表达式的自我比较（假绿）。 */
+export function workIdFromTranslateItemId(itemId: string): string {
+  const idx = itemId.indexOf('/')
+  return idx > 0 ? itemId.slice(0, idx) : itemId
+}
+
+/** itemId → file 标识（第一个 `/` 之后）。无 `/` 时返回空串（不是抛错——排障工具读它，
+ *  遇到一个形状意外的 id 不该让整个视图崩掉，同 tmdbIdFromOwnId 的 null 口径）。 */
+export function fileKeyFromTranslateItemId(itemId: string): string {
+  const idx = itemId.indexOf('/')
+  return idx > 0 ? itemId.slice(idx + 1) : ''
 }
