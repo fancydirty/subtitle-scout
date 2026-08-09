@@ -224,6 +224,16 @@ export async function runSubtitleWorkDir(
     const attempt = (row?.sub_attempt ?? 0) + 1
     const translatable = row?.translatable ?? null
 
+    // 🔴 `sub:` 前缀（3-2 后置修复，实测确认过不是推测）：last_error 是识别轨与字幕轨的
+    // **共用列**，而 identifyScheduler 的队列谓词是
+    // `last_error IS NULL OR last_error != 'tmdb-404'` —— 靠这一列把 404 目录永久排除。
+    // 字幕轨裸写 'no-match' 会把那个终态凭据洗掉：实测 404 态时识别队列 0 个目录，
+    // 被覆盖后变 1 个 → 该目录重进识别队列，每天白烧一次 TMDB + LLM。
+    // 加前缀而不是改 identifyScheduler 的谓词：一列多主时，各轨只认自己的命名空间是
+    // 更小的契约（D17 的回填 pass 已用 `probe:` 前缀立过同样的先例）。
+    // 前缀加在 bump 内部而不是 4 个调用点上——否则未来新增调用者必然忘。
+    const tagged = `sub:${reason}`
+
     // 满 7 次且**可救性已判定**才停牌。translatable IS NULL 时刻意落到 else 分支
     // （C40 铁律：`translatable IS NULL` 不得判死）——判据不全 ≠ 不可救。judge 还没判到它、
     // 或 embedded_langs 缺失导致判不了，此刻判死会永久埋掉一批一抽轨就能救的日漫。
@@ -236,14 +246,14 @@ export async function runSubtitleWorkDir(
       // recheck_after=+7天：供阶段 2.6 停牌复查闸取件（D13/R25「每周找一次」）。
       // 若照失败轨写"明天"，复查会退化成日频；不写则停在上一次失败的"明天"，同样日频。
       db.prepare('UPDATE files SET sub_attempt = ?, sub_status = ?, recheck_after = ?, last_error = ?, updated_at = ? WHERE path = ?')
-        .run(attempt, parked, now + PARK_RECHECK_MS, reason, now, f.path)
+        .run(attempt, parked, now + PARK_RECHECK_MS, tagged, now, f.path)
       return
     }
     // sub_status **一列不动**（保持 NULL）：R17 废止了第五态 `unavailable`——"搜过确实没有"
     // 是普通失败，与其他失败路径同轨。写任何非 NULL 值都会让该行既不在字幕工作台
     // （谓词 `sub_status IS NULL`）、又攒不到 7 次 → 永久出局（C15）。
     db.prepare('UPDATE files SET sub_attempt = ?, recheck_after = ?, last_error = ?, updated_at = ? WHERE path = ?')
-      .run(attempt, now + DAY_MS, reason, now, f.path)
+      .run(attempt, now + DAY_MS, tagged, now, f.path)
   }
 
   console.error(`[subtitle-worker] subtitle:${item.workId} task with ${task.targets.length} targets`)

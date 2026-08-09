@@ -168,7 +168,7 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     const row = db.prepare('SELECT sub_status, recheck_after, last_error FROM files WHERE path = ?').get(item.files[0].path) as any
     expect(row.sub_status).toBeNull()  // 不标 unavailable
     expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)  // 明天
-    expect(row.last_error).toBe('fabricated-no-match')
+    expect(row.last_error).toBe('sub:fabricated-no-match')
   })
 
   it('🔴 超时抛错 → recheck_after 15min（TimeoutError 判别）', async () => {
@@ -178,7 +178,7 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
       const row = db.prepare('SELECT recheck_after, last_error FROM files WHERE path = ?').get(f.path) as any
       expect(row.recheck_after).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
       expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)
-      expect(row.last_error).toBe('timeout')
+      expect(row.last_error).toBe('sub:timeout')
     }
   })
 
@@ -201,7 +201,7 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     await runSubtitleWorkDir(db, worker as any, item, 'zh')
     const row2 = db.prepare('SELECT recheck_after, last_error FROM files WHERE path = ?').get(item.files[1].path) as any
     expect(row2.recheck_after).not.toBeNull()
-    expect(row2.last_error).toBe('no-outcome')
+    expect(row2.last_error).toBe('sub:no-outcome')
   })
 
   it('retry_later → sub_attempt+1 且退避到明天', async () => {
@@ -236,7 +236,7 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
       installed: [], no_safe_match: [{ itemId: 'tmdb:95897/s1e1', reason: 'searched all providers' }], retry_later: [], hardsub_assumed: [],
     })) as any, item, 'zh')
     const row = db.prepare('SELECT last_error FROM files WHERE path = ?').get(item.files[0].path) as any
-    expect(row.last_error).toBe('fabricated-no-match')
+    expect(row.last_error).toBe('sub:fabricated-no-match')
   })
 
   it('退避阶梯：attempt 递增 → 退避时间拉长', async () => {
@@ -406,7 +406,7 @@ describe('C15 对称性：电影与剧集在同一失败下计数行为一致', 
   it('🔴 剧集「搜过确实没有」→ sub_attempt=1 且落进 no-match 桶', async () => {
     await runSubtitleWorkDir(db, noMatchWorker('job-subtitle:tmdb:95897', 'tmdb:95897/s1e1') as any, tv, 'zh')
     expect(subAttemptOf(db, tv.files[0].path)).toBe(1)
-    expect(lastErrorOf(tv.files[0].path)).toBe('no-match')
+    expect(lastErrorOf(tv.files[0].path)).toBe('sub:no-match')
   })
 
   it('🔴 电影（season/episode 为 NULL）同一失败 → sub_attempt 也是 1，不是 0', async () => {
@@ -418,7 +418,7 @@ describe('C15 对称性：电影与剧集在同一失败下计数行为一致', 
     expect(subAttemptOf(db, movie.files[0].path)).toBe(1)
     // 🔴 这一条才是真正咬住 C15 的断言（见上方 lastErrorOf 的论证）：旧正则下电影反解失败 →
     // 漏到 B-2 兜底 → 这里会是 'no-outcome'，而计数照样是 1，只看计数完全测不出来。
-    expect(lastErrorOf(movie.files[0].path)).toBe('no-match')
+    expect(lastErrorOf(movie.files[0].path)).toBe('sub:no-match')
   })
 
   it('🔴 两者的 sub_status 与 recheck_after 也一致（同轨的完整含义）', async () => {
@@ -432,7 +432,7 @@ describe('C15 对称性：电影与剧集在同一失败下计数行为一致', 
     // 同轨的完整含义包含"落进同一个桶"——两边都该是 agent 的结论 no-match，
     // 而不是一边 no-match、一边被系统兜底成 no-outcome。
     expect(lastErrorOf(movie.files[0].path)).toBe(lastErrorOf(tv.files[0].path))
-    expect(lastErrorOf(movie.files[0].path)).toBe('no-match')
+    expect(lastErrorOf(movie.files[0].path)).toBe('sub:no-match')
   })
 
   it('🔴 电影装盘成功 → 与剧集同样"不写 covered、不改 needs_subtitle、只写 recheck_after"', async () => {
@@ -570,5 +570,27 @@ describe('R21/D15 移交分流（sub_attempt >= 7）', () => {
       .flatMap(q => q.files.map(f => f.path))
     expect(paths).not.toContain(item.files[0].path)
     expect(paths).not.toContain(item.files[1].path)
+  })
+  // 🔴 跨轨串味防线（3-2 后置修复，实测确认过不是推测）。
+  // last_error 是识别轨与字幕轨的**共用列**，而 identifyScheduler 的队列谓词是
+  // `last_error IS NULL OR last_error != 'tmdb-404'` —— 靠这一列把 TMDB 查不到的目录
+  // 永久排除。字幕轨若裸写 'no-match'，那个终态凭据就被洗掉：
+  // 实测 404 态时识别队列 0 个目录，被覆盖后变 1 个 → 该目录重进识别队列，
+  // 每天白烧一次 TMDB + LLM，而且永不终止（字幕每天失败一次、每天洗一次）。
+  //
+  // 这条断言的是**约束本身**（前缀存在），而不是某个具体的值字符串——
+  // 单纯把其他用例的期望值改成 'sub:xxx' 只是让测试跟上契约，
+  // 并不会在有人去掉前缀时变红（那些用例会一起改回去）。
+  it('🔴 字幕轨的 last_error 一律带 sub: 前缀，不许洗掉识别轨的 tmdb-404 终态', async () => {
+    const p = item.files[0].path
+    // 模拟识别轨已判该文件所在目录为 404 终态
+    db.prepare("UPDATE files SET last_error = 'tmdb-404' WHERE path = ?").run(p)
+    await runSubtitleWorkDir(db, noMatch as any, item, 'zh')
+    const after = (db.prepare('SELECT last_error FROM files WHERE path = ?').get(p) as
+      { last_error: string | null }).last_error
+    // 字幕轨确实写了自己的账
+    expect(after).not.toBe('tmdb-404')
+    // 且写的值必须落在自己的命名空间里——否则识别轨的谓词无法区分"是我的终态"与"别人的失败"
+    expect(after).toMatch(/^sub:/)
   })
 })
