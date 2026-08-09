@@ -86,6 +86,11 @@ describe('ScoutDaemonV2（巡检模型）', () => {
       identify: { db, runIdentify: identifySpy, worker: {} as any },
       subtitleWorker: subtitleSpy as any,
       writableRoots: new Map([['/media', true]]),
+      // 3-3 起阶段 3 在消费冻结快照前逐文件 stat（R12 / C23），故"这个视频在盘上"从此是
+      // 字幕流的**输入**。本用例测的是阶段顺序，不注入的话会退化成默认 existsSync ——
+      // 那两个路径在真实磁盘上并不存在 → 整簇被剔除 → subtitleSpy 一次都不被调 →
+      // 断言 `order.indexOf('subtitle') >= 0` 当场红，红的理由却与阶段顺序无关。
+      fileExists: (p: string) => p === '/media/Show/E01.mkv',
     }))
     const ctrl = new AbortController()
     const p = daemon.run(ctrl.signal)
@@ -1625,6 +1630,10 @@ describe('ScoutDaemonV2 · C34 gcStaging 的 in-flight 集合', () => {
       roots: ['/media'], ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
       writableRoots: new Map([['/media', true]]),
       subtitleWorker: subtitleWorker as any,
+      // 3-3 起阶段 3 消费快照前逐文件 stat（R12 / C23）：不注入会退化成默认 existsSync，
+      // 而这个路径在真实磁盘上不存在 → 整簇被剔除 → worker 不被调、jobId 也不该被登记，
+      // 于是本用例红在"worker 没被调用"而不是它想测的 in-flight 语义。
+      fileExists: (p: string) => p === '/media/Show/E01.mkv',
     }))
     await (daemon as any).runInspection(new AbortController().signal)
     expect(subtitleWorker).toHaveBeenCalled()
@@ -2629,8 +2638,10 @@ describe('🔴 阶段 2.6 端到端：放回来的行本轮就能被字幕流捞
       roots: ['/media'],
       ...fakeFs({ '/media': [V] }),
       writableRoots: new Map([['/media', true]]),
-      // 字幕 worker 只记录它看到了哪些 target，不改库——避免 bump 的真实时钟与假 NOW 打架，
-      // 那是另一条用例（用例 8）专门处理的耦合点。
+      // 3-3 起阶段 3 消费快照前逐文件 stat（R12 / C23）：视频必须"在盘上"，否则整簇被剔除，
+      // 本用例会红在"文件不存在"而不是它要测的阶段位置。这里同时也是一条有用的耦合声明——
+      // 复查闸放回来的行**也要过 stat 这道门**（幽灵文件不该因为被放回就白跑一轮 agent）。
+      fileExists: (p: string) => p === V,
       subtitleWorker: async (task: any) => {
         for (const t of task.targets) seenByWorker.push(t.videoPath)
         return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
@@ -2671,6 +2682,423 @@ describe('🔴 阶段 2.6 端到端：放回来的行本轮就能被字幕流捞
     // 且退避是 +7 天（供下一次复查取件），不是"明天"——否则复查退化成日频。
     const ra = recheckAfterOf(db, V)!
     expect(ra).toBeGreaterThan(Date.now() + 6 * DAY)
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3-3：冻结快照（R4 / C23）+ 消费前逐文件 stat（R12 / C23）+ 计数单调（C13）
+//
+// 用户原话（R4 的本体）：「每次巡检开始，流水线是冻结的，开工没有回头箭，找到的记录，
+// 找不到的不管，留给下次。」
+//
+// 改动前两条工作台都是 `while (true) { queue = listXxxQueue(...); if (empty) break; 处理 queue[0] }`
+// —— **每圈重新查库**。这不是冻结，是滚动重算，两个真实伤害：
+//   ① 大库在 115 FUSE 上真能跑 10h，期间新入库的文件会被本轮捞走 → "开工没有回头箭"被破坏
+//   ② 任何一条失败路径忘了写退避 → 该行仍满足工作台谓词 → **同轮无限重选**，跑完整 agent
+//      session 一直烧到进程被杀（C26 热循环的形态）。D6 靠"必须写 recheck_after"防它，
+//      冻结是第二道防线——两道都在才叫防线，只有一道就是"哪天谁漏写一次就出事"。
+//
+// 为什么冻结之后**不需要**再补一轮"消费完再查一次"（用户点名要论证的那条）：
+// spec §2 的阶段语义是"有活就一直跑，跑空才进下一步"，而阶段 2 → 2.5 → 2.6 → 3 是**串行**的。
+// 阶段 3 开跑时上游已经全部静止：识别不会再绑新 work_id、judge 不会再写 needs_subtitle、
+// 复查闸不会再放回停牌行、扫描早在阶段 1 就结束了。于是"快照拍完之后还能新增的字幕活"
+// 只有两个来源，两个都**必须**被排除：
+//   · 磁盘上新出现的文件 —— R4 原话点名不管（"找到的记录，找不到的不管，留给下次"）
+//   · 快照拍摄那一刻仍在退避窗内、但跑到一半到点了的行 —— 这是"队列漂移"本身，
+//     R4 那句"跑的过程中队列不漂移"就是在说它
+// 故：拍一次，消费完即结束。补查一轮既违背 R4，又把 ① 的伤害原样放回来。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 磁盘建模：视频 + 字幕**同一份** fileExists（它就是文件系统谓词，不该有两套）。
+ *
+ *  为什么本组必须显式注入它而既有的 R24 组用 fakeSubtitleDisk([]) 就够：3-3 让阶段 3 在消费
+ *  快照前对每个视频 stat 一次，于是"视频在不在盘上"第一次成为**阶段 3 的输入**。
+ *  fakeSubtitleDisk 建模的是"只有字幕在盘上"（视频路径不在集合里 → fileExists 返 false），
+ *  拿它跑阶段 3 就等于声明"这些视频全没了"——那测的是别的东西。 */
+function fakeVideoDisk(videos: string[], subtitles: string[] = []) {
+  const present = new Set([...videos, ...subtitles])
+  const calls: string[] = []
+  return {
+    calls,
+    fileExists: (p: string) => { calls.push(p); return present.has(p) },
+    /** 模拟巡检跑到一半用户删了文件（快照已冻结，磁盘变了）。 */
+    remove: (p: string) => { present.delete(p) },
+  }
+}
+
+/** 造一簇"在字幕工作台里"的行：已识别 + needs_subtitle=1 + sub_status NULL + 无退避。
+ *  sub_recheck_at 刻意设成未到点：本组测的是工作台的取件与消费，不是字幕存在性观察——
+ *  让 B 档来搅局的话，observeSubtitle 会顺手改 sub_status，断言就测不准了。 */
+function seedWorkbench(
+  db: ReturnType<typeof openDb>,
+  workId: string,
+  files: Array<{ path: string; season?: number | null; episode?: number | null }>,
+): void {
+  if (!db.prepare('SELECT id FROM works WHERE id = ?').get(workId)) {
+    db.prepare(`INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at)
+                VALUES (?,?,?,?,?,?)`).run(workId, `Show ${workId}`, 'tv', 'en', 1000, 1000)
+  }
+  const ins = db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                             season, episode, needs_subtitle, sub_status,
+                                             recheck_after, sub_recheck_at, updated_at)
+                          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  for (const f of files) {
+    const dir = f.path.slice(0, f.path.lastIndexOf('/'))
+    ins.run(f.path, dir, f.path.slice(f.path.lastIndexOf('/') + 1), BIG, 1000, dir, workId,
+      f.season === undefined ? 1 : f.season, f.episode === undefined ? 1 : f.episode,
+      1, null, null, NOW + 5 * DAY, 1000)
+  }
+}
+
+/** 数"某条 SQL 被 prepare 了几次"的 db 包装。
+ *
+ *  用 Proxy 而不是 `{...db, prepare}`：better-sqlite3 的方法挂在原型上，对象展开拿不到
+ *  `transaction`（deleteMissing 要用）→ 扫描当场抛错，红得理由是假的。
+ *
+ *  判据是 SQL 里的字面量而不是"调了几次 listSubtitleQueue"：那个函数是静态 import 进
+ *  daemonV2 的，模块级 mock 会把被测对象换成替身。代价是这条断言与 SQL 文本耦合——
+ *  故正则取**只可能出现在该查询里**的片段（`needs_subtitle = 1` 只在 listSubtitleQueue，
+ *  judgeOnce 用的是 `needs_subtitle IS NULL`）。文本改了这条会红，那时该改断言。 */
+function countingDb(db: ReturnType<typeof openDb>, re: RegExp) {
+  let n = 0
+  const proxy = new Proxy(db as any, {
+    get(target, key) {
+      if (key === 'prepare') {
+        return (sql: string) => { if (re.test(sql)) n++; return target.prepare(sql) }
+      }
+      const v = target[key]
+      return typeof v === 'function' ? v.bind(target) : v
+    },
+  })
+  return { proxy: proxy as ReturnType<typeof openDb>, count: () => n }
+}
+
+const SUBTITLE_QUEUE_SQL = /needs_subtitle = 1/
+const IDENTIFY_QUEUE_SQL = /work_id IS NULL/
+
+describe('ScoutDaemonV2 阶段 3 · R4 冻结快照（C23：至今未实现）', () => {
+  const A = '/media/ShowA/E01.mkv'
+  const B = '/media/ShowB/E01.mkv'
+
+  it('🔴🔴 用例1: 巡检中途新入库的文件**不被本轮捞走**（R4「找不到的不管，留给下次」）', async () => {
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    // 🔴 B **必须在盘上**（连同 A 一起建模），否则本用例会被 3-3 的另一半（消费前 stat）
+    // 顺手挡掉：变异验证 M1b 实测到过——撤销字幕冻结后这条仍然绿，因为 B 是被"文件不存在"
+    // 剔除的，而不是被冻结拦住的。两个机制都能让 `seen` 只含 A，用例分辨不出是哪一个在起
+    // 作用，于是它守的其实是"stat 生效"而不是"冻结生效"（一条名不副实的假绿）。
+    // 让 B 存在之后，唯一还能把它挡在本轮之外的机制就只剩冻结。
+    const disk = fakeVideoDisk([A, B])
+    const seen: string[] = []
+
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async (task: any) => {
+        for (const t of task.targets) seen.push(t.videoPath)
+        // 处理第一个作品时，另一部剧刚被别人写进库（真实来源：用户往守备目录里拷了新片，
+        // 而本轮扫描早就跑完了；或者别的进程/API 写库）。滚动重算下它会被本轮捞走。
+        if (seen.length === 1) {
+          seedWorkbench(db, 'tmdb:2', [{ path: B }])
+        }
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+
+    // 🔴 冻结的全部含义：本轮只看见拍快照那一刻的活。
+    expect(seen).toEqual([A])
+    // 而 B 确实在库里、确实满足工作台谓词——它只是"留给下次"（否则本用例是空转的假绿）。
+    expect(listSubtitleQueue(db, ['/media'], NOW).flatMap(q => q.files.map(f => f.path))).toContain(B)
+    db.close()
+  })
+
+  it('🔴🔴 用例2: 字幕队列**只被查询一次**（滚动重算下是 N+1 次）', async () => {
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    seedWorkbench(db, 'tmdb:2', [{ path: B }])
+    const disk = fakeVideoDisk([A, B])
+    const c = countingDb(db, SUBTITLE_QUEUE_SQL)
+
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      db: c.proxy,
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A, B] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(c.count()).toBe(1)
+    db.close()
+  })
+
+  it('🔴🔴 用例9: 快照消费完就结束——即便被处理的行**没有出队**也不死循环（C26 第二道防线）', async () => {
+    // 这一条守的是"冻结本身就是一道防线"，与 D6 的出队凭据**互不替代**：
+    // 造一条"跑完了但没写出队凭据"的失败路径（生产上任何一条 catch 漏了回写就是这个形态），
+    // 滚动重算下它会被同轮无限重选、跑完整 agent session 一直烧到进程被杀。
+    //
+    // 🔴 故障必须注入在 **db.prepare** 这一层（同用例 10 的既有手法），不能在 subtitleWorker
+    // 里擦掉 recheck_after：worker 返回之后 runSubtitleWorkDir 的 B-2「无结局」兜底还会再
+    // bump 一次，把出队凭据又写回去——本用例第一版正是这么写的，于是**改动前就绿**
+    // （空转的假绿：它测的是"bump 能出队"，那是 D6 的账，不是冻结的账）。
+    // 把 subtitleScheduler 的两条回写语句整体空转，才是"这条路径漏了回写"的真实形态。
+    //
+    // worker 里有失控刹车：滚动重算下这个循环不会自己停（见下方对 abort 的论证）。
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    seedWorkbench(db, 'tmdb:2', [{ path: B }])
+    const disk = fakeVideoDisk([A, B])
+    let calls = 0
+
+    // 只空转"字幕轨的回写"这两条形态（bump 与 markInstalled），其余 SQL 一律真跑——
+    // 整体空转会连扫描的 upsert 一起废掉，那测的又是别的东西了。
+    const noopStmt = { run: () => ({ changes: 0 }), get: () => undefined, all: () => [] }
+    const real = db.prepare.bind(db)
+
+    // 🔴 失控保护必须打在**队列查询**这一层，不能在 worker 里 throw、也不能靠 abort：
+    //  · worker 抛错被 `runSubtitleWorkDir` 的 catch-all（B-3）吞掉，循环照转——本用例第一版
+    //    就是这么写的，结果不是"红"而是把 vitest worker 进程跑到 **OOM**（106s 后 heap 爆掉，
+    //    json 报表里显示成"0 failed"，一个彻头彻尾的假绿）。
+    //  · abort 也停不住：`this.stopping` 只在 `run()` 里被 signal 监听器置位，而本组用例
+    //    直接调 `runInspection`（既有测试的通行捷径），那个监听器根本没注册过。
+    // 队列查询在阶段 3 循环里**不在任何 try 内**，从这里抛出的错会一路穿出 runInspection，
+    // 于是"失控"表现为用例 reject + 计数不符，而不是挂死。
+    let queries = 0
+    const stmtFor = (sql: string) => {
+      if (/^UPDATE files SET (sub_attempt = \?|recheck_after = \?, updated_at)/.test(sql)) return noopStmt
+      if (SUBTITLE_QUEUE_SQL.test(sql) && ++queries > 3) {
+        throw new Error(`同轮重选失控：字幕队列已被重查 ${queries} 次（冻结失效）`)
+      }
+      return real(sql as any)
+    }
+    const neutered = new Proxy(db as any, {
+      get(target, key) {
+        if (key === 'prepare') return stmtFor
+        const v = target[key]
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    })
+
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      db: neutered,
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A, B] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async () => {
+        calls++
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+    }))
+    await expect((daemon as any).runInspection(new AbortController().signal)).resolves.toBeUndefined()
+    expect(calls).toBe(2)   // 两个作品各一次，不多不少
+    expect(queries).toBe(1) // 且队列只查了一次（冻结的直接凭据）
+    // 前置自检：出队凭据确实没被写下（否则本用例又退回成"测 D6"的空转假绿）
+    expect(recheckAfterOf(db, A)).toBeNull()
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2 阶段 2 · R4 冻结快照（识别流同样形态）', () => {
+  const UA = '/media/UnA/E01.mkv'
+  const UB = '/media/UnB/E01.mkv'
+
+  /** 造一行"未识别"的文件（work_id NULL → 落在识别工作台里）。 */
+  function seedUnidentified(db: ReturnType<typeof openDb>, path: string): void {
+    const dir = path.slice(0, path.lastIndexOf('/'))
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, sub_recheck_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)`)
+      .run(path, dir, path.slice(path.lastIndexOf('/') + 1), BIG, 1000, dir, NOW + 5 * DAY, 1000)
+  }
+
+  it('🔴🔴 用例8: 识别中途新入库的目录不被本轮捞走（阶段 2 的冻结）', async () => {
+    const db = openDb(':memory:')
+    seedUnidentified(db, UA)
+    const seen: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [UA] }),
+      fileExists: () => false,
+      identify: {
+        db,
+        worker: {} as any,
+        runIdentify: async (_deps: any, facts: any) => {
+          seen.push(facts.workDir)
+          if (seen.length === 1) seedUnidentified(db, UB)
+          return { tmdbId: null, title: null, reason: 'noop' }
+        },
+      },
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(seen).toEqual(['/media/UnA'])
+    db.close()
+  })
+
+  it('🔴 识别队列也只被查询一次', async () => {
+    const db = openDb(':memory:')
+    seedUnidentified(db, UA)
+    seedUnidentified(db, UB)
+    const c = countingDb(db, IDENTIFY_QUEUE_SQL)
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      db: c.proxy,
+      roots: ['/media'],
+      ...fakeFs({ '/media': [UA, UB] }),
+      fileExists: () => false,
+      identify: {
+        db: c.proxy,
+        worker: {} as any,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+      },
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(c.count()).toBe(1)
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2 阶段 3 · R12/C23 消费快照前逐文件 stat', () => {
+  const A = '/media/ShowA/E01.mkv'
+  const A2 = '/media/ShowA/E02.mkv'
+
+  it('🔴🔴 用例3: 快照里的文件已从磁盘消失 → 剔除，且 sub_attempt **不变**（C23 红线）', async () => {
+    // 改动前：agent 拿到一批不存在的 videoPath → staging 沙盒在已删目录 ENOENT → 抛错 →
+    // catch 里 bump **全部**文件 → sub_attempt 白涨一次。连 7 天白涨 7 次后这个**已经不存在
+    // 的文件**被"移交翻译流"，翻译流才用 R12 检出它不存在 → 7 天的 LLM 花在幽灵上。
+    //
+    // 关键在"不计数"：文件没了不是一次"失败尝试"。把它记成尝试就是让 R10 的 7 次额度
+    // 被幽灵吃掉，而 R7（消失即删行）本来会在下一轮扫描把这一行整个删掉——那才是正解。
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A, episode: 1 }, { path: A2, episode: 2 }])
+    const disk = fakeVideoDisk([A, A2])
+    const seen: string[] = []
+
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      // 磁盘上两个文件都还在（扫描阶段不删行），但**跑到阶段 3 时** A2 被用户删了。
+      ...fakeFs({ '/media': [A, A2] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async (task: any) => {
+        for (const t of task.targets) seen.push(t.videoPath)
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+    }))
+    // 快照冻结之后、消费到它之前，磁盘变了
+    const origScan = (daemon as any).scanOnce.bind(daemon)
+    ;(daemon as any).scanOnce = async () => { await origScan(); disk.remove(A2) }
+
+    await (daemon as any).runInspection(new AbortController().signal)
+
+    expect(seen).toEqual([A])                  // A2 被剔除，agent 一眼都没看到
+    expect(attemptOf(db, A2)).toBe(0)          // 🔴 不计数：文件没了 ≠ 一次失败尝试
+    expect(recheckAfterOf(db, A2)).toBeNull()  // 也不写退避（一列都不许动）
+    expect(attemptOf(db, A)).toBe(1)           // 存在的那个照常走失败轨（B-2 无结局兜底）
+    db.close()
+  })
+
+  it('🔴🔴 用例4: 整个作品的文件都不存在 → 跳过该作品，**不调 worker**', async () => {
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A, episode: 1 }, { path: A2, episode: 2 }])
+    const disk = fakeVideoDisk([A, A2])
+    const worker = vi.fn(async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }))
+
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A, A2] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: worker as any,
+    }))
+    const origScan = (daemon as any).scanOnce.bind(daemon)
+    ;(daemon as any).scanOnce = async () => { await origScan(); disk.remove(A); disk.remove(A2) }
+
+    await (daemon as any).runInspection(new AbortController().signal)
+
+    expect(worker).not.toHaveBeenCalled()
+    expect(attemptOf(db, A)).toBe(0)
+    expect(attemptOf(db, A2)).toBe(0)
+    // 沙盒也不许被登记为"在飞行"——登记了却没跑，这个 jobId 会白白免疫一次 GC
+    expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
+    db.close()
+  })
+
+  it('🔴 用例5: 部分文件消失 → 只把还在的那些交给 agent（不是整簇丢掉）', async () => {
+    // 反向红线：实现若写成"有任何一个文件不存在就跳过整个作品"，同一部剧里其他还在的集
+    // 就被连坐——而它们本该照常补字幕。这一条与用例 4 是一对，缺一条实现就能两头讨好。
+    const db = openDb(':memory:')
+    const A3 = '/media/ShowA/E03.mkv'
+    seedWorkbench(db, 'tmdb:1', [
+      { path: A, episode: 1 }, { path: A2, episode: 2 }, { path: A3, episode: 3 },
+    ])
+    const disk = fakeVideoDisk([A, A2, A3])
+    const seen: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A, A2, A3] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async (task: any) => {
+        for (const t of task.targets) seen.push(t.videoPath)
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+    }))
+    const origScan = (daemon as any).scanOnce.bind(daemon)
+    ;(daemon as any).scanOnce = async () => { await origScan(); disk.remove(A2) }
+
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(seen.sort()).toEqual([A, A3].sort())
+    expect(attemptOf(db, A2)).toBe(0)
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2 阶段 3 · C13 sub_attempt 单调递增', () => {
+  const A = '/media/ShowA/E01.mkv'
+  const SUB = '/media/ShowA/E01.zh-Hans.srt'
+
+  it('🔴🔴 用例6: 字幕 worker 抛错 → sub_attempt 仍 +1（异常不许让计数停摆）', async () => {
+    // 计数不单调 = 永远攒不到 7 次 = 停牌/移交翻译**静默失效**：那个文件每天被重选一次、
+    // 每天烧一次付费 LLM，永不终止，而界面上什么异常都看不出来。
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    const disk = fakeVideoDisk([A])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async () => { throw new Error('LLM 500') },
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(attemptOf(db, A)).toBe(1)
+    expect(recheckAfterOf(db, A)).not.toBeNull()   // 且写了退避，本轮/次日不会原地重选
+    db.close()
+  })
+
+  it('🔴🔴 用例7: 装盘成功 → sub_attempt **不涨**（防"成功也计数"这个反向 bug）', async () => {
+    // 3-2 刚明确"装盘成功不递增计数"：否则一个"每次都装盘成功但字幕总没落地"的文件会在
+    // 7 轮后被判进停牌，而它一次都没"找不到"过。用例 6 的修法（保证回写）最容易顺手引入
+    // 的正是这个反向 bug，故两条必须成对。
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    const disk = fakeVideoDisk([A])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async () => ({
+        installed: [{ itemId: 'tmdb:1/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+        no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      }),
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(attemptOf(db, A)).toBe(0)
+    expect(subStatusOf(db, A)).toBeNull()          // 也不许写 covered（R24 仍然成立）
+    expect(recheckAfterOf(db, A)).not.toBeNull()   // 但要出队（D6）
     db.close()
   })
 })

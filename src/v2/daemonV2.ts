@@ -394,14 +394,24 @@ export class ScoutDaemonV2 {
     // 阶段 1：机械扫描
     await this.scanOnce()
 
-    // 阶段 2：识别工作流（上游）——有活跑到空
+    // 阶段 2：识别工作流（上游）——消费**冻结快照**（R4 / C23）
+    //
+    // 用户原话：「每次巡检开始，流水线是冻结的，开工没有回头箭，找到的记录，找不到的不管，
+    // 留给下次。」改动前这里是 `while (true) { queue = listIdentifyQueue(...); 处理 queue[0] }`
+    // ——每圈重查库，那是滚动重算而不是冻结（C23，spec 的缺口清单一开始也漏记了这一条）。
+    //
+    // 两个真实伤害（阶段 3 同型，论证不重复）：
+    //  ① 大库在 115 FUSE 上真能跑 10h，期间新入库的目录会被本轮捞走 → "开工没有回头箭"被破坏
+    //  ② 任何一条失败路径漏了写退避 → 该行仍满足工作台谓词 → **同轮无限重选**，跑完整 agent
+    //     session 一直烧到进程被杀。识别侧退避写在 next_retry_at（identifyScheduler），
+    //     字幕侧写在 recheck_after（D6）；冻结是这两条之外的**第二道防线**——一道防线的意思
+    //     就是"哪天谁漏写一次就出事"。
+    const identifyQueue = listIdentifyQueue(this.deps.db, this.deps.now?.() ?? Date.now())
     let identifyRounds = 0
-    while (!this.stopping) {
-      const queue = listIdentifyQueue(this.deps.db, this.deps.now?.() ?? Date.now())
-      if (queue.length === 0) break
+    for (const item of identifyQueue) {
+      if (this.stopping) break
       identifyRounds++
-      const item = queue[0]
-      this.deps.log(`识别 ${item.workDir} (${item.fileCount} 文件, 第 ${identifyRounds} 个)`)
+      this.deps.log(`识别 ${item.workDir} (${item.fileCount} 文件, 第 ${identifyRounds}/${identifyQueue.length} 个)`)
       await runIdentifyWorkDir(this.deps.identify, item)
     }
 
@@ -415,6 +425,9 @@ export class ScoutDaemonV2 {
     // 单元用例照样全绿，只是每次复查都白亏一天——这类"顺序错了但列对了"的缺陷，只有端到端
     // 跑真实 listSubtitleQueue 的用例才看得见（daemonV2.test.ts 用例 7）。
     //
+    // 冻结之后这个顺序更是 load-bearing：阶段 3 的快照只拍一次，2.6 若跑在它后面，
+    // 放回来的行**这一整轮都不会被看见**（改动前靠每圈重查还能歪打正着捞到）。
+    //
     // 整支 try/catch 隔离，口径与 gcStaging / 回填 pass / 各运维器官一致：复查是增益，它挂了
     // 顶多是停牌行晚一天被放回；做成阻塞项就是"一次库锁停掉整条流水线"，而流水线里还有
     // 扫描的删除清理（R6/R7 的地基）与两条工作台。
@@ -424,26 +437,139 @@ export class ScoutDaemonV2 {
       this.deps.log(`warn: 停牌复查闸失败（隔离，不阻塞本轮巡检，下轮重试）: ${String(e)}`)
     }
 
-    // 阶段 3：字幕工作流（下游）——有活跑到空
+    // 阶段 3：字幕工作流（下游）——消费**冻结快照**（R4 / C23）。
+    //
+    // ── 为什么消费完就结束，**不再补查一轮**（用户点名要论证的那条）──
+    // spec §2 的阶段语义是"有活就一直跑，跑空才进下一步"，字面读像是"要跑到查不出活为止"。
+    // 但阶段 2 → 2.5 → 2.6 → 3 是**串行**的，故阶段 3 开跑时上游已经全部静止：识别不会再绑
+    // 新 work_id、judge 不会再写 needs_subtitle、复查闸不会再放回停牌行、扫描早在阶段 1 就
+    // 结束了。于是"快照拍完之后还能新长出来的字幕活"只有两个来源，两个都**必须**被排除：
+    //  · 磁盘上新出现的文件 —— R4 原话点名不管（"找到的记录，找不到的不管，留给下次"）
+    //  · 拍快照那一刻仍在退避窗内、跑到一半才到点的行 —— 这就是"队列漂移"本身，
+    //    R4 那句"跑的过程中队列不漂移"说的正是它
+    // 补查一轮既违背 R4，又把上面伤害 ① 原样放回来。所以"跑空"在冻结模型下的正确解读是
+    // **"把这一轮的快照消费空"**，而不是"把库查空"。
+    const subtitleQueue = listSubtitleQueue(this.deps.db, this.writableRoots(), this.deps.now?.() ?? Date.now())
     let subtitleRounds = 0
-    while (!this.stopping) {
-      const wRoots = this.writableRoots()
-      const queue = listSubtitleQueue(this.deps.db, wRoots, this.deps.now?.() ?? Date.now())
-      if (queue.length === 0) break
+    for (const frozen of subtitleQueue) {
+      if (this.stopping) break
+
+      // R12 + C23：消费**这个作品**之前逐文件 stat。快照是冻结的，磁盘不是。
+      const item = this.dropVanishedFiles(frozen)
+      if (item === null) continue   // 整簇都没了 → 跳过，worker 一次都不调
+
       subtitleRounds++
-      const item = queue[0]
-      this.deps.log(`字幕 ${item.title} (${item.files.length} 文件, 第 ${subtitleRounds} 个)`)
+      this.deps.log(`字幕 ${item.title} (${item.files.length} 文件, 第 ${subtitleRounds}/${subtitleQueue.length} 个)`)
       // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
+      // 登记必须在**剔除之后**：整簇消失的作品若也登记一次，这个 jobId 就白白免疫一次 GC。
       // jobId 必须与 buildSubtitleTask 实际用的那个**字节一致**，故共用 subtitleJobId
       // 而不是在这里手写一遍 `subtitle:${workId}`（两份必然漂移，漂了 GC 保护就静默失效）。
       const jobId = subtitleJobId(item.workId)
       this.inFlightStagingJobIds.add(jobId)
       try {
         await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage)
+      } catch (e) {
+        // ── C13 计数单调的兜底（"finally 保证回写"这条路的实现）──
+        //
+        // 为什么选"保证回写"而不是"领取即计数"（两条路我选这条并论证）：
+        // 领取即计数要求"成功则回退"，也就是**装盘成功路径上必须再发一条 -1 的写**。
+        // 那条回退写一旦漏掉或在它之前掉电（软路由掉电是本项目常态），成功就变成了一次
+        // 失败额度 —— 一个"每次都装盘成功但字幕总没落地"的文件会在 7 轮后被判进停牌，
+        // 而它一次都没"找不到"过。3-2 刚明确"装盘成功不递增计数"，领取即计数是逆着这条走、
+        // 靠一条补偿写把语义扳回来；而补偿写的失效是**静默**的（状态流转看起来一模一样）。
+        // 保证回写没有这个反向风险：它只在真的出了异常时补一次，成功路径一列都不碰。
+        //
+        // runSubtitleWorkDir 内部已有 catch-all（B-3）+ B-2 无结局兜底，正常形态下每个文件
+        // 都会被回写一次。这里兜的是**它自己整体抛错**那条缝：buildSubtitleTask / traceBus /
+        // 报告反解等它 try 之外的代码抛出时，改动前是直接掀翻整轮巡检、且一行都没记账 →
+        // sub_attempt 不涨 → 永远攒不到 7 次 → 停牌与移交翻译**静默失效**，那个文件每天被
+        // 重选一次、每天烧一次付费 LLM，永不终止（C13）。
+        //
+        // 诚实划界：进程被杀（掉电/OOM/kill -9）**这里救不了**，任何进程内机制都救不了。
+        // 那条缝只能靠"下一轮巡检会重选它、再失败一次就记上"来收敛——代价是丢一次计数，
+        // 不违反单调（计数不会倒退），只是慢一天。不为它编一条测不出来的补丁。
+        this.deps.log(`warn: 字幕工作台整体抛错，补记一次尝试（C13 计数单调）: ${item.title}: ${String(e)}`)
+        this.bumpAllAsAttempt(item)
       } finally {
         // finally 而不是顺序执行：worker 抛错时若不摘，这个 jobId 会永久免疫 GC，
         // 沙盒垃圾从此无界堆积（媒体目录里的隐藏目录，用户看不见、只会看到盘满）。
         this.inFlightStagingJobIds.delete(jobId)
+      }
+    }
+  }
+
+  /** R12 + C23：把快照里**已从磁盘消失**的文件剔掉；整簇都没了返回 null。
+   *
+   *  为什么非做不可（这是本步最贵的一条，成本以"7 天 LLM"计）：改动前 agent 会拿到一批不存在
+   *  的 videoPath → staging 沙盒在已删目录里 ENOENT → 抛错 → runSubtitleWorkDir 的 catch-all
+   *  给**整簇**文件 bump 一次 → `sub_attempt` 白涨。连 7 天白涨 7 次之后，这个**已经不存在的
+   *  文件**被判"移交翻译流"，翻译流才用 R12 检出它不存在 → 7 天的付费 LLM 花在幽灵上。
+   *  真实剧本（C23）：大库巡检跑 10h，快照第 0 分钟冻结，用户第 3h 删掉一整部剧，第 7h 字幕流
+   *  才处理到它。
+   *
+   *  ── 为什么**不计 sub_attempt**（红线）──
+   *  文件没了不是"一次失败尝试"。R10 的 7 次是给"认真找了但确实没有"的额度（R9/R17），
+   *  让幽灵吃掉它就是把停牌/移交翻译的判据整个污染。正解在别处：R7 规定"磁盘上消失的文件
+   *  直接删除记录"，下一轮扫描的删除清理会把这一行整个删掉——本函数只需要**这一轮别乱记账**，
+   *  连退避都不写（写了就是替一个即将被删的行安排未来）。
+   *
+   *  ── 为什么按文件粒度剔而不是"有一个不在就跳过整簇"──
+   *  同一部剧的其他集还在盘上、还该照常补字幕，整簇跳过就是连坐（用例 5 钉住这条反向红线）。
+   *
+   *  复用 `deps.fileExists`（1b-4 为 R24 加的注入点，默认 existsSync），**不写第二份探针**：
+   *  两份实现必然漂移，而这两处问的是同一个问题（"这个路径现在在盘上吗"）。
+   *  stat 抛错（FUSE 挂载常态）时**当它还在**：这条判据的唯一后果是"要不要把活交给 agent"，
+   *  而 R8/D23 已经立过同一条原则——"问不出答案"绝不许折叠成"消失"，否则挂载抖一下就等于
+   *  把整轮的活全部丢掉，而文件其实一直在。 */
+  private dropVanishedFiles(item: SubtitleQueueItem): SubtitleQueueItem | null {
+    const fileExists = this.deps.fileExists ?? existsSync
+    const alive: SubtitleQueueItem['files'] = []
+    const gone: string[] = []
+    for (const f of item.files) {
+      let present: boolean
+      try {
+        present = fileExists(f.path)
+      } catch {
+        present = true   // 问不出答案 ≠ 消失（见上方论证）
+      }
+      if (present) alive.push(f)
+      else gone.push(f.path)
+    }
+    if (gone.length > 0) {
+      this.deps.log(
+        `字幕: 快照中 ${gone.length} 个文件已从磁盘消失，剔除且**不计 sub_attempt**（R12 / C23）: ${gone[0]}`
+        + (gone.length > 1 ? ` 等 ${gone.length} 个` : ''),
+      )
+    }
+    if (alive.length === 0) return null
+    if (alive.length === item.files.length) return item
+    return { ...item, files: alive }
+  }
+
+  /** C13 兜底：给这一簇的每个文件补记一次失败尝试 + 退避。
+   *
+   *  刻意**不复用** subtitleScheduler 里的 bump()：那个函数还负责满 7 次的停牌分流（读
+   *  translatable、写 sub_status、写 +7 天），而这里是"我们不知道 worker 到底做了什么"的
+   *  异常缝。在信息最少的路径上做最重的状态跃迁（把一行推进停牌态）是拿不确定性去改终态——
+   *  真正的分流留给下一轮：计数已经涨上去了，下次失败会立刻按 `>= 7` 分流（D15 的两半咬合）。
+   *
+   *  逐条 try/catch：这条路径本身就是异常处理，它再抛错会盖掉原始异常（排障时看到的是
+   *  "database is locked"而不是真正掀翻工作台的那个错）。 */
+  private bumpAllAsAttempt(item: SubtitleQueueItem): void {
+    const now = this.deps.now?.() ?? Date.now()
+    const DAY_MS = 24 * 60 * 60 * 1000
+    for (const f of item.files) {
+      try {
+        // last_error 带 `sub:` 前缀是硬要求（跨轨串味防线，subtitleScheduler.bump 立的先例）：
+        // 这一列与识别轨共用，而 identifyScheduler 的队列谓词靠 `last_error != 'tmdb-404'`
+        // 把 TMDB 查不到的目录永久排除。字幕轨裸写会洗掉那个终态凭据 → 该目录重进识别队列、
+        // 每天白烧一次 TMDB + LLM。
+        this.deps.db.prepare(
+          `UPDATE files SET sub_attempt = sub_attempt + 1, recheck_after = ?,`
+          + ` last_error = 'sub:workbench-error', updated_at = ? WHERE path = ?`,
+        ).run(now + DAY_MS, now, f.path)
+      } catch (e) {
+        this.deps.log(`warn: 补记尝试失败（隔离，不盖掉原始异常）: ${f.path}: ${String(e)}`)
       }
     }
   }
