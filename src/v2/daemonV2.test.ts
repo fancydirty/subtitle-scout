@@ -3,7 +3,7 @@ import { openDb } from './db.js'
 import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
 // 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
 // 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
-import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir } from './subtitleScheduler.js'
+import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir, RETRY_LATER_STREAK_CAP } from './subtitleScheduler.js'
 // C21 用例 7b 端到端：用真实的抓源腿 locate 验"回填的产出真能被消费方读出来"，
 // 而不是只断言列被写上（列值断言在"写了个 {} "的实现下同样为真）。
 import { makeDbLocate } from '../cli/fetchSourceSub.js'
@@ -456,8 +456,8 @@ describe('ScoutDaemonV2.scanOnce · LIKE 陷阱：路径含 % 与 _', () => {
  *  还没有）——测试与实现共用同一条"按实际列取"的口径，否则第 3 步加完列，这里会静默漏测。 */
 function stateOf(db: ReturnType<typeof openDb>, path: string): Record<string, unknown> {
   const have = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
-  const cols = ['work_id', 'needs_subtitle', 'sub_status', 'sub_attempt', 'translatable',
-    'recheck_after', 'embedded_langs', 'duration_sec'].filter(c => have.has(c))
+  const cols = ['work_id', 'needs_subtitle', 'sub_status', 'sub_attempt', 'sub_retry_streak',
+    'translatable', 'recheck_after', 'embedded_langs', 'duration_sec'].filter(c => have.has(c))
   return db.prepare(`SELECT ${cols.join(', ')} FROM files WHERE path = ?`).get(path) as Record<string, unknown>
 }
 
@@ -479,6 +479,10 @@ function seedSettledFile(
     recheck_after: 9_999_999_999, embedded_langs: '["chi","eng"]', duration_sec: 1440, updated_at: 1000,
   }
   if (have.has('sub_attempt')) row.sub_attempt = 3
+  // 播种一个"半程折算进度"（第 5 步下游加的 sub_retry_streak）：换片源的伤害只有在
+  // 状态最满的行上才看得见。CAP-1 是最危险的取值——不清的话，新片源第一次撞限流就
+  // 凭空折算出一次"真实尝试"，而它一次都没被真正搜过。
+  if (have.has('sub_retry_streak')) row.sub_retry_streak = 2
   if (have.has('translatable')) row.translatable = 1
   const cols = Object.keys(row)
   db.prepare(`INSERT INTO files (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`)
@@ -588,6 +592,27 @@ describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
     // translatable 残留 → D9 的可救性判决是基于**上一个文件**的内嵌轨算出来的，
     // 而我们刚把 embedded_langs 清成 NULL：清掉证据留下判决 = 判决永久冻结（D17 同型）
     expect(s.translatable).toBeNull()
+    db.close()
+  })
+
+  it('🔴 sub_retry_streak 换片源时也被清（否则新片源自带"半程折算进度"）', async () => {
+    // 论证：streak 的语义是"连续几轮**这个文件**在源站上问不到"。换片源之后这一行代表的是
+    // 另一个文件（mtime/size 全变、embedded_langs 与 sub_attempt 都已清）。留着旧文件攒的
+    // streak = 新片源自带半程折算进度：seedSettledFile 播的是 CAP-1，不清的话新文件第一次
+    // 撞限流就凭空折算出一次"真实尝试"，而它一次都没被真正搜过。与 sub_attempt 残留
+    // （新片源自带失败额度）是同一个洞的另一扇门。
+    //
+    // 值是 **0 而不是 NULL**：这一列是 NOT NULL DEFAULT 0，清空按 dflt_value 回落。
+    // 写 NULL 会当场撞 NOT NULL 约束把整轮扫描炸掉。
+    const db = openDb(':memory:')
+    const cols = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
+    expect(cols.has('sub_retry_streak')).toBe(true)
+    seedSettledFile(db, P, { mtime: 1000 })
+    expect(stateOf(db, P).sub_retry_streak).toBe(2)   // 前置条件成立，否则本用例是空转的假绿
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 5000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    expect(stateOf(db, P).sub_retry_streak).toBe(0)
     db.close()
   })
 
@@ -3368,7 +3393,27 @@ describe('ScoutDaemonV2 阶段 3 · C13 sub_attempt 单调递增', () => {
     expect(recheckAfterOf(db, A)).not.toBeNull()   // 但要出队（D6）
     db.close()
   })
+
+  // 编排侧裁决（2026-08-08）：`bumpAllAsAttempt` 这条路径写的是 `sub_attempt + 1` ——
+  // 它已经表态"这是一次真实尝试"。既然表了态，就必须同时归零 sub_retry_streak，
+  // 否则同一次回写里自相矛盾：一边说算一次尝试、一边保留 retry_later 的豁免进度。
+  // 极端形态：streak=CAP-1 的行在这里记一次尝试，下一次真限流立刻再折算一次，同一个
+  // 失败被计两笔额度。修法已落地（daemonV2.ts 的 UPDATE 里加了 sub_retry_streak = 0）。
+  //
+  // 🔴 但这一行**目前没有测试守着**，如实记下来而不是造一条假绿：
+  // 我试过三种注入方式都没能可靠触达这条缝——
+  //   ① 让 subtitleWorker 抛错 → runSubtitleWorkDir 自己的 catch-all（subtitleScheduler.ts:352
+  //      的 `bump(f, reason)`）先吞掉了，走的是 'attempted' 档，归零是 bump() 做的。
+  //      摘掉 bumpAllAsAttempt 的归零后测试依然全绿 = 两个机制都让 streak 变 0，
+  //      用例分辨不出谁在起作用（与本仓栽过多次的假绿同型）。
+  //   ② mock db.prepare 让特定 SQL 抛错 → 那条 SQL 在本场景下压根没被执行到，
+  //      `expect(thrown).toBe(true)` 当场证伪，测试红的理由是"故障没注入"而非"归零失效"。
+  // 这条缝的触发条件是"runSubtitleWorkDir 调用点之外、finally 之前抛错"，从 deps 注入面
+  // 够不到。要么给它开一个专门的测试缝（为测试改生产结构），要么承认它只能靠 code review 守。
+  // 选后者：这一行的正确性是从"已表态算一次尝试"直接推出的，不是靠巧合成立的。
+  // 若日后有人给 daemonV2 加了可注入的 hook，这里是补测试的入口。
 })
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 第 4 步：翻译流接进 daemonV2 —— 主进程内独立循环（R19 + C32 + C3）

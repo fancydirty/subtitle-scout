@@ -144,6 +144,33 @@ function commonDir(dirs: string[]): string {
 /** 满几次真实尝试后移交（R10：用户裁决的"7 次"）。 */
 const HANDOFF_THRESHOLD = 7
 
+/** 连续多少轮"源站拒绝回答"（retry_later）折算成一次真实尝试。
+ *
+ *  量级含义：巡检模型下字幕流**每天跑一次**（M-1，全部退避都是"明天"），所以这个数字读作
+ *  「**连续 3 天源站一次都没答上话**」。它不是一个调参出来的魔数，而是"偶发限流"与
+ *  "provider 挂了"之间的分界线，两侧各有一个具体的失效形态：
+ *
+ *   · 取太小（比如 1，即等于不豁免）→ 就是本步在修的那个 bug 本身：撞限流 7 天攒满 7 次 →
+ *     移交翻译流/判 unsolvable，而字幕一直在源站上（Peacemaker 实案）。
+ *   · 取太大（比如 30）→ provider 永久挂掉（API key 失效、站点关站）的文件要 30×7=210 天
+ *     才攒满 7 次额度进翻译流。这半年里它每天烧一次付费 LLM session 而必然失败，
+ *     且 UI 上看不出任何异常。
+ *
+ *  为什么落在 3 而不是 2 或 7：
+ *   · **≥3 才排得掉真实的限流周期**。免费档配额普遍按日重置（skill 里点名的"free daily
+ *     download allowance, often with a reset time"），而日重置窗口与我们的日巡检**不同相位**——
+ *     巡检恰好每天都落在配额已耗尽的时段是完全正常的，连续 2 天并不能区分"我们每天都来晚了"
+ *     与"provider 挂了"。3 天是第一个让"每次都恰好撞上"变得不太可能的值。
+ *   · **不取 7**：7 已经是 R10 那个额度本身的量级，`7×7=49 天`才移交一次。而且 7 会与
+ *     HANDOFF_THRESHOLD 在读代码时混成同一个概念（"到底哪个 7 是哪个"），
+ *     两个语义无关的量必须取不同的值，这是可读性上的刚性要求。
+ *   · 折算后的长期行为：真挂了的 provider → 每 3 天记一次额度 → **21 天后移交翻译流**。
+ *     三周是"用户还没来投诉、但系统已经自己认输"的合理量级，且远小于 R25 的周频复查节奏。
+ *
+ *  这个数字**只影响折算速度，不影响正确性**：任何 ≥2 的取值都同时满足两条红线
+ *  （限流不吃额度 / 长期挂掉仍会移交），改它是安全的。 */
+export const RETRY_LATER_STREAK_CAP = 3
+
 /** 停牌后交给阶段 2.6 复查闸的间隔（R25「每周找一次」/ D13）。 */
 const PARK_RECHECK_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -203,7 +230,11 @@ export async function runSubtitleWorkDir(
   // 也是等下一轮，1h/15min 短退避是旧 30s tick 思维的残留，与模型矛盾（M-1）。
   const DAY_MS = 24 * 60 * 60 * 1000
 
-  /** 一次**真实失败**的回写：sub_attempt+1 + 退避，满 7 次则按 translatable 分流停牌。
+  /** 一次失败的回写。**两种失败在语义上不同一档**，由 `outcome` 参数（而不是 reason 字符串）
+   *  分流——见该参数的论证。
+   *
+   *  ── `'attempted'`（默认）= 真实尝试过、确实没拿到 ─────────────────────────────
+   *  sub_attempt+1 + 退避，满 7 次则按 translatable 分流停牌。
    *
    *  🔴 计数写 `sub_attempt` 而不是 `attempt`（C7，3-2 实测确认过不是推测）：
    *  `attempt` 被识别轨共用，而 identifyScheduler 在识别成功时把它**归零**
@@ -217,12 +248,54 @@ export async function runSubtitleWorkDir(
    *
    *  阈值是 `>= HANDOFF_THRESHOLD` 而**不是 `==`**（D15）：停牌复查闸放回时 sub_attempt
    *  不归零，值必然会超过 7。写 `==` 的话 sub_attempt=8/9 的行永远匹配不上 → 回 NULL 之后
-   *  再也进不了停牌 → 每天被字幕流重选一次（而非每周），成本回到 D15 想避免的量级。 */
-  const bump = (f: SubtitleQueueItem['files'][number], reason: string) => {
-    const row = db.prepare('SELECT sub_attempt, translatable FROM files WHERE path = ?')
-      .get(f.path) as { sub_attempt: number; translatable: number | null } | undefined
-    const attempt = (row?.sub_attempt ?? 0) + 1
+   *  再也进不了停牌 → 每天被字幕流重选一次（而非每周），成本回到 D15 想避免的量级。
+   *
+   *  ── `'unanswered'` = 源站拒绝回答（retry_later）─────────────────────────────
+   *  **不递增 sub_attempt**，只递增 sub_retry_streak + 退避；streak 满 CAP 时折算一次
+   *  sub_attempt 并把 streak 归零（此时同样按 translatable 分流，与真实失败一条 UPDATE）。
+   *
+   *  为什么必须豁免（第 5 步下游，R9/R10 的语义修正）：`sub_attempt` 的含义是"真实尝试过、
+   *  **确实找不到**的次数"，R10 的"满 7 次移交翻译"整个建立在这个含义上。而 retry_later 是
+   *  "**问都没问到**"——429 / 配额耗尽 / 5xx / key 被拒时源站拒绝回答，它没有产生任何关于
+   *  "这个字幕存不存在"的信息。把它计入额度是语义错误，且有实案（Peacemaker）：撞限流 7 天
+   *  → 攒满 7 次 → 移交翻译流或判 unsolvable 停牌，**而那个字幕一直在源站上**。第 5 步把
+   *  skill 改对（撞限流报 retry_later 而不是误报 no_safe_match）之后，这个洞不补则 prompt
+   *  改了也白改。v1 轨的口径一直是对的（findSubtitleWorkerTask.ts 注释：retry_later 走
+   *  "completeError 的短退避节流轨，R-10 豁免，永不 dormant"），是新架构漏消费了这个区分。
+   *
+   *  为什么豁免必须**配上限**而不是无条件：provider 长期挂掉（API key 永久失效、站点关站）
+   *  的文件会永远攒不到 7 次 → **永不进翻译流** → 永远躺在字幕工作台里每天烧一次付费
+   *  session，UI 上毫无异常。那是把一个永久卡死换成另一种形状的永久卡死。
+   *
+   *  ── 为什么分流靠 `outcome` 参数而不是匹配 reason 字符串 ────────────────────────
+   *  reason 是给人看的叙事（'quota' / 'timeout' / `String(e).slice(0,100)` 的任意错误文本），
+   *  它的取值集合**不封闭**：catch-all 那条会把 provider SDK 抛出的任意 message 塞进来，
+   *  而那些 message 里完全可能出现 'retry' / 'rate limit' 字样（限流在别的层被抛成异常时
+   *  正是这个形状）。靠 `reason === 'retry-later'` 判分支，则任何人改一次日志措辞就静默把
+   *  豁免弄丢（或反过来把一个真实超时误判成豁免）；而 `outcome` 是**联合类型**，
+   *  漏传/拼错在 tsc 就红，新增一个失败桶时编译器会强迫调用者表态走哪一档。 */
+  const bump = (
+    f: SubtitleQueueItem['files'][number],
+    reason: string,
+    /** 这一次失败**是否产生了关于"字幕是否存在"的信息**。这是全部判据，不是叙事标签。 */
+    outcome: 'attempted' | 'unanswered' = 'attempted',
+  ) => {
+    const row = db.prepare('SELECT sub_attempt, sub_retry_streak, translatable FROM files WHERE path = ?')
+      .get(f.path) as { sub_attempt: number; sub_retry_streak: number; translatable: number | null } | undefined
+    const prevAttempt = row?.sub_attempt ?? 0
+    const prevStreak = row?.sub_retry_streak ?? 0
     const translatable = row?.translatable ?? null
+
+    // 折算判定：只有 unanswered 这一档会攒 streak；攒满即折算一次额度并归零。
+    const streakNow = outcome === 'unanswered' ? prevStreak + 1 : 0
+    const redeem = outcome === 'unanswered' && streakNow >= RETRY_LATER_STREAK_CAP
+    // 额度只在两种情况下涨：真实尝试，或折算。
+    const attempt = outcome === 'attempted' || redeem ? prevAttempt + 1 : prevAttempt
+    // 归零的两个来源合成一条：① 折算后重新计数（不归零则下一轮立刻又满上限 → 折算退化成
+    // 每轮都折算 = 完全没有豁免）；② **任何非 unanswered 的结局**——源站已经能回答了，
+    // 之前那串"问不到"不再是连续的。漏掉 ② 的形态：几个月里零散撞过几次限流的文件慢慢攒到
+    // 上限，凭一堆互不相关的瞬时故障折算出一次"真实尝试"，而它每次都被正常回答过。
+    const streak = redeem ? 0 : streakNow
 
     // 🔴 `sub:` 前缀（3-2 后置修复，实测确认过不是推测）：last_error 是识别轨与字幕轨的
     // **共用列**，而 identifyScheduler 的队列谓词是
@@ -239,21 +312,29 @@ export async function runSubtitleWorkDir(
     // 或 embedded_langs 缺失导致判不了，此刻判死会永久埋掉一批一抽轨就能救的日漫。
     // 它继续留在字幕流（sub_status 保持 NULL），计数照涨；待 D17 回填补上证据、judge 重判后，
     // 下一次失败立刻按 >=7 分流。
+    //
+    // 折算那一轮同样走这条分流（而不是"折算只加计数、分流留给下一轮"）：分两轮的话进程
+    // 在两轮之间被杀会留下"计数已到 7、状态还是 NULL"的行，白吃一次额度——与上面 D15/C40
+    // 那段是同一个论证，故两档失败共用这一条判定，不为折算另开一条路径。
     if (attempt >= HANDOFF_THRESHOLD && translatable !== null) {
       // translatable=1 → 归翻译流；=0 → 不可救，不给第 8 次机会（R21：O(1) 可判的终局不该
       // 塞在 7 天延迟之后，更不该让翻译流领走一个 100ms 就判 unsupported 的活）。
       const parked = translatable === 1 ? 'handoff_translate' : 'unsolvable'
       // recheck_after=+7天：供阶段 2.6 停牌复查闸取件（D13/R25「每周找一次」）。
       // 若照失败轨写"明天"，复查会退化成日频；不写则停在上一次失败的"明天"，同样日频。
-      db.prepare('UPDATE files SET sub_attempt = ?, sub_status = ?, recheck_after = ?, last_error = ?, updated_at = ? WHERE path = ?')
-        .run(attempt, parked, now + PARK_RECHECK_MS, tagged, now, f.path)
+      db.prepare('UPDATE files SET sub_attempt = ?, sub_retry_streak = ?, sub_status = ?, recheck_after = ?, last_error = ?, updated_at = ? WHERE path = ?')
+        .run(attempt, streak, parked, now + PARK_RECHECK_MS, tagged, now, f.path)
       return
     }
     // sub_status **一列不动**（保持 NULL）：R17 废止了第五态 `unavailable`——"搜过确实没有"
     // 是普通失败，与其他失败路径同轨。写任何非 NULL 值都会让该行既不在字幕工作台
     // （谓词 `sub_status IS NULL`）、又攒不到 7 次 → 永久出局（C15）。
-    db.prepare('UPDATE files SET sub_attempt = ?, recheck_after = ?, last_error = ?, updated_at = ? WHERE path = ?')
-      .run(attempt, now + DAY_MS, tagged, now, f.path)
+    //
+    // 退避对两档失败都写"明天"（巡检模型 / M-1）：豁免的是**计数**，不是**出队**。
+    // 不写退避就是 C26 的付费 LLM 热循环——daemonV2 阶段 3 的 while 下一圈重选同一个作品，
+    // 撞着同一个限流反复烧 session。
+    db.prepare('UPDATE files SET sub_attempt = ?, sub_retry_streak = ?, recheck_after = ?, last_error = ?, updated_at = ? WHERE path = ?')
+      .run(attempt, streak, now + DAY_MS, tagged, now, f.path)
   }
 
   console.error(`[subtitle-worker] subtitle:${item.workId} task with ${task.targets.length} targets`)
@@ -304,7 +385,12 @@ export async function runSubtitleWorkDir(
   //
   // **不走 bump()**：装盘成功不是失败，不许递增 sub_attempt 吃掉 7 次额度——否则一个"每次都
   // 装盘成功但字幕总没落地"的文件会在 7 轮后被判进停牌，而它一次都没"找不到"过。
-  const markInstalled = db.prepare('UPDATE files SET recheck_after = ?, updated_at = ? WHERE path = ?')
+  //
+  // 但**必须归零 sub_retry_streak**（第 5 步下游）：streak 的语义是"**连续**几轮源站拒绝
+  // 回答"，而装盘成功恰是源站不但答了、还给了字幕的最强证据。因为这条路径刻意绕开 bump()，
+  // bump 内部那条归零管不到它，只能在这里再写一遍。漏掉的形态：一个"平时装盘成功、偶尔撞
+  // 限流"的文件把 streak 一直攒着，最终折算出一次凭空的"真实尝试"额度。
+  const markInstalled = db.prepare('UPDATE files SET sub_retry_streak = 0, recheck_after = ?, updated_at = ? WHERE path = ?')
 
   const coveredPaths = new Set<string>()
   for (const inst of report.installed) {
@@ -343,12 +429,14 @@ export async function runSubtitleWorkDir(
     }
   }
 
-  // retry_later：与其他失败同轨（限流/配额等瞬时故障，巡检模型下一样是等明天）
+  // retry_later：**源站拒绝回答**（限流/配额耗尽/5xx/key 被拒）。走 bump 的 `'unanswered'`
+  // 档——退避照写（明天），但**不吃 sub_attempt 额度**，只攒 sub_retry_streak；连续满
+  // RETRY_LATER_STREAK_CAP 轮才折算一次额度。论证见 bump 头注释与该常量的注释。
   for (const rl of report.retry_later) {
     const p = resolvePath(item, rl.itemId)
     if (!p) continue
     const f = item.files.find(x => x.path === p)
-    if (f) bump(f, 'retry-later')
+    if (f) bump(f, 'retry-later', 'unanswered')
   }
 
   // B-2：无结局文件（不在任何桶）→ 回写退避，不能残留 needs=1 让它同轮被重选。

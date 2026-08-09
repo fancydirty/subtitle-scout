@@ -264,6 +264,11 @@ const FINGERPRINT_RESET_COLUMNS = [
   'needs_subtitle',   // judge 的重判凭据（谓词 IS NULL）
   'sub_status',       // 磁盘当前有没有字幕（D8）——换了文件，旧结论作废
   'sub_attempt',      // 第 3 步加。残留 = 新片源自带失败额度，提前进停牌
+  // 第 5 步下游加。残留 = 新片源自带"半程折算进度"：streak 的语义是"连续几轮**这个文件**
+  // 在源站上问不到"，而换片源后这一行代表的是另一个文件（mtime/size 全变、embedded_langs
+  // 与 sub_attempt 都已清）。极端形态是 streak=CAP-1 的行换了片源，新文件第一次撞限流就
+  // 凭空折算出一次"真实尝试"——而它一次都没被真正搜过。与 sub_attempt 残留是同一个洞。
+  'sub_retry_streak',
   'translatable',     // 第 3 步加。基于旧文件内嵌轨算出的可救性，证据已清，判决必须跟着清
   'recheck_after',    // 未来时刻的退避会把新文件挡在字幕工作台外
 ] as const
@@ -619,8 +624,13 @@ export class ScoutDaemonV2 {
         // 这一列与识别轨共用，而 identifyScheduler 的队列谓词靠 `last_error != 'tmdb-404'`
         // 把 TMDB 查不到的目录永久排除。字幕轨裸写会洗掉那个终态凭据 → 该目录重进识别队列、
         // 每天白烧一次 TMDB + LLM。
+        // sub_retry_streak 归零（编排侧裁决，2026-08-08）：这条 UPDATE 写的是
+        // `sub_attempt + 1` ——它已经表态"这是一次真实尝试"。既然表了态，留着连续
+        // "问不到"的进度就是同一次回写里自相矛盾：一边说算一次尝试、一边保留豁免额度。
+        // 极端形态：streak=CAP-1 的行在这里抛错记一次尝试，下一次真限流立刻再折算一次，
+        // 同一个失败被计两笔。规则是"任何非 retry_later 的结局都归零"，工作台异常同样适用。
         this.deps.db.prepare(
-          `UPDATE files SET sub_attempt = sub_attempt + 1, recheck_after = ?,`
+          `UPDATE files SET sub_attempt = sub_attempt + 1, sub_retry_streak = 0, recheck_after = ?,`
           + ` last_error = 'sub:workbench-error', updated_at = ? WHERE path = ?`,
         ).run(now + DAY_MS, now, f.path)
       } catch (e) {

@@ -174,6 +174,11 @@ CREATE TABLE IF NOT EXISTS files (
   -- 定义漂移时以哪边为准会变成一个新问题）。语义见 v37 entry 的注释：翻译轨自己的退避轨，
   -- tr_attempt 必须 NOT NULL DEFAULT 0（'>= 3' 的三值逻辑），tr_recheck_after 刻意可空
   -- （NULL = 从没被翻译流碰过 = 立刻可领）。
+  --
+  -- sub_retry_streak（v38）同样**不在此终态定义里**，由 v38 的条件式 ALTER 追加（同上口径）。
+  -- 语义 = 连续多少轮源站拒绝回答（retry_later）。它是"retry_later 不吃 sub_attempt 额度"
+  -- 这条豁免的对价账本：连续达上限时折算一次 sub_attempt 并归零，任何非 retry_later 的结局
+  -- 都把它归零。必须 NOT NULL DEFAULT 0（'>= CAP' 的三值逻辑，同 D22）。详见 v38 entry。
 );
 CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
 CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
@@ -838,6 +843,51 @@ CREATE TABLE IF NOT EXISTS works (
     }
     if (!columns.has('tr_recheck_after')) {
       db.exec('ALTER TABLE files ADD COLUMN tr_recheck_after INTEGER')
+    }
+  },
+  // v38（2026-08-08 流水线 spec 第 5 步的下游半边 · 裁决 R9 + R10 的语义修正）：
+  // files 表加 sub_retry_streak ——"连续多少轮源站拒绝回答"的独立计数列。
+  //
+  // 它存在的全部理由是一个语义错误：第 5 步把字幕 agent 的 skill 改对之后（撞 provider
+  // 限流/配额耗尽时报 retry_later 而不是误报 no_safe_match），下游 subtitleScheduler 仍把
+  // retry_later 与"搜过确实没有"记在同一个 sub_attempt 上。而 `sub_attempt` 的含义是
+  // **真实尝试过、确实找不到**的次数——R10 的"满 7 次移交翻译"整个建立在这个含义上。
+  // retry_later 是"**问都没问到**"：429 / 配额耗尽 / 5xx / key 被拒时源站拒绝回答，
+  // 它没有产生任何关于"这个字幕存不存在"的信息。实案（Peacemaker）：撞限流 7 天 →
+  // 攒满 7 次 → 移交翻译流或判 unsolvable 停牌，**而那个字幕一直在源站上**。
+  // v1 轨的口径本来就是对的（findSubtitleWorkerTask.ts 注释明写 retry_later 走
+  // "completeError 的短退避节流轨，R-10 豁免，永不 dormant"），是新架构漏消费了这个区分。
+  //
+  // 那为什么不直接**无条件豁免**、连这一列都不要：provider 长期挂掉（API key 永久失效、
+  // 站点关站）的文件会永远攒不到 7 次 sub_attempt → **永不进翻译流** → 永远躺在字幕
+  // 工作台里每天烧一次付费 session，UI 上毫无异常。那是把一个永久卡死换成另一个。
+  // 故裁决是"豁免计数，但配上限"：连续达到上限时折算一次 sub_attempt 并把连续计数归零。
+  //
+  // 为什么必须是**独立一列**（C7 的第四次，前三次都有实测血案）：两列表达两件不同的事，
+  // 一列一主。把折算进度编码进 sub_attempt（负数/高位）会让每一个只读 sub_attempt 的
+  // 地方——daemonV2 的快照剔除与 bumpAllAsAttempt、阶段 2.6 复查闸、UI——读出一个它
+  // 无法解释的数。
+  //
+  // 为什么 `INTEGER NOT NULL DEFAULT 0`（D22 同型，本仓第六次面对这个坑）：
+  // 折算谓词是 `sub_retry_streak >= CAP`，SQL 三值逻辑下 `NULL >= 3` 求值为 **unknown**
+  // （不是 false）→ 谓词永不命中 → 上一段那条"最终仍会移交"的通路一行代码不用改就静默
+  // 失效。DEFAULT 0 兜住两类不写这一列的写入方：① daemonV2 的 upsert（只写机械事实）；
+  // ② 1b-3 的指纹变化清空（fingerprintResetColumns 对 NOT NULL 列按 dflt_value 回落，
+  // 读不出 DEFAULT 就 `continue` 跳过该列 → 换片源后旧的折算进度残留）。
+  //
+  // 条件式表存在性 + 列存在性双重检查照抄 v30–v37（前者防 v29 及更早的库裸 ALTER 把
+  // openDb 整个炸掉，后者保证幂等——db.test.ts 会把尾部迁移重放一遍）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('sub_retry_streak')) {
+      db.exec('ALTER TABLE files ADD COLUMN sub_retry_streak INTEGER NOT NULL DEFAULT 0')
     }
   },
 ]

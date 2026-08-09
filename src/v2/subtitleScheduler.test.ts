@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { openDb } from './db.js'
-import { runSubtitleWorkDir, buildSubtitleTask, listSubtitleQueue, type SubtitleQueueItem } from './subtitleScheduler.js'
+import {
+  runSubtitleWorkDir, buildSubtitleTask, listSubtitleQueue,
+  RETRY_LATER_STREAK_CAP, type SubtitleQueueItem,
+} from './subtitleScheduler.js'
 import { traceBus } from '../core/traceBus.js'
 
 function mkItem(): SubtitleQueueItem {
@@ -27,6 +30,9 @@ function needsOf(db: ReturnType<typeof openDb>, path: string): number | null {
 }
 function subAttemptOf(db: ReturnType<typeof openDb>, path: string): number {
   return (db.prepare('SELECT sub_attempt FROM files WHERE path = ?').get(path) as { sub_attempt: number }).sub_attempt
+}
+function retryStreakOf(db: ReturnType<typeof openDb>, path: string): number {
+  return (db.prepare('SELECT sub_retry_streak FROM files WHERE path = ?').get(path) as { sub_retry_streak: number }).sub_retry_streak
 }
 
 describe('runSubtitleWorkDir（死循环修复回写）', () => {
@@ -204,22 +210,174 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     expect(row2.last_error).toBe('sub:no-outcome')
   })
 
-  it('retry_later → sub_attempt+1 且退避到明天', async () => {
-    // 断言从 `attempt` 改到 `sub_attempt`（C7）：这不是把测试改松，是原来那一列**是错的**。
-    // `attempt` 被识别轨共用，identifyScheduler 在识别成功时把它归零
-    // （`UPDATE files SET work_id=?, attempt=0 ... WHERE work_dir=?`，实测：攒了 5 次字幕
-    // 失败的行跑一次识别成功后变 0）→ R10 的"满 7 次移交翻译"永远走不到。故 3-2 给字幕轨
-    // 建了独立的 sub_attempt。本用例守的行为（retry_later 要计数、要退避）一字未改。
+  it('🔴 retry_later → sub_attempt **不变**（源站没回答，不消耗内容判决额度），但退避照写', async () => {
+    // 改动前这条用例断言的是 `sub_attempt === 1`——它**编码的正是本 task 在修的 bug**，
+    // 不是被改松。第 5 步把 skill prompt 改对之后（撞 429/配额耗尽报 retry_later 而不是
+    // 误报 no_safe_match），下游仍把它当"一次真实尝试"记账，于是 prompt 改完 bug 依然在：
+    //
+    // `sub_attempt` 的语义是"**真实尝试过、确实找不到**的次数"——R10 的"满 7 次移交翻译"
+    // 整个建立在这个含义上。而 retry_later 是"**问都没问到**"：provider 限流/配额耗尽/
+    // 5xx/key 被拒时源站拒绝回答，它没有产生任何关于"这个字幕存不存在"的信息。
+    // 把它计入额度是语义错误，且有实案（Peacemaker）：撞限流 7 天 → 攒满 7 次 →
+    // 移交翻译流或判 unsolvable 停牌，而那个字幕一直在源站上。
+    //
+    // v1 轨早就是这个口径（findSubtitleWorkerTask.ts 的注释明写 retry_later 走
+    // "completeError 的短退避节流轨（R-10 豁免，永不 dormant）"），是新架构漏消费了这个区分。
     const worker = async () => ({
       installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [],
     })
     await runSubtitleWorkDir(db, worker as any, item, 'zh')
     const row = db.prepare('SELECT recheck_after, sub_attempt, attempt FROM files WHERE path = ?').get(item.files[0].path) as any
-    expect(row.sub_attempt).toBe(1)
+    expect(row.sub_attempt).toBe(0)
     // 顺带钉住**不许再碰**共用列：写它就会污染识别轨的退避阶梯（C7 的反方向伤害）。
     expect(row.attempt).toBe(0)
+    // 但必须退避——豁免的是"计数"，不是"出队"。不写退避就是 C26 的付费 LLM 热循环：
+    // 同一轮 while 下一圈重选同一个作品，撞着限流反复烧 session。
     expect(row.recheck_after).toBeGreaterThan(Date.now() + 20 * 60 * 60 * 1000)
     expect(row.recheck_after).toBeLessThan(Date.now() + 28 * 60 * 60 * 1000)
+  })
+
+  it('🔴 retry_later → 连续计数 +1（豁免的对价：它必须被记在**另一列**上）', async () => {
+    // 豁免不能是无条件的，故必须有一个独立的账本记"连续多少轮源站答不上"。
+    // 一列一主（C7 用实测证明过一列多主的后果）：这一列只服务"折算"这一件事。
+    const worker = async () => ({
+      installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [],
+    })
+    await runSubtitleWorkDir(db, worker as any, item, 'zh')
+    expect(retryStreakOf(db, item.files[0].path)).toBe(1)
+    await runSubtitleWorkDir(db, worker as any, item, 'zh')
+    expect(retryStreakOf(db, item.files[0].path)).toBe(2)
+    // 计数在涨，但额度一点没被吃
+    expect(subAttemptOf(db, item.files[0].path)).toBe(0)
+  })
+
+  it('🔴 连续计数达上限 → **折算一次** sub_attempt 且连续计数归零', async () => {
+    // 这是"无脑豁免"的解药：provider 永久挂掉（API key 失效、站点关站）的文件若纯豁免，
+    // 会永远攒不到 7 次、**永不进翻译流** —— 那是另一种永久卡死，只是换了个形状。
+    const worker = async () => ({
+      installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [],
+    })
+    const p = item.files[0].path
+    for (let i = 0; i < RETRY_LATER_STREAK_CAP; i++) await runSubtitleWorkDir(db, worker as any, item, 'zh')
+    expect(subAttemptOf(db, p)).toBe(1)
+    // 归零而不是留在上限值：不归零的话下一次 retry_later 立刻又满上限 → 折算退化成
+    // "每轮都折算一次" = 完全没有豁免，回到本 task 修的那个 bug。
+    expect(retryStreakOf(db, p)).toBe(0)
+    // 状态仍在字幕流里（折算只是记一笔额度，不是停牌）
+    expect(subStatusOf(db, p)).toBeNull()
+  })
+
+  it('🔴 no_safe_match 之后连续计数**归零**（源站已经能回答了）', async () => {
+    // "连续"是这一列的全部语义。任何一次源站真的回答了（不管答案是"有"还是"没有"），
+    // 之前那串"问不到"就不再连续 —— 不归零的话，几个月里零散撞过几次限流的文件会
+    // 慢慢攒到上限，然后凭一堆互不相关的瞬时故障折算出一次"真实尝试"，而它每次都被
+    // 正常回答过。那是把"偶发限流"误读成"provider 挂了"。
+    const p = item.files[0].path
+    const rl = async () => ({ installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [] })
+    await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    expect(retryStreakOf(db, p)).toBe(1)   // 前置条件成立，否则本用例是空转的假绿
+
+    const nm = async () => {
+      traceBus.publish({ runKey: 'job-subtitle:tmdb:95897', seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '[]', tookMs: 5, at: Date.now() })
+      return { installed: [], no_safe_match: [{ itemId: 'tmdb:95897/s1e1', reason: 'nothing' }], retry_later: [], hardsub_assumed: [] }
+    }
+    await runSubtitleWorkDir(db, nm as any, item, 'zh')
+    expect(retryStreakOf(db, p)).toBe(0)
+    expect(subAttemptOf(db, p)).toBe(1)    // 这一次是真实尝试，额度照吃
+  })
+
+  it('🔴 installed 之后连续计数**归零**（源站不但能回答，还给了字幕）', async () => {
+    // 装盘走的**不是** bump()（成功不是失败，3-2 定的），故归零必须在装盘那条路径上
+    // 单独写一遍。漏掉它的形态：一个"平时装盘成功、偶尔撞限流"的文件把 streak 一直
+    // 攒着，最终折算出凭空的失败额度。
+    const p = item.files[0].path
+    const rl = async () => ({ installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [] })
+    await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    expect(retryStreakOf(db, p)).toBe(1)   // 前置条件
+
+    const ok = async () => ({
+      installed: [{ itemId: 'tmdb:95897/s1e1', installedPath: '/media/TV/Overflow/Overflow - 01.zh-Hans.ass', installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })
+    await runSubtitleWorkDir(db, ok as any, item, 'zh')
+    expect(retryStreakOf(db, p)).toBe(0)
+    // 且装盘仍然不吃额度（3-2 的既有不变量，别被本次改动带坏）
+    expect(subAttemptOf(db, p)).toBe(0)
+  })
+
+  it('🔴 混合序列：retry_later ×(上限-1) → no_safe_match → retry_later ⇒ 连续计数是 1 而非上限', async () => {
+    // 防"归零没生效"：若归零那条漏了，最后一次 retry_later 会让计数直接顶到上限并折算，
+    // 于是断言 `=== 1` 会红。只断言"归零后是 0"是不够的——那测不出"归零后重新计数"这半边。
+    const p = item.files[0].path
+    const rl = async () => ({ installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [] })
+    const nm = async () => {
+      traceBus.publish({ runKey: 'job-subtitle:tmdb:95897', seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '[]', tookMs: 5, at: Date.now() })
+      return { installed: [], no_safe_match: [{ itemId: 'tmdb:95897/s1e1', reason: 'nothing' }], retry_later: [], hardsub_assumed: [] }
+    }
+    for (let i = 0; i < RETRY_LATER_STREAK_CAP - 1; i++) await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    expect(retryStreakOf(db, p)).toBe(RETRY_LATER_STREAK_CAP - 1)  // 前置条件
+    await runSubtitleWorkDir(db, nm as any, item, 'zh')
+    await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    expect(retryStreakOf(db, p)).toBe(1)
+    // 额度只被 no_safe_match 那一次吃掉
+    expect(subAttemptOf(db, p)).toBe(1)
+  })
+
+  it('🔴🔴 撞限流 7 天**不会**导致停牌（本 bug 的红线，端到端）', async () => {
+    // Peacemaker 那个案子的形状：agent 每天都正确报 retry_later（源站限流），
+    // 而 scheduler 每天记一笔"真实尝试" → 第 7 天 sub_attempt=7 → translatable=1 就移交
+    // 翻译流、=0 就判 unsolvable 停牌，**而那个字幕一直在源站上**。
+    // translatable 显式设为 1：若留 NULL，C40 的"不判死"会独立地让 sub_status 保持 NULL，
+    // 本用例就变成一条测不出任何东西的假绿（分不清是豁免生效还是 C40 兜住了）。
+    const p = item.files[0].path
+    db.prepare('UPDATE files SET translatable = 1 WHERE path = ?').run(p)
+    const rl = async () => ({ installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'rate limited (429)' }], hardsub_assumed: [] })
+    for (let i = 0; i < 7; i++) await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    expect(subStatusOf(db, p)).toBeNull()
+    // 7 天限流最多折算出 floor(7/上限) 次额度，离 7 次还远
+    expect(subAttemptOf(db, p)).toBeLessThan(7)
+  })
+
+  it('🔴🔴 长期挂掉的 provider 最终**仍会**移交（防无脑豁免造成的另一种永久卡死）', async () => {
+    // 这一条与上一条是同一枚硬币的两面，必须成对存在：
+    // 上一条防"限流被当成找不到"，这一条防"provider 永久挂掉的文件永不进翻译流"。
+    // API key 永久失效 / 站点关站的文件若纯豁免，sub_attempt 恒为 0 → R10 的移交
+    // 永远走不到 → 它永远躺在字幕工作台里每天烧一次 session，UI 上毫无异常。
+    const p = item.files[0].path
+    db.prepare('UPDATE files SET translatable = 1 WHERE path = ?').run(p)
+    const rl = async () => ({ installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'auth rejected' }], hardsub_assumed: [] })
+    // 满 7 次额度需要 7 × 上限 轮（每轮 = 一天巡检）
+    for (let i = 0; i < 7 * RETRY_LATER_STREAK_CAP; i++) await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    expect(subAttemptOf(db, p)).toBe(7)
+    expect(subStatusOf(db, p)).toBe('handoff_translate')
+  })
+
+  it('🔴 折算那一轮撞上 >=7 → 与真实失败同样按 translatable 分流（同一条 UPDATE / C40）', async () => {
+    // 折算路径若绕开分流（比如"折算只加计数、分流留给下一轮"），进程在两轮之间被杀
+    // （软路由掉电是本项目常态）就留下"计数已到 7、状态还是 NULL"的行，白吃一次额度。
+    const p = item.files[0].path
+    db.prepare('UPDATE files SET sub_attempt = 6, translatable = 0, sub_retry_streak = ? WHERE path = ?')
+      .run(RETRY_LATER_STREAK_CAP - 1, p)
+    const rl = async () => ({ installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [] })
+    await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    expect(subAttemptOf(db, p)).toBe(7)
+    expect(subStatusOf(db, p)).toBe('unsolvable')
+    expect(retryStreakOf(db, p)).toBe(0)
+    // 停牌写 +7 天（供阶段 2.6 复查闸取件 / D13），不是失败轨的"明天"
+    const row = db.prepare('SELECT recheck_after FROM files WHERE path = ?').get(p) as any
+    expect(row.recheck_after).toBeGreaterThan(Date.now() + 6.5 * 24 * 60 * 60 * 1000)
+  })
+
+  it('🔴 retry_later 的 last_error 仍带 sub: 前缀（跨轨串味防线不许因新分支丢掉）', async () => {
+    // last_error 是识别轨与字幕轨的共用列，identifyScheduler 靠 `!= 'tmdb-404'` 把 404 目录
+    // 永久排除。新开的这条豁免分支是一条**全新的 UPDATE 语句**，前缀极易在这里漏掉。
+    const p = item.files[0].path
+    db.prepare("UPDATE files SET last_error = 'tmdb-404' WHERE path = ?").run(p)
+    const rl = async () => ({ installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [] })
+    await runSubtitleWorkDir(db, rl as any, item, 'zh')
+    const after = (db.prepare('SELECT last_error FROM files WHERE path = ?').get(p) as any).last_error
+    expect(after).not.toBe('tmdb-404')
+    expect(after).toMatch(/^sub:/)
   })
 
   it('🔴 B-1：run 前 snapshot 清缓冲——第二次 run 的旧事件不污染', async () => {
