@@ -54,9 +54,11 @@ export async function resolveTranslateSource(args: {
   }
 
   if (isJa(origin)) {
-    // 源语言优先(单跳首选):ja 内嵌 → jimaku/外源 ja。都没有 → 退而求其次 eng(用户裁决
-    // 2026-07-24:fallback 设计=尽量源语言,jimaku 确实没有就 eng 兜底,context 补信息熵;
-    // 总好过留空缺)。eng 兜底时 sourceRef 前缀 'fallback:' 明示,供 runs/审计区分。
+    // 单跳只走源语言:ja 内嵌轨 → jimaku/外源 ja。两条都空就停牌,**故意不回退英轨**。
+    // 这里曾有一段 eng 兜底(2026-07-24 裁决:"jimaku 没有就 eng 兜底,context 补信息熵,总好过留空缺"),
+    // 2026-08-08 用户重新拍板废止(R18,R13 胜出):JP→EN→CN 是悄悄降质却假装成功,
+    // 而 no-source 是诚实的"暂时无能为力"——界面停牌可被看见、可被后续补源救回,
+    // 二次转译的产物却会以 covered 姿态永久占位。所以此处的空白是设计,不是漏写。
     const jaIdx = tracks.findIndex((t) => !t.isImageBased && isJaTrack(t))
     if (jaIdx >= 0) {
       const srt = await args.deps.extract(args.videoPath, jaIdx)
@@ -69,34 +71,30 @@ export async function resolveTranslateSource(args: {
         return { status: 'ok', srtText: fetched.srtText, sourceRef: fetched.sourceRef, sourceLangName: '日文' }
       }
     }
-    const enIdx = tracks.findIndex((t) => !t.isImageBased && isEnTrack(t))
-    if (enIdx >= 0) {
-      const srt = await args.deps.extract(args.videoPath, enIdx)
-      if (srt == null) return { status: 'extract-failed', reason: 'eng fallback embedded extract failed' }
-      return { status: 'ok', srtText: srt, sourceRef: `fallback:embedded:s:${enIdx}`, sourceLangName: '英文' }
-    }
     return {
       status: 'no-source',
-      reason: 'origin_lang=ja: no Japanese source (jimaku/embedded ja) and no English fallback track either',
+      reason: 'origin_lang=ja: no Japanese source (embedded ja track or jimaku fetch) — single-hop only, English relay is forbidden',
     }
   }
 
-  if (isEn(origin) || origin === '') {
-    // origin 空(库未刮到 original_language):有 en 内嵌轨时按 en 处理(legacy 行为);
-    // 有 ja 内嵌轨而 origin 空则仍走 no-source——单跳不许把日片英译,也不许英片日译的反向臆断。
-    if (origin === '' && !tracks.some((t) => !t.isImageBased && isEnTrack(t))) {
-      return {
-        status: 'no-source',
-        reason: 'origin_lang unknown and no English embedded track — cannot pick a single-hop source language honestly',
-      }
+  if (origin === '') {
+    // TMDB 未刮到 original_language。空值 ≠ 英语:此时片子的语言**完全未经证实**,
+    // 而单跳翻译的正确性完全押在"源语言判断没错"上。有英文内嵌轨也不足以证明对白是英语
+    // (日漫/欧洲片普遍自带英轨)。宁可停牌等 identify 补上语言,也不拿臆断去开翻。
+    return {
+      status: 'no-source',
+      reason: 'origin_lang unknown — cannot pick a single-hop source language honestly',
     }
+  }
+
+  if (isEn(origin)) {
     const enIdx = tracks.findIndex((t) => !t.isImageBased && isEnTrack(t))
     if (enIdx >= 0) {
       const srt = await args.deps.extract(args.videoPath, enIdx)
       if (srt == null) return { status: 'extract-failed', reason: 'eng embedded extract failed' }
       return { status: 'ok', srtText: srt, sourceRef: `embedded:s:${enIdx}`, sourceLangName: '英文' }
     }
-    if (args.deps.fetchSourceSub && isEn(origin)) {
+    if (args.deps.fetchSourceSub) {
       const fetched = await args.deps.fetchSourceSub(args.videoPath)
       if (fetched) {
         return { status: 'ok', srtText: fetched.srtText, sourceRef: fetched.sourceRef, sourceLangName: '英文' }

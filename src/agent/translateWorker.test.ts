@@ -98,7 +98,13 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
     expect(readFileSync(join(jobRoot, 'work', 'summary.md'), 'utf8')).toContain('道别')
   })
 
-  it('ja origin with only eng embedded: resolve_source → fallback eng → 正常走翻译车道', async () => {
+  // 这条**不走真 resolver**（MockLanguageModel 直接喂 finalize），验的是"管道把模型
+  // finalize 的 sourceRef 原样透传"——取什么值对被测逻辑毫无影响。
+  // 原标题写的是 "ja origin with only eng embedded → fallback eng"，而 R18（2026-08-08）
+  // 已废止 eng 兜底、resolver 不再返回 `fallback:`。留着那个标题会让后人以为兜底还在
+  // 且有测试覆盖（真正的红线在 resolveSource.test.ts 与 translateWorker.tools.test.ts）。
+  // 故标题与取值都改成中性的，不再假装描述一个已被禁止的场景。
+  it('管道原样透传模型 finalize 的 sourceRef（不解释、不校验其语义）', async () => {
     mkdirSync(join(root, 'Show'), { recursive: true })
     writeFileSync(baseTask().videoPath, 'video-bytes')
     const steps = [
@@ -111,7 +117,7 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
       toolCallResult('c7', 'install_sidecar', {}),
       finalizeResult({
         status: 'installed', reason: null,
-        sourceRef: 'fallback:embedded:s:0', sidecarPath: baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'),
+        sourceRef: 'embedded:s:1', sidecarPath: baseTask().videoPath.replace(/\.mkv$/, '.zh-Hans.srt'),
       }),
     ]
     let call = 0
@@ -119,7 +125,7 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
     const run = makeTranslateWorker(baseDeps(model))
     const report = await run(baseTask({ originLang: 'ja' }))
     expect(report.status).toBe('installed')
-    expect(report.sourceRef).toMatch(/^fallback:embedded/)
+    expect(report.sourceRef).toBe('embedded:s:1')
   })
 
   it('gate fail → model finalizes held; nothing installed', async () => {

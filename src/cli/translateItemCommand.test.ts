@@ -137,7 +137,7 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
       agentRunner: (() => {
         return async (task: Record<string, unknown>) => {
           seenTask = task
-          return { status: 'installed', reason: null, sourceRef: 'fallback:embedded:s:0', sidecarPath: '/media/tv/ww/e02.zh-Hans.srt', llmCalls: 9 } as never
+          return { status: 'installed', reason: null, sourceRef: 'embedded:s:1', sidecarPath: '/media/tv/ww/e02.zh-Hans.srt', llmCalls: 9 } as never
         }
       })() as never,
     })
@@ -147,7 +147,7 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
       mediaRoot: '/media/tv/ww', stagingRoot: '/media/tv',
     })
     expect(r).toMatchObject({
-      status: 'installed', sourceRef: 'fallback:embedded:s:0',
+      status: 'installed', sourceRef: 'embedded:s:1',
       sidecarPath: '/media/tv/ww/e02.zh-Hans.srt', llmCalls: 9,
     })
     expect(r.reason).toBeUndefined() // null → undefined 归一化

@@ -77,13 +77,16 @@ describe('translate workspace tools', () => {
     expect(readdirSync(paths.jobRoot).filter(n => n.includes('.tmp'))).toEqual([])
   })
 
-  it('resolve_source: ja origin with only eng embedded → fallback eng, canonical written', async () => {
+  // R18(2026-08-08 废止 2026-07-24 的 eng 兜底裁决):这条原先断言"ja + 只有 eng 轨 → fallback eng
+  // + canonical 已写"。现在改为断言反面,并且**canonical 必须没被写出来**——只查 status 会漏掉
+  // "先落了一份英文 canonical 再返回 no-source"这种留垃圾的实现。
+  it('R18: ja origin with only eng embedded → no-source, canonical NOT written', async () => {
     task.originLang = 'ja'
     const tools = makeTranslateWorkspaceTools(baseDeps())
     const r = await call(tools.resolve_source)
-    expect(r.status).toBe('ok')
-    expect(r.sourceRef).toMatch(/^fallback:embedded/)
-    expect(existsSync(paths.canonicalSourcePath)).toBe(true)
+    expect(r.status).toBe('no-source')
+    expect(String(r.reason)).not.toMatch(/fallback|兜底/i)
+    expect(existsSync(paths.canonicalSourcePath)).toBe(false)
   })
 
   it('read_workspace_doc rejects path escape outside jobRoot', async () => {

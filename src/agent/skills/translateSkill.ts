@@ -34,11 +34,11 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
    the full repair loop at step 7.
 1. **Source-language → Chinese single-hop only.** Never JP→EN→CN relay.
 2. If \`origin_lang\` is Japanese (\`ja\`/\`jpn\`): **source language first** — embedded ja or
-   jimaku. Only when NO Japanese source exists does the resolver fall back to an English track
-   (marked \`fallback:\` in sourceRef). That fallback is a deliberate gap-filler: compensate by
-   leaning HARD on the same-series Chinese-subs context for terms, tone, and relationships —
-   English carries less information than the original Japanese, so context is what keeps the
-   Chinese from tasting flat. Never relay THROUGH English when a Japanese source exists.
+   jimaku. When NO Japanese source exists, the resolver returns \`no-source\` — finalize it.
+   English relay is **forbidden** (R18, 2026-08-08): a relayed draft ships as \`covered\` and
+   permanently occupies the slot, while an honest stall stays visible and gets retried weekly.
+   Do not attempt to read an English track yourself, and do not treat \`no-source\` as a tool
+   malfunction to retry around — it is the terminal answer for this file.
 3. If no valid source exists → finalize \`no-source\`. Honest failure beats a wrong-language draft.
 4. **No Brave Search, no generic web_search, no SaaS search tools.** This environment
    deliberately binds your hands: use TMDB + same-series existing Chinese subs + (when wired)
