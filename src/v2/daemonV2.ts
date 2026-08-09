@@ -21,6 +21,7 @@ import { langOf } from '../agent/languages.js'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, basename } from 'node:path'
 import { isDirWritable } from '../core/mediaContext.js'
+import { SettingsRepo } from './settingsRepo.js'
 
 export const INSPECT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -36,6 +37,12 @@ export interface DaemonV2Deps {
   /** 测试注入：距上次巡检满这个时间才算到点。默认 INSPECT_INTERVAL_MS。 */
   inspectEveryMs?: number
   now?: () => number
+  /** 测试注入：遍历一个守备目录。默认 walkVideoFiles。
+   *  抽成注入点是删除逻辑的刚性需求——R8 的两种"不许删"场景（目录不可访问 / 目录看起来是空的）
+   *  在真实文件系统上无法稳定复现，而这两条正是"一次删光全库"的唯一防线。 */
+  listVideoFiles?: (root: string) => string[]
+  /** 测试注入：stat 一个文件。默认 statSync；返回 null 视为不可 stat。 */
+  statFile?: (p: string) => { mtimeMs: number; size: number } | null
 }
 
 export class ScoutDaemonV2 {
@@ -162,16 +169,38 @@ export class ScoutDaemonV2 {
         parse_confidence=excluded.parse_confidence, updated_at=excluded.updated_at
     `)
     const findExisting = db.prepare('SELECT mtime, size FROM files WHERE path = ?')
+    const walk = this.deps.listVideoFiles ?? walkVideoFiles
+    const stat = this.deps.statFile ?? ((p: string) => { try { return statSync(p) } catch { return null } })
     let scanned = 0, upserted = 0, skipped = 0
 
+    // D20：删除前先算一次嵌套关系，凡出现在任何一对里的根（**内外层都算**）整轮跳过删除。
+    // 为什么不能靠告警了事：第 1a 步的 detectNestedRoots 只告警、不擅自改用户配置（守备目录
+    // 是用户的意图），所以不能假设"用户看了告警会去修"。真实剧本（C29）：/media 与 /media/115
+    // 并存，115 的 rclone FUSE 掉线 → /media 的 walk 照样成功（它自己不空）→ 115 下的 files 行
+    // 落进 /media 的差集被当成"消失的文件"全删。这正是 R8 要防的灾难的实现版。
+    const nestedRoots = this.nestedRootSet()
+
     for (const root of this.deps.roots) {
-      const files = walkVideoFiles(root)
+      // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
+      // 拿它做差集就是删库，故整根跳过删除；upsert 也无从做（一个文件都没拿到）。
+      let files: string[]
+      try {
+        files = walk(root)
+      } catch (e) {
+        this.deps.log(`scan: 守备目录不可访问，跳过删除（R8 挂载保护）: ${root}: ${String(e)}`)
+        continue
+      }
+
+      const seen = new Set<string>()
       for (const f of files) {
         scanned++
-        let st
-        try { st = statSync(f) } catch { skipped++; continue }
+        const st = stat(f)
+        if (!st) { skipped++; continue }
         const sc = isScannable(f, st.size)
         if (!sc.ok) { skipped++; continue }
+        // seen 只收**入库口径**的路径（过了 isScannable 这道门），否则差集会把
+        // "扫到了但按规矩不入库"的文件当成"库里该有的行"，两边口径不一致。
+        seen.add(f)
         const existing = findExisting.get(f) as { mtime: number; size: number } | undefined
         if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
         const row = toMediaFileRow(f, st, this.deps.roots)
@@ -179,9 +208,97 @@ export class ScoutDaemonV2 {
           row.workDir, row.season, row.episode, row.parseConfidence, Date.now())
         upserted++
       }
+
+      // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录**不报错、
+      // 只是看起来是空的**——这是最阴的形态，无脑差集就是一次删光该根全库。
+      // "空" 判据用 seen.size 而非 files.length：全部文件都被 isScannable 挡掉（比如整根都是
+      // 探针残留小文件）同样意味着"没有可信的入库口径快照"，一样不该删。
+      if (seen.size === 0) {
+        this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除（R8 挂载保护）: ${root}`)
+        continue
+      }
+
+      if (nestedRoots.has(root)) {
+        // 打日志是硬要求：不说原因的话运维只会看到"删除逻辑坏了"，无从排查。
+        this.deps.log(`scan: 守备目录处于嵌套关系中，跳过删除（D20 / C29）: ${root}`)
+        continue
+      }
+
+      this.deleteMissing(root, seen)
     }
     if (upserted > 0) {
       this.deps.log(`scan: scanned=${scanned} upserted=${upserted} skipped=${skipped}`)
+    }
+  }
+
+  /** 出现在任何一对嵌套关系里的守备目录（内层外层都算）——D20 的跳过名单。
+   *
+   *  判据取 media_roots **表**（复用 settingsRepo.detectNestedRoots 这一份既有实现，不重写
+   *  第二份），而不是 deps.roots——两者会漂移：watchV2 启动时读表读一次就再不刷新，运行期
+   *  用户在 dashboard 里加根不会反映到进程内快照。
+   *
+   *  漂移方向决定了为什么防线 3 必须独立存在：表里已成嵌套但 deps.roots 还没看见时，防线 2
+   *  会照实跳过（安全）；反之 deps.roots 里有嵌套而表里还没落库时，防线 2 静默失效——此时
+   *  唯一顶住的就是 deleteMissing 里的"排除更深根前缀"（D21）。两条防线保护的对象也不同：
+   *  防线 3 救的是**内层根**名下的行（被外层的差集吃掉），防线 2 额外救的是**外层根**名下
+   *  那些确实没扫到的行——那些行前缀上就归外层管，防线 3 帮不上，只能整根不删。
+   *
+   *  表读不到（旧库无 media_roots / 测试用裸库）时返回空集：宁可让防线 3 单独顶，也不能因为
+   *  读表抛错就让整轮扫描挂掉。 */
+  private nestedRootSet(): Set<string> {
+    const out = new Set<string>()
+    try {
+      for (const pair of new SettingsRepo(this.deps.db).detectNestedRoots()) {
+        out.add(pair.root)     // 外层
+        out.add(pair.nested)   // 内层——两边都算，内层的行会被外层的差集吃掉，外层自己也不可信
+      }
+    } catch { /* 无表/读失败：交给防线 3，不阻断扫描 */ }
+    return out
+  }
+
+  /** 差集删除：库中归 root 管的行里，本轮没扫到的那些（R7 直接删，历史不留）。
+   *
+   *  D1 逐根比对，**不做全局补集**——把所有根扫到的路径并成一个大集合再删补集的话，
+   *  "这个根根本没扫到（挂载掉线）"与"这个根扫到了但是空的"不可区分，R8 保护形同虚设。
+   *
+   *  D21（'/' 防护）："归 root 管的行" = 在 root 前缀下、且**不在任何更深守备目录前缀下**。
+   *  若 '/' 是守备目录，裸前缀条件 `substr(path,1,1)='/'` 对每一条绝对路径都为真 → '/' 的
+   *  差集覆盖全库，把仍然有效的 /media/tv 名下的行一起清光。removeRoot 侧已在审校 F8 修过
+   *  同一漏洞面，但那是"删一个根时的自我限界"、这里是"查库中归这个根管的行"，两条独立代码
+   *  路径不会自动继承，故必须独立再修一次。
+   *  正常（无嵌套）配置下 deeperPrefixes 为空，退化成纯前缀匹配。
+   *
+   *  前缀比较用 `substr(path,1,length(?)) = ?` 而不是 LIKE：媒体路径可以合法含 % 和 _
+   *  （"100% Pascal-sensei"、"Look_Back"），LIKE 会把这些字面字符当通配符展开 → 兄弟目录
+   *  的行被卷进别人的差集误删。substr 定长字面量比较没有这个陷阱（沿用 removeRoot 的论证）。
+   *  root 后补 '/' 是避免 "/media/tv" 前缀吃到兄弟目录 "/media/tv2"。 */
+  private deleteMissing(root: string, seen: Set<string>): void {
+    const db = this.deps.db
+    const prefix = root.endsWith('/') ? root : `${root}/`
+    const deeperPrefixes = this.deps.roots
+      .filter((r) => r !== root)
+      .map((r) => (r.endsWith('/') ? r : `${r}/`))
+      .filter((p) => p !== prefix && p.startsWith(prefix))
+    const scopeSql = `substr(path,1,length(?)) = ?`
+      + deeperPrefixes.map(() => ' AND substr(path,1,length(?)) != ?').join('')
+    const scopeArgs: string[] = [prefix, prefix, ...deeperPrefixes.flatMap((p) => [p, p])]
+
+    // 事务包住"读该根名下的行 → 逐条删"（照 removeRoot 的 transaction().immediate() 手法）：
+    // 中途崩溃留下半删状态的库，比不删更糟——库不再是任何一个时刻的磁盘快照。
+    const tx = db.transaction((): number => {
+      const rows = db.prepare(`SELECT path FROM files WHERE ${scopeSql}`).all(...scopeArgs) as { path: string }[]
+      const del = db.prepare('DELETE FROM files WHERE path = ?')
+      let deleted = 0
+      for (const r of rows) {
+        if (seen.has(r.path)) continue
+        del.run(r.path)
+        deleted++
+      }
+      return deleted
+    })
+    const deleted = tx.immediate()
+    if (deleted > 0) {
+      this.deps.log(`scan: 删除磁盘上已消失的文件 ${deleted} 行（R7）: ${root}`)
     }
   }
 
