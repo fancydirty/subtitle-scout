@@ -14,6 +14,11 @@ function mkDeps(db: ReturnType<typeof openDb>, overrides: TestDeps = {}) {
     identify: { db, runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }), worker: { model: {} as any, tmdb: { search: async () => [], getDetails: async () => null } as any } },
     subtitleWorker: async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }),
     targetLanguage: 'zh',
+    // 探针默认注入 null（"探测不可用"）：沿用 IngestDeps.probe/probeDuration 的既有测试约定
+    // ——测试永远注入固定值，**从不真的 spawn ffprobe**（否则测试快慢取决于 ffprobe-static
+    // 装没装上，且会在扫描用例里意外产生真实进程）。
+    probe: async () => null,
+    probeDuration: async () => null,
     log: () => {},
     inspectEveryMs: 24 * 60 * 60 * 1000,
     now: () => 1_000_000_000_000,
@@ -409,6 +414,309 @@ describe('ScoutDaemonV2.scanOnce · LIKE 陷阱：路径含 % 与 _', () => {
     }))
     await scan(daemon)
     expect(pathsInDb(db)).toEqual(['/media/Plain/E01.mkv'])
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第 1b 步（续）：指纹变化状态重置（C11）+ embedded_langs 写入（C12）
+//
+// C11 的血案：用户把某集 720p 换成 1080p（**同路径、不同文件**）。旧的
+// `ON CONFLICT DO UPDATE SET` 只覆盖 dir/filename/size/mtime/... 这批机械事实，
+// 状态列（sub_status='covered' 等）原封不动残留 → 新文件明明没字幕，系统认为已覆盖，
+// 永不补。这直接违背 R6"磁盘是真源，数据库是投影"。
+//
+// C12 的血案（本仓第三次栽在"写了某列却没人写/没人读"这一模式上，见 D17）：
+// files.embedded_langs 全仓无人写入 → 永远 NULL → judge 规则 2（"已有内嵌中文轨 → 跳过"）
+// 在新架构下**静默失效**，本该跳过的片子被送进字幕流白找一圈付费 LLM；D9 的 translatable
+// 预判（日漫有日文内嵌轨时可翻译）同样失去前提，会误判死一批能救的片子。
+//
+// 这批用例的重点有三处咬合：
+//   ① 逐列断言，不是只断言一列——C11 的六列各自对应一条独立的卡死通路，漏一列就是漏一个洞
+//   ② 指纹**未变**时状态列必须原封不动（防"每轮巡检清空全库状态"这个过度清空的反向灾难）
+//   ③ 指纹未变时**不许调 probe**（性能红线：115 网盘是 rclone FUSE 挂载，ffprobe 12-16s/文件）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** C11 关心的状态列 + judge/字幕流读它们的凭据。逐列取出来做断言，不做整行 toEqual
+ *  ——整行断言会把 size/mtime/updated_at 这些**本来就该变**的机械列混进来，一变就红，
+ *  于是维护者只会把断言改松，最后退化成"只断言 path"那种骗人的测试。
+ *
+ *  列集合按 schema 实际有的列取（`sub_attempt` / `translatable` 归 spec 第 3 步加，本步的库里
+ *  还没有）——测试与实现共用同一条"按实际列取"的口径，否则第 3 步加完列，这里会静默漏测。 */
+function stateOf(db: ReturnType<typeof openDb>, path: string): Record<string, unknown> {
+  const have = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
+  const cols = ['work_id', 'needs_subtitle', 'sub_status', 'sub_attempt', 'translatable',
+    'recheck_after', 'embedded_langs', 'duration_sec'].filter(c => have.has(c))
+  return db.prepare(`SELECT ${cols.join(', ')} FROM files WHERE path = ?`).get(path) as Record<string, unknown>
+}
+
+/** 造一行"已经走完全流程"的 files 行：识别过、判过、字幕覆盖过、探测过。
+ *  换片源的伤害只有在这种"状态最满"的行上才看得见——空行没有可残留的东西。
+ *  `sub_attempt`/`translatable` 只在库里真有这两列时才播种（第 3 步之后）。 */
+function seedSettledFile(
+  db: ReturnType<typeof openDb>,
+  path: string,
+  over: Partial<{ mtime: number; size: number; sub_status: string | null; needs_subtitle: number | null }> = {},
+): void {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  const have = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
+  const row: Record<string, unknown> = {
+    path, dir, filename: path.slice(path.lastIndexOf('/') + 1),
+    size: over.size ?? BIG, mtime: over.mtime ?? 1000, work_dir: dir, work_id: 'tmdb:42',
+    needs_subtitle: over.needs_subtitle === undefined ? 1 : over.needs_subtitle,
+    sub_status: over.sub_status === undefined ? 'covered' : over.sub_status,
+    recheck_after: 9_999_999_999, embedded_langs: '["chi","eng"]', duration_sec: 1440, updated_at: 1000,
+  }
+  if (have.has('sub_attempt')) row.sub_attempt = 3
+  if (have.has('translatable')) row.translatable = 1
+  const cols = Object.keys(row)
+  db.prepare(`INSERT INTO files (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`)
+    .run(...cols.map(c => row[c]))
+}
+
+/** 磁盘建模 + 可数的探针。每个探针都记一次调用，用于"未变化的文件绝不 probe"的红线断言。 */
+function fakeFsWithProbe(
+  disk: Record<string, string[] | 'EIO'>,
+  stats: Record<string, { mtimeMs: number; size: number }>,
+  probeImpl?: (p: string) => Promise<Array<{ lang: string | null; codec: string | null; isImageBased: boolean }> | null>,
+  durationImpl?: (p: string) => Promise<number | null>,
+) {
+  const probeCalls: string[] = []
+  const durationCalls: string[] = []
+  return {
+    probeCalls,
+    durationCalls,
+    deps: {
+      listVideoFiles: (root: string) => {
+        const v = disk[root]
+        if (v === 'EIO') throw new Error(`ENOENT: mount gone ${root}`)
+        return v ?? []
+      },
+      statFile: (p: string) => stats[p] ?? { mtimeMs: 1000, size: BIG },
+      probe: async (p: string) => {
+        probeCalls.push(p)
+        return probeImpl ? await probeImpl(p) : [{ lang: 'jpn', codec: 'subrip', isImageBased: false }]
+      },
+      probeDuration: async (p: string) => {
+        durationCalls.push(p)
+        return durationImpl ? await durationImpl(p) : 1500
+      },
+    },
+  }
+}
+
+describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
+  const P = '/media/Show/E01.mkv'
+
+  it('mtime 变化（换片源）→ 状态列被逐列清空，work_id 保留', async () => {
+    const db = openDb(':memory:')
+    seedSettledFile(db, P, { mtime: 1000 })
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 5000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    const s = stateOf(db, P)
+    // 逐列断言：这几列各自是一条独立的卡死通路。
+    //  · sub_status='covered' 残留 → 字幕流谓词 `sub_status IS NULL` 永远看不见它 → 永不补字幕
+    //  · needs_subtitle=1/0 残留 → judge 谓词 `needs_subtitle IS NULL` 永不重判（C11 与 D17 同型：
+    //    我们下一行就把 embedded_langs 清成 NULL 了，清掉证据却留着据此做出的判决 = 判决永久冻结。
+    //    真实伤害：旧 720p 自带中文内嵌轨 → needs_subtitle=0；换成无中文轨的 1080p 后仍是 0 → 永不补）
+    //  · sub_attempt=3 残留 → 新片源自带 3 次失败额度，4 次就进停牌（本该有 7 次）
+    //  · recheck_after 残留 → 未来时刻的退避把新文件挡在字幕工作台外
+    //  · embedded_langs/duration_sec 残留 → 描述的是**上一个文件**的内容，是纯错误事实
+    expect(s.sub_status).toBeNull()
+    expect(s.needs_subtitle).toBeNull()
+    expect(s.recheck_after).toBeNull()
+    // work_id 保留（C11 明写"同路径通常仍是同作品"）：换片源不改身份，清了就是白烧一轮识别 LLM
+    expect(s.work_id).toBe('tmdb:42')
+    // 机械事实照常更新
+    expect(db.prepare('SELECT mtime FROM files WHERE path = ?').get(P)).toEqual({ mtime: 5000 })
+    db.close()
+  })
+
+  it('size 变化（同 mtime，改封装/重灌）→ 状态列同样被清空', async () => {
+    const db = openDb(':memory:')
+    seedSettledFile(db, P, { mtime: 1000, size: BIG })
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG * 2 } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    const s = stateOf(db, P)
+    expect(s.sub_status).toBeNull()
+    expect(s.needs_subtitle).toBeNull()
+    expect(s.recheck_after).toBeNull()
+    expect(s.work_id).toBe('tmdb:42')
+    db.close()
+  })
+
+  it('sub_attempt / translatable 列一旦存在（spec 第 3 步加列后）也必须被清', async () => {
+    const db = openDb(':memory:')
+    // 这两列归 spec 第 3 步加，本步的 schema 里还没有。但清空名单若按"今天有哪些列"硬编码，
+    // 第 3 步加完列的那天就会**静默漏清**——本仓已经三次栽在"写了某列却没人写/没人读"
+    // （C12 → C35 → D17）。故实现按 PRAGMA 实际列取交集，这条用例用手工 ALTER 预演第 3 步的
+    // schema，把"未来加的列会自动被清"这件事钉住，不留给下一个 task 去发现。
+    db.exec('ALTER TABLE files ADD COLUMN sub_attempt INTEGER NOT NULL DEFAULT 0')
+    db.exec('ALTER TABLE files ADD COLUMN translatable INTEGER')
+    seedSettledFile(db, P, { mtime: 1000 })
+    expect(stateOf(db, P).sub_attempt).toBe(3)   // 前置条件成立，否则下面断言无意义
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 5000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    const s = stateOf(db, P)
+    // sub_attempt 残留 → 新片源自带 3 次失败额度，4 次就进停牌（本该有 7 次）
+    expect(s.sub_attempt).toBe(0)
+    // translatable 残留 → D9 的可救性判决是基于**上一个文件**的内嵌轨算出来的，
+    // 而我们刚把 embedded_langs 清成 NULL：清掉证据留下判决 = 判决永久冻结（D17 同型）
+    expect(s.translatable).toBeNull()
+    db.close()
+  })
+
+  it('指纹未变 → 状态列一列不动（防"每轮巡检清空全库状态"的反向灾难）', async () => {
+    const db = openDb(':memory:')
+    seedSettledFile(db, P, { mtime: 1000, size: BIG })
+    const before = stateOf(db, P)
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    await scan(daemon)   // 跑两遍：过度清空往往只在第二轮才露出来
+    expect(stateOf(db, P)).toEqual(before)
+    db.close()
+  })
+
+  it('指纹未变 → 一次 probe 都不许调（性能红线：115 是 rclone FUSE，ffprobe 12-16s/文件）', async () => {
+    const db = openDb(':memory:')
+    seedSettledFile(db, P, { mtime: 1000, size: BIG })
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    await scan(daemon)
+    // 用调用次数而非"结果没变"断言：结果相同可能只是探针恰好返回了同样的值，
+    // 掩盖"每轮对全库重探一遍"这个真实成本（生产上是几万文件 × 12s）。
+    expect(fs.probeCalls).toEqual([])
+    expect(fs.durationCalls).toEqual([])
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2.scanOnce · C12 embedded_langs / duration_sec 写入', () => {
+  const P = '/media/Show/E01.mkv'
+
+  it('新增文件 → probe 被调用，embedded_langs + duration_sec 落库', async () => {
+    const db = openDb(':memory:')
+    const fs = fakeFsWithProbe({ '/media': [P] }, {},
+      async () => [
+        { lang: 'jpn', codec: 'subrip', isImageBased: false },
+        { lang: 'eng', codec: 'subrip', isImageBased: false },
+      ],
+      async () => 1423)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    expect(fs.probeCalls).toEqual([P])
+    const s = stateOf(db, P)
+    // 原始 ffprobe tag 原样存（不归一化）——与 streamProbe.ts 的契约、
+    // 与 episodes/movies.embedded_langs 的既有口径一致，归一是消费方 langOf 的事。
+    expect(JSON.parse(s.embedded_langs as string)).toEqual(['jpn', 'eng'])
+    expect(s.duration_sec).toBe(1423)
+    db.close()
+  })
+
+  it('图形字幕轨（PGS）与无语言标签的轨被剔除——位图叠加不算"已有可读字幕"', async () => {
+    const db = openDb(':memory:')
+    const fs = fakeFsWithProbe({ '/media': [P] }, {},
+      async () => [
+        { lang: 'chi', codec: 'hdmv_pgs_subtitle', isImageBased: true },  // 位图，无法当文本用
+        { lang: null, codec: 'subrip', isImageBased: false },             // 无 tag，无从判语言
+        { lang: 'eng', codec: 'subrip', isImageBased: false },
+      ])
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    // 若不剔除 PGS：judge 规则 2 会把这行判成"已有内嵌中字 → needs_subtitle=0"，
+    // 而用户实际看到的是一条没法读的位图轨——本该找字幕的片子被永久跳过。
+    // 口径复用 ingest.ts 的 usableEmbeddedLangs（同一份"图形字幕不算覆盖"的既有裁决）。
+    expect(JSON.parse(stateOf(db, P).embedded_langs as string)).toEqual(['eng'])
+    db.close()
+  })
+
+  it('指纹变化 → probe 重跑并覆盖旧值（不是留着上一个文件的探测结果）', async () => {
+    const db = openDb(':memory:')
+    seedSettledFile(db, P, { mtime: 1000 })   // 旧值 '["chi","eng"]' / 1440
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 7000, size: BIG } },
+      async () => [{ lang: 'jpn', codec: 'subrip', isImageBased: false }],
+      async () => 1500)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    expect(fs.probeCalls).toEqual([P])
+    const s = stateOf(db, P)
+    expect(JSON.parse(s.embedded_langs as string)).toEqual(['jpn'])
+    expect(s.duration_sec).toBe(1500)
+    db.close()
+  })
+
+  it('probe 抛错（损坏文件 / 网盘超时）→ 该文件仍入库，其他文件照常，整轮不炸', async () => {
+    const db = openDb(':memory:')
+    const bad = '/media/Show/BROKEN.mkv'
+    const good = '/media/Show/OK.mkv'
+    const fs = fakeFsWithProbe({ '/media': [bad, good] }, {},
+      async (p) => { if (p === bad) throw new Error('ffprobe timeout'); return [{ lang: 'eng', codec: 'subrip', isImageBased: false }] },
+      async (p) => { if (p === bad) throw new Error('ffprobe timeout'); return 1200 })
+    const logs: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps, log: (m: string) => logs.push(m) }))
+    // 不抛 = 整轮巡检不被单个损坏文件掀翻（ingest 的既有铁律："一个文件/一次抖动不能拖垮整轮 pass"）
+    await expect(scan(daemon)).resolves.toBeUndefined()
+
+    expect(pathsInDb(db)).toEqual([bad, good])
+    // 失败文件留 NULL——**NULL 才是"没探测过"**（streamProbe.ts 的 load-bearing 契约）。
+    // 若写 []（="探过、确认零轨"）：judge 规则 2 会当"确认无内嵌中字"照常放行（这一步侥幸无害），
+    // 但 D9 的 translatable 会据此判"无同语言内嵌轨 → 不可救 → unsolvable"——把一个只是
+    // 网盘超时过一次的日漫永久判死。留 NULL 则 D17 的回填 pass 还能靠 `embedded_langs IS NULL`
+    // 找回来重探（那个谓词是失败重试的唯一凭据，写了 [] 就等于自己删掉重试通路）。
+    expect(stateOf(db, bad).embedded_langs).toBeNull()
+    expect(stateOf(db, bad).duration_sec).toBeNull()
+    // 兄弟文件不受牵连
+    expect(JSON.parse(stateOf(db, good).embedded_langs as string)).toEqual(['eng'])
+    expect(stateOf(db, good).duration_sec).toBe(1200)
+    expect(logs.join('\n')).toMatch(/probe/)
+    db.close()
+  })
+
+  it('probe 返回 null（ffprobe 二进制缺席/不可用）→ embedded_langs 留 NULL，不写空数组', async () => {
+    const db = openDb(':memory:')
+    const fs = fakeFsWithProbe({ '/media': [P] }, {}, async () => null, async () => null)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    // streamProbe.ts 的契约把 null 与 [] 分得很死：null="探测不可用"，[]="探过、确认无轨"。
+    // 折叠成 [] 会让"这台机器没装 ffprobe"看起来像"全库都确认没有内嵌轨"，
+    // 于是 D9 会把全库日漫判成不可救。
+    expect(stateOf(db, P).embedded_langs).toBeNull()
+    db.close()
+  })
+
+  it('probe 返回 []（探过、容器里确实零字幕轨）→ 写空数组，不是 NULL', async () => {
+    const db = openDb(':memory:')
+    const fs = fakeFsWithProbe({ '/media': [P] }, {}, async () => [], async () => 900)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    // 这个区分是 load-bearing 的：D17 的回填 pass 用 `embedded_langs IS NULL` 挑重探对象。
+    // 把"确认零轨"记成 NULL → 这批文件每次启动都被回填 pass 重探一遍，
+    // 在 115 网盘上就是每次启动几万次 12s 的探测（永不收敛的重探循环）。
+    expect(stateOf(db, P).embedded_langs).toBe('[]')
+    expect(stateOf(db, P).duration_sec).toBe(900)
+    db.close()
+  })
+
+  it('探针注入缺席（deps 不提供 probe）→ 扫描照常，不炸', async () => {
+    const db = openDb(':memory:')
+    // watchV2 之外还有别的构造点（测试脚手架、未来的 CLI 子命令）。probe 是增益不是前提，
+    // 缺注入时退化成"只入库、不探测"，绝不能让阶段 1 整个失效。
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], probe: undefined, probeDuration: undefined,
+      ...fakeFs({ '/media': [P] }),
+    }))
+    await expect(scan(daemon)).resolves.toBeUndefined()
+    expect(pathsInDb(db)).toEqual([P])
     db.close()
   })
 })

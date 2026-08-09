@@ -10,6 +10,7 @@ import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
 import type { IdentifySchedulerDeps } from './identifyScheduler.js'
 import { makeFileLogger } from '../core/fileLogger.js'
+import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 
 async function main() {
   const cacheRoot = '/cache'
@@ -60,6 +61,12 @@ async function main() {
     identify: identifyDeps,
     subtitleWorker,
     targetLanguage: process.env.TARGET_LANGUAGES?.split(',')[0]?.trim() || 'zh',
+    // C12：探针接线。复用 files/streamProbe.ts 的两个既有实现（cli/index.ts 给 ingest 接的是
+    // 同一对函数），**不写第二份**——本仓已经因为"两份实现漂移"栽过（D7 的 findOverlappingRoot）。
+    // 漏了这两行的后果是"测试绿、生产漏"：files.embedded_langs 继续全 NULL，
+    // judge 规则 2 与 D9 的 translatable 照旧静默失效。
+    probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
+    probeDuration: (videoPath: string) => probeDurationSec(videoPath),
     log,
   })
 

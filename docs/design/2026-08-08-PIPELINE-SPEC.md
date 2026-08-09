@@ -63,6 +63,7 @@
 | D19 | 第 3 步迁移必须含 `UPDATE files SET sub_status=NULL WHERE sub_status='unavailable'` | 顺序调整后第 2 步先上线，存量 `unavailable` 行在新谓词下既不在字幕工作台、又攒不到 7 次 → 永久出局 |
 | D20 | **D1 删除逻辑必须主动跳过被嵌套污染的根**（内外层都算），只做 upsert 不做差集删除；跳过要打日志 | 第 1a 步的 detectNestedRoots 只告警、不改用户配置；若用户不理，D1 上线仍会删库——不能依赖"用户看了告警去修"这个假设 |
 | D21 | `'/'` 作为守备目录时，D1 的差集**必须排除更深守备目录名下的行** | `substr(path,1,1)='/'` 对所有绝对路径为真。第 1a 步已在 removeRoot 侧修（审校 F8），D1 是另一条代码路径，不会自动继承 |
+| D22 | `sub_attempt` 建列时**必须 `INTEGER NOT NULL DEFAULT 0`**，不许可空 | 与 D18 同一个坑：`sub_attempt >= 7` 在 NULL 上是三值逻辑的 unknown → 谓词永不命中 → 停牌移交静默失效。且指纹变化清空时会因 NOT NULL 约束整轮抛错（1b-3 已用 PRAGMA 读 dflt_value 兜住，但建列侧仍须写对） |
 | R21 | **翻译可救性在 judge 阶段预判**；源语言不受支持的片子满 7 次后**直接 unsolvable**，不进 handoff_translate、不给第 8 次机会 | origin_lang 识别时已入库，O(1) 可判的终局不该塞在 7 天延迟之后 |
 | R22 | 只管守备目录内的情况；**硬链接/重复源不考虑**，不修，记为已知限制 | 守备目录是唯一地界，目录外的事不管 |
 | R23 | **「停牌」= 磁盘上当前没有中文字幕这一事实**，不是流程状态。解除停牌的唯一凭据是**扫描发现同名字幕文件**——翻译流领走了/在跑/跑失败期间一律仍显示停牌 | 与 R6 同源：磁盘是真源，数据库是投影 |
@@ -507,7 +508,12 @@ TDD 用例（先红后绿）：
 - **root 从 media_roots 移除 → 其下 files 行立即删除**（D2，须走 `removeRoot` 真实入口 / D11）
 - **addRoot 拒绝嵌套 root**（D7，防 C29 删库）
 - 文件仍在但 mtime/size 变化 → 更新，且清空 sub_status/sub_attempt/recheck_after/embedded_langs/duration_sec（C11）
-  - 注意：**不清 needs_subtitle**（D8：它表达"原则上需要"，与磁盘现状无关）
+  - **需连带清 `needs_subtitle`**（订正 2026-08-08）：D8 的职责切分说它表达"原则上需要中文字幕"，
+    据此曾写"不清"——**这是错的**。它的判据（origin_lang / embedded_langs）本身就随片源变，
+    清掉判据却留着判决结果，正是本项目栽过三次的同型缺陷。
+    真实伤害：旧 720p 有中文内嵌轨 → judge 判 `needs_subtitle=0`；换成无中文轨的 1080p 后仍是 0，
+    而 judge 谓词是 `needs_subtitle IS NULL` → 永不重判 → 这集永远不补字幕。
+    D8 的切分仍然成立，但它管的是"**装盘与手删字幕**不改 needs_subtitle"，不是"换片源不改"。
 - 新增/指纹变化文件 → 写入 embedded_langs + duration_sec（C12，probe）
 
 R24 专项用例：
