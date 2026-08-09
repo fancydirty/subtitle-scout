@@ -15,7 +15,7 @@ import { statSync } from 'node:fs'
 import { toMediaFileRow, isScannable } from './scanner.js'
 import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
-import { listSubtitleQueue, runSubtitleWorkDir, type SubtitleQueueItem } from './subtitleScheduler.js'
+import { listSubtitleQueue, runSubtitleWorkDir, subtitleJobId, type SubtitleQueueItem } from './subtitleScheduler.js'
 import { judgeSubtitle } from './subtitleJudge.js'
 import { tagsForLanguage } from '../agent/languages.js'
 import { findExternalSidecar } from '../files/sidecar.js'
@@ -26,6 +26,32 @@ import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { mapWithConcurrency } from './probeConcurrency.js'
 
 export const INSPECT_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/** 维护循环的节拍——也就是 run() 的 idle sleep 周期。
+ *
+ *  为什么运维必须挂在这一层而不是巡检里面（D5 的关键取舍）：巡检是**每日一次**，而
+ *  `wal_checkpoint(TRUNCATE)` 每天才做一次等于把 WAL 里一整天的写入押在"今天不掉电"上——
+ *  2026-07-21 那次软路由掉电报废的正是 WAL 里 4MB 未 checkpoint 的数据（db.ts:579-584）。
+ *  旧 daemon 的组织方式是"维护循环不受产工作闸限制"（daemon.ts 的 2c/2d 分支跑在
+ *  `if (!permitted) return` 之外），这里照同一思路：维护在时间闸**之外**，每 5 分钟一拍，
+ *  内部各器官自带更粗的时间门（dbMaintenance 内部小时/天级、trace 修剪天级）。 */
+export const MAINTENANCE_TICK_MS = 5 * 60 * 1000
+
+/** 巡检抛错后的重试退避（D4 的"独立短 backoff"那条分支）。
+ *
+ *  为什么不是"失败就完全不推进任何时刻"：那样下一拍（5 分钟后）就会重跑整轮巡检，而巡检
+ *  里有识别/字幕两条付费 LLM 工作台——一个持续性故障（比如 TMDB key 过期）会变成每 5 分钟
+ *  烧一轮的热循环。为什么不是"失败也推进 24h 闸"：那正是 C22 本身（挂载抖 5 分钟修好，
+ *  系统睡满一天，与 R8"优雅恢复"的本意正相反）。
+ *
+ *  故分账：24h 闸只由**成功**的巡检推进（记开始时刻），失败另记一个短退避时刻。30 分钟是
+ *  "挂载抖动/网盘限流这类几分钟级故障能在同一天自愈"与"别把持续性故障做成热循环"之间的
+ *  折中；退避只存进程内存，进程重启即重试（重启是运维的显式动作，不该被上一次的失败罚站）。 */
+export const INSPECT_FAILURE_BACKOFF_MS = 30 * 60 * 1000
+
+/** trace 快照修剪的时间门（照旧 daemon 的 `last_trace_prune_at` meta 手法，一天一次足矣）。 */
+const TRACE_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000
+
 
 /** B 档轮转复核的周期（D12）：每次检测后把 `sub_recheck_at` 推到 now + 这个间隔，
  *  于是全库自然摊平成"每个文件每周复核一次"，单轮开销 ≈ 全库 1/7。
@@ -38,7 +64,18 @@ const SUB_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
 
 export interface DaemonV2Deps {
   db: ScoutDb
+  /** 守备目录的**启动快照**。保留是为了不动既有构造点/测试；运行期真相请走 rootsProvider。 */
   roots: string[]
+  /** 守备目录的惰性提供者（cmdWatch 侧 = `settingsRepo.listRoots()`）。
+   *
+   *  为什么必须惰性：守备目录是产品层配置（media_roots 表，dashboard 里增删），watchV2 那份
+   *  独立入口在启动时读表读一次就再不刷新——用户在 dashboard 里加根后要重启容器才生效。
+   *  cmdWatch 侧的既有口径是 `currentRoots()` 每次现取（dashboard G4），切过来不能退化。
+   *
+   *  **同一轮巡检内取一次快照**（见 runInspection）：中途变动会让扫描作用域与删除作用域
+   *  对不上——deleteMissing 的 deeperPrefixes 是从 roots 算的，跑到一半少了一个根，那个根
+   *  名下的行就会落进别人的差集被误删（D21 同一漏洞面）。 */
+  rootsProvider?: () => string[]
   identify: IdentifySchedulerDeps
   subtitleWorker: (task: import('../agent/findSubtitleWorker.schemas.js').FindSubtitleTask) => Promise<import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport>
   targetLanguage: string
@@ -47,11 +84,20 @@ export interface DaemonV2Deps {
   log: (msg: string) => void
   /** 测试注入：距上次巡检满这个时间才算到点。默认 INSPECT_INTERVAL_MS。 */
   inspectEveryMs?: number
+  /** 巡检失败后的重试退避（D4）。默认 INSPECT_FAILURE_BACKOFF_MS。 */
+  inspectFailureBackoffMs?: number
+  /** 维护循环的节拍（测试注入）。默认 MAINTENANCE_TICK_MS(5min)。
+   *  抽成注入点是"运维不跟着 24h 巡检闸走"这条 D5 红线的刚性需求：不能把它做成"每圈跑一次
+   *  维护"就完事——必须能在一个 run() 内驱动出**多拍**，才能证明 gcStaging 只在 boot 跑一次
+   *  而 dbMaintenance 每拍都跑（前者若漏进维护循环，就会周期性 rm 掉正在跑的工作台）。 */
+  maintenanceTickMs?: number
+
   now?: () => number
   /** 测试注入：遍历一个守备目录。默认 walkVideoFiles。
    *  抽成注入点是删除逻辑的刚性需求——R8 的两种"不许删"场景（目录不可访问 / 目录看起来是空的）
    *  在真实文件系统上无法稳定复现，而这两条正是"一次删光全库"的唯一防线。 */
   listVideoFiles?: (root: string) => string[]
+
   /** 测试注入：stat 一个文件。默认 statSync；返回 null 视为不可 stat。 */
   statFile?: (p: string) => { mtimeMs: number; size: number } | null
   /** C12：内嵌字幕轨探针。**必须可注入**——这是 spawn ffprobe 的重 IO，测试里从不真的跑
@@ -70,7 +116,59 @@ export interface DaemonV2Deps {
   /** R24：字幕存在性探针。测试用注入点——测试要能数 stat 调用次数才能守住"未到点的文件
    *  一次 stat 都不许发"这条性能红线（115 FUSE 上全量复核是几万文件 × 60 次 stat）。 */
   fileExists?: (path: string) => boolean
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 运维器官（D5 / C16）。签名照 DaemonDeps 的既有形态，接线点仍在 cmdWatch（切换方式是
+  // "cmdWatch 内部把 ScoutDaemon 换成 daemonV2"，不是换入口文件——这样这些接线天然留在原处，
+  // 不需要在 watchV2 里重建第二份）。
+  //
+  // 全部 optional，缺省即整支休眠、零成本（同 DaemonDeps.dbMaintenance/gcStaging 的既有门控
+  // 模式）：既有构造点与几十条既有测试都不传这些字段，不许因为"忘了接线"就让阶段 1 失效。
+  // 但反过来——生产接线漏一个是**静默**的（不报错、只是从此永不 checkpoint），
+  // 所以 cli 侧的接线由 watchWiring.test.ts 逐个器官钉住。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** DB 耐久运维：小时级 `wal_checkpoint(TRUNCATE)` + 天级 `VACUUM INTO` 在线备份（留 7 份）。
+   *  内部自带时间门（dbMaintenance.ts），故这里每拍无脑调即可。
+   *
+   *  **这不是可选增益，是这个项目在软路由上的生存条件**：2026-07-21 本机 scout.db 真损坏
+   *  （malformed），WAL 里 4MB 未 checkpoint 的数据随主文件一起报废，恢复只能靠几天前的手动
+   *  备份（db.ts:579-584 记有实案）。VACUUM INTO 是对活 WAL 库唯一安全的在线备份形态。 */
+  dbMaintenance?: () => void
+  /** 沙盒孤儿 GC：清 `<root>/.subtitle-staging/<jobId>` 与 `.subtitle-translate/<jobId>`。
+   *  **只在 daemon 启动时调一次**，镜像旧 daemon 的"单实例前提，无条件回收"语义——
+   *  旧进程遗留的工作台全部是孤儿垃圾。
+   *
+   *  参数是本进程当前在飞行的 staging jobId 集合（C34）。旧接线传的是 `new Set()`，而
+   *  gcOrphans 的两条保留条件之一就是"这个工作台正在被使用"——空集合意味着它会 rm 掉正在
+   *  被 agent 写入的沙盒。启动时刻本进程还没有任何在飞行的活，所以启动这一次传空集合本身是
+   *  正确的；把集合做成**参数**而不是让调用方硬编码 `new Set()`，是为了让"谁在飞行"这个
+   *  事实由 daemon（唯一知道它的人）提供，将来若有第二个调用时机也不会再退回空集合。 */
+  gcStaging?: (inFlightStagingJobIds: ReadonlySet<string>) => number
+  /** 写探针残留清扫：`isDirWritable` 在网络挂载上"写成功但立刻删不掉"（最终一致性）会留下
+   *  0 字节隐藏文件，2026-07-29 生产实测全库残留 175 个。
+   *
+   *  新架构下这个器官**必须由 daemon 调**：旧世界里它挂在 ingest 的走盘循环里
+   *  （ingest.ts:894，顺便扫本轮见过的每个目录），而 daemonV2 不跑 ingest——切换后没有任何
+   *  代码路径会清它，且 daemonV2 自己的 writableRoots() 每个进程都会各留一枚新探针。 */
+  sweepWriteProbes?: () => number
+  /** trace 快照保留天数（惰性读 settings，默认 30）。 */
+  traceRetentionDays?: () => number
+  /** trace 修剪的执行体（RunsRepo）。runs 行本身保留（决策史不删），只把过保留期的
+   *  trace_json 置 NULL。与 traceRetentionDays 是一对：只有两者都注入才启用这一支。 */
+  runs?: { pruneTraces: (beforeMs: number) => number }
+  /** 每拍最先跑（照 DaemonDeps.preTick）：cmdWatch 接 secrets_version watcher——wizard 把密钥
+   *  落库后同进程热重建长命客户端，容器零重启。放在维护层而不是巡检里：巡检一天才一次，
+   *  配好密钥要等到明天才点火就等于没有 wizard。 */
+  preTick?: () => Promise<void>
+  /** 产工作许可（照 DaemonDeps.workPermitted）= engine_enabled ∧ setup 闸（TMDB+LLM 可解析）。
+   *  false 时**整轮巡检跳过**（零密钥的 setup 模式下识别/字幕 agent 一定失败，跑就是空烧），
+   *  维护循环不闸——见旧 daemon 对这条分界的既有论证。
+   *
+   *  被闸住时也**不推进时间闸**：否则用户配好密钥点火后，还要等最多 24h 才有第一轮巡检。 */
+  workPermitted?: () => boolean
 }
+
 
 /** C11 换片源时该清空的状态列（**意图声明**，不是 schema 快照）。
  *
@@ -102,38 +200,138 @@ const FINGERPRINT_RESET_COLUMNS = [
 export class ScoutDaemonV2 {
   private stopping = false
   private writableCache: Map<string, boolean>
+  /** 本轮巡检期间生效的守备目录快照（见 DaemonV2Deps.rootsProvider 的论证：同一轮内必须稳定，
+   *  否则删除作用域与扫描作用域会对不上）。巡检外的读取（writableRoots/gcStaging）走现取。 */
+  private rootsSnapshot: string[] | null = null
+  /** 巡检失败后的退避到点时刻（D4 的独立短 backoff）。0 = 没有待退避的失败。
+   *  只存内存不落库：进程重启是运维的显式动作，不该被上一次失败罚站。 */
+  private inspectRetryAfter = 0
+  /** trace 修剪的天级时间门（照旧 daemon 的 meta 手法，但这一支只服务本进程，存内存足够；
+   *  重启后多修剪一次是幂等的、无害的）。 */
+  private lastTracePruneAt = 0
+  /** C34：本进程当前在飞行的 staging 沙盒 jobId（= 目录名，见 subtitleJobId 的论证）。
+   *  gcOrphans 靠它区分"孤儿垃圾"与"正在被 agent 写入的工作台"。 */
+  private inFlightStagingJobIds = new Set<string>()
 
   constructor(private deps: DaemonV2Deps) {
     this.writableCache = deps.writableRoots ?? new Map<string, boolean>()
   }
 
+  /** 运行期守备目录：巡检中用本轮快照，巡检外现取（dashboard 加根后下一拍即生效）。 */
+  private currentRoots(): string[] {
+    if (this.rootsSnapshot !== null) return this.rootsSnapshot
+    return this.deps.rootsProvider?.() ?? this.deps.roots
+  }
+
   async run(signal: AbortSignal): Promise<void> {
+    // stopping 从入参 signal 现取，而不是沿用上一次 run 留下的 true。
+    // 生产上 run() 只被调一次，这行看着多余——但少了它，"同一个实例 run 第二次"会静默地
+    // **什么都不做**（while 条件当场为假），而这正好是测试里驱动多圈的写法：于是任何
+    // "第二圈应该/不应该发生某事"的断言都变成假绿（断言的是"一次都没跑"，不是"跑了但没做"）。
+    // 本轮写这批用例时就真踩到了：三条用例靠这个空转过绿。信号是唯一权威，照它取。
+    this.stopping = signal.aborted
     signal.addEventListener('abort', () => { this.stopping = true }, { once: true })
 
+
+    // 启动时的一次性沙盒孤儿回收（照旧 daemon boot 的 gcStaging 语义：单实例前提下，
+    // 本进程启动时旧进程必已死，它遗留的工作台全部是孤儿垃圾）。
+    // **绝不能挪进下面的维护循环**：那样每 5 分钟就会去清一遍，而"正在被 agent 写入"这个
+    // 事实只能靠 in-flight 集合 + mtime 活性窗口保护，任何一处判据失灵就是把跑了两小时的
+    // 翻译工作台整个 rm 掉（gcOrphans 的 R6-9/R7-1 两次修复都在还这笔债）。
+    try {
+      const cleaned = this.deps.gcStaging?.(this.inFlightStagingJobIds) ?? 0
+      if (cleaned > 0) this.deps.log(`boot: 清理了 ${cleaned} 个上个进程遗留的孤儿工作台`)
+    } catch (e) {
+      this.deps.log(`warn: boot 孤儿工作台回收失败（隔离，不阻塞启动）: ${String(e)}`)
+    }
+
     while (!this.stopping) {
+      // 维护循环跑在时间闸**之外**（旧 daemon 的既有分界：产工作循环受闸、维护循环不受）。
+      // 巡检一天一次，WAL checkpoint 若跟着变成一天一次，等于把一整天的写入押在"今天不掉电"上。
+      await this.runMaintenance()
+
       const now = this.deps.now?.() ?? Date.now()
       const lastInspectAt = this.readLastInspectAt()
       const everyMs = this.deps.inspectEveryMs ?? INSPECT_INTERVAL_MS
+      const permitted = this.deps.workPermitted?.() ?? true
 
-      if (now - lastInspectAt >= everyMs) {
+      if (permitted && now - lastInspectAt >= everyMs && now >= this.inspectRetryAfter) {
         this.deps.log(`巡检开始 (距上次 ${lastInspectAt === 0 ? '(冷启动)' : `${Math.round((now - lastInspectAt) / 3600000)}h`})`)
+        // D4 ①：时间闸记的是巡检**开始**时刻（这个 now），不是跑完之后再取一次。
+        // 用结束时刻的话真实周期 = 24h + 本轮耗时，逐轮漂移——大库在 115 FUSE 上真能跑 10h，
+        // 周期就漂成 34h，几轮之后巡检时刻会跑到用户看电视的黄金时段去。
         try {
           await this.runInspection(signal)
+          // D4 ②：**只有成功才推进 24h 闸**。失败推进 = 挂载抖一下（FUSE 常态）就静默睡满
+          // 一天，用户 5 分钟后修好挂载什么也不会发生——而 R8 保护的本意恰恰是优雅恢复。
+          this.writeLastInspectAt(now)
+          this.inspectRetryAfter = 0
+          this.deps.log('巡检完成，歇着等明天')
         } catch (e) {
-          this.deps.log(`巡检失败（隔离，下轮重试）: ${String(e)}`)
+          // 失败走**独立的短退避**，与 24h 闸分账（见 INSPECT_FAILURE_BACKOFF_MS 的论证）：
+          // 不推进时间闸，但也不许下一拍（5min 后）就重跑——巡检里有两条付费 LLM 工作台，
+          // 持续性故障（TMDB key 过期之类）会变成每 5 分钟烧一轮的热循环。
+          const backoff = this.deps.inspectFailureBackoffMs ?? INSPECT_FAILURE_BACKOFF_MS
+          this.inspectRetryAfter = now + backoff
+          this.deps.log(`巡检失败（隔离，时间闸不推进，${Math.round(backoff / 60000)}min 后重试）: ${String(e)}`)
         }
-        this.writeLastInspectAt(this.deps.now?.() ?? Date.now())
-        this.deps.log('巡检完成，歇着等明天')
       }
 
       if (this.stopping) break
-      // "歇着"：每 5min 检查一次是否到 24h（不是轮询工作台，是轮询时间闸）
-      await sleep(5 * 60 * 1000, signal)
+      // "歇着"：每 5min 一拍——既是时间闸的轮询（不是轮询工作台），也是维护循环的节拍。
+      await sleep(this.deps.maintenanceTickMs ?? MAINTENANCE_TICK_MS, signal)
+    }
+  }
+
+  /** 维护循环：4 个运维器官（D5 / C16）。**不受 24h 巡检闸与 workPermitted 限制**。
+   *
+   *  每个器官各自 try/catch：口径与旧 daemon 一致（"失败只记日志，运维是增益，绝不拖垮主
+   *  循环"），但**必须逐个包**而不是整体包一层——整体包的话第一个器官抛错就短路掉后面三个，
+   *  一次磁盘满会同时静默掉 checkpoint、备份、探针清扫和 trace 修剪。 */
+  private async runMaintenance(): Promise<void> {
+    const now = this.deps.now?.() ?? Date.now()
+
+    // preTick 最先跑：secrets_version 变了在这里完成热重建，本拍后续的 workPermitted 与
+    // 所有闭包就能立刻看到新客户端（wizard 落库 → 同进程点火，容器零重启）。
+    if (this.deps.preTick) {
+      try { await this.deps.preTick() } catch (e) { this.deps.log(`warn: preTick 失败（隔离）: ${String(e)}`) }
+    }
+
+    if (this.deps.dbMaintenance) {
+      try { this.deps.dbMaintenance() } catch (e) { this.deps.log(`warn: db 运维失败（隔离）: ${String(e)}`) }
+    }
+
+    if (this.deps.sweepWriteProbes) {
+      try {
+        const swept = this.deps.sweepWriteProbes()
+        if (swept > 0) this.deps.log(`清理了 ${swept} 个残留写探针文件`)
+      } catch (e) { this.deps.log(`warn: 写探针清扫失败（隔离）: ${String(e)}`) }
+    }
+
+    // trace 修剪自带天级时间门：修剪不是热路径，每 5 分钟发一条全表 UPDATE 是白付 IO。
+    if (this.deps.runs && this.deps.traceRetentionDays && now - this.lastTracePruneAt >= TRACE_PRUNE_EVERY_MS) {
+      try {
+        const days = this.deps.traceRetentionDays()
+        const pruned = this.deps.runs.pruneTraces(now - days * 86_400_000)
+        if (pruned > 0) this.deps.log(`trace 修剪: 清空了 ${pruned} 份超过 ${days} 天的快照`)
+      } catch (e) { this.deps.log(`warn: trace 修剪失败（隔离）: ${String(e)}`) }
+      // 时间门在**尝试之后**推进（不论成败）：失败也隔一天再试，避免坏库上每拍重试。
+      this.lastTracePruneAt = now
     }
   }
 
   /** 一轮完整巡检：扫描 → 识别跑空 → judge → 字幕跑空。 */
   private async runInspection(signal: AbortSignal): Promise<void> {
+    // 本轮 roots 快照（见 rootsProvider 的论证）。finally 清掉，让巡检外的读取回到现取。
+    this.rootsSnapshot = this.deps.rootsProvider?.() ?? this.deps.roots
+    try {
+      await this.runInspectionInner(signal)
+    } finally {
+      this.rootsSnapshot = null
+    }
+  }
+
+  private async runInspectionInner(signal: AbortSignal): Promise<void> {
     // 阶段 1：机械扫描
     await this.scanOnce()
 
@@ -160,14 +358,25 @@ export class ScoutDaemonV2 {
       subtitleRounds++
       const item = queue[0]
       this.deps.log(`字幕 ${item.title} (${item.files.length} 文件, 第 ${subtitleRounds} 个)`)
-      await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage)
+      // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
+      // jobId 必须与 buildSubtitleTask 实际用的那个**字节一致**，故共用 subtitleJobId
+      // 而不是在这里手写一遍 `subtitle:${workId}`（两份必然漂移，漂了 GC 保护就静默失效）。
+      const jobId = subtitleJobId(item.workId)
+      this.inFlightStagingJobIds.add(jobId)
+      try {
+        await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage)
+      } finally {
+        // finally 而不是顺序执行：worker 抛错时若不摘，这个 jobId 会永久免疫 GC，
+        // 沙盒垃圾从此无界堆积（媒体目录里的隐藏目录，用户看不见、只会看到盘满）。
+        this.inFlightStagingJobIds.delete(jobId)
+      }
     }
   }
 
   /** 只读根过滤：字幕只在可写根内派发（115 只读跳过）。 */
   private writableRoots(): string[] {
     const out: string[] = []
-    for (const root of this.deps.roots) {
+    for (const root of this.currentRoots()) {
       if (!this.writableCache.has(root)) {
         this.writableCache.set(root, isDirWritable(root))
       }
@@ -175,6 +384,7 @@ export class ScoutDaemonV2 {
     }
     return out
   }
+
 
   /** judge 阶段：对已识别但未判定的文件跑 judgeSubtitle（国产/内嵌跳过）。
    *
@@ -215,7 +425,12 @@ export class ScoutDaemonV2 {
   private async scanOnce(): Promise<void> {
     const db = this.deps.db
     const now = this.deps.now?.() ?? Date.now()
+    // 本轮的守备目录：巡检内是 runInspection 冻结的快照，直接 scanOnce（既有测试口径）时现取。
+    // 整个 scanOnce **只在这里取一次**：扫描作用域与删除作用域必须是同一份名单，中途换名单
+    // 就是让 deleteMissing 的 deeperPrefixes 与刚扫过的路径集对不上（D21 同一漏洞面）。
+    const scanRoots = this.currentRoots()
     const resetCols = this.fingerprintResetColumns()
+
     // 清空子句拼进 upsert 的 DO UPDATE 而不是事后另发一条 UPDATE：一条语句 = 一个原子写。
     // 分两条的话，进程在两条之间被杀（软路由掉电是常态，见 db.ts 的 synchronous=FULL 论证）
     // 会留下"机械事实已是新文件、状态列还是旧文件"的库——那正是 C11 要修的那个状态本身。
@@ -265,7 +480,7 @@ export class ScoutDaemonV2 {
     // 谓词是全库查询、**不分根**，光看库里的列推不出"这个根本轮可不可信"。
     const skippedRoots: string[] = []
 
-    for (const root of this.deps.roots) {
+    for (const root of scanRoots) {
       // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
       // 拿它做差集就是删库，故整根跳过删除；upsert 也无从做（一个文件都没拿到）。
       let files: string[]
@@ -293,7 +508,7 @@ export class ScoutDaemonV2 {
         seen.add(f)
         const existing = findExisting.get(f) as { mtime: number; size: number } | undefined
         if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
-        const row = toMediaFileRow(f, st, this.deps.roots)
+        const row = toMediaFileRow(f, st, scanRoots)
         upsert.run(row.path, row.dir, row.filename, row.size, row.mtime,
           row.workDir, row.season, row.episode, row.parseConfidence,
           now + SUB_RECHECK_INTERVAL_MS, Date.now())
@@ -323,7 +538,7 @@ export class ScoutDaemonV2 {
       }
 
       for (const f of rootDetect) toDetect.push(f)
-      this.deleteMissing(root, seen)
+      this.deleteMissing(root, seen, scanRoots)
     }
     if (upserted > 0) {
       this.deps.log(`scan: scanned=${scanned} upserted=${upserted} skipped=${skipped}`)
@@ -607,10 +822,10 @@ export class ScoutDaemonV2 {
    *  （"100% Pascal-sensei"、"Look_Back"），LIKE 会把这些字面字符当通配符展开 → 兄弟目录
    *  的行被卷进别人的差集误删。substr 定长字面量比较没有这个陷阱（沿用 removeRoot 的论证）。
    *  root 后补 '/' 是避免 "/media/tv" 前缀吃到兄弟目录 "/media/tv2"。 */
-  private deleteMissing(root: string, seen: Set<string>): void {
+  private deleteMissing(root: string, seen: Set<string>, roots: string[]): void {
     const db = this.deps.db
     const prefix = root.endsWith('/') ? root : `${root}/`
-    const deeperPrefixes = this.deps.roots
+    const deeperPrefixes = roots
       .filter((r) => r !== root)
       .map((r) => (r.endsWith('/') ? r : `${r}/`))
       .filter((p) => p !== prefix && p.startsWith(prefix))

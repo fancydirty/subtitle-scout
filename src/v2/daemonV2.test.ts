@@ -3,7 +3,7 @@ import { openDb } from './db.js'
 import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
 // 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
 // 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
-import { listSubtitleQueue } from './subtitleScheduler.js'
+import { listSubtitleQueue, subtitleJobId } from './subtitleScheduler.js'
 
 interface TestDeps {
   db?: ReturnType<typeof openDb>
@@ -1408,6 +1408,423 @@ describe('ScoutDaemonV2.scanOnce · D23 被跳过的根不做字幕观察', () =
     expect(subStatusOf(db, nu)).toBeNull()
     expect(sub.calls).toEqual([])
     expect(recheckAtOf(db, nu)).not.toBeNull()
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第 2 步：daemonV2 接容器 + 4 个运维器官（C2 + C16 + C22 + D4 + D5）
+//
+// 血案（db.ts:579-584 注释记有实案）：2026-07-21 软路由掉电，WAL 里 4MB 未 checkpoint 的
+// 数据连库一起报废。所以 dbMaintenance 不是"可选增益"，它是这个项目在软路由上的生存条件。
+//
+// 这批用例守的是**切换动作本身**的两类伤害：
+//   ① 静默丢器官（C16 / D5）：旧入口 cmdWatch 上挂着 4 个运维器官，daemonV2 零命中。
+//      切过去而不接线 = 从此永不 checkpoint、永不备份、workspace 垃圾无人回收。
+//      注意 spy 计数是**必要不充分**的：还必须钉住"运维不跟着 24h 巡检闸走"——
+//      每天才 checkpoint 一次，等于把 WAL 里一整天的写入押在"今天不掉电"上。
+//   ② 时间闸吃掉 24h（C22 / D4）：失败也推进时间闸 → 挂载抖一下，用户 5 分钟后修好挂载，
+//      系统还要睡满 24 小时；而 R8 保护的本意恰恰是"挂载抖动要能优雅恢复"。
+//      附带：闸从巡检**结束**算 → 真实周期 = 24h + 本轮耗时，大库跑 10h 就漂成 34h。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 4 个运维器官的可数替身 + 一份能直接摊进 mkDeps 的 deps 片段。 */
+function mkOrgans(over: {
+  dbMaintenance?: () => void
+  sweepWriteProbes?: () => number
+  pruneTraces?: (before: number) => number
+} = {}) {
+  const calls = { dbMaintenance: 0, gcStaging: 0, sweepWriteProbes: 0, pruneTraces: [] as number[] }
+  const gcStagingSaw: Array<string[]> = []
+  return {
+    calls,
+    gcStagingSaw,
+    deps: {
+      dbMaintenance: () => { calls.dbMaintenance++; over.dbMaintenance?.() },
+      gcStaging: (inFlight: ReadonlySet<string>) => {
+        calls.gcStaging++
+        gcStagingSaw.push([...inFlight])
+        return 0
+      },
+      sweepWriteProbes: () => { calls.sweepWriteProbes++; return over.sweepWriteProbes?.() ?? 0 },
+      traceRetentionDays: () => 30,
+      runs: {
+        pruneTraces: (before: number) => {
+          calls.pruneTraces.push(before)
+          return over.pruneTraces ? over.pruneTraces(before) : 0
+        },
+      },
+    },
+  }
+}
+
+/** 跑一次 run() 的头一圈（boot + 维护 + 可能的巡检），然后 abort。
+ *  5 分钟的 idle sleep 是可中止的，abort 立刻结算，测试不会真的等。 */
+async function oneLoop(daemon: ScoutDaemonV2): Promise<void> {
+  const ctrl = new AbortController()
+  const p = daemon.run(ctrl.signal)
+  await new Promise(r => setTimeout(r, 30))
+  ctrl.abort()
+  await p
+}
+
+function lastInspectAt(db: ReturnType<typeof openDb>): number | null {
+  const row = db.prepare(`SELECT value FROM meta WHERE key = 'last_inspect_at'`).get() as { value: string } | undefined
+  return row ? Number(row.value) : null
+}
+
+describe('ScoutDaemonV2 · D5 运维器官接线（C16：切换入口不得静默丢失既有能力）', () => {
+  it('🔴 4 个运维器官各自被调用（dbMaintenance / gcStaging / sweepWriteProbes / trace 修剪）', async () => {
+    const db = openDb(':memory:')
+    const o = mkOrgans()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [] }), ...o.deps,
+    }))
+    await oneLoop(daemon)
+    expect(o.calls.dbMaintenance).toBeGreaterThanOrEqual(1)
+    expect(o.calls.gcStaging).toBeGreaterThanOrEqual(1)
+    expect(o.calls.sweepWriteProbes).toBeGreaterThanOrEqual(1)
+    expect(o.calls.pruneTraces.length).toBeGreaterThanOrEqual(1)
+    db.close()
+  })
+
+  it('🔴 trace 修剪按 retentionDays 算截止时刻（不是随手传个 now）', async () => {
+    const db = openDb(':memory:')
+    const o = mkOrgans()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [] }),
+      ...o.deps, traceRetentionDays: () => 7,
+    }))
+    await oneLoop(daemon)
+    // 只断言"调了"会让 pruneTraces(now) 这种把整个 trace 表清光的实现全绿。
+    expect(o.calls.pruneTraces[0]).toBe(NOW - 7 * DAY)
+    db.close()
+  })
+
+  it('trace 修剪有自己的天级时间门（同一进程内不每圈重跑）', async () => {
+    const db = openDb(':memory:')
+    const o = mkOrgans()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [] }), ...o.deps,
+      maintenanceTickMs: 1,   // 多拍：dbMaintenance 每拍跑，trace 修剪只该跑第一拍
+    }))
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 60))
+    ctrl.abort()
+    await p
+    expect(o.calls.dbMaintenance).toBeGreaterThan(1)   // 证明真的跑了多拍（防假绿）
+    expect(o.calls.pruneTraces.length).toBe(1)
+    db.close()
+  })
+
+  it('🔴 运维器官抛错 → 不拖垮主循环，也不拖垮彼此（运维是增益）', async () => {
+    const db = openDb(':memory:')
+    const o = mkOrgans({
+      dbMaintenance: () => { throw new Error('disk full') },
+      sweepWriteProbes: () => { throw new Error('EIO on FUSE') },
+      pruneTraces: () => { throw new Error('db locked') },
+    })
+    const walked: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: (r: string) => { walked.push(r); return [] },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      ...o.deps,
+      gcStaging: () => { throw new Error('readdir failed') },
+    }))
+    await oneLoop(daemon)
+    // 每个器官都被尝试过（一个坏了不许短路掉后面的）
+    expect(o.calls.dbMaintenance).toBeGreaterThanOrEqual(1)
+    expect(o.calls.sweepWriteProbes).toBeGreaterThanOrEqual(1)
+    expect(o.calls.pruneTraces.length).toBeGreaterThanOrEqual(1)
+    // 巡检照跑（这是"不拖垮主循环"的真实含义，不是"没抛到最外层"）
+    expect(walked).toEqual(['/media'])
+    expect(lastInspectAt(db)).toBe(NOW)
+    db.close()
+  })
+
+  it('🔴 运维不受 24h 巡检闸限制（巡检没到点时运维仍在跑）', async () => {
+    const db = openDb(':memory:')
+    // 1h 前刚巡检过 → 巡检闸关着
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(NOW - 1 * 3600_000))
+    const o = mkOrgans()
+    const walked: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: (r: string) => { walked.push(r); return [] },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      ...o.deps,
+    }))
+    await oneLoop(daemon)
+    expect(walked).toEqual([])                              // 巡检确实没跑
+    expect(o.calls.dbMaintenance).toBeGreaterThanOrEqual(1) // 运维照跑
+    expect(o.calls.sweepWriteProbes).toBeGreaterThanOrEqual(1)
+    expect(o.calls.pruneTraces.length).toBeGreaterThanOrEqual(1)
+    db.close()
+  })
+
+  it('运维器官全不注入 → 分支整个休眠，巡检照常（同 DaemonDeps 的 optional 门控口径）', async () => {
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fakeFs({ '/media': [] }) }))
+    await oneLoop(daemon)
+    expect(lastInspectAt(db)).toBe(NOW)
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2 · C34 gcStaging 的 in-flight 集合', () => {
+  it('🔴 gcStaging 只在启动时跑一次，绝不进维护循环（否则会周期性 rm 掉正在跑的工作台）', async () => {
+    const db = openDb(':memory:')
+    const o = mkOrgans()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [] }), ...o.deps,
+      maintenanceTickMs: 1,   // 一个 run() 内驱动出多拍
+    }))
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 60))
+    ctrl.abort()
+    await p
+    // 维护器官每拍都跑（这是 D5 要的"运维不跟着日巡检走"）……
+    expect(o.calls.dbMaintenance).toBeGreaterThan(1)
+    // ……但 gcStaging 只有 boot 那一次。它是"无条件回收孤儿"语义（旧进程遗留的工作台全是垃圾），
+    // 进了周期循环就会拿这个语义去砸本进程正在写的沙盒——in-flight 集合 + mtime 活性窗口
+    // 任何一处判据失灵（gcOrphans 的 R6-9/R7-1 两次修复都在还这笔债）就是一场事故。
+    expect(o.calls.gcStaging).toBe(1)
+    db.close()
+  })
+
+  it('🔴 字幕工作台在飞行中时，它的 staging jobId 在 in-flight 集合里（空集合会 rm 掉正在跑的沙盒）', async () => {
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:7', 'Show', 'tv', 1000, 1000)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, season, episode, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run('/media/Show/E01.mkv', '/media/Show', 'E01.mkv', BIG, 1000, '/media/Show', 'tmdb:7', 1, 1, 1, 1000)
+
+    let sawInFlight: string[] = []
+    let daemon!: ScoutDaemonV2
+    const subtitleWorker = vi.fn(async () => {
+      // worker 跑到一半时，daemon 眼里的 in-flight 集合必须包含这个作品的 staging jobId——
+      // gcOrphans 靠 jobId **目录名**判活（`<root>/.subtitle-staging/<jobId>/`），
+      // 名字对不上就等于没保护。
+      sawInFlight = [...(daemon as any).inFlightStagingJobIds as Set<string>]
+      // 装盘成功一律返回空桶：只测在飞行期间的集合，不测回写
+      return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+    })
+    daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: subtitleWorker as any,
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(subtitleWorker).toHaveBeenCalled()
+    // 与 subtitleScheduler.buildSubtitleTask 实际用的 jobId 同源（不在测试里复述格式）
+    expect(sawInFlight).toEqual([subtitleJobId('tmdb:7')])
+    // 跑完必须摘掉，否则这个 jobId 会永久免疫 GC → 沙盒垃圾无界堆积
+    expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
+    db.close()
+  })
+
+  it('字幕 worker 抛错也要把 in-flight 条目摘掉（finally 语义）', async () => {
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:7', 'Show', 'tv', 1000, 1000)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, season, episode, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run('/media/Show/E01.mkv', '/media/Show', 'E01.mkv', BIG, 1000, '/media/Show', 'tmdb:7', 1, 1, 1, 1000)
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async () => { throw new Error('LLM 500') },
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2 · D4 时间闸（C22：一次故障不许吃掉 24h）', () => {
+  /** 让巡检整轮抛错：注入的 statFile 是 scanOnce 里唯一没被 try/catch 包住的磁盘调用，
+   *  形态也真实（FUSE 挂载上 stat 抖动）。 */
+  const throwingScan = {
+    listVideoFiles: () => ['/media/Show/E01.mkv'],
+    statFile: () => { throw new Error('EIO: stat failed on FUSE mount') },
+  }
+
+  it('🔴 巡检抛错 → 时间闸不推进（否则挂载抖一下就睡满 24h，与 R8 优雅恢复正相反）', async () => {
+    const db = openDb(':memory:')
+    const seeded = NOW - 25 * 3600_000
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(seeded))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...throwingScan }))
+    await oneLoop(daemon)
+    expect(lastInspectAt(db)).toBe(seeded)
+    db.close()
+  })
+
+  it('🔴 巡检抛错后不许原地热重试（独立的短 failure backoff，与 24h 分账）', async () => {
+    const db = openDb(':memory:')
+    let clock = NOW
+    let walks = 0
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      now: () => clock,
+      inspectFailureBackoffMs: 30 * 60_000,
+      listVideoFiles: () => { walks++; return ['/media/Show/E01.mkv'] },
+      statFile: () => { throw new Error('EIO') },
+    }))
+    await oneLoop(daemon)
+    expect(walks).toBe(1)
+    clock += 60_000            // 1 分钟后：24h 闸开着（失败没推进），但退避没到
+    await oneLoop(daemon)
+    expect(walks).toBe(1)      // 不许再跑——否则每 5 分钟烧一整轮 LLM
+    db.close()
+  })
+
+  it('🔴 失败退避到点后重试（证明不是永久停摆），成功一次即推进时间闸', async () => {
+    const db = openDb(':memory:')
+    let clock = NOW
+    let broken = true
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      now: () => clock,
+      inspectFailureBackoffMs: 30 * 60_000,
+      // 必须返回一个文件：walk 返回空数组会被 R8 的"扫出 0 个媒体文件"整根跳过，
+      // 于是 statFile 一次都不会被调、巡检**成功**返回——那样这条用例测的就不是它想测的东西。
+      listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => { if (broken) throw new Error('EIO'); return { mtimeMs: 1000, size: BIG } },
+    }))
+    await oneLoop(daemon)
+    expect(lastInspectAt(db)).toBeNull()
+    broken = false                       // 用户 5 分钟就修好了挂载
+    clock += 31 * 60_000
+    await oneLoop(daemon)
+    expect(lastInspectAt(db)).toBe(clock)
+    db.close()
+  })
+
+  it('🔴 时间闸记的是巡检**开始**时刻，不是结束时刻（否则周期随耗时逐轮漂移）', async () => {
+    const db = openDb(':memory:')
+    let clock = NOW
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      now: () => clock,
+      // 大库巡检真能跑 10 小时（115 FUSE 上几万文件）
+      listVideoFiles: () => { clock += 10 * 3600_000; return [] },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+    }))
+    await oneLoop(daemon)
+    expect(lastInspectAt(db)).toBe(NOW)
+    db.close()
+  })
+
+  it('🔴 周期不漂移：上轮跑了 10h，距开始满 24h 就该再巡检（结束口径下这里会静默睡到 34h）', async () => {
+    const db = openDb(':memory:')
+    // 上一轮 NOW 开始、NOW+10h 结束
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(NOW))
+    let walks = 0
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      now: () => NOW + 24 * 3600_000 + 1,
+      listVideoFiles: () => { walks++; return [] },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+    }))
+    await oneLoop(daemon)
+    expect(walks).toBe(1)
+    db.close()
+  })
+
+  it('巡检成功 → 时间闸正常推进（不许为了守住上面几条把推进整个删掉）', async () => {
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fakeFs({ '/media': [] }) }))
+    await oneLoop(daemon)
+    expect(lastInspectAt(db)).toBe(NOW)
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2 · 切换入口时同样不许丢的另外三样（与 4 器官同一类伤害）', () => {
+  it('🔴 preTick 每圈最先跑：wizard 落库 → 同进程点火（否则配好密钥必须重启容器）', async () => {
+    const db = openDb(':memory:')
+    const order: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      preTick: async () => { order.push('preTick') },
+      listVideoFiles: () => { order.push('scan'); return [] },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      dbMaintenance: () => { order.push('maintenance') },
+    }))
+    await oneLoop(daemon)
+    expect(order[0]).toBe('preTick')
+    expect(order).toContain('scan')
+    db.close()
+  })
+
+  it('preTick 抛错不拖垮本圈（同 DaemonDeps 的隔离口径）', async () => {
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [] }),
+      preTick: async () => { throw new Error('secrets rebuild failed') },
+    }))
+    await oneLoop(daemon)
+    expect(lastInspectAt(db)).toBe(NOW)
+    db.close()
+  })
+
+  it('🔴 workPermitted=false → 不跑巡检（setup 模式零密钥不许空烧），但运维照跑', async () => {
+    const db = openDb(':memory:')
+    const o = mkOrgans()
+    const walked: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      workPermitted: () => false,
+      listVideoFiles: (r: string) => { walked.push(r); return [] },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      ...o.deps,
+    }))
+    await oneLoop(daemon)
+    expect(walked).toEqual([])
+    expect(lastInspectAt(db)).toBeNull()          // 闸住时也不许推进时间闸
+    expect(o.calls.dbMaintenance).toBeGreaterThanOrEqual(1)
+    db.close()
+  })
+
+  it('🔴 守备目录惰性求值：dashboard 加根后下一轮巡检就该扫到（否则要重启容器）', async () => {
+    const db = openDb(':memory:')
+    let roots = ['/media/tv']
+    const walked: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [],
+      rootsProvider: () => roots,
+      listVideoFiles: (r: string) => { walked.push(r); return [] },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(walked).toEqual(['/media/tv'])
+    roots = ['/media/tv', '/media/movies']        // 用户在 dashboard 里加了一个根
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(walked).toEqual(['/media/tv', '/media/tv', '/media/movies'])
+    db.close()
+  })
+
+  it('🔴 同一轮巡检内 roots 快照稳定（中途变动不许让删除作用域与扫描作用域对不上）', async () => {
+    const db = openDb(':memory:')
+    seedFiles(db, ['/media/tv/Show/E01.mkv', '/media/115/Anime/E01.mkv'])
+    let roots = ['/media/tv', '/media/115']
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [],
+      rootsProvider: () => roots,
+      listVideoFiles: (r: string) => {
+        // 扫第一个根的过程中，用户把第二个根删了。若 deleteMissing 现读一份新快照，
+        // /media/tv 的 deeperPrefixes 会变、/media/115 名下的行落进别人的差集被误删。
+        roots = ['/media/tv']
+        return r === '/media/tv' ? ['/media/tv/Show/E01.mkv'] : ['/media/115/Anime/E01.mkv']
+      },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(pathsInDb(db)).toEqual(['/media/115/Anime/E01.mkv', '/media/tv/Show/E01.mkv'])
     db.close()
   })
 })

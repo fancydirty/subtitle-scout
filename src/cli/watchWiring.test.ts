@@ -1,0 +1,171 @@
+// 第 2 步（C2 + D5）：cmdWatch 组装出来的 daemon 必须是 V2，且 4 个运维器官全部接上。
+//
+// 为什么把组装抽成 buildDaemonV2Deps 这个纯函数来测，而不是直接测 cmdWatch：
+// cmdWatch 是个 550 行的过程式启动序列（openDb / 起 dashboard HTTP 服务 / 装 SIGINT 处理器 /
+// 结尾 process.exit(0)），在测试进程里跑它就是把测试进程自己搞死。把"接线"从"启动"里剥出来
+// 之后，接线这件事变成可断言的纯数据映射——而它恰恰是本步唯一容易静默错的地方（C16：
+// 器官漏接不会有任何报错，只是从此永不 checkpoint）。
+//
+// 剩下的"cmdWatch 到底 new 了哪个 daemon 类"这一条无法用纯函数覆盖，由文件末尾那条
+// 源码断言兜住。它是弱证据（不执行代码），但它守的东西很窄很硬：有人把入口切回旧
+// ScoutDaemon 时必须红。
+import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { buildDaemonV2Deps } from './watchWiring.js'
+import { openDb } from '../v2/db.js'
+
+function mkArgs(over: Record<string, any> = {}) {
+  const db = openDb(':memory:')
+  return {
+    db,
+    args: {
+      db,
+      rootsProvider: () => ['/media'],
+      identifyProvider: () => ({} as any),
+      subtitleWorker: (async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] })) as any,
+      targetLanguage: () => 'zh',
+      log: () => {},
+      now: () => 1_000,
+      gcOrphans: vi.fn(() => 0),
+      bootTimeMs: 500,
+      dbMaintenance: vi.fn(),
+      sweepWriteProbes: vi.fn(() => 0),
+      runs: { pruneTraces: vi.fn(() => 0) },
+      traceRetentionDays: () => 30,
+      preTick: async () => {},
+      workPermitted: () => true,
+      probe: async () => null,
+      probeDuration: async () => null,
+      ...over,
+    },
+  }
+}
+
+describe('buildDaemonV2Deps · D5 四个运维器官全部接上', () => {
+  it('🔴 dbMaintenance 被接上（WAL checkpoint + 天级 VACUUM INTO 备份；2026-07-21 掉电血案）', () => {
+    const { db, args } = mkArgs()
+    const deps = buildDaemonV2Deps(args)
+    expect(deps.dbMaintenance).toBeDefined()
+    deps.dbMaintenance!()
+    expect(args.dbMaintenance).toHaveBeenCalledTimes(1)
+    db.close()
+  })
+
+  it('🔴 gcStaging 被接上，且**带真实 in-flight 集合**（C34：空集合会 rm 掉正在跑的工作台）', () => {
+    const { db, args } = mkArgs()
+    const deps = buildDaemonV2Deps(args)
+    expect(deps.gcStaging).toBeDefined()
+    deps.gcStaging!(new Set(['subtitle:tmdb:7']))
+    // 断言到 gcOrphans 的实参：只断言"deps.gcStaging 存在"会让传 new Set() 的实现全绿，
+    // 而那正是 C34 记的那个 bug 本身。
+    expect(args.gcOrphans).toHaveBeenCalledWith(['/media'], new Set(['subtitle:tmdb:7']), 500)
+    db.close()
+  })
+
+  it('🔴 gcStaging 的守备目录是每次现取（dashboard 加根后新根下的沙盒也要能被回收）', () => {
+    let roots = ['/media/tv']
+    const { db, args } = mkArgs({ rootsProvider: () => roots })
+    const deps = buildDaemonV2Deps(args)
+    roots = ['/media/tv', '/media/movies']
+    deps.gcStaging!(new Set())
+    expect(args.gcOrphans).toHaveBeenCalledWith(['/media/tv', '/media/movies'], new Set(), 500)
+    db.close()
+  })
+
+  it('🔴 C34 决策留痕：翻译流未接入 daemonV2，故 in-flight 集合里不会有 .subtitle-translate 的 jobId', () => {
+    // 这条用例是**决策的留痕**，不是行为断言：C34 说 `new Set()` 会 GC 掉正在跑的翻译工作台。
+    // 处置分两半：
+    //  ① `.subtitle-staging`（字幕工作台）——daemonV2 自己在跑，jobId 由它登记，已真实填充。
+    //  ② `.subtitle-translate`（翻译工作台）——**daemonV2 里根本没有翻译流**（第 4 步才接，C3），
+    //     所以本进程不可能有在飞行的翻译 jobId，填不出来也不需要填。
+    // 那"正在跑的翻译工作台"从哪来？只能来自并发的手动 CLI（cmdTranslateItem）。它由 gcOrphans
+    // 自己的两道既有防线兜住，与 jobId 集合无关：mtime 新于 bootTime（新建未写）+ 递归最新
+    // mtime 在 10 分钟活性窗口内（R6-9 / R7-1 两次修复，stagingSandbox.test.ts 已钉住）。
+    // 再加上 gcStaging 只在 boot 跑一次（daemonV2.test.ts 钉住），暴露窗口是启动那一瞬间。
+    // 第 4 步把翻译接进 daemonV2 时，必须把它的 jobId 也登记进同一个集合——那时这条注释是入口。
+    const { db, args } = mkArgs()
+    const deps = buildDaemonV2Deps(args)
+    deps.gcStaging!(new Set(['subtitle:tmdb:7']))
+    const passed = (args.gcOrphans as any).mock.calls[0][1] as Set<string>
+    expect([...passed].some(id => id.startsWith('translate'))).toBe(false)
+    db.close()
+  })
+
+  it('🔴 sweepWriteProbes 被接上（isDirWritable 在云盘上留 0 字节探针，实测残留 175 个）', () => {
+    const { db, args } = mkArgs()
+    const deps = buildDaemonV2Deps(args)
+    expect(deps.sweepWriteProbes).toBeDefined()
+    deps.sweepWriteProbes!()
+    expect(args.sweepWriteProbes).toHaveBeenCalledTimes(1)
+    db.close()
+  })
+
+  it('🔴 traceRetentionDays + runs 被接上（trace 快照按天修剪）', () => {
+    const { db, args } = mkArgs({ traceRetentionDays: () => 7 })
+    const deps = buildDaemonV2Deps(args)
+    expect(deps.traceRetentionDays!()).toBe(7)
+    deps.runs!.pruneTraces(123)
+    expect(args.runs.pruneTraces).toHaveBeenCalledWith(123)
+    db.close()
+  })
+
+  it('targetLanguage 与 roots 都是惰性求值（设置页改完下一轮生效，不用重启容器）', () => {
+    let lang = 'zh'
+    let roots = ['/media']
+    const { db, args } = mkArgs({ targetLanguage: () => lang, rootsProvider: () => roots })
+    const deps = buildDaemonV2Deps(args)
+    lang = 'ja'; roots = ['/media', '/media2']
+    expect(deps.targetLanguage).toBe('ja')
+    expect(deps.rootsProvider!()).toEqual(['/media', '/media2'])
+    db.close()
+  })
+
+  it('🔴 identify deps 也是惰性求值（holder 换代后 daemon 必须拿到新客户端，否则 wizard 落库白配）', () => {
+    let gen = { tag: 'gen1' } as any
+    const { db, args } = mkArgs({ identifyProvider: () => gen })
+    const deps = buildDaemonV2Deps(args)
+    gen = { tag: 'gen2' }
+    expect((deps.identify as any).tag).toBe('gen2')
+    db.close()
+  })
+
+  it('probe / probeDuration 被接上（C12：不接线则 embedded_langs 永远 NULL，judge 规则 2 静默失效）', () => {
+    const { db, args } = mkArgs()
+    const deps = buildDaemonV2Deps(args)
+    expect(deps.probe).toBeDefined()
+    expect(deps.probeDuration).toBeDefined()
+    db.close()
+  })
+
+  it('preTick / workPermitted 被接上（wizard 落库同进程点火 + setup 模式不空烧）', () => {
+    const { db, args } = mkArgs()
+    const deps = buildDaemonV2Deps(args)
+    expect(deps.preTick).toBeDefined()
+    expect(deps.workPermitted!()).toBe(true)
+    db.close()
+  })
+})
+
+describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）', () => {
+  const src = readFileSync('src/cli/index.ts', 'utf8')
+
+  it('🔴 cmdWatch 构造 ScoutDaemonV2 并用它 run', () => {
+    expect(src).toContain('new ScoutDaemonV2(')
+    expect(src).toMatch(/const daemon = new ScoutDaemonV2\(/)
+    expect(src).toMatch(/await daemon\.run\(shutdown\.signal\)/)
+  })
+
+  it('🔴 旧 ScoutDaemon 不再被 cmdWatch 构造（切换是"内部替换"，D5）', () => {
+    expect(src).not.toMatch(/new ScoutDaemon\(/)
+  })
+
+  it('🔴 Dockerfile 的 CMD 仍指向 cli/index.js watch（D5：不换入口文件，运维器官接线天然保留）', () => {
+    const dockerfile = readFileSync('Dockerfile', 'utf8')
+    expect(dockerfile).toContain('"dist/cli/index.js", "watch"')
+    expect(dockerfile).not.toContain('watchV2')
+  })
+
+  it('cmdWatch 经 buildDaemonV2Deps 组装（防"绕过被测的接线函数、就地手写第二份"）', () => {
+    expect(src).toContain('buildDaemonV2Deps(')
+  })
+})

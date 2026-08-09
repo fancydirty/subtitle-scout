@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { parseArgs } from 'node:util'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, statSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,7 +11,7 @@ import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { type FetchEvent, type FetchAdapter } from '../adapters/fetchLib.js'
 import { applyQuotaEvent } from './quotaState.js'
 import { gcOrphans } from '../files/stagingSandbox.js'
-import { isDirWritable, type PathMapping } from '../core/mediaContext.js'
+import { isDirWritable, sweepWriteProbes, type PathMapping } from '../core/mediaContext.js'
 import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
 import { AuthService } from '../dashboard/auth.js'
@@ -41,6 +41,12 @@ import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
 import { runVerifySweep } from '../subtitleVerify/verifySweep.js'
 import { makeIngestPass, type IngestResult } from '../v2/ingest.js'
 import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
+import { ScoutDaemonV2 } from '../v2/daemonV2.js'
+import { buildDaemonV2Deps } from './watchWiring.js'
+import { runIdentify } from '../agent/identifyWorker.js'
+import type { IdentifySchedulerDeps } from '../v2/identifyScheduler.js'
+import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
+
 import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
 import { makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
 import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
@@ -345,11 +351,32 @@ async function cmdWatch() {
     } | null
     /** dashboard POST /api/v2/reconcile-all 的执行体；setup 未满足 → null（端点 503）。 */
     reconcileAll: (() => Promise<ReconcileAllResultDTO>) | null
+    /** 第 2 步（C2）：daemonV2 的识别工作台 deps；!tmdb || !model → null（闸住时不会被调）。 */
+    identifyDeps: IdentifySchedulerDeps | null
+    /** 第 2 步（C2）：daemonV2 的字幕工作台执行体；!model → null。 */
+    subtitleWorkerV2: ((task: FindSubtitleTask) => Promise<FindSubtitleBatchReport>) | null
+
   }
 
   /** setup 模式下的 ingest 兜底空实现（spec §4.7：闸保证它实际不会被调到——bootIngestPending
    *  在 setup 期间一直被闸住；它只是让 ingestTrigger/requestIngest 的类型与形状闭合）。 */
   const EMPTY_INGEST_RESULT: IngestResult = { scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false }
+
+  /** setup 模式下 daemonV2 两条工作台的兜底空实现（同 EMPTY_INGEST_RESULT 的既有语义：
+   *  workPermitted 恒 false 把整轮巡检闸住，这两个实际不会被调到；它们只让类型闭合）。
+   *
+   *  为什么不在这里 throw：§4.7 步 5 的既有口径是"闸住 ≠ 崩"。setup 模式下 dashboard 必须
+   *  可达（wizard 就在那儿），一个抛错的工作台会把 daemon 主循环打成失败退避，用户连配密钥的
+   *  界面都进不去。空 report 的语义也刚好正确——"这一轮什么也没做"。 */
+  const EMPTY_IDENTIFY_DEPS: IdentifySchedulerDeps = {
+    db,
+    runIdentify: async () => ({ tmdbId: null, title: null, reason: 'setup incomplete — engine is gated' }),
+    worker: { model: null as unknown as LanguageModel, tmdb: { search: async () => [], getDetails: async () => null } },
+  }
+  const EMPTY_SUBTITLE_REPORT: FindSubtitleBatchReport = {
+    installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null,
+  }
+
 
   const buildCurrent = async (): Promise<WatchClients> => {
     const { mappings, tmdb, reasoningModel } = await assemble(cfg, warn)
@@ -404,6 +431,45 @@ async function cmdWatch() {
     const findSubtitleWorkerTaskDeps = satisfied
       ? { lib, tmdb, mediaRoots: currentRoots(), targetLanguage: languagesNow().targetLanguages[0], runs }
       : null
+    // 第 2 步（C2）：daemonV2 的两条工作台执行体。跟着 holder 一起换代——密钥落库后
+    // preTick 重建，daemon 下一拍就拿到能用的客户端（getter 注入见 watchWiring.ts）。
+    //
+    // identify 的 tmdb 适配是把 TmdbClient 的四个方法拼成 IdentifyWorkerDeps 要的那一个
+    // getDetails（详情 + 中文标题 + 原始语言）。origin_lang 必须在这里落库：R21 的
+    // translatable 预判、D9 的日漫内嵌轨判定都以它为前提。
+    const identifyDeps: IdentifySchedulerDeps | null = (satisfied && tmdb && reasoningModel)
+      ? {
+          db,
+          runIdentify,
+          worker: {
+            model: reasoningModel,
+            tmdb: {
+              search: (mt, q, y) => tmdb.search(mt, q, y),
+              getDetails: async (mt, id) => {
+                const d = await tmdb.getDetails(mt, id)
+                if (!d) return null
+                // 中文标题与原始语言是**增益**（catch 兜住）：TMDB 的这两个副接口挂掉不该让
+                // 整次识别失败——身份认定只依赖 getDetails 本体（同 tmdbCatalog 的既有口径）。
+                const chinese = await tmdb.getChineseTitles(mt, id).catch(() => [])
+                const ol = await tmdb.getOriginLanguage(mt, id).catch(() => null)
+                return {
+                  id: Number(id), title: d.title || d.originalTitle || String(id),
+                  originalTitle: d.originalTitle ?? null, year: d.year, overview: d.overview,
+                  posterPath: d.posterPath, genreIds: d.genreIds,
+                  originLanguage: ol, chineseTitles: chinese,
+                }
+              },
+            },
+          },
+        }
+      : null
+    // 字幕 worker：与旧管线 find_subtitle 分支同门（makeFindSubtitleWorker），adapters 用
+    // holder 代际那一份 realignAdapters——**不 per-task 重建**。新架构里一轮巡检会连着跑几十个
+    // 作品，每个作品重建一整套 provider adapters（含 Zimuku 的 session 重读盘）纯属白付。
+    const subtitleWorkerV2 = (satisfied && reasoningModel)
+      ? makeFindSubtitleWorker({ model: reasoningModel, adapters: realignAdapters, cacheRoot, tmdb })
+      : null
+
     const orchestrateWorkerTaskDeps = satisfied
       ? { lib, tmdb, model: reasoningModel, now: () => Date.now(), runs }
       : null
@@ -416,6 +482,7 @@ async function cmdWatch() {
     return {
       mappings, tmdb, reasoningModel, realignAdapters, ingestPass,
       realignDeps, findSubtitleWorkerTaskDeps, orchestrateWorkerTaskDeps, reconcileAll,
+      identifyDeps, subtitleWorkerV2,
     }
   }
 
@@ -767,7 +834,58 @@ async function cmdWatch() {
   const subtitleSourcesWarning = zeroSubtitleSourcesWarningLine(process.env)
   if (subtitleSourcesWarning) console.warn(subtitleSourcesWarning)
 
-  const daemon = new ScoutDaemon(daemonDeps)
+  // 第 2 步（C2 + C16 + D5）：容器入口从此跑 ScoutDaemonV2（每日巡检模型）。
+  //
+  // 切换方式是**内部替换**，不是换 Dockerfile 的 CMD 指向 watchV2（D5 裁决）：上面 daemonDeps
+  // 里那 4 个运维器官（dbMaintenance / gcStaging / traceRetentionDays / 写探针清扫）的接线
+  // 天然留在这个函数里，不需要在 watchV2.ts 里重建第二份——重建 = 第二份实现 = 必然漂移，
+  // 本仓已经反复栽过（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。
+  //
+  // 旧 ScoutDaemon 的**代码保留、不再被构造**：翻译流仍挂在它的 dispatchTranslate 上，
+  // 第 4 步才迁到 daemonV2。故**翻译功能从这一步起停摆到第 4 步**——spec §4 第 2/3 步的验收
+  // 注记（C34 + C45）已明确这是已知且接受的过渡代价。上方 daemonDeps 字面量同样保留：
+  // 它是第 4 步接回翻译时的现成参照，且 handleWorkerTask 仍被 dashboard 的手动 redispatch 用。
+  const daemon = new ScoutDaemonV2(buildDaemonV2Deps({
+    db,
+    rootsProvider: currentRoots,
+    // holder 现取（spec A §4.2）：setup 模式下这两个是 null，此时 workPermitted 恒 false
+    // 把整轮巡检闸住，daemon 一次都不会读到它们；点火后同一个 getter 自然吃到新客户端。
+    // `?? throw` 形态的兜底不写在这里——那会把"闸住"变成"崩"，与 §4.7 步 5 的既有口径相反。
+    identifyProvider: () => clients.current.identifyDeps ?? EMPTY_IDENTIFY_DEPS,
+    subtitleWorker: (task) => {
+      const w = clients.current.subtitleWorkerV2
+      if (!w) return Promise.resolve(EMPTY_SUBTITLE_REPORT)
+      return w(task)
+    },
+    // 债务D5 的既有口径：settings.target_languages 行为级优先，每次求值。
+    targetLanguage: () => languagesNow().targetLanguages[0],
+    log,
+    now: () => Date.now(),
+    // ── D5 的 4 个运维器官：与上方 daemonDeps 用**同一批闭包**，不另建第二份 ──
+    gcOrphans,
+    bootTimeMs,
+    dbMaintenance: daemonDeps.dbMaintenance!,
+    // 写探针清扫（C16 第 4 项）：旧世界里它挂在 ingest 的走盘循环里（ingest.ts:894，顺便扫
+    // 本轮见过的每个目录），而 daemonV2 不跑 ingest——不在这里接就没有任何代码路径会清它，
+    // 而 daemonV2 自己每次 writableRoots() 探测都会在守备目录根上再留一枚新探针
+    // （2026-07-29 实测残留 175 个）。作用域取守备目录根一级：探针正是写在那一级的
+    // （isDirWritable(root)），逐目录递归扫是白付 IO。
+    sweepWriteProbes: () => {
+      let swept = 0
+      for (const root of currentRoots()) {
+        swept += sweepWriteProbes(root, (d) => { try { return readdirSync(d) } catch { return [] } })
+      }
+      return swept
+    },
+    runs,
+    traceRetentionDays: daemonDeps.traceRetentionDays!,
+    preTick: daemonDeps.preTick!,
+    workPermitted: daemonDeps.workPermitted!,
+    // C12：探针复用 files/streamProbe.ts 的既有实现（旧 ingest 接的是同一对函数），不写第二份。
+    probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
+    probeDuration: (videoPath: string) => probeDurationSec(videoPath),
+  }))
+
 
   const stop = () => {
     log('received shutdown signal')

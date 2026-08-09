@@ -76,6 +76,17 @@ export function listSubtitleQueue(db: ScoutDb, roots?: string[], now = Date.now(
   return [...byWork.values()]
 }
 
+/** 一个作品的字幕任务的 jobId，同时也是它 staging 沙盒的**目录名**
+ *  （`<root>/.subtitle-staging/<jobId>/`，见 files/stagingSandbox.ts allocate）。
+ *
+ *  抽出来导出是 C34 的刚性需求：gcOrphans 靠这个目录名判"这个工作台是不是正在被使用"，
+ *  daemon 侧必须能算出与 buildSubtitleTask **字节一致**的同一个字符串。两边各自手写一份
+ *  `subtitle:${workId}` 的话，任何一侧改了格式，GC 的保护就静默失效——沙盒会在 agent 正在
+ *  往里写的时候被 rm 掉，而测试里两边都自洽、全绿。本仓已因"留两份漂移实现"栽过多次。 */
+export function subtitleJobId(workId: string): string {
+  return `subtitle:${workId}`
+}
+
 /** 组装 FindSubtitleTask（一个作品的一簇）。 */
 export function buildSubtitleTask(item: SubtitleQueueItem, targetLanguage: string): FindSubtitleTask {
   // INNER 沙盒根：所有文件所在目录的公共祖先（同一作品通常同根，安全）
@@ -100,7 +111,7 @@ export function buildSubtitleTask(item: SubtitleQueueItem, targetLanguage: strin
     embeddedTmdbId: null,
   }))
   return {
-    jobId: `subtitle:${item.workId}`,
+    jobId: subtitleJobId(item.workId),
     mediaRoot,
     workUnitKind: 'work-dir',
     title: item.title,

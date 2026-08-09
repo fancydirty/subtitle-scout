@@ -213,7 +213,12 @@ function latestMtimeMs(dir: string): number {
   return latest
 }
 
-export function gcOrphans(mediaRoots: string[], activeJobIds: Set<string>, bootTimeMs?: number): number {
+/** activeJobIds 收成 `ReadonlySet`（2026-08-08 第 2 步 / C34）：本函数只对它调 `.has()`，
+ *  从不写。收窄成只读是为了让调用方能**直接**把 daemon 进程内那个活的 in-flight 集合传进来
+ *  （见 v2/daemonV2.ts 的 inFlightStagingJobIds），而不用为了满足类型多拷一份——拷一份的写法
+ *  在这里正好是危险的：GC 的判据是"这个工作台此刻是否在被使用"，任何一层拷贝都可能在 await
+ *  边界上变成陈旧快照，把跑了两小时的翻译工作台当孤儿 rm 掉。既有调用方传 `Set` 不受影响。 */
+export function gcOrphans(mediaRoots: string[], activeJobIds: ReadonlySet<string>, bootTimeMs?: number): number {
   let cleaned = 0
   // P2.4(复审 Important-1):translate 工作台 `.subtitle-translate` 与 find 的 `.subtitle-staging`
   // 同法清扫——daemon translate 每 job 落 `<root>/.subtitle-translate/<jobId>/`,无清扫则无界堆积。
