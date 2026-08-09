@@ -15,6 +15,7 @@ import type { ScoutDb } from '../v2/db.js'
 import type { IdentifySchedulerDeps } from '../v2/identifyScheduler.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
+import type { TranslateRunItemResult } from '../v2/translateWorkerTask.js'
 
 export interface WatchWiringArgs {
   db: ScoutDb
@@ -55,6 +56,16 @@ export interface WatchWiringArgs {
    *  开关，用户在 dashboard 里改。求值一次 = 把 watch 启动那一刻的开关冻死在进程里，用户关掉
    *  翻译后 handoff_translate 行要等容器重启才恢复复查——而它们正是最需要被放回来的那批。 */
   translateEnabled: () => boolean
+  /** 翻译一个视频（第 4 步 / C3 + R19）。生产实现是 `makeDaemonTranslateRunItem`，与手动
+   *  `translate-item` CLI 共用同一份组装（防两处漂移）。
+   *
+   *  **必须惰性**（同 identifyProvider 的 holder 口径 / spec A §4.2）：runItem 内部攥着 LLM
+   *  客户端与 adapters，而 secrets_version 变化时 preTick 会整体重建它们。组装时求值一次 =
+   *  把"点火前的 null 世界"冻死在进程里，wizard 里配完 TRANSLATE_* 也要等容器重启才生效。
+   *  故这里收的是"每次调用时才现建"的那个函数本身，buildDaemonV2Deps 只做透传、绝不调用。 */
+  translateRunItem: (videoPath: string) => Promise<TranslateRunItemResult>
+  /** 装盘成功后踢一脚扫描（R24：只有扫描有权把 sub_status 写成 covered，越早扫到越早解除停牌）。 */
+  requestIngest: () => void
   probe: (videoPath: string) => Promise<EmbeddedSubtitleTrack[] | null>
   probeDuration: (videoPath: string) => Promise<number | null>
 }
@@ -93,6 +104,12 @@ export function buildDaemonV2Deps(args: WatchWiringArgs): DaemonV2Deps {
     workPermitted: args.workPermitted,
     // D14：传函数本身（不是 `args.translateEnabled()` 求值一次）——daemonV2 每轮巡检现取。
     translateEnabled: args.translateEnabled,
+    // 第 4 步（C3 + R19）：翻译流的两条接线。同样传函数本身、绝不在这里调用——
+    // runItem 每次调用现建 LLM 客户端与 adapters（见 WatchWiringArgs.translateRunItem 的论证）。
+    // 漏接的伤害与那 4 个运维器官同型且更隐蔽：翻译流恒休眠，而这与"还没接翻译"完全无法区分
+    // （C3/C45 记的正是这个现状），界面、日志、库里都看不出差别。
+    translateRunItem: args.translateRunItem,
+    requestIngest: args.requestIngest,
     // C12：复用 files/streamProbe.ts 的既有实现（cli 给旧 ingest 接的是同一对函数），不写第二份。
     // 漏了这两行的后果是"测试绿、生产漏"：files.embedded_langs 继续全 NULL，
     // judge 规则 2 与 D9 的 translatable 预判照旧静默失效。

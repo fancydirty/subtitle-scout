@@ -3369,3 +3369,271 @@ describe('ScoutDaemonV2 阶段 3 · C13 sub_attempt 单调递增', () => {
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第 4 步：翻译流接进 daemonV2 —— 主进程内独立循环（R19 + C32 + C3）
+//
+// **循环形态与它的论证**（C32 要求形态必须明确）：照 spec §4 的建议——主巡检每轮**末尾**
+// 推进一次翻译，**单次只处理一个作品**。
+//
+// 为什么这个形态满足 R11「翻译流独立，不与识别/字幕互相阻塞」：
+//  · 不阻塞识别/字幕 —— 它跑在阶段 3 **之后**，此时两条上游工作台的快照都已消费完；
+//    翻译再慢也只是让"歇到明天"晚开始，不会让任何一个字幕活等它（用例 11 钉这条）。
+//  · 不被它们阻塞 —— 它有自己的取件谓词（sub_status='handoff_translate'）与自己的退避列
+//    （tr_recheck_after / D3），与字幕流的谓词严格互斥（C14），故字幕流的队列状态挡不住它。
+//    旧 daemon.ts 的设计恰恰相反（"translate 只在巡检世界全空时才领"= 被巡检阻塞），
+//    那正是 C3 记的"旧设计与 R11 正相反"。
+//  · 单次只处理一个作品 —— 一个作品的翻译是数分钟到数小时的付费 LLM。一轮吃光整个队列会
+//    把巡检拖成几十小时，期间删除清理（R6/R7 的地基）与两条工作台全被堵在后面。
+//    队列不会因此饿死：每轮巡检推进一个，且没被领到的行 tr_recheck_after 一列都没被碰过，
+//    下一轮照样是最优先的候选（谓词是 `IS NULL OR <= now`，不是"轮转指针"）。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + C3 + C32 + D6 + D10）', () => {
+  const NOW2 = 1_000_000_000_000
+  const V1 = '/media/Show/E01.mkv'
+  const V2 = '/media/Show/E02.mkv'
+
+  /** 一行 handoff_translate 的待翻文件（files + works 都齐，谓词是 INNER JOIN）。 */
+  function seedHandoff(
+    db: ReturnType<typeof openDb>,
+    path: string,
+    opts: { workId?: string; trRecheckAfter?: number | null; trAttempt?: number; subStatus?: string } = {},
+  ): void {
+    const workId = opts.workId ?? 'tmdb:1'
+    const dir = path.slice(0, path.lastIndexOf('/'))
+    if (!db.prepare('SELECT 1 FROM works WHERE id = ?').get(workId)) {
+      db.prepare('INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+        .run(workId, 'Show', 'tv', 'en', 1000, 1000)
+    }
+    db.prepare(
+      `INSERT INTO files (path, dir, filename, size, mtime, work_id, needs_subtitle, sub_status,
+                          sub_attempt, tr_attempt, tr_recheck_after, updated_at)
+       VALUES (?,?,?,?,?,?,1,?,7,?,?,?)`,
+    ).run(
+      path, dir, path.slice(path.lastIndexOf('/') + 1), BIG, 1000, workId,
+      opts.subStatus ?? 'handoff_translate', opts.trAttempt ?? 0, opts.trRecheckAfter ?? null, 1000,
+    )
+  }
+
+  function trRowOf(db: ReturnType<typeof openDb>, path: string) {
+    return db.prepare('SELECT sub_status, tr_attempt, tr_recheck_after FROM files WHERE path = ?')
+      .get(path) as { sub_status: string | null; tr_attempt: number; tr_recheck_after: number | null }
+  }
+
+  /** 直接驱动翻译推进一轮（绕开 24h 时间闸与前面三个阶段的噪音）。 */
+  async function advance(daemon: ScoutDaemonV2): Promise<void> {
+    await (daemon as any).advanceTranslateOnce()
+  }
+
+  it('🔴 到点的 handoff_translate 行被领走并跑 runItem（C3：翻译接回来了）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    const seen: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async (p: string) => { seen.push(p); return { status: 'installed' as const } },
+    }))
+    await advance(daemon)
+    expect(seen).toEqual([V1])
+    db.close()
+  })
+
+  it('🔴 用例 9：翻译开关关闭 → 不领新活（runItem 一次都不调）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    let calls = 0
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => false,
+      fileExists: () => true,
+      translateRunItem: async () => { calls++; return { status: 'installed' as const } },
+    }))
+    await advance(daemon)
+    expect(calls).toBe(0)
+    // 且**一列都不许动**：关掉翻译不是"处理成失败"，这批行归阶段 2.6 复查闸管（D14a）
+    expect(trRowOf(db, V1)).toMatchObject({ sub_status: 'handoff_translate', tr_attempt: 0, tr_recheck_after: null })
+    db.close()
+  })
+
+  it('🔴 translateRunItem 未注入 → 整支休眠（缺省接线零成本，同 probe/gcStaging 的既有口径）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { now: () => NOW2, translateEnabled: () => true, fileExists: () => true }))
+    await advance(daemon)
+    expect(trRowOf(db, V1).tr_recheck_after).toBeNull()
+    db.close()
+  })
+
+  it('🔴 用例 2（端到端）：tr_recheck_after 未到点的不被领（D6 防付费 LLM 热循环）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1, { trRecheckAfter: NOW2 + 1 })
+    let calls = 0
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2, translateEnabled: () => true, fileExists: () => true,
+      translateRunItem: async () => { calls++; return { status: 'installed' as const } },
+    }))
+    await advance(daemon)
+    expect(calls).toBe(0)
+    db.close()
+  })
+
+  it('🔴 单次只处理一个作品（C32 形态约束：不许一轮吃光队列）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1, { workId: 'tmdb:1' })
+    seedHandoff(db, V2, { workId: 'tmdb:2' })
+    const seen: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2, translateEnabled: () => true, fileExists: () => true,
+      translateRunItem: async (p: string) => { seen.push(p); return { status: 'installed' as const } },
+    }))
+    await advance(daemon)
+    expect(seen).toHaveLength(1)
+    // 没被领的那行一列都没动 → 下一轮它还是最优先候选（不会饿死）
+    const untouched = seen[0] === V1 ? V2 : V1
+    expect(trRowOf(db, untouched).tr_recheck_after).toBeNull()
+    db.close()
+  })
+
+  it('🔴 用例 5（端到端）：installed → 不写 covered + 清 tr_attempt + 写 tr_recheck_after', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1, { trAttempt: 2 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2, translateEnabled: () => true, fileExists: () => true,
+      translateRunItem: async () => ({ status: 'installed' as const }),
+    }))
+    await advance(daemon)
+    const r = trRowOf(db, V1)
+    expect(r.sub_status).toBe('handoff_translate')          // ① 不写 covered（R24 扫描独占）
+    expect(r.tr_attempt).toBe(0)                            // ② 清额度
+    expect(r.tr_recheck_after).toBe(NOW2 + 86_400_000)      // ③ 出队（D6）
+    db.close()
+  })
+
+  it('🔴 用例 6（端到端）：no-source → unsolvable', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2, translateEnabled: () => true, fileExists: () => true,
+      translateRunItem: async () => ({ status: 'no-source' as const }),
+    }))
+    await advance(daemon)
+    expect(trRowOf(db, V1).sub_status).toBe('unsolvable')
+    db.close()
+  })
+
+  it('🔴 用例 7（端到端）：held 满 3 次 → unsolvable；未满 → 退避且状态不变', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1, { trAttempt: 0 })
+    const mk = (now: number) => new ScoutDaemonV2(mkDeps(db, {
+      now: () => now, translateEnabled: () => true, fileExists: () => true,
+      translateRunItem: async () => ({ status: 'held' as const, reason: '术语漂移' }),
+    }))
+    await advance(mk(NOW2))
+    expect(trRowOf(db, V1)).toMatchObject({ tr_attempt: 1, sub_status: 'handoff_translate' })
+    await advance(mk(NOW2 + 86_400_000))
+    expect(trRowOf(db, V1)).toMatchObject({ tr_attempt: 2, sub_status: 'handoff_translate' })
+    await advance(mk(NOW2 + 2 * 86_400_000))
+    expect(trRowOf(db, V1)).toMatchObject({ tr_attempt: 3, sub_status: 'unsolvable' })
+    db.close()
+  })
+
+  it('🔴 用例 8（端到端 / D10）：跑 LLM 期间扫描写了 covered → 回写不生效且被观察到', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1, { trAttempt: 1 })
+    const logs: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2, translateEnabled: () => true, fileExists: () => true,
+      log: (m: string) => logs.push(m),
+      // 在"LLM 跑着"的这一刻模拟扫描抢先写 covered（R24 扫描独占）——这就是 D10 的真实剧本
+      translateRunItem: async () => {
+        db.prepare(`UPDATE files SET sub_status='covered' WHERE path=?`).run(V1)
+        return { status: 'installed' as const }
+      },
+    }))
+    await advance(daemon)
+    const r = trRowOf(db, V1)
+    expect(r.sub_status).toBe('covered')     // 磁盘事实没被翻译回写覆盖
+    expect(r.tr_attempt).toBe(1)             // 一列都没动
+    // 守卫匹配 0 行必须**可观察**：否则你不知道发生过覆盖，也不知道 tr_recheck_after 没写上
+    expect(logs.some((l) => l.includes('守卫'))).toBe(true)
+    db.close()
+  })
+
+  it('🔴 用例 10（R12）：文件已不存在 → 跳过、不调 runItem、**不计 tr_attempt**', async () => {
+    // R12 + C23 的同一条原则（字幕流的 dropVanishedFiles 已立过）：文件没了不是"一次失败尝试"。
+    // 让幽灵吃掉失败额度就是把"满 3 次转 unsolvable"的判据整个污染——一个已被删除的文件会在
+    // 3 轮后被写成 unsolvable，而它压根不该再有任何状态（R7：下一轮扫描会把这行整个删掉）。
+    const db = openDb(':memory:')
+    seedHandoff(db, V1, { trAttempt: 1 })
+    let calls = 0
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2, translateEnabled: () => true,
+      fileExists: () => false,                       // 复用 1b-4 的注入点，不写第二份探针
+      translateRunItem: async () => { calls++; return { status: 'installed' as const } },
+    }))
+    await advance(daemon)
+    expect(calls).toBe(0)
+    const r = trRowOf(db, V1)
+    expect(r.tr_attempt).toBe(1)             // 不计数
+    expect(r.sub_status).toBe('handoff_translate')
+    db.close()
+  })
+
+  it('🔴 runItem 抛错 → 隔离（不掀翻巡检）且按失败轨记账', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1, { trAttempt: 0 })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2, translateEnabled: () => true, fileExists: () => true,
+      translateRunItem: async () => { throw new Error('LLM boom') },
+    }))
+    await expect(advance(daemon)).resolves.toBeUndefined()
+    // 抛错必须记一次失败额度（否则一个稳定抛错的文件永远攒不满 3 次 → 每轮重跑，C13 同型）
+    expect(trRowOf(db, V1).tr_attempt).toBe(1)
+    expect(trRowOf(db, V1).tr_recheck_after).toBe(NOW2 + 86_400_000)
+    db.close()
+  })
+
+  it('🔴 用例 11：翻译不阻塞识别/字幕——翻译跑在阶段 3 之后，且它抛错也不影响两条工作台', async () => {
+    // 形态论证的可测部分（见本 describe 顶部）：断言**顺序**（识别、字幕都先跑完）+ **隔离**
+    // （翻译整支炸掉，前面阶段的产出照样落库、巡检照样算成功推进时间闸）。
+    const db = openDb(':memory:')
+    // 一个待识别目录 + 一个待找字幕的作品 + 一个待翻译的行
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, updated_at)
+                VALUES (?,?,?,?,?,?,?)`)
+      .run('/media/New/E01.mkv', '/media/New', 'E01.mkv', BIG, 1000, '/media/New', 1000)
+    db.prepare('INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)')
+      .run('tmdb:9', 'Sub', 'tv', 1000, 1000)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id, needs_subtitle, updated_at)
+                VALUES (?,?,?,?,?,?,1,?)`)
+      .run('/media/Sub/E01.mkv', '/media/Sub', 'E01.mkv', BIG, 1000, 'tmdb:9', 1000)
+    seedHandoff(db, V1)
+
+    const order: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      roots: ['/media'],
+      listVideoFiles: () => ['/media/New/E01.mkv', '/media/Sub/E01.mkv', V1],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      fileExists: () => true,
+      translateEnabled: () => true,
+      identify: {
+        db,
+        runIdentify: async () => { order.push('identify'); return { tmdbId: null, title: null, reason: 'noop' } },
+        worker: {} as any,
+      },
+      subtitleWorker: async () => {
+        order.push('subtitle')
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+      translateRunItem: async () => { order.push('translate'); throw new Error('translate exploded') },
+    }))
+    // 整轮巡检必须**成功**（时间闸推进），翻译的爆炸被隔离
+    await expect((daemon as any).runInspection(new AbortController().signal)).resolves.toBeUndefined()
+    expect(order.indexOf('translate')).toBe(order.length - 1)     // 翻译在最后
+    expect(order).toContain('identify')
+    expect(order).toContain('subtitle')
+    db.close()
+  })
+})

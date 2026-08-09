@@ -357,6 +357,12 @@ spec 原把 D2 归在"扫描删除清理"下 → 用裸 SQL 造数据的测试�
   旧翻译流从第 2 步起饿死，直到第 4 步重接（窗口期翻译不可用，须在验收里注明）
 - `gcStaging` 的 in-flight 集合传的是 `new Set()`（`cli/index.ts:649`）→ 新架构下无来源，
   会 GC 掉正在跑的翻译工作台；D5 只检查"接线了"，未检查"接对了"
+  - **第 2 步已落地一半**：`watchWiring.ts` 现传 daemon 的真实 `inFlightStagingJobIds`
+  - **🔴 4-3 发现另一半仍开着**：翻译循环**没有**把工作台 jobId 登记进那个集合（字幕流有）。
+    根因是翻译 jobId 是 `translateItemCommand.ts:276` 的 `daemon-${Date.now()}` —— 每次调用都不同，
+    循环层无法预知、无法登记。于是跑几小时的翻译工作台，**唯一保护是 GC 的 mtime 活性窗口**。
+    修法要改 jobId 生成方式（牵动 GC 语义与工作台目录命名），归第 7 步或第 4 步收尾。
+    注：`translateItemId`（4-2）已提供稳定身份，可作为 jobId 的派生源
 
 ---
 
@@ -798,6 +804,19 @@ R24 让扫描承担"每个视频当前有没有同名中文字幕"这项职责�
 | `no-source` / `no-embedded` | sub_status='unsolvable'（停牌，仍周频复查）|
 | `held`（质量闸拦下） | tr_attempt+1，tr_recheck_after=明天；满 3 次 → unsolvable |
 | `extract-failed` / `probe-failed` / `write-failed` | 同上退避轨 |
+
+**三种失败态与 `held` 共用同一个额度**（4-3 实现时裁决）：分开各记一套的话，交替出现两种失败的
+文件每种都攒不满上限 → 永远停在退避轨、每天烧一个 session，正是 `translateWorkerTask.ts:167`
+注释记的 job29 形状（重试 11 次全同样错误）。
+
+**语言集合的口径（4-3 裁决）**：`SUPPORTED_SOURCE_LANGS` 原本把两件事混成一个集合，现拆为
+- `FETCHABLE_SOURCE_LANGS = ['en']` —— 外挂抓取腿（MVP 仅 en，R20）
+- `EXTRACTABLE_SOURCE_LANGS = ['en','ja']` —— 内嵌轨抽取腿（R20 明写 en/ja 皆可）
+- `SUPPORTED_SOURCE_LANGS` 降为二者并集的**派生量**，行为零变化
+
+不把 `fetchSourceSub` 的语言门直接收窄到 `['en']`：`resolveSource.ts:68` 的 ja 分支 fetch 是
+**抽轨失败后的兜底腿**，是 jimaku 未落地时的预留接入点（C6 已记为已知缺口）。字面收窄会把一个
+"待接入"变成"已删除"，且 `fetchSourceSub.test.ts` 有一条用例正钉着"origin ja 过门"这个设计意图。
 
 **全部回写必须带守卫** `WHERE sub_status='handoff_translate'`（D10）——
 翻译等 LLM 的几分钟内扫描可能已把状态写成 covered，无守卫会被覆盖。

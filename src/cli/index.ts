@@ -897,6 +897,36 @@ async function cmdWatch() {
     // 翻译后，停在 handoff_translate 的行下一轮就该恢复复查，不用重启容器——它们正是 C41
     // 那批"翻译不启动就永久卡死"的行，最不该等一次重启。
     translateEnabled: () => !!tryAutoTranslateCfg(cfg) && settingsRepo.get('ai_translate_enabled') === 'true',
+    // 第 4 步（C3 + R19）：翻译流真正接回来的那根线。**每次调用现建**（不是启动时建一次）：
+    // runItem 内部攥着 LLM 客户端与 adapters，而 secrets_version 变化时 preTick 会整体重建
+    // 它们——建一次就等于把"点火前的世界"冻死在进程里，wizard 里配完 TRANSLATE_* 还得重启容器。
+    //
+    // 凭证走 tryAutoTranslateCfg（与上方 translateEnabled 逐字同源）：只认显式 TRANSLATE_* 三件套，
+    // **绝不回退 LLM_*** 弱模型——回退的后果是拿一个过不了质量闸的模型反复 held，每次都是一个
+    // 付费 session（旧世界实案：job29 重试 11 次全同样错误）。凭证不全时返回 no-embedded 而不是
+    // no-source：no-source 是"确实没有源"这个**终局事实**，会按 §5 映射直接写 unsolvable 停牌，
+    // 而"用户还没配翻译凭证"根本不是关于源的判断——拿它去判死一批文件是错的。
+    // （translateEnabled 双门控此时本就为 false，翻译流不会领活；这一支是防御性的第二道。）
+    //
+    // 与手动 `translate-item` CLI 共用 makeDaemonTranslateRunItem → makeTranslateAgentDeps
+    // 这一份组装，不在这里另写第二份（两份必然漂移，本仓已反复栽过）。
+    translateRunItem: async (videoPath: string) => {
+      const translateCfg = tryAutoTranslateCfg(cfg)
+      if (!translateCfg) {
+        return { status: 'no-embedded' as const, reason: 'translate 未启用：需配 TRANSLATE_MODEL/TRANSLATE_BASE_URL/TRANSLATE_API_KEY 三件套' }
+      }
+      const adapters = await buildAdapters(emitProviderEvent, cfg, warn)
+      const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
+      const runItem = makeDaemonTranslateRunItem({
+        db, cfg: translateCfg, fetchSourceSub, tmdb: clients.current.tmdb, roots: currentRoots,
+      })
+      return runItem(videoPath)
+    },
+    // 装盘成功踢一脚扫描：新 sidecar 越早被扫到、covered 越早落库（R24：只有扫描有权写它，
+    // 翻译 worker 的成功报告不算）。复用上方同一个 ingestTrigger 闭包，不建第二个。
+    requestIngest: () => {
+      void ingestTrigger().catch((e) => log(`warn: 翻译后踢一脚扫描失败（下一轮自然巡检仍会确认）: ${String(e)}`))
+    },
     // C12：探针复用 files/streamProbe.ts 的既有实现（旧 ingest 接的是同一对函数），不写第二份。
     probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
     probeDuration: (videoPath: string) => probeDurationSec(videoPath),

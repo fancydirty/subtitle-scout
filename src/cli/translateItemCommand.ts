@@ -17,6 +17,8 @@ import { buildAdapters } from '../adapters/buildAdapters.js'
 import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { CHINESE_SIDECAR_TAGS } from '../agent/languages.js'
+// C20：itemId 的唯一构造入口 + work_id 的唯一解析入口（自有 id 空间，不在本文件另写解析）。
+import { translateItemId, tmdbIdFromOwnId } from '../v2/ownIds.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -179,26 +181,48 @@ export function makeTranslateAgentDeps(
   }
 }
 
-/** db 定位任务的 itemId/origin_lang/tmdb 身份(供 agent 任务构造与 TMDB 富化)。 */
+/** db 定位任务的 itemId/origin_lang/tmdb 身份（供 agent 任务构造与 TMDB 富化）。
+ *
+ *  ── 为什么读 files/works 而不是 episodes/movies（C4，与 4-2 对 fetchSourceSub 的处置同源）──
+ *  4-2 修了抓源腿的 locate，**漏了这一个**。而这里是生产路径上 itemId 的真实构造点：
+ *  daemonV2 的翻译循环 → makeDaemonTranslateRunItem → 本函数 → agent task.itemId →
+ *  translateWorker.tools 的 seriesKeyOf（剧级术语表）。新架构下 episodes/movies 是空表，
+ *  不改的后果是**翻译流刚接回来就把全库待翻文件判成"无源停牌"**：每个文件都命中
+ *  `identity === null` → runItem 返回 no-source → 按 §5 映射写 unsolvable。
+ *  而 no-source 是一个**诚实终态**，日志上看不出这是 bug，只能看到"翻译判定全库都没源"。
+ *
+ *  ── 为什么 itemId 必须调 `translateItemId` 而不是在这里拼（C20）──
+ *  形态是 `<work_id>/<sha1(path)前12>`，唯一构造入口在 ownIds.ts。手拼一份同形字符串今天
+ *  也能过测试，但那就有了两份形态定义；漂移的那天（比如有人图省事改成拼 basename）
+ *  glossary key 会退化成每文件一个 → 同剧第 2 集拿不到第 1 集冻结的术语表 → 人名地名每集
+ *  换译法（实案：同一模型同剧两 run 分别选出"东国 / 奥斯塔尼亚"）。纯质量漂移，无断言会红。
+ *
+ *  ── 不 UNION 旧表兜底（照 4-2 的既有裁决）──
+ *  兜底看似更稳，实则让新架构的断裂永久隐形：只要旧表还有存量行，生产与测试都会表现得像
+ *  接通了，而真实数据在 files/works 里的那批文件依然拿不到身份。INNER JOIN works 同理——
+ *  未识别行（work_id IS NULL）必须返回 null：没有 work_id 就构造不出合法 itemId，
+ *  塞一个占位值就是把 C20 的伤害引进来。 */
 export function locateTranslateIdentity(
   db: import('../v2/db.js').ScoutDb,
   videoPath: string,
 ): { itemId: string; title: string; originLang: string | null; tmdbId?: string; mediaType?: 'tv' | 'movie' } | null {
-  const ep = db.prepare(
-    `SELECT e.id AS itemId, e.series_id AS seriesId, s.name AS title, s.origin_lang AS originLang
-       FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.path = ?`,
-  ).get(videoPath) as { itemId: string; seriesId: string; title: string; originLang: string | null } | undefined
-  if (ep) {
-    const tmdbId = ep.seriesId.startsWith('tmdb:') ? ep.seriesId.slice(5) : undefined
-    return { itemId: ep.itemId, title: ep.title, originLang: ep.originLang, tmdbId, mediaType: 'tv' }
+  const row = db.prepare(
+    `SELECT f.work_id AS workId, w.title AS title, w.origin_lang AS originLang, w.media_type AS mediaType
+       FROM files f JOIN works w ON f.work_id = w.id
+      WHERE f.path = ?`,
+  ).get(videoPath) as { workId: string; title: string; originLang: string | null; mediaType: string } | undefined
+  if (!row) return null
+  // work_id 形如 'tmdb:123'，复用自有 id 空间的解析入口（不在这里 slice(5)——那是第二份解析）。
+  const tmdbId = tmdbIdFromOwnId(row.workId) ?? undefined
+  return {
+    itemId: translateItemId(row.workId, videoPath),
+    title: row.title,
+    originLang: row.originLang,
+    tmdbId,
+    // works.media_type 的值域是 'tv' | 'movie'（识别时写入）；其它值一律不传，
+    // 让 TMDB 富化那一支自然跳过，而不是硬转类型骗过编译器。
+    mediaType: row.mediaType === 'tv' || row.mediaType === 'movie' ? row.mediaType : undefined,
   }
-  const mv = db.prepare('SELECT id, name, origin_lang FROM movies WHERE path = ?')
-    .get(videoPath) as { id: string; name: string; origin_lang: string | null } | undefined
-  if (mv) {
-    const tmdbId = mv.id.startsWith('tmdb:') ? mv.id.slice(5) : undefined
-    return { itemId: mv.id, title: mv.name, originLang: mv.origin_lang, tmdbId, mediaType: 'movie' }
-  }
-  return null
 }
 
 export type DaemonTranslateRunItemResult = {

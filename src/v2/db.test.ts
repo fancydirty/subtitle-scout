@@ -40,12 +40,12 @@ describe('db 基座', () => {
     // v26（parked_paths.embedded_tmdb_id）后是 '19'；v27（认领退役，DROP identify_overrides）后是 '20'；
     // v28（字幕时间轴校验落库：subtitle_verify 表）后是 '21'；v29（jobs.lease_started_at
     // 稳定 claim 锚点，修活动页秒表冻结）后是 '22'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '31' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '31' })
   })
 
   it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
@@ -97,7 +97,7 @@ describe('db 基座', () => {
     expect(freshCols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '30' })
+    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '31' })
     fresh.close()
 
     // migrate from prior (schema_version 13 = v20 终态，无负缓存列)
@@ -120,7 +120,7 @@ describe('db 基座', () => {
     expect(cols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '31' })
     // 存量行默认：retry_count=0，其余可空
     expect(db.prepare('SELECT retry_count, next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?')
       .get('/media/a.mkv')).toEqual({
@@ -157,7 +157,7 @@ describe('db 基座', () => {
     expect(db.prepare('SELECT id, started_at, decision, llm_calls, assrt_calls FROM runs').get()).toEqual({
       id: 1, started_at: 123, decision: 'translate:held', llm_calls: null, assrt_calls: null,
     })
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
   })
 
   it('v23：translate_glossaries 表存在;v15 老库升级后可用', () => {
@@ -169,7 +169,7 @@ describe('db 基座', () => {
     const cols = (db.prepare('PRAGMA table_info(translate_glossaries)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(['series_key', 'terms_json', 'updated_at'])
     db.prepare("INSERT INTO translate_glossaries VALUES ('tmdb:1', '[]', 1)").run()
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     db.close()
   })
 
@@ -226,7 +226,7 @@ describe('db 基座', () => {
     raw.close()
 
     const db = openDb(p)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     // 表建出来且可写
     expect(() =>
       db.prepare(
@@ -242,7 +242,7 @@ describe('db 基座', () => {
 
     // 幂等：重开不重跑（版本门），且即便重跑 IF NOT EXISTS 也不炸
     const db2 = openDb(p)
-    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     db2.close()
   })
 
@@ -276,7 +276,7 @@ describe('db 基座', () => {
     raw.close()
 
     const db = openDb(p)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     // 列被补出来
     const cols = new Set(
       (db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((c) => c.name),
@@ -294,7 +294,7 @@ describe('db 基座', () => {
 
     // 幂等：重开不重跑（版本门到 '22' 就停），即便 guard 再跑一遍也因列已存在而跳过 ALTER，不炸
     const db2 = openDb(p)
-    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     db2.close()
   })
 
@@ -451,7 +451,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19+详情页富化 六条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -575,7 +575,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19+详情页富化 四条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -669,7 +669,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19+详情页富化 三条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -774,7 +774,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19+详情页富化 两条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '30' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '31' })
 
     // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
     expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())
@@ -825,8 +825,9 @@ describe('v25 migration: parked_paths raw data columns', () => {
     // v33（D19/C44 废止 unavailable 第五态的存量行）后是 27 条，落库值随之是 '27'。
     // v34（files.sub_attempt，D22 的 NOT NULL DEFAULT 0）后是 28 条；v35（files.translatable，
     // R21/D9 的可救性三态列）后是 29 条，落库值随之是 '29'。v36（works.provider_ids，C5/C21
-    // 翻译抓源腿的 imdb 命门）后是 30 条，落库值随之是 '30'。
-    expect(MIGRATIONS.length).toBe(30)
+    // 翻译抓源腿的 imdb 命门）后是 30 条，落库值随之是 '30'。v37（files.tr_attempt +
+    // tr_recheck_after，D3/D6 翻译轨自己的退避轨）后是 31 条，落库值随之是 '31'。
+    expect(MIGRATIONS.length).toBe(31)
 
     // Insert a parked path with raw data（embedded_langs 与 episodes/movies 同构：JSON 数组串）
     db.prepare(`
@@ -1275,6 +1276,128 @@ describe('v36 迁移：works.provider_ids（C5 + C21）', () => {
       .run('tmdb:1', 'The Rig', 'tv', '{"tmdb":"1","imdb":"tt14827638"}', 1000, 1000)
     const row = db.prepare('SELECT provider_ids FROM works WHERE id = ?').get('tmdb:1') as { provider_ids: string }
     expect(JSON.parse(row.provider_ids)).toEqual({ tmdb: '1', imdb: 'tt14827638' })
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v37（spec §4 第 4 步 · 裁决 D3 + D6）：files 表加 tr_attempt / tr_recheck_after
+// ——翻译流**自己的**退避轨。
+//
+// 为什么必须是独立两列而不是复用字幕轨的 sub_attempt/recheck_after（D3，与 C7 同型）：
+// C7 已经用实测证明过一列多主的后果——`attempt` 被识别轨与字幕轨共用，identifyScheduler
+// 在识别成功时把它归零，于是字幕轨攒了几天的失败额度被一次识别重跑洗掉，R10 的"满 7 次
+// 移交翻译"永远走不到。翻译轨若复用 sub_attempt 是同一个坑的第三次：翻译失败会把
+// 字幕轨的额度顶上去（本该 7 次的文件 4 次就停牌），而字幕轨的停牌写入又会把翻译的
+// 退避时刻覆盖掉（recheck_after 在 3-2 里是"+7 天"，翻译轨要的是"明天"）。
+//
+// 为什么 tr_attempt 必须 `INTEGER NOT NULL DEFAULT 0`（同 D22，本仓第五次面对这个坑）：
+// 分流谓词是 `tr_attempt >= 3`（held 满 3 次 → unsolvable），SQL 三值逻辑下 `NULL >= 3`
+// 求值为 **unknown**（不是 false）→ 谓词永不命中 → "翻译反复失败就停牌"这条通路静默失效，
+// 一个模型系统性过不了闸的文件会被无限重试，每次都是一个付费 LLM session。
+//
+// 为什么 tr_recheck_after 刻意**可空**（与 tr_attempt 相反，判据是"NULL 意味着什么"）：
+// 它是"下次该轮到这一行"的时刻，NULL = "从没被翻译流碰过" = **应当立刻可领**。
+// 翻译工作台的谓词因此必须写成 `(tr_recheck_after IS NULL OR tr_recheck_after <= now)`。
+// 反过来若给它 `NOT NULL DEFAULT 0`，0 也 `<= now` 恒成立，语义上等价——但 3-2 刚把
+// 字幕轨的 recheck_after 定成可空且用 `IS NULL OR` 读，两条轨对同一概念用相反的表示法
+// 是纯粹的认知负担，且 D18 的教训是"NULL 语义必须写死"而不是"必须消灭 NULL"。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('v37 迁移：files.tr_attempt / tr_recheck_after（D3 + D6）', () => {
+  function replayTail(db: ScoutDb): void {
+    for (let i = 17; i < MIGRATIONS.length; i++) {
+      const migration = MIGRATIONS[i]
+      if (typeof migration === 'function') migration(db)
+      else db.exec(migration)
+    }
+  }
+
+  function colInfo(db: ScoutDb, table: string, col: string) {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string; type: string; notnull: number; dflt_value: string | null
+    }>).find((c) => c.name === col)
+  }
+
+  it('🔴 用例 5：tr_attempt 是 INTEGER NOT NULL DEFAULT 0（D22 同型三值逻辑红线）', () => {
+    const db = openDb(':memory:')
+    const c = colInfo(db, 'files', 'tr_attempt')
+    expect(c).toBeDefined()
+    expect(c!.type).toBe('INTEGER')
+    // NOT NULL：可空的话 `tr_attempt >= 3` 在 NULL 上是 unknown → held 满 3 次转
+    // unsolvable 静默失效 → 付费 LLM 无限重试同一条过不了闸的字幕
+    expect(c!.notnull).toBe(1)
+    // DEFAULT 0：与 sub_attempt 同理，1b-3 的指纹变化清空按 dflt_value 回落。
+    // tr_attempt 尚未进 FINGERPRINT_RESET_COLUMNS（换片源时该不该清是另一个判断），
+    // 但 DEFAULT 的第二个作用在今天就是 load-bearing 的：daemonV2 的 upsert 列清单里
+    // 没有 tr_attempt，每个新扫到的文件全靠这条 DEFAULT 拿到 0 而不是撞 NOT NULL 约束。
+    expect(c!.dflt_value).toBe('0')
+    db.close()
+  })
+
+  it('🔴 用例 5b：tr_recheck_after 可空（NULL = 从没被翻译流碰过 = 立刻可领）', () => {
+    const db = openDb(':memory:')
+    const c = colInfo(db, 'files', 'tr_recheck_after')
+    expect(c).toBeDefined()
+    expect(c!.type).toBe('INTEGER')
+    expect(c!.notnull).toBe(0)
+    db.close()
+  })
+
+  it('🔴 用例 5c：新插入行 tr_attempt 自动为 0（不写这一列的写入方也安全）', () => {
+    // daemonV2 的 upsert 语句列清单里没有 tr_attempt（它只写机械事实）。若靠"调用方
+    // 记得写"，漏一个写入点就是撞 NOT NULL 约束把整轮扫描炸掉——这正是 D22 注释里
+    // 那条"加列当天生产静默崩溃"的定时炸弹形态。
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, updated_at)
+                VALUES (?,?,?,?,?,?)`).run('/m/tr.mkv', '/m', 'tr.mkv', 100, 1000, 1000)
+    const row = db.prepare('SELECT tr_attempt, tr_recheck_after FROM files WHERE path = ?')
+      .get('/m/tr.mkv') as { tr_attempt: number; tr_recheck_after: number | null }
+    expect(row.tr_attempt).toBe(0)
+    expect(row.tr_recheck_after).toBeNull()
+    db.close()
+  })
+
+  it('🔴 用例 5d：存量行升级上来 tr_attempt 落 0 而非 NULL（ALTER 的 DEFAULT 回填）', () => {
+    // fresh install 与升级路径必须落到同一个值。测试用的 :memory: 永远是 fresh install，
+    // 两条路径分叉过的话只有老库静默失效，在 CI 里完全隐形。
+    const db = openDb(':memory:')
+    db.exec('ALTER TABLE files DROP COLUMN tr_attempt')
+    db.exec('ALTER TABLE files DROP COLUMN tr_recheck_after')
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, updated_at)
+                VALUES (?,?,?,?,?,?)`).run('/m/legacy-tr.mkv', '/m', 'legacy-tr.mkv', 100, 1000, 1000)
+    replayTail(db)
+    const row = db.prepare('SELECT tr_attempt, tr_recheck_after FROM files WHERE path = ?')
+      .get('/m/legacy-tr.mkv') as { tr_attempt: number; tr_recheck_after: number | null }
+    expect(row.tr_attempt).toBe(0)
+    expect(row.tr_recheck_after).toBeNull()
+    db.close()
+  })
+
+  it('🔴 用例 5e：幂等——重放两次不撞 duplicate column', () => {
+    const db = openDb(':memory:')
+    expect(() => { replayTail(db); replayTail(db) }).not.toThrow()
+    db.close()
+  })
+
+  it('🔴 用例 5f：老库无 files 表 → 迁移不抛（照 v30–v36 的条件式写法）', () => {
+    const db = openDb(':memory:')
+    db.exec('DROP TABLE files')
+    expect(() => replayTail(db)).not.toThrow()
+    db.close()
+  })
+
+  it('🔴 用例 5g：1b-3 的指纹清空逻辑读得出 tr_attempt 的 dflt_value（不会 continue 跳过）', () => {
+    // 这条钉的是 D22 注释点名的那处咬合：fingerprintResetColumns 对 NOT NULL 列按
+    // dflt_value 回落，读不出 DEFAULT 就 `continue` 跳过该列。tr_attempt 今天还不在
+    // FINGERPRINT_RESET_COLUMNS 里，但这个 PRAGMA 契约是"将来把它加进去时不会当场炸"
+    // 的前提——而"加进去"是一行改动，没有这条断言的话它会在加进去的那一天才暴露。
+    const db = openDb(':memory:')
+    const info = db.prepare('PRAGMA table_info(files)').all() as Array<{
+      name: string; notnull: number; dflt_value: string | null
+    }>
+    const tr = info.find((c) => c.name === 'tr_attempt')!
+    expect(tr.notnull).toBe(1)
+    expect(tr.dflt_value).not.toBeNull()   // ← null 会让回落逻辑跳过该列
     db.close()
   })
 })

@@ -35,6 +35,11 @@ function mkArgs(over: Record<string, any> = {}) {
       preTick: async () => {},
       workPermitted: () => true,
       translateEnabled: () => false,
+      // 第 4 步的两条翻译接线。**刻意在 WatchWiringArgs 里是必填**（同那 4 个运维器官的手法）：
+      // 漏接不报错、只是翻译流恒休眠，而那与"还没接翻译"完全无法区分（C3/C45）。
+      // 让类型层强制每个构造点都想一次，比事后靠一条断言去追要可靠。
+      translateRunItem: async () => ({ status: 'installed' as const }),
+      requestIngest: () => {},
       probe: async () => null,
       probeDuration: async () => null,
       ...over,
@@ -208,5 +213,62 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
     const body = m![1]
     expect(body).toContain('tryAutoTranslateCfg')
     expect(body).toContain('ai_translate_enabled')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第 4 步（C3 + R19）：翻译流的接线。
+//
+// 这一条与那 4 个运维器官是**同一类伤害**：漏接不报错，只是翻译从此永不推进——而"翻译永不
+// 推进"恰恰是本步开工前的现状（C3/C45：daemonV2 里 translate 零命中），所以漏接之后的系统
+// 与漏接之前**完全无法区分**，界面上、日志上、库里都看不出差别。故必须逐条钉住。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('buildDaemonV2Deps · 翻译流接线（第 4 步 / C3 + R19）', () => {
+  it('🔴 translateRunItem 被接上（漏接 = 翻译流恒休眠，与"没接翻译"不可区分）', () => {
+    const runItem = vi.fn(async () => ({ status: 'installed' as const }))
+    const { db, args } = mkArgs({ translateRunItem: runItem })
+    const deps = buildDaemonV2Deps(args as any)
+    expect(deps.translateRunItem).toBeDefined()
+    db.close()
+  })
+
+  it('🔴 translateRunItem 是**惰性取用**（不在组装时求值一次）', () => {
+    // 与 identify holder 同一条既有理由（spec A §4.2）：翻译 runItem 内部攥着 LLM 客户端与
+    // adapters，而 secrets_version 变化时 preTick 会整体重建它们。组装时求值一次 =
+    // 把"点火前的 null 世界"冻死在进程里，wizard 里配完 TRANSLATE_* 也要等容器重启才生效。
+    let built = 0
+    const { db, args } = mkArgs({
+      translateRunItem: () => { built++; return Promise.resolve({ status: 'installed' as const }) },
+    })
+    buildDaemonV2Deps(args as any)
+    expect(built).toBe(0)      // 只组装、不调用
+    db.close()
+  })
+
+  it('🔴 requestIngest 被接上（装盘成功踢一脚扫描，R24 只有扫描有权写 covered）', () => {
+    const { db, args } = mkArgs({ requestIngest: vi.fn() })
+    const deps = buildDaemonV2Deps(args as any)
+    expect(deps.requestIngest).toBeDefined()
+    db.close()
+  })
+})
+
+describe('cmdWatch 源码级接线 · 翻译流（第 4 步）', () => {
+  const src = readFileSync('src/cli/index.ts', 'utf8')
+
+  it('🔴 cmdWatch 传了 translateRunItem，且它来自 makeDaemonTranslateRunItem（与手动 CLI 同源）', () => {
+    // 为什么是源码断言：与本文件既有的 translateEnabled 那条同一手法。buildDaemonV2Deps 的
+    // 用例注入的是测试自己写的替身，`translateRunItem: async () => ({status:'installed'})`
+    // 这种硬编码在它们眼里与真实 agent 完全等价、全绿。而生产上真正要守的是"接的是那个
+    // 会跑 workspace agent 的实现"，且与手动 CLI 共用同一份组装（防两处漂移）。
+    expect(src).toMatch(/translateRunItem:/)
+    expect(src).toContain('makeDaemonTranslateRunItem')
+  })
+
+  it('🔴 翻译 runItem 的凭证走 tryAutoTranslateCfg（不许回退 LLM_* 弱模型烧配额）', () => {
+    // 既有铁律（cli/index.ts 原 translate 分支的注释）：只认显式 TRANSLATE_* 三件套，
+    // 绝不回退 LLM_*=mimo。回退的后果是用一个过不了质量闸的弱模型反复 held，
+    // 每次都是一个付费 session（旧世界实案：job29 重试 11 次全同样错误）。
+    expect(src).toContain('tryAutoTranslateCfg')
   })
 })

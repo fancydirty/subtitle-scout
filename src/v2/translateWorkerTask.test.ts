@@ -303,3 +303,241 @@ describe('runTranslateWorkerTask — 结局映射', () => {
     expect(runsRows[0]).toMatchObject({ decision: 'translate:write-failed', llmCalls: 2 })
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 新架构翻译流（spec §4 第 4 步 · C3/C31/C32 + D3/D6/D10 + R12/R19/R24）。
+//
+// 上面那批 describe 测的是**旧世界**（episodes/movies + jobs 表派活），第 7 步才清理，
+// 故刻意留着不动。下面这批测的是新世界：files/works + tr_attempt/tr_recheck_after。
+// 两批共存期间读者最容易搞混的一点写在这里：`listTranslateCandidates` 是旧的、
+// `listNewTranslateCandidates` 是新的，旧的那个从第 2 步起在生产上恒返回零行
+// （谓词 sub_status='unavailable' 已被 R17 废止 + v33 洗掉存量），是死路一条。
+// ─────────────────────────────────────────────────────────────────────────────
+import {
+  listNewTranslateCandidates, applyTranslateOutcome, TRANSLATE_HELD_LIMIT,
+  FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS,
+} from './translateWorkerTask.js'
+import { translateItemId } from './ownIds.js'
+import { seriesKeyOf } from './glossaryRepo.js'
+
+const NOW = 1_000_000_000_000
+const DAY = 86_400_000
+
+/** 新架构的一行：files（含 work_id）+ works。 */
+function seedFile(
+  path: string,
+  opts: {
+    workId?: string
+    subStatus?: string | null
+    trAttempt?: number
+    trRecheckAfter?: number | null
+    originLang?: string | null
+  } = {},
+): void {
+  const workId = opts.workId ?? 'tmdb:1'
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  const exists = db.prepare('SELECT 1 FROM works WHERE id = ?').get(workId)
+  if (!exists) {
+    db.prepare('INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .run(workId, `Title ${workId}`, 'tv', opts.originLang ?? 'en', 1000, 1000)
+  }
+  db.prepare(
+    `INSERT INTO files (path, dir, filename, size, mtime, work_id, sub_status, tr_attempt, tr_recheck_after, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    path, dir, path.slice(path.lastIndexOf('/') + 1), 100, 1000, workId,
+    opts.subStatus === undefined ? 'handoff_translate' : opts.subStatus,
+    opts.trAttempt ?? 0, opts.trRecheckAfter ?? null, 1000,
+  )
+}
+
+function fileRow(path: string) {
+  return db.prepare('SELECT sub_status, tr_attempt, tr_recheck_after FROM files WHERE path = ?')
+    .get(path) as { sub_status: string | null; tr_attempt: number; tr_recheck_after: number | null }
+}
+
+describe('listNewTranslateCandidates — 工作台谓词（C3 核心：改读 files/handoff_translate）', () => {
+  it('🔴 用例 1：取 sub_status=handoff_translate 且 tr_recheck_after 到点/为 NULL 的行', () => {
+    seedFile('/media/tv/Show/S01E01.mkv', { trRecheckAfter: null })          // 从没碰过 → 立刻可领
+    seedFile('/media/tv/Show/S01E02.mkv', { trRecheckAfter: NOW - 1 })       // 已到点
+    seedFile('/media/tv/Show/S01E03.mkv', { trRecheckAfter: NOW })           // 恰好到点（边界含等号）
+    const got = listNewTranslateCandidates(db, NOW)
+    expect(got.map((c) => c.videoPath).sort()).toEqual([
+      '/media/tv/Show/S01E01.mkv', '/media/tv/Show/S01E02.mkv', '/media/tv/Show/S01E03.mkv',
+    ])
+  })
+
+  it('🔴 用例 2：tr_recheck_after 未到点的**不被领**（D6 防付费 LLM 热循环）', () => {
+    // 这条是 D6 的红线本身。翻译流是主进程内独立循环（R19），下一圈几秒后就来；
+    // 没有这个出队闸，同一行会被反复领走，每次都是一个数分钟的付费 LLM session。
+    seedFile('/media/tv/Show/S01E01.mkv', { trRecheckAfter: NOW + 1 })
+    expect(listNewTranslateCandidates(db, NOW)).toEqual([])
+  })
+
+  it('🔴 其它三态一律不进翻译工作台（C14 两工作台互斥）', () => {
+    seedFile('/media/a.mkv', { subStatus: null })
+    seedFile('/media/b.mkv', { subStatus: 'covered', workId: 'tmdb:2' })
+    seedFile('/media/c.mkv', { subStatus: 'unsolvable', workId: 'tmdb:3' })
+    expect(listNewTranslateCandidates(db, NOW)).toEqual([])
+  })
+
+  it('🔴 未识别行（work_id IS NULL）不进 —— INNER JOIN works，不许兜底', () => {
+    // itemId 的第一段就是 work_id，没有 work_id 就构造不出合法 itemId；
+    // 硬塞一个占位值会让 glossary key 退化（C20），故必须整行不取。
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id, sub_status, updated_at)
+                VALUES (?,?,?,?,?,NULL,'handoff_translate',?)`)
+      .run('/media/orphan.mkv', '/media', 'orphan.mkv', 100, 1000, 1000)
+    expect(listNewTranslateCandidates(db, NOW)).toEqual([])
+  })
+
+  it('🔴 用例 3：itemId 由 translateItemId 产出（断言真实 candidate 形态 / C20 构造点）', () => {
+    // 4-2 的交接点名了这条：C20 的既有红线测的是**构造器**，手拼 itemId 的话它们一条都不会红。
+    // 故这里断言的是真实 candidate 的 itemId 字段，且**独立算出**期望值（写死的 sha1 前 12 位），
+    // 不是拿 translateItemId 跟自己比 —— 后者在"实现改成手拼但恰好同形"时也会绿。
+    seedFile('/media/tv/Show/S01E01.mkv', { workId: 'tmdb:42' })
+    const [c] = listNewTranslateCandidates(db, NOW)
+    expect(c.itemId).toBe('tmdb:42/e5569b3ed744')
+    // 与唯一构造入口同值（这条是防"两份实现漂移"，与上面那条职责不同）
+    expect(c.itemId).toBe(translateItemId('tmdb:42', '/media/tv/Show/S01E01.mkv'))
+  })
+
+  it('🔴 用例 4：同剧两集的 candidate itemId 被 seriesKeyOf 解出同一 key（C20 端到端）', () => {
+    // C20 的实质伤害：itemId 若以绝对路径开头，seriesKeyOf 的 `idx > 0` 为假 → 返回整串 →
+    // 每个文件一个 glossary key → 同剧第 2 集拿不到第 1 集冻结的术语表 → 人名地名每集换译法
+    // （实案：同一模型同剧两 run 分别选出"东国 / 奥斯塔尼亚"）。纯质量漂移，别处无断言会红。
+    seedFile('/media/tv/Show/Season 01/E01.mkv', { workId: 'tmdb:7' })
+    seedFile('/media/tv/Show/Season 02/E01.mkv', { workId: 'tmdb:7' })
+    const keys = listNewTranslateCandidates(db, NOW).map((c) => seriesKeyOf(c.itemId))
+    expect(keys).toHaveLength(2)
+    expect(new Set(keys)).toEqual(new Set(['tmdb:7']))
+    // 且两集的 itemId 本身必须不同（同名 basename 撞车会让第二季第一集永远派不出活）
+    const ids = listNewTranslateCandidates(db, NOW).map((c) => c.itemId)
+    expect(new Set(ids).size).toBe(2)
+  })
+
+  it('🔴 candidate 带出 origin_lang 与 title（runItem 单跳选源要用，避免二次查库漂移）', () => {
+    seedFile('/media/tv/Show/S01E01.mkv', { workId: 'tmdb:5', originLang: 'ja' })
+    const [c] = listNewTranslateCandidates(db, NOW)
+    expect(c.originLang).toBe('ja')
+    expect(c.workId).toBe('tmdb:5')
+  })
+})
+
+describe('applyTranslateOutcome — 8 种 worker status 按 §5 映射表处置（C + D）', () => {
+  it('🔴 用例 5：installed → 不写 covered / 清 tr_attempt / 写 tr_recheck_after（三条分开断言）', () => {
+    seedFile('/media/x.mkv', { trAttempt: 2 })
+    applyTranslateOutcome(db, '/media/x.mkv', 'installed', NOW)
+    const r = fileRow('/media/x.mkv')
+    // ① 不写 covered（R24：covered 是扫描独占的事实投影，worker 的成功报告不算）
+    expect(r.sub_status).toBe('handoff_translate')
+    // ② 清 tr_attempt（成功把失败额度归零）
+    expect(r.tr_attempt).toBe(0)
+    // ③ 写 tr_recheck_after 出队（D6：成功也必须出队，否则独立循环下一圈重领同一行）
+    expect(r.tr_recheck_after).toBe(NOW + DAY)
+  })
+
+  it('🔴 already-covered → 同 installed 一档（扫描本就会认）', () => {
+    seedFile('/media/x.mkv', { trAttempt: 2 })
+    applyTranslateOutcome(db, '/media/x.mkv', 'already-covered', NOW)
+    const r = fileRow('/media/x.mkv')
+    expect(r.sub_status).toBe('handoff_translate')
+    expect(r.tr_attempt).toBe(0)
+    expect(r.tr_recheck_after).toBe(NOW + DAY)
+  })
+
+  it('🔴 用例 6：no-source → unsolvable', () => {
+    seedFile('/media/x.mkv')
+    applyTranslateOutcome(db, '/media/x.mkv', 'no-source', NOW)
+    expect(fileRow('/media/x.mkv').sub_status).toBe('unsolvable')
+  })
+
+  it('🔴 no-embedded → unsolvable（同 no-source 一档）', () => {
+    seedFile('/media/x.mkv')
+    applyTranslateOutcome(db, '/media/x.mkv', 'no-embedded', NOW)
+    expect(fileRow('/media/x.mkv').sub_status).toBe('unsolvable')
+  })
+
+  it('🔴 判无源转 unsolvable 时必须写 recheck_after（R25：停牌仍每周复查，否则成永久终态）', () => {
+    // 阶段 2.6 复查闸的取件谓词是 `recheck_after IS NOT NULL AND recheck_after <= now`。
+    // 翻译流把行写成 unsolvable 却不写 recheck_after → 复查闸永远选不中它 → R26"无永久终态"
+    // 被静默破坏，那一集再也不会被找字幕。这条在状态列断言里完全看不出来。
+    seedFile('/media/x.mkv')
+    applyTranslateOutcome(db, '/media/x.mkv', 'no-source', NOW)
+    const r = db.prepare('SELECT recheck_after FROM files WHERE path = ?').get('/media/x.mkv') as { recheck_after: number | null }
+    expect(r.recheck_after).not.toBeNull()
+    expect(r.recheck_after).toBeGreaterThan(NOW)
+  })
+
+  it('🔴 用例 7：held 未满 3 次 → tr_attempt+1 + 退避到明天，状态不变', () => {
+    seedFile('/media/x.mkv', { trAttempt: 0 })
+    applyTranslateOutcome(db, '/media/x.mkv', 'held', NOW)
+    let r = fileRow('/media/x.mkv')
+    expect(r.tr_attempt).toBe(1)
+    expect(r.tr_recheck_after).toBe(NOW + DAY)
+    expect(r.sub_status).toBe('handoff_translate')
+
+    applyTranslateOutcome(db, '/media/x.mkv', 'held', NOW + DAY)
+    r = fileRow('/media/x.mkv')
+    expect(r.tr_attempt).toBe(2)
+    expect(r.sub_status).toBe('handoff_translate')
+  })
+
+  it('🔴 用例 7b：held 满 3 次 → unsolvable', () => {
+    seedFile('/media/x.mkv', { trAttempt: 2 })   // 这次 +1 = 3 → 到限
+    applyTranslateOutcome(db, '/media/x.mkv', 'held', NOW)
+    const r = fileRow('/media/x.mkv')
+    expect(r.tr_attempt).toBe(3)
+    expect(r.sub_status).toBe('unsolvable')
+    expect(TRANSLATE_HELD_LIMIT).toBe(3)
+  })
+
+  it('🔴 extract-failed / probe-failed / write-failed 走同一条退避轨', () => {
+    for (const status of ['extract-failed', 'probe-failed', 'write-failed'] as const) {
+      db.prepare('DELETE FROM files').run()
+      seedFile('/media/x.mkv', { trAttempt: 0 })
+      applyTranslateOutcome(db, '/media/x.mkv', status, NOW)
+      const r = fileRow('/media/x.mkv')
+      expect(r.tr_attempt).toBe(1)
+      expect(r.tr_recheck_after).toBe(NOW + DAY)
+      expect(r.sub_status).toBe('handoff_translate')
+    }
+  })
+
+  it('🔴 三条失败态满 3 次同样转 unsolvable（与 held 共用额度，不是各自一套）', () => {
+    seedFile('/media/x.mkv', { trAttempt: 2 })
+    applyTranslateOutcome(db, '/media/x.mkv', 'write-failed', NOW)
+    expect(fileRow('/media/x.mkv').sub_status).toBe('unsolvable')
+  })
+
+  it('🔴 用例 8（D10 红线）：回写前 sub_status 被扫描改成 covered → 回写不生效', () => {
+    // 翻译流是 SELECT → await LLM（数分钟）→ UPDATE。这几分钟里扫描可能已扫到中文字幕并
+    // 写了 covered（R24 扫描独占）。无守卫的回写会把那个**磁盘事实**覆盖成 handoff_translate/
+    // unsolvable → 界面显示停牌，而磁盘上字幕明明已经在了。
+    for (const status of ['installed', 'no-source', 'held'] as const) {
+      db.prepare('DELETE FROM files').run()
+      seedFile('/media/x.mkv', { trAttempt: 1 })
+      db.prepare(`UPDATE files SET sub_status='covered' WHERE path=?`).run('/media/x.mkv')  // 扫描抢先
+      const res = applyTranslateOutcome(db, '/media/x.mkv', status, NOW)
+      const r = fileRow('/media/x.mkv')
+      expect(r.sub_status).toBe('covered')      // 没被覆盖
+      expect(r.tr_attempt).toBe(1)              // 一列都没动
+      expect(res.guardMissed).toBe(true)        // 且这件事**可观察**（否则你不知道发生过）
+    }
+  })
+
+  it('🔴 守卫命中时 guardMissed=false（防"恒 true"式假绿）', () => {
+    seedFile('/media/x.mkv')
+    expect(applyTranslateOutcome(db, '/media/x.mkv', 'installed', NOW).guardMissed).toBe(false)
+  })
+})
+
+describe('SUPPORTED_SOURCE_LANGS 口径收敛（C31 末段 / G）', () => {
+  it('🔴 用例 12：可抓源 / 可抽轨只有一份定义，daemonV2 与 judge 都从这里取', () => {
+    // C31 末段记的口径不一：translateWorkerTask.ts 把"可抓源"（外挂搜索，MVP 仅 en）与
+    // "可抽轨"（内嵌轨，en/ja 皆可）混成一个 SUPPORTED_SOURCE_LANGS=['en','ja']，
+    // 而 3-2 在 daemonV2.ts 里另建了拆开的两个集合。两份定义漂移的那天没有测试会红，
+    // 只是无内嵌轨的日漫又开始白绕一圈 7 天（判可救 → 抓不到日文源 → unsolvable）。
+    expect(FETCHABLE_SOURCE_LANGS).toEqual(['en'])
+    expect(EXTRACTABLE_SOURCE_LANGS).toEqual(['en', 'ja'])
+  })
+})

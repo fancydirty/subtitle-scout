@@ -26,7 +26,13 @@ import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { mapWithConcurrency } from './probeConcurrency.js'
 // C21 回填 pass 用它把 works.id（'tmdb:<id>'）解回 TMDB id。复用 ownIds 这一份唯一解析入口，
 // 不在这里另写一遍 slice(5)——本仓已因"两份实现漂移"栽过（D7 的 findOverlappingRoot）。
-import { tmdbIdFromOwnId } from './ownIds.js'
+import { tmdbIdFromOwnId, translateItemId } from './ownIds.js'
+// 语言集合的唯一定义处（C31 末段 / 任务 G 收敛）：judge 的喂料与翻译流的语言门同源。
+import {
+  FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS,
+  listNewTranslateCandidates, applyTranslateOutcome,
+  type TranslateRunItemResult,
+} from './translateWorkerTask.js'
 
 export const INSPECT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -79,15 +85,14 @@ const BACKFILL_BATCH_SIZE = 200
  *   · 外挂抓取仅 en —— OpenSubtitles 靠 imdb 命中；日语要等 F2 的 jimaku 落地（C6）
  *   · 内嵌轨抽取 en/ja 皆可 —— 抽轨是纯本地 ffmpeg 操作、零 provider 依赖，天然比抓取宽
  *
- *  为什么不复用 `translateWorkerTask.ts` 的 `SUPPORTED_SOURCE_LANGS = ['en','ja']`：
- *  那一个常量把两件事混成了一个集合，正是 spec 记录的口径不一（C31 末段："spec 写 MVP 仅 en，
- *  而 translateWorkerTask.ts:49 实为 ['en','ja']"）。直接拿它当抓取集合会让**无内嵌轨的日漫**
- *  被判可救 → 移交翻译流 → 翻译流发现抓不到日文源 → unsolvable，白绕一圈 7 天
- *  （C24 想省掉的正是这种绕路）。第 4 步重接翻译时应把那个常量也拆成两个，届时两处收敛成
- *  一份；今天不动它——它还挂在旧翻译流上，改了会波及本 task 范围外的代码。 */
+ *  定义已在第 4 步任务 G 里收敛到 `translateWorkerTask.ts`（C31 末段）。3-2 写这段时两处
+ *  各有一份常量、注释里记着"第 4 步重接翻译时应把那个常量也拆成两个，届时两处收敛成一份"
+ *  ——就是现在。这里只做引用组装，**不留第二份字面量**：语言映射分叉的那天没有任何测试会红，
+ *  只是日漫又开始被判死（本仓已因"两份漂移实现"栽过多次，见 D7 的 findOverlappingRoot、
+ *  C30 的两套字幕标签集）。 */
 const TRANSLATABLE_LANGS: TranslatableDeps = {
-  fetchableSourceLangs: ['en'],
-  extractableSourceLangs: ['en', 'ja'],
+  fetchableSourceLangs: FETCHABLE_SOURCE_LANGS,
+  extractableSourceLangs: EXTRACTABLE_SOURCE_LANGS,
 }
 
 
@@ -158,12 +163,30 @@ export interface DaemonV2Deps {
    *   · 默认 true → handoff_translate 永远不被复查 → C41 的永久卡死在**缺省接线下复活**，
    *     而缺省接线正是最常见形态（watchV2 那条独立入口 + 几十条既有测试的构造点）。
    *     伤害是永久且静默的：那批文件再也不补字幕，界面上什么异常都看不出来。
-   *   · 默认 false → 复查闸可能碰到飞行中的翻译。但**翻译流第 4 步才接入 daemonV2**
-   *     （C3：本文件里 translate 零命中；spec §4 明记"翻译从第 2 步起饿死"），
-   *     故今天不存在飞行中的翻译，这条伤害的前提为假。
-   *  取伤害小的那个。第 4 步接翻译流时真实双门控必须同时接上（watchWiring 已接），
-   *  届时缺省值只影响没接线的构造点，而那些构造点也不跑翻译流——自洽。 */
+   *   · 默认 false → 复查闸可能碰到飞行中的翻译。3-2 写这段时的论证是"翻译流第 4 步才
+   *     接入 daemonV2，故今天不存在飞行中的翻译，这条伤害的前提为假"——**第 4 步已到，
+   *     那个前提从现在起为真**。但结论不变，且现在有了更强的理由：本开关同时门控
+   *     `advanceTranslateOnce`（不注入 → 恒 false → 翻译流根本不领活），故"复查闸碰到
+   *     飞行中的翻译"在缺省接线下依然不可能发生——两支被同一个开关关掉，自洽。
+   *  取伤害小的那个。生产的真实双门控在 cli/index.ts（TRANSLATE_* 凭证 ∧ ai_translate_enabled），
+   *  由 watchWiring.test.ts 逐字钉住。 */
   translateEnabled?: () => boolean
+
+  /** 翻译一个视频（第 4 步 / C3）。**必须可注入**：这是数分钟到数小时的付费 LLM agent，
+   *  测试里从不真的跑（同 subtitleWorker / probe 的既有约定）。
+   *
+   *  未注入时**整支翻译流休眠**（零成本，同 probe/gcStaging 的既有门控模式）：既有构造点与
+   *  一百多条既有测试都不传这个字段，不许因为"忘了接线"就让巡检失效。但反过来——生产接线
+   *  漏了是**静默**的（不报错、只是翻译永不推进，正是 C3 记的那个状态），故 cli 侧的接线由
+   *  watchWiring.test.ts 钉住。
+   *
+   *  生产实现是 `makeDaemonTranslateRunItem`（cli/translateItemCommand.ts），与手动 CLI
+   *  共用同一份组装防漂移。 */
+  translateRunItem?: (videoPath: string) => Promise<TranslateRunItemResult>
+
+  /** 翻译装盘成功后踢一脚扫描，让新 sidecar 尽快被记账成 covered（R24：只有扫描有权写）。
+   *  可选：不注入时靠下一轮自然巡检确认，慢一天但不丢。 */
+  requestIngest?: () => void
 
   // ───────────────────────────────────────────────────────────────────────────
   // 运维器官（D5 / C16）。签名照 DaemonDeps 的既有形态，接线点仍在 cmdWatch（切换方式是
@@ -512,6 +535,22 @@ export class ScoutDaemonV2 {
         this.inFlightStagingJobIds.delete(jobId)
       }
     }
+
+    // 阶段 4：翻译流推进一个作品（R19 + C32 / 第 4 步把 C3 接回来）。
+    //
+    // 位置在**最末尾**是形态的一部分，不是随手放的（完整论证见 advanceTranslateOnce）：
+    // 翻译是这条流水线里唯一"单个活可能跑几小时"的阶段，放在前面会把删除清理与两条工作台
+    // 全堵在它后面；放最后则它再慢也只是让"歇到明天"晚开始。
+    //
+    // 整支 try/catch 隔离，口径与 gcStaging / 回填 pass / 阶段 2.6 一致：翻译挂了不许连带
+    // 掀翻整轮巡检——否则 D4 的失败退避不推进时间闸，扫描与识别跟着一起停摆（一次 LLM 偶发
+    // 超时就能停掉整条流水线）。advanceTranslateOnce 内部已把 runItem 的抛错收成失败轨记账，
+    // 这里兜的是它 try 之外那条缝（取候选的 SQL、守卫回写、日志）。
+    try {
+      await this.advanceTranslateOnce()
+    } catch (e) {
+      this.deps.log(`warn: 翻译流推进失败（隔离，不阻塞本轮巡检，下轮重试）: ${String(e)}`)
+    }
   }
 
   /** R12 + C23：把快照里**已从磁盘消失**的文件剔掉；整簇都没了返回 null。
@@ -745,6 +784,96 @@ export class ScoutDaemonV2 {
         `停牌复查: ${res.changes} 行放回字幕工作台（sub_attempt 不归零 / D15，`
         + `翻译${translateOn ? '已启用→只收 unsolvable' : '未启用→含 handoff_translate'} / D14）`,
       )
+    }
+  }
+
+  /** 翻译流推进**一个作品**（spec §2 的"翻译工作流" / R19 + C32 的形态）。
+   *
+   *  ── 形态：主进程内独立循环，跑在巡检每轮末尾，单次只处理一个作品 ──
+   *  R19 定的是"主进程内独立循环"而**不是独立进程**：独立进程要重建跨进程租约、竞态与 GC
+   *  保护（gcStaging 的 in-flight 集合是进程内的 Set），而这三样每一样都曾在本仓出过事。
+   *
+   *  为什么这个形态满足 R11「翻译流独立，不与识别/字幕互相阻塞」——两个方向分别论证：
+   *   · **不阻塞它们**：本方法在阶段 3 之后调用，那时识别与字幕的冻结快照都已消费完毕。
+   *     翻译再慢也只是让"歇到明天"晚开始，不会让任何一个字幕活排在它后面等。
+   *     且单次只一个作品：一个作品的翻译是数分钟到数小时的付费 LLM，一轮吃光队列会把巡检
+   *     拖成几十小时，期间删除清理（R6/R7 的地基）与两条工作台全被堵住——那才是真的阻塞。
+   *   · **不被它们阻塞**：谓词（`sub_status='handoff_translate'`）与退避列（tr_recheck_after）
+   *     都是翻译轨自己的，与字幕流的 `sub_status IS NULL` 严格互斥（C14），故字幕队列里有
+   *     多少活都挡不住它。旧 daemon.ts 恰恰相反——"translate 只在巡检世界全空时才领"，
+   *     那就是 C3 记的"旧设计与 R11 正相反"。
+   *  队列不会因"单次一个"而饿死：没被领到的行 tr_recheck_after 一列都没被碰过，下轮照样是
+   *  最优先候选（谓词是 `IS NULL OR <= now` 的时刻判定，不是轮转指针）。
+   *
+   *  ── 双门控（翻译总开关）──
+   *  `translateEnabled` 惰性求值、每轮现取（同阶段 2.6 的口径）；关闭时**不领新活**，
+   *  已在飞行中的这一个跑完（本方法是同步等待一个 runItem，天然满足"在飞行中的跑完"）。
+   *
+   *  ── R12：跑前校验文件仍存在，且**不计 tr_attempt** ──
+   *  复用 `deps.fileExists`（1b-4 的注入点，默认 existsSync），不写第二份探针。
+   *  文件没了不是"一次失败尝试"：让幽灵吃掉失败额度会污染"满 3 次转 unsolvable"的判据——
+   *  一个已删除的文件 3 轮后被写成 unsolvable，而它压根不该再有任何状态（R7 规定下一轮扫描
+   *  把这行整个删掉）。故这一支连退避都不写：给一个即将被删的行安排未来是没有意义的。 */
+  private async advanceTranslateOnce(): Promise<void> {
+    const runItem = this.deps.translateRunItem
+    if (!runItem) return                                   // 未接线 → 整支休眠（零成本）
+    // 惰性求值（见 translateEnabled 的论证）：dashboard 里关掉翻译，下一轮就不再领新活。
+    if (!(this.deps.translateEnabled?.() ?? false)) return
+
+    const db = this.deps.db
+    const now = this.deps.now?.() ?? Date.now()
+    const fileExists = this.deps.fileExists ?? existsSync
+
+    const candidates = listNewTranslateCandidates(db, now)
+    if (candidates.length === 0) return
+
+    // 单次只处理一个**作品**（C32）：取队首那个 work_id 的第一个文件。
+    // 为什么按文件而不是按整簇：翻译是逐文件的付费 LLM（每集一个 session），一簇 24 集就是
+    // 24 个 session 串行几小时。字幕流可以整簇一次（一个 agent session 处理一批），翻译不行。
+    const c = candidates[0]
+
+    // R12：跑到时资源文件仍存在。stat 抛错时**当它还在**（同 dropVanishedFiles 的既有口径）：
+    // FUSE 挂载抖动时"问不出答案"绝不许折叠成"消失"，否则挂载抖一下就等于把活丢掉。
+    let present = true
+    try { present = fileExists(c.videoPath) } catch { present = true }
+    if (!present) {
+      this.deps.log(`翻译跳过（文件已消失，不计 tr_attempt / R12）: ${c.videoPath}`)
+      return
+    }
+
+    this.deps.log(`翻译 ${c.title} (${c.videoPath})`)
+    let status: TranslateRunItemResult['status']
+    try {
+      const r = await runItem(c.videoPath)
+      status = r.status
+    } catch (e) {
+      // 抛错按失败轨记账（**不是**静默跳过）：一个稳定抛错的文件若不记额度就永远攒不满 3 次，
+      // 于是每轮巡检重跑一次、每次一个付费 LLM session，永不终止（C13 在字幕轨的同型血案）。
+      // 归到 write-failed 这一档是因为它与"诚实无源"截然不同——无源是终局（→ unsolvable），
+      // 抛错是"这次没跑通"，该走退避轨、给它剩下的额度。
+      this.deps.log(`warn: 翻译抛错（隔离，按失败轨退避）: ${c.videoPath}: ${String(e)}`)
+      status = 'write-failed'
+    }
+
+    // 全部回写带乐观守卫（D10），守卫匹配 0 行时必须留下痕迹——见下方论证。
+    const write = applyTranslateOutcome(db, c.videoPath, status, now)
+    if (write.guardMissed) {
+      // D10 + C32：这几分钟里扫描已经改过 sub_status（最常见是扫到字幕写了 covered）。
+      // 回写整个作废是**正确**的（磁盘事实优先），但它同时意味着 tr_recheck_after 没写上 →
+      // D6 要防的热循环从侧门回来。故这件事必须可观察：不记日志的话，"翻译白跑一轮付费 LLM
+      // 且下一轮还会重跑"在库里和日志里都留不下任何痕迹，排障时无从下手。
+      this.deps.log(
+        `warn: 翻译回写守卫未命中（sub_status 已被扫描改成 ${write.status}，本次 ${status} 回写作废 / D10）: ${c.videoPath}`,
+      )
+      return
+    }
+    this.deps.log(`翻译结果 ${status} → sub_status=${write.status}: ${c.videoPath}`)
+
+    // 装盘成功踢一脚扫描：新 sidecar 越早被扫到、covered 越早落库（R24 只有扫描有权写）。
+    if (status === 'installed') {
+      try { this.deps.requestIngest?.() } catch (e) {
+        this.deps.log(`warn: 翻译后踢扫描失败（下一轮自然巡检仍会确认）: ${String(e)}`)
+      }
     }
   }
 

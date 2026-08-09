@@ -14,6 +14,7 @@
 import type { ScoutDb } from './db.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
+import { translateItemId } from './ownIds.js'
 import { traceBus } from '../core/traceBus.js'
 
 /** runItem 的报告形状(legacy translate/translateItem.ts 已随审计 D 波退役——类型就地定义,
@@ -42,11 +43,46 @@ function hasNonChineseTrack(embeddedLangsJson: string | null): boolean {
   return langs.some((l) => typeof l === 'string' && !isChineseTag(l))
 }
 
-/** F1 铁原则:只做"源语言→中文"单跳直译,永不中继(JP→EN→CN 丢义严重,用户明令禁止)。
- *  故源语言外挂搜索腿只认这个集合;日漫(origin ja)等 F2 的 jimaku 日文源落地后再加 'ja'。
- *  值域=TMDB original_language 小写码('en'/'ja'),比对方(listTranslateCandidates/
- *  cli/fetchSourceSub.ts 的语言门)负责 lower+trim 防脏值。 */
-export const SUPPORTED_SOURCE_LANGS = ['en', 'ja']
+// ─────────────────────────────────────────────────────────────────────────────
+// 源语言集合的**唯一定义处**（C31 末段 / 第 4 步任务 G 的口径收敛）。
+//
+// 为什么必须是**两个**集合而不是一个（这就是 C31 记的那处口径不一）：
+//  · FETCHABLE  = 能从 provider **抓到外挂源语言字幕**的语言。MVP 仅 en——OpenSubtitles
+//    靠 imdb 精确命中；日语要等 F2 的 jimaku 落地（C6）。
+//  · EXTRACTABLE = 能**抽内嵌文本轨**的语言。en/ja 皆可——抽轨是纯本地 ffmpeg 操作、
+//    零 provider 依赖，天然比抓取宽。
+// 原 `SUPPORTED_SOURCE_LANGS = ['en','ja']` 把这两件事混成一个集合，spec 正文却写"MVP 仅 en"
+// ——两处都不算错，它们说的是不同的事，混在一起才是错。合成一个的后果各有一半是错的：
+// 取 ['en'] 会判死一抽轨就能救的日漫（C31）；取 ['en','ja'] 会让**无内嵌轨**的日漫被判可救
+// → 移交翻译流 → 翻译流发现抓不到日文源 → unsolvable，白绕一圈 7 天（C24 想省的正是这种绕路）。
+//
+// 收敛方向是"3-2 建的那两个搬过来、旧的那一个变成派生量"，而不是反过来：3-2 的
+// `TRANSLATABLE_LANGS`（daemonV2.ts）是 judge 的真实喂料、语义已经拆对了；本文件这个是
+// 混的。故这里放定义，daemonV2 与 judge 从这里 import。
+//
+// F1/R13/R18 铁原则不变：只做"源语言→中文"单跳直译，永不中继（JP→EN→CN 丢义严重，
+// 用户 2026-08-08 以 R18 重新拍板废止 eng 兜底）。值域 = TMDB original_language 小写码，
+// 比对方负责 lower+trim 防脏值。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 能抓到外挂源语言字幕的语言（MVP 仅 en，靠 imdb 命中）。 */
+export const FETCHABLE_SOURCE_LANGS = ['en']
+
+/** 能抽内嵌文本轨的语言（纯本地 ffmpeg，故比抓取宽）。 */
+export const EXTRACTABLE_SOURCE_LANGS = ['en', 'ja']
+
+/** 翻译流整体能处理的源语言 = 两条腿的并集（派生量，**不是第三份定义**）。
+ *
+ *  为什么保留这个名字而不是就地改掉所有调用点：它今天有一个**语义正确**的消费者——
+ *  `cli/fetchSourceSub.ts` 的语言门。那个门看似属于"抓取腿"（照 FETCHABLE 就该是 ['en']），
+ *  但它实际是 `resolveSource` 在**抽轨失败之后**调的兜底腿，而 resolveSource 的 ja 分支
+ *  会先试日文内嵌轨、抽不到才 fetch（resolveSource.ts:56-72）。把那个门收窄到 ['en'] 会让
+ *  ja 分支的 fetch 调用变成永远返回 null 的死代码 —— 那不是"收敛口径"，是**砍掉一条腿**，
+ *  且会让 F2 的 jimaku 落地时无处接入（届时只需把 jimaku adapter 挂进 fetch，语言门已经通）。
+ *  fetchSourceSub.test.ts 有一条用例正钉着"origin ja 过门、search languages=[ja]"，
+ *  它断言的是这个设计意图，不是实现细节。故这里改的是**定义的组织方式**（一份变量、
+ *  语义写清、拆出两个精确集合），不是任何一处的行为。 */
+export const SUPPORTED_SOURCE_LANGS = [...new Set([...FETCHABLE_SOURCE_LANGS, ...EXTRACTABLE_SOURCE_LANGS])]
 
 function isSupportedSourceLang(originLang: string | null): boolean {
   if (!originLang) return false
@@ -58,6 +94,12 @@ export interface TranslateCandidate {
   videoPath: string
 }
 
+/** ⚠️ **旧世界的候选谓词，生产上恒返回零行**（保留至第 7 步清理，勿当范例）。
+ *
+ *  两处已经死掉：① 数据长在 episodes/movies，新架构的数据在 files/works（C4）；
+ *  ② 谓词 `sub_status='unavailable'` 是 R17 废止的第五态——3-2 拆掉了唯一写入点、
+ *  v33 迁移洗掉了存量行，故这个谓词在今天的库上永远选不出行（C34 记的"零候选静默饿死"）。
+ *  新架构的入口是下方 `listNewTranslateCandidates`。 */
 export function listTranslateCandidates(db: ScoutDb): TranslateCandidate[] {
   // F1:候选从单腿(内嵌非中文轨)扩成双腿 OR(内嵌非中文轨 OR origin_lang ∈ SUPPORTED_SOURCE_LANGS)。
   // episodes 无 origin_lang 列,JOIN series 取;movies 直取自身列。embedded_langs 的 IS NOT NULL
@@ -73,6 +115,146 @@ export function listTranslateCandidates(db: ScoutDb): TranslateCandidate[] {
   return rows
     .filter((r) => hasNonChineseTrack(r.embedded_langs) || isSupportedSourceLang(r.origin_lang))
     .map((r) => ({ itemId: r.id, videoPath: r.path }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 新架构翻译工作台（spec §2「翻译工作流」+ §5 映射表 / C3 + D3 + D6 + D10 + R24）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 翻译轨的退避步长 = 1 天（spec §5：held 等失败态 `tr_recheck_after=明天`）。
+ *  成功态（installed/already-covered）**同样用它出队**——见 applyTranslateOutcome 的 D6 论证。 */
+export const TRANSLATE_RECHECK_MS = 24 * 3_600_000
+
+/** held / extract-failed / probe-failed / write-failed 的失败额度，满即转 unsolvable（spec §5）。
+ *
+ *  为什么四种状态**共用一个额度**而不是各记一套：它们是同一件事的不同表征——"这个文件
+ *  翻译流搞不定"。分开记的话一个交替出现 held / extract-failed 的文件每种都攒不满，
+ *  永远停在退避轨上每天烧一个付费 LLM session（旧世界的实案就是这个形状：
+ *  job29 重试 11 次全同样错误）。 */
+export const TRANSLATE_HELD_LIMIT = 3
+
+/** 停牌行的复查窗（转 unsolvable 时写进 `recheck_after`，供阶段 2.6 复查闸取件）。
+ *  与 subtitleScheduler 的 PARK_RECHECK_MS 同值（7 天 / R25「每周找一次」）——刻意**不 import**
+ *  那个私有常量，两条轨各自声明自己的节奏；同值是巧合而非契约（字幕轨改周期不该连带改翻译轨）。 */
+export const TRANSLATE_PARK_RECHECK_MS = 7 * 24 * 3_600_000
+
+/** 新架构的一个翻译活。 */
+export interface NewTranslateCandidate {
+  /** `<work_id>/<sha1(path)前12>`，**唯一构造入口是 ownIds.translateItemId**（C20）。 */
+  itemId: string
+  videoPath: string
+  workId: string
+  title: string
+  /** works.origin_lang（TMDB 两字母码），NULL=未刮到。单跳选源要用。 */
+  originLang: string | null
+}
+
+/** 翻译工作台（spec §2）：`sub_status='handoff_translate'` 且 `tr_recheck_after` 到点。
+ *
+ *  ── 为什么谓词必须是这三条，逐条对应一处曾经/可能的静默失效 ──
+ *  ① `sub_status = 'handoff_translate'`：旧谓词是 `sub_status='unavailable'`，而那个第五态
+ *     已被 R17 废止（3-2 拆写入点、v33 洗存量）→ 旧翻译流从第 2 步起**零候选静默饿死**
+ *     （C34 明记这个窗口期）。这一条就是把翻译接回来的那一行。
+ *  ② `tr_recheck_after IS NULL OR <= now`：NULL 的语义在 v37 迁移里写死了 = "从没被翻译流
+ *     碰过" = 立刻可领。**照字面只写 `<= now` 会让全部新行永不命中**（NULL 上的比较是
+ *     三值逻辑的 unknown）→ 又一次"加了列但谓词读不到"的静默失效，本仓栽过五次（C12/C35/
+ *     D17/D18/D22）。反过来漏了 `<= now` 这一半就是 D6 要防的付费 LLM 热循环。
+ *  ③ `INNER JOIN works`：没有 work_id 就构造不出合法 itemId（第一段就是 work_id）。
+ *     LEFT JOIN + 占位值会让 glossary key 退化成每文件一个（C20 的实质伤害），
+ *     而那是纯质量漂移、没有任何断言会红。故未识别行整行不取。
+ *
+ *  **不做可救性预筛**（不看 origin_lang / embedded_langs）：那是 judge 在阶段 2.5 的活
+ *  （R21/D9 的 translatable 列），能进 handoff_translate 就意味着 judge 已判 translatable=1。
+ *  在这里再判一次是第二份实现，两份漂移时没人知道该信哪个。 */
+export function listNewTranslateCandidates(db: ScoutDb, now: number): NewTranslateCandidate[] {
+  const rows = db.prepare(
+    `SELECT f.path AS path, f.work_id AS workId, w.title AS title, w.origin_lang AS originLang
+       FROM files f JOIN works w ON f.work_id = w.id
+      WHERE f.sub_status = 'handoff_translate'
+        AND (f.tr_recheck_after IS NULL OR f.tr_recheck_after <= ?)
+      ORDER BY f.work_id, f.season, f.episode, f.path`,
+  ).all(now) as Array<{ path: string; workId: string; title: string; originLang: string | null }>
+  return rows.map((r) => ({
+    // 🔴 唯一构造入口（C20 + 4-2 的交接）：**不许在这里手拼** `${r.workId}/${...}`。
+    // C20 的既有红线用例测的是构造器 translateItemId 本身，手拼一份同形字符串它们一条都不会红
+    // ——直到某天两份形态漂移（比如有人在这里改成拼 basename），同剧术语表继承静默断掉。
+    itemId: translateItemId(r.workId, r.path),
+    videoPath: r.path,
+    workId: r.workId,
+    title: r.title,
+    originLang: r.originLang,
+  }))
+}
+
+/** applyTranslateOutcome 的回执。 */
+export interface TranslateOutcomeWrite {
+  /** 乐观守卫（D10）匹配 0 行 = 这几分钟里扫描已经改过状态，本次回写整个作废。
+   *  **必须可观察**：否则"翻译回写被静默丢弃"这件事在日志和库里都留不下痕迹，
+   *  而它同时意味着 tr_recheck_after 没写上 → D6 要防的热循环从侧门回来（C32 原话）。 */
+  guardMissed: boolean
+  /** 落库后的 sub_status（守卫未命中时是库里的现值）。供调用方记日志。 */
+  status: string
+}
+
+/** 把一次 worker 报告按 §5 映射表落库，**全部回写带乐观守卫**（D10）。
+ *
+ *  ── D10：为什么每一条 UPDATE 都要 `WHERE sub_status='handoff_translate'` ──
+ *  翻译流的形状是 SELECT → `await` LLM（**数分钟**）→ UPDATE。这几分钟里扫描可能已经扫到
+ *  磁盘上出现了中文字幕并写了 `covered`（R24：扫描独占 covered）。无守卫的回写会把那个
+ *  **磁盘事实**覆盖成 handoff_translate / unsolvable → 界面显示停牌，而字幕明明已经在盘上了。
+ *  守卫让"世界变了"这件事表现为 changes===0，而不是表现为一次静默的事实覆盖。
+ *
+ *  ── D6 + R24：为什么 installed **不写 covered、却必须写 tr_recheck_after** ──
+ *  不写 covered：sub_status 是"磁盘上现在什么情况"的投影，worker 只负责把文件放上去，
+ *  有没有由扫描说了算（R23/R24）。翻译报 installed 而写盘其实失败的情况真实存在
+ *  （权限/满盘/原子改名失败），直接写 covered 就是让系统相信一个没被验证的成功。
+ *  必须写 tr_recheck_after：这条是 D6 的红线。成功后状态**仍是** handoff_translate
+ *  （要等扫描确认），于是它**依然满足工作台谓词**——不写出队时刻的话，主进程内独立循环
+ *  下一圈（几秒后）立刻重领同一行，每圈一个付费 LLM session。R24 删掉 covered 写入之后
+ *  "出队"的唯一凭据就只剩这一列了（C26 记的正是这个链条）。 */
+export function applyTranslateOutcome(
+  db: ScoutDb,
+  videoPath: string,
+  status: TranslateRunItemResult['status'],
+  now: number,
+): TranslateOutcomeWrite {
+  const GUARD = ` AND sub_status = 'handoff_translate'`
+  let changes = 0
+
+  if (status === 'installed' || status === 'already-covered') {
+    // 成功轨：状态一列不动（等扫描确认 / R24），清失败额度，写出队时刻（D6）。
+    changes = db.prepare(
+      `UPDATE files SET tr_attempt = 0, tr_recheck_after = ?, updated_at = ? WHERE path = ?${GUARD}`,
+    ).run(now + TRANSLATE_RECHECK_MS, now, videoPath).changes
+  } else if (status === 'no-source' || status === 'no-embedded') {
+    // 诚实无源 → 停牌。**必须同时写 recheck_after**（不是 tr_recheck_after）：
+    // 阶段 2.6 复查闸的取件谓词是 `recheck_after IS NOT NULL AND recheck_after <= now`
+    // （daemonV2.reviewParkedOnce），只写 tr_recheck_after 的话这一行再也不会被任何闸门看见
+    // → R26"无永久终态"被静默破坏，那一集永远不再被找字幕。状态列断言看不出这一条。
+    changes = db.prepare(
+      `UPDATE files SET sub_status = 'unsolvable', tr_recheck_after = ?, recheck_after = ?, updated_at = ?`
+      + ` WHERE path = ?${GUARD}`,
+    ).run(now + TRANSLATE_RECHECK_MS, now + TRANSLATE_PARK_RECHECK_MS, now, videoPath).changes
+  } else {
+    // 失败退避轨（held / extract-failed / probe-failed / write-failed）：额度+1，退避到明天；
+    // 满额转 unsolvable。分流在 SQL 里用 CASE 一条语句做完，而不是"先 SELECT 再判再 UPDATE"：
+    // 后者在两步之间掉电（软路由掉电是本项目常态）会留下"读了但没写"的半状态，且那个 SELECT
+    // 读到的 sub_status 与 UPDATE 的守卫之间还有一道竞态缝——守卫的意义就是让判断与写入原子。
+    changes = db.prepare(
+      `UPDATE files SET tr_attempt = tr_attempt + 1,
+              sub_status = CASE WHEN tr_attempt + 1 >= ? THEN 'unsolvable' ELSE sub_status END,
+              recheck_after = CASE WHEN tr_attempt + 1 >= ? THEN ? ELSE recheck_after END,
+              tr_recheck_after = ?, updated_at = ?
+        WHERE path = ?${GUARD}`,
+    ).run(
+      TRANSLATE_HELD_LIMIT, TRANSLATE_HELD_LIMIT, now + TRANSLATE_PARK_RECHECK_MS,
+      now + TRANSLATE_RECHECK_MS, now, videoPath,
+    ).changes
+  }
+
+  const row = db.prepare('SELECT sub_status FROM files WHERE path = ?').get(videoPath) as
+    { sub_status: string | null } | undefined
+  return { guardMissed: changes === 0, status: row?.sub_status ?? '(row gone)' }
 }
 
 /** done(含 no-source 诚实收官)行的复查窗:窗内不重派——zerotest2 实证热循环(job28 每 tick

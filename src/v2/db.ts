@@ -168,6 +168,12 @@ CREATE TABLE IF NOT EXISTS files (
   --
   -- translatable（v35/R21+D9）= 翻译可救性预判，三态：NULL=暂不可判 / 0=不可救 / 1=可救。
   -- 刻意**可空**（与 sub_attempt 相反）：NULL 是有意义的第三态，C40 明令它不得判死。
+  --
+  -- tr_attempt / tr_recheck_after（v37/D3+D6）**不在此终态定义里**，由 v37 的条件式 ALTER
+  -- 追加——照 provider_ids 的既有口径（终态里写了、条件式 ALTER 又跑一遍是无害的，但两处
+  -- 定义漂移时以哪边为准会变成一个新问题）。语义见 v37 entry 的注释：翻译轨自己的退避轨，
+  -- tr_attempt 必须 NOT NULL DEFAULT 0（'>= 3' 的三值逻辑），tr_recheck_after 刻意可空
+  -- （NULL = 从没被翻译流碰过 = 立刻可领）。
 );
 CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
 CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
@@ -788,6 +794,50 @@ CREATE TABLE IF NOT EXISTS works (
     )
     if (!columns.has('provider_ids')) {
       db.exec('ALTER TABLE works ADD COLUMN provider_ids TEXT')
+    }
+  },
+  // v37（2026-08-08 流水线 spec §4 第 4 步 · 裁决 D3 + D6）：files 表加 tr_attempt / tr_recheck_after
+  // ——翻译流**自己的**退避轨。
+  //
+  // 为什么必须是独立两列而不是复用字幕轨的 sub_attempt/recheck_after（D3，与 C7 同型）：
+  // C7 已用实测证明"一列多主"的后果——`attempt` 被识别轨与字幕轨共用，identifyScheduler
+  // 在识别成功时把它归零，于是字幕轨攒了几天的失败额度被一次识别重跑洗掉。翻译轨若复用
+  // sub_attempt 是同一个坑的第三次：翻译失败会把字幕轨的额度顶上去（本该 7 次的文件 4 次
+  // 就停牌），而字幕轨停牌写入的 recheck_after 是"+7 天"、翻译轨要的是"明天"，互相覆盖。
+  //
+  // 为什么 tr_attempt 必须 `INTEGER NOT NULL DEFAULT 0`（同 D22，本仓第五次面对这个坑）：
+  // 分流谓词是 `tr_attempt >= 3`（held 满 3 次 → unsolvable），SQL 三值逻辑下 `NULL >= 3`
+  // 求值为 **unknown**（不是 false）→ 谓词永不命中 → "翻译反复失败就停牌"静默失效，
+  // 一个模型系统性过不了闸的文件被无限重试，每次都是一个付费 LLM session。
+  // DEFAULT 0 另有一项**今天就 load-bearing** 的作用：daemonV2 的 upsert 列清单里没有
+  // tr_attempt（它只写机械事实），每个新扫到的文件全靠这条 DEFAULT 拿到 0 而不是撞 NOT NULL。
+  //
+  // 为什么 tr_recheck_after 刻意**可空**（判据是"NULL 意味着什么"，不是照抄上一条）：
+  // 它是"下次该轮到这一行"的时刻，NULL = "从没被翻译流碰过" = **应当立刻可领**。故翻译
+  // 工作台谓词必须写成 `(tr_recheck_after IS NULL OR tr_recheck_after <= now)`，与字幕轨
+  // recheck_after 的既有读法（3-2）保持同一种表示法——两条轨对同一概念用相反表示法是纯
+  // 认知负担。反过来给它 `NOT NULL DEFAULT 0` 语义上等价（0 也 <= now），但会分叉口径。
+  //
+  // SQLite 的 `ADD COLUMN ... NOT NULL DEFAULT 0` 对存量行直接填 0（不留 NULL），故升级
+  // 路径与 fresh install 落到同一个值，无需额外 UPDATE 回填。
+  //
+  // 条件式表存在性 + 列存在性双重检查照抄 v30–v36：前者防 v29 及更早的库（files 表 v30 才建）
+  // 裸 ALTER 撞 `no such table: files` 把 openDb 整个炸掉 → 用户的库再也打不开；后者保证幂等
+  // （db.test.ts 会把尾部迁移重放一遍，裸 ALTER 会抛 duplicate column name）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('tr_attempt')) {
+      db.exec('ALTER TABLE files ADD COLUMN tr_attempt INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!columns.has('tr_recheck_after')) {
+      db.exec('ALTER TABLE files ADD COLUMN tr_recheck_after INTEGER')
     }
   },
 ]

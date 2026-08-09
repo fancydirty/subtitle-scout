@@ -56,11 +56,15 @@ export function judgeSubtitle(input: JudgeInput, deps: JudgeDeps): JudgeVerdict 
  *  · extractableSourceLangs = 能**抽内嵌文本轨**的语言。en/ja 皆可——抽轨是纯本地 ffmpeg
  *    操作、零 provider 依赖，故天然比抓取宽。
  *
- *  为什么必须是两个集合而不是一个（R20 的口径统一）：spec 正文写"MVP 仅 en"、而
- *  translateWorkerTask.ts:49 的 SUPPORTED_SOURCE_LANGS 实为 ['en','ja']——两处口径不一
- *  正是因为它们说的是不同的事。合成一个集合的话，取 ['en'] 会误判死有日文轨的日漫（C31），
- *  取 ['en','ja'] 会让无内嵌轨的韩剧…… 不，会让**无内嵌轨的日漫**被判可救 → 移交翻译流 →
- *  翻译流发现抓不到日文源 → unsolvable，白绕一圈（C24 想省掉的正是这种绕路）。 */
+ *  为什么必须是两个集合而不是一个（R20 的口径统一）：spec 正文写"MVP 仅 en"、而旧的
+ *  `SUPPORTED_SOURCE_LANGS` 实为 ['en','ja']——两处口径不一正是因为它们说的是不同的事。
+ *  合成一个集合的话，取 ['en'] 会误判死有日文轨的日漫（C31），
+ *  取 ['en','ja'] 会让**无内嵌轨的日漫**被判可救 → 移交翻译流 →
+ *  翻译流发现抓不到日文源 → unsolvable，白绕一圈（C24 想省掉的正是这种绕路）。
+ *
+ *  两个集合的**唯一定义处**是 `translateWorkerTask.ts` 的 FETCHABLE_SOURCE_LANGS /
+ *  EXTRACTABLE_SOURCE_LANGS（第 4 步任务 G 收敛 / C31 末段）。本接口只声明形状，
+ *  不放字面量——喂料由 daemonV2 从那一份定义组装。 */
 export interface TranslatableDeps {
   fetchableSourceLangs: string[]
   extractableSourceLangs: string[]
