@@ -155,9 +155,19 @@ CREATE TABLE IF NOT EXISTS files (
   work_dir TEXT, season INTEGER, episode INTEGER, parse_confidence TEXT,
   work_id TEXT, needs_subtitle INTEGER, sub_status TEXT,
   attempt INTEGER NOT NULL DEFAULT 0, next_retry_at INTEGER, last_error TEXT,
-  recheck_after INTEGER, sub_recheck_at INTEGER, updated_at INTEGER NOT NULL
+  recheck_after INTEGER, sub_recheck_at INTEGER,
+  sub_attempt INTEGER NOT NULL DEFAULT 0, translatable INTEGER,
+  updated_at INTEGER NOT NULL
   -- sub_recheck_at（v32/D12）="下次该复核字幕存在性的时刻"，勿与 recheck_after 混淆（审计 F5）：
   -- recheck_after = 字幕流"再去找一次"的重试调度；sub_recheck_at = B 档"磁盘上有没有"的事实复核。
+  --
+  -- sub_attempt（v34/D22）= 字幕流真实尝试次数，**独立于上面那个 attempt**（后者被识别轨共用，
+  -- 且识别成功时归零 → 复用它会让字幕轨永远攒不到 7 次，实测确认 / C7）。
+  -- 必须 NOT NULL DEFAULT 0：sub_attempt >= 7 在 NULL 上是三值逻辑的 unknown，
+  -- 可空版本会让停牌移交静默失效（与 D18 同一个坑）。
+  --
+  -- translatable（v35/R21+D9）= 翻译可救性预判，三态：NULL=暂不可判 / 0=不可救 / 1=可救。
+  -- 刻意**可空**（与 sub_attempt 相反）：NULL 是有意义的第三态，C40 明令它不得判死。
 );
 CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
 CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
@@ -649,6 +659,85 @@ CREATE TABLE IF NOT EXISTS works (
       .get()
     if (!exists) return
     db.prepare(`UPDATE files SET sub_status = NULL WHERE sub_status = 'unavailable'`).run()
+  },
+  // v34（2026-08-08 流水线 spec，裁决 D22 / 缺口 C7）：files 表加 sub_attempt
+  // ——字幕流"真实尝试次数"的**独立**计数列。
+  //
+  // 为什么必须独立于既有的 `attempt` 列（C7，实测确认过不是推测）：`attempt` 被识别轨与
+  // 字幕轨共用，而 identifyScheduler 在识别成功时把它**归零**
+  // （`UPDATE files SET work_id=?, attempt=0 ... WHERE work_dir=?`）。于是 R10 的"满 7 次
+  // 移交翻译"若复用这一列，任何一次识别重跑都会把字幕轨攒了几天的失败额度洗掉 → 永远攒不到
+  // 7 次 → 停牌移交这条通路根本走不到。反方向同样脏：字幕失败会把识别的退避阶梯顶上去。
+  // 一列一主是唯一解。
+  //
+  // 为什么是 `INTEGER NOT NULL DEFAULT 0` 而不是可空（D22，这才是本条迁移的实质）：
+  // 分流谓词是 `sub_attempt >= 7`，而 SQL 三值逻辑下 `NULL >= 7` 求值为 **unknown**
+  // （不是 false）→ WHERE 不取它、CASE 不进它 → 整套"满 7 次移交停牌"一行代码都不用改
+  // 就静默失效了，日志与界面上什么都看不出来。这与 sub_recheck_at 栽的坑（D18）是同一个，
+  // 本仓已四次栽在这个模式上（C12 → C35 → D17 → D18）——不能有第五次。
+  //
+  // DEFAULT 0 是第二项刚性需求，与 NOT NULL 各自解决不同的问题：
+  //   · NOT NULL 保证谓词可判（上一段）
+  //   · DEFAULT 0 保证**两类不写这一列的写入方**都拿到 0 而不是撞约束：
+  //     ① daemonV2 的 upsert 语句列清单里没有 sub_attempt（它只写机械事实），新扫到的文件
+  //        全靠这条 DEFAULT；
+  //     ② 1b-3 的指纹变化清空（fingerprintResetColumns）对 NOT NULL 列**按 dflt_value 回落**，
+  //        没有 DEFAULT 时它会 `continue` 跳过该列 → 换片源后旧的失败计数原样残留 →
+  //        新片源自带失败额度，4 次就进停牌（本该有 7 次）。
+  //     那边有一条 ALTER 预演用例正钉着这个行为，本条把预演变成现实。
+  //
+  // SQLite 的 `ADD COLUMN ... NOT NULL DEFAULT 0` 对存量行直接填 0（不是留 NULL），故升级
+  // 路径与 fresh install 落到同一个值，无需额外 UPDATE 回填。
+  //
+  // 条件式 files 表存在性检查照抄 v30–v33：v29 及更早的库升级上来时 files 表还不存在
+  // （v30 才建），裸 ALTER 会 `no such table: files` 把 openDb 整个炸掉 → 用户的库再也打不开。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('sub_attempt')) {
+      db.exec('ALTER TABLE files ADD COLUMN sub_attempt INTEGER NOT NULL DEFAULT 0')
+    }
+  },
+  // v35（2026-08-08 流水线 spec，裁决 R21 + D9 / 缺口 C24·C31·C40）：files 表加 translatable
+  // ——"翻译救不救得了这一集"的预判事实列，judge 阶段写入。
+  //
+  // 为什么要预判（R21 / C24）：`works.origin_lang` 在识别时就已落库，即**第 0 天**就知道
+  // 翻译救不救得了。而把这个判定留在翻译流内部（满 7 次之后）意味着：韩剧/法国片无中字 →
+  // 字幕 agent 认真穷尽搜 7 天（7 个完整付费 LLM session + 全 provider 网络调用）→ 第 8 天
+  // 移交翻译流 → 100ms 内判定 unsupported → unsolvable。O(1) 可判的终局不该塞在 7 天延迟之后。
+  //
+  // 为什么**可空**、且与 sub_attempt 刻意相反（C40 红线）：这一列的 NULL 是一个**有意义的
+  // 第三态**——"暂不可判"（judge 还没跑到它，或 embedded_langs 缺失导致判据不全）。
+  // C40 明令 `translatable IS NULL` **不得判死**：视为暂不可判，继续留在字幕流。
+  // 若照 sub_attempt 的样子建成 `NOT NULL DEFAULT 0`，"还没判"与"判过、不可救"就撞成同一个
+  // 值 → 满 7 次时一律走 unsolvable → 把一批还没来得及判的片子永久判死。
+  // 三态语义：NULL=暂不可判 / 0=不可救（→ unsolvable）/ 1=可救（→ handoff_translate）。
+  //
+  // 判据不进 sub_status 而单独立列（R21）：sub_status 是"磁盘上现在什么情况"的投影，
+  // 恰好四态（R17）；把可救性塞进去就是造第五态，正是本步在废止的那件事。
+  //
+  // 不加 CHECK 约束（值域 NULL/0/1）：SQLite 给已有表加 CHECK 需要官方 12 步重建表流程
+  // （建新表→拷数据→删旧表→改名），而 files 表在生产上有几万行、且 DROP TABLE 会撞
+  // foreign_keys 的隐式检查（见 openDb 里那段论证）。成本远超收益——写入者只有 judge 一处，
+  // 由 judgeTranslatable 的返回类型在类型层收口。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('translatable')) {
+      db.exec('ALTER TABLE files ADD COLUMN translatable INTEGER')
+    }
   },
 ]
 

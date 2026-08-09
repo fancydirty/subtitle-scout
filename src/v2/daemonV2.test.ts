@@ -3,7 +3,7 @@ import { openDb } from './db.js'
 import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
 // 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
 // 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
-import { listSubtitleQueue, subtitleJobId } from './subtitleScheduler.js'
+import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir } from './subtitleScheduler.js'
 
 interface TestDeps {
   db?: ReturnType<typeof openDb>
@@ -554,12 +554,17 @@ describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
 
   it('sub_attempt / translatable 列一旦存在（spec 第 3 步加列后）也必须被清', async () => {
     const db = openDb(':memory:')
-    // 这两列归 spec 第 3 步加，本步的 schema 里还没有。但清空名单若按"今天有哪些列"硬编码，
-    // 第 3 步加完列的那天就会**静默漏清**——本仓已经三次栽在"写了某列却没人写/没人读"
-    // （C12 → C35 → D17）。故实现按 PRAGMA 实际列取交集，这条用例用手工 ALTER 预演第 3 步的
-    // schema，把"未来加的列会自动被清"这件事钉住，不留给下一个 task 去发现。
-    db.exec('ALTER TABLE files ADD COLUMN sub_attempt INTEGER NOT NULL DEFAULT 0')
-    db.exec('ALTER TABLE files ADD COLUMN translatable INTEGER')
+    // 这两列原本归 spec 第 3 步加，本用例当初用手工 `ALTER TABLE ... ADD COLUMN` **预演**
+    // 未来的 schema，把"未来加的列会自动被清"这件事提前钉住（实现按 PRAGMA 取交集）。
+    //
+    // 🔴 3-2 已真正加上这两列（v34/v35），预演随之到期：裸 ALTER 会撞 `duplicate column name`。
+    // 处置是**把预演换成前置断言**而不是删掉本用例——它守的行为一点没变，反而变得更强：
+    // 当初断言的是"假设将来有这两列，清空逻辑会覆盖它们"，现在断言的是"这两列真的在库里，
+    // 且真的被清"。删掉它就等于把 v34 那条 `NOT NULL DEFAULT 0` 与 1b-3 的 dflt_value 回落
+    // 之间的咬合（下面 toBe(0) 那条）交还给运气。
+    const cols = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
+    expect(cols.has('sub_attempt')).toBe(true)
+    expect(cols.has('translatable')).toBe(true)
     seedSettledFile(db, P, { mtime: 1000 })
     expect(stateOf(db, P).sub_attempt).toBe(3)   // 前置条件成立，否则下面断言无意义
     const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 5000, size: BIG } })
@@ -567,7 +572,10 @@ describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
     await scan(daemon)
 
     const s = stateOf(db, P)
-    // sub_attempt 残留 → 新片源自带 3 次失败额度，4 次就进停牌（本该有 7 次）
+    // sub_attempt 残留 → 新片源自带 3 次失败额度，4 次就进停牌（本该有 7 次）。
+    // 值是 **0 而不是 NULL**：sub_attempt 是 NOT NULL DEFAULT 0（D22），清空按 dflt_value
+    // 回落。写成 NULL 会当场撞 NOT NULL 约束把整轮扫描炸掉——这正是 1b-3 用 PRAGMA 读
+    // dflt_value 而不是一律写 NULL 的全部理由。
     expect(s.sub_attempt).toBe(0)
     // translatable 残留 → D9 的可救性判决是基于**上一个文件**的内嵌轨算出来的，
     // 而我们刚把 embedded_langs 清成 NULL：清掉证据留下判决 = 判决永久冻结（D17 同型）
@@ -1895,7 +1903,10 @@ describe('ScoutDaemonV2 · D17 embedded_langs 存量回填 pass（C38 + C43）',
 
   it('🔴🔴 回填后 needs_subtitle 被置 NULL —— 重判通路红线（C43 的核心）', async () => {
     const db = openDb(':memory:')
-    db.exec('ALTER TABLE files ADD COLUMN translatable INTEGER')
+    // 原本这里有一条手工 `ALTER TABLE files ADD COLUMN translatable INTEGER` 预演未来 schema；
+    // 3-2 真正加上该列（v35）后预演到期（裸 ALTER 撞 duplicate column），改为前置断言。
+    expect(new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+      .map(c => c.name)).has('translatable')).toBe(true)
     seedLegacyFile(db, P, { needs_subtitle: 0, translatable: 0 })
     // 前置条件：这一行**已经被判过**（needs_subtitle=0），否则本用例是空转的假绿。
     expect(stateOf(db, P).needs_subtitle).toBe(0)
@@ -2051,8 +2062,13 @@ describe('ScoutDaemonV2 · D17 embedded_langs 存量回填 pass（C38 + C43）',
 
   it('🔴 translatable 列不存在时（3-2 之前的 schema）→ 回填照常进行，不抛错', async () => {
     const db = openDb(':memory:')
-    // 今天的 schema 里就没有 translatable 列。硬编码进 SQL 会让整个回填 pass 抛
-    // `no such column: translatable` → boot 阶段就炸 → daemon 起不来。
+    // 原本这条靠"今天的 schema 里本来就没有 translatable"来构造前提。3-2 加上该列（v35）后
+    // 那个前提消失了，但**要守的行为没有消失**：回填 pass 按 PRAGMA 取交集拼列，是为了让它
+    // 在"列还没加"的库上不抛 `no such column` 而炸掉 boot。生产上这个形态真实存在——
+    // 容器滚更时新代码可能先于迁移跑起来（或用户从旧备份恢复出一个 v34 之前的库）。
+    // 故用 DROP COLUMN **主动造回**旧 schema，而不是把用例删掉：删掉就等于把"动态拼列"
+    // 这个设计的唯一守卫者拿走，日后谁把它改回硬编码 SQL 都不会红。
+    db.exec('ALTER TABLE files DROP COLUMN translatable')
     const cols = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
     expect(cols.has('translatable')).toBe(false)   // 前置条件成立，否则本用例无意义
     seedLegacyFile(db, P, { needs_subtitle: 1 })
@@ -2116,6 +2132,227 @@ describe('ScoutDaemonV2 · D17 embedded_langs 存量回填 pass（C38 + C43）',
     // 每个文件恰好被探一次：legacy 归回填，fresh 归扫描。任何一方多探一次这里就红。
     expect(fs.probeCalls.filter(p => p === legacy).length).toBe(1)
     expect(fs.probeCalls.filter(p => p === fresh).length).toBe(1)
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// judgeOnce 写 translatable（R21 + D9 / 缺口 C24·C31·C40）。
+//
+// 为什么这一组必须走**真实的 judgeOnce** 而不是只测 judgeTranslatable 纯函数：
+// C12/C35/D17 三次同型血案的共同形状是"写了某列却没定谁来写/谁来读"——纯函数全绿、
+// 而生产上那一列永远是 NULL。translatable 的**唯一写入者**就是这里，
+// 少了这组用例，judgeTranslatable 可以完美无缺地存在而 files.translatable 一辈子不被写。
+// ─────────────────────────────────────────────────────────────────────────────
+function translatableOf(db: ReturnType<typeof openDb>, path: string): number | null {
+  return (db.prepare('SELECT translatable FROM files WHERE path = ?').get(path) as { translatable: number | null }).translatable
+}
+
+describe('ScoutDaemonV2.judgeOnce · translatable 预判写入（R21/D9）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴 origin=en → translatable=1（用例 11 的端到端版）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'en' })
+    expect(translatableOf(db, V)).toBeNull()   // 前置条件：还没判过，否则用例是空转的假绿
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    expect(translatableOf(db, V)).toBe(1)
+    db.close()
+  })
+
+  it('🔴🔴 origin=ja 且有日文内嵌轨 → translatable=1（用例 12 / D9 防误判死日漫）', async () => {
+    // 这条是整组里最 load-bearing 的一条：只看 origin_lang 的实现会在这里写 0，
+    // 于是满 7 次后走 unsolvable → 一批 BD 压制的日漫（普遍带日文内嵌轨）永久停牌，
+    // 而它们其实一抽轨就能救（纯本地操作，完全符合 R13 单跳）。
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'ja', embeddedLangs: '["jpn"]' })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    expect(translatableOf(db, V)).toBe(1)
+    db.close()
+  })
+
+  it('🔴 origin=ko 且探过、确认零内嵌轨 → translatable=0（用例 13）', async () => {
+    const db = openDb(':memory:')
+    // embedded_langs='[]' 是"探过、确认零轨"，与 NULL（没探过）是两回事——
+    // streamProbe 的三态契约，消费方不许折叠。
+    seedJudgeable(db, V, { originLang: 'ko', embeddedLangs: '[]' })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    expect(translatableOf(db, V)).toBe(0)
+    db.close()
+  })
+
+  it('🔴 origin=ja 但 embedded_langs 还是 NULL（没探过）→ translatable 保持 NULL（C40 不判死）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'ja', embeddedLangs: null })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    // 判据不全就该留 NULL 等 D17 回填。写 0 = 拿"信息缺失"当"结论"，
+    // 满 7 次时被当不可救直接 unsolvable，永久判死一部可能有日文轨的日漫。
+    expect(translatableOf(db, V)).toBeNull()
+    // 但 needs_subtitle 该判的照判——两列是独立事实，translatable 判不了不影响找字幕。
+    expect(needsSubtitleOf(db, V)).toBe(1)
+    db.close()
+  })
+
+  it('🔴 needs_subtitle 与 translatable 在**同一条 UPDATE** 里写（掉电不留半判决行）', async () => {
+    // 分两条语句的话，进程在两条之间被杀（软路由掉电是本项目常态，见 db.ts 的
+    // synchronous=FULL 论证）会留下 needs_subtitle 已判、translatable 还是 NULL 的行。
+    // 而 judge 谓词是 `needs_subtitle IS NULL` → 这一行永不重判 → translatable 永久冻结在
+    // NULL。C40 说 NULL 不判死（所以不会立刻出事），但它会**永远**停在"暂不可判"，
+    // 满 7 次时既不移交翻译也不停牌，在字幕流里无限期打转 —— D17 同型的第五次。
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'en' })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    const row = db.prepare('SELECT needs_subtitle, translatable FROM files WHERE path = ?').get(V) as any
+    expect(row.needs_subtitle).toBe(1)
+    expect(row.translatable).toBe(1)
+    db.close()
+  })
+
+  it('🔴 国产片（origin=zh）→ needs_subtitle=0，translatable 不必纠结但必须被写过一次', async () => {
+    // 边界：needs_subtitle=0 的行永远进不了字幕工作台，故它的 translatable 是什么都无所谓。
+    // 但**不能因此跳过写入**——若实现写成"needs=0 就 continue"，将来 judge 谓词一变
+    // （比如换片源把 needs 清成 NULL 重判）就会留下一批 translatable 语义不明的行。
+    // 这里只钉"judge 跑过之后这一行不再处于未判状态"，不对具体值下断言。
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'zh' })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    expect(needsSubtitleOf(db, V)).toBe(0)
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴🔴🔴 C27 永久卡死态的端到端红线（本 task 最重要的一条）。
+//
+// 生产上正在发生的数据损坏（用户实测复现：listSubtitleQueue 捞到 0 个作品）：
+//   ① 字幕装盘成功 → 旧 markCovered 写 `needs_subtitle=0` + `sub_status='covered'`
+//   ② 下一轮扫描发现字幕其实没落地（worker 声称成功但文件没写成）或用户手删 →
+//      R24 让扫描把 sub_status 回退 NULL（1b-4 已实现）
+//   ③ 但 `needs_subtitle=0` 留着 → 既不满足 judge 谓词 `needs_subtitle IS NULL`（不会重判）、
+//      又不满足字幕工作台谓词 `needs_subtitle=1`（不会排它）
+//   ④ → 这一集**再也不会被补字幕**，而界面上什么异常都看不出来。
+//
+// 为什么这一组必须**端到端串三个真实组件**（runSubtitleWorkDir → observeSubtitle →
+// listSubtitleQueue），而不是分别断言各自的列：
+// 卡死是**谓词组合**造成的，不是任何单个组件的行为错误。三个组件各自单测都能全绿——
+// 装盘写了两列（"符合当时的设计"）、扫描回退了 sub_status（"正确"）、队列按谓词取件（"正确"）——
+// 而合起来那一行永久消失。前七轮子代理反复踩到的假绿正是这一类：声称守某条通路、
+// 实际只钉了通路上的一个中间变量。故这里用真实函数跑完整循环，断言"这一行回到了工作台"。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 C27 端到端：装盘 → 字幕没落地/被手删 → 该行必须重回字幕工作台', () => {
+  const V = '/media/Show/E01.mkv'
+  const SUB = '/media/Show/E01.zh-Hans.srt'
+
+  /** 造一行"已识别、已判需字幕、指纹与磁盘一致"的行 + 对应的 works。 */
+  function seed(db: ReturnType<typeof openDb>): void {
+    db.prepare(`INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at)
+                VALUES (?,?,?,?,?,?)`).run('tmdb:42', 'Show', 'tv', 'en', 1000, 1000)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                   season, episode, needs_subtitle, sub_status, sub_recheck_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(V, '/media/Show', 'E01.mkv', BIG, 1000, '/media/Show', 'tmdb:42',
+        1, 1, 1, null, NOW - 1, 1000)
+  }
+
+  /** 🔴 时钟口径：`runSubtitleWorkDir` 里的退避回写用的是**真实** `Date.now()`
+   *  （它没有 now 注入点），而 daemon 侧用的是注入的假 NOW(1e12)——后者比真实时间**早约
+   *  9100 天**。于是装盘写下的 recheck_after ≈ 真实now+1天，用假时钟去查队列永远落在退避
+   *  窗口内，"这一行回到了工作台"这件事就永远看不见（本组用例第一版正是这么红的）。
+   *
+   *  故取件断言一律走真实时钟 + 一个足够跨过退避的余量。**不改成"把余量调到假时钟上"**：
+   *  那样断言会依赖两个时钟的差值恰好是今天这个数，明年跑就变味了。
+   *  扫描侧继续用假 NOW（它的 sub_recheck_at 逻辑全建立在 NOW 上），两边各用各的口径，
+   *  唯一的耦合点就是这里的取件时刻——显式写出来而不是让它藏在数字里。 */
+  const queueNow = () => Date.now() + 2 * DAY
+  const queuePaths = (db: ReturnType<typeof openDb>, at: number) =>
+    listSubtitleQueue(db, ['/media'], at).flatMap(q => q.files.map(f => f.path))
+
+  it('🔴🔴 worker 声称装盘成功但字幕没落地 → 下一轮扫描后该行重回工作台（不是永久卡死）', async () => {
+    const db = openDb(':memory:')
+    seed(db)
+    expect(queuePaths(db, NOW)).toContain(V)   // 前置：它本来在工作台里（尚无 recheck_after）
+
+    // ── 第 1 轮：字幕流跑完，worker 报 installed（但磁盘上其实没有这个文件）──
+    const item = listSubtitleQueue(db, ['/media'], NOW)[0]
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })) as any, item, 'zh')
+
+    // 装盘后当轮出队（D6 的 recheck_after 出队凭据 / 防 C26 热循环）。
+    // 用**真实时钟的当下**查（不加余量）：此刻退避未过，理应取不到。
+    expect(queuePaths(db, Date.now())).not.toContain(V)
+
+    // ── 第 2 轮（次日）：扫描观察字幕存在性。磁盘上**没有**那个字幕文件 ──
+    const sub = fakeSubtitleDisk([])   // 空磁盘：worker 声称成功但文件没写成
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], fileExists: sub.fileExists,
+      ...fakeFs({ '/media': [V] }),
+      now: () => NOW + DAY,
+    }))
+    await scan(daemon)
+
+    // 🔴 这是全套改动里最 load-bearing 的一条断言：
+    // 旧实现下 needs_subtitle 被装盘写成了 0 → 这一行永久消失，此处必然失败。
+    expect(subStatusOf(db, V)).toBeNull()
+    expect(needsSubtitleOf(db, V)).toBe(1)     // 语言事实没变，它仍然"原则上需要中文字幕"
+    expect(queuePaths(db, queueNow())).toContain(V)
+    db.close()
+  })
+
+  it('🔴🔴 用户嫌翻译质量差手删字幕 → 该行重回工作台（C19 的原始剧本）', async () => {
+    const db = openDb(':memory:')
+    seed(db)
+
+    // 第 1 轮：装盘成功，且字幕**真的**落到磁盘上了
+    const disk = fakeSubtitleDisk([SUB])
+    const item = listSubtitleQueue(db, ['/media'], NOW)[0]
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })) as any, item, 'zh')
+
+    // 第 2 轮扫描：字幕在 → 扫描（唯一有权写 covered 的人 / R24）确认覆盖
+    const d1 = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], fileExists: disk.fileExists, ...fakeFs({ '/media': [V] }), now: () => NOW + DAY,
+    }))
+    await scan(d1)
+    expect(subStatusOf(db, V)).toBe('covered')
+    expect(queuePaths(db, queueNow())).not.toContain(V)   // covered 的不该白烧付费 LLM
+
+    // ── 用户手动删掉字幕（视频 mtime/size 不变 → 进不了 A 档，只能靠 B 档轮到）──
+    disk.remove(SUB)
+    const d2 = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], fileExists: disk.fileExists, ...fakeFs({ '/media': [V] }),
+      now: () => NOW + 9 * DAY,   // 越过 sub_recheck_at 的 7 天，B 档轮到它
+    }))
+    await scan(d2)
+
+    expect(subStatusOf(db, V)).toBeNull()      // 扫描回退（R24）
+    expect(needsSubtitleOf(db, V)).toBe(1)     // 🔴 旧实现这里是 0 → 永久卡死
+    expect(queuePaths(db, queueNow())).toContain(V)
+    db.close()
+  })
+
+  it('🔴 judge 也能重新看见它（卡死的另一半：judge 谓词 needs_subtitle IS NULL）', async () => {
+    // C27 有两条堵死的路，工作台谓词只是其中一条。另一条是 judge——若装盘把
+    // needs_subtitle 写成 0，judge 的 `IS NULL` 谓词同样再也不会重判这一行。
+    // 本用例钉住"装盘之后 needs_subtitle 仍是 judge 判出来的那个值"，即装盘没有越界改判决。
+    const db = openDb(':memory:')
+    seed(db)
+    const item = listSubtitleQueue(db, ['/media'], NOW)[0]
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })) as any, item, 'zh')
+    // 装盘不碰 needs_subtitle（D8）：它是语言事实的投影，只有 judge 与换片源清空能改它。
+    expect(needsSubtitleOf(db, V)).toBe(1)
     db.close()
   })
 })

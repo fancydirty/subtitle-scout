@@ -16,7 +16,7 @@ import { toMediaFileRow, isScannable } from './scanner.js'
 import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, subtitleJobId, type SubtitleQueueItem } from './subtitleScheduler.js'
-import { judgeSubtitle } from './subtitleJudge.js'
+import { judgeSubtitle, judgeTranslatable, type TranslatableDeps } from './subtitleJudge.js'
 import { tagsForLanguage } from '../agent/languages.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { existsSync } from 'node:fs'
@@ -69,6 +69,24 @@ const SUB_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
  *  期间删除清理、识别、字幕三条主路全被堵在后面——而回填只是让存量行**重新被 judge 看一眼**，
  *  晚一天完成没有任何实质损失。剩余行留 NULL，下次启动继续，靠谓词自然收敛、不丢活。 */
 const BACKFILL_BATCH_SIZE = 200
+
+/** R20 的 MVP 语言边界，喂给 judgeTranslatable（R21 + D9）。
+ *
+ *  两个集合**刻意不同**，这正是 R20 的裁决内容：
+ *   · 外挂抓取仅 en —— OpenSubtitles 靠 imdb 命中；日语要等 F2 的 jimaku 落地（C6）
+ *   · 内嵌轨抽取 en/ja 皆可 —— 抽轨是纯本地 ffmpeg 操作、零 provider 依赖，天然比抓取宽
+ *
+ *  为什么不复用 `translateWorkerTask.ts` 的 `SUPPORTED_SOURCE_LANGS = ['en','ja']`：
+ *  那一个常量把两件事混成了一个集合，正是 spec 记录的口径不一（C31 末段："spec 写 MVP 仅 en，
+ *  而 translateWorkerTask.ts:49 实为 ['en','ja']"）。直接拿它当抓取集合会让**无内嵌轨的日漫**
+ *  被判可救 → 移交翻译流 → 翻译流发现抓不到日文源 → unsolvable，白绕一圈 7 天
+ *  （C24 想省掉的正是这种绕路）。第 4 步重接翻译时应把那个常量也拆成两个，届时两处收敛成
+ *  一份；今天不动它——它还挂在旧翻译流上，改了会波及本 task 范围外的代码。 */
+const TRANSLATABLE_LANGS: TranslatableDeps = {
+  fetchableSourceLangs: ['en'],
+  extractableSourceLangs: ['en', 'ja'],
+}
+
 
 export interface DaemonV2Deps {
   db: ScoutDb
@@ -425,18 +443,45 @@ export class ScoutDaemonV2 {
     `).all() as Array<{ path: string; filename: string; embedded_langs: string | null; work_id: string; origin_lang: string | null }>
 
     if (rows.length === 0) return
-    const update = db.prepare('UPDATE files SET needs_subtitle = ?, updated_at = ? WHERE path = ?')
+    // needs_subtitle 与 translatable 写在**同一条 UPDATE** 里（不是两条）。
+    // 分两条的话，进程在两条之间被杀（软路由掉电是本项目常态，见 db.ts 的 synchronous=FULL
+    // 论证）会留下"needs_subtitle 已判、translatable 还是 NULL"的行——而 judge 的谓词是
+    // `needs_subtitle IS NULL`，这一行从此**永不重判** → translatable 永久冻结在 NULL。
+    // C40 说 NULL 不判死（不会立刻出事），但它会永远停在"暂不可判"：满 7 次时既不移交翻译、
+    // 也不停牌，在字幕流里无限期打转。这正是 C12 → C35 → D17 → D18 那条"写了某列却没定谁
+    // 来读/何时写全"的血案的第五次形态。
+    //
+    // translatable 列按 PRAGMA 取交集动态拼（照 fingerprintResetColumns / backfill 的既有
+    // 口径）：硬编码进 SQL 会让本阶段在**没有该列的旧库**上抛 `no such column` → 整轮巡检
+    // 挂掉。生产上这形态真实存在（容器滚更时新代码可能先于迁移起来、或从旧备份恢复的库）。
+    const haveTranslatable = (() => {
+      try {
+        return new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+          .map((c) => c.name)).has('translatable')
+      } catch { return false }
+    })()
+    const update = db.prepare(
+      `UPDATE files SET needs_subtitle = ?, updated_at = ?`
+      + (haveTranslatable ? `, translatable = ?` : '')
+      + ` WHERE path = ?`,
+    )
     let judged = 0
 
     for (const r of rows) {
       let embedded: string[] | null = null
       if (r.embedded_langs) { try { embedded = JSON.parse(r.embedded_langs) } catch { embedded = null } }
 
-      const verdict = judgeSubtitle(
-        { originLang: r.origin_lang, embeddedLangs: embedded },
-        { targetLanguages: [this.deps.targetLanguage] },
-      )
-      update.run(verdict.needs ? 1 : 0, now, r.path)
+      const input = { originLang: r.origin_lang, embeddedLangs: embedded }
+      const verdict = judgeSubtitle(input, { targetLanguages: [this.deps.targetLanguage] })
+      // R21：可救性与 needs_subtitle 同时判定。**无条件判**（连 needs=0 的行也判）——
+      // 若写成"needs=0 就跳过"，将来换片源把 needs 清成 NULL 重判时会留下一批 translatable
+      // 语义不明的行；而多判一次的成本是零（纯函数、不碰磁盘、判据都已在手上）。
+      const translatable = judgeTranslatable(input, TRANSLATABLE_LANGS)
+      if (haveTranslatable) {
+        update.run(verdict.needs ? 1 : 0, now, translatable, r.path)
+      } else {
+        update.run(verdict.needs ? 1 : 0, now, r.path)
+      }
       judged++
     }
     if (judged > 0) {
