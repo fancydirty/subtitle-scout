@@ -226,9 +226,22 @@ ${identityVerification ? `0. FIRST, identify the media from the raw evidence per
    entries plausibly cover your targets — a season pack or complete-series collection that
    spans the targets' seasons counts, so read its fileList (\`get_candidate\` detailed) to
    confirm which of your targets are inside and to find each one's fileIndex.
-4. If nothing plausible turns up, you MAY call \`search_source\` again with different
-   queries (alternate titles, romanizations, a narrower/wider query) — re-searching is
-   expected, not a failure.
+4. If nothing plausible turns up, do NOT stop there. Re-searching is EXPECTED, and one empty
+   \`search_source\` call is not an exhausted search. A target may only be reported
+   \`no_safe_match\` once every one of these that applies is genuinely behind you:
+   - Query variants: the title AND the native/original title, romanizations, with and without
+     the year, and — when a narrow per-episode query came back empty — a series-level query
+     with no season/episode narrowing at all. Providers index different names, and some only
+     consult the first 1-2 of your query variants per call, so variants belong spread across
+     SEVERAL calls rather than piled into one.
+   - Providers: your results come from more than one provider, and they succeed and fail
+     independently. One provider coming back empty is not "there is nothing". If
+     \`providerFailures\` names a provider that did not answer this call, your search is
+     INCOMPLETE rather than empty — see \`retry_later\` below.
+   - Packs and absolute numbering: covered by the sections above, not repeated here — a
+     target is not exhausted until you have looked for it INSIDE the season packs and
+     complete-series collections you were returned, and, where a pack numbers episodes
+     differently than your files do, under its absolute episode number.
 5. For each target you can locate in a plausible candidate: \`download_candidate\` (with
    \`videoFilename\` naming the target, plus \`fileIndex\`/\`archiveEntryName\` as needed) to
    fetch it into your sandbox and get structural inspection signals. Compare those signals
@@ -248,11 +261,27 @@ ${identityVerification ? `0. FIRST, identify the media from the raw evidence per
      returned, the language tag you installed, the candidate's provider/providerId, and your
      reason.
    - \`no_safe_match\`: targets you genuinely exhausted the real candidates for — pack or
-     single, nothing containing that episode could be verified. "I am not confident" belongs
-     here, per item, with your reason. It is NOT "there was no clean single-episode file"
-     (a pack that spans the season DOES contain it).
-   - \`retry_later\`: targets you could not process because of a TRANSIENT failure (a provider
-     errored, a download timed out) — the system will bring them back soon. Not for doubt;
+     single, nothing containing that episode could be verified. What this bucket asserts is
+     that the sources ANSWERED you and what came back held nothing whose belonging you could
+     verify. "I am not confident" belongs here, per item, with your reason. It is NOT "there
+     was no clean single-episode file" (a pack that spans the season DOES contain it), and it
+     is NOT for a target that still has an untried query variant, an unexplored provider, or
+     an unopened pack left (step 4) — while anything is still left to try, this target is
+     unfinished, not hopeless.
+     You must have ACTUALLY called \`search_source\` for a target before reporting it here.
+     The system mechanically checks this: a \`no_safe_match\` report from a run where
+     \`search_source\` was never called is recorded as a fabricated no-match and raises an
+     alarm. This is not a trap to avoid — it is why a guess costs you more than a search does.
+   - \`retry_later\`: targets you could not process because the source could not ANSWER you
+     this time — the question never really got asked, so no answer about the subtitle's
+     existence was produced. A provider errored, a download timed out, a provider returned
+     5xx, authentication or an API key was rejected, a provider rate-limited you (HTTP 429),
+     or a provider's request quota ran out for now (e.g. a free daily download allowance,
+     often with a reset time). Rate limiting and quota exhaustion belong HERE even though
+     neither is an error in the usual sense: a 429 is a perfectly normal HTTP response and an
+     exhausted quota is a successful "not now", so nothing looks broken — but a source that
+     declined to answer told you nothing about whether the subtitle exists. Anything visible
+     in \`providerFailures\` is this, not an empty result. Not for doubt;
      doubt is no_safe_match.${hardsubMode === 'agent' ? `
    - \`hardsub_assumed\`: targets you judge to already carry hardcoded subtitles baked into the
      video — see the dedicated section below for the evidence bar. Only this task's mode makes
