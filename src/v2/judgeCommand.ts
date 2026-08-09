@@ -1,10 +1,13 @@
 // src/v2/judgeCommand.ts：需字幕判定 CLI（新架构阶段 3）
 // 用法：node dist/v2/judgeCommand.js [workId]
 // 对已识别文件跑 judgeSubtitle，更新 needs_subtitle。
+//
+// **不探磁盘**（D8 / C27）：这里曾有一份手写的 readdir + 双正则 sidecar 探测，用来喂 judge
+// 规则 3。规则 3 已连同 hasSidecarSubtitle 一起删除——"磁盘上当前有没有外挂中文字幕"归
+// sub_status，由扫描独占写入（R24）。两列都判同一个磁盘事实会造出永久卡死态，
+// 完整论证见 subtitleJudge.ts 顶部。
 import { openDb } from './db.js'
 import { judgeSubtitle } from './subtitleJudge.js'
-import { existsSync, readdirSync } from 'node:fs'
-import { dirname, basename } from 'node:path'
 
 async function main() {
   const db = openDb('/cache/scout.db')
@@ -19,36 +22,22 @@ async function main() {
   `).all() as Array<{ path: string; filename: string; embedded_langs: string | null; work_id: string; origin_lang: string | null }>
 
   console.log(`待判定 ${rows.length} 个文件`)
-  const stats = { missing: 0, originSkip: 0, embedded: 0, sidecar: 0 }
+  const stats = { missing: 0, originSkip: 0, embedded: 0 }
   const update = db.prepare('UPDATE files SET needs_subtitle = ?, updated_at = ? WHERE path = ?')
 
   for (const r of rows) {
     let embedded: string[] | null = null
     if (r.embedded_langs) { try { embedded = JSON.parse(r.embedded_langs) } catch { embedded = null } }
-    // sidecar 探测：同目录同名前缀的中文字幕（.zh / .zh-Hans / .chs / .zh-CN 等 language tag）
-    // 🔴 2026-08-08 实测：真实字幕是 .zh-Hans.ass（BCP-47 变体），只查 .zh/.chs 会漏判。
-    // 用前缀 + 语言标签正则：stem.zh* 或 stem.chs* 且扩展名是字幕。
-    const dir = dirname(r.path)
-    const stem = basename(r.filename).replace(/\.[^.]+$/, '')
-    const dirEntries = (() => { try { return readdirSync(dir) } catch { return [] } })()
-    const sidecar = dirEntries.some((e) =>
-      e !== r.filename
-      && e.startsWith(stem + '.')
-      && /\.(srt|ass|ssa|vtt)$/i.test(e)
-      && /[.-](zh|chs|chi|zho)([.-]|$)/i.test(e)
-    )
 
     const verdict = judgeSubtitle(
-      { originLang: r.origin_lang, embeddedLangs: embedded, hasSidecarSubtitle: sidecar },
-      { targetLanguages: [targetLang], hasSidecar: () => sidecar },
+      { originLang: r.origin_lang, embeddedLangs: embedded },
+      { targetLanguages: [targetLang] },
     )
     update.run(verdict.needs ? 1 : 0, now, r.path)
-    stats[verdict.needs ? 'missing' :
-      verdict.reason === 'origin-skip' ? 'originSkip' :
-      verdict.reason === 'embedded' ? 'embedded' : 'sidecar']++
+    stats[verdict.needs ? 'missing' : verdict.reason === 'origin-skip' ? 'originSkip' : 'embedded']++
   }
 
-  console.log(`判定完成: 需要字幕=${stats.missing} 国产跳过=${stats.originSkip} 内嵌跳过=${stats.embedded} sidecar跳过=${stats.sidecar}`)
+  console.log(`判定完成: 需要字幕=${stats.missing} 国产跳过=${stats.originSkip} 内嵌跳过=${stats.embedded}`)
   db.close()
 }
 

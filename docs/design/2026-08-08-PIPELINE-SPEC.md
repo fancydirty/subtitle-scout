@@ -53,13 +53,13 @@
 | D9 | `translatable` 预判必须**同时考虑内嵌轨**，不能只看 origin_lang | 日漫自带日文内嵌轨时是纯本地抽取、完全合规，只看语言会把能救的判死 |
 | D10 | 翻译回写必须带**乐观并发守卫** `WHERE sub_status='handoff_translate'` | 翻译等 LLM 的几分钟内扫描可能已写 covered，无守卫会被覆盖 |
 | D11 | D2 的清理必须挂在 `settingsRepo.removeRoot` 内（已确认它只清旧表、**一行 files 不碰**） | 挂错位置会导致测试绿、生产漏 |
-| D12 | 字幕存在性检测分两档（具体机制见 §5 补）：**新增/指纹变化文件全量检测**；未变化文件按 `sub_recheck_at` 到点轮转，**每轮只查到点的那批** | 21 标签×4 扩展=84 次 stat/文件，115 网盘挂载放大 46 倍 |
+| D12 | 字幕存在性检测分两档（具体机制见 §5 补）：**新增/指纹变化文件全量检测**；未变化文件按 `sub_recheck_at` 到点轮转，**每轮只查到点的那批** | 15 标签×4 扩展=60 次 stat/文件，115 网盘挂载放大 46 倍 |
 | D13 | **停牌复查是独立的阶段 2.6**，不塞给字幕流执行 | 字幕流谓词是 `sub_status IS NULL`，看不见停牌行——让它负责复查是鸡生蛋；且强行改状态会掀掉飞行中的翻译，D10 守卫匹配 0 行 → 退避不写 → 热循环从侧门回来 |
 | D14 | **周频复查的对象取决于翻译开关**（用户裁决 a）：<br>· `unsolvable` — 恒参与<br>· `handoff_translate` — **翻译未启用时参与**；已启用时不参与（归翻译流管，有自己的 tr_recheck_after 节奏） | 翻译开着时复查会打断飞行中的翻译；翻译关着时若不复查，它就成了真正的永久终态，违背 R25 |
 | D15 | 复查时 **sub_attempt 不归零**；回 NULL 后下一次失败立即判 `>= 7`（**不是 `== 7`**）→ 直接回停牌 | 归零会让永远找不到的文件变成 7 次/14 天（182 session/年）；不归零 = 1 次/周（52 次/年），才符合 R25 原意"每周找一次" |
 | D16 | D12 的低频复核**范围必须含停牌态**（unsolvable + handoff_translate），不能只抽样 covered | 用户手放字幕不改视频指纹，若只覆盖 covered 则停牌态的手放字幕永不被发现 → R23"用户手放的也认"失效 |
 | D17 | **embedded_langs 存量回填 pass 必须同时把 `needs_subtitle` 与 `translatable` 置 NULL**，否则 judge 谓词 `needs_subtitle IS NULL` 永不再看存量行 → 回填等于白跑 ffprobe | 第三次栽在同一模式（C12→C35→本条）：写了某列却没定谁来重读它 |
-| D18 | `sub_recheck_at` 的 **NULL 语义写死**：迁移时对全库随机打散到未来 7 天内（`now + random()*7天`），**不留 NULL** | 照字面写谓词 `sub_recheck_at <= now` 则 NULL 行永不命中（静默失效）；补 `IS NULL OR` 则首轮全库雪崩（几万文件 ×84 次 stat） |
+| D18 | `sub_recheck_at` 的 **NULL 语义写死**：迁移时对全库随机打散到未来 7 天内（`now + random()*7天`），**不留 NULL** | 照字面写谓词 `sub_recheck_at <= now` 则 NULL 行永不命中（静默失效）；补 `IS NULL OR` 则首轮全库雪崩（几万文件 ×60 次 stat） |
 | D19 | 第 3 步迁移必须含 `UPDATE files SET sub_status=NULL WHERE sub_status='unavailable'` | 顺序调整后第 2 步先上线，存量 `unavailable` 行在新谓词下既不在字幕工作台、又攒不到 7 次 → 永久出局 |
 | D20 | **D1 删除逻辑必须主动跳过被嵌套污染的根**（内外层都算），只做 upsert 不做差集删除；跳过要打日志 | 第 1a 步的 detectNestedRoots 只告警、不改用户配置；若用户不理，D1 上线仍会删库——不能依赖"用户看了告警去修"这个假设 |
 | D21 | `'/'` 作为守备目录时，D1 的差集**必须排除更深守备目录名下的行** | `substr(path,1,1)='/'` 对所有绝对路径为真。第 1a 步已在 removeRoot 侧修（审校 F8），D1 是另一条代码路径，不会自动继承 |
@@ -92,7 +92,10 @@
         识别不出 → next_retry_at = 明天
 
 阶段 2.5 judge
-        ① 识别绑定后判 needs_subtitle（国产/内嵌中文/已有中文 sidecar → 跳过）
+        ① 识别绑定后判 needs_subtitle（国产/内嵌中文 → 跳过）
+           **不判 sidecar**（D8/C27，1b-5 已落地）：外挂字幕是磁盘事实，归 sub_status 管。
+           两列都判同一个事实会造出永久卡死态——用户手删字幕后 sub_status 回退 NULL 了，
+           但 needs_subtitle=0 留着，既不满足 judge 谓词 `IS NULL`、又不满足工作台谓词 `=1`。
         ② 判 translatable（R21）：works.origin_lang 是否在可抓源集合内（MVP=仅 en）
            → 写入独立事实列 translatable（0/1），不进 sub_status
 
@@ -322,8 +325,8 @@ judge 阶段加 `translatable` 独立事实列（不进 sub_status，避免污�
 修法（D7）：addRoot 时检测祖先/后代关系并拒绝；已存在的嵌套配置在迁移时告警。
 
 ### C30 R24 的 stat 代价 45 次/文件，115 网盘放大 46 倍 🟡 已由 D12 裁决
-现成实现 `findExternalSidecar`（`sidecar.ts:72-79`）是 21 种语言标签 × 4 种扩展名。
-R24 要求连**未变化**文件也检测 → 大库几万文件 × 84 次 stat，115 是 FUSE 网盘挂载。
+现成实现 `findExternalSidecar`（`sidecar.ts:72-79`）是 15 种语言标签 × 4 种扩展名。
+R24 要求连**未变化**文件也检测 → 大库几万文件 × 60 次 stat，115 是 FUSE 网盘挂载。
 另有两处实现标签集**互不兼容**：`daemonV2.ts:140` 正则漏 `cht`；`sidecar.ts:12` 漏 `.vtt`。
 且 `startsWith(stem+'.')` 会把 `X.1080p.zh.srt` 误归给 `X.mkv`。
 修法（D12）：新增/指纹变化文件全量检测；未变化文件走低频复核（每周一轮或对 covered 抽样）。
@@ -430,7 +433,7 @@ D14 原写"只有 unsolvable 参与周频复查"，本意是避免打断飞行�
 
 ### C42 sub_recheck_at 的 NULL 语义未定义，两条路都是坑 🔴 已由 D18 裁决
 - 照字面写谓词 `sub_recheck_at <= now` → 迁移后全库 NULL，**永不命中**（C12 同型静默失效）
-- 补 `IS NULL OR sub_recheck_at <= now` → 首轮全库命中，几万文件 × 84 次 stat **雪崩**
+- 补 `IS NULL OR sub_recheck_at <= now` → 首轮全库命中，几万文件 × 60 次 stat **雪崩**
 修法（D18）：迁移时随机打散到未来 7 天内，**不留 NULL**，谓词保持纯粹。
 
 ### C43 存量回填缺重判通路 🔴 已由 D17 加强版裁决
@@ -698,7 +701,7 @@ worker 只负责把文件放到磁盘上；**磁盘上有没有，由扫描说�
 
 ### 字幕存在性检测的两档机制（D12 + D16 具体化）
 
-R24 让扫描承担"每个视频当前有没有同名中文字幕"这项职责，但全量做代价是 84 次 stat/文件
+R24 让扫描承担"每个视频当前有没有同名中文字幕"这项职责，但全量做代价是 60 次 stat/文件
 （15 语言标签 × 3 扩展名），在 115 FUSE 网盘上放大约 46 倍。故分两档：
 
 **A 档 · 全量检测**（每轮巡检必做）
@@ -714,7 +717,7 @@ R24 让扫描承担"每个视频当前有没有同名中文字幕"这项职责�
 **NULL 语义写死**（D18，防首轮雪崩）：
 迁移时对全库随机打散 —— `sub_recheck_at = now + abs(random() % (7*86400*1000))`，**不留 NULL**。
 - 若照字面写 `sub_recheck_at <= now`，NULL 行永不命中 → 静默失效（同 C12 模式）
-- 若补 `IS NULL OR sub_recheck_at <= now`，首轮全库命中 → 几万文件 × 84 次 stat 雪崩
+- 若补 `IS NULL OR sub_recheck_at <= now`，首轮全库命中 → 几万文件 × 60 次 stat 雪崩
 - 故第三条路：迁移即打散，谓词保持纯粹的 `sub_recheck_at <= now`
 
 **范围必须含停牌态**（D16 / C37）：B 档的挑选谓词**不得按 sub_status 过滤**——

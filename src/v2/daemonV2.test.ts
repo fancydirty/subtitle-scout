@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
+// 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
+// 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
+import { listSubtitleQueue } from './subtitleScheduler.js'
 
 interface TestDeps {
   db?: ReturnType<typeof openDb>
@@ -1109,6 +1112,302 @@ describe('ScoutDaemonV2.scanOnce · D12 B 档：到点轮转复核', () => {
     }))
     await expect(scan(daemon)).resolves.toBeUndefined()
     expect(pathsInDb(db)).toEqual([V])
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C27 / D8：needs_subtitle 与 sub_status 的职责切分（judge 不再判 sidecar）
+//
+// 卡死链条（spec C27）：judge 规则 3 为"磁盘上有外挂中字"这个**磁盘事实**写 needs_subtitle=0，
+// 而 1b-4 又让扫描为同一个事实写 sub_status='covered'。用户嫌翻译质量差手删字幕之后：
+//   · 扫描把 sub_status 回退成 NULL ✅
+//   · needs_subtitle=0 留着 ✗ → 既不满足 judge 谓词 `needs_subtitle IS NULL`（不会重判它）、
+//     又不满足字幕工作台谓词 `needs_subtitle=1`（不会排它）→ **这一集永久卡死，永不补字幕**
+//
+// 而 1b-4 还放大了这个洞：它把 judge 的 sidecar 探测面从"漏 cht 与全部 BCP-47 地区变体"
+// 收敛成全认，于是能触发 needs_subtitle=0 的文件变多了，C27 的命中面跟着变大。
+//
+// 修法（D8）：needs_subtitle 只由**语言事实**决定（origin_lang / 内嵌轨），与磁盘上当前有没有
+// 外挂字幕无关；磁盘事实归 sub_status，由扫描独占写入（R24）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 直接驱动 judge 阶段（阶段 2.5），绕开识别/字幕两个 agent 阶段的噪音。 */
+async function judge(daemon: ScoutDaemonV2): Promise<void> {
+  await (daemon as any).judgeOnce()
+}
+
+/** 造一行"已识别、未判定"的 files 行——judge 谓词（work_id IS NOT NULL AND
+ *  needs_subtitle IS NULL）刚好命中它。origin_lang 挂在 works 上。
+ *
+ *  sub_recheck_at 默认设成**已到点**：这一行的指纹与 fakeFs 给的 stat 一致（它是上一轮扫描
+ *  就已入库的既有行），所以它进不了 A 档，只能靠 B 档轮到。留 NULL 的话它两档都进不去
+ *  （`<= now` 在 NULL 上是三值逻辑的 unknown），扫描阶段对它就是个 no-op——而 D18 已经
+ *  写死了"库里不留 NULL"，那样的行在生产上根本不存在，拿它当夹具只会测出个假象。 */
+function seedJudgeable(
+  db: ReturnType<typeof openDb>,
+  path: string,
+  opts: { originLang?: string | null; embeddedLangs?: string | null; subStatus?: string | null } = {},
+): void {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  const workId = 'tmdb:42'
+  const has = db.prepare('SELECT id FROM works WHERE id = ?').get(workId)
+  if (!has) {
+    db.prepare('INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .run(workId, 'Show', 'tv', opts.originLang === undefined ? 'en' : opts.originLang, 1000, 1000)
+  }
+  db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                 season, episode, needs_subtitle, sub_status, sub_recheck_at,
+                                 embedded_langs, updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(path, dir, path.slice(path.lastIndexOf('/') + 1), BIG, 1000, dir, workId,
+      1, 1, null, opts.subStatus === undefined ? null : opts.subStatus, NOW - 1,
+      opts.embeddedLangs === undefined ? null : opts.embeddedLangs, 1000)
+}
+
+function needsSubtitleOf(db: ReturnType<typeof openDb>, path: string): number | null {
+  return (db.prepare('SELECT needs_subtitle FROM files WHERE path = ?').get(path) as { needs_subtitle: number | null }).needs_subtitle
+}
+
+describe('ScoutDaemonV2.judgeOnce · C27/D8 职责切分', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴 磁盘上有外挂中文字幕 → judge **不再**因此写 needs_subtitle=0（它由语言事实决定）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'en' })
+    const sub = fakeSubtitleDisk(['/media/Show/E01.zh-Hans.srt'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], fileExists: sub.fileExists }))
+    await judge(daemon)
+    // 改动前：规则 3 命中 → needs_subtitle=0 → 用户手删字幕后永久卡死（C27）。
+    // 改动后：origin_lang=en 且无内嵌中文轨 = 这资源**原则上**需要中文字幕，判 1。
+    expect(needsSubtitleOf(db, V)).toBe(1)
+    db.close()
+  })
+
+  it('🔴 判 1 之后仍不会被字幕工作台排中——因为扫描给了它 sub_status=covered（防"修了卡死却引入白找一圈"）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'en' })
+    const sub = fakeSubtitleDisk(['/media/Show/E01.zh-Hans.srt'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    // 完整走一遍"扫描（写 sub_status）→ judge（写 needs_subtitle）"这两个真实阶段，
+    // 不手工造 sub_status——否则测的就不是"两个阶段合起来仍然正确"这件事。
+    await scan(daemon)
+    await judge(daemon)
+    expect(needsSubtitleOf(db, V)).toBe(1)
+    expect(subStatusOf(db, V)).toBe('covered')
+    // 删掉规则 3 之后，"磁盘已有外挂中字的文件不许被送进字幕流白烧一轮付费 LLM"这个**正确
+    // 行为**必须仍然成立，只是换了保证者：从 needs_subtitle=0 换成 sub_status='covered'。
+    // 用真实队列函数断言，不复述谓词——谓词是实现细节，复述一遍等于测试自己也维护一份，
+    // 两份一漂移测试就变成假绿。
+    expect(listSubtitleQueue(db, ['/media'], NOW).flatMap(q => q.files.map(f => f.path))).toEqual([])
+    db.close()
+  })
+
+  it('🔴 C27 卡死态不再可达：用户手删字幕 → 扫描回退 NULL → 该文件**能**重进字幕工作台', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'en' })
+    const sub = fakeSubtitleDisk(['/media/Show/E01.zh-Hans.srt'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    // 第 1 轮：字幕在磁盘上 → covered、judge 判 needs=1、队列为空（不白找）
+    await scan(daemon)
+    await judge(daemon)
+    expect(listSubtitleQueue(db, ['/media'], NOW)).toEqual([])
+
+    // 用户嫌翻译质量差，手删了字幕。视频 mtime/size **一点没变**（这正是 C19/C27 的前提），
+    // 所以走的是 B 档轮转复核这条路——把复核时刻拨到已到点。
+    sub.remove('/media/Show/E01.zh-Hans.srt')
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?').run(NOW - 1, V)
+
+    // 第 2 轮：扫描观察到字幕没了 → sub_status 回 NULL
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBeNull()
+    // needs_subtitle 一列不动（D8：磁盘事实不改语言判决），仍是 1
+    expect(needsSubtitleOf(db, V)).toBe(1)
+    // **本 bug 的核心红线**：这一集必须能重回字幕工作台。改动前它是 needs_subtitle=0 +
+    // sub_status=NULL 的双不满足态 → 永久卡死、界面上看不出任何异常。
+    expect(listSubtitleQueue(db, ['/media'], NOW).flatMap(q => q.files.map(f => f.path))).toEqual([V])
+    db.close()
+  })
+
+  it('国产片（origin_lang 是中文）仍然 needs_subtitle=0（规则 1 不受影响）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'zh' })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], fileExists: sub.fileExists }))
+    await judge(daemon)
+    expect(needsSubtitleOf(db, V)).toBe(0)
+    db.close()
+  })
+
+  it('有内嵌中文轨仍然 needs_subtitle=0（规则 2 不受影响）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'en', embeddedLangs: '["chi","eng"]' })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], fileExists: sub.fileExists }))
+    await judge(daemon)
+    expect(needsSubtitleOf(db, V)).toBe(0)
+    db.close()
+  })
+
+  it('judge 阶段一次 sidecar stat 都不许发（探测面已整条移交扫描，留着就是 84 次/文件白付）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, V, { originLang: 'en' })
+    const sub = fakeSubtitleDisk(['/media/Show/E01.zh-Hans.srt'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], fileExists: sub.fileExists }))
+    await judge(daemon)
+    // 用调用次数断言而非结果：一个"照旧探 84 次但把结果丢掉"的实现在状态列上与正确实现
+    // 完全一致，全绿——而生产上那是每轮巡检在 115 FUSE 挂载上白付一整套 stat。
+    expect(sub.calls).toEqual([])
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D23：字幕存在性观察必须与 R8/D20 的跳过共进退
+//
+// 1b-2 给删除清理加了 R8 挂载保护（守备目录不可访问 / 扫出 0 个媒体文件 → 跳过该根的删除），
+// 但 1b-4 的字幕存在性观察没有这个保护。挂载掉线时 fileExists 对整个根返回 false（或抛错）
+// → 该根下所有 covered 被回退成 NULL → 挂载恢复后全部重新找一遍字幕，**而字幕其实一直在
+// 磁盘上** → 烧掉整轮 LLM。R8 保护的本意是"目录看起来是空的，别当真"，这个本意对观察同样成立。
+//
+// 难点：B 档的挑选谓词 `WHERE sub_recheck_at <= now` 是**全库查询、不分根**，所以"哪些根本轮
+// 被跳过"这个信息必须显式传进 detectSubtitles，靠库里的列是推不出来的。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ScoutDaemonV2.scanOnce · D23 被跳过的根不做字幕观察', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴 守备目录不可访问（walk 抛错）→ 该根下文件不做字幕观察，covered 不被回退', async () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    // 挂载掉线的真实形态：walk 抛错，且此后对该根下任何路径的 stat 一律返回 false
+    // ——字幕文件明明在磁盘上，只是这一刻看不见。
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': 'EIO' }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    // 状态断言（真实伤害）：回退成 NULL 就是下一轮为这一集重跑一整个字幕 agent session。
+    expect(subStatusOf(db, V)).toBe('covered')
+    // 次数断言（机制）：一次 stat 都不该发——挂载掉线时对整根发 84 次/文件的 ENOENT 探测
+    // 是纯浪费（FUSE 上 ENOENT 也要过一趟网络），且状态断言对"探了但恰好没改状态"的实现全瞎。
+    expect(sub.calls).toEqual([])
+    db.close()
+  })
+
+  it('🔴 守备目录扫出 0 个媒体文件 → 同上（115 FUSE 掉线时目录"看起来是空的"）', async () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [] }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBe('covered')
+    expect(sub.calls).toEqual([])
+    db.close()
+  })
+
+  it('🔴 嵌套根（D20 跳过删除的）→ 同上', async () => {
+    const db = openDb(':memory:')
+    db.prepare('INSERT INTO media_roots (path, type, added_at) VALUES (?,?,?)').run('/media', 'local', 1)
+    db.prepare('INSERT INTO media_roots (path, type, added_at) VALUES (?,?,?)').run('/media/115', 'local', 1)
+    const inner = '/media/115/Anime/E01.mkv'
+    seedRow(db, inner, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    // C29 的形态：/media 的 walk 成功（它自己不空），但掉线的 115 下面什么都看不见。
+    // 删除侧靠 D20 整根跳过；观察侧若不跟着跳，115 全库的 covered 会被一次回退干净。
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media', '/media/115'],
+      ...fakeFs({ '/media': ['/media/tv/Show/E01.mkv'], '/media/115': 'EIO' }),
+      fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, inner)).toBe('covered')
+    expect(sub.checkedVideos([inner])).toEqual([])
+    db.close()
+  })
+
+  it('挂载恢复后字幕观察正常生效（证明不是永久禁用）', async () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const disk: Record<string, string[] | 'EIO'> = { '/media': 'EIO' }
+    const sub = fakeSubtitleDisk([])   // 字幕这次是真被用户删了
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: (root: string) => {
+        const v = disk[root]
+        if (v === 'EIO') throw new Error('mount gone')
+        return v ?? []
+      },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBe('covered')   // 掉线期间不动
+    disk['/media'] = [V]                          // 挂载回来了
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBeNull()        // 这才是真的"字幕没了"
+    db.close()
+  })
+
+  it('正常根的字幕观察不受被跳过的根影响（隔离性）', async () => {
+    const db = openDb(':memory:')
+    const okFile = '/media/tv/Show/E01.mkv'
+    const deadFile = '/media/115/Anime/E01.mkv'
+    seedRow(db, okFile, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    seedRow(db, deadFile, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media/tv', '/media/115'],
+      ...fakeFs({ '/media/tv': [okFile], '/media/115': 'EIO' }),
+      fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, okFile)).toBeNull()      // 健康根照常观察、照常回退
+    expect(subStatusOf(db, deadFile)).toBe('covered')  // 掉线根一列不动
+    db.close()
+  })
+
+  it('🔴 被跳过观察的文件 sub_recheck_at 不许推进（否则挂载恢复后还要再等 7 天才复核）', async () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': 'EIO' }), fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    // 设计约束的两条边（见 detectSubtitles 里的论证）：
+    //  · 推 7 天 → 挂载 5 分钟修好，这批文件的字幕存在性还要再瞎 7 天（B 档是唯一的复核通路）
+    //  · 保持不动 → 下一轮 B 档天然重选它们，而"下一轮"是 24h 后的巡检，不是同轮内的循环，
+    //    所以不存在 D12 担心的热循环；被跳过的根本轮一次 stat 都没发，成本是 0。
+    // 故选"不动"。这与 observeSubtitle 里 stat 抖动时的处置同源（都是"本轮没能观察到"）。
+    expect(recheckAtOf(db, V)).toBe(NOW - 1)
+    db.close()
+  })
+
+  it('被跳过的根不影响它自己的 upsert（新文件仍能入库，只是不观察）', async () => {
+    const db = openDb(':memory:')
+    db.prepare('INSERT INTO media_roots (path, type, added_at) VALUES (?,?,?)').run('/media', 'local', 1)
+    db.prepare('INSERT INTO media_roots (path, type, added_at) VALUES (?,?,?)').run('/media/115', 'local', 1)
+    const nu = '/media/tv/New/E01.mkv'
+    const sub = fakeSubtitleDisk(['/media/tv/New/E01.zh.srt'])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media', '/media/115'],
+      ...fakeFs({ '/media': [nu], '/media/115': [] }),
+      fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    // 入库照旧（D20 只跳过删除，upsert 不受影响），但 A 档观察被跳过 → 状态留 NULL，
+    // 而 sub_recheck_at 仍由 upsert 的兜底地板写死（C42），下一轮 B 档会补上这次观察。
+    expect(pathsInDb(db)).toEqual([nu])
+    expect(subStatusOf(db, nu)).toBeNull()
+    expect(sub.calls).toEqual([])
+    expect(recheckAtOf(db, nu)).not.toBeNull()
     db.close()
   })
 })

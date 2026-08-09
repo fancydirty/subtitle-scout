@@ -17,7 +17,7 @@ import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, type SubtitleQueueItem } from './subtitleScheduler.js'
 import { judgeSubtitle } from './subtitleJudge.js'
-import { langOf, tagsForLanguage } from '../agent/languages.js'
+import { tagsForLanguage } from '../agent/languages.js'
 import { findExternalSidecar } from '../files/sidecar.js'
 import { existsSync } from 'node:fs'
 import { isDirWritable } from '../core/mediaContext.js'
@@ -176,7 +176,13 @@ export class ScoutDaemonV2 {
     return out
   }
 
-  /** judge 阶段：对已识别但未判定的文件跑 judgeSubtitle（国产/内嵌/sidecar 跳过）。 */
+  /** judge 阶段：对已识别但未判定的文件跑 judgeSubtitle（国产/内嵌跳过）。
+   *
+   *  **不探磁盘**（D8 / C27）：needs_subtitle 只表达"这资源原则上需要中文字幕"，判据是语言
+   *  事实（origin_lang / 内嵌轨）。"磁盘上当前有没有外挂字幕"归 sub_status，由扫描独占写入
+   *  （R24），judge 一次 stat 都不该发——留着不仅是每轮白付 84 次 stat/文件（115 是 FUSE 挂载），
+   *  更会把同一个磁盘事实投影到两列上，造出 needs_subtitle=0 + sub_status=NULL 的永久卡死态
+   *  （见 subtitleJudge.ts 顶部对 C27 的完整论证）。 */
   private async judgeOnce(): Promise<void> {
     const db = this.deps.db
     const now = this.deps.now?.() ?? Date.now()
@@ -188,31 +194,14 @@ export class ScoutDaemonV2 {
 
     if (rows.length === 0) return
     const update = db.prepare('UPDATE files SET needs_subtitle = ?, updated_at = ? WHERE path = ?')
-    const fileExists = this.deps.fileExists ?? existsSync
-    const tags = tagsForLanguage(this.deps.targetLanguage)
     let judged = 0
 
     for (const r of rows) {
       let embedded: string[] | null = null
       if (r.embedded_langs) { try { embedded = JSON.parse(r.embedded_langs) } catch { embedded = null } }
-      // C30：sidecar 探测收敛到 findExternalSidecar 这一份。此前这里是一份独立手写的
-      // `/\.(srt|ass|ssa|vtt)$/i` + `/[.-](zh|chs|chi|zho)([.-]|$)/i` 双正则 readdir 扫描，
-      // 与 sidecar.ts 各漏一半：正则漏 cht（繁体的明确信号）与全部 BCP-47 地区变体
-      // （zh-CN/zh-TW/zh-cn…，agent H2 白名单生产实测装出过、Bazarr 存量是小写形态），
-      // sidecar.ts 漏 .vtt。同一个磁盘事实在 judge 与扫描两条路径上得到相反结论。
-      // 本项目已因"留两份漂移实现"栽过（第 1a 步的 findOverlappingRoot），故只留一份。
-      //
-      // 顺带修掉误归属（C30）：旧实现用 `startsWith(stem + '.')` 判同名，
-      // `E01.1080p.zh.srt` 的前缀确实是 `E01.` → 被当成 `E01.mkv` 的字幕。真实剧本是同目录
-      // 并存 `E01.mkv`（无字幕）与 `E01.1080p.mkv`（有字幕），前者被误判成"已有 sidecar"
-      // 永远不补字幕。findExternalSidecar 是"构造 `<stem>.<tag><ext>` 再探存在性"，精确到字符。
-      let sidecar = false
-      try {
-        sidecar = findExternalSidecar(r.path, tags, fileExists) !== null
-      } catch { sidecar = false }
 
       const verdict = judgeSubtitle(
-        { originLang: r.origin_lang, embeddedLangs: embedded, hasSidecarSubtitle: sidecar },
+        { originLang: r.origin_lang, embeddedLangs: embedded },
         { targetLanguages: [this.deps.targetLanguage] },
       )
       update.run(verdict.needs ? 1 : 0, now, r.path)
@@ -272,6 +261,9 @@ export class ScoutDaemonV2 {
     // 不依赖 ffprobe，凭一个 fileExists 就能做。合成一个名单就等于"没装 ffprobe 的机器
     // 连字幕都不认了"。
     const toDetect: string[] = []
+    // D23：本轮被跳过的根（R8 两种形态 + D20 嵌套）。名单要传给 detectSubtitles——B 档的挑选
+    // 谓词是全库查询、**不分根**，光看库里的列推不出"这个根本轮可不可信"。
+    const skippedRoots: string[] = []
 
     for (const root of this.deps.roots) {
       // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
@@ -280,11 +272,16 @@ export class ScoutDaemonV2 {
       try {
         files = walk(root)
       } catch (e) {
-        this.deps.log(`scan: 守备目录不可访问，跳过删除（R8 挂载保护）: ${root}: ${String(e)}`)
+        this.deps.log(`scan: 守备目录不可访问，跳过删除与字幕观察（R8 挂载保护 / D23）: ${root}: ${String(e)}`)
+        skippedRoots.push(root)
         continue
       }
 
       const seen = new Set<string>()
+      // 本根的 A 档候选先攒在局部名单里，**跑完两道 R8/D20 闸门之后**才并进 toDetect。
+      // 不能边扫边直接 push 进 toDetect：嵌套根这条形态（D20）里 walk 是**成功**的
+      // （/media 自己不空），文件确实被 upsert 了，等到发现"这个根不可信"时它们已经进名单了。
+      const rootDetect: string[] = []
       for (const f of files) {
         scanned++
         const st = stat(f)
@@ -305,7 +302,7 @@ export class ScoutDaemonV2 {
         // `continue` 就走了，**一次 ffprobe 都不会发**——这是性能红线而非优化：
         // 生产上一个守备目录是 115 网盘的 rclone FUSE 挂载，全库重探是几万 × 12s。
         toProbe.push(f)
-        toDetect.push(f)
+        rootDetect.push(f)
       }
 
       // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录**不报错、
@@ -313,16 +310,19 @@ export class ScoutDaemonV2 {
       // "空" 判据用 seen.size 而非 files.length：全部文件都被 isScannable 挡掉（比如整根都是
       // 探针残留小文件）同样意味着"没有可信的入库口径快照"，一样不该删。
       if (seen.size === 0) {
-        this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除（R8 挂载保护）: ${root}`)
+        this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除与字幕观察（R8 挂载保护 / D23）: ${root}`)
+        skippedRoots.push(root)
         continue
       }
 
       if (nestedRoots.has(root)) {
         // 打日志是硬要求：不说原因的话运维只会看到"删除逻辑坏了"，无从排查。
-        this.deps.log(`scan: 守备目录处于嵌套关系中，跳过删除（D20 / C29）: ${root}`)
+        this.deps.log(`scan: 守备目录处于嵌套关系中，跳过删除与字幕观察（D20 / C29 / D23）: ${root}`)
+        skippedRoots.push(root)
         continue
       }
 
+      for (const f of rootDetect) toDetect.push(f)
       this.deleteMissing(root, seen)
     }
     if (upserted > 0) {
@@ -332,7 +332,7 @@ export class ScoutDaemonV2 {
     // 字幕存在性观察（R24）**必须在删除清理跑完之后**：对一个已经从磁盘消失的文件跑 84 次
     // stat 是纯浪费，在 FUSE 挂载上尤其贵（ENOENT 也要过一趟网络）。顺序在这里是硬要求，
     // 不是风格问题——B 档是从库里挑行，删除没跑完的话幽灵行就在挑选范围里。
-    this.detectSubtitles(toDetect, now)
+    this.detectSubtitles(toDetect, now, skippedRoots)
 
     await this.probeNewOrChanged(toProbe)
   }
@@ -348,10 +348,23 @@ export class ScoutDaemonV2 {
    *  反过来（B 先 A 后）也不会错，但会白扫一遍刚被 A 档扫过的文件。
    *
    *  fileExists 未注入时整个观察退化成 no-op（同 probe 的既有约定）：观察是增益，不是阶段 1
-   *  的前提，绝不能因为某个构造点忘了接线就让机械扫描/删除清理整个失效。 */
-  private detectSubtitles(aPaths: string[], now: number): void {
+   *  的前提，绝不能因为某个构造点忘了接线就让机械扫描/删除清理整个失效。
+   *
+   *  D23：`skippedRoots` = 本轮被 R8/D20 跳过删除的根，其下文件**整批不做观察**。
+   *  为什么观察必须与删除共进退：R8 保护的本意是"挂载掉线时目录看起来是空的，别当真"，
+   *  而这个"别当真"对字幕存在性同样成立——挂载掉线时 fileExists 对整个根返回 false（或抛错），
+   *  该根下所有 covered 会被一次回退成 NULL，挂载恢复后系统为整根重新找一遍字幕，
+   *  **而字幕一直在磁盘上**。烧的是整轮付费 LLM，且界面上看不出任何异常。
+   *
+   *  过滤必须在**这里**做而不是在调用方：A 档名单可以在调用方过滤（那是逐根攒的），
+   *  但 B 档的挑选谓词是全库查询、不分根——`SELECT path FROM files WHERE sub_recheck_at <= now`
+   *  里没有任何"这个根本轮可不可信"的信息，只能靠这个显式传进来的名单排除。 */
+  private detectSubtitles(aPaths: string[], now: number, skippedRoots: string[] = []): void {
     const fileExists = this.deps.fileExists ?? existsSync
     const db = this.deps.db
+    // 前缀补 '/' 与 deleteMissing 同源：避免 "/media/tv" 吃到兄弟目录 "/media/tv2"。
+    const skipPrefixes = skippedRoots.map((r) => (r.endsWith('/') ? r : `${r}/`))
+    const inSkippedRoot = (p: string): boolean => skipPrefixes.some((pre) => p.startsWith(pre))
 
     // A 档：本轮新增/指纹变化。用 Set 去重——同一路径不该在名单里出现两次（今天不会，但
     // 多根重叠配置下曾经出过同一文件被两个根各扫一次的形态）。
@@ -377,14 +390,31 @@ export class ScoutDaemonV2 {
     } catch { return }   // 无该列的旧库：观察退化成只做 A 档，不阻断扫描
 
     let checked = detected.size
+    let skipped = 0
     for (const row of due) {
       if (detected.has(row.path)) continue   // A 档本轮已看过（正常情况下谓词已排除，双保险）
+      if (inSkippedRoot(row.path)) {
+        // D23：不观察，也**不推 sub_recheck_at**。
+        //
+        // 设计约束辨析（用户点名要论证的那条）："跳过观察"不许实现成"跳过推 sub_recheck_at"
+        // 这句话防的是把它当**常态机制**用——若正常路径上"观察完不推时刻"，这些行每轮都被
+        // B 档重选，D12 的性能收益归零。但这里是**异常路径**，两点让它不构成那个问题：
+        //  ① 被跳过的根本轮一次 stat 都没发，成本是 0；重选的代价只是下一轮多一条 SELECT 行。
+        //  ② "下一轮"是 24h 后的下次巡检（时间闸），不是同轮内的 while 循环——不存在热循环。
+        // 反过来若在这里推 7 天：挂载抖 5 分钟就修好了，这批文件的字幕存在性却还要再瞎 7 天，
+        // 而 B 档是它们唯一的复核通路（手放/手删字幕不改视频指纹，永远进不了 A 档）。
+        // 那正好把 R8"优雅恢复"的本意做成了"故障惩罚 7 天"，与 D4 修 C22 时的同一条道理。
+        // 处置与 observeSubtitle 里 stat 抖动那条完全同源：本轮没能观察到 → 时刻不动 → 下轮重试。
+        skipped++
+        continue
+      }
       detected.add(row.path)
       this.observeSubtitle(row.path, fileExists, now)
       checked++
     }
-    if (checked > 0) {
-      this.deps.log(`scan: 字幕存在性观察 A档=${aPaths.length} B档=${checked - aPaths.length}（R24 / D12）`)
+    if (checked > 0 || skipped > 0) {
+      this.deps.log(`scan: 字幕存在性观察 A档=${aPaths.length} B档=${checked - aPaths.length}`
+        + `${skipped > 0 ? ` 跳过=${skipped}（D23 挂载保护）` : ''}（R24 / D12）`)
     }
   }
 

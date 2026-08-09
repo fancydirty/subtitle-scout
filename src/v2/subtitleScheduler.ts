@@ -22,13 +22,29 @@ export interface SubtitleQueueItem {
 
 /** 字幕队列：一个作品的一簇（needs_subtitle=1 的全部文件）。
  *  🔴 2026-08-08 实测：必须按守备目录过滤——files 表可能含已移除根的残留数据
- *  （如 115 测试目录），只读挂载上建 staging 沙盒会 ENOENT。 */
+ *  （如 115 测试目录），只读挂载上建 staging 沙盒会 ENOENT。
+ *
+ *  **必须排除 covered**（D8 / C27）：judge 的 sidecar 规则已被删除——"磁盘上当前有没有外挂
+ *  中文字幕"这个事实不再投影到 needs_subtitle（两列都判同一个事实会造出永久卡死态，论证见
+ *  subtitleJudge.ts 顶部）。于是"磁盘已有外挂中字的文件不许被送进字幕流白烧一轮付费 LLM"
+ *  这个正确行为的**唯一保证者**变成了扫描写的 sub_status='covered'（R24）——它必须在这里
+ *  被真正读到。少了这个条件，删规则 3 就是把一个卡死 bug 换成一个白烧钱 bug。
+ *
+ *  为什么条件是"排除 covered"而不是 spec §2 写的 `sub_status IS NULL`（有意的偏差，已报告）：
+ *  那条更严的谓词有个**前置迁移**（D19 / C44）——本文件 :227 目前仍在为最常见的失败路径写
+ *  `sub_status='unavailable'`（第五态，R17 要废止但归 spec 第 3 步）。今天就上 `IS NULL`，
+ *  这批存量与新写的 unavailable 行会立刻既不在字幕工作台、又攒不到 7 次 → **永久出局**，
+ *  正是 C15/C44 点名的那个洞，且它的修法（`UPDATE files SET sub_status=NULL WHERE
+ *  sub_status='unavailable'` + 删掉 unavailable 写入）明确排在第 3 步。
+ *  故这里只收紧到"C27 需要的最小充分条件"：covered 出局，其余照旧。第 3 步做完那两件事之后
+ *  应当把这里换成 `sub_status IS NULL`（与 C14 的两工作台互斥要求对齐）。 */
 export function listSubtitleQueue(db: ScoutDb, roots?: string[], now = Date.now()): SubtitleQueueItem[] {
   const rows = db.prepare(`
     SELECT w.id AS work_id, w.title, w.original_title, w.year, w.overview, w.chinese_titles, w.media_type,
            f.path, f.filename, f.season, f.episode, f.dir, f.duration_sec, f.embedded_langs
     FROM files f JOIN works w ON f.work_id = w.id
     WHERE f.needs_subtitle = 1
+      AND (f.sub_status IS NULL OR f.sub_status != 'covered')
       AND (f.recheck_after IS NULL OR f.recheck_after <= ?)
     ORDER BY w.id, f.season, f.episode
   `).all(now) as Array<{

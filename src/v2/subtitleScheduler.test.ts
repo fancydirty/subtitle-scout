@@ -187,4 +187,34 @@ describe('listSubtitleQueue（recheck_after 消费，死循环修复）', () => 
     expect(showB.length).toBe(1)
     expect(showB[0].files.length).toBe(1)
   })
+
+  // D8 / C27：judge 的 sidecar 规则被删除后，"磁盘已有外挂中字的文件不许被送进字幕流白烧
+  // 一轮付费 LLM"的**唯一保证者**就是扫描写的 sub_status='covered'（R24）。它必须在这条
+  // 谓词里被真正读到——否则删规则 3 就是把一个卡死 bug（C27）换成一个白烧钱 bug。
+  it('🔴 sub_status=covered 的文件不入队（即便 needs_subtitle=1 / D8 的把关处）', () => {
+    db.prepare(`UPDATE files SET sub_status = 'covered' WHERE path = ?`).run('/media/TV/ShowA/E01.mkv')
+    const paths = listSubtitleQueue(db, ['/media/TV'], Date.now()).flatMap(q => q.files.map(f => f.path))
+    expect(paths).not.toContain('/media/TV/ShowA/E01.mkv')
+    expect(paths).toContain('/media/TV/ShowB/E01.mkv')   // 兄弟行不受牵连
+  })
+
+  it('🔴 covered 被扫描回退成 NULL 后 → 重新入队（C27 卡死态的出口）', () => {
+    const p = '/media/TV/ShowA/E01.mkv'
+    db.prepare(`UPDATE files SET sub_status = 'covered' WHERE path = ?`).run(p)
+    expect(listSubtitleQueue(db, ['/media/TV'], Date.now()).flatMap(q => q.files.map(f => f.path))).not.toContain(p)
+    // 用户手删字幕 → 扫描观察到字幕没了 → 回退 NULL（daemonV2.observeSubtitle）
+    db.prepare('UPDATE files SET sub_status = NULL WHERE path = ?').run(p)
+    expect(listSubtitleQueue(db, ['/media/TV'], Date.now()).flatMap(q => q.files.map(f => f.path))).toContain(p)
+  })
+
+  it('停牌态（unsolvable / handoff_translate）不因新条件被误挡在门外', () => {
+    // 新加的条件只针对 covered，不许顺手把停牌态也排掉——那两态的出队/放回归阶段 2.6
+    // 复查闸管（D13），而 spec §2 那条更严的 `sub_status IS NULL` 有前置迁移（D19/C44），
+    // 归第 3 步。今天多排掉一态就是提前制造"既不在工作台、又攒不到 7 次"的永久出局（C15）。
+    const p = '/media/TV/ShowA/E01.mkv'
+    for (const st of ['unsolvable', 'handoff_translate', 'unavailable']) {
+      db.prepare('UPDATE files SET sub_status = ? WHERE path = ?').run(st, p)
+      expect(listSubtitleQueue(db, ['/media/TV'], Date.now()).flatMap(q => q.files.map(f => f.path))).toContain(p)
+    }
+  })
 })
