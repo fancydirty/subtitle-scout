@@ -37,7 +37,14 @@ export async function extractEmbeddedSubtitle(
     execFileImpl?: typeof nodeExecFile
   },
 ): Promise<string | null> {
-  const bin = opts?.ffmpegPath ?? process.env.FFMPEG_PATH ?? 'ffmpeg'
+  // `||` 而非 `??`（与 streamProbe.ts resolveFfprobeBin 同一条裁决，刻意，别改回去）：
+  // `??` 只对 null/undefined 短路，空串是合法值会被原样采纳 → execFile("") 抛
+  // ERR_INVALID_ARG_VALUE → 被下面的 catch 吞掉 → 抽取恒返回 null，静默失败。
+  // 今天 compose 里没有 FFMPEG_PATH 那一行所以没爆，但 FFPROBE_PATH 正是照
+  // `${FFPROBE_PATH:-}` 这个写法被 compose 设成空串而引发了一次 61 文件的静默故障；
+  // 一旦有人照同样的样子给 FFMPEG_PATH 加一行，这里会以完全相同的方式静默失败。
+  // 空白 trim 后为空即当"没给"，回落 'ffmpeg'（容器内 /usr/bin/ffmpeg 在 PATH）。
+  const bin = opts?.ffmpegPath?.trim() || process.env.FFMPEG_PATH?.trim() || 'ffmpeg'
   const impl = opts?.execFileImpl ?? nodeExecFile
   // 默认 5min:4K 长片抽内嵌 subrip 真机可超 30s(Astronaut ~90s+);EXTRACT_TIMEOUT_MS 可配。
   const fromEnv = Number(process.env.EXTRACT_TIMEOUT_MS)

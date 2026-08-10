@@ -67,7 +67,13 @@ services:
       # 跳过原产地即目标语言的影视(如目标中文时跳过国产剧,避免为它们空跑找字幕)
       SKIP_CHINESE_ORIGIN: ${SKIP_CHINESE_ORIGIN:-}
       # ffprobe 路径（镜像已内置 ffmpeg，通常无需配置；源码直装且 PATH 无 ffmpeg 时才用）
-      FFPROBE_PATH: ${FFPROBE_PATH:-}
+      # 默认值**必须显式写成镜像里的真实路径**，不能写 `${FFPROBE_PATH:-}`：`:-}` 会把变量
+      # **设置成空串**（不是"不设置"），从而覆盖 Dockerfile 的 ENV FFPROBE_PATH=/usr/bin/ffprobe
+      # → 生产上探针拿到空路径静默失效（61 个文件 embedded_langs/duration_sec 全 NULL，
+      # 日志却报 probe ok=61）。代码侧已把空串归一为"未设置"（streamProbe.ts resolveFfprobeBin），
+      # 这里再显式给回镜像默认值是第二道：镜像 npm ci --omit=optional 不装 ffprobe-static，
+      # 光靠代码回落这一档在生产镜像里是空的。
+      FFPROBE_PATH: ${FFPROBE_PATH:-/usr/bin/ffprobe}
       # 整理归档根（默认库根上一级；高级配置，dashboard 部署页可见）
       REALIGN_ARCHIVE_ROOT: ${REALIGN_ARCHIVE_ROOT:-}
       # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)

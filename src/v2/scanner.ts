@@ -174,6 +174,13 @@ export function toMediaFileRow(
     mtime: Math.round(stat.mtimeMs),
     durationSec: null,
     embeddedLangs: null,
+    // ⚠️ audio_langs 现状（2026-08 定位报告，**待用户裁决，先别当它是活的**）：
+    // 全仓**零写入者、零读取者**——除了 db.ts 的 schema 声明（:154 / :529）和这一行恒为 null
+    // 的赋值，没有任何代码写它，也没有任何代码读它。这是本仓第 5 例"写了列没定谁写"
+    // （前四例：C12 → C35 → D17 → D18）。与 embedded_langs 不同，那一列有 probeNewOrChanged +
+    // backfillEmbeddedLangs 两条写入通路和 judge/D9 两个读者；这一列一条都没有。
+    // 裁决未定（"接一个写入者（ffprobe 音轨语言）" vs "删列"），本批**不动**。
+    // 别照 embeddedLangs 的样子给它接探针——先等裁决，否则又是一列没人读的数据。
     audioLangs: null,
     workDir: s.workDir,
     season: s.season,

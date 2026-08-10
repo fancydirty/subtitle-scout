@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { execFile as nodeExecFile } from 'node:child_process'
 import { openDb } from './db.js'
+// 真实探针（不是替身）：FFPROBE_PATH 空串那组回归必须跨过 streamProbe.ts 的二进制解析那一档
+// ——本次事故就坏在那里，而 C12 那组全用假 probe，从不经过它。
+import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
 // 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
 // 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
@@ -761,6 +765,196 @@ describe('ScoutDaemonV2.scanOnce · C12 embedded_langs / duration_sec 写入', (
     }))
     await expect(scan(daemon)).resolves.toBeUndefined()
     expect(pathsInDb(db)).toEqual([P])
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 生产事故回归（FFPROBE_PATH 空串 → 61 文件静默全 NULL、日志报 ok=61）
+//
+// **为什么上面那整个 C12 describe 抓不到这个 bug**：它全部用假探针替身
+// （`probe: async () => [...]`），从不经过 streamProbe.ts 的二进制解析那一档——它验的是
+// "探针给了值 → 落库正确"，而生产坏在"探针给不出值"。更深一层：那批用例里
+// "probe 返回 null → 留 NULL" 那条是**绿的且行为正确**——单测已经把生产的实际行为
+// （全 NULL）断言成了预期行为，所以故障发生时没有任何一条测试变红。
+//
+// 这一组补两层：
+//  B) 跨真实 streamProbe 边界——注入 execFileImpl 而不是替换整个 probe，
+//     让二进制解析那一档真的进覆盖范围。
+//  C) 钉住三态日志（wrote/unavailable/failed）与"整体不可用" warn 闸。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('ScoutDaemonV2.scanOnce · FFPROBE_PATH 空串回归（跨真实 streamProbe 边界）', () => {
+  const P = '/media/Show/E01.mkv'
+  const ORIGINAL_FFPROBE_PATH = process.env.FFPROBE_PATH
+
+  afterEach(() => {
+    if (ORIGINAL_FFPROBE_PATH === undefined) delete process.env.FFPROBE_PATH
+    else process.env.FFPROBE_PATH = ORIGINAL_FFPROBE_PATH
+  })
+
+  /** 与 streamProbe.test.ts 的 fakeExecFile 同形（那边是私有的，这里按同一份口径复述最小版）。 */
+  function fakeExecFile(handler: (bin: string, args: readonly string[]) => { stdout: string } | { error: unknown }) {
+    return ((bin: string, args: readonly string[], _o: unknown, cb: (e: unknown, so: string, se: string) => void) => {
+      const r = handler(bin, args)
+      if ('error' in r) cb(r.error, '', '')
+      else cb(null, r.stdout, '')
+    }) as unknown as typeof nodeExecFile
+  }
+
+  /** 把 daemon 的 probe/probeDuration 接到**真实的** streamProbe 上，只把最底层的 execFile
+   *  和 ffprobe-static import 换成替身。二进制解析、三态归一、catch 吞错全在覆盖内。 */
+  function realProbeDeps(opts: {
+    execFileImpl: typeof nodeExecFile
+    importFfprobeStatic?: () => Promise<unknown>
+  }) {
+    return {
+      probe: (p: string) => probeEmbeddedSubtitles(p, opts),
+      probeDuration: (p: string) => probeDurationSec(p, opts),
+    }
+  }
+
+  it('FFPROBE_PATH 为空串（compose ${VAR:-} 的默认产物）→ 仍能经 ffprobe-static 探到值并落库', async () => {
+    // 这条是整个事故的核心回归：修复前 bin="" → execFile("") 抛 ERR_INVALID_ARG_VALUE
+    // → 被 streamProbe 的 catch 吞掉 → 两个探针都返回 null → 两列全 NULL。
+    process.env.FFPROBE_PATH = ''
+    const db = openDb(':memory:')
+    const seenBins: string[] = []
+    const execFileImpl = fakeExecFile((bin, args) => {
+      seenBins.push(bin)
+      return args.includes('-show_format')
+        ? { stdout: JSON.stringify({ format: { duration: '210.016' } }) }
+        : { stdout: JSON.stringify({ streams: [{ codec_name: 'subrip', tags: { language: 'jpn' } }] }) }
+    })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [P] }),
+      ...realProbeDeps({ execFileImpl, importFfprobeStatic: async () => ({ path: '/static/ffprobe' }) }),
+    }))
+    await scan(daemon)
+
+    // 绝不能是空串——空串就是那次 61 文件静默失败的形态
+    expect(seenBins).not.toContain('')
+    expect(new Set(seenBins)).toEqual(new Set(['/static/ffprobe']))
+    const s = stateOf(db, P)
+    expect(JSON.parse(s.embedded_langs as string)).toEqual(['jpn'])
+    expect(s.duration_sec).toBe(210)
+    db.close()
+  })
+
+  it('FFPROBE_PATH 指向真实路径时照常使用它（空串归一不该顺手打坏正常配置）', async () => {
+    process.env.FFPROBE_PATH = '/usr/bin/ffprobe'
+    const db = openDb(':memory:')
+    const seenBins: string[] = []
+    const execFileImpl = fakeExecFile((bin) => {
+      seenBins.push(bin)
+      return { stdout: JSON.stringify({ streams: [], format: { duration: '100.5' } }) }
+    })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [P] }),
+      // 故意也给 static 替身：若解析顺序坏了会用错这个，断言能抓到
+      ...realProbeDeps({ execFileImpl, importFfprobeStatic: async () => ({ path: '/static/ffprobe' }) }),
+    }))
+    await scan(daemon)
+    expect(new Set(seenBins)).toEqual(new Set(['/usr/bin/ffprobe']))
+    expect(stateOf(db, P).embedded_langs).toBe('[]')
+    db.close()
+  })
+
+  it('空串 FFPROBE_PATH 且 ffprobe-static 也不可用 → 两列留 NULL 且 execFile 一次不碰（不是 execFile("")）', async () => {
+    process.env.FFPROBE_PATH = ''
+    const db = openDb(':memory:')
+    let execFileCalled = false
+    const execFileImpl = fakeExecFile(() => { execFileCalled = true; return { stdout: '{}' } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [P] }),
+      ...realProbeDeps({ execFileImpl, importFfprobeStatic: async () => ({}) }),
+    }))
+    await scan(daemon)
+    // 真的没有可用二进制时留 NULL 是**正确**行为（三态契约）——这里钉的是"以何种方式到达 NULL"：
+    // 必须是解析阶段判定不可用，而不是拿空串去 spawn 然后吞掉报错。
+    expect(execFileCalled).toBe(false)
+    expect(stateOf(db, P).embedded_langs).toBeNull()
+    expect(stateOf(db, P).duration_sec).toBeNull()
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2.scanOnce · probe 日志三态（可证伪）+ 整体不可用闸', () => {
+  const A = '/media/Show/E01.mkv'
+  const B = '/media/Show/E02.mkv'
+
+  it('探到值 → wrote=N；旧的 ok=N 口径不再出现（它把静默失败报告成成功）', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = fakeFsWithProbe({ '/media': [A, B] }, {},
+      async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }], async () => 1200)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps, log: (m: string) => logs.push(m) }))
+    await scan(daemon)
+    expect(logs).toContain('scan: probe wrote=2 unavailable=0 failed=0')
+    // 旧口径必须彻底消失：`ok=2` 与 `wrote=2 unavailable=0` 在这一轮恰好等价，
+    // 正是这种"正常时看不出差别"让它在故障时也没人怀疑。
+    expect(logs.join('\n')).not.toMatch(/probe ok=/)
+    db.close()
+  })
+
+  it('探针整体给不出值（探针不可用）→ wrote=0 unavailable=N，且打一条 warn 明说疑似 FFPROBE_PATH 配置错误', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    // 这正是生产那 61 个文件的形态：probe/probeDuration 都正常返回 null，一次没抛。
+    const fs = fakeFsWithProbe({ '/media': [A, B] }, {}, async () => null, async () => null)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps, log: (m: string) => logs.push(m) }))
+    await scan(daemon)
+
+    // 旧实现在这里打的是 `scan: probe ok=2 failed=0`——两次静默失败被逐字报告成成功。
+    expect(logs).toContain('scan: probe wrote=0 unavailable=2 failed=0')
+    const warn = logs.find((m) => m.startsWith('warn: scan: probe 整体不可用'))
+    expect(warn, `缺"整体不可用"warn 闸，日志：${logs.join(' | ')}`).toBeDefined()
+    // warn 必须点名 FFPROBE_PATH——这条日志的全部价值就是让下一次同类故障在第一次
+    // live test 的日志里自证，而不是等人去查数据库发现两列全 NULL。
+    expect(warn).toMatch(/FFPROBE_PATH/)
+    expect(warn).toMatch(/2 个文件/)
+    db.close()
+  })
+
+  it('部分探到（一个有值一个不可用）→ 不打整体不可用 warn（那道闸只在"一个都没探到"时响，避免噪音）', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = fakeFsWithProbe({ '/media': [A, B] }, {},
+      async (p) => (p === A ? [{ lang: 'eng', codec: 'subrip', isImageBased: false }] : null),
+      async (p) => (p === A ? 1200 : null))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps, log: (m: string) => logs.push(m) }))
+    await scan(daemon)
+    expect(logs).toContain('scan: probe wrote=1 unavailable=1 failed=0')
+    expect(logs.some((m) => m.startsWith('warn: scan: probe 整体不可用'))).toBe(false)
+    db.close()
+  })
+
+  it('抛异常的文件计入 failed 而非 unavailable（两者排障动作不同：坏文件 vs 坏环境）', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = fakeFsWithProbe({ '/media': [A, B] }, {},
+      async (p) => { if (p === A) throw new Error('ffprobe timeout'); return null },
+      async (p) => { if (p === A) throw new Error('ffprobe timeout'); return null })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps, log: (m: string) => logs.push(m) }))
+    await scan(daemon)
+    expect(logs).toContain('scan: probe wrote=0 unavailable=1 failed=1')
+    // failed 与 unavailable 混在一起时不算"整体不可用"——抛错那条已有逐文件日志了。
+    expect(logs.some((m) => m.startsWith('warn: scan: probe 整体不可用'))).toBe(false)
+    db.close()
+  })
+
+  it('只有时长探到、字幕轨不可用 → 仍算 wrote（探到任一样东西就不是"整体不可用"）', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = fakeFsWithProbe({ '/media': [A] }, {}, async () => null, async () => 900)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps, log: (m: string) => logs.push(m) }))
+    await scan(daemon)
+    expect(logs).toContain('scan: probe wrote=1 unavailable=0 failed=0')
+    // embedded_langs 仍按三态契约留 NULL（不可用 ≠ 零轨），但 duration 落了库。
+    expect(stateOf(db, A).embedded_langs).toBeNull()
+    expect(stateOf(db, A).duration_sec).toBe(900)
     db.close()
   })
 })

@@ -78,7 +78,9 @@ services:
       LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}
       SKIP_CHINESE_ORIGIN: ${SKIP_CHINESE_ORIGIN:-}
       # ffprobe 路径（镜像已内置 ffmpeg，通常无需配置；源码直装且 PATH 无 ffmpeg 时才用）
-      FFPROBE_PATH: ${FFPROBE_PATH:-}
+      # 默认值必须是镜像里的真实路径，不能是 `${FFPROBE_PATH:-}`——`:-}` 把变量设成空串
+      # （≠ 不设置）会覆盖 Dockerfile 的 ENV FFPROBE_PATH，探针静默失效。同主 compose 的论证。
+      FFPROBE_PATH: ${FFPROBE_PATH:-/usr/bin/ffprobe}
       # 整理归档根（默认库根上一级；容器挂载下建议显式配，见 .env.example）
       REALIGN_ARCHIVE_ROOT: ${REALIGN_ARCHIVE_ROOT:-}
       # 媒体守备目录(dashboard 设置页优先;此处为首启种子,容器内路径)

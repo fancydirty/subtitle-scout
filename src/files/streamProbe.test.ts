@@ -112,6 +112,50 @@ describe('probeEmbeddedSubtitles', () => {
       expect(importCalled).toBe(false)
     })
 
+    // 生产事故回归（compose `${FFPROBE_PATH:-}` 把变量设成**空串**而非"不设置"，覆盖了镜像
+    // Dockerfile 的 ENV FFPROBE_PATH=/usr/bin/ffprobe）：原实现用 `??` 解析，空串是合法值不短路
+    // → bin=""  → 绕过"二进制缺席"闸 → execFile("") 抛 ERR_INVALID_ARG_VALUE 被 catch 吞掉
+    // → 探针恒 null → 61 个文件的 embedded_langs/duration_sec 静默全 NULL，日志却报 ok=61。
+    // 原有用例只覆盖了 '/env/ffprobe'（已设置）与 delete（未设置）两态，**空串这第三态**——
+    // 也就是 compose 默认产物、生产最可能的取值——恰好没测。这两条把它钉住。
+    it('FFPROBE_PATH 为空串（compose ${VAR:-} 的默认产物）视为未设置，回落 ffprobe-static，绝不 execFile("")', async () => {
+      process.env.FFPROBE_PATH = ''
+      let seenBin: string | undefined
+      const execFileImpl = fakeExecFile((bin) => { seenBin = bin; return { stdout: JSON.stringify({ streams: [] }) } })
+      const importFfprobeStatic = async () => ({ path: '/static/ffprobe' })
+      const r = await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+      expect(seenBin).toBe('/static/ffprobe')
+      expect(r).toEqual([])
+    })
+
+    it('FFPROBE_PATH 为纯空白（"  "）同样视为未设置——trim 后为空即当没给', async () => {
+      process.env.FFPROBE_PATH = '   '
+      let seenBin: string | undefined
+      const execFileImpl = fakeExecFile((bin) => { seenBin = bin; return { stdout: JSON.stringify({ streams: [] }) } })
+      const importFfprobeStatic = async () => ({ path: '/static/ffprobe' })
+      await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+      expect(seenBin).toBe('/static/ffprobe')
+    })
+
+    it('空串 FFPROBE_PATH + ffprobe-static 也不可用 → 返回 null（探针不可用契约），execFile 一次不碰', async () => {
+      // 纵深防御那道闸（`if (!bin)`）的直接断言：即使回落链整条都空，也绝不能走到 execFile("")。
+      process.env.FFPROBE_PATH = ''
+      let execFileCalled = false
+      const execFileImpl = fakeExecFile(() => { execFileCalled = true; return { stdout: JSON.stringify({ streams: [] }) } })
+      const importFfprobeStatic = async () => ({})
+      const r = await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+      expect(r).toBeNull()
+      expect(execFileCalled).toBe(false)
+    })
+
+    it('opts.ffprobePath 为空串时也不当"显式指定"，继续回落 env/static', async () => {
+      process.env.FFPROBE_PATH = '/env/ffprobe'
+      let seenBin: string | undefined
+      const execFileImpl = fakeExecFile((bin) => { seenBin = bin; return { stdout: JSON.stringify({ streams: [] }) } })
+      await probeEmbeddedSubtitles('/media/movie.mkv', { execFileImpl, ffprobePath: '' })
+      expect(seenBin).toBe('/env/ffprobe')
+    })
+
     it('falls back to the ffprobe-static bundled binary when neither opt nor env is set', async () => {
       delete process.env.FFPROBE_PATH
       let seenBin: string | undefined
@@ -187,6 +231,37 @@ describe('probeDurationSec', () => {
     }))
     const result = await probeDurationSec('/media/movie.mkv', { execFileImpl })
     expect(result).toBeNull()
+  })
+
+  // 与 probeEmbeddedSubtitles 同构的空串回归——两个探针共用同一套解析顺序，也就共用同一个 bug。
+  // 生产上这一条的后果是 duration_sec 全 NULL（同一批 61 个文件）。
+  describe('binary resolution order（空串回归，与 probeEmbeddedSubtitles 同构）', () => {
+    const ORIGINAL_FFPROBE_PATH = process.env.FFPROBE_PATH
+
+    afterEach(() => {
+      if (ORIGINAL_FFPROBE_PATH === undefined) delete process.env.FFPROBE_PATH
+      else process.env.FFPROBE_PATH = ORIGINAL_FFPROBE_PATH
+    })
+
+    it('FFPROBE_PATH 为空串（compose ${VAR:-} 的默认产物）视为未设置，回落 ffprobe-static，绝不 execFile("")', async () => {
+      process.env.FFPROBE_PATH = ''
+      let seenBin: string | undefined
+      const execFileImpl = fakeExecFile((bin) => { seenBin = bin; return { stdout: JSON.stringify({ format: { duration: '210.016' } }) } })
+      const importFfprobeStatic = async () => ({ path: '/static/ffprobe' })
+      const r = await probeDurationSec('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+      expect(seenBin).toBe('/static/ffprobe')
+      expect(r).toBe(210)
+    })
+
+    it('空串 FFPROBE_PATH + ffprobe-static 也不可用 → 返回 null，execFile 一次不碰', async () => {
+      process.env.FFPROBE_PATH = ''
+      let execFileCalled = false
+      const execFileImpl = fakeExecFile(() => { execFileCalled = true; return { stdout: '{}' } })
+      const importFfprobeStatic = async () => ({})
+      const r = await probeDurationSec('/media/movie.mkv', { execFileImpl, importFfprobeStatic })
+      expect(r).toBeNull()
+      expect(execFileCalled).toBe(false)
+    })
   })
 })
 

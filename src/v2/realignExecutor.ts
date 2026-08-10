@@ -726,12 +726,17 @@ export async function executeRealign(job: Job, deps: RealignExecutorDeps): Promi
   } else {
     // 7a. 归档根解析（IMP#9）：必须在库根之外（Jellyfin 不看），默认库根上一级（同 share，
     //     rename 原子性由下方探针核实）。
-    const archiveRootBase = deps.archiveRoot ?? process.env.REALIGN_ARCHIVE_ROOT ?? dirname(libRoot)
+    // `||` 而非 `??`（与 streamProbe.ts resolveFfprobeBin 同一条裁决，刻意）：compose 里
+    // **已经有** `REALIGN_ARCHIVE_ROOT: ${REALIGN_ARCHIVE_ROOT:-}` 这一行，用户不填时 compose
+    // 会把它设置成**空串**而非"不设置"。用 `??` 的话空串被当合法值采纳 → archiveRootBase=""
+    // → 归档根变成空字符串而不是 dirname(libRoot)，下面的 isUnderRoots / archiveDirFor 会拿
+    // 一个空根去拼路径（相对当前工作目录），把归档搬到完全意外的地方。雷已经埋好，这里拆掉。
+    const archiveRootBase = deps.archiveRoot?.trim() || process.env.REALIGN_ARCHIVE_ROOT?.trim() || dirname(libRoot)
     if (isUnderRoots(archiveRootBase, [libRoot])) {
       return park(`归档根 ${archiveRootBase} 位于库根之内（${libRoot}）——归档必须在媒体库之外，检查 REALIGN_ARCHIVE_ROOT`)
     }
     archiveDir = archiveDirFor(archiveRootBase, seriesTitle, deps.now())
-    notes.push(`归档目录：${archiveDir}（${deps.archiveRoot != null || process.env.REALIGN_ARCHIVE_ROOT ? '来自 REALIGN_ARCHIVE_ROOT' : '默认：库根上一级'}）`)
+    notes.push(`归档目录：${archiveDir}（${deps.archiveRoot?.trim() || process.env.REALIGN_ARCHIVE_ROOT?.trim() ? '来自 REALIGN_ARCHIVE_ROOT' : '默认：库根上一级'}）`)
   }
 
   // 6c. build 残留 GC（CRIT#4）：回滚后（或极端遗留）还立着的 .realign-build/<show> 骨架。

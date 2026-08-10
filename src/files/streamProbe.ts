@@ -76,11 +76,38 @@ async function resolveFfprobeStaticPathWith(importer: () => Promise<unknown>): P
   return mod?.path ?? mod?.default?.path ?? null
 }
 
+/** 二进制路径解析：`opts.ffprobePath` → `process.env.FFPROBE_PATH` → 懒加载 ffprobe-static。
+ *
+ *  **为什么是 `||` 而不是 `??`（刻意裁决，别"顺手改回去"）**：`??` 只对 null/undefined 短路，
+ *  空串是**合法值**会被原样采纳。而生产上这个变量最常见的取值恰恰是空串——
+ *  `docker-compose.yml` 写 `FFPROBE_PATH: ${FFPROBE_PATH:-}`，用户没在 .env 里填时 compose
+ *  会把它**设置成空串**（不是"不设置"），从而覆盖镜像 Dockerfile 的
+ *  `ENV FFPROBE_PATH=/usr/bin/ffprobe`。用 `??` 的旧实现于是拿到 bin=""，绕过"二进制缺席"这道闸，
+ *  `execFile("")` 抛 ERR_INVALID_ARG_VALUE 被下面的 catch 吞掉 → 探针恒返回 null →
+ *  61 个文件的 embedded_langs / duration_sec 静默全 NULL，而日志报的是 `probe ok=61 failed=0`。
+ *  所以这里要的正是"空白字符串也算没给"——`|| undefined` 配 `.trim()` 就是这个语义，
+ *  它同时吃掉 ""、"   " 两种 compose/手填能产出的空值形态。
+ *
+ *  返回 null = 三档全空 = 探针不可用（调用方据契约返回 null，绝不 execFile 空串）。 */
+async function resolveFfprobeBin(opts?: {
+  ffprobePath?: string
+  importFfprobeStatic?: () => Promise<unknown>
+}): Promise<string | null> {
+  const envPath = process.env.FFPROBE_PATH?.trim() || undefined
+  const explicit = opts?.ffprobePath?.trim() || undefined
+  return explicit
+    ?? envPath
+    ?? (opts?.importFfprobeStatic
+      ? await resolveFfprobeStaticPathWith(opts.importFfprobeStatic)
+      : await resolveFfprobeStaticPath())
+}
+
 /**
  * 探测一个视频文件的内嵌字幕轨(ffprobe `-show_streams -select_streams s`)。
  *
  * 二进制解析顺序：`opts.ffprobePath` → `process.env.FFPROBE_PATH` → 懒加载 `import('ffprobe-static')`
  * 拿它自带的二进制(容器/异构平台用前两者兜底逃生；第三档失败/包缺失一律降级为 null，不抛)。
+ * 前两档的空串/纯空白**一律视为"没给"**——理由见 resolveFfprobeBin 的裁决注释。
  *
  * **返回值契约(load-bearing，消费方必须遵守)**：
  * - `null` —— 探测不可用/失败(二进制缺失、execFile 报错/ENOENT、超时、JSON 解析不出来)。
@@ -105,12 +132,11 @@ export async function probeEmbeddedSubtitles(
     importFfprobeStatic?: () => Promise<unknown>
   },
 ): Promise<EmbeddedSubtitleTrack[] | null> {
-  const bin = opts?.ffprobePath
-    ?? process.env.FFPROBE_PATH
-    ?? (opts?.importFfprobeStatic
-      ? await resolveFfprobeStaticPathWith(opts.importFfprobeStatic)
-      : await resolveFfprobeStaticPath())
-  if (bin === null) return null
+  const bin = await resolveFfprobeBin(opts)
+  // `!bin` 而非 `bin === null`：纵深防御。上游解析已把空值归一为 null，这道闸再兜一层——
+  // 即使日后有人在解析链里漏一个空串进来，也绝不会走到 execFile("")（那正是本次事故的形态：
+  // 报错被 catch 吞掉，故障表现为"探针静默不可用"而非一条可见的崩溃）。
+  if (!bin) return null
 
   const impl = opts?.execFileImpl ?? nodeExecFile
   const timeout = opts?.timeoutMs ?? 15000
@@ -145,9 +171,9 @@ export async function probeEmbeddedSubtitles(
 /**
  * 探测一个视频文件的时长（ffprobe `-show_format -print_format json`）。
  *
- * 二进制解析顺序与 probeEmbeddedSubtitles 完全一致：`opts.ffprobePath` →
- * `process.env.FFPROBE_PATH` → 懒加载 `import('ffprobe-static')`。任何失败（二进制
- * 缺席、spawn 失败、JSON 解析失败、无 duration 字段或 duration 非有效数值）一律
+ * 二进制解析顺序与 probeEmbeddedSubtitles 完全一致（共用 resolveFfprobeBin，含"空串/纯空白
+ * 视为未设置"那条裁决——两个探针共用同一条链，也就共用同一个故障面，必须一处修两处生效）。
+ * 任何失败（二进制缺席、spawn 失败、JSON 解析失败、无 duration 字段或 duration 非有效数值）一律
  * 降级为 null——备料是增益，不阻塞后续流程。
  *
  * 返回值：向下取整后的秒数，失败时 null。 */
@@ -161,12 +187,9 @@ export async function probeDurationSec(
     importFfprobeStatic?: () => Promise<unknown>
   },
 ): Promise<number | null> {
-  const bin = opts?.ffprobePath
-    ?? process.env.FFPROBE_PATH
-    ?? (opts?.importFfprobeStatic
-      ? await resolveFfprobeStaticPathWith(opts.importFfprobeStatic)
-      : await resolveFfprobeStaticPath())
-  if (bin === null) return null
+  const bin = await resolveFfprobeBin(opts)
+  // 同 probeEmbeddedSubtitles：`!bin` 是纵深防御那道闸，绝不让空串走到 execFile。
+  if (!bin) return null
 
   const impl = opts?.execFileImpl ?? nodeExecFile
   const timeout = opts?.timeoutMs ?? 15000

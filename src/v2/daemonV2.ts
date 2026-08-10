@@ -1215,7 +1215,16 @@ export class ScoutDaemonV2 {
 
     const db = this.deps.db
     const write = db.prepare('UPDATE files SET embedded_langs = ?, duration_sec = ?, updated_at = ? WHERE path = ?')
-    let ok = 0, failed = 0
+    // 三态计数（不是二态）：`wrote`（真探到值并落库）/ `unavailable`（探针给不出值，两列留 NULL）
+    // / `failed`（抛异常，被隔离）。口径照 backfillEmbeddedLangs 的 `{ path, wrote }`，不另发明。
+    //
+    // 为什么必须区分：旧实现只统计"没抛异常"（ok++），而探针不可用时 probe() 是**正常返回 null**
+    // 的（streamProbe 的三态契约把一切失败归一为 null，不抛）——于是 FFPROBE_PATH 被 compose
+    // 设成空串导致 61 个文件一个值都没探到时，日志打的是 `scan: probe ok=61 failed=0`，
+    // 61 次静默失败被逐字报告成成功。这是那次故障没被第一时间发现的**直接原因**：
+    // 日志本身不可证伪。改成三态后同一场故障的日志是 `wrote=0 unavailable=61 failed=0`，
+    // 一眼看出探针整体不可用，不必去查数据库。
+    let wrote = 0, unavailable = 0, failed = 0
 
     const results = await mapWithConcurrency(paths, this.deps.probeConcurrency ?? 2, async (p) => {
       // 同一文件的两个探针**串行**（沿用 ingest 的既有口径）：并发只在跨文件那一层买得到
@@ -1236,19 +1245,36 @@ export class ScoutDaemonV2 {
       // 探测失败（null）不写 '[]'、也不覆盖已有值为 NULL——这里 langs/duration 本轮必然是
       // 该文件的最新事实（指纹刚变过，旧值已在 upsert 里被清），直写即可。
       write.run(langs === null ? null : JSON.stringify(langs), duration, Date.now(), p)
-      return p
+      // wrote 的判据是"这一轮到底有没有探到任何一样东西"——两个探针都给不出值（langs 为 null
+      // 且 duration 为 null）就是 unavailable。**注意这与写库与否无关**：本函数按上面的论证恒
+      // 直写（指纹刚变，旧值必须被清），所以不能像 backfill 那样用"是否执行 write"当判据。
+      const gotSomething = langs !== null || duration !== null
+      return { path: p, wrote: gotSomething }
     })
 
     for (let i = 0; i < results.length; i++) {
       const r = results[i]
-      if (r.status === 'fulfilled') { ok++; continue }
+      if (r.status === 'fulfilled') {
+        if (r.value.wrote) wrote++
+        else unavailable++
+        continue
+      }
       failed++
       // 逐个记日志而不是只记个数：事后排障要能分辨"这片子真没内嵌轨"与"这台机器的 ffprobe 坏了"
       // （referenceSource.ts 的同一条论证）。失败行的两列保持 NULL，下轮/回填 pass 会重探。
       this.deps.log(`scan: probe 失败（隔离，留 NULL 待重探）: ${paths[i]}: ${String(r.reason)}`)
     }
-    if (ok > 0 || failed > 0) {
-      this.deps.log(`scan: probe ok=${ok} failed=${failed}`)
+    if (wrote > 0 || unavailable > 0 || failed > 0) {
+      this.deps.log(`scan: probe wrote=${wrote} unavailable=${unavailable} failed=${failed}`)
+    }
+    // 整体不可用闸：一个都没探到 = 几乎必然是环境/配置问题（FFPROBE_PATH 空串、二进制缺席、
+    // 挂载全掉），不是"这批片子恰好都没内嵌轨也没时长"——后者在真实媒体库里概率为零。
+    // 这条 warn 的价值是让下一次同类故障在**第一次 live test 的日志里就自证**，
+    // 而不是等人去查数据库才发现全 NULL（本次事故正是这么被拖住的）。
+    if (unavailable === paths.length && paths.length > 0) {
+      this.deps.log(`warn: scan: probe 整体不可用——${paths.length} 个文件一个值都没探到，`
+        + `疑似 FFPROBE_PATH 配置错误（compose ${'${FFPROBE_PATH:-}'} 会把它设成空串）或 ffprobe 二进制缺席；`
+        + `这两列全留 NULL，judge/D9 会因缺证据退化，请先核实容器内 ffprobe 可用`)
     }
   }
 
