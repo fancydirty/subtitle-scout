@@ -25,7 +25,7 @@
 第 5 步   字幕 skill 两条边界            ✅  2 commit（prompt + 计数轨）
 第 5.5 步 skill/工具一致性审计 + 干测压测 ✅  3 commit
 第 7 步   清理死代码（A+B+C1 三批）      ✅  7 commit，净删 ~3600 行
-第 6 步   live test（NAS 测试库）          🔄  单元 1-4 通过，字幕流验证中
+第 6 步   live test（NAS 测试库）          ✅  单元 1-6 全通过，含翻译首次出片
 第 8 步   前端全删重做                    ⬜  ← 用户裁决：并入下列三件事
           ├─ 4 个 builder 迁到 files/works（修海报墙冻结快照）
           ├─ 删 jobs 生产者 + redispatch 假按钮
@@ -230,6 +230,46 @@ files   = 60  ==  磁盘视频 60
 不是 error），agent 正确报 retry_later，scheduler 豁免计数但记了 streak（CAP=3 才折算）。
 **没有把源站沉默冤枉成"确实没有"**，也没有因此提前移交翻译。
 
+### 单元 6：翻译单元 —— **首次真实运行，成功出片** ✅
+
+这是文档 §九 一直记着「从未在任何环境跑过」的那条链路。造 `handoff_translate` 态
+（Peacemaker S02E02，英语可救、先删掉它的外挂字幕避免 already-covered）后：
+
+```
+翻译 Peacemaker (.../Peacemaker S02E02 ....mkv)
+[translate-worker] job daemon-1786390499859 finished in 113 step(s)     ← 13 分钟 / 113 步
+翻译结果 installed → sub_status=handoff_translate                       ← R24：不写 covered
+```
+
+**产物质量**（59558 bytes / 876 cue / SRT 规范）：
+```
+2
+00:00:14,764 --> 00:00:17,058
+- (键盘哔哔声)
+- 约翰·伊科诺莫斯：很明显，
+那是洗手间。
+```
+人名音译（约翰·伊科诺莫斯 / 阿曼达·沃勒）、说话人标签、音效标注全部保留。
+
+**闭环验证**（翻译轨衔接修复的实证）：
+```
+翻译装盘后 sub_recheck_at = 0                    ← commit 51eb5a4 生效
+下一轮 scan: 字幕存在性观察 A档=0 B档=1           ← 精确捞到那一行，不是全库
+S02E02: handoff_translate → covered              ← 闭环完成
+```
+端到端全程：**移交 → 翻译 → 装盘 → 扫描观察 → covered**。
+
+### 顺带验证的判定正确性（差点被我当成缺陷）
+
+- **Cassandra（德语剧）`translatable=0`** —— 正确。`de` 既不在可抓源集合（MVP=en）也不在
+  可抽轨集合（en/ja）；它有 `eng` 内嵌轨也不救，因为 R18 禁英文兜底转译
+- **Adam's Sweet Agony（日漫）`translatable=0`** —— 正确。`embedded_langs=[]`（探过、确认零轨）
+  = 真的没有日文源，而 jimaku 尚未落地（C6）
+- **Constellation `needs_subtitle=0`** —— 正确。它有 `chi` 内嵌中文轨，judge 规则 2 排除。
+  我一开始拿它造 7 次移交场景，发现 `needs=0` 时以为是缺陷，查完是我选错了对象
+
+三条都是"看起来像 bug 实际是对的"，判据都能在 `subtitleJudge.ts` 的注释里找到原始论证。
+
 ### 环境实测事实（与本地盘语义不同，值得记）
 
 - `find -delete` **在 CIFS 上静默失效**（报成功但文件还在）——必须用 `rm`
@@ -338,13 +378,16 @@ dashboard redispatch。
 
 ---
 
-## 九、翻译的诚实边界
+## 九、翻译的边界（2026-08-10 已实测出片，此节改写）
 
-**管道全程接通、每个接缝都有断言，但真正产出字幕的那一段
-（`resolveTranslateSource` → workspace agent → `writeSidecarAtomic`）
-从未在任何环境跑过。** 干测验的是 agent 的决策流程（桩返回假数据），
-不是真实的抽轨/翻译/写盘。这与 spec 第 6 步"翻译单元最后修最后测"一致，
-但别把"26 项全绿"读成"翻译能出片"。
+~~从未在任何环境跑过~~ —— **第 6 步 live test 已验证成功出片**（见 §六·五 单元 6）：
+Peacemaker S02E02，113 步 / 13 分钟，产出 876 cue 的规范 SRT，闭环到 `covered`。
+`resolveTranslateSource` → workspace agent → `writeSidecarAtomic` 全程真实跑通。
+
+仍未验证的部分（诚实边界）：
+- **只跑过 1 集、1 种场景**（英语内嵌轨抽取）。日语源、外挂抓源、`held` 修复循环、
+  7 次移交的真实触发（我造的是直接写 `handoff_translate` 态，不是等它真攒满 7 次）都没实测
+- 翻译工作台的 GC 在长跑下的行为未验（见下方 jobId 稳定化那条）
 
 另外 MVP 边界（R20）：外挂抓取仅 en；内嵌轨抽取 en/ja 皆可。
 日漫无日文内嵌轨时走 jimaku，而 **jimaku 尚未落地**（C6），所以那类会直接 no-source。
