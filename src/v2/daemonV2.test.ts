@@ -1404,6 +1404,54 @@ function needsSubtitleOf(db: ReturnType<typeof openDb>, path: string): number | 
   return (db.prepare('SELECT needs_subtitle FROM files WHERE path = ?').get(path) as { needs_subtitle: number | null }).needs_subtitle
 }
 
+describe('ScoutDaemonV2.judgeOnce · 日志文案必须与计数口径逐字对应（2026-08-10 live test）', () => {
+  // 起因：live test 里 61 个文件全被日志报成「judge: 61 个文件判定需字幕」，我据此误判
+  // judge 规则 2（已有内嵌中文轨 → 跳过）在生产失效、停了引擎排查根因——查完发现规则完全
+  // 正常（44 需 / 17 跳），错的是日志：`judged` 计的是**判定过的行数**，文案却说"判定需字幕"。
+  //
+  // 与同一天修掉的 `scan: probe ok=N`（统计"没抛异常"而非"写进去了"）是同一类缺陷：
+  // **日志把一个中间量说成结论量**。这类缺陷不会让程序算错，但会让读日志的人算错——
+  // 而 live test 阶段人读日志就是唯一的观测手段，误导一次的代价是一轮排查 + 一次停机。
+  it('🔴 混合样本：日志分别报「需字幕」与「跳过」的条数，不把总数说成需字幕数', async () => {
+    const db = openDb(':memory:')
+    // 3 个需字幕（en 无内嵌中文） + 2 个该跳过（内嵌 chi / 国产）
+    seedJudgeable(db, '/media/Show/E01.mkv', { originLang: 'en' })
+    seedJudgeable(db, '/media/Show/E02.mkv', { originLang: 'en' })
+    seedJudgeable(db, '/media/Show/E03.mkv', { originLang: 'en' })
+    seedJudgeable(db, '/media/Show/E04.mkv', { originLang: 'en', embeddedLangs: JSON.stringify(['eng', 'chi']) })
+    seedJudgeable(db, '/media/Show/E05.mkv', { originLang: 'en', embeddedLangs: JSON.stringify(['chi']) })
+    const logs: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], log: (m: string) => logs.push(m) }))
+    await judge(daemon)
+
+    const line = logs.find((l) => l.startsWith('judge:'))
+    expect(line).toBeDefined()
+    // 口径断言：DB 里真实的 needs=1 条数，必须等于日志里"需字幕"那个数字
+    const needs = (db.prepare('SELECT COUNT(*) AS n FROM files WHERE needs_subtitle = 1').get() as { n: number }).n
+    const skipped = (db.prepare('SELECT COUNT(*) AS n FROM files WHERE needs_subtitle = 0').get() as { n: number }).n
+    expect(needs).toBe(3)
+    expect(skipped).toBe(2)
+    expect(line).toContain(`${needs} 需字幕`)
+    expect(line).toContain(`${skipped} 跳过`)
+    // 反向防线：旧文案「judge: 5 个文件判定需字幕」会让 5(总数) 被读成需字幕数
+    expect(line).not.toMatch(/^judge: 5 个文件判定需字幕$/)
+    db.close()
+  })
+
+  it('🔴 全部跳过时日志不得写成「N 需字幕」（探针可用但全是内嵌中文的库）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, '/media/Show/E01.mkv', { originLang: 'en', embeddedLangs: JSON.stringify(['chi']) })
+    seedJudgeable(db, '/media/Show/E02.mkv', { originLang: 'en', embeddedLangs: JSON.stringify(['chi']) })
+    const logs: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], log: (m: string) => logs.push(m) }))
+    await judge(daemon)
+    const line = logs.find((l) => l.startsWith('judge:'))
+    expect(line).toContain('0 需字幕')
+    expect(line).toContain('2 跳过')
+    db.close()
+  })
+})
+
 describe('ScoutDaemonV2.judgeOnce · C27/D8 职责切分', () => {
   const V = '/media/Show/E01.mkv'
 

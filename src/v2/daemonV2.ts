@@ -697,6 +697,12 @@ export class ScoutDaemonV2 {
       + ` WHERE path = ?`,
     )
     let judged = 0
+    // 分开计数（needs / skip）而不是只记总数：日志文案曾写成「judge: N 个文件判定需字幕」而 N
+    // 其实是**判定过的行数**——2026-08-10 live test 里 61 个文件全被报成"需字幕"，我据此误判
+    // judge 规则 2（已有内嵌中文轨 → 跳过）失效并停了引擎排查，实际规则完全正常（44 需 / 17 跳）。
+    // 与 probe 的 `ok=N`（统计"没抛异常"而非"写进去了"）是同一类缺陷：**日志把一个中间量说成
+    // 结论量**，读日志的人无从分辨。计数口径必须与文案逐字对应。
+    let needsCount = 0
 
     for (const r of rows) {
       let embedded: string[] | null = null
@@ -714,9 +720,10 @@ export class ScoutDaemonV2 {
         update.run(verdict.needs ? 1 : 0, now, r.path)
       }
       judged++
+      if (verdict.needs) needsCount++
     }
     if (judged > 0) {
-      this.deps.log(`judge: ${judged} 个文件判定需字幕`)
+      this.deps.log(`judge: 判定 ${judged} 个文件——${needsCount} 需字幕 / ${judged - needsCount} 跳过（国产或已有内嵌中文轨）`)
     }
   }
 
