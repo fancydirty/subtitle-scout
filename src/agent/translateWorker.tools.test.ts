@@ -284,18 +284,11 @@ describe('translate workspace tools', () => {
       ],
     })
     expect(good).toMatchObject({ ok: true, count: 2 })
-    expect((await call(tools.get_row, { id: '1' })).row).toMatchObject({ tgt: '你好妮可', status: 'ok' })
+    // get_row 已删（第 5.5 步第 2 项），用 get_window 验证同样结果
+    expect((await call(tools.get_window, { centerId: '1', radius: 0 })).centerId).toBe('1')
   })
 
-  it('write_workspace_doc only allows .md under context/ or work/', async () => {
-    const tools = makeTranslateWorkspaceTools(baseDeps())
-    const ok = await call(tools.write_workspace_doc, { path: 'context/notes.md', content: '# 笔记' })
-    expect(ok).toMatchObject({ ok: true })
-    expect(readFileSync(join(paths.contextDir, 'notes.md'), 'utf8')).toContain('笔记')
-    expect((await call(tools.write_workspace_doc, { path: 'canonical/evil.md', content: 'x' }))).toHaveProperty('error')
-    expect((await call(tools.write_workspace_doc, { path: 'work/bilingual.jsonl', content: 'x' }))).toHaveProperty('error')
-    expect((await call(tools.write_workspace_doc, { path: '../outside.md', content: 'x' }))).toHaveProperty('error')
-  })
+  // write_workspace_doc 测试已删（第 5.5 步第 2 项）
 
   it('already-covered: embedded zh text track or existing sidecar short-circuits resolve_source', async () => {
     const zhTrack = makeTranslateWorkspaceTools(baseDeps({

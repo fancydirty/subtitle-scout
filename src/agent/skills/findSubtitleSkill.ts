@@ -249,10 +249,22 @@ ${identityVerification ? `0. FIRST, identify the media from the raw evidence per
    hundreds, span roughly matching runtime, decodable, not HTML, script matching your target
    language). A convincing filename sitting on top of implausible structural signals is NOT a
    match — trust the bytes over the label.
+   
+   **Key parameters when working with downloads and installation:**
+   - \`candidateId\`: the candidate's \`id\` exactly as returned by \`search_source\` / \`list_candidates\`
+   - \`stagedFileId\`: opaque handle returned by \`download_candidate\` — pass it to \`install_subtitle\`
+   - \`langTag\`: BCP-47 language tag used by \`install_subtitle\` to name the installed file correctly${isChinese ? ' (e.g. "zh-Hans" or "zh-Hant" — distinguish based on the subtitle\'s actual script)' : ''}.
+   
+   **Optional safety check:** \`check_episode_code_safety\` is an advisory tool — it checks whether a
+   filename's episode code (S01E05, etc.) matches your target's season/episode numbers. A \`false\`
+   result does NOT mean reject (the file might still be correct despite a naming quirk), and a \`true\`
+   result does NOT mean accept (you still verify structural signals). Use it as ONE signal among several.
+
 6. Only when you have genuinely decided — the way a person would after opening the file —
-   call \`install_subtitle\` (with \`videoFilename\` naming the target) to atomically place it
-   next to that target's video. If you are not sure about that target, that is no_safe_match
-   for that item, not a hopeful guess.
+   call \`install_subtitle\` (with \`videoFilename\` naming the target, \`stagedFileId\` from the
+   download, and \`langTag\` matching the subtitle's script) to atomically place it next to that
+   target's video. If you are not sure about that target, that is no_safe_match for that item,
+   not a hopeful guess.
 7. Report ONE batch outcome by calling \`finalize\` EXACTLY ONCE, after you have worked
    through the whole target list. The report has ${hardsubMode === 'agent' ? 'four buckets' : 'three buckets'}, and every target's itemId
    must land in exactly one of them, copied VERBATIM from the task's target list (never

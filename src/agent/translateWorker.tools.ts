@@ -262,28 +262,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     },
   })
 
-  const write_workspace_doc = tool({
-    description:
-      'Write/replace a SMALL markdown note inside context/ or work/ (e.g. context/notes.md, ' +
-      'work/summary.md). Cannot write canonical/, glossary/, or .jsonl tables — those have ' +
-      'their own tools.',
-    inputSchema: z.object({
-      path: z.string().min(1),
-      content: z.string().max(8000),
-    }),
-    execute: async ({ path, content }) => {
-      const abs = resolve(paths.jobRoot, path)
-      if (!abs.startsWith(paths.jobRoot + '/')) {
-        return { error: `path escapes the job workspace: ${path}` }
-      }
-      const allowed = abs.startsWith(paths.contextDir + '/') || abs.startsWith(paths.workDir + '/')
-      if (!allowed || !abs.endsWith('.md')) {
-        return { error: 'write_workspace_doc only allows .md files under context/ or work/' }
-      }
-      writeFileSync(abs, content.endsWith('\n') ? content : content + '\n')
-      return { ok: true, path, chars: content.length }
-    },
-  })
+  // write_workspace_doc 已删（第 5.5 步第 2 项：agent 不写自由笔记，context/ 是系统写的）
 
   const CJK = /[　-鿿豈-﫿]/
 
@@ -399,15 +378,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     },
   })
 
-  const get_row = tool({
-    description: 'Read ONE bilingual row in full (id/src/tgt/status/notes).',
-    inputSchema: z.object({ id: z.string().min(1) }),
-    execute: async ({ id }) => {
-      const row = readRows(paths).find((r) => r.id === id)
-      if (!row) return { error: `no bilingual row with id=${id}` }
-      return { row }
-    },
-  })
+  // get_row 已删（第 5.5 步第 2 项：功能被 get_window 完全覆盖）
 
   const rowStatusEnum = z.enum(['pending', 'draft', 'ok', 'needs_review', 'failed'])
 
@@ -732,11 +703,11 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
     fetch_tmdb_context,
     fetch_series_target_subs,
     read_workspace_doc,
-    write_workspace_doc,
+    // write_workspace_doc 已删
     freeze_glossary,
     lookup_glossary,
     list_rows,
-    get_row,
+    // get_row 已删
     update_row,
     update_rows,
     get_window,

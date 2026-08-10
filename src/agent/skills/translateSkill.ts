@@ -20,7 +20,8 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
 - \`glossary/terms.json\` — frozen termbase document
 - \`work/bilingual.jsonl\` — bilingual table; you write \`tgt\`/\`status\` like KV rows
 - \`work/summary.md\` — short rolling bilingual summary
-- \`context/*\` — TMDB + same-series target-language subs (if any) + optional wiki (later)
+- \`context/*\` — **system-written, read-only**: TMDB + same-series target subs (if any) +
+  optional wiki. Read via \`read_workspace_doc\`; never write here.
 - \`out/target.srt\` — **only** produced by deterministic merge, never hand-authored timings
 
 ## Iron rules
@@ -52,13 +53,14 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
 1. \`read_doc(translate-workspace)\` if you have not already.
 2. **resolve_source** (deterministic single-hop). On failure → finalize no-source / extract-failed.
 3. **materialize_agent_view** — build \`source_clean.jsonl\` + pending bilingual rows.
-4. Load context: TMDB synopsis/cast; same-series target-language subtitle excerpts when present.
-5. Skim cleaned source via windowed reads (\`get_window\` / paged \`read_workspace_doc\`). Build a
-   glossary of characters, places, world terms. **Every \`zh\` must be a Simplified-Chinese
-   rendering** (transliterate names the way official Chinese subtitles do — never copy the Latin
-   original into \`zh\`; freeze will REJECT non-Chinese \`zh\`). Only if the audience genuinely
-   reads the original script (rare, e.g. an acronym) may you set \`keepOriginal: true\`.
-   **freeze_glossary** → \`glossary/terms.json\`.
+4. Load context: **fetch_tmdb_context** (synopsis/cast); **fetch_series_target_subs** (same-series
+   target-language subtitle excerpts when present).
+5. Skim cleaned source via **list_rows** and windowed reads (\`get_window\` / paged
+   \`read_workspace_doc\`). Build a glossary of characters, places, world terms. **Every \`zh\`
+   must be a Simplified-Chinese rendering** (transliterate names the way official Chinese subtitles
+   do — never copy the Latin original into \`zh\`; freeze will REJECT non-Chinese \`zh\`). Only if
+   the audience genuinely reads the original script (rare, e.g. an acronym) may you set
+   \`keepOriginal: true\`. **freeze_glossary** → \`glossary/terms.json\`.
 6. Translate **by windows** (about 10–40 cues). For each window: read glossary + summary + rows →
    draft → **update_row** for each id → **update_summary**. Proper names must match the frozen
    glossary **exactly** — including nicknames and surname-only forms (if the glossary says
@@ -78,12 +80,13 @@ job staging directory (\`.subtitle-translate/<jobId>/\`):
    feels like it belongs with its neighbor. Merging shifts every subsequent row id and the
    whole file misaligns (the gate will catch it as a \`possibleRowShift\`; you will then have
    to rewrite the entire shifted span instead of the two rows you tried to save).
-7. **run_structural_gate** (term conformance, empty tgt, counts). If it FAILS, this is **not**
-   the end — it returns a \`violations\` list telling you EXACTLY which terms are wrong and at
-   which cue ids (\`term\`, \`expectZh\`, \`missAtCues\`). **Repair loop (up to 3 rounds):**
-   for every violation, \`update_row\`/\`update_rows\` the flagged cues so the frozen glossary's
-   canonical \`expectZh\` is used, then **re-run the gate**. Only after 3 failed repair rounds
-   do you finalize \`held\` — giving up without repairing is abandoning fixable work.
+7. **run_structural_gate** (term conformance, empty tgt, counts) and **run_critic** (optional
+   LLM-based quality check). If the structural gate FAILS, this is **not** the end — it returns
+   a \`violations\` list telling you EXACTLY which terms are wrong and at which cue ids (\`term\`,
+   \`expectZh\`, \`missAtCues\`). **Repair loop (up to 3 rounds):** for every violation,
+   \`update_row\`/\`update_rows\` the flagged cues so the frozen glossary's canonical \`expectZh\`
+   is used, then **re-run the gate**. Only after 3 failed repair rounds do you finalize \`held\`
+   — giving up without repairing is abandoning fixable work.
    If the gate returns \`possibleRowShift\`, your translations were written to the WRONG row ids
    (you merged or skipped source cues somewhere near the reported first cue). Do not patch
    individual terms — \`get_window\` that span, rewrite EVERY row in it with

@@ -56,7 +56,7 @@ import { runFindSubtitleWorkerTask } from '../v2/findSubtitleWorkerTask.js'
 import {
   makeUnidentifiedFindSubtitleWorker, runUnidentifiedFindSubtitleWorkerTask,
 } from './unidentifiedFindSubtitle.js'
-import { runReconcileAll, runOrchestrateWorkerTask } from '../v2/reconcileAll.js'
+// (import removed - see comment above)
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
@@ -169,81 +169,8 @@ function buildIngestPass(opts: {
  *  check_series_layout 工具需要真实 TmdbClient 才能判断"季数是否超出 TMDB 季表"，摄取层本身
  *  也需要真实 TmdbClient 才能识别文件——手动触发的全仓校验若因为缺 key 而悄悄只做一半，
  *  会让使用者误以为已经跑过完整校验——所以这里直接报错退出，同 requireEnv 的硬依赖语义一致。 */
-async function cmdReconcileAll() {
-  // spec A §4.3：assemble 的密钥解析走 cfg，cfg 的 dbGet 需要 settingsRepo，
-  // settingsRepo 需要 db——cacheRoot 的计算不依赖密钥（与 assemble 内同一表达式），先算。
-  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
-  const dbPath = join(cacheRoot, 'scout.db')
-  const db = openDb(dbPath)
-  const settingsRepo = new SettingsRepo(db)
-  // spec A §4.7 步 6：一次性命令不寄居 dashboard，缺 TMDB **或 LLM** 仍 exit 2——
-  // assemble 改 null 耐受后这里必须同时查两把钥匙，否则拿 null reasoningModel 跑
-  // orchestrator 会运行时炸而非人话拒启动。
-  const cfgGate = makeAdapterConfigResolver(process.env, (k) => settingsRepo.get(k))
-  if (!setupSatisfied(cfgGate)) {
-    console.error('reconcile-all needs TMDB_API_KEY and the LLM triple (base URL, API key, model) — set them in the environment, or finish the setup wizard in the dashboard first.')
-    process.exit(2)
-  }
-  const { tmdb, reasoningModel } = await assemble(cfgGate, (m) => console.error(`warn: ${m}`))
-  if (!tmdb || !reasoningModel) {
-    // 与门禁同条件的 TS 收窄兜底（闸门评估后密钥被并发删除的竞态），文案与门禁一致。
-    console.error('reconcile-all needs TMDB_API_KEY and the LLM triple (base URL, API key, model) — set them in the environment, or finish the setup wizard in the dashboard first.')
-    process.exit(2)
-  }
-  const jobs = new JobsRepo(db)
-  const lib = new LibraryRepo(db)
-  // dashboard G4：守备目录 DB 化——settingsRepo 是 roots 的权威来源，MEDIA_ROOTS env 只在
-  // media_roots 表为空时充当首启种子（见 SettingsRepo.seedRootsFromEnv）。这是一次性命令
-  // （跑完即退出），不需要惰性求值带来的"运行期加根即时生效"收益，但仍然统一走同一套接线，
-  // 不再维护第二套"从 env 直读"的旧逻辑。
-  // F2（2026-08-08）：先归一化存量非规范根（尾斜杠/重复斜杠）。必须在 seed 之前——
-  // 否则存量 '/media/tv/' 与 env 里的 '/media/tv' 会被当成两个不同的根共存。
-  settingsRepo.normalizeRoots()
-  // D7（2026-08-08）：种子现在过嵌套闸门 + 绝对路径门，被跳过的会进 rejected。env 顺序
-  // 静默决定守备范围（先写的赢），必须打告警——否则"为什么少了一个根"无从排查。
-  for (const r of settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now()).rejected) {
-    console.warn(nestedRootSkipWarning(r))
-  }
-  const currentRoots = () => settingsRepo.listRoots().map(r => r.path)
-  // D7 附加（2026-08-08）：存量嵌套根告警。这里也要有——normalizeRoots 展开 '..' 时能
-  // **自己造出**嵌套（'/media/tv/..' + '/media/tv' → '/media' ⊃ '/media/tv'），
-  // 而本命令跑的是全量重算，正是最该看见这个事实的地方（审校 F9）。
-  {
-    const w = existingNestedRootsWarning(settingsRepo.detectNestedRoots())
-    if (w) console.warn(w)
-  }
-  // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
-  // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
-  // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
-  // exact mapping (locked by targetLanguages.test.ts).
-  // dashboard G4：settings.target_languages（行为级设置，dashboard 里可改）优先于部署层的
-  // TARGET_LANGUAGES env，见 resolveTargetLanguages 第二参的文档注释。
-  // 债务D5：语言配置提供者——settings 行为级 > env 部署级的求值挪进闭包，每次消费新鲜读。
-  const languagesNow = () => resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
-  const ingest = buildIngestPass({
-    roots: currentRoots, lib, tmdb,
-    targetLanguages: () => languagesNow().targetLanguages,
-    originSkipLanguages: () => languagesNow().originSkipLanguages,
-    excludeExtras: () => settingsRepo.get('exclude_extras') === 'true',
-    // 救援R5：hardsub_mode 提供者——非三态合法值（未设置/脏值）一律降级 'off'（最保守，
-    // 同 exclude_extras 的默认关闭口径）。
-    hardsubMode: () => {
-      const v = settingsRepo.get('hardsub_mode')
-      return v === 'agent' || v === 'aggressive' ? v : 'off'
-    },
-    log: (msg) => console.log(`[reconcile-all] ${msg}`),
-  })
-  const decision = await runReconcileAll({
-    ingest, lib, jobs, model: reasoningModel, tmdb,
-    now: () => Date.now(), orchestratorJobId: null,
-  })
-  console.log(
-    `[reconcile-all] ${decision.summary} (dispatched ${decision.dispatchedFindSubtitle} find-subtitle, ` +
-    `${decision.dispatchedRealign} realign, spawned ${decision.spawnedSiblings} sibling orchestrators)`
-  )
-  db.close()
-  process.exit(0)
-}
+// cmdReconcileAll 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
+
 
 async function cmdWatch() {
   // R8-1：进程启动时间——gcOrphans 的两条保留条件之一（① mtime 新于 bootTime 的"新建未写"工作台
@@ -346,11 +273,8 @@ async function cmdWatch() {
     findSubtitleWorkerTaskDeps: {
       lib: LibraryRepo; tmdb: TmdbClient; mediaRoots: string[]; targetLanguage: string; runs: RunsRepo
     } | null
-    orchestrateWorkerTaskDeps: {
-      lib: LibraryRepo; tmdb: TmdbClient; model: LanguageModel; now: () => number; runs: RunsRepo
-    } | null
-    /** dashboard POST /api/v2/reconcile-all 的执行体；setup 未满足 → null（端点 503）。 */
-    reconcileAll: (() => Promise<ReconcileAllResultDTO>) | null
+    // orchestrateWorkerTaskDeps 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
+    // reconcileAll 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
     /** 第 2 步（C2）：daemonV2 的识别工作台 deps；!tmdb || !model → null（闸住时不会被调）。 */
     identifyDeps: IdentifySchedulerDeps | null
     /** 第 2 步（C2）：daemonV2 的字幕工作台执行体；!model → null。 */
@@ -477,18 +401,11 @@ async function cmdWatch() {
       ? makeFindSubtitleWorker({ model: reasoningModel, adapters: realignAdapters, cacheRoot, tmdb })
       : null
 
-    const orchestrateWorkerTaskDeps = satisfied
-      ? { lib, tmdb, model: reasoningModel, now: () => Date.now(), runs }
-      : null
-    const reconcileAll = (satisfied && ingestPass)
-      ? () => runReconcileAll({
-          ingest: ingestPass, lib, jobs, model: reasoningModel, tmdb,
-          now: () => Date.now(), orchestratorJobId: null,
-        })
-      : null
+    // orchestrateWorkerTaskDeps 已删（第 5.5 步）
+    // reconcileAll 已删（第 5.5 步）
     return {
       mappings, tmdb, reasoningModel, realignAdapters, ingestPass,
-      realignDeps, findSubtitleWorkerTaskDeps, orchestrateWorkerTaskDeps, reconcileAll,
+      realignDeps, findSubtitleWorkerTaskDeps,
       identifyDeps, subtitleWorkerV2,
     }
   }
@@ -613,11 +530,6 @@ async function cmdWatch() {
           mediaRoots: roots,
           jf: makeRealignLibraryPort({ lib, roots, runIngest: c.ingestPass ?? (() => Promise.resolve(EMPTY_INGEST_RESULT)) }),
         }, jobs, () => Date.now())
-      } else if (payload.taskType === 'orchestrate') {
-        // spec §4.7 步 5：orchestrateWorkerTaskDeps 同款——satisfied 决定可空性，护栏后必非空。
-        const oDeps = c.orchestrateWorkerTaskDeps
-        if (!oDeps) { jobs.completeError(job.id, 'setup incomplete — engine is gated', Date.now()); return }
-        await runOrchestrateWorkerTask(job, oDeps, jobs)
       } else if (payload.taskType === 'translate') {
         // E AI 翻译:daemon 自动翻一个可译候选。**双重 env 门控**——tryAutoTranslateCfg 只认显式
         // TRANSLATE_* 三件套(绝不回退 LLM_*=mimo 烧配额),不全则拒跑走 completeError(等用户配齐;
@@ -675,7 +587,7 @@ async function cmdWatch() {
       port: dashPort,
       token: process.env.DASHBOARD_TOKEN || undefined,
       distDir,
-      reconcileAll: () => clients.current.reconcileAll,
+      // reconcileAll 已删（第 5.5 步）
       // dashboard G5：POST /api/v2/workflow/redispatch（人类扳手）依赖真实 JobsRepo（jobs 在上方
       // 无条件构造，直接传）。tmdb/reconcileAll 改 getter 注入（spec A §4.2 holder 覆盖 dashboard
       // 注入面）——setup 模式下现取现得 null，端点照既有降级先例 503/跳过。
@@ -991,12 +903,12 @@ async function cmdDoctor() {
     : envOnlyAdapterConfig(process.env)
 
   // env 缺失走诊断项（✗ + hint、exit 1），不 requireEnv 急切崩溃（那是 exit 2 的”用法错误”通道）
-  // TMDB 排最前:它是 watch/reconcile-all 的硬前置(缺 key 直接拒绝启动),缺它 doctor 必须 ✗ 而非
+  // TMDB 排最前:它是 watch 的硬前置(缺 key 直接拒绝启动),缺它 doctor 必须 ✗ 而非
   // 假装全绿——修复"doctor 通过但 watch 立刻因缺 TMDB_API_KEY 退出"的假信心。
   const tmdbKey = cfg.secret('TMDB_API_KEY').value
   if (!tmdbKey) {
     results.push({
-      name: 'tmdb', ok: false, detail: 'TMDB_API_KEY 未配置（watch/reconcile-all 的硬前置，缺它直接拒绝启动）（也可在 dashboard 的 setup wizard 里配置）',
+      name: 'tmdb', ok: false, detail: 'TMDB_API_KEY 未配置（watch 的硬前置，缺它直接拒绝启动）（也可在 dashboard 的 setup wizard 里配置）',
       hint: '获取：https://www.themoviedb.org → 账户设置 → API → 复制 API Key(v3 auth)。墙内环境可配 TMDB_PROXY_URL 或 TMDB_BASE_URL 走反代。',
     })
   } else {
@@ -1144,7 +1056,7 @@ async function cmdRealignRollback(archiveDir: string) {
   }
 }
 
-const USAGE = 'usage: subtitle-scout watch | reconcile-all | doctor | translate-item <videoPath> | realign-rollback <archiveDir> | auth reset'
+const USAGE = 'usage: subtitle-scout watch | doctor | translate-item <videoPath> | realign-rollback <archiveDir> | auth reset'
 
 /** 鉴权 A4 Task 15：`subtitle-scout auth reset`——诚实找回密码。删管理员三键回到未初始化态，
  *  下次访问 dashboard 重进创建管理员向导。复用 cmdWatch 同一套 db 定位（SUBTITLE_SCOUT_CACHE_DIR）。 */
@@ -1174,7 +1086,7 @@ async function main() {
     process.exit(0)
   }
   if (cmd === 'watch') return cmdWatch()
-  if (cmd === 'reconcile-all') return cmdReconcileAll()
+  // 'reconcile-all' 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
   if (cmd === 'doctor') return cmdDoctor()
   if (cmd === 'translate-item' && positionals[1]) return cmdTranslateItem(positionals[1])
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])

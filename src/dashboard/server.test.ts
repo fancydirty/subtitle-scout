@@ -77,14 +77,13 @@ function distWith(html: string): string {
 
 async function start(
   distDir: string, token?: string,
-  reconcileAll?: () => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>,
+  // reconcileAll 已删（第 5.5 步）
   env?: Record<string, string | undefined>,
-  // dashboard G5：POST /api/v2/workflow/redispatch 依赖（缺席→503，照 reconcileAll 先例）。
+  // dashboard G5：POST /api/v2/workflow/redispatch 依赖（缺席→503）。
   jobs?: Pick<JobsRepo, 'upsertWorkerTask'>,
   // dashboard G5：GET /api/v2/library/series/:id 命中时的惰性刷新接线（缺席→跳过，不报错）。
   tmdb?: FakeTmdb,
-  // 验收修复轮一 Task V2：甄别认领成功后踢一脚扫描的回调（缺席→无事发生，照 reconcileAll/jobs/
-  // tmdb 三个既有可选依赖的先例）。
+  // 验收修复轮一 Task V2：甄别认领成功后踢一脚扫描的回调（缺席→无事发生，照 jobs/tmdb 既有可选依赖的先例）。
   requestIngest?: () => void,
   // 字幕校验三端点的依赖注入（缺席→接真实模块：真会改写磁盘字幕 + spawn ffmpeg，所以下面
   // 的用例一律注入桩；见 DashboardOpts.subtitleWriteDeps 注释）。
@@ -98,12 +97,12 @@ async function start(
     setupDeps?: Partial<SetupDeps>
     cacheRoot?: string
     tmdbGetter?: () => FakeTmdb | null
-    reconcileAllGetter?: () => (() => Promise<{ dispatchedFindSubtitle: number; dispatchedRealign: number; spawnedSiblings: number; summary: string }>) | null
+    // reconcileAllGetter 已删（第 5.5 步）
   },
 ): Promise<{ base: string }> {
   server = await startDashboard({
     db, port: 0, token, distDir,
-    reconcileAll: extra?.reconcileAllGetter ?? (reconcileAll ? () => reconcileAll : undefined),
+    // reconcileAll 已删（第 5.5 步）
     env,
     jobs,
     tmdb: extra?.tmdbGetter ?? (tmdb ? () => tmdb : undefined),
@@ -204,81 +203,8 @@ describe('startDashboard (v2)', () => {
 
   })
 
-  describe('POST /api/v2/reconcile-all (v3 phase ⑦)', () => {
-    it('invokes the injected reconcileAll callback and returns its result', async () => {
-      const reconcileAll = async () => ({
-        dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
-      })
-      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
-      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({
-        dispatchedFindSubtitle: 2, dispatchedRealign: 1, spawnedSiblings: 0, summary: 'dispatched 3 tasks',
-      })
-    })
+  // POST /api/v2/reconcile-all 测试已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
 
-    it('returns 503 when reconcileAll is not configured (e.g. TMDB_API_KEY missing)', async () => {
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
-      expect(res.status).toBe(503)
-    })
-
-    it('rejects non-POST methods with 405', async () => {
-      const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: '' })
-      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
-      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'GET' })
-      expect(res.status).toBe(405)
-    })
-
-    it('requires the configured token (401 without it, 200 with it)', async () => {
-      const reconcileAll = async () => ({ dispatchedFindSubtitle: 0, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' })
-      const { base } = await start(distWith('<!doctype html>'), 's3cret', reconcileAll)
-      const unauthed = await fetch(`${base}/api/v2/reconcile-all`, { method: 'POST' })
-      expect(unauthed.status).toBe(401)
-      const authed = await fetch(`${base}/api/v2/reconcile-all?token=s3cret`, { method: 'POST' })
-      expect(authed.status).toBe(200)
-    })
-
-    it('returns 500 with the error message when reconcileAll throws', async () => {
-      const reconcileAll = async () => { throw new Error('orchestrator blew up') }
-      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
-      const res = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
-      expect(res.status).toBe(500)
-      expect((await res.json()).error).toMatch(/orchestrator blew up/)
-    })
-
-    it('in-flight guard: a second POST while one reconcile-all pass is still running gets 409 instead of launching a second expensive scan+LLM pass — no in-flight guard means DASHBOARD_TOKEN-less deployments could be hammered into repeated full-repo scans', async () => {
-      let calls = 0
-      let releaseFirst: () => void = () => {}
-      const gate = new Promise<void>(resolve => { releaseFirst = resolve })
-      const reconcileAll = async () => {
-        calls++
-        await gate // blocks until the test explicitly releases it, simulating a long scan+LLM pass
-        return { dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'ok' }
-      }
-      const { base } = await start(distWith('<!doctype html>'), 'tok', reconcileAll)
-
-      // Fire the first POST and let it actually enter the handler (increment `calls`, flip the
-      // in-flight flag, and start blocking on `gate`) before firing the second.
-      const firstReq = fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
-      await new Promise(r => setTimeout(r, 20))
-
-      const secondRes = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
-      expect(secondRes.status).toBe(409)
-      expect((await secondRes.json()).error).toMatch(/already running/i)
-      expect(calls).toBe(1) // the second POST never invoked reconcileAll at all
-
-      releaseFirst()
-      const firstRes = await firstReq
-      expect(firstRes.status).toBe(200)
-      expect(calls).toBe(1)
-
-      // Once the in-flight pass finishes, the guard releases and a later POST runs normally.
-      const thirdRes = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
-      expect(thirdRes.status).toBe(200)
-      expect(calls).toBe(2)
-    })
-  })
 
   // 痕迹通道 C：GET /api/v2/workflow/trace-stream 是纯直播 SSE 端点，跟 reconcile-all/parked-claim
   // 一样是 handleApiRoute 纯函数分发之前的独立 rawPath 分支——同样的 method-then-token 校验顺序。
@@ -388,7 +314,7 @@ describe('startDashboard (v2)', () => {
     })
 
     it('GET /api/v2/settings/deploy 反映注入的 env：secrets 脱敏，非机密原样', async () => {
-      const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, {
+      const { base } = await start(distWith('<!doctype html>'), 'tok', {
         TMDB_API_KEY: 'sk-abcdef1234567890', LLM_BASE_URL: 'https://api.deepseek.com/v1',
       })
       const res = await fetch(`${base}/api/v2/settings/deploy?token=tok`)
@@ -753,7 +679,7 @@ describe('startDashboard (v2)', () => {
           getSeasonEpisodes: async () => [{ episode: 1, title: 'Ep1', overview: null, airDate: null, stillPath: null }],
           search: async () => [],
         }
-        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, tmdbStub)
         const res = await fetch(`${base}/api/v2/library/series/s1?token=tok`)
         expect(res.status).toBe(200)
       })
@@ -770,7 +696,7 @@ describe('startDashboard (v2)', () => {
             return [{ id: 1429, title: 'Attack on Titan', originalTitle: '進撃の巨人', year: 2013, posterPath: '/p.jpg' }]
           },
         }
-        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, tmdbStub)
         const res = await fetch(`${base}/api/v2/tmdb/search?q=${encodeURIComponent('进击的巨人')}&type=tv&token=tok`)
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ results: [{ id: 1429, name: 'Attack on Titan', year: 2013, posterPath: '/p.jpg' }] })
@@ -784,7 +710,7 @@ describe('startDashboard (v2)', () => {
 
       it('q 缺失 / type 非法 → 400', async () => {
         const tmdbStub: FakeTmdb = { getSeasonTable: async () => [], getSeasonEpisodes: async () => [], search: async () => [] }
-        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, tmdbStub)
         expect((await fetch(`${base}/api/v2/tmdb/search?type=tv&token=tok`)).status).toBe(400)
         expect((await fetch(`${base}/api/v2/tmdb/search?q=x&type=bogus&token=tok`)).status).toBe(400)
       })
@@ -795,7 +721,7 @@ describe('startDashboard (v2)', () => {
           getSeasonEpisodes: async () => [],
           search: async () => { throw new Error('network blew up') },
         }
-        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, tmdbStub)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, tmdbStub)
         const res = await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv&token=tok`)
         expect(res.status).toBe(502)
         expect(await res.json()).toEqual({ error: 'tmdb search failed' })
@@ -835,7 +761,7 @@ describe('startDashboard (v2)', () => {
         lib.upsertParkedPath(path, 'excluded-extra', NOW)
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
         )
         const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, {
           method: 'POST',
@@ -855,7 +781,7 @@ describe('startDashboard (v2)', () => {
         lib.upsertParkedPath(path, 'no match', NOW)
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
         )
         const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, {
           method: 'POST',
@@ -884,7 +810,7 @@ describe('startDashboard (v2)', () => {
     describe('POST /api/v2/workflow/redispatch（人类扳手：手动重派）', () => {
       it('合法 body → 转调 upsertWorkerTask，原样返回四态回执', async () => {
         const jobs = new JobsRepo(db)
-        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, jobs)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, jobs)
         const res = await fetch(`${base}/api/v2/workflow/redispatch?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -896,7 +822,7 @@ describe('startDashboard (v2)', () => {
 
       it('zod 拒绝非法 body → 400', async () => {
         const jobs = new JobsRepo(db)
-        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, jobs)
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, jobs)
         const res = await fetch(`${base}/api/v2/workflow/redispatch?token=tok`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -917,7 +843,7 @@ describe('startDashboard (v2)', () => {
 
       it('非 POST 方法 405，token 门', async () => {
         const jobs = new JobsRepo(db)
-        const { base } = await start(distWith('<!doctype html>'), 's3cret', undefined, undefined, jobs)
+        const { base } = await start(distWith('<!doctype html>'), 's3cret', undefined, jobs)
         expect((await fetch(`${base}/api/v2/workflow/redispatch?token=s3cret`, { method: 'GET' })).status).toBe(405)
         const unauthed = await fetch(`${base}/api/v2/workflow/redispatch`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seriesId: 's1' }),
@@ -1496,7 +1422,7 @@ describe('字幕校验三端点', () => {
 
     async function startCompare(kind: 'local' | 'lan' | 'cloud' = 'lan'): Promise<{ base: string }> {
       return start(
-        distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined,
+        distWith('x'), 'tok', undefined, undefined, undefined, undefined,
         stubDeps(), stubCompare(kind),
       )
     }
@@ -1587,7 +1513,7 @@ describe('字幕校验三端点', () => {
     it('无参考源 → 200 + 空 reference（不是 404：资源存在，缺的只是"拿什么比"）', async () => {
       seedVerdict('shifted')
       const { base } = await start(
-        distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined,
+        distWith('x'), 'tok', undefined, undefined, undefined, undefined,
         stubDeps(), { ...stubCompare(), findReference: async () => null },
       )
       const res = await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)
@@ -1618,7 +1544,7 @@ describe('字幕校验三端点', () => {
     it('待检字幕读不出来 → 500', async () => {
       seedVerdict('shifted')
       const { base } = await start(
-        distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined,
+        distWith('x'), 'tok', undefined, undefined, undefined, undefined,
         stubDeps(), { ...stubCompare(), loadCues: async () => null },
       )
       const res = await fetch(`${base}/api/v2/subtitle/compare?itemId=e1&token=tok`)
@@ -1707,9 +1633,9 @@ describe('setup 面端点（spec A §4.4）', () => {
       search: async () => [{ id: 1, title: 'X', originalTitle: 'X', year: 2020, posterPath: null }],
     }
     let ignited = false
-    // 位置参数：distDir, token, reconcileAll, env, jobs, tmdb, requestIngest,
+    // 位置参数：distDir, token, env, jobs, tmdb, requestIngest,
     // subtitleWriteDeps, subtitleCompareDeps, extra —— 中间七个一律 undefined。
-    const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
+    const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, {
       tmdbGetter: () => (ignited ? tmdbStub : null),
     })
     expect((await fetch(`${base}/api/v2/tmdb/search?q=x&type=tv&token=tok`)).status).toBe(503)
@@ -1719,17 +1645,6 @@ describe('setup 面端点（spec A §4.4）', () => {
     expect(await after.json()).toEqual({ results: [{ id: 1, name: 'X', year: 2020, posterPath: null }] })
   })
 
-  it('点火语义 · POST /api/v2/reconcile-all：同进程内 getter 从 null 翻成执行体 → 503 变 200', async () => {
-    let ignited = false
-    const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
-      reconcileAllGetter: () => (ignited
-        ? async () => ({ dispatchedFindSubtitle: 1, dispatchedRealign: 0, spawnedSiblings: 0, summary: 'dispatched 1 task' })
-        : null),
-    })
-    expect((await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })).status).toBe(503)
-    ignited = true
-    const after = await fetch(`${base}/api/v2/reconcile-all?token=tok`, { method: 'POST' })
-    expect(after.status).toBe(200)
-    expect((await after.json()).summary).toBe('dispatched 1 task')
-  })
+  // 点火语义 reconcile-all 测试已删（第 5.5 步）
+
 })

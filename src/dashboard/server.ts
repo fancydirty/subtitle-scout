@@ -50,17 +50,12 @@ export interface DashboardOpts {
    *  （A1 起鉴权只有前置门一处；旧部署带 ?token=/x-dashboard-token 头照常通行）。 */
   token?: string
   distDir: string
-  /** v3 phase ⑦："全仓校验"触发器——POST /api/v2/reconcile-all 调它，跑一次机械预扫描
-   *  +一次编排器过（src/v2/reconcileAll.ts 的 runReconcileAll，cmdReconcileAll CLI 命令共用
-   *  同一个函数，不重复实现）。undefined（TMDB_API_KEY 未配置，或纯只读测试场景）时该端点
-   *  返回 503，而不是让请求悬空或让 startDashboard 强制要求这个回调。 */
-  /** spec A §4.2：reconcileAll 改 getter 注入，返回执行体或 null（setup 未满足 → 503，同既有先例）。 */
-  reconcileAll?: () => (() => Promise<ReconcileAllResultDTO>) | null
+  // reconcileAll 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
   /** dashboard G4：GET /api/v2/settings/deploy 脱敏展示的 env 来源——默认 process.env，测试
    *  注入固定值以避免依赖跑测试的机器/CI 实际配了什么。 */
   env?: Record<string, string | undefined>
   /** dashboard G5：POST /api/v2/workflow/redispatch（人类扳手：手动重派）依赖——undefined（纯
-   *  只读测试场景）时该端点返回 503，同 reconcileAll 缺席的既有先例。 */
+   *  只读测试场景）时该端点返回 503。 */
   jobs?: Pick<JobsRepo, 'upsertWorkerTask'>
   /** dashboard G5：GET /api/v2/library/series/:id 命中时的惰性 TMDB 应有集缓存刷新（G2 遗留的
    *  触发点）——undefined（TMDB_API_KEY 未配置）时跳过，端点本身照常返回磁盘现状，不因为缺
@@ -78,12 +73,12 @@ export interface DashboardOpts {
   /** 验收修复轮一 Task V2（原为甄别台认领后踢扫描；认领已随两证据红线退役——见 triageOps.ts
    *  头注释——本回调保留给 unexclude 翻案分支：翻案写库后立即请求一次扫描，让用户体感"翻案后
    *  文件很快重回识别流"而不是等下一个自然扫描周期）。undefined（watch 进程未接线，或纯只读
-   *  测试场景）＝无事发生，同 reconcileAll/jobs/tmdb 三个既有可选依赖的缺席降级先例——不强制
+   *  测试场景）＝无事发生，同 jobs/tmdb 既有可选依赖的缺席降级先例——不强制
    *  startDashboard 的调用方必须提供这个回调。 */
   requestIngest?: () => void
   /** 字幕校验三端点（GET verify / POST correct / POST revert）的依赖注入口。
    *
-   *  与 reconcileAll/jobs/tmdb 那几个"缺席就 503"的可选依赖**不同**：这三个端点的默认实现
+   *  与 jobs/tmdb 那几个"缺席就 503"的可选依赖**不同**：这三个端点的默认实现
    *  完全由 db + 真实模块拼出来（下方 wiring），生产环境无需任何额外接线就能用，所以缺席
    *  不降级。这个字段**只为测试而存在**：`shift`/`revert` 会真的改写磁盘上的字幕文件、
    *  `reverify` 会真的 spawn ffmpeg 找参考源，ESM 又无法 spy 模块导出——不给注入口就没法测
@@ -205,7 +200,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, reconcileAll, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride } = opts
+  const { db, port, token, distDir, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride } = opts
   const settingsRepo = new SettingsRepo(db)
   // spec A §4.4：setup 面依赖——默认接真实实现（cfg 的 dbGet 惰性读库，wizard 落库后下一次
   // status/validate 调用自然反映），测试经 opts.setupDeps 部分覆盖（同 subDeps 先例）。
@@ -302,7 +297,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
   // this server instance is enough — startDashboard runs once per daemon process, so this is
   // effectively the "module-level flag" the review asked for, just closure-scoped instead of
   // truly global (avoids leaking state across independent startDashboard calls in tests).
-  let reconcileInFlight = false
+  // reconcileInFlight 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
 
   const server = createServer(async (req, res) => {
     try {
@@ -423,39 +418,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
 
       // v3 phase ⑦："全仓校验"触发器——异步 + 只接受 POST，独立于下面纯同步的 handleApiRoute
       // 分发。鉴权已由上方统一前置门完成（A1 起它是唯一的门），这里只剩 method/存在性检查。
-      if (rawPath === '/api/v2/reconcile-all') {
-        if (req.method !== 'POST') {
-          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        const runReconcileAll = reconcileAll?.()
-        if (!runReconcileAll) {
-          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'reconcile-all not configured (TMDB_API_KEY missing?)' }))
-          return
-        }
-        // Overlap guard (no `await` between the check and the flip, so two requests racing in the
-        // same event-loop turn can't both slip through — only one process runs this callback at a
-        // time regardless).
-        if (reconcileInFlight) {
-          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'reconcile-all already running — try again once it finishes' }))
-          return
-        }
-        reconcileInFlight = true
-        try {
-          const result = await runReconcileAll()
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify(result))
-        } catch (e) {
-          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: String(e) }))
-        } finally {
-          reconcileInFlight = false
-        }
-        return
-      }
+      // POST /api/v2/reconcile-all 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
 
       // 认领端点（POST /api/parked/claim、/api/v2/triage/claim）已退役（两证据红线裁决，
       // 见 src/v2/triageOps.ts 头注释）：正确的用户动作是改文件名，不是零证据指派身份。
