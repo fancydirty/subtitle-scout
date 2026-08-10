@@ -133,6 +133,133 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     expect(after).not.toContain(item.files[1].path)
   })
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴🔴 装盘与观察之间的衔接（本 task 在修的缺陷，第 8 步 live test 第五轮实测）
+  //
+  // spec 有 D12/D16/D18 三条裁决管两档调度，却**没有任何一条说"worker 刚把字幕放到磁盘上
+  // 之后，谁负责立刻观察它"**。于是装盘与观察之间断了一截：
+  //   · worker 按 R24 不写 covered（正确——covered 是磁盘事实观察，不是流程结果）
+  //   · 而刚装了字幕的文件**既不在 A 档、也不在 B 档**：
+  //       A 档 = 本轮新增/指纹变化 → 装字幕**不改视频文件的 mtime/size**，指纹没变 → 不命中
+  //       B 档 = `sub_recheck_at <= now` → 上一轮 A 档检测时已被推到 now+7 天 → 不命中
+  //
+  // 生产实测（第五轮巡检）：
+  //   第四轮 A 档检测 61 个文件 → sub_recheck_at 全推到 7 天后（08-17）
+  //          → 字幕流跑，35 个字幕装上磁盘（日志 `installed N/N ...（等扫描确认 / R24）`）
+  //   第五轮 scan：upserted=0（指纹未变）→ A 档空；B 档 61 行全在未来 → 一个都选不中
+  //          → detectSubtitles 什么都没检测，sub_status 仍全是 NULL
+  //   实测数据：sub_recheck_at 未来|61（最早=最晚=08-17，now=08-10）/ sub_status (null)|61
+  //            / 磁盘上实际字幕数 35
+  //
+  // 两条后果（第二条是花钱的那条）：
+  //   ① 界面上这 35 个文件要连续 7 天显示"没有字幕"——用户看到的是假的
+  //   ② sub_status 仍为 NULL ⇒ 它们**仍满足字幕工作台谓词**（listSubtitleQueue 的
+  //      `sub_status IS NULL`）⇒ 下一轮巡检会**再找一遍已经有字幕的文件**，白烧付费 LLM。
+  //      35 文件 × 每轮一次 × 7 天。
+  //
+  // 修法（最小改动）：装盘成功时把 `sub_recheck_at` 置成"立即到点"的哨兵值，让下一轮
+  // B 档谓词天然命中。为什么这个修法不碰三条裁决的任何一条：
+  //   · 不违反 R24：仍然只有扫描写 covered。worker 在这里表达的是"我改过这个文件旁边的
+  //     磁盘内容，请优先复核"——是**复核排期**，不是**结论**。装错/装了个 0 字节文件时，
+  //     扫描照旧观察不到 sidecar、照旧不写 covered，一字不差。
+  //   · 不违反 D12：两档语义没动，没有新增第三档，也没退化成"每轮全量"——被拉到立即到点的
+  //     只有**本轮真装了盘的那几个文件**，而不是全库。
+  //   · 不违反 D18：写的是一个具体数值，**不是 NULL**，谓词 `<= now` 能命中它。
+  //
+  // 为什么哨兵取 0 而不是 `now - 1`（这是本修法唯一的非显然之处，取错就是静默失效）：
+  // 这一列的**唯一读者**是 daemonV2 的 B 档谓词 `WHERE sub_recheck_at <= ?`，而它喂的是
+  // **`deps.now()`（可注入的时钟）**；runSubtitleWorkDir 这一侧用的是**真实 `Date.now()`**。
+  // 两个时钟源不同源：注入 now=1_000_000_000_000（2001 年，本仓 daemonV2.test.ts 的既有口径）
+  // 时，`Date.now() - 1` 写出来是 2026 年的时刻，对读者而言是**未来 25 年** → 谓词永不命中
+  // → 修了等于没修，而单元测试里全绿（因为单元测试用真实时钟）。0 是**任何时钟源下都已过期**
+  // 的值，且非 NULL，同时天然自清除（下一轮观察完就被推回 now+7 天）。
+  // ───────────────────────────────────────────────────────────────────────────
+  const installedReport = (itemId: string, installedPath: string) => async () => ({
+    installed: [{ itemId, installedPath, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+    no_safe_match: [], retry_later: [], hardsub_assumed: [],
+  })
+
+  it('🔴🔴 装盘成功 → sub_recheck_at 拉到「立即到点」（否则要等 7 天才被观察成 covered）', async () => {
+    // 前置条件：模拟上一轮 A 档检测已把它推到 7 天后——正是生产第五轮的那个库状态。
+    // 不设这个前置的话，新建行的 sub_recheck_at 是 NULL，"没被拉到过去"与"本来就是 NULL"
+    // 分不开，用例会变成一条测不出东西的假绿。
+    const p = item.files[0].path
+    const future = Date.now() + 7 * 24 * 60 * 60 * 1000
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?').run(future, p)
+
+    await runSubtitleWorkDir(db, installedReport('tmdb:95897/s1e1', '/media/TV/Overflow/Overflow - 01.zh-Hans.ass') as any, item, 'zh')
+
+    const got = (db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(p) as any).sub_recheck_at
+    // 断言"已过期"而不是等于某个具体数字：哨兵的具体取值是实现细节，
+    // "下一轮 B 档谓词能命中它"才是语义。
+    expect(got).not.toBeNull()                 // D18：不许留 NULL，否则谓词永不命中
+    expect(got).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('🔴🔴 哨兵值在**被注入的时钟**下也已过期（防 `now-1` 那个跨时钟源的静默失效）', async () => {
+    // 上一条用真实时钟断言，对 `Date.now() - 1` 这个错误实现**同样是绿的**——而那个实现
+    // 在生产上完全无效（读者用 deps.now()，写者用 Date.now()，两者不同源，论证见上方块注释）。
+    // 这一条模拟 daemonV2.test.ts 的既有注入口径（now = 2001 年）来钉住"任何时钟源下都过期"。
+    const p = item.files[0].path
+    await runSubtitleWorkDir(db, installedReport('tmdb:95897/s1e1', '/media/TV/Overflow/Overflow - 01.zh-Hans.ass') as any, item, 'zh')
+    const got = (db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(p) as any).sub_recheck_at
+    const INJECTED_NOW = 1_000_000_000_000   // 2001-09-09，本仓 daemonV2 测试的既有口径
+    expect(got).toBeLessThanOrEqual(INJECTED_NOW)
+  })
+
+  it('🔴 装盘失败（no-match）→ **不许**把 sub_recheck_at 拉到现在（否则每轮白烧 60 次 stat）', async () => {
+    // 反向红线：拉到立即到点的凭据是"我确实改过磁盘内容"。找不到字幕的文件磁盘上什么都没变，
+    // 把它也拉过去就是让它每轮都进 B 档、每轮 15 标签×4 扩展 = 60 次 stat，
+    // 在 115 的 rclone FUSE 挂载上放大约 46 倍——那正是 D12 两档机制存在的唯一理由。
+    const p = item.files[0].path
+    const future = Date.now() + 7 * 24 * 60 * 60 * 1000
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?').run(future, p)
+    const worker = async () => {
+      traceBus.publish({ runKey: 'job-subtitle:tmdb:95897', seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '[]', tookMs: 5, at: Date.now() })
+      return { installed: [], no_safe_match: [{ itemId: 'tmdb:95897/s1e1', reason: 'nothing found' }], retry_later: [], hardsub_assumed: [] }
+    }
+    await runSubtitleWorkDir(db, worker as any, item, 'zh')
+    expect((db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(p) as any).sub_recheck_at).toBe(future)
+  })
+
+  it('🔴 装盘失败（retry_later）→ 同样不许拉 sub_recheck_at（源站没回答，磁盘没变）', async () => {
+    const p = item.files[0].path
+    const future = Date.now() + 7 * 24 * 60 * 60 * 1000
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?').run(future, p)
+    const worker = async () => ({
+      installed: [], no_safe_match: [], retry_later: [{ itemId: 'tmdb:95897/s1e1', reason: 'quota' }], hardsub_assumed: [],
+    })
+    await runSubtitleWorkDir(db, worker as any, item, 'zh')
+    expect((db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(p) as any).sub_recheck_at).toBe(future)
+  })
+
+  it('🔴 同一目录多文件、只有部分装成功 → 只有装成功的那个被拉到立即到点（逐文件粒度）', async () => {
+    // 拉排期的粒度必须是**文件**，不是目录/作品。按目录拉的话，同一部剧里没找到字幕的那些集
+    // 会被顺带拉进 B 档，每轮白扫 60 次 stat —— 与上面两条失败用例是同一条性能红线，
+    // 只是从"整簇失败"换成了"部分失败"这个更常见的形态（一部剧极少全集都能找到字幕）。
+    const [ok, fail] = item.files.map(f => f.path)
+    const future = Date.now() + 7 * 24 * 60 * 60 * 1000
+    db.prepare('UPDATE files SET sub_recheck_at = ?').run(future)
+    // 只报第一个文件装盘成功；第二个文件无结局（B-2 兜底轨）
+    await runSubtitleWorkDir(db, installedReport('tmdb:95897/s1e1', '/media/TV/Overflow/Overflow - 01.zh-Hans.ass') as any, item, 'zh')
+    expect((db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(ok) as any).sub_recheck_at).toBeLessThanOrEqual(Date.now())
+    expect((db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(fail) as any).sub_recheck_at).toBe(future)
+  })
+
+  it('🔴 已是 covered 的文件重复装盘 → 幂等：不写 covered、不吃额度、排期照样拉到立即到点', async () => {
+    // 幂等性的三条不变量一起钉：重复装盘不许把 sub_status 从 covered 改成别的（R24：这一列
+    // 只有扫描能动）、不许递增 sub_attempt（成功不是失败）、而排期仍该拉过去
+    // （磁盘内容确实又被改过一次，复核一次是对的且成本只有一个文件）。
+    const p = item.files[0].path
+    db.prepare('UPDATE files SET sub_status = ?, sub_recheck_at = ? WHERE path = ?')
+      .run('covered', Date.now() + 7 * 24 * 60 * 60 * 1000, p)
+    await runSubtitleWorkDir(db, installedReport('tmdb:95897/s1e1', '/media/TV/Overflow/Overflow - 01.zh-Hans.ass') as any, item, 'zh')
+    expect(subStatusOf(db, p)).toBe('covered')   // 扫描的结论不被 worker 覆盖或清掉
+    expect(subAttemptOf(db, p)).toBe(0)
+    expect((db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(p) as any).sub_recheck_at)
+      .toBeLessThanOrEqual(Date.now())
+  })
+
   it('🔴 R17：「搜过确实没有」→ sub_status 仍 NULL 且 sub_attempt+1（防第五态回归）', async () => {
     // 这是**最常见的失败路径**。改动前它写 `sub_status='unavailable'` 且**不递增计数**：
     // 该行既不在字幕工作台（sub_status 非 NULL）、又永攒不到 7 次 → 翻译流永远收不到活

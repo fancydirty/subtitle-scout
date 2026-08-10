@@ -1352,6 +1352,165 @@ describe('ScoutDaemonV2.scanOnce · D12 B 档：到点轮转复核', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 🔴🔴 第 8 步 live test 第五轮实测缺陷：**装盘与观察之间没有衔接**
+//
+// spec 有 D12/D16/D18 三条裁决管两档调度，却没有任何一条说"worker 刚把字幕放到磁盘上之后，
+// 谁负责立刻观察它"。于是刚装了字幕的文件**既不在 A 档、也不在 B 档**：
+//   · A 档 = 本轮新增/指纹变化 → 装 sidecar **不改视频文件的 mtime/size** → 指纹没变，不命中
+//   · B 档 = `sub_recheck_at <= now` → 上一轮 A 档检测时已推到 now+7 天 → 不命中
+//
+// 生产实测（第五轮巡检的库状态，逐字）：
+//   sub_recheck_at 分布：未来|61（最早=最晚=2026-08-17，now=2026-08-10）
+//   sub_status 分布：   (null)|61
+//   磁盘上实际字幕数：   35
+// 即：worker 装好的 35 个字幕要等 **7 天**才会被观察成 covered。这期间
+//   ① 界面上这些文件一直显示"没有字幕"（用户看到的是假的）
+//   ② 更贵的那条：sub_status 仍为 NULL ⇒ 它们**仍满足字幕工作台谓词** ⇒ 下一轮巡检
+//      **再找一遍已经有字幕的文件**，白烧付费 LLM，35 文件 × 每轮一次 × 7 天。
+//
+// 这批用例与 subtitleScheduler.test.ts 里那批是**互补而非重复**，两边都必须有：
+//   · 那边（单元）钉"装盘成功写出的排期值是已过期的"——写者一侧的契约。
+//   · 这边（端到端）钉"下一轮扫描真的把它观察成 covered 了"——**读者一侧真的会命中**。
+//     只有单元断言的话，谁把哨兵改成一个"看起来过期但读者时钟下是未来"的值（比如
+//     `Date.now()-1` 撞上注入时钟）都不会红，而那恰是这个修法唯一的静默失效点。
+//
+// 同型缺陷第 5 次（C12 → C35 → C43 → C21 → 本条），形态是"写了某列却没定谁来写/谁来重读"，
+// 这次的变体是"**放了文件却没定谁来观察它**"。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('ScoutDaemonV2 · 装盘→观察的衔接（worker 装完盘，下一轮扫描必须就观察到）', () => {
+  const V = '/media/Show/E01.mkv'
+  const SUB = '/media/Show/E01.zh-Hans.srt'
+
+  /** 复现生产第五轮的那个库状态：指纹与磁盘一致（进不了 A 档）、sub_recheck_at 在未来
+   *  （进不了 B 档）、sub_status 为 NULL（仍在字幕工作台里）。 */
+  function seedAfterADetect(db: ReturnType<typeof openDb>): void {
+    seedRow(db, V, { sub_status: null, sub_recheck_at: NOW + 7 * DAY })
+  }
+
+  it('🔴🔴 worker 装盘 → **下一轮扫描**就观察成 covered（而不是等 7 天）', async () => {
+    const db = openDb(':memory:')
+    seedAfterADetect(db)
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+
+    // ① 字幕流跑：worker 把 sidecar 放到磁盘上，并走真实的回写路径（不在测试里手写 UPDATE
+    //    ——手写就等于测试自己维护一份实现，两份一漂移就是假绿）。
+    const item = {
+      workId: 'tmdb:42', title: 'Show', originalTitle: null, year: null, overview: null,
+      chineseTitles: [], mediaType: 'tv',
+      files: [{ path: V, filename: 'E01.mkv', season: 1, episode: 1, dir: '/media/Show', durationSec: 1440, embeddedLangs: null }],
+    }
+    sub.put(SUB)   // worker 真的把文件放上去了
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })) as any, item as any, 'zh')
+
+    // 装盘那一刻状态仍是 NULL（R24：worker 无权写 covered）——前置条件，也是 R24 的守卫。
+    expect(subStatusOf(db, V)).toBeNull()
+
+    // ② 下一轮巡检的扫描阶段。指纹没变（fakeFs 的 stat 恒定）⇒ A 档为空，
+    //    所以这一条能绿的**唯一**通路就是 B 档真的选中了它。
+    await scan(daemon)
+
+    expect(sub.checkedVideos([V])).toEqual([V])   // 真的被观察了（而不是靠别的路径蒙对）
+    expect(subStatusOf(db, V)).toBe('covered')
+    db.close()
+  })
+
+  it('🔴🔴 观察完排期被推回 7 天后（拉到立即到点是一次性的，不许退化成每轮全量 / D12）', async () => {
+    const db = openDb(':memory:')
+    seedAfterADetect(db)
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    const item = {
+      workId: 'tmdb:42', title: 'Show', originalTitle: null, year: null, overview: null,
+      chineseTitles: [], mediaType: 'tv',
+      files: [{ path: V, filename: 'E01.mkv', season: 1, episode: 1, dir: '/media/Show', durationSec: 1440, embeddedLangs: null }],
+    }
+    sub.put(SUB)
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })) as any, item as any, 'zh')
+
+    await scan(daemon)
+    // 观察路径自己会把排期推回 now+7 天 ⇒ 哨兵天然自清除。
+    // 没有这一条，"拉到立即到点"就有可能被实现成一个粘住的状态（比如某个布尔标记忘了清），
+    // 于是这一行每轮都进 B 档、每轮 60 次 stat —— D12 的性能收益在它身上归零。
+    expect(recheckAtOf(db, V)).toBe(NOW + 7 * DAY)
+
+    // 再跑一轮：不该再被观察（已推到未来）。这是"一次性"的直接证据。
+    const before = sub.calls.length
+    await scan(daemon)
+    expect(sub.calls.length).toBe(before)
+    db.close()
+  })
+
+  it('🔴🔴 装盘声称成功但磁盘上其实没有 → 仍**不是** covered（R24 的价值，别被本修法绕过）', async () => {
+    const db = openDb(':memory:')
+    seedAfterADetect(db)
+    // 用户裁决原文点名的那三种形态：装错了 / 装了个空文件 / 装了个 0 字节文件——
+    // 流程认为成功，而磁盘上没有可用字幕。这正是"covered 必须是磁盘观察结果、不是流程结果"
+    // 的全部理由。本修法只把**复核排期**提前，绝不能顺手把 worker 的成功报告变成结论：
+    // 若哪天有人图省事让 worker 直接写 covered，这一条就是拦住它的那道门。
+    const sub = fakeSubtitleDisk([])   // 磁盘上**没有**任何字幕（worker 撒谎/装失败）
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    const item = {
+      workId: 'tmdb:42', title: 'Show', originalTitle: null, year: null, overview: null,
+      chineseTitles: [], mediaType: 'tv',
+      files: [{ path: V, filename: 'E01.mkv', season: 1, episode: 1, dir: '/media/Show', durationSec: 1440, embeddedLangs: null }],
+    }
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })) as any, item as any, 'zh')
+
+    await scan(daemon)
+    expect(sub.checkedVideos([V])).toEqual([V])   // 被观察了（排期确实拉到了立即到点）
+    expect(subStatusOf(db, V)).toBeNull()         // 但观察不到 sidecar ⇒ 不是 covered
+    db.close()
+  })
+
+  it('🔴🔴 端到端：装盘后的文件不再被字幕工作台重选（防"每轮重找已有字幕的文件"白烧 LLM）', async () => {
+    const db = openDb(':memory:')
+    seedAfterADetect(db)
+    db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:42', 'Show', 'tv', 1000, 1000)
+    const sub = fakeSubtitleDisk([])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), fileExists: sub.fileExists,
+    }))
+    const item = {
+      workId: 'tmdb:42', title: 'Show', originalTitle: null, year: null, overview: null,
+      chineseTitles: [], mediaType: 'tv',
+      files: [{ path: V, filename: 'E01.mkv', season: 1, episode: 1, dir: '/media/Show', durationSec: 1440, embeddedLangs: null }],
+    }
+    sub.put(SUB)
+    await runSubtitleWorkDir(db, (async () => ({
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })) as any, item as any, 'zh')
+    await scan(daemon)
+
+    // 用**真实的队列函数**做断言，不复述谓词。这是"白烧付费 LLM"那条后果的直接凭据：
+    // 断言 sub_status 只证明状态对了，而"会不会被再找一遍"取决于工作台谓词整体，
+    // 谓词是那个真正花钱的东西。时刻用远未来（+30 天）排除 recheck_after 退避的干扰——
+    // 出队的凭据必须是 covered，不能是"恰好还在退避里"（退避一到期就又被选中了）。
+    const queued = listSubtitleQueue(db, ['/media'], Date.now() + 30 * DAY)
+      .flatMap(q => q.files.map(f => f.path))
+    expect(queued).not.toContain(V)
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // C27 / D8：needs_subtitle 与 sub_status 的职责切分（judge 不再判 sidecar）
 //
 // 卡死链条（spec C27）：judge 规则 3 为"磁盘上有外挂中字"这个**磁盘事实**写 needs_subtitle=0，

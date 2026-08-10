@@ -390,7 +390,36 @@ export async function runSubtitleWorkDir(
   // 回答"，而装盘成功恰是源站不但答了、还给了字幕的最强证据。因为这条路径刻意绕开 bump()，
   // bump 内部那条归零管不到它，只能在这里再写一遍。漏掉的形态：一个"平时装盘成功、偶尔撞
   // 限流"的文件把 streak 一直攒着，最终折算出一次凭空的"真实尝试"额度。
-  const markInstalled = db.prepare('UPDATE files SET sub_retry_streak = 0, recheck_after = ?, updated_at = ? WHERE path = ?')
+  //
+  // 🔴🔴 并且**必须把 sub_recheck_at 拉到"立即到点"**（第 8 步 live test 第五轮实测缺陷）。
+  // spec 有 D12/D16/D18 三条裁决管两档调度，却没有任何一条说"worker 刚把字幕放到磁盘上之后，
+  // 谁负责立刻观察它"——装盘与观察之间断了一截。刚装了字幕的文件**两档都不在**：
+  //   · A 档 = 本轮新增/指纹变化 → 装 sidecar **不改视频文件的 mtime/size** → 指纹没变，不命中
+  //   · B 档 = `sub_recheck_at <= now` → 上一轮 A 档检测时已推到 now+7 天 → 不命中
+  // 生产实测（第五轮巡检）：sub_recheck_at 未来|61（最早=最晚=08-17，now=08-10）、
+  // sub_status (null)|61、而磁盘上实际字幕数 35。两条后果：
+  //   ① 界面上这 35 个文件要连续 7 天显示"没有字幕"（用户看到的是假的）
+  //   ② 更贵的那条：sub_status 仍为 NULL ⇒ 它们**仍满足 listSubtitleQueue 的谓词** ⇒
+  //      下一轮巡检**再找一遍已经有字幕的文件**，白烧付费 LLM（35 文件 × 每轮 × 7 天）。
+  //
+  // 为什么这个修法不碰三条裁决的任何一条（这是选它而不是"让 worker 写 covered"的理由）：
+  //  · **不违反 R24**：仍然只有扫描写 covered。这里表达的是"我改过这个文件旁边的磁盘内容，
+  //    请优先复核"——是**复核排期**，不是**结论**。装错/装了个空文件/装了个 0 字节文件时
+  //    （用户裁决原文点名的三种形态），扫描照旧观察不到 sidecar、照旧不写 covered。
+  //  · **不违反 D12**：两档语义没动，没新增第三档，也没退化成"每轮全量"——被拉到立即到点的
+  //    只有**本轮真装了盘的那几个文件**（逐文件粒度），不是全库。失败的桶一律不拉，
+  //    否则找不到字幕的文件每轮白烧 60 次 stat（15 标签 × 4 扩展），那正是 D12 存在的理由。
+  //  · **不违反 D18**：写的是一个具体数值，**不是 NULL**，谓词 `<= now` 能命中它。
+  //
+  // 哨兵取 **0** 而不是 `now - 1`（这是本修法唯一的非显然之处，取错就是静默失效）：
+  // 这一列的唯一读者是 daemonV2 的 B 档谓词 `WHERE sub_recheck_at <= ?`，它喂的是
+  // **`deps.now()`（可注入时钟）**，而这里用的是**真实 `Date.now()`**——两个时钟源不同源。
+  // 注入 now=1_000_000_000_000（2001 年，daemonV2 测试的既有口径）时，`Date.now()-1` 写出来是
+  // 2026 年，对读者而言是**未来 25 年** → 谓词永不命中 → 修了等于没修，而单元测试全绿
+  // （单元测试用真实时钟）。0 在任何时钟源下都已过期，非 NULL，且**天然自清除**——
+  // 下一轮 observeSubtitle 观察完就把它推回 now+7 天，不会粘成"每轮都进 B 档"。
+  const IMMEDIATE_RECHECK = 0
+  const markInstalled = db.prepare('UPDATE files SET sub_retry_streak = 0, recheck_after = ?, sub_recheck_at = ?, updated_at = ? WHERE path = ?')
 
   const coveredPaths = new Set<string>()
   for (const inst of report.installed) {
@@ -400,7 +429,7 @@ export async function runSubtitleWorkDir(
   }
   for (const f of item.files) {
     if (coveredPaths.has(f.path)) {
-      markInstalled.run(now2 + DAY_MS, now2, f.path)
+      markInstalled.run(now2 + DAY_MS, IMMEDIATE_RECHECK, now2, f.path)
     }
   }
 
@@ -456,7 +485,9 @@ export async function runSubtitleWorkDir(
   if (coveredCount > 0) {
     // 措辞刻意不是 "marked covered"：这一轮我们只是把文件放到了磁盘上并出队，
     // **covered 由下一次扫描确认**（R24）。日志说"已覆盖"会误导排障的人以为状态已经变了。
-    console.error(`[subtitle-scheduler] installed ${coveredCount}/${item.files.length} sidecars for ${item.title}（等扫描确认 / R24）`)
+    // 补"已排下轮复核"：装盘与观察的衔接靠 sub_recheck_at 被拉到立即到点（见 markInstalled
+    // 的论证）。不说这句的话，排障的人看到"等扫描确认"会以为要等 7 天——那正是本条修的缺陷。
+    console.error(`[subtitle-scheduler] installed ${coveredCount}/${item.files.length} sidecars for ${item.title}（已排下轮复核，等扫描确认 / R24）`)
   }
   return report
 }
