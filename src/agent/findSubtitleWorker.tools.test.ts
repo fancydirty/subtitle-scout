@@ -1099,11 +1099,71 @@ describe('resolveTargetFilename', () => {
       expect(spy).toHaveBeenCalledTimes(1)
       const call = spy.mock.calls[0][0] as string
       expect(call).toMatch(/^\[find-subtitle-worker\] videoFilename mismatch:/)
-      expect(call).toContain('agent=')
-      expect(call).toContain('targets=')
+      // 2026-08-10：日志格式从「agent=<hex> targets=<hex>」改成明文优先（见下方 describe 的论证）
+      expect(call).toContain('"wrong.mkv"')
+      expect(call).toContain('"Show.S01E01.mkv"')
     } finally {
       spy.mockRestore()
     }
+  })
+
+  // ── 2026-08-10 live test 教训：取证日志不许截断到看不出差异 ────────────────────
+  //
+  // 原实现：`agent=${toHex(videoFilename)} targets=${filenames.map(f => toHex(f).slice(0, 80))}`
+  // agent 侧不截断、targets 侧砍到 80 个 hex 字符（= 40 字节）。生产里文件名 78 字节，于是
+  // 日志里每个 target 都在第 40 字节处断掉——显示出来的每一项都"不等于" agent 那串，
+  // 而真正的原因（究竟是不匹配，还是日志截断）无从判断。我为此停机排查了一轮，
+  // 最后手工 bytes.fromhex() 解码才看出是日志问题，实际 8/8 字幕都装成功了。
+  //
+  // 这是同一天遇到的第三条「日志误导」缺陷（前两条：probe 的 ok=N 统计"没抛异常"、
+  // judge 的"N 个文件判定需字幕"把总数说成需字幕数）。取证日志的全部价值在于"能不能当场
+  // 定位差异"，截断到看不出差异的长度等于没有这条日志。
+  describe('mismatch 取证日志（2026-08-10 live test 回归）', () => {
+    const longName = 'Peacemaker S02E06 Ignorance Is Chris 1080p AMZN WEBrip x265 DDP5.1 D0ct0rLew[SEV].mkv'
+
+    it('🔴 长文件名（>40 字节）不被截断——完整明文必须出现在日志里', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        resolveTargetFilename(longName, ['Other S02E01 Something Entirely Different 1080p AMZN.mkv'])
+        const call = spy.mock.calls[0][0] as string
+        // 完整名字必须在，不许出现"砍一半"的形态
+        expect(call).toContain(longName)
+        expect(call).toContain('Other S02E01 Something Entirely Different 1080p AMZN.mkv')
+        // 旧实现会把 target 砍成 40 字节，明文里就看不到尾部的 .mkv
+        expect(call).toContain('.mkv"')
+      } finally { spy.mockRestore() }
+    })
+
+    it('🔴 日志带字节长度，方便一眼看出"是否只是长度不同"', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        resolveTargetFilename('a.mkv', ['bb.mkv'])
+        const call = spy.mock.calls[0][0] as string
+        expect(call).toMatch(/\(5B\)/)   // 'a.mkv'
+        expect(call).toMatch(/\(6B\)/)   // 'bb.mkv'
+      } finally { spy.mockRestore() }
+    })
+
+    it('🔴 等长但不等值时附完整 hex（NBSP/NFD 这类隐形差异的唯一现场）', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        // 同长度、canonical 也不同（不是 NBSP 那种能被容错匹配掉的），触发 hex 分支
+        resolveTargetFilename('abc.mkv', ['abd.mkv'])
+        const call = spy.mock.calls[0][0] as string
+        expect(call).toContain('等长但不等值')
+        expect(call).toContain(Buffer.from('abc.mkv', 'utf8').toString('hex'))
+        expect(call).toContain(Buffer.from('abd.mkv', 'utf8').toString('hex'))
+      } finally { spy.mockRestore() }
+    })
+
+    it('长度明显不同时不打 hex（避免噪音——明文已经够定位）', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        resolveTargetFilename('a.mkv', ['completely-different-and-longer.mkv'])
+        const call = spy.mock.calls[0][0] as string
+        expect(call).not.toContain('等长但不等值')
+      } finally { spy.mockRestore() }
+    })
   })
 
   it('prefers exact match before canonical fallback when both space and NBSP variants exist', () => {

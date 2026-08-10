@@ -84,9 +84,29 @@ export function resolveTargetFilename(videoFilename: string | null, filenames: s
 
   // ③ Forensic log before returning the error. This observability was missing during the
   //    2026-07-18 production incident and forced a real-device reproduction; keep it.
+  //
+  // 2026-08-10 live test 教训：这条日志原来只打 hex，且 targets 侧 `.slice(0, 80)`（= 40 字节）
+  // 而 agent 侧不截断。生产里 agent 报的是 78 字节的长文件名，于是每个 target 都在第 40 字节
+  // 处被砍断 —— 日志显示的每一项都"不等于" agent 那串，而真实原因无从判断（我为此停机排查了
+  // 一轮，最后要手工 `bytes.fromhex(...)` 解码才看出是日志截断，不是数据不匹配）。
+  //
+  // 修法：明文优先（人能直接读），hex 只对**真正有字节级差异**的那一项输出，且不截断。
+  // 取证日志的价值全在"能不能当场定位差异"，截断到看不出差异的长度等于没有这条日志。
   const toHex = (s: string) => Buffer.from(s, 'utf8').toString('hex')
+  // 找出与 agent 串"canonical 相同但字节不同"的项——那才是 NBSP/NFD 这类隐形差异的现场，
+  // 需要 hex 才看得见。其余项是明显的不同文件，明文就够了。
+  const byteLevelSuspects = filenames.filter(f => f !== videoFilename && canonFilename(f) !== canonVideo
+    && f.length === videoFilename.length)
   console.error(
-    `[find-subtitle-worker] videoFilename mismatch: agent=${toHex(videoFilename)} targets=${filenames.map(f => toHex(f).slice(0, 80)).join(', ')}`
+    `[find-subtitle-worker] videoFilename mismatch:\n`
+    + `  agent  : ${JSON.stringify(videoFilename)} (${Buffer.byteLength(videoFilename, 'utf8')}B)\n`
+    + filenames.map((f, i) =>
+        `  target${i}: ${JSON.stringify(f)} (${Buffer.byteLength(f, 'utf8')}B)`).join('\n')
+    + (byteLevelSuspects.length > 0
+        ? `\n  ⚠️ 等长但不等值（疑似 NBSP/NFD 等隐形字节差异，附完整 hex 供比对）：\n`
+          + `     agent: ${toHex(videoFilename)}\n`
+          + byteLevelSuspects.map(f => `     target: ${toHex(f)}`).join('\n')
+        : '')
   )
   return { error: `unknown videoFilename: ${videoFilename} — must be one of the task's target files` }
 }
