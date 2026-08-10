@@ -630,11 +630,42 @@ TDD 红线用例：
 - 8 种 worker status 按 §5 映射表处置
 - **修 gcStaging 的 in-flight 集合**（C34）：新架构下需真实来源，否则会 GC 掉正在跑的翻译工作台
 
-### 第 5 步：字幕 skill 两条边界（R9）
+### 第 5 步：字幕 skill 两条边界（R9）✅ 已完成（2 commit）
 `src/agent/skills/findSubtitleSkill.ts`（纯 prompt 改动）：
 - **不许编造**：无 search_source 证据不得报"找到"
 - **不许撂挑子**：还有未探索的源/查询变体时不得报"没有"；穷尽后方可
 - 明确区分"限流等待"与"确实没有"（Peacemaker 误判根因）
+
+**实施要点**：判据从"故障分类学"改成**"源站有没有回答你"**——按"是不是 error"分类
+必然漏掉 429 与配额耗尽（两者都不是 error：429 是正常 HTTP 响应，配额用完是一次成功的
+"not now"）。改前 skill 里 grep `quota|limit|429` **零命中**。
+
+**⚠️ 本步只做 prompt 是不够的**（第二个 commit 修的）：v2 轨的 `retry_later` 走同一个
+`bump()` → `sub_attempt+1`，而 v1 轨明写它走"completeError 短退避节流轨（R-10 豁免）"
+（`findSubtitleWorkerTask.ts:421`）。即 agent 正确报了、scheduler 照样记一笔"真实尝试"，
+撞限流 7 天照样停牌。裁决：**豁免计数但配上限**——新增 `sub_retry_streak`（NOT NULL
+DEFAULT 0），满 `RETRY_LATER_STREAK_CAP=3` 折算一次 `sub_attempt` 并归零；任何非
+retry_later 的结局都把它归零。CAP=3 读作"连续 3 天源站一次都没答上话"（≥3 才排得掉
+免费档按日重置的配额周期与日巡检的相位差；不取 7 是避免与 `HANDOFF_THRESHOLD` 混成
+同一概念）。真挂了的 provider 21 天后移交。
+
+### 第 5.5 步：skill/工具一致性审计 + 干测压测 ✅ 已完成（3 commit）
+用户裁决：live test 前先审 skill 与工具是否自洽，再问询 agent 看它怎么说。
+
+**① 删 orchestrator 及其旧架构（14 文件）**——用户从未同意过的 agent，依赖面全是旧表，
+活代码接死架构。连带删 `reconcileAll` / CLI `reconcile-all` / dashboard 端点
+（那个按钮现在 404，用户已确认可接受）。
+
+**② 删冗余工具 2 个 + 补 prompt 缺口 5 处**
+- 删 `get_row`（被 `get_window` 覆盖）、`write_workspace_doc`（`context/` 系统写、agent 只读）
+- 字幕补 `check_episode_code_safety` + `candidateId`/`stagedFileId`/`langTag` 三参数
+- 翻译补 `fetch_tmdb_context`/`fetch_series_target_subs`/`list_rows`/`run_critic`
+- **反向纠错**：`list_rows` 原判为"冗余"，实为**必需入口工具**——`get_window` 要中心行 ID
+  才能读，agent 开局手上没有任何 ID。方向正好相反
+
+**③ 干测压测 26 项全绿**（真实 LLM + 工具桩化，磁盘零写入，mimo-v2.5 vs pro 双模型）
+字幕 8 场景 / 翻译 5 场景。桩必须复刻真实工具的 fail-closed 闸门，否则测出的是
+测试自己的 bug（教训见 CURRENT-STATE §四）。弱模型未暴露 skill 的模糊处。
 
 ### 第 6 步：115 改可写 + **单元式** live test（R16）
 用户裁决：**先单元测，不从 0 到 1 全量**——全量出问题难查根因。
@@ -666,10 +697,21 @@ TDD 红线用例：
    - 不用动画（日文源未支持，见 C6）
    - 候选：和平使者（Peacemaker）有一集一直找不到字幕，适合做 handoff 场景
 
-### 第 7 步：清理（C9 + C10 + C25）
-- 删 daemon.ts / dispatcher.ts / orchestratorAgent*（须在第 4 步完成后）
-- 旧表迁移或废弃
+### 第 7 步：清理（C9 + C10 + C25）← 下一步做这个
+- 删 daemon.ts / dispatcher.ts（orchestratorAgent* 已在第 5.5 步删完）
+- 旧表迁移或废弃（episodes/movies/series/subtitles，`db.ts` 里 59 处引用）
+- 按 path 挂的三张表孤儿行（`subtitle_verify`/`parked_paths`/`pending_removals`）
+  ——已核实新架构链路一个都不读
+- 翻译 jobId 稳定化（GC 定时炸弹，见 C34 末段；`translateItemId` 可作派生源）
 - C25 的零碎项（written===0 退避、识别回写加 work_id IS NULL 限定等）
+
+**做法要求（因为删代码已经踩过一次坑）**：
+1. 先扫全仓列出候选清单，**给用户过一眼再删**——不许直接动手
+2. 每删一批立刻 `git checkout <删除前的 sha>` 实测对比失败数。
+   **不许凭"看起来不相关"下结论**：第 5.5 步我断言 4 个 dashboard 失败与
+   orchestrator 删除无关，实测才发现删除前是 0 失败、删除后 4 失败，是我造成的回归
+   （根因：删位置参数时算错偏移，`stubDeps()` 落错档位）
+3. 分批提交，别一次删完
 
 ---
 

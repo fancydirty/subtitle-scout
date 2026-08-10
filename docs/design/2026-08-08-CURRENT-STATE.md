@@ -1,111 +1,201 @@
-# Subtitle Scout 当前状态与待办（权威文档）
+# Subtitle Scout 当前状态与待办（权威入口）
 
-**日期**: 2026-08-08
-**用途**: compact 后继续讨论的单一权威。后端逻辑与前端都要慢慢耐心讨论。
-**状态**: 持续更新——每次实质进展更新本节。
+**更新**: 2026-08-10（第 5.5 步完成）
+**用途**: compact 后接续的单一入口。读完这份 + PIPELINE-SPEC.md 就能继续干活。
+**配套**: `2026-08-08-PIPELINE-SPEC.md`（26 条用户裁决 + 23 条实现裁决 + 45 个缺口，权威 spec）
 
 ---
 
 ## 一、项目是什么
 
-自动中文字幕下载器：扫描媒体库 → 识别资源 → 为缺字幕的资源找字幕 → 落盘。
+自动中文字幕下载器：扫描媒体库 → 识别资源 → 为缺字幕的资源找字幕 → 找不到就翻译 → 落盘。
 
-## 二、当前架构（最终确认版）
+三个 agent（识别 / 字幕 / 翻译）+ 纯机械的调度层。**数据库是状态机，磁盘是真源。**
+
+---
+
+## 二、进度：7 步里做完 6 步
 
 ```
-每天一次巡检（距上次满 24h，对齐 Jellyfin 库扫描频率）：
-  阶段 1：机械扫描守备目录 → files 表（新文件入库，指纹 mtime+size 跳过）
-  阶段 2：识别工作流（上游）
-    → 识别工作台 = 未识别的作品（work_id IS NULL 且 next_retry_at 已过）
-    → 有活就一直跑（逐个作品），识别不出的标 next_retry_at=明天
-    → 跑空才进下一步
-  阶段 2.5：judge（识别绑定后判 needs_subtitle：国产/内嵌/sidecar 跳过）
-  阶段 3：字幕工作流（下游）
-    → 字幕工作台 = 已识别作品里缺字幕的（needs_subtitle=1 且 recheck_after 已过）
-    → 有活就一直跑（逐个作品），找不到的标 recheck_after=明天
-    → 跑空才结束
-  阶段 4：停，歇着，等明天
+第 1a 步  守备目录地界加固              ✅  4 task
+第 1b 步  扫描删除清理 + 字幕存在性观察  ✅  5 task ← 用户最早点名的地基
+第 2 步   daemonV2 接容器 + 运维器官     ✅
+第 3 步   状态机改造                    ✅  4 task + 1 跨轨修复
+第 4 步   翻译接回新架构                ✅  3 task
+第 5 步   字幕 skill 两条边界            ✅  2 commit（prompt + 计数轨）
+第 5.5 步 skill/工具一致性审计 + 干测压测 ✅  3 commit
+第 6 步   115 改可写 + 单元式 live test   ⬜  ← 需要动生产环境
+第 7 步   清理死代码 + 旧表              ⬜  ← 下一步做这个
 ```
 
-**关键原则**（全部来自用户裁决）：
-- 工作台语义 = "有活就一直跑，跑完歇，明天再巡检"，**没有 30s tick 轮询**
-- 识别是字幕的上游，识别没完成字幕不开始（流水线串行）
-- 找不到 = 明天再试（24h）——字幕源更新慢，15min/6h 重试无意义
-- 不设步数上限（用户裁决"stepCap 取消都无所谓"）
-- 识别 agent 只认身份（目录 → TMDB），集号绑定由系统自动执行
-- 字幕 agent 一个 session 针对一个作品，把缺的补满（不是逐集）
+**测试**: 3100 条 / 7 失败（全是接手前的既有债务）/ tsc 干净 / 零新增回归
 
-## 三、核心数据模型
+---
+
+## 三、第 5.5 步做了什么（最近一批，compact 前刚完成）
+
+### ① 删 orchestrator 及其旧架构（14 个文件）
+用户从未同意过这个 agent，它的依赖面全是旧表（`missingBySeason`/`listParkedPaths`/`jobs`），
+新架构的 files/works 一个都不碰——活代码接死架构。
+
+连带删掉：`reconcileAll`、CLI 的 `reconcile-all` 命令、dashboard 的
+`POST /api/v2/reconcile-all` 端点。**dashboard 上那个按钮现在会 404**，
+用户已确认可接受（前端反正要重做）。
+
+### ② 删冗余工具 2 个 + 补 prompt 缺口 5 处
+- 删 `get_row`（被 `get_window` 完全覆盖）、`write_workspace_doc`（`context/` 是系统写的，agent 只读）
+- 字幕 skill 补：`check_episode_code_safety` + 三个参数（`candidateId`/`stagedFileId`/`langTag`）
+- 翻译 skill 补：`fetch_tmdb_context`、`fetch_series_target_subs`、`list_rows`、`run_critic`
+
+审计发现的关键事实：**`list_rows` 原本被我判为"冗余"，实际是必需的入口工具**——
+`get_window` 必须给中心行 ID 才能读，agent 开局手上没有任何 ID。方向正好相反。
+
+### ③ 干测压测 26 项全绿（真实 LLM + 工具桩化，磁盘零写入）
+mimo-v2.5（弱）vs mimo-v2.5-pro（强）双模型对比。
+
+字幕 agent 8 场景：限流误判 / 只有 pack / **Peacemaker 同名陷阱** / 首搜空 /
+绝对集号 / 结构可疑 / 跨季同名 / 混语言包 → 16 项全绿
+翻译 agent 5 场景：正常流程 / **闸门修复循环** / **日漫无日文源** /
+已有字幕 / 装盘闸门 → 10 项全绿
+
+**最有说服力的三条**：
+- Peacemaker 陷阱守住了（真实事故：当初装错全部 8 集）。两个模型都重搜 4-6 次
+  试 `DC Peacemaker`/`和平使者`/`John Cena`/`HBO Max`，只在确实找不到后才放弃
+- R18 禁令被读进去了：日漫无日文源时第 1 步就收工，pro 的理由明写
+  `English relay is forbidden per playbook`
+- 修复循环干净：gate 报"Pictor 应为皮克托，错在 cue 2/4" → `lookup_glossary`
+  查权威译名（不凭记忆）→ 只改被点名的两行 → 重跑 → PASS，没有直接 held
+
+**弱模型没有暴露 skill 的模糊处**——两个模型判断质量没有实质差距，只是风格不同
+（pro 爱写详细 reason，v2.5 爱多跑几次搜索）。
+
+---
+
+## 四、⚠️ 我在第 5.5 步犯的三个错（教训，别再犯）
+
+### ① 误判了一个回归的归属（最严重）
+我断言那 4 个 dashboard 失败"与 orchestrator 删除无关"——**错的**。
+用 `git checkout 532f82e~1` 实测才发现：删除前 `server.test.ts` 是 **0 失败**，
+删除后变 4 失败，是我造成的回归。
+
+根因：删 `reconcileAll` 位置参数时 `startSub` 少减了一个 `undefined`，
+`stubDeps()` 从第 7 位（`subtitleWriteDeps`）落到第 8 位（`subtitleCompareDeps`），
+于是 correct/revert 接了真实模块去读真磁盘 → 409/400 而非 200。
+
+**教训：「看起来不相关」不等于不相关，必须用 git 实测对比。**
+
+### ② 桩不像真实工具 → 测出的是测试自己的 bug
+S2（只有 pack）首轮判 agent 失败。实际是我的桩假装"整包下载就是那一集"，
+跳过了真实工具的二段式选集（`fileIndex` 为空 + 多条目包 → 返回 `archiveEntries`
+让 agent 二次选集，见 `assrtAdapter.ts:58`「宁停不猜，silent 装错比留缺口更糟」）。
+桩补上这段后两个模型都走了正确的二段式。**我差点据此去改一份没问题的 prompt。**
+
+### ③ 测试 schema 与生产不一致 → 结论完全反了
+S6（结构可疑）判 pro 不如弱模型。实际是生产的 `FindSubtitleBatchReportSchema`
+三桶是 `{itemId, reason}` 对象数组，我写成了 `string[]`：pro 按生产格式输出被拦下
+判为失败，而弱模型凑巧写字符串反而"通过"。pro 的理由其实写得更好。
+
+---
+
+## 五、核心数据模型
 
 ```
 files 表（机械扫描产出，每行一个媒体文件）：
   path / dir / filename / size / mtime / duration_sec / embedded_langs / audio_langs
-  work_dir / season / episode / parse_confidence（high/low/none）
-  work_id（NULL=未识别，'tmdb:<id>'=已识别）
-  needs_subtitle（NULL=未判定，0/1）
-  sub_status（NULL/covered/unavailable）
-  attempt / next_retry_at / last_error / recheck_after
+  work_dir / season / episode / parse_confidence
+  work_id（NULL=未识别 / 'tmdb:<id>'=已识别）
+  needs_subtitle（原则上是否需要中文字幕，语言事实，装盘不改它）
+  sub_status（NULL / covered / handoff_translate / unsolvable，**只有扫描能写 covered**）
+  sub_attempt（NOT NULL DEFAULT 0，满 7 次移交翻译）
+  sub_retry_streak（连续 retry_later 计数，满 3 折算一次 sub_attempt）
+  translatable（NULL=暂不可判 / 0=不可救 / 1=可救）
+  recheck_after / sub_recheck_at / tr_attempt / tr_recheck_after / last_error
 
 works 表（识别 agent 产出，每行一个作品）：
   id（tmdb:<id>）/ title / original_title / year / media_type / origin_lang
-  overview / poster_path / chinese_titles
+  overview / poster_path / chinese_titles / provider_ids（含 imdb）
 
-media_roots 表：守备目录 + content_type（movies/tv/mixed）
+media_roots：守备目录（禁嵌套，addRoot 是闸门）
 ```
 
-## 四、已验证的能力（115 测试目录 Mediary Scout）
+**跨轨共用列的隔离约定**（踩过三次）：
+- `last_error` 三方共用 → 各轨加前缀（`sub:` / `probe:` / 识别轨的 `tmdb-404` 是终态凭据）
+- `attempt`（识别）vs `sub_attempt`（字幕）vs `tr_attempt`（翻译）→ 一列一主
+- `recheck_after` 三方共用，今天靠 `sub_status` 白名单**隐式**隔离（无显式机制，遗留项）
 
-- **机械扫描**：611 文件扫描，248 新入库，confidence 分类正确
-- **识别**：83 作品全部识别（中文目录名/`{tmdb-N}` 标签/leetspeak/×变体全处理）
-- **judge**：248 文件判定需字幕（国产/内嵌/sidecar 跳过逻辑正确）
-- **字幕**：可写目录端到端装盘验证过（Overflow 8 集、American Horror Story 20 集）
-- **巡检模型**：扫描→识别→judge→字幕一条龙跑通（115 实测）
-- **死循环修复**：找不到的标 24h 退避，队列推进不卡死
-
-## 五、测试状态
-
-- 后端 2768 条测试，7 红（全为既有债务，与近期工作无关）：
-  - deployContract 3（部署契约，CI 环境相关）
-  - buildAdapters 2（zimuku 灰色站点网络探测）
-  - secrets 1 / settingsRepo 1（历史断言没同步代码演化）
-- 前端 863 条测试（但前端要重做，见待办）
+---
 
 ## 六、环境
 
-- 软路由：192.168.100.1（SSH root，密码见本机 ~/.ssh 或密码管理器，不入库）
+- 软路由：192.168.100.1（SSH root，密码见密码管理器，不入库）。公司环境走 cf tunnel
 - 容器：subtitle-scout（ghcr.io/fancydirty/subtitle-scout:latest）
-- OpenList：115 网盘挂载（cookie 已配），rclone WebDAV 只读挂到 /mnt/nvme0n1-4/115-test/
-- 测试目录：115 网盘 Mediary Scout（83 作品，Jellyfin 约定，只读）
-- 生产媒体：nas_media（用户真实媒体库，**用户裁决不再当测试目录用**）
+- 测试目录：115 网盘 Mediary Scout（83 作品，Jellyfin 约定，**目前只读**）
+- 生产媒体：nas_media（用户裁决：不再当测试目录用）
+- LLM（干测用）：`LLM_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1`，
+  key 在 `~/projects/token.txt` 的 `XIAOMI_API_KEY`，模型 `mimo-v2.5` / `mimo-v2.5-pro`
+  ⚠️ 端点是 `token-plan-sgp.xiaomimimo.com`（不是 xiaomitoken.com，我一开始搞错过）
 
-## 七、待办（compact 后讨论）
+---
 
-### 后端
-1. **字幕写盘验证用可写目录**——115 只读验证不了写盘，需要一个可写测试媒体目录
-   （用户问：OpenList 只能写入？需确认 115 是否可写或另建）
-2. **dispatcher.ts 死代码清理**——daemonV2 巡检化后不再用它
-3. **旧架构代码清理**——orchestrator agent / unidentified / workUnit 分组等 18 个旧 agent 文件
-4. **旧表迁移**——episodes/movies/subtitles → files/works（provider_ref 来源保留）
-5. **skill 限流措辞**——明确"限流等待 vs no_safe_match"（Peacemaker 误判根因）
-6. **Dockerfile CMD 改 daemonV2**——当前手动启动，应设为容器主进程
-7. **AI 翻译链路验证**（TRANSLATE_* 配置已就绪，未跑过新架构）
+## 七、下一步：第 7 步清理死代码
 
-### 前端（已裁决删了重做）
-8. **前端全删重做**——围绕新数据模型（files/works）重写，用户说"慢慢耐心讨论"
+用户已确认："先干测，然后做第七步，就是清理死代码。"
 
-### 文档
-9. 归档已完成（7 份过时 → archive/），`conveyor-architecture.md` 归属待确认
+**做法要求**（因为我上一轮删代码已经踩过坑）：
+1. 先扫全仓列出候选清单，**给用户过一眼再删**
+2. 每删一批立刻 `git` 实测对比失败数，不许凭"看起来不相关"下结论
+3. 分批提交，别一次删完
 
-## 八、最近提交（git log）
+**已知候选**（spec 的 C9/C10 + 审计遗留）：
+- 旧 daemon（`v2/daemon.ts`）——daemonV2 已接容器，它不再被构造
+- 旧表 episodes/movies/series/subtitles（`db.ts` 里 59 处引用）
+- 按 path 挂的三张表孤儿行（`subtitle_verify`/`parked_paths`/`pending_removals`）
+  ——新架构链路一个都不读（已核实）
+- `dispatcher.ts`、旧 ingest 链路
+- 翻译 jobId 稳定化（GC 定时炸弹，见下）
 
+---
+
+## 八、遗留项（不挡路，但记着）
+
+| 项 | 说明 |
+|---|---|
+| **翻译工作台 GC 炸弹** | 翻译循环没把 jobId 登记进 `gcStaging` 的 in-flight 集合（字幕流有）。根因是翻译 jobId 是 `daemon-${Date.now()}`，每次不同、循环层无法预知。跑几小时的工作台唯一保护是 mtime 活性窗口。`translateItemId` 已提供稳定身份可作派生源 |
+| `scanCommand.ts` 是 C42 第二扇侧门 | 另一份 upsert 不写 `sub_recheck_at`，经它入库的行 B 档永远选不中 |
+| `watchV2.ts` 旁路入口 | 漏接 4 个运维器官 + `workPermitted` + `translateEnabled`，持续漂移源 |
+| `recheck_after` 隐式隔离 | 三方共用靠 `sub_status` 白名单，没有 `last_error` 那样的显式前缀机制 |
+| probe 失败重试通路 | 隐式靠 D17 回填 pass，没有独立记账 |
+| 命名事故 | `recheck_after`（重试调度）vs `sub_recheck_at`（事实复核）语义近但含义完全不同 |
+| `db.test.ts` 14 处版本号字面量 | 每加一条迁移就要手改 14 行，应写成 `String(MIGRATIONS.length)` |
+| 既有 7 红 | deployContract 3（部署脚本换了测试没跟上）/ buildAdapters 2（zimuku）/ secrets 1 + settingsRepo 1（SECRET_NAMES 从 12 涨到 15） |
+
+---
+
+## 九、翻译的诚实边界
+
+**管道全程接通、每个接缝都有断言，但真正产出字幕的那一段
+（`resolveTranslateSource` → workspace agent → `writeSidecarAtomic`）
+从未在任何环境跑过。** 干测验的是 agent 的决策流程（桩返回假数据），
+不是真实的抽轨/翻译/写盘。这与 spec 第 6 步"翻译单元最后修最后测"一致，
+但别把"26 项全绿"读成"翻译能出片"。
+
+另外 MVP 边界（R20）：外挂抓取仅 en；内嵌轨抽取 en/ja 皆可。
+日漫无日文内嵌轨时走 jimaku，而 **jimaku 尚未落地**（C6），所以那类会直接 no-source。
+
+---
+
+## 十、干测怎么跑（compact 后要用）
+
+```bash
+export LLM_API_KEY="$(grep XIAOMI_API_KEY ~/projects/token.txt | cut -d= -f2)"
+export LLM_BASE_URL="https://token-plan-sgp.xiaomimimo.com/v1"
+
+# 字幕 agent（8 场景 × 2 模型）
+npx vitest run src/agent/dryRun.test.ts -t 'S3'          # 单场景
+# 翻译 agent（5 场景 × 2 模型）
+npx vitest run src/agent/dryRunTranslate.test.ts -t 'T2'
+
+# 无 key 时自动 skip，不会红
 ```
-f5fdd63 feat(v2): daemonV2 巡检化——消除 30s 轮询，对齐 Jellyfin 日巡检模型
-5b5ec79 fix(v2): 死循环修复步 4-5——步数上限移除 + 识别 catch-all + 只读根防护
-1db10f0 fix(v2): 死循环修复步 1-3——recheck_after 退避 + 反编造门 + catch-all
-f8012dc fix(v2): 死循环修复步 1-3（重复提交）
-bd3246c test(tmdb): getDetails 期望值补 title 字段（v30 schema）
-7cab442 feat(v2): 新架构 daemon（daemonV2）——纯机械调度主循环
-f8dc10d fix(v2): 字幕装盘后标记 covered（needs_subtitle=0）
-8270ef0 fix(v2): 字幕链路 itemId 派生 + sidecar BCP-47 探测 + 判定修复
-（更早的在新架构文档 archive 里有记录）
-```
+
+单场景约 30-110 秒。全跑一遍两个文件约 20 分钟（26 项 × 双模型）。
