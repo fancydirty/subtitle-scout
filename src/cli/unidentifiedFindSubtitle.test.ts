@@ -1305,8 +1305,12 @@ describe('makeUnidentifiedFindSubtitleWorker (identify-only wiring)', () => {
 
     // 管线拆分（2026-07-28 事故裁决）：识别专用 worker——识别工具全挂，字幕工具零挂载
     // （零误触发纪律：模型连工具名都看不到）。
+    // 第 7 步 C 组（2/2）：write_identified_media 已随 agent/identityTools.ts 删除——它是
+    // series/episodes/movies 三张旧表最后的 INSERT 路径，本函数（makeUnidentifiedFindSubtitleWorker）
+    // 是它 identityDeps 的唯一生产供应点，而这条链整体不可达（唯一调用者 cli/index.ts 的
+    // handleWorkerTask 是零调用者孤儿）。本 worker 形态从此无落库通道，见被测函数头注释。
     expect([...capturedTools].sort()).toEqual(
-      ['finalize', 'get_tmdb_details', 'read_doc', 'search_tmdb', 'write_identified_media'].sort(),
+      ['finalize', 'get_tmdb_details', 'read_doc', 'search_tmdb'].sort(),
     )
     // skill 索引只含识别文档；找字幕 playbook 不出现
     expect(capturedSystemText).toContain('identify-media')
@@ -1316,7 +1320,7 @@ describe('makeUnidentifiedFindSubtitleWorker (identify-only wiring)', () => {
     expect(capturedPromptText).toContain('This task carries NO identity')
     expect(capturedPromptText).not.toContain('guessed title')
     expect(capturedPromptText).toContain(
-      '- itemId: null (unidentified — identify first, then write_identified_media) | structure hint: season 1 | duration: 2530s | embedded langs: eng | file: 2026.2160p.iT.WEB-DL.H.265.mkv',
+      '- itemId: null (unidentified — identify first, then report it in finalize) | structure hint: season 1 | duration: 2530s | embedded langs: eng | file: 2026.2160p.iT.WEB-DL.H.265.mkv',
     )
     for (const name of ['search_source', 'list_candidates', 'get_candidate', 'download_candidate', 'install_subtitle', 'check_episode_code_safety']) {
       expect(capturedPromptText).not.toContain(name)

@@ -1,5 +1,5 @@
 import { dirname, join, relative, basename } from 'node:path'
-import { stepCountIs, tool, type LanguageModel } from 'ai'
+import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { makeRunTracer } from '../core/traceBus.js'
 import { languageName } from './languages.js'
@@ -19,9 +19,7 @@ import {
 import { allocate, cleanup } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
 import type { FetchAdapter } from '../adapters/fetchLib.js'
-import type { TmdbClient, TmdbDetails } from '../adapters/providers/tmdb.js'
-import type { LibraryRepo } from '../v2/libraryRepo.js'
-import { makeWriteIdentityTool } from './identityTools.js'
+import type { TmdbClient } from '../adapters/providers/tmdb.js'
 
 export interface FindSubtitleWorkerDeps {
   model: LanguageModel
@@ -41,39 +39,25 @@ export interface FindSubtitleWorkerDeps {
   /** 管线拆分（2026-07-28 事故裁决：一晚 446 文件全量批，agent 烧 ~450/500 步在识别上——
    *  424 次 write_identified_media 对 7 次 search_source——步数见底后凭空编造 384 条
    *  no_safe_match、242 集被假 unavailable。裁决：识别归识别，找字幕归找字幕，DB 为状态机）。
-   *  true = 识别专用 worker：只挂 read_doc/search_tmdb/get_tmdb_details/write_identified_media/
-   *  finalize，字幕工具（search_source/download_candidate/install_subtitle/…）零挂载——零误触发
-   *  纪律：模型连字幕工具名都不许看到。skill 索引只含 identify-media 文档。找字幕由既有库行
-   *  管线接手（orchestrator 见 sub_status=missing 后派 per-series find_subtitle worker），两个
-   *  agent 之间从不直接交接。显式 flag 而非从 adapters 空推导——魔法推导会让"忘了传 adapters"
-   *  静默变成识别专用 worker。要求 tmdb + identityDeps 同时在场（没有识别工具的识别专用
-   *  worker 是自相矛盾，构造期直接抛）。 */
+   *  true = 识别专用 worker：只挂 read_doc/search_tmdb/get_tmdb_details/finalize，字幕工具
+   *  （search_source/download_candidate/install_subtitle/…）零挂载——零误触发纪律：模型连
+   *  字幕工具名都不许看到。skill 索引只含 identify-media 文档。显式 flag 而非从 adapters
+   *  空推导——魔法推导会让"忘了传 adapters"静默变成识别专用 worker。
+   *
+   *  ⚠️ 第 7 步 C 组（2/2）实测：**这个模式已无落库通道，因此在生产上不可能产出任何持久
+   *  效果**。原本的落地通道是 identityDeps 供的 write_identified_media 工具（agent 识别完
+   *  自己往 series/episodes/movies 三张旧表写行）——本组已把它连同 agent/identityTools.ts
+   *  整体删除，因为它是那三张旧表最后的 INSERT 路径，而它整条上游链在第 2 步切换入口那一刻
+   *  就已经不可达了（identityDeps 的唯一生产供应点 cli/unidentifiedFindSubtitle.ts 的
+   *  makeUnidentifiedFindSubtitleWorker ← 唯一调用点 cli/index.ts 的 handleWorkerTask
+   *  scope==='unidentified' 分支 ← handleWorkerTask 是零调用者孤儿，见该函数头注释）。
+   *
+   *  为什么保留 identifyOnly 而不一并删：删它会连带拖走 makeUnidentifiedFindSubtitleWorker /
+   *  runUnidentifiedFindSubtitleWorkerTask / unidentifiedFindSubtitle.ts 整个文件 + handleWorkerTask
+   *  的一个分支——那是"旧 jobs 队列整体退役"这个独立决策的一部分（同 handleWorkerTask 本身
+   *  的处置理由），不是本组"删旧表最后写入路径"这一件事能顺手带走的。识别落库在新架构里由
+   *  agent/identifyWorker.ts + v2/identifyScheduler.ts 写 works/files 两张新表承担，与本模式无关。 */
   identifyOnly?: boolean
-  /** For write_identified_media tool (agent-first identification, Task 9): when provided, the
-   *  worker gets the write_identified_media tool so the agent can persist a TMDB-verified
-   *  identity (series/episode or movie row) itself. Shape mirrors WriteIdentityDeps in
-   *  identityTools.ts; absent → the tool is not mounted at all (model never sees its name). */
-  identityDeps?: {
-    lib: LibraryRepo
-    tmdb: {
-      getDetails: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<TmdbDetails | null>
-      getChineseTitles: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string[]>
-      getExternalIds: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null } | null>
-      getOriginLanguage: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string | null>
-    }
-    /** Test seam (identityEval): optional factory to wrap/replace the write tool (e.g. to log
-     *  calls). Production omits this — the default is makeWriteIdentityTool(identityDeps). */
-    writeToolFactory?: (deps: {
-      lib: LibraryRepo
-      tmdb: {
-        getDetails: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<TmdbDetails | null>
-        getChineseTitles: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string[]>
-        getExternalIds: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null } | null>
-        getOriginLanguage: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<string | null>
-      }
-      resolveTargetPath: (file: string) => string | null
-    }) => ReturnType<typeof makeWriteIdentityTool>
-  }
 }
 
 /** Glue-layer repair (2026-07-16): a worker run now covers a whole season-level (or
@@ -94,14 +78,17 @@ const timeoutFor = (n: number) =>
  *  tests and production. Returns a function that runs exactly one BATCH task (a season-level or
  *  single-movie range of targets) end to end, reporting a per-target outcome bucket for each. */
 export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
-  // identifyOnly 的构造期防线：识别专用 worker 缺识别工具（tmdb 证据面）或缺落地通道
-  // （identityDeps 的 write_identified_media）是自相矛盾的组装——静默降级会复刻"模型空谈
-  // 我会识别"的旧病，这里直接拒绝构造（同 task 目标越沙盒的 fail-before-model 纪律）。
-  if (deps.identifyOnly && (!deps.tmdb || !deps.identityDeps)) {
+  // identifyOnly 的构造期防线：识别专用 worker 缺识别工具（tmdb 证据面）是自相矛盾的组装
+  // ——静默降级会复刻"模型空谈我会识别"的旧病，这里直接拒绝构造（同 task 目标越沙盒的
+  // fail-before-model 纪律）。
+  // 第 7 步 C 组（2/2）：判据原为 `!deps.tmdb || !deps.identityDeps`——identityDeps 那一臂
+  // 随 write_identified_media 工具（agent/identityTools.ts，三张旧表最后的 INSERT 路径）
+  // 一同删除，剩下 tmdb 这一臂。语义收窄是**如实的**，不是放松：落地通道现在恒不存在，
+  // 拿它当构造期条件只会让这个（本就不可达的）模式一律构造失败，那是假装的严格。
+  if (deps.identifyOnly && !deps.tmdb) {
     throw new Error(
-      'identifyOnly worker requires both tmdb (search_tmdb/get_tmdb_details evidence tools) and ' +
-        'identityDeps (write_identified_media) — an identification-only worker without ' +
-        'identification tools cannot exist',
+      'identifyOnly worker requires tmdb (search_tmdb/get_tmdb_details evidence tools) — ' +
+        'an identification-only worker without identification tools cannot exist',
     )
   }
   return async function runFindSubtitleTask(task: FindSubtitleTask): Promise<FindSubtitleBatchReport> {
@@ -139,34 +126,13 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       ? [IDENTIFY_MEDIA_SKILL]
       : deps.tmdb != null ? [skill, IDENTIFY_MEDIA_SKILL] : [skill]
 
-    // 🔴 写库门（identityEval 第三轮实测：识别全对但跳过 write_identified_media 反复发生，
-    // skill 硬门措辞时好时坏 —— 措辞治不了的用机制）：记录 write 工具是否真的被调过，
-    // finalize 校验时据此拒收"报了 identified 却没写库"的自相矛盾报告。拒收发生在 agent
-    // 循环内，模型能看到错误并补调工具，比事后 runner 丢弃更有教育意义。
-    let writeIdentityCalled = false
-    // 🔴 identityEval 第七轮修复：write_identified_media 原本要 agent 交绝对路径，而 prompt
-    // 出于沙盒纪律只给相对目录段+basename——模型只能编（实测 14 次调用 13 次是
-    // `../../../../..` 拼接幻觉）。改成模型报 file 名、代码在这里按 basename 解析真实路径。
-    // 与 season/episode 血案同一个教训：不向模型索要它按设计拿不到的数据。
-    const resolveTargetPath = (file: string): string | null => {
-      const wanted = basename(file)
-      return task.targets.find(t => basename(t.videoPath) === wanted)?.videoPath ?? null
-    }
-    const identityWriteTool = deps.identityDeps
-      ? (deps.identityDeps.writeToolFactory
-          ? deps.identityDeps.writeToolFactory({ ...deps.identityDeps, resolveTargetPath })
-          : makeWriteIdentityTool({ ...deps.identityDeps, resolveTargetPath }))
-      : null
-    const trackedIdentityWriteTool = identityWriteTool
-      ? tool({
-          description: identityWriteTool.description!,
-          inputSchema: identityWriteTool.inputSchema!,
-          execute: async (input: unknown, opts: unknown) => {
-            writeIdentityCalled = true
-            return (identityWriteTool.execute as (i: unknown, o: unknown) => Promise<unknown>)(input, opts)
-          },
-        })
-      : null
+    // 第 7 步 C 组（2/2）：这里原有 write_identified_media 的整套接线——写库门
+    // （writeIdentityCalled 追踪 + finalize 拒收"报了 identified 却没写库"）、
+    // resolveTargetPath（模型报 basename、代码解析绝对路径）、以及包一层记调用的
+    // trackedIdentityWriteTool。随 agent/identityTools.ts 一同删除：那个工具是 series/
+    // episodes/movies 三张旧表最后的 INSERT 路径，而它整条上游链（identityDeps ←
+    // makeUnidentifiedFindSubtitleWorker ← handleWorkerTask 的 scope==='unidentified' 分支）
+    // 自第 2 步切换生产入口起就不可达。旧表从此只被读（dashboard 海报墙/详情页），不再新增行。
 
     // 管线拆分（2026-07-28）：identifyOnly 模式下字幕工具整组不建不挂——不是"挂了不让用"，
     // 是模型的工具清单里根本没有这些名字（零误触发纪律，同 tmdb/identityDeps 缺席时的
@@ -202,10 +168,8 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // 路 A：身份证据工具——tmdb 配置时才挂上（deps.tmdb 为 null 时整个 spread 为空对象，
       // 模型连工具名都看不到，与 skill 的 identityVerification 分支严格同开同关）。
       ...(deps.tmdb ? makeTmdbEvidenceTools({ tmdb: deps.tmdb }) : {}),
-      // write_identified_media（Task 9，agent-first 识别落地）：identityDeps 提供时才挂上——
-      // agent 用 TMDB 证据（two-evidence bar）验证身份后亲自把识别结果写进库；缺席时整个
-      // spread 为空对象，与 tmdb 证据工具同一个"依赖不在则工具不可见"的纪律。
-      ...(trackedIdentityWriteTool ? { write_identified_media: trackedIdentityWriteTool } : {}),
+      // 第 7 步 C 组（2/2）：write_identified_media 曾在这里按 identityDeps 在场与否挂载
+      // ——随 agent/identityTools.ts 一同删除（见上方 identityWriteTool 接线处的注释）。
       ...(deps.identifyOnly ? {} : subtitleTools()),
     }
 
@@ -222,7 +186,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
           'not ask about or reference one.',
           '',
           'Your ONLY job is identification: establish what each target file actually is, verify it',
-          'with evidence, and persist it via write_identified_media. You do not handle subtitles in',
+          'with evidence, and report it in finalize. You do not handle subtitles in',
           'any way — another pipeline picks up from the database after you.',
           '',
           'Available skill documents (call read_doc(name) to load the full text of one):',
@@ -262,8 +226,8 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     // raw data 建成）。此时整份 prompt 没有任何"猜到的身份"可报（task.title 等都是空值），
     // 改报每个 target 的 raw evidence：结构提示（identifyFromPath 的 season/episode/
     // absoluteEpisode，标注为 hint 不是事实）、时长（durationSec，ffprobe raw 值）、
-    // 内嵌字幕语言（embeddedLangs）、目录段——识别动作全归 agent（Step 0 →
-    // write_identified_media），机械层只递证据不递结论。
+    // 内嵌字幕语言（embeddedLangs）、目录段——识别动作全归 agent（Step 0 → finalize 的
+    // identity 字段），机械层只递证据不递结论。
     const unidentified = task.targets.every((t) => t.itemId === null)
     const targetsBlock = unidentified
       ? task.targets.map((t) => {
@@ -288,7 +252,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
           const tag = t.embeddedTmdbId
             ? ` | path carries [tmdbid-${t.embeddedTmdbId}] (STRONGEST hint — but it may be stale or wrong; verify with get_tmdb_details before claiming it)`
             : ''
-          return `- itemId: null (unidentified — identify first, then write_identified_media) | structure hint: ${hints || 'none'}${duration}${langs}${dir}${tag} | file: ${t.videoFilename}`
+          return `- itemId: null (unidentified — identify first, then report it in finalize) | structure hint: ${hints || 'none'}${duration}${langs}${dir}${tag} | file: ${t.videoFilename}`
         }).join('\n')
       : task.targets.map(t => {
           const se = t.season != null ? `S${t.season}E${t.episode}` : '(movie)'
@@ -316,18 +280,20 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
 
     // Task 12（agent-first 识别主链路）：unidentified scope 的任务级身份块——没有任何
     // "guessed title"可报（整批 target 都是 parked_paths 的未识别文件，机械层只递 raw
-    // 证据不递结论），改成明示"无身份、先识别"。tmdb 缺席时（识别工具与
-    // write_identified_media 双双未挂）诚实标注本 run 做不了识别——同库行分支的
-    // tmdb-conditional 口径，不教模型空谈"我会验证"。
+    // 证据不递结论），改成明示"无身份、先识别"。tmdb 缺席时（识别证据工具未挂）诚实标注
+    // 本 run 做不了识别——同库行分支的 tmdb-conditional 口径，不教模型空谈"我会验证"。
     // 管线拆分（2026-07-28）：identifyOnly 分支——工作流措辞里没有任何字幕动作：识别 →
-    // write_identified_media → finalize，仅此而已。证据行措辞（embedded subtitle languages）
-    // 保留：那是识别证据（语言构成暗示产地），不是字幕工具。
+    // finalize，仅此而已。证据行措辞（embedded subtitle languages）保留：那是识别证据
+    // （语言构成暗示产地），不是字幕工具。
+    // 第 7 步 C 组（2/2）：两处"then call write_identified_media"措辞随该工具删除一并去掉
+    // ——prompt 绝不许提一个本 run 根本没挂载的工具名（模型只会试、失败、把失败写进
+    // finalize 的 reason，那正是 identityEval 六轮血案的形状）。
     const identityBlock = deps.identifyOnly
       ? [
           'This task carries NO identity — every target below is an unidentified parked file.',
           'Workflow: identify each target from its raw evidence (directory names, file name,',
           'duration, embedded subtitle languages, structure hints) per the identify-media skill',
-          'document, then call write_identified_media for that target. When every target is done',
+          'document. When every target is done',
           '(identified, or honestly could not be identified), call finalize.',
         ]
       : unidentified
@@ -337,8 +303,8 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
             ? [
                 'Identify each target from its raw evidence (directory names, file name, duration,',
                 'embedded subtitle languages, structure hints) per the skill document (Step 0): clean',
-                'a title, verify against TMDB under the two-evidence bar, then call',
-                'write_identified_media for the target BEFORE searching for its subtitles.',
+                'a title, verify against TMDB under the two-evidence bar, and report the identity in',
+                'finalize.',
               ]
             : [
                 'No identification tools are available in this run — do not guess an identity;',
@@ -369,7 +335,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     const prompt = deps.identifyOnly
       ? [
           'Identify each of the unidentified parked files listed below: establish what each one',
-          'actually is per the identify-media skill document, write_identified_media per target,',
+          'actually is per the identify-media skill document,',
           'and call finalize exactly once when all targets are done (identified or honestly not).',
           '',
           ...identityBlock,
@@ -414,14 +380,18 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // 写库门的教训（identityEval 第四轮）：曾在这里挂 superRefine 拒收"报了 identified 却
       // 没写库"的报告，指望模型在循环内看到错误后补调工具——**错的**。hasToolCall('finalize')
       // 一调就停循环（见 reasoningAgent.ts），schema 校验失败直接抛错，模型根本没有重试机会，
-      // 结果把 5 个识别全对的 case 生生炸成失败。约束改到 runner 层软记录（见下方
-      // writeIdentityCalled 的消费处）+ skill 措辞硬门，不在这里拦。
+      // 结果把 5 个识别全对的 case 生生炸成失败。约束曾改到 runner 层软记录 + skill 措辞硬门。
+      // 第 7 步 C 组（2/2）：软记录那一半随 write_identified_media 工具一同删除（写库门已无
+      // 对象可门）；这段教训保留，它约束的是"别把 schema 当模型的教鞭"这条设计纪律本身。
       //
       // 管线拆分（2026-07-28）：identifyOnly 模式沿用同一份 FindSubtitleBatchReportSchema，
       // 不另起 schema——installed 桶在识别专用 run 里天然恒空（没有任何安装工具可产出它），
       // no_safe_match = "无法识别"的逐 target 判决。identity 字段保持 advisory 语义
-      // （e2bff84：内层校验失败折叠 null）——真正的识别结果早已由 write_identified_media
-      // 的逐文件事务持久化，finalize 报告丢了也不丢账。
+      // （e2bff84：内层校验失败折叠 null）。
+      // 第 7 步 C 组（2/2）：原注释在这里写着"真正的识别结果早已由 write_identified_media 的
+      // 逐文件事务持久化，finalize 报告丢了也不丢账"——该工具已删，这句话现在是假的：
+      // identifyOnly 模式已无任何落库通道，identity 只存在于 finalize 报告里（而该模式整条
+      // 上游链本身不可达，见 FindSubtitleWorkerDeps.identifyOnly 的头注释）。
       schema: FindSubtitleBatchReportSchema,
       // 用户裁决：不设步数上限（100000 等效无限——实际先撞 context）。
       stopWhen: stepCountIs(deps.stepCap ?? 100000),
@@ -445,17 +415,9 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // since runFindSubtitleTask's return type is deliberately just the batch report.
       console.error(`[find-subtitle-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
       const report = readFinalized()
-      // 写库门（软记录，identityEval 第四轮的教训——见上方 schema 处的注释）：报了
-      // identified 却没调过 write_identified_media = 识别没落地（库里没行、没有 itemId、
-      // 文件还停在 parked）。不炸报告（那会把识别正确的 run 也毁掉），但必须吼出来：
-      // 这是"agent 说识别了但实际没生效"的唯一可观测信号，静默会让整条链路看起来在工作。
-      if (trackedIdentityWriteTool && report.identity?.outcome === 'identified' && !writeIdentityCalled) {
-        console.error(
-          `[find-subtitle-worker] job ${task.jobId}: 🔴 identity reported as identified ` +
-            `(tmdb:${report.identity.tmdbId}) but write_identified_media was NEVER called — ` +
-            `the identification did NOT persist: no library row, no itemId, file stays parked.`,
-        )
-      }
+      // 第 7 步 C 组（2/2）：这里原有写库门的软记录分支——报了 identified 却没调过
+      // write_identified_media 时吼一行"识别没落地"。随该工具一同删除（写库门的追踪变量
+      // writeIdentityCalled 已无来源）。
       return report
     } finally {
       // Try-error sandbox cleanup runs even on a thrown error — the staging dir never

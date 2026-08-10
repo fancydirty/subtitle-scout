@@ -117,7 +117,8 @@ export interface FindSubtitleTask {
   targets: FindSubtitleTargetFact[]
 }
 
-/** 🔴 itemId 可空（2026-07-28，job 34 实测——identityTools.ts 头注释那个缺陷类的第三例）：
+/** 🔴 itemId 可空（2026-07-28，job 34 实测——"向模型索要它按设计拿不到的数据"这个缺陷类的
+ *  第三例；前两例记在原 agent/identityTools.ts 的头注释里，该文件已于第 7 步 C 组删除）：
  *  混合批（73 个未识别 parked 文件 + 24 个库行目标）里，弱模型 74 次 write_identified_media
  *  全对、68 次 install_subtitle 全成，finalize 却对部分 installed 项报了 itemId:null——
  *  原 `z.string().min(1)` 拒收，整份报告校验失败，execute 永不运行，152 秒收割成果全灭，
@@ -204,7 +205,8 @@ export const FindSubtitleBatchReportSchema = z.object({
        *  🔴 安全默认是 identification-failed：省略键或发了无法识别的值时，宁可多跑一轮，
        *  也不可把一个可自愈的文件永久钉死。偏向"继续尝试"是刻意的不对称。
        *
-       *  🔴 容错口径同 identityTools.ts 顶部记录的六轮血案：真模型对枚举会发下划线/大写/
+       *  🔴 容错口径同 identityEval 六轮血案（原记于 agent/identityTools.ts 顶部，该文件已于
+       *  第 7 步 C 组删除）：真模型对枚举会发下划线/大写/
        *  省略等变体，schema 太窄会让 agent"想报却报不进来"。preprocess 折叠变体。 */
       kind: z.preprocess(
         (v) => {

@@ -7,7 +7,6 @@ import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/
 import type { FetchAdapter } from '../adapters/fetchLib.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 import { openDb } from '../v2/db.js'
-import { LibraryRepo } from '../v2/libraryRepo.js'
 import {
   makeFindSubtitleWorker, BATCH_BASE_TIMEOUT_MS, PER_TARGET_TIMEOUT_MS, BATCH_TIMEOUT_CAP_MS,
 } from './findSubtitleWorker.js'
@@ -426,64 +425,6 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     })
   })
 
-  // Task 9（agent-first 识别落地）：identityDeps 决定 write_identified_media 是否挂载——与
-  // tmdb 证据工具同一纪律（依赖缺席时模型连工具名都看不到）。与任务书原文的两处最小偏差，
-  // 均被 repo 现实强制：① makeFindSubtitleWorker 返回的是 run 函数，tools 在每个 run 内部
-  // 现建（不在返回值上），只能由 mock model 在 doGenerate 里捕获 options.tools 断言，与上方
-  // identity evidence tools 组同法；② 本 repo 的 mock 模型是 MockLanguageModelV4。
-  describe('findSubtitleWorker with identityDeps', () => {
-    const fakeIdentityTmdb = () => ({
-      getDetails: vi.fn(),
-      getChineseTitles: vi.fn(),
-      getExternalIds: vi.fn(),
-      getOriginLanguage: vi.fn(),
-    })
-
-    function captureToolsModel(captured: { tools: string[] }) {
-      return new MockLanguageModelV4({
-        doGenerate: async (options: LanguageModelV4CallOptions) => {
-          captured.tools = (options.tools ?? []).map((t: any) => t.name)
-          return finalizeResult({ installed: [], no_safe_match: [{ itemId: 'ep-1', reason: 'x' }], retry_later: [] })
-        },
-      })
-    }
-
-    it('includes write_identified_media tool when identityDeps provided', async () => {
-      const mediaRoot = join(root, 'media')
-      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
-      const db = openDb(':memory:')
-      try {
-        const lib = new LibraryRepo(db)
-        const captured: { tools: string[] } = { tools: [] }
-        const runTask = makeFindSubtitleWorker({
-          model: captureToolsModel(captured), adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
-          identityDeps: { lib, tmdb: fakeIdentityTmdb() },
-        })
-        await runTask(baseTask(mediaRoot, [
-          { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null, embeddedTmdbId: null },
-        ], { jobId: 'job-identity-1' }))
-
-        expect(captured.tools).toContain('write_identified_media')
-      } finally {
-        db.close()
-      }
-    })
-
-    it('omits write_identified_media tool when identityDeps not provided', async () => {
-      const mediaRoot = join(root, 'media')
-      mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
-      const captured: { tools: string[] } = { tools: [] }
-      const runTask = makeFindSubtitleWorker({
-        model: captureToolsModel(captured), adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
-      })
-      await runTask(baseTask(mediaRoot, [
-        { itemId: 'ep-1', videoPath: join(mediaRoot, 'Show', 'Show.S01E01.mkv'), videoFilename: 'Show.S01E01.mkv', season: 1, episode: 1, absoluteEpisode: null, imdbId: null, embeddedTmdbId: null },
-      ], { jobId: 'job-identity-2' }))
-
-      expect(captured.tools).not.toContain('write_identified_media')
-    })
-  })
-
   // 管线拆分（2026-07-28 事故裁决：一晚 446 文件全量批里 agent 烧 ~450 步做识别——424 次
   // write_identified_media 对 7 次 search_source——步数见底后凭空编造 384 条 no_safe_match、
   // 242 集被假 unavailable。裁决：识别归识别，找字幕归找字幕，DB 为状态机）。identifyOnly
@@ -493,12 +434,6 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
       search: vi.fn(async () => []),
       getDetails: vi.fn(async () => null),
       getSeasonTable: vi.fn(async () => null),
-    })
-    const fakeIdentityTmdb = () => ({
-      getDetails: vi.fn(),
-      getChineseTitles: vi.fn(),
-      getExternalIds: vi.fn(),
-      getOriginLanguage: vi.fn(),
     })
     const SUBTITLE_TOOL_NAMES = [
       'search_source', 'list_candidates', 'get_candidate',
@@ -544,16 +479,17 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
       mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
       const db = openDb(':memory:')
       try {
-        const lib = new LibraryRepo(db)
         const { captured, model } = capture()
         const runTask = makeFindSubtitleWorker({
           model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
-          tmdb: fakeTmdb(), identityDeps: { lib, tmdb: fakeIdentityTmdb() }, identifyOnly: true,
+          tmdb: fakeTmdb(), identifyOnly: true,
         })
         await runTask(unidentifiedTask(mediaRoot))
 
+        // 第 7 步 C 组（2/2）：write_identified_media 已随 agent/identityTools.ts 删除
+        // （series/episodes/movies 三张旧表最后的 INSERT 路径）——识别集从此不含它。
         expect([...captured.tools].sort()).toEqual(
-          ['finalize', 'get_tmdb_details', 'read_doc', 'search_tmdb', 'write_identified_media'].sort(),
+          ['finalize', 'get_tmdb_details', 'read_doc', 'search_tmdb'].sort(),
         )
       } finally {
         db.close()
@@ -565,11 +501,10 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
       mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
       const db = openDb(':memory:')
       try {
-        const lib = new LibraryRepo(db)
         const { captured, model } = capture()
         const runTask = makeFindSubtitleWorker({
           model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
-          tmdb: fakeTmdb(), identityDeps: { lib, tmdb: fakeIdentityTmdb() }, identifyOnly: true,
+          tmdb: fakeTmdb(), identifyOnly: true,
         })
         await runTask(unidentifiedTask(mediaRoot))
 
@@ -585,11 +520,10 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
       mkdirSync(join(mediaRoot, 'Show'), { recursive: true })
       const db = openDb(':memory:')
       try {
-        const lib = new LibraryRepo(db)
         const { captured, model } = capture()
         const runTask = makeFindSubtitleWorker({
           model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10,
-          tmdb: fakeTmdb(), identityDeps: { lib, tmdb: fakeIdentityTmdb() }, identifyOnly: true,
+          tmdb: fakeTmdb(), identifyOnly: true,
         })
         await runTask(unidentifiedTask(mediaRoot))
 
@@ -597,8 +531,16 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
           expect(captured.promptText).not.toContain(name)
           expect(captured.systemText).not.toContain(name)
         }
-        // workflow wording: identify per doc → write_identified_media per target → finalize
-        expect(captured.promptText).toContain('write_identified_media')
+        // workflow wording: identify per doc → finalize。
+        // 第 7 步 C 组（2/2）：原先断言 prompt **含** 'write_identified_media'。该工具已删，
+        // 而 prompt 绝不许提一个本 run 没挂载的工具名——模型只会去试、被拒、把失败写进
+        // finalize 的 reason（identityEval 六轮血案的形状）。断言因此反向锁住。
+        expect(captured.promptText).not.toContain('write_identified_media')
+        // 刻意只断 promptText，不断 systemText：systemText 含 skill 索引，而
+        // identify-media 文档的 descriptor/正文仍写着 write_identified_media。那是**先于本组
+        // 存在**的缺陷（生产 daemonV2 字幕 worker 走 cli/index.ts 的 makeFindSubtitleWorker
+        // 也从不传 identityDeps，却照样加载这篇文档——工具早已未挂载），修它要改喂给活路径的
+        // prompt 内容，不属于本组"删旧表最后写入路径"的范围。只报告，不动手。
         expect(captured.promptText).toContain('finalize')
         // raw-evidence target block stays intact (embedded subtitle languages line included)
         expect(captured.promptText).toContain('embedded langs: eng')
@@ -609,7 +551,7 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
       }
     })
 
-    it('identifyOnly without tmdb/identityDeps is a construction error (never a silently degraded worker)', () => {
+    it('identifyOnly without tmdb is a construction error (never a silently degraded worker)', () => {
       const model = new MockLanguageModelV4({ doGenerate: async () => { throw new Error('never') } })
       expect(() => makeFindSubtitleWorker({
         model, adapters: [], cacheRoot: join(root, 'cache'), identifyOnly: true,

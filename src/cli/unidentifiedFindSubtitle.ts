@@ -102,7 +102,7 @@ export function buildUnidentifiedWorkUnits(
           ? { season: null, episode: null, absoluteEpisode: null }
           : identity
         // embedded_langs 是 JSON 数组串（与 episodes/movies 同构）；坏 JSON 按未探测处理，
-        // 不阻塞上车（同 identityTools.ts 的容错口径）。
+        // 不阻塞上车（同原 identityTools.ts 的容错口径，该文件已于第 7 步 C 组删除）。
         let embeddedLangs: string[] | null = null
         if (p.embedded_langs) {
           try {
@@ -147,17 +147,33 @@ export interface UnidentifiedFindSubtitleWorkerDeps {
   /** Test phase per spec: no production step cap yet — observe actual step counts first.
    *  @default 500 */
   stepCap?: number
-  /** 全量 TmdbClient——既喂识别证据工具（search/getDetails/getSeasonTable），也喂
-   *  identityDeps（write_identified_media 需要 getDetails/getChineseTitles/getExternalIds/
-   *  getOriginLanguage 四面富化）。cmdWatch 顶部已把 TMDB_API_KEY 做成硬前置，恒非空。 */
+  /** 全量 TmdbClient——喂识别证据工具（search/getDetails/getSeasonTable）。cmdWatch 顶部
+   *  已把 TMDB_API_KEY 做成硬前置，恒非空。
+   *  第 7 步 C 组（2/2）：原注释还写着"也喂 identityDeps（write_identified_media 需要
+   *  getDetails/getChineseTitles/getExternalIds/getOriginLanguage 四面富化）"——该工具已删，
+   *  那半句已作废。 */
   tmdb: TmdbClient
+  /** 第 7 步 C 组（2/2）：不再流向 worker 构造（identityDeps 已删），见下方
+   *  makeUnidentifiedFindSubtitleWorker 头注释末段。 */
   lib: LibraryRepo
 }
 
 /** 组装未识别 scope 的 worker（管线拆分，2026-07-28）：identifyOnly——只做识别，字幕工具
  *  零挂载。adapters 从此不进这条链（省掉 provider 组装成本，也让"识别 run 绝不可能碰
  *  字幕工具"成为构造期事实而非运行期约定）。identifyOnly flag 是权威开关，不从 adapters
- *  空数组魔法推导。 */
+ *  空数组魔法推导。
+ *
+ *  ⚠️ 第 7 步 C 组（2/2）：**本函数产出的 worker 已无落库通道**。原本这里还传
+ *  `identityDeps: { lib, tmdb }`，那是 write_identified_media 工具（agent/identityTools.ts）
+ *  的唯一生产供应点，也是 series/episodes/movies 三张旧表最后的 INSERT 路径。该工具已随本
+ *  组删除，理由是它整条上游链自第 2 步切换生产入口起就不可达：本函数唯一调用点是
+ *  cli/index.ts 的 handleWorkerTask scope==='unidentified' 分支，而 handleWorkerTask 是零
+ *  调用者孤儿（见该函数头注释的事实链）。
+ *
+ *  连带事实：deps.lib 现在只被本文件的 runner（runUnidentifiedFindSubtitleWorkerTask）用，
+ *  不再流向 worker 构造；本函数的 deps.lib 字段因此成为纯签名残留，刻意保留——删它要动
+ *  UnidentifiedFindSubtitleWorkerDeps 的形状与 cli/index.ts 的构造点，而整条链的退役属于
+ *  "旧 jobs 队列整体退役"那个独立决策，不在本组范围。 */
 export function makeUnidentifiedFindSubtitleWorker(deps: UnidentifiedFindSubtitleWorkerDeps) {
   return makeFindSubtitleWorker({
     model: deps.model,
@@ -165,7 +181,6 @@ export function makeUnidentifiedFindSubtitleWorker(deps: UnidentifiedFindSubtitl
     cacheRoot: deps.cacheRoot,
     stepCap: deps.stepCap,
     tmdb: deps.tmdb,
-    identityDeps: { lib: deps.lib, tmdb: deps.tmdb },
     identifyOnly: true,
   })
 }
@@ -515,10 +530,15 @@ export async function runUnidentifiedFindSubtitleWorkerTask(
           // 显式 const 而不是内联进 if：调试时要看得见这个中间值（计划自审 ①）。
           const stillParked = deps.lib.countParked(targets.map((t) => t.videoPath))
           if (stillParked < targets.length) {
-            // **有产出**：差值 > 0 ⇒ 至少一条路径被清出 parked ⇒ 身份落库发生了
-            // （write_identified_media 的事务无条件 clearParkedPath，identityTools.ts:172/229/242/274）。
+            // **有产出**：差值 > 0 ⇒ 至少一条路径被清出 parked ⇒ 身份落库发生了。
+            // 🔴 第 7 步 C 组（2/2）：这个分支曾由 write_identified_media 的事务
+            // （无条件 clearParkedPath）触发——该工具已随 agent/identityTools.ts 删除，本
+            // worker 形态已无任何落库通道，因此这条差值现在**恒为 0**、本分支恒不进入。
+            // 保留而不删：整条链（本 runner ← handleWorkerTask 零调用者孤儿）本身已不可达，
+            // 它的退役属于"旧 jobs 队列整体退役"那个独立决策，见
+            // makeUnidentifiedFindSubtitleWorker 头注释末段。
             // 识别成功但没找到字幕 —— 这是本 worker 形态下的**正常终局**，不是失败。
-            // 字幕由 orchestrator 下一轮派 per-series find_subtitle 去找：identityTools.ts:158 落
+            // 字幕由 orchestrator 下一轮派 per-series find_subtitle 去找：落
             // sub_status='missing' → libraryRepo missingBySeason/missingMovies 都计入 →
             // orchestratorAgent.tools.ts 的 list_missing_coverage 读得到（方案 §6 已验证该链通）。
             // 🔴 不 bump：已识别的路径**已不在 parked 表里**（bump 对它是空操作），而剩下未识别的
