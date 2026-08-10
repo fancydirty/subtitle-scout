@@ -606,7 +606,7 @@ describe('startDashboard (v2)', () => {
   // dashboard G5：workflow/library/甄别聚合 API——七端点全走真实 HTTP round-trip。
   describe('workflow/library/甄别聚合 API（dashboard G5）', () => {
     it('GET /api/v2/workflow/pending 聚合缺口事实 + parked 计数 + meta 新鲜度', async () => {
-      db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(NOW))
+      db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(NOW))
       const { base } = await start(distWith('<!doctype html>'), 'tok')
       const res = await fetch(`${base}/api/v2/workflow/pending?token=tok`)
       expect(res.status).toBe(200)

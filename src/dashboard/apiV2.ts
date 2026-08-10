@@ -891,15 +891,25 @@ export interface WorkflowPendingMovieDTO {
 export interface WorkflowFreshnessDTO {
   /** settingsRepo.listRoots() 的路径列表。 */
   roots: string[]
-  /** meta 表 'last_ingest_at' 键。⚠️ 第 7 步 B 组实测：**这个键现在没有任何写入者**——原
-   *  唯一写入点是 v2/daemon.ts 的 tickInner（该文件随 ScoutDaemon 于本组整体删除），而
-   *  daemonV2 走自己的巡检时间门、从不写这个键。故本字段在生产恒为 null（"从未摄取过"），
-   *  dashboard 上的"上次扫描"因此常显空。
+  /** 上次扫描时刻 = meta 表 `last_inspect_at` 键（daemonV2.writeLastInspectAt 写入）。
+   *  从未巡检过时 null。
    *
-   *  为什么本组不改：修它有两种方向（让 daemonV2 写这个键，或让 UI 改读 daemonV2 的巡检
-   *  时间戳），都是**行为变更**，而本组的硬性约束是"ScoutDaemonV2 行为一个字节都不能变"。
-   *  已作为新发现报告，留给后续决策。
-   *  （db.ts 注释里提到的 'last_reconcile_at' 同样未见任何代码路径写入。） */
+   *  ## 为什么读 `last_inspect_at` 而不是 `last_ingest_at`（2026-08-10）
+   *
+   *  本字段原读 `last_ingest_at`，而那个键**已经没有任何写入者**——归因不是第 7 步 B 组
+   *  （B 组删掉的 v2/daemon.ts 只是尸体），而是**第 2 步**（915f3ec）把 cmdWatch 内部的
+   *  ScoutDaemon 换成 ScoutDaemonV2：那之后 ScoutDaemon 再没被构造过，它 tickInner 里
+   *  那唯一的写入点从此就是死代码。所以这个字段自第 2 步起在生产恒为 null。
+   *
+   *  后果是一句**主动的假话**：前端 text.ts lastCheckedLine() 见 null 就显示"还没扫过"，
+   *  而 daemonV2 每天都在正常巡检。讽刺的是 text.ts 那段"lastScanAt === null 时绝不编一个
+   *  时刻出来"的注释与专门测试完全正确——错的是我们喂给它的数据源。
+   *
+   *  新架构下"巡检"就是"摄取"，`last_inspect_at` 与 `last_ingest_at` 语义等价（daemonV2
+   *  自己也读它做 24h 时间门），故改读取侧即可——**不给 daemonV2 新增任何写入行为**。
+   *  字段名 `lastScanAt` 与前端一并不动：语义没变，仍是"上次扫描时刻"。
+   *
+   *  不做 `last_ingest_at` 回退：见 buildWorkflowPending 里 SELECT 处的说明。 */
   lastScanAt: number | null
   /** episodes + movies 两表行数之和——库内文件总量的机械计数。 */
   files: number
@@ -942,7 +952,22 @@ export function buildWorkflowPending(
   }))
   const parked = lib.listParkedPaths().length
 
-  const lastScanRow = db.prepare(`SELECT value FROM meta WHERE key = 'last_ingest_at'`).get() as
+  // 上次扫描时刻读 daemonV2 写的 `last_inspect_at`（键的选择与归因见 WorkflowFreshnessDTO
+  // .lastScanAt 头注释）。键名与 daemonV2.readLastInspectAt/writeLastInspectAt 一致。
+  //
+  // ## 为什么不给已死的 `last_ingest_at` 做 COALESCE 回退
+  //
+  // 已部署的老库里可能确实存着一行第 2 步之前写的 `last_ingest_at`。不回退它，理由：
+  // 1. **那个时刻已经很旧了**（第 2 步至今，量级是周/月）。把它显示成"上次扫描"是把一个
+  //    陈旧值当成新鲜值——这跟本次要修的"假话"是同一类错误，只是换了个方向说谎。
+  // 2. **null 窗口极短**。daemonV2 冷启动（读不到 last_inspect_at ⇒ 0 ⇒ 立即跑）第一圈就
+  //    巡检、成功即写键。所以老库升级后"显示还没扫过"只持续到首轮巡检结束，是分钟量级，
+  //    不是一天。回退换来的那点"立刻有个数"根本不值得。
+  // 3. 回退会让这个键继续苟活，下一个读代码的人还得再考古一遍它是死是活。
+  //
+  // 而"还没扫过"在那个短窗口里恰好是**真话**（新架构下确实还没巡检过）——text.ts 那条
+  // "绝不编一个时刻出来"的纪律在这里正常工作，不需要我们替它兜底。
+  const lastScanRow = db.prepare(`SELECT value FROM meta WHERE key = 'last_inspect_at'`).get() as
     | { value: string }
     | undefined
   const filesRow = db
