@@ -183,8 +183,25 @@ export function applyTranslateOutcome(
 
   if (status === 'installed' || status === 'already-covered') {
     // 成功轨：状态一列不动（等扫描确认 / R24），清失败额度，写出队时刻（D6）。
+    //
+    // **并且把 sub_recheck_at 拉到"立即到点"**（第 8 步 live test 第五轮实测缺陷，字幕轨
+    // 已在 subtitleScheduler.markInstalled 修过同一条，见 commit 12e4ab6）。不拉的话这一行
+    // 既不在扫描 A 档（翻译不改视频指纹）也不在 B 档（上一轮 A 档已把 recheck 推到 now+7 天）
+    // → 翻译装好的字幕要等 7 天才被观察成 covered，这 7 天里它 sub_status 仍非 covered，
+    // 于是继续满足工作台谓词、被反复重找/重翻，白烧付费 LLM。
+    //
+    // 这条轨比字幕轨更隐蔽：daemonV2 在 installed 后**已经**调了 requestIngest() 踢扫描
+    // （注释写着"新 sidecar 越早被扫到、covered 越早落库"），但踢的那轮扫描两档谓词同样
+    // 选不中它——**踢了扫描而扫描什么都不看**，这条衔接一直是装饰性的。
+    //
+    // 哨兵取 0 而非 now-1：这一列的唯一读者是 daemonV2 的 B 档谓词 `sub_recheck_at <= ?`，
+    // 喂的是可注入时钟 deps.now()；写者这里的 now 来自调用方。两个时钟源不同源时
+    // （测试注入 2001 年、读者用真实时间）now-1 对读者是"未来 25 年"→ 谓词永不命中，
+    // 而单元测试全绿。0 在任何时钟源下都已过期，且被观察后由 observeSubtitle 推回 +7 天，
+    // 天然自清除。**不写 NULL**（D18：NULL 行永不命中 `<= now`）。
     changes = db.prepare(
-      `UPDATE files SET tr_attempt = 0, tr_recheck_after = ?, updated_at = ? WHERE path = ?${GUARD}`,
+      `UPDATE files SET tr_attempt = 0, tr_recheck_after = ?, sub_recheck_at = 0, updated_at = ?`
+      + ` WHERE path = ?${GUARD}`,
     ).run(now + TRANSLATE_RECHECK_MS, now, videoPath).changes
   } else if (status === 'no-source' || status === 'no-embedded') {
     // 诚实无源 → 停牌。**必须同时写 recheck_after**（不是 tr_recheck_after）：

@@ -220,8 +220,8 @@ function seedFile(
 }
 
 function fileRow(path: string) {
-  return db.prepare('SELECT sub_status, tr_attempt, tr_recheck_after FROM files WHERE path = ?')
-    .get(path) as { sub_status: string | null; tr_attempt: number; tr_recheck_after: number | null }
+  return db.prepare('SELECT sub_status, tr_attempt, tr_recheck_after, sub_recheck_at FROM files WHERE path = ?')
+    .get(path) as { sub_status: string | null; tr_attempt: number; tr_recheck_after: number | null; sub_recheck_at: number | null }
 }
 
 describe('listNewTranslateCandidates — 工作台谓词（C3 核心：改读 files/handoff_translate）', () => {
@@ -302,6 +302,58 @@ describe('applyTranslateOutcome — 8 种 worker status 按 §5 映射表处置�
     expect(r.tr_attempt).toBe(0)
     // ③ 写 tr_recheck_after 出队（D6：成功也必须出队，否则独立循环下一圈重领同一行）
     expect(r.tr_recheck_after).toBe(NOW + DAY)
+  })
+
+  // ── 装盘与观察的衔接（字幕轨同型缺陷的第二条轨，2026-08-10 live test）─────────────
+  //
+  // 字幕轨已在 subtitleScheduler.markInstalled 修过（commit 12e4ab6）：装盘成功必须把
+  // sub_recheck_at 拉到"立即到点"，否则该行既不在扫描的 A 档（指纹没变）也不在 B 档
+  // （上一轮 A 档已把 recheck 推到 now+7 天）→ 装好的字幕要等 7 天才被观察成 covered。
+  //
+  // 翻译轨完全同型，且更隐蔽：daemonV2 在翻译 installed 后**已经**调了 requestIngest()
+  // 踢扫描（注释写着"新 sidecar 越早被扫到、covered 越早落库"），但踢的那轮扫描两档谓词
+  // 同样选不中它——**踢了扫描而扫描什么都不看**，这条衔接是装饰性的。
+  //
+  // 哨兵取 0 而非 now-1：这一列的唯一读者是 daemonV2 的 B 档谓词 `sub_recheck_at <= ?`，
+  // 喂的是可注入时钟 deps.now()；而写者拿到的 now 来自调用方。两个时钟源不同源时
+  // （测试注入 2001 年、写者用真实时间），now-1 对读者是"未来 25 年"→ 谓词永不命中，
+  // 而单元测试全绿。0 在任何时钟源下都已过期。见 subtitleScheduler.ts 的同一论证。
+  it('🔴 installed → sub_recheck_at 拉到「立即到点」，否则新装的字幕等 7 天才被观察', () => {
+    seedFile('/media/x.mkv', { trAttempt: 2 })
+    // 模拟上一轮 A 档已把复核推到 7 天后（生产实测形态：sub_recheck_at 未来|61）
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?').run(NOW + 7 * DAY, '/media/x.mkv')
+    applyTranslateOutcome(db, '/media/x.mkv', 'installed', NOW)
+    const r = fileRow('/media/x.mkv')
+    expect(r.sub_recheck_at).not.toBeNull()          // D18：不许写 NULL
+    expect(r.sub_recheck_at).toBeLessThanOrEqual(NOW) // 立即到点，下一轮 B 档就命中
+    expect(r.sub_status).toBe('handoff_translate')    // R24 未被破坏：仍不写 covered
+  })
+
+  it('🔴 哨兵值在被注入的时钟下也已过期（不许用 now-1——写者与读者时钟不同源）', () => {
+    seedFile('/media/x.mkv')
+    // 写者拿到一个"很早的" now（本仓既有测试口径：注入 2001 年）
+    applyTranslateOutcome(db, '/media/x.mkv', 'installed', 1_000_000_000_000)
+    const v = fileRow('/media/x.mkv').sub_recheck_at as number
+    // 读者可能用真实时钟（2026）——哨兵必须对**任何**时钟源都已过期
+    expect(v).toBeLessThanOrEqual(1_000_000_000_000)
+    expect(v).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('🔴 失败轨不许拉 sub_recheck_at（否则找不到源的行每轮白扫 60 次 stat）', () => {
+    for (const st of ['held', 'no-source', 'extract-failed'] as const) {
+      seedFile('/media/f.mkv', { trAttempt: 0 })
+      db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?').run(NOW + 7 * DAY, '/media/f.mkv')
+      applyTranslateOutcome(db, '/media/f.mkv', st, NOW)
+      expect(fileRow('/media/f.mkv').sub_recheck_at, `status=${st} 不该拉排期`).toBe(NOW + 7 * DAY)
+      db.prepare('DELETE FROM files WHERE path = ?').run('/media/f.mkv')
+    }
+  })
+
+  it('🔴 already-covered 同样拉排期（磁盘上本就有，扫描该尽快把它记成 covered）', () => {
+    seedFile('/media/x.mkv')
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE path = ?').run(NOW + 7 * DAY, '/media/x.mkv')
+    applyTranslateOutcome(db, '/media/x.mkv', 'already-covered', NOW)
+    expect(fileRow('/media/x.mkv').sub_recheck_at).toBeLessThanOrEqual(NOW)
   })
 
   it('🔴 already-covered → 同 installed 一档（扫描本就会认）', () => {
