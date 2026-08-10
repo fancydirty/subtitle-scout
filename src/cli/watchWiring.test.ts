@@ -190,6 +190,10 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
   it('🔴 Dockerfile 的 CMD 仍指向 cli/index.js watch（D5：不换入口文件，运维器官接线天然保留）', () => {
     const dockerfile = readFileSync('Dockerfile', 'utf8')
     expect(dockerfile).toContain('"dist/cli/index.js", "watch"')
+    // 下面这条防的**不再是** watchV2.ts（该文件已于第 7 步删除，现在没人能把 CMD 指过去）。
+    // 保留的理由是它防的是 D5 裁决的另一半、且是面向未来的：谁要是重新造一个第二入口
+    // （watchV2 是这个错误形态的历史名字）并把 CMD 指过去，运维器官接线就会静默漏接一批
+    // （见本文件头注释的 WAL 掉电实案）。成本为零，且是这条裁决唯一的可执行痕迹。
     expect(dockerfile).not.toContain('watchV2')
   })
 

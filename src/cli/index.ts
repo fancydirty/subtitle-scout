@@ -40,7 +40,7 @@ import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
 import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
 import { runVerifySweep } from '../subtitleVerify/verifySweep.js'
 import { makeIngestPass, type IngestResult } from '../v2/ingest.js'
-import { ScoutDaemon, type DaemonDeps } from '../v2/daemon.js'
+import { type DaemonDeps } from '../v2/daemon.js'
 import { ScoutDaemonV2 } from '../v2/daemonV2.js'
 import { buildDaemonV2Deps } from './watchWiring.js'
 import { runIdentify } from '../agent/identifyWorker.js'
@@ -702,7 +702,7 @@ async function cmdWatch() {
     // 债务D5：trace 保留天数同款惰性读，默认 30 天。
     traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 30,
     // 字幕校验巡检（Task 6）：**本轮雪藏（spec §5/§10）——不再注入 verifySweep**。
-    // DaemonDeps.verifySweep 是 optional，daemon.ts:327 的 `this.deps.verifySweep &&` 短路让
+    // DaemonDeps.verifySweep 是 optional，daemon.ts 里 `this.deps.verifySweep &&` 那条短路让
     // 整个分支休眠，零成本（不查候选、不 spawn ffmpeg、不写 meta 时间门）。
     // runVerifySweep / verifyAndRecord 的实现与 import 全部保留（用户裁决"代码可以不删"）；
     // 将来重启用时，把下面注释掉的这一段注入原样恢复即可，不需要动 daemon 侧任何代码。
@@ -739,7 +739,8 @@ async function cmdWatch() {
       satisfactionTracker()
     },
     // spec A §4.6/§4.7 步 3：产工作许可 = engine_enabled(fail-open) ∧ setup 闸(TMDB+LLM 可解析)。
-    // 维护循环（续租/孤儿回收/dbMaintenance 等）不闸——见 daemon.ts 的五处分支闸。
+    // 维护循环（续租/孤儿回收/dbMaintenance 等）不闸——见 daemon.ts 里 `if (permitted` 的
+    // 四处分支闸（ingest / dispatchTranslate / verifySweep / dispatch）。
     workPermitted: () => engineEnabled((k) => settingsRepo.get(k)) && setupSatisfied(cfg),
   }
 
@@ -755,10 +756,11 @@ async function cmdWatch() {
 
   // 第 2 步（C2 + C16 + D5）：容器入口从此跑 ScoutDaemonV2（每日巡检模型）。
   //
-  // 切换方式是**内部替换**，不是换 Dockerfile 的 CMD 指向 watchV2（D5 裁决）：上面 daemonDeps
+  // 切换方式是**内部替换**，不是换 Dockerfile 的 CMD 指向另一个入口（D5 裁决）：上面 daemonDeps
   // 里那 4 个运维器官（dbMaintenance / gcStaging / traceRetentionDays / 写探针清扫）的接线
-  // 天然留在这个函数里，不需要在 watchV2.ts 里重建第二份——重建 = 第二份实现 = 必然漂移，
-  // 本仓已经反复栽过（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。
+  // 天然留在这个函数里，不用在第二个入口文件里重建第二份——重建 = 第二份实现 = 必然漂移，
+  // 本仓已经反复栽过（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。曾经存在的那个
+  // 备选入口 watchV2.ts 已于**第 7 步删除**（这条裁决落地后它从未被 CMD 指过，是死代码）。
   //
   // 旧 ScoutDaemon 的**代码保留、不再被构造**：翻译流仍挂在它的 dispatchTranslate 上，
   // 第 4 步才迁到 daemonV2。故**翻译功能从这一步起停摆到第 4 步**——spec §4 第 2/3 步的验收

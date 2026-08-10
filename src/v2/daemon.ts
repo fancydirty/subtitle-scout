@@ -31,8 +31,9 @@ export interface DaemonDeps {
    *  dispatchTranslateTasks 预绑定 db/jobs）。**env 门控在 cli 接线侧**：TRANSLATE_MODEL/LLM_MODEL
    *  未配 → cmdWatch 根本不注入本钩子（undefined），功能休眠零成本（同 SUBHD_ENABLED 模式）。
    *  候选=sub_status='unavailable' 且内嵌非中文轨——翻译是最后手段，天然候选极少。放在 tick 的
-   *  dispatch 之前、boot ingest 门之后：与 orchestrate 心跳同一时机语义（判定纯机械无 LLM，
-   *  幂等 upsert，每 tick 调也只在候选出现时建行）。 */
+   *  dispatch 之前、boot ingest 门之后：这个位置安全的理由是本钩子的**判定纯机械、不碰 LLM**
+   *  （只查库 + 幂等 upsert，每 tick 调也只在候选出现时建行），所以既不需要等 dispatch 让出
+   *  预算，也不该在 boot 首轮 ingest 之前跑（那时库里还是上个进程的 stale 分类）。 */
   dispatchTranslate?: () => void
   /** DB 审计🔴 耐久运维钩:每 tick 调用一次,内部时间门控(小时级 wal_checkpoint /
    *  天级 VACUUM INTO 备份)。cli 接线侧预绑定 db/cacheDir/state;失败只记日志不炸 tick。 */
@@ -64,7 +65,7 @@ export interface DaemonDeps {
    *  （密钥落库 → 同进程热重建长命客户端）。optional：缺省不跑。 */
   preTick?: () => Promise<void>
   /** 启动面（spec A §4.6/§4.7）：产工作许可——engine_enabled(fail-open) ∧ setup 闸(TMDB+LLM 可解析)。
-   *  返回 false 时本 tick 跳过全部产工作循环（ingest/orchestrate 心跳/dispatchTranslate/verifySweep/
+   *  返回 false 时本 tick 跳过全部产工作循环（ingest/dispatchTranslate/verifySweep/
    *  dispatch）；维护循环（续租/孤儿回收/过期租约回收/trace 修剪/dbMaintenance）不闸。
    *  optional：缺省视为恒 true（今天的行为）。 */
   workPermitted?: () => boolean
@@ -261,18 +262,18 @@ export class ScoutDaemon {
     // stale wanted job（新分类规则尚未跑过一轮 ingest），若照常 dispatch 会派发过时判断。
     if (this.bootIngestPending) return
 
-    // 2c. E AI 翻译：机械派 translate 任务（见 DaemonDeps.dispatchTranslate 的门控/时机注释）。
+    // 2d. E AI 翻译：机械派 translate 任务（见 DaemonDeps.dispatchTranslate 的门控/时机注释）。
     // 失败只记一行 warn 不炸 tick——翻译是增益路径，绝不拖垮主循环。
     if (permitted && this.deps.dispatchTranslate) {
       try { this.deps.dispatchTranslate() } catch (e) { log(`warn: translate dispatch failed: ${String(e)}`) }
     }
 
-    // 2d. DB 耐久运维（周期 checkpoint/在线备份，内部时间门控，见 dbMaintenance.ts）。
+    // 2e. DB 耐久运维（周期 checkpoint/在线备份，内部时间门控，见 dbMaintenance.ts）。
     if (this.deps.dbMaintenance) {
       try { this.deps.dbMaintenance() } catch (e) { log(`warn: db maintenance failed: ${String(e)}`) }
     }
 
-    // 2e. 字幕校验巡检（Task 6）：给"已有字幕但从未校验过"的条目做首次检测——这是让校验功能
+    // 2f. 字幕校验巡检（Task 6）：给"已有字幕但从未校验过"的条目做首次检测——这是让校验功能
     //     对用户可见的唯一通道（correct/revert 两条写路径的前置都是"库里已有结论"，见
     //     verifySweep.ts 头注释）。时间门同 last_ingest_at 的 meta 手法，间隔 6h。
     //

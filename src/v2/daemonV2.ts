@@ -102,9 +102,11 @@ export interface DaemonV2Deps {
   roots: string[]
   /** 守备目录的惰性提供者（cmdWatch 侧 = `settingsRepo.listRoots()`）。
    *
-   *  为什么必须惰性：守备目录是产品层配置（media_roots 表，dashboard 里增删），watchV2 那份
-   *  独立入口在启动时读表读一次就再不刷新——用户在 dashboard 里加根后要重启容器才生效。
-   *  cmdWatch 侧的既有口径是 `currentRoots()` 每次现取（dashboard G4），切过来不能退化。
+   *  为什么必须惰性：守备目录是产品层配置（media_roots 表，dashboard 里增删）。上面那个
+   *  `roots: string[]` 就是被冻死的形态——**启动那一刻读一次表就再不刷新**，用户在 dashboard
+   *  里加根后要重启容器才生效（历史上 watchV2.ts 那条独立入口整体就是这么接的，它已于第 7 步
+   *  随死代码清理删除）。cmdWatch 侧的既有口径是 `currentRoots()` 每次现取（dashboard G4），
+   *  切过来不能退化。
    *
    *  **同一轮巡检内取一次快照**（见 runInspection）：中途变动会让扫描作用域与删除作用域
    *  对不上——deleteMissing 的 deeperPrefixes 是从 roots 算的，跑到一半少了一个根，那个根
@@ -161,7 +163,7 @@ export interface DaemonV2Deps {
    *
    *  **未注入时默认 false（"翻译未启用"）**，两种默认的伤害不对称：
    *   · 默认 true → handoff_translate 永远不被复查 → C41 的永久卡死在**缺省接线下复活**，
-   *     而缺省接线正是最常见形态（watchV2 那条独立入口 + 几十条既有测试的构造点）。
+   *     而缺省接线正是最常见形态（几十条既有测试的构造点都不传这个字段）。
    *     伤害是永久且静默的：那批文件再也不补字幕，界面上什么异常都看不出来。
    *   · 默认 false → 复查闸可能碰到飞行中的翻译。3-2 写这段时的论证是"翻译流第 4 步才
    *     接入 daemonV2，故今天不存在飞行中的翻译，这条伤害的前提为假"——**第 4 步已到，
@@ -191,7 +193,7 @@ export interface DaemonV2Deps {
   // ───────────────────────────────────────────────────────────────────────────
   // 运维器官（D5 / C16）。签名照 DaemonDeps 的既有形态，接线点仍在 cmdWatch（切换方式是
   // "cmdWatch 内部把 ScoutDaemon 换成 daemonV2"，不是换入口文件——这样这些接线天然留在原处，
-  // 不需要在 watchV2 里重建第二份）。
+  // 不用在第二个入口文件里重建第二份；那个备选入口 watchV2.ts 已于第 7 步删除）。
   //
   // 全部 optional，缺省即整支休眠、零成本（同 DaemonDeps.dbMaintenance/gcStaging 的既有门控
   // 模式）：既有构造点与几十条既有测试都不传这些字段，不许因为"忘了接线"就让阶段 1 失效。
@@ -1443,8 +1445,8 @@ export class ScoutDaemonV2 {
   /** 出现在任何一对嵌套关系里的守备目录（内层外层都算）——D20 的跳过名单。
    *
    *  判据取 media_roots **表**（复用 settingsRepo.detectNestedRoots 这一份既有实现，不重写
-   *  第二份），而不是 deps.roots——两者会漂移：watchV2 启动时读表读一次就再不刷新，运行期
-   *  用户在 dashboard 里加根不会反映到进程内快照。
+   *  第二份），而不是 deps.roots——两者会漂移：deps.roots 是**启动快照**（见 DaemonV2Deps.roots
+   *  的注释），运行期用户在 dashboard 里加根不会反映到进程内那份数组里。
    *
    *  漂移方向决定了为什么防线 3 必须独立存在：表里已成嵌套但 deps.roots 还没看见时，防线 2
    *  会照实跳过（安全）；反之 deps.roots 里有嵌套而表里还没落库时，防线 2 静默失效——此时

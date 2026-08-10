@@ -8,8 +8,9 @@
 // db.ts:579-584 记有实案）。剥出来之后"接线"变成可断言的纯数据映射（watchWiring.test.ts）。
 //
 // 切换方式是"cmdWatch 内部把 ScoutDaemon 换成 ScoutDaemonV2"，**不换 Dockerfile 的 CMD**
-// （D5）：这样 4 个运维器官的接线天然留在原处，不需要在 watchV2.ts 里重建第二份。本仓已经
-// 反复因"留两份实现漂移"栽过（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。
+// （D5）：这样 4 个运维器官的接线天然留在原处，不用在第二个入口文件里重建第二份。本仓已经
+// 反复因"留两份实现漂移"栽过（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。那个备选
+// 入口 watchV2.ts 已于**第 7 步删除**——正是这条裁决的执行结果（它从未被 CMD 指过）。
 import type { DaemonV2Deps } from '../v2/daemonV2.js'
 import type { ScoutDb } from '../v2/db.js'
 import type { IdentifySchedulerDeps } from '../v2/identifyScheduler.js'
