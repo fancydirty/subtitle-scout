@@ -53,8 +53,10 @@ export const INGEST_ORCHESTRATE_SERIES_ID = 'ingest-trigger'
 /**
  * 建一个 ingest-trigger "tick"：跑一次 ingest()，若本轮有实际变化（result.changed）就
  * upsert 一个 taskType='orchestrate' 的 worker_task（identity 固定，天然去重）。像
- * makeIngestPass/旧 makeSelfScanTrigger 一样不带自己的定时器——daemon（src/v2/daemon.ts）
- * 决定何时调用它，门在自己的 meta 表时间戳（详见 daemon.ts 的 tickInner）。
+ * makeIngestPass/旧 makeSelfScanTrigger 一样不带自己的定时器——调用方决定何时调用它。
+ * 第 7 步 B 组：原注释说定时权归 `daemon（src/v2/daemon.ts）`、门在它的 meta 表时间戳
+ * ——那个文件已整体删除。今天的调用方是 cli/index.ts 里的两个"踢一脚"入口（甄别台认领后、
+ * daemonV2 翻译装盘后），都是事件驱动的即时触发，不再有周期性的 meta 时间门。
  */
 export function makeIngestTrigger(deps: IngestTriggerDeps): () => Promise<IngestTriggerResult> {
   return async function ingestTriggerTick(): Promise<IngestTriggerResult> {

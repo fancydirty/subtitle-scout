@@ -891,9 +891,15 @@ export interface WorkflowPendingMovieDTO {
 export interface WorkflowFreshnessDTO {
   /** settingsRepo.listRoots() 的路径列表。 */
   roots: string[]
-  /** meta 表 'last_ingest_at' 键（摄取层每轮心跳的真实写入点，见 v2/daemon.ts tickInner；
-   *  db.ts 注释里提到的 'last_reconcile_at' 未见任何代码路径写入，核实后改用真正被写的键）。
-   *  从未摄取过（首启/空库）时为 null。 */
+  /** meta 表 'last_ingest_at' 键。⚠️ 第 7 步 B 组实测：**这个键现在没有任何写入者**——原
+   *  唯一写入点是 v2/daemon.ts 的 tickInner（该文件随 ScoutDaemon 于本组整体删除），而
+   *  daemonV2 走自己的巡检时间门、从不写这个键。故本字段在生产恒为 null（"从未摄取过"），
+   *  dashboard 上的"上次扫描"因此常显空。
+   *
+   *  为什么本组不改：修它有两种方向（让 daemonV2 写这个键，或让 UI 改读 daemonV2 的巡检
+   *  时间戳），都是**行为变更**，而本组的硬性约束是"ScoutDaemonV2 行为一个字节都不能变"。
+   *  已作为新发现报告，留给后续决策。
+   *  （db.ts 注释里提到的 'last_reconcile_at' 同样未见任何代码路径写入。） */
   lastScanAt: number | null
   /** episodes + movies 两表行数之和——库内文件总量的机械计数。 */
   files: number

@@ -191,9 +191,11 @@ export interface DaemonV2Deps {
   requestIngest?: () => void
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 运维器官（D5 / C16）。签名照 DaemonDeps 的既有形态，接线点仍在 cmdWatch（切换方式是
-  // "cmdWatch 内部把 ScoutDaemon 换成 daemonV2"，不是换入口文件——这样这些接线天然留在原处，
-  // 不用在第二个入口文件里重建第二份；那个备选入口 watchV2.ts 已于第 7 步删除）。
+  // 运维器官（D5 / C16）。签名照旧 DaemonDeps 的既有形态（那个类型与它的 ScoutDaemon 已于
+  // 第 7 步 B 组随 src/v2/daemon.ts 整体删除；此处保留"照它的形态"这句是为了说明这批字段的
+  // optional 门控口径来自何处）。接线点仍在 cmdWatch——切换方式是"cmdWatch 内部把 ScoutDaemon
+  // 换成 daemonV2"，不是换入口文件，这样这些接线天然留在原处，
+  // 不用在第二个入口文件里重建第二份；那个备选入口 watchV2.ts 已于第 7 步删除。
   //
   // 全部 optional，缺省即整支休眠、零成本（同 DaemonDeps.dbMaintenance/gcStaging 的既有门控
   // 模式）：既有构造点与几十条既有测试都不传这些字段，不许因为"忘了接线"就让阶段 1 失效。

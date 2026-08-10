@@ -18,7 +18,7 @@ import { AuthService } from '../dashboard/auth.js'
 import { makeModel } from '../agent/llm.js'
 import { cmdTranslateItem, tryAutoTranslateCfg, makeDaemonTranslateRunItem } from './translateItemCommand.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
-import { dispatchTranslateTasks, runTranslateWorkerTask } from '../v2/translateWorkerTask.js'
+import { runTranslateWorkerTask } from '../v2/translateWorkerTask.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities, checkJimaku, checkSubhd,
@@ -40,7 +40,6 @@ import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
 import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
 import { runVerifySweep } from '../subtitleVerify/verifySweep.js'
 import { makeIngestPass, type IngestResult } from '../v2/ingest.js'
-import { type DaemonDeps } from '../v2/daemon.js'
 import { ScoutDaemonV2 } from '../v2/daemonV2.js'
 import { buildDaemonV2Deps } from './watchWiring.js'
 import { runIdentify } from '../agent/identifyWorker.js'
@@ -62,7 +61,6 @@ import { buildAdapters } from '../adapters/buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
 import { identifyFromPath } from '../recognition/identifyFromPath.js'
 import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
-import { SELF_SCAN_DEFAULT_INTERVAL_MS } from '../daemon/selfScan.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
 import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning, existingNestedRootsWarning } from './watchStartupWarnings.js'
@@ -200,7 +198,8 @@ async function cmdWatch() {
   const runs = new RunsRepo(db)
   // 字幕校验巡检（Task 6）的持久层。dashboard 那侧（server.ts）自己也建一个实例——两者
   // 无状态（只包一个 db 引用），共享同一个 sqlite 连接，各建一个与共用一个等价。
-  // 2026-08-07（spec §5）：巡检注入本轮雪藏（见下面 daemonDeps 里注释掉的那段），这个实例
+  // 2026-08-07（spec §5）：巡检注入本轮雪藏（承载它的 daemonDeps 字面量已于第 7 步 B 组删除，
+  // 雪藏状态不变——daemonV2 侧从未有过 verifySweep 字段），这个实例
   // 目前只剩"恢复注入时现成可用"的意义——按用户裁决不删。
   const verifyRepo = new SubtitleVerifyRepo(db)
 
@@ -235,7 +234,7 @@ async function cmdWatch() {
   // spec A §4.3：密钥解析器——env 优先、库兜底，dbGet 惰性读库（每 tick/每重建都是新鲜值）。
   const cfg = makeAdapterConfigResolver(process.env, (k) => settingsRepo.get(k))
 
-  // Construct DaemonDeps
+  // 语言/识别配置的解析（原注释写"Construct DaemonDeps"——那个类型已于第 7 步 B 组删除）
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
   // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
   // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
@@ -419,6 +418,28 @@ async function cmdWatch() {
     jobs, now: () => Date.now(), log,
   })
 
+  // ⚠️ 第 7 步 B 组的实测发现：**这个函数在生产已无调用者**，但刻意保留、不在本组删除。
+  //
+  // 事实链（可复核）：它唯一的调用点是原 `daemonDeps.executeJob` 闭包；`executeJob` 唯一的
+  // 消费者是 `ScoutDaemon.dispatch()`；而 ScoutDaemon 自第 2 步起就不再被构造（生产唯一入口
+  // cmdWatch 构造的是 ScoutDaemonV2），本组已把 ScoutDaemon 与 src/v2/daemon.ts 整体删除。
+  // 连带事实：`jobs.claimNext()` 在删除后**生产零调用点**——ScoutDaemon.dispatch 是它唯一的
+  // 非测试调用者。也就是说 jobs 队列现在只有生产者（dashboard 的 redispatch、
+  // dispatchTranslateTasks、各 upsertWorkerTask），没有任何消费者。
+  //
+  // 为什么本组不删它：这不是"B 组把它弄死的"，而是第 2 步切换入口那一刻就已经死了、B 组只是
+  // 让它显形。删它会连带拖走 runFindSubtitleWorkerTask / runRealignWorkerTask /
+  // runTranslateWorkerTask / runUnidentifiedFindSubtitleWorkerTask 四条 worker_task 执行路径、
+  // JobsRepo 的整套 claim/租约/reap 机制，以及 dashboard 上仍在写 jobs 行的 redispatch 端点
+  // ——那是"旧 jobs 队列整体退役"这个独立决策，涉及产品语义（dashboard 的手动重派按钮是否
+  // 还有意义），不是一次纯结构清理能顺手带走的。本组的硬性约束是"ScoutDaemonV2 行为一个
+  // 字节都不能变"，故只报告、不动手。
+  //
+  // 下面 `void handleWorkerTask` 是**诚实的坟头标记**：让"零调用者"这个事实在源码里可见，
+  // 而不是靠 tsconfig 没开 noUnusedLocals 蒙过去（本仓 noUnusedLocals 下另有 6 处同类既有
+  // 未读局部，全部先于本组存在）。
+  //
+  // ── 以下是它原有的设计注释，退役决策做出前原样保留 ──
   // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
   // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）在被调用之后，
   // 自己都已经把抛出的异常兜进 completeError（worker-exhaustion 要求：find-subtitle worker 撞
@@ -572,6 +593,10 @@ async function cmdWatch() {
       log(`warn: job ${job.id} worker_task(${String(payload.taskType)}) 组装阶段抛错，已失败退避: ${msg}`)
     }
   }
+  // 坟头标记（见上方 handleWorkerTask 的头注释）：生产零调用者——原调用点 daemonDeps.executeJob
+  // 随 ScoutDaemon/DaemonDeps 于第 7 步 B 组一并删除。保留函数体是刻意的（删它属于"旧 jobs
+  // 队列整体退役"这个独立决策，涉及 dashboard redispatch 的产品语义），这一行只让事实显形。
+  void handleWorkerTask
 
   // Dashboard v2（媒体库 API，读 v2 SQLite；海报直出 TMDB CDN，不再走服务端代理）
   // spec A §4.7 步 1：dashboard 先于门禁评估与 worker 装配启动——顺序即语义，容器健康检查
@@ -603,8 +628,8 @@ async function cmdWatch() {
         now: () => Date.now(),
       },
       // 验收修复轮一 Task V2：甄别台目录组认领成功后踢一脚扫描（DashboardOpts.requestIngest
-      // 注释）——复用上方已经构造好的同一个 ingestTrigger 闭包（daemon 自己的周期 tick 也调它，
-      // 见 daemonDeps.ingestTrigger），认领这一刻立即触发一轮，不用等 ingestEveryMs 时间门。
+      // 注释）——复用上方已经构造好的同一个 ingestTrigger 闭包（daemonV2 的翻译流装盘后也调它，
+      // 见下方 requestIngest），认领这一刻立即触发一轮，不用等下一轮自然巡检。
       // fire-and-forget：不 await（不让 POST /api/v2/triage/claim 卡在一整轮扫描后才响应），
       // ingestTrigger() 返回的 promise 若拒绝，在这里兜底记日志，不让未捕获的 rejection 冒到
       // 进程顶层（server.ts 那侧的 try/catch 只兜同步抛错，异步失败必须自己接住）。
@@ -638,7 +663,7 @@ async function cmdWatch() {
   if (!setupSatisfied(cfg)) console.warn(setupModeWarningLine())
 
   // spec A §4.2：secrets_version watcher（daemon preTick 每 tick 比对）与点火日志追踪，二者在
-  // daemonDeps 字面量之前定义——rebuild 整体换 clients.current，satisfaction tracker 记 engine live。
+  // daemonV2 接线之前定义——rebuild 整体换 clients.current，satisfaction tracker 记 engine live。
   const secretsWatcher = makeSecretsWatcher({
     readVersion: () => settingsRepo.secretsVersion(),
     rebuild: async () => { clients.current = await buildCurrent() },
@@ -647,102 +672,25 @@ async function cmdWatch() {
   })
   const satisfactionTracker = makeSatisfactionTracker({ satisfied: () => setupSatisfied(cfg), log })
 
-  const daemonDeps: DaemonDeps = {
-    lib,
-    jobs,
-    runs,
-    ingestTrigger,
-    // dashboard G4：每次 daemon tick 调用时重新取一遍 roots——同 ingestPass，不锁定启动时刻的快照。
-    // R8-1：传进程启动时间——gcOrphans 的两条保留条件之一（新建未写 / 最近 10 分钟有写入），
-    // 两者任一满足就不清，避免误删并发 CLI 正在用的工作台。
-    gcStaging: () => gcOrphans(currentRoots(), new Set(), bootTimeMs),
-    // 清算波 R-6（A-F7）：job.kind==='worker_task' 是 claimNext() 这条 kind 无关队列上唯一的
-    // 活执行通路。旧管线的中转层（v2/executor.ts 的 executeJob/executeRealignBranch）与它的
-    // 路由决策（cli/legacyJobRouting.ts 的 routeLegacyJob/tombstoneLegacyJob）已整体删除：
-    // - kind==='realign' 的 worker_task 早已经由 handleWorkerTask 直连 runRealignWorkerTask
-    //   （见上方 realign 分支），从不经过这个旧中转层——executor.ts 服务的是已作古的老式
-    //   kind==='realign' 单行（非 worker_task），upsertWanted（唯一的创建方）已随死器官处决，
-    //   production 早已零调用点，没有任何在制品行会走到这里。
-    // - kind==='series_season'/'movie' 是更早退役（Wave 2A）的老式 kind，同样零创建点。
-    // 两者的存量墓碑处理（tombstoneLegacyJob）已不再需要专门的"体面收场"语义——任何非
-    // worker_task 的 job 到达这里都是接线回归警报（不应该发生的状态），completeError 兜底：
-    // 失败退避而不是让 daemon 崩，同时在 last_error 里留下可诊断的痕迹。
-    executeJob: async (job) => {
-      if (job.kind === 'worker_task') {
-        await handleWorkerTask(job)
-        return
-      }
-      jobs.completeError(job.id, `unknown/retired job kind reached executeJob: ${job.kind} (job ${job.id})`, Date.now())
-      log(`warn: job ${job.id} kind=${job.kind} 已不是活执行通路（legacy 管线已处决），已失败退避`)
-    },
-    log,
-    now: () => Date.now(),
-    // E AI 翻译:派活双门——①显式 TRANSLATE_* 三件套(部署层)②settings.ai_translate_enabled==='true'
-    // (行为级开关,默认关)。**每 tick 惰性求值**(同 scan_interval_ms 的债务D5 口径):设置页改完
-    // 下一 tick 生效,不用重启守护进程;TRANSLATE_* 缺席时 tryAutoTranslateCfg()=null 同样按 tick 现取。
-    // 派活纯机械(SQL 筛候选 + 幂等 upsert,无 LLM);worker claim 端仍只认 TRANSLATE_*(开关只断派活,
-    // 存量行不受影响)。失败只记一行 warn 不炸 tick。
-    dispatchTranslate: () => {
-      if (tryAutoTranslateCfg(cfg) && settingsRepo.get('ai_translate_enabled') === 'true') {
-        dispatchTranslateTasks(db, jobs, () => Date.now())
-      }
-    },
-    // DB 审计🔴 耐久运维:周期 wal_checkpoint + 天级 VACUUM INTO 在线备份(留 7 份),
-    // 内部时间门控;失败只记日志(运维是增益,不拖主循环)。
-    dbMaintenance: (() => {
-      const state = makeMaintenanceState()
-      return () => runDbMaintenance(db, cacheRoot, state, Date.now(), log)
-    })(),
-    concurrency: {
-      searching: 1,
-    },
-    // 债务D5：改惰性读——行为级 settings.scan_interval_ms 优先于部署级 SCAN_INTERVAL_MS env
-    // （同 target_languages 的既有优先级口径），每 tick 求值，设置页改完下一 tick 生效。
-    ingestEveryMs: () => Number(settingsRepo.get('scan_interval_ms')) || Number(process.env.SCAN_INTERVAL_MS) || SELF_SCAN_DEFAULT_INTERVAL_MS,
-    // 债务D5：trace 保留天数同款惰性读，默认 30 天。
-    traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 30,
-    // 字幕校验巡检（Task 6）：**本轮雪藏（spec §5/§10）——不再注入 verifySweep**。
-    // DaemonDeps.verifySweep 是 optional，daemon.ts 里 `this.deps.verifySweep &&` 那条短路让
-    // 整个分支休眠，零成本（不查候选、不 spawn ffmpeg、不写 meta 时间门）。
-    // runVerifySweep / verifyAndRecord 的实现与 import 全部保留（用户裁决"代码可以不删"）；
-    // 将来重启用时，把下面注释掉的这一段注入原样恢复即可，不需要动 daemon 侧任何代码。
-    //
-    // 历史注释（原注入的设计理由，恢复时一并参考）：让校验功能对用户真正可见的唯一通道——
-    // correct/revert 两条写路径只能给**已有结论**的条目重检，没有任何地方给"从未检测过"的
-    // 条目做首次检测（见 subtitleVerify/verifySweep.ts 头注释）。低频（6h）+ 双预算
-    // （5 条 / 5 分钟）+ 串行。**只检测，绝不校正**（spec 铁律③"是否校正是用户的选择"）：
-    // verifyAndRecord 唯一的写动作是往 subtitle_verify 落一行结论；发现偏移只把红芯片点亮，
-    // 等用户点校正。这里没有、也绝不能出现 shiftSubtitleTiming 的调用点。无 env 门控
-    // （对照 dispatchTranslate 的 TRANSLATE_* 门）：校验不依赖任何外部凭据或付费服务。
-    //
-    // verifySweep: () =>
-    //   runVerifySweep({
-    //     db,
-    //     repo: verifyRepo,
-    //     verify: (c) => verifyAndRecord(verifyRepo, c.itemId, c.videoPath, c.subtitlePath, Date.now()),
-    //     log,
-    //     now: () => Date.now(),
-    //   }).then(({ checked, skipped, failed, budgetSkipped }) => {
-    //     // 一行统计只在真做过事时打——稳态下候选集合为空（检过的不再是候选），
-    //     // 每 6h 一行 "0/0/0" 的噪声对排障没有价值。
-    //     if (checked + skipped + failed + budgetSkipped > 0) {
-    //       log(
-    //         `verify sweep: checked=${checked} skipped=${skipped} ` +
-    //         `failed=${failed} budgetSkipped=${budgetSkipped}`,
-    //       )
-    //     }
-    //   }),
-    // spec A §4.2/§4.7：preTick 每 tick 最先跑——secrets_version 变了在这里完成热重建
-    // （整体换 clients.current），随后 satisfaction tracker 在"点火"那一刻记 engine live。
-    preTick: async () => {
-      await secretsWatcher()
-      satisfactionTracker()
-    },
-    // spec A §4.6/§4.7 步 3：产工作许可 = engine_enabled(fail-open) ∧ setup 闸(TMDB+LLM 可解析)。
-    // 维护循环（续租/孤儿回收/dbMaintenance 等）不闸——见 daemon.ts 里 `if (permitted` 的
-    // 四处分支闸（ingest / dispatchTranslate / verifySweep / dispatch）。
-    workPermitted: () => engineEnabled((k) => settingsRepo.get(k)) && setupSatisfied(cfg),
-  }
+  // 第 7 步 B 组：原先这里是一个 15 字段的 `DaemonDeps` 字面量，它存在的唯一理由已经是
+  // "给下面 4 个运维器官的闭包找个地方待着"——ScoutDaemonV2 只从它身上取 dbMaintenance /
+  // traceRetentionDays / preTick / workPermitted 四个，另外 11 个字段（lib/jobs/runs/
+  // ingestTrigger/gcStaging/executeJob/log/now/dispatchTranslate/concurrency/ingestEveryMs）
+  // 自 ScoutDaemon 停止被构造起就零消费者。承载它们的类型 DaemonDeps 与唯一消费者
+  // ScoutDaemon 已随 src/v2/daemon.ts 整体删除，故字面量一并拆掉：4 个器官直接内联进下方
+  // buildDaemonV2Deps({...}) 的调用（那里本就是它们唯一的去处），不再绕一层"先塞进一个
+  // 15 字段的类型、再用 `!` 非空断言取出来"——那 4 处 `!` 正是 DaemonDeps 把它们声明成
+  // optional 留下的疤，内联后类型天然收紧（WatchWiringArgs 上这 4 个字段是必填的）。
+  //
+  // dbMaintenance 的闭包工厂在这里独立成 const 而不是内联进下方对象字面量：它需要一个
+  // 跨调用存活的 makeMaintenanceState()（内部时间门控就靠这份 state 记"上次 checkpoint /
+  // 上次备份是什么时候"），写成 IIFE 塞进字面量会让这层意图埋在 40 行接线中间。
+  // DB 审计🔴 耐久运维：周期 wal_checkpoint + 天级 VACUUM INTO 在线备份（留 7 份），
+  // 内部时间门控；失败只记日志（运维是增益，不拖主循环）。
+  const dbMaintenance = (() => {
+    const state = makeMaintenanceState()
+    return () => runDbMaintenance(db, cacheRoot, state, Date.now(), log)
+  })()
 
   // 去 Jellyfin 化 P7：不再有单一"正在看哪台 Jellyfin"的地址可报，改报实际生效的媒体根白名单
   // （DB media_roots 与 MEDIA_ROOTS 首启种子都为空时 currentRoots() 为空——上方已经打印过对应
@@ -754,18 +702,22 @@ async function cmdWatch() {
   const subtitleSourcesWarning = zeroSubtitleSourcesWarningLine(process.env)
   if (subtitleSourcesWarning) console.warn(subtitleSourcesWarning)
 
-  // 第 2 步（C2 + C16 + D5）：容器入口从此跑 ScoutDaemonV2（每日巡检模型）。
+  // 第 2 步（C2 + C16 + D5）：容器入口跑 ScoutDaemonV2（每日巡检模型）。
   //
-  // 切换方式是**内部替换**，不是换 Dockerfile 的 CMD 指向另一个入口（D5 裁决）：上面 daemonDeps
-  // 里那 4 个运维器官（dbMaintenance / gcStaging / traceRetentionDays / 写探针清扫）的接线
-  // 天然留在这个函数里，不用在第二个入口文件里重建第二份——重建 = 第二份实现 = 必然漂移，
-  // 本仓已经反复栽过（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。曾经存在的那个
-  // 备选入口 watchV2.ts 已于**第 7 步删除**（这条裁决落地后它从未被 CMD 指过，是死代码）。
+  // 切换方式是**内部替换**，不是换 Dockerfile 的 CMD 指向另一个入口（D5 裁决）：那 4 个运维
+  // 器官（dbMaintenance / gcStaging / traceRetentionDays+runs / 写探针清扫，外加 preTick /
+  // workPermitted）的接线天然留在这个函数里，不用在第二个入口文件里重建第二份——重建 =
+  // 第二份实现 = 必然漂移，本仓已经反复栽过（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。
+  // 曾经存在的那个备选入口 watchV2.ts 已于**第 7 步删除**（它从未被 CMD 指过，是死代码）。
   //
-  // 旧 ScoutDaemon 的**代码保留、不再被构造**：翻译流仍挂在它的 dispatchTranslate 上，
-  // 第 4 步才迁到 daemonV2。故**翻译功能从这一步起停摆到第 4 步**——spec §4 第 2/3 步的验收
-  // 注记（C34 + C45）已明确这是已知且接受的过渡代价。上方 daemonDeps 字面量同样保留：
-  // 它是第 4 步接回翻译时的现成参照，且 handleWorkerTask 仍被 dashboard 的手动 redispatch 用。
+  // 第 7 步 B 组：旧 ScoutDaemon 与它的 DaemonDeps 类型已**整体删除**（src/v2/daemon.ts 不再
+  // 存在）。翻译流早在第 4 步就迁到了 daemonV2（下方 translateEnabled / translateRunItem 两根
+  // 线），不再挂在旧 daemon 的 dispatchTranslate 上，那条"停摆到第 4 步"的过渡代价已经结清。
+  //
+  // 这里原有一句"handleWorkerTask 仍被 dashboard 的手动 redispatch 用"——**那是假的**，已删。
+  // dashboard 的 POST /api/v2/workflow/redispatch 走 triageOps.redispatch → jobs.upsertWorkerTask，
+  // 只**写一行 jobs 记录**，从不调用 handleWorkerTask。真实情况见下方 handleWorkerTask 定义处
+  // 的注释：随 ScoutDaemon 删除，jobs 队列在生产已无任何认领者（claimNext 零生产调用点）。
   const daemon = new ScoutDaemonV2(buildDaemonV2Deps({
     db,
     rootsProvider: currentRoots,
@@ -782,10 +734,13 @@ async function cmdWatch() {
     targetLanguage: () => languagesNow().targetLanguages[0],
     log,
     now: () => Date.now(),
-    // ── D5 的 4 个运维器官：与上方 daemonDeps 用**同一批闭包**，不另建第二份 ──
+    // ── D5 的 4 个运维器官（C16：切换入口不得静默丢失既有能力）──
+    // 第 7 步 B 组：这 4 个直接内联在这里。此前它们先被塞进一个 15 字段的 `DaemonDeps`
+    // 字面量、再用 `daemonDeps.dbMaintenance!` 这种非空断言取回来——那层中转随
+    // ScoutDaemon/DaemonDeps 一起删掉了，`!` 也跟着消失（WatchWiringArgs 上这 4 个字段必填）。
     gcOrphans,
     bootTimeMs,
-    dbMaintenance: daemonDeps.dbMaintenance!,
+    dbMaintenance,
     // 写探针清扫（C16 第 4 项）：旧世界里它挂在 ingest 的走盘循环里（ingest.ts:894，顺便扫
     // 本轮见过的每个目录），而 daemonV2 不跑 ingest——不在这里接就没有任何代码路径会清它，
     // 而 daemonV2 自己每次 writableRoots() 探测都会在守备目录根上再留一枚新探针
@@ -799,9 +754,18 @@ async function cmdWatch() {
       return swept
     },
     runs,
-    traceRetentionDays: daemonDeps.traceRetentionDays!,
-    preTick: daemonDeps.preTick!,
-    workPermitted: daemonDeps.workPermitted!,
+    // 债务D5：trace 保留天数惰性读，默认 30 天（设置页改完下一轮巡检生效，不用重启容器）。
+    traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 30,
+    // spec A §4.2/§4.7：preTick 每拍最先跑——secrets_version 变了在这里完成热重建
+    // （整体换 clients.current），随后 satisfaction tracker 在"点火"那一刻记 engine live。
+    preTick: async () => {
+      await secretsWatcher()
+      satisfactionTracker()
+    },
+    // spec A §4.6/§4.7 步 3：产工作许可 = engine_enabled(fail-open) ∧ setup 闸(TMDB+LLM 可解析)。
+    // false 时整轮巡检跳过，维护循环（dbMaintenance/trace 修剪/孤儿回收）不闸——分界见
+    // daemonV2.ts 里 DaemonV2Deps.workPermitted 的字段注释。
+    workPermitted: () => engineEnabled((k) => settingsRepo.get(k)) && setupSatisfied(cfg),
     // D14 / C41：阶段 2.6 停牌复查闸的取件范围。**与上方 dispatchTranslate 逐字同源的双门控**
     // （TRANSLATE_* 三凭证部署层 ∧ settings.ai_translate_enabled 行为级，默认关）——两处若各写
     // 一份判据，用户眼里"翻译开着"这一件事会在派活与复查两条路上得到相反答案，而本仓已因

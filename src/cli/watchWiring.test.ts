@@ -7,8 +7,9 @@
 // 器官漏接不会有任何报错，只是从此永不 checkpoint）。
 //
 // 剩下的"cmdWatch 到底 new 了哪个 daemon 类"这一条无法用纯函数覆盖，由文件末尾那条
-// 源码断言兜住。它是弱证据（不执行代码），但它守的东西很窄很硬：有人把入口切回旧
-// ScoutDaemon 时必须红。
+// 源码断言兜住。它是弱证据（不执行代码），但它守的东西很窄很硬：有人重建第二个 daemon
+// 入口、导致运维器官静默漏接一批时必须红（旧 ScoutDaemon 是这个错误形态的历史名字，
+// 它本身已于第 7 步 B 组随 src/v2/daemon.ts 删除——详见那条用例自己的注释）。
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { buildDaemonV2Deps } from './watchWiring.js'
@@ -183,7 +184,19 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
     expect(src).toMatch(/await daemon\.run\(shutdown\.signal\)/)
   })
 
-  it('🔴 旧 ScoutDaemon 不再被 cmdWatch 构造（切换是"内部替换"，D5）', () => {
+  it('🔴 不许出现第二个 daemon 入口重建接线（D5；旧 ScoutDaemon 已于第 7 步 B 组删除）', () => {
+    // 处理判断（第 7 步 B 组）：**保留这条，不删**，与上一批处理 watchV2 死守卫时同一裁决。
+    //
+    // 表面上它已永久绿——`ScoutDaemon` 这个类连同 src/v2/daemon.ts 已整体删除，今天没有任何
+    // 符号能让它红。但它守的不是"那个类还在不在"，而是 D5 裁决的另一半、且是面向未来的：
+    // **不许有人再造第二个 daemon 并在 cmdWatch 里构造它**。这个故障形态的代价极高且静默——
+    // 第二个 daemon 意味着第二份接线，而那 4 个运维器官（+ preTick/workPermitted）漏接任何
+    // 一个都不会报错，只是从此永不 checkpoint、永不备份、workspace 垃圾无人回收，直到软路由
+    // 下一次掉电（2026-07-21 那次报废了 WAL 里 4MB 数据，db.ts:579-584 记有实案）。
+    //
+    // 正则刻意保持 `new ScoutDaemon\(` 而不是放宽成"任何 new XxxDaemon"：后者会把合法的
+    // `new ScoutDaemonV2(` 一起判红（上一条用例正要求它出现）。ScoutDaemon 是这个错误形态的
+    // 历史名字，留住这个名字就是留住那条裁决唯一的可执行痕迹，成本为零。
     expect(src).not.toMatch(/new ScoutDaemon\(/)
   })
 
