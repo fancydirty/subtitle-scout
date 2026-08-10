@@ -1161,7 +1161,11 @@ describe('字幕校验三端点', () => {
   }
 
   async function startSub(backups: string[] = []): Promise<{ base: string }> {
-    return start(distWith('x'), 'tok', undefined, undefined, undefined, undefined, undefined, stubDeps(backups))
+    // 位置参数（reconcileAll 删除后）：distDir, token, env, jobs, tmdb, requestIngest,
+    // subtitleWriteDeps, subtitleCompareDeps, extra —— stubDeps() 必须落在第 7 位。
+    // 曾多给一个 undefined 让它落到第 8 位（subtitleCompareDeps），于是 subtitleWriteDeps
+    // 缺席 → correct/revert 接真实模块去读真磁盘 → 409/400 而非 200。
+    return start(distWith('x'), 'tok', undefined, undefined, undefined, undefined, stubDeps(backups))
   }
 
   describe('GET /api/v2/subtitle/verify', () => {
