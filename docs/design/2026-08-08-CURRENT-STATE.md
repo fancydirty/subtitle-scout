@@ -194,6 +194,42 @@ covered**，这 7 天里它仍满足工作台谓词、被反复重找，白烧 L
 该列读者用可注入时钟、写者用调用方的 now，两者不同源时 `now-1` 对读者是"未来 25 年"
 → 谓词永不命中而单测全绿。
 
+### 单元 5：删文件验证「以文件为真源」（R7 + R23/R24）✅
+
+手工删掉 1 个字幕（Peacemaker S02E01 的 .srt）+ 1 个视频（Kraven the Hunter），
+只把那一集的 `sub_recheck_at` 拉到点（验 B 档精确性，不是全库雪崩），跑一轮：
+
+```
+scan: 删除磁盘上已消失的文件 1 行（R7）: .../Movies    ← 精确 1 行，不多不少
+scan: 字幕存在性观察 A档=0 B档=1（R24 / D12）          ← 只查拉到点的那 1 个
+S02E01: sub_status 从 covered 回退成 NULL、needs=1、attempt=0
+```
+
+**最终对账**（这是第 6 步最硬的一条证据）：
+```
+covered = 34  ==  磁盘字幕 34
+files   = 60  ==  磁盘视频 60
+```
+用户手删字幕 → 系统回退状态并会重新找它，且**不记它一次失败**（attempt 仍 0）。
+这就是 R23/R24「磁盘是真源、covered 是事实观察」在生产中的完整闭环。
+
+### 单元 3 的真实成绩单
+
+| 作品 | 已装 | 待找 | 不需要 |
+|---|---|---|---|
+| **Peacemaker** | **8** | 0 | 0 | ← 当年装错 8 集的事故案例，这次全对 |
+| IT: Welcome to Derry | 7 | 0 | 1 |
+| Gachiakuta | 13 | 0 | 8 |
+| Adam's Sweet Agony | 5 | 3 | 0 |
+| Cassandra（德语） | 0 | 6 | 0 |
+| Constellation | 0 | 0 | 7 |
+| The Astronaut / Pulp Fiction | 各 1 | 0 | 0 |
+
+**待找的 9 个全是 `sub:retry-later` + `sub_attempt=0` + `sub_retry_streak=1`**——
+这正是第 5 步 R9 两条边界在生产中工作的样子：assrt 配额只剩 5（一次成功的 "not now"，
+不是 error），agent 正确报 retry_later，scheduler 豁免计数但记了 streak（CAP=3 才折算）。
+**没有把源站沉默冤枉成"确实没有"**，也没有因此提前移交翻译。
+
 ### 环境实测事实（与本地盘语义不同，值得记）
 
 - `find -delete` **在 CIFS 上静默失效**（报成功但文件还在）——必须用 `rm`
