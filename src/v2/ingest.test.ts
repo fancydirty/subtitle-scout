@@ -111,7 +111,9 @@ describe('makeIngestPass — new file recognized end-to-end (TV)', () => {
 
     // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
     // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
-    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    // 就安静躺着，orchestrator 不知道有活干。**第 7 步删掉 orchestrate 兜底心跳后这条断言更
+    // 硬**：过去最坏也就是躺到 24h 兜底心跳来捞一次，现在 ingest 的 changed 是唯一的触发源，
+    // 它一旦回 false 那批 park 就是永久无人认领。
     expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     // 不建行：ingest 只发 raw 数据
     expect(lib.getSeries('tmdb:108964')).toBeNull()
@@ -144,7 +146,9 @@ describe('makeIngestPass — new file recognized end-to-end (movie)', () => {
 
     // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
     // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
-    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    // 就安静躺着，orchestrator 不知道有活干。**第 7 步删掉 orchestrate 兜底心跳后这条断言更
+    // 硬**：过去最坏也就是躺到 24h 兜底心跳来捞一次，现在 ingest 的 changed 是唯一的触发源，
+    // 它一旦回 false 那批 park 就是永久无人认领。
     expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     // 不建行：ingest 只发 raw 数据
     expect(lib.getMovie('tmdb:603')).toBeNull()
@@ -237,7 +241,9 @@ describe('makeIngestPass — park', () => {
 
     // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
     // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
-    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    // 就安静躺着，orchestrator 不知道有活干。**第 7 步删掉 orchestrate 兜底心跳后这条断言更
+    // 硬**：过去最坏也就是躺到 24h 兜底心跳来捞一次，现在 ingest 的 changed 是唯一的触发源，
+    // 它一旦回 false 那批 park 就是永久无人认领。
     expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     const parked = lib.listParkedPaths()
     expect(parked).toHaveLength(1)
@@ -1912,7 +1918,9 @@ describe('makeIngestPass — mechanical extras (R4)', () => {
 
     // 2026-07-28 真库阶段一实测修复：新 park = 库状态变化（changed=true）→ 触发 orchestrate。
     // 旧断言 changed:false 钉死的正是触发缺口：重构后新文件只 park 不建行，新 park 的文件
-    // 安静躺 24h 等兜底心跳，orchestrator 不知道有活干。
+    // 就安静躺着，orchestrator 不知道有活干。**第 7 步删掉 orchestrate 兜底心跳后这条断言更
+    // 硬**：过去最坏也就是躺到 24h 兜底心跳来捞一次，现在 ingest 的 changed 是唯一的触发源，
+    // 它一旦回 false 那批 park 就是永久无人认领。
     expect(result).toEqual({ scanned: 1, upserted: 0, parked: 1, removed: 0, changed: true })
     expect(recognize).not.toHaveBeenCalled()
     expect(probe).not.toHaveBeenCalled()

@@ -7,8 +7,9 @@
 // 器官漏接不会有任何报错，只是从此永不 checkpoint）。
 //
 // 剩下的"cmdWatch 到底 new 了哪个 daemon 类"这一条无法用纯函数覆盖，由文件末尾那条
-// 源码断言兜住。它是弱证据（不执行代码），但它守的东西很窄很硬：有人把入口切回旧
-// ScoutDaemon 时必须红。
+// 源码断言兜住。它是弱证据（不执行代码），但它守的东西很窄很硬：有人重建第二个 daemon
+// 入口、导致运维器官静默漏接一批时必须红（旧 ScoutDaemon 是这个错误形态的历史名字，
+// 它本身已于第 7 步 B 组随 src/v2/daemon.ts 删除——详见那条用例自己的注释）。
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { buildDaemonV2Deps } from './watchWiring.js'
@@ -183,13 +184,29 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
     expect(src).toMatch(/await daemon\.run\(shutdown\.signal\)/)
   })
 
-  it('🔴 旧 ScoutDaemon 不再被 cmdWatch 构造（切换是"内部替换"，D5）', () => {
+  it('🔴 不许出现第二个 daemon 入口重建接线（D5；旧 ScoutDaemon 已于第 7 步 B 组删除）', () => {
+    // 处理判断（第 7 步 B 组）：**保留这条，不删**，与上一批处理 watchV2 死守卫时同一裁决。
+    //
+    // 表面上它已永久绿——`ScoutDaemon` 这个类连同 src/v2/daemon.ts 已整体删除，今天没有任何
+    // 符号能让它红。但它守的不是"那个类还在不在"，而是 D5 裁决的另一半、且是面向未来的：
+    // **不许有人再造第二个 daemon 并在 cmdWatch 里构造它**。这个故障形态的代价极高且静默——
+    // 第二个 daemon 意味着第二份接线，而那 4 个运维器官（+ preTick/workPermitted）漏接任何
+    // 一个都不会报错，只是从此永不 checkpoint、永不备份、workspace 垃圾无人回收，直到软路由
+    // 下一次掉电（2026-07-21 那次报废了 WAL 里 4MB 数据，db.ts:579-584 记有实案）。
+    //
+    // 正则刻意保持 `new ScoutDaemon\(` 而不是放宽成"任何 new XxxDaemon"：后者会把合法的
+    // `new ScoutDaemonV2(` 一起判红（上一条用例正要求它出现）。ScoutDaemon 是这个错误形态的
+    // 历史名字，留住这个名字就是留住那条裁决唯一的可执行痕迹，成本为零。
     expect(src).not.toMatch(/new ScoutDaemon\(/)
   })
 
   it('🔴 Dockerfile 的 CMD 仍指向 cli/index.js watch（D5：不换入口文件，运维器官接线天然保留）', () => {
     const dockerfile = readFileSync('Dockerfile', 'utf8')
     expect(dockerfile).toContain('"dist/cli/index.js", "watch"')
+    // 下面这条防的**不再是** watchV2.ts（该文件已于第 7 步删除，现在没人能把 CMD 指过去）。
+    // 保留的理由是它防的是 D5 裁决的另一半、且是面向未来的：谁要是重新造一个第二入口
+    // （watchV2 是这个错误形态的历史名字）并把 CMD 指过去，运维器官接线就会静默漏接一批
+    // （见本文件头注释的 WAL 掉电实案）。成本为零，且是这条裁决唯一的可执行痕迹。
     expect(dockerfile).not.toContain('watchV2')
   })
 
@@ -205,9 +222,14 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
     //   · 硬编码 true  → 用户没开翻译，handoff_translate 永不复查 → C41 永久卡死
     // 弱证据（不执行代码）但守的东西很窄很硬，与本文件末尾那条"入口是不是 V2"同一手法。
     //
-    // 口径必须与 cli/index.ts:767 的 dispatchTranslate 逐字同源（TRANSLATE_* 凭证 ∧
-    // settings 行为级开关）：两处若各写一份判据，用户眼里"翻译开着"这一件事会在派活与复查
-    // 两条路上得到相反答案——本仓已因"留两份漂移实现"栽过多次（D7 / C30）。
+    // 定位方式刻意用**符号名而非行号**：本仓已有多处"注释硬写行号"在删除重构期持续腐烂的
+    // 实例（这条注释自己此前就写着 `cli/index.ts:767`，B 组删 daemon.ts 后已指向别的内容）。
+    // 被守的判据是 cmdWatch 传给 buildDaemonV2Deps 的 `translateEnabled` 字段（搜符号名即达），
+    // 口径 = TRANSLATE_* 凭证（tryAutoTranslateCfg）∧ settings 行为级开关（ai_translate_enabled）。
+    // 它曾与旧 daemon 的 `dispatchTranslate` 字段逐字同源；该字段已随 src/v2/daemon.ts 于第 7 步
+    // B 组删除，故今天这是全仓唯一一处此判据。将来若再添一处派活闸，必须回到 `translateEnabled`
+    // 复用——两处各写一份判据，用户眼里"翻译开着"这一件事会在派活与复查两条路上得到相反
+    // 答案（本仓已因"留两份漂移实现"栽过多次：D7 / C30）。
     const m = src.match(/translateEnabled:\s*\(\)\s*=>([\s\S]{0,200}?)\n/)
     expect(m).not.toBeNull()
     const body = m![1]

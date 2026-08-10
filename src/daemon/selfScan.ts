@@ -11,7 +11,9 @@ import { join, extname } from 'node:path'
  * refresh-bridge 两条独立分支"已删除），production 自此零调用点，随死器官处决整体删除。
  * 本文件仍导出的 walkVideoFiles/isVideoFile（内部）/isJunkDir（内部）/
  * SELF_SCAN_DEFAULT_INTERVAL_MS 是活体——v2/ingest.ts、v2/realignLibraryPort.ts、
- * cli/index.ts、v2/daemon.ts 仍在用同一份遍历实现与心跳间隔常量。
+ * v2/daemonV2.ts 仍在用同一份遍历实现（走盘）。至于那个心跳间隔常量：第 7 步 B 组删掉
+ * v2/daemon.ts 与 cli/index.ts 的 ingestEveryMs 之后，它已无生产消费者——详见常量自身的
+ * 注释（刻意保留的理由写在那里）。
  */
 
 /**
@@ -85,9 +87,17 @@ function walk(dir: string, out: string[]): void {
 }
 
 /**
- * One source of truth for B2's interval wiring (SCAN_INTERVAL_MS env + the daemon loop's own
- * time-gate, the same shape as DaemonDeps.reconcileEveryMs in src/v2/daemon.ts). Picking the
- * default here — rather than leaving it to whichever call site first needs a number — means B2
- * and any future caller import the same constant instead of two modules quietly drifting apart.
+ * One source of truth for the ingest heartbeat interval (SCAN_INTERVAL_MS env + settings
+ * scan_interval_ms). Picking the default here — rather than leaving it to whichever call site
+ * first needs a number — means any future caller imports the same constant instead of two
+ * modules quietly drifting apart.
+ *
+ * 第 7 步 B 组：原注释说它与 `DaemonDeps.reconcileEveryMs in src/v2/daemon.ts` 同形——那个
+ * 文件与类型已整体删除，且 cli/index.ts 侧唯一消费它的 `ingestEveryMs` 字段随同一批清理
+ * 消失（daemonV2 走的是自己的 INSPECT_INTERVAL_MS 日巡检时间门，不读这个常量）。
+ * 本常量今天的真实消费者只剩 daemon/selfScan.test.ts 的那条值断言——**刻意保留不删**：
+ * 它是 15 分钟这个数字的单一真相点，spec 的 scan_interval_ms 设置键仍以它为默认语义
+ * （dashboard 的 apiV2 settings 白名单里 scan_interval_ms 仍可写），删掉等于让那个键失去
+ * 文档化的默认值。属于"旧 ingest 心跳整体退役"决策的范围，本组只报告、不动手。
  */
 export const SELF_SCAN_DEFAULT_INTERVAL_MS = 15 * 60_000

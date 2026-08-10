@@ -891,19 +891,52 @@ export interface WorkflowPendingMovieDTO {
 export interface WorkflowFreshnessDTO {
   /** settingsRepo.listRoots() 的路径列表。 */
   roots: string[]
-  /** meta 表 'last_ingest_at' 键（摄取层每轮心跳的真实写入点，见 v2/daemon.ts tickInner；
-   *  db.ts 注释里提到的 'last_reconcile_at' 未见任何代码路径写入，核实后改用真正被写的键）。
-   *  从未摄取过（首启/空库）时为 null。 */
+  /** 上次扫描时刻 = meta 表 `last_inspect_at` 键（daemonV2.writeLastInspectAt 写入）。
+   *  从未巡检过时 null。
+   *
+   *  ## 为什么读 `last_inspect_at` 而不是 `last_ingest_at`（2026-08-10）
+   *
+   *  本字段原读 `last_ingest_at`，而那个键**已经没有任何写入者**——归因不是第 7 步 B 组
+   *  （B 组删掉的 v2/daemon.ts 只是尸体），而是**第 2 步**（915f3ec）把 cmdWatch 内部的
+   *  ScoutDaemon 换成 ScoutDaemonV2：那之后 ScoutDaemon 再没被构造过，它 tickInner 里
+   *  那唯一的写入点从此就是死代码。所以这个字段自第 2 步起在生产恒为 null。
+   *
+   *  后果是一句**主动的假话**：前端 text.ts lastCheckedLine() 见 null 就显示"还没扫过"，
+   *  而 daemonV2 每天都在正常巡检。讽刺的是 text.ts 那段"lastScanAt === null 时绝不编一个
+   *  时刻出来"的注释与专门测试完全正确——错的是我们喂给它的数据源。
+   *
+   *  新架构下"巡检"就是"摄取"，`last_inspect_at` 与 `last_ingest_at` 语义等价（daemonV2
+   *  自己也读它做 24h 时间门），故改读取侧即可——**不给 daemonV2 新增任何写入行为**。
+   *  字段名 `lastScanAt` 与前端一并不动：语义没变，仍是"上次扫描时刻"。
+   *
+   *  不做 `last_ingest_at` 回退：见 buildWorkflowPending 里 SELECT 处的说明。 */
   lastScanAt: number | null
   /** episodes + movies 两表行数之和——库内文件总量的机械计数。 */
   files: number
   /**
-   * 字幕校验巡检的上次运行时刻（meta 表 `last_verify_sweep_at`，verifySweep 写入）。
-   * 从未跑过时 null。
+   * 字幕校验巡检的上次运行时刻（读 meta 表 `last_verify_sweep_at`，见下方 SELECT）。
    *
-   * 为什么需要它：巡检此前只在容器日志里打一行 `verify sweep: checked=N`，界面上完全看不见。
-   * 一个"全是绿点"的库有两种可能——真的都没问题，或者巡检根本没在跑——而用户无从分辨。
-   * 时间戳是唯一"崩掉的系统 produce 不出来"的廉价元件（同 lastScanAt 的既有理由）。
+   * ⚠️ **本字段在生产恒为 null，且这不是 bug 而是已知待办。** 此前这行注释写着
+   * "verifySweep 写入"——那是句**假话**，与本文件 lastScanAt 头注释所修的是同一形状、
+   * 同一成因的假话（注释宣称的机制其实不存在），故在第 7 步 B 组同批更正。
+   *
+   * 事实链（可复核）：
+   * 1. `last_verify_sweep_at` 全仓**无任何写入者**。verifySweep.ts 只把键名导出成常量
+   *    （`VERIFY_SWEEP_META_KEY`），`runVerifySweep` 函数体内零 meta 写入。
+   * 2. `runVerifySweep` 被 `cli/index.ts` import，但**从未被调用**。
+   * 3. 成因不是删代码删漏了，而是产品决策：巡检注入于 2026-08-07 雪藏（见 cmdWatch 里
+   *    `verifyRepo` 构造处的说明；承载它的 daemonDeps 字面量后来随第 7 步 B 组删除，
+   *    daemonV2 侧从未有过 verifySweep 字段，雪藏状态不变）。
+   *
+   * 所以：**没有写入者 → 本字段生产恒 null → 前端"从未跑过"的显示恰好是真话**（同 lastScanAt
+   * 那条"绝不编一个时刻出来"的纪律）。这与 lastScanAt 的病例关键区别在于：那边 daemonV2 天天
+   * 在巡检、显示"还没扫过"才是假话；这边校验巡检确实没在跑，读到 null 并无谎言，故**只更正
+   * 注释、不动 SELECT、不动任何行为**。恢复 verifySweep 注入是产品决策，不在第 7 步范围内。
+   *
+   * 为什么当初要有它：巡检此前只在容器日志里打一行 `verify sweep: checked=N`，界面上完全
+   * 看不见。一个"全是绿点"的库有两种可能——真的都没问题，或者巡检根本没在跑——而用户无从
+   * 分辨。时间戳是唯一"崩掉的系统 produce 不出来"的廉价元件（同 lastScanAt 的既有理由）。
+   * 恢复注入那天，这个字段与前端无需任何改动即自动复活。
    */
   lastVerifySweepAt: number | null
   /** 已出校验结论的条目数 / 该被校验的条目数（sub_status='covered'）。
@@ -936,7 +969,22 @@ export function buildWorkflowPending(
   }))
   const parked = lib.listParkedPaths().length
 
-  const lastScanRow = db.prepare(`SELECT value FROM meta WHERE key = 'last_ingest_at'`).get() as
+  // 上次扫描时刻读 daemonV2 写的 `last_inspect_at`（键的选择与归因见 WorkflowFreshnessDTO
+  // .lastScanAt 头注释）。键名与 daemonV2.readLastInspectAt/writeLastInspectAt 一致。
+  //
+  // ## 为什么不给已死的 `last_ingest_at` 做 COALESCE 回退
+  //
+  // 已部署的老库里可能确实存着一行第 2 步之前写的 `last_ingest_at`。不回退它，理由：
+  // 1. **那个时刻已经很旧了**（第 2 步至今，量级是周/月）。把它显示成"上次扫描"是把一个
+  //    陈旧值当成新鲜值——这跟本次要修的"假话"是同一类错误，只是换了个方向说谎。
+  // 2. **null 窗口极短**。daemonV2 冷启动（读不到 last_inspect_at ⇒ 0 ⇒ 立即跑）第一圈就
+  //    巡检、成功即写键。所以老库升级后"显示还没扫过"只持续到首轮巡检结束，是分钟量级，
+  //    不是一天。回退换来的那点"立刻有个数"根本不值得。
+  // 3. 回退会让这个键继续苟活，下一个读代码的人还得再考古一遍它是死是活。
+  //
+  // 而"还没扫过"在那个短窗口里恰好是**真话**（新架构下确实还没巡检过）——text.ts 那条
+  // "绝不编一个时刻出来"的纪律在这里正常工作，不需要我们替它兜底。
+  const lastScanRow = db.prepare(`SELECT value FROM meta WHERE key = 'last_inspect_at'`).get() as
     | { value: string }
     | undefined
   const filesRow = db

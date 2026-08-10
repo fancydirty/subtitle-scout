@@ -1,16 +1,23 @@
-// E AI 翻译 · daemon 自动触发接线(v1,env 门控)。三件套:
-// ① listTranslateCandidates:可译候选 = sub_status='unavailable'(搜索穷尽确认无中字)且
-//    embedded_langs 含非中文轨——翻译是**最后手段**,只救 find-subtitle 管线判无的项,天然收窄
-//    候选集与 LLM 成本(全库当前仅个位数)。embedded_langs 只存语言 tag 不存 codec,故这里只是
-//    廉价预筛;权威判定(文本轨 vs 图形轨、能否抽)由 translateItem 现场重探,预筛错杀不了对
-//    (最坏 no-embedded/extract-failed 收尾)。
-// ② dispatchTranslateTasks:每候选 upsert 一行 taskType='translate' 的 worker_task。identity 用
-//    合成 seriesId `translate:<itemId>`(orchestrator-shard 先例)——同季两集不共享 identity 行,
-//    重复派发幂等。**调用方(daemon tick)必须 env 门控**(TRANSLATE_MODEL 未配→根本不接线,
-//    功能休眠零成本,同 SUBHD_ENABLED 模式)。
-// ③ runTranslateWorkerTask:claims-and-runs 一行(镜像 rescueWorkerTask 形状)。installed→done+
-//    踢 ingest(下一轮扫描把新 sidecar 记账成 covered);held/extract-failed→completeError(可
-//    重试,fail-closed 不装);already-covered/no-embedded→done(无事可做)。
+// E AI 翻译。本文件现在有两批住户,分界线在下方"新架构翻译工作台"那道横线:
+//
+// ① 新架构（活的,第 4 步接线,daemonV2 的 translate 循环用）:
+//    listNewTranslateCandidates / applyTranslateOutcome / FETCHABLE_SOURCE_LANGS /
+//    EXTRACTABLE_SOURCE_LANGS —— 读 files/works,状态机在 sub_status=handoff_translate +
+//    tr_attempt/tr_recheck_after 上。
+// ② runTranslateWorkerTask:claims-and-runs 一行 jobs 表 worker_task(镜像 rescueWorkerTask
+//    形状)。installed→done+踢 ingest;held/extract-failed→completeError(可重试,fail-closed
+//    不装);already-covered/no-embedded→done(无事可做)。它仍被 cli/index.ts 的
+//    handleWorkerTask translate 分支调用——而 handleWorkerTask 本身是零调用者孤儿(见
+//    cli/index.ts 该函数头注释),所以这条路径今天也不跑;jobs 队列整体退役是独立决策。
+//
+// 第 7 步删掉的旧世界两件套（原 ① ②,勿再照抄任何残留注释）:
+//    · listTranslateCandidates —— 双重死亡:查 episodes/movies JOIN series(旧表),且谓词
+//      sub_status='unavailable' 是 R17 废止的第五态(3-2 拆掉唯一写入点、v33 迁移洗掉存量行),
+//      在今天的库上永远选不出行。连带 isChineseTag/hasNonChineseTrack/isSupportedSourceLang
+//      三个私有辅助与 TranslateCandidate 接口一并随之零引用。
+//    · dispatchTranslateTasks(+ TRANSLATE_DONE_RECHECK_MS) —— 它的迭代源只有上面那一个,
+//      而它自己也零生产调用者(唯一调用点是旧 daemon 的 dispatchTranslate 钩子,随
+//      src/v2/daemon.ts 于第 7 步 B 组删除)。留个恒 return 0 的空壳比删掉更糟。
 import type { ScoutDb } from './db.js'
 import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
@@ -27,20 +34,6 @@ export interface TranslateRunItemResult {
   reason?: string
   sourceRef?: string
   llmCalls?: number
-}
-
-/** 中文 tag 判定(原始 ffprobe tag,口径同 translateItem.isChinese)。 */
-function isChineseTag(lang: string): boolean {
-  const l = lang.toLowerCase()
-  return l.startsWith('zh') || l === 'chi' || l === 'zho' || l === 'chs' || l === 'cht'
-}
-
-function hasNonChineseTrack(embeddedLangsJson: string | null): boolean {
-  if (!embeddedLangsJson) return false
-  let langs: unknown
-  try { langs = JSON.parse(embeddedLangsJson) } catch { return false }
-  if (!Array.isArray(langs)) return false
-  return langs.some((l) => typeof l === 'string' && !isChineseTag(l))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,39 +76,6 @@ export const EXTRACTABLE_SOURCE_LANGS = ['en', 'ja']
  *  它断言的是这个设计意图，不是实现细节。故这里改的是**定义的组织方式**（一份变量、
  *  语义写清、拆出两个精确集合），不是任何一处的行为。 */
 export const SUPPORTED_SOURCE_LANGS = [...new Set([...FETCHABLE_SOURCE_LANGS, ...EXTRACTABLE_SOURCE_LANGS])]
-
-function isSupportedSourceLang(originLang: string | null): boolean {
-  if (!originLang) return false
-  return SUPPORTED_SOURCE_LANGS.includes(originLang.trim().toLowerCase())
-}
-
-export interface TranslateCandidate {
-  itemId: string
-  videoPath: string
-}
-
-/** ⚠️ **旧世界的候选谓词，生产上恒返回零行**（保留至第 7 步清理，勿当范例）。
- *
- *  两处已经死掉：① 数据长在 episodes/movies，新架构的数据在 files/works（C4）；
- *  ② 谓词 `sub_status='unavailable'` 是 R17 废止的第五态——3-2 拆掉了唯一写入点、
- *  v33 迁移洗掉了存量行，故这个谓词在今天的库上永远选不出行（C34 记的"零候选静默饿死"）。
- *  新架构的入口是下方 `listNewTranslateCandidates`。 */
-export function listTranslateCandidates(db: ScoutDb): TranslateCandidate[] {
-  // F1:候选从单腿(内嵌非中文轨)扩成双腿 OR(内嵌非中文轨 OR origin_lang ∈ SUPPORTED_SOURCE_LANGS)。
-  // episodes 无 origin_lang 列,JOIN series 取;movies 直取自身列。embedded_langs 的 IS NOT NULL
-  // 预筛随之取消——零内嵌(NULL/'[]')但源语言受支持的项正是 F1 要救的("零字幕数据"场景),
-  // 判定移到下方 JS 过滤。同一条目两腿都命中只出现一次(一行一判,天然去重)。
-  const rows = db.prepare(
-    `SELECT e.id AS id, e.path AS path, e.embedded_langs AS embedded_langs, s.origin_lang AS origin_lang
-       FROM episodes e JOIN series s ON e.series_id = s.id
-      WHERE e.sub_status = 'unavailable'
-     UNION ALL
-     SELECT id, path, embedded_langs, origin_lang FROM movies WHERE sub_status = 'unavailable'`,
-  ).all() as Array<{ id: string; path: string; embedded_langs: string | null; origin_lang: string | null }>
-  return rows
-    .filter((r) => hasNonChineseTrack(r.embedded_langs) || isSupportedSourceLang(r.origin_lang))
-    .map((r) => ({ itemId: r.id, videoPath: r.path }))
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 新架构翻译工作台（spec §2「翻译工作流」+ §5 映射表 / C3 + D3 + D6 + D10 + R24）
@@ -255,34 +215,6 @@ export function applyTranslateOutcome(
   const row = db.prepare('SELECT sub_status FROM files WHERE path = ?').get(videoPath) as
     { sub_status: string | null } | undefined
   return { guardMissed: changes === 0, status: row?.sub_status ?? '(row gone)' }
-}
-
-/** done(含 no-source 诚实收官)行的复查窗:窗内不重派——zerotest2 实证热循环(job28 每 tick
- *  done→revive→no-source→done,~30 runs/10min 烧配额且饿死同列其它 translate job)。
- *  超窗才 revive,对应"unavailable 的衰减复查周期性再给机会"的既有语义。 */
-export const TRANSLATE_DONE_RECHECK_MS = 24 * 3_600_000
-
-/** 返回本轮新建的 job 行数(幂等:已有 identity 行时 created=0)。 */
-export function dispatchTranslateTasks(
-  db: ScoutDb, jobs: JobsRepo, now: () => number,
-  opts?: { doneRecheckMs?: number },
-): number {
-  const recheckMs = opts?.doneRecheckMs ?? TRANSLATE_DONE_RECHECK_MS
-  let created = 0
-  for (const c of listTranslateCandidates(db)) {
-    const existing = db.prepare(
-      `SELECT state, updated_at FROM jobs
-        WHERE kind = 'worker_task' AND series_id = ? AND ifnull(json_extract(payload,'$.taskType'),'') = 'translate'`,
-    ).get(`translate:${c.itemId}`) as { state: string; updated_at: number } | undefined
-    if (existing && existing.state === 'done' && now() - existing.updated_at < recheckMs) continue
-    const outcome = jobs.upsertWorkerTask(
-      { seriesId: `translate:${c.itemId}`, season: null, movieId: null },
-      { taskType: 'translate', videoPath: c.videoPath, itemId: c.itemId },
-      null, now(),
-    )
-    if (outcome.outcome === 'created') created++
-  }
-  return created
 }
 
 export interface TranslateWorkerTaskDeps {

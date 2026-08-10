@@ -476,8 +476,13 @@ export function makeIngestPass(deps: IngestDeps): () => Promise<IngestResult> {
   const { lib, tmdb, log } = deps
 
   return async function ingestPass(): Promise<IngestResult> {
-    // 互斥：dashboard 触发的 reconcile-all 和甄别页 requestIngest 不检查锁，daemon tick 的 ingest
-    // 分支有 hasActiveRealignWorkerTask 互斥——如果 ingest 已在跑，直接早退（不排队，不并发）。
+    // 互斥：本函数只有**自己这一把 ingestLock**——如果 ingest 已在跑，直接早退（不排队，不并发）。
+    // 历史口径已作废（第 7 步）：这里原写着"daemon tick 的 ingest 分支有
+    // hasActiveRealignWorkerTask 互斥"。那道 ingest/realign 互斥门的唯一调用者是
+    // src/v2/daemon.ts 的 tickInner，已随 B 组删除；JobsRepo.hasActiveRealignWorkerTask
+    // 随之零调用者，本步一并删掉。也就是说**今天不存在任何 ingest-vs-realign 互斥**：
+    // 唯一生效的防护是下面这把进程内 ingestLock（只防 ingest 自己重入）。
+    // 这不是本步造成的退化——第 2 步换 daemonV2 入口那一刻就已如此，本注释只是停止撒谎。
     if (ingestLock.held) {
       return { scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false, skipped: true }
     }

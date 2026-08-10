@@ -16,6 +16,9 @@ import {
 // 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
 import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
 import { traceBus } from '../core/traceBus.js'
+// 接缝回归（2026-08-10）：lastScanAt 的**真写入者**。见下方 🔴 用例——这条 import 的存在
+// 本身就是那个缺口的修补：此前本文件只手写 INSERT 复述键名，从不碰真正的写入方。
+import { ScoutDaemonV2 } from '../v2/daemonV2.js'
 
 let db: ScoutDb
 let lib: LibraryRepo
@@ -615,7 +618,7 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
     lib.upsertParkedPath('/media/tv/Unknown/e1.mkv', 'ambiguous match', NOW)
     const settings = new SettingsRepo(db)
     settings.addRoot('/media/tv', NOW)
-    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_ingest_at', ?)`).run(String(NOW))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(NOW))
 
     const result = buildWorkflowPending(db, settings, NOW)
 
@@ -639,7 +642,7 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
     })
   })
 
-  it('空库：series/movies 空数组，parked 0，lastScanAt null（meta 表从未写过 last_ingest_at）', () => {
+  it('空库：series/movies 空数组，parked 0，lastScanAt null（meta 表从未写过 last_inspect_at）', () => {
     const freshDb = openDb(':memory:')
     const settings = new SettingsRepo(freshDb)
     const result = buildWorkflowPending(freshDb, settings, NOW)
@@ -650,6 +653,57 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
         lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0,
       },
     })
+  })
+
+  // ---- 接缝回归：daemonV2 的写入侧 ↔ dashboard 的读取侧（2026-08-10）----
+  //
+  // 🔴 防的是：**dashboard 读一个没有任何写入者的 meta 键**，于是"上次扫描"恒为 null，
+  //    前端 text.ts lastCheckedLine() 显示"还没扫过"——即使 daemonV2 每天都在正常巡检。
+  //    这是一句主动的假话，且已在生产里存活了 5 个 commit（第 2 步 915f3ec 让 ScoutDaemon
+  //    不再被构造起，它 tickInner 里那唯一的 `last_ingest_at` 写入点就成了死代码；第 7 步
+  //    B 组 d9096ec 删掉的只是尸体）。
+  //
+  // 为什么之前没被发现：两侧各自都有测试且都是绿的——daemonV2 的用例自己 INSERT
+  // 'last_inspect_at'、dashboard 的用例自己 INSERT 'last_ingest_at'，各自复述了一份键名。
+  // **没有任何测试同时用真写入者和真读取者**，所以两份键名漂移成两个不同的字符串时，
+  // 全套件 3000+ 条一条都不红。这条用例的全部价值就是跨过那道接缝：写入侧必须是真的
+  // ScoutDaemonV2（不是手写 INSERT），读取侧必须是真的 buildWorkflowPending（不是手写
+  // SELECT）。任何一侧再改键名，这里当场变红。
+  it('🔴 daemonV2 真跑一轮巡检后，dashboard 的 lastScanAt 能读到它写的时刻（不再是恒 null 的假话）', async () => {
+    const seamDb = openDb(':memory:')
+    const settings = new SettingsRepo(seamDb)
+    const emptyRoot = mkdtempSync(join(tmpdir(), 'scout-seam-'))
+    settings.addRoot(emptyRoot, NOW)
+
+    // 巡检前：从未跑过 → null。text.ts 的"绝不编一个时刻出来"在这里是**真话**。
+    expect(buildWorkflowPending(seamDb, settings, NOW).meta.lastScanAt).toBeNull()
+
+    // 真的 daemonV2、真的 run()：冷启动（读不到时间门 ⇒ 0）第一圈就巡检，成功即写键。
+    // 守备目录是个空临时目录，巡检本身无事可做——本用例只关心那次写入被读取侧看见。
+    const daemon = new ScoutDaemonV2({
+      db: seamDb,
+      roots: [emptyRoot],
+      identify: {
+        db: seamDb,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: { model: {} as any, tmdb: { search: async () => [], getDetails: async () => null } as any },
+      },
+      subtitleWorker: async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }),
+      targetLanguage: 'zh',
+      probe: async () => null,
+      probeDuration: async () => null,
+      log: () => {},
+      now: () => NOW,
+    } as any)
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise((r) => setTimeout(r, 50))
+    ctrl.abort()
+    await p
+
+    // 巡检后：读取侧拿到的正是写入侧记的那个时刻（daemonV2 记的是巡检**开始**时刻 = NOW）。
+    expect(buildWorkflowPending(seamDb, settings, NOW).meta.lastScanAt).toBe(NOW)
+    seamDb.close()
   })
 })
 

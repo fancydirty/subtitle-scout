@@ -243,6 +243,19 @@ export class LibraryRepo {
     this.db = db
   }
 
+  /** ⚠️ 第 7 步 C 组（2/2）：**本方法（及下方 upsertEpisode/upsertMovie）已无任何生产调用方**。
+   *  唯一的生产写入方是 agent 的 write_identified_media 工具（原 agent/identityTools.ts），
+   *  本组已将其整体删除——它是 series/episodes/movies 三张旧表最后的 INSERT 路径，而它整条
+   *  上游链自第 2 步切换生产入口（cmdWatch → ScoutDaemonV2）起就不可达。
+   *
+   *  今天还在调它的只有 src/testing/seedBacklog.ts（测试 fixture 助手）与各测试文件。刻意
+   *  保留而不删方法体：dashboard 的海报墙/详情页仍在**读**这三张表（HTTP 端点 + 15 秒轮询的
+   *  React 组件），那些端点的测试必须能给旧表填行——删掉造数据的手，等于删掉活功能的测试
+   *  验证能力。旧表本身也不能删（删表是功能迁移，不是死代码清理）。
+   *
+   *  因此本组交付的结构性保证精确表述为：**旧表在生产代码里已零写入方**（不是"SQL 已从仓里
+   *  消失"）。日后若有人给这三个方法新接一个生产调用方，那就是在给一组只读的遗留表重新
+   *  开写口——请先确认那不是应该写进 works/files 两张新表的东西。 */
   upsertSeries(params: SeriesParams): void {
     const posterPath = params.posterPath ?? null
     // 验收修复轮一 Task V1：genres 有值才 JSON.stringify，无值（undefined/null）→ NULL 绑定，
@@ -370,6 +383,7 @@ export class LibraryRepo {
    *  归零，否则保持原值不动。这是 ingest 的 FULL PATH（新识别/probeMemo 过期，见 ingest.ts）
    *  写入 covered/embedded 的落点：INSERT（新行）本就默认 0（db.ts schema default），只有
    *  UPDATE（已存在的行，例如此前是 unavailable/missing）需要这条 CASE 主动归零。 */
+  /** 生产零调用方——见 upsertSeries 头注释（第 7 步 C 组）。 */
   upsertEpisode(params: EpisodeParams): void {
     const now = Date.now()
     this.db
@@ -406,6 +420,7 @@ export class LibraryRepo {
 
   /** F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零，R-3 不变式）：同 upsertEpisode 的
    *  search_attempts CASE——见该方法头注释。 */
+  /** 生产零调用方——见 upsertSeries 头注释（第 7 步 C 组）。 */
   upsertMovie(params: MovieParams): void {
     const now = Date.now()
     const posterPath = params.posterPath ?? null
@@ -966,12 +981,14 @@ export class LibraryRepo {
    *  error_attempt 单调累积到天级退避。判据必须是机械事实，不能问 agent：identity 是
    *  advisory schema（findSubtitleWorker.schemas.ts:172-177）。
    *
-   *  为什么"还剩几条"能等价于"识别落库了"：write_identified_media 的事务无条件
-   *  clearParkedPath（identityTools.ts:172/229/242/274），而已识别路径不会被 ingest 重新
+   *  为什么"还剩几条"曾等价于"识别落库了"：write_identified_media 的事务无条件
+   *  clearParkedPath，而已识别路径不会被 ingest 重新
    *  park —— fresh/promote 分支被 findRowByPath+probe memo 短路（ingest.ts:573-593），
    *  replica 分支被 getItemFileByPath 短路（ingest.ts:604-613）。
-   *  🔴 本方法的判据价值依赖这两条短路：日后改 ingest 打破任一条，计数会虚高 →
-   *  判据静默失效（回到刷红 + 累积退避）。
+   *  🔴 第 7 步 C 组（2/2）：write_identified_media（agent/identityTools.ts）已删——它是
+   *  series/episodes/movies 三张旧表最后的 INSERT 路径，整条上游链自第 2 步切换生产入口起
+   *  不可达。因此上述等价关系**已不成立**：唯一消费方 unidentifiedFindSubtitle 的
+   *  identityProgress 差值现在恒为 0。本方法本身仍是正确的纯读查询，保留不动。
    *
    *  空数组 → 直接 0，不发查询：SQLite 的 `IN ()` 是语法错误。
    *
