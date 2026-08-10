@@ -270,6 +270,46 @@ S02E02: handoff_translate → covered              ← 闭环完成
 
 三条都是"看起来像 bug 实际是对的"，判据都能在 `subtitleJudge.ts` 的注释里找到原始论证。
 
+### 单元 7：GC 炸弹 —— 实测坐实，且根因与文档记的不同 ✅
+
+翻译成功后工作台目录 **312KB 留在磁盘上**（`daemon-1786390499859/`）。此前这只是 §八 里的
+理论推断，现在有了实测证据。而根因与文档记的**不一样**：
+
+| | 缺陷 | 是否残留成因 |
+|---|---|---|
+| A | 翻译流**从来没有成功后的清理**（字幕流有 `cleanup(...)`） | ✅ **就是这 312KB** |
+| B | in-flight 未登记（§八 原先记的那条） | ❌ 真实风险（boot GC 会误删正在跑的现场），但不是残留成因 |
+
+文档原先把重心放错了：它说"回收机制存在、只是保护没接"，实际是**回收压根没接**。
+唯一的清扫者 `gcOrphans` 只在 boot 跑一次 → 长期不重启的 daemon 每翻一集永久留一个目录。
+
+**第三个后果（此前无人记录）**：同一毫秒内两个不同文件会拿到**同一个** jobId
+（实测复现 `daemon-1786393875937` 撞名）→ 两个活共用一个工作台、半成品互相污染。
+
+修法（`6944998`）：新增 `translateJobId(workId, path)` = `translate-<workId>-<fileKey>`。
+- **不能直接用 `translateItemId` 当目录名**（最省事但错）：它含 `/` → 工作台会埋进
+  二级目录而 `gcOrphans` 只**非递归**扫直接子条目 → 够不到 = 永久泄漏；含 `:` → SMB/exFAT
+  非法字符，而生产媒体根正是群晖 SMB + rclone FUSE，`mkdir` 直接失败 → 翻译流整支起不来
+- 成功回收 / 失败留现场（held 的半成品是数小时付费 LLM 的排障唯一材料）。
+  不堆积由三道独立收口保证：稳定 jobId（同文件只占一个目录）+ `TRANSLATE_HELD_LIMIT=3`
+  + gcOrphans 的 boot 回收与 mtime 窗口。故不另造第二套超时清理
+- 稳定 jobId 引入的新风险已同时处理：残留的 `glossary/FROZEN` 会让 one-shot 的
+  `freeze_glossary` 返回 already frozen → 这一次只能拿旧术语表跑；若上次正是术语冲突 held，
+  这一行会**永久 held**（每轮烧一个付费 session 却永远过不了闸）。故开工前 `resetWorkspace`
+
+**实测验证**：新 jobId 形态 `translate-tmdb-110492-efc328d47823`（可读出是哪部剧），
+翻译成功后工作台只剩 `.subtitle-translate/.ignore`，工作目录已回收。
+
+### 第 6 步最终对账（全部单元跑完）
+
+```
+DB files          = 60   ==  磁盘视频 60
+DB covered        = 35   ==  磁盘中文字幕 35
+embedded_null     = 0        （spec 硬门 1）
+provider_ids_null = 0        （spec 硬门 2）
+工作台残留        = 0
+```
+
 ### 环境实测事实（与本地盘语义不同，值得记）
 
 - `find -delete` **在 CIFS 上静默失效**（报成功但文件还在）——必须用 `rm`
@@ -365,7 +405,7 @@ dashboard redispatch。
 
 | 项 | 说明 |
 |---|---|
-| **翻译工作台 GC 炸弹** | 翻译循环没把 jobId 登记进 `gcStaging` 的 in-flight 集合（字幕流有）。根因是翻译 jobId 是 `daemon-${Date.now()}`，每次不同、循环层无法预知。跑几小时的工作台唯一保护是 mtime 活性窗口。`translateItemId` 已提供稳定身份可作派生源 |
+| ~~翻译工作台 GC 炸弹~~ | **已修（`6944998`）**，且实测发现根因与本条原先的记载不同——详见 §六·五 单元 7。原记载说"回收机制存在只是保护没接"，实际是回收压根没接；另实测到同毫秒撞 jobId 这第三个后果 |
 | `server.test.ts` flake | 全套件并行下偶发失败（~1/10，`port: 0` + undici 全局态），单独跑 120/120 稳定绿。会污染「失败必须是同样 7 条」的验收口径，值得单独定位 |
 | `recheck_after` 隐式隔离 | 三方共用靠 `sub_status` 白名单，没有 `last_error` 那样的显式前缀机制 |
 | probe 失败重试通路 | 隐式靠 D17 回填 pass，没有独立记账 |
