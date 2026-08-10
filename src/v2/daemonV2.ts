@@ -197,8 +197,8 @@ export interface DaemonV2Deps {
   // 换成 daemonV2"，不是换入口文件，这样这些接线天然留在原处，
   // 不用在第二个入口文件里重建第二份；那个备选入口 watchV2.ts 已于第 7 步删除。
   //
-  // 全部 optional，缺省即整支休眠、零成本（同 DaemonDeps.dbMaintenance/gcStaging 的既有门控
-  // 模式）：既有构造点与几十条既有测试都不传这些字段，不许因为"忘了接线"就让阶段 1 失效。
+  // 全部 optional，缺省即整支休眠、零成本（这套门控模式的来源见上一段）：既有构造点与
+  // 几十条既有测试都不传这些字段，不许因为"忘了接线"就让阶段 1 失效。
   // 但反过来——生产接线漏一个是**静默**的（不报错、只是从此永不 checkpoint），
   // 所以 cli 侧的接线由 watchWiring.test.ts 逐个器官钉住。
   // ───────────────────────────────────────────────────────────────────────────
@@ -232,11 +232,12 @@ export interface DaemonV2Deps {
   /** trace 修剪的执行体（RunsRepo）。runs 行本身保留（决策史不删），只把过保留期的
    *  trace_json 置 NULL。与 traceRetentionDays 是一对：只有两者都注入才启用这一支。 */
   runs?: { pruneTraces: (beforeMs: number) => number }
-  /** 每拍最先跑（照 DaemonDeps.preTick）：cmdWatch 接 secrets_version watcher——wizard 把密钥
+  /** 每拍最先跑（"照旧 DaemonDeps 形态"的措辞来源见本节开头的运维器官段落）：cmdWatch 接
+   *  secrets_version watcher——wizard 把密钥
    *  落库后同进程热重建长命客户端，容器零重启。放在维护层而不是巡检里：巡检一天才一次，
    *  配好密钥要等到明天才点火就等于没有 wizard。 */
   preTick?: () => Promise<void>
-  /** 产工作许可（照 DaemonDeps.workPermitted）= engine_enabled ∧ setup 闸（TMDB+LLM 可解析）。
+  /** 产工作许可（措辞来源同上）= engine_enabled ∧ setup 闸（TMDB+LLM 可解析）。
    *  false 时**整轮巡检跳过**（零密钥的 setup 模式下识别/字幕 agent 一定失败，跑就是空烧），
    *  维护循环不闸——见旧 daemon 对这条分界的既有论证。
    *

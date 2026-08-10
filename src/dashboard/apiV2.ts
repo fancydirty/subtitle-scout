@@ -914,12 +914,29 @@ export interface WorkflowFreshnessDTO {
   /** episodes + movies 两表行数之和——库内文件总量的机械计数。 */
   files: number
   /**
-   * 字幕校验巡检的上次运行时刻（meta 表 `last_verify_sweep_at`，verifySweep 写入）。
-   * 从未跑过时 null。
+   * 字幕校验巡检的上次运行时刻（读 meta 表 `last_verify_sweep_at`，见下方 SELECT）。
    *
-   * 为什么需要它：巡检此前只在容器日志里打一行 `verify sweep: checked=N`，界面上完全看不见。
-   * 一个"全是绿点"的库有两种可能——真的都没问题，或者巡检根本没在跑——而用户无从分辨。
-   * 时间戳是唯一"崩掉的系统 produce 不出来"的廉价元件（同 lastScanAt 的既有理由）。
+   * ⚠️ **本字段在生产恒为 null，且这不是 bug 而是已知待办。** 此前这行注释写着
+   * "verifySweep 写入"——那是句**假话**，与本文件 lastScanAt 头注释所修的是同一形状、
+   * 同一成因的假话（注释宣称的机制其实不存在），故在第 7 步 B 组同批更正。
+   *
+   * 事实链（可复核）：
+   * 1. `last_verify_sweep_at` 全仓**无任何写入者**。verifySweep.ts 只把键名导出成常量
+   *    （`VERIFY_SWEEP_META_KEY`），`runVerifySweep` 函数体内零 meta 写入。
+   * 2. `runVerifySweep` 被 `cli/index.ts` import，但**从未被调用**。
+   * 3. 成因不是删代码删漏了，而是产品决策：巡检注入于 2026-08-07 雪藏（见 cmdWatch 里
+   *    `verifyRepo` 构造处的说明；承载它的 daemonDeps 字面量后来随第 7 步 B 组删除，
+   *    daemonV2 侧从未有过 verifySweep 字段，雪藏状态不变）。
+   *
+   * 所以：**没有写入者 → 本字段生产恒 null → 前端"从未跑过"的显示恰好是真话**（同 lastScanAt
+   * 那条"绝不编一个时刻出来"的纪律）。这与 lastScanAt 的病例关键区别在于：那边 daemonV2 天天
+   * 在巡检、显示"还没扫过"才是假话；这边校验巡检确实没在跑，读到 null 并无谎言，故**只更正
+   * 注释、不动 SELECT、不动任何行为**。恢复 verifySweep 注入是产品决策，不在第 7 步范围内。
+   *
+   * 为什么当初要有它：巡检此前只在容器日志里打一行 `verify sweep: checked=N`，界面上完全
+   * 看不见。一个"全是绿点"的库有两种可能——真的都没问题，或者巡检根本没在跑——而用户无从
+   * 分辨。时间戳是唯一"崩掉的系统 produce 不出来"的廉价元件（同 lastScanAt 的既有理由）。
+   * 恢复注入那天，这个字段与前端无需任何改动即自动复活。
    */
   lastVerifySweepAt: number | null
   /** 已出校验结论的条目数 / 该被校验的条目数（sub_status='covered'）。

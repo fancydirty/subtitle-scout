@@ -234,7 +234,7 @@ async function cmdWatch() {
   // spec A §4.3：密钥解析器——env 优先、库兜底，dbGet 惰性读库（每 tick/每重建都是新鲜值）。
   const cfg = makeAdapterConfigResolver(process.env, (k) => settingsRepo.get(k))
 
-  // 语言/识别配置的解析（原注释写"Construct DaemonDeps"——那个类型已于第 7 步 B 组删除）
+  // 语言/识别配置的解析
   // A4: TARGET_LANGUAGES (comma-separated, default 'zh') + legacy SKIP_CHINESE_ORIGIN compat.
   // Two lists: targetLanguages = coverage/hunting targets; originSkipLanguages = origin-audio
   // languages that suppress an item — see targetLanguages.ts's resolveTargetLanguages for the
@@ -435,9 +435,13 @@ async function cmdWatch() {
   // 还有意义），不是一次纯结构清理能顺手带走的。本组的硬性约束是"ScoutDaemonV2 行为一个
   // 字节都不能变"，故只报告、不动手。
   //
-  // 下面 `void handleWorkerTask` 是**诚实的坟头标记**：让"零调用者"这个事实在源码里可见，
-  // 而不是靠 tsconfig 没开 noUnusedLocals 蒙过去（本仓 noUnusedLocals 下另有 6 处同类既有
-  // 未读局部，全部先于本组存在）。
+  // 关于"零调用者"这个事实如何被承载：**只由本注释承载**。本仓当前**未开启**
+  // `--noUnusedLocals`（tsconfig 里没有它），所以编译器今天对此完全沉默；开启那天，
+  // 它会与 `cli/index.ts` 已有的六处未读局部/未读 import 一同显形——`:40` verifyAndRecord、
+  // `:41` runVerifySweep、`:67` ReconcileAllResultDTO、`:69` requireEnv、`:204` verifyRepo、
+  // `:245` targetLanguages（六处全部先于本组存在）。刻意**不写** `void handleWorkerTask`：
+  // 那一行的实际效果是把本函数从"开启那天自动进入待处理清单"里主动豁免出去，成为七个孤儿
+  // 里唯一被特殊对待的一个——与本注释想要的"让事实显形"恰好相反。
   //
   // ── 以下是它原有的设计注释，退役决策做出前原样保留 ──
   // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
@@ -593,10 +597,8 @@ async function cmdWatch() {
       log(`warn: job ${job.id} worker_task(${String(payload.taskType)}) 组装阶段抛错，已失败退避: ${msg}`)
     }
   }
-  // 坟头标记（见上方 handleWorkerTask 的头注释）：生产零调用者——原调用点 daemonDeps.executeJob
-  // 随 ScoutDaemon/DaemonDeps 于第 7 步 B 组一并删除。保留函数体是刻意的（删它属于"旧 jobs
-  // 队列整体退役"这个独立决策，涉及 dashboard redispatch 的产品语义），这一行只让事实显形。
-  void handleWorkerTask
+  // 到此为止：本函数生产零调用者，保留是刻意的——事实链、退役归属与"为什么不写
+  // `void handleWorkerTask`"全部见上方头注释。
 
   // Dashboard v2（媒体库 API，读 v2 SQLite；海报直出 TMDB CDN，不再走服务端代理）
   // spec A §4.7 步 1：dashboard 先于门禁评估与 worker 装配启动——顺序即语义，容器健康检查
@@ -766,14 +768,20 @@ async function cmdWatch() {
     // false 时整轮巡检跳过，维护循环（dbMaintenance/trace 修剪/孤儿回收）不闸——分界见
     // daemonV2.ts 里 DaemonV2Deps.workPermitted 的字段注释。
     workPermitted: () => engineEnabled((k) => settingsRepo.get(k)) && setupSatisfied(cfg),
-    // D14 / C41：阶段 2.6 停牌复查闸的取件范围。**与上方 dispatchTranslate 逐字同源的双门控**
-    // （TRANSLATE_* 三凭证部署层 ∧ settings.ai_translate_enabled 行为级，默认关）——两处若各写
-    // 一份判据，用户眼里"翻译开着"这一件事会在派活与复查两条路上得到相反答案，而本仓已因
-    // "留两份漂移实现"栽过多次（D7 的 findOverlappingRoot、C30 的两套字幕标签集）。
+    // D14 / C41：阶段 2.6 停牌复查闸的取件范围。双门控 = TRANSLATE_* 三凭证部署层 ∧
+    // settings.ai_translate_enabled 行为级（默认关）。
     //
-    // 惰性求值（每轮巡检现取，同 dispatchTranslate 的每 tick 口径）：用户在 dashboard 里关掉
-    // 翻译后，停在 handoff_translate 的行下一轮就该恢复复查，不用重启容器——它们正是 C41
-    // 那批"翻译不启动就永久卡死"的行，最不该等一次重启。
+    // 这份判据曾**与旧 daemon 的 `dispatchTranslate` 字段逐字同源**——那是"派活"一侧，本处是
+    // "复查"一侧，两处若各写一份，用户眼里"翻译开着"这一件事会在两条路上得到相反答案（本仓
+    // 已因"留两份漂移实现"栽过多次：D7 的 findOverlappingRoot、C30 的两套字幕标签集）。
+    // 该字段已于**第 7 步 B 组随 src/v2/daemon.ts 一并删除**（15 个零消费者字段之一），所以
+    // **今天这是全仓唯一一处此判据**，不再有"另一端"需要对齐。防漂移的意义随之从"两处保持
+    // 一致"变成"新增第二处派活闸时必须回到这里复用，而不是就地手写"——守卫在
+    // watchWiring.test.ts 的 `translateEnabled` 源码断言用例（它按符号名定位本行）。
+    //
+    // 惰性求值（每轮巡检现取，非组装时求值一次）：用户在 dashboard 里关掉翻译后，停在
+    // handoff_translate 的行下一轮就该恢复复查，不用重启容器——它们正是 C41 那批"翻译不启动
+    // 就永久卡死"的行，最不该等一次重启。
     translateEnabled: () => !!tryAutoTranslateCfg(cfg) && settingsRepo.get('ai_translate_enabled') === 'true',
     // 第 4 步（C3 + R19）：翻译流真正接回来的那根线。**每次调用现建**（不是启动时建一次）：
     // runItem 内部攥着 LLM 客户端与 adapters，而 secrets_version 变化时 preTick 会整体重建

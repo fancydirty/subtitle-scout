@@ -80,8 +80,9 @@ export const VERIFY_SWEEP_MAX_ITEMS = 20
  * AbortSignal 传进 extractEmbeddedSubtitle，它当前不收；单条目自身由 itemTimeoutMs 兜底）。
  * 与 EMBEDDED_TOTAL_BUDGET_MS 同一套"软预算"语义，理由见那边注释。
  *
- * 取 8 分钟（2026-07-31，原 5 分钟）：扫描是 **fire-and-forget** 的（daemon 侧不 await，
- * 见 tickInner 步骤 2e），所以它不阻塞 reap/dispatch——原注释里"最多让 20 拍其它分支延后"
+ * 取 8 分钟（2026-07-31，原 5 分钟）：扫描是 **fire-and-forget** 的（历史调用方
+ * ScoutDaemon.tickInner 步骤 2e 不 await 它；tickInner 已随 src/v2/daemon.ts 于第 7 步 B 组
+ * 删除），所以它不阻塞 reap/dispatch——原注释里"最多让 20 拍其它分支延后"
  * 的担心不成立，那是把它当同步任务算的。真正的成本是 ffmpeg 抢 IO，而实测一轮 20 条
  * 只有十几秒，离 8 分钟很远。
  *
@@ -259,8 +260,11 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
  * 跑一次巡检扫描：选候选 → 串行逐条检测落库，受条数与墙钟双预算约束。
  *
  * **单条失败绝不阻塞后续**（daemon 的既有纪律）：每条包 try/catch，ffmpeg 挂了、文件消失、
- * 编码怪异都只记一行 log 继续下一条。整个函数不抛——调用方（daemon tickInner）那一侧
- * 仍会再包一层，但本函数自己就该是不抛的，否则"一条坏字幕炸掉整个后台循环"。
+ * 编码怪异都只记一行 log 继续下一条。整个函数自己就该是不抛的，否则"一条坏字幕炸掉整个
+ * 后台循环"。（历史口径：曾经的调用方 ScoutDaemon.tickInner 那一侧还会再包一层兜底；
+ * tickInner 已随 src/v2/daemon.ts 于第 7 步 B 组删除，且本函数当前**无任何生产调用者**
+ * ——巡检注入于 2026-08-07 雪藏，见 cmdWatch 里 `verifyRepo` 构造处的说明。故"自己不抛"
+ * 现在是唯一一道防线。）
  */
 export async function runVerifySweep(deps: VerifySweepDeps): Promise<VerifySweepResult> {
   const maxItems = deps.maxItems ?? VERIFY_SWEEP_MAX_ITEMS

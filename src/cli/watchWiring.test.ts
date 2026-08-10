@@ -222,9 +222,14 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
     //   · 硬编码 true  → 用户没开翻译，handoff_translate 永不复查 → C41 永久卡死
     // 弱证据（不执行代码）但守的东西很窄很硬，与本文件末尾那条"入口是不是 V2"同一手法。
     //
-    // 口径必须与 cli/index.ts:767 的 dispatchTranslate 逐字同源（TRANSLATE_* 凭证 ∧
-    // settings 行为级开关）：两处若各写一份判据，用户眼里"翻译开着"这一件事会在派活与复查
-    // 两条路上得到相反答案——本仓已因"留两份漂移实现"栽过多次（D7 / C30）。
+    // 定位方式刻意用**符号名而非行号**：本仓已有多处"注释硬写行号"在删除重构期持续腐烂的
+    // 实例（这条注释自己此前就写着 `cli/index.ts:767`，B 组删 daemon.ts 后已指向别的内容）。
+    // 被守的判据是 cmdWatch 传给 buildDaemonV2Deps 的 `translateEnabled` 字段（搜符号名即达），
+    // 口径 = TRANSLATE_* 凭证（tryAutoTranslateCfg）∧ settings 行为级开关（ai_translate_enabled）。
+    // 它曾与旧 daemon 的 `dispatchTranslate` 字段逐字同源；该字段已随 src/v2/daemon.ts 于第 7 步
+    // B 组删除，故今天这是全仓唯一一处此判据。将来若再添一处派活闸，必须回到 `translateEnabled`
+    // 复用——两处各写一份判据，用户眼里"翻译开着"这一件事会在派活与复查两条路上得到相反
+    // 答案（本仓已因"留两份漂移实现"栽过多次：D7 / C30）。
     const m = src.match(/translateEnabled:\s*\(\)\s*=>([\s\S]{0,200}?)\n/)
     expect(m).not.toBeNull()
     const body = m![1]

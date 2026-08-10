@@ -5,7 +5,10 @@ import { join } from 'node:path'
 import { walkVideoFiles, SELF_SCAN_DEFAULT_INTERVAL_MS } from './selfScan.js'
 
 describe('SELF_SCAN_DEFAULT_INTERVAL_MS', () => {
-  it('is 15 minutes — the single source of truth cli/index.ts and v2/daemon.ts wire the ingest heartbeat gate off of', () => {
+  // 第 7 步 B 组：本常量**已无生产消费者**（v2/daemon.ts 与 cli/index.ts 的 ingestEveryMs 一并
+  // 删除），故用例名不再宣称它是"某处接线所依据的唯一真相"——那句话此前与 selfScan.ts 模块
+  // 头注释里"已无生产消费者"的交代互相矛盾。现在只钉住数值本身（刻意保留的理由见常量注释）。
+  it('is 15 minutes — the value itself (no production consumer since step 7 group B; kept deliberately, see the constant\'s own comment)', () => {
     expect(SELF_SCAN_DEFAULT_INTERVAL_MS).toBe(15 * 60_000)
   })
 })

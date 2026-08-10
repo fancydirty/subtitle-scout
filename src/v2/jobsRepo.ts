@@ -491,9 +491,12 @@ export class JobsRepo {
   /** 去 Jellyfin 化 T4（design §P3 "Ingest-vs-realign exclusion"，D4）：ingest 心跳每轮开跑前的
    *  互斥检查——ingest 的磁盘真相 walker（新建/摄取文件 + 消失即删行）与 realign 的整理搬移
    *  在同一批路径上同时跑会互相踩脚（realign 正在搬的文件，中途状态对 walker 而言像是
-   *  "消失了又出现"，会被误判成新文件重新识别，或误判成真的消失而删行）。daemon.ts 的
-   *  tickInner 在跑 ingest 分支前查一次：当下是否有一个 realign worker_task 正占着
-   *  searching 槽，有则整轮跳过（反方向——realign 等 ingestLock——是 realign 自己的职责，T7）。
+   *  "消失了又出现"，会被误判成新文件重新识别，或误判成真的消失而删行）。判据：当下是否有一个
+   *  realign worker_task 正占着 searching 槽，有则整轮跳过（反方向——realign 等 ingestLock——是
+   *  realign 自己的职责，T7）。
+   *  历史口径：原调用点是 daemon.ts 的 tickInner，它在跑 ingest 分支前查一次；tickInner 已随
+   *  src/v2/daemon.ts 于第 7 步 B 组删除，本方法当前**无生产调用者**（daemonV2 不跑旧 ingest
+   *  分支；ingest.ts 里 ingestPass 开头那条提到本方法的注释同属该历史口径）。
    *  Cheap：单行 EXISTS 风格查询；worker_task 的 taskType 判别键在 payload JSON 里，用
    *  json_extract 拆（同 dashboard/apiV2.ts 现有对 worker_task payload 的查法口径一致）。 */
   hasActiveRealignWorkerTask(): boolean {
