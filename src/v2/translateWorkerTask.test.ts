@@ -1,143 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from './db.js'
 import { JobsRepo, type Job } from './jobsRepo.js'
-import {
-  listTranslateCandidates, dispatchTranslateTasks, runTranslateWorkerTask, SUPPORTED_SOURCE_LANGS,
-} from './translateWorkerTask.js'
+import { runTranslateWorkerTask } from './translateWorkerTask.js'
 
 let db: ScoutDb
 let jobs: JobsRepo
 beforeEach(() => { db = openDb(':memory:'); jobs = new JobsRepo(db) })
-
-function seedSeries(id: string, originLang: string | null = null): void {
-  db.prepare(`INSERT INTO series (id, name, origin_lang) VALUES (?, ?, ?)`).run(id, id, originLang)
-}
-function seedEpisode(id: string, seriesId: string, subStatus: string, embeddedLangs: string | null, path = `/media/tv/${id}.mkv`): void {
-  db.prepare(
-    `INSERT INTO episodes (id, series_id, season, episode, path, sub_status, updated_at, embedded_langs)
-     VALUES (?, ?, 1, 1, ?, ?, 0, ?)`,
-  ).run(id, seriesId, path, subStatus, embeddedLangs)
-}
-function seedMovie(id: string, subStatus: string, embeddedLangs: string | null, path = `/media/movies/${id}.mkv`, originLang: string | null = null): void {
-  db.prepare(
-    `INSERT INTO movies (id, name, path, sub_status, updated_at, embedded_langs, origin_lang)
-     VALUES (?, ?, ?, ?, 0, ?, ?)`,
-  ).run(id, id, path, subStatus, embeddedLangs, originLang)
-}
-
-describe('listTranslateCandidates — unavailable + 内嵌非中文轨才算可译候选', () => {
-  beforeEach(() => seedSeries('tmdb:1'))
-
-  it('unavailable + eng 内嵌轨 → 候选(episode 与 movie 都算)', () => {
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["eng"]')
-    seedMovie('tmdb:9', 'unavailable', '["eng","jpn"]')
-    const c = listTranslateCandidates(db)
-    expect(c.map((x) => x.itemId).sort()).toEqual(['tmdb:1/s1e1', 'tmdb:9'])
-  })
-
-  it('covered/embedded/missing/ignored 不算(只翻搜索穷尽确认无的)', () => {
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'covered', '["eng"]')
-    seedEpisode('tmdb:1/s1e2', 'tmdb:1', 'missing', '["eng"]', '/media/tv/e2.mkv')
-    seedEpisode('tmdb:1/s1e3', 'tmdb:1', 'ignored', '["eng"]', '/media/tv/e3.mkv')
-    expect(listTranslateCandidates(db)).toEqual([])
-  })
-
-  it('unavailable 但内嵌只有中文轨/无轨/未探测 → 不算', () => {
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["chi"]')
-    seedEpisode('tmdb:1/s1e2', 'tmdb:1', 'unavailable', '[]', '/media/tv/e2.mkv')
-    seedEpisode('tmdb:1/s1e3', 'tmdb:1', 'unavailable', null, '/media/tv/e3.mkv')
-    expect(listTranslateCandidates(db)).toEqual([])
-  })
-})
-
-describe('listTranslateCandidates — F1 源语言腿:unavailable + origin_lang ∈ SUPPORTED_SOURCE_LANGS 也算候选', () => {
-  it('SUPPORTED_SOURCE_LANGS 是单跳直译铁原则常量:en+ja(F2 jimaku;永不英语中继)', () => {
-    expect(SUPPORTED_SOURCE_LANGS).toEqual(['en', 'ja'])
-  })
-
-  it('unavailable + 零内嵌 + series.origin_lang=en → 候选(episodes JOIN series 取 origin_lang)', () => {
-    seedSeries('tmdb:1', 'en')
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', null)
-    seedEpisode('tmdb:1/s1e2', 'tmdb:1', 'unavailable', '[]', '/media/tv/e2.mkv')
-    expect(listTranslateCandidates(db).map((x) => x.itemId).sort()).toEqual(['tmdb:1/s1e1', 'tmdb:1/s1e2'])
-  })
-
-  it('origin_lang=ja → 候选(F2 jimaku;单跳日→中,永不英语中继)', () => {
-    seedSeries('tmdb:2', 'ja')
-    seedEpisode('tmdb:2/s1e1', 'tmdb:2', 'unavailable', null)
-    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:2/s1e1'])
-  })
-
-  it('movies 同构:origin_lang=en/ja 零内嵌 → 候选;null/ko → 非', () => {
-    seedMovie('tmdb:9', 'unavailable', null, '/media/movies/en.mkv', 'en')
-    seedMovie('tmdb:10', 'unavailable', null, '/media/movies/ja.mkv', 'ja')
-    seedMovie('tmdb:11', 'unavailable', null, '/media/movies/null.mkv', null)
-    seedMovie('tmdb:13', 'unavailable', null, '/media/movies/ko.mkv', 'ko')
-    expect(listTranslateCandidates(db).map((x) => x.itemId).sort()).toEqual(['tmdb:10', 'tmdb:9'])
-  })
-
-  it('origin_lang 脏值(大小写/空白)lower+trim 后比对:" EN " → 候选', () => {
-    seedSeries('tmdb:3', ' EN ')
-    seedEpisode('tmdb:3/s1e1', 'tmdb:3', 'unavailable', null)
-    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:3/s1e1'])
-  })
-
-  it('origin_lang=en 但 sub_status 非 unavailable → 非候选(只救搜索穷尽确认无的)', () => {
-    seedSeries('tmdb:4', 'en')
-    seedEpisode('tmdb:4/s1e1', 'tmdb:4', 'missing', null)
-    seedMovie('tmdb:12', 'covered', null, '/media/movies/c.mkv', 'en')
-    expect(listTranslateCandidates(db)).toEqual([])
-  })
-
-  it('两腿是 OR:origin_lang=en + 内嵌非中文轨的同一条目只出现一次(不重复派活)', () => {
-    seedSeries('tmdb:5', 'en')
-    seedEpisode('tmdb:5/s1e1', 'tmdb:5', 'unavailable', '["eng"]')
-    expect(listTranslateCandidates(db).map((x) => x.itemId)).toEqual(['tmdb:5/s1e1'])
-  })
-})
-
-describe('dispatchTranslateTasks — 派 translate worker_task(合成 identity 幂等)', () => {
-  beforeEach(() => seedSeries('tmdb:1'))
-
-  it('每候选一行 job;重复派发幂等不翻倍', () => {
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["eng"]')
-    seedEpisode('tmdb:1/s1e2', 'tmdb:1', 'unavailable', '["eng"]', '/media/tv/e2.mkv')
-    expect(dispatchTranslateTasks(db, jobs, () => 1000)).toBe(2)
-    expect(dispatchTranslateTasks(db, jobs, () => 2000)).toBe(0) // 幂等:已有行,created=0
-    const rows = db.prepare(`SELECT payload FROM jobs WHERE kind='worker_task'`).all() as { payload: string }[]
-    const payloads = rows.map((r) => JSON.parse(r.payload))
-    expect(payloads).toHaveLength(2)
-    expect(payloads.every((p) => p.taskType === 'translate' && typeof p.videoPath === 'string')).toBe(true)
-  })
-
-  it('同季两集不撞 identity(合成 seriesId 按 item)', () => {
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["eng"]')
-    seedEpisode('tmdb:1/s1e2', 'tmdb:1', 'unavailable', '["eng"]', '/media/tv/e2.mkv')
-    dispatchTranslateTasks(db, jobs, () => 1000)
-    const n = db.prepare(`SELECT COUNT(*) AS n FROM jobs`).get() as { n: number }
-    expect(n.n).toBe(2)
-  })
-
-  it('done 行在 24h 复查窗内跳过(不热循环 revive no-source);超窗才复活', () => {
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["eng"]')
-    expect(dispatchTranslateTasks(db, jobs, () => 1_000)).toBe(1)
-    // 标记 done(模拟一次 no-source 收官)
-    db.prepare(`UPDATE jobs SET state='done', updated_at=2_000`).run()
-    expect(dispatchTranslateTasks(db, jobs, () => 2_000 + 3_600_000)).toBe(0) // 1h 后:窗内,跳过
-    expect((db.prepare(`SELECT state FROM jobs`).get() as { state: string }).state).toBe('done')
-    // 超 24h 窗:复活重派(revived 非 created,返回值仍 0,状态翻 wanted)
-    expect(dispatchTranslateTasks(db, jobs, () => 2_000 + 25 * 3_600_000)).toBe(0)
-    expect((db.prepare(`SELECT state FROM jobs`).get() as { state: string }).state).toBe('wanted')
-  })
-
-  it('done 复查窗可注入(缩短窗→复活)', () => {
-    seedEpisode('tmdb:1/s1e1', 'tmdb:1', 'unavailable', '["eng"]')
-    dispatchTranslateTasks(db, jobs, () => 1_000)
-    db.prepare(`UPDATE jobs SET state='done', updated_at=2_000`).run()
-    expect(dispatchTranslateTasks(db, jobs, () => 2_000 + 60_000, { doneRecheckMs: 30_000 })).toBe(0)
-    expect((db.prepare(`SELECT state FROM jobs`).get() as { state: string }).state).toBe('wanted')
-  })
-})
 
 describe('runTranslateWorkerTask — 结局映射', () => {
   // daemon 真实语序:先 claim(state→active)再 execute——completeDone/Error 只对 active 行生效,
@@ -307,15 +175,15 @@ describe('runTranslateWorkerTask — 结局映射', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 新架构翻译流（spec §4 第 4 步 · C3/C31/C32 + D3/D6/D10 + R12/R19/R24）。
 //
-// 上面那批 describe 测的是**旧世界**（episodes/movies + jobs 表派活），第 7 步才清理，
-// 故刻意留着不动。下面这批测的是新世界：files/works + tr_attempt/tr_recheck_after。
-// 两批共存期间读者最容易搞混的一点写在这里：`listTranslateCandidates` 是旧的、
-// `listNewTranslateCandidates` 是新的，旧的那个从第 2 步起在生产上恒返回零行
-// （谓词 sub_status='unavailable' 已被 R17 废止 + v33 洗掉存量），是死路一条。
+// 历史注记（第 7 步已结清）：这里原本写着"上面那批 describe 测的是旧世界
+// （episodes/movies + jobs 表派活），第 7 步才清理，故刻意留着不动"——那一批
+// （listTranslateCandidates 11 条 + dispatchTranslateTasks 4 条）连同被测的两个函数
+// 已于第 7 步删除，所以本文件现在**只剩新世界 + runTranslateWorkerTask**，不再有
+// "两批共存"这回事，也不再需要提醒读者别把新旧两个候选函数搞混。
 // ─────────────────────────────────────────────────────────────────────────────
 import {
   listNewTranslateCandidates, applyTranslateOutcome, TRANSLATE_HELD_LIMIT,
-  FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS,
+  FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS, SUPPORTED_SOURCE_LANGS,
 } from './translateWorkerTask.js'
 import { translateItemId } from './ownIds.js'
 import { seriesKeyOf } from './glossaryRepo.js'
