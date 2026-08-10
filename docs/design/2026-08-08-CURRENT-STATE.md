@@ -24,11 +24,14 @@
 第 4 步   翻译接回新架构                ✅  3 task
 第 5 步   字幕 skill 两条边界            ✅  2 commit（prompt + 计数轨）
 第 5.5 步 skill/工具一致性审计 + 干测压测 ✅  3 commit
-第 6 步   115 改可写 + 单元式 live test   ⬜  ← 需要动生产环境
-第 7 步   清理死代码 + 旧表              ⬜  ← 下一步做这个
+第 7 步   清理死代码（A+B+C1 三批）      ✅  7 commit，净删 ~3600 行
+第 6 步   115 改可写 + 单元式 live test   ⬜  ← 剩这一步（需要动生产环境）
 ```
 
-**测试**: 3100 条 / 7 失败（全是接手前的既有债务）/ tsc 干净 / 零新增回归
+**测试**: 2984 条 / 7 失败（全是接手前的既有债务）/ tsc 干净 / 零新增回归
+
+⚠️ **第 7 步探查暴露了三条比清理本身更重要的缺口**，见 §八。其中「海报墙显示
+的是旧表冻结快照」是**用户可见的功能失效**，优先级高于第 6 步。
 
 ---
 
@@ -137,36 +140,83 @@ media_roots：守备目录（禁嵌套，addRoot 是闸门）
 
 ---
 
-## 七、下一步：第 7 步清理死代码
+## 七、第 7 步已完成（A+B+C1 三批，7 commit，净删 ~3600 行）
 
-用户已确认："先干测，然后做第七步，就是清理死代码。"
+**做法**：静态可达性分析（从 `cli/index.ts` 爬 import 图）定位候选 → 用户过一眼 →
+subagent 分批实施 + 每批两阶段审查（spec 合规 → 代码质量）→ 每批 git 实测对比失败集。
 
-**做法要求**（因为我上一轮删代码已经踩过坑）：
-1. 先扫全仓列出候选清单，**给用户过一眼再删**
-2. 每删一批立刻 `git` 实测对比失败数，不许凭"看起来不相关"下结论
-3. 分批提交，别一次删完
+- **A 组**：删 7 个不可达整文件（dispatcher / 4 个 *Command / watchV2 /
+  extractEpisodeStructure）+ orchestrate 兜底心跳残留。顺手根治两条遗留项——
+  `scanCommand` 是 C42 第二扇侧门、`watchV2` 是漏接 4 器官的旁路入口，
+  它们之所以是漂移源正因为是无人调用的第二份实现
+- **B 组**：删 `daemon.ts`（504 行）。`ScoutDaemon` 自第 2 步起零构造；
+  `DaemonDeps` 15 字段里 daemonV2 只消费 4 个，已内联进 `buildDaemonV2Deps`，
+  4 处 `!` 非空断言随之消失。**顺带修了 `lastScanAt` 恒 null 的功能退化**（见 §四）
+- **C1 组**：删 `agent/identityTools.ts`——三张旧表最后的 INSERT 通道。
+  删掉它，「旧表不再新增行」从注释变成**结构性保证**（生产代码零调用方）。
+  另删 `listTranslateCandidates`（查旧表 + 谓词被 v33 洗掉，双重死亡）、
+  `hasActiveRealignWorkerTask`（零调用者）
 
-**已知候选**（spec 的 C9/C10 + 审计遗留）：
-- 旧 daemon（`v2/daemon.ts`）——daemonV2 已接容器，它不再被构造
-- 旧表 episodes/movies/series/subtitles（`db.ts` 里 59 处引用）
-- 按 path 挂的三张表孤儿行（`subtitle_verify`/`parked_paths`/`pending_removals`）
-  ——新架构链路一个都不读（已核实）
-- `dispatcher.ts`、旧 ingest 链路
-- 翻译 jobId 稳定化（GC 定时炸弹，见下）
+**⛔ 明确没做**：四张旧表本身不能删。dashboard 海报墙与详情页仍在读它们，
+接着活的 HTTP 端点和 15 秒轮询的 React 组件。删表是功能迁移不是清理。
+真要做得分三批：C2 先决定 jobs 队列去留 → C3 把 4 个 builder 迁到 files/works →
+之后才轮到删表（选「删代码 + DROP TABLE 迁移」而非只删代码，因为数据可从磁盘重建，
+留个空 schema 只会让未来的人再考据一遍）。
+
+**过程中我犯的错**：验收命令写错了——我让 subagent 确认「三张旧表再无 INSERT」
+且断言「应该为空」，但我的 grep 排除了调用方却没排除**方法体所在文件**，
+只要 `libraryRepo.ts` 里三个方法体还在就不可能为空。正确的保证是「生产代码零调用方」。
+subagent 纠正了我。
 
 ---
 
-## 八、遗留项（不挡路，但记着）
+## 八、遗留项
+
+### 🔴 第 7 步探查暴露的三条（都不是第 7 步造成的，但都是它查出来的）
+
+**1. 海报墙显示的是旧表冻结快照——用户可见的功能失效，优先级高于第 6 步**
+
+`buildLibrary` 读 `series`/`episodes`/`movies`；V2 识别（`identifyScheduler.writeIdentified`）
+只写 `files`/`works`。**两者之间没有数据迁移，也没有双写。**
+所以自第 2 步切入口起，所有新获取的内容在 UI 上都不可见——海报墙展示的是
+迁移前那个库的冻结快照，还会随 ingest 删除消失文件的行而缓慢衰减。
+
+修它 = 把 4 个 builder（`buildLibrary` / `buildSeriesDetail` /
+`buildLibrarySeriesDetail` / `buildLibraryMovieDetail`）迁到 `files`/`works`。
+这是功能迁移，得单独立项。**注意这和「前端全删重做」的计划相关**——如果前端要重做，
+这 4 个端点的重写正好一起做。
+
+**2. jobs 队列只剩生产者没有消费者**
+
+`claimNext()` 生产零调用点（第 2 步切入口那刻就死了）。后果：
+- dashboard 的 redispatch 按钮返回 200 + 一个四态回执 DTO，**但那行永远不会被执行**
+- `ingestTrigger` 每个 changed pass 还打一行 `orchestrator pass enqueued` 的**假日志**
+- 活动页的「已进行 N 秒」秒表永远显示没有任务在跑
+- `hasActiveRealignWorkerTask` 的 ingest/realign 互斥门无生效路径
+
+活着的生产者两个：`ingestTrigger`（有 identity-dedup 兜底，卡成一行不会无限增长）、
+dashboard redispatch。**决策点**：要么给 jobs 接个消费者，要么删生产者 + 那个按钮。
+
+**3. `last_verify_sweep_at` 只有读者没有写者**
+
+与 B 组修掉的 `last_ingest_at` **完全同型**。`apiV2.ts` 读它渲染「字幕校验巡检」
+新鲜度，但全仓无写入者——`runVerifySweep` 被 import 但从未调用，成因是
+2026-08-07「巡检注入本轮雪藏」（用户拍板的产品决策）。
+界面上「字幕校验巡检」永远显示没跑过。已在注释里写明事实，恢复注入是产品决策。
+
+### 其他
 
 | 项 | 说明 |
 |---|---|
 | **翻译工作台 GC 炸弹** | 翻译循环没把 jobId 登记进 `gcStaging` 的 in-flight 集合（字幕流有）。根因是翻译 jobId 是 `daemon-${Date.now()}`，每次不同、循环层无法预知。跑几小时的工作台唯一保护是 mtime 活性窗口。`translateItemId` 已提供稳定身份可作派生源 |
-| `scanCommand.ts` 是 C42 第二扇侧门 | 另一份 upsert 不写 `sub_recheck_at`，经它入库的行 B 档永远选不中 |
-| `watchV2.ts` 旁路入口 | 漏接 4 个运维器官 + `workPermitted` + `translateEnabled`，持续漂移源 |
+| `server.test.ts` flake | 全套件并行下偶发失败（~1/10，`port: 0` + undici 全局态），单独跑 120/120 稳定绿。会污染「失败必须是同样 7 条」的验收口径，值得单独定位 |
 | `recheck_after` 隐式隔离 | 三方共用靠 `sub_status` 白名单，没有 `last_error` 那样的显式前缀机制 |
 | probe 失败重试通路 | 隐式靠 D17 回填 pass，没有独立记账 |
 | 命名事故 | `recheck_after`（重试调度）vs `sub_recheck_at`（事实复核）语义近但含义完全不同 |
 | `db.test.ts` 14 处版本号字面量 | 每加一条迁移就要手改 14 行，应写成 `String(MIGRATIONS.length)` |
+| 注释硬写行号会腐烂 | 第 7 步实测：`cli/index.ts` 有条注释写 `daemon.ts:327`，删 39 行后指到了另一个函数里。已改成引符号名（重构时工具会带着走）。仓内还有 `watchWiring.ts:7` 等同类实例 |
+| `--noUnusedLocals` 下 7 处孤儿 | `cli/index.ts` 的 `verifyAndRecord`/`runVerifySweep`/`verifyRepo`（verifySweep 雪藏，**有意保留**）+ `ReconcileAllResultDTO`/`requireEnv`/`targetLanguages`（疑似真死）+ `handleWorkerTask` |
+| `identifyMediaSkill` 教模型调未挂载工具 | 文档仍写 `write_identified_media`，而活路径（daemonV2 字幕 worker）从不传 `identityDeps`。模型会去试、被拒、把失败写进 reason |
 | 既有 7 红 | deployContract 3（部署脚本换了测试没跟上）/ buildAdapters 2（zimuku）/ secrets 1 + settingsRepo 1（SECRET_NAMES 从 12 涨到 15） |
 
 ---
