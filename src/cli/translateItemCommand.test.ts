@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { translateTimeoutMs, sourceLangDisplayName, sidecarPathFor, readSeriesTargetSubs, locateTranslateIdentity, makeDaemonTranslateRunItem, tryAutoTranslateCfg } from './translateItemCommand.js'
 import { openDb } from '../v2/db.js'
 import { makeAdapterConfigResolver, envOnlyAdapterConfig } from '../v2/secrets.js'
-import { translateItemId } from '../v2/ownIds.js'
+import { translateItemId, translateJobId } from '../v2/ownIds.js'
 import { seriesKeyOf } from '../v2/glossaryRepo.js'
 import { listNewTranslateCandidates } from '../v2/translateWorkerTask.js'
 
@@ -181,6 +181,58 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
     expect(deps.glossaryStore).toBeDefined()
     deps.glossaryStore!.save('tmdb:1', [{ src: 'Nico', zh: '妮可' }], 1)
     expect(deps.glossaryStore!.load('tmdb:1')).toEqual([{ src: 'Nico', zh: '妮可' }])
+    db.close()
+  })
+
+  // ── 翻译工作台 GC 炸弹（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八）──
+  // 旧实现是 `jobId: \`daemon-${Date.now()}\``。它同时坏了两件事：
+  //  ① 循环层无法预知 → 没法登记进 gcStaging 的 in-flight 集合（字幕流有）→ 保护只剩 mtime 窗口
+  //  ② 每次调用都是新值 → 同一集每次重试堆一个新工作台目录，且成功后没人按名字回收
+  // 这一族用例钉住"jobId 是稳定身份"这条契约在**生产构造点**上成立。
+  it('🔴 jobId 由 translateJobId 稳定派生：同一文件两次调用拿到同一个 workspace 路径（幂等）', async () => {
+    const db = seedDb()
+    const seen: string[] = []
+    const runItem = makeDaemonTranslateRunItem({
+      db,
+      cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+      roots: () => ['/media/tv'],
+      agentRunner: (() => {
+        return async (task: Record<string, unknown>) => {
+          seen.push(task.jobId as string)
+          return { status: 'installed', reason: null, sourceRef: null, sidecarPath: '/x.srt', llmCalls: 1 } as never
+        }
+      })() as never,
+    })
+    await runItem('/media/tv/ww/e02.mkv')
+    await runItem('/media/tv/ww/e02.mkv')
+    expect(seen[0]).toBe(seen[1])
+    // 与唯一构造入口同源（不复述格式）：daemonV2 的循环靠同一个函数**预知**这个名字并登记
+    // 进 in-flight 集合，两处任一改格式，GC 保护就静默失效而测试全绿（C34 的教训）。
+    expect(seen[0]).toBe(translateJobId('tmdb:261868', '/media/tv/ww/e02.mkv'))
+    // 反面：绝不含时间戳（`daemon-${Date.now()}` 在这条断言下必红）
+    expect(seen[0]).not.toMatch(/^daemon-\d+$/)
+    db.close()
+  })
+
+  it('🔴 不同文件的 workspace 路径不撞（撞了就是两个活共用一个工作台，半成品互相污染）', async () => {
+    const db = seedDb()
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id, season, episode, sub_status, updated_at)
+                VALUES ('/media/tv/ww/e03.mkv', '/media/tv/ww', 'e03.mkv', 100, 0, 'tmdb:261868', 1, 3, 'handoff_translate', 0)`).run()
+    const seen: string[] = []
+    const runItem = makeDaemonTranslateRunItem({
+      db,
+      cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+      roots: () => ['/media/tv'],
+      agentRunner: (() => {
+        return async (task: Record<string, unknown>) => {
+          seen.push(task.jobId as string)
+          return { status: 'installed', reason: null, sourceRef: null, sidecarPath: '/x.srt', llmCalls: 1 } as never
+        }
+      })() as never,
+    })
+    await runItem('/media/tv/ww/e02.mkv')
+    await runItem('/media/tv/ww/e03.mkv')
+    expect(seen[0]).not.toBe(seen[1])
     db.close()
   })
 })

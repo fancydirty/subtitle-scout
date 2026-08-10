@@ -18,7 +18,7 @@ import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type Ada
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { CHINESE_SIDECAR_TAGS } from '../agent/languages.js'
 // C20：itemId 的唯一构造入口 + work_id 的唯一解析入口（自有 id 空间，不在本文件另写解析）。
-import { translateItemId, tmdbIdFromOwnId } from '../v2/ownIds.js'
+import { translateItemId, translateJobId, workIdFromTranslateItemId, tmdbIdFromOwnId } from '../v2/ownIds.js'
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -273,7 +273,13 @@ export function makeDaemonTranslateRunItem(opts: {
     )
     const videoDir = dirname(videoPath)
     const report = await runner({
-      jobId: `daemon-${Date.now()}`,
+      // 🔴 GC 炸弹修复（2026-08-08 live test 实测：工作台残留 312KB / CURRENT-STATE §八）。
+      // 旧值 `daemon-${Date.now()}` 让循环层无法预知目录名 → 没法登记进 gcStaging 的 in-flight
+      // 集合（字幕流靠 subtitleJobId 做到了，C34），且每次重试堆一个新目录、成功后没人回收。
+      // 这里与 daemonV2 的 in-flight 登记必须调**同一个** translateJobId（两处手写必漂移，
+      // 漂了 GC 保护就静默失效）；派生源用 identity 而不是 candidate，是因为 runItem 的签名只
+      // 收 videoPath——identity.itemId 与 candidate.itemId 同源这件事已由既有红线用例钉住。
+      jobId: translateJobId(workIdFromTranslateItemId(identity.itemId), videoPath),
       videoPath,
       itemId: identity.itemId,
       originLang: identity.originLang,
@@ -393,7 +399,12 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
         const deps = makeTranslateAgentDeps(cfg, fetchSourceSub, { db, fetchTmdbContext })
         const run = makeTranslateWorker(deps)
         const report = await run({
-          jobId: `cli-${Date.now()}`,
+          // 与 daemon 分支同一个构造入口（GC 炸弹修复，见上方 :276 区的论证）。手动 CLI 同样
+          // 受益于稳定身份：反复手动重翻同一个文件不再每次堆一个新工作台；且 daemon 的
+          // boot GC 与它算出的 jobId 一致——不过手动 CLI 是**另一个进程**，daemon 的 in-flight
+          // 集合是进程内的 Set，跨进程保护仍只有 gcOrphans 的 mtime 活性窗口（R6-9/R7-1）。
+          // 这一条**不因本次修复而改善**，如实记在这里，不假装跨进程租约已经存在。
+          jobId: translateJobId(workIdFromTranslateItemId(identity.itemId), videoPath),
           videoPath,
           itemId: identity.itemId,
           originLang: identity.originLang,

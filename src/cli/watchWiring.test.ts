@@ -13,6 +13,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { buildDaemonV2Deps } from './watchWiring.js'
+// 翻译工作台 jobId 的唯一构造入口（GC 炸弹修复）：不在测试里复述目录名格式，理由同 subtitleJobId。
+import { translateJobId } from '../v2/ownIds.js'
 import { openDb } from '../v2/db.js'
 
 function mkArgs(over: Record<string, any> = {}) {
@@ -79,22 +81,26 @@ describe('buildDaemonV2Deps · D5 四个运维器官全部接上', () => {
     db.close()
   })
 
-  it('🔴 C34 决策留痕：翻译流未接入 daemonV2，故 in-flight 集合里不会有 .subtitle-translate 的 jobId', () => {
-    // 这条用例是**决策的留痕**，不是行为断言：C34 说 `new Set()` 会 GC 掉正在跑的翻译工作台。
-    // 处置分两半：
-    //  ① `.subtitle-staging`（字幕工作台）——daemonV2 自己在跑，jobId 由它登记，已真实填充。
-    //  ② `.subtitle-translate`（翻译工作台）——**daemonV2 里根本没有翻译流**（第 4 步才接，C3），
-    //     所以本进程不可能有在飞行的翻译 jobId，填不出来也不需要填。
-    // 那"正在跑的翻译工作台"从哪来？只能来自并发的手动 CLI（cmdTranslateItem）。它由 gcOrphans
-    // 自己的两道既有防线兜住，与 jobId 集合无关：mtime 新于 bootTime（新建未写）+ 递归最新
-    // mtime 在 10 分钟活性窗口内（R6-9 / R7-1 两次修复，stagingSandbox.test.ts 已钉住）。
-    // 再加上 gcStaging 只在 boot 跑一次（daemonV2.test.ts 钉住），暴露窗口是启动那一瞬间。
-    // 第 4 步把翻译接进 daemonV2 时，必须把它的 jobId 也登记进同一个集合——那时这条注释是入口。
+  it('🔴 C34 收口：in-flight 集合原样透传，两条工作台的 jobId 都能进（翻译流已接入）', () => {
+    // 这条用例的**前身**是"翻译流未接入 daemonV2，故集合里不会有 .subtitle-translate 的 jobId"
+    // ——那条留痕的末句写着"第 4 步把翻译接进 daemonV2 时，必须把它的 jobId 也登记进同一个
+    // 集合——那时这条注释是入口"。2026-08-08 live test 实测到工作台残留 312KB（CURRENT-STATE
+    // §八「翻译工作台 GC 炸弹」），修复正是走这个入口：translateJobId 让循环层能预知目录名，
+    // daemonV2.advanceTranslateOnce 于是像字幕流一样登记/摘除。留着旧断言会把一个**已经不成立
+    // 的世界观**钉死在测试里（"翻译 jobId 永远不该出现"），故连同论证一起改写。
+    //
+    // 本层（接线层）要守的只有一条：gcStaging 把 daemon 给的集合**原样**递给 gcOrphans，
+    // 不筛、不拷、不加工。谁往集合里放什么是 daemon 的事（由 daemonV2.test.ts 分别钉住两条轨）。
+    // 拷一份在这里恰好是危险的：GC 的判据是"此刻是否在被使用"，任何拷贝都可能在 await
+    // 边界上变成陈旧快照，把跑了两小时的翻译工作台当孤儿 rm 掉（gcOrphans 头注的既有论证）。
     const { db, args } = mkArgs()
     const deps = buildDaemonV2Deps(args)
-    deps.gcStaging!(new Set(['subtitle:tmdb:7']))
+    const live = new Set(['subtitle:tmdb:7', translateJobId('tmdb:7', '/media/Show/E01.mkv')])
+    deps.gcStaging!(live)
     const passed = (args.gcOrphans as any).mock.calls[0][1] as Set<string>
-    expect([...passed].some(id => id.startsWith('translate'))).toBe(false)
+    // 同一个对象（不是等值副本）——"原样透传"这条契约只有引用相等才测得到
+    expect(passed).toBe(live)
+    expect([...passed].some(id => id.startsWith('translate'))).toBe(true)
     db.close()
   })
 

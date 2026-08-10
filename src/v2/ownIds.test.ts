@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   seriesId, episodeId, tmdbIdFromOwnId,
   translateItemId, translateFileKey, workIdFromTranslateItemId, fileKeyFromTranslateItemId,
+  translateJobId,
 } from './ownIds.js'
 // C20 红线跑**真实的** seriesKeyOf（不复述它的逻辑）：要守的正是"两个模块的隐含契约还对得上"，
 // 复述等于测试自己维护第二份实现，两份一漂移就是假绿。
@@ -146,5 +147,60 @@ describe('translateItemId · C20 glossary key 可解性红线', () => {
   it('🔴 file 标识内不含 `/`（否则 itemId 里会出现第二个 `/`，反解歧义）', () => {
     const k = translateFileKey('/mnt/media/Show/Season 01/E01.mkv')
     expect(k.includes('/')).toBe(false)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// translateJobId · 翻译工作台 GC 炸弹（CURRENT-STATE §八 / C34 的翻译那一半）
+//
+// 生产实测（2026-08-08 live test）：翻译成功后工作台目录留在磁盘上没被回收——
+// `_scout_live_test/TV/.subtitle-translate/daemon-1786390499859/` 共 312KB，sub_status 已闭环
+// 到 covered 但目录仍在。根因是 jobId 曾是 `daemon-${Date.now()}`：每次调用都是新值，**循环层
+// 无法预知**，于是既没法登记进 gcStaging 的 in-flight 集合（字幕流有，见 subtitleJobId），
+// 也没法在成功后按名字回收——每次失败重试还额外堆一个新目录，无界增长。
+//
+// 修法与字幕流同构：把目录名从"时刻"改成"身份"（translateItemId 已提供稳定身份）。
+// 这一族用例钉住那个身份函数本身；工作台的创建/回收由 translateWorker.test.ts 钉，
+// in-flight 登记由 daemonV2.test.ts 钉。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('translateJobId · 翻译工作台目录名（GC 炸弹的稳定身份）', () => {
+  it('🔴 同一 (work, path) 两次调用同值（幂等：重试复用同一目录，不每次堆一个新的）', () => {
+    // 这一条直接钉住实测缺陷的成因：`daemon-${Date.now()}` 在这条断言下必红。
+    const p = '/mnt/media/TV/Show/S01E01.mkv'
+    expect(translateJobId('tmdb:123', p)).toBe(translateJobId('tmdb:123', p))
+  })
+
+  it('🔴 不同文件不撞（撞了就是两个活共用一个工作台，半成品互相污染）', () => {
+    const a = translateJobId('tmdb:123', '/mnt/media/TV/Show/S01E01.mkv')
+    const b = translateJobId('tmdb:123', '/mnt/media/TV/Show/S01E02.mkv')
+    expect(a).not.toBe(b)
+  })
+
+  it('🔴 不同作品同路径也不撞（work_id 参与派生）', () => {
+    const a = translateJobId('tmdb:123', '/mnt/media/x.mkv')
+    const b = translateJobId('tmdb:456', '/mnt/media/x.mkv')
+    expect(a).not.toBe(b)
+  })
+
+  it('🔴 是合法的**单层目录名**：不含 `/`、`\\`、`:`，也不以 `.` 开头', () => {
+    // 它是 `<root>/.subtitle-translate/<jobId>/` 的那一段。含 `/` 会让工作台埋进深层目录 →
+    // gcOrphans 只在每个根下**非递归**扫 `.subtitle-translate/`，够不到就是永久泄漏；
+    // 含 `:`（work_id 天然带 `tmdb:`）在 SMB/exFAT 挂载上直接创建失败——生产的媒体根正是
+    // 群晖 SMB 与 rclone FUSE。以 `.` 开头会被自己的 GC 与运维 ls 忽略。
+    const id = translateJobId('tmdb:123', '/mnt/media/TV/Show/S01E01.mkv')
+    expect(id).not.toMatch(/[/\\:]/)
+    expect(id.startsWith('.')).toBe(false)
+    expect(id.length).toBeGreaterThan(0)
+  })
+
+  it('🔴 与 translateItemId 同源（不许两处各算一份身份）', () => {
+    // 循环层能预知 jobId 的前提是"它由 candidate 已有的 (workId, path) 唯一决定"。
+    // 若这里改成读别的东西（basename、files.id、随机量），daemonV2 登记的那个名字与
+    // worker 实际建的目录就会对不上 —— GC 保护静默失效，正是 C34 在字幕流栽过的形态。
+    const workId = 'tmdb:261868'
+    const p = '/mnt/media/TV/ww/e02.mkv'
+    expect(translateJobId(workId, p)).toContain(translateFileKey(p))
+    // 反解得回 work_id：排障时从目录名看得出这是哪部剧（同 itemId 的可读性要求）
+    expect(translateJobId(workId, p)).toContain('261868')
   })
 })

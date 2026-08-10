@@ -11,6 +11,8 @@ import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir, RETRY_LATER_STREA
 // C21 用例 7b 端到端：用真实的抓源腿 locate 验"回填的产出真能被消费方读出来"，
 // 而不是只断言列被写上（列值断言在"写了个 {} "的实现下同样为真）。
 import { makeDbLocate } from '../cli/fetchSourceSub.js'
+// 翻译工作台的 jobId 同源断言（GC 炸弹）：不在测试里复述目录名格式，理由同 subtitleJobId。
+import { translateJobId } from './ownIds.js'
 
 interface TestDeps {
   db?: ReturnType<typeof openDb>
@@ -4080,6 +4082,81 @@ describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + 
     expect(order.indexOf('translate')).toBe(order.length - 1)     // 翻译在最后
     expect(order).toContain('identify')
     expect(order).toContain('subtitle')
+    db.close()
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 翻译工作台的 in-flight 登记（CURRENT-STATE §八「翻译工作台 GC 炸弹」/ C34 的另一半）
+  //
+  // 字幕流早有这条（阶段 3 里 `inFlightStagingJobIds.add(subtitleJobId(item.workId))`），
+  // 翻译流一直没有——文档记的根因是"翻译 jobId 是 `daemon-${Date.now()}`，每次不同、循环层
+  // 无法预知"。既然 jobId 现在由 `translateJobId(workId, path)` 稳定派生，循环层在**开工前**
+  // 就能算出与 worker 实际建目录**字节一致**的那个名字，这条登记从"做不到"变成"必须做"。
+  //
+  // 为什么不能只靠 gcOrphans 自己的 mtime 活性窗口（那是改动前唯一的保护）：
+  // 窗口是 10 分钟递归最新 mtime，而翻译的单步可以很久没有磁盘写（一次 pro reasoning 的
+  // update_rows 之间隔着分钟级的模型思考），且 gcStaging 只在 boot 跑一次——真实杀伤场景是
+  // "手动 CLI 正在翻一部电影，运维重启 daemon"：boot GC 拿着空集合 + 一个刚好静默了 11 分钟
+  // 的工作台，把跑了两小时的现场整个 rm 掉。in-flight 集合是这条路径上唯一确定性的判据。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('🔴 翻译在飞行中时，它的工作台 jobId 在 in-flight 集合里（否则 boot GC 会 rm 掉正在跑的现场）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)                                    // work_id 默认 tmdb:1
+    let sawInFlight: string[] = []
+    let daemon!: ScoutDaemonV2
+    daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => {
+        // runItem 跑到一半时观察 daemon 眼里的集合——gcOrphans 靠 jobId **目录名**判活
+        // （`<root>/.subtitle-translate/<jobId>/`），名字对不上就等于没保护。
+        sawInFlight = [...((daemon as any).inFlightStagingJobIds as Set<string>)]
+        return { status: 'installed' as const }
+      },
+    }))
+    await advance(daemon)
+    // 与生产实际用的那个 jobId **同源**（不在测试里复述格式）：这一条正是 C34 在字幕流
+    // 立下的规矩——两边各手写一份，任何一侧改格式 GC 保护就静默失效而测试全绿。
+    expect(sawInFlight).toEqual([translateJobId('tmdb:1', V1)])
+    // 跑完必须摘掉，否则这个 jobId 永久免疫 GC → 工作台垃圾无界堆积
+    expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
+    db.close()
+  })
+
+  it('🔴 runItem 抛错也要把 in-flight 条目摘掉（finally 语义，同字幕流）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => { throw new Error('LLM boom') },
+    }))
+    await advance(daemon)
+    expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
+    db.close()
+  })
+
+  it('🔴 文件已消失（R12 跳过，runItem 一次不调）→ 不许登记（白白免疫一次 GC）', async () => {
+    // 与字幕流"登记必须在剔除之后"同一条论证：一个根本没开工的 jobId 若也登记一次，
+    // 它对应的（上一次失败留下的）工作台就白白躲过这一次 boot 回收。
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    let calls = 0
+    const seen: string[][] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => false,                             // 磁盘上没了
+      translateRunItem: async () => { calls++; return { status: 'installed' as const } },
+      // gcStaging 不在这条路径上被调，故直接观察集合的终态 + 过程态
+      log: (m: string) => { seen.push([m]) },
+    }))
+    await advance(daemon)
+    expect(calls).toBe(0)
+    expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
     db.close()
   })
 })

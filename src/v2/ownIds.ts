@@ -110,3 +110,35 @@ export function fileKeyFromTranslateItemId(itemId: string): string {
   const idx = itemId.indexOf('/')
   return idx > 0 ? itemId.slice(idx + 1) : ''
 }
+
+/** 翻译工作台的 jobId，同时也是它的**目录名**（`<root>/.subtitle-translate/<jobId>/`，
+ *  见 translate/workspace/paths.ts 的 workspacePaths）。与字幕流的 `subtitleJobId` 同职、同理由。
+ *
+ *  ── 为什么必须存在、且必须是稳定身份（2026-08-08 live test 实测缺陷）──
+ *  旧值是 `daemon-${Date.now()}` / `cli-${Date.now()}`，实测后果是工作台**永久残留**：
+ *  `_scout_live_test/TV/.subtitle-translate/daemon-1786390499859/` 312KB，翻译已成功、
+ *  sub_status 已闭环到 covered，目录还在。时刻做目录名同时坏了两件独立的事：
+ *   ① **循环层无法预知** → 没法在开工前把它登记进 `gcOrphans` 的 in-flight 集合（字幕流靠
+ *      `subtitleJobId` 做到了这一点，C34）。于是"正在跑的翻译工作台"唯一的保护是 mtime
+ *      10 分钟活性窗口，而一次 pro reasoning 的两步之间静默几十分钟是常态 → boot GC 会把
+ *      跑了两小时的现场整个 rm 掉（gcOrphans 的 R6-9/R7-1 两次修复都在还这笔债）。
+ *   ② **每次调用都是新值** → 同一集每次失败重试都堆一个新目录，成功后也没人按名字回收，
+ *      媒体目录里的隐藏目录无界增长（用户看不见，只会看到盘满）。
+ *  稳定身份把这两件事同时解掉：可预知 → 能登记；同文件复用 → 不堆积、且成功后可按名字删。
+ *
+ *  ── 形态：`translate-<work_id 去掉 provider 前缀>-<translateFileKey>`──
+ *  **不能直接用 itemId 当目录名**（那是最省事的写法，但错）：itemId 是 `tmdb:123/<key>`，
+ *  含 `/` 会让工作台埋进 `.subtitle-translate/tmdb:123/<key>/` 这样的**深层**路径，而
+ *  gcOrphans 只在每个媒体根下**非递归**扫 `.subtitle-translate/` 的直接子条目——够不到就是
+ *  永久泄漏（同一条论证见 stagingSandbox.allocate 的头注释）。`:` 同样不能留：生产的媒体根是
+ *  群晖 SMB 与 rclone FUSE 挂载，冒号在 SMB/exFAT 上是非法文件名字符，mkdir 直接失败 →
+ *  翻译流整支起不来。故 work_id 里的 `:` 一律换成 `-`。
+ *
+ *  仍保留可读的 work_id 段（不是纯哈希）：运维 `ls .subtitle-translate/` 时要能看出
+ *  "这是哪部剧的残留"，同 itemId 的可读性要求。 */
+export function translateJobId(workId: string, videoPath: string): string {
+  // 只替换目录名非法/易碎的字符，其余原样保留（同 translateItemId "work_id 原样嵌入"的口径：
+  // 不校验形状、不硬编码 tmdb: 前缀，将来接第二个 provider 不用改这一行）。
+  const safeWorkId = workId.replace(/[/\\:]/g, '-')
+  return `translate-${safeWorkId}-${translateFileKey(videoPath)}`
+}

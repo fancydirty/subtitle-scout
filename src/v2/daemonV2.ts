@@ -26,7 +26,7 @@ import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { mapWithConcurrency } from './probeConcurrency.js'
 // C21 回填 pass 用它把 works.id（'tmdb:<id>'）解回 TMDB id。复用 ownIds 这一份唯一解析入口，
 // 不在这里另写一遍 slice(5)——本仓已因"两份实现漂移"栽过（D7 的 findOverlappingRoot）。
-import { tmdbIdFromOwnId, translateItemId } from './ownIds.js'
+import { tmdbIdFromOwnId, translateItemId, translateJobId } from './ownIds.js'
 // 语言集合的唯一定义处（C31 末段 / 任务 G 收敛）：judge 的喂料与翻译流的语言门同源。
 import {
   FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS,
@@ -864,6 +864,21 @@ export class ScoutDaemonV2 {
     }
 
     this.deps.log(`翻译 ${c.title} (${c.videoPath})`)
+    // 🔴 GC 炸弹修复（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八 + C34 的翻译那一半）。
+    //
+    // 把这个活的翻译工作台目录名登记为"在飞行"，跑完（含抛错）必须摘掉——与阶段 3 字幕流的
+    // 那段登记完全同构，理由也同：gcOrphans 的两条保留条件之一就是"这个工作台正在被使用"，
+    // 空集合意味着 boot GC 会 rm 掉正在被 agent 写入的现场。
+    //
+    // 文档此前把这条记为"做不到"，根因是旧 jobId 是 `daemon-${Date.now()}` —— 循环层无法预知。
+    // `translateJobId(workId, path)` 把它变成稳定派生值之后，这里能算出与
+    // makeDaemonTranslateRunItem 实际用的那个**字节一致**的同一个字符串，登记于是成立。
+    // 两处必须共用同一个构造函数（不许任何一侧手拼）：漂了 GC 保护就静默失效而测试全绿。
+    //
+    // 登记必须在 R12 的存在性检查**之后**（与字幕流"登记必须在剔除之后"同一条论证）：
+    // 一个根本没开工的 jobId 若也登记一次，它对应的（上次失败留下的）现场就白白免疫一次回收。
+    const jobId = translateJobId(c.workId, c.videoPath)
+    this.inFlightStagingJobIds.add(jobId)
     let status: TranslateRunItemResult['status']
     try {
       const r = await runItem(c.videoPath)
@@ -875,6 +890,10 @@ export class ScoutDaemonV2 {
       // 抛错是"这次没跑通"，该走退避轨、给它剩下的额度。
       this.deps.log(`warn: 翻译抛错（隔离，按失败轨退避）: ${c.videoPath}: ${String(e)}`)
       status = 'write-failed'
+    } finally {
+      // finally 而不是顺序执行（照字幕流的既有形态）：runItem 抛错时若不摘，这个 jobId 会
+      // 永久免疫 GC，工作台垃圾从此无界堆积——而它正是本次要修的那个缺陷本身。
+      this.inFlightStagingJobIds.delete(jobId)
     }
 
     // 全部回写带乐观守卫（D10），守卫匹配 0 行时必须留下痕迹——见下方论证。

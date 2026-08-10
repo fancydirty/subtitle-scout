@@ -6,7 +6,7 @@ import { translateSkill } from './skills/translateSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
 import { makeTranslateWorkspaceTools } from './translateWorker.tools.js'
 import { TranslateReportSchema, type TranslateReport, type TranslateTask } from './translateWorker.schemas.js'
-import { ensureWorkspaceLayout } from '../translate/workspace/paths.js'
+import { resetWorkspace, cleanupWorkspace } from '../translate/workspace/paths.js'
 import type { ResolveSourceDeps } from '../translate/workspace/resolveSource.js'
 import type { GlossaryTerm } from '../translate/workspace/types.js'
 
@@ -44,7 +44,9 @@ export type TranslateRunReport = TranslateReport & { llmCalls?: number }
 export function makeTranslateWorker(deps: TranslateWorkerDeps) {
   return async function runTranslateTask(task: TranslateTask): Promise<TranslateRunReport> {
     const stagingBase = task.stagingRoot ?? task.mediaRoot
-    const paths = ensureWorkspaceLayout(stagingBase, task.jobId)
+    // 开工前清空（jobId 现在是稳定身份 → 同一文件重试复用同一目录 → 上一次的 FROZEN /
+    // bilingual 残留会串味甚至永久锁死这一次；完整论证见 workspace/paths.ts resetWorkspace）。
+    const paths = resetWorkspace(stagingBase, task.jobId)
 
     const tools = {
       read_doc: makeReadDocTool([translateSkill]),
@@ -106,10 +108,39 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
         abortSignal: timeoutMs === Infinity ? undefined : AbortSignal.timeout(timeoutMs),
       })
       console.error(`[translate-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
-      return { ...readFinalized(), llmCalls: result.steps.length }
+      const report = { ...readFinalized(), llmCalls: result.steps.length }
+      // ── 工作台回收（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八「GC 炸弹」）──
+      //
+      // 两侧刻意**不对称**（这是与字幕流唯一的差异，故必须论证而不是照抄 stagingSandbox 的
+      // "无论成败都删"）：
+      //  · 成功轨（installed / already-covered）→ 删。产物已经 rename 进视频目录，工作台是
+      //    纯垃圾。改动前它永久留着：唯一的清扫者 gcOrphans 只在 daemon **boot** 跑一次，
+      //    一个长期不重启的 daemon 每翻一集就攒一个 312KB 的隐藏目录在用户的媒体库里。
+      //  · 未成功（held / no-source / extract-failed / probe-failed）→ **留现场**。翻译是数分钟
+      //    到数小时的付费 LLM，held 的半成品（已译好的几百行 bilingual + 冻结术语表 + critic.md）
+      //    是排障与人工救援的唯一材料，删掉就等于"失败了但没人知道模型卡在哪"。
+      //
+      // 留现场为什么不会堆满磁盘（用户点名要的那条上限）——三道各自独立的收口：
+      //  ① jobId 是稳定身份（translateJobId）→ 同一个文件无论重试几次都只占**一个**目录。
+      //     旧的 `daemon-${Date.now()}` 才是真的堆积源：每次失败一个新目录，无上限。
+      //  ② 失败额度有限（TRANSLATE_HELD_LIMIT=3 → unsolvable），一个文件最多留一份现场。
+      //  ③ 跨文件的总量由 gcOrphans 的 boot 回收 + 10 分钟 mtime 活性窗口收口——一个已经
+      //     停牌的失败现场在下次 daemon 重启时必然被当孤儿清掉（它既不在 in-flight 集合里，
+      //     mtime 也早就陈旧）。这条路径本就是为此存在的，不需要在这里再造第二套超时清理。
+      if (report.status === 'installed' || report.status === 'already-covered') {
+        const removed = cleanupWorkspace(stagingBase, task.jobId)
+        if (!removed) {
+          // 必须留痕：静默失败会让"每集残留一个工作台"再次隐形，而那正是本次实测抓到的形态。
+          console.error(`[translate-worker] job ${task.jobId} 工作台回收失败（下次 boot GC 兜底）`)
+        }
+      } else {
+        console.error(`[translate-worker] job ${task.jobId} status=${report.status} → 保留工作台现场供排障（稳定 jobId，重试复用同一目录）`)
+      }
+      return report
     } catch (e) {
       // 模型放弃/步数耗尽/abort 等未 finalize 的情形:诚实 held(fail-closed),绝不让异常
       // 以未捕获形态炸出调用方——与 find-subtitle worker-exhaustion 语义对齐。
+      // 工作台**保留**（同上面的未成功轨）：耗尽路径恰恰是最需要看现场的那一种。
       const reason = e instanceof Error ? e.message : String(e)
       console.error(`[translate-worker] job ${task.jobId} ended without a clean finalize: ${reason}`)
       return { status: 'held', reason: `worker exhausted: ${reason.slice(0, 200)}`, sourceRef: null, sidecarPath: null, llmCalls: stepCount }
