@@ -25,14 +25,14 @@
 第 5 步   字幕 skill 两条边界            ✅  2 commit（prompt + 计数轨）
 第 5.5 步 skill/工具一致性审计 + 干测压测 ✅  3 commit
 第 7 步   清理死代码（A+B+C1 三批）      ✅  7 commit，净删 ~3600 行
-第 6 步   115 改可写 + 单元式 live test   ⬜  ← 后端最后一步
+第 6 步   live test（NAS 测试库）          🔄  单元 1-4 通过，字幕流验证中
 第 8 步   前端全删重做                    ⬜  ← 用户裁决：并入下列三件事
           ├─ 4 个 builder 迁到 files/works（修海报墙冻结快照）
           ├─ 删 jobs 生产者 + redispatch 假按钮
           └─ 之后四张旧表才真正无活读者，那时才轮到删表
 ```
 
-**测试**: 2984 条 / 7 失败（全是接手前的既有债务）/ tsc 干净 / 零新增回归
+**测试**: 3018 条 / 7 失败（全是接手前的既有债务）/ tsc 干净 / 零新增回归
 
 ⚠️ **第 6 步的硬约束**：dashboard 现在显示的不是真相（见 §八 第 1 条），
 所以 live test **不许拿界面当验收依据**——必须直接查 DB 与磁盘上的字幕文件。
@@ -141,6 +141,66 @@ media_roots：守备目录（禁嵌套，addRoot 是闸门）
 - LLM（干测用）：`LLM_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1`，
   key 在 `~/projects/token.txt` 的 `XIAOMI_API_KEY`，模型 `mimo-v2.5` / `mimo-v2.5-pro`
   ⚠️ 端点是 `token-plan-sgp.xiaomimimo.com`（不是 xiaomitoken.com，我一开始搞错过）
+
+---
+
+## 六·五、第 6 步 live test 实录（2026-08-10 夜）
+
+**环境**：115 触发风控后改用 NAS（CIFS，稳定、支持硬链接）。测试库
+`/mnt/nvme0n1-4/nas_media/_scout_live_test/{Movies,TV,Anime}`，
+61 个视频硬链自 NAS 全库（零额外空间），Jellyfin 形状、作品名清洗过、初始零字幕。
+含 spec 点名的 Peacemaker（当年装错 8 集的事故案例）。
+
+⚠️ **CI 已不可用**（GitHub Actions 账单额度耗尽），改为在软路由上 `docker build` 直出镜像。
+⚠️ **LLM 换端点**：DeepSeek 余额耗尽（`sub:AI_APICallError: Insufficient Balance`），
+   改用小米 mimo（`token-plan-sgp.xiaomimimo.com`，key 在 `~/projects/token.txt`）。
+
+### 已验证通过的单元
+
+| 单元 | 结果 |
+|---|---|
+| 1 扫描 | `scanned=61 upserted=61 skipped=0`，与建库计数精确一致 |
+| 1 probe | `probe wrote=61 unavailable=0 failed=0`；实测到 36 语言多轨文件与 `[]` 零轨，三态语义正确 |
+| 2 识别 | 9/9 作品、61/61 文件全绑定，零失败；`origin_lang` 全对（ja/de/en）；Peacemaker→tmdb:110492 是正确的 DC 剧 |
+| 2.5 judge | `判定 61 个文件——44 需字幕 / 17 跳过`；规则 2 正确排除 17 个带 `chi` 内嵌轨的文件 |
+| 3 字幕流 | 35 个字幕装盘成功（Peacemaker 8/8、IT Welcome to Derry 7/7 等） |
+| **R24 闭环** | `A档=0 B档=61` → `covered=35`，**精确等于磁盘上的 35 个字幕**；`sub_recheck_at` 全部推回未来（哨兵自清除）；`35 covered + 9 待找 + 17 不需要 = 61` |
+| 4 日巡检 | `巡检完成，歇着等明天` —— 日巡检模型（阶段 4）按设计收工 |
+
+### 抓到并修掉的 4 个真实缺陷
+
+**① `FFPROBE_PATH` 空串致探针全静默失效**（`a226c0b`）——最严重的一个。
+`docker-compose.yml` 的 `${FFPROBE_PATH:-}` 把变量设成**空串**（不是"不设置"），覆盖了
+Dockerfile 里正确的 `ENV`；而代码用 `??` 解析，空串是合法值 → `execFile("")` 抛错 →
+被 `catch` 吞成 null → 61 个文件三列全 NULL，日志却报 `probe ok=61`。
+四层叠加的静默失效，每一层单独看都"没 bug"。
+修：`?.trim() ||` 归一空串 + `if (!bin)` 纵深防御 + compose 给回默认值 + 三层回归测试。
+
+**②③④ 三条「日志误导」缺陷**（`6650bc8` / `7cf655a`）：
+- `probe ok=N` 统计的是"没抛异常"而非"写进去了" → 改 `wrote/unavailable/failed` 三态 + 整体不可用时打 warn
+- `judge: N 个文件判定需字幕` 把**判定总数**说成需字幕数 → 我据此误判规则 2 失效、停机排查一轮
+- mismatch 取证日志 targets 侧截断到 40 字节而 agent 侧不截断 → 每项都"看起来不等"，
+  手工 hex 解码才发现是日志问题（实际 8/8 装成功）
+
+三条都不让程序算错，但都让**读日志的人**算错——而 live test 阶段人读日志是唯一观测手段。
+
+**⑤ 装盘与观察之间没有衔接**（`12e4ab6` + `51eb5a4`）——第 5 次同型缺陷的新形态。
+worker 按 R24 不写 covered（正确），但刚装字幕的文件既不在扫描 A 档（指纹没变）
+也不在 B 档（上一轮已把 `sub_recheck_at` 推到 +7 天）→ **装好的字幕要等 7 天才被观察成
+covered**，这 7 天里它仍满足工作台谓词、被反复重找，白烧 LLM。
+翻译轨同型且更隐蔽：`daemonV2` 已经调了 `requestIngest()` 踢扫描，但踢的那轮扫描
+两档谓词同样选不中它——**踢了扫描而扫描什么都不看**，这条衔接一直是装饰性的。
+修：成功轨写 `sub_recheck_at = 0`（哨兵）。**哨兵取 0 而非 `now-1`** 是关键：
+该列读者用可注入时钟、写者用调用方的 now，两者不同源时 `now-1` 对读者是"未来 25 年"
+→ 谓词永不命中而单测全绿。
+
+### 环境实测事实（与本地盘语义不同，值得记）
+
+- `find -delete` **在 CIFS 上静默失效**（报成功但文件还在）——必须用 `rm`
+- `rm -rf` 非空目录在 CIFS 上不可靠，要先逐文件 `rm`
+- 115（openlist WebDAV）：顶层是虚拟挂载点**不能建目录**（409 Conflict）；
+  `MKCOL` 返回 405 但实际执行成功；高频试探会触发**阿里云 WAF 风控**（我踩了）
+- CIFS **支持硬链接**（10.9GB 文件瞬间完成、零额外空间）——建测试库的理想方式
 
 ---
 
