@@ -336,7 +336,49 @@ Re:ZERO         S1   应有 85 / 实有 77   ← 缺 8 集 → 8 个虚线卡片
 
 **生产状态**：schema v33、通知表已建、SSE 活着、季集 2144 行、covered 167。
 
-### 还差一件（比这三件更要命）
+### ④ 媒体库页数据端点（R-F2 + R-F5）— `bce8eef`
+
+新建 `GET /api/v2/mediaLibrary` + `/:workId`，**旧的 4 个 builder 原样不动**（前端替换完再删）。
+不原地改是因为旧 `LibraryItemDTO` 背着为旧模型设计的字段（`job` 挂已死的 jobs 表、
+`coverage` 是六桶旧覆盖率模型），原地改会让 DTO 同时背两套语义。
+
+⚠️ **我说"中文判定复用 `langOf`"是不够的，subagent 实测纠正**：
+```
+chi/zho/zh/zh-Hant  → langOf 返回 zh   ✅
+chs / cht           → langOf 返回自身  ❌  （只折叠 ZH_ORIGIN_CODES={zh,cn,chi,zho,cmn}）
+```
+只用 `langOf` 会让**带简繁内嵌轨的片子丢掉蓝点**。正解是两臂并列
+（`tagsForLanguage('zh')` 命中 ∨ `langOf === 'zh'`）。反向验证时精准红 2 条，正是 chs/cht。
+
+**R-F2「不管来源」的实现**：跨该格全部文件求或（`.some()`），绝不取首行。
+同时 `fileCount`/`subtitledFileCount` 如实呈报——"另一处那份仍要单独去配"这个事实
+不许被聚合吞掉。列表页的 `onDiskEpisodeCount` 用去重后格数而非 `COUNT(*)`：
+两个目录各一份时后者会把"实有 1 集"报成 2 集。
+
+**不保留 `section`（动漫分区）**：`genres` 列只在 `series` 表上（v13 加的），
+`works` **没有这一列**，第一臂结构上不可用；且 R-F2 的形态是网格+圆点，没有分区概念。
+
+**生产实测（真实 115 库，58 个作品）**：
+```
+列表：Three Kingdoms   应有 95 / 实有 95 / 缺  0    ← 完整无虚线
+      Attack on Titan  应有 87 / 实有 25 / 缺 62    ← 62 个虚线卡片
+      Re:ZERO          应有 85 / 实有 78 / 缺  7    ← 78 实线（73 绿）+ 7 虚线
+详情：Peaky Blinders 6 季，S01-S03 各 6 集全实有、全绿点（就是刚配上的那 24 集）
+      PLUTO S01 8 集全蓝点（内嵌中文轨，不需处理）
+```
+三态圆点在真实数据上全部验证。
+
+### 前端可以开工了
+
+四件后端前置全部完成并生产验证。新前端要的数据现在都能拿到：
+
+| 页面 | 数据源 |
+|---|---|
+| 活动页 | `GET /api/v2/events`（SSE，4 类事件） |
+| 通知页 | `notifications` 表（一周窗，逐集存读时聚合）+ SSE `found` 实时推 |
+| 媒体库页 | `GET /api/v2/mediaLibrary` + `/:workId` |
+
+### 原先记的"还差一件"已完成
 
 `buildLibrary` / `buildSeriesDetail` / `buildLibrarySeriesDetail` / `buildLibraryMovieDetail`
 四个 builder **整个长在旧表上**（`series`/`episodes`/`subtitles`）。而生产实测 `series` 是 **0 行**——
