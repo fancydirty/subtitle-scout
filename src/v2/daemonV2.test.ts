@@ -13,6 +13,9 @@ import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir, RETRY_LATER_STREA
 import { makeDbLocate } from '../cli/fetchSourceSub.js'
 // 翻译工作台的 jobId 同源断言（GC 炸弹）：不在测试里复述目录名格式，理由同 subtitleJobId。
 import { translateJobId } from './ownIds.js'
+// R-F5 应有集回填：断言走**真实读出方**（媒体库页虚线小卡片就是读它），不在测试里复述
+// tmdb_seasons 的 SELECT——复述等于测试自己维护第二份读实现，两份一漂移就是假绿。
+import { canonicalEpisodes } from './tmdbCatalog.js'
 
 interface TestDeps {
   db?: ReturnType<typeof openDb>
@@ -4626,6 +4629,232 @@ describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + 
     await advance(daemon)
     expect(calls).toBe(0)
     expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R-F5：works 的 TMDB 应有集回填 pass（backfillSeasonCatalog）。
+//
+// **本条的实质是"给一张已存在但没人喂的表接上生产者"，不是新建缓存。**
+// 实测现状（2026-08-11）：
+//   · `tmdb_seasons` 表早在 db.ts v12 就建好，`tmdbCatalog.refreshSeriesCatalog` 是它唯一的
+//     写入方，`canonicalEpisodes` 是唯一的读出方——两个函数都在、都有测试、都能跑。
+//   · 但它**唯一的生产触发点**是 `server.ts:275` 的 `librarySeriesDetail`，而那条通路先查
+//     `SELECT … FROM series WHERE id = ?`（apiV2.ts:1580），detail 为 null 就不触发刷新。
+//   · `series` 表是**旧世界**的表，写入方只有 `libraryRepo.upsertSeries`，其唯一生产调用方
+//     在 ingest 走盘循环里；而新架构的 daemonV2 **一行 series 都不写**（实测 grep 为 0），
+//     它写的是 `works`。
+//   → 于是新架构识别出来的 110 个 works 在 `series` 里没有对应行 → detail 恒 null →
+//     `refreshSeriesCatalog` 对它们**一次都不会被调用** → `tmdb_seasons` 对新架构恒空。
+//
+// 这正是本仓栽过 5 次的同型缺陷的**第 6 例**（C12→C35→C43→C21→audio_langs）：
+// 列/表写好了、读出函数也写好了，**但没定谁来写**。前 5 次是"谁来写/谁来重读"，
+// 这一次更隐蔽——写入方存在，只是它的触发谓词长在另一张没人填的表上。
+//
+// 因此本 pass 的三个职责必须写死在这里：
+//   · **谁写**：`ScoutDaemonV2.backfillSeasonCatalog`（boot 一次，照 backfillProviderIds 形态）
+//   · **谁读**：`tmdbCatalog.canonicalEpisodes`（既有，媒体库页虚线小卡片的数据来源）
+//   · **什么时候写全**：靠 `works` 全表扫 + 每轮 BACKFILL_BATCH_SIZE 上限，多轮 boot 收敛；
+//     单轮内靠 refreshSeriesCatalog 自己的 7 天 TTL 门天然跳过已刷新的行。
+//
+// 为什么走回填 pass 而不是"识别成功那一刻同步抓"（这是 R-F5 落地形态的关键选择）：
+// 与 C21 完全同构——识别成功后 `files.work_id` 非 NULL，而 identifyScheduler 的队列谓词是
+// `work_id IS NULL` → 那个作品目录**永不再进识别队列**。只在识别时抓，覆盖的仅是**今后**新
+// 识别的作品，库里现存的 110 个 works 永远没有季集表 → 媒体库页对存量剧一根虚线都画不出来。
+// 回填 pass 同时覆盖存量与新增（新增作品下一次 boot 自然被谓词捞到），是唯一收敛的形态。
+// ─────────────────────────────────────────────────────────────────────────────
+async function backfillCatalog(daemon: ScoutDaemonV2): Promise<void> {
+  await (daemon as any).backfillSeasonCatalog()
+}
+
+/** 只注入季集两个方法的最小 identify deps（回填只用得到它们）。 */
+function catDeps(db: ReturnType<typeof openDb>, over: {
+  table?: (tvId: string) => Promise<any>
+  episodes?: (tvId: string, season: number) => Promise<any>
+} = {}) {
+  const tableCalls: string[] = []
+  const epCalls: Array<[string, number]> = []
+  return {
+    tableCalls,
+    epCalls,
+    deps: {
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: {
+          model: {} as any,
+          tmdb: {
+            search: async () => [],
+            getDetails: async () => null,
+            getSeasonTable: async (tvId: string) => {
+              tableCalls.push(tvId)
+              return over.table ? over.table(tvId) : [{ seasonNumber: 1, episodeCount: 2, airDate: '2022-01-01' }]
+            },
+            getSeasonEpisodes: async (tvId: string, season: number) => {
+              epCalls.push([tvId, season])
+              if (over.episodes) return over.episodes(tvId, season)
+              return [
+                { episode: 1, title: 'Ep1', overview: null, airDate: null, stillPath: null },
+                { episode: 2, title: 'Ep2', overview: null, airDate: null, stillPath: null },
+              ]
+            },
+          } as any,
+        },
+      },
+    },
+  }
+}
+
+function seedWorkFor(db: ReturnType<typeof openDb>, id: string, mediaType: 'tv' | 'movie' = 'tv') {
+  db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+    .run(id, `Work ${id}`, mediaType, 1000, 1000)
+}
+
+function catalogRows(db: ReturnType<typeof openDb>, seriesId: string): number {
+  return (db.prepare('SELECT COUNT(*) c FROM tmdb_seasons WHERE series_id = ?').get(seriesId) as { c: number }).c
+}
+
+describe('ScoutDaemonV2 · R-F5 works 应有集回填 pass', () => {
+  it('🔴 电视剧 work 的 TMDB 季集表被抓进 tmdb_seasons（媒体库页虚线小卡片的数据来源）', async () => {
+    const db = openDb(':memory:')
+    seedWorkFor(db, 'tmdb:120089')
+    // 前置：确实是空的，否则本用例空转（假绿最常见形态，照 C21 用例 7 的口径先断一次）
+    expect(catalogRows(db, 'tmdb:120089')).toBe(0)
+
+    const cat = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...cat.deps })))
+
+    // 断言**读出方**的产出而不是"行数非 0"：媒体库页拿的是 canonicalEpisodes，
+    // 写进去两行垃圾同样满足"行数非 0"，而虚线卡片仍画不出集号——列有值、功能照旧瘸。
+    expect(canonicalEpisodes(db, 'tmdb:120089', 1)).toEqual([
+      { episode: 1, title: 'Ep1', overview: null, airDate: null, stillPath: null },
+      { episode: 2, title: 'Ep2', overview: null, airDate: null, stillPath: null },
+    ])
+    db.close()
+  })
+
+  it('🔴 media_type=movie 被跳过，不留空行、也不打 TMDB（电影没有季集）', async () => {
+    const db = openDb(':memory:')
+    seedWorkFor(db, 'tmdb:9', 'movie')
+    const cat = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...cat.deps })))
+
+    // 两条都要断：不打请求（白烧配额 + 保证 404）、不留行（空行会被读成"这剧有 0 季"）。
+    expect(cat.tableCalls).toEqual([])
+    expect(catalogRows(db, 'tmdb:9')).toBe(0)
+    db.close()
+  })
+
+  it('🔴 TMDB 抓取失败 → 一行不写（留"没探过"，不写 0 集），下轮重试', async () => {
+    // 三态契约与 embedded_langs 同源（daemonV2.backfillEmbeddedLangs 的既有论证）：
+    // NULL/无行 = 没探过，有行 = 探过的权威结果。若失败时写 0 行**并记 fetched_at**，
+    // 媒体库页会把它读成"这季确实有 0 集"→ 一根虚线都不画，而真相是没抓到。
+    // tmdb_seasons 没有独立的"探过没有"标志列，`是否存在行`就是那个标志——所以
+    // 失败路径必须一行都不落，让下一轮 boot 的 MAX(fetched_at) IS NULL 把它捡回来。
+    const db = openDb(':memory:')
+    seedWorkFor(db, 'tmdb:500')
+    const boom = catDeps(db, { table: async () => { throw new Error('TMDB 429') } })
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...boom.deps })))
+    expect(catalogRows(db, 'tmdb:500')).toBe(0)
+
+    // 下一轮：同一行必须**再次**被捞起来重试（这才是"留 NULL 待重试"的实义；
+    // 只断言"这轮没写"是半个断言——真正的回归是它从此再也不被捡起）。
+    const good = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...good.deps })))
+    expect(good.tableCalls).toEqual(['500'])
+    expect(canonicalEpisodes(db, 'tmdb:500', 1).length).toBe(2)
+    db.close()
+  })
+
+  it('🔴 存量回填：库里已识别的 works 全部被补上（不靠识别队列——它们永不再进队列）', async () => {
+    const db = openDb(':memory:')
+    for (const id of ['tmdb:1', 'tmdb:2', 'tmdb:3']) seedWorkFor(db, id)
+    const cat = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...cat.deps })))
+    expect(cat.tableCalls.sort()).toEqual(['1', '2', '3'])
+    for (const id of ['tmdb:1', 'tmdb:2', 'tmdb:3']) {
+      expect(canonicalEpisodes(db, id, 1).length).toBe(2)
+    }
+    db.close()
+  })
+
+  it('🔴 单轮有批量上限（照 backfillProviderIds 的 200 行口径，防 TMDB 配额雪崩）', async () => {
+    // 110 个作品 × 每部若干季 = 每季一次 /tv/{id}/season/{n}。没有上限时一次 boot 能打出
+    // 上千次请求 → 429 后整批白跑。上限的语义是"每轮 boot 最多推进这么多 work"，
+    // 靠多轮 boot 收敛（同 C21）。
+    const db = openDb(':memory:')
+    const N = 205
+    for (let i = 0; i < N; i++) seedWorkFor(db, `tmdb:${1000 + i}`)
+    const cat = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...cat.deps })))
+    expect(cat.tableCalls.length).toBe(200)
+    db.close()
+  })
+
+  it('🔴 幂等：同一个 work 重复回填不产生重复行（TTL 门内甚至不再打 TMDB）', async () => {
+    const db = openDb(':memory:')
+    seedWorkFor(db, 'tmdb:77')
+    const first = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...first.deps })))
+    expect(catalogRows(db, 'tmdb:77')).toBe(2)
+
+    // 第二轮：refreshSeriesCatalog 的 7 天 TTL 门应当挡掉整次请求。
+    // 断言"没有重复行" + "没再打 TMDB" 两条——只断行数的话，一个
+    // DELETE+INSERT 的实现会照样绿，而它每轮都在白烧配额。
+    const second = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...second.deps })))
+    expect(catalogRows(db, 'tmdb:77')).toBe(2)
+    expect(second.tableCalls).toEqual([])
+    db.close()
+  })
+
+  it('🔴 pass 级爆炸不阻塞主巡检（try/catch 隔离，照 backfillProviderIds/embedded_langs 口径）', async () => {
+    // 库被锁 / 老库无 works 表（容器滚更时新代码先于迁移跑起来、或从 v30 前的备份恢复）。
+    const noTable = openDb(':memory:')
+    noTable.exec('DROP TABLE works')
+    await expect(backfillCatalog(new ScoutDaemonV2(mkDeps(noTable, { ...catDeps(noTable).deps }))))
+      .resolves.toBeUndefined()
+    noTable.close()
+
+    // 探针未注入（deps 漏接线）→ 整支休眠且一行不动，不抛。
+    const db = openDb(':memory:')
+    seedWorkFor(db, 'tmdb:1')
+    const bare = new ScoutDaemonV2(mkDeps(db, {
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: { model: {} as any, tmdb: { search: async () => [], getDetails: async () => null } as any },
+      },
+    }))
+    await expect(backfillCatalog(bare)).resolves.toBeUndefined()
+    expect(catalogRows(db, 'tmdb:1')).toBe(0)
+    db.close()
+  })
+
+  it('🔴 非 tmdb: 形状的 id 被跳过（不拿解析不出 TMDB id 的串去打端点）', async () => {
+    const db = openDb(':memory:')
+    seedWorkFor(db, 'self-scan-trigger')
+    const cat = catDeps(db)
+    await backfillCatalog(new ScoutDaemonV2(mkDeps(db, { ...cat.deps })))
+    expect(cat.tableCalls).toEqual([])
+    db.close()
+  })
+
+  it('🔴 boot 时被真实调用（不是"写了个方法没人叫"——本仓五次同型缺陷的形状）', async () => {
+    // 上面 8 条用例**全部**直接调 (daemon as any).backfillSeasonCatalog()，因此它们在
+    // "方法写好了但 run() 里没人叫"的实现下会全绿——而那恰恰就是本条要修的那个缺陷本身
+    // （C12→C35→C43→C21→audio_langs 的共同形状）。照 C21 那条同名用例的口径，
+    // 这一条走**完整 run()**，没有任何测试专用的直接调用，是 R-F5 真正的验收点。
+    const db = openDb(':memory:')
+    seedWorkFor(db, 'tmdb:83')
+    const cat = catDeps(db)
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [], listVideoFiles: () => [], ...cat.deps,
+    }))
+    await oneLoop(daemon)
+    expect(cat.tableCalls).toEqual(['83'])
+    expect(canonicalEpisodes(db, 'tmdb:83', 1).length).toBe(2)
     db.close()
   })
 })

@@ -27,6 +27,10 @@ import { mapWithConcurrency } from './probeConcurrency.js'
 // C21 回填 pass 用它把 works.id（'tmdb:<id>'）解回 TMDB id。复用 ownIds 这一份唯一解析入口，
 // 不在这里另写一遍 slice(5)——本仓已因"两份实现漂移"栽过（D7 的 findOverlappingRoot）。
 import { tmdbIdFromOwnId, translateItemId, translateJobId } from './ownIds.js'
+// R-F5 应有集回填：复用既有的 tmdbCatalog 写入方，**不在这里另写一份季集抓取**。
+// TTL 门、gain-path 降级（拿不全所有季就一行不落）两条语义都长在它里面，回填 pass 只负责
+// "把 works 里的 tv 一个个喂给它"——刷新节奏因此只有一个权威。
+import { refreshSeriesCatalog } from './tmdbCatalog.js'
 // 语言集合的唯一定义处（C31 末段 / 任务 G 收敛）：judge 的喂料与翻译流的语言门同源。
 import {
   FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS,
@@ -428,6 +432,20 @@ export class ScoutDaemonV2 {
       await this.backfillProviderIds()
     } catch (e) {
       this.deps.log(`warn: boot provider_ids 回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
+    }
+
+    // R-F5 存量回填（works → tmdb_seasons 应有集缓存）：同一 boot 阶段、同一 try/catch 隔离口径。
+    //
+    // 位置在 provider_ids 回填**之后**、巡检之前，理由同上一支：与扫描无交集，但放进 while
+    // 循环就会每 5 分钟去打一轮 TMDB。
+    //
+    // 独立 try/catch 而不是与上面共用：共用时 provider_ids 那支的 pass 级爆炸会**跳过**本支，
+    // 于是一个与季集表毫不相干的 external_ids 故障会连带让媒体库页的虚线卡片永远画不出来。
+    // 这条 catch 是"TMDB 抓不到季集表只是媒体库页少个虚线、绝不阻塞主巡检"的唯一保证者。
+    try {
+      await this.backfillSeasonCatalog()
+    } catch (e) {
+      this.deps.log(`warn: boot 应有集回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
     }
 
     while (!this.stopping) {
@@ -1710,6 +1728,103 @@ export class ScoutDaemonV2 {
       }
     }
     this.deps.log(`回填: works.provider_ids ok=${ok} failed=${failed} skipped=${skipped}（C21）`)
+  }
+
+  /** R-F5 存量回填（works → tmdb_seasons 应有集缓存）：把 TMDB 的季集表抓进本地库，
+   *  供媒体库页画"应有集 vs 实有集"的**虚线小卡片**（TMDB 说这季有、磁盘上没有的集）。
+   *
+   *  **这一条修的是"表建好了、读写函数都写好了，但没有生产者"**——本仓栽过 5 次的
+   *  同型缺陷（C12 → C35 → C43 → C21 → audio_langs）的第 6 例，且形态更隐蔽。实测现状：
+   *   · `tmdb_seasons` 表 db.ts v12 就建好；`tmdbCatalog.refreshSeriesCatalog` 是唯一写入方，
+   *     `canonicalEpisodes` 是唯一读出方——都在、都有测试、都能跑。
+   *   · 但它唯一的**触发点**是 `server.ts:275` 的 `librarySeriesDetail`，那条通路先查
+   *     `SELECT … FROM series WHERE id = ?`，detail 为 null 就不触发。
+   *   · `series` 是**旧世界**的表，只有 `libraryRepo.upsertSeries`（ingest 走盘循环）会写；
+   *     新架构的 daemonV2 一行 series 都不写，它写的是 `works`。
+   *   → 新架构识别出的作品在 `series` 里没有行 → detail 恒 null → refreshSeriesCatalog
+   *     对它们**一次都不会被调用** → tmdb_seasons 对新架构恒空，虚线卡片一根画不出来。
+   *
+   *  三个职责（本仓铁律：每加一列/一表都必须写死谁写、谁读、什么时候写全）：
+   *   · **谁写**：本 pass。boot 一次，不进 while 循环（同 C21：放进循环就是每 5 分钟打一轮
+   *     TMDB；谓词收敛后确实是 0 行，但那是靠运气不是设计）。
+   *   · **谁读**：`tmdbCatalog.canonicalEpisodes`（既有），媒体库页/详情页的应有集来源。
+   *   · **什么时候写全**：`works` 全表扫 + 每轮 BACKFILL_BATCH_SIZE 上限，多轮 boot 收敛；
+   *     单轮内 refreshSeriesCatalog 自己的 7 天 TTL 门跳过已刷新的 series（幂等来源）。
+   *
+   *  为什么是回填 pass 而不是"识别成功那一刻同步抓"（R-F5 落地形态的关键选择）：与 C21
+   *  完全同构——识别成功后 `files.work_id` 非 NULL，而 identifyScheduler 的队列谓词是
+   *  `work_id IS NULL` → 那个目录**永不再进识别队列**。只在识别时抓，覆盖的仅是今后新识别
+   *  的作品，库里现存的存量作品永远没有季集表。回填 pass 同时覆盖存量与新增（新识别的作品
+   *  下一次 boot 被同一个谓词捞到），是唯一收敛的形态。且它天然满足"不许让 TMDB 抓取阻塞
+   *  识别"——本 pass 与识别在时间上完全不相交。
+   *
+   *  **movie 跳过**：电影没有季集，`tmdb_seasons` 里给它留行没有任何读出方会用；更要紧的是
+   *  拿 movie id 去打 `/tv/{id}` 是保证 404 的白烧。谓词层就滤掉，不进循环。
+   *
+   *  **失败留空不写 0**（与 embedded_langs 的三态契约同源，见 backfillEmbeddedLangs 的论证）：
+   *  `tmdb_seasons` 没有独立的"探过没有"标志列，**是否存在行**就是那个标志。TMDB 429/网络
+   *  抖动时若写 0 行并记 fetched_at，媒体库页会把它读成"这季确实有 0 集"→ 一根虚线都不画，
+   *  而真相是没抓到。故失败路径一行不落（refreshSeriesCatalog 的 gain-path 降级已经保证了
+   *  这一点：拿不全所有季就原样返回、旧缓存纹丝不动），让下一轮 boot 重新捞起来。
+   *
+   *  探针（getSeasonTable/getSeasonEpisodes）未注入时整支休眠且**一行不动**，同
+   *  backfillProviderIds 的"探针缺席不动列"论证：漏接线是静默的，不能让它伪装成"抓过了"。 */
+  private async backfillSeasonCatalog(): Promise<void> {
+    // 无 cast：季集两个方法已经是 IdentifyWorkerDeps.tmdb 上的可选字段（identifyWorker.ts），
+    // 取值即窄化。窄化后 tmdb 恰好就是 refreshSeriesCatalog 要的
+    // `Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes'>`。
+    const { getSeasonTable, getSeasonEpisodes } = this.deps.identify?.worker?.tmdb ?? {}
+    if (!getSeasonTable || !getSeasonEpisodes) return
+    const tmdb = { getSeasonTable, getSeasonEpisodes }
+
+    const db = this.deps.db
+    let rows: Array<{ id: string }> = []
+    try {
+      // 谓词只挑 tv：movie 在 SQL 层就滤掉（见上方 movie 论证）。不加 `已有缓存` 的排除条件
+      // ——那由 refreshSeriesCatalog 的 TTL 门负责，两处都判会让 TTL 语义分裂成两份。
+      // 代价是批量额度会被已刷新的 series 占掉一部分名额，但它们不发任何请求（TTL 门早退），
+      // 配额上是零成本，而少一处重复谓词换来的是"刷新节奏只有一个权威"。
+      rows = db.prepare(
+        `SELECT id FROM works WHERE media_type = 'tv' ORDER BY id LIMIT ${BACKFILL_BATCH_SIZE}`,
+      ).all() as Array<{ id: string }>
+    } catch { return }   // 无 works 表的旧库：回填是增益，不许阻断启动（同 C21 口径）
+    if (rows.length === 0) return
+
+    this.deps.log(`回填: works 应有集缓存开始（本批 ${rows.length} 个剧 / 上限 ${BACKFILL_BATCH_SIZE}，R-F5）`)
+    let refreshed = 0, skipped = 0, failed = 0
+
+    // **串行**，与 backfillProviderIds 同一口径（TMDB 配额敏感；且这里每个剧还要按季再打
+    // N 次 /tv/{id}/season/{n}，并发打满换来的一次 429 会让整批白跑）。
+    for (const r of rows) {
+      if (tmdbIdFromOwnId(r.id) === null) {
+        // 非 `tmdb:<id>` 形状（历史合成 id，如 'self-scan-trigger'）：打端点保证 404 的白烧。
+        skipped++
+        continue
+      }
+      const before = (db.prepare('SELECT MAX(fetched_at) ts FROM tmdb_seasons WHERE series_id = ?')
+        .get(r.id) as { ts: number | null }).ts
+      try {
+        await refreshSeriesCatalog(db, tmdb, r.id, this.deps.now?.() ?? Date.now())
+      } catch (e) {
+        // refreshSeriesCatalog 内部已把 TMDB 故障吞成"原样返回、旧缓存不动"，能漏到这里的
+        // 只有库级异常。仍然隔离：一个剧的失败没有理由让后面 199 个剧不回填。
+        failed++
+        this.deps.log(`回填: 应有集失败（隔离，留空待下轮）: ${r.id}: ${String(e)}`)
+        continue
+      }
+      // 🔴 计数口径必须与日志逐字对应（本仓刚栽过三次"日志把中间量说成结论量"）：
+      // refreshSeriesCatalog 是 void 返回，"没抛异常"**不等于**"刷新成功"——TTL 门早退、
+      // gain-path 降级（TMDB 429/某季拿不到）两条路径都是静默 return。若把循环次数记成
+      // refreshed，日志会报 `refreshed=200` 而实际一个剧都没抓到。故这里改读 fetched_at
+      // 是否真的推进了，只有真写进库的才计入 refreshed，其余归 skipped。
+      const after = (db.prepare('SELECT MAX(fetched_at) ts FROM tmdb_seasons WHERE series_id = ?')
+        .get(r.id) as { ts: number | null }).ts
+      if (after !== null && after !== before) refreshed++
+      else skipped++
+    }
+    // refreshed=本轮真的写进 tmdb_seasons 的剧数；skipped=TTL 门内/降级/非自有 id（三者都
+    // 没写库，但性质不同，故不与 failed 合并）；failed=库级异常。
+    this.deps.log(`回填: works 应有集 refreshed=${refreshed} skipped=${skipped} failed=${failed}（R-F5）`)
   }
 
   /** 出现在任何一对嵌套关系里的守备目录（内层外层都算）——D20 的跳过名单。

@@ -389,6 +389,16 @@ async function cmdWatch() {
               // provider_ids=null（留给回填 pass 重试）。在这里再兜一层会把"失败"伪装成
               // "TMDB 确认没有"，那一行从此永久收敛、永不重试。
               getExternalIds: (mt, id) => tmdb.getExternalIds(mt, id),
+              // R-F5 接线：季集表采集，供 daemonV2.backfillSeasonCatalog 把 TMDB 应有集写进
+              // tmdb_seasons（媒体库页虚线小卡片的数据来源）。**与上一行同一个坑的第六次**：
+              // deps 上它是 optional，漏接线时回填 pass 整支静默休眠（探针缺席不动列），
+              // 界面上只表现为"虚线一根都不画"，没有任何报错。
+              //
+              // 不加 catch，理由同上一行但机制不同：refreshSeriesCatalog 内部已按 gain-path
+              // 降级（任一季拿不到就原样返回、旧缓存纹丝不动、一行不落）。在这里兜一层返回
+              // 空数组，会把"没抓到"伪装成"这剧确实零季"→ 媒体库页把它读成 0 集。
+              getSeasonTable: (id) => tmdb.getSeasonTable(id),
+              getSeasonEpisodes: (id, season) => tmdb.getSeasonEpisodes(id, season),
             },
           },
         }

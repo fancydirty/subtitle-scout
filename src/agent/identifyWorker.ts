@@ -15,6 +15,9 @@ import { z } from 'zod'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { makeRunTracer } from '../core/traceBus.js'
 import { titleFromDir, searchCandidates, verifyEvidence } from '../v2/identify.js'
+// R-F5：季集两个方法的签名直接从 TmdbClient 取（type-only import，不引入运行期依赖）——
+// 不在这里手抄一遍返回类型，抄错一个字段就是"类型说有、实际没有"的静默漂移。
+import type { TmdbClient } from '../adapters/providers/tmdb.js'
 
 export interface IdentifyWorkerDeps {
   model: LanguageModel
@@ -38,6 +41,19 @@ export interface IdentifyWorkerDeps {
      *  让 external_ids 的一次 5xx 把整次识别打回退避轨，代价是一整个作品目录明天才重试、
      *  外加一次白烧的付费 LLM session。 */
     getExternalIds?: (mediaType: 'tv' | 'movie', tmdbId: string) => Promise<{ imdbId: string | null }>
+    /** 季表 + 逐季集清单（`/tv/{id}`、`/tv/{id}/season/{n}`，tmdb.ts:203/381）——R-F5 应有集
+     *  缓存（tmdb_seasons）的采集来源，供媒体库页画"TMDB 说这季有、磁盘上没有"的虚线小卡片。
+     *
+     *  **它们与识别行为完全无关**：识别 agent 一次都不调这两个方法，身份认定只依赖 getDetails。
+     *  之所以挂在这个 deps 上，是因为 daemonV2 的回填 pass 复用 `deps.identify.worker.tmdb`
+     *  这一个既有的 TMDB 客户端接线点（backfillProviderIds 取 getExternalIds 就是这么取的），
+     *  不另开第二条注入通路——两份接线一漂移，就会出现"识别能打 TMDB、回填打不了"的静默半瘫。
+     *
+     *  **可选**的理由与 getExternalIds 逐字同源：这个 deps 有几十个既有构造点，做成必填会让
+     *  它们全部编译不过；故按本仓既有分工——类型层留宽、接线层单钉。回填 pass 在两个方法
+     *  任一缺席时**整支休眠且一行不动**（探针缺席不动列），绝不把"漏接线"伪装成"抓过了"。 */
+    getSeasonTable?: TmdbClient['getSeasonTable']
+    getSeasonEpisodes?: TmdbClient['getSeasonEpisodes']
   }
   /** 批量绑定工具的执行体（写库由调用方实现——可单测）。
    *  可选：scheduler 调用时注入（见 identifyScheduler.ts 的 writeIdentified 覆盖）。 */
