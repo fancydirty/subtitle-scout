@@ -179,6 +179,11 @@ CREATE TABLE IF NOT EXISTS files (
   -- 语义 = 连续多少轮源站拒绝回答（retry_later）。它是"retry_later 不吃 sub_attempt 额度"
   -- 这条豁免的对价账本：连续达上限时折算一次 sub_attempt 并归零，任何非 retry_later 的结局
   -- 都把它归零。必须 NOT NULL DEFAULT 0（'>= CAP' 的三值逻辑，同 D22）。详见 v38 entry。
+  --
+  -- skip_reason / sidecar_langs（v40/R-F15）同样**不在此终态定义里**，由 v40 的条件式 ALTER
+  -- 追加（同上口径）。前者 = judgeSubtitle 的 verdict.reason 原值（origin-skip/embedded/
+  -- missing），后者 = 该视频旁边全部外挂字幕的语言集合 JSON（与当前 target_languages 无关的
+  -- 磁盘事实）。两列皆可空，NULL 分别是"还没判"与"还没观察"的第三态。详见 v40 entry。
 );
 CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
 CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
@@ -964,6 +969,79 @@ CREATE UNIQUE INDEX IF NOT EXISTS notifications_identity
   ON notifications(work_id, ifnull(season,-1), ifnull(episode,-1));
 CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC);
     `.trim())
+  },
+  // v40（R-F15 目标语言可切换性，2026-08-11）：files 表加 skip_reason + sidecar_langs 两列。
+  // 纯条件式 ADD COLUMN，无 CHECK 约束变更、不碰既有表，故不触发 12 步建新表流程。
+  //
+  // ── 用户原话（这两列存在的全部理由）────────────────────────────────────────
+  // 「咱们这个项目之所以没有硬编码锚定中文，就是因为要考虑用户不止中国人，可能会是美国人
+  // 想要英文字幕的情况」「每个资源有哪些字幕，需要在一开始就记录下来，这样在用户更换目标
+  // 语言后，数据库能反应过来」。目标语言是可配置的（settings.target_languages），而库里
+  // 两个关键结论此前都**把目标语言烧死在了一个不可逆的投影里**：
+  //
+  //  ① needs_subtitle 是个布尔，丢掉了 judgeSubtitle 已经算出来的 reason。生产库 1026 个
+  //     needs_subtitle=0 的文件分不出"片子本来就是目标语言"（origin-skip）与"有内嵌目标
+  //     语言轨"（embedded）——这两者在换目标语言后的命运**完全相反**：origin=zh 的国产剧在
+  //     目标改成 en 之后立刻需要找字幕，而有内嵌 zh 轨的片子在目标 en 下同样需要找。
+  //     真正的区别在展示（媒体库页第三种标记 ◇ = 原生同语言）与排障（"这 1026 个到底为什么
+  //     被跳过"此前无法回答）。reason 是 judge **已经算出来**的量，扔掉纯属浪费。
+  //  ② sub_status='covered' 是个**无语言布尔**。磁盘上明明有 .en.srt/.ja.srt，系统却只在
+  //     当前目标语言的 tag 集里找过一遍，其余语言从未被记录。后果是换目标语言后：
+  //     已配 .zh-Hans.srt 的文件在目标 en 下**仍显示 covered**（错误），而磁盘上早有
+  //     .en.srt 的文件会被**重新找一遍**（烧付费 LLM 找一个已经在盘上的字幕）。
+  //
+  // ── 两列的职责（谁写 / 谁读 / 何时写全）──────────────────────────────────────
+  // 本仓已栽过 6 次「加了能力却没定谁写/谁读/谁触发」（C12 → C35 → D17 → D18 → C43 …），
+  // 故每一列都在这里写死三件事：
+  //
+  //  skip_reason TEXT（可空）= judgeSubtitle 的 verdict.reason 原值：
+  //    'origin-skip' / 'embedded' / 'missing'。
+  //    · 谁写：daemonV2.judgeOnce，与 needs_subtitle **同一条 UPDATE**（分两条会在掉电时
+  //      留下"判决已写、理由还是旧的"的行，而 judge 谓词是 `needs_subtitle IS NULL` →
+  //      这一行从此永不重判，理由列永久冻结在上一次目标语言的口径上）。
+  //    · 谁读：媒体库页第三种标记 ◇（origin-skip）与 ◆（embedded）；运维排障。
+  //    · 何时写全：judge 谓词覆盖的全部行；换目标语言时随 needs_subtitle 一起清 NULL
+  //      （retarget.ts），下轮 judge 按新语言重算。
+  //    刻意**不加 CHECK 约束**：值域由 JudgeVerdict 这个联合类型在编译期保证，SQLite 侧再写
+  //      一份字面量就是第二处定义，将来加一种 reason 时必然漏改一处（本仓 C30 的原型）。
+  //
+  //  sidecar_langs TEXT（可空）= 该视频旁边**全部**外挂字幕的语言集合，JSON 数组，
+  //    如 `["en","ja","zh-Hans"]`。与当前 target_languages **无关**——这是磁盘事实，
+  //    不是"用户现在要什么"（同 KNOWN_LANGUAGE_TAGS 头注释确立的既有口径）。
+  //    · 谁写：daemonV2.observeSubtitle，扫描独占（同 sub_status 的 R24 口径：磁盘上有什么
+  //      由扫描说了算，不是 worker 的成功报告）。
+  //    · 谁读：retarget.ts 换语言时据它重导 sub_status（**不需要重新扫盘**，这是本列最大的
+  //      价值）；未来媒体库页可展示"这一集有哪些语言的字幕"。
+  //    · 何时写全：A 档新增/指纹变化 + B 档 7 天轮转（D12 两档原样复用，不新增扫描通路）。
+  //    三态**必须保持**（与 embedded_langs / streamProbe 的既有契约一脉相承）：
+  //      NULL = 没观察过（FUSE 抖动读不了目录也留 NULL）；[] = 观察过、确认零条外挂字幕。
+  //      折叠成 [] 会让一次挂载抖动被记成"这片子没有任何字幕"，换语言重判时据此重找一遍。
+  //
+  // ── 为什么 sidecar_langs 不写进上面那份 files 终态定义 ─────────────────────
+  // 照 recheck_after / sub_recheck_at / sub_attempt / translatable / provider_ids 的既有分工：
+  // 一列一条迁移 entry，fresh install 走完整链一次到位，存量库靠同一条 entry 原地补齐。
+  // 两处都写会让"改一处忘另一处"变成可能。
+  //
+  // 条件式表存在性 + 列存在性双重检查照抄 v30–v38（前者防 v29 及更早的库裸 ALTER 把 openDb
+  // 整个炸掉 → 用户的库再也打不开；后者保证幂等——db.test.ts 会把尾部迁移重放一遍）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    // 两列都**可空**且无 DEFAULT：NULL 在这两列上都是有意义的第三态（"还没判" / "还没观察"），
+    // 与 sub_attempt/sub_retry_streak 那种 `NOT NULL DEFAULT 0` 的计数列语义相反——那边
+    // NULL 会让 `>= N` 的三值逻辑静默失效，这边 NULL 恰恰是重判/重观察的唯一凭据。
+    if (!columns.has('skip_reason')) {
+      db.exec('ALTER TABLE files ADD COLUMN skip_reason TEXT')
+    }
+    if (!columns.has('sidecar_langs')) {
+      db.exec('ALTER TABLE files ADD COLUMN sidecar_langs TEXT')
+    }
   },
 ]
 

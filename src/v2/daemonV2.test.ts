@@ -16,6 +16,10 @@ import { translateJobId } from './ownIds.js'
 // R-F5 应有集回填：断言走**真实读出方**（媒体库页虚线小卡片就是读它），不在测试里复述
 // tmdb_seasons 的 SELECT——复述等于测试自己维护第二份读实现，两份一漂移就是假绿。
 import { canonicalEpisodes } from './tmdbCatalog.js'
+// R-F15：换目标语言的全库重判。用**真实实现**做断言（不在测试里复述那条 UPDATE）——
+// 复述等于测试自己维护第二份实现，两份一漂移就是假绿（同上面 listSubtitleQueue 的既有理由）。
+import { retargetForLanguageChange } from './retarget.js'
+import { SettingsRepo } from './settingsRepo.js'
 
 interface TestDeps {
   db?: ReturnType<typeof openDb>
@@ -1632,6 +1636,201 @@ describe('ScoutDaemonV2.scanOnce · C30 两份漂移标签集统一', () => {
     }))
     await scan(daemon)
     expect(subStatusOf(db, '/media/Show/E01.mkv')).toBeNull()
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R-F15：目标语言可切换性（用户点名的架构级缺口）
+//
+// 用户原话：「咱们这个项目之所以没有硬编码锚定中文，就是因为要考虑用户不止中国人，可能会是
+// 美国人想要英文字幕的情况」「每个资源有哪些字幕，需要在一开始就记录下来，这样在用户更换
+// 目标语言后，数据库能反应过来」。
+//
+// 三件改动的**职责切分**（本仓栽过 6 次「加了能力却没定谁写/谁读/谁触发」，故逐列写死）：
+//  · files.skip_reason  —— 写：judgeOnce（与 needs_subtitle 同一条 UPDATE）。读：媒体库页
+//    第三种标记 ◇。何时写全：judge 谓词 `needs_subtitle IS NULL` 覆盖的全部行。
+//  · files.sidecar_langs —— 写：observeSubtitle（扫描独占，同 sub_status 的 R24 口径）。
+//    读：换目标语言时的 sub_status 重导出。何时写全：A 档新增/指纹变化 + B 档 7 天轮转。
+//  · 触发 —— updateSettings 里 target_languages **真的变了**才跑（幂等）。
+// ─────────────────────────────────────────────────────────────────────────────
+function skipReasonOf(db: ReturnType<typeof openDb>, path: string): string | null {
+  return (db.prepare('SELECT skip_reason FROM files WHERE path = ?').get(path) as { skip_reason: string | null }).skip_reason
+}
+
+function sidecarLangsOf(db: ReturnType<typeof openDb>, path: string): string[] | null {
+  const raw = (db.prepare('SELECT sidecar_langs FROM files WHERE path = ?').get(path) as { sidecar_langs: string | null }).sidecar_langs
+  return raw === null ? null : JSON.parse(raw)
+}
+
+/** 造一行"已识别、待 judge"的文件（work_id 已绑、needs_subtitle still NULL）。 */
+function seedForJudge(
+  db: ReturnType<typeof openDb>, path: string,
+  opts: { originLang?: string | null; embedded?: string[] | null } = {},
+): void {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  db.prepare(`INSERT OR REPLACE INTO works (id, title, media_type, origin_lang, created_at, updated_at)
+              VALUES ('tmdb:42','T','tv',?,1,1)`).run(opts.originLang ?? 'en')
+  db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                 embedded_langs, needs_subtitle, updated_at)
+              VALUES (?,?,?,?,?,?,'tmdb:42',?,NULL,1000)`)
+    .run(path, dir, path.slice(path.lastIndexOf('/') + 1), BIG, 1000, dir,
+      opts.embedded === undefined || opts.embedded === null ? null : JSON.stringify(opts.embedded))
+}
+
+describe('🔴 R-F15 缺口① · judge 把 verdict.reason 落进 files.skip_reason', () => {
+  // 修复前 daemonV2 只用 verdict.needs，reason 算出来就扔——生产库 1026 个 needs_subtitle=0
+  // 的文件分不出"本来就是目标语言"与"有内嵌字幕轨"，媒体库页第三种标记拿不到数据。
+  it.each([
+    ['origin-skip（片子本来就是目标语言）', { originLang: 'zh', embedded: null }, 0, 'origin-skip'],
+    ['embedded（有内嵌目标语言字幕轨）', { originLang: 'ja', embedded: ['chi'] }, 0, 'embedded'],
+    ['missing（需要找字幕）', { originLang: 'ja', embedded: ['jpn'] }, 1, 'missing'],
+  ])('🔴 %s → skip_reason 落库', async (_label, seed, needs, reason) => {
+    const db = openDb(':memory:')
+    const V = '/media/Show/E01.mkv'
+    seedForJudge(db, V, seed as any)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { targetLanguage: 'zh' }))
+    await (daemon as any).judgeOnce()
+    const row = db.prepare('SELECT needs_subtitle FROM files WHERE path = ?').get(V) as { needs_subtitle: number }
+    expect(row.needs_subtitle).toBe(needs)
+    expect(skipReasonOf(db, V)).toBe(reason)
+    db.close()
+  })
+})
+
+describe('🔴 R-F15 缺口② · 扫描记录全部外挂字幕语言（不只目标语言）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  /** 目录 readdir 替身 + **调用计数**——性能红线的唯一凭据。 */
+  function fakeDir(files: Record<string, string[]>) {
+    const calls: string[] = []
+    return { calls, readdir: (d: string) => { calls.push(d); return files[d] ?? [] } }
+  }
+
+  it('🔴 目标 zh，盘上只有 .en.srt → sidecar_langs 记下 en（换语言时的全部凭据）', async () => {
+    const db = openDb(':memory:')
+    const dir = fakeDir({ '/media/Show': ['E01.mkv', 'E01.en.srt'] })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), targetLanguage: 'zh',
+      fileExists: () => false, readdir: dir.readdir,
+    }))
+    await scan(daemon)
+    expect(sidecarLangsOf(db, V)).toEqual(['en'])
+    // 但 sub_status 仍是 NULL：目标是 zh，一条英文字幕不构成"已覆盖"（既有语义不许被本改动放宽）
+    expect(subStatusOf(db, V)).toBeNull()
+    db.close()
+  })
+
+  it('🔴 一个视频旁边多条不同语言字幕 → 全部记录', async () => {
+    const db = openDb(':memory:')
+    const dir = fakeDir({ '/media/Show': ['E01.mkv', 'E01.zh-Hans.srt', 'E01.en.srt', 'E01.ja.ass'] })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), targetLanguage: 'zh',
+      fileExists: () => false, readdir: dir.readdir,
+    }))
+    await scan(daemon)
+    expect(sidecarLangsOf(db, V)).toEqual(['en', 'ja', 'zh-Hans'])
+    expect(subStatusOf(db, V)).toBe('covered')   // 目标 zh 命中 zh-Hans
+    db.close()
+  })
+
+  it('🔴 性能红线：同目录 8 个视频 → readdir 只发 1 次（per-scan 目录缓存）', async () => {
+    // 这一条是本组**最贵**的用例。R24 现状是每视频 15 tag × 4 ext = 60 次 stat，115 网盘的
+    // rclone FUSE 挂载上放大约 46 倍。改成 readdir 的全部理由就是把"每文件 60 次 syscall"
+    // 压成"每目录 1 次"；若忘了做目录缓存，8 个视频就是 8 次 readdir，收益归零且比原来更糟
+    // （readdir 单次比 stat 贵）。实测（本地 tmpfs，24 视频无中字）：1440 次 existsSync
+    // 5.82ms vs 1 次 readdir 0.22ms，快 26 倍——而未命中恰恰是"需要找字幕"那批生产主力。
+    const db = openDb(':memory:')
+    const vids = Array.from({ length: 8 }, (_, i) => `/media/Show/E0${i + 1}.mkv`)
+    const dir = fakeDir({ '/media/Show': [...vids.map((v) => v.split('/').pop()!), 'E01.en.srt'] })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': vids }), targetLanguage: 'zh',
+      fileExists: () => false, readdir: dir.readdir,
+    }))
+    await scan(daemon)
+    expect(dir.calls).toEqual(['/media/Show'])
+    db.close()
+  })
+
+  it('🔴 readdir 抛错（FUSE 抖动）→ sidecar_langs 留 NULL，不写成 []（三态契约）', async () => {
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), targetLanguage: 'zh',
+      fileExists: () => false, readdir: () => { throw new Error('EIO') },
+    }))
+    await scan(daemon)
+    // NULL = 没观察到；[] = 观察过确认零条。折叠成 [] 会让一次抖动被记成"这片子没有任何字幕"，
+    // 换语言重判时据此重新找一遍（烧付费 LLM）。
+    expect(sidecarLangsOf(db, V)).toBeNull()
+    db.close()
+  })
+})
+
+describe('🔴 R-F15 缺口③ · 换目标语言 → 全库重判（不重新扫盘）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴 核心场景：盘上有 .en.srt，目标 zh→en → 重判后判成"已有字幕"，且不碰磁盘', async () => {
+    // 修复前：sub_status 是无语言布尔，改目标后该文件仍被当成"需要找字幕" → 系统重新找一遍
+    // 一个磁盘上早就有的英文字幕。有了 sidecar_langs 之后，重判**不需要任何 stat/readdir**。
+    const db = openDb(':memory:')
+    const dir = { readdir: (_d: string) => ['E01.mkv', 'E01.en.srt'] }
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs({ '/media': [V] }), targetLanguage: 'zh',
+      fileExists: () => false, readdir: dir.readdir,
+    }))
+    await scan(daemon)
+    expect(subStatusOf(db, V)).toBeNull()          // 目标 zh 时：英文字幕不算覆盖
+    expect(sidecarLangsOf(db, V)).toEqual(['en'])  // 但语言事实已记下
+
+    // 用户在设置页把目标改成 en。**一次磁盘访问都不许发**——readdir/fileExists 全给炸弹。
+    const settings = new SettingsRepo(db)
+    const before = settings.get('target_languages')
+    expect(before).toBeNull()
+    retargetForLanguageChange(db, ['en'], NOW + 1)
+
+    expect(subStatusOf(db, V)).toBe('covered')     // 磁盘上那条 .en.srt 现在算覆盖了
+    expect(db.prepare('SELECT needs_subtitle, skip_reason FROM files WHERE path = ?').get(V))
+      .toEqual({ needs_subtitle: null, skip_reason: null })   // 判决列清空 → 下轮 judge 重判
+    db.close()
+  })
+
+  it('🔴 反向：目标 zh→ja 而盘上只有 .en.srt → covered 回退 NULL，重进字幕工作台', async () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered' })
+    db.prepare("UPDATE files SET sidecar_langs = '[\"en\"]' WHERE path = ?").run(V)
+    retargetForLanguageChange(db, ['ja'], NOW + 1)
+    expect(subStatusOf(db, V)).toBeNull()
+    db.close()
+  })
+
+  it('🔴 R24 红线：不清 sub_status——磁盘事实不因改配置而丢失（sidecar_langs 未知的行原样不动）', () => {
+    // 用户点名的约束：sub_status 是磁盘事实观察（R24），不该因为改配置就被清成 NULL。
+    // sidecar_langs 为 NULL = "还没观察过这一行的语言"，此时**没有任何新证据**可据以重导出，
+    // 清掉就是拿信息缺失当结论（今天栽过三次的「把中间量说成结论量」的同型）。
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered' })   // sidecar_langs 仍是 NULL（存量行）
+    retargetForLanguageChange(db, ['en'], NOW + 1)
+    expect(subStatusOf(db, V)).toBe('covered')
+    db.close()
+  })
+
+  it.each([['handoff_translate'], ['unsolvable']])(
+    '🔴 停牌态（%s）+ 新目标语言字幕不在盘上 → 一列不动（扫描都没权清它，重判更没有）',
+    (stalled) => {
+      const db = openDb(':memory:')
+      seedRow(db, V, { sub_status: stalled })
+      db.prepare("UPDATE files SET sidecar_langs = '[\"en\"]' WHERE path = ?").run(V)
+      retargetForLanguageChange(db, ['ja'], NOW + 1)
+      expect(subStatusOf(db, V)).toBe(stalled)
+      db.close()
+    })
+
+  it('🔴 停牌态 + 新目标语言字幕**在**盘上 → covered（停牌自然解除，同 R23 既有口径）', () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'handoff_translate' })
+    db.prepare("UPDATE files SET sidecar_langs = '[\"en\"]' WHERE path = ?").run(V)
+    retargetForLanguageChange(db, ['en'], NOW + 1)
+    expect(subStatusOf(db, V)).toBe('covered')
     db.close()
   })
 })

@@ -432,6 +432,72 @@ describe('settings · 启动面三键（spec A §4.4/§4.6）', () => {
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// R-F15 缺口③：换目标语言 → 全库重判的**触发点**就在这里。
+// 「谁触发」必须钉死在一条能跑通的链路上——本仓栽过 6 次「加了能力却没定谁写/谁读/谁触发」。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 R-F15 · PUT target_languages 变更触发全库重判', () => {
+  const seedJudged = (d: ScoutDb, needs: number, reason: string) => {
+    d.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id,
+                                  needs_subtitle, skip_reason, updated_at)
+               VALUES ('/m/a.mkv','/m','a.mkv',1,1,'tmdb:1',?,?,1)`).run(needs, reason)
+  }
+  const judgedRow = (d: ScoutDb) =>
+    d.prepare('SELECT needs_subtitle, skip_reason FROM files').get()
+
+  it('🔴 值真的变了 → 全库 needs_subtitle/skip_reason 清 NULL（下轮 judge 自然重判）', () => {
+    const d = openDb(':memory:')
+    const repo = new SettingsRepo(d)
+    repo.set('target_languages', 'zh', NOW)
+    seedJudged(d, 0, 'origin-skip')
+    expect(updateSettings(repo, { target_languages: 'en' }, NOW + 1).ok).toBe(true)
+    expect(judgedRow(d)).toEqual({ needs_subtitle: null, skip_reason: null })
+  })
+
+  it('🔴 幂等：PUT 同一个值 → 不触发重判（判决列原样保留）', () => {
+    // 设置页保存按钮把整个表单一起 PUT，同值反复提交是**常态**。每次都清全库判决 =
+    // 每次点保存都让全库重跑一遍 judge，并把 sub_status 按同一批语言重导一遍——
+    // 一个纯粹的无变化保存变成周期性全库写。只有真的变了才触发。
+    const d = openDb(':memory:')
+    const repo = new SettingsRepo(d)
+    repo.set('target_languages', 'zh', NOW)
+    seedJudged(d, 0, 'origin-skip')
+    expect(updateSettings(repo, { target_languages: 'zh' }, NOW + 1).ok).toBe(true)
+    expect(judgedRow(d)).toEqual({ needs_subtitle: 0, skip_reason: 'origin-skip' })
+  })
+
+  it('🔴 只改别的键（body 不含 target_languages）→ 不触发重判', () => {
+    const d = openDb(':memory:')
+    const repo = new SettingsRepo(d)
+    repo.set('target_languages', 'zh', NOW)
+    seedJudged(d, 1, 'missing')
+    expect(updateSettings(repo, { hardsub_mode: 'aggressive' }, NOW + 1).ok).toBe(true)
+    expect(judgedRow(d)).toEqual({ needs_subtitle: 1, skip_reason: 'missing' })
+  })
+
+  it('🔴 校验失败的批次 → 一列都不许动（全有或全无，重判也在同一个事务里）', () => {
+    const d = openDb(':memory:')
+    const repo = new SettingsRepo(d)
+    repo.set('target_languages', 'zh', NOW)
+    seedJudged(d, 0, 'embedded')
+    expect(updateSettings(repo, { target_languages: 'en', hardsub_mode: 'bogus' }, NOW + 1).ok).toBe(false)
+    expect(repo.get('target_languages')).toBe('zh')
+    expect(judgedRow(d)).toEqual({ needs_subtitle: 0, skip_reason: 'embedded' })
+  })
+
+  it('🔴 等价写法归一：`zh,en` → `zh, en` 只是空白差异，不算变更（不触发重判）', () => {
+    // zod 的正则不允许空格，但 settings 表里可能有历史脏值/别的写入路径的产物。
+    // 用解析后的语言**列表**比较而不是裸字符串——比较的是"目标语言集合变没变"这个语义，
+    // 不是"这个字符串的字节变没变"（字段名必须与真实含义逐字对应）。
+    const d = openDb(':memory:')
+    const repo = new SettingsRepo(d)
+    repo.set('target_languages', 'zh, en', NOW)
+    seedJudged(d, 1, 'missing')
+    expect(updateSettings(repo, { target_languages: 'zh,en' }, NOW + 1).ok).toBe(true)
+    expect(judgedRow(d)).toEqual({ needs_subtitle: 1, skip_reason: 'missing' })
+  })
+})
+
 describe('媒体根路径形状（spec A §11-1：win32 绝对路径不冤杀）', () => {
   it('listMediaSubdirs/addMediaRoot 接受 C:\\ 形状进入存在性检查（POSIX 上诚实报不存在），相对路径仍拒', () => {
     expect(listMediaSubdirs('C:\\media')).toEqual({ ok: false, error: 'path does not exist' })

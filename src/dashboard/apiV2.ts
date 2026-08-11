@@ -16,7 +16,10 @@ import { traceBus, type TraceEvent } from '../core/traceBus.js'
 import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
 // Plan B Task 1: originLang + nativeAudio 计算依赖
 import { langOf } from '../agent/languages.js'
-import { resolveTargetLanguages } from '../cli/targetLanguages.js'
+import { resolveTargetLanguages, parseTargetLanguages } from '../cli/targetLanguages.js'
+// R-F15 缺口③：换目标语言 → 全库重判（清判决列 + 按 sidecar_langs 重导 sub_status）。
+// 实现放在 v2/ 而不是这里：它是库层语义（且要能被 daemon 侧测试直接调），dashboard 只是触发者。
+import { retargetForLanguageChange } from '../v2/retarget.js'
 
 // ---- Library (海报墙) ----
 
@@ -782,8 +785,26 @@ export function updateSettings(
   }
   // R5-7 修复：多键写入无事务——注释声称"全有或全无"，但校验后的写入循环不在事务里，
   // 崩溃即部分写。包一层 db.transaction 让语义与注释一致。
+  //
+  // R-F15 缺口③：target_languages **真的变了**时，同一个事务里触发全库重判。
+  //
+  //  · 为什么触发点在这里：这是 target_languages 唯一的用户可达写入路径（settings 表的
+  //    set() 是无差别的字符串存取，把重判挂在 repo 层会让 seedRootsFromEnv 之类的内部写入
+  //    也触发全库写）。本仓栽过 6 次「加了能力却没定谁触发」，故触发者必须是一个具体的、
+  //    有测试覆盖的调用点。
+  //  · 为什么比较**解析后的语言列表**而不是裸字符串：比较的是"目标语言集合变没变"这个语义，
+  //    不是"这个字符串的字节变没变"。`zh, en` 与 `zh,en` 是同一个配置，按字节比会误判成变更
+  //    → 白清一次全库判决（字段名/判据必须与真实含义逐字对应）。
+  //  · 为什么在同一个事务里：校验失败时一列都不许动（"全有或全无"这条既有语义对重判同样
+  //    成立）；且设置写入与据它做出的全库重判之间掉电会留下"新语言已生效、判决还是旧的"的库，
+  //    而 judge 谓词是 `needs_subtitle IS NULL` → 那批行永不重判，正是 D17/C43 那类永久冻结。
+  const nextTargets = entries.find(([k]) => k === 'target_languages')?.[1] as string | undefined
+  const targetsChanged = nextTargets !== undefined
+    && parseTargetLanguages(settingsRepo.get('target_languages') ?? undefined).join(',')
+      !== parseTargetLanguages(nextTargets).join(',')
   settingsRepo.db.transaction(() => {
     for (const [key, value] of entries) settingsRepo.set(key, value as string, now)
+    if (targetsChanged) retargetForLanguageChange(settingsRepo.db, parseTargetLanguages(nextTargets), now)
   })()
   return { ok: true, settings: buildSettings(settingsRepo) }
 }

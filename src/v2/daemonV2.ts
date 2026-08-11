@@ -18,8 +18,11 @@ import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } fro
 import { listSubtitleQueue, runSubtitleWorkDir, subtitleJobId, type SubtitleQueueItem } from './subtitleScheduler.js'
 import { judgeSubtitle, judgeTranslatable, type TranslatableDeps } from './subtitleJudge.js'
 import { tagsForLanguage } from '../agent/languages.js'
-import { findExternalSidecar } from '../files/sidecar.js'
-import { existsSync } from 'node:fs'
+import { findExternalSidecar, listSidecarLanguages } from '../files/sidecar.js'
+// R-F15：目标语言 → sidecar_langs 记账值域的换算（zh → {zh-Hans, zh-Hant}）。与换语言重判
+// 共用**同一份**换算，不另写第二份——两份必然漂移（C30 的原案就是两处标签集各漏一半）。
+import { coverageValuesFor } from './retarget.js'
+import { existsSync, readdirSync } from 'node:fs'
 import { isDirWritable } from '../core/mediaContext.js'
 import { SettingsRepo } from './settingsRepo.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
@@ -236,6 +239,18 @@ export interface DaemonV2Deps {
   /** R24：字幕存在性探针。测试用注入点——测试要能数 stat 调用次数才能守住"未到点的文件
    *  一次 stat 都不许发"这条性能红线（115 FUSE 上全量复核是几万文件 × 60 次 stat）。 */
   fileExists?: (path: string) => boolean
+
+  /** R-F15：列目录（sidecar_langs 观察用）。默认 readdirSync。
+   *
+   *  为什么与 fileExists 并存而不是替它（两者问的不是同一个问题）：fileExists 回答"当前目标
+   *  语言的那条字幕在不在"（单点判据，服务 sub_status），readdir 回答"这个视频旁边一共有哪些
+   *  语言的字幕"（与配置无关的磁盘事实，服务 sidecar_langs）。见 files/sidecar.ts 两个函数的
+   *  分工注释。
+   *
+   *  同为测试注入点、同一条理由：测试要能**数调用次数**才守得住性能红线。这里的红线是
+   *  「同目录多个视频只 readdir 一次」——忘了做 per-scan 目录缓存的话，一个 24 集的季目录
+   *  就是 24 次 readdir，在 115 FUSE 上比原来的逐个 stat 还慢。 */
+  readdir?: (dir: string) => string[]
 
   /** 翻译总开关的**双门控**（TRANSLATE_* 凭证 ∧ settings.ai_translate_enabled==='true'），
    *  阶段 2.6 复查闸的取件范围靠它分流（D14 / C41）。接线点在 cli/watchWiring.ts。
@@ -870,15 +885,24 @@ export class ScoutDaemonV2 {
     // translatable 列按 PRAGMA 取交集动态拼（照 fingerprintResetColumns / backfill 的既有
     // 口径）：硬编码进 SQL 会让本阶段在**没有该列的旧库**上抛 `no such column` → 整轮巡检
     // 挂掉。生产上这形态真实存在（容器滚更时新代码可能先于迁移起来、或从旧备份恢复的库）。
-    const haveTranslatable = (() => {
+    //
+    // R-F15：skip_reason 走**同一套**动态拼列口径（v40 加的列，旧库上同样可能缺席），
+    // 并且与 needs_subtitle 写在**同一条 UPDATE** 里——理由与上面 translatable 那段逐字同源：
+    // 分两条时进程被杀会留下"判决已写、理由还是上一次目标语言口径"的行，而 judge 谓词是
+    // `needs_subtitle IS NULL` → 这一行从此永不重判 → skip_reason 永久冻结在错误的值上，
+    // 媒体库页据它显示 ◇/◆ 标记，用户看到的是**与事实相反**的标记且无从察觉。
+    const haveCols = (() => {
       try {
         return new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
-          .map((c) => c.name)).has('translatable')
-      } catch { return false }
+          .map((c) => c.name))
+      } catch { return new Set<string>() }
     })()
+    const haveTranslatable = haveCols.has('translatable')
+    const haveSkipReason = haveCols.has('skip_reason')
     const update = db.prepare(
       `UPDATE files SET needs_subtitle = ?, updated_at = ?`
       + (haveTranslatable ? `, translatable = ?` : '')
+      + (haveSkipReason ? `, skip_reason = ?` : '')
       + ` WHERE path = ?`,
     )
     let judged = 0
@@ -899,11 +923,16 @@ export class ScoutDaemonV2 {
       // 若写成"needs=0 就跳过"，将来换片源把 needs 清成 NULL 重判时会留下一批 translatable
       // 语义不明的行；而多判一次的成本是零（纯函数、不碰磁盘、判据都已在手上）。
       const translatable = judgeTranslatable(input, TRANSLATABLE_LANGS)
-      if (haveTranslatable) {
-        update.run(verdict.needs ? 1 : 0, now, translatable, r.path)
-      } else {
-        update.run(verdict.needs ? 1 : 0, now, r.path)
-      }
+      // 参数按上面拼列的**同一顺序**组装（needs, now, [translatable], [skip_reason], path）。
+      // R-F15：verdict.reason 是 judgeSubtitle **已经算出来**的量，此前算完即丢——生产库
+      // 1026 个 needs_subtitle=0 的行分不出 origin-skip 与 embedded，媒体库页第三种标记 ◇
+      // 拿不到数据、排障也答不出"这些到底为什么被跳过"。存的是 reason **原值**，不做任何
+      // 二次归纳：字段名与真实含义必须逐字对应（今天已栽过三次"把中间量说成结论量"）。
+      const args: unknown[] = [verdict.needs ? 1 : 0, now]
+      if (haveTranslatable) args.push(translatable)
+      if (haveSkipReason) args.push(verdict.reason)
+      args.push(r.path)
+      update.run(...args)
       judged++
       if (verdict.needs) needsCount++
     }
@@ -1419,6 +1448,23 @@ export class ScoutDaemonV2 {
   private detectSubtitles(aPaths: string[], now: number, skippedRoots: string[] = []): void {
     const fileExists = this.deps.fileExists ?? existsSync
     const db = this.deps.db
+    // R-F15：**per-scan 的目录缓存**。sidecar_langs 的观察靠 readdir 一次拿到整个目录的文件名
+    // （替代原本每文件 60 次 stat），但同一个目录下通常有一整季 24 个视频——不缓存的话就是
+    // 24 次 readdir，收益归零且比逐个 stat 更糟（单次 readdir 更贵）。缓存的生命周期严格是
+    // **本次扫描的这一趟**（局部变量，不是实例字段）：跨轮复用会让"用户刚放进去的字幕"要等到
+    // 下一次进程重启才被看见，正是 R23/R24 要消解的那类"库与磁盘不一致"。
+    // 失败（FUSE 抖动抛错）同样入缓存——存 null 而不是不存，否则同目录每个文件都重试一次，
+    // 挂载真掉线时这一趟扫描要在同一个坏目录上撞 24 次。
+    const readdir = this.deps.readdir ?? ((d: string) => readdirSync(d))
+    const dirCache = new Map<string, string[] | null>()
+    const cachedReaddir = (d: string): string[] => {
+      if (!dirCache.has(d)) {
+        try { dirCache.set(d, readdir(d)) } catch { dirCache.set(d, null) }
+      }
+      const hit = dirCache.get(d) ?? null
+      if (hit === null) throw new Error(`readdir failed (cached): ${d}`)
+      return hit
+    }
     // 前缀补 '/' 与 deleteMissing 同源：避免 "/media/tv" 吃到兄弟目录 "/media/tv2"。
     const skipPrefixes = skippedRoots.map((r) => (r.endsWith('/') ? r : `${r}/`))
     const inSkippedRoot = (p: string): boolean => skipPrefixes.some((pre) => p.startsWith(pre))
@@ -1429,7 +1475,7 @@ export class ScoutDaemonV2 {
     for (const p of aPaths) {
       if (detected.has(p)) continue
       detected.add(p)
-      this.observeSubtitle(p, fileExists, now)
+      this.observeSubtitle(p, fileExists, cachedReaddir, now)
     }
 
     // B 档：到点轮转。谓词**只看 sub_recheck_at**，不带 sub_status 过滤（D16 铁律 / C37）：
@@ -1466,7 +1512,7 @@ export class ScoutDaemonV2 {
         continue
       }
       detected.add(row.path)
-      this.observeSubtitle(row.path, fileExists, now)
+      this.observeSubtitle(row.path, fileExists, cachedReaddir, now)
       checked++
     }
     if (checked > 0 || skipped > 0) {
@@ -1490,23 +1536,62 @@ export class ScoutDaemonV2 {
    *     的职责（D13），节奏是周频。若扫描顺手把 handoff_translate 清成 NULL，就会掀掉飞行中
    *     的翻译（D10 的守卫匹配 0 行 → 退避不写 → 付费 LLM 热循环从侧门回来）。
    *
-   *  标签集/扩展名集统一走 findExternalSidecar（C30）：此前 judgeOnce 里另有一份手写正则，
+   *  标签集/扩展名集统一走 files/sidecar.ts（C30）：此前 judgeOnce 里另有一份手写正则，
    *  与 sidecar.ts 各漏一半（正则漏 cht 与全部 BCP-47 地区变体，sidecar.ts 漏 .vtt），
    *  同一个磁盘事实在两条代码路径上得到相反结论。本项目已因"留两份漂移实现"栽过
    *  （第 1a 步的 findOverlappingRoot），故收敛到一份。
-   *  顺带修掉误归属：findExternalSidecar 是"构造 `<stem>.<tag><ext>` 再探存在性"，精确到
-   *  字符；旧的 `startsWith(stem + '.')` 会把 `X.1080p.zh.srt` 误归给 `X.mkv`（C30）。 */
-  private observeSubtitle(videoPath: string, fileExists: (p: string) => boolean, now: number): void {
+   *  顺带修掉误归属：判据是"`<stem>.<tag><ext>` 精确整段匹配"，精确到字符；
+   *  旧的 `startsWith(stem + '.')` 会把 `X.1080p.zh.srt` 误归给 `X.mkv`（C30）。
+   *
+   *  ── R-F15：covered 的判据改由 readdir 那一趟**同源导出**（这是本次唯一的机制变更）──
+   *  同一个问题（"磁盘上现在有哪些字幕"）此前要付两趟 IO：listSidecarLanguages 的 1 次
+   *  readdir + findExternalSidecar 的最多 60 次 stat。两趟不仅浪费，更是**两份判据**——
+   *  它们在同一时刻对同一个目录可能给出不一致的答案（FUSE 上尤其可能：一趟成功一趟抖动），
+   *  于是 sidecar_langs 记着 ["zh-Hans"] 而 sub_status 是 NULL，两列互相矛盾且无人察觉。
+   *  这正是 C27「同一个磁盘事实被两列各判一次」的形状，本仓已明令一个磁盘事实只许有一个
+   *  投影来源。故 readdir 成功时，covered 直接由语言集合判定（目标语言 ∈ 集合），
+   *  **一次 stat 都不发**——60 次 stat/文件 归零，这是本次改动净赚的性能。
+   *
+   *  fileExists 那条路**保留为降级路径**，不是死代码：readdir 读不了目录时（权限/FUSE 抖动，
+   *  或调用方没接 readdir 这个注入点）仍按老办法逐个探测。降级比放弃观察好——R24 的本体是
+   *  "磁盘上有没有字幕由扫描说了算"，不该因为列不出目录就整个失效。 */
+  private observeSubtitle(
+    videoPath: string, fileExists: (p: string) => boolean,
+    readdir: (d: string) => string[], now: number,
+  ): void {
     const db = this.deps.db
-    const tags = tagsForLanguage(this.deps.targetLanguage)
-    let found: { path: string } | null = null
+    const targetValues = coverageValuesFor([this.deps.targetLanguage])
+
+    // R-F15 缺口②：一趟 readdir 同时产出两个结论——**全部**外挂字幕语言（sidecar_langs，
+    // 与当前目标语言无关的磁盘事实）与"当前目标语言的字幕在不在"（sub_status 的判据）。
+    // 三态：null = 目录读不了（下面降级到逐个 stat）；[] = 读了、确认零条外挂字幕。
+    let sidecarLangs: string[] | null = null
     try {
-      found = findExternalSidecar(videoPath, tags, fileExists)
-    } catch (e) {
-      // 单个文件的 stat 抖动（FUSE 挂载常态）不许掀翻整轮扫描。跳过 = 不改状态列，
-      // 且**不推 sub_recheck_at**，于是下一轮它还在 B 档名单里，天然重试。
-      this.deps.log(`scan: 字幕存在性观察失败（隔离，下轮重试）: ${videoPath}: ${String(e)}`)
-      return
+      sidecarLangs = listSidecarLanguages(videoPath, readdir)
+    } catch { sidecarLangs = null }
+
+    let found = false
+    if (sidecarLangs !== null) {
+      found = sidecarLangs.some((l) => targetValues.has(l))
+      // 单独一条 UPDATE、且**只写这一列**：它与下面 sub_status 的写入条件不同（后者有
+      // "只回退 covered"的守卫），合并会把那条守卫带到这一列上——磁盘事实的记录不该因为
+      // 这一行当前是停牌态就被跳过。列缺席的旧库上静默跳过（同 judge 的动态拼列口径）。
+      try {
+        db.prepare('UPDATE files SET sidecar_langs = ? WHERE path = ?')
+          .run(JSON.stringify(sidecarLangs), videoPath)
+      } catch { /* 无该列的旧库：记录是增益，不许阻断 R24 的本体 */ }
+    } else {
+      // 降级路径：目录列不出来，退回逐个 stat 探测当前目标语言（老机制，逐字不变）。
+      // sidecar_langs 保持 NULL——**不许**在这里瞎写 []，那会把"没观察到"记成"确认没有"，
+      // 换语言重判时据此重新找一遍（三态契约，同 embedded_langs）。
+      try {
+        found = findExternalSidecar(videoPath, tagsForLanguage(this.deps.targetLanguage), fileExists) !== null
+      } catch (e) {
+        // 单个文件的 stat 抖动（FUSE 挂载常态）不许掀翻整轮扫描。跳过 = 不改状态列，
+        // 且**不推 sub_recheck_at**，于是下一轮它还在 B 档名单里，天然重试。
+        this.deps.log(`scan: 字幕存在性观察失败（隔离，下轮重试）: ${videoPath}: ${String(e)}`)
+        return
+      }
     }
 
     if (found) {

@@ -96,3 +96,76 @@ export function findExternalSidecar(
   }
   return null
 }
+
+/** 无语言标记的裸字幕（`<stem>.srt`）记账值。
+ *
+ *  为什么必须有一个显式值而不是跳过、也不是猜成目标语言：跳过会让"这一集旁边确实躺着一份
+ *  字幕"这个事实彻底消失（sidecar_langs 记成 []，与"真的一条都没有"同形）；猜成目标语言则是
+ *  拿信息缺失当结论——换语言重判时会据此判"已有字幕"，而那份字幕可能是任何语言。
+ *  'und' 是 ISO 639-2 的标准 undetermined 码，且天然不等于任何真实目标语言码，
+ *  故它在重判的集合判定里永远不构成覆盖，语义上正是我们要的"知道有、但不知道是什么"。 */
+export const UNDETERMINED_LANGUAGE = 'und'
+
+/** 列出**该视频旁边全部外挂字幕的语言**（R-F15 缺口②）。三态：null=目录读不了（没观察到），
+ *  []=观察过、确认零条，非空数组=去重且已排序的语言集合（如 `["en","ja","zh-Hans"]`）。
+ *
+ *  ── 与 findExternalSidecar 的分工（两者刻意并存，不是新旧替换）──────────────
+ *   · findExternalSidecar 回答「**当前目标语言**的字幕在不在」——单个布尔判据，服务 sub_status
+ *     与 ingest 的 rule 3，且要给出**命中的那条真实路径**（领养记账要用）。
+ *   · 本函数回答「这个视频旁边**一共有哪些语言**的字幕」——与当前 target_languages 完全无关的
+ *     磁盘事实（同 KNOWN_LANGUAGE_TAGS 头注释确立的既有口径：认不认识这个 tag ≠ 用户现在
+ *     要不要这个语言）。正因为与配置无关，换目标语言后才能**不重新扫盘**就重导 sub_status。
+ *
+ *  ── 为什么机制是 readdir 而不是继续逐个 fileExists（性能是硬约束）──────────
+ *  "所有语言"没有有限 tag 集，无法用现状的"构造 `<stem>.<tag><ext>` 再探存在性"枚举——
+ *  硬要枚举就是 4 语言 × 15 tag × 4 ext = 240 次 stat/文件，在 115 的 rclone FUSE 挂载上
+ *  必然打崩。反过来 readdir 一次拿到整个目录的文件名、在内存里正则匹配，**比现状还快**：
+ *  现状是 15 中文 tag × 4 ext = 60 次 stat/文件，且**未命中时全额付费**——而未命中恰恰是
+ *  "需要找字幕"那批（生产主力人群）。实测（本地 tmpfs，24 个视频的季目录、无中字）：
+ *    逐个 existsSync 1440 次 syscall / 5.82ms   vs   readdir 1 次 / 0.22ms   → 快 26 倍。
+ *  调用方必须做 **per-scan 的目录缓存**（daemonV2.detectSubtitles），否则同目录 24 个视频
+ *  就是 24 次 readdir，收益归零且比原来更糟（单次 readdir 比单次 stat 贵）。
+ *
+ *  ── 匹配规则（误归属是 C30 的原案，机制上必须堵死）──────────────────────
+ *  只认 `<stem>.<tag><ext>`：stem 后紧跟一个点、然后是**不含点**的单段 tag、然后是扩展名。
+ *  `X.1080p.zh.srt` 因此**不会**归给 `X.mkv`（旧的 startsWith(stem+'.') 会误归，真实剧本是
+ *  同目录并存 `E01.mkv` 与 `E01.1080p.mkv`，前者被误判 covered 后永远不补字幕）。
+ *  `<stem><ext>`（无 tag 的裸字幕）单独认成 UNDETERMINED_LANGUAGE，见该常量注释。
+ *
+ *  tag → 语言的换算复用 languageForTag 这一份既有表，**不另写第二份折叠**：本仓已因"留两份
+ *  漂移实现"栽过（C30 两处标签集各漏一半）。特别注意不能改用 agent/languages.ts 的 langOf——
+ *  它**只折叠中文别名 chi/zho/cmn/cn**，对 `chs`/`cht` 返回自身（实测），漏判简繁两种最常见
+ *  的中文 sidecar 形态。 */
+export function listSidecarLanguages(
+  videoPath: string,
+  readdir: (dir: string) => string[],
+): SubtitleLanguage[] | null {
+  const dir = dirname(videoPath)
+  const videoBase = basename(videoPath).replace(/\.[^.]+$/, '')
+
+  let names: string[]
+  try {
+    names = readdir(dir)
+  } catch {
+    // FUSE 挂载抖动读不了目录 → null（没观察到），**绝不折叠成 []**。折叠的话一次抖动就被
+    // 记成"这片子一条字幕都没有"，换语言重判时据此重新找一遍（烧付费 LLM），
+    // 与 embedded_langs / streamProbe 的 null-vs-[] 三态契约同源。
+    return null
+  }
+
+  const langs = new Set<SubtitleLanguage>()
+  for (const name of names) {
+    const ext = SUBTITLE_EXTS.find((e) => name.toLowerCase().endsWith(e))
+    if (!ext) continue
+    const stem = name.slice(0, name.length - ext.length)
+    if (stem === videoBase) { langs.add(UNDETERMINED_LANGUAGE); continue }
+    if (!stem.startsWith(`${videoBase}.`)) continue
+    const tag = stem.slice(videoBase.length + 1)
+    // 单段 tag（不含点）——多段的是别的视频的字幕或带修饰的文件名，不归本视频（C30）。
+    if (tag === '' || tag.includes('.')) continue
+    langs.add(languageForTag(tag))
+  }
+  // 排序让这一列的值**稳定**：同一组字幕不该因为 readdir 的返回顺序（不同 FS 不同）而写出
+  // 不同的 JSON 串，否则每轮观察都在改写同一行、updated_at 无谓翻新，且测试无从断言。
+  return [...langs].sort()
+}
