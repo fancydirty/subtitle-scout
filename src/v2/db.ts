@@ -1143,27 +1143,47 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
   //      将据它渲染横版背景，那个页面与它的 API 字段今天都还不存在。在它落地之前，
   //      这一列是**只写不读**的，本条 entry 不为"计划中的读取方"背书。唯一的现实消费者
   //      是运维手工查库（`SELECT id, title, backdrop_path FROM works`）。
+  //
+  //      ⚠️⚠️ **但有一个同名字段的读取方已经存在，且它接的不是这一列**（Task ⑥ 审计 🔴-2）：
+  //      `apiV2.buildWorkflowWorkers`（旧活动页的 DTO 生产者）三处查询全部
+  //      `LEFT JOIN series` / `LEFT JOIN movies`，读的是 `series.backdrop_path`。
+  //      而那两张是**旧世界的表**（daemonV2.ts:2137 自陈），生产实测 **series 0 行 / movies 0 行**
+  //      （works 110 行）——所以旧活动页的 backdropPath 恒 null，与本列填不填满无关。
+  //
+  //      这**不是**"读取方接错表"需要立刻改：旧活动页整个要被 Task ⑨ 重写，
+  //      现在把 buildWorkflowWorkers 切到 works 等于给一个即将删除的页面做迁移。
+  //      但 Task ⑨ 必须知道：**它要读的是 works.backdrop_path，不许照抄旧 DTO 的 JOIN**，
+  //      否则会得到一个"填满了却全是 null"的字段，且排障时极难看出来。
+  //      （顺带：这一列对 tv/movie 一视同仁，能顺手抹平 apiV2.ts:1126 记的那处
+  //       "movies 表没有 backdrop 列"的不对称——生产 110 个 works 里 42 个是 movie。）
   //    · 谁触发：写入点①随每次识别成功；写入点②随每次进程 boot（每轮 200 行上限，
   //      多轮 boot 收敛）。
   //
   //  为什么**可空且无 DEFAULT**（判据是"NULL 对这一列意味着什么"，不是照抄上一条）：
-  //    NULL 在这里同时承担两个语义，缺一不可——
-  //      ① "还没采过"，也就是回填 pass 的**唯一取件谓词**（`backdrop_path IS NULL`）
-  //      ② 因此也是这个 pass 的**收敛条件**：采过就非 NULL，谓词自然选不中
-  //    这与 provider_ids（v36）的 NULL 语义逐字同源。若照 sub_attempt 的样子建成
-  //    `NOT NULL DEFAULT ''`，存量行升级上来全是 ''，回填一行都选不中 → 存量作品的横版图
-  //    永远补不上，而那正是本条要修的事本身。
+  //    NULL = **这个作品没有横版图**（TMDB 真没有，或还没采过——v42 时这两者不可区分，
+  //    v43 起"采没采过"由 `backdrop_checked_at` 单独承载，本列不再兼职表达它）。
+  //    读取方（Task ⑨ 活动页）对 NULL 的处置恒定是"降级模糊海报"，与成因无关。
+  //    ⚠️ v42 原文此处写的是「NULL 同时承担'还没采过'与回填 pass 的取件谓词/收敛条件」——
+  //    那正是队头阻塞的根因（一个 NULL 兼两职，其中一职恒真 → 谓词永不收敛）。
+  //    v43 起取件谓词是 `backdrop_checked_at IS NULL`，本列不再是谓词的输入。
+  //    仍然必须可空且无 DEFAULT：若照 sub_attempt 的样子建成 `NOT NULL DEFAULT ''`，
+  //    读取方就要去认识空串（apiV2 的 nullIfEmpty 已在为这种二义性付代价）。
   //
   //  ⚠️ 这一列与 provider_ids 有一处**关键的不同**，不许照抄那边的三态写法：
   //    provider_ids 能靠 `{tmdb}`（非 NULL）表达"查过、TMDB 确实没有"，因为它是个 record，
   //    有地方放这个凭据。backdrop_path 是**裸路径串**，没有第三个值可用：TMDB 确实没有
-  //    横版图的作品（小众剧、部分电影常见），采回来就是 null，与"还没采过"在列上不可区分
-  //    → 每轮 boot 都会被谓词捡回来重查一次。这是**已知且接受**的代价，理由：
-  //      · 一次 `getDetails` 往返，200 行上限，串行，量级与 provider_ids 回填相同；
-  //      · 反面方案（写 `''` 当"查过没有"的哨兵）会让读取方拿到空串——而 apiV2 那一侧
-  //        `nullIfEmpty` 的存在正说明本仓已经在为空串/NULL 二义性付代价，不该再造一个。
-  //    若日后 TMDB 无图的作品占比高到让这个重查有成本，正确的修法是加一列
-  //    `backdrop_checked_at`（"查过"这件事自己的载体），而不是往路径列里塞哨兵值。
+  //    横版图的作品（小众剧、部分电影常见），采回来就是 null，与"还没采过"在列上不可区分。
+  //
+  //    ⚠️⚠️ **v43 已修正本段的结论，下面这段保留作沿革，不再是现行设计。**
+  //    原文当年判定"每轮 boot 重查一次"是**已知且接受**的代价，理由是"一次 getDetails
+  //    往返，200 行上限，串行，量级与 provider_ids 回填相同"。这个成本估算**低估了一个
+  //    量级**：真实后果不是"多花一次往返"，而是**永久饿死**——谓词恒真 + `ORDER BY id`
+  //    恒定 + `LIMIT 200` 三者相乘，每轮取到的是同一批头部 200 行，第 201 行往后**一次
+  //    都不会被查到**（审计实测 250 行 / 3 轮：totalCalls=600 unique=200）。
+  //    修法正是本段末尾自己指出的那个——加一列 `backdrop_checked_at`，见 v43 entry。
+  //    反面方案（写 `''` 当哨兵）的否决**依然有效**，v43 没有推翻它：apiV2 那一侧
+  //    `nullIfEmpty` 的存在正说明本仓已经在为空串/NULL 二义性付代价，不该再造一个。
+  //    v43 走的是"凭据另起一列"，backdrop_path 本身的语义（NULL = 没有图）一字未动。
   //
   // ── 为什么不写进上面那份 works 终态定义 ────────────────────────────────────
   // 照 provider_ids（v36）/ content_type（v30 续）/ recheck_after / sub_recheck_at /
@@ -1184,6 +1204,100 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
     )
     if (!columns.has('backdrop_path')) {
       db.exec('ALTER TABLE works ADD COLUMN backdrop_path TEXT')
+    }
+  },
+  // v43（Task ⑦ backdrop 回填的队头阻塞修复，2026-08-12）：works 加 backdrop_checked_at。
+  // 纯条件式 ADD COLUMN，无 CHECK 约束变更、不碰既有表，故不触发 12 步建新表流程。
+  //
+  // ── 这一列修的是什么（v42 entry 亲手记下的那笔债，现在到期了）─────────────────
+  // v42 的 entry 末尾写着："若日后 TMDB 无图的作品占比高到让这个重查有成本，正确的修法是
+  // 加一列 `backdrop_checked_at`（"查过"这件事自己的载体），而不是往路径列里塞哨兵值。"
+  // 本条就是那一列。触发它的不是"占比高到有成本"，而是审计实测出的一个**更硬的**后果——
+  // 那个已知代价被低估了一个量级：它不是"多花一次往返"，是**永久饿死**。
+  //
+  // 实测（250 行全部无横版图，跑 3 轮 boot）：
+  //   totalCalls=600 unique=200 first=1 call#201=1
+  // 600 次调用只覆盖了 200 个不同作品。原因是三件事凑在一起，缺一不可：
+  //   ① 谓词 `backdrop_path IS NULL` 对"TMDB 真没图"的行**恒真**（v42 已知、已接受）
+  //   ② `ORDER BY id` 是**恒定**序（不是随机、不是轮转）
+  //   ③ `LIMIT 200` 每轮只取头部
+  // → 每轮 boot 取到的是**同一批** 200 行，第 201–250 行**一次都没被查过**，且后续
+  //   任何一轮都不会查到它们。这不是"收敛慢"，是那 50 行永远拿不到横版图。
+  // 生产今天 110 行（< 200）不触发，但这是随库增长静默生效的定时炸弹；且 `ORDER BY id`
+  // 是**字符串序**（`tmdb:1038392` 排在 `tmdb:99` 前面），谁被饿死不可预测、不可复现。
+  //
+  // ── 为什么是独立一列，而不是往 backdrop_path 里塞哨兵 ─────────────────────────
+  // v42 entry 已经论证过反面方案（写 `''` 当"查过没有"的哨兵）：读取方会拿到空串，而
+  // apiV2 那侧 `nullIfEmpty` 的存在正说明本仓已经在为空串/NULL 二义性付代价，不该再造一个。
+  // 那条论证今天依然成立，本条不推翻它——本条是它指名的那个"正确修法"。
+  //
+  // 关键在于把**两件不同的事**拆回两列，各自的 NULL 语义才不再打架：
+  //   · `backdrop_path`     = 「图是什么」。NULL = 没有图（无论查没查过）。**语义不变**，
+  //                           读取方（Task ⑨ 活动页）照旧 `?? 降级模糊海报`，不需要认识哨兵。
+  //   · `backdrop_checked_at` = 「查过没有、什么时候查的」。NULL = 从没查过。
+  // 于是回填谓词从「图是不是空的」改成「查没查过」——后者才是这个 pass 真正想问的问题，
+  // 而它天然单调：查一次就永久非 NULL，谓词再也选不中，**无论 TMDB 有没有图**。
+  //
+  // ── 为什么这与 C21 是同源形态而非"同一件事两套写法" ──────────────────────────
+  // C21（provider_ids）的收敛靠的是「写一个非 NULL 的凭据表达'查过、确实没有'」——
+  // `{tmdb}` 就是那个凭据。本条一字不差是同一个机制，只是凭据**放在哪里**不同：
+  //   · provider_ids 是 record，凭据能塞进值里自己（`{tmdb}`），不必加列；
+  //   · backdrop_path 是裸路径串，值里没有第三个槽位 → 凭据只能另起一列。
+  // 换句话说 C21 是本条的**退化特例**（恰好不需要额外列），不是另一套方案。
+  // 两者的收敛不变式是同一条：**每一个"从 TMDB 拿到了确定答案"的行，都必须落下一个
+  // 非 NULL 的凭据；只有"没拿到答案"（调用失败/探针缺席）才允许留 NULL 等下轮。**
+  //
+  // 而且这个「裸值列 + 独立 _checked_at 列」的形状在本仓**早有先例，不是新发明**：
+  // `series.chinese_title` + `series.chinese_title_checked_at`（v9 终态定义，db.ts:25-26）
+  // 就是逐字同构的一对——中文名同样是裸串、同样"TMDB 真没有"与"还没查"不可区分，
+  // 当年就是靠独立的 `_checked_at` 解决的。本条照抄那个既有形状，含命名。
+  //
+  // ── 这一列的职责（谁写 / 谁读 / 谁触发）─────────────────────────────────────
+  // 本仓已栽过 11 次「加了能力却没定谁写/谁读/谁触发」，故照 v42 的规矩写死三件事：
+  //
+  //  backdrop_checked_at INTEGER（可空）= 最近一次**从 TMDB 得到确定答案**的时刻（epoch ms）。
+  //    · 谁写：**两个**写入点，与 backdrop_path 的两个写入点一一配对（缺一就是只修一半）——
+  //      ① `identifyScheduler.writeIdentified`：新识别时与 backdrop_path 同一条 INSERT 落下。
+  //         不补这点的话，新识别的作品若 TMDB 无图，checked_at 恒 NULL → 回填 pass 每轮
+  //         boot 把它捡回来重查一次，本条修的队头阻塞就从回填侧原样搬到识别侧。
+  //      ② `daemonV2.backfillBackdropPaths`：存量回填 pass，本条的主战场。
+  //    · 谁读：**只有回填 pass 的取件谓词**（`backdrop_checked_at IS NULL`）。这是如实陈述：
+  //      它不是展示字段，Task ⑨ 的活动页读的是 backdrop_path，**不读这一列**。
+  //      它的全部价值是"让谓词能收敛"，与 chinese_title_checked_at 的既有定位一致。
+  //    · 谁触发：写入点①随每次识别成功；写入点②随每次进程 boot。
+  //
+  //  为什么**可空且无 DEFAULT**（判据是"NULL 对这一列意味着什么"，逐条重算而非照抄上一条）：
+  //    NULL = "从没查过"，这正是回填 pass 的**唯一取件谓词**兼**收敛条件**。
+  //    若建成 `NOT NULL DEFAULT 0`，存量行升级上来全是 0（非 NULL）→ 谓词一行都选不中
+  //    → 存量作品的横版图**永远补不上**，恰好把本条要修的饿死从 50 行放大到全库。
+  //    这与 v36 provider_ids / v42 backdrop_path 的 NULL 语义逐字同源。
+  //
+  //  ⚠️ 存量行（v42 已跑过、backdrop_path 已有值的行）在本迁移里**一律落 NULL**，
+  //    刻意不做 `UPDATE … SET backdrop_checked_at = <now> WHERE backdrop_path IS NOT NULL`
+  //    的"顺手回填"。理由：那种写法要在迁移里凭空捏一个"查过的时刻"，而 openDb 是同步的、
+  //    在每个进程启动路径上（同 v36 "不在迁移里打网络"的既有口径的近亲）。代价是可控且
+  //    **一次性**的：这些行下一轮 boot 会被谓词捡回来各重查一次，然后落下真实的 checked_at
+  //    从此永久收敛——是"多一轮"，不是"每轮"，与本条要修的无限重查在量级上不同。
+  //
+  // ── 为什么不写进上面那份 works 终态定义 ────────────────────────────────────
+  // 照 provider_ids（v36）/ backdrop_path（v42）的既有分工：一列一条迁移 entry，
+  // fresh install 走完整链一次到位，存量库靠同一条 entry 原地补齐。两处都写会让
+  // "改一处忘另一处"变成可能（works 表定义末尾的原话）。
+  //
+  // 条件式表存在性 + 列存在性双重检查照抄 v42（前者防 v29 及更早、尚无 works 表的库裸
+  // ALTER 把 openDb 整个炸掉 → 用户的库再也打不开；后者保证幂等——db.test.ts 会把尾部
+  // 迁移重放一遍，裸 ALTER 会抛 duplicate column name）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'works'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(works)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('backdrop_checked_at')) {
+      db.exec('ALTER TABLE works ADD COLUMN backdrop_checked_at INTEGER')
     }
   },
 ]

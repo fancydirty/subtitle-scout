@@ -2052,24 +2052,45 @@ export class ScoutDaemonV2 {
    *  它们只能退化成「模糊海报当背景」。反过来只有本 pass 而没有写入点①，新识别的作品要
    *  等到**下一次 boot** 才拿到图（boot 可能几周一次）。两个点合起来才收敛。
    *
-   *  **与 C21 那个 pass 的关键差别：这里没有"查过、确实没有"的凭据可写。**
-   *  provider_ids 是 record，能用 `{tmdb}`（非 NULL）表达"查过、TMDB 真没有"从而收敛；
-   *  backdrop_path 是**裸路径串**，没有第三个值可用——TMDB 确实没有横版图的作品采回来就是
-   *  null，与"还没采过"在列上不可区分 → 每轮 boot 都会被 `IS NULL` 谓词捡回来重查一次。
-   *  这是**已知且接受**的代价（一次 getDetails 往返 × 每轮 200 行上限），不是遗漏；
-   *  完整论证（含"为什么不写空串当哨兵"）见 db.ts 的 v42 entry。
+   *  **与 C21 那个 pass 的关系：同一个收敛机制，凭据放的位置不同（v43 修正）。**
+   *  C21 的收敛靠"写一个非 NULL 的凭据表达'查过、TMDB 确实没有'"——`{tmdb}` 就是那个凭据。
+   *  本 pass 一字不差是同一个机制，差别只在凭据**塞在哪**：provider_ids 是 record，凭据能
+   *  塞进值里自己；backdrop_path 是裸路径串，值里没有第三个槽位 → 凭据另起一列
+   *  `backdrop_checked_at`（v43）。C21 是本形态的**退化特例**（恰好不需要额外列），
+   *  不是另一套写法。共同的收敛不变式：**每一个"从 TMDB 拿到了确定答案"的行都必须落下
+   *  一个非 NULL 的凭据；只有"没拿到答案"（调用失败/探针缺席）才允许留 NULL 等下轮。**
+   *
+   *  ⚠️ v42 时本注释此处写的是"这里没有'查过、确实没有'的凭据可写……每轮 boot 都会被
+   *  `IS NULL` 谓词捡回来重查一次，这是**已知且接受**的代价"。那个成本估算**低估了一个
+   *  量级**，审计实测（250 行全部无横版图 / 3 轮 boot）：
+   *      totalCalls=600 unique=200 first=1 call#201=1
+   *  600 次调用只覆盖 200 个不同作品——不是"多花往返"，是第 201 行往后**永久饿死**。
+   *  根因是三件事相乘，缺一不可：谓词 `backdrop_path IS NULL` 对无图行**恒真**
+   *  ＋ `ORDER BY id` **恒定**序 ＋ `LIMIT 200` 只取头部 → 每轮都是同一批 200 行。
+   *  （且 `ORDER BY id` 是字符串序，`tmdb:1038392` 排在 `tmdb:99` 前，谁被饿死不可预测。）
+   *  生产今天 110 行 < 200 不触发，是随库增长静默生效的定时炸弹。完整论证见 db.ts v43。
    *
    *  **与 C21 相同的另一处**：backdrop_path 不是任何判决的输入（judge / 抓源 / 翻译都不读
    *  它，今天连读取方都还没有），所以补上它**不需要打通任何重判通路**——这与
    *  backfillEmbeddedLangs 必须额外置 `needs_subtitle = NULL` 的情形不同。若日后它变成某个
    *  判决的输入，这条论证即失效，那时必须同步加重判通路。
    *
-   *  写入语义（两态，比 C21 少一态，理由见上）：
-   *   · 拿到 backdrop  → 写路径串，非 NULL，从此收敛。
-   *   · TMDB 真没有 / 调用失败 → 留 NULL，下次 boot 重试（两者不可区分，已知代价）。
+   *  取件谓词：`backdrop_checked_at IS NULL`（**不是** `backdrop_path IS NULL`）。
+   *  问的是"查没查过"而不是"图是不是空的"——后者对 TMDB 真没图的行恒真，是上面那个
+   *  饿死的根因。前者天然单调：查一次就永久非 NULL，**无论 TMDB 有没有图**。
+   *
+   *  写入语义（三态，与 C21 逐条对齐；决定这一行会不会被下轮捡回来重查，不许折叠）：
+   *   · 拿到 backdrop        → 写路径串 + checked_at，从此收敛。
+   *   · TMDB 确认没有横版图  → **只写 checked_at，backdrop_path 留 NULL**。这是"查过、
+   *     确实没有"的凭据，对应 C21 的 `{tmdb}`。⚠️ 绝不往 backdrop_path 里写空串当哨兵
+   *     （db.ts v42 的否决依然有效：读取方会拿到空串，apiV2 的 nullIfEmpty 已在为这种
+   *     二义性付代价）——凭据在另一列，路径列的语义一字未动。
+   *   · 调用失败 / 非自有 id → 两列都不动，留 NULL 下次 boot 重试。
    *
    *  探针（getDetails）未注入时整支休眠且**一行不动**，同 backfillProviderIds 的"探针缺席
-   *  不动列"论证：漏接线是静默的，不能让它伪装成"抓过了"。 */
+   *  不动列"论证：漏接线是静默的，不能让它伪装成"抓过了"。⚠️ 这一条在 v43 之后**更要命**：
+   *  checked_at 是单调的，缺席时若照写就等于把全库永久标成"查过、没有横版图"，
+   *  而 v42 时至少下一轮还会重查回来。 */
   private async backfillBackdropPaths(): Promise<void> {
     const getDetails = this.deps.identify?.worker?.tmdb?.getDetails
     if (!getDetails) return
@@ -2078,12 +2099,16 @@ export class ScoutDaemonV2 {
     let rows: Array<{ id: string; media_type: string }> = []
     try {
       rows = db.prepare(
-        `SELECT id, media_type FROM works WHERE backdrop_path IS NULL ORDER BY id LIMIT ${BACKFILL_BATCH_SIZE}`,
+        `SELECT id, media_type FROM works WHERE backdrop_checked_at IS NULL ORDER BY id LIMIT ${BACKFILL_BATCH_SIZE}`,
       ).all() as Array<{ id: string; media_type: string }>
     } catch { return }   // 无 works 表/无该列的旧库：回填是增益，不许阻断启动（同 C21 口径）
     if (rows.length === 0) return
 
-    const write = db.prepare('UPDATE works SET backdrop_path = ?, updated_at = ? WHERE id = ?')
+    const write = db.prepare('UPDATE works SET backdrop_path = ?, backdrop_checked_at = ?, updated_at = ? WHERE id = ?')
+    // "查过、TMDB 确实没有横版图"的凭据：只落 checked_at，**不碰 backdrop_path**
+    // （它留 NULL 就是"没有图"，读取方照旧降级模糊海报，不需要认识任何哨兵值）。
+    // 这一句就是本 pass 的收敛点，对应 C21 的 `{tmdb}` 那一写。
+    const markChecked = db.prepare('UPDATE works SET backdrop_checked_at = ?, updated_at = ? WHERE id = ?')
     this.deps.log(`回填: works.backdrop_path 存量回填开始（本批 ${rows.length} 行 / 上限 ${BACKFILL_BATCH_SIZE}，R-F13）`)
     let ok = 0, failed = 0, skipped = 0
 
@@ -2102,15 +2127,24 @@ export class ScoutDaemonV2 {
         const d = await getDetails(mediaType, tmdbId)
         const backdrop = d?.backdropPath ?? null
         if (backdrop === null) {
-          // 三种情形折叠在这里，且**都不写库**：getDetails 返回 null（TMDB 404）、
-          // 该作品确实没有横版图、构造点没接这个可选字段。写空串"标记查过"是错的
-          // （见 db.ts v42 的哨兵值论证），故一行不动、下轮重查。
+          // 三种情形折叠在这里：getDetails 返回 null（TMDB 404）、该作品确实没有横版图、
+          // 构造点没接这个可选字段。三者都**不写 backdrop_path**（写空串"标记查过"是错的，
+          // 见 db.ts v42 的哨兵值论证），但**都要落 checked_at**——这一次 TMDB 往返是真打
+          // 出去了、也真拿回了确定答案（"没有图"），凭据必须落下，否则下一轮谓词又把它
+          // 捡回来，就是 v43 修的那个永久饿死（250 行 / 3 轮 → unique=200，尾部 50 行
+          // 一次都轮不到）。这一写对应 C21 的 `{tmdb}`。
+          //
+          // ⚠️ 注意本分支与下面 catch 分支的界线：这里是"打通了、答案是没有"，
+          // catch 是"没打通、不知道答案"。前者收敛，后者留 NULL 重试。把两者折叠成同一种
+          // 处置（无论哪种都落 checked_at）会让一次 TMDB 抖动永久放弃这一行——那正是
+          // identifyScheduler C5 注释点名的"把失败伪装成 TMDB 确认没有"。
+          markChecked.run(Date.now(), Date.now(), r.id)
           // 🔴 计数口径：这些**不算 ok**——本仓栽过三次"日志把中间量说成结论量"
-          //（最近一次是 refreshed 记成循环次数）。ok 只数真的写进库的行。
+          //（最近一次是 refreshed 记成循环次数）。ok 只数真的写进**图**的行。
           skipped++
           continue
         }
-        write.run(backdrop, Date.now(), r.id)
+        write.run(backdrop, Date.now(), Date.now(), r.id)
         ok++
       } catch (e) {
         // 留 NULL（下轮重试的唯一凭据）。**不往 works 写任何失败叙事**：works 表没有
@@ -2120,9 +2154,12 @@ export class ScoutDaemonV2 {
         this.deps.log(`回填: backdrop_path 失败（隔离，留 NULL 待下轮）: ${r.id}: ${String(e)}`)
       }
     }
-    // ok=本轮真写进库的行数；skipped=TMDB 无图/404/非自有 id（三者都没写库，但性质不同，
-    // 故不与 failed 合并）；failed=调用抛错。
-    this.deps.log(`回填: works.backdrop_path ok=${ok} failed=${failed} skipped=${skipped}（R-F13）`)
+    // ok=本轮真采到图并写进 backdrop_path 的行数；
+    // skipped=TMDB 无图/404（**已落 checked_at，从此收敛**）+ 非自有 id（两列都没动）；
+    // failed=调用抛错（两列都没动，留 NULL 下轮重试）。
+    // 三者性质不同故不合并——尤其 skipped 与 failed：前者收敛、后者会回来，
+    // 合并了就看不出"这一轮到底有没有把库往收敛推进"。
+    this.deps.log(`回填: works.backdrop_path ok=${ok} failed=${failed} skipped=${skipped}（R-F13 / v43 收敛）`)
   }
 
   /** R-F5 存量回填（works → tmdb_seasons 应有集缓存）：把 TMDB 的季集表抓进本地库，

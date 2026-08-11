@@ -40,12 +40,12 @@ describe('db 基座', () => {
     // v26（parked_paths.embedded_tmdb_id）后是 '19'；v27（认领退役，DROP identify_overrides）后是 '20'；
     // v28（字幕时间轴校验落库：subtitle_verify 表）后是 '21'；v29（jobs.lease_started_at
     // 稳定 claim 锚点，修活动页秒表冻结）后是 '22'。
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '37' })
   })
   it('重复打开幂等（不重跑建表）', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-')), 'scout.db')
     openDb(p).close(); const db2 = openDb(p)
-    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db2.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '37' })
   })
 
   it('pre-fold 老库(schema_version 1-8 缺 v9 折叠表)迁移失败 → 人话错误而非裸 SQL', () => {
@@ -97,7 +97,7 @@ describe('db 基座', () => {
     expect(freshCols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '36' })
+    expect(fresh.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '37' })
     fresh.close()
 
     // migrate from prior (schema_version 13 = v20 终态，无负缓存列)
@@ -120,7 +120,7 @@ describe('db 基座', () => {
     expect(cols).toEqual(expect.arrayContaining([
       'retry_count', 'next_retry_at', 'probe_mtime', 'probe_size',
     ]))
-    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '37' })
     // 存量行默认：retry_count=0，其余可空
     expect(db.prepare('SELECT retry_count, next_retry_at, probe_mtime, probe_size FROM parked_paths WHERE path = ?')
       .get('/media/a.mkv')).toEqual({
@@ -157,7 +157,7 @@ describe('db 基座', () => {
     expect(db.prepare('SELECT id, started_at, decision, llm_calls, assrt_calls FROM runs').get()).toEqual({
       id: 1, started_at: 123, decision: 'translate:held', llm_calls: null, assrt_calls: null,
     })
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
   })
 
   it('v23：translate_glossaries 表存在;v15 老库升级后可用', () => {
@@ -169,7 +169,7 @@ describe('db 基座', () => {
     const cols = (db.prepare('PRAGMA table_info(translate_glossaries)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(['series_key', 'terms_json', 'updated_at'])
     db.prepare("INSERT INTO translate_glossaries VALUES ('tmdb:1', '[]', 1)").run()
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     db.close()
   })
 
@@ -226,7 +226,7 @@ describe('db 基座', () => {
     raw.close()
 
     const db = openDb(p)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     // 表建出来且可写
     expect(() =>
       db.prepare(
@@ -242,7 +242,7 @@ describe('db 基座', () => {
 
     // 幂等：重开不重跑（版本门），且即便重跑 IF NOT EXISTS 也不炸
     const db2 = openDb(p)
-    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     db2.close()
   })
 
@@ -276,7 +276,7 @@ describe('db 基座', () => {
     raw.close()
 
     const db = openDb(p)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     // 列被补出来
     const cols = new Set(
       (db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((c) => c.name),
@@ -294,7 +294,7 @@ describe('db 基座', () => {
 
     // 幂等：重开不重跑（版本门到 '22' 就停），即便 guard 再跑一遍也因列已存在而跳过 ALTER，不炸
     const db2 = openDb(p)
-    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db2.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     db2.close()
   })
 
@@ -451,7 +451,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v14 形状库（seeded schema_version '6'）经 openDb 会连跑 v15+v16+v17+v18+v19+详情页富化 六条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
       series_id: 'tmdb:100', season: 1, episode: 1, name: 'Ep1', path: '/media/ep1.mkv',
       sub_status: 'covered', updated_at: 5000,
@@ -575,7 +575,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v16 形状库（seeded schema_version '8'）经 openDb 只需再跑 v17+v18+v19+详情页富化 四条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     // 存量 item_files 行原样存活，不丢数据不串列。
     expect(db.prepare(`SELECT item_id, path, added_at FROM item_files WHERE path = '/media/ep1-replica.mkv'`).get())
       .toEqual({ item_id: 'tmdb:100/s1e1', path: '/media/ep1-replica.mkv', added_at: 6000 })
@@ -669,7 +669,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v17 形状库（seeded schema_version '9'）经 openDb 只需再跑 v18+v19+详情页富化 三条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     // 存量 episodes/subtitles/movies 行原样存活，不丢数据不串列——这正是本次修复要堵的事故的
     // 对立面：迁移本身绝不能是又一个"整库索引批量误删"的来源。
     expect(db.prepare(`SELECT * FROM episodes WHERE id = 'tmdb:100/s1e1'`).get()).toMatchObject({
@@ -774,7 +774,7 @@ describe('db 基座', () => {
     const db = openDb(dbPath)
 
     // v18 形状库（seeded schema_version '10'）经 openDb 只需再跑 v19+详情页富化 两条迁移到 '12'。
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
 
     // W2：确诊双前缀被剥掉第一层，只留原始 provider:providerId。
     expect(db.prepare(`SELECT provider_ref FROM subtitles WHERE item_id = 'tmdb:100/s3e11'`).get())
@@ -837,8 +837,12 @@ describe('v25 migration: parked_paths raw data columns', () => {
     // 的 R8 三道闸的判决落进状态机，此前只有日志与瞬时 SSE 两个非持久出口）后是 35 条，
     // 落库值随之是 '35'。v42（works.backdrop_path，Task ⑥ / R-F13+R-F14——活动页「在跑」
     // 卡片要横版 backdrop，TMDB 客户端早就在取这个字段、只是 works 落库时被丢弃）后是
-    // 36 条，落库值随之是 '36'。
-    expect(MIGRATIONS.length).toBe(36)
+    // 36 条，落库值随之是 '36'。v43（works.backdrop_checked_at，Task ⑦——v42 的回填 pass
+    // 谓词 `backdrop_path IS NULL` 对"TMDB 真没横版图"的行恒真，叠加 `ORDER BY id` 恒定序
+    // 与 LIMIT 200，每轮 boot 取到同一批头部 200 行，第 201 行往后永久饿死；实测 250 行/
+    // 3 轮 totalCalls=600 unique=200。把"查过没有"的凭据挪进独立一列后谓词才单调收敛）
+    // 后是 37 条，落库值随之是 '37'。
+    expect(MIGRATIONS.length).toBe(37)
 
     // Insert a parked path with raw data（embedded_langs 与 episodes/movies 同构：JSON 数组串）
     db.prepare(`
@@ -1535,7 +1539,7 @@ describe('v39 迁移：notifications 表（R-F3）', () => {
     raw.close()
 
     const db = openDb(file)
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '36' })
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: '37' })
     // 表真的在（不是"迁移没抛错"——那在表压根没建的实现下同样成立）
     expect(
       db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notifications'").get(),
@@ -1664,6 +1668,109 @@ describe('v42 迁移：works.backdrop_path（R-F13 / R-F14）', () => {
       const ddl = raw.split('\n').map((l) => l.replace(/--.*$/, '')).join('\n')
       expect(ddl).toContain('poster_path')
       expect(ddl).not.toContain('backdrop_path')
+    }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v43：works.backdrop_checked_at（Task ⑦ — v42 回填 pass 的队头阻塞/永久饿死修复）
+//
+// 为什么需要这一列：v42 的取件谓词是 `backdrop_path IS NULL`，而对"TMDB 确实没有横版图"
+// 的作品这个谓词**恒真**；叠加 `ORDER BY id`（恒定序）与 `LIMIT 200`（只取头部），
+// 每轮 boot 取到的是**同一批** 200 行 → 第 201 行往后一次都轮不到。审计实测（250 行全部
+// 无图 / 3 轮 boot）：totalCalls=600 unique=200 —— 不是"收敛慢"，是那 50 行永远拿不到图。
+// 把"查过没有"的凭据从值里挪进独立一列后，谓词 `backdrop_checked_at IS NULL` 才单调。
+//
+// 照 v36 provider_ids / v42 backdrop_path 的既有口径测：fresh install 一条、升级路径一条、
+// 幂等一条、无 works 表一条、终态定义不许写一条——升级路径与 fresh install 是**两条不同的
+// 代码路**（终态 schema 与 v43 entry 各自负责一半），只测 fresh 的话"存量库升上来没这一列"
+// 测不出来。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('v43 迁移：works.backdrop_checked_at（Task ⑦ 队头阻塞修复）', () => {
+  function replayTail(db: ScoutDb): void {
+    for (let i = 17; i < MIGRATIONS.length; i++) {
+      const migration = MIGRATIONS[i]
+      if (typeof migration === 'function') migration(db)
+      else db.exec(migration)
+    }
+  }
+
+  it('🔴 fresh install 的 works 表有 backdrop_checked_at（INTEGER，可空、无 DEFAULT）', () => {
+    const db = openDb(':memory:')
+    const c = (db.prepare('PRAGMA table_info(works)').all() as Array<{
+      name: string; type: string; notnull: number; dflt_value: string | null
+    }>).find((x) => x.name === 'backdrop_checked_at')
+    expect(c).toBeDefined()
+    expect(c!.type).toBe('INTEGER')
+    // 可空 + 无 DEFAULT 是刚性的：NULL 是回填 pass 的**唯一取件谓词**
+    // （`backdrop_checked_at IS NULL`，daemonV2.backfillBackdropPaths）。若建成
+    // `NOT NULL DEFAULT 0`，存量行升级上来全是 0（非 NULL）→ 谓词一行都选不中 →
+    // 存量作品的横版图**永远补不上**，恰好把本条要修的饿死从 50 行放大到全库。
+    expect(c!.notnull).toBe(0)
+    expect(c!.dflt_value).toBeNull()
+    db.close()
+  })
+
+  it('🔴 存量库（无该列）升级 → 补上列，存量行落 NULL（回填的取件凭据）', () => {
+    // ⚠️ 含 v42 已跑过、backdrop_path 已有值的行：本迁移**刻意不**顺手把它们标成"查过"
+    // （那要在迁移里凭空捏一个"查过的时刻"）。代价是一次性的——它们下一轮 boot 各重查
+    // 一次、落下真实 checked_at 后永久收敛，是"多一轮"而非"每轮"。
+    const db = openDb(':memory:')
+    db.exec('ALTER TABLE works DROP COLUMN backdrop_checked_at')
+    db.prepare(`INSERT INTO works (id, title, media_type, backdrop_path, created_at, updated_at) VALUES (?,?,?,?,?,?)`)
+      .run('tmdb:83', 'Legacy Work', 'tv', '/already.jpg', 1000, 1000)
+    replayTail(db)
+    const row = db.prepare('SELECT backdrop_path, backdrop_checked_at FROM works WHERE id = ?')
+      .get('tmdb:83') as { backdrop_path: string | null; backdrop_checked_at: number | null }
+    // 既有的图不许被迁移碰
+    expect(row.backdrop_path).toBe('/already.jpg')
+    expect(row.backdrop_checked_at).toBeNull()
+    db.close()
+  })
+
+  it('🔴 幂等——重放两次不撞 duplicate column', () => {
+    const db = openDb(':memory:')
+    expect(() => { replayTail(db); replayTail(db) }).not.toThrow()
+    db.close()
+  })
+
+  it('🔴 老库无 works 表 → 迁移不抛（照 v30–v42 的条件式写法）', () => {
+    // v29 及更早的库升级上来时 works 表还不存在（v30 才建）。裸 ALTER 会
+    // `no such table: works` 把 openDb 整个炸掉 → 用户的库再也打不开。
+    const db = openDb(':memory:')
+    db.exec('DROP TABLE works')
+    expect(() => replayTail(db)).not.toThrow()
+    db.close()
+  })
+
+  it('🔴 backdrop_checked_at **不写进任何 CREATE TABLE works 终态定义**，只由末尾那条 ALTER entry 补（隐含规则）', () => {
+    // 本仓的迁移隐含规则（works 表定义末尾的原话）：新增列只写进末尾的条件式 ALTER entry，
+    // 绝不同时改顶部的 CREATE TABLE 终态定义——"两处都写会让'改一处忘另一处'变成可能"。
+    // 先例：works.provider_ids（v36）、works.backdrop_path（v42）。
+    // **必须扫全部 entry 而不是第一个**：db.ts 里有**两处** `CREATE TABLE IF NOT EXISTS works`
+    // （v9 的终态折叠 entry 与 v30 的建表 entry），只查第一处的话，往 v30 那处偷偷补一列
+    // 不会有任何测试变红。
+    const worksDdls = MIGRATIONS.filter((m): m is string => typeof m === 'string')
+      .flatMap((m) => {
+        const out: string[] = []
+        let from = 0
+        for (;;) {
+          const at = m.indexOf('CREATE TABLE IF NOT EXISTS works', from)
+          if (at === -1) break
+          const block = m.slice(at)
+          out.push(block.slice(0, block.indexOf(')')))
+          from = at + 1
+        }
+        return out
+      })
+    // 前置：真的切到了 works 的 DDL（否则下面的 not.toContain 是空转的假绿）
+    expect(worksDdls.length).toBe(2)
+    for (const raw of worksDdls) {
+      // 先剥掉 `--` 行注释再断言：终态定义末尾那段注记本身就在解释这些列为什么不在这里，
+      // 裸文本匹配会把那段解释当成列声明而误红。
+      const ddl = raw.split('\n').map((l) => l.replace(/--.*$/, '')).join('\n')
+      expect(ddl).toContain('poster_path')
+      expect(ddl).not.toContain('backdrop_checked_at')
     }
   })
 })

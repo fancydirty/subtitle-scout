@@ -5358,12 +5358,17 @@ function backdropOf(db: ReturnType<typeof openDb>, id: string): string | null {
   return (db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get(id) as { backdrop_path: string | null }).backdrop_path
 }
 
+/** v43：「查过没有」的凭据列。回填 pass 的取件谓词读的是**它**，不是 backdrop_path。 */
+function checkedOf(db: ReturnType<typeof openDb>, id: string): number | null {
+  return (db.prepare('SELECT backdrop_checked_at FROM works WHERE id = ?').get(id) as { backdrop_checked_at: number | null }).backdrop_checked_at
+}
+
 function seedWorkBd(db: ReturnType<typeof openDb>, id: string, over: {
-  mediaType?: 'tv' | 'movie'; backdropPath?: string | null
+  mediaType?: 'tv' | 'movie'; backdropPath?: string | null; checkedAt?: number | null
 } = {}) {
-  db.prepare(`INSERT INTO works (id, title, media_type, backdrop_path, created_at, updated_at)
-              VALUES (?,?,?,?,?,?)`)
-    .run(id, `Work ${id}`, over.mediaType ?? 'tv', over.backdropPath ?? null, 1000, 1000)
+  db.prepare(`INSERT INTO works (id, title, media_type, backdrop_path, backdrop_checked_at, created_at, updated_at)
+              VALUES (?,?,?,?,?,?,?)`)
+    .run(id, `Work ${id}`, over.mediaType ?? 'tv', over.backdropPath ?? null, over.checkedAt ?? null, 1000, 1000)
 }
 
 /** 只注入 getDetails 的最小 identify deps（本回填只用得到它一个方法）。 */
@@ -5437,37 +5442,50 @@ describe('ScoutDaemonV2 · v42 works.backdrop_path 存量回填 pass（写入点
     db.close()
   })
 
-  it('🔴 已有值的行不被重查、不被覆盖（靠 `IS NULL` 谓词自然收敛）', async () => {
+  it('🔴 查过的行不被重查、已有图不被覆盖（靠 `backdrop_checked_at IS NULL` 谓词收敛）', async () => {
+    // ⚠️ v43 语义变更：收敛的凭据从「backdrop_path 非空」换成「checked_at 非空」。
+    // 原因是前者对"TMDB 真没图"的行恒为空 → 谓词恒真 → 队头阻塞永久饿死尾部行
+    // （见下面 3 轮收敛 / 250 行两条用例）。这里同步改成钉新谓词。
+    // tmdb:84 用「有图 **且** 已查过」构造 —— v42 的"只有图、没 checked_at"那种存量行
+    // 该被捡回来重查一次（一次性代价），那由下面单独一条用例钉。
     const db = openDb(':memory:')
     seedWorkBd(db, 'tmdb:83')
-    seedWorkBd(db, 'tmdb:84', { backdropPath: '/already.jpg' })   // 已有值，不该被碰
+    seedWorkBd(db, 'tmdb:84', { backdropPath: '/already.jpg', checkedAt: 5000 })   // 已收敛，不该被碰
     const bd = bdDeps(db, async () => ({ backdropPath: '/new.jpg' }))
     const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
     await backfillBackdrops(daemon)
     expect(bd.calls).toEqual([['tv', '83']])
     expect(backdropOf(db, 'tmdb:84')).toBe('/already.jpg')
-    // 第二次启动（新进程同一个库）：谓词已选不中它 → 零新增调用。
+    expect(checkedOf(db, 'tmdb:84')).toBe(5000)   // 连凭据的时刻都不许被前移
+    // 第二次启动（新进程同一个库）：谓词已选不中它们 → 零新增调用。
     const daemon2 = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
     await backfillBackdrops(daemon2)
     expect(bd.calls).toEqual([['tv', '83']])   // 仍是 1 次，没有第 2 次
     db.close()
   })
 
-  it('🔴 TMDB 真没有横版图 → 不写库、留 NULL（不许拿空串当"查过"的哨兵）', async () => {
-    // 与 C21 用例 9b **相反**的取舍，且这个相反是论证过的（db.ts v42 entry）：
-    // provider_ids 能用 `{tmdb}` 表达"查过没有"从而收敛；backdrop_path 是裸路径串，
-    // 没有第三个值可用。写 '' 当哨兵会让读取方拿到空串（apiV2 那侧 nullIfEmpty 的存在
-    // 正说明本仓已在为空串/NULL 二义性付代价）。故这里接受"每轮重查一次"。
+  it('🔴 TMDB 真没有横版图 → 不写 backdrop_path，但落 checked_at 收敛（不许拿空串当哨兵）', async () => {
+    // 与 C21 用例 9b **同源**的取舍（v43 修正了 v42 的判断）：C21 靠 `{tmdb}` 这个非 NULL
+    // 凭据表达"查过、确实没有"从而收敛；backdrop_path 是裸路径串，值里没有第三个槽位，
+    // 于是凭据另起一列 `backdrop_checked_at`。两者是同一个机制，不是两套写法。
+    //
+    // v42 时这里接受的是"每轮重查一次"，实测证明那低估了一个量级——谓词恒真 +
+    // ORDER BY id 恒定 + LIMIT 200 相乘 = 尾部行永久饿死（见下面 3 轮收敛/250 行两条用例）。
+    // 但 v42 对空串哨兵的否决**依然有效且必须钉住**：backdrop_path 绝不能被写成 ''，
+    // 读取方拿到空串就是新的二义性（apiV2 的 nullIfEmpty 已在为这种事付代价）。
     const db = openDb(':memory:')
     seedWorkBd(db, 'tmdb:83')
     const bd = bdDeps(db, async () => ({ backdropPath: null }))
     const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
     await backfillBackdrops(daemon)
+    // 图这一列语义未变：NULL = 没有图。**不是空串**。
     expect(backdropOf(db, 'tmdb:83')).toBeNull()
+    // 但"查过了"这件事必须留下凭据，否则下轮又被捡回来（本 task 修的饿死的根因）。
+    expect(checkedOf(db, 'tmdb:83')).not.toBeNull()
     db.close()
   })
 
-  it('🔴 getDetails 返回 null（TMDB 404）→ 不写库、不抛', async () => {
+  it('🔴 getDetails 返回 null（TMDB 404）→ 不写图、落 checked_at、不抛', async () => {
     const db = openDb(':memory:')
     seedWorkBd(db, 'tmdb:83')
     const bd = bdDeps(db, async () => null)
@@ -5504,6 +5522,7 @@ describe('ScoutDaemonV2 · v42 works.backdrop_path 存量回填 pass（写入点
 
     const noCol = openDb(':memory:')
     noCol.exec('ALTER TABLE works DROP COLUMN backdrop_path')
+    noCol.exec('ALTER TABLE works DROP COLUMN backdrop_checked_at')
     seedWorkNoIds(noCol, 'tmdb:83')
     const d2 = new ScoutDaemonV2(mkDeps(noCol, { ...bdDeps(noCol).deps }))
     await expect(backfillBackdrops(d2)).resolves.toBeUndefined()
@@ -5543,6 +5562,152 @@ describe('ScoutDaemonV2 · v42 works.backdrop_path 存量回填 pass（写入点
     // 前面所有用例都可以在"方法存在但 boot 里没人调"的情况下全绿。
     expect(bd.calls).toEqual([['tv', '83']])
     expect(backdropOf(db, 'tmdb:83')).toBe('/boot.jpg')
+    db.close()
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // v43：队头阻塞 / 永久饿死。**这两条是本次修复的验收点**，其余用例在有缺陷的
+  // v42 实现下全都是绿的（它们每条只跑 1 轮、或规模 < 200，两个触发条件都不满足）。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('🔴🔴 收敛——全库无横版图，跑 3 轮 boot，第 3 轮 TMDB 调用为 0', async () => {
+    // 这是 v42 缺陷的最小复现：TMDB 对这些作品**真的没有**横版图（小众剧/部分电影常见），
+    // 于是 `backdrop_path IS NULL` 这个谓词**恒真** → 每轮 boot 原样重查一遍，永不收敛。
+    // v43 把"查过没有"的凭据挪进 backdrop_checked_at，谓词才单调。
+    //
+    // 断言**每轮的调用次数**而不是只看总数：只断言总数的话，"第 1 轮 0 次、第 2 轮 30 次"
+    // 之类的错误分布也能凑出同一个总和。收敛是一个**逐轮**的性质。
+    const db = openDb(':memory:')
+    for (let i = 0; i < 30; i++) seedWorkBd(db, `tmdb:${i}`)
+    const bd = bdDeps(db, async () => ({ backdropPath: null }))   // TMDB 一张横版图都没有
+
+    const perRound: number[] = []
+    for (let round = 0; round < 3; round++) {
+      const before = bd.calls.length
+      // 每轮 new 一个 daemon = 模拟**新进程**同一个库（回填是 boot 一次的 pass），
+      // 不是同一实例调三遍——后者可能被实例内的记忆化蒙混过去。
+      await backfillBackdrops(new ScoutDaemonV2(mkDeps(db, { ...bd.deps })))
+      perRound.push(bd.calls.length - before)
+    }
+
+    // 第 1 轮查完 30 行；第 2、3 轮谓词一行都选不中 → 0 次。
+    expect(perRound).toEqual([30, 0, 0])
+    // 收敛的实质：图确实还是没有（TMDB 真没有，不许伪造成空串），但**查过**这件事留下了。
+    const noImage = db.prepare('SELECT COUNT(*) AS n FROM works WHERE backdrop_path IS NULL').get() as { n: number }
+    const unchecked = db.prepare('SELECT COUNT(*) AS n FROM works WHERE backdrop_checked_at IS NULL').get() as { n: number }
+    expect(noImage.n).toBe(30)     // 图还是没有 —— 这正是 TMDB 的事实
+    expect(unchecked.n).toBe(0)    // 但全都查过了 —— 这是收敛的凭据
+    // 且绝不许拿空串当哨兵（db.ts v42 的否决，v43 未推翻）
+    const emptyStr = db.prepare("SELECT COUNT(*) AS n FROM works WHERE backdrop_path = ''").get() as { n: number }
+    expect(emptyStr.n).toBe(0)
+    db.close()
+  })
+
+  it('🔴🔴 不饿死尾部——250 行（> LIMIT 200）全部无图，跑 3 轮后第 201–250 行都被查过', async () => {
+    // 审计实跑的那个场景，v42 实现下的实测结论：
+    //     totalCalls=600 unique=200 first=1 call#201=1
+    // 600 次调用只覆盖 200 个不同作品，**第 201–250 行一次都没被查过**。根因是三件事
+    // 相乘：谓词恒真 ＋ `ORDER BY id` 恒定序 ＋ LIMIT 200 只取头部 → 每轮同一批。
+    //
+    // ⚠️ 用 **unique 覆盖数**断言，不是 totalCalls：totalCalls=600 在"正确轮转"与
+    // "同一批查三遍"两种实现下**完全相同**，正是它掩盖了这个缺陷 3 个月。
+    const db = openDb(':memory:')
+    for (let i = 0; i < 250; i++) seedWorkBd(db, `tmdb:${i}`)
+    const bd = bdDeps(db, async () => ({ backdropPath: null }))
+
+    const perRound: number[] = []
+    for (let round = 0; round < 3; round++) {
+      const before = bd.calls.length
+      await backfillBackdrops(new ScoutDaemonV2(mkDeps(db, { ...bd.deps })))
+      perRound.push(bd.calls.length - before)
+    }
+
+    // 第 1 轮 200（批上限）、第 2 轮剩下的 50、第 3 轮 0（全查完了）。
+    expect(perRound).toEqual([200, 50, 0])
+    const unique = new Set(bd.calls.map(([, id]) => id))
+    expect(unique.size).toBe(250)            // v42 实现下这里是 200
+    expect(bd.calls.length).toBe(250)        // 且一次都没重复查（v42 下是 600）
+
+    // 逐行钉死"尾部真的被采到"，而不只是数个数。`ORDER BY id` 是**字符串**序
+    // （'tmdb:1038392' < 'tmdb:99'），所以"尾部"不等于 i 大的那些——直接查库最可靠。
+    const unchecked = db.prepare('SELECT COUNT(*) AS n FROM works WHERE backdrop_checked_at IS NULL').get() as { n: number }
+    expect(unchecked.n).toBe(0)
+    // 再点名审计报告里那个"第 201 行"：按字符串序排出来的第 201 行，必须被查过。
+    const row201 = db.prepare('SELECT id FROM works ORDER BY id LIMIT 1 OFFSET 200').get() as { id: string }
+    expect(checkedOf(db, row201.id)).not.toBeNull()
+    expect(unique.has(row201.id.slice('tmdb:'.length))).toBe(true)
+    db.close()
+  })
+
+  it('🔴 调用失败的行**不**落 checked_at —— 留 NULL 下轮重试（收敛不许吃掉重试）', async () => {
+    // 收敛与重试的界线：本 task 让"查过"变单调，但**不能**顺手把"没查成"也标成查过——
+    // 那会让一次 TMDB 抖动永久放弃这一行（identifyScheduler C5 注释点名的
+    // "把失败伪装成 TMDB 确认没有"）。这是修复最容易过头的地方，必须钉住。
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:bad')
+    seedWorkBd(db, 'tmdb:good')
+    let failNext = true
+    const bd = bdDeps(db, async (_mt, id) => {
+      if (id === 'bad' && failNext) throw new Error('TMDB 503')
+      return { backdropPath: id === 'bad' ? '/recovered.jpg' : '/ok.jpg' }
+    })
+    await backfillBackdrops(new ScoutDaemonV2(mkDeps(db, { ...bd.deps })))
+    expect(checkedOf(db, 'tmdb:bad')).toBeNull()        // 没查成 → 不留凭据
+    expect(checkedOf(db, 'tmdb:good')).not.toBeNull()   // 查成了 → 留凭据
+
+    // 下一轮：好行已收敛不再查，坏行必须**被重新捡回来**并成功。
+    failNext = false
+    const before = bd.calls.length
+    await backfillBackdrops(new ScoutDaemonV2(mkDeps(db, { ...bd.deps })))
+    expect(bd.calls.slice(before)).toEqual([['tv', 'bad']])
+    expect(backdropOf(db, 'tmdb:bad')).toBe('/recovered.jpg')
+    db.close()
+  })
+
+  it('🔴 探针缺席（getDetails 未注入）→ 不许留下 checked_at（v43 之后这一条更要命）', async () => {
+    // v42 时漏接线的后果是"这一轮白跑"，下轮还会重来。v43 之后 checked_at 是**单调**的，
+    // 若在探针缺席时照写，一次"忘接线的启动"就把全库永久标成"查过、没有横版图"，
+    // 再也没有任何一轮 boot 会回来 —— 活动页永久退化成模糊海报，且排障时毫无线索。
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: { model: {} as any, tmdb: { search: async () => [] } as any },
+      },
+    }))
+    await expect(backfillBackdrops(daemon)).resolves.toBeUndefined()
+    expect(backdropOf(db, 'tmdb:83')).toBeNull()
+    expect(checkedOf(db, 'tmdb:83')).toBeNull()   // ← 这一条是本用例的实质
+    db.close()
+  })
+
+  it('🔴 非 tmdb: 形状的 id **不**落 checked_at（没打过 TMDB，就没有"查过"这回事）', async () => {
+    // 与上一条同源：skipped 计数里混着两种性质完全不同的行——"打通了、TMDB 说没有"
+    // （该收敛）与"压根没打"（该留 NULL）。落错了就是永久放弃一行等人修数据的记录。
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'weird-legacy-id')
+    const bd = bdDeps(db)
+    await backfillBackdrops(new ScoutDaemonV2(mkDeps(db, { ...bd.deps })))
+    expect(bd.calls).toEqual([])
+    expect(checkedOf(db, 'weird-legacy-id')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 已有图但 checked_at 为 NULL 的 v42 存量行 → 补一轮后收敛（迁移刻意不回填的那批）', async () => {
+    // v43 迁移**不**顺手把 backdrop_path 非空的行标成"查过"（那要在迁移里凭空捏时刻）。
+    // 代价必须是**一次性**的：这批行下一轮各重查一次、落下真实 checked_at 后永久收敛。
+    // 这条钉的就是"多一轮，不是每轮"。
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83', { backdropPath: '/from-v42.jpg' })
+    const bd = bdDeps(db, async () => ({ backdropPath: '/refreshed.jpg' }))
+    await backfillBackdrops(new ScoutDaemonV2(mkDeps(db, { ...bd.deps })))
+    expect(bd.calls).toEqual([['tv', '83']])
+    expect(checkedOf(db, 'tmdb:83')).not.toBeNull()
+    const before = bd.calls.length
+    await backfillBackdrops(new ScoutDaemonV2(mkDeps(db, { ...bd.deps })))
+    expect(bd.calls.length).toBe(before)   // 第二轮 0 次 —— 一次性代价，不是每轮
     db.close()
   })
 

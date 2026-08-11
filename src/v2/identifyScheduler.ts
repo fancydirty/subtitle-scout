@@ -153,9 +153,25 @@ export async function runIdentifyWorkDir(
       const backdropNow = details.backdropPath ?? null
       const keptBackdrop = backdropNow ?? ((deps.db.prepare('SELECT backdrop_path FROM works WHERE id = ?')
         .get(`tmdb:${input.tmdbId}`) as { backdrop_path: string | null } | undefined)?.backdrop_path ?? null)
+      // v43：backdrop_path 的**收敛凭据**，与上面那个值一一配对（这是写入点①这一半）。
+      // 这一次 getDetails 是真打出去、真拿回确定答案了（有图或确认没图），故无论
+      // backdropNow 是不是 null 都要落 checked_at——不落的话，回填 pass 的谓词
+      // （`backdrop_checked_at IS NULL`）每轮 boot 都会把这个刚识别完的作品捡回来重查，
+      // v43 修的那个队头阻塞就原样从回填侧搬到识别侧（TMDB 真无图的新作品永远收敛不了）。
+      //
+      // ⚠️ 但**探针没给这个可选字段**（deps 构造点没接 backdropPath）时不能落：那与
+      // "TMDB 确认没有"不可区分，而它其实一次图都没查过。用 `in` 判断而不是 `!= null`，
+      // 正是为了把"接了线但 TMDB 没图"（应收敛）与"压根没接线"（应留 NULL 重试）分开——
+      // 同 backfillBackdropPaths 的"探针缺席不动列"论证，且 checked_at 是单调的，
+      // 错写一次就是永久放弃。
+      const backdropProbed = 'backdropPath' in details
+      const keptBackdropChecked = backdropProbed
+        ? now
+        : ((deps.db.prepare('SELECT backdrop_checked_at FROM works WHERE id = ?')
+            .get(`tmdb:${input.tmdbId}`) as { backdrop_checked_at: number | null } | undefined)?.backdrop_checked_at ?? null)
       deps.db.prepare(`
-        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, backdrop_path, chinese_titles, provider_ids, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, backdrop_path, backdrop_checked_at, chinese_titles, provider_ids, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         `tmdb:${input.tmdbId}`,
         details.title,
@@ -179,6 +195,7 @@ export async function runIdentifyWorkDir(
         // `TypeError: Invalid value`（它只认 null/number/string/bigint/Buffer），
         // 那会把一次成功的识别整个打回退避轨。
         keptBackdrop,
+        keptBackdropChecked,
         JSON.stringify(details.chineseTitles ?? []),
         kept,
         now, now,

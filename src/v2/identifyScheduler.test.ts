@@ -249,24 +249,45 @@ describe('runIdentifyWorkDir · works.backdrop_path 落库（v42 / R-F13 写入�
     db.close()
   })
 
-  it('🔴 TMDB 真没有横版图（backdropPath=null）→ 落 NULL，识别照常成功', async () => {
-    // NULL 是回填 pass 的取件谓词。这里刻意**不写空串哨兵**：裸路径列没有第三个值可用，
-    // "查过没有"与"还没采过"在这一列上不可区分是已知代价（见 db.ts v42 entry）。
+  it('🔴 TMDB 真没有横版图（backdropPath=null）→ 图落 NULL，但落 checked_at（v43 收敛凭据）', async () => {
+    // ⚠️ v43 语义变更（写入点①这一半）：探针**打通了**、TMDB 给的答案就是"没有横版图"，
+    // 这是一个确定答案，必须落下 backdrop_checked_at。不落的话回填 pass 的谓词
+    // （`backdrop_checked_at IS NULL`）每轮 boot 都会把这个刚识别完的作品捡回来重查 →
+    // v43 修的队头阻塞原样从回填侧搬到识别侧（TMDB 真无图的新作品永远收敛不了）。
+    // 图这一列仍然落 NULL，**刻意不写空串哨兵**（db.ts v42 的否决，v43 未推翻）。
     const db = openDb(':memory:')
     const workDir = seed(db)
     await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: null }), item(workDir))
     const bound = db.prepare('SELECT work_id FROM files WHERE work_dir = ?').get(workDir) as { work_id: string | null }
     expect(bound.work_id).toBe('tmdb:1')
-    const row = db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get('tmdb:1') as { backdrop_path: string | null }
+    const row = db.prepare('SELECT backdrop_path, backdrop_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { backdrop_path: string | null; backdrop_checked_at: number | null }
     expect(row.backdrop_path).toBeNull()
+    expect(row.backdrop_checked_at).not.toBeNull()   // ← v43 的实质
     db.close()
   })
 
-  it('🔴 getDetails 没给 backdropPath 字段（旧构造点）→ 落 NULL，不抛（optional 接线纪律）', async () => {
+  it('🔴 拿到图时也落 checked_at（收敛凭据与图同一条 INSERT）', async () => {
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: '/bd.jpg' }), item(workDir))
+    const row = db.prepare('SELECT backdrop_path, backdrop_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { backdrop_path: string | null; backdrop_checked_at: number | null }
+    expect(row.backdrop_path).toBe('/bd.jpg')
+    expect(row.backdrop_checked_at).not.toBeNull()
+    db.close()
+  })
+
+  it('🔴 getDetails 没给 backdropPath 字段（旧构造点）→ 两列都落 NULL，不抛（optional 接线纪律）', async () => {
     // IdentifyWorkerDeps.tmdb.getDetails 的 backdropPath 是 optional（几十个既有构造点的
     // 编译成本，同 getExternalIds 的既有分工：类型层留宽、接线层单钉）。
     // 这一条钉的是**不许炸**：undefined 直接喂给 better-sqlite3 会抛
     // `TypeError: Invalid value`，把一次成功的识别整个打回退避轨。
+    //
+    // ⚠️ v43 追加的实质：**checked_at 也必须留 NULL**。"构造点没接这个字段"与
+    // "TMDB 确认没有"完全不同——前者一次图都没查过。落错了就是把漏接线伪装成"查过了"，
+    // 而 checked_at 是**单调**的，一次忘接线的启动会让这些作品永久拿不到横版图、
+    // 且再没有任何一轮 boot 会回来补（同 backfillBackdropPaths 的"探针缺席不动列"论证）。
     const db = openDb(':memory:')
     const workDir = seed(db)
     await runIdentifyWorkDir(depsWith(db, BASE), item(workDir))   // BASE 里没有 backdropPath
@@ -274,23 +295,30 @@ describe('runIdentifyWorkDir · works.backdrop_path 落库（v42 / R-F13 写入�
       .get(workDir) as { work_id: string | null; last_error: string | null }
     expect(bound.work_id).toBe('tmdb:1')
     expect(bound.last_error).toBeNull()          // 没被打进退避轨
-    const row = db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get('tmdb:1') as { backdrop_path: string | null }
+    const row = db.prepare('SELECT backdrop_path, backdrop_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { backdrop_path: string | null; backdrop_checked_at: number | null }
     expect(row.backdrop_path).toBeNull()
+    expect(row.backdrop_checked_at).toBeNull()   // ← v43：漏接线不许伪装成"查过了"
     db.close()
   })
 
-  it('🔴 重识别同一作品 → 已有的 backdrop_path 不被 INSERT OR REPLACE 洗成 NULL', async () => {
+  it('🔴 重识别同一作品 → 已有的 backdrop_path / checked_at 不被 INSERT OR REPLACE 洗掉', async () => {
     // `INSERT OR REPLACE INTO works` 是**整行替换**（provider_ids 那条已经吃过一次）。
-    // 第二次识别拿不到横版图时若直接绑 null，会把回填 pass 上一轮采到的值抹掉——
-    // 而与 provider_ids 不同的是，这里丢了**不保证**补得回来：若 TMDB 对这个作品本来
-    // 就没有横版图，回填每轮都白烧一次往返却永远写不进值。
+    // 第二次识别拿不到横版图时若直接绑 null，会把回填 pass 上一轮采到的值抹掉。
+    // v43 追加：checked_at 同样不许被洗——洗掉就等于把一个已收敛的行退回"没查过"，
+    // 回填 pass 下轮又把它捡回来，收敛性被识别路径悄悄破坏。
     const db = openDb(':memory:')
     const workDir = seed(db)
     await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: '/bd.jpg' }), item(workDir))
-    // 第二次：TMDB 这次没给横版图
-    await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: null }), item(workDir))
-    const row = db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get('tmdb:1') as { backdrop_path: string | null }
+    const first = db.prepare('SELECT backdrop_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { backdrop_checked_at: number | null }
+    expect(first.backdrop_checked_at).not.toBeNull()
+    // 第二次：构造点这次没接 backdropPath 字段（探针缺席，不是"TMDB 说没有"）
+    await runIdentifyWorkDir(depsWith(db, BASE), item(workDir))
+    const row = db.prepare('SELECT backdrop_path, backdrop_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { backdrop_path: string | null; backdrop_checked_at: number | null }
     expect(row.backdrop_path).toBe('/bd.jpg')
+    expect(row.backdrop_checked_at).toBe(first.backdrop_checked_at)   // 凭据也不许丢
     db.close()
   })
 })
