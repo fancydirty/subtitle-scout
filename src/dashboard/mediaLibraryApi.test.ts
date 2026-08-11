@@ -42,14 +42,23 @@ function addFile(o: {
   episode?: number | null
   subStatus?: string | null
   embeddedLangs?: string[] | null
+  /** NULL=judge 还没判 / 0=不需要 / 1=需要。**默认 1**——与本 helper 的历史行为逐字一致
+   *  （八态之前这一列恒写 1），故既有用例的期望一个字都不用改。
+   *  ⚠️ 用 `undefined` 表达"取默认值"、用 `null` 表达"真的写 NULL"：写成 `?? 1` 的话
+   *  显式传 null 会被悄悄改写成 1，第 8 态（unjudged）就永远造不出测试数据来。 */
+  needsSubtitle?: number | null
+  skipReason?: string | null
 }): void {
   db.prepare(
-    `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, season, episode, sub_status, embedded_langs, needs_subtitle, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, season, episode, sub_status, embedded_langs, needs_subtitle, skip_reason, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     o.path, '/d', 'f.mkv', 100, NOW, '/d', o.workId,
     o.season ?? null, o.episode ?? null, o.subStatus ?? null,
-    o.embeddedLangs ? JSON.stringify(o.embeddedLangs) : null, 1, NOW,
+    o.embeddedLangs ? JSON.stringify(o.embeddedLangs) : null,
+    o.needsSubtitle === undefined ? 1 : o.needsSubtitle,
+    o.skipReason ?? null,
+    NOW,
   )
 }
 
@@ -306,6 +315,168 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       addCanonical('tmdb:1', 1, [1])
       addFile({ path: '/orphan/s1e1.mkv', workId: null, season: 1, episode: 1, subStatus: 'covered' })
       expect(buildMediaLibraryDetail(db, 'tmdb:1')!.seasons[0].episodes[0].dot).toBe('none')
+    })
+  })
+
+  describe('🔴 EpisodeState 八态（R-F12 集号染色，优先级链在后端）', () => {
+    /** 造一集一份文件，返回那一格的 episodeState。 */
+    function stateOf(o: {
+      subStatus?: string | null
+      embeddedLangs?: string[] | null
+      needsSubtitle?: number | null
+      skipReason?: string | null
+    }): string {
+      addWork('tmdb:800', { title: 'StateProbe' })
+      addCanonical('tmdb:800', 1, [1])
+      addFile({ path: '/s/s1e1.mkv', workId: 'tmdb:800', season: 1, episode: 1, ...o })
+      return buildMediaLibraryDetail(db, 'tmdb:800')!.seasons[0].episodes[0].episodeState
+    }
+
+    // ── ① sub_status 全值域逐个透传 ────────────────────────────────────────────
+    // grep 全部生产写入点得到的实际值域是 { NULL, 'covered', 'handoff_translate', 'unsolvable' }
+    // ——db.ts:555 的注释（'missing'/'covered'/'embedded'/'unavailable'）四个里三个是错的，
+    // 该列无 CHECK 约束、注释是照旧 episodes/movies 表抄的。这四行把**代码实际会写入的**
+    // 每一个值各钉一行，不依赖生产样本（生产 unsolvable/handoff_translate 各 0 行）。
+    it("sub_status='covered' → 'covered'", () => {
+      expect(stateOf({ subStatus: 'covered' })).toBe('covered')
+    })
+
+    it("sub_status='handoff_translate' → 'translating'（生产 0 行，靠造数据验）", () => {
+      expect(stateOf({ subStatus: 'handoff_translate' })).toBe('translating')
+    })
+
+    it("sub_status='unsolvable' → 'unsolvable'（生产 0 行，靠造数据验）", () => {
+      expect(stateOf({ subStatus: 'unsolvable' })).toBe('unsolvable')
+    })
+
+    it("sub_status=NULL + needs_subtitle=1 → 'pending'", () => {
+      expect(stateOf({ subStatus: null, needsSubtitle: 1 })).toBe('pending')
+    })
+
+    // ── ② needs_subtitle / skip_reason ────────────────────────────────────────
+    it("skip_reason='origin-skip' → 'origin-skip'（◇ 原生同语言）", () => {
+      expect(stateOf({ needsSubtitle: 0, skipReason: 'origin-skip' })).toBe('origin-skip')
+    })
+
+    it("skip_reason='embedded' → 'embedded'（◆ 自带目标语言内嵌轨）", () => {
+      expect(stateOf({ needsSubtitle: 0, skipReason: 'embedded' })).toBe('embedded')
+    })
+
+    it("🔴 第 8 态：needs_subtitle IS NULL → 'unjudged'（judge 还没轮到它）", () => {
+      // 这一态是本 task 的存在理由之一：新扫进来的文件、以及被 D17 回填/指纹重置清空判决的行
+      // 都会在这里停留一轮。塌缩进 pending 就是把"系统还没结论"说成"系统认为需要找字幕"（病 B）。
+      expect(stateOf({ subStatus: null, needsSubtitle: null })).toBe('unjudged')
+    })
+
+    it("🔴 needs_subtitle=0 但 skip_reason 缺失（v40 之前的存量行）→ 'unjudged'，不许猜 ◇/◆", () => {
+      // 生产实测：skip_reason 1192 行全 NULL。这批行 judge 判过（needs=0）但没留理由。
+      // origin-skip 与 embedded 在换目标语言后命运完全相反，猜任何一个都是编造事实。
+      expect(stateOf({ needsSubtitle: 0, skipReason: null })).toBe('unjudged')
+    })
+
+    it("needs_subtitle=0 + 不认识的 skip_reason → 'unjudged'（将来加了新 reason 而忘了跟这里）", () => {
+      expect(stateOf({ needsSubtitle: 0, skipReason: 'brand-new-reason' })).toBe('unjudged')
+    })
+
+    it("未知的非 NULL sub_status → 'unjudged'（无 CHECK 约束，宁可说不知道也不归进 pending）", () => {
+      expect(stateOf({ subStatus: 'some-future-parked-state', needsSubtitle: 1 })).toBe('unjudged')
+    })
+
+    // ── ③ 优先级链：冲突组合是常态不是边缘（设计文档教训八）────────────────────
+    it("🔴 sub_status 优先于 needs_subtitle：handoff_translate + needs_subtitle=1 → 'translating'", () => {
+      // 这是**正常库里必然出现**的组合，不是编造的边缘：subtitleScheduler.ts:326 满 7 次
+      // 把行写成 handoff_translate，而 needs_subtitle 一直是 1（D8：装盘与停牌都不改它）。
+      // 若 pending 排在前面，每一个在翻译的集都显示 '···'，⇄ 态在真实库里永不出现。
+      expect(stateOf({ subStatus: 'handoff_translate', needsSubtitle: 1 })).toBe('translating')
+    })
+
+    it("🔴 unsolvable + needs_subtitle=1 → 'unsolvable'（同上，⊘ 态不许被 pending 吃掉）", () => {
+      expect(stateOf({ subStatus: 'unsolvable', needsSubtitle: 1 })).toBe('unsolvable')
+    })
+
+    it("🔴 retarget 造出的真实组合：handoff_translate + needs_subtitle IS NULL → 'translating'", () => {
+      // retarget.ts 换目标语言时清 needs_subtitle + skip_reason，却**刻意不清 sub_status**
+      // （R24 铁律，清了会掀掉飞行中的翻译 / D10 守卫匹配 0 行）。于是这个组合必然出现。
+      // 若 unjudged 排在 translating 前面，正在被翻译的那一集会显示 '?'。
+      expect(stateOf({ subStatus: 'handoff_translate', needsSubtitle: null })).toBe('translating')
+    })
+
+    it("🔴 covered 优先于 translating：字幕已在盘上就不许显示「还在翻译」", () => {
+      // observeSubtitle（daemonV2.ts:1603）对扫到 sidecar 的行**无条件**写 covered，
+      // 停牌的解除凭据就是它（R23）。反向由 D10 的乐观守卫兜死。
+      expect(stateOf({ subStatus: 'covered', needsSubtitle: 1 })).toBe('covered')
+    })
+
+    it("🔴 covered 优先于 skip_reason：needs=0(origin-skip) 但磁盘上真有字幕 → 'covered'", () => {
+      expect(stateOf({ subStatus: 'covered', needsSubtitle: 0, skipReason: 'origin-skip' })).toBe('covered')
+    })
+
+    it("🔴 origin-skip 先于 embedded：国产片同时带中文内嵌轨 → 'origin-skip'", () => {
+      // 照抄 judgeSubtitle 自己的规则顺序（origin_lang 命中在前）。反过来的话显示的 ◆
+      // 会与库里 skip_reason 的值直接矛盾——同一个事实两处对不上，排障时无从下手。
+      // judge 对这种片子写进 skip_reason 的就是 'origin-skip'，这里必须与它一致。
+      expect(stateOf({ needsSubtitle: 0, skipReason: 'origin-skip', embeddedLangs: ['chi'] }))
+        .toBe('origin-skip')
+    })
+
+    // ── ④ 虚线格与 R-F2 聚合 ──────────────────────────────────────────────────
+    it("🔴 虚线格（onDisk=false）→ 'absent'，不染色", () => {
+      addWork('tmdb:801', { title: 'Dashed' })
+      addCanonical('tmdb:801', 1, [1, 2])
+      addFile({ path: '/s/s1e1.mkv', workId: 'tmdb:801', season: 1, episode: 1, subStatus: 'covered' })
+      const eps = buildMediaLibraryDetail(db, 'tmdb:801')!.seasons[0].episodes
+      expect(eps.map((e) => [e.onDisk, e.episodeState])).toEqual([[true, 'covered'], [false, 'absent']])
+    })
+
+    it('🔴 R-F2 同一集两份文件：取优先级链最靠前的那一份（一份 covered、一份 pending → covered）', () => {
+      addWork('tmdb:802', { title: 'TwoCopies' })
+      addCanonical('tmdb:802', 1, [1])
+      addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:802', season: 1, episode: 1, subStatus: null, needsSubtitle: 1 })
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:802', season: 1, episode: 1, subStatus: 'covered' })
+      expect(buildMediaLibraryDetail(db, 'tmdb:802')!.seasons[0].episodes[0].episodeState).toBe('covered')
+    })
+
+    it('🔴 顺序无关：把上一条的两份文件调换入库顺序，结论必须一模一样', () => {
+      // 防"取首行"式实现——它会因入库顺序不同给出相反结论，而测试若恰好按"好的在前"写就永远绿。
+      addWork('tmdb:803', { title: 'TwoCopiesRev' })
+      addCanonical('tmdb:803', 1, [1])
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:803', season: 1, episode: 1, subStatus: 'covered' })
+      addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:803', season: 1, episode: 1, subStatus: null, needsSubtitle: 1 })
+      expect(buildMediaLibraryDetail(db, 'tmdb:803')!.seasons[0].episodes[0].episodeState).toBe('covered')
+    })
+
+    it('🔴 与 dot 同源：两个控件不许对同一格给出互相矛盾的结论', () => {
+      // dot 是 episodeState 的有损投影（covered→green / embedded→blue / 其余→none）。
+      // 这条把"投影关系"本身钉住：任何一侧单独改判据都会在这里红。
+      addWork('tmdb:804', { title: 'Consistency' })
+      addCanonical('tmdb:804', 1, [1, 2, 3])
+      addFile({ path: '/c/s1e1.mkv', workId: 'tmdb:804', season: 1, episode: 1, subStatus: 'covered' })
+      addFile({ path: '/c/s1e2.mkv', workId: 'tmdb:804', season: 1, episode: 2, needsSubtitle: 0, skipReason: 'embedded', embeddedLangs: ['chi'] })
+      addFile({ path: '/c/s1e3.mkv', workId: 'tmdb:804', season: 1, episode: 3, subStatus: 'unsolvable' })
+      const eps = buildMediaLibraryDetail(db, 'tmdb:804')!.seasons[0].episodes
+      expect(eps.map((e) => [e.episodeState, e.dot])).toEqual([
+        ['covered', 'green'], ['embedded', 'blue'], ['unsolvable', 'none'],
+      ])
+    })
+
+    it('🔴 电影那一格同样带 episodeState（不是只有剧集有）', () => {
+      addWork('tmdb:805', { title: 'A Movie', mediaType: 'movie' })
+      addFile({ path: '/m/a.mkv', workId: 'tmdb:805', season: null, episode: null, subStatus: 'handoff_translate' })
+      expect(buildMediaLibraryDetail(db, 'tmdb:805')!.movie!.episodeState).toBe('translating')
+    })
+
+    it('🔴 SubtitleDot 保持三态：八态落地不许改动 dot 的既有取值', () => {
+      // 它被三个 DTO 共用（列表页海报卡是"底部渐变嵌进度条"不是点）。扩它会波及列表页。
+      // 五个非 covered/embedded 的态在 dot 上必须全部塌缩成 'none'，一个都不许漏出去。
+      addWork('tmdb:806', { title: 'DotStable' })
+      addCanonical('tmdb:806', 1, [1, 2, 3, 4])
+      addFile({ path: '/d/s1e1.mkv', workId: 'tmdb:806', season: 1, episode: 1, subStatus: 'handoff_translate' })
+      addFile({ path: '/d/s1e2.mkv', workId: 'tmdb:806', season: 1, episode: 2, subStatus: 'unsolvable' })
+      addFile({ path: '/d/s1e3.mkv', workId: 'tmdb:806', season: 1, episode: 3, needsSubtitle: 0, skipReason: 'origin-skip' })
+      addFile({ path: '/d/s1e4.mkv', workId: 'tmdb:806', season: 1, episode: 4, needsSubtitle: null })
+      const eps = buildMediaLibraryDetail(db, 'tmdb:806')!.seasons[0].episodes
+      expect(eps.map((e) => e.episodeState)).toEqual(['translating', 'unsolvable', 'origin-skip', 'unjudged'])
+      expect(new Set(eps.map((e) => e.dot))).toEqual(new Set(['none']))
     })
   })
 

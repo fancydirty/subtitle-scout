@@ -24,8 +24,49 @@ import { langOf, tagsForLanguage } from '../agent/languages.js'
 /** 卡片右上角小圆点。
  *  · 'none'  = 没有中文字幕
  *  · 'blue'  = 内嵌中文轨（不需要处理）
- *  · 'green' = 外挂中文 sidecar（磁盘上真有一份可换可删的字幕文件） */
+ *  · 'green' = 外挂中文 sidecar（磁盘上真有一份可换可删的字幕文件）
+ *
+ *  🔴 **保持三态，不许扩**（R-F12 落地时点名的约束）：它被 MediaLibraryItemDTO 的
+ *  subtitledEpisodeCount 口径、MediaLibraryEpisodeDTO.dot、MediaLibraryMovieDTO.dot 三处共用，
+ *  而列表页海报卡呈现的是"底部渐变嵌进度条"不是点——往这个联合里加值会让列表页拿到它
+ *  根本不会渲染的态。八态是**新增字段** `episodeState`，见下方 EpisodeState。 */
 export type SubtitleDot = 'none' | 'blue' | 'green'
+
+// ---- 八态语义（R-F12 集号染色）----
+
+/** 一格（一集 / 电影那一格）**唯一**的语义态，供 R-F12 集号染色（`E01 ✓`）使用。
+ *
+ *  ── 为什么优先级链必须在后端算，不能透传原值让前端拼（R-F15）────────────────
+ *  `embedded` 的判据是"embedded_langs 含**目标语言**"，而目标语言是
+ *  `resolveTargetLanguages(env, settings.target_languages)` 的结果——前端根本不知道它是什么。
+ *  透传 skip_reason/needs_subtitle/sub_status 三个原值让前端拼，等于把 R-F15 的后端判据
+ *  复制一份到浏览器里：换目标语言那天两份判据必然漂移（C30 的原型），且前端那份没有任何
+ *  测试钉着。故此列**只出结论**，原值一个都不透传。
+ *
+ *  ── 冲突组合是常态，不是边缘（设计文档教训八）──────────────────────────────
+ *  最硬的例子来自 retarget.ts：换目标语言时它清 needs_subtitle + skip_reason，却**刻意不清
+ *  sub_status**（R24 铁律，清了会掀掉飞行中的翻译）。于是"sub_status='handoff_translate' +
+ *  needs_subtitle IS NULL"是一个**正常库里必然出现**的组合。若 unjudged 排在 translating
+ *  前面，正在被翻译的那一集会显示成 `?`。优先级链的顺序因此是判据本身，不是排版偏好。 */
+export type EpisodeState =
+  /** 虚线格：TMDB 说这季有、磁盘上没有。**不染色**，也不参与下面任何判据
+   *  （没有文件就没有任何字幕事实可言）。 */
+  | 'absent'
+  /** ✓ 绿。磁盘上真有一份外挂目标语言 sidecar（`sub_status='covered'`）。 */
+  | 'covered'
+  /** ⇄ 已移交翻译流（`sub_status='handoff_translate'`），正在处理。 */
+  | 'translating'
+  /** ⊘ 判定无解（`sub_status='unsolvable'`）。**不是永久终态**——阶段 2.6 复查闸每周放回一次
+   *  （R25/R26），界面显示停牌只是"现在没辙"。 */
+  | 'unsolvable'
+  /** ◇ 片子原生就是目标语言（`skip_reason='origin-skip'`），压根不需要字幕。 */
+  | 'origin-skip'
+  /** ◆ 自带目标语言内嵌轨。 */
+  | 'embedded'
+  /** ··· 系统认为这一集需要找字幕、还没找到（`needs_subtitle=1`）。 */
+  | 'pending'
+  /** ? 第 8 态：系统**答不上来**。两种来源，见 classifyFileState 的终态分支。 */
+  | 'unjudged'
 
 /** 一个语言标签是否算中文。
  *
@@ -91,6 +132,121 @@ function fileHasEmbeddedChinese(embeddedLangs: string[] | null): boolean {
   return embeddedLangs != null && embeddedLangs.some(isChineseTag)
 }
 
+// ---- 八态判定（R-F12）----
+
+/** 一个**文件**的八态判定（不含 'absent'——那是格级的、由 onDisk=false 决定，见 aggregateState）。
+ *
+ *  ── 优先级链的顺序与理由（这是本函数的全部内容，顺序即判据）──────────────────
+ *  链条是 covered → translating → unsolvable → origin-skip → embedded → pending → unjudged，
+ *  分三段，每一段的段内顺序都有各自的理由：
+ *
+ *  【第一段 sub_status 三态（covered / translating / unsolvable）优先于一切】
+ *  因为它们是**这一行当前正处在流水线的哪个位置**，而 needs_subtitle / skip_reason 是
+ *  "当初判定它原则上需不需要字幕"。D8 把这两组切得很干净：needs_subtitle 只看语言事实、
+ *  一次判完就不再动（谓词 `needs_subtitle IS NULL`），sub_status 则随磁盘与流程持续变化。
+ *  拿一个**不再更新的判决**去盖一个**持续更新的状态**，显示的就是过期信息。
+ *  具体到必然出现的组合：满 7 次失败的行被 subtitleScheduler.ts:326 写成 handoff_translate /
+ *  unsolvable，而它的 needs_subtitle 一直是 1（装盘与停牌都不改 needs_subtitle / D8）——
+ *  若 pending 排在前面，**每一个**停牌/在翻译的集都显示 `···`，⇄ 与 ⊘ 两个态在真实库里
+ *  永远不会出现。
+ *
+ *  【第一段段内：covered 最先】
+ *  covered 是 R24 的**磁盘事实观察**（扫描独占写入），另外两个是流程中间态。
+ *  实测这个组合会真实发生：daemonV2.ts:1603 的 observeSubtitle 对扫到 sidecar 的行
+ *  **无条件**写 covered（"不论原状态是 NULL 还是停牌态"，停牌的解除凭据就是它 / R23）——
+ *  也就是说 handoff_translate → covered 的跃迁靠的正是这条无条件写，此后该行不会再是
+ *  handoff_translate。反过来 translateWorkerTask.ts:182 的 D10 乐观守卫
+ *  `AND sub_status='handoff_translate'` 保证翻译回写**永远不会**覆盖 covered。
+ *  两侧都咬死了：字幕已经在盘上时不许显示"还在翻译"。
+ *
+ *  【第二段 skip_reason/embedded 优先于 pending】
+ *  origin-skip 与 embedded 都来自 `needs_subtitle=0`（judgeSubtitle 的两条 needs:false 分支），
+ *  与 pending 的 `needs_subtitle=1` **互斥**，段内没有真正的冲突可言。列成链只是为了让
+ *  "0 却没有 reason"这种旧库形态有明确落点（见下方 needs===0 的兜底）。
+ *
+ *  【第二段段内：origin-skip 先于 embedded】
+ *  这一条是**照抄 judgeSubtitle 自己的规则顺序**（origin_lang 命中在前、embedded_langs 在后），
+ *  不是本文件另立的偏好。一部国产片同时带中文内嵌轨时，judge 写进 skip_reason 的就是
+ *  'origin-skip'；这里若反过来先判 embedded，显示的 ◆ 会与库里 skip_reason 的值直接矛盾，
+ *  排障时两处对不上。判据只有一个来源，顺序也必须只有一个来源。
+ *
+ *  【第三段 unjudged 兜底在最后】
+ *  它是"系统答不上来"，只有在前面所有判据都不成立时才成立——这正是兜底的定义。
+ *
+ *  ── sub_status 的真实值域是怎么确认的（**不信 db.ts:555 的注释**）───────────────
+ *  db.ts:555 写的是 `'missing'/'covered'/'embedded'/'unavailable'`，四个值里**三个是错的**：
+ *  该列无 CHECK 约束，注释是 v29 时代照 episodes/movies 表抄来的、早已过期。
+ *  grep 全部生产写入点（`UPDATE files SET ... sub_status`，排除测试）得到的实际值域：
+ *    · daemonV2.ts:1603       → 'covered'                     （R24 扫描独占的磁盘事实）
+ *    · subtitleScheduler.ts:326 → 'handoff_translate' | 'unsolvable'（满 7 次分流，:323 那行三元）
+ *    · translateWorkerTask.ts:213/223 → 'unsolvable'           （翻译流判死 / 满次数）
+ *    · daemonV2.ts:1011 / 1611、retarget.ts:119、db.ts:695 → NULL（复查闸放回 / 回退 / v33 迁移）
+ *    · retarget.ts:116        → 'covered'                      （换语言按 sidecar_langs 重导）
+ *    · daemonV2.ts:1249 的 INSERT 不写这一列 → 新行默认 NULL
+ *  即 files.sub_status ∈ { NULL, 'covered', 'handoff_translate', 'unsolvable' }。
+ *  注释里的 'missing'/'embedded'/'unavailable' 在 files 表上**没有任何生产写入点**：
+ *  前两个只属于旧 episodes/movies 表（那两张表有 CHECK 约束，是另一套值域），
+ *  'unavailable' 是被 D19/C44 废止的第五态，v33 迁移（db.ts:695）已把存量洗成 NULL。
+ *
+ *  故本函数**不为 'missing'/'embedded'/'unavailable' 写分支**：给一个生产永不出现的值
+ *  安排一个态，就是在测试里造一份只有测试会走的代码路径。未知值一律落到最后的 unjudged
+ *  兜底（见下）。 */
+function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
+  // 第一段：sub_status —— 这一行当前在流水线的哪个位置。
+  if (f.sub_status === 'covered') return 'covered'
+  if (f.sub_status === 'handoff_translate') return 'translating'
+  if (f.sub_status === 'unsolvable') return 'unsolvable'
+  // 非 NULL 的未知值 → 不往下走。该列无 CHECK 约束，将来加一种停牌态而忘了跟这里时，
+  // 继续往下会拿 needs_subtitle 把它报成 'pending'（'···' = 系统正要去找字幕）——而它其实
+  // 停在一个我们不认识的流水线位置上，很可能根本不在字幕工作台里。把未知说成已知就是病 B。
+  // 落 unjudged（'?'）是唯一诚实的选择，也与 web/src/library/episodeState.ts:53 对未知
+  // sub_status 走防御性兜底、不静默吞掉的既有口径同源。
+  if (f.sub_status != null) return 'unjudged'
+
+  // 第二段：judge 的判决（needs_subtitle）+ 理由（skip_reason）。
+  // 判据用 needs_subtitle 而非"skip_reason 非空"：skip_reason 是 v40 才加的列（db.ts:1039），
+  // 存量库里 judge 早已判过的行这一列全是 NULL（生产实测 1192 行全 NULL）。以 reason 为准的话，
+  // 那 1192 行会全部落进 unjudged —— 而它们其实判过，只是判的时候还没有这一列。
+  if (f.needs_subtitle === 0) {
+    if (f.skip_reason === 'origin-skip') return 'origin-skip'
+    if (f.skip_reason === 'embedded') return 'embedded'
+    // needs=0 但 reason 缺失/不认识（v40 之前判定的存量行；或将来新增了一种 reason 而这里
+    // 忘了跟）。**不许猜**成 origin-skip 或 embedded：两者在换目标语言后的命运完全相反
+    // （db.ts:983 的原话），猜错就是给用户一个与事实相反的 ◇/◆ 标记且无从察觉。
+    // 落 unjudged（`?` = 系统答不上来）是唯一诚实的选择——它同时是"该重判了"的可见信号。
+    return 'unjudged'
+  }
+  if (f.needs_subtitle === 1) return 'pending'
+
+  // 第 8 态兜底。走到这里的都是 sub_status IS NULL 且 needs_subtitle IS NULL 的行——
+  // judge 还没轮到它（谓词 `needs_subtitle IS NULL`）。新扫进来的文件、以及刚被 D17 回填 /
+  // 指纹重置清空判决的行，都会在这里停留一轮。
+  // 另外两条通往 unjudged 的路在上面各自就近说明：非 NULL 的未知 sub_status、
+  // 以及 needs=0 但 reason 缺失/不认识。
+  return 'unjudged'
+}
+
+/** 一格（可能多份文件）的八态聚合。
+ *
+ *  🔴 与 aggregateDot 同源的 R-F2 条款：**任一份**最好的状态代表这一格。用户原话是两个
+ *  「绝命毒师」目录只要有一处 S01E03 有字幕就算已获取——同一条口径必须覆盖到八态上，
+ *  否则圆点说"已获取"而集号染色说"待处理"，同一张卡上两个控件自相矛盾。
+ *
+ *  取法 = 按上面那条优先级链取**最靠前**的那一份，而不是取第一行：取首行的实现会因入库
+ *  顺序不同给出相反结论（aggregateDot 的注释里钉过同一个坑，那次是 `.some()` 治的）。 */
+const STATE_RANK: readonly Exclude<EpisodeState, 'absent'>[] = [
+  'covered', 'translating', 'unsolvable', 'origin-skip', 'embedded', 'pending', 'unjudged',
+]
+
+function aggregateState(files: readonly FileRow[]): Exclude<EpisodeState, 'absent'> {
+  let best = STATE_RANK.length - 1
+  for (const f of files) {
+    const rank = STATE_RANK.indexOf(classifyFileState(f))
+    if (rank < best) best = rank
+  }
+  return STATE_RANK[best]
+}
+
 // ---- R-F2「不管来源」的聚合 ----
 
 /** 一格（一集，或电影的那一格）在**聚合后**的字幕事实。 */
@@ -100,6 +256,9 @@ interface DotAggregate {
   /** 其中有外挂中文 sidecar 的份数（R-F2 原话"另一处那份仍要单独去配"的可见依据）。 */
   subtitledFileCount: number
   dot: SubtitleDot
+  /** 八态（R-F12）。与 dot 走**同一条** R-F2「任一份算」口径，只是判据更细，
+   *  见 aggregateState。虚线格由调用方覆盖成 'absent'（这里拿不到 onDisk 这个信息）。 */
+  episodeState: Exclude<EpisodeState, 'absent'>
 }
 
 /** 🔴 R-F2 防猴子用户核心条款：**任一份**有字幕 → 该格算已获取。
@@ -116,7 +275,7 @@ function aggregateDot(files: readonly FileRow[]): DotAggregate {
   const subtitledFileCount = files.filter((f) => fileHasSidecar(f.sub_status)).length
   const anyEmbedded = files.some((f) => fileHasEmbeddedChinese(parseEmbeddedLangs(f.embedded_langs)))
   const dot: SubtitleDot = subtitledFileCount > 0 ? 'green' : anyEmbedded ? 'blue' : 'none'
-  return { fileCount: files.length, subtitledFileCount, dot }
+  return { fileCount: files.length, subtitledFileCount, dot, episodeState: aggregateState(files) }
 }
 
 // ---- 行形状 ----
@@ -136,6 +295,13 @@ interface FileRow {
   episode: number | null
   sub_status: string | null
   embedded_langs: string | null
+  /** NULL=judge 还没判（谓词 `needs_subtitle IS NULL`）/ 0=不需要 / 1=需要。
+   *  SQLite 存的是 INTEGER，读出来就是 number|null——**不要**在判据里用真值性
+   *  （`if (f.needs_subtitle)` 会把 0 和 NULL 判成同一件事，而它们是完全相反的两个态）。 */
+  needs_subtitle: number | null
+  /** judgeSubtitle 的 verdict.reason 原值：'origin-skip'/'embedded'/'missing'（v40 加的列，
+   *  db.ts:997 定义了它的三件事）。存量行为 NULL——那是"判的时候还没这一列"，不是 judge 没判。 */
+  skip_reason: string | null
 }
 
 /** `works.chinese_titles` 是 JSON 数组（中文译名变体）；取首个作为展示名。
@@ -206,7 +372,7 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
 
   const files = db
     .prepare(
-      `SELECT work_id, season, episode, sub_status, embedded_langs
+      `SELECT work_id, season, episode, sub_status, embedded_langs, needs_subtitle, skip_reason
        FROM files WHERE work_id IS NOT NULL`,
     )
     .all() as FileRow[]
@@ -264,6 +430,12 @@ export interface MediaLibraryEpisodeDTO {
   onDisk: boolean
   /** 圆点三态。onDisk=false 时恒 'none'（没有文件就没有字幕事实）。 */
   dot: SubtitleDot
+  /** R-F12 集号染色的**唯一**判据（八态，优先级链已在后端算完，见 classifyFileState）。
+   *  onDisk=false 时恒 'absent'（虚线格不染色）。
+   *  与 `dot` **刻意共存而不互相推导**：dot 回答"有没有中文字幕"（三态，列表页海报卡与
+   *  电影格共用），episodeState 回答"这一集现在处在什么状态"（八态，只服务集号染色）。
+   *  前者是后者的有损投影（covered→green、embedded→blue、其余五态→none），反向推不回来。 */
+  episodeState: EpisodeState
   /** 该集在磁盘上的文件份数（同一集在两个目录各一份 → 2）。虚线格为 0。 */
   fileCount: number
   /** 其中有外挂中文 sidecar 的份数。R-F2「另一处那份仍要单独去配」的可见依据：
@@ -280,6 +452,11 @@ export interface MediaLibrarySeasonDTO {
 /** 电影那一格（剧集恒 null）。 */
 export interface MediaLibraryMovieDTO {
   dot: SubtitleDot
+  /** 同 MediaLibraryEpisodeDTO.episodeState 的八态口径。电影那一格**恒有文件**
+   *  （buildMediaLibraryDetail 只在 mediaType==='movie' 时构造它，而 works 行能露出
+   *  就意味着至少有一个文件），故这里不会是 'absent'——但类型上保留完整联合：
+   *  收窄成 Exclude<EpisodeState,'absent'> 会让前端为电影和剧集写两套 switch。 */
+  episodeState: EpisodeState
   fileCount: number
   subtitledFileCount: number
 }
@@ -324,7 +501,8 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
 
   const files = db
     .prepare(
-      `SELECT work_id, season, episode, sub_status, embedded_langs FROM files WHERE work_id = ?`,
+      `SELECT work_id, season, episode, sub_status, embedded_langs, needs_subtitle, skip_reason
+       FROM files WHERE work_id = ?`,
     )
     .all(workId) as FileRow[]
 
@@ -380,13 +558,15 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
         .map((episode): MediaLibraryEpisodeDTO => {
           const key = epKey(season, episode)
           const rows = onDiskCells.get(key)
-          // 虚线格（应有但磁盘没有）：没有文件就没有字幕事实，dot 恒 none、两个计数恒 0。
+          // 虚线格（应有但磁盘没有）：没有文件就没有字幕事实，dot 恒 none、两个计数恒 0，
+          // episodeState 恒 'absent'（R-F12：虚线格不染色）。
           if (!rows) {
             return {
               episode,
               title: canonicalTitles.get(key) ?? null,
               onDisk: false,
               dot: 'none',
+              episodeState: 'absent',
               fileCount: 0,
               subtitledFileCount: 0,
             }
@@ -397,6 +577,7 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
             title: canonicalTitles.get(key) ?? null,
             onDisk: true,
             dot: agg.dot,
+            episodeState: agg.episodeState,
             fileCount: agg.fileCount,
             subtitledFileCount: agg.subtitledFileCount,
           }

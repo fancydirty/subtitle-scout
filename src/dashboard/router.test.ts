@@ -136,7 +136,7 @@ const mediaLibraryDetailDTO: MediaLibraryDetailDTO = {
   },
   seasons: [{
     season: 1,
-    episodes: [{ episode: 3, title: 'E3', onDisk: true, dot: 'green', fileCount: 2, subtitledFileCount: 1 }],
+    episodes: [{ episode: 3, title: 'E3', onDisk: true, dot: 'green', episodeState: 'covered', fileCount: 2, subtitledFileCount: 1 }],
   }],
   movie: null,
   unplacedFileCount: 0,
