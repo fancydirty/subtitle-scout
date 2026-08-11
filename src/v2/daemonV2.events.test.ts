@@ -11,7 +11,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { openDb } from './db.js'
 import { ScoutDaemonV2 } from './daemonV2.js'
-import type { ScoutEventInput } from '../core/scoutEvents.js'
+import { ScoutEventBus, type ScoutEventInput } from '../core/scoutEvents.js'
 
 const NOW = 1_000_000_000_000
 const BIG = 200 * 1024 * 1024
@@ -176,6 +176,30 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     db.close()
   })
 
+  it('🔴 工作台收工必须发无 workbench 的 activity（审计 🔴-2：跨阶段脏值 = F-6 的同型复发）', async () => {
+    // 阶段 2 识别循环结束 → judge（大库上分钟级）→ 停牌复查闸 → 阶段 3 字幕循环，
+    // 中间**两段无 emit**。没有收工事件的话，ScoutEventBus 的 current 会一直停在
+    // 最后一个识别的作品上，/api/v2/health 在这几分钟里说「正在识别 W9，第 47/47 个」
+    // ——而识别台早已空了。这正是 F-6 那个缺陷，只是尺度从"跨巡检"缩到"跨阶段"。
+    //
+    // 判据：收工事件**不带 workbench**（归巡检级），总线据此清空 current。
+    const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    const { got } = mkEmit()
+    const bus = new ScoutEventBus()
+    await runOneInspection(new ScoutDaemonV2(mkDeps(db, {
+      emit: (e: ScoutEventInput) => { got.push(e as any); bus.publish(e) },
+      roots: ['/media'], listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+    })))
+    const done = got.filter((e) => e.message.includes('字幕工作台跑完'))
+    expect(done).toHaveLength(1)
+    expect(done[0].workbench).toBeUndefined()
+    // 端到端的真正判据：巡检跑完后总线的 current 必须是 null，不许停在最后一个作品上
+    expect(bus.getCurrent()).toBeNull()
+    db.close()
+  })
+
   it('🔴 R-F1 的执行前提：识别的 activity 必须带 workbench=identify（前端据此把它剔出活动页）', async () => {
     // ── 这条用例存在的理由（Task ⓪ 审计 🔴-2）─────────────────────────────────
     // R-F1「识别不进活动页」与生产代码正在推识别 activity 直接冲突（IMPL-DESIGN 教训七：
@@ -193,7 +217,9 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
       emit, roots: ['/media'], listVideoFiles: () => ['/media/New/x.mkv'],
       statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
     })))
-    const ident = got.filter((e) => e.type === 'activity' && e.message.includes('识别'))
+    // ⚠️ 用「正在识别」而不是「识别」：阶段收工事件的文案是「识别完成，处理了 N 个目录」，
+    // 那是**巡检级**的（不带 workbench，见上一条用例），拿宽松的 includes('识别') 会把它捞进来。
+    const ident = got.filter((e) => e.type === 'activity' && e.message.includes('正在识别'))
     // 若哪天识别不再推 activity（R-F1 的另一种合规实现），这条用例应当随之删除而不是放宽；
     // 故这里先断言"确实推了"，把"悄悄不推了"也变成一次可见的失败。
     expect(ident.length).toBeGreaterThan(0)

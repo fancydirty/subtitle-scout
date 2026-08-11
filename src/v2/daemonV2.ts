@@ -633,6 +633,19 @@ export class ScoutDaemonV2 {
       })
       await runIdentifyWorkDir(this.deps.identify, item)
     }
+    // 识别工作台**收工**（审计 🔴-2：F-6 的同型小尺度复发）。
+    //
+    // 为什么必须有这一条：ScoutEventBus 的 current 快照只在收到带 workbench 的事件时推进，
+    // 只在收到不带 workbench 的事件时清空。阶段 2 结束到阶段 3 第一条 emit（:687）之间，
+    // 隔着 judge（:638，大库上分钟级）与停牌复查闸（:650）**两段无 emit 的时间**。
+    // 没有这一条的话，/api/v2/health 在这几分钟里会稳定地说「正在识别 W9，第 47/47 个」
+    // ——而识别台早已空了。那正是 F-6 被修的那个缺陷，只是尺度从"跨巡检"缩到"跨阶段"。
+    //
+    // 不带 workbench = 归属巡检级 = 总线据此清空 current（与巡检开始/完成/失败同一口径）。
+    // 只在真的识别过东西时发，空跑不发（避免每天给用户一条"识别完成 0 个"的噪音）。
+    if (identifyQueue.length > 0) {
+      this.emit({ type: 'activity', message: `识别完成，处理了 ${identifyQueue.length} 个目录` })
+    }
 
     // 阶段 2.5：judge（B-1）——识别绑定后判 needs_subtitle
     await this.judgeOnce()
@@ -747,6 +760,12 @@ export class ScoutDaemonV2 {
         // 沙盒垃圾从此无界堆积（媒体目录里的隐藏目录，用户看不见、只会看到盘满）。
         this.inFlightStagingJobIds.delete(jobId)
       }
+    }
+    // 字幕工作台**收工**（同上，审计 🔴-2）。翻译流（阶段 4）每轮只推进一个作品，
+    // 且可能整轮不推进（无活时直接返回）——那种情况下若没有这一条，current 会一直停在
+    // 最后一个字幕作品上，直到明天巡检开始才被清掉。
+    if (subtitleQueue.length > 0) {
+      this.emit({ type: 'activity', message: `字幕工作台跑完，处理了 ${subtitleQueue.length} 个作品` })
     }
 
     // 阶段 4：翻译流推进一个作品（R19 + C32 / 第 4 步把 C3 接回来）。
