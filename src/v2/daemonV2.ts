@@ -623,11 +623,12 @@ export class ScoutDaemonV2 {
       this.deps.log(`识别 ${item.workDir} (${item.fileCount} 文件, 第 ${identifyRounds}/${identifyQueue.length} 个)`)
       // R-F10 activity ④ + progress：识别工作台的作品级状态变化（与阶段 3 字幕流同构）。
       // 识别是巡检里第一条真正"在动"的阶段，不推的话大库跑识别的那几小时活动页是死的。
-      this.emit({ type: 'activity', message: `正在识别：${item.workDir}`, title: item.workDir })
+      this.emit({ type: 'activity', message: `正在识别：${item.workDir}`, title: item.workDir, workbench: 'identify' })
       this.emit({
         type: 'progress',
         message: `识别第 ${identifyRounds}/${identifyQueue.length} 个`,
         title: item.workDir,
+        workbench: 'identify',
         data: { done: identifyRounds, total: identifyQueue.length },
       })
       await runIdentifyWorkDir(this.deps.identify, item)
@@ -683,11 +684,12 @@ export class ScoutDaemonV2 {
       //  · progress 说"排到第几个了"（队列级，24 集的剧在这里连发 → 唯一需要节流的事件源；
       //    **节流是总线的职责，不是这里的**——发布方如实发，ScoutEventBus 折叠。两边都做
       //    就会出现"节流窗口叠加"这种没人算得清的行为）。
-      this.emit({ type: 'activity', message: `正在找字幕：${item.title}（${item.files.length} 个文件）`, title: item.title })
+      this.emit({ type: 'activity', message: `正在找字幕：${item.title}（${item.files.length} 个文件）`, title: item.title, workbench: 'subtitle' })
       this.emit({
         type: 'progress',
         message: `第 ${subtitleRounds}/${subtitleQueue.length} 个作品`,
         title: item.title,
+        workbench: 'subtitle',
         data: { done: subtitleRounds, total: subtitleQueue.length },
       })
       // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
@@ -714,6 +716,7 @@ export class ScoutDaemonV2 {
             type: 'found',
             message: `${item.title}：装上了 ${report.installed.length} 条字幕`,
             title: item.title,
+            workbench: 'subtitle',
             data: { installed: report.installed.length, files: item.files.length },
           })
         }
@@ -1080,7 +1083,7 @@ export class ScoutDaemonV2 {
     this.deps.log(`翻译 ${c.title} (${c.videoPath})`)
     // R-F10 activity ⑤：翻译是流水线里唯一"单个活可能跑几小时"的阶段（阶段 4）。不推的话
     // 用户在活动页上会看到系统"卡在最后一步不动"——而它其实正在逐段翻一集片。
-    this.emit({ type: 'activity', message: `正在翻译：${c.title}`, title: c.title })
+    this.emit({ type: 'activity', message: `正在翻译：${c.title}`, title: c.title, workbench: 'translate' })
     // 🔴 GC 炸弹修复（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八 + C34 的翻译那一半）。
     //
     // 把这个活的翻译工作台目录名登记为"在飞行"，跑完（含抛错）必须摘掉——与阶段 3 字幕流的
@@ -1133,6 +1136,7 @@ export class ScoutDaemonV2 {
     if (status === 'installed') {
       this.emit({
         type: 'found', message: `${c.title}：翻译完成并装上了字幕`, title: c.title,
+        workbench: 'translate',
         data: { via: 'translate' },
       })
     }

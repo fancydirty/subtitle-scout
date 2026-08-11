@@ -91,6 +91,64 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
     })
   })
 
+  // ── per-workbench 节流（教训七）───────────────────────────────────────────────
+  // 改动前节流窗是**全局单标量**，三个工作台共用一个 1 秒窗口。阶段切换那一秒里谁先发谁把
+  // 对方挤掉：字幕台刚发完，翻译台紧接着那条就被静默折叠，前端于是看到一路"卡住不动"。
+  // 下面四条锁的就是"各自独立"这件事——注意每一条都验**放行**（收到了什么），不验
+  // "publish 没抛异常"（病 B：中间量当结论量）。
+  describe('🔴 progress 节流按工作台各自独立（教训七：全局单标量会让阶段切换互相挤掉）', () => {
+    it('🔴 两个工作台同一 tick 交替发 progress → 两条都放行，不互相吃节流窗', () => {
+      const { bus } = mkBus()
+      const { got } = collect(bus)
+      bus.publish({ type: 'progress', message: '字幕 1/47', workbench: 'subtitle' })
+      bus.publish({ type: 'progress', message: '翻译 1/12', workbench: 'translate' })
+      // 全局单标量的实现在这里只会收到第一条。
+      expect(got.map((e) => e.message)).toEqual(['字幕 1/47', '翻译 1/12'])
+    })
+
+    it('🔴 三个工作台各自仍被节流：每台同 tick 连发 5 条 → 每台只出 1 条，共 3 条', () => {
+      const { bus } = mkBus()
+      const { got } = collect(bus)
+      for (const wb of ['identify', 'subtitle', 'translate'] as const) {
+        for (let i = 0; i < 5; i++) bus.publish({ type: 'progress', message: `${wb} ${i}`, workbench: wb })
+      }
+      // 独立 ≠ 不节流：放开成 15 条同样是错的（那是把节流整个删了）。
+      expect(got.map((e) => e.message)).toEqual(['identify 0', 'subtitle 0', 'translate 0'])
+    })
+
+    it('🔴 一个工作台的窗口不被另一个工作台的放行往后顶', () => {
+      const { bus, tick } = mkBus()
+      const { got } = collect(bus)
+      bus.publish({ type: 'progress', message: '字幕 1', workbench: 'subtitle' })
+      tick(900)
+      // 全局窗的话这条会把窗口顶到 t=900，字幕台 t=1000 那条（本该放行）就被挤掉。
+      bus.publish({ type: 'progress', message: '翻译 1', workbench: 'translate' })
+      tick(100)   // 字幕台距上次放行整 1000ms → 必须放行
+      bus.publish({ type: 'progress', message: '字幕 2', workbench: 'subtitle' })
+      expect(got.map((e) => e.message)).toEqual(['字幕 1', '翻译 1', '字幕 2'])
+    })
+
+    it('🔴 时钟从 0 起：首条 progress 必须放行（`?? -Infinity` 不能写成 `|| -Infinity`）', () => {
+      // 审计 🟡-1：源码注释郑重论证了这条决策，却零测试覆盖——把 `??` 改成 `||`
+      // 全量 3229 条一条都不红。而它不是理论问题：Map 里存的 0（时钟从 0 起的注入时钟）
+      // 会被 `||` 判成 falsy 退回 -Infinity，节流窗当场失效。
+      const { bus } = mkBus(0)
+      const { got } = collect(bus)
+      bus.publish({ type: 'progress', message: 'A', workbench: 'subtitle' })
+      bus.publish({ type: 'progress', message: 'B', workbench: 'subtitle' })  // 同毫秒，必须被折叠
+      expect(got.map((e) => e.message)).toEqual(['A'])
+    })
+
+    it('🔴 无 workbench 的 progress 自成一路，不与任何工作台合并窗口', () => {
+      const { bus } = mkBus()
+      const { got } = collect(bus)
+      bus.publish({ type: 'progress', message: '无台' })                              // 巡检/扫描级
+      bus.publish({ type: 'progress', message: '字幕', workbench: 'subtitle' })
+      bus.publish({ type: 'progress', message: '无台 2' })                            // 同路，被折叠
+      expect(got.map((e) => e.message)).toEqual(['无台', '字幕'])
+    })
+  })
+
   describe('多订阅者 + 清理（长跑 daemon 上的真问题）', () => {
     it('🔴 第二个订阅者不挤掉第一个，两者各自收到全量', () => {
       const { bus } = mkBus()

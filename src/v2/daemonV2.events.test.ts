@@ -86,6 +86,10 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     })))
     const act = got.filter((e) => e.type === 'activity')
     expect(act.some((e) => e.message.includes('字幕') && e.title === 'Show')).toBe(true)
+    // Task ⓪ 审计 🔴-1：字段加了但没人读——实测把 daemonV2 的 7 个 workbench 全删光，
+    // 3229 条测试无一变红、tsc 也过。那是本仓第 11 次「加了能力没定谁写/谁读/谁触发」。
+    // 这条断言就是缺失的那个读者：删掉写入点，这里立刻红。
+    expect(act.find((e) => e.message.includes('字幕'))?.workbench).toBe('subtitle')
     db.close()
   })
 
@@ -108,6 +112,7 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     expect(found).toHaveLength(1)
     expect(found[0].title).toBe('Show')
     expect(found[0].message).toContain('1')
+    expect(found[0].workbench).toBe('subtitle')
     db.close()
   })
 
@@ -121,7 +126,11 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
       statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
     })))
     // 节流是**总线**的职责，不是发布方的——发布方如实发，总线折叠。这里断言发布方如实发了。
-    expect(got.filter((e) => e.type === 'progress').length).toBeGreaterThan(0)
+    const prog = got.filter((e) => e.type === 'progress')
+    expect(prog.length).toBeGreaterThan(0)
+    // Task ⓪：progress 是 per-workbench 节流的**唯一**依据。这个字段一旦没填，
+    // 总线会把三个工作台的进度当成同一路互相吃掉，而且不报任何错。
+    expect(prog.every((e) => e.workbench === 'subtitle')).toBe(true)
     db.close()
   })
 
@@ -154,6 +163,41 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
       new Set([...new Set(got.map((e) => e.type))].filter((t) =>
         ['activity', 'found', 'health', 'progress'].includes(t))),
     )
+    // Task ⓪：workbench 的值域同样必须封闭在三态。撑成五态（塞 'inspect'/'scan'）
+    // 会让 current.kind 对不上——设计裁决是「巡检级/扫描级一律不填，判别靠 undefined」。
+    for (const e of got) {
+      if (e.workbench !== undefined) expect(['identify', 'subtitle', 'translate']).toContain(e.workbench)
+    }
+    // 巡检级的两条（巡检开始/完成）不属于任何工作台，必须不填——它们要是填了，
+    // 前端按 workbench 分组时会凭空多出一个不存在的工作台。
+    const patrol = got.filter((e) => e.message.includes('巡检开始') || e.message.includes('巡检完成'))
+    expect(patrol.length).toBeGreaterThan(0)
+    expect(patrol.every((e) => e.workbench === undefined)).toBe(true)
+    db.close()
+  })
+
+  it('🔴 R-F1 的执行前提：识别的 activity 必须带 workbench=identify（前端据此把它剔出活动页）', async () => {
+    // ── 这条用例存在的理由（Task ⓪ 审计 🔴-2）─────────────────────────────────
+    // R-F1「识别不进活动页」与生产代码正在推识别 activity 直接冲突（IMPL-DESIGN 教训七：
+    // 两条裁决相隔 9 行，作者同时引用却没发现）。
+    //
+    // 裁决是三件事的组合：① 保留 emit（识别失败要能看见）② 打标 ③ 前端据标剔除。
+    // ③ 的执行方在 Task ⑨，今天还不存在。**但 ② 一旦静默失效，③ 就永远无法正确实现**——
+    // 前端会看到一条没有 workbench 的 activity，只能按"某个工作台"渲染，R-F1 当场违反。
+    // 故在这里钉死 ②：识别的 activity 必须可被机器识别为识别。
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, updated_at)
+                VALUES ('/media/New/x.mkv','/media/New','x.mkv',?,1000,'/media/New',NULL,1,1000)`).run(BIG)
+    const { emit, got } = mkEmit()
+    await runOneInspection(new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'], listVideoFiles: () => ['/media/New/x.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+    })))
+    const ident = got.filter((e) => e.type === 'activity' && e.message.includes('识别'))
+    // 若哪天识别不再推 activity（R-F1 的另一种合规实现），这条用例应当随之删除而不是放宽；
+    // 故这里先断言"确实推了"，把"悄悄不推了"也变成一次可见的失败。
+    expect(ident.length).toBeGreaterThan(0)
+    expect(ident.every((e) => e.workbench === 'identify')).toBe(true)
     db.close()
   })
 

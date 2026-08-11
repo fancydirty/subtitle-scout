@@ -21,6 +21,9 @@ import {
 // R-F2 / R-F5：媒体库页数据层（新架构 files/works/tmdb_seasons）。刻意与 apiV2.js 分开
 // import —— 两套 builder 读的是完全不同的表，混在一行会让"哪个长在旧表上"不可见。
 import { buildMediaLibrary, buildMediaLibraryDetail } from './mediaLibraryApi.js'
+// R-F3：通知页列表的读函数。**复用**，不在 dashboard 层重写查询——一周窗与倒序都长在
+// 那边（读窗常量还与 dbMaintenance 的 pruneFound 共用），另写一份必然静默漂移。
+import { listRecentFoundGrouped } from '../v2/notificationsRepo.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from '../core/traceBus.js'
 import type { ScoutEventBus } from '../core/scoutEvents.js'
@@ -635,6 +638,44 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = redispatch(jobs, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.outcome : { error: result.error }))
+        return
+      }
+
+      // ── R-F3：GET /api/v2/notifications —— 通知页的**唯一**列表数据源 ──────────
+      //
+      // 本仓第 7 次同型缺陷的收口：notifications 表（db.ts v39）、生产数据、读函数
+      // （notificationsRepo.listRecentFoundGrouped）三样俱全，**就是没有 HTTP 端点**，
+      // 前端拿不到。这里只补那条缺失的接线，不重写任何查询逻辑。
+      //
+      // 三个业务约束全部**长在 listRecentFoundGrouped 里**，这一层一个都不重新实现：
+      //   · 保留一周 → 读窗（NOTIFICATION_RETENTION_MS，与 pruneFound 共用同一常量）
+      //   · 倒序     → SQL 的 `ORDER BY found_at DESC, id DESC` + Map 插入序
+      //   · 不做已读 → 没有任何写路径（本端点 GET only，无 PATCH/POST 兄弟）
+      // 返回的是**按 work+season 聚合的 FoundGroup[]**（不是逐集行）：R-F3 的展示形态是
+      // 「XX 剧找到了 S01 的第 3/5/7 集」一条，不是三条。想要逐集行的话 listRecentFound
+      // 也在同一个模块里——刻意不暴露它：两个口径同时开着，前端迟早会挑错那个。
+      //
+      // 为什么是 server.ts 的独立分支而不是 router.ts 的 RouterDeps 条目（它确实是纯同步
+      // 只读，够格进那张纯函数路由表）：同 GET /api/v2/subtitle/verify 的既有先例——那条
+      // 也是纯读却留在这里。`now` 是这个端点唯一的外部输入，放在这里它与隔壁 events/
+      // workflowPending 的 `Date.now()` 取值口径显式同源，不必再穿一层闭包。
+      //
+      // 与隔壁 SSE `found` 事件的分工（notificationsRepo 头注释已论证，此处只记结论）：
+      // SSE 只是「有新内容」的提示，**列表永远只由本端点出**。SSE 每次装盘都发，而
+      // recordFound 是幂等刷新（ON CONFLICT DO UPDATE），两边条目数天然不等——只要前端
+      // 敢拿 SSE 事件往列表里插，那个差值就会摆在用户眼前。
+      //
+      // 读失败不在这一层兜：listRecentFound 内部已经 try/catch 返回空数组（通知页挂掉
+      // 不许把整个 dashboard 带走），这里再包一层 try 只会把真实异常吞得更深。
+      // 鉴权已由上方统一前置门完成（cookie / x-api-key / legacy token 三通道）。
+      if (rawPath === '/api/v2/notifications') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        res.writeHead(200, JSON_CT)
+        res.end(JSON.stringify(listRecentFoundGrouped(db, Date.now())))
         return
       }
 

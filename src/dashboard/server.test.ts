@@ -1744,4 +1744,140 @@ describe('setup 面端点（spec A §4.4）', () => {
     })
   })
 
+  // ── R-F3 通知端点：**走真实 HTTP** ──────────────────────────────────────────
+  // 为什么必须在这里测（notificationsRepo 的 20 条单测已经全绿了还测）：这个 task 修的
+  // 恰恰是"读函数全绿、表里有数据、就是没人把它挂上 HTTP"——repo 层的用例对这种缺陷
+  // 100% 无感。只有真实 fetch 能证明这条线是通的。
+  describe('通知端点（R-F3）', () => {
+    /** 直写 notifications 表。不走 recordFound 是刻意的：这些用例要钉的是**端点吐出来的
+     *  东西**，用 repo 的写函数喂会让"写口径错了但读口径跟着一起错"的情况照样通过。 */
+    function insertFound(
+      db: ScoutDb,
+      row: { workId: string; title: string; season: number | null; episode: number | null; via: string; foundAt: number },
+    ): void {
+      db.prepare(
+        `INSERT INTO notifications (work_id, title, season, episode, via, found_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(row.workId, row.title, row.season, row.episode, row.via, row.foundAt)
+    }
+
+    const DAY = 24 * 3600_000
+
+    /** 端点用的是 `Date.now()`（同隔壁 workflowPending/events 的既有口径），所以种子数据
+     *  必须挂在真实当下的相对位置上，不能用文件顶部那个固定的 NOTIFICATION_* 无关的 NOW
+     *  （1_700_000_000_000 早已在一周窗外，全部会被读窗过滤掉）。 */
+    function seedNotifications(db: ScoutDb): number {
+      const now = Date.now()
+      // 绝命毒师 S01：三集，两个来路 → 应聚成 **一组**，via='mixed'，episodes 升序
+      insertFound(db, { workId: 'tmdb:1', title: '绝命毒师', season: 1, episode: 7, via: 'fetch', foundAt: now - 3 * DAY })
+      insertFound(db, { workId: 'tmdb:1', title: '绝命毒师', season: 1, episode: 3, via: 'translate', foundAt: now - 2 * DAY })
+      insertFound(db, { workId: 'tmdb:1', title: '绝命毒师', season: 1, episode: 5, via: 'fetch', foundAt: now - 1 * DAY })
+      // 同一作品的 S02 是**另一组**（键含季）
+      insertFound(db, { workId: 'tmdb:1', title: '绝命毒师', season: 2, episode: 1, via: 'fetch', foundAt: now - 4 * DAY })
+      // 电影：season/episode 皆 NULL → 单独一组、episodes 为空数组
+      insertFound(db, { workId: 'tmdb:9', title: '沙丘', season: null, episode: null, via: 'fetch', foundAt: now - 10 * 60_000 })
+      // 超一周窗：**不许出现在响应里**（R-F3「保留一周」是读时过滤，不依赖清理跑过）
+      insertFound(db, { workId: 'tmdb:77', title: '陈年老剧', season: 1, episode: 1, via: 'fetch', foundAt: now - 8 * DAY })
+      return now
+    }
+
+    it('🔴 GET /api/v2/notifications 真的挂上了（第 7 次同型缺陷：表有、数据有、读函数有，就是没端点）', async () => {
+      seedNotifications(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/notifications?token=tok`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('application/json')
+      expect(Array.isArray(await res.json())).toBe(true)
+    })
+
+    it('🔴 条数 == 按 work+season 聚合的组数（**不是**逐集行数——设计文档 v3 的 COUNT(*) 是错的）', async () => {
+      seedNotifications(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const list = (await (await fetch(`${base}/api/v2/notifications?token=tok`)).json()) as any[]
+
+      // 验收口径原样落成 SQL（一周窗与端点同源：都用 Date.now() 减 7 天）
+      const cutoff = Date.now() - 7 * DAY
+      const groups = (db.prepare(
+        `SELECT COUNT(DISTINCT work_id || '/' || COALESCE(season, -1)) AS n
+           FROM notifications WHERE found_at > ?`,
+      ).get(cutoff) as { n: number }).n
+      const rows = (db.prepare(
+        'SELECT COUNT(*) AS n FROM notifications WHERE found_at > ?',
+      ).get(cutoff) as { n: number }).n
+
+      expect(list).toHaveLength(groups)
+      // 两个口径必须真的不同，否则这条断言什么也没证明（种子里 S01 是三集聚成一组）
+      expect(rows).toBeGreaterThan(groups)
+    })
+
+    it('🔴 返回 FoundGroup[] 的完整形状：季分组、episodes 升序、混合来路如实报 mixed', async () => {
+      seedNotifications(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const list = (await (await fetch(`${base}/api/v2/notifications?token=tok`)).json()) as any[]
+
+      const s1 = list.find((g) => g.workId === 'tmdb:1' && g.season === 1)
+      expect(s1).toMatchObject({ workId: 'tmdb:1', title: '绝命毒师', season: 1, via: 'mixed' })
+      // 展示用「第 3/5/7 集」——升序，不是插入序也不是 found_at 序
+      expect(s1.episodes).toEqual([3, 5, 7])
+      // latestAt = 组内最近一次（E5 那条，now-1d），不是最早那条
+      expect(s1.latestAt).toBeGreaterThan(list.find((g) => g.season === 2).latestAt)
+
+      // 同一作品的 S02 是独立的一组（键含季）
+      expect(list.find((g) => g.workId === 'tmdb:1' && g.season === 2)).toMatchObject({
+        episodes: [1], via: 'fetch',
+      })
+      // 电影：season NULL + episodes 空数组
+      expect(list.find((g) => g.workId === 'tmdb:9')).toMatchObject({
+        title: '沙丘', season: null, episodes: [], via: 'fetch',
+      })
+    })
+
+    it('🔴 倒序（R-F3）：组间按 latestAt 从新到旧', async () => {
+      seedNotifications(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const list = (await (await fetch(`${base}/api/v2/notifications?token=tok`)).json()) as any[]
+      const times = list.map((g) => g.latestAt)
+      expect(times).toEqual([...times].sort((a, b) => b - a))
+      // 最新的是那部十分钟前的电影
+      expect(list[0].workId).toBe('tmdb:9')
+    })
+
+    it('🔴 保留一周是**读时过滤**，不依赖 dbMaintenance 的清理跑过', async () => {
+      seedNotifications(db) // 里面有一条 now-8d 的
+      // 前提校验：那行确实还躺在表里（这条用例测的是读窗，不是清理）
+      expect((db.prepare('SELECT COUNT(*) AS n FROM notifications').get() as { n: number }).n).toBe(6)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const list = (await (await fetch(`${base}/api/v2/notifications?token=tok`)).json()) as any[]
+      expect(list.map((g) => g.workId)).not.toContain('tmdb:77')
+    })
+
+    it('空表 → 200 + 空数组（不是 404，通知页首次打开就是这一态）', async () => {
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/notifications?token=tok`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+    })
+
+    it('🔴 不做已读（R-F3）：写方法一律 405，且不改动表', async () => {
+      seedNotifications(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        const res = await fetch(`${base}/api/v2/notifications?token=tok`, { method })
+        expect(res.status).toBe(405)
+        expect(await res.json()).toEqual({ error: 'method not allowed' })
+      }
+      // 405 之后表原样（没有任何写路径偷偷落地）
+      expect((db.prepare('SELECT COUNT(*) AS n FROM notifications').get() as { n: number }).n).toBe(6)
+    })
+
+    it('🔴 鉴权：走与其余 /api/v2/* 完全相同的那一道统一前置门（三通道）', async () => {
+      seedNotifications(db)
+      const { base } = await start(distWith('<!doctype html>'), 's3cret')
+      expect((await fetch(`${base}/api/v2/notifications`)).status).toBe(401)
+      expect((await fetch(`${base}/api/v2/notifications?token=s3cret`)).status).toBe(200)
+      // x-api-key 通道：前置门认的是 settings 里那把 key，这里只钉"错的 key 进不来"
+      expect((await fetch(`${base}/api/v2/notifications`, { headers: { 'x-api-key': 'wrong' } })).status).toBe(401)
+    })
+  })
+
 })

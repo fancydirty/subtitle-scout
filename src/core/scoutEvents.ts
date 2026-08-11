@@ -39,6 +39,11 @@ export type ScoutEventType =
   /** 正在处理的那个作品的进度（第 3/8 集）——唯一的高频事件，故唯一被节流。 */
   | 'progress'
 
+/** 三个工作台。**封闭三态**，与 §3.5 的 `current.kind` 同集合——它描述的就是"哪个工作台"，
+ *  而不是"事件从哪一行代码发出来的"。想给巡检级/扫描级事件找个位置的冲动请忍住：
+ *  加 `'inspect'|'scan'` 会把它变成五态，`current.kind` 那侧就再也对不上了。 */
+export type ScoutWorkbench = 'identify' | 'subtitle' | 'translate'
+
 /** 发布方给的部分（id/at 由总线补齐——发布方自己编 id 就会与续传的单调性打架）。 */
 export interface ScoutEventInput {
   type: ScoutEventType
@@ -46,6 +51,18 @@ export interface ScoutEventInput {
   message: string
   /** 作品标题（有则给，通知页/活动页按它分组）。 */
   title?: string
+  /**
+   * 这条事件属于哪个工作台。**可选，而且必须可选**（不是偷懒）：
+   * daemonV2 的 13 个 emit 点里有 6 个**不属于任何工作台**——巡检开始/完成/失败是巡检级，
+   * 阶段 1 扫描的三条 health 是扫描级。给它们编一个 `'identify'` 是在事件流里撒谎，
+   * 而为它们扩类型又会把三态撑成五态（见 ScoutWorkbench 的注释）。
+   *
+   * 故判别口径是 **`workbench !== undefined`**，不是"哪个值"：
+   * 有值 → 工作台级，前端按值分三路（subtitle/translate 进两 tab，identify 进顶部状态条）；
+   * 无值 → 巡检/扫描级，前端走全局横幅那条，**不进任何 tab**。
+   * 前端千万不要写 `?? 'identify'` 之类的兜底——那会把巡检级事件混进识别状态条。
+   */
+  workbench?: ScoutWorkbench
   /** 结构化补充（进度的 done/total 之类）。前端可选消费，缺席不影响 message 的可读性。 */
   data?: Record<string, unknown>
 }
@@ -61,7 +78,9 @@ export interface ScoutEvent extends ScoutEventInput {
 /** progress 的节流窗口（R-F10 约束 2：每秒最多 1 条）。
  *  为什么只节流 progress：一部剧 24 集逐集完成会在几分钟内连发 24 条，而其余三类天然低频
  *  （巡检一天一次、found 一集一条、health 是异常）。对低频事件加节流只会制造"事件丢了"
- *  的排障疑云，没有任何收益。 */
+ *  的排障疑云，没有任何收益。
+ *
+ *  **窗口是 per-workbench 的，不是全局的**（见 ScoutEventBus.lastProgressAt 的注释）。 */
 export const PROGRESS_THROTTLE_MS = 1000
 
 /** 续传环形缓冲的容量。
@@ -86,9 +105,25 @@ export class ScoutEventBus {
   private readonly subscribers = new Set<(e: ScoutEvent) => void>()
   private readonly buffer: ScoutEvent[] = []
   private nextId = 1
-  /** 上一条**放行**的 progress 的时刻（不是上一次尝试的时刻——否则连续尝试会把窗口
-   *  无限往后顶，一条都发不出去）。 */
-  private lastProgressAt = -Infinity
+  /**
+   * 上一条**放行**的 progress 的时刻（不是上一次尝试的时刻——否则连续尝试会把窗口
+   * 无限往后顶，一条都发不出去），**按工作台各记一个**。
+   *
+   * ── 为什么不是全局单标量（原实现）──
+   * 三个工作台共用一个 1 秒窗口，则阶段切换的那一秒里，谁先发谁把对方挤掉：字幕台刚
+   * 发完 `3/47`，翻译台紧接着的 `1/12` 就被静默折叠。前端于是只看得见其中一路在动，
+   * 另一路"卡住不动"——而它其实正在跑。节流的本意是"同一个高频源别刷屏"，不是
+   * "三条互不相干的进度条互相抢名额"。
+   *
+   * ── key 为什么是 `ScoutWorkbench | undefined`，undefined 不与任何工作台合并 ──
+   * 无 workbench 的 progress 是巡检/扫描级（当前生产没有这样的点，但类型允许），
+   * 它与工作台进度不是同一路条，合并进任何一个工作台的窗口都会重演上面那笔账。
+   * 故它自成一路（Map 的 key 直接用 undefined，不做归一化）。
+   *
+   * 用 Map 而不是三个字段：三态是封闭的，但写成三个字段会让"新增一个工作台"变成
+   * 改三处；而且 undefined 这一路根本没法当字段名。
+   */
+  private readonly lastProgressAt = new Map<ScoutWorkbench | undefined, number>()
 
   constructor(opts: ScoutEventBusOpts = {}) {
     this.nowFn = opts.now ?? (() => Date.now())
@@ -106,8 +141,11 @@ export class ScoutEventBus {
     try {
       const at = this.nowFn()
       if (input.type === 'progress') {
-        if (at - this.lastProgressAt < PROGRESS_THROTTLE_MS) return
-        this.lastProgressAt = at
+        // 未记录过 → 视为 -Infinity（第一条无条件放行）。注意 Map 里可能存着 0
+        // （注入时钟从 0 起的测试），故必须用 `?? -Infinity` 而不是 `|| -Infinity`。
+        const last = this.lastProgressAt.get(input.workbench) ?? -Infinity
+        if (at - last < PROGRESS_THROTTLE_MS) return
+        this.lastProgressAt.set(input.workbench, at)
       }
       const ev: ScoutEvent = { ...input, id: this.nextId++, at }
       this.buffer.push(ev)
