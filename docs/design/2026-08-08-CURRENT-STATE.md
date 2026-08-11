@@ -90,7 +90,7 @@
 | **新列只能进条件式 ALTER** | 不能改 `db.ts` 顶部 CREATE TABLE 终态定义。同时要改 `db.test.ts` 的 **16 处**版本号字面量 |
 | **SSE 需跑完整 `watch`** | `events` 只在 `cmdWatch` 注入，不跑则 `/api/v2/events` 恒 503。**没有轻量模式** |
 | **Context 必须拆四层** | 单 Context 会让 progress 每秒触发全树重渲染 |
-| **生产 daemon 从未跑完一轮完整巡检** | `meta` 无 `last_inspect_at`。这是**实施前置调查项**，一条命令定性：`docker logs subtitle-scout \| grep -c "巡检失败"` |
+| ~~生产 daemon 从未跑完一轮完整巡检~~ | ✅ **已定性、断言被推翻**（2026-08-11）：巡检完成 ×1 / 失败 ×0，13:49:34Z 跑完。⑪ 的 trigger 可达 |
 
 ### 环境（公司/家里不同）
 

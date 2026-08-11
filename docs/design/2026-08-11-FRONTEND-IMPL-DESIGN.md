@@ -819,9 +819,10 @@ cd web && npm run dev
    跑满一个巡检周期后删（trigger 见下）
 ```
 
-⚠️ **⑪ 的 trigger 目前不可达**：实测 `meta` 表**没有 `last_inspect_at` 行**，
-生产 daemon 从未成功跑完一轮完整巡检。删除条件改成可观测量：
-「`meta.last_inspect_at` 出现且 ≥ 实施完成时刻」。
+⚠️ **⑪ 的 trigger 已可达（2026-08-11 实测推翻 v5 的断言）**：生产 daemon
+**已成功跑完一轮完整巡检**（`docker logs` 有「巡检完成，歇着等明天」1 次、巡检失败 0 次，
+时间 2026-08-11T13:49:34Z）。v3~v5 说的"从未跑完一轮"是**基于当时未跑完的旧观察**，已过期。
+删除条件维持可观测量：「`meta.last_inspect_at` ≥ 实施完成时刻」——现在它是真能等到的。
 
 ⚠️ **⑪ 与 §七 的冲突（二轮审计 🔴）**：⑪ 说"跑满一周期后删 `_legacy`"，
 而 §七说 `subtitleVerify` "跑稳后单独裁决"——两句话对同一个目录给出相反处置。
@@ -862,7 +863,7 @@ cd web && npm run dev
 | ② DTO 扩七态 | 对每个 `sub_status` 值域（含 `unsolvable`/`handoff_translate`）**造一行测试数据**，验 DTO 能透传。⚠️ 生产当前这两态是 **0 行**，不能靠生产样本验 |
 | ③ media_roots 健康列 | ⚠️ **不许用 umount**（三轮审计 🟡）：容器把宿主 `/` 挂进 `/hostroot`，卸掉 115 的 rclone 挂载 = 全库不可访问，且 R8 三道闸里 umount 只触发第一道，而生产真实出事那次（04:07）走的是第三道 C47——**只验三分之一**。<br>**改注入式**，喂 `readRootWithRetry` 四种结局：① 抛 EIO 验 `:1300` ② 返回 `[]` 验 `:1306` ③ 返回 40% 文件验 `:1375`（C47，真出过的那档）④ 恢复正常验 `last_error` **被清空**（教训九说的那个缺失点）。<br>生产端到端想验一次：**临时新建空目录当守备目录再 `chmod 000`**，代价可控、不碰 115 |
 | ④ current 数据源 | 巡检期间 `curl /api/v2/health` 的 `current.title` == `docker logs` 里当前那行「字幕 X (N 文件, 第 i/n 个)」的 X |
-| ⑤ health 端点 | 逐字段核对：`lastInspectAt` 对 `meta`、`engineEnabled` 对 `settings`、`roots[]` 对 `media_roots`。⚠️ `lastInspectAt` 当前会返回 **0**（生产从未跑完一轮），前端要按冷启动处理 |
+| ⑤ health 端点 | 逐字段核对：`lastInspectAt` 对 `meta`、`engineEnabled` 对 `settings`、`roots[]` 对 `media_roots`。⚠️ v5 说"生产从未跑完一轮、`lastInspectAt` 恒 0"——**2026-08-11 实测推翻**（13:49:34Z 已跑完一轮）。前端**仍要**保留冷启动分支（全新部署确实是 0），但别把它当常态 |
 | ⑥ backdrop_path | 回填后 `SELECT COUNT(*) FROM works WHERE backdrop_path IS NULL` ≈ 0；**且新识别一部作品后再查一次**，验 `identifyScheduler` 的写入点也补了（只验回填不验写入 = 只修一半） |
 | ⑪ 容器 | `docker build` 退出码 0 |
 
