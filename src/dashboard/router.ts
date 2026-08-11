@@ -4,6 +4,7 @@ import type {
   WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
   DormantTaskDTO, MovieDetailDTO,
 } from './apiV2.js'
+import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
@@ -55,6 +56,13 @@ export interface RouterDeps {
   /** spec B §2/§4：GET /api/v2/library/movies/:id——movie 详情（单体对象；三层格阵合并：
    *  canonical ∪ 磁盘 ∪ 覆盖）。 */
   movieDetail: (id: string) => MovieDetailDTO | null
+  /** R-F2/R-F5：GET /api/v2/mediaLibrary——新前端媒体库页的海报墙列表（长在 files/works/
+   *  tmdb_seasons 上）。与旧的 `library`（长在 series/episodes/movies，生产 0 行）**明确
+   *  区分开**，两条路由并存直到前端替换完成。 */
+  mediaLibrary: () => MediaLibraryItemDTO[]
+  /** R-F2/R-F5：GET /api/v2/mediaLibrary/:workId——季集网格详情。id 空间是 works.id
+   *  （'tmdb:<n>'），与 librarySeriesDetail 那条同形，故复用同一套 isSafeId/decodeIdSegment。 */
+  mediaLibraryDetail: (workId: string) => MediaLibraryDetailDTO | null
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -169,6 +177,21 @@ export function handleApiRoute(
   }
 
   if (pathname === '/api/v2/triage') return { status: 200, json: deps.triage() }
+
+  // ---- R-F2 / R-F5：媒体库页两个新端点（长在 files/works/tmdb_seasons 上）----
+  // 刻意命名 mediaLibrary 而非复用 library：旧的 /api/v2/library 及其 4 个 builder 长在
+  // series/episodes/movies 上（生产 series 0 行），前端替换完成前两套并存、互不干扰。
+  // 精确路径必须在带 id 的正则**之前**判——否则 `/api/v2/mediaLibrary` 本身会被
+  // `([^/]+)` 之外的分支漏掉（这里顺序天然正确，写明是防后人重排）。
+  if (pathname === '/api/v2/mediaLibrary') return { status: 200, json: deps.mediaLibrary() }
+
+  const mlm = pathname.match(/^\/api\/v2\/mediaLibrary\/([^/]+)$/)
+  if (mlm) {
+    const id = decodeIdSegment(mlm[1])
+    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
+    const detail = deps.mediaLibraryDetail(id)
+    return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
+  }
 
   // ---- setup（spec A：bootstrap wizard 与 Providers 区）----
   if (pathname === '/api/v2/setup/status') return { status: 200, json: deps.setupStatus() }

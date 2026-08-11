@@ -1651,4 +1651,97 @@ describe('setup 面端点（spec A §4.4）', () => {
 
   // 点火语义 reconcile-all 测试已删（第 5.5 步）
 
+  // ── R-F2 / R-F5 媒体库页两个新端点：**走真实 HTTP** ────────────────────────────
+  // 为什么必须在这里再测一遍（builder 单测已经全绿了还测）：本仓栽过 6 次「加了能力却没定
+  // 谁写/谁读/谁触发」，最近一次的形态正是"函数写好了但没人叫"——builder 层 8 条用例全绿，
+  // 而端点根本没挂进 router。只有真实 fetch 能证明这条线是通的。
+  describe('媒体库页数据端点（R-F2 / R-F5）', () => {
+    /** 直写新架构三张表（files/works/tmdb_seasons）——顶部的 seed() 喂的是旧表，两套不通用。 */
+    function seedMediaLibrary(db: ScoutDb): void {
+      db.prepare(
+        `INSERT INTO works (id, title, year, media_type, poster_path, chinese_titles, created_at, updated_at)
+         VALUES ('tmdb:1','Breaking Bad',2008,'tv','/bb.jpg','["绝命毒师"]',?,?)`,
+      ).run(NOW, NOW)
+      db.prepare(
+        `INSERT INTO tmdb_seasons (series_id, season, episode, title, fetched_at)
+         VALUES ('tmdb:1',1,3,'E3',?), ('tmdb:1',1,4,'E4',?)`,
+      ).run(NOW, NOW)
+      // 同一集两份文件（两个「绝命毒师」目录），只有一份有字幕 —— R-F2 防猴子用户核心用例
+      const ins = db.prepare(
+        `INSERT INTO files (path, dir, filename, size, mtime, work_id, season, episode, sub_status, updated_at)
+         VALUES (?,?,?,1,1,'tmdb:1',1,3,?,?)`,
+      )
+      ins.run('/media/bb-1080p/S01E03.mkv', '/media/bb-1080p', 'S01E03.mkv', 'covered', NOW)
+      ins.run('/media/bb-4k/S01E03.mkv', '/media/bb-4k', 'S01E03.mkv', null, NOW)
+      // 孤儿（识别失败）——按 R-F2 不许露出
+      db.prepare(
+        `INSERT INTO files (path, dir, filename, size, mtime, work_id, updated_at)
+         VALUES ('/media/mystery/whatever.mkv','/media/mystery','whatever.mkv',1,1,NULL,?)`,
+      ).run(NOW)
+    }
+
+    it('🔴 GET /api/v2/mediaLibrary 真的挂上了（不是只写了 builder 没人叫）', async () => {
+      seedMediaLibrary(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/mediaLibrary?token=tok`)
+      expect(res.status).toBe(200)
+      const list = (await res.json()) as any[]
+      // 孤儿不露出 → 只有一个作品
+      expect(list).toHaveLength(1)
+      expect(list[0]).toMatchObject({
+        workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: '绝命毒师',
+        year: 2008, posterPath: '/bb.jpg', mediaType: 'tv',
+        expectedEpisodeCount: 2, onDiskEpisodeCount: 1, missingEpisodeCount: 1,
+        subtitledEpisodeCount: 1,
+      })
+    })
+
+    it('🔴 GET /api/v2/mediaLibrary/:workId 真的挂上了，且 R-F2「任一份有字幕」经 HTTP 成立', async () => {
+      seedMediaLibrary(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/mediaLibrary/tmdb:1?token=tok`)
+      expect(res.status).toBe(200)
+      const detail = (await res.json()) as any
+      expect(detail.work).toMatchObject({ workId: 'tmdb:1', mediaType: 'tv' })
+      expect(detail.seasons).toHaveLength(1)
+      // E3 实有（两份文件、一份有字幕 → 绿点）；E4 应有但磁盘没有（虚线、无点）
+      expect(detail.seasons[0].episodes).toEqual([
+        expect.objectContaining({ episode: 3, onDisk: true, dot: 'green', fileCount: 2, subtitledFileCount: 1 }),
+        expect.objectContaining({ episode: 4, onDisk: false, dot: 'none' }),
+      ])
+    })
+
+    it('id 段 %3A 编码同样可用（前端 encodeURIComponent 后的形态）', async () => {
+      seedMediaLibrary(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const res = await fetch(`${base}/api/v2/mediaLibrary/tmdb%3A1?token=tok`)
+      expect(res.status).toBe(200)
+      expect((await res.json() as any).work.workId).toBe('tmdb:1')
+    })
+
+    it('不存在的 workId → 404；非法 id → 400', async () => {
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      expect((await fetch(`${base}/api/v2/mediaLibrary/tmdb:404?token=tok`)).status).toBe(404)
+      expect((await fetch(`${base}/api/v2/mediaLibrary/..%2Fetc?token=tok`)).status).toBe(400)
+    })
+
+    it('🔴 鉴权：两个新端点走与其余 /api/v2/* 完全相同的那一道统一前置门', async () => {
+      seedMediaLibrary(db)
+      const { base } = await start(distWith('<!doctype html>'), 's3cret')
+      expect((await fetch(`${base}/api/v2/mediaLibrary`)).status).toBe(401)
+      expect((await fetch(`${base}/api/v2/mediaLibrary/tmdb:1`)).status).toBe(401)
+      expect((await fetch(`${base}/api/v2/mediaLibrary?token=s3cret`)).status).toBe(200)
+      expect((await fetch(`${base}/api/v2/mediaLibrary/tmdb:1?token=s3cret`)).status).toBe(200)
+    })
+
+    it('🔴 旧的 /api/v2/library 原样活着（前端替换完成前不许动它）', async () => {
+      seedMediaLibrary(db)
+      const { base } = await start(distWith('<!doctype html>'), 'tok')
+      const old = await fetch(`${base}/api/v2/library?token=tok`)
+      expect(old.status).toBe(200)
+      // 顶部 seed() 写的旧表数据照旧读得出来
+      expect(((await old.json()) as any[]).find((x) => x.id === 's1')).toMatchObject({ name: 'Series A' })
+    })
+  })
+
 })

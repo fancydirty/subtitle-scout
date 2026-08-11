@@ -7,6 +7,7 @@ import type {
   DormantTaskDTO, MovieDetailDTO,
 } from './apiV2.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
+import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 
@@ -120,6 +121,26 @@ let lastSeriesId: string | null = null
 let lastLibrarySeriesId: string | null = null
 let lastRunTraceId: number | null = null
 let lastMovieId: string | null = null
+let lastMediaLibraryId: string | null = null
+// R-F2 / R-F5：媒体库页两个新 DTO 的路由层 stub（内容正确性由 mediaLibraryApi.test.ts 钉，
+// 这里只需要形状合法——路由层的职责是 method/shape/存在性判定）。
+const mediaLibraryItem: MediaLibraryItemDTO = {
+  workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: '绝命毒师', year: 2008,
+  posterPath: '/bb.jpg', mediaType: 'tv',
+  expectedEpisodeCount: 62, onDiskEpisodeCount: 60, missingEpisodeCount: 2, subtitledEpisodeCount: 58,
+}
+const mediaLibraryDetailDTO: MediaLibraryDetailDTO = {
+  work: {
+    workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: '绝命毒师', year: 2008,
+    posterPath: '/bb.jpg', mediaType: 'tv',
+  },
+  seasons: [{
+    season: 1,
+    episodes: [{ episode: 3, title: 'E3', onDisk: true, dot: 'green', fileCount: 2, subtitledFileCount: 1 }],
+  }],
+  movie: null,
+  unplacedFileCount: 0,
+}
 const deps: RouterDeps = {
   library: () => [libItem],
   series: (id) => { lastSeriesId = id; return id === 's1' || id === 'tmdb:71' ? seriesDetail : null },
@@ -143,6 +164,9 @@ const deps: RouterDeps = {
   setupStatus: () => setupStatusDTO,
   providers: () => providersDTO,
   movieDetail: (id) => { lastMovieId = id; return id === 'm1' || id === 'tmdb:1234' ? movieDetailDTO : null },
+  // R-F2 / R-F5：媒体库页两个新端点的路由层 stub。
+  mediaLibrary: () => [mediaLibraryItem],
+  mediaLibraryDetail: (id) => { lastMediaLibraryId = id; return id === 'tmdb:1' ? mediaLibraryDetailDTO : null },
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string> } = {}) =>
@@ -368,5 +392,38 @@ describe('handleApiRoute (v2)', () => {
   it('GET /api/v2/library/movies/:id rejects bad ids with 400', () => {
     expect(call('/api/v2/library/movies/a..b').status).toBe(400)
     expect(call('/api/v2/library/movies/bad/path').status).toBe(404) // doesn't match route pattern
+  })
+
+  // R-F2 / R-F5：媒体库页两个新端点的路由层判定。
+  describe('媒体库页（R-F2 / R-F5）', () => {
+    it('routes /api/v2/mediaLibrary', () => {
+      const r = call('/api/v2/mediaLibrary')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual([mediaLibraryItem])
+    })
+
+    it('routes /api/v2/mediaLibrary/:workId，deps 收到原样 id', () => {
+      const r = call('/api/v2/mediaLibrary/tmdb:1')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual(mediaLibraryDetailDTO)
+      expect(lastMediaLibraryId).toBe('tmdb:1')
+    })
+
+    it('%3A 编码的 id 解码后同样命中', () => {
+      expect(call('/api/v2/mediaLibrary/tmdb%3A1').status).toBe(200)
+      expect(lastMediaLibraryId).toBe('tmdb:1')
+    })
+
+    it('未命中 404；非法 id 400', () => {
+      expect(call('/api/v2/mediaLibrary/tmdb:404').status).toBe(404)
+      expect(call('/api/v2/mediaLibrary/a..b').status).toBe(400)
+      expect(call('/api/v2/mediaLibrary/%zz').status).toBe(400)
+    })
+
+    it('🔴 精确路径 /api/v2/mediaLibrary 不被带 id 的正则吃掉（列表与详情两条路由不许互相遮蔽）', () => {
+      // 防回归：把列表路由写在正则之后、或把正则写成 `([^/]*)` 时，其中一条会静默失效。
+      expect(call('/api/v2/mediaLibrary').json).toEqual([mediaLibraryItem])
+      expect(call('/api/v2/mediaLibrary/tmdb:1').json).toEqual(mediaLibraryDetailDTO)
+    })
   })
 })

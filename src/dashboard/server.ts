@@ -18,6 +18,9 @@ import {
   buildTriage, redispatch, buildRunTrace, buildDormantTasks, buildLibraryMovieDetail,
   type ReconcileAllResultDTO,
 } from './apiV2.js'
+// R-F2 / R-F5：媒体库页数据层（新架构 files/works/tmdb_seasons）。刻意与 apiV2.js 分开
+// import —— 两套 builder 读的是完全不同的表，混在一行会让"哪个长在旧表上"不可见。
+import { buildMediaLibrary, buildMediaLibraryDetail } from './mediaLibraryApi.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from '../core/traceBus.js'
 import type { ScoutEventBus } from '../core/scoutEvents.js'
@@ -306,6 +309,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     setupStatus: () => buildSetupStatus(setupDeps),
     providers: () => buildProviders(setupDeps),
     movieDetail: (id) => buildLibraryMovieDetail(db, settingsRepo, id),
+    // R-F2 / R-F5：媒体库页两个新端点。**纯同步只读**，无惰性 TMDB 刷新副作用 ——
+    // 应有集（tmdb_seasons）的回填由 daemonV2 的 boot pass 负责（R-F5 已落地，生产 2144 行），
+    // 不在读路径上再挂一次网络触发：librarySeriesDetail 那条的 fire-and-forget 是 G2 遗留，
+    // 新端点不继承它（海报墙是全量列表，逐个作品踢 TMDB 会在一次页面加载里打爆配额）。
+    mediaLibrary: () => buildMediaLibrary(db),
+    mediaLibraryDetail: (workId) => buildMediaLibraryDetail(db, workId),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —
