@@ -322,6 +322,12 @@ cd /mnt/nvme0n1-4/docker/subtitle-scout && git reset --hard && docker build ... 
 | ① 审计 🟡-2 | 🟡 | 端点无分页无上限。实测 3600 行 → 300 组 / 39.6 KiB / 4ms，**当前量级无害**；但 `?limit=` 被静默忽略，体积由表行数单方面决定，`pruneFound` 是唯一的闸 | 前端出现性能问题时再说 |
 | ① 审计 🟡-3 | 🟡 | `HEAD /api/v2/notifications` → 405（HTTP 语义上 HEAD 是 GET 的安全子集），且 405 无 `Allow` 头。**全仓既有口径**，隔壁 `subtitle/verify` 同款 | 全仓统一时一起改，不开单点特例 |
 | ① 审计 B-3 | 🔵 | 实施者的 200 轮对拍脚本跑完删了 → 数字不可复现。**对拍脚本应入库** | 下次做对拍时建 `scripts/` |
+| ④ 审计 🔴-1 | 🔴 | **`queue` 被静默丢弃，且设计文档自相矛盾**：§3.6 说 health 要返回 `current` **和 `queue`**，而 §3.5:578 说「queue 砍掉，活动页的 total 只信 SSE」、:568 明令「**不许用它**」（`listSubtitleQueue` 语义与 R4 冻结快照相反）。实施者挑了对的那一半但没记录。<br>**裁决：依 §3.5 砍掉 queue。** R-F4「排队」那半边**后端确实无数据源**（`subtitleQueue` 是 `runInspection` 的局部变量，出不来）——前端只信 SSE。<br>⚠️ 不记这条，下一个人读 §3.6 会以为端点残缺，或照它把 `listSubtitleQueue` 接上去，正好踩中 :568 明令禁止的坑 | Task ⑤ 落地时在 health 端点注释里钉死 |
+| ④ 审计 🟡-1 | 🟡 | **翻译台没有 progress emit 点**（识别 :627、字幕 :688 都有），故 `current.kind==='translate'` 时 `index/total` **恒 null**。而 `daemonV2.ts:755` 自陈「翻译是唯一单个活可能跑几小时的阶段」——最需要进度的阶段进度条永远空。<br>实施者称这是「诚实的 null」——该辩护对 identify/subtitle 成立（那是短暂窗口，下一条 progress 就填上），**对 translate 不成立**（永久） | 需在 daemonV2 补翻译 progress emit，超出 ④ 范围 |
+| ④ 审计 🟡-2 | 🟡 | `getCurrent()` **生产零读取点**（`grep -rln getCurrent src/` 只命中实现与其测试）。本仓栽过 6 次「有表有函数没人触发」，`cli/index.ts:260` 明写守卫靠 `watchWiring.test.ts` 的源码断言。<br>**Task ④ 交付时没有任何机制阻止 Task ⑤ 忘掉这件事**——靠 commit message 里一句叮嘱，正是那 6 次的共同形态 | **Task ⑤ 必须补一条源码级接线断言**（照 `watchWiring.test.ts` 形态）钉住 `/health` 真的读了 `getCurrent()` |
+| ② 审计 A-5 | 🟡 | 列表页 SQL 多取了 `needs_subtitle, skip_reason` 两列却无人读（`MediaLibraryItemDTO` 无 `episodeState`）。审计实测：把列表页 SQL 改回不取新列 → **0 红**（对照详情页同变异 6 红）。纯开销 1192 行 × 2 列，且无测试防它被改 | Task ⑧ 时决定：删掉，或在列表 DTO 暴露聚合态 |
+| ② 审计 A-3 | 🟡 | **已知口径分歧**：`embedded_langs` 有目标语言轨但 `skip_reason` 尚未写入时，`dot` 给 blue 而 `episodeState` 给 unjudged，同一格两个控件不同口径。这是**有意的**（dot 描述磁盘事实、state 描述 judge 判决），但前端要知道 | Task ⑧ 渲染时确认这个组合不刺眼 |
+| ② 审计尾注 | 🔴 | **`web/src/library/episodeState.ts` 已存在一套同名异义的七态**（`covered/hardsub/missing/throttled/error/dashed/partial`），长在**旧** `episodes` 表上、值域完全不同。②的实现注释把它当「既有口径同源」引用——**不成立**。Task ⑧ 落地时两套同名概念必然撞车 | Task ⑧ 前必须裁决二者关系（预期：旧的随 `_legacy` 一起走） |
 
 ---
 
@@ -334,6 +340,8 @@ cd /mnt/nvme0n1-4/docker/subtitle-scout && git reset --hard && docker build ... 
 |---|---|---|
 | ⓪ workbench | ✅ 代码通过 + 4 道守卫经变异验证 | `8997bcf` |
 | ① notifications | ⚠️ **代码通过，但状态绑定 Task ⑩**（无消费者前不标完成） | `8997bcf` |
+| ② EpisodeState 八态 | ⚠️ **代码通过（审计 4 条 🔴 已修），状态绑定 Task ⑧** | `a5cf3f1` + `e7898ff` |
+| ④ current 快照 | ⚠️ **代码通过（审计 🔴-2 已修），状态绑定 Task ⑤**（⑤ 须补源码级接线断言） | `e39e399` + `56da668` |
 | ② EpisodeState | ⬜ | |
 | ③ media_roots | ⬜ | |
 | ④ current | ⬜ | |
