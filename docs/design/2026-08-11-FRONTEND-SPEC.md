@@ -176,6 +176,10 @@ live test 里我就是靠 `doctor` 一条命令定位到"三个守备目录不�
 | R-F8 | 守备目录用输入框 + 强制「测试」通过才能保存，不做点击式选择器 |
 | R-F9 | 设置页做减法：三层分区，33 个 env 字段收成折叠区 + doctor 按钮 |
 | R-F10 | SSE 只推对用户有必要的事件（4 类：activity/found/health/progress），排障类信息一律不推；只推变化不推心跳；progress 节流 1s；全站一条连接 |
+| R-F11 | 视觉基准 = Linear DESIGN.md（四层 surface 阶梯 + 三层 hairline，拒绝投影） |
+| R-F12 | 媒体库页状态标记 = 集号染色（`E01 ✓`），不用圆点（违反 Carbon 双通道规则）、不用左竖线 |
+| R-F13 | 活动页 = 全背景式卡片，图渐隐进 surface-1 实色；在跑用横版 backdrop、排队用竖版 poster |
+| R-F14 | 需补 `works.backdrop_path`（TMDB 客户端已在取，落库时漏了） |
 
 ---
 
@@ -389,9 +393,77 @@ chs / cht           → langOf 返回自身  ❌  （只折叠 ZH_ORIGIN_CODES={
 
 ---
 
+## 六·八、视觉设计裁决（R-F11 ~ R-F14，2026-08-11 可视化协作产出）
+
+用 brainstorming 的 visual companion 逐版迭代出来的，全部用**生产真实数据**画稿
+（Attack on Titan 25/87、Peaky Blinders S01 全绿、PLUTO 全蓝、Re:ZERO 71 集待处理）。
+
+### R-F11 视觉基准 = Linear DESIGN.md
+
+来源 `VoltAgent/awesome-design-md`（107k★）的 `design-md/linear.app/DESIGN.md`，
+已落项目根目录 `DESIGN.md`（commit `084b7bc`）。选它因为深色 + 密集 + 开发者工具 + 状态标记多。
+
+它给出的关键规范**直接解释了我前几版稿子为什么"素"**：
+> 深度靠**四层 surface 阶梯 + 三层 hairline 边框**承载，深色上几乎完全拒绝投影。
+
+而我之前只用了一层背景 + 一层边框。真实 token：
+```
+canvas #010102 · surface-1..4 #0f1011→#191a1b · hairline #23252a→#3e3e44
+accent 薰衣草蓝 #5e6ad2 · success #27a644
+status-badge: surface-2 底 + pill 圆角 + 2px 8px padding
+```
+
+### R-F12 集号染色替代圆点（媒体库页）
+
+⚠️ **原方案（三色小圆点）被调研推翻**：Carbon Design System 要求状态指示必须用
+**颜色 + 形状/符号至少两者**——只靠颜色对色盲无效、对屏幕阅读器不可见。
+
+用户否掉的中间方案：左竖线（Bootstrap alert 遗产，土）。
+查 Linear 的 DESIGN.md 确认**它根本不用左竖线**，它的 status-badge 靠药丸 + 底色。
+
+**最终选定：状态直接长在集号上**——`E01 ✓`（绿）/ `E02 ◆`（蓝）/ `E03 ···`（灰）。
+mono 字体 + 状态色，读起来像终端输出。这是唯一**零额外元素**的方案：
+状态和本来就要显示的编号合二为一，一屏 40 张卡也不碎。
+
+### R-F13 全背景式卡片（活动页）
+
+演进路径：纯文字列表 → 卡片里放缩略图 → **图本身就是卡片**。
+
+最终形态：**左侧图铺满，横向渐变渐隐进 surface-1 实色，文字浮在渐隐区。**
+```css
+/* 在跑的：横版 backdrop 占 60% */
+background: linear-gradient(to right,
+  rgba(1,1,2,.06) 0%, rgba(1,1,2,.28) 20%, rgba(1,1,2,.84) 44%, #0f1011 60%);
+/* 排队的：竖版 poster 59px 宽，渐变区 118px（图的两倍） */
+background: linear-gradient(to right,
+  rgba(1,1,2,0) 0%, rgba(1,1,2,.14) 44%, rgba(1,1,2,.78) 68%, #0f1011 100%);
+```
+
+三个关键决定：
+1. **渐变终点用 surface-1 实色，不是半透明黑**——右半区底色与普通卡片完全一致，
+   文字对比度稳定，不会因背后有图而发飘
+2. **在跑用横版 backdrop、排队用竖版 poster**——用户实测发现矛盾的根源是宽高比：
+   `16:9 @ 70px高 = 124px宽`（太窄看不清）vs `2:3 @ 70px高 = 47px宽`（天生适合窄行）。
+   两个位置职责不同，形状不同不是缺陷是分工
+3. **排队行 88px 高 + 标题 16px**——行高撑起来右侧才不显空。副标题合并成
+   「2018 · 动画 · 13 集待处理」一行说完
+
+调研到的共同规范（Plex/Jellyfin/Poster Tools 都遵守）：
+> dark matte + gradient keep text crisp over busy art
+
+### R-F14 需要补的后端字段：`works.backdrop_path`
+
+活动页依赖横版 backdrop，而 `works` 表没有这一列（只在旧 `series` 表上，那张表 0 行）。
+
+**好消息**：TMDB 客户端**已经在取 `backdropPath`**
+（`src/adapters/providers/tmdb.ts:355`，注释写着「剧集 hero 背景大图」），
+只是 `identifyScheduler` 落库时漏写这一列。补一列 + 一个回填 pass 即可，
+比季集表那件小。素材实测：110 个作品全有 poster、2093 集有 still。
+
+---
+
 ## 七、还没定的（动手前要补）
 
-- 三个页面各自的**具体信息层级**（哪些字段、排序、空状态文案）
-- 媒体库页的**季集网格布局**（要先调研 Jellyfin/Jellyseerr）
+- 通知页与媒体库页的具体版式（活动页已定，见 §六·八）
 - 通知页"一周"的**清理机制**（定时任务？读时过滤？）
 - 旧前端的**替换顺序**（先做哪个页面、怎么与旧壳共存）
