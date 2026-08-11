@@ -335,6 +335,13 @@ cd /mnt/nvme0n1-4/docker/subtitle-scout && git reset --hard && docker build ... 
 | ⑥ 审计（自报） | 🔴 | **`cmdWatch` 适配器块零覆盖**：删掉 `backdropPath` 接线一行 → **0 红**；删掉既有的 `getExternalIds` 接线 → **同样 0 红**。这行是两个写入点是不是装饰品的**唯一现实通路** | 需把适配器构造抽成可导出函数（`watchWiring.test.ts` 现只拿 `() => ({} as any)` 打桩）。**Task ⑤ 或收尾时处理** |
 | ⑥ 已知代价 | 🔵 | `backdrop_path` 无"查过但没有"的第三值 → TMDB 真无横版图的作品每轮 boot 重查一次 | 将来加 `backdrop_checked_at`，不往路径列塞哨兵 |
 | 我的病 B | 🔵 | Task ③ 的 commit message 里两个变异数字与审计实测不符（3 红实为 2、5 红实为 6）——数字来自实施者报告，我未复核就写进去了 | 已在 `57d32aa` 记录。**以后 commit message 引用 subagent 的数字前必须复核** |
+| ⑤ 审计 🔴 | 🔴 | **健康横幅仍走 `EngineBanner` 读 setup/status 的 `engineEnabled`**，没读 `/health` 的 `workPermitted`。端点已不说假话，但**用户可见后果还没消除** | **Task ⑦**（需 UI 裁决：横幅文案怎么区分"用户关了开关"与"凭据没配好"） |
+| ⑤ 审计 🟡 | 🟡 | `setupApi.buildSetupStatus:120` 是 `engine_enabled !== 'false'` 的**第二处手写**，而 `server.ts:56` 注释宣称"三处同源"。今天值恰好一致，但就是 D7/C30 形态 | 动 setup 页时一起收 |
+| ⑤ 审计 🟡-3 | 🟡 | **`lastInspectAt` 语义错位**：成功才落库（完成语义的门），落的却是**开始时刻**（D4①）。大库实测能跑 10h → 巡检 04:00 开始 14:00 结束，用户 13:00 看到"9 小时前巡检过"而**此刻正在巡检中**。且与 `roots[].lastCheckedAt`（真·处理完时刻）在同一响应体里语义不同、无字段区分 | Task ⑦ 渲染"上次巡检"时必须知道；或后端改成落完成时刻 |
+| ⑤ 审计 🟡-4 | 🟡 | **陈旧门覆盖不到"daemon 死了"**：容器挂了之后健康横幅**整整 48h 继续报绿**。`lastInspectAt` 本可提供这个信号（daemon 死了它就不推进），但端点没把它折进任何判决，全推给前端 | Task ⑦ 需自己算 `now - lastInspectAt`；或后端补一个 `daemonAlive` 判决 |
+| ⑤ 审计 🟡-5 | 🔵 | 实施者的 M2~M9 红数表**混用两种统计口径**（M7 差 16 倍：报 16 实为 1，疑似统计了全套件而非本 task 两文件），M4/M5 纯偏高 | 已记录。审计口径要在报告里写明 |
+| ⑥ 修复者发现 | 🟡 | **`backfillSeasonCatalog` 有队头阻塞同型**：谓词 `WHERE media_type='tv' ORDER BY id LIMIT 200` 无收敛项。<br>⚠️ 但我核实后**定性要修正**：`refreshSeriesCatalog` 内部有 7 天 TTL 门（`tmdbCatalog.ts:29`），已刷新的剧零请求早退——**配额上不是每轮重查**。真问题只剩"超过 200 个剧时尾部永远进不了这一批"。生产 68 部剧未触发 | 剧数逼近 200 时修（同 v43 的 `_checked_at` 形态） |
+| flake 根治 | 🟡 | `startDashboard` 的 listen 失败被吞（`on('error', … resolve(server))`）→ 端口被占时 resolve 一个**没在监听**的 server。生产上 `DASHBOARD_PORT` 被占 = "进程活着、日志一行 error、dashboard 静默不可达" | 建议改 `reject`。只在测试侧用 `baseOf()` 挡住了 |
 
 ---
 
@@ -350,7 +357,15 @@ cd /mnt/nvme0n1-4/docker/subtitle-scout && git reset --hard && docker build ... 
 | ② EpisodeState 八态 | ⚠️ **代码通过（审计 4 条 🔴 已修），状态绑定 Task ⑧** | `a5cf3f1` + `e7898ff` |
 | ④ current 快照 | ⚠️ **代码通过（审计 🔴-2 已修），状态绑定 Task ⑤**（⑤ 须补源码级接线断言） | `e39e399` + `56da668` |
 | ③ media_roots 健康列 | ⚠️ **代码通过（审计 🔴-1 真回归已修），状态绑定 Task ⑤** | `07a9669` + `57d32aa` |
-| ⑥ backdrop_path | ⚠️ **代码通过，状态绑定 Task ⑨**；审计中 | `8bb0d02` |
+| ⑥ backdrop_path | ⚠️ **代码通过（审计 🟡-4 队头阻塞已修，v43），状态绑定 Task ⑨** | `8bb0d02` + `5ff3061` |
+| ⑤ health 端点 | ⚠️ **代码通过（审计 2 条 🔴 已修），状态绑定 Task ⑦** | `b217dd2` + `940c5a5` |
+| — flake 根治 | ✅ **真因是绑 `::` 却拨 `127.0.0.1`**，前人归因错误。28 轮零 flake | `218cb7b` |
+
+### 🎉 后端六步（⓪①②③④⑤⑥）全部完成
+
+`143 文件 / 3343 用例 / 失败恰好 7 条既有债务 / npm run check 退出码 0`
+
+**下一步：前端四步（⑦⑧⑨⑩）+ 收尾（⑪）**
 | ② EpisodeState | ⬜ | |
 | ③ media_roots | ⬜ | |
 | ④ current | ⬜ | |
