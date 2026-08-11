@@ -79,6 +79,27 @@ const SUB_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
  *  晚一天完成没有任何实质损失。剩余行留 NULL，下次启动继续，靠谓词自然收敛、不丢活。 */
 const BACKFILL_BATCH_SIZE = 200
 
+/** C46：R8 两道闸门的**当场重试**退避阶梯（毫秒），长度即重试次数。
+ *
+ *  生产实测（2026-08-11 02:48:39）：Movies 这个根读出 0 个媒体文件走了 R8 保护，而同一轮里
+ *  Anime/TV 两个根扫出 1155 个文件一切正常；20 分钟后手工 ls 同一目录完全正常（36 个作品
+ *  目录、51 个文件、2s 走完、rclone 日志零错误），随后连做 30 轮读取零失败。结论：
+ *  openlist WebDAV + rclone FUSE 有**几秒级的瞬时读取抖动**，且抖动时 readdir **不抛错、
+ *  只返回空数组**。R8 保护本身做对了（没把"看起来是空的"当成"文件都被删了"去清库），
+ *  但它只是 `continue` 等下一轮——而下一轮是 **24 小时后**。一次几秒的抖动被日巡检模型
+ *  放大成整整一天不处理该根；若每天巡检那一刻恰好都抖一下，这个根**永远**不被处理，
+ *  日志却只平静地说"跳过"。
+ *
+ *  为什么是 2 次 / 1s+3s 这个保守值：
+ *   · **次数**取 2 —— 观测到的抖动是"下一秒就好"，2 次覆盖 4 秒窗口已远超实测形态；
+ *     再多只是在真掉线时把每轮巡检的空转拉长（Movies 一趟全量 readdir 实测 44s，
+ *     3 次就是 2 分钟），而真掉线本就该由 R8 保护接住、等下一轮，不该在这里死磕。
+ *   · **递增**（1s→3s）而非等长 —— 抖动最常见的成因是网盘侧限流/连接重建，等长间隔
+ *     等于拿同样的节奏再撞两次；递增给对端喘息窗口。
+ *   · **绝不密集重试** —— 这是慢挂载不是本地盘，紧凑重试正是会把 115 打崩的那个行为。
+ *     总退避 4s 相对于 24 小时的损失可以忽略，相对于一趟 44s 的 readdir 也只是零头。 */
+const R8_RETRY_BACKOFFS_MS = [1000, 3000]
+
 /** R20 的 MVP 语言边界，喂给 judgeTranslatable（R21 + D9）。
  *
  *  两个集合**刻意不同**，这正是 R20 的裁决内容：
@@ -127,6 +148,18 @@ export interface DaemonV2Deps {
    *  维护"就完事——必须能在一个 run() 内驱动出**多拍**，才能证明 gcStaging 只在 boot 跑一次
    *  而 dbMaintenance 每拍都跑（前者若漏进维护循环，就会周期性 rm 掉正在跑的工作台）。 */
   maintenanceTickMs?: number
+
+  /** 测试注入：等待。默认下面那个真实的 `sleep`（setTimeout + AbortSignal 中断）。
+   *
+   *  存在的理由是 C46 的 R8 重试退避（1s+3s）：不可注入的话，每条"持续失败"用例都要真睡
+   *  4 秒，daemonV2.test.ts 会从 2 秒拖成十几秒。更坏的是它会诱使后来人把退避调小来"救测试"
+   *  ——而退避小正是会打崩 115 网盘的那个行为。测试用 no-op 替身，把"等多久"变成可断言的
+   *  数字（`expect(waited).toEqual([1000, 3000])`），比真等强。
+   *
+   *  **签名必须带 signal 且实现必须真的响应它**：重试退避期间收到停止信号要当场返回，
+   *  否则 `docker stop` 会白等 3 秒（run() 主循环的 idle sleep 早就是这个口径，此处复用
+   *  同一个函数，不造第二份）。 */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
 
   now?: () => number
   /** 测试注入：遍历一个守备目录。默认 walkVideoFiles。
@@ -441,7 +474,9 @@ export class ScoutDaemonV2 {
 
   private async runInspectionInner(signal: AbortSignal): Promise<void> {
     // 阶段 1：机械扫描
-    await this.scanOnce()
+    // signal 传下去是 C46 的刚性需求：R8 重试的退避（1s+3s）落在 scanOnce 里面，
+    // 不接的话 `docker stop` 会在每个抖动的根上白等 4 秒。
+    await this.scanOnce(signal)
 
     // 阶段 2：识别工作流（上游）——消费**冻结快照**（R4 / C23）
     //
@@ -918,7 +953,78 @@ export class ScoutDaemonV2 {
     }
   }
 
-  private async scanOnce(): Promise<void> {
+  /** C46：读一个守备目录，**带当场重试**。R8 两道闸门的判定收敛到这一个地方。
+   *
+   *  返回 `ok:false` 有且仅有两种成因，正好对应 R8 的两道闸：
+   *   · `error !== undefined` —— walk 抛错（挂载掉线/权限）
+   *   · `error === undefined` —— walk 成功但入库口径快照为空（FUSE 抖动的那张阴脸）
+   *  调用方据此打不同的日志，但**两者的后续处置完全一致**（跳过删除与字幕观察）。
+   *
+   *  "空" 判据用 `entries.length`（过完 isScannable 的入库口径）而非 `files.length`：
+   *  全部文件都被 isScannable 挡掉（比如整根都是探针残留小文件）同样意味着"没有可信的
+   *  入库口径快照"，一样不该拿去做差集。这是 R8 第二道闸原本就有的口径，原样保留。
+   *
+   *  stat 在这里做而不是留给调用方：判"空"本来就得过一遍 isScannable，而 isScannable 要
+   *  size。既然已经 stat 过，就把结果一并带出去给 upsert 用——在 115 FUSE 上 stat 代价放大
+   *  约 46 倍，让调用方再 stat 一遍就是白白翻倍。
+   *
+   *  `signal` 在**退避期间**生效：`docker stop` 时 daemon 若正卡在 3s 退避上必须当场收手。
+   *  中断后不再发下一次 walk，直接返回最后一次的失败结果 → 走 R8 那条安全路径。
+   *  这一点是刚性的：中断绝不能变成"拿着空快照去做差集"。 */
+  private async readRootWithRetry(
+    root: string,
+    stat: (p: string) => { mtimeMs: number; size: number } | null,
+    signal?: AbortSignal,
+  ): Promise<
+    | { ok: true; attempts: number; files: string[]; entries: Array<{ path: string; st: { mtimeMs: number; size: number } }> }
+    | { ok: false; attempts: number; error?: unknown }
+  > {
+    const walk = this.deps.listVideoFiles ?? walkVideoFiles
+    const sleepFn = this.deps.sleep ?? sleep
+    const backoffs = R8_RETRY_BACKOFFS_MS
+
+    let lastError: unknown
+    let hadError = false
+    // attempt 0 是首次读取，1..N 是重试。循环上界 = 首次 + backoffs.length 次重试。
+    for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+      if (attempt > 0) {
+        // 退避在**发起重试之前**，不是在失败之后：写成"失败就 sleep"的话最后一次失败
+        // 也会白等一轮退避，把一个已经确定要跳过的根再多拖 3 秒。
+        await sleepFn(backoffs[attempt - 1], signal)
+        // 退避期间被 abort → 当场收手，返回上一次的失败结果（走 R8 安全路径）。
+        if (signal?.aborted) return { ok: false, attempts: attempt, error: hadError ? lastError : undefined }
+      }
+
+      let files: string[]
+      try {
+        files = walk(root)
+      } catch (e) {
+        lastError = e
+        hadError = true
+        continue
+      }
+      hadError = false
+      lastError = undefined
+
+      // 入库口径快照：过 isScannable 这道门。seen 只收这一档，否则差集会把
+      // "扫到了但按规矩不入库"的文件当成"库里该有的行"，两边口径不一致。
+      const entries: Array<{ path: string; st: { mtimeMs: number; size: number } }> = []
+      for (const f of files) {
+        const st = stat(f)
+        if (!st) continue
+        if (!isScannable(f, st.size).ok) continue
+        entries.push({ path: f, st })
+      }
+      if (entries.length > 0) {
+        return { ok: true, attempts: attempt + 1, files, entries }
+      }
+      // 读成功但为空 → 落进下一轮重试（或耗尽后由调用方走 R8 第二道闸）。
+    }
+
+    return { ok: false, attempts: backoffs.length + 1, error: hadError ? lastError : undefined }
+  }
+
+  private async scanOnce(signal?: AbortSignal): Promise<void> {
     const db = this.deps.db
     const now = this.deps.now?.() ?? Date.now()
 
@@ -953,7 +1059,6 @@ export class ScoutDaemonV2 {
         updated_at=excluded.updated_at${resetSql}
     `)
     const findExisting = db.prepare('SELECT mtime, size FROM files WHERE path = ?')
-    const walk = this.deps.listVideoFiles ?? walkVideoFiles
     const stat = this.deps.statFile ?? ((p: string) => { try { return statSync(p) } catch { return null } })
     let scanned = 0, upserted = 0, skipped = 0
 
@@ -978,31 +1083,53 @@ export class ScoutDaemonV2 {
     const skippedRoots: string[] = []
 
     for (const root of scanRoots) {
-      // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
-      // 拿它做差集就是删库，故整根跳过删除；upsert 也无从做（一个文件都没拿到）。
-      let files: string[]
-      try {
-        files = walk(root)
-      } catch (e) {
-        this.deps.log(`scan: 守备目录不可访问，跳过删除与字幕观察（R8 挂载保护 / D23）: ${root}: ${String(e)}`)
+      // C46：两道 R8 闸门合并成一次**带当场重试**的读取（见 R8_RETRY_BACKOFFS_MS 的论证）。
+      // 合并而不是各写一段重试的理由：两种形态（抛错 / 读出空）是**同一个瞬时故障的两张脸**
+      // ——生产实测的那次是"不抛错只返回空"，但 rclone 在别的抖动路径上是会抛 EIO 的。
+      // 分开写等于同一件事有两份退避策略，哪天调了一处就漂移。
+      const read = await this.readRootWithRetry(root, stat, signal)
+
+      if (!read.ok) {
+        // ── 重试全部失败 → 行为与改动前**逐字一致**（跳过删除、跳过字幕观察、
+        //    skippedRoots.push、打日志）。重试是 R8 保护之上的增益，绝不是它的替代品：
+        //    "一次删光该根全库"仍是这个项目最严重的可能故障。
+        //    日志带上"已重试 N 次"——不带的话运维看到"跳过"会以为系统没努力过，
+        //    而真相是连着 3 次读取都是坏的（那是真掉线，该去看 rclone 了）。
+        const tried = `已重试 ${read.attempts - 1} 次`
+        if (read.error !== undefined) {
+          // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
+          // 拿它做差集就是删库，故整根跳过删除；upsert 也无从做（一个文件都没拿到）。
+          // 原始错因（String(e)）必须原样带出：那是排障的唯一线索，不许被重试包装吃掉。
+          this.deps.log(`scan: 守备目录不可访问，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}: ${String(read.error)}`)
+        } else {
+          // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录
+          // **不报错、只是看起来是空的**——这是最阴的形态，无脑差集就是一次删光该根全库。
+          this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}`)
+        }
         skippedRoots.push(root)
         continue
       }
 
-      const seen = new Set<string>()
+      // 重试后成功 = 用户的挂载**正在抖**。必须打日志：这一条是"抖动"与"一切正常"之间
+      // 唯一的可观察差别（入库结果两者完全相同）。不打的话抖动会一直恶化到重试也救不回来
+      // 的那天才第一次被发现——本仓已因"日志把中间量说成结论量"栽过三次（probe ok=N 数的
+      // 是没抛异常、judge 把总数说成需字幕数、mismatch 截断到看不出差异）。
+      if (read.attempts > 1) {
+        this.deps.log(`scan: 守备目录瞬时读取故障，第 ${read.attempts - 1} 次重试成功（R8 / C46）: ${root}`)
+      }
+
+      const files = read.files
+      // deleteMissing 的差集口径：过完 isScannable 的那一档（见 readRootWithRetry 的论证）。
+      const seen = new Set<string>(read.entries.map(e => e.path))
       // 本根的 A 档候选先攒在局部名单里，**跑完两道 R8/D20 闸门之后**才并进 toDetect。
       // 不能边扫边直接 push 进 toDetect：嵌套根这条形态（D20）里 walk 是**成功**的
       // （/media 自己不空），文件确实被 upsert 了，等到发现"这个根不可信"时它们已经进名单了。
       const rootDetect: string[] = []
-      for (const f of files) {
-        scanned++
-        const st = stat(f)
-        if (!st) { skipped++; continue }
-        const sc = isScannable(f, st.size)
-        if (!sc.ok) { skipped++; continue }
-        // seen 只收**入库口径**的路径（过了 isScannable 这道门），否则差集会把
-        // "扫到了但按规矩不入库"的文件当成"库里该有的行"，两边口径不一致。
-        seen.add(f)
+      scanned += files.length
+      skipped += files.length - read.entries.length
+      // 复用探空阶段已经取到的 st，**不重新 stat**：stat 在 115 FUSE 上代价放大约 46 倍，
+      // 几千文件重取一遍就是把本该秒级的机械扫描又拖长一截（同 R24 那条性能红线的理由）。
+      for (const { path: f, st } of read.entries) {
         const existing = findExisting.get(f) as { mtime: number; size: number } | undefined
         if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
         const row = toMediaFileRow(f, st, scanRoots)
@@ -1015,16 +1142,6 @@ export class ScoutDaemonV2 {
         // 生产上一个守备目录是 115 网盘的 rclone FUSE 挂载，全库重探是几万 × 12s。
         toProbe.push(f)
         rootDetect.push(f)
-      }
-
-      // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录**不报错、
-      // 只是看起来是空的**——这是最阴的形态，无脑差集就是一次删光该根全库。
-      // "空" 判据用 seen.size 而非 files.length：全部文件都被 isScannable 挡掉（比如整根都是
-      // 探针残留小文件）同样意味着"没有可信的入库口径快照"，一样不该删。
-      if (seen.size === 0) {
-        this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除与字幕观察（R8 挂载保护 / D23）: ${root}`)
-        skippedRoots.push(root)
-        continue
       }
 
       if (nestedRoots.has(root)) {

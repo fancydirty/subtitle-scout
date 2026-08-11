@@ -32,6 +32,11 @@ function mkDeps(db: ReturnType<typeof openDb>, overrides: TestDeps = {}) {
     probe: async () => null,
     probeDuration: async () => null,
     log: () => {},
+    // C46：测试**永远不真的等**（同 probe/subtitleWorker "从不真跑"的既有约定）。
+    // 不默认掉的话，每条用空守备目录建模的既有用例都会撞上 R8 重试的 1s+3s 退避——
+    // 这个文件里这样的用例有一大把，整体从 2 秒涨到 64 秒。
+    // 需要主循环真的按拍走的用例（维护循环那几条）显式覆盖回真 sleep。
+    sleep: async () => {},
     inspectEveryMs: 24 * 60 * 60 * 1000,
     now: () => 1_000_000_000_000,
     ...overrides,
@@ -171,6 +176,48 @@ function fakeFs(disk: Record<string, string[] | 'EIO'>) {
   }
 }
 
+/** 瞬时抖动建模（C46）：把 fakeFs 的「一个根一个固定磁盘现状」扩成「一个根一串逐次响应」。
+ *
+ *  为什么必须扩 fakeFs 而不是另造一套：R8 两道闸门的判据分别是 walk **抛错**与 walk 返回的
+ *  路径集**过完 isScannable 后为空**，两者都长在 listVideoFiles 这一个注入点上。另造一份替身
+ *  就是让"瞬时故障"这条路径与既有的"持续故障"用例跑在两套磁盘模型上，哪天 fakeFs 的口径改了
+ *  （比如 statFile 的默认 size 调过 isScannable 的门），只有一半用例会红。
+ *
+ *  第 i 次 walk 取序列第 i 项，**耗尽后固定复用最后一项**——这正好建模两种形态：
+ *   · `[[], [file]]`  = 抖一下就好（生产 02:48:39 那次，20 分钟后手工 ls 完全正常）
+ *   · `[[]]`          = 持续为空（挂载真的掉了，R8 保护必须原样生效） */
+function flakyFakeFs(disk: Record<string, Array<string[] | 'EIO'>>) {
+  const walkCalls: string[] = []
+  return {
+    walkCalls,
+    deps: {
+      listVideoFiles: (root: string) => {
+        // 本根已经被调过几次（walkCalls 里同名的个数）= 这次该取序列的第几项。
+        const nth = walkCalls.filter(r => r === root).length
+        walkCalls.push(root)
+        const seq = disk[root] ?? [[]]
+        const v = seq[Math.min(nth, seq.length - 1)]
+        if (v === 'EIO') throw new Error(`ENOENT: mount gone ${root}`)
+        return v
+      },
+      statFile: (_p: string) => ({ mtimeMs: 1000, size: BIG }),
+    },
+  }
+}
+
+/** no-op sleep 替身：记下每次被要求等多久，但**一秒都不真的等**。
+ *
+ *  这是硬要求而非提速技巧：重试的默认退避是 1s + 3s，两条"持续失败"用例各真睡 4 秒就是
+ *  把 daemonV2.test.ts 从 2 秒拖到十几秒；更糟的是它会诱使后来人把退避调小来"救测试"，
+ *  而退避小正是会打崩 115 网盘的那个行为。 */
+function fakeSleep(onCall?: () => void) {
+  const waited: number[] = []
+  return {
+    waited,
+    sleep: async (ms: number, _signal?: AbortSignal) => { waited.push(ms); onCall?.() },
+  }
+}
+
 /** 直接驱动阶段 1，不跑整轮巡检——删除语义是纯同步的库/磁盘比对，绕开 agent 噪音。 */
 async function scan(daemon: ScoutDaemonV2): Promise<void> {
   await (daemon as any).scanOnce()
@@ -268,6 +315,202 @@ describe('ScoutDaemonV2.scanOnce · 防线 1：R8 挂载保护', () => {
     disk['/media'] = ['/media/Show/E01.mkv']       // 挂载回来了，E02 确实没了
     await scan(daemon)
     expect(pathsInDb(db)).toEqual(['/media/Show/E01.mkv'])
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C46：R8 两道闸门的**当场重试**（瞬时抖动 ≠ 挂载掉线）
+//
+// 生产实测（2026-08-11 02:48:39）：
+//   02:47:55  巡检开始
+//   02:48:39  scan: 守备目录扫出 0 个媒体文件，跳过删除与字幕观察（R8 挂载保护 / D23）: .../Movies
+//   02:48:40  scan: scanned=1155 upserted=1155     ← 同一轮里 Anime/TV 两个根完全正常
+// 而同一个 Movies 目录 20 分钟后手工 ls 完全正常（36 个作品目录、51 个文件、2s 走完、
+// rclone 日志零错误），随后连做 30 轮读取零失败——所以那是**几秒级的瞬时抖动**，
+// 不是持续故障。openlist WebDAV + rclone FUSE 的 readdir 在抖动时**不抛错、只返回空数组**，
+// 这正是 R8 第二道闸要防的那个最阴的形态。
+//
+// R8 保护本身做对了（没把"看起来是空的"当成"文件都被删了"去清库）。缺陷在于它只是
+// `continue` —— 本轮跳过、等 24 小时后的下一轮巡检，而故障几秒后就自愈了。后果：
+//  ① 一次几秒的抖动 = 这个根**一整天**不被处理（日巡检模型下抖动被放大 ~17000 倍）
+//  ② 更糟：若每天巡检那一刻恰好都抖一下，这个根**永远**不会被处理，
+//     而日志只会平静地说"跳过"，用户看不出任何异常（本仓已因"日志把中间量说成结论量"
+//     栽过三次，见 probe ok=N / judge 总数当需字幕数 / mismatch 截断）
+//
+// 这批用例的重点是**两个方向都不能塌**：既要让瞬时抖动当场恢复，又不许因此削弱 R8——
+// 重试全部失败后行为必须与改动前逐字一致（跳过删除、跳过字幕观察、不清库、打日志）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ScoutDaemonV2.scanOnce · C46 R8 闸门的当场重试', () => {
+  it('🔴 瞬时空列表（第 1 次空、第 2 次正常）→ 重试后拿到文件并正常入库，不走 R8 跳过', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    // 生产形态：readdir 不抛错，只返回空数组，几秒后自愈。
+    const fs = flakyFakeFs({ '/media': [[], ['/media/Show/E01.mkv']] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    // 入库断言（真实收益）：这一行本来要等 24 小时才会出现。
+    expect(pathsInDb(db)).toEqual(['/media/Show/E01.mkv'])
+    // 机制断言：确实重试了一次（走了 2 次 walk），且退避真的被请求过。
+    expect(fs.walkCalls).toEqual(['/media', '/media'])
+    expect(sl.waited).toHaveLength(1)
+    // 日志断言：用户必须能看出"我的挂载在抖"。只入库不吭声的话，抖动会一直恶化到
+    // 重试也救不回来的那天才第一次被发现。
+    expect(logs.join('\n')).toMatch(/第 1 次重试成功/)
+    // 且**绝不能**同时打那条 R8 跳过日志——本轮根本没跳过。
+    expect(logs.join('\n')).not.toMatch(/跳过删除/)
+    db.close()
+  })
+
+  it('🔴 瞬时抛错 EIO（第 1 次抛、第 2 次正常）→ 重试后成功（第一道闸同样要覆盖）', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = flakyFakeFs({ '/media': ['EIO', ['/media/Show/E01.mkv']] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    expect(pathsInDb(db)).toEqual(['/media/Show/E01.mkv'])
+    expect(fs.walkCalls).toEqual(['/media', '/media'])
+    expect(logs.join('\n')).toMatch(/第 1 次重试成功/)
+    expect(logs.join('\n')).not.toMatch(/跳过删除/)
+    db.close()
+  })
+
+  it('🔴 瞬时故障发生在第 2 次（第 1、2 次空，第 3 次正常）→ 第 2 次重试仍能救回来', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = flakyFakeFs({ '/media': [[], 'EIO', ['/media/Show/E01.mkv']] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    expect(pathsInDb(db)).toEqual(['/media/Show/E01.mkv'])
+    expect(fs.walkCalls).toHaveLength(3)
+    // 退避必须**递增**（1s → 3s）：等长间隔在"网盘正在限流"这个最常见的抖动成因下
+    // 就是拿同样的节奏再撞两次，而递增给了对端喘息窗口。
+    expect(sl.waited).toEqual([1000, 3000])
+    expect(logs.join('\n')).toMatch(/第 2 次重试成功/)
+    db.close()
+  })
+
+  it('🔴 持续为空（重试都失败）→ 仍然走 R8 保护：跳过删除、不清库、打日志', async () => {
+    const db = openDb(':memory:')
+    seedFiles(db, ['/media/Show/E01.mkv', '/media/Show/E02.mkv'])
+    const logs: string[] = []
+    // 序列只有一项 → 耗尽后固定复用，即"每次都空"（挂载真的掉了）。
+    const fs = flakyFakeFs({ '/media': [[]] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    // 这条是本批用例存在的**首要理由**：防止"为了修重试把 R8 保护改坏"。
+    // 一次删光该根全库是这个项目最严重的可能故障，重试是它上面的增益、不是替代品。
+    expect(rowsInDb(db)).toEqual(alive(['/media/Show/E01.mkv', '/media/Show/E02.mkv']))
+    expect(logs.join('\n')).toMatch(/跳过删除/)
+    // 日志必须说清"已经重试过了"——否则运维看到"跳过"会以为系统没努力过，
+    // 而真相是挂载连着 3 次读取都是空的（那是真掉线，该去看 rclone 了）。
+    expect(logs.join('\n')).toMatch(/已重试 2 次/)
+    expect(fs.walkCalls).toHaveLength(3)   // 首次 + 2 次重试，绝不多于此
+    db.close()
+  })
+
+  it('🔴 持续抛错 EIO → 同上：R8 第一道闸原样生效', async () => {
+    const db = openDb(':memory:')
+    seedFiles(db, ['/media/Show/E01.mkv', '/media/Show/E02.mkv'])
+    const logs: string[] = []
+    const fs = flakyFakeFs({ '/media': ['EIO'] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    expect(rowsInDb(db)).toEqual(alive(['/media/Show/E01.mkv', '/media/Show/E02.mkv']))
+    expect(logs.join('\n')).toMatch(/守备目录不可访问/)
+    expect(logs.join('\n')).toMatch(/已重试 2 次/)
+    // 抛错形态的原始错因（EIO 文本）不许在重试包装里被吃掉——那是排障的唯一线索。
+    expect(logs.join('\n')).toMatch(/mount gone/)
+    expect(fs.walkCalls).toHaveLength(3)
+    db.close()
+  })
+
+  it('🔴 持续失败的根**仍然**不做字幕观察（重试不许绕过 D23 的联动）', async () => {
+    const db = openDb(':memory:')
+    const V = '/media/Show/E01.mkv'
+    seedRow(db, V, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const fs = flakyFakeFs({ '/media': [[]] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    // 回退成 NULL = 下一轮为这一集重跑一整个付费字幕 agent session（D23 的原始伤害）。
+    expect(subStatusOf(db, V)).toBe('covered')
+    expect(sub.calls).toEqual([])
+    db.close()
+  })
+
+  it('🔴 正常情况（第一次就拿到文件）→ 零重试、零退避（别白白放大慢挂载的压力）', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = flakyFakeFs({ '/media': [['/media/Show/E01.mkv']] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    expect(pathsInDb(db)).toEqual(['/media/Show/E01.mkv'])
+    // 这条是性能红线：生产上一个守备目录是 115 网盘的 rclone FUSE 挂载，
+    // 无条件重试 = 每轮巡检对每个根多发两次全量 readdir（Movies 那次实测 44s 一趟）。
+    expect(fs.walkCalls).toEqual(['/media'])
+    expect(sl.waited).toEqual([])
+    expect(logs.join('\n')).not.toMatch(/重试/)
+    db.close()
+  })
+
+  it('🔴 重试期间收到停止信号 → 立刻收手，不再发第二次重试（docker stop 不该等满退避）', async () => {
+    const db = openDb(':memory:')
+    seedFiles(db, ['/media/Show/E01.mkv'])
+    const ctrl = new AbortController()
+    // 在第一次退避里 abort：真实剧本是运维 docker stop 时 daemon 正卡在 3s 退避上。
+    const sl = fakeSleep(() => ctrl.abort())
+    const fs = flakyFakeFs({ '/media': [[]] })
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep,
+    }))
+    await (daemon as any).scanOnce(ctrl.signal)
+    // 不加信号的话这个根会走满 3 次 walk（见上面"持续为空"那条）。abort 落在第一次退避里
+    // → 退避当场返回、剩下的重试整个不发 → 只有最初那 1 次 walk。
+    expect(fs.walkCalls).toHaveLength(1)
+    // 收手也**必须**是 R8 那条安全路径：中断绝不能变成"拿着空快照去做差集"。
+    expect(rowsInDb(db)).toEqual(alive(['/media/Show/E01.mkv']))
+    db.close()
+  })
+
+  it('🔴 一个根抖动不拖累另一个根：A 根重试后成功，B 根照常一次过', async () => {
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    const fs = flakyFakeFs({
+      '/media/tv': [[], ['/media/tv/Show/E01.mkv']],       // 抖一下
+      '/media/movies': [['/media/movies/A/a.mkv']],        // 正常
+    })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media/tv', '/media/movies'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    expect(pathsInDb(db)).toEqual(['/media/movies/A/a.mkv', '/media/tv/Show/E01.mkv'])
+    // 退避只为抖动的那个根付出，正常的根一次 walk 走完。
+    expect(fs.walkCalls).toEqual(['/media/tv', '/media/tv', '/media/movies'])
+    expect(sl.waited).toHaveLength(1)
     db.close()
   })
 })
@@ -1972,7 +2215,10 @@ describe('ScoutDaemonV2 · D5 运维器官接线（C16：切换入口不得静�
     const walked: string[] = []
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       roots: ['/media'],
-      listVideoFiles: (r: string) => { walked.push(r); return [] },
+      // 返回一个真文件而不是 []：本用例断言的是"巡检**跑了一轮**"（walked 里出现几个根），
+      // 空目录会触发 C46 的 R8 重试 → 同一个根出现 3 次，断言的语义当场从"跑了一轮"
+      // 滑成"walk 被调了几次"，与本用例要守的东西（运维抛错不拖垮巡检）无关。
+      listVideoFiles: (r: string) => { walked.push(r); return ['/media/Show/E01.mkv'] },
       statFile: () => ({ mtimeMs: 1000, size: BIG }),
       ...o.deps,
       gcStaging: () => { throw new Error('readdir failed') },
@@ -2175,7 +2421,8 @@ describe('ScoutDaemonV2 · D4 时间闸（C22：一次故障不许吃掉 24h）'
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       roots: ['/media'],
       now: () => NOW + 24 * 3600_000 + 1,
-      listVideoFiles: () => { walks++; return [] },
+      // 非空目录：本用例数的是"巡检跑了几轮"，空目录会引入 C46 的 R8 重试噪音（见上）。
+      listVideoFiles: () => { walks++; return ['/media/Show/E01.mkv'] },
       statFile: () => ({ mtimeMs: 1000, size: BIG }),
     }))
     await oneLoop(daemon)
@@ -2245,7 +2492,9 @@ describe('ScoutDaemonV2 · 切换入口时同样不许丢的另外三样（与 4
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       roots: [],
       rootsProvider: () => roots,
-      listVideoFiles: (r: string) => { walked.push(r); return [] },
+      // 非空目录：本用例断言的是"这一轮扫了**哪些根**"（惰性求值有没有生效），
+      // 空目录会因 C46 的 R8 重试让每个根重复 3 次，把名单断言变成计数断言。
+      listVideoFiles: (r: string) => { walked.push(r); return [`${r}/Show/E01.mkv`] },
       statFile: () => ({ mtimeMs: 1000, size: BIG }),
     }))
     await (daemon as any).runInspection(new AbortController().signal)
