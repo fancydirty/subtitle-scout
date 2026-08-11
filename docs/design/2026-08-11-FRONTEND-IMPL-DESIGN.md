@@ -214,6 +214,107 @@ hash 路由 + Tab 拆型、划掉 `chinese_titles` 疑虑、§4.4 五种异常�
 
 ---
 
+## 零·四、第四轮：换成"新人视角"，卡在 9/12 步
+
+前三轮攻**内容**（事实/遗漏/决策）。第四轮换角色——审计员扮演**入职第一天的工程师**，
+拿着文档**真的去执行** §5 的 12 步。结果：**只有 1 步能独立完成**，可执行性评分 **35%**。
+
+它的判词一针见血：
+> **这份文档把「该做什么」想得很透，但把「怎么做」全留在了作者脑子里。**
+> 它假设读者已经在这个仓里待了很久。
+
+### 🔴🔴 教训十一：§2.1 的 activity/workflow 处置是**反的**，照做会立刻编译失败
+
+我在 §2.1 写：
+| activity | ⚠️ **当前已不在导航里** | 重写 |
+| workflow | ❌ 含假按钮 redispatch | **删** |
+
+**两条都错，而且第一条方向是反的**：
+```
+$ grep -n "route.tab ===" web/src/shell/AppShell.tsx
+94:  {route.tab === 'workflow' && <ActivityPage />}      ← workflow tab 渲染的就是活动页
+$ grep -rn "from '../workflow/" web/src/activity/*.tsx
+ActivityPage.tsx:29  RunDetail        ← activity 四处依赖 workflow
+ActivityPage.tsx:30  RerunDialog
+ActivityHero.tsx:71  useLiveTrail
+ActivityDone.tsx:40  decisionPhrase
+```
+
+`AppShell.tsx:10-13` 的注释写得明明白白：「2026-07-31：Workflow tab 换成活动页……
+Lanes 一族暂时保留在 workflow/ 下未删——**RunDetail 与 RerunDialog 仍被活动页复用**」。
+
+**按字面执行：删掉 `workflow/` → `activity/` 的 8 个测试 + ActivityPage 立刻编译失败。**
+
+前三轮查了 `route.ts` 三次，**没有一轮打开 `AppShell.tsx`**——
+而 tab id 到页面组件的映射就在那里，且**和 tab 的名字不是一回事**。
+
+**改**：
+| activity | ✅ **生产在跑，挂在 `#/workflow` tab 下** | 重写 |
+| workflow | ⚠️ Lanes 部分删，但 `RunDetail`/`RerunDialog`/`useLiveTrail`/`phrases` **被 activity 复用，必须先迁出** | 部分删 |
+
+### 🔴 教训十二：`workbench` 必填字段有 6 个调用点填不了
+
+实测 **13 个** emit 点（我文档里写的"11 个"也是错的），其中六个不属于任何工作台：
+
+```
+:519 巡检开始   :531 巡检完成   :542 巡检失败        ← 巡检级
+:1300 :1306 :1375  三条 health   ← 阶段 1 扫描级，不属于识别/字幕/翻译任何一个
+```
+
+**必填 = 这六处必须编一个值**。编 `'identify'` 是撒谎；加 `'inspect'|'scan'` 就变五态，
+而 §3.5 刚说 `current.kind` "扩成三态"——又对不上。
+
+**裁决**：`workbench` 改成**可选**，只在三个工作台的 7 个点填；
+判别靠 `workbench !== undefined`。`current.kind` 保持三态（它只描述工作台）。
+
+### 🔴 教训十三：`npm test` 不查类型，58 处类型错误能全绿通过验收
+
+```
+$ node -e "..." → test: vitest run | check: tsc --noEmit    ← 两条独立命令
+```
+vitest 用 esbuild transpile，**类型错误直接忽略**。而 `workbench` 字段波及
+**13 个生产调用点 + 45 处测试构造点 = 58 处**。
+
+按文档做完 ⓪ 之后：`npm test` 全绿 / `npm run check` 58 个错误。
+而 §6 的验收表**从头到尾没提过 `npm run check`**——新人会带着 58 个类型错误交差。
+
+### 🔴 教训十四：后端测试基线是红的（7 条），而 §6 只给了前端基线
+
+```
+前端  78 文件 / 863 用例 / 0 失败    ✅ 我文档里的 78 是准的
+后端 142 文件 / 3217 用例 / 7 失败   ← §6 完全没提
+```
+
+那 7 条（deployContract 3 / buildAdapters 2 / secrets 1 / settingsRepo 1）
+是我接手前就有的债务，**我知道，却只把它写进 §八 债务，没写进 §6 的基线条目**。
+
+后果：新人改完六个后端步骤后跑测试看到 7 红——**是我弄坏的还是本来就有的？**
+六个后端步骤因此**永远没有"做完了"的判据**。这正是教训五控诉的病，只是这次长在验收层。
+
+### 🟡 其余卡点（审计列了 9 个，摘要）
+
+| 卡点 | 缺什么 |
+|---|---|
+| **文件路径全缺** | 全文引用 6 个文件名**一个都不带路径**。审计猜 `scoutEvents.ts` 在 dashboard（实际 `src/core/`）、猜 `notificationsRepo.ts` 在 core（实际 `src/v2/`） |
+| **迁移隐含规则** | 新列**只能写进迁移数组的条件式 ALTER**，绝不能同时改顶部 CREATE TABLE 终态定义——这条规则只存在于 `works` 表定义末尾的源码注释里，文档一字未提。③ 和 ⑥ 会各踩一次 |
+| **"循环末尾"到不了** | 教训九的单点收敛 SQL 说"每根循环末尾统一写一次"，但那个循环里有多处 `continue`，**末尾根本到不了**。要改 `try/finally` |
+| **七态类型没定义** | 给了优先级链没给类型。且 `SubtitleDot` 被**三个 DTO 共用**，扩成七态会波及列表页海报卡 |
+| **第 8 态无名无符号** | 教训八自承"七态其实是八态"，但第 8 态没进表、没有符号、§4.4 的"占比高"没给阈值 |
+| **符号怎么渲染** | ⊘⇄◇◆✓··· 讨论了两节，**从没说是文本还是 SVG**。当文本则六个字符字宽基线全不一致 |
+| **dev server 怎么起** | 文档 772 行零字。而 SSE 需要跑完整的 `watch`（daemon 会读守备目录、调 TMDB、可能烧 LLM），没有轻量模式 |
+| **Tab 拆型波及 6 处** | `route.ts`/`tabs.ts`/`Sidebar.tsx`/`NavIcons.tsx`/`AppShell.tsx`/`i18n×2`。其中 `AppShell.tsx` 5 处分支 + i18n 三个 key **不报错只静默失效** |
+| **Context 放哪** | 全文唯一线索是"`ScoutEventsProvider` 层"，没说目录、没说四个 Context 是四个文件还是一个 |
+
+### 审计给的"补三处收益最大"（已采纳）
+
+1. **§2.1 的 activity/workflow 处置** —— 唯一一条照做会立刻编译失败的
+2. **全文补仓库相对路径 + §5 每步补"要改哪些文件"清单** —— 纯机械，一次解掉三个卡点。
+   `tabs.ts:8-10` 的注释已经是现成模板（它列了"重启用一个 tab 要同步改的 5 处"）
+3. **§6 加两条基线**：后端 142/3217/**已知 7 红**（点名）+ `npm run check` 与
+   `cd web && npx tsc --noEmit` 退出码 0
+
+---
+
 ## 一、第一性原理：这个前端的本质
 
 ### 1.1 它是观察窗，不是应用
@@ -272,10 +373,10 @@ web/src  208 个 ts/tsx 文件 / 24709 行 / 78 个测试文件
 
 | 功能区 | 行数 | 测试文件 | 状态 | 处置 |
 |---|---|---|---|---|
-| activity | 4703 | 8 | ⚠️ **当前已不在导航里**（route.ts 只有 library/workflow/settings） | **重写** |
+| activity | 4703 | 8 | ✅ **生产在跑，挂在 `#/workflow` tab 下**（`AppShell.tsx:94`）。⚠️ v3 写「已不在导航里」**方向是反的** | **重写** |
 | settings | 3853 | — | ✅ live test 全程在用 | **保留** |
 | library | 2670 | — | ❌ 读 `series`（生产 0 行） | **重写** |
-| workflow | 1640 | — | ❌ 含假按钮 redispatch | **删** |
+| workflow | 1640 | — | ⚠️ Lanes 部分含假按钮 redispatch，但 `RunDetail`/`RerunDialog`/`useLiveTrail`/`phrases` **被 activity 四处 import**（照 v3 判「删」会立刻编译失败） | **部分删，复用件先迁出** |
 | **api** | **1851** | — | ⚠️ **v1 漏了** | **见下方裁决** |
 | **subtitleVerify** | **1758** | 3 | ⚠️ **v1 漏了** | **见下方裁决** |
 | components | 1743 | — | ✅ 与数据源无关 | **复用** |
@@ -591,9 +692,32 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 **v2 §4.3 原文写「◇ 就是 skip_reason 唯一的读者——不接就是第 8 次同型缺陷」，
 却没说要改后端。照那样实施，第 9 次当场发生。**
 
-**修法**（进 §5 与 §6）：`mediaLibraryApi.ts` 两条 SQL 补 `skip_reason, needs_subtitle`，
-`MediaLibraryEpisodeDTO` 把 `dot: 'none'|'blue'|'green'` 换成能表达七态的判别式，
-或直接透传 `subStatus` / `skipReason` / `needsSubtitle` 原值让前端染色。
+**修法（四轮审计要求钉死，v3 那个"或"把关键裁决留给了实施者）**：
+
+**优先级链在后端 `src/dashboard/mediaLibraryApi.ts` 实现**（不透传原值让前端算——
+前端不知道 `target_languages` 是什么，那是 R-F15 的后端判据）。
+
+```ts
+// 新增字段，八态。SubtitleDot 保持三态不动（它被三个 DTO 共用，
+// 扩它会波及列表页海报卡，而列表页是"底部渐变嵌进度条"不是点）
+export type EpisodeState =
+  | 'covered'      // ✓ 绿   sub_status='covered'
+  | 'translating'  // ⇄      sub_status='handoff_translate'
+  | 'unsolvable'   // ⊘      sub_status='unsolvable'
+  | 'origin-skip'  // ◇      skip_reason='origin-skip'
+  | 'embedded'     // ◆      embedded_langs 含目标语言
+  | 'pending'      // ···    needs_subtitle=1
+  | 'unjudged'     // ?      needs_subtitle IS NULL（第 8 态，v3 漏了）
+  | 'absent'       // 虚线   onDisk=false（不染色）
+```
+
+**第 8 态 `unjudged`**：符号用 `?`，中性灰。它在换语言重判期间是**多数态**
+（生产实测 `skip_reason` 1192 行全 NULL）。§4.4 的"正在重新判定"横幅
+触发阈值定为：**`unjudged` 占比 > 30%**。
+
+**符号怎么渲染**（v3 讨论了两节从没说）：统一走一个
+`<EpisodeMark state={...} />` 组件，**内联 SVG 12×12**，笔画照 `NavIcons.tsx` 的 1.8px 约定。
+不用 Unicode 文本——`···`(U+22EF) 与 `⇄`(U+21C4) 的字宽基线不一致，塞进集号格会歪。
 
 ### 4.4 异常态（v1 完全没写，审计 F-11）
 
@@ -623,6 +747,30 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 ⚠️ 二轮审计：v2 把三个不同量级的后端工程压成了三行字。展开后是 11 步。
 
 ```
+### 本地开发怎么跑起来（四轮审计：v3 772 行零字）
+
+```bash
+# ① 起后端（8099）。⚠️ watch 是完整日巡检 daemon，会读守备目录、调 TMDB、可能烧 LLM
+SUBTITLE_SCOUT_CACHE_DIR=./cache-local npm run cli watch
+# ② 起前端（5173，vite.config.ts 已配 /api → localhost:8099 代理）
+cd web && npm run dev
+```
+⚠️ **SSE 必须跑 ①**：`events: scoutEvents` 只在 `cmdWatch` 里注入（`src/cli/index.ts:662`），
+不跑 watch 的话 `/api/v2/events` 恒 503（`src/dashboard/server.ts:661`）。**没有轻量模式。**
+
+### ⚠️ 迁移的隐含规则（③ 与 ⑥ 各会踩一次）
+
+**新增列只能写进 `src/v2/db.ts` 迁移数组末尾的条件式 ALTER entry，
+绝不能同时改顶部的 CREATE TABLE 终态定义。**
+
+这条规则只存在于源码注释里（`works` 表定义末尾：「`provider_ids` 不在此终态定义里……
+**两处都写会让"改一处忘另一处"变成可能**」）。可照抄的先例：
+`media_roots.content_type`（v30）、`works.provider_ids`（v36）。
+
+同时要改 `src/v2/db.test.ts` 的 **16 处**版本号字面量
+（15 处 `value: 'NN'` + 1 处 `expect(MIGRATIONS.length).toBe(NN)`——后者不是 `value:` 形态，
+两个 subagent 分别数成 14 和 15 都漏了它）。
+
 **依赖图**（三轮审计 Y4：v3 只标了一处，实施者会以为全串行）
 ```
 ①②③④⑥⓪ 六步互不依赖，可全并行
@@ -635,9 +783,13 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 
 ```
 后端（必须先做，每步都要有验收，见 §6）
-⓪ ScoutEventInput 加必填 workbench 判别字段 +      中：教训七。不做则前端拿到
-  progress 节流改 per-workbench + current.kind      {done:3,total:47} 无法区分是
-  扩三态                                             识别还是字幕
+⓪ ScoutEventInput 加**可选** workbench 字段 +      中：教训七。不做则前端拿到
+  progress 节流改 per-workbench                     {done:3,total:47} 无法区分
+  ⚠️ 必须**可选**不能必填（教训十二）：实测 13 个
+  emit 点里有 6 个填不了——:519/:531/:542 是巡检级，
+  :1300/:1306/:1375 是阶段 1 扫描级，都不属于任何工作台。
+  判别靠 `workbench !== undefined`；current.kind 保持三态
+  改动波及 13 生产点 + 45 测试构造点 = 58 处（必跑 npm run check）
 ① 补 GET /api/v2/notifications                    小：读函数已有，只缺端点
 ② mediaLibraryApi 补 skip_reason/needs_subtitle/  中：改 2 条 SQL + DTO + 染色判别
    sub_status 透传，DTO 从三态扩到七态             ← 不做则 ◇⊘⇄··· 无数据，第 9 次同型缺陷
@@ -649,7 +801,15 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
    写入点                                          ← 只补回填不补写入 = 只修一半
 
 前端
-⑦ shell 改造：Route/NavTab 拆型 + SSE Context      ← 三页共同地基
+⑦ shell 改造：Route/NavTab 拆型 + SSE Context      ← 需 ⑤ 先落地（useHealth 基线源）
+   要改 6 处（四轮审计实测，v3 说"只需加一个分支"把工作量说小了）：
+     web/src/shell/route.ts      Tab/TAB_IDS/isTab/ShellRoute.tab/go()
+     web/src/shell/tabs.ts       TabMeta.id / NavLabelKey / TABS  ← 它的头注释就是现成模板
+     web/src/shell/Sidebar.tsx   TAB_ICONS: Record<Tab,...> 穷尽映射
+     web/src/shell/NavIcons.tsx  补 2 个图标（18×18、笔画 1.8px、currentColor）
+     web/src/shell/AppShell.tsx  5 处 route.tab === 分支  ⚠️ 改错只静默失效不报错
+     web/src/i18n/{en,zh}.ts     3 个新 nav_* key        ⚠️ 漏了只显示 key 不报错
+   SSE Context 放 web/src/events/（四个独立 Context 各一文件 + Provider）
 ⑧ 媒体库页（列表 + 详情）                          ← 纯 HTTP，能在 SSE 未通时先验 ⑦
 ⑨ 活动页                                          ← 依赖 SSE + backdrop
 ⑩ 通知页                                          ← 依赖 ① + SSE 提示
@@ -690,7 +850,9 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 | 活动页 | 巡检期间打开，卡片内容随 `docker logs` 的「字幕 X (N 文件, 第 i/n 个)」同步 |
 | 通知页 | **组数**（端点返回 `FoundGroup[]` 是按 work+season 聚合的）== `SELECT COUNT(DISTINCT work_id\|\|'/'\|\|COALESCE(season,-1)) FROM notifications WHERE found_at > now-7d`。⚠️ v3 原写 `COUNT(*)`（逐集行数），与实现口径不符、永远不通过——同一份文档里两条验收对同一端点给了两个口径 |
 | SSE | 断网 30 秒再恢复，页面自动重连；**且断线期间巡检若跑完，重连后活动页能靠 `/api/v2/health` 纠正**（这条专门验 F-6） |
-| **前端测试** | 文件数 >= 78 且用例总数 >= 实施前基线。**实施前先跑一次锁定基线** |
+| **前端测试** | `cd web && npx vitest run` → 文件数 >= **78**、用例 >= **863**、失败 **0**（实测基线，前端是干净的） |
+| **后端测试** | `npx vitest run --exclude '**/web/**'` → 文件数 >= **142**、用例 >= **3217**、失败 **必须恰好是那 7 条既有债务**：deployContract×3 / buildAdapters×2 / secrets×1 / settingsRepo×1。<br>⚠️ **不得 >7、不得出现新面孔**。v3 只给了前端基线，导致六个后端步骤永远没有"做完了"的判据（教训十四） |
+| **类型检查** | `npm run check` **且** `cd web && npx tsc --noEmit`，两条都要退出码 0。<br>⚠️ **vitest 不查类型**（esbuild transpile 直接忽略）——⓪ 的 `workbench` 字段波及 58 处，不跑这条会带着 58 个类型错误全绿交差（教训十三） |
 
 ### 后端六步的验收（二轮审计 🔴：v2 完全没有，那三步"永远算不完"）
 
