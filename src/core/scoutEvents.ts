@@ -67,6 +67,37 @@ export interface ScoutEventInput {
   data?: Record<string, unknown>
 }
 
+/**
+ * 「当前在处理什么」的**快照**（不是变化）。
+ *
+ * ── 为什么需要它（设计文档审计 F-6）──
+ * SSE 的 activity 事件是**变化**：断线期间巡检跑完、50 槽缓冲又被 progress 冲掉，重连后
+ * replay 里既没有"正在处理 X"也没有"巡检完成"，前端于是永远停在上一次看到的那句
+ * "正在处理 X"。变化流无法自证当前态，必须有一个可随时查询的快照与它并列。
+ *
+ * ── 为什么挂在总线上而不是落 meta 表 / 注入 daemon holder ──
+ * · holder 注入否掉：cli/index.ts 里 dashboard（:662 拿到 events）比 daemon（:745 才 new）
+ *   先构造，dashboard 手上根本没有 daemon 引用可注入。
+ * · meta 表否掉：meta 至今**没有任何读写封装**，全是散落裸 SQL；为一个每秒可能变几次的
+ *   内存态开一条落盘通道，是拿磁盘换一个进程重启就该归零的值。
+ * · 挂总线**零新增连线**：写入点 = 已有的 13 个 emit，触发点 = publish 本身，
+ *   读取点 = /api/v2/health。没有任何一方需要多认识一个对象。
+ *
+ * 字段一律 `| null` 而不是可选：这东西会被 JSON.stringify 送给前端，undefined 会让字段
+ * **整个消失**，前端就分不清"没在处理"和"这版后端还没这个字段"。
+ */
+export interface ScoutCurrent {
+  /** 哪个工作台在忙。取自事件的 `workbench`——**不是**从 message 里猜的。 */
+  kind: ScoutWorkbench
+  /** 正在处理的作品标题。事件没带 title 时是 null（不编一个）。 */
+  title: string | null
+  /** 队列里的第几个（progress 的 `data.done`）。只有 progress 带得出，故 activity 之后、
+   *  配对的 progress 之前会是 null——**这是诚实的 null，不是缺陷**。 */
+  index: number | null
+  /** 队列总长（progress 的 `data.total`）。 */
+  total: number | null
+}
+
 export interface ScoutEvent extends ScoutEventInput {
   /** 单调递增，从 1 起。SSE 的 `id:` 字段与浏览器 `Last-Event-ID` 续传就靠它。
    *  **被节流折叠掉的事件不占号**：占号的话重连补发会看到 id 空洞，客户端无从判断那是
@@ -125,8 +156,83 @@ export class ScoutEventBus {
    */
   private readonly lastProgressAt = new Map<ScoutWorkbench | undefined, number>()
 
+  /**
+   * 「现在在处理什么」的快照。见 ScoutCurrent 的头注释（为什么它必须与事件流并列存在）。
+   *
+   * ── 谁写它：本类的 updateCurrent，唯一入口是 publish（= 已有的 13 个 emit 点）。
+   * ── 谁读它：getCurrent()（Task ⑤ 的 /api/v2/health）。
+   * ── 何时清空：见 updateCurrent 里 `workbench === undefined` 那一支的论证。
+   */
+  private current: ScoutCurrent | null = null
+
   constructor(opts: ScoutEventBusOpts = {}) {
     this.nowFn = opts.now ?? (() => Date.now())
+  }
+
+  /**
+   * 依据一条事件推进 / 清空 current。**自带 try/catch**（不是靠 publish 那层兜）：
+   * 快照是增益，它算错了顶多 /health 显示不准，绝不许因此让这条事件推不出去——外层那个
+   * catch 是在 broadcast **之前**兜住的，一旦被它接住订阅者就一条都收不到了。
+   *
+   * ── 判别口径复用既有的那条：`workbench !== undefined` ──
+   * 有 workbench = 工作台级 → 它描述"某个台在处理某个作品"，推进快照。
+   * 无 workbench = 巡检级/扫描级（生产里正好 6 个点：巡检开始 / 巡检完成 / 巡检失败 +
+   *   阶段 1 扫描的三条 health）→ **清空**。
+   *
+   * ── 为什么"清空"这件事恰好能被这条口径覆盖（本 task 的核心判断）──
+   * 要解决的缺陷是"巡检跑完了前端还停在正在处理 X"。巡检的三种结局各发一条无 workbench
+   * 的事件：完成（activity）、失败（health）、以及下一轮的开始（activity）。三条都清空，
+   * 于是 current 在"没有任何工作台在跑"的全部时段里都是 null。
+   * **这不需要 daemon 配合、不新增任何连线**——这 6 个 emit 点在 Task ⓪ 之前就存在，
+   * 本改动一行 daemonV2 都没碰。
+   *
+   * 阶段 1 那三条扫描级 health 也会清空：它们发生在巡检开头，此刻 current 已被"巡检开始"
+   * 清成 null，再清一次是幂等的 no-op，不是误伤。
+   *
+   * ── found 为什么不动 current ──
+   * found 是**成果**（"装上了 3 条"），不是**状态**（"正在处理谁"）。拿它推进快照会让
+   * /health 把一条已经结束的活报成"正在处理"；拿它清空则会在同一个作品还要继续的中途
+   * 把状态条打空。成果的去处是通知页，不是状态快照。
+   */
+  private updateCurrent(input: ScoutEventInput): void {
+    try {
+      if (input.workbench === undefined) {
+        this.current = null
+        return
+      }
+      if (input.type === 'activity') {
+        // 新作品开工：index/total 归 null 而不是留着上一条的——留着就是拿甲剧的
+        // "第 3/47 个"去描述乙剧，正是本仓的病 B（把中间量说成结论量）。
+        this.current = { kind: input.workbench, title: input.title ?? null, index: null, total: null }
+        return
+      }
+      if (input.type === 'progress') {
+        // done/total 走 `data`（daemonV2 的两个 progress 点都填 `{ done, total }`）。
+        // data 的类型是 Record<string, unknown>，故必须逐个验型：非有限数一律记 null，
+        // **不做 Number() 强转**——把 undefined 转成 NaN 再报出去比报 null 更难排查。
+        const d = input.data
+        const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+        this.current = {
+          kind: input.workbench,
+          title: input.title ?? null,
+          index: num(d?.done),
+          total: num(d?.total),
+        }
+      }
+      // health（带 workbench，当前生产无此点）不动 current：它是异常播报，不是"在处理谁"。
+    } catch {
+      // 见方法头注释。宁可快照停在旧值，也不许连累这条事件的推送。
+    }
+  }
+
+  /**
+   * 「现在在处理什么」的当前快照，没有任何工作台在跑时为 null。
+   *
+   * **返回的是副本**：直接把内部对象交出去，调用方（/health 的 JSON 序列化路径）一改就
+   * 改到了总线的内部状态，而这种串味在测试里几乎照不出来。
+   */
+  getCurrent(): ScoutCurrent | null {
+    return this.current === null ? null : { ...this.current }
   }
 
   /**
@@ -139,6 +245,11 @@ export class ScoutEventBus {
    */
   publish(input: ScoutEventInput): void {
     try {
+      // 快照先于节流门推进：节流管的是**推送带宽**（别把 SSE 刷屏），而 current 是
+      // 按需查询的，一次巡检里被读几次由前端决定，与事件频率无关。放在门后的话，被折叠
+      // 的那 3/4 条 progress 也会把快照一起折叠掉——而这个快照的存在意义恰恰是
+      // "断线/丢事件时仍能问出真实当前态"，让它跟着丢是自废武功。
+      this.updateCurrent(input)
       const at = this.nowFn()
       if (input.type === 'progress') {
         // 未记录过 → 视为 -Infinity（第一条无条件放行）。注意 Map 里可能存着 0
