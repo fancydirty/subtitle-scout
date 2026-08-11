@@ -411,12 +411,30 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       expect(stateOf({ subStatus: 'covered', needsSubtitle: 0, skipReason: 'origin-skip' })).toBe('covered')
     })
 
-    it("🔴 origin-skip 先于 embedded：国产片同时带中文内嵌轨 → 'origin-skip'", () => {
-      // 照抄 judgeSubtitle 自己的规则顺序（origin_lang 命中在前）。反过来的话显示的 ◆
-      // 会与库里 skip_reason 的值直接矛盾——同一个事实两处对不上，排障时无从下手。
-      // judge 对这种片子写进 skip_reason 的就是 'origin-skip'，这里必须与它一致。
+    it("🔴 skip_reason 的值直通 state：judge 说 'origin-skip'，界面就得是 ◇（不许自己按 embedded_langs 重算）", () => {
+      // ⚠️ 这条用例原名「origin-skip 先于 embedded」并声称钉住了一条优先级——**审计 A-2 证伪**：
+      // skip_reason 是单值列，两个守卫互斥，调换 if 顺序是空操作（实测 0 红）。
+      // 它真正钉的是**映射**：judge 写进库的 reason 值，必须原样映射成对应的 state。
+      // 把返回值互换（reason='origin-skip' 却返回 'embedded'）才会红——这才是真判据。
+      //
+      // 这里刻意给一个同时带 chi 内嵌轨的国产片：episodeState 必须听 skip_reason 的（◇），
+      // **不许**自己去看 embedded_langs 改判成 ◆。理由见实现注释里那段"未声明的规格偏离"——
+      // 语言判据只能有一份，且那一份在 judge 手里（R-F15 换语言时它会重算）。
       expect(stateOf({ needsSubtitle: 0, skipReason: 'origin-skip', embeddedLangs: ['chi'] }))
         .toBe('origin-skip')
+    })
+
+    it("🔴 反向对照：同样带 chi 轨，reason='embedded' 才给 ◆（证明上一条钉的是映射不是顺序）", () => {
+      expect(stateOf({ needsSubtitle: 0, skipReason: 'embedded', embeddedLangs: ['chi'] }))
+        .toBe('embedded')
+    })
+
+    it("🔴 reason 缺席时不许拿 embedded_langs 猜：有 chi 轨但 reason=NULL → unjudged（'还没判'）", () => {
+      // 审计 A-3 记录的已知偏差就长在这里：此格 dot='blue'（有 chi 轨）而 state='unjudged'。
+      // 两个控件口径不同是**有意的**——dot 描述磁盘事实，state 描述 judge 的判决。
+      // 判决没下就说"还没判"，比拿磁盘事实替 judge 下结论诚实（换目标语言后后者会翻车）。
+      expect(stateOf({ needsSubtitle: 0, skipReason: null, embeddedLangs: ['chi'] }))
+        .toBe('unjudged')
     })
 
     // ── ④ 虚线格与 R-F2 聚合 ──────────────────────────────────────────────────
@@ -434,6 +452,48 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:802', season: 1, episode: 1, subStatus: null, needsSubtitle: 1 })
       addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:802', season: 1, episode: 1, subStatus: 'covered' })
       expect(buildMediaLibraryDetail(db, 'tmdb:802')!.seasons[0].episodes[0].episodeState).toBe('covered')
+    })
+
+    it('🔴 R-F2 违反（审计 A-4）：一份 unsolvable + 一份 embedded → 必须是 embedded，不是 unsolvable', () => {
+      // ── 这条用例的来历 ────────────────────────────────────────────────────────
+      // 审计实测：STATE_RANK 把 unsolvable（**流程失败态**）排在 embedded / origin-skip
+      // （两个**不需要字幕的终态**）之前，于是一份文件配不到字幕，就把另一份"压根不需要
+      // 字幕"的事实盖掉了。同一格上两个控件会互相打脸：
+      //   圆点说 blue（有中文内嵌轨，不需处理）／集号染色说 ⊘（判定无解）
+      // 这正是 R-F2「任一份有字幕就算已获取」要防的形态，只是换了个控件。
+      // aggregateDot 用 .some() 遵守了 R-F2，aggregateState 必须与它同向。
+      addWork('tmdb:804', { title: 'RankConflict' })
+      addCanonical('tmdb:804', 1, [1])
+      addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:804', season: 1, episode: 1, subStatus: 'unsolvable' })
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:804', season: 1, episode: 1, needsSubtitle: 0, skipReason: 'embedded', embeddedLangs: ['chi'] })
+      const ep = buildMediaLibraryDetail(db, 'tmdb:804')!.seasons[0].episodes[0]
+      expect(ep.episodeState).toBe('embedded')
+      // 两个控件必须同向——这条断言才是本用例的真正目的
+      expect(ep.dot).toBe('blue')
+    })
+
+    it('🔴 R-F2 违反（审计 A-4）：一份 unsolvable + 一份 origin-skip → 必须是 origin-skip', () => {
+      addWork('tmdb:805', { title: 'RankConflict2' })
+      addCanonical('tmdb:805', 1, [1])
+      addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:805', season: 1, episode: 1, subStatus: 'unsolvable' })
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:805', season: 1, episode: 1, needsSubtitle: 0, skipReason: 'origin-skip' })
+      expect(buildMediaLibraryDetail(db, 'tmdb:805')!.seasons[0].episodes[0].episodeState).toBe('origin-skip')
+    })
+
+    it('🔴 translating 同理不许盖掉"不需要字幕"：一份 handoff_translate + 一份 origin-skip → origin-skip', () => {
+      addWork('tmdb:806', { title: 'RankConflict3' })
+      addCanonical('tmdb:806', 1, [1])
+      addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:806', season: 1, episode: 1, subStatus: 'handoff_translate' })
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:806', season: 1, episode: 1, needsSubtitle: 0, skipReason: 'origin-skip' })
+      expect(buildMediaLibraryDetail(db, 'tmdb:806')!.seasons[0].episodes[0].episodeState).toBe('origin-skip')
+    })
+
+    it('🔴 但 covered 仍然最优先：一份 covered + 一份 origin-skip → covered（与 .some() 同向）', () => {
+      addWork('tmdb:807', { title: 'RankCovered' })
+      addCanonical('tmdb:807', 1, [1])
+      addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:807', season: 1, episode: 1, subStatus: 'covered' })
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:807', season: 1, episode: 1, needsSubtitle: 0, skipReason: 'origin-skip' })
+      expect(buildMediaLibraryDetail(db, 'tmdb:807')!.seasons[0].episodes[0].episodeState).toBe('covered')
     })
 
     it('🔴 顺序无关：把上一条的两份文件调换入库顺序，结论必须一模一样', () => {
@@ -499,6 +559,19 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       addWork('tmdb:102', { title: 'A Show', mediaType: 'tv' })
       addFile({ path: '/t/s1e1.mkv', workId: 'tmdb:102', season: 1, episode: 1 })
       expect(buildMediaLibraryDetail(db, 'tmdb:102')!.movie).toBeNull()
+    })
+
+    it('🔴 零文件的电影（审计 A-6）：详情端点没有 INNER JOIN，空壳 works 打得进来 → absent 而非 unjudged', () => {
+      // DTO 注释原先断言「电影那一格恒有文件，故不会是 absent」——那个推理只对**列表页**成立
+      // （buildMediaLibrary 用 INNER JOIN files 滤掉了空壳）。详情页是 FROM works WHERE id=?，
+      // 直接按 workId 打就能拿到零文件的 movie。此时 aggregateState([]) 会走兜底返回 unjudged，
+      // 把"磁盘上什么都没有"报成"系统还没判它"——那是把 absent 说成 unjudged，病 B 的形态。
+      addWork('tmdb:900', { title: 'GhostMovie', mediaType: 'movie' })
+      const d = buildMediaLibraryDetail(db, 'tmdb:900')!
+      expect(d.movie).not.toBeNull()
+      expect(d.movie!.fileCount).toBe(0)
+      expect(d.movie!.episodeState).toBe('absent')
+      expect(d.movie!.dot).toBe('none')
     })
 
     it('🔴 R-F2 电影也按任一份算：两份拷贝，一份有字幕 → 绿点', () => {

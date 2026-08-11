@@ -164,11 +164,19 @@ function fileHasEmbeddedChinese(embeddedLangs: string[] | null): boolean {
  *  与 pending 的 `needs_subtitle=1` **互斥**，段内没有真正的冲突可言。列成链只是为了让
  *  "0 却没有 reason"这种旧库形态有明确落点（见下方 needs===0 的兜底）。
  *
- *  【第二段段内：origin-skip 先于 embedded】
- *  这一条是**照抄 judgeSubtitle 自己的规则顺序**（origin_lang 命中在前、embedded_langs 在后），
- *  不是本文件另立的偏好。一部国产片同时带中文内嵌轨时，judge 写进 skip_reason 的就是
- *  'origin-skip'；这里若反过来先判 embedded，显示的 ◆ 会与库里 skip_reason 的值直接矛盾，
- *  排障时两处对不上。判据只有一个来源，顺序也必须只有一个来源。
+ *  【第二段段内：origin-skip 与 embedded **不存在**优先级——它们是同一列的两个互斥值】
+ *  ⚠️ 审计 A-2/A-3 纠正：这里原先写着"origin-skip 先于 embedded，照抄 judgeSubtitle 的规则顺序"，
+ *  并声称该顺序经变异验证。**两句都不成立**——审计实测把两个 if 调换、把 STATE_RANK 里两者
+ *  调换，**测试都是 0 红**，因为 `skip_reason` 是**单值列**，两个守卫天然互斥，调换是空操作。
+ *  真正会红的是把**返回值**互换（那是映射错了，不是顺序错了）。
+ *
+ *  顺带澄清一处**未声明的规格偏离**（审计 A-3）：设计文档 §4.3 给第 5 档定的判据是
+ *  「embedded_langs 含目标语言」，而这里读的是 `skip_reason === 'embedded'`。
+ *  **这是有意的，且比规格更对**：skip_reason 由 judge 在判定时按当时的 target_languages 算出，
+ *  在 DTO 层拿 embedded_langs 重算等于把 R-F15 的语言判据复制第二份（换语言后两份会分叉）。
+ *  代价是 judge 还没轮到重判的行会落 unjudged 而不是 embedded——那是诚实的"还没判"。
+ *  ⚠️ 已知未覆盖：`embedded_langs` 有目标语言轨但 skip_reason 尚未写入时，
+ *  dot 会给 blue 而 episodeState 给 unjudged，同一格两个控件口径不同。见债务清单。
  *
  *  【第三段 unjudged 兜底在最后】
  *  它是"系统答不上来"，只有在前面所有判据都不成立时才成立——这正是兜底的定义。
@@ -205,8 +213,15 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
 
   // 第二段：judge 的判决（needs_subtitle）+ 理由（skip_reason）。
   // 判据用 needs_subtitle 而非"skip_reason 非空"：skip_reason 是 v40 才加的列（db.ts:1039），
-  // 存量库里 judge 早已判过的行这一列全是 NULL（生产实测 1192 行全 NULL）。以 reason 为准的话，
-  // 那 1192 行会全部落进 unjudged —— 而它们其实判过，只是判的时候还没有这一列。
+  // **存量行在被重判之前这一列是 NULL**，而 needs_subtitle 从 v1 就在。以 reason 为准的话，
+  // 滚更窗口里"判过但还没轮到重判"的行会全部落进 unjudged —— 那是把已知说成未知。
+  //
+  // ⚠️ 这里原先写着「生产实测 1192 行全 NULL」——**那是假数字，审计实测推翻**（2026-08-11）：
+  //   skip_reason: origin-skip 808 / missing 212 / embedded 172，合计 1192，**一行 NULL 都没有**；
+  //   needs_subtitle=0 且 skip_reason IS NULL 的行数 = 0。
+  // 那个数字来自设计文档里一份写于 v40 迁移 + 一轮 judge 跑完之前的过期观察，被逐级照抄成了
+  // "生产实测"。判据的选择本身没错（当前库上两种判据等价），但**支撑它的论据当时是编的**——
+  // 记在这里，因为"把转述包装成实测"正是本仓的病 B。真论据是上面那条结构性理由，与行数无关。
   if (f.needs_subtitle === 0) {
     if (f.skip_reason === 'origin-skip') return 'origin-skip'
     if (f.skip_reason === 'embedded') return 'embedded'
@@ -232,13 +247,40 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
  *  「绝命毒师」目录只要有一处 S01E03 有字幕就算已获取——同一条口径必须覆盖到八态上，
  *  否则圆点说"已获取"而集号染色说"待处理"，同一张卡上两个控件自相矛盾。
  *
- *  取法 = 按上面那条优先级链取**最靠前**的那一份，而不是取第一行：取首行的实现会因入库
- *  顺序不同给出相反结论（aggregateDot 的注释里钉过同一个坑，那次是 `.some()` 治的）。 */
+ *  取法 = 按下面那条**聚合序**取最靠前的那一份，而不是取第一行：取首行的实现会因入库
+ *  顺序不同给出相反结论（aggregateDot 的注释里钉过同一个坑，那次是 `.some()` 治的）。
+ *
+ *  ⚠️⚠️ **聚合序 ≠ 分类链**（审计 A-4 抓到的 R-F2 违反，本仓第一次踩这个形态）：
+ *
+ *    分类链（classifyFileState）问的是「**这一份**处在流水线的哪个位置」，
+ *    所以 sub_status 三态优先——它是持续变化的现状，盖过一次判完就不再动的 needs_subtitle。
+ *
+ *    聚合序问的是「**哪一份**代表这一格」，判据完全不同：**已解决 > 未解决**。
+ *    origin-skip / embedded 是「压根不需要字幕」的**终态**，unsolvable / translating 是
+ *    「还没搞定」的**流程态**。原先照抄分类链，把 unsolvable 排在了 embedded 前面，于是
+ *    一份配不到字幕，就把另一份「压根不需要」的事实盖掉了——同一格上圆点说 blue（不需处理）、
+ *    集号染色说 ⊘（无解），两个控件互相打脸。**这正是 R-F2 要防的形态，只是换了个控件。**
+ *
+ *    判据统一为：与 aggregateDot 的 `.some()` 同向——只要有一份「不用管了」，这一格就不用管了。
+ */
 const STATE_RANK: readonly Exclude<EpisodeState, 'absent'>[] = [
-  'covered', 'translating', 'unsolvable', 'origin-skip', 'embedded', 'pending', 'unjudged',
+  // ── 已解决（这一格不需要人再操心）──────────────────────────────────────────
+  'covered',      // 有外挂字幕（R24 磁盘事实，与 .some() 同向）
+  'origin-skip',  // 母语即目标语言，压根不需要字幕
+  'embedded',     // 已有内嵌目标语言轨
+  // ── 未解决（还在流水线上 / 卡住了）─────────────────────────────────────────
+  'translating',  // 在翻译台上
+  'unsolvable',   // 配不到也翻不了
+  'pending',      // 排队等找
+  'unjudged',     // 系统还答不上来（兜底，必须垫底）
 ]
 
-function aggregateState(files: readonly FileRow[]): Exclude<EpisodeState, 'absent'> {
+function aggregateState(files: readonly FileRow[]): EpisodeState {
+  // 零文件 → 'absent'（审计 A-6）。这一格磁盘上什么都没有，不是"系统还没判它"。
+  // 走得到这里的真实路径：buildMediaLibraryDetail 的电影分支是 `FROM works WHERE id = ?`，
+  // **没有列表页那个 INNER JOIN files**，所以按 workId 直接打详情端点就能拿到空壳 works。
+  // 原先落进下面的兜底返回 unjudged，把 absent 说成 unjudged——病 B 的形态。
+  if (files.length === 0) return 'absent'
   let best = STATE_RANK.length - 1
   for (const f of files) {
     const rank = STATE_RANK.indexOf(classifyFileState(f))
@@ -256,9 +298,12 @@ interface DotAggregate {
   /** 其中有外挂中文 sidecar 的份数（R-F2 原话"另一处那份仍要单独去配"的可见依据）。 */
   subtitledFileCount: number
   dot: SubtitleDot
-  /** 八态（R-F12）。与 dot 走**同一条** R-F2「任一份算」口径，只是判据更细，
-   *  见 aggregateState。虚线格由调用方覆盖成 'absent'（这里拿不到 onDisk 这个信息）。 */
-  episodeState: Exclude<EpisodeState, 'absent'>
+  /** 八态（R-F12）。与 dot 走**同一条** R-F2「任一份算」口径，只是判据更细，见 aggregateState。
+   *
+   *  两条路径会得到 'absent'：① 剧集的虚线格由调用方直接覆盖成 'absent'（这里拿不到 onDisk）；
+   *  ② **零文件的电影格**——详情端点没有列表页那个 INNER JOIN，空壳 works 打得进来（审计 A-6）。
+   *  故这里不能收窄成 Exclude<..., 'absent'>。 */
+  episodeState: EpisodeState
 }
 
 /** 🔴 R-F2 防猴子用户核心条款：**任一份**有字幕 → 该格算已获取。
@@ -452,10 +497,12 @@ export interface MediaLibrarySeasonDTO {
 /** 电影那一格（剧集恒 null）。 */
 export interface MediaLibraryMovieDTO {
   dot: SubtitleDot
-  /** 同 MediaLibraryEpisodeDTO.episodeState 的八态口径。电影那一格**恒有文件**
-   *  （buildMediaLibraryDetail 只在 mediaType==='movie' 时构造它，而 works 行能露出
-   *  就意味着至少有一个文件），故这里不会是 'absent'——但类型上保留完整联合：
-   *  收窄成 Exclude<EpisodeState,'absent'> 会让前端为电影和剧集写两套 switch。 */
+  /** 同 MediaLibraryEpisodeDTO.episodeState 的八态口径。
+   *
+   *  ⚠️ 这里原先写着「电影那一格**恒有文件**，故不会是 'absent'」——**审计 A-6 证伪**：
+   *  那条推理只对**列表页**成立（buildMediaLibrary 用 INNER JOIN files 滤掉了空壳 works）。
+   *  详情页是 `FROM works WHERE id = ?`，按 workId 直接打就能拿到零文件的 movie，
+   *  此时这里就是 'absent'。前端不许假设电影格必有文件。 */
   episodeState: EpisodeState
   fileCount: number
   subtitledFileCount: number
