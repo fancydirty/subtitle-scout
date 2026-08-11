@@ -20,6 +20,7 @@ import {
 } from './apiV2.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from '../core/traceBus.js'
+import type { ScoutEventBus } from '../core/scoutEvents.js'
 import { AuthService, AUTH_KEYS, safeStrEqual } from './auth.js'
 import {
   buildVerifyDTOs, correctSubtitle, revertSubtitle, parseItemIds, parseItemIdBody,
@@ -95,7 +96,24 @@ export interface DashboardOpts {
    *  `probeDuration` 会 spawn ffprobe、`classify` 会读 /proc/self/mountinfo（macOS 开发机上
    *  恒读不到 → 恒判 cloud，那样"lan 不被误禁"这条回归锁在开发机上压根跑不起来）。 */
   subtitleCompareDeps?: Partial<SubtitleCompareDeps>
+  /** R-F10：全站唯一那条 SSE 通道（GET /api/v2/events）的事件源。
+   *
+   *  为什么是**注入**而不是模块级单例（与隔壁 traceBus 刻意不同）：单例会让并行跑的用例
+   *  互相串事件，而这条通道的每一条用例都在数"收到几条"。生产接线在 cmdWatch——同一个
+   *  ScoutEventBus 实例一头给 daemonV2 的 emit、一头给这里。
+   *
+   *  缺席 → 该端点 503（照 jobs/tmdb 那批可选依赖的既有降级先例）。**不做成 200 空流**：
+   *  那种失败是静默的（前端对着一条永远没数据的流干等，界面看起来只是"很安静"），正是
+   *  本仓栽过 6 次的"有能力但没人触发"那一类。 */
+  events?: ScoutEventBus
+  /** SSE 保活注释帧的周期。默认 15s；**测试注入小值**，否则每条心跳用例要真等 15 秒。 */
+  eventsHeartbeatMs?: number
 }
+
+/** SSE 保活注释帧周期（R-F10 约束 1：保活不许占事件通道，故用注释帧而不是数据帧）。
+ *  15s 沿用隔壁 trace-stream 的既有值——反代（nginx 默认 60s proxy_read_timeout）掐断
+ *  空闲连接前必须有东西流过。 */
+const EVENTS_HEARTBEAT_MS = 15_000
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -200,7 +218,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride } = opts
+  const { db, port, token, distDir, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride, events, eventsHeartbeatMs } = opts
   const settingsRepo = new SettingsRepo(db)
   // spec A §4.4：setup 面依赖——默认接真实实现（cfg 的 dbGet 惰性读库，wizard 落库后下一次
   // status/validate 调用自然反映），测试经 opts.setupDeps 部分覆盖（同 subDeps 先例）。
@@ -608,6 +626,81 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = redispatch(jobs, body, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? result.outcome : { error: result.error }))
+        return
+      }
+
+      // ── R-F10：GET /api/v2/events —— 全站唯一那条 SSE 通道 ─────────────────────
+      //
+      // 为什么只有**一个**端点、四类事件全走同一条流（用户裁决 R-F10 约束 3）：HTTP/1.1
+      // 每源只有 6 个连接上限，三个页面（活动/通知/媒体库）各开一条会吃掉一半，剩下的要
+      // 分给全站的图片与 API 请求。类型区分靠 SSE 的 `event:` 字段，前端在 shell 层分发。
+      //
+      // 鉴权已由上方统一前置门完成（与其余 22 个 /api/v2/* 端点同一道门，三通道齐全）。
+      // ⚠️ 浏览器原生 EventSource **不能带自定义请求头**，所以 apiKey 必须走 `?apikey=`
+      // query 通道——那条通道在前置门里已经存在（`url.searchParams.get('apikey')`），
+      // 这里不新开任何旁路。
+      //
+      // 与隔壁 trace-stream（痕迹通道 C）的分工：那条是给排障看的 agent 工具调用流水，
+      // 事无巨细；这条只推"对用户有必要"的 4 类（R-F10）。两条通道刻意不合并——合并就等于
+      // 把"我跑了多少次 ffprobe"重新推到用户脸上，而那正是本裁决要消灭的东西。
+      if (rawPath === '/api/v2/events') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (!events) {
+          // 缺席 → 可诊断的 503（见 DashboardOpts.events 的论证：绝不做成静默的 200 空流）。
+          res.writeHead(503, JSON_CT)
+          res.end(JSON.stringify({ error: 'event stream not configured (bus missing)' }))
+          return
+        }
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+          // 反代（nginx）默认会缓冲上游响应，SSE 于是卡住直到缓冲满——这个头让它关掉。
+          'x-accel-buffering': 'no',
+        })
+        // 显式冲刷响应头：Node 默认等到第一次 write() 才冲，而 SSE 客户端要在第一条数据/
+        // 心跳到达之前就看到连接已建立（论证与实测复现见隔壁 trace-stream 分支）。
+        res.flushHeaders()
+        // socket 猝死（客户端断网/杀进程）到 'close' 事件触发之间有窗口——窗口内的写入打在
+        // 已毁的流上，ServerResponse 无 'error' 监听器时是 uncaughtException，**整个守护
+        // 进程（产品本体）直接崩**。两道防线照抄 trace-stream 的既有形态：no-op 'error'
+        // 兜底 + 每次写入前的 destroyed/writableEnded 守卫。
+        res.on('error', () => {})
+
+        const write = (chunk: string): void => {
+          if (res.destroyed || res.writableEnded) return
+          try { res.write(chunk) } catch { /* 在途 EPIPE：见上方两道防线的论证 */ }
+        }
+        const frame = (e: { id: number; type: string }): string =>
+          // `id:` 必须发——浏览器 EventSource 靠它维护 Last-Event-ID，断线重连时自动带回来。
+          `id: ${e.id}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`
+
+        // 断线续传：浏览器 EventSource 重连时自动带 `Last-Event-ID` 头（手机锁屏再打开必然
+        // 走这条路）。不补发的话活动页在重连后会短暂空白，且断线期间"找到了字幕"这类
+        // 通知页数据源会**永久丢失**（前端没有别的地方能补到它）。
+        // 非法/缺席的头按 0 处理（= 补发缓冲里全部，最多 50 条，不会失控）。
+        const lastIdRaw = req.headers['last-event-id']
+        const lastId = Number(Array.isArray(lastIdRaw) ? lastIdRaw[0] : lastIdRaw)
+        for (const e of events.replay(Number.isFinite(lastId) && lastId > 0 ? lastId : 0)) {
+          write(frame(e))
+        }
+
+        const unsubscribe = events.subscribe((e) => { write(frame(e)) })
+        // 保活只发 SSE **注释帧**（`: ping`），不发数据帧（R-F10 约束 1：只推变化不推心跳）。
+        // 日巡检模型下大部分时间确实没有变化——发心跳数据帧会让前端每 15 秒收到一条"什么
+        // 也没发生"，活动页得自己把它过滤掉，而注释帧连 EventSource 的 message 事件都不触发。
+        const heartbeat = setInterval(() => { write(': ping\n\n') }, eventsHeartbeatMs ?? EVENTS_HEARTBEAT_MS)
+        req.on('close', () => {
+          clearInterval(heartbeat)
+          // 必须退订：不退就是长跑 daemon 上的真实内存泄漏——每次浏览器重连留一个死回调，
+          // 而回调闭包里还攥着整个 ServerResponse。守卫在 eventStream.test.ts 的
+          // subscriberCount 断言（只测"退订后收不到"证明不了内部集合已经放手）。
+          unsubscribe()
+        })
         return
       }
 

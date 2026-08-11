@@ -14,6 +14,7 @@ import { gcOrphans } from '../files/stagingSandbox.js'
 import { isDirWritable, sweepWriteProbes, type PathMapping } from '../core/mediaContext.js'
 import { makeFileLogger } from '../core/fileLogger.js'
 import { startDashboard } from '../dashboard/server.js'
+import { ScoutEventBus } from '../core/scoutEvents.js'
 import { AuthService } from '../dashboard/auth.js'
 import { makeModel } from '../agent/llm.js'
 import { cmdTranslateItem, tryAutoTranslateCfg, makeDaemonTranslateRunItem } from './translateItemCommand.js'
@@ -250,6 +251,15 @@ async function cmdWatch() {
   // 低，只把 error/notice 落一行 log。
   // 提到 buildCurrent 之前（holder 化后 realign adapters 在 buildCurrent 里组装，需要同一个 emit
   // 函数，且 const 不能被前向引用）。
+  // R-F10：全站唯一那条 SSE 通道的事件总线。**一个实例、两个消费方**——daemon 产
+  // （buildDaemonV2Deps 的 emit），dashboard 推给浏览器（startDashboard 的 events）。
+  //
+  // 建在这里（dashboard 启动之前、daemon 组装之前）是刚性的：两者都在本函数里构造，
+  // 谁先建都行但必须**是同一个实例**。只喂一头是本仓栽过 6 次的那个静默形态——有产无收
+  // （daemon 发了没人推）或有收无产（端点在但永远没数据），两者在界面上都只是"很安静"。
+  // 守卫在 watchWiring.test.ts 的源码断言（它按 `scoutEvents` 这个符号名定位这两处接线）。
+  const scoutEvents = new ScoutEventBus()
+
   const emitProviderEvent = (e: FetchEvent) => {
     applyQuotaEvent(e, settingsRepo, Date.now())
     if (e.event === 'provider_error') log(`find-subtitle worker: provider error (${e.provider}): ${e.message}`)
@@ -648,6 +658,8 @@ async function cmdWatch() {
       requestIngest: () => {
         void ingestTrigger().catch((e) => log(`warn: 甄别认领后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
       },
+      // R-F10：SSE 通道的消费端（GET /api/v2/events）。与下方 daemon 的 emit 是同一个实例。
+      events: scoutEvents,
     })
     if (dashServer.listening) {
       // 鉴权 A4 Task 15：启动播报三态（裸奔告警退役）。DASHBOARD_TOKEN 现在只是 legacy 兼容
@@ -826,6 +838,9 @@ async function cmdWatch() {
     // C12：探针复用 files/streamProbe.ts 的既有实现（旧 ingest 接的是同一对函数），不写第二份。
     probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
     probeDuration: (videoPath: string) => probeDurationSec(videoPath),
+    // R-F10：SSE 通道的生产端。与上方 startDashboard 的 events 是同一个 ScoutEventBus 实例
+    // ——节流（progress 1s）、续传缓冲（50 条）、订阅者广播都长在总线里，这里只负责发。
+    emit: (e) => scoutEvents.publish(e),
   }))
 
 

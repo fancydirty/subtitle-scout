@@ -17,6 +17,7 @@ import type { IdentifySchedulerDeps } from '../v2/identifyScheduler.js'
 import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import type { FindSubtitleTask, FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
 import type { TranslateRunItemResult } from '../v2/translateWorkerTask.js'
+import type { ScoutEventInput } from '../core/scoutEvents.js'
 
 export interface WatchWiringArgs {
   db: ScoutDb
@@ -69,6 +70,13 @@ export interface WatchWiringArgs {
   requestIngest: () => void
   probe: (videoPath: string) => Promise<EmbeddedSubtitleTrack[] | null>
   probeDuration: (videoPath: string) => Promise<number | null>
+  /** R-F10：SSE 事件出口（cmdWatch 侧 = `scoutEvents.publish`，同一个 ScoutEventBus 实例
+   *  的另一头喂给 startDashboard 的 `events`）。
+   *
+   *  **必填**，与 4 个运维器官同一手法：漏接不报错、只是 SSE 流永远空着——而那与"系统正在
+   *  歇着"在界面上完全无法区分（本仓栽过 6 次的「有能力但没人触发」）。让类型层强制每个
+   *  构造点都想一次，比事后靠一条断言去追要可靠。 */
+  emit: (e: ScoutEventInput) => void
 }
 
 /** 把 cmdWatch 已经组装好的原料映射成 DaemonV2Deps。纯函数、无副作用、不 new 任何东西。 */
@@ -116,5 +124,9 @@ export function buildDaemonV2Deps(args: WatchWiringArgs): DaemonV2Deps {
     // judge 规则 2 与 D9 的 translatable 预判照旧静默失效。
     probe: args.probe,
     probeDuration: args.probeDuration,
+    // R-F10：**透传函数本身**，不在这里包装或就地求值——包装一层就等于多一处能静默吃掉
+    // 事件的地方，而 daemonV2 内部的 `this.emit()` 已经是那道 try/catch 隔离（一处足矣，
+    // 两处就没人说得清事件到底死在哪一层）。
+    emit: args.emit,
   }
 }

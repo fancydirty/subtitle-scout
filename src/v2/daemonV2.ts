@@ -31,6 +31,9 @@ import { tmdbIdFromOwnId, translateItemId, translateJobId } from './ownIds.js'
 // TTL 门、gain-path 降级（拿不全所有季就一行不落）两条语义都长在它里面，回填 pass 只负责
 // "把 works 里的 tv 一个个喂给它"——刷新节奏因此只有一个权威。
 import { refreshSeriesCatalog } from './tmdbCatalog.js'
+// R-F10：SSE 事件的载荷类型（只引类型，总线实例由 cmdWatch 注入——daemon 不认识总线本体，
+// 同 reasoningAgent 只引 TraceEvent 类型不引 traceBus 单例的既有分层）。
+import type { ScoutEventInput } from '../core/scoutEvents.js'
 // 语言集合的唯一定义处（C31 末段 / 任务 G 收敛）：judge 的喂料与翻译流的语言门同源。
 import {
   FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS,
@@ -324,6 +327,27 @@ export interface DaemonV2Deps {
    *
    *  被闸住时也**不推进时间闸**：否则用户配好密钥点火后，还要等最多 24h 才有第一轮巡检。 */
   workPermitted?: () => boolean
+
+  /** R-F10：SSE 推送通道的事件出口。**只发"对用户有必要"的 4 类**——发布点清单与逐条判据
+   *  见 docs/design/2026-08-11-FRONTEND-SPEC.md §六·六，接线在 cli/watchWiring.ts。
+   *
+   *  ── 为什么是显式 emit，而不是在 cli 的 log 函数里做模式匹配（设计选择 A）──
+   *  旁路 log 等于**解析自己刚打印出来的字符串**：日志文案一改事件就静默失效，而本仓今天
+   *  已经栽过三次"日志文案与实际口径不符"（`judge: N 个文件判定需字幕` 把总数说成需字幕数、
+   *  `scan: probe ok=N` 统计"没抛异常"而非"写进去了"）。显式调用点则由 tsc 与本文件旁边的
+   *  daemonV2.events.test.ts（走完整 run()）钉住。
+   *
+   *  ── 纪律：不许把排障信息塞进来 ──
+   *  probe wrote=N 统计、`回填: xxx ok=N`、`judge: 判定 N 个文件`、trace 修剪、清理写探针、
+   *  各种"（隔离，下轮重试）"的单文件错误**一律不发**（R-F10 反面清单）。它们的去处是
+   *  doctor 按钮 + 日志文件。理由：**把系统的辛苦展示给用户看是反效果**——用户要的是
+   *  "找到了什么"，不是"我跑了多少次 ffprobe"。反例锁在 daemonV2.events.test.ts。
+   *
+   *  ── optional + 失败隔离 ──
+   *  缺席即整支静默、零成本（同 probe / gcStaging / translateRunItem 的既有门控模式：
+   *  几百条既有测试与构造点都不传这个字段）。调用一律经私有的 `this.emit()` 包 try/catch
+   *  ——SSE 挂了绝不能影响巡检，与本仓 gcStaging/dbMaintenance 的既有口径一致。 */
+  emit?: (e: ScoutEventInput) => void
 }
 
 
@@ -383,6 +407,21 @@ export class ScoutDaemonV2 {
   private currentRoots(): string[] {
     if (this.rootsSnapshot !== null) return this.rootsSnapshot
     return this.deps.rootsProvider?.() ?? this.deps.roots
+  }
+
+  /** R-F10：唯一的事件出口。**所有 emit 调用都必须走这里**，不许在业务代码里裸调
+   *  `this.deps.emit?.()`——那样每个调用点都得自己包一次 try/catch，漏一个就是"SSE 挂掉
+   *  连带掀翻整轮巡检"，而它恰恰是最不该拖垮流水线的那一支（推送是增益，巡检是本体）。
+   *  与 gcStaging / dbMaintenance / 各回填 pass 的既有隔离口径完全一致。
+   *
+   *  刻意**不记日志**：这里失败最可能的成因就是订阅者侧的问题，而每次巡检会调它十几次，
+   *  记日志等于在真出问题时把日志刷爆——而日志文件正是排障的那一层。 */
+  private emit(e: ScoutEventInput): void {
+    try {
+      this.deps.emit?.(e)
+    } catch {
+      // 吞掉：见方法头注释。
+    }
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -460,6 +499,9 @@ export class ScoutDaemonV2 {
 
       if (permitted && now - lastInspectAt >= everyMs && now >= this.inspectRetryAfter) {
         this.deps.log(`巡检开始 (距上次 ${lastInspectAt === 0 ? '(冷启动)' : `${Math.round((now - lastInspectAt) / 3600000)}h`})`)
+        // R-F10 activity ①：巡检开始。用户视角的"系统在忙还是在歇"——日巡检模型下这是
+        // 一天里最重要的那条状态变化（没有它，活动页在 23 小时里看起来与宕机无异）。
+        this.emit({ type: 'activity', message: '巡检开始' })
         // D4 ①：时间闸记的是巡检**开始**时刻（这个 now），不是跑完之后再取一次。
         // 用结束时刻的话真实周期 = 24h + 本轮耗时，逐轮漂移——大库在 115 FUSE 上真能跑 10h，
         // 周期就漂成 34h，几轮之后巡检时刻会跑到用户看电视的黄金时段去。
@@ -470,6 +512,8 @@ export class ScoutDaemonV2 {
           this.writeLastInspectAt(now)
           this.inspectRetryAfter = 0
           this.deps.log('巡检完成，歇着等明天')
+          // R-F10 activity ②：巡检完成。与 ① 成对——活动页据此从"在忙"切回"歇着"。
+          this.emit({ type: 'activity', message: '巡检完成，歇着等明天' })
         } catch (e) {
           // 失败走**独立的短退避**，与 24h 闸分账（见 INSPECT_FAILURE_BACKOFF_MS 的论证）：
           // 不推进时间闸，但也不许下一拍（5min 后）就重跑——巡检里有两条付费 LLM 工作台，
@@ -477,6 +521,10 @@ export class ScoutDaemonV2 {
           const backoff = this.deps.inspectFailureBackoffMs ?? INSPECT_FAILURE_BACKOFF_MS
           this.inspectRetryAfter = now + backoff
           this.deps.log(`巡检失败（隔离，时间闸不推进，${Math.round(backoff / 60000)}min 后重试）: ${String(e)}`)
+          // R-F10 health ④：**整轮**巡检失败。这与反面清单里那些"（隔离，下轮重试）"的单文件
+          // 错误不是一档——单文件抖动会自愈且不影响别的文件，而整轮失败意味着这一天什么都没做
+          // （时间闸不推进，30min 后才重试）。用户视角就是"我的库可能有问题"，正是 health 的定义。
+          this.emit({ type: 'health', message: `巡检失败，${Math.round(backoff / 60000)} 分钟后重试: ${String(e)}` })
         }
       }
 
@@ -558,6 +606,15 @@ export class ScoutDaemonV2 {
       if (this.stopping) break
       identifyRounds++
       this.deps.log(`识别 ${item.workDir} (${item.fileCount} 文件, 第 ${identifyRounds}/${identifyQueue.length} 个)`)
+      // R-F10 activity ④ + progress：识别工作台的作品级状态变化（与阶段 3 字幕流同构）。
+      // 识别是巡检里第一条真正"在动"的阶段，不推的话大库跑识别的那几小时活动页是死的。
+      this.emit({ type: 'activity', message: `正在识别：${item.workDir}`, title: item.workDir })
+      this.emit({
+        type: 'progress',
+        message: `识别第 ${identifyRounds}/${identifyQueue.length} 个`,
+        title: item.workDir,
+        data: { done: identifyRounds, total: identifyQueue.length },
+      })
       await runIdentifyWorkDir(this.deps.identify, item)
     }
 
@@ -606,6 +663,18 @@ export class ScoutDaemonV2 {
 
       subtitleRounds++
       this.deps.log(`字幕 ${item.title} (${item.files.length} 文件, 第 ${subtitleRounds}/${subtitleQueue.length} 个)`)
+      // R-F10 activity ③ + progress：开始处理一个作品。
+      //  · activity 说"现在在干什么"（作品级，一部剧一条）
+      //  · progress 说"排到第几个了"（队列级，24 集的剧在这里连发 → 唯一需要节流的事件源；
+      //    **节流是总线的职责，不是这里的**——发布方如实发，ScoutEventBus 折叠。两边都做
+      //    就会出现"节流窗口叠加"这种没人算得清的行为）。
+      this.emit({ type: 'activity', message: `正在找字幕：${item.title}（${item.files.length} 个文件）`, title: item.title })
+      this.emit({
+        type: 'progress',
+        message: `第 ${subtitleRounds}/${subtitleQueue.length} 个作品`,
+        title: item.title,
+        data: { done: subtitleRounds, total: subtitleQueue.length },
+      })
       // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
       // 登记必须在**剔除之后**：整簇消失的作品若也登记一次，这个 jobId 就白白免疫一次 GC。
       // jobId 必须与 buildSubtitleTask 实际用的那个**字节一致**，故共用 subtitleJobId
@@ -613,7 +682,26 @@ export class ScoutDaemonV2 {
       const jobId = subtitleJobId(item.workId)
       this.inFlightStagingJobIds.add(jobId)
       try {
-        await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage)
+        const report = await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage)
+        // R-F10 found ①：**找到并装上了字幕**——这一条就是通知页的数据源，也是整条通道里
+        // 用户唯一真正想要的那个信号（"找到了什么"）。
+        //
+        // 计数取 `report.installed.length` 而不是 `item.files.length`：后者是"这次派了几个
+        // 文件的活"，与"装上了几条"完全是两回事（最常见的形态恰恰是派 8 集只找到 3 集）。
+        // 把派发量当成果量报出去，就是在通知页上撒谎。
+        //
+        // report 为 null（worker 抛错，runSubtitleWorkDir 内部按失败轨记完账后返回 null）
+        // 或 installed 为空（搜过确实没有）时**不发**——R-F10 约束 1「只推变化」：
+        // "这一轮没找到"不是成果，也不是异常（它是最常见的正常结局），推它只会把通知页
+        // 变成噪音流。它的去处是日志文件与 runs 表。
+        if (report && report.installed.length > 0) {
+          this.emit({
+            type: 'found',
+            message: `${item.title}：装上了 ${report.installed.length} 条字幕`,
+            title: item.title,
+            data: { installed: report.installed.length, files: item.files.length },
+          })
+        }
       } catch (e) {
         // ── C13 计数单调的兜底（"finally 保证回写"这条路的实现）──
         //
@@ -961,6 +1049,9 @@ export class ScoutDaemonV2 {
     }
 
     this.deps.log(`翻译 ${c.title} (${c.videoPath})`)
+    // R-F10 activity ⑤：翻译是流水线里唯一"单个活可能跑几小时"的阶段（阶段 4）。不推的话
+    // 用户在活动页上会看到系统"卡在最后一步不动"——而它其实正在逐段翻一集片。
+    this.emit({ type: 'activity', message: `正在翻译：${c.title}`, title: c.title })
     // 🔴 GC 炸弹修复（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八 + C34 的翻译那一半）。
     //
     // 把这个活的翻译工作台目录名登记为"在飞行"，跑完（含抛错）必须摘掉——与阶段 3 字幕流的
@@ -1006,6 +1097,16 @@ export class ScoutDaemonV2 {
       return
     }
     this.deps.log(`翻译结果 ${status} → sub_status=${write.status}: ${c.videoPath}`)
+    // R-F10 found ②：翻译装盘成功同样是"找到了字幕"——对用户而言"从哪来的"是实现细节，
+    // 结果都是"这一集现在有中文字幕了"，故与抓源装盘同走 found（通知页不分两个池子）。
+    // 只在 installed 这一档发：其余状态（no-source / write-failed / unsupported）是失败或
+    // 终局判定，不是成果，走日志与 sub_status。
+    if (status === 'installed') {
+      this.emit({
+        type: 'found', message: `${c.title}：翻译完成并装上了字幕`, title: c.title,
+        data: { via: 'translate' },
+      })
+    }
 
     // 装盘成功踢一脚扫描：新 sidecar 越早被扫到、covered 越早落库（R24 只有扫描有权写）。
     if (status === 'installed') {
@@ -1163,10 +1264,17 @@ export class ScoutDaemonV2 {
           // 拿它做差集就是删库，故整根跳过删除；upsert 也无从做（一个文件都没拿到）。
           // 原始错因（String(e)）必须原样带出：那是排障的唯一线索，不许被重试包装吃掉。
           this.deps.log(`scan: 守备目录不可访问，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}: ${String(read.error)}`)
+          // R-F10 health ①：R8 第一道闸。用户视角就是"我的库可能有问题"——这个根这一整轮
+          // 都不会被处理，而下一轮是 24 小时之后。**不推的话它只存在于日志文件里**，
+          // 而日志文件正是用户不会去看的地方（R-F9 的三层分区：排障归排障，但"整个根停摆"
+          // 已经越过了排障，是产品事实）。
+          this.emit({ type: 'health', message: `守备目录读取失败，本轮跳过（${tried}）: ${root}` })
         } else {
           // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录
           // **不报错、只是看起来是空的**——这是最阴的形态，无脑差集就是一次删光该根全库。
           this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}`)
+          // R-F10 health ②：R8 第二道闸（FUSE 掉线最阴的形态——目录不报错、只是看起来是空的）。
+          this.emit({ type: 'health', message: `守备目录扫出 0 个媒体文件，疑似挂载异常，本轮跳过（${tried}）: ${root}` })
         }
         skippedRoots.push(root)
         continue
@@ -1232,6 +1340,10 @@ export class ScoutDaemonV2 {
           // 完全一致：跳过删除**并**跳过字幕观察（D23 联动，只跳删除不跳观察等于
           // 拿不可信快照把 covered 打回 NULL，下一轮重跑整轮付费字幕 session）。
           this.deps.log(`scan: 守备目录行数骤降且重读不一致，跳过删除与字幕观察（R8 第三道闸 / D23 / C47）: ${root}: ${facts}`)
+          // R-F10 health ③：C47 拦截。这一档尤其必须让用户看见——它拦下的正是"一次删掉
+          // 572 行而磁盘上一个文件都没少"那种真实数据损失（2026-08-11 04:07 实测），
+          // 而拦截本身意味着这个根本轮不被清理，用户有权知道自己的库正处在这个状态。
+          this.emit({ type: 'health', message: `守备目录行数骤降且两次读取不一致，已拦下删除（${facts}）: ${root}` })
           skippedRoots.push(root)
           continue
         }

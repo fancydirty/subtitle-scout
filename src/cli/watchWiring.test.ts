@@ -45,6 +45,9 @@ function mkArgs(over: Record<string, any> = {}) {
       requestIngest: () => {},
       probe: async () => null,
       probeDuration: async () => null,
+      // R-F10：默认 no-op（本文件多数用例不关心事件）。**必填字段**，故这里必须有默认——
+      // 而"必填"本身就是那道防线：新增构造点漏接 emit 时 tsc 直接红，不会静默漏。
+      emit: () => {},
       ...over,
     },
   }
@@ -298,5 +301,53 @@ describe('cmdWatch 源码级接线 · 翻译流（第 4 步）', () => {
     // 绝不回退 LLM_*=mimo。回退的后果是用一个过不了质量闸的弱模型反复 held，
     // 每次都是一个付费 session（旧世界实案：job29 重试 11 次全同样错误）。
     expect(src).toContain('tryAutoTranslateCfg')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R-F10：SSE 事件通道的接线。
+//
+// 为什么这一组必须存在：本仓栽过 6 次「写了某列/某能力，却没定谁来写、谁来读、谁来触发」
+// （C12→C35→C43→C21→audio_langs→tmdb_seasons）。emit 漏接是**静默**的——daemon 照常跑、
+// 测试照常绿、SSE 端点照常 200，只是那条流上永远一条事件都没有，而这与"系统正在歇着"
+// 在界面上完全无法区分。同 4 个运维器官的既有守法：纯函数映射在这里断言，"cmdWatch 到底
+// 有没有把总线同时喂给 daemon 与 dashboard"由文件末尾的源码断言兜住。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('buildDaemonV2Deps · R-F10 SSE 事件通道', () => {
+  it('🔴 emit 被接上（漏接 = SSE 流永远空着，与"系统在歇着"无法区分）', () => {
+    const emit = vi.fn()
+    const { db, args } = mkArgs({ emit })
+    const deps = buildDaemonV2Deps(args as any)
+    expect(deps.emit).toBeDefined()
+    deps.emit!({ type: 'activity', message: 'x' })
+    expect(emit).toHaveBeenCalledWith({ type: 'activity', message: 'x' })
+    db.close()
+  })
+
+  it('🔴 emit 是**透传**而不是在这里就地求值/包装（总线换实例后 daemon 必须跟着换）', () => {
+    const a = vi.fn(); const b = vi.fn()
+    let cur = a
+    const { db, args } = mkArgs({ emit: (e: any) => cur(e) })
+    const deps = buildDaemonV2Deps(args as any)
+    deps.emit!({ type: 'found', message: '1' })
+    cur = b
+    deps.emit!({ type: 'found', message: '2' })
+    expect(a).toHaveBeenCalledTimes(1)
+    expect(b).toHaveBeenCalledTimes(1)
+    db.close()
+  })
+})
+
+describe('cmdWatch 源码级接线 · R-F10 SSE 通道（一条总线两个消费方）', () => {
+  const src = readFileSync('src/cli/index.ts', 'utf8')
+
+  it('🔴 cmdWatch 建了 ScoutEventBus，并**同时**喂给 dashboard 与 daemon', () => {
+    // 这条守的正是本仓栽过 6 次的那个形态：只喂一头 = 有产无收（daemon 发了没人推）或
+    // 有收无产（端点在但永远没数据），两者都测不出来、界面上都只是"很安静"。
+    expect(src).toContain('new ScoutEventBus(')
+    // dashboard 侧：startDashboard 的 events 参数
+    expect(src).toMatch(/events:\s*scoutEvents/)
+    // daemon 侧：buildDaemonV2Deps 的 emit 参数
+    expect(src).toMatch(/emit:\s*\(e\)\s*=>\s*scoutEvents\.publish\(e\)/)
   })
 })
