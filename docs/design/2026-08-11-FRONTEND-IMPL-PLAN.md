@@ -328,6 +328,13 @@ cd /mnt/nvme0n1-4/docker/subtitle-scout && git reset --hard && docker build ... 
 | ② 审计 A-5 | 🟡 | 列表页 SQL 多取了 `needs_subtitle, skip_reason` 两列却无人读（`MediaLibraryItemDTO` 无 `episodeState`）。审计实测：把列表页 SQL 改回不取新列 → **0 红**（对照详情页同变异 6 红）。纯开销 1192 行 × 2 列，且无测试防它被改 | Task ⑧ 时决定：删掉，或在列表 DTO 暴露聚合态 |
 | ② 审计 A-3 | 🟡 | **已知口径分歧**：`embedded_langs` 有目标语言轨但 `skip_reason` 尚未写入时，`dot` 给 blue 而 `episodeState` 给 unjudged，同一格两个控件不同口径。这是**有意的**（dot 描述磁盘事实、state 描述 judge 判决），但前端要知道 | Task ⑧ 渲染时确认这个组合不刺眼 |
 | ② 审计尾注 | 🔴 | **`web/src/library/episodeState.ts` 已存在一套同名异义的七态**（`covered/hardsub/missing/throttled/error/dashed/partial`），长在**旧** `episodes` 表上、值域完全不同。②的实现注释把它当「既有口径同源」引用——**不成立**。Task ⑧ 落地时两套同名概念必然撞车 | Task ⑧ 前必须裁决二者关系（预期：旧的随 `_legacy` 一起走） |
+| ③ 审计 🔴-2 | 🟡 | **并发倒流**：慢的失败轮会覆盖新的健康轮，`last_checked_at` 从 2000 退回 1000。UPDATE 无单调守卫。<br>**降级理由**：`scanOnce` 是 private、唯一调用点在 `runInspection` 内，而 `run()` 是单进程 while 循环串行 await——同一进程不可能重叠（`ingestTrigger` 走的是 `v2/ingest.ts`，根本不碰这两列）。要重现需两个 daemon 实例共库=部署错误 | 若将来真出现多实例，加 `WHERE last_checked_at IS NULL OR last_checked_at <= ?` |
+| ③ 审计 🟡-4 | 🟡 | **陈旧判决永久粘住**：表里有、本轮 `scanRoots` 没有的根，`last_error` 会一直挂着。`last_checked_at` 停在旧值可供读取方判陈旧，但**没有任何契约要求 Task ⑤ 这么做** | Task ⑤ 实现 `roots.ok` 时必须显式处理陈旧（建议：`last_checked_at` 早于本轮巡检开始即视为未知而非红） |
+| ③ 审计 🟡-5 | 🟡 | `normalizeRoots` 改名时把旧判决**搬到新路径**；去重分支（`del.run`）则连判决一起丢。`settingsRepo` 里 4 处 `media_roots` 写入点全都不知道这两列存在 | 用户改守备目录时才可见，Task ⑤/⑦ 前决定 |
+| ③ 审计 🔵-6 | 🔵 | `db.test.ts` 的「v39 重放尾部迁移幂等」用例**已漂到 v41**（用 `MIGRATIONS.length - 1` 取最后一条）。用例名说 v39、注释说 CREATE TABLE IF NOT EXISTS，实际测的是 v41 的 ALTER。**v40 引入的既有债务**，而 db.test.ts:993 有一整段红字警告过这个精确形态 | 改 16 处版本号的人从它旁边走过没看见——下次动迁移时修 |
+| ⑥ 审计（自报） | 🔴 | **`cmdWatch` 适配器块零覆盖**：删掉 `backdropPath` 接线一行 → **0 红**；删掉既有的 `getExternalIds` 接线 → **同样 0 红**。这行是两个写入点是不是装饰品的**唯一现实通路** | 需把适配器构造抽成可导出函数（`watchWiring.test.ts` 现只拿 `() => ({} as any)` 打桩）。**Task ⑤ 或收尾时处理** |
+| ⑥ 已知代价 | 🔵 | `backdrop_path` 无"查过但没有"的第三值 → TMDB 真无横版图的作品每轮 boot 重查一次 | 将来加 `backdrop_checked_at`，不往路径列塞哨兵 |
+| 我的病 B | 🔵 | Task ③ 的 commit message 里两个变异数字与审计实测不符（3 红实为 2、5 红实为 6）——数字来自实施者报告，我未复核就写进去了 | 已在 `57d32aa` 记录。**以后 commit message 引用 subagent 的数字前必须复核** |
 
 ---
 
@@ -342,6 +349,8 @@ cd /mnt/nvme0n1-4/docker/subtitle-scout && git reset --hard && docker build ... 
 | ① notifications | ⚠️ **代码通过，但状态绑定 Task ⑩**（无消费者前不标完成） | `8997bcf` |
 | ② EpisodeState 八态 | ⚠️ **代码通过（审计 4 条 🔴 已修），状态绑定 Task ⑧** | `a5cf3f1` + `e7898ff` |
 | ④ current 快照 | ⚠️ **代码通过（审计 🔴-2 已修），状态绑定 Task ⑤**（⑤ 须补源码级接线断言） | `e39e399` + `56da668` |
+| ③ media_roots 健康列 | ⚠️ **代码通过（审计 🔴-1 真回归已修），状态绑定 Task ⑤** | `07a9669` + `57d32aa` |
+| ⑥ backdrop_path | ⚠️ **代码通过，状态绑定 Task ⑨**；审计中 | `8bb0d02` |
 | ② EpisodeState | ⬜ | |
 | ③ media_roots | ⬜ | |
 | ④ current | ⬜ | |
