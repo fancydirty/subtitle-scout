@@ -92,6 +92,128 @@ $ SubtitleDot = 'none' | 'blue' | 'green'   ← 只有三态
 
 ---
 
+## 零·三、第三轮审计：找到了比前两轮都严重的一条
+
+前两轮打事实层与遗漏层。第三轮打**设计决策本身**与**假修复**，
+并在核实跨文档一致性时撞上一条谁都没发现的硬伤。
+
+### 🔴🔴 教训七：两条用户裁决在生产代码里已经打起来了，而我同时引用两条却没发现
+
+**R-F1 明令「识别不进活动页」。而生产代码正在推识别的 activity 事件：**
+
+```
+daemonV2.ts:519  activity  巡检开始
+daemonV2.ts:531  activity  巡检完成，歇着等明天
+daemonV2.ts:626  activity  正在识别：${item.workDir}     ← ⚠️ 违反 R-F1
+daemonV2.ts:686  activity  正在找字幕：${item.title}
+daemonV2.ts:1083 activity  正在翻译：${c.title}
+```
+
+`:625` 的注释还把它当功劳写着：
+> 「识别是巡检里第一条真正"在动"的阶段，不推的话大库跑识别的那几小时活动页是死的。」
+
+**后端在 R-F10（推什么事件）的名义下，单方面推翻了 R-F1（识别不进活动页）。
+两条裁决在同一份 SPEC 里相隔 9 行。**
+
+而我的 v3 §3.3 把 activity 画成「→ 活动页」、§4.1 按 R-F1 设计成两 tab——
+**这两段自己就对不上，我引用了两条互斥的裁决却没发现。**
+
+**第二层（这层是数据缺陷，不是 UI 决策）**：
+
+```
+:631  data: { done: identifyRounds, total: identifyQueue.length }   识别
+:691  data: { done: subtitleRounds, total: subtitleQueue.length }   字幕
+```
+**`progress` 载荷没有任何工作台判别字段**。前端收到 `{done:3,total:47}`
+**无法知道这是识别的 3/47 还是字幕的 3/47**。
+
+且节流是**全局单标量**（`scoutEvents.ts:91` `private lastProgressAt = -Infinity`），
+三个工作台共用一个 1 秒窗口——阶段切换那一秒会互相挤掉。
+
+而 §3.5 的 `current: { kind:'subtitle'|'translate' }` 是**两态的，实际有三个工作台**。
+这个 DTO 在写下的那一刻就漏了 identify。
+
+**这是第 10 次同型缺陷，形态是新的**：
+前 9 次是「加了能力没定谁读」，这次是
+**「两条用户裁决互相矛盾，实现挑了一条执行，设计文档两条都引用却没发现冲突」**。
+
+**裁决（选 c）**：
+- 保留识别的 emit（那条"大库几小时活动页是死的"的顾虑成立）
+- 但 `ScoutEventInput` **加必填 `workbench: 'identify'|'subtitle'|'translate'` 判别字段**
+- 活动页仍是两 tab（守 R-F1），**识别态降级为顶部一行状态条**
+  （「正在识别 3/47 部作品」），不占 tab
+- `progress` 节流改成 **per-workbench**（`Map<workbench, lastAt>`）
+- `current.kind` 扩成三态
+
+### 🔴 教训八：七态判定优先级缺失，而冲突组合是**常态**不是边缘
+
+`skip_reason` 与 `sub_status` 由**两个互不知情的阶段、按两套完全不同的判据**写入：
+
+| 列 | 写入者 | 判据 |
+|---|---|---|
+| `skip_reason` | `judgeOnce`（阶段 2.5） | **纯语言事实**，`daemonV2.ts:865` 注释明写「不探磁盘」 |
+| `sub_status` | `observeSubtitle`（阶段 1） | **纯磁盘事实**（R24），代码原文「不论原状态是 NULL 还是停牌态」 |
+
+于是：**国产剧 + 用户手放一份 `.zh.srt`** → `skip_reason='origin-skip'` **且** `sub_status='covered'`。
+这一格同时满足 E01 ✓（绿）与 E03 ◇（灰）。`embedded` + `covered` 同理。
+
+v3 的七态表是**七行平铺、没有优先级序**。实施者必然停下来问；
+自己猜的话两种猜法都说得通，而**猜错不报错、不红测试，只是全库一批格子颜色是错的**。
+
+**裁决：写死优先级链**
+```
+1. sub_status='covered'           → ✓ 绿   磁盘事实最硬（用户可换可删）
+2. sub_status='handoff_translate' → ⇄      在跑
+3. sub_status='unsolvable'        → ⊘      终局
+4. skip_reason='origin-skip'      → ◇      不需要
+5. embedded_langs 含目标语言       → ◆
+6. needs_subtitle=1               → ···
+7. needs_subtitle IS NULL         → 未判定（§4.4 的"正在重新判定"过渡态）
+```
+⚠️ 第 7 档是 v3 漏的——**七态其实是八态**。§4.4 识别出了这个过渡态，§4.3 没给它位置。
+
+### 🔴 教训九：§3.5 的"最小改法"是假修复，而专门验它的那条验收也被同一个洞穿透
+
+v3 §3.5 写「四个 emit 点各加一句 UPDATE，**成功读取时清空**」。两处都不成立：
+
+**① 四个 emit 点不同型。** `daemonV2.ts:542` 在 `run()` 的 catch 里包整个 `runInspection`，
+**它手上没有 root**（已核实）。这一个 UPDATE 写到哪一行去？
+全部 roots 一起标错是谎报（可能只坏一个根），不标则"四个"就是三个。
+
+**② "成功时清空"的落点不存在**，而且不是忘了写——扫描循环的成功路径上有**三条**分支
+（一次读成功 / 重试后成功 / C47 重读恢复），三条都得清，漏一条就从"永远误灭"变成"永远误亮"。
+更隐蔽的是 C47 的分支②（判定为真实删除、照常放行）既不 emit 也是成功路径。
+
+**③ 因此 §6③ 的验收（umount → ok=false → 恢复 → ok=true）测得出 false 但测不出回 true。**
+那条验收本是专门用来钉"永远误灭"的，**它自己被同一个漏洞穿透了**。
+
+**改法：不要"emit 点写 / 成功点清"，改成单点收敛**——每根循环末尾无论成败统一写一次：
+```ts
+db.prepare('UPDATE media_roots SET last_error=?, last_checked_at=? WHERE path=?')
+  .run(rootFailed ? reason : null, now, root)
+```
+`:542` 那个巡检级 health 排除在 `roots[]` 之外，它属于 `/health` 顶层的 `lastInspectError`。
+
+### 🔴 教训十：`#/library` 重定向到 legacy = 把用户送进一个恒空页面
+
+v3 §2.2 判定「静默串页比 404 危险得多」，于是让 `#/library/*` 重定向到 `#/legacy/library/*`。
+**但 §八.6 自己记着「旧 library 读 `series`（0 行）会显示空」——两段没连上。**
+
+拼起来：老书签 → 重定向 → 读 0 行的表 → **白屏**。
+v3 列的三种结局（正常/404/串页）**漏了实际会发生的第四种：稳定地什么都没有**。
+
+**改法**：`#/library` 与 `#/library/:id` 都重定向到 **`#/media` 列表**，**丢弃 id 段**，
+顶部一次性提示「媒体库地址已更新」。丢 id 消除串页风险，落到有数据的新列表而非 0 行旧表。
+`_legacy/library` 只从设置页入口进入，不接管任何书签。
+
+### 审计攻击过但没攻破的（它主动列出，我认可）
+
+§3.4 选 (b)、§3.5 判定 `listSubtitleQueue` 语义相反、E06/E07 必须与 E04 可分、
+hash 路由 + Tab 拆型、划掉 `chinese_titles` 疑虑、§4.4 五种异常态、
+无循环依赖、「不自己写重连」——这八条实跑核实后成立。
+
+---
+
 ## 一、第一性原理：这个前端的本质
 
 ### 1.1 它是观察窗，不是应用
@@ -255,12 +377,23 @@ GET /api/v2/notifications → FoundGroup[]
 
 ```
 AppShell
-  └─ <ScoutEventsProvider>          ← 唯一的 EventSource（R-F10：6 连接上限）
-       ├─ useActivity()   → 活动页
-       ├─ useFound()      → 通知页 + 活动页"刚找到"提示
-       ├─ useHealth()     → 全局横幅（任何页面都该看到）
-       └─ useProgress()   → 活动页当前项进度
+  └─ 唯一的 EventSource（R-F10：6 连接上限）
+       └─ 四个**独立** Context，各自 setState
+            ├─ <ActivityCtx>  → 活动页（按 workbench 分流，见下）
+            ├─ <FoundCtx>     → 通知页角标 + 活动页"刚找到"
+            ├─ <HealthCtx>    → 全局横幅
+            └─ <ProgressCtx>  → 活动页当前项进度
 ```
+
+⚠️ **必须是四个独立 Context，不能是一个**（三轮审计 🟡）：
+React 的 Context 传播语义是「value 引用变化 → 所有 consumer 无条件重渲染」，
+`memo` 挡不住 consumer 本身。progress 每秒一条 → 单 Context 会让
+活动页 + 通知页 + 全局横幅**每秒全树重渲染**，巡检期间持续几小时。
+拆四层后 progress 只碰 `ProgressCtx`。零依赖、零外部库，§七 的裁决仍成立。
+
+⚠️ **activity/progress 必须按 `workbench` 分流**（教训七）：
+后端要加必填判别字段后，活动页据它分三路——
+`subtitle`/`translate` 进两个 tab，`identify` 进顶部状态条（守 R-F1）。
 
 **不自己写重连**：浏览器 `EventSource` 自带重连 + `Last-Event-ID` 续传，
 后端已实现 50 条环形缓冲。自己写会和浏览器内置的打架。
@@ -362,8 +495,18 @@ SSE 的 `health` 事件只负责"立刻亮起"，灭灯靠这个端点。
 
 ### 3.7 不做前端缓存
 
-数据一天变一次，每次进页面重新拉最简单。加缓存要处理失效，
+数据一天变一次，每次进页面重新拉最简单。加**前端状态缓存**要处理失效，
 而失效时机恰好是"巡检完成"——那是个 SSE 事件，引入不必要的耦合。
+
+⚠️ 但三轮审计指出 v3 的理由是**假两难**：后端 JSON 响应头实测**只有 content-type**，
+无 `ETag`/`Last-Modified`/`max-age`，所以列表↔详情来回点会每次全表聚合
+（`files` 1290 行 + `tmdb_seasons` 2144 行 + JS 端聚合）。
+
+**加一个后端 `ETag`（`buildMediaLibrary` 结果的 hash）零失效逻辑**——
+内容变了 hash 就变，不需要订阅 SSE。304 直接省掉传输。
+「不做前端状态缓存」这个决策保留，但别拿"失效难"当不加 ETag 的理由。
+
+（海报本身没问题：`posterPath` 直出 `image.tmdb.org`，TMDB CDN 自带长缓存。）
 
 ---
 
@@ -457,7 +600,7 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 | 场景 | 处置 |
 |---|---|
 | API 500 / 网络失败 | 显示错误态 + 重试按钮。**绝不显示空闲态文案**（那是谎报） |
-| SSE 503（bus 未接） | `onerror` 计数，连续 3 次失败后停止重连并显示"实时更新不可用"。不能让浏览器无限重连 |
+| SSE 503（bus 未接） | ⚠️ v3 原写"连续 3 次失败后停止重连"，**没有恢复路径**（三轮审计 🟡）——503 在 setup 模式下是常态，用户配完 key、bus 接上了，前端却已自杀且不会回来。<br>且 `EventSource` 的 `onerror` **区分不了 503 与普通断网**，30 秒断网就可能触发永久停连——**与 §6 的"断网 30 秒能自动重连"验收直接打架**。<br>**改法**：不硬停，改**指数退避到 60s 上限**；同时横幅带「实时更新不可用 · **重试**」按钮，点击 `new EventSource()` |
 | TMDB 图片 404 / `posterPath` 为 null | `onError` 换成占位块（`surface-2` + 作品首字母）。**这是必然分支**，DTO 注释明写可为 null |
 | 加载中 | 骨架屏（`surface-1` 灰块），不白屏、不转圈 |
 | 换语言重判进行中 | 媒体库四态会全部重算。检测到 `needs_subtitle IS NULL` 占比高时显示"正在重新判定"过渡态 |
@@ -480,7 +623,21 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 ⚠️ 二轮审计：v2 把三个不同量级的后端工程压成了三行字。展开后是 11 步。
 
 ```
+**依赖图**（三轮审计 Y4：v3 只标了一处，实施者会以为全串行）
+```
+①②③④⑥⓪ 六步互不依赖，可全并行
+⑤ ← ③④          （health 端点是前四步做完后的组装）
+⑦ ← ⑤            （useHealth 的基线源；v3 说⑦是"共同地基"漏了这条）
+⑧ ← ② + ⑦        （七态染色是媒体库页的核心视觉，v3 没标）
+⑨ ← ⑥ + ⑦ + ⓪
+⑩ ← ① + ⑦
+```
+
+```
 后端（必须先做，每步都要有验收，见 §6）
+⓪ ScoutEventInput 加必填 workbench 判别字段 +      中：教训七。不做则前端拿到
+  progress 节流改 per-workbench + current.kind      {done:3,total:47} 无法区分是
+  扩三态                                             识别还是字幕
 ① 补 GET /api/v2/notifications                    小：读函数已有，只缺端点
 ② mediaLibraryApi 补 skip_reason/needs_subtitle/  中：改 2 条 SQL + DTO + 染色判别
    sub_status 透传，DTO 从三态扩到七态             ← 不做则 ◇⊘⇄··· 无数据，第 9 次同型缺陷
@@ -531,7 +688,7 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 | 媒体库列表 | 作品数 == `SELECT COUNT(DISTINCT work_id) FROM files WHERE work_id IS NOT NULL`；随机抽 3 个作品核对"缺 N 集" == `tmdb_seasons` 减 `files` 去重格数 |
 | 媒体库详情 | **现查四种染色各自的样本**：`SELECT work_id, season, episode, sub_status, skip_reason FROM files WHERE ... LIMIT 1` 各取一条，肉眼核对。**不预设哪部剧应该是什么颜色** |
 | 活动页 | 巡检期间打开，卡片内容随 `docker logs` 的「字幕 X (N 文件, 第 i/n 个)」同步 |
-| 通知页 | 条目数 == `SELECT COUNT(*) FROM notifications WHERE found_at > now-7d` |
+| 通知页 | **组数**（端点返回 `FoundGroup[]` 是按 work+season 聚合的）== `SELECT COUNT(DISTINCT work_id\|\|'/'\|\|COALESCE(season,-1)) FROM notifications WHERE found_at > now-7d`。⚠️ v3 原写 `COUNT(*)`（逐集行数），与实现口径不符、永远不通过——同一份文档里两条验收对同一端点给了两个口径 |
 | SSE | 断网 30 秒再恢复，页面自动重连；**且断线期间巡检若跑完，重连后活动页能靠 `/api/v2/health` 纠正**（这条专门验 F-6） |
 | **前端测试** | 文件数 >= 78 且用例总数 >= 实施前基线。**实施前先跑一次锁定基线** |
 
@@ -541,7 +698,7 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 |---|---|
 | ① notifications 端点 | `curl /api/v2/notifications \| jq length` == `SELECT COUNT(DISTINCT work_id\|\|'/'\|\|COALESCE(season,-1)) FROM notifications WHERE found_at > now-7d` |
 | ② DTO 扩七态 | 对每个 `sub_status` 值域（含 `unsolvable`/`handoff_translate`）**造一行测试数据**，验 DTO 能透传。⚠️ 生产当前这两态是 **0 行**，不能靠生产样本验 |
-| ③ media_roots 健康列 | **故意 umount 一个守备目录**，跑一轮巡检，验 `/api/v2/health` 的 `roots[].ok=false` 且 `lastError` 非空；恢复挂载后再跑一轮，验 `ok` 回 `true`。**这条专门钉"永远误灭"** |
+| ③ media_roots 健康列 | ⚠️ **不许用 umount**（三轮审计 🟡）：容器把宿主 `/` 挂进 `/hostroot`，卸掉 115 的 rclone 挂载 = 全库不可访问，且 R8 三道闸里 umount 只触发第一道，而生产真实出事那次（04:07）走的是第三道 C47——**只验三分之一**。<br>**改注入式**，喂 `readRootWithRetry` 四种结局：① 抛 EIO 验 `:1300` ② 返回 `[]` 验 `:1306` ③ 返回 40% 文件验 `:1375`（C47，真出过的那档）④ 恢复正常验 `last_error` **被清空**（教训九说的那个缺失点）。<br>生产端到端想验一次：**临时新建空目录当守备目录再 `chmod 000`**，代价可控、不碰 115 |
 | ④ current 数据源 | 巡检期间 `curl /api/v2/health` 的 `current.title` == `docker logs` 里当前那行「字幕 X (N 文件, 第 i/n 个)」的 X |
 | ⑤ health 端点 | 逐字段核对：`lastInspectAt` 对 `meta`、`engineEnabled` 对 `settings`、`roots[]` 对 `media_roots`。⚠️ `lastInspectAt` 当前会返回 **0**（生产从未跑完一轮），前端要按冷启动处理 |
 | ⑥ backdrop_path | 回填后 `SELECT COUNT(*) FROM works WHERE backdrop_path IS NULL` ≈ 0；**且新识别一部作品后再查一次**，验 `identifyScheduler` 的写入点也补了（只验回填不验写入 = 只修一半） |
@@ -564,7 +721,7 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 
 | 项 | 留什么路 |
 |---|---|
-| **移动端** | 卡片尺寸用 CSS 变量或 `clamp()`，**不写死 px**。R-F13 给的 186px/59px/88px/118px 是桌面基准值，要以变量形式落地 |
+| **移动端** | 用 **CSS 变量**落地，**不要用 clamp()**（三轮审计 🔵：clamp 要三个参数而 R-F13 只给了一个，实施者会卡住）。<br>`:root { --card-run-h:186px; --card-queue-w:59px; --card-queue-h:88px; --card-queue-fade:118px }`<br>移动端那轮**在 media query 里改变量值，不改组件**——这才是真正的"留路" |
 | 设置页减法（R-F9） | 本轮不动 settings，但新 shell 的导航要为它留位置 |
 | `subtitleVerify` 去留 | 移入 `_legacy` 保留可达，跑稳后单独裁决 |
 
@@ -598,9 +755,14 @@ MediaLibraryEpisodeDTO = { episode, title, onDisk, dot, fileCount, subtitledFile
 6. **`_legacy` 期间两套页面读不同的表**。旧 library 读 `series`（0 行）会显示空——
    应在 `_legacy` 页面顶部加说明横幅，避免被当成 bug。
 
-7. **生产 daemon 从未成功跑完一轮完整巡检**（`meta` 无 `last_inspect_at`）。
-   这既影响 §5⑪ 的删除 trigger，也意味着**日巡检模型的完整闭环在生产上尚未被观测到**。
-   值得单独查一次：是每轮都在中途失败，还是一直没跑到那一步。
+7. 🔺 **生产 daemon 从未成功跑完一轮完整巡检**（`meta` 无 `last_inspect_at`）。
+   **三轮审计要求把它从"债务"升级为「实施前置调查项」**——理由很硬：
+   若真相是"每轮都在中途失败"，那 `skip_reason` 1192 行全 NULL、
+   两个停牌态各 0 行这些"七态无样本"现象**很可能同源于此**
+   （judge 在阶段 2.5，若巡检总在阶段 1/2 挂掉，2.5 根本没跑过）。
+   那样的话 §6 的"造数据补测"就不是权宜之计而是**唯一可能的验收方式**，
+   且新前端上线后**长期只看得到四态**。
+   一条命令定性：`docker logs subtitle-scout | grep -c "巡检失败"`。
 
 8. **`sub_status` 值域在两套表之间已劈叉**：`files` 表无 CHECK 约束、实际有
    `handoff_translate`/`unsolvable`；而 `episodes`/`movies` 旧表的 CHECK 枚举不含它们。
