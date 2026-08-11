@@ -30,7 +30,7 @@ import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
 import { JimakuClient } from '../adapters/providers/jimaku.js'
 import { curlFetch, SUBHD_BASE } from '../adapters/providers/subhd.js'
 import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
-import { setupSatisfied, engineEnabled, makeSecretsWatcher, makeSatisfactionTracker, type ClientsHolder } from './watchClients.js'
+import { setupSatisfied, workPermitted, makeSecretsWatcher, makeSatisfactionTracker, type ClientsHolder } from './watchClients.js'
 import { openDb } from '../v2/db.js'
 import { JobsRepo, type Job } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -798,7 +798,11 @@ async function cmdWatch() {
     // spec A §4.6/§4.7 步 3：产工作许可 = engine_enabled(fail-open) ∧ setup 闸(TMDB+LLM 可解析)。
     // false 时整轮巡检跳过，维护循环（dbMaintenance/trace 修剪/孤儿回收）不闸——分界见
     // daemonV2.ts 里 DaemonV2Deps.workPermitted 的字段注释。
-    workPermitted: () => engineEnabled((k) => settingsRepo.get(k)) && setupSatisfied(cfg),
+    //
+    // 合取式本身收在 watchClients.workPermitted 里（此前就地写在这一行，导致
+    // /api/v2/health 只抄到了左半边 engineEnabled，见那个函数的头注释）。这里只负责
+    // 把两个数据源接上去——判据全仓一份。
+    workPermitted: () => workPermitted((k) => settingsRepo.get(k), cfg),
     // D14 / C41：阶段 2.6 停牌复查闸的取件范围。双门控 = TRANSLATE_* 三凭证部署层 ∧
     // settings.ai_translate_enabled 行为级（默认关）。
     //

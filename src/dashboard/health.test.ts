@@ -7,9 +7,13 @@
 //  不是前人以为的 undici 连接池复用。见 testServerHost.ts 的头注释。本文件保持独立，理由仍是
 //  上面那条"细差别不该跟别人的红搅在一起"，与 flake 无关。）
 //
-// 本文件覆盖：四字段各自的数据源与降级 / `roots[].ok` 的三态（从没扫过 / 陈旧 / 新鲜）/
-// events 缺席时**不 503** / 刻意不返回 queue / method 门 / 鉴权门。
-// "端点真的读了 getCurrent()"那条**源码级**接线断言在隔壁 healthWiring.test.ts。
+// 本文件覆盖：字段各自的数据源与降级 / `roots[].ok` 的三态（从没扫过 / 陈旧 / 新鲜）/
+// events 缺席时**不 503** / 刻意不返回 queue / method 门 / 鉴权门 /
+// workPermitted 与 daemon 同源（🔴-2）/ getCurrent 的运行时接线探针（🔴-1）。
+//
+// ⚠️ 曾经有一个 healthWiring.test.ts 用**源码文本**断言来守"端点真的读了 getCurrent()"。
+// 它的 4 条断言实测全是假绿（`current: null, // events.getCurrent()` 就能全部喂饱），
+// **已删除**——理由与替代方案见本文件下方那条运行时探针用例的头注释。
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -21,6 +25,10 @@ import { startDashboard, buildRootHealth } from './server.js'
 import { TEST_HOST, baseOf } from './testServerHost.js'
 import { ScoutEventBus } from '../core/scoutEvents.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
+// 🔴-2：端点的 workPermitted 必须与 daemon 逐字同源。测试直接调 daemon 那一侧用的同一个
+// 函数来比对，**不在这里复述判据**——复述就是第三处手写实现（D7/C30 的既有形态）。
+import { workPermitted } from '../cli/watchClients.js'
+import { makeAdapterConfigResolver } from '../v2/secrets.js'
 // 陈旧门以巡检周期为单位（不在测试里复述 48h 这个数字——复述就是第二处定义，
 // 同 watchWiring.test.ts 拒绝复述目录名格式的既有理由）。
 import { INSPECT_INTERVAL_MS } from '../v2/daemonV2.js'
@@ -51,9 +59,24 @@ function distWith(html: string): string {
   return dist
 }
 
-async function start(opts: { events?: ScoutEventBus | null; token?: string } = {}) {
+/** setup 闸满足所需的最小 env（TMDB + LLM 三件套，见 watchClients.setupSatisfied）。
+ *
+ *  为什么每个用例都必须显式给 env：不给的话 startDashboard 落到 `process.env`，于是
+ *  `setupSatisfied` / `workPermitted` 两个字段的值取决于**跑测试的这台机器配没配 TMDB_API_KEY**
+ *  ——开发机上恒绿、CI 上恒红（或反过来）。这正是本仓 deployContract 那批用例踩过的坑。 */
+const SETUP_OK_ENV = {
+  TMDB_API_KEY: 't', LLM_BASE_URL: 'b', LLM_API_KEY: 'k', LLM_MODEL: 'm',
+} as const
+
+async function start(opts: {
+  events?: ScoutEventBus | null
+  token?: string
+  /** 缺省 = setup 闸满足。多数用例测的是别的字段，让 workPermitted 不要在背景里干扰它们。 */
+  env?: Record<string, string | undefined>
+} = {}) {
   server = await startDashboard({
     db, port: 0, host: TEST_HOST, token: opts.token ?? 'tok', distDir: distWith('<!doctype html>'),
+    env: opts.env ?? { ...SETUP_OK_ENV },
     // 默认**不接**总线：本端点的多数用例关心的是三个 DB 字段，而"没接线怎么办"恰恰是
     // 本 task 要论证的降级（不 503），故它是默认态而不是特例。
     events: opts.events ?? undefined,
@@ -149,7 +172,7 @@ describe('buildRootHealth · `ok` 是三态不是布尔（Task ③ 审计留下�
 describe('GET /api/v2/health（Task ⑤）', () => {
   const NOW = 1_700_000_000_000
 
-  it('空库：四个字段齐全，lastInspectAt 冷启动为 null（前端要保留冷启动分支）', async () => {
+  it('空库：字段齐全，lastInspectAt 冷启动为 null（前端要保留冷启动分支）', async () => {
     const { base } = await start()
     const { status, body } = await getHealth(base)
     expect(status).toBe(200)
@@ -200,6 +223,91 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect((await getHealth(base)).body.engineEnabled).toBe(false)
     settings.set('engine_enabled', '0', NOW)
     expect((await getHealth(base)).body.engineEnabled).toBe(true)
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴-2：daemon 不干活时这个端点不许说引擎开着。
+  //
+  // 修复前这里只有一个 `engineEnabled` 字段，注释声称它"与 daemon 的 workPermitted 同源"，
+  // 而 daemon 的判据是 `engineEnabled(...) && setupSatisfied(cfg)`——端点只取了左半边。
+  // 于是全新部署 / 凭据过期时：daemon 整轮巡检被 setup 闸闸死、什么都不做，
+  // 而健康横幅坚定地说"引擎开着"。这一组把那句假话钉死。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('🔴 setup 闸不满足（TMDB/LLM 缺失）→ workPermitted: false，即使总开关是开的', async () => {
+    // 这是 🔴-2 那句假话的正脸：engineEnabled 照实报 true（用户确实没关开关），
+    // 但 workPermitted 必须是 false——daemon 此刻整轮跳过，端点不许说它在干活。
+    const { base } = await start({ env: {} })          // 一个密钥都没有 = 全新部署
+    const { body } = await getHealth(base)
+    expect(body.engineEnabled).toBe(true)
+    expect(body.setupSatisfied).toBe(false)
+    expect(body.workPermitted).toBe(false)
+  })
+
+  it('🔴 setup 闸只差一件（LLM_MODEL 缺）也算不满足——与 watchClients.setupSatisfied 同口径', async () => {
+    // 部分配置是"凭据过期/漏填"最真实的形状（用户填了 TMDB 和 LLM 的 base+key，忘了 model）。
+    // 若 dashboard 层把判据手写成"TMDB 有就算数"这类近似，这一条会红。
+    const { base } = await start({ env: { TMDB_API_KEY: 't', LLM_BASE_URL: 'b', LLM_API_KEY: 'k' } })
+    const { body } = await getHealth(base)
+    expect(body.setupSatisfied).toBe(false)
+    expect(body.workPermitted).toBe(false)
+  })
+
+  it('🔴 密钥配在**库**里（wizard 落库，不走 env）也算满足——不许只认 env', async () => {
+    // setup wizard 的正常路径是 PUT /api/v2/setup/secrets 落库，env 一个都没有。
+    // 若这里的解析只看 env（在 dashboard 层另写一套解析规则最容易掉的坑），
+    // 一个配置完好的部署会被报成 workPermitted: false——方向相反的另一句假话。
+    const settings = new SettingsRepo(db)
+    for (const [k, v] of Object.entries(SETUP_OK_ENV)) settings.setSecret(k as any, v, NOW)
+    const { base } = await start({ env: {} })
+    const { body } = await getHealth(base)
+    expect(body.setupSatisfied).toBe(true)
+    expect(body.workPermitted).toBe(true)
+  })
+
+  it('🔴 总开关关 + setup 满足 → workPermitted false，且两个合取项可分辨', async () => {
+    // 为什么必须是三个字段而不是把 engineEnabled 直接改成合取：这一条与上面第一条
+    // （开关开、凭据缺）在 workPermitted 上**同为 false**，而用户的下一步动作完全相反
+    // （把开关打开 / 去 setup 页填 key）。两条用例的 engineEnabled/setupSatisfied 组合
+    // 恰好相反，那正是前端指路所需的全部信息。合成一个字段的话这两条会变得不可区分。
+    new SettingsRepo(db).set('engine_enabled', 'false', NOW)
+    const { base } = await start()                      // env 默认满足 setup 闸
+    const { body } = await getHealth(base)
+    expect(body.engineEnabled).toBe(false)
+    expect(body.setupSatisfied).toBe(true)
+    expect(body.workPermitted).toBe(false)
+  })
+
+  it('🔴 workPermitted 与 daemon 的 workPermitted 逐字同源（不是端点自己算的第二份）', async () => {
+    // 上面四条锁的是"值对不对"，这一条锁的是"**判据是同一个**"：把 cli/index.ts 喂给
+    // daemon 的那两个数据源原样喂给 watchClients.workPermitted，逐一比对四种组合下
+    // 端点与它是否给出同一个答案。任何一方将来增减合取项而另一方没跟上，这条就红。
+    //
+    // 直接调那个函数而不是复述它的逻辑：复述就是**第三处手写判据**，正是本 task 禁止的
+    // D7/C30 形态——那样的断言在两份实现一起漂移时会跟着一起绿。
+    const settings = new SettingsRepo(db)
+    const cases: Array<{ engine: string | null; env: Record<string, string> }> = [
+      { engine: null, env: { ...SETUP_OK_ENV } },
+      { engine: null, env: {} },
+      { engine: 'false', env: { ...SETUP_OK_ENV } },
+      { engine: 'false', env: {} },
+    ]
+    for (const c of cases) {
+      settings.set('engine_enabled', c.engine ?? 'true', NOW)
+      const { base } = await start({ env: c.env })
+      const { body } = await getHealth(base)
+      // daemon 侧的构造：cli/index.ts:801 就是这两个入参（settings 裸键读 + env/库两级密钥面）。
+      const daemonSays = workPermitted(
+        (k) => settings.get(k),
+        makeAdapterConfigResolver(c.env, (k) => settings.get(k)),
+      )
+      expect(body.workPermitted).toBe(daemonSays)
+      // 顺带钉住三者自洽——端点若把某一项算漏（比如 workPermitted 忘了合取），这里也红。
+      expect(body.workPermitted).toBe(body.engineEnabled && body.setupSatisfied)
+      const s = server; server = undefined
+      s?.closeAllConnections?.()
+      await new Promise<void>((resolve) => s!.close(() => resolve()))
+    }
   })
 
   it('🔴 roots 端到端：三态各一行，同一次响应里同时出现 true / false / null', async () => {
@@ -256,6 +364,35 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect((await getHealth(base)).body.current).toEqual({ kind: 'translate', title: '乙剧', index: null, total: null })
   })
 
+  it('🔴 接线（运行时探针）：每次请求都**真的调用** ScoutEventBus.getCurrent()，而不是别处凑出同形对象', async () => {
+    // ── 这一条替代了原 healthWiring.test.ts（已删）──────────────────────────────
+    // 那个文件用源码文本匹配来证明"端点读了 getCurrent()"，实测**四条断言全是假绿**：
+    // codeLines() 只剥整行注释，把 `current: events ? events.getCurrent() : null` 改成
+    // `current: null, // events.getCurrent()` 之后 4/4 全过。剥掉行尾注释也救不了——
+    // 判据仍落在文本上，一个字符串字面量或一个叫 getCurrent 的局部变量照样喂得饱。
+    // 文本断言的能力上限就在这里：它证明的是"源码里写了这几个字"，不是"运行时调了"。
+    //
+    // 这条探针证明后者：给端点一个**被监视过的**总线，断言那个方法真的被调用了。
+    // 它同时钉死了原文件想守却守不住的那个变异——"绕过总线自己去 meta 表读一份同形快照"
+    // （Task ④ 明确否掉的方案）：那种实现下响应体可以完全正确，但 getCurrent 调用数为 0。
+    const bus = new ScoutEventBus()
+    bus.publish({ type: 'activity', message: '开始处理', title: '丙剧', workbench: 'identify' })
+    // spy 而不是替身对象：真实 ScoutEventBus 的行为原样保留（含"返回副本"那条），
+    // 这里只在它身上加一个计数器。ESM 无法 spy 模块导出，但**实例方法**可以。
+    const calls: number[] = []
+    const real = bus.getCurrent.bind(bus)
+    bus.getCurrent = () => { calls.push(1); return real() }
+
+    const { base } = await start({ events: bus })
+    expect(calls.length).toBe(0)                    // 组装阶段不许求值（那会冻死快照）
+    const first = await getHealth(base)
+    expect(calls.length).toBe(1)                    // 恰好一次：请求来了才取，且只取一次
+    expect(first.body.current).toEqual({ kind: 'identify', title: '丙剧', index: null, total: null })
+    // 第二次请求要再调一次——"现取"这件事在调用计数上也留痕（上面那条只看得见值）。
+    await getHealth(base)
+    expect(calls.length).toBe(2)
+  })
+
   it('🔴 没接总线（不跑 watch）→ **不 503**：current 给 null，其余三个字段照给', async () => {
     // 本 task 的一条明确裁决（与隔壁 /api/v2/events 缺席即 503 刻意不同）：health 的另外
     // 三个字段与总线毫无关系，整体 503 会让"守备目录健康度"这个纯 DB 事实在没跑 watch 时
@@ -276,7 +413,9 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     // 会让活动页 total 与 SSE 的 total 对不上且越跑越飘）。
     const { base } = await start({ events: new ScoutEventBus() })
     const { body } = await getHealth(base)
-    expect(Object.keys(body).sort()).toEqual(['current', 'engineEnabled', 'lastInspectAt', 'roots'])
+    expect(Object.keys(body).sort()).toEqual(
+      ['current', 'engineEnabled', 'lastInspectAt', 'roots', 'setupSatisfied', 'workPermitted'],
+    )
     expect('queue' in body).toBe(false)
   })
 

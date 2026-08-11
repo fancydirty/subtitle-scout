@@ -55,7 +55,12 @@ import type { SetupDeps } from './setupApi.js'
 import { buildSetupStatus, buildProviders, putSecret, validateSetupTarget } from './setupApi.js'
 // Task ⑤：/api/v2/health 的 engineEnabled 判据。**复用**而不是第三次手写 `!== 'false'`
 // ——同一件事在健康横幅 / setup 页 / daemon 派活三条路上给出不同答案是 D7/C30 的既有形态。
-import { engineEnabled } from '../cli/watchClients.js'
+// 🔴-2 修复：workPermitted 是 daemon 那条产工作许可的**同一个函数**（此前这里只取了它的
+// 左半边 engineEnabled，于是 setup 闸关着的时候端点会说"引擎开着"——见 HealthDTO 的字段注释）。
+import { engineEnabled, setupSatisfied, workPermitted } from '../cli/watchClients.js'
+// health 的 setup 闸要一个 env+库两级解析的密钥面。用 setupApi 已经在用的那个工厂，
+// 不在 dashboard 层另起一套解析规则。
+import { makeAdapterConfigResolver } from '../v2/secrets.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -198,7 +203,20 @@ export interface HealthRootDTO {
 /** GET /api/v2/health 的响应。 */
 export interface HealthDTO {
   lastInspectAt: number | null
+  /**
+   * **daemon 到底会不会干活**——判据与 daemon 的 `workPermitted` 逐字同源
+   * （二者调用同一个 watchClients.workPermitted，不是两份实现）。
+   *
+   * 这是本端点回答"为什么什么都没发生"的那个字段：`false` = 下一轮巡检会整轮跳过。
+   * 下面两个 boolean 是它的两个合取项，只为让前端说得出**是哪一半**没满足。
+   */
+  workPermitted: boolean
+  /** 用户在设置页/活动页那个总开关的状态（settings.engine_enabled，fail-open）。
+   *  ⚠️ 它**不是**"引擎在干活"——true 但 setupSatisfied 为 false 时 daemon 照样全停。 */
   engineEnabled: boolean
+  /** setup 闸：TMDB + LLM 三件套是否全部可解析（env 或库）。全新部署 / 凭据过期时为 false，
+   *  这正是"什么都没发生"最常见的成因，也是本字段存在的全部理由。 */
+  setupSatisfied: boolean
   roots: HealthRootDTO[]
   current: ScoutCurrent | null
 }
@@ -365,6 +383,11 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     now: () => Date.now(),
     ...setupDepsOverride,
   }
+  // GET /api/v2/health 的 workPermitted 判据要读的密钥面（env 两级 + 库）。
+  // **从 setupDeps 派生而不是从外层 env/settingsRepo 直取**：setupDeps 是本文件里"密钥从哪来"
+  // 的既有唯一口子（buildSetupStatus 走的就是它），测试经 opts.setupDeps 换掉 env 时，
+  // health 与 setup/status 必须回答同一件事——两处各取各的 env 就是又一份会漂移的实现。
+  const healthCfg = makeAdapterConfigResolver(setupDeps.env, (k) => setupDeps.settingsRepo.get(k))
   const auth = new AuthService(settingsRepo)
   // 字幕校验三端点的依赖：默认全部接真实模块，测试可通过 opts.subtitleWriteDeps 部分覆盖
   // （见 DashboardOpts.subtitleWriteDeps 注释——这是"为可测性而设"的注入口，不是降级开关）。
@@ -831,18 +854,40 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       //    刻意不抽公共函数：那边是"顶栏新鲜度行"的一个字段，这边是健康基线，
       //    合并会让两个页面的降级策略互相绑架（那边 null 显示"还没扫过"，这边 null 要触发
       //    冷启动分支）。**只读不写**，本端点零写路径。
-      //  · engineEnabled —— settings 表 `engine_enabled`，fail-open（只有精确 'false' 才算关，
-      //    脏值/缺省一律开，spec §4.6）。判据与 watchClients.engineEnabled（daemon 的
-      //    workPermitted）、setupApi.buildSetupStatus 同源。这里复用 watchClients 那份实现
-      //    而不是第三次手写 `!== 'false'`：三处各写一份，用户眼里"引擎开着"这一件事会在
-      //    健康横幅、setup 页、daemon 派活三条路上给出可能不同的答案（D7/C30 的既有形态）。
+      //  · workPermitted / engineEnabled / setupSatisfied —— **daemon 会不会干活**及其两个
+      //    合取项。三者都经 watchClients 那一份实现（`workPermitted` = `engineEnabled` ∧
+      //    `setupSatisfied`），dashboard 一行判据都不重写。
+      //
+      //    ⚠️ 这里曾经只有 `engineEnabled` 一个字段，注释还写着它"与 daemon 的 workPermitted
+      //    同源"——**那是假话**（🔴-2）：daemon 的判据是合取式，端点只取了左半边。后果是全新
+      //    部署 / 凭据过期（TMDB key 失效、LLM_* 缺失）时 daemon 整轮巡检被 setup 闸闸死、
+      //    什么都不做，而健康横幅坚定地说"引擎开着"。而这个端点存在的全部理由就是"用户开着
+      //    dashboard 排查为什么什么都没发生"——`setupSatisfied === false` 正是那个最常见的
+      //    成因，也正是它当时唯一漏掉的那个事实。
+      //
+      //    为什么是**三个字段**而不是把 engineEnabled 直接改成合取（那样 DTO 不扩大）：
+      //    合取之后"用户手动关了引擎"与"凭据没配好"在这个字段上不可区分，而这两件事的
+      //    下一步动作完全相反（去把开关打开 / 去 setup 页填 key）。前端要能把用户指向对的
+      //    那一边，就必须看得见是哪一半没满足。engineEnabled 保留原语义（= 那个总开关的
+      //    状态）还有一层意思：activity 页的开关是**受控件**，它读的就是这个语义，改成
+      //    合取会让"凭据没配好"表现为开关自己跳回关位，用户点它也拨不动。
+      //  · engine_enabled 的库位与 fail-open 口径（只有精确 'false' 才算关，脏值/缺省一律
+      //    开，spec §4.6）见 watchClients.engineEnabled；setup 闸的口径（TMDB + LLM 三件套
+      //    全部可解析）见 watchClients.setupSatisfied。setupApi.buildSetupStatus 的
+      //    `engineEnabled` 与本端点的同名字段是同一件事的两个出口，语义一致。
       //  · roots —— media_roots 的 path/last_error/last_checked_at（Task ③ / db.ts v41 加的两列）。
       //    写：daemonV2.scanOnce 的 finally 单点收敛。**本端点是这两列的第一个读取方**
       //    （db.ts v41 那条 entry 写着"目前没有读取方……Task ⑤ 的 /api/v2/health 将据它判
       //    roots.ok，那个端点今天还不存在"——就是这里）。ok 的三态折叠见 buildRootHealth。
       //  · current —— ScoutEventBus.getCurrent()（Task ④ 挂的内存快照）。写：publish
       //    （= daemonV2 已有的 13 个 emit 点）。**本端点是 getCurrent() 的唯一生产读取点**，
-      //    故那条接线由 healthWiring.test.ts 的源码级断言守卫（照 watchWiring.test.ts 的形态）。
+      //    故那条接线由 health.test.ts 里那条**运行时探针**用例守卫：给端点一个 spy 过的
+      //    ScoutEventBus，断言 getCurrent 每次请求真的被调用一次。
+      //    （此前守它的是 healthWiring.test.ts 的源码文本断言，已删——那 4 条实测全是假绿，
+      //     `current: null, // events.getCurrent()` 就能把它们全部喂饱。文本匹配证明的是
+      //     "源码里写了这几个字"，不是"运行时调了"；watchWiring.test.ts 那种形态之所以仍然
+      //     必要，是因为它守的是 cli/index.ts 的接线，那里没有可运行的行为可断言——而
+      //     /health 是个能真起来的 HTTP 端点，有更强的证据可用就不该退回弱证据。）
       //
       // ── events 缺席（不跑 watch 时）为什么**不整体 503** ─────────────────────
       // 隔壁 /api/v2/events 缺席即 503，那是对的：它整个端点就是那条流，没有总线就没有
@@ -875,7 +920,14 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           .all() as Array<{ path: string; last_error: string | null; last_checked_at: number | null }>
         const body: HealthDTO = {
           lastInspectAt: Number.isFinite(lastInspectNum) ? lastInspectNum : null,
+          // 三个布尔全部现取，且**判据只有一份**：workPermitted 就是 daemon 那个同名函数，
+          // engineEnabled / setupSatisfied 是它的两个合取项各自单独摆出来（前端要能说出
+          // 是"你把开关关了"还是"凭据没配好"——合成一个字段这两种就不可区分了）。
+          // 三者天然自洽（workPermitted === engineEnabled && setupSatisfied），因为它们
+          // 调的是同一批函数，不是三处各算一遍。
+          workPermitted: workPermitted((k) => settingsRepo.get(k), healthCfg),
           engineEnabled: engineEnabled((k) => settingsRepo.get(k)),
+          setupSatisfied: setupSatisfied(healthCfg),
           roots: buildRootHealth(rootRows, Date.now()),
           // events 缺席 → null（见上方论证：不整体 503）。
           current: events ? events.getCurrent() : null,

@@ -49,6 +49,30 @@ export function engineEnabled(get: (key: string) => string | null): boolean {
   return get('engine_enabled') !== 'false'
 }
 
+/**
+ * 产工作许可（spec §4.6 + §4.7 步 3）：**daemon 到底会不会干活**这一件事的唯一判据。
+ *
+ * ── 为什么它必须是一个具名函数，而不是在调用点就地写 `engineEnabled(...) && setupSatisfied(...)` ──
+ * 这个合取此前只存在于 cli/index.ts 的 `workPermitted:` 字面量里。dashboard 的
+ * GET /api/v2/health 需要回答同一件事（那个端点存在的全部理由就是"用户开着 dashboard 排查
+ * 为什么什么都没发生"），而它当时只取了**左半边** `engineEnabled`，于是全新部署 / 凭据过期时
+ * 出现过一句主动的假话：daemon 整轮巡检被 setup 闸闸死、什么都不做，健康横幅却说"引擎开着"。
+ *
+ * 修法不是在 dashboard 层把合取**再手写一遍**——那正是本仓 D7（findOverlappingRoot 两份）/
+ * C30（两套字幕标签集）反复栽过的形态，也正是 /health 端点自己的注释所反对的。判据收敛到
+ * 这里一处，daemon 与 dashboard 各自调用，此后任何一方增减合取项，另一方自动跟上。
+ *
+ * 两个入参形状不同是刻意的，不是疏漏：`get` 是 settings 表的裸键读（engine_enabled 是行为
+ * 开关，只在库里），`cfg` 是 env+库两级解析的密钥面（TMDB/LLM 三件套可以来自 env）。
+ * 合并成一个参数就得让 settings 读也绕道 AdapterConfigResolver，那是为了对称而扭曲语义。
+ */
+export function workPermitted(
+  get: (key: string) => string | null,
+  cfg: AdapterConfigResolver,
+): boolean {
+  return engineEnabled(get) && setupSatisfied(cfg)
+}
+
 /** 点火日志追踪（spec §4.7 步 4）：setup 闸从"不满足"翻成"满足"的那一刻记一行
  *  'setup complete — engine live'——同进程点火的唯一可观测标志。初始即满足（现有 env
  *  部署升级）时永不记——那一行对老部署是假新闻。 */
