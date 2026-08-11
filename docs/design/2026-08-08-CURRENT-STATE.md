@@ -1,8 +1,12 @@
 # Subtitle Scout 当前状态与待办（权威入口）
 
-**更新**: 2026-08-10（第 5.5 步完成）
-**用途**: compact 后接续的单一入口。读完这份 + PIPELINE-SPEC.md 就能继续干活。
-**配套**: `2026-08-08-PIPELINE-SPEC.md`（26 条用户裁决 + 23 条实现裁决 + 45 个缺口，权威 spec）
+**更新**: 2026-08-11（后端全完成；前端设计过四轮审计，待实施）
+**用途**: compact 后接续的**单一入口**。先读 §二·五「compact 后从这里开始」。
+**配套**:
+- `2026-08-08-PIPELINE-SPEC.md` — 后端权威 spec（R1–R26 / D1–D23 / C1–C47）
+- `2026-08-11-FRONTEND-SPEC.md` — 前端用户裁决（R-F1~R-F15）
+- `2026-08-11-FRONTEND-IMPL-DESIGN.md` — **前端施工图**（v5，四轮审计）
+- `DESIGN.md`（项目根）— Linear 视觉基准
 
 ---
 
@@ -14,28 +18,90 @@
 
 ---
 
-## 二、进度：7 步里做完 6 步
+## 二、进度：后端全完成，前端设计已过四轮审计，待实施
 
 ```
-第 1a 步  守备目录地界加固              ✅  4 task
-第 1b 步  扫描删除清理 + 字幕存在性观察  ✅  5 task ← 用户最早点名的地基
-第 2 步   daemonV2 接容器 + 运维器官     ✅
-第 3 步   状态机改造                    ✅  4 task + 1 跨轨修复
-第 4 步   翻译接回新架构                ✅  3 task
-第 5 步   字幕 skill 两条边界            ✅  2 commit（prompt + 计数轨）
-第 5.5 步 skill/工具一致性审计 + 干测压测 ✅  3 commit
-第 7 步   清理死代码（A+B+C1 三批）      ✅  7 commit，净删 ~3600 行
-第 6 步   live test（NAS 测试库）          ✅  单元 1-6 全通过，含翻译首次出片
-第 8 步   前端全删重做                    ⬜  ← 用户裁决：并入下列三件事
-          ├─ 4 个 builder 迁到 files/works（修海报墙冻结快照）
-          ├─ 删 jobs 生产者 + redispatch 假按钮
-          └─ 之后四张旧表才真正无活读者，那时才轮到删表
+第 1a-5.5 步  ✅ 后端重构（识别/字幕/翻译三条流水线 + 日巡检模型）
+第 7 步       ✅ 清理死代码（净删 ~3600 行）
+第 6 步       ✅ live test（115 全库 + NAS，抓到并修了 8 个真实缺陷）
+第 8 步       🔄 前端全删重做 ← **当前在这里**
+              ├─ ✅ 用户裁决收齐（R-F1~R-F15）
+              ├─ ✅ 四件后端前置全部完成并生产验证
+              ├─ ✅ 实施设计文档 v5（四轮对抗性审计，17 条 🔴 全吸收）
+              └─ ⬜ **下一步：写实施计划 → subagent 逐 task 实现 → 每 task 后对抗审计**
 ```
 
-**测试**: 3018 条 / 7 失败（全是接手前的既有债务）/ tsc 干净 / 零新增回归
+### 测试基线（每次验收必须对照，2026-08-11 实测）
 
-⚠️ **第 6 步的硬约束**：dashboard 现在显示的不是真相（见 §八 第 1 条），
-所以 live test **不许拿界面当验收依据**——必须直接查 DB 与磁盘上的字幕文件。
+```
+后端  npx vitest run --exclude '**/web/**'
+      142 文件 / 3217 用例 / 失败恰好 7 条（接手前的既有债务）
+        deployContract×3  buildAdapters×2  secrets×1  settingsRepo×1
+前端  cd web && npx vitest run
+      78 文件 / 863 用例 / 0 失败（干净）
+类型  npm run check  且  cd web && npx tsc --noEmit   两条都要退出码 0
+```
+
+⚠️ **三条验收陷阱**（都实测踩过）：
+1. **vitest 不查类型**（esbuild transpile 直接忽略）→ 类型错误能全绿交差，必须单独跑 `npm run check`
+2. **vitest 会静默丢整个测试文件** → 实测出现过 141 vs 142 文件、总数少 220，
+   而 `numFailedTests` 照样是 7。**验收必须同时断言文件数**
+3. **默认 reporter 偶尔虚报**（`numFailedTestSuites=9` 是 describe 计数不是文件数）→ 用 `--reporter=json`
+
+---
+
+## 二·五、compact 后从这里开始
+
+**用户已明确下一步**：
+> 「直接开始写计划，然后 subagent driven 实现，每个 task 实现后都起子代理对抗审计。」
+
+### 要读的三份文档（按顺序）
+
+| 文档 | 作用 |
+|---|---|
+| `docs/design/2026-08-11-FRONTEND-IMPL-DESIGN.md`（934 行）| **施工图**。§5 有 12 步 + 依赖图 + 每步文件清单；§6 有验收 |
+| `docs/design/2026-08-11-FRONTEND-SPEC.md`（530 行）| 用户裁决 R-F1~R-F15 的原文与理由 |
+| `DESIGN.md`（项目根，548 行）| Linear 视觉基准（四层 surface 阶梯 + 三层 hairline，拒绝投影）|
+
+### 实施顺序（IMPL-DESIGN §5，已有依赖图）
+
+```
+后端六步（可并行：⓪①②③④⑥）
+⓪ ScoutEventInput 加**可选** workbench 字段 + progress 节流改 per-workbench
+① 补 GET /api/v2/notifications
+② mediaLibraryApi 补 EpisodeState 八态（优先级链在后端）
+③ media_roots 加 last_error/last_checked_at（单点收敛，try/finally）
+④ current 数据源（落库 meta 或 holder 注入，二选一未定）
+⑤ 补 GET /api/v2/health（← 依赖 ③④）
+⑥ works.backdrop_path + 回填 + identifyScheduler 写入点
+
+前端四步
+⑦ shell 改造（← 依赖 ⑤）：6 个文件，清单在 §5
+⑧ 媒体库页（← ②+⑦）  ⑨ 活动页（← ⑥+⑦+⓪）  ⑩ 通知页（← ①+⑦）
+⑪ 旧页面移入 _legacy + docker build 验证
+```
+
+### ⚠️ 四轮审计留下的、动手前会撞的坑
+
+| 坑 | 说明 |
+|---|---|
+| **`workflow` tab 渲染的是 `ActivityPage`** | `AppShell.tsx:94`。且 `activity/` 四处 import `workflow/`——判「删」会立刻编译失败 |
+| **`workbench` 必须可选** | 13 个 emit 点里 6 个填不了（巡检级 + 扫描级） |
+| **新列只能进条件式 ALTER** | 不能改 `db.ts` 顶部 CREATE TABLE 终态定义。同时要改 `db.test.ts` 的 **16 处**版本号字面量 |
+| **SSE 需跑完整 `watch`** | `events` 只在 `cmdWatch` 注入，不跑则 `/api/v2/events` 恒 503。**没有轻量模式** |
+| **Context 必须拆四层** | 单 Context 会让 progress 每秒触发全树重渲染 |
+| **生产 daemon 从未跑完一轮完整巡检** | `meta` 无 `last_inspect_at`。这是**实施前置调查项**，一条命令定性：`docker logs subtitle-scout \| grep -c "巡检失败"` |
+
+### 环境（公司/家里不同）
+
+```
+家里  ssh media-router          （直连 192.168.100.1）
+公司  ssh media-router-wan      （cf tunnel，ProxyCommand 会自己拉起）
+      ⚠️ 直连不通 = 用户在公司，切 wan。别误判成"路由器挂了"（我犯过）
+部署  git push → 路由器 git reset --hard + docker build（**CI 账单已耗尽，不能靠 GitHub Actions**）
+      cd /mnt/nvme0n1-4/docker/subtitle-scout && docker build ... && docker compose up -d
+apiKey  52720d9a83fb9a74eed14c50ed58e1e2   （dashboard API 用 x-api-key 头）
+```
 
 ---
 
@@ -458,6 +524,44 @@ dashboard redispatch。
 | `--noUnusedLocals` 下 7 处孤儿 | `cli/index.ts` 的 `verifyAndRecord`/`runVerifySweep`/`verifyRepo`（verifySweep 雪藏，**有意保留**）+ `ReconcileAllResultDTO`/`requireEnv`/`targetLanguages`（疑似真死）+ `handleWorkerTask` |
 | `identifyMediaSkill` 教模型调未挂载工具 | 文档仍写 `write_identified_media`，而活路径（daemonV2 字幕 worker）从不传 `identityDeps`。模型会去试、被拒、把失败写进 reason |
 | 既有 7 红 | deployContract 3（部署脚本换了测试没跟上）/ buildAdapters 2（zimuku）/ secrets 1 + settingsRepo 1（SECRET_NAMES 从 12 涨到 15） |
+
+---
+
+## 八·五、⭐ 四轮对抗性审计的方法论沉淀（2026-08-11）
+
+前端设计文档经四轮 subagent 对抗审计，共 **17 条 🔴**。
+**没有一轮收益递减**——因为每轮换了攻击层面：
+
+| 轮 | 攻击层面 | 🔴 | 代表性发现 |
+|---|---|---|---|
+| 一 | **事实层**（数字对不对） | 6 | 我引用了一份已被自己销毁的数据快照 |
+| 二 | **遗漏层**（该有的有没有） | 3 | DTO 给不出 `skip_reason`——我在警告"第 8 次同型缺陷"的段落里亲手写下第 9 次 |
+| 三 | **决策层 + 假修复** | 4 | R-F1 与生产代码打架（识别在推 activity），两条裁决相隔 9 行，我同时引用却没发现 |
+| 四 | **可执行性**（新人能做吗） | 4 | `workflow` tab 渲染的是 `ActivityPage`，我写"activity 不在导航里"方向反了 |
+
+### 三条可复用的经验
+
+1. **换角色比换问题有效**。第四轮让审计员扮演"入职第一天的工程师"、
+   **真的去执行 12 步**，找到了前三轮从旁边走过去三次的错误
+   （前三轮查了 `route.ts` 三次，没有一轮打开 `AppShell.tsx`）。
+
+2. **让审计员实跑，不许推测**。四轮里我被实测纠正 **10 次以上**，
+   包括"季集表要新建"（早已存在）、"复用 langOf"（chs/cht 不折叠）、
+   "阈值 50%"（混淆删除比例与存活比例，挡不住真实事故）。
+
+3. **要求审计员列出"攻击过但没攻破的"**。这能区分"真没问题"与"没认真找"，
+   第三轮列了 8 条、第四轮列了独立评分（推理质量高 / 事实准确度 70% / 可执行度 35%）。
+
+### 本项目的两个招牌病（识别它们）
+
+**病 A：加了能力却没定谁写/谁读/谁触发** —— 已栽 **10 次**
+> C12 → C35 → C43 → C21 → `audio_langs` → `tmdb_seasons`（表有函数有没人触发）
+> → 通知端点（表有数据读函数有没 HTTP 端点）→ `skip_reason` 零读者
+> → SSE `found` 载荷对不上消费方 → **两条裁决互斥、实现挑一条、文档两条都引用却没发现**
+
+**病 B：把中间量说成结论量** —— 已栽 **4 次**
+> `probe ok=N` 统计"没抛异常"而非"写进去了" / `judge: N 个文件判定需字幕` 把总数说成需字幕数
+> / mismatch 日志截断到看不出差异 / 设计文档引用已销毁的数据快照
 
 ---
 
