@@ -100,6 +100,50 @@ const BACKFILL_BATCH_SIZE = 200
  *     总退避 4s 相对于 24 小时的损失可以忽略，相对于一趟 44s 的 readdir 也只是零头。 */
 const R8_RETRY_BACKOFFS_MS = [1000, 3000]
 
+/** C47：R8 第三道闸的**存活比例**下限。本轮扫到的行数 / 库里该根既有的行数 低于此值
+ *  即判定"读取不可信"，触发一次确认性重读（见 scanOnce 里的三分处置）。
+ *
+ *  生产实测（2026-08-11 04:07）——这是一次**真实数据损失**，不是推演：
+ *      scan: 删除磁盘上已消失的文件 572 行（R7）: .../Mediary Scout/TV
+ *      scan: scanned=720 upserted=135 skipped=2
+ *  上一轮扫到 1155，这一轮只读出 720，差集 572 行被当成"磁盘上已消失"删掉，而磁盘上一个
+ *  文件都没少。R8 原有两道闸只认"抛错"和"整根 0 个"，**部分成功**这第三种形态毫无防线——
+ *  它长得跟"用户真的删了 572 个文件"一模一样。
+ *
+ *  ★ 为什么是存活比例，不是删除比例（这个方向搞反一次，守卫就完全失效）：
+ *  出事那轮库里既有 = 720 + 572 = 1292。直觉上"删掉了 572/1292 ≈ 44%，快一半了"，
+ *  于是很容易定出"删除超过 50% 才拦"——但守卫真正要比的是 seen/existing = 720/1292
+ *  = **55.7%**，它**高于** 50%。按删除比例定阈值的话，这次事故会原样再发生一次。
+ *  （用用户记忆里的 1155 做分母也一样：720/1155 = 62.3%，同样高于 50%。）
+ *
+ *  ★ 为什么 80% 挡不住用户的真实删除——阈值必须落在这个区间里：
+ *   · 下界（必须拦住的）：生产事故的 55.7%，以及用 1155 做分母的 62.3% → 阈值须 > 0.623
+ *   · 上界（必须放行的）：用户删掉一整季 20/351，存活 331/351 = 94.3% → 阈值须 < 0.943
+ *     区间 (0.623, 0.943)，取 0.80 ——大致居中，两侧都留足余量，且能用一句人话说清：
+ *     "一轮之内消失超过 20% 就先别信"。
+ *   · 按这个阈值，用户一次删到多少集才会**触发**守卫？351 集的库要一次删掉 71 集
+ *     （≈ 3.5 整季）才跌破 80%。而即便触发了也**不等于不删**：确认性重读只要复现同一个
+ *     数字，删除照常执行（见下）。所以 80% 的代价上限只是"一次超大规模删除多花一趟
+ *     readdir 并延后几秒"，不存在"用户删了但库里清不掉"这种结局。
+ *
+ *  ★ 为什么必须配确认性重读，而不能是纯比例守卫：
+ *  纯比例守卫会把真实的大规模删除**永久锁死**——库 351 / 盘 200 → 57% → 拦下不删 →
+ *  下一轮库还是 351、盘还是 200 → 又拦 → 永远，日志每轮平静地说"跳过删除"。这正是 D18
+ *  （sub_recheck_at 停在 NULL 再没人复核）和 C46（抖一下停摆一整天）栽过的那类静默失效，
+ *  不能在修一个删库 bug 的同时把它请回来。
+ *  判别真实删除与 FUSE 抖动的信号是现成的、且不需要任何配置或持久状态：
+ *  **真实删除在两次读取之间是稳定的，抖动不是。** 故三分：
+ *   ① 重读恢复到 ≥ 阈值 → 抖动，用重读结果照常入库+删除（顺带救回这一轮，同 C46 的收益）
+ *   ② 重读拿到**同一个**数字 → 稳定事实 → 确系用户删除 → 照删，无死锁
+ *   ③ 重读拿到**不同的**低数字 → 两次读取自相矛盾，没有一个可信 → 跳过该根（R8 处置）
+ *  用户点名的最坏情况"每次都是不同的部分"落在 ③，正是最该跳过的那一档。
+ *
+ *  ★ 为什么不给开关（沿用 R-F9 的教训：设置页铺 33 个字段是反效果）：
+ *  会被误拦的合法场景只有"一次删掉 >20% 且删除动作恰好横跨两次读取之间"，而它的后果
+ *  仅仅是延后到下一轮（那时两次读取都会看到删除后的稳定状态，走 ②）。既然没有"用户想
+ *  删却永远删不掉"的结局，就不存在必须由用户绕过的场景，也就不需要开关。 */
+const R8_MIN_SURVIVAL_RATIO = 0.8
+
 /** R20 的 MVP 语言边界，喂给 judgeTranslatable（R21 + D9）。
  *
  *  两个集合**刻意不同**，这正是 R20 的裁决内容：
@@ -1118,18 +1162,72 @@ export class ScoutDaemonV2 {
         this.deps.log(`scan: 守备目录瞬时读取故障，第 ${read.attempts - 1} 次重试成功（R8 / C46）: ${root}`)
       }
 
-      const files = read.files
+      // 本轮采信的读取结果。守卫的"重读已恢复"分支会**整体换掉**这两个变量，故用 let：
+      // 只换 seen 而留下旧的 entries/files，会让入库走 720 个的旧快照、删除走 1292 个的新
+      // 快照，两个口径当场劈叉（且 skipped 会算成 720-1292 的负数）。
+      let files = read.files
+      let entries = read.entries
       // deleteMissing 的差集口径：过完 isScannable 的那一档（见 readRootWithRetry 的论证）。
-      const seen = new Set<string>(read.entries.map(e => e.path))
+      let seen = new Set<string>(entries.map(e => e.path))
+
+      // ── C47：R8 第三道闸——部分读取的比例守卫。
+      //
+      // 走到这里说明本轮读到了 >0 个文件（0 个已被上面第二道闸接走），但"读到了一些"
+      // 距离"读到的是全部"还差得远：生产 04:07 那次读到 720 个、库里 1292 行，差集 572 行
+      // 被当成"磁盘上已消失"删了个干净，而磁盘上一个文件都没少。
+      //
+      // 分母取库里归本根管的行数（与删除作用域同源，见 rootScopeQuery）。既有为 0 时
+      // 直接放行：那是**首次入库**（从无到有），不是骤降；且此时比值的分母为 0，
+      // 让它参与比较会得到 Infinity/NaN，而 NaN 的任何比较都是 false ——究竟表现为
+      // "永远拦"还是"永远放"取决于比较写法，两种写错法都不会在别处暴露。故显式短路。
+      const existingCount = this.countRowsUnderRoot(root, scanRoots)
+      if (existingCount > 0 && seen.size < existingCount * R8_MIN_SURVIVAL_RATIO) {
+        // 触发了守卫**不等于**判定为故障——真实的大规模删除也会落到这里。两者的区别在于
+        // 稳定性：真实删除在两次读取之间是稳定的，FUSE 抖动不是。故再读一次来分辨。
+        // 这一趟额外 readdir（115 上实测 44s）只在守卫触发时付，正常轮次一次都不发。
+        const confirm = await this.readRootWithRetry(root, stat, signal)
+        const pct = (n: number) => `${(n / existingCount * 100).toFixed(1)}%`
+        // 日志一次把四个数字全给出来：扫到多少 / 库里多少 / 比例 / 阈值 / 重读多少。
+        // 本仓已栽过三次"日志把中间量说成结论量"（probe ok=N 数的是没抛异常、judge 把
+        // 总数说成需字幕数、mismatch 截断到看不出差异），这条日志的存在意义就是让人
+        // **当场**判断这次拦截是对是错，而不是回头去猜。
+        const facts = `扫到 ${seen.size} / 库里 ${existingCount} = ${pct(seen.size)}`
+          + `，低于阈值 ${R8_MIN_SURVIVAL_RATIO * 100}%；重读`
+          + (confirm.ok ? `扫到 ${confirm.entries.length}（${pct(confirm.entries.length)}）` : '失败')
+
+        if (confirm.ok && confirm.entries.length >= existingCount * R8_MIN_SURVIVAL_RATIO) {
+          // ① 重读恢复 → 确系抖动。用**重读的结果**继续，本轮照常入库+删除。
+          // 不退化成"跳过了事"是刻意的：那等于把一次几秒的抖动放大成一整天停摆，
+          // 正是 C46 刚修掉的放大效应，不许在这里请回来。
+          this.deps.log(`scan: 首次读取骤降但重读已恢复，采用重读结果（R8 第三道闸 / C47）: ${root}: ${facts}`)
+          files = confirm.files
+          entries = confirm.entries
+          seen = new Set<string>(entries.map(e => e.path))
+        } else if (confirm.ok && confirm.entries.length === seen.size) {
+          // ② 两次读到同一个数字 → 这是稳定事实，确系用户删除 → 放行，照常删。
+          // 这一分支是**防死锁**的：没有它，库 351/盘 200 会每轮都跌破阈值、每轮都被拦、
+          // 库永远停在 351，日志每轮平静地说"跳过删除"——D18/C46 那类静默失效的翻版。
+          this.deps.log(`scan: 行数骤降但两次读取一致，判定为真实删除，照常清理（R8 第三道闸 / C47）: ${root}: ${facts}`)
+        } else {
+          // ③ 重读失败、或拿到**另一个**低数字 → 两次读取自相矛盾，没有一个可信。
+          // 用户点名的最坏情况"每次都是不同的部分"正落在这一档。处置与现有两道闸
+          // 完全一致：跳过删除**并**跳过字幕观察（D23 联动，只跳删除不跳观察等于
+          // 拿不可信快照把 covered 打回 NULL，下一轮重跑整轮付费字幕 session）。
+          this.deps.log(`scan: 守备目录行数骤降且重读不一致，跳过删除与字幕观察（R8 第三道闸 / D23 / C47）: ${root}: ${facts}`)
+          skippedRoots.push(root)
+          continue
+        }
+      }
+
       // 本根的 A 档候选先攒在局部名单里，**跑完两道 R8/D20 闸门之后**才并进 toDetect。
       // 不能边扫边直接 push 进 toDetect：嵌套根这条形态（D20）里 walk 是**成功**的
       // （/media 自己不空），文件确实被 upsert 了，等到发现"这个根不可信"时它们已经进名单了。
       const rootDetect: string[] = []
       scanned += files.length
-      skipped += files.length - read.entries.length
+      skipped += files.length - entries.length
       // 复用探空阶段已经取到的 st，**不重新 stat**：stat 在 115 FUSE 上代价放大约 46 倍，
       // 几千文件重取一遍就是把本该秒级的机械扫描又拖长一截（同 R24 那条性能红线的理由）。
-      for (const { path: f, st } of read.entries) {
+      for (const { path: f, st } of entries) {
         const existing = findExisting.get(f) as { mtime: number; size: number } | undefined
         if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
         const row = toMediaFileRow(f, st, scanRoots)
@@ -1639,6 +1737,35 @@ export class ScoutDaemonV2 {
     return out
   }
 
+  /** "库中归 root 管的行"这个作用域谓词。D21 的全部要害都在这里，故只此一份。
+   *
+   *  从 deleteMissing 里抽出来是 C47 的刚性需求：比例守卫的**分母**必须与删除的**作用域**
+   *  逐字同源。分母若比删除域宽（比如漏掉 deeperPrefixes 那一档），嵌套配置下内层根的行
+   *  会被算进外层的分母，比例被稀释到守卫永远触发不了——而嵌套正是 C29 那次删库的形态，
+   *  守卫在最需要它的配置下失效。反过来若窄了则会凭空误拦。两个口径同源才不会漂移。
+   *
+   *  谓词本身的论证（原样保留在 deleteMissing 的文档注释里）：substr 定长比较而非 LIKE，
+   *  root 后补 '/'，并排除所有更深的守备目录前缀（D21 '/' 防护）。 */
+  private rootScopeQuery(root: string, roots: string[]): { sql: string; args: string[] } {
+    const prefix = root.endsWith('/') ? root : `${root}/`
+    const deeperPrefixes = roots
+      .filter((r) => r !== root)
+      .map((r) => (r.endsWith('/') ? r : `${r}/`))
+      .filter((p) => p !== prefix && p.startsWith(prefix))
+    return {
+      sql: `substr(path,1,length(?)) = ?`
+        + deeperPrefixes.map(() => ' AND substr(path,1,length(?)) != ?').join(''),
+      args: [prefix, prefix, ...deeperPrefixes.flatMap((p) => [p, p])],
+    }
+  }
+
+  /** C47：库里"归 root 管"的行数——比例守卫的分母。 */
+  private countRowsUnderRoot(root: string, roots: string[]): number {
+    const { sql, args } = this.rootScopeQuery(root, roots)
+    const row = this.deps.db.prepare(`SELECT COUNT(*) AS n FROM files WHERE ${sql}`).get(...args) as { n: number }
+    return row.n
+  }
+
   /** 差集删除：库中归 root 管的行里，本轮没扫到的那些（R7 直接删，历史不留）。
    *
    *  D1 逐根比对，**不做全局补集**——把所有根扫到的路径并成一个大集合再删补集的话，
@@ -1657,14 +1784,7 @@ export class ScoutDaemonV2 {
    *  root 后补 '/' 是避免 "/media/tv" 前缀吃到兄弟目录 "/media/tv2"。 */
   private deleteMissing(root: string, seen: Set<string>, roots: string[]): void {
     const db = this.deps.db
-    const prefix = root.endsWith('/') ? root : `${root}/`
-    const deeperPrefixes = roots
-      .filter((r) => r !== root)
-      .map((r) => (r.endsWith('/') ? r : `${r}/`))
-      .filter((p) => p !== prefix && p.startsWith(prefix))
-    const scopeSql = `substr(path,1,length(?)) = ?`
-      + deeperPrefixes.map(() => ' AND substr(path,1,length(?)) != ?').join('')
-    const scopeArgs: string[] = [prefix, prefix, ...deeperPrefixes.flatMap((p) => [p, p])]
+    const { sql: scopeSql, args: scopeArgs } = this.rootScopeQuery(root, roots)
 
     // 事务包住"读该根名下的行 → 逐条删"（照 removeRoot 的 transaction().immediate() 手法）：
     // 中途崩溃留下半删状态的库，比不删更糟——库不再是任何一个时刻的磁盘快照。

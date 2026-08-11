@@ -515,6 +515,226 @@ describe('ScoutDaemonV2.scanOnce · C46 R8 闸门的当场重试', () => {
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// C47：部分读取的比例守卫（R8 第三道闸）
+//
+// 生产实测（2026-08-11 04:07）——**真实数据损失**，不是推演：
+//   scan: 删除磁盘上已消失的文件 572 行（R7）: .../Mediary Scout/TV
+//   scan: scanned=720 upserted=135 skipped=2
+// 上一轮扫到 1155，这一轮只读出 720，差集 572 行被当成"磁盘上已消失"删掉了——
+// 而磁盘上一个文件都没少（同一小时内手工 ls 反复在"正常/空"之间横跳：
+// 10:47 Movies 36 目录 → 02:48 扫描读出空 → 11:10 读出 51 → 11:35 读出 351 → 11:40 读出 0）。
+//
+// R8 原有两道闸只覆盖两种形态：walk 抛错、整根扫出 0 个。**部分成功**（720/1155）这第三种
+// 形态没有任何防线——它长得跟"用户真的删了 572 个文件"一模一样，被当成可信事实拿去做差集。
+//
+// ★ 两个必须在测试里钉死的反直觉结论（都是本次设计时算出来、与最初直觉相反的）：
+//
+//  ① 阈值不能按"删除比例"定，必须按**存活比例**定。
+//     572/1292 ≈ 44% 看起来"删了将近一半"，但守卫的判据是 seen/existing = 720/1292 = 55.7%
+//     ——**高于 50%**。若按最初设想的"低于 50% 才拦"，这次生产事故会原样再发生一次。
+//     这两个量方向相反，混淆一次就等于守卫完全失效，故用例直接用生产的绝对数字建模。
+//
+//  ② 纯比例守卫会把"用户真的删了一大批"**永久锁死**。
+//     库 351 / 盘 200 → 57% → 拦下不删 → 下一轮库还是 351、盘还是 200 → 又拦 → 永远。
+//     日志每轮平静地说"跳过删除"，用户看不出任何异常——正是 D18/C46 栽过的那类静默失效。
+//     解法不加配置、不落持久状态：**再读一次**。真实删除在两次读取间是稳定的，
+//     FUSE 抖动不是。据此三分：恢复→照常用；两次同数→坐实为真实删除→照删；
+//     两次不同→读取自相矛盾→跳过该根。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 造 n 个连着编号的剧集路径（比例守卫的用例都要成百上千行，手写不现实）。 */
+function epPaths(root: string, n: number, from = 1): string[] {
+  return Array.from({ length: n }, (_, i) => `${root}/Show/E${String(from + i).padStart(4, '0')}.mkv`)
+}
+
+describe('ScoutDaemonV2.scanOnce · C47 部分读取的比例守卫（R8 第三道闸）', () => {
+  it('🔴 生产事故重演：库里 1292 行、本轮只读出 720（55.7%）→ 拦下删除，572 行一个不许掉', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 1292)
+    seedFiles(db, all)
+    const logs: string[] = []
+    // 部分读取**稳定复现**同一个 720（序列耗尽后复用最后一项）——这是最凶的形态：
+    // 确认性重读也拿到 720 的话，"两次同数"的放行分支会把它当成真实删除。
+    // 所以这里的 720 必须由**不同的**再读结果来否定，见下一条用例；本条先钉最基本的：
+    // 只要触发了守卫，572 行就绝不能在"第一次读到 720"这个事实上被删掉。
+    const fs = flakyFakeFs({ '/media': [all.slice(0, 720), all] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    // 核心断言：一行都没少。用 rowsInDb 而不是 pathsInDb——被误删的行会被同一轮的 upsert
+    // 用同一个路径插回来，只看路径完全看不出差别，work_id 丢了才是被删过的凭据。
+    expect(rowsInDb(db)).toEqual(alive(all))
+    // 日志必须给得出数字，让人当场判断这次拦截对不对（本仓已栽过三次"日志把中间量说成
+    // 结论量"：probe ok=N 数的是没抛异常、judge 把总数说成需字幕数、mismatch 截断）。
+    const joined = logs.join('\n')
+    expect(joined).toMatch(/720/)      // 扫到多少
+    expect(joined).toMatch(/1292/)     // 库里多少
+    expect(joined).toMatch(/55\.7%/)   // 比例
+    expect(joined).toMatch(/80%/)      // 阈值
+    db.close()
+  })
+
+  it('🔴 两次读取给出**不同**的部分结果（720 → 890）→ 读取自相矛盾，跳过该根不删', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 1292)
+    seedFiles(db, all)
+    const logs: string[] = []
+    // 用户原话点名的最坏情况："也可能每次都是不同的部分（更糟）"。
+    // 两次都低于阈值且互不相同 → 没有任何一个数字可信 → 唯一安全的处置是整根跳过。
+    const fs = flakyFakeFs({ '/media': [all.slice(0, 720), all.slice(0, 890)] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    expect(rowsInDb(db)).toEqual(alive(all))
+    expect(logs.join('\n')).toMatch(/跳过删除/)
+    db.close()
+  })
+
+  it('🔴 首次入库（库里 0 行 → 读到 1155 行）→ 不是骤降，绝不许拦', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 1155)
+    const logs: string[] = []
+    const fs = flakyFakeFs({ '/media': [all] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    // 0 行既有 → 比例的分母为 0。写成 seen/existing 会得到 Infinity 或 NaN，
+    // 而 NaN 参与的任何比较都是 false —— 究竟是"永远拦"还是"永远放"取决于比较写法，
+    // 两种写错法都不会在别的用例里暴露。故首次入库单独钉一条。
+    expect(pathsInDb(db)).toEqual([...all].sort())
+    expect(logs.join('\n')).not.toMatch(/跳过删除/)
+    // 且不该为它付出确认性重读的代价（115 FUSE 上一趟 readdir 实测 44s）。
+    expect(fs.walkCalls).toEqual(['/media'])
+    db.close()
+  })
+
+  it('🔴 用户真删了一整季（库 351、盘 331，94.3%）→ 正常删除，不许误拦', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 351)
+    seedFiles(db, all)
+    const logs: string[] = []
+    const kept = all.slice(0, 331)          // 删掉 20 集 = 一整季
+    const fs = flakyFakeFs({ '/media': [kept] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    // 守卫的存在价值有一半在这条：拦得住灾难但顺手把用户的正常使用也锁死的话，
+    // 用户会去关掉整个删除逻辑，那比没有守卫更糟。
+    expect(pathsInDb(db)).toEqual([...kept].sort())
+    expect(logs.join('\n')).toMatch(/删除磁盘上已消失的文件 20 行/)
+    // 没触发守卫 → 不该有确认性重读。
+    expect(fs.walkCalls).toEqual(['/media'])
+    db.close()
+  })
+
+  it('🔴 用户真删了一大批且两次读取一致（库 351、盘两次都是 200）→ 坐实为真实删除，照删不误', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 351)
+    seedFiles(db, all)
+    const logs: string[] = []
+    const kept = all.slice(0, 200)          // 57% —— 低于阈值，守卫会触发
+    // 序列只有一项 → 每次读都是同一批 200 个。这正是"用户真的删了 151 个文件"的形态。
+    const fs = flakyFakeFs({ '/media': [kept] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    // 这条防的是纯比例守卫的**永久死锁**：库 351/盘 200 每一轮都是 57%，
+    // 若只看比例就会每轮都拦、库永远停在 351、日志每轮平静地说"跳过删除"。
+    // 确认性重读把"真实删除"与"抖动"分开：两次读到同一批 → 这是稳定事实 → 删。
+    expect(pathsInDb(db)).toEqual([...kept].sort())
+    expect(logs.join('\n')).toMatch(/删除磁盘上已消失的文件 151 行/)
+    // 代价必须只在守卫触发时付：触发了 → 恰好一次确认性重读，绝不多于此。
+    expect(fs.walkCalls).toEqual(['/media', '/media'])
+    db.close()
+  })
+
+  it('🔴 确认性重读恢复到完整（720 → 1292）→ 用完整的那次入库并正常删除（顺带救回这一轮）', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 1292)
+    seedFiles(db, all.slice(0, 1291))       // 库里少一行，验证"用重读结果"而不是"跳过了事"
+    const logs: string[] = []
+    const fs = flakyFakeFs({ '/media': [all.slice(0, 720), all] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    // 恢复后不该退化成"本轮什么也不做"：那等于把一次几秒的抖动放大成一整天的停摆
+    // （C46 修的正是这个放大效应，新守卫不许把它请回来）。
+    expect(pathsInDb(db)).toEqual([...all].sort())
+    expect(logs.join('\n')).not.toMatch(/跳过删除/)
+    db.close()
+  })
+
+  it('🔴 被守卫拦下的根**不做字幕观察**（D23 联动，与现有两道闸完全一致）', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 1292)
+    // 全库都是"指纹与磁盘一致 + 已到复检点"的行 → 只要守卫没拦住，B 档就会去观察它们。
+    for (const p of all) seedRow(db, p, { sub_status: 'covered', sub_recheck_at: NOW - 1 })
+    const sub = fakeSubtitleDisk([])
+    const fs = flakyFakeFs({ '/media': [all.slice(0, 720), all.slice(0, 890)] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, fileExists: sub.fileExists,
+    }))
+    await scan(daemon)
+    // 只跳过删除却仍做观察 = 拿一份不可信的磁盘快照去把 covered 打回 NULL，
+    // 下一轮就是为这 1292 集重跑一整轮付费字幕 agent session（D23 的原始伤害）。
+    expect(subStatusOf(db, all[0])).toBe('covered')
+    expect(sub.calls).toEqual([])
+    db.close()
+  })
+
+  it('🔴 全部消失（库 351、盘 0）→ 仍然走既有的 seen.size===0 那道闸，不是新守卫', async () => {
+    const db = openDb(':memory:')
+    const all = epPaths('/media', 351)
+    seedFiles(db, all)
+    const logs: string[] = []
+    const fs = flakyFakeFs({ '/media': [[]] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, log: (m: string) => logs.push(m),
+    }))
+    await scan(daemon)
+    expect(rowsInDb(db)).toEqual(alive(all))
+    // 归属断言：0 个必须由 R8 第二道闸接住（它带 1s+3s 退避重试），**不能**滑进新守卫
+    // ——新守卫的"两次同数就删"分支在 0/0 上会得出"用户清空了这个根"并删光全库。
+    expect(logs.join('\n')).toMatch(/扫出 0 个媒体文件/)
+    expect(logs.join('\n')).not.toMatch(/骤降/)
+    expect(sl.waited).toEqual([1000, 3000])
+    db.close()
+  })
+
+  it('🔴 一个根被守卫拦下，另一个正常的根照常删除（逐根隔离，D1 不许被新守卫破坏）', async () => {
+    const db = openDb(':memory:')
+    const tv = epPaths('/media/tv', 1292)
+    const movies = epPaths('/media/movies', 100)
+    seedFiles(db, [...tv, ...movies])
+    const fs = flakyFakeFs({
+      '/media/tv': [tv.slice(0, 720), tv.slice(0, 890)],   // 抖 → 拦
+      '/media/movies': [movies.slice(0, 99)],              // 真删 1 个 → 照删
+    })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media/tv', '/media/movies'], ...fs.deps, sleep: sl.sleep,
+    }))
+    await scan(daemon)
+    expect(pathsInDb(db)).toEqual([...movies.slice(0, 99), ...tv].sort())
+    db.close()
+  })
+})
+
 describe('ScoutDaemonV2.scanOnce · 防线 4：逐根隔离（D1）', () => {
   it('删除不波及其他守备目录的行——且一个根掉线不影响另一个根的删除', async () => {
     const db = openDb(':memory:')
