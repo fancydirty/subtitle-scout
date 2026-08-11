@@ -1297,142 +1297,206 @@ export class ScoutDaemonV2 {
     // 谓词是全库查询、**不分根**，光看库里的列推不出"这个根本轮可不可信"。
     const skippedRoots: string[] = []
 
+    // Task ③：守备目录健康度的**唯一写入点**（media_roots.last_error / last_checked_at）。
+    //
+    // 为什么必须是 try/finally 的单点收敛，而不是"每根循环末尾统一写一次"：
+    // 下面这个循环体里有 **3 处 `continue`**（R8 第一/二道闸合并的那个 `!read.ok` 分支、
+    // C47 第三道闸的分支 ③、D20 嵌套根分支），循环末尾对它们**根本到不了**。写在末尾
+    // 等于"只有健康的根会被记录"——而这两列存在的全部意义恰恰是记录不健康的那些。
+    //
+    // 为什么 catch 里要记一笔再 rethrow：循环体里任何未预期的异常（upsert 撞库、
+    // deleteMissing 抛错）都会掀翻整轮巡检。若只有 finally 而没有 catch，rootError 仍是
+    // null → 这一行被写成"健康"，然后整轮巡检失败——库里留下一条与事实相反的记录。
+    // rethrow 保证控制流与改动前**逐字一致**（异常照旧向上传播，走 run() 的 health ④）。
+    const markRoot = db.prepare(
+      'UPDATE media_roots SET last_error = ?, last_checked_at = ? WHERE path = ?',
+    )
+
     for (const root of scanRoots) {
-      // C46：两道 R8 闸门合并成一次**带当场重试**的读取（见 R8_RETRY_BACKOFFS_MS 的论证）。
-      // 合并而不是各写一段重试的理由：两种形态（抛错 / 读出空）是**同一个瞬时故障的两张脸**
-      // ——生产实测的那次是"不抛错只返回空"，但 rclone 在别的抖动路径上是会抛 EIO 的。
-      // 分开写等于同一件事有两份退避策略，哪天调了一处就漂移。
-      const read = await this.readRootWithRetry(root, stat, signal)
+      // 本根本轮的判决。null = 健康（这正是**成功路径清空**的载体：finally 里无条件写，
+      // 值为 null 时那条 UPDATE 就是一次清空）。绝不能写成"只在出错时才发 UPDATE"——
+      // 那样用户修好挂载后 last_error 永久粘住，界面永远显示红的（这是本任务点名的缺失点）。
+      let rootError: string | null = null
+      try {
+        // C46：两道 R8 闸门合并成一次**带当场重试**的读取（见 R8_RETRY_BACKOFFS_MS 的论证）。
+        // 合并而不是各写一段重试的理由：两种形态（抛错 / 读出空）是**同一个瞬时故障的两张脸**
+        // ——生产实测的那次是"不抛错只返回空"，但 rclone 在别的抖动路径上是会抛 EIO 的。
+        // 分开写等于同一件事有两份退避策略，哪天调了一处就漂移。
+        const read = await this.readRootWithRetry(root, stat, signal)
 
-      if (!read.ok) {
-        // ── 重试全部失败 → 行为与改动前**逐字一致**（跳过删除、跳过字幕观察、
-        //    skippedRoots.push、打日志）。重试是 R8 保护之上的增益，绝不是它的替代品：
-        //    "一次删光该根全库"仍是这个项目最严重的可能故障。
-        //    日志带上"已重试 N 次"——不带的话运维看到"跳过"会以为系统没努力过，
-        //    而真相是连着 3 次读取都是坏的（那是真掉线，该去看 rclone 了）。
-        const tried = `已重试 ${read.attempts - 1} 次`
-        if (read.error !== undefined) {
-          // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
-          // 拿它做差集就是删库，故整根跳过删除；upsert 也无从做（一个文件都没拿到）。
-          // 原始错因（String(e)）必须原样带出：那是排障的唯一线索，不许被重试包装吃掉。
-          this.deps.log(`scan: 守备目录不可访问，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}: ${String(read.error)}`)
-          // R-F10 health ①：R8 第一道闸。用户视角就是"我的库可能有问题"——这个根这一整轮
-          // 都不会被处理，而下一轮是 24 小时之后。**不推的话它只存在于日志文件里**，
-          // 而日志文件正是用户不会去看的地方（R-F9 的三层分区：排障归排障，但"整个根停摆"
-          // 已经越过了排障，是产品事实）。
-          this.emit({ type: 'health', message: `守备目录读取失败，本轮跳过（${tried}）: ${root}` })
-        } else {
-          // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录
-          // **不报错、只是看起来是空的**——这是最阴的形态，无脑差集就是一次删光该根全库。
-          this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}`)
-          // R-F10 health ②：R8 第二道闸（FUSE 掉线最阴的形态——目录不报错、只是看起来是空的）。
-          this.emit({ type: 'health', message: `守备目录扫出 0 个媒体文件，疑似挂载异常，本轮跳过（${tried}）: ${root}` })
-        }
-        skippedRoots.push(root)
-        continue
-      }
-
-      // 重试后成功 = 用户的挂载**正在抖**。必须打日志：这一条是"抖动"与"一切正常"之间
-      // 唯一的可观察差别（入库结果两者完全相同）。不打的话抖动会一直恶化到重试也救不回来
-      // 的那天才第一次被发现——本仓已因"日志把中间量说成结论量"栽过三次（probe ok=N 数的
-      // 是没抛异常、judge 把总数说成需字幕数、mismatch 截断到看不出差异）。
-      if (read.attempts > 1) {
-        this.deps.log(`scan: 守备目录瞬时读取故障，第 ${read.attempts - 1} 次重试成功（R8 / C46）: ${root}`)
-      }
-
-      // 本轮采信的读取结果。守卫的"重读已恢复"分支会**整体换掉**这两个变量，故用 let：
-      // 只换 seen 而留下旧的 entries/files，会让入库走 720 个的旧快照、删除走 1292 个的新
-      // 快照，两个口径当场劈叉（且 skipped 会算成 720-1292 的负数）。
-      let files = read.files
-      let entries = read.entries
-      // deleteMissing 的差集口径：过完 isScannable 的那一档（见 readRootWithRetry 的论证）。
-      let seen = new Set<string>(entries.map(e => e.path))
-
-      // ── C47：R8 第三道闸——部分读取的比例守卫。
-      //
-      // 走到这里说明本轮读到了 >0 个文件（0 个已被上面第二道闸接走），但"读到了一些"
-      // 距离"读到的是全部"还差得远：生产 04:07 那次读到 720 个、库里 1292 行，差集 572 行
-      // 被当成"磁盘上已消失"删了个干净，而磁盘上一个文件都没少。
-      //
-      // 分母取库里归本根管的行数（与删除作用域同源，见 rootScopeQuery）。既有为 0 时
-      // 直接放行：那是**首次入库**（从无到有），不是骤降；且此时比值的分母为 0，
-      // 让它参与比较会得到 Infinity/NaN，而 NaN 的任何比较都是 false ——究竟表现为
-      // "永远拦"还是"永远放"取决于比较写法，两种写错法都不会在别处暴露。故显式短路。
-      const existingCount = this.countRowsUnderRoot(root, scanRoots)
-      if (existingCount > 0 && seen.size < existingCount * R8_MIN_SURVIVAL_RATIO) {
-        // 触发了守卫**不等于**判定为故障——真实的大规模删除也会落到这里。两者的区别在于
-        // 稳定性：真实删除在两次读取之间是稳定的，FUSE 抖动不是。故再读一次来分辨。
-        // 这一趟额外 readdir（115 上实测 44s）只在守卫触发时付，正常轮次一次都不发。
-        const confirm = await this.readRootWithRetry(root, stat, signal)
-        const pct = (n: number) => `${(n / existingCount * 100).toFixed(1)}%`
-        // 日志一次把四个数字全给出来：扫到多少 / 库里多少 / 比例 / 阈值 / 重读多少。
-        // 本仓已栽过三次"日志把中间量说成结论量"（probe ok=N 数的是没抛异常、judge 把
-        // 总数说成需字幕数、mismatch 截断到看不出差异），这条日志的存在意义就是让人
-        // **当场**判断这次拦截是对是错，而不是回头去猜。
-        const facts = `扫到 ${seen.size} / 库里 ${existingCount} = ${pct(seen.size)}`
-          + `，低于阈值 ${R8_MIN_SURVIVAL_RATIO * 100}%；重读`
-          + (confirm.ok ? `扫到 ${confirm.entries.length}（${pct(confirm.entries.length)}）` : '失败')
-
-        if (confirm.ok && confirm.entries.length >= existingCount * R8_MIN_SURVIVAL_RATIO) {
-          // ① 重读恢复 → 确系抖动。用**重读的结果**继续，本轮照常入库+删除。
-          // 不退化成"跳过了事"是刻意的：那等于把一次几秒的抖动放大成一整天停摆，
-          // 正是 C46 刚修掉的放大效应，不许在这里请回来。
-          this.deps.log(`scan: 首次读取骤降但重读已恢复，采用重读结果（R8 第三道闸 / C47）: ${root}: ${facts}`)
-          files = confirm.files
-          entries = confirm.entries
-          seen = new Set<string>(entries.map(e => e.path))
-        } else if (confirm.ok && confirm.entries.length === seen.size) {
-          // ② 两次读到同一个数字 → 这是稳定事实，确系用户删除 → 放行，照常删。
-          // 这一分支是**防死锁**的：没有它，库 351/盘 200 会每轮都跌破阈值、每轮都被拦、
-          // 库永远停在 351，日志每轮平静地说"跳过删除"——D18/C46 那类静默失效的翻版。
-          this.deps.log(`scan: 行数骤降但两次读取一致，判定为真实删除，照常清理（R8 第三道闸 / C47）: ${root}: ${facts}`)
-        } else {
-          // ③ 重读失败、或拿到**另一个**低数字 → 两次读取自相矛盾，没有一个可信。
-          // 用户点名的最坏情况"每次都是不同的部分"正落在这一档。处置与现有两道闸
-          // 完全一致：跳过删除**并**跳过字幕观察（D23 联动，只跳删除不跳观察等于
-          // 拿不可信快照把 covered 打回 NULL，下一轮重跑整轮付费字幕 session）。
-          this.deps.log(`scan: 守备目录行数骤降且重读不一致，跳过删除与字幕观察（R8 第三道闸 / D23 / C47）: ${root}: ${facts}`)
-          // R-F10 health ③：C47 拦截。这一档尤其必须让用户看见——它拦下的正是"一次删掉
-          // 572 行而磁盘上一个文件都没少"那种真实数据损失（2026-08-11 04:07 实测），
-          // 而拦截本身意味着这个根本轮不被清理，用户有权知道自己的库正处在这个状态。
-          this.emit({ type: 'health', message: `守备目录行数骤降且两次读取不一致，已拦下删除（${facts}）: ${root}` })
+        if (!read.ok) {
+          // ── 重试全部失败 → 行为与改动前**逐字一致**（跳过删除、跳过字幕观察、
+          //    skippedRoots.push、打日志）。重试是 R8 保护之上的增益，绝不是它的替代品：
+          //    "一次删光该根全库"仍是这个项目最严重的可能故障。
+          //    日志带上"已重试 N 次"——不带的话运维看到"跳过"会以为系统没努力过，
+          //    而真相是连着 3 次读取都是坏的（那是真掉线，该去看 rclone 了）。
+          const tried = `已重试 ${read.attempts - 1} 次`
+          if (read.error !== undefined) {
+            // walk 抛错 = 守备目录不可访问（挂载掉线/权限）。此时**已扫到的路径集是不可信的**，
+            // 拿它做差集就是删库，故整根跳过删除；upsert 也无从做（一个文件都没拿到）。
+            // 原始错因（String(e)）必须原样带出：那是排障的唯一线索，不许被重试包装吃掉。
+            this.deps.log(`scan: 守备目录不可访问，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}: ${String(read.error)}`)
+            // R-F10 health ①：R8 第一道闸。用户视角就是"我的库可能有问题"——这个根这一整轮
+            // 都不会被处理，而下一轮是 24 小时之后。**不推的话它只存在于日志文件里**，
+            // 而日志文件正是用户不会去看的地方（R-F9 的三层分区：排障归排障，但"整个根停摆"
+            // 已经越过了排障，是产品事实）。
+            this.emit({ type: 'health', message: `守备目录读取失败，本轮跳过（${tried}）: ${root}` })
+            // Task ③：与 health 事件**同源**的持久化判决（见循环顶部 rootError 的论证）。
+            // 文案刻意与 health message 保持一致：两个出口说同一件事，漂了就会出现
+            // "SSE 说读取失败、库里说行数骤降"这种自相矛盾的排障现场。
+            rootError = `守备目录读取失败，本轮跳过（${tried}）: ${String(read.error)}`
+          } else {
+            // R8 第二道：目录可访问但一个媒体文件都没扫到。115 的 rclone FUSE 掉线时目录
+            // **不报错、只是看起来是空的**——这是最阴的形态，无脑差集就是一次删光该根全库。
+            this.deps.log(`scan: 守备目录扫出 0 个媒体文件，跳过删除与字幕观察（R8 挂载保护 / D23，${tried}）: ${root}`)
+            // R-F10 health ②：R8 第二道闸（FUSE 掉线最阴的形态——目录不报错、只是看起来是空的）。
+            this.emit({ type: 'health', message: `守备目录扫出 0 个媒体文件，疑似挂载异常，本轮跳过（${tried}）: ${root}` })
+            // Task ③：同上，R8 第二道闸的持久化判决。
+            rootError = `守备目录扫出 0 个媒体文件，疑似挂载异常，本轮跳过（${tried}）`
+          }
           skippedRoots.push(root)
           continue
         }
-      }
 
-      // 本根的 A 档候选先攒在局部名单里，**跑完两道 R8/D20 闸门之后**才并进 toDetect。
-      // 不能边扫边直接 push 进 toDetect：嵌套根这条形态（D20）里 walk 是**成功**的
-      // （/media 自己不空），文件确实被 upsert 了，等到发现"这个根不可信"时它们已经进名单了。
-      const rootDetect: string[] = []
-      scanned += files.length
-      skipped += files.length - entries.length
-      // 复用探空阶段已经取到的 st，**不重新 stat**：stat 在 115 FUSE 上代价放大约 46 倍，
-      // 几千文件重取一遍就是把本该秒级的机械扫描又拖长一截（同 R24 那条性能红线的理由）。
-      for (const { path: f, st } of entries) {
-        const existing = findExisting.get(f) as { mtime: number; size: number } | undefined
-        if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
-        const row = toMediaFileRow(f, st, scanRoots)
-        upsert.run(row.path, row.dir, row.filename, row.size, row.mtime,
-          row.workDir, row.season, row.episode, row.parseConfidence,
-          now + SUB_RECHECK_INTERVAL_MS, Date.now())
-        upserted++
-        // 只有走到这里（新增 or 指纹变化）才排进探测队列。指纹未变的文件在上面那行
-        // `continue` 就走了，**一次 ffprobe 都不会发**——这是性能红线而非优化：
-        // 生产上一个守备目录是 115 网盘的 rclone FUSE 挂载，全库重探是几万 × 12s。
-        toProbe.push(f)
-        rootDetect.push(f)
-      }
+        // 重试后成功 = 用户的挂载**正在抖**。必须打日志：这一条是"抖动"与"一切正常"之间
+        // 唯一的可观察差别（入库结果两者完全相同）。不打的话抖动会一直恶化到重试也救不回来
+        // 的那天才第一次被发现——本仓已因"日志把中间量说成结论量"栽过三次（probe ok=N 数的
+        // 是没抛异常、judge 把总数说成需字幕数、mismatch 截断到看不出差异）。
+        if (read.attempts > 1) {
+          this.deps.log(`scan: 守备目录瞬时读取故障，第 ${read.attempts - 1} 次重试成功（R8 / C46）: ${root}`)
+        }
 
-      if (nestedRoots.has(root)) {
-        // 打日志是硬要求：不说原因的话运维只会看到"删除逻辑坏了"，无从排查。
-        this.deps.log(`scan: 守备目录处于嵌套关系中，跳过删除与字幕观察（D20 / C29 / D23）: ${root}`)
-        skippedRoots.push(root)
-        continue
-      }
+        // 本轮采信的读取结果。守卫的"重读已恢复"分支会**整体换掉**这两个变量，故用 let：
+        // 只换 seen 而留下旧的 entries/files，会让入库走 720 个的旧快照、删除走 1292 个的新
+        // 快照，两个口径当场劈叉（且 skipped 会算成 720-1292 的负数）。
+        let files = read.files
+        let entries = read.entries
+        // deleteMissing 的差集口径：过完 isScannable 的那一档（见 readRootWithRetry 的论证）。
+        let seen = new Set<string>(entries.map(e => e.path))
 
-      for (const f of rootDetect) toDetect.push(f)
-      this.deleteMissing(root, seen, scanRoots)
+        // ── C47：R8 第三道闸——部分读取的比例守卫。
+        //
+        // 走到这里说明本轮读到了 >0 个文件（0 个已被上面第二道闸接走），但"读到了一些"
+        // 距离"读到的是全部"还差得远：生产 04:07 那次读到 720 个、库里 1292 行，差集 572 行
+        // 被当成"磁盘上已消失"删了个干净，而磁盘上一个文件都没少。
+        //
+        // 分母取库里归本根管的行数（与删除作用域同源，见 rootScopeQuery）。既有为 0 时
+        // 直接放行：那是**首次入库**（从无到有），不是骤降；且此时比值的分母为 0，
+        // 让它参与比较会得到 Infinity/NaN，而 NaN 的任何比较都是 false ——究竟表现为
+        // "永远拦"还是"永远放"取决于比较写法，两种写错法都不会在别处暴露。故显式短路。
+        const existingCount = this.countRowsUnderRoot(root, scanRoots)
+        if (existingCount > 0 && seen.size < existingCount * R8_MIN_SURVIVAL_RATIO) {
+          // 触发了守卫**不等于**判定为故障——真实的大规模删除也会落到这里。两者的区别在于
+          // 稳定性：真实删除在两次读取之间是稳定的，FUSE 抖动不是。故再读一次来分辨。
+          // 这一趟额外 readdir（115 上实测 44s）只在守卫触发时付，正常轮次一次都不发。
+          const confirm = await this.readRootWithRetry(root, stat, signal)
+          const pct = (n: number) => `${(n / existingCount * 100).toFixed(1)}%`
+          // 日志一次把四个数字全给出来：扫到多少 / 库里多少 / 比例 / 阈值 / 重读多少。
+          // 本仓已栽过三次"日志把中间量说成结论量"（probe ok=N 数的是没抛异常、judge 把
+          // 总数说成需字幕数、mismatch 截断到看不出差异），这条日志的存在意义就是让人
+          // **当场**判断这次拦截是对是错，而不是回头去猜。
+          const facts = `扫到 ${seen.size} / 库里 ${existingCount} = ${pct(seen.size)}`
+            + `，低于阈值 ${R8_MIN_SURVIVAL_RATIO * 100}%；重读`
+            + (confirm.ok ? `扫到 ${confirm.entries.length}（${pct(confirm.entries.length)}）` : '失败')
+
+          if (confirm.ok && confirm.entries.length >= existingCount * R8_MIN_SURVIVAL_RATIO) {
+            // ① 重读恢复 → 确系抖动。用**重读的结果**继续，本轮照常入库+删除。
+            // 不退化成"跳过了事"是刻意的：那等于把一次几秒的抖动放大成一整天停摆，
+            // 正是 C46 刚修掉的放大效应，不许在这里请回来。
+            this.deps.log(`scan: 首次读取骤降但重读已恢复，采用重读结果（R8 第三道闸 / C47）: ${root}: ${facts}`)
+            files = confirm.files
+            entries = confirm.entries
+            seen = new Set<string>(entries.map(e => e.path))
+          } else if (confirm.ok && confirm.entries.length === seen.size) {
+            // ② 两次读到同一个数字 → 这是稳定事实，确系用户删除 → 放行，照常删。
+            // 这一分支是**防死锁**的：没有它，库 351/盘 200 会每轮都跌破阈值、每轮都被拦、
+            // 库永远停在 351，日志每轮平静地说"跳过删除"——D18/C46 那类静默失效的翻版。
+            this.deps.log(`scan: 行数骤降但两次读取一致，判定为真实删除，照常清理（R8 第三道闸 / C47）: ${root}: ${facts}`)
+          } else {
+            // ③ 重读失败、或拿到**另一个**低数字 → 两次读取自相矛盾，没有一个可信。
+            // 用户点名的最坏情况"每次都是不同的部分"正落在这一档。处置与现有两道闸
+            // 完全一致：跳过删除**并**跳过字幕观察（D23 联动，只跳删除不跳观察等于
+            // 拿不可信快照把 covered 打回 NULL，下一轮重跑整轮付费字幕 session）。
+            this.deps.log(`scan: 守备目录行数骤降且重读不一致，跳过删除与字幕观察（R8 第三道闸 / D23 / C47）: ${root}: ${facts}`)
+            // R-F10 health ③：C47 拦截。这一档尤其必须让用户看见——它拦下的正是"一次删掉
+            // 572 行而磁盘上一个文件都没少"那种真实数据损失（2026-08-11 04:07 实测），
+            // 而拦截本身意味着这个根本轮不被清理，用户有权知道自己的库正处在这个状态。
+            this.emit({ type: 'health', message: `守备目录行数骤降且两次读取不一致，已拦下删除（${facts}）: ${root}` })
+            // Task ③：C47 第三道闸的持久化判决。这一档尤其重要——生产 04:07 那次走的就是
+            // 它，而当时事后完全查不出"哪个根、什么时候、拦下了多少"。facts 原样带进去：
+            // 那串数字（扫到多少/库里多少/比例/重读多少）是判断"这次拦截对不对"的全部依据。
+            rootError = `守备目录行数骤降且两次读取不一致，已拦下删除（${facts}）`
+            skippedRoots.push(root)
+            continue
+          }
+        }
+
+        // 本根的 A 档候选先攒在局部名单里，**跑完两道 R8/D20 闸门之后**才并进 toDetect。
+        // 不能边扫边直接 push 进 toDetect：嵌套根这条形态（D20）里 walk 是**成功**的
+        // （/media 自己不空），文件确实被 upsert 了，等到发现"这个根不可信"时它们已经进名单了。
+        const rootDetect: string[] = []
+        scanned += files.length
+        skipped += files.length - entries.length
+        // 复用探空阶段已经取到的 st，**不重新 stat**：stat 在 115 FUSE 上代价放大约 46 倍，
+        // 几千文件重取一遍就是把本该秒级的机械扫描又拖长一截（同 R24 那条性能红线的理由）。
+        for (const { path: f, st } of entries) {
+          const existing = findExisting.get(f) as { mtime: number; size: number } | undefined
+          if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
+          const row = toMediaFileRow(f, st, scanRoots)
+          upsert.run(row.path, row.dir, row.filename, row.size, row.mtime,
+            row.workDir, row.season, row.episode, row.parseConfidence,
+            now + SUB_RECHECK_INTERVAL_MS, Date.now())
+          upserted++
+          // 只有走到这里（新增 or 指纹变化）才排进探测队列。指纹未变的文件在上面那行
+          // `continue` 就走了，**一次 ffprobe 都不会发**——这是性能红线而非优化：
+          // 生产上一个守备目录是 115 网盘的 rclone FUSE 挂载，全库重探是几万 × 12s。
+          toProbe.push(f)
+          rootDetect.push(f)
+        }
+
+        if (nestedRoots.has(root)) {
+          // 打日志是硬要求：不说原因的话运维只会看到"删除逻辑坏了"，无从排查。
+          this.deps.log(`scan: 守备目录处于嵌套关系中，跳过删除与字幕观察（D20 / C29 / D23）: ${root}`)
+          skippedRoots.push(root)
+          // Task ③ 审计补：这一支原先**不写 rootError**，于是库里说它健康，而日志与
+          // skippedRoots 都说它整轮停摆——三个出口两种结论。Task ⑤ 的 /api/v2/health
+          // 据 last_error 判 roots.ok，会把一个整轮不被处理的根判成绿的。
+          // 这一支与另外三道闸的**用户后果完全相同**（跳过删除与字幕观察，下一轮是 24h 后），
+          // 判决就必须相同。区别只在成因是配置问题而非挂载故障，故文案指向"怎么修"。
+          rootError = `守备目录处于嵌套关系中，本轮跳过（请在设置里去掉其中一个）: ${root}`
+          continue
+        }
+
+        for (const f of rootDetect) toDetect.push(f)
+        this.deleteMissing(root, seen, scanRoots)
+      } catch (e) {
+        // 未预期异常（upsert 撞库 / deleteMissing 抛错 / stat 替身炸了）。先把判决记成
+        // "这个根本轮出事了"，再原样 rethrow —— 控制流与本改动之前逐字一致。
+        // 不记的话 finally 会把它写成健康，而整轮巡检随即失败：库里留下与事实相反的一行。
+        rootError = `扫描本根时异常: ${String(e)}`
+        throw e
+      } finally {
+        // ── 单点收敛（本轮这个根**唯一**的一次健康度写入）。
+        //
+        // 放在 finally 而不是循环末尾：上面的循环体有 3 处 continue（R8 一/二道闸、
+        // C47 分支 ③、D20 嵌套），末尾根本到不了；而那三处恰恰是最需要被记录的三种不健康。
+        // finally 对 continue / return / throw 三种离开方式都会执行，是唯一无遗漏的位置。
+        //
+        // rootError 为 null 时这条 UPDATE 就是**成功路径的清空**：把上一轮留下的
+        // last_error 抹掉。只写不清 = 用户修好挂载后界面永远显示红的。清与写共用同一条
+        // 语句、同一个变量，结构上就不存在"漏了清空那条分支"的可能。
+        //
+        // 两列同一条 UPDATE：分两条会在掉电时留下"错误已清、时刻还是旧的"的行，
+        // 而 `last_error IS NULL` 单独看不出是"健康"还是"从没扫过"，两列必须同生共死。
+        //
+        // try/catch 包住：media_roots 表可能不存在（测试用裸库 / v11 及更早的旧库），
+        // 且这个根可能根本不在表里（deps.roots 启动快照与表会漂移，见 rootsProvider 注释）
+        // —— 后者是 UPDATE 影响 0 行，不抛错，本就无害。健康度记账是**增益**，
+        // 绝不许因为它失败而掀翻整轮扫描（同 nestedRootSet / emit 的既有隔离口径）。
+        try {
+          markRoot.run(rootError, now, root)
+        } catch { /* 无表/写失败：不阻断扫描，见上 */ }
+      }
     }
     if (upserted > 0) {
       this.deps.log(`scan: scanned=${scanned} upserted=${upserted} skipped=${skipped}`)

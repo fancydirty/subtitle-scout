@@ -742,6 +742,256 @@ describe('ScoutDaemonV2.scanOnce · C47 部分读取的比例守卫（R8 第三�
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Task ③：守备目录健康度落库（media_roots.last_error / last_checked_at）
+//
+// R8 三道闸今天的两个出口（日志 + SSE health）都是**瞬时**的：日志没人看，SSE 只推给当时
+// 正连着的订阅者。于是"这个根现在健不健康"在进程外没有任何持久载体——2026-08-11 04:07 那次
+// C47 拦截，事后完全查不出"哪个根、什么时候、拦下了多少"。这两列把闸门的判决落进状态机。
+//
+// 这批用例钉的是**调用方真的在写**，不是"UPDATE 语句本身能跑"。教训来自 Task ⓪：那次
+// 4 条测试全绿，把 7 个生产写入点全删光却无一变红——测试只测了工具，没锁住调用方。
+// 故这里**一条都不直接调 markRoot**，全部经由 scanOnce 的真实故障注入驱动。
+//
+// ★ 四种结局各钉一条，外加两条结构性的：
+//   ① 抛 EIO      → R8 第一道闸（`!read.ok` 且 error !== undefined）
+//   ② 返回 []     → R8 第二道闸（`!read.ok` 且 error === undefined）
+//   ③ 读到 40%    → C47 第三道闸分支 ③（生产 04:07 真实走的那一档）
+//   ④ 恢复正常    → last_error **清回 NULL**（设计文档「教训九」点名的缺失点：
+//                    只写不清 = 用户修好挂载后界面永远显示红的）
+//   ⑤ last_checked_at 是"上次**检查**时间"不是"上次成功时间"——失败轮也必须推进
+//   ⑥ D20 嵌套那处 continue 也真的走到 finally（三处 continue 的到达性证明）
+//
+// ⚠️ 全部用**注入式**故障建模（listVideoFiles 替身），不碰任何真实挂载：umount 只触发
+//    第一道闸，而生产真出事那次走的是第三道 C47，用 umount 根本验不到。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 往 media_roots 里放一个根。健康度两列刻意不填 —— NULL/NULL = "从没扫过"，
+ *  正是 db.ts v41 论证里那个有意义的第三态，也是每条用例的干净起点。 */
+function seedRoot(db: ReturnType<typeof openDb>, path: string): void {
+  db.prepare('INSERT INTO media_roots (path, type, added_at) VALUES (?,?,?)').run(path, 'local', 1)
+}
+
+/** 读回一个根的健康度判决。断言直接打在**库里的行**上，不打在任何中间量上：
+ *  这两列存在的全部意义就是"进程外可查"，只有查库才是真的在验它。 */
+function rootHealth(
+  db: ReturnType<typeof openDb>,
+  path: string,
+): { last_error: string | null; last_checked_at: number | null } {
+  return db.prepare('SELECT last_error, last_checked_at FROM media_roots WHERE path = ?').get(path) as
+    { last_error: string | null; last_checked_at: number | null }
+}
+
+describe('ScoutDaemonV2.scanOnce · Task ③ 守备目录健康度落库（media_roots.last_error / last_checked_at）', () => {
+  it('🔴 ① walk 抛 EIO（R8 第一道闸）→ last_error 落库，原始错因不许被重试包装吃掉', async () => {
+    const db = openDb(':memory:')
+    seedRoot(db, '/media')
+    seedFiles(db, ['/media/Show/E01.mkv'])
+    const events: any[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': 'EIO' }),
+      emit: (e: any) => events.push(e),
+    }))
+    await scan(daemon)
+
+    const h = rootHealth(db, '/media')
+    // 判决落库，且说的是**这一道闸**的事（不是"扫出 0 个"也不是"行数骤降"）。
+    expect(h.last_error).toMatch(/守备目录读取失败/)
+    // 原始错因是排障的唯一线索。只断言"非空"的话，把 String(read.error) 换成常量
+    // 也照样绿——那正是生产 04:07 事后"查不出发生了什么"的成因。
+    expect(h.last_error).toMatch(/mount gone \/media/)
+    // 重试次数：R8 之上的增益。不带的话运维会以为系统没努力过。
+    expect(h.last_error).toMatch(/已重试 2 次/)
+    // 与 SSE health 事件**同源**：两个出口说同一件事，漂了就会出现
+    // "SSE 说读取失败、库里说行数骤降"这种自相矛盾的排障现场。
+    const health = events.filter(e => e.type === 'health').map(e => e.message).join('\n')
+    expect(health).toMatch(/守备目录读取失败，本轮跳过（已重试 2 次）/)
+    expect(h.last_error).toMatch(/守备目录读取失败，本轮跳过（已重试 2 次）/)
+    // 时刻同轮写入（mkDeps 注入的 now）。
+    expect(h.last_checked_at).toBe(NOW)
+    // 闸门本体不许被这次记账削弱：一行都没掉。
+    expect(rowsInDb(db)).toEqual(alive(['/media/Show/E01.mkv']))
+    db.close()
+  })
+
+  it('🔴 ② walk 返回 []（R8 第二道闸，FUSE 掉线最阴的形态）→ last_error 落库', async () => {
+    const db = openDb(':memory:')
+    seedRoot(db, '/media')
+    seedFiles(db, ['/media/Show/E01.mkv', '/media/Show/E02.mkv'])
+    const events: any[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [] }),
+      emit: (e: any) => events.push(e),
+    }))
+    await scan(daemon)
+
+    const h = rootHealth(db, '/media')
+    expect(h.last_error).toMatch(/守备目录扫出 0 个媒体文件，疑似挂载异常，本轮跳过（已重试 2 次）/)
+    // 归属断言：这一档**不能**被写成第一道闸的文案。两道闸判据不同（抛错 vs 读出空），
+    // 混成一句话就等于库里的判决无法区分"挂载报错"与"挂载装死"，而后者才是 115 的常态形态。
+    expect(h.last_error).not.toMatch(/读取失败/)
+    expect(h.last_checked_at).toBe(NOW)
+    const health = events.filter(e => e.type === 'health').map(e => e.message).join('\n')
+    expect(health).toMatch(/守备目录扫出 0 个媒体文件，疑似挂载异常/)
+    expect(rowsInDb(db)).toEqual(alive(['/media/Show/E01.mkv', '/media/Show/E02.mkv']))
+    db.close()
+  })
+
+  it('🔴 ③ 只读到 40% 且两次不一致（C47 第三道闸 / 生产 04:07 真实走的那一档）→ last_error 带上判断依据的全部数字', async () => {
+    const db = openDb(':memory:')
+    seedRoot(db, '/media')
+    const all = epPaths('/media', 1000)
+    seedFiles(db, all)
+    const events: any[] = []
+    // 40% → 远低于 80% 阈值 → 守卫触发；重读拿到**另一个**低数字 → 分支 ③（两次自相矛盾）。
+    // 这正是用户点名的最坏情况"也可能每次都是不同的部分（更糟）"。
+    const fs = flakyFakeFs({ '/media': [all.slice(0, 400), all.slice(0, 500)] })
+    const sl = fakeSleep()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fs.deps, sleep: sl.sleep, emit: (e: any) => events.push(e),
+    }))
+    await scan(daemon)
+
+    const h = rootHealth(db, '/media')
+    expect(h.last_error).toMatch(/守备目录行数骤降且两次读取不一致，已拦下删除/)
+    // facts 原样带进去：那串数字是判断"这次拦截对不对"的**全部**依据。只断言前半句人话的话，
+    // 把 facts 丢掉照样绿 —— 而丢掉 facts 就退回到了 04:07 那天"查不出拦下了多少"的原点。
+    expect(h.last_error).toMatch(/扫到 400/)      // 本轮扫到多少
+    expect(h.last_error).toMatch(/库里 1000/)     // 分母（与删除作用域同源）
+    expect(h.last_error).toMatch(/40\.0%/)        // 存活比例（★ 不是删除比例）
+    expect(h.last_error).toMatch(/80%/)           // 阈值
+    expect(h.last_error).toMatch(/重读扫到 500/)  // 确认性重读的结果
+    expect(h.last_checked_at).toBe(NOW)
+    // 同源：SSE 与库里说同一件事。
+    const health = events.filter(e => e.type === 'health').map(e => e.message).join('\n')
+    expect(health).toMatch(/守备目录行数骤降且两次读取不一致，已拦下删除/)
+    // 闸门本体：1000 行一个不许掉。
+    expect(rowsInDb(db)).toEqual(alive(all))
+    db.close()
+  })
+
+  it('🔴 ④【教训九】挂载修好后 → last_error 被**清回 NULL**（只写不清 = 界面永远显示红的）', async () => {
+    const db = openDb(':memory:')
+    seedRoot(db, '/media')
+    // fakeFs 每次调用现读 disk 对象 → 直接改这个对象就是"用户把挂载修好了"。
+    const disk: Record<string, string[] | 'EIO'> = { '/media': 'EIO' }
+    let now = NOW
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs(disk), now: () => now,
+    }))
+
+    // 第 1 轮：挂载掉线 → 判决落库。先钉住这一步，否则第 2 轮的"清空"可能只是
+    // "这一列从来就没被写过"，断言 NULL 会在**功能完全不存在**时同样为真（假绿）。
+    await scan(daemon)
+    expect(rootHealth(db, '/media').last_error).toMatch(/守备目录读取失败/)
+
+    // 第 2 轮：用户重新挂上了 115。
+    disk['/media'] = ['/media/Show/E01.mkv']
+    now = NOW + 24 * 60 * 60 * 1000
+    await scan(daemon)
+
+    const h = rootHealth(db, '/media')
+    // ★ 本任务点名的缺失点：成功路径必须**主动清空**。写成"只在出错时才发 UPDATE"的话
+    // 这里会留着上一轮的 /守备目录读取失败/，用户修好挂载后界面永远显示红的。
+    expect(h.last_error).toBeNull()
+    // 且时刻推进到了这一轮 —— 证明"NULL"是本轮真写进去的，不是上一轮没写过。
+    expect(h.last_checked_at).toBe(NOW + 24 * 60 * 60 * 1000)
+    // 恢复轮本身正常干活（清空不是靠"这一轮什么也没做"换来的）。
+    expect(pathsInDb(db)).toEqual(['/media/Show/E01.mkv'])
+    db.close()
+  })
+
+  it('🔴 ⑤ last_checked_at 是"上次**检查**时间"不是"上次成功时间"：失败轮也必须推进', async () => {
+    const db = openDb(':memory:')
+    seedRoot(db, '/media')
+    const disk: Record<string, string[] | 'EIO'> = { '/media': ['/media/Show/E01.mkv'] }
+    let now = NOW
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'], ...fakeFs(disk), now: () => now,
+    }))
+
+    // 轮 1 成功 → 立一个基准时刻。
+    await scan(daemon)
+    expect(rootHealth(db, '/media')).toEqual({ last_error: null, last_checked_at: NOW })
+
+    // 轮 2 掉线 → 时刻仍须推进。若实现写成"只有成功才更新时刻"，运维看到的就是
+    // "上次检查：昨天"，而系统其实每轮都在检查、每轮都失败 —— 那是一条与事实相反的记录，
+    // 且会让人以为巡检本身停了，去排查一个根本不存在的问题。
+    disk['/media'] = 'EIO'
+    now = NOW + 1000
+    await scan(daemon)
+    const h2 = rootHealth(db, '/media')
+    expect(h2.last_error).toMatch(/守备目录读取失败/)
+    expect(h2.last_checked_at).toBe(NOW + 1000)
+
+    // 轮 3 仍然掉线、时刻再推进一次 —— 钉死"失败轮推进"不是靠轮 1 那次成功的残留。
+    now = NOW + 2000
+    await scan(daemon)
+    expect(rootHealth(db, '/media').last_checked_at).toBe(NOW + 2000)
+    db.close()
+  })
+
+  it('🔴 ⑥ D20 嵌套根那处 continue 同样走到 finally（三处 continue 的到达性证明）', async () => {
+    const db = openDb(':memory:')
+    // 存量嵌套是真实可达状态：第 1a 步的 detectNestedRoots 只告警、不改用户配置。
+    seedRoot(db, '/media')
+    seedRoot(db, '/media/115')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media', '/media/115'],
+      // 两个根的 walk 都**成功**（嵌套这条形态的特征就是"读得到，但作用域不可信"）→
+      // 控制流必然走到 D20 那处 continue，而不是被前两道闸提前接走。
+      ...fakeFs({ '/media': ['/media/tv/Show/E01.mkv'], '/media/115': ['/media/115/Anime/E01.mkv'] }),
+    }))
+    await scan(daemon)
+
+    // 到达性凭据：last_checked_at 只由 finally 里那条 UPDATE 写。它从 NULL 变成 NOW，
+    // 就证明这两个根**都**在 continue 之后仍然执行了 finally。把健康度记账挪回循环末尾
+    // （最直觉的写法）时，这两行会原样停在 NULL —— 这条用例就是那种写法的照妖镜。
+    expect(rootHealth(db, '/media').last_checked_at).toBe(NOW)
+    expect(rootHealth(db, '/media/115').last_checked_at).toBe(NOW)
+    // D20 分支同样要写 rootError（Task ③ 审计补的第四道判决）。
+    //
+    // 这条断言的来历值得记：上一版实现**不写**，于是三个出口两种结论——日志与 skippedRoots
+    // 都说"这个根整轮停摆"，唯独库里说它健康。写这批测试的 subagent 发现了，但按
+    // "不许扩大范围"如实钉住了当时的 `toBeNull()`，并写明"这不是背书"。
+    // 那个做法是对的：它逼着改这一支的人必须同时改断言，不给静默漂移留缝。
+    // 我（编排方）随后裁决补上 rootError——判据是**用户后果相同**（跳过删除与字幕观察、
+    // 下一轮 24h 后），成因不同不改变判决，只改变文案指向（这条指向"怎么修"）。
+    expect(rootHealth(db, '/media').last_error).toMatch(/嵌套关系/)
+    expect(rootHealth(db, '/media').last_error).toMatch(/去掉其中一个/)
+    // 嵌套的两边都要记——用户从任一边看过去都该知道这一轮没跑
+    expect(rootHealth(db, '/media/115').last_error).toMatch(/嵌套关系/)
+    db.close()
+  })
+
+  it('🔴 ⑦ 循环体里抛未预期异常 → 判决记成"出事了"再原样 rethrow（绝不能被记成健康）', async () => {
+    const db = openDb(':memory:')
+    seedRoot(db, '/media')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv'],
+      // walk **成功**，炸在它后面 —— 这条路径不属于 R8 三道闸的任何一道，
+      // 走的是 catch 那一支（生产上的对应形态：upsert 撞库、deleteMissing 抛错）。
+      statFile: () => { throw new Error('boom: stat exploded') },
+    }))
+
+    // 控制流必须与本改动之前**逐字一致**：异常照旧向上传播（走 run() 的 health ④）。
+    // 记账是增益，不许顺手把异常吞掉变成"静默跳过这个根"。
+    await expect(scan(daemon)).rejects.toThrow(/boom: stat exploded/)
+
+    const h = rootHealth(db, '/media')
+    // 若 catch 里不记一笔，rootError 仍是 null → finally 把这一行写成**健康**，
+    // 而整轮巡检随即失败：库里留下一条与事实正好相反的记录，且没有任何别的地方能推翻它。
+    expect(h.last_error).toMatch(/扫描本根时异常/)
+    expect(h.last_error).toMatch(/boom: stat exploded/)
+    // 抛异常这条路径上 finally 一样要跑（continue / throw / 正常结束三种离开方式全覆盖）。
+    expect(h.last_checked_at).toBe(NOW)
+    db.close()
+  })
+})
+
 describe('ScoutDaemonV2.scanOnce · 防线 4：逐根隔离（D1）', () => {
   it('删除不波及其他守备目录的行——且一个根掉线不影响另一个根的删除', async () => {
     const db = openDb(':memory:')

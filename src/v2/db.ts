@@ -1043,6 +1043,72 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
       db.exec('ALTER TABLE files ADD COLUMN sidecar_langs TEXT')
     }
   },
+  // v41（Task ③ 守备目录健康度，2026-08-12）：media_roots 加 last_error + last_checked_at。
+  // 纯条件式 ADD COLUMN，无 CHECK 约束变更、不碰既有表，故不触发 12 步建新表流程。
+  //
+  // ── 为什么需要这两列 ──────────────────────────────────────────────────────
+  // scanOnce 的 R8 三道闸（读取抛错 / 扫出 0 个 / 行数骤降且重读不一致）今天**只有两个出口**：
+  // 日志文件与一条 SSE health 事件。两者都是**瞬时**的——日志没人看，SSE 只推给当时正连着的
+  // 订阅者。于是"这个根现在健不健康"这个事实在进程外**没有任何持久载体**：
+  //   · 用户 24h 后打开界面，早上 04:07 那次拦截已经无处可查；
+  //   · 任何"当前状态"型的读取方（如守备目录列表要标红、健康检查要判 roots.ok）
+  //     没有数据源可查，只能凭空说"好的"——那就是撒谎。
+  // 这两列把闸门的判决**落进状态机**（铁律①：数据库是状态机），让"上一轮扫描时这个根
+  // 怎么样了"变成可查询的事实。
+  //
+  // ── 两列的职责（谁写 / 谁读 / 谁触发）─────────────────────────────────────
+  // 本仓已栽过 11 次「加了能力却没定谁写/谁读/谁触发」（C12 → C35 → D17 → D18 → C43 …），
+  // 故每一列都在这里写死三件事：
+  //
+  //  last_error TEXT（可空）= 上一轮扫描对这个根的判决。
+  //    · 谁写：daemonV2.scanOnce 的**单点收敛**（每根一次 try/finally，见那里的论证）。
+  //      失败路径写人话原因，成功路径**写 NULL**——只写不清等于错误永久粘住，
+  //      用户修好挂载后界面永远显示红的。清空与写入是同一条 UPDATE 的两种取值，
+  //      不是两条代码路径（分两条必然漏一条，这正是"教训九"点名的缺失点）。
+  //    · 谁读：**目前没有读取方**。这是如实陈述而非疏漏：Task ⑤ 的 /api/v2/health
+  //      将据它判 roots.ok，那个端点今天还不存在。在它落地之前，这两列是**只写不读**的，
+  //      本条 entry 不为"计划中的读取方"背书。唯一的现实消费者是运维手工查库
+  //      （`SELECT path, last_error, last_checked_at FROM media_roots`）。
+  //    · 谁触发：每轮扫描（scanOnce），即 24h 巡检 + 任何直接调 scanOnce 的路径。
+  //      粒度是"每根每轮一次"，不是"每次闸门触发一次"。
+  //    刻意**不加 CHECK 约束**、不做枚举：值是给人看的原因串（含 root 路径与实测数字），
+  //    枚举化会立刻催生"第二处定义"（同 v40 skip_reason 的既有论证）。
+  //
+  //  last_checked_at INTEGER（可空）= 上一轮扫描**处理完这个根**的时刻（毫秒）。
+  //    · 谁写：同上，与 last_error 在**同一条 UPDATE 里**。分两条会在掉电时留下
+  //      "错误已清、时刻还是旧的"（或反之）的行，而这两列的意义完全绑定在一起：
+  //      `last_error IS NULL` 单独看不出是"健康"还是"从没扫过"，必须配 last_checked_at。
+  //    · 谁读：同 last_error——今天没有读取方。
+  //    · 谁触发：同上。
+  //    刻意**可空且无 DEFAULT**：NULL = 这个根从没被扫过（用户刚在 dashboard 里加的根，
+  //    下一轮巡检才会碰它）。这是有意义的第三态，与 last_error IS NULL 的"健康"截然不同——
+  //    折叠成 `NOT NULL DEFAULT 0` 会让"刚加的根"与"扫过且健康的根"不可区分，
+  //    未来的读取方会把前者当成绿的（同 D18 那类静默失效的形态）。
+  //
+  // ── 为什么不写进上面那份 media_roots 终态定义 ──────────────────────────────
+  // 照 content_type（v30 续）/ recheck_after / sub_recheck_at / provider_ids / sidecar_langs
+  // 的既有分工：一列一条迁移 entry，fresh install 走完整链一次到位，存量库靠同一条 entry
+  // 原地补齐。两处都写会让"改一处忘另一处"变成可能（works 表定义末尾的原话）。
+  //
+  // 条件式表存在性 + 列存在性双重检查照抄 v30 的 content_type（前者防 v11 及更早、
+  // 尚无 media_roots 表的库裸 ALTER 把 openDb 整个炸掉 → 用户的库再也打不开；
+  // 后者保证幂等——db.test.ts 会把尾部迁移重放一遍）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_roots'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(media_roots)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('last_error')) {
+      db.exec('ALTER TABLE media_roots ADD COLUMN last_error TEXT')
+    }
+    if (!columns.has('last_checked_at')) {
+      db.exec('ALTER TABLE media_roots ADD COLUMN last_checked_at INTEGER')
+    }
+  },
 ]
 
 export function openDb(path: string): ScoutDb {
