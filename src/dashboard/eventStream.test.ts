@@ -1,7 +1,9 @@
 // src/dashboard/eventStream.test.ts —— R-F10 全站单条 SSE 通道（GET /api/v2/events）的行为锁。
 //
-// 为什么单独一个文件而不是塞进 server.test.ts：那个文件已知在全套件并行下偶发失败
-// （`port: 0` 端口复用，~1/10，与代码无因果，见文件头 afterEach 的长注释）。本条通道的用例
+// 为什么单独一个文件而不是塞进 server.test.ts：那个文件曾在全套件并行下偶发失败
+// （~1/10，与代码无因果）。该 flake 已于 2026-08-12 根治——真因是 listen 绑 `::` 而请求拨
+// `127.0.0.1` 的跨地址族串台，不是前人以为的 undici 连接池复用；见 testServerHost.ts 头注释。
+// 本文件保持独立的理由与 flake 无关：长连接 + 流式读混进去会让红的归属难判。本条通道的用例
 // 全是长连接 + 流式读，混进去会让"是我改坏的还是那条既有 flake"变得无法区分。
 //
 // 本文件覆盖：四类事件送达 / 反例（不该推的不推，由发布方保证——这里只锁"总线里没有的东西
@@ -15,6 +17,7 @@ import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici'
 import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { startDashboard } from './server.js'
+import { TEST_HOST, baseOf } from './testServerHost.js'
 import { ScoutEventBus } from '../core/scoutEvents.js'
 import { AuthService } from './auth.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
@@ -22,8 +25,9 @@ import { SettingsRepo } from '../v2/settingsRepo.js'
 let server: Server | undefined
 let db: ScoutDb
 
-// 同 server.test.ts 的两层隔离（服务端断 keep-alive + 客户端换 dispatcher）——理由见那边的
-// 长注释（`port: 0` + undici 连接池缓存会让上一个用例的连接打到下一个 server 上）。
+// 同 server.test.ts 的两层隔离（服务端断 keep-alive + 客户端换 dispatcher）。注意：这两层
+// **不是**那条串台 flake 的解药（真因见 testServerHost.ts），保留是因为各自仍有独立价值——
+// 本文件全是 SSE 长连接，closeAllConnections 让 server 立刻关干净而不是拖到连接自然超时。
 afterEach(async () => {
   const s = server
   server = undefined
@@ -46,14 +50,12 @@ function distWith(html: string): string {
 
 async function start(opts: { events?: ScoutEventBus | null; token?: string; heartbeatMs?: number } = {}) {
   server = await startDashboard({
-    db, port: 0, token: opts.token, distDir: distWith('<!doctype html>'),
+    db, port: 0, host: TEST_HOST, token: opts.token, distDir: distWith('<!doctype html>'),
     // 默认接一条总线：绝大多数用例关心的是流本身，不是"没接线怎么办"（那一条单独测）。
     events: opts.events === null ? undefined : (opts.events ?? new ScoutEventBus()),
     eventsHeartbeatMs: opts.heartbeatMs,
   })
-  const addr = server.address()
-  const port = typeof addr === 'object' && addr ? addr.port : 0
-  return { base: `http://127.0.0.1:${port}` }
+  return { base: baseOf(server) }
 }
 
 /** 读流直到 predicate 满足或超时。**不定时等固定时长**：那既慢又脆。 */

@@ -60,6 +60,30 @@ import { engineEnabled } from '../cli/watchClients.js'
 export interface DashboardOpts {
   db: ScoutDb
   port: number
+  /** 监听网卡。缺省（生产/Docker）＝不传 host 给 listen()，即通配 `::`，容器外才能连进来。
+   *
+   *  ── 为什么需要这个字段（测试 flake 的根因，2026-08-12 实测定位）──────────────
+   *  `listen(0)` 不带 host 时 Node 绑的是 **IPv6 通配 `::`**，OS 只保证这个端口在 `::` 的
+   *  ephemeral 空间里没被占；而测试拿 `server.address().port` 拼出的 base 一律是
+   *  **`http://127.0.0.1:<port>`**（IPv4）。两个地址族的端口空间在 macOS/Linux 上**不互斥**：
+   *  同一个号完全可能同时被本机另一个进程的 IPv4 socket 持有——那个进程可以是并行的另一个
+   *  vitest worker，也可以是开发机上任何一个监听 0.0.0.0 的服务。于是请求根本没到本用例的
+   *  server 上，而是打给了陌生人。
+   *
+   *  实测证据（十进程 × 600 轮的复现脚本，无 host）：
+   *   · `SyntaxError: Unexpected end of JSON input` ← 拿到别人的 `401`/`404` 空体；
+   *   · `<!DOCTYPE html>…` ← 拿到开发机上另一个前端 dev server 的首页。
+   *  两条都带同一个指纹：`server.on('request')` 计数为 **0**——本用例的 server 一个请求都没收到。
+   *  这正是 server.test.ts 头注释描述的症状，但**归因错了**：前人认为是"`port: 0` 端口回收 +
+   *  undici 按 host:port 缓存连接、复用到已关闭 server"。该机制在 Node 19+ 上不成立
+   *  （`close()` 会主动回收空闲 keep-alive socket；单进程 300 轮"关旧 server→新 server 抢同一
+   *  端口→再请求"实测 0/300 串台），所以他们那两层缓解（closeAllConnections + 换 dispatcher）
+   *  修的是一个不存在的通道——真正的串台发生在**跨进程、跨地址族**，客户端连接池清得再干净
+   *  也拦不住，因为那条连接从一开始就是新建的、且它连对了 IPv4 端口，只是那个端口不是我们的。
+   *
+   *  绑死 `127.0.0.1` 后，端口的分配与拨号处在同一个地址族，OS 的 ephemeral 端口保证重新生效；
+   *  真撞上了也会变成显式 `EADDRINUSE`（可观测），而不是静默拿到陌生人的响应体。 */
+  host?: string
   /** legacy DASHBOARD_TOKEN 兼容输入——唯一角色是喂下方统一前置门的 legacy token 通道
    *  （A1 起鉴权只有前置门一处；旧部署带 ?token=/x-dashboard-token 头照常通行）。 */
   token?: string
@@ -327,7 +351,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, token, distDir, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride, events, eventsHeartbeatMs } = opts
+  const { db, port, host, token, distDir, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride, events, eventsHeartbeatMs } = opts
   const settingsRepo = new SettingsRepo(db)
   // spec A §4.4：setup 面依赖——默认接真实实现（cfg 的 dbGet 惰性读库，wizard 落库后下一次
   // status/validate 调用自然反映），测试经 opts.setupDeps 部分覆盖（同 subDeps 先例）。
@@ -1191,6 +1215,9 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
   })
   return new Promise(resolve => {
     server.on('error', e => { console.error(`dashboard server error: ${e}`); resolve(server) })
-    server.listen(port, () => resolve(server))
+    // host 缺省时**不传**（而不是传 '0.0.0.0'）：保持生产既有的 `::` 通配语义原样不动，
+    // 只让显式传 host 的调用方（测试）落到单一地址族。见 DashboardOpts.host 的长注释。
+    if (host) server.listen(port, host, () => resolve(server))
+    else server.listen(port, () => resolve(server))
   })
 }

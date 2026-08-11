@@ -1,9 +1,11 @@
 // src/dashboard/health.test.ts —— Task ⑤ GET /api/v2/health（健康横幅与活动页状态条的基线快照）。
 //
-// 为什么单独一个文件而不是塞进 server.test.ts：照 eventStream.test.ts 的既有先例——那个文件
-// 已知在全套件并行下偶发失败（`port: 0` 端口复用 + undici 连接池，见它文件头 afterEach 的
-// 长注释）。本端点的用例要区分 `ok: null`（未知）与 `ok: false`（坏）这种细差别，混进去会让
-// "是我改坏的还是那条既有 flake"变得无法区分。
+// 为什么单独一个文件而不是塞进 server.test.ts：照 eventStream.test.ts 的既有先例——那两个文件
+// 曾在全套件并行下偶发失败。本端点的用例要区分 `ok: null`（未知）与 `ok: false`（坏）这种细
+// 差别，混进去会让"是我改坏的还是那条既有 flake"变得无法区分。
+// （2026-08-12：那条 flake 已根治——真因是 listen 绑 `::` 而请求拨 `127.0.0.1` 的跨地址族串台，
+//  不是前人以为的 undici 连接池复用。见 testServerHost.ts 的头注释。本文件保持独立，理由仍是
+//  上面那条"细差别不该跟别人的红搅在一起"，与 flake 无关。）
 //
 // 本文件覆盖：四字段各自的数据源与降级 / `roots[].ok` 的三态（从没扫过 / 陈旧 / 新鲜）/
 // events 缺席时**不 503** / 刻意不返回 queue / method 门 / 鉴权门。
@@ -16,6 +18,7 @@ import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici'
 import type { Server } from 'node:http'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { startDashboard, buildRootHealth } from './server.js'
+import { TEST_HOST, baseOf } from './testServerHost.js'
 import { ScoutEventBus } from '../core/scoutEvents.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 // 陈旧门以巡检周期为单位（不在测试里复述 48h 这个数字——复述就是第二处定义，
@@ -26,7 +29,8 @@ let server: Server | undefined
 let db: ScoutDb
 
 // 同 eventStream.test.ts / server.test.ts 的两层隔离（服务端断 keep-alive + 客户端换
-// dispatcher）——理由见那边的长注释。
+// dispatcher）。注意这两层**不是**那条串台 flake 的解药（真因＝跨地址族，见 testServerHost.ts），
+// 保留只为与隔壁两个文件的收尾形态一致。
 afterEach(async () => {
   const s = server
   server = undefined
@@ -49,14 +53,12 @@ function distWith(html: string): string {
 
 async function start(opts: { events?: ScoutEventBus | null; token?: string } = {}) {
   server = await startDashboard({
-    db, port: 0, token: opts.token ?? 'tok', distDir: distWith('<!doctype html>'),
+    db, port: 0, host: TEST_HOST, token: opts.token ?? 'tok', distDir: distWith('<!doctype html>'),
     // 默认**不接**总线：本端点的多数用例关心的是三个 DB 字段，而"没接线怎么办"恰恰是
     // 本 task 要论证的降级（不 503），故它是默认态而不是特例。
     events: opts.events ?? undefined,
   })
-  const addr = server.address()
-  const port = typeof addr === 'object' && addr ? addr.port : 0
-  return { base: `http://127.0.0.1:${port}` }
+  return { base: baseOf(server) }
 }
 
 async function getHealth(base: string): Promise<{ status: number; body: any }> {

@@ -12,6 +12,7 @@ import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import { startDashboard } from './server.js'
+import { TEST_HOST, baseOf } from './testServerHost.js'
 import { traceBus, type TraceEvent } from '../core/traceBus.js'
 import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
 import type { SubtitleWriteDeps } from './subtitleVerifyApi.js'
@@ -35,8 +36,23 @@ let db: ScoutDb
 // 于是把请求送到了新 server 上。表现就是随机一条 API 用例拿到别人的响应：实测复现过
 // `expected 200 to be 400`（打到另一个已喂过合法 body 的 server）和
 // `SyntaxError: Unexpected token '<', "<!DOCTYPE "`（打到静态文件兜底，返回 index.html）。
-// 单文件跑永远绿、全量偶发红，正是"跨 worker 端口复用"的指纹。每个用例结束时销毁全局
-// dispatcher 并换一个新的，池子里不留任何跨用例的连接。
+//
+// ⚠️ 2026-08-12 更正：上面这段**归因是错的**，那两层缓解也因此没能根治（此后 flake 照旧偶发，
+// 且新加的 health.test.ts 一进来就染上同型红）。实测证伪与真因：
+//   · 证伪：单进程 300 轮"建 keep-alive 连接 → close() 旧 server → 新 server 抢同一端口 →
+//     再请求"，串台 **0/300**。Node 19+ 的 `close()` 会主动回收空闲 keep-alive socket，
+//     "池里留着指向已关闭 server 的陈旧连接"这条通道在本仓的 Node 版本上根本不成立。
+//   · 真因：`startDashboard` 的 `listen(0)` **不带 host** → 绑 IPv6 通配 `::`；而 base 拼的是
+//     `http://127.0.0.1:<port>` → **IPv4**。两个地址族的端口空间不互斥，同一个号可以同时被
+//     本机另一个进程的 IPv4 socket 持有（并行 worker / 开发机上任何监听 0.0.0.0 的服务）。
+//     请求于是压根没进本进程。决定性指纹：出错那轮 server 的 'request' 计数为 **0**。
+//     前人观察到的 `<!DOCTYPE` 也不是"打到自己的静态兜底"，而是打到了机器上另一个 dev server。
+//   修法见 testServerHost.ts（测试一律 `listen(port, '127.0.0.1')`）。实测 6000 次
+//   start→fetch→close：不绑 host 4/6000 串台，绑 127.0.0.1 **0/6000**。
+//
+// 下面这两层**保留**：它们各自仍有独立价值（closeAllConnections 让 SSE 长连接用例的 server
+// 立刻关干净、不拖住 afterEach；换 dispatcher 让每个用例的客户端状态互不影响），只是都不是
+// 那条 flake 的解药。删掉它们等于在无关的方向上制造新变量，不划算。
 afterEach(async () => {
   const s = server
   server = undefined
@@ -101,7 +117,7 @@ async function start(
   },
 ): Promise<{ base: string }> {
   server = await startDashboard({
-    db, port: 0, token, distDir,
+    db, port: 0, host: TEST_HOST, token, distDir,
     // reconcileAll 已删（第 5.5 步）
     env,
     jobs,
@@ -112,9 +128,7 @@ async function start(
     cacheRoot: extra?.cacheRoot,
     setupDeps: extra?.setupDeps,
   })
-  const addr = server.address()
-  const port = typeof addr === 'object' && addr ? addr.port : 0
-  return { base: `http://127.0.0.1:${port}` }
+  return { base: baseOf(server) }
 }
 
 beforeEach(() => {
