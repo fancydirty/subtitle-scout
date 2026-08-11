@@ -990,6 +990,34 @@ describe('ScoutDaemonV2.scanOnce · Task ③ 守备目录健康度落库（media
     expect(h.last_checked_at).toBe(NOW)
     db.close()
   })
+
+  it('🔴 ⑧ 无 media_roots 表的库：记账整体失败但**绝不掀翻扫描**（审计 🔴-1 抓到的真回归）', async () => {
+    // ── 这条用例的来历 ──────────────────────────────────────────────────────
+    // 上一版把 `db.prepare('UPDATE media_roots ...')` 放在循环外、保护性 try **之外**。
+    // better-sqlite3 在 **prepare 阶段就解析 SQL**（实测：无表时 prepare 当场抛
+    // `SqliteError: no such table: media_roots`），于是那层 try/catch 声称的
+    // 「记账失败不许掀翻整轮扫描」**保护不到自己**——审计端到端实测 Task ③ 之前 survived、
+    // 之后 THREW。这是本 task 引入的真回归，不是既有债务。
+    //
+    // 审计还指出：针对这层保护的变异当时是 **0 红**（零覆盖），所以补这一条。
+    // 判据不是"没抛错"，而是**扫描的正常产物照旧落库**——只有这样才能区分
+    // "隔离成功"与"整个扫描被跳过了但异常被吞了"。
+    const db = openDb(':memory:')
+    // 刻意**不** seedRoot：openDb 建了 media_roots 表，这里把它整个删掉，
+    // 模拟 v11 及更早的旧库（那时还没有这张表）。
+    db.exec('DROP TABLE media_roots')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: 200 * 1024 * 1024 }),
+      fileExists: () => true,
+    }))
+    await expect(scan(daemon)).resolves.not.toThrow()
+    // 真正的判据：扫描的产物在库里。若只断言"不抛错"，那么"整轮被静默跳过"也会通过。
+    const n = (db.prepare('SELECT COUNT(*) n FROM files').get() as { n: number }).n
+    expect(n).toBe(1)
+    db.close()
+  })
 })
 
 describe('ScoutDaemonV2.scanOnce · 防线 4：逐根隔离（D1）', () => {
@@ -5304,6 +5332,236 @@ describe('ScoutDaemonV2 · R-F5 works 应有集回填 pass', () => {
     await oneLoop(daemon)
     expect(cat.tableCalls).toEqual(['83'])
     expect(canonicalEpisodes(db, 'tmdb:83', 1).length).toBe(2)
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v42 / R-F13：works.backdrop_path 存量回填 pass（**写入点②**）。
+//
+// 为什么必须有这条**独立于识别队列**的通路：识别成功后 `files.work_id` 非 NULL，而
+// identifyScheduler 的队列谓词是 `work_id IS NULL` → 那个作品目录**永不再进识别队列**。
+// 于是"识别时顺手落 backdrop"（写入点①）只覆盖**今后**新识别的作品，库里现存的已识别
+// 作品的 backdrop_path 会永远是 NULL，活动页对它们只能退化成「模糊海报当背景」。
+// 反过来只有本 pass 而没有写入点①，新识别的作品要等下一次 boot 才有图。
+// 这是本仓栽过 11 次的同型缺陷（加了能力却没定谁写/谁读/谁触发）的形状，手法照 C21。
+//
+// 与 C21 的关键差别：这里**没有"查过、确实没有"的凭据可写**。provider_ids 是 record，
+// 能用 `{tmdb}`（非 NULL）收敛；backdrop_path 是裸路径串，TMDB 真没图时采回来就是 null，
+// 与"还没采过"不可区分 → 每轮 boot 重查一次。已知代价，见 db.ts v42 entry。
+// ─────────────────────────────────────────────────────────────────────────────
+async function backfillBackdrops(daemon: ScoutDaemonV2): Promise<void> {
+  await (daemon as any).backfillBackdropPaths()
+}
+
+function backdropOf(db: ReturnType<typeof openDb>, id: string): string | null {
+  return (db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get(id) as { backdrop_path: string | null }).backdrop_path
+}
+
+function seedWorkBd(db: ReturnType<typeof openDb>, id: string, over: {
+  mediaType?: 'tv' | 'movie'; backdropPath?: string | null
+} = {}) {
+  db.prepare(`INSERT INTO works (id, title, media_type, backdrop_path, created_at, updated_at)
+              VALUES (?,?,?,?,?,?)`)
+    .run(id, `Work ${id}`, over.mediaType ?? 'tv', over.backdropPath ?? null, 1000, 1000)
+}
+
+/** 只注入 getDetails 的最小 identify deps（本回填只用得到它一个方法）。 */
+function bdDeps(db: ReturnType<typeof openDb>, impl?: (mt: 'tv' | 'movie', id: string) => Promise<unknown>) {
+  const calls: Array<[string, string]> = []
+  return {
+    calls,
+    deps: {
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: {
+          model: {} as any,
+          tmdb: {
+            search: async () => [],
+            getDetails: async (mt: 'tv' | 'movie', id: string) => {
+              calls.push([mt, id])
+              return impl ? impl(mt, id) : { backdropPath: `/bd-${id}.jpg` }
+            },
+          } as any,
+        },
+      },
+    },
+  }
+}
+
+describe('ScoutDaemonV2 · v42 works.backdrop_path 存量回填 pass（写入点②）', () => {
+  it('🔴🔴 backdrop_path IS NULL 的存量行被补上（R-F13 红线）', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    // 前置条件：这一行确实是 NULL，否则本用例空转（假绿的最常见形态）
+    expect(backdropOf(db, 'tmdb:83')).toBeNull()
+    const bd = bdDeps(db, async () => ({ backdropPath: '/xyz.jpg' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await backfillBackdrops(daemon)
+
+    expect(backdropOf(db, 'tmdb:83')).toBe('/xyz.jpg')
+    // mediaType 从 works.media_type 取（tv/movie 是两个不同的 TMDB 端点，猜错就是 404）
+    expect(bd.calls).toEqual([['tv', '83']])
+    db.close()
+  })
+
+  it('🔴 分批——250 行存量，一轮只处理 200（每批上限，TMDB 配额敏感）', async () => {
+    const db = openDb(':memory:')
+    for (let i = 0; i < 250; i++) seedWorkBd(db, `tmdb:${i}`)
+    const bd = bdDeps(db)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await backfillBackdrops(daemon)
+    // 用**调用次数**断言而不是"还有多少行是 NULL"：后者在"一次拉完 250 行但只写回 200 行"
+    // 这种形态下同样为真，而真实成本（250 次 TMDB 往返）一分不少。
+    expect(bd.calls.length).toBe(200)
+    const left = db.prepare('SELECT COUNT(*) AS n FROM works WHERE backdrop_path IS NULL').get() as { n: number }
+    expect(left.n).toBe(50)   // 剩下的下次启动继续，不丢活
+    db.close()
+  })
+
+  it('🔴 单个 work 失败 → 留 NULL 待下轮，兄弟行照常完成，整轮不炸', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:bad')
+    seedWorkBd(db, 'tmdb:good')
+    const bd = bdDeps(db, async (_mt, id) => {
+      if (id === 'bad') throw new Error('TMDB 503')
+      return { backdropPath: '/ok.jpg' }
+    })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await expect(backfillBackdrops(daemon)).resolves.toBeUndefined()
+
+    // 失败行留 NULL —— 这是下轮重试的唯一凭据。
+    expect(backdropOf(db, 'tmdb:bad')).toBeNull()
+    expect(backdropOf(db, 'tmdb:good')).toBe('/ok.jpg')
+    db.close()
+  })
+
+  it('🔴 已有值的行不被重查、不被覆盖（靠 `IS NULL` 谓词自然收敛）', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    seedWorkBd(db, 'tmdb:84', { backdropPath: '/already.jpg' })   // 已有值，不该被碰
+    const bd = bdDeps(db, async () => ({ backdropPath: '/new.jpg' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await backfillBackdrops(daemon)
+    expect(bd.calls).toEqual([['tv', '83']])
+    expect(backdropOf(db, 'tmdb:84')).toBe('/already.jpg')
+    // 第二次启动（新进程同一个库）：谓词已选不中它 → 零新增调用。
+    const daemon2 = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await backfillBackdrops(daemon2)
+    expect(bd.calls).toEqual([['tv', '83']])   // 仍是 1 次，没有第 2 次
+    db.close()
+  })
+
+  it('🔴 TMDB 真没有横版图 → 不写库、留 NULL（不许拿空串当"查过"的哨兵）', async () => {
+    // 与 C21 用例 9b **相反**的取舍，且这个相反是论证过的（db.ts v42 entry）：
+    // provider_ids 能用 `{tmdb}` 表达"查过没有"从而收敛；backdrop_path 是裸路径串，
+    // 没有第三个值可用。写 '' 当哨兵会让读取方拿到空串（apiV2 那侧 nullIfEmpty 的存在
+    // 正说明本仓已在为空串/NULL 二义性付代价）。故这里接受"每轮重查一次"。
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    const bd = bdDeps(db, async () => ({ backdropPath: null }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await backfillBackdrops(daemon)
+    expect(backdropOf(db, 'tmdb:83')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 getDetails 返回 null（TMDB 404）→ 不写库、不抛', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    const bd = bdDeps(db, async () => null)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await expect(backfillBackdrops(daemon)).resolves.toBeUndefined()
+    expect(backdropOf(db, 'tmdb:83')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 getDetails 未注入 → 整支休眠，一行不动（探针缺席不动列）', async () => {
+    // 反向灾难同 C21：若实现在探针缺席时也照写（比如写空串"标记查过"），一次"忘接线的
+    // 启动"就把全库标成"查过、没有横版图"，而其实一次 TMDB 都没打 → 活动页永久退化。
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        worker: { model: {} as any, tmdb: { search: async () => [] } as any },
+      },
+    }))
+    await expect(backfillBackdrops(daemon)).resolves.toBeUndefined()
+    expect(backdropOf(db, 'tmdb:83')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 老库无 works 表 / 无该列 → 回填静默跳过，不抛', async () => {
+    // 容器滚更时新代码可能先于迁移跑起来；用户也可能从 v30 之前的备份恢复。
+    const noTable = openDb(':memory:')
+    noTable.exec('DROP TABLE works')
+    const d1 = new ScoutDaemonV2(mkDeps(noTable, { ...bdDeps(noTable).deps }))
+    await expect(backfillBackdrops(d1)).resolves.toBeUndefined()
+    noTable.close()
+
+    const noCol = openDb(':memory:')
+    noCol.exec('ALTER TABLE works DROP COLUMN backdrop_path')
+    seedWorkNoIds(noCol, 'tmdb:83')
+    const d2 = new ScoutDaemonV2(mkDeps(noCol, { ...bdDeps(noCol).deps }))
+    await expect(backfillBackdrops(d2)).resolves.toBeUndefined()
+    noCol.close()
+  })
+
+  it('🔴 media_type=movie 的作品走 movie 端点（猜错就 404）', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:9', { mediaType: 'movie' })
+    const bd = bdDeps(db)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await backfillBackdrops(daemon)
+    expect(bd.calls).toEqual([['movie', '9']])
+    db.close()
+  })
+
+  it('🔴 非 tmdb: 形状的 id 被跳过（不拿解析不出 TMDB id 的串去打端点）', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'weird-legacy-id')
+    const bd = bdDeps(db)
+    const daemon = new ScoutDaemonV2(mkDeps(db, { ...bd.deps }))
+    await backfillBackdrops(daemon)
+    expect(bd.calls).toEqual([])
+    expect(backdropOf(db, 'weird-legacy-id')).toBeNull()
+    db.close()
+  })
+
+  it('🔴 boot 时被真实调用（不是"写了个方法没人叫"——本仓 11 次同型缺陷的形状）', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    const bd = bdDeps(db, async () => ({ backdropPath: '/boot.jpg' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [], listVideoFiles: () => [], ...bd.deps,
+    }))
+    await oneLoop(daemon)
+    // 走的是完整 run()，没有任何测试专用的直接调用 —— 这条是本 pass 真正的验收点：
+    // 前面所有用例都可以在"方法存在但 boot 里没人调"的情况下全绿。
+    expect(bd.calls).toEqual([['tv', '83']])
+    expect(backdropOf(db, 'tmdb:83')).toBe('/boot.jpg')
+    db.close()
+  })
+
+  it('🔴 pass 级爆炸不阻塞主巡检（boot 调用点被独立 try/catch 隔离）', async () => {
+    const db = openDb(':memory:')
+    seedWorkBd(db, 'tmdb:83')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: [],
+      listVideoFiles: () => [],
+      identify: {
+        db,
+        runIdentify: async () => ({ tmdbId: null, title: null, reason: 'noop' }),
+        // 不是单个 work 失败，是 pass 级别的爆炸（deps 结构本身坏了）
+        worker: { model: {} as any, tmdb: { get getDetails(): never { throw new Error('deps exploded') } } as any },
+      },
+    }))
+    await oneLoop(daemon)
+    // 巡检照常发生 = 回填不是主巡检的前置条件。
+    expect(lastInspectAt(db)).not.toBeNull()
     db.close()
   })
 })

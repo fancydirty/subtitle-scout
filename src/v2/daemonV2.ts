@@ -488,6 +488,20 @@ export class ScoutDaemonV2 {
       this.deps.log(`warn: boot provider_ids 回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
     }
 
+    // v42 存量回填（works.backdrop_path，R-F13 活动页横版背景图）：同一 boot 阶段、
+    // 同一 try/catch 隔离口径。
+    //
+    // 位置在 provider_ids 回填**之后**、巡检之前，理由同上一支：与扫描无交集，但放进 while
+    // 循环就会每 5 分钟去打一轮 TMDB。
+    //
+    // 独立 try/catch 而不是与上面共用：共用时 provider_ids 那支的 pass 级爆炸会**跳过**本支，
+    // 于是一个与背景图毫不相干的 external_ids 故障会连带让活动页永远退化成模糊海报。
+    try {
+      await this.backfillBackdropPaths()
+    } catch (e) {
+      this.deps.log(`warn: boot backdrop_path 回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
+    }
+
     // R-F5 存量回填（works → tmdb_seasons 应有集缓存）：同一 boot 阶段、同一 try/catch 隔离口径。
     //
     // 位置在 provider_ids 回填**之后**、巡检之前，理由同上一支：与扫描无交集，但放进 while
@@ -1308,9 +1322,20 @@ export class ScoutDaemonV2 {
     // deleteMissing 抛错）都会掀翻整轮巡检。若只有 finally 而没有 catch，rootError 仍是
     // null → 这一行被写成"健康"，然后整轮巡检失败——库里留下一条与事实相反的记录。
     // rethrow 保证控制流与改动前**逐字一致**（异常照旧向上传播，走 run() 的 health ④）。
-    const markRoot = db.prepare(
-      'UPDATE media_roots SET last_error = ?, last_checked_at = ? WHERE path = ?',
-    )
+    //
+    // ⚠️ **惰性 prepare，不在这里预备**（Task ③ 审计 🔴-1 抓到的真回归）：
+    // better-sqlite3 在 `prepare()` **就**解析 SQL，无 media_roots 表的库（测试裸库 / v11 及
+    // 更早的旧库）当场抛 `no such table`。上一版把 prepare 放在循环外、保护性 try **之外**，
+    // 于是那层 try/catch 声称的"记账失败不许掀翻整轮扫描"**保护不到自己**——
+    // 审计端到端实测：Task ③ 之前 survived、之后 THREW。
+    // 惰性化后 prepare 与 run 同在一个 try 里，两者的失败走同一条隔离路径。
+    let markRoot: import('better-sqlite3').Statement | null = null
+    const markRootStmt = (): import('better-sqlite3').Statement => {
+      if (markRoot === null) {
+        markRoot = db.prepare('UPDATE media_roots SET last_error = ?, last_checked_at = ? WHERE path = ?')
+      }
+      return markRoot
+    }
 
     for (const root of scanRoots) {
       // 本根本轮的判决。null = 健康（这正是**成功路径清空**的载体：finally 里无条件写，
@@ -1493,8 +1518,11 @@ export class ScoutDaemonV2 {
         // 且这个根可能根本不在表里（deps.roots 启动快照与表会漂移，见 rootsProvider 注释）
         // —— 后者是 UPDATE 影响 0 行，不抛错，本就无害。健康度记账是**增益**，
         // 绝不许因为它失败而掀翻整轮扫描（同 nestedRootSet / emit 的既有隔离口径）。
+        //
+        // ⚠️ 必须调 markRootStmt() 而不是用一个循环外 prepare 好的 Statement：
+        // prepare 本身就会对无表的库抛错，放在这个 try 外面 = 这层保护形同虚设（审计 🔴-1）。
         try {
-          markRoot.run(rootError, now, root)
+          markRootStmt().run(rootError, now, root)
         } catch { /* 无表/写失败：不阻断扫描，见上 */ }
       }
     }
@@ -2012,6 +2040,89 @@ export class ScoutDaemonV2 {
       }
     }
     this.deps.log(`回填: works.provider_ids ok=${ok} failed=${failed} skipped=${skipped}（C21）`)
+  }
+
+  /** v42 存量回填 pass：给 `works.backdrop_path IS NULL` 的作品补横版背景图
+   *  （boot 一次，不进主循环）。R-F13 活动页「在跑」卡片的数据来源。
+   *
+   *  **这是 backdrop_path 的写入点②，与 identifyScheduler 的写入点①缺一不可。**
+   *  论证与 C21 逐字同构：识别成功后 `files.work_id` 非 NULL，而 identifyScheduler 的队列
+   *  谓词是 `work_id IS NULL` → 那个作品目录**永不再进识别队列**。于是"识别时顺手落
+   *  backdrop"只覆盖**今后**新识别的作品，库里现存的已识别作品永远没有横版图，活动页对
+   *  它们只能退化成「模糊海报当背景」。反过来只有本 pass 而没有写入点①，新识别的作品要
+   *  等到**下一次 boot** 才拿到图（boot 可能几周一次）。两个点合起来才收敛。
+   *
+   *  **与 C21 那个 pass 的关键差别：这里没有"查过、确实没有"的凭据可写。**
+   *  provider_ids 是 record，能用 `{tmdb}`（非 NULL）表达"查过、TMDB 真没有"从而收敛；
+   *  backdrop_path 是**裸路径串**，没有第三个值可用——TMDB 确实没有横版图的作品采回来就是
+   *  null，与"还没采过"在列上不可区分 → 每轮 boot 都会被 `IS NULL` 谓词捡回来重查一次。
+   *  这是**已知且接受**的代价（一次 getDetails 往返 × 每轮 200 行上限），不是遗漏；
+   *  完整论证（含"为什么不写空串当哨兵"）见 db.ts 的 v42 entry。
+   *
+   *  **与 C21 相同的另一处**：backdrop_path 不是任何判决的输入（judge / 抓源 / 翻译都不读
+   *  它，今天连读取方都还没有），所以补上它**不需要打通任何重判通路**——这与
+   *  backfillEmbeddedLangs 必须额外置 `needs_subtitle = NULL` 的情形不同。若日后它变成某个
+   *  判决的输入，这条论证即失效，那时必须同步加重判通路。
+   *
+   *  写入语义（两态，比 C21 少一态，理由见上）：
+   *   · 拿到 backdrop  → 写路径串，非 NULL，从此收敛。
+   *   · TMDB 真没有 / 调用失败 → 留 NULL，下次 boot 重试（两者不可区分，已知代价）。
+   *
+   *  探针（getDetails）未注入时整支休眠且**一行不动**，同 backfillProviderIds 的"探针缺席
+   *  不动列"论证：漏接线是静默的，不能让它伪装成"抓过了"。 */
+  private async backfillBackdropPaths(): Promise<void> {
+    const getDetails = this.deps.identify?.worker?.tmdb?.getDetails
+    if (!getDetails) return
+
+    const db = this.deps.db
+    let rows: Array<{ id: string; media_type: string }> = []
+    try {
+      rows = db.prepare(
+        `SELECT id, media_type FROM works WHERE backdrop_path IS NULL ORDER BY id LIMIT ${BACKFILL_BATCH_SIZE}`,
+      ).all() as Array<{ id: string; media_type: string }>
+    } catch { return }   // 无 works 表/无该列的旧库：回填是增益，不许阻断启动（同 C21 口径）
+    if (rows.length === 0) return
+
+    const write = db.prepare('UPDATE works SET backdrop_path = ?, updated_at = ? WHERE id = ?')
+    this.deps.log(`回填: works.backdrop_path 存量回填开始（本批 ${rows.length} 行 / 上限 ${BACKFILL_BATCH_SIZE}，R-F13）`)
+    let ok = 0, failed = 0, skipped = 0
+
+    // **串行**，与 backfillProviderIds 同一口径（TMDB 配额敏感；并发打满换来的一次 429
+    // 会让整批白跑）。
+    for (const r of rows) {
+      const tmdbId = tmdbIdFromOwnId(r.id)
+      if (tmdbId === null) {
+        // 非 `tmdb:<id>` 形状（ownIds 注释点名的历史合成 id，如 'self-scan-trigger'）：
+        // 拿它去打 `/tv/self-scan-trigger` 是保证 404 的白烧。留 NULL 等人修数据。
+        skipped++
+        continue
+      }
+      const mediaType = r.media_type === 'movie' ? 'movie' : 'tv'
+      try {
+        const d = await getDetails(mediaType, tmdbId)
+        const backdrop = d?.backdropPath ?? null
+        if (backdrop === null) {
+          // 三种情形折叠在这里，且**都不写库**：getDetails 返回 null（TMDB 404）、
+          // 该作品确实没有横版图、构造点没接这个可选字段。写空串"标记查过"是错的
+          // （见 db.ts v42 的哨兵值论证），故一行不动、下轮重查。
+          // 🔴 计数口径：这些**不算 ok**——本仓栽过三次"日志把中间量说成结论量"
+          //（最近一次是 refreshed 记成循环次数）。ok 只数真的写进库的行。
+          skipped++
+          continue
+        }
+        write.run(backdrop, Date.now(), r.id)
+        ok++
+      } catch (e) {
+        // 留 NULL（下轮重试的唯一凭据）。**不往 works 写任何失败叙事**：works 表没有
+        // last_error 列，而 files.last_error 是识别/字幕两轨共用的——一个作品级的 TMDB
+        // 故障没有理由去污染文件级的失败账（同 C21 的既有论证）。
+        failed++
+        this.deps.log(`回填: backdrop_path 失败（隔离，留 NULL 待下轮）: ${r.id}: ${String(e)}`)
+      }
+    }
+    // ok=本轮真写进库的行数；skipped=TMDB 无图/404/非自有 id（三者都没写库，但性质不同，
+    // 故不与 failed 合并）；failed=调用抛错。
+    this.deps.log(`回填: works.backdrop_path ok=${ok} failed=${failed} skipped=${skipped}（R-F13）`)
   }
 
   /** R-F5 存量回填（works → tmdb_seasons 应有集缓存）：把 TMDB 的季集表抓进本地库，
