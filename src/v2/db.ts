@@ -573,7 +573,8 @@ CREATE TABLE IF NOT EXISTS works (
   chinese_titles TEXT,                -- JSON 数组，中文译名变体
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-  -- provider_ids（v36/C5+C21）**不在此终态定义里**，由 v36 的条件式 ALTER 追加——
+  -- provider_ids（v36/C5+C21）与 backdrop_path（v42/R-F13+R-F14）**都不在此终态定义里**，
+  -- 分别由 v36 / v42 的条件式 ALTER 追加——
   -- 同 files 表的 recheck_after/sub_recheck_at/sub_attempt/translatable 的既有分工（见上方
   -- files 定义末尾的同款注记）：一列一条迁移 entry，fresh install 走完整链一次到位，
   -- 存量库靠同一条 entry 原地补齐。两处都写会让"改一处忘另一处"变成可能。
@@ -1107,6 +1108,82 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
     }
     if (!columns.has('last_checked_at')) {
       db.exec('ALTER TABLE media_roots ADD COLUMN last_checked_at INTEGER')
+    }
+  },
+  // v42（Task ⑥ 活动页横版背景图，2026-08-12）：works 加 backdrop_path。
+  // 纯条件式 ADD COLUMN，无 CHECK 约束变更、不碰既有表，故不触发 12 步建新表流程。
+  //
+  // ── 为什么需要这一列 ──────────────────────────────────────────────────────
+  // R-F13 的活动页「在跑」卡片要**横版** backdrop（60% 宽 / 186px 高），排队卡片才用竖版
+  // poster。这不是审美偏好而是宽高比算术：`16:9 @ 70px高 = 124px宽`（窄行里看不清）
+  // vs `2:3 @ 70px高 = 47px宽`（天生适合窄行）——两个位置形状不同是分工不是缺陷。
+  //
+  // 横版图今天在库里**无处可取**：`series.backdrop_path`（v16）确实存在，但 `series` 是
+  // **旧世界**的表，只有 `libraryRepo.upsertSeries`（ingest 走盘循环）会写；新架构的
+  // daemonV2 一行 series 都不写，它写的是 `works`。于是新架构识别出的作品全都没有横版图，
+  // 活动页只能退化成「模糊海报当背景」。而 TMDB 客户端**早就在取**这个字段
+  // （tmdb.ts:325 的 backdropPath，v16 详情页重设计时加的），只是 works 落库时漏了它——
+  // 这一列买的是「已经付过 TMDB 往返的数据不要在落库那一步扔掉」。
+  //
+  // ── 这一列的职责（谁写 / 谁读 / 谁触发）─────────────────────────────────────
+  // 本仓已栽过 11 次「加了能力却没定谁写/谁读/谁触发」（C12 → C35 → D17 → D18 → C43 …），
+  // 故在这里写死三件事：
+  //
+  //  backdrop_path TEXT（可空）= TMDB 横版背景图路径（如 '/bd.jpg'；web 端自拼 w1280 CDN
+  //    URL 前缀，同 poster_path 的既有口径——服务端不代理图片）。
+  //    · 谁写：**两个**写入点，缺一不可（只补一个就是"只修一半"，本仓病 A 的典型形态）——
+  //      ① `identifyScheduler.writeIdentified`：新识别的作品在落 works 行那一刻带上它。
+  //         只有这个点的话，库里**存量**的已识别作品永远是空的：identifyScheduler 的队列
+  //         谓词是 `files.work_id IS NULL`，识别成功后那个目录**永不再进识别队列**。
+  //      ② `daemonV2.backfillBackdropPaths`：boot 时的存量回填 pass。只有这个点的话，
+  //         新识别的作品要等到**下一次 boot** 才有图（而 boot 可能几周一次）。
+  //      两个点合起来才收敛，这与 provider_ids（C5 写入点 + C21 回填 pass）是同一形态、
+  //      同一理由——那一条的注释已经把这个论证写死过一遍，本条照抄其分工。
+  //    · 谁读：**目前没有读取方**。这是如实陈述而非疏漏：Task ⑨ 的活动页「在跑」卡片
+  //      将据它渲染横版背景，那个页面与它的 API 字段今天都还不存在。在它落地之前，
+  //      这一列是**只写不读**的，本条 entry 不为"计划中的读取方"背书。唯一的现实消费者
+  //      是运维手工查库（`SELECT id, title, backdrop_path FROM works`）。
+  //    · 谁触发：写入点①随每次识别成功；写入点②随每次进程 boot（每轮 200 行上限，
+  //      多轮 boot 收敛）。
+  //
+  //  为什么**可空且无 DEFAULT**（判据是"NULL 对这一列意味着什么"，不是照抄上一条）：
+  //    NULL 在这里同时承担两个语义，缺一不可——
+  //      ① "还没采过"，也就是回填 pass 的**唯一取件谓词**（`backdrop_path IS NULL`）
+  //      ② 因此也是这个 pass 的**收敛条件**：采过就非 NULL，谓词自然选不中
+  //    这与 provider_ids（v36）的 NULL 语义逐字同源。若照 sub_attempt 的样子建成
+  //    `NOT NULL DEFAULT ''`，存量行升级上来全是 ''，回填一行都选不中 → 存量作品的横版图
+  //    永远补不上，而那正是本条要修的事本身。
+  //
+  //  ⚠️ 这一列与 provider_ids 有一处**关键的不同**，不许照抄那边的三态写法：
+  //    provider_ids 能靠 `{tmdb}`（非 NULL）表达"查过、TMDB 确实没有"，因为它是个 record，
+  //    有地方放这个凭据。backdrop_path 是**裸路径串**，没有第三个值可用：TMDB 确实没有
+  //    横版图的作品（小众剧、部分电影常见），采回来就是 null，与"还没采过"在列上不可区分
+  //    → 每轮 boot 都会被谓词捡回来重查一次。这是**已知且接受**的代价，理由：
+  //      · 一次 `getDetails` 往返，200 行上限，串行，量级与 provider_ids 回填相同；
+  //      · 反面方案（写 `''` 当"查过没有"的哨兵）会让读取方拿到空串——而 apiV2 那一侧
+  //        `nullIfEmpty` 的存在正说明本仓已经在为空串/NULL 二义性付代价，不该再造一个。
+  //    若日后 TMDB 无图的作品占比高到让这个重查有成本，正确的修法是加一列
+  //    `backdrop_checked_at`（"查过"这件事自己的载体），而不是往路径列里塞哨兵值。
+  //
+  // ── 为什么不写进上面那份 works 终态定义 ────────────────────────────────────
+  // 照 provider_ids（v36）/ content_type（v30 续）/ recheck_after / sub_recheck_at /
+  // sidecar_langs 的既有分工：一列一条迁移 entry，fresh install 走完整链一次到位，存量库靠
+  // 同一条 entry 原地补齐。两处都写会让"改一处忘另一处"变成可能（works 表定义末尾的原话）。
+  //
+  // 条件式表存在性 + 列存在性双重检查照抄 v36 的 provider_ids（前者防 v29 及更早、尚无
+  // works 表的库裸 ALTER 把 openDb 整个炸掉 → 用户的库再也打不开；后者保证幂等——
+  // db.test.ts 会把尾部迁移重放一遍，裸 ALTER 会抛 duplicate column name）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'works'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(works)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('backdrop_path')) {
+      db.exec('ALTER TABLE works ADD COLUMN backdrop_path TEXT')
     }
   },
 ]

@@ -195,3 +195,102 @@ describe('runIdentifyWorkDir · works.provider_ids 落库（C5）', () => {
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v42 / R-F13：识别时把横版背景图落进 works.backdrop_path。
+//
+// 这是 backdrop_path 的**写入点①**。为什么只有回填 pass 不够（本仓病 A 的典型形态
+// ——"只修一半"）：identifyScheduler 的队列谓词是 `files.work_id IS NULL`，识别成功后
+// 那个目录永不再进识别队列；反过来只有回填 pass 而没有这一点，新识别的作品要等到
+// **下一次 boot** 才拿到图（boot 可能几周一次），在那之前活动页对它退化成模糊海报。
+// 两个写入点合起来才收敛，同 provider_ids（C5 写入点 + C21 回填 pass）的既有分工。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('runIdentifyWorkDir · works.backdrop_path 落库（v42 / R-F13 写入点①）', () => {
+  const BASE = {
+    id: 1, title: 'The Rig', originalTitle: 'The Rig', year: 2023,
+    overview: null, posterPath: null, genreIds: null,
+    originLanguage: 'en', chineseTitles: ['钻井危机'],
+  }
+
+  function seed(db: ReturnType<typeof openDb>) {
+    const workDir = '/media/TV/The Rig (2023)'
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(`${workDir}/S02E06.mkv`, workDir, 'S02E06.mkv', 100, 1000, workDir, 2, 6, 1000)
+    return workDir
+  }
+
+  const item = (workDir: string) => ({
+    workDir, dirName: 'The Rig (2023)', fileCount: 1, seasons: [2], hasSeasonDirs: true,
+  })
+
+  function depsWith(db: ReturnType<typeof openDb>, details: unknown): IdentifySchedulerDeps {
+    return {
+      db,
+      runIdentify: async () => ({ tmdbId: '1', title: 'The Rig', reason: 'confirmed' }),
+      worker: {
+        model: {} as any,
+        tmdb: { search: async () => [], getDetails: async () => details } as any,
+      },
+    }
+  }
+
+  it('🔴 识别成功 → works.backdrop_path 落 TMDB 的 backdropPath（此前这一列被丢弃）', async () => {
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: '/bd.jpg' }), item(workDir))
+
+    // 前置：识别真的成功了（否则下面断言列值也可能"通过"，是假绿）
+    const bound = db.prepare('SELECT work_id FROM files WHERE work_dir = ?').get(workDir) as { work_id: string | null }
+    expect(bound.work_id).toBe('tmdb:1')
+
+    const row = db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get('tmdb:1') as { backdrop_path: string | null }
+    expect(row.backdrop_path).toBe('/bd.jpg')
+    db.close()
+  })
+
+  it('🔴 TMDB 真没有横版图（backdropPath=null）→ 落 NULL，识别照常成功', async () => {
+    // NULL 是回填 pass 的取件谓词。这里刻意**不写空串哨兵**：裸路径列没有第三个值可用，
+    // "查过没有"与"还没采过"在这一列上不可区分是已知代价（见 db.ts v42 entry）。
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: null }), item(workDir))
+    const bound = db.prepare('SELECT work_id FROM files WHERE work_dir = ?').get(workDir) as { work_id: string | null }
+    expect(bound.work_id).toBe('tmdb:1')
+    const row = db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get('tmdb:1') as { backdrop_path: string | null }
+    expect(row.backdrop_path).toBeNull()
+    db.close()
+  })
+
+  it('🔴 getDetails 没给 backdropPath 字段（旧构造点）→ 落 NULL，不抛（optional 接线纪律）', async () => {
+    // IdentifyWorkerDeps.tmdb.getDetails 的 backdropPath 是 optional（几十个既有构造点的
+    // 编译成本，同 getExternalIds 的既有分工：类型层留宽、接线层单钉）。
+    // 这一条钉的是**不许炸**：undefined 直接喂给 better-sqlite3 会抛
+    // `TypeError: Invalid value`，把一次成功的识别整个打回退避轨。
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, BASE), item(workDir))   // BASE 里没有 backdropPath
+    const bound = db.prepare('SELECT work_id, last_error FROM files WHERE work_dir = ?')
+      .get(workDir) as { work_id: string | null; last_error: string | null }
+    expect(bound.work_id).toBe('tmdb:1')
+    expect(bound.last_error).toBeNull()          // 没被打进退避轨
+    const row = db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get('tmdb:1') as { backdrop_path: string | null }
+    expect(row.backdrop_path).toBeNull()
+    db.close()
+  })
+
+  it('🔴 重识别同一作品 → 已有的 backdrop_path 不被 INSERT OR REPLACE 洗成 NULL', async () => {
+    // `INSERT OR REPLACE INTO works` 是**整行替换**（provider_ids 那条已经吃过一次）。
+    // 第二次识别拿不到横版图时若直接绑 null，会把回填 pass 上一轮采到的值抹掉——
+    // 而与 provider_ids 不同的是，这里丢了**不保证**补得回来：若 TMDB 对这个作品本来
+    // 就没有横版图，回填每轮都白烧一次往返却永远写不进值。
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: '/bd.jpg' }), item(workDir))
+    // 第二次：TMDB 这次没给横版图
+    await runIdentifyWorkDir(depsWith(db, { ...BASE, backdropPath: null }), item(workDir))
+    const row = db.prepare('SELECT backdrop_path FROM works WHERE id = ?').get('tmdb:1') as { backdrop_path: string | null }
+    expect(row.backdrop_path).toBe('/bd.jpg')
+    db.close()
+  })
+})

@@ -389,6 +389,15 @@ async function cmdWatch() {
                   id: Number(id), title: d.title || d.originalTitle || String(id),
                   originalTitle: d.originalTitle ?? null, year: d.year, overview: d.overview,
                   posterPath: d.posterPath, genreIds: d.genreIds,
+                  // v42 / R-F13 接线：横版背景图。TmdbClient.getDetails 早就在解析
+                  // backdrop_path（tmdb.ts:325，v16 详情页重设计时加的），此前在**这一行**
+                  // 被丢弃 → works.backdrop_path 无论加不加列都恒 NULL。
+                  //
+                  // **这一行不接，本 task 的两个写入点就同时是装饰品**（写入点①
+                  // identifyScheduler、写入点② daemonV2.backfillBackdropPaths 都从这个
+                  // 适配器取值）——同 C5 那一行的既有教训：deps 上它是 optional，
+                  // 漏接线是**静默**的，界面上只表现为活动页永远退化成模糊海报，没有报错。
+                  backdropPath: d.backdropPath,
                   originLanguage: ol, chineseTitles: chinese,
                 }
               },

@@ -144,9 +144,18 @@ export async function runIdentifyWorkDir(
       // 且抓源腿在两轮之间退化回文本 query。读在事务内，与写同一把锁。
       const kept = providerIds ?? ((deps.db.prepare('SELECT provider_ids FROM works WHERE id = ?')
         .get(`tmdb:${input.tmdbId}`) as { provider_ids: string | null } | undefined)?.provider_ids ?? null)
+      // 同一个 `INSERT OR REPLACE` 整行替换的坑，对 backdrop_path 同样成立（v42）：本次
+      // getDetails 没给横版图时（TMDB 真没有 / 该构造点没接这个可选字段）若直接绑 null，
+      // 会把回填 pass 上一轮辛苦采到的值抹掉。与 provider_ids 不同的是，这里丢了**不保证**
+      // 能补回来——回填谓词是 `backdrop_path IS NULL`，确实会把它捡回去重查，但若 TMDB 对
+      // 这个作品本来就没有横版图，那就是每轮 boot 白烧一次往返（见 db.ts v42 的已知代价）。
+      // 读在事务内，与写同一把锁。
+      const backdropNow = details.backdropPath ?? null
+      const keptBackdrop = backdropNow ?? ((deps.db.prepare('SELECT backdrop_path FROM works WHERE id = ?')
+        .get(`tmdb:${input.tmdbId}`) as { backdrop_path: string | null } | undefined)?.backdrop_path ?? null)
       deps.db.prepare(`
-        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, chinese_titles, provider_ids, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, backdrop_path, chinese_titles, provider_ids, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         `tmdb:${input.tmdbId}`,
         details.title,
@@ -156,6 +165,20 @@ export async function runIdentifyWorkDir(
         details.originLanguage,
         details.overview,
         details.posterPath,
+        // R-F13/R-F14（v42）：横版背景图。TMDB 客户端早就在取这个字段（tmdb.ts:325），
+        // 此前落库时被丢弃 → 新架构识别出的作品在活动页只能退化成「模糊海报当背景」。
+        //
+        // 这是 backdrop_path 的**写入点①（新识别）**，与 daemonV2.backfillBackdropPaths
+        // （写入点②，存量回填）缺一不可：identifyScheduler 的队列谓词是
+        // `files.work_id IS NULL`，识别成功后那个目录**永不再进识别队列** → 只补这一点，
+        // 库里的存量作品永远没图；只补回填 pass，新识别的作品要等下一次 boot 才有图。
+        // 同 provider_ids（C5 写入点 + C21 回填）的既有分工。
+        //
+        // `?? null` 而不是省略：getDetails 的 backdropPath 是 optional（几十个既有构造点的
+        // 编译成本，见 IdentifyWorkerDeps 的论证），undefined 传给 better-sqlite3 会抛
+        // `TypeError: Invalid value`（它只认 null/number/string/bigint/Buffer），
+        // 那会把一次成功的识别整个打回退避轨。
+        keptBackdrop,
         JSON.stringify(details.chineseTitles ?? []),
         kept,
         now, now,

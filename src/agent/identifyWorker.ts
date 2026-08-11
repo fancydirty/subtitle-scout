@@ -27,6 +27,14 @@ export interface IdentifyWorkerDeps {
       id: number; title: string; originalTitle: string | null; year: number | null;
       overview: string | null; posterPath: string | null; genreIds: number[] | null;
       originLanguage: string | null; chineseTitles: string[]
+      /** TMDB 横版背景图路径（R-F13 活动页「在跑」卡片；v42 的 works.backdrop_path 的数据来源）。
+       *
+       *  **可选**且与 posterPath 的必填形成对照——这是刻意的，理由与 getExternalIds 同源：
+       *  这个 deps 有几十个既有构造点（cli/index.ts、identifyScheduler.test、
+       *  daemonV2.test…），做成必填会让它们全部编译不过。缺席（undefined）与 TMDB 确实
+       *  没有横版图（null）在落库时都归 NULL——这两者在**这一列上不可区分**是已知代价，
+       *  见 db.ts v42 entry 里"裸路径串没有第三个值可用"的完整论证。 */
+      backdropPath?: string | null
     } | null>
     /** 外部 id 端点（`/{tv|movie}/{id}/external_ids`，tmdb.ts:365）——采**真** imdb id 落进
      *  works.provider_ids（C5）。语义：404→{imdbId:null}（真无数据），其余失败→抛。
