@@ -448,11 +448,12 @@ dashboard redispatch。
 | 项 | 说明 |
 |---|---|
 | ~~翻译工作台 GC 炸弹~~ | **已修（`6944998`）**，且实测发现根因与本条原先的记载不同——详见 §六·五 单元 7。原记载说"回收机制存在只是保护没接"，实际是回收压根没接；另实测到同毫秒撞 jobId 这第三个后果 |
-| `server.test.ts` flake | 全套件并行下偶发失败（~1/10，`port: 0` + undici 全局态），单独跑 120/120 稳定绿。会污染「失败必须是同样 7 条」的验收口径，值得单独定位 |
+| `server.test.ts` flake | 全套件并行下偶发失败（~1/10，`port: 0` + undici 全局态），单独跑 120/120 稳定绿。会污染「失败必须是同样 7 条」的验收口径 |
+| 🔴 **vitest 会静默丢整个测试文件** | 比上一条危险得多：实测出现过 141 vs 142 文件、总数少 220 条，而 `numFailedTests` **照样是 7**——很容易被当成通过。我们全程用「失败必须是那 7 条」当验收门，这个 flake 能直接绕过它。**建议验收时同时断言文件数与总数下界** |
 | `recheck_after` 隐式隔离 | 三方共用靠 `sub_status` 白名单，没有 `last_error` 那样的显式前缀机制 |
 | probe 失败重试通路 | 隐式靠 D17 回填 pass，没有独立记账 |
 | 命名事故 | `recheck_after`（重试调度）vs `sub_recheck_at`（事实复核）语义近但含义完全不同 |
-| `db.test.ts` 14 处版本号字面量 | 每加一条迁移就要手改 14 行，应写成 `String(MIGRATIONS.length)` |
+| `db.test.ts` **16 处**版本号字面量 | 每加一条迁移要手改 16 行（15 处 `value: 'NN'` + 1 处 `expect(MIGRATIONS.length).toBe(NN)`）。两个 subagent 分别数成 14 和 15，**都漏了最后那条**——它不是 `value:` 形态所以 grep 不到。应统一写成 `String(MIGRATIONS.length)` |
 | 注释硬写行号会腐烂 | 第 7 步实测：`cli/index.ts` 有条注释写 `daemon.ts:327`，删 39 行后指到了另一个函数里。已改成引符号名（重构时工具会带着走）。仓内还有 `watchWiring.ts:7` 等同类实例 |
 | `--noUnusedLocals` 下 7 处孤儿 | `cli/index.ts` 的 `verifyAndRecord`/`runVerifySweep`/`verifyRepo`（verifySweep 雪藏，**有意保留**）+ `ReconcileAllResultDTO`/`requireEnv`/`targetLanguages`（疑似真死）+ `handleWorkerTask` |
 | `identifyMediaSkill` 教模型调未挂载工具 | 文档仍写 `write_identified_media`，而活路径（daemonV2 字幕 worker）从不传 `identityDeps`。模型会去试、被拒、把失败写进 reason |

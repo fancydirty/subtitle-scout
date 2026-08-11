@@ -503,8 +503,11 @@ language 丢弃，只写无语言的布尔 `sub_status='covered'`。
 1. **`files` 加 `skip_reason` 列** —— 把已算出的 `verdict.reason` 存下来。改动极小
 2. **扫描时记录全部外挂字幕语言** —— 不只搜目标语言，`<stem>.*.srt/ass` 全扫，
    语言集合存成 JSON（如 `["zh-Hans","en","ja"]`）
-3. **换目标语言 → 触发全库重判** —— 清 `needs_subtitle` / `sub_status` 让下轮巡检重判。
-   有了第 2 条的数据，重判**不需要重新扫盘**
+3. **换目标语言 → 触发全库重判** —— 清 `needs_subtitle` / `skip_reason` 让下轮巡检重判。
+   有了第 2 条的数据，重判**不需要重新扫盘**。
+   ⚠️ **绝不清 `sub_status`**（本行原先写的是"清 needs_subtitle / sub_status"，实施时纠正）：
+   它是**磁盘事实观察**（R24），不该因为改一个配置就把观察结果丢掉。
+   正确做法是重判时直接查 `sidecar_langs` 里有没有新目标语言。
 
 ### 媒体库页第三种标记
 
