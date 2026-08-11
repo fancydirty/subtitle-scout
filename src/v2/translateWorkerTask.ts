@@ -23,6 +23,7 @@ import type { Job, JobsRepo } from './jobsRepo.js'
 import type { RunsRepo } from './runsRepo.js'
 import { translateItemId } from './ownIds.js'
 import { traceBus } from '../core/traceBus.js'
+import { recordFound } from './notificationsRepo.js'
 
 /** runItem 的报告形状(legacy translate/translateItem.ts 已随审计 D 波退役——类型就地定义,
  *  与 cli/translateItemCommand.ts 的 DaemonTranslateRunItemResult 同构)。 */
@@ -231,6 +232,44 @@ export function applyTranslateOutcome(
 
   const row = db.prepare('SELECT sub_status FROM files WHERE path = ?').get(videoPath) as
     { sub_status: string | null } | undefined
+
+  // ── R-F3：通知流水（通知页的持久化数据源）──────────────────────────────────
+  // 翻译装盘成功同样是"找到了字幕"——对用户而言"从哪来的"是实现细节，结果都是"这一集现在
+  // 有中文字幕了"，故与抓源装盘**同走一条流水**（通知页不分两个池子，同 daemonV2 的 found
+  // 事件口径）；但 via 列如实记 'translate'，因为机翻与抓来的质量期望不同，用户看到
+  // 「翻译完成」时对质量的预期应该被如实告知。
+  //
+  // 三个门必须同时成立，逐条对应一种"会谎报成果"的形态：
+  //  ① `status === 'installed'` —— **不含 already-covered**：那是"字幕本来就在盘上"，
+  //     不是这一轮的新成果，报它等于每轮巡检都往通知页灌一条同文。
+  //  ② `changes > 0`（乐观守卫 D10 命中）—— 守卫匹配 0 行意味着这几分钟里扫描已经改过
+  //     sub_status，**本次回写整个作废**。回写作废却报"找到了"，是通知页上一条凭空的成果。
+  //  ③ `work_id`/`title` 齐备 —— 未识别文件没有作品维度可展示（通知页按作品+季聚合）。
+  //
+  // 为什么在这里补一次查询（多一次 SELECT）：季集号与标题必须取自**库里的事实**
+  // （files.season/episode + works.title），而 applyTranslateOutcome 的入参只有 videoPath。
+  // 从路径反解文件名是识别层的活，在这里再来一份正则就是第二份实现。这条 SELECT 只在
+  // installed 且守卫命中时才跑（翻译轨一天几个活的量级），不在任何热路径上。
+  if (status === 'installed' && changes > 0) {
+    try {
+      const meta = db.prepare(
+        `SELECT f.season AS season, f.episode AS episode, f.work_id AS workId, w.title AS title
+           FROM files f JOIN works w ON f.work_id = w.id
+          WHERE f.path = ?`,
+      ).get(videoPath) as { season: number | null; episode: number | null; workId: string; title: string } | undefined
+      if (meta) {
+        recordFound(db, {
+          workId: meta.workId, title: meta.title,
+          season: meta.season, episode: meta.episode, via: 'translate',
+        }, now)
+      }
+    } catch {
+      // 吞掉：recordFound 自己已整体 try/catch，这一层兜的是上面那条 SELECT
+      // （表缺失/JOIN 意外）。通知是增益，绝不许反噬翻译回写——回写没写上的代价是
+      // D6 的付费 LLM 热循环。
+    }
+  }
+
   return { guardMissed: changes === 0, status: row?.sub_status ?? '(row gone)' }
 }
 

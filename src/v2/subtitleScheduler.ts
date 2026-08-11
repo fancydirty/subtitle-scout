@@ -8,6 +8,7 @@ import type { FindSubtitleTask, FindSubtitleTargetFact } from '../agent/findSubt
 import type { LanguageModel } from 'ai'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { traceBus } from '../core/traceBus.js'
+import { recordFound } from './notificationsRepo.js'
 
 export interface SubtitleQueueItem {
   workId: string
@@ -430,6 +431,25 @@ export async function runSubtitleWorkDir(
   for (const f of item.files) {
     if (coveredPaths.has(f.path)) {
       markInstalled.run(now2 + DAY_MS, IMMEDIATE_RECHECK, now2, f.path)
+      // ── R-F3：通知流水（通知页的持久化数据源）────────────────────────────────
+      // 写入点与 SSE `found` 事件**同一口径**（daemonV2 在 runSubtitleWorkDir 返回后按
+      // report.installed.length 发一条），但落点不同、缺一不可：SSE 只把新的推给正在看的人
+      // （进程内环形缓冲 50 条、非持久），R-F3 要的"保留一周"必须落库——用户关着浏览器的
+      // 那 23 小时里找到的字幕在缓冲里全部丢失，容器重启同样清零。论证见 notificationsRepo.ts。
+      //
+      // 为什么写在**这里**（逐文件、markInstalled 紧邻）而不是在 daemonV2 那条 emit 旁边：
+      // 通知要的是**季集号**（"S01 的第 3/5/7 集"），而 daemonV2 那一层手里只有
+      // report.installed.length 这个计数——它连哪几集都不知道。季集号取自 `f`（files 行的
+      // 事实），**不从 installedPath 猜**：文件名解析在本仓是识别层的活，在这里再来一份
+      // 正则就是第二份实现，两份漂移时没人知道该信哪个。
+      //
+      // recordFound 内部整体 try/catch（绝不抛错），故这里**不需要**再包一层——它与
+      // ScoutEventBus.publish 是同一口径。但语义上这仍是"两道"：万一将来有人把 repo 里那层
+      // catch 拿掉，notificationsWiring.test.ts 的「通知表被删也不许影响装盘回写」会立刻红。
+      recordFound(db, {
+        workId: item.workId, title: item.title,
+        season: f.season, episode: f.episode, via: 'fetch',
+      }, now2)
     }
   }
 

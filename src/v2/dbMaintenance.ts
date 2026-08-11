@@ -7,6 +7,7 @@
 import { mkdirSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ScoutDb } from './db.js'
+import { pruneFound } from './notificationsRepo.js'
 
 export const CHECKPOINT_EVERY_MS = 60 * 60_000        // 每小时压一次 WAL(TRUNCATE)
 export const BACKUP_EVERY_MS = 24 * 3600_000          // 每天一份在线快照
@@ -25,7 +26,7 @@ export function makeMaintenanceState(): MaintenanceState {
 export function runDbMaintenance(
   db: ScoutDb, cacheDir: string, state: MaintenanceState, now: number,
   log: (msg: string) => void = () => {},
-): { checkpointed: boolean; backupPath: string | null } {
+): { checkpointed: boolean; backupPath: string | null; notificationsPruned: number } {
   let checkpointed = false
   let backupPath: string | null = null
   try {
@@ -59,5 +60,25 @@ export function runDbMaintenance(
     log(`warn: db 备份失败(下 tick 再试): ${String(e)}`)
     backupPath = null
   }
-  return { checkpointed, backupPath }
+  // ── R-F3：通知流水的保留期清理（"随 dbMaintenance 顺手清"，**不新起定时器**）──
+  //
+  // 为什么挂在这里：这个循环已经在跑 VACUUM/checkpoint，多一个定时器就多一处"谁来触发"的
+  // 接线，而本仓栽过 6 次"加了能力却没定谁来触发"（C12→C35→C43→C21→audio_langs→
+  // tmdb_seasons）。清理的正确性**不依赖它跑得多勤**——一周窗由读时过滤独立保证
+  // （listRecentFound 的谓词），这里只负责回收空间。所以刻意**不加时间门控**（不像
+  // checkpoint/backup 那样攒到整点）：DELETE 的谓词本身就是幂等的，一周内无过期行时它删 0 行、
+  // 代价是一次走索引的空查询。加门控只会多一个状态字段和一处"门控与保留期两个周期怎么配"的
+  // 疑问，换不到任何东西。
+  //
+  // 单独 try/catch 且**放在 checkpoint/backup 之后**：口径同本文件既有的两个器官——运维是
+  // 增益，一处失灵不许连坐。放在最后是因为 checkpoint 与 backup 是耐久性器官（掉电丢数据的
+  // 那条防线），通知清理只是空间回收；万一它抛错，前两者已经完成。
+  let notificationsPruned = 0
+  try {
+    notificationsPruned = pruneFound(db, now)
+    if (notificationsPruned > 0) log(`通知清理: 删除 ${notificationsPruned} 条过一周的成果（R-F3）`)
+  } catch (e) {
+    log(`warn: 通知清理失败(下 tick 再试): ${String(e)}`)
+  }
+  return { checkpointed, backupPath, notificationsPruned }
 }

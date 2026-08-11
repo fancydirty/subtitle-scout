@@ -188,6 +188,20 @@ CREATE TABLE IF NOT EXISTS works (
   media_type TEXT NOT NULL, origin_lang TEXT, overview TEXT, poster_path TEXT,
   chinese_titles TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+-- v39（R-F3）：通知流水。留在终态 schema 里是为了让它可读完整（同 v28/v30 注释的口径）；
+-- fresh install 走完整 MIGRATIONS 链，v39 entry 的 CREATE TABLE IF NOT EXISTS 会跳过。
+-- 逐集存、读时聚合；唯一索引必须走 ifnull()（电影 season/episode 恒 NULL，裸 UNIQUE 失效）。
+-- 完整论证见 v39 entry。
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id TEXT NOT NULL, title TEXT NOT NULL,
+  season INTEGER, episode INTEGER,          -- 皆 NULL = 电影
+  via TEXT NOT NULL,                        -- 'fetch' / 'translate'
+  found_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS notifications_identity
+  ON notifications(work_id, ifnull(season,-1), ifnull(episode,-1));
+CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC);
   `.trim(),
   // v10（胶水层修复战役，2026-07-16）：三列事实增量。layout_nonstandard=摄取层观察到的
   // "磁盘布局不合规范形"series 级事实（债务D1，realign 出生信号之一）；search_attempts=
@@ -889,6 +903,67 @@ CREATE TABLE IF NOT EXISTS works (
     if (!columns.has('sub_retry_streak')) {
       db.exec('ALTER TABLE files ADD COLUMN sub_retry_streak INTEGER NOT NULL DEFAULT 0')
     }
+  },
+  // v39（R-F3 通知页的持久化数据源，2026-08-11）：notifications 表。纯 CREATE TABLE +
+  // CREATE INDEX，无 CHECK 约束变更、不碰任何既有表，故不触发 12 步建新表流程。
+  //
+  // ── 为什么必须有这张表（这是本条唯一需要论证的事）────────────────────────────
+  // 上一个 commit（32ceaeb）的 SSE 通道里 `found` 事件就是通知页的数据源，但它的续传缓冲是
+  // **进程内环形缓冲**（ScoutEventBus.buffer，REPLAY_BUFFER_CAP=50，非持久）。而 R-F3 要求
+  // 通知**保留一周**。两者的差距不是容量，是**生命周期**：用户关着浏览器的那 23 小时里找到的
+  // 字幕全部丢失，容器重启同样清零。scoutEvents.ts 自己的注释已经把这条说穿了——"这条缓冲
+  // 只服务'手机锁屏 30 秒再打开'这一档断线重连，**不是账目**（账目在 runs 表与日志文件里）"。
+  // 通知页要的恰恰是账目。故 SSE 只负责"实时把新的推给正在看的人"，一周的流水必须落库。
+  //
+  // ── 为什么不能从既有表推导（逐个排除，全部实测过，不是推测）──────────────────
+  //  · `files.sub_status='covered' + updated_at`：**推不出来**。updated_at 是"这一行最后被写过
+  //    的时刻"，而不是"字幕找到的时刻"——observeSubtitle 每次 B 档复核（7 天一轮）都会
+  //    无条件 `UPDATE files SET sub_status='covered', sub_recheck_at=?, updated_at=?`，
+  //    一个三个月前配上字幕的文件每周被刷新一次 updated_at。实测：写入 updated_at=1000 后
+  //    再复核一次即变 99999。照它做一周窗，通知页会天天冒出陈年老片假装"刚找到"；反过来
+  //    真·新成果与假·复核刷新在这一列上**完全同形**，无从区分。而且它只有一个时刻，
+  //    装盘与"用户手删后重新找到"也分不开。
+  //  · `subtitles` 表（有 created_at，形状最接近）：**生产已无写入者**。它的两个写入点
+  //    markCovered / recordAdoptedSidecar 都挂在 LibraryRepo 上，服务 episodes/movies 旧表；
+  //    新架构 daemonV2 走 files/works 两表，装盘回写在 subtitleScheduler.markInstalled 里，
+  //    一行都不碰 subtitles。用它 = 先给它接一个新生产者，那与新建表同等工作量却背上
+  //    旧 item_id 值域（episodes.id）与新 work_id 值域的映射债。
+  //  · `runs`：**生产零消费者也零新增生产者**——RunsRepo.insert 的 4 个调用点全在
+  //    worker_task 路径上，而 jobs.claimNext 自第 2 步起生产零调用点（cli/index.ts:446 明记）。
+  //    且它的粒度是"一次 job 的决策史"，没有季集维度，detail 是人话字符串。
+  //  · `jobs`：同上，队列只剩生产者没有认领者；且它是**任务**表，任务完成即被改写，
+  //    不是成果流水。
+  //
+  // ── 表结构的三个非显然选择 ──────────────────────────────────────────────────
+  //  ① **逐集存，不存聚合**。R-F3 的展示形态是「XX 剧找到了 S01 的第 3/5/7 集」（按作品+季
+  //     聚合），但存聚合会立刻撞上"同一季分两次找到"的合并问题：先找到 E1、两天后找到 E2，
+  //     聚合行要么被覆盖（丢 E1）要么要读-改-写（两步之间掉电留半状态，软路由掉电是本项目
+  //     常态）。逐集存 + 读时 GROUP BY 天然免疫，代价只是读时一次聚合——一周的量级是几十行。
+  //  ② **唯一索引用 ifnull() 表达式**，不是裸 UNIQUE(work_id, season, episode)。SQLite 的
+  //     UNIQUE 视 NULL 互不相等，而电影的 season/episode 恒 NULL → 裸 UNIQUE 对电影**完全
+  //     失效**，每次装盘插一新行。同 jobs_identity 的既有作法（那条注释里记的是同一个坑）。
+  //  ③ **不做已读状态**（R-F3 原话"少一个状态少一堆 bug"）：故无 read_at 列。倒序流水 +
+  //     一周窗就是全部语义。
+  //
+  // 保留期**不由本表结构表达**（没有过期列）：一周窗是读时过滤 + dbMaintenance 顺手清，
+  // 论证见 notificationsRepo.ts 顶部。
+  (db) => {
+    db.exec(`
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id TEXT NOT NULL,            -- works.id（'tmdb:<id>'）。前端按它跳媒体库页
+  title TEXT NOT NULL,              -- 冗余存作品标题：通知页不该为了显示一行字去 JOIN works，
+                                    -- 而且作品行被删（用户移除根）后这条历史成果仍应可读
+  season INTEGER,                   -- NULL = 电影（R-F3「电影就是已找到字幕」）
+  episode INTEGER,                  -- NULL = 电影
+  via TEXT NOT NULL,                -- 'fetch'（抓源装盘）/ 'translate'（翻译装盘）
+  found_at INTEGER NOT NULL         -- 找到的时刻。倒序流水与一周窗的**唯一**锚点
+                                    -- （刻意不复用 files.updated_at，见本 entry 上方论证）
+);
+CREATE UNIQUE INDEX IF NOT EXISTS notifications_identity
+  ON notifications(work_id, ifnull(season,-1), ifnull(episode,-1));
+CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC);
+    `.trim())
   },
 ]
 
