@@ -26,7 +26,11 @@ import { buildMediaLibrary, buildMediaLibraryDetail } from './mediaLibraryApi.js
 import { listRecentFoundGrouped } from '../v2/notificationsRepo.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from '../core/traceBus.js'
-import type { ScoutEventBus } from '../core/scoutEvents.js'
+import type { ScoutEventBus, ScoutCurrent } from '../core/scoutEvents.js'
+// Task ⑤：GET /api/v2/health 的 `roots[].ok` 陈旧门以巡检周期为单位（见
+// ROOT_HEALTH_STALE_AFTER_MS 的论证——不在这里写死 48h）。**只引常量、不引 daemon 类**：
+// daemonV2 的模块图（48 个模块，已核）不含 dashboard/*，故无环。
+import { INSPECT_INTERVAL_MS } from '../v2/daemonV2.js'
 import { AuthService, AUTH_KEYS, safeStrEqual } from './auth.js'
 import {
   buildVerifyDTOs, correctSubtitle, revertSubtitle, parseItemIds, parseItemIdBody,
@@ -49,6 +53,9 @@ import {
 import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
 import type { SetupDeps } from './setupApi.js'
 import { buildSetupStatus, buildProviders, putSecret, validateSetupTarget } from './setupApi.js'
+// Task ⑤：/api/v2/health 的 engineEnabled 判据。**复用**而不是第三次手写 `!== 'false'`
+// ——同一件事在健康横幅 / setup 页 / daemon 派活三条路上给出不同答案是 D7/C30 的既有形态。
+import { engineEnabled } from '../cli/watchClients.js'
 
 export interface DashboardOpts {
   db: ScoutDb
@@ -120,6 +127,102 @@ export interface DashboardOpts {
  *  15s 沿用隔壁 trace-stream 的既有值——反代（nginx 默认 60s proxy_read_timeout）掐断
  *  空闲连接前必须有东西流过。 */
 const EVENTS_HEARTBEAT_MS = 15_000
+
+/**
+ * Task ⑤：`roots[].ok` 判"这条判决还新鲜吗"的容差 = **2 个巡检周期**。
+ *
+ * ── 为什么必须有这个门（Task ③ 审计留下的债务）────────────────────────────────
+ * `media_roots.last_error` / `last_checked_at` 的唯一写入点是 daemonV2.scanOnce 的 finally，
+ * 而它只遍历**本轮 scanRoots**。库里有、本轮没扫到的根（rootsProvider 与 media_roots 表
+ * 漂移、或 daemon 压根没在跑）的两列会**永久停在上一轮的值**：last_error 粘住、
+ * last_checked_at 停在旧时刻。此时 `ok = (last_error === null)` 是一句**主动的假话**——
+ * 它把一个几周没人碰过的根报成绿的（或把一个早就修好的根报成红的）。
+ *
+ * ── 为什么是 2× 而不是 1× ──────────────────────────────────────────────────
+ * 1× 会**每天误报**：巡检自身要跑（大库在 115 FUSE 上实测能跑数小时，daemonV2.ts:527
+ * 的时间闸记的是**开始**时刻），失败还走 INSPECT_FAILURE_BACKOFF_MS 的独立退避。于是
+ * "上次检查 24.5 小时前"是完全正常的稳态，1× 门下每天都会有一段时间把健康的根刷成未知。
+ * 2× = 完整错过一个巡检周期，那才是真的有事（daemon 死了 / 这个根从 scanRoots 里掉出去了）。
+ *
+ * ── 为什么复用 INSPECT_INTERVAL_MS 而不是就地写 48h ─────────────────────────
+ * 这个门的语义是"几个巡检周期"，不是"几小时"。写死 48h 之后谁改了巡检周期（daemonV2 的
+ * `inspectEveryMs` 就是为此存在的注入口），这里会静默漂移成一个与巡检节奏无关的魔数——
+ * 本仓 D7/C30「留两份实现必漂移」的既有形态。
+ */
+const ROOT_HEALTH_STALE_AFTER_MS = 2 * INSPECT_INTERVAL_MS
+
+/** GET /api/v2/health 的 `roots[]` 元素。字段一律非可选（`| null` 而不是 `?`）：
+ *  这东西要 JSON.stringify 给前端，undefined 会让字段**整个消失**，前端就分不清
+ *  "没有这个事实"和"这版后端还没这个字段"（同 ScoutCurrent 的既有论证）。 */
+export interface HealthRootDTO {
+  path: string
+  /**
+   * 这个根现在健不健康。**三态，不是布尔**——`null` = 不知道，见下方 buildRootHealth
+   * 的完整论证。前端渲染纪律：`null` 必须画成灰的（"未知"），**绝不许 `?? true` 兜底**
+   * ——那正好把这个三态设计要防的那句假话原地复活。
+   */
+  ok: boolean | null
+  /** 上一轮扫描对这个根的判决原文（人话，含 root 路径与实测数字）。健康/从没扫过时 null。
+   *  ⚠️ `ok === null`（陈旧）时**这一条仍可能非 null**：它是那次陈旧扫描留下的原文，
+   *  对排障有用，但它**不是当前结论**——当前结论只看 `ok`。 */
+  lastError: string | null
+  /** 上一轮扫描**处理完这个根**的时刻（毫秒）。从没扫过 → null（有意义的第三态，
+   *  见 db.ts v41 那条迁移 entry 里"刻意可空且无 DEFAULT"的论证）。 */
+  lastCheckedAt: number | null
+}
+
+/** GET /api/v2/health 的响应。 */
+export interface HealthDTO {
+  lastInspectAt: number | null
+  engineEnabled: boolean
+  roots: HealthRootDTO[]
+  current: ScoutCurrent | null
+}
+
+/**
+ * 把 media_roots 的两列折成 `ok` 三态。**不是 `last_error === null`**。
+ *
+ * ── 三种情况（这是本函数存在的全部理由）─────────────────────────────────────
+ *
+ *  ① `last_checked_at IS NULL` → **`ok: null`（未知）**，不是 true。
+ *     语义：这个根从没被扫过（用户刚在 dashboard 里加完，下一轮巡检才会碰它）。
+ *     报 true 就是在替一个从未被验证过的根打包票——而"刚加的根路径写错了/挂载没起来"
+ *     恰恰是这个字段最该抓到的场景之一。db.ts v41 那条 entry 已经预言了这个坑：
+ *     「折叠成 NOT NULL DEFAULT 0 会让『刚加的根』与『扫过且健康的根』不可区分，
+ *     未来的读取方会把前者当成绿的」——本函数就是那个"未来的读取方"，它不上这个当。
+ *
+ *  ② `now - last_checked_at > ROOT_HEALTH_STALE_AFTER_MS` → **`ok: null`（未知）**。
+ *     语义：判决陈旧。见 ROOT_HEALTH_STALE_AFTER_MS 的论证（写入点只覆盖本轮 scanRoots，
+ *     落选的根两列会永久粘住）。**陈旧的红也一样归 null**，不是 false：一个两周前失败、
+ *     此后再没被扫过的根，说它"现在是坏的"与说它"现在是好的"同样没有依据——
+ *     两个方向都是拿中间量当结论量（病 B）。lastError 原文照给，让用户自己看那次发生了什么。
+ *
+ *  ③ 新鲜（`last_checked_at` 在容差内）→ `ok = (last_error === null)`。
+ *     只有在这一支里，`last_error` 才是一句**关于现在**的话。
+ *
+ * ── 为什么 `ok` 是 `boolean | null` 而不是拆一个 `status: 'ok'|'error'|'unknown'` ──
+ * 设计文档 §3.5 钉的字段名就是 `ok`，前端横幅的判据是"要不要亮红灯"。三态用 null 表达
+ * 在 JSON 里是无歧义的（`false !== null`），而换字段名等于让 §3.5 与实现对不上，
+ * 下一个人得再考古一遍。
+ *
+ * ── 时钟从参数进 ──
+ * `now` 注入而不是就地 Date.now()：陈旧判定是本函数唯一的时间依赖，不注入就没法测
+ * "刚好卡在容差边界"这条线（同本仓各处 `now: () => number` 的既有惯例）。
+ */
+export function buildRootHealth(
+  rows: ReadonlyArray<{ path: string; last_error: string | null; last_checked_at: number | null }>,
+  now: number,
+): HealthRootDTO[] {
+  return rows.map((r) => {
+    const lastCheckedAt = r.last_checked_at
+    // ① 从没扫过 / ② 判决陈旧 —— 两者都是"不知道"，不许折成 true 也不许折成 false。
+    const ok: boolean | null =
+      lastCheckedAt === null || now - lastCheckedAt > ROOT_HEALTH_STALE_AFTER_MS
+        ? null
+        : r.last_error === null
+    return { path: r.path, ok, lastError: r.last_error, lastCheckedAt }
+  })
+}
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -676,6 +779,85 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         }
         res.writeHead(200, JSON_CT)
         res.end(JSON.stringify(listRecentFoundGrouped(db, Date.now())))
+        return
+      }
+
+      // ── Task ⑤：GET /api/v2/health —— 健康横幅与活动页状态条的**基线快照** ──────
+      //
+      // 存在理由（设计文档 §3.5 / 审计 F-5）：SSE 的 `health` 事件**只发不撤**——daemonV2
+      // 里没有任何"恢复"事件的发射点，横幅一旦亮起在当前实现下永远不灭。前端在首次加载与
+      // SSE 重连后各拉一次这个端点，作为横幅的真实基线：SSE 只负责"立刻亮起"，**灭灯靠这里**。
+      // §3.6 追加 `current`（同理：activity 是变化不是快照，断线期间巡检跑完、缓冲又被
+      // progress 冲掉的话，前端会永远停在"正在处理 X"）。
+      //
+      // ⚠️⚠️ **刻意不返回 `queue` 字段**（IMPL-PLAN 审计 🔴-1 的裁决，落地在此）。
+      // 设计文档自相矛盾：§3.6 说 health 要返回 `current` **和 `queue`**，而 §3.5:578 说
+      // 「queue 砍掉，活动页的 total 只信 SSE」、:568 对 `listSubtitleQueue` 明令「**不许用它**」
+      // ——它返回的是"现在重查会捞到什么"，而 R4 的设计是**冻结快照**（daemonV2.ts:660 有
+      // 大段论证）。用它会让活动页 total 与 SSE 的 total 对不上，且越跑越飘。
+      // **裁决：依 §3.5 砍掉 queue。** R-F4「排队」那半边后端确实无数据源——`subtitleQueue`
+      // 是 `runInspection` 的局部变量，出不来。这条注释就是那个裁决的落点：
+      // 下一个人读 §3.6 会以为端点残缺，或照它把 listSubtitleQueue 接上去，正好踩中 :568。
+      //
+      // ── 四个字段的数据源（谁写 / 谁读 / 谁触发，本仓已栽 11 次「加了能力没定接线」）──
+      //  · lastInspectAt —— meta 表 `last_inspect_at`。写：daemonV2.writeLastInspectAt
+      //    （**只在整轮巡检成功后**写，D4 ②）。全新部署为 null（前端必须保留冷启动分支，
+      //    不许显示成 1970-01-01）；生产已有值（2026-08-11 那轮巡检写入）。
+      //    键名与 apiV2.buildWorkflowPending 的 lastScanAt 同源——两处读同一个键，
+      //    刻意不抽公共函数：那边是"顶栏新鲜度行"的一个字段，这边是健康基线，
+      //    合并会让两个页面的降级策略互相绑架（那边 null 显示"还没扫过"，这边 null 要触发
+      //    冷启动分支）。**只读不写**，本端点零写路径。
+      //  · engineEnabled —— settings 表 `engine_enabled`，fail-open（只有精确 'false' 才算关，
+      //    脏值/缺省一律开，spec §4.6）。判据与 watchClients.engineEnabled（daemon 的
+      //    workPermitted）、setupApi.buildSetupStatus 同源。这里复用 watchClients 那份实现
+      //    而不是第三次手写 `!== 'false'`：三处各写一份，用户眼里"引擎开着"这一件事会在
+      //    健康横幅、setup 页、daemon 派活三条路上给出可能不同的答案（D7/C30 的既有形态）。
+      //  · roots —— media_roots 的 path/last_error/last_checked_at（Task ③ / db.ts v41 加的两列）。
+      //    写：daemonV2.scanOnce 的 finally 单点收敛。**本端点是这两列的第一个读取方**
+      //    （db.ts v41 那条 entry 写着"目前没有读取方……Task ⑤ 的 /api/v2/health 将据它判
+      //    roots.ok，那个端点今天还不存在"——就是这里）。ok 的三态折叠见 buildRootHealth。
+      //  · current —— ScoutEventBus.getCurrent()（Task ④ 挂的内存快照）。写：publish
+      //    （= daemonV2 已有的 13 个 emit 点）。**本端点是 getCurrent() 的唯一生产读取点**，
+      //    故那条接线由 healthWiring.test.ts 的源码级断言守卫（照 watchWiring.test.ts 的形态）。
+      //
+      // ── events 缺席（不跑 watch 时）为什么**不整体 503** ─────────────────────
+      // 隔壁 /api/v2/events 缺席即 503，那是对的：它整个端点就是那条流，没有总线就没有
+      // 任何东西可给。**本端点不同**：四个字段里有三个（lastInspectAt / engineEnabled /
+      // roots）与总线毫无关系，它们全部长在库上。整体 503 会让"守备目录健康度"这个纯 DB
+      // 事实在没跑 watch 时也查不到——而那恰恰是最需要它的时候（用户开着 dashboard 排查
+      // "为什么什么都没发生"，得到的却是一个 503）。
+      // 故：**events 缺席 → `current: null`，其余三个字段照给**。
+      // 这不会制造歧义：`current: null` 的语义本来就是"没有任何工作台在跑"（见 ScoutCurrent
+      // 头注释），而 watch 没跑时确实没有任何工作台在跑——两条路径给出的是**同一句真话**，
+      // 不是拿 null 掩盖缺席。
+      //
+      // 读失败不在这一层兜（同隔壁 notifications 的既有口径）：三条查询都是本进程刚开的库，
+      // 真抛错说明库坏了，包一层 try 只会把它吞得更深；最外层那个 catch 会转 500。
+      // 鉴权已由上方统一前置门完成（cookie / x-api-key / legacy token 三通道）。
+      if (rawPath === '/api/v2/health') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, JSON_CT)
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        const inspectRow = db
+          .prepare(`SELECT value FROM meta WHERE key = 'last_inspect_at'`)
+          .get() as { value: string } | undefined
+        // 脏值（非数字）按"没有"处理，**不报一个 NaN 出去**：NaN 经 JSON.stringify 变
+        // null，与"从没巡检过"撞车但过程不可见；显式判一次让两者走同一条诚实的 null。
+        const lastInspectNum = inspectRow ? Number(inspectRow.value) : NaN
+        const rootRows = db
+          .prepare('SELECT path, last_error, last_checked_at FROM media_roots ORDER BY path')
+          .all() as Array<{ path: string; last_error: string | null; last_checked_at: number | null }>
+        const body: HealthDTO = {
+          lastInspectAt: Number.isFinite(lastInspectNum) ? lastInspectNum : null,
+          engineEnabled: engineEnabled((k) => settingsRepo.get(k)),
+          roots: buildRootHealth(rootRows, Date.now()),
+          // events 缺席 → null（见上方论证：不整体 503）。
+          current: events ? events.getCurrent() : null,
+        }
+        res.writeHead(200, JSON_CT)
+        res.end(JSON.stringify(body))
         return
       }
 
