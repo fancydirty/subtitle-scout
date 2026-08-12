@@ -83,6 +83,21 @@ const settle = () => new Promise((r) => setTimeout(r, 20))
  *  写死一个字面量，`id:` 行的完整形状（含分隔符与 seq）才真的被钉在用例里。 */
 const BOOT = 'boot-fixed-1'
 
+// ⚠️ BOOT 必须与本文件里所有 `not.toContain(x)` 的 x 都不相交。
+//
+// 来历：`id:` 行的格式是 `<bootId>:<seq>`，所以 bootId 会**出现在每一条事件帧里**
+// （不只是握手帧，afterHandshake 剥不掉它）。而多条用例的判据是"某个 message 没被重发"，
+// 形如 `expect(buf).not.toContain('e1')`。若 bootId 恰好含 'e1'，断言就被一个与被测行为
+// **完全无关**的随机数打红——`makeBootId()` 生成 base36 随机串时实测各约 0.37% 概率撞上，
+// 那条用例因此有 ~0.75% 的无故翻红率（全量跑真抽中过一次）。
+//
+// 这条自检把"固定 bootId"这个前提变成可执行的：谁把它改回随机、或改成一个含 e1/e2/e3 的值，
+// 这里当场红，而不是留一颗每 130 次 CI 炸一回的雷。
+// ⚠️ 写成**用例**而不是模块级 throw：模块级抛错会让 vitest 把整个文件静默丢掉
+// （实测 `total=0`——那不是"没变红"，是这 16 条一条都没跑，而失败计数照样是 0）。
+// 那正是本仓 §二 记的第 2 条验收陷阱，在这里踩一次就够了。
+const NOT_CONTAIN_PROBES = ['e1', 'e2', 'e3', '第一条', '断线期间A', '断线期间B'] as const
+
 /**
  * 校验并**剥掉**连接建立时的握手前言，返回其后的流内容。
  *
@@ -119,6 +134,13 @@ function afterHandshake(buf: string, bootId: string): string {
 }
 
 describe('GET /api/v2/events（R-F10 全站单条 SSE 通道）', () => {
+  it('🔴 自检：BOOT 不许与任何 not.toContain 探针相交（否则会造出 ~0.75% 的无故翻红）', () => {
+    for (const probe of NOT_CONTAIN_PROBES) {
+      expect(BOOT, `BOOT 含探针 '${probe}'——事件帧的 id: 行带 bootId，会让 not.toContain('${probe}') 被无关值打红`)
+        .not.toContain(probe)
+    }
+  })
+
   it('SSE 响应头正确：text/event-stream / no-cache / keep-alive', async () => {
     const { base } = await start({ token: 'tok' })
     const ctrl = new AbortController()
@@ -306,7 +328,12 @@ describe('GET /api/v2/events（R-F10 全站单条 SSE 通道）', () => {
   it('🔴 头优先于 query：浏览器自己带的那个是权威，前端无法覆盖它', async () => {
     // 两条通路并存就必须定优先级，否则"同时给了但不一样"是未定义行为。
     // 头是浏览器维护的（前端碰不到也改不了），query 是前端自己写的——冲突时信前者。
-    const events = new ScoutEventBus()
+    //
+    // ⚠️ 必须注入固定 bootId（原先是裸 `new ScoutEventBus()`）：`makeBootId()` 生成 base36
+    // 随机串，而下面断言 `not.toContain('e1'|'e2')` —— **随机串可以撞上 'e1'/'e2'**。
+    // 实测撞上的概率各约 0.37%，这条用例因此有 ~0.75% 的概率无故变红（全量跑抽中过）。
+    // 那是一条"断言的判据被无关随机数污染"的 flaky，不是产品问题；总线本来就有测试注入点。
+    const events = new ScoutEventBus({ bootId: BOOT })
     const { base } = await start({ events, token: 'tok' })
     events.publish({ type: 'found', message: 'e1' })
     events.publish({ type: 'found', message: 'e2' })
@@ -317,7 +344,8 @@ describe('GET /api/v2/events（R-F10 全站单条 SSE 通道）', () => {
       headers: { 'last-event-id': '2' }, signal: c.signal,
     })
     try {
-      const buf = await readUntil(r, (b) => b.includes('e3'))
+      // 同样剥掉握手帧再断言——hello 的载荷里带 bootId，不剥的话固定 bootId 也可能自带 'e1'
+      const buf = afterHandshake(await readUntil(r, (b) => b.includes('e3')), BOOT)
       expect(buf).not.toContain('e1')
       expect(buf).not.toContain('e2')
     } finally { c.abort() }
