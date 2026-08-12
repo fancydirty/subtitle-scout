@@ -9,16 +9,16 @@
 // 将来重启用时把 { id: 'triage', labelKey: 'nav_triage' } 加回本表即可（Sidebar 的
 // TAB_ICONS/角标、route.ts 的 Tab 联合、AppShell 的分支、i18n 的 nav_triage 键需一并恢复）。
 //
-// ── 2026-08-12（Task ⑦）：本表 = **侧栏渲染哪几项**，不再等于"合法路由有哪些" ──────
-// FRONTEND-SPEC 的三个页面（活动/通知/媒体库）+ 设置进表。旧的 library/workflow **路由仍在**
-// （route.ts 的 Tab 联合里还有它们，直达 #/library、#/workflow 照常渲染），只是从这张表里
-// 摘掉 → 侧栏与 ⌘K 不再列出。摘导航项与删路由是两件事，后者是 Task ⑪。
-// 论证见 route.ts 头注释（简言之：#/workflow 今天渲染的就是唯一能用的活动页，而
-// activity/ 有 7 处 import workflow/，现在删会立刻编译失败）。
+// ── 2026-08-12（Task ⑦→⑪）：本表 = 侧栏渲染哪几项，Task ⑪ 起它**又等于**合法路由全集 ──
+// Task ⑦ 把 FRONTEND-SPEC 的三个页面（活动/通知/媒体库）+ 设置放进本表，同时把旧的
+// library/workflow 只摘导航、留路由（那是等 Task ⑧⑨ 新页面填肉的窗口期权宜）。
+// Task ⑪ 旧页面移入 `web/src/_legacy/`，两个旧 tab 从 `route.ts` 的 `Tab` 联合里删除，
+// 它们的老 hash 由 `LEGACY_REDIRECTS` 改写到新页面。于是**两个集合重新合一**：
+// `TABS.map(m => m.id)` 就是 `Tab` 的全部取值。
 //
 // 加一项要动的地方与文件头第一段列的完全一样（Tab 联合 → 本表 → TAB_ICONS → 图标 →
 // AppShell 分支 → i18n 两侧）。**其中 AppShell 分支与 i18n 键漏了都不报错**：前者静默
-// 渲染空白，后者静默显示 key 原文。tabs.contract.test.ts 就是为这两条静默失效存在的。
+// 渲染空白，后者静默显示 key 原文。nav.contract.test.tsx 就是为这两条静默失效存在的。
 import type { Tab } from './route.js'
 
 export type NavLabelKey =

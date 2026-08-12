@@ -2,7 +2,7 @@
 // triage/text.ts 的既有分工：带运行期数字/路径的句子走这里而不是 useT.ts 的扁平表）。
 // 双语（DESIGN.md §7 只豁免 Workflow 区，Settings 正常双语）。
 import type { Lang } from '../i18n/useT.js'
-import { formatDuration } from '../library/text.js'
+import { formatDuration } from '../lib/duration.js'
 import type { RemoveRootResultDTO, DeploySecretDTO } from '../api/types.js'
 
 /** target_languages 未设置时的真实运行期默认值——src/cli/targetLanguages.ts 的
@@ -59,8 +59,10 @@ export function joinDir(parent: string, name: string): string {
   return parent === '/' ? `/${name}` : `${parent}/${name}`
 }
 
-/** 守备目录"何时加入"相对时间——复用 library/text.ts 的 formatDuration（技术单位不翻译，同
- *  triage/text.ts 的 relativeClaimedAgo 先例），只有前后缀跟着语言走。 */
+/** 守备目录"何时加入"相对时间——复用 lib/duration.ts 的 formatDuration（技术单位不翻译，同
+ *  triage/text.ts 的 relativeClaimedAgo 先例），只有前后缀跟着语言走。
+ *  ⚠️ Task ⑪：这个函数原在 `library/text.ts`，随旧 library 页面移入 `_legacy/` 时提到了
+ *  `lib/`——设置页是活着的导航项，不能依赖已下架目录（详见 lib/duration.ts 头注释）。 */
 export function addedAgoLabel(deltaMs: number, lang: Lang): string {
   const d = formatDuration(deltaMs)
   return lang === 'zh' ? `${d} 前加入` : `added ${d} ago`

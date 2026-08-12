@@ -15,7 +15,7 @@ import { render, screen, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { Sidebar } from './Sidebar.js'
 import { TABS } from './tabs.js'
-import { parseShellHash } from './route.js'
+import { parseShellHash, legacyRedirectTarget } from './route.js'
 import { en } from '../i18n/en.js'
 import { zh } from '../i18n/zh.js'
 
@@ -26,27 +26,50 @@ describe('导航结构（Task ⑦ 四项）', () => {
     expect(TABS.map((m) => m.id)).toEqual(['activity', 'notifications', 'media', 'settings'])
   })
 
-  it('旧的 library/workflow **不在导航里**（用户裁决：摘导航但留路由）', () => {
+  it('旧的 library/workflow **不在导航里**', () => {
     const ids = TABS.map((m) => m.id)
     expect(ids).not.toContain('library')
     expect(ids).not.toContain('workflow')
   })
 
-  // ⚠️ 这条与上一条是**互补**的，不是重复：上一条防"忘了摘"，这条防"顺手删了路由"。
-  // 删路由会让 #/workflow（今天唯一能用的活动页）与用户的旧书签一起失效，
-  // 且 activity/ 的 7 处 import 会编译失败。
-  it('旧路由 #/library 与 #/workflow 仍然可直达（Task ⑪ 才下架）', () => {
-    expect(parseShellHash('#/workflow').tab).toBe('workflow')
-    expect(parseShellHash('#/library').tab).toBe('library')
-    // 二级路由也得还在（剧集详情页）
-    expect(parseShellHash('#/library/tmdb%3A123').libraryId).toBe('tmdb:123')
+  // ⚠️ Task ⑪ 改写了这条的语义（不是删掉它）。
+  // 旧版本断言的是「#/library 与 #/workflow 仍可直达」——那是 Task ⑦⑧⑨ 窗口期的裁决
+  // （当时 #/workflow 渲染的旧活动页是仓里唯一能用的活动视图）。旧页面已移入 `_legacy/`，
+  // 现在的裁决是**改写到功能等价的新页面**，所以这条跟着变成"改写落点对不对"。
+  //
+  // 🔴 **不许退化成只断言 tab 值**：id 段必须一起验。旧 `series.id` 与新 `works.id` 字面
+  // 都长成 `tmdb:<n>`，把 id 带过去就是拿旧 id 打新端点（可能显示另一部剧，且不报错）。
+  it('旧 hash 改写到新页面，且**丢弃 id 段**（不许把旧 id 送进新端点）', () => {
+    expect(parseShellHash('#/workflow').tab).toBe('activity')
+    expect(parseShellHash('#/library').tab).toBe('media')
+    // 二级路由：落到媒体库**列表**，mediaWorkId 必须为空
+    const detail = parseShellHash('#/library/tmdb%3A123')
+    expect(detail.tab).toBe('media')
+    expect(detail.mediaWorkId ?? null).toBeNull()
+    const movie = parseShellHash('#/library/movies/tmdb%3A99')
+    expect(movie.tab).toBe('media')
+    expect(movie.mediaWorkId ?? null).toBeNull()
   })
 
-  it('未识别 hash / 根路径落到 activity（不再是 library——它已不在侧栏，落它会没有高亮项）', () => {
+  // 🔴 改写 ≠ 兜底，两者的地址栏行为不同（改写要自愈、兜底不许动地址栏）。
+  // legacyRedirectTarget 是 useShellRoute 里那次 location.replace 的判据，单独钉住它。
+  it('legacyRedirectTarget 只认旧 hash，不认兜底 hash', () => {
+    expect(legacyRedirectTarget('#/library')).toBe('media')
+    expect(legacyRedirectTarget('#/library/tmdb%3A123')).toBe('media')
+    expect(legacyRedirectTarget('#/workflow')).toBe('activity')
+    // 这几个走 DEFAULT_TAB 兜底：内容落到活动页，但**地址栏不许被改写**——
+    // 用户从没访问过一个曾经存在的页面，替他改地址是越权。
+    for (const h of ['', '#/', '#/nonsense', '#/triage', '#/activity', '#/media/tmdb%3A1']) {
+      expect(legacyRedirectTarget(h), `${h} 不该被判为需要改写`).toBeNull()
+    }
+  })
+
+  it('未识别 hash / 根路径落到 activity（不再是 library——它已下架）', () => {
     expect(parseShellHash('').tab).toBe('activity')
     expect(parseShellHash('#/').tab).toBe('activity')
     expect(parseShellHash('#/nonsense').tab).toBe('activity')
-    // 旧书签 #/triage 的兜底路径同样改到 activity
+    // 旧书签 #/triage（spec §5 雪藏的甄别页）同样走兜底。它**不在** LEGACY_REDIRECTS 里：
+    // 那个页面没有功能后继，编一条 triage→某页 的对应关系是无中生有。
     expect(parseShellHash('#/triage').tab).toBe('activity')
   })
 

@@ -2,7 +2,7 @@
 // 必须隔离**的执行守卫。
 //
 // ── 背景 ────────────────────────────────────────────────────────────────
-// `web/src/library/episodeState.ts` 有一套七态 `EpisodeCellState`：
+// `web/src/_legacy/library/episodeState.ts` 有一套七态 `EpisodeCellState`：
 //   covered / hardsub / missing / throttled / error / dashed / partial
 // 长在**旧** `episodes` 表上（经 LibraryOnDiskEpisodeDTO.subStatus）。
 // 本目录用的是后端 mediaLibraryApi.ts 的八态 `EpisodeState`：
@@ -10,6 +10,18 @@
 // 长在**新** `files` 表的 sub_status/needs_subtitle/skip_reason 三列上。
 //
 // 裁决（完整论证见 episodeStateMeta.ts 头注释）：**新页面绝不复用旧的，一行都不 import**。
+//
+// ── 2026-08-12（Task ⑪）：旧页面移入 `_legacy/`，本守卫的路径断言跟着改 ──────────
+// 旧 `library/` `workflow/` `activity/` 三个目录已 git mv 到 `web/src/_legacy/` 下。
+// 本文件里所有写死的 `library/...` 路径**必须跟着改成 `_legacy/library/...`**，否则：
+//  · 两条自检（VFS 里有旧模块 / 阳性对照走得到旧模块）会**变红** —— 这两条是好的，
+//    它们吵闹地失败，等于提醒"该改路径了"。实测确实红了，本次就是被它们叫住的。
+//  · 但最后那条目录级禁令 `m.startsWith('library/')` 会**静默变绿** —— 移走之后再没有
+//    任何模块以 `library/` 开头，禁令恒真。这才是真正危险的一条：它不报错，只是从此
+//    不再保护任何东西。任务书点名的"别让守卫静默失效"就是指它。
+// 现在禁令改为 `_legacy/` 前缀，且**覆盖面反而变大**（原先只禁 library/ 一个目录，
+// 现在把 workflow/ activity/ 一并禁掉——它们同样是下架页面，新页面在其上建依赖
+// 会同样把 `_legacy` 删除卡死）。
 //
 // ── 这个文件的前身是装饰品，以下是它被推翻的经过 ────────────────────────────
 // 旧版本花 18 行头注释论证自己"走 import 图 + 值层面集合运算"。**两句都是假的**：
@@ -21,11 +33,11 @@
 // 它连"import 图里不该出现旧模块"都做不了，因为它自己就在图里。
 //
 // ── 现在这个文件怎么做（真·import 图）──────────────────────────────────────
-// `import.meta.glob(..., { query: '?raw', eager: true })` 把 src 下全部 233 个 .ts/.tsx
-// 的**源文本**取进来（实测可用：episodeStateMeta.ts 取到 2329 字符真内容；⚠️ 注意 CSS 的
+// `import.meta.glob(..., { query: '?raw', eager: true })` 把 src 下全部 .ts/.tsx 的
+// **源文本**取进来（实测可用：episodeStateMeta.ts 取到 2329 字符真内容；⚠️ 注意 CSS 的
 // `?raw` 在 vitest 里恒空串，那是 css:false 处理链的问题，.ts/.tsx 不受影响，见
 // vitest.config.ts:11 记的那个坑），然后从两个入口出发**跟着相对路径 import 递归走闭包**，
-// 断言闭包里不出现 `library/`。
+// 断言闭包里不出现 `_legacy/`。
 //
 // 🔴 **本文件自己不在被检查的图里**：它只把源码当数据读，不 import 任何被测模块的实现。
 // 这正是旧版本做不到的那件事。
@@ -33,8 +45,8 @@
 // 🔴 **防空转**（这份守卫最容易退化成的样子：解析器坏掉 → 闭包为空 → 恒绿）：
 //   · 断言闭包规模与已知成员（入口自身、EpisodeMark、episodeStateMeta、api/types 都得在）
 //   · 断言**未解析的相对 specifier 数为 0**（解析器漏掉一条边 = 那条边后面的子树全逃检）
-//   · **阳性对照**：从 library/SeriesPage.tsx 出发走同一套解析器，必须**能**抓到
-//     library/episodeState.ts。抓不到就说明解析器根本不工作，此时禁令那条的"绿"无意义。
+//   · **阳性对照**：从 _legacy/library/SeriesPage.tsx 出发走同一套解析器，必须**能**抓到
+//     _legacy/library/episodeState.ts。抓不到就说明解析器根本不工作，此时禁令那条的"绿"无意义。
 import { describe, it, expect } from 'vitest'
 import { EPISODE_STATE_LABEL, LEGEND_STATES } from './episodeStateMeta.js'
 import { en } from '../i18n/en.js'
@@ -124,6 +136,14 @@ function importClosure(entries: string[]): { modules: Set<string>; unresolved: s
 
 const ENTRIES = ['media/MediaDetailPage.tsx', 'media/EpisodeCell.tsx']
 
+/** 被禁的目录前缀。Task ⑪ 前是 `library/` 一个；旧页面移入 `_legacy/` 后收敛成这一个
+ *  前缀，且**覆盖面变大**（library + workflow + activity 三个下架目录全在里面）。 */
+const LEGACY_PREFIX = '_legacy/'
+/** 债务①点名的那个具体模块（旧七态）。移动后的新路径。 */
+const LEGACY_EPISODE_STATE = '_legacy/library/episodeState.ts'
+/** 阳性对照的入口——它真的 import 了上面那个模块（SeriesPage.tsx:13）。 */
+const POSITIVE_CONTROL_ENTRY = '_legacy/library/SeriesPage.tsx'
+
 describe('债务①：新页面的 import 图里不许出现旧 library 模块', () => {
   it('解析器自检：源码 VFS 装到了全部 src 文件，且入口都在里面', () => {
     // 空 VFS / 少半个目录都会让下面的禁令恒真。
@@ -132,18 +152,27 @@ describe('债务①：新页面的 import 图里不许出现旧 library 模块',
       expect(SOURCES[e], `${e} 不在源码 VFS 里——glob 模式坏了`).toBeTruthy()
       expect(SOURCES[e]!.length).toBeGreaterThan(500)
     }
-    // 被禁的那个模块**确实存在**——它要是被删/改名了，禁令同样会退化成恒真，
-    // 那时该改的是这份守卫（或它已随 Task ⑪ 完成使命），不是让它继续假绿。
-    expect(SOURCES['library/episodeState.ts'], '旧模块不在了——这份守卫要重新评估').toBeTruthy()
+    // 被禁的那个模块**确实存在**——它要是被删/改名/搬走了，禁令同样会退化成恒真。
+    // 🔴 Task ⑪ 就是被这条叫住的：旧页面 git mv 到 `_legacy/` 后它立刻变红，
+    // 提示"路径断言该跟着改了"。这正是它存在的意义，不要把它降级成软断言。
+    expect(SOURCES[LEGACY_EPISODE_STATE], '旧模块不在这个路径上了——这份守卫要重新评估').toBeTruthy()
+    // 下架目录整体还在（禁令的靶子不是一个文件而是一整个目录）。它哪天真被删干净了，
+    // 这条会红，那时该做的是**删掉整份守卫**（使命完成），不是把断言改软。
+    const legacyModules = Object.keys(SOURCES).filter((m) => m.startsWith(LEGACY_PREFIX))
+    expect(legacyModules.length, '`_legacy/` 下一个文件都没有——守卫已无靶子').toBeGreaterThan(20)
   })
 
-  it('解析器自检（阳性对照）：同一套解析器从 library/SeriesPage.tsx 出发**抓得到** library/episodeState.ts', () => {
+  it('解析器自检（阳性对照）：同一套解析器从 _legacy/library/SeriesPage.tsx 出发**抓得到** episodeState', () => {
     // 🔴 这条是整份文件的地基。SeriesPage.tsx:13 真的写着
     // `import { buildGridCells, tallyGridCells } from './episodeState.js'`。
     // 抓不到 = 解析器不工作 = 下面那条禁令的"绿"是空转。
-    const { modules, unresolved } = importClosure(['library/SeriesPage.tsx'])
-    expect(modules.has('library/episodeState.ts'), '解析器抓不到一条真实存在的 import 边').toBe(true)
+    const { modules, unresolved } = importClosure([POSITIVE_CONTROL_ENTRY])
+    expect(modules.has(LEGACY_EPISODE_STATE), '解析器抓不到一条真实存在的 import 边').toBe(true)
     expect(unresolved, '阳性对照里有解析不出的相对 import').toEqual([])
+    // 🔴 阳性对照还要顺带证明**禁令的判据本身能命中**：这个闭包里的旧模块确实以
+    // `_legacy/` 开头。若哪天有人把前缀常量写错（比如写成 'legacy/' 少个下划线），
+    // 禁令会恒真而这条会红。
+    expect([...modules].filter((m) => m.startsWith(LEGACY_PREFIX)).length).toBeGreaterThan(3)
   })
 
   it('闭包完整：两个入口的依赖闭包无一条相对 import 解析失败，且已知成员都在', () => {
@@ -162,18 +191,42 @@ describe('债务①：新页面的 import 图里不许出现旧 library 模块',
 
   // 🔴 债务①的**真判据**：不是"两套枚举值域不同"（那是恒真的静态事实），
   // 而是"新页面的模块依赖闭包里没有旧模块"。
-  it('MediaDetailPage / EpisodeCell 的依赖闭包**不含 library/episodeState**', () => {
+  it('MediaDetailPage / EpisodeCell 的依赖闭包**不含旧七态模块**', () => {
     const { modules } = importClosure(ENTRIES)
     expect(
-      modules.has('library/episodeState.ts'),
+      modules.has(LEGACY_EPISODE_STATE),
       '新详情页（直接或间接）import 了旧七态模块——债务①的隔离被打破',
     ).toBe(false)
   })
 
-  it('更强：闭包里**一个 library/ 模块都没有**（目录级隔离，见 episodeStateMeta.ts 理由③）', () => {
-    // 旧页面整个随 Task ⑪ 移入 `_legacy`。今天在它任何一个文件上建依赖，那天都要还债。
+  it('更强：闭包里**一个 `_legacy/` 模块都没有**（目录级隔离）', () => {
+    // Task ⑪ 前这条只禁 `library/`；旧页面移入 `_legacy/` 后一并把 workflow/ activity/
+    // 收进禁区——三个都是下架目录，新页面在其中任何一个上建依赖，都会把设计文档 §2.2
+    // 「跑稳后删 `_legacy`」这一步卡死（删了就编译失败）。
     const { modules } = importClosure(ENTRIES)
-    expect([...modules].filter((m) => m.startsWith('library/')).sort()).toEqual([])
+    expect([...modules].filter((m) => m.startsWith(LEGACY_PREFIX)).sort()).toEqual([])
+  })
+
+  // 🔴 Task ⑪ 新增的一条，管的是**反方向**：不只是这两个入口，**整个活代码区**都不许
+  // 依赖 `_legacy/`。上面那条只看媒体库详情页的闭包——有人在设置页/通知页/活动页上接一条
+  // 边，它一条都抓不到，而那同样会把 `_legacy` 删除卡死。
+  //
+  // 本次实测就抓到过一条真的：`settings/text.ts` import `library/text.ts` 的 formatDuration
+  // （已把函数提到 `lib/duration.ts` 解掉）。没有这条断言，那条边会活到"删 _legacy"那天
+  // 才以编译错误的形式爆出来。
+  it('全域方向铁律：任何**活**模块都不许 import `_legacy/`（_legacy 内部互相 import 不管）', () => {
+    const offenders: string[] = []
+    for (const [path, src] of Object.entries(SOURCES)) {
+      if (path.startsWith(LEGACY_PREFIX)) continue // 下架区内部自洽，不管
+      for (const spec of specifiersOf(src)) {
+        if (!spec.startsWith('.')) continue
+        const target = resolveSpec(path, spec)
+        if (target !== null && target.startsWith(LEGACY_PREFIX)) {
+          offenders.push(`${path} -> ${target}`)
+        }
+      }
+    }
+    expect(offenders, '活模块依赖了已下架目录——`_legacy` 将无法删除').toEqual([])
   })
 })
 
@@ -205,7 +258,8 @@ describe('新八态 vs 旧七态：值域对不齐（语义佐证，非隔离守
     for (const key of Object.values(EPISODE_STATE_LABEL)) {
       expect(key.startsWith('media_state_'), `${key} 不在 media_state_ 命名空间里`).toBe(true)
     }
-    // 旧图例键还活着且不重名（Task ⑪ 才随旧页面删）
+    // 旧图例键还活着且不重名（它随 `_legacy` 最终删除时才走——那是独立裁决，见
+    // 设计文档 §2.2「跑稳一个巡检周期后删」）
     expect(en.library_legend_covered).toBeTruthy()
     expect(en.library_legend_covered).not.toBe(en.media_state_covered)
   })

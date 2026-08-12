@@ -152,25 +152,75 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
   })
 })
 
-describe('AppShell：旧路由仍然渲染真页面（Task ⑪ 才下架）', () => {
-  it('#/workflow 仍渲染活动页（ActivityPage），不是占位壳', async () => {
+describe('AppShell：旧 hash 改写到新页面（Task ⑪ 下架）', () => {
+  // ⚠️ 这个 describe 换了语义，不是删了重写。Task ⑦⑧⑨ 期间它断言的是「#/workflow 与
+  // #/library 仍渲染旧真页面」——那时旧活动页是仓里唯一能用的活动视图。旧页面已移入
+  // `web/src/_legacy/`，现在的裁决是改写到功能等价的新页面：
+  //   #/workflow → 活动页 ; #/library* → 媒体库**列表**（丢弃 id 段）
+  //
+  // 🔴 为什么不是"重定向到 `_legacy` 页面"：设计文档教训十已裁决不许——旧 library 页读
+  // `series` 表（生产 **0 行**），把老书签送过去 = 稳定地什么都没有，比 404 更难排查。
+
+  it('#/workflow 渲染**新**活动页（workbench），不是旧活动页也不是空白', async () => {
     location.hash = '#/workflow'
     renderShell()
     const main = await screen.findByRole('main')
-    // 占位壳的标记绝不该出现在这里——出现了就说明有人把 workflow 也改成占位页，
-    // 那会让今天唯一能用的活动视图消失。
+    // 新活动页的标志物：两个 tab 的 tablist（R-F1，与 #/activity 那条同一判据）。
+    // 旧活动页没有 tablist，所以这条也把"改写没生效、还在渲染旧页面"一并挡住。
     await waitFor(() => {
-      expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
+      expect(within(main).getByRole('tablist', { name: en.wb_tablist_label })).toBeInTheDocument()
     })
+    expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
   })
 
-  it('#/library 仍渲染海报墙（SeriesGrid 的空库文案），不是占位壳', async () => {
+  it('#/library 渲染**新**媒体库列表，且旧海报墙文案绝不在场', async () => {
     location.hash = '#/library'
     renderShell()
     const main = await screen.findByRole('main')
     await waitFor(() => {
-      expect(within(main).getByText(en.library_empty_title)).toBeInTheDocument()
+      expect(within(main).getByText(en.media_empty_title)).toBeInTheDocument()
     })
+    // 🔴 反向断言：旧海报墙的空库文案（library_empty_title）在场 = 改写没生效、
+    // 或者有人把 `_legacy` 页面又接回了外壳。这条是本 task 的下架回归锁。
+    expect(within(main).queryByText(en.library_empty_title)).toBeNull()
     expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
+  })
+
+  it('#/library/:id **不**打开详情页——落到列表（旧 id 打新端点会静默串页）', async () => {
+    location.hash = '#/library/tmdb%3A123'
+    renderShell()
+    const main = await screen.findByRole('main')
+    // 落到空列表态 = id 段真的被丢了。若 id 被带进 mediaWorkId，这里渲染的是详情页，
+    // media_empty_title 不会在场。
+    await waitFor(() => {
+      expect(within(main).getByText(en.media_empty_title)).toBeInTheDocument()
+    })
+  })
+
+  it('地址栏自愈：旧 hash 被就地改写成新地址（老书签不会永远停在旧地址上）', async () => {
+    location.hash = '#/workflow'
+    renderShell()
+    await screen.findByRole('main')
+    await waitFor(() => expect(location.hash).toBe('#/activity'))
+  })
+
+  // 🔴 自愈的**反向边界**：兜底 ≠ 改写，地址栏不许被动。
+  // 变异实测（把 useShellRoute 里的 `legacyRedirectTarget(...)===null 就 return` 换成
+  // 无条件 `location.replace('#/'+parseShellHash(hash).tab)`）时，nav.contract 的
+  // legacyRedirectTarget 纯函数用例**照样全绿**——那条只测判据，测不到副作用。
+  // 这两条补的就是那个洞：把内容落点与地址栏行为分开钉。
+  it.each([
+    ['#/nonsense', '#/nonsense'],
+    ['#/triage', '#/triage'],
+  ])('兜底 hash %s 内容落到活动页，但地址栏**原样不动**（替用户改地址是越权）', async (start, expected) => {
+    location.hash = start
+    renderShell()
+    const main = await screen.findByRole('main')
+    // 内容确实落到活动页（兜底生效）
+    await waitFor(() => {
+      expect(within(main).getByRole('tablist', { name: en.wb_tablist_label })).toBeInTheDocument()
+    })
+    // 但地址栏没被改写
+    expect(location.hash).toBe(expected)
   })
 })

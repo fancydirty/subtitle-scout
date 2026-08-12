@@ -13,8 +13,7 @@ import { TABS } from './tabs.js'
 import type { Tab } from './route.js'
 import { api, UNAUTHORIZED_EVENT } from '../api/client.js'
 import {
-  LibraryIcon, WorkflowIcon, SettingsIcon,
-  ActivityIcon, NotificationsIcon, MediaIcon,
+  SettingsIcon, ActivityIcon, NotificationsIcon, MediaIcon,
 } from './NavIcons.js'
 
 /** 登出：POST /auth/logout 清 cookie，无论成败都派发 scout:unauthorized——AuthGate 据此重探
@@ -31,17 +30,15 @@ interface Props {
 }
 
 /** tab → 图标组件映射（2026-08-06：极简点线风格）。
- *  **`Record<Tab, …>` 是穷尽的**，而 Tab 联合里除了导航四项还有 library/workflow 两个
- *  旧路由（Task ⑦ 只把它们摘出 TABS，没删路由——见 route.ts 头注释）。它们的键必须留着，
- *  否则 TS 报缺键；侧栏遍历的是 TABS，所以留着也不会渲染出来。这不是死代码：Task ⑪ 删
- *  路由时这两个键与图标组件一起走。 */
+ *  **`Record<Tab, …>` 是穷尽的**——少一个键 TS 就报错，多一个键也报错（多余属性）。
+ *  Task ⑪ 起 `Tab` 就是导航四项（旧 library/workflow 随页面移入 `_legacy/`，它们的
+ *  两个键与 import 在本次一并删除；`NavIcons.tsx` 里的 LibraryIcon/WorkflowIcon 组件
+ *  本体保留——同 TriageIcon 的既有处置，图标是无依赖的纯 SVG，重启用时不必重画）。 */
 const TAB_ICONS: Record<Tab, React.ComponentType> = {
   activity: ActivityIcon,
   notifications: NotificationsIcon,
   media: MediaIcon,
   settings: SettingsIcon,
-  library: LibraryIcon,
-  workflow: WorkflowIcon,
 }
 
 export function Sidebar({ tab }: Props) {
