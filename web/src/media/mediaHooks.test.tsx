@@ -37,7 +37,21 @@ describe('useMediaLibrary', () => {
   })
 
   it('成功 → data 是后端数组原文，error 为 null', async () => {
-    const rows = [{ workId: 'tmdb:1' }]
+    // ⚠️ 这一行必须是**契约完整**的行（六个必填键齐备）。原先这里写的是
+    // `[{ workId: 'tmdb:1' }]`——一个只有一个键的占位。API 边界上了
+    // MEDIA_LIBRARY_LIST_SHAPE 之后那个占位会被判违约（它确实少五个键），
+    // 用例随之变红。
+    //
+    // 🔴 正确的处置是**补全 fixture，不是放宽契约**：本用例的意图是"原文透传、
+    // 不做任何变形"，那个意图完全不要求行是残缺的。放宽契约去迁就一个偷懒的
+    // 占位，等于让线上少五个键的响应照样通过——那才是假修复。
+    // 补全之后这条用例的意图不变，还顺带多守了一条：透传的是**完整的**行。
+    const rows = [{
+      workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: null, year: 2008,
+      posterPath: null, mediaType: 'tv',
+      expectedEpisodeCount: 62, onDiskEpisodeCount: 62,
+      missingEpisodeCount: 0, subtitledEpisodeCount: 62,
+    }]
     probe(rows)
     const { result } = renderHook(() => useMediaLibrary())
     await waitFor(() => expect(result.current.loading).toBe(false))

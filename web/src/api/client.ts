@@ -17,6 +17,17 @@ import type {
   ActivityDTO,
   FoundGroupDTO,
 } from './types.js'
+import { checkShape, ContractViolationError, arr, type Shape } from './contract.js'
+import {
+  HEALTH_SHAPE, MEDIA_LIBRARY_ITEM_SHAPE, MEDIA_LIBRARY_DETAIL_SHAPE,
+  ACTIVITY_SHAPE, FOUND_GROUP_SHAPE, SETUP_STATUS_SHAPE,
+} from './contracts.js'
+
+/** 两个列表端点的响应体是**数组**——声明写的是"一行"，这里包成数组形状。
+ *  在这里包而不是在 contracts.ts 里直接写 `arr(...)`：那边的每个 const 与一个 DTO
+ *  一一对应（`MediaLibraryItemDTO` 就是一行），包不包数组是**端点**的事不是 DTO 的事。 */
+const MEDIA_LIBRARY_LIST_SHAPE: Shape = arr(MEDIA_LIBRARY_ITEM_SHAPE)
+const NOTIFICATIONS_SHAPE: Shape = arr(FOUND_GROUP_SHAPE)
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
  *  触发一次 auth/status 重探，自动把界面切回 LoginPage——避免每个数据 hook 各自处理 401。 */
@@ -85,14 +96,62 @@ function notifyIfUnauthorized(status: number): void {
   }
 }
 
-async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+/** 契约违约的处置：**抛错，走每个 hook 已有的 error 分支**（不降级、不放行）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 三种处置的取舍（这是本层的核心设计，不是实现细节）
+ * ══════════════════════════════════════════════════════════════════════════════
+ * ① **放行 + 上报** —— 直接否掉。这个仓库**没有前端错误上报通道**（PageBoundary 的
+ *    「刻意不上报」一节已经确立），所谓"上报"实际只剩 `console.warn`——用户看不见。
+ *    于是它等价于纯放行：用户看到半截 UI（`NaN` 集、空白标签、假的"引擎没开"横幅），
+ *    而系统认为一切正常。这正是**病 B（静默撒谎）**，是本层要消灭的那个东西本身。
+ *
+ * ② **降级成"没数据"** —— 同样否掉，理由更硬。把契约违例当成空结果，就是把
+ *    「接口坏了」说成「真的没有数据」。本仓 §4.4 已有明令：**错误态绝不显示空态文案**
+ *    （`MediaLibraryPage`/`NotificationsPage`/`ActivityPage` 三处各写了一遍
+ *    "「库里没有东西」与「我没能问到」是两件事"）。在 API 边界做这个降级，等于在
+ *    三个页面辛苦维持的诚实性上游把它统一破坏掉。
+ *
+ * ③ **抛错** —— 选它。抛出去之后落点有两个，**都已经存在，不需要新建任何机制**：
+ *    · 数据 hook（`useHealth`/`useMediaLibrary`/…）的 `.catch` → `error` 字符串 →
+ *      页面走它**已经写好**的错误态：一句人话 + 一个"重试"按钮。侧栏顶栏全在。
+ *    · 渲染期消费点（`SettingsTabsPage.readProviders`）→ `PageBoundary` → 那一页降级。
+ *
+ * 上一轮确立的纪律：「假修复（`?.` 静默到底）比白屏更坏——白屏至少是诚实的」。
+ * ③ 比白屏还好一档：它不是白屏，是**一句说得出原因的错误态**，且降级范围恰好等于
+ * 真正坏掉的那一部分。
+ *
+ * ── 一条重要的边界：这**不会**把整站打崩 ──────────────────────────────────
+ * 全站唯一"失败即整站不可用"的请求是 `/api/v2/auth/status`（App 层鉴权门）——
+ * 而它**刻意不在名单里**（见 contracts.ts 的排除理由）。名单里 6 个端点的失败，
+ * 每一个都落在某一页的 error 态里，外壳始终在场。
+ */
+function assertShape(path: string, body: unknown, shape: Shape | undefined): void {
+  if (shape === undefined) return
+  const bad = checkShape(body, shape)
+  if (bad) throw new ContractViolationError(path, bad)
+}
+
+/**
+ * `shape` 给了就校验，不给就是原来的纯 `as T`（**60+ 个非致命 DTO 保持零开销**）。
+ *
+ * 🔴 为什么校验放在 `get()` 里、而不是各个 `api.*` 方法各自校验：
+ * 放这里它是**一道门**——新增端点时"要不要校验"是一个显式的选择（传不传第二个参数），
+ * 而不是一件需要记得去做的事。放在调用方就会退化成"想起来的那几个加了"。
+ */
+async function get<T>(path: string, signal?: AbortSignal, shape?: Shape): Promise<T> {
   const res = await fetch(withToken(path), { signal })
   if (!res.ok) {
     notifyIfUnauthorized(res.status)
     const body: unknown = await res.json().catch(() => null)
     throw new Error(errorMessage(path, res.status, body))
   }
-  return res.json() as Promise<T>
+  // ⚠️ 拿 `unknown` 接住，**先校验再 as T**。写成 `const b = await res.json() as T`
+  // 再校验的话，中间那一步已经把类型谎报给编译器了——后面的代码会以为 b 是 T，
+  // 而校验还没跑。顺序在这里不是风格问题。
+  const body: unknown = await res.json()
+  assertShape(path, body, shape)
+  return body as T
 }
 
 /** 非 GET 请求 helper：POST/PUT/DELETE 共用同一套响应体解析 + 错误消息抽取口径——错误响应体是
@@ -134,7 +193,8 @@ export const api = {
     get<RunHistoryDTO[]>(`/api/v2/runs?offset=${offset}&limit=${limit}`, signal),
   reconcileAll: () => post<ReconcileAllResultDTO>('/api/v2/reconcile-all'),
   // ---------- Spec A 启动面（BootstrapGate / wizard / Settings Providers 区共用） ----------
-  setupStatus: (signal?: AbortSignal) => get<SetupStatusDTO>('/api/v2/setup/status', signal),
+  // 契约①：providers.subhd.enabled 是**三层解引用**——上一轮整页白屏的那一处。
+  setupStatus: (signal?: AbortSignal) => get<SetupStatusDTO>('/api/v2/setup/status', signal, SETUP_STATUS_SHAPE),
   setupProviders: (signal?: AbortSignal) => get<ProvidersDTO>('/api/v2/setup/providers', signal),
   putSecret: (name: SecretName, value: string) =>
     put<PutSecretResultDTO>('/api/v2/settings/secrets', { name, value }),
@@ -243,27 +303,34 @@ export const api = {
   // 事件之后靠它纠正，这正是后端设立该端点的理由（server.ts 的 F-6 论证）。
   // ⚠️ 不跑 watch 时它**照常 200**（只是 current 为 null），与隔壁 /api/v2/events 的 503
   // 刻意不同：另外三个字段全长在库上，与事件总线无关。
-  health: (signal?: AbortSignal) => get<HealthDTO>('/api/v2/health', signal),
+  // 契约②：全局壳的判决源——workPermitted 决定横幅说什么，roots[] 决定守备目录提示。
+  // 这两个字段缺席时**不会崩，会撒谎**（falsy 兜底 → 假的"引擎没开"/挂载故障不显示）。
+  health: (signal?: AbortSignal) => get<HealthDTO>('/api/v2/health', signal, HEALTH_SHAPE),
 
   // Task ⑧：媒体库页（R-F2 / R-F5）。**刻意不复用 `library`/`librarySeriesDetail`**——
   // 那两个端点长在旧 series/episodes/movies 表上（生产 series 0 行，读不出任何东西），
   // 这两个长在 works/files/tmdb_seasons 上。两套并存直到 Task ⑪ 下架旧的。
-  mediaLibrary: (signal?: AbortSignal) => get<MediaLibraryItemDTO[]>('/api/v2/mediaLibrary', signal),
+  // 契约③：媒体库页主数据源——四个计数字段参与算术，缺一个就出 NaN/假的"齐全"。
+  mediaLibrary: (signal?: AbortSignal) =>
+    get<MediaLibraryItemDTO[]>('/api/v2/mediaLibrary', signal, MEDIA_LIBRARY_LIST_SHAPE),
   // workId 含冒号（'tmdb:1396'）。encodeURIComponent 编码后由 router.ts 的 decodeIdSegment
   // 解回——同 librarySeriesDetail 的既有拼法（router.ts 注释明写两条同形、复用同一套
   // isSafeId/decodeIdSegment）。⚠️ 不编码的话冒号本身虽合法，但作品 id 空间将来若出现
   // 需要转义的字符就会静默 404。
   mediaLibraryDetail: (workId: string, signal?: AbortSignal) =>
-    get<MediaLibraryDetailDTO>(`/api/v2/mediaLibrary/${encodeURIComponent(workId)}`, signal),
+    // 契约④：detail.data.work.title 两层解引用 + seasons.map——两条都是崩页形态。
+    get<MediaLibraryDetailDTO>(`/api/v2/mediaLibrary/${encodeURIComponent(workId)}`, signal, MEDIA_LIBRARY_DETAIL_SHAPE),
 
   // Task ⑨：活动页排队段（R-F13）。**只给"还有谁在等 + 它们的图"**——
   // total/index/当前在跑的是谁一律不从这里来（见 api/types.ts 的 ActivityDTO 注释与
   // 后端 activityApi.ts 头注释对「health 不返回 queue」那条裁决的论证）。
-  activity: (signal?: AbortSignal) => get<ActivityDTO>('/api/v2/activity', signal),
+  // 契约⑤：两个队列缺席会被 `?? []` 兜成"没有排队"——把接口坏了说成真没数据。
+  activity: (signal?: AbortSignal) => get<ActivityDTO>('/api/v2/activity', signal, ACTIVITY_SHAPE),
 
   // Task ⑩：通知页（R-F3）。**通知列表的唯一数据源**——SSE 的 `found` 事件不进列表
   // （server.ts:814 的分工裁决：recordFound 是幂等刷新，SSE 每次装盘都发，两边条目数
   // 天然不等；拿 SSE 往列表里插，那个差值就是用户眼前的重复条目）。
   // 无分页无上限（实测 3600 行 → 300 组 / 39.6 KiB / 4ms，当前量级无害）。
-  notifications: (signal?: AbortSignal) => get<FoundGroupDTO[]>('/api/v2/notifications', signal),
+  // 契约⑥：latestAt 缺席 → 分桶 NaN + `NaN:NaN` 时刻；非数组 → .map 崩。
+  notifications: (signal?: AbortSignal) => get<FoundGroupDTO[]>('/api/v2/notifications', signal, NOTIFICATIONS_SHAPE),
 }

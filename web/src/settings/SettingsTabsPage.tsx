@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import type { SettingsDTO, ProviderRowDTO, SetupStatusDTO } from '../api/types.js'
 import { useSettings, useDeploySettings, useRoots, useSetupProviders, useSetupStatus } from '../api/hooks.js'
+import { isContractViolation } from '../api/contract.js'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs.js'
 import { Badge } from '../components/ui/badge.js'
 import { BehaviorSection } from './BehaviorSection.js'
@@ -29,14 +30,42 @@ import { SystemSection } from './SystemSection.js'
  *  跑去重填一遍）。把白屏换成静默错误答案不是修复。
  *
  *  正确的分档：
- *   - `data == null`（未加载完 / 请求失败）→ **合法缺席**，返回 null，调用方按"还不知道"降级。
+ *   - `data == null` **且** 不是契约违例（未加载完 / 网络失败）→ **合法缺席**，返回 null，
+ *     调用方按"还不知道"降级。
+ *   - `data == null` **但** error 是契约违例 → 见下方 §两条路，同样要抛。
  *   - `data` 在但 `providers` 缺席/形状不对 → **契约违例**，抛一个说得清是什么事的错误，
  *     由 AppShell 的 PageBoundary 接住 → 这一页降级，侧栏顶栏都还在。
  *
  *  比起原来那句裸解引用抛出的 `Cannot read properties of undefined (reading 'subhd')`，
- *  这条消息在 console 里直接指认是**谁**违约（后端 setup/status）、少了什么。 */
-function readProviders(data: SetupStatusDTO | null): SetupStatusDTO['providers'] | null {
-  if (data == null) return null
+ *  这条消息在 console 里直接指认是**谁**违约（后端 setup/status）、少了什么。
+ *
+ *  ── §两条路：为什么加了 API 边界校验之后**这个函数仍然不能删** ────────────────
+ *  `api/contract.ts` 现在会在 `get()` 里先校验一遍 `SETUP_STATUS_SHAPE`，于是违约有了
+ *  **两条**可能的到达路径，两条都得堵：
+ *
+ *   路径 A（边界拦下）：`get()` 抛 → `useSetupStatus` 的 catch → `error` 字符串，
+ *     而 `data` 保持 **null**。⚠️ 如果这里只看 `data == null` 就返回 null，那条违约会被
+ *     当成"还没加载完"**静静吞掉**，badge 渲染 0/8——一句谎话（"一个源都没配"），
+ *     而真相是"不知道"。**这是实测撞出来的**：只加边界校验、不改这里时，
+ *     `AppShell.boundary.test.tsx` 立刻变红，因为原本诚实的页面降级退化成了静默 0/8。
+ *     故这里读 `error` 并用 `isContractViolation` 把它与网络失败分开——网络失败照旧
+ *     降级（那是正常路径，daemon 没起时天天发生），只有违约才抛。
+ *
+ *   路径 B（边界放过、消费点发现）：契约声明是**只声明致命路径上的键**的（见
+ *     contracts.ts 的论证），`SETUP_STATUS_SHAPE` 只覆盖 subhd/zimuku 两支。将来这里
+ *     要读第三支时，边界不认识它，仍然只有这个函数能发现。
+ *
+ *  两道**不是冗余**：A 道知道"形状不对"，B 道知道"`null` 的 data 在语义上意味着什么"
+ *  ——后者是消费点才有的知识，契约层永远不会有。 */
+function readProviders(
+  data: SetupStatusDTO | null,
+  error: string | null,
+): SetupStatusDTO['providers'] | null {
+  if (data == null) {
+    // 路径 A：后端违约（边界拦下）。**不许**与"还没加载完"合流——见上方论证。
+    if (isContractViolation(error)) throw new Error(error ?? '')
+    return null
+  }
   const p: SetupStatusDTO['providers'] | undefined = data.providers
   if (p == null || p.subhd == null || p.zimuku == null) {
     throw new Error(
@@ -68,7 +97,7 @@ export function SettingsTabsPage() {
   // ⚠️ 这里读的是 readProviders 的返回值，**不是**再解引用一次 setupStatus.data。
   // 契约违例在上面那个函数里已经被判成 throw，走到这里的 setupProviders 只有两态：
   // null（还没到）或完整。下面 badge 与卡片区共用同一个值，形状判断只做一次。
-  const setupProviders = readProviders(setupStatus.data)
+  const setupProviders = readProviders(setupStatus.data, setupStatus.error)
 
   // badge n/8 实算（spec §2 已配置判据）
   const keyedConfigured = (r: ProviderRowDTO) => r.secrets.length > 0 && r.secrets.every((s) => s.set)
