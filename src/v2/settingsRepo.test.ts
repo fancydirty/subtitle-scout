@@ -4,6 +4,7 @@ import { openDb } from './db.js'
 import type { ScoutDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 import { SettingsRepo } from './settingsRepo.js'
+import { SECRET_NAMES } from './secrets.js'
 
 let db: ScoutDb
 let lib: LibraryRepo
@@ -296,8 +297,11 @@ describe('SettingsRepo · secret:* 键空间（spec A §4.1）', () => {
   it('listSecretMeta 只回 set/source/masked，永不回明文', () => {
     settings.setSecret('JIMAKU_API_KEY', 'jimaku-plain-key-123', NOW)
     const meta = settings.listSecretMeta({ TMDB_API_KEY: 'env-tmdb-key-456' })
-    // 12 = SECRET_NAMES.length（阶段 0 扩入 TRANSLATE_* 三凭证，spec §8.2）。
-    expect(meta).toHaveLength(12)
+    // ⚠️ 绑 SECRET_NAMES.length 而不是硬编码数字（原先写死 12，c582571 加了三个
+    // ZIMUKU_VISION_* 键之后这条就一直红着——那是测试过时，不是 bug）。
+    // 这条断言要守的是"**每个**白名单键都出一行 meta"，不是"恰好某个数字"；
+    // 键数本身由 secrets.test.ts 那条枚举断言把关，在这里再硬编码一次就是第二处定义。
+    expect(meta).toHaveLength(SECRET_NAMES.length)
     expect(meta.find((m) => m.name === 'JIMAKU_API_KEY'))
       .toEqual({ name: 'JIMAKU_API_KEY', set: true, source: 'db', masked: 'jim••••123' })
     expect(meta.find((m) => m.name === 'TMDB_API_KEY'))

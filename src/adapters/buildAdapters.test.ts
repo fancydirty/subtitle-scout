@@ -68,13 +68,18 @@ describe('buildAdapters', () => {
     expect(adapters.some(a => a.name === 'jimaku')).toBe(false)
   })
 
-  it('skips zimuku with a warning when ZIMUKU_ENABLED=true but LLM_* env is missing (captcha solving needs a multimodal LLM)', async () => {
+  // ⚠️ 这条用例原本叫「skips zimuku … LLM_* env is missing」，断言 `toEqual([])` + 一条 warn。
+  // `c582571`（zimuku 验证码改成**优先模板匹配**、视觉 LLM 降级为可选兜底）之后那个前提就
+  // 不成立了，于是它一直红着（接手时 7 条既有失败之一）。**是测试过时，不是 bug。**
+  // 现在守的是改动后的真实契约：没有视觉配置照样入列（模板匹配是 0 token 的主路径），
+  // 视觉缺席只影响"模板未命中时能不能兜底"，不影响适配器在不在。
+  it('zimuku：flag 开、无任何视觉配置 → **照常入列**（模板匹配是主路径，不需要 LLM）', async () => {
     process.env.ZIMUKU_ENABLED = 'true'
     const warns: string[] = []
     const adapters = await buildAdapters(() => {}, undefined, (m) => warns.push(m))
-    expect(adapters.map(a => a.name)).toEqual([])
-    expect(warns).toHaveLength(1)
-    expect(warns[0]).toContain('zimuku')
+    expect(adapters.map(a => a.name)).toEqual(['zimuku'])
+    // 也不该再为此 warn——它不是降级，是正常形态
+    expect(warns).toEqual([])
   })
 
   it('forwards api_call events to the supplied emit callback', async () => {
@@ -109,24 +114,30 @@ describe('buildAdapters · cfg resolver（spec A §4.3：DB 供凭据）', () =>
     expect(adapters.map(a => a.name)).toEqual(['opensubtitles'])
   })
 
-  it('zimuku：flag 开 + LLM 三件套齐 → 入列', async () => {
+  it('zimuku：flag 开 + ZIMUKU_VISION_* 三件套齐 → 入列（视觉兜底可用）', async () => {
     const adapters = await buildAdapters(() => {}, cfgOf(
-      { LLM_BASE_URL: 'https://llm.example/v1', LLM_API_KEY: 'k', LLM_MODEL: 'm' },
+      {
+        ZIMUKU_VISION_BASE_URL: 'https://llm.example/v1',
+        ZIMUKU_VISION_API_KEY: 'k',
+        ZIMUKU_VISION_MODEL: 'm',
+      },
       { ZIMUKU_ENABLED: 'true' },
     ))
     expect(adapters.map(a => a.name)).toEqual(['zimuku'])
   })
 
-  it('zimuku：flag 开但 LLM 缺 → 跳过 + warn 一行（不再 throw）', async () => {
+  // 同上：`c582571` 之后"视觉三件套不齐"不再是跳过的理由。
+  // 这里刻意只给一件（BASE_URL 缺 KEY/MODEL）——半齐的配置**不许**被当成齐，
+  // 但也**不许**因此把整个适配器踢掉（模板匹配那条主路径与视觉配置无关）。
+  it('zimuku：视觉三件套只齐一件 → 仍然入列（半齐 ≠ 齐，但也 ≠ 不能用）', async () => {
     const warns: string[] = []
     const adapters = await buildAdapters(
       () => {},
-      cfgOf({ LLM_API_KEY: 'k' }, { ZIMUKU_ENABLED: 'true' }),
+      cfgOf({ ZIMUKU_VISION_API_KEY: 'k' }, { ZIMUKU_ENABLED: 'true' }),
       (m) => warns.push(m),
     )
-    expect(adapters.map(a => a.name)).toEqual([])
-    expect(warns).toHaveLength(1)
-    expect(warns[0]).toContain('zimuku')
+    expect(adapters.map(a => a.name)).toEqual(['zimuku'])
+    expect(warns).toEqual([])
   })
 
   it('subhd：flag 来自 cfg provider:SUBHD_ENABLED', async () => {

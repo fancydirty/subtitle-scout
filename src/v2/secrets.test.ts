@@ -6,16 +6,22 @@ import {
 } from './secrets.js'
 
 describe('SECRET_NAMES 白名单（spec §4.1）', () => {
-  // 9 而非 10：spec §4.1 散文写"10 个名字"但枚举只列了 9 个，**以枚举为准**（下面这份列表
-  // 就是 spec 的枚举原文）。这是一处已知的 spec 笔误，不要"补"第 10 个名字出来。
-  it('恰为 12 键（含 TRANSLATE_* 三凭证，spec §8.2）', () => {
+  // 数字的沿革（每次改这里都要把上一档留着，否则下一个人会以为"12"是凭空来的）：
+  //   9  → spec §4.1 的枚举原文（散文写"10 个名字"但只列了 9 个，**以枚举为准**，是 spec 笔误）
+  //   12 → 29651cd 加 TRANSLATE_* 三凭证（spec §8.2）
+  //   15 → c582571 加 ZIMUKU_VISION_* 三凭证（zimuku 的视觉兜底配置）
+  //
+  // ⚠️ c582571 加了三个键**但没改这条断言**，于是它红了很久（接手时的 7 条既有失败之一）。
+  // 那不是 bug 是**测试过时**：白名单本身是对的，只是这条断言还停在上一档。
+  it('恰为 15 键（含 TRANSLATE_* 与 ZIMUKU_VISION_* 各三凭证）', () => {
     expect([...SECRET_NAMES].sort()).toEqual([
       'ASSRT_TOKEN', 'JIMAKU_API_KEY', 'LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL',
       'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_PASSWORD', 'OPENSUBTITLES_USERNAME',
       'TMDB_API_KEY',
       'TRANSLATE_API_KEY', 'TRANSLATE_BASE_URL', 'TRANSLATE_MODEL',
+      'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_MODEL',
     ].sort())
-    expect(SECRET_NAMES).toHaveLength(12)
+    expect(SECRET_NAMES).toHaveLength(15)
   })
   it('isSecretName 放行白名单、拒绝其他', () => {
     expect(isSecretName('TMDB_API_KEY')).toBe(true)
