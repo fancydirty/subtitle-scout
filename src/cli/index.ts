@@ -468,22 +468,31 @@ async function cmdWatch() {
 
   // spec A §4.2：ingest pass 经 holder 现取——setup 模式下 ingestPass 为 null，注入兜底空
   // 实现（workPermitted 闸保证它实际不会被调到）；点火后同一闭包自然吃到新 pass。
+  // 2026-08-13：`jobs` 与 `now` 已从 deps 移除——ingestTrigger 不再写 jobs 表（它写的那条
+  // taskType='orchestrate' 行全仓无处理分支，永远不可能被执行，见该模块头注释的裁决段）。
   const ingestTrigger = makeIngestTrigger({
     ingest: () => clients.current.ingestPass?.() ?? Promise.resolve(EMPTY_INGEST_RESULT),
-    jobs, now: () => Date.now(), log,
+    log,
   })
 
   // ⚠️ 原本这里有一个 140 行的 `const handleWorkerTask = async (job: Job) => {...}` 闭包，
   // **生产零调用者**。2026-08-13 死代码清理把它整体提取到 `./handleWorkerTask.ts`，
   // 函数体逐字未改，15 个闭包捕获变量收进显式 deps 参数（字段名与这里的局部名逐字相同）。
   //
-  // 为什么是提取而不是删除或原地保留（三条路的完整权衡、零调用者的事实链、以及它今天
-  // 造成的两个真实后果——ingestTrigger 仍在写无人认领的 orchestrate 行、dashboard 的
-  // 手动重派按钮语义为空）全部写在那个文件的头注释里，不在这里重抄。
+  // 为什么是提取而不是删除或原地保留（三条路的完整权衡、零调用者的事实链、可证伪的删除
+  // 判据）全部写在那个文件的头注释里，不在这里重抄。
+  //
+  // ⚠️ 这里原本还写着"它造成的两个真实后果"。2026-08-13 裁决后这句需要更新：
+  //   · ingestTrigger 写无人认领的 orchestrate 行 —— **已修**（入队删除；那行即便队列
+  //     复活也不可执行，全仓无 orchestrate 处理分支）。
+  //   · dashboard 手动重派按钮语义为空 —— 更准确的说法是**按钮已不在活 UI 里**
+  //     （RerunDialog 随旧活动页移入 `web/src/_legacy/`）；端点仍在且仍会写行，
+  //     刻意保留，判据与 handleWorkerTask 同进退。
   //
   // 一句话版本：`export` 出去之后，"零调用者"这个事实从"由一段会过期的注释承载"变成了
-  // "由 `rg \"from './handleWorkerTask.js'\" src` 无输出承载"——机器可查，且恢复接线
-  // 那天的那次 import 就是接线动作本身，在 diff 里藏不住。
+  // **一条会红的断言**——`src/cli/handleWorkerTask.orphan.test.ts` 扫全部生产源码（剥注释
+  // 后）里对它的 import，零个才绿。谁哪天把它接回去，那条断言当场红，并在失败信息里
+  // 指名要重读哪两处裁决。
   //
   // 连带效果（提取后由编译器自动指认，不是手工找的）：本文件顶部有 5 个 import 的**唯一**
   // 消费者就是这个函数——`runFindSubtitleWorkerTask` / `runRealignWorkerTask` /

@@ -11,12 +11,10 @@ function ingestResult(over: Partial<IngestResult> = {}): IngestResult {
 describe('makeIngestTrigger (去 Jellyfin 化 T4：selfScanTrigger 两信号 refresh-bridge 的替代)', () => {
   let jobs: JobsRepo
   let db: ScoutDb
-  let now: number
 
   beforeEach(() => {
     db = openDb(':memory:')
     jobs = new JobsRepo(db)
-    now = Date.now()
   })
 
   // 清算波 R-6（A-F8）：jobsRepo.listByState 已随死器官处决（production 零调用点）——直接换成
@@ -29,8 +27,6 @@ describe('makeIngestTrigger (去 Jellyfin 化 T4：selfScanTrigger 两信号 ref
   function makeDeps(over: Partial<IngestTriggerDeps> = {}): IngestTriggerDeps {
     return {
       ingest: vi.fn(async () => ingestResult()),
-      jobs,
-      now: () => now,
       log: () => {},
       ...over,
     }
@@ -47,80 +43,107 @@ describe('makeIngestTrigger (去 Jellyfin 化 T4：selfScanTrigger 两信号 ref
     expect(out.ingest).toEqual(result)
   })
 
-  it('changed=false → no orchestrate worker_task enqueued', async () => {
-    const tick = makeIngestTrigger(makeDeps({ ingest: async () => ingestResult({ changed: false }) }))
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 2026-08-13「jobs 队列泄漏」裁决的回归锁
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 本组三条原本断言的是**相反**的事（changed=true 就该入队一行 orchestrate、二次触发
+  // 复用同一行、done 行复活）。那些断言今天全部作废：orchestrate 行全仓无处理分支，
+  // 连死认领者 handleWorkerTask 的路由表里都没有（它会掉进 else 走 completeError），
+  // 写下去只会永久搁浅。生产库实测已搁浅一行 4.66 天。
+  //
+  // ⚠️ 判据必须可证伪，不能是恒真命题：
+  //   · 只断言"jobs 表为空"不够——ingest 若整个没跑（比如有人把 tick 改成 no-op），
+  //     它也恒绿。所以每条都**先断言 ingest 真的跑了且报了 changed=true**，
+  //     再断言"在这个本该入队的时刻，表里依然一行都没有"。
+  //   · 不用 spy 断言"upsertWorkerTask 没被调用"——那只锁住这一条调用路径；
+  //     直接查表锁住的是**结果**（任何绕道写进去的行都会被抓到）。
+  it('changed=true（本该入队的那一刻）→ jobs 表一行都没多出来：orchestrate 入队已删除', async () => {
+    const ingest = vi.fn(async () => ingestResult({ scanned: 3, upserted: 1, removed: 0, changed: true }))
+    const tick = makeIngestTrigger(makeDeps({ ingest }))
 
     const out = await tick()
 
-    expect(out.orchestratorTriggered).toBe(false)
+    // ① 先证明这一拍真的发生了、且确实是"有变化"那一拍——否则下面两条会因为
+    //    "根本没跑"而假绿。
+    expect(ingest).toHaveBeenCalledTimes(1)
+    expect(out.ingest.changed).toBe(true)
+    // ② 这一刻旧实现会写一行 orchestrate。今天：零行。
     expect(pendingOrchestrateJobs().length).toBe(0)
+    // ③ 更强：整张 jobs 表一行都没有（不只是"没有 ingest-trigger 身份的行"——
+    //    换个 seriesId 绕道写进去同样算泄漏）。
+    expect((db.prepare(`SELECT COUNT(*) AS c FROM jobs`).get() as { c: number }).c).toBe(0)
   })
 
-  it('changed=true → exactly one orchestrate worker_task upserted with the fixed identity', async () => {
-    const tick = makeIngestTrigger(makeDeps({
-      ingest: async () => ingestResult({ scanned: 3, upserted: 1, removed: 0, changed: true }),
-    }))
-
-    const out = await tick()
-
-    expect(out.orchestratorTriggered).toBe(true)
-    const pending = pendingOrchestrateJobs()
-    expect(pending.length).toBe(1)
-    expect(pending[0].series_id).toBe(INGEST_ORCHESTRATE_SERIES_ID)
-    expect(pending[0].season).toBeNull()
-    expect(pending[0].movie_id).toBeNull()
-    const payload = JSON.parse(pending[0].payload!)
-    expect(payload.taskType).toBe('orchestrate')
-  })
-
-  it('dedupe: a second changed=true pass while the first orchestrate job is still pending → same row, no duplicate (carried over from selfScanTrigger Signal B dedupe semantics)', async () => {
+  it('连续多拍 changed=true → jobs 表始终为空（泄漏不是"至多一行"，是零行）', async () => {
     let calls = 0
-    const tick = makeIngestTrigger(makeDeps({
-      ingest: async () => {
-        calls++
-        return ingestResult({ upserted: calls, changed: true })
-      },
-    }))
+    const ingest = vi.fn(async () => {
+      calls++
+      return ingestResult({ upserted: calls, changed: true })
+    })
+    const tick = makeIngestTrigger(makeDeps({ ingest }))
 
-    const first = await tick()
-    expect(first.orchestratorTriggered).toBe(true)
-    const firstPending = pendingOrchestrateJobs()
-    expect(firstPending.length).toBe(1)
-    const firstJobId = firstPending[0].id
+    await tick()
+    await tick()
+    await tick()
 
-    const second = await tick()
-    expect(second.orchestratorTriggered).toBe(true)
-
-    const stillPending = pendingOrchestrateJobs()
-    expect(stillPending.length).toBe(1)
-    expect(stillPending[0].id).toBe(firstJobId) // same row, not a new one
+    // 三拍都真的跑了（否则"表为空"恒真）
+    expect(ingest).toHaveBeenCalledTimes(3)
+    expect((db.prepare(`SELECT COUNT(*) AS c FROM jobs`).get() as { c: number }).c).toBe(0)
+    // jobs repo 在本用例里被构造但从未被本模块写过——固定 identity 去重曾是"至多一行"
+    // 的唯一防线，删掉入队之后它连那一行也不需要了。
+    expect(jobs.countByState('wanted')).toBe(0)
   })
 
-  it('the same identity row revives done → wanted on the next triggered pass (upsertWorkerTask semantics, not a fresh row)', async () => {
-    const tick = makeIngestTrigger(makeDeps({ ingest: async () => ingestResult({ changed: true }) }))
+  it('结构性判据：全仓没有任何 orchestrate 处理分支——这才是删除入队的理由', async () => {
+    // 这条不是行为断言而是**架构断言**，刻意用源码扫描：入队之所以该删，不是"暂时没人
+    // 认领"（那会诱人写成"先留着"），而是那行 job 即便被认领也只会立刻 completeError。
+    // 谁哪天真的实现了 orchestrator，这条会红，提醒他"入队那一半也要一起加回来"。
+    //
+    // ⚠️ 必须剥掉注释再扫。第一版没剥，结果被 ingestTrigger.ts 自己头注释里那句引用
+    // （解释"执行方无输出"时写下的同一个字符串）匹配到而变红——那是**假阳性**：
+    // 一段解释性散文不是一个处理分支。剥注释后判据锁的才是真正的代码行。
+    const { readFileSync, readdirSync, statSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 
-    const first = await tick()
-    expect(first.orchestratorTriggered).toBe(true)
-    const firstJobId = pendingOrchestrateJobs()[0].id
-    // 清算波 R-6（A-F8）：jobsRepo.retire 已随死器官处决（production 零调用点，原 v2/aggregate
-    // 模块已随旧管线一起删除）。等价改走活体路径：claim 再 completeDone——同样是 wanted→done，
-    // 只是经由 active 态中转，而不是 retire() 的 wanted/failed→done 直跳。
-    expect(jobs.claimNext(now)?.id).toBe(firstJobId)
-    jobs.completeDone(firstJobId, now)
-    expect(pendingOrchestrateJobs().length).toBe(0)
+    const files: string[] = []
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir)) {
+        const p = join(dir, e)
+        if (statSync(p).isDirectory()) walk(p)
+        else if (p.endsWith('.ts') && !p.endsWith('.test.ts')) files.push(p)
+      }
+    }
+    walk(srcRoot)
 
-    const second = await tick()
-    expect(second.orchestratorTriggered).toBe(true)
-    const pending = pendingOrchestrateJobs()
-    expect(pending.length).toBe(1)
-    expect(pending[0].id).toBe(firstJobId) // same identity → same row, revived done→wanted
+    /** 去掉块注释与行注释，只留可执行代码。 */
+    const codeOf = (f: string) =>
+      readFileSync(f, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+
+    const handlesBranch = (needle: string) => files.filter((f) => codeOf(f).includes(needle))
+
+    // 阳性对照：同一套扫描器**必须**能在活代码里抓到 find_subtitle 的处理分支。
+    // 抓不到就说明扫描器根本没工作（或注释剥除把代码也剥没了），此时下面那条
+    // "零 orchestrate 分支"的绿毫无意义。
+    expect(handlesBranch("taskType === 'find_subtitle'").length,
+      '扫描器失效——连 find_subtitle 分支都没抓到').toBeGreaterThan(0)
+
+    expect(handlesBranch("taskType === 'orchestrate'"),
+      'orchestrate 处理分支出现了——入队那一半也该一起恢复，见 ingestTrigger.ts 头注释').toEqual([])
   })
 
-  it('log line fires only when changed=true; ingest() throwing propagates (no catch inside the trigger — daemon.ts owns fault isolation)', async () => {
+  it('log line fires only when changed=true; ingest() throwing propagates (no catch inside the trigger — 调用方 owns fault isolation)', async () => {
     const log = vi.fn()
     const tickSilent = makeIngestTrigger(makeDeps({ ingest: async () => ingestResult({ changed: false }), log }))
     await tickSilent()
     expect(log).not.toHaveBeenCalled()
+
+    const tickLogs = makeIngestTrigger(makeDeps({ ingest: async () => ingestResult({ changed: true }), log }))
+    await tickLogs()
+    expect(log).toHaveBeenCalledTimes(1)
 
     const tickThrows = makeIngestTrigger(makeDeps({ ingest: async () => { throw new Error('boom') } }))
     await expect(tickThrows()).rejects.toThrow('boom')

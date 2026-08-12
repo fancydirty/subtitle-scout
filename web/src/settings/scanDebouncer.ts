@@ -17,6 +17,17 @@ export interface ScanDebouncer {
   cancelScan: (path: string) => void
   /** 立即触发（"立即扫描"按钮用）——清空队列和定时器，绕过防抖直接调 API */
   triggerNow: () => Promise<void>
+  /** 卸载清理（组件 unmount 时调）——**取消**待触发的扫描：清掉定时器和队列，**不**补打 API。
+   *
+   *  语义为什么是"取消"而不是"立即触发"：用户加根时服务端的 POST /api/v2/settings/roots
+   *  处理器**已经**同步踢过一次 requestIngest（src/dashboard/server.ts:745），用户真正想要
+   *  的那次扫描早就跑了——这里的防抖扫描只是第二脚，取消它在正常路径上什么都不丢。反过来
+   *  若 dispose 改成 flush，就会把"用户加完根又把它删了"变成"照样扫一遍"，正是本防抖器
+   *  开篇（策略 3「删除取消」）要防的那件事。
+   *
+   *  幂等：可重复调用，且 dispose 后实例**仍可继续使用**（不打成废品）——React StrictMode
+   *  开发期双跑挂载会在同一个 useRef 实例上先跑一次 cleanup，打死就哑了。 */
+  dispose: () => void
   /** 测试用：返回当前待扫路径数量 */
   getPendingCount: () => number
 }
@@ -72,6 +83,15 @@ export function createScanDebouncer(triggerScanFn: () => Promise<unknown>): Scan
       }
       pendingPaths.clear()
       await triggerScanFn()
+    },
+
+    dispose() {
+      // 取消语义：定时器和队列一起清掉，**绝不**调 triggerScanFn。
+      if (debounceTimer) {
+        clearTimeout(debounceTimer)
+        debounceTimer = null
+      }
+      pendingPaths.clear()
     },
 
     getPendingCount() {

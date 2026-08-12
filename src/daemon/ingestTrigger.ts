@@ -1,5 +1,4 @@
 import type { IngestResult } from '../v2/ingest.js'
-import type { JobsRepo } from '../v2/jobsRepo.js'
 
 /**
  * 去 Jellyfin 化 T4（design §P3 "B2 双信号坍缩成单步"）：selfScanTrigger.ts 的两信号
@@ -27,67 +26,85 @@ import type { JobsRepo } from '../v2/jobsRepo.js'
  *  - 重启后"把已知的每条路径都当作新摄取"的一次性追赶式 orchestrate（旧版靠空快照人为
  *    制造这个效果）——新版没有快照这个状态，重启后第一次 ingest 只要真的有变化
  *    （result.changed）一样会正常触发一次编排，不需要刻意模拟"追赶"这个概念。
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 🔴 2026-08-13「jobs 队列泄漏」裁决：**orchestrate 入队已删除，本模块不再写 jobs 表**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * 原本这里有一段 `deps.jobs.upsertWorkerTask({...taskType:'orchestrate'...})`。删掉它的
+ * 理由不是"暂时没人认领"（那种理由会诱人写成"先留着，接回来就能用"），而是一条**结构性
+ * 的不可执行**：
+ *
+ *   写入方：`taskType: 'orchestrate'`  ← 本模块，曾是全仓唯一
+ *   执行方：全仓零个 orchestrate 处理分支（判据见本模块测试的「结构性判据」一条，
+ *           它扫的是**代码行**而非注释——本段文字本身就会被它的注释过滤器排除）
+ *
+ * 注意"无输出"的范围：不只是活代码里没有，**连那个被提取出来待考的死认领者
+ * `cli/handleWorkerTask.ts` 里也没有**。它的路由表只有 find_subtitle / realign /
+ * translate 三支，orchestrate 会掉进最后的 else，走
+ * `completeError('unknown worker_task taskType: orchestrate')`。
+ *
+ * → 也就是说：这行 job 不是"等着被接回来的活"，它是**即便 jobs 队列整体复活也只会立刻
+ *   失败**的一行。orchestrator 那套架构（makeOrchestratorAgent / runOrchestrateWorkerTask
+ *   / orchestrateWorkerTaskDeps）已于第 5.5 步随旧架构整体删除，不存在"恢复接线"这个选项
+ *   ——要恢复得先重新实现一个 orchestrator。
+ *
+ * 这与 `handleWorkerTask` 的处境**性质不同**，所以处置也不同：handleWorkerTask 的三个
+ * 分支背后是真实存在、测试覆盖的 runner（findSubtitleWorkerTask 等），缺的只是一根 claim
+ * 接线，接回来当天就能跑——所以它保留待裁。orchestrate 背后什么都没有。
+ *
+ * 实测证据（2026-08-13，生产库 /cache/scout.db）：jobs 表 12 行，其中恰好一行
+ * `state='wanted'`，就是本模块 2026-08-08 写下的那条 ingest-trigger orchestrate 行，
+ * 已搁浅 4.66 天无人认领。固定 identity 的去重让它止步于一行（没有无界增长），但"至多
+ * 泄漏一行"仍是泄漏——它会永久占据 dashboard 的待办语义，且是一行永远不可能被执行的活。
+ *
+ * 删除后本模块**完全不碰 jobs 表**（deps 里的 `jobs` 字段一并移除）。ingest() 本身照跑，
+ * 三个调用点（甄别台认领、翻译装盘、daemonV2 requestIngest）的"踢一脚扫描"语义逐字不变
+ * ——那才是它们真正想要的效果，orchestrate 入队从来只是搭车的副作用。
+ *
+ * 那条搁浅的生产行不由代码清理（本仓无 jobs 的 GC 通道，写一个只为删一行不值当）：它
+ * state='wanted' 且无人 claim，对活代码零影响；下次谁若真的重建 orchestrator，它会自然
+ * 被认领掉。
+ * ═══════════════════════════════════════════════════════════════════════════
  */
 
 export interface IngestTriggerDeps {
   /** 调用方预绑定好的 v2/ingest.ts makeIngestPass(...) 返回值。 */
   ingest: () => Promise<IngestResult>
-  jobs: Pick<JobsRepo, 'upsertWorkerTask'>
-  now: () => number
   log: (msg: string) => void
 }
 
 export interface IngestTriggerResult {
   ingest: IngestResult
-  /** 本轮 ingest() 报告 changed=true 时为 true（至多一次 upsertWorkerTask 调用，identity 去重）。 */
-  orchestratorTriggered: boolean
 }
 
-/** ingest-triggered 编排任务的固定 worker_task 身份（同旧 SELF_SCAN_ORCHESTRATE_SERIES_ID
- *  的去重把戏，见本文件头注释）。字符串值本可以延续旧值 'self-scan-trigger'（纯内部 dedup
- *  键，从不对外暴露），但这里选择重命名成 'ingest-trigger'：诚实性选择，不是必要项——P2
- *  已经是"全新库 bootstrap"（design §P2），没有旧数据需要向后兼容；旧值若真的还残留在某个
- *  开发库里，也只是一条不会再被任何代码路径碰到的死行，不影响正确性。 */
+/** ingest-triggered 编排任务曾经使用的固定 worker_task 身份。
+ *
+ *  ⚠️ 2026-08-13：**唯一的使用点（orchestrate 入队）已删除**，见本文件头注释的裁决段。
+ *  常量本体保留，只为一个用途：生产库里那条 2026-08-08 写下的搁浅行的 `series_id` 就是
+ *  这个字符串，排查的人 grep 它要能落到这段解释上。它不再被任何写入路径引用。 */
 export const INGEST_ORCHESTRATE_SERIES_ID = 'ingest-trigger'
 
 /**
- * 建一个 ingest-trigger "tick"：跑一次 ingest()，若本轮有实际变化（result.changed）就
- * upsert 一个 taskType='orchestrate' 的 worker_task（identity 固定，天然去重）。像
+ * 建一个 ingest-trigger "tick"：跑一次 ingest()，把它的结果原样交回调用方。像
  * makeIngestPass/旧 makeSelfScanTrigger 一样不带自己的定时器——调用方决定何时调用它。
- * 第 7 步 B 组：原注释说定时权归 `daemon（src/v2/daemon.ts）`、门在它的 meta 表时间戳
- * ——那个文件已整体删除。今天的调用方是 cli/index.ts 里的两个"踢一脚"入口（甄别台认领后、
- * daemonV2 翻译装盘后），都是事件驱动的即时触发，不再有周期性的 meta 时间门。
+ * 今天的调用方是 cli/index.ts 里的三个"踢一脚"入口（甄别台认领后、翻译装盘后、daemonV2
+ * 的 requestIngest），都是事件驱动的即时触发。
+ *
+ * 2026-08-13：本函数曾在 result.changed 时 upsert 一个 taskType='orchestrate' 的
+ * worker_task。那行永远不可能被执行（全仓零 orchestrate 处理分支），入队已删除——完整
+ * 论证见文件头的裁决段。ingest() 与 changed 日志逐字保留。
  */
 export function makeIngestTrigger(deps: IngestTriggerDeps): () => Promise<IngestTriggerResult> {
   return async function ingestTriggerTick(): Promise<IngestTriggerResult> {
     const result = await deps.ingest()
 
-    let orchestratorTriggered = false
     if (result.changed) {
-      // 固定 identity → upsertWorkerTask 的身份 dedup（SELECT-then-branch，非 ON CONFLICT——
-      // 见 jobsRepo.ts upsertWorkerTask 头注释）保证"至多一个待处理的 ingest-triggered
-      // orchestrator job"，本轮触发时若上一次触发的那行还没被认领/跑完，不会多出一行：
-      // - 仍是 wanted（最常见——上一次触发的编排 pass 还没被 daemon claim）：F-R2-5（R2 复审）
-      //   起 payload（这条 reason 摘要）真的会被刷新为本轮最新的 scanned/upserted/parked/
-      //   removed 统计，不再是本轮的新意图被无声丢弃、dashboard 只看到上一轮的旧摘要。
-      // - 已被认领在跑（searching/downloading/verifying）：payload 保持不动，只刷
-      //   updated_at——那个 pass 已经在读旧摘要了，这轮的新变化会在它跑完、下一次 ingest
-      //   仍报 changed 时再触发一次新的编排 pass，不会丢。
-      deps.jobs.upsertWorkerTask(
-        { seriesId: INGEST_ORCHESTRATE_SERIES_ID, season: null, movieId: null },
-        {
-          taskType: 'orchestrate',
-          reason: `ingest: scanned=${result.scanned} upserted=${result.upserted} parked=${result.parked} removed=${result.removed}`,
-        },
-        null,
-        deps.now(),
-      )
-      orchestratorTriggered = true
       deps.log(
-        `ingest trigger: pass changed library state (upserted=${result.upserted} removed=${result.removed}) — orchestrator pass enqueued`,
+        `ingest trigger: pass changed library state (upserted=${result.upserted} removed=${result.removed})`,
       )
     }
 
-    return { ingest: result, orchestratorTriggered }
+    return { ingest: result }
   }
 }

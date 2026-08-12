@@ -124,6 +124,42 @@ describe('RootsManager：删根确认流', () => {
   })
 })
 
+describe('RootsManager：卸载清理防抖扫描', () => {
+  // 缺陷回归：加根后 2 秒内切走页面（组件卸载），防抖定时器此前**无人清理**，仍会在
+  // 2 秒后打一次 POST /api/v2/library/scan。
+  //
+  // 为什么这是真缺陷而不是"用户本来就想扫"：服务端 POST /api/v2/settings/roots 处理器
+  // 在加根成功时**已经**同步踢过一次 requestIngest（src/dashboard/server.ts:745），用户
+  // 要的那次扫描早跑完了。真正的坏后果在下一条用例里。
+  it('加根后立刻卸载 → 2 秒后不再打 /api/v2/library/scan', async () => {
+    const fetchMock = mockFetchRouted([
+      { path: '/api/v2/fs/list', body: { dirs: [] } },
+      { path: '/api/v2/settings/roots', method: 'POST', body: { ok: true } },
+      { path: '/api/v2/library/scan', method: 'POST', body: { ok: true } },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    const { unmount } = renderManager(asyncOf([]))
+
+    // 空态直接展开浏览器 → 点 Add 加根 → onAdded → debouncer.requestScan 武装定时器
+    fireEvent.click(screen.getByRole('button', { name: 'Add this directory' }))
+    // 等加根**真正完成**（成功文案上屏 = onAdded 已回调 = 防抖定时器已武装），
+    // 这才是缺陷描述的时序："用户加完守备目录立刻切到别的页"。
+    expect(
+      await screen.findByText('Added — the next scan will pick it up automatically.'),
+    ).toBeInTheDocument()
+
+    // 切页 = 卸载。此后那颗 2 秒定时器不许再打 API。
+    // 用真实定时器等满 2 秒（fake timers 会卡住上面 findByText 的轮询，故不混用）。
+    unmount()
+    await new Promise((r) => setTimeout(r, 2100))
+
+    const scanCalls = fetchMock.mock.calls.filter(
+      (c) => requestInfo(c[0] as RequestInfo).path === '/api/v2/library/scan',
+    )
+    expect(scanCalls).toHaveLength(0)
+  })
+})
+
 describe('RootsManager：加根入口', () => {
   it('roots 为空时展示一句话引导并直接展开目录浏览器', async () => {
     const fetchMock = mockFetchRouted([{ path: '/api/v2/fs/list', body: { dirs: ['media'] } }])

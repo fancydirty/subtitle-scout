@@ -24,9 +24,10 @@
 //
 // (c) **提取成模块导出**（本次采用）：`export` 的符号不受 noUnusedLocals 约束——这不是
 //     绕过检查，而是**换了一种更强的承载方式**。留在原地时，"零调用者"这个事实只由一段
-//     中文注释承载，注释会过期、会被人略过；搬出来之后，同一个事实变成了一条机器可查的
-//     结构性质：`rg "from './handleWorkerTask.js'" src` 无输出。谁哪天把它接回去，
-//     那次 import 就是接线动作本身，在 diff 里一目了然。
+//     中文注释承载，注释会过期、会被人略过；搬出来之后，同一个事实变成了**一条会红的
+//     断言**：`src/cli/handleWorkerTask.orphan.test.ts` 扫全部生产源码（剥注释后）里对
+//     本模块的 import，零个才绿。谁哪天把它接回去，那次 import 就是接线动作本身，
+//     测试当场红并指名要重读哪两处裁决。
 //
 // 这与本仓 `subtitleVerify/verifySweep.ts` 那族资产是**同一种处理**：算法留着、导出留着、
 // 接线不接，事实写在文件头。参照 `v2/subtitleVerifyRepo.ts` 的头部裁决。
@@ -39,14 +40,47 @@
 // 非测试调用者。也就是说 jobs 队列现在只有生产者（dashboard 的 redispatch、
 // 各 upsertWorkerTask），没有任何消费者。
 //
-// 🔴 由此产生的**真实后果**（2026-08-13 清理时复核确认，不是推断）：
-//    `daemon/ingestTrigger.ts` 在 ingest 报 changed=true 时会 upsertWorkerTask 一行
-//    taskType='orchestrate' 的 job，而它的三个调用点（甄别台认领后、翻译装盘后、
-//    daemonV2 的 requestIngest）**都是活的**。这些行写进 jobs 表后没有任何消费者，
-//    靠 upsertWorkerTask 的固定 identity 去重才不至于无界增长（永远至多一行 wanted）。
-//    同理 dashboard 的"手动重派"按钮今天点下去只会写一行 jobs 记录，不会有任何东西认领它
-//    ——按钮在 UI 上是活的，语义上是空的。这两条都属于"旧 jobs 队列整体退役"那个待做决策
-//    的范围，本次只记录、不动手。
+// 🔴 由此产生的**真实后果**（2026-08-13 复核确认，不是推断）——本轮已处置其一：
+//
+//    ① `daemon/ingestTrigger.ts` 曾在 ingest 报 changed=true 时 upsertWorkerTask 一行
+//       taskType='orchestrate' 的 job，而它的三个调用点（甄别台认领后、翻译装盘后、
+//       daemonV2 的 requestIngest）都是活的。**该入队已于 2026-08-13 删除**，理由不是
+//       "暂时没人认领"，而是 orchestrate 那行**即便队列整体复活也无法执行**：本文件的
+//       路由表只有 find_subtitle / realign / translate 三支，orchestrate 会掉进 else 走
+//       `completeError('unknown worker_task taskType')`；orchestrator 那套架构已于第
+//       5.5 步整体删除，不存在"恢复接线"这个选项。完整论证见 ingestTrigger.ts 头注释。
+//
+//    ② dashboard 的 POST /api/v2/workflow/redispatch 仍会写一行 taskType='find_subtitle'
+//       的 job，无人认领。**它与 ① 性质不同，故保留**：find_subtitle 背后是本文件那条
+//       真实存在、测试覆盖的 runner，缺的只是一根 claim 接线——接回来当天那些行就会被
+//       正常执行。它是"待接线的活"，不是"不可执行的死行"。
+//       连带事实：该端点今天**没有任何活前端调用方**——唯一的调用点 RerunDialog.tsx 已随
+//       旧活动页移入 `web/src/_legacy/`，活 UI 里点不到它（`web/src/api/client.ts` 的
+//       `api.redispatch` 亦零活调用方）。所以"按钮语义为空"这个原始描述今天更准确的说法是：
+//       **按钮本身已不在活 UI 里**，端点仍在，仍可被 curl 命中并写行。
+//
+// ── 什么时候可以删（**可证伪的判据，不是"跑稳后再说"**）──────────────────────
+// 满足**任意一条**即可整族删除（本文件 + jobsRepo 的 claim/租约/reap 机制 + redispatch
+// 端点及其 DTO + `web/src/_legacy/workflow/RerunDialog.tsx`）：
+//
+//   (a) 产品明确裁定"手动重派/worker_task 队列"这个能力不再需要——那就连四条 runner
+//       一起删，别留半截；
+//
+//   (b) 距 2026-08-13 起再过一个发布周期，本模块仍**没有**被任何活代码 import。
+//       判据（一条能跑的命令，无输出 = 仍是孤儿 = 可以删）：
+//
+//         rg -l "from './handleWorkerTask.js'" src --glob '!*.test.ts'
+//
+//       雪藏满两轮 = 没人真的要它。
+//
+// 反过来，**恢复**它只需要一处 wiring：在 cmdWatch 的主循环里加一个
+// `jobs.claimNext(now)` → `handleWorkerTask(job, {...})` 的 claim 分支（deps 字段名与
+// cmdWatch 的局部名逐字相同，见下方 HandleWorkerTaskDeps 注释）。队列一旦有了消费者，
+// redispatch 端点与那四条 runner 立刻全部有意义。
+//
+// 🔴 不要只删一半（比如"UI 反正没了，把 redispatch 端点删了留 runner"）：那会留下一族
+//    无入口的 runner，与本仓病 A 是同一形状。要么整族留，要么整族删。
+
 //
 // ── 以下是它原有的设计注释，退役决策做出前原样保留 ──────────────────────────
 // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask

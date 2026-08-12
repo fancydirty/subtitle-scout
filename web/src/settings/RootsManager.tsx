@@ -14,14 +14,16 @@
 // （label prop 退役），EmptyState 走 components/ui 同名零改件，VStack 换裸 flex div，Text 按
 // 控件事典映射到手写 span。
 // 2026-08-13 清理：`useEffect` 从这行 import 里删除（本组件零调用）。
-// ⚠️ 但它留下一个**没修的问题**，记在这里而不是假装干净：下面的 `debouncerRef` 持有一个
-// 2 秒 setTimeout（scanDebouncer.ts:26 SCAN_DEBOUNCE_MS），组件卸载时**没有任何清理**
-// ——用户加完根立刻切走页面，那个定时器仍会在 2 秒后打一次 triggerScan。
-// 没有顺手修的原因：ScanDebouncer 的公开接口（requestScan/cancelScan/triggerNow/
-// getPendingCount）里**没有** dispose/cancelAll，而 cancelScan 需要逐个路径调、组件这侧
-// 拿不到待扫路径清单。补一个 dispose 是接口变更 + 需要自己的测试，属于另一件事。
-// 这个 useEffect 很可能当初就是为这件事 import 的，只是从未写下 cleanup。
-import { useMemo, useState, useRef } from 'react'
+// 2026-08-13 复原：`useEffect` 又加回来了——它当初**就是**为下面那个卸载清理 import 的，
+// 只是从未写下 cleanup。`debouncerRef` 持有一个 2 秒 setTimeout（scanDebouncer.ts
+// SCAN_DEBOUNCE_MS），组件卸载时无人清理，会在卸载后打一次 triggerScan。
+// 真正的坏后果**不是**"多扫一次"（用户加根时服务端已经同步踢过一次 requestIngest，见
+// src/dashboard/server.ts:745，他要的扫描早跑了），而是**跨卸载边界后 cancelScan 失效**：
+// 加根 → 2 秒内切页（卸载，定时器仍在飞）→ 切回来（新组件、新 debouncer，队列空）→ 删掉
+// 那个根 → handleRemoved 调的是**新**实例的 cancelScan，拦不住**旧**实例那颗定时器 →
+// 用户已经删掉的根照样触发一轮全库 ingest。dispose 语义选"取消"而非"立即触发"，理由见
+// scanDebouncer.ts 的 dispose 注释。
+import { useMemo, useState, useRef, useEffect } from 'react'
 import { Button } from '../components/ui/button.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import type { Async } from '../api/hooks.js'
@@ -48,6 +50,14 @@ export function RootsManager({ roots }: Props) {
   if (!debouncerRef.current) {
     debouncerRef.current = createScanDebouncer(api.triggerScan)
   }
+
+  // 卸载清理：取消待触发的防抖扫描（语义见 scanDebouncer.ts dispose 注释）。
+  // 依赖数组为空 = 只在真正卸载时跑；dispose 幂等且不打死实例，StrictMode 双跑安全。
+  useEffect(() => {
+    return () => {
+      debouncerRef.current?.dispose()
+    }
+  }, [])
 
   const list = roots.data ?? []
   // R6 UX 改进：固定起点（用户主目录），不再用 commonRootStart 动态计算——那会导致

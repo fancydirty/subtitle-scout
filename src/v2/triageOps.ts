@@ -50,7 +50,21 @@ const REDISPATCH_SCHEMA = z.object({
  *  同一个 taskType='find_subtitle'），reason 固定标注"manual redispatch from dashboard"以便
  *  在 runs/日志里区分人工重派与 orchestrator 自主派发。回执 WorkerTaskUpsertOutcome 原样返回
  *  ——created/revived/coalesced/blocked_dormant 四态都是事实，不是错误，调用方统一按 200 回应；
- *  只有 zod 校验本身不通过才是 ok:false（对应 400）。 */
+ *  只有 zod 校验本身不通过才是 ok:false（对应 400）。
+ *
+ *  ⚠️ 2026-08-13「jobs 队列泄漏」裁决——**本函数今天写下的行没有任何消费者**：
+ *  jobs 队列唯一的认领者 `cli/handleWorkerTask.ts` 自第 7 步起生产零调用点（那里有完整
+ *  事实链与删除判据）。此外本端点也**没有活前端调用方**了：唯一的 UI 入口 RerunDialog
+ *  已随旧活动页移入 `web/src/_legacy/`。
+ *
+ *  为什么仍然保留（而不是像 ingestTrigger 的 orchestrate 入队那样一并删掉）：它写的是
+ *  `taskType='find_subtitle'`，而那条 runner（`v2/findSubtitleWorkerTask.ts`）真实存在、
+ *  被大量用例覆盖，且就在 handleWorkerTask 的路由表里——接回 claim 那天，这些行当天就会
+ *  被正常执行。它是**待接线的活**。被删掉的 orchestrate 则相反：全仓没有它的处理分支，
+ *  即便队列复活也只会立刻 completeError，那是**不可执行的死行**。两者性质不同，故处置不同。
+ *
+ *  删除判据与 handleWorkerTask 同进退（见该文件头注释的 (a)/(b) 两条）——这两者要么一起
+ *  留，要么一起删，不许只删一半。 */
 export function redispatch(
   jobs: Pick<JobsRepo, 'upsertWorkerTask'>, body: unknown, now: number,
 ): RedispatchResult {
