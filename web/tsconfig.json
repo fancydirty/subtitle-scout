@@ -2,6 +2,12 @@
   "compilerOptions": {
     "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler",
     "jsx": "react-jsx", "strict": true, "skipLibCheck": true, "noEmit": true,
+    // 2026-08-13：与根 tsconfig.json 同一裁决——开 noUnusedLocals、不开 noUnusedParameters。
+    // 完整论证（含"前端这 2 处未用形参分别是什么、为什么不该用 `_` 前缀消掉"）写在根
+    // tsconfig.json 里，不在这里重抄；两处必须同进同退，否则同一份 ../src 代码在两个
+    // 工程下的检查强度不同，前端 tsc 会成为后端孤儿的漏网通道（本文件 include 了 ../src，
+    // 实测前端 tsc 会一并检查被 web 引用到的后端文件）。
+    "noUnusedLocals": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": ["vitest/globals", "@testing-library/jest-dom"]
   },
   "include": ["src"]

@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, afterEach, beforeEach } from 'vitest'
 import { ensureWorkspaceLayout } from '../translate/workspace/paths.js'
-import { materializeAgentView } from '../translate/workspace/materialize.js'
+// 2026-08-13 清理：materializeAgentView 的 import 已删（本文件零调用）。该函数活着，且
+// 被 translateWorker.tools.ts:208 在生产路径上调用——覆盖它的是 materialize.test.ts 与
+// merge.test.ts 两个文件，不是这里。本文件测的是工具层的读写契约，不直接建 agent 视图。
 import { makeTranslateWorkspaceTools, type TranslateToolDeps } from './translateWorker.tools.js'
 import type { TranslateTask } from './translateWorker.schemas.js'
 import type { WorkspacePaths } from '../translate/workspace/types.js'

@@ -13,7 +13,15 @@
 // 控件栈（Plan C Task 27 迁移）：Astryx Text/Button/VStack/EmptyState 全卸——Button children 化
 // （label prop 退役），EmptyState 走 components/ui 同名零改件，VStack 换裸 flex div，Text 按
 // 控件事典映射到手写 span。
-import { useMemo, useState, useRef, useEffect } from 'react'
+// 2026-08-13 清理：`useEffect` 从这行 import 里删除（本组件零调用）。
+// ⚠️ 但它留下一个**没修的问题**，记在这里而不是假装干净：下面的 `debouncerRef` 持有一个
+// 2 秒 setTimeout（scanDebouncer.ts:26 SCAN_DEBOUNCE_MS），组件卸载时**没有任何清理**
+// ——用户加完根立刻切走页面，那个定时器仍会在 2 秒后打一次 triggerScan。
+// 没有顺手修的原因：ScanDebouncer 的公开接口（requestScan/cancelScan/triggerNow/
+// getPendingCount）里**没有** dispose/cancelAll，而 cancelScan 需要逐个路径调、组件这侧
+// 拿不到待扫路径清单。补一个 dispose 是接口变更 + 需要自己的测试，属于另一件事。
+// 这个 useEffect 很可能当初就是为这件事 import 的，只是从未写下 cleanup。
+import { useMemo, useState, useRef } from 'react'
 import { Button } from '../components/ui/button.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import type { Async } from '../api/hooks.js'

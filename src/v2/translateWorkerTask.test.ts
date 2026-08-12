@@ -459,5 +459,12 @@ describe('SUPPORTED_SOURCE_LANGS 口径收敛（C31 末段 / G）', () => {
     // 只是无内嵌轨的日漫又开始白绕一圈 7 天（判可救 → 抓不到日文源 → unsolvable）。
     expect(FETCHABLE_SOURCE_LANGS).toEqual(['en'])
     expect(EXTRACTABLE_SOURCE_LANGS).toEqual(['en', 'ja'])
+    // 2026-08-13 补：`SUPPORTED_SOURCE_LANGS` 此前被 import、被写进本 describe 的标题，
+    // 却**没有任何断言**（清理时由 noUnusedLocals 抓出）。它不是可有可无的第三个常量——
+    // 它是两条腿的并集（派生量），且有一个语义正确的真实消费者：cli/fetchSourceSub.ts 的
+    // 语言门（论证见该常量的头注释：收窄到 ['en'] 会让 ja 分支的 fetch 变成死代码）。
+    // 派生关系没被钉住的话，有人把它改回手写字面量、或改成只取 FETCHABLE，这一组
+    // "只有一份定义"的用例照样全绿——而那正是本用例声称要防的漂移。
+    expect(SUPPORTED_SOURCE_LANGS).toEqual(['en', 'ja'])
   })
 })

@@ -29,7 +29,12 @@ import type { EmbeddedSubtitleTrack } from '../files/streamProbe.js'
 import { mapWithConcurrency } from './probeConcurrency.js'
 // C21 回填 pass 用它把 works.id（'tmdb:<id>'）解回 TMDB id。复用 ownIds 这一份唯一解析入口，
 // 不在这里另写一遍 slice(5)——本仓已因"两份实现漂移"栽过（D7 的 findOverlappingRoot）。
-import { tmdbIdFromOwnId, translateItemId, translateJobId } from './ownIds.js'
+import { tmdbIdFromOwnId, translateJobId } from './ownIds.js'
+// 2026-08-13 清理：同一行上曾并列 import 的 `translateItemId` 零调用——本文件只需要
+// **工作台目录名**（translateJobId，GC 在飞登记用，见 :1154），itemId 的构造发生在下游
+// （translateWorkerTask.ts:142 建 candidate 时）。两个构造器同名前缀容易被误当一对，
+// 这里只用得到后者。C20「唯一构造入口」纪律不受影响：删的是 import，不是构造器。
+
 // R-F5 应有集回填：复用既有的 tmdbCatalog 写入方，**不在这里另写一份季集抓取**。
 // TTL 门、gain-path 降级（拿不全所有季就一行不落）两条语义都长在它里面，回填 pass 只负责
 // "把 works 里的 tv 一个个喂给它"——刷新节奏因此只有一个权威。

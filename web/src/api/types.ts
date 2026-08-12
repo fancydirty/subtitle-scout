@@ -17,14 +17,6 @@ export interface RunHistoryDTO {
   journalPath: string | null
 }
 
-/** v3 phase ⑦："全仓校验"结果——POST /api/v2/reconcile-all 的响应体。 */
-export interface ReconcileAllResultDTO {
-  dispatchedFindSubtitle: number
-  dispatchedRealign: number
-  spawnedSiblings: number
-  summary: string
-}
-
 /** 去 Jellyfin 化 P6：park 救援页——一次性脚手架，GET /api/parked 的响应体。 */
 export interface ParkedItemDTO {
   path: string

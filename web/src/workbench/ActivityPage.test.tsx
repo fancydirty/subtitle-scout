@@ -16,7 +16,7 @@
 // ⚠️ 每条断言都配了**阳性对照**（"改坏之前它确实是另一个样子"）：
 // 只断言"识别的卡片不在场"的话，一个恒渲染空白的页面也会全绿。
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { render, screen, cleanup, act, waitFor, within, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, act, waitFor, fireEvent } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { EventsProvider } from '../events/EventsProvider.js'
 import { __resetEventsBusForTests } from '../events/eventsBus.js'

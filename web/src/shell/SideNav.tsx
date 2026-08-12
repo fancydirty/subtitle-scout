@@ -9,7 +9,10 @@
 // 选中态文字色用 --color-sidebar-active（lime 语义，tw.css:34——"当前页"是每屏唯一亮色配额），
 // 不是 --color-accent：后者被 scout.css:86 遮蔽成柠檬绿 #96DA26，过渡期撞车铁律（名值两查
 // 已打 0：sidebar-active 在 scout.css 零出现）。选中背景仍 bg-secondary。
-import { useId } from 'react'
+// 2026-08-13 清理：`import { useId } from 'react'` 已删（零调用）。核对过它不是"漏接的
+// 无障碍属性"：本组件的 <nav> 用的是静态 `aria-label="Side navigation"`（:23），选中态走
+// `aria-current="page"`（:51），两者都不需要生成 id；也没有任何 label/aria-labelledby 配对
+// 在等一个 id。属于纯残留，不是 a11y 缺口。
 import type { ReactNode } from 'react'
 
 interface SideNavProps {

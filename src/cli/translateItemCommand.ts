@@ -20,14 +20,11 @@ import { CHINESE_SIDECAR_TAGS } from '../agent/languages.js'
 // C20：itemId 的唯一构造入口 + work_id 的唯一解析入口（自有 id 空间，不在本文件另写解析）。
 import { translateItemId, translateJobId, workIdFromTranslateItemId, tmdbIdFromOwnId } from '../v2/ownIds.js'
 
-function requireEnv(name: string): string {
-  const v = process.env[name]
-  if (!v) {
-    console.error(`translate-item 需要 ${name}(在 .env 配 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL,同一 AI 服务商)`)
-    process.exit(2)
-  }
-  return v
-}
+// 2026-08-13 清理：`requireEnv` 已删除（零调用者）。它做的事——"缺 LLM_BASE_URL/
+// LLM_API_KEY/LLM_MODEL 就打印一行中文提示并 exit(2)"——在 spec A §4.3「凭证来源无关化」
+// 之后由下方 `translateLlmCfg` 承担：它走 AdapterConfigResolver（env **或** dashboard
+// setup wizard 落库的密钥都认），缺值时 throw 而不是 exit。行为差异是刻意的：exit(2) 会
+// 让"env 里没有但库里有"的合法部署直接崩，那正是 §4.3 要修的东西。
 
 /** F2:TMDB original_language 码 → prompt 源语言显示名。未知码→'源语言'(宁泛不硬套英文)。 */
 export function sourceLangDisplayName(originLang: string | null | undefined): string {
@@ -332,18 +329,20 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
   // 需要库定位(origin_lang/imdb),故只在 scout.db 已存在时接线——库还没建(从没跑过 watch)时
   // 不为一次手动翻译凭空创建空库(openDb 会落盘建表),此时 fetch 腿关闭,行为同 F1 前(no-embedded)。
   // db/adapters 组装失败(如 ZIMUKU_ENABLED=true 缺 LLM_*)同样降级关腿,不拦手动翻译主线。
+  //
+  // 2026-08-13 清理：这里原本还建了一个 `locateOriginLang = (p) => makeDbLocate(db)(p)?.originLang`
+  // 闭包，**赋值后零读取**。它不是"接线断了"——origin_lang 这条线是通的，只是换了出口：
+  // P1 切到 workspace agent 后，源语言由下方 `locateTranslateIdentity(db, videoPath).originLang`
+  // 提供，与 makeDbLocate 读的是同一张表同一列（files JOIN works 的 w.origin_lang）。
+  // 两个入口并存时删掉没人读的那个；`makeDbLocate` 本身仍活着（makeRealFetchSourceSub 在用）。
   let fetchSourceSub: import('../translate/workspace/resolveSource.js').ResolveSourceDeps['fetchSourceSub']
   let db: import('../v2/db.js').ScoutDb | undefined
-  let locateOriginLang: ((videoPath: string) => string | null) | undefined
   if (existsSync(dbPath)) {
     try {
       const { openDb } = await import('../v2/db.js')
-      const { makeDbLocate } = await import('./fetchSourceSub.js')
       db = openDb(dbPath)
       const adapters = await buildAdapters(() => {}, secrets, (m) => console.log('[translate-item] ' + m))
       fetchSourceSub = makeRealFetchSourceSub(db, adapters)
-      const locate = makeDbLocate(db)
-      locateOriginLang = (p) => locate(p)?.originLang ?? null
     } catch (e) {
       console.log(`[translate-item] 源语言外挂搜索腿未启用(${e instanceof Error ? e.message : String(e)}),仅走内嵌轨`)
     }

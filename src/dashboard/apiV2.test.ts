@@ -12,9 +12,11 @@ import {
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers,
   buildTriage, redispatch, buildRunTrace, buildDormantTasks, dormantTargetLabel,
 } from './apiV2.js'
-// 清算波 R-6（F9b）：用真实常量而不是陈旧字符串 'self-scan-trigger'（去 Jellyfin 化 T4 已
-// 改名为 INGEST_ORCHESTRATE_SERIES_ID='ingest-trigger'）造 ingest 触发器的合成 series_id 测试行。
-import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
+// 2026-08-13 清理：`import { INGEST_ORCHESTRATE_SERIES_ID }` 已删（零引用）。它当初是
+// 清算波 R-6（F9b）为"用真实常量而不是陈旧字符串 'self-scan-trigger' 造 ingest 触发器的
+// 合成 series_id 测试行"引入的，但那条用例后来随旧库三族端点一并删除。今天本文件里所有
+// orchestrate 相关用例造的都是 'orchestrator-shard-N' 这种手写分片 id，与 ingest 触发器的
+// 固定 identity 无关，用不到这个常量。常量本体仍活着（ingestTrigger.ts 的去重键）。
 import { traceBus } from '../core/traceBus.js'
 // 接缝回归（2026-08-10）：lastScanAt 的**真写入者**。见下方 🔴 用例——这条 import 的存在
 // 本身就是那个缺口的修补：此前本文件只手写 INSERT 复述键名，从不碰真正的写入方。
@@ -838,7 +840,10 @@ describe('buildWorkflowWorkers（GET /api/v2/workflow/workers：跑中 worker_ta
     const jobId = insertJob(db, { kind: 'series_season', seriesId: 's1', season: 2, state: 'wanted', priority: 0 })
     insertRun(db, jobId, NOW - 1000, 'installed', 'find')
     // 窗口内两条 translate:installed(带 llm_calls);窗口外一条不计
-    const r1 = db.prepare(
+    // 2026-08-13：`const r1 = ` 绑定已删——`.run()` 的返回值（lastInsertRowid/changes）
+    // 从未被读。这一行插入的行**本身是被断言的**（下面 `detail === 'ww e02'` 那条查的就是
+    // 它），所以不是测试漏洞，只是三条并列 INSERT 里唯一多写了个变量名的那条。
+    db.prepare(
       `INSERT INTO runs (job_id, started_at, finished_at, decision, detail, llm_calls) VALUES (?, ?, ?, 'translate:installed', 'ww e02', 58)`,
     ).run(jobId, NOW - 3000, NOW - 2500)
     db.prepare(

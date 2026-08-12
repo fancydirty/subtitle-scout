@@ -73,7 +73,7 @@ describe('ZimukuVisionCard', () => {
   })
 
   it('Test 失败后显示错误消息且 Save 按钮仍 disabled', async () => {
-    const testVision = vi.spyOn(api, 'testVision').mockResolvedValue({ success: false, error: 'Invalid API key' })
+    vi.spyOn(api, 'testVision').mockResolvedValue({ success: false, error: 'Invalid API key' })
     renderCard()
     await waitFor(() => {
       fireEvent.change(screen.getByLabelText(/Model/i), { target: { value: 'gpt-4o' } })
@@ -88,7 +88,7 @@ describe('ZimukuVisionCard', () => {
   })
 
   it('字段内容修改后清除测试结果，Save 按钮重新 disabled', async () => {
-    const testVision = vi.spyOn(api, 'testVision').mockResolvedValue({ success: true, digits: '02998' })
+    vi.spyOn(api, 'testVision').mockResolvedValue({ success: true, digits: '02998' })
     renderCard()
     await waitFor(() => {
       fireEvent.change(screen.getByLabelText(/Model/i), { target: { value: 'gpt-4o' } })
@@ -109,7 +109,7 @@ describe('ZimukuVisionCard', () => {
   })
 
   it('Save 按钮点击后调用 putSecret 三次并 reload', async () => {
-    const testVision = vi.spyOn(api, 'testVision').mockResolvedValue({ success: true, digits: '02998' })
+    vi.spyOn(api, 'testVision').mockResolvedValue({ success: true, digits: '02998' })
     const putSecret = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
     const reload = renderCard()
     await waitFor(() => {

@@ -6,6 +6,39 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+
+    // ── 2026-08-13 死代码清理：开 noUnusedLocals，**不开** noUnusedParameters ──────────
+    //
+    // 为什么开 noUnusedLocals：本仓反复出现的病 A（"加了能力没人用"）在代码里的静态残留
+    // 就是未读局部与未读 import。清理前实测 45 处，其中真正有价值的发现全部来自这一档——
+    // 一个 import 了 runVerifySweep 却从不调用的 cli、一个 import 了整套 worker_task 执行
+    // 路径却零调用的 cmdWatch、一个 import 了 buildSubtitleTask 却手抄它输出格式的测试。
+    // 不开这个选项，下一个孤儿产生时同样不会有人知道；开了，它在编译期当场显形。
+    "noUnusedLocals": true,
+
+    // 为什么**不开** noUnusedParameters（实测后的判断，不是图省事）：
+    // 开启后后端多出 7 处、前端多出 2 处，把它们逐一看过之后，**没有一处是死代码**：
+    //   · `CompareTimeline.test.tsx` 的 `observe(el: Element)` —— ResizeObserver 接口实现，
+    //     形参由 DOM 规范规定，不是我们能删的；
+    //   · `opensubtitles.test.ts` / `zimuku.test.ts` 的 `(url, init)` 与
+    //     `extractEmbeddedSub.test.ts` 的 `(bin, args, options, callback)` —— fetch /
+    //     execFile 的桩，要拿到第 3、第 4 个参数就必须写出前面几个；
+    //   · `identifyScheduler.test.ts` 的 `depsWith(db, workDir, externalIds)` —— 同理，
+    //     workDir 是位置占位，第三参才是各用例真正要变的东西；
+    //   · `buildAdapters(emit, cfg, warn)` 的 warn、`forwardResume(job, deps, ctx)` 的 job
+    //     —— 带默认值/位置固定的公开签名，删了就是 API 变更。
+    // 也就是说这个选项在本仓的信噪比是 0/9：九处全是"接口/位置签名要求它在那儿"，
+    // 一处真死代码都没有。而消解它们只有两条路——加 `_` 前缀（TS 只豁免参数、不豁免局部），
+    // 或改签名。前者是给九个健康的形参统一打上"我知道它没用"的标记，纯噪音；后者是为了
+    // 让编译器闭嘴而动公开接口，本末倒置。
+    //
+    // ⚠️ 这个判断有前提：本仓**没有 lint**（无 eslint/biome 配置，见 package.json）。
+    // 有 lint 的话正确解法是 `@typescript-eslint/no-unused-vars` 配
+    // `argsIgnorePattern: '^_'`——它能区分"接口实现的占位"与"忘了删的参数"，而 tsc 的
+    // noUnusedParameters 做不到这个区分。哪天引入 lint，这一条应当重新评估。
+    //
+    // 注：`noUnusedLocals` 只管**模块内未读**，不管"导出了但全仓没人 import"。后者需要
+    // knip/ts-prune 这类工具，本次未引入——见清理报告"发现但没修"一节。
     "types": ["node"]
   },
   "include": ["src"]

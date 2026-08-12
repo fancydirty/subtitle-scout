@@ -3,8 +3,8 @@
 // 行为照 Jellyfin：遍历守备目录 → 按扩展名过滤 → ffprobe 探测 → 按约定解析结构 → 落 files 表。
 // 零身份判断（work_id 恒 NULL，识别 agent 的事）。不符合约定的静默跳过（非媒体文件）。
 //
-// 核心职责（三件事）：
-//  1. walk：遍历守备目录，找到所有媒体文件（复用 walkVideoFiles）
+// 核心职责：本文件今天只做 2 和 3，**1 不在这里**（见下方 import 处的说明）。
+//  1. walk：遍历守备目录，找到所有媒体文件 —— ⚠️ 实际由 daemonV2 直接调 walkVideoFiles 完成
 //  2. parse：按 Jellyfin 约定解析路径结构（work_dir/season/episode/parse_confidence）
 //  3. upsert：写入 files 表（指纹 mtime+size 未变则跳过）
 //
@@ -14,7 +14,18 @@
 //  - 全 null → 'none'（完全没解析出，等 agent 从目录结构推断）
 import { parseFilename } from '../recognition/parseFilename.js'
 import { detectSeasonFolder } from '../recognition/identifyFromPath.js'
-import { walkVideoFiles } from '../daemon/selfScan.js'
+// 2026-08-13 清理：这里原有 `import { walkVideoFiles } from '../daemon/selfScan.js'`，零调用。
+// 成因不是"删漏了"，而是**本文件的 walk 步骤从未在这里落地**：spec §4 设想的是一个
+// scanner 模块自己吃 ScannerDeps{roots, listVideoFiles, stat, now} 跑完整轮扫描，
+// 但真正实现出来的只有下面这几个纯函数（deriveWorkDir / isScannable / parseStructure /
+// singleSeasonOf / toMediaFileRow），走盘那一层最后长在了 daemonV2 里
+// （daemonV2.ts:1232 `this.deps.listVideoFiles ?? walkVideoFiles`）。
+//
+// ⚠️ 连带残留：下方 `ScanResult` 与 `ScannerDeps` 两个 interface 是同一个未落地设计的
+// 遗物——全仓零引用（daemonV2 消费的只有 toMediaFileRow / isScannable 两个函数）。
+// 它们是 `export` 的，所以 noUnusedLocals **抓不到**（编译器只管模块内未读，不管
+// 导出后无人 import）。本次不删，因为删导出类型属于 API 面变更、且它俩是"scanner 本该
+// 长成什么样"的唯一设计残迹；但记在这里，免得下一个人以为它们有消费方。
 
 export interface ScanResult {
   scanned: number      // 走到的文件数

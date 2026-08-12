@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { execFile as nodeExecFile } from 'node:child_process'
 import { openDb } from './db.js'
 // 真实探针（不是替身）：FFPROBE_PATH 空串那组回归必须跨过 streamProbe.ts 的二进制解析那一档
@@ -44,7 +44,11 @@ function mkDeps(db: ReturnType<typeof openDb>, overrides: TestDeps = {}) {
     // 这个文件里这样的用例有一大把，整体从 2 秒涨到 64 秒。
     // 需要主循环真的按拍走的用例（维护循环那几条）显式覆盖回真 sleep。
     sleep: async () => {},
-    inspectEveryMs: 24 * 60 * 60 * 1000,
+    // 2026-08-13：从写死的 `24 * 60 * 60 * 1000` 改为 import 进来的真常量。
+    // INSPECT_INTERVAL_MS 一直被 import 却从未使用（清理时由 noUnusedLocals 抓出）——
+    // 而这里手抄的字面量恰好就是它的值。抄一份的后果是：生产改巡检周期那天，这个文件里
+    // 所有"距上次巡检不足/已满一个周期"的用例仍按旧值建模，测的是一个已经不存在的系统。
+    inspectEveryMs: INSPECT_INTERVAL_MS,
     now: () => 1_000_000_000_000,
     ...overrides,
   } as any
@@ -53,10 +57,15 @@ function mkDeps(db: ReturnType<typeof openDb>, overrides: TestDeps = {}) {
 describe('ScoutDaemonV2（巡检模型）', () => {
   it('冷启动（无 last_inspect_at）→ 立即跑巡检', async () => {
     const db = openDb(':memory:')
-    const inspect = vi.fn()
-    const daemon = new ScoutDaemonV2(mkDeps(db))
-    // 注入 runInspection 到原型 spy 不方便——直接验证 meta 被写入
-    // 通过一个可观察的行为：识别队列有活时会被处理
+    // 注入 runInspection 到原型 spy 不方便——改为验证两件**可观察**的事：
+    //   ① meta 里落了 last_inspect_at（巡检确实收官过）
+    //   ② 识别队列里那一行真的被处理了（identifySpy 被调用）
+    // 2026-08-13 补：②此前只写在上面这句注释里、**没有对应断言**——测试造了带活的
+    // files 行、造了 identifySpy，然后只断言 ①。于是"冷启动会不会真的开工"这件事
+    // 其实没被守住：把 runInspection 里的识别那一段整段注释掉，本用例照样全绿
+    // （meta 仍会被写）。补上 ② 之后才名副其实。
+    // 同批删除的还有两个建完即弃的局部：`const inspect = vi.fn()`（从未注入任何地方）
+    // 与 `const daemon = new ScoutDaemonV2(mkDeps(db))`（真正跑的是下面的 daemon2）。
     db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, updated_at)
                 VALUES (?,?,?,?,?,?,?)`)
       .run('/media/Show/E01.mkv', '/media/Show', 'E01.mkv', 100, 1000, '/media/Show', 1000)
@@ -70,6 +79,7 @@ describe('ScoutDaemonV2（巡检模型）', () => {
     await p
     const row = db.prepare(`SELECT value FROM meta WHERE key = 'last_inspect_at'`).get() as { value: string } | undefined
     expect(row).toBeDefined()
+    expect(identifySpy).toHaveBeenCalled()
     db.close()
   })
 
@@ -1236,7 +1246,10 @@ function seedSettledFile(
   // 播种一个"半程折算进度"（第 5 步下游加的 sub_retry_streak）：换片源的伤害只有在
   // 状态最满的行上才看得见。CAP-1 是最危险的取值——不清的话，新片源第一次撞限流就
   // 凭空折算出一次"真实尝试"，而它一次都没被真正搜过。
-  if (have.has('sub_retry_streak')) row.sub_retry_streak = 2
+  // 2026-08-13：取值从写死的 `2` 改为 `RETRY_LATER_STREAK_CAP - 1`。注释一直说的是"CAP-1"，
+  // 而常量虽已 import 却从未被用（清理时由 noUnusedLocals 抓出）。写死的 2 会在 CAP 调值那天
+  // 静默失去"最危险取值"的语义——用例照样绿，但它守的东西已经变了。
+  if (have.has('sub_retry_streak')) row.sub_retry_streak = RETRY_LATER_STREAK_CAP - 1
   if (have.has('translatable')) row.translatable = 1
   const cols = Object.keys(row)
   db.prepare(`INSERT INTO files (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`)
@@ -1362,7 +1375,7 @@ describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
     const cols = new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).map(c => c.name))
     expect(cols.has('sub_retry_streak')).toBe(true)
     seedSettledFile(db, P, { mtime: 1000 })
-    expect(stateOf(db, P).sub_retry_streak).toBe(2)   // 前置条件成立，否则本用例是空转的假绿
+    expect(stateOf(db, P).sub_retry_streak).toBe(RETRY_LATER_STREAK_CAP - 1)  // 前置条件成立，否则本用例是空转的假绿
     const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 5000, size: BIG } })
     const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
     await scan(daemon)

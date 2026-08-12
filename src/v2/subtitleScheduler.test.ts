@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import {
-  runSubtitleWorkDir, buildSubtitleTask, listSubtitleQueue,
+  runSubtitleWorkDir, buildSubtitleTask, listSubtitleQueue, subtitleJobId,
   RETRY_LATER_STREAK_CAP, type SubtitleQueueItem,
 } from './subtitleScheduler.js'
 import { traceBus } from '../core/traceBus.js'
@@ -48,7 +48,11 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     }
   })
 
-  const noopWorker = async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] })
+  // 2026-08-13 清理：`const noopWorker = async () => ({ installed: [], ... })` 已删除，
+  // 零引用。本文件每条用例都自建一个**表达该用例意图**的 worker（noMatchWorker /
+  // installedWorker / retryLaterWorker …），一个"什么都不报"的通用桩没有调用点——
+  // 而且它恰恰是最危险的那种桩：一个空报告会让所有文件走 B-2「无结局」兜底，
+  // 用它写出来的用例测的是兜底路径，不是它名字暗示的"正常但没结果"。
 
   // ───────────────────────────────────────────────────────────────────────────
   // 装盘成功的回写（R24 + D6 + D8）。这一组取代了改动前那条
@@ -675,6 +679,30 @@ describe('C15 对称性：电影与剧集在同一失败下计数行为一致', 
     return { installed: [], no_safe_match: [{ itemId, reason: 'nothing found' }], retry_later: [], hardsub_assumed: [] }
   }
 
+  /** 从**真实的** buildSubtitleTask 取一个文件的 itemId / jobId，而不是在测试里手抄
+   *  `tmdb:95897/s1e1` 这种字符串。
+   *
+   *  2026-08-13 补：`buildSubtitleTask` 一直被 import 却从未被调用（清理时由 noUnusedLocals
+   *  抓出），而本组用例的**全部前提**恰恰是"worker 报的 itemId 与 buildSubtitleTask 发出去的
+   *  那个字节一致"——归属反解（C15）就是拿它去匹配的。手抄的后果是：那个三元表达式哪天改了
+   *  形态（比如补零成 s01e01），生产里 worker 收到新形态、回报新形态、反解照常成功，而这一组
+   *  用例仍在用旧形态自问自答，**两边都绿，C15 的守卫其实已经失效**。
+   *  这与本文件 :670 注释里"不在测试里复述实现"的既有纪律是同一条。 */
+  /** FindSubtitleTargetFact.itemId 的类型是 `string | null`（null = 未识别，见 schemas
+   *  的 :31 与 :120 那段论证）。本组用例造的都是**已识别**的作品（work_id 有值），
+   *  buildSubtitleTask 必然拼出非空 itemId——所以这里断言非空而不是 `as string` 硬转：
+   *  真拿到 null 的那天说明 buildSubtitleTask 对已识别作品也不发身份了，那是个该当场
+   *  失败的回归，不该被一个静默的类型断言吞掉。 */
+  const realItemId = (it: SubtitleQueueItem, fileIndex = 0): string => {
+    const id = buildSubtitleTask(it, 'zh').targets[fileIndex].itemId
+    expect(id).not.toBeNull()
+    return id!
+  }
+  /** runKey ≠ jobId：runSubtitleWorkDir 用的是 `job-${subtitleJobId(workId)}`
+   *  （:234 `job-subtitle:${item.workId}`，而 subtitleJobId 本身产的是 `subtitle:X`）。
+   *  这里照 daemonV2.test.ts 的既有口径用真常量拼，不手抄 'job-subtitle:tmdb:95897'。 */
+  const realRunKey = (it: SubtitleQueueItem): string => `job-${subtitleJobId(it.workId)}`
+
   /** 🔴 归属反解的**唯一可靠证人是 last_error（落到哪个桶），不是 sub_attempt 的数值**。
    *
    *  3-2 的变异验证实测踩到：把 resolvePath 换回"只认 /sNeM"的旧正则后，电影的
@@ -689,7 +717,7 @@ describe('C15 对称性：电影与剧集在同一失败下计数行为一致', 
     (db.prepare('SELECT last_error FROM files WHERE path = ?').get(path) as { last_error: string | null }).last_error
 
   it('🔴 剧集「搜过确实没有」→ sub_attempt=1 且落进 no-match 桶', async () => {
-    await runSubtitleWorkDir(db, noMatchWorker('job-subtitle:tmdb:95897', 'tmdb:95897/s1e1') as any, tv, 'zh')
+    await runSubtitleWorkDir(db, noMatchWorker(realRunKey(tv), realItemId(tv)) as any, tv, 'zh')
     expect(subAttemptOf(db, tv.files[0].path)).toBe(1)
     expect(lastErrorOf(tv.files[0].path)).toBe('sub:no-match')
   })
@@ -699,7 +727,7 @@ describe('C15 对称性：电影与剧集在同一失败下计数行为一致', 
     // noSafePaths → 落到 B-2「无结局」兜底走 bump（那条恰好也计数）。但 no_safe_match 那条
     // 分支写的是 unavailable **且不计数**——于是剧集与电影在同一个"找不到"下走了两条不同的
     // 轨、留下两种不同的状态。修法（C15）：归属反解改按 path，两者同轨。
-    await runSubtitleWorkDir(db, noMatchWorker('job-subtitle:tmdb:603', 'tmdb:603') as any, movie, 'zh')
+    await runSubtitleWorkDir(db, noMatchWorker(realRunKey(movie), realItemId(movie)) as any, movie, 'zh')
     expect(subAttemptOf(db, movie.files[0].path)).toBe(1)
     // 🔴 这一条才是真正咬住 C15 的断言（见上方 lastErrorOf 的论证）：旧正则下电影反解失败 →
     // 漏到 B-2 兜底 → 这里会是 'no-outcome'，而计数照样是 1，只看计数完全测不出来。
@@ -707,8 +735,8 @@ describe('C15 对称性：电影与剧集在同一失败下计数行为一致', 
   })
 
   it('🔴 两者的 sub_status 与 recheck_after 也一致（同轨的完整含义）', async () => {
-    await runSubtitleWorkDir(db, noMatchWorker('job-subtitle:tmdb:95897', 'tmdb:95897/s1e1') as any, tv, 'zh')
-    await runSubtitleWorkDir(db, noMatchWorker('job-subtitle:tmdb:603', 'tmdb:603') as any, movie, 'zh')
+    await runSubtitleWorkDir(db, noMatchWorker(realRunKey(tv), realItemId(tv)) as any, tv, 'zh')
+    await runSubtitleWorkDir(db, noMatchWorker(realRunKey(movie), realItemId(movie)) as any, movie, 'zh')
     const tvRow = db.prepare('SELECT sub_status, sub_attempt FROM files WHERE path = ?').get(tv.files[0].path) as any
     const mvRow = db.prepare('SELECT sub_status, sub_attempt FROM files WHERE path = ?').get(movie.files[0].path) as any
     expect(mvRow.sub_status).toBe(tvRow.sub_status)     // 都是 NULL

@@ -122,3 +122,22 @@ describe('collapseRecentRuns（Activity 流连续重试折叠：同 jobId 同 de
     expect(folded[0].count).toBe(1)
   })
 })
+
+// 2026-08-13 补：`outcomeMessageKey` 此前被 import 却**零断言**（清理时由 noUnusedLocals
+// 抓出）。它不是死代码——RerunDialog.tsx:71 在生产路径上调它把四态回执翻成人话。
+// 一个映射函数没有覆盖，DESIGN.md §8 那条"四个 outcome 不许都写成 success"的纪律就没有
+// 任何机械守卫：有人把 blocked_dormant 也 return 成 workflow_outcome_created，
+// 前端照样绿、用户看到"已派发"而实际上什么都没派。故补这一组，而不是删 import。
+describe('outcomeMessageKey（四态回执 → i18n 键 / DESIGN.md §8）', () => {
+  it('四个 outcome 各自映射到自己的键', () => {
+    expect(outcomeMessageKey('created')).toBe('workflow_outcome_created')
+    expect(outcomeMessageKey('revived')).toBe('workflow_outcome_revived')
+    expect(outcomeMessageKey('coalesced')).toBe('workflow_outcome_coalesced')
+    expect(outcomeMessageKey('blocked_dormant')).toBe('workflow_outcome_blocked_dormant')
+  })
+
+  it('🔴 四个键两两不同——DESIGN.md §8：不许把四态都折叠成一句 success', () => {
+    const keys = (['created', 'revived', 'coalesced', 'blocked_dormant'] as const).map(outcomeMessageKey)
+    expect(new Set(keys).size).toBe(4)
+  })
+})

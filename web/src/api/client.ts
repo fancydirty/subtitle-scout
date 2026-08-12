@@ -1,6 +1,6 @@
 // web/src/api/client.ts：v2 只读数据层客户端。DASHBOARD_TOKEN 存在时带 ?token=。
 import type {
-  RunHistoryDTO, ReconcileAllResultDTO,
+  RunHistoryDTO,
   ParkedItemDTO, WorkflowPendingDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
@@ -191,7 +191,6 @@ async function del<T>(path: string): Promise<T> {
 export const api = {
   runs: (offset: number, limit: number, signal?: AbortSignal) =>
     get<RunHistoryDTO[]>(`/api/v2/runs?offset=${offset}&limit=${limit}`, signal),
-  reconcileAll: () => post<ReconcileAllResultDTO>('/api/v2/reconcile-all'),
   // ---------- Spec A 启动面（BootstrapGate / wizard / Settings Providers 区共用） ----------
   // 契约①：providers.subhd.enabled 是**三层解引用**——上一轮整页白屏的那一处。
   setupStatus: (signal?: AbortSignal) => get<SetupStatusDTO>('/api/v2/setup/status', signal, SETUP_STATUS_SHAPE),

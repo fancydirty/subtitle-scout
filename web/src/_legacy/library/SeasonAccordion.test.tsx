@@ -1,11 +1,11 @@
 // web/src/library/SeasonAccordion.test.tsx：季手风琴——≤50 集用行式（EpisodeRow），>50 集回落
 // 格阵（SeasonGridBody），季头恒显卷起汇总（覆盖句）。默认测试语言 en（jsdom navigator.language=
 // en-US，同 SeriesPage.test.tsx 口径）——覆盖句大数字段在 en 下渲染为 "1 of 2"（zh 才是 "1 / 2"）。
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { describe, it, expect, afterEach } from 'vitest'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../../i18n/useT.js'
 import { SeasonAccordion } from './SeasonAccordion.js'
-import type { LibrarySeasonDTO, SubtitleCompareDTO } from '../../api/types.js'
+import type { LibrarySeasonDTO } from '../../api/types.js'
 
 afterEach(cleanup)
 
@@ -57,4 +57,9 @@ describe('SeasonAccordion', () => {
 // web/src/subtitleVerify/** 的源码与测试保留，将来重启用时把这个 describe（连同 stubVerify /
 // compareDTO / openPanel 三个 helper、beforeEach 的 ResizeObserver stub、originalFetch /
 // vi.restoreAllMocks / vi.unstubAllGlobals 在 afterEach 的清理）恢复即可。
+//
+// 2026-08-13 清理：那次删除**漏摘了 4 个 import**——`beforeEach` / `vi` / `waitFor` /
+// `SubtitleCompareDTO`，四个全是上面那 7 条用例专用的（ResizeObserver stub 用 beforeEach、
+// fetch stub 用 vi、面板异步渲染用 waitFor、compareDTO helper 用那个类型）。本次删掉它们。
+// 恢复那个 describe 时这 4 行也要跟着回来——这里点名列出，免得届时以为只需贴回 describe。
 //

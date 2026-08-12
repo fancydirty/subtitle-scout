@@ -14,7 +14,16 @@ import { tool, stepCountIs, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { makeRunTracer } from '../core/traceBus.js'
-import { titleFromDir, searchCandidates, verifyEvidence } from '../v2/identify.js'
+import { searchCandidates } from '../v2/identify.js'
+// 2026-08-13 清理：`verifyEvidence` 与 `titleFromDir` 曾一并 import 进来，两个都零调用。
+// 这**不是**"双证据核验丢了"——那道门是活的，只是不在这一层：写库门在
+// `v2/identifyScheduler.ts:104` 的 writeIdentified 里（`verifyEvidence(...)` + 不过就
+// `evidence-fail` 拒写，且它是用 `titleFromDir(facts.dirName)` 清洗后的标题去比的）。
+// 分层是刻意的：agent（本文件）只负责"确认身份"，机械核验放在 scheduler 的落库路径上，
+// 因为 2026-08-08 实测过 agent 经常搜完 TMDB 却不调 write 工具——门必须长在写库那一侧，
+// 不能长在 agent 自觉调用的一侧。本文件 prompt 里那句 "two-evidence bar — never skip it"
+// 是对 agent 的行为指令，不由这两个函数实现，故删 import 不影响它。
+
 // R-F5：季集两个方法的签名直接从 TmdbClient 取（type-only import，不引入运行期依赖）——
 // 不在这里手抄一遍返回类型，抄错一个字段就是"类型说有、实际没有"的静默漂移。
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
@@ -102,8 +111,10 @@ export async function runIdentify(
   facts: WorkDirFacts,
   runKey: string,
 ): Promise<IdentifyReport> {
+  // `candidates[0]` 已经**就是** titleFromDir(facts.dirName)（见 v2/identify.ts:30 的
+  // `const primary = titleFromDir(dirName)`），所以这里不再另算一份 `const title = ...`
+  // ——那一行赋值后零读取，是同一个值的第二份副本（2026-08-13 清理删除）。
   const candidates = searchCandidates(facts.dirName)
-  const title = titleFromDir(facts.dirName)
 
   const searchTool = tool({
     description: `Search TMDB for a title. Returns candidate hits with id/title/year. Use this to find which work a directory belongs to.`,

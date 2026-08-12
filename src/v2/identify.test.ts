@@ -16,6 +16,27 @@ describe('titleFromDir（目录名 → 标题）', () => {
   })
 })
 
+// 2026-08-13 补：`searchCandidates` 此前被 import 却**零断言**（清理时由 noUnusedLocals
+// 抓出）。它不是可删的多余 import——它是生产活体：identifyWorker 的 prompt 里那行
+// `Search candidates: ${candidates.join(' | ')}` 就是它的产出，agent 拿它去搜 TMDB。
+// 一个决定"识别 agent 拿什么词去搜"的函数在本文件里一条覆盖都没有，属于测试漏洞而非死代码，
+// 故补这一组，而不是把 import 删掉。
+describe('searchCandidates（目录名 → TMDB 搜索候选）', () => {
+  it('带年份：清洗后的标题排第一，原目录名作为第二候选保留', () => {
+    // 顺序有语义：primary（titleFromDir 清洗过的）在前，agent 优先用它搜。
+    expect(searchCandidates('Pulp Fiction (1994)')).toEqual(['Pulp Fiction', 'Pulp Fiction (1994)'])
+  })
+  it('无年份：清洗结果与原名相同 → 去重成一个候选（Set 去重，不产出重复搜索词）', () => {
+    expect(searchCandidates('SPY x FAMILY')).toEqual(['SPY x FAMILY'])
+  })
+  it('带 tmdb 标签：标签被清掉，原名仍保留（万一 TMDB 认得完整形态）', () => {
+    expect(searchCandidates('后室 (2026) {tmdb-1083381}')).toEqual(['后室', '后室 (2026) {tmdb-1083381}'])
+  })
+  it('空白目录名 → 空数组（不产出空字符串候选，否则 agent 会拿空串去搜）', () => {
+    expect(searchCandidates('   ')).toEqual([])
+  })
+})
+
 describe('verifyEvidence（双证据核验）', () => {
   it('名字 + 年份吻合 → 通过', () => {
     expect(verifyEvidence(

@@ -1,25 +1,45 @@
 // src/dashboard/apiV2.ts
 // v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报直接暴露 TMDB
 // poster_path，前端自行拼 CDN URL（image.tmdb.org，公开、免 key）——不再经服务端代理。
-import { dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
-import { LibraryRepo, type ItemFileCoverage } from '../v2/libraryRepo.js'
+import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo, findOverlappingRoot } from '../v2/settingsRepo.js'
-import type { JobsRepo, WorkerTaskUpsertOutcome } from '../v2/jobsRepo.js'
-import { canonicalEpisodes } from '../v2/tmdbCatalog.js'
 import { traceBus, type TraceEvent } from '../core/traceBus.js'
-// 清算波 R-6（F9b）：只为下面的文档注释引用真实常量，而不是把它的字符串值抄一份陈旧副本
-// （旧值 'self-scan-trigger' 已在去 Jellyfin 化 T4 改名为 INGEST_ORCHESTRATE_SERIES_ID=
-// 'ingest-trigger'——注释里继续写旧值会误导读者去 grep 一个早已不存在的字符串）。
-import { INGEST_ORCHESTRATE_SERIES_ID } from '../daemon/ingestTrigger.js'
-// Plan B Task 1: originLang + nativeAudio 计算依赖
-import { langOf } from '../agent/languages.js'
-import { resolveTargetLanguages, parseTargetLanguages } from '../cli/targetLanguages.js'
+import { parseTargetLanguages } from '../cli/targetLanguages.js'
 // R-F15 缺口③：换目标语言 → 全库重判（清判决列 + 按 sidecar_langs 重导 sub_status）。
 // 实现放在 v2/ 而不是这里：它是库层语义（且要能被 daemon 侧测试直接调），dashboard 只是触发者。
 import { retargetForLanguageChange } from '../v2/retarget.js'
+
+// ---- 2026-08-13 死代码清理：本文件删掉的 6 个未消费 import ----
+//
+// 删除的是 `dirname`、`ItemFileCoverage`、`canonicalEpisodes`、`INGEST_ORCHESTRATE_SERIES_ID`、
+// `langOf`、`resolveTargetLanguages`（后者只窄化为仍在用的 `parseTargetLanguages`）。
+// 逐条成因，写在这里是因为它们不是同一种残留：
+//
+// · `JobsRepo` + `WorkerTaskUpsertOutcome`（整行 import 全未消费）：redispatch 的实现已迁去
+//   `v2/triageOps.ts`，本文件第 1049 行只剩一句 `export { redispatch, type RedispatchResult }
+//   from '../v2/triageOps.js'` 的转发——转发不需要这两个类型，它们随实现一起走了。
+//
+// · `dirname` / `ItemFileCoverage` / `canonicalEpisodes`：2026-08-12「无活 UI 端点」裁决
+//   删掉旧库三族 builder（见下方那段注释）时漏摘的 import。三个符号本身都还活着
+//   （canonicalEpisodes 由 daemonV2 boot pass + tmdbCatalog 消费，ItemFileCoverage 由
+//   libraryRepo.itemFileCoverage 产出），只是**本文件**不再引用。
+//
+// · `INGEST_ORCHESTRATE_SERIES_ID`：曾被 import 进来"只为让文档注释引用真实常量而不是抄
+//   一份陈旧字符串副本"。但那条注释后来随旧库三族一并删除，import 留了下来——一个
+//   为注释服务的 import 在注释消失后就是纯残留。今天全文件零处提及该常量的语义。
+//
+// · `langOf` + `resolveTargetLanguages`：**这两条是"接线断了"的化石，不是普通残留。**
+//   原注释写的是「Plan B Task 1: originLang + nativeAudio 计算依赖」。实测：`nativeAudio`
+//   这个标识符在**全仓（src + web/src）只出现在那一行注释里**——没有 DTO 字段、没有 SQL 列、
+//   没有前端消费方。也就是说 Plan B Task 1 的产出侧从未落地（或落地后被整体回滚），
+//   只剩两个 import 和一行注释在替一个不存在的功能站岗。这里按"真死代码"处理（删），
+//   而不是按 subtitleVerify 那族"留着等接线"处理——区别在于：那族有 246 条用例覆盖的
+//   真实算法资产在等一根线，这里**没有任何资产**，只有两个指向别处活函数的 import。
+//   要恢复 originLang/nativeAudio，改的是 buildMediaLibrary 的 DTO，不是这两行 import。
 
 // ---- 2026-08-12（无活 UI 端点裁决）：旧库三族 builder 已整体删除 ----
 //

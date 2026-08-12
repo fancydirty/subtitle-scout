@@ -5,8 +5,14 @@
 // 它不需要看目录树、不需要判断身份、不需要管字幕放哪——系统 harness 它。
 import type { ScoutDb } from './db.js'
 import type { FindSubtitleTask, FindSubtitleTargetFact } from '../agent/findSubtitleWorker.schemas.js'
-import type { LanguageModel } from 'ai'
-import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
+// 2026-08-13 清理：这里原有 `import type { LanguageModel } from 'ai'` 与
+// `import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'`，两个都零调用。
+// 本文件**不组装 worker**：`runSubtitleWorkDir` 的第二参就是已经造好的 worker
+// （`(task) => Promise<FindSubtitleBatchReport>`），由 cmdWatch 在 holder 代际里
+// 统一 makeFindSubtitleWorker 一次、整轮巡检复用（见 cli/index.ts 的 subtitleWorkerV2：
+// "一轮巡检会连着跑几十个作品，每个作品重建一整套 provider adapters 纯属白付"）。
+// 调度器拿 model 自己造 worker 会正面违反那条口径，故这两个 import 不该复活——
+// 需要换 worker 实现时改的是注入点，不是这里。
 import { traceBus } from '../core/traceBus.js'
 import { recordFound } from './notificationsRepo.js'
 

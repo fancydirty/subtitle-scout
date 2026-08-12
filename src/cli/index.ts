@@ -19,7 +19,6 @@ import { AuthService } from '../dashboard/auth.js'
 import { makeModel } from '../agent/llm.js'
 import { cmdTranslateItem, tryAutoTranslateCfg, makeDaemonTranslateRunItem } from './translateItemCommand.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
-import { runTranslateWorkerTask } from '../v2/translateWorkerTask.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities, checkJimaku, checkSubhd,
@@ -32,14 +31,27 @@ import { curlFetch, SUBHD_BASE } from '../adapters/providers/subhd.js'
 import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
 import { setupSatisfied, workPermitted, makeSecretsWatcher, makeSatisfactionTracker, type ClientsHolder } from './watchClients.js'
 import { openDb } from '../v2/db.js'
-import { JobsRepo, type Job } from '../v2/jobsRepo.js'
+import { JobsRepo } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { RunsRepo } from '../v2/runsRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { makeMaintenanceState, runDbMaintenance } from '../v2/dbMaintenance.js'
-import { SubtitleVerifyRepo } from '../v2/subtitleVerifyRepo.js'
-import { verifyAndRecord } from '../subtitleVerify/verifySubtitle.js'
-import { runVerifySweep } from '../subtitleVerify/verifySweep.js'
+// ── 字幕校验巡检（雪藏中，2026-08-07）：本文件**刻意不 import 它** ──────────────
+// 这里曾有三行：`SubtitleVerifyRepo` / `verifyAndRecord` / `runVerifySweep`，三个都是
+// import 进来后零调用。2026-08-13 清理把它们删掉，理由**不是**"这些资产没用"——恰恰相反，
+// src/subtitleVerify/ 是 246 条用例覆盖的真算法，`v2/subtitleVerifyRepo.ts` 头部有一份
+// 完整裁决明令保留（🔴 那份注释不要删）。
+//
+// 删的是**假信号**：一个零调用的 import 会让 `rg 'runVerifySweep' src/cli/` 出现命中，
+// 读者据此以为"cli 这边已经接上了、只差最后一步"。真相是一根线都没接。让 grep 诚实地
+// 返回零结果，比留一个指向空处的 import 更接近"让事实显形"。
+//
+// 恢复接线要做的事（照抄 subtitleVerifyRepo.ts §「反过来，恢复它只需要」）：
+//   1. 在 daemonV2 加一个 pass 调 runVerifySweep，并写 `last_verify_sweep_at` meta 键
+//      （apiV2.ts 的 lastVerifySweepAt 字段已就位，无需改动即自动复活）；
+//   2. 把 TriagePage 挂回 AppShell。
+// 那一天在这里重新 import 是一行的事——而在此之前，这里不该有任何东西。
+
 import { makeIngestPass, type IngestResult } from '../v2/ingest.js'
 import { ScoutDaemonV2 } from '../v2/daemonV2.js'
 import { buildDaemonV2Deps } from './watchWiring.js'
@@ -51,11 +63,6 @@ import { fetchAnimeListsTable } from '../adapters/providers/animeLists.js'
 import { makeRealignRunEpisode, type RealignExecutorDeps } from '../v2/realignExecutor.js'
 import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
 import { replayRollback } from '../files/realignManifest.js'
-import { runRealignWorkerTask } from '../v2/realignWorkerTask.js'
-import { runFindSubtitleWorkerTask } from '../v2/findSubtitleWorkerTask.js'
-import {
-  makeUnidentifiedFindSubtitleWorker, runUnidentifiedFindSubtitleWorkerTask,
-} from './unidentifiedFindSubtitle.js'
 // (import removed - see comment above)
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
@@ -65,13 +72,17 @@ import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
 import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning, existingNestedRootsWarning } from './watchStartupWarnings.js'
-import type { ReconcileAllResultDTO } from '../dashboard/apiV2.js'
+// 2026-08-13 清理：`import type { ReconcileAllResultDTO }` 已删除。它是 cmdReconcileAll 的
+// 返回类型，而 cmdReconcileAll 本身已随第 5.5 步（orchestrator 及其旧架构全删）消失——
+// 一个只为已删函数存在的类型 import。DTO 本体仍留在 apiV2.ts（web/src/api/client.ts 的
+// `reconcileAll()` 还在引用同名前端 DTO，见下方"发现但没修"）。
 
-function requireEnv(name: string): string {
-  const v = process.env[name]
-  if (!v) { console.error(`missing required env var: ${name}`); process.exit(2) }
-  return v
-}
+
+// 2026-08-13 清理：`requireEnv` 已删除（零调用者）。它的最后两个调用点是
+// JELLYFIN_URL / JELLYFIN_API_KEY，随 design §P7「去 Jellyfin 化」的代码出口一并消失
+// （见下方 cmdWatch 里那条已有注释）。今天所有凭证都走 AdapterConfigResolver
+// （env **或** dashboard setup wizard 落库皆可，spec A §4.3），"缺就 exit(2)"这个
+// 早退语义已被 §4.7 的 setup 闸取代：缺密钥不再崩，而是 gated 存活等用户补配。
 
 /** 进程级长命客户端的组装产物。setup 模式（spec A §4.7）：LLM/TMDB 任一不可解析 → 对应字段
  *  null + 一行 warn，**不再 exit**——硬性要求上提到门禁层（cmdWatch setup 闸 /
@@ -197,12 +208,21 @@ async function cmdWatch() {
   const jobs = new JobsRepo(db)
   const lib = new LibraryRepo(db)
   const runs = new RunsRepo(db)
-  // 字幕校验巡检（Task 6）的持久层。dashboard 那侧（server.ts）自己也建一个实例——两者
-  // 无状态（只包一个 db 引用），共享同一个 sqlite 连接，各建一个与共用一个等价。
-  // 2026-08-07（spec §5）：巡检注入本轮雪藏（承载它的 daemonDeps 字面量已于第 7 步 B 组删除，
-  // 雪藏状态不变——daemonV2 侧从未有过 verifySweep 字段），这个实例
-  // 目前只剩"恢复注入时现成可用"的意义——按用户裁决不删。
-  const verifyRepo = new SubtitleVerifyRepo(db)
+  // 字幕校验巡检（Task 6）的持久层**曾在这里建一个实例**：`const verifyRepo = new
+  // SubtitleVerifyRepo(db)`，赋值后零读取。2026-08-07（spec §5）巡检注入雪藏后，承载它的
+  // daemonDeps 字面量于第 7 步 B 组删除（daemonV2 侧从未有过 verifySweep 字段），此后它
+  // 只剩"恢复注入时现成可用"这一个意义，当时的裁决是不删。
+  //
+  // 🟡 2026-08-13 清理**推翻了这一条局部裁决**（只推翻这一条，资产族的保留裁决**不动**——
+  // 见 v2/subtitleVerifyRepo.ts 头部那份完整论证，那份注释不要删）。理由：
+  //   · 被保护的资产是 `SubtitleVerifyRepo` 这个类和 src/subtitleVerify/ 那 246 条用例，
+  //     **不是这一行 new**。类还在、测试还在、dashboard 侧（server.ts:398）活着的实例还在。
+  //   · 「现成可用」的收益是零：这个 repo 无状态（构造函数只存一个 db 引用），恢复注入时
+  //     重新写 `new SubtitleVerifyRepo(db)` 就是一行——而那一行本来就已经明列在
+  //     subtitleVerifyRepo.ts 的恢复清单里。留一个不读的实例并不能让恢复少做任何事。
+  //   · 代价却是实的：它是本文件开启 noUnusedLocals 的最后一个障碍物，而开启它正是为了
+  //     让**下一个**孤儿在编译期显形。为了一行零收益的占位而永久放弃全仓的孤儿告警，
+  //     账算不过来。
 
   // dashboard G4：守备目录 DB 化——spec 裁决照抄 Jellyfin 分界：挂载是部署层（compose volume），
   // 守备目录是产品层（media_roots 表，dashboard 里增删）。MEDIA_ROOTS env 降级为首启种子值：
@@ -243,7 +263,13 @@ async function cmdWatch() {
   // dashboard G4：settings.target_languages（行为级设置）优先于部署层的 TARGET_LANGUAGES env
   // ——见 resolveTargetLanguages 第二参的文档注释；本战役唯一被真正消费的行为键。
   // 债务D5：语言配置提供者——settings 行为级 > env 部署级的求值挪进闭包，每次消费新鲜读。
-  const { targetLanguages } = resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
+  //
+  // 2026-08-13 清理：这里原本**并排**还有一行急切解构
+  // `const { targetLanguages } = resolveTargetLanguages(...)`，零读取。它是 D5 改造前的形态，
+  // 改造把所有消费点切到了下面这个惰性闭包，旧的那行没删干净。留着它有真实危害：它是一份
+  // watch 启动时刻的**冻结快照**，而 D5 的全部意义就是"设置页改完下一轮就生效、不用重启
+  // 容器"。下一个人顺手用了这个现成的 `targetLanguages` 变量，就悄悄退回改造前的行为，
+  // 且不会有任何测试变红——正是 D5 注释里点名要防的那种静默漂移。
   const languagesNow = () => resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
 
   // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
@@ -447,187 +473,24 @@ async function cmdWatch() {
     jobs, now: () => Date.now(), log,
   })
 
-  // ⚠️ 第 7 步 B 组的实测发现：**这个函数在生产已无调用者**，但刻意保留、不在本组删除。
+  // ⚠️ 原本这里有一个 140 行的 `const handleWorkerTask = async (job: Job) => {...}` 闭包，
+  // **生产零调用者**。2026-08-13 死代码清理把它整体提取到 `./handleWorkerTask.ts`，
+  // 函数体逐字未改，15 个闭包捕获变量收进显式 deps 参数（字段名与这里的局部名逐字相同）。
   //
-  // 事实链（可复核）：它唯一的调用点是原 `daemonDeps.executeJob` 闭包；`executeJob` 唯一的
-  // 消费者是 `ScoutDaemon.dispatch()`；而 ScoutDaemon 自第 2 步起就不再被构造（生产唯一入口
-  // cmdWatch 构造的是 ScoutDaemonV2），本组已把 ScoutDaemon 与 src/v2/daemon.ts 整体删除。
-  // 连带事实：`jobs.claimNext()` 在删除后**生产零调用点**——ScoutDaemon.dispatch 是它唯一的
-  // 非测试调用者。也就是说 jobs 队列现在只有生产者（dashboard 的 redispatch、
-  // dispatchTranslateTasks、各 upsertWorkerTask），没有任何消费者。
+  // 为什么是提取而不是删除或原地保留（三条路的完整权衡、零调用者的事实链、以及它今天
+  // 造成的两个真实后果——ingestTrigger 仍在写无人认领的 orchestrate 行、dashboard 的
+  // 手动重派按钮语义为空）全部写在那个文件的头注释里，不在这里重抄。
   //
-  // 为什么本组不删它：这不是"B 组把它弄死的"，而是第 2 步切换入口那一刻就已经死了、B 组只是
-  // 让它显形。删它会连带拖走 runFindSubtitleWorkerTask / runRealignWorkerTask /
-  // runTranslateWorkerTask / runUnidentifiedFindSubtitleWorkerTask 四条 worker_task 执行路径、
-  // JobsRepo 的整套 claim/租约/reap 机制，以及 dashboard 上仍在写 jobs 行的 redispatch 端点
-  // ——那是"旧 jobs 队列整体退役"这个独立决策，涉及产品语义（dashboard 的手动重派按钮是否
-  // 还有意义），不是一次纯结构清理能顺手带走的。本组的硬性约束是"ScoutDaemonV2 行为一个
-  // 字节都不能变"，故只报告、不动手。
+  // 一句话版本：`export` 出去之后，"零调用者"这个事实从"由一段会过期的注释承载"变成了
+  // "由 `rg \"from './handleWorkerTask.js'\" src` 无输出承载"——机器可查，且恢复接线
+  // 那天的那次 import 就是接线动作本身，在 diff 里藏不住。
   //
-  // 关于"零调用者"这个事实如何被承载：**只由本注释承载**。本仓当前**未开启**
-  // `--noUnusedLocals`（tsconfig 里没有它），所以编译器今天对此完全沉默；开启那天，
-  // 它会与 `cli/index.ts` 已有的六处未读局部/未读 import 一同显形——`:40` verifyAndRecord、
-  // `:41` runVerifySweep、`:67` ReconcileAllResultDTO、`:69` requireEnv、`:204` verifyRepo、
-  // `:245` targetLanguages（六处全部先于本组存在）。刻意**不写** `void handleWorkerTask`：
-  // 那一行的实际效果是把本函数从"开启那天自动进入待处理清单"里主动豁免出去，成为七个孤儿
-  // 里唯一被特殊对待的一个——与本注释想要的"让事实显形"恰好相反。
-  //
-  // ── 以下是它原有的设计注释，退役决策做出前原样保留 ──
-  // v3 phase ⑦ claim-loop routing: kind==='worker_task' 三个 taskType 分流。每个 runXxxWorkerTask
-  // 函数（runFindSubtitleWorkerTask/runRealignWorkerTask/runOrchestrateWorkerTask）在被调用之后，
-  // 自己都已经把抛出的异常兜进 completeError（worker-exhaustion 要求：find-subtitle worker 撞
-  // 步数上限/超时/abort 是抛错，不是结构化 retry_later；一个抛错的 worker 必须让这个 job 失败
-  // 退避，不能让 daemon 崩）、并自己完成 job 的状态迁移。但 find_subtitle 分支在调用
-  // runFindSubtitleWorkerTask 之前，还要先 await buildAdapters(...) + makeFindSubtitleWorker(...)
-  // 组装 runTask 闭包——这两步本身在它们各自的 try/catch 之外（只在 ZIMUKU_ENABLED=true 且缺
-  // LLM_BASE_URL 时抛，watch 场景下 LLM_* 已被 requireEnv'd 兜底，实际不会触发，但保留同样的
-  // 抛错-即-completeError 契约仍是必须的），因此这里把三个分支整体包进同一个 try/catch：
-  // 任何分支在完成路由之前抛出，都在这里兜底 completeError，而不是让异常逃出 handleWorkerTask
-  // 把 daemon 的 claim 循环带崩（daemon.dispatch 是最后一道网，这里的 try/catch 是它前面一道，
-  // 不依赖它兜底）。
-  const handleWorkerTask = async (job: Job): Promise<void> => {
-    let payload: { taskType?: unknown; scope?: unknown } = {}
-    try {
-      payload = JSON.parse(job.payload ?? '{}')
-    } catch {
-      jobs.completeError(job.id, `worker_task job ${job.id} has unparseable payload: ${job.payload}`, Date.now())
-      return
-    }
-    const c = clients.current
-    if (!c.tmdb || !c.reasoningModel) {
-      // spec §4.7 步 5：闸全关保证不会有工作流到这里——这行只在"任务在飞、密钥被并发
-      // 删空"的竞态下可达。不断言、不崩，失败退避留可诊断痕迹（同下方组装兜底的既有口径）。
-      jobs.completeError(job.id, 'setup incomplete — engine is gated (secrets removed mid-flight?)', Date.now())
-      return
-    }
-    try {
-      if (payload.taskType === 'find_subtitle') {
-        if (payload.scope === 'unidentified') {
-          // 管线拆分（2026-07-28 事故裁决：424 写库/7 搜索/384 编造/242 假 unavailable——
-          // 识别归识别，找字幕归找字幕，DB 为状态机）：scope='unidentified' 的 find_subtitle
-          // 行从此是**识别专用** job。从 parked_paths 读 raw data（duration_sec/embedded_langs）
-          // + identifyFromPath 结构提示建 targets（批次上限 60，最久 parked 先上）；worker 是
-          // identifyOnly 形态（只挂识别工具，字幕工具零挂载）——识别结果由
-          // write_identified_media 落库为 sub_status=missing 的库行，找字幕由既有库行管线
-          // （orchestrator 见 missing → 派 per-series worker）接手。不再 buildAdapters：
-          // 识别 run 用不到任何字幕 provider，省掉整套 provider 组装。
-          // runner 与类型细节见 cli/unidentifiedFindSubtitle.ts。
-          const runTask = makeUnidentifiedFindSubtitleWorker({
-            model: c.reasoningModel,
-            cacheRoot,
-            tmdb: c.tmdb,
-            lib,
-            // 作品单元管线（spec 2026-08-07 §4）：识别 job 的步数上限从共享兜底 500 提到 2000。
-            // 一个作品单元现在可能带整部剧的全部集数（§3.2 的分组收益），按 5 步/文件估算，
-            // MAX_TARGETS_PER_JOB=60 的批次约 300 步，2000 留足余量。
-            // 🔴 必须在这里显式传，绝不改 findSubtitleWorker.ts 的 `deps.stepCap ?? 500`——
-            // 那是识别与字幕两个 scope 共享的兜底，改它会把库行 scope 的字幕 worker 一起放开，
-            // 那是不同的活（审计 M10）。2000 不是无限：无限意味着一个死循环 agent 能烧到配额见底。
-            stepCap: 2000,
-          })
-          // dashboard G4 / 债务D5：mediaRoots/targetLanguage/hardsubMode 每次派发新鲜读取——
-          // 同下方库行分支的既有口径，不锁定 watch 启动时刻的快照。
-          await runUnidentifiedFindSubtitleWorkerTask(
-            job, {
-              lib, mediaRoots: currentRoots(),
-              targetLanguage: languagesNow().targetLanguages[0],
-              hardsubMode: (() => {
-                const v = settingsRepo.get('hardsub_mode')
-                return v === 'agent' || v === 'aggressive' ? v : 'off'
-              })(),
-              runTask, runs,
-            }, jobs, () => Date.now(),
-          )
-          return
-        }
-        // spec §4.7 步 5：holder 代际内 tmdb/model 由 10-6 护栏收窄非空，deps 的可空性由 buildCurrent
-        // 的同一 satisfied 条件决定——护栏通过后 deps 必非空，这里的兜底只为不让 TS 撒谎。
-        const fsDeps = c.findSubtitleWorkerTaskDeps
-        if (!fsDeps) { jobs.completeError(job.id, 'setup incomplete — engine is gated', Date.now()); return }
-        const runTask = makeFindSubtitleWorker({
-          model: c.reasoningModel,
-          adapters: await buildAdapters(emitProviderEvent, cfg, warn),
-          cacheRoot,
-          // 路 A：Step 0 识别验证的证据源（同 realignRunEpisode 处的注释——holder 代际内 tmdb 非空）。
-          tmdb: c.tmdb,
-        })
-        // dashboard G4：mediaRoots 在每次派发时用新鲜的 currentRoots() 覆写——POST 加根后不需要
-        // 重启 watch 进程，下一个被 claim 的 find_subtitle 行就能写进新根（否则 outer 沙盒检查
-        // assertDirSafe 会一直拿着 watch 启动那一刻的旧白名单，新根永远进不来）。
-        // 债务D5：targetLanguage 同 mediaRoots 在每次派发时新鲜读取——设置页改 target_languages
-        // 后被 claim 的 find_subtitle 任务立即生效。
-        await runFindSubtitleWorkerTask(
-          job, {
-            ...fsDeps, mediaRoots: currentRoots(),
-            targetLanguage: languagesNow().targetLanguages[0],
-            // 救援R5：hardsub_mode 同 targetLanguage 的既有先例——每次派发新鲜读取，脏值/未设置
-            // 降级 'off'（同 ingest 侧 buildIngestPass 调用点的同款判定逻辑）。
-            hardsubMode: (() => {
-              const v = settingsRepo.get('hardsub_mode')
-              return v === 'agent' || v === 'aggressive' ? v : 'off'
-            })(),
-            runTask,
-          }, jobs, () => Date.now(),
-        )
-      } else if (payload.taskType === 'realign') {
-        // spec §4.7 步 5：realignDeps 的非空由 buildCurrent 的 satisfied 条件决定（holder 代际内），
-        // 10-6 护栏已收窄 tmdb/model——这里的兜底只为 TS 类型闭合，护栏通过后 rDeps 必非空。
-        // 退役T1 (W0-3a): thread the same RunsRepo instance into the realign runner too — see
-        // the comment on findSubtitleWorkerTaskDeps above for the why.
-        // dashboard G4：同 find_subtitle 分支——mediaRoots + jf（realign port 内部按 roots 走盘/
-        // 列虚拟库）都用新鲜的 currentRoots() 重建，不复用 cmdWatch 启动时刻构造的旧闭包。
-        const rDeps = c.realignDeps
-        if (!rDeps) { jobs.completeError(job.id, 'setup incomplete — engine is gated', Date.now()); return }
-        const roots = currentRoots()
-        await runRealignWorkerTask(job, {
-          ...rDeps, runs,
-          mediaRoots: roots,
-          jf: makeRealignLibraryPort({ lib, roots, runIngest: c.ingestPass ?? (() => Promise.resolve(EMPTY_INGEST_RESULT)) }),
-        }, jobs, () => Date.now())
-      } else if (payload.taskType === 'translate') {
-        // E AI 翻译:daemon 自动翻一个可译候选。**双重 env 门控**——tryAutoTranslateCfg 只认显式
-        // TRANSLATE_* 三件套(绝不回退 LLM_*=mimo 烧配额),不全则拒跑走 completeError(等用户配齐;
-        // 与 dispatch 侧门控对称,即便有残留 translate 行也不会误用弱模型)。deps 与手动 CLI 共用
-        // makeDaemonTranslateRunItem→makeTranslateAgentDeps(workspace agent 主路径)防漂移。
-        const translateCfg = tryAutoTranslateCfg(cfg)
-        if (!translateCfg) {
-          jobs.completeError(job.id, 'translate 未启用:需配 TRANSLATE_MODEL/TRANSLATE_BASE_URL/TRANSLATE_API_KEY 三件套', Date.now())
-        } else {
-          // P3:translate 分支从 legacy translateItem 切到 workspace agent。库内定位身份
-          // (origin_lang/itemId) → 工作台翻译;glossaryStore/critic/TMDB 与手动 CLI 同门接线。
-          // adapters 每次 claim 现建(同 find_subtitle 分支口径),fetchSourceSub 防漂移共用。
-          // translateCfg 是 tryAutoTranslateCfg(cfg) 的返回值（专用翻译三凭证），与外层
-          // AdapterConfigResolver 同名 cfg 不再遮蔽——重命名为 translateCfg 消除歧义。
-          const adapters = await buildAdapters(emitProviderEvent)
-          const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
-          const runItem = makeDaemonTranslateRunItem({
-            db, cfg: translateCfg, fetchSourceSub, tmdb: c.tmdb, roots: currentRoots,
-          })
-          await runTranslateWorkerTask(job, {
-            runItem,
-            requestIngest: () => {
-              void ingestTrigger().catch((e) => log(`warn: translate 后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
-            },
-            runs,
-          }, jobs, () => Date.now())
-        }
-      } else {
-        jobs.completeError(job.id, `unknown worker_task taskType: ${String(payload.taskType)}`, Date.now())
-      }
-    } catch (error) {
-      // Closes the phase ⑦ review's IMP#8 asymmetry: buildAdapters/makeFindSubtitleWorker assembly
-      // above sits outside runFindSubtitleWorkerTask's own try/catch (it hasn't been called yet),
-      // so a throw there previously left the job in 'searching' just like the realign wrapper bug
-      // (finding #1) did. A throw this late (after runXxxWorkerTask already routed to its own
-      // completeError/completeDone/park) can't happen — those calls never throw past their own
-      // try/catch — so this only ever fires for the assembly step itself.
-      const msg = error instanceof Error ? error.message : String(error)
-      jobs.completeError(job.id, msg, Date.now())
-      log(`warn: job ${job.id} worker_task(${String(payload.taskType)}) 组装阶段抛错，已失败退避: ${msg}`)
-    }
-  }
-  // 到此为止：本函数生产零调用者，保留是刻意的——事实链、退役归属与"为什么不写
-  // `void handleWorkerTask`"全部见上方头注释。
+  // 连带效果（提取后由编译器自动指认，不是手工找的）：本文件顶部有 5 个 import 的**唯一**
+  // 消费者就是这个函数——`runFindSubtitleWorkerTask` / `runRealignWorkerTask` /
+  // `runTranslateWorkerTask` / `makeUnidentifiedFindSubtitleWorker` +
+  // `runUnidentifiedFindSubtitleWorkerTask`，以及 `type Job`。它们随函数一起搬走了。
+  // 这正是"接线断了"的可见形状：cmdWatch 曾经看起来 import 了整套 worker_task 执行路径，
+  // 实际上一条都没在用。
 
   // Dashboard v2（媒体库 API，读 v2 SQLite；海报直出 TMDB CDN，不再走服务端代理）
   // spec A §4.7 步 1：dashboard 先于门禁评估与 worker 装配启动——顺序即语义，容器健康检查

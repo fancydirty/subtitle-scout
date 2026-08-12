@@ -8,8 +8,6 @@
 //  - 防错闸：season 200-1927 或 >2500 作废（防 '1920x1080'/'2025' 被拆成季/集）。
 //  - 季/集只认明确标记（SxxExx / 1x03 / [01] / 第N集），绝不把 4 位数字拆成季/集。
 
-import { filenameParse, type ParsedFilename, type ParsedShow } from '@ctrl/video-filename-parser'
-
 /** Recognition-ready shape for a single filename or bare path segment. Consumed by C2 (path-aware
  *  merging) and C3 (TMDB resolution) — keep the field names stable, they are the contract. */
 export interface ParsedName {
@@ -24,15 +22,14 @@ export interface ParsedName {
 }
 
 // ---------------------------------------------------------------------------
-// 底层：带优先级和元数据的季/集正则库（Emby EpisodeExpressions 的等价物）
+// 底层：带优先级的季/集正则库（Emby EpisodeExpressions 的等价物）
+//
+// 注：这组规则是**内联的顺序 if 块**（见 extractSeasonEpisode），不是一张数据表。
+// 曾经存在过一个 `EpisodeRule { re; isAbsolute }` 接口来描述表驱动形态，但表驱动从未
+// 落地——每条规则的 plausible 判据各不相同（R1 要 looksLikeYear 闸、R1b 要额外的
+// complete/全N集 上下文测试），塞不进统一的 `{re, isAbsolute}` 里。该接口已随本次
+// 清理删除；要恢复表驱动，得先让各条规则的后置判据同构。
 // ---------------------------------------------------------------------------
-
-interface EpisodeRule {
-  /** 正则（必须含 named groups：seriesname/seasonnumber/epnumber 可选）。 */
-  re: RegExp
-  /** 这条规则的 season 在 group 几（默认 'seasonnumber'）。 */
-  isAbsolute: boolean
-}
 
 /** 防错闸：season 落在 [200, 1927] 或 >2500 视为误判（防 '1920x1080'/'2025' 被拆成季/集）。
  *  学自 Emby EpisodePathParser.cs: "Invalidate match when the season is 200 through 1927 or
@@ -230,19 +227,17 @@ function cleanTitle(title: string): string {
   return t
 }
 
-function toYear(rawYear: string | null | undefined): number | null {
-  if (!rawYear) return null
-  const n = Number(rawYear)
-  return Number.isFinite(n) ? n : null
-}
-
-function isShowResult(result: ParsedFilename): result is ParsedShow {
-  return 'isTv' in result && result.isTv === true
-}
 
 /**
  * 照 Emby.Naming 架构重写的 parseFilename。先用我们自己的规则库提取季/集（扛住真实命名），
- * title 清洗不截断，季/集只认明确标记。轮子的 movie 模式仅作 year/title 的 fallback。
+ * title 清洗不截断，季/集只认明确标记。
+ *
+ * 2026-08-13 清理实测：本文件**已完全不依赖** `@ctrl/video-filename-parser`。文件头注释
+ * 说的"轮子的 movie 模式仅作 year/title 的 fallback"在今天的代码里不成立——fallback 走的是
+ * 本文件自己的 `extractYear` / `cleanTitle`。随之删除的还有只为该轮子而存在的
+ * `toYear`（把轮子的 string year 转 number）和 `isShowResult`（ParsedFilename → ParsedShow
+ * 类型守卫）两个函数，以及 `filenameParse/ParsedFilename/ParsedShow` 三个 import。
+ * package.json 的依赖项**未动**——identifyFromPath.ts 的注释仍在引用该轮子的行为特征。
  */
 export function parseFilename(name: string): ParsedName {
   // 1. 先用我们自己的规则库提取季/集结构（这是扛住真实命名的关键——轮子会拆错 '2025'/'怪奇物语'）。

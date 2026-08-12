@@ -66,7 +66,14 @@ import { useT } from '../i18n/useT.js'
 import { RootHealthNote } from '../shell/RootHealthNote.js'
 import type { ScoutEvent, EventsStatus } from '../events/types.js'
 import type { ActivityQueueItemDTO, HealthDTO, ScoutCurrentDTO } from '../api/types.js'
-import { ACTIVITY_TABS, laneOf, tabOf, workIdOf, type ActivityTab } from './workbenchRouting.js'
+import { ACTIVITY_TABS, laneOf, workIdOf, type ActivityTab } from './workbenchRouting.js'
+// 2026-08-13 清理：`tabOf` 从这行 import 里删除（本文件零调用）。
+// 它的文档写着"两个 tab 的唯一入口"，读起来像是本页的路由核心——实测**生产零调用者**，
+// 只有 workbenchRouting.test.ts 在测它。为什么用不上：本页两个 tab 的队列不是靠事件分流
+// 得来的，而是后端**已经分好**两条（activityData.subtitleQueue / translateQueue，:423），
+// 前端只按当前 tab 取其中一条。事件流这侧只需要 laneOf（判 patrol / identify），
+// 不需要"事件 → tab"这层映射。
+// 函数本体保留在 workbenchRouting.ts（有测试、语义正确、导出可用），只是本页不 import 它。
 import { inspectFreshness, liveFreshness, relAgo, workPermission, type LiveFreshness } from './inspectFreshness.js'
 import { RunCard, QueueCard, type WorkbenchCardFace } from './WorkbenchCards.js'
 

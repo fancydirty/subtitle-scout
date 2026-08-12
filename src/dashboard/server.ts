@@ -15,7 +15,6 @@ import {
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers,
   buildTriage, redispatch, buildRunTrace, buildDormantTasks,
-  type ReconcileAllResultDTO,
 } from './apiV2.js'
 // R-F2 / R-F5：媒体库页数据层（新架构 files/works/tmdb_seasons）。刻意与 apiV2.js 分开
 // import —— 两套 builder 读的是完全不同的表，混在一行会让"哪个长在旧表上"不可见。
