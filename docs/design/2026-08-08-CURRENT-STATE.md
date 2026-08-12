@@ -32,9 +32,10 @@
 ### 最终基线（每次改动都要对照）
 
 ```
-后端  npx vitest run --exclude '**/web/**'   → 144 文件 / 3369 用例 / 失败恰好 7 条
-        既有债务：deployContract×3 buildAdapters×2 secrets×1 settingsRepo×1
-前端  cd web && npx vitest run               → 109 文件 / 1329 用例 / 0 失败（起点 78/863）
+后端  npx vitest run --exclude '**/web/**'   → 144 文件 / 3326 用例 / **0 失败**
+        ⚠️ 那 7 条"既有债务"已于 2026-08-12 全部修掉（`4bb2456`）——**全是测试过时，无一是真 bug**。
+        以后再出现失败就是真的回归，不许再当"既有债务"放过。
+前端  cd web && npx vitest run               → 106 文件 / 1288 用例 / 0 失败（起点 78/863）
 类型  npm run check  且  cd web && npx tsc --noEmit   两条都要退出码 0
 构建  docker build                            → 退出码 0（CI 账单耗尽，只能本机或软路由）
 ```
@@ -65,10 +66,16 @@ cd /mnt/nvme0n1-4/docker/subtitle-scout && git fetch && git reset --hard origin/
 ⚠️ 部署后要看的三件事：① `works.backdrop_path` 回填有没有跑（110 个作品）
 ② 三个新页面在真数据下长什么样 ③ `media_roots` 两列有没有被写。
 
-### 🟡 一并单独裁决的一组端点（都是病 A 的候选）
+### ✅ 已了结（2026-08-12）
 
-- `_legacy/verify` 的 **6 个后端端点**（本轮刻意没动，删 UI 留端点 = 招牌缺陷形态）
-- `/api/v2/library*`（`useLibrary` 等现在只被 `_legacy/` 调用）
+- **7 条长期失败**（`4bb2456`）：secrets/settingsRepo 白名单 12→15、buildAdapters 的
+  zimuku 不再依赖 LLM、deployContract 的部署方式换代。全是测试过时。
+  顺带加了一条守「镜像名在 release.yml 与 compose 之间一致」——正是我部署时踩的那个坑。
+- **设置页白屏 + 老库启动崩溃**（`202ba61`）
+- **无活 UI 的端点裁决**（`8b809af`）：删 library 一族 4 条；
+  subtitleVerify 一族 6 条**留**并写死可证伪的删除判据（它是"没有燃料的引擎"——
+  写入环封闭无入口，`runVerifySweep` 零调用点、生产表 0 行）。
+  并补上唯一活端点 `/api/v2/library/scan` 的守卫（此前两端零覆盖，删掉它 0 红）。
 
 ### 🟡 债务清单
 
