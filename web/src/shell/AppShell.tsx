@@ -21,6 +21,18 @@
 // （测试也全留着），将来重启用时把 import + 分支 + Sidebar 的 parked={workflow.data?.parked}
 // 三处加回即可。历史注释（dashboard-F5：TriagePage 四区单列收件箱 Pending/Excluded/Timing/
 // Dormant，自己发 GET /api/v2/triage，跟外壳只共享侧栏 parked 角标）。
+//
+// ── 2026-08-12（Task ⑦）：新导航四项 + 两个旧路由并存 ────────────────────────
+// 本层现在有 **5 个** route.tab 分支族：library（含二级路由）/ workflow / settings +
+// 新增的 activity / notifications / media。
+//
+// **library 与 workflow 的分支一行没动，这是用户裁决**（见 route.ts 头注释的完整论证）：
+//  · `#/workflow` 渲染的 ActivityPage 是今天仓里**唯一能用的活动视图**，新活动页要
+//    Task ⑨ 才填肉。现在删 = 在两个 task 的窗口期里把它变成不可访问。
+//  · activity/ 有 7 处 import workflow/（RunDetail / RerunDialog / rerun / phrases ×3 /
+//    useLiveTrail），判「删 workflow」会**立刻编译失败**。
+// 两个旧 tab 只是从侧栏与 ⌘K 里消失了（tabs.ts 的 TABS 不再列它们），路由直达照常工作。
+// 旧页面下架（移入 _legacy）是 Task ⑪ 的独立动作。
 import { useState } from 'react'
 import { useWorkflowPending, useLibrarySeriesDetail, useLibraryMovieDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
@@ -33,6 +45,8 @@ import { SeriesPage } from '../library/SeriesPage.js'
 import { MovieDetailPage } from '../library/MovieDetailPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
 import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
+import { ActivityPlaceholder, NotificationsPlaceholder, MediaPlaceholder } from './placeholders.js'
+import { EventsProvider } from '../events/EventsProvider.js'
 import { cn } from '../lib/utils.js'
 
 export function Shell() {
@@ -52,7 +66,13 @@ export function Shell() {
   const movieDetail = useLibraryMovieDetail(route.movieId ?? null)
 
   return (
-    <>
+    // Task ⑦：EventsProvider 包在最外——四层 SSE Context（activity/found/health/progress）
+    // 对全树可用。包在这里而不是各页面内部：R-F10 约束 3 要求**整个 app 只有一条 SSE 连接**
+    // （HTTP/1.1 每源 6 连接上限），每页各包一个 Provider 会各开一条。
+    // ⚠️ 连接是**惰性**的：eventsBus 只在有人 subscribe 时才 new EventSource（引用计数），
+    // 所以本 task 挂上 Provider 但没有任何页面订阅 = **一条连接都不会开**。这是有意的：
+    // 占位期不该去敲一个端点。Task ⑨⑩ 的页面一 useActivityEvent/useFoundEvent，连接自动建立。
+    <EventsProvider>
       {/* 自绘壳，结构逐值复刻 AstryxAppShell（node_modules/@astryxdesign/core/src/AppShell/
           AppShell.tsx:769-811 + Layout.tsx:283-296，height="fill" 路径）：根 flex column
           满高（h-screen；Astryx 用 100dvh，桌面端等价，本应用桌面优先）→ 顶栏全宽在最前
@@ -93,10 +113,18 @@ export function Shell() {
               ))}
             {route.tab === 'workflow' && <ActivityPage />}
             {route.tab === 'settings' && <SettingsTabsPage />}
+            {/* ── Task ⑦ 新导航三页（占位壳，⑧⑨⑩ 填肉）──────────────────────
+                ⚠️ 这一族分支是**静默失效点**：漏一条不报错，只是那个 tab 渲染一片空白
+                （侧栏还高亮着，用户以为页面坏了）。AppShell.nav.test.tsx 里有一条
+                "TABS 里每一项都必须渲染出可识别内容"的遍历用例守它——加 tab 时忘了加
+                分支，那条会红。 */}
+            {route.tab === 'activity' && <ActivityPlaceholder />}
+            {route.tab === 'notifications' && <NotificationsPlaceholder />}
+            {route.tab === 'media' && <MediaPlaceholder />}
           </main>
         </div>
       </div>
       <CommandK isOpen={isCmdKOpen} onOpenChange={setCmdKOpen} />
-    </>
+    </EventsProvider>
   )
 }

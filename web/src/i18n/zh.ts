@@ -5,11 +5,26 @@ import { en } from './en.js'
 export const zh = {
   // Workflow 沿用视觉基准
   // full-design-v2.html 里的"工作流"（外壳导航标签，不属于"Workflow 区"内容本身）。
+  //
+  // 2026-08-12（Task ⑦）：新导航四项。中文名取用户在 FRONTEND-SPEC §二 里的原话
+  //（"活动页 / 通知页 / 媒体库页"），去掉"页"字做导航标签。
+  // ⚠️ nav_media 与 nav_library 的中文都是"媒体库"——**不是笔误**：新媒体库页（#/media）
+  // 就是要取代旧海报墙（#/library）的位置，只是本 task 只建占位壳。两者不会同时出现在
+  // 侧栏（TABS 里只有 media），所以用户看不到重名。nav_library 随 Task ⑪ 一起删。
+  nav_activity: '活动',
+  nav_notifications: '通知',
+  nav_media: '媒体库',
   nav_library: '媒体库',
   nav_workflow: '工作流',
   // nav_triage（'甄别'，中文名用户钦定 DESIGN.md §7）随甄别页下架移除（spec §5，2026-08-07）。
   nav_settings: '设置',
   nav_logout: '登出',
+
+  // Task ⑦ 三个占位页。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
+  placeholder_activity_purpose: '引擎现在在忙什么，以及你是不是可以不用管了。',
+  placeholder_notifications_purpose: '过去一周找到并装上的字幕，最新的在最前面。',
+  placeholder_media_purpose: '每部剧应该有哪些集、磁盘上实际有哪些、字幕是什么情况。',
+  placeholder_under_construction: '施工中',
 
   cmdk_trigger: '搜索',
   cmdk_label: '命令面板',

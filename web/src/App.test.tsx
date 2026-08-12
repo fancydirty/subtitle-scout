@@ -86,38 +86,46 @@ afterEach(() => {
 })
 
 describe('App 外壳冒烟', () => {
-  it('渲染三个 tab 项', async () => {
+  // 2026-08-12（Task ⑦）：导航换成 FRONTEND-SPEC 的三个页面 + 设置。
+  // 旧的 Library/Workflow **路由还在**（直达 #/library、#/workflow 照常渲染真页面），
+  // 只是不再出现在侧栏——所以下面断言的是"侧栏里没有它们"，不是"它们没了"。
+  it('渲染四个 tab 项（活动/通知/媒体库/设置）', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
 
-    expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Workflow' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Activity' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Notifications' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Media' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     // 甄别项已下架（spec §5）：断言它不在场，这就是本轮的回归锁。
     expect(screen.queryByRole('link', { name: /^Triage/ })).not.toBeInTheDocument()
+    // Task ⑦：旧两项已从侧栏摘掉（路由仍在，见 shell/nav.contract.test.tsx）。
+    expect(screen.queryByRole('link', { name: 'Library' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Workflow' })).not.toBeInTheDocument()
   })
 
-  it('点击侧栏 tab 切换 hash 路由，对应内容跟着换（Library 落地页是空库态）', async () => {
+  it('点击侧栏 tab 切换 hash 路由，对应内容跟着换（默认落地页是活动页）', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
 
-    await screen.findByRole('link', { name: 'Library' })
-    expect(await screen.findByText('No library yet')).toBeInTheDocument()
+    // Task ⑦：未识别 hash 的落点从 library 改成 activity（library 已不在侧栏，
+    // 继续落它会让用户停在一个没有任何高亮项的页面上）。
+    await screen.findByRole('link', { name: 'Activity' })
+    expect(await screen.findByText('Under construction')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('link', { name: 'Workflow' }))
-    // 2026-07-31：这个 tab 从旧的 Lanes 三泳道换成了活动页（ActivityPage）。空态文案随之
-    // 从 'No active work'（账目视角：没有活）变成 'No subtitles in progress'（运行态视角：
-    // 现在没有在处理的字幕）——后者是这一页新的定位，见 AppShell.tsx 的那段注释。
-    await waitFor(() => expect(screen.getByText('No subtitles in progress')).toBeInTheDocument())
-    expect(location.hash).toBe('#/workflow')
-    expect(screen.queryByText('No library yet')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Notifications' }))
+    await waitFor(() => expect(location.hash).toBe('#/notifications'))
+
+    fireEvent.click(screen.getByRole('link', { name: 'Media' }))
+    await waitFor(() => expect(location.hash).toBe('#/media'))
 
     // 原本这里还有一段"点 Triage → hash 变 #/triage → 待甄别箱空态"，随甄别页下架移除
-    // （spec §5）；重启用时按上面 Workflow 那段的手法恢复。
+    // （spec §5）；重启用时按上面的手法恢复。
 
     fireEvent.click(screen.getByRole('link', { name: 'Settings' }))
     await waitFor(() => expect(location.hash).toBe('#/settings'))
-    expect(screen.queryByText('No library yet')).not.toBeInTheDocument()
+    // 设置是真页面，不该出现占位标记
+    await waitFor(() => expect(screen.queryByText('Under construction')).not.toBeInTheDocument())
   })
 
   it('fetch 成功时顶栏渲染 mono 新鲜度行（watching/scanned/files 三段）', async () => {
@@ -138,9 +146,10 @@ describe('App 外壳冒烟', () => {
     ]))
     render(<App />)
 
-    // 外壳本身（三 tab 项）必须完整渲染，不能因为后端请求失败就整屏空白。
-    expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Workflow' })).toBeInTheDocument()
+    // 外壳本身（四 tab 项）必须完整渲染，不能因为后端请求失败就整屏空白。
+    expect(await screen.findByRole('link', { name: 'Activity' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Notifications' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Media' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     // 新鲜度行降级为冷静的 mono 灰字，不是报错弹窗。
     await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument())
@@ -165,13 +174,14 @@ describe('App 鉴权门（A2 Task 11）', () => {
     ]))
     render(<App />)
     expect(await screen.findByRole('button', { name: /log in|登录/i })).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Library' })).not.toBeInTheDocument()
+    // 未登录时整个 Shell 不该在场——用导航项之一作探针（Task ⑦ 起是 Activity）。
+    expect(screen.queryByRole('link', { name: 'Activity' })).not.toBeInTheDocument()
   })
 
   it('authenticated:true → 渲染 Shell', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
-    expect(await screen.findByRole('link', { name: 'Library' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Activity' })).toBeInTheDocument()
   })
 
   it('auth/status 探测失败（服务器不可达）→ 连接错误屏 + 重试，不误导为 LoginPage、不白屏', async () => {
@@ -202,7 +212,7 @@ describe('App 鉴权门（A2 Task 11）', () => {
   it('⌘K：点击触发器打开，Escape 关闭', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
-    await screen.findByRole('link', { name: 'Library' })
+    await screen.findByRole('link', { name: 'Activity' })
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
@@ -211,7 +221,7 @@ describe('App 鉴权门（A2 Task 11）', () => {
     expect(dialog).toBeInTheDocument()
     // 四个 tab 都是 bootstrap 结果，导航面板里应该能看到（跟侧栏重复渲染的同名文字互不冲突，
     // getAllByText 至少命中一个即可）。
-    expect(screen.getAllByText('Workflow').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Notifications').length).toBeGreaterThan(0)
 
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -220,7 +230,7 @@ describe('App 鉴权门（A2 Task 11）', () => {
   it('⌘K：选中一项后跳转对应 tab 并关闭面板', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
-    await screen.findByRole('link', { name: 'Library' })
+    await screen.findByRole('link', { name: 'Activity' })
 
     fireEvent.click(screen.getByText('Find anything'))
     await screen.findByRole('dialog')
@@ -277,7 +287,7 @@ describe('App 外壳无障碍契约（Task 28）', () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
     // 等 Shell 落地（侧栏链接出现）再断言，避开 auth/status 探测的空拍。
-    await screen.findByRole('link', { name: 'Library' })
+    await screen.findByRole('link', { name: 'Activity' })
     expect(screen.getByRole('link', { name: /skip to content/i })).toHaveAttribute(
       'href',
       '#scout-app-main',

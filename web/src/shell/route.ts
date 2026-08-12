@@ -1,17 +1,41 @@
-// web/src/shell/route.ts：新外壳的 hash 路由——三 tab（#/library #/workflow #/settings），
-// 浏览器原生前进后退可用（location.hash 变化即触发 hashchange，无需自己维护历史栈）。
-// 故意与旧 lib/hashRoute.ts（海报墙/详情/历史/park 那一套，dashboard-F3 已随老 components/
-// 一并退役）分开设计过：新外壳的路由表只认 tab + Library 的二级路由（#/library/:id 剧集页），
-// 别的 tab 目前都只有一层。
+// web/src/shell/route.ts：新外壳的 hash 路由，浏览器原生前进后退可用（location.hash 变化即
+// 触发 hashchange，无需自己维护历史栈）。故意与旧 lib/hashRoute.ts（海报墙/详情/历史/park
+// 那一套，dashboard-F3 已随老 components/ 一并退役）分开设计过：新外壳的路由表只认 tab +
+// Library 的二级路由（#/library/:id 剧集页），别的 tab 目前都只有一层。
 //
 // 2026-08-07（spec §5）：甄别 tab 本轮雪藏，'triage' 从 Tab 联合与 TAB_IDS 移除。旧书签
-// #/triage 由下面 isTab() 的兜底自动降级到 library（不白屏、不 404）。将来重启用把
-// 'triage' 加回这两处即可。
+// #/triage 由下面 isTab() 的兜底自动降级（不白屏、不 404）。将来重启用把 'triage' 加回
+// 这两处即可。
+//
+// ── 2026-08-12（Task ⑦）：Tab ≠ 导航项，两个集合从这里开始分家 ──────────────────
+// 新导航是 FRONTEND-SPEC 的三个页面（活动/通知/媒体库）+ 设置。但 `#/library`（旧海报墙）
+// 与 `#/workflow`（**今天渲染的就是真活动页 ActivityPage**）**仍是合法路由**，只是不再出现
+// 在侧栏与 ⌘K 里。
+//
+// 为什么不把这两个从 Tab 联合里删掉（用户裁决，2026-08-12）：
+//  · `#/workflow` 今天渲染 ActivityPage，而新活动页要到 Task ⑨ 才填肉。现在删 = 把仓里
+//    **唯一能用的活动视图**在两个 task 的窗口期里变成无法访问，用户书签直接降级到占位页。
+//  · `activity/` 有 **7 处** import `workflow/`（RunDetail/RerunDialog/rerun/phrases×3/
+//    useLiveTrail），判「删 workflow」会立刻编译失败。旧页面下架是 Task ⑪ 的独立动作。
+// 故本 task 的处置是**只从导航里摘掉**（见 tabs.ts 的 TABS），路由与渲染分支原样保留。
+//
+// `Tab`（合法路由全集）与 `TABS`（侧栏渲染哪几项）**是两个集合**，这条分家是有意的：
+// Sidebar 的 TAB_ICONS 仍是 `Record<Tab, …>` 穷尽映射（少一个键 TS 就报错），而侧栏只
+// 遍历 TABS——想让某个路由"活着但不出现在导航里"，只需要把它从 TABS 拿掉，不动 Tab。
 import { useEffect, useState } from 'react'
 
-export type Tab = 'library' | 'workflow' | 'settings'
+/** 合法路由全集（**不等于**导航项集合，见文件头注释）。
+ *  · 前四个 = 新导航四项（活动/通知/媒体库/设置）；
+ *  · 后两个 = 旧页面路由，仍可直达但已不在侧栏（Task ⑪ 下架）。 */
+export type Tab = 'activity' | 'notifications' | 'media' | 'settings' | 'library' | 'workflow'
 
-const TAB_IDS: readonly Tab[] = ['library', 'workflow', 'settings']
+const TAB_IDS: readonly Tab[] = ['activity', 'notifications', 'media', 'settings', 'library', 'workflow']
+
+/** 未识别 hash / 根路径的落点。
+ *  2026-08-12 用户裁决：从 'library' 改为 'activity'——library 已不在导航里，继续落它会让
+ *  用户刷新后停在一个**侧栏没有任何高亮项**的页面上。活动页是新导航第一项，也是产品定位
+ *  （FRONTEND-SPEC §一「只有监视和折腾设置的作用」）里那个"打开就想看的一屏"。 */
+const DEFAULT_TAB: Tab = 'activity'
 
 function isTab(value: string): value is Tab {
   return (TAB_IDS as readonly string[]).includes(value)
@@ -28,13 +52,13 @@ export interface ShellRoute {
   movieId?: string | null
 }
 
-/** hash → 路由。未识别/根路径一律落到 library（第一个 tab，也是产品默认落地页）。
+/** hash → 路由。未识别/根路径一律落到 DEFAULT_TAB（活动页，见其注释）。
  *  畸形百分号编码（如 '%zz'）让 decodeURIComponent 抛 URIError 时，libraryId 降级为 null
  *  （落到 SeriesGrid 列表页，不炸整个外壳）。 */
 export function parseShellHash(hash: string): ShellRoute {
   const segs = hash.replace(/^#\/?/, '').split('/')
   const raw = segs[0] ?? ''
-  const tab = isTab(raw) ? raw : 'library'
+  const tab = isTab(raw) ? raw : DEFAULT_TAB
   let libraryId: string | null = null
   let movieId: string | null = null
   let page: 'library' | 'series-detail' | 'movie-detail' | undefined = undefined

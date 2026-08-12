@@ -6,7 +6,8 @@ import { UNAUTHORIZED_EVENT } from '../api/client.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-const wrap = () => render(<I18nProvider><Sidebar tab="library" /></I18nProvider>)
+// Task ⑦：导航换成活动/通知/媒体库/设置四项，默认选中项随之从 library 改成 activity。
+const wrap = () => render(<I18nProvider><Sidebar tab="activity" /></I18nProvider>)
 
 describe('Sidebar 登出入口（鉴权 A2 Task 14）', () => {
   it('渲染登出钮', () => {
@@ -48,9 +49,10 @@ describe('Sidebar 登出入口（鉴权 A2 Task 14）', () => {
 // parked prop。源码保留在 web/src/triage 下，将来重启用时恢复本用例。
 describe('Sidebar 迁移锁（Task 28：自绘 SideNav）', () => {
   it('选中项带 aria-current="page"，未选中项没有——选中态语义锚点（不再是 data-selected）', () => {
-    wrap() // tab="library"
-    expect(screen.getByRole('link', { name: 'Library' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('link', { name: 'Workflow' })).not.toHaveAttribute('aria-current')
+    wrap() // tab="activity"
+    expect(screen.getByRole('link', { name: 'Activity' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Notifications' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('link', { name: 'Media' })).not.toHaveAttribute('aria-current')
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
   })
 

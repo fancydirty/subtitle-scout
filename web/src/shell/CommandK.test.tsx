@@ -47,22 +47,22 @@ describe('CommandK（自绘 ⌘K 面板）', () => {
   // 2026-08-07（spec §5）：甄别 tab 下架，TABS 从四项减为三项——CommandK 源码直接 TABS.map，
   // 所以只有下面这些"列表恰为哪几项 / 箭头走到第几项是谁"的断言需要跟着改（Triage 从列表
   // 里消失，两次 ArrowDown 的落点从 cmdk-option-triage 变成末项 cmdk-option-settings）。
-  it('空查询：三个 tab 全列出（bootstrap 语义）', async () => {
+  it('空查询：四个 tab 全列出（bootstrap 语义）', async () => {
     render(<Harness />)
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
     const options = within(screen.getByRole('listbox')).getAllByRole('option')
-    expect(options.map((o) => o.textContent)).toEqual(['Library', 'Workflow', 'Settings'])
+    expect(options.map((o) => o.textContent)).toEqual(['Activity', 'Notifications', 'Media', 'Settings'])
   })
 
-  it('输入过滤：子串匹配（work → Workflow 在，Library/Settings 不在）', async () => {
+  it('输入过滤：子串匹配（noti → Notifications 在，其余不在）', async () => {
     render(<Harness />)
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'noti' } })
     const listbox = screen.getByRole('listbox')
-    expect(within(listbox).getAllByRole('option').map((o) => o.textContent)).toEqual(['Workflow'])
-    expect(within(listbox).queryByText('Library')).not.toBeInTheDocument()
+    expect(within(listbox).getAllByRole('option').map((o) => o.textContent)).toEqual(['Notifications'])
+    expect(within(listbox).queryByText('Activity')).not.toBeInTheDocument()
   })
 
   it('无匹配：空态文案（cmdk_empty），无 option', async () => {
@@ -102,7 +102,7 @@ describe('CommandK（自绘 ⌘K 面板）', () => {
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
     expect(screen.getByRole('combobox')).toHaveValue('')
-    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(3)
+    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(4)
   })
 })
 
@@ -115,9 +115,9 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
     const combobox = screen.getByRole('combobox')
-    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-library')
-    expect(screen.getByRole('option', { name: 'Library' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('option', { name: 'Workflow' })).toHaveAttribute('aria-selected', 'false')
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-activity')
+    expect(screen.getByRole('option', { name: 'Activity' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('option', { name: 'Notifications' })).toHaveAttribute('aria-selected', 'false')
   })
 
   it('↓ 移到下一项；末项再按回卷首项（wrap 不 clamp，BaseTypeahead.js:417）', async () => {
@@ -127,15 +127,17 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     const combobox = screen.getByRole('combobox')
 
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
-    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-workflow')
-    expect(screen.getByRole('option', { name: 'Workflow' })).toHaveAttribute('aria-selected', 'true')
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-notifications')
+    expect(screen.getByRole('option', { name: 'Notifications' })).toHaveAttribute('aria-selected', 'true')
 
-    // 三项（甄别下架后）：再按一次即到末项 Settings。
+    // 四项（Task ⑦）：再按两次到末项 Settings。
+    fireEvent.keyDown(combobox, { key: 'ArrowDown' })
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-media')
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
     expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-settings')
     // 末项再按 → 回卷首项（clamp 语义下这里会停在 settings，这条断言就是 wrap/clamp 的分界线）。
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
-    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-library')
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-activity')
   })
 
   it('↑ 反向移动；首项再按回卷末项（BaseTypeahead.js:421）', async () => {
@@ -156,7 +158,7 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
     fireEvent.keyDown(combobox, { key: 'Enter' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(location.hash).toBe('#/workflow')
+    expect(location.hash).toBe('#/notifications')
   })
 
   it('过滤变化 → 高亮重置回首项（BaseTypeahead.js:255 结果集落地语义）', async () => {
@@ -166,12 +168,13 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     const combobox = screen.getByRole('combobox')
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
-    // 三项下两次 ArrowDown 落在末项 Settings（甄别下架前这里是 cmdk-option-triage）。
+    fireEvent.keyDown(combobox, { key: 'ArrowDown' })
+    // 四项下三次 ArrowDown 落在末项 Settings（Task ⑦ 前是三项两次）。
     expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-settings')
 
-    fireEvent.change(combobox, { target: { value: 'work' } })
-    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-workflow')
-    expect(screen.getByRole('option', { name: 'Workflow' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.change(combobox, { target: { value: 'noti' } })
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-notifications')
+    expect(screen.getByRole('option', { name: 'Notifications' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('hover 同步高亮（BaseTypeahead.js:543 onMouseEnter），点击仍走原路径', async () => {
@@ -198,14 +201,17 @@ describe('CommandK 键盘导航（契约⑥，对齐 Astryx BaseTypeahead）', (
     const combobox = screen.getByRole('combobox')
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
     fireEvent.keyDown(combobox, { key: 'ArrowDown' })
-    // 三项下两次 ArrowDown 落在末项 Settings（甄别下架前这里是 cmdk-option-triage）。
+    fireEvent.keyDown(combobox, { key: 'ArrowDown' })
+    // 四项下三次 ArrowDown 落在末项 Settings（Task ⑦ 前是三项两次；甄别下架前是 triage）。
+    // 这里必须停在**末项**：本用例要验的是"重开时高亮不残留在上次的位置"，
+    // 停在中间项的话首项与它的距离更近，回归发生时更容易蒙混过关。
     expect(combobox).toHaveAttribute('aria-activedescendant', 'cmdk-option-settings')
     fireEvent.keyDown(combobox, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     await screen.findByRole('dialog')
-    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', 'cmdk-option-library')
-    expect(screen.getByRole('option', { name: 'Library' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', 'cmdk-option-activity')
+    expect(screen.getByRole('option', { name: 'Activity' })).toHaveAttribute('aria-selected', 'true')
   })
 })

@@ -3,12 +3,30 @@
 export const en = {
   // 侧栏导航项标签。三个分区 eyebrow（LIBRARY/AGENTS/SYSTEM）按 DESIGN.md 铁律固定英文大写，
   // 不进这张表——见 web/src/shell/tabs.ts 顶部注释。
+  //
+  // 2026-08-12（Task ⑦）：新导航四项 = 活动/通知/媒体库/设置。nav_library / nav_workflow
+  // **保留**——那两个路由还活着（只是不在侧栏里），Topbar 的面包屑仍按 route.tab 查 TABS…
+  // 查不到时回落空串，但 #/library 的二级面包屑（剧名那条）还要用 nav_library。
+  // 两个键随 Task ⑪ 删旧页面时一起走。
+  nav_activity: 'Activity',
+  nav_notifications: 'Notifications',
+  nav_media: 'Media',
   nav_library: 'Library',
   nav_workflow: 'Workflow',
   // nav_triage（'Triage'）随甄别页下架移除（spec §5，2026-08-07）——留着就是孤儿死代码。
   //   重启用时把这个键加回本文件与 zh.ts（i18n.test.ts 只测两侧键集一致）。
   nav_settings: 'Settings',
   nav_logout: 'Log out',
+
+  // Task ⑦ 三个占位页：说明"这页将来回答什么问题"。**不描述还不存在的功能细节**——
+  // 一句人话，等 Task ⑧⑨⑩ 填肉时这些键会被真页面的文案取代或保留作空态说明。
+  placeholder_activity_purpose:
+    'What the engine is working on right now, and whether you can leave it alone.',
+  placeholder_notifications_purpose:
+    'Subtitles found and installed over the past week, newest first.',
+  placeholder_media_purpose:
+    'Every episode you should have, which ones are on disk, and their subtitle status.',
+  placeholder_under_construction: 'Under construction',
 
   // ⌘K 命令面板：F2 只做 tab 导航，不做搜索。
   cmdk_trigger: 'Find anything',

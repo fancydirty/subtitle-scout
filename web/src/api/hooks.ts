@@ -13,6 +13,7 @@ import type {
   ShiftedItemDTO,
   DormantTaskDTO,
   MovieDetailDTO,
+  HealthDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -847,6 +848,50 @@ export function useDormantTasks(): Async<DormantTaskDTO[]> {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [load])
+
+  return { data, loading, error, reload }
+}
+
+/**
+ * Task ⑦：健康快照（GET /api/v2/health）。
+ *
+ * ── 为什么**不轮询**（与隔壁 useLibrary 的 15s 轮询刻意不同）───────────────────
+ * 这个端点的存在理由是"SSE 断线期间丢了事件，重连后纠正当前态"（后端 F-6 论证）。
+ * 纠正的**触发时机是重连**，不是时间——挂个 15 秒定时器等于在一条已经好好连着的 SSE
+ * 旁边再开一路轮询，正是 R-F6「用 SSE 不用轮询」要消灭的东西。
+ *
+ * 故：首载一次 + 暴露 reload()。**谁在重连时调 reload 是消费页面的责任**（Task ⑨ 的
+ * 活动页：订 useEventsStatus，从 retrying/connecting 变回 open 时调一次）。
+ * ⚠️ 本 task **没有任何生产调用点**——三个页面都还是占位壳。这是有意的、也是如实记录的：
+ * 本仓的病 A 是"加了能力却没定谁写/谁读/谁触发"，所以这里把三方**写明**：
+ *   谁写 = 后端 /api/v2/health；谁读 = Task ⑨ 活动页顶部状态条 + 健康横幅；
+ *   谁触发 = 首载 + SSE 从非 open 恢复到 open 时的那一次 reload。
+ * 在 Task ⑨ 接上之前，它只有测试在用——**不算完成**，与 Task ①「无消费者不标完成」同一条纪律。
+ */
+export function useHealth(): Async<HealthDTO> {
+  const [data, setData] = useState<HealthDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    api
+      .health(ctrl.signal)
+      .then((d) => {
+        setData(d)
+        setError(null)
+      })
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
 
   return { data, loading, error, reload }
 }

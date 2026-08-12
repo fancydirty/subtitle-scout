@@ -12,6 +12,7 @@ import type {
   ShiftedItemDTO, DormantTaskDTO,
   MovieDetailDTO, WaveformPeaksResponse,
   TestVisionRequest, TestVisionResponse,
+  HealthDTO,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -229,4 +230,10 @@ export const api = {
 
   // R6：手动触发扫描——添加目录后防抖触发、或 Settings 页"立即扫描"按钮直接调。
   triggerScan: () => post<{ ok: true }>('/api/v2/library/scan'),
+
+  // Task ⑦：健康快照。SSE（events/）给的是**变化**，这个给的是**当前态**——断线期间丢了
+  // 事件之后靠它纠正，这正是后端设立该端点的理由（server.ts 的 F-6 论证）。
+  // ⚠️ 不跑 watch 时它**照常 200**（只是 current 为 null），与隔壁 /api/v2/events 的 503
+  // 刻意不同：另外三个字段全长在库上，与事件总线无关。
+  health: (signal?: AbortSignal) => get<HealthDTO>('/api/v2/health', signal),
 }

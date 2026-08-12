@@ -12,7 +12,10 @@ import { useT } from '../i18n/useT.js'
 import { TABS } from './tabs.js'
 import type { Tab } from './route.js'
 import { api, UNAUTHORIZED_EVENT } from '../api/client.js'
-import { LibraryIcon, WorkflowIcon, SettingsIcon } from './NavIcons.js'
+import {
+  LibraryIcon, WorkflowIcon, SettingsIcon,
+  ActivityIcon, NotificationsIcon, MediaIcon,
+} from './NavIcons.js'
 
 /** 登出：POST /auth/logout 清 cookie，无论成败都派发 scout:unauthorized——AuthGate 据此重探
  *  auth/status（cookie 已清 → authenticated:false → LoginPage）。finally 保证服务器宕了也切回
@@ -27,11 +30,18 @@ interface Props {
   tab: Tab
 }
 
-/** tab → 图标组件映射（2026-08-06：极简点线风格） */
+/** tab → 图标组件映射（2026-08-06：极简点线风格）。
+ *  **`Record<Tab, …>` 是穷尽的**，而 Tab 联合里除了导航四项还有 library/workflow 两个
+ *  旧路由（Task ⑦ 只把它们摘出 TABS，没删路由——见 route.ts 头注释）。它们的键必须留着，
+ *  否则 TS 报缺键；侧栏遍历的是 TABS，所以留着也不会渲染出来。这不是死代码：Task ⑪ 删
+ *  路由时这两个键与图标组件一起走。 */
 const TAB_ICONS: Record<Tab, React.ComponentType> = {
+  activity: ActivityIcon,
+  notifications: NotificationsIcon,
+  media: MediaIcon,
+  settings: SettingsIcon,
   library: LibraryIcon,
   workflow: WorkflowIcon,
-  settings: SettingsIcon,
 }
 
 export function Sidebar({ tab }: Props) {

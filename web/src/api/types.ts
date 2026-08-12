@@ -556,3 +556,49 @@ export interface TestVisionResponse {
   digits?: string
   error?: string
 }
+
+// ── Task ⑦：GET /api/v2/health（Task ⑤ 的端点）─────────────────────────────────
+// 手抄自 src/dashboard/server.ts 的同名 interface（同本文件其余 DTO 的既有做法：web/ 是
+// 独立 tsconfig 工程，跨出去 import 会把 node 侧类型面拖进来）。
+
+/** `roots[]` 元素。字段一律 `| null` 而非可选——后端刻意如此（undefined 会让字段整个消失，
+ *  前端就分不清"没有这个事实"与"这版后端还没这个字段"）。 */
+export interface HealthRootDTO {
+  path: string
+  /** **三态，不是布尔**：null = 不知道（从没扫过 / 扫描结果已陈旧）。
+   *  ⚠️ 后端点名的渲染纪律：null 必须画成灰的"未知"，**绝不许 `?? true` 兜底**——
+   *  那正好把这个三态设计要防的那句假话原地复活。 */
+  ok: boolean | null
+  /** 上一轮扫描的判决原文。⚠️ `ok === null`（陈旧）时这条仍可能非 null，
+   *  但它**不是当前结论**——当前结论只看 `ok`。 */
+  lastError: string | null
+  lastCheckedAt: number | null
+}
+
+/** 「现在在处理什么」的快照。SSE 是**变化**流，断线期间的变化会丢；这个是**当前态**，
+ *  可随时查询——两者并列存在是后端 F-6 的设计裁决，不是冗余。 */
+export interface ScoutCurrentDTO {
+  kind: 'identify' | 'subtitle' | 'translate'
+  title: string | null
+  /** 队列里的第几个。activity 之后、配对的 progress 之前是 null——**诚实的 null，不是缺陷**。 */
+  index: number | null
+  total: number | null
+}
+
+export interface HealthDTO {
+  /** ⚠️ 语义警告（Task ⑤ 审计 🟡-3，**后端未修**）：这个字段落的是巡检的**开始时刻**，
+   *  不是完成时刻。大库实测能跑 10h → 04:00 开始 14:00 结束，13:00 读到的是"9 小时前"
+   *  而此刻**正在巡检中**。渲染成"上次巡检于 X 前"是在说一句半真的话。
+   *  本 task 不消费它做任何判决（占位页不渲染时间），Task ⑨ 真要显示时必须先解决这条。 */
+  lastInspectAt: number | null
+  /** **daemon 到底会不会干活**（= engineEnabled && setupSatisfied，后端同源计算）。
+   *  这是回答"为什么什么都没发生"的那个字段。 */
+  workPermitted: boolean
+  /** 用户那个总开关的状态。⚠️ **不是**"引擎在干活"——true 但 setupSatisfied 为 false 时
+   *  daemon 照样全停。要显示"在干活"必须读 workPermitted。 */
+  engineEnabled: boolean
+  /** TMDB + LLM 三件套是否全部可解析。false = 去 setup 页填 key。 */
+  setupSatisfied: boolean
+  roots: HealthRootDTO[]
+  current: ScoutCurrentDTO | null
+}
