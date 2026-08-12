@@ -1,6 +1,74 @@
 import type { ScoutDb } from './db.js'
 
 /**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 🟡 2026-08-12「无活 UI 端点」裁决：**本族保留，但它今天在生产是一个封闭空转的环**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * 本轮裁决把 `/api/v2/library` 一族（4 条端点）删了，字幕校验这 6 条**留下**。留的理由
+ * 与"还有人在用"无关——它今天**没有任何活 UI**。留是因为下面第 3 条。以下是实测事实，
+ * 写在这里是为了让下一个清理的人不必再考古一遍。
+ *
+ * ── 1. 六条端点今天各自的活 UI：一个都没有 ──────────────────────────────────
+ *   GET  /api/v2/subtitle/verify         ← api.subtitleVerify ← useSubtitleVerify ← 零调用
+ *   GET  /api/v2/subtitle/compare        ← api.subtitleCompare ← useSubtitleCompare ← 零调用
+ *   GET  /api/v2/subtitle/waveform-peaks ← api.waveformPeaks ← web/src/subtitleVerify/
+ *                                          InspectPanel.tsx ← **零模块 import 它**
+ *   GET  /api/v2/subtitle/shifted        ← useShiftedSubtitles ← triage/TimingBox
+ *   POST /api/v2/subtitle/correct        ← api.subtitleCorrect ← triage/TimingBox
+ *   POST /api/v2/subtitle/revert         ← api.subtitleRevert  ← triage/TimingBox
+ *   而 TimingBox ← TriagePage ← **没有任何地方渲染 TriagePage**（甄别 tab 于 2026-08-07
+ *   雪藏，AppShell 不 import 它，'triage' 也不在 route.ts 的 Tab 联合里）。
+ *
+ * ── 2. 更要紧的事实：这张表在生产**永远不会有第一行** ──────────────────────
+ * 唯一的写入者是 `upsertVerifyResult`，它唯一的生产调用点是
+ * `subtitleVerify/verifySubtitle.ts:verifyAndRecord`。而 `verifyAndRecord` 的生产调用点
+ * 只剩一个：`dashboard/server.ts` 里 `subDeps.reverify`——它只在 correct/revert 内部被调。
+ * 而 correct/revert 都以 `subtitleVerifyApi.locate()` 开头，**没有已存在的行就直接 404**。
+ *
+ *   → 想写入，先得有行；想有行，得先写入。**环是封闭的，没有入口。**
+ *
+ * 本该打破这个环的是巡检 `runVerifySweep`（它 `LEFT JOIN subtitle_verify … IS NULL`
+ * 专挑没结论的条目）——但它于 2026-08-07 随巡检注入一并雪藏，今天**被 cli/index.ts import
+ * 却从未被调用**（apiV2.ts 的 `lastVerifySweepAt` 头注释里已独立记过同一事实）。
+ *
+ * 所以今天对这 6 条端点 curl 的实际结果是：verify 恒 `checked:false`、shifted 恒 `[]`、
+ * compare/correct/revert 恒 404。**它不是一个"没人点的运维工具"，是一个没有燃料的引擎。**
+ * 这条要写明，是因为"留着给运维 curl"是最容易被编出来的留存理由，而它是假的。
+ *
+ * ── 3. 那为什么还留？──────────────────────────────────────────────────────
+ * 因为**缺的只是一根接线，而资产是真的**：`src/subtitleVerify/` 下的 alignDetect /
+ * referenceSource / shiftTiming / subtitleSpans / verifySubtitle / verifySweep 是 246 条
+ * 用例覆盖的真实算法（时间轴偏移检测、参考源选取、带备份的幂等平移），删掉是不可逆的
+ * 损失，而重新接上巡检注入是**一处 wiring**。删 6 条端点省不下什么，却把这份资产的
+ * 唯一出口堵死。
+ *
+ * 另有两处**已经活着**的依赖，删表会连带打断：
+ *   · `subtitleSpans.ts` 的 readSubtitleText / parseCues / hashSubtitleContent 被
+ *     server.ts 直接 import（compare 端点与写扳手的哈希守卫共用）。
+ *   · `apiV2.buildWorkflowPending` 会 `SELECT COUNT(*) FROM subtitle_verify` 产出
+ *     verifiedItems/verifiableItems 两个计数——那条端点是**活的**（顶栏新鲜度行）。
+ *     删表会让一个活端点 500。
+ *
+ * ── 4. 什么时候可以删（**可证伪的判据，不是"跑稳后再说"**）────────────────
+ * 满足**任意一条**即可整族删除（6 条端点 + 本 repo + subtitle_verify 表 +
+ * src/subtitleVerify/ + web/src/subtitleVerify/ + triage 的 TimingBox）：
+ *
+ *   (a) 产品明确放弃"字幕时间轴校正"这个功能——那就连算法一起删，别留半截；
+ *   (b) 距 2026-08-12 起再过一个发布周期，`runVerifySweep` 仍**没有**被接进 daemonV2
+ *       的任何 pass（判据：`rg 'runVerifySweep\(' src/v2/daemonV2.ts` 无输出）。
+ *       雪藏满两轮 = 没人真的要它。
+ *
+ * 反过来，**恢复**它只需要：在 daemonV2 加一个 pass 调 runVerifySweep（并写
+ * `last_verify_sweep_at` meta 键），再把 TriagePage 挂回 AppShell。环一旦有了入口，
+ * 上面 6 条端点立刻全部有意义。
+ *
+ * 🔴 不要只删一半（比如"UI 反正没了，把端点删了留算法"）：那会留下一族无出口的算法，
+ *    与本仓病 A 是同一形状，只是换了个方向。要么整族留，要么整族删。
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/**
  * 字幕时间轴校验结论的持久层（表 subtitle_verify，schema v28）。
  *
  * 三值封闭，且**在 UI 上只映射两种颜色**（spec 铁律①）：

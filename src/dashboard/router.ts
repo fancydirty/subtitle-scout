@@ -1,8 +1,8 @@
 // src/dashboard/router.ts
 import type {
-  LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
-  DormantTaskDTO, MovieDetailDTO,
+  RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
+  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, TriageDTO, RunTraceDTO,
+  DormantTaskDTO,
 } from './apiV2.js'
 import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
 import type { ActivityDTO } from './activityApi.js'
@@ -11,8 +11,6 @@ import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 
 export interface RouterDeps {
-  library: () => LibraryItemDTO[]
-  series: (id: string) => SeriesDetailDTO | null
   runs: (offset: number, limit: number) => RunHistoryDTO[]
   /** 去 Jellyfin 化 P6：park 救援页列表。 */
   parked: () => ParkedItemDTO[]
@@ -34,9 +32,6 @@ export interface RouterDeps {
   workflowPasses: (limit: number) => WorkflowPassDTO[]
   /** dashboard G5：GET /api/v2/workflow/workers——跑中 worker_task + 近期非 orchestrate runs。 */
   workflowWorkers: () => WorkflowWorkersDTO
-  /** dashboard G5：GET /api/v2/library/series/:id——三层格阵合并详情（canonical ∪ 磁盘 ∪
-   *  覆盖）。命中时的惰性 TMDB 缓存刷新是 server.ts wiring 的副作用，这个闭包本身仍是纯查询。 */
-  librarySeriesDetail: (id: string) => LibrarySeriesDetailDTO | null
   /** dashboard G5：GET /api/v2/triage——甄别台：pending（park 救援清单）+ claimed（已认领 override 清单）。 */
   triage: () => TriageDTO
   /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace——单 run 痕迹快照回放（区别于
@@ -54,12 +49,9 @@ export interface RouterDeps {
   setupStatus: () => SetupStatusDTO
   /** spec A §4.4/§5.4：GET /api/v2/setup/providers——Providers 区行数据（打码值/source/上次测试点）。 */
   providers: () => ProvidersDTO
-  /** spec B §2/§4：GET /api/v2/library/movies/:id——movie 详情（单体对象；三层格阵合并：
-   *  canonical ∪ 磁盘 ∪ 覆盖）。 */
-  movieDetail: (id: string) => MovieDetailDTO | null
   /** R-F2/R-F5：GET /api/v2/mediaLibrary——新前端媒体库页的海报墙列表（长在 files/works/
-   *  tmdb_seasons 上）。与旧的 `library`（长在 series/episodes/movies，生产 0 行）**明确
-   *  区分开**，两条路由并存直到前端替换完成。 */
+   *  tmdb_seasons 上）。旧的 `/api/v2/library` 一族（长在 series/episodes/movies，生产 0 行）
+   *  已于 2026-08-12 删除，本端点现在是媒体库列表的**唯一**数据源。 */
   mediaLibrary: () => MediaLibraryItemDTO[]
   /** R-F2/R-F5：GET /api/v2/mediaLibrary/:workId——季集网格详情。id 空间是 works.id
    *  （'tmdb:<n>'），与 librarySeriesDetail 那条同形，故复用同一套 isSafeId/decodeIdSegment。 */
@@ -104,16 +96,11 @@ export function handleApiRoute(
   if (pathname === '/api/runs' || /^\/api\/runs\/[^/]+$/.test(pathname)) return V1_GONE
 
   // ---- v2 ----
-  if (pathname === '/api/v2/library') return { status: 200, json: deps.library() }
-
-  const sm = pathname.match(/^\/api\/v2\/series\/([^/]+)$/)
-  if (sm) {
-    const id = decodeIdSegment(sm[1])
-    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
-    const detail = deps.series(id)
-    return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
-  }
-
+  // 2026-08-12（无活 UI 端点裁决）：`/api/v2/library`、`/api/v2/series/:id`、
+  // `/api/v2/library/series/:id`、`/api/v2/library/movies/:id` 四条已删除——它们长在
+  // series/episodes/movies 三张**生产 0 行**的旧表上（mediaLibraryApi.ts 头注释的实测），
+  // 且消费方在 Task ⑪ 后只剩 `_legacy/`（`/api/v2/series/:id` 更是连 _legacy 都没有）。
+  // 媒体库的活路由是下面的 `/api/v2/mediaLibrary` 与 `/api/v2/mediaLibrary/:workId`。
   if (pathname === '/api/v2/runs') {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200)
     const offset = Math.max(Number(req.query.offset) || 0, 0)
@@ -146,6 +133,9 @@ export function handleApiRoute(
   if (pathname === '/api/v2/workflow/pending') return { status: 200, json: deps.workflowPending() }
 
   // ---- Plan C 两个只读 GET（spec §4）：零写路径、零状态机改动 ----
+  // 🟡 `/api/v2/subtitle/shifted` 属于字幕校验那一族（今天无活 UI：它的消费链末端
+  //    TriagePage 未被任何地方渲染）。2026-08-12 裁决**保留**，理由与删除判据见
+  //    `src/v2/subtitleVerifyRepo.ts` 头注释。它今天恒返回 `[]`（表永远为空）。
   if (pathname === '/api/v2/subtitle/shifted') return { status: 200, json: deps.shiftedSubtitles() }
   if (pathname === '/api/v2/workflow/dormant') return { status: 200, json: deps.dormantTasks() }
 
@@ -165,27 +155,11 @@ export function handleApiRoute(
     return trace ? { status: 200, json: trace } : { status: 404, json: { error: 'not found' } }
   }
 
-  const lsm = pathname.match(/^\/api\/v2\/library\/series\/([^/]+)$/)
-  if (lsm) {
-    const id = decodeIdSegment(lsm[1])
-    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
-    const detail = deps.librarySeriesDetail(id)
-    return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
-  }
-
-  const mm = pathname.match(/^\/api\/v2\/library\/movies\/([^/]+)$/)
-  if (mm) {
-    const id = decodeIdSegment(mm[1])
-    if (id === null || !isSafeId(id)) return { status: 400, json: { error: 'bad id' } }
-    const detail = deps.movieDetail(id)
-    return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
-  }
-
   if (pathname === '/api/v2/triage') return { status: 200, json: deps.triage() }
 
   // ---- R-F2 / R-F5：媒体库页两个新端点（长在 files/works/tmdb_seasons 上）----
-  // 刻意命名 mediaLibrary 而非复用 library：旧的 /api/v2/library 及其 4 个 builder 长在
-  // series/episodes/movies 上（生产 series 0 行），前端替换完成前两套并存、互不干扰。
+  // 刻意命名 mediaLibrary 而非复用 library：旧的 `/api/v2/library` 及其 4 个 builder 长在
+  // series/episodes/movies 上（生产 series 0 行），已于 2026-08-12 随"无活 UI 端点"裁决删除。
   // 精确路径必须在带 id 的正则**之前**判——否则 `/api/v2/mediaLibrary` 本身会被
   // `([^/]+)` 之外的分支漏掉（这里顺序天然正确，写明是防后人重排）。
   if (pathname === '/api/v2/mediaLibrary') return { status: 200, json: deps.mediaLibrary() }

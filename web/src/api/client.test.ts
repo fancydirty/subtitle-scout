@@ -54,7 +54,7 @@ describe('client.ts get() 失败时的错误消息', () => {
       'fetch',
       vi.fn(async () => ({ ok: false, status: 401, json: async () => null }) as unknown as Response),
     )
-    await expect(api.library()).rejects.toThrow(/登录/)
+    await expect(api.mediaLibrary()).rejects.toThrow(/登录/)
   })
 })
 
@@ -137,5 +137,26 @@ describe('client.ts 启动面方法（spec A §4.4 线形）', () => {
     vi.stubGlobal('fetch', fetchMock)
     await expect(api.setupStatus()).rejects.toThrow('unauthorized')
     expect(String((fetchMock.mock.calls[0] as unknown[])[0]).startsWith('/api/v2/setup/status')).toBe(true)
+  })
+
+  it('🔴 triggerScan 打的是 /api/v2/library/scan 且用 POST（这条 URL 此前零覆盖）', async () => {
+    // ── 来历 ────────────────────────────────────────────────────────────────
+    // 端点裁决那一轮把 11 条端点里的 10 条判为"无活 UI"，`/api/v2/library/scan` 是**唯一活的**
+    //（AppShell settings → SettingsTabsPage → RootsManager → scanDebouncer → 这里）。
+    // 但变异实测：把这里的 URL 改成 `/api/v2/WRONG/scan`，前端 1287 条用例**无一变红**——
+    // scanDebouncer.test.ts 测的是防抖时序，`triggerScan` 是注入的 mock，**碰不到真实 URL**。
+    // 线上后果：用户加完守备目录后永远不会自动扫描，且**静默无声**（POST 打到 404 被吞）。
+    //
+    // ⚠️ 这条 URL 的名字里带 `library`，而同批被删的三条端点（/api/v2/library、
+    // library/series/:id、library/movies/:id）**同前缀**——下一轮清理的人极易顺手带走它。
+    // 判据是"链断没断"，不是"名字里有没有 library"。
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ ok: true }),
+    }) as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    await api.triggerScan()
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toBe('/api/v2/library/scan')
+    expect(init.method).toBe('POST')
   })
 })

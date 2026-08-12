@@ -1,7 +1,7 @@
 // web/src/api/client.ts：v2 只读数据层客户端。DASHBOARD_TOKEN 存在时带 ?token=。
 import type {
-  LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ReconcileAllResultDTO,
-  ParkedItemDTO, WorkflowPendingDTO, LibrarySeriesDetailDTO,
+  RunHistoryDTO, ReconcileAllResultDTO,
+  ParkedItemDTO, WorkflowPendingDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
   WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
@@ -10,7 +10,7 @@ import type {
   AuthStatusDTO, AuthSecurityDTO,
   SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
   ShiftedItemDTO, DormantTaskDTO,
-  MovieDetailDTO, WaveformPeaksResponse,
+  WaveformPeaksResponse,
   TestVisionRequest, TestVisionResponse,
   HealthDTO,
   MediaLibraryItemDTO, MediaLibraryDetailDTO,
@@ -130,9 +130,6 @@ async function del<T>(path: string): Promise<T> {
 }
 
 export const api = {
-  library: (signal?: AbortSignal) => get<LibraryItemDTO[]>('/api/v2/library', signal),
-  series: (id: string, signal?: AbortSignal) =>
-    get<SeriesDetailDTO>(`/api/v2/series/${encodeURIComponent(id)}`, signal),
   runs: (offset: number, limit: number, signal?: AbortSignal) =>
     get<RunHistoryDTO[]>(`/api/v2/runs?offset=${offset}&limit=${limit}`, signal),
   reconcileAll: () => post<ReconcileAllResultDTO>('/api/v2/reconcile-all'),
@@ -149,10 +146,6 @@ export const api = {
   // dashboard-F2：顶栏新鲜度行 + 侧栏甄别角标共用同一份响应（meta + parked）。
   workflowPending: (signal?: AbortSignal) =>
     get<WorkflowPendingDTO>('/api/v2/workflow/pending', signal),
-  // dashboard-F3：剧集页三层格阵详情（canonical ∪ 磁盘 ∪ 覆盖）。id 含冒号（tmdb:123），
-  // encodeURIComponent 编码后由 router.ts 的 decodeIdSegment 解回。
-  librarySeriesDetail: (id: string, signal?: AbortSignal) =>
-    get<LibrarySeriesDetailDTO>(`/api/v2/library/series/${encodeURIComponent(id)}`, signal),
   // 对照图数据（2026-07-30）：单条，供检视面板画双轨时间轴。
   subtitleCompare: (itemId: string, signal?: AbortSignal) =>
     get<SubtitleCompareDTO>(`/api/v2/subtitle/compare?itemId=${encodeURIComponent(itemId)}`, signal),
@@ -219,10 +212,6 @@ export const api = {
     post<{ ok: true }>('/api/v2/auth/change-password', { oldPassword, newPassword }),
   regenerateApiKey: () => post<{ apiKey: string }>('/api/v2/auth/regenerate-api-key'),
 
-  // Plan B: 电影详情
-  movieDetail: (id: string, signal?: AbortSignal) =>
-    get<MovieDetailDTO>(`/api/v2/library/movies/${id}`, signal),
-
   // Plan B: 波形 peaks
   waveformPeaks: (itemId: string, signal?: AbortSignal) =>
     get<WaveformPeaksResponse>(`/api/v2/subtitle/waveform-peaks?itemId=${itemId}`, signal),
@@ -231,7 +220,23 @@ export const api = {
   testVision: (req: TestVisionRequest) =>
     post<TestVisionResponse>('/api/v2/test-vision', req),
 
-  // R6：手动触发扫描——添加目录后防抖触发、或 Settings 页"立即扫描"按钮直接调。
+  // R6：手动触发扫描——添加目录后防抖触发。
+  //
+  // 🔴 **别看名字像 library 就顺手删掉**（2026-08-12「无活 UI 端点」裁决时点名的误删风险）：
+  // 同一轮里 `/api/v2/library`、`/api/v2/library/series/:id`、`/api/v2/library/movies/:id`
+  // 三条**同前缀**端点全部被删（旧表、无活 UI），唯独这一条**留下**——它与那三条毫无关系，
+  // 既不读 series/episodes/movies，也不产 DTO，只是踢一脚 daemon 的 ingest。
+  //
+  // 活消费链（2026-08-12 实测，逐跳可复核）：
+  //   POST /api/v2/library/scan
+  //     ← api.triggerScan（本行）
+  //     ← settings/scanDebouncer.ts createScanDebouncer（2 秒防抖）
+  //     ← settings/RootsManager.tsx:41
+  //     ← settings/SettingsTabsPage.tsx:132
+  //     ← shell/AppShell.tsx 的 `route.tab === 'settings'` 分支（导航四项之一，天天在用）
+  //
+  // 什么时候可以删：当"加完守备目录后自动扫一次"这个产品行为被取消，或 RootsManager 不再
+  // 调 scanDebouncer 时。判据是上面那条链断在任意一跳——不是"名字里有 library"。
   triggerScan: () => post<{ ok: true }>('/api/v2/library/scan'),
 
   // Task ⑦：健康快照。SSE（events/）给的是**变化**，这个给的是**当前态**——断线期间丢了

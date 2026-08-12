@@ -57,7 +57,6 @@ function mockFetch() {
       : url.includes('/workflow/pending')
         ? { meta: { roots: [], lastScanAt: null, files: 0, lastVerifySweepAt: null,
                     verifiedItems: 0, verifiableItems: 0 }, parked: 0 }
-      : url.includes('/api/v2/library') ? []
       : {}
     return { ok: true, status: 200, json: async () => body } as unknown as Response
   })

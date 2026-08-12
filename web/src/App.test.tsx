@@ -5,8 +5,6 @@
 // 角标断言随之移除。TriagePage 源码与它自己的测试保留在 web/src/triage/ 下，将来重启用时
 // 恢复这些断言即可。
 // i18n 完整性测试在 web/src/i18n/i18n.test.ts（不需要挂组件树，纯表对比更快更直接）。
-// Library tab 自己的三层格阵/筛选/详情板测试在 web/src/library/SeriesGrid.test.tsx 与
-// SeriesPage.test.tsx（dashboard-F3）——这里只保证外壳级别的路由/新鲜度行/⌘K 没被 F3 带崩。
 //
 // 查询手法说明：侧栏 tab 项渲染成 <a href="#/xxx">（SideNavItem 传了 href），跟顶栏面包屑
 // 的同名当前项文字（纯 <span>）会重名——统一用 getByRole('link', {name}) 定位侧栏项，
@@ -14,16 +12,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
 import { App } from './App.js'
-import type { WorkflowPendingDTO, LibraryItemDTO } from './api/types.js'
+import type { WorkflowPendingDTO } from './api/types.js'
 
 function requestPath(input: RequestInfo | URL): string {
   const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
   return raw.split('?')[0]
 }
 
-/** 按 URL 路由的 fetch mock——Shell 现在并发打好几个端点（workflow/pending、library，
- *  路由到剧集详情页时还有 library/series/:id），SeriesGrid 需要 /api/v2/library 真给一个
- *  数组，不能再像 F2 时那样"随便什么 URL 都回同一个 body"（那样 SeriesGrid 拿到非数组会炸）。 */
+/** 按 URL 路由的 fetch mock——Shell 会并发打好几个端点（workflow/pending、health、
+ *  activity…），不能像 F2 时那样"随便什么 URL 都回同一个 body"。
+ *  （2026-08-12：旧的 /api/v2/library handler 随该端点删除一并移除。） */
 function mockFetchRouted(handlers: { path: string; body: unknown; prefix?: boolean }[]) {
   return vi.fn(async (input: RequestInfo | URL) => {
     const path = requestPath(input)
@@ -39,7 +37,6 @@ const WORKFLOW: WorkflowPendingDTO = {
   parked: 3,
   meta: { roots: ['/media'], lastScanAt: Date.now() - 2 * 60_000, files: 568 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
 }
-const EMPTY_LIBRARY: LibraryItemDTO[] = []
 /** Task ⑨ 活动页的健康快照。`current: null` = 没有任何工作台在跑（本冒烟测试不关心
  *  在跑态，只要页面能渲染出来）。workPermitted 给 true 免得状态条上多一行不许可提示
  *  干扰别的断言。 */
@@ -58,7 +55,6 @@ function standardHandlers() {
     // 统一给一个"已初始化已登录"的 status，让门放行到 Shell。
     { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
     { path: '/api/v2/workflow/pending', body: WORKFLOW },
-    { path: '/api/v2/library', body: EMPTY_LIBRARY },
     // Workflow tab 真页面额外发的端点。活动页只用 workers（passes 是旧 Lanes 的中泳道），
     // 但两个都留着：RunDetail 仍被活动页复用，且多给一个 handler 无害。不给 workers 会 404
     // → data 恒 null → 空态判定永远凑不齐（ActivityPage 首载两源皆 null 时渲染 null）。

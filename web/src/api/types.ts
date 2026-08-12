@@ -1,62 +1,11 @@
 // web/src/api/types.ts：必须与 src/dashboard/apiV2.ts 的 DTO 保持一致
 export type SubStatus = 'missing' | 'covered' | 'embedded' | 'unavailable' | 'ignored' | 'hardsub-assumed'
 
-export interface CoverageDTO {
-  covered: number
-  missing: number
-  embedded: number
-  unavailable: number
-  /** 救援R5：硬字幕假定——独立桶，前端渲染独立样式，不冒充"外挂字幕已确认"的绿点。 */
-  hardsubAssumed: number
-  /** 重复源 P3b：文件级副本间覆盖不一致——独立桶。 */
-  partial: number
-}
-export interface LibraryJobDTO {
-  state: string
-  priority: number
-}
-export interface LibraryItemDTO {
-  id: string
-  kind: 'series' | 'movie'
-  name: string
-  chineseTitle: string | null
-  year: number | null
-  posterPath: string | null
-  section: string
-  coverage: CoverageDTO
-  job: LibraryJobDTO | null
-  originLang: string | null
-  nativeAudio: boolean
-}
-
-export interface SeriesEpisodeDTO {
-  id: string
-  episode: number
-  name: string | null
-  subStatus: SubStatus
-  statusReason: string | null
-  recheckAfter: number | null
-}
-export interface SeriesSeasonDTO {
-  season: number
-  episodes: SeriesEpisodeDTO[]
-}
-export interface SeriesRunDTO {
-  startedAt: number
-  finishedAt: number | null
-  decision: string | null
-  detail: string | null
-  journalPath: string | null
-}
-export interface SeriesDetailDTO {
-  id: string
-  name: string
-  chineseTitle: string | null
-  year: number | null
-  posterPath: string | null
-  seasons: SeriesSeasonDTO[]
-  runs: SeriesRunDTO[]
-}
+// ---- 2026-08-12（无活 UI 端点裁决）：旧库 DTO 一族已删除 ----
+// CoverageDTO / LibraryJobDTO / LibraryItemDTO / SeriesEpisodeDTO / SeriesSeasonDTO /
+// SeriesRunDTO / SeriesDetailDTO 随 /api/v2/library 与 /api/v2/series/:id 一并删除。
+// 它们对应的后端 builder 长在 series/episodes/movies 三张生产 0 行的旧表上。
+// 媒体库页现在的 DTO 是下方的 MediaLibraryItemDTO / MediaLibraryDetailDTO。
 
 export interface RunHistoryDTO {
   id: number
@@ -335,19 +284,15 @@ export interface FsListDTO {
   dirs: string[]
 }
 
-/** dashboard-F3：GET /api/v2/library/series/:id 响应体——三层格阵合并详情（canonical ∪ 磁盘 ∪
- *  覆盖），与 src/dashboard/apiV2.ts 的 LibrarySeriesDetailDTO 一族保持一致。 */
-export interface LibrarySeriesSummaryDTO {
-  id: string
-  name: string
-  chineseTitle: string | null
-  posterPath: string | null
-  /** 详情页重设计 item B：TMDB 剧集简介 + hero 背景大图路径（web 端自拼 backdropUrl w1280）。 */
-  overview: string | null
-  backdropPath: string | null
-  year: number | null
-  layoutNonstandard: boolean
-}
+// ---- 2026-08-12（无活 UI 端点裁决）：/api/v2/library/series/:id 的响应体 DTO 已删除 ----
+// LibrarySeriesSummaryDTO / LibrarySeriesDetailDTO 随端点一并删除（后端 builder 长在
+// series/episodes 旧表，生产 0 行；前端 useLibrarySeriesDetail 在 Task ⑪ 后零调用）。
+//
+// ⚠️ 下面三个 DTO（LibraryCanonicalEpisodeDTO / LibraryOnDiskEpisodeDTO / LibrarySeasonDTO）
+// **刻意保留**：它们已不再由任何 HTTP 端点产出，但 `_legacy/library/episodeState.ts` 与
+// SeasonAccordion 仍在类型层引用它们（`_legacy/` 整体是被 tsc 与 vitest 覆盖的）。
+// 什么时候可以删：`web/src/_legacy/` 整体删除那天（设计文档 §2.2 的"跑满一个巡检周期后"），
+// 与这批 DTO 一起走，不需要单独裁决。
 export interface LibraryCanonicalEpisodeDTO {
   episode: number
   title: string | null
@@ -378,11 +323,6 @@ export interface LibrarySeasonDTO {
   onDisk: LibraryOnDiskEpisodeDTO[]
   coverage: LibraryCoverageRowDTO[]
 }
-export interface LibrarySeriesDetailDTO {
-  series: LibrarySeriesSummaryDTO
-  seasons: LibrarySeasonDTO[]
-}
-
 /** 字幕校验（2026-07-30 spec）：与 src/dashboard/subtitleVerifyApi.ts 的同名 DTO 一致。
  *  **恰好三个键**——offsetMs/score/referenceTier/detail 是内部诊断字段，故意不在这里
  *  （铁律②：UI 不展示任何数字。前端拿不到就不可能误显示成"偏移 2.4 秒"）。 */
@@ -510,30 +450,10 @@ export interface DormantTaskDTO {
   attempts: number
 }
 
-/** Plan B：文件级副本与字幕覆盖的明细行——MovieDetailDTO 的嵌套子类型。 */
-export interface ItemFileCoverage {
-  path: string
-  isMain: boolean
-  covered: boolean
-}
-
-/** Plan B：电影详情——14 键，与后端 MovieDetailDTO 手抄同步。 */
-export interface MovieDetailDTO {
-  id: string
-  name: string
-  chineseTitle: string | null
-  year: number | null
-  posterPath: string | null
-  path: string
-  subStatus: SubStatus
-  statusReason: string | null
-  recheckAfter: number | null
-  originLang: string | null
-  nativeAudio: boolean
-  files: ItemFileCoverage[]
-  subtitles: { language: string; path: string }[]
-  recentJobs: { id: number; state: string; priority: number; updatedAt: number }[]
-}
+// ---- 2026-08-12（无活 UI 端点裁决）：MovieDetailDTO / ItemFileCoverage 已删除 ----
+// 随 /api/v2/library/movies/:id 一并删除：后端 buildLibraryMovieDetail 长在 movies 旧表上，
+// 前端 useLibraryMovieDetail 在 Task ⑪ 之后零调用（AppShell 删旧分支时把它一并删了）。
+// 电影在新架构里是 works 的一种，走 MediaLibraryDetailDTO。
 
 /** Plan B：波形 peaks 响应——音频对齐可视化数据。 */
 export interface WaveformPeaksResponse {

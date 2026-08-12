@@ -1,10 +1,10 @@
-// web/src/api/hooks.ts：轻 fetch hooks。三态齐（loading/error/data），海报墙 15s 轮询，
+// web/src/api/hooks.ts：轻 fetch hooks。三态齐（loading/error/data），轮询类 15s，
 // visibilitychange 时暂停轮询（省流、后台不空转）。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
 import type {
-  LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
-  LibrarySeriesDetailDTO, WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, TriageDTO,
+  RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
+  WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, TriageDTO,
   SettingsDTO, DeploySettingsDTO, MediaRootDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
@@ -12,7 +12,6 @@ import type {
   ProvidersDTO,
   ShiftedItemDTO,
   DormantTaskDTO,
-  MovieDetailDTO,
   HealthDTO,
   MediaLibraryItemDTO,
   MediaLibraryDetailDTO,
@@ -29,86 +28,14 @@ export interface Async<T> {
 
 const LIBRARY_POLL_MS = 15_000
 
-/** 海报墙：首载 + 15s 轮询；页面不可见时暂停，恢复可见立即刷新。 */
-export function useLibrary(): Async<LibraryItemDTO[]> {
-  const [data, setData] = useState<LibraryItemDTO[] | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const load = useCallback(async () => {
-    try {
-      const rows = await api.library()
-      setData(rows)
-      setError(null)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const reload = useCallback(() => {
-    setLoading(true)
-    void load()
-  }, [load])
-
-  useEffect(() => {
-    void load()
-    const start = () => {
-      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
-    }
-    const stop = () => {
-      if (timer.current != null) {
-        clearInterval(timer.current)
-        timer.current = null
-      }
-    }
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void load()
-        start()
-      } else {
-        stop()
-      }
-    }
-    if (document.visibilityState === 'visible') start()
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      stop()
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [load])
-
-  return { data, loading, error, reload }
-}
-
-/** 剧详情：随 id 变化重取，一次性（详情不轮询）。 */
-export function useSeries(id: string): Async<SeriesDetailDTO> {
-  const [data, setData] = useState<SeriesDetailDTO | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
-
-  useEffect(() => {
-    const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
-    api
-      .series(id, ctrl.signal)
-      .then((d) => setData(d))
-      .catch((e) => {
-        if (!ctrl.signal.aborted) setError(String(e))
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
-    return () => ctrl.abort()
-  }, [id, nonce])
-
-  return { data, loading, error, reload }
-}
+// ---- 2026-08-12（无活 UI 端点裁决）：四个旧库 hook 已删除 ----
+// useLibrary / useSeries / useLibrarySeriesDetail / useLibraryMovieDetail 连同它们的
+// client 方法、DTO 与后端端点一并删除。前三者在 Task ⑪ 之后消费方只剩 _legacy/（或归零：
+// AppShell 删旧分支时把后两个 hook 的调用一并删了），useSeries 更是全仓零调用。
+// 媒体库的活 hook 是 useMediaLibrary / useMediaLibraryDetail。
+//
+// ⚠️ LIBRARY_POLL_MS（上方 15s 常量）**不随之删除**：它是本文件 8 个轮询 hook 共用的节律
+//    常量，名字里的 LIBRARY 是历史命名，不代表它属于旧库那一族。
 
 const PAGE = 50
 
@@ -164,76 +91,6 @@ export function useParked(): Async<ParkedItemDTO[]> {
       })
     return () => ctrl.abort()
   }, [nonce])
-
-  return { data, loading, error, reload }
-}
-
-/** dashboard-F3：剧集页三层格阵详情——随 id 变化重取，一次性（同 useSeries，详情不轮询）。
- *  id 为 null 时（不在 #/library/:id 二级路由上）完全不发请求——Shell 在每次渲染都会调用
- *  这个 hook（喂给 Topbar 面包屑 + SeriesPage），如果 null 也照样打一次 GET，四个 tab 里
- *  三个会白白 404 一次；hooks 调用顺序仍然稳定（id 从 null 变成字符串只是走 else 分支，
- *  不影响 hook 调用次数/顺序）。 */
-export function useLibrarySeriesDetail(id: string | null): Async<LibrarySeriesDetailDTO> {
-  const [data, setData] = useState<LibrarySeriesDetailDTO | null>(null)
-  const [loading, setLoading] = useState(id != null)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
-
-  useEffect(() => {
-    if (id == null) {
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
-    api
-      .librarySeriesDetail(id, ctrl.signal)
-      .then((d) => setData(d))
-      .catch((e) => {
-        if (!ctrl.signal.aborted) setError(String(e))
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
-    return () => ctrl.abort()
-  }, [id, nonce])
-
-  return { data, loading, error, reload }
-}
-
-/** Plan B：电影详情——一次性（详情不轮询），id 为 null 时不发请求（同 useLibrarySeriesDetail 口径）。 */
-export function useLibraryMovieDetail(id: string | null): Async<MovieDetailDTO> {
-  const [data, setData] = useState<MovieDetailDTO | null>(null)
-  const [loading, setLoading] = useState(id != null)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
-
-  useEffect(() => {
-    if (id == null) {
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
-    api
-      .movieDetail(id, ctrl.signal)
-      .then((d) => setData(d))
-      .catch((e) => {
-        if (!ctrl.signal.aborted) setError(String(e))
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
-    return () => ctrl.abort()
-  }, [id, nonce])
 
   return { data, loading, error, reload }
 }

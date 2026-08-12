@@ -2,23 +2,15 @@
 import { describe, it, expect } from 'vitest'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
-  LibraryItemDTO, SeriesDetailDTO, RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, LibrarySeriesDetailDTO, TriageDTO, RunTraceDTO,
-  DormantTaskDTO, MovieDetailDTO,
+  RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
+  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, TriageDTO, RunTraceDTO,
+  DormantTaskDTO,
 } from './apiV2.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 
-const libItem: LibraryItemDTO = {
-  id: 's1', kind: 'series', name: 'A', chineseTitle: null, year: null, posterPath: null, section: '剧集',
-  coverage: { covered: 0, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 }, job: null,
-  originLang: null, nativeAudio: false,
-}
-const seriesDetail: SeriesDetailDTO = {
-  id: 's1', name: 'A', chineseTitle: null, year: null, posterPath: null, seasons: [], runs: [],
-}
 const run: RunHistoryDTO = {
   id: 1, jobId: 1, startedAt: 1, finishedAt: 2, decision: 'download', detail: 'ok', journalPath: null,
 }
@@ -71,10 +63,6 @@ const workflowWorkersDTO: WorkflowWorkersDTO = {
   held: [],
   providerQuota: [],
 }
-const librarySeriesDetailDTO: LibrarySeriesDetailDTO = {
-  series: { id: 's1', name: 'A', chineseTitle: null, posterPath: null, overview: null, backdropPath: null, year: null, layoutNonstandard: false },
-  seasons: [],
-}
 const triageDTO: TriageDTO = {
   pending: [parkedItem],
 }
@@ -108,19 +96,11 @@ const shiftedRow: ShiftedItemDTO = {
 const dormantRow: DormantTaskDTO = {
   jobId: 1, task: 'find_subtitle', targetLabel: 'The Rig, Season 2', attempts: 5,
 }
-const movieDetailDTO: MovieDetailDTO = {
-  id: 'm1', name: 'The Movie', chineseTitle: null, year: 2024, posterPath: null,
-  path: '/media/movies/The Movie.mkv', subStatus: 'covered', statusReason: null, recheckAfter: null,
-  originLang: 'en', nativeAudio: true, files: [], subtitles: [], recentJobs: [],
-}
 
 let lastRunsArgs: { offset: number; limit: number } | null = null
 let lastFsListPath: string | null = null
 let lastPassesLimit: number | null = null
-let lastSeriesId: string | null = null
-let lastLibrarySeriesId: string | null = null
 let lastRunTraceId: number | null = null
-let lastMovieId: string | null = null
 let lastMediaLibraryId: string | null = null
 // R-F2 / R-F5：媒体库页两个新 DTO 的路由层 stub（内容正确性由 mediaLibraryApi.test.ts 钉，
 // 这里只需要形状合法——路由层的职责是 method/shape/存在性判定）。
@@ -153,8 +133,6 @@ const activityDTO = {
   }],
 }
 const deps: RouterDeps = {
-  library: () => [libItem],
-  series: (id) => { lastSeriesId = id; return id === 's1' || id === 'tmdb:71' ? seriesDetail : null },
   runs: (offset, limit) => { lastRunsArgs = { offset, limit }; return [run] },
   parked: () => [parkedItem],
   settings: () => settingsDTO,
@@ -167,14 +145,12 @@ const deps: RouterDeps = {
   workflowPending: () => workflowPendingDTO,
   workflowPasses: (limit) => { lastPassesLimit = limit; return [workflowPassDTO] },
   workflowWorkers: () => workflowWorkersDTO,
-  librarySeriesDetail: (id) => { lastLibrarySeriesId = id; return id === 's1' || id === 'tmdb:71' ? librarySeriesDetailDTO : null },
   triage: () => triageDTO,
   runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
   shiftedSubtitles: () => [shiftedRow],
   dormantTasks: () => [dormantRow],
   setupStatus: () => setupStatusDTO,
   providers: () => providersDTO,
-  movieDetail: (id) => { lastMovieId = id; return id === 'm1' || id === 'tmdb:1234' ? movieDetailDTO : null },
   // R-F2 / R-F5：媒体库页两个新端点的路由层 stub。
   mediaLibrary: () => [mediaLibraryItem],
   mediaLibraryDetail: (id) => { lastMediaLibraryId = id; return id === 'tmdb:1' ? mediaLibraryDetailDTO : null },
@@ -185,52 +161,6 @@ const call = (pathname: string, opts: { query?: Record<string, string> } = {}) =
   handleApiRoute({ pathname, query: opts.query ?? {} }, deps)
 
 describe('handleApiRoute (v2)', () => {
-  it('routes /api/v2/library', () => {
-    const r = call('/api/v2/library')
-    expect(r.status).toBe(200)
-    expect(r.json).toEqual([libItem])
-  })
-  it('routes /api/v2/series/:id and 404s unknown', () => {
-    expect(call('/api/v2/series/s1').status).toBe(200)
-    expect(call('/api/v2/series/nope').status).toBe(404)
-  })
-  it('rejects illegal series id with 400', () => {
-    expect(call('/api/v2/series/a..b').status).toBe(400)
-    expect(call('/api/v2/series/a%2fb').status).toBe(400) // %2f 解码为 '/'，不在允许字符集
-  })
-
-  // 复审修复：真实自有 id 恒为 'tmdb:<n>' 形状（src/v2/ownIds.ts）——冒号必须直通；有些客户端
-  // 会把 ':' 编码成 %3A，id 段先 decodeURIComponent 再过 isSafeId；畸形编码（URIError）→ 400。
-  describe('自有 id（tmdb:<n> 形状，含冒号）直通两个 series 详情端点', () => {
-    it('/api/v2/series/tmdb:71 → 200，deps 收到原样 id', () => {
-      const r = call('/api/v2/series/tmdb:71')
-      expect(r.status).toBe(200)
-      expect(lastSeriesId).toBe('tmdb:71')
-    })
-    it('/api/v2/series/tmdb%3A71 → 解码为 tmdb:71 后 200', () => {
-      const r = call('/api/v2/series/tmdb%3A71')
-      expect(r.status).toBe(200)
-      expect(lastSeriesId).toBe('tmdb:71')
-    })
-    it('/api/v2/series/%zz（畸形百分号编码）→ 400，不抛错', () => {
-      expect(call('/api/v2/series/%zz').status).toBe(400)
-    })
-    it('/api/v2/library/series/tmdb:71 → 200，deps 收到原样 id', () => {
-      const r = call('/api/v2/library/series/tmdb:71')
-      expect(r.status).toBe(200)
-      expect(lastLibrarySeriesId).toBe('tmdb:71')
-    })
-    it('/api/v2/library/series/tmdb%3A71 → 解码为 tmdb:71 后 200', () => {
-      const r = call('/api/v2/library/series/tmdb%3A71')
-      expect(r.status).toBe(200)
-      expect(lastLibrarySeriesId).toBe('tmdb:71')
-    })
-    it('/api/v2/library/series/%zz（畸形百分号编码）→ 400；含 .. 仍 400', () => {
-      expect(call('/api/v2/library/series/%zz').status).toBe(400)
-      expect(call('/api/v2/library/series/a..b').status).toBe(400)
-      expect(call('/api/v2/library/series/tmdb%3A..%3A71').status).toBe(400) // 解码后含 '..' 同样拒
-    })
-  })
   it('routes /api/v2/runs with offset/limit defaults', () => {
     expect(call('/api/v2/runs').status).toBe(200)
     expect(lastRunsArgs).toEqual({ offset: 0, limit: 50 })
@@ -321,14 +251,6 @@ describe('handleApiRoute (v2)', () => {
       expect(r.json).toEqual(workflowWorkersDTO)
     })
 
-    it('routes GET /api/v2/library/series/:id，404 未命中，400 非法 id', () => {
-      const hit = call('/api/v2/library/series/s1')
-      expect(hit.status).toBe(200)
-      expect(hit.json).toEqual(librarySeriesDetailDTO)
-      expect(call('/api/v2/library/series/nope').status).toBe(404)
-      expect(call('/api/v2/library/series/a..b').status).toBe(400)
-    })
-
     it('routes GET /api/v2/triage', () => {
       const r = call('/api/v2/triage')
       expect(r.status).toBe(200)
@@ -379,31 +301,6 @@ describe('handleApiRoute (v2)', () => {
     const r = call('/api/v2/workflow/dormant')
     expect(r.status).toBe(200)
     expect(r.json).toEqual([dormantRow])
-  })
-
-  // spec B Task 4：GET /api/v2/library/movies/:id——movie 详情端点（三层格阵合并）。
-  it('GET /api/v2/library/movies/:id returns detail', () => {
-    const r = call('/api/v2/library/movies/m1')
-    expect(r.status).toBe(200)
-    expect(r.json).toEqual(movieDetailDTO)
-    expect(lastMovieId).toBe('m1')
-  })
-
-  it('GET /api/v2/library/movies/nonexistent returns 404', () => {
-    const r = call('/api/v2/library/movies/nonexistent')
-    expect(r.status).toBe(404)
-    expect((r.json as { error: string }).error).toBe('not found')
-  })
-
-  it('GET /api/v2/library/movies/:id accepts tmdb: ids', () => {
-    const r = call('/api/v2/library/movies/tmdb:1234')
-    expect(r.status).toBe(200)
-    expect(lastMovieId).toBe('tmdb:1234')
-  })
-
-  it('GET /api/v2/library/movies/:id rejects bad ids with 400', () => {
-    expect(call('/api/v2/library/movies/a..b').status).toBe(400)
-    expect(call('/api/v2/library/movies/bad/path').status).toBe(404) // doesn't match route pattern
   })
 
   // R-F2 / R-F5：媒体库页两个新端点的路由层判定。

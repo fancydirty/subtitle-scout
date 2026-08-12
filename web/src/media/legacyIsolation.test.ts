@@ -141,8 +141,14 @@ const ENTRIES = ['media/MediaDetailPage.tsx', 'media/EpisodeCell.tsx']
 const LEGACY_PREFIX = '_legacy/'
 /** 债务①点名的那个具体模块（旧七态）。移动后的新路径。 */
 const LEGACY_EPISODE_STATE = '_legacy/library/episodeState.ts'
-/** 阳性对照的入口——它真的 import 了上面那个模块（SeriesPage.tsx:13）。 */
-const POSITIVE_CONTROL_ENTRY = '_legacy/library/SeriesPage.tsx'
+/** 阳性对照的入口——它真的 import 了上面那个模块（SeasonAccordion.tsx:16）。
+ *  ⚠️ 2026-08-12：原本用的是 `_legacy/library/SeriesPage.tsx`，它随 `/api/v2/library/series/:id`
+ *  端点的删除一并删除（该端点无活 UI，见 apiV2.ts 的裁决注释）。换成同目录下同样直接
+ *  import episodeState 的 SeasonAccordion——阳性对照要的只是"一条真实存在的 import 边"，
+ *  换入口不改变这份守卫的语义。下面那条 `.length > 3` 的断言也随之改成 > 2：
+ *  SeasonAccordion 的 _legacy 闭包比 SeriesPage 小一点（实测 4 个：自身 + episodeState +
+ *  text + EpisodeRow…），阈值按实测下调而不是删掉它。 */
+const POSITIVE_CONTROL_ENTRY = '_legacy/library/SeasonAccordion.tsx'
 
 describe('债务①：新页面的 import 图里不许出现旧 library 模块', () => {
   it('解析器自检：源码 VFS 装到了全部 src 文件，且入口都在里面', () => {
@@ -162,9 +168,9 @@ describe('债务①：新页面的 import 图里不许出现旧 library 模块',
     expect(legacyModules.length, '`_legacy/` 下一个文件都没有——守卫已无靶子').toBeGreaterThan(20)
   })
 
-  it('解析器自检（阳性对照）：同一套解析器从 _legacy/library/SeriesPage.tsx 出发**抓得到** episodeState', () => {
-    // 🔴 这条是整份文件的地基。SeriesPage.tsx:13 真的写着
-    // `import { buildGridCells, tallyGridCells } from './episodeState.js'`。
+  it('解析器自检（阳性对照）：同一套解析器从 _legacy/library/SeasonAccordion.tsx 出发**抓得到** episodeState', () => {
+    // 🔴 这条是整份文件的地基。SeasonAccordion.tsx:16 真的写着
+    // `import { buildGridCells, tallyGridCells, … } from './episodeState.js'`。
     // 抓不到 = 解析器不工作 = 下面那条禁令的"绿"是空转。
     const { modules, unresolved } = importClosure([POSITIVE_CONTROL_ENTRY])
     expect(modules.has(LEGACY_EPISODE_STATE), '解析器抓不到一条真实存在的 import 边').toBe(true)

@@ -97,7 +97,9 @@ async function start(
   env?: Record<string, string | undefined>,
   // dashboard G5：POST /api/v2/workflow/redispatch 依赖（缺席→503）。
   jobs?: Pick<JobsRepo, 'upsertWorkerTask'>,
-  // dashboard G5：GET /api/v2/library/series/:id 命中时的惰性刷新接线（缺席→跳过，不报错）。
+  // dashboard-F5：GET /api/v2/tmdb/search 的搜索代理接线（缺席→503）。
+  // （原先这里还承担 /api/v2/library/series/:id 的惰性 TMDB 刷新接线，该端点已于
+  //  2026-08-12「无活 UI 端点」裁决删除，回填改由 daemonV2 的 boot pass 负责。）
   tmdb?: FakeTmdb,
   // 验收修复轮一 Task V2：甄别认领成功后踢一脚扫描的回调（缺席→无事发生，照 jobs/tmdb 既有可选依赖的先例）。
   requestIngest?: () => void,
@@ -137,19 +139,8 @@ beforeEach(() => {
 })
 
 describe('startDashboard (v2)', () => {
-  it('serves /api/v2/library with coverage + job', async () => {
-    const { base } = await start(distWith('<!doctype html><title>scout</title>'), 'tok')
-    const lib = await (await fetch(`${base}/api/v2/library?token=tok`)).json()
-    const series = lib.find((x: any) => x.id === 's1')
-    expect(series).toMatchObject({ name: 'Series A', chineseTitle: '甲剧', posterPath: 'ptag' })
-    expect(series.coverage).toEqual({ covered: 1, missing: 1, embedded: 0, unavailable: 0, hardsubAssumed: 0, partial: 0 })
-    expect(series.job).toEqual({ state: 'searching', priority: 100 })
-  })
-  it('serves /api/v2/series/:id and /api/v2/runs', async () => {
+  it('serves /api/v2/runs', async () => {
     const { base } = await start(distWith('<!doctype html>'), 'tok')
-    const detail = await (await fetch(`${base}/api/v2/series/s1?token=tok`)).json()
-    expect(detail.seasons[0].episodes.map((e: any) => e.id)).toEqual(['e1', 'e2'])
-    expect(detail.runs[0]).toMatchObject({ decision: 'download', detail: '下好一集' })
     const runs = await (await fetch(`${base}/api/v2/runs?token=tok`)).json()
     expect(runs.length).toBe(1)
     expect(runs[0].decision).toBe('download')
@@ -192,8 +183,8 @@ describe('startDashboard (v2)', () => {
   })
   it('rejects api without token when configured (401)', async () => {
     const { base } = await start(distWith('<!doctype html>'), 's3cret')
-    expect((await fetch(`${base}/api/v2/library`)).status).toBe(401)
-    expect((await fetch(`${base}/api/v2/library?token=s3cret`)).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`)).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/mediaLibrary?token=s3cret`)).status).toBe(200)
   })
 
   it('GET /api/v2/subtitle/waveform-peaks without token → 401', async () => {
@@ -307,7 +298,7 @@ describe('startDashboard (v2)', () => {
 
       // 守护进程活着的直接证据：同一 server 实例照常服务下一个请求。
       // （若 uncaughtException 已炸，vitest 会把它记为本测试的 unhandled error，全绿即无泄漏。）
-      const res = await fetch(`${base}/api/v2/library?token=tok`)
+      const res = await fetch(`${base}/api/v2/mediaLibrary?token=tok`)
       expect(res.status).toBe(200)
     })
   })
@@ -665,40 +656,6 @@ describe('startDashboard (v2)', () => {
       expect(body.recent.length).toBeGreaterThan(0)
     })
 
-    describe('GET /api/v2/library/series/:id（三层格阵合并 + 惰性刷新接线）', () => {
-      it('返回合并详情，404 未命中', async () => {
-        const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/v2/library/series/s1?token=tok`)
-        expect(res.status).toBe(200)
-        const body = await res.json()
-        expect(body.series.name).toBe('Series A')
-        const notFound = await fetch(`${base}/api/v2/library/series/nope?token=tok`)
-        expect(notFound.status).toBe(404)
-      })
-
-      it('tmdb 未配置时端点仍正常工作（不报错，只是跳过惰性刷新）', async () => {
-        const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/v2/library/series/s1?token=tok`)
-        expect(res.status).toBe(200)
-      })
-
-      // 注：真实 seriesId 形如 'tmdb:<n>'（含冒号，src/v2/ownIds.ts）；router.ts 的 SAFE_ID
-      // 字符集不含 ':'，这条路由（同既有 /api/v2/series/:id）目前无法用真实带冒号的 id 走完整
-      // HTTP round-trip 触发 refreshSeriesCatalog 的真实 TMDB 分支（tmdbIdFromOwnId 对不含
-      // 冒号的 id 恒早退）——这是路由层既有限制，不是本端点新引入的缺陷，这里只验证 tmdb 配置
-      // 存在时命中仍是 200、不因 fire-and-forget 分支而报错/挂起。
-      it('tmdb 已配置时命中不报错、不阻塞响应（早退分支：测试用 id 不合 tmdb:<n> 形状）', async () => {
-        const tmdbStub: FakeTmdb = {
-          getSeasonTable: async () => [{ seasonNumber: 1, episodeCount: 1, airDate: null }],
-          getSeasonEpisodes: async () => [{ episode: 1, title: 'Ep1', overview: null, airDate: null, stillPath: null }],
-          search: async () => [],
-        }
-        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, tmdbStub)
-        const res = await fetch(`${base}/api/v2/library/series/s1?token=tok`)
-        expect(res.status).toBe(200)
-      })
-    })
-
     describe('GET /api/v2/tmdb/search（dashboard-F5：ClaimDialog 的 TMDB 搜索代理）', () => {
       it('转调 tmdb.search，结果映射成 {id,name,year,posterPath}（形状）', async () => {
         const tmdbStub: FakeTmdb = {
@@ -821,6 +778,55 @@ describe('startDashboard (v2)', () => {
       })
     })
 
+    // ── POST /api/v2/library/scan ────────────────────────────────────────────
+    // 这一族的来历：端点裁决那一轮清点出 11 条"疑似无活 UI"的端点，
+    // `/api/v2/library/scan` 是**唯一被判为"活"**的一条（活链路：
+    // AppShell settings 分支 → SettingsTabsPage:132 → RootsManager:41 → scanDebouncer → 这里）。
+    //
+    // 🔴 但它当时**两端零测试覆盖**——变异实测：把这个后端分支删掉、或把前端打的 URL
+    // 改成 `/api/v2/WRONG/scan`，后端 3322 + 前端 1287 条用例**无一变红**。
+    // 线上后果是"用户加完守备目录后永远不会自动扫描"，且**静默无声**。
+    //
+    // 那是病 A 的镜像形态：不是"有端点没 UI"，而是"**有活链路却没有任何守卫**"。
+    // 名字里带 library 让它更危险——同批被删的三条端点同前缀，下一轮清理的人极易顺手带走它。
+    describe('POST /api/v2/library/scan（守备目录改动后踢一脚扫描）', () => {
+      it('🔴 POST → 200 且 requestIngest 恰好被调用一次', async () => {
+        let calls = 0
+        const { base } = await start(
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
+        )
+        const res = await fetch(`${base}/api/v2/library/scan?token=tok`, { method: 'POST' })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ ok: true })
+        expect(calls).toBe(1)
+      })
+
+      it('🔴 未注入 requestIngest（没跑 watch）→ 503，而不是假装成功', async () => {
+        // 假装 200 会让用户以为扫描已排上队，然后永远等不到结果。
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/library/scan?token=tok`, { method: 'POST' })
+        expect(res.status).toBe(503)
+      })
+
+      it('GET 等非 POST → 405（它有副作用，不许被预取/爬虫触发）', async () => {
+        let calls = 0
+        const { base } = await start(
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
+        )
+        expect((await fetch(`${base}/api/v2/library/scan?token=tok`)).status).toBe(405)
+        expect(calls).toBe(0)
+      })
+
+      it('无凭据 → 401，且不许触发扫描', async () => {
+        let calls = 0
+        const { base } = await start(
+          distWith('<!doctype html>'), 's3cret', undefined, undefined, undefined, () => { calls++ },
+        )
+        expect((await fetch(`${base}/api/v2/library/scan`, { method: 'POST' })).status).toBe(401)
+        expect(calls).toBe(0)
+      })
+    })
+
     describe('POST /api/v2/workflow/redispatch（人类扳手：手动重派）', () => {
       it('合法 body → 转调 upsertWorkerTask，原样返回四态回执', async () => {
         const jobs = new JobsRepo(db)
@@ -903,9 +909,9 @@ describe('startDashboard (v2)', () => {
 })
 
 describe('auth 前置门（A1：统一门，spec §2）', () => {
-  it('未初始化：/api/v2/library 401 setup required；静态资源照常 200', async () => {
+  it('未初始化：/api/v2/mediaLibrary 401 setup required；静态资源照常 200', async () => {
     const { base } = await start(distWith('<!doctype html><title>scout</title>'))
-    const api = await fetch(`${base}/api/v2/library`)
+    const api = await fetch(`${base}/api/v2/mediaLibrary`)
     expect(api.status).toBe(401)
     expect(await api.json()).toEqual({ error: 'setup required' })
     const page = await fetch(`${base}/`)
@@ -939,11 +945,11 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
     })
     expect(login.status).toBe(200)
     const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]
-    const lib = await fetch(`${base}/api/v2/library`, { headers: { cookie } })
+    const lib = await fetch(`${base}/api/v2/mediaLibrary`, { headers: { cookie } })
     expect(lib.status).toBe(200)
     const out = await fetch(`${base}/api/v2/auth/logout`, { method: 'POST', headers: { cookie } })
     expect(out.status).toBe(200)
-    const after = await fetch(`${base}/api/v2/library`, { headers: { cookie } })
+    const after = await fetch(`${base}/api/v2/mediaLibrary`, { headers: { cookie } })
     expect(after.status).toBe(401)
   })
   it('login 错密码 401；连爆 6 次 429（节流）', async () => {
@@ -967,9 +973,9 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
       body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
     })
     const { apiKey } = await setup.json() as { apiKey: string }
-    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': apiKey } })).status).toBe(200)
-    expect((await fetch(`${base}/api/v2/library?apikey=${apiKey}`)).status).toBe(200)
-    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': 'wrong' } })).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { 'x-api-key': apiKey } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary?apikey=${apiKey}`)).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { 'x-api-key': 'wrong' } })).status).toBe(401)
   })
   it('auth/status：未初始化 {initialized:false,...}；登录后 authenticated:true', async () => {
     const { base } = await start(distWith('x'))
@@ -987,9 +993,9 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
   })
   it('legacy DASHBOARD_TOKEN：未初始化+带旧 token → API 照常通（旧部署零破坏）', async () => {
     const { base } = await start(distWith('x'), 'legacy-tok')
-    expect((await fetch(`${base}/api/v2/library?token=legacy-tok`)).status).toBe(200)
-    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-dashboard-token': 'legacy-tok' } })).status).toBe(200)
-    expect((await fetch(`${base}/api/v2/library?token=wrong`)).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/mediaLibrary?token=legacy-tok`)).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { 'x-dashboard-token': 'legacy-tok' } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary?token=wrong`)).status).toBe(401)
   })
   it('已初始化后 legacy token 仍等价 api key（迁移期共存）', async () => {
     const { base } = await start(distWith('x'), 'legacy-tok')
@@ -997,7 +1003,7 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
     })
-    expect((await fetch(`${base}/api/v2/library?token=legacy-tok`)).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary?token=legacy-tok`)).status).toBe(200)
   })
   it('SSE trace-stream 走 ?apikey=（EventSource 无法带头）', async () => {
     const { base } = await start(distWith('x'))
@@ -1091,8 +1097,8 @@ describe('auth Security 区端点（A3 Task 12）', () => {
     const r = await fetch(`${base}/api/v2/auth/regenerate-api-key`, { method: 'POST', headers: { cookie } })
     const { apiKey: nk } = await r.json() as { apiKey: string }
     expect(nk).toMatch(/^[0-9a-f]{32}$/)
-    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': apiKey } })).status).toBe(401)
-    expect((await fetch(`${base}/api/v2/library`, { headers: { 'x-api-key': nk } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { 'x-api-key': apiKey } })).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { 'x-api-key': nk } })).status).toBe(200)
   })
 })
 
@@ -1113,8 +1119,8 @@ describe('改密撤销会话 + 补发当前 cookie（审计 MEDIUM #1）', () =>
       body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
     })
     const cookie2 = (login.headers.get('set-cookie') ?? '').split(';')[0]
-    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie1 } })).status).toBe(200)
-    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie2 } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { cookie: cookie1 } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { cookie: cookie2 } })).status).toBe(200)
     // 用 cookie1 改密
     const cp = await fetch(`${base}/api/v2/auth/change-password`, {
       method: 'POST', headers: { 'content-type': 'application/json', cookie: cookie1 },
@@ -1124,9 +1130,9 @@ describe('改密撤销会话 + 补发当前 cookie（审计 MEDIUM #1）', () =>
     const cookie3 = (cp.headers.get('set-cookie') ?? '').split(';')[0]
     expect(cookie3).toMatch(/^scout_session=[0-9a-f]{64}$/)
     // 旧的两枚全失效，新的一枚有效
-    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie1 } })).status).toBe(401)
-    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie2 } })).status).toBe(401)
-    expect((await fetch(`${base}/api/v2/library`, { headers: { cookie: cookie3 } })).status).toBe(200)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { cookie: cookie1 } })).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { cookie: cookie2 } })).status).toBe(401)
+    expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { cookie: cookie3 } })).status).toBe(200)
   })
 })
 
@@ -1746,15 +1752,6 @@ describe('setup 面端点（spec A §4.4）', () => {
       expect((await fetch(`${base}/api/v2/mediaLibrary/tmdb:1`)).status).toBe(401)
       expect((await fetch(`${base}/api/v2/mediaLibrary?token=s3cret`)).status).toBe(200)
       expect((await fetch(`${base}/api/v2/mediaLibrary/tmdb:1?token=s3cret`)).status).toBe(200)
-    })
-
-    it('🔴 旧的 /api/v2/library 原样活着（前端替换完成前不许动它）', async () => {
-      seedMediaLibrary(db)
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const old = await fetch(`${base}/api/v2/library?token=tok`)
-      expect(old.status).toBe(200)
-      // 顶部 seed() 写的旧表数据照旧读得出来
-      expect(((await old.json()) as any[]).find((x) => x.id === 's1')).toMatchObject({ name: 'Series A' })
     })
   })
 

@@ -10,12 +10,11 @@ import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
-import { refreshSeriesCatalog } from '../v2/tmdbCatalog.js'
 import {
-  buildLibrary, buildSeriesDetail, buildRuns, buildParked, unexclude,
+  buildRuns, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
-  buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers, buildLibrarySeriesDetail,
-  buildTriage, redispatch, buildRunTrace, buildDormantTasks, buildLibraryMovieDetail,
+  buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers,
+  buildTriage, redispatch, buildRunTrace, buildDormantTasks,
   type ReconcileAllResultDTO,
 } from './apiV2.js'
 // R-F2 / R-F5：媒体库页数据层（新架构 files/works/tmdb_seasons）。刻意与 apiV2.js 分开
@@ -102,14 +101,17 @@ export interface DashboardOpts {
   /** dashboard G5：POST /api/v2/workflow/redispatch（人类扳手：手动重派）依赖——undefined（纯
    *  只读测试场景）时该端点返回 503。 */
   jobs?: Pick<JobsRepo, 'upsertWorkerTask'>
-  /** dashboard G5：GET /api/v2/library/series/:id 命中时的惰性 TMDB 应有集缓存刷新（G2 遗留的
-   *  触发点）——undefined（TMDB_API_KEY 未配置）时跳过，端点本身照常返回磁盘现状，不因为缺
-   *  TMDB 而报错。
-   *  dashboard-F5：'search' 供 GET /api/v2/tmdb/search（只读搜索代理；原为 ClaimDialog 而设，
-   *  认领退役后前端不再调用，端点保留为无害的只读代理）转调——
-   *  同一个 tmdb 依赖，缺席时两个消费点各自独立降级（这里 503，series/:id 那边跳过刷新）。 */
-  /** spec A §4.2：tmdb 改 getter 注入（holder 覆盖 dashboard 注入面）——消费处现取现判空,
-   *  缺席语义不变（series 详情惰性刷新跳过、tmdb/search 503）。 */
+  /** dashboard-F5：'search' 供 GET /api/v2/tmdb/search（只读搜索代理；原为 ClaimDialog 而设，
+   *  认领退役后前端不再调用，端点保留为无害的只读代理）转调。缺席（TMDB_API_KEY 未配置）
+   *  → 该端点 503。
+   *
+   *  ⚠️ 2026-08-12：`getSeasonTable`/`getSeasonEpisodes` 两个方法此前还供
+   *  `/api/v2/library/series/:id` 命中时的惰性 TMDB 应有集刷新（G2 遗留触发点）使用，
+   *  该端点已随"无活 UI 端点"裁决删除，dashboard 侧现在**只用 `search`**。两个方法留在
+   *  Pick 里是因为 daemonV2 的 boot pass（R-F5 应有集回填）与本注入面共用同一个 TmdbClient
+   *  形状；要收窄成 `Pick<TmdbClient,'search'>` 得先确认没有测试按这个形状造桩。
+   *
+   *  spec A §4.2：tmdb 改 getter 注入（holder 覆盖 dashboard 注入面）——消费处现取现判空。 */
   tmdb?: () => Pick<TmdbClient, 'getSeasonTable' | 'getSeasonEpisodes' | 'search'> | null
   /** spec A：setupApi 的默认实现需要 cacheRoot（assrt 探测的缓存目录）；测试可注入临时目录。 */
   cacheRoot?: string
@@ -430,8 +432,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     ...subtitleCompareDeps,
   }
   const deps: RouterDeps = {
-    library: () => buildLibrary(db),
-    series: (id) => buildSeriesDetail(db, id),
     runs: (offset, limit) => buildRuns(db, offset, limit),
     parked: () => buildParked(db),
     settings: () => buildSettings(settingsRepo),
@@ -441,16 +441,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     workflowPending: () => buildWorkflowPending(db, settingsRepo, Date.now()),
     workflowPasses: (limit) => buildWorkflowPasses(db, limit),
     workflowWorkers: () => buildWorkflowWorkers(db, Date.now()),
-    // G2 遗留的惰性刷新触发点：命中一个真实存在的 series 时 fire-and-forget 踢一次
-    // refreshSeriesCatalog（TTL 门在函数内部，无脑调用即可）——tmdb 缺席时跳过，不影响这个端点
-    // 本身的同步返回；只在 detail 非 null（series 真存在）时才触发，避免对着不存在的 series id
-    // 白打一次早退调用。
-    librarySeriesDetail: (id) => {
-      const detail = buildLibrarySeriesDetail(db, id)
-      const tmdbClient = tmdb?.()
-      if (detail && tmdbClient) void refreshSeriesCatalog(db, tmdbClient, id, Date.now()).catch(() => {})
-      return detail
-    },
     triage: () => buildTriage(db),
     runTrace: (id) => buildRunTrace(db, id),
     // Plan C：两个只读 GET。shifted 复用 subDeps 的 repo + exists（同一份 existsSync 实现，
@@ -463,11 +453,10 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     dormantTasks: () => buildDormantTasks(db),
     setupStatus: () => buildSetupStatus(setupDeps),
     providers: () => buildProviders(setupDeps),
-    movieDetail: (id) => buildLibraryMovieDetail(db, settingsRepo, id),
     // R-F2 / R-F5：媒体库页两个新端点。**纯同步只读**，无惰性 TMDB 刷新副作用 ——
     // 应有集（tmdb_seasons）的回填由 daemonV2 的 boot pass 负责（R-F5 已落地，生产 2144 行），
-    // 不在读路径上再挂一次网络触发：librarySeriesDetail 那条的 fire-and-forget 是 G2 遗留，
-    // 新端点不继承它（海报墙是全量列表，逐个作品踢 TMDB 会在一次页面加载里打爆配额）。
+    // 不在读路径上再挂一次网络触发（海报墙是全量列表，逐个作品踢 TMDB 会在一次页面加载里
+    // 打爆配额）。旧 librarySeriesDetail 那条 G2 遗留的 fire-and-forget 已随该端点一并删除。
     mediaLibrary: () => buildMediaLibrary(db),
     mediaLibraryDetail: (workId) => buildMediaLibraryDetail(db, workId),
     // R-F13：活动页排队段。**纯同步只读**（同上两条的口径）。
@@ -1154,6 +1143,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       }
 
       // ---- 字幕时间轴校验三端点（spec §3.4）----
+      //
+      // 🟡 2026-08-12「无活 UI 端点」裁决：**本族 6 条端点今天没有任何活 UI，且这张表在
+      //    生产永远不会有第一行**（写入环封闭、巡检雪藏）。经裁决**保留**，完整事实链、
+      //    留存理由与可证伪的删除判据写在 `src/v2/subtitleVerifyRepo.ts` 头注释。
+      //    要动这一族之前先读那段——别只删一半。
+      //
       // GET verify 是**纯读**（只查 repo，不碰文件系统、不触发检测），本可以塞进下方同步的
       // handleApiRoute；但它与两个 POST 扳手是同一族语义、共用同一份 DTO 映射与参数解析，
       // 拆在两处会让"三值→两色"的映射离它的两个兄弟很远。放在一起，且刻意保持纯读。
