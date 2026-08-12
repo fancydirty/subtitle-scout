@@ -14,6 +14,8 @@ import type {
   DormantTaskDTO,
   MovieDetailDTO,
   HealthDTO,
+  MediaLibraryItemDTO,
+  MediaLibraryDetailDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -892,6 +894,78 @@ export function useHealth(): Async<HealthDTO> {
       })
     return () => ctrl.abort()
   }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** Task ⑧：媒体库页海报墙（GET /api/v2/mediaLibrary）。
+ *
+ *  ── 为什么**不轮询**（与隔壁 useLibrary 的 15s 轮询刻意不同）───────────────────
+ *  useLibrary 那 15s 是 dashboard-F2 时代"顶栏新鲜度行必须活着"的遗产。媒体库页回答的是
+ *  「我这部剧应该有哪些集、磁盘上有哪些」——**磁盘扫描是分钟到小时级的事实**，每 15 秒
+ *  重打一次全库聚合（buildMediaLibrary 是三条全表查询 + 逐格聚合）只是在给自己制造负载，
+ *  用户也看不出任何差别。故：首载一次 + 暴露 reload()。同 useTriage/useSettings 的既有先例。
+ *
+ *  谁触发 reload：错误态那个「重试」按钮（MediaLibraryPage）。这是本 hook 今天**唯一**的
+ *  reload 调用点，如实记在这里（本仓的病 A 是"加了能力却没定谁触发"）。 */
+export function useMediaLibrary(): Async<MediaLibraryItemDTO[]> {
+  const [data, setData] = useState<MediaLibraryItemDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .mediaLibrary(ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** Task ⑧：媒体库详情（季集网格）。workId 为 null（不在 #/media/:workId 二级路由上）时
+ *  **完全不发请求**——Shell 在每次渲染都会调用这个 hook，null 也照打的话另外三个 tab
+ *  会白白 404 一次（同 useLibrarySeriesDetail 的既有降级口径，一字不差）。
+ *  一次性、不轮询：同 useMediaLibrary 的理由，详情更不需要。 */
+export function useMediaLibraryDetail(workId: string | null): Async<MediaLibraryDetailDTO> {
+  const [data, setData] = useState<MediaLibraryDetailDTO | null>(null)
+  const [loading, setLoading] = useState(workId != null)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    if (workId == null) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .mediaLibraryDetail(workId, ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [workId, nonce])
 
   return { data, loading, error, reload }
 }

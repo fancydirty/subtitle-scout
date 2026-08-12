@@ -34,7 +34,7 @@
 // 两个旧 tab 只是从侧栏与 ⌘K 里消失了（tabs.ts 的 TABS 不再列它们），路由直达照常工作。
 // 旧页面下架（移入 _legacy）是 Task ⑪ 的独立动作。
 import { useState } from 'react'
-import { useWorkflowPending, useLibrarySeriesDetail, useLibraryMovieDetail } from '../api/hooks.js'
+import { useWorkflowPending, useLibrarySeriesDetail, useLibraryMovieDetail, useMediaLibraryDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
@@ -45,7 +45,9 @@ import { SeriesPage } from '../library/SeriesPage.js'
 import { MovieDetailPage } from '../library/MovieDetailPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
 import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
-import { ActivityPlaceholder, NotificationsPlaceholder, MediaPlaceholder } from './placeholders.js'
+import { ActivityPlaceholder, NotificationsPlaceholder } from './placeholders.js'
+import { MediaLibraryPage } from '../media/MediaLibraryPage.js'
+import { MediaDetailPage } from '../media/MediaDetailPage.js'
 import { EventsProvider } from '../events/EventsProvider.js'
 import { cn } from '../lib/utils.js'
 
@@ -64,6 +66,12 @@ export function Shell() {
 
   // Plan B：电影详情——同 seriesDetail 的口径，route.movieId 为 null 时 hook 不发请求。
   const movieDetail = useLibraryMovieDetail(route.movieId ?? null)
+
+  // Task ⑧：媒体库详情（#/media/:workId）——同上口径，mediaWorkId 为 null 时 hook 不发请求。
+  // 与 seriesDetail 不同的是它**只喂给页面本体**，不喂 Topbar：新导航的面包屑只有一级
+  // （TABS 里的 tab 名），媒体库详情页自己在页头画了返回链接与作品名。给 Topbar 加二级
+  // 面包屑是独立的产品动作，不在本 task 范围。
+  const mediaDetail = useMediaLibraryDetail(route.mediaWorkId ?? null)
 
   return (
     // Task ⑦：EventsProvider 包在最外——四层 SSE Context（activity/found/health/progress）
@@ -120,7 +128,15 @@ export function Shell() {
                 分支，那条会红。 */}
             {route.tab === 'activity' && <ActivityPlaceholder />}
             {route.tab === 'notifications' && <NotificationsPlaceholder />}
-            {route.tab === 'media' && <MediaPlaceholder />}
+            {route.tab === 'media' &&
+              (route.mediaWorkId ? (
+                // key=mediaWorkId：切换到另一部作品时强制重挂载（同 SeriesPage 的既有口径），
+                // 避免上一部作品的 MediaPoster 失败态（useState failed）跨作品残留 —— 那会让
+                // 一部有海报的作品显示成首字母占位。
+                <MediaDetailPage key={route.mediaWorkId} detail={mediaDetail} />
+              ) : (
+                <MediaLibraryPage />
+              ))}
           </main>
         </div>
       </div>

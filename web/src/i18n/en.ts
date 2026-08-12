@@ -18,14 +18,12 @@ export const en = {
   nav_settings: 'Settings',
   nav_logout: 'Log out',
 
-  // Task ⑦ 三个占位页：说明"这页将来回答什么问题"。**不描述还不存在的功能细节**——
+  // Task ⑦ 占位页（Task ⑧ 填肉后只剩活动/通知两个）：说明"这页将来回答什么问题"。**不描述还不存在的功能细节**——
   // 一句人话，等 Task ⑧⑨⑩ 填肉时这些键会被真页面的文案取代或保留作空态说明。
   placeholder_activity_purpose:
     'What the engine is working on right now, and whether you can leave it alone.',
   placeholder_notifications_purpose:
     'Subtitles found and installed over the past week, newest first.',
-  placeholder_media_purpose:
-    'Every episode you should have, which ones are on disk, and their subtitle status.',
   placeholder_under_construction: 'Under construction',
 
   // ⌘K 命令面板：F2 只做 tab 导航，不做搜索。
@@ -432,4 +430,43 @@ export const en = {
 
   settings_system_rerun_wizard: 'Re-run setup wizard',
   settings_system_rerun_wizard_desc: 'Walk through bootstrap again. Steps configured via environment stay locked.',
+
+  // ── Task ⑧ 媒体库页（#/media）────────────────────────────────────────────
+  // 键前缀 `media_*` 与旧海报墙的 `library_*` **刻意分开**：两个页面并存到 Task ⑪，
+  // 共用键会让"改文案时改到另一个页面"变成可能，而且旧键随旧页面一起删。
+  media_result_count_prefix: 'Titles',
+  media_card_subtitled: 'subtitled',
+  media_card_ondisk: 'on disk',
+  media_card_expected: 'expected',
+  media_empty_title: 'Nothing in the library yet',
+  media_empty_desc: 'Once media roots are scanned, titles will appear here.',
+  media_error_title: 'Could not load the media library',
+  media_retry: 'Retry',
+  media_back: '← Media',
+  media_season_prefix: 'Season',
+  media_season_missing: 'missing',
+  media_movie_heading: 'Movie',
+  media_legend_label: 'Episode status legend',
+  media_unplaced_prefix: 'Files that could not be placed into a season:',
+  // R-F2「另一处那份仍要单独去配」。这一格仍然是 covered（任一份有就算），这句话补的是
+  // "但另一份还是裸的"。刻意不说 "missing"——那个词在本页已经属于虚线格（磁盘上没有）。
+  media_extra_unsubtitled: 'another copy still needs subtitles:',
+  media_extra_unsubtitled_legend: 'superscript = copies of this episode still without subtitles',
+  media_detail_not_found_title: 'No such title',
+  media_detail_not_found_desc: 'This work is not in the library. It may have been removed with its media root.',
+  media_detail_no_seasons_title: 'No episodes yet',
+  media_detail_no_seasons_desc:
+    'Nothing on disk could be placed into a season, and the expected-episode list has not been cached yet.',
+
+  // 八态文案（R-F12）。**逐态一句人话**——不是符号的名字（"对勾"），是那一格的事实。
+  // ⚠️ unsolvable 刻意不写 "failed"/"gave up"：后端注释明写它**不是永久终态**，
+  // 阶段 2.6 的复查闸每周放回一次。说"失败"是把停牌说成终局。
+  media_state_covered: 'Subtitled',
+  media_state_translating: 'Being translated',
+  media_state_unsolvable: 'No source yet — will retry',
+  media_state_origin_skip: 'Original language — no subtitles needed',
+  media_state_embedded: 'Embedded track',
+  media_state_pending: 'Looking for subtitles',
+  media_state_unjudged: 'Not judged yet',
+  media_state_absent: 'Not on disk',
 } as const

@@ -602,3 +602,121 @@ export interface HealthDTO {
   roots: HealthRootDTO[]
   current: ScoutCurrentDTO | null
 }
+
+// ── Task ⑧：媒体库页两个端点（GET /api/v2/mediaLibrary、/:workId）─────────────
+// 手抄自 src/dashboard/mediaLibraryApi.ts 的同名 interface（同本文件其余 DTO 的既有做法：
+// web/ 是独立 tsconfig 工程，跨出去 import 会把 node 侧类型面拖进来）。
+//
+// 🔴 命名撞车的裁决（任务书点名的债务①）：`web/src/library/episodeState.ts` 已存在一个
+// `EpisodeCellState`，七态、值域完全不同（covered/hardsub/missing/throttled/error/dashed/
+// partial），长在**旧** `episodes` 表的 `LibraryOnDiskEpisodeDTO.subStatus` 上。
+// 本文件这个 `EpisodeState` 是后端 mediaLibraryApi.ts 的**八态**，长在**新** `files` 表的
+// sub_status/needs_subtitle/skip_reason 三列上。
+//
+// 两套**绝不互相复用、绝不互相推导**：
+//  ① 值域没有交集可言——同名的 'covered' 两边判据不同（旧的把 embedded/ignored 也折进
+//     covered，新的 embedded 是独立一态）；'missing' 在新八态里根本不存在（对应
+//     'pending'/'unsolvable' 两个语义相反的态）。写一个 map 把旧七态映到新八态，就是
+//     把两套判据焊死，任一侧改动都会静默漂移出错误的染色。
+//  ② 数据源不同——旧的读 episodes 表（生产 series 0 行、该表已死），新的读 files 表。
+//  ③ 生命周期不同——旧七态随 Task ⑪ 与旧 library 页面一起移入 `_legacy`。
+// 故新页面（web/src/media/）**一行都不 import 旧文件**，类型名也刻意不同
+// （EpisodeCellState vs EpisodeState），撞不到一起。
+
+/** 卡片右上角小圆点（后端 SubtitleDot）。**三态**，与下面的八态**共存不互推**：
+ *  dot 回答"有没有中文字幕"，episodeState 回答"这一集现在处在什么状态"。
+ *  前者是后者的**有损投影**（covered→green、embedded→blue、其余五态→none），反向推不回来。
+ *  ⚠️ 媒体库页按 R-F12 用**集号染色**渲染状态，**不渲染圆点**——这个类型在本文件出现，
+ *  只是因为 DTO 里有这个字段（如实手抄后端线形），不代表页面会画它。 */
+export type MediaSubtitleDot = 'none' | 'blue' | 'green'
+
+/** R-F12 集号染色的八态。优先级链已在后端算完（见 mediaLibraryApi.ts 的 classifyFileState），
+ *  前端**只做符号映射，不做任何判定**——前端不知道 target_languages 是什么，那是 R-F15 的
+ *  后端判据，在浏览器里复制一份必然与后端漂移。
+ *
+ *  符号（设计文档 §4.3 裁决，内联 SVG，见 web/src/media/EpisodeMark.tsx）：
+ *    covered ✓ / translating ⇄ / unsolvable ⊘ / origin-skip ◇ / embedded ◆ /
+ *    pending ··· / unjudged ? / absent 虚线不染色（不画任何符号） */
+export type EpisodeState =
+  | 'absent'
+  | 'covered'
+  | 'translating'
+  | 'unsolvable'
+  | 'origin-skip'
+  | 'embedded'
+  | 'pending'
+  | 'unjudged'
+
+/** GET /api/v2/mediaLibrary 的行——海报墙一张卡。
+ *  四个计数字段名与后端逐字对应（后端头注释的命名铁律：绝不出现含混的 episodeCount）。 */
+export interface MediaLibraryItemDTO {
+  /** works.id（'tmdb:<id>'）。**这就是详情页的路由 id**，也是 R-F2 的合并键。 */
+  workId: string
+  title: string
+  chineseTitle: string | null
+  year: number | null
+  posterPath: string | null
+  mediaType: 'tv' | 'movie'
+  /** 应有集数 = tmdb_seasons 行数（R-F5）。**电影恒 0**；剧集为 0 = 应有集缓存还没回填，
+   *  **不是**"这剧只有 0 集"——前端据此隐藏"应有 N 集"那半句，不许显示 "0 集"。 */
+  expectedEpisodeCount: number
+  /** 实有集数 = 磁盘上有文件的**去重后**集数（R-F2：同一集两份文件只算 1）。 */
+  onDiskEpisodeCount: number
+  /** 虚线卡片数 = max(0, 应有 - 实有)（后端已夹 0）。 */
+  missingEpisodeCount: number
+  /** 已获取中文字幕的格数（R-F2「任一份有就算」口径；绿点 + 蓝点都计入）。 */
+  subtitledEpisodeCount: number
+}
+
+/** 详情页一格（一集）。 */
+export interface MediaLibraryEpisodeDTO {
+  episode: number
+  title: string | null
+  /** **实线 vs 虚线的唯一判据**（R-F5）：true=磁盘上真有文件（实线）；
+   *  false=TMDB 说这季有、磁盘上没有（虚线）。 */
+  onDisk: boolean
+  dot: MediaSubtitleDot
+  /** R-F12 集号染色的唯一判据。onDisk=false 时后端恒给 'absent'（虚线格不染色）。 */
+  episodeState: EpisodeState
+  /** 该集在磁盘上的文件份数（同一集在两个目录各一份 → 2）。虚线格为 0。 */
+  fileCount: number
+  /** 其中有外挂中文 sidecar 的份数。R-F2「另一处那份仍要单独去配」的可见依据：
+   *  `subtitledFileCount < fileCount` 即"还有份没配上"。 */
+  subtitledFileCount: number
+}
+
+export interface MediaLibrarySeasonDTO {
+  season: number
+  episodes: MediaLibraryEpisodeDTO[]
+}
+
+/** 电影那一格（剧集恒 null）。
+ *  ⚠️ 后端注释点名：**不许假设电影格必有文件**——详情端点没有列表页那个 INNER JOIN，
+ *  零文件的空壳 works 打得进来，此时 episodeState 就是 'absent'。 */
+export interface MediaLibraryMovieDTO {
+  dot: MediaSubtitleDot
+  episodeState: EpisodeState
+  fileCount: number
+  subtitledFileCount: number
+}
+
+export interface MediaLibraryWorkDTO {
+  workId: string
+  title: string
+  chineseTitle: string | null
+  year: number | null
+  posterPath: string | null
+  mediaType: 'tv' | 'movie'
+}
+
+/** GET /api/v2/mediaLibrary/:workId 响应体。 */
+export interface MediaLibraryDetailDTO {
+  work: MediaLibraryWorkDTO
+  /** 季集网格。**电影恒空数组**（R-F5：电影没有季集）。 */
+  seasons: MediaLibrarySeasonDTO[]
+  /** 电影那一格；剧集恒 null。 */
+  movie: MediaLibraryMovieDTO | null
+  /** 属于本作品、但 season/episode 解析不出因而进不了季集网格的文件数。
+   *  **必须如实露出**：不报的话用户会以为系统把文件弄丢了。电影恒 0。 */
+  unplacedFileCount: number
+}

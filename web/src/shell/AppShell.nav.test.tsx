@@ -37,6 +37,15 @@ function mockFetch() {
         ? { target_languages: null, hardsub_mode: null, exclude_extras: null,
             trace_retention_days: null, scan_interval_ms: null }
       : url.includes('/api/v2/library') && !url.includes('series') ? []
+      // Task ⑧：媒体库两个端点。**必须给数组**——`{}` 会让 MediaLibraryPage 的 items.map
+      // 抛 TypeError（实测踩到），主区被炸空，本文件真正要测的"分支在不在"就被淹没了。
+      // 空数组 = 空库态，正是这里要的"渲染出了页面本体"的最小形状。
+      // ⚠️ 精确路径判在带 id 的之前——`/api/v2/mediaLibrary/tmdb:1` 也含 'mediaLibrary'。
+      : /\/api\/v2\/mediaLibrary$/.test(url.split('?')[0] ?? '') ? []
+      : url.includes('/api/v2/mediaLibrary/')
+        ? { work: { workId: 'tmdb:1', title: 'W', chineseTitle: null, year: null,
+                    posterPath: null, mediaType: 'tv' },
+            seasons: [], movie: null, unplacedFileCount: 0 }
       : url.includes('/workflow/pending')
         ? { meta: { roots: [], lastScanAt: null, files: 0, lastVerifySweepAt: null,
                     verifiedItems: 0, verifiableItems: 0 }, parked: 0 }
@@ -92,11 +101,14 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
     expect(new Set(texts).size).toBe(TABS.length)
   })
 
-  it('三个占位页各自渲染出自己的页面名（导航标签的同一份文案）', async () => {
+  // ── Task ⑧：媒体库页已填肉，占位页只剩两个 ────────────────────────────────
+  // 下面三条从"三个占位页"改成"两个"，并**补一条媒体库页的反向断言**（它绝不许再显示
+  // 施工中标记）。只把 'media' 从列表里删掉是不够的：那样一来，有人把 MediaLibraryPage
+  // 换回占位壳时全绿——正是 Task ⓪「删光生产写入点测试无一变红」的同型。
+  it('两个占位页各自渲染出自己的页面名（导航标签的同一份文案）', async () => {
     for (const [tab, label] of [
       ['activity', en.nav_activity],
       ['notifications', en.nav_notifications],
-      ['media', en.nav_media],
     ] as const) {
       location.hash = `#/${tab}`
       renderShell()
@@ -108,12 +120,11 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
     }
   })
 
-  it('三个占位页各自渲染出"施工中"标记与自己的数据源说明（不是同一个壳复制三遍）', async () => {
+  it('两个占位页各自渲染出"施工中"标记与自己的数据源说明（不是同一个壳复制三遍）', async () => {
     const seen: string[] = []
     for (const [tab, source] of [
       ['activity', 'Task ⑨'],
       ['notifications', 'Task ⑩'],
-      ['media', 'Task ⑧'],
     ] as const) {
       location.hash = `#/${tab}`
       renderShell()
@@ -121,18 +132,17 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
       await waitFor(() => {
         expect(within(main).getByText(en.placeholder_under_construction)).toBeInTheDocument()
       })
-      // 每页的施工说明必须提到**自己那个** task 与数据源——三页共用一句就是假占位。
+      // 每页的施工说明必须提到**自己那个** task 与数据源——两页共用一句就是假占位。
       const note = within(main).getByText(new RegExp(source))
       expect(note).toBeInTheDocument()
       seen.push(note.textContent ?? '')
       cleanup()
     }
-    // 三条说明互不相同
-    expect(new Set(seen).size).toBe(3)
+    expect(new Set(seen).size).toBe(2)
   })
 
   it('占位页**不渲染任何假数据**——没有列表项、没有骨架屏、没有数字读数', async () => {
-    for (const tab of ['activity', 'notifications', 'media'] as const) {
+    for (const tab of ['activity', 'notifications'] as const) {
       location.hash = `#/${tab}`
       renderShell()
       const main = await screen.findByRole('main')
@@ -142,6 +152,18 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
       expect(main.querySelectorAll('[class*="skeleton"], [class*="Skeleton"]')).toHaveLength(0)
       cleanup()
     }
+  })
+
+  it('#/media 渲染真页面（Task ⑧ 已填肉）——绝不再是占位壳', async () => {
+    location.hash = '#/media'
+    renderShell()
+    const main = await screen.findByRole('main')
+    // 空库态（mock 给的是 []）的真文案在场 = 真页面渲染了。
+    await waitFor(() => {
+      expect(within(main).getByText(en.media_empty_title)).toBeInTheDocument()
+    })
+    // 施工中标记绝不许出现——有人把它换回占位壳时这条红。
+    expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
   })
 })
 

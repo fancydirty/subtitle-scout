@@ -13,6 +13,7 @@ import type {
   MovieDetailDTO, WaveformPeaksResponse,
   TestVisionRequest, TestVisionResponse,
   HealthDTO,
+  MediaLibraryItemDTO, MediaLibraryDetailDTO,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -236,4 +237,15 @@ export const api = {
   // ⚠️ 不跑 watch 时它**照常 200**（只是 current 为 null），与隔壁 /api/v2/events 的 503
   // 刻意不同：另外三个字段全长在库上，与事件总线无关。
   health: (signal?: AbortSignal) => get<HealthDTO>('/api/v2/health', signal),
+
+  // Task ⑧：媒体库页（R-F2 / R-F5）。**刻意不复用 `library`/`librarySeriesDetail`**——
+  // 那两个端点长在旧 series/episodes/movies 表上（生产 series 0 行，读不出任何东西），
+  // 这两个长在 works/files/tmdb_seasons 上。两套并存直到 Task ⑪ 下架旧的。
+  mediaLibrary: (signal?: AbortSignal) => get<MediaLibraryItemDTO[]>('/api/v2/mediaLibrary', signal),
+  // workId 含冒号（'tmdb:1396'）。encodeURIComponent 编码后由 router.ts 的 decodeIdSegment
+  // 解回——同 librarySeriesDetail 的既有拼法（router.ts 注释明写两条同形、复用同一套
+  // isSafeId/decodeIdSegment）。⚠️ 不编码的话冒号本身虽合法，但作品 id 空间将来若出现
+  // 需要转义的字符就会静默 404。
+  mediaLibraryDetail: (workId: string, signal?: AbortSignal) =>
+    get<MediaLibraryDetailDTO>(`/api/v2/mediaLibrary/${encodeURIComponent(workId)}`, signal),
 }

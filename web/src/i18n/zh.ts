@@ -20,10 +20,9 @@ export const zh = {
   nav_settings: '设置',
   nav_logout: '登出',
 
-  // Task ⑦ 三个占位页。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
+  // Task ⑦ 占位页（Task ⑧ 填肉后只剩活动/通知两个）。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
   placeholder_activity_purpose: '引擎现在在忙什么，以及你是不是可以不用管了。',
   placeholder_notifications_purpose: '过去一周找到并装上的字幕，最新的在最前面。',
-  placeholder_media_purpose: '每部剧应该有哪些集、磁盘上实际有哪些、字幕是什么情况。',
   placeholder_under_construction: '施工中',
 
   cmdk_trigger: '搜索',
@@ -373,4 +372,38 @@ export const zh = {
 
   settings_system_rerun_wizard: '重跑设置向导',
   settings_system_rerun_wizard_desc: '重新走一遍启动配置。环境变量配置的步骤保持锁定。',
+
+  // ── Task ⑧ 媒体库页（#/media）────────────────────────────────────────────
+  media_result_count_prefix: '作品',
+  media_card_subtitled: '已配',
+  media_card_ondisk: '磁盘',
+  media_card_expected: '应有',
+  media_empty_title: '库里还什么都没有',
+  media_empty_desc: '守备目录扫描完成后，作品会出现在这里。',
+  media_error_title: '没能加载媒体库',
+  media_retry: '重试',
+  media_back: '← 媒体库',
+  media_season_prefix: '第',
+  media_season_missing: '缺',
+  media_movie_heading: '电影',
+  media_legend_label: '集号状态图例',
+  media_unplaced_prefix: '有文件没能归入任何一季：',
+  // R-F2「另一处那份仍要单独去配」。这一格仍然是"已配字幕"（任一份有就算），这句补的是
+  // "但另一份还是裸的"。不说"缺"——那个词在本页属于虚线格（磁盘上没有）。
+  media_extra_unsubtitled: '另有份数还没配上：',
+  media_extra_unsubtitled_legend: '右上角数字 = 这一集还没配上字幕的份数',
+  media_detail_not_found_title: '没有这部作品',
+  media_detail_not_found_desc: '库里没有这个作品，可能已随守备目录一起移除。',
+  media_detail_no_seasons_title: '还没有任何一集',
+  media_detail_no_seasons_desc: '磁盘上没有能归入季的文件，应有集目录也还没缓存。',
+
+  // 八态文案（R-F12）。⚠️ unsolvable 不写"失败"——它不是永久终态，复查闸每周放回一次。
+  media_state_covered: '已配字幕',
+  media_state_translating: '正在翻译',
+  media_state_unsolvable: '暂时没辙 · 还会再试',
+  media_state_origin_skip: '原生就是目标语言 · 不需要字幕',
+  media_state_embedded: '自带内嵌字幕轨',
+  media_state_pending: '正在找字幕',
+  media_state_unjudged: '还没判定',
+  media_state_absent: '磁盘上没有',
 } as const

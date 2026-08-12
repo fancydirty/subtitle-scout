@@ -50,6 +50,14 @@ export interface ShellRoute {
   libraryId: string | null
   /** #/library/movies/:id 命中时的电影 id（已 decode）；其余情况 null。 */
   movieId?: string | null
+  /** Task ⑧：#/media/:workId 命中时的作品 id（已 decode）；其余情况 null。
+   *
+   *  ⚠️ **与 libraryId 是两个不同的 id 空间，刻意不合并**：libraryId 是旧 `series.id`
+   *  （旧 /api/v2/library/series/:id 的键），mediaWorkId 是 `works.id`
+   *  （新 /api/v2/mediaLibrary/:workId 的键）。两者今天在生产里字面都是 'tmdb:<n>'，
+   *  但 series 表 0 行、works 表 110 行——**它们不是同一张表的同一行**。共用一个字段
+   *  会让"哪个页面该发哪个请求"变成靠 tab 猜，Task ⑪ 删旧页面时也分不清哪些用法要删。 */
+  mediaWorkId?: string | null
 }
 
 /** hash → 路由。未识别/根路径一律落到 DEFAULT_TAB（活动页，见其注释）。
@@ -61,6 +69,7 @@ export function parseShellHash(hash: string): ShellRoute {
   const tab = isTab(raw) ? raw : DEFAULT_TAB
   let libraryId: string | null = null
   let movieId: string | null = null
+  let mediaWorkId: string | null = null
   let page: 'library' | 'series-detail' | 'movie-detail' | undefined = undefined
 
   if (tab === 'library') {
@@ -86,9 +95,19 @@ export function parseShellHash(hash: string): ShellRoute {
     }
   }
 
-  return { tab, page, libraryId, movieId }
-}
+  // Task ⑧：#/media/:workId 二级路由（媒体库详情，季集网格）。
+  // 与 library 分支的形状刻意一致（try/catch 降级到 null → 落回列表页而不是白屏），
+  // 但 id 落在**另一个字段**上（mediaWorkId），理由见 ShellRoute 的字段注释。
+  if (tab === 'media' && segs[1]) {
+    try {
+      mediaWorkId = decodeURIComponent(segs[1])
+    } catch {
+      mediaWorkId = null
+    }
+  }
 
+  return { tab, page, libraryId, movieId, mediaWorkId }
+}
 export function useShellRoute(): ShellRoute {
   const [route, setRoute] = useState<ShellRoute>(() => parseShellHash(location.hash))
   useEffect(() => {
@@ -112,4 +131,11 @@ export function libraryItemHref(item: { kind: 'series' | 'movie'; libraryId: str
     return `#/library/movies/${encodeURIComponent(item.libraryId)}`
   }
   return `#/library/${encodeURIComponent(item.libraryId)}`
+}
+
+/** Task ⑧：#/media/:workId 的 href——workId 含冒号（'tmdb:1396'），encodeURIComponent
+ *  编码后由 parseShellHash 的 decodeURIComponent 解回。海报卡与详情页返回链接共用这一个
+ *  拼法（同 libraryItemHref 的既有理由：两处各写一份必然漂移）。 */
+export function mediaItemHref(workId: string): string {
+  return `#/media/${encodeURIComponent(workId)}`
 }

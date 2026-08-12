@@ -1802,3 +1802,211 @@
 /* "4 小时后重试" 那行走弱色 mono——它继承 hero 既有的 .act-hero-facts > * 那条 gray 规则，
    这里刻意**不为它另写一条颜色**（尤其不给红）：那句"会重试"的承诺需要一个可核对的时刻，
    但它是背景事实不是警示。 */
+
+/* ═══ 媒体库页（Task ⑧ / R-F2 · R-F5 · R-F11 · R-F12）═══════════════════════════
+   ⚠️ token 名的坑（Task ⑦ 的实施者踩过，PlaceholderPage 头注释记着）：
+   DESIGN.md 写的 `surface-1` / `hairline` 在本仓 **grep 零命中**——本仓用的是
+   `--color-card` / `--color-border` / `--color-secondary` / `--color-accent` 那套语义名。
+   写 `var(--color-surface-1, transparent)` 会**静默 fallback 成透明**，构建通过、测试全绿、
+   只有肉眼能看出来。所以这一整段**只用本仓真实存在的变量**，一个新变量都不新增。
+
+   R-F11（Linear 基准）：深度靠 surface 阶梯 + 发丝线承载，**拒绝投影**——
+   下面没有任何 box-shadow / drop-shadow 声明。 */
+
+/* ---- 列表：海报墙 ---- */
+.media-grid {
+  display: grid;
+  gap: 1rem;
+  /* 与 .library-grid 同一条几何（auto-fill + 8 列封顶）——两个海报墙并存期间列宽不一致
+     会让用户以为是两个产品。Task ⑪ 删掉 .library-grid 后这条独活。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, calc((100% - 7 * 1rem) / 8))), 1fr));
+}
+.media-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+.media-card-frame {
+  position: relative;
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  /* 发丝线（第一层）。hover 抬到 rgba(255,255,255,.14)（第二层），无投影。 */
+  border: 1px solid var(--color-border);
+  /* --color-secondary（#16181f），**不是** --color-accent：后者在过渡期被遮蔽成柠檬绿，
+     会把整墙海报框刷绿（.library-poster-frame 那条注释里记的同一个坑）。 */
+  background: var(--color-secondary);
+  transition: border-color 120ms ease;
+}
+.media-card:hover .media-card-frame {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.media-card:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+.media-card-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 骨架屏那一格没有 AspectRatio 撑高（里面是 Skeleton 不是 img），自己给 2:3。 */
+.media-card-skel {
+  aspect-ratio: 2 / 3;
+}
+.media-poster-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-secondary);
+  color: var(--color-weak);
+  font-size: 24px;
+}
+.media-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ---- 详情：头部海报缩略 ---- */
+.media-detail-poster {
+  width: 72px;
+  flex-shrink: 0;
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-secondary);
+}
+
+/* ---- 详情：图例 ---- */
+.media-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-card);
+}
+.media-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* ---- 详情：集号格阵（R-F12 集号染色）───────────────────────────────────────
+   🔴 这一段是 R-F12 的**全部视觉载体**，三条裁决刻在这里：
+    ① **没有圆点**——状态长在集号上（`E01 ✓`），不是集号旁边挂一个点。
+       所以这段里没有任何 `border-radius: 50%` 的小色块规则，也不该有人加回来。
+    ② **没有左竖线**——用户点名否掉（Bootstrap alert 遗产）。故没有 border-left 声明。
+    ③ **虚线格不染色**——[data-ondisk='false'] 下集号恒走 --color-faint，
+       且 EpisodeMark 对 'absent' 返回 null（组件层就没有符号可画）。 */
+.media-ep-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+}
+.media-ep-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 3px 6px;
+  border-radius: var(--radius-control);
+  background: var(--color-card);
+  /* R-F5 维度一：**实线** = 磁盘上真有此集。 */
+  border: 1px solid var(--color-border);
+}
+/* R-F5 维度一：**虚线** = TMDB 说这季有、磁盘上没有。
+   面色也退到页面底色——虚线格不是"一张有内容的卡"，它是一个空位。 */
+.media-ep-cell[data-ondisk='false'] {
+  border-style: dashed;
+  background: transparent;
+}
+/* 电影那一格：文案比集号长，占满一行不裁切。 */
+.media-ep-cell-wide {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+.media-ep-num {
+  display: inline-flex;
+  align-items: center;
+  /* --font-mono 在 tw.css:56 真实定义（ui-monospace…）。**不写 fallback 逗号列表**：
+     那会掩盖"变量名打错了"这种错误——本仓踩过的坑正是 fallback 静默生效。 */
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  /* 默认色 = 未染色。八态各自的颜色在下面逐条覆盖；漏配一态时它是灰的（诚实的"没有色"），
+     而不是继承某个态的颜色（那会把 A 态显示成 B 态）。 */
+  color: var(--color-faint);
+}
+
+/* 八态染色（R-F12）。**颜色只在这里定**，组件层不写死任何色值（data-state 是唯一钩子）。
+   每一条的色都从既有 token 拿，不新增配色（DESIGN.md：不自开色板）。 */
+/* ✓ 已配字幕——绿，唯一的"成了"色。 */
+.media-ep-num[data-state='covered'] {
+  color: var(--color-fn-green);
+}
+/* ◆ 自带内嵌目标语言轨——蓝。与绿同属"不用管了"，但事实不同（片子自带 vs 我们配上）。 */
+.media-ep-num[data-state='embedded'] {
+  color: var(--color-fn-blue);
+}
+/* ◇ 原生就是目标语言——灰。它是"压根不需要字幕"，既不是成果也不是待办，走中性色。 */
+.media-ep-num[data-state='origin-skip'] {
+  color: var(--color-muted-foreground);
+}
+/* ⇄ 在翻译台上——紫。这是唯一"正在动"的态，用 fn-purple（本仓既有的"活着/在跑"色，
+   活动页 hero 脉动点就是它）。 */
+.media-ep-num[data-state='translating'] {
+  color: var(--color-fn-purple);
+}
+/* ⊘ 判定无解——琥珀，**不是红**。理由是后端注释里的事实：unsolvable **不是永久终态**，
+   阶段 2.6 的复查闸每周把它放回一次（R25/R26）。红 = "坏了，去处理"，而这里的真相是
+   "现在没辙，系统还会自己再试"——用红是把停牌说成故障，本仓病 B 的配色版。 */
+.media-ep-num[data-state='unsolvable'] {
+  color: var(--color-fn-amber);
+}
+/* ··· 排队等找——弱灰。待办不是问题，不给状态色。 */
+.media-ep-num[data-state='pending'] {
+  color: var(--color-weak);
+}
+/* ? 系统答不上来——最弱灰。它是"还没判"，比待办更没有信息量。 */
+.media-ep-num[data-state='unjudged'] {
+  color: var(--color-faint);
+}
+/* absent（虚线格）：不染色。写出来是为了让"八态都在这段里有交代"这件事可核对——
+   EpisodeMark 对 absent 返回 null，所以这一格只有一个灰集号，没有符号。 */
+.media-ep-num[data-state='absent'] {
+  color: var(--color-faint);
+}
+/* 符号继承集号的颜色（currentColor）——两个通道**同色**是有意的：它们表达的是同一件事，
+   分色会让人以为符号和数字各说各的。 */
+.media-ep-mark {
+  flex-shrink: 0;
+}
+
+/* R-F2 次要标记：集号右上角的上标数字 = 这一集**还没配上字幕的份数**（>1 份文件时才有）。
+   ── 三条约束刻在这里 ──────────────────────────────────────────────────────
+   ① **不是第九个态**：它不进 data-state 那张颜色表，也不在图例的七枚符号里。所以这里
+      **不给它任何状态色**——用 --color-weak（弱灰，同 pending 的"待办不是问题"口径）。
+      给它红/琥珀会把它抬成一个与八态平级的告警，那正是"第九个符号"的病。
+   ② **Carbon 双通道不靠颜色**：它传达信息的通道是**字形**（那个数字本身）与
+      **位置**（上标），颜色只是弱化。整句事实走 EpisodeCell 的 aria-label。
+   ③ **R-F11 拒绝投影/徽章**：没有 box-shadow、没有 background、没有 border-radius——
+      它是一个上标数字，不是一枚角标徽章。 */
+.media-ep-extra {
+  /* 上标定位用 font-size + vertical-align，不用 position:absolute：绝对定位会脱离
+     集号的行盒，一屏 40 格时与相邻格重叠（本仓 activity/ 踩过同型）。 */
+  font-size: 8px;
+  line-height: 1;
+  vertical-align: super;
+  margin-left: 1px;
+  color: var(--color-weak);
+}
+

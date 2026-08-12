@@ -1,6 +1,8 @@
-// web/src/shell/placeholders.tsx：三个新页面的占位实现（Task ⑦ 只建壳，⑧⑨⑩ 填肉）。
+// web/src/shell/placeholders.tsx：新页面的占位实现（Task ⑦ 只建壳，⑨⑩ 填肉）。
 //
-// 三个都用同一个 PlaceholderPage 壳，各自只给"这页回答什么问题"与"谁来填、数据源是什么"。
+// 2026-08-12（Task ⑧）：媒体库页已填肉，占位实现随之删除——**现在只剩两个**（活动/通知）。
+//
+// 两个都用同一个 PlaceholderPage 壳，各自只给"这页回答什么问题"与"谁来填、数据源是什么"。
 // 文案里的数据源与 task 号是可核对的事实（对得上 FRONTEND-SPEC §六·七 的数据源表），
 // 不是占位废话——下一个人接手时这三行就是他的入口索引。
 //
@@ -32,14 +34,8 @@ export function NotificationsPlaceholder() {
   )
 }
 
-/** 媒体库页（Task ⑧）——应有集 vs 实有集 vs 字幕情况。 */
-export function MediaPlaceholder() {
-  const { t } = useT()
-  return (
-    <PlaceholderPage
-      title={t('nav_media')}
-      purpose={t('placeholder_media_purpose')}
-      buildNote="Task ⑧ · GET /api/v2/mediaLibrary + /:workId"
-    />
-  )
-}
+/** 媒体库页（Task ⑧）**已填肉**——占位实现随之删除，见 web/src/media/MediaLibraryPage.tsx。
+ *
+ *  留这段注释而不是留一个不再被引用的 MediaPlaceholder：孤儿组件会在下一次有人搜
+ *  "media placeholder" 时被当成"还没做完"的证据。i18n 的 `placeholder_media_purpose`
+ *  键也**一并删除**（en/zh 两侧），理由同——留着就是键集里的死条目。 */
