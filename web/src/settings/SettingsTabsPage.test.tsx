@@ -62,4 +62,55 @@ describe('SettingsTabsPage', () => {
     expect(screen.queryByRole('switch', { name: 'AI subtitle translation' })).not.toBeInTheDocument()
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
   })
+
+  // ── setup/status 的 providers 契约（后端 buildSetupStatus 保证非可选） ──────────
+  //
+  // 这两条守的是一个**实测过的整页白屏**：原代码写 `data?.providers.subhd.enabled`，
+  // 可选链只挡到 data，providers 缺席时抛 TypeError、React 卸载整棵树。
+  //
+  // ⚠️ 这里**刻意不**断言"缺 providers 时页面照常渲染 0/8"——那是假修复的形状。
+  // 契约说 providers 必在，所以缺席是真异常，正确行为是**抛一条说得清的错**，
+  // 由 AppShell 的 PageBoundary 降级这一页（见 AppShell.boundary.test.tsx）。
+  it('providers 完整时正常读取（subhd/zimuku 各记一分）', () => {
+    mockHooks()
+    vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({
+      data: {
+        providers: {
+          subhd: { enabled: true, source: 'db' },
+          zimuku: { enabled: true, source: 'db', captchaReady: false },
+        },
+      } as never,
+      loading: false, error: null, reload: vi.fn(),
+    })
+    renderPage()
+    expect(screen.getByText('2/8')).toBeInTheDocument()
+  })
+
+  it('data 为 null（未加载/失败）→ 合法缺席，降级成 0/8，**不抛**', () => {
+    mockHooks() // useSetupStatus 的 data 默认就是 null
+    expect(() => renderPage()).not.toThrow()
+    expect(screen.getByText('0/8')).toBeInTheDocument()
+  })
+
+  it('data 在但 providers 缺席 → 契约违例，抛出指名道姓的错（不是静默 0/8）', () => {
+    mockHooks()
+    vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({
+      data: { bootstrapComplete: true } as never, loading: false, error: null, reload: vi.fn(),
+    })
+    // React 会把渲染期异常往 console.error 复读一遍，静音只为输出可读。
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // 断言消息内容而不只是 toThrow()：裸 toThrow() 对旧代码的 TypeError 也会绿，
+    // 分不出"崩了"和"诚实报了契约违例"。
+    expect(() => renderPage()).toThrow(/setup\/status.*providers/s)
+  })
+
+  it('providers 在但 zimuku 缺席（半截形状）→ 同样判违例', () => {
+    mockHooks()
+    vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({
+      data: { providers: { subhd: { enabled: false, source: 'none' } } } as never,
+      loading: false, error: null, reload: vi.fn(),
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(() => renderPage()).toThrow(/providers/)
+  })
 })

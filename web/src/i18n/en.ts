@@ -22,6 +22,14 @@ export const en = {
   // **不描述还不存在的功能细节**——一句人话，等 Task ⑨ 填肉时这个键随之删除。
   placeholder_under_construction: 'Under construction',
 
+  // 页级错误边界（PageBoundary）的降级文案。措辞纪律同 verify_inspect_failed：
+  // 说清"坏的是这一页"+"没动你的东西"+"下一步能做什么"，**不吐技术细节**
+  // （堆栈里全是模块名和字段名，对用户毫无意义，走 console.error）。
+  // 不写"请联系管理员"——这是自托管应用，用户就是管理员。
+  page_failed_title: 'This page ran into a problem',
+  page_failed_desc: 'Something in this page could not be displayed. Nothing was changed, and the rest of the app still works — try reloading, or switch to another page from the sidebar.',
+  page_failed_retry: 'Reload this page',
+
   // ⌘K 命令面板：F2 只做 tab 导航，不做搜索。
   cmdk_trigger: 'Find anything',
   cmdk_label: 'Command palette',

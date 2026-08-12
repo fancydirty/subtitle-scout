@@ -32,6 +32,7 @@ import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
 import { CommandK } from './CommandK.js'
 import { EngineBanner } from './EngineBanner.js'
+import { PageBoundary } from './PageBoundary.js'
 import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
 import { ActivityPage } from '../workbench/ActivityPage.js'
 import { MediaLibraryPage } from '../media/MediaLibraryPage.js'
@@ -93,23 +94,38 @@ export function Shell() {
                 （#/workflow 渲染的那个），现已移入 `_legacy/activity/`——这个 import
                 路径今天不再有歧义，但目录名仍不改回去（改名是独立动作，且 `_legacy`
                 整体去留还没裁决）。 */}
-            {route.tab === 'activity' && <ActivityPage />}
+            {/* ⚠️ 每条分支都包 PageBoundary（**边界在分支里、不在分支外**）：
+                一页渲染时抛出的异常此前会卸载整棵树 = 侧栏顶栏一起消失的全屏白屏
+                （实测：SettingsTabsPage 读 setupStatus.data.providers 时 DTO 缺字段）。
+                包在这里而不是包在 <main> 外面一条，是因为 name 要区分、且 tab 切换时
+                天然换掉边界实例（坏掉的那页不会把 failed 态带到下一页）。
+                论证见 PageBoundary.tsx 文件头。 */}
+            {route.tab === 'activity' && (
+              <PageBoundary name="activity"><ActivityPage /></PageBoundary>
+            )}
             {/* Task ⑩：通知页。一周流水、倒序、不做已读；SSE `found` 只点亮页内的
                 「有新字幕 · 点击刷新」提示，列表永远只由 GET /api/v2/notifications 出
                 （设计文档 §3.4 的分工，论证在页面头注释）。
                 ⚠️ 这一页**没有二级路由**（不像 media 那样有 :workId），所以这里是
                 一条光杆分支——route.ts 也刻意不给它加任何段解析。 */}
-            {route.tab === 'notifications' && <NotificationsPage />}
-            {route.tab === 'media' &&
-              (route.mediaWorkId ? (
-                // key=mediaWorkId：切换到另一部作品时强制重挂载，避免上一部作品的
-                // MediaPoster 失败态（useState failed）跨作品残留 —— 那会让一部有海报的
-                // 作品显示成首字母占位。
-                <MediaDetailPage key={route.mediaWorkId} detail={mediaDetail} />
-              ) : (
-                <MediaLibraryPage />
-              ))}
-            {route.tab === 'settings' && <SettingsTabsPage />}
+            {route.tab === 'notifications' && (
+              <PageBoundary name="notifications"><NotificationsPage /></PageBoundary>
+            )}
+            {route.tab === 'media' && (
+              <PageBoundary name="media">
+                {route.mediaWorkId ? (
+                  // key=mediaWorkId：切换到另一部作品时强制重挂载，避免上一部作品的
+                  // MediaPoster 失败态（useState failed）跨作品残留 —— 那会让一部有海报的
+                  // 作品显示成首字母占位。
+                  <MediaDetailPage key={route.mediaWorkId} detail={mediaDetail} />
+                ) : (
+                  <MediaLibraryPage />
+                )}
+              </PageBoundary>
+            )}
+            {route.tab === 'settings' && (
+              <PageBoundary name="settings"><SettingsTabsPage /></PageBoundary>
+            )}
           </main>
         </div>
       </div>

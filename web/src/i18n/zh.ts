@@ -23,6 +23,11 @@ export const zh = {
   // Task ⑦ 占位页（Task ⑧⑩ 填肉后**只剩活动一个**）。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
   placeholder_under_construction: '施工中',
 
+  // 页级错误边界降级文案（对应 en.ts 同名三键，措辞纪律见那边注释）。
+  page_failed_title: '这一页出了点问题',
+  page_failed_desc: '这一页里有内容没能显示出来。你的数据没有被改动，其他页面照常可用——可以重新加载这一页，或者从侧栏切到别的页面。',
+  page_failed_retry: '重新加载这一页',
+
   cmdk_trigger: '搜索',
   cmdk_label: '命令面板',
   cmdk_placeholder: '跳转到页面…',

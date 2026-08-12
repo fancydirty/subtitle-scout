@@ -1302,6 +1302,34 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
   },
 ]
 
+/** pre-fold（v9 折叠之前，Jellyfin 时代）老库的结构指纹：series.poster_tag 列存在。
+ *  v9 终态把它换成了 poster_path，此后没有任何迁移会重新引入 poster_tag——所以"有它"就等价于
+ *  "这库是 pre-fold 的"，不会随 MIGRATIONS 继续增长而失真。series 表不存在（空库/半初始化）
+ *  时返回 false：指纹取不到就不拦，交给正常路径去建表。 */
+function hasPreFoldFingerprint(db: ScoutDb): boolean {
+  try {
+    const cols = db.prepare('PRAGMA table_info(series)').all() as Array<{ name: string }>
+    return cols.some((c) => c.name === 'poster_tag')
+  } catch {
+    return false // 库里连 series 都没有——不是 pre-fold 老库该有的样子，不拦
+  }
+}
+
+/** pre-fold 老库的人话指引。语气与内容对齐既有那条 catch 兜底提示：说清"为什么没救"、
+ *  "该做什么"、"做完会发生什么"。docker 部署形态下 scout.db 躺在 SUBTITLE_SCOUT_CACHE_DIR
+ *  挂载卷里，所以路径要报全，并明确 -wal/-shm 一起删（只删主文件会让 SQLite 拿残留 WAL 重建
+ *  出半个老库，用户会二次撞坑）。 */
+function preFoldMessage(currentVersion: number, path: string): string {
+  return (
+    `数据库 schema v${currentVersion} 是 de-Jellyfin 化(v9)之前的旧版本,与当前折叠后的迁移链不兼容` +
+    `——迁移未执行,数据库未被改动。这类开发期老库已作废,没有升级路径。` +
+    `请停掉服务,备份后删除 ${path} 及同目录的 ${path}-wal / ${path}-shm(三个一起删,只删主文件会让 ` +
+    `SQLite 拿残留 WAL 重建出半个老库),重启后程序会重新初始化,从零重扫媒体库、重新识别与找字幕。` +
+    `docker 部署的话这些文件在 SUBTITLE_SCOUT_CACHE_DIR 挂载卷里,删之前先 cp 一份留底。` +
+    `丢的只有索引与任务/黑名单记录(可重建),磁盘上已下好的字幕文件不受影响——它们是真状态,重扫会重新认领。`
+  )
+}
+
 export function openDb(path: string): ScoutDb {
   const db = new Database(path)
 
@@ -1355,6 +1383,31 @@ export function openDb(path: string): ScoutDb {
   // 迁移前置防线：包装在 try...catch 里，确保**任何**阶段抛错（FK 体检/VACUUM/迁移事务）
   // 都能正确关闭连接，绝不残留句柄与 -wal/-shm 锁阻碍重启或修复。
   try {
+    // 前置版本闸（pre-fold 老库）：v9 折叠之前的老库（Jellyfin 时代，schema_version 1..8）与
+    // 当前折叠后的迁移链**结构上不兼容**——它们的表形状是 v1→v8 逐步 ALTER 的产物，而折叠后
+    // MIGRATIONS[0] 是"给空库落 v9 终态"的裸 CREATE TABLE，从下标 currentVersion 处接着跑
+    // 只会撞上各式各样的 SQL 错误。这些错误的**形状不可枚举**：实测 schema_version=6 的真实
+    // 老库跑到 v15（sub_status 值域重建，建 episodes_v15 → INSERT SELECT 拷贝）抛的是
+    // "table episodes_v15 has 14 columns but 10 values were supplied"（列数不匹配），而
+    // schema_version=8 的库抛的是 "no such table: item_files"。下游 catch 里那条人话提示原本
+    // 只匹配 /no such (table|column)/，于是前者漏网、用户拿到裸 SqliteError 堆栈。往那条正则
+    // 上继续贴补丁是打地鼠——下一个老迁移随时可能抛第三种形状（CHECK 约束失败、datatype
+    // mismatch、UNIQUE 冲突……）。**根治办法是根本不进迁移链**：在动手之前就判定这是老库，
+    // 直接给可操作指引。这样也顺带避免为一个注定失败的迁移白做一次 VACUUM 快照。
+    //
+    // 判据是"版本号 + 结构指纹"两条**同时**成立，不能只看版本号：meta.schema_version 落的是
+    // MIGRATIONS 数组下标+1，而折叠把 v1..v8 压成了下标 0 这一条——于是"下标口径的 6"（fresh
+    // install 只跑了前 6 条 entry，是完全健康的库，实测有 parked_paths、series.poster_path）
+    // 与"语义口径的 v6"（Jellyfin 时代老库，实测有 series.poster_tag、无 parked_paths）数字
+    // 完全撞车。只看 `currentVersion < 9` 会把前者也拦下来，误伤正常升级路径。结构指纹取
+    // series.poster_tag：它是 Jellyfin 时代的图片 tag 列，v9 终态换成了 poster_path 且此后
+    // 再没有任何迁移会重新引入 poster_tag——有它 ⇔ 这库是 pre-fold 的，判据稳定且不会随
+    // MIGRATIONS 继续增长而失真。series 表不存在（空库/半初始化）时指纹取不到 → 不拦，交给
+    // 正常路径。
+    if (currentVersion >= 1 && currentVersion < 9 && hasPreFoldFingerprint(db)) {
+      throw new Error(preFoldMessage(currentVersion, path))
+    }
+
     // 执行未应用的迁移
     if (currentVersion < MIGRATIONS.length) {
       // DB 审计🔴:迁移前自动快照(任何进程 openDb 触发迁移都有恢复点,不靠运维记得手动备份)。
@@ -1422,6 +1475,11 @@ export function openDb(path: string): ScoutDb {
     // 彻底防止死锁/句柄残留妨碍修复或守护进程重启。
     try { db.close() } catch { /* 忽略重复 close */ }
     const msg = String((err as Error)?.message ?? err)
+    // 兜底（非主路径）：pre-fold 老库的主拦截是迁移**之前**的版本闸（见上方 hasPreFoldFingerprint
+    // 调用处），它在动迁移链前就给出人话指引。这条保留作为第二道网——专门接"指纹取不到但确实是
+    // 老库"的残缺形态（例如库里只有 meta 表、series 压根不存在，指纹判据无从落脚，迁移链跑起来
+    // 撞 no such table）。注意它天生只认 /no such (table|column)/ 这一种错误形状，无法覆盖列数
+    // 不匹配等其它形状——这正是不能把它当主防线的原因，别再往这条正则上贴补丁。
     if (currentVersion >= 1 && currentVersion < 9 && /no such (table|column)/i.test(msg)) {
       throw new Error(
         `数据库 schema v${currentVersion} 是 de-Jellyfin 化(v9)之前的旧版本,与当前折叠后的迁移链不兼容` +

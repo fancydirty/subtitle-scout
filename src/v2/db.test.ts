@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
@@ -52,10 +52,87 @@ describe('db 基座', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'scout-old-')), 'scout.db')
     // 手造一个 de-Jellyfin(v9)之前的老库:有 meta.schema_version=8,但没有 v9 折叠 entry 建的
     // item_files 等表——openDb 会因 8<11 去跑 MIGRATIONS[8]=v17 的 ALTER item_files → no such table。
+    // 注意这是**残缺形态**（库里只有 meta 表、连 series 都没有），迁移前的版本闸取不到结构指纹
+    // 而不拦，落到 catch 里的 /no such (table|column)/ 兜底分支——本用例守的是那道兜底。真实老库
+    // 的完整形态（有 Jellyfin 时代的 series.poster_tag）走版本闸，见下一条用例。
     const raw = new Database(p)
     raw.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key,value) VALUES ('schema_version','8')")
     raw.close()
     expect(() => openDb(p)).toThrow(/de-Jellyfin|旧版本|删除 scout\.db/)
+  })
+
+  it('pre-fold 老库(真实形态 v6,迁移抛的不是 no such table 而是列数不匹配) → 版本闸给人话指引', () => {
+    // 回归：仓里真实存在的 cache-local/scout.db（meta.schema_version=6, Jellyfin 时代形状）起
+    // watch 会崩。它从下标 6 接着跑，撞上 v15 的 sub_status 值域重建（建 episodes_v15 →
+    // INSERT SELECT 拷贝），抛的是 "table episodes_v15 has 14 columns but 10 values were
+    // supplied"——**不是** no such table/column，上面那条兜底正则匹配不到,用户拿到裸 SqliteError
+    // 堆栈、进程退出、dashboard 从未启动。这里复刻那个形状:老库的 episodes 是 v1..v8 时代的 10 列,
+    // series 带 Jellyfin 的 poster_tag（版本闸的结构指纹）。
+    const p = join(mkdtempSync(join(tmpdir(), 'scout-old-real-')), 'scout.db')
+    const raw = new Database(p)
+    raw.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO meta (key,value) VALUES ('schema_version','6');
+      CREATE TABLE series (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, chinese_title TEXT,
+        chinese_title_checked_at INTEGER, poster_tag TEXT,
+        year INTEGER, provider_ids TEXT, origin_lang TEXT
+      );
+      CREATE TABLE episodes (
+        id TEXT PRIMARY KEY, series_id TEXT NOT NULL REFERENCES series(id),
+        season INTEGER NOT NULL, episode INTEGER NOT NULL,
+        name TEXT, path TEXT NOT NULL,
+        sub_status TEXT NOT NULL CHECK(sub_status IN
+          ('missing','covered','embedded','unavailable','ignored','needs_review')),
+        status_reason TEXT, recheck_after INTEGER, updated_at INTEGER NOT NULL
+      );
+    `)
+    raw.close()
+
+    let caught: unknown
+    try { openDb(p) } catch (e) { caught = e }
+
+    // 拿到的必须是人话 Error，不是裸 SqliteError
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).constructor.name).toBe('Error')
+    const msg = (caught as Error).message
+    expect(msg).not.toMatch(/SqliteError|columns but .* values were supplied/)
+    // 指引必须可操作：说清版本、要删哪些文件（含 -wal/-shm）、删完会发生什么、丢什么不丢什么
+    expect(msg).toMatch(/de-Jellyfin|旧版本/)
+    expect(msg).toContain(p)          // 报全路径（docker 挂卷下用户要按图索骥）
+    expect(msg).toMatch(/-wal/)
+    expect(msg).toMatch(/-shm/)
+    expect(msg).toMatch(/备份|留底/)
+    expect(msg).toMatch(/重扫|重新初始化/)
+
+    // 闸在迁移**之前**：库没被改动，且没为一个注定失败的迁移白做快照
+    const after = new Database(p, { readonly: true })
+    expect(after.prepare("select value from meta where key='schema_version'").get()).toEqual({ value: '6' })
+    after.close()
+    expect(existsSync(`${p}.pre-v${MIGRATIONS.length}.bak`)).toBe(false)
+  })
+
+  it('版本闸不误伤：下标口径的低版本健康库（无 poster_tag）照常升级到最新', () => {
+    // meta.schema_version 落的是 MIGRATIONS 数组下标+1，而 v9 折叠把 v1..v8 压成了下标 0
+    // 这一条——于是"下标口径的 6"（健康库，只是没跑完后续 entry）与"语义口径的 v6"（Jellyfin
+    // 老库）数字完全撞车。若版本闸只看 `currentVersion < 9`，这个库会被误拦。结构指纹
+    // （series.poster_tag）就是用来分开这两者的：这里造的库走完整链建表，没有 poster_tag。
+    const p = join(mkdtempSync(join(tmpdir(), 'scout-legit-')), 'scout.db')
+    const raw = new Database(p)
+    for (let i = 0; i < 6; i++) {
+      const m = MIGRATIONS[i]
+      if (typeof m === 'string') raw.exec(m)
+      else m(raw as unknown as ScoutDb)
+    }
+    raw.exec("INSERT OR REPLACE INTO meta (key,value) VALUES ('schema_version','6')")
+    const cols = (raw.prepare('PRAGMA table_info(series)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).not.toContain('poster_tag')   // 前提自检：这确实是健康库形状
+    raw.close()
+
+    const db = openDb(p)   // 不该抛
+    expect(db.prepare("select value from meta where key='schema_version'").get())
+      .toEqual({ value: String(MIGRATIONS.length) })
+    db.close()
   })
 
   it('v9 终态：series/movies 用 poster_path，无 poster_tag；episodes/movies 有探针 memo 列', () => {
