@@ -8,10 +8,13 @@ import { ZimukuVisionCard } from './ZimukuVisionCard.js'
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 function renderCard(reload = vi.fn(), secrets: ProviderRowDTO['secrets'] = []) {
-  // Mock setupProviders with zimuku_vision provider containing the provided secrets
+  // ⚠️ 这个 mock 必须与后端 buildProviders 的真实形状一致：ZIMUKU_VISION_* 三凭证挂在
+  // **zimuku** 行下（后端 PROVIDER_SECRETS.zimuku），没有 `zimuku_vision` provider。
+  // 本文件曾经 mock 出一个 `zimuku_vision` 行——那是一个后端从不返回的形状，于是这些
+  // 测试全绿而线上那张卡恒显示"未配置"。mock 撒谎，测试就只在测自己。
   vi.spyOn(api, 'setupProviders').mockResolvedValue({
     providers: [
-      { id: 'zimuku_vision' as const, secrets, lastTest: null },
+      { id: 'zimuku' as const, secrets, lastTest: null },
     ],
   })
   render(<I18nProvider initialLang="en"><ZimukuVisionCard reload={reload} /></I18nProvider>)

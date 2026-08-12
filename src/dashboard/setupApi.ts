@@ -161,7 +161,20 @@ const PROVIDER_SECRETS: Record<ProviderRowDTO['id'], SecretName[]> = {
   opensubtitles: ['OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD'],
   jimaku: ['JIMAKU_API_KEY'],
   subhd: [],
-  zimuku: [],
+  // zimuku 自身**无凭据**（是个开关型源，可达性即可用）。这三个 ZIMUKU_VISION_* 不是
+  // "zimuku 的登录凭据"，是它验证码破解的**可选视觉兜底**——模板匹配未命中时才降级调用
+  // （buildAdapters.ts:58-74；缺席时模板未命中直接失败，不会尝试 LLM）。
+  //
+  // 挂在 zimuku 行下而不是新开一个 `zimuku_vision` provider 行：它不是字幕源，没有
+  // 自己的 validate 探针（ZimukuVisionCard 的测试走独立的 POST /api/v2/test-vision，
+  // 不走 setup/validate），也不该在 Providers 的 n/8 计数里占一格。它就是 zimuku 的
+  // 一项配置，DTO 上也该长在 zimuku 这一行。
+  //
+  // ⚠️ 消费方注意：zimuku 行从此 `secrets.length > 0`。前端凡是用
+  // "secrets 非空" 当 "这是张 keyed 凭据卡" 判据的地方，都必须显式排除 zimuku
+  // （见 web/src/settings/SettingsTabsPage.tsx 的 keyedRows）——否则 zimuku 会
+  // 既渲染成开关卡又渲染成凭据卡，且在 n/8 里被数两次。
+  zimuku: ['ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_MODEL'],
 }
 
 function readLastTest(deps: SetupDeps, target: ValidateTarget): SecretTestDTO | null {

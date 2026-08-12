@@ -94,83 +94,11 @@ export interface TraceEvent {
   at: number
 }
 
-/** dashboard-F4：GET /api/v2/workflow/workers 响应体，与 src/dashboard/apiV2.ts 的
- *  WorkflowWorkersDTO 一族保持一致。 */
-export interface WorkflowRunningWorkerDTO {
-  jobId: number
-  seriesId: string | null
-  movieId: string | null
-  taskType: string | null
-  seasons: number[] | null
-  /** 验收修复轮一收官补刀（spec §B 铁律①）：跑中卡头主语=剧/片名；null=空名/查无（前端降级
-   *  显示 id，诚实兜底）。 */
-  seriesName: string | null
-  movieName: string | null
-  /** 活动页铁律「必须有图」：TMDB 图片 path（URL 由 client.ts 的 posterUrl/backdropUrl 自拼，
-   *  免 key 直连 TMDB）。series 命中取 series 的，movie 命中取 movies 的。
-   *
-   *  ⚠️ 不对称（不是 bug）：`movies` 表没有 backdrop_path 列（只有 series 有），所以 movie 目标的
-   *  backdropPath 恒为 null——此时走「模糊海报当背景」的降级路径，不要当数据缺失报障。两边都查无
-   *  （name 也 null 的行）时两字段都 null。 */
-  posterPath: string | null
-  backdropPath: string | null
-  startedAtLease: number
-  /** traceBus.peek 的直播补拉——非破坏性尾部 20 条，供 TraceRows 首屏渲染的初始 trail。 */
-  trail: TraceEvent[]
-}
-/** R2D-1（R2 复审）：worker run 详情入口——id 是身份键（RunDetail/RerunDialog 用），
- *  seriesId/movieId 供 RunDetail 判断 Rerun 按钮是否可用（同 src/dashboard/apiV2.ts 的
- *  WorkflowRecentRunDTO 一致）。 */
-export interface WorkflowRecentRunDTO {
-  id: number
-  jobId: number | null
-  decision: string | null
-  detail: string | null
-  finishedAt: number | null
-  seriesId: string | null
-  movieId: string | null
-  /** 验收修复轮一 Task V3：seriesId 对应行的 series.name（LEFT JOIN），空名/未富化诚实降级
-   *  为 null——Workflow 叙事化的人话句用它替换裸 tmdb id。 */
-  seriesName: string | null
-  /** 同 seriesName，movieId 对应行的 movies.name。 */
-  movieName: string | null
-  /** 活动页铁律「必须有图」：同 WorkflowRunningWorkerDTO 的同名两字段，口径一致——只给 path。
-   *  ⚠️ movie 目标的 backdropPath 恒为 null（movies 表没有 backdrop_path 列），走模糊海报降级。 */
-  posterPath: string | null
-  backdropPath: string | null
-  /** 审计 UX-P0：LLM 调用账本（翻译 run 写入；find/realign 为 null）——ActivityRow 成本后缀。 */
-  llmCalls: number | null
-}
-/** 审计 UX-P0：held（fail-closed 拦下）落库可见——failed + 未来重试时刻的 worker_task。 */
-export interface WorkflowHeldJobDTO {
-  jobId: number
-  itemId: string | null
-  reason: string | null
-  nextRetryAt: number | null
-  errorAttempt: number
-  /** 剧名 / 片名（2026-07-31 审计 C-3）。此前前端靠 recent[] 按 jobId 反查名字与海报，
-   *  但 held 停留是**天级**（heldBackoffMs +1d/+3d/+7d），recent 是 ORDER BY finished_at
-   *  DESC LIMIT 20 的滑动窗口——生产节奏（每小时 20 条）下一小时内就被挤出，此后 join 恒
-   *  MISS：卡死态没有图（违反 L4「必须有图」），且降级显示 tmdb:1396/s12e04 这种技术
-   *  标识符（违反 L3「不暴露机械」）。 */
-  seriesName: string | null
-  movieName: string | null
-  posterPath: string | null
-  /** 仅 series 有值——movies 表没有 backdrop_path 列。电影恒 null，前端据此走模糊海报降级。 */
-  backdropPath: string | null
-}
-export interface WorkflowWorkersDTO {
-  running: WorkflowRunningWorkerDTO[]
-  recent: WorkflowRecentRunDTO[]
-  /** 验收修复轮一 Task V3：顶部总览句"N episodes installed in the last 24h"的数据源。 */
-  installedLast24h: number
-  /** 审计 UX-P0：SummaryLine "N translated" 段数据源（translate:installed 24h 计数）。 */
-  translatedLast24h: number
-  /** 审计 UX-P0：held 队列。 */
-  held: WorkflowHeldJobDTO[]
-  /** 债务 D3：provider 配额事实——后端已滤除过期条目；resetAt=ISO 串或 null（未知重置时刻）。 */
-  providerQuota: Array<{ provider: string; resetAt: string | null; observedAt: number }>
-}
+// GET /api/v2/workflow/workers 的四个 DTO（WorkflowRunningWorkerDTO / WorkflowRecentRunDTO /
+// WorkflowHeldJobDTO / WorkflowWorkersDTO）已于 2026-08-13 随后端端点一并删除。
+// 裁决与论证见 `src/dashboard/apiV2.ts` 的墓碑注释；一句话版本：它的显示位已被
+// `web/src/workbench/ActivityPage`（读 SSE + /api/v2/activity + /api/v2/health）取代，
+// 而后继**刻意不读** jobs 表，所以它不是"缺一根接线的资产"，是一份已被取代的旧图纸。
 
 /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace 响应体——单 run 痕迹快照回放
  *  （RunDetail 右侧板用，区别于 workers.running[].trail 的直播补拉）。 */
@@ -379,7 +307,7 @@ export const SECRET_NAMES = [
 ] as const
 export type SecretName = (typeof SECRET_NAMES)[number]
 
-export type ValidateTarget = 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku' | 'zimuku_vision'
+export type ValidateTarget = 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
 
 export interface ValidateResultDTO { ok: boolean; detail?: string; error?: string }
 

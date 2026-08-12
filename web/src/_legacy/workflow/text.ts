@@ -1,7 +1,7 @@
 // web/src/workflow/text.ts：Workflow 区的动态文案组装——纯函数，全部英文（DESIGN.md §7：
 // Workflow 区永不本地化），带运行期数字/技术枚举值的拼句故意不进 i18n 表（同 time.ts 的既有
 // 理由），集中收纳供 RerunDialog/TraceRows/RunDetail 共用同一份口径，避免多处各拼一套措辞。
-import type { DispatchReceiptsDTO, WorkflowRecentRunDTO } from '../../api/types.js'
+import type { DispatchReceiptsDTO } from '../../api/types.js'
 import type { TKey } from '../../i18n/useT.js'
 import { formatNextRecheck } from './time.js'
 
@@ -52,24 +52,10 @@ export function decisionVariant(decision: string | null): DecisionVariant {
   return 'neutral'
 }
 
-/** recent 完成行流：输入按 finished_at 降序，连续且 jobId 相同且 decision 相同的行折叠为
- *  一条（row=最新那条，count=折叠数量）；不同 jobId/decision 交错时不跨段折叠。
- *  原消费方是 ActivityFeed（把同一任务连续失败重试刷屏的 N 行压成一条 ×N 角标）——它随活动页
- *  重建在 2bb6d10 退役，本函数暂留且有测试钉着；删除是独立清理，不与注释刷新同改。 */
-export function collapseRecentRuns(
-  rows: WorkflowRecentRunDTO[],
-): { row: WorkflowRecentRunDTO; count: number }[] {
-  const result: { row: WorkflowRecentRunDTO; count: number }[] = []
-  for (const row of rows) {
-    const last = result[result.length - 1]
-    if (last && last.row.jobId === row.jobId && last.row.decision === row.decision) {
-      last.count += 1
-    } else {
-      result.push({ row, count: 1 })
-    }
-  }
-  return result
-}
+// `collapseRecentRuns` 已于 2026-08-13 删除。它的入参类型是 `WorkflowRecentRunDTO`，
+// 随 GET /api/v2/workflow/workers 一并消失（见 src/dashboard/apiV2.ts 墓碑注释）。
+// 它**在删除前就已经是零调用者**——上面那段原注释自陈"原消费方 ActivityFeed 随活动页
+// 重建在 2bb6d10 退役，本函数暂留"。这次不是被 DTO 连累，是它自己等到了删除的时机。
 
 /** 四态回执 → i18n 键（redispatch 的四个 outcome 各自一句诚实英文，DESIGN.md §8：不许都写成
  *  success）。回执对象本身的其它字段（pendingState/intentRefreshed/lastError）目前只用于

@@ -643,17 +643,18 @@ describe('startDashboard (v2)', () => {
       expect(body[0].receipts).toEqual({ created: 1, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 })
     })
 
-    it('GET /api/v2/workflow/workers 返回跑中 worker + 近期 runs', async () => {
+    // 2026-08-13 裁决：GET /api/v2/workflow/workers 已删除（无活 UI + 显示位已有活的后继，
+    // 见 apiV2.ts 墓碑注释）。用例翻面成**端到端 404**：仍插一行 state='searching' 的
+    // worker_task，坐实"即使库里真有该端点会返回的数据，端点本身也不在了"——只断言 404
+    // 而不断言空 body，会漏掉"接回来但返回空壳"这种半吊子恢复。
+    it('GET /api/v2/workflow/workers 已删除 → 404（即使库里有 searching 的 worker_task）', async () => {
       db.prepare(
         `INSERT INTO jobs (kind, series_id, payload, state, priority, created_at, updated_at)
          VALUES ('worker_task', 's1', ?, 'searching', 0, ?, ?)`
       ).run(JSON.stringify({ taskType: 'find_subtitle', seasons: [1] }), NOW, NOW)
       const { base } = await start(distWith('<!doctype html>'), 'tok')
       const res = await fetch(`${base}/api/v2/workflow/workers?token=tok`)
-      expect(res.status).toBe(200)
-      const body = await res.json()
-      expect(body.running.some((r: { seriesId: string; taskType: string }) => r.seriesId === 's1' && r.taskType === 'find_subtitle')).toBe(true)
-      expect(body.recent.length).toBeGreaterThan(0)
+      expect(res.status).toBe(404)
     })
 
     describe('GET /api/v2/tmdb/search（dashboard-F5：ClaimDialog 的 TMDB 搜索代理）', () => {

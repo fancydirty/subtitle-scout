@@ -13,7 +13,7 @@ import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
   buildRuns, buildParked, unexclude,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
-  buildWorkflowPending, buildWorkflowPasses, buildWorkflowWorkers,
+  buildWorkflowPending, buildWorkflowPasses,
   buildTriage, redispatch, buildRunTrace, buildDormantTasks,
 } from './apiV2.js'
 // R-F2 / R-F5：媒体库页数据层（新架构 files/works/tmdb_seasons）。刻意与 apiV2.js 分开
@@ -439,7 +439,6 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     fsList: (path) => listMediaSubdirs(path),
     workflowPending: () => buildWorkflowPending(db, settingsRepo, Date.now()),
     workflowPasses: (limit) => buildWorkflowPasses(db, limit),
-    workflowWorkers: () => buildWorkflowWorkers(db, Date.now()),
     triage: () => buildTriage(db),
     runTrace: (id) => buildRunTrace(db, id),
     // Plan C：两个只读 GET。shifted 复用 subDeps 的 repo + exists（同一份 existsSync 实现，

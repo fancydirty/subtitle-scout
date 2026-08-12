@@ -55,11 +55,10 @@ function standardHandlers() {
     // 统一给一个"已初始化已登录"的 status，让门放行到 Shell。
     { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
     { path: '/api/v2/workflow/pending', body: WORKFLOW },
-    // Workflow tab 真页面额外发的端点。活动页只用 workers（passes 是旧 Lanes 的中泳道），
-    // 但两个都留着：RunDetail 仍被活动页复用，且多给一个 handler 无害。不给 workers 会 404
-    // → data 恒 null → 空态判定永远凑不齐（ActivityPage 首载两源皆 null 时渲染 null）。
+    // 2026-08-13：`/api/v2/workflow/workers` 的 stub 已删——那个端点连同它唯一的消费方
+    // （_legacy 活动页）一起没了，活外壳一次都不会打它。留着 stub 会让这份冒烟测试
+    // 继续为一条不存在的端点背书。`passes` 保留：它仍是活端点。
     { path: '/api/v2/workflow/passes', body: [] },
-    { path: '/api/v2/workflow/workers', body: { running: [], recent: [] } },
     // dashboard-F5：TriagePage（Triage tab 真页面）挂载即打 /api/v2/triage——同上面 passes/
     // workers 的既有理由：F4 及以前 Triage 还是占位态不发请求，现在不给会 404 → error 态，
     // 下面"切到 Triage tab 看空态"的断言永远等不到。

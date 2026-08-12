@@ -113,4 +113,42 @@ describe('SettingsTabsPage', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(() => renderPage()).toThrow(/providers/)
   })
+
+  // ── zimuku 行现在带 secrets（ZIMUKU_VISION_* 视觉兜底）───────────────────────
+  //
+  // keyedRows 的判据曾是纯 `secrets.length > 0`。后端把三个 ZIMUKU_VISION_* 挂到 zimuku
+  // 行下之后，那个判据会把 zimuku 也当成"凭据卡"：渲染成 ProviderCard（与下面的
+  // ProviderToggleCard 重复），并在 n/8 里被数第二次（→ 9/8）。这条钉住排除逻辑。
+  it('zimuku 带 ZIMUKU_VISION_* 时不渲染成 keyed 凭据卡，也不在 n/8 里重复计数', () => {
+    mockHooks()
+    vi.spyOn(hooks, 'useSetupProviders').mockReturnValue({
+      data: {
+        providers: [
+          { id: 'zimuku', lastTest: null, secrets: [
+            { name: 'ZIMUKU_VISION_BASE_URL', set: true, source: 'db', masked: '••••' },
+            { name: 'ZIMUKU_VISION_API_KEY', set: true, source: 'db', masked: '••••' },
+            { name: 'ZIMUKU_VISION_MODEL', set: true, source: 'db', masked: '••••' },
+          ] },
+        ],
+      } as never,
+      loading: false, error: null, reload: vi.fn(),
+    })
+    vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({
+      data: {
+        providers: {
+          subhd: { enabled: false, source: 'none' },
+          zimuku: { enabled: true, source: 'db', captchaReady: false },
+        },
+      } as never,
+      loading: false, error: null, reload: vi.fn(),
+    })
+    renderPage()
+    // 计数只来自 setup/status 的 zimuku.enabled 这一分，不因 secrets 非空再加一分。
+    // （badge 在 tablist 上，不依赖当前 tab。）
+    expect(screen.getByText('1/8')).toBeInTheDocument()
+    // Radix 卸载非激活 tab 的内容，卡片断言必须先切到 providers。
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /Providers/ }), { button: 0, ctrlKey: false })
+    // zimuku 只出现一次（开关卡），不额外多一张 keyed 凭据卡。
+    expect(screen.getAllByTestId('providers-zimuku')).toHaveLength(1)
+  })
 })

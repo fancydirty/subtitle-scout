@@ -40,11 +40,14 @@ export function ZimukuVisionCard({ reload }: Props) {
     void (async () => {
       try {
         const data = await api.setupProviders()
-        // setupProviders 返回 providers 数组，找到 zimuku_vision provider
-        const visionProvider = data.providers.find((p) => p.id === 'zimuku_vision')
-        if (visionProvider) {
+        // 这三个密钥挂在 **zimuku** 行下（后端 PROVIDER_SECRETS.zimuku），不是某个
+        // 独立的 `zimuku_vision` provider——视觉兜底不是字幕源，是 zimuku 的一项可选配置。
+        // ⚠️ 历史坑：这里曾经找 `p.id === 'zimuku_vision'`，而后端从来没有过这个 id，
+        // find 恒 undefined → secrets 恒空 → 徽标恒"未配置"，哪怕三个密钥都配好了。
+        const zimukuProvider = data.providers.find((p) => p.id === 'zimuku')
+        if (zimukuProvider) {
           // 从该 provider 的 secrets 中筛选出 ZIMUKU_VISION_* 的三个
-          const visionSecrets = visionProvider.secrets.filter((s) =>
+          const visionSecrets = zimukuProvider.secrets.filter((s) =>
             VISION_FIELDS.includes(s.name as typeof VISION_FIELDS[number])
           )
           setSecrets(visionSecrets)

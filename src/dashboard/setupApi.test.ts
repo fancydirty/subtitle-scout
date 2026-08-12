@@ -147,7 +147,7 @@ describe('putSecret（spec §4.4）', () => {
 })
 
 describe('buildProviders（Providers 区读面）', () => {
-  it('7 行分组；密钥打码；secret_test:* 反射为 lastTest；subhd/zimuku 空 secrets 数组', () => {
+  it('7 行分组；密钥打码；secret_test:* 反射为 lastTest；subhd 空 secrets 数组', () => {
     settings.setSecret('TMDB_API_KEY', 'tmdb-plain-123456', NOW)
     settings.set(`secret_test:tmdb`, JSON.stringify({ ok: true, at: NOW - 60_000 }), NOW)
     const p = buildProviders(makeDeps())
@@ -162,6 +162,33 @@ describe('buildProviders（Providers 区读面）', () => {
     expect(p.providers.find((r) => r.id === 'translate')!.secrets.map((s) => s.name))
       .toEqual(['TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL'])
     expect(JSON.stringify(p)).not.toContain('tmdb-plain-123456')
+  })
+
+  // zimuku 的视觉兜底三凭证必须挂在 zimuku 行下——这是 ZimukuVisionCard 唯一的读取口。
+  // 曾经这三个键**不在任何 provider 行里**，前端卡片去找一个不存在的 `zimuku_vision`
+  // provider，于是恒显示"未配置"，哪怕密钥全配好了。这条钉住那个回归。
+  it('zimuku 行携带 ZIMUKU_VISION_* 三凭证（视觉兜底；卡片的唯一读取口）', () => {
+    const zimuku = buildProviders(makeDeps()).providers.find((r) => r.id === 'zimuku')!
+    expect(zimuku.secrets.map((s) => s.name))
+      .toEqual(['ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_MODEL'])
+  })
+
+  it('ZIMUKU_VISION_* 已配置时 zimuku 行如实反映 set/source，且不回明文', () => {
+    settings.setSecret('ZIMUKU_VISION_BASE_URL', 'https://llm.example/v1', NOW)
+    settings.setSecret('ZIMUKU_VISION_API_KEY', 'sk-vision-plain-9876', NOW)
+    settings.setSecret('ZIMUKU_VISION_MODEL', 'gpt-4o', NOW)
+    const p = buildProviders(makeDeps())
+    const zimuku = p.providers.find((r) => r.id === 'zimuku')!
+    expect(zimuku.secrets.every((s) => s.set)).toBe(true)
+    expect(zimuku.secrets.every((s) => s.source === 'db')).toBe(true)
+    expect(JSON.stringify(p)).not.toContain('sk-vision-plain-9876')
+  })
+
+  // 视觉兜底不是字幕源：它没有自己的 provider 行，也没有自己的 validate 探针
+  // （卡片的"测试"按钮走独立的 POST /api/v2/test-vision）。
+  it('没有 zimuku_vision provider 行，也不是合法的 validate target', async () => {
+    expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'zimuku_vision' as never)).toBeUndefined()
+    expect((await validateSetupTarget(makeDeps(), { target: 'zimuku_vision' })).status).toBe(400)
   })
 
   it('secret_test:* 脏 JSON → lastTest=null（防御性解析）', () => {

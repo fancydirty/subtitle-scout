@@ -1,7 +1,7 @@
 // src/dashboard/router.ts
 import type {
   RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, TriageDTO, RunTraceDTO,
+  WorkflowPendingDTO, WorkflowPassDTO, TriageDTO, RunTraceDTO,
   DormantTaskDTO,
 } from './apiV2.js'
 import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
@@ -30,13 +30,12 @@ export interface RouterDeps {
   /** dashboard G5：GET /api/v2/workflow/passes?limit=20——orchestrate 通行记录 + receipts；
    *  limit 已在本文件里 clamp 到 [1,100] 后再传入。 */
   workflowPasses: (limit: number) => WorkflowPassDTO[]
-  /** dashboard G5：GET /api/v2/workflow/workers——跑中 worker_task + 近期非 orchestrate runs。 */
-  workflowWorkers: () => WorkflowWorkersDTO
   /** dashboard G5：GET /api/v2/triage——甄别台：pending（park 救援清单）+ claimed（已认领 override 清单）。 */
   triage: () => TriageDTO
-  /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace——单 run 痕迹快照回放（区别于
-   *  workflowWorkers 的 traceBus.peek 直播补拉：这里是收官后落库的完整快照，供 RunDetail
-   *  右侧板"快照回放"用）。id 已在本文件里做纯数字校验+转 number 后再传入。 */
+  /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace——单 run 痕迹快照回放。
+   *  （曾经这里写着"区别于 workflowWorkers 的 traceBus.peek 直播补拉"——那条端点已于
+   *   2026-08-13 删除，见 apiV2.ts 的墓碑注释；本端点只读收官后落库的完整快照。）
+   *  id 已在本文件里做纯数字校验+转 number 后再传入。 */
   runTrace: (id: number) => RunTraceDTO | null
   /** Plan C（spec §4.1）：GET /api/v2/subtitle/shifted——Triage 第三区 + Library 详情偏移行。
    *  纯读。备份文件存在性探测（hasPriorCorrection）关在 server.ts 的注入闭包里，这一层
@@ -144,7 +143,8 @@ export function handleApiRoute(
     return { status: 200, json: deps.workflowPasses(limit) }
   }
 
-  if (pathname === '/api/v2/workflow/workers') return { status: 200, json: deps.workflowWorkers() }
+  // GET /api/v2/workflow/workers 已于 2026-08-13 删除（无活 UI + 显示位已有活的后继，
+  // 论证见 apiV2.ts 的墓碑注释）。这里不留兜底分支：未知路径统一落本函数末尾的 404。
 
   // dashboard-F4：GET /api/v2/workflow/runs/:id/trace——纯数字 id 校验（runs.id 是
   // INTEGER PRIMARY KEY AUTOINCREMENT，跟 series/library 那两条路由的 tmdb:<n> 形状 id 不是

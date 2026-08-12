@@ -40,7 +40,6 @@ function mockFetch(statusBody: unknown) {
       : url.includes('/workflow/pending')
         ? { meta: { roots: [], lastScanAt: null, files: 0, lastVerifySweepAt: null,
                     verifiedItems: 0, verifiableItems: 0 }, parked: 0 }
-      : url.includes('/workflow/workers') ? { running: [], recent: [] }
       : url.includes('/workflow/passes') ? []
       : {}
     return { ok: true, status: 200, json: async () => body } as unknown as Response

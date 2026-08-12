@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
 import type {
   RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
-  WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, TriageDTO,
+  WorkflowPassDTO, RunTraceDTO, TriageDTO,
   SettingsDTO, DeploySettingsDTO, MediaRootDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
@@ -207,61 +207,9 @@ export function useWorkflowPasses(limit: number): Async<WorkflowPassDTO[]> {
   return { data, loading, error, reload }
 }
 
-/** dashboard-F4：右泳道跑中/近期 worker——同样 15s 轮询做"落后补拉"（SSE 直播是增量，这份
- *  轮询是兜底真源：running[].trail 首屏种子 + 断线重连后的补齐，见 workflow/traceStream.ts
- *  的 onReconnect 钩子，由 Lanes.tsx 在重连时主动调用这里的 reload()）。 */
-export function useWorkflowWorkers(): Async<WorkflowWorkersDTO> {
-  const [data, setData] = useState<WorkflowWorkersDTO | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const load = useCallback(async () => {
-    try {
-      const d = await api.workflowWorkers()
-      setData(d)
-      setError(null)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const reload = useCallback(() => {
-    setLoading(true)
-    void load()
-  }, [load])
-
-  useEffect(() => {
-    void load()
-    const start = () => {
-      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
-    }
-    const stop = () => {
-      if (timer.current != null) {
-        clearInterval(timer.current)
-        timer.current = null
-      }
-    }
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void load()
-        start()
-      } else {
-        stop()
-      }
-    }
-    if (document.visibilityState === 'visible') start()
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      stop()
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [load])
-
-  return { data, loading, error, reload }
-}
+// `useWorkflowWorkers` 已于 2026-08-13 随 GET /api/v2/workflow/workers 一并删除
+// （裁决见 src/dashboard/apiV2.ts 墓碑注释）。它是本文件里最后一个"只服务 _legacy 页面"
+// 的轮询 hook——留着就是每 15 秒对一个已不存在的端点打一次 404。
 
 /** dashboard-F5：甄别台（Triage tab）——pending（park 救援清单）。同 useParked 的既有先例：
  *  一次性 + 手动 reload（不轮询——翻案是低频人工动作，不像 workflow 那样需要常驻轮询感知
@@ -575,7 +523,7 @@ export function useSetupProviders(): Async<ProvidersDTO> {
     void load()
     const start = () => {
       // 守卫写法照抄既有轮询 hook（本文件 useLibrary/useWorkflowPending/useWorkflowPasses/
-      // useWorkflowWorkers/useSetupStatus 五处一模一样）：visibilitychange 连发或 effect 复跑时，
+      // useSetupStatus 四处一模一样）：visibilitychange 连发或 effect 复跑时，
       // 没这道判断会叠出第二个 setInterval，旧句柄被覆盖后再也 clear 不掉——越切标签页轮询越快。
       if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
     }

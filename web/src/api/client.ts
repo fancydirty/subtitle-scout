@@ -4,7 +4,7 @@ import type {
   ParkedItemDTO, WorkflowPendingDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
-  WorkflowPassDTO, WorkflowWorkersDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
+  WorkflowPassDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
   TriageDTO,
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
   AuthStatusDTO, AuthSecurityDTO,
@@ -230,7 +230,7 @@ export const api = {
   // dashboard-F4：Workflow 三泳道——中泳道 pass 记录 + 右泳道跑中/近期 worker。
   workflowPasses: (limit: number, signal?: AbortSignal) =>
     get<WorkflowPassDTO[]>(`/api/v2/workflow/passes?limit=${limit}`, signal),
-  workflowWorkers: (signal?: AbortSignal) => get<WorkflowWorkersDTO>('/api/v2/workflow/workers', signal),
+  // `workflowWorkers` 已于 2026-08-13 随后端端点删除（见 src/dashboard/apiV2.ts 墓碑注释）。
   // dashboard-F4：RunDetail 快照回放——runId 是 runs.id（纯数字），不经 encodeURIComponent
   // 那一套（同 router.ts 该端点自己的纯数字校验口径，不是 tmdb:<n> 那种自有 id 空间）。
   runTrace: (runId: number, signal?: AbortSignal) =>

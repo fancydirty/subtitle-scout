@@ -7,7 +7,10 @@ import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo, findOverlappingRoot } from '../v2/settingsRepo.js'
-import { traceBus, type TraceEvent } from '../core/traceBus.js'
+// `traceBus`（值）随 buildWorkflowWorkers 一并移除：它唯一的用处是 running 行的直播补拉
+// （peek/peekPrefix）。本文件现在只剩**已落库快照**的解析（buildRunTrace 读 runs.trace_json），
+// 那条路径只要类型。
+import { type TraceEvent } from '../core/traceBus.js'
 import { parseTargetLanguages } from '../cli/targetLanguages.js'
 // R-F15 缺口③：换目标语言 → 全库重判（清判决列 + 按 sidecar_langs 重导 sub_status）。
 // 实现放在 v2/ 而不是这里：它是库层语义（且要能被 daemon 侧测试直接调），dashboard 只是触发者。
@@ -611,287 +614,92 @@ export function buildWorkflowPasses(db: ScoutDb, limit: number): WorkflowPassDTO
   }))
 }
 
-// ---- workflow/workers：跑中的 worker_task + 近期非 orchestrate runs ----
-
-export interface WorkflowRunningWorkerDTO {
-  jobId: number
-  seriesId: string | null
-  movieId: string | null
-  taskType: string | null
-  seasons: number[] | null
-  /** 验收修复轮一收官补刀（spec §B 铁律①）：跑中卡头主语=剧/片名，LEFT JOIN series/movies
-   *  取 name（空名/查无→null，前端降级显示 id——诚实兜底）。 */
-  seriesName: string | null
-  movieName: string | null
-  /** 活动页铁律「必须有图」：同 name 那对，从已经 LEFT JOIN 上的 series/movies 顺手多 SELECT 两
-   *  列（不新增查询/端点）。只给 TMDB path，URL 由前端自拼（web/src/api/client.ts 的 posterUrl/
-   *  backdropUrl 免 key 直连 TMDB），同 LibraryItemDTO/SeriesDetailDTO 的既有分工。
-   *
-   *  ⚠️ 不对称（不是 bug，别当 bug 修）：`series` 表有 poster_path + backdrop_path，`movies` 表
-   *  只有 poster_path，没有 backdrop 列（src/v2/db.ts：backdrop_path 只在 v16 那条 ALTER 给
-   *  series 加过；movies 建表与两次 v15 重建都没有这一列）。所以：
-   *    - series 命中 → posterPath 可能有值，backdropPath 可能有值
-   *    - movies 命中 → posterPath 可能有值，backdropPath **恒为 null**（前端据此走「模糊海报当
-   *      背景」的降级路径，不要以为是数据缺失事故）
-   *    - LEFT JOIN 两边都未命中（name 也是 null 的那种行）→ 两个字段都 null */
-  posterPath: string | null
-  backdropPath: string | null
-  /** jobs.lease_started_at——本轮 claim 发生的时刻，作为"这个尝试何时开始"的**稳定**锚点。
-   *  关键：它不同于 updated_at——renewLease 心跳每 tick 把 updated_at 刷到 ~now，而
-   *  lease_started_at 只在 claimNext 落一次、续租绝不触碰。活动页 hero 的"已进行 N 秒"秒表
-   *  据此计算 now-startedAtLease；早先错锚 updated_at 时，秒表每 15s 轮询后归零、在屏上冻住
-   *  （2026-08-01 实机盯页面发现，见 db.ts v29 迁移与 buildWorkflowWorkers 的兜底注释）。 */
-  startedAtLease: number
-  /** traceBus.peek(`job-${jobId}`, 20) 的直播补拉——非破坏性读尾部 20 条，不影响该 job 收官时
-   *  的 snapshot。 */
-  trail: TraceEvent[]
-}
-export interface WorkflowRecentRunDTO {
-  /** R2D-1（R2 复审）：runs.id——worker run 详情入口的身份键（RunDetail 打开哪一行、React key，
-   *  同一个 job 可能有多行 runs，jobId 不足以定位具体是哪一行）。 */
-  id: number
-  jobId: number | null
-  decision: string | null
-  detail: string | null
-  finishedAt: number | null
-  /** R2D-1：该行关联 job 的 series_id（LEFT JOIN jobs）——RunDetail 的 Rerun 按钮据此判断是否
-   *  可用（同 Rerun 扳手的既有口径：只认 seriesId，movie 目标没有这个扳手）。job 已不存在/
-   *  job_id 为 NULL 时降级 null，不炸查询。 */
-  seriesId: string | null
-  /** R2D-1：同 seriesId，movie_id（find_subtitle 的 movie 目标）——目前只用于展示，Rerun 只认
-   *  seriesId。 */
-  movieId: string | null
-  /** 验收修复轮一 Task V3（design §B）：seriesId 对应行的 series.name（LEFT JOIN series）——
-   *  Workflow 叙事化用它替换裸 tmdb id 呈现（"Searching subtitles for {seriesName}"式人话
-   *  句）。空名（P6 认领占位/尚未富化的 ''）诚实降级为 null，不假装有名字；seriesId 为 null 时
-   *  同样为 null。 */
-  seriesName: string | null
-  /** 同 seriesName，movieId 对应行的 movies.name（LEFT JOIN movies）。 */
-  movieName: string | null
-  /** 活动页铁律「必须有图」：同 WorkflowRunningWorkerDTO 的同名两字段，口径一字不差——从已经
-   *  LEFT JOIN 上的 series/movies 多 SELECT 两列，只给 path 不给 URL。
-   *
-   *  ⚠️ 同一处不对称（不是 bug）：`movies` 表没有 backdrop_path 列（只有 series 有），所以 movie
-   *  目标的 backdropPath **恒为 null**，前端据此走「模糊海报当背景」降级；两边都未命中时两个字段
-   *  都 null。详见 WorkflowRunningWorkerDTO.posterPath 上方的完整说明。 */
-  posterPath: string | null
-  backdropPath: string | null
-  /** 审计 UX-P0:LLM 调用账本（runs.llm_calls,翻译 run 写入;find/realign 为 null）——Workflow
-   *  ActivityRow 的"· N calls"成本后缀数据源。 */
-  llmCalls: number | null
-}
-export interface WorkflowHeldJobDTO {
-  /** 审计 UX-P0:held(fail-closed 质量闸拦下)落库后不再隐身——failed + next_retry_at 未来的
-   *  worker_task 行。itemId 取 payload.itemId(translate 合成行),缺省回退 seriesId。 */
-  jobId: number
-  itemId: string | null
-  reason: string | null
-  nextRetryAt: number | null
-  errorAttempt: number
-  /** 剧名 / 片名（2026-07-31 审计 C-3）。此前前端靠 recent[] 按 jobId 反查名字与海报，
-   *  但 held 停留是**天级**（heldBackoffMs +1d/+3d/+7d），recent 是 ORDER BY finished_at
-   *  DESC LIMIT 20 的滑动窗口——生产节奏（每小时 20 条）下一小时内就被挤出，此后 join 恒
-   *  MISS：卡死态没有图（违反 L4「必须有图」），且降级显示 tmdb:1396/s12e04 这种技术
-   *  标识符（违反 L3「不暴露机械」）。 */
-  seriesName: string | null
-  movieName: string | null
-  posterPath: string | null
-  /** 仅 series 有值——movies 表没有 backdrop_path 列。电影恒 null，前端据此走模糊海报降级。 */
-  backdropPath: string | null
-}
-export interface WorkflowWorkersDTO {
-  running: WorkflowRunningWorkerDTO[]
-  recent: WorkflowRecentRunDTO[]
-  /** 验收修复轮一 Task V3（design §B）：顶部总览句"N episodes installed in the last 24h"的
-   *  数据源——runs 里 decision='installed' 且 finished_at > now-86400e3 的计数，独立 COUNT
-   *  查询（一句 SQL）。now 由调用方传入（沿 buildWorkflowPending 的既有 now 传参先例）。 */
-  installedLast24h: number
-  /** 审计 UX-P0:同口径 translate:installed 的 24h 计数——SummaryLine"N translated"段数据源。 */
-  translatedLast24h: number
-  /** 审计 UX-P0:held 队列(见 WorkflowHeldJobDTO)。 */
-  held: WorkflowHeldJobDTO[]
-  /** 债务 D3：provider 配额事实句数据源——settings 旁路键 quota_state_*（见 cli/quotaState.ts）。
-   *  读侧滤除已过期（resetAt 早于 now）的条目；值 JSON 解析失败 fail-soft 跳过整条。 */
-  providerQuota: Array<{ provider: string; resetAt: string | null; observedAt: number }>
-}
-
-/** worker_task 的 payload JSON 里取 taskType/seasons——容错解析（同 buildLibrary 对 worker_task
- *  payload 的既有查法口径一致），格式异常一律降级为 null，不炸聚合查询。 */
-function parseWorkerTaskPayload(payload: string | null): { taskType: string | null; seasons: number[] | null } {
-  if (!payload) return { taskType: null, seasons: null }
-  try {
-    const parsed = JSON.parse(payload) as { taskType?: unknown; seasons?: unknown }
-    const taskType = typeof parsed.taskType === 'string' ? parsed.taskType : null
-    const seasons = Array.isArray(parsed.seasons)
-      ? parsed.seasons.filter((s): s is number => typeof s === 'number')
-      : null
-    return { taskType, seasons }
-  } catch {
-    return { taskType: null, seasons: null }
-  }
-}
-
-/** 空字符串（P6 认领占位/尚未富化的 name 列）诚实降级为 null——同 sectionForItem 一带的
- *  "已知债务如实标注"口径，不假装一个空名剧/空名片有名字。 */
-function nullIfEmpty(name: string | null): string | null {
-  return name != null && name !== '' ? name : null
-}
-
-/** GET /api/v2/workflow/workers：running=jobs 里 state='searching' 且 kind='worker_task' 的
- *  跑中行（附 traceBus.peek 直播补拉）；recent=非 orchestrate 的 runs 行（find_subtitle/realign
- *  worker 各自产出的收工记录，附 LEFT JOIN series/movies 取的 name，供 Workflow 叙事化的人话句
- *  使用），finished_at 降序 limit 20；installedLast24h=独立 COUNT 查询，验收修复轮一 Task V3
- *  （design §B）：顶部总览句"N episodes installed in the last 24h"的数据源。now 由调用方传入
- *  （沿 buildWorkflowPending 的既有 now 传参先例）。 */
-export function buildWorkflowWorkers(db: ScoutDb, now: number): WorkflowWorkersDTO {
-  // 验收修复轮一收官补刀：running 卡头的主语也要是剧名不是 tmdb id（spec §B 铁律①——V3 只给
-  // recent 加了 name join，跑中行漏了同款待遇）。LEFT JOIN 手法与下方 recent 查询一致。
-  const runningRows = db
-    .prepare(
-      `SELECT j.id, j.series_id, j.movie_id, j.payload, j.updated_at, j.lease_started_at,
-              s.name AS series_name, m.name AS movie_name,
-              s.poster_path AS series_poster_path, s.backdrop_path AS series_backdrop_path,
-              m.poster_path AS movie_poster_path
-       FROM jobs j
-       LEFT JOIN series s ON s.id = j.series_id
-       LEFT JOIN movies m ON m.id = j.movie_id
-       WHERE j.state = 'searching' AND j.kind = 'worker_task'`
-    )
-    .all() as {
-      id: number; series_id: string | null; movie_id: string | null; payload: string | null
-      updated_at: number; lease_started_at: number | null; series_name: string | null; movie_name: string | null
-      series_poster_path: string | null; series_backdrop_path: string | null
-      movie_poster_path: string | null
-    }[]
-
-  const running: WorkflowRunningWorkerDTO[] = runningRows.map((r) => {
-    const { taskType, seasons } = parseWorkerTaskPayload(r.payload)
-    // R2D-13（R2 复审）：realign 字幕先行阶段逐集起 `job-${jobId}-${absoluteEpisode}` runKey
-    // （见 src/v2/realignWorkerTask.ts 的同名注释）——单 runKey 的 peek 永远拿不到这些子集事件，
-    // realign WorkerCard 因此直播空转。taskType==='realign' 时改用 peekPrefix 合并读全部子集
-    // 缓冲；其余 taskType（find_subtitle）只有一个 runKey，维持 peek 原样。
-    const trail = taskType === 'realign'
-      ? traceBus.peekPrefix(`job-${r.id}-`, 20)
-      : traceBus.peek(`job-${r.id}`, 20)
-    return {
-      jobId: r.id, seriesId: r.series_id, movieId: r.movie_id, taskType, seasons,
-      seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
-      // 铁律「必须有图」：series 优先、movie 兜底（一行 job 只会命中其中一边）。backdrop 只可能
-      // 来自 series——movies 表没有 backdrop_path 列，movie 目标恒 null（见 DTO 注释的不对称说明）。
-      posterPath: nullIfEmpty(r.series_poster_path) ?? nullIfEmpty(r.movie_poster_path),
-      backdropPath: nullIfEmpty(r.series_backdrop_path),
-      // 秒表锚点：lease_started_at（claim 时刻，心跳续租不动它）。?? updated_at 兜底存量在飞行中
-      // 的行——v29 迁移前就 searching 的 job 此列为 null，退回旧口径（会略有前移，但只影响那批
-      // 一次性的存量行，且容器重启后它们会被 reap 重新 claim 而填上真值）。见 db.ts v29 迁移注释。
-      startedAtLease: r.lease_started_at ?? r.updated_at, trail,
-    }
-  })
-
-  // R2D-1（R2 复审）：worker run 详情入口需要 runs.id（身份键）+ 该行所属 job 的 series_id/
-  // movie_id（Rerun 按钮判据）——LEFT JOIN（不是 JOIN）：job_id 为 NULL 或指向的 job 行已不存在
-  // 时该行仍要出现在 recent 里，只是 seriesId/movieId 降级 null，不能因为关联缺失就整行消失。
-  // 验收修复轮一 Task V3（design §B）：再 LEFT JOIN series/movies 取 name——同样的"缺失不删行、
-  // 降级为 null"口径，series_id/movie_id 本身为 NULL，或指向的行不存在/name 是空串占位，都不该
-  // 让整行 recent 消失或假装有名字。
-  const recentRows = db
-    .prepare(
-      `SELECT r.id AS id, r.job_id AS job_id, r.decision AS decision, r.detail AS detail,
-              r.finished_at AS finished_at, r.llm_calls AS llm_calls,
-              j.series_id AS series_id, j.movie_id AS movie_id,
-              s.name AS series_name, m.name AS movie_name,
-              s.poster_path AS series_poster_path, s.backdrop_path AS series_backdrop_path,
-              m.poster_path AS movie_poster_path
-       FROM runs r LEFT JOIN jobs j ON r.job_id = j.id
-       LEFT JOIN series s ON j.series_id = s.id
-       LEFT JOIN movies m ON j.movie_id = m.id
-       WHERE r.decision IS NULL OR r.decision != 'orchestrate'
-       ORDER BY r.finished_at DESC LIMIT 20`
-    )
-    .all() as {
-      id: number; job_id: number | null; decision: string | null; detail: string | null
-      finished_at: number | null; llm_calls: number | null; series_id: string | null; movie_id: string | null
-      series_name: string | null; movie_name: string | null
-      series_poster_path: string | null; series_backdrop_path: string | null
-      movie_poster_path: string | null
-    }[]
-  const recent: WorkflowRecentRunDTO[] = recentRows.map((r) => ({
-    id: r.id, jobId: r.job_id, decision: r.decision, detail: r.detail, finishedAt: r.finished_at,
-    seriesId: r.series_id, movieId: r.movie_id,
-    seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
-    // 同 running 的口径：series 优先、movie 兜底；backdrop 只可能来自 series（movies 无此列）。
-    posterPath: nullIfEmpty(r.series_poster_path) ?? nullIfEmpty(r.movie_poster_path),
-    backdropPath: nullIfEmpty(r.series_backdrop_path),
-    llmCalls: r.llm_calls,
-  }))
-
-  const installedRow = db
-    .prepare(`SELECT COUNT(*) AS c FROM runs WHERE decision = 'installed' AND finished_at > ?`)
-    .get(now - 86_400_000) as { c: number }
-  const translatedRow = db
-    .prepare(`SELECT COUNT(*) AS c FROM runs WHERE decision = 'translate:installed' AND finished_at > ?`)
-    .get(now - 86_400_000) as { c: number }
-
-  // 审计 UX-P0:held 队列——failed + 未来重试时刻的 worker_task;payload.itemId(translate 合成行)
-  // 优先,缺省回退 series_id。同 parseWorkerTaskPayload 的容错口径:payload 坏了 itemId 降级 null。
-  // 名字与海报（2026-07-31 审计 C-3）：LEFT JOIN 照抄 running/recent 那两处，不新增查询。
-  // 前端原先靠 recent[] 按 jobId 反查，一小时后必然 MISS——理由见 DTO 字段注释。
-  const heldRows = db
-    .prepare(
-      `SELECT j.id, j.series_id, j.movie_id, j.payload, j.last_error, j.next_retry_at,
-              j.error_attempt,
-              s.name AS series_name, m.name AS movie_name,
-              s.poster_path AS series_poster_path, s.backdrop_path AS series_backdrop_path,
-              m.poster_path AS movie_poster_path
-       FROM jobs j
-       LEFT JOIN series s ON s.id = j.series_id
-       LEFT JOIN movies m ON m.id = j.movie_id
-       WHERE j.state = 'failed' AND j.kind = 'worker_task'
-         AND j.next_retry_at IS NOT NULL AND j.next_retry_at > ?`,
-    )
-    .all(now) as {
-      id: number; series_id: string | null; movie_id: string | null; payload: string | null
-      last_error: string | null; next_retry_at: number | null; error_attempt: number
-      series_name: string | null; movie_name: string | null
-      series_poster_path: string | null; series_backdrop_path: string | null
-      movie_poster_path: string | null
-    }[]
-  const held: WorkflowHeldJobDTO[] = heldRows.map((r) => {
-    let itemId: string | null = null
-    try {
-      const p = JSON.parse(r.payload ?? '{}') as { itemId?: unknown }
-      if (typeof p.itemId === 'string' && p.itemId) itemId = p.itemId
-    } catch { /* 降级 seriesId */ }
-    return {
-      jobId: r.id, itemId: itemId ?? r.series_id,
-      reason: r.last_error, nextRetryAt: r.next_retry_at, errorAttempt: r.error_attempt,
-      // series 优先、movie 兜底（同 running/recent 的既有扁平化口径）。都查无 → null。
-      seriesName: nullIfEmpty(r.series_name), movieName: nullIfEmpty(r.movie_name),
-      posterPath: nullIfEmpty(r.series_poster_path) ?? nullIfEmpty(r.movie_poster_path),
-      backdropPath: nullIfEmpty(r.series_backdrop_path),
-    }
-  })
-
-  const settingsRepo = new SettingsRepo(db)
-  const providerQuota: WorkflowWorkersDTO['providerQuota'] = []
-  for (const { key, value } of settingsRepo.listByPrefix('quota_state_')) {
-    try {
-      const parsed = JSON.parse(value) as { resetAt?: unknown; observedAt?: unknown }
-      const resetAt = typeof parsed.resetAt === 'string' ? parsed.resetAt : null
-      const observedAt = typeof parsed.observedAt === 'number' ? parsed.observedAt : null
-      if (observedAt === null) continue
-      if (resetAt !== null) {
-        const resetMs = Date.parse(resetAt)
-        if (Number.isNaN(resetMs) || resetMs < now) continue
-      }
-      providerQuota.push({ provider: key.slice('quota_state_'.length), resetAt, observedAt })
-    } catch {
-      // JSON parse 失败或非法形状 fail-soft：跳过垃圾值，不炸聚合端点
-    }
-  }
-
-  return { running, recent, installedLast24h: installedRow.c, translatedLast24h: translatedRow.c, held, providerQuota }
-}
-
+// ---- workflow/workers：已删除（2026-08-13「三个 jobs 读取面」裁决）----
+//
+// 曾经这里是 `buildWorkflowWorkers` + 四个 DTO（running/recent/held/providerQuota），
+// GET /api/v2/workflow/workers 的生产者。**删除，不是雪藏**——理由与同轮保留的
+// `buildDormantTasks` 不同，两者的分界写在下面，因为它正是本轮唯一需要论证的地方。
+//
+// ── 为什么它不属于「待接线的活」──────────────────────────────────────────
+// 它的两条 `FROM jobs` 查询（running: state='searching' / held: state='failed' 且
+// next_retry_at 未来）在生产**永远查不到行**：写这两个状态的只有 `jobsRepo.claimNext`
+// 与 `completeError`，而它们的调用者全部挂在 `cli/handleWorkerTask.ts` 之下——那个模块
+// 自第 7 步起生产零 import（有 `handleWorkerTask.orphan.test.ts` 钉着这个事实）。
+//
+// 但"查不到行"**不是**删它的理由（`buildDormantTasks` 同样如此，却留下了）。真正的理由是：
+//
+//   **它的显示位已经有活的后继，且后继刻意不读它。**
+//
+// 唯一消费方 `web/src/_legacy/activity/ActivityPage` 已被 `web/src/workbench/ActivityPage`
+// 取代（Task ⑨，活在 AppShell 里）。新页面读 SSE + `/api/v2/activity` + `/api/v2/health`，
+// 一行 jobs 都不读；`db.ts` v42 那段注释更是**点名禁止**新活动页照抄本 DTO 的 JOIN
+// （旧 DTO 读 `series.backdrop_path`，而 `series` 表生产 0 行，照抄会得到"填满了却全是
+// null"的字段）。所以即便哪天 jobs 队列被接回 claim，也**不会**有人想恢复这个 DTO——
+// 该显示的东西新页面已经在显示了。它不是缺一根接线的资产，是一份已被取代的旧图纸。
+//
+// 这与 `handleWorkerTask` 家族的「要么整族留、要么整族删」不冲突：那条铁律护的是
+// **执行侧**（四条 runner + claim/租约/reap + redispatch 生产者），它们缺的确实只是一根
+// 接线。本函数是**显示侧**，而显示侧的后继已经上线。删它不会让那一族少掉半边。
+//
+// ⚠️ 连带记入债务（不在本轮修）：`providerQuota` 是本 DTO 里**唯一有活写入者**的字段
+// （`cli/quotaState.applyQuotaEvent` ← `emitProviderEvent` ← 活的 translate/realign 路径）。
+// 删掉本函数后，`settings` 里的 `quota_state_*` 键**成为只写不读**——这是病 A 的镜像形态
+// （有活写入者却没有读取方）。正确的处置是给它一个真正的展示位或删掉写入侧，两者都是
+// 独立的产品动作，不在一次结构清理里顺手决定。
+//
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 🟡 2026-08-13「三个 jobs 读取面」裁决：**本条保留**，与同轮删除的
+ *    `buildWorkflowWorkers` 分道扬镳。分界线在下面第 3 条。
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 1. 它今天没有活 UI（如实陈述，不粉饰）────────────────────────────────
+ *   GET /api/v2/workflow/dormant ← api.workflowDormant ← useDormantTasks
+ *     ← web/src/triage/DormantBox ← web/src/triage/TriagePage
+ *     ← **AppShell 不 import 它**（甄别 tab 于 2026-08-07 雪藏，'triage' 也不在
+ *       route.ts 的 Tab 联合里）。
+ *
+ * ── 2. 它今天也**查不到新行**（比上一条更要命，同样如实写下）──────────────
+ * 写 `state='dormant'` 的只有四处，全部在 `v2/jobsRepo.ts`：`park` / `reapExpiredLeases`
+ * / `reapAllActive` / `forceState`。而：
+ *   · `reapExpiredLeases` / `reapAllActive` / `forceState` —— 生产零调用点；
+ *   · `park` 的两个调用者（realignWorkerTask / translateWorkerTask）只经
+ *     `cli/handleWorkerTask.ts` 到达，而那个模块自第 7 步起生产零 import
+ *     （`cli/handleWorkerTask.orphan.test.ts` 正钉着这个事实）。
+ * 换言之 jobs 队列**只剩一个活写入者**（`triageOps.redispatch` → `upsertWorkerTask`，
+ * 它只写 `'wanted'`），没有任何东西能再把一行推进 dormant。
+ * 所以本函数今天返回的是**旧世界残留的墓碑行**，不是活事实。
+ *
+ * ── 3. 那为什么它留、而 buildWorkflowWorkers 删？──────────────────────────
+ * 因为判据是**"显示位有没有活的后继"**，不是"查不查得到行"（后者两边一样）。
+ *
+ *   · `buildWorkflowWorkers` 的显示位**已有后继**：`web/src/workbench/ActivityPage`
+ *     （活在 AppShell 里）读 SSE + /api/v2/activity + /api/v2/health，一行 jobs 都不读，
+ *     且 db.ts v42 注释**点名禁止**它照抄旧 DTO 的 JOIN。旧 DTO 不是"缺一根接线"，
+ *     是一份**已被取代**的旧图纸 → 删。
+ *   · 本条的显示位**没有后继**：三页产品（活动/通知/媒体库）里没有任何地方呈现
+ *     "自动重试已永久停止"这件事。而 dormant 恰恰是最不该静默的一种状态。
+ *     它的容器 `TriagePage` 也不是我可以顺手删的——2026-08-12 那轮裁决保留
+ *     subtitleVerify 一族时，**明写恢复路径是"把 TriagePage 挂回 AppShell"**
+ *     （见 `v2/subtitleVerifyRepo.ts` 头注释）。那条裁决今天仍然成立，
+ *     删掉 TriagePage 的第四区等于单方面拆掉另一轮裁决的恢复路径。
+ *
+ * ── 4. 什么时候可以删（**可证伪的判据，一条能跑的命令**）──────────────────
+ * 本条与 jobs 队列**同进退**：dormant 行的存在性完全由那个队列决定，队列一旦整族退役，
+ * 本函数连墓碑行都查不到，届时必须一起走。判据（无输出 = 队列仍是孤儿 = 尚未触发）：
+ *
+ *     rg -l "from './handleWorkerTask.js'" src --glob '!*.test.ts'
+ *
+ * 这条命令**已经有机器载体**：`src/cli/handleWorkerTask.orphan.test.ts`。
+ * 触发方式有两个方向，两个都要处置本条：
+ *   (a) `cli/handleWorkerTask.ts` 与 jobs 队列整族**被删** → 本函数、DormantTaskDTO、
+ *       dormantTargetLabel、端点、client 方法、useDormantTasks、DormantBox 一起删；
+ *   (b) 队列**被接回 claim**（orphan 守卫会当场变红）→ dormant 重新是活事实，
+ *       那时必须回答"它在三页产品的哪一页露出"，而不是继续挂在一个雪藏页上。
+ *
+ * 🔴 不要只删一半：删 DormantBox 留端点、或删端点留 DormantBox，都是本仓病 A 的形状。
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 /** Plan C（spec §4.2）：GET /api/v2/workflow/dormant 的行 DTO。**四键封闭。**
  *  刻意缺席的字段与理由：
  *   - `reason`/`last_error`：现网该串是中文且含内部措辞（`src/v2/jobsRepo.ts:110`），

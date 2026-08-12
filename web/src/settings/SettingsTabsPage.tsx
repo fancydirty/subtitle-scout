@@ -92,7 +92,11 @@ export function SettingsTabsPage() {
   const rows = providers.data?.providers ?? []
   const translateRow = rows.find((r) => r.id === 'translate')
   const llmRow = rows.find((r) => r.id === 'llm')
-  const keyedRows = rows.filter((r) => r.secrets.length > 0 && r.id !== 'translate')
+  // "keyed 凭据卡" = 有自己凭据的字幕源。判据不能只看 `secrets.length > 0`：
+  // zimuku 行现在带着三个 ZIMUKU_VISION_*（视觉兜底，见后端 PROVIDER_SECRETS 注释），
+  // 但它本身是**开关型**源——下面已经用 ProviderToggleCard + ZimukuVisionCard 渲染过了。
+  // 不显式排除的话它会被渲染两次，且在 n/8 里被数两次（→ 9/8）。
+  const keyedRows = rows.filter((r) => r.secrets.length > 0 && r.id !== 'translate' && r.id !== 'zimuku')
 
   // ⚠️ 这里读的是 readProviders 的返回值，**不是**再解引用一次 setupStatus.data。
   // 契约违例在上面那个函数里已经被判成 throw，走到这里的 setupProviders 只有两态：

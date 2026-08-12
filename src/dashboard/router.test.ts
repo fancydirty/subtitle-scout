@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
   RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, WorkflowWorkersDTO, TriageDTO, RunTraceDTO,
+  WorkflowPendingDTO, WorkflowPassDTO, TriageDTO, RunTraceDTO,
   DormantTaskDTO,
 } from './apiV2.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
@@ -54,14 +54,6 @@ const workflowPendingDTO: WorkflowPendingDTO = {
 const workflowPassDTO: WorkflowPassDTO = {
   id: 1, jobId: 1, startedAt: 1, finishedAt: 2, detail: 'x',
   receipts: { created: 1, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 },
-}
-const workflowWorkersDTO: WorkflowWorkersDTO = {
-  running: [{ jobId: 1, seriesId: 's1', movieId: null, taskType: 'find_subtitle', seasons: null, seriesName: null, movieName: null, posterPath: null, backdropPath: null, startedAtLease: 1, trail: [] }],
-  recent: [{ id: 1, jobId: 1, decision: 'download', detail: 'ok', finishedAt: 2, seriesId: 's1', movieId: null, seriesName: 'A', movieName: null, posterPath: null, backdropPath: null, llmCalls: null }],
-  installedLast24h: 3,
-  translatedLast24h: 1,
-  held: [],
-  providerQuota: [],
 }
 const triageDTO: TriageDTO = {
   pending: [parkedItem],
@@ -144,7 +136,6 @@ const deps: RouterDeps = {
   },
   workflowPending: () => workflowPendingDTO,
   workflowPasses: (limit) => { lastPassesLimit = limit; return [workflowPassDTO] },
-  workflowWorkers: () => workflowWorkersDTO,
   triage: () => triageDTO,
   runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
   shiftedSubtitles: () => [shiftedRow],
@@ -245,10 +236,13 @@ describe('handleApiRoute (v2)', () => {
       expect(r.json).toEqual([workflowPassDTO])
     })
 
-    it('routes GET /api/v2/workflow/workers', () => {
+    // 2026-08-13 裁决：GET /api/v2/workflow/workers 已删除。这条从"路由到 DTO"翻面成
+    // **404 墓碑**——它比删掉整条用例强：有人若把端点悄悄接回来（比如为了给某个新页面
+    // 复用旧 DTO），这条会红并指向 apiV2.ts 的墓碑注释，要求先重读裁决。
+    // 判据留在测试里而不是注释里，是本仓这一族清理的既有形态。
+    it('GET /api/v2/workflow/workers 已删除 → 404（不是 200 空壳）', () => {
       const r = call('/api/v2/workflow/workers')
-      expect(r.status).toBe(200)
-      expect(r.json).toEqual(workflowWorkersDTO)
+      expect(r.status).toBe(404)
     })
 
     it('routes GET /api/v2/triage', () => {
