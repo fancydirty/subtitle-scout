@@ -45,9 +45,10 @@ import { SeriesPage } from '../library/SeriesPage.js'
 import { MovieDetailPage } from '../library/MovieDetailPage.js'
 import { ActivityPage } from '../activity/ActivityPage.js'
 import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
-import { ActivityPlaceholder, NotificationsPlaceholder } from './placeholders.js'
+import { ActivityPage as WorkbenchActivityPage } from '../workbench/ActivityPage.js'
 import { MediaLibraryPage } from '../media/MediaLibraryPage.js'
 import { MediaDetailPage } from '../media/MediaDetailPage.js'
+import { NotificationsPage } from '../notifications/NotificationsPage.js'
 import { EventsProvider } from '../events/EventsProvider.js'
 import { cn } from '../lib/utils.js'
 
@@ -121,13 +122,23 @@ export function Shell() {
               ))}
             {route.tab === 'workflow' && <ActivityPage />}
             {route.tab === 'settings' && <SettingsTabsPage />}
-            {/* ── Task ⑦ 新导航三页（占位壳，⑧⑨⑩ 填肉）──────────────────────
+            {/* ── Task ⑦ 新导航三页（⑧⑨⑩ 已全部填肉）─────────────────────────
                 ⚠️ 这一族分支是**静默失效点**：漏一条不报错，只是那个 tab 渲染一片空白
                 （侧栏还高亮着，用户以为页面坏了）。AppShell.nav.test.tsx 里有一条
                 "TABS 里每一项都必须渲染出可识别内容"的遍历用例守它——加 tab 时忘了加
                 分支，那条会红。 */}
-            {route.tab === 'activity' && <ActivityPlaceholder />}
-            {route.tab === 'notifications' && <NotificationsPlaceholder />}
+            {/* Task ⑨：活动页**已填肉**（占位实现随之删除）。两个 tab（字幕/翻译）——
+                **只有两个**：识别按 R-F1 降级为顶部状态条，不占 tab。
+                ⚠️ 组件在 `workbench/` 而不是 `activity/`：后者是旧活动页（#/workflow 今天
+                渲染的那个），两套同名概念并存到 Task ⑪，目录分开才不会误 import。
+                本页没有二级路由（同通知页），故是一条光杆分支。 */}
+            {route.tab === 'activity' && <WorkbenchActivityPage />}
+            {/* Task ⑩：通知页**已填肉**（占位实现随之删除）。一周流水、倒序、不做已读；
+                SSE `found` 只点亮页内的「有新字幕 · 点击刷新」提示，列表永远只由
+                GET /api/v2/notifications 出（设计文档 §3.4 的分工，论证在页面头注释）。
+                ⚠️ 这一页**没有二级路由**（不像 media 那样有 :workId），所以这里是
+                一条光杆分支——route.ts 也刻意不给它加任何段解析。 */}
+            {route.tab === 'notifications' && <NotificationsPage />}
             {route.tab === 'media' &&
               (route.mediaWorkId ? (
                 // key=mediaWorkId：切换到另一部作品时强制重挂载（同 SeriesPage 的既有口径），

@@ -20,9 +20,7 @@ export const zh = {
   nav_settings: '设置',
   nav_logout: '登出',
 
-  // Task ⑦ 占位页（Task ⑧ 填肉后只剩活动/通知两个）。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
-  placeholder_activity_purpose: '引擎现在在忙什么，以及你是不是可以不用管了。',
-  placeholder_notifications_purpose: '过去一周找到并装上的字幕，最新的在最前面。',
+  // Task ⑦ 占位页（Task ⑧⑩ 填肉后**只剩活动一个**）。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
   placeholder_under_construction: '施工中',
 
   cmdk_trigger: '搜索',
@@ -406,4 +404,52 @@ export const zh = {
   media_state_pending: '正在找字幕',
   media_state_unjudged: '还没判定',
   media_state_absent: '磁盘上没有',
+
+  // ── Task ⑩ 通知页（#/notifications）─────────────────────────────────────
+  // R-F3：保留一周 / 倒序流水 / **不做已读状态**——本族里没有"标记已读/未读"文案，
+  // 将来也不许加（加文案就是加状态的第一步）。
+  notif_window_note: '过去一周找到的',
+  notif_day_today: '今天',
+  notif_day_yesterday: '昨天',
+  notif_episodes_prefix: '第',
+  notif_episodes_suffix: '集',
+  notif_movie_found: '已找到字幕',
+  notif_via_fetch: '抓取',
+  notif_via_translate: '机翻',
+  // 组内两种来路都有——必须如实报，谎报单一来源会误导用户对字幕质量的预期。
+  notif_via_mixed: '抓取 + 机翻',
+  // 🔴 SSE 提示条。**刻意不说条数**：事件条数 ≠ 端点组数（幂等刷新），报数会撒谎。
+  notif_new_found: '有新找到的字幕',
+  notif_refresh: '刷新',
+  notif_empty_title: '这一周还没找到什么',
+  notif_empty_desc: '过去一周装上的字幕会出现在这里，最新的在最前面。',
+  notif_error_title: '没能加载通知',
+  notif_retry: '重试',
+  // ── Task ⑨ 活动页（#/activity）────────────────────────────────────────────
+  // ⚠️ 「上次巡检开始于」的「开始」二字是语义债务的执行，不是措辞偏好：
+  // lastInspectAt 落的是开始时刻不是完成时刻，写「完成于」就是在报一个我们不知道的事实。
+  wb_statusbar_label: '引擎状态',
+  wb_inspect_unknown: '正在获取引擎状态…',
+  wb_inspect_never: '还没跑过巡检',
+  wb_inspect_running: '正在巡检',
+  wb_inspect_stale: '很久没开始新一轮巡检了，引擎可能没在跑',
+  wb_inspect_idle: '上次巡检开始于',
+  wb_identify_running: '正在识别',
+  wb_engine_off: '引擎开关是关的，什么都不会处理',
+  wb_setup_incomplete: '还没配好，去把 TMDB 与 LLM 的凭据填上',
+  wb_tablist_label: '工作台',
+  wb_tab_subtitle: '字幕',
+  wb_tab_translate: '翻译',
+  wb_section_running: '正在跑',
+  wb_section_queued: '已排队',
+  wb_running_none: '这个工作台现在没在跑什么',
+  wb_running_now: '正在处理',
+  wb_queue_none: '没有排队的作品',
+  wb_untitled: '未命名',
+  wb_media_tv: '剧集',
+  wb_media_movie: '电影',
+  wb_pending_files: '集待处理',
+  wb_loading: '加载中…',
+  wb_error_title: '没能加载队列',
+  wb_retry: '重试',
 } as const

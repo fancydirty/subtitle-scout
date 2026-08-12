@@ -141,6 +141,17 @@ const mediaLibraryDetailDTO: MediaLibraryDetailDTO = {
   movie: null,
   unplacedFileCount: 0,
 }
+/** R-F13 活动页排队段（Task ⑨）。两段各一项，图一有一无——无图那项守着"降级不是崩"。 */
+const activityDTO = {
+  subtitleQueue: [{
+    workId: 'tmdb:1', title: 'Queued Show', chineseTitle: null, year: 2018, mediaType: 'tv' as const,
+    posterPath: '/p.jpg', backdropPath: '/bd.jpg', pendingFileCount: 13,
+  }],
+  translateQueue: [{
+    workId: 'tmdb:2', title: 'Translating Movie', chineseTitle: null, year: 2001, mediaType: 'movie' as const,
+    posterPath: null, backdropPath: null, pendingFileCount: 1,
+  }],
+}
 const deps: RouterDeps = {
   library: () => [libItem],
   series: (id) => { lastSeriesId = id; return id === 's1' || id === 'tmdb:71' ? seriesDetail : null },
@@ -167,6 +178,7 @@ const deps: RouterDeps = {
   // R-F2 / R-F5：媒体库页两个新端点的路由层 stub。
   mediaLibrary: () => [mediaLibraryItem],
   mediaLibraryDetail: (id) => { lastMediaLibraryId = id; return id === 'tmdb:1' ? mediaLibraryDetailDTO : null },
+  activity: () => activityDTO,
 }
 
 const call = (pathname: string, opts: { query?: Record<string, string> } = {}) =>
@@ -424,6 +436,25 @@ describe('handleApiRoute (v2)', () => {
       // 防回归：把列表路由写在正则之后、或把正则写成 `([^/]*)` 时，其中一条会静默失效。
       expect(call('/api/v2/mediaLibrary').json).toEqual([mediaLibraryItem])
       expect(call('/api/v2/mediaLibrary/tmdb:1').json).toEqual(mediaLibraryDetailDTO)
+    })
+  })
+
+  // R-F13：活动页排队段（Task ⑨）。
+  describe('活动页（R-F13）', () => {
+    it('routes /api/v2/activity', () => {
+      const r = call('/api/v2/activity')
+      expect(r.status).toBe(200)
+      expect(r.json).toEqual(activityDTO)
+    })
+
+    it('🔴 不被 /api/v2/mediaLibrary/:id 那条正则吃掉，也不吃掉别人', () => {
+      // 两条路由的字面前缀不同，但正则式路由最容易出的事就是顺序性遮蔽。
+      expect(call('/api/v2/activity').json).toEqual(activityDTO)
+      expect(call('/api/v2/mediaLibrary').json).toEqual([mediaLibraryItem])
+    })
+
+    it('不认二级路径（/api/v2/activity/xxx → 404，不静默回落到列表）', () => {
+      expect(call('/api/v2/activity/tmdb:1').status).toBe(404)
     })
   })
 })

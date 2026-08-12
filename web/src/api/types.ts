@@ -720,3 +720,70 @@ export interface MediaLibraryDetailDTO {
    *  **必须如实露出**：不报的话用户会以为系统把文件弄丢了。电影恒 0。 */
   unplacedFileCount: number
 }
+
+// ── Task ⑩ 通知页（#/notifications）─────────────────────────────────────────
+// 手抄自 src/v2/notificationsRepo.ts:48 的 `FoundGroup`（同 api/types.ts 全文件的既有处置：
+// web/ 是独立 tsconfig 工程，跨出去 import 会把 node 侧类型面拖进浏览器工程）。
+// ⚠️ 手抄的代价是后端改了这里不会报错——缓解在 notifications/notificationsWire.test.ts：
+// 它拿**后端真实 listRecentFoundGrouped 的输出形状**（从源码注释逐字誊来的样例）喂给渲染层。
+
+/** 一条通知的来路。后端 `FoundVia | 'mixed'`——组内混合来路时必须如实报 'mixed'
+ *  （一季里有抓来的也有机翻的时，谎报单一来源会误导用户对字幕质量的预期）。 */
+export type FoundVia = 'fetch' | 'translate' | 'mixed'
+
+/** GET /api/v2/notifications 的一条。**按 work+season 聚合，不是逐集行**
+ *  （R-F3 的展示形态是「XX 剧找到了 S01 的第 3/5/7 集」一条，不是三条）。
+ *
+ *  ⚠️ **没有稳定的行 id**——后端逐集存、读时聚合，组本身不是一行数据。React key 只能
+ *  用 `workId + '/' + season` 自己拼（那正是后端聚合时用的幂等键，见 groupKey）。 */
+export interface FoundGroupDTO {
+  workId: string
+  /** ⚠️ **写入时的快照**，不是 works 表的当前值。作品在一周窗内改过名的话，历史行的
+   *  title 会与媒体库页显示的不一致——这是后端的刻意选择（通知是"当时发生了什么"的账目）。 */
+  title: string
+  /** null = 电影（此时 episodes 为空数组）。 */
+  season: number | null
+  /** **升序**（展示用"第 3/5/7 集"）。电影为空数组。 */
+  episodes: number[]
+  /** 组内最近一次找到的时刻——**组间倒序的锚点**。 */
+  latestAt: number
+  via: FoundVia
+}
+
+// ── Task ⑨ 活动页（#/activity）：GET /api/v2/activity ────────────────────────
+// 手抄自 src/dashboard/activityApi.ts 的同名 interface（同本文件全文件的既有处置）。
+//
+// 🔴 这个端点**只回答"还有谁在等"**，不产出 total/index/当前在跑的是谁。
+// 那三样只信 SSE 与 /api/v2/health 的 `current`（冻结快照）。理由是 health 端点有一条
+// 明令「不返回 queue」的裁决：`listSubtitleQueue` 是**实时重查**，与 R4 的**冻结快照**
+// 语义相反，拿它算「第 i/n 个」的 n 会与 SSE 那个冻结的 n 对不上、且随巡检推进越飘越远。
+// 完整论证见后端 activityApi.ts 的头注释。
+//
+// 前端这一侧的执行纪律（ActivityPage 里有用例钉着）：
+//  · 不许拿 `subtitleQueue.length` 当 total；
+//  · 不许拿 SSE 的 total 减 done 去截断这个列表。
+// 两个数字来源在 UI 上分开呈现、绝不互相推导。
+
+/** 排队中的一个**作品**（R-F4：粒度是作品，不是集）。 */
+export interface ActivityQueueItemDTO {
+  /** works.id（'tmdb:<n>'）。与 SSE 事件的 `data.workId` 对齐用——**不靠标题字符串匹配**
+   *  （同名翻拍与译名切换都会让字符串匹配静默错位，表现为"卡片配了别人的图"）。 */
+  workId: string
+  title: string
+  chineseTitle: string | null
+  year: number | null
+  mediaType: 'tv' | 'movie'
+  /** 竖版海报（R-F13 排队段用 59×88 竖版 poster）。null → 前端降级纯排印。 */
+  posterPath: string | null
+  /** 横版背景图（R-F13 在跑段用横版 backdrop）。排队项也带它——一个作品会从排队**走到**
+   *  在跑，那一刻要立刻有横版图可用，否则会闪一帧无图降级。 */
+  backdropPath: string | null
+  /** 这个作品自己有几个文件在等（「2018 · 动画 · 13 集待处理」那个 13）。
+   *  🔴 **不是 total、不是序号**，与队列长度无关。 */
+  pendingFileCount: number
+}
+
+export interface ActivityDTO {
+  subtitleQueue: ActivityQueueItemDTO[]
+  translateQueue: ActivityQueueItemDTO[]
+}

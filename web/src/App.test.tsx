@@ -40,6 +40,17 @@ const WORKFLOW: WorkflowPendingDTO = {
   meta: { roots: ['/media'], lastScanAt: Date.now() - 2 * 60_000, files: 568 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
 }
 const EMPTY_LIBRARY: LibraryItemDTO[] = []
+/** Task ⑨ 活动页的健康快照。`current: null` = 没有任何工作台在跑（本冒烟测试不关心
+ *  在跑态，只要页面能渲染出来）。workPermitted 给 true 免得状态条上多一行不许可提示
+ *  干扰别的断言。 */
+const HEALTH = {
+  lastInspectAt: Date.now() - 60_000,
+  workPermitted: true,
+  engineEnabled: true,
+  setupSatisfied: true,
+  roots: [],
+  current: null,
+}
 
 function standardHandlers() {
   return [
@@ -66,6 +77,10 @@ function standardHandlers() {
     },
     { path: '/api/v2/settings/deploy', body: { secrets: {}, nonSecrets: {} } },
     { path: '/api/v2/settings/roots', body: [] },
+    // Task ⑨：活动页（默认落地页）挂载即打这两个端点——同上面 passes/workers/triage 的
+    // 既有理由，不给会让它落进 error 态，下面"默认落地页渲染的是活动页"的断言就等不到。
+    { path: '/api/v2/health', body: HEALTH },
+    { path: '/api/v2/activity', body: { subtitleQueue: [], translateQueue: [] } },
   ]
 }
 
@@ -111,7 +126,9 @@ describe('App 外壳冒烟', () => {
     // Task ⑦：未识别 hash 的落点从 library 改成 activity（library 已不在侧栏，
     // 继续落它会让用户停在一个没有任何高亮项的页面上）。
     await screen.findByRole('link', { name: 'Activity' })
-    expect(await screen.findByText('Under construction')).toBeInTheDocument()
+    // Task ⑨：活动页已填肉——判据从"施工中标记"换成真页面的标志物（两个 tab 的 tablist）。
+    // ⚠️ 只把这一行删掉是不行的：那样默认落地页渲染成什么都不会有人管。
+    expect(await screen.findByRole('tablist', { name: 'Workbenches' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Notifications' }))
     await waitFor(() => expect(location.hash).toBe('#/notifications'))

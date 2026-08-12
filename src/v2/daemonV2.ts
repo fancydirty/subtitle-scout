@@ -711,13 +711,27 @@ export class ScoutDaemonV2 {
       //  · progress 说"排到第几个了"（队列级，24 集的剧在这里连发 → 唯一需要节流的事件源；
       //    **节流是总线的职责，不是这里的**——发布方如实发，ScoutEventBus 折叠。两边都做
       //    就会出现"节流窗口叠加"这种没人算得清的行为）。
-      this.emit({ type: 'activity', message: `正在找字幕：${item.title}（${item.files.length} 个文件）`, title: item.title, workbench: 'subtitle' })
+      this.emit({
+        type: 'activity',
+        message: `正在找字幕：${item.title}（${item.files.length} 个文件）`,
+        title: item.title,
+        workbench: 'subtitle',
+        // R-F13（Task ⑨）：活动页「在跑」卡片要一张横版 backdrop，而图片路径**不进事件通道**
+        // （静态资料随每条事件重复推是浪费，一部剧 24 条 progress 就重复 24 次）。给出 workId，
+        // 前端拿它去 /api/v2/activity 那份作品身份表里查图。
+        // 🔴 **必须是 workId 而不是让前端拿 title 去匹配**：同名作品（不同年份的翻拍）与
+        // 中文译名切换都会让字符串匹配静默错位——错位的表现是"卡片配了另一部剧的图"，
+        // 而那在测试里几乎照不出来。
+        data: { workId: item.workId },
+      })
       this.emit({
         type: 'progress',
         message: `第 ${subtitleRounds}/${subtitleQueue.length} 个作品`,
         title: item.title,
         workbench: 'subtitle',
-        data: { done: subtitleRounds, total: subtitleQueue.length },
+        // done/total 是 ScoutEventBus.updateCurrent 读的两个键（它只认这两个名字）；
+        // workId 是给前端取图用的第三个键，对 updateCurrent 是惰性无关字段。
+        data: { done: subtitleRounds, total: subtitleQueue.length, workId: item.workId },
       })
       // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
       // 登记必须在**剔除之后**：整簇消失的作品若也登记一次，这个 jobId 就白白免疫一次 GC。
@@ -1116,7 +1130,14 @@ export class ScoutDaemonV2 {
     this.deps.log(`翻译 ${c.title} (${c.videoPath})`)
     // R-F10 activity ⑤：翻译是流水线里唯一"单个活可能跑几小时"的阶段（阶段 4）。不推的话
     // 用户在活动页上会看到系统"卡在最后一步不动"——而它其实正在逐段翻一集片。
-    this.emit({ type: 'activity', message: `正在翻译：${c.title}`, title: c.title, workbench: 'translate' })
+    this.emit({
+      type: 'activity',
+      message: `正在翻译：${c.title}`,
+      title: c.title,
+      workbench: 'translate',
+      // 同字幕台那条：R-F13 的横版图靠 workId 去 /api/v2/activity 查，不靠标题匹配。
+      data: { workId: c.workId },
+    })
     // 🔴 GC 炸弹修复（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八 + C34 的翻译那一半）。
     //
     // 把这个活的翻译工作台目录名登记为"在飞行"，跑完（含抛错）必须摘掉——与阶段 3 字幕流的

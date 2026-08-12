@@ -14,6 +14,8 @@ import type {
   TestVisionRequest, TestVisionResponse,
   HealthDTO,
   MediaLibraryItemDTO, MediaLibraryDetailDTO,
+  ActivityDTO,
+  FoundGroupDTO,
 } from './types.js'
 
 /** 鉴权 A2：任意请求撞 401（会话过期/未登录）时派发的全局事件名。App 层 useAuthStatus 监听它，
@@ -248,4 +250,15 @@ export const api = {
   // 需要转义的字符就会静默 404。
   mediaLibraryDetail: (workId: string, signal?: AbortSignal) =>
     get<MediaLibraryDetailDTO>(`/api/v2/mediaLibrary/${encodeURIComponent(workId)}`, signal),
+
+  // Task ⑨：活动页排队段（R-F13）。**只给"还有谁在等 + 它们的图"**——
+  // total/index/当前在跑的是谁一律不从这里来（见 api/types.ts 的 ActivityDTO 注释与
+  // 后端 activityApi.ts 头注释对「health 不返回 queue」那条裁决的论证）。
+  activity: (signal?: AbortSignal) => get<ActivityDTO>('/api/v2/activity', signal),
+
+  // Task ⑩：通知页（R-F3）。**通知列表的唯一数据源**——SSE 的 `found` 事件不进列表
+  // （server.ts:814 的分工裁决：recordFound 是幂等刷新，SSE 每次装盘都发，两边条目数
+  // 天然不等；拿 SSE 往列表里插，那个差值就是用户眼前的重复条目）。
+  // 无分页无上限（实测 3600 行 → 300 组 / 39.6 KiB / 4ms，当前量级无害）。
+  notifications: (signal?: AbortSignal) => get<FoundGroupDTO[]>('/api/v2/notifications', signal),
 }

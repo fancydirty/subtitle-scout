@@ -16,6 +16,8 @@ import type {
   HealthDTO,
   MediaLibraryItemDTO,
   MediaLibraryDetailDTO,
+  ActivityDTO,
+  FoundGroupDTO,
 } from './types.js'
 
 export interface Async<T> {
@@ -966,6 +968,94 @@ export function useMediaLibraryDetail(workId: string | null): Async<MediaLibrary
       })
     return () => ctrl.abort()
   }, [workId, nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** Task ⑩：通知页流水（GET /api/v2/notifications）。
+ *
+ *  ── 这是通知列表的**唯一**数据源（R-F3 + 设计文档 §3.4 的分工裁决）─────────────
+ *  SSE 的 `found` 事件**不进列表**。理由在后端 server.ts:814 与 notificationsRepo 头注释：
+ *  `recordFound` 是幂等刷新（同一组 ON CONFLICT DO UPDATE 而非 INSERT），而 SSE 每次装盘
+ *  都发一条——**两边的条目数天然不等**。拿 SSE 事件往列表里插，那个差值就会以重复条目的
+ *  形态摆在用户眼前（同一部剧在流水里出现两次，一条来自端点、一条来自事件）。
+ *  SSE 在通知页的**唯一**职责是点亮「有新字幕 · 点击刷新」那条提示（见 NotificationsPage）。
+ *
+ *  ── 为什么**不轮询**（同 useMediaLibrary/useHealth 的既有理由）────────────────
+ *  这一页有 SSE：新成果到达的那一刻 found 事件就到了，提示条立刻亮起。在一条已经好好连着
+ *  的 SSE 旁边再挂 15 秒定时器，正是 R-F6「用 SSE 不用轮询」要消灭的东西。
+ *
+ *  谁触发 reload（本仓的病 A 是"加了能力却没定谁触发"，故如实登记**三个**调用点）：
+ *   ① 提示条上的「刷新」按钮（收到 found 事件后才出现）；
+ *   ② 错误态的「重试」按钮；
+ *   ③ SSE 从非 open 恢复到 open 时的那一次补拉——断线期间的 found 事件全部丢失
+ *      （eventsBus 的续传只补后端环形缓冲里还在的，且它"不是账目"），不补拉的话
+ *      用户会盯着一个永远不更新也永远不提示的列表。 */
+export function useNotifications(): Async<FoundGroupDTO[]> {
+  const [data, setData] = useState<FoundGroupDTO[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    api
+      .notifications(ctrl.signal)
+      .then((d) => setData(d))
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
+
+  return { data, loading, error, reload }
+}
+
+/** Task ⑨：活动页排队段（GET /api/v2/activity）。
+ *
+ *  ── 为什么**不轮询**（同 useMediaLibrary/useHealth 的既有理由）─────────────────
+ *  R-F6 的裁决是"用 SSE 不用轮询"。队列的变化时机是**离散且可观测**的：daemon 开始处理
+ *  下一个作品时会 emit 一条 activity。故这里的刷新触发点是**那条事件**，不是定时器——
+ *  由 ActivityPage 在收到 activity 事件时调 reload()（谁触发写明在这里，本仓的病 A 是
+ *  "加了能力却没定谁触发"）。
+ *
+ *  三个 reload 触发点，全部在 ActivityPage：
+ *   ① 收到 activity 事件（队列刚少了一个/多了一个）；
+ *   ② SSE 从非 open 恢复到 open（断线期间的队列变化一次补齐）；
+ *   ③ 错误态那个「重试」按钮。 */
+export function useActivity(): Async<ActivityDTO> {
+  const [data, setData] = useState<ActivityDTO | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    // ⚠️ **不在这里 setLoading(true)**（与 useMediaLibrary 刻意不同）：这个 hook 会被
+    // activity 事件频繁 reload，每次都把 loading 抬起来会让已经渲染出来的队列在每条事件
+    // 到达时闪成骨架屏。首载那次的 loading 由 useState 初值给出，之后一律**静默重取**
+    // （旧数据留在屏幕上直到新数据到达）。
+    api
+      .activity(ctrl.signal)
+      .then((d) => {
+        setData(d)
+        setError(null)
+      })
+      .catch((e) => {
+        if (!ctrl.signal.aborted) setError(String(e))
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [nonce])
 
   return { data, loading, error, reload }
 }

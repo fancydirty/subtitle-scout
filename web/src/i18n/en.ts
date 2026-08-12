@@ -18,12 +18,8 @@ export const en = {
   nav_settings: 'Settings',
   nav_logout: 'Log out',
 
-  // Task ⑦ 占位页（Task ⑧ 填肉后只剩活动/通知两个）：说明"这页将来回答什么问题"。**不描述还不存在的功能细节**——
-  // 一句人话，等 Task ⑧⑨⑩ 填肉时这些键会被真页面的文案取代或保留作空态说明。
-  placeholder_activity_purpose:
-    'What the engine is working on right now, and whether you can leave it alone.',
-  placeholder_notifications_purpose:
-    'Subtitles found and installed over the past week, newest first.',
+  // Task ⑦ 占位页（Task ⑧⑩ 填肉后**只剩活动一个**）：说明"这页将来回答什么问题"。
+  // **不描述还不存在的功能细节**——一句人话，等 Task ⑨ 填肉时这个键随之删除。
   placeholder_under_construction: 'Under construction',
 
   // ⌘K 命令面板：F2 只做 tab 导航，不做搜索。
@@ -469,4 +465,63 @@ export const en = {
   media_state_pending: 'Looking for subtitles',
   media_state_unjudged: 'Not judged yet',
   media_state_absent: 'Not on disk',
+
+  // ── Task ⑩ 通知页（#/notifications）─────────────────────────────────────
+  // 键前缀 `notif_*`。R-F3：保留一周 / 倒序流水 / **不做已读状态**——所以这一族里
+  // 没有任何 "mark as read" / "unread" 文案，将来也不许加（加文案就是加状态的第一步）。
+  notif_window_note: 'Found in the past week',
+  notif_day_today: 'Today',
+  notif_day_yesterday: 'Yesterday',
+  notif_episodes_prefix: 'episodes',
+  /** 集号后缀。英文没有量词，故为空串；中文是"集"（「第 3/5/7 集」）。
+   *  ⚠️ 空串是**有意**的，不是漏填——t() 不支持插值（i18n/useT.ts 头注释），而中英两侧
+   *  的量词位置不同（en 前置 "episodes 3/5/7"，zh 前后夹 "第 3/5/7 集"），只能拆成
+   *  prefix/suffix 两个键。notifications 的用例里有一条钉着"两侧至少有一侧非空"。 */
+  notif_episodes_suffix: '',
+  notif_movie_found: 'subtitles found',
+  notif_via_fetch: 'fetched',
+  notif_via_translate: 'translated',
+  // 组内两种来路都有。**必须如实报**——一季里有抓来的也有机翻的时，谎报单一来源
+  // 会误导用户对字幕质量的预期（notificationsRepo 的 FoundGroup.via 注释）。
+  notif_via_mixed: 'fetched + translated',
+  // 🔴 SSE 提示条。**刻意不说条数**：SSE 的 found 事件条数与端点返回的组数天然不等
+  // （recordFound 幂等刷新，同一组重复装盘只 UPDATE），说"3 条新字幕"然后刷新只多 1 条
+  // 会让用户以为系统弄丢了两条。只说"有"这个我们确实知道得准的布尔事实。
+  notif_new_found: 'New subtitles found',
+  notif_refresh: 'Refresh',
+  notif_empty_title: 'Nothing found this week',
+  notif_empty_desc: 'Subtitles picked up in the past week show up here, newest first.',
+  notif_error_title: 'Could not load notifications',
+  notif_retry: 'Retry',
+  // ── Task ⑨ 活动页（#/activity）────────────────────────────────────────────
+  // 顶部状态条。⚠️ 巡检那几句的措辞是**语义债务的执行**，不是文案偏好：
+  // `lastInspectAt` 落的是巡检的**开始**时刻不是完成时刻（Task ⑤ 审计 🟡-3，后端未修），
+  // 故 idle 那句必须说「started」/「开始于」——说「completed」就是在报一个我们不知道的事实。
+  wb_statusbar_label: 'Engine status',
+  wb_inspect_unknown: 'Checking engine status…',
+  wb_inspect_never: 'No sweep has run yet',
+  wb_inspect_running: 'Sweep in progress',
+  // 「daemon 可能没在跑」——陈旧门（48h）覆盖不到容器挂掉这一档，见 inspectFreshness 债务二。
+  wb_inspect_stale: 'No sweep started recently — the engine may not be running',
+  wb_inspect_idle: 'Last sweep started',
+  // R-F1：识别降级到状态条，不占 tab。
+  wb_identify_running: 'Identifying',
+  // 引擎不许可的两态。分开是因为可执行动作不同（打开开关 vs 去填 key）。
+  wb_engine_off: 'Engine is switched off — nothing will be processed',
+  wb_setup_incomplete: 'Setup incomplete — add your TMDB and LLM credentials',
+  wb_tablist_label: 'Workbenches',
+  wb_tab_subtitle: 'Subtitles',
+  wb_tab_translate: 'Translation',
+  wb_section_running: 'Running',
+  wb_section_queued: 'Queued',
+  wb_running_none: 'Nothing running on this workbench',
+  wb_running_now: 'Processing now',
+  wb_queue_none: 'Nothing queued',
+  wb_untitled: 'Untitled',
+  wb_media_tv: 'Series',
+  wb_media_movie: 'Movie',
+  wb_pending_files: 'pending',
+  wb_loading: 'Loading…',
+  wb_error_title: 'Could not load the queue',
+  wb_retry: 'Retry',
 } as const

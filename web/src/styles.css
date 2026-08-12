@@ -2010,3 +2010,306 @@
   color: var(--color-weak);
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Task ⑩ 通知页（#/notifications）
+   ══════════════════════════════════════════════════════════════════════════
+   R-F11（视觉基准 Linear，DESIGN.md）：深度靠 **surface 阶梯 + 发丝线**承载，
+   **拒绝投影** —— 下面没有任何 box-shadow / drop-shadow 声明。
+
+   ⚠️ 只用本仓**真实存在**的变量，一个新变量都不新增（同 media 段的既有纪律）：
+   DESIGN.md 写的 --color-surface-1 / --color-hairline 在本仓 grep **零命中**，
+   写 `var(--color-surface-1, transparent)` 会**静默 fallback 成透明** ——
+   构建通过、测试全绿、只有肉眼能看出来（Task ⑦ 的实施者踩过并记在 PlaceholderPage 里）。
+
+   四层 surface 阶梯在这一页的分配：
+     L0 页面底 --color-background (#0b0c0f)  ← main 的底
+     L1 区块面 --color-secondary  (#16181f)  ← <Section> 自带
+     L2 行 / 提示条 --color-card  (#111318)
+     L3 hover     rgba(255,255,255,.03) 叠加
+   三层 hairline：--color-border-subtle（段内分隔）< --color-border（行边框）
+     < rgba(255,255,255,.14)（hover 抬升，同 .media-card-frame 的既有取值）。 */
+
+/* ---- 一天一段 ---- */
+.notif-day {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 段落标题：mono 小标（"今天"/"昨天"/"08-09"）。**不做粘性吸顶** —— 一周的量级
+   （实测 300 组封顶）撑不出需要吸顶的滚动长度，而 sticky 会在每段交界处闪一下。 */
+.notif-day-heading {
+  margin: 0;
+  padding-bottom: 4px;
+  /* 第一层发丝线（最弱的那层）：段与段之间的呼吸，不是边框。 */
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+}
+.notif-day-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ---- 一条通知 ---- */
+.notif-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  /* 第二层发丝线 + L2 面色。**不是** --color-accent：过渡期它被遮蔽成柠檬绿，
+     会把整列行刷绿（.media-card-frame 那条注释里记的同一个坑）。 */
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.notif-row:hover {
+  /* 第三层发丝线（hover 抬升），取值与 .media-card-frame:hover 一致——两页的
+     hover 手感不一致会让用户觉得是两个产品。 */
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+}
+.notif-row:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+/* 骨架屏那几行：没有内容撑高，自己给一个与真实行等高的最小高度，
+   否则加载完成时整页会跳一下。 */
+.notif-row-skel {
+  min-height: 46px;
+}
+
+/* ---- 「有新字幕 · 点击刷新」提示条 ----
+   🔴 这条是 SSE 在通知页上**唯一**被允许产生的可见效果（设计文档 §3.4）。
+   它**不是** Banner 组件的一个变体：Banner 的三档 status（warning/error/success）
+   都带功能色底，而"有新成果"既不是告警也不是成败判定——它是一个中性的邀请。
+   用功能色会让用户在看到绿底时以为"刚刚成功了什么"，而实际上什么都没发生，
+   只是有东西可以刷新了。 */
+.notif-new-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+}
+/* 提示点：紫色（--color-fn-purple，本仓"有动静"的既有语义，同 hero 脉动点）。
+   **不用绿色** —— 绿在本仓是 covered/on 的状态色，用在这里会读成"已完成"。
+   不做脉动动画：这一页是静态流水，一个跳动的点会持续勾走注意力。 */
+.notif-new-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-fn-purple);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Task ⑨ 活动页（#/activity）—— R-F13 全背景式卡片 + R-F11 Linear 视觉基准
+   ══════════════════════════════════════════════════════════════════════════════
+
+   R-F13 的形态演进（设计文档 §六·八）：纯文字列表 → 卡片里放缩略图 → **图本身就是卡片**。
+   最终：左侧图铺满，横向渐变渐隐进 surface-1 **实色**，文字浮在渐隐区。
+
+   三个关键决定（原文照录，因为它们解释了下面每一个数字）：
+    1. **渐变终点用实色，不是半透明黑**——右半区底色与普通卡片完全一致，文字对比度稳定，
+       不会因背后有图而发飘。本仓的 surface-1 实色 = var(--color-card)（#111318）。
+       ⚠️ DESIGN.md 写的是 #0f1011，但那套 token 在本仓 grep 零命中——写
+       `var(--color-surface-1, transparent)` 会**静默 fallback 成透明**（Task ⑦ 的实施者
+       踩过并记在 PlaceholderPage 头注释里）。故一律用本仓真实存在的 --color-* 那套。
+    2. **在跑用横版 backdrop、排队用竖版 poster**——用户实测发现矛盾的根源是宽高比：
+       16:9 @ 70px高 = 124px宽（太窄看不清）vs 2:3 @ 70px高 = 47px宽（天生适合窄行）。
+       两个位置职责不同，形状不同不是缺陷是分工。
+    3. **排队行 88px 高 + 标题 16px**——行高撑起来右侧才不显空。
+
+   R-F11：四层 surface 阶梯 + 三层 hairline，**拒绝投影**（深色上投影糊成一团）。
+   下面没有任何一条 box-shadow，这是刻意的。
+
+   ⚠️ **尺寸走 CSS 变量，不写死 px、也不用 clamp()**（设计文档 §七 的"留路"，
+   三轮审计 🔵 点名：clamp 要三个参数而 R-F13 只给了一个，实施者会卡住）。
+   移动端那一轮**在 media query 里改变量值、不改组件**——这才是真正的留路。 */
+:root {
+  --card-run-h: 186px;      /* 在跑卡片高度 */
+  --card-run-img: 60%;      /* 横版 backdrop 占宽 */
+  --card-queue-w: 59px;     /* 排队卡片的竖版 poster 宽 */
+  --card-queue-h: 88px;     /* 排队卡片行高 */
+  --card-queue-fade: 118px; /* 排队卡片渐变区宽（图的两倍） */
+}
+
+/* ---- 两个 tab（Steam 式）---- */
+.wb-tabs {
+  display: flex;
+  gap: 4px;
+  /* 第二层 hairline 作为 tab 条的下边界 */
+  border-bottom: 1px solid var(--color-border);
+}
+.wb-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  /* 选中态靠 2px 下划线 + 文字色，**不用底色药丸**：Linear 的 tab 是下划线式，
+     药丸是它 status-badge 的语言（那是另一个语义，混用会让两者互相稀释）。 */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-weak);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.wb-tab:hover { color: var(--color-fg); }
+.wb-tab[aria-selected='true'] {
+  color: var(--color-fg);
+  border-bottom-color: var(--color-accent);
+}
+.wb-tab:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-control) var(--radius-control) 0 0;
+}
+
+/* ---- 顶部状态条（识别 + 巡检/扫描 的去处，R-F1：它们不占 tab）---- */
+.wb-statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-weak);
+}
+/* 「daemon 可能没在跑」那一档（inspectFreshness 的 'stale'）。用**文字色 + 前缀符号**
+   双通道，不只靠颜色（Carbon 规则，同 R-F12 否掉纯色圆点的那条理由）。 */
+.wb-statusbar[data-stale='true'] { color: var(--color-fn-amber, #d19a3d); }
+.wb-status-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: currentColor;
+}
+
+/* ---- 在跑卡片：横版 backdrop 铺左 60%，渐隐进实色 ---- */
+.wb-run-card {
+  position: relative;
+  height: var(--card-run-h);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  background: var(--color-card);
+}
+.wb-run-img {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--card-run-img);
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 渐变遮罩独立一层（不是 img 的 filter）：图片加载失败时这一层照样在，
+   右半区的文字底色因此**永远**是稳定的实色，不会因为没图而突然变成裸背景。 */
+.wb-run-fade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    rgba(1, 1, 2, 0.06) 0%,
+    rgba(1, 1, 2, 0.28) 20%,
+    rgba(1, 1, 2, 0.84) 44%,
+    var(--color-card) var(--card-run-img)
+  );
+}
+.wb-run-body {
+  position: relative; /* 浮在渐隐区之上 */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 20px;
+  /* 文字从渐隐区开始，不压在图上 */
+  margin-left: calc(var(--card-run-img) - 16%);
+}
+
+/* ---- 排队卡片：竖版 poster 59px，渐变区 118px ---- */
+.wb-queue-card {
+  position: relative;
+  height: var(--card-queue-h);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  background: var(--color-card);
+}
+.wb-queue-img {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--card-queue-w);
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.wb-queue-fade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    rgba(1, 1, 2, 0) 0%,
+    rgba(1, 1, 2, 0.14) 44%,
+    rgba(1, 1, 2, 0.78) 68%,
+    var(--color-card) var(--card-queue-fade)
+  );
+}
+.wb-queue-body {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 16px;
+  margin-left: var(--card-queue-fade);
+}
+/* 无图降级：不留空槽（那会让卡片看起来缺了一块），渐变区直接从最左开始。
+   判据是 data-noimg，由组件在 posterPath/backdropPath 为 null 时置上——
+   `posterPath` 为 null 是**必然分支**不是边缘兜底（后端 DTO 注释明写可为 null）。 */
+.wb-run-card[data-noimg='true'] .wb-run-body,
+.wb-queue-card[data-noimg='true'] .wb-queue-body { margin-left: 0; }
+.wb-run-card[data-noimg='true'] .wb-run-fade,
+.wb-queue-card[data-noimg='true'] .wb-queue-fade { background: var(--color-card); }
+
+.wb-card-title {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+/* 副标题合并成「2018 · 动画 · 13 集待处理」一行说完（R-F13 决定 3）。 */
+.wb-card-sub {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-weak);
+}
+/* 进度读数走 mono——同顶栏新鲜度行与媒体库卡片那套"技术性读数"的排印语言。 */
+.wb-card-progress {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-weak);
+}
+.wb-section-head {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-weak);
+  margin-bottom: 8px;
+}
+.wb-list { display: flex; flex-direction: column; gap: 8px; }

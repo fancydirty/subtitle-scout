@@ -21,6 +21,7 @@ import {
 // R-F2 / R-F5：媒体库页数据层（新架构 files/works/tmdb_seasons）。刻意与 apiV2.js 分开
 // import —— 两套 builder 读的是完全不同的表，混在一行会让"哪个长在旧表上"不可见。
 import { buildMediaLibrary, buildMediaLibraryDetail } from './mediaLibraryApi.js'
+import { buildActivity } from './activityApi.js'
 // R-F3：通知页列表的读函数。**复用**，不在 dashboard 层重写查询——一周窗与倒序都长在
 // 那边（读窗常量还与 dbMaintenance 的 pruneFound 共用），另写一份必然静默漂移。
 import { listRecentFoundGrouped } from '../v2/notificationsRepo.js'
@@ -469,6 +470,16 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     // 新端点不继承它（海报墙是全量列表，逐个作品踢 TMDB 会在一次页面加载里打爆配额）。
     mediaLibrary: () => buildMediaLibrary(db),
     mediaLibraryDetail: (workId) => buildMediaLibraryDetail(db, workId),
+    // R-F13：活动页排队段。**纯同步只读**（同上两条的口径）。
+    //
+    // roots 传的是 `settingsRepo.listRoots()` 的全部路径，而 daemon 侧传的是
+    // `writableRoots()`（额外滤掉不可写的根）。这个差异是**有意的、且方向是安全的**：
+    // dashboard 进程算不出 daemon 的可写性判定（那是一次真实的写探针，见 isDirWritable——
+    // 在读路径上对每个根写一个探针文件是不可接受的副作用）。不滤 = 可能**多列**几个
+    // 作品（那些落在只读根里、daemon 本轮其实不会碰的），**绝不会少列**。
+    // 多列的代价是用户看到一项"排着但今天没动"，少列的代价是队列凭空短一截而无从察觉——
+    // 取前者。这条不对称写在这里，是因为它是本端点与 daemon 之间唯一的口径差。
+    activity: () => buildActivity(db, { roots: settingsRepo.listRoots().map((r) => r.path) }),
   }
 
   // v3 phase ⑦ review fix: reconcile-all runs a full mechanical scan + orchestrator LLM pass —

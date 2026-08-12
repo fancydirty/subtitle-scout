@@ -5,6 +5,7 @@ import type {
   DormantTaskDTO, MovieDetailDTO,
 } from './apiV2.js'
 import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
+import type { ActivityDTO } from './activityApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
 import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
@@ -63,6 +64,10 @@ export interface RouterDeps {
   /** R-F2/R-F5：GET /api/v2/mediaLibrary/:workId——季集网格详情。id 空间是 works.id
    *  （'tmdb:<n>'），与 librarySeriesDetail 那条同形，故复用同一套 isSafeId/decodeIdSegment。 */
   mediaLibraryDetail: (workId: string) => MediaLibraryDetailDTO | null
+  /** R-F13：GET /api/v2/activity——活动页排队段的作品身份与两张图（横版 backdrop + 竖版
+   *  poster）。**不产出 total/index/当前在跑的是谁**——那三样只信 SSE 与 /health 的 current
+   *  （冻结快照）。完整论证见 activityApi.ts 头注释。 */
+  activity: () => ActivityDTO
 }
 export interface ApiResult { status: number; json: unknown }
 
@@ -192,6 +197,13 @@ export function handleApiRoute(
     const detail = deps.mediaLibraryDetail(id)
     return detail ? { status: 200, json: detail } : { status: 404, json: { error: 'not found' } }
   }
+
+  // ---- R-F13：活动页排队段的身份与图（Task ⑨）----
+  // 只读、无参数。**刻意不与 /api/v2/health 合并**：health 是"当前态快照"（含 current），
+  // 本端点是"还有谁在等"，两者的刷新时机完全不同（health 在重连时拉一次，本端点随
+  // activity 事件拉）。且 health 有一条明令「不返回 queue」的裁决（见 activityApi.ts 头注释
+  // 对 :578 的完整论证）——把队列塞回 health 会正面违反它。
+  if (pathname === '/api/v2/activity') return { status: 200, json: deps.activity() }
 
   // ---- setup（spec A：bootstrap wizard 与 Providers 区）----
   if (pathname === '/api/v2/setup/status') return { status: 200, json: deps.setupStatus() }

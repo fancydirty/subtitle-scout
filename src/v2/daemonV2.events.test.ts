@@ -227,8 +227,63 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     db.close()
   })
 
-  it('🔴 emit 抛错必须被隔离：巡检照常跑完（SSE 挂了绝不能影响巡检）', async () => {
+  it('🔴 R-F13 取图前提：字幕台的 activity/progress 必须带 data.workId（前端据它查横版图）', async () => {
+    // ── 这条用例存在的理由（Task ⑨）──────────────────────────────────────────
+    // R-F13 的「在跑」卡片要一张横版 backdrop。图片路径**不进事件通道**（静态资料随每条
+    // 事件重复推是浪费），前端拿 workId 去 GET /api/v2/activity 那份作品身份表里查。
+    //
+    // 备选是让前端拿 `title` 字符串去匹配——否掉的理由是它**静默错位**：同名作品（不同
+    // 年份的翻拍）与中文译名切换都会让匹配落到另一部剧上，表现为"卡片配了别人的图"，
+    // 而这在测试里几乎照不出来。故判据必须是 id。
+    //
+    // 这个字段是本仓典型的"加了没人读会静默失效"形态：漏填不报错、tsc 不管
+    // （data 是 Record<string, unknown>），前端只会退化成无图降级——而无图降级路径本来
+    // 就存在且合法。故在发布方这一侧钉死。
     const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    const { emit, got } = mkEmit()
+    await runOneInspection(new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'], listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+    })))
+
+    const subAct = got.filter((e) => e.type === 'activity' && e.workbench === 'subtitle')
+    expect(subAct.length).toBeGreaterThan(0)
+    // seedSubtitleWork 种的作品 id 就是 'tmdb:42'——**不在这里复述一个字面量常量**的
+    // 反面：这个值是 seed helper 的一部分，两处写死同一个串正是本仓 D7 的形态。
+    // 但它同时是本条断言的全部内容（"带对了 id"），故取库里的真值来比对。
+    const workId = (db.prepare('SELECT work_id FROM files WHERE path = ?')
+      .get('/media/Show/E01.mkv') as { work_id: string }).work_id
+    expect(subAct.every((e) => e.data?.workId === workId)).toBe(true)
+
+    const subProg = got.filter((e) => e.type === 'progress' && e.workbench === 'subtitle')
+    expect(subProg.length).toBeGreaterThan(0)
+    expect(subProg.every((e) => e.data?.workId === workId)).toBe(true)
+    // progress 的 done/total 是 ScoutEventBus.updateCurrent 读的两个键——加 workId
+    // 不许把它们挤掉（那会让 /health 的 current.index/total 双双变 null）。
+    expect(subProg.every((e) => typeof e.data?.done === 'number' && typeof e.data?.total === 'number')).toBe(true)
+    db.close()
+  })
+
+  it('🔴 识别的事件**不带 workId**（此刻还没有作品身份——编一个就是撒谎）', async () => {
+    // 识别台处理的是**目录**（item.workDir），作品身份正是它要产出的东西。
+    // 给它塞一个 workId 只能塞 null/空串，而前端的判据是"有没有这个键"——
+    // 塞一个空值会让前端拿空 id 去查图表，查不到再降级，白走一趟且掩盖了语义。
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, updated_at)
+                VALUES ('/media/New/x.mkv','/media/New','x.mkv',?,1000,'/media/New',NULL,1,1000)`).run(BIG)
+    const { emit, got } = mkEmit()
+    await runOneInspection(new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'], listVideoFiles: () => ['/media/New/x.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+    })))
+    const ident = got.filter((e) => e.workbench === 'identify')
+    expect(ident.length).toBeGreaterThan(0)
+    expect(ident.every((e) => e.data?.workId === undefined)).toBe(true)
+    db.close()
+  })
+
+  it('🔴 emit 抛错必须被隔离：巡检照常跑完（SSE 挂了绝不能影响巡检）', async () => {    const db = openDb(':memory:')
     seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
     const logs: string[] = []
     const daemon = new ScoutDaemonV2(mkDeps(db, {
