@@ -18,90 +18,65 @@
 
 ---
 
-## 二、进度：后端全完成，前端设计已过四轮审计，待实施
+## 二、进度：**第 8 步（前端全删重做）已完成** ✅
 
 ```
-第 1a-5.5 步  ✅ 后端重构（识别/字幕/翻译三条流水线 + 日巡检模型）
-第 7 步       ✅ 清理死代码（净删 ~3600 行）
-第 6 步       ✅ live test（115 全库 + NAS，抓到并修了 8 个真实缺陷）
-第 8 步       🔄 前端全删重做 ← **当前在这里**
-              ├─ ✅ 用户裁决收齐（R-F1~R-F15）
-              ├─ ✅ 四件后端前置全部完成并生产验证
-              ├─ ✅ 实施设计文档 v5（四轮对抗性审计，17 条 🔴 全吸收）
-              └─ ⬜ **下一步：写实施计划 → subagent 逐 task 实现 → 每 task 后对抗审计**
+第 1a-5.5 步  ✅ 后端重构     第 7 步 ✅ 清理死代码     第 6 步 ✅ live test
+第 8 步       ✅ **前端全删重做（12 个 task，2026-08-12 完成）**
+              ├─ 后端六步 ⓪①②③④⑤⑥（workbench / notifications / EpisodeState 八态 /
+              │            media_roots 健康列 / current 快照 / health 端点 / backdrop）
+              ├─ 前端四步 ⑦ shell+SSE / ⑧ 媒体库页 / ⑨ 活动页 / ⑩ 通知页
+              └─ 收尾 ⑪ _legacy + docker build / ⑫ 终局审计与跨 task 收口
 ```
 
-### 测试基线（每次验收必须对照，2026-08-11 实测）
+### 最终基线（每次改动都要对照）
 
 ```
-后端  npx vitest run --exclude '**/web/**'
-      142 文件 / 3217 用例 / 失败恰好 7 条（接手前的既有债务）
-        deployContract×3  buildAdapters×2  secrets×1  settingsRepo×1
-前端  cd web && npx vitest run
-      78 文件 / 863 用例 / 0 失败（干净）
+后端  npx vitest run --exclude '**/web/**'   → 144 文件 / 3369 用例 / 失败恰好 7 条
+        既有债务：deployContract×3 buildAdapters×2 secrets×1 settingsRepo×1
+前端  cd web && npx vitest run               → 109 文件 / 1329 用例 / 0 失败（起点 78/863）
 类型  npm run check  且  cd web && npx tsc --noEmit   两条都要退出码 0
+构建  docker build                            → 退出码 0（CI 账单耗尽，只能本机或软路由）
 ```
 
 ⚠️ **三条验收陷阱**（都实测踩过）：
-1. **vitest 不查类型**（esbuild transpile 直接忽略）→ 类型错误能全绿交差，必须单独跑 `npm run check`
-2. **vitest 会静默丢整个测试文件** → 实测出现过 141 vs 142 文件、总数少 220，
-   而 `numFailedTests` 照样是 7。**验收必须同时断言文件数**
-3. **默认 reporter 偶尔虚报**（`numFailedTestSuites=9` 是 describe 计数不是文件数）→ 用 `--reporter=json`
+1. **vitest 不查类型** → 类型错误能全绿交差，必须单独跑 tsc（**两个工程各一次**）
+2. **vitest 会静默丢整个测试文件** → 必须同时断言文件数
+3. **默认 reporter 虚报** → 用 `--reporter=json`
+
+（dashboard 测试的 flake 已根治，见 `218cb7b`：真因是绑 `::` 却拨 `127.0.0.1`。）
 
 ---
 
-## 二·五、compact 后从这里开始
+## 二·五、下一步
 
-**用户已明确下一步**：
-> 「直接开始写计划，然后 subagent driven 实现，每个 task 实现后都起子代理对抗审计。」
+### 🔴 生产部署（唯一的必做项）
 
-### 要读的三份文档（按顺序）
-
-| 文档 | 作用 |
-|---|---|
-| `docs/design/2026-08-11-FRONTEND-IMPL-DESIGN.md`（934 行）| **施工图**。§5 有 12 步 + 依赖图 + 每步文件清单；§6 有验收 |
-| `docs/design/2026-08-11-FRONTEND-SPEC.md`（530 行）| 用户裁决 R-F1~R-F15 的原文与理由 |
-| `DESIGN.md`（项目根，548 行）| Linear 视觉基准（四层 surface 阶梯 + 三层 hairline，拒绝投影）|
-
-### 实施顺序（IMPL-DESIGN §5，已有依赖图）
+**生产 schema 落后 3 级**（实测 v34，代码要求 v37）：v41 `media_roots` 健康列、
+v42 `works.backdrop_path`、v43 `backdrop_checked_at`。升级通路已验证健康（v34 库 → openDb → 全列到位）。
 
 ```
-后端六步（可并行：⓪①②③④⑥）
-⓪ ScoutEventInput 加**可选** workbench 字段 + progress 节流改 per-workbench
-① 补 GET /api/v2/notifications
-② mediaLibraryApi 补 EpisodeState 八态（优先级链在后端）
-③ media_roots 加 last_error/last_checked_at（单点收敛，try/finally）
-④ current 数据源（落库 meta 或 holder 注入，二选一未定）
-⑤ 补 GET /api/v2/health（← 依赖 ③④）
-⑥ works.backdrop_path + 回填 + identifyScheduler 写入点
-
-前端四步
-⑦ shell 改造（← 依赖 ⑤）：6 个文件，清单在 §5
-⑧ 媒体库页（← ②+⑦）  ⑨ 活动页（← ⑥+⑦+⓪）  ⑩ 通知页（← ①+⑦）
-⑪ 旧页面移入 _legacy + docker build 验证
+git push                                  # 本地 12 个 task 尚未推送
+ssh media-router-wan                      # 公司；家里 media-router
+cd /mnt/nvme0n1-4/docker/subtitle-scout && git fetch && git reset --hard origin/main \
+  && docker build -t subtitle-scout . && docker compose up -d
 ```
+⚠️ **CI 账单已耗尽**，不能靠 GitHub Actions。
+⚠️ 部署后要看的三件事：① `works.backdrop_path` 回填有没有跑（110 个作品）
+② 三个新页面在真数据下长什么样 ③ `media_roots` 两列有没有被写。
 
-### ⚠️ 四轮审计留下的、动手前会撞的坑
+### 🟡 一并单独裁决的一组端点（都是病 A 的候选）
 
-| 坑 | 说明 |
-|---|---|
-| **`workflow` tab 渲染的是 `ActivityPage`** | `AppShell.tsx:94`。且 `activity/` 四处 import `workflow/`——判「删」会立刻编译失败 |
-| **`workbench` 必须可选** | 13 个 emit 点里 6 个填不了（巡检级 + 扫描级） |
-| **新列只能进条件式 ALTER** | 不能改 `db.ts` 顶部 CREATE TABLE 终态定义。同时要改 `db.test.ts` 的 **16 处**版本号字面量 |
-| **SSE 需跑完整 `watch`** | `events` 只在 `cmdWatch` 注入，不跑则 `/api/v2/events` 恒 503。**没有轻量模式** |
-| **Context 必须拆四层** | 单 Context 会让 progress 每秒触发全树重渲染 |
-| ~~生产 daemon 从未跑完一轮完整巡检~~ | ✅ **已定性、断言被推翻**（2026-08-11）：巡检完成 ×1 / 失败 ×0，13:49:34Z 跑完。⑪ 的 trigger 可达 |
+- `_legacy/verify` 的 **6 个后端端点**（本轮刻意没动，删 UI 留端点 = 招牌缺陷形态）
+- `/api/v2/library*`（`useLibrary` 等现在只被 `_legacy/` 调用）
 
-### 环境（公司/家里不同）
+### 🟡 债务清单
 
-```
-家里  ssh media-router          （直连 192.168.100.1）
-公司  ssh media-router-wan      （cf tunnel，ProxyCommand 会自己拉起）
-      ⚠️ 直连不通 = 用户在公司，切 wan。别误判成"路由器挂了"（我犯过）
-部署  git push → 路由器 git reset --hard + docker build（**CI 账单已耗尽，不能靠 GitHub Actions**）
-      cd /mnt/nvme0n1-4/docker/subtitle-scout && docker build ... && docker compose up -d
-apiKey  52720d9a83fb9a74eed14c50ed58e1e2   （dashboard API 用 x-api-key 头）
-```
+见 `docs/design/2026-08-11-FRONTEND-IMPL-PLAN.md` §三·五（滚动维护）。其中较要紧的：
+- `SettingsTabsPage.tsx:42` 对部分 DTO 缺失会**崩整页白屏**
+- 老库（schema v6）起 watch 会崩，友好提示的正则匹配不到 column count mismatch
+- `lastInspectAt` 落的是巡检**开始**时刻（前端已靠文案"开始于"扛着，后端未修）
+- 翻译台没有 progress emit 点 → `current.kind==='translate'` 时进度恒 null
 
 ---
 
