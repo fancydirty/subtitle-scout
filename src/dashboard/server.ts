@@ -27,6 +27,7 @@ import { listRecentFoundGrouped } from '../v2/notificationsRepo.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from '../core/traceBus.js'
 import type { ScoutEventBus, ScoutCurrent } from '../core/scoutEvents.js'
+import { eventFrame, helloFrame, parseResumeToken, resolveReplayFrom } from '../core/sseWire.js'
 // Task ⑤：GET /api/v2/health 的 `roots[].ok` 陈旧门以巡检周期为单位（见
 // ROOT_HEALTH_STALE_AFTER_MS 的论证——不在这里写死 48h）。**只引常量、不引 daemon 类**：
 // daemonV2 的模块图（48 个模块，已核）不含 dashboard/*，故无环。
@@ -983,17 +984,61 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           if (res.destroyed || res.writableEnded) return
           try { res.write(chunk) } catch { /* 在途 EPIPE：见上方两道防线的论证 */ }
         }
-        const frame = (e: { id: number; type: string }): string =>
-          // `id:` 必须发——浏览器 EventSource 靠它维护 Last-Event-ID，断线重连时自动带回来。
-          `id: ${e.id}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`
+        const bootId = events.bootId()
+        // 帧格式与断点解析都在 src/core/sseWire.ts（**纯函数、零依赖**），不是这里的闭包。
+        // 那不是为了好看：它是前端 web/ 的端到端用例唯一能直接 import 的东西，
+        // 于是"后端怎么发"与"前端怎么收"能在同一条用例里用**同一份真实实现**对上。
+        // 见 sseWire.ts 头注释「为什么单独一个文件」。
+        const frame = (e: { id: number; type: string }): string => eventFrame(bootId, e)
+
+        // ── boot epoch 的第②个落点：连接建立时的一次性 hello 帧 ─────────────────
+        // 缺陷：ScoutEventBus.nextId 是进程内变量，daemon 重启（软路由掉电是本项目常态）
+        // 后从 1 重数。前端的 lastSeenId 只单调上升，去重门 `id <= lastSeenId` 于是把
+        // **重启后的全部新事件**当旧的丢掉——页面不报错、连接是通的、状态显示"已连接"，
+        // 但永远不再更新。用户完全无法察觉。
+        //
+        // hello 让前端知道"对面换进程了，你攒的那个 id 作废"。**每条连接一次**，不是每条
+        // 事件一次——bootId 在一条连接的生命周期里恒定，塞进每条事件只会给每秒一条的
+        // progress 热路径加一份纯冗余载荷（第 N 次重复不多给一个比特的信息）。
+        //
+        // ⚠️ 必须在 replay 之前发：replay 补发的那些事件带的就是本 bootId 的号，前端得先
+        // 知道 epoch 变了、把 lastSeenId 清零，否则那批补发照样被旧断点的去重门吃掉。
+        write(helloFrame(bootId))
 
         // 断线续传：浏览器 EventSource 重连时自动带 `Last-Event-ID` 头（手机锁屏再打开必然
         // 走这条路）。不补发的话活动页在重连后会短暂空白，且断线期间"找到了字幕"这类
         // 通知页数据源会**永久丢失**（前端没有别的地方能补到它）。
         // 非法/缺席的头按 0 处理（= 补发缓冲里全部，最多 50 条，不会失控）。
-        const lastIdRaw = req.headers['last-event-id']
-        const lastId = Number(Array.isArray(lastIdRaw) ? lastIdRaw[0] : lastIdRaw)
-        for (const e of events.replay(Number.isFinite(lastId) && lastId > 0 ? lastId : 0)) {
+        //
+        // ⚠️ **两条通路，缺一不可**（Task ⑦ 实施者发现并如实报告的缺口）：
+        //   ① 请求头 `Last-Event-ID` —— 浏览器**原生**重连时自动带，前端碰不到也改不了。
+        //   ② query `?lastEventId=` —— **手工重连**用。`EventSource` 构造器不能带自定义头，
+        //      所以前端在致命错误后自己 new 一个新连接时，①那条头**不存在**；
+        //      没有②的话那次重连等同 `replay(0)`，50 槽缓冲对这条路径完全失效。
+        // 前端的重连策略（不插手 CONNECTING、只在 CLOSED 后手工重建）决定了②是常用路径而非兜底。
+        // 头优先于 query：浏览器自己带的那个是权威，前端不该也无法覆盖它。
+        // （`?apikey=` 已是本端点既有的 query 先例——EventSource 不能带鉴权头，同一个成因。）
+        //
+        // ── boot epoch 的第①个落点：断点自带它属于哪次启动 ─────────────────────
+        // `id:` 行写成 `<bootId>:<seq>`（W3C 说 last event ID 是**不透明字符串**，不要求
+        // 是数字），浏览器原生重连会把它原样放进 `Last-Event-ID` 头。于是重启后的新进程
+        // 一看 epoch 对不上，就知道这个断点属于**上一个进程的号段**，必须从缓冲头补发，
+        // 而不是拿 42 去 replay(>42) 把自己刚发的 1..42 全部跳过。
+        // **这一半光靠改前端修不掉**：那个头前端碰不到（W3C 不暴露）。
+        // 判定逻辑在 sseWire.resolveReplayFrom（含"裸数字断点为什么按它说的办"的论证）。
+        // ⚠️ 回落判据是「头**有实际内容**」，不是「头存在」——`??` 在这里是错的。
+        // 浏览器在还没见过任何 `id:` 行时（首连之后立刻断的那一档）会带一个**空串**
+        // `Last-Event-ID`，而空串是 falsy 但**不是** nullish：`?? ` 会把它当有效值收下，
+        // query 那条通路被空串顶掉 → 手工重建时明明报了断点却按 replay(0) 处理。
+        // 症状是"重连后重灌一遍全部缓冲"（前端有去重门，所以只是浪费带宽、不出错）——
+        // 又一个静默的半失效，故这里显式判空而不是靠 `??`。
+        const headerRaw = req.headers['last-event-id']
+        const headerVal = Array.isArray(headerRaw) ? headerRaw[0] : headerRaw
+        const lastIdStr = (headerVal != null && headerVal !== '')
+          ? headerVal
+          : (new URL(req.url ?? '/', 'http://x').searchParams.get('lastEventId') ?? undefined)
+        const replayFrom = resolveReplayFrom(parseResumeToken(lastIdStr), bootId)
+        for (const e of events.replay(replayFrom)) {
           write(frame(e))
         }
 

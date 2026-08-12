@@ -26,6 +26,8 @@
 // 回调抛错必须吞），但**不复用它**：traceBus 的载荷是 agent 工具调用（runKey/tool/args），
 // 语义、粒度、消费者全都不同，塞在一起会让"该不该推给用户"这条判据无处安放。
 
+import { makeBootId } from './sseWire.js'
+
 /** R-F10 的四类事件。类型集合是**封闭**的——新增一类必须回到 FRONTEND-SPEC §六·六 走
  *  同一条判据（"站在用户视角问：我需要知道吗"），而不是就地加个字符串。 */
 export type ScoutEventType =
@@ -124,6 +126,9 @@ export interface ScoutEventBusOpts {
   /** 测试注入时钟。**必须可注入**：节流测试真睡 1 秒会把用例时长押在 wall clock 上
    *  （同 DaemonV2Deps.sleep 的既有论证——真等还会诱使后来人调小窗口来"救测试"）。 */
   now?: () => number
+  /** 本次进程启动的 epoch（见 bootId 字段的注释）。**测试注入**：要造出"后端重启了"
+   *  这个前提，唯一的办法就是 new 第二条总线并给它一个不同的 bootId。缺席 → makeBootId()。 */
+  bootId?: string
 }
 
 /**
@@ -135,6 +140,28 @@ export class ScoutEventBus {
   private readonly nowFn: () => number
   private readonly subscribers = new Set<(e: ScoutEvent) => void>()
   private readonly buffer: ScoutEvent[] = []
+  /**
+   * **本次进程启动的 epoch**。`nextId` 的号段只在这个 epoch 内有意义。
+   *
+   * ── 它为什么必须存在（修的是"跨后端重启静默失聪"）─────────────────────────
+   * 下面那个 `nextId` 是**进程内变量**，daemon/容器重启后从 1 重数（软路由掉电是本项目
+   * 的常态）。而 SSE 的续传是拿 id 当游标的：
+   *  · 服务端侧：重启后的新进程收到浏览器原生重连带来的 `Last-Event-ID: 42`，会
+   *    `replay(>42)`，把自己刚发的 1..42 **全部跳过**；
+   *  · 客户端侧：前端的 `lastSeenId` 只单调上升，去重门 `id <= lastSeenId` 会把重启后的
+   *    全部新事件当旧的丢掉。
+   * 两侧都失聪，而且**页面不报错、连接是通的、状态显示"已连接"**——用户只会觉得
+   * "这破软件又不干活了"。这是最坏的那种失败：不可察觉。
+   *
+   * epoch 让双方能问出"我们说的是不是同一段历史"。它随 SSE 送到客户端的两个落点、
+   * 以及"为什么不把 nextId 落 meta 表"，见 src/core/sseWire.ts 的头注释。
+   *
+   * ── 为什么挂在总线上而不是 server.ts 的模块级常量 ──
+   * 号段是总线发的，epoch 就该跟号段同源。放 server.ts 会变成两个可以各自漂移的东西
+   * （本仓 D7/C30「留两份实现必漂移」的既有形态），而且测试里造"两次启动"就得去改
+   * 模块级状态，而总线本身刻意不是单例（见本类头注释）正是为了让每条用例有自己的实例。
+   */
+  private readonly bootIdValue: string
   private nextId = 1
   /**
    * 上一条**放行**的 progress 的时刻（不是上一次尝试的时刻——否则连续尝试会把窗口
@@ -167,6 +194,13 @@ export class ScoutEventBus {
 
   constructor(opts: ScoutEventBusOpts = {}) {
     this.nowFn = opts.now ?? (() => Date.now())
+    this.bootIdValue = opts.bootId ?? makeBootId()
+  }
+
+  /** 本次进程启动的 epoch（见 bootIdValue 的注释）。SSE 端点把它写进每条 `id:` 行、
+   *  并在连接建立时用一条 hello 帧告诉客户端。 */
+  bootId(): string {
+    return this.bootIdValue
   }
 
   /**
