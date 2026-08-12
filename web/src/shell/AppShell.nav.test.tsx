@@ -46,6 +46,10 @@ function mockFetch() {
         ? { work: { workId: 'tmdb:1', title: 'W', chineseTitle: null, year: null,
                     posterPath: null, mediaType: 'tv' },
             seasons: [], movie: null, unplacedFileCount: 0 }
+      // Task ⑩：通知端点。同上，**必须给数组**——落到下面的 `{}` 兜底会让
+      // NotificationsPage 拿 `{}` 当 FoundGroup[] 用，主区被炸空，本文件真正要测的
+      // "分支在不在"就被淹没了。空数组 = 空流水态，正是这里要的最小形状。
+      : /\/api\/v2\/notifications$/.test(url.split('?')[0] ?? '') ? []
       : url.includes('/workflow/pending')
         ? { meta: { roots: [], lastScanAt: null, files: 0, lastVerifySweepAt: null,
                     verifiedItems: 0, verifiableItems: 0 }, parked: 0 }
@@ -101,58 +105,14 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
     expect(new Set(texts).size).toBe(TABS.length)
   })
 
-  // ── Task ⑧：媒体库页已填肉，占位页只剩两个 ────────────────────────────────
-  // 下面三条从"三个占位页"改成"两个"，并**补一条媒体库页的反向断言**（它绝不许再显示
-  // 施工中标记）。只把 'media' 从列表里删掉是不够的：那样一来，有人把 MediaLibraryPage
-  // 换回占位壳时全绿——正是 Task ⓪「删光生产写入点测试无一变红」的同型。
-  it('两个占位页各自渲染出自己的页面名（导航标签的同一份文案）', async () => {
-    for (const [tab, label] of [
-      ['activity', en.nav_activity],
-      ['notifications', en.nav_notifications],
-    ] as const) {
-      location.hash = `#/${tab}`
-      renderShell()
-      const main = await screen.findByRole('main')
-      await waitFor(() => {
-        expect(within(main).getByRole('heading', { name: label })).toBeInTheDocument()
-      })
-      cleanup()
-    }
-  })
-
-  it('两个占位页各自渲染出"施工中"标记与自己的数据源说明（不是同一个壳复制三遍）', async () => {
-    const seen: string[] = []
-    for (const [tab, source] of [
-      ['activity', 'Task ⑨'],
-      ['notifications', 'Task ⑩'],
-    ] as const) {
-      location.hash = `#/${tab}`
-      renderShell()
-      const main = await screen.findByRole('main')
-      await waitFor(() => {
-        expect(within(main).getByText(en.placeholder_under_construction)).toBeInTheDocument()
-      })
-      // 每页的施工说明必须提到**自己那个** task 与数据源——两页共用一句就是假占位。
-      const note = within(main).getByText(new RegExp(source))
-      expect(note).toBeInTheDocument()
-      seen.push(note.textContent ?? '')
-      cleanup()
-    }
-    expect(new Set(seen).size).toBe(2)
-  })
-
-  it('占位页**不渲染任何假数据**——没有列表项、没有骨架屏、没有数字读数', async () => {
-    for (const tab of ['activity', 'notifications'] as const) {
-      location.hash = `#/${tab}`
-      renderShell()
-      const main = await screen.findByRole('main')
-      // 假 UI 的三个典型形态：列表项 / 表格 / 骨架块
-      expect(within(main).queryAllByRole('listitem')).toHaveLength(0)
-      expect(within(main).queryAllByRole('table')).toHaveLength(0)
-      expect(main.querySelectorAll('[class*="skeleton"], [class*="Skeleton"]')).toHaveLength(0)
-      cleanup()
-    }
-  })
+  // ── Task ⑧⑨⑩：三个页面**全部填肉，占位页一个不剩** ────────────────────────
+  // 原先这里有三条"占位页应该长什么样"的用例（页面名 / 施工中标记 / 不许有假数据），
+  // 随最后一个占位页（活动）被真页面取代而删除——留着就是断言一个已经不存在的形态。
+  //
+  // 🔴 但**不能只删**：只删的话，有人把真页面换回占位壳时全套件依然全绿
+  // （正是 Task ⓪「删光 7 个生产写入点、4 条测试无一变红」的同型）。
+  // 故三条删除的同时，下面三条"真页面 + 反向断言"必须齐备——每页一条，各自
+  // ① 断言该页真身的标志物在场 ② 断言施工中标记**绝不**在场。
 
   it('#/media 渲染真页面（Task ⑧ 已填肉）——绝不再是占位壳', async () => {
     location.hash = '#/media'
@@ -163,6 +123,31 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
       expect(within(main).getByText(en.media_empty_title)).toBeInTheDocument()
     })
     // 施工中标记绝不许出现——有人把它换回占位壳时这条红。
+    expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
+  })
+
+  // 🔴 Task ⑨ 的同型反向断言。变异实测（把分支退回 ActivityPlaceholder）→ 本条红。
+  it('#/activity 渲染真页面（Task ⑨ 已填肉）——绝不再是占位壳', async () => {
+    location.hash = '#/activity'
+    renderShell()
+    const main = await screen.findByRole('main')
+    // 真页面的两个标志物：两个 tab 的 tablist（R-F1：**只有两个**）+ 顶部状态条。
+    await waitFor(() => {
+      expect(within(main).getByRole('tablist', { name: en.wb_tablist_label })).toBeInTheDocument()
+    })
+    expect(within(main).getAllByRole('tab')).toHaveLength(2)
+    expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
+  })
+
+  // 🔴 Task ⑩ 的同型反向断言。变异实测（把分支退回占位组件）→ 本条红。
+  it('#/notifications 渲染真页面（Task ⑩ 已填肉）——绝不再是占位壳', async () => {
+    location.hash = '#/notifications'
+    renderShell()
+    const main = await screen.findByRole('main')
+    // 空流水态（mock 给的是 []）的真文案在场 = 真页面渲染了。
+    await waitFor(() => {
+      expect(within(main).getByText(en.notif_empty_title)).toBeInTheDocument()
+    })
     expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
   })
 })

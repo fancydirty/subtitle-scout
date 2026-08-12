@@ -43,11 +43,25 @@ function cssDeclRe(selectorRe: string, prop: string): string | null {
  *  ⚠️ 顺序是「先剥全文注释，再从代码里切段」，不能反过来：本段的头注释里就写着
  *  "拒绝投影——没有任何 box-shadow 声明"，而从段中间 slice 会切出一个**没有 `/*` 开头
  *  的半截注释**，剥注释的正则匹配不到它，扫描 box-shadow 就命中了自己的注释文字（踩过）。
- *  切点用 `.media-grid {` —— 那是本段第一条真规则。 */
+ *  切点用 `.media-grid {` —— 那是本段第一条真规则。
+ *
+ *  ⚠️⚠️ **必须有下界**（2026-08-12 / Task ⑩ 实测踩到）：原本是 `slice(i)` 一路切到
+ *  文件尾。styles.css 是**追加式**的——媒体库段后面每加一段新页面样式，都会被这个
+ *  切片**静默吞进"媒体库段"**。Task ⑩ 在文件尾加了通知页样式（里面有一个合法的
+ *  `border-radius: 50%` 小圆点），于是"媒体库格阵不画圆点"那条 R-F12 守卫**报了假红**：
+ *  它抓到的圆点根本不在媒体库段里。
+ *  假红比假绿容易发现，但成因同一个：**切片没有下界 = 守卫的作用域会随文件增长而漂移**。
+ *  下界取"下一个页面段的段首标记"。找不到下一段（媒体库是最后一段）时才切到尾。 */
 const MEDIA_CSS = (() => {
   const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
   const i = bare.indexOf('.media-grid {')
-  return i < 0 ? '' : bare.slice(i)
+  if (i < 0) return ''
+  // 下一个页面段的段首。新增页面段时把它的第一条选择器加进这个数组
+  // （漏加的症状就是本段守卫开始扫描那一段——多半表现为假红，见上）。
+  const NEXT_SECTION_MARKERS = ['.notif-day {']
+  const rest = bare.slice(i)
+  const ends = NEXT_SECTION_MARKERS.map((m) => rest.indexOf(m)).filter((n) => n >= 0)
+  return ends.length > 0 ? rest.slice(0, Math.min(...ends)) : rest
 })()
 
 afterEach(cleanup)
