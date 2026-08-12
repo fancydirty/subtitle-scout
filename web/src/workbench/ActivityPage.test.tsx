@@ -628,3 +628,235 @@ describe('数据获取：刷新触发点与异常态', () => {
     }
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴-1 首连 ≠ 重连：`connecting → open` 一次请求都不许多打
+// ═══════════════════════════════════════════════════════════════════════════
+// 审计探针：`/activity 1 -> 2 | /health 1 -> 2`——每次挂载多打一次。
+// 成因：eventsBus 的初始状态就是 `'connecting'`（eventsBus.ts:99），而活动页两处的
+// 边沿判据都是 `was !== 'open' && status === 'open'`，于是首连的 connecting→open
+// 被当成了"重连"。
+//
+// ⚠️ 这一段存在的理由是**既有那条用例锁不住**：
+// 「首载就拉一次快照」用 `toBe(1)`，但它在 `open()` **之前**就断言完了——
+// 多打的那一次发生在 open() 之后，它看不见。下面每条都**跨过 open()** 再数。
+describe('🔴-1 首连不是重连（审计：每次挂载多打一次 /health 与 /activity）', () => {
+  it('🔴 首连 open 之后，/health 与 /activity **各仍然只有 1 次**', async () => {
+    renderPage()
+    await ready()
+    // 首载两个请求都已落地
+    expect(countOf('/api/v2/health')).toBe(1)
+    expect(countOf('/api/v2/activity')).toBe(1)
+
+    // 🔴 首连成功——这一步是既有用例**没有走到**的那一步。
+    act(() => { bus().open() })
+
+    // 给"如果有多余请求它也该发出来了"留足时间：等到状态确实是 open 之后再数。
+    // （只 await 一个 microtask 的话，一个慢一拍的 effect 会让这条假绿。）
+    await waitFor(() => expect(bus().readyState).toBe(1))
+    await act(async () => { await Promise.resolve() })
+
+    expect(countOf('/api/v2/health'),
+      '首连的 connecting→open 被当成重连 → 在首载 fetch 之外多打了一次 /health').toBe(1)
+    expect(countOf('/api/v2/activity'),
+      '首连的 connecting→open 被当成重连 → 多打了一次 /activity').toBe(1)
+  })
+
+  it('🔴 卸载重挂（refCount 归零后重新订阅）同样不多打——新一轮的首连还是首连', async () => {
+    const first = renderPage()
+    await ready()
+    act(() => { bus().open() })
+    first.unmount()
+
+    urls = []
+    renderPage()
+    await ready()
+    const n = FakeES.instances.length
+    act(() => { FakeES.instances[n - 1]!.open() })
+    await act(async () => { await Promise.resolve() })
+
+    expect(countOf('/api/v2/health'), '重挂后的首连又被当成了重连').toBe(1)
+    expect(countOf('/api/v2/activity')).toBe(1)
+  })
+
+  // ⭐ 阳性对照：**真的**掉过线再回来时，那一次拉取必须照常发生。
+  // 没有这一条的话，一个"永远不拉"的实现会让上面两条全绿——而那会退回到
+  // 「永远停在正在处理 X」那个更严重的缺陷。
+  it('⭐ 阳性对照：retrying → open（真重连）**照常各拉一次**', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    await act(async () => { await Promise.resolve() })
+    const h = countOf('/api/v2/health')
+    const a = countOf('/api/v2/activity')
+
+    act(() => { bus().fail(2) })
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(1))
+    act(() => { FakeES.instances[FakeES.instances.length - 1]!.open() })
+
+    await waitFor(() => {
+      expect(countOf('/api/v2/health'), '真重连时没拉快照 → 断线期间的变化永远纠正不回来')
+        .toBe(h + 1)
+    })
+    expect(countOf('/api/v2/activity')).toBe(a + 1)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🟡-2 通道掉线 → 「你看到的读数可能已经过期」必须**说出来**
+// ═══════════════════════════════════════════════════════════════════════════
+// 审计实测（连接进入 CLOSED 之后）：
+//   ACTIVITY offline indicator ?    false
+//   ACTIVITY 仍显示过期的在跑卡片 ?  true   ← 一直挂着
+//
+// 🔴 判据必须落在**电平**上：既有的处置是"重连后拉快照"，而 `unavailable` 是 503 终态
+// （eventsBus.ts:262 一次都不会再重连），那条纠正**根本不会被触发**。故下面两条分别
+// 钉 retrying 与 unavailable 两个电平，**不是**钉某一次跃迁。
+describe('🟡-2 实时通道掉线 → 读数过期这件事对用户可见', () => {
+  /** 让总线进入 retrying：CLOSED → probe 拿到非 503 → scheduleReconnect。 */
+  async function goRetrying() {
+    act(() => { bus().fail(2) })
+    await screen.findByTestId('wb-live-line')
+  }
+
+  it('🔴 retrying：状态条出现过期提示，且**明说下面的内容可能不是最新的**', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    // 阳性对照的前半：连着的时候**不该**有这一行（恒显示的实现也要红）
+    expect(screen.queryByTestId('wb-live-line'),
+      '连接正常时也在喊"可能过期" → 这条提示是恒显示的装饰品').toBeNull()
+
+    await goRetrying()
+    expect(screen.getByTestId('wb-live-line').textContent?.trim()).toBe(en.wb_live_retrying)
+  })
+
+  it('🔴 unavailable（503 终态，永不重连）：提示**明说要刷新页面**，与 retrying 不同一句', async () => {
+    // /api/v2/events 的旁路探测返回 503 → eventsBus 判 unavailable（终态）。
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      urls.push(url)
+      if (url.includes('/api/v2/events')) {
+        return { ok: false, status: 503, body: null, json: async () => ({}) } as unknown as Response
+      }
+      if (url.includes('/api/v2/health')) {
+        return { ok: true, status: 200, json: async () => healthBody } as unknown as Response
+      }
+      if (url.includes('/api/v2/activity')) {
+        return { ok: true, status: 200, json: async () => activityBody } as unknown as Response
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as unknown as Response
+    }))
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    act(() => { bus().fail(2) })
+
+    const line = await screen.findByTestId('wb-live-line')
+    await waitFor(() => expect(line.textContent?.trim()).toBe(en.wb_live_unavailable))
+    // 🔴 终态与"自己会好"必须是两句不同的话：前者只有刷新页面才可能变，
+    // 说成"正在重新接上"就是在承诺一件永远不会发生的事。
+    expect(en.wb_live_unavailable).not.toBe(en.wb_live_retrying)
+    expect(en.wb_live_unavailable.toLowerCase()).toContain('refresh')
+  })
+
+  it('🔴 那张过期的「正在处理 X」卡片**自己身上**带标记（它才是谎话本体）', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    act(() => {
+      bus().emit(ev({ type: 'activity', message: '正在找字幕：Show A', title: 'Show A', workbench: 'subtitle' }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    // 阳性对照的前半：连着的时候卡片是干净的
+    expect(screen.queryByTestId('wb-run-stale')).toBeNull()
+    expect(screen.getByTestId('wb-run-card')).toHaveAttribute('data-stale', 'false')
+
+    await goRetrying()
+
+    // 🔴 卡片还在（**不许**因为断线就把它藏掉——那是另一种撒谎："这里没东西"），
+    // 但它现在带着"可能已经跑完了"。
+    expect(screen.getByTestId('wb-run-card').textContent).toContain('Show A')
+    expect(screen.getByTestId('wb-run-stale').textContent).toBe(en.wb_run_maybe_stale)
+    expect(screen.getByTestId('wb-run-card')).toHaveAttribute('data-stale', 'true')
+  })
+
+  it('⭐ 阳性对照：通道恢复 → 两处提示**都消失**（不是贴上去就撕不下来的）', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    act(() => {
+      bus().emit(ev({ type: 'activity', message: '正在找字幕：Show A', title: 'Show A', workbench: 'subtitle' }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    await goRetrying()
+    expect(screen.getByTestId('wb-run-stale')).toBeInTheDocument()
+
+    // 退避重连成功
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(1))
+    act(() => { FakeES.instances[FakeES.instances.length - 1]!.open() })
+
+    await waitFor(() => expect(screen.queryByTestId('wb-live-line')).toBeNull())
+    expect(screen.queryByTestId('wb-run-stale')).toBeNull()
+  })
+
+  it('🔴 没有在跑卡片时**照样**提示（"这个工作台没在跑什么"同样可能是过期的谎话）', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    expect(screen.getByTestId('wb-run-empty')).toBeInTheDocument()
+    await goRetrying()
+    // 状态条那条是这一档唯一的载体——把提示只做在卡片上的话，这里就没人说话了。
+    expect(screen.getByTestId('wb-live-line').textContent?.trim()).toBe(en.wb_live_retrying)
+  })
+
+  it('🔴 首连中（connecting）**不喊**过期——冷启动不是故障', async () => {
+    // 页面刚挂上、还没 open：屏幕上根本没有"旧读数"这回事，
+    // 此刻喊"可能已经不是最新的"是无中生有（同 inspectFreshness 里
+    // 「never 不许算成 56 年的陈旧」那条纪律）。
+    renderPage()
+    await ready()
+    expect(screen.queryByTestId('wb-live-line')).toBeNull()
+  })
+
+  it('🔴 提示**不是报错弹窗**：没有 alert/dialog role，也不提 SSE/连接/状态码', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    await goRetrying()
+
+    // R-F9/R-F10：排障类一律不推给用户。这是诚实性提示，不是故障播报。
+    expect(screen.queryAllByRole('alert')).toEqual([])
+    expect(screen.queryAllByRole('dialog')).toEqual([])
+    // 页面照常可用：tab 还在、队列还在（提示没把内容顶掉）
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
+    expect(screen.getByText('Queued Show')).toBeInTheDocument()
+
+    for (const [k, v] of [
+      ['wb_live_retrying', en.wb_live_retrying],
+      ['wb_live_unavailable', en.wb_live_unavailable],
+      ['wb_run_maybe_stale', en.wb_run_maybe_stale],
+    ] as const) {
+      expect(v.toLowerCase(), `${k} 里出现了排障词汇`)
+        .not.toMatch(/sse|eventsource|http|503|websocket|socket|endpoint|error|failed/)
+    }
+  })
+
+  it('🔴 双通道（Carbon）：文字自己把话说全，信息不靠颜色承载', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    await goRetrying()
+
+    // 通道①：文字。去掉全部样式后这两句仍然把事情说清楚了。
+    for (const s of [en.wb_live_retrying, en.wb_run_maybe_stale]) {
+      expect(s.length, '这句话太短，撑不起"读数可能过期"这个意思').toBeGreaterThan(12)
+    }
+    expect(en.wb_live_retrying.toLowerCase()).toContain('out of date')
+    // 通道②：形状（空心点），不是只换个颜色。
+    const dot = screen.getByTestId('wb-live-line').querySelector('.wb-status-dot-hollow')
+    expect(dot, '过期提示没有形状通道——只靠颜色区分违反 Carbon').not.toBeNull()
+    // 读屏器拿得到，但**不打断**（polite 不是 assertive：这是背景事实不是错误）。
+    expect(screen.getByTestId('wb-live-line')).toHaveAttribute('aria-live', 'polite')
+  })
+})

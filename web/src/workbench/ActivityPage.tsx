@@ -34,8 +34,25 @@
 // 重连后的 replay 里既没有"正在处理 X"也没有"巡检完成"——前端会**永远停在**上一次
 // 看到的那句「正在处理 X」。用户看到的是一个假装在忙、实际早就歇了的界面。
 //
-// 处置：订 `useEventsStatus()`，从**非 open 变回 open** 的那一刻拉一次 /health，
-// 拿快照覆盖本地的当前态。见下方 useReconnectSync。
+// 处置之一：订 `useEventsStatus()`，从**掉线状态恢复**的那一刻拉一次 /health，
+// 拿快照覆盖本地的当前态。判据在 events/resumeEdge.ts（**不在本文件手写**——
+// 手写的三份副本已经漂移过一次，见那个文件的头注释）。
+//
+// ⚠️ 但"重连后拉快照"只在**重连成功之后**才生效，而下面两个状态里它一次都不会发生：
+//   · `retrying`     —— 退避重连中，可能持续任意久
+//   · `unavailable`  —— 503 终态，eventsBus 一次都不会再重连（eventsBus.ts:262），
+//                       "重连后纠正"这条路**根本不会被触发**
+// 这两段时间里，上面那句「正在处理 X」原样挂着，而它已经是一句谎话。
+//
+// 处置之二（诚实性，不是排障）：把"读数已经不新鲜了"这件事**说出来**。
+// 落点两处、说的是同一件事的两个粒度：
+//   ① 顶部状态条一行——页面级。没有在跑卡片时（"这个工作台现在没在跑什么"同样可能
+//      是过期的谎话）它是唯一的载体。
+//   ② 在跑卡片上一行——那张卡片才是用户真正盯着的那句谎话本体。
+// 形态照抄既有的 stale 档（inspectFreshness 的「daemon 可能没在跑」）：状态条里的
+// 一行字 + 双通道（文字本身说清楚 + 空心点的形状差异，不只靠颜色）。
+// **不做弹窗、不报错、不提 HTTP/SSE/状态码**——R-F9/R-F10 的裁决是排障类一律不推给
+// 用户，这里推的是"你看到的数字有多新"，与 stale 那一档同类。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Section } from '../components/ui/section.js'
 import { EmptyState } from '../components/ui/empty-state.js'
@@ -44,11 +61,12 @@ import { useActivity, useHealth } from '../api/hooks.js'
 import {
   useActivityEvent, useProgressEvent, useHealthEvent, useEventsStatus,
 } from '../events/EventsProvider.js'
+import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
-import type { ScoutEvent } from '../events/types.js'
+import type { ScoutEvent, EventsStatus } from '../events/types.js'
 import type { ActivityQueueItemDTO, HealthDTO, ScoutCurrentDTO } from '../api/types.js'
 import { ACTIVITY_TABS, laneOf, tabOf, workIdOf, type ActivityTab } from './workbenchRouting.js'
-import { inspectFreshness, relAgo, workPermission } from './inspectFreshness.js'
+import { inspectFreshness, liveFreshness, relAgo, workPermission, type LiveFreshness } from './inspectFreshness.js'
 import { RunCard, QueueCard, type WorkbenchCardFace } from './WorkbenchCards.js'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -84,8 +102,6 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
   /** 已经把哪一条事件折进去了（按 id 去重——四层 Context 存的是"最后一条"，
    *  组件因别的原因重渲染时会再读到同一条，不去重会重复应用）。 */
   const appliedId = useRef(0)
-  /** 上一次的连接状态——用来识别"从非 open 变回 open"这个**边沿**（不是电平）。 */
-  const prevStatus = useRef(status)
 
   // ── SSE 增量 ──────────────────────────────────────────────────────────
   // 判据逐字照后端 ScoutEventBus.updateCurrent（那是同一件事的服务端实现）：
@@ -136,19 +152,18 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
   }, [health])
 
   // ── 🔴 断线重连纠正（后端 F-6 的执行点）────────────────────────────────
-  // 检测"非 open → open"这个**边沿**并拉一次快照。
-  useEffect(() => {
-    const was = prevStatus.current
-    prevStatus.current = status
-    if (was !== 'open' && status === 'open') {
-      // 重连了：本地那份靠事件推导出来的当前态可能已经过时（断线期间的变化全丢了），
-      // 拉快照重新对齐。快照到达后由下面那个 effect 覆盖。
-      reloadHealth()
-      // 允许下一次快照覆盖本地态（seeded 那道闸只管首载）。
-      seeded.current = false
-      appliedId.current = 0
-    }
-  }, [status, reloadHealth])
+  // 判据在 events/resumeEdge.ts。⚠️ **不是** `was !== 'open'`：那样写会把首连的
+  // `connecting → open` 也算成重连（eventsBus 的初始状态就是 'connecting'），
+  // 每次挂载都在挂载期 fetch 之外多打一次 /health。
+  const onResume = useCallback(() => {
+    // 重连了：本地那份靠事件推导出来的当前态可能已经过时（断线期间的变化全丢了），
+    // 拉快照重新对齐。快照到达后由上面那个 seeding effect 覆盖。
+    reloadHealth()
+    // 允许下一次快照覆盖本地态（seeded 那道闸只管首载）。
+    seeded.current = false
+    appliedId.current = 0
+  }, [reloadHealth])
+  useResumeEdge(status, onResume)
 
   return current
 }
@@ -158,18 +173,20 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 顶部状态条。三类信息在这里落地，**它们都不占 tab**：
+ * 顶部状态条。四类信息在这里落地，**它们都不占 tab**：
  *  ① 巡检时间态（含"daemon 可能没在跑"——债务二）
  *  ② 识别态（R-F1：识别降级到这里）
  *  ③ 巡检级/扫描级事件的最近一条（无 workbench 的那 6 个 emit 点）
  *  ④ 引擎不许可的原因（读 workPermitted，不是 engineEnabled）
+ *  ⑤ 🟡 读数新鲜度（实时通道掉了 → 下面这些数字可能已经过期）
  */
 function StatusBar({
-  health, current, patrolEvent,
+  health, current, patrolEvent, status,
 }: {
   health: HealthDTO | null
   current: Current | null
   patrolEvent: ScoutEvent | null
+  status: EventsStatus
 }) {
   const { t } = useT()
   // 时钟只在挂载时取一次：这一行是"大约多久前"的粒度（分/时/天），
@@ -178,6 +195,8 @@ function StatusBar({
 
   const fresh = health ? inspectFreshness(health, now) : null
   const perm = health ? workPermission(health) : null
+  // 🟡 读数新鲜度。**电平**不是边沿——见 inspectFreshness 里 liveFreshness 的论证。
+  const live = liveFreshness(status)
 
   // 巡检那一句。⚠️ 债务一：`lastInspectAt` 是**开始**时刻不是完成时刻，
   // 故 idle 分支的文案是「上次巡检**开始于** X 前」——不许写成"完成于"。
@@ -191,10 +210,26 @@ function StatusBar({
 
   return (
     <div className="wb-statusbar" data-stale={fresh?.phase === 'stale' ? 'true' : 'false'}
+         data-live={live}
          aria-label={t('wb_statusbar_label')}>
       <span data-testid="wb-inspect-line">
         <span className="wb-status-dot" aria-hidden="true" /> {inspectLine}
       </span>
+
+      {/* 🟡 读数已过期。
+          · **两通道**（Carbon）：文字本身把话说全（"可能已经不是最新的"）+ 点变成**空心**
+            （形状差异）。颜色只是第三重，色觉障碍与灰度打印下信息不丢。
+          · `role="status"` + `aria-live="polite"`：读屏器要能知道读数不新鲜了，
+            但**不打断**用户正在听的内容——这不是错误，是一条背景事实。
+          · **不是弹窗、不是 EmptyState**：既有的 stale 档就长这样（状态条里一行字），
+            两件同类的事必须长得像，否则用户会以为它们说的是两回事。 */}
+      {live !== 'live' && (
+        <span data-testid="wb-live-line" role="status" aria-live="polite">
+          <span className="wb-status-dot wb-status-dot-hollow" aria-hidden="true" />
+          {' '}
+          {live === 'off' ? t('wb_live_unavailable') : t('wb_live_retrying')}
+        </span>
+      )}
 
       {/* 🔴 R-F1 的可见形态：识别在**这里**，不在 tab 里。
           判据是 current.kind === 'identify'（laneOf 的同一套口径在 useCurrentState 里已用过）。 */}
@@ -246,13 +281,15 @@ function faceOf(item: ActivityQueueItemDTO, t: ReturnType<typeof useT>['t']): Wo
 }
 
 function TabPanel({
-  tab, current, queue, queueByWorkId,
+  tab, current, queue, queueByWorkId, live,
 }: {
   tab: ActivityTab
   current: Current | null
   queue: ActivityQueueItemDTO[]
   queueByWorkId: Map<string, ActivityQueueItemDTO>
   /** 在跑那个作品的 workId（来自 SSE 的 data.workId）——用它取图。 */
+  /** 🟡 读数新鲜度。非 'live' 时给在跑卡片挂一行"可能已经跑完了"。 */
+  live: LiveFreshness
 }) {
   const { t } = useT()
   return (
@@ -275,6 +312,12 @@ function TabPanel({
               ? `${current.index}/${current.total}`
               : null
           }
+          // 🟡 通道掉了 → 这张卡片上的「正在处理 X」可能早就不成立了。
+          // ⚠️ retrying 与 unavailable **共用同一句**（顶部状态条那两句才是分开的）：
+          // 卡片上要回答的是"这句话还算不算数"，两态的答案完全一样（都不算）；
+          // "自己会好 vs 得刷新页面"是**下一步做什么**，那属于页面级的那条，
+          // 在卡片上重复一遍只会让两条提示互相稀释。
+          staleNote={live === 'live' ? null : t('wb_run_maybe_stale')}
         />
       ) : (
         <div className="wb-card-sub" data-testid="wb-run-empty">{t('wb_running_none')}</div>
@@ -359,13 +402,10 @@ export function ActivityPage() {
     }
   }, [activityEvent, reloadActivity])
 
-  // ② SSE 从非 open 恢复到 open → 断线期间的队列变化一次补齐。
-  const prevStatus = useRef(status)
-  useEffect(() => {
-    const was = prevStatus.current
-    prevStatus.current = status
-    if (was !== 'open' && status === 'open') reloadActivity()
-  }, [status, reloadActivity])
+  // ② SSE 从掉线状态恢复 → 断线期间的队列变化一次补齐。
+  //    判据与 useCurrentState 那处**同一个函数**（events/resumeEdge.ts）——
+  //    这两处曾经是两份手抄，同时漏掉了 connecting 那一支。
+  useResumeEdge(status, reloadActivity)
 
   const queues = useMemo(() => ({
     subtitle: activityData?.subtitleQueue ?? [],
@@ -384,7 +424,7 @@ export function ActivityPage() {
   return (
     <Section>
       <div className="flex flex-col gap-3">
-        <StatusBar health={health} current={current} patrolEvent={patrolEvent} />
+        <StatusBar health={health} current={current} patrolEvent={patrolEvent} status={status} />
 
         <div className="wb-tabs" role="tablist" aria-label={t('wb_tablist_label')}>
           {ACTIVITY_TABS.map((id) => (
@@ -417,6 +457,7 @@ export function ActivityPage() {
             current={current}
             queue={queues[tab]}
             queueByWorkId={queueByWorkId}
+            live={liveFreshness(status)}
           />
         )}
       </div>

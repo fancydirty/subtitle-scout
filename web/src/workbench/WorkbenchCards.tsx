@@ -45,13 +45,28 @@ export interface WorkbenchCardFace {
  * `progress` 是可选的第三行（「第 3/8 集」）。**可选是刚性的**：ScoutCurrent 的
  * index/total 在 activity 之后、配对的 progress 之前是 **null**——后端注释明写
  * 那是"诚实的 null，不是缺陷"。给它编一个 "0/0" 就是把未知说成已知。
+ *
+ * 🟡 `staleNote`：实时通道掉了的时候，这张卡片上的「正在处理 X」可能早就不成立了
+ * （SSE 是变化流，断线期间的"跑完了"根本没送到）。给了这个字符串就在卡片里多渲一行。
+ *
+ * 🔴 为什么标记要落在**卡片上**而不是只在顶部状态条：这张卡片才是那句谎话的本体。
+ * 用户盯着的是「正在处理 Show A」这几个字，一条挂在页面顶端、与卡片隔着 tab 条的
+ * 提示很容易被当成跟别的事有关。两处都说是**有意的冗余**：状态条那条覆盖"没有卡片时
+ * 队列同样可能过期"，这条覆盖"卡片本身在撒谎"。
+ *
+ * ⚠️ 双通道（Carbon）：这一行**自己把话说全**（"可能已经跑完了"），
+ * 不靠颜色、不靠图标独立承载信息——去掉 CSS 之后信息量一个字都不少。
  */
-export function RunCard({ face, progress }: { face: WorkbenchCardFace; progress?: string | null }) {
+export function RunCard(
+  { face, progress, staleNote }:
+  { face: WorkbenchCardFace; progress?: string | null; staleNote?: string | null },
+) {
   const [failed, setFailed] = useState(false)
   const url = backdropUrl(face.backdropPath)
   const noimg = !url || failed
   return (
-    <div className="wb-run-card" data-noimg={noimg ? 'true' : 'false'} data-testid="wb-run-card">
+    <div className="wb-run-card" data-noimg={noimg ? 'true' : 'false'}
+         data-stale={staleNote ? 'true' : 'false'} data-testid="wb-run-card">
       {!noimg && <CardImage src={url} className="wb-run-img" onFail={() => setFailed(true)} />}
       <div className="wb-run-fade" />
       <div className="wb-run-body">
@@ -60,6 +75,10 @@ export function RunCard({ face, progress }: { face: WorkbenchCardFace; progress?
         {/* progress 为 null/undefined 时**整行不渲染**（不是渲染一个空 span）：
             空行会在卡片里留一道说不清的空隙。 */}
         {progress ? <span className="wb-card-progress">{progress}</span> : null}
+        {/* 同上：没有这一行时整行不渲染。`role="status"` 让读屏器也拿得到这条事实。 */}
+        {staleNote
+          ? <span className="wb-run-stale" role="status" data-testid="wb-run-stale">{staleNote}</span>
+          : null}
       </div>
     </div>
   )

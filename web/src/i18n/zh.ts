@@ -452,4 +452,10 @@ export const zh = {
   wb_loading: '加载中…',
   wb_error_title: '没能加载队列',
   wb_retry: '重试',
+  // ── 🟡 实时通道掉线时的「读数已经不新鲜了」（诚实性，**不是排障提示**）────────
+  // 措辞纪律同 en 侧：不出现 SSE / 连接 / 状态码这类词。两句分开是因为用户能做的事不同
+  // （retrying 自己会好；unavailable 是终态，只有刷新才可能变，所以必须明说刷新）。
+  wb_live_retrying: '实时更新断了，正在重新接上。下面看到的可能已经不是最新的了。',
+  wb_live_unavailable: '实时更新没有开着。下面看到的是一份快照，刷新页面才会更新。',
+  wb_run_maybe_stale: '可能已经跑完了，这里收不到实时更新',
 } as const

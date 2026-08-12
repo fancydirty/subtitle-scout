@@ -2313,3 +2313,37 @@
   margin-bottom: 8px;
 }
 .wb-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---- 🟡 读数已过期（实时通道掉线）——**诚实性**，不是排障提示 ----
+   与上面 [data-stale='true']（「daemon 可能没在跑」）刻意长得像：两者是同一类判决的
+   两半（那边是"后端歇了而我们连着"，这边是"后端在跑而我们听不见"），
+   长得不像会让用户以为它们说的是两回事。
+
+   🔴 Carbon 双通道，**三重都不单独承载信息**：
+     ① 文字自己把话说全（"可能已经不是最新的了" / "可能已经跑完了"）——去掉全部 CSS
+        之后信息量一个字都不少，这是主通道；
+     ② 点是**空心**的（形状差异，border 而非实心 background）——色觉障碍与灰度打印下
+        仍能与旁边那个实心点区分；
+     ③ 颜色只是第三重。
+   R-F11：不投影，靠 hairline 与既有 token。 */
+.wb-status-dot-hollow {
+  background: none;
+  border: 1px solid currentColor;
+  /* 空心点比实心点视觉上偏小，补 1px 让两个点在一行里看起来一样大。 */
+  width: 7px; height: 7px;
+}
+.wb-statusbar[data-live='retrying'] [data-testid='wb-live-line'],
+.wb-statusbar[data-live='off'] [data-testid='wb-live-line'] {
+  color: var(--color-fn-amber, #d19a3d);
+}
+/* 在跑卡片上那一行。**在卡片里**而不是只在页面顶端：那张卡片才是谎话本体。 */
+.wb-run-stale {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-fn-amber, #d19a3d);
+}
+/* 卡片整体降一档存在感：读数不新鲜时它不该再是页面上最抢眼的东西。
+   ⚠️ 只降到 0.72——**不许降到看不清**：这条读数仍然是用户此刻唯一有的信息，
+   把它糊掉等于用另一种方式撒谎（"这里没东西"）。 */
+.wb-run-card[data-stale='true'] { opacity: 0.72; }
+

@@ -524,4 +524,17 @@ export const en = {
   wb_loading: 'Loading…',
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',
+  // ── 🟡 实时通道掉线时的「读数已经不新鲜了」（诚实性，**不是排障提示**）────────
+  // R-F9/R-F10 的裁决是排障类一律不推给用户，所以这两句里**不出现** SSE / 连接 /
+  // 状态码 / 端点这类词——它们说的是"你看到的数字有多新"，与上面 wb_inspect_stale
+  // 那句「引擎可能没在跑」同一类判决。
+  //
+  // ⚠️ 两句刻意不同，因为**用户能做的事不同**：
+  //  · retrying    自己会好，说一句"正在重新接上"就够，不要求用户做任何事；
+  //  · unavailable 终态（没跑 watch，eventsBus 一次都不会再重连）——只有刷新页面
+  //    才可能变，所以这句必须**明说刷新**，否则用户会盯着一个永远不动的界面等。
+  wb_live_retrying: 'Live updates dropped — reconnecting. What you see below may be out of date.',
+  wb_live_unavailable: 'Live updates are off. What you see below is a snapshot — refresh the page to update it.',
+  /** 在跑卡片上那一行。卡片自己就是那句谎话本体，所以这里要短、要贴脸。 */
+  wb_run_maybe_stale: 'May have finished — no live updates',
 } as const

@@ -34,6 +34,7 @@ import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
 import { useNotifications } from '../api/hooks.js'
 import { useEventsStatus, useFoundEvent } from '../events/EventsProvider.js'
+import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
 import { NewFoundBanner } from './NewFoundBanner.js'
 import { NotificationRow } from './NotificationRow.js'
@@ -113,14 +114,16 @@ export function NotificationsPage() {
   }, [found])
 
   // SSE 断线期间的 found 事件全部丢失（后端环形缓冲"不是账目"，见 notificationsRepo
-  // 头注释）。重连回 open 时补拉一次——否则用户会盯着一个既不更新也不提示的列表。
+  // 头注释）。从掉线状态**恢复**时补拉一次——否则用户会盯着一个既不更新也不提示的列表。
   // ⚠️ 这不是轮询：它由**状态跃迁**触发，不是定时器。
-  const prevStatus = useRef(status)
-  useEffect(() => {
-    const was = prevStatus.current
-    prevStatus.current = status
-    if (was !== 'open' && status === 'open' && was !== 'connecting') reload()
-  }, [status, reload])
+  //
+  // 判据从本文件手写的那一行改为 events/resumeEdge.ts 的共享判据。**行为一模一样**
+  // （四种跃迁的真值表逐条相同，resumeEdge.test.ts 的 16 行穷尽表钉着），换的是形状：
+  // 原来那行是 `was !== 'open' && status === 'open' && was !== 'connecting'`——
+  // 一个**否定式白名单**，给 EventsStatus 加第五态时它会**静默地**把新态判成"要拉"。
+  // 而这正是活动页那两处出错的机制（它们漏了 `was !== 'connecting'` 这一半，
+  // 同一件事三份手抄、其中两份漂了）。共享判据带 never 穷尽检查，加第五态是编译错误。
+  useResumeEdge(status, reload)
 
   const refresh = useCallback(() => {
     setHasNew(false)
