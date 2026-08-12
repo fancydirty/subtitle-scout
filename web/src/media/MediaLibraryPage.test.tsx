@@ -77,8 +77,67 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
   it('coverageParts 是纯映射——三个数字逐字取自 DTO，不含任何算术', () => {
     const p = coverageParts(item({
       subtitledEpisodeCount: 7, onDiskEpisodeCount: 9, expectedEpisodeCount: 24,
+      missingEpisodeCount: 15,
     }))
-    expect(p).toEqual({ subtitled: 7, onDisk: 9, expected: 24 })
+    expect(p).toEqual({ subtitled: 7, onDisk: 9, expected: 24, missing: 15 })
+  })
+})
+
+// ═══ 🟡-3 缺集数 ═════════════════════════════════════════════════════════════
+// `missingEpisodeCount` 后端算了、DTO 声明了，而在本次改动之前**只在测试 fixture 里
+// 出现过**——终局审计变异 `missingEpisodeCount: 0` → 前端 0 红。下面这组是它的守卫。
+describe('🟡-3 missingEpisodeCount 真的被读了（变异恒 0 → 本组必红）', () => {
+  it('🔴 missing>0 → 卡片上显示"缺 N"', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({ missingEpisodeCount: 32 })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    const line = within(link).getByTestId('media-card-missing')
+    expect(line.textContent).toContain(`${en.media_card_missing} 32`)
+  })
+
+  // 🔴 这一条是"前端别自己算"的判据：给一组任何本地重算都会得出别的值的数字。
+  it('🔴 **原样取 DTO**，不在浏览器里算 expected - onDisk', async () => {
+    // expected-onDisk = 62-30 = 32，而后端给的是 7（比如应有集缓存刚回填了一部分）。
+    // 任何"顺手自己算"的写法都会显示 32——那就是把后端的夹 0 判据复制了第二份。
+    vi.stubGlobal('fetch', mockFetch([item({
+      expectedEpisodeCount: 62, onDiskEpisodeCount: 30, missingEpisodeCount: 7,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    const line = within(link).getByTestId('media-card-missing')
+    expect(line.textContent).toContain(`${en.media_card_missing} 7`)
+    expect(line.textContent).not.toContain('32')
+  })
+
+  it('🔴 missing=0（齐全）→ **整段不在场**（沉默即好消息，不显示"缺 0"）', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({
+      expectedEpisodeCount: 62, onDiskEpisodeCount: 62, missingEpisodeCount: 0,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    expect(within(link).queryByTestId('media-card-missing')).toBeNull()
+    expect(link.textContent).not.toContain(`${en.media_card_missing} 0`)
+  })
+
+  it('电影（missing 恒 0）不显示这一段', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({
+      mediaType: 'movie', expectedEpisodeCount: 0, onDiskEpisodeCount: 1,
+      missingEpisodeCount: 0, subtitledEpisodeCount: 1,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    expect(within(link).queryByTestId('media-card-missing')).toBeNull()
+  })
+
+  it('🔴 应有集未回填（expected=0）→ 后端夹 0 给 missing=0 → 不显示（与"绝口不提应有集"一致）', () => {
+    // 这一支不需要额外的前端条件：后端的 Math.max(0, …) 已经把它折成 0 了。
+    // 在前端再写一次 `expected>0 &&` 就是第三份判据（后端一份、coverageParts 一份）。
+    expect(coverageParts(item({ expectedEpisodeCount: 0, missingEpisodeCount: 0 })).missing).toBeNull()
+  })
+
+  it('coverageParts 对 missing=0 给 null，>0 原样给', () => {
+    expect(coverageParts(item({ missingEpisodeCount: 0 })).missing).toBeNull()
+    expect(coverageParts(item({ missingEpisodeCount: 1 })).missing).toBe(1)
   })
 })
 

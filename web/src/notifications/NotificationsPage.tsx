@@ -36,9 +36,10 @@ import { useNotifications } from '../api/hooks.js'
 import { useEventsStatus, useFoundEvent } from '../events/EventsProvider.js'
 import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
-import { NewFoundBanner } from './NewFoundBanner.js'
+import { NewFoundBanner, LiveOffBanner } from './NewFoundBanner.js'
 import { NotificationRow } from './NotificationRow.js'
 import { bucketByDay, formatDayStamp, groupKey, type DayBucket } from './notifText.js'
+import { liveFreshness } from '../workbench/inspectFreshness.js'
 
 function DaySection({ bucket }: { bucket: DayBucket }) {
   const { t } = useT()
@@ -125,12 +126,25 @@ export function NotificationsPage() {
   // 同一件事三份手抄、其中两份漂了）。共享判据带 never 穷尽检查，加第五态是编译错误。
   useResumeEdge(status, reload)
 
+  // 🟡 实时通道掉线的披露（终局审计 🟡-2）。判据是 `liveFreshness` 的**电平**，
+  // 与活动页**同一个函数**——两页对"读数还活着吗"给出不同答案是本仓典型的漂移形态。
+  //
+  // ⚠️ 这与上面那个 `useResumeEdge(status, reload)` 不冲突而是互补：
+  // 那个是**边沿**（恢复了就补拉），这个是**电平**（现在听不见就说出来）。
+  // 边沿的处置在 `unavailable`（503 终态，eventsBus 一次都不再重连）下**永远不触发**
+  // ——那正是本条存在的全部理由。
+  const live = liveFreshness(status)
+
   const refresh = useCallback(() => {
     setHasNew(false)
     reload()
   }, [reload])
 
   const banner = hasNew ? <NewFoundBanner onRefresh={refresh} /> : null
+  // ⚠️ 两条 banner **可以同时在场**，且那不是冗余：断线**之前**收到过 found 事件
+  // （hasNew=true）、随后通道掉了——此时"有新字幕"与"我现在听不见了"都是真的，
+  // 藏起任何一条都是在少说一句真话。
+  const liveBanner = <LiveOffBanner live={live} onRefresh={refresh} />
 
   if (loading && !data) {
     return (
@@ -163,6 +177,9 @@ export function NotificationsPage() {
     return (
       <Section>
         <div className="flex flex-col gap-3">
+          {/* 🟡 空态 + 通道掉线是**最需要这条**的组合：屏幕上写着"这一周还没找到什么"，
+              而真相可能是"这一周找到的我没听见"。两句话的差别就是用户会不会去检查系统。 */}
+          {liveBanner}
           {/* 空态下提示条**照样要出**：一周内什么都没找到、然后刚刚找到了一条——
               这恰恰是最该提示的时刻。把 banner 埋在 groups.length>0 分支里的话，
               空态用户永远等不到那个刷新入口。 */}
@@ -180,6 +197,7 @@ export function NotificationsPage() {
   return (
     <Section>
       <div className="flex flex-col gap-3">
+        {liveBanner}
         {banner}
         <span className="font-mono text-[11px] leading-4 text-muted-foreground">
           {t('notif_window_note')} · {groups.length}

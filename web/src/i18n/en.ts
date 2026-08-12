@@ -393,8 +393,20 @@ export const en = {
   wizard_launch_engine_label: 'Engine',
   wizard_launch_engine_desc: 'Start scanning and fetching as soon as Scout launches.',
 
+  // ── 全局 banner（四页共用）。**两种成因分开说**（终局审计 🟡-4）────────────────
+  // 此前 banner 只读 setup/status 的 `engineEnabled`，于是
+  // `engineEnabled=true && setupSatisfied=false` 时它判定"引擎开着"→ 整条不渲染，
+  // 媒体库/通知/设置三页完全无提示，只有活动页（读 workPermitted）说得出真话。
+  //
+  // 🔴 两句必须不同，因为**用户的下一步动作完全相反**：
+  //  · engine-off       → 拨开关（banner 自己就有那个按钮，一步到位）
+  //  · setup-incomplete → 去 setup 页填 key（**按钮必须换成去设置页**，
+  //    在这一档给"开启"按钮是最坏的形态：它 PUT 成功、banner 变成另一句，
+  //    而 daemon 照样一动不动——用户会以为自己已经修好了）。
   engine_banner_off: 'Engine off — polling and dispatch are paused.',
   engine_banner_turn_on: 'Turn on',
+  engine_banner_setup: 'Setup incomplete — nothing will be processed until your TMDB and LLM credentials are in.',
+  engine_banner_go_setup: 'Open settings',
 
   settings_engine_label: 'Engine',
   settings_engine_desc: 'Master switch for scanning, fetching and all automatic work.',
@@ -434,6 +446,10 @@ export const en = {
   media_card_subtitled: 'subtitled',
   media_card_ondisk: 'on disk',
   media_card_expected: 'expected',
+  // 🟡-3：缺集数（missingEpisodeCount 的第一个读取方）。
+  // "missing N" 而不是 "N missing"：卡片上这一行要能被扫视，名字在前、数字在后，
+  // 与同卡片上面那三段（`subtitled 12 · on disk 30`）的语序一致。
+  media_card_missing: 'missing',
   media_empty_title: 'Nothing in the library yet',
   media_empty_desc: 'Once media roots are scanned, titles will appear here.',
   media_error_title: 'Could not load the media library',
@@ -537,4 +553,20 @@ export const en = {
   wb_live_unavailable: 'Live updates are off. What you see below is a snapshot — refresh the page to update it.',
   /** 在跑卡片上那一行。卡片自己就是那句谎话本体，所以这里要短、要贴脸。 */
   wb_run_maybe_stale: 'May have finished — no live updates',
+
+  // ── 🔴 守备目录健康度（终局审计 🔴-1）——`/health` 的 `roots[]` 的第一个读取方 ──
+  // 用户视角的问题是「我的库是不是有问题」，**不是**「扫描器返回了什么 errno」。
+  // 故两句都不出现 mount / FUSE / errno / 重试次数 / 状态码这类词（R-F9/R-F10：
+  // 排障类不推给用户），也**不透传** `lastError` 原文（那一列是带 errno 的排障串）。
+  //
+  // 🔴 两句刻意不同，因为它们是**两件不同的事**，不是同一件事的两种强度：
+  //  · failed（ok === false）  新鲜判决 + 读取失败 → 这是坏消息，且**有东西可修**
+  //    （用户的挂载掉了）。措辞点明后果："里面的东西可能不是最新的"——这才是用户
+  //    真正关心的，而不是"扫描失败了"这个过程事实。
+  //  · unknown（ok === null） 从没扫过（刚加的根）/ 判决陈旧超 2 个巡检周期。
+  //    **这不是故障**，措辞必须中性——说成"有问题"会让刚加完目录的用户以为自己加错了。
+  //    绝不许把这一档折成绿的"一切正常"（后端 buildRootHealth 与 api/types.ts 两处
+  //    头注释都点名了 `?? true` 这条禁令）。
+  root_health_failed: 'Cannot read these folders — what you see may be out of date',
+  root_health_unknown: 'Not checked recently',
 } as const

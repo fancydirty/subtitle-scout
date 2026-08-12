@@ -337,8 +337,14 @@ export const zh = {
   wizard_launch_engine_label: '发动机',
   wizard_launch_engine_desc: '启动后立即开始扫描与抓取。',
 
+  // ── 全局 banner（四页共用）。两种成因分开说（终局审计 🟡-4）────────────────
+  // 措辞纪律同 en 侧：两句对应的下一步动作完全相反（拨开关 / 去填 key），
+  // setup 那一档的按钮必须是"去设置"而不是"开启"——后者点了会成功、banner 会变，
+  // 而 daemon 照样一动不动。
   engine_banner_off: '发动机已关——轮询与派发暂停。',
   engine_banner_turn_on: '开启',
+  engine_banner_setup: '还没配好——TMDB 与 LLM 的凭据填上之前，什么都不会被处理。',
+  engine_banner_go_setup: '去设置',
 
   settings_engine_label: '发动机',
   settings_engine_desc: '扫描、抓取与一切自动工作的总开关。',
@@ -376,6 +382,9 @@ export const zh = {
   media_card_subtitled: '已配',
   media_card_ondisk: '磁盘',
   media_card_expected: '应有',
+  // 🟡-3：缺集数。「缺 12」——不写"集"字：电影恒 0（不渲染），剧集这一行紧挨着
+  // 上面那三个同为集数的读数，量纲无歧义。
+  media_card_missing: '缺',
   media_empty_title: '库里还什么都没有',
   media_empty_desc: '守备目录扫描完成后，作品会出现在这里。',
   media_error_title: '没能加载媒体库',
@@ -458,4 +467,11 @@ export const zh = {
   wb_live_retrying: '实时更新断了，正在重新接上。下面看到的可能已经不是最新的了。',
   wb_live_unavailable: '实时更新没有开着。下面看到的是一份快照，刷新页面才会更新。',
   wb_run_maybe_stale: '可能已经跑完了，这里收不到实时更新',
+
+  // ── 🔴 守备目录健康度（终局审计 🔴-1）────────────────────────────────────
+  // 措辞纪律同 en 侧：不出现挂载 / errno / 重试次数这类词，不透传 lastError 原文。
+  // 两句分开是因为它们是两件不同的事：failed 是坏消息且有东西可修；
+  // unknown（从没扫过 / 判决陈旧）**不是故障**，措辞必须中性。
+  root_health_failed: '这些目录读不到，里面的东西可能不是最新的',
+  root_health_unknown: '最近没有检查过',
 } as const

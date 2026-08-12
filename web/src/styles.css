@@ -2111,6 +2111,22 @@
   border-radius: 50%;
   background: var(--color-fn-purple);
 }
+/* 🟡 「实时更新没有开着」那一条（终局审计 🟡-2）。与上面那条 banner **同一个槽位、
+   同一段几何**——它们说的是同一件事的两面（有新的了 / 我可能不知道有没有新的），
+   长得不一样会让用户以为它们说的是两回事。
+
+   🔴 Carbon 双通道，逐字照活动页状态条里 .wb-status-dot-hollow 的做法：
+     ① 文字自己把话说全（复用 wb_live_unavailable / wb_live_retrying 两句原文）；
+     ② 点是**空心**的（形状差异，border 而非实心 background）——旁边 NewFoundBanner
+        的点是实心的，两条 banner 同时在场时形状就能分开；
+     ③ 颜色只是第三重（amber，同活动页那一档）。 */
+.notif-new-dot-hollow {
+  background: none;
+  border: 1px solid var(--color-fn-amber, #d19a3d);
+  /* 空心点比实心点视觉上偏小，补 1px 让两个点看起来一样大（同 wb-status-dot-hollow）。 */
+  width: 7px;
+  height: 7px;
+}
 
 /* ══════════════════════════════════════════════════════════════════════════════
    Task ⑨ 活动页（#/activity）—— R-F13 全背景式卡片 + R-F11 Linear 视觉基准
@@ -2347,3 +2363,78 @@
    把它糊掉等于用另一种方式撒谎（"这里没东西"）。 */
 .wb-run-card[data-stale='true'] { opacity: 0.72; }
 
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   🔴 守备目录健康度（终局审计 🔴-1）——`/health` 的 `roots[]` 的可见形态
+   ══════════════════════════════════════════════════════════════════════════════
+   活动页（状态条内）与媒体库页（列表上方）共用同一套样式：两处说的是同一件事，
+   长得不一样会让用户以为它们说的是两回事（同 [data-stale] 与 [data-live] 那对的既有理由）。
+
+   🔴 Carbon 双通道，**三重都不单独承载信息**：
+     ① 文字自己把话说全（"这些目录读不到，里面的东西可能不是最新的"）——去掉全部 CSS
+        之后信息量一个字都不少，这是主通道；
+     ② 形状：**方块**，实心=读不到 / 空心=未知。方块而不是圆点，是因为活动页状态条里
+        已经有两个圆点（实心=巡检态、空心=实时读数过期）——再加一对圆点会让四个语义
+        共用两种形状，色觉障碍者与灰度打印下都分不出哪个说的是哪件事；
+     ③ 颜色只是第三重。
+   R-F11：不投影，只用本仓真实存在的 token。 */
+.root-health-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 18px;
+}
+/* `ok === false`：新鲜判决 + 读取失败。amber——与 wb_inspect_stale（"引擎可能没在跑"）
+   同一档色，两者是同类判决（"有事发生了，但不是错误弹窗那种事"）。 */
+.root-health-line[data-kind='failed'] { color: var(--color-fn-amber, #d19a3d); }
+/* 🔴 `ok === null`：从没扫过 / 判决陈旧。**灰**——后端 buildRootHealth 与 api/types.ts
+   两处头注释点名的渲染纪律。这一档既不是绿（`?? true` 会把"刚加的根路径写错了"报成健康）
+   也不是红（`?? false` 会把"还没轮到扫"报成故障）。灰 = 不知道，这就是它要说的全部。 */
+.root-health-line[data-kind='unknown'] { color: var(--color-weak); }
+.root-health-mark {
+  width: 7px; height: 7px; flex-shrink: 0;
+  /* 方块——border-radius 显式归零：这一族样式紧挨着 .wb-status-dot（圆），
+     不写死的话将来谁给容器加一条 [class*='-dot'] 的圆角规则就会静默把形状通道抹掉。 */
+  border-radius: 0;
+  background: currentColor;
+}
+/* 空心 = 未知。与实心方块的差异是**形状**（有没有填充），不是明暗——
+   降透明度做"淡一点的实心块"在灰度下与实心块无法区分，那等于只剩颜色一个通道。 */
+.root-health-mark-hollow {
+  background: none;
+  border: 1px solid currentColor;
+}
+.root-health-paths {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  /* 路径可能很长（云盘挂载点常是深路径）。**不许 ellipsis 截断**：截掉的恰恰是
+     区分两个同前缀根的那一段（/mnt/media/a 与 /mnt/media/b），用户就分不出是哪个坏了。 */
+  word-break: break-all;
+}
+/* 媒体库页的容器：状态条那种边框在这一页是多余的（这一页没有状态条），
+   但两条名单同时出现时需要各占一行——活动页那个 flex-wrap 的状态条自己会处理。 */
+.root-health-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* 两个名单都空时组件返回 null，这个容器就是一个空 div——:empty 收掉它自己的间距，
+   免得海报墙上方凭空多出 4px 的空档。 */
+.root-health-strip:empty { display: none; }
+
+/* 🟡-3 海报卡上的缺集数（missingEpisodeCount 的第一个读取方，终局审计）。
+   ── 为什么单独一行、且不是 mono ────────────────────────────────────────────
+   上面那串（`subtitled 12 · on disk 30 · expected 62`）是**读数**，走 mono；
+   这一条是**结论**（"这部剧还差东西"），走正文字体让它在扫视时先被看见。
+   ⚠️ 只在 missing>0 时渲染（组件层判），所以这里不需要任何"0 的时候藏起来"的样式。
+
+   颜色用 amber——与守备目录 failed 那档、活动页 stale 那档同一个"有事但不是错误"的
+   语义层。**不用红**：缺集是媒体库的常态（新番每周才更一集），红会让整面墙报警。
+   双通道：文字自带"missing/缺"这个词，去掉 CSS 之后语义一个字不少。 */
+.media-card-missing {
+  display: block;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-fn-amber, #d19a3d);
+}

@@ -21,14 +21,18 @@ import { describe, it, expect } from 'vitest'
 declare const __STYLES_CSS__: string
 const CSS = __STYLES_CSS__
 
+/** 下一个页面段的段首。**在 styles.css 尾部追加新段的人必须把段首选择器加进来**——
+ *  下面那条自检用例就是为此存在的（终局审计 🔴-1 追加了守备目录健康度段，
+ *  这个数组第一次真的派上用场）。提到 IIFE 外面是为了让自检用例也能读到它，
+ *  否则自检只能硬编码一份同样的名单，两份必然漂移。 */
+const NEXT_SECTION_MARKERS: string[] = ['.root-health-line {']
+
 /** 活动页那一段 CSS 的**代码部分**（先剥全文注释，再从代码里切段——顺序不能反，
  *  否则会切出半截注释而扫描时命中自己的注释文字）。 */
 const WB_CSS = (() => {
   const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
   const i = bare.indexOf('.wb-tabs {')
   if (i < 0) return ''
-  /** 下一个页面段的段首。本段是文件最后一段时为空——见文件头 ⚠️⚠️。 */
-  const NEXT_SECTION_MARKERS: string[] = []
   const rest = bare.slice(i)
   const ends = NEXT_SECTION_MARKERS.map((m) => rest.indexOf(m)).filter((n) => n >= 0)
   return ends.length > 0 ? rest.slice(0, Math.min(...ends)) : rest
@@ -50,16 +54,28 @@ describe('切片自检（防"守卫作用域随文件增长而漂移"）', () =>
     expect(WB_CSS).toContain('.wb-queue-card')
   })
 
-  it('🔴 本段仍是 styles.css 的最后一段——不是的话必须给 NEXT_SECTION_MARKERS 加下界', () => {
-    // 这条是上面那个空数组的**可执行前提**。有人在文件尾追加了新页面段而没加标记时，
+  it('🔴 活动页段之后的每一个新段都已登记下界——没登记的会让守卫扫到别人的样式', () => {
+    // 这条是 NEXT_SECTION_MARKERS 的**可执行前提**。有人在文件尾追加了新页面段而没加标记时，
     // 本条会红，提示他去补——而不是让下面的守卫悄悄开始扫描别人的样式。
+    //
+    // ⚠️ 判据从"本段是最后一段"改成"越界的段都已登记"（终局审计 🔴-1 追加了守备目录
+    // 健康度段之后的必然演进）：切片已经在 NEXT_SECTION_MARKERS 处截断，所以真正要守的
+    // 不是"后面没有东西"，而是"后面的东西都在名单里"。仍旧改一行 CSS 就会红。
     const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
     const after = bare.slice(bare.indexOf('.wb-tabs {'))
-    // 允许的选择器前缀：本段自己的 .wb-* + :root（变量声明）。出现别的顶层页面段前缀
-    // 就说明有人追加了新段。
-    const selectors = [...after.matchAll(/^\.([a-z0-9-]+)/gim)].map((m) => m[1]!)
+    // 已登记的下界之后的内容不算越界——它已经被切掉了，守卫扫不到。
+    const ends = NEXT_SECTION_MARKERS.map((m) => after.indexOf(m)).filter((n) => n >= 0)
+    const inSlice = ends.length > 0 ? after.slice(0, Math.min(...ends)) : after
+    // 允许的选择器前缀：本段自己的 .wb-*。出现别的顶层页面段前缀就说明有人在**切片内部**
+    // 追加了新段（而不是在下界之后）。
+    const selectors = [...inSlice.matchAll(/^\.([a-z0-9-]+)/gim)].map((m) => m[1]!)
     const foreign = [...new Set(selectors)].filter((s) => !s.startsWith('wb-'))
-    expect(foreign, `活动页段后面出现了新的页面段：${foreign.join(', ')} —— 请给 NEXT_SECTION_MARKERS 加下界`).toEqual([])
+    expect(foreign, `活动页段里混进了别的页面段：${foreign.join(', ')} —— 请给 NEXT_SECTION_MARKERS 加下界`).toEqual([])
+    // 下界本身必须真的在文件里——名单里写了个不存在的选择器时，切片会退化成"切到文件尾"，
+    // 而这条自检会假绿。
+    for (const m of NEXT_SECTION_MARKERS) {
+      expect(bare.includes(m), `下界 ${m} 在 styles.css 里不存在（切片会退化成切到文件尾）`).toBe(true)
+    }
   })
 })
 

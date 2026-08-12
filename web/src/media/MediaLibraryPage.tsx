@@ -13,6 +13,12 @@
 // ⚠️ expected=0 有**两种**含义：电影（本来就没有季集）与"应有集缓存还没回填"。
 // 两种都**不许显示 "N/0"** —— 那会让用户以为这部剧应该有 0 集。见 coverageLine。
 //
+// ── 🔴 守备目录健康度（终局审计 🔴-1）─────────────────────────────────────
+// 这一页多打一个 GET /api/v2/health，只为 `roots[]` 那一条提示（RootHealthNote）。
+// 为什么这一页需要它：R8 三道闸在某个根读不到时会**跳过该根的删除清理**，于是海报墙上
+// 那些卡片照常在场、数字照常是上一轮的——页面看上去完全正常，而它描述的磁盘已经不在了。
+// ⚠️ 这**不是**给本页加 SSE：媒体库页是纯 HTTP 快照、没有活数据，useHealth 也不轮询。
+//
 // ── 视觉（R-F11 / DESIGN.md）────────────────────────────────────────────
 // 四层 surface 阶梯 + 发丝线、**拒绝投影**。token 用**本仓真实存在的**那套
 // （--color-card / --color-border / --color-secondary），**不是** DESIGN.md 写的
@@ -23,9 +29,10 @@ import { Skeleton } from '../components/ui/skeleton.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
 import { AspectRatio } from '../components/ui/aspect-ratio.js'
-import { useMediaLibrary } from '../api/hooks.js'
+import { useMediaLibrary, useHealth } from '../api/hooks.js'
 import { useT } from '../i18n/useT.js'
 import { mediaItemHref } from '../shell/route.js'
+import { RootHealthNote } from '../shell/RootHealthNote.js'
 import { MediaPoster } from './MediaPoster.js'
 import type { MediaLibraryItemDTO } from '../api/types.js'
 
@@ -37,24 +44,41 @@ import type { MediaLibraryItemDTO } from '../api/types.js'
  *   · 剧集但 expected===0：应有集缓存还没回填。**只说磁盘上有多少**，绝口不提应有集
  *     ——显示 "12/0" 是在报一个我们并不知道的数字。
  *
- *  返回结构化片段而非拼好的串：i18n 的三段文案由调用方组合，且测试能逐段断言。 */
+ *  ── 🟡-3：`missingEpisodeCount` 的读取点（终局审计）──────────────────────
+ *  这个字段后端算了（mediaLibraryApi.ts:461）、DTO 声明了，而此前**只在测试 fixture 里
+ *  出现过**——变异 `missingEpisodeCount: 0` → 前端 0 红。本函数是它的第一个读取方。
+ *
+ *  🔴 **原样取 DTO，绝不在浏览器里算 `expected - onDisk`**。看上去那是同一个数字，
+ *  但后端那一行是 `Math.max(0, expected - onDisk)`——夹 0 是一个**判据**（应有集缓存
+ *  缺失时裸减法得负数），在前端复制一份就是把判据变成两份，任一侧改动都会静默漂移出
+ *  "缺 -12 集"。同 subtitledEpisodeCount「前端不做第二遍聚合」的既有纪律。
+ *
+ *  🔴 **`missing === 0` 时返回 null，整段不渲染**（沉默即好消息，同 RootHealthNote /
+ *  wb-perm-line 的既有口径）。一部齐全的剧不该在卡片上挂一个"缺 0 集"——那是噪音，
+ *  而这一行的全部价值就是让不齐全的那几张卡在海报墙上跳出来。
+ *  ⚠️ 顺带封住 expected===0 那一支：后端此时给 missing=0（夹 0 的结果），于是
+ *  "应有集未知"的卡片自动不显示缺集——与上面"绝口不提应有集"保持一致，
+ *  不需要在这里再写一次 expected 的条件（写了就是第三份判据）。 */
 export function coverageParts(item: MediaLibraryItemDTO): {
   subtitled: number
   onDisk: number
   /** null = 应有集未知（电影，或 tmdb_seasons 还没回填）——调用方**不许**渲染这一段。 */
   expected: number | null
+  /** null = 不缺集（或应有集未知）——调用方**不许**渲染这一段。 */
+  missing: number | null
 } {
   return {
     subtitled: item.subtitledEpisodeCount,
     onDisk: item.onDiskEpisodeCount,
     expected: item.expectedEpisodeCount > 0 ? item.expectedEpisodeCount : null,
+    missing: item.missingEpisodeCount > 0 ? item.missingEpisodeCount : null,
   }
 }
 
 function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
   const { t } = useT()
   const title = item.chineseTitle ?? item.title
-  const { subtitled, onDisk, expected } = coverageParts(item)
+  const { subtitled, onDisk, expected, missing } = coverageParts(item)
 
   return (
     <a className="media-card" href={mediaItemHref(item.workId)} aria-label={title}>
@@ -72,6 +96,14 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
           {t('media_card_subtitled')} {subtitled} · {t('media_card_ondisk')} {onDisk}
           {expected !== null ? ` · ${t('media_card_expected')} ${expected}` : ''}
         </span>
+        {/* 🟡-3 缺集数。**单独一行**而不是挤进上面那串：上面三个是"库里有什么"的读数，
+            这一条是"还差什么"的**结论**，两者混排会让它淹没在数字堆里（而它恰恰是
+            用户在海报墙上扫视时唯一想找的东西）。missing===0 时整段不在场。 */}
+        {missing !== null && (
+          <span className="media-card-missing" data-testid="media-card-missing">
+            {t('media_card_missing')} {missing}
+          </span>
+        )}
       </div>
     </a>
   )
@@ -96,6 +128,15 @@ function LoadingGrid() {
 
 export function MediaLibraryPage() {
   const { data, loading, error, reload } = useMediaLibrary()
+  // 🔴 守备目录健康度（终局审计 🔴-1）。**这一页也要有**，理由不是"两处都放稳妥些"：
+  // 这一页画的**就是那些目录里的东西**。一个根读不到时，R8 三道闸会跳过该根的删除清理
+  // （daemonV2.ts:1380，"一次删光该根全库"是本项目最严重的可能故障），于是海报墙上
+  // 那些卡片**照常在场、数字照常是上一轮的**——页面看上去完全正常。用户在这一页问的
+  // 「我的库是不是有问题」，答案恰恰只在这条提示里。
+  //
+  // ⚠️ 只多一个 GET /api/v2/health（useHealth 不轮询，见其头注释），不引入 SSE：
+  // 媒体库页是纯 HTTP 快照，没有活数据，加 SSE 是硬造需求（见页面头注释）。
+  const { data: health } = useHealth()
   const { t } = useT()
 
   if (loading && !data) {
@@ -127,7 +168,14 @@ export function MediaLibraryPage() {
   if (items.length === 0) {
     return (
       <Section>
-        <EmptyState title={t('media_empty_title')} description={t('media_empty_desc')} />
+        <div className="flex flex-col gap-3">
+          {/* 🔴 空态下这条**尤其**要出：「库里什么都没有」与「守备目录读不到，所以我
+              什么都没看见」是两件事，而空态文案自己说不出后者。这正是 §4.4「错误态绝不
+              显示空态文案」那条纪律的同一形态——只不过这里的"错误"不在 HTTP 层
+              （端点 200、返回 []），而在磁盘层。 */}
+          <div className="root-health-strip"><RootHealthNote roots={health?.roots} /></div>
+          <EmptyState title={t('media_empty_title')} description={t('media_empty_desc')} />
+        </div>
       </Section>
     )
   }
@@ -135,6 +183,7 @@ export function MediaLibraryPage() {
   return (
     <Section>
       <div className="flex flex-col gap-3">
+        <div className="root-health-strip"><RootHealthNote roots={health?.roots} /></div>
         <span className="font-mono text-[11px] leading-4 text-muted-foreground">
           {t('media_result_count_prefix')} {items.length}
         </span>

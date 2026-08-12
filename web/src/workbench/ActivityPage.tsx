@@ -63,6 +63,7 @@ import {
 } from '../events/EventsProvider.js'
 import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
+import { RootHealthNote } from '../shell/RootHealthNote.js'
 import type { ScoutEvent, EventsStatus } from '../events/types.js'
 import type { ActivityQueueItemDTO, HealthDTO, ScoutCurrentDTO } from '../api/types.js'
 import { ACTIVITY_TABS, laneOf, tabOf, workIdOf, type ActivityTab } from './workbenchRouting.js'
@@ -179,6 +180,11 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
  *  ③ 巡检级/扫描级事件的最近一条（无 workbench 的那 6 个 emit 点）
  *  ④ 引擎不许可的原因（读 workPermitted，不是 engineEnabled）
  *  ⑤ 🟡 读数新鲜度（实时通道掉了 → 下面这些数字可能已经过期）
+ *  ⑥ 🔴 守备目录健康度（`/health` 的 `roots[]`，终局审计 🔴-1）
+ *
+ * ⚠️ ⑤ 与 ⑥ 说的**不是同一件事**，两条并列不是冗余：
+ *   ⑤ = 我（浏览器）听不听得见后端；⑥ = 后端看不看得见你的磁盘。
+ * 两者可以任意组合出现（实时通道好好的、而挂载掉了，是最常见的那一种）。
  */
 function StatusBar({
   health, current, patrolEvent, status,
@@ -230,6 +236,13 @@ function StatusBar({
           {live === 'off' ? t('wb_live_unavailable') : t('wb_live_retrying')}
         </span>
       )}
+
+      {/* 🔴 守备目录健康度（终局审计 🔴-1）——`/health` 的 `roots[]` 在这里第一次被读。
+          落点选在状态条里，与「上次巡检」「实时更新」并列：那两行说的是"引擎在不在动、
+          我听不听得见"，这一行说的是"引擎能不能看见我的库"——同一个问题（我的库现在
+          是什么状况）的第三个侧面。三行同形（一个标记 + 一句话），用户不必学第二套语汇。
+          两个名单都空时组件自己返回 null，健康的根一个字都不占屏。 */}
+      <RootHealthNote roots={health?.roots} />
 
       {/* 🔴 R-F1 的可见形态：识别在**这里**，不在 tab 里。
           判据是 current.kind === 'identify'（laneOf 的同一套口径在 useCurrentState 里已用过）。 */}
