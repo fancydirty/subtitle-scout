@@ -44,15 +44,19 @@ export const EPISODE_STATE_LABEL: Record<EpisodeState, TKey> = {
 
 /** 图例里列出的态与顺序——**只列八个染色态**，absent 不在其中（虚线格不染色，它由
  *  "边框形状"这个正交维度表达，见 §4.3 那张两维度表；把它塞进颜色图例会让人以为
- *  虚线也是一种颜色）。顺序 = 后端 STATE_RANK 的聚合序（已解决四个在前、未解决四个在后），
- *  与后端同序不是巧合：用户在图例里看到的先后，就是同一格多份文件时谁代表这一格的先后。 */
+ *  虚线也是一种颜色）。顺序 = 后端 STATE_RANK 的聚合序，与后端同序不是巧合：用户在图例里
+ *  看到的先后，就是同一格多份文件时谁代表这一格的先后。
+ *
+ *  ⚠️ `extra` 在**末位**，与后端 STATE_RANK 逐字一致（2026-08-13 审计）：它说的是
+ *  「**这一份**不算数」，不是「这一格不用管」，故只有当一格的全部文件都是 extra 时才报
+ *  extra。排进"已解决"段会让一个 Trailer 盖掉同格里真正在排队的正片。 */
 export const LEGEND_STATES: readonly Exclude<EpisodeState, 'absent'>[] = [
   'covered',
   'origin-skip',
   'embedded',
-  'extra',
   'translating',
   'unsolvable',
   'pending',
   'unjudged',
+  'extra',
 ]

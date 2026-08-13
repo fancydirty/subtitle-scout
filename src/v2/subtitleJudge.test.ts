@@ -91,14 +91,19 @@ describe('judgeSubtitle 规则 0：机械特典（用户裁决「特典都完全
     expect(judgeSubtitle({ originLang: 'zh', embeddedLangs: null, filename: 'Show NCOP.mkv' }, DEPS))
       .toEqual({ needs: false, reason: 'extra' })
     // 内嵌中字的特典同理（若排在 embedded 之后会记成 embedded）。
-    expect(judgeSubtitle({ originLang: 'en', embeddedLangs: ['chi'], filename: 'Show Menu.mkv' }, DEPS))
+    // ⚠️ Menu 属**普通词档**，必须方括号包裹才算标记（extrasFilter 的两档裁决）——
+    // 裸 `Show Menu.mkv` 现在不再命中，那是有意的（`The.Menu.2022.mkv` 是一部真电影）。
+    expect(judgeSubtitle({ originLang: 'en', embeddedLangs: ['chi'], filename: 'Show [Menu].mkv' }, DEPS))
       .toEqual({ needs: false, reason: 'extra' })
   })
 
   it('🔴 正常剧集不受影响（零误伤——本裁决的立论前提）', () => {
-    // 生产实测：`isMechanicalExtra` 在全库 645 文件里命中 16 个，其中**有季集号的 0 个**。
-    // 这里用真实的正片文件名钉住那个 0：一旦标记表被人加宽（比如把 'SP'/'OVA' 收进去，
-    // 或把词边界放松成 includes），这一条会红。
+    // ⚠️ 这里原先写着「生产实测全库 645 命中 16，其中**有季集号的 0 个**」并把它当作
+    // "规则不会误伤"的依据——**审计证伪**：那是**这批样本**的属性，不是规则的属性。
+    // 用真函数跑常见片名，`Trailer Park Boys - S01E01`、`Preview.to.a.Kill.S02E04`、
+    // `The.Menu.2022` 全部被误杀，前两个还带完整季集号。
+    // 治法是 extrasFilter 的两档裁决（普通英文词必须方括号包裹），六个反例的锁在
+    // extrasFilter.test.ts 的"误杀回归锁"一组。这里保留正片不受影响的端到端断言。
     for (const filename of [
       '[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][01][1080P][BDRip][HEVC-10bit][FLACx2].mkv',
       '[DMG] ヴァイオレット・エヴァーガーデン 第01話「愛してる」と自動手記人形 [BDRip][AVC_AAC][1080P][CHS](624F1EFE).mp4',

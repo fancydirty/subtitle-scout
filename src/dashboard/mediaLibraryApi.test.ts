@@ -674,6 +674,72 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       expect(buildMediaLibraryDetail(db, 'tmdb:807')!.seasons[0].episodes[0].episodeState).toBe('covered')
     })
 
+    // ── extra 的聚合位置（审计抓到的 R-F2 同型复发，与上面 A-4 两条同形）─────────────
+    // 病灶：extra 原先排在 STATE_RANK 第 4 档（已解决段）。A-4 被盖掉的是"已解决"的事实，
+    // 这里被盖掉的是**未解决**的事实——更糟：用户永远不会去点开那一格。
+    it('🔴 R-F2 违反：一份 extra + 一份 pending 正片 → 必须是 pending，不是 extra', () => {
+      // 审计用真代码造的数据：同一格里一份是特典、另一份是真需要字幕的正片。
+      // 报 extra = 界面说「特典 · 不找字幕」，而那份正在排队的正片被完全盖掉。
+      // `extra` 只说明**那一份**不算数，推不出**这一格**不用管——这是它与 embedded /
+      // origin-skip 的根本区别（那两个是关于这一格的事实）。
+      addWork('tmdb:808', { title: 'ExtraMasksPending' })
+      addCanonical('tmdb:808', 1, [1])
+      addFile({ path: '/a/s1e1.PV.mkv', workId: 'tmdb:808', season: 1, episode: 1, needsSubtitle: 0, skipReason: 'extra' })
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:808', season: 1, episode: 1, needsSubtitle: 1 })
+      const ep = buildMediaLibraryDetail(db, 'tmdb:808')!.seasons[0].episodes[0]
+      expect(ep.episodeState).toBe('pending')
+      // 两份文件的事实都要如实呈报，不许被聚合吞掉（同 aggregateDot 的既有口径）
+      expect(ep.fileCount).toBe(2)
+    })
+
+    it('🔴 入库顺序调换后结论不变（防"取首行"：extra 在前 vs 正片在前）', () => {
+      addWork('tmdb:809', { title: 'ExtraMasksPendingRev' })
+      addCanonical('tmdb:809', 1, [1])
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:809', season: 1, episode: 1, needsSubtitle: 1 })
+      addFile({ path: '/a/s1e1.PV.mkv', workId: 'tmdb:809', season: 1, episode: 1, needsSubtitle: 0, skipReason: 'extra' })
+      expect(buildMediaLibraryDetail(db, 'tmdb:809')!.seasons[0].episodes[0].episodeState).toBe('pending')
+    })
+
+    it('🔴 电影分支：一个 Trailer 不许让正片从界面上消失', () => {
+      // 电影格尤其危险——aggregateDot 把一部电影的**全部**文件聚成一格，
+      // 没有集号维度可以分开，一个 Trailer.mkv 就能盖掉正片。
+      addWork('tmdb:810', { title: 'A Movie With Trailer', mediaType: 'movie' })
+      addFile({ path: '/m/[Trailer].mkv', workId: 'tmdb:810', needsSubtitle: 0, skipReason: 'extra' })
+      addFile({ path: '/m/movie.mkv', workId: 'tmdb:810', needsSubtitle: 1 })
+      const m = buildMediaLibraryDetail(db, 'tmdb:810')!.movie!
+      expect(m.episodeState).toBe('pending')
+      expect(m.fileCount).toBe(2)
+    })
+
+    it('🔴 反向对照：**全部**文件都是 extra 时才报 extra（这才是 extra 成立的唯一条件）', () => {
+      // 这一条与上面三条成对。只锁"不许盖住正片"而不锁这一条的话，把 extra 从 STATE_RANK
+      // 里整个删掉（→ indexOf 给 -1 → 无条件赢）也能让上面三条继续绿——那是另一个方向的坏。
+      addWork('tmdb:811', { title: 'AllExtras', mediaType: 'movie' })
+      addFile({ path: '/m/[PV].mkv', workId: 'tmdb:811', needsSubtitle: 0, skipReason: 'extra' })
+      addFile({ path: '/m/[NCOP].mkv', workId: 'tmdb:811', needsSubtitle: 0, skipReason: 'extra' })
+      expect(buildMediaLibraryDetail(db, 'tmdb:811')!.movie!.episodeState).toBe('extra')
+    })
+
+    it('🔴 extra 也不许盖住其余每一个未解决态（逐态遍历，不是只测 pending）', () => {
+      // 只测 pending 的话，把 extra 挪到 translating/unsolvable/unjudged 之前仍然全绿。
+      // 逐态钉死"extra 必须垫底"这条完整判据。
+      const cases: Array<[string, { subStatus?: string | null; needsSubtitle?: number | null }, string]> = [
+        ['translating', { subStatus: 'handoff_translate' }, 'translating'],
+        ['unsolvable', { subStatus: 'unsolvable' }, 'unsolvable'],
+        ['pending', { needsSubtitle: 1 }, 'pending'],
+        ['unjudged', { needsSubtitle: null }, 'unjudged'],
+      ]
+      const got: string[] = []
+      for (const [tag, props, _want] of cases) {
+        const id = `tmdb:82-${tag}`
+        addWork(id, { title: tag, mediaType: 'movie' })
+        addFile({ path: `/m/${tag}/[PV].mkv`, workId: id, needsSubtitle: 0, skipReason: 'extra' })
+        addFile({ path: `/m/${tag}/main.mkv`, workId: id, ...props })
+        got.push(buildMediaLibraryDetail(db, id)!.movie!.episodeState)
+      }
+      expect(got).toEqual(cases.map(([, , want]) => want))
+    })
+
     it('🔴 顺序无关：把上一条的两份文件调换入库顺序，结论必须一模一样', () => {
       // 防"取首行"式实现——它会因入库顺序不同给出相反结论，而测试若恰好按"好的在前"写就永远绿。
       addWork('tmdb:803', { title: 'TwoCopiesRev' })

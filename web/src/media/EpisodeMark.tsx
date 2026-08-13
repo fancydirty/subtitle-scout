@@ -20,6 +20,7 @@
 // ── 无障碍 ───────────────────────────────────────────────────────────────
 // SVG 自身 aria-hidden（它是装饰性的形状通道），语义走外层 EpisodeCell 的 aria-label
 // （"E01 已配字幕"整句），避免屏幕阅读器把符号和集号读成两个割裂的片段。
+import type { ReactElement } from 'react'
 import type { EpisodeState } from '../api/types.js'
 
 /** 除 absent 外的七态——absent 不画符号（虚线格不染色，R-F12），故从这个联合里排除。 */
@@ -32,8 +33,15 @@ const STROKE = 1.8
  *    extra ▭ / pending ··· / unjudged ? / absent（不画）
  *
  *  ⚠️ **每个 case 的返回值就是那个态的判据本身**——把 covered 的 ✓ 写成 ◇ 不会有任何
- *  类型错误，只会让用户看到一个与事实相反的标记。EpisodeMark.test.tsx 逐态断言几何。 */
-function shapeOf(state: MarkState) {
+ *  类型错误，只会让用户看到一个与事实相反的标记。EpisodeMark.test.tsx 逐态断言几何。
+ *
+ *  ⚠️ 返回类型显式标注 `ReactElement`（不是让 TS 推断）+ 末尾 `never` 守卫，两者缺一不可：
+ *  没有它们时删掉任意一个 case，switch 会**静默推出 `| undefined`**（无 default、无显式
+ *  返回类型），`tsc` 退出码 0 —— 本文件头上"第九态时 TS 立刻报错"那句话在这一处曾经不成立
+ *  （审计实测：删 `case 'extra'` → tsc 通过，只有 3 条用例红）。
+ *  显式返回类型让"漏一个 case"在**这一行**就报 TS2366（不是等运行期渲染出空白），
+ *  never 守卫让"加了第十态"在**赋值那一行**就报 TS2322 并指出漏了哪个态。 */
+function shapeOf(state: MarkState): ReactElement {
   switch (state) {
     // ✓ 对勾：两段折线，先下后上（右上角收笔明显高于起笔——这是"勾"与"折角"的区别）。
     case 'covered':
@@ -88,6 +96,13 @@ function shapeOf(state: MarkState) {
         </>
       )
   }
+  // 编译期穷尽守卫。走到这里说明 MarkState 多了一个上面没处理的态：`state` 此时的类型
+  // 是 never，赋给 never 变量成立；一旦漏了 case，它的类型就是那个漏掉的字面量联合，
+  // 赋值立刻 TS2322 且错误信息直接点名漏了谁。
+  // 运行期 throw 不是装饰：JS 侧真传进一个未知态时，返回 undefined 会让 React 渲染出一个
+  // 空 svg（用户看到没有符号的集号格，且无人报错），抛错至少是可见的。
+  const _exhaustive: never = state
+  throw new Error(`EpisodeMark: 未处理的态 ${String(_exhaustive)}`)
 }
 
 /** 一个 12×12 的状态符号。`absent` 传进来返回 null——**虚线格不染色**（R-F12），

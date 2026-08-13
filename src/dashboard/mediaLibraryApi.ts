@@ -269,19 +269,41 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
  *    集号染色说 ⊘（无解），两个控件互相打脸。**这正是 R-F2 要防的形态，只是换了个控件。**
  *
  *    判据统一为：与 aggregateDot 的 `.some()` 同向——只要有一份「不用管了」，这一格就不用管了。
+ *
+ *  ⚠️⚠️ **`extra` 是这条口径的例外，它必须垫底**（审计抓到的 R-F2 同型复发，方向更糟）：
+ *
+ *    上面那条「有一份不用管 ⇒ 这一格不用管」对 covered / origin-skip / embedded 成立，
+ *    因为那三个说的都是**关于这一格的**事实：「这一集已经有字幕了」「这一集的母语就是中文」
+ *    「这一集自带内嵌轨」——任一份成立，这一集确实就不用管了。
+ *
+ *    `extra` 说的**不是**这种事实。它只说「**这一份文件**不算数」，推不出「这一格不用管」。
+ *    把它排进已解决段（原先在第 4 档）会造出这个形态，审计用真代码造数据实测：
+ *      同一格：一份 PV（skip_reason='extra'）+ 一份真需要字幕的正片（needs_subtitle=1）
+ *      → episodeState = 'extra'，界面报「特典 · 不找字幕」，
+ *        而那份**正在排队等找字幕的正片被完全盖掉**。
+ *    与 A-4 那两条锁（unsolvable 盖住 embedded）逐字同形，但方向反过来、**更糟**：
+ *    A-4 被盖掉的是「已解决」的事实（顶多让人多看一眼），这里被盖掉的是**未解决**的事实
+ *    ——用户永远不会去点开那一格，那集字幕永远不会有人管。
+ *    电影分支尤其危险：aggregateDot 把一部电影的**全部**文件聚成一格，
+ *    一个 `Trailer.mkv` 就能让正片从界面上消失。
+ *
+ *    正确的判据：**只有当这一格的全部文件都是 extra 时，这一格才该报 extra**。
+ *    把 extra 放在序列**最末**恰好精确等价于这句话——取最小 rank 的聚合下，
+ *    extra 胜出 ⟺ 没有任何一份文件的 rank 更小 ⟺ 每一份都是 extra。不需要特判。
  */
-const STATE_RANK: readonly Exclude<EpisodeState, 'absent'>[] = [
+const STATE_RANK = [
   // ── 已解决（这一格不需要人再操心）──────────────────────────────────────────
   'covered',      // 有外挂字幕（R24 磁盘事实，与 .some() 同向）
   'origin-skip',  // 母语即目标语言，压根不需要字幕
   'embedded',     // 已有内嵌目标语言轨
-  'extra',        // 机械特典，不算在找字幕的范围（2026-08-13 用户裁决）
   // ── 未解决（还在流水线上 / 卡住了）─────────────────────────────────────────
   'translating',  // 在翻译台上
   'unsolvable',   // 配不到也翻不了
   'pending',      // 排队等找
-  'unjudged',     // 系统还答不上来（兜底，必须垫底）
-]
+  'unjudged',     // 系统还答不上来
+  // ── 「这一份不算数」——不是关于这一格的事实，故垫底（见上方那段论证）───────────
+  'extra',        // 机械特典。只有**全部**文件都是 extra，这一格才报 extra
+] as const satisfies readonly Exclude<EpisodeState, 'absent'>[]
 
 function aggregateState(files: readonly FileRow[]): EpisodeState {
   // 零文件 → 'absent'（审计 A-6）。这一格磁盘上什么都没有，不是"系统还没判它"。
@@ -289,13 +311,41 @@ function aggregateState(files: readonly FileRow[]): EpisodeState {
   // **没有列表页那个 INNER JOIN files**，所以按 workId 直接打详情端点就能拿到空壳 works。
   // 原先落进下面的兜底返回 unjudged，把 absent 说成 unjudged——病 B 的形态。
   if (files.length === 0) return 'absent'
-  let best = STATE_RANK.length - 1
+  // 初值取 STATE_RANK.length（**越界哨兵**，不是 length-1）：写成 length-1 时，"初值"
+  // 与"序列最后一个态"是同一个下标，于是垫底那一态究竟是被文件选中的、还是根本没人选中
+  // 时的默认值，两种情形无法分辨。extra 移到垫底之后这一点会真的咬人——空循环会静默
+  // 返回 'extra'（"这一格全是特典"），而它其实什么都没判。哨兵让它变成显式的不可达分支。
+  // RANK = STATE_RANK 的**放宽视图**。`as const` 让 STATE_RANK 成为定长元组（穷尽守卫
+  // 需要那个字面量类型），而定长元组上的 indexOf 只接受元组成员、下标也被收成字面量联合
+  // ——哨兵 `length` 会当场类型错误。放宽一次，本函数内统一用它。
+  const RANK: readonly Exclude<EpisodeState, 'absent'>[] = STATE_RANK
+  let best = RANK.length
   for (const f of files) {
-    const rank = STATE_RANK.indexOf(classifyFileState(f))
+    const rank = RANK.indexOf(classifyFileState(f))
     if (rank < best) best = rank
   }
-  return STATE_RANK[best]
+  // files 非空 + classifyFileState 的返回类型被 STATE_RANK 穷尽覆盖 ⇒ best 必然已被赋值。
+  // 兜底成 unjudged（"系统答不上来"）而不是 extra：万一将来加了第十态而忘了进 STATE_RANK，
+  // indexOf 给 -1 会被上面的 `< best` 收下（-1 最小）——那是另一个坑，由下方穷尽守卫挡。
+  return RANK[best] ?? 'unjudged'
 }
+
+/** 编译期穷尽守卫：`EpisodeState` 加了新态而忘了排进 STATE_RANK → tsc 立刻红。
+ *
+ *  为什么需要它：aggregateState 用 `indexOf` 定位，漏排的态会拿到 **-1**，而 -1 比任何
+ *  真实 rank 都小 ⇒ 那个态会**无条件赢下每一格**，且 `STATE_RANK[-1]` 是 undefined。
+ *  这是纯运行期故障，测试不特意造那个态就永远绿。extra 这次的教训正是"新态进了序列但
+ *  位置错了"——位置对不对没法让编译器管，**在不在序列里**可以，那就至少把这一半钉死。
+ *
+ *  ⚠️ 写法有讲究，第一版写成 `Object.fromEntries(...) as Record<...>` 是**假守卫**
+ *  （变异实测：把 extra 整条从序列删掉，tsc 照样退出码 0）——`Object.fromEntries` 的返回
+ *  类型是 `{[k:string]:T}`，字面量信息在那一步就全丢了，末尾的 `as` 再把剩下的检查也压掉。
+ *  真守卫必须让**字面量元组**直接参与类型运算：STATE_RANK 上的 `as const satisfies`
+ *  锁住"每个元素都是合法态"，下面这个 never 赋值锁住"每个态都在元组里"，两个方向缺一不可。
+ *  （赋给 `never[]` 之类也不行——空数组对任何数组类型都成立，同样是假守卫。） */
+type _MissingFromStateRank = Exclude<Exclude<EpisodeState, 'absent'>, typeof STATE_RANK[number]>
+const _stateRankExhaustive: never = undefined as unknown as _MissingFromStateRank
+void _stateRankExhaustive
 
 // ---- R-F2「不管来源」的聚合 ----
 

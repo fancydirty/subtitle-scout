@@ -945,11 +945,6 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
     })
   })
 
-  describe('probeMemo / setProbeMemo', () => {
-  })
-
-  describe('deleteEpisodeByPath / deleteMovieByPath / deleteSeriesIfEmpty', () => {
-  })
 })
 
 // 胶水层修复战役（2026-07-16）：季级缺口事实清单，替代被处决的 LIMIT 1 代表集查询。

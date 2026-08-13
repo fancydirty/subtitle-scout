@@ -15,7 +15,8 @@
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "cli": "tsx src/cli/index.ts"
+    "cli": "tsx src/cli/index.ts",
+    "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
