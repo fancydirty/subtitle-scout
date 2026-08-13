@@ -18,6 +18,7 @@ import { SUBHD_BASE, curlFetch } from '../adapters/providers/subhd.js'
 import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
 import { detectChallenge } from '../adapters/providers/yunsuo.js'
 import { makeModel } from '../agent/llm.js'
+import { QUOTA_STATE_PREFIX } from '../cli/quotaState.js'
 import { join } from 'node:path'
 
 // ---------- DTO ----------
@@ -45,10 +46,19 @@ export interface SetupStatusDTO {
 
 export interface SecretTestDTO { ok: boolean; at: number; error?: string }
 
+/** 配额耗尽事实（settings 旁路键 `quota_state_<provider>`，写入方见 cli/quotaState.ts）。
+ *  `resetAt`=provider 报的重置时刻（ISO，OS 的 reset_time_utc；provider 没给就是 null，
+ *  那时只知道"耗尽了"不知道"何时恢复"——UI 必须如实说不知道，不许编一个时间）；
+ *  `observedAt`=我们观测到这件事的本地毫秒时刻。 */
+export interface ProviderQuotaDTO { resetAt: string | null; observedAt: number }
+
 export interface ProviderRowDTO {
   id: 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
   secrets: { name: SecretName; set: boolean; source: SecretSource; masked: string | null }[]
   lastTest: SecretTestDTO | null
+  /** 该源当前是否处于"配额已耗尽"状态；null=没有这个事实（正常，绝大多数时候如此）。
+   *  **挂在 provider 行上而不是另起一个聚合 DTO**：见 buildProviders 上方的落点论证。 */
+  quota: ProviderQuotaDTO | null
 }
 
 export interface ProvidersDTO { providers: ProviderRowDTO[] }
@@ -189,12 +199,72 @@ function readLastTest(deps: SetupDeps, target: ValidateTarget): SecretTestDTO | 
   }
 }
 
+/**
+ * `quota_state_*` 旁路键 → 按 provider id 索引的配额事实。**fail-soft**：值是 JSON 解析
+ * 失败、形状不对、或 observedAt 不是数字，一律跳过该条（垃圾值不许炸整个 providers 端点——
+ * 这个端点是设置页的主数据源，它 500 等于用户连凭据都看不见了）。
+ *
+ * **过期条目就地滤除**：`resetAt` 早于 now 说明配额窗口已经翻篇，事实已经不成立。
+ * （清键的正路是 `/download` 200 → applyQuotaEvent 的 delete 分支，但那要等下一次真实调用；
+ *  在此之前读侧不能把一条过期事实当现况展示——那正是"为什么 assrt 不找了"的反向误导。）
+ * `resetAt === null`（provider 没告诉我们何时恢复）**不滤**：不知道重置时刻不等于已经重置，
+ * 这一条只能等 `/download` 成功来清，读侧按"耗尽，恢复时间未知"如实展示。
+ */
+function readProviderQuotas(deps: SetupDeps): Map<string, ProviderQuotaDTO> {
+  const now = deps.now()
+  const out = new Map<string, ProviderQuotaDTO>()
+  for (const { key, value } of deps.settingsRepo.listByPrefix(QUOTA_STATE_PREFIX)) {
+    try {
+      const parsed = JSON.parse(value) as { resetAt?: unknown; observedAt?: unknown }
+      if (typeof parsed.observedAt !== 'number') continue
+      const resetAt = typeof parsed.resetAt === 'string' ? parsed.resetAt : null
+      if (resetAt !== null) {
+        const resetMs = Date.parse(resetAt)
+        if (Number.isNaN(resetMs) || resetMs < now) continue
+      }
+      out.set(key.slice(QUOTA_STATE_PREFIX.length), { resetAt, observedAt: parsed.observedAt })
+    } catch {
+      // 非法 JSON：跳过这一条，其余 provider 的行照常产出
+    }
+  }
+  return out
+}
+
+/**
+ * ── `quota` 字段的落点论证（2026-08-13，接上一轮主动记入的债务）─────────────────
+ *
+ * 上一轮删 `buildWorkflowWorkers` 时，`quota_state_*` 的**唯一读取方**随那份 DTO 一起消失，
+ * 键变成只写不读。此处把读取方加回来，但**刻意不照抄**被删的 `providerQuota: Array<{...}>`：
+ *
+ *  · 那是一个**跨 provider 的扁平数组**，为「活动页顶部来一句事实句」而生。它的容器
+ *    （workflow/workers 端点 + 旧活动页）已经整体退役，照抄它等于把一份已被取代的旧图纸
+ *    再画一遍——上一轮删它给的理由，反过来同样禁止我复活它的形状。
+ *  · 更要命的是**它没有身份**：一个 `provider: string` 字符串，与设置页里那一排真正的
+ *    provider 行没有任何类型上的联系。而配额耗尽这件事，天然是**某一个源的属性**。
+ *
+ * 挂到 `ProviderRowDTO.quota` 上，换来三件事：
+ *  ① provider 身份成了**类型化的**（`id` 那个联合），漂移会被 typeContract 当场抓住；
+ *  ② 不新增端点、不新增 client 方法、不新增 hook——设置页本来就在拉 /setup/providers；
+ *  ③ 展示位与"这个源现在能不能用"的其它事实（凭据是否配齐、上次测试通没通过）**并排**，
+ *    用户不必在两页之间拼凑一个源的状态。
+ *
+ * ⚠️ **今天生产 0 条**（实测 2026-08-13：`settings` 全表 7 行，无 `quota_state_*`）。
+ * 这**不是**"信号不产生"——OpenSubtitles 凭据在生产是配好的（env 三件套俱在），写入链
+ * `applyQuotaEvent ← emitProviderEvent ← buildAdapters` 全程活着，0 条的含义是
+ * **至今没撞过配额**。这正是它该有的常态：这个字段绝大多数时候是 null，只在出事那天说话。
+ *
+ * ⚠️ 今天**只有 opensubtitles 会写**这个键（全仓仅 opensubtitlesAdapter 发 code=
+ * 'quota_exhausted'；assrt 的 provider_error 不带 code）。读侧仍按 provider id 通用索引，
+ * 不硬编码 'opensubtitles'——哪天 assrt 适配器补上配额事件，UI 侧零改动就能显示。
+ */
 export function buildProviders(deps: SetupDeps): ProvidersDTO {
   const meta = deps.settingsRepo.listSecretMeta(deps.env)
+  const quotas = readProviderQuotas(deps)
   const rows = (Object.keys(PROVIDER_SECRETS) as ProviderRowDTO['id'][]).map((id) => ({
     id,
     secrets: PROVIDER_SECRETS[id].map((name) => meta.find((m) => m.name === name)!),
     lastTest: readLastTest(deps, id),
+    quota: quotas.get(id) ?? null,
   }))
   return { providers: rows }
 }

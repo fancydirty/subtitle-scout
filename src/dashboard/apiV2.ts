@@ -647,6 +647,11 @@ export function buildWorkflowPasses(db: ScoutDb, limit: number): WorkflowPassDTO
 // （有活写入者却没有读取方）。正确的处置是给它一个真正的展示位或删掉写入侧，两者都是
 // 独立的产品动作，不在一次结构清理里顺手决定。
 //
+// ✅ 2026-08-13 **已结清**：裁决"给它一个真展示位"。读取方加在
+// `dashboard/setupApi.ts` 的 `buildProviders`（`ProviderRowDTO.quota`），
+// 展示位在设置页的 `ProviderCard`——**刻意没有照抄**上面那个扁平 `providerQuota` 数组，
+// 理由写在 `setupApi.ts` 里 `buildProviders` 上方。这里不要再复活本形状。
+//
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * 🟡 2026-08-13「三个 jobs 读取面」裁决：**本条保留**，与同轮删除的
@@ -683,14 +688,26 @@ export function buildWorkflowPasses(db: ScoutDb, limit: number): WorkflowPassDTO
  *     subtitleVerify 一族时，**明写恢复路径是"把 TriagePage 挂回 AppShell"**
  *     （见 `v2/subtitleVerifyRepo.ts` 头注释）。那条裁决今天仍然成立，
  *     删掉 TriagePage 的第四区等于单方面拆掉另一轮裁决的恢复路径。
+ *     ⚠️ 2026-08-13 补记：TriagePage 的去留后来单独裁决过一轮（此前 FRONTEND-IMPL-DESIGN
+ *     的清点表判「删」，与上述恢复路径打架）。结论**雪藏保留**，正本在
+ *     `web/src/triage/TriagePage.tsx` 头注释，那里写明 DormantBox 与 jobs 族**同进退**
+ *     ——即下面第 4 条判据，两处不重抄。
  *
  * ── 4. 什么时候可以删（**可证伪的判据，一条能跑的命令**）──────────────────
  * 本条与 jobs 队列**同进退**：dormant 行的存在性完全由那个队列决定，队列一旦整族退役，
  * 本函数连墓碑行都查不到，届时必须一起走。判据（无输出 = 队列仍是孤儿 = 尚未触发）：
  *
- *     rg -l "from './handleWorkerTask.js'" src --glob '!*.test.ts'
+ *     rg -l "^import .*from '\./handleWorkerTask\.js'" src -g '!*.test.ts' -g '!cli/handleWorkerTask.ts'
  *
- * 这条命令**已经有机器载体**：`src/cli/handleWorkerTask.orphan.test.ts`。
+ * ⚠️ 2026-08-13 更正：这条判据此前写作
+ * `rg -l "from './handleWorkerTask.js'" src --glob '!*.test.ts'`，**那个形态今天已经
+ * 假阳**——它会命中两个文件：本文件（上面这行注释就含同一个字符串）与
+ * `cli/handleWorkerTask.ts` 自己。也就是说照抄它去核对的人会得到"队列复活了"的错误
+ * 结论。锚 `^import` 挡散文引用，`-g '!cli/handleWorkerTask.ts'` 挡自指。
+ * 这正是判据必须有机器载体（而不是只当散文留着）的原因：断言会被跑，散文不会。
+ *
+ * 这条命令**已经有机器载体**：`src/cli/handleWorkerTask.orphan.test.ts`（它解析 import
+ * 并剥注释，不受上述假阳影响，故那份守卫一直是对的——错的只是这里抄下来的命令行）。
  * 触发方式有两个方向，两个都要处置本条：
  *   (a) `cli/handleWorkerTask.ts` 与 jobs 队列整族**被删** → 本函数、DormantTaskDTO、
  *       dormantTargetLabel、端点、client 方法、useDormantTasks、DormantBox 一起删；

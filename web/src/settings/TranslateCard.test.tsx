@@ -11,11 +11,11 @@ const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', secrets: [
   { name: 'TRANSLATE_BASE_URL', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },
-], lastTest: null }
+], lastTest: null, quota: null }
 
 const LLM_ROW: ProviderRowDTO = { id: 'llm', secrets: [
   { name: 'LLM_MODEL', set: true, source: 'db', masked: 'mimo-v2.5' },
-], lastTest: null }
+], lastTest: null, quota: null }
 
 function renderCard(over: { translate?: Partial<ProviderRowDTO>; llm?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; deploy?: Partial<DeploySettingsDTO>; reload?: () => void } = {}) {
   const translate: ProviderRowDTO = { ...TRANSLATE_ROW, ...over.translate }

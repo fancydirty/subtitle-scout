@@ -63,6 +63,17 @@ import type { ScoutDb } from './db.js'
  * `last_verify_sweep_at` meta 键），再把 TriagePage 挂回 AppShell。环一旦有了入口，
  * 上面 6 条端点立刻全部有意义。
  *
+ * ⚠️ 2026-08-13 补记：上一句里的「把 TriagePage 挂回 AppShell」曾与
+ * `docs/design/2026-08-11-FRONTEND-IMPL-DESIGN.md` 的旧前端清点表直接打架——那张表判
+ * 「triage 已被雪藏 → 删」。用户裁决：**都留**，那张表已更正为「雪藏保留」。
+ * TriagePage 去留的**正本**在 `web/src/triage/TriagePage.tsx` 头注释（本处不重抄），
+ * 那里写明 TimingBox 与本族**同进退**：本族整族删除时 TimingBox 必须跟着走（它已列在
+ * 上面第 4 条的删除清单里），本族恢复时它是那份资产在前端的唯一出口。
+ *
+ * 上面第 4 条判据 (b) 现在有机器载体了：`src/dashboard/triageShelved.orphan.test.ts` 的
+ * ③ 钉着 `runVerifySweep` 仍未接进 daemonV2 这个事实——它红了 = 本族活了 = 该重读本段。
+ * 此前那条判据只是这段散文里的一行 `rg` 命令，没有任何东西会在它失效时变红。
+ *
  * 🔴 不要只删一半（比如"UI 反正没了，把端点删了留算法"）：那会留下一族无出口的算法，
  *    与本仓病 A 是同一形状，只是换了个方向。要么整族留，要么整族删。
  * ═══════════════════════════════════════════════════════════════════════════

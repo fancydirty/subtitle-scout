@@ -271,6 +271,14 @@ bind_work({
 | `series`/`episodes`/`movies` 表 | 替换为 works/work_files |
 | ingest.ts 识别相关 | 替换为 Jellyfin 约定扫描器 |
 
+> 🟡 **2026-08-13 注（只更正 triage 一行，不动这份存档的其余内容）**：上表「realign /
+> rescue / triage → 退役删除」**未曾执行，也不再是现行处置**。本文档描述的传送带架构整体
+> 没有落地（判据：`rg 'work_files' src` 无输出，works/work_files 两表从未建过），因此表里
+> 的处置全是**未落地意向**。triage 的现行裁决是**雪藏保留**，正本在
+> `web/src/triage/TriagePage.tsx` 头注释（含可证伪的删除判据），机器载体是
+> `src/dashboard/triageShelved.orphan.test.ts`。这行注是为了让下一个考古的人不必再核对
+> 一遍这份存档到底执行了没有。
+
 ---
 
 ## 9. 实施阶段

@@ -364,6 +364,14 @@ export const zh = {
   settings_provider_test: '测试',
   settings_provider_last_test_ok: '上次测试通过',
   settings_provider_last_test_fail: '上次测试失败',
+  // 配额耗尽（设置页 ProviderCard）——"为什么 assrt 不找了"的答案。
+  // 双通道（Carbon）：句子本身把话说全，空心标记承担形状差异，颜色只是第三重。
+  settings_provider_quota_exhausted: '配额已耗尽——此源当前不可用',
+  settings_provider_quota_resets_in: '恢复于',
+  // 🔴 resetAt=null 表示我们**不知道**何时恢复。如实说，绝不猜一个时间。
+  settings_provider_quota_reset_unknown: '恢复时间未知',
+  settings_provider_quota_observed: '观测于',
+  settings_provider_quota_ago_suffix: '前',
 
   // zimuku 视觉兜底卡片
   settings_zimuku_vision_heading: 'zimuku 视觉兜底（可选）',

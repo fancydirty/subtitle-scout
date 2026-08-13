@@ -429,6 +429,14 @@ export const en = {
   settings_provider_test: 'Test',
   settings_provider_last_test_ok: 'Last test passed',
   settings_provider_last_test_fail: 'Last test failed',
+  // Quota exhausted (settings/ProviderCard) — the answer to "why did assrt stop looking?".
+  // Two channels (Carbon): the sentence says it in full, the hollow marker carries the shape.
+  settings_provider_quota_exhausted: 'Quota exhausted — this source is unavailable right now',
+  settings_provider_quota_resets_in: 'resets in',
+  // 🔴 resetAt=null means we do NOT know when it comes back. Say so; never guess a time.
+  settings_provider_quota_reset_unknown: 'reset time unknown',
+  settings_provider_quota_observed: 'observed',
+  settings_provider_quota_ago_suffix: 'ago',
 
   // zimuku vision fallback card
   settings_zimuku_vision_heading: 'zimuku vision fallback (optional)',

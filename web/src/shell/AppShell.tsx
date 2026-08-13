@@ -7,6 +7,11 @@
 // TriagePage import 移除，侧栏也不再收 parked 角标。TriagePage 源码仍在 web/src/triage/ 下
 // （测试也全留着），将来重启用时把 import + 分支 + Sidebar 的 parked={workflow.data?.parked}
 // 三处加回即可。
+// 🟡 2026-08-13 更正：「雪藏」不等于「将来可能删」——它是**明确保留**的（且它是 verify
+//    族唯一的恢复载体：那族的恢复路径第 2 步就是"把 TriagePage 挂回本层"）。为什么留、
+//    什么时候才可以删（可证伪判据 + 机器载体）见 `web/src/triage/TriagePage.tsx` 头注释，
+//    那里是正本；本处不重抄。⚠️ 真挂回来时 `src/dashboard/triageShelved.orphan.test.ts`
+//    的②会当场变红——那是提醒去更新裁决，不是阻拦。
 //
 // ── 2026-08-12（Task ⑪）：旧页面下架，本层回到**四条光杆分支** ────────────────────
 // Task ⑦ 时这里有 5 个分支族（library 含二级路由 / workflow / settings + activity /

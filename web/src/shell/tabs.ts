@@ -8,6 +8,9 @@
 // 2026-08-07（spec §5）：甄别 tab 本轮雪藏——从四项减为三项。源码保留在 web/src/triage/ 下，
 // 将来重启用时把 { id: 'triage', labelKey: 'nav_triage' } 加回本表即可（Sidebar 的
 // TAB_ICONS/角标、route.ts 的 Tab 联合、AppShell 的分支、i18n 的 nav_triage 键需一并恢复）。
+// 🟡 2026-08-13 更正：「雪藏」不等于「将来可能删」——它是**明确保留**的。为什么留、
+//    什么时候才可以删（可证伪判据 + 机器载体）见 `web/src/triage/TriagePage.tsx` 头注释，
+//    那里是正本；本处不重抄。
 //
 // ── 2026-08-12（Task ⑦→⑪）：本表 = 侧栏渲染哪几项，Task ⑪ 起它**又等于**合法路由全集 ──
 // Task ⑦ 把 FRONTEND-SPEC 的三个页面（活动/通知/媒体库）+ 设置放进本表，同时把旧的

@@ -69,7 +69,15 @@
 //   (b) 距 2026-08-13 起再过一个发布周期，本模块仍**没有**被任何活代码 import。
 //       判据（一条能跑的命令，无输出 = 仍是孤儿 = 可以删）：
 //
-//         rg -l "from './handleWorkerTask.js'" src --glob '!*.test.ts'
+//         rg -l "^import .*from '\./handleWorkerTask\.js'" src -g '!*.test.ts' -g '!cli/handleWorkerTask.ts'
+//
+//       ⚠️ 2026-08-13 更正：此前这里写的是
+//       `rg -l "from './handleWorkerTask.js'" src --glob '!*.test.ts'`，**那个形态今天
+//       已经假阳**——它命中本文件（上面这行注释含同一字符串）与 `dashboard/apiV2.ts`
+//       （它头注释里也引用了这条命令）。照抄去核对会得出"队列复活了"的错误结论。
+//       锚 `^import` 挡散文引用，`-g '!cli/handleWorkerTask.ts'` 挡自指。
+//       本模块的守卫 `handleWorkerTask.orphan.test.ts` 解析 import 且剥注释，不受影响
+//       ——错的只是这里抄下来的命令行，不是那份断言。
 //
 //       雪藏满两轮 = 没人真的要它。
 //

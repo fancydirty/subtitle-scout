@@ -6,6 +6,7 @@ import {
   buildSetupStatus, buildProviders, putSecret, sanitizeCredentials, validateSetupTarget,
   type SetupDeps, type ValidateProbe,
 } from './setupApi.js'
+import { applyQuotaEvent } from '../cli/quotaState.js'
 
 let db: ScoutDb
 let settings: SettingsRepo
@@ -194,6 +195,93 @@ describe('buildProviders（Providers 区读面）', () => {
   it('secret_test:* 脏 JSON → lastTest=null（防御性解析）', () => {
     settings.set('secret_test:assrt', '{broken', NOW)
     expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'assrt')!.lastTest).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// quota 字段（2026-08-13：`quota_state_*` 只写不读的债务在这里结清）
+//
+// 写入方是 cli/quotaState.applyQuotaEvent（活的 translate/realign 路径），这里是它
+// **唯一的读取方**。删掉本组断言里的任何一条，那个键就重新变回只写不读。
+// ═══════════════════════════════════════════════════════════════════════════
+describe('buildProviders 的 quota 字段（quota_state_* 旁路键的唯一读取方）', () => {
+  const quotaKey = (p: string) => `quota_state_${p}`
+
+  it('没有旁路键时每一行的 quota 都是 null（常态：没撞过配额）', () => {
+    const p = buildProviders(makeDeps())
+    expect(p.providers.every((r) => r.quota === null)).toBe(true)
+  })
+
+  it('resetAt 在未来 → 落到对应 provider 行，其余行仍为 null', () => {
+    const resetAt = new Date(NOW + 3_600_000).toISOString()
+    settings.set(quotaKey('opensubtitles'), JSON.stringify({ resetAt, observedAt: NOW - 1000 }), NOW)
+    const p = buildProviders(makeDeps())
+    expect(p.providers.find((r) => r.id === 'opensubtitles')!.quota)
+      .toEqual({ resetAt, observedAt: NOW - 1000 })
+    expect(p.providers.filter((r) => r.id !== 'opensubtitles').every((r) => r.quota === null)).toBe(true)
+  })
+
+  // provider 没告诉我们何时恢复 → 不知道重置时刻**不等于**已经重置。这一条只能等
+  // /download 成功来清键，读侧必须留着并如实说"恢复时间未知"。
+  it('resetAt=null 不被当成过期滤掉（耗尽但恢复时间未知，仍是现况）', () => {
+    settings.set(quotaKey('assrt'), JSON.stringify({ resetAt: null, observedAt: NOW - 5000 }), NOW)
+    expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'assrt')!.quota)
+      .toEqual({ resetAt: null, observedAt: NOW - 5000 })
+  })
+
+  // 过期条目当作现况展示，正是"为什么 assrt 不找了"的反向误导——必须滤掉。
+  it('resetAt 已过去 → 滤除（配额窗口已翻篇，事实不再成立）', () => {
+    settings.set(
+      quotaKey('opensubtitles'),
+      JSON.stringify({ resetAt: new Date(NOW - 1).toISOString(), observedAt: NOW - 90_000 }),
+      NOW,
+    )
+    expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'opensubtitles')!.quota).toBeNull()
+  })
+
+  it('resetAt 不是可解析日期 → 滤除（不把垃圾当事实）', () => {
+    settings.set(quotaKey('opensubtitles'), JSON.stringify({ resetAt: 'not-a-date', observedAt: NOW }), NOW)
+    expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'opensubtitles')!.quota).toBeNull()
+  })
+
+  // 这个端点是设置页的主数据源；它 500 等于用户连凭据都看不见了。
+  it('脏 JSON / 缺 observedAt → 跳过该条，其余行照常产出（fail-soft，不炸端点）', () => {
+    settings.set(quotaKey('opensubtitles'), '{broken', NOW)
+    settings.set(quotaKey('jimaku'), JSON.stringify({ resetAt: null }), NOW)
+    settings.set(quotaKey('assrt'), JSON.stringify({ resetAt: null, observedAt: NOW }), NOW)
+    const p = buildProviders(makeDeps())
+    expect(p.providers).toHaveLength(8)
+    expect(p.providers.find((r) => r.id === 'opensubtitles')!.quota).toBeNull()
+    expect(p.providers.find((r) => r.id === 'jimaku')!.quota).toBeNull()
+    expect(p.providers.find((r) => r.id === 'assrt')!.quota).not.toBeNull()
+  })
+
+  // 键名里的 provider 段若不对应任何 provider 行，不许凭空多造一行出来。
+  it('未知 provider 的旁路键不产生额外行', () => {
+    settings.set(quotaKey('nonesuch'), JSON.stringify({ resetAt: null, observedAt: NOW }), NOW)
+    const p = buildProviders(makeDeps())
+    expect(p.providers).toHaveLength(8)
+    expect(p.providers.some((r) => r.id === 'nonesuch' as never)).toBe(false)
+  })
+
+  // 🔴 写入方与读取方**必须用同一个前缀常量**。这条钉住的是最阴的那种断链：
+  // 任一侧改了字面量而另一侧没改，写入照常、读取恒空，两侧测试都还是绿的。
+  it('🔴 端到端：applyQuotaEvent 真的写完，buildProviders 真的读得到（同一个前缀常量）', () => {
+    applyQuotaEvent(
+      { event: 'provider_error', provider: 'opensubtitles', message: 'quota exhausted', code: 'quota_exhausted', resetAt: new Date(NOW + 60_000).toISOString() },
+      settings,
+      NOW,
+    )
+    expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'opensubtitles')!.quota)
+      .toEqual({ resetAt: new Date(NOW + 60_000).toISOString(), observedAt: NOW })
+
+    // 反向：/download 200 清键 → 读侧当场回到 null（不是等过期）
+    applyQuotaEvent(
+      { event: 'api_call', provider: 'opensubtitles', endpoint: 'os/download', status: 200, durationMs: 5 },
+      settings,
+      NOW + 1,
+    )
+    expect(buildProviders(makeDeps()).providers.find((r) => r.id === 'opensubtitles')!.quota).toBeNull()
   })
 })
 

@@ -330,10 +330,20 @@ export interface SetupStatusDTO {
 
 export interface SecretTestDTO { ok: boolean; at: number; error?: string }
 
+/** 某个字幕源"配额已耗尽"的事实（后端 `ProviderQuotaDTO` 的手抄件）。
+ *  写入链：provider adapter 发 code='quota_exhausted' → cli/quotaState.applyQuotaEvent
+ *  → settings 的 `quota_state_<provider>` 键；读取方是 GET /api/v2/setup/providers。
+ *
+ *  🔴 渲染纪律：`resetAt === null` 是**"不知道何时恢复"**，不是"马上恢复"也不是"不会恢复"。
+ *  必须画成一句诚实的"恢复时间未知"，**绝不许**拿 observedAt 加一个猜的小时数兜底成
+ *  一个看起来很确定的时刻——用户会照着那个时间来等，而我们根本没有这个信息。 */
+export interface ProviderQuotaDTO { resetAt: string | null; observedAt: number }
+
 export interface ProviderRowDTO {
   id: ValidateTarget
   secrets: { name: SecretName; set: boolean; source: SecretSource; masked: string | null }[]
   lastTest: SecretTestDTO | null
+  quota: ProviderQuotaDTO | null
 }
 
 export interface ProvidersDTO { providers: ProviderRowDTO[] }

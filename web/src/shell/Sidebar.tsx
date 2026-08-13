@@ -6,6 +6,9 @@
 // 2026-08-07（spec §5）：甄别 tab 本轮雪藏——TAB_ICONS 的 triage 键、parked 角标 prop 与
 // endContent 一并移除（TAB_ICONS 是 Record<Tab, …>，留着 triage 键会被 TS 判为多余属性）。
 // 将来重启用时把 triage 图标键与 parked 角标加回即可（图标组件 TriageIcon 仍在 NavIcons 里）。
+// 🟡 2026-08-13 更正：「雪藏」不等于「将来可能删」——它是**明确保留**的。为什么留、
+//    什么时候才可以删（可证伪判据 + 机器载体）见 `web/src/triage/TriagePage.tsx` 头注释，
+//    那里是正本；本处不重抄。
 import { SideNav, SideNavHeading, SideNavItem } from './SideNav.js'
 import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
