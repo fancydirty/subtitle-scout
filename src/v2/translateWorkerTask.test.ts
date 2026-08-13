@@ -291,6 +291,68 @@ describe('listNewTranslateCandidates — 工作台谓词（C3 核心：改读 fi
   })
 })
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔴 2026-08-14：翻译台的「没有排队的作品」——字幕台 2026-08-13 修过的同一个洞
+// ══════════════════════════════════════════════════════════════════════════════
+// 字幕台的病灶原话（activityApi.ts / SUBTITLE_QUEUE_WHERE）：界面复用了 daemon 的**取件**
+// 谓词（含退避窗），全部在等的文件恰好都在退避窗时端点返回 [] → 活动页说「已排队 · 0 /
+// 没有排队的作品」。**空态与"全都在退避里"共用了同一句话。**
+//
+// 翻译台留了同一个洞：`tr_recheck_after`（v37/D6）那一条没有短路形参。生产当前
+// handoff_translate 0 行、翻译开关未配置，所以它今天还不是一句用户可见的假话——
+// 是个**装好的陷阱**，用户一开翻译就踩。故这一组只能靠构造场景，没有生产数据可验。
+//
+// 治法照抄字幕台的口径：**参数化而不是复制**——三条 WHERE 仍然只有一份文本，
+// `includeBackoff` 只把退避那一条短路掉。
+describe('listNewTranslateCandidates — includeBackoff（界面语义 vs daemon 取件语义）', () => {
+  it('🔴 热循环红线：**默认参数**仍然滤掉退避中的行（D6，这条最重要）', () => {
+    // 翻译流是主进程内独立循环（R19），下一圈几秒后就来。默认参数一旦漏了这条闸，
+    // 同一行被反复领走，每次一个数分钟的**付费** LLM session。本仓对此有明确红线。
+    seedFile('/media/tv/Show/S01E01.mkv', { trRecheckAfter: NOW + 1 })
+    expect(listNewTranslateCandidates(db, NOW)).toEqual([])
+    // 显式传 false 与不传必须同义（默认值不是"碰巧"对的）
+    expect(listNewTranslateCandidates(db, NOW, { includeBackoff: false })).toEqual([])
+  })
+
+  it('🔴 includeBackoff: true → 退避中的行**照样返回**（界面问的是"还有什么在等"）', () => {
+    const at = NOW + 16 * 3_600_000
+    seedFile('/media/tv/Show/S01E01.mkv', { trRecheckAfter: at })
+    const got = listNewTranslateCandidates(db, NOW, { includeBackoff: true })
+    expect(got.map((c) => c.videoPath)).toEqual(['/media/tv/Show/S01E01.mkv'])
+  })
+
+  it('🔴 候选带出 trRecheckAfter 原值——界面要说得出"最早什么时候重试"', () => {
+    // 只有 includeBackoff 模式看得见退避中的行，故"最早什么时候"这句话在默认模式下
+    // 问不出来。这一列存在的唯一理由就是让界面能说出那个时刻（同 SubtitleQueueItem.recheckAfter）。
+    const at = NOW + 16 * 3_600_000
+    seedFile('/media/tv/Show/S01E01.mkv', { trRecheckAfter: at })
+    seedFile('/media/tv/Show/S01E02.mkv', { trRecheckAfter: null })
+    const byPath = new Map(
+      listNewTranslateCandidates(db, NOW, { includeBackoff: true }).map((c) => [c.videoPath, c]),
+    )
+    expect(byPath.get('/media/tv/Show/S01E01.mkv')!.trRecheckAfter).toBe(at)
+    // NULL = 从没被翻译流碰过 = 立刻可领；如实带出 null，不许折叠成 0 或 now
+    expect(byPath.get('/media/tv/Show/S01E02.mkv')!.trRecheckAfter).toBeNull()
+  })
+
+  it('🔴 放宽的只是退避那一条：**归属**谓词在两种模式下字节一致', () => {
+    // 若有人把 includeBackoff 实现成"界面自己写一份两条的 WHERE"，最可能的漂移形态是
+    // 界面把 covered / unsolvable / 未识别的行也算成"在等"——用户看到的队列比 daemon
+    // 会跑的长，还是一句假话。
+    seedFile('/media/a.mkv', { subStatus: null })
+    seedFile('/media/b.mkv', { subStatus: 'covered', workId: 'tmdb:2' })
+    seedFile('/media/c.mkv', { subStatus: 'unsolvable', workId: 'tmdb:3' })
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id, sub_status, updated_at)
+                VALUES (?,?,?,?,?,NULL,'handoff_translate',?)`)
+      .run('/media/orphan.mkv', '/media', 'orphan.mkv', 100, 1000, 1000)
+    expect(listNewTranslateCandidates(db, NOW, { includeBackoff: true })).toEqual([])
+  })
+
+  it('🔴 空态仍是真的空态：includeBackoff 不许无中生有', () => {
+    expect(listNewTranslateCandidates(db, NOW, { includeBackoff: true })).toEqual([])
+  })
+})
+
 describe('applyTranslateOutcome — 8 种 worker status 按 §5 映射表处置（C + D）', () => {
   it('🔴 用例 5：installed → 不写 covered / 清 tr_attempt / 写 tr_recheck_after（三条分开断言）', () => {
     seedFile('/media/x.mkv', { trAttempt: 2 })

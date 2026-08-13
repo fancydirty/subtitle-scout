@@ -14,6 +14,7 @@ import type { FindSubtitleTask, FindSubtitleTargetFact } from '../agent/findSubt
 // 调度器拿 model 自己造 worker 会正面违反那条口径，故这两个 import 不该复活——
 // 需要换 worker 实现时改的是注入点，不是这里。
 import { traceBus } from '../core/traceBus.js'
+import { clusterDueNow, clusterEarliestRetryAt } from './backoffCluster.js'
 import { recordFound } from './notificationsRepo.js'
 
 export interface SubtitleQueueItem {
@@ -69,33 +70,22 @@ export interface SubtitleQueueOpts {
 
 /** 这一项现在**会不会被 daemon 取走**（至少一个文件到点）。
  *
- *  🔴 判据是 `.some()` 而不是 `.every()`，这是本组两个 helper 唯一需要论证的地方：
- *  daemon 的取件是**逐文件**的——`listSubtitleQueue` 默认模式下把退避中的文件滤掉，
- *  剩下一个到点的文件仍然会让这个作品成簇被跑。故"2 集在等、其中 1 集到点"这一项
- *  **现在真的会动**，说它 dueNow=false 是一句假话（用户会以为要等，实际下一轮就跑）。
- *  `.every()` 的语义是"整簇都到点"，那个问题没有任何界面在问。
+ *  判据本身（`.some()` 而不是 `.every()`，以及与 earliestRetryAt 的同向收口）住在
+ *  `backoffCluster.ts`——**两个工作台共用那一份**。2026-08-14 翻译台补同型的洞时，
+ *  照抄一份到那边就意味着以后有人改判据只改得到一处，两个 tab 静默劈叉（C30）。
+ *  这里只负责把字幕轨自己的那一列（`files.recheck_after`）喂进去。
  *
  *  默认模式下恒 true（SQL 已滤）；`includeBackoff` 模式下才有信息量。
  *  界面拿它区分"33 个在等，其中 0 个会动"与"33 个在等、daemon 却没动"
  *  ——**这两件事对用户的含义完全相反**，共用一句"已排队 33"就是把它们混成半真的话。 */
 export function queueItemDueNow(item: SubtitleQueueItem, now: number): boolean {
-  return item.files.some((f) => f.recheckAfter === null || f.recheckAfter <= now)
+  return clusterDueNow(item.files.map((f) => f.recheckAfter), now)
 }
 
 /** 这一簇里**最早**的重试时刻；只要有任一文件已到点（即 `queueItemDueNow` 为真）→ null。
- *
- *  与 dueNow 同向的收口：这一项现在就会动时，"最早 X 后重试"是一句无意义的话
- *  （它压根不在等）。两个 helper 的口径必须一致，否则界面会渲染出
- *  "dueNow 但 16h 后重试"这种自相矛盾的副行。 */
+ *  判据同上，住在 backoffCluster.ts。 */
 export function queueItemEarliestRetryAt(item: SubtitleQueueItem, now: number): number | null {
-  if (queueItemDueNow(item, now)) return null
-  let earliest: number | null = null
-  for (const f of item.files) {
-    const at = f.recheckAfter
-    if (at === null || at <= now) continue
-    if (earliest === null || at < earliest) earliest = at
-  }
-  return earliest
+  return clusterEarliestRetryAt(item.files.map((f) => f.recheckAfter), now)
 }
 
 /** 字幕队列：一个作品的一簇（needs_subtitle=1 的全部文件）。

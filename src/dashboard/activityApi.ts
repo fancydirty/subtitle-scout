@@ -34,6 +34,7 @@ import {
   listSubtitleQueue, queueItemDueNow, queueItemEarliestRetryAt,
 } from '../v2/subtitleScheduler.js'
 import { listNewTranslateCandidates } from '../v2/translateWorkerTask.js'
+import { clusterDueNow, clusterEarliestRetryAt } from '../v2/backoffCluster.js'
 
 /** 排队中的一个**作品**（R-F4：粒度是作品，不是集）。 */
 export interface ActivityQueueItemDTO {
@@ -55,16 +56,22 @@ export interface ActivityQueueItemDTO {
    *  🔴 **这不是 total、不是序号**——它是"这个作品自己有几集在等"，与队列长度无关。
    *  见文件头对 :578 那条裁决的论证。 */
   pendingFileCount: number
-  /** 这一项**现在就能取**吗。
+  /** 这一项**现在就能取**吗（false = 全部文件都还在退避窗里）。
    *
    *  🔴 这是 2026-08-13 那条假话的修复点。此前本端点复用的是 daemon 的**取件**谓词
    *  （含退避窗），于是生产上「needs_subtitle=1 AND sub_status IS NULL」的 33 个文件
    *  全在退避窗里时，本端点返回空数组，活动页说「已排队 · 0 / 没有排队的作品」——
    *  而库里确实有 33 个在等。**空态与"全都在退避里"共用了同一句话。**
    *
-   *  修法不是在这里重写一份 WHERE（那正是本文件头注释禁的），而是让
-   *  `listSubtitleQueue` 的第三条谓词可短路（`includeBackoff`，见那边的论证）：
-   *  归属谓词仍是同一份文本，只是本端点问的是「还有什么在等」而不是「现在该取哪件」。
+   *  修法不是在这里重写一份 WHERE（那正是本文件头注释禁的），而是让取件函数的退避
+   *  那一条谓词可短路（`includeBackoff`）：归属谓词仍是同一份文本，只是本端点问的是
+   *  「还有什么在等」而不是「现在该取哪件」。
+   *
+   *  🔴 2026-08-14：**两个台现在都走这条口径**。翻译台此前恒 true（它的取件谓词没有
+   *  短路形参），于是留着与字幕台同型的洞：全在 `tr_recheck_after` 退避窗时同样返回
+   *  空数组、同样说"没有排队的作品"。生产当时 handoff_translate 0 行、翻译开关未配置，
+   *  所以它还没变成用户可见的假话——是个装好的陷阱。现已按同一参数化口径修掉，
+   *  且 dueNow/retryAfter 的判据两台共用 backoffCluster 的那一份文本。
    *
    *  false 时 `retryAfter` 必非 null；true 时 `retryAfter` 恒 null。 */
   dueNow: boolean
@@ -176,9 +183,22 @@ export function buildActivity(
   // listNewTranslateCandidates 是**逐文件**的（翻译是每集一个 LLM session），
   // 而 R-F4 要求活动页粒度 = 作品 → 在这里按 workId 折叠，计数落到 pendingFileCount。
   // 折叠时保序（Map 保插入序，而该函数已按 work_id/season/episode 排好）。
-  const translateByWork = new Map<string, number>()
-  for (const c of listNewTranslateCandidates(db, now)) {
-    translateByWork.set(c.workId, (translateByWork.get(c.workId) ?? 0) + 1)
+  //
+  // 🔴 `includeBackoff: true`——与字幕台同一条论证（2026-08-14 补上）。翻译台此前恒
+  // `dueNow: true`，理由是"它的取件谓词没有短路形参，返回的行按定义都已到点"——那句话
+  // 描述的是**实现的缺陷**而不是一条设计裁决：全部行都在 tr_recheck_after 退避窗里时，
+  // 本端点返回空数组，活动页照样说「已排队 0 / 没有排队的作品」，与字幕台修掉的是同一句
+  // 假话。谓词没有第二份，`includeBackoff` 只短路退避那一条，见 translateWorkerTask
+  // 里 TRANSLATE_QUEUE_WHERE 的论证。
+  //
+  // 折叠时把每个文件的 tr_recheck_after 收进数组：dueNow/retryAfter 是**簇级**的两句话，
+  // 判据（`.some()` / 取最早）住在 backoffCluster.ts，与字幕台共用同一份文本。
+  const translateByWork = new Map<string, { count: number; recheckAts: (number | null)[] }>()
+  for (const c of listNewTranslateCandidates(db, now, { includeBackoff: true })) {
+    let e = translateByWork.get(c.workId)
+    if (!e) { e = { count: 0, recheckAts: [] }; translateByWork.set(c.workId, e) }
+    e.count += 1
+    e.recheckAts.push(c.trRecheckAfter)
   }
 
   const faces = loadWorkFaces(db, [
@@ -215,13 +235,14 @@ export function buildActivity(
         retryAfter: queueItemEarliestRetryAt(i, now),
       }),
     ),
-    // 🔴 翻译台恒 `dueNow: true`，这**不是**偷懒的常量：`listNewTranslateCandidates`
-    // 的谓词里 `tr_recheck_after` 那一条**没有**被短路（它没有 includeBackoff 形参），
-    // 所以它返回的每一行按定义都已到点。给一个不成立的 false 才是假话。
-    // ⚠️ 代价如实记：翻译台因此仍有与字幕台同型的空态歧义（全在退避窗时说"0 个在等"）。
-    // 未修，见报告"发现但没修"——修它要动 translateWorkerTask 的取件谓词，那是另一条链。
-    translateQueue: [...translateByWork.entries()].map(([workId, n]) =>
-      project(workId, workId, n, { dueNow: true, retryAfter: null }),
+    // 翻译台与字幕台**同一口径**（2026-08-14 起）：退避中的项照样出现，只是
+    // dueNow=false 且给得出 retryAfter。两个 tab 并排放在同一个页面上，
+    // "在等"这个词在两边必须是同一个意思——判据共用 backoffCluster 的那一份。
+    translateQueue: [...translateByWork.entries()].map(([workId, e]) =>
+      project(workId, workId, e.count, {
+        dueNow: clusterDueNow(e.recheckAts, now),
+        retryAfter: clusterEarliestRetryAt(e.recheckAts, now),
+      }),
     ),
   }
 }

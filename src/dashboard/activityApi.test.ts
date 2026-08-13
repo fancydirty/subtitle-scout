@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { buildActivity } from './activityApi.js'
 import { listSubtitleQueue } from '../v2/subtitleScheduler.js'
+import { listNewTranslateCandidates } from '../v2/translateWorkerTask.js'
 
 let db: ScoutDb
 const NOW = 1_700_000_000_000
@@ -256,13 +257,18 @@ describe('buildActivity：翻译台排队段', () => {
     expect(dto.translateQueue.map((i) => i.workId)).toEqual(['tmdb:9'])
   })
 
-  it('翻译退避窗（tr_recheck_after）未到的不进队列', () => {
+  it('翻译退避窗（tr_recheck_after）未到的**照样在队列里**，只是 dueNow=false', () => {
+    // 2026-08-14：这条以前断言的是 `toEqual([])`，那正是 2026-08-13 在字幕台修掉的
+    // 同一句假话——「全都在退避里」被折叠成「没有排队的作品」。见下面那一组的论证。
     addWork('tmdb:9', { title: 'Trans Show' })
+    const at = NOW + 3_600_000
     addFile({
       path: '/d/t.mkv', workId: 'tmdb:9', season: 1, episode: 1,
-      subStatus: 'handoff_translate', trRecheckAfter: NOW + 3_600_000,
+      subStatus: 'handoff_translate', trRecheckAfter: at,
     })
-    expect(buildActivity(db, { now: NOW }).translateQueue).toEqual([])
+    expect(buildActivity(db, { now: NOW }).translateQueue).toMatchObject([
+      { workId: 'tmdb:9', pendingFileCount: 1, dueNow: false, retryAfter: at },
+    ])
   })
 
   it('翻译项同样带两张图（一个作品会从排队走到在跑，那一刻横版图要已经在手）', () => {
@@ -270,6 +276,82 @@ describe('buildActivity：翻译台排队段', () => {
     addFile({ path: '/d/t.mkv', workId: 'tmdb:9', season: 1, episode: 1, subStatus: 'handoff_translate' })
     expect(buildActivity(db, { now: NOW }).translateQueue[0]).toMatchObject({
       posterPath: '/p9.jpg', backdropPath: '/bd9.jpg',
+    })
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 2026-08-14：翻译台的空态歧义 —— 字幕台 2026-08-13 修过的同一个洞
+  // ══════════════════════════════════════════════════════════════════════════
+  // 上面那一组（字幕台）的病灶：界面复用 daemon 的取件谓词（含退避窗）→ 全在退避窗时
+  // 返回 [] →「已排队 · 0 / 没有排队的作品」。翻译台留了同一个洞，只是退避列换成
+  // `tr_recheck_after`（v37/D6，防付费 LLM 热循环）。
+  //
+  // ⚠️ 与字幕台不同的是：生产当前 handoff_translate **0 行**、翻译开关未配置，所以这**今天
+  // 不是**用户可见的假话，是个装好的陷阱——一旦用户开翻译就踩。没有生产数据可验，
+  // 全部靠这一组构造场景。
+  describe('翻译台：退避窗中的作品仍在队列里（空态 ≠ 全都在等重试）', () => {
+    it('🔴 全部文件都在退避窗 → **照样出现**，dueNow=false 且给得出 retryAfter', () => {
+      addWork('tmdb:9', { title: 'Trans Backing Off' })
+      const at = NOW + 16 * 3_600_000
+      addFile({
+        path: '/d/t.mkv', workId: 'tmdb:9', season: 1, episode: 1,
+        subStatus: 'handoff_translate', trRecheckAfter: at,
+      })
+      const dto = buildActivity(db, { now: NOW })
+      expect(dto.translateQueue).toHaveLength(1)
+      expect(dto.translateQueue[0]).toMatchObject({
+        workId: 'tmdb:9', pendingFileCount: 1, dueNow: false, retryAfter: at,
+      })
+    })
+
+    it('🔴 retryAfter 是这一簇里**最早**的那个（对齐字幕台语义）', () => {
+      addWork('tmdb:9', { title: 'Trans Backing Off' })
+      const soon = NOW + 2 * 3_600_000
+      const later = NOW + 20 * 3_600_000
+      addFile({ path: '/d/a.mkv', workId: 'tmdb:9', season: 1, episode: 1, subStatus: 'handoff_translate', trRecheckAfter: later })
+      addFile({ path: '/d/b.mkv', workId: 'tmdb:9', season: 1, episode: 2, subStatus: 'handoff_translate', trRecheckAfter: soon })
+      expect(buildActivity(db, { now: NOW }).translateQueue[0]).toMatchObject({
+        pendingFileCount: 2, dueNow: false, retryAfter: soon,
+      })
+    })
+
+    it('🔴 一簇里只要有一个到点 → dueNow=true、retryAfter=null（这一项现在真的会被跑）', () => {
+      // 与字幕台同一条论证（queueItemDueNow 的 `.some()`）：daemon 的取件是**逐文件**的，
+      // 剩一个到点的文件就足以让这个作品当轮被领走。说它 dueNow=false 是假话。
+      addWork('tmdb:9', { title: 'Trans Mixed' })
+      addFile({ path: '/d/a.mkv', workId: 'tmdb:9', season: 1, episode: 1, subStatus: 'handoff_translate', trRecheckAfter: NOW + 9_000_000 })
+      addFile({ path: '/d/b.mkv', workId: 'tmdb:9', season: 1, episode: 2, subStatus: 'handoff_translate', trRecheckAfter: null })
+      expect(buildActivity(db, { now: NOW }).translateQueue[0]).toMatchObject({
+        dueNow: true, retryAfter: null,
+      })
+    })
+
+    it('🔴 边界：tr_recheck_after === now 算到点（dueNow=true / retryAfter=null）', () => {
+      addWork('tmdb:9', { title: 'Trans Exact' })
+      addFile({ path: '/d/t.mkv', workId: 'tmdb:9', season: 1, episode: 1, subStatus: 'handoff_translate', trRecheckAfter: NOW })
+      expect(buildActivity(db, { now: NOW }).translateQueue[0]).toMatchObject({
+        dueNow: true, retryAfter: null,
+      })
+    })
+
+    it('🔴 空态仍然是真的空态：库里没有 handoff_translate 的行 → []（不许因放宽而无中生有）', () => {
+      addWork('tmdb:2', { title: 'Covered' })
+      addFile({ path: '/d/2.mkv', workId: 'tmdb:2', season: 1, episode: 1, subStatus: 'covered' })
+      expect(buildActivity(db, { now: NOW }).translateQueue).toEqual([])
+    })
+
+    it('🔴 daemon 的取件语义**一字未改**：同一批数据，默认模式下退避行仍然不可取', () => {
+      // 🔴🔴 这条是本次放宽的**反向守卫**，也是全组最重要的一条：若有人把 includeBackoff
+      // 默认成 true（或直接删掉那一条 WHERE），daemon 的翻译循环（R19：主进程内独立循环，
+      // 下一圈几秒后就来）会当轮重领退避中的文件 → 每圈一个**付费** LLM session，
+      // 而本文件其余所有断言都还是绿的。故必须在这里正面钉住默认行为。
+      addWork('tmdb:9', { title: 'Trans Backing Off' })
+      addFile({
+        path: '/d/t.mkv', workId: 'tmdb:9', season: 1, episode: 1,
+        subStatus: 'handoff_translate', trRecheckAfter: NOW + 86_400_000,
+      })
+      expect(listNewTranslateCandidates(db, NOW)).toEqual([])
+      expect(listNewTranslateCandidates(db, NOW, { includeBackoff: true })).toHaveLength(1)
     })
   })
 })

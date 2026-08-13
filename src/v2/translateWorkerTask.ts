@@ -108,6 +108,49 @@ export interface NewTranslateCandidate {
   title: string
   /** works.origin_lang（TMDB 两字母码），NULL=未刮到。单跳选源要用。 */
   originLang: string | null
+  /** `files.tr_recheck_after` 原值。NULL = 不在退避窗里（现在就能领）。
+   *
+   *  🔴 只有 `includeBackoff: true` 的调用方**可能**看到未来时刻——默认调用（daemon 派活）
+   *  下这一列必然满足 `IS NULL OR <= now`，因为 SQL 已经把不满足的行滤掉了。
+   *  它存在的唯一理由是让**界面**能说出"最早什么时候重试"，而那句话在默认模式下问不出来
+   *  （默认模式看不见那些行）。派活侧不读它，读了也没意义。
+   *  （与 SubtitleQueueItem.files[].recheckAfter 同一条论证、同一个用途。） */
+  trRecheckAfter: number | null
+}
+
+/** `listNewTranslateCandidates` 的取件谓词——**全仓唯一一份**（C30：两份判据必漂移）。
+ *
+ *  ── 为什么第二条要参数化，而不是分裂出第二个函数（照抄字幕台 2026-08-13 的口径）──
+ *  第一条（`sub_status='handoff_translate'`）与第三条（`INNER JOIN works`，写在 FROM 里）
+ *  回答的是「这个文件**在不在**翻译工作台上」——与时间无关的归属事实，daemon 与界面的
+ *  答案必须字节一致。第二条（`tr_recheck_after` 退避窗）回答的是「**现在**该不该动它」，
+ *  两个调用方要的答案本来就不同：
+ *    · daemon 问「现在该领哪件」→ 退避中的**该滤**（不滤就是 D6 的付费 LLM 热循环：
+ *      翻译流是主进程内独立循环 / R19，下一圈几秒后就来，每圈一个数分钟的付费 session）
+ *    · 界面问「还有什么在等」  → 退避中的**不该滤**（滤了就是「已排队 0 / 没有排队的作品」，
+ *      而库里的文件正在等——这正是字幕台 2026-08-13 修掉的那句假话，翻译台同型）
+ *
+ *  🔴 参数化而不是复制：两条 WHERE 仍然只有这**一份**文本，`includeBackoff` 只是把退避
+ *  那一条短路掉。有人改归属条件时，两个调用方**同时**跟着变，不可能漂移。若改成"界面
+ *  自己写一份一条的 WHERE"，漂移形态是界面把 covered / unsolvable / 未识别的行也算成
+ *  "在等"——用户看到的队列比 daemon 会跑的长，还是一句假话。
+ *
+ *  ⚠️ 生产现状（2026-08-14）：`handoff_translate` **0 行**、翻译开关未配置，所以本条今天
+ *  还不是用户可见的假话，是个**装好的陷阱**——用户一开翻译就踩。故它没有生产数据可验，
+ *  全靠 translateWorkerTask.test.ts / activityApi.test.ts 里构造的场景钉着。 */
+const TRANSLATE_QUEUE_WHERE = `
+        f.sub_status = 'handoff_translate'
+        AND (? = 1 OR f.tr_recheck_after IS NULL OR f.tr_recheck_after <= ?)`
+
+/** `listNewTranslateCandidates` 的可选行为。 */
+export interface TranslateQueueOpts {
+  /** true = 连**退避窗未到**的行一起返回（界面用："还有什么在等"）。
+   *  默认 false = daemon 的领活语义（"现在该领哪件"）。
+   *
+   *  🔴 daemon 侧**绝不许**传 true：那会让退避中的文件当轮就被重领，
+   *  即 D6 的付费 LLM 热循环。这条由 translateWorkerTask.test.ts 与
+   *  activityApi.test.ts 的守卫用例各钉一道。 */
+  includeBackoff?: boolean
 }
 
 /** 翻译工作台（spec §2）：`sub_status='handoff_translate'` 且 `tr_recheck_after` 到点。
@@ -126,15 +169,25 @@ export interface NewTranslateCandidate {
  *
  *  **不做可救性预筛**（不看 origin_lang / embedded_langs）：那是 judge 在阶段 2.5 的活
  *  （R21/D9 的 translatable 列），能进 handoff_translate 就意味着 judge 已判 translatable=1。
- *  在这里再判一次是第二份实现，两份漂移时没人知道该信哪个。 */
-export function listNewTranslateCandidates(db: ScoutDb, now: number): NewTranslateCandidate[] {
+ *  在这里再判一次是第二份实现，两份漂移时没人知道该信哪个。
+ *
+ *  ── `opts.includeBackoff`（2026-08-14）───────────────────────────────────────
+ *  第二条（退避窗）现在可短路，谓词文本仍只有 `TRANSLATE_QUEUE_WHERE` 那一份。
+ *  完整论证在那个常量上方。**daemon 侧不传**（默认 false = 原语义，一字未改）。 */
+export function listNewTranslateCandidates(
+  db: ScoutDb, now: number, opts: TranslateQueueOpts = {},
+): NewTranslateCandidate[] {
+  const includeBackoff = opts.includeBackoff === true
   const rows = db.prepare(
-    `SELECT f.path AS path, f.work_id AS workId, w.title AS title, w.origin_lang AS originLang
+    `SELECT f.path AS path, f.work_id AS workId, w.title AS title, w.origin_lang AS originLang,
+            f.tr_recheck_after AS trRecheckAfter
        FROM files f JOIN works w ON f.work_id = w.id
-      WHERE f.sub_status = 'handoff_translate'
-        AND (f.tr_recheck_after IS NULL OR f.tr_recheck_after <= ?)
+      WHERE ${TRANSLATE_QUEUE_WHERE}
       ORDER BY f.work_id, f.season, f.episode, f.path`,
-  ).all(now) as Array<{ path: string; workId: string; title: string; originLang: string | null }>
+  ).all(includeBackoff ? 1 : 0, now) as Array<{
+    path: string; workId: string; title: string; originLang: string | null
+    trRecheckAfter: number | null
+  }>
   return rows.map((r) => ({
     // 🔴 唯一构造入口（C20 + 4-2 的交接）：**不许在这里手拼** `${r.workId}/${...}`。
     // C20 的既有红线用例测的是构造器 translateItemId 本身，手拼一份同形字符串它们一条都不会红
@@ -144,6 +197,7 @@ export function listNewTranslateCandidates(db: ScoutDb, now: number): NewTransla
     workId: r.workId,
     title: r.title,
     originLang: r.originLang,
+    trRecheckAfter: r.trRecheckAfter,
   }))
 }
 
