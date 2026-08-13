@@ -1342,12 +1342,28 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
   // 全是 NULL，但这条 UPDATE 不该依赖那个观察。清它会掀掉飞行中的翻译。
   //
   // ── ② 为什么现在可以 DROP extras_exemptions ────────────────────────────────
-  // 它是救援R4b 的"用户翻案"豁免表（v14）。三方全空，逐条核实过：
+  // 它是救援R4b 的"用户翻案"豁免表（v14）。**判据是静态可达性**，逐条核实过：
   //   · **零读取方**：唯一读它的是 `v2/ingest.ts` 的 excludeExtras 分支
   //     （`isMechanicalExtra(path) && !lib.isExtrasExempt(path)`），ingest 已整体退役。
   //   · **零写入方**：唯一写入面是 POST /api/v2/triage/unexclude 端点 + 前端 ExcludedBox，
   //     两者 2026-08-13 已删（见 dashboard/server.ts 与 triageOps.ts 的头注释）。
-  //   · **生产零行**（2026-08-13 实测 `/cache/scout.db`）。
+  //   · 承载这两条的 `LibraryRepo.addExtrasExemption` / `isExtrasExempt` 同批删除，
+  //     于是全仓（src + web/src）再没有任何生产代码提到这张表——2026-08-14 复核仍然成立：
+  //     剥掉注释后 `extras_exemptions` 只剩本文件的 v14 建表与下面这条 v44 DROP 两处历史迁移。
+  //
+  // ⚠️ **行数不是判据**（2026-08-14 修正论证方式，不是修正结论）。这里原先还列着第三条
+  // 「**生产零行**（2026-08-13 实测 `/cache/scout.db`）」，那条**不能证明任何东西**：
+  // 本仓的活表 `item_files` 同样 0 行，而它有真实写入方（settingsRepo.ts:430 的级联删除、
+  // libraryRepo 的副本登记）；更根本地，`media_roots=0` 的库上**每一张表都是 0 行**。
+  // 行数只说明"到目前为止没人往里写过东西"，而那既可能是"这条路已经死了"，也可能是
+  // "这条路还没被走过"——两者在行数上完全不可分辨。
+  // 本仓 2026-08-13 因此拒绝过一条审计建议：`upsertSeries` 三件套被判「死代码、生产 0 行」，
+  // 实测注入 throw → 红 514 条 / 14 文件，它是活功能唯一的造数手段。那次是同一个坏论据
+  // 差点删掉活代码。
+  // 事实本身留着（它确实是 0 行，排障时有用），但它**只是背景，不承担举证**：
+  // 上面那两条零读写才是 DROP 成立的全部理由。
+  //   · 生产零行（2026-08-13 实测 `/cache/scout.db`）——背景事实，非判据。
+  //
   // triageOps.ts 当时写的保留理由是"不单方面拆掉'保留待裁'资产的地基"——今天用户**已经
   // 裁决**了（「特典都完全不算在找字幕的范围」+「不值得为它增加心智负担」），
   // 保留待裁的前提消失，故一并清掉。`LibraryRepo.addExtrasExemption` / `isExtrasExempt`

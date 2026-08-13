@@ -6,8 +6,16 @@
 //
 // 本文件要钉的几条，每条都是"改坏了不报错"的形态：
 //  ① backdropPath 读的是 **works.backdrop_path**（v42），不是旧世界的 series.backdrop_path
-//     ——后者生产 0 行，照抄旧 DTO 的 JOIN 会让横版图恒 null，而无图降级路径本来就存在，
+//     ——照抄旧 DTO 的 JOIN 会让横版图恒 null，而无图降级路径本来就存在，
 //     没有任何既有用例会红。
+//     ⚠️ 这里原先写的理由是「后者生产 0 行」。**行数不是判据**（2026-08-14 修正论证）：
+//     `media_roots=0` 的库上每张表都是 0 行，活表 `item_files` 今天同样 0 行；行数分不出
+//     "这条路死了"与"这条路还没被走过"。真正的理由是**静态可达性**：新架构的写入侧
+//     （daemonV2 的 works upsert）只写 `works`，`series` 的唯一写入方 libraryRepo.upsertSeries
+//     在生产代码里零调用（剥注释后全仓只剩 src/testing/seedBacklog.ts 这一个测试造数器
+//     在调它）——所以 series.backdrop_path 对本端点恒 null 是**结构性**的，与今天几行无关。
+//     下面 :100 那条"读错表"诱饵用例正是这条判据的执行载体：它种一行同 id 的 series，
+//     真去 JOIN 旧表就会拿到诱饵值而变红。
 //  ② **不产出 total/index**（与 /api/v2/health「刻意不返回 queue」那条裁决的分工，
 //     完整论证见 activityApi.ts 头注释）。加一个 total 字段"方便前端"会正面违反 :578。
 //  ③ 识别台**没有对应段**（R-F1 的后端侧执行）。
@@ -97,7 +105,9 @@ describe('buildActivity：字幕台排队段', () => {
   it('🔴 series.backdrop_path 有值而 works 的为 NULL 时 → 仍是 null（**没有**读旧表）', () => {
     addWork('tmdb:1', { title: 'Show A', backdropPath: null })
     addFile({ path: '/d/a.mkv', workId: 'tmdb:1', season: 1, episode: 1 })
-    // 旧世界那张表：生产 0 行，但这里刻意种一行同 id 的，作为"读错表"的诱饵。
+    // 旧世界那张表：生产写入方为零（唯一写它的 libraryRepo.upsertSeries 在生产代码里
+    // 零调用点），这里刻意种一行同 id 的，作为"读错表"的诱饵。
+    // ——判据是"没人写它"，不是"它今天 0 行"：后者在 media_roots=0 的库上对每张表都成立。
     db.prepare(`INSERT INTO series (id, name, backdrop_path) VALUES ('tmdb:1', 'Show A', '/WRONG.jpg')`).run()
 
     expect(buildActivity(db, { now: NOW }).subtitleQueue[0]!.backdropPath).toBeNull()

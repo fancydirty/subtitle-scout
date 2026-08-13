@@ -231,7 +231,11 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
     if (f.skip_reason === 'embedded') return 'embedded'
     // 机械特典（2026-08-13 用户裁决）。与上面两个同族——needs=0 的三种理由，单值列互斥，
     // 三个 if 之间不存在优先级可言（同 A-2/A-3 审计对 origin-skip/embedded 的结论）。
-    if (f.skip_reason === 'extra') return 'extra'
+    //
+    // 🔴 判据走 isJudgedExtra（T2-a 收敛，2026-08-14）——这里原先自己写了一遍
+    // `f.skip_reason === 'extra'`，与那个函数构成同一条判据的第二个定义点。
+    // 「格子上标 ▭」与「不进 unplacedFileCount」必须同生同死，故共用同一个裁决者。
+    if (isJudgedExtra(f)) return 'extra'
     // needs=0 但 reason 缺失/不认识（v40 之前判定的存量行；或将来新增了一种 reason 而这里
     // 忘了跟）。**不许猜**成 origin-skip 或 embedded：两者在换目标语言后的命运完全相反
     // （db.ts:983 的原话），猜错就是给用户一个与事实相反的 ◇/◆ 标记且无从察觉。
@@ -289,7 +293,15 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
  *
  *    正确的判据：**只有当这一格的全部文件都是 extra 时，这一格才该报 extra**。
  *    把 extra 放在序列**最末**恰好精确等价于这句话——取最小 rank 的聚合下，
- *    extra 胜出 ⟺ 没有任何一份文件的 rank 更小 ⟺ 每一份都是 extra。不需要特判。
+  *    extra 胜出 ⟺ 没有任何一份文件的 rank 更小 ⟺ 每一份都是 extra。不需要特判。
+ *
+ *  ── 🔴 前端图例顺序钉在这条序列上（T2-b，2026-08-14）─────────────────────────
+ *  `web/src/media/episodeStateMeta.ts` 的 `LEGEND_STATES` 必须与本序列**逐位相同**
+ *  （图例顺序 = 聚合优先级顺序：用户在图例里看到的先后，就是同一格多份文件时谁代表
+ *  这一格的先后）。此前这条约束只写在两侧注释里，改一边忘另一边不会有人红。
+ *  现在由 `web/src/api/typeContract.ts` 的 `C_LegendOrder` 在**编译期**对拍
+ *  （`cd web && npx tsc --noEmit`），凭据就是下面这个 `as const` 定长元组——
+ *  它一旦退化成 `string[]`，位置信息就没了，那条契约会静默失效。所以 `as const` 不许删。
  */
 const STATE_RANK = [
   // ── 已解决（这一格不需要人再操心）──────────────────────────────────────────
@@ -304,6 +316,22 @@ const STATE_RANK = [
   // ── 「这一份不算数」——不是关于这一格的事实，故垫底（见上方那段论证）───────────
   'extra',        // 机械特典。只有**全部**文件都是 extra，这一格才报 extra
 ] as const satisfies readonly Exclude<EpisodeState, 'absent'>[]
+
+/** 聚合序的**元组类型**（含位置信息），供前端 typeContract.ts 对拍图例顺序（T2-b）。
+ *
+ *  为什么导出 type 而不是让前端 import STATE_RANK 这个值：前端只需要在编译期读到
+ *  "第 n 位是哪个态"，`import type` 会被完整擦除，不把后端代码拖进 bundle
+ *  （typeContract.ts 头注释里那条实测：产物字节级不变）。导出值给前端则会在 web 侧
+ *  制造一条真实的运行时依赖，且 Docker 的 web 构建阶段根本没有 `../src`。 */
+export type StateRankOrder = typeof STATE_RANK
+
+/** 同一条序列的**值**，仅供后端测试（legendOrder.contract.test.ts）做运行时逐位对拍。
+ *
+ *  为什么不直接导出 STATE_RANK：那个名字是本模块的内部实现，导出它会让"聚合序"看起来
+ *  像是可供别处消费的公开资产（本仓病 A 的温床——导出即邀请调用）。这个别名把用途
+ *  写进名字里：**for contract**，除了那条契约测试没有第二个消费者。
+ *  ⚠️ 前端**不许** import 它（运行时依赖 + Docker 阶段无 ../src），前端那侧走上面的 type。 */
+export const STATE_RANK_FOR_CONTRACT: StateRankOrder = STATE_RANK
 
 function aggregateState(files: readonly FileRow[]): EpisodeState {
   // 零文件 → 'absent'（审计 A-6）。这一格磁盘上什么都没有，不是"系统还没判它"。
@@ -450,16 +478,35 @@ const epKey = (season: number, episode: number): string => `${season}\u0000${epi
 
 /** 这一行是否是 judge 判定的机械特典（`skip_reason='extra'`，2026-08-13 用户裁决）。
  *
- *  **两页共用这一份判据**（列表页 buildMediaLibrary + 详情页 buildMediaLibraryDetail）：
- *  两处各写一遍 `f.skip_reason === 'extra'` 是 C30 的原型——将来若判据要加一条
- *  （比如"needs_subtitle=0 才算数"），改一处忘一处时两页的 unplacedFileCount 会不相等，
- *  而那正是这个字段当初被引入所要修的那条自相矛盾。
+ *  🔴 **本文件里这条判据的唯一定义点**（T2-a，2026-08-14 收敛）。三个消费点全部调它：
+ *    · classifyFileState  → episodeState='extra'，格子上画 ▭「特典 · 不找字幕」
+ *    · buildMediaLibrary  → 从列表页 unplacedFileCount 里扣除
+ *    · buildMediaLibraryDetail → 从详情页 unplacedFileCount 里扣除
+ *
+ *  ── 收敛前是什么样、为什么那是真故障（不是洁癖）───────────────────────────────
+ *  这个函数的头注释此前写着「两处各写一遍 `f.skip_reason === 'extra'` 是 C30 的原型」，
+ *  指的是两个 unplaced 消费点——那一半确实已经收敛。但它**自己就是第二份**：
+ *  classifyFileState 里另有一行 `if (f.skip_reason === 'extra') return 'extra'`。
+ *  也就是说判据在同一个文件里有两个定义点，分别喂给两个**必须互相自洽**的控件：
+ *  「格子上标了 ▭」与「不计入待办数」是同一条裁决（用户原话「不值得为它增加心智负担」）
+ *  的一体两面。加判据时改一处忘一处，用户就会看到一个格子标着 ▭ 说"系统不管它"、
+ *  而概览数字同时把它算进"解析器没能归位的真实文件"催他去改名——两个控件对同一份文件
+ *  说相反的话，正是 unplacedFileCount 这个字段当初被引入所要修的那条自相矛盾。
+ *
+ *  ── 入参刻意收窄成 `{ skip_reason }`，不是整个 FileRow ──────────────────────
+ *  判据读什么，签名就写什么。收窄之后"这条判据不看 needs_subtitle"从一句注释变成
+ *  **编译器管着的事实**：有人想加 `&& f.needs_subtitle === 0` 时得先改签名，
+ *  那一步会逼他到这里读完下面这段论证。同时它让判据可以脱离数据库单独被测。
  *
  *  🔴 判据**不看 needs_subtitle**：skip_reason 是单值列，只有 judge 会写它，
- *  写 'extra' 的那一条分支必然同时写 needs_subtitle=0（同一条 UPDATE，见 judgeOnce）。
+ *  写 'extra' 的那一条分支必然同时写 needs_subtitle=0（同一条 UPDATE，daemonV2.ts:1092
+ *  ——那条 UPDATE 刻意合并的理由见其头注释：分两条会在掉电时留下永不重判的行）。
  *  再加一条 `&& needs_subtitle === 0` 是冗余守卫，且会在"judge 写了一半掉电"这种
- *  本来就不可能的形态上制造第二种行为。 */
-function isJudgedExtra(f: FileRow): boolean {
+ *  本来就不可能的形态上制造第二种行为。
+ *
+ *  ⚠️ 导出仅供 extraCriterion.singleSource.test.ts 的真值表用（判据的行为规格）。
+ *  它不是 DTO 的一部分，不要在 dashboard 之外调用。 */
+export function isJudgedExtra(f: { skip_reason: string | null }): boolean {
   return f.skip_reason === 'extra'
 }
 

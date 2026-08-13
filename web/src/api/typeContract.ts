@@ -82,6 +82,10 @@ import type * as BeNotifications from '../../../src/v2/notificationsRepo.js'
 import type * as BeSettingsRepo from '../../../src/v2/settingsRepo.js'
 import type * as BeLibraryRepo from '../../../src/v2/libraryRepo.js'
 import type * as Fe from './types.js'
+/** T2-b：图例顺序对拍需要 `LEGEND_STATES` 的**元组类型**。
+ *  `import { type X }` 是纯类型导入，与本文件其余 import 一样在转译期被完整擦除
+ *  （不产生 import 语句，产物不变）——这里只用它做 `typeof`，不读它的值。 */
+import { type LEGEND_STATES } from '../media/episodeStateMeta.js'
 
 /** 后端形状能否当前端声明用。true=能。 */
 type Satisfies<Be, Fe_> = [Be] extends [Fe_] ? true : false
@@ -141,6 +145,43 @@ export type C_MediaSubtitleDot = Assert<Satisfies<BeMediaLibrary.SubtitleDot, Fe
  *  前端**多**列一个后端没有的态时，EpisodeMark 会为一个永不出现的态画符号（死分支）。 */
 export type C_EpisodeState_BeToFe = Assert<Satisfies<BeMediaLibrary.EpisodeState, Fe.EpisodeState>>
 export type C_EpisodeState_FeToBe = Assert<Satisfies<Fe.EpisodeState, BeMediaLibrary.EpisodeState>>
+
+/** 🔴 图例**顺序** ≡ 后端聚合优先级顺序（T2-b，2026-08-14）。
+ *
+ *  ── 钉的是什么 ─────────────────────────────────────────────────────────────
+ *  `episodeStateMeta.ts` 的 `LEGEND_STATES` 与后端 `mediaLibraryApi.ts` 的 `STATE_RANK`
+ *  必须**逐位相同**。语义：图例顺序 = 聚合优先级顺序，用户在图例里看到的先后，
+ *  就是同一格多份文件时谁代表这一格的先后。分叉时图例会把一个"其实垫底"的态画在
+ *  "最优先"的位置，用户据此形成的心智模型与系统实际行为相反，界面上没有任何异常可见。
+ *
+ *  ── 为什么不能用本文件其余各条那个 `Satisfies` ─────────────────────────────
+ *  `Satisfies` 走的是 `[Be] extends [Fe]`，对元组它会**逐位**比，看起来够用；
+ *  但 `readonly [...]` 元组在只读协变下，同成员不同序的两个元组在**联合层面**互相
+ *  assignable 的情形是存在的，而且更要命：任一侧一旦丢掉 `as const`（退化成
+ *  `EpisodeState[]`），`Satisfies` 立刻恒真——那正是本仓抓到过三次的假守卫形态
+ *  （`as` 断言 / `Object.fromEntries` / `_Missing[] = []`）。
+ *  `SameOrder` 递归拆头，两侧**同时**要求 `AH extends BH` 与 `BH extends AH`
+ *  （逐位互为子类型 = 逐位字面量相等），并在长度不等时收敛到 false。
+ *  它对"丢掉 as const"同样敏感：`EpisodeState[]` 不是元组，匹配不到
+ *  `readonly [infer AH, ...infer AT]` 也匹配不到 `readonly []` → false → 报错。
+ *
+ *  ── 这条契约里最硬的一位：`extra` 必须垫底 ────────────────────────────────
+ *  2026-08-13 审计抓到的真故障：`extra` 曾排在第 4 档（"已解决"段），后果是
+ *  「一个 Trailer 让正片从界面消失」——电影分支把一部电影的全部文件聚成一格，
+ *  一份 `Trailer.mkv` 就能盖掉那份真正在排队等字幕的正片。后端侧已由
+ *  mediaLibraryApi.test.ts 四条用例钉死，前端图例这一侧此前**没有任何东西钉着**：
+ *  实测（收敛前）把 extra 挪回第 4 档，`cd web && npx tsc --noEmit` 退出码 0、
+ *  前端 975 条用例全绿。这一条就是补那个洞。
+ *
+ *  ⚠️ 与 `src/dashboard/legendOrder.contract.test.ts`（值层面逐位对拍）是**两条腿**：
+ *  那条不依赖类型、`as const` 被删也照样说话，但管不到类型面漂移；这条反之。 */
+type SameOrder<A extends readonly unknown[], B extends readonly unknown[]> =
+  A extends readonly [infer AH, ...infer AT]
+    ? B extends readonly [infer BH, ...infer BT]
+      ? [AH] extends [BH] ? ([BH] extends [AH] ? SameOrder<AT, BT> : false) : false
+      : false
+    : B extends readonly [] ? true : false
+export type C_LegendOrder = Assert<SameOrder<BeMediaLibrary.StateRankOrder, typeof LEGEND_STATES>>
 
 // src/dashboard/activityApi.ts
 export type C_ActivityQueueItemDTO = Assert<Satisfies<BeActivity.ActivityQueueItemDTO, Fe.ActivityQueueItemDTO>>

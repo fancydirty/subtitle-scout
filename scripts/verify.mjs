@@ -30,7 +30,7 @@ const flag = (name, dflt) => {
   return i >= 0 && args[i + 1] ? Number(args[i + 1]) : dflt
 }
 // 基线：低于它就说明有文件被静默丢掉。随真实文件数增长时手动上调。
-const MIN_BE_FILES = flag('--be-files', 146)
+const MIN_BE_FILES = flag('--be-files', 148)
 const MIN_FE_FILES = flag('--fe-files', 84)
 
 const tmp = mkdtempSync(join(tmpdir(), 'scout-verify-'))

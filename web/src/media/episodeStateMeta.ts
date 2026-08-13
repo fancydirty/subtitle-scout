@@ -49,8 +49,21 @@ export const EPISODE_STATE_LABEL: Record<EpisodeState, TKey> = {
  *
  *  ⚠️ `extra` 在**末位**，与后端 STATE_RANK 逐字一致（2026-08-13 审计）：它说的是
  *  「**这一份**不算数」，不是「这一格不用管」，故只有当一格的全部文件都是 extra 时才报
- *  extra。排进"已解决"段会让一个 Trailer 盖掉同格里真正在排队的正片。 */
-export const LEGEND_STATES: readonly Exclude<EpisodeState, 'absent'>[] = [
+ *  extra。排进"已解决"段会让一个 Trailer 盖掉同格里真正在排队的正片。
+ *
+ *  ── 🔴 `as const` 不许删，那条同序契约靠它（T2-b，2026-08-14）────────────────
+ *  这里原先写的是 `LEGEND_STATES: readonly Exclude<EpisodeState, 'absent'>[] = [...]`。
+ *  那条**类型标注**会把字面量元组当场拓宽成数组，位置信息全部丢失——于是上面那句
+ *  「与后端逐字一致」在类型层面无人可查，只是一句注释。实测（2026-08-14 收敛前）：
+ *  把 extra 挪回第 4 档（模拟那个已修的 🔴「一个 Trailer 让正片从界面消失」），
+ *  `cd web && npx tsc --noEmit` 退出码 0、前端 975 条用例全绿。
+ *
+ *  现在改成 `as const satisfies`：`satisfies` 保留"每个元素都是合法态"的检查
+ *  （原标注的唯一作用），`as const` 保住定长元组，两者叠加才让
+ *  `web/src/api/typeContract.ts` 的 `C_LegendOrder` 有东西可对拍。
+ *  ⚠️ 别改回 `: readonly ...[]` 标注，那是把契约静默拆掉——本仓抓到过三种同型假守卫
+ *  （`as` 断言 / `Object.fromEntries` / `_Missing[] = []`），这会是第四种。 */
+export const LEGEND_STATES = [
   'covered',
   'origin-skip',
   'embedded',
@@ -59,4 +72,4 @@ export const LEGEND_STATES: readonly Exclude<EpisodeState, 'absent'>[] = [
   'pending',
   'unjudged',
   'extra',
-]
+] as const satisfies readonly Exclude<EpisodeState, 'absent'>[]
