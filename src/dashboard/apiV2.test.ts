@@ -90,6 +90,16 @@ function insertRun(db: ScoutDb, jobId: number, startedAt: number, decision: stri
   ).run(jobId, startedAt, startedAt + 1000, decision, detail, `/j/${startedAt}/decision.json`)
 }
 
+/** 往 `files` 表播 n 行——daemonV2 扫盘写的那张表，也是 meta.files 的唯一数据源。
+ *  路径带序号保证 UNIQUE；只填 NOT NULL 列，其余留默认（本用例族只关心 COUNT(*)）。 */
+function seedFiles(d: ScoutDb, n: number): void {
+  const stmt = d.prepare(
+    `INSERT INTO files (path, dir, filename, size, mtime, updated_at)
+     VALUES (?, '/media/tv', ?, 1, 1, 1)`,
+  )
+  for (let i = 0; i < n; i++) stmt.run(`/media/tv/seed-${i}.mkv`, `seed-${i}.mkv`)
+}
+
 beforeEach(() => {
   db = openDb(':memory:')
   lib = new LibraryRepo(db)
@@ -444,6 +454,9 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
     const settings = new SettingsRepo(db)
     settings.addRoot('/media/tv', NOW)
     db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(NOW))
+    // meta.files 数的是 `files` 表（daemonV2 唯一在写的那张），不是 fixture 里的
+    // episodes(4)+movies(1)。这里播 3 行，与 5 刻意不等——见下方 🔴 用例。
+    seedFiles(db, 3)
 
     const result = buildWorkflowPending(db, settings, NOW)
 
@@ -461,10 +474,51 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
     ])
     expect(result.parked).toBe(1)
     expect(result.meta).toEqual({
-      roots: ['/media/tv'], lastScanAt: NOW, files: 5, // episodes(4)+movies(1)
+      roots: ['/media/tv'], lastScanAt: NOW, files: 3, // COUNT(*) FROM files
       // 2026-07-31 新增：巡检还没跑过 → null + 0；covered 计数来自 fixture
       lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: result.meta.verifiableItems,
     })
+  })
+
+  // ── 2026-08-13：顶栏「N files」数错表的回归锁 ───────────────────────────────
+  //
+  // 🔴 防的是**一句用户当场能看到的假话**：本字段原读
+  // `(SELECT COUNT(*) FROM episodes) + (SELECT COUNT(*) FROM movies)`。那两张表在生产
+  // 各 0 行（唯一写入链 v2/ingest.ts 已整体退役，upsertEpisode/upsertMovie 的非测试
+  // 调用者只剩 testing/seedBacklog.ts），而 `files` 表有 645 行。于是顶栏
+  // （web/src/shell/freshness.ts 的 `${meta.files} files`）对一个 645 个文件的库
+  // 显示「0 files」。
+  //
+  // 为什么此前测试全绿：上面那条用例的 fixture 用 `lib.upsertEpisode/upsertMovie`
+  // 播了 4+1 行 **episodes/movies**，一行 `files` 都没播——测试自己复述了一份已死的
+  // 写入路径，于是读取侧数哪张表都不影响结论。这与本文件 lastScanAt 那条接缝用例
+  // （两侧各自复述键名 → 键名漂移无人变红）是同一种盲区，只是换成了表名。
+  //
+  // 本用例的全部价值是把两张表的行数**造成不相等**（episodes+movies=5，files=7），
+  // 于是任何一侧的口径都无法同时满足——读回旧口径当场变红。
+  it('🔴 meta.files 数的是 `files` 表，不是恒空的 episodes+movies（顶栏「N files」不许再说假话）', () => {
+    const settings = new SettingsRepo(db)
+    // fixture 已有 episodes(4) + movies(1) = 5。files 表播 7 行，两者刻意不等。
+    seedFiles(db, 7)
+    expect(
+      (db.prepare(`SELECT (SELECT COUNT(*) FROM episodes) + (SELECT COUNT(*) FROM movies) AS c`)
+        .get() as { c: number }).c,
+    ).toBe(5) // 旧口径若复活会读出这个数
+
+    expect(buildWorkflowPending(db, settings, NOW).meta.files).toBe(7)
+  })
+
+  // 生产形状的直接复刻：episodes/movies 各 0 行（结构上不可填），files 有真实数据。
+  // 上面那条用两个非零数分辨口径；这一条钉的是**生产当下那个具体的 0 vs N**——
+  // 旧口径在这里读出 0，也就是用户今天在顶栏看到的那句假话本身。
+  it('🔴 生产形状（episodes/movies 皆 0、files 非空）下 meta.files 不是 0', () => {
+    const prodDb = openDb(':memory:')
+    const settings = new SettingsRepo(prodDb)
+    expect((prodDb.prepare(`SELECT COUNT(*) AS c FROM episodes`).get() as { c: number }).c).toBe(0)
+    expect((prodDb.prepare(`SELECT COUNT(*) AS c FROM movies`).get() as { c: number }).c).toBe(0)
+    seedFiles(prodDb, 645) // 生产实测行数
+
+    expect(buildWorkflowPending(prodDb, settings, NOW).meta.files).toBe(645)
   })
 
   it('空库：series/movies 空数组，parked 0，lastScanAt null（meta 表从未写过 last_inspect_at）', () => {

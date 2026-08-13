@@ -438,7 +438,38 @@ export interface WorkflowFreshnessDTO {
    *
    *  不做 `last_ingest_at` 回退：见 buildWorkflowPending 里 SELECT 处的说明。 */
   lastScanAt: number | null
-  /** episodes + movies 两表行数之和——库内文件总量的机械计数。 */
+  /**
+   * 磁盘上的视频文件总数 = `SELECT COUNT(*) FROM files`。
+   *
+   * ── 2026-08-13：从 `episodes + movies` 改成 `files`（修一句顶栏假话）────────────
+   * 本字段原读 `(SELECT COUNT(*) FROM episodes) + (SELECT COUNT(*) FROM movies)`。
+   * 那两张表在生产**各 0 行**，而 `files` 有 645 行（真实数据）——于是顶栏新鲜度行
+   * （web/src/shell/freshness.ts 的 `${meta.files} files`）对一个 645 个文件的库
+   * 显示「0 files」。这与本文件 lastScanAt 头注释所修的是同一形状的假话：读取侧读了
+   * 一张没有写入者的表。
+   *
+   * 判据不是"这两张表暂时是空的"，是**结构上不可填**：`libraryRepo.upsertEpisode` /
+   * `upsertMovie` 的非测试调用者只剩 `src/testing/seedBacklog.ts`（测试 fixture），
+   * 原写入链 `src/v2/ingest.ts` 本轮整体退役（同 parked 族的判据，见本文件上方
+   * 「Parked ... 整族删除」段与 web/src/triage/TriagePage.tsx 的「2.5 parked 族的结局」）。
+   * 今天唯一在扫盘写库的是 daemonV2，它只写 `files`。
+   *
+   * ── 语义对齐：为什么 `COUNT(*) FROM files` 就是对的口径 ─────────────────────
+   * 旧口径 episodes+movies 是「库内条目数」（一集一行 / 一部电影一行）。新口径是
+   * 「磁盘上的视频文件数」。两者在**同一集有两份拷贝**时会分叉（旧口径 1、新口径 2），
+   * 但这行文案本来就写着 "files"，且 DESIGN.md 把它钦定为"存活感"信号（机械读数，
+   * 不是去重后的作品学统计）——`files` 表一行就是磁盘上一个视频文件，字面对得上。
+   *
+   * ⚠️ **刻意不复用 mediaLibraryApi 的去重口径**（`onDiskEpisodeCount` = 去重后的
+   * 格数，生产 568）：那是媒体库页「实有几集」的口径，分母是 tmdb_seasons，用于算缺集数；
+   * 拿它当 "N files" 会把"两个目录各一份"报成 1 个文件，那是另一句假话。两处口径不同
+   * 不是"同一件事两套写法"——它们回答的是两个不同的问题。真正该复用的是
+   * `sub_status='covered'` 这个字幕判据，见下方 verifiableItems。
+   *
+   * ⚠️ **不加 `work_id IS NOT NULL` 过滤**：识别失败的孤儿文件仍然是磁盘上的文件，
+   * 顶栏说的是"我在看着多少个文件"，不是"我认出了多少个"。（媒体库页滤掉它们是因为
+   * 那一屏是海报墙，没有作品就没有卡片——见 buildMediaLibrary 头注释。）
+   */
   files: number
   /**
    * 字幕校验巡检的上次运行时刻（读 meta 表 `last_verify_sweep_at`，见下方 SELECT）。
@@ -467,7 +498,26 @@ export interface WorkflowFreshnessDTO {
    */
   lastVerifySweepAt: number | null
   /** 已出校验结论的条目数 / 该被校验的条目数（sub_status='covered'）。
-   *  两个裸计数，不是百分比——铺量期用它能看出"还在推进"，稳态下两者相等。 */
+   *  两个裸计数，不是百分比——铺量期用它能看出"还在推进"，稳态下两者相等。
+   *
+   *  ⚠️ **两者在生产都恒为 0，且这里刻意不跟着 `files` 一起改口径**（2026-08-13）。
+   *  上面 `files` 从 episodes+movies 改读 `files` 表是因为它有活的渲染面（顶栏）且在说假话；
+   *  这一对**没有任何活消费者**（`rg 'verifiableItems|verifiedItems' web/src` 只命中
+   *  api/types.ts 的类型声明与几个测试 fixture，无 UI 读取），改它不修任何用户可见的假话。
+   *
+   *  更要紧的是：改了反而**造一句新假话**。这一对是同一个 id 空间的分子/分母——
+   *  · 分子 `verifiedItems` = `COUNT(*) FROM subtitle_verify`，而 subtitle_verify.item_id
+   *    的值域就是 episodes/movies 的 id（见 v2/subtitleVerifyRepo.ts 头注释：那张表在生产
+   *    永远不会有第一行，环是封闭的）；
+   *  · 分母若单方面改成 `files.sub_status='covered'`（生产 219），顶栏就会读出「0 / 219」
+   *    ——一个分子来自死 id 空间、分母来自活表的比值，含义是"有 219 条待校验、已校验 0 条"，
+   *    而实际上**校验巡检根本没在跑**（runVerifySweep 零调用，见 lastVerifySweepAt 头注释）。
+   *    那正是"把一个不存在的进度条画出来"。今天的 0 / 0 反而是真话：没有可校验的条目，
+   *    也没有校验结论。
+   *
+   *  这一对与 `lastVerifySweepAt` 同进退：verifySweep 巡检恢复注入那天一起重估口径
+   *  （届时 selectVerifyCandidates 的 episodes/movies JOIN 也得一并迁到 files，
+   *   见 src/subtitleVerify/verifySweep.ts:180-190）。 */
   verifiedItems: number
   verifiableItems: number
 }
@@ -514,9 +564,11 @@ export function buildWorkflowPending(
   const lastScanRow = db.prepare(`SELECT value FROM meta WHERE key = 'last_inspect_at'`).get() as
     | { value: string }
     | undefined
-  const filesRow = db
-    .prepare(`SELECT (SELECT COUNT(*) FROM episodes) + (SELECT COUNT(*) FROM movies) AS c`)
-    .get() as { c: number }
+  // 磁盘上的视频文件总数。**读 `files` 表，不读 episodes+movies**——那两张表结构上
+  // 不可填（唯一写入链 v2/ingest.ts 已退役，非测试调用者归零），照旧读会让一个 645 个
+  // 文件的库在顶栏显示「0 files」。完整判据与"为什么不复用媒体库页的去重口径"见
+  // WorkflowFreshnessDTO.files 头注释。
+  const filesRow = db.prepare(`SELECT COUNT(*) AS c FROM files`).get() as { c: number }
 
   // 字幕校验的新鲜度与推进度（2026-07-31）。键名与 verifySweep.VERIFY_SWEEP_META_KEY 一致。
   const lastVerifyRow = db
