@@ -86,6 +86,13 @@ export const HEALTH_SHAPE: Shape = obj({
   // roots[].ok 是**三态**（true/false/null，见 rootHealth.ts 的论证）——声明成
   // nullable(bool()) 而不是 bool()，否则合法的"不知道"会被判成违约。
   roots: arr(obj({ path: str(), ok: nullable(bool()) })),
+  // 病 A 第 7 例：活动页状态条读它（UnidentifiedNote）。**两个字段都要声明**——
+  // `dirCount` 缺席时 `dirCount === 0` 判空会把 undefined 当 0 静默吞掉整条提示；
+  // `dirs` 缺席时 `dirs.map` 直接抛。二者都是"后端换版本"下的真实形态。
+  unidentified: obj({
+    dirCount: num(),
+    dirs: arr(obj({ dirName: str(), fileCount: num() })),
+  }),
 })
 
 /** `/api/v2/mediaLibrary` 的**一行**（client 那边包成数组）。

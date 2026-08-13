@@ -487,4 +487,11 @@ export const zh = {
   // unknown（从没扫过 / 判决陈旧）**不是故障**，措辞必须中性。
   root_health_failed: '这些目录读不到，里面的东西可能不是最新的',
   root_health_unknown: '最近没有检查过',
+
+  // ── 🔴 认不出来的目录（病 A 第 7 例的可见形态）──────────────────────────
+  // 措辞纪律同 en 侧：说后果不说过程；必须带上「按 title (year) 改名」这句
+  // （R-F1 的下半句，界面上没有按钮，用户唯一的动作在他自己的文件管理器里）；
+  // 不出现 park / work_id / TMDB / agent / 404 / 退避 这类实现词。
+  unidentified_note: '这些目录认不出来，改成「片名 (年份)」就能处理了',
+  unidentified_more: '另外还有 {n} 个',
 } as const

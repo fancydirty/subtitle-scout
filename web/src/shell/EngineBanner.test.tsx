@@ -34,6 +34,7 @@ function health(engineEnabled: boolean, setupSatisfied: boolean): HealthDTO {
     engineEnabled,
     setupSatisfied,
     roots: [],
+    unidentified: { dirCount: 0, dirs: [] },
     current: null,
   }
 }

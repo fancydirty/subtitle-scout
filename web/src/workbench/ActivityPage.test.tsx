@@ -54,7 +54,7 @@ const ev = (over: Partial<ScoutEvent> & Pick<ScoutEvent, 'type'>): ScoutEvent =>
 const HEALTH_IDLE = {
   lastInspectAt: Date.now() - 3_600_000,
   workPermitted: true, engineEnabled: true, setupSatisfied: true,
-  roots: [], current: null,
+  roots: [], unidentified: { dirCount: 0, dirs: [] }, current: null,
 }
 
 const QUEUE_ITEM = {

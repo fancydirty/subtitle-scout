@@ -46,6 +46,7 @@ const HEALTH = {
   engineEnabled: true,
   setupSatisfied: true,
   roots: [],
+  unidentified: { dirCount: 0, dirs: [] },
   current: null,
 }
 

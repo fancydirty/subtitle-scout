@@ -20,10 +20,12 @@ import { render, screen, cleanup, waitFor, within } from '@testing-library/react
 import { I18nProvider } from '../i18n/useT.js'
 import { Shell } from './AppShell.js'
 import { en } from '../i18n/en.js'
-import type { HealthDTO, HealthRootDTO } from '../api/types.js'
+import type { HealthDTO, HealthRootDTO, UnidentifiedHealthDTO } from '../api/types.js'
 
 /** 后端这一轮给的 roots——每条用例自己改它，模拟 /health 的真实响应。 */
 let roots: HealthRootDTO[] = []
+/** 同上，`unidentified` 段（病 A 第 7 例的那条链）。缺省 = 全部认得出来。 */
+let unidentified: UnidentifiedHealthDTO = { dirCount: 0, dirs: [] }
 
 function healthBody(): HealthDTO {
   return {
@@ -31,6 +33,7 @@ function healthBody(): HealthDTO {
     // 三个布尔取"一切许可"：本文件测的是 roots 那条链，不该被 banner 的文案干扰。
     workPermitted: true, engineEnabled: true, setupSatisfied: true,
     roots,
+    unidentified,
     current: null,
   }
 }
@@ -80,6 +83,7 @@ function mockFetch() {
 
 beforeEach(() => {
   roots = []
+  unidentified = { dirCount: 0, dirs: [] }
   vi.stubGlobal('fetch', mockFetch())
   // EventSource：jsdom 没有它，Shell 的 EventsProvider 会去 new 一个。
   // 给个惰性壳（永不连上）——本文件不测 SSE。
@@ -218,5 +222,77 @@ describe('落点：活动页与媒体库页有；通知页与设置页没有（�
     const main = await screen.findByRole('main')
     await waitFor(() => expect(main.textContent?.length ?? 0).toBeGreaterThan(0))
     expect(within(main).queryByTestId('root-health-failed')).toBeNull()
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔴 病 A 第 7 例：`/health` 的 `unidentified` 真的被读了
+// ══════════════════════════════════════════════════════════════════════════════
+// 与上面 roots 那组同一手法、同一理由：组件级测试（UnidentifiedNote.test.tsx）给组件
+// 一个 DTO 它就渲染，但**没有任何人钉着"活动页真的把 /health 的 unidentified 喂给了它"**。
+// 变异闸：把 server.ts 的 `unidentified: buildUnidentifiedHealth(db)` 改成
+// `unidentified: { dirCount: 0, dirs: [] }`（或把 ActivityPage 里那行 <UnidentifiedNote/>
+// 删掉），本组必红。
+describe('🔴 /health 的 unidentified 真的被读了（变异恒空 → 本组必红）', () => {
+  it('活动页：认不出来的目录名与那句"改成 片名 (年份)"都出现在页面上', async () => {
+    unidentified = { dirCount: 2, dirs: [
+      { dirName: 'Unknown Show', fileCount: 24 },
+      { dirName: 'some.random.rip', fileCount: 1 },
+    ] }
+    location.hash = '#/activity'
+    renderShell()
+    const main = await screen.findByRole('main')
+    await waitFor(() => {
+      expect(within(main).getByTestId('wb-unidentified-line')).toBeInTheDocument()
+    })
+    const line = within(main).getByTestId('wb-unidentified-line')
+    expect(line.textContent).toContain(en.unidentified_note)
+    expect(line.textContent).toContain('Unknown Show')
+    expect(line.textContent).toContain('some.random.rip')
+  })
+
+  it('🔴 dirCount 为 0 → 一个字都不占屏（这就是被变异掉之后的样子）', async () => {
+    unidentified = { dirCount: 0, dirs: [] }
+    location.hash = '#/activity'
+    renderShell()
+    const main = await screen.findByRole('main')
+    await waitFor(() => expect(within(main).getByTestId('wb-inspect-line')).toBeInTheDocument())
+    expect(within(main).queryByTestId('wb-unidentified-line')).toBeNull()
+  })
+
+  it('🔴 截断时说"另外还有 N 个"——N 由 dirCount 算，不是 dirs.length', async () => {
+    // 后端上限 8：dirCount=30 而 dirs 只给 8 个。拿 dirs.length 当总数会对用户**少报**。
+    unidentified = {
+      dirCount: 30,
+      dirs: Array.from({ length: 8 }, (_, i) => ({ dirName: `D${i}`, fileCount: 1 })),
+    }
+    location.hash = '#/activity'
+    renderShell()
+    const main = await screen.findByRole('main')
+    await waitFor(() => expect(within(main).getByTestId('wb-unidentified-more')).toBeInTheDocument())
+    expect(within(main).getByTestId('wb-unidentified-more').textContent).toContain('22')
+  })
+
+  // 🔴 R-F1「未识别资源不给用户改」的端到端闸：这条提示**不许长出任何可点的东西**。
+  it('🔴 这条提示上没有任何按钮 / 链接（R-F1：不给用户改）', async () => {
+    unidentified = { dirCount: 1, dirs: [{ dirName: 'Unknown Show', fileCount: 3 }] }
+    location.hash = '#/activity'
+    renderShell()
+    const main = await screen.findByRole('main')
+    await waitFor(() => expect(within(main).getByTestId('wb-unidentified-line')).toBeInTheDocument())
+    const line = within(main).getByTestId('wb-unidentified-line')
+    expect(within(line).queryByRole('button')).toBeNull()
+    expect(within(line).queryByRole('link')).toBeNull()
+  })
+
+  // 🔴 R-F2 的作用域：孤儿**不进媒体库海报墙**。这条与上面第一条是同一份数据的两面。
+  it('🔴 媒体库页上一个字都没有（R-F2「识别失败的孤儿不露出」的作用域在那一页）', async () => {
+    unidentified = { dirCount: 1, dirs: [{ dirName: 'Unknown Show', fileCount: 3 }] }
+    location.hash = '#/media'
+    renderShell()
+    const main = await screen.findByRole('main')
+    await waitFor(() => expect(within(main).getByRole('link', { name: 'Breaking Bad' })).toBeInTheDocument())
+    expect(within(main).queryByTestId('wb-unidentified-line')).toBeNull()
+    expect(main.textContent).not.toContain('Unknown Show')
   })
 })

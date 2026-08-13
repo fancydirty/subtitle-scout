@@ -16,6 +16,7 @@ const HEALTH: HealthDTO = {
   engineEnabled: true,
   setupSatisfied: false,
   roots: [{ path: '/media', ok: null, lastError: null, lastCheckedAt: null }],
+  unidentified: { dirCount: 0, dirs: [] },
   current: null,
 }
 

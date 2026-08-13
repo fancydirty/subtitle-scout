@@ -103,6 +103,7 @@ describe('ContractViolationError / isContractViolation', () => {
 const HEALTH_OK = {
   lastInspectAt: 1, workPermitted: true, engineEnabled: true, setupSatisfied: true,
   roots: [{ path: '/media', ok: null, lastError: null, lastCheckedAt: null }],
+  unidentified: { dirCount: 0, dirs: [] },
   current: null,
 }
 
@@ -125,6 +126,18 @@ describe('HEALTH_SHAPE（判据①②：全局壳的判决源）', () => {
     for (const ok of [true, false, null]) {
       expect(checkShape({ ...HEALTH_OK, roots: [{ path: '/m', ok }] }, HEALTH_SHAPE)).toBeNull()
     }
+  })
+
+  it('🔴 unidentified 缺席 → 拦。不拦的话 UnidentifiedNote 的 `if (!unidentified)` 静静'
+    + '返回 null，"有几个目录我认不出来"界面上一个字都不显示（病 A 第 7 例的形状）', () => {
+    const { unidentified: _drop, ...broken } = HEALTH_OK
+    expect(checkShape(broken, HEALTH_SHAPE)?.path).toBe('unidentified')
+  })
+
+  it('🔴 unidentified.dirCount 缺席 → 拦。undefined 走 `=== 0` 判空为 false，'
+    + '整条提示照渲染但数字是 NaN——比整段消失更难排查', () => {
+    const v = checkShape({ ...HEALTH_OK, unidentified: { dirs: [] } }, HEALTH_SHAPE)
+    expect(v?.path).toBe('unidentified.dirCount')
   })
 
   it('current 是 null 时放行（合法：现在没在处理任何东西）', () => {

@@ -64,6 +64,7 @@ import {
 import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
 import { RootHealthNote } from '../shell/RootHealthNote.js'
+import { UnidentifiedNote } from './UnidentifiedNote.js'
 import type { ScoutEvent, EventsStatus } from '../events/types.js'
 import type { ActivityQueueItemDTO, HealthDTO, ScoutCurrentDTO } from '../api/types.js'
 import { ACTIVITY_TABS, laneOf, workIdOf, type ActivityTab } from './workbenchRouting.js'
@@ -250,6 +251,13 @@ function StatusBar({
           是什么状况）的第三个侧面。三行同形（一个标记 + 一句话），用户不必学第二套语汇。
           两个名单都空时组件自己返回 null，健康的根一个字都不占屏。 */}
       <RootHealthNote roots={health?.roots} />
+
+      {/* 🔴 认不出来的目录（病 A 第 7 例）——`/health` 的 `unidentified` 在这里第一次被读。
+          紧挨 RootHealthNote 是刻意的：那一行说"引擎**看不看得见**我的库"，这一行说
+          "引擎**认不认得**我库里的东西"——同一个问题的第四个侧面，同形同语汇。
+          dirCount 为 0 时组件自己返回 null，认得出来的库一个字都不占屏。
+          ⚠️ 这里**不给任何按钮**（R-F1「未识别资源不给用户改」）——完整论证见组件头注释。 */}
+      <UnidentifiedNote unidentified={health?.unidentified} />
 
       {/* 🔴 R-F1 的可见形态：识别在**这里**，不在 tab 里。
           判据是 current.kind === 'identify'（laneOf 的同一套口径在 useCurrentState 里已用过）。 */}

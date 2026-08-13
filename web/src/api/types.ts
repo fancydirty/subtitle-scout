@@ -435,6 +435,24 @@ export interface ScoutCurrentDTO {
   total: number | null
 }
 
+/** 一个认不出来的作品目录。**刻意只有两个字段**——后端点名的信息量边界
+ *  （R-F9/R-F10：last_error / attempt / next_retry_at / 绝对路径全是排障读数，不出）。 */
+export interface UnidentifiedDirDTO {
+  /** 目录名（`work_dir` 最后一段），**不是绝对路径**。用户要改名的就是这个东西。 */
+  dirName: string
+  fileCount: number
+}
+
+/** 「有几个目录我认不出来」。
+ *
+ *  ⚠️ 渲染纪律：`dirCount === 0` 时**整段不渲染**（沉默即好消息，同 RootHealthNote）。
+ *  `dirs` 是**截断**的（后端上限 8），说"有几个"一律用 `dirCount`，
+ *  **绝不许拿 `dirs.length` 当总数**——那会在超过 8 个时对用户少报。 */
+export interface UnidentifiedHealthDTO {
+  dirCount: number
+  dirs: UnidentifiedDirDTO[]
+}
+
 export interface HealthDTO {
   /** ⚠️ 语义警告（Task ⑤ 审计 🟡-3，**后端未修**）：这个字段落的是巡检的**开始时刻**，
    *  不是完成时刻。大库实测能跑 10h → 04:00 开始 14:00 结束，13:00 读到的是"9 小时前"
@@ -450,6 +468,9 @@ export interface HealthDTO {
   /** TMDB + LLM 三件套是否全部可解析。false = 去 setup 页填 key。 */
   setupSatisfied: boolean
   roots: HealthRootDTO[]
+  /** 「有几个目录我认不出来」。R-F2 的「孤儿不露出」作用域是**媒体库海报墙**（不给卡片），
+   *  不是"数量不许被知道"；R-F1 的「不给用户改」禁的是编辑。故这里只读、无任何动作入口。 */
+  unidentified: UnidentifiedHealthDTO
   current: ScoutCurrentDTO | null
 }
 

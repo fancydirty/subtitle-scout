@@ -585,4 +585,16 @@ export const en = {
   //    头注释都点名了 `?? true` 这条禁令）。
   root_health_failed: 'Cannot read these folders — what you see may be out of date',
   root_health_unknown: 'Not checked recently',
+
+  // ── 🔴 认不出来的目录（病 A 第 7 例的可见形态）──────────────────────────
+  // 措辞纪律（与 root_health_* 同源，且多一条）：
+  //  ① **说后果，不说过程**。用户关心的不是"识别流程失败了"，而是"这些东西我不会处理"
+  //     ——因为后者才推得出他该干什么。
+  //  ② **必须带上那句该干的事**（`title (year)`）。这是 R-F1 的下半句
+  //     「未识别资源不给用户改（底线是按 title (year) 命名）」——界面上没有任何按钮，
+  //     用户唯一的动作在他自己的文件管理器里。不说清格式，这条提示就只是在报忧。
+  //  ③ 不出现 park / parked / work_id / TMDB / agent / 404 / 退避 这类实现词。
+  unidentified_note: "Can't recognise these folders — rename them to “title (year)” and they'll be picked up",
+  /** 截断时的尾巴。`dirs` 只给前 8 个，总数一律读 dirCount（绝不用 dirs.length）。 */
+  unidentified_more: 'and {n} more',
 } as const

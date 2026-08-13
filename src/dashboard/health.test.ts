@@ -336,6 +336,29 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(Object.keys(body.roots[0]).sort()).toEqual(['lastCheckedAt', 'lastError', 'ok', 'path'])
   })
 
+  // ── unidentified：「有几个目录我认不出来」（病 A 第 7 例的读出面）─────────────
+  // 这一段的完整论证（含 R-F1/R-F2 的作用域解读）在 unidentifiedHealth.ts 头注释。
+  // 这里只钉**端点边界**：字段确实出得来、且是活谓词算出来的，不是恒空占位。
+  it('🔴 unidentified 出现在 /health 里，且空库时是 0（不是缺席字段）', async () => {
+    const { base } = await start()
+    const { body } = await getHealth(base)
+    expect(body.unidentified).toEqual({ dirCount: 0, dirs: [] })
+  })
+
+  it('🔴 unidentified 端到端：work_id IS NULL 的目录真的能走到 HTTP 响应上', async () => {
+    // 含一个 404 终态目录——它**永不再进识别队列**，是这条提示最该抓到的那一类。
+    db.prepare(
+      `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, last_error, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run('/media/Unknown Show/e1.mkv', '/media/Unknown Show', 'e1.mkv', 1, NOW,
+      '/media/Unknown Show', null, 'tmdb-404', NOW)
+
+    const { base } = await start()
+    const { body } = await getHealth(base)
+    expect(body.unidentified.dirCount).toBe(1)
+    expect(body.unidentified.dirs).toEqual([{ dirName: 'Unknown Show', fileCount: 1 }])
+  })
+
   it('🔴 接了总线：current 来自 ScoutEventBus 的快照（Task ④ 的 getCurrent）', async () => {
     const bus = new ScoutEventBus()
     bus.publish({ type: 'activity', message: '开始处理', title: '甲剧', workbench: 'subtitle' })
@@ -414,7 +437,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     const { base } = await start({ events: new ScoutEventBus() })
     const { body } = await getHealth(base)
     expect(Object.keys(body).sort()).toEqual(
-      ['current', 'engineEnabled', 'lastInspectAt', 'roots', 'setupSatisfied', 'workPermitted'],
+      ['current', 'engineEnabled', 'lastInspectAt', 'roots', 'setupSatisfied', 'unidentified', 'workPermitted'],
     )
     expect('queue' in body).toBe(false)
   })

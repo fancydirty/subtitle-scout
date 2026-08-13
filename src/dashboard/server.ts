@@ -20,6 +20,7 @@ import {
 // import —— 两套 builder 读的是完全不同的表，混在一行会让"哪个长在旧表上"不可见。
 import { buildMediaLibrary, buildMediaLibraryDetail } from './mediaLibraryApi.js'
 import { buildActivity } from './activityApi.js'
+import { buildUnidentifiedHealth, type UnidentifiedHealthDTO } from './unidentifiedHealth.js'
 // R-F3：通知页列表的读函数。**复用**，不在 dashboard 层重写查询——一周窗与倒序都长在
 // 那边（读窗常量还与 dbMaintenance 的 pruneFound 共用），另写一份必然静默漂移。
 import { listRecentFoundGrouped } from '../v2/notificationsRepo.js'
@@ -221,6 +222,18 @@ export interface HealthDTO {
    *  这正是"什么都没发生"最常见的成因，也是本字段存在的全部理由。 */
   setupSatisfied: boolean
   roots: HealthRootDTO[]
+  /**
+   * 「有几个目录我认不出来」——`files.work_id IS NULL` 的目录汇总。
+   *
+   * 放在 /health 而不是新端点：本字段与 `roots[]` 回答的是同一个问题的两面
+   * （「我的库现在是什么状况」），而活动页状态条已经在读这个端点。开第二个端点等于
+   * 让同一屏多打一次往返，且 R-F10「全站一条连接」的精神同样反对为一个数字新开通道。
+   *
+   * ⚠️ 与 R-F1/R-F2 的关系（完整论证见 unidentifiedHealth.ts 头注释）：R-F2 的
+   * 「孤儿不露出」作用域是**媒体库海报墙**（不给卡片），不是"数量不许被知道"；
+   * R-F1 的「不给用户改」禁的是**编辑**，本字段是纯读，且不带任何可操作端点。
+   */
+  unidentified: UnidentifiedHealthDTO
   current: ScoutCurrent | null
 }
 
@@ -928,6 +941,9 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           engineEnabled: engineEnabled((k) => settingsRepo.get(k)),
           setupSatisfied: setupSatisfied(healthCfg),
           roots: buildRootHealth(rootRows, Date.now()),
+          // 「有几个目录我认不出来」（病 A 第 7 例的读出面）。谓词与 identifyScheduler 的
+          // 取件谓词**刻意不同**（要含 404 终态那批永不重试的）——见 buildUnidentifiedHealth。
+          unidentified: buildUnidentifiedHealth(db),
           // events 缺席 → null（见上方论证：不整体 503）。
           current: events ? events.getCurrent() : null,
         }
