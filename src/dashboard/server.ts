@@ -641,12 +641,14 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
 
       // ── POST /api/v2/triage/unexclude（救援R4b 特典翻案）已删除，2026-08-13 ──
       // 它是 parked_paths 族的写入面：翻案 = 写 extras_exemptions 豁免 + 退 park 户口，
-      // 好让文件"下一轮扫描时重回识别流"。这三件事今天全部落空——
-      //   · 唯一给 parked_paths 写行的是 v2/ingest.ts（本轮已整体退役），表从此零写入者；
+      // 好让文件"下一轮扫描时重回识别流"。这三件事全部落空——
+      //   · 唯一给 parked_paths 写行的是 v2/ingest.ts（已整体退役），表从此零写入者；
       //   · extras_exemptions 的唯一读取方也是 ingest（excludeExtras 分支的 isExtrasExempt）；
       //   · "重回识别流"由 daemonV2 的 files/works 两表决定，与 park 户口无关。
       // 于是这个端点翻的是一张永远为空的表的案。前端 ExcludedBox（唯一调用方）同批删除。
-      // 完整裁决见 `web/src/triage/TriagePage.tsx` 头注释的 parked 族段落。
+      // ⚠️ 同日后续：`extras_exemptions` 表本身也已删除（db.ts v44）——用户裁决「特典都
+      // 完全不算在找字幕的范围」，特典判据改落在 subtitleJudge 的规则 0 上，不再有"翻案"
+      // 这个概念（想给特典找字幕的通路是改文件名，同认领退役的口径）。
 
       // POST /api/v2/triage/unclaim（审计 A-5 的认领撤销扳手）已随 identify_overrides 表
       // 一并退役——没有认领，就没有可撤销的认领。

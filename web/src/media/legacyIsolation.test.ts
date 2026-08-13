@@ -72,18 +72,20 @@ import type { EpisodeState } from '../api/types.js'
 // 证明不了"没被 import"。后者由上面那组负责。此处不再声称它们有隔离效力。
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 新八态的**值**全集（从 EPISODE_STATE_LABEL 的键派生——那张表是穷尽 Record，
+/** 新九态的**值**全集（从 EPISODE_STATE_LABEL 的键派生——那张表是穷尽 Record，
  *  少一个键 tsc 就红，所以它的键集合就是类型联合本身）。 */
 const NEW_STATES = Object.keys(EPISODE_STATE_LABEL) as EpisodeState[]
 
-describe('新八态 vs 旧七态：值域对不齐（语义佐证，非隔离守卫）', () => {
-  it('新八态恰好八个，且就是后端 mediaLibraryApi.ts 的那八个', () => {
+describe('新九态 vs 旧七态：值域对不齐（语义佐证，非隔离守卫）', () => {
+  it('新九态恰好九个，且就是后端 mediaLibraryApi.ts 的那九个', () => {
+    // 'extra' 是 2026-08-13 用户裁决「特典都完全不算在找字幕的范围」加的第九态
+    // （后端 skip_reason='extra'）。
     expect([...NEW_STATES].sort()).toEqual(
-      ['absent', 'covered', 'embedded', 'origin-skip', 'pending', 'translating', 'unjudged', 'unsolvable'],
+      ['absent', 'covered', 'embedded', 'extra', 'origin-skip', 'pending', 'translating', 'unjudged', 'unsolvable'],
     )
   })
 
-  it('旧七态的 "missing" 在新八态里没有对应——它对应两个**语义相反**的态', () => {
+  it('旧七态的 "missing" 在新九态里没有对应——它对应两个**语义相反**的态', () => {
     expect(NEW_STATES).not.toContain('missing')
     // 排队等找（还会来结果）与 判定无解（现在没辙）—— 设计文档 §4.3 点名要求两者视觉可分。
     expect(NEW_STATES).toContain('pending')
@@ -101,8 +103,8 @@ describe('新八态 vs 旧七态：值域对不齐（语义佐证，非隔离守
   })
 })
 
-describe('八态文案表（穷尽 Record，漏一态 tsc 红）', () => {
-  it('八个态在 en/zh 两侧都有真文案，且同侧内两两不同', () => {
+describe('九态文案表（穷尽 Record，漏一态 tsc 红）', () => {
+  it('九个态在 en/zh 两侧都有真文案，且同侧内两两不同', () => {
     for (const [name, table] of [['en', en], ['zh', zh]] as const) {
       const values = NEW_STATES.map((s) => (table as Record<string, string>)[EPISODE_STATE_LABEL[s]])
       for (const [i, v] of values.entries()) {
@@ -121,8 +123,8 @@ describe('八态文案表（穷尽 Record，漏一态 tsc 红）', () => {
     expect(zh.media_state_unsolvable).toContain('再试')
   })
 
-  it('图例列七个染色态，absent 不在其中（它是边框维度，不是颜色维度）', () => {
-    expect(LEGEND_STATES).toHaveLength(7)
+  it('图例列八个染色态，absent 不在其中（它是边框维度，不是颜色维度）', () => {
+    expect(LEGEND_STATES).toHaveLength(8)
     expect(LEGEND_STATES as readonly string[]).not.toContain('absent')
     // 图例覆盖了除 absent 外的全部态——漏一个就是有格子的颜色无处可查
     expect([...LEGEND_STATES].sort()).toEqual(NEW_STATES.filter((s) => s !== 'absent').sort())

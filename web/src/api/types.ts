@@ -26,24 +26,14 @@ export interface RunHistoryDTO {
 // 头注释的「2.5 parked 族的结局」段。
 
 /** dashboard-F2：GET /api/v2/workflow/pending 响应体——与 src/dashboard/apiV2.ts 的
- *  WorkflowPendingDTO 一族保持一致。顶栏新鲜度行与侧栏甄别角标共用同一个请求（meta+parked）。 */
-export interface WorkflowPendingSeriesDTO {
-  seriesId: string
-  seriesName: string
-  season: number
-  missing: number
-  throttled: number
-  nextRecheckAt: number | null
-  sampleReason: string | null
-}
-export interface WorkflowPendingMovieDTO {
-  id: string
-  name: string
-  missing: 0 | 1
-  throttled: 0 | 1
-  nextRecheckAt: number | null
-  sampleReason: string | null
-}
+ *  WorkflowPendingDTO 一族保持一致。**唯一读取面是 shell/Topbar.tsx 的新鲜度行，只读
+ *  `.meta`**。
+ *
+ *  2026-08-13：`series[]` / `movies[]` / `parked` 三字段连同
+ *  `WorkflowPendingSeriesDTO` / `WorkflowPendingMovieDTO` 两个接口在前后端同批删除——
+ *  三者零组件消费（旧读取面：甄别页 PendingBox/ExcludedBox 与旧 workflow 页，均已下架），
+ *  而后端每 15 秒轮询要为它们白跑两条 GROUP BY + 一次 parked_paths 全表扫。
+ *  正本论证见 `src/dashboard/apiV2.ts` 的 WorkflowPendingDTO 头注释。 */
 export interface WorkflowFreshnessDTO {
   roots: string[]
   lastScanAt: number | null
@@ -55,9 +45,6 @@ export interface WorkflowFreshnessDTO {
   verifiableItems: number
 }
 export interface WorkflowPendingDTO {
-  series: WorkflowPendingSeriesDTO[]
-  movies: WorkflowPendingMovieDTO[]
-  parked: number
   meta: WorkflowFreshnessDTO
 }
 
@@ -513,7 +500,7 @@ export type MediaSubtitleDot = 'none' | 'blue' | 'green'
  *
  *  符号（设计文档 §4.3 裁决，内联 SVG，见 web/src/media/EpisodeMark.tsx）：
  *    covered ✓ / translating ⇄ / unsolvable ⊘ / origin-skip ◇ / embedded ◆ /
- *    pending ··· / unjudged ? / absent 虚线不染色（不画任何符号） */
+ *    extra ▭ / pending ··· / unjudged ? / absent 虚线不染色（不画任何符号） */
 export type EpisodeState =
   | 'absent'
   | 'covered'
@@ -521,6 +508,12 @@ export type EpisodeState =
   | 'unsolvable'
   | 'origin-skip'
   | 'embedded'
+  /** ▭ 机械特典（后端 `skip_reason='extra'`）：NCOP/NCED/PV/menu 这类无对白映像。
+   *  2026-08-13 用户裁决「特典都完全不算在找字幕的范围」。与 origin-skip / embedded
+   *  同属"不用人操心"那一族，只是理由不同（前两者"不需要"，这个"不算数"）。
+   *  ⚠️ 它**不计入卡片上的 unplacedFileCount**（后端已扣除），只在格子层面可见——
+   *  两者合起来才是"减少心智负担而不隐瞒事实"。 */
+  | 'extra'
   | 'pending'
   | 'unjudged'
 
@@ -543,12 +536,18 @@ export interface MediaLibraryItemDTO {
   missingEpisodeCount: number
   /** 已获取中文字幕的格数（R-F2「任一份有就算」口径；绿点 + 蓝点都计入）。 */
   subtitledEpisodeCount: number
-  /** 属于这部作品、但季集解析不出因而**进不了季集网格**的文件数（特典居多）。电影恒 0。
+  /** 属于这部作品、但季集解析不出因而**进不了季集网格**的文件数。电影恒 0。
    *
    *  🔴 2026-08-13：与详情页的同名字段**同一个数**。此前这些文件被后端塞进一个假格、
    *  算进 `onDiskEpisodeCount`，于是同一部剧列表说「磁盘 78 / 缺 7」、详情说
    *  「磁盘 77 / 缺 8」。现在它们不进集数，只在这里如实计数——
-   *  **必须显示**：不显示的话用户看不出"有文件没进网格"，会以为系统把文件弄丢了。 */
+   *  **必须显示**：不显示的话用户看不出"有文件没进网格"，会以为系统把文件弄丢了。
+   *
+   *  🔴 2026-08-13（同日第二条裁决）：**已扣除机械特典**（后端 skip_reason='extra'）。
+   *  此前这个数把"系统故意不管的特典"与"系统没搞定的解析失败"混成一个数（生产 Re:ZERO
+   *  报 67 = 16 特典 + 51 解析失败），用户无从分辨而前者根本不需要他动手。
+   *  扣除后它只剩一种含义：**解析器没能归位的真实文件**，且可行动（改文件名即可修好）。
+   *  特典并没有被藏掉——它们在季集网格里以 `episodeState='extra'`（▭）可见。 */
   unplacedFileCount: number
 }
 

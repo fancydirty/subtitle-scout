@@ -36,19 +36,21 @@ export const EPISODE_STATE_LABEL: Record<EpisodeState, TKey> = {
   unsolvable: 'media_state_unsolvable',
   'origin-skip': 'media_state_origin_skip',
   embedded: 'media_state_embedded',
+  extra: 'media_state_extra',
   pending: 'media_state_pending',
   unjudged: 'media_state_unjudged',
   absent: 'media_state_absent',
 }
 
-/** 图例里列出的态与顺序——**只列七个染色态**，absent 不在其中（虚线格不染色，它由
+/** 图例里列出的态与顺序——**只列八个染色态**，absent 不在其中（虚线格不染色，它由
  *  "边框形状"这个正交维度表达，见 §4.3 那张两维度表；把它塞进颜色图例会让人以为
- *  虚线也是一种颜色）。顺序 = 后端 STATE_RANK 的聚合序（已解决三个在前、未解决四个在后），
+ *  虚线也是一种颜色）。顺序 = 后端 STATE_RANK 的聚合序（已解决四个在前、未解决四个在后），
  *  与后端同序不是巧合：用户在图例里看到的先后，就是同一格多份文件时谁代表这一格的先后。 */
 export const LEGEND_STATES: readonly Exclude<EpisodeState, 'absent'>[] = [
   'covered',
   'origin-skip',
   'embedded',
+  'extra',
   'translating',
   'unsolvable',
   'pending',

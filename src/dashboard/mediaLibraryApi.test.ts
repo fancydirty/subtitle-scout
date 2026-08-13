@@ -240,6 +240,91 @@ describe('buildMediaLibrary（列表：海报墙）', () => {
     })
   })
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 2026-08-13（同日第二条裁决）：机械特典**不算进 unplacedFileCount**
+  // ══════════════════════════════════════════════════════════════════════════
+  // 用户原话：「特典逻辑我觉得可以删除掉，感觉为它增加我们的心智负担不值得。」
+  //
+  // 此前 unplacedFileCount 把两种东西混成一个数：
+  //   · 系统**故意不管**的（NCOP/NCED/PV/menu —— judge 已判 skip_reason='extra'）
+  //   · 系统**没搞定**的（解析器在真剧集上失败，改文件名即可修好）
+  // 生产实测 Re:ZERO 报 67，其中 16 个属前者、51 个属后者。一个数同时表达两件事，
+  // 用户无从分辨，而前者根本不需要他动一根手指——那正是"占脑子"。
+  //
+  // 扣除后这个数只剩一种含义：「解析器没能归位的真实文件」，且**可行动**。
+  // 特典并没有被藏掉——它们在季集网格里以 episodeState='extra'（▭）可见。
+  describe('🔴 机械特典（skip_reason=extra）不计入 unplacedFileCount', () => {
+    it('🔴🔴 16 特典 + 51 解析失败 → unplaced 报 51，不是 67（生产 Re:ZERO 的真实构成）', () => {
+      addWork('tmdb:60', { title: 'Re:ZERO' })
+      addCanonical('tmdb:60', 1, [1])
+      addFile({ path: '/r/s1e1.mkv', workId: 'tmdb:60', season: 1, episode: 1 })
+      for (let i = 0; i < 16; i++) {
+        addFile({ path: `/r/NCOP${i}.mkv`, workId: 'tmdb:60', season: null, episode: null,
+          needsSubtitle: 0, skipReason: 'extra' })
+      }
+      for (let i = 0; i < 51; i++) {
+        addFile({ path: `/r/unparsed${i}.mkv`, workId: 'tmdb:60', season: null, episode: null })
+      }
+      const [item] = buildMediaLibrary(db)
+      expect(item.unplacedFileCount).toBe(51)
+      // 特典既不进 unplaced、也**不进集数**（它们不是"某一集"）——两个数都不许被它们抬高。
+      expect(item.onDiskEpisodeCount).toBe(1)
+      expect(item.missingEpisodeCount).toBe(0)
+    })
+
+    it('🔴 列表页与详情页**同一个数**（扣除口径也必须两页一致）', () => {
+      // 这条守的是 isJudgedExtra 那份共用判据。两页各写一遍 `skip_reason==='extra'` 时，
+      // 改一处忘一处会让两页的 unplacedFileCount 不相等——而这个字段当初正是为了修
+      // "两页对同一部剧说不同的话"才引入的。
+      addWork('tmdb:61', { title: 'Cross Check Extras' })
+      addCanonical('tmdb:61', 1, [1])
+      addFile({ path: '/c/s1e1.mkv', workId: 'tmdb:61', season: 1, episode: 1 })
+      addFile({ path: '/c/NCOP.mkv', workId: 'tmdb:61', season: null, episode: null,
+        needsSubtitle: 0, skipReason: 'extra' })
+      addFile({ path: '/c/unparsed.mkv', workId: 'tmdb:61', season: null, episode: null })
+
+      const [item] = buildMediaLibrary(db)
+      const detail = buildMediaLibraryDetail(db, 'tmdb:61')!
+      expect(item.unplacedFileCount).toBe(detail.unplacedFileCount)
+      // 阳性对照：不是恰好都为 0，也不是"扣成了 0"——解析失败那一个必须还在。
+      expect(item.unplacedFileCount).toBe(1)
+    })
+
+    it('🔴 **全是特典**的剧 → unplaced=0（用户一眼看过去无事可做，这就是"不占脑子"）', () => {
+      addWork('tmdb:62', { title: 'All Mechanical Extras' })
+      for (const n of ['NCOP', 'NCED', 'PV', 'menu']) {
+        addFile({ path: `/a/${n}.mkv`, workId: 'tmdb:62', season: null, episode: null,
+          needsSubtitle: 0, skipReason: 'extra' })
+      }
+      const [item] = buildMediaLibrary(db)
+      expect(item.unplacedFileCount).toBe(0)
+      expect(buildMediaLibraryDetail(db, 'tmdb:62')!.unplacedFileCount).toBe(0)
+      // 但这部剧**仍然出现在海报墙上**——"不数它们"不等于"这部剧不存在"。
+      expect(item.workId).toBe('tmdb:62')
+    })
+
+    it('🔴 judge 还没判到的行（skip_reason IS NULL）仍算 unplaced——诚实的"还没判"', () => {
+      // 判据刻意是 `skip_reason='extra'`（judge 的判决）而不是在这一层重跑一次
+      // isMechanicalExtra(filename)：后者是第二份判据，改 EXTRA_MARKERS 那天两处必然漂移。
+      // 代价就是这一条——judge 还没轮到的特典会短暂被算进 unplaced。那是诚实的，不是错。
+      addWork('tmdb:63', { title: 'Not Yet Judged' })
+      addFile({ path: '/n/NCOP.mkv', workId: 'tmdb:63', season: null, episode: null,
+        needsSubtitle: null, skipReason: null })
+      expect(buildMediaLibrary(db)[0].unplacedFileCount).toBe(1)
+    })
+
+    it('🔴 其他 skip_reason（origin-skip / embedded）**照旧计入** unplaced', () => {
+      // 只有 'extra' 这一个值有扣除效果。写成"needs_subtitle===0 就扣"会把一批
+      // 国产片/带内嵌轨的**真剧集**（只是没解析出季集）一并藏掉——那是把"没搞定"藏了。
+      addWork('tmdb:64', { title: 'Other Reasons' })
+      addFile({ path: '/o/cn.mkv', workId: 'tmdb:64', season: null, episode: null,
+        needsSubtitle: 0, skipReason: 'origin-skip' })
+      addFile({ path: '/o/emb.mkv', workId: 'tmdb:64', season: null, episode: null,
+        needsSubtitle: 0, skipReason: 'embedded' })
+      expect(buildMediaLibrary(db)[0].unplacedFileCount).toBe(2)
+    })
+  })
+
   it('多个作品：按标题稳定排序，列表可预期', () => {
     addWork('tmdb:20', { title: 'Zebra' })
     addFile({ path: '/z/e1.mkv', workId: 'tmdb:20', season: 1, episode: 1 })
@@ -446,6 +531,13 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
 
     it("skip_reason='embedded' → 'embedded'（◆ 自带目标语言内嵌轨）", () => {
       expect(stateOf({ needsSubtitle: 0, skipReason: 'embedded' })).toBe('embedded')
+    })
+
+    it("🔴 skip_reason='extra' → 'extra'（▭ 机械特典，2026-08-13 用户裁决）", () => {
+      // 特典不进 unplacedFileCount，但**必须在格子层面可见**——两件事合起来才是
+      // "减少心智负担而不隐瞒事实"：概览数字里不出现（用户无事可做），
+      // 具体格子上如实标注（用户想查时查得到）。少了这一条就成了静默吞掉。
+      expect(stateOf({ needsSubtitle: 0, skipReason: 'extra' })).toBe('extra')
     })
 
     it("🔴 第 8 态：needs_subtitle IS NULL → 'unjudged'（judge 还没轮到它）", () => {

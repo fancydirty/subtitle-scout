@@ -1040,13 +1040,17 @@ export class ScoutDaemonV2 {
   }
 
 
-  /** judge 阶段：对已识别但未判定的文件跑 judgeSubtitle（国产/内嵌跳过）。
+  /** judge 阶段：对已识别但未判定的文件跑 judgeSubtitle（特典/国产/内嵌跳过）。
    *
    *  **不探磁盘**（D8 / C27）：needs_subtitle 只表达"这资源原则上需要中文字幕"，判据是语言
-   *  事实（origin_lang / 内嵌轨）。"磁盘上当前有没有外挂字幕"归 sub_status，由扫描独占写入
+   *  事实（origin_lang / 内嵌轨）**与文件名事实**（机械特典标记，2026-08-13 用户裁决——
+   *  见 subtitleJudge.ts 的规则 0）。"磁盘上当前有没有外挂字幕"归 sub_status，由扫描独占写入
    *  （R24），judge 一次 stat 都不该发——留着不仅是每轮白付 84 次 stat/文件（115 是 FUSE 挂载），
    *  更会把同一个磁盘事实投影到两列上，造出 needs_subtitle=0 + sub_status=NULL 的永久卡死态
-   *  （见 subtitleJudge.ts 顶部对 C27 的完整论证）。 */
+   *  （见 subtitleJudge.ts 顶部对 C27 的完整论证）。
+   *
+   *  🔴 `filename` 必须真的喂进 judgeSubtitle：它是规则 0 的**唯一**判据，漏传会让特典
+   *  静默回到 needs=1（而所有语言相关用例照绿）。judgeOnce 的 SELECT 里本来就有这一列。 */
   private async judgeOnce(): Promise<void> {
     const db = this.deps.db
     const now = this.deps.now?.() ?? Date.now()
@@ -1100,7 +1104,7 @@ export class ScoutDaemonV2 {
       let embedded: string[] | null = null
       if (r.embedded_langs) { try { embedded = JSON.parse(r.embedded_langs) } catch { embedded = null } }
 
-      const input = { originLang: r.origin_lang, embeddedLangs: embedded }
+      const input = { originLang: r.origin_lang, embeddedLangs: embedded, filename: r.filename }
       const verdict = judgeSubtitle(input, { targetLanguages: [this.deps.targetLanguage] })
       // R21：可救性与 needs_subtitle 同时判定。**无条件判**（连 needs=0 的行也判）——
       // 若写成"needs=0 就跳过"，将来换片源把 needs 清成 NULL 重判时会留下一批 translatable
@@ -1120,7 +1124,7 @@ export class ScoutDaemonV2 {
       if (verdict.needs) needsCount++
     }
     if (judged > 0) {
-      this.deps.log(`judge: 判定 ${judged} 个文件——${needsCount} 需字幕 / ${judged - needsCount} 跳过（国产或已有内嵌中文轨）`)
+      this.deps.log(`judge: 判定 ${judged} 个文件——${needsCount} 需字幕 / ${judged - needsCount} 跳过（特典、国产或已有内嵌中文轨）`)
     }
   }
 

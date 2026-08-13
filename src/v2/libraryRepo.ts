@@ -306,78 +306,6 @@ export class LibraryRepo {
       )
   }
 
-  /** 富化重试机制的候选清单（验收修复轮一 Task V1，design §A，一石二鸟）：genres 尚未富化
-   *  （NULL——存量剧 + getDetails 抖动失败的剧）即候选；空名占位建行时 genres 必为 NULL，同样
-   *  落网。genres 非 NULL 即"TMDB 已给过权威答复"——此时 name 仍为空只剩确定性无解形态
-   *  （404 → genres=[]，或查无标题），重试必然拿到同一答案：定论即熄火（债务D6 收尾——旧谓词
-   *  的 name='' 臂让 404 行永留候选，每轮空转烧 3 个 TMDB 请求并挤占 cap 槽）。可治愈的空名
-   *  （建行时 getDetails 成功）已由建行当场回填 originalTitle 兜住（ingest.ts），不经过这里。
-   *  limit 由调用方传 cap（ingest.ts pass 收尾每轮传 10，防 TMDB 抖动期连环空转拖垮整轮 pass）。 */
-  listSeriesNeedingEnrich(limit: number): { id: string }[] {
-    // 详情页重设计 item B（db.ts v16 迁移）：series.overview/backdrop_path 后加两列，存量
-    // 已富化剧（genres 早已非 NULL）这两列恒 NULL——迁移注释假定"series 层靠既有富化重试 pass
-    // 连带补齐"，但旧谓词只认 genres IS NULL 接不住它们。放宽第二臂 overview IS NULL 把它们
-    // 拉回候选一次性回填；自熄火——overview 一旦落值即脱离该臂，不会 re-enrich 风暴。
-    // 护栏 name != ''：第二臂只捞真名剧。空名占位（P6 认领债务 / 404 死 id，genres 已落 []
-    // 但 overview 永远拿不到）绝不能经 overview 臂永留候选空转烧 TMDB 配额（复活债务D6 的
-    // 熄火不变式——空名死 id 只能经 genres IS NULL 臂进候选、拿到 genres=[] 定论后彻底熄火）。
-    return this.db
-      .prepare(`SELECT id FROM series WHERE genres IS NULL OR (overview IS NULL AND name != '') LIMIT ?`)
-      .all(limit) as { id: string }[]
-  }
-
-  /** 富化重试的落笔处（验收修复轮一 Task V1，design §A）——宁可不写不可覆盖：这是"回填"，
-   *  不是"覆盖"，任何字段只在当前列真的缺失时才被本次给出的新值填上，绝不用新值覆盖一个
-   *  已经有效的旧值（哪怕旧值本身就是这次 enrich 想改进的东西——那不是这个方法的职责，
-   *  改身份走 agent 的 write_identified_media）。
-   *  - name：只在当前是空串且本次给出非 null 新值时才写（CASE 手法）——空串是"从未识别成功
-   *    过"的占位语义（历史 P6 override 写入时的空名占位），非空 name 不会被这里改写。
-   *  - chinese_title/poster_path/year/genres：COALESCE(现列, 新值)——现列非 NULL 就原样保留，
-   *    现列 NULL 才落新值。调用方给的字段用 undefined/null 表示"这次没查到"，转成 SQL NULL，
-   *    COALESCE 对它是 no-op，天然满足"没查到就不动"。 */
-  applyEnrichment(
-    id: string,
-    e: {
-      name?: string | null
-      chineseTitle?: string | null
-      posterPath?: string | null
-      overview?: string | null
-      backdropPath?: string | null
-      year?: number | null
-      genres?: number[] | null
-      providerIds?: string | null
-    }
-  ): void {
-    const genresJson = e.genres != null ? JSON.stringify(e.genres) : null
-    this.db
-      .prepare(
-        // overview/backdrop_path（详情页重设计 item B）随 poster/genres 同一套"宁可不写不可覆盖"
-        // COALESCE 手法回填——存量已富化剧经放宽后的 listSeriesNeedingEnrich 谓词重入候选后，
-        // 由这里把 getDetails 拿到的 overview/backdrop 落进原本 NULL 的两列（现列非 NULL 则保留）。
-        `UPDATE series SET
-           name = CASE WHEN name = '' AND @name IS NOT NULL THEN @name ELSE name END,
-           chinese_title = COALESCE(chinese_title, @chineseTitle),
-           poster_path = COALESCE(poster_path, @posterPath),
-           overview = COALESCE(overview, @overview),
-           backdrop_path = COALESCE(backdrop_path, @backdropPath),
-           year = COALESCE(year, @year),
-           genres = COALESCE(genres, @genres),
-           provider_ids = COALESCE(@providerIds, provider_ids)
-         WHERE id = @id`
-      )
-      .run({
-        id,
-        name: e.name ?? null,
-        chineseTitle: e.chineseTitle ?? null,
-        posterPath: e.posterPath ?? null,
-        overview: e.overview ?? null,
-        backdropPath: e.backdropPath ?? null,
-        year: e.year ?? null,
-        genres: genresJson,
-        providerIds: e.providerIds ?? null,
-      })
-  }
-
   /** F-R2-6（R2 复审，审计定罪：ingest 覆盖路径绕过阶梯归零，R-3 不变式）：ON CONFLICT 分支的
    *  search_attempts CASE——excluded.sub_status（本次要写入的新状态）落在 covered/embedded 时
    *  归零，否则保持原值不动。这是 ingest 的 FULL PATH（新识别/probeMemo 过期，见 ingest.ts）
@@ -480,17 +408,6 @@ export class LibraryRepo {
     return row ?? null
   }
 
-  /** 该剧该季在镜像里的集数。（历史注释提到的 core/seasonShape.ts 的
-   *  SeasonShape.mirrorEpisodeCount 侧、以及它的消费方 v3 orchestratorAgent.tools.ts，
-   *  均已删除——前者本轮随死代码清理退役，后者早于旧管线退役时删除。此处只留本方法自身
-   *  的语义说明，不再指向已不存在的模块。） */
-  countEpisodesInSeason(seriesId: string, season: number): number {
-    const row = this.db
-      .prepare(`SELECT COUNT(*) as count FROM episodes WHERE series_id = ? AND season = ?`)
-      .get(seriesId, season) as { count: number }
-    return row.count
-  }
-
   /** 该剧镜像里全部集的路径（跨季）——realignExecutor 据此推导出实际需要整理的磁盘目录
    *  （绝对编号平铺库通常全部塞在同一个被误刮成"Season 01"的目录里）。 */
   episodePathsForSeries(seriesId: string): string[] {
@@ -518,37 +435,6 @@ export class LibraryRepo {
       this.db.prepare(`DELETE FROM series WHERE id = ?`).run(seriesId)
     })
     tx()
-  }
-
-  /** TMDB original_language 缓存读取；NULL=未解析过。 */
-  getSeriesOriginLang(seriesId: string): string | null {
-    const row = this.db.prepare('SELECT origin_lang FROM series WHERE id = ?').get(seriesId) as
-      | { origin_lang: string | null }
-      | undefined
-    return row?.origin_lang ?? null
-  }
-
-  /** TMDB original_language 缓存读取；NULL=未解析过。 */
-  getMovieOriginLang(movieId: string): string | null {
-    const row = this.db.prepare('SELECT origin_lang FROM movies WHERE id = ?').get(movieId) as
-      | { origin_lang: string | null }
-      | undefined
-    return row?.origin_lang ?? null
-  }
-
-  /** 解析到 TMDB original_language 后写回，之后不再回查。 */
-  setSeriesOriginLang(seriesId: string, lang: string): void {
-    this.db.prepare('UPDATE series SET origin_lang = ? WHERE id = ?').run(lang, seriesId)
-  }
-
-  /** 解析到 TMDB original_language 后写回，之后不再回查。 */
-  setMovieOriginLang(movieId: string, lang: string): void {
-    this.db.prepare('UPDATE movies SET origin_lang = ? WHERE id = ?').run(lang, movieId)
-  }
-
-  /** 债务D1：摄取层每轮 pass 结束时写回的磁盘布局事实（1=本轮观察到任一集路径不合规范形）。 */
-  setSeriesLayoutNonstandard(seriesId: string, nonstandard: boolean): void {
-    this.db.prepare('UPDATE series SET layout_nonstandard = ? WHERE id = ?').run(nonstandard ? 1 : 0, seriesId)
   }
 
   /** 胶水层修复（Task 8c，裁决 R-3 呈现面——考古定罪：谓词曾是守门人，把退避窗口内的停牌缺口
@@ -1039,24 +925,11 @@ export class LibraryRepo {
       .all() as ParkedPath[]
   }
 
-  // ---- 救援R4b：特典机械排除的用户翻案豁免（extras_exemptions，schema v14） ----
-
-  /** 翻案：把 path 写进豁免表（幂等 upsert）。机械过滤器此后跳过该 path 的 NC 铁案，
-   *  让它重回正常识别流。见 db.ts v14 迁移注释的"为何独立成表"。 */
-  addExtrasExemption(path: string, now: number): void {
-    this.db
-      .prepare(
-        `INSERT INTO extras_exemptions (path, created_at) VALUES (?, ?)
-         ON CONFLICT(path) DO NOTHING`
-      )
-      .run(path, now)
-  }
-
-  /** 机械过滤器每轮 pass 查询：该 path 是否已被用户翻案豁免。 */
-  isExtrasExempt(path: string): boolean {
-    const row = this.db.prepare(`SELECT 1 FROM extras_exemptions WHERE path = ?`).get(path)
-    return row != null
-  }
+  // ---- 救援R4b 的特典翻案豁免（extras_exemptions）已随表一并删除，2026-08-13 ----
+  // 曾有 addExtrasExemption / isExtrasExempt 两个方法。删除依据（用户裁决「特典都完全不算
+  // 在找字幕的范围」+「不值得为它增加心智负担」）与 extras_exemptions 表本身同批，
+  // 完整论证在 db.ts 的 v44 迁移 entry。新的特典判据落在 subtitleJudge 的规则 0 上，
+  // 不再有"豁免"这个概念——想给某个特典找字幕的通路是改文件名（同认领退役的口径）。
 
   // ---- 重复源 P1：item_files（同一条目的副本文件，schema v16） ----
 
@@ -1077,43 +950,6 @@ export class LibraryRepo {
     return this.db
       .prepare(`SELECT id, item_id, path, added_at FROM item_files WHERE item_id = ? ORDER BY added_at ASC, id ASC`)
       .all(itemId) as ItemFile[]
-  }
-
-  /** B3-3（配额止血）：按 path 反查该 path 是否已是某条目的登记副本——ingest.ts 主扫描循环用它
-   *  在调用昂贵的 recognize() 之前先判断"这条路径我们已经认得，只是副本身份"，从而跳过重新识别
-   *  （findRowByPath 只查 episodes/movies，天生看不到副本；这条是它的 item_files 侧对应口）。
-   *  找不到（路径不是任何条目的已登记副本）→ null。 */
-  getItemFileByPath(path: string): ItemFile | null {
-    const row = this.db
-      .prepare(`SELECT id, item_id, path, added_at FROM item_files WHERE path = ?`)
-      .get(path) as ItemFile | undefined
-    return row ?? null
-  }
-
-  /** 副本文件从磁盘消失时删行（seenPaths 差异清理调用）。行不存在=无事发生。 */
-  removeItemFileByPath(path: string): void {
-    this.db.prepare(`DELETE FROM item_files WHERE path = ?`).run(path)
-  }
-
-  /** 主文件消失时：最年长副本晋升为主文件——episodes/movies.path 顶替成该副本 path，该副本
-   *  从 item_files 退出（它现在是主文件了）。字幕行的 file_path 归属不动（spec §2）：原本挂在
-   *  该副本 path 上的字幕，其 file_path 仍指向同一物理文件，只是这个文件现在的角色从"副本"变
-   *  "主文件"，归属语义不变。无副本可晋升（列表空）=无事发生，调用方据此决定删条目还是留空壳。
-   *  返回晋升后的新主文件 path（null=无副本可晋升）。 */
-  promoteOldestReplica(itemId: string): string | null {
-    const replicas = this.listItemFiles(itemId)
-    if (replicas.length === 0) return null
-    const promoted = replicas[0]
-    const promote = this.db.transaction(() => {
-      // 两表尝试（同 markCovered/markUnavailable 的既有口径）：itemId 要么是 episode 要么是 movie。
-      const epResult = this.db.prepare(`UPDATE episodes SET path = ? WHERE id = ?`).run(promoted.path, itemId)
-      if (epResult.changes === 0) {
-        this.db.prepare(`UPDATE movies SET path = ? WHERE id = ?`).run(promoted.path, itemId)
-      }
-      this.db.prepare(`DELETE FROM item_files WHERE id = ?`).run(promoted.id)
-    })
-    promote()
-    return promoted.path
   }
 
   /** B3-4（专项#1，schema v17）：某副本 path 上次记住的时长判决（mismatch/probe-failed）+ 判决
@@ -1188,93 +1024,6 @@ export class LibraryRepo {
          ON CONFLICT(item_id, path) DO NOTHING`
       )
       .run(itemId, subtitlePath, language, source, filePath, now)
-  }
-
-  // ---- P2：ffprobe 探针记忆化（episodes/movies 共用列，见 db.ts P1 注释） ----
-
-  /** 两表 UPDATE 尝试模式（同 markCovered/markUnavailable 的既有写法）：itemId
-   *  的自有 id 空间里 episodes 与 movies 互斥（episodes 形状含 '/s<N>e<M>' 段，movies 没有），
-   *  先按 episodes 查，查不到再查 movies，不需要额外的 kind 参数区分调用方意图。 */
-  probeMemo(itemId: string): ProbeMemo | null {
-    type Row = { probe_mtime: number | null; probe_size: number | null; embedded_langs: string | null }
-    const episodeRow = this.db
-      .prepare(`SELECT probe_mtime, probe_size, embedded_langs FROM episodes WHERE id = ?`)
-      .get(itemId) as Row | undefined
-    const row =
-      episodeRow ??
-      (this.db
-        .prepare(`SELECT probe_mtime, probe_size, embedded_langs FROM movies WHERE id = ?`)
-        .get(itemId) as Row | undefined)
-    if (!row || row.probe_mtime == null || row.probe_size == null) return null
-    return {
-      mtime: row.probe_mtime,
-      size: row.probe_size,
-      langs: row.embedded_langs != null ? (JSON.parse(row.embedded_langs) as string[]) : null,
-    }
-  }
-
-  /** 同 probeMemo 的两表尝试模式：先 UPDATE episodes，0 行受影响再 UPDATE movies。 */
-  setProbeMemo(itemId: string, mtime: number, size: number, langs: string[] | null): void {
-    const langsJson = langs != null ? JSON.stringify(langs) : null
-    const episodeResult = this.db
-      .prepare(`UPDATE episodes SET probe_mtime = ?, probe_size = ?, embedded_langs = ? WHERE id = ?`)
-      .run(mtime, size, langsJson, itemId)
-    if (episodeResult.changes === 0) {
-      this.db
-        .prepare(`UPDATE movies SET probe_mtime = ?, probe_size = ?, embedded_langs = ? WHERE id = ?`)
-        .run(mtime, size, langsJson, itemId)
-    }
-  }
-
-  // ---- P2：磁盘真相移除（T3 摄取层消费：文件从盘上消失 → 行退役） ----
-
-  /** 按 path 删 episode 行 + 关联 subtitles（subtitles 未声明外键到 episodes(id)，同属一份账目，
-   *  与 deleteSeriesRows 同样理由一并清理）。路径不存在时是空操作。
-   *  R6-4 修复：也要删 item_files——deleteSeriesRows 的头注释把"owner 删了但 item_files 留孤儿"
-   *  定性为 SEVERE 数据腐蚀（ingest B3-3 短路命中孤儿 path → ownerPath=null → continue → 盘上
-   *  有视频有字幕却永久不再识别，非自愈），本方法与 deleteSeriesRows 同形，漏了同级清理。 */
-  deleteEpisodeByPath(path: string): void {
-    const tx = this.db.transaction(() => {
-      const row = this.db.prepare(`SELECT id FROM episodes WHERE path = ?`).get(path) as
-        | { id: string }
-        | undefined
-      if (!row) return
-      this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`).run(row.id)
-      this.db.prepare(`DELETE FROM item_files WHERE item_id = ?`).run(row.id)
-      this.db.prepare(`DELETE FROM episodes WHERE path = ?`).run(path)
-    })
-    tx()
-  }
-
-  /** 按 path 删 movie 行 + 关联 subtitles（同 deleteEpisodeByPath）。
-   *  R6-4 修复：也要删 item_files（同 deleteEpisodeByPath 的理由）。 */
-  deleteMovieByPath(path: string): void {
-    const tx = this.db.transaction(() => {
-      const row = this.db.prepare(`SELECT id FROM movies WHERE path = ?`).get(path) as
-        | { id: string }
-        | undefined
-      if (!row) return
-      this.db.prepare(`DELETE FROM subtitles WHERE item_id = ?`).run(row.id)
-      this.db.prepare(`DELETE FROM item_files WHERE item_id = ?`).run(row.id)
-      this.db.prepare(`DELETE FROM movies WHERE path = ?`).run(path)
-    })
-    tx()
-  }
-
-  /** episodes 行随磁盘真相逐个被 deleteEpisodeByPath 删空后，该剧的 series 行变成永久性镜像
-   *  鬼影（同 deleteSeriesRows 头注释的既有理由）——T3 摄取层在删完某剧最后一个 episode 后调用。 */
-  deleteSeriesIfEmpty(seriesId: string): void {
-    const row = this.db
-      .prepare(`SELECT COUNT(*) as c FROM episodes WHERE series_id = ?`)
-      .get(seriesId) as { c: number }
-    if (row.c === 0) {
-      this.db.prepare(`DELETE FROM series WHERE id = ?`).run(seriesId)
-      // 审计 M4（2026-07-26）：tmdb_seasons 是 series 级联的一部分（settingsRepo 删守备目录
-      // 时就是这么清的），此前这里漏了——身份纠错会频繁删空 series 行，孤儿季表随之无上界
-      // 累积且无 GC。更实际的危害：同一个 series_id 日后若回归，tmdbCatalog 的 TTL 门读
-      // MAX(fetched_at)，7 天内直接早退，那次"新剧首次入库刷应有集缓存"被静默跳过。
-      this.db.prepare(`DELETE FROM tmdb_seasons WHERE series_id = ?`).run(seriesId)
-    }
   }
 }
 

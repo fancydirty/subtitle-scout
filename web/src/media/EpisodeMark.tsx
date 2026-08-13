@@ -13,8 +13,8 @@
 //
 // ── Carbon 双通道（R-F12 的立论依据）───────────────────────────────────────
 // 状态 = **颜色 + 形状**两个通道。这个文件负责形状那一半，缺了它就退化成"只靠颜色"——
-// 对色盲无效、对屏幕阅读器不可见。所以 `absent` 之外的七态**每一个都必须有可分辨的形状**，
-// 不许出现两个态共用同一个图形只换颜色。EpisodeMark.test.tsx 有一条"七个态的图形两两不同"
+// 对色盲无效、对屏幕阅读器不可见。所以 `absent` 之外的八态**每一个都必须有可分辨的形状**，
+// 不许出现两个态共用同一个图形只换颜色。EpisodeMark.test.tsx 有一条"八个态的图形两两不同"
 // 的用例钉着这条。
 //
 // ── 无障碍 ───────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ const STROKE = 1.8
 
 /** 八态的符号语义（设计文档 §4.3）：
  *    covered ✓ / translating ⇄ / unsolvable ⊘ / origin-skip ◇ / embedded ◆ /
- *    pending ··· / unjudged ? / absent（不画）
+ *    extra ▭ / pending ··· / unjudged ? / absent（不画）
  *
  *  ⚠️ **每个 case 的返回值就是那个态的判据本身**——把 covered 的 ✓ 写成 ◇ 不会有任何
  *  类型错误，只会让用户看到一个与事实相反的标记。EpisodeMark.test.tsx 逐态断言几何。 */
@@ -63,6 +63,12 @@ function shapeOf(state: MarkState) {
     // 填充用 currentColor 而非 stroke——否则实心与空心在小尺寸下几乎看不出差别。
     case 'embedded':
       return <path d="M6 1.6 L10.4 6 L6 10.4 L1.6 6 Z" fill="currentColor" stroke="none" />
+    // ▭ 空心横矩形：机械特典（NCOP/NCED/PV/menu），"不算在找字幕的范围"。
+    // 形状选横向矩形而不是再来一个菱形/圆：它与 ◇◆ 同属"不用操心"一族，但**理由不同**
+    // （那两个是"不需要字幕"，这个是"这东西压根不算数"），共用轮廓会让人以为是同一件事。
+    // 横宽比 2:1 是刻意的——在 12px 盒子里它与 ◇ 的方向感正交，余光扫过就能分辨。
+    case 'extra':
+      return <rect x="1.6" y="3.6" width="8.8" height="4.8" rx="0.8" fill="none" />
     // ··· 三点：排队等找字幕。三个实心点，水平居中等距。
     case 'pending':
       return (

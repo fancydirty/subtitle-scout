@@ -32,9 +32,6 @@ function mockFetchRouted(handlers: { path: string; body: unknown; prefix?: boole
 }
 
 const WORKFLOW: WorkflowPendingDTO = {
-  series: [],
-  movies: [],
-  parked: 3,
   meta: { roots: ['/media'], lastScanAt: Date.now() - 2 * 60_000, files: 568 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
 }
 /** Task ⑨ 活动页的健康快照。`current: null` = 没有任何工作台在跑（本冒烟测试不关心

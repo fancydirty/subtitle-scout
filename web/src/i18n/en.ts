@@ -473,6 +473,7 @@ export const en = {
   media_state_unsolvable: 'No source yet — will retry',
   media_state_origin_skip: 'Original language — no subtitles needed',
   media_state_embedded: 'Embedded track',
+  media_state_extra: 'Extra — not subtitled by design',
   media_state_pending: 'Looking for subtitles',
   media_state_unjudged: 'Not judged yet',
   media_state_absent: 'Not on disk',

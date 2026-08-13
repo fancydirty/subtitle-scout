@@ -447,8 +447,15 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
   })
 
   it('camelCase 直译 + meta 新鲜度行（roots/lastScanAt/files）', () => {
-    // e4（s1 season2, unavailable）经 markUnavailable 建立真实退避窗口，制造 throttled 事实
-    // （plain upsertEpisode 不落 recheck_after，NULL 比较恒 falsy，missingBySeason 两桶都是 0）。
+    // 2026-08-13：本用例原先还断言 result.series / result.movies / result.parked 三个字段
+    // （s1 两个季的 missing/throttled/nextRecheckAt/sampleReason、m1 电影行、parked 计数）。
+    // 那三个字段本轮随 WorkflowPendingDTO 一并删除（零前端消费者，见 apiV2.ts 头注释），
+    // 对应断言随之移除。**产出它们的 LibraryRepo.missingBySeason/missingMovies 未删**，
+    // 其行为仍由 src/v2/libraryRepo.test.ts 的 6+2 条用例直接覆盖（含退避窗口/throttled
+    // 分桶/sampleReason 全部语义），所以删的是重复覆盖，不是覆盖本身。
+    //
+    // 保留 markUnavailable/upsertParkedPath 两行 fixture：它们建立的是本用例仍在断言的
+    // meta 之外的库状态，去掉会让这条用例与下方 files 回归锁的 fixture 形状漂移。
     lib.markUnavailable('e4', 'no_safe_match', NOW)
     lib.upsertParkedPath('/media/tv/Unknown/e1.mkv', 'ambiguous match', NOW)
     const settings = new SettingsRepo(db)
@@ -460,19 +467,6 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
 
     const result = buildWorkflowPending(db, settings, NOW)
 
-    const s1Season1 = result.series.find(s => s.seriesId === 's1' && s.season === 1)!
-    expect(s1Season1).toMatchObject({ seriesName: 'Series A', missing: 1, throttled: 0 })
-
-    const s1Season2 = result.series.find(s => s.seriesId === 's1' && s.season === 2)!
-    expect(s1Season2.missing).toBe(0)
-    expect(s1Season2.throttled).toBe(1)
-    expect(s1Season2.nextRecheckAt).toBe(NOW + 86_400_000) // 阶梯第 1 档=1 天
-    expect(s1Season2.sampleReason).toBe('no_safe_match')
-
-    expect(result.movies).toEqual([
-      { id: 'm1', name: 'Movie Z', missing: 1, throttled: 0, nextRecheckAt: null, sampleReason: null },
-    ])
-    expect(result.parked).toBe(1)
     expect(result.meta).toEqual({
       roots: ['/media/tv'], lastScanAt: NOW, files: 3, // COUNT(*) FROM files
       // 2026-07-31 新增：巡检还没跑过 → null + 0；covered 计数来自 fixture
@@ -521,12 +515,15 @@ describe('buildWorkflowPending（GET /api/v2/workflow/pending：missingBySeason/
     expect(buildWorkflowPending(prodDb, settings, NOW).meta.files).toBe(645)
   })
 
-  it('空库：series/movies 空数组，parked 0，lastScanAt null（meta 表从未写过 last_inspect_at）', () => {
+  // 2026-08-13：原标题「series/movies 空数组，parked 0，...」——那三个字段本轮随
+  // WorkflowPendingDTO 删除。用例保留：它锁的是**空库不编造任何东西**（lastScanAt null
+  // 而不是 0 或 Date.now()，files 0，两个 verify 计数 0），那条纪律与字段删除无关。
+  // `toEqual` 是全等断言，所以它同时也是"响应体不多长出字段"的锁。
+  it('空库：lastScanAt null（meta 表从未写过 last_inspect_at），不编造任何计数', () => {
     const freshDb = openDb(':memory:')
     const settings = new SettingsRepo(freshDb)
     const result = buildWorkflowPending(freshDb, settings, NOW)
     expect(result).toEqual({
-      series: [], movies: [], parked: 0,
       meta: {
         roots: [], lastScanAt: null, files: 0,
         lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0,

@@ -245,12 +245,13 @@ ALTER TABLE runs ADD COLUMN trace_json TEXT;   -- 痕迹通道 C 收官快照
   // 的 JSON 数组（如 '[16,35]'，16=Animation）；NULL=尚未富化（含存量 36 部剧与"空名 ? 卡"）。
   // 富化重试机制（ingest.ts pass 收尾）逐步回填，sectionOf 新规读它判"动漫 vs 剧集"。
   `ALTER TABLE series ADD COLUMN genres TEXT`,
-  // v14（救援R4b）：特典机械排除的"用户翻案"豁免表。isMechanicalExtra 命中的路径在
-  // exclude_extras 开启时会被 park excluded-extra；用户在甄别页「Excluded extras」箱点翻案时，
-  // 把该 path 写进这里——机械过滤器每轮 pass 先查此表，命中即跳过铁案、让文件重回正常识别流
-  // （否则文件名仍匹配 NC 正则，下一轮 pass 会无限再排除，翻案沦为 no-op）。持久化独立成表
-  // 而非复用 parked_paths.reason：recognize() 的 upsertParkedPath 会覆写 reason，豁免标记若挂在
-  // parked_paths 上会被识别失败的再 park 冲掉——独立表不受该覆写影响，豁免恒久生效。
+  // v14（救援R4b）：特典机械排除的"用户翻案"豁免表。
+  // ⚠️ 2026-08-13：这张表已由 **v44 entry DROP**（零行、零读取方、零写入方；用户裁决
+  // 「特典都完全不算在找字幕的范围」后连"保留待裁"的前提都没了——完整论证见 v44）。
+  // 本条 entry **保留原样不许删**：迁移链是按数组下标记版本的（meta.schema_version =
+  // MIGRATIONS.length），删掉中间一条会让所有存量库的版本号与实际结构错位一格，
+  // 后续 entry 全部跑错。fresh install 会先建它、再由 v44 立刻 DROP 掉——
+  // 多一次建删的代价是几微秒，换的是版本账不错位。
   `CREATE TABLE extras_exemptions (
   path TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL
@@ -996,13 +997,20 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
   // 故每一列都在这里写死三件事：
   //
   //  skip_reason TEXT（可空）= judgeSubtitle 的 verdict.reason 原值：
-  //    'origin-skip' / 'embedded' / 'missing'。
+  //    'origin-skip' / 'embedded' / 'extra' / 'missing'。
+  //    （'extra' = 机械特典，2026-08-13 用户裁决「特典都完全不算在找字幕的范围」加的第四值，
+  //     判据是文件名命中 extrasFilter 的标记表，见 subtitleJudge 的规则 0。）
   //    · 谁写：daemonV2.judgeOnce，与 needs_subtitle **同一条 UPDATE**（分两条会在掉电时
   //      留下"判决已写、理由还是旧的"的行，而 judge 谓词是 `needs_subtitle IS NULL` →
   //      这一行从此永不重判，理由列永久冻结在上一次目标语言的口径上）。
-  //    · 谁读：媒体库页第三种标记 ◇（origin-skip）与 ◆（embedded）；运维排障。
+  //    · 谁读：媒体库页第三种标记 ◇（origin-skip）、◆（embedded）与 ▭（extra）；
+  //      `mediaLibraryApi.isJudgedExtra`（把特典从 unplacedFileCount 里扣掉）；运维排障。
   //    · 何时写全：judge 谓词覆盖的全部行；换目标语言时随 needs_subtitle 一起清 NULL
   //      （retarget.ts），下轮 judge 按新语言重算。
+  //      ⚠️ 'extra' 这一值**与目标语言无关**（判据是文件名），但它照旧随换语言一起被清、
+  //      再由下一轮 judge 原样重算出来——多算一次纯函数的成本换"一列只有一个写入口径"，
+  //      比在 retarget 里给它开一个"这个值不清"的例外划算得多（那个例外会让 retarget
+  //      需要认识 skip_reason 的值域，等于把 judge 的判据复制一份过去）。
   //    刻意**不加 CHECK 约束**：值域由 JudgeVerdict 这个联合类型在编译期保证，SQLite 侧再写
   //      一份字面量就是第二处定义，将来加一种 reason 时必然漏改一处（本仓 C30 的原型）。
   //
@@ -1299,6 +1307,74 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
     if (!columns.has('backdrop_checked_at')) {
       db.exec('ALTER TABLE works ADD COLUMN backdrop_checked_at INTEGER')
     }
+  },
+  // v44（2026-08-13 用户裁决「特典都完全不算在找字幕的范围」）：两件事，一条 entry。
+  //   ① 让存量特典行**重回 judge**（清 needs_subtitle + skip_reason → NULL）；
+  //   ② DROP 掉零行、零读取方、零写入方的 extras_exemptions 表。
+  //
+  // ── ① 为什么必须有这条迁移（没有它，本轮代码改动对存量库完全不生效）───────────
+  // judge 的取件谓词是 `needs_subtitle IS NULL`（daemonV2.judgeOnce）。生产库那 16 个
+  // NCOP/NCED/PV/menu 文件今天全是 `needs_subtitle=1`——它们**早就被判过了**，
+  // 于是新加的规则 0 永远轮不到它们，代码改了而生产一行不变（本仓栽过多次的"写了新判据
+  // 却没定谁触发重判"，C12 → C35 → D17 → C43 那条血案的又一形态）。
+  //
+  // 谓词刻意是 `needs_subtitle IS NOT NULL`（**全量**清），不是"只清文件名命中的行"：
+  //  · 清得多的代价是**零**——judge 下一轮把它们照原样重判一遍（纯函数、不碰磁盘、
+  //    判据都在 files/works 两表里现成），语言判决会得到与今天逐字相同的结果。
+  //  · 而"只清命中的行"要在 SQL 里复刻一遍 EXTRA_MARKERS 的正则（SQLite 没有 REGEXP，
+  //    得摊成 7 个 LIKE），那就是**第二份判据**：改 TS 那张表时这里不会跟着变，
+  //    以后新增的标记对存量行永远不生效，且没有任何测试会红。C30 的原型。
+  //  · 清 NULL 是**安全**方向：NULL = "还没判"，judge 每轮都会来收，不存在滞留态。
+  //    唯一的代价是重判当轮多跑一次纯函数。
+  //
+  // skip_reason 与 needs_subtitle **同一条 UPDATE 一起清**（照 retarget.ts 的既有口径）：
+  // 分两条会在掉电时留下"判决已清、理由还是旧的"的行，而 judge 谓词只看 needs_subtitle
+  // → 那一行重判时会覆盖 reason，看似自愈；但反序（reason 先清、needs 没清）就永久留下
+  // 一个 needs=1 而 reason=NULL 的行，媒体库页据 reason 显示标记，用户看到的是空白。
+  //
+  // **刻意不碰 sub_status**（R24 铁律，同 retarget.ts:80 的论证）：那 16 行今天 sub_status
+  // 全是 NULL，但这条 UPDATE 不该依赖那个观察。清它会掀掉飞行中的翻译。
+  //
+  // ── ② 为什么现在可以 DROP extras_exemptions ────────────────────────────────
+  // 它是救援R4b 的"用户翻案"豁免表（v14）。三方全空，逐条核实过：
+  //   · **零读取方**：唯一读它的是 `v2/ingest.ts` 的 excludeExtras 分支
+  //     （`isMechanicalExtra(path) && !lib.isExtrasExempt(path)`），ingest 已整体退役。
+  //   · **零写入方**：唯一写入面是 POST /api/v2/triage/unexclude 端点 + 前端 ExcludedBox，
+  //     两者 2026-08-13 已删（见 dashboard/server.ts 与 triageOps.ts 的头注释）。
+  //   · **生产零行**（2026-08-13 实测 `/cache/scout.db`）。
+  // triageOps.ts 当时写的保留理由是"不单方面拆掉'保留待裁'资产的地基"——今天用户**已经
+  // 裁决**了（「特典都完全不算在找字幕的范围」+「不值得为它增加心智负担」），
+  // 保留待裁的前提消失，故一并清掉。`LibraryRepo.addExtrasExemption` / `isExtrasExempt`
+  // 两个方法同批删除。
+  //
+  // 翻案能力就此消失，这是**有意的**：新的特典判据落在 needs_subtitle 这一列上，
+  // 用户若真想给某个特典找字幕，通路是改文件名（同"认领退役"那条裁决的口径——
+  // 改名对所有下游工具都修好，而豁免表只修我们一家）。
+  //
+  // `DROP TABLE IF EXISTS` 而非裸 DROP：v13 及更早的库根本没建过这张表（v14 才建），
+  // 裸 DROP 会让那些库的 openDb 整个炸掉 → 用户的库再也打不开。
+  (db) => {
+    const columns = (() => {
+      try {
+        const exists = db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+          .get()
+        if (!exists) return new Set<string>()
+        return new Set(
+          (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+            .map((c) => c.name),
+        )
+      } catch { return new Set<string>() }
+    })()
+    // files 表存在且有 needs_subtitle 列时才清（v8 及更早的库没有这张表/这一列）。
+    if (columns.has('needs_subtitle')) {
+      db.exec(
+        'UPDATE files SET needs_subtitle = NULL'
+        + (columns.has('skip_reason') ? ', skip_reason = NULL' : '')
+        + ' WHERE needs_subtitle IS NOT NULL',
+      )
+    }
+    db.exec('DROP TABLE IF EXISTS extras_exemptions')
   },
 ]
 

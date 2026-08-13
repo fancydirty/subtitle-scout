@@ -20,8 +20,13 @@
 // 三个动作全部落空。端点 POST /api/v2/triage/unexclude 与前端 ExcludedBox 同批删除。
 // 正本论证见 `web/src/triage/TriagePage.tsx` 头注释的「2.5 parked 族的结局」段。
 //
-// `LibraryRepo.addExtrasExemption` / `isExtrasExempt` 与 `extras_exemptions` 表本身**保留**：
-// 同 parked_paths 的处置理由——不单方面拆掉"保留待裁"资产的地基（见那一段）。
+// ⚠️ **同日后续裁决（更新上一段的结论）**：`extras_exemptions` 表与
+// `LibraryRepo.addExtrasExemption` / `isExtrasExempt` 当时以"不单方面拆掉保留待裁资产的
+// 地基"为由保留，**现已全部删除**——用户裁决「特典都完全不算在找字幕的范围」+「不值得为它
+// 增加心智负担」，保留待裁的前提消失。特典判据现在落在 `v2/subtitleJudge.ts` 的规则 0
+// （命中 → needs_subtitle=0 + skip_reason='extra'），`isMechanicalExtra` 因此重新有了
+// 唯一的生产读取方。表由 db.ts 的 v44 迁移 DROP，完整论证在那条 entry。
+// 翻案能力就此消失是**有意的**：想给某个特典找字幕的通路是改文件名（同认领退役的口径）。
 import { z } from 'zod'
 import type { JobsRepo, WorkerTaskUpsertOutcome } from './jobsRepo.js'
 

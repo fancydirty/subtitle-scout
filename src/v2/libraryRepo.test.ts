@@ -345,42 +345,6 @@ describe('媒体镜像', () => {
     expect(row).toEqual({ overview: 'ov', backdrop_path: '/bd.jpg' })
   })
 
-  it('listSeriesNeedingEnrich: genres IS NULL 的行（含空名占位建行——其 genres 必为 NULL），最多 limit 条', () => {
-    lib.upsertSeries({ id: 's1', name: '' }) // 空名占位（P6 认领债务）——genres NULL，经 genres 臂落网
-    lib.upsertSeries({ id: 's2', name: 'Show B' }) // genres 未富化（NULL）
-    // 详情页重设计后"已富化不是候选"需连 overview 也落齐——否则会经放宽后的 overview IS NULL 臂
-    // 被拉回候选（下方专测覆盖该新臂）。
-    lib.upsertSeries({ id: 's3', name: 'Show C', genres: [16], overview: 'ov' }) // 已富化（含 overview），不是候选
-    const rows = lib.listSeriesNeedingEnrich(10)
-    expect(rows.map((r) => r.id).sort()).toEqual(['s1', 's2'])
-  })
-
-  it('listSeriesNeedingEnrich: genres 已富化但 overview NULL 的真名剧（存量回填缺口）是候选', () => {
-    // 详情页重设计 item B：overview/backdrop 是后加列，存量已富化剧（genres 早非 NULL）overview
-    // 恒 NULL。第二臂 overview IS NULL AND name != '' 把它们拉回候选一次性补拍；overview 落值后
-    // 脱离该臂自熄火，无 re-enrich 风暴。
-    lib.upsertSeries({ id: 's1', name: 'Stock Show', genres: [16] }) // genres 有、overview NULL、真名 → 候选
-    expect(lib.listSeriesNeedingEnrich(10).map((r) => r.id)).toEqual(['s1'])
-    // 回填 overview 后脱离候选（自熄火）
-    lib.applyEnrichment('s1', { overview: 'now filled' })
-    expect(lib.listSeriesNeedingEnrich(10)).toEqual([])
-  })
-
-  it('listSeriesNeedingEnrich: overview 臂受 name != \'\' 护栏——空名死 id（genres 已落定论）不因 overview NULL 复活候选', () => {
-    // D6 熄火不变式的护栏：空名占位/404 死 id 一旦 genres 落非 NULL 定论（如 []）即须彻底退出候选，
-    // 绝不能因 overview 永远拿不到而经 overview 臂永留候选空转烧 TMDB 配额。name != '' 护栏挡住它。
-    lib.upsertSeries({ id: 'dead', name: '', genres: [] }) // 空名 + genres 定论 + overview NULL
-    expect(lib.listSeriesNeedingEnrich(10)).toEqual([])
-  })
-
-  it('listSeriesNeedingEnrich: 空名但 TMDB 已有定论（404 → genres=[]）的行熄火，不再是候选', () => {
-    // 404 时富化重试写 genres=[]（权威答复"查无此 id"，永久态）但 name 恒 ''——旧谓词的
-    // name='' 臂会让它每轮重进候选、空转烧 TMDB 配额并挤占 cap 10 的重试槽。重试对这种行
-    // 必然徒劳（TMDB 每次给同一答案）：定论即熄火。
-    lib.upsertSeries({ id: 's404', name: '', genres: [] })
-    expect(lib.listSeriesNeedingEnrich(10)).toEqual([])
-  })
-
   it('upsertSeries: excluded.name 为空串占位时不踩既有非空 name（claim 剧来新集不得抹掉已治好的名字）', () => {
     // claim-gated 分支的 title 恒 ''：该剧每来一集新文件都会带着空名重新 upsert——空串是
     // "从未识别成功过"的占位语义（同 applyEnrichment 的 name CASE），绝不能覆盖一个真名。
@@ -389,96 +353,6 @@ describe('媒体镜像', () => {
     const row = lib.getSeries('s1')!
     expect(row.name).toBe('Healed Name')
     expect(row.year).toBe(2024)
-  })
-
-  it('listSeriesNeedingEnrich 遵守 limit', () => {
-    lib.upsertSeries({ id: 's1', name: '' })
-    lib.upsertSeries({ id: 's2', name: '' })
-    lib.upsertSeries({ id: 's3', name: '' })
-    expect(lib.listSeriesNeedingEnrich(2)).toHaveLength(2)
-  })
-
-  it('applyEnrichment：name 只在当前空串时才写，非空 name 不覆盖', () => {
-    lib.upsertSeries({ id: 's1', name: 'Existing Name' })
-    lib.applyEnrichment('s1', { name: 'New Name From TMDB' })
-    expect(lib.getSeries('s1')!.name).toBe('Existing Name')
-
-    lib.upsertSeries({ id: 's2', name: '' })
-    lib.applyEnrichment('s2', { name: 'Filled In' })
-    expect(lib.getSeries('s2')!.name).toBe('Filled In')
-  })
-
-  it('applyEnrichment：chinese_title/poster_path/year/genres 只在现列 NULL 时才写', () => {
-    lib.upsertSeries({ id: 's1', name: 'A', chineseTitle: '甲剧', posterPath: 'ptag', year: 2020, genres: [16] })
-    lib.applyEnrichment('s1', { chineseTitle: '乙剧', posterPath: 'ptag2', year: 2099, genres: [35] })
-    const row = lib.getSeries('s1')!
-    expect(row.chinese_title).toBe('甲剧')
-    expect(row.poster_path).toBe('ptag')
-    expect(row.year).toBe(2020)
-    expect(row.genres).toBe(JSON.stringify([16]))
-
-    lib.upsertSeries({ id: 's2', name: 'B' }) // 全空
-    lib.applyEnrichment('s2', { chineseTitle: '乙剧', posterPath: 'ptag2', year: 2099, genres: [35] })
-    const row2 = lib.getSeries('s2')!
-    expect(row2.chinese_title).toBe('乙剧')
-    expect(row2.poster_path).toBe('ptag2')
-    expect(row2.year).toBe(2099)
-    expect(row2.genres).toBe(JSON.stringify([35]))
-  })
-
-  it('applyEnrichment：overview/backdrop 只在现列 NULL 时才回填，非空不覆盖', () => {
-    // 详情页重设计 item B：存量已富化剧经放宽后的候选谓词重入后，由 applyEnrichment 把 getDetails
-    // 的 overview/backdrop 落进原本 NULL 的两列——同 poster/genres 的"宁可不写不可覆盖"语义。
-    lib.upsertSeries({ id: 's1', name: 'Stock Show', genres: [16] }) // overview/backdrop NULL
-    lib.applyEnrichment('s1', { overview: 'filled ov', backdropPath: '/bd.jpg' })
-    let row = db.prepare(`SELECT overview, backdrop_path FROM series WHERE id='s1'`).get() as { overview: string | null; backdrop_path: string | null }
-    expect(row).toEqual({ overview: 'filled ov', backdrop_path: '/bd.jpg' })
-    // 现列已非 NULL → 后续 enrich 不覆盖
-    lib.applyEnrichment('s1', { overview: 'other', backdropPath: '/other.jpg' })
-    row = db.prepare(`SELECT overview, backdrop_path FROM series WHERE id='s1'`).get() as { overview: string | null; backdrop_path: string | null }
-    expect(row).toEqual({ overview: 'filled ov', backdrop_path: '/bd.jpg' })
-  })
-
-  it('applyEnrichment：字段缺省（undefined）视同没查到，不误写', () => {
-    lib.upsertSeries({ id: 's1', name: '' })
-    lib.applyEnrichment('s1', {}) // TMDB 失败路径：什么都没拿到
-    const row = lib.getSeries('s1')!
-    expect(row.name).toBe('')
-    expect(row.chinese_title).toBeNull()
-    expect(row.genres).toBeNull()
-  })
-
-  // origin_lang 缓存（task 2 依赖）
-  it('origin_lang: set + get for series and movie, null by default', () => {
-    lib.upsertSeries({ id: 's1', name: 'S', posterPath: null })
-    expect(lib.getSeriesOriginLang('s1')).toBeNull()
-    lib.setSeriesOriginLang('s1', 'zh')
-    expect(lib.getSeriesOriginLang('s1')).toBe('zh')
-
-    lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing', posterPath: null, year: null, providerIds: null })
-    expect(lib.getMovieOriginLang('m1')).toBeNull()
-    lib.setMovieOriginLang('m1', 'ja')
-    expect(lib.getMovieOriginLang('m1')).toBe('ja')
-  })
-  it('getSeriesOriginLang / getMovieOriginLang return null for unknown ids', () => {
-    expect(lib.getSeriesOriginLang('nope')).toBeNull()
-    expect(lib.getMovieOriginLang('nope')).toBeNull()
-  })
-  it('upsertMovie does not clobber an existing origin_lang', () => {
-    lib.upsertMovie({ id: 'm2', name: 'M', path: '/m.mkv', subStatus: 'missing', posterPath: null, year: null, providerIds: null })
-    lib.setMovieOriginLang('m2', 'zh')
-    lib.upsertMovie({ id: 'm2', name: 'M2', path: '/m2.mkv', subStatus: 'covered', posterPath: null, year: 2020, providerIds: null })
-    expect(lib.getMovieOriginLang('m2')).toBe('zh')
-  })
-
-  // 债务D1（realign 出生信号换代）：摄取层每轮 pass 结束时写回的磁盘布局事实。
-  it('setSeriesLayoutNonstandard 写 1/0', () => {
-    lib.upsertSeries({ id: 's1', name: 'S' })
-    expect(lib.getSeries('s1')!.layout_nonstandard).toBe(0)
-    lib.setSeriesLayoutNonstandard('s1', true)
-    expect(lib.getSeries('s1')!.layout_nonstandard).toBe(1)
-    lib.setSeriesLayoutNonstandard('s1', false)
-    expect(lib.getSeries('s1')!.layout_nonstandard).toBe(0)
   })
 })
 
@@ -540,16 +414,6 @@ describe('realign 支持方法', () => {
     expect(lib.getSeries('nope')).toBeNull()
   })
 
-  it('countEpisodesInSeason 统计指定季集数', () => {
-    lib.upsertSeries({ id: 's1', name: 'Show' })
-    lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a', subStatus: 'missing' })
-    lib.upsertEpisode({ id: 'e2', seriesId: 's1', season: 1, episode: 2, name: 'E2', path: '/b', subStatus: 'missing' })
-    lib.upsertEpisode({ id: 'e3', seriesId: 's1', season: 2, episode: 1, name: 'E1', path: '/c', subStatus: 'missing' })
-    expect(lib.countEpisodesInSeason('s1', 1)).toBe(2)
-    expect(lib.countEpisodesInSeason('s1', 2)).toBe(1)
-    expect(lib.countEpisodesInSeason('s1', 3)).toBe(0)
-  })
-
   it('episodePathsForSeries 返回该剧全部集路径（跨季）', () => {
     lib.upsertSeries({ id: 's1', name: 'Show' })
     lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/Show/Season 01/a.mkv', subStatus: 'missing' })
@@ -567,49 +431,53 @@ describe('realign 支持方法', () => {
     expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('e1')).toEqual({ c: 0 })
   })
 
+  // 🔴 SEVERE 数据腐蚀的回归锁——**不要删**。realign 收尾:refreshLibrary→ingest 用同一稳定
+  // seriesId 重识别新目录,重叠集把新文件登记成旧行的 item_files 副本;deleteSeriesRows 若漏删
+  // item_files,这些副本 owner 已删成孤儿 → 下一轮 ingest B3-3 短路命中孤儿 path 却
+  // ownerPath=null → continue,该 path 永不再被重识别成 episode → 集消失。
+  //
+  // ⚠️ 2026-08-13：本用例原先用 `lib.getItemFileByPath(...)` 做断言，而那个方法本轮作为
+  // 死代码删除（生产零调用者，唯一调用点是它自己的单测）。**用例本身不能跟着删**——它锁的
+  // 是 `deleteSeriesRows` 的级联行为，而 deleteSeriesRows 是活的（realignExecutor.ts 在调）。
+  // 断言改为直接查表，不再经由一个被删掉的读取助手。
   it('deleteSeriesRows 同时清 item_files——否则 realign 后副本成孤儿、集永久隐形(SEVERE 腐蚀根因)', () => {
-    // realign 收尾:refreshLibrary→ingest 用同一稳定 seriesId 重识别新目录,重叠集把新文件登记成旧行
-    // 的 item_files 副本;deleteSeriesRows 若漏删 item_files,这些副本 owner 已删成孤儿 → 下一轮 ingest
-    // B3-3 短路命中孤儿 path 却 ownerPath=null → continue,该 path 永不再被重识别成 episode → 集消失。
     lib.upsertSeries({ id: 's1', name: 'Show' })
     lib.upsertEpisode({ id: 's1/e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/main.mkv', subStatus: 'covered' })
     lib.addItemFile('s1/e1', '/media/4k-replica.mkv', 1000) // 跨根副本
-    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).not.toBeNull()
+    const countReplica = () => (lib.db
+      .prepare('SELECT COUNT(*) as c FROM item_files WHERE path = ?')
+      .get('/media/4k-replica.mkv') as { c: number }).c
+    expect(countReplica()).toBe(1)
 
     lib.deleteSeriesRows('s1')
 
     // 副本行必须一并清除,不能留成孤儿
-    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).toBeNull()
+    expect(countReplica()).toBe(0)
   })
 
-  // R6-4 修复：deleteEpisodeByPath/deleteMovieByPath 也要清 item_files——deleteSeriesRows 的头注释
-  // 把"owner 删了但 item_files 留孤儿"定性为 SEVERE 数据腐蚀，本方法与它同形，漏了同级清理。
-  // 这两条测试锁住"item_files 必须一并清除，不能留成孤儿"。
-  it('deleteEpisodeByPath 同时清 item_files——否则 episode 删除后副本成孤儿（R6-4 腐蚀）', () => {
-    lib.upsertSeries({ id: 's1', name: 'Show' })
-    lib.upsertEpisode({ id: 's1/e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/media/main.mkv', subStatus: 'covered' })
-    lib.addItemFile('s1/e1', '/media/4k-replica.mkv', 1000) // 跨根副本
-    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).not.toBeNull()
+  // 🔴 `upsertMovie` 的 ON CONFLICT 语义锁——**不要删**。锁的是
+  // `origin_lang = COALESCE(excluded.origin_lang, origin_lang)`：一个已解析出的
+  // origin_lang 绝不被后续不带该字段的 upsert 清空。upsertMovie 本轮保留（见其头注释），
+  // 这条行为因此仍然是活的。
+  //
+  // ⚠️ 2026-08-13：本用例原先经 `setMovieOriginLang` 写、`getMovieOriginLang` 读，
+  // 那两个 setter/getter 本轮作为死代码删除（生产零调用者）。**用例本身不能跟着删**——
+  // 它的被测对象是 upsertMovie 而不是那两个访问器。改为经 upsertMovie 自己的
+  // `originLang` 入参写入、直接查表读回。
+  it('upsertMovie 不覆盖已有的 origin_lang（ON CONFLICT COALESCE 语义锁）', () => {
+    const originLangOf = (id: string) => (lib.db
+      .prepare('SELECT origin_lang FROM movies WHERE id = ?')
+      .get(id) as { origin_lang: string | null }).origin_lang
 
-    lib.deleteEpisodeByPath('/media/main.mkv')
+    lib.upsertMovie({ id: 'm2', name: 'M', path: '/m.mkv', subStatus: 'missing', originLang: 'zh' })
+    expect(originLangOf('m2')).toBe('zh')
 
-    // 副本行必须一并清除,不能留成孤儿
-    expect(lib.getItemFileByPath('/media/4k-replica.mkv')).toBeNull()
+    // 第二次 upsert 不带 originLang（undefined → SQL NULL）→ COALESCE 保住旧值
+    lib.upsertMovie({ id: 'm2', name: 'M2', path: '/m2.mkv', subStatus: 'covered', year: 2020 })
+    expect(originLangOf('m2')).toBe('zh')
   })
 
-  it('deleteMovieByPath 同时清 item_files——否则 movie 删除后副本成孤儿（R6-4 腐蚀）', () => {
-    lib.upsertMovie({ id: 'm1', name: 'Movie', path: '/media/movie.mkv', subStatus: 'covered' })
-    lib.addItemFile('m1', '/media/movie-4k.mkv', 2000) // 跨根副本
-    expect(lib.getItemFileByPath('/media/movie-4k.mkv')).not.toBeNull()
-
-    lib.deleteMovieByPath('/media/movie.mkv')
-
-    // 副本行必须一并清除,不能留成孤儿
-    expect(lib.getItemFileByPath('/media/movie-4k.mkv')).toBeNull()
-  })
-
-  it('upsertSeries posterPath / upsertMovie posterPath 写入 poster_path 列', () => {
-    lib.upsertSeries({ id: 's1', name: 'Show', posterPath: '/dqZEN.jpg' })
+  it('upsertSeries posterPath / upsertMovie posterPath 写入 poster_path 列', () => {    lib.upsertSeries({ id: 's1', name: 'Show', posterPath: '/dqZEN.jpg' })
     expect(lib.getSeries('s1')?.poster_path).toBe('/dqZEN.jpg')
 
     lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing', posterPath: '/abc.jpg' })
@@ -866,16 +734,9 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       expect(lib.shouldRetryParkedPath('/a', fp(), 1000)).toBe(true)
     })
 
-    it('救援R4b：addExtrasExemption/isExtrasExempt——幂等写入，命中查询', () => {
-      expect(lib.isExtrasExempt('/media/Show - NCOP01.mkv')).toBe(false)
-      lib.addExtrasExemption('/media/Show - NCOP01.mkv', 1000)
-      expect(lib.isExtrasExempt('/media/Show - NCOP01.mkv')).toBe(true)
-      // 幂等：重复写同一 path 不抛错
-      lib.addExtrasExemption('/media/Show - NCOP01.mkv', 2000)
-      expect(lib.isExtrasExempt('/media/Show - NCOP01.mkv')).toBe(true)
-      // 未豁免的其他 path 不受影响
-      expect(lib.isExtrasExempt('/media/Other.mkv')).toBe(false)
-    })
+    // 「救援R4b：addExtrasExemption/isExtrasExempt」一例已随两个方法与 extras_exemptions
+    // 表一并删除（2026-08-13 用户裁决「特典都完全不算在找字幕的范围」，db.ts v44 迁移）。
+    // 特典判据现在落在 subtitleJudge 的规则 0 上，由 subtitleJudge.test.ts 覆盖。
   })
 
   describe('upsertParkedPath with raw data', () => {
@@ -994,35 +855,6 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
       expect(lib.listItemFiles('s1/e1')).toHaveLength(1)
     })
 
-    it('removeItemFileByPath：删副本行；不存在的 path 无事发生', () => {
-      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
-      lib.removeItemFileByPath('/media/4k.mkv')
-      expect(lib.listItemFiles('s1/e1')).toEqual([])
-      expect(() => lib.removeItemFileByPath('/media/nope.mkv')).not.toThrow()
-    })
-
-    it('promoteOldestReplica：最年长副本 path 顶替 episodes.path，该副本退出 item_files', () => {
-      lib.addItemFile('s1/e1', '/media/1080p.mkv', 2000)
-      lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
-      const newMain = lib.promoteOldestReplica('s1/e1')
-      expect(newMain).toBe('/media/4k.mkv')
-      expect(lib.getEpisode('s1/e1')!.path).toBe('/media/4k.mkv')
-      // 晋升的副本退出 item_files，只剩另一个
-      expect(lib.listItemFiles('s1/e1').map((f) => f.path)).toEqual(['/media/1080p.mkv'])
-    })
-
-    it('promoteOldestReplica：movie 分支（两表尝试模式）', () => {
-      lib.upsertMovie({ id: 'm1', name: 'M', path: '/media/m-main.mkv', subStatus: 'covered' })
-      lib.addItemFile('m1', '/media/m-4k.mkv', 1000)
-      expect(lib.promoteOldestReplica('m1')).toBe('/media/m-4k.mkv')
-      expect(lib.getMovie('m1')!.path).toBe('/media/m-4k.mkv')
-    })
-
-    it('promoteOldestReplica：无副本可晋升 → 返回 null，不动主文件', () => {
-      expect(lib.promoteOldestReplica('s1/e1')).toBeNull()
-      expect(lib.getEpisode('s1/e1')!.path).toBe('/media/main.mkv')
-    })
-
     it('itemFileCoverage：主文件 covered + 副本无字幕 → 主 covered、副本 uncovered（partial 素材）', () => {
       // 主文件已入库为 covered（beforeEach 设的 sub_status='covered'）
       lib.addItemFile('s1/e1', '/media/4k.mkv', 1000)
@@ -1114,79 +946,9 @@ describe('P2：自有 id 空间新表 + 探针 memo（去 Jellyfin 化 schema v9
   })
 
   describe('probeMemo / setProbeMemo', () => {
-    it('对 episode 行读写', () => {
-      lib.upsertSeries({ id: 's1', name: 'A' })
-      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a', subStatus: 'missing' })
-      expect(lib.probeMemo('e1')).toBeNull()
-      lib.setProbeMemo('e1', 111, 222, ['chi', 'eng'])
-      expect(lib.probeMemo('e1')).toEqual({ mtime: 111, size: 222, langs: ['chi', 'eng'] })
-    })
-
-    it('对 movie 行读写', () => {
-      lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'missing' })
-      expect(lib.probeMemo('m1')).toBeNull()
-      lib.setProbeMemo('m1', 333, 444, null)
-      expect(lib.probeMemo('m1')).toEqual({ mtime: 333, size: 444, langs: null })
-    })
-
-    it('未知 id 返回 null', () => {
-      expect(lib.probeMemo('nope')).toBeNull()
-    })
   })
 
   describe('deleteEpisodeByPath / deleteMovieByPath / deleteSeriesIfEmpty', () => {
-    it('deleteEpisodeByPath 删除该行 + 关联 subtitles', () => {
-      lib.upsertSeries({ id: 's1', name: 'A' })
-      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a.mkv', subStatus: 'covered' })
-      lib.markCovered('e1', '/a.zh-Hans.srt', 'scout-download')
-      lib.deleteEpisodeByPath('/a.mkv')
-      expect(lib.getEpisode('e1')).toBeNull()
-      expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('e1')).toEqual({ c: 0 })
-    })
-
-    it('deleteEpisodeByPath 对不存在的路径是空操作', () => {
-      expect(() => lib.deleteEpisodeByPath('/nope.mkv')).not.toThrow()
-    })
-
-    it('deleteMovieByPath 删除该行 + 关联 subtitles', () => {
-      lib.upsertMovie({ id: 'm1', name: 'M', path: '/m.mkv', subStatus: 'covered' })
-      lib.markCovered('m1', '/m.zh-Hans.srt', 'scout-download')
-      lib.deleteMovieByPath('/m.mkv')
-      expect(lib.getMovie('m1')).toBeNull()
-      expect(lib.db.prepare('SELECT COUNT(*) as c FROM subtitles WHERE item_id=?').get('m1')).toEqual({ c: 0 })
-    })
-
-    it('deleteSeriesIfEmpty：还有集时不删；集清空后删', () => {
-      lib.upsertSeries({ id: 's1', name: 'A' })
-      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a.mkv', subStatus: 'missing' })
-      lib.deleteSeriesIfEmpty('s1')
-      expect(lib.getSeries('s1')).not.toBeNull()
-
-      lib.deleteEpisodeByPath('/a.mkv')
-      lib.deleteSeriesIfEmpty('s1')
-      expect(lib.getSeries('s1')).toBeNull()
-    })
-
-    // 审计 M4：tmdb_seasons 是 series 级联的一部分（settingsRepo 删守备目录时就是这么清的），
-    // 此前漏清 → 身份纠错频繁删空 series 行时孤儿季表无上界累积；更实际的危害是同一
-    // series_id 回归时 tmdbCatalog 的 TTL 门读 MAX(fetched_at) 7 天内早退，静默跳过刷缓存。
-    it('deleteSeriesIfEmpty 连带清 tmdb_seasons（不留孤儿季表）', () => {
-      lib.upsertSeries({ id: 's1', name: 'A' })
-      lib.upsertEpisode({ id: 'e1', seriesId: 's1', season: 1, episode: 1, name: 'E1', path: '/a.mkv', subStatus: 'missing' })
-      lib.db
-        .prepare(`INSERT INTO tmdb_seasons (series_id, season, episode, air_date, fetched_at) VALUES (?, 1, 1, NULL, ?)`)
-        .run('s1', 1000)
-      expect(lib.db.prepare(`SELECT COUNT(*) as c FROM tmdb_seasons WHERE series_id=?`).get('s1')).toEqual({ c: 1 })
-
-      // 还有集时不动
-      lib.deleteSeriesIfEmpty('s1')
-      expect(lib.db.prepare(`SELECT COUNT(*) as c FROM tmdb_seasons WHERE series_id=?`).get('s1')).toEqual({ c: 1 })
-
-      lib.deleteEpisodeByPath('/a.mkv')
-      lib.deleteSeriesIfEmpty('s1')
-      expect(lib.getSeries('s1')).toBeNull()
-      expect(lib.db.prepare(`SELECT COUNT(*) as c FROM tmdb_seasons WHERE series_id=?`).get('s1')).toEqual({ c: 0 })
-    })
   })
 })
 

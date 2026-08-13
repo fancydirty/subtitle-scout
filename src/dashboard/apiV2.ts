@@ -5,7 +5,9 @@ import { resolve } from 'node:path'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
-import { LibraryRepo } from '../v2/libraryRepo.js'
+// `LibraryRepo`（值）随 buildWorkflowPending 的 series/movies/parked 三字段一并移除：
+// 它在本文件唯一的用处是那三条查询（missingBySeason/missingMovies/listParkedPaths）。
+// 本文件现在剩下的都是直接写 SQL 的纯读聚合，不需要 repo 层。
 import { SettingsRepo, findOverlappingRoot } from '../v2/settingsRepo.js'
 // `traceBus`（值）随 buildWorkflowWorkers 一并移除：它唯一的用处是 running 行的直播补拉
 // （peek/peekPrefix）。本文件现在只剩**已落库快照**的解析（buildRunTrace 读 runs.trace_json），
@@ -396,25 +398,14 @@ export function addMediaRoot(
 // 北极星约束：这些端点是纯读聚合 + 一个人类扳手（redispatch）——全部走既有 repo/模块，
 // 不新增任何判断逻辑。机械层产出事实，不产出指令。
 
-// ---- workflow/pending：缺口事实 + parked 计数 + 顶栏新鲜度行 ----
+// ---- workflow/pending：顶栏新鲜度行 ----
+//
+// 2026-08-13：`WorkflowPendingSeriesDTO` / `WorkflowPendingMovieDTO` 两个接口随
+// WorkflowPendingDTO 的 series[]/movies[] 两字段一并删除——它们的唯一用处就是给那两个
+// 字段做元素类型，字段没了就没有任何声明或实现引用它们。产出它们的
+// `LibraryRepo.missingBySeason/missingMovies` 两个方法保留，理由见 WorkflowPendingDTO
+// 头注释；那两个方法返回的是 snake_case 的行对象，不依赖这里的 camelCase DTO 形状。
 
-export interface WorkflowPendingSeriesDTO {
-  seriesId: string
-  seriesName: string
-  season: number
-  missing: number
-  throttled: number
-  nextRecheckAt: number | null
-  sampleReason: string | null
-}
-export interface WorkflowPendingMovieDTO {
-  id: string
-  name: string
-  missing: 0 | 1
-  throttled: 0 | 1
-  nextRecheckAt: number | null
-  sampleReason: string | null
-}
 export interface WorkflowFreshnessDTO {
   /** settingsRepo.listRoots() 的路径列表。 */
   roots: string[]
@@ -521,31 +512,45 @@ export interface WorkflowFreshnessDTO {
   verifiedItems: number
   verifiableItems: number
 }
+/** GET /api/v2/workflow/pending 的响应体。
+ *
+ *  ── 2026-08-13：`series[]` / `movies[]` / `parked` 三个字段删除 ──────────────
+ *  三者都是**零消费者的产出**：这条端点在前端的唯一读取面是 `shell/Topbar.tsx`
+ *  （经 AppShell 的 useWorkflowPending，15 秒轮询），而它只读 `.meta`
+ *  （`formatFreshness(workflow.data.meta, ...)`，Topbar.tsx 一处）。三个字段从未
+ *  被任何组件读过——旧的读取面（甄别页 PendingBox/ExcludedBox、旧 workflow 页）
+ *  已分别于 2026-08-13 与 Task ⑪ 删除。
+ *
+ *  代价是实打实的：每 15 秒一次轮询，`missingBySeason` 与 `missingMovies` 各跑一条
+ *  带 JOIN 的 GROUP BY（episodes×series / movies），`listParkedPaths()` 再全表扫一次
+ *  parked_paths 并只取 `.length`——三条查询的结果直接被 JSON 序列化后丢弃。
+ *
+ *  ⚠️ 这**不是**"删了读出面留着写入面"的病：这三条读的是别人（settingsRepo.removeRoot、
+ *  findSubtitleWorkerTask、cli/unidentifiedFindSubtitle）在维护的表，本端点只是个
+ *  多余的旁观者。删掉旁观者不影响任何表的读写闭环。
+ *
+ *  🔴 `LibraryRepo.missingBySeason` / `missingMovies` 两个方法本轮**不删**，尽管本次
+ *  删除让它们的生产调用者归零（`listParkedPaths` 不同，它在
+ *  `cli/unidentifiedFindSubtitle.ts` 还有一个调用点，且是
+ *  `dashboard/triageShelved.orphan.test.ts` 自检段选定的扫描器靶子）。
+ *  理由：它们查的是 episodes/movies 两张**仍然活着**的表（3 条 HTTP 端点经
+ *  getEpisode/getMovie 在读、settingsRepo.removeRoot 的级联在写），而"哪些季/电影还缺
+ *  字幕"是这个产品的核心事实——缺的只是一个展示位（旧 workflow 页随 Task ⑪ 下架，
+ *  三页新产品尚未给它安排出口）。这与 parked 族的情形**不同**：那边是表本身零写入者，
+ *  这边是活表上的一个真查询暂时没有渲染面。
+ *  删它们要先回答"缺口事实在三页产品的哪一页露出"，那是产品决策，不在本轮死代码清理的
+ *  范围内。 */
 export interface WorkflowPendingDTO {
-  series: WorkflowPendingSeriesDTO[]
-  movies: WorkflowPendingMovieDTO[]
-  parked: number
   meta: WorkflowFreshnessDTO
 }
 
-/** GET /api/v2/workflow/pending：libraryRepo.missingBySeason/missingMovies 直译 camelCase +
- *  parked_paths 计数 + 顶栏新鲜度行。纯读聚合，不做任何"该不该派"的判断——那是 orchestrator
- *  的事，这里只把缺口事实摆出来。 */
+/** GET /api/v2/workflow/pending：顶栏新鲜度行（meta）。纯读聚合。
+ *
+ *  2026-08-13：`series`/`movies`/`parked` 三个字段连同产出它们的三条查询一并删除，
+ *  理由见 WorkflowPendingDTO 头注释。本函数现在只产出 meta 一个字段。 */
 export function buildWorkflowPending(
   db: ScoutDb, settingsRepo: Pick<SettingsRepo, 'listRoots'>, now: number,
 ): WorkflowPendingDTO {
-  const lib = new LibraryRepo(db)
-
-  const series: WorkflowPendingSeriesDTO[] = lib.missingBySeason(now).map((r) => ({
-    seriesId: r.series_id, seriesName: r.series_name, season: r.season,
-    missing: r.missing, throttled: r.throttled, nextRecheckAt: r.next_recheck_at, sampleReason: r.sample_reason,
-  }))
-  const movies: WorkflowPendingMovieDTO[] = lib.missingMovies(now).map((r) => ({
-    id: r.id, name: r.name, missing: r.missing, throttled: r.throttled,
-    nextRecheckAt: r.next_recheck_at, sampleReason: r.sample_reason,
-  }))
-  const parked = lib.listParkedPaths().length
-
   // 上次扫描时刻读 daemonV2 写的 `last_inspect_at`（键的选择与归因见 WorkflowFreshnessDTO
   // .lastScanAt 头注释）。键名与 daemonV2.readLastInspectAt/writeLastInspectAt 一致。
   //
@@ -583,7 +588,6 @@ export function buildWorkflowPending(
     .get() as { done: number; total: number }
 
   return {
-    series, movies, parked,
     meta: {
       roots: settingsRepo.listRoots().map((r) => r.path),
       lastScanAt: lastScanRow ? Number(lastScanRow.value) : null,

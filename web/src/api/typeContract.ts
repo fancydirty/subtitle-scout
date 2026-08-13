@@ -100,8 +100,9 @@ type Assert<_T extends true> = never
 
 // src/dashboard/apiV2.ts
 export type C_RunHistoryDTO = Assert<Satisfies<BeApiV2.RunHistoryDTO, Fe.RunHistoryDTO>>
-export type C_WorkflowPendingSeriesDTO = Assert<Satisfies<BeApiV2.WorkflowPendingSeriesDTO, Fe.WorkflowPendingSeriesDTO>>
-export type C_WorkflowPendingMovieDTO = Assert<Satisfies<BeApiV2.WorkflowPendingMovieDTO, Fe.WorkflowPendingMovieDTO>>
+// `WorkflowPendingSeriesDTO` / `WorkflowPendingMovieDTO` 的对拍随两个接口本身于
+// 2026-08-13 删除（WorkflowPendingDTO 的 series[]/movies[]/parked 三字段零消费者，
+// 前后端同批清理）。这不是"漏写对拍"，是被对拍的类型两侧都已不存在。
 export type C_WorkflowFreshnessDTO = Assert<Satisfies<BeApiV2.WorkflowFreshnessDTO, Fe.WorkflowFreshnessDTO>>
 export type C_WorkflowPendingDTO = Assert<Satisfies<BeApiV2.WorkflowPendingDTO, Fe.WorkflowPendingDTO>>
 export type C_DispatchReceiptsDTO = Assert<Satisfies<BeApiV2.DispatchReceiptsDTO, Fe.DispatchReceiptsDTO>>

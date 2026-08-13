@@ -360,10 +360,10 @@ describe('R-F2「另一处那份仍要单独去配」在详情页可见', () => 
     expect(cssDecl('.media-ep-extra', 'box-shadow')).toBeNull()
   })
 
-  it('图例不列它（它不属于那张八态颜色表）——图例仍然恰好七枚符号', () => {
+  it('图例不列它（它不属于那张九态颜色表）——图例仍然恰好八枚符号', () => {
     renderDetail(asyncOf(twoCopies()))
     const legend = screen.getByLabelText(en.media_legend_label)
-    expect(legend.querySelectorAll('svg')).toHaveLength(7)
+    expect(legend.querySelectorAll('svg')).toHaveLength(8)
     expect(legend.querySelector('.media-ep-extra')).toBeNull()
   })
 
@@ -404,20 +404,21 @@ describe('电影那一格（R-F5：电影没有季集）', () => {
 
 // ═══ 其余契约 ═════════════════════════════════════════════════════════════════
 describe('图例 / unplaced / 异常态', () => {
-  it('图例列出七个染色态（absent 不在其中——它是边框维度不是颜色维度）', () => {
+  it('图例列出八个染色态（absent 不在其中——它是边框维度不是颜色维度）', () => {
     renderDetail(asyncOf(detail()))
     const legend = screen.getByLabelText(en.media_legend_label)
     expect(within(legend).getAllByText(/./).length).toBeGreaterThan(0)
     for (const label of [
       en.media_state_covered, en.media_state_origin_skip, en.media_state_embedded,
+      en.media_state_extra,
       en.media_state_translating, en.media_state_unsolvable, en.media_state_pending,
       en.media_state_unjudged,
     ]) {
       expect(within(legend).getByText(label)).toBeInTheDocument()
     }
     expect(within(legend).queryByText(en.media_state_absent)).toBeNull()
-    // 七枚符号
-    expect(legend.querySelectorAll('svg')).toHaveLength(7)
+    // 八枚符号（2026-08-13 加了 ▭ extra）
+    expect(legend.querySelectorAll('svg')).toHaveLength(8)
   })
 
   it('unplacedFileCount > 0 时如实报（不报的话用户会以为文件被弄丢了）', () => {

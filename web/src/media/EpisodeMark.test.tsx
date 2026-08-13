@@ -1,11 +1,11 @@
-// web/src/media/EpisodeMark.test.tsx：八态符号的**几何**守卫（R-F12 / Carbon 双通道）。
+// web/src/media/EpisodeMark.test.tsx：九态符号的**几何**守卫（R-F12 / Carbon 双通道）。
 //
 // ── 为什么这个文件必须断言几何，而不是"渲染了一个 svg" ─────────────────────────
 // Task ⓪ 的教训：4 条测试全绿，把 7 个生产写入点删光测试无一变红。这里的同型是
 // 「断言 `container.querySelector('svg')` 非空」——把 covered 的 ✓ 画成 ◇ 照样绿，
 // 而那正是这个组件唯一能出的错（映射错态 → 用户看到与事实相反的标记）。
 //
-// 所以本文件的判据是：**每个态的 path/circle 数据本身**，以及**七个态两两不同**。
+// 所以本文件的判据是：**每个态的 path/circle/rect 数据本身**，以及**八个染色态两两不同**。
 // 前者钉住"这个态画的是不是那个符号"，后者钉住 Carbon 双通道（不许两个态共用同一图形
 // 只换颜色——那就退化成只靠颜色，对色盲无效）。
 //
@@ -19,17 +19,17 @@ import type { EpisodeState } from '../api/types.js'
 
 afterEach(cleanup)
 
-/** 八态全集——**从这里派生**遍历用例，而不是手抄一份列表：后端加第九态时
+/** 九态全集——**从这里派生**遍历用例，而不是手抄一份列表：后端加第十态时
  *  api/types.ts 的联合会变，但这个数组不会自动跟着变，所以下面还有一条
  *  "数组恰好等于类型联合"的编译期守卫（ALL_STATES 的类型标注）。 */
 const ALL_STATES: readonly EpisodeState[] = [
   'covered', 'translating', 'unsolvable', 'origin-skip',
-  'embedded', 'pending', 'unjudged', 'absent',
+  'embedded', 'extra', 'pending', 'unjudged', 'absent',
 ]
 /** 编译期穷尽守卫：漏一个态 / 多一个不存在的态 → tsc 报错（vitest 不查类型，两个 tsc 查）。 */
 const _exhaustive: Record<EpisodeState, true> = {
   covered: true, translating: true, unsolvable: true, 'origin-skip': true,
-  embedded: true, pending: true, unjudged: true, absent: true,
+  embedded: true, extra: true, pending: true, unjudged: true, absent: true,
 }
 void _exhaustive
 
@@ -52,6 +52,12 @@ function shapeFingerprint(container: Element): string {
       if (tag === 'path') return `path:${el.getAttribute('d')}:${el.getAttribute('fill') ?? ''}`
       if (tag === 'circle')
         return `circle:${el.getAttribute('cx')},${el.getAttribute('cy')},${el.getAttribute('r')}`
+      // ▭ extra 用的是 <rect>。不摊开几何的话它的指纹会退化成裸 'rect' —— 将来第二个
+      // rect 态出现时"两两不同"那条会假绿（两个都指纹成 'rect' 反而**会**红，但若只有
+      // 一个 rect 态则永远测不到几何写错）。摊开与 path/circle 同口径。
+      if (tag === 'rect')
+        return `rect:${el.getAttribute('x')},${el.getAttribute('y')},`
+          + `${el.getAttribute('width')},${el.getAttribute('height')}:${el.getAttribute('fill') ?? ''}`
       return tag
     })
     .join('|')
@@ -92,7 +98,7 @@ describe('EpisodeMark：规格（照 NavIcons.tsx 的既有约定）', () => {
   })
 })
 
-describe('EpisodeMark：八态的符号（映射错 = 用户看到与事实相反的标记）', () => {
+describe('EpisodeMark：九态的符号（映射错 = 用户看到与事实相反的标记）', () => {
   it('absent 不画任何符号——**虚线格不染色**（R-F12 点名条款）', () => {
     const container = renderMark('absent')
     expect(container.querySelector('svg')).toBeNull()
@@ -155,6 +161,27 @@ describe('EpisodeMark：八态的符号（映射错 = 用户看到与事实相�
     expect([...open.getAttribute('d')!.matchAll(/(-?[\d.]+)\s+(-?[\d.]+)/g)]).toHaveLength(4)
   })
 
+  it('🔴 extra = ▭ 空心横矩形，且**与 ◇/◆ 的轮廓不同族**（理由不同，不许共用形状）', () => {
+    const c = renderMark('extra')
+    // 是 rect 而不是又一个 path/circle——形状通道上必须与既有七个态都能一眼分开。
+    const rects = [...c.querySelectorAll('rect')]
+    expect(rects).toHaveLength(1)
+    const r = rects[0]!
+    expect(r.getAttribute('fill')).toBe('none')          // 空心：这一格"没内容要处理"
+    const w = Number(r.getAttribute('width'))
+    const h = Number(r.getAttribute('height'))
+    // **横向**矩形（宽 > 高）。写成正方形的话它与 ◇ 只差 45° 旋转，余光扫过分不开——
+    // 而 Carbon 双通道的全部意义就是"不靠颜色也能分辨"。
+    expect(w).toBeGreaterThan(h)
+    // 在 12×12 盒子里（不越界，否则相邻集号会被笔画蹭到）
+    expect(Number(r.getAttribute('x')) + w).toBeLessThanOrEqual(12)
+    expect(Number(r.getAttribute('y')) + h).toBeLessThanOrEqual(12)
+    cleanup()
+    // 与 origin-skip / embedded 那对菱形**不是同一个轮廓**：它们同属"不用操心"一族，
+    // 但理由不同（那两个"不需要字幕"，这个"压根不算数"），共用轮廓会让人以为是一回事。
+    expect(renderMark('origin-skip').querySelector('rect')).toBeNull()
+  })
+
   it('pending = ··· 三个点，水平同高、等距（不是两个也不是四个）', () => {
     const circles = [...renderMark('pending').querySelectorAll('circle')]
     expect(circles).toHaveLength(3)
@@ -178,10 +205,10 @@ describe('EpisodeMark：八态的符号（映射错 = 用户看到与事实相�
   })
 })
 
-describe('EpisodeMark：Carbon 双通道——七个染色态的形状两两不同', () => {
+describe('EpisodeMark：Carbon 双通道——八个染色态的形状两两不同', () => {
   // 若两个态共用同一图形，状态就退化成"只靠颜色"，对色盲无效、对屏幕阅读器不可见
   // ——正是 R-F12 推翻三色小圆点方案的那条理由。
-  it('七个态的图形指纹互不相同', () => {
+  it('八个染色态的图形指纹互不相同', () => {
     const prints = MARK_STATES.map((s) => {
       const p = shapeFingerprint(renderMark(s))
       cleanup()
@@ -191,7 +218,7 @@ describe('EpisodeMark：Carbon 双通道——七个染色态的形状两两不�
     expect(new Set(prints).size).toBe(MARK_STATES.length)
   })
 
-  it('七个态都真的画了东西（不是空 svg）', () => {
+  it('八个染色态都真的画了东西（不是空 svg）', () => {
     for (const s of MARK_STATES) {
       const svg = renderMark(s).querySelector('svg')!
       expect(svg.children.length, `${s} 是空 svg`).toBeGreaterThan(0)

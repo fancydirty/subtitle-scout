@@ -3894,6 +3894,75 @@ describe('ScoutDaemonV2.judgeOnce · translatable 预判写入（R21/D9）', () 
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 🔴 judgeOnce 必须把 **filename** 喂进 judgeSubtitle（规则 0 的唯一判据）。
+//
+// 为什么这组用例非有不可（而不是"subtitleJudge.test.ts 测过纯函数就够了"）：
+// 这正是本仓栽过 5 次的那个形状（C12 → C35 → D17 → D18 → C43）——"判据写好了，
+// 但没人把它接到生产路径上"。`isMechanicalExtra` 上一轮就是这么死的：函数完好、
+// 用例全绿、生产零调用点，16 个特典照样每轮烧一次付费 LLM session。
+// 纯函数用例对"judgeOnce 忘了传 filename"完全无感（它会全绿），只有端到端断言能抓住。
+// ─────────────────────────────────────────────────────────────────────────────
+// skipReasonOf 已在上方 R-F15 那组定义（:1948），此处复用——再声明一份是 SyntaxError，
+// 而 vitest 对整文件语法错误的表现是**静默丢掉全部 3200+ 用例只报 0 test**（本轮实测踩到）。
+describe('ScoutDaemonV2.judgeOnce · 机械特典不进字幕范围（2026-08-13 用户裁决）', () => {
+  // 生产库实测的真实文件名（`/cache/scout.db`，Re:ZERO 那 16 个之一）。
+  const EXTRA = '/media/Show/[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][NCOP1][1080P][BDRip][HEVC-10bit][FLAC].mkv'
+  const REAL = '/media/Show/[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][01][1080P][BDRip][HEVC-10bit][FLACx2].mkv'
+
+  it('🔴🔴 特典 → needs_subtitle=0 + skip_reason=extra（filename 真的被喂进去了）', async () => {
+    const db = openDb(':memory:')
+    // origin=ja + 日文内嵌轨：**没有规则 0 的话这一行必然判 needs=1**（走到规则 3）。
+    // 所以这条断言只可能因为"filename 被喂进去且规则 0 生效"而通过。
+    seedJudgeable(db, EXTRA, { originLang: 'ja', embeddedLangs: '["jpn"]' })
+    expect(needsSubtitleOf(db, EXTRA)).toBeNull()  // 前置：还没判过，否则用例是空转的假绿
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    expect(needsSubtitleOf(db, EXTRA)).toBe(0)
+    expect(skipReasonOf(db, EXTRA)).toBe('extra')
+    db.close()
+  })
+
+  it('🔴 同一部剧的正片不受影响 → 仍然 needs_subtitle=1（零误伤）', async () => {
+    // 与上一条**同一个作品、同一个目录、同一套语言事实**，只有文件名不同。
+    // 这样两条合起来钉的是"判据确实是文件名"，而不是"某个作品被整体跳过了"。
+    const db = openDb(':memory:')
+    seedJudgeable(db, REAL, { originLang: 'ja', embeddedLangs: '["jpn"]' })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    expect(needsSubtitleOf(db, REAL)).toBe(1)
+    expect(skipReasonOf(db, REAL)).toBe('missing')
+    db.close()
+  })
+
+  it('🔴 特典与正片在**同一轮** judge 里被分开处理（逐行判据，不是整簇）', async () => {
+    const db = openDb(':memory:')
+    seedJudgeable(db, EXTRA, { originLang: 'ja', embeddedLangs: '["jpn"]' })
+    seedJudgeable(db, REAL, { originLang: 'ja', embeddedLangs: '["jpn"]' })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    expect(needsSubtitleOf(db, EXTRA)).toBe(0)
+    expect(needsSubtitleOf(db, REAL)).toBe(1)
+    db.close()
+  })
+
+  it('🔴 判成特典的行**进不了字幕工作台**（这才是用户裁决要的最终效果）', async () => {
+    // 前三条断言的是 files 两列的值；这一条断言的是**它带来的后果**——
+    // 只钉列值的话，有人把工作台谓词从 `needs_subtitle = 1` 改成别的判据时不会红，
+    // 而那正是"特典不算在找字幕的范围"这句话真正的含义所在。
+    const db = openDb(':memory:')
+    seedJudgeable(db, EXTRA, { originLang: 'ja', embeddedLangs: '["jpn"]' })
+    seedJudgeable(db, REAL, { originLang: 'ja', embeddedLangs: '["jpn"]' })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'] }))
+    await judge(daemon)
+    const queued = listSubtitleQueue(db, ['/media'], NOW)
+      .flatMap((item) => item.files.map((f) => f.path))
+    expect(queued).toContain(REAL)
+    expect(queued).not.toContain(EXTRA)
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 🔴🔴🔴 C27 永久卡死态的端到端红线（本 task 最重要的一条）。
 //
 // 生产上正在发生的数据损坏（用户实测复现：listSubtitleQueue 捞到 0 个作品）：

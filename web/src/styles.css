@@ -1633,6 +1633,13 @@
 .media-ep-num[data-state='origin-skip'] {
   color: var(--color-muted-foreground);
 }
+/* ▭ 机械特典（NCOP/NCED/PV/menu）——同 origin-skip 的中性灰。
+   两者共用一个色是**有意**的：它们对用户的含义完全相同（"这一格不需要你做任何事"），
+   而 R-F12 的双通道设计里区分它们的是**形状**（◇ vs ▭），不是颜色。为一个不需要行动的
+   态单开一种颜色，只会让本来就有 8 种颜色的图例更难扫。 */
+.media-ep-num[data-state='extra'] {
+  color: var(--color-muted-foreground);
+}
 /* ⇄ 在翻译台上——紫。这是唯一"正在动"的态，用 fn-purple（本仓既有的"活着/在跑"色，
    活动页 hero 脉动点就是它）。 */
 .media-ep-num[data-state='translating'] {

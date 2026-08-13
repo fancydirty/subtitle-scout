@@ -650,15 +650,20 @@ describe('startDashboard (v2)', () => {
 
   // dashboard G5：workflow/library/甄别聚合 API——七端点全走真实 HTTP round-trip。
   describe('workflow/library/甄别聚合 API（dashboard G5）', () => {
-    it('GET /api/v2/workflow/pending 聚合缺口事实 + parked 计数 + meta 新鲜度', async () => {
+    // 2026-08-13：原先还断言 `body.series.some(...)`——`series`/`movies`/`parked` 三个字段
+    // 本轮随 WorkflowPendingDTO 删除（零前端消费者，见 apiV2.ts 头注释）。用例保留：它是这条
+    // 端点唯一的真实 HTTP round-trip 覆盖（路由挂载 + JSON 序列化 + token 鉴权），
+    // 断言收敛到仍然存在的 meta 上。
+    it('GET /api/v2/workflow/pending 返回 meta 新鲜度（真实 HTTP round-trip）', async () => {
       db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(NOW))
       const { base } = await start(distWith('<!doctype html>'), 'tok')
       const res = await fetch(`${base}/api/v2/workflow/pending?token=tok`)
       expect(res.status).toBe(200)
       const body = await res.json()
-      expect(body.series.some((s: { seriesId: string; season: number }) => s.seriesId === 's1' && s.season === 1)).toBe(true)
       expect(body.meta.lastScanAt).toBe(NOW)
       expect(typeof body.meta.files).toBe('number')
+      // 删掉的三个字段不许悄悄回来（响应体形状锁）
+      expect(Object.keys(body)).toEqual(['meta'])
     })
 
     it('GET /api/v2/workflow/passes 返回 orchestrate runs + receipts（从 trace_json 解析）', async () => {

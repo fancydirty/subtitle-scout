@@ -63,6 +63,10 @@ export type EpisodeState =
   | 'origin-skip'
   /** ◆ 自带目标语言内嵌轨。 */
   | 'embedded'
+  /** ▭ 机械特典（`skip_reason='extra'`）：NCOP/NCED/PV/menu 这类无对白映像。
+   *  2026-08-13 用户裁决「特典都完全不算在找字幕的范围」——它与 origin-skip / embedded
+   *  同属"已解决、不用人操心"那一族，只是**理由**不同（前两者是"不需要"，这个是"不算数"）。 */
+  | 'extra'
   /** ··· 系统认为这一集需要找字幕、还没找到（`needs_subtitle=1`）。 */
   | 'pending'
   /** ? 第 8 态：系统**答不上来**。两种来源，见 classifyFileState 的终态分支。 */
@@ -225,6 +229,9 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
   if (f.needs_subtitle === 0) {
     if (f.skip_reason === 'origin-skip') return 'origin-skip'
     if (f.skip_reason === 'embedded') return 'embedded'
+    // 机械特典（2026-08-13 用户裁决）。与上面两个同族——needs=0 的三种理由，单值列互斥，
+    // 三个 if 之间不存在优先级可言（同 A-2/A-3 审计对 origin-skip/embedded 的结论）。
+    if (f.skip_reason === 'extra') return 'extra'
     // needs=0 但 reason 缺失/不认识（v40 之前判定的存量行；或将来新增了一种 reason 而这里
     // 忘了跟）。**不许猜**成 origin-skip 或 embedded：两者在换目标语言后的命运完全相反
     // （db.ts:983 的原话），猜错就是给用户一个与事实相反的 ◇/◆ 标记且无从察觉。
@@ -268,6 +275,7 @@ const STATE_RANK: readonly Exclude<EpisodeState, 'absent'>[] = [
   'covered',      // 有外挂字幕（R24 磁盘事实，与 .some() 同向）
   'origin-skip',  // 母语即目标语言，压根不需要字幕
   'embedded',     // 已有内嵌目标语言轨
+  'extra',        // 机械特典，不算在找字幕的范围（2026-08-13 用户裁决）
   // ── 未解决（还在流水线上 / 卡住了）─────────────────────────────────────────
   'translating',  // 在翻译台上
   'unsolvable',   // 配不到也翻不了
@@ -369,6 +377,21 @@ function mediaTypeOf(raw: string): 'tv' | 'movie' {
 /** 一集的分组键。season/episode 均非空才成格 —— 见 buildMediaLibraryDetail 的 unplaced 说明。 */
 const epKey = (season: number, episode: number): string => `${season}\u0000${episode}`
 
+/** 这一行是否是 judge 判定的机械特典（`skip_reason='extra'`，2026-08-13 用户裁决）。
+ *
+ *  **两页共用这一份判据**（列表页 buildMediaLibrary + 详情页 buildMediaLibraryDetail）：
+ *  两处各写一遍 `f.skip_reason === 'extra'` 是 C30 的原型——将来若判据要加一条
+ *  （比如"needs_subtitle=0 才算数"），改一处忘一处时两页的 unplacedFileCount 会不相等，
+ *  而那正是这个字段当初被引入所要修的那条自相矛盾。
+ *
+ *  🔴 判据**不看 needs_subtitle**：skip_reason 是单值列，只有 judge 会写它，
+ *  写 'extra' 的那一条分支必然同时写 needs_subtitle=0（同一条 UPDATE，见 judgeOnce）。
+ *  再加一条 `&& needs_subtitle === 0` 是冗余守卫，且会在"judge 写了一半掉电"这种
+ *  本来就不可能的形态上制造第二种行为。 */
+function isJudgedExtra(f: FileRow): boolean {
+  return f.skip_reason === 'extra'
+}
+
 // ---- 列表页 ----
 
 export interface MediaLibraryItemDTO {
@@ -394,25 +417,38 @@ export interface MediaLibraryItemDTO {
   /** 已获取中文字幕的格数（R-F2「任一份有就算」口径；绿点 + 蓝点都计入 ——
    *  用户视角"这一集有中文字幕"不分内嵌外挂）。 */
   subtitledEpisodeCount: number
-  /** 属于本作品、但 `season/episode` 解析不出因而**进不了季集网格**的文件数。
-   *  电影恒 0（电影的文件本来就不该有季集，它们全部落进那唯一一格）。
+  /** 属于本作品、但 `season/episode` 解析不出因而**进不了季集网格**的文件数，
+   *  **已扣除机械特典**。电影恒 0（电影的文件本来就不该有季集，它们全部落进那唯一一格）。
    *
    *  🔴 2026-08-13 新增，与详情页的同名字段**同一口径**（两页同一个数）。这是修复
    *  「同一部剧，列表说磁盘 78 / 缺 7，详情说磁盘 77 / 缺 8」那条自相矛盾的另一半：
-   *  此前这些文件被塞进一个 key 为 `''` 的**假格**，于是 67 个特典文件给 `cells.size`
+   *  此前这些文件被塞进一个 key 为 `''` 的**假格**，于是 67 个文件给 `cells.size`
    *  贡献 +1（列表页多算一集），而详情页按 `tmdb_seasons` 逐格铺、它们一个都进不去。
    *  两页对同一部剧给出的"磁盘上有几集"必然差 1。
    *
    *  现在它们**不进任何格**、只在这里如实计数。为什么不算进"磁盘上有几集"：
-   *   · 那 112 个解析失败的文件实测是 NCOP/NCED/PV/menu/Commentary 这类**特典**
-   *     （`v2/extrasFilter.ts` 的机械铁案表认的就是这几个标记）。它们不是"某一集"。
-   *   · 更硬的理由是算术：`missingEpisodeCount = expected - onDisk`，而 expected 来自
-   *     `tmdb_seasons`——**特典不在 TMDB 的集表里**。把它们计进 onDisk 就是拿分母里
-   *     没有的东西去减分母，一部有 67 个特典的剧会被算成"倒欠 67 集"（夹 0 掩盖了
+   *   · 算术上讲不通：`missingEpisodeCount = expected - onDisk`，而 expected 来自
+   *     `tmdb_seasons`——这些文件**不在 TMDB 的集表里**。把它们计进 onDisk 就是拿分母里
+   *     没有的东西去减分母，一部有 67 个此类文件的剧会被算成"倒欠 67 集"（夹 0 掩盖了
    *     负号，但"缺几集"这个结论已经错了）。
-   *   · 反过来"全都算特典所以直接丢掉"同样不行：解析器**会**在正常剧集上失败
-   *     （生产 112 个里有 79 个属于 TV 作品，不可能全是特典）。丢掉的话用户看不出
-   *     "有文件没进网格"，会以为系统把文件弄丢了。故：不计入集数，但**数出来**。 */
+   *   · 反过来"直接丢掉不报"同样不行：解析器**会**在正常剧集上失败，丢掉的话用户看不出
+   *     "有文件没进网格"，会以为系统把文件弄丢了。故：不计入集数，但**数出来**。
+   *
+   *  ── 🔴 为什么要扣除机械特典（2026-08-13 用户裁决「不值得为它增加心智负担」）──────
+   *  此前这个数把特典与解析失败**混成一个数**。生产实测 Re:ZERO 报 67，其中
+   *  **16 个是 NCOP/NCED/PV/menu**（我们**主动**决定不管它们，见 subtitleJudge 规则 0）、
+   *  51 个是解析器在真剧集上失败。一个数同时表达"系统故意不管的"与"系统没搞定的"，
+   *  用户无从分辨，而前者根本不需要他动一根手指——那正是用户说的"占脑子"。
+   *
+   *  扣除之后这个数只剩**一种**含义：「解析器没能归位的真实文件」，且**可行动**
+   *  （改文件名即可修好，对所有下游工具都生效）。特典不在其中，因为它们不是"没搞定"，
+   *  是"不算数"——它们的去处是季集网格里那个 ▭ 标记（episodeState='extra'），
+   *  在**格子层面**如实可见，并没有被藏掉。
+   *
+   *  ⚠️ 判据是 `skip_reason='extra'`（judge 的判决）而**不是**在这里重跑一次
+   *  `isMechanicalExtra(filename)`：后者是第二份判据，改 EXTRA_MARKERS 那天两处必然漂移
+   *  （C30 的原型），且这一层压根没有 filename 列可读。代价是 judge 还没轮到的行会短暂
+   *  被算进 unplaced——那是诚实的"还没判"，不是错。 */
   unplacedFileCount: number
 }
 
@@ -452,9 +488,13 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
   // work → 格键 → 该格的文件们。
   //
   // 🔴 2026-08-13：**剧集**里 season/episode 解析不出的文件**不再进任何格**。
-  // 旧实现把它们全塞进 key 为 `''` 的一格，于是无论 1 个还是 67 个特典，`cells.size`
-  // 都 +1 —— 列表页因此比详情页多算一集（详情页按 tmdb_seasons 逐格铺，它们进不去）。
+  // 旧实现把它们全塞进 key 为 `''` 的一格，于是无论 1 个还是 67 个都 `cells.size` +1
+  // —— 列表页因此比详情页多算一集（详情页按 tmdb_seasons 逐格铺，它们进不去）。
   // 完整论证见 MediaLibraryItemDTO.unplacedFileCount。
+  //
+  // 🔴 2026-08-13（同日、第二处裁决）：机械特典**不进 unplaced 计数**。判据是
+  // `skip_reason='extra'`（judge 的判决，不在这里重跑正则——见那个字段的注释）。
+  // 它们既不进格、也不被数——因为它们不是"系统没搞定"，是"系统故意不管"。
   //
   // ⚠️ **电影例外**：电影的文件本来就没有季集，`''` 对它们不是"解析失败"而是正常形态
   // （详情页的电影分支也是把全部文件聚成一格：`aggregateDot(files)`）。两页在电影上
@@ -465,7 +505,9 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
   for (const f of files) {
     const placed = f.season != null && f.episode != null
     if (!placed && mediaTypeById.get(f.work_id) !== 'movie') {
-      unplacedByWork.set(f.work_id, (unplacedByWork.get(f.work_id) ?? 0) + 1)
+      if (!isJudgedExtra(f)) {
+        unplacedByWork.set(f.work_id, (unplacedByWork.get(f.work_id) ?? 0) + 1)
+      }
       continue
     }
     const key = placed ? epKey(f.season!, f.episode!) : ''
@@ -556,14 +598,16 @@ export interface MediaLibraryDetailDTO {
   seasons: MediaLibrarySeasonDTO[]
   /** 电影那一格；剧集恒 null。 */
   movie: MediaLibraryMovieDTO | null
-  /** 属于本作品、但 season/episode 解析不出因而进不了季集网格的文件数。
+  /** 属于本作品、但 season/episode 解析不出因而进不了季集网格的文件数，
+   *  **已扣除机械特典**（`skip_reason='extra'`）。
    *  **必须如实报**：不报的话用户看不出"有文件没进网格"，会以为系统把文件弄丢了；
    *  而按 NULL 分组又会造出一个 season=null 的幽灵季。电影恒 0
    *  （电影的文件本来就不该有季集，它们全部落进 movie 那一格）。
    *
-   *  🔴 2026-08-13：与 `MediaLibraryItemDTO.unplacedFileCount` **同一口径、同一个数**。
-   *  此前只有详情页有这个字段，列表页把同一批文件塞进一个假格算进 onDisk——两页对
-   *  同一部剧的"磁盘上有几集"差 1。判据统一在列表页那个字段的注释里。
+   *  🔴 2026-08-13：与 `MediaLibraryItemDTO.unplacedFileCount` **同一口径、同一个数**
+   *  （判据共用 `isJudgedExtra`）。此前只有详情页有这个字段，列表页把同一批文件塞进
+   *  一个假格算进 onDisk——两页对同一部剧的"磁盘上有几集"差 1。
+   *  扣除特典的完整论证在列表页那个字段的注释里。
    *
    *  ⚠️ 判据是 `season IS NULL OR episode IS NULL`，**不是** `parse_confidence='none'`
    *  （此前这里写的是后者，与代码不符——代码从来读的都是前两列）。两者高度相关但不等价：
@@ -610,9 +654,12 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
     return { work, seasons: [], movie: aggregateDot(files), unplacedFileCount: 0 }
   }
 
-  // 剧集：季集网格。season/episode 任一为 NULL 的文件进不了网格，单独计数。
+  // 剧集：季集网格。season/episode 任一为 NULL 的文件进不了网格，单独计数
+  // （**扣除机械特典**——判据与列表页共用 isJudgedExtra，两页必须同一个数）。
   const placed = files.filter((f) => f.season != null && f.episode != null)
-  const unplacedFileCount = files.length - placed.length
+  const unplacedFileCount = files.filter(
+    (f) => (f.season == null || f.episode == null) && !isJudgedExtra(f),
+  ).length
 
   const onDiskCells = new Map<string, FileRow[]>()
   for (const f of placed) {

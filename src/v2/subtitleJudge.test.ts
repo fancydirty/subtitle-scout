@@ -54,6 +54,85 @@ describe('judgeSubtitle（需字幕判定）', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 规则 0：机械特典不算在找字幕的范围（2026-08-13 用户裁决）
+//
+// 用户原话：「特典逻辑我觉得可以删除掉，感觉为它增加我们的心智负担不值得。也就是说
+// **特典都完全不算在找字幕的范围**。」
+//
+// 接线关系：`extrasFilter.isMechanicalExtra` 此前生产**零调用点**（原调用者 v2/ingest.ts
+// 的 excludeExtras 分支随 ingest 整体退役），于是生产库那 16 个 NCOP/NCED/PV/menu 文件
+// 全是 needs_subtitle=1，每轮巡检为一段 91 秒无对白 OP 烧一次付费 LLM session。
+// 本组用例钉的就是"那根线真的接上了"。
+describe('judgeSubtitle 规则 0：机械特典（用户裁决「特典都完全不算在找字幕的范围」）', () => {
+  // 🔴 文件名取自**生产库实测**（2026-08-13 `/cache/scout.db`，645 文件里命中的那 16 个），
+  // 不是手编的理想形态：真实的 DBD-Raws 命名把标记塞在方括号里、后面还跟着一串画质标签，
+  // 而词边界正则是否能穿过 `][` 这种边界正是它唯一会出错的地方。
+  const PROD_EXTRAS = [
+    '[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][NCED1][1080P][BDRip][HEVC-10bit][FLAC].mkv',
+    '[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][NCOP2][1080P][BDRip][HEVC-10bit][FLAC].mkv',
+    '[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][PV][01][1080P][BDRip][HEVC-10bit][FLAC].mkv',
+    '[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][menu][03][1080P][BDRip][HEVC-10bit][FLAC].mkv',
+  ]
+
+  it('🔴 生产库那 16 个特典的真实文件名 → needs=false + reason=extra', () => {
+    for (const filename of PROD_EXTRAS) {
+      // origin=ja + 无内嵌中字：这**正是**规则 0 不存在时会被判 needs=1 的组合
+      // （走到规则 3 落 missing）。所以这一条同时钉住"规则 0 在场"与"它排在语言规则之前"。
+      expect(judgeSubtitle({ originLang: 'ja', embeddedLangs: ['jpn'], filename }, DEPS))
+        .toEqual({ needs: false, reason: 'extra' })
+    }
+  })
+
+  it('🔴 规则 0 必须**排在语言规则之前**——否则中文特典会被记成 origin-skip', () => {
+    // 判决（needs=false）两种排序下相同，**只有 reason 不同**。所以这一条是唯一能抓住
+    // "顺序被人调换"的用例：把规则 0 挪到 origin-skip 之后，这里立刻红而上一条照绿。
+    // 为什么 reason 值得钉：排障时看到 origin-skip 会以为"这是国产片"，而它其实是特典；
+    // 且媒体库页据 skip_reason 显示标记，用户会看到 ◇ 而不是 ▭。
+    expect(judgeSubtitle({ originLang: 'zh', embeddedLangs: null, filename: 'Show NCOP.mkv' }, DEPS))
+      .toEqual({ needs: false, reason: 'extra' })
+    // 内嵌中字的特典同理（若排在 embedded 之后会记成 embedded）。
+    expect(judgeSubtitle({ originLang: 'en', embeddedLangs: ['chi'], filename: 'Show Menu.mkv' }, DEPS))
+      .toEqual({ needs: false, reason: 'extra' })
+  })
+
+  it('🔴 正常剧集不受影响（零误伤——本裁决的立论前提）', () => {
+    // 生产实测：`isMechanicalExtra` 在全库 645 文件里命中 16 个，其中**有季集号的 0 个**。
+    // 这里用真实的正片文件名钉住那个 0：一旦标记表被人加宽（比如把 'SP'/'OVA' 收进去，
+    // 或把词边界放松成 includes），这一条会红。
+    for (const filename of [
+      '[DBD-Raws][Re Zero kara Hajimeru Isekai Seikatsu S1][01][1080P][BDRip][HEVC-10bit][FLACx2].mkv',
+      '[DMG] ヴァイオレット・エヴァーガーデン 第01話「愛してる」と自動手記人形 [BDRip][AVC_AAC][1080P][CHS](624F1EFE).mp4',
+      'Blade.Runner.2049.2017.1080p.BluRay.DDP.7.1.H.265-EDGE2020.mkv',
+    ]) {
+      expect(judgeSubtitle({ originLang: 'ja', embeddedLangs: ['jpn'], filename }, DEPS))
+        .toEqual({ needs: true, reason: 'missing' })
+    }
+  })
+
+  it('🔴 SP/OVA/OAD/Special 是灰区，**绝不**被规则 0 判死（会误杀有字幕的剧情向 OAD）', () => {
+    for (const filename of ['Show OVA1.mkv', 'Show SP01.mkv', 'Show OAD.mkv', 'Special.mkv']) {
+      expect(judgeSubtitle({ originLang: 'ja', embeddedLangs: ['jpn'], filename }, DEPS))
+        .toEqual({ needs: true, reason: 'missing' })
+    }
+  })
+
+  it('filename 缺省 / null → 规则 0 不成立（安全方向：漏判成"要找"而非误判成特典）', () => {
+    // 一批既有调用方共用 JudgeInput 而不关心文件名。缺省时**必须**当作"不是特典"——
+    // 反过来（缺省当特典）会让任何忘记传 filename 的调用方静默把整库判死。
+    expect(judgeSubtitle({ originLang: 'en', embeddedLangs: null }, DEPS))
+      .toEqual({ needs: true, reason: 'missing' })
+    expect(judgeSubtitle({ originLang: 'en', embeddedLangs: null, filename: null }, DEPS))
+      .toEqual({ needs: true, reason: 'missing' })
+  })
+
+  it('判据是 basename——路径里的目录名命中标记不算（CM Punk 那类误伤）', () => {
+    expect(judgeSubtitle(
+      { originLang: 'en', embeddedLangs: null, filename: '/media/CM Punk Show/ep1.mkv' }, DEPS,
+    )).toEqual({ needs: true, reason: 'missing' })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // judgeTranslatable（R21 + D9 / 缺口 C24·C31·C40）：翻译救不救得了这一集的**预判**。
 //
 // 为什么要预判：origin_lang 识别时就已入库，即第 0 天就知道终局。把它留到翻译流内部

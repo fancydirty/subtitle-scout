@@ -403,6 +403,10 @@ export const zh = {
   media_state_unsolvable: '暂时没辙 · 还会再试',
   media_state_origin_skip: '原生就是目标语言 · 不需要字幕',
   media_state_embedded: '自带内嵌字幕轨',
+  // 特典（NCOP/NCED/PV/menu）。措辞不说"已跳过"或"已忽略"——那听着像系统偷懒或出错；
+  // 说"不找字幕"是把裁决如实讲出来（用户原话：「特典都完全不算在找字幕的范围」），
+  // 让用户一眼知道这是**设计如此**、不需要他做任何事。
+  media_state_extra: '特典 · 不找字幕',
   media_state_pending: '正在找字幕',
   media_state_unjudged: '还没判定',
   media_state_absent: '磁盘上没有',

@@ -2,12 +2,35 @@
 // spec: docs/design/2026-08-08-PIPELINE-SPEC.md 裁决 D8 / 缺口 C27
 //
 // 规则（身份确定后自动跑）：
+//  0. 文件名命中机械特典标记（NCOP/NCED/menu/PV/…）→ needs_subtitle=0（特典不算字幕范围）
 //  1. origin_lang ∈ 目标语言（如 zh）→ needs_subtitle=0（国产片，不需要中文字幕）
 //  2. embedded_langs 含目标语言 → needs_subtitle=0（已有内嵌中字）
 //  3. 其余 → needs_subtitle=1（需要找字幕）
 //
-// **判据只有语言事实**（D8 的职责切分）：needs_subtitle 回答"这资源**原则上**需要中文字幕吗"，
-// 与磁盘上当前有没有外挂字幕无关；后者归 sub_status，由扫描独占写入（R24）。
+// **判据是语言事实 + 文件名事实**（D8 的职责切分）：needs_subtitle 回答"这资源**原则上**
+// 需要中文字幕吗"，与磁盘上当前有没有外挂字幕无关；后者归 sub_status，由扫描独占写入（R24）。
+//
+// ── 规则 0 的来历与它为什么在**这里**（2026-08-13 用户裁决）────────────────────
+// 用户原话：「特典逻辑我觉得可以删除掉……特典都完全不算在找字幕的范围」。
+// `isMechanicalExtra` 此前生产零调用点（原调用者 v2/ingest.ts 的 excludeExtras 分支随 ingest
+// 整体退役），于是生产上 16 个 NCOP/NCED/PV/menu 文件全部 needs_subtitle=1，每轮巡检都在
+// 为一段 91 秒的无对白 OP 动画烧一次付费 LLM session 去找中文字幕。
+//
+// 接在 judge 这一步（而不是扫描期就不入库、也不是在字幕工作台谓词里加一条）的理由：
+//  · **一个事实只许有一个投影列**（C27 的教训）。"这个文件原则上需不需要中文字幕"已经有
+//    needs_subtitle 这一列了，特典是这个问题的又一条判据，不是一个新问题。在工作台谓词里
+//    另加 `AND filename NOT LIKE …` 就是第二份判据，且它对媒体库页不可见——用户会看到
+//    16 个 `···`（系统正要去找）而 daemon 其实永远不找它，界面在撒谎。
+//  · **不在扫描期丢掉**：文件在磁盘上，媒体库要如实说出它的存在（用户不能因为我们不给
+//    它找字幕就以为文件丢了）。judge 只改判决，不改可见性。
+//  · 它天然继承 needs_subtitle 已有的**重判通路**（谓词 `needs_subtitle IS NULL`）：
+//    改了标记表 / 换目标语言时，retarget 与 D17 回填把这一列清 NULL 就会重判，
+//    不需要为特典另造一条回填 pass。
+//
+// ⚠️ 规则 0 **必须排在语言规则之前**，这不是排版偏好：一个日语 NCOP（origin=ja、无内嵌中字）
+// 走到规则 3 会被判 needs=1。而反过来把它排在最后毫无意义——前两条判 0 的行本来就已经出局。
+// 排第一还有一个可观测的好处：skip_reason 会如实记成 'extra' 而不是被 origin-skip 抢先盖住
+// （一个中文特典若判成 origin-skip，排障时看不出它其实是特典）。
 //
 // 这里曾有第 3 条规则「磁盘已有同名 sidecar 中文字幕 → needs_subtitle=0」，删掉的原因（C27）：
 // 同一个**磁盘事实**被两列各判一次，就会造出一个双不满足的永久卡死态——
@@ -19,10 +42,17 @@
 // 只是换了保证者：由扫描写的 `sub_status='covered'` 挡在字幕工作台门口（R24）。
 // 一个磁盘事实只许有一个投影列——这是 C19 换列复活（C27）的唯一根治办法。
 import { langOf, tagsForLanguage } from '../agent/languages.js'
+import { isMechanicalExtra } from './extrasFilter.js'
 
 export interface JudgeInput {
   originLang: string | null
   embeddedLangs: string[] | null
+  /** 文件名（`files.filename`，不是全路径）。规则 0 的判据。
+   *
+   *  🔴 **可选且默认按"不是特典"处理**：judgeTranslatable 与一批既有调用方共用 JudgeInput，
+   *  强制必填会把它们全部改一遍而其中多数根本不关心文件名。缺省时规则 0 不成立——
+   *  这是安全的方向（漏判成"要找字幕"只是白找一次，误判成特典是永久不找）。 */
+  filename?: string | null
 }
 
 export interface JudgeDeps {
@@ -30,11 +60,16 @@ export interface JudgeDeps {
 }
 
 export type JudgeVerdict =
-  | { needs: false; reason: 'origin-skip' | 'embedded' }
+  | { needs: false; reason: 'origin-skip' | 'embedded' | 'extra' }
   | { needs: true; reason: 'missing' }
 
-/** 判定一个文件是否需要找字幕。纯函数（只看语言事实，不碰磁盘）。 */
+/** 判定一个文件是否需要找字幕。纯函数（只看语言事实与文件名，不碰磁盘）。 */
 export function judgeSubtitle(input: JudgeInput, deps: JudgeDeps): JudgeVerdict {
+  // 0. 机械特典（NCOP/NCED/menu/PV/…）：用户裁决「特典都完全不算在找字幕的范围」。
+  //    必须排在语言规则之前，理由见文件头（日语 NCOP 否则会落到规则 3 判 needs=1）。
+  if (input.filename != null && isMechanicalExtra(input.filename)) {
+    return { needs: false, reason: 'extra' }
+  }
   // 1. 国产片跳过：origin_lang 是目标语言（如 zh 目标中文时，中文影视不需要中文字幕）
   if (input.originLang != null && deps.targetLanguages.includes(input.originLang.toLowerCase())) {
     return { needs: false, reason: 'origin-skip' }
