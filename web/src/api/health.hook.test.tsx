@@ -16,7 +16,7 @@ const HEALTH: HealthDTO = {
   engineEnabled: true,
   setupSatisfied: false,
   roots: [{ path: '/media', ok: null, lastError: null, lastCheckedAt: null }],
-  unidentified: { dirCount: 0, dirs: [] },
+  unidentified: { dirCount: 0, dirs: [] }, stalledJobs: { count: 0, overdueMs: null },
   current: null,
 }
 

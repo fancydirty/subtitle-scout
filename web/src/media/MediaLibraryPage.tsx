@@ -66,19 +66,31 @@ export function coverageParts(item: MediaLibraryItemDTO): {
   expected: number | null
   /** null = 不缺集（或应有集未知）——调用方**不许**渲染这一段。 */
   missing: number | null
+  /** null = 没有进不了网格的文件——调用方**不许**渲染这一段（沉默即好消息）。
+   *
+   *  🔴 2026-08-13。这一段的存在理由与 missing 那一段**不同**：missing 说的是
+   *  "磁盘上少了什么"，这一段说的是"磁盘上有东西我没归到位"。此前这些文件被后端
+   *  算进 onDisk（一整批只算 1 集），列表与详情因此差 1 集；现在它们退出集数，
+   *  **必须在这里被说出来**——否则它们从"算错了"变成"凭空消失"，那是更糟的一句假话。
+   *
+   *  ⚠️ 同 missing 的既有纪律：**原样取 DTO，不在浏览器里算**。 */
+  unplaced: number | null
 } {
   return {
     subtitled: item.subtitledEpisodeCount,
     onDisk: item.onDiskEpisodeCount,
     expected: item.expectedEpisodeCount > 0 ? item.expectedEpisodeCount : null,
     missing: item.missingEpisodeCount > 0 ? item.missingEpisodeCount : null,
+    // `> 0` 而不是真值性：与 missing 同形。后端老版本缺这个字段时 undefined > 0 为 false
+    // → 整段不渲染，这是**正确的降级**（宁可少说一句，不许渲染 "NaN 个文件"）。
+    unplaced: item.unplacedFileCount > 0 ? item.unplacedFileCount : null,
   }
 }
 
 function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
   const { t } = useT()
   const title = item.chineseTitle ?? item.title
-  const { subtitled, onDisk, expected, missing } = coverageParts(item)
+  const { subtitled, onDisk, expected, missing, unplaced } = coverageParts(item)
 
   return (
     <a className="media-card" href={mediaItemHref(item.workId)} aria-label={title}>
@@ -102,6 +114,16 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
         {missing !== null && (
           <span className="media-card-missing" data-testid="media-card-missing">
             {t('media_card_missing')} {missing}
+          </span>
+        )}
+        {/* 🔴 进不了季集网格的文件（2026-08-13）。**与 missing 分两行**：那一条说
+            "磁盘上少了什么"，这一条说"磁盘上有东西我没归到位"——两件相反的事，
+            挤一行会让用户以为是同一个数的两半。unplaced===0 时整段不在场。
+            措辞不提 season/episode/parse_confidence（那是排障读数）：用户能做的
+            与 UnidentifiedNote 同类——去改文件名。 */}
+        {unplaced !== null && (
+          <span className="media-card-missing" data-testid="media-card-unplaced">
+            {t('media_card_unplaced').replace('{n}', String(unplaced))}
           </span>
         )}
       </div>

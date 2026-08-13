@@ -154,6 +154,92 @@ describe('buildMediaLibrary（列表：海报墙）', () => {
     expect(item.missingEpisodeCount).toBe(1)
   })
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 2026-08-13：列表页与详情页对同一部剧的"磁盘上有几集"必须一致
+  // ══════════════════════════════════════════════════════════════════════════
+  // 生产症状：同一部剧，列表说「磁盘 78 / 缺 7」，详情说「磁盘 77 / 缺 8」。
+  // 根因：列表页把 season/episode 为 NULL 的文件全塞进 key 为 '' 的**同一个假格**，
+  // 于是 67 个特典文件给 cells.size 贡献 +1；详情页按 tmdb_seasons 逐格铺，它们进不去。
+  describe('🔴 解析不出季集的文件（特典）不算进"磁盘上有几集"', () => {
+    it('🔴 67 个进不了网格的文件 → onDisk **不因它们 +1**，而是记进 unplacedFileCount', () => {
+      addWork('tmdb:50', { title: 'Extras Heavy' })
+      addCanonical('tmdb:50', 1, [1, 2])
+      addFile({ path: '/x/s1e1.mkv', workId: 'tmdb:50', season: 1, episode: 1 })
+      for (let i = 0; i < 67; i++) {
+        addFile({ path: `/x/NCOP${i}.mkv`, workId: 'tmdb:50', season: null, episode: null })
+      }
+      const [item] = buildMediaLibrary(db)
+      // 旧实现：onDisk=2（1 集 + 那个假格），missing=0。两个数字都是假的。
+      expect(item.onDiskEpisodeCount).toBe(1)
+      expect(item.missingEpisodeCount).toBe(1)
+      expect(item.unplacedFileCount).toBe(67)
+    })
+
+    it('🔴🔴 列表页与详情页的 onDisk / unplaced **逐字一致**（那条自相矛盾的直接判据）', () => {
+      // 不断言各自的常量，而是把两页的数放在一起比——这是"两处漂移"唯一照得出来的形态。
+      addWork('tmdb:51', { title: 'Cross Check' })
+      addCanonical('tmdb:51', 1, [1, 2, 3])
+      addFile({ path: '/y/s1e1.mkv', workId: 'tmdb:51', season: 1, episode: 1 })
+      addFile({ path: '/y/s1e2.mkv', workId: 'tmdb:51', season: 1, episode: 2 })
+      addFile({ path: '/y/NCED.mkv', workId: 'tmdb:51', season: null, episode: null })
+      addFile({ path: '/y/menu.mkv', workId: 'tmdb:51', season: null, episode: null })
+
+      const [item] = buildMediaLibrary(db)
+      const detail = buildMediaLibraryDetail(db, 'tmdb:51')!
+      const detailOnDisk = detail.seasons
+        .flatMap((s) => s.episodes)
+        .filter((e) => e.onDisk).length
+
+      expect(item.onDiskEpisodeCount).toBe(detailOnDisk)
+      expect(item.unplacedFileCount).toBe(detail.unplacedFileCount)
+      // 阳性对照：这两个数不是恰好都为 0（否则一个恒返回 0 的实现也全绿）。
+      expect(item.onDiskEpisodeCount).toBe(2)
+      expect(item.unplacedFileCount).toBe(2)
+    })
+
+    it('🔴 一个 unplaced 都没有 → 恒 0（不许长出一个凭空的计数）', () => {
+      addWork('tmdb:52', { title: 'Clean' })
+      addFile({ path: '/z/s1e1.mkv', workId: 'tmdb:52', season: 1, episode: 1 })
+      expect(buildMediaLibrary(db)[0].unplacedFileCount).toBe(0)
+    })
+
+    it('🔴 **电影不受影响**：它的文件本来就没季集，仍然算 1 格、unplaced 恒 0', () => {
+      // 这条守的是那个 media_type 分流。一刀切按 NULL 判会把每部电影的唯一那份文件
+      // 判成 unplaced → 全库电影的 onDisk 一夜之间变 0（而详情页照常显示有字幕）。
+      addWork('tmdb:53', { title: 'Dune', mediaType: 'movie' })
+      addFile({ path: '/m/dune.mkv', workId: 'tmdb:53', season: null, episode: null, subStatus: 'covered' })
+      const [item] = buildMediaLibrary(db)
+      expect(item.onDiskEpisodeCount).toBe(1)
+      expect(item.subtitledEpisodeCount).toBe(1)
+      expect(item.unplacedFileCount).toBe(0)
+      expect(buildMediaLibraryDetail(db, 'tmdb:53')!.unplacedFileCount).toBe(0)
+    })
+
+    it('🔴 unplaced 文件即便**有字幕**也不计进 subtitledEpisodeCount（它不是"一集"）', () => {
+      // 否则会出现 subtitled > onDisk：卡片上写「已配 2 · 磁盘 1」，用户当场看出这是假的。
+      addWork('tmdb:54', { title: 'Subtitled Extra' })
+      addFile({ path: '/w/s1e1.mkv', workId: 'tmdb:54', season: 1, episode: 1 })
+      addFile({ path: '/w/PV.mkv', workId: 'tmdb:54', season: null, episode: null, subStatus: 'covered' })
+      const [item] = buildMediaLibrary(db)
+      expect(item.onDiskEpisodeCount).toBe(1)
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.unplacedFileCount).toBe(1)
+    })
+
+    it('🔴 只有 unplaced 文件的剧**仍然出现在海报墙上**（不许静默消失）', () => {
+      // "不算进集数"绝不等于"这部剧不存在"。works JOIN files 仍然命中，
+      // 卡片照出，只是它说"磁盘 0 集 · 3 个文件没进季集网格"——那才是真话。
+      addWork('tmdb:55', { title: 'All Extras' })
+      for (const n of ['NCOP', 'NCED', 'PV']) {
+        addFile({ path: `/e/${n}.mkv`, workId: 'tmdb:55', season: null, episode: null })
+      }
+      const [item] = buildMediaLibrary(db)
+      expect(item.workId).toBe('tmdb:55')
+      expect(item.onDiskEpisodeCount).toBe(0)
+      expect(item.unplacedFileCount).toBe(3)
+    })
+  })
+
   it('多个作品：按标题稳定排序，列表可预期', () => {
     addWork('tmdb:20', { title: 'Zebra' })
     addFile({ path: '/z/e1.mkv', workId: 'tmdb:20', season: 1, episode: 1 })

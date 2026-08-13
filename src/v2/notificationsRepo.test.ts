@@ -45,6 +45,60 @@ describe('notificationsRepo（R-F3 通知页的持久化数据源）', () => {
     expect(rows.map(r => r.via)).toEqual(['translate', 'fetch'])
   })
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 2026-08-13：`season IS NULL` 的**两个含义**
+  // ══════════════════════════════════════════════════════════════════════════
+  // 生产症状：通知页把剧集渲染成「已找到字幕」的电影行。根因是前端判
+  // `isMovie = season === null`，而这张表里 season=NULL 有两个来源：
+  //   ① 真电影（上面那条用例）
+  //   ② **剧集，但那个文件的季没解析出来**——装盘时 `f.season` 原样写进来就是 NULL。
+  //      生产实测：112 个文件 season/episode 为 NULL，其中 79 个属于 TV 作品。
+  // 消歧的载体是 works.media_type（结构事实），LEFT JOIN 现取。
+  describe('mediaType：消解 season=NULL 的二义性', () => {
+    const addWork = (id: string, type: string) =>
+      db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+        .run(id, 'W', type, 1000, 1000)
+
+    it('🔴 剧集 + season=NULL（季没解析出来）→ mediaType=**tv**，绝不是 movie', () => {
+      addWork('tmdb:1', 'tv')
+      recordFound(db, { workId: 'tmdb:1', title: 'W', season: null, episode: null, via: 'fetch' }, 1000)
+      expect(listRecentFound(db, 1000)[0].mediaType).toBe('tv')
+      expect(listRecentFoundGrouped(db, 1000)[0].mediaType).toBe('tv')
+    })
+
+    it('🔴 真电影 + season=NULL → mediaType=movie（阳性对照：不是恒 tv）', () => {
+      addWork('tmdb:9', 'movie')
+      recordFound(db, { workId: 'tmdb:9', title: 'W', season: null, episode: null, via: 'fetch' }, 1000)
+      expect(listRecentFound(db, 1000)[0].mediaType).toBe('movie')
+      expect(listRecentFoundGrouped(db, 1000)[0].mediaType).toBe('movie')
+    })
+
+    it('🔴 works 行不在（用户移了守备目录）→ **unknown**，且这条通知**照样返回**', () => {
+      // LEFT 而不是 INNER 的判据。INNER 会把这条成果整条抹掉——用户前天确实收到了那条
+      // 字幕，抹掉它比说不清它是电影还是剧集更糟。
+      recordFound(db, { workId: 'tmdb:gone', title: 'W', season: null, episode: null, via: 'fetch' }, 1000)
+      const rows = listRecentFound(db, 1000)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].mediaType).toBe('unknown')
+      expect(listRecentFoundGrouped(db, 1000)[0].mediaType).toBe('unknown')
+    })
+
+    it('media_type 是意料外的值 → unknown（不许静默当成 tv 或 movie）', () => {
+      addWork('tmdb:7', 'anime')
+      recordFound(db, { workId: 'tmdb:7', title: 'W', season: 1, episode: 1, via: 'fetch' }, 1000)
+      expect(listRecentFound(db, 1000)[0].mediaType).toBe('unknown')
+    })
+
+    it('聚合不改变 mediaType（组内同 workId，恒等）', () => {
+      addWork('tmdb:1', 'tv')
+      recordFound(db, { workId: 'tmdb:1', title: 'W', season: 1, episode: 1, via: 'fetch' }, 1000)
+      recordFound(db, { workId: 'tmdb:1', title: 'W', season: 1, episode: 2, via: 'fetch' }, 1100)
+      const [g] = listRecentFoundGrouped(db, 1100)
+      expect(g.episodes).toEqual([1, 2])
+      expect(g.mediaType).toBe('tv')
+    })
+  })
+
   // ── 幂等 ────────────────────────────────────────────────────────────────────
 
   // 为什么"同一集重复装盘不产生重复通知"是**对的**、而不是该产生两条：

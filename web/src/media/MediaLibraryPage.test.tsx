@@ -24,7 +24,7 @@ function item(o: Partial<MediaLibraryItemDTO> = {}): MediaLibraryItemDTO {
     workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
     posterPath: null, mediaType: 'tv',
     expectedEpisodeCount: 62, onDiskEpisodeCount: 30, missingEpisodeCount: 32,
-    subtitledEpisodeCount: 12,
+    subtitledEpisodeCount: 12, unplacedFileCount: 0,
     ...o,
   }
 }
@@ -79,7 +79,7 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
       subtitledEpisodeCount: 7, onDiskEpisodeCount: 9, expectedEpisodeCount: 24,
       missingEpisodeCount: 15,
     }))
-    expect(p).toEqual({ subtitled: 7, onDisk: 9, expected: 24, missing: 15 })
+    expect(p).toEqual({ subtitled: 7, onDisk: 9, expected: 24, missing: 15, unplaced: null })
   })
 })
 
@@ -138,6 +138,45 @@ describe('🟡-3 missingEpisodeCount 真的被读了（变异恒 0 → 本组必
   it('coverageParts 对 missing=0 给 null，>0 原样给', () => {
     expect(coverageParts(item({ missingEpisodeCount: 0 })).missing).toBeNull()
     expect(coverageParts(item({ missingEpisodeCount: 1 })).missing).toBe(1)
+  })
+})
+
+// ═══ 🔴-2 进不了季集网格的文件 ═══════════════════════════════════════════════
+// 后端此前把这些文件塞进一个假格、算进 onDisk（一整批只算 1 集），于是同一部剧
+// 列表说「磁盘 78 / 缺 7」、详情说「磁盘 77 / 缺 8」。现在它们退出集数——
+// 那就必须在这一屏被**说出来**，否则从"算错了"变成"凭空消失"。
+describe('🔴-2 unplacedFileCount 真的被读了（变异恒 0 → 本组必红）', () => {
+  it('🔴 unplaced>0 → 卡片上单独一行说出来', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({ unplacedFileCount: 67 })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    expect(within(link).getByTestId('media-card-unplaced').textContent).toContain('67')
+  })
+
+  it('🔴 与"缺 N"是**两行不同的话**（一个说少了什么，一个说没归到位）', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({ missingEpisodeCount: 7, unplacedFileCount: 67 })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    const missing = within(link).getByTestId('media-card-missing')
+    const unplaced = within(link).getByTestId('media-card-unplaced')
+    expect(missing).not.toBe(unplaced)
+    expect(missing.textContent).toContain('7')
+    expect(missing.textContent).not.toContain('67')
+  })
+
+  it('🔴 unplaced=0 → **整段不在场**（沉默即好消息，同 missing 的既有口径）', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({ unplacedFileCount: 0 })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    expect(within(link).queryByTestId('media-card-unplaced')).toBeNull()
+  })
+
+  it('coverageParts：0 → null，>0 原样给；字段缺席（老后端）→ null 而不是 NaN', () => {
+    expect(coverageParts(item({ unplacedFileCount: 0 })).unplaced).toBeNull()
+    expect(coverageParts(item({ unplacedFileCount: 67 })).unplaced).toBe(67)
+    const legacy = item()
+    delete (legacy as Partial<typeof legacy>).unplacedFileCount
+    expect(coverageParts(legacy).unplaced).toBeNull()
   })
 })
 

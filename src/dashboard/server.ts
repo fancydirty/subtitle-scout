@@ -21,6 +21,7 @@ import {
 import { buildMediaLibrary, buildMediaLibraryDetail } from './mediaLibraryApi.js'
 import { buildActivity } from './activityApi.js'
 import { buildUnidentifiedHealth, type UnidentifiedHealthDTO } from './unidentifiedHealth.js'
+import { buildStalledJobs, type StalledJobsDTO } from './stalledJobsHealth.js'
 // R-F3：通知页列表的读函数。**复用**，不在 dashboard 层重写查询——一周窗与倒序都长在
 // 那边（读窗常量还与 dbMaintenance 的 pruneFound 共用），另写一份必然静默漂移。
 import { listRecentFoundGrouped } from '../v2/notificationsRepo.js'
@@ -246,6 +247,19 @@ export interface HealthDTO {
    * R-F1 的「不给用户改」禁的是**编辑**，本字段是纯读，且不带任何可操作端点。
    */
   unidentified: UnidentifiedHealthDTO
+  /**
+   * 「有几件活记着失败了，而且再也没人去重试」——`jobs` 里该被领走而没被领走的行。
+   *
+   * 🔴 2026-08-13 加。生产实测：2 行 `state='failed'`，`next_retry_at` 过期 66 小时，
+   * 而 jobs 队列**已无认领者**（claimNext 生产零调用点）。此前三页产品没有任何地方
+   * 读 jobs，这两行在界面上**完全不存在**。
+   *
+   * 与 `roots` / `unidentified` 并列的理由完全相同：它们是同一个问题的不同侧面
+   * （「我的库/引擎现在是什么状况」），而活动页状态条已经在读这个端点。
+   * 判据是**行为**（该动而没动）不是断言（"队列退役了"）——队列被接回 claim 之后
+   * 这一段会自己消失。完整论证见 stalledJobsHealth.ts 头注释。
+   */
+  stalledJobs: StalledJobsDTO
   current: ScoutCurrent | null
 }
 
@@ -952,6 +966,9 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           // 「有几个目录我认不出来」（病 A 第 7 例的读出面）。谓词与 identifyScheduler 的
           // 取件谓词**刻意不同**（要含 404 终态那批永不重试的）——见 buildUnidentifiedHealth。
           unidentified: buildUnidentifiedHealth(db),
+          // 「该被重试却一直没动的活」（🔴-4）。谓词是 claimNext 取件谓词的**真子集**
+          // （同两条状态 + 一道时间门），故队列一旦被接回 claim，这一段自动归零。
+          stalledJobs: buildStalledJobs(db, Date.now()),
           // events 缺席 → null（见上方论证：不整体 503）。
           current: events ? events.getCurrent() : null,
         }

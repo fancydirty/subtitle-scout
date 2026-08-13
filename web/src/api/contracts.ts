@@ -93,6 +93,9 @@ export const HEALTH_SHAPE: Shape = obj({
     dirCount: num(),
     dirs: arr(obj({ dirName: str(), fileCount: num() })),
   }),
+  // 🔴-4。**不声明**：老后端缺这个字段时 `StalledJobsNote` 的 `if (!stalledJobs) return null`
+  // 会整段不渲染——那是正确的降级（不知道就不说话，同 RootHealthNote 的既有口径）。
+  // 声明它会把一个无害缺席升级成整页拦截，而这一段的违约表现只是"少一行提示"。
 })
 
 /** `/api/v2/mediaLibrary` 的**一行**（client 那边包成数组）。
@@ -104,6 +107,10 @@ export const MEDIA_LIBRARY_ITEM_SHAPE: Shape = obj({
   onDiskEpisodeCount: num(),
   missingEpisodeCount: num(),
   subtitledEpisodeCount: num(),
+  // 🔴 2026-08-13。**刻意不声明**：老后端（还没有这个字段的部署）返回的行在这里
+  // 会整页被拦，而这一段的违约表现只是"少显示一行"——判据③不占。coverageParts 已按
+  // `> 0` 写（undefined > 0 为 false → 整段不渲染），那是正确的降级。
+  // 上面四个不同：它们参与算术，缺席出 NaN。
 })
 
 /** `/api/v2/mediaLibrary/:workId`。
@@ -130,11 +137,17 @@ export const MEDIA_LIBRARY_DETAIL_SHAPE: Shape = obj({
 })
 
 /** `/api/v2/activity`。两个队列都必在（缺席会被 `?? []` 兜成"没有排队"的谎话）。
- *  `pendingFileCount` 是显示在卡片上的数字，缺席出 `undefined`。 */
+ *  `pendingFileCount` 是显示在卡片上的数字，缺席出 `undefined`。
+ *  `dueNow` 决定卡片上说"在等"还是"N 小时后重试"——缺席时 `!dueNow` 为 true，
+ *  会让**已到点**的项挂上一句"重试中"的假话，故必须声明。 */
 const QUEUE_ITEM_SHAPE: Shape = obj({
   workId: str(),
   title: str(),
   pendingFileCount: num(),
+  dueNow: bool(),
+  // `retryAfter` 刻意**不声明**：null 是它的常态值（到点的项），而契约层的 nullable(num())
+  // 对 `undefined` 与 `null` 的区分在这里没有消费差异——前端读到 null/undefined 都走
+  // "不说重试时刻"那一支。声明它只会把一个无害缺席升级成整页拦截。
 })
 export const ACTIVITY_SHAPE: Shape = obj({
   subtitleQueue: arr(QUEUE_ITEM_SHAPE),
@@ -152,6 +165,9 @@ export const FOUND_GROUP_SHAPE: Shape = obj({
   episodes: arr(num()),
   latestAt: num(),
   via: str(),
+  // 🔴 **不声明** mediaType：老后端（还没有这个字段）返回的行在这里会整页被拦，
+  // 而它缺席的表现是 `notifShape` 走 'unknown' 那一支——一句在任何情况下都为真的话。
+  // 拿一句真话换整页拦截是坏交易。判据①②③一条都不占。
 })
 
 /** `/api/v2/setup/status` 的 `providers` 子树——上一轮崩页的那三层解引用。

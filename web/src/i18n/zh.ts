@@ -398,6 +398,9 @@ export const zh = {
   // 🟡-3：缺集数。「缺 12」——不写"集"字：电影恒 0（不渲染），剧集这一行紧挨着
   // 上面那三个同为集数的读数，量纲无歧义。
   media_card_missing: '缺',
+  // 🔴 2026-08-13：进不了季集网格的文件（特典居多）。措辞与详情页的
+  // media_unplaced_prefix 同族但更短（卡片一行），且不提 season/episode 这类内部词。
+  media_card_unplaced: '{n} 个文件没归入季集',
   media_empty_title: '库里还什么都没有',
   media_empty_desc: '守备目录扫描完成后，作品会出现在这里。',
   media_error_title: '没能加载媒体库',
@@ -436,6 +439,16 @@ export const zh = {
   notif_episodes_prefix: '第',
   notif_episodes_suffix: '集',
   notif_movie_found: '已找到字幕',
+  // 🔴 2026-08-13：`season === null` 二义性的两条新文案。
+  // notif_found_generic —— 作品身份查不到时的那句。**两个来源**：works 行已删（用户移了
+  //   守备目录，通知还在一周窗内），或 media_type 是意料外的值。措辞必须对两者都为真，
+  //   故只说「这个文件」这个确实发生过的事实——既不声称电影也不声称剧集，
+  //   也不断言"作品已不在库里"（那对第二个来源是假的）。
+  //   🔴 与 notif_movie_found **逐字不同**：两句字面相同的话在界面上就是同一句，
+  //   那正是本轮要消灭的形态（"我查不到"与一个确定结论共用一句话）。
+  notif_found_generic: '找到了这个文件的字幕',
+  // notif_season_unplaced —— 剧集但季没解析出来。用户能做的与「认不出的目录」同类：改文件名。
+  notif_season_unplaced: '已找到字幕（这一集没能归入季集）',
   notif_via_fetch: '抓取',
   notif_via_translate: '机翻',
   // 组内两种来路都有——必须如实报，谎报单一来源会误导用户对字幕质量的预期。
@@ -471,6 +484,12 @@ export const zh = {
   wb_media_tv: '剧集',
   wb_media_movie: '电影',
   wb_pending_files: '集待处理',
+  // 🔴 退避窗（2026-08-13）。修的是「已排队 · 0 / 没有排队的作品」这句假话：
+  // 生产上 33 个文件在等、全在退避窗，此前它们一个都不显示。现在照常显示，
+  // 只是各自说清楚"还要等多久"，队列整体取不到时再加一句总的。
+  // 措辞纪律同 stale 那一族：不出现"退避/backoff/next_retry_at"这类内部词。
+  wb_queue_retry_in: '{d} 后重试',
+  wb_queue_all_backoff: '这些都在等着重试，最早 {d} 后',
   wb_loading: '加载中…',
   wb_error_title: '没能加载队列',
   wb_retry: '重试',
@@ -494,4 +513,9 @@ export const zh = {
   // 不出现 park / work_id / TMDB / agent / 404 / 退避 这类实现词。
   unidentified_note: '这些目录认不出来，改成「片名 (年份)」就能处理了',
   unidentified_more: '另外还有 {n} 个',
+  // 🔴-4：记着失败、却再也没被重试的活。措辞纪律同上：不出现 job/queue/claim/
+  // next_retry_at 这类内部词；也**不承诺**「它会重试」（那是假的），
+  // 更不断言「永远不会」（那是把当前实现钉成结论）——只陈述"记着失败了、多久没动"。
+  stalled_jobs_note: '有 {n} 件活记着失败了',
+  stalled_jobs_age: '已经 {d} 没有再重试',
 } as const

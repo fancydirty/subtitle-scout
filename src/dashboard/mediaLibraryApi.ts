@@ -394,6 +394,26 @@ export interface MediaLibraryItemDTO {
   /** 已获取中文字幕的格数（R-F2「任一份有就算」口径；绿点 + 蓝点都计入 ——
    *  用户视角"这一集有中文字幕"不分内嵌外挂）。 */
   subtitledEpisodeCount: number
+  /** 属于本作品、但 `season/episode` 解析不出因而**进不了季集网格**的文件数。
+   *  电影恒 0（电影的文件本来就不该有季集，它们全部落进那唯一一格）。
+   *
+   *  🔴 2026-08-13 新增，与详情页的同名字段**同一口径**（两页同一个数）。这是修复
+   *  「同一部剧，列表说磁盘 78 / 缺 7，详情说磁盘 77 / 缺 8」那条自相矛盾的另一半：
+   *  此前这些文件被塞进一个 key 为 `''` 的**假格**，于是 67 个特典文件给 `cells.size`
+   *  贡献 +1（列表页多算一集），而详情页按 `tmdb_seasons` 逐格铺、它们一个都进不去。
+   *  两页对同一部剧给出的"磁盘上有几集"必然差 1。
+   *
+   *  现在它们**不进任何格**、只在这里如实计数。为什么不算进"磁盘上有几集"：
+   *   · 那 112 个解析失败的文件实测是 NCOP/NCED/PV/menu/Commentary 这类**特典**
+   *     （`v2/extrasFilter.ts` 的机械铁案表认的就是这几个标记）。它们不是"某一集"。
+   *   · 更硬的理由是算术：`missingEpisodeCount = expected - onDisk`，而 expected 来自
+   *     `tmdb_seasons`——**特典不在 TMDB 的集表里**。把它们计进 onDisk 就是拿分母里
+   *     没有的东西去减分母，一部有 67 个特典的剧会被算成"倒欠 67 集"（夹 0 掩盖了
+   *     负号，但"缺几集"这个结论已经错了）。
+   *   · 反过来"全都算特典所以直接丢掉"同样不行：解析器**会**在正常剧集上失败
+   *     （生产 112 个里有 79 个属于 TV 作品，不可能全是特典）。丢掉的话用户看不出
+   *     "有文件没进网格"，会以为系统把文件弄丢了。故：不计入集数，但**数出来**。 */
+  unplacedFileCount: number
 }
 
 /** GET /api/v2/mediaLibrary：海报墙列表。
@@ -429,12 +449,26 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
     expectedByWork.set(r.series_id, r.n)
   }
 
-  // work → 格键 → 该格的文件们。电影/未解析出季集的文件统一落在 '' 这一格
-  // （电影本来就一格；剧集里解析不出季集的文件也只能算作"这作品有文件"，
-  //  它进不了季集网格，但它的字幕事实仍是真实的）。
+  // work → 格键 → 该格的文件们。
+  //
+  // 🔴 2026-08-13：**剧集**里 season/episode 解析不出的文件**不再进任何格**。
+  // 旧实现把它们全塞进 key 为 `''` 的一格，于是无论 1 个还是 67 个特典，`cells.size`
+  // 都 +1 —— 列表页因此比详情页多算一集（详情页按 tmdb_seasons 逐格铺，它们进不去）。
+  // 完整论证见 MediaLibraryItemDTO.unplacedFileCount。
+  //
+  // ⚠️ **电影例外**：电影的文件本来就没有季集，`''` 对它们不是"解析失败"而是正常形态
+  // （详情页的电影分支也是把全部文件聚成一格：`aggregateDot(files)`）。两页在电影上
+  // 一直是一致的，这次改动不许碰它——故这里按 media_type 分流，而不是一刀切按 NULL 判。
+  const mediaTypeById = new Map(works.map((w) => [w.id, mediaTypeOf(w.media_type)]))
   const cellsByWork = new Map<string, Map<string, FileRow[]>>()
+  const unplacedByWork = new Map<string, number>()
   for (const f of files) {
-    const key = f.season != null && f.episode != null ? epKey(f.season, f.episode) : ''
+    const placed = f.season != null && f.episode != null
+    if (!placed && mediaTypeById.get(f.work_id) !== 'movie') {
+      unplacedByWork.set(f.work_id, (unplacedByWork.get(f.work_id) ?? 0) + 1)
+      continue
+    }
+    const key = placed ? epKey(f.season!, f.episode!) : ''
     let cells = cellsByWork.get(f.work_id)
     if (!cells) { cells = new Map(); cellsByWork.set(f.work_id, cells) }
     const bucket = cells.get(key)
@@ -460,6 +494,7 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
       onDiskEpisodeCount: onDisk,
       missingEpisodeCount: Math.max(0, expected - onDisk),
       subtitledEpisodeCount: subtitled,
+      unplacedFileCount: unplacedByWork.get(w.id) ?? 0,
     }
   })
 }
@@ -521,10 +556,18 @@ export interface MediaLibraryDetailDTO {
   seasons: MediaLibrarySeasonDTO[]
   /** 电影那一格；剧集恒 null。 */
   movie: MediaLibraryMovieDTO | null
-  /** 属于本作品、但 season/episode 解析不出（`parse_confidence='none'`）因而进不了
-   *  季集网格的文件数。**必须如实报**：不报的话用户看不出"有文件没进网格"，会以为
-   *  系统把文件弄丢了；而按 NULL 分组又会造出一个 season=null 的幽灵季。电影恒 0
-   *  （电影的文件本来就不该有季集，它们全部落进 movie 那一格）。 */
+  /** 属于本作品、但 season/episode 解析不出因而进不了季集网格的文件数。
+   *  **必须如实报**：不报的话用户看不出"有文件没进网格"，会以为系统把文件弄丢了；
+   *  而按 NULL 分组又会造出一个 season=null 的幽灵季。电影恒 0
+   *  （电影的文件本来就不该有季集，它们全部落进 movie 那一格）。
+   *
+   *  🔴 2026-08-13：与 `MediaLibraryItemDTO.unplacedFileCount` **同一口径、同一个数**。
+   *  此前只有详情页有这个字段，列表页把同一批文件塞进一个假格算进 onDisk——两页对
+   *  同一部剧的"磁盘上有几集"差 1。判据统一在列表页那个字段的注释里。
+   *
+   *  ⚠️ 判据是 `season IS NULL OR episode IS NULL`，**不是** `parse_confidence='none'`
+   *  （此前这里写的是后者，与代码不符——代码从来读的都是前两列）。两者高度相关但不等价：
+   *  confidence='low' 的行照样可能有季集号，而 confidence 列在存量行上是 NULL。 */
   unplacedFileCount: number
 }
 

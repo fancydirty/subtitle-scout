@@ -34,6 +34,7 @@ function healthBody(): HealthDTO {
     workPermitted: true, engineEnabled: true, setupSatisfied: true,
     roots,
     unidentified,
+    stalledJobs: { count: 0, overdueMs: null },
     current: null,
   }
 }

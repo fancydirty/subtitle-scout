@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb, type ScoutDb } from '../v2/db.js'
 import { buildActivity } from './activityApi.js'
+import { listSubtitleQueue } from '../v2/subtitleScheduler.js'
 
 let db: ScoutDb
 const NOW = 1_700_000_000_000
@@ -122,26 +123,83 @@ describe('buildActivity：字幕台排队段', () => {
     expect(byId.get('tmdb:2')!.chineseTitle).toBeNull()
   })
 
-  // 🔴 谓词复用的证据：这几行**各自**违反 listSubtitleQueue 的一条 WHERE。
-  // 若有人在 activityApi 里重写了一遍谓词而漏掉其中一条，对应那行就会冒出来。
-  it('🔴 不满足取件谓词的行不进队列（needs_subtitle=0 / 已有 sub_status / 退避窗未到）', () => {
+  // 🔴 谓词复用的证据：这两行**各自**违反 listSubtitleQueue 的一条**归属**谓词。
+  // 若有人在 activityApi 里重写了一遍 WHERE 而漏掉其中一条，对应那行就会冒出来。
+  //
+  // ⚠️ 退避窗那一条**刻意不在这里**（2026-08-13 改）：它不是归属谓词，是调度谓词。
+  // 本端点问的是「还有什么在等」，退避中的行**必须**出现。见下一组。
+  it('🔴 不满足**归属**谓词的行不进队列（needs_subtitle=0 / 已有 sub_status）', () => {
     addWork('tmdb:1', { title: 'Not Needed' })
     addFile({ path: '/d/1.mkv', workId: 'tmdb:1', season: 1, episode: 1, needsSubtitle: 0 })
     addWork('tmdb:2', { title: 'Already Covered' })
     addFile({ path: '/d/2.mkv', workId: 'tmdb:2', season: 1, episode: 1, subStatus: 'covered' })
-    addWork('tmdb:3', { title: 'Backing Off' })
-    addFile({ path: '/d/3.mkv', workId: 'tmdb:3', season: 1, episode: 1, recheckAfter: NOW + 86_400_000 })
     addWork('tmdb:4', { title: 'Genuinely Queued' })
     addFile({ path: '/d/4.mkv', workId: 'tmdb:4', season: 1, episode: 1 })
 
-    // 阳性对照与三条否定并列：只有否定断言时，一个恒返回 [] 的实现也会全绿。
+    // 阳性对照与两条否定并列：只有否定断言时，一个恒返回 [] 的实现也会全绿。
     expect(buildActivity(db, { now: NOW }).subtitleQueue.map((i) => i.workId)).toEqual(['tmdb:4'])
   })
 
-  it('退避窗**到点**的行会回到队列（边界：recheck_after === now 算到点）', () => {
+  it('退避窗**到点**的行 dueNow=true / retryAfter=null（边界：recheck_after === now 算到点）', () => {
     addWork('tmdb:3', { title: 'Backing Off' })
     addFile({ path: '/d/3.mkv', workId: 'tmdb:3', season: 1, episode: 1, recheckAfter: NOW })
-    expect(buildActivity(db, { now: NOW }).subtitleQueue.map((i) => i.workId)).toEqual(['tmdb:3'])
+    const [item] = buildActivity(db, { now: NOW }).subtitleQueue
+    expect(item).toMatchObject({ workId: 'tmdb:3', dueNow: true, retryAfter: null })
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 2026-08-13：「已排队 · 0 / 没有排队的作品」那句假话
+  // ══════════════════════════════════════════════════════════════════════════
+  // 生产实测：needs_subtitle=1 AND sub_status IS NULL 共 33 个文件，其中**到点可取 0**
+  // （全在退避窗，最早约 16h 后）。此前本端点复用 daemon 的取件谓词（含退避窗）→
+  // 返回 []，活动页说「没有排队的作品」。空态与"全都在退避里"共用了同一句话。
+  describe('退避窗中的作品仍在队列里（空态 ≠ 全都在等重试）', () => {
+    it('🔴 全部文件都在退避窗 → **照样出现**，dueNow=false 且给得出 retryAfter', () => {
+      addWork('tmdb:3', { title: 'Backing Off' })
+      const at = NOW + 16 * 3_600_000
+      addFile({ path: '/d/3.mkv', workId: 'tmdb:3', season: 1, episode: 1, recheckAfter: at })
+      const dto = buildActivity(db, { now: NOW })
+      expect(dto.subtitleQueue).toHaveLength(1)
+      expect(dto.subtitleQueue[0]).toMatchObject({
+        workId: 'tmdb:3', pendingFileCount: 1, dueNow: false, retryAfter: at,
+      })
+    })
+
+    it('🔴 retryAfter 是这一簇里**最早**的那个（用户要知道最早什么时候会动）', () => {
+      addWork('tmdb:3', { title: 'Backing Off' })
+      const soon = NOW + 2 * 3_600_000
+      const later = NOW + 20 * 3_600_000
+      addFile({ path: '/d/a.mkv', workId: 'tmdb:3', season: 1, episode: 1, recheckAfter: later })
+      addFile({ path: '/d/b.mkv', workId: 'tmdb:3', season: 1, episode: 2, recheckAfter: soon })
+      expect(buildActivity(db, { now: NOW }).subtitleQueue[0]).toMatchObject({
+        pendingFileCount: 2, dueNow: false, retryAfter: soon,
+      })
+    })
+
+    it('🔴 一簇里只要有一个到点 → dueNow=true、retryAfter=null（这一项现在真的会被跑）', () => {
+      addWork('tmdb:3', { title: 'Mixed' })
+      addFile({ path: '/d/a.mkv', workId: 'tmdb:3', season: 1, episode: 1, recheckAfter: NOW + 9_000_000 })
+      addFile({ path: '/d/b.mkv', workId: 'tmdb:3', season: 1, episode: 2, recheckAfter: null })
+      expect(buildActivity(db, { now: NOW }).subtitleQueue[0]).toMatchObject({
+        dueNow: true, retryAfter: null,
+      })
+    })
+
+    it('🔴 空态仍然是真的空态：库里没有满足归属谓词的行 → []（不许因放宽而无中生有）', () => {
+      addWork('tmdb:2', { title: 'Covered' })
+      addFile({ path: '/d/2.mkv', workId: 'tmdb:2', season: 1, episode: 1, subStatus: 'covered' })
+      expect(buildActivity(db, { now: NOW }).subtitleQueue).toEqual([])
+    })
+
+    it('🔴 daemon 的取件语义**一字未改**：同一批数据，默认模式下退避行仍然不可取', () => {
+      // 这条是本次放宽的**反向守卫**。若有人把 includeBackoff 默认成 true（或直接删掉
+      // 那一条 WHERE），daemon 会当轮重选退避中的文件 → C26 付费 LLM 热循环，
+      // 而本文件其余所有断言都还是绿的。故必须在这里正面钉住默认行为。
+      addWork('tmdb:3', { title: 'Backing Off' })
+      addFile({ path: '/d/3.mkv', workId: 'tmdb:3', season: 1, episode: 1, recheckAfter: NOW + 86_400_000 })
+      expect(listSubtitleQueue(db, undefined, NOW)).toEqual([])
+      expect(listSubtitleQueue(db, undefined, NOW, { includeBackoff: true })).toHaveLength(1)
+    })
   })
 
   it('识别失败的孤儿（work_id IS NULL）不进队列——它连作品身份都没有', () => {
@@ -227,7 +285,8 @@ describe('buildActivity：与 /api/v2/health「不返回 queue」那条裁决的
     expect(Object.keys(dto).sort()).toEqual(['subtitleQueue', 'translateQueue'])
     for (const item of [...dto.subtitleQueue, ...dto.translateQueue]) {
       expect(Object.keys(item).sort()).toEqual(
-        ['backdropPath', 'chineseTitle', 'mediaType', 'pendingFileCount', 'posterPath', 'title', 'workId', 'year'],
+        ['backdropPath', 'chineseTitle', 'dueNow', 'mediaType', 'pendingFileCount', 'posterPath',
+         'retryAfter', 'title', 'workId', 'year'],
       )
       // pendingFileCount 是"这个作品自己有几集在等"，与队列长度无关——名字里没有 total
       // 是刻意的，见 DTO 的字段注释。

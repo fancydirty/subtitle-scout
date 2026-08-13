@@ -466,6 +466,8 @@ export const en = {
   // "missing N" 而不是 "N missing"：卡片上这一行要能被扫视，名字在前、数字在后，
   // 与同卡片上面那三段（`subtitled 12 · on disk 30`）的语序一致。
   media_card_missing: 'missing',
+  // 🔴 2026-08-13: files that could not be placed into a season/episode grid.
+  media_card_unplaced: '{n} file(s) not in a season',
   media_empty_title: 'Nothing in the library yet',
   media_empty_desc: 'Once media roots are scanned, titles will appear here.',
   media_error_title: 'Could not load the media library',
@@ -511,6 +513,9 @@ export const en = {
    *  prefix/suffix 两个键。notifications 的用例里有一条钉着"两侧至少有一侧非空"。 */
   notif_episodes_suffix: '',
   notif_movie_found: 'subtitles found',
+  // 🔴 2026-08-13: the two meanings of `season === null`.
+  notif_found_generic: 'found subtitles for this file',
+  notif_season_unplaced: 'subtitles found (episode not placed into a season)',
   notif_via_fetch: 'fetched',
   notif_via_translate: 'translated',
   // 组内两种来路都有。**必须如实报**——一季里有抓来的也有机翻的时，谎报单一来源
@@ -553,6 +558,11 @@ export const en = {
   wb_media_tv: 'Series',
   wb_media_movie: 'Movie',
   wb_pending_files: 'pending',
+  // 🔴 Backoff window (2026-08-13). Fixes the "Queued · 0 / Nothing queued" lie:
+  // 33 files were waiting in production, all inside the backoff window, and none of
+  // them showed up. They show up now, each saying how long the wait is.
+  wb_queue_retry_in: 'retrying in {d}',
+  wb_queue_all_backoff: 'All of these are waiting to retry — the earliest in {d}',
   wb_loading: 'Loading…',
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',
@@ -597,4 +607,8 @@ export const en = {
   unidentified_note: "Can't recognise these folders — rename them to “title (year)” and they'll be picked up",
   /** 截断时的尾巴。`dirs` 只给前 8 个，总数一律读 dirCount（绝不用 dirs.length）。 */
   unidentified_more: 'and {n} more',
+  // 🔴-4: work recorded as failed that has not been retried since. States the fact only —
+  // never promises a retry (untrue), never claims it will never retry (pins today's impl).
+  stalled_jobs_note: '{n} task(s) recorded as failed',
+  stalled_jobs_age: 'not retried for {d}',
 } as const

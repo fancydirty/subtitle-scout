@@ -30,7 +30,9 @@
 // overview/originLang），把它们整个 JSON 出去等于把磁盘路径与剧情简介推给浏览器。
 // 故本文件在它们之上做一层**投影**：只留 workId/title/图/这轮几集，别的一律不出。
 import type { ScoutDb } from '../v2/db.js'
-import { listSubtitleQueue } from '../v2/subtitleScheduler.js'
+import {
+  listSubtitleQueue, queueItemDueNow, queueItemEarliestRetryAt,
+} from '../v2/subtitleScheduler.js'
 import { listNewTranslateCandidates } from '../v2/translateWorkerTask.js'
 
 /** 排队中的一个**作品**（R-F4：粒度是作品，不是集）。 */
@@ -53,6 +55,23 @@ export interface ActivityQueueItemDTO {
    *  🔴 **这不是 total、不是序号**——它是"这个作品自己有几集在等"，与队列长度无关。
    *  见文件头对 :578 那条裁决的论证。 */
   pendingFileCount: number
+  /** 这一项**现在就能取**吗。
+   *
+   *  🔴 这是 2026-08-13 那条假话的修复点。此前本端点复用的是 daemon 的**取件**谓词
+   *  （含退避窗），于是生产上「needs_subtitle=1 AND sub_status IS NULL」的 33 个文件
+   *  全在退避窗里时，本端点返回空数组，活动页说「已排队 · 0 / 没有排队的作品」——
+   *  而库里确实有 33 个在等。**空态与"全都在退避里"共用了同一句话。**
+   *
+   *  修法不是在这里重写一份 WHERE（那正是本文件头注释禁的），而是让
+   *  `listSubtitleQueue` 的第三条谓词可短路（`includeBackoff`，见那边的论证）：
+   *  归属谓词仍是同一份文本，只是本端点问的是「还有什么在等」而不是「现在该取哪件」。
+   *
+   *  false 时 `retryAfter` 必非 null；true 时 `retryAfter` 恒 null。 */
+  dueNow: boolean
+  /** `dueNow === false` 时：这一簇里**最早**的重试时刻（毫秒）。到点的项恒 null。
+   *  前端拿它说「最早 16 小时后重试」——一个退避中的队列若只报"在等"而不说"等到什么
+   *  时候"，用户无法区分"系统在等"与"系统卡住了"。 */
+  retryAfter: number | null
 }
 
 /** GET /api/v2/activity 的响应。两个工作台各一段。
@@ -145,7 +164,13 @@ export function buildActivity(
   // ── 字幕台 ──────────────────────────────────────────────────────────────
   // listSubtitleQueue 已按 work_id 聚合成"一个作品一项"（R-F4 的粒度天然一致），
   // 每项的 files.length 就是这轮这个作品有几集在等。
-  const subtitleItems = listSubtitleQueue(db, opts.roots, now)
+  //
+  // 🔴 `includeBackoff: true`——本端点问的是「**还有什么在等**」，不是「现在该取哪件」。
+  // 生产实测（2026-08-13）：33 个文件满足归属谓词，其中到点可取 **0**（全在退避窗，
+  // 最早约 16h 后）。默认模式下本端点返回空数组 → 界面说「已排队 0 / 没有排队的作品」，
+  // 而那是一句假话。谓词没有第二份，`includeBackoff` 只短路第三条，见 subtitleScheduler
+  // 里 SUBTITLE_QUEUE_WHERE 的论证。
+  const subtitleItems = listSubtitleQueue(db, opts.roots, now, { includeBackoff: true })
 
   // ── 翻译台 ──────────────────────────────────────────────────────────────
   // listNewTranslateCandidates 是**逐文件**的（翻译是每集一个 LLM session），
@@ -164,7 +189,10 @@ export function buildActivity(
    *  为什么不 filter 掉：files.work_id 有值却 works 里查不到，说明库处在一个不该有的状态；
    *  把这一项静默丢掉会让用户看到的队列比 daemon 实际要跑的短，而"少了一部"这件事
    *  在界面上无从察觉。宁可画一张无图卡片。 */
-  const project = (workId: string, fallbackTitle: string, pendingFileCount: number): ActivityQueueItemDTO => {
+  const project = (
+    workId: string, fallbackTitle: string, pendingFileCount: number,
+    due: { dueNow: boolean; retryAfter: number | null },
+  ): ActivityQueueItemDTO => {
     const f = faces.get(workId)
     return {
       workId,
@@ -175,13 +203,25 @@ export function buildActivity(
       posterPath: f?.posterPath ?? null,
       backdropPath: f?.backdropPath ?? null,
       pendingFileCount,
+      dueNow: due.dueNow,
+      retryAfter: due.retryAfter,
     }
   }
 
   return {
-    subtitleQueue: subtitleItems.map((i) => project(i.workId, i.title, i.files.length)),
+    subtitleQueue: subtitleItems.map((i) =>
+      project(i.workId, i.title, i.files.length, {
+        dueNow: queueItemDueNow(i, now),
+        retryAfter: queueItemEarliestRetryAt(i, now),
+      }),
+    ),
+    // 🔴 翻译台恒 `dueNow: true`，这**不是**偷懒的常量：`listNewTranslateCandidates`
+    // 的谓词里 `tr_recheck_after` 那一条**没有**被短路（它没有 includeBackoff 形参），
+    // 所以它返回的每一行按定义都已到点。给一个不成立的 false 才是假话。
+    // ⚠️ 代价如实记：翻译台因此仍有与字幕台同型的空态歧义（全在退避窗时说"0 个在等"）。
+    // 未修，见报告"发现但没修"——修它要动 translateWorkerTask 的取件谓词，那是另一条链。
     translateQueue: [...translateByWork.entries()].map(([workId, n]) =>
-      project(workId, workId, n),
+      project(workId, workId, n, { dueNow: true, retryAfter: null }),
     ),
   }
 }

@@ -462,7 +462,22 @@ export interface HealthDTO {
   /** 「有几个目录我认不出来」。R-F2 的「孤儿不露出」作用域是**媒体库海报墙**（不给卡片），
    *  不是"数量不许被知道"；R-F1 的「不给用户改」禁的是编辑。故这里只读、无任何动作入口。 */
   unidentified: UnidentifiedHealthDTO
+  /** 「有几件活记着失败了，而且再也没人去重试」（🔴-4）。
+   *  `count === 0` → 这段整段不渲染（沉默即好消息）。 */
+  stalledJobs: StalledJobsDTO
   current: ScoutCurrentDTO | null
+}
+
+/** `/api/v2/health` 的 `stalledJobs` 段——手抄自 src/dashboard/stalledJobsHealth.ts。
+ *
+ *  🔴 判据是**行为**（jobs 里"该被 claimNext 领走却一直没动"的行），不是"队列退役了"
+ *  这个断言。生产实测：2 行 failed、过期 66 小时、无认领者，此前界面上一个字都没有。
+ *  队列被接回 claim 之后这些行会被真的领走 → count 自动归零 → 这一段自己消失。 */
+export interface StalledJobsDTO {
+  count: number
+  /** 最久那件过期了多久（毫秒）。`count === 0` 时为 null——
+   *  **不是 0**：「没有这回事」与「过期 0 毫秒」是两件事。 */
+  overdueMs: number | null
 }
 
 // ── Task ⑧：媒体库页两个端点（GET /api/v2/mediaLibrary、/:workId）─────────────
@@ -528,6 +543,13 @@ export interface MediaLibraryItemDTO {
   missingEpisodeCount: number
   /** 已获取中文字幕的格数（R-F2「任一份有就算」口径；绿点 + 蓝点都计入）。 */
   subtitledEpisodeCount: number
+  /** 属于这部作品、但季集解析不出因而**进不了季集网格**的文件数（特典居多）。电影恒 0。
+   *
+   *  🔴 2026-08-13：与详情页的同名字段**同一个数**。此前这些文件被后端塞进一个假格、
+   *  算进 `onDiskEpisodeCount`，于是同一部剧列表说「磁盘 78 / 缺 7」、详情说
+   *  「磁盘 77 / 缺 8」。现在它们不进集数，只在这里如实计数——
+   *  **必须显示**：不显示的话用户看不出"有文件没进网格"，会以为系统把文件弄丢了。 */
+  unplacedFileCount: number
 }
 
 /** 详情页一格（一集）。 */
@@ -610,6 +632,13 @@ export interface FoundGroupDTO {
   /** 组内最近一次找到的时刻——**组间倒序的锚点**。 */
   latestAt: number
   via: FoundVia
+  /** 作品类型三态（后端 LEFT JOIN works 现取）。
+   *
+   *  🔴 渲染层判"这是不是电影"**只许读这个**，不许用 `season === null`——那个判据在
+   *  notifications 表里是二义的（真电影 / 剧集但季没解析出来），生产上正把剧集渲染成
+   *  「已找到字幕」的电影行。'unknown' = works 行已删，我们**确实不知道**，
+   *  渲染层必须走一条不声称任何一边的话（绝不 `?? 'movie'`）。 */
+  mediaType: 'tv' | 'movie' | 'unknown'
 }
 
 // ── Task ⑨ 活动页（#/activity）：GET /api/v2/activity ────────────────────────
@@ -643,6 +672,19 @@ export interface ActivityQueueItemDTO {
   /** 这个作品自己有几个文件在等（「2018 · 动画 · 13 集待处理」那个 13）。
    *  🔴 **不是 total、不是序号**，与队列长度无关。 */
   pendingFileCount: number
+  /** 这一项**现在就能取**吗（false = 全部或部分文件还在退避窗里）。
+   *
+   *  🔴 2026-08-13 修复的那句假话：此前本端点复用 daemon 的取件谓词（含退避窗），
+   *  生产上 33 个在等的文件恰好全在退避窗 → 端点返回 `[]` → 活动页说
+   *  「已排队 · 0 / 没有排队的作品」。**空态与"全都在退避里"共用了同一句话。**
+   *  现在退避中的项照样返回，只是 `dueNow: false`。
+   *
+   *  ⚠️ 翻译台恒 true（它的取件谓词没有短路形参，返回的行按定义都已到点）。 */
+  dueNow: boolean
+  /** `dueNow === false` 时这一簇里**最早**的重试时刻（毫秒）；到点的项恒 null。
+   *  前端拿它说「最早 16 小时后重试」——只说"在等"不说"等到什么时候"，
+   *  用户分不出"系统在等"与"系统卡住了"。 */
+  retryAfter: number | null
 }
 
 export interface ActivityDTO {

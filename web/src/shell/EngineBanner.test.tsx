@@ -34,7 +34,7 @@ function health(engineEnabled: boolean, setupSatisfied: boolean): HealthDTO {
     engineEnabled,
     setupSatisfied,
     roots: [],
-    unidentified: { dirCount: 0, dirs: [] },
+    unidentified: { dirCount: 0, dirs: [] }, stalledJobs: { count: 0, overdueMs: null },
     current: null,
   }
 }

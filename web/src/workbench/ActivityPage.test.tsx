@@ -16,7 +16,7 @@
 // ⚠️ 每条断言都配了**阳性对照**（"改坏之前它确实是另一个样子"）：
 // 只断言"识别的卡片不在场"的话，一个恒渲染空白的页面也会全绿。
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { render, screen, cleanup, act, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, act, waitFor, fireEvent, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { EventsProvider } from '../events/EventsProvider.js'
 import { __resetEventsBusForTests } from '../events/eventsBus.js'
@@ -54,16 +54,19 @@ const ev = (over: Partial<ScoutEvent> & Pick<ScoutEvent, 'type'>): ScoutEvent =>
 const HEALTH_IDLE = {
   lastInspectAt: Date.now() - 3_600_000,
   workPermitted: true, engineEnabled: true, setupSatisfied: true,
-  roots: [], unidentified: { dirCount: 0, dirs: [] }, current: null,
+  roots: [], unidentified: { dirCount: 0, dirs: [] },
+  stalledJobs: { count: 0, overdueMs: null as number | null }, current: null,
 }
 
 const QUEUE_ITEM = {
   workId: 'tmdb:1', title: 'Queued Show', chineseTitle: null, year: 2018,
   mediaType: 'tv' as const, posterPath: '/p.jpg', backdropPath: '/bd.jpg', pendingFileCount: 13,
+  dueNow: true, retryAfter: null as number | null,
 }
 const TRANSLATE_ITEM = {
   workId: 'tmdb:9', title: 'Trans Show', chineseTitle: null, year: 2020,
   mediaType: 'tv' as const, posterPath: '/p9.jpg', backdropPath: '/bd9.jpg', pendingFileCount: 4,
+  dueNow: true, retryAfter: null as number | null,
 }
 
 /** 每个 URL 的请求次数——重连纠正那条的**判据本体**（不是 DOM 文案）。 */
@@ -112,6 +115,56 @@ async function ready() {
   await waitFor(() => expect(countOf('/api/v2/activity')).toBeGreaterThan(0))
   await screen.findByText('Queued Show')
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴-4：记着失败、却再也没被重试的活
+// ═══════════════════════════════════════════════════════════════════════════
+// 生产实测：2 行 failed、过期 66 小时、jobs 队列已无认领者，而三页产品没有任何地方
+// 读 jobs——这两条在界面上**完全不存在**。
+describe('🔴-4 停摆的活在状态条上说得出来', () => {
+  it('🔴 count>0 → 状态条多一行，说出条数与"多久没再重试"', async () => {
+    healthBody = { ...HEALTH_IDLE, stalledJobs: { count: 2, overdueMs: 66 * 3_600_000 } }
+    renderPage()
+    await ready()
+    const line = await screen.findByTestId('wb-stalled-jobs-line')
+    expect(line.textContent).toContain('2')
+    expect(within(line).getByTestId('wb-stalled-jobs-age').textContent).toContain('2d')
+  })
+
+  it('🔴 count=0 → **整段不在场**（健康的队列一个字都不占屏）', async () => {
+    renderPage()
+    await ready()
+    expect(screen.queryByTestId('wb-stalled-jobs-line')).toBeNull()
+  })
+
+  it('🔴 字段缺席（老后端）→ 整段不在场，**不报一句"都好着呢"**', async () => {
+    const { stalledJobs: _drop, ...legacy } = HEALTH_IDLE
+    healthBody = legacy
+    renderPage()
+    await ready()
+    expect(screen.queryByTestId('wb-stalled-jobs-line')).toBeNull()
+    // 阳性对照：状态条本身还在（不是整页崩了才"看不到"）
+    expect(screen.getByTestId('wb-inspect-line')).toBeInTheDocument()
+  })
+
+  it('🔴 overdueMs 缺席 → 只说条数，**不编一个时长**', async () => {
+    healthBody = { ...HEALTH_IDLE, stalledJobs: { count: 1, overdueMs: null } }
+    renderPage()
+    await ready()
+    const line = await screen.findByTestId('wb-stalled-jobs-line')
+    expect(line.textContent).toContain('1')
+    expect(within(line).queryByTestId('wb-stalled-jobs-age')).toBeNull()
+  })
+
+  it('🔴 **不给按钮**（唯一可能的那个写出来的行同样没人领 → 打不通的按钮）', async () => {
+    healthBody = { ...HEALTH_IDLE, stalledJobs: { count: 2, overdueMs: 66 * 3_600_000 } }
+    renderPage()
+    await ready()
+    const line = await screen.findByTestId('wb-stalled-jobs-line')
+    expect(within(line).queryByRole('button')).toBeNull()
+    expect(within(line).queryByRole('link')).toBeNull()
+  })
+})
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔴 R-F1：识别不进活动页
@@ -611,6 +664,86 @@ describe('数据获取：刷新触发点与异常态', () => {
     renderPage()
     await waitFor(() => expect(screen.getByTestId('wb-queue-empty')).toBeInTheDocument())
     expect(screen.queryByText(en.wb_error_title)).toBeNull()
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 2026-08-13：退避窗中的队列不许被说成"没有排队的作品"
+  // ══════════════════════════════════════════════════════════════════════════
+  // 生产实测：33 个文件在等、到点可取 0。后端此前整个滤掉它们 → 这一页说
+  // 「已排队 · 0 / 没有排队的作品」。现在它们照常出现，只是各自说清楚还要等多久。
+  describe('🔴 退避窗：空态与「都在等重试」是两句不同的话', () => {
+    const HOUR = 3_600_000
+    /** 16 小时 **多一点**。relAgo 向下取整，而页面的时钟基准在 fixture 之后才取——
+     *  正好 16h 会因为渲染耗掉的那几毫秒被算成 "15h"（实测踩到）。多给 1 分钟余量，
+     *  断言的仍是"这一行说出了正确的量级"，不是毫秒级精度。 */
+    const IN_16H = () => Date.now() + 16 * HOUR + 60_000
+
+    it('全体退避 → 卡片在场、计数非 0、且**多一句**"最早 16h 后"', async () => {
+      activityBody = {
+        subtitleQueue: [{ ...QUEUE_ITEM, dueNow: false, retryAfter: IN_16H() }],
+        translateQueue: [],
+      }
+      renderPage()
+      await ready()
+      // ① 空态那句话**不在场**——这是修复前后的分水岭
+      expect(screen.queryByTestId('wb-queue-empty')).toBeNull()
+      // ② 计数说的是真话
+      expect(screen.getByText(/Queued · 1/)).toBeInTheDocument()
+      // ③ "都在等重试"那一行在场，且给得出时刻
+      const line = screen.getByTestId('wb-queue-all-backoff')
+      expect(line.textContent).toContain('16h')
+    })
+
+    it('🔴 卡片副行自己也说得出"16h 后重试"（整行不在场时用户仍看不出这一项在等）', async () => {
+      activityBody = {
+        subtitleQueue: [{ ...QUEUE_ITEM, dueNow: false, retryAfter: IN_16H() }],
+        translateQueue: [],
+      }
+      renderPage()
+      await ready()
+      const text = screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? ''
+      expect(text).toContain('16h')
+      // 阳性对照：到点的项**不许**挂这一段（否则它是恒真的装饰，不是判据）
+      cleanup()
+      activityBody = { subtitleQueue: [QUEUE_ITEM], translateQueue: [] }
+      renderPage()
+      await ready()
+      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? '').not.toContain('16h')
+    })
+
+    it('🔴 有一项到点 → **不说**"都在等重试"（正常推进的队列不许被说成停滞）', async () => {
+      activityBody = {
+        subtitleQueue: [
+          { ...QUEUE_ITEM, dueNow: false, retryAfter: IN_16H() },
+          { ...QUEUE_ITEM, workId: 'tmdb:2', title: 'Due Show' },
+        ],
+        translateQueue: [],
+      }
+      renderPage()
+      await ready()
+      expect(screen.queryByTestId('wb-queue-all-backoff')).toBeNull()
+      // 但那一项自己那句"16h 后重试"仍在（逐项的事实不因整体判决而消失）
+      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? '').toContain('16h')
+    })
+
+    it('🔴 队列真空 → 仍然是空态文案，且**不许**冒出那一行', async () => {
+      activityBody = { subtitleQueue: [], translateQueue: [] }
+      renderPage()
+      await waitFor(() => expect(screen.getByTestId('wb-queue-empty')).toBeInTheDocument())
+      expect(screen.queryByTestId('wb-queue-all-backoff')).toBeNull()
+    })
+
+    it('🔴 全体退避但一个时刻都没给（老后端 / retryAfter 缺席）→ 整行不出现，不编时刻', async () => {
+      activityBody = {
+        subtitleQueue: [{ ...QUEUE_ITEM, dueNow: false, retryAfter: null }],
+        translateQueue: [],
+      }
+      renderPage()
+      await ready()
+      expect(screen.queryByTestId('wb-queue-all-backoff')).toBeNull()
+      // 卡片仍然在场——"说不出等多久"不等于"不该显示它"
+      expect(screen.getAllByTestId('wb-queue-card')).toHaveLength(1)
+    })
   })
 
   it('🔴 **不轮询**：60 秒过去两个端点都只有首载那一次', async () => {

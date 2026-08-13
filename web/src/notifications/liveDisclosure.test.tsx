@@ -55,7 +55,7 @@ class FakeES {
 const NOW = Date.now()
 const ROWS: FoundGroupDTO[] = [
   { workId: 'tmdb:1396', title: 'Breaking Bad', season: 1, episodes: [3],
-    latestAt: NOW - 3600_000, via: 'fetch' },
+    latestAt: NOW - 3600_000, via: 'fetch', mediaType: 'tv' },
 ]
 
 /** 503 探测的响应——eventsBus 在 onerror 后会打一次 /api/v2/events 判是不是终态。 */

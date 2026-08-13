@@ -430,6 +430,21 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(body.roots[0].ok).toBe(true)      // 守备目录健康度照常可见
   })
 
+  it('🔴 stalledJobs 真的接上了（端点级：造一行过期的 failed，读数必须变）', async () => {
+    // 接线探针。DTO 声明了、聚合函数写了、**端点没接**是本仓病 A 的经典形态
+    // （unidentifiedHealth 那条注释数过 7 例）。故这里不看聚合函数，只看 HTTP 响应体。
+    const { base } = await start()
+    // 阳性对照在前：干净库下必须是 0，否则下面那条断言可能只是在读一个恒非 0 的东西。
+    expect((await getHealth(base)).body.stalledJobs).toEqual({ count: 0, overdueMs: null })
+    db.prepare(
+      `INSERT INTO jobs (kind, series_id, payload, state, next_retry_at, created_at, updated_at)
+       VALUES ('worker_task','tmdb:1','{"taskType":"find_subtitle"}','failed',?,?,?)`,
+    ).run(Date.now() - 66 * 3_600_000, Date.now(), Date.now())
+    const { body } = await getHealth(base)
+    expect(body.stalledJobs.count).toBe(1)
+    expect(body.stalledJobs.overdueMs).toBeGreaterThan(60 * 3_600_000)
+  })
+
   it('🔴 **刻意不返回 queue**（§3.5:578/:568 裁决；§3.6 说要返回是文档自相矛盾）', async () => {
     // 这条是那个裁决唯一的可执行痕迹：下一个人读 §3.6 会以为端点残缺、照它把
     // listSubtitleQueue 接上去，正好踩中 :568 明令禁止的那条（语义与 R4 冻结快照相反，
@@ -437,7 +452,8 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     const { base } = await start({ events: new ScoutEventBus() })
     const { body } = await getHealth(base)
     expect(Object.keys(body).sort()).toEqual(
-      ['current', 'engineEnabled', 'lastInspectAt', 'roots', 'setupSatisfied', 'unidentified', 'workPermitted'],
+      ['current', 'engineEnabled', 'lastInspectAt', 'roots', 'setupSatisfied', 'stalledJobs',
+       'unidentified', 'workPermitted'],
     )
     expect('queue' in body).toBe(false)
   })

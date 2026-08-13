@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from './db.js'
 import {
   runSubtitleWorkDir, buildSubtitleTask, listSubtitleQueue, subtitleJobId,
-  RETRY_LATER_STREAK_CAP, type SubtitleQueueItem,
+  RETRY_LATER_STREAK_CAP, queueItemDueNow, queueItemEarliestRetryAt, type SubtitleQueueItem,
 } from './subtitleScheduler.js'
 import { traceBus } from '../core/traceBus.js'
 
@@ -16,8 +16,8 @@ function mkItem(): SubtitleQueueItem {
     chineseTitles: [],
     mediaType: 'tv',
     files: [
-      { path: '/media/TV/Overflow/Overflow - 01.mkv', filename: 'Overflow - 01.mkv', season: 1, episode: 1, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null },
-      { path: '/media/TV/Overflow/Overflow - 02.mkv', filename: 'Overflow - 02.mkv', season: 1, episode: 2, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null },
+      { path: '/media/TV/Overflow/Overflow - 01.mkv', filename: 'Overflow - 01.mkv', season: 1, episode: 1, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null, recheckAfter: null },
+      { path: '/media/TV/Overflow/Overflow - 02.mkv', filename: 'Overflow - 02.mkv', season: 1, episode: 2, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null, recheckAfter: null },
     ],
   }
 }
@@ -618,6 +618,84 @@ describe('listSubtitleQueue（recheck_after 消费，死循环修复）', () => 
     }
   })
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 includeBackoff（2026-08-13）：一个谓词、两个问题
+  // ══════════════════════════════════════════════════════════════════════════
+  // daemon 问"现在该取哪件"（退避该滤）；界面问"还有什么在等"（退避不该滤）。
+  // 谓词文本仍只有 SUBTITLE_QUEUE_WHERE 一份，第三条可短路。
+  describe('includeBackoff', () => {
+    it('🔴 默认（daemon 语义）**一字未改**：退避中的行不可取', () => {
+      // 反向守卫。默认值若被改成 true，daemon 会当轮重选退避文件 → C26 付费热循环，
+      // 而下面那条放宽的断言照样是绿的——两条必须并列。
+      const paths = listSubtitleQueue(db, ['/media/TV'], Date.now())
+        .flatMap((q) => q.files.map((f) => f.filename))
+      expect(paths).not.toContain('E02.mkv')
+    })
+
+    it('🔴 includeBackoff:true → 退避中的行也返回，且带得出 recheckAfter', () => {
+      const files = listSubtitleQueue(db, ['/media/TV'], Date.now(), { includeBackoff: true })
+        .flatMap((q) => q.files)
+      const e02 = files.find((f) => f.filename === 'E02.mkv')
+      expect(e02).toBeDefined()
+      expect(e02!.recheckAfter).toBeGreaterThan(Date.now())
+      // 阳性对照：到点的那些也还在（放宽不是"只返回退避的"）。
+      expect(files.map((f) => f.filename)).toContain('E01.mkv')
+    })
+
+    it('🔴 放宽的只有第三条：归属谓词（covered / 停牌两态 / needs_subtitle）照样滤', () => {
+      // 这条是"没造第二套 WHERE"的证据：若有人在界面侧另写一份两条的 WHERE，
+      // 他多半会漏掉停牌两态——那时这条会红。
+      const p = '/media/TV/ShowA/E01.mkv'
+      for (const st of ['covered', 'unsolvable', 'handoff_translate']) {
+        db.prepare('UPDATE files SET sub_status = ? WHERE path = ?').run(st, p)
+        const paths = listSubtitleQueue(db, ['/media/TV'], Date.now(), { includeBackoff: true })
+          .flatMap((q) => q.files.map((f) => f.path))
+        expect(paths).not.toContain(p)
+      }
+      db.prepare('UPDATE files SET needs_subtitle = 0, sub_status = NULL WHERE path = ?').run(p)
+      expect(
+        listSubtitleQueue(db, ['/media/TV'], Date.now(), { includeBackoff: true })
+          .flatMap((q) => q.files.map((f) => f.path)),
+      ).not.toContain(p)
+    })
+
+    it('🔴 recheckAfter 逐文件如实带出（不是整簇一个值）', () => {
+      const files = listSubtitleQueue(db, ['/media/TV'], Date.now(), { includeBackoff: true })
+        .flatMap((q) => q.files)
+      expect(files.find((f) => f.filename === 'E01.mkv')!.recheckAfter).toBeNull()
+      expect(files.find((f) => f.filename === 'E02.mkv')!.recheckAfter).not.toBeNull()
+    })
+  })
+
+  describe('queueItemDueNow / queueItemEarliestRetryAt', () => {
+    const mk = (recheck: (number | null)[]): SubtitleQueueItem => ({
+      workId: 'tmdb:1', title: 'x', originalTitle: null, year: null, overview: null,
+      chineseTitles: [], mediaType: 'tv',
+      files: recheck.map((r, i) => ({
+        path: `/p/${i}.mkv`, filename: `${i}.mkv`, season: 1, episode: i, dir: '/p',
+        durationSec: null, embeddedLangs: null, recheckAfter: r,
+      })),
+    })
+    const T = 1_000_000
+
+    it('全部退避 → dueNow=false，retryAfter 取最早那个', () => {
+      const it0 = mk([T + 500, T + 100, T + 900])
+      expect(queueItemDueNow(it0, T)).toBe(false)
+      expect(queueItemEarliestRetryAt(it0, T)).toBe(T + 100)
+    })
+
+    it('🔴 任一文件到点 → dueNow=true（daemon 逐文件取件，这一簇现在真的会动）', () => {
+      const it0 = mk([T + 500, null])
+      expect(queueItemDueNow(it0, T)).toBe(true)
+      // 且此时**不许**再报一个重试时刻——那会渲染出"现在就跑 · 8m 后重试"的自相矛盾。
+      expect(queueItemEarliestRetryAt(it0, T)).toBeNull()
+    })
+
+    it('边界：recheck_after === now 算到点', () => {
+      expect(queueItemDueNow(mk([T]), T)).toBe(true)
+    })
+  })
+
   it('🔴 unavailable 第五态已绝迹，但万一有残留行也不许被永久埋掉（C44 兜底）', () => {
     // v33 迁移 + 拆写入点之后库里不该再有这个值。但"不该有"不等于"没有"——
     // 迁移与写入点删除之间上线过的版本、或用户从旧备份恢复的库都可能带着它。
@@ -648,7 +726,7 @@ function mkMovieItem(): SubtitleQueueItem {
     files: [{
       path: '/media/Movies/The Matrix (1999)/The Matrix.mkv', filename: 'The Matrix.mkv',
       season: null, episode: null, dir: '/media/Movies/The Matrix (1999)',
-      durationSec: 8160, embeddedLangs: null,
+      durationSec: 8160, embeddedLangs: null, recheckAfter: null,
     }],
   }
 }

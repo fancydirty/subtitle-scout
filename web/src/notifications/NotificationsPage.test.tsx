@@ -49,6 +49,7 @@ import { I18nProvider } from '../i18n/useT.js'
 import { EventsProvider } from '../events/EventsProvider.js'
 import { __resetEventsBusForTests } from '../events/eventsBus.js'
 import { NotificationsPage } from './NotificationsPage.js'
+import { notifShape } from './NotificationRow.js'
 import { en } from '../i18n/en.js'
 import { zh } from '../i18n/zh.js'
 import type { FoundGroupDTO } from '../api/types.js'
@@ -270,9 +271,9 @@ describe('三态（加载 / 错误 / 空）', () => {
 describe('R-F3 倒序流水：DOM 顺序 = 时间倒序', () => {
   /** 故意乱序喂（端点若因任何原因没排好，前端也不许把它铺成乱的）。 */
   const rows: FoundGroupDTO[] = [
-    { workId: 'w-old', title: 'Oldest', season: 1, episodes: [1], latestAt: NOW - 3 * DAY, via: 'fetch' },
-    { workId: 'w-new', title: 'Newest', season: 1, episodes: [1], latestAt: NOW - 60_000, via: 'fetch' },
-    { workId: 'w-mid', title: 'Middle', season: 1, episodes: [1], latestAt: NOW - 1 * DAY, via: 'fetch' },
+    { workId: 'w-old', title: 'Oldest', season: 1, episodes: [1], latestAt: NOW - 3 * DAY, via: 'fetch', mediaType: 'tv' },
+    { workId: 'w-new', title: 'Newest', season: 1, episodes: [1], latestAt: NOW - 60_000, via: 'fetch', mediaType: 'tv' },
+    { workId: 'w-mid', title: 'Middle', season: 1, episodes: [1], latestAt: NOW - 1 * DAY, via: 'fetch', mediaType: 'tv' },
   ]
 
   it('DOM 里三行的顺序是 Newest → Middle → Oldest', async () => {
@@ -296,8 +297,8 @@ describe('R-F3 倒序流水：DOM 顺序 = 时间倒序', () => {
 
   it('同一天的多条也倒序（桶内顺序）', async () => {
     const sameDay: FoundGroupDTO[] = [
-      { workId: 'a', title: 'A older', season: 1, episodes: [1], latestAt: NOW - 5 * 3600_000, via: 'fetch' },
-      { workId: 'b', title: 'B newer', season: 1, episodes: [1], latestAt: NOW - 60_000, via: 'fetch' },
+      { workId: 'a', title: 'A older', season: 1, episodes: [1], latestAt: NOW - 5 * 3600_000, via: 'fetch', mediaType: 'tv' },
+      { workId: 'b', title: 'B newer', season: 1, episodes: [1], latestAt: NOW - 60_000, via: 'fetch', mediaType: 'tv' },
     ]
     vi.stubGlobal('fetch', mock(sameDay))
     renderPage()
@@ -312,8 +313,8 @@ describe('R-F3 保留一周：窗口是**后端**的，前端如实照搬', () =
     // 混入一条 400 天前的：后端读窗不该给，但若给了，前端偷偷吞掉的话
     // 「后端读窗坏了」这件事就永远没人看得见。
     const withAncient: FoundGroupDTO[] = [
-      { workId: 'fresh', title: 'Fresh', season: 1, episodes: [1], latestAt: NOW - 3600_000, via: 'fetch' },
-      { workId: 'ancient', title: 'Ancient', season: 1, episodes: [1], latestAt: NOW - 400 * DAY, via: 'fetch' },
+      { workId: 'fresh', title: 'Fresh', season: 1, episodes: [1], latestAt: NOW - 3600_000, via: 'fetch', mediaType: 'tv' },
+      { workId: 'ancient', title: 'Ancient', season: 1, episodes: [1], latestAt: NOW - 400 * DAY, via: 'fetch', mediaType: 'tv' },
     ]
     vi.stubGlobal('fetch', mock(withAncient))
     renderPage()
@@ -324,8 +325,8 @@ describe('R-F3 保留一周：窗口是**后端**的，前端如实照搬', () =
 
   it('顶部计数与端点组数一致（不是集数、不是事件数）', async () => {
     const rows: FoundGroupDTO[] = [
-      { workId: 'a', title: 'A', season: 1, episodes: [1, 2, 3, 4, 5], latestAt: NOW - 1000, via: 'fetch' },
-      { workId: 'b', title: 'B', season: null, episodes: [], latestAt: NOW - 2000, via: 'translate' },
+      { workId: 'a', title: 'A', season: 1, episodes: [1, 2, 3, 4, 5], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
+      { workId: 'b', title: 'B', season: null, episodes: [], latestAt: NOW - 2000, via: 'translate', mediaType: 'movie' },
     ]
     vi.stubGlobal('fetch', mock(rows))
     renderPage()
@@ -335,7 +336,7 @@ describe('R-F3 保留一周：窗口是**后端**的，前端如实照搬', () =
   })
 
   it('「过去一周」这句话在页面上是明说的（用户得知道这里只有一周）', async () => {
-    vi.stubGlobal('fetch', mock([{ workId: 'a', title: 'A', season: 1, episodes: [1], latestAt: NOW, via: 'fetch' }]))
+    vi.stubGlobal('fetch', mock([{ workId: 'a', title: 'A', season: 1, episodes: [1], latestAt: NOW, via: 'fetch', mediaType: 'tv' }]))
     renderPage()
     await screen.findByText('A')
     expect(screen.getByText(new RegExp(en.notif_window_note))).toBeInTheDocument()
@@ -346,7 +347,7 @@ describe('R-F3 保留一周：窗口是**后端**的，前端如实照搬', () =
 
 describe('🔴 R-F3 不做已读状态：六个具体形态', () => {
   const rows: FoundGroupDTO[] = [
-    { workId: 'tmdb:1', title: 'Show One', season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch' },
+    { workId: 'tmdb:1', title: 'Show One', season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
   ]
 
   /** 🔴 **每条用例一个独一无二的 workId**。
@@ -360,8 +361,8 @@ describe('🔴 R-F3 不做已读状态：六个具体形态', () => {
    * 🔴 **两行不是一行**（第二次自攻的教训）：已读态可以完全不碰任何一行的属性，
    * 只把"读过的沉底"——单行列表里排序是恒等变换，那种写法会整条逃检。 */
   const soloRows = (tag: string, title: string): FoundGroupDTO[] => [
-    { workId: `${tag}-1`, title: `${title} A`, season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch' },
-    { workId: `${tag}-2`, title: `${title} B`, season: 1, episodes: [2], latestAt: NOW - 2000, via: 'translate' },
+    { workId: `${tag}-1`, title: `${title} A`, season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
+    { workId: `${tag}-2`, title: `${title} B`, season: 1, episodes: [2], latestAt: NOW - 2000, via: 'translate', mediaType: 'tv' },
   ]
 
   it('① 全页**没有任何写方法**的请求（GET only，端点本身也是 GET only）', async () => {
@@ -559,10 +560,74 @@ describe('🔴 R-F3 不做已读状态：六个具体形态', () => {
   })
 })
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔴 2026-08-13：`season === null` 有**两个含义**，不许共用一句话
+// ══════════════════════════════════════════════════════════════════════════════
+// 生产症状：通知页把剧集渲染成「已找到字幕」的电影行（112 个 season=NULL 的文件里
+// 79 个属于 TV 作品）。判据已改成后端的 mediaType 三态。
+describe('🔴 mediaType 三态：剧集不许被渲染成电影', () => {
+  it('🔴 mediaType=tv + season=null（季没解析出来）→ **不说「已找到字幕」**（那是电影语）', async () => {
+    vi.stubGlobal('fetch', mock([
+      { workId: 'tmdb:1', title: 'Unplaced Show', season: null, episodes: [], latestAt: NOW, via: 'fetch', mediaType: 'tv' as const },
+    ]))
+    renderPage()
+    const row = await screen.findByRole('link', { name: 'Unplaced Show' })
+    // ① 修复前它走的就是这一支——这条断言是那句假话的直接判据
+    expect(row.getAttribute('data-shape')).toBe('tv-unplaced')
+    expect(within(row).queryByText(en.notif_movie_found)).toBeNull()
+    // ② 说的是真话：找到了字幕，但这一集没能归入季集
+    expect(within(row).getByTestId('notif-unplaced')).toBeInTheDocument()
+    // ③ 仍然不许出现 "S null"
+    expect(row.textContent ?? '').not.toContain('null')
+  })
+
+  it('🔴 阳性对照：mediaType=movie + season=null → 照旧说「已找到字幕」（一字未改）', async () => {
+    vi.stubGlobal('fetch', mock([
+      { workId: 'tmdb:550', title: 'Real Movie', season: null, episodes: [], latestAt: NOW, via: 'fetch', mediaType: 'movie' as const },
+    ]))
+    renderPage()
+    const row = await screen.findByRole('link', { name: 'Real Movie' })
+    expect(row.getAttribute('data-shape')).toBe('movie')
+    expect(within(row).getByText(en.notif_movie_found)).toBeInTheDocument()
+    expect(within(row).queryByTestId('notif-unplaced')).toBeNull()
+  })
+
+  it('🔴 mediaType=unknown（works 行已删）→ 不声称任何一边，也**不消失**', async () => {
+    vi.stubGlobal('fetch', mock([
+      { workId: 'tmdb:gone', title: 'Orphan', season: null, episodes: [], latestAt: NOW, via: 'fetch', mediaType: 'unknown' as const },
+    ]))
+    renderPage()
+    const row = await screen.findByRole('link', { name: 'Orphan' })
+    expect(row.getAttribute('data-shape')).toBe('unknown')
+    expect(within(row).getByTestId('notif-unknown')).toBeInTheDocument()
+    expect(within(row).queryByTestId('notif-unplaced')).toBeNull()
+    expect(row.textContent ?? '').not.toContain('null')
+  })
+
+  it('🔴 mediaType 缺席（老后端）→ unknown，**不回落到 season 判据**', async () => {
+    // 回落等于让这个 bug 在混版部署下静默续命。'unknown' 那句话在任何情况下都是真的。
+    vi.stubGlobal('fetch', mock([
+      { workId: 'tmdb:1', title: 'Legacy', season: null, episodes: [], latestAt: NOW, via: 'fetch' } as unknown as FoundGroupDTO,
+    ]))
+    renderPage()
+    const row = await screen.findByRole('link', { name: 'Legacy' })
+    expect(row.getAttribute('data-shape')).toBe('unknown')
+    expect(within(row).queryByText(en.notif_movie_found)).toBeNull()
+  })
+
+  it('notifShape 判据表（四支各一条，含 tv+有季那一支）', () => {
+    expect(notifShape({ season: null, mediaType: 'movie' })).toBe('movie')
+    expect(notifShape({ season: 1, mediaType: 'movie' })).toBe('movie')
+    expect(notifShape({ season: null, mediaType: 'tv' })).toBe('tv-unplaced')
+    expect(notifShape({ season: 1, mediaType: 'tv' })).toBe('season')
+    expect(notifShape({ season: 1, mediaType: 'unknown' })).toBe('unknown')
+  })
+})
+
 describe('行的三种形状（电影 / 剧集 / 无集号）', () => {
   it('电影（season=null）→ 说「已找到字幕」，**绝不**显示 S null 或空的集号段', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'tmdb:550', title: 'Fight Club', season: null, episodes: [], latestAt: NOW, via: 'fetch' },
+      { workId: 'tmdb:550', title: 'Fight Club', season: null, episodes: [], latestAt: NOW, via: 'fetch', mediaType: 'movie' },
     ]))
     renderPage()
     const row = await screen.findByRole('link', { name: 'Fight Club' })
@@ -574,7 +639,7 @@ describe('行的三种形状（电影 / 剧集 / 无集号）', () => {
 
   it('剧集有集号 → S01 + 折叠后的集号', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'tmdb:1', title: 'Show', season: 1, episodes: [1, 2, 3, 7], latestAt: NOW, via: 'fetch' },
+      { workId: 'tmdb:1', title: 'Show', season: 1, episodes: [1, 2, 3, 7], latestAt: NOW, via: 'fetch', mediaType: 'tv' },
     ]))
     renderPage()
     const row = await screen.findByRole('link', { name: 'Show' })
@@ -584,7 +649,7 @@ describe('行的三种形状（电影 / 剧集 / 无集号）', () => {
 
   it('剧集但 episodes 为空（跨进程的形状假设，不是本地不变式）→ 只报季，不渲染空的集号段', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'tmdb:1', title: 'Weird', season: 3, episodes: [], latestAt: NOW, via: 'fetch' },
+      { workId: 'tmdb:1', title: 'Weird', season: 3, episodes: [], latestAt: NOW, via: 'fetch', mediaType: 'tv' },
     ]))
     renderPage()
     const row = await screen.findByRole('link', { name: 'Weird' })
@@ -595,9 +660,9 @@ describe('行的三种形状（电影 / 剧集 / 无集号）', () => {
 
   it('三种 via 各有各的文案，且 mixed **如实报两种来路**（谎报单一来源会误导质量预期）', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'a', title: 'A', season: 1, episodes: [1], latestAt: NOW - 1, via: 'fetch' },
-      { workId: 'b', title: 'B', season: 1, episodes: [1], latestAt: NOW - 2, via: 'translate' },
-      { workId: 'c', title: 'C', season: 1, episodes: [1], latestAt: NOW - 3, via: 'mixed' },
+      { workId: 'a', title: 'A', season: 1, episodes: [1], latestAt: NOW - 1, via: 'fetch', mediaType: 'tv' },
+      { workId: 'b', title: 'B', season: 1, episodes: [1], latestAt: NOW - 2, via: 'translate', mediaType: 'tv' },
+      { workId: 'c', title: 'C', season: 1, episodes: [1], latestAt: NOW - 3, via: 'mixed', mediaType: 'tv' },
     ]))
     renderPage()
     await screen.findByText('A')
@@ -617,8 +682,8 @@ describe('行的三种形状（电影 / 剧集 / 无集号）', () => {
   it('title 是**写入时的快照**，页面如实照搬（不去 join 当前名纠正它）', async () => {
     // 同一 workId 的两条历史行，title 不同（作品一周内改过名）——两条都要如实显示。
     vi.stubGlobal('fetch', mock([
-      { workId: 'tmdb:1', title: 'New Name', season: 2, episodes: [1], latestAt: NOW - 1000, via: 'fetch' },
-      { workId: 'tmdb:1', title: 'Old Name', season: 1, episodes: [1], latestAt: NOW - 5000, via: 'fetch' },
+      { workId: 'tmdb:1', title: 'New Name', season: 2, episodes: [1], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
+      { workId: 'tmdb:1', title: 'Old Name', season: 1, episodes: [1], latestAt: NOW - 5000, via: 'fetch', mediaType: 'tv' },
     ]))
     renderPage()
     expect(await screen.findByText('New Name')).toBeInTheDocument()
@@ -637,8 +702,8 @@ describe('React key：workId/season（没有稳定行 id）', () => {
   // 这一条保留为**渲染完整性**的回归（两季都在场、内容没串台），不再声称它守 key。
   it('同一作品的两季都渲染出来且内容没串台（渲染完整性，**不是** key 守卫）', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'tmdb:1', title: 'Same Show S2', season: 2, episodes: [1], latestAt: NOW - 1000, via: 'fetch' },
-      { workId: 'tmdb:1', title: 'Same Show S1', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'fetch' },
+      { workId: 'tmdb:1', title: 'Same Show S2', season: 2, episodes: [1], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
+      { workId: 'tmdb:1', title: 'Same Show S1', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'fetch', mediaType: 'tv' },
     ]))
     renderPage()
     await screen.findByText('Same Show S2')
@@ -657,8 +722,8 @@ describe('React key：workId/season（没有稳定行 id）', () => {
     })
     try {
       vi.stubGlobal('fetch', mock([
-        { workId: 'tmdb:1', title: 'Same Show S2', season: 2, episodes: [1], latestAt: NOW - 1000, via: 'fetch' },
-        { workId: 'tmdb:1', title: 'Same Show S1', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'fetch' },
+        { workId: 'tmdb:1', title: 'Same Show S2', season: 2, episodes: [1], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
+        { workId: 'tmdb:1', title: 'Same Show S1', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'fetch', mediaType: 'tv' },
       ]))
       renderPage()
       await screen.findByText('Same Show S2')
@@ -673,8 +738,8 @@ describe('React key：workId/season（没有稳定行 id）', () => {
 
   it('同一作品的「电影行 + 季行」共存（-1 占位不与真实季号相撞）', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'tmdb:9', title: 'Movie Row', season: null, episodes: [], latestAt: NOW - 1000, via: 'fetch' },
-      { workId: 'tmdb:9', title: 'Season Row', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'fetch' },
+      { workId: 'tmdb:9', title: 'Movie Row', season: null, episodes: [], latestAt: NOW - 1000, via: 'fetch', mediaType: 'movie' },
+      { workId: 'tmdb:9', title: 'Season Row', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'fetch', mediaType: 'tv' },
     ]))
     renderPage()
     await screen.findByText('Movie Row')
@@ -695,12 +760,12 @@ describe('React key：workId/season（没有稳定行 id）', () => {
   // 外加一条用户能真实感知的后果：**焦点**（节点身份的自然推论）。
   it('重排不留残影——index 当 key 会在这里露馅', async () => {
     const first: FoundGroupDTO[] = [
-      { workId: 'a', title: 'Alpha', season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch' },
-      { workId: 'b', title: 'Beta', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'translate' },
+      { workId: 'a', title: 'Alpha', season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
+      { workId: 'b', title: 'Beta', season: 1, episodes: [1], latestAt: NOW - 2000, via: 'translate', mediaType: 'tv' },
     ]
     const second: FoundGroupDTO[] = [
-      { workId: 'b', title: 'Beta', season: 1, episodes: [1, 2, 3], latestAt: NOW - 100, via: 'translate' },
-      { workId: 'a', title: 'Alpha', season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch' },
+      { workId: 'b', title: 'Beta', season: 1, episodes: [1, 2, 3], latestAt: NOW - 100, via: 'translate', mediaType: 'tv' },
+      { workId: 'a', title: 'Alpha', season: 1, episodes: [1], latestAt: NOW - 1000, via: 'fetch', mediaType: 'tv' },
     ]
     let payload = first
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -756,7 +821,7 @@ describe('React key：workId/season（没有稳定行 id）', () => {
 describe('行的去处：点一条落到媒体库详情（不是死链，也不是旧 #/library）', () => {
   it('href = #/media/:workId，冒号已编码', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'tmdb:1396', title: 'Breaking Bad', season: 1, episodes: [1], latestAt: NOW, via: 'fetch' },
+      { workId: 'tmdb:1396', title: 'Breaking Bad', season: 1, episodes: [1], latestAt: NOW, via: 'fetch', mediaType: 'tv' },
     ]))
     renderPage()
     const row = await screen.findByRole('link', { name: 'Breaking Bad' })
@@ -776,7 +841,7 @@ describe('中文侧渲染的是译文不是键名', () => {
 
   it('zh 下集号是「第 3/5/7 集」（前后夹量词，en 侧后缀为空）', async () => {
     vi.stubGlobal('fetch', mock([
-      { workId: 'a', title: '剧', season: 1, episodes: [3, 5, 7], latestAt: NOW, via: 'fetch' },
+      { workId: 'a', title: '剧', season: 1, episodes: [3, 5, 7], latestAt: NOW, via: 'fetch', mediaType: 'tv' },
     ]))
     renderPage('zh')
     const row = await screen.findByRole('link', { name: '剧' })

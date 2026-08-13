@@ -65,6 +65,7 @@ import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
 import { RootHealthNote } from '../shell/RootHealthNote.js'
 import { UnidentifiedNote } from './UnidentifiedNote.js'
+import { StalledJobsNote } from './StalledJobsNote.js'
 import type { ScoutEvent, EventsStatus } from '../events/types.js'
 import type { ActivityQueueItemDTO, HealthDTO, ScoutCurrentDTO } from '../api/types.js'
 import { ACTIVITY_TABS, laneOf, workIdOf, type ActivityTab } from './workbenchRouting.js'
@@ -259,6 +260,12 @@ function StatusBar({
           ⚠️ 这里**不给任何按钮**（R-F1「未识别资源不给用户改」）——完整论证见组件头注释。 */}
       <UnidentifiedNote unidentified={health?.unidentified} />
 
+      {/* 🔴-4 记着失败、却再也没被重试的活。紧挨上面两行是刻意的：那两行说
+          "引擎看不看得见 / 认不认得我的库"，这一行说"引擎记着有活没干完"——
+          同一个问题的第五个侧面，同形同语汇。count 为 0 时组件自己返回 null。
+          ⚠️ 这里**不给任何按钮**：唯一可能的那个（redispatch）写出来的行同样没人领。 */}
+      <StalledJobsNote stalledJobs={health?.stalledJobs} />
+
       {/* 🔴 R-F1 的可见形态：识别在**这里**，不在 tab 里。
           判据是 current.kind === 'identify'（laneOf 的同一套口径在 useCurrentState 里已用过）。 */}
       {current?.kind === 'identify' && (
@@ -287,29 +294,41 @@ function StatusBar({
 // 一个 tab 的内容
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 「2018 · 动画 · 13 集待处理」那一行。缺席的段**整段不出现**（不留 "· ·"）。 */
+/** 「2018 · 动画 · 13 集待处理」那一行。缺席的段**整段不出现**（不留 "· ·"）。
+ *
+ *  🔴 第四段「16h 后重试」（2026-08-13）：`dueNow === false` 的项必须说出"等到什么
+ *  时候"。只说"13 集待处理"而不说它正在退避，用户分不出「系统在等」与「系统卡住了」
+ *  ——生产上这两件事看起来一模一样（33 个在等，其中到点可取 0）。
+ *  `retryAfter` 缺席（后端老版本 / 到点项）时这一段整段不出现，不编一个时刻。 */
 function subtitleLine(
-  item: { year: number | null; mediaType: 'tv' | 'movie'; pendingFileCount: number },
-  t: (k: 'wb_media_tv' | 'wb_media_movie' | 'wb_pending_files') => string,
+  item: {
+    year: number | null; mediaType: 'tv' | 'movie'; pendingFileCount: number
+    dueNow?: boolean; retryAfter?: number | null
+  },
+  t: (k: 'wb_media_tv' | 'wb_media_movie' | 'wb_pending_files' | 'wb_queue_retry_in') => string,
+  now: number,
 ): string {
   const parts: string[] = []
   if (item.year !== null) parts.push(String(item.year))
   parts.push(item.mediaType === 'movie' ? t('wb_media_movie') : t('wb_media_tv'))
   parts.push(`${item.pendingFileCount} ${t('wb_pending_files')}`)
+  if (item.dueNow === false && typeof item.retryAfter === 'number' && item.retryAfter > now) {
+    parts.push(t('wb_queue_retry_in').replace('{d}', relAgo(item.retryAfter - now)))
+  }
   return parts.join(' · ')
 }
 
-function faceOf(item: ActivityQueueItemDTO, t: ReturnType<typeof useT>['t']): WorkbenchCardFace {
+function faceOf(item: ActivityQueueItemDTO, t: ReturnType<typeof useT>['t'], now: number): WorkbenchCardFace {
   return {
     title: item.chineseTitle ?? item.title,
-    subtitle: subtitleLine(item, t),
+    subtitle: subtitleLine(item, t, now),
     posterPath: item.posterPath,
     backdropPath: item.backdropPath,
   }
 }
 
 function TabPanel({
-  tab, current, queue, queueByWorkId, live,
+  tab, current, queue, queueByWorkId, live, now,
 }: {
   tab: ActivityTab
   current: Current | null
@@ -318,8 +337,16 @@ function TabPanel({
   /** 在跑那个作品的 workId（来自 SSE 的 data.workId）——用它取图。 */
   /** 🟡 读数新鲜度。非 'live' 时给在跑卡片挂一行"可能已经跑完了"。 */
   live: LiveFreshness
+  /** 算"还有多久重试"的基准。**从参数进**（页面级取一次）——每张卡片各自 Date.now()
+   *  会让同一屏的几张卡算出相差几毫秒的读数，且渲染即变，测不了。 */
+  now: number
 }) {
   const { t } = useT()
+  // 🔴 「一个都到不了点」那一行（2026-08-13）。
+  // 队列非空、却**没有任何一项现在能取**时，用户看到 33 张卡片却什么都没在跑——
+  // 不说破的话，那一屏与"daemon 卡死了"完全无法区分。这一行就是那句区分。
+  // 全到点时整段不在场（沉默即好消息，同 RootHealthNote / missing 那一行的既有口径）。
+  const nextRetryAt = allBackingOffUntil(queue, now)
   return (
     <div>
       <div className="wb-section-head">{t('wb_section_running')}</div>
@@ -333,7 +360,7 @@ function TabPanel({
             subtitle: t('wb_running_now'),
             posterPath: null,
             backdropPath: null,
-            ...facePatch(current, queueByWorkId, t),
+            ...facePatch(current, queueByWorkId, t, now),
           }}
           progress={
             current.index !== null && current.total !== null
@@ -355,14 +382,51 @@ function TabPanel({
         {t('wb_section_queued')} · {queue.length}
       </div>
       {queue.length === 0 ? (
+        // 🔴 这一句现在**只**意味着"真的没有作品在等"。修复前它同时承载着
+        // "全部在退避窗里"（生产实测那 33 个），空态与"我这会儿取不到"共用一句话。
         <div className="wb-card-sub" data-testid="wb-queue-empty">{t('wb_queue_none')}</div>
       ) : (
-        <ul className="wb-list">
-          {queue.map((item) => <QueueCard key={item.workId} face={faceOf(item, t)} />)}
-        </ul>
+        <>
+          {nextRetryAt !== null && (
+            <div
+              className="wb-card-sub"
+              data-testid="wb-queue-all-backoff"
+              role="status"
+              aria-live="polite"
+            >
+              {t('wb_queue_all_backoff').replace('{d}', relAgo(nextRetryAt - now))}
+            </div>
+          )}
+          <ul className="wb-list">
+            {queue.map((item) => <QueueCard key={item.workId} face={faceOf(item, t, now)} />)}
+          </ul>
+        </>
       )}
     </div>
   )
+}
+
+/** 队列非空、且**没有任何一项现在能取**时，返回最早那个重试时刻；否则 null。
+ *
+ *  🔴 判据是「一个都到不了点」而不是「有项在退避」：后者在"30 个到点、3 个退避"时
+ *  也会喊一句"都在等着重试"，那是把一个正常推进的队列说成停滞（半真的话）。
+ *  只有全体都取不到时，"什么都没在跑"才需要解释。
+ *
+ *  ⚠️ 全体退避但**没有一个给得出时刻**（后端老版本 / retryAfter 缺席）→ 返回 null，
+ *  这一行整段不出现。宁可少说一句，也不编一个时刻出来。 */
+export function allBackingOffUntil(
+  queue: readonly { dueNow?: boolean; retryAfter?: number | null }[],
+  now: number,
+): number | null {
+  if (queue.length === 0) return null
+  if (queue.some((i) => i.dueNow !== false)) return null
+  let earliest: number | null = null
+  for (const i of queue) {
+    const at = i.retryAfter
+    if (typeof at !== 'number' || at <= now) continue
+    if (earliest === null || at < earliest) earliest = at
+  }
+  return earliest
 }
 
 /** 在跑卡片的图与副行——**靠 workId 从队列表里查**，查不到就无图降级。
@@ -378,6 +442,7 @@ function facePatch(
   current: Current,
   queueByWorkId: Map<string, ActivityQueueItemDTO>,
   t: ReturnType<typeof useT>['t'],
+  now: number,
 ): Partial<WorkbenchCardFace> {
   const id = current.workId
   if (!id) return {}
@@ -385,7 +450,7 @@ function facePatch(
   if (!item) return {}
   return {
     title: item.chineseTitle ?? item.title,
-    subtitle: subtitleLine(item, t),
+    subtitle: subtitleLine(item, t, now),
     posterPath: item.posterPath,
     backdropPath: item.backdropPath,
   }
@@ -440,6 +505,12 @@ export function ActivityPage() {
     translate: activityData?.translateQueue ?? [],
   }), [activityData])
 
+  /** 「还有多久重试」的时钟基准。**跟着 activityData 走，不挂定时器**——
+   *  同 StatusBar 里那个 `now`（`useMemo(..., [health])`）的既有口径：这一行显示的是
+   *  分/时粒度，每秒重算只会让整个列表每秒重渲染，而字一分钟才变一次。
+   *  队列一刷新（activity 事件 / 重连补齐）读数就跟着新。 */
+  const queueNow = useMemo(() => Date.now(), [activityData])
+
   const queueByWorkId = useMemo(() => {
     const m = new Map<string, ActivityQueueItemDTO>()
     for (const it of [...queues.subtitle, ...queues.translate]) m.set(it.workId, it)
@@ -486,6 +557,7 @@ export function ActivityPage() {
             queue={queues[tab]}
             queueByWorkId={queueByWorkId}
             live={liveFreshness(status)}
+            now={queueNow}
           />
         )}
       </div>

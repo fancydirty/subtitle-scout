@@ -24,7 +24,78 @@ export interface SubtitleQueueItem {
   overview: string | null
   chineseTitles: string[]
   mediaType: string
-  files: Array<{ path: string; filename: string; season: number | null; episode: number | null; dir: string; durationSec: number | null; embeddedLangs: string[] | null }>
+  files: Array<{
+    path: string; filename: string; season: number | null; episode: number | null
+    dir: string; durationSec: number | null; embeddedLangs: string[] | null
+    /** `files.recheck_after` 原值。NULL = 不在退避窗里（现在就能取）。
+     *
+     *  🔴 只有 `includeBackoff: true` 的调用方**可能**看到未来时刻——默认调用（daemon 派活）
+     *  下这一列必然满足 `IS NULL OR <= now`，因为 SQL 已经把不满足的行滤掉了。
+     *  它存在的唯一理由是让**界面**能说出"最早什么时候重试"，而那句话在默认模式下问不出来
+     *  （默认模式看不见那些行）。派活侧不读它，读了也没意义。 */
+    recheckAfter: number | null
+  }>
+}
+
+/** `listSubtitleQueue` 的取件谓词——**全仓唯一一份**（C30：两份判据必漂移）。
+ *
+ *  ── 为什么第三条要参数化，而不是分裂出第二个函数 ────────────────────────────
+ *  前两条（`needs_subtitle = 1` / `sub_status IS NULL`）回答的是「这个文件**在不在**
+ *  字幕工作台上」——这是一个与时间无关的归属事实，daemon 与界面的答案必须字节一致。
+ *  第三条（`recheck_after` 退避窗）回答的是「**现在**该不该动它」——这是调度问题，
+ *  两个调用方要的答案本来就不同：
+ *    · daemon 问「现在该取哪件」→ 退避中的**该滤**（不滤就是 C26 付费 LLM 热循环）
+ *    · 界面问「还有什么在等」  → 退避中的**不该滤**（滤了就是"已排队 0 / 没有排队的作品"，
+ *      而库里 33 个文件正在等——生产实测 2026-08-13，全部在退避窗，最早约 16h 后到点）
+ *
+ *  🔴 参数化而不是复制：三条 WHERE 仍然只有这**一份**文本，`includeBackoff` 只是把第三条
+ *  短路掉。有人改前两条时，两个调用方**同时**跟着变，不可能漂移。若改成"界面自己写一份
+ *  两条的 WHERE"，那正是 activityApi 头注释禁的那件事，且漂移形态是界面把 covered /
+ *  停牌两态的行也算成"在等"——用户看到的队列比 daemon 会跑的长，还是一句假话。 */
+const SUBTITLE_QUEUE_WHERE = `
+      f.needs_subtitle = 1
+      AND f.sub_status IS NULL
+      AND (? = 1 OR f.recheck_after IS NULL OR f.recheck_after <= ?)`
+
+/** `listSubtitleQueue` 的可选行为。 */
+export interface SubtitleQueueOpts {
+  /** true = 连**退避窗未到**的行一起返回（界面用："还有什么在等"）。
+   *  默认 false = daemon 的取件语义（"现在该取哪件"）。
+   *
+   *  🔴 daemon 侧**绝不许**传 true：那会让退避中的文件当轮就被重选，
+   *  即 C26 的付费 LLM 热循环。这条由 subtitleScheduler.test.ts 的守卫用例钉着。 */
+  includeBackoff?: boolean
+}
+
+/** 这一项现在**会不会被 daemon 取走**（至少一个文件到点）。
+ *
+ *  🔴 判据是 `.some()` 而不是 `.every()`，这是本组两个 helper 唯一需要论证的地方：
+ *  daemon 的取件是**逐文件**的——`listSubtitleQueue` 默认模式下把退避中的文件滤掉，
+ *  剩下一个到点的文件仍然会让这个作品成簇被跑。故"2 集在等、其中 1 集到点"这一项
+ *  **现在真的会动**，说它 dueNow=false 是一句假话（用户会以为要等，实际下一轮就跑）。
+ *  `.every()` 的语义是"整簇都到点"，那个问题没有任何界面在问。
+ *
+ *  默认模式下恒 true（SQL 已滤）；`includeBackoff` 模式下才有信息量。
+ *  界面拿它区分"33 个在等，其中 0 个会动"与"33 个在等、daemon 却没动"
+ *  ——**这两件事对用户的含义完全相反**，共用一句"已排队 33"就是把它们混成半真的话。 */
+export function queueItemDueNow(item: SubtitleQueueItem, now: number): boolean {
+  return item.files.some((f) => f.recheckAfter === null || f.recheckAfter <= now)
+}
+
+/** 这一簇里**最早**的重试时刻；只要有任一文件已到点（即 `queueItemDueNow` 为真）→ null。
+ *
+ *  与 dueNow 同向的收口：这一项现在就会动时，"最早 X 后重试"是一句无意义的话
+ *  （它压根不在等）。两个 helper 的口径必须一致，否则界面会渲染出
+ *  "dueNow 但 16h 后重试"这种自相矛盾的副行。 */
+export function queueItemEarliestRetryAt(item: SubtitleQueueItem, now: number): number | null {
+  if (queueItemDueNow(item, now)) return null
+  let earliest: number | null = null
+  for (const f of item.files) {
+    const at = f.recheckAfter
+    if (at === null || at <= now) continue
+    if (earliest === null || at < earliest) earliest = at
+  }
+  return earliest
 }
 
 /** 字幕队列：一个作品的一簇（needs_subtitle=1 的全部文件）。
@@ -47,20 +118,26 @@ export interface SubtitleQueueItem {
  *  少了任一条，这批行会立刻既不在字幕工作台、又攒不到 7 次 → **永久出局**（C15/C44）。
  *
  *  🔴 2026-08-08 实测：必须按守备目录过滤——files 表可能含已移除根的残留数据
- *  （如 115 测试目录），只读挂载上建 staging 沙盒会 ENOENT。 */
-export function listSubtitleQueue(db: ScoutDb, roots?: string[], now = Date.now()): SubtitleQueueItem[] {
+ *  （如 115 测试目录），只读挂载上建 staging 沙盒会 ENOENT。
+ *
+ *  ── `opts.includeBackoff`（2026-08-13）───────────────────────────────────────
+ *  第三条（退避窗）现在可短路，谓词文本仍只有 `SUBTITLE_QUEUE_WHERE` 那一份。
+ *  完整论证在那个常量上方。**daemon 侧不传**（默认 false = 原语义，一字未改）。 */
+export function listSubtitleQueue(
+  db: ScoutDb, roots?: string[], now = Date.now(), opts: SubtitleQueueOpts = {},
+): SubtitleQueueItem[] {
+  const includeBackoff = opts.includeBackoff === true
   const rows = db.prepare(`
     SELECT w.id AS work_id, w.title, w.original_title, w.year, w.overview, w.chinese_titles, w.media_type,
-           f.path, f.filename, f.season, f.episode, f.dir, f.duration_sec, f.embedded_langs
+           f.path, f.filename, f.season, f.episode, f.dir, f.duration_sec, f.embedded_langs, f.recheck_after
     FROM files f JOIN works w ON f.work_id = w.id
-    WHERE f.needs_subtitle = 1
-      AND f.sub_status IS NULL
-      AND (f.recheck_after IS NULL OR f.recheck_after <= ?)
+    WHERE ${SUBTITLE_QUEUE_WHERE}
     ORDER BY w.id, f.season, f.episode
-  `).all(now) as Array<{
+  `).all(includeBackoff ? 1 : 0, now) as Array<{
     work_id: string; title: string; original_title: string | null; year: number | null;
     overview: string | null; chinese_titles: string | null; media_type: string;
-    path: string; filename: string; season: number | null; episode: number | null; dir: string; duration_sec: number | null; embedded_langs: string | null
+    path: string; filename: string; season: number | null; episode: number | null; dir: string
+    duration_sec: number | null; embedded_langs: string | null; recheck_after: number | null
   }>
 
   const byWork = new Map<string, SubtitleQueueItem>()
@@ -81,7 +158,7 @@ export function listSubtitleQueue(db: ScoutDb, roots?: string[], now = Date.now(
     }
     let langs: string[] | null = null
     if (r.embedded_langs) { try { langs = JSON.parse(r.embedded_langs) } catch { langs = null } }
-    item.files.push({ path: r.path, filename: r.filename, season: r.season, episode: r.episode, dir: r.dir, durationSec: r.duration_sec, embeddedLangs: langs })
+    item.files.push({ path: r.path, filename: r.filename, season: r.season, episode: r.episode, dir: r.dir, durationSec: r.duration_sec, embeddedLangs: langs, recheckAfter: r.recheck_after })
   }
   return [...byWork.values()]
 }

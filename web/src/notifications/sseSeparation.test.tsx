@@ -54,9 +54,9 @@ const NOW = Date.now()
 /** 端点返回的两组。**这两个剧名是列表里合法存在的**。 */
 const ENDPOINT_ROWS: FoundGroupDTO[] = [
   { workId: 'tmdb:1396', title: 'Breaking Bad', season: 1, episodes: [3, 5, 7],
-    latestAt: NOW - 3600_000, via: 'fetch' },
+    latestAt: NOW - 3600_000, via: 'fetch', mediaType: 'tv' },
   { workId: 'tmdb:1399', title: 'Game of Thrones', season: 2, episodes: [1],
-    latestAt: NOW - 7200_000, via: 'translate' },
+    latestAt: NOW - 7200_000, via: 'translate', mediaType: 'tv' },
 ]
 
 /** 🔴 **只存在于 SSE 事件里**的剧名——端点一次都没返回过它。
@@ -305,7 +305,7 @@ describe('列表内容全部来自端点（DOM 逐条核对）', () => {
   it('端点给几组就渲染几行——不多不少', async () => {
     const many: FoundGroupDTO[] = Array.from({ length: 7 }, (_, i) => ({
       workId: `tmdb:${i}`, title: `Show ${i}`, season: 1, episodes: [1],
-      latestAt: NOW - i * 600_000, via: 'fetch' as const,
+      latestAt: NOW - i * 600_000, via: 'fetch', mediaType: 'tv' as const,
     }))
     vi.stubGlobal('fetch', mockFetch(many))
     renderPage()
