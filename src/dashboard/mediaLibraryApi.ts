@@ -373,7 +373,28 @@ interface DotAggregate {
  *   · 用 `.some()` 跨该格的**全部**文件求或，绝不能取"第一行"——取首行的实现会因入库
  *     顺序不同给出相反结论，而测试若恰好按"有字幕的在前"写就永远绿。
  *   · 绿点优先于蓝点：外挂那份是用户能换能删的可操作对象，内嵌轨不是。
- *   · fileCount / subtitledFileCount 如实呈报，"另一处仍要单独去配"这个事实不许被聚合吞掉。 */
+ *   · fileCount / subtitledFileCount 如实呈报，"另一处仍要单独去配"这个事实不许被聚合吞掉。
+ *
+ *  ── fileCount 会不会把特典算进"这一格有几份"？（2026-08-14 实测裁决：不会，不修）──
+ *
+ *  滚动债务清单里挂过一条「fileCount 未随 extra 调整，用户会看到电影格 fileCount=2 而
+ *  其中一份是 Trailer」。**实测证伪**：生产 16 个 `skip_reason='extra'` 的文件，
+ *  解析出集号的是 **0 个**，全部 `episode IS NULL` → 一个都进不了网格 → 进不了这个聚合。
+ *
+ *  这不是巧合，是两档标记表（extrasFilter.ts）的结构后果：
+ *   · `NCOP/NCED` 这类压制圈行话，命名里本就不带季集号（`[NCOP][1080P]...`）；
+ *   · `[PV]/[menu]` 这类必须方括号包裹的普通词，同样出现在无季集号的花絮文件上。
+ *  也就是说「被判特典」与「解析出季集」在现有规则下几乎互斥。
+ *
+ *  ⚠️ 但这是**规则的后果、不是不变量**。反例形态已经在生产里躺着：
+ *      `[DBD-Raws][...S1][25][Commentary][...].mkv`  ← 正片集号 + 特典性质标记并存
+ *  它今天没被判特典（`Commentary` 不在铁案表里），一旦哪天进表，这一格就会
+ *  `fileCount=2` 而其中一份是评论音轨。
+ *
+ *  所以判据是：**在特典能带季集号之前，这里不需要过滤**。真要修的那天，
+ *  要先想清楚 fileCount 到底该回答哪个问题——"这一格有几份文件"（如实报数，
+ *  用户点开能看到那份 Commentary）还是"这一格有几份要管的"（过滤，但用户会
+ *  发现数字与展开后的列表对不上）。两个都自洽，别在没有真实用户困惑时先选一个。 */
 function aggregateDot(files: readonly FileRow[]): DotAggregate {
   const subtitledFileCount = files.filter((f) => fileHasSidecar(f.sub_status)).length
   const anyEmbedded = files.some((f) => fileHasEmbeddedChinese(parseEmbeddedLangs(f.embedded_langs)))
