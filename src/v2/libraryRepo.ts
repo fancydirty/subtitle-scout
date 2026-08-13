@@ -480,10 +480,10 @@ export class LibraryRepo {
     return row ?? null
   }
 
-  /** 该剧该季在镜像里的集数——core/seasonShape.ts 的 SeasonShape.mirrorEpisodeCount 侧
-   *  （镜像集数 vs TMDB 该季 episode_count 的主信号，消费方是 v3 orchestrator 的布局检查
-   *  orchestratorAgent.tools.ts；同一套判据在旧管线时代叫 diagnoseSeason，该模块已随
-   *  旧管线退役删除）。 */
+  /** 该剧该季在镜像里的集数。（历史注释提到的 core/seasonShape.ts 的
+   *  SeasonShape.mirrorEpisodeCount 侧、以及它的消费方 v3 orchestratorAgent.tools.ts，
+   *  均已删除——前者本轮随死代码清理退役，后者早于旧管线退役时删除。此处只留本方法自身
+   *  的语义说明，不再指向已不存在的模块。） */
   countEpisodesInSeason(seriesId: string, season: number): number {
     const row = this.db
       .prepare(`SELECT COUNT(*) as count FROM episodes WHERE series_id = ? AND season = ?`)

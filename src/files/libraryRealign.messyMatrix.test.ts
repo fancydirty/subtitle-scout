@@ -3,7 +3,6 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scanVideoFiles, buildRealignPlan } from './libraryRealign.js'
-import { mirrorExceedsSeasonTable } from '../core/seasonShape.js'
 import type { SeasonTableEntry } from '../adapters/providers/tmdb.js'
 
 function mkDir(...parts: string[]): string {
@@ -97,10 +96,15 @@ describe('乱排布矩阵（验收记录：5 种形态）', () => {
     const planResult = buildRealignPlan(files, { seriesTitle: 'Normal Show', year: 2018, tmdbId: '1', seasonTable })
     expect(planResult.ok).toBe(false) // headline assertion：正常库产不出 realign 计划
 
-    // 第二层守卫（诊断主信号）：镜像集数(3)未超过 TMDB 该季集数(3)，mirrorExceedsSeasonTable
-    // （core/seasonShape.ts，纯函数、不接 LLM）直接判 false——两层独立守卫都确认"这个库不该
-    // 被动"（旧管线时代这条信号由 diagnoseSeason 判定，其余情况会再问一次 LLM 兜底；
-    // diagnoseSeason 已随旧管线退役删除，v3 orchestrator 的布局检查只保留了这条纯判据）。
-    expect(mirrorExceedsSeasonTable({ seriesId: 'normal', season: 1, mirrorEpisodeCount: 3, tmdbEpisodeCount: 3 })).toBe(false)
+    // ── 2026-08-13：原先这里有第二层守卫，断言 `mirrorExceedsSeasonTable`（core/seasonShape.ts）
+    // 对本形态判 false。该模块本轮随死代码清理删除——它的头注释声称消费方是
+    // `orchestratorAgent.tools.ts`，但那个文件早已不存在（旧管线退役时删掉），全仓
+    // 除本行外零引用。**留着这条断言就得留着整个模块**，而模块唯一的存在理由就是这条断言：
+    // 那是自证循环，不是守卫。
+    //
+    // ⚠️ 删的是「对一个没有生产消费方的纯函数的断言」，不是本用例的判据——上面那条
+    // headline（正常库产不出 realign 计划）才是本用例的真判据，它走的是真产品代码
+    // `buildRealignPlan`，原样保留。变异实测见本轮报告：把 buildRealignPlan 的闸门放开
+    // 这条会红。
   })
 })

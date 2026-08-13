@@ -100,17 +100,6 @@
   object-fit: cover;
   display: block;
 }
-.library-poster-fallback {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-secondary);
-  color: var(--color-weak);
-  font-size: 22px;
-  font-weight: 600;
-}
 .library-poster-meta {
   padding-top: 6px;
 }
@@ -148,137 +137,6 @@
   gap: 1rem;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, calc((100% - 7 * 1rem) / 8))), 1fr));
 }
-
-/* ---- 剧集页头部海报缩略（SeriesPage）---- */
-.library-detail-header-poster {
-  width: 72px;
-  height: 104px;
-  flex-shrink: 0;
-  border-radius: 4px;
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  /* --color-secondary（#16181f），不是 --color-accent：后者被 scout 遮蔽成柠檬绿，过渡期会刷绿。 */
-  background: var(--color-secondary);
-}
-.library-detail-header-poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.library-detail-header-poster .library-poster-fallback {
-  font-size: 28px;
-}
-
-/* ---- 剧集页 hero 头部（SeriesHero，详情页重设计 item B）——渐变压暗背景大图 + 排印。 ---- */
-.library-hero {
-  position: relative;
-  border-radius: 12px;
-  overflow: hidden;
-  padding: 20px;
-}
-.library-hero-backdrop {
-  position: absolute;
-  inset: 0;
-  background-size: cover;
-  background-position: center 20%;
-  z-index: 0;
-}
-.library-hero-scrim {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background: linear-gradient(180deg, rgba(11, 12, 15, 0.35) 0%, var(--color-background) 82%);
-}
-.library-hero-body {
-  position: relative;
-  z-index: 2;
-}
-
-/* ---- 逐集行（EpisodeRow，详情页重设计 item B）——文字在左 + 剧照 + 点击行内展开简介。 ---- */
-.library-eprow {
-  border-top: 1px solid var(--color-border);
-}
-/* 2026-07-30（字幕校验）：.library-eprow-head 从 button 变成 div——校验芯片需要独立可点，
-   button 套 button 是非法 HTML。容器保留 flex/padding/左边框/hover 底色（视觉不变），
-   把"可点击展开"的那部分职责交给内部的 .library-eprow-toggle。 */
-.library-eprow-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 9px 4px 9px 10px;
-  border-left: 2px solid transparent;
-}
-.library-eprow-toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-}
-.library-eprow-head:hover {
-  background: var(--color-card);
-}
-.library-eprow-active > .library-eprow-head {
-  /* --color-ring（紫），不是 --color-accent：后者被 scout 遮蔽成柠檬绿，过渡期是绿、卸载后变
-     #16181f 与卡底同色 → 左强调条隐形。三处可见强调（本条 + 焦点环 + 选中格）统一走 --color-ring。 */
-  border-left-color: var(--color-ring);
-  background: var(--color-card);
-}
-.library-eprow-spacer {
-  flex: 1;
-}
-.library-eprow-still {
-  width: 112px;
-  height: 63px;
-  object-fit: cover;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-}
-.library-eprow-tag {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--color-muted-foreground);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 0 5px;
-}
-.library-eprow-body {
-  padding: 2px 10px 12px 40px;
-}
-
-/* ---- 季手风琴（SeasonAccordion，详情页重设计 item B）——季头卷起汇总 + 展开箭头。 ---- */
-.library-season-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 11px 2px;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-}
-/* 键盘焦点环（Task 23 焦点环清扫）——原生 button 季头此前只有浏览器默认虚框。 */
-.library-season-head:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
-}
-.library-season-chev {
-  color: var(--color-weak);
-  transition: transform 0.18s ease;
-  display: inline-block;
-}
 .library-season-chev.open {
   transform: rotate(90deg);
 }
@@ -312,9 +170,6 @@
   outline: 2px solid var(--color-ring);
   outline-offset: 1px;
 }
-.ep-cell-selected {
-  border-color: var(--color-ring);
-}
 .ep-cell-dashed {
   background: transparent;
   border-style: dashed;
@@ -345,34 +200,6 @@
 .ep-cell-partial .ep-num {
   /* 半覆盖：新栈无橙档，沿用唯一暖色 --color-fn-amber（#f2c00b，有意改值自旧 --color-text-orange #e8a33d）。 */
   color: var(--color-fn-amber);
-}
-
-/* 5px 语义点——左上角，跟 mono 集号并排读。 */
-.ep-dot {
-  position: absolute;
-  left: 3px;
-  top: 3px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-}
-.ep-dot-covered {
-  background: var(--color-fn-green);
-}
-.ep-dot-hardsub {
-  background: color-mix(in srgb, var(--color-fn-green) 55%, var(--color-weak) 45%);
-}
-.ep-dot-partial {
-  background: linear-gradient(90deg, var(--color-fn-green) 50%, var(--color-weak) 50%);
-}
-.ep-dot-missing {
-  background: transparent;
-  border: 1px solid var(--color-weak);
-  width: 4px;
-  height: 4px;
-}
-.ep-dot-throttled {
-  background: var(--color-weak);
 }
 .ep-dot-error {
   background: var(--color-fn-red);
@@ -595,50 +422,10 @@
   flex-direction: column;
   gap: 2px;
 }
-.wf-trace-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.8;
-}
-.wf-trace-tool {
-  color: var(--color-muted-foreground);
-  flex-shrink: 0;
-}
-.wf-trace-args {
-  color: var(--color-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-.wf-trace-took {
-  color: var(--color-weak);
-  flex-shrink: 0;
-  margin-left: auto;
-}
 /* 在跑行——蓝点延展动画，DESIGN.md §5 动效 allowlist 的"active"那一条。回放（RunDetail）
    永远不传 live，这一行永远不出现在快照回放里。 */
 .wf-trace-row-active {
   align-items: center;
-}
-.wf-trace-active-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--color-fn-blue);
-  animation: wf-pulse 1.2s ease-in-out infinite;
-}
-.wf-trace-active-bar {
-  margin-left: 6px;
-  height: 1px;
-  flex: 1;
-  background: linear-gradient(90deg, var(--color-fn-blue), transparent);
-  animation: wf-extend 1.6s ease-in-out infinite;
-  transform-origin: left;
 }
 @keyframes wf-pulse {
   0%, 100% { opacity: 0.4; }
@@ -647,12 +434,6 @@
 @keyframes wf-extend {
   0% { transform: scaleX(0); opacity: 0.8; }
   100% { transform: scaleX(1); opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .wf-trace-active-dot,
-  .wf-trace-active-bar {
-    animation: none;
-  }
 }
 
 /* ---- recent 完成行的人话句子流（design §B，铁律①④⑤：主语=剧名/片名，短语=decisionPhrase，
@@ -1177,38 +958,6 @@
   border: 1px solid var(--color-border);
 }
 
-/* 字幕校验芯片（2026-07-30 spec）——几何复用 .library-eprow-tag（mono 10px / 1px 边框 /
-   4px 圆角），只换颜色。只有绿和红两种，永远不会有第三种（用户裁决：不给黄色）。 */
-.library-eprow-verify {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  border-radius: 4px;
-}
-/* 绿态：一个 5px 圆点，与行首的 .ep-dot 同尺寸同语言，不占文字宽度。
-   绿是"安静"——它的存在感应该低到用户扫一整季时视线不被任何一行拦住。 */
-.library-eprow-verify-ok {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--color-fn-green);
-}
-/* 红态：可点的文字芯片。红只染文字与边框，不铺底色块（用户裁决：红只给点不给块）。 */
-.library-eprow-verify-shifted {
-  color: var(--color-fn-red);
-  border: 1px solid color-mix(in srgb, var(--color-fn-red) 40%, transparent);
-  background: transparent;
-  padding: 0 5px;
-  cursor: pointer;
-}
-.library-eprow-verify-shifted:hover:not(:disabled) {
-  border-color: var(--color-fn-red);
-}
-.library-eprow-verify-shifted:disabled {
-  cursor: default;
-}
-
 /* ── 对照时间轴（2026-07-30 spec §4.2.1）──────────────────────────────────
    图形化证据区：让用户看出"字幕怎么偏的"。形态本身携带诊断——两排块形状相同=纯偏移
    （可校正），越往后越拉开=帧率不匹配（平移修不好）。 */
@@ -1436,42 +1185,9 @@
   display: flex;
   flex-direction: column;
 }
-.conveyor-row {
-  height: 20px;
-  line-height: 20px;
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* slide-in-from-top-2 风格：新行从上方 2px 处落位。200ms，缓动同 spec 指定值。
-     CSS 动画在挂载时跑一次就结束，旧行不会重播——这正是"只动新行"的落地方式。
-     注：这 2px 位移意味着动画进行中（≤200ms）最上面那行会短暂探出容器上边界 2px。这是
-     slide-in-from-top-2 的固有代价，不是整行步进失效——headless Chromium 实测动画结束后
-     halfCut=false、末行底边严格贴合容器底边。整行步进保证的是**稳态**永不切半行。 */
-  animation: conveyor-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-/* 亮度分级：由亮到暗，**用颜色不是 opacity**（状态→颜色，同 ai-elements ChainOfThought 的
-   口径。opacity 会连带把行的背景/边框一起淡掉，且和硬出叠在一起会读成"渐隐遮罩"——正是裁决
-   L9 要去掉的东西）。
-   最新行（nth-last-child(1)）常态下由 AI Elements Shimmer 渲染（bg-clip-text，自带高光
-   扫动）；往上三档 muted-foreground → weak → faint 递弱，第 5 行起与第 4 档同色。
-   reduced-motion 下最新行退回纯文本，取 :nth-last-child(1) 的 --color-foreground 兜底色。 */
-/* 第 1 档（最新行）在常态下由 Shimmer 用 bg-clip-text 自己画字，不吃这里的 color；
-   这条规则是 prefers-reduced-motion 下退回纯文本时的兜底色——不要因为"看起来没用"删掉。
-   值 #e6e8ec 与 Shimmer 高光色 var(--color-foreground) 相同，两条路径峰值亮度一致。 */
-.conveyor-row:nth-last-child(1) { color: var(--color-foreground); }
-.conveyor-row:nth-last-child(2) { color: var(--color-muted-foreground); }
-.conveyor-row:nth-last-child(3) { color: var(--color-weak); }
-.conveyor-row:nth-last-child(4) { color: var(--color-faint); }
-.conveyor-row:nth-last-child(n + 5) { color: var(--color-faint); }
 @keyframes conveyor-in {
   from { transform: translateY(-2px); }
   to { transform: translateY(0); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .conveyor-row { animation: none; }
 }
 
 /* ── 活动页 hero（ActivityHero，任务 4：剧集路径）────────────────────────────
@@ -1651,23 +1367,6 @@
 .act-hero[data-art='blur-poster'] .act-hero-poster {
   width: 160px;
 }
-
-/* ── 活动页的队列段 / 刚刚完成段（ActivityQueue + ActivityDone，任务 6）───────────
-   spec §3 骨架的下两块。两段共用一套行几何（.act-row*）：hero:队列的图片尺寸比 ≈ 5:1
-   （hero 132~160px vs 这里 38px）—— **层级靠图片大小编码**，这条裁决的直接推论是队列行
-   不需要徽章/状态列/术语，所以下面没有任何 badge/chip 样式，只有一行灰字。 */
-.act-section {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 14px 0 4px;
-  /* 段与段之间一条发丝线（spec 骨架图里那道 ├───┤）。低墨排：分隔靠线不靠底色块。 */
-  border-top: 1px solid var(--color-border);
-}
-.act-section-head {
-  width: 100%;
-  padding: 0 4px 6px;
-}
 /* 「自动检查已开启」小标签：发丝线胶囊 + mono 小字，同 .cmdk-trigger 的既有语言。
    中性色——它报的是"一切照常"，不是警示（L1：黄是警示色，这里绝不能用）。 */
 .act-auto-chip {
@@ -1677,14 +1376,6 @@
   /* 未分层声明，赢过组件层任何 text-* 工具类（Tailwind utilities 在 @layer utilities 里）。
      所以组件层不给颜色类——给了也不生效。 */
   color: var(--color-weak);
-}
-.act-row {
-  width: 100%;
-  padding: 5px 4px;
-  border-radius: 8px;
-}
-.act-row:hover {
-  background: rgba(255, 255, 255, 0.03);
 }
 /* L5 队列/完成行的海报：**2:3 竖版、38px 宽**（用户明确纠正过 16:9）。这两个值是这条裁决的
    真身，ActivityQueue.test.tsx 直接读 CSS 源文件断言它们——改成 16/9 或改宽度会立刻变红。 */
@@ -1701,25 +1392,6 @@
   /* 用 --color-secondary 不用 --color-accent：scout.css:86 把 --color-accent 遮蔽成
      柠檬绿 #96DA26（@scope Theme 全 app 生效直到 Task 31），过渡期铁律。 */
   background: var(--color-secondary);
-}
-.act-row-poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.act-row-poster .library-poster-fallback {
-  font-size: 13px;
-}
-.act-row-main {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-}
-.act-row-fact {
-  color: var(--color-weak);
 }
 .act-row-status,
 .act-row-time {

@@ -440,7 +440,12 @@ describe('🔴 R-F3 不做已读状态：六个具体形态', () => {
   // 变成一个会独立报红的事实。
   it('③ 自检：源码 VFS 装满 + 闭包完整 + **阳性对照**（解析器坏掉时不许静静地绿）', () => {
     // (a) VFS 真的读到了全树源码（glob 模式写错时它会是空对象，禁令随之恒真）
-    expect(Object.keys(SOURCES).length, '源码 VFS 太小——glob 模式坏了').toBeGreaterThan(200)
+    //
+    // ⚠️ 这个下限是**哨兵**不是断言：它只防"glob 写坏 → SOURCES 变空 → 禁令恒真"。
+    // 2026-08-13 删掉 web/src/_legacy/（20 文件）后全树从 214 降到 194，这条如实变红了
+    // ——**那正是它该有的行为**（删代码时哨兵吵闹地失败，而不是静默跟着缩水）。
+    // 阈值随真实文件数下调到 150；下次大批量删文件时它还会红，届时同样只需下调并记一行。
+    expect(Object.keys(SOURCES).length, '源码 VFS 太小——glob 模式坏了').toBeGreaterThan(150)
     expect(SOURCES[NOTIF_ENTRY], '入口不在 VFS 里').toBeTruthy()
     expect(SOURCES[NOTIF_ENTRY]!.length, '入口源码是空串——?raw 处理链坏了').toBeGreaterThan(1000)
 

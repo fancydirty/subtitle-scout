@@ -1,12 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { AspectRatio } from './aspect-ratio.js'
-import { Banner } from './banner.js'
 import { EmptyState } from './empty-state.js'
 import { Kbd } from './kbd.js'
 import { Section } from './section.js'
 import { Segmented } from './segmented.js'
-import { Separator } from './separator.js'
 import { StatusDot } from './status-dot.js'
 
 describe('自绘 primitive 的 role 契约', () => {
@@ -54,12 +52,6 @@ describe('自绘 primitive 的 role 契约', () => {
     expect(screen.getByText('panel body')).toBeInTheDocument()
   })
 
-  it('Separator 是 role=separator 且带 aria-orientation', () => {
-    render(<Separator />)
-    const sep = screen.getByRole('separator')
-    expect(sep).toHaveAttribute('aria-orientation', 'horizontal')
-  })
-
   it('AspectRatio 把比例落在 style 上', () => {
     render(
       <AspectRatio data-testid="ar" fit="cover" ratio={2 / 3}>
@@ -97,25 +89,5 @@ describe('自绘 primitive 的 role 契约', () => {
     expect(screen.getByRole('radio', { name: 'A' })).toHaveAttribute('aria-checked', 'true')
     rerender(<Segmented items={[{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }]} label="x" onChange={() => {}} value="b" />)
     expect(screen.getByRole('radio', { name: 'B' })).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('Banner warning 是 role=alert 且自带状态图标', () => {
-    render(<Banner status="warning" title="Translation is paused." />)
-    const alert = screen.getByRole('alert')
-    expect(alert).toHaveTextContent('Translation is paused.')
-    // Astryx Banner 在未传 icon 时会渲染一个默认状态图标（Banner.tsx: {icon ?? <Icon …/>}），
-    // 本仓唯一调用点就没传 icon——不复刻默认图标等于 Task 31 静默删掉一个屏幕上看得见的字形。
-    expect(alert.querySelector('svg')).not.toBeNull()
-  })
-
-  it('Banner success 是 role=status（非警报）', () => {
-    render(<Banner status="success" title="All roots reachable." />)
-    expect(screen.getByRole('status')).toHaveTextContent('All roots reachable.')
-    expect(screen.queryByRole('alert')).toBeNull()
-  })
-
-  it('Banner error 是 role=alert', () => {
-    render(<Banner status="error" title="Save failed." />)
-    expect(screen.getByRole('alert')).toHaveTextContent('Save failed.')
   })
 })

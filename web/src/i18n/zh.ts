@@ -41,10 +41,6 @@ export const zh = {
   library_filter_throttled: '停牌中',
   library_filter_full: '全覆盖',
 
-  library_section_series: '剧集',
-  library_section_anime: '动漫',
-  library_section_movie: '电影',
-  library_section_other: '其他',
 
   library_kind_series: '剧集',
   library_kind_movie: '电影',
@@ -59,10 +55,8 @@ export const zh = {
   library_detail_not_found_title: '未找到该剧集',
   library_detail_not_found_desc: '这部剧可能已从库中移除。',
   library_detail_layout_nonstandard: '目录结构与 TMDB 标准顺序不同',
-  library_detail_canonical_pending: '应有集目录尚未缓存',
   library_detail_not_on_disk: '磁盘无此文件',
   library_detail_no_subtitles: '这一集暂无字幕。',
-  library_detail_next_recheck_prefix: '预计复查',
   library_detail_close_label: '关闭单集详情',
   library_detail_file_heading: '文件',
   library_detail_files_heading: '文件清单',
@@ -71,10 +65,6 @@ export const zh = {
   library_detail_embedded: '已覆盖 · 内嵌字幕（视频自带）',
   library_detail_main_file: '主文件',
   // 详情页重设计 item B（Phase 5）：hero + FactsRail + 季手风琴 + 逐集行内展开。
-  library_detail_embedded_short: '内嵌',
-  library_episode_no_overview: '暂无本集简介（TMDB 未提供）',
-  library_verify_ok: '字幕时间轴对得上',
-  library_verify_shifted: '时间轴对不上',
   // library_verify_inspect（'看字幕时间轴'）随字幕校验渲染点下架移除（spec §5，2026-08-07）。
   verify_track_reference: '画面里说话',
   verify_track_reference_sub: '参考',
@@ -102,8 +92,6 @@ export const zh = {
   verify_cloud_title: '网盘上的文件没法做对照',
   verify_cloud_body: '读一小段都要等十几秒，画不出时间轴。其余功能照常。',
   verify_cloud_blind_fix: '仍然可以直接校正，只是没有图可看。',
-  library_facts_coverage: '覆盖',
-  library_facts_embedded_unit: '集内嵌',
 
   library_legend_covered: '已覆盖',
   library_legend_hardsub: '硬字幕假定',
@@ -122,19 +110,8 @@ export const zh = {
   workflow_rundetail_replay_empty: en.workflow_rundetail_replay_empty,
   workflow_rundetail_replay_error_prefix: en.workflow_rundetail_replay_error_prefix,
 
-  workflow_rerun_confirm_title: en.workflow_rerun_confirm_title,
-  workflow_rerun_confirm_desc: en.workflow_rerun_confirm_desc,
   workflow_rerun_include_throttled_label: en.workflow_rerun_include_throttled_label,
-  workflow_rerun_action_label: en.workflow_rerun_action_label,
-  workflow_rerun_error_prefix: en.workflow_rerun_error_prefix,
-  workflow_rerun_result_title: en.workflow_rerun_result_title,
-  workflow_rerun_failed_title: en.workflow_rerun_failed_title,
-  workflow_rerun_close_label: en.workflow_rerun_close_label,
 
-  workflow_outcome_created: en.workflow_outcome_created,
-  workflow_outcome_revived: en.workflow_outcome_revived,
-  workflow_outcome_coalesced: en.workflow_outcome_coalesced,
-  workflow_outcome_blocked_dormant: en.workflow_outcome_blocked_dormant,
 
   triage_empty_title: '所有文件都已找到归属',
   // 认领退役（2026-07-28 两证据红线裁决）：空态文案不再提"人工认领"——正确的修复动作是改文件名。

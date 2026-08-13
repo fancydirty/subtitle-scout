@@ -47,10 +47,6 @@ export const en = {
   library_filter_full: 'Fully covered',
 
   // 分区标题（后端零配置派生的四个已知桶——sectionLabel.ts 认得的原文见该文件注释）。
-  library_section_series: 'Series',
-  library_section_anime: 'Anime',
-  library_section_movie: 'Movies',
-  library_section_other: 'Other',
 
   // 海报卡副行的媒体类型词。
   library_kind_series: 'series',
@@ -69,10 +65,8 @@ export const en = {
   library_detail_not_found_title: 'Series not found',
   library_detail_not_found_desc: 'This series may have been removed from the library.',
   library_detail_layout_nonstandard: 'layout differs from TMDB canonical order',
-  library_detail_canonical_pending: 'canonical catalog pending',
   library_detail_not_on_disk: 'not on disk',
   library_detail_no_subtitles: 'No subtitles found for this episode.',
-  library_detail_next_recheck_prefix: 'next recheck in',
   library_detail_close_label: 'Close episode details',
   library_detail_file_heading: 'File',
   library_detail_files_heading: 'Files',
@@ -81,12 +75,8 @@ export const en = {
   library_detail_embedded: 'covered · embedded subtitles (in video)',
   library_detail_main_file: 'main',
   // 详情页重设计 item B（Phase 5）：hero + FactsRail + 季手风琴 + 逐集行内展开。
-  library_detail_embedded_short: 'embedded',
-  library_episode_no_overview: 'No synopsis for this episode (not provided by TMDB).',
   // 字幕校验（2026-07-30）：绿态只给 aria-label（视觉上是个点，见 VerifyChip.tsx）；
   // 红态是芯片上的可见文字。两句都不提机械（不说内嵌轨/比对/参考源）。
-  library_verify_ok: 'Subtitle timing looks right',
-  library_verify_shifted: 'timing looks off',
   // library_verify_inspect（'Show subtitle timeline'）随字幕校验渲染点下架移除（spec §5，
   //   2026-08-07）；上面两句仍被 VerifyChip.tsx 引用（组件本身保留，只是暂时无人挂载）。
   // 对照时间轴（2026-07-30）：轨道名与操作提示。措辞不提机械——说"画面里说话"而不是
@@ -120,8 +110,6 @@ export const en = {
   verify_cloud_title: 'No comparison for files on cloud storage',
   verify_cloud_body: 'Reading even a short stretch takes tens of seconds, so the timeline cannot be drawn. Everything else works as usual.',
   verify_cloud_blind_fix: 'You can still fix the timing — you just will not see the chart.',
-  library_facts_coverage: 'covered',
-  library_facts_embedded_unit: 'embedded',
 
   // 格阵图例。
   library_legend_covered: 'covered',
@@ -153,19 +141,8 @@ export const en = {
   workflow_rundetail_replay_empty: 'No trace events were captured for this pass.',
   workflow_rundetail_replay_error_prefix: "Couldn't load the trace replay: ",
 
-  workflow_rerun_confirm_title: 'Rerun this series?',
-  workflow_rerun_confirm_desc: 'This dispatches a find_subtitle task for the series.',
   workflow_rerun_include_throttled_label: 'Include throttled episodes',
-  workflow_rerun_action_label: 'Rerun',
-  workflow_rerun_error_prefix: "Couldn't dispatch this rerun: ",
-  workflow_rerun_result_title: 'Rerun result',
-  workflow_rerun_failed_title: 'Rerun failed',
-  workflow_rerun_close_label: 'Close',
 
-  workflow_outcome_created: 'created — a new task was dispatched.',
-  workflow_outcome_revived: 'revived — a dormant task was reactivated.',
-  workflow_outcome_coalesced: 'coalesced — merged into an in-flight task.',
-  workflow_outcome_blocked_dormant: 'blocked — this series is dormant and was not dispatched.',
 
   // Triage tab（甄别，dashboard-F5）——正常双语区（DESIGN.md §7 只豁免 Workflow 区）。
   // 待甄别箱空态是好消息——"identifier 全部归位"方向写，不是"这里本来会显示什么"式说明
