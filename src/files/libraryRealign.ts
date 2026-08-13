@@ -1,12 +1,16 @@
 import { readdirSync } from 'node:fs'
 import { extname, basename, join } from 'node:path'
 import { formatEpisodeCode } from '../core/episode.js'
+import { CJK_EPISODE_MARKER_CLASS } from '../recognition/parseFilename.js'
 import type { SeasonTableEntry } from '../adapters/providers/tmdb.js'
 import type { AnimeListsEntry } from '../adapters/providers/animeLists.js'
 
 export interface EpisodeNumberMatch { absoluteEpisode: number; matchedToken: string }
 
-const CJK_EPISODE_RE = /第\s*(\d{1,4})\s*[话話集]/
+// 集号标记字用共享常量（CJK_EPISODE_MARKER_CLASS，全仓唯一定义点）——此前本文件写的是
+// 全的 `[话話集]`，而 parseFilename/identifyFromPath 四处漏了「話」，同一批日文文件两套答案。
+// 注：这里的数字上限是 {1,4}（长篇动画 E1050），与识别层的 {1,3} 不同，故不共用整条正则。
+const CJK_EPISODE_RE = new RegExp(`第\\s*(\\d{1,4})\\s*${CJK_EPISODE_MARKER_CLASS}`)
 const SXXEYY_RE = /S\d{1,4}E\d{1,4}/i
 const E_CODE_RE = /(?<![A-Za-z0-9])E(\d{1,4})(?!\d)/i
 // E 前缀范围合集：'E01-E02' / 'E01-02'——一个文件跨多集，取任何单集都是错的，判 null 进隔离区。

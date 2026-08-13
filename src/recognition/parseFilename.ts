@@ -31,6 +31,29 @@ export interface ParsedName {
 // 清理删除；要恢复表驱动，得先让各条规则的后置判据同构。
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 共享字符类：CJK 集号标记字
+//
+// 收敛记录（2026-08-14）：此前全仓有 **4 处**同义字符类、**3 种**写法——
+//   src/files/libraryRealign.ts      `[话話集]`  ← 唯一写全的
+//   src/recognition/parseFilename.ts `[集话]`（R4）/ `[话集]`（R7）/ `[话集]`（cleanTitle 守卫）
+//   src/recognition/identifyFromPath.ts `[话集]` ×2
+// 漂移的代价是实打实的：parseFilename 的三处漏了日文/繁体的「話」，生产库 13 个日文动画
+// 文件全部解析不出集号（DB 落 parse_confidence='none'），而 libraryRealign 对同一批文件
+// 认得出——同一个仓库里两套字符类给出两个答案。
+//
+// 治法是让它**只有一个定义点**：下面这个常量。新增字形（如「回」「話数」）只改这里。
+// 用字符串而非 RegExp 是因为四个使用点的上下文各不相同（有的要捕获组、有的要锚定 ^$、
+// 有的带 \s* 弹性），共享的是**字符类**这一层，不是整条正则。
+// ---------------------------------------------------------------------------
+
+/** CJK 集号标记字：简体「话」/ 日文·繁体「話」/ 通用「集」。全仓唯一定义点。 */
+export const CJK_EPISODE_MARKER_CLASS = '[话話集]'
+
+/** 裸集数标记（整段就是一个集号，没有剧名）——`第05話` / `第 5 话` / `第12集`。
+ *  cleanTitle 守卫和 identifyFromPath 的 BARE_EPISODE_PATTERNS 共用它，防止两边再次漂移。 */
+export const BARE_CJK_EPISODE_SOURCE = `第\\s*(\\d{1,3})\\s*${CJK_EPISODE_MARKER_CLASS}`
+
 /** 防错闸：season 落在 [200, 1927] 或 >2500 视为误判（防 '1920x1080'/'2025' 被拆成季/集）。
  *  学自 Emby EpisodePathParser.cs: "Invalidate match when the season is 200 through 1927 or
  *  above 2500"——除非真有剧故意用这么大的季号（几乎没有），这么大的 season 一定是把别的数字
@@ -46,9 +69,45 @@ function looksLikeYear(s: number, e: number): boolean {
   return four >= 1900 && four <= 2099
 }
 
+/** 括号包裹的、恰好 8 位的十六进制串 —— CRC32 校验和。
+ *
+ *  病灶（2026-08-14 生产实测）：ep04 的文件名尾部是 `...第04話「...」[BDRip][AVC_AAC][1080P][CHS](4FE33E90).mp4`。
+ *  R5（`(?<![a-zA-Z])[eE]...(\d{2,3})`）在 CRC 里命中了 `E90`——`E` 前面是 `3`（不是字母），
+ *  negative lookbehind 闸放它过去 → DB 落成 `season=1, episode=90, parse_confidence='high'`。
+ *  这比"解析不出"严重得多：**带着高置信度的错误答案**没有任何下游会去复查它。
+ *
+ *  判据（三个限定缺一不可，每一个都在收窄误伤面）：
+ *   ① 圆括号包裹 `(...)` —— fansub/BDRip 发布命名放 CRC32 的固定位置（AniDB CRC 惯例）。
+ *      裸写的 `4FE33E90` 不排除：没有约定支撑，宁可不动。
+ *   ② 恰好 8 个字符   —— CRC32 就是 32 bit = 8 个 hex nibble。7 位/9 位不是 CRC32，不排除。
+ *   ③ 全部是 hex 字符 —— `(ZFE33E90)` 长度对但不是 hex，不排除。
+ *
+ *  方向是**宁可漏判也不要误判**（北极星红线"绝不误认"）：排除面越窄，正常集号被误杀的面越小。
+ *  已知残余风险：方括号写法 `[4FE33E90]` 和裸写不在排除范围内，依然可能被 R5 吃掉。那是
+ *  **已知边界**而非遗漏——扩大排除面需要新的真实样本来立论，不能凭想象扩。 */
+const CRC32_TOKEN_RE = /\([0-9A-Fa-f]{8}\)/g
+
+/** 把 CRC32 校验和整段替换成等长的 '#'，让集号正则看不见它里面的 `E90`。
+ *
+ *  **等长**是关键：调用方（R8）依赖 `m.index` 在原串上做后置判据，长度一变索引就全错。
+ *  '#' 既不是十六进制字符也不是 `\d`/`[a-zA-Z]`，任何集号规则都不会从它身上刨出数字。
+ *  只做遮蔽不做删除，也保证 seriesname 的字符偏移与原串逐字对齐（见 R5 的还原逻辑）。 */
+function maskCrc32(text: string): string {
+  return text.replace(CRC32_TOKEN_RE, (m) => '#'.repeat(m.length))
+}
+
 /** 从一段文本提取季/集结构。只认明确标记，绝不把 4 位数字拆成季/集。 */
-function extractSeasonEpisode(text: string): { season: number | null; episode: number | null; absoluteEpisode: number | null; seriesname: string | null } {
+function extractSeasonEpisode(rawText: string): { season: number | null; episode: number | null; absoluteEpisode: number | null; seriesname: string | null } {
   // 规则按优先级从高到低，第一个 plausible 的命中即返回。
+  //
+  // 先把 CRC32 校验和遮蔽掉（等长替换成 '#'，见 maskCrc32）——它是发布命名的固定约定，
+  // 里面的 `E90`/数字对集号规则全是噪声。遮蔽而非删除：等长保证 m.index / seriesname 的
+  // 字符偏移与原串逐字对齐，下面所有规则都可以照旧用 text，唯一的额外责任是**返回
+  // seriesname 时切回原串**（'#' 不能进 title）。
+  const text = maskCrc32(rawText)
+  /** seriesname 必须取自原串——text 里的 CRC 已被 '#' 覆盖，直接返回会把 '#' 塞进 title。
+   *  等长遮蔽让同一个 [start, end) 区间在两串上指向同一段内容，所以按长度切回即可。 */
+  const unmask = (s: string | undefined): string | null => (s ? rawText.slice(0, s.length) || null : null)
 
   // R1: S01E01 / S1E1 / s01e01（Kodi 标准，最严格）。seriesname 用 negative lookahead 防截断。
   //  多集文件（S01E05E06 / S01E05-E06 / S01E05+E06）取第一集（Emby/jellyfin 同款：multi-episode
@@ -59,7 +118,7 @@ function extractSeasonEpisode(text: string): { season: number | null; episode: n
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.epnumber)
       if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
-        return { season, episode, absoluteEpisode: null, seriesname: m.groups.seriesname || null }
+        return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
@@ -72,7 +131,7 @@ function extractSeasonEpisode(text: string): { season: number | null; episode: n
     if (m?.groups && /complete|全\s*\d+\s*集|season/i.test(text)) {
       const season = Number(m.groups.seasonnumber)
       if (isPlausibleSeason(season)) {
-        return { season, episode: null, absoluteEpisode: null, seriesname: m.groups.seriesname || null }
+        return { season, episode: null, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
@@ -84,7 +143,7 @@ function extractSeasonEpisode(text: string): { season: number | null; episode: n
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.epnumber)
       if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
-        return { season, episode, absoluteEpisode: null, seriesname: m.groups.seriesname || null }
+        return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
@@ -96,19 +155,19 @@ function extractSeasonEpisode(text: string): { season: number | null; episode: n
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.epnumber)
       if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
-        return { season, episode, absoluteEpisode: null, seriesname: m.groups.seriesname || null }
+        return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
 
   // R4: 第1季第2集 / 第1季 02 / 第1季EP02（中文季+集）
   {
-    const m = text.match(/(?<seriesname>.*?)第\s*(?<seasonnumber>\d{1,2})\s*季[\s._-]*(?:第\s*(?<ep1>\d{1,3})\s*[集话]|(?<ep2>\d{1,3})\b)/)
+    const m = text.match(new RegExp(`(?<seriesname>.*?)第\\s*(?<seasonnumber>\\d{1,2})\\s*季[\\s._-]*(?:第\\s*(?<ep1>\\d{1,3})\\s*${CJK_EPISODE_MARKER_CLASS}|(?<ep2>\\d{1,3})\\b)`))
     if (m?.groups) {
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.ep1 ?? m.groups.ep2)
       if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
-        return { season, episode, absoluteEpisode: null, seriesname: m.groups.seriesname || null }
+        return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
@@ -118,7 +177,7 @@ function extractSeasonEpisode(text: string): { season: number | null; episode: n
     const m = text.match(/(?<seriesname>.*?)(?<![a-zA-Z])[eE](?:p(?:isode)?)?[\s._-]*(?<epnumber>\d{2,3})\b/i)
     if (m?.groups) {
       const episode = Number(m.groups.epnumber)
-      return { season: null, episode: null, absoluteEpisode: episode, seriesname: m.groups.seriesname || null }
+      return { season: null, episode: null, absoluteEpisode: episode, seriesname: unmask(m.groups.seriesname) }
     }
   }
 
@@ -128,16 +187,16 @@ function extractSeasonEpisode(text: string): { season: number | null; episode: n
     if (m?.groups) {
       const episode = Number(m.groups.epnumber)
       if (!(episode >= 1900 && episode <= 2099)) { // [2025] 是年份不是集号
-        return { season: null, episode: null, absoluteEpisode: episode, seriesname: m.groups.seriesname || null }
+        return { season: null, episode: null, absoluteEpisode: episode, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
 
   // R7: 第3话 / 第3集（CJK 集标记）——绝对集号
   {
-    const m = text.match(/(?<seriesname>.*?)第\s*(?<epnumber>\d{1,3})\s*[话集]/)
+    const m = text.match(new RegExp(`(?<seriesname>.*?)第\\s*(?<epnumber>\\d{1,3})\\s*${CJK_EPISODE_MARKER_CLASS}`))
     if (m?.groups) {
-      return { season: null, episode: null, absoluteEpisode: Number(m.groups.epnumber), seriesname: m.groups.seriesname || null }
+      return { season: null, episode: null, absoluteEpisode: Number(m.groups.epnumber), seriesname: unmask(m.groups.seriesname) }
     }
   }
 
@@ -148,7 +207,7 @@ function extractSeasonEpisode(text: string): { season: number | null; episode: n
     const m = text.match(/(?<seriesname>.*?)[\s._-](?<epnumber>\d{1,3})(?![\da-zA-Z])/)
     if (m?.groups) {
       const episode = Number(m.groups.epnumber)
-      const seriesname = m.groups.seriesname || null
+      const seriesname = unmask(m.groups.seriesname)
       const startsWithYear = seriesname !== null && /^\s*(19\d{2}|20\d{2})\b/.test(seriesname)
       const seriesEndsWithSeasonOrE = seriesname !== null && /(?:season|[sS]|[eE])\s*$|(?:^|\s)season$/i.test(seriesname)
       const afterMatch = text.slice((m.index ?? 0) + m[0].length)
@@ -222,8 +281,8 @@ function cleanTitle(title: string): string {
   }
   // 7. 剥尾部标点/分隔符
   t = t.replace(/[\s._\-—–()（）\[\]【】]+$/, '').trim()
-  // 裸集数标记不是剧名（'ep 1' / 'ep1' / 'ep' / '第3话' / '01' / '01.mkv' 剥完剩的 'ep'）
-  if (/^(?:ep(?:isode)?(?:[\s._-]*\d{1,3})?|第\s*\d{1,3}\s*[话集]|\d{1,3})$/i.test(t)) return ''
+  // 裸集数标记不是剧名（'ep 1' / 'ep1' / 'ep' / '第3话' / '第3話' / '01' / '01.mkv' 剥完剩的 'ep'）
+  if (new RegExp(`^(?:ep(?:isode)?(?:[\\s._-]*\\d{1,3})?|${BARE_CJK_EPISODE_SOURCE}|\\d{1,3})$`, 'i').test(t)) return ''
   return t
 }
 

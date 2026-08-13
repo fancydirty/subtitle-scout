@@ -1,5 +1,5 @@
 import { posix } from 'node:path'
-import { parseFilename, type ParsedName } from './parseFilename.js'
+import { parseFilename, BARE_CJK_EPISODE_SOURCE, type ParsedName } from './parseFilename.js'
 
 /** Recognition-ready shape for a full video path. Consumed by C3 (TMDB resolution) — keep the
  *  field names stable, they are the contract. */
@@ -109,8 +109,8 @@ function cleanFileTitle(title: string): string {
   t = t.trim()
   // 剥掉可能残留的扩展名（第三方轮子 movie mode 对 "ep 1.mp4" 会把扩展名留在 title 里）
   t = t.replace(/\.(?:mkv|mp4|avi|ts|m2ts|wmv|flv|webm|mov|mpg|mpeg|m4v)$/i, '').trim()
-  // 裸集数标记（ep 1 / ep1 / 第3话 / 第3集 / 01）不是剧名——返回空串，让调用方走目录 fallback
-  if (/^(?:ep(?:isode)?[\s._-]*\d{1,3}|第\s*\d{1,3}\s*[话集]|\d{1,3})$/i.test(t)) return ''
+  // 裸集数标记（ep 1 / ep1 / 第3话 / 第3話 / 第3集 / 01）不是剧名——返回空串，让调用方走目录 fallback
+  if (new RegExp(`^(?:ep(?:isode)?[\\s._-]*\\d{1,3}|${BARE_CJK_EPISODE_SOURCE}|\\d{1,3})$`, 'i').test(t)) return ''
   return t
 }
 
@@ -139,7 +139,7 @@ function isUsableDirTitle(title: string | null | undefined): boolean {
  */
 const BARE_EPISODE_PATTERNS: RegExp[] = [
   /^(?:ep|episode)[\s._-]*(\d{1,3})$/i,
-  /^第\s*(\d{1,3})\s*[话集]$/,
+  new RegExp(`^${BARE_CJK_EPISODE_SOURCE}$`),
   /^(\d{1,3})$/,
 ]
 
