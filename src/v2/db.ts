@@ -182,8 +182,14 @@ CREATE TABLE IF NOT EXISTS files (
   --
   -- skip_reason / sidecar_langs（v40/R-F15）同样**不在此终态定义里**，由 v40 的条件式 ALTER
   -- 追加（同上口径）。前者 = judgeSubtitle 的 verdict.reason 原值（origin-skip/embedded/
-  -- missing），后者 = 该视频旁边全部外挂字幕的语言集合 JSON（与当前 target_languages 无关的
+  -- missing），后者 = 该视频旁边**全部**外挂字幕的语言集合 JSON（与当前 target_languages 无关的
   -- 磁盘事实）。两列皆可空，NULL 分别是"还没判"与"还没观察"的第三态。详见 v40 entry。
+  --
+  -- parser_version（v45/C48）同样**不在此终态定义里**，由 v45 的条件式 ALTER 追加（同上口径）。
+  -- 语义 = 这一行的 work_dir/season/episode/parse_confidence 四列是用**哪个版本的解析规则**
+  -- 算出来的。刻意可空且无 DEFAULT：NULL = "旧规则解析的（或未知）"，是重解析的唯一凭据。
+  -- 给它 DEFAULT 当前版本会让全部存量行当场被标成"已最新" → 重解析一行都不发生，
+  -- 正是这一列要修的那个静默失效原样复活。详见 v45 entry。
 );
 CREATE INDEX IF NOT EXISTS files_work_dir ON files(work_dir);
 CREATE INDEX IF NOT EXISTS files_work_id ON files(work_id);
@@ -1375,6 +1381,60 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
       )
     }
     db.exec('DROP TABLE IF EXISTS extras_exemptions')
+  },
+
+  // v45（C48 解析器版本化重解析，2026-08-14）：files 表加 parser_version。
+  // 纯条件式 ADD COLUMN，无 CHECK 约束变更、不碰既有表，故不触发 12 步建新表流程。
+  //
+  // ── 为什么需要这一列（没有它，解析器的任何改进对存量库**永远**不生效）─────────
+  // scanOnce 的指纹闸是 `if (mtime 与 size 都没变) continue`，而它挡在 toMediaFileRow
+  // （内含 parseStructure → parseFilename）**之前**。文件躺在 NAS 上不动 → 指纹永远不变
+  // → 解析永远不重跑。cf0453c 修好了日文「話」集号与 CRC32 误判，生产库那 13 个日文文件
+  // （12 个 season/episode 全 NULL + parse_confidence='none'；1 个 ep04 被 CRC 里的
+  // `(4FE33E90)` 误读成 season=1/episode=90 且 confidence='high'）部署新代码后**一行不变**。
+  //
+  // 这是本仓招牌病 A（"加了能力却没人触发"）的第 13 次：C12 → C35 → D17 → D18 → C43 →
+  // v44 的 needs_subtitle 重判 → …… 前几次的治法都是"再写一条一次性 UPDATE 迁移"，
+  // 而那个治法**不治本**：下次改解析器时得记得再写一条，忘了没有任何测试会红。
+  // 版本号把判据变成结构性的——解析规则一变就递增常量，扫描自己会发现落后的行。
+  //
+  // ── 默认值必须是 NULL，不能是 PARSER_VERSION（这是本条迁移唯一的要害）─────────
+  // 存量行是**用旧规则解析出来的**，它们必须"看起来是旧版本"从而被重解析一次。
+  // 若写成 `DEFAULT 1`（= 当前 PARSER_VERSION），全部存量行会当场被标成"已是最新"，
+  // 重解析一行都不发生 —— 加了列、加了判据、加了代码，而生产库原封不动。
+  // 那正是本条迁移要消灭的那个失效模式**穿着新衣服**再来一次，且这次连日志都不会响。
+  //
+  // 读取侧用 `(parser_version ?? 0) < PARSER_VERSION` 把 NULL 归一成 0（daemonV2）：
+  // 不用 SQL 谓词判是刻意的——`parser_version < 1` 在 NULL 上是三值逻辑的 unknown，
+  // **永远选不中存量行**，与 D18 踩的是同一个坑，而这里的静默失效恰恰是本列要修的病。
+  // 判据放在 TS 侧、对着一个已经读出来的值做比较，NULL 归零是显式的一步。
+  //
+  // ── 谁写 / 谁读 / 谁触发 ────────────────────────────────────────────────
+  //  · 谁写：daemonV2.scanOnce **独占**（正常 upsert 与 C48 重解析两条路径都恒写
+  //    PARSER_VERSION）。没有第二个写入者，也不接受 worker/API 写它——它记的是
+  //    "这一行的解析列是哪套规则算的"，只有算的人有资格说。
+  //  · 谁读：daemonV2.scanOnce 的重解析判据，全仓唯一读者。不进 API、不进 UI、
+  //    不参与任何业务判决——它是纯粹的记账列。
+  //  · 谁触发：每轮巡检的 scanOnce。存量行在**下一轮扫描**被重解析一次并写上当前版本，
+  //    此后收敛（`< PARSER_VERSION` 恒假），行为与今天的指纹闸逐字相同。
+  //
+  // 刻意**不加 CHECK 约束**、也**不加 NOT NULL**：NULL 是有意义的第三态（"旧规则/未知"），
+  // 正是重解析的唯一凭据（同 v40 skip_reason/sidecar_langs 的既有口径）。
+  //
+  // 条件式表存在性 + 列存在性双重检查照抄 v30–v44（前者防 v29 及更早的库裸 ALTER 把
+  // openDb 整个炸掉 → 用户的库再也打不开；后者保证幂等——db.test.ts 会把尾部迁移重放一遍）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('parser_version')) {
+      db.exec('ALTER TABLE files ADD COLUMN parser_version INTEGER')
+    }
   },
 ]
 

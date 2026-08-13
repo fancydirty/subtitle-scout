@@ -100,6 +100,36 @@ export interface ParsedStructure {
   parseConfidence: 'high' | 'low' | 'none'
 }
 
+/** C48：**解析逻辑的版本号**。改动任何影响 parseStructure 产物的规则时 +1。
+ *
+ *  ── 为什么需要它（本仓招牌病 A 的第 13 次，这次治本）─────────────────────────
+ *  scanOnce 的指纹闸（`mtime+size 未变 → continue`）挡在 toMediaFileRow **之前**，
+ *  于是解析规则的任何改进对**存量行零作用**：文件躺在 NAS 上不动，mtime/size 永远不变。
+ *  2026-08-14 的 cf0453c 修好了日文「話」集号与 CRC32 误判，而生产库那 13 行
+ *  （12 个 parse_confidence='none' + 1 个被 CRC 里的 E90 误读成 S1E90）部署后**一行不变**。
+ *  这不是"改进没上线"，是"改进永远不会上线"——没有任何通路会重跑解析。
+ *
+ *  版本号把"这一行是用哪套规则解析的"变成**库里的一等事实**，扫描据此判断该不该重算。
+ *  没有它的话，唯一的替代方案是"每轮无条件重解析全库"（不收敛）或"手工写一条一次性
+ *  UPDATE 迁移"（下次改解析器时又得记得再写一条，而没有任何测试会在忘记时变红）。
+ *
+ *  ── 谁写 / 谁读 / 谁触发（本仓已栽 12 次"加了列却没定这三者"，故写死在这里）──
+ *   · 谁写：daemonV2.scanOnce **独占**——正常 upsert 路径与 C48 重解析路径都写它，
+ *     两条路径都恒写 PARSER_VERSION（写的是"我用哪套规则算的"，不是"算出了什么"）。
+ *   · 谁读：daemonV2.scanOnce 的重解析判据（`(row.parser_version ?? 0) < PARSER_VERSION`），
+ *     全仓唯一读者。它不是给 UI 看的，也不参与任何业务判决。
+ *   · 谁触发：每轮巡检的 scanOnce。存量行（迁移后为 NULL）在**下一轮扫描**被重解析一次，
+ *     写上当前版本后即收敛，此后与今天的指纹闸行为逐字相同。
+ *
+ *  ── 递增它的时机 ──
+ *  凡改动 parseFilename / identifyFromPath / deriveWorkDir / parseStructure 中**会改变
+ *  已有文件名解析结果**的规则，就 +1。改注释、改错误文案、加只影响新形态的规则时不必
+ *  （多递增的代价只是全库跑一遍纯函数，漏递增的代价是这条修复对存量库静默失效——
+ *  两种错误的伤害不对称，拿不准时就 +1）。
+ *
+ *  值取 1 而非 cf0453c 的 commit 号/日期：它只需要**单调递增且可比较**，语义是序数不是时刻。 */
+export const PARSER_VERSION = 1
+
 /** 解析路径结构（照 Jellyfin 约定 + parse_confidence 判定）。 */
 export function parseStructure(
   videoPath: string,

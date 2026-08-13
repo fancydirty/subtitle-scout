@@ -12,7 +12,7 @@
 //   阶段 4：停，歇着，等明天
 import { walkVideoFiles } from '../daemon/selfScan.js'
 import { statSync } from 'node:fs'
-import { toMediaFileRow, isScannable } from './scanner.js'
+import { toMediaFileRow, isScannable, PARSER_VERSION } from './scanner.js'
 import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, subtitleJobId, type SubtitleQueueItem } from './subtitleScheduler.js'
@@ -1460,18 +1460,63 @@ export class ScoutDaemonV2 {
     // 只不过换从"新文件"这条侧门进来（C42）。
     //
     // 值取 now 而不是 Date.now()：与观察路径写的值同源，否则同一行会在两个时刻之间反复漂移。
+    //
+    // C48：parser_version 按 PRAGMA 取交集动态拼进来（照 judgeOnce 的 translatable/skip_reason
+    // 与 fingerprintResetColumns 的既有口径），硬编码进 SQL 会让本阶段在**没有该列的旧库**上
+    // 抛 `no such column` → 整轮巡检挂掉。生产上这形态真实存在（容器滚更时新代码可能先于
+    // 迁移起来、或从旧备份恢复的库）。
+    const haveParserVersion = (() => {
+      try {
+        return (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+          .some((c) => c.name === 'parser_version')
+      } catch { return false }
+    })()
+    const pvInsertCol = haveParserVersion ? ', parser_version' : ''
+    const pvInsertVal = haveParserVersion ? ', ?' : ''
+    const pvUpdate = haveParserVersion ? ', parser_version=excluded.parser_version' : ''
     const upsert = db.prepare(`
-      INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, parse_confidence, sub_recheck_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, parse_confidence, sub_recheck_at, updated_at${pvInsertCol})
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${pvInsertVal})
       ON CONFLICT(path) DO UPDATE SET
         dir=excluded.dir, filename=excluded.filename, size=excluded.size, mtime=excluded.mtime,
         work_dir=excluded.work_dir, season=excluded.season, episode=excluded.episode,
         parse_confidence=excluded.parse_confidence, sub_recheck_at=excluded.sub_recheck_at,
-        updated_at=excluded.updated_at${resetSql}
+        updated_at=excluded.updated_at${resetSql}${pvUpdate}
     `)
-    const findExisting = db.prepare('SELECT mtime, size FROM files WHERE path = ?')
+
+    // ── C48 的重解析语句：**只写解析产物四列 + 版本 + updated_at，一个状态列都不碰**。
+    //
+    // 为什么必须是一条**独立**的 UPDATE，而不是复用上面那条 upsert：
+    // upsert 的 DO UPDATE 里挂着 `resetSql`（C11 的状态清空名单：sub_status / needs_subtitle /
+    // sub_attempt / sub_retry_streak / translatable / recheck_after）。走它就等于把重解析
+    // 变成"换片源"处理——而这两件事的性质**完全相反**：
+    //   · 指纹变化 = 这一行代表的是**另一个文件** → 旧结论全部作废，状态该清。
+    //   · 版本落后 = 文件一个字节没变，只是**我们过去读错了它的名字** → 磁盘事实没变，
+    //     用户已装好的字幕、已攒的重试额度、已做出的语言判决，一条都不该动。
+    // 走错方向的代价是真金白银：sub_status='covered' 被清成 NULL → 该行重回字幕工作台
+    // → 为一个字幕早就躺在盘上的文件重跑一整轮付费 LLM。生产 13 行部署当天就会全部重跑。
+    // 也顺带不推 sub_recheck_at（那是"字幕存在性该复核了"的调度，与解析无关）。
+    //
+    // 同理不进 toProbe / toDetect：ffprobe 在 115 FUSE 上是 12-16s/文件，而"我们把文件名
+    // 读错了"与"这个文件的内嵌轨是什么"毫无关系；字幕存在性同理。
+    //
+    // 语句本身在无列的旧库上永远不会被执行（下面的 needsReparse 恒 false），故不必动态拼。
+    const reparse = haveParserVersion ? db.prepare(`
+      UPDATE files SET work_dir = ?, season = ?, episode = ?, parse_confidence = ?,
+        parser_version = ?, updated_at = ? WHERE path = ?
+    `) : null
+
+    const findExisting = db.prepare(
+      `SELECT mtime, size${haveParserVersion ? ', parser_version' : ''} FROM files WHERE path = ?`,
+    )
     const stat = this.deps.statFile ?? ((p: string) => { try { return statSync(p) } catch { return null } })
     let scanned = 0, upserted = 0, skipped = 0
+    // C48：本轮因**解析器版本落后**而被重解析的行数。单独计数而不是并进 upserted：
+    // 两者的性质完全不同（upserted = 磁盘上有东西变了；reparsed = 磁盘没变、是我们过去
+    // 读错了），混在一起会让日志说"upserted=13"而运维去磁盘上找那 13 个变化的文件——
+    // 找不到。这正是本仓栽过三次的"日志把一个中间量说成结论量"（probe ok=N / judge 总数 /
+    // mismatch 截断），计数口径必须与文案逐字对应。
+    let reparsed = 0
 
     // D20：删除前先算一次嵌套关系，凡出现在任何一对里的根（**内外层都算**）整轮跳过删除。
     // 为什么不能靠告警了事：第 1a 步的 detectNestedRoots 只告警、不擅自改用户配置（守备目录
@@ -1647,12 +1692,40 @@ export class ScoutDaemonV2 {
         // 复用探空阶段已经取到的 st，**不重新 stat**：stat 在 115 FUSE 上代价放大约 46 倍，
         // 几千文件重取一遍就是把本该秒级的机械扫描又拖长一截（同 R24 那条性能红线的理由）。
         for (const { path: f, st } of entries) {
-          const existing = findExisting.get(f) as { mtime: number; size: number } | undefined
-          if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) continue
+          const existing = findExisting.get(f) as
+            { mtime: number; size: number; parser_version?: number | null } | undefined
+          if (existing && existing.mtime === Math.round(st.mtimeMs) && existing.size === st.size) {
+            // ── C48：指纹未变，但这一行可能是**旧解析规则**的产物。
+            //
+            // NULL 归一成 0 是显式的一步，不许下放给 SQL：`parser_version < 1` 在 NULL 上是
+            // 三值逻辑的 unknown → **永远选不中存量行**，而存量行恰恰是这条通路的全部服务
+            // 对象（迁移给它们的默认值就是 NULL）。那是 D18 踩过的坑，也是本修复要治的病
+            // 本身——让它从侧门溜回来的话，加了列、加了判据、加了测试，生产库仍然一行不变。
+            const rowVersion = existing.parser_version ?? 0
+            if (reparse !== null && rowVersion < PARSER_VERSION) {
+              // 解析是**纯函数**：入参只有文件名（f 已在手上）与 scanRoots（内存里的快照）。
+              // toMediaFileRow 额外要一个 st，我们把探空阶段那份原样传进去——**零新增
+              // 文件系统调用**。这是 1647 行那条性能红线（115 FUSE 上 stat 放大约 46 倍，
+              // 所以扫描刻意复用 st 不重新 stat）在本通路上的兑现，不是顺带的优化。
+              const r = toMediaFileRow(f, st, scanRoots)
+              reparse.run(r.workDir, r.season, r.episode, r.parseConfidence,
+                PARSER_VERSION, Date.now(), f)
+              reparsed++
+            }
+            // 无论重解析与否都 continue：指纹未变的文件**不进探测队列、不进字幕观察名单**
+            // （见下方 toProbe 处的性能红线论证）。重解析只改我们对文件名的读法，
+            // 与"这个文件的内嵌轨是什么"「磁盘上有没有字幕」两件事都无关。
+            continue
+          }
           const row = toMediaFileRow(f, st, scanRoots)
-          upsert.run(row.path, row.dir, row.filename, row.size, row.mtime,
+          const args: unknown[] = [row.path, row.dir, row.filename, row.size, row.mtime,
             row.workDir, row.season, row.episode, row.parseConfidence,
-            now + SUB_RECHECK_INTERVAL_MS, Date.now())
+            now + SUB_RECHECK_INTERVAL_MS, Date.now()]
+          // 与上面拼列的**同一条件**（haveParserVersion）、同一顺序：正常 upsert 路径同样
+          // 恒写当前版本。漏了它的话，每一个新增/指纹变化的行都会带着 NULL 落库，
+          // 下一轮扫描立刻把它们判成"版本落后"再重解析一次——永不收敛，且结果逐字相同。
+          if (haveParserVersion) args.push(PARSER_VERSION)
+          upsert.run(...args)
           upserted++
           // 只有走到这里（新增 or 指纹变化）才排进探测队列。指纹未变的文件在上面那行
           // `continue` 就走了，**一次 ffprobe 都不会发**——这是性能红线而非优化：
@@ -1710,6 +1783,13 @@ export class ScoutDaemonV2 {
     }
     if (upserted > 0) {
       this.deps.log(`scan: scanned=${scanned} upserted=${upserted} skipped=${skipped}`)
+    }
+    // C48：独立成一条日志且**独立判空**（不并进上面那条的条件）——重解析的典型场景恰恰是
+    // "磁盘一个文件都没变（upserted=0）、但解析规则升级了"，挂在 `upserted > 0` 下面
+    // 会让这条通路在它唯一重要的那一轮里**一声不响**。升级解析器后运维的第一个问题是
+    // "存量库到底重算了没有、算了多少行"，这条日志是唯一的答案。
+    if (reparsed > 0) {
+      this.deps.log(`scan: 解析器版本升级到 v${PARSER_VERSION}，重解析 ${reparsed} 行（指纹未变，仅重算 work_dir/season/episode/parse_confidence，未触碰任何字幕状态）`)
     }
 
     // 字幕存在性观察（R24）**必须在删除清理跑完之后**：对一个已经从磁盘消失的文件跑 84 次

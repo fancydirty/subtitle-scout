@@ -5,6 +5,10 @@ import { openDb } from './db.js'
 // ——本次事故就坏在那里，而 C12 那组全用假 probe，从不经过它。
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
+// C48：解析器版本常量。测试**必须**import 真常量而不是手抄一个字面量——手抄的话，
+// 递增版本那天这组用例仍按旧值建模，测的是一个已经不存在的系统（同 INSPECT_INTERVAL_MS
+// 那次的教训，见 mkDeps 里 inspectEveryMs 的注释）。
+import { PARSER_VERSION } from './scanner.js'
 // 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
 // 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
 import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir, RETRY_LATER_STREAK_CAP } from './subtitleScheduler.js'
@@ -278,7 +282,28 @@ describe('ScoutDaemonV2.scanOnce · 删除清理（C1 / R6 / R7）', () => {
     }))
     await scan(daemon)
     await scan(daemon)   // 跑两遍：幂等意味着第二遍也不该动它
-    expect(db.prepare('SELECT * FROM files WHERE path = ?').get('/media/Show/E01.mkv')).toEqual(before)
+    const after = db.prepare('SELECT * FROM files WHERE path = ?').get('/media/Show/E01.mkv') as Record<string, unknown>
+
+    // C48 之后这条断言的口径**收窄了一次**，收窄的部分是刻意的、也是本用例守的东西之一：
+    // seedFiles 播的行 parser_version 是 NULL（= 存量行的形状），第一轮扫描会对它做一次
+    // 重解析，于是 work_dir/season/episode/parse_confidence/parser_version/updated_at
+    // 这六列**必然**变。把它们排除掉不是"给新功能让路"，而是因为原用例真正守的是
+    // 另外那 20 多列：**这一行没有被删掉又插回来**（work_id 还在）、字幕/识别状态一列没动。
+    // 那部分一个字都没放松。
+    const PARSE_COLS = new Set(['work_dir', 'season', 'episode', 'parse_confidence',
+      'parser_version', 'updated_at'])
+    const omit = (r: Record<string, unknown>) =>
+      Object.fromEntries(Object.entries(r).filter(([k]) => !PARSE_COLS.has(k)))
+    expect(omit(after)).toEqual(omit(before as Record<string, unknown>))
+    // work_id 单独点名（存活证据）：为 null 就说明这行被删了又被 upsert 插回来
+    expect(after.work_id).toBe('tmdb:/media/Show/E01.mkv')
+
+    // 而"第二遍不该动它"这一半，改用**第三遍**来测且是全列相等——版本已在第一轮追平，
+    // 此后必须是逐字不变的真 no-op。这比原来的写法更强：原写法里两轮都在收敛前/后，
+    // 分不出"第二轮没动"是因为收敛了还是因为压根没实现重解析。
+    const settled = db.prepare('SELECT * FROM files WHERE path = ?').get('/media/Show/E01.mkv')
+    await scan(daemon)
+    expect(db.prepare('SELECT * FROM files WHERE path = ?').get('/media/Show/E01.mkv')).toEqual(settled)
     db.close()
   })
 })
@@ -1406,6 +1431,231 @@ describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
     // 掩盖"每轮对全库重探一遍"这个真实成本（生产上是几万文件 × 12s）。
     expect(fs.probeCalls).toEqual([])
     expect(fs.durationCalls).toEqual([])
+    db.close()
+  })
+})
+
+/** 解析产物四列 + 版本列。与 stateOf（运行状态列）刻意分成两个读取面：
+ *  C48 的全部要害就是"这两组列的命运必须相反"——解析列该被重算，状态列一列不许动。
+ *  合成一个 helper 会让断言写成 `expect(row).toEqual({...})` 而把两种语义混进一个对象，
+ *  下一个人加列时分不清该往哪边放。 */
+function parseOf(db: ReturnType<typeof openDb>, path: string): Record<string, unknown> {
+  return db.prepare(
+    'SELECT work_dir, season, episode, parse_confidence, parser_version FROM files WHERE path = ?',
+  ).get(path) as Record<string, unknown>
+}
+
+/** 磁盘建模 + **可数的 stat**。C48 的性能红线断言要的是 stat 调用次数，而 fakeFsWithProbe
+ *  的 statFile 不计数——探空阶段每文件必然 stat 一次（既有行为），重解析**不许在那之上
+ *  再加一次**。用次数而非"没变慢"断言：后者在测试里根本测不出来，而生产上 115 FUSE 的
+ *  stat 放大约 46 倍，多一次就是几千文件 × 46。 */
+function fakeFsCountingStat(
+  disk: Record<string, string[]>,
+  stats: Record<string, { mtimeMs: number; size: number }>,
+) {
+  const statCalls: string[] = []
+  const probeCalls: string[] = []
+  const readdirCalls: string[] = []
+  return {
+    statCalls,
+    probeCalls,
+    readdirCalls,
+    deps: {
+      listVideoFiles: (root: string) => disk[root] ?? [],
+      statFile: (p: string) => {
+        statCalls.push(p)
+        return stats[p] ?? { mtimeMs: 1000, size: BIG }
+      },
+      probe: async (p: string) => { probeCalls.push(p); return null },
+      probeDuration: async (p: string) => { probeCalls.push(p); return null },
+      readdir: (d: string) => { readdirCalls.push(d); return [] },
+    },
+  }
+}
+
+describe('🔴 C48 解析器版本化重解析（指纹未变但解析规则已升级）', () => {
+  // 用 S01E01 而不是裸 E01：裸 `E01.mkv` 在当前解析器下是 `episode=null / confidence='low'`
+  // （R5 的 `E\d{2,3}` 要有前缀上下文才认，这正是 cf0453c 收紧 CRC 误判时的既有行为）。
+  // 拿它当夹具会让"重解析跑了"这件事只能靠 confidence 从 none→low 来证明——太弱，
+  // 且与 CRC 那个真实病例的形状不同。S01E01 有确定的 season/episode，断言才咬得住。
+  const P = '/media/Show/S01E01.mkv'
+  // 生产真名单里的 ep04（紫罗兰永恒花园）。它是 13 个日文文件里**唯一**解析出了值的那个，
+  // 而那个值是错的：CRC32 校验和 `(4FE33E90)` 里的 `E90` 被旧 R5（`E\d{2,3}`）当成集号，
+  // 落库 season=1/episode=90/parse_confidence='high'——"high" 意味着下游不会去质疑它。
+  // cf0453c 修好了解析器，但这一行的 mtime/size 永远不变（文件躺在 NAS 上不动），
+  // 于是 `if (指纹未变) continue` 让新解析器对它**永远不生效**。这就是本 describe 的由来。
+  const JP = '/media/Anime/ヴァイオレット・エヴァーガーデン/Season 01/'
+    + '[DMG] ヴァイオレット・エヴァーガーデン 第04話「君は道具ではなく、その名が似合う人になるんだ」'
+    + ' [BDRip][AVC_AAC][1080P][CHS](4FE33E90).mp4'
+
+  /** 播一行"旧解析器留下的行"：指纹与磁盘一致（所以会走 continue 那条路），
+   *  但 parser_version 落后。`version: null` 建模的是**存量库**——迁移加列时既有行拿到 NULL。 */
+  function seedParsedRow(
+    db: ReturnType<typeof openDb>,
+    path: string,
+    over: {
+      mtime?: number; size?: number
+      season?: number | null; episode?: number | null
+      confidence?: string | null; version?: number | null
+      sub_status?: string | null
+    } = {},
+  ): void {
+    const dir = path.slice(0, path.lastIndexOf('/'))
+    db.prepare(`INSERT INTO files
+      (path, dir, filename, size, mtime, work_dir, season, episode, parse_confidence,
+       parser_version, work_id, needs_subtitle, sub_status, sub_attempt, sub_retry_streak,
+       translatable, recheck_after, embedded_langs, duration_sec, sub_recheck_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      path, dir, path.slice(path.lastIndexOf('/') + 1),
+      over.size ?? BIG, over.mtime ?? 1000, dir,
+      over.season === undefined ? null : over.season,
+      over.episode === undefined ? null : over.episode,
+      over.confidence === undefined ? 'none' : over.confidence,
+      over.version === undefined ? null : over.version,
+      'tmdb:42', 1, over.sub_status === undefined ? 'covered' : over.sub_status,
+      3, RETRY_LATER_STREAK_CAP - 1, 1, 9_999_999_999, '["chi","eng"]', 1440,
+      // ⚠️ sub_recheck_at 必须是**未来**时刻（mkDeps.now = 1e12，而 9_999_999_999 < 1e12）。
+      // 播成过去时刻的话 R24 的 B 档谓词 `sub_recheck_at <= now` 会选中这一行，
+      // 而夹具里的文件在真实磁盘上不存在 → observeSubtitle 把 covered 回退成 NULL，
+      // 用例 3/4 会红在一个**与 C48 完全无关**的既有行为上（照 seedRow 的 `NOW + 5*DAY` 口径）。
+      1_000_000_000_000 + 5 * 24 * 60 * 60 * 1000, 1000,
+    )
+  }
+
+  it('用例 1 · 指纹未变 + 版本落后（存量行 = NULL）→ 重解析，解析列被更新', async () => {
+    const db = openDb(':memory:')
+    // 旧解析器的产物：一个字都没解析出来（生产 13 个里的 12 个就是这个状态）。
+    seedParsedRow(db, P, { mtime: 1000, size: BIG, season: null, episode: null, confidence: 'none' })
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    const p = parseOf(db, P)
+    // 'E01.mkv' 在当前解析器下出得来集号——断言的是"重解析真的跑了"，
+    // 不是"某个具体集号"（后者是 parseFilename 自己的测试范围）。
+    expect(p.season).toBe(1)
+    expect(p.episode).toBe(1)
+    expect(p.parse_confidence).toBe('high')
+    // 版本追平 = 收敛的凭据（见用例 5）
+    expect(p.parser_version).toBe(PARSER_VERSION)
+    db.close()
+  })
+
+  it('用例 2 · 指纹未变 + 版本已是最新 → 不重解析（收敛性）', async () => {
+    const db = openDb(':memory:')
+    // 刻意播一个**错的**解析结果，且版本标成最新。若实现漏判版本（无条件重解析），
+    // 这个错值会被纠正 → 用例红。用"错值被保留"来证明"没跑"，比断言 updated_at 没变更硬：
+    // 后者在实现改成"重解析但不写 updated_at"时会假绿。
+    seedParsedRow(db, P, {
+      mtime: 1000, size: BIG, season: 7, episode: 777, confidence: 'high', version: PARSER_VERSION,
+    })
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    await scan(daemon)   // 跑两遍：不收敛的实现往往第二轮才露头
+
+    const p = parseOf(db, P)
+    expect(p.season).toBe(7)
+    expect(p.episode).toBe(777)
+    expect(p.parse_confidence).toBe('high')
+    db.close()
+  })
+
+  it('用例 3 · 重解析绝不冲掉运行状态（sub_status / needs_subtitle / attempt / streak…）', async () => {
+    // 本组最重要的一条。重解析与"指纹变化"（C11）是**性质完全不同**的两件事：
+    //  · 指纹变化 = 换了片源 = 这一行代表的是另一个文件 → 旧结论全部作废，状态列该清。
+    //  · 版本落后 = 文件一个字节没变，只是我们**过去读错了它的名字** → 磁盘事实没变，
+    //    用户已经找到并装好的字幕、已经攒的重试额度、已经做出的语言判决，一条都不该动。
+    // 清错方向的代价是真金白银：sub_status='covered' 被清成 NULL → 该行重回字幕工作台
+    // → 为一个字幕早就躺在盘上的文件重跑一整轮付费 LLM。生产 13 行里若有已配好字幕的，
+    // 部署当天就会全部重跑。
+    const db = openDb(':memory:')
+    seedParsedRow(db, P, { mtime: 1000, size: BIG, season: null, episode: null, confidence: 'none' })
+    const before = stateOf(db, P)
+    expect(before.sub_status).toBe('covered')          // 前置条件成立，否则本用例是空转的假绿
+    expect(before.sub_attempt).toBe(3)
+    expect(before.sub_retry_streak).toBe(RETRY_LATER_STREAK_CAP - 1)
+
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    // 解析真的跑了（否则下面那句"状态没变"可以靠"什么都没做"廉价满足）
+    expect(parseOf(db, P).parser_version).toBe(PARSER_VERSION)
+    // 而运行状态整体逐列相等
+    expect(stateOf(db, P)).toEqual(before)
+    db.close()
+  })
+
+  it('用例 4 · 端到端（生产场景）：日文 ep04 旧行 S1E90 → 新行 S1E4，且 sub_status 未被冲掉', async () => {
+    const db = openDb(':memory:')
+    // 生产库今天这一行的真实状态：CRC 里的 E90 被误读成第 90 集，且置信度是 'high'。
+    seedParsedRow(db, JP, {
+      mtime: 1000, size: BIG, season: 1, episode: 90, confidence: 'high',
+      version: null, sub_status: 'covered',
+    })
+    const fs = fakeFsWithProbe({ '/media': [JP] }, { [JP]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    const p = parseOf(db, JP)
+    expect(p.season).toBe(1)      // 由 `Season 01/` 目录给出（纯路径推导，零 fs）
+    expect(p.episode).toBe(4)     // 「第04話」——不再是 CRC 里的 90
+    expect(p.parse_confidence).toBe('high')
+    expect(p.parser_version).toBe(PARSER_VERSION)
+    // 用户已经配好的字幕不许被这次重解析掀掉
+    expect(stateOf(db, JP).sub_status).toBe('covered')
+    db.close()
+  })
+
+  it('用例 5 · 重解析是一次性的：第二轮不再改任何解析列（版本已追平）', async () => {
+    const db = openDb(':memory:')
+    seedParsedRow(db, P, { mtime: 1000, size: BIG, season: null, episode: null, confidence: 'none' })
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    const afterFirst = parseOf(db, P)
+    expect(afterFirst.parser_version).toBe(PARSER_VERSION)
+
+    // 第二轮：手工把解析列改成一个哨兵值。若第二轮仍会重解析，哨兵会被覆盖 → 红。
+    db.prepare('UPDATE files SET episode = 999 WHERE path = ?').run(P)
+    await scan(daemon)
+    expect(parseOf(db, P).episode).toBe(999)
+    db.close()
+  })
+
+  it('用例 6 · 性能红线：重解析不引入任何额外的文件系统调用', async () => {
+    // 1647 行那条注释是硬约束：115 FUSE 上 stat 代价放大约 46 倍，所以扫描刻意复用探空阶段
+    // 的 st、不重新 stat。重解析只需要**文件名 + 已在手上的 st**，不需要碰盘——本用例把
+    // 这件事钉死：一个指纹未变但需重解析的文件，其 stat 次数必须与"什么都不做"时逐字相同
+    // （即探空阶段的那 1 次），且不发 probe。
+    const db = openDb(':memory:')
+    seedParsedRow(db, P, { mtime: 1000, size: BIG, season: null, episode: null, confidence: 'none' })
+    const fs = fakeFsCountingStat({ '/media': [P] }, { [P]: { mtimeMs: 1000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    // 重解析确实发生了（否则本用例退化成"什么都没做当然不 stat"的假绿）
+    expect(parseOf(db, P).parser_version).toBe(PARSER_VERSION)
+    // 探空阶段每文件恰好 1 次 stat，重解析在其之上加 0 次
+    expect(fs.statCalls).toEqual([P])
+    // 也不许把它塞进探测队列：ffprobe 在 FUSE 上是 12-16s/文件，
+    // 而"我们过去把文件名读错了"与"这个文件的内嵌轨是什么"毫无关系。
+    expect(fs.probeCalls).toEqual([])
+    db.close()
+  })
+
+  it('用例 7 · 指纹**也**变了的行：走 C11 全量路径（状态列照清），版本同样追平', async () => {
+    // 边界：两个条件同时成立时不许"重解析路径"把 C11 的清空吃掉——那会让换片源的行
+    // 保留旧片源的 sub_status='covered'，即 C11 修的那个洞原样复活。
+    const db = openDb(':memory:')
+    seedParsedRow(db, P, { mtime: 1000, size: BIG, season: null, episode: null, confidence: 'none' })
+    const fs = fakeFsWithProbe({ '/media': [P] }, { [P]: { mtimeMs: 5000, size: BIG } })
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+
+    expect(stateOf(db, P).sub_status).toBeNull()      // C11 照常生效
+    expect(parseOf(db, P).parser_version).toBe(PARSER_VERSION)
     db.close()
   })
 })
