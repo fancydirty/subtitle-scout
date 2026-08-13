@@ -18,72 +18,64 @@
 
 ---
 
-## 二、进度：**第 8 步（前端全删重做）已完成** ✅
+## 二、进度：第 8 步已完成，正在收尾
 
 ```
-第 1a-5.5 步  ✅ 后端重构     第 7 步 ✅ 清理死代码     第 6 步 ✅ live test
-第 8 步       ✅ **前端全删重做（12 个 task，2026-08-12 完成）**
-              ├─ 后端六步 ⓪①②③④⑤⑥（workbench / notifications / EpisodeState 八态 /
-              │            media_roots 健康列 / current 快照 / health 端点 / backdrop）
-              ├─ 前端四步 ⑦ shell+SSE / ⑧ 媒体库页 / ⑨ 活动页 / ⑩ 通知页
-              └─ 收尾 ⑪ _legacy + docker build / ⑫ 终局审计与跨 task 收口
+第 1a-7 步   ✅ 后端重构 + live test + 清理死代码
+第 8 步      ✅ **前端全删重做**（12 task，2026-08-12 完成并部署）
+收尾轮       🔄 T1-T6，见 `2026-08-13-WRAPUP-PLAN.md` ← **当前在这里**
 ```
 
-### 最终基线（每次改动都要对照）
+### ⚠️ 验收只用一条命令（这条最重要）
 
-```
-后端  npx vitest run --exclude '**/web/**'   → 144 文件 / 3326 用例 / **0 失败**
-        ⚠️ 那 7 条"既有债务"已于 2026-08-12 全部修掉（`4bb2456`）——**全是测试过时，无一是真 bug**。
-        以后再出现失败就是真的回归，不许再当"既有债务"放过。
-前端  cd web && npx vitest run               → 106 文件 / 1288 用例 / 0 失败（起点 78/863）
-类型  npm run check  且  cd web && npx tsc --noEmit   两条都要退出码 0
-构建  docker build                            → 退出码 0（CI 账单耗尽，只能本机或软路由）
+```bash
+npm run verify
 ```
 
-⚠️ **三条验收陷阱**（都实测踩过）：
-1. **vitest 不查类型** → 类型错误能全绿交差，必须单独跑 tsc（**两个工程各一次**）
-2. **vitest 会静默丢整个测试文件** → 必须同时断言文件数
-3. **默认 reporter 虚报** → 用 `--reporter=json`
+四条判据缺一即失败：① 退出码 0 ② `numFailedTests === 0`
+③ **每个 `testResults[].status === 'passed'`** ④ 文件数 >= 基线。
 
-（dashboard 测试的 flake 已根治，见 `218cb7b`：真因是绑 `::` 却拨 `127.0.0.1`。）
+**不许再手敲 `npx vitest ... | node -e "numFailedTests"` 那套口径**——
+它对**空 describe** 完全免疫。2026-08-13 栽过一次：commit message 写
+「146 文件 / 3272 用例 / 0 失败」**字面为真**，而 vitest **退出码是 1**
+（删除脚本把两个 `describe` 掏空只剩壳）。`scripts/verify.mjs` 就是为堵这个洞建的。
+
+**当前基线**：后端 146 文件 / 3284 用例；前端 84 文件 / 975 用例。
 
 ---
 
-## 二·五、下一步
+## 二·五、compact 后从这里开始
 
-### 🔴 生产部署（唯一的必做项）
+**读这三份**：
+| 文档 | 作用 |
+|---|---|
+| `2026-08-13-WRAPUP-PLAN.md` | **当前施工图**：T1-T6 + 通用底座 + 变异验证的十个陷阱 |
+| `2026-08-11-FRONTEND-IMPL-PLAN.md` | 前端 12 task 的完整记录与滚动债务清单 |
+| `DESIGN.md`（项目根） | Linear 视觉基准 |
 
-**生产 schema 落后 3 级**（实测 v34，代码要求 v37）：v41 `media_roots` 健康列、
-v42 `works.backdrop_path`、v43 `backdrop_checked_at`。升级通路已验证健康（v34 库 → openDb → 全列到位）。
+**执行模式**（用户明确要求）：每 task 由 subagent **TDD 实现**
+（先写红测试 → 实现 → 变异验证）→ **另起 subagent 对抗审计** → 我裁决 → commit。
+
+### 生产环境
 
 ```
-git push                                  # 本地 12 个 task 尚未推送
-ssh media-router-wan                      # 公司；家里 media-router
-cd /mnt/nvme0n1-4/docker/subtitle-scout && git fetch && git reset --hard origin/main \
-  && docker build -t subtitle-scout . && docker compose up -d
+公司  ssh media-router-wan     家里  ssh media-router
+⚠️ GitHub 曾持续 500 → 已加 router remote 可直推：
+   git push router HEAD:main   （软路由已设 receive.denyCurrentBranch=updateInstead）
+部署  cd /mnt/nvme0n1-4/docker/subtitle-scout
+      docker build -t ghcr.io/fancydirty/subtitle-scout:latest .   ← tag 必须是这个全限定名
+      docker compose up -d --force-recreate
+⚠️ **部署后必须核对镜像 ID**：踩过一次 tag 不匹配，容器 healthy 但跑的是 25 小时前的旧镜像
+apiKey  52720d9a83fb9a74eed14c50ed58e1e2
+库      容器内 /cache/scout.db（不是 /data/cache）
 ```
-⚠️ **CI 账单已耗尽**，不能靠 GitHub Actions。
-⚠️ 部署后要看的三件事：① `works.backdrop_path` 回填有没有跑（110 个作品）
-② 三个新页面在真数据下长什么样 ③ `media_roots` 两列有没有被写。
 
-### ✅ 已了结（2026-08-12）
+### 115 挂载的排障（踩过一次，手册在机器上）
 
-- **7 条长期失败**（`4bb2456`）：secrets/settingsRepo 白名单 12→15、buildAdapters 的
-  zimuku 不再依赖 LLM、deployContract 的部署方式换代。全是测试过时。
-  顺带加了一条守「镜像名在 release.yml 与 compose 之间一致」——正是我部署时踩的那个坑。
-- **设置页白屏 + 老库启动崩溃**（`202ba61`）
-- **无活 UI 的端点裁决**（`8b809af`）：删 library 一族 4 条；
-  subtitleVerify 一族 6 条**留**并写死可证伪的删除判据（它是"没有燃料的引擎"——
-  写入环封闭无入口，`runVerifySweep` 零调用点、生产表 0 行）。
-  并补上唯一活端点 `/api/v2/library/scan` 的守卫（此前两端零覆盖，删掉它 0 红）。
-
-### 🟡 债务清单
-
-见 `docs/design/2026-08-11-FRONTEND-IMPL-PLAN.md` §三·五（滚动维护）。其中较要紧的：
-- `SettingsTabsPage.tsx:42` 对部分 DTO 缺失会**崩整页白屏**
-- 老库（schema v6）起 watch 会崩，友好提示的正则匹配不到 column count mismatch
-- `lastInspectAt` 落的是巡检**开始**时刻（前端已靠文案"开始于"扛着，后端未修）
-- 翻译台没有 progress emit 点 → `current.kind==='translate'` 时进度恒 null
+`/mnt/nvme0n1-4/docker/openlist/MOUNT-RUNBOOK.md`。要点：
+**排障从 `rclone lsd Openlist:` 开始**——进程在、挂载点在、openlist HTTP 200
+这四个信号在密码失效时**全部正常**，只有那条命令会报 401。
+admin 密码在容器内 `/opt/openlist/data/.creds/openlist-admin.txt`。
 
 ---
 
