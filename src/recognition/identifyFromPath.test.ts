@@ -38,6 +38,17 @@ describe('identifyFromPath — Show/Season NN/file layout', () => {
     expect(identity.isTv).toBe(true)
   })
 
+  it('日文/繁体「第N話」在季目录里与简体「第N话」逐字段等价（生产 NAS 回归）', () => {
+    // 生产库 `Season 01/` 下 13 个日文动画文件全部是「話」字形。这一条锁的是**端到端**行为：
+    // 不管内部走 parseFilename 的 R7 还是 identifyFromPath 自己的 BARE_EPISODE_PATTERNS
+    // 兜底，两种字形对调用方必须无差别。
+    const ja = identifyFromPath('间谍过家家/Season 2/第3話.mkv')
+    const zh = identifyFromPath('间谍过家家/Season 2/第3话.mkv')
+    expect(ja).toEqual(zh)
+    expect((ja as PathIdentity).episode).toBe(3)
+    expect((ja as PathIdentity).season).toBe(2)
+  })
+
   it('"Specials" folder maps to season 0, bare-episode file still resolves against it', () => {
     const r = identifyFromPath('间谍过家家/Specials/ep 1.mp4')
     expect(isPark(r)).toBe(false)

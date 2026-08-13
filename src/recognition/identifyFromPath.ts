@@ -110,6 +110,9 @@ function cleanFileTitle(title: string): string {
   // 剥掉可能残留的扩展名（第三方轮子 movie mode 对 "ep 1.mp4" 会把扩展名留在 title 里）
   t = t.replace(/\.(?:mkv|mp4|avi|ts|m2ts|wmv|flv|webm|mov|mpg|mpeg|m4v)$/i, '').trim()
   // 裸集数标记（ep 1 / ep1 / 第3话 / 第3話 / 第3集 / 01）不是剧名——返回空串，让调用方走目录 fallback
+  // ⚠️ 同 BARE_EPISODE_PATTERNS 的债务标记：其中的 CJK 分支当前不可达（前置条件是
+  //    fileParsed.title 非 null，而裸 `第N話` 经 parseFilename 后 title 恒为 null）。
+  //    变异实测删掉该分支零条测试变红。保留 + 统一字符类，删除另行立项。
   if (new RegExp(`^(?:ep(?:isode)?[\\s._-]*\\d{1,3}|${BARE_CJK_EPISODE_SOURCE}|\\d{1,3})$`, 'i').test(t)) return ''
   return t
 }
@@ -136,6 +139,16 @@ function isUsableDirTitle(title: string | null | undefined): boolean {
  * Only called once the lib parse found no season/episode/absoluteEpisode structure at all.
  * Digits capped at 3 (episodes rarely run past 999) so a bare 4-digit filename that's really a
  * year (e.g. a hypothetical 'movies/2016.mp4') doesn't get misread as an episode number.
+ *
+ * ⚠️ 债务标记（2026-08-14 变异实测）：下面这条 CJK 模式**当前是不可达的**。它的前置条件是
+ * `!fileParsed.isTv`，而任何形如 `第N话/話/集` 的裸文件名都会先被 parseFilename 的 R7 吃掉
+ * （返回 isTv=true / absoluteEpisode=N），控制流根本走不到这里。实测：把这条模式整行删掉，
+ * `npm run verify` 四判据全绿、3305 条用例零失败；穷举 18 种字形（三字符 × 三位数 × 带/不带
+ * 空格）全部 reachable=0。
+ *
+ * 本轮**没有删它**，只贴标记——理由是它与 :113 的守卫是同一份"裸集号"语义的两个副本，
+ * 而删除属于行为收窄，应当独立立项、独立回归，不该塞进一个修 bug 的 commit 里搭车。
+ * 字符类仍统一到 BARE_CJK_EPISODE_SOURCE：即便不可达，也不能让它成为下一次漂移的种子。
  */
 const BARE_EPISODE_PATTERNS: RegExp[] = [
   /^(?:ep|episode)[\s._-]*(\d{1,3})$/i,

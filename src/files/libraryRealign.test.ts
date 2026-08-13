@@ -17,6 +17,17 @@ describe('parseAbsoluteEpisodeNumber', () => {
   it('CJK "第N集"（简体）', () => {
     expect(parseAbsoluteEpisodeNumber('Show 第5集 1080p.mkv')).toEqual({ absoluteEpisode: 5, matchedToken: '第5集' })
   })
+  it('CJK "第N話"（日文/繁体）——与简体「话」等价', () => {
+    // 本文件的 CJK_EPISODE_RE 一直写的是全的 `[话話集]`，但「話」这一支**此前零覆盖**：
+    // 2026-08-14 变异实测把它降级成 `[话集]`，全仓 3306 条用例零失败。
+    // 也就是说 realign 侧的正确性当时只是"碰巧对"，没有任何锁。这条就是那把锁。
+    expect(parseAbsoluteEpisodeNumber('间谍过家家 第26話.mkv')).toEqual({ absoluteEpisode: 26, matchedToken: '第26話' })
+    // 生产 NAS 真名（紫罗兰永恒花园 ep04）——注意它同时带 CRC32 `(4FE33E90)`，
+    // CJK 分支必须先于裸 E 码命中，绝不能落到 E_CODE_RE 去读 CRC 里的 `E90`。
+    expect(parseAbsoluteEpisodeNumber(
+      '[DMG] ヴァイオレット・エヴァーガーデン 第04話「君は道具ではなく、その名が似合う人になるんだ」 [BDRip][AVC_AAC][1080P][CHS](4FE33E90).mp4',
+    )).toEqual({ absoluteEpisode: 4, matchedToken: '第04話' })
+  })
   it('方括号 [26]', () => {
     expect(parseAbsoluteEpisodeNumber('[SubGroup] Spy x Family [26][1080p].mkv')).toEqual({ absoluteEpisode: 26, matchedToken: '[26]' })
   })

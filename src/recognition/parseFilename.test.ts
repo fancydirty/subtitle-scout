@@ -281,6 +281,22 @@ describe('parseFilename — R5 排除 CRC32 校验和（病二：自信的谎话
     expect(r.absoluteEpisode).toBe(26)
     expect(r.isTv).toBe(true)
   })
+
+  it('🔴 遮蔽必须**等长**：CRC 出现在剧名之前时，title 不能被切错位', () => {
+    // 实现把 CRC 替换成等长的 '#' 串，靠"同一个 [0,len) 区间在遮蔽串和原串上指向同一段内容"
+    // 把 seriesname 切回原串。若替换成不等长的单个 '#'，seriesname 的长度就与原串偏移脱钩，
+    // unmask 会切出一段**乱码前缀**（实测 '(624F1E'）——一个静默的 title 损坏。
+    //
+    // 这一条是该不变量的唯一锁。发现过程本身值得记：第一轮变异（把 '#'.repeat(m.length)
+    // 改成 '#'）**零条测试变红**，说明当时全组断言都把 CRC 放在文件名尾部，够不到这个分支。
+    // 补这条时特意把 CRC 挪到剧名**之前**，才让不变量进入可观测范围。
+    const r = parseFilename('(624F1EFE) Show 第05話.mkv')
+    expect(r.absoluteEpisode).toBe(5)
+    expect(r.title).toBe('(624F1EFE) Show')
+    // 关键：title 不是被切错位的乱码前缀
+    expect(r.title).not.toBe('(624F1E')
+    expect(r.title).toContain('Show')
+  })
 })
 
 describe('cleanTitle 裸集数守卫 — 「第N話」必须与「第N话」行为一致', () => {
