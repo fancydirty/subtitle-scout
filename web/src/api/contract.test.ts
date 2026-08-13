@@ -307,14 +307,14 @@ describe('client.get() 接线', () => {
   })
 
   it('🔴 **没接契约的端点零开销放行**——这条钉的是"只挡致命的几个、不挡 69 个"那条'
-    + '范围裁决。哪天有人给 runs/settings/triage 也接满，这条会红。', async () => {
-    // 三个刻意不接的端点，各喂一个残缺到不能再残缺的体，必须全部原样通过。
+    + '范围裁决。哪天有人给 runs/settings 也接满，这条会红。', async () => {
+    // 两个刻意不接的端点，各喂一个残缺到不能再残缺的体，必须全部原样通过。
+    // （第三个样本原是 api.triage，随 parked 族于 2026-08-13 删除——见
+    //  web/src/triage/TriagePage.tsx 头注释 2.5 段。剩下两个足以钉住同一条范围裁决。）
     stub([{ nonsense: true }])
     await expect(api.runs(0, 10)).resolves.toEqual([{ nonsense: true }])
     stub({ nonsense: true })
     await expect(api.settings()).resolves.toEqual({ nonsense: true })
-    stub({ nonsense: true })
-    await expect(api.triage()).resolves.toEqual({ nonsense: true })
   })
 
   it('契约违例走的是 ContractViolationError（消费点据此与网络失败分型）', async () => {

@@ -1,7 +1,6 @@
 import { basename, sep } from 'node:path'
 import { walkVideoFiles } from '../daemon/selfScan.js'
 import { tmdbIdFromOwnId } from './ownIds.js'
-import { ingestLock } from './ingest.js'
 import type { LibraryRepo } from './libraryRepo.js'
 import type { RealignLibraryPort } from './realignExecutor.js'
 
@@ -22,9 +21,26 @@ export interface RealignLibraryPortDeps {
   /** MEDIA_ROOTS（已解析出的本地库根列表，与 cli/index.ts 的 mediaRoots() 输出同源）——
    *  getItemsPage 的磁盘走盘范围，getVirtualFolders 的库清单来源。 */
   roots: string[]
-  /** 一次完整摄取 pass（v2/ingest.ts 的 makeIngestPass 产出）——refreshLibrary 的库原生等价
-   *  操作："重新识别 + 写行"顶替 Jellyfin 的 /Items/{id}/Refresh。 */
-  runIngest: () => Promise<unknown>
+  /** "让库看见新结构"——refreshLibrary 的库原生等价操作，顶替 Jellyfin 的
+   *  /Items/{id}/Refresh。
+   *
+   *  2026-08-13 换绳子（原字段名 `runIngest`，接的是 v2/ingest.ts 的 makeIngestPass）：
+   *  ingest 整条链已退役，且它本来就写错了表——realign 搬完文件后需要被重新记账的是
+   *  `files`（新路径进库、旧路径退出），而 ingest 一行 files 都不写。现在接的是
+   *  daemonV2 的带外扫描请求（`requestScan`），那才是写 files 的那个。
+   *
+   *  **同步、不返回 promise**（这是与 runIngest 的第二处不同）：requestScan 只给 daemon
+   *  主循环置一个标志，扫描在主循环里异步发生。refreshLibrary 因此不再"等扫描跑完"——
+   *  但那个等待本来也不是它要的：realignExecutor 紧接着调 waitForIngestIdle 轮询
+   *  getScheduledTasks（见下方），那才是"等扫描真的做完"的机制，且它现在等的是对的东西。 */
+  requestScan: () => void
+  /** "现在有没有扫描在跑"——getScheduledTasks 的数据源，realignExecutor 的
+   *  waitForIngestIdle 轮询它来实现"扫描中不许挪文件"。
+   *
+   *  2026-08-13：原先读的是 `ingestLock.held`（v2/ingest.ts 的模块级单例）。现在读
+   *  `daemonV2.isScanning()`——旧锁守的是 ingest，而真正会与 realign 抢同一批路径的是
+   *  daemonV2 的 scanOnce，那把锁从一开始就守错了对象。 */
+  isScanning: () => boolean
   /** R8-6：走盘缓存窗口的时钟（默认 Date.now）——此前声明了却没人用（死依赖），
    *  现在 getItemsPage 的 100ms 缓存窗口两端都走它，测试可注入可控时钟。 */
   now?: () => number
@@ -130,13 +146,17 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
     /**
      * 消费方：waitForIngestIdle（C-B3 改名前旧名 waitForJellyfinIdle；realignExecutor.ts:
      * 292-304，经 :603/:791/:850/:863 调用）——只读 isRunning。D4：把"扫描中不许挪文件"这条
-     * 安全属性原样保留下来的关键——ingestLock.held（v2/ingest.ts 导出，makeIngestPass 的摄取
-     * pass 执行期间为 true，含抛错路径的 finally 兜底释放）映射成一个 Running 态任务，
-     * waitForIngestIdle 的既有轮询逻辑字节不改照常工作，等的本来就是"我们自己的摄取 pass"，
+     * 安全属性原样保留下来的关键——`deps.isScanning()`（2026-08-13 起 = daemonV2 的 scanOnce
+     * 执行期间为 true，含抛错路径的 finally 兜底释放）映射成一个 Running 态任务，
+     * waitForIngestIdle 的既有轮询逻辑字节不改照常工作，等的本来就是"我们自己的扫描"，
      * 不是 Jellyfin 的扫描任务——函数改名前的旧注释把主语错记成了 Jellyfin，C-B3 一并纠正。
+     *
+     * ⚠️ 2026-08-13 换绳子：原先读的是 `ingestLock.held`（v2/ingest.ts 的模块级单例）。
+     * ingest 整条链退役，且那把锁**守错了对象**——它守的是 ingest（不写 files），而真正会
+     * 与 realign 抢同一批路径的是 daemonV2 的 scanOnce。安全属性因此比改动前更强。
      */
     async getScheduledTasks() {
-      return ingestLock.held ? [{ id: 'ingest', name: 'library ingest', isRunning: true }] : []
+      return deps.isScanning() ? [{ id: 'scan', name: 'library scan', isRunning: true }] : []
     },
 
     /**
@@ -159,13 +179,17 @@ export function makeRealignLibraryPort(deps: RealignLibraryPortDeps): RealignLib
 
     /**
      * 消费方：realignExecutor.ts:790/:862——整理搬完之后"让库看见新结构"。库原生世界没有
-     * 独立刮削服务可踢，等价动作是再跑一次自己的摄取 pass（把 .realign-build 亮相后的新
-     * 目录路径重新识别、写回 episodes/movies 行）。libraryId 参数（我们自己 getVirtualFolders
-     * 派发的 'root:N'）在库原生世界没有"只刷这一个库"的对应操作——runIngest 本就是全量扫
-     * 同一份 deps.roots，传参无意义，忽略不用。
+     * 独立刮削服务可踢，等价动作是请求一次自己的扫描（把 .realign-build 亮相后的新目录路径
+     * 重新记账进 `files`）。libraryId 参数（我们自己 getVirtualFolders 派发的 'root:N'）在
+     * 库原生世界没有"只刷这一个库"的对应操作——扫描本就是全量扫同一份 deps.roots，
+     * 传参无意义，忽略不用。
+     *
+     * `async` 保留（RealignLibraryPort 接口要求返回 Promise，realignExecutor 会 await 它），
+     * 但内部不再有真正的等待——见 deps.requestScan 字段注释末段：等扫描真的做完是紧随其后的
+     * waitForIngestIdle 轮询的职责，不是这一行的。
      */
     async refreshLibrary(_libraryId) {
-      await deps.runIngest()
+      deps.requestScan()
     },
   }
 }

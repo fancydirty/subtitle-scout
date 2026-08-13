@@ -277,8 +277,12 @@ export interface TranslateWorkerTaskDeps {
   /** 端到端翻译一个视频(workspace agent 报告;状态集含 probe-failed——else 分支同样走
    *  completeError,语义对齐)。 */
   runItem: (videoPath: string) => Promise<TranslateRunItemResult>
-  /** installed 后踢一脚 ingest,让新 sidecar 尽快记账成 covered(镜像 rescue 的先例)。 */
-  requestIngest?: () => void
+  /** installed 后踢一脚扫描,让新 sidecar 尽快记账成 covered(镜像 rescue 的先例)。
+   *
+   *  2026-08-13 换绳子(原名 requestIngest,指向已退役的 v2/ingest.ts):真正会把 sidecar
+   *  记成 covered 的是 daemonV2 的 scanOnce(detectSubtitles),ingest 写的是另一个世界的
+   *  episodes/movies。完整实测证据见 v2/daemonV2.ts 的 requestScan 头注释。 */
+  requestScan?: () => void
   runs?: Pick<RunsRepo, 'insert'>
 }
 
@@ -326,7 +330,7 @@ export async function runTranslateWorkerTask(
       jobs.completeDone(job.id, now())
       // F1:sourceRef(外挂搜索腿的 'provider:id')进 detail 供追溯;内嵌轨腿无此值,不加尾巴。
       recordRun('translate:installed', `${videoPath} → ${r.sidecarPath ?? '?'}${r.sourceRef ? ` (source: ${r.sourceRef})` : ''}`, llmCalls)
-      deps.requestIngest?.()
+      deps.requestScan?.()
     } else if (r.status === 'already-covered' || r.status === 'no-embedded' || r.status === 'no-source') {
       // 候选预筛与现场重探之间世界变了(有人装了字幕/轨其实不可抽)——无事可做,不算错。
       // no-source(F1)同口径:外挂搜索穷尽也没有=诚实无源;unavailable 的衰减复查会周期性再给机会。

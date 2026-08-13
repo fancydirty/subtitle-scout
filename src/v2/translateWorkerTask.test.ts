@@ -16,13 +16,13 @@ describe('runTranslateWorkerTask — 结局映射', () => {
     return db.prepare(`SELECT * FROM jobs LIMIT 1`).get() as Job
   }
 
-  it('installed → completeDone + requestIngest + runs 记录', async () => {
+  it('installed → completeDone + requestScan + runs 记录', async () => {
     const job = makeJob('/media/x.mkv')
     let ingested = false
     const runsRows: { decision: string }[] = []
     await runTranslateWorkerTask(job, {
       runItem: async () => ({ status: 'installed', sidecarPath: '/media/x.zh-Hans.srt' }),
-      requestIngest: () => { ingested = true },
+      requestScan: () => { ingested = true },
       runs: { insert: (r: { decision: string }) => { runsRows.push(r) } } as never,
     }, jobs, () => 99)
     expect((db.prepare(`SELECT state FROM jobs WHERE id=?`).get(job.id) as { state: string }).state).toBe('done')

@@ -11,10 +11,10 @@ import { SettingsRepo } from '../v2/settingsRepo.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
-  buildRuns, buildParked, unexclude,
+  buildRuns,
   buildSettings, buildDeploySettings, listMediaSubdirs, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses,
-  buildTriage, redispatch, buildRunTrace, buildDormantTasks,
+  redispatch, buildRunTrace, buildDormantTasks,
 } from './apiV2.js'
 // R-F2 / R-F5：媒体库页数据层（新架构 files/works/tmdb_seasons）。刻意与 apiV2.js 分开
 // import —— 两套 builder 读的是完全不同的表，混在一行会让"哪个长在旧表上"不可见。
@@ -117,12 +117,24 @@ export interface DashboardOpts {
   cacheRoot?: string
   /** spec A：setup 三端点的依赖注入（缺席→接真实实现，同 subtitleWriteDeps 的既有注入口惯例）。 */
   setupDeps?: Partial<SetupDeps>
-  /** 验收修复轮一 Task V2（原为甄别台认领后踢扫描；认领已随两证据红线退役——见 triageOps.ts
-   *  头注释——本回调保留给 unexclude 翻案分支：翻案写库后立即请求一次扫描，让用户体感"翻案后
-   *  文件很快重回识别流"而不是等下一个自然扫描周期）。undefined（watch 进程未接线，或纯只读
-   *  测试场景）＝无事发生，同 jobs/tmdb 既有可选依赖的缺席降级先例——不强制
-   *  startDashboard 的调用方必须提供这个回调。 */
-  requestIngest?: () => void
+  /** "踢一脚扫描"：加根成功 / Settings 页"立即扫描"按钮成功后，立即请求一轮机械扫描，
+   *  让用户体感"加完目录马上看得见文件"而不是等下一个自然巡检周期（最长 24h）。
+   *
+   *  ── 2026-08-13 换绳子（原字段名 `requestIngest: () => void`）──
+   *  原实现指向 `v2/ingest.ts` 的摄取 pass。那条链对本回调想要的效果**完全无效**：
+   *  ingest 只写 series/episodes/movies/parked_paths 四张旧世界表，一行 `files` 都不写，
+   *  而媒体库页读的是 `works JOIN files`——踢完之后界面纹丝不动。现在接的是
+   *  `daemonV2.requestScan()`（真正在写 files 的那个扫描器）。完整实测证据见
+   *  `src/v2/daemonV2.ts` 的 `requestScan()` 头注释，此处不重抄。
+   *
+   *  ── 返回值语义（这是它与旧 `() => void` 的第二处不同）──
+   *  `true` = 已排队（daemon 就绪，主循环下一圈就扫）；`false` = daemon 尚未就绪
+   *  （cmdWatch 里 dashboard 先于 daemon 构造，中间有几毫秒窗口）。调用方据此答 503 而不是
+   *  假装成功——同 jobs/tmdb 那几个"缺席就 503"的既有降级先例。
+   *
+   *  字段本身 undefined（纯只读测试场景 / 未接线）＝同 `false`，不强制 startDashboard 的
+   *  调用方必须提供它。 */
+  requestScan?: () => boolean
   /** 字幕校验三端点（GET verify / POST correct / POST revert）的依赖注入口。
    *
    *  与 jobs/tmdb 那几个"缺席就 503"的可选依赖**不同**：这三个端点的默认实现
@@ -385,7 +397,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, host, token, distDir, env = process.env, jobs, tmdb, requestIngest, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride, events, eventsHeartbeatMs } = opts
+  const { db, port, host, token, distDir, env = process.env, jobs, tmdb, requestScan, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride, events, eventsHeartbeatMs } = opts
   const settingsRepo = new SettingsRepo(db)
   // spec A §4.4：setup 面依赖——默认接真实实现（cfg 的 dbGet 惰性读库，wizard 落库后下一次
   // status/validate 调用自然反映），测试经 opts.setupDeps 部分覆盖（同 subDeps 先例）。
@@ -445,14 +457,12 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
   }
   const deps: RouterDeps = {
     runs: (offset, limit) => buildRuns(db, offset, limit),
-    parked: () => buildParked(db),
     settings: () => buildSettings(settingsRepo),
     deploySettings: () => buildDeploySettings(env),
     roots: () => settingsRepo.listRoots(),
     fsList: (path) => listMediaSubdirs(path),
     workflowPending: () => buildWorkflowPending(db, settingsRepo, Date.now()),
     workflowPasses: (limit) => buildWorkflowPasses(db, limit),
-    triage: () => buildTriage(db),
     runTrace: (id) => buildRunTrace(db, id),
     // Plan C：两个只读 GET。shifted 复用 subDeps 的 repo + exists（同一份 existsSync 实现，
     // 见上方 subDeps 的 wiring），backupSuffix 用与两个写扳手同一个常量——三处必须同源，
@@ -615,32 +625,14 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       // 认领端点（POST /api/parked/claim、/api/v2/triage/claim）已退役（两证据红线裁决，
       // 见 src/v2/triageOps.ts 头注释）：正确的用户动作是改文件名，不是零证据指派身份。
 
-      // 救援R4b：POST /api/v2/triage/unexclude——甄别页「Excluded extras」箱翻案。薄转发
-      // 形状：method 门 → 解析 body → unexclude(db) 判断层 → 成功踢一脚扫描（鉴权在统一前置门）。
-      if (rawPath === '/api/v2/triage/unexclude') {
-        if (req.method !== 'POST') {
-          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'method not allowed' }))
-          return
-        }
-        const body = await readJsonBodyOrFail(req, res)
-        if (body === BODY_FAILED) return
-        const b = (body ?? {}) as { path?: unknown }
-        const result = unexclude(db, { path: typeof b.path === 'string' ? b.path : '' })
-        // 翻案成功后踢一脚扫描——豁免已写库、park 行已退，重扫让文件立即重回识别流
-        // （fire-and-forget：不 await，同步抛错吞掉——翻案本身已经写对了数据，触发扫描失败
-        // 不该让它对用户显示失败；下一个自然周期还会再扫一次，不会永久错过）。
-        if (result.ok && requestIngest) {
-          try {
-            requestIngest()
-          } catch {
-            // swallow — 见上方注释。
-          }
-        }
-        res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(result))
-        return
-      }
+      // ── POST /api/v2/triage/unexclude（救援R4b 特典翻案）已删除，2026-08-13 ──
+      // 它是 parked_paths 族的写入面：翻案 = 写 extras_exemptions 豁免 + 退 park 户口，
+      // 好让文件"下一轮扫描时重回识别流"。这三件事今天全部落空——
+      //   · 唯一给 parked_paths 写行的是 v2/ingest.ts（本轮已整体退役），表从此零写入者；
+      //   · extras_exemptions 的唯一读取方也是 ingest（excludeExtras 分支的 isExtrasExempt）；
+      //   · "重回识别流"由 daemonV2 的 files/works 两表决定，与 park 户口无关。
+      // 于是这个端点翻的是一张永远为空的表的案。前端 ExcludedBox（唯一调用方）同批删除。
+      // 完整裁决见 `web/src/triage/TriagePage.tsx` 头注释的 parked 族段落。
 
       // POST /api/v2/triage/unclaim（审计 A-5 的认领撤销扳手）已随 identify_overrides 表
       // 一并退役——没有认领，就没有可撤销的认领。
@@ -753,15 +745,21 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const result = addMediaRoot(settingsRepo, b.path, Date.now())
         res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(result.ok ? { ok: true } : { error: result.error }))
-        // R6：添加根成功后自动触发一次扫描（研究结论：Sonarr/Radarr 模式，无需等下一轮轮询）
-        if (result.ok && requestIngest) requestIngest()
+        // R6：添加根成功后自动触发一次扫描（研究结论：Sonarr/Radarr 模式，无需等下一轮轮询）。
+        // 2026-08-13：这一脚现在踢在 daemonV2 的带外扫描上（原先踢的是 ingest，而 ingest
+        // 一行 files 都不写 → 用户加完目录界面纹丝不动）。见 DashboardOpts.requestScan。
+        //
+        // 返回值刻意**不影响** HTTP 状态码：加根本身已经成功写库了（响应上面已经发出去），
+        // daemon 没就绪只是"晚一点扫到"，不是加根失败。这与下面 /library/scan 端点不同——
+        // 那个端点的**全部语义**就是触发扫描，触发不了就必须如实 503。
+        if (result.ok && requestScan) requestScan()
         return
       }
 
       // POST /api/v2/library/scan：手动触发扫描端点（用户添加目录后前端防抖触发，或
-      // Settings 页"立即扫描"按钮直接调）。同 requestIngest 可选依赖先例（watch 未接线
+      // Settings 页"立即扫描"按钮直接调）。同 requestScan 可选依赖先例（watch 未接线
       // 或纯只读测试 → 503），method 门在前。研究结论（DIRBROWSER_RESEARCH.md）：
-      // Plex/Sonarr/Radarr 成熟方案是 webhook 触发部分扫描，我们的 ingest 是全库扫但有
+      // Plex/Sonarr/Radarr 成熟方案是 webhook 触发部分扫描，我们的扫描是全库扫但有
       // 增量逻辑，防抖 2 秒累积多次请求避免"猴子动作"（快速增删目录）重复触发。
       if (rawPath === '/api/v2/library/scan') {
         if (req.method !== 'POST') {
@@ -769,12 +767,22 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           res.end(JSON.stringify({ error: 'method not allowed' }))
           return
         }
-        if (!requestIngest) {
+        // 两道门都答 503，且**理由相同**（"现在没有能扫盘的东西"）：
+        //  · 字段缺席 = 没跑 watch（纯 dashboard / 只读测试）；
+        //  · 返回 false = 跑了 watch 但 daemon 还没构造完（cmdWatch 里 dashboard 先起，
+        //    见 cli/index.ts 的 daemonHolder）。
+        // 合并成一句 `!requestScan || !requestScan()` 会让"字段在但返回 false"也走进来，
+        // 正是想要的——但那样读的人分不清两态，故写成两步、留这段注释。
+        if (!requestScan) {
           res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'scan trigger not configured (watch daemon not running)' }))
           return
         }
-        requestIngest()
+        if (!requestScan()) {
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'scan trigger not ready (daemon still starting up)' }))
+          return
+        }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: true }))
         return

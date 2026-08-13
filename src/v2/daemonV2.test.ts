@@ -5743,3 +5743,177 @@ describe('ScoutDaemonV2 · v42 works.backdrop_path 存量回填 pass（写入点
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// requestScan：带外扫描（2026-08-13）
+//
+// 这一组守的是**一个真实的用户功能**："加了守备目录之后立刻能看见扫描结果"（还有它的两个
+// 同门：Settings 页「立即扫描」按钮、翻译装盘后的 covered 记账）。
+//
+// ⚠️ 为什么它值得一整组用例：这三个调用点此前接的是 `v2/ingest.ts`，而 ingest **一行
+// `files` 都不写**（它只写 series/episodes/movies/parked_paths 四张旧世界表，生产全部 0 行）
+// ——也就是说这个功能在换绳子**之前就是坏的，且完全静默**：端点 200、日志正常、界面纹丝不动，
+// 用户只能等最长 24 小时后的下一轮自然巡检。实测对照（临时库 + 真实实现走盘同一批文件）：
+//     ingest            → parked_paths=2, files=0
+//     daemonV2.scanOnce → files=2,        parked_paths=0
+// 换绳子后这一组用例就是那个"曾经没有守卫"的位置上的守卫。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真实承载）', () => {
+  it('🔴 requestScan() → 主循环真的跑了一轮 scanOnce，新文件**进 files 表**', async () => {
+    // 这条是整组的核心：断言的不是"某个回调被调了"，而是**库里真的多了行**。
+    // 换绳子前那条链在这条断言下必红（ingest 一行 files 都不写）。
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': ['/media/Show/E01.mkv', '/media/Show/E02.mkv'] }),
+      // 巡检闸关死（inspectEveryMs 极大 + 已巡检过），确保写进 files 的**只可能**是
+      // 带外扫描那一次——否则自然巡检会顺手扫一遍，这条就成了假绿。
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(1_000_000_000_000))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    expect(pathsInDb(db), '前提：带外扫描之前 files 是空的（否则下面的断言无意义）').toEqual([])
+
+    daemon.requestScan()
+    await new Promise(r => setTimeout(r, 60))
+    ctrl.abort()
+    await p
+
+    expect(pathsInDb(db)).toEqual(['/media/Show/E01.mkv', '/media/Show/E02.mkv'])
+    db.close()
+  })
+
+  it('🔴 requestScan() **提前唤醒** idle sleep——不必等满一整拍（"立刻"这两个字的承载）', async () => {
+    // ⚠️ 这条与上一条不是重复。上一条用 maintenanceTickMs=1 建模，主循环本来就在飞转，
+    // 即便 wakeIdle 整个失效它也照样绿（变异实测确认过：注掉 wakeIdle 那一行，上一条
+    // 与幂等那条全绿）。真正要守的是**延迟**：没有 wakeIdle，用户加完守备目录得等满
+    // 一个维护拍（生产 5 分钟）才开始扫。
+    //
+    // 故这里把拍设成 30s（远大于用例耐心），只有提前唤醒才可能在 100ms 内扫完。
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 30_000,   // 不唤醒就得等 30 秒 → 用例超时/断言空
+      sleep: undefined,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(1_000_000_000_000))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    expect(pathsInDb(db), '前提：此刻主循环已经睡下了，files 仍空').toEqual([])
+
+    daemon.requestScan()
+    await new Promise(r => setTimeout(r, 100))   // ≪ 30s：只有被唤醒才来得及
+    expect(pathsInDb(db), '🔴 请求后 100ms 内就该扫完——没唤醒的话这里还是空的').toEqual(['/media/Show/E01.mkv'])
+
+    ctrl.abort()
+    await p
+    db.close()
+  })
+
+  it('🔴 幂等：连点 N 次只换来一轮扫描（加根 UI 的"猴子动作"不许放大成 N 轮走盘）', async () => {
+    const db = openDb(':memory:')
+    const walks: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: (root: string) => { walks.push(root); return ['/media/Show/E01.mkv'] },
+      fileExists: () => true,
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(1_000_000_000_000))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    const before = walks.length
+
+    // 同一拍里连按 5 次（防抖之外的第二道保险）。
+    for (let i = 0; i < 5; i++) daemon.requestScan()
+    await new Promise(r => setTimeout(r, 60))
+    ctrl.abort()
+    await p
+
+    expect(walks.length - before, '5 次请求折叠成 1 轮走盘').toBe(1)
+    db.close()
+  })
+
+  it('🔴 带外扫描抛错 → 隔离，主循环照常活着（它只是"早一点扫到"的增益）', async () => {
+    // ⚠️ 靶子选择：不能用"走盘抛错"来制造这个场景——scanOnce 内部**逐根隔离**（防线 4/D1），
+    // 单个根 walk 失败会被它自己接住并记进 media_roots.last_error，根本不冒到带外那层
+    // try/catch。实测过：那样写这条恒绿（日志里是"跳过删除"而不是"带外扫描失败"），
+    // 是一条测不到任何东西的假用例。改用 **pass 级**爆炸（statFile 抛错，穿过逐根隔离）。
+    const db = openDb(':memory:')
+    const logs: string[] = []
+    let ticks = 0
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => { throw new Error('boom') },
+      fileExists: () => true,
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+      log: (m: string) => logs.push(m),
+      dbMaintenance: () => { ticks++ },
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(1_000_000_000_000))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    daemon.requestScan()
+    await new Promise(r => setTimeout(r, 40))
+    const ticksAfter = ticks
+    await new Promise(r => setTimeout(r, 40))
+    ctrl.abort()
+    await p
+
+    expect(logs.some((l) => l.includes('带外扫描失败')), '失败必须留痕（静默吞掉是本仓反面清单第一条）').toBe(true)
+    expect(ticks, '主循环在带外扫描抛错之后仍在走拍').toBeGreaterThan(ticksAfter)
+    db.close()
+  })
+
+  it('🔴 isScanning()：扫描期间为 true，扫完（含抛错）回落 false', async () => {
+    // realignLibraryPort.getScheduledTasks 读它 → realignExecutor 的 waitForIngestIdle
+    // 靠它实现"扫描中不许挪文件"。**卡住不回落**的后果是 realign 从此永远等不到 idle
+    // 且完全静默——所以抛错路径这一半必须单独钉。
+    const db = openDb(':memory:')
+    const seen: boolean[] = []
+    // ⚠️ 走盘必须返回**非空**：空结果会触发 R8 第二道闸的当场重试（C46），listVideoFiles
+    // 被调 3 次，seen 就成了 [true,true,true]——断言写成 toEqual([true]) 会因为这个与
+    // isScanning 毫不相干的原因变红。实测踩过一次，故这里给一个真文件。
+    const ok = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => { seen.push(ok.isScanning()); return ['/media/Show/E01.mkv'] },
+      fileExists: () => true,
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+    }))
+    expect(ok.isScanning(), '扫描前 false').toBe(false)
+    await scan(ok)
+    expect(seen, '扫描进行中（走盘回调里看自己）为 true').toEqual([true])
+    expect(ok.isScanning(), '扫描后回落 false').toBe(false)
+
+    // 抛错侧同样不能用"走盘抛错"（逐根隔离会接住，scanOnce 正常返回 → 这一半恒绿）。
+    // 用 pass 级爆炸（statFile 抛错）才真的穿到 scanOnce 外面。
+    const bad = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => { throw new Error('EIO') },
+      fileExists: () => true,
+    }))
+    await expect(scan(bad)).rejects.toThrow('EIO')
+    expect(bad.isScanning(), '🔴 抛错路径也必须由 finally 释放，否则 realign 永久等待').toBe(false)
+    db.close()
+  })
+})

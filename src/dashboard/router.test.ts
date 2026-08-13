@@ -2,8 +2,8 @@
 import { describe, it, expect } from 'vitest'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import type {
-  RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, TriageDTO, RunTraceDTO,
+  RunHistoryDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
+  WorkflowPendingDTO, WorkflowPassDTO, RunTraceDTO,
   DormantTaskDTO,
 } from './apiV2.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
@@ -13,9 +13,6 @@ import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 
 const run: RunHistoryDTO = {
   id: 1, jobId: 1, startedAt: 1, finishedAt: 2, decision: 'download', detail: 'ok', journalPath: null,
-}
-const parkedItem: ParkedItemDTO = {
-  path: '/media/tv/Unknown/e1.mkv', parkReason: 'ambiguous match', firstSeen: 1, lastAttempt: 1,
 }
 const settingsDTO: SettingsDTO = {
   target_languages: 'zh,en', hardsub_mode: null, exclude_extras: null,
@@ -54,9 +51,6 @@ const workflowPendingDTO: WorkflowPendingDTO = {
 const workflowPassDTO: WorkflowPassDTO = {
   id: 1, jobId: 1, startedAt: 1, finishedAt: 2, detail: 'x',
   receipts: { created: 1, revived: 0, coalesced: 0, blocked_dormant: 0, unknown: 0 },
-}
-const triageDTO: TriageDTO = {
-  pending: [parkedItem],
 }
 const runTraceDTO: RunTraceDTO = {
   events: [{ runKey: 'job-1', seq: 0, tool: 'search_source', argsSummary: '"x"', resultSummary: '41 candidates', tookMs: 1200, at: 1 }],
@@ -126,7 +120,6 @@ const activityDTO = {
 }
 const deps: RouterDeps = {
   runs: (offset, limit) => { lastRunsArgs = { offset, limit }; return [run] },
-  parked: () => [parkedItem],
   settings: () => settingsDTO,
   deploySettings: () => deploySettingsDTO,
   roots: () => mediaRoots,
@@ -136,7 +129,6 @@ const deps: RouterDeps = {
   },
   workflowPending: () => workflowPendingDTO,
   workflowPasses: (limit) => { lastPassesLimit = limit; return [workflowPassDTO] },
-  triage: () => triageDTO,
   runTrace: (id) => { lastRunTraceId = id; return id === 1 ? runTraceDTO : null },
   shiftedSubtitles: () => [shiftedRow],
   dormantTasks: () => [dormantRow],
@@ -158,10 +150,11 @@ describe('handleApiRoute (v2)', () => {
     call('/api/v2/runs', { query: { offset: '10', limit: '5' } })
     expect(lastRunsArgs).toEqual({ offset: 10, limit: 5 })
   })
-  it('routes /api/parked (P6 park 救援)', () => {
-    const r = call('/api/parked')
-    expect(r.status).toBe(200)
-    expect(r.json).toEqual([parkedItem])
+  // 2026-08-13：`/api/parked` 与 `/api/v2/triage` 随 parked 族整体删除（见 apiV2.ts 的
+  // Parked 段墓碑）。两条用例**改成 404 墓碑锁**而不是删掉——同 `/api/v2/workflow/workers`
+  // 的既有先例：路由表少一条是静默的，留一条负向断言，谁把它加回来就得先来读一遍裁决。
+  it('retires /api/parked with 404 (parked 族整体退役)', () => {
+    expect(call('/api/parked').status).toBe(404)
   })
   it('retires v1 endpoints with 410', () => {
     expect(call('/api/summary').status).toBe(410)
@@ -245,10 +238,8 @@ describe('handleApiRoute (v2)', () => {
       expect(r.status).toBe(404)
     })
 
-    it('routes GET /api/v2/triage', () => {
-      const r = call('/api/v2/triage')
-      expect(r.status).toBe(200)
-      expect(r.json).toEqual(triageDTO)
+    it('retires GET /api/v2/triage with 404 (parked 族整体退役)', () => {
+      expect(call('/api/v2/triage').status).toBe(404)
     })
   })
 

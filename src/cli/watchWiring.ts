@@ -66,8 +66,11 @@ export interface WatchWiringArgs {
    *  把"点火前的 null 世界"冻死在进程里，wizard 里配完 TRANSLATE_* 也要等容器重启才生效。
    *  故这里收的是"每次调用时才现建"的那个函数本身，buildDaemonV2Deps 只做透传、绝不调用。 */
   translateRunItem: (videoPath: string) => Promise<TranslateRunItemResult>
-  /** 装盘成功后踢一脚扫描（R24：只有扫描有权把 sub_status 写成 covered，越早扫到越早解除停牌）。 */
-  requestIngest: () => void
+  /** 装盘成功后踢一脚扫描——**已删除（2026-08-13）**。
+   *
+   *  原字段 `requestIngest: () => void`，cmdWatch 传的是 ingestTrigger 闭包（→ v2/ingest.ts）。
+   *  daemonV2 现在直接调自己的 `requestScan()`（同一进程内它就是那个扫描器，绕出去再注回来
+   *  只是多一处能漏接线的地方）。三个"踢一脚"调用点的去向见 daemonV2.requestScan 头注释。 */
   probe: (videoPath: string) => Promise<EmbeddedSubtitleTrack[] | null>
   probeDuration: (videoPath: string) => Promise<number | null>
   /** R-F10：SSE 事件出口（cmdWatch 侧 = `scoutEvents.publish`，同一个 ScoutEventBus 实例
@@ -118,7 +121,6 @@ export function buildDaemonV2Deps(args: WatchWiringArgs): DaemonV2Deps {
     // 漏接的伤害与那 4 个运维器官同型且更隐蔽：翻译流恒休眠，而这与"还没接翻译"完全无法区分
     // （C3/C45 记的正是这个现状），界面、日志、库里都看不出差别。
     translateRunItem: args.translateRunItem,
-    requestIngest: args.requestIngest,
     // C12：复用 files/streamProbe.ts 的既有实现（cli 给旧 ingest 接的是同一对函数），不写第二份。
     // 漏了这两行的后果是"测试绿、生产漏"：files.embedded_langs 继续全 NULL，
     // judge 规则 2 与 D9 的 translatable 预判照旧静默失效。

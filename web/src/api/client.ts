@@ -1,11 +1,10 @@
 // web/src/api/client.ts：v2 只读数据层客户端。DASHBOARD_TOKEN 存在时带 ?token=。
 import type {
   RunHistoryDTO,
-  ParkedItemDTO, WorkflowPendingDTO,
+  WorkflowPendingDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
   WorkflowPassDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
-  TriageDTO,
   SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
   AuthStatusDTO, AuthSecurityDTO,
   SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
@@ -200,8 +199,6 @@ export const api = {
   // credentials 提供 = wizard"先测后存"（服务端测请求体凭据、不落库）；省略 = 测已解析的 env/db 凭据。
   validateSetup: (target: ValidateTarget, credentials?: Partial<Record<SecretName, string>>) =>
     post<ValidateResultDTO>('/api/v2/setup/validate', credentials === undefined ? { target } : { target, credentials }),
-  // 去 Jellyfin 化 P6：park 救援页——一次性脚手架。
-  parked: (signal?: AbortSignal) => get<ParkedItemDTO[]>('/api/parked', signal),
   // dashboard-F2：顶栏新鲜度行 + 侧栏甄别角标共用同一份响应（meta + parked）。
   workflowPending: (signal?: AbortSignal) =>
     get<WorkflowPendingDTO>('/api/v2/workflow/pending', signal),
@@ -238,12 +235,6 @@ export const api = {
   // dashboard-F4：人类扳手①——手动重派。四态回执（created/revived/coalesced/blocked_dormant）
   // 都是 200，post() 的既有错误分支只在 zod 校验失败（400）/未配置（503）时触发。
   redispatch: (input: RedispatchInput) => post<RedispatchOutcomeDTO>('/api/v2/workflow/redispatch', input),
-  // dashboard-F5：甄别台——pending 一次性查询（翻案成功后由调用方手动 reload，同 useParked
-  // 的既有口径：低频人工动作，不值得为它常驻轮询）。认领端点（claimTriage/unclaim/tmdbSearch）
-  // 已随认领退役删除（2026-07-28 两证据红线裁决，见 src/v2/triageOps.ts 头注释）。
-  triage: (signal?: AbortSignal) => get<TriageDTO>('/api/v2/triage', signal),
-  // 救援R4c：excluded-extra 停车行翻案——取消排除，让文件回到 pending 池重新参与 ingest。
-  unexclude: (path: string) => post<{ ok: true }>('/api/v2/triage/unexclude', { path }),
   // dashboard-F6：Settings tab——行为级设置读写 + 部署层只读展示 + 守备目录管理 + 目录浏览器。
   settings: (signal?: AbortSignal) => get<SettingsDTO>('/api/v2/settings', signal),
   // 单键提交（BehaviorSection 每行改动即时 PUT，body 只含那一个改动的键）；200 回执是写入后的

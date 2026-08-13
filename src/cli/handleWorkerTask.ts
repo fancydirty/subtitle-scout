@@ -115,7 +115,6 @@ import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import type { FetchEvent } from '../adapters/fetchLib.js'
 import type { AdapterConfigResolver } from '../v2/secrets.js'
 import type { RealignExecutorDeps } from '../v2/realignExecutor.js'
-import type { IngestResult } from '../v2/ingest.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { runFindSubtitleWorkerTask } from '../v2/findSubtitleWorkerTask.js'
@@ -144,15 +143,20 @@ export interface HandleWorkerTaskDeps {
   emitProviderEvent: (e: FetchEvent) => void
   log: (msg: string) => void
   warn: (msg: string) => void
-  ingestTrigger: () => Promise<unknown>
-  EMPTY_INGEST_RESULT: IngestResult
+  /** "踢一脚扫描"。2026-08-13 换绳子：原为 `ingestTrigger: () => Promise<unknown>`
+   *  （绑定 v2/ingest.ts 的摄取 pass，整条链已退役）。现在是 daemonV2 的带外扫描请求
+   *  ——同步、幂等、只置标志。完整论证见 `v2/daemonV2.ts` 的 requestScan 头注释。
+   *
+   *  ⚠️ 本文件整体是"零生产调用者、保留待裁"的资产（见文件头注释）。换绳子而不是让它
+   *  跟着 ingest 一起烂掉，正是为了让那句"接回来当天就能跑"继续为真——留一根指向已删
+   *  模块的断线，等于单方面把它降级成不可恢复的死肉。 */
+  requestScan: () => void
   /** cmdWatch 的 `clients: ClientsHolder<WatchClients>`——这里只声明本函数**实际读到**的
    *  那 5 个字段（结构化子集，holder 传进来天然满足）。 */
   clients: {
     current: {
       tmdb: TmdbClient | null
       reasoningModel: LanguageModel | null
-      ingestPass: (() => Promise<IngestResult>) | null
       realignDeps: RealignExecutorDeps | null
       findSubtitleWorkerTaskDeps: {
         lib: LibraryRepo; tmdb: TmdbClient; mediaRoots: string[]; targetLanguage: string; runs: RunsRepo
@@ -164,7 +168,7 @@ export interface HandleWorkerTaskDeps {
 export const makeHandleWorkerTask = (deps: HandleWorkerTaskDeps) => {
   const {
     jobs, lib, runs, db, settingsRepo, cacheRoot, cfg, currentRoots, languagesNow,
-    emitProviderEvent, log, warn, ingestTrigger, EMPTY_INGEST_RESULT, clients,
+    emitProviderEvent, log, warn, requestScan, clients,
   } = deps
   // ── 以下函数体逐字取自 cli/index.ts 的原 handleWorkerTask（2026-08-13 提取，零改动）──
   return async (job: Job): Promise<void> => {
@@ -264,7 +268,10 @@ export const makeHandleWorkerTask = (deps: HandleWorkerTaskDeps) => {
       await runRealignWorkerTask(job, {
         ...rDeps, runs,
         mediaRoots: roots,
-        jf: makeRealignLibraryPort({ lib, roots, runIngest: c.ingestPass ?? (() => Promise.resolve(EMPTY_INGEST_RESULT)) }),
+        // 2026-08-13：port 的两根线换成 daemonV2 的带外扫描请求 + "扫描中"查询
+        // （原为 runIngest: ingestPass）。isScanning 恒 false 是**诚实的降级**：本文件没有
+        // daemon 实例可问，而它本就零生产调用者；真接回来时应把 daemon 的 isScanning 传进来。
+        jf: makeRealignLibraryPort({ lib, roots, requestScan, isScanning: () => false }),
       }, jobs, () => Date.now())
     } else if (payload.taskType === 'translate') {
       // E AI 翻译:daemon 自动翻一个可译候选。**双重 env 门控**——tryAutoTranslateCfg 只认显式
@@ -287,9 +294,7 @@ export const makeHandleWorkerTask = (deps: HandleWorkerTaskDeps) => {
         })
         await runTranslateWorkerTask(job, {
           runItem,
-          requestIngest: () => {
-            void ingestTrigger().catch((e) => log(`warn: translate 后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
-          },
+          requestScan,
           runs,
         }, jobs, () => Date.now())
       }

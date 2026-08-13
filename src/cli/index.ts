@@ -52,7 +52,6 @@ import { makeMaintenanceState, runDbMaintenance } from '../v2/dbMaintenance.js'
 //   2. 把 TriagePage 挂回 AppShell。
 // 那一天在这里重新 import 是一行的事——而在此之前，这里不该有任何东西。
 
-import { makeIngestPass, type IngestResult } from '../v2/ingest.js'
 import { ScoutDaemonV2 } from '../v2/daemonV2.js'
 import { buildDaemonV2Deps } from './watchWiring.js'
 import { runIdentify } from '../agent/identifyWorker.js'
@@ -67,8 +66,6 @@ import { replayRollback } from '../files/realignManifest.js'
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
-import { identifyFromPath } from '../recognition/identifyFromPath.js'
-import { makeIngestTrigger } from '../daemon/ingestTrigger.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
 import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning, existingNestedRootsWarning } from './watchStartupWarnings.js'
@@ -132,41 +129,9 @@ async function assemble(cfg: AdapterConfigResolver, warn: (msg: string) => void)
   return { cacheRoot, mappings, tmdb, reasoningModel }
 }
 
-/** 去 Jellyfin 化 T4：cmdWatch 与 cmdReconcileAll 共用的摄取 pass 组装——recognize 是纯路径结构
- *  解析 identifyFromPath（同步，无 TMDB/override 查询；身份裁决已上移到 agent 的
- *  write_identified_media，ingest 只落 raw data 等 agent 识别，见 v2/ingest.ts 的
- *  IngestDeps.recognize 注释），probe 绑定 ffprobe 探针（files/streamProbe.ts）。
- *  两个调用点各自决定 roots/targetLanguages/originSkipLanguages/log 的具体来源，其余接线逐字
- *  相同，不重复两份。
- *  dashboard G4：roots 从静态数组换成惰性提供者——两个调用点都传
- *  `() => settingsRepo.listRoots().map(r => r.path)`，dashboard 里增删守备目录后不需要重启进程
- *  或重建这个 pass 闭包，下一轮调用自然读到最新的根集合（见 v2/ingest.ts 的 IngestDeps.roots）。 */
-function buildIngestPass(opts: {
-  roots: () => string[]
-  lib: LibraryRepo
-  tmdb: TmdbClient
-  targetLanguages: () => string[]
-  originSkipLanguages: () => string[]
-  excludeExtras?: () => boolean
-  hardsubMode?: () => 'off' | 'agent' | 'aggressive'
-  log: (msg: string) => void
-}): ReturnType<typeof makeIngestPass> {
-  return makeIngestPass({
-    roots: opts.roots,
-    lib: opts.lib,
-    tmdb: opts.tmdb,
-    recognize: (videoPath: string) => identifyFromPath(videoPath),
-    probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
-    // 重复源 P4b："复制优先"机械通道（v2/subtitlePropagation.ts）接线——同 realign 那处既有接线
-    // 复用同一个 probeDurationSec，不是新引入的探针实现。
-    probeDuration: (videoPath: string) => probeDurationSec(videoPath),
-    targetLanguages: opts.targetLanguages,
-    originSkipLanguages: opts.originSkipLanguages,
-    excludeExtras: opts.excludeExtras,
-    hardsubMode: opts.hardsubMode,
-    log: opts.log,
-  })
-}
+// `buildIngestPass`（cmdWatch 的摄取 pass 组装，v2/ingest.ts 的 makeIngestPass 接线）
+// **已删除，2026-08-13**——ingest 整条链退役。它为什么是死的、三个"踢一脚扫描"调用点改接
+// 到哪里去了，完整论证与实测证据在 `src/v2/daemonV2.ts` 的 `requestScan()` 头注释，不重抄。
 
 /** on-demand "全仓校验" 触发器（v3 phase ⑦ Task 1）：跑一次摄取 pass（去 Jellyfin 化 T4：
  *  scanLibrary 机械预扫描 → v2/ingest.ts 的 makeIngestPass，见 reconcileAll.ts 的
@@ -301,8 +266,6 @@ async function cmdWatch() {
     /** realign 字幕先行的长驻 adapters（既有注释：同一次 executeRealign 内几十集
      *  紧凑循环，重建只有 Zimuku session 重读盘的开销——故随 holder 代际重建，不 per-claim）。 */
     realignAdapters: FetchAdapter[]
-    /** tmdb 缺席 → null（闸保证不会被调用，null 只是结构性的，spec §4.7 步 5）。 */
-    ingestPass: (() => Promise<IngestResult>) | null
     /** !tmdb || !reasoningModel → null。 */
     realignDeps: RealignExecutorDeps | null
     findSubtitleWorkerTaskDeps: {
@@ -317,11 +280,7 @@ async function cmdWatch() {
 
   }
 
-  /** setup 模式下的 ingest 兜底空实现（spec §4.7：闸保证它实际不会被调到——bootIngestPending
-   *  在 setup 期间一直被闸住；它只是让 ingestTrigger/requestIngest 的类型与形状闭合）。 */
-  const EMPTY_INGEST_RESULT: IngestResult = { scanned: 0, upserted: 0, parked: 0, removed: 0, changed: false }
-
-  /** setup 模式下 daemonV2 两条工作台的兜底空实现（同 EMPTY_INGEST_RESULT 的既有语义：
+  /** setup 模式下 daemonV2 两条工作台的兜底空实现（
    *  workPermitted 恒 false 把整轮巡检闸住，这两个实际不会被调到；它们只让类型闭合）。
    *
    *  为什么不在这里 throw：§4.7 步 5 的既有口径是"闸住 ≠ 崩"。setup 模式下 dashboard 必须
@@ -337,23 +296,37 @@ async function cmdWatch() {
   }
 
 
+  // ── "踢一脚扫描"的接线点（2026-08-13 换绳子）────────────────────────────────
+  //
+  // 这里原本是 `const ingestTrigger = makeIngestTrigger({ ingest: ... })`——一个绑定
+  // v2/ingest.ts 摄取 pass 的闭包，三个调用点共用（加根后、手动扫描按钮、翻译装盘后）。
+  // ingest 整条链已随本轮清理退役，理由与实测证据见 `v2/daemonV2.ts` 的 `requestScan()`
+  // 头注释（一句话版：ingest 只写 series/episodes/movies/parked_paths 四张旧世界表，
+  // 一行 `files` 都不写，而今天所有活着的读出面读的都是 files/works——那三脚全踢空了）。
+  //
+  // 替代品是 daemonV2 自己的 `requestScan()`（带外机械扫描）。但 daemon 在**下面**才被
+  // 构造，而 startDashboard 在**上面**就要拿到这根线，故用一个 late-bound holder：
+  //
+  //  · 为什么不是"把 daemon 挪到 dashboard 前面构造"——dashboard 先起是 spec A §4.7 步 1
+  //    的刚性顺序（零 key 首启时容器健康检查要能转绿、wizard 要可达），不能为接线倒过来。
+  //  · 为什么不是 `daemon!` 非空断言——那会把"dashboard 起来了但 daemon 还没构造完的那几毫秒
+  //    里恰好有人点了扫描"变成一次 TypeError 崩进 HTTP 处理器。holder 为 null 时如实返回
+  //    false，端点据此答 503（"扫描触发器尚未就绪"），与它既有的"watch 没跑 → 503"同一档。
+  const daemonHolder: { current: { requestScan: () => void } | null } = { current: null }
+
+  /** 三个调用点共用的"踢一脚扫描"。daemon 尚未就绪 → 返回 false（调用方答 503），
+   *  不假装成功。 */
+  const requestScan = (): boolean => {
+    const d = daemonHolder.current
+    if (!d) return false
+    d.requestScan()
+    return true
+  }
+
   const buildCurrent = async (): Promise<WatchClients> => {
     const { mappings, tmdb, reasoningModel } = await assemble(cfg, warn)
     const satisfied = tmdb !== null && reasoningModel !== null
     const realignAdapters = await buildAdapters(emitProviderEvent, cfg, warn)
-    const ingestPass = tmdb
-      ? buildIngestPass({
-          roots: currentRoots, lib, tmdb,
-          targetLanguages: () => languagesNow().targetLanguages,
-          originSkipLanguages: () => languagesNow().originSkipLanguages,
-          excludeExtras: () => settingsRepo.get('exclude_extras') === 'true',
-          hardsubMode: () => {
-            const v = settingsRepo.get('hardsub_mode')
-            return v === 'agent' || v === 'aggressive' ? v : 'off'
-          },
-          log,
-        })
-      : null
     const realignRunEpisode = satisfied
       ? makeRealignRunEpisode({
           runFindSubtitleTask: makeFindSubtitleWorker({
@@ -368,10 +341,17 @@ async function cmdWatch() {
           mediaRoots: currentRoots(),
         })
       : null
-    const realignDeps: RealignExecutorDeps | null = (satisfied && ingestPass && realignRunEpisode)
+    // 2026-08-13：合取式里的 `ingestPass &&` 随 ingest 退役一并去掉——realign 的门控本来
+    // 就是 satisfied（TMDB + 模型），ingestPass 只是它的一个派生物（`tmdb ? ... : null`），
+    // 出现在这里是搭车而不是独立条件。
+    const realignDeps: RealignExecutorDeps | null = (satisfied && realignRunEpisode)
       ? {
           lib, jobs,
-          jf: makeRealignLibraryPort({ lib, roots: currentRoots(), runIngest: ingestPass }),
+          // port 的两根线接 daemonV2 的带外扫描（原为 runIngest: ingestPass）。
+          // ⚠️ realignDeps 的唯一消费者是 `cli/handleWorkerTask.ts`（零生产调用者、保留待裁），
+          // 它在派发时用新鲜的 currentRoots() **重建**这个 port，故这里构造的这一份实际不会被
+          // 用到——`isScanning: () => false` 的诚实降级与那边同一口径，理由见那边的注释。
+          jf: makeRealignLibraryPort({ lib, roots: currentRoots(), requestScan, isScanning: () => false }),
           tmdb: {
             getSeasonTable: (id) => tmdb.getSeasonTable(id),
             getDetails: (mediaType, id) => tmdb.getDetails(mediaType, id),
@@ -458,22 +438,13 @@ async function cmdWatch() {
     // orchestrateWorkerTaskDeps 已删（第 5.5 步）
     // reconcileAll 已删（第 5.5 步）
     return {
-      mappings, tmdb, reasoningModel, realignAdapters, ingestPass,
+      mappings, tmdb, reasoningModel, realignAdapters,
       realignDeps, findSubtitleWorkerTaskDeps,
       identifyDeps, subtitleWorkerV2,
     }
   }
 
   const clients: ClientsHolder<WatchClients> = { current: await buildCurrent() }
-
-  // spec A §4.2：ingest pass 经 holder 现取——setup 模式下 ingestPass 为 null，注入兜底空
-  // 实现（workPermitted 闸保证它实际不会被调到）；点火后同一闭包自然吃到新 pass。
-  // 2026-08-13：`jobs` 与 `now` 已从 deps 移除——ingestTrigger 不再写 jobs 表（它写的那条
-  // taskType='orchestrate' 行全仓无处理分支，永远不可能被执行，见该模块头注释的裁决段）。
-  const ingestTrigger = makeIngestTrigger({
-    ingest: () => clients.current.ingestPass?.() ?? Promise.resolve(EMPTY_INGEST_RESULT),
-    log,
-  })
 
   // ⚠️ 原本这里有一个 140 行的 `const handleWorkerTask = async (job: Job) => {...}` 闭包，
   // **生产零调用者**。2026-08-13 死代码清理把它整体提取到 `./handleWorkerTask.ts`，
@@ -530,15 +501,18 @@ async function cmdWatch() {
         rootsCount: () => settingsRepo.listRoots().length,
         now: () => Date.now(),
       },
-      // 验收修复轮一 Task V2：甄别台目录组认领成功后踢一脚扫描（DashboardOpts.requestIngest
-      // 注释）——复用上方已经构造好的同一个 ingestTrigger 闭包（daemonV2 的翻译流装盘后也调它，
-      // 见下方 requestIngest），认领这一刻立即触发一轮，不用等下一轮自然巡检。
-      // fire-and-forget：不 await（不让 POST /api/v2/triage/claim 卡在一整轮扫描后才响应），
-      // ingestTrigger() 返回的 promise 若拒绝，在这里兜底记日志，不让未捕获的 rejection 冒到
-      // 进程顶层（server.ts 那侧的 try/catch 只兜同步抛错，异步失败必须自己接住）。
-      requestIngest: () => {
-        void ingestTrigger().catch((e) => log(`warn: 甄别认领后踢一脚扫描失败（下一个自然周期还会再扫一次）: ${String(e)}`))
-      },
+      // "加了守备目录 / 点了立即扫描后立刻扫一轮"的接线（server.ts 的 DashboardOpts.requestScan）。
+      //
+      // 2026-08-13 换绳子：原字段名 `requestIngest`，接的是 ingestTrigger 闭包（→ v2/ingest.ts）。
+      // 那条链对本功能**无效**——ingest 一行 files 都不写，而媒体库页读的正是 files/works，
+      // 于是"加完目录立刻扫描"在界面上什么都不会发生（实测证据见 daemonV2.requestScan 头注释）。
+      // 现在接到 daemonV2 的带外扫描上，那才是今天真正在写 files 的东西。
+      //
+      // 同步返回布尔而不是 fire-and-forget promise：requestScan() 只是给主循环置一个标志
+      // （毫秒级、不会抛、不阻塞），端点拿它区分"已排队"（200）与"daemon 还没就绪"（503）。
+      // 旧实现要 catch 一个可能长达一整轮扫描的 promise，那个复杂度随 ingest 一起消失了。
+      requestScan,
+
       // R-F10：SSE 通道的消费端（GET /api/v2/events）。与下方 daemon 的 emit 是同一个实例。
       events: scoutEvents,
     })
@@ -576,6 +550,7 @@ async function cmdWatch() {
     initialVersion: settingsRepo.secretsVersion(),
   })
   const satisfactionTracker = makeSatisfactionTracker({ satisfied: () => setupSatisfied(cfg), log })
+
 
   // 第 7 步 B 组：原先这里是一个 15 字段的 `DaemonDeps` 字面量，它存在的唯一理由已经是
   // "给下面 4 个运维器官的闭包找个地方待着"——ScoutDaemonV2 只从它身上取 dbMaintenance /
@@ -715,11 +690,8 @@ async function cmdWatch() {
       })
       return runItem(videoPath)
     },
-    // 装盘成功踢一脚扫描：新 sidecar 越早被扫到、covered 越早落库（R24：只有扫描有权写它，
-    // 翻译 worker 的成功报告不算）。复用上方同一个 ingestTrigger 闭包，不建第二个。
-    requestIngest: () => {
-      void ingestTrigger().catch((e) => log(`warn: 翻译后踢一脚扫描失败（下一轮自然巡检仍会确认）: ${String(e)}`))
-    },
+    // 翻译装盘后的"踢一脚扫描"接线**已删除**（2026-08-13）：daemonV2 现在直接调自己的
+    // requestScan()，不再从外面注一根线进去（同一进程内它自己就是那个扫描器）。
     // C12：探针复用 files/streamProbe.ts 的既有实现（旧 ingest 接的是同一对函数），不写第二份。
     probe: (videoPath: string) => probeEmbeddedSubtitles(videoPath),
     probeDuration: (videoPath: string) => probeDurationSec(videoPath),
@@ -727,6 +699,10 @@ async function cmdWatch() {
     // ——节流（progress 1s）、续传缓冲（50 条）、订阅者广播都长在总线里，这里只负责发。
     emit: (e) => scoutEvents.publish(e),
   }))
+
+  // 把 daemon 交给上面那个 late-bound holder——`requestScan` 闭包（已经交给 startDashboard）
+  // 从这一刻起变成真的会扫盘。在此之前它如实返回 false，端点答 503（见 holder 定义处的论证）。
+  daemonHolder.current = daemon
 
 
   const stop = () => {

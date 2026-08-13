@@ -7,10 +7,10 @@ import { LibraryRepo } from '../v2/libraryRepo.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import {
-  buildRuns, buildParked, unexclude,
+  buildRuns,
   buildSettings, buildDeploySettings, listMediaSubdirs, SETTINGS_KEYS, updateSettings, addMediaRoot,
   buildWorkflowPending, buildWorkflowPasses,
-  buildTriage, redispatch, buildRunTrace, buildDormantTasks, dormantTargetLabel,
+  redispatch, buildRunTrace, buildDormantTasks, dormantTargetLabel,
 } from './apiV2.js'
 // 2026-08-13 清理：`import { INGEST_ORCHESTRATE_SERIES_ID }` 已删（零引用）。它当初是
 // 清算波 R-6（F9b）为"用真实常量而不是陈旧字符串 'self-scan-trigger' 造 ingest 触发器的
@@ -112,51 +112,11 @@ beforeEach(() => {
   insertRun(db, seriesJobId, NOW - 2000, 'no_safe_match', '暂时没找到')
   insertRun(db, seriesJobId, NOW - 1000, 'download', '下好一集')
 })
-// 去 Jellyfin 化 P6：park 救援页（认领动作已随两证据红线裁决退役，见 triageOps.ts 头注释——
-// 只剩"看见待识别文件"这一份事实呈现）。
-describe('buildParked（P6 park 救援清单）', () => {
-  it('buildParked 转发 listParkedPaths（first_seen desc），DTO 字段驼峰化', () => {
-    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW - 5000)
-    lib.upsertParkedPath('/media/tv/Another Show/e1.mkv', 'no match', NOW - 1000)
-
-    const parked = buildParked(db)
-    expect(parked).toEqual([
-      { path: '/media/tv/Another Show/e1.mkv', parkReason: 'no match', firstSeen: NOW - 1000, lastAttempt: NOW - 1000 },
-      { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW - 5000, lastAttempt: NOW - 5000 },
-    ])
-  })
-})
-
-describe('unexclude（救援R4b 特典翻案）', () => {
-  it('合法翻案：excluded-extra 行 → 写豁免 + 退 park 户口', () => {
-    const path = '/media/tv/Show/Show - NCOP01.mkv'
-    lib.upsertParkedPath(path, 'excluded-extra', NOW)
-
-    const result = unexclude(db, { path })
-    expect(result).toEqual({ ok: true })
-    expect(lib.isExtrasExempt(path)).toBe(true)
-    // park 户口已退——下一轮 ingest 靠豁免跳过铁案重走识别流
-    expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(false)
-  })
-
-  it('拒绝空 path', () => {
-    expect(unexclude(db, { path: '' })).toEqual({ ok: false, error: expect.any(String) })
-  })
-
-  it('拒绝不在 parked_paths 的 path', () => {
-    expect(unexclude(db, { path: '/media/never/parked.mkv' })).toEqual({ ok: false, error: expect.any(String) })
-  })
-
-  it('拒绝 reason 非 excluded-extra 的行（只翻特典的案，不误退普通停车行）', () => {
-    const path = '/media/tv/Show/e1.mkv'
-    lib.upsertParkedPath(path, 'no match', NOW)
-    const result = unexclude(db, { path })
-    expect(result).toEqual({ ok: false, error: expect.any(String) })
-    // 普通停车行原样保留，未被误退、未被误豁免
-    expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(true)
-    expect(lib.isExtrasExempt(path)).toBe(false)
-  })
-})
+// ── parked 族的 7 条用例已删除，2026-08-13 ──────────────────────────────────
+// `buildParked` 1 条 + `unexclude` 4 条 + `buildTriage` 2 条。被测函数随 parked_paths 的
+// 唯一写入者（src/v2/ingest.ts）一并退役——表从此零写入者，读出面留着就是给一张永远为空的
+// 表建界面。没有降级形态可留：这不是"断言变松"，是被断言的东西不存在了。
+// 正本论证见 web/src/triage/TriagePage.tsx 头注释的「2.5 parked 族的结局」段。
 
 describe('buildRuns', () => {
   it('全局历史按 id desc，limit/offset 生效', () => {
@@ -659,24 +619,6 @@ describe('buildRunTrace（GET /api/v2/workflow/runs/:id/trace：单 run 痕迹�
 
   it('行不存在 → null（router.ts 映射 404）', () => {
     expect(buildRunTrace(db, 999_999)).toBeNull()
-  })
-})
-
-describe('buildTriage（GET /api/v2/triage：pending=buildParked——认领半边已退役）', () => {
-  it('形状：pending 转发 buildParked（含 reason）', () => {
-    lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-
-    const triage = buildTriage(db)
-    expect(triage).toEqual({
-      pending: [
-        { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
-      ],
-    })
-  })
-
-  it('空表：pending 空数组', () => {
-    const freshDb = openDb(':memory:')
-    expect(buildTriage(freshDb)).toEqual({ pending: [] })
   })
 })
 

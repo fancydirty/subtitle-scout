@@ -17,15 +17,13 @@ export interface RunHistoryDTO {
   journalPath: string | null
 }
 
-/** 去 Jellyfin 化 P6：park 救援页——一次性脚手架，GET /api/parked 的响应体。 */
-export interface ParkedItemDTO {
-  path: string
-  parkReason: string
-  firstSeen: number
-  lastAttempt: number
-}
-
-// ClaimParkedInput（POST /api/parked/claim 请求体）已随认领退役删除——见 TriageDTO 注释。
+// ── parked 族已整体删除，2026-08-13 ──────────────────────────────────────────
+// `ParkedItemDTO` / `TriageDTO` / `api.parked` / `api.triage` / `api.unexclude` /
+// `useParked` / `useTriage`，连同后端 GET /api/parked、GET /api/v2/triage、
+// POST /api/v2/triage/unexclude 与 PendingBox/ExcludedBox 两个区。
+// 判据：parked_paths 的唯一写入者 src/v2/ingest.ts 本轮退役，表从此零写入者——
+// 留着读出面 = 给一张永远为空的表建界面。正本论证见 web/src/triage/TriagePage.tsx
+// 头注释的「2.5 parked 族的结局」段。
 
 /** dashboard-F2：GET /api/v2/workflow/pending 响应体——与 src/dashboard/apiV2.ts 的
  *  WorkflowPendingDTO 一族保持一致。顶栏新鲜度行与侧栏甄别角标共用同一个请求（meta+parked）。 */
@@ -119,13 +117,6 @@ export interface RedispatchInput {
   seriesId: string
   seasons?: number[]
   includeThrottled?: boolean
-}
-
-/** dashboard-F5：GET /api/v2/triage 响应体——待识别（pending，转发 buildParked）事实清单，
- *  与 src/dashboard/apiV2.ts 的 TriageDTO 一致。claimed 半边（ClaimedOverrideDTO）已随认领
- *  退役（2026-07-28 两证据红线裁决，见 src/v2/triageOps.ts 头注释）。 */
-export interface TriageDTO {
-  pending: ParkedItemDTO[]
 }
 
 // TmdbSearchResultDTO/TmdbSearchResponseDTO（GET /api/v2/tmdb/search 响应体）已随认领退役

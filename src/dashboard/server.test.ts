@@ -101,8 +101,10 @@ async function start(
   // （原先这里还承担 /api/v2/library/series/:id 的惰性 TMDB 刷新接线，该端点已于
   //  2026-08-12「无活 UI 端点」裁决删除，回填改由 daemonV2 的 boot pass 负责。）
   tmdb?: FakeTmdb,
-  // 验收修复轮一 Task V2：甄别认领成功后踢一脚扫描的回调（缺席→无事发生，照 jobs/tmdb 既有可选依赖的先例）。
-  requestIngest?: () => void,
+  // "踢一脚扫描"回调（缺席→无事发生，照 jobs/tmdb 既有可选依赖的先例）。
+  // 2026-08-13：原名 requestIngest、类型 `() => void`；现为 requestScan、返回布尔
+  // （true=已排队 / false=daemon 未就绪 → 端点 503）。见 DashboardOpts.requestScan。
+  requestScan?: () => boolean,
   // 字幕校验三端点的依赖注入（缺席→接真实模块：真会改写磁盘字幕 + spawn ffmpeg，所以下面
   // 的用例一律注入桩；见 DashboardOpts.subtitleWriteDeps 注释）。
   subtitleWriteDeps?: Partial<SubtitleWriteDeps>,
@@ -124,7 +126,7 @@ async function start(
     env,
     jobs,
     tmdb: extra?.tmdbGetter ?? (tmdb ? () => tmdb : undefined),
-    requestIngest,
+    requestScan,
     subtitleWriteDeps,
     subtitleCompareDeps,
     cacheRoot: extra?.cacheRoot,
@@ -193,20 +195,8 @@ describe('startDashboard (v2)', () => {
     expect(res.status).toBe(401)
   })
 
-  describe('park 救援页 (去 Jellyfin 化 P6)', () => {
-    it('GET /api/parked lists parked_paths', async () => {
-      const lib = new LibraryRepo(db)
-      lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
-      const { base } = await start(distWith('<!doctype html>'), 'tok')
-      const res = await fetch(`${base}/api/parked?token=tok`)
-      expect(res.status).toBe(200)
-      const parked = await res.json()
-      expect(parked).toEqual([
-        { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
-      ])
-    })
-
-  })
+  // park 救援页 (去 Jellyfin 化 P6) 的 `GET /api/parked` 用例已删除，2026-08-13——
+  // 端点随 parked 族整体退役。它的 404 墓碑锁在下方「退役端点如实 404」那一组里。
 
   // POST /api/v2/reconcile-all 测试已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
 
@@ -471,6 +461,56 @@ describe('startDashboard (v2)', () => {
         expect(new SettingsRepo(db).listRoots().map(r => r.path)).toContain(dir)
       })
 
+      // ── 「加了守备目录后立刻扫描」的守卫（2026-08-13 新增）─────────────────────
+      // 🔴 为什么这两条必须存在：变异实测——把 `if (result.ok && requestScan) requestScan()`
+      //    这一行短路掉，后端 3242 条用例**无一变红**。也就是说这个用户功能（R6：加完目录
+      //    不必等下一轮轮询）此前在后端**零守卫**，与 /api/v2/library/scan 当初的处境
+      //    一模一样（见下方那一族的头注释）。
+      //    线上后果是静默的：加根仍然 200、DB 里根也在，只是永远不会有人去扫它，
+      //    用户要等最长 24 小时的自然巡检才看得见文件。
+      it('🔴 加根成功 → requestScan 恰好被踢一次（R6：不必等下一轮轮询）', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'add-root-scan-'))
+        let calls = 0
+        const { base } = await start(
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++; return true },
+        )
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: dir }),
+        })
+        expect(res.status).toBe(200)
+        expect(calls, '加根成功却没踢扫描 —— 用户得等最长 24h 的自然巡检').toBe(1)
+      })
+
+      it('🔴 加根失败（相对路径 400）→ 不许踢扫描（没有新根可扫，白跑一轮全库走盘）', async () => {
+        let calls = 0
+        const { base } = await start(
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++; return true },
+        )
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: 'relative/nope' }),
+        })
+        expect(res.status).toBe(400)
+        expect(calls).toBe(0)
+      })
+
+      it('🔴 daemon 未就绪（requestScan 返回 false）→ 加根本身仍然 200', async () => {
+        // 分界：加根**已经写库成功**了，响应此刻已发出。daemon 没就绪只是"晚一点扫到"，
+        // 不是加根失败——把它降级成 5xx 会让用户以为目录没加上去，然后重复加。
+        // 这与 /api/v2/library/scan 的 503 不同：那个端点的全部语义就是触发扫描。
+        const dir = mkdtempSync(join(tmpdir(), 'add-root-notready-'))
+        const { base } = await start(
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => false,
+        )
+        const res = await fetch(`${base}/api/v2/settings/roots?token=tok`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: dir }),
+        })
+        expect(res.status).toBe(200)
+        expect(new SettingsRepo(db).listRoots().map(r => r.path)).toContain(dir)
+      })
+
       it('重复加同一路径是幂等 200', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'add-root-idem-'))
         const { base } = await start(distWith('<!doctype html>'), 'tok')
@@ -700,82 +740,35 @@ describe('startDashboard (v2)', () => {
       })
     })
 
-    describe('GET /api/v2/triage（认领端点已随两证据红线退役，只剩 pending 事实）', () => {
-      it('GET /api/v2/triage 返回 pending', async () => {
-        const lib = new LibraryRepo(db)
-        lib.upsertParkedPath('/media/tv/Unknown Show/e1.mkv', 'ambiguous match', NOW)
+    // ── parked 族的端点用例，2026-08-13 ──────────────────────────────────────
+    // 删掉的是：GET /api/v2/triage 的 200 用例 1 条 + POST /api/v2/triage/unexclude 的
+    // 4 条（合法翻案 / 400 / 405 / 401）。端点随 parked 族整体退役——parked_paths 的唯一
+    // 写入者 src/v2/ingest.ts 已删，表从此零写入者。
+    // 正本论证见 web/src/triage/TriagePage.tsx 头注释的「2.5 parked 族的结局」段。
+    //
+    // 「退役端点如实 404」那条**保留并扩容**：原本钉 3 个认领端点，现在把本轮删掉的 3 个
+    // 也加进去。它是这一族唯一该留的守卫形态——路由表少一条是静默的，而这条会在有人把
+    // 端点悄悄加回来（或把 404 变成 500/白屏）时当场红。
+    describe('退役端点如实 404（认领三条 + 2026-08-13 parked 族三条）', () => {
+      it('POST 六个退役端点一律 404', async () => {
         const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/v2/triage?token=tok`)
-        expect(res.status).toBe(200)
-        const body = await res.json()
-        expect(body).toEqual({
-          pending: [
-            { path: '/media/tv/Unknown Show/e1.mkv', parkReason: 'ambiguous match', firstSeen: NOW, lastAttempt: NOW },
-          ],
-        })
-      })
-
-      it('退役的认领端点如实 404：POST /api/parked/claim、/api/v2/triage/claim、/api/v2/triage/unclaim', async () => {
-        const { base } = await start(distWith('<!doctype html>'), 'tok')
-        for (const p of ['/api/parked/claim', '/api/v2/triage/claim', '/api/v2/triage/unclaim']) {
+        for (const p of [
+          '/api/parked/claim', '/api/v2/triage/claim', '/api/v2/triage/unclaim',
+          // ↓ 本轮新退役的三条
+          '/api/parked', '/api/v2/triage', '/api/v2/triage/unexclude',
+        ]) {
           const res = await fetch(`${base}${p}?token=tok`, {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
           })
           expect(res.status).toBe(404)
         }
       })
-    })
 
-    describe('POST /api/v2/triage/unexclude（救援R4b 特典翻案）', () => {
-      it('合法翻案 → 200 + 写豁免 + 退 park 户口 + 踢一脚扫描', async () => {
-        const lib = new LibraryRepo(db)
-        const path = '/media/tv/Show/Show - NCOP01.mkv'
-        lib.upsertParkedPath(path, 'excluded-extra', NOW)
-        let calls = 0
-        const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
-        )
-        const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path }),
-        })
-        expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ ok: true })
-        expect(lib.isExtrasExempt(path)).toBe(true)
-        expect(lib.listParkedPaths().some((p) => p.path === path)).toBe(false)
-        expect(calls).toBe(1)
-      })
-
-      it('reason 非 excluded-extra → 400，requestIngest 不被调用', async () => {
-        const lib = new LibraryRepo(db)
-        const path = '/media/tv/Show/e1.mkv'
-        lib.upsertParkedPath(path, 'no match', NOW)
-        let calls = 0
-        const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
-        )
-        const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path }),
-        })
-        expect(res.status).toBe(400)
-        expect(calls).toBe(0)
-      })
-
-      it('非 POST 方法 405', async () => {
+      it('GET /api/parked 与 GET /api/v2/triage 同样 404（读出面也走了，不是只删写入面）', async () => {
         const { base } = await start(distWith('<!doctype html>'), 'tok')
-        const res = await fetch(`${base}/api/v2/triage/unexclude?token=tok`, { method: 'GET' })
-        expect(res.status).toBe(405)
-      })
-
-      it('需要配置的 token', async () => {
-        const { base } = await start(distWith('<!doctype html>'), 's3cret')
-        const res = await fetch(`${base}/api/v2/triage/unexclude`, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
-        })
-        expect(res.status).toBe(401)
+        for (const p of ['/api/parked', '/api/v2/triage']) {
+          expect((await fetch(`${base}${p}?token=tok`)).status).toBe(404)
+        }
       })
     })
 
@@ -791,10 +784,10 @@ describe('startDashboard (v2)', () => {
     // 那是病 A 的镜像形态：不是"有端点没 UI"，而是"**有活链路却没有任何守卫**"。
     // 名字里带 library 让它更危险——同批被删的三条端点同前缀，下一轮清理的人极易顺手带走它。
     describe('POST /api/v2/library/scan（守备目录改动后踢一脚扫描）', () => {
-      it('🔴 POST → 200 且 requestIngest 恰好被调用一次', async () => {
+      it('🔴 POST → 200 且 requestScan 恰好被调用一次', async () => {
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++; return true },
         )
         const res = await fetch(`${base}/api/v2/library/scan?token=tok`, { method: 'POST' })
         expect(res.status).toBe(200)
@@ -802,9 +795,20 @@ describe('startDashboard (v2)', () => {
         expect(calls).toBe(1)
       })
 
-      it('🔴 未注入 requestIngest（没跑 watch）→ 503，而不是假装成功', async () => {
+      it('🔴 未注入 requestScan（没跑 watch）→ 503，而不是假装成功', async () => {
         // 假装 200 会让用户以为扫描已排上队，然后永远等不到结果。
         const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/library/scan?token=tok`, { method: 'POST' })
+        expect(res.status).toBe(503)
+      })
+
+      it('🔴 requestScan 返回 false（daemon 还没构造完）→ 503，同样不假装成功', async () => {
+        // 2026-08-13 新增。cmdWatch 里 dashboard **先于** daemon 构造（spec A §4.7 步 1 的
+        // 刚性顺序：零 key 首启要能转绿），中间存在一个"端点在、扫描器还没在"的窗口。
+        // 旧的 `() => void` 形状表达不了这一态，只能假装成功——那正是这条要堵的洞。
+        const { base } = await start(
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => false,
+        )
         const res = await fetch(`${base}/api/v2/library/scan?token=tok`, { method: 'POST' })
         expect(res.status).toBe(503)
       })
@@ -812,7 +816,7 @@ describe('startDashboard (v2)', () => {
       it('GET 等非 POST → 405（它有副作用，不许被预取/爬虫触发）', async () => {
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, () => { calls++; return true },
         )
         expect((await fetch(`${base}/api/v2/library/scan?token=tok`)).status).toBe(405)
         expect(calls).toBe(0)
@@ -821,7 +825,7 @@ describe('startDashboard (v2)', () => {
       it('无凭据 → 401，且不许触发扫描', async () => {
         let calls = 0
         const { base } = await start(
-          distWith('<!doctype html>'), 's3cret', undefined, undefined, undefined, () => { calls++ },
+          distWith('<!doctype html>'), 's3cret', undefined, undefined, undefined, () => { calls++; return true },
         )
         expect((await fetch(`${base}/api/v2/library/scan`, { method: 'POST' })).status).toBe(401)
         expect(calls).toBe(0)
@@ -1182,7 +1186,7 @@ describe('字幕校验三端点', () => {
   }
 
   async function startSub(backups: string[] = []): Promise<{ base: string }> {
-    // 位置参数（reconcileAll 删除后）：distDir, token, env, jobs, tmdb, requestIngest,
+    // 位置参数（reconcileAll 删除后）：distDir, token, env, jobs, tmdb, requestScan,
     // subtitleWriteDeps, subtitleCompareDeps, extra —— stubDeps() 必须落在第 7 位。
     // 曾多给一个 undefined 让它落到第 8 位（subtitleCompareDeps），于是 subtitleWriteDeps
     // 缺席 → correct/revert 接真实模块去读真磁盘 → 409/400 而非 200。
@@ -1658,7 +1662,7 @@ describe('setup 面端点（spec A §4.4）', () => {
       search: async () => [{ id: 1, title: 'X', originalTitle: 'X', year: 2020, posterPath: null }],
     }
     let ignited = false
-    // 位置参数：distDir, token, env, jobs, tmdb, requestIngest,
+    // 位置参数：distDir, token, env, jobs, tmdb, requestScan,
     // subtitleWriteDeps, subtitleCompareDeps, extra —— 中间七个一律 undefined。
     const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, {
       tmdbGetter: () => (ignited ? tmdbStub : null),

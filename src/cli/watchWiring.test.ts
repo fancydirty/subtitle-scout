@@ -42,7 +42,6 @@ function mkArgs(over: Record<string, any> = {}) {
       // 漏接不报错、只是翻译流恒休眠，而那与"还没接翻译"完全无法区分（C3/C45）。
       // 让类型层强制每个构造点都想一次，比事后靠一条断言去追要可靠。
       translateRunItem: async () => ({ status: 'installed' as const }),
-      requestIngest: () => {},
       probe: async () => null,
       probeDuration: async () => null,
       // R-F10：默认 no-op（本文件多数用例不关心事件）。**必填字段**，故这里必须有默认——
@@ -276,10 +275,18 @@ describe('buildDaemonV2Deps · 翻译流接线（第 4 步 / C3 + R19）', () =>
     db.close()
   })
 
-  it('🔴 requestIngest 被接上（装盘成功踢一脚扫描，R24 只有扫描有权写 covered）', () => {
-    const { db, args } = mkArgs({ requestIngest: vi.fn() })
+  // 2026-08-13：原先这里有一条「🔴 requestIngest 被接上」——守的是"装盘成功踢一脚扫描"
+  // 这根注入线。那根线**已删除**：daemonV2 现在直接调自己的 requestScan()（同一进程内它
+  // 就是那个扫描器，绕出去再注回来只是多一处能漏接线的地方）。原实现指向的 v2/ingest.ts
+  // 一行 files 都不写，那一脚从来就是踢空的——完整实测证据见 v2/daemonV2.ts 的
+  // requestScan 头注释。
+  //
+  // 用**负向锁**替代，而不是删掉了事：这条守的是"没人把那根注入线加回来"。加回来就意味着
+  // 又有一个 optional、漏接静默、且可能再次指向错误目标的接线点。
+  it('🔴 buildDaemonV2Deps 不再产出 requestIngest 注入线（daemon 自己调 requestScan）', () => {
+    const { db, args } = mkArgs()
     const deps = buildDaemonV2Deps(args as any)
-    expect(deps.requestIngest).toBeDefined()
+    expect('requestIngest' in deps).toBe(false)
     db.close()
   })
 })

@@ -290,9 +290,9 @@ export interface DaemonV2Deps {
    *  共用同一份组装防漂移。 */
   translateRunItem?: (videoPath: string) => Promise<TranslateRunItemResult>
 
-  /** 翻译装盘成功后踢一脚扫描，让新 sidecar 尽快被记账成 covered（R24：只有扫描有权写）。
-   *  可选：不注入时靠下一轮自然巡检确认，慢一天但不丢。 */
-  requestIngest?: () => void
+  /** 翻译装盘成功后踢一脚扫描——**已删除（2026-08-13）**，改为 daemon 直接调自己的
+   *  `requestScan()`（见该方法与 handleTranslateResult 装盘分支的论证）。原字段是
+   *  `requestIngest?: () => void`，注入的实现指向已退役的 v2/ingest.ts。 */
 
   // ───────────────────────────────────────────────────────────────────────────
   // 运维器官（D5 / C16）。签名照旧 DaemonDeps 的既有形态（那个类型与它的 ScoutDaemon 已于
@@ -418,6 +418,85 @@ export class ScoutDaemonV2 {
   /** C34：本进程当前在飞行的 staging 沙盒 jobId（= 目录名，见 subtitleJobId 的论证）。
    *  gcOrphans 靠它区分"孤儿垃圾"与"正在被 agent 写入的工作台"。 */
   private inFlightStagingJobIds = new Set<string>()
+
+  /** 带外扫描请求标志（`requestScan()` 置位，run() 主循环取件后清位）。
+   *
+   *  ── 为什么是"标志 + 主循环取件"，而不是 requestScan() 里直接 await scanOnce() ──
+   *  scanOnce 会**写 files 表并算删除差集**（deleteMissing 的 deeperPrefixes 依赖"扫描
+   *  作用域与删除作用域是同一份名单"，见 scanOnce 顶部 scanRoots 的论证）。两个 scanOnce
+   *  并发跑就是两份名单交错——一份的"我这轮没见到这个文件"会撞上另一份正在写入的行。
+   *  而 requestScan() 的三个调用点全是**HTTP/worker 回调线程**（加根、手动扫描、翻译装盘），
+   *  它们与巡检完全异步，直接 await 必然有并发窗口。
+   *
+   *  主循环是单线程序列点：把请求变成一个标志，由循环自己在两轮工作之间取件，天然与
+   *  runInspection 串行，零并发窗口，且不需要引入第二把锁（旧世界的 ingestLock 就是那把
+   *  锁，它连同 ingest 一起退役了——不再重建一个）。 */
+  private scanRequested = false
+
+  /** idle sleep 的提前唤醒钩子（`requestScan()` 调它）。null = 当前不在 sleep 里。
+   *
+   *  没有它的话，带外扫描请求要等最多一整个 MAINTENANCE_TICK_MS（5 分钟）才被取件——
+   *  而这三个调用点的用户语义恰恰是"**立刻**"（加完守备目录就想看见扫描结果）。
+   *  唤醒后主循环立刻转下一圈、取件、扫描，延迟从 5 分钟降到毫秒级。 */
+  private wakeIdle: (() => void) | null = null
+
+  /** 请求一次**带外扫描**（不是完整巡检，只跑阶段 1 的机械扫描 scanOnce）。
+   *
+   *  ── 这个方法是谁的后继 ──
+   *  它顶替的是旧世界的 `requestIngest()`（cli/index.ts 的 ingestTrigger 闭包 →
+   *  daemon/ingestTrigger.ts → v2/ingest.ts 的 makeIngestPass）。三个调用点原样保留、
+   *  语义不变，只把绳子的另一头从 ingest 换成 daemonV2：
+   *    ① `POST /api/v2/settings/roots` 加根成功后（server.ts，R6"加完目录立刻扫"）
+   *    ② `POST /api/v2/library/scan` 手动扫描按钮（server.ts）
+   *    ③ 翻译装盘成功后（本文件 handleTranslateResult，R24"只有扫描有权写 covered"）
+   *
+   *  ── 为什么必须换绳子（实测，不是推理）──
+   *  旧链路今天对这三个调用点**完全无效**，且不是"心跳停了"这么简单：ingest 写的是
+   *  series/episodes/movies/parked_paths 四张**旧世界**表，而今天活着的读出面
+   *  （媒体库页 works JOIN files、字幕/识别两条工作台、judge）读的全是 `files`/`works`。
+   *  ingest 从头到尾**一行 files 都不写**——它连 upsertEpisode/upsertMovie/upsertSeries
+   *  都不再调用（身份裁决早已上移到 agent），所以那三张表即便 ingest 全速跑也永远是 0 行。
+   *  实测（2026-08-13，临时库 + 真实 makeIngestPass 走盘 2 个文件）：
+   *    ingest → parked_paths=2, files=0, works=0, episodes=0, movies=0, series=0
+   *    daemonV2.scanOnce → files=2, parked_paths=0
+   *  两者写入集**完全不相交**。于是"加了守备目录后立刻扫描"这个用户功能在删 ingest
+   *  **之前就已经是坏的**：它踢的那一脚落在一张没人看的表上，用户界面纹丝不动，只能等
+   *  daemonV2 最多 24 小时后的下一轮自然巡检。本方法把那一脚踢到真正在扫盘的东西上。
+   *
+   *  ── 只跑 scanOnce，不跑整轮 runInspection（刻意）──
+   *  runInspection 阶段 2/3 是两条**付费 LLM 工作台**（识别 + 字幕）。带外触发点里有一个
+   *  是 HTTP 端点，暴露"用户点一下按钮就烧一轮 LLM"的形状；更糟的是加根 UI 有防抖但没有
+   *  幂等保证，猴子动作能连点出好几轮。而这三个调用点想要的东西**只需要机械扫描**：
+   *  加根要的是"新目录下的文件进 files 表"，翻译装盘要的是"新 sidecar 被记成 covered"
+   *  （R24：detectSubtitles 就在 scanOnce 里）。识别与字幕交给当天的自然巡检，不抢跑。
+   *
+   *  幂等：重复调用只是把同一个标志重复置位，主循环一次取件跑一轮——连点 10 次不会扫 10 遍。 */
+  requestScan(): void {
+    this.scanRequested = true
+    // 在 sleep 里就立刻唤醒；不在（正在巡检/维护）就什么都不做——标志已置位，
+    // 当前这轮工作结束后主循环自然会取件，不需要也不该打断正在跑的巡检。
+    this.wakeIdle?.()
+  }
+
+  /** scanOnce 是否正在执行中。
+   *
+   *  顶替 `v2/ingest.ts` 导出的 `ingestLock.held`（模块级单例锁，随 ingest 一起退役）。
+   *  唯一消费者是 `v2/realignLibraryPort.ts` 的 `getScheduledTasks()`，它把这个布尔映射成
+   *  一个 Running 态任务喂给 realignExecutor 的 `waitForIngestIdle` 轮询——那条**安全属性**
+   *  是"扫描进行中不许挪文件"（realign 会整体重排目录结构；扫描正在算删除差集时挪文件，
+   *  差集会把刚挪走的路径判成"消失"）。
+   *
+   *  换绳子后这个属性**变强了**：旧的 ingestLock 守的是 ingest（它根本不写 files），
+   *  而真正会与 realign 抢同一批路径的是 daemonV2 的 scanOnce。旧锁守错了对象。
+   *
+   *  实例字段而非模块级单例：一个进程只有一个 daemon，但模块级状态会在测试之间泄漏
+   *  （ingestLock 正是这个形状——测试里抛错路径漏了 finally 就污染下一个用例）。 */
+  isScanning(): boolean {
+    return this.scanning
+  }
+
+  /** `isScanning()` 的后备字段。scanOnce 的 try/finally 维护（含抛错路径）。 */
+  private scanning = false
 
   constructor(private deps: DaemonV2Deps) {
     this.writableCache = deps.writableRoots ?? new Map<string, boolean>()
@@ -563,9 +642,58 @@ export class ScoutDaemonV2 {
       }
 
       if (this.stopping) break
+
+      // 带外扫描取件（见 requestScan 的论证）。位置在巡检**之后**、sleep 之前：
+      //  · 在巡检之后 = 与 runInspection 严格串行，两个 scanOnce 永不并发；
+      //  · 在 sleep 之前 = 请求在本圈就被消费掉，不必再睡满一拍。
+      // 先清标志再跑：跑的过程中新来的请求会重新置位，下一圈再扫一次（不丢），
+      // 而不是被这一轮"顺便"吞掉。
+      if (this.scanRequested) {
+        this.scanRequested = false
+        // workPermitted 不闸这一支：机械扫描不烧 LLM、不打 TMDB，纯本地走盘 + 写 files。
+        // setup 未完成（没配密钥）时用户加了守备目录同样该看见文件进库——那正是 wizard
+        // 期间最需要的反馈，闸掉它等于"配完密钥前加目录什么都不会发生"。
+        try {
+          this.deps.log('带外扫描（加根 / 手动扫描 / 翻译装盘触发）')
+          await this.scanOnce(signal)
+        } catch (e) {
+          // 隔离口径同 gcStaging/各回填 pass：带外扫描失败绝不许掀翻主循环——
+          // 它只是"早一点扫到"的增益，当天的自然巡检仍会完整跑一遍。
+          this.deps.log(`warn: 带外扫描失败（隔离，下一轮自然巡检仍会扫）: ${String(e)}`)
+        }
+        if (this.stopping) break
+        // 本圈已经做过实事，直接转下一圈（不睡）——连续两个请求（加根 + 翻译装盘）
+        // 之间不该插一拍 5 分钟的空睡。
+        continue
+      }
+
       // "歇着"：每 5min 一拍——既是时间闸的轮询（不是轮询工作台），也是维护循环的节拍。
-      await sleep(this.deps.maintenanceTickMs ?? MAINTENANCE_TICK_MS, signal)
+      // 可被 requestScan() 提前唤醒（wakeIdle），否则带外请求要等满一拍才被取件。
+      await this.idleSleep(this.deps.maintenanceTickMs ?? MAINTENANCE_TICK_MS, signal)
     }
+  }
+
+  /** 可被 `requestScan()` 提前唤醒的 idle sleep。
+   *
+   *  与裸 `sleep()` 的唯一区别是把一个"提前结束"的把手挂到 this.wakeIdle 上。finally 里
+   *  **必须**清空它：留着的话下一次 requestScan 会去 resolve 一个已经 settle 的 promise
+   *  （无害但无效），而真正在睡的那一觉反而叫不醒——那正是"带外扫描时灵时不灵"的形状。 */
+  private idleSleep(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (signal.aborted) return resolve()
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        signal.removeEventListener('abort', finish)
+        this.wakeIdle = null
+        resolve()
+      }
+      const timer = setTimeout(finish, ms)
+      signal.addEventListener('abort', finish, { once: true })
+      this.wakeIdle = finish
+    })
   }
 
   /** 维护循环：4 个运维器官（D5 / C16）。**不受 24h 巡检闸与 workPermitted 限制**。
@@ -1201,10 +1329,18 @@ export class ScoutDaemonV2 {
     }
 
     // 装盘成功踢一脚扫描：新 sidecar 越早被扫到、covered 越早落库（R24 只有扫描有权写）。
+    //
+    // 2026-08-13：这里原本调的是 `this.deps.requestIngest?.()`（外部注入 → cli 的
+    // ingestTrigger → v2/ingest.ts）。那条链**对本行想要的效果完全无效**：ingest 写的是
+    // episodes/movies 的 sub_status，而这里刚刚写完的是 `files` 表——两个世界互不相干，
+    // 踢完之后 files.sub_status 该是什么还是什么。真正会把新 sidecar 记成 covered 的是
+    // scanOnce 里的 detectSubtitles，也就是 requestScan()。完整实测证据见 requestScan 头注释。
+    //
+    // 改成调自己的 requestScan() 而不是继续走注入：daemon 要踢的是**它自己的**扫描，
+    // 绕一圈从外面注进来只是多一个能忘记接线的地方（deps.requestIngest 是 optional，
+    // 漏接是静默的——本仓栽过 6 次的那个形状）。
     if (status === 'installed') {
-      try { this.deps.requestIngest?.() } catch (e) {
-        this.deps.log(`warn: 翻译后踢扫描失败（下一轮自然巡检仍会确认）: ${String(e)}`)
-      }
+      this.requestScan()
     }
   }
 
@@ -1279,7 +1415,23 @@ export class ScoutDaemonV2 {
     return { ok: false, attempts: backoffs.length + 1, error: hadError ? lastError : undefined }
   }
 
+  /** 机械扫描一轮。**唯一**改动是把 `scanning` 标志的 try/finally 包在外面（供
+   *  `isScanning()` → realignLibraryPort 的"扫描中不许挪文件"安全属性读，见 isScanning
+   *  头注释）；实现体原样收在 scanOnceInner 里，一字未改。
+   *
+   *  finally 而不是"末尾清一下"：scanOnce 有多条抛出路径（upsert 撞库、walk 抛错、
+   *  markRoot 的 rethrow），漏掉任何一条都会让锁**永久卡住** → realign 从此永远等不到
+   *  idle，静默停摆。旧 ingestLock 正是靠 finally 兜这件事的，语义逐字继承。 */
   private async scanOnce(signal?: AbortSignal): Promise<void> {
+    this.scanning = true
+    try {
+      await this.scanOnceInner(signal)
+    } finally {
+      this.scanning = false
+    }
+  }
+
+  private async scanOnceInner(signal?: AbortSignal): Promise<void> {
     const db = this.deps.db
     const now = this.deps.now?.() ?? Date.now()
 

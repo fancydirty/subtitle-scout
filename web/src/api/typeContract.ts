@@ -100,7 +100,6 @@ type Assert<_T extends true> = never
 
 // src/dashboard/apiV2.ts
 export type C_RunHistoryDTO = Assert<Satisfies<BeApiV2.RunHistoryDTO, Fe.RunHistoryDTO>>
-export type C_ParkedItemDTO = Assert<Satisfies<BeApiV2.ParkedItemDTO, Fe.ParkedItemDTO>>
 export type C_WorkflowPendingSeriesDTO = Assert<Satisfies<BeApiV2.WorkflowPendingSeriesDTO, Fe.WorkflowPendingSeriesDTO>>
 export type C_WorkflowPendingMovieDTO = Assert<Satisfies<BeApiV2.WorkflowPendingMovieDTO, Fe.WorkflowPendingMovieDTO>>
 export type C_WorkflowFreshnessDTO = Assert<Satisfies<BeApiV2.WorkflowFreshnessDTO, Fe.WorkflowFreshnessDTO>>
@@ -117,7 +116,6 @@ export type C_WorkflowPassDTO = Assert<Satisfies<BeApiV2.WorkflowPassDTO, Fe.Wor
 //    这恰好演示了契约的另一半价值：后端删掉一整族 DTO 时，前端这边会当场编译红，
 //    有人必须来看一眼、并做出"跟着删"还是"标注为死类型"的决定，而不是静默漂移。
 export type C_RunTraceDTO = Assert<Satisfies<BeApiV2.RunTraceDTO, Fe.RunTraceDTO>>
-export type C_TriageDTO = Assert<Satisfies<BeApiV2.TriageDTO, Fe.TriageDTO>>
 export type C_DormantTaskDTO = Assert<Satisfies<BeApiV2.DormantTaskDTO, Fe.DormantTaskDTO>>
 export type C_DeploySecretDTO = Assert<Satisfies<BeApiV2.DeploySecretDTO, Fe.DeploySecretDTO>>
 export type C_DeploySettingsDTO = Assert<Satisfies<BeApiV2.DeploySettingsDTO, Fe.DeploySettingsDTO>>

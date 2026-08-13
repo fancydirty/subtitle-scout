@@ -115,26 +115,25 @@ export interface ReconcileAllResultDTO {
   summary: string
 }
 
-// ---- Parked (去 Jellyfin 化 P6：最小 park 救援——一次性脚手架，不做搜索/候选/批量) ----
-
-export interface ParkedItemDTO {
-  path: string
-  parkReason: string
-  firstSeen: number
-  lastAttempt: number
-}
-
-/** park 救援页列表：转发 LibraryRepo.listParkedPaths()（已 first_seen DESC 排序，挂得最久的排最前）。 */
-export function buildParked(db: ScoutDb): ParkedItemDTO[] {
-  return new LibraryRepo(db).listParkedPaths().map((p) => ({
-    path: p.path,
-    parkReason: p.park_reason,
-    firstSeen: p.first_seen,
-    lastAttempt: p.last_attempt,
-  }))
-}
-
-export { unexclude, type UnexcludeResult } from '../v2/triageOps.js'
+// ---- Parked (去 Jellyfin 化 P6：最小 park 救援) — **整族删除，2026-08-13** ----
+//
+// 删掉的是：`ParkedItemDTO` / `buildParked` / `unexclude` 转发 / 下方的 `TriageDTO`+
+// `buildTriage`，对应端点 GET /api/parked、GET /api/v2/triage、POST /api/v2/triage/unexclude，
+// 前端 useParked/useTriage 两个 hook 与 PendingBox/ExcludedBox 两个区。
+//
+// 判据（不是"看起来没人用"，是"这张表从今天起没有写入者"）：
+//  · `parked_paths` 的**唯一**写入者是 `v2/ingest.ts` 的三处 upsertParkedPath，
+//    该文件本轮整体退役（它只写 series/episodes/movies/parked_paths 四张旧世界表，
+//    一行 `files` 都不写——实测证据见 v2/daemonV2.ts 的 requestScan 头注释）。
+//  · daemonV2（今天唯一在扫盘的东西）从不碰 parked_paths：认不出来的文件留在
+//    `files.work_id IS NULL`，读出面是 `dashboard/unidentifiedHealth.ts`（活着，
+//    活动页状态条在用）——**那才是 park 救援清单的真正后继**，不是这一族。
+// 于是保留它们 = 给一张永远为空的表建读出面，正是本仓病 A 的形状。
+//
+// 🔴 表本身（parked_paths）**没有随之 DROP**，那是刻意的：`cli/unidentifiedFindSubtitle.ts`
+// 仍在读写它，而那个文件属于"零生产调用者、保留待裁"的 handleWorkerTask 族（上一轮裁决）。
+// 拆掉它的表 = 单方面把另一轮裁决的"接回来当天就能跑"变成假话。完整说明见
+// `web/src/triage/TriagePage.tsx` 头注释的 parked 族段落。
 
 // ---- Settings（dashboard 重建战役 G4：settings 表 + 守备目录 + 部署层只读展示） ----
 
@@ -860,19 +859,8 @@ export function buildRunTrace(db: ScoutDb, runId: number): RunTraceDTO | null {
 //
 // 应有集的读取方仍是 tmdbCatalog.canonicalEpisodes（活着，media 详情页在用）。
 
-// ---- triage（甄别台）：pending=park 救援清单 ----
-// claimed 半边（buildClaimedOverrides / ClaimedOverrideDTO）已随 identify_overrides 表退役
-// （两证据红线裁决，见 src/v2/triageOps.ts 头注释）：甄别页只剩"看见待识别文件"这一个职能，
-// 修复动作是改文件名，不是在面板里指派身份。
-
-export interface TriageDTO {
-  pending: ParkedItemDTO[]
-}
-
-/** GET /api/v2/triage：pending 转发 buildParked（含 reason）——甄别台看全"待认领"事实。 */
-export function buildTriage(db: ScoutDb): TriageDTO {
-  return { pending: buildParked(db) }
-}
+// ---- triage（甄别台）：pending=park 救援清单 —— **已随 parked 族整体删除，2026-08-13** ----
+// 论证在上方 Parked 段，不重抄。（claimed 半边此前已随 identify_overrides 表退役。）
 
 // ---- workflow/redispatch（人类扳手①：手动重派）----
 

@@ -1,7 +1,7 @@
 // src/dashboard/router.ts
 import type {
-  RunHistoryDTO, ParkedItemDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
-  WorkflowPendingDTO, WorkflowPassDTO, TriageDTO, RunTraceDTO,
+  RunHistoryDTO, SettingsDTO, DeploySettingsDTO, FsListResult,
+  WorkflowPendingDTO, WorkflowPassDTO, RunTraceDTO,
   DormantTaskDTO,
 } from './apiV2.js'
 import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
@@ -12,8 +12,9 @@ import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 
 export interface RouterDeps {
   runs: (offset: number, limit: number) => RunHistoryDTO[]
-  /** 去 Jellyfin 化 P6：park 救援页列表。 */
-  parked: () => ParkedItemDTO[]
+  // `parked` / `triage` 两个 dep 已删除（2026-08-13，parked_paths 族整体退役——
+  // 唯一写入者 v2/ingest.ts 已删，表从此零写入者；完整裁决见 web/src/triage/TriagePage.tsx
+  // 头注释的 parked 族段落）。对应端点 GET /api/parked、GET /api/v2/triage 一并删除。
   /** dashboard G4：settings 表白名单五键（GET /api/v2/settings，展示层——写入走 server.ts 的
    *  PUT 分支，纯函数路由这里只读）。 */
   settings: () => SettingsDTO
@@ -30,8 +31,6 @@ export interface RouterDeps {
   /** dashboard G5：GET /api/v2/workflow/passes?limit=20——orchestrate 通行记录 + receipts；
    *  limit 已在本文件里 clamp 到 [1,100] 后再传入。 */
   workflowPasses: (limit: number) => WorkflowPassDTO[]
-  /** dashboard G5：GET /api/v2/triage——甄别台：pending（park 救援清单）+ claimed（已认领 override 清单）。 */
-  triage: () => TriageDTO
   /** dashboard-F4：GET /api/v2/workflow/runs/:id/trace——单 run 痕迹快照回放。
    *  （曾经这里写着"区别于 workflowWorkers 的 traceBus.peek 直播补拉"——那条端点已于
    *   2026-08-13 删除，见 apiV2.ts 的墓碑注释；本端点只读收官后落库的完整快照。）
@@ -107,9 +106,8 @@ export function handleApiRoute(
   }
 
   // ---- parked (去 Jellyfin 化 P6：最小 park 救援) ----
-  // GET 只读列表走这里（纯同步）；POST /api/parked/claim 需要解析 JSON body + 写库校验，
-  // 走 server.ts 里同 /api/v2/reconcile-all 一样的专用分支，不硬塞进这个纯函数路由表。
-  if (pathname === '/api/parked') return { status: 200, json: deps.parked() }
+  // GET /api/parked 已删除（2026-08-13）——见上方 RouterDeps 里 parked/triage 两个 dep
+  // 被删掉那一段的说明。落到下面的 404，与其它未知路径同一形状。
 
   // ---- settings / deploy / roots / fs (dashboard G4：两层设置 + 守备目录 UI 化) ----
   // 四个都是纯同步 GET，走这个纯函数路由表；写入端点（PUT settings、POST/DELETE roots）需要
@@ -155,7 +153,8 @@ export function handleApiRoute(
     return trace ? { status: 200, json: trace } : { status: 404, json: { error: 'not found' } }
   }
 
-  if (pathname === '/api/v2/triage') return { status: 200, json: deps.triage() }
+  // GET /api/v2/triage 已删除（2026-08-13，同 /api/parked——它的 body 就是 { pending:
+  // buildParked(db) }，同一族同一批走）。
 
   // ---- R-F2 / R-F5：媒体库页两个新端点（长在 files/works/tmdb_seasons 上）----
   // 刻意命名 mediaLibrary 而非复用 library：旧的 `/api/v2/library` 及其 4 个 builder 长在

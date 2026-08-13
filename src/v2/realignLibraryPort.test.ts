@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeRealignLibraryPort } from './realignLibraryPort.js'
 import { verifyRealignedCounts, waitForIngestIdle } from './realignExecutor.js'
-import { ingestLock } from './ingest.js'
 import { openDb } from './db.js'
 import { LibraryRepo } from './libraryRepo.js'
 
@@ -17,7 +16,7 @@ describe('makeRealignLibraryPort · getItem', () => {
   it('已知 series id → 返回 Name/ProductionYear/ProviderIds.Tmdb 三个被消费的字段', async () => {
     const lib = mkLib()
     lib.upsertSeries({ id: 'tmdb:120089', name: 'Spy x Family', year: 2022 })
-    const port = makeRealignLibraryPort({ lib, roots: [], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: [], requestScan: vi.fn(), isScanning: () => false })
 
     const item = await port.getItem('tmdb:120089')
 
@@ -28,7 +27,7 @@ describe('makeRealignLibraryPort · getItem', () => {
 
   it('未知 id（库里没有这条 series 行）→ 抛错，不返回伪造数据', async () => {
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: [], requestScan: vi.fn(), isScanning: () => false })
 
     await expect(port.getItem('tmdb:no-such-id')).rejects.toThrow()
   })
@@ -47,7 +46,7 @@ describe('makeRealignLibraryPort · getItemsPage', () => {
     writeFileSync(join(showDir, 'Season 02', 'ep2.mkv'), 'x')
 
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [root], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: [root], requestScan: vi.fn(), isScanning: () => false })
     const page = await port.getItemsPage(0, 100)
 
     expect(page).toHaveLength(2)
@@ -77,7 +76,8 @@ describe('makeRealignLibraryPort · getItemsPage', () => {
     const port = makeRealignLibraryPort({
       lib: mkLib(),
       roots: [root],
-      runIngest: vi.fn(),
+      requestScan: vi.fn(),
+      isScanning: () => false,
       walkVideoFiles: walkSpy,
     })
 
@@ -98,7 +98,7 @@ describe('makeRealignLibraryPort · getItemsPage', () => {
     for (let i = 1; i <= 5; i++) writeFileSync(join(showDir, `e${i}.mkv`), 'x')
 
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [root], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: [root], requestScan: vi.fn(), isScanning: () => false })
     const page1 = await port.getItemsPage(0, 2)
     const page2 = await port.getItemsPage(2, 2)
     const page3 = await port.getItemsPage(4, 2)
@@ -116,7 +116,7 @@ describe('makeRealignLibraryPort · getItemsPage', () => {
     writeFileSync(join(root, 'flat', 'loose.mkv'), 'x')
 
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [root], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: [root], requestScan: vi.fn(), isScanning: () => false })
     const page = await port.getItemsPage(0, 100)
 
     expect(page).toHaveLength(1)
@@ -133,42 +133,43 @@ describe('makeRealignLibraryPort · getItemsPage', () => {
     writeFileSync(join(root, 'Other Show', 'Season 01', 'x.mkv'), 'x')
 
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [root], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: [root], requestScan: vi.fn(), isScanning: () => false })
 
     const result = await verifyRealignedCounts(port, showDir, new Map([[1, 3]]), { pageSize: 2 })
     expect(result.ok).toBe(true)
   })
 })
 
-describe('makeRealignLibraryPort · getScheduledTasks（D4：ingestLock 承载"扫描中不许挪文件"）', () => {
-  afterEach(() => { ingestLock.held = false })
-
-  it('ingestLock.held=false → 空数组（空闲）', async () => {
+// 2026-08-13：本组三条原先驱动的是 `ingestLock.held`（v2/ingest.ts 的模块级单例，随 ingest
+// 整体退役）。改成驱动注入的 `isScanning`——**安全属性逐字不变**（"扫描中不许挪文件"），
+// 只是问的对象从 ingest 换成了真正会与 realign 抢同一批路径的 daemonV2.scanOnce。
+// 顺带一个真实的改善：状态从模块级单例变成 per-port 注入，不再有跨用例泄漏的可能
+// （旧写法要靠 afterEach 手动复位，漏一次就污染下一条）。
+describe('makeRealignLibraryPort · getScheduledTasks（D4：isScanning 承载"扫描中不许挪文件"）', () => {
+  it('isScanning()=false → 空数组（空闲）', async () => {
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [], runIngest: vi.fn() })
-    ingestLock.held = false
+    const port = makeRealignLibraryPort({ lib, roots: [], requestScan: vi.fn(), isScanning: () => false })
 
     expect(await port.getScheduledTasks()).toEqual([])
   })
 
-  it('ingestLock.held=true → 一个 isRunning:true 的任务（Running 态）', async () => {
+  it('isScanning()=true → 一个 isRunning:true 的任务（Running 态）', async () => {
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [], runIngest: vi.fn() })
-    ingestLock.held = true
+    const port = makeRealignLibraryPort({ lib, roots: [], requestScan: vi.fn(), isScanning: () => true })
 
     const tasks = await port.getScheduledTasks()
     expect(tasks).toHaveLength(1)
     expect(tasks[0].isRunning).toBe(true)
   })
 
-  it('契约测试：waitForIngestIdle 在 ingestLock 释放前一直轮询，释放后返回 true', async () => {
+  it('契约测试：waitForIngestIdle 在扫描结束前一直轮询，结束后返回 true', async () => {
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [], runIngest: vi.fn() })
-    ingestLock.held = true
+    let scanning = true
+    const port = makeRealignLibraryPort({ lib, roots: [], requestScan: vi.fn(), isScanning: () => scanning })
     let ticks = 0
     const sleep = async () => {
       ticks++
-      if (ticks === 2) ingestLock.held = false
+      if (ticks === 2) scanning = false
     }
 
     const idle = await waitForIngestIdle(port, { pollMs: 1, timeoutMs: 10_000, sleep })
@@ -180,7 +181,7 @@ describe('makeRealignLibraryPort · getScheduledTasks（D4：ingestLock 承载"�
 describe('makeRealignLibraryPort · getVirtualFolders', () => {
   it('每个 MEDIA_ROOTS 条目映射成一个 identity 虚拟库（locations=[root]）', async () => {
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: ['/media/tv', '/media/anime'], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: ['/media/tv', '/media/anime'], requestScan: vi.fn(), isScanning: () => false })
 
     const folders = await port.getVirtualFolders()
 
@@ -191,21 +192,21 @@ describe('makeRealignLibraryPort · getVirtualFolders', () => {
 })
 
 describe('makeRealignLibraryPort · refreshLibrary', () => {
-  it('调用一次 deps.runIngest（libraryId 参数被忽略——库原生世界没有"只刷一个库"的等价操作）', async () => {
+  it('调用一次 deps.requestScan（libraryId 参数被忽略——库原生世界没有"只刷一个库"的等价操作）', async () => {
     const lib = mkLib()
-    const runIngest = vi.fn(async () => ({ scanned: 1, upserted: 1, parked: 0, removed: 0, changed: true }))
-    const port = makeRealignLibraryPort({ lib, roots: [], runIngest })
+    const requestScan = vi.fn()
+    const port = makeRealignLibraryPort({ lib, roots: [], requestScan, isScanning: () => false })
 
     await port.refreshLibrary('root:0')
 
-    expect(runIngest).toHaveBeenCalledTimes(1)
+    expect(requestScan).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('makeRealignLibraryPort · 无 deleteItem（D1）', () => {
   it('产出的 port 对象不含 deleteItem', () => {
     const lib = mkLib()
-    const port = makeRealignLibraryPort({ lib, roots: [], runIngest: vi.fn() })
+    const port = makeRealignLibraryPort({ lib, roots: [], requestScan: vi.fn(), isScanning: () => false })
 
     expect((port as unknown as { deleteItem?: unknown }).deleteItem).toBeUndefined()
   })

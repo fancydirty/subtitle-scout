@@ -6,35 +6,24 @@
 // 两证据红线（agent 识别必须凑齐两路独立证据）；②override 的覆盖单元是 dirname(path) 目录
 // 前缀——对 1.mp4 认领一次，该目录未来落进来的每个文件都被投毒成同一身份。正确的用户动作是
 // **改文件名**：改名对所有下游工具（不只本项目）都修好识别。identify_overrides 表已随之
-// DROP（见 db.ts 尾部迁移）。下方 unexclude 是不同概念，刻意保留：它不指派任何身份，只是把
-// 被机械铁案误伤的文件放回识别队列，身份裁决仍由 agent 在证据红线下完成。
+// DROP（见 db.ts 尾部迁移）。
+//
+// ── 2026-08-13：`unexclude` / `UnexcludeResult` 也删除了 ────────────────────────
+// 上一段末尾原本写着「下方 unexclude 是不同概念，刻意保留：它不指派任何身份，只是把被机械
+// 铁案误伤的文件放回识别队列」。那句话的**前提**是"有一条会读这个豁免的识别流"——
+// 而那条流就是 `v2/ingest.ts` 的 excludeExtras 分支（`isMechanicalExtra(path) &&
+// !lib.isExtrasExempt(path)`），它是 extras_exemptions 全仓**唯一的读取方**。ingest 本轮
+// 整体退役，于是：
+//   · 写豁免 → 没人读；
+//   · 退 park 户口 → parked_paths 已零写入者，退了也不会有人再把它加回来；
+//   · "重新走识别流" → 那是 daemonV2 的 files/works 两表在管，与 park 户口无关。
+// 三个动作全部落空。端点 POST /api/v2/triage/unexclude 与前端 ExcludedBox 同批删除。
+// 正本论证见 `web/src/triage/TriagePage.tsx` 头注释的「2.5 parked 族的结局」段。
+//
+// `LibraryRepo.addExtrasExemption` / `isExtrasExempt` 与 `extras_exemptions` 表本身**保留**：
+// 同 parked_paths 的处置理由——不单方面拆掉"保留待裁"资产的地基（见那一段）。
 import { z } from 'zod'
-import type { ScoutDb } from './db.js'
-import { LibraryRepo } from './libraryRepo.js'
 import type { JobsRepo, WorkerTaskUpsertOutcome } from './jobsRepo.js'
-
-/** unexclude 的回执形状（历史名 ClaimParkedResult——认领退役后随主人改名）。 */
-export type UnexcludeResult = { ok: true } | { ok: false; error: string }
-
-/** 救援R4b 翻案：用户在甄别页「Excluded extras」箱认为某个被机械排除的文件其实是真内容。
- *  校验它确实是当前 park reason=excluded-extra 的行 → 写豁免（extras_exemptions）+ 退 park 户口，
- *  让下一轮 ingest 跳过机械铁案、重新走识别流（豁免持久，见 db.ts v14 迁移注释）。校验失败诚实
- *  拒绝（调用方薄，判断集中在这一层可单测）。 */
-export function unexclude(db: ScoutDb, input: { path: string }): UnexcludeResult {
-  const { path } = input
-  if (!path) return { ok: false, error: 'path is required' }
-
-  const lib = new LibraryRepo(db)
-  const row = lib.listParkedPaths().find((p) => p.path === path)
-  if (!row) return { ok: false, error: 'path is not currently parked' }
-  if (row.park_reason !== 'excluded-extra') {
-    return { ok: false, error: 'path is not an excluded extra' }
-  }
-
-  lib.addExtrasExemption(path, Date.now())
-  lib.clearParkedPath(path)
-  return { ok: true }
-}
 
 export type RedispatchResult =  | { ok: true; outcome: WorkerTaskUpsertOutcome }
   | { ok: false; error: string }

@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
 import type {
-  RunHistoryDTO, ParkedItemDTO, WorkflowPendingDTO,
-  WorkflowPassDTO, RunTraceDTO, TriageDTO,
+  RunHistoryDTO, WorkflowPendingDTO,
+  WorkflowPassDTO, RunTraceDTO,
   SettingsDTO, DeploySettingsDTO, MediaRootDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
@@ -68,32 +68,13 @@ export function useRuns(page: number): Async<RunHistoryDTO[]> {
 
 export const RUNS_PAGE_SIZE = PAGE
 
-/** 去 Jellyfin 化 P6：park 救援页列表——一次性 + 手动 reload（不轮询，认领后调用方自己 reload）。 */
-export function useParked(): Async<ParkedItemDTO[]> {
-  const [data, setData] = useState<ParkedItemDTO[] | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
-
-  useEffect(() => {
-    const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
-    api
-      .parked(ctrl.signal)
-      .then((d) => setData(d))
-      .catch((e) => {
-        if (!ctrl.signal.aborted) setError(String(e))
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
-    return () => ctrl.abort()
-  }, [nonce])
-
-  return { data, loading, error, reload }
-}
+// ── parked 族已整体删除，2026-08-13 ──────────────────────────────────────────
+// `ParkedItemDTO` / `TriageDTO` / `api.parked` / `api.triage` / `api.unexclude` /
+// `useParked` / `useTriage`，连同后端 GET /api/parked、GET /api/v2/triage、
+// POST /api/v2/triage/unexclude 与 PendingBox/ExcludedBox 两个区。
+// 判据：parked_paths 的唯一写入者 src/v2/ingest.ts 本轮退役，表从此零写入者——
+// 留着读出面 = 给一张永远为空的表建界面。正本论证见 web/src/triage/TriagePage.tsx
+// 头注释的「2.5 parked 族的结局」段。
 
 /** dashboard-F2：外壳级数据面——顶栏新鲜度行 + 侧栏甄别角标共用这一份轮询，避免两处各发一次。
  *  轮询节奏与策略沿用 useLibrary（15s、后台不可见时暂停）：这行是"系统在跑"的唯一信号源，
@@ -210,35 +191,6 @@ export function useWorkflowPasses(limit: number): Async<WorkflowPassDTO[]> {
 // `useWorkflowWorkers` 已于 2026-08-13 随 GET /api/v2/workflow/workers 一并删除
 // （裁决见 src/dashboard/apiV2.ts 墓碑注释）。它是本文件里最后一个"只服务 _legacy 页面"
 // 的轮询 hook——留着就是每 15 秒对一个已不存在的端点打一次 404。
-
-/** dashboard-F5：甄别台（Triage tab）——pending（park 救援清单）。同 useParked 的既有先例：
- *  一次性 + 手动 reload（不轮询——翻案是低频人工动作，不像 workflow 那样需要常驻轮询感知
- *  后台变化）。 */
-export function useTriage(): Async<TriageDTO> {
-  const [data, setData] = useState<TriageDTO | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
-
-  useEffect(() => {
-    const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
-    api
-      .triage(ctrl.signal)
-      .then((d) => setData(d))
-      .catch((e) => {
-        if (!ctrl.signal.aborted) setError(String(e))
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
-    return () => ctrl.abort()
-  }, [nonce])
-
-  return { data, loading, error, reload }
-}
 
 /** dashboard-F6：Settings tab 行为级设置——一次性 + 手动 reload（同 useTriage/useParked 的既有
  *  先例：设置改动是低频人工动作，不需要常驻轮询；BehaviorSection 单键 PUT 成功后直接用响应体
