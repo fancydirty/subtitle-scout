@@ -39,7 +39,12 @@ import { makeMaintenanceState, runDbMaintenance } from '../v2/dbMaintenance.js'
 // ── 字幕校验巡检（雪藏中，2026-08-07）：本文件**刻意不 import 它** ──────────────
 // 这里曾有三行：`SubtitleVerifyRepo` / `verifyAndRecord` / `runVerifySweep`，三个都是
 // import 进来后零调用。2026-08-13 清理把它们删掉，理由**不是**"这些资产没用"——恰恰相反，
-// src/subtitleVerify/ 是 246 条用例覆盖的真算法，`v2/subtitleVerifyRepo.ts` 头部有一份
+// src/subtitleVerify/ 是 246 条用例覆盖的真算法（⚠️ 2026-08-14 取证更正：这 246 条里
+// 只有 verifySweep 的 33 条与孤儿族耦合，另外 213 条 —— alignDetect/referenceSource/
+// shiftTiming/subtitleSpans/verifySubtitle —— 与本族**零耦合**，删族不会带走它们。
+// 此前流传的「246 条全靠 addReplicaSubtitle 撑着」是假的：那个函数定义在族外的
+// libraryRepo.ts:1019，且在整个 subtitleVerify/ 里只出现在一行负面样本 fixture 上），
+// `v2/subtitleVerifyRepo.ts` 头部有一份
 // 完整裁决明令保留（🔴 那份注释不要删）。
 //
 // 删的是**假信号**：一个零调用的 import 会让 `rg 'runVerifySweep' src/cli/` 出现命中，

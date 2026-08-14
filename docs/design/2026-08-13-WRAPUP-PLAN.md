@@ -56,7 +56,43 @@ npm run verify
 
 ## 一、Task 清单
 
-### T1 · 孤儿族整族裁决（1803 行）🔴 最大一块
+### T1 · 孤儿族整族裁决 ✅ 用户裁定「封存」（2026-08-14）
+
+**用户原话**（被问及"手动重派"与"字幕时间轴自动巡检"两个能力还要不要）：
+> 「a，先不管。b. 也不管。这俩都是目前先 archive 的功能。
+>   不删但也不接，等现在有的功能测试没毛病了再说。」
+
+**裁决落地**：
+- **不删、不接线**，维持零 import 现状；三个 orphan 守卫继续钉住"仍是孤儿"这个事实。
+- **删掉两处「一个发布周期」时限判据**（`handleWorkerTask.ts` / `subtitleVerifyRepo.ts`）。
+  理由：本仓自 v0.1.0（2026-07-09）后再无 release tag，"一个发布周期"无可查定义
+  → 判据永远停在"技术上还没到期"，是个**永不触发的自毁开关**，比没有判据更糟——
+  它让人误以为这里有个会自己了结的机制。改成**人的裁决**：解封条件是
+  「字幕获取主链路经 live test 确认无毛病后，由用户重新裁决接通还是删除」。
+
+**取证推翻的两条假事实**（都被广泛引用过）：
+1. ❌「删整族会让 `subtitleVerify` 的 246 条算法用例跑不了（靠 `addReplicaSubtitle` 当 fixture）」
+   → **假**。`addReplicaSubtitle` 定义在**族外**（`libraryRepo.ts:1019`），删族带不走它；
+   246 条里 213 条（alignDetect/referenceSource/shiftTiming/subtitleSpans/verifySubtitle）
+   与本族**零耦合**，真实代价只有 verifySweep 的 33 条，其中仅 1 条涉及那个函数。
+2. ❌「`item_files` 是活表恰好 0 行，可作为『行数不能证明死活』的例证」
+   → **假**。它的唯一写入方 `ingest.ts` 已被物理删除，是**真的没有写入方了**。
+   拿死表论证"0 行不代表死"，论据是空的。已换成经实测的 `series` 表
+   （生产 0 行，但写入方 `upsertSeries` 注入 throw → 红 514 条/14 文件，是活代码）。
+
+**取证的其它实测结论**：
+- `handleWorkerTask` 比裁决说的**更死**：注入 throw **零红**——它的守卫只断言
+  `typeof === 'function'` 从不调用。守卫比作者以为的弱一档。
+- 族必须**整族进退**：我实测真删 `workUnit` + `subtitlePropagation` → tsc 报
+  `TS2307 Cannot find module '../v2/workUnit.js'`（同族 `unidentifiedFindSubtitle` 编译期依赖它）。
+  注入 throw 证不出编译期依赖，这是探针法的盲区。
+- 三张表删族后的归属：`jobs` 有写有读**永远无消费方**（12 行陈旧记录一直堆着）；
+  `parked_paths` 变无写入方死表（5 行冻结）；`item_files` 本来就已经是死表。
+- 无外部调度：`docker-compose` / Dockerfile / shell 脚本里零处直接调族内文件。
+
+<details><summary>原始判据（已被上述裁决替代，留档）</summary>
+
+#### T1 · 孤儿族整族裁决（1803 行）🔴 最大一块
 
 `handleWorkerTask` / `unidentifiedFindSubtitle` / `realignWorkerTask` / `workUnit` /
 `subtitlePropagation` / `verifySweep` —— 它们**互相引用构成封闭族**（只有族内边，无外部入口）。
@@ -69,6 +105,8 @@ npm run verify
 - ⚠️ `addReplicaSubtitle` 是 verify 族 246 条算法用例的 fixture——删了那批用例还能跑吗？
 
 **这是产品决策，subagent 只出方案与证据，我拍板。**
+
+</details>
 
 ### T2 · 口径统一（3 处已知重复定义）
 
@@ -160,8 +198,8 @@ T1 放最后：它是删代码，而删代码前应该先把**活功能的问题
 | Task | 状态 | commit |
 |---|---|---|
 | T5 季集解析器 | ✅ 生产已验 | `cf0453c` `1936d6c` `a632836` |
-| T4 翻译台空态 | ⬜ | |
-| T3 fileCount | ⬜ | |
-| T2 口径统一 | ⬜ | |
-| T1 孤儿族裁决 | ⬜ | |
+| T4 翻译台空态 | ✅ | `be5bff3` |
+| T3 fileCount | ✅ 实测证伪，不修 | `1ad585d` |
+| T2 口径统一 | ✅ | `14063d6` |
+| T1 孤儿族裁决 | ✅ 用户裁定封存 | 见下 |
 | T6 收尾 | ⬜ | |
