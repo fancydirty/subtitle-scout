@@ -24,7 +24,7 @@ function item(o: Partial<MediaLibraryItemDTO> = {}): MediaLibraryItemDTO {
     workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
     posterPath: null, mediaType: 'tv',
     expectedEpisodeCount: 62, onDiskEpisodeCount: 30, missingEpisodeCount: 32,
-    subtitledEpisodeCount: 12, unplacedFileCount: 0,
+    subtitledEpisodeCount: 12, embeddedEpisodeCount: 0, unplacedFileCount: 0,
     ...o,
   }
 }
@@ -74,12 +74,14 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
     expect(line.textContent).toContain(`${en.media_card_ondisk} 30`)
   })
 
-  it('coverageParts 是纯映射——三个数字逐字取自 DTO，不含任何算术', () => {
+  it('coverageParts 是纯映射——每个数字逐字取自 DTO，不含任何算术', () => {
     const p = coverageParts(item({
       subtitledEpisodeCount: 7, onDiskEpisodeCount: 9, expectedEpisodeCount: 24,
       missingEpisodeCount: 15,
     }))
-    expect(p).toEqual({ subtitled: 7, onDisk: 9, expected: 24, missing: 15, unplaced: null })
+    expect(p).toEqual({
+      subtitled: 7, embedded: null, onDisk: 9, expected: 24, missing: 15, unplaced: null,
+    })
   })
 })
 
@@ -210,6 +212,63 @@ describe('R-F5 应有集：expected=0 的两种含义都不许显示 "N/0"', () 
   it('coverageParts 对 expected=0 给 null（调用方据此不渲染那一段）', () => {
     expect(coverageParts(item({ expectedEpisodeCount: 0 })).expected).toBeNull()
     expect(coverageParts(item({ expectedEpisodeCount: 1 })).expected).toBe(1)
+  })
+})
+
+// ═══ 🔴 2026-08-14：「已配」与「自带」分列（用户裁决③）═════════════════════════
+// 生产症状：《翘楚》卡片写「已配 5」，点进详情 24 格全是「原生语言不需要字幕」——
+// 那 5 集是片源**自带的内嵌轨**，磁盘上一份字幕文件都没有。后端已把这两件事拆成
+// `subtitledEpisodeCount`（外挂 sidecar）与 `embeddedEpisodeCount`（内嵌轨）两个字段。
+//
+// 🔴 这一屏的责任仍然只有一条：**如实呈现后端给的两个数，不做任何再运算**
+// （见本文件头注释与 MediaLibraryPage.tsx:8 的既有纪律）。特别是**不许**把
+// 「自带」算成 `旧的合计 - 已配`——那是把后端的分区判据复制一份到浏览器里。
+describe('🔴 「已配」与「自带」在卡片上分列', () => {
+  it('🔴🔴 embedded>0 → 卡片上「自带 N」在场（本 bug 的可见修复）', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({
+      subtitledEpisodeCount: 0, embeddedEpisodeCount: 5, onDiskEpisodeCount: 24,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    const line = within(link).getByText(new RegExp(en.media_card_subtitled))
+    // 两个数在同一行、各自带名字。「已配 0」必须**照实说 0**，不许因为是 0 就藏起来——
+    // 这一屏的全部价值就是让用户看出"这 5 集我们一份都没配"。
+    expect(line.textContent).toContain(`${en.media_card_subtitled} 0`)
+    expect(line.textContent).toContain(`${en.media_card_embedded} 5`)
+  })
+
+  it('🔴 embedded=0 → 「自带」那一段整段不在场（沉默即好消息，同 missing 的既有口径）', async () => {
+    // 绝大多数作品没有内嵌轨，恒挂一个"自带 0"是纯噪音。
+    vi.stubGlobal('fetch', mockFetch([item({
+      subtitledEpisodeCount: 12, embeddedEpisodeCount: 0,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    expect(within(link).queryByText(new RegExp(en.media_card_embedded))).toBeNull()
+    expect(within(link).getByText(new RegExp(`${en.media_card_subtitled} 12`))).toBeInTheDocument()
+  })
+
+  it('🔴 coverageParts 原样取 DTO 的两个数，**不做减法**', () => {
+    // 这组数字下，几种"顺手自己算"的写法都会得出别的值：
+    //   onDisk - subtitled = 24-2 = 22 ；expected - onDisk = 24-24 = 0 ；都不是 5。
+    const p = coverageParts(item({
+      subtitledEpisodeCount: 2, embeddedEpisodeCount: 5,
+      onDiskEpisodeCount: 24, expectedEpisodeCount: 24, missingEpisodeCount: 0,
+    }))
+    expect(p).toEqual({
+      subtitled: 2, embedded: 5, onDisk: 24, expected: 24, missing: null, unplaced: null,
+    })
+  })
+
+  it('🔴 embedded 字段缺席（老后端）→ null 而不是 NaN（同 unplaced 的既有降级）', () => {
+    const legacy = item()
+    delete (legacy as Partial<MediaLibraryItemDTO>).embeddedEpisodeCount
+    expect(coverageParts(legacy).embedded).toBeNull()
+  })
+
+  it('🔴 coverageParts 对 embedded=0 给 null，>0 原样给', () => {
+    expect(coverageParts(item({ embeddedEpisodeCount: 0 })).embedded).toBeNull()
+    expect(coverageParts(item({ embeddedEpisodeCount: 24 })).embedded).toBe(24)
   })
 })
 

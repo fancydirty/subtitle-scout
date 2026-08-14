@@ -51,7 +51,7 @@ function mockFetch() {
       : /\/api\/v2\/mediaLibrary$/.test(path) ? [
           { workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
             posterPath: null, mediaType: 'tv', expectedEpisodeCount: 62,
-            onDiskEpisodeCount: 30, missingEpisodeCount: 32, subtitledEpisodeCount: 12, embeddedEpisodeCount: 0 },
+            onDiskEpisodeCount: 30, missingEpisodeCount: 32, subtitledEpisodeCount: 12 },
         ]
       : path.includes('/api/v2/mediaLibrary/') ? DETAIL
       : url.includes('/workflow/pending')

@@ -325,6 +325,183 @@ describe('buildMediaLibrary（列表：海报墙）', () => {
     })
   })
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 2026-08-14：「已配」与「自带」必须分开数（用户裁决③）
+  // ══════════════════════════════════════════════════════════════════════════
+  // 生产症状（实测 53/75 部作品命中）：《翘楚》列表页说「已配 5」，详情页 24 格
+  // **全是**「原生语言不需要字幕」，数据库里外挂 sidecar 是 **0** 个 —— 那 5 集其实是
+  // 片源自带的**内嵌字幕轨**。
+  //
+  // 根因：列表页的判据是 `aggregateDot(rows).dot !== 'none'`，把 green（外挂 sidecar）
+  // 与 blue（内嵌轨）算成了同一件事。而 `subtitledEpisodeCount` 的字段定义写的是
+  // 「已**获取**中文字幕的集数」——内嵌轨不是我们获取来的，磁盘上没有任何一份字幕文件。
+  //
+  // 用户裁决：**分开显示**（「已配 0 · 自带 5」）。理由是它是唯一能让两个页面说同一句话
+  // 的方案：只数外挂会让数字突然变小且信息丢失，维持现状则两页永远对不上。
+  //
+  // 🔴 两个计数 = `dot` 三态的**逐格分区**，不是两个独立判据：
+  //   subtitledEpisodeCount = dot==='green' 的格数（外挂 sidecar，可换可删的真文件）
+  //   embeddedEpisodeCount  = dot==='blue'  的格数（片源自带轨，不需要处理）
+  // 二者**互斥**（green 优先于 blue，同 aggregateDot 的既有口径），
+  // 故 `subtitled + embedded === dot !== 'none' 的格数` 恒成立——旧那个数没有丢，
+  // 只是被拆成了它本来就该是的两半。
+  describe('🔴 外挂 sidecar 与内嵌轨分开计数', () => {
+    it('🔴🔴 一格只有内嵌轨 → 进 embedded，**不进** subtitled（本 bug 的直接判据）', () => {
+      // 这就是《翘楚》的形态：磁盘上 0 份字幕文件，却被报成「已配 5」。
+      addWork('tmdb:289271', { title: 'Qiao Chu' })
+      addCanonical('tmdb:289271', 1, [1, 2, 3])
+      for (const ep of [1, 2, 3]) {
+        addFile({ path: `/q/s1e${ep}.mkv`, workId: 'tmdb:289271', season: 1, episode: ep,
+          subStatus: null, embeddedLangs: ['chi'] })
+      }
+      const [item] = buildMediaLibrary(db)
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.embeddedEpisodeCount).toBe(3)
+    })
+
+    it('🔴 一格有外挂 sidecar → 进 subtitled', () => {
+      addWork('tmdb:70', { title: 'Sidecar Only' })
+      addCanonical('tmdb:70', 1, [1, 2])
+      addFile({ path: '/s/s1e1.mkv', workId: 'tmdb:70', season: 1, episode: 1, subStatus: 'covered' })
+      addFile({ path: '/s/s1e2.mkv', workId: 'tmdb:70', season: 1, episode: 2, subStatus: null })
+      const [item] = buildMediaLibrary(db)
+      expect(item.subtitledEpisodeCount).toBe(1)
+      expect(item.embeddedEpisodeCount).toBe(0)
+    })
+
+    it('🔴 一格**内嵌 + 外挂都有** → 只算 subtitled（与 dot 的 green 优先自洽）', () => {
+      // 理由：这两个数是 `dot` 三态的逐格分区，而 aggregateDot 已裁决「绿点优先于蓝点」
+      // （外挂那份是用户能换能删的可操作对象，内嵌轨不是）。若这里两边都 +1，
+      // 同一格会被数两次 → `subtitled + embedded > onDisk`，卡片上写「已配 3 · 自带 3 ·
+      // 磁盘 3」，用户当场看出至少有一个数是假的。互斥是这两个数可加的前提。
+      addWork('tmdb:71', { title: 'Both' })
+      addCanonical('tmdb:71', 1, [1])
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:71', season: 1, episode: 1,
+        subStatus: 'covered', embeddedLangs: ['chs'] })
+      const [item] = buildMediaLibrary(db)
+      expect(item.subtitledEpisodeCount).toBe(1)
+      expect(item.embeddedEpisodeCount).toBe(0)
+      // 两个数之和不许超过磁盘上的格数（同一格被数两次的唯一照妖镜）。
+      expect(item.subtitledEpisodeCount + item.embeddedEpisodeCount)
+        .toBeLessThanOrEqual(item.onDiskEpisodeCount)
+    })
+
+    it('🔴 一格里 A 份有外挂、B 份只有内嵌 → 仍只算 subtitled（R-F2 任一份算，格级）', () => {
+      // 两个目录各一份的库。R-F2 的 `.some()` 在格级已经把它聚成 green，
+      // 这里守的是分区判据读的是**聚合后的 dot**，不是逐份文件各自表态。
+      addWork('tmdb:72', { title: 'Dup Dirs Mixed' })
+      addCanonical('tmdb:72', 1, [1])
+      addFile({ path: '/a/s1e1.mkv', workId: 'tmdb:72', season: 1, episode: 1, subStatus: 'covered' })
+      addFile({ path: '/b/s1e1.mkv', workId: 'tmdb:72', season: 1, episode: 1,
+        subStatus: null, embeddedLangs: ['zh'] })
+      const [item] = buildMediaLibrary(db)
+      expect(item.onDiskEpisodeCount).toBe(1)
+      expect(item.subtitledEpisodeCount).toBe(1)
+      expect(item.embeddedEpisodeCount).toBe(0)
+    })
+
+    it('🔴 没有任何中文字幕的格 → 两个数都不加', () => {
+      addWork('tmdb:73', { title: 'Nothing' })
+      addCanonical('tmdb:73', 1, [1, 2])
+      addFile({ path: '/n/s1e1.mkv', workId: 'tmdb:73', season: 1, episode: 1,
+        subStatus: null, embeddedLangs: ['eng', 'jpn'] })
+      addFile({ path: '/n/s1e2.mkv', workId: 'tmdb:73', season: 1, episode: 2 })
+      const [item] = buildMediaLibrary(db)
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.embeddedEpisodeCount).toBe(0)
+    })
+
+    it('🔴 电影同样分列：内嵌轨的电影是「已配 0 · 自带 1」', () => {
+      addWork('tmdb:74', { title: 'Embedded Movie', mediaType: 'movie' })
+      addFile({ path: '/m/em.mkv', workId: 'tmdb:74', season: null, episode: null,
+        subStatus: null, embeddedLangs: ['cht'] })
+      const [item] = buildMediaLibrary(db)
+      expect(item.onDiskEpisodeCount).toBe(1)
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.embeddedEpisodeCount).toBe(1)
+    })
+
+    it('🔴 unplaced 文件的内嵌轨也不进 embedded（它不是"一集"，同 subtitled 的既有口径）', () => {
+      addWork('tmdb:75', { title: 'Unplaced Embedded' })
+      addFile({ path: '/u/s1e1.mkv', workId: 'tmdb:75', season: 1, episode: 1 })
+      addFile({ path: '/u/PV.mkv', workId: 'tmdb:75', season: null, episode: null,
+        subStatus: null, embeddedLangs: ['chi'] })
+      const [item] = buildMediaLibrary(db)
+      expect(item.onDiskEpisodeCount).toBe(1)
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.embeddedEpisodeCount).toBe(0)
+      expect(item.unplacedFileCount).toBe(1)
+    })
+
+    // ────────────────────────────────────────────────────────────────────────
+    // 🔴🔴 跨页一致性：这条是本次修复的**核心不变量**，也是用户选③的唯一理由
+    // ────────────────────────────────────────────────────────────────────────
+    it('🔴🔴 列表页 subtitledEpisodeCount === 详情页 subtitledFileCount>0 的格数', () => {
+      // 不断言各自的常量，而是把两页的数放在一起比 —— 这是"两处漂移"唯一照得出来的形态
+      // （同 onDisk/unplaced 那条跨页用例的写法）。
+      //
+      // 判据为什么是 `subtitledFileCount > 0`：那是详情页**唯一**表达"这一格磁盘上真有
+      // 一份中文字幕文件"的字段（aggregateDot 里 green 的定义就是它 > 0）。
+      // 旧实现的 `dot !== 'none'` 会把只有内嵌轨的格也算进来 → 这条等式当场破。
+      addWork('tmdb:80', { title: 'Cross Page Subtitled' })
+      addCanonical('tmdb:80', 1, [1, 2, 3, 4, 5])
+      // 1 格外挂、1 格外挂+内嵌、2 格只有内嵌、1 格什么都没有、另有 1 格 TMDB 没有的第 6 集。
+      addFile({ path: '/x/s1e1.mkv', workId: 'tmdb:80', season: 1, episode: 1, subStatus: 'covered' })
+      addFile({ path: '/x/s1e2.mkv', workId: 'tmdb:80', season: 1, episode: 2,
+        subStatus: 'covered', embeddedLangs: ['chi'] })
+      addFile({ path: '/x/s1e3.mkv', workId: 'tmdb:80', season: 1, episode: 3,
+        subStatus: null, embeddedLangs: ['chi'] })
+      addFile({ path: '/x/s1e4.mkv', workId: 'tmdb:80', season: 1, episode: 4,
+        subStatus: null, embeddedLangs: ['cht'] })
+      addFile({ path: '/x/s1e5.mkv', workId: 'tmdb:80', season: 1, episode: 5 })
+      addFile({ path: '/x/s1e6.mkv', workId: 'tmdb:80', season: 1, episode: 6,
+        subStatus: null, embeddedLangs: ['zh'] })
+
+      const [item] = buildMediaLibrary(db)
+      const cells = buildMediaLibraryDetail(db, 'tmdb:80')!.seasons.flatMap((s) => s.episodes)
+
+      expect(item.subtitledEpisodeCount).toBe(cells.filter((e) => e.subtitledFileCount > 0).length)
+      // 「自带」那一半同样要跨页对得上：详情页里"没有 sidecar 但 dot 是蓝"的格。
+      expect(item.embeddedEpisodeCount)
+        .toBe(cells.filter((e) => e.subtitledFileCount === 0 && e.dot === 'blue').length)
+
+      // 阳性对照：这两个数不是恰好都为 0，也不是恰好相等（否则 `dot !== 'none'` 的旧实现
+      // 或任何一个恒返回 0 的实现都会全绿）。
+      expect(item.subtitledEpisodeCount).toBe(2)
+      expect(item.embeddedEpisodeCount).toBe(3)
+    })
+
+    it('🔴🔴 电影分支的跨页一致性（电影走 movie 那一格，不走 seasons）', () => {
+      addWork('tmdb:81', { title: 'Cross Page Movie', mediaType: 'movie' })
+      addFile({ path: '/m/a.mkv', workId: 'tmdb:81', season: null, episode: null,
+        subStatus: null, embeddedLangs: ['chi'] })
+      const [item] = buildMediaLibrary(db)
+      const movie = buildMediaLibraryDetail(db, 'tmdb:81')!.movie!
+      expect(item.subtitledEpisodeCount).toBe(movie.subtitledFileCount > 0 ? 1 : 0)
+      expect(item.embeddedEpisodeCount)
+        .toBe(movie.subtitledFileCount === 0 && movie.dot === 'blue' ? 1 : 0)
+      // 阳性对照。
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.embeddedEpisodeCount).toBe(1)
+    })
+
+    it('🔴🔴 《翘楚》生产形态：24 集全内嵌 → 「已配 0 · 自带 24」，详情页 0 格有 sidecar', () => {
+      // 生产真实数据的复刻（tmdb:289271，实测外挂 0 份）。旧实现在这里报「已配 24」。
+      addWork('tmdb:82', { title: 'Qiao Chu Full' })
+      addCanonical('tmdb:82', 1, Array.from({ length: 24 }, (_, i) => i + 1))
+      for (let ep = 1; ep <= 24; ep++) {
+        addFile({ path: `/qc/s1e${ep}.mkv`, workId: 'tmdb:82', season: 1, episode: ep,
+          subStatus: null, embeddedLangs: ['chi'], needsSubtitle: 0, skipReason: 'origin-skip' })
+      }
+      const [item] = buildMediaLibrary(db)
+      const cells = buildMediaLibraryDetail(db, 'tmdb:82')!.seasons.flatMap((s) => s.episodes)
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.embeddedEpisodeCount).toBe(24)
+      expect(cells.filter((e) => e.subtitledFileCount > 0)).toHaveLength(0)
+      expect(item.subtitledEpisodeCount).toBe(cells.filter((e) => e.subtitledFileCount > 0).length)
+    })
+  })
+
   it('多个作品：按标题稳定排序，列表可预期', () => {
     addWork('tmdb:20', { title: 'Zebra' })
     addFile({ path: '/z/e1.mkv', workId: 'tmdb:20', season: 1, episode: 1 })

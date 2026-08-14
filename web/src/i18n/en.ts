@@ -437,6 +437,7 @@ export const en = {
   // 共用键会让"改文案时改到另一个页面"变成可能，而且旧键随旧页面一起删。
   media_result_count_prefix: 'Titles',
   media_card_subtitled: 'subtitled',
+  media_card_embedded: 'built-in',
   media_card_ondisk: 'on disk',
   media_card_expected: 'expected',
   // 🟡-3：缺集数（missingEpisodeCount 的第一个读取方）。

@@ -532,9 +532,48 @@ export interface MediaLibraryItemDTO {
    *  夹 0 是必需的：应有集缓存缺失（expected=0）而磁盘有 12 集时，裸减法得 -12，
    *  前端会显示"缺 -12 集"。 */
   missingEpisodeCount: number
-  /** 已获取中文字幕的格数（R-F2「任一份有就算」口径；绿点 + 蓝点都计入 ——
-   *  用户视角"这一集有中文字幕"不分内嵌外挂）。 */
+  /** **外挂**中文字幕（sidecar）已就位的格数 —— 「已配」。
+   *
+   *  🔴 判据 = 该格聚合后 `dot === 'green'`，等价于详情页 `subtitledFileCount > 0`
+   *  （aggregateDot 里 green 的定义就是它）。**这条等价是跨页一致性的凭据**，
+   *  由 mediaLibraryApi.test.ts 的「列表页 subtitledEpisodeCount === 详情页
+   *  subtitledFileCount>0 的格数」用例钉住。
+   *
+   *  ── 🔴 2026-08-14 语义修正：内嵌轨**不再**计入（用户裁决③「分开显示」）────────
+   *  此前判据是 `aggregateDot(rows).dot !== 'none'`，把 green（外挂 sidecar）与
+   *  blue（内嵌轨）算成了同一件事。生产实测 53/75 部作品命中，最刺眼的形态：
+   *  《翘楚》(tmdb:289271) 列表页说「已配 5」，点进详情 24 格**全是**「原生语言不需要
+   *  字幕」，库里外挂 sidecar 是 **0** 个 —— 那 5 集是片源自带的内嵌轨。
+   *
+   *  为什么这是真错而不是口径之争：本字段的定义（本文件头注释:17）写的是
+   *  「已**获取**中文字幕的集数」。内嵌轨不是获取来的 —— 磁盘上没有任何一份可换可删的
+   *  字幕文件，系统也从没为它做过一件事。把它算进"已配"，用户看到的就是一份**我们并
+   *  没有做过的工作**的成绩单，而详情页同时告诉他这 24 集我们一份都没配。
+   *
+   *  ── 为什么是「改语义」而不是「加新字段、旧字段维持原样」────────────────────
+   *  旧语义（green+blue 的合计）在任何一个页面上都**没有消费者需要它**：详情页从来只数
+   *  sidecar（subtitledFileCount），列表页的字段名与定义注释说的也是"已获取"。
+   *  也就是说旧值不是"另一种正确口径"，它就是这个字段一直以来的**错误实现**。
+   *  保留它需要再起一个名字（`subtitledOrEmbeddedEpisodeCount` 之类），那会在 DTO 里
+   *  留下一个"名字对、没人读、且与另外两个数恒等"的第三个计数 —— 本仓病 A 的温床。
+   *  语义修正的代价（下游静默变小）由下面这条兜住：**唯一的读取方**是
+   *  MediaLibraryPage 的 coverageParts（全仓 grep 只此一处生产读取点），
+   *  且它同屏渲染新增的 embeddedEpisodeCount —— 数字变小的同时旁边就出现了差额去处。 */
   subtitledEpisodeCount: number
+  /** **内嵌**中文轨（片源自带）的格数 —— 「自带」。
+   *
+   *  🔴 判据 = 该格聚合后 `dot === 'blue'`。与上面那个字段**互斥**（green 优先于 blue，
+   *  aggregateDot 的既有裁决：外挂那份是用户能换能删的可操作对象，内嵌轨不是）。
+   *  互斥是这两个数**可加**的前提：不互斥的话，一格同时有外挂与内嵌就会被数两次，
+   *  卡片上出现 `已配 3 · 自带 3 · 磁盘 3`，用户当场看出至少有一个数是假的。
+   *
+   *  故恒有 `subtitledEpisodeCount + embeddedEpisodeCount ≤ onDiskEpisodeCount`，
+   *  且这两个数之和 === 旧实现那个 `dot !== 'none'` 的合计（旧值没有丢，只是被拆成了
+   *  它本来就该是的两半 —— 这正是用户选③而不是"只数外挂"的理由：不丢信息）。
+   *
+   *  ⚠️ 它**不是**待办：内嵌轨意味着这一集不需要人操心（judge 会给 needs_subtitle=0），
+   *  前端据此在 `> 0` 时才渲染（沉默即好消息），绝不恒挂一个"自带 0"。 */
+  embeddedEpisodeCount: number
   /** 属于本作品、但 `season/episode` 解析不出因而**进不了季集网格**的文件数，
    *  **已扣除机械特典**。电影恒 0（电影的文件本来就不该有季集，它们全部落进那唯一一格）。
    *
@@ -642,7 +681,15 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
     // 🔴 去重后的格数，不是 files 行数：两个目录各一份的库，COUNT(*) 会把"实有 1 集"
     // 报成 2 集，进而算出负的缺集数（missing 的夹 0 会掩盖它，但概览数字就已经错了）。
     const onDisk = cells.size
-    const subtitled = [...cells.values()].filter((rows) => aggregateDot(rows).dot !== 'none').length
+    // 🔴 2026-08-14（用户裁决③）：外挂与内嵌**分开计数**，不再用 `dot !== 'none'` 混算。
+    //   · subtitled = dot 'green'（外挂 sidecar 就位）→ 等价于详情页 `subtitledFileCount > 0`，
+    //     这条等价就是跨页一致性的凭据（同名用例钉住）。
+    //   · embedded  = dot 'blue'（内嵌轨，片源自带；green 优先于 blue，故两者互斥不重叠）。
+    // 互斥来自 aggregateDot 的三态本身：green/blue/none 三选一，所以两个计数之和恒
+    // === 旧实现那个 `!== 'none'` 的合计——旧值没丢，只是被拆开了。
+    const dots = [...cells.values()].map((rows) => aggregateDot(rows).dot)
+    const subtitled = dots.filter((d) => d === 'green').length
+    const embedded = dots.filter((d) => d === 'blue').length
     return {
       workId: w.id,
       title: w.title,
@@ -654,6 +701,7 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
       onDiskEpisodeCount: onDisk,
       missingEpisodeCount: Math.max(0, expected - onDisk),
       subtitledEpisodeCount: subtitled,
+      embeddedEpisodeCount: embedded,
       unplacedFileCount: unplacedByWork.get(w.id) ?? 0,
     }
   })

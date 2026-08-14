@@ -174,7 +174,7 @@ describe('HEALTH_SHAPE（判据①②：全局壳的判决源）', () => {
 describe('MEDIA_LIBRARY_ITEM_SHAPE（判据③：四个计数字段参与算术）', () => {
   const ROW = {
     workId: 'tmdb:1', title: 'BB', expectedEpisodeCount: 62,
-    onDiskEpisodeCount: 50, missingEpisodeCount: 12, subtitledEpisodeCount: 40,
+    onDiskEpisodeCount: 50, missingEpisodeCount: 12, subtitledEpisodeCount: 40, embeddedEpisodeCount: 0,
   }
   it('完整行放行', () => expect(checkShape(ROW, MEDIA_LIBRARY_ITEM_SHAPE)).toBeNull())
 

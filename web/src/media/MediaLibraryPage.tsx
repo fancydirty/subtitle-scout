@@ -61,6 +61,19 @@ import type { MediaLibraryItemDTO } from '../api/types.js'
  *  不需要在这里再写一次 expected 的条件（写了就是第三份判据）。 */
 export function coverageParts(item: MediaLibraryItemDTO): {
   subtitled: number
+  /** null = 没有任何内嵌中文轨的集——调用方**不许**渲染这一段（沉默即好消息，同 unplaced）。
+   *
+   *  🔴 2026-08-14（用户裁决③「分开显示」）。为什么必须与 subtitled 分开呈现：
+   *  后端此前用 `dot !== 'none'` 把外挂 sidecar 与内嵌轨混算进 subtitledEpisodeCount，
+   *  生产 53/75 部命中。最刺眼的形态是《翘楚》——列表卡说「已配 5」，点进详情页
+   *  24 格**全是**「原生语言不需要字幕」，库里外挂 sidecar 是 **0** 个。
+   *  同一件事两个页面给了不同答案，而"已配"描述的是一份**我们并没有做过的工作**。
+   *
+   *  拆开后列表页「已配」与详情页 `subtitledFileCount > 0` 的格数恒等（后端同名用例钉住），
+   *  这条等式就是用户选这个方案而不是"只数外挂"或"维持现状"的唯一理由。
+   *
+   *  ⚠️ 同 missing/unplaced 的既有纪律：**原样取 DTO，不在浏览器里算**。 */
+  embedded: number | null
   onDisk: number
   /** null = 应有集未知（电影，或 tmdb_seasons 还没回填）——调用方**不许**渲染这一段。 */
   expected: number | null
@@ -78,6 +91,7 @@ export function coverageParts(item: MediaLibraryItemDTO): {
 } {
   return {
     subtitled: item.subtitledEpisodeCount,
+    embedded: item.embeddedEpisodeCount > 0 ? item.embeddedEpisodeCount : null,
     onDisk: item.onDiskEpisodeCount,
     expected: item.expectedEpisodeCount > 0 ? item.expectedEpisodeCount : null,
     missing: item.missingEpisodeCount > 0 ? item.missingEpisodeCount : null,
@@ -90,7 +104,7 @@ export function coverageParts(item: MediaLibraryItemDTO): {
 function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
   const { t } = useT()
   const title = item.chineseTitle ?? item.title
-  const { subtitled, onDisk, expected, missing, unplaced } = coverageParts(item)
+  const { subtitled, embedded, onDisk, expected, missing, unplaced } = coverageParts(item)
 
   return (
     <a className="media-card" href={mediaItemHref(item.workId)} aria-label={title}>
@@ -105,7 +119,12 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
           {/* mono 读数——同 Topbar 新鲜度行那套"技术性读数"的排印语言。
               三个数字之间用 · 分隔，每个数字自带它的名字，不做无标签的 "3/12/24"
               （那种写法一年后没人记得中间那个是什么）。 */}
-          {t('media_card_subtitled')} {subtitled} · {t('media_card_ondisk')} {onDisk}
+          {t('media_card_subtitled')} {subtitled}
+          {/* 🔴「自带 N」紧跟在「已配 N」后面（用户裁决③）：这两个数必须相邻，否则
+              「已配 0」单独出现时用户会以为这一部一集都看不了，而真相是 24 集都有内嵌轨。
+              embedded=null 时**整段不在场**——同 missing/unplaced 的"沉默即好消息"。 */}
+          {embedded !== null ? ` · ${t('media_card_embedded')} ${embedded}` : ''}
+          {' · '}{t('media_card_ondisk')} {onDisk}
           {expected !== null ? ` · ${t('media_card_expected')} ${expected}` : ''}
         </span>
         {/* 🟡-3 缺集数。**单独一行**而不是挤进上面那串：上面三个是"库里有什么"的读数，

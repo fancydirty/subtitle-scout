@@ -92,7 +92,7 @@ let lastMediaLibraryId: string | null = null
 const mediaLibraryItem: MediaLibraryItemDTO = {
   workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: '绝命毒师', year: 2008,
   posterPath: '/bb.jpg', mediaType: 'tv',
-  expectedEpisodeCount: 62, onDiskEpisodeCount: 60, missingEpisodeCount: 2, subtitledEpisodeCount: 58,
+  expectedEpisodeCount: 62, onDiskEpisodeCount: 60, missingEpisodeCount: 2, subtitledEpisodeCount: 58, embeddedEpisodeCount: 0,
   unplacedFileCount: 0,
 }
 const mediaLibraryDetailDTO: MediaLibraryDetailDTO = {

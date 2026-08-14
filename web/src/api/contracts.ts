@@ -107,6 +107,7 @@ export const MEDIA_LIBRARY_ITEM_SHAPE: Shape = obj({
   onDiskEpisodeCount: num(),
   missingEpisodeCount: num(),
   subtitledEpisodeCount: num(),
+  embeddedEpisodeCount: num(),
   // 🔴 2026-08-13。**刻意不声明**：老后端（还没有这个字段的部署）返回的行在这里
   // 会整页被拦，而这一段的违约表现只是"少显示一行"——判据③不占。coverageParts 已按
   // `> 0` 写（undefined > 0 为 false → 整段不渲染），那是正确的降级。
