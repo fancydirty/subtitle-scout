@@ -37,7 +37,8 @@ export function StepLanguage({ onAdvance }: WizardStepProps) {
   }
 
   const toggle = (code: string) => {
-    apply(selected.includes(code) ? selected.filter((c) => c !== code) : [...selected, code])
+    // 单选：点击已选的不取消，点击其他的替换（有且只能有一个）
+    apply([code])
   }
 
   const addCustom = () => {
@@ -48,7 +49,8 @@ export function StepLanguage({ onAdvance }: WizardStepProps) {
     }
     setInvalid(false)
     setCustom('')
-    if (!selected.includes(code)) apply([...selected, code])
+    // 单选：添加自定义语言时替换当前选择
+    apply([code])
   }
 
   const onContinue = async () => {

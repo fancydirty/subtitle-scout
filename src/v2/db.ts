@@ -1460,6 +1460,33 @@ CREATE INDEX IF NOT EXISTS notifications_found_at ON notifications(found_at DESC
       db.exec('ALTER TABLE files ADD COLUMN parser_version INTEGER')
     }
   },
+  // v40（auth 重做，2026-08-15 用户裁决）：session 从 settings 表的 `session:<token>` 键值行
+  // 迁到独立的 auth_sessions 表。三件事一次做：
+  //  ① **库里只存 sha256(token)**——settings 行存明文 token，库文件泄漏 = 全部会话可被劫持；
+  //    哈希后泄漏只能撞 256-bit 原像，不可行。防 fixation 的另一半（登录必发新 token）
+  //    本来就有，不变。
+  //  ② **绝对上限有了载体**：created_at 列让"登录起 90 天强制重登"（OWASP 滑动+绝对组合，
+  //    用户裁决 B）可判——旧结构只有滚动 expiresAt，会话可以无限滑动永生。
+  //  ③ 卫生：settings 表不再混会话行（配置与登录态分家，同 *arr/Jellyfin 的独立表惯例）。
+  // 迁移：存量 session: 行**不搬**——token 是明文进 sha256 需要原值（有），但旧行只有
+  // expiresAt 没有 created_at，搬过来绝对上限无从算起；且旧 cookie 30 天内自然到期。
+  // 代价是所有已登录浏览器在升级后重登一次（单管理员家用场景可接受，一次性的）。
+  // DROP 旧键值行走扫除而非迁移（幂等、可重放）。条件式：settings 表可能不存在（pre-v12 老库）。
+  (db) => {
+    db.exec(`
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  sid_hash TEXT PRIMARY KEY,           -- sha256(token) 的 hex——不存明文（见上①）
+  created_at INTEGER NOT NULL,         -- 绝对上限的锚点（登录时刻）
+  last_seen INTEGER NOT NULL,          -- 滑动续期的锚点（最近一次 verify 通过）
+  expires_at INTEGER NOT NULL          -- 滑动过期时刻（verify 通过时顺延）
+);`)
+    const settingsExists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'")
+      .get()
+    if (settingsExists) {
+      db.exec("DELETE FROM settings WHERE key LIKE 'session:%'")
+    }
+  },
 ]
 
 /** pre-fold（v9 折叠之前，Jellyfin 时代）老库的结构指纹：series.poster_tag 列存在。

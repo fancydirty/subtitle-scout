@@ -63,8 +63,9 @@ describe('StepLanguage', () => {
 
   it('首选非 zh → UI 保持/切回英文', () => {
     renderStep()
+    // 单选：先选中文切到中文 UI，再选日语切回英文 UI
     fireEvent.click(screen.getByRole('button', { name: '中文' }))
-    fireEvent.click(screen.getByRole('button', { name: '中文' })) // 取消
+    expect(screen.getByRole('button', { name: '保存并继续' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: '日本語' }))
     expect(screen.getByRole('button', { name: 'Save & continue' })).toBeEnabled()
   })
@@ -81,16 +82,15 @@ describe('StepLanguage', () => {
     expect(screen.getByRole('button', { name: 'pt-BR' })).toBeInTheDocument()
   })
 
-  it('Continue → PUT target_languages（join 顺序 = 选择顺序）→ onAdvance', async () => {
+  it('Continue → PUT target_languages（单选）→ onAdvance', async () => {
     const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({} as Awaited<ReturnType<typeof api.updateSettings>>)
     const onAdvance = vi.fn()
     renderStep({ onAdvance })
-    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    // 单选：只能选一个，选中文后 UI 切中文
     fireEvent.click(screen.getByRole('button', { name: '中文' }))
-    // 注意标签是英文：setLang 只看 next[0]（本例 = 'en'），所以选了中文之后 UI 仍是英文。
-    fireEvent.click(screen.getByRole('button', { name: 'Save & continue' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存并继续' }))
     await waitFor(() => expect(onAdvance).toHaveBeenCalledTimes(1))
-    expect(update).toHaveBeenCalledWith({ target_languages: 'en,zh' })
+    expect(update).toHaveBeenCalledWith({ target_languages: 'zh' })
   })
 
   it('PUT 失败 → 行内错误、不前进', async () => {

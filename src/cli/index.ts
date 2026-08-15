@@ -935,7 +935,7 @@ function cmdAuthReset(): void {
   }
   const db = openDb(dbPath)
   try {
-    new AuthService(new SettingsRepo(db)).reset()
+    new AuthService(new SettingsRepo(db), db).reset()
     console.log('已清除管理员凭据。下次访问 dashboard 将重新进入创建管理员向导。')
   } finally {
     db.close()

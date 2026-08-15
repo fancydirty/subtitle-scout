@@ -430,7 +430,9 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
   // 的既有唯一口子（buildSetupStatus 走的就是它），测试经 opts.setupDeps 换掉 env 时，
   // health 与 setup/status 必须回答同一件事——两处各取各的 env 就是又一份会漂移的实现。
   const healthCfg = makeAdapterConfigResolver(setupDeps.env, (k) => setupDeps.settingsRepo.get(k))
-  const auth = new AuthService(settingsRepo)
+  // auth 重做（2026-08-15）：AuthService 吃 db（auth_sessions 表）+ 登录失败审计日志
+  // （本文件没有统一 logger，putSecret 先例走 console.error——同轨）。
+  const auth = new AuthService(settingsRepo, db, (m) => console.error(m))
   // 字幕校验三端点的依赖：默认全部接真实模块，测试可通过 opts.subtitleWriteDeps 部分覆盖
   // （见 DashboardOpts.subtitleWriteDeps 注释——这是"为可测性而设"的注入口，不是降级开关）。
   const verifyRepo = new SubtitleVerifyRepo(db)
@@ -527,11 +529,40 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         const sessionToken = cookies['scout_session']
         const apiKeyReq = (req.headers['x-api-key'] as string | undefined) ?? url.searchParams.get('apikey') ?? undefined
         const legacyReq = url.searchParams.get('token') ?? (req.headers['x-dashboard-token'] as string | undefined)
+        const sessionOutcome = sessionToken !== undefined
+          ? auth.sessions.verify(sessionToken, Date.now())
+          : { ok: false, renewCookie: false }
         const authed =
-          (sessionToken !== undefined && auth.sessions.verify(sessionToken, Date.now())) ||
+          sessionOutcome.ok ||
           (apiKeyReq !== undefined && auth.verifyApiKey(apiKeyReq)) ||
           // legacy DASHBOARD_TOKEN：常量时间比较（审计 #4——与 api key 路径口径一致，不留 === 时序侧信道）。
           (token !== undefined && legacyReq !== undefined && safeStrEqual(legacyReq, token))
+        // 🔴 滑动续期的 cookie 重发（2026-08-15 auth 重做）：verify 带 renewCookie（旧窗口
+        // 剩余寿命 < 半衰期）时，本响应要补一个 set-cookie（同 token 顺延 Max-Age）——cookie
+        // 的寿命只认 set-cookie，服务端单方面续 expires_at 救不了客户端，那正是"天天用却在
+        // 第 30 天掉线"的根因（*arr 的 SlidingExpiration 同款语义）。
+        //
+        // 实现选择：一次性包装 res.writeHead 把 set-cookie 挂到**首个**响应头上，而不是
+        // 逐分支补——下方几十个分支各自的 writeHead 不该为此逐个改（漏一处就漏一次续期，
+        // 且未来新增分支还会再漏）。首个头已发即恢复原实现（绝不重复发）。
+        // 路由自己要发 set-cookie 的（login/logout/setup/change-password）在头里已带该键，
+        // 包装层检测到既有 set-cookie 就不覆盖（它们的语义优先——登出新签/作废，不是续期）。
+        if (sessionOutcome.ok && sessionOutcome.renewCookie) {
+          const resAny = res as unknown as {
+            writeHead: (status: number, headers?: Record<string, unknown>) => unknown
+          }
+          const origWriteHead = (res.writeHead.bind(res) as unknown as typeof resAny.writeHead)
+          let cookieSent = false
+          resAny.writeHead = ((status: number, headers?: Record<string, unknown>) => {
+            if (!cookieSent) {
+              cookieSent = true
+              const merged = { ...(headers ?? {}) }
+              if (!('set-cookie' in merged)) merged['set-cookie'] = sessionCookie(sessionToken!)
+              return origWriteHead(status, merged)
+            }
+            return origWriteHead(status, headers)
+          })
+        }
 
         // 探测端点：任何态放行（前端 app-shell 靠它决定去 /setup、/login 还是正常渲染）
         if (rawPath === '/api/v2/auth/status' && req.method === 'GET') {

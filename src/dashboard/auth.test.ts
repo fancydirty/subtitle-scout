@@ -23,51 +23,85 @@ describe('hashPassword/verifyPassword（scrypt，盐:哈希 hex 格式）', { ti
   })
 })
 
-describe('SessionStore（持久化到 settings 表，30 天滚动过期）', () => {
+describe('SessionStore（auth_sessions 表，30 天滑动 + 90 天绝对上限）', () => {
   const NOW = 1_700_000_000_000
   const DAY = 24 * 3600 * 1000
 
   function makeStore() {
     const db = openDb(':memory:')
-    const repo = new SettingsRepo(db)
-    return new SessionStore(repo)
+    return new SessionStore(db)
   }
 
-  it('create 签发 64 hex token，verify 通过', () => {
+  it('create 签发 64 hex token，verify 通过且 renewCookie=false（新窗口无需重发）', () => {
     const s = makeStore()
     const t = s.create(NOW)
     expect(t).toMatch(/^[0-9a-f]{64}$/)
-    expect(s.verify(t, NOW + 1000)).toBe(true)
+    expect(s.verify(t, NOW + 1000)).toEqual({ ok: true, renewCookie: false })
   })
-  it('过期后 verify false 且条目被清', () => {
+  it('滑动过期后 verify ok=false 且行被清', () => {
     const s = makeStore()
     const t = s.create(NOW)
-    expect(s.verify(t, NOW + 31 * DAY)).toBe(false)
-    expect(s.verify(t, NOW + 1000)).toBe(false) // 已删，回到过期前的时刻也不行
+    expect(s.verify(t, NOW + 31 * DAY).ok).toBe(false)
+    expect(s.verify(t, NOW + 1000).ok).toBe(false) // 已删，回到过期前的时刻也不行
   })
-  it('滚动过期：每次 verify 续期 30 天', () => {
+  it('滑动续期：每次 verify 顺延 30 天', () => {
     const s = makeStore()
     const t = s.create(NOW)
-    expect(s.verify(t, NOW + 29 * DAY)).toBe(true)  // 续期到 +59d
-    expect(s.verify(t, NOW + 58 * DAY)).toBe(true)  // 仍活着
+    expect(s.verify(t, NOW + 29 * DAY).ok).toBe(true)  // 续期到 +59d
+    expect(s.verify(t, NOW + 58 * DAY).ok).toBe(true)  // 仍活着
+  })
+  it('🔴 半衰期进入 renewCookie=true（cookie 重发的判据本体——漏了它活跃用户第 30 天必掉线）', () => {
+    const s = makeStore()
+    // 每个场景用独立 token，避免前序 verify 的续期干扰后续判定
+    const t1 = s.create(NOW)
+    expect(s.verify(t1, NOW + 10 * DAY).renewCookie).toBe(false)  // 剩 20d > 半衰 15d，不触发
+    
+    const t2 = s.create(NOW)
+    expect(s.verify(t2, NOW + 20 * DAY).renewCookie).toBe(true)   // 剩 10d < 15d，触发重发
+    
+    const t3 = s.create(NOW)
+    expect(s.verify(t3, NOW + 16 * DAY).renewCookie).toBe(true)   // 刚好剩 14d < 15d，边界触发
+    
+    const t4 = s.create(NOW)
+    expect(s.verify(t4, NOW + 15 * DAY).renewCookie).toBe(false)  // 剩 15d = 半衰期，不触发
+  })
+  it('🔴 绝对上限 90 天：无论多活跃，登录起 90 天强制重登（行删除）', () => {
+    const s = makeStore()
+    const t = s.create(NOW)
+    // 每 29 天活跃一次——滑动窗永远满足，但 created_at 不动
+    for (let d = 29; d <= 87; d += 29) {
+      expect(s.verify(t, NOW + d * DAY).ok, `day ${d} 仍活着`).toBe(true)
+    }
+    // 第 89 天：还没到绝对上限（>90 才死），活着
+    expect(s.verify(t, NOW + 89 * DAY).ok).toBe(true)
+    // 第 91 天：绝对上限到点，死且行已删
+    expect(s.verify(t, NOW + 91 * DAY).ok).toBe(false)
+    expect(s.verify(t, NOW + 89 * DAY).ok).toBe(false)
+  })
+  it('库里只存 sha256：token 明文不在 auth_sessions 表里（库泄漏不可逆推 token）', () => {
+    const db = openDb(':memory:')
+    const s = new SessionStore(db)
+    const t = s.create(NOW)
+    const row = db.prepare('SELECT sid_hash FROM auth_sessions').get() as { sid_hash: string } | undefined
+    expect(row).toBeDefined()
+    expect(row!.sid_hash).not.toBe(t)
+    expect(row!.sid_hash).toMatch(/^[0-9a-f]{64}$/)  // sha256 hex
   })
   it('revoke 后 verify false；未知 token false', () => {
     const s = makeStore()
     const t = s.create(NOW)
     s.revoke(t)
-    expect(s.verify(t, NOW)).toBe(false)
-    expect(s.verify('deadbeef', NOW)).toBe(false)
+    expect(s.verify(t, NOW).ok).toBe(false)
+    expect(s.verify('deadbeef', NOW).ok).toBe(false)
   })
   it('持久化：重启后（新实例）会话仍有效', () => {
     const db = openDb(':memory:')
-    const repo1 = new SettingsRepo(db)
-    const s1 = new SessionStore(repo1)
+    const s1 = new SessionStore(db)
     const t = s1.create(NOW)
 
     // 模拟重启：新建 SessionStore 实例，复用同一个 db
-    const repo2 = new SettingsRepo(db)
-    const s2 = new SessionStore(repo2)
-    expect(s2.verify(t, NOW + 1000)).toBe(true)
+    const s2 = new SessionStore(db)
+    expect(s2.verify(t, NOW + 1000).ok).toBe(true)
   })
 })
 
@@ -165,12 +199,12 @@ describe('LoginThrottle IPv6 /64 归一（防地址轮换绕过）', () => {
 describe('login 只对失败计入节流（审计 #3：成功登录不消耗预算）', { timeout: 30_000 }, () => {
   const NOW = 1_700_000_000_000
   it('连续 10 次成功登录全部放行——成功不消耗节流预算', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     auth.setup('admin', 'hunter2222', NOW)
     for (let i = 0; i < 10; i++) expect(auth.login('admin', 'hunter2222', '1.1.1.1', NOW).ok).toBe(true)
   })
   it('4 次失败后穿插成功，成功不加计数——之后还能再失败 1 次才触顶', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     auth.setup('admin', 'hunter2222', NOW)
     for (let i = 0; i < 4; i++) auth.login('admin', 'wrong', '2.2.2.2', NOW)
     expect(auth.login('admin', 'hunter2222', '2.2.2.2', NOW).ok).toBe(true) // 成功不计
@@ -200,7 +234,7 @@ describe('login 只对失败计入节流（审计 #3：成功登录不消耗预�
     })
     vi.resetModules()
     const { AuthService: FreshAuthService } = await import('./auth.js')
-    const auth = new FreshAuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new FreshAuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     auth.setup('admin', 'hunter2222', NOW) // setup 自己也会跑 scrypt，从这里开始计数
 
     scryptCalls = 0
@@ -223,7 +257,7 @@ describe('login 只对失败计入节流（审计 #3：成功登录不消耗预�
 describe('AuthService（settings 三键：auth_username/auth_password_hash/auth_api_key）', { timeout: 30_000 }, () => {
   const NOW = 1_700_000_000_000
   function mkAuth() {
-    return new AuthService(new SettingsRepo(openDb(':memory:')))
+    return new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
   }
   it('未初始化态：isInitialized false；setup 写三键并返回 32 hex api key', () => {
     const auth = mkAuth()
@@ -249,7 +283,7 @@ describe('AuthService（settings 三键：auth_username/auth_password_hash/auth_
     auth.setup('admin', 'hunter2222', NOW)
     const ok = auth.login('admin', 'hunter2222', '1.1.1.1', NOW)
     expect(ok.ok).toBe(true)
-    if (ok.ok) expect(auth.sessions.verify(ok.sessionToken, NOW + 1)).toBe(true)
+    if (ok.ok) expect(auth.sessions.verify(ok.sessionToken, NOW + 1).ok).toBe(true)
     const bad = auth.login('admin', 'wrong', '1.1.1.1', NOW)
     expect(bad).toMatchObject({ ok: false, status: 401 })
     for (let i = 0; i < 5; i++) auth.login('admin', 'wrong', '2.2.2.2', NOW)
@@ -285,7 +319,7 @@ describe('AuthService（settings 三键：auth_username/auth_password_hash/auth_
 
 describe('verifyApiKey 多字节边界（主控亲核补）', () => {
   it('字符串等长但字节数不等（多字节字符）→ false 而非 timingSafeEqual 抛 RangeError', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     const r = auth.setup('admin', 'hunter2222', 1_700_000_000_000)
     if (!r.ok) throw new Error('setup failed')
     const evil = '文'.repeat(32) // 32 字符（与 32 hex 等长），但 UTF-8 字节数 96
@@ -296,13 +330,13 @@ describe('verifyApiKey 多字节边界（主控亲核补）', () => {
 
 describe('A1 硬化（Task 14′：长度阈值 10 + setup 原子性）', { timeout: 30_000 }, () => {
   it('MIN_PASSWORD_LEN=10：9 字符拒绝，10 字符通过', () => {
-    const a1 = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const a1 = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     expect(a1.setup('admin', 'x'.repeat(9), 1).ok).toBe(false)
-    const a2 = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const a2 = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     expect(a2.setup('admin', 'x'.repeat(10), 1).ok).toBe(true)
   })
   it('changePassword 同样 10 阈值：9 字符新密码拒绝', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     auth.setup('admin', 'hunter2222', 1)
     expect(auth.changePassword('hunter2222', 'x'.repeat(9), 2).ok).toBe(false)
     expect(auth.changePassword('hunter2222', 'x'.repeat(10), 2).ok).toBe(true)
@@ -313,16 +347,16 @@ describe('A1 硬化（Task 14′：长度阈值 10 + setup 原子性）', { time
     let calls = 0
     const orig = repo.set.bind(repo)
     repo.set = (k: string, v: string, n: number) => { if (++calls === 3) throw new Error('disk full'); return orig(k, v, n) }
-    const auth = new AuthService(repo)
+    const auth = new AuthService(repo, db)
     expect(() => auth.setup('admin', 'hunter2222', 1)).toThrow()
     // 新实例读同一 db：三键应因回滚而全不存在。
-    expect(new AuthService(new SettingsRepo(db)).isInitialized()).toBe(false)
+    expect(new AuthService(new SettingsRepo(db), db).isInitialized()).toBe(false)
   })
 })
 
 describe('AuthService.reset（A4 Task 15：诚实找回密码的后端）', { timeout: 30_000 }, () => {
   it('reset 后回到未初始化态，旧密码/apiKey 全失效', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     const r = auth.setup('admin', 'hunter2222', 1)
     if (!r.ok) throw new Error('setup failed')
     expect(auth.isInitialized()).toBe(true)
@@ -338,28 +372,28 @@ describe('AuthService.reset（A4 Task 15：诚实找回密码的后端）', { ti
 describe('改密撤销现有会话（审计 MEDIUM #1：凭据轮换必须让被盗会话失效）', { timeout: 30_000 }, () => {
   const NOW = 1_700_000_000_000
   it('changePassword 成功后，此前签发的所有会话 token 全部失效', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     auth.setup('admin', 'hunter2222', NOW)
     const s1 = auth.sessions.create(NOW)
     const s2 = auth.sessions.create(NOW)
-    expect(auth.sessions.verify(s1, NOW + 1)).toBe(true)
-    expect(auth.sessions.verify(s2, NOW + 1)).toBe(true)
+    expect(auth.sessions.verify(s1, NOW + 1).ok).toBe(true)
+    expect(auth.sessions.verify(s2, NOW + 1).ok).toBe(true)
     expect(auth.changePassword('hunter2222', 'newpass8888', NOW + 2).ok).toBe(true)
-    expect(auth.sessions.verify(s1, NOW + 3)).toBe(false)
-    expect(auth.sessions.verify(s2, NOW + 3)).toBe(false)
+    expect(auth.sessions.verify(s1, NOW + 3).ok).toBe(false)
+    expect(auth.sessions.verify(s2, NOW + 3).ok).toBe(false)
   })
   it('changePassword 失败（旧密码错）不动会话', () => {
-    const auth = new AuthService(new SettingsRepo(openDb(':memory:')))
+    const auth = new AuthService(new SettingsRepo(openDb(':memory:')), openDb(':memory:'))
     auth.setup('admin', 'hunter2222', NOW)
     const s1 = auth.sessions.create(NOW)
     expect(auth.changePassword('wrong', 'newpass8888', NOW + 2).ok).toBe(false)
-    expect(auth.sessions.verify(s1, NOW + 3)).toBe(true) // 没成功就不撤销
+    expect(auth.sessions.verify(s1, NOW + 3).ok).toBe(true) // 没成功就不撤销
   })
   it('SessionStore.clear 清空全部会话', () => {
-    const s = new SessionStore(new SettingsRepo(openDb(':memory:')))
+    const s = new SessionStore(openDb(':memory:'))
     const a = s.create(NOW), b = s.create(NOW)
     s.clear()
-    expect(s.verify(a, NOW + 1)).toBe(false)
-    expect(s.verify(b, NOW + 1)).toBe(false)
+    expect(s.verify(a, NOW + 1).ok).toBe(false)
+    expect(s.verify(b, NOW + 1).ok).toBe(false)
   })
 })
