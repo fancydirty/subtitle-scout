@@ -5,7 +5,6 @@ scratch
 fixtures
 cache-local
 docs
-worker
 scripts
 output
 *.log

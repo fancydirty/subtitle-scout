@@ -125,8 +125,8 @@ docker compose run --rm --no-deps subtitle-scout node dist/cli/index.js doctor
 访问 `http://<主机IP>:8099`（端口可通过 `DASHBOARD_PORT` 自定义）：
 
 - 每部剧/电影的字幕覆盖状态一览（哪几集缺、哪几集处理中、哪几集暂时没找到）
-- 活动页：正在处理 / 已排队的作品实时状态（SSE 推送 + 通知页持久化"找到了什么"）
-- 决策历史（每次处理"选了谁、为什么没找到"的人话摘要 + agent 工具调用 trace）目前**没有专门页面**，通过 API 查询：`curl -H 'X-Api-Key: <key>' 'http://<主机IP>:8099/api/v2/runs?limit=50'`（单条 trace 回放：`/api/v2/workflow/runs/<id>/trace`）
+- 活动页：正在处理 / 已排队的作品实时状态（SSE 推送）+ **决策历史**——每次处理的一行人话摘要（选了谁、为什么没找到），点击展开该次运行的工具调用 trace（搜索→下载→验证→安装的完整决策链）
+- 通知页：持久化的"找到了什么"流水
 
 ### 账号鉴权（单管理员）
 
@@ -369,14 +369,10 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 
 监控页 `http://<主机>:8099`：
 - 媒体库页看每部作品的字幕覆盖状态（哪几集缺、哪几集处理中）
-- 活动页看正在处理/已排队的实时状态；通知页看"找到了什么"的持久化流水
-- 每次处理的人话摘要（选了谁、为什么没找到）**没有专门页面**，用 API 查 `runs` 表：
+- 活动页底部「决策历史」段：每次处理的一行人话摘要（选了谁、为什么没找到），点击一行展开该次 agent 运行的工具调用序列
+- 脚本/集成也可以走 API：`curl -H 'X-Api-Key: <key>' 'http://<主机>:8099/api/v2/runs?limit=50'`（单条 trace：`/api/v2/workflow/runs/<id>/trace`）
 
-  ```bash
-  curl -H 'X-Api-Key: <你的-api-key>' 'http://<主机>:8099/api/v2/runs?limit=50'
-  ```
-
-**LLM/API 调用明细**：traceBus 收官快照落盘在 `runs.trace_json`（默认保留 30 天），单条回放走 `/api/v2/workflow/runs/<id>/trace`（同样带 API key）。每次 agent 运行的决策链（搜索→下载→验证→安装）都在里面。
+**LLM/API 调用明细**：traceBus 收官快照落盘在 `runs.trace_json`（默认保留 30 天，超期自动修剪、行本身保留）。
 
 程序日志（`docker compose logs subtitle-scout` 或容器内 `/cache/logs/`）能看到 provider 报错/提示一类的关键事件，但不是完整调用记录。
 

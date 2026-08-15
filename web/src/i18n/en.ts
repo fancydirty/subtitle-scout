@@ -545,6 +545,14 @@ export const en = {
   wb_loading: 'Loading…',
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',
+  // ── 决策历史段（RunsHistory）——decision 词本身不翻译（技术状态词，见 settings_deploy_present_word 的裁决） ──
+  runs_section_title: 'Run history',
+  runs_empty: 'No runs recorded yet',
+  runs_error_prefix: 'Could not load run history: ',
+  runs_load_more: 'Load more',
+  runs_trace_loading: 'Loading trace…',
+  runs_trace_none: 'No trace snapshot for this run',
+  runs_ago: '{d} ago',
   // ── 🟡 实时通道掉线时的「读数已经不新鲜了」（诚实性，**不是排障提示**）────────
   // R-F9/R-F10 的裁决是排障类一律不推给用户，所以这两句里**不出现** SSE / 连接 /
   // 状态码 / 端点这类词——它们说的是"你看到的数字有多新"，与上面 wb_inspect_stale

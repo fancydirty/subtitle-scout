@@ -1,6 +1,6 @@
 # Subtitle Scout 待办事项
 
-**更新日期**: 2026-08-15（Phase 2 完成，ingest 整条链已删）
+**更新日期**: 2026-08-15（Phase 3 完成：runs 前端消费页 + 全部技术债清偿/失效判定）
 
 ---
 
@@ -41,19 +41,19 @@
 - ✅ ingest 整条链已删（commit `10bd7c5`，2026-08-13，净 -4698 行）
 - ⏳ parked_paths 表还在（仍被 `cli/unidentifiedFindSubtitle.ts` 读写，属"保留待裁"的 handleWorkerTask 族，见 10bd7c5 的四张表评估）
 
-**Phase 3: 可观测性与测试补全**
+**Phase 3: 可观测性与测试补全（已完成）**
 - [x] runs 记账接线（2026-08-15，生产实测发现）：v3 字幕轨对 runs 表**零写入**——唯一写方是已死的 jobs claim-dispatch 路径，而 `/api/v2/runs` 端点还活着。已把 `RunsRepo.insert` 接进 `runSubtitleWorkDir`（按非空桶各记一行，词表沿用，trace_json 一次快照挂多行，job_id=NULL）。测试：daemonV2.test.ts「runSubtitleWorkDir · runs 记账」4 条。
-- [ ] runs 的前端消费：新前端四 tab（activity/notifications/media/settings）无任何页面读 runs——数据可经 `/api/v2/runs`（管理员 API key）curl，但活动页只有"正在跑/排队"，没有历史/trace 回放 UI。README 已改为如实描述。
-- [ ] subtitles 表处置待裁决：item_id 域指向 episodes/movies（commit 10bd7c5 已定性"结构上不可填"），新架构的覆盖事实在 files.sidecar_langs——这张表与 runs 的旧 join 口径已死。
-- [ ] identityEval 里那条 mtime 伪造的闭环测试是冗余的（真正load-bearing 的是生产条件锁），可合并
-- [ ] 回滚窄窗口：v24 后回滚→期间人工认领→滚回，那条人工认领会失去 source 保护（三步齐全才命中，已在 db.ts 注释标注）
+- [x] runs 的前端消费（2026-08-15）：活动页新增「决策历史」段（`web/src/workbench/RunsHistory.tsx`）——runs 行（decision 词不翻译 + 人话 detail + 相对时间）、点击惰性展开 trace 回放（`/api/v2/workflow/runs/:id/trace`，每行只取一次）、工作台级事件触发重拉、分页加载更多。README 已同步回真实描述（历史段在活动页，不再只说 curl）。
+- [x] subtitles 表处置（2026-08-15 评估裁决：**保留，不 DROP**）：3 处 INSERT 全在雪藏的 handleWorkerTask 族上（用户 2026-08-14 裁决「不删不接，等主链路 live test 没毛病再裁」），读方（verifySweep 族）同样雪藏。唯一活触碰点是 `settingsRepo.removeRoot` 的级联 DELETE——对 0 行表是无害 no-op。单方 DROP 等于替雪藏裁决做决定；处置与那族捆绑，等 live test 观察期结束后一起裁。
+- [x] identityEval mtime 冗余测试：**已随 identityEval.live.test.ts 文件删除而消失**（agent-first 架构重构），死待办划掉。
+- [x] 回滚窄窗口 v24：**已随 v27 认领退役失效**——identify_overrides 表（含 source 列）v27 已 DROP，db.ts 里那段三步齐全注释也已删；迁移链按 meta.schema_version 只进不退，"回滚到 v24-26 再滚回"的操作面不存在了。死待办划掉。
 
 ---
 
 ## 🧹 技术债（更早遗留）
 
-- [ ] 生产库识别错误评估：扫 NAS 看多少条目 title 是 "tv"/"movies"/分类目录/单字符垃圾（旧 bug 误识别的）——现在 agent 能自己纠了，可以先观察一轮再决定要不要批量干预
-- [ ] worker/（Cloudflare ASSRT 中继）孤儿组件，已标退役，可考虑删
+- [x] 生产库识别错误评估（2026-08-15 实查）：36 个 works 全部干净——0 条可疑 title（"tv"/"movies"/分类目录/单字符垃圾）、0 条 year 缺失。现库是 8/15 从零 live test 重建的，识别全走 agent-first 新架构，旧 bug 存量脏数据不存在，无需干预。
+- [x] worker/（Cloudflare ASSRT 中继）孤儿组件已删（2026-08-15）：目录本就被 .gitignore（从未入库），磁盘清除 + devDependencies 删 wrangler/@cloudflare/workers-types（lockfile 已刷新）+ .dockerignore 摘除条目。云上资源（workers.dev 部署与 KV namespace）是仓库外的，如需回收另行 wrangler delete。
 
 ---
 

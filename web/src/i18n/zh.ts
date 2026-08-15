@@ -478,6 +478,14 @@ export const zh = {
   wb_loading: '加载中…',
   wb_error_title: '没能加载队列',
   wb_retry: '重试',
+  // ── 决策历史段（RunsHistory）——decision 词本身不翻译（技术状态词，同 en 侧裁决） ──
+  runs_section_title: '决策历史',
+  runs_empty: '还没有运行记录',
+  runs_error_prefix: '没能加载运行历史：',
+  runs_load_more: '加载更多',
+  runs_trace_loading: '正在加载痕迹…',
+  runs_trace_none: '这条运行没有痕迹快照',
+  runs_ago: '{d} 前',
   // ── 🟡 实时通道掉线时的「读数已经不新鲜了」（诚实性，**不是排障提示**）────────
   // 措辞纪律同 en 侧：不出现 SSE / 连接 / 状态码这类词。两句分开是因为用户能做的事不同
   // （retrying 自己会好；unavailable 是终态，只有刷新才可能变，所以必须明说刷新）。

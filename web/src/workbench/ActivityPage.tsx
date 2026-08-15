@@ -78,6 +78,10 @@ import { ACTIVITY_TABS, laneOf, workIdOf, type ActivityTab } from './workbenchRo
 // 函数本体保留在 workbenchRouting.ts（有测试、语义正确、导出可用），只是本页不 import 它。
 import { inspectFreshness, liveFreshness, relAgo, workPermission, type LiveFreshness } from './inspectFreshness.js'
 import { RunCard, QueueCard, type WorkbenchCardFace } from './WorkbenchCards.js'
+// 决策历史段（2026-08-15）：runs 表的前端消费——"跑完了为什么"在产品里此前整体不存在。
+// 自包含组件（自订事件刷新 + 自取数），本页只负责挂载位置（队列段之下，错误/加载
+// 分支之外——activity 端点挂了不该把历史段一起藏起来，两条是独立的数据路）。
+import { RunsHistory } from './RunsHistory.js'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 当前态：SSE 增量 + health 快照纠正
@@ -560,6 +564,8 @@ export function ActivityPage() {
             now={queueNow}
           />
         )}
+
+        <RunsHistory />
       </div>
     </Section>
   )

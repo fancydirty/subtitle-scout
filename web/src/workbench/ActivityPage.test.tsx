@@ -91,6 +91,11 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     urls.push(url)
+    if (url.includes('/api/v2/runs?')) {
+      // RunsHistory 段（2026-08-15）也随活动页渲染：历史是空数组（多数用例不关心它，
+      // stub 给真实形状——catch-all 那档返回 {} 会被组件的形状防御判成错误态）。
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response
+    }
     if (url.includes('/api/v2/health')) {
       return { ok: true, status: 200, json: async () => healthBody } as unknown as Response
     }

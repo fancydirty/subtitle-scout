@@ -35,13 +35,11 @@
     "@types/ffprobe-static": "^2.0.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260702.1",
     "@types/adm-zip": "^0.5.8",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10",
-    "wrangler": "^4.107.0"
+    "vitest": "^4.1.10"
   }
 }
