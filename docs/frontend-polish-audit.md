@@ -53,6 +53,11 @@ exist`, etc. are appended to Chinese prefixes in settings/dir-browser/remove-roo
 They are correct technical strings, but the Chinese presentation should map the
 known set to Chinese while preserving the raw string for unknown errors and logs.
 
+### P0-8 Login throttling was misreported
+`LoginPage` collapsed every non-network failure into "wrong password", including the
+backend's 429 throttling response. A locked-out user was being told their password
+was wrong. The 429 path now has its own message.
+
 ### P1-0 Topbar freshness line
 `watching /Volumes/… · scanned 2m ago · 531 files` is intentionally technical
 (DESIGN.md §0/§7) and is not changed. The `offline` / `loading…` fallback words
@@ -63,8 +68,22 @@ Raw env keys stay visible in the Advanced tab, but the tab and its badges are no
 localized. This keeps the power-user surface while removing accidental exposure
 from the default visual language.
 
+## Implemented in this pass
+
+- Added `common_*`, settings tab/badge, TranslateCard, secret-label and a11y keys to
+  both i18n tables; replaced every hardcoded settings chrome string.
+- Added `settings/secretLabels.ts`: `SecretName -> TKey` single map; ProviderCard and
+  TranslateCard render human labels and keep the raw env key only as a tooltip.
+- Scan interval is now displayed/edited in minutes; conversion to `scan_interval_ms`
+  happens only at the PUT boundary.
+- Added `lib/errorText.ts`: zh mappings for the known backend error contract.
+  en and unknown errors are passed through unchanged. Wired into all settings pages,
+  wizard save/test paths, EngineBanner, and the three data pages.
+- Login now distinguishes 429 throttling from invalid credentials.
+
 ## Verification
 
-- `cd web && npm test` — all frontend tests green.
-- `npm test` — backend suite green (no backend behavior changed in this pass).
+- `cd web && npm test` — 87 files / 1003 tests green.
+- `npm test` — 145 files / 3328 tests green (plus 3 skipped / 27 skipped).
 - `npm run check` — full repo typecheck green.
+- `cd web && npm run build` — production build green.

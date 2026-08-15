@@ -37,12 +37,13 @@ import { useState } from 'react'
 import { api } from '../api/client.js'
 import { useHealth } from '../api/hooks.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { Button } from '../components/ui/button.js'
 import { workPermission } from '../workbench/inspectFreshness.js'
 import { go } from './route.js'
 
 export function EngineBanner() {
-  const { t } = useT()
+  const { t, lang } = useT()
   const { data, reload } = useHealth()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -67,7 +68,7 @@ export function EngineBanner() {
     } catch (e) {
       // PUT 失败不能静默——banner 留着、按钮复活、行内红字告知（同 wizard 步件的
       // saveError 先例）。reload 只在成功路径调，失败时状态未变，不需要重拉。
-      setError(String(e))
+      setError(localizeErrorValue(e, lang))
     } finally {
       setBusy(false)
     }

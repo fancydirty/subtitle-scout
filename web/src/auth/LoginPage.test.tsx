@@ -41,6 +41,16 @@ describe('LoginPage（鉴权 A2 Task 10+10′）', () => {
     expect(p.value).toBe('')
   })
 
+  it('429 节流 → 说“试太多次”，不说“密码不对”', async () => {
+    vi.stubGlobal('fetch', resp(429, { error: 'too many attempts — wait a minute' }))
+    wrap()
+    fireEvent.change(screen.getByLabelText(/username|用户名/i), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByLabelText(/^password$|^密码$/i), { target: { value: 'wrong-pass' } })
+    fireEvent.click(screen.getByRole('button', { name: /log in|登录/i }))
+    await screen.findByText(/too many attempts|尝试次数过多/i)
+    expect(screen.queryByText(/incorrect username or password|用户名或密码不正确/i)).not.toBeInTheDocument()
+  })
+
   it('传输失败（fetch reject）→ "Can\'t reach the server." 变体', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
     wrap()

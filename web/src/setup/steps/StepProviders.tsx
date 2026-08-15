@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
+import { localizeError, localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Input } from '../../components/ui/input.js'
 import { StatusDot, StepFooter } from './ui.js'
@@ -54,7 +55,7 @@ function testable(id: ProviderId, values: Partial<Record<SecretName, string>>): 
 }
 
 export function StepProviders({ status, patchStatus, onAdvance, onBack }: WizardStepProps) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [blocks, setBlocks] = useState<Record<ProviderId, BlockState>>({
     assrt: EMPTY_BLOCK, opensubtitles: EMPTY_BLOCK, jimaku: EMPTY_BLOCK,
   })
@@ -85,7 +86,7 @@ export function StepProviders({ status, patchStatus, onAdvance, onBack }: Wizard
       }
       const r = await api.validateSetup(id, credentials)
       if (r.ok) setBlock(id, { testing: false, testedKey: currentKey(id, b.values) })
-      else setBlock(id, { testing: false, failMsg: r.error ?? r.detail ?? t('wizard_test_failed') })
+      else setBlock(id, { testing: false, failMsg: localizeError(r.error ?? r.detail ?? t('wizard_test_failed'), lang) })
     } catch (e) {
       // 同 Task 17/18：端点自身挂了 ≠ 凭据不对（spec §7）。
       void e
@@ -120,7 +121,7 @@ export function StepProviders({ status, patchStatus, onAdvance, onBack }: Wizard
       patchStatus({ providers: { ...status.providers, ...patch } })
       onAdvance()
     } catch (e) {
-      setSaveError(String(e))
+      setSaveError(localizeErrorValue(e, lang))
       setSaving(false)
     }
   }

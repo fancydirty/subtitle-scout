@@ -63,6 +63,7 @@ import {
 } from '../events/EventsProvider.js'
 import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
+import { localizeError } from '../lib/errorText.js'
 import { RootHealthNote } from '../shell/RootHealthNote.js'
 import { UnidentifiedNote } from './UnidentifiedNote.js'
 import { StalledJobsNote } from './StalledJobsNote.js'
@@ -461,7 +462,7 @@ function facePatch(
 // ═══════════════════════════════════════════════════════════════════════════
 
 export function ActivityPage() {
-  const { t } = useT()
+  const { t, lang } = useT()
   const { data: health, reload: reloadHealth } = useHealth()
   const { data: activityData, loading, error, reload: reloadActivity } = useActivity()
   const status = useEventsStatus()
@@ -543,7 +544,7 @@ export function ActivityPage() {
         {error && !activityData ? (
           <EmptyState
             title={t('wb_error_title')}
-            description={error}
+            description={localizeError(error, lang)}
             actions={
               <Button variant="secondary" onClick={reloadActivity}>{t('wb_retry')}</Button>
             }

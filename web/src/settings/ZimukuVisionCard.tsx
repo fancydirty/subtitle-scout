@@ -11,6 +11,7 @@ import { Button } from '../components/ui/button.js'
 import { Input } from '../components/ui/input.js'
 import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { SettingsCard } from './SettingsCard.js'
 
 interface Props {
@@ -25,7 +26,7 @@ const PLACEHOLDERS: Record<string, string> = {
 }
 
 export function ZimukuVisionCard({ reload }: Props) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [secrets, setSecrets] = useState<Array<{ name: string; set: boolean; source: 'env' | 'db' | 'none'; masked: string | null }>>([])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [touched, setTouched] = useState<Record<string, boolean>>({})
@@ -96,10 +97,10 @@ export function ZimukuVisionCard({ reload }: Props) {
       if (res.success) {
         setTestResult({ ok: true, message: t('settings_zimuku_vision_test_ok') })
       } else {
-        setTestResult({ ok: false, message: res.error ?? t('settings_zimuku_vision_test_fail') })
+        setTestResult({ ok: false, message: res.error ? localizeErrorValue(res.error, lang) : t('settings_zimuku_vision_test_fail') })
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(localizeErrorValue(err, lang))
     } finally {
       setTesting(false)
     }
@@ -119,7 +120,7 @@ export function ZimukuVisionCard({ reload }: Props) {
       setTouched({})
       setTestResult(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(localizeErrorValue(err, lang))
     } finally {
       setBusy(false)
     }
@@ -139,7 +140,7 @@ export function ZimukuVisionCard({ reload }: Props) {
       setConfirmOpen(false)
       reload()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(localizeErrorValue(err, lang))
     } finally {
       setBusy(false)
     }
@@ -212,7 +213,7 @@ export function ZimukuVisionCard({ reload }: Props) {
               onClick={handleSave}
               disabled={!canSave || busy || allEnv}
             >
-              Save
+              {t('common_save')}
             </Button>
             {isConfigured && !allEnv && (
               <Button
@@ -220,7 +221,7 @@ export function ZimukuVisionCard({ reload }: Props) {
                 onClick={() => setConfirmOpen(true)}
                 disabled={busy}
               >
-                Clear
+                {t('common_clear')}
               </Button>
             )}
           </div>
@@ -235,7 +236,7 @@ export function ZimukuVisionCard({ reload }: Props) {
             <AlertDialogDescription>{t('settings_zimuku_vision_clear_confirm_body')}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t('common_cancel')}</AlertDialogCancel>
             <AlertDialogAction onClick={handleClear}>{t('settings_zimuku_vision_clear_action')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -28,6 +28,7 @@ import type {
   MediaLibraryMovieDTO,
 } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
+import { localizeError } from '../lib/errorText.js'
 import { EpisodeCell } from './EpisodeCell.js'
 import { EpisodeMark } from './EpisodeMark.js'
 import { EPISODE_STATE_LABEL, LEGEND_STATES } from './episodeStateMeta.js'
@@ -120,8 +121,9 @@ function MovieBlock({ movie }: { movie: MediaLibraryMovieDTO }) {
 }
 
 function DetailSkeleton() {
+  const { t } = useT()
   return (
-    <div className="flex gap-4" aria-busy="true" aria-label="loading media detail">
+    <div className="flex gap-4" aria-busy="true" aria-label={t('a11y_loading_media_detail')}>
       <div className="media-detail-poster">
         <Skeleton className="h-full w-full rounded-control" />
       </div>
@@ -134,7 +136,7 @@ function DetailSkeleton() {
 }
 
 export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDTO> }) {
-  const { t } = useT()
+  const { t, lang } = useT()
 
   if (detail.loading && !detail.data) {
     return (
@@ -164,7 +166,7 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
       <Section>
         <EmptyState
           title={t('media_error_title')}
-          description={detail.error}
+          description={localizeError(detail.error, lang)}
           actions={
             <Button variant="secondary" onClick={detail.reload}>
               {t('media_retry')}

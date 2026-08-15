@@ -23,9 +23,10 @@ import { api } from '../api/client.js'
 import type { Async } from '../api/hooks.js'
 import type { SettingsDTO, SettingsKey } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import {
   DEFAULT_TARGET_LANGUAGES, DEFAULT_HARDSUB_MODE,
-  PLACEHOLDER_TRACE_RETENTION_DAYS, PLACEHOLDER_SCAN_INTERVAL_MS,
+  PLACEHOLDER_TRACE_RETENTION_DAYS, PLACEHOLDER_SCAN_INTERVAL_MINUTES, SCAN_INTERVAL_MS_PER_MINUTE,
 } from './text.js'
 
 interface RowProps {
@@ -40,7 +41,7 @@ interface RowProps {
  *  事件循环内背靠背发生，React state 还没来得及重渲染，仅凭 saving 这个 state 判断挡不住第二
  *  次调用。ref 是同步的，第一次调用内立即置位，第二次调用能立刻读到最新值，可靠去重。 */
 function useFieldCommit(onUpdated: (settings: SettingsDTO) => void) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const inFlightRef = useRef(false)
@@ -53,7 +54,7 @@ function useFieldCommit(onUpdated: (settings: SettingsDTO) => void) {
       const result = await api.updateSettings({ [key]: value })
       onUpdated(result)
     } catch (e) {
-      setError(t('settings_save_error_prefix') + String(e))
+      setError(t('settings_save_error_prefix') + localizeErrorValue(e, lang))
     } finally {
       inFlightRef.current = false
       setSaving(false)
@@ -229,10 +230,14 @@ function EngineRow({ settings, onUpdated }: RowProps) {
 }
 
 function NumberSettingRow({
-  settings, onUpdated, settingKey, label, placeholder, note,
-}: RowProps & { settingKey: SettingsKey; label: string; placeholder: string; note: string }) {
+  settings, onUpdated, settingKey, label, placeholder, note, unitDivisor = 1,
+}: RowProps & {
+  settingKey: SettingsKey; label: string; placeholder: string; note: string
+  /** 显示/提交换算：人类单位 = 存储值 / unitDivisor；提交时再乘回去。 */
+  unitDivisor?: number
+}) {
   const committedStr = settings[settingKey] ?? ''
-  const committedNum = committedStr ? Number(committedStr) : null
+  const committedNum = committedStr ? Number(committedStr) / unitDivisor : null
   const [draft, setDraft] = useState<number | null>(committedNum)
   const { saving, error, commit } = useFieldCommit(onUpdated)
   const lastCommittedRef = useRef(committedNum)
@@ -248,8 +253,8 @@ function NumberSettingRow({
     // NaN 闸：真实浏览器 type=number 会把非法输入清成 ''（走上面的 null 早退），jsdom 不拦——
     // Number('12abc')=NaN 一旦漏进草稿，String(NaN)='NaN' 会被当成合法值发 PUT，这里永久关死。
     if (Number.isNaN(draft)) return
-    if (String(draft) === committedStr) return
-    void commit(settingKey, String(draft))
+    if (String(draft * unitDivisor) === committedStr) return
+    void commit(settingKey, String(draft * unitDivisor))
   }
 
   return (
@@ -294,7 +299,7 @@ export function BehaviorSection({ settings }: Props) {
           {t('settings_behavior_heading')}
         </span>
         <span className="font-mono text-[13px] leading-5 text-muted-foreground">
-          loading…
+          {t('common_loading')}
         </span>
       </section>
     )
@@ -338,7 +343,8 @@ export function BehaviorSection({ settings }: Props) {
           onUpdated={setLocal}
           settingKey="scan_interval_ms"
           label={t('settings_scan_interval_label')}
-          placeholder={PLACEHOLDER_SCAN_INTERVAL_MS}
+          placeholder={PLACEHOLDER_SCAN_INTERVAL_MINUTES}
+          unitDivisor={SCAN_INTERVAL_MS_PER_MINUTE}
           note={t('settings_scan_interval_note')}
         />
       </div>

@@ -44,8 +44,10 @@ import { MediaLibraryPage } from '../media/MediaLibraryPage.js'
 import { MediaDetailPage } from '../media/MediaDetailPage.js'
 import { NotificationsPage } from '../notifications/NotificationsPage.js'
 import { EventsProvider } from '../events/EventsProvider.js'
+import { useT } from '../i18n/useT.js'
 
 export function Shell() {
+  const { t } = useT()
   const route = useShellRoute()
   const workflow = useWorkflowPending()
   const [isCmdKOpen, setCmdKOpen] = useState(false)
@@ -72,7 +74,7 @@ export function Shell() {
           保留成本一行；样式在 styles.css 的 shell 段（.skip-to-content）。 */}
       <div className="flex h-screen flex-col">
         <a href="#scout-app-main" className="skip-to-content">
-          Skip to content
+          {t('a11y_skip_to_content')}
         </a>
         <Topbar
           tab={route.tab}

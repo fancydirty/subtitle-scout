@@ -20,7 +20,9 @@ export const DEFAULT_HARDSUB_MODE = 'off'
  *  （cli/index.ts 的 LOG_RETAIN_DAYS 兜底 30；src/daemon/selfScan.ts 的
  *  SELF_SCAN_DEFAULT_INTERVAL_MS=900000），只作占位参考。 */
 export const PLACEHOLDER_TRACE_RETENTION_DAYS = '30'
-export const PLACEHOLDER_SCAN_INTERVAL_MS = '900000'
+export const PLACEHOLDER_SCAN_INTERVAL_MINUTES = '15'
+/** 后端仍存毫秒（scan_interval_ms），只在设置页边界换算成分钟给人类看。 */
+export const SCAN_INTERVAL_MS_PER_MINUTE = 60_000
 
 /** 守备目录浏览器的默认起点：现有根路径的最长公共祖先目录段（零根时回退到 '/'）。
  *  posix 风格，不处理尾斜杠差异之外的形状（本项目路径恒为绝对路径）。 */

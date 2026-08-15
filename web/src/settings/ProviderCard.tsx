@@ -9,7 +9,9 @@ import { StatusDot } from '../components/ui/status-dot.js'
 import { api } from '../api/client.js'
 import type { ProviderRowDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { SettingsCard } from './SettingsCard.js'
+import { SECRET_LABEL_KEY } from './secretLabels.js'
 
 const PROVIDER_NAME: Record<ProviderRowDTO['id'], string> = {
   tmdb: 'TMDB',
@@ -96,7 +98,7 @@ function ProviderSecretField({ secret, editing, draft, onDraft }: {
 }) {
   const { t } = useT()
   if (editing && secret.source !== 'env') {
-    return <Input aria-label={secret.name} value={draft} onChange={(e) => onDraft(e.target.value)} placeholder={secret.masked ?? ''} />
+    return <Input aria-label={t(SECRET_LABEL_KEY[secret.name])} value={draft} onChange={(e) => onDraft(e.target.value)} placeholder={secret.masked ?? ''} />
   }
   return (
     <>
@@ -114,7 +116,7 @@ function ProviderSecretField({ secret, editing, draft, onDraft }: {
 }
 
 export function ProviderCard({ row, reload }: { row: ProviderRowDTO; reload: () => void }) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [editing, setEditing] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
@@ -138,14 +140,14 @@ export function ProviderCard({ row, reload }: { row: ProviderRowDTO; reload: () 
       }
       setEditing(false); setDrafts({}); reload()
     } catch (e) {
-      setError(t('settings_save_error_prefix') + String(e))
+      setError(t('settings_save_error_prefix') + localizeErrorValue(e, lang))
     } finally { setBusy(false) }
   }
 
   async function onTest() {
     setBusy(true); setError(null)
     try { await api.validateSetup(row.id); reload() }
-    catch (e) { setError(t('settings_save_error_prefix') + String(e)) }
+    catch (e) { setError(t('settings_save_error_prefix') + localizeErrorValue(e, lang)) }
     finally { setBusy(false) }
   }
 
@@ -169,7 +171,7 @@ export function ProviderCard({ row, reload }: { row: ProviderRowDTO; reload: () 
           )}
         </div>
         {row.lastTest && !row.lastTest.ok && row.lastTest.error && (
-          <span className="text-[11px] leading-4 text-muted-foreground">{row.lastTest.error}</span>
+          <span className="text-[11px] leading-4 text-muted-foreground">{localizeErrorValue(row.lastTest.error, lang)}</span>
         )}
         {/* 配额行排在 lastTest 之后、密钥清单之前：它比"上次测试"更**当下**（测试是
             用户上次手动点的，配额是引擎刚刚撞上的），又比密钥明细更该被先看到。
@@ -177,7 +179,7 @@ export function ProviderCard({ row, reload }: { row: ProviderRowDTO; reload: () 
         <ProviderQuotaNote quota={row.quota} />
         {row.secrets.map((s) => (
           <div key={s.name} className="flex items-center gap-2">
-            <span className="font-mono text-[13px] leading-5">{s.name}</span>
+            <span className="text-[13px] leading-5" title={s.name}>{t(SECRET_LABEL_KEY[s.name])}</span>
             <ProviderSecretField secret={s} editing={editing} draft={drafts[s.name] ?? ''} onDraft={(v) => setDrafts((d) => ({ ...d, [s.name]: v }))} />
           </div>
         ))}

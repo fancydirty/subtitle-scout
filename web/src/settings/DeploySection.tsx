@@ -8,13 +8,14 @@
 import type { Async } from '../api/hooks.js'
 import type { DeploySettingsDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
+import { localizeError } from '../lib/errorText.js'
 
 interface Props {
   deploy: Async<DeploySettingsDTO>
 }
 
 export function DeploySection({ deploy }: Props) {
-  const { t } = useT()
+  const { t, lang } = useT()
 
   return (
     <section className="settings-section">
@@ -25,10 +26,10 @@ export function DeploySection({ deploy }: Props) {
 
       {deploy.loading && !deploy.data ? (
         <span className="font-mono text-[13px] leading-5 text-muted-foreground">
-          loading…
+          {t('common_loading')}
         </span>
       ) : deploy.error && !deploy.data ? (
-        <div className="settings-deploy-error">{t('settings_deploy_error_prefix') + deploy.error}</div>
+        <div className="settings-deploy-error">{t('settings_deploy_error_prefix') + localizeError(deploy.error, lang)}</div>
       ) : deploy.data ? (
         <div className="flex flex-col gap-2">
           <span className="text-[11px] leading-4 text-muted-foreground">

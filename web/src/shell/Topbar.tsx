@@ -43,9 +43,9 @@ export function Topbar({ tab, workflow, onOpenCmdK }: Props) {
   if (workflow.data) {
     freshness = formatFreshness(workflow.data.meta, Date.now())
   } else if (workflow.error) {
-    freshness = 'offline'
+    freshness = t('common_offline')
   } else {
-    freshness = 'loading…'
+    freshness = t('topbar_loading')
   }
 
   return (
@@ -56,7 +56,7 @@ export function Topbar({ tab, workflow, onOpenCmdK }: Props) {
           min-w-0 + truncate：长标签在窄视口下允许 nav 收缩、当前级省略号截断，右组
           （新鲜度行 + ⌘K 触发器）不被推出屏外——等价于 Astryx TopNav 左段的
           flex:1 1 0 + minWidth:0。truncate 保 textContent 全文，getByText 断言不受影响。 */}
-      <nav aria-label="Breadcrumb" className="min-w-0">
+      <nav aria-label={t('a11y_breadcrumb')} className="min-w-0">
         <ol className="flex items-center gap-1 text-sm leading-5">
           <li aria-current="page" className="truncate text-foreground">
             {rootLabel}

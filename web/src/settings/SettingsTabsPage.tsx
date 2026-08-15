@@ -6,6 +6,7 @@ import { useState } from 'react'
 import type { SettingsDTO, ProviderRowDTO, SetupStatusDTO } from '../api/types.js'
 import { useSettings, useDeploySettings, useRoots, useSetupProviders, useSetupStatus } from '../api/hooks.js'
 import { isContractViolation } from '../api/contract.js'
+import { useT } from '../i18n/useT.js'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs.js'
 import { Badge } from '../components/ui/badge.js'
 import { BehaviorSection } from './BehaviorSection.js'
@@ -77,6 +78,7 @@ function readProviders(
 }
 
 export function SettingsTabsPage() {
+  const { t } = useT()
   const settings = useSettings()
   const deploy = useDeploySettings()
   const roots = useRoots()
@@ -116,17 +118,17 @@ export function SettingsTabsPage() {
   return (
     <Tabs defaultValue="general" className="w-full">
       <TabsList>
-        <TabsTrigger value="general">General</TabsTrigger>
+        <TabsTrigger value="general">{t('settings_tab_general')}</TabsTrigger>
         <TabsTrigger value="providers">
-          Providers
+          {t('settings_tab_providers')}
           <Badge variant={providerBadgeVariant} className="ml-1">{configuredCount}/8</Badge>
         </TabsTrigger>
         <TabsTrigger value="media">
-          Media
-          {mediaUnconfigured ? <Badge variant="warning" className="ml-1">⚠ Not configured</Badge> : null}
+          {t('settings_tab_media')}
+          {mediaUnconfigured ? <Badge variant="warning" className="ml-1">{t('settings_status_unconfigured')}</Badge> : null}
         </TabsTrigger>
-        <TabsTrigger value="security">Security</TabsTrigger>
-        <TabsTrigger value="advanced">Advanced</TabsTrigger>
+        <TabsTrigger value="security">{t('settings_tab_security')}</TabsTrigger>
+        <TabsTrigger value="advanced">{t('settings_tab_advanced')}</TabsTrigger>
       </TabsList>
 
       <TabsContent value="general" className="p-6 space-y-6">

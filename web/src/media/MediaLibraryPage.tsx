@@ -31,6 +31,7 @@ import { Button } from '../components/ui/button.js'
 import { AspectRatio } from '../components/ui/aspect-ratio.js'
 import { useMediaLibrary, useHealth } from '../api/hooks.js'
 import { useT } from '../i18n/useT.js'
+import { localizeError } from '../lib/errorText.js'
 import { mediaItemHref } from '../shell/route.js'
 import { RootHealthNote } from '../shell/RootHealthNote.js'
 import { MediaPoster } from './MediaPoster.js'
@@ -151,8 +152,9 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
 }
 
 function LoadingGrid() {
+  const { t } = useT()
   return (
-    <div aria-busy="true" aria-label="loading media library">
+    <div aria-busy="true" aria-label={t('a11y_loading_media_library')}>
       <div className="media-grid">
         {Array.from({ length: 12 }).map((_, i) => (
           <div className="flex flex-col gap-2" key={i}>
@@ -178,7 +180,7 @@ export function MediaLibraryPage() {
   // ⚠️ 只多一个 GET /api/v2/health（useHealth 不轮询，见其头注释），不引入 SSE：
   // 媒体库页是纯 HTTP 快照，没有活数据，加 SSE 是硬造需求（见页面头注释）。
   const { data: health } = useHealth()
-  const { t } = useT()
+  const { t, lang } = useT()
 
   if (loading && !data) {
     return (
@@ -194,7 +196,7 @@ export function MediaLibraryPage() {
       <Section>
         <EmptyState
           title={t('media_error_title')}
-          description={error}
+          description={localizeError(error, lang)}
           actions={
             <Button variant="secondary" onClick={reload}>
               {t('media_retry')}

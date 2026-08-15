@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
+import { localizeError, localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Switch } from '../../components/ui/switch.js'
 import { StepFooter } from './ui.js'
@@ -66,7 +67,7 @@ export function StepFreeSources({ status, patchStatus, onAdvance, onBack }: Wiza
       if (Object.keys(statusPatch).length > 0) patchStatus({ providers: { ...status.providers, ...statusPatch } })
       onAdvance()
     } catch (e) {
-      setSaveError(String(e))
+      setSaveError(localizeErrorValue(e, lang))
       setSaving(false)
     }
   }

@@ -29,6 +29,7 @@ import { EmptyState } from '../components/ui/empty-state.js'
 import type { Async } from '../api/hooks.js'
 import type { MediaRootDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
+import { localizeError } from '../lib/errorText.js'
 import { addedAgoLabel } from './text.js'
 import { DirBrowser } from './DirBrowser.js'
 import { RemoveRootDialog } from './RemoveRootDialog.js'
@@ -81,7 +82,7 @@ export function RootsManager({ roots }: Props) {
       <section className="settings-section">
         <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_roots_heading')}</span>
         <span className="font-mono text-[13px] leading-5 text-muted-foreground">
-          loading…
+          {t('common_loading')}
         </span>
       </section>
     )
@@ -92,7 +93,7 @@ export function RootsManager({ roots }: Props) {
         <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_roots_heading')}</span>
         <EmptyState
           isCompact
-          title={t('settings_roots_error_prefix') + roots.error}
+          title={t('settings_roots_error_prefix') + localizeError(roots.error, lang)}
           actions={
             <Button variant="secondary" onClick={roots.reload}>
               {t('settings_roots_retry_label')}

@@ -24,13 +24,14 @@ import { Button, buttonVariants } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import type { AuthSecurityDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { AuthField } from '../auth/AuthField.js'
 
 const MIN_PASSWORD_LEN = 10
 const maskKey = (key: string) => '••••••••' + key.slice(-4)
 
 export function SecuritySection() {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [data, setData] = useState<AuthSecurityDTO | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -38,7 +39,7 @@ export function SecuritySection() {
     let alive = true
     api.authSecurity()
       .then((d) => { if (alive) setData(d) })
-      .catch((e) => { if (alive) setError(t('settings_security_error_prefix') + String(e)) })
+      .catch((e) => { if (alive) setError(t('settings_security_error_prefix') + localizeErrorValue(e, lang)) })
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -126,8 +127,8 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
             <AlertDialogDescription>{t('settings_security_regen_confirm')}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            {/* Cancel 用字面量——i18n 表无此键，不为它加键（Task 26 铁规）。 */}
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            {/* Cancel 走 common_cancel（审计 P0-4）。 */}
+            <AlertDialogCancel>{t('common_cancel')}</AlertDialogCancel>
             <AlertDialogAction
               className={buttonVariants({ variant: 'destructive' })}
               disabled={busy}
@@ -148,7 +149,7 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
 }
 
 function ChangePasswordRow() {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -165,7 +166,7 @@ function ChangePasswordRow() {
       setCurrent('')
       setNext('')
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(localizeErrorValue(e, lang))
     } finally {
       setBusy(false)
     }

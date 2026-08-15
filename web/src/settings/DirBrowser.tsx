@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { breadcrumbSegments, joinDir } from './text.js'
 import { filterSystemDirs } from './dirBrowserUtils.js'
 
@@ -54,7 +55,7 @@ function PathBreadcrumb({ path, onNavigate }: { path: string; onNavigate: (p: st
 }
 
 export function DirBrowser({ startPath, onAdded }: Props) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [currentPath, setCurrentPath] = useState(startPath)
   const [dirs, setDirs] = useState<string[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
@@ -84,7 +85,7 @@ export function DirBrowser({ startPath, onAdded }: Props) {
       })
       .catch((e) => {
         if (ctrl.signal.aborted) return
-        setListError(String(e))
+        setListError(localizeErrorValue(e, lang))
         setDirs(null)
       })
       .finally(() => {
@@ -104,7 +105,7 @@ export function DirBrowser({ startPath, onAdded }: Props) {
       setAddedMsg(t('settings_dirbrowser_add_success'))
       onAdded(currentPath)  // R6：传递添加的路径给父级（触发防抖扫描）
     } catch (e) {
-      setAddError(String(e))
+      setAddError(localizeErrorValue(e, lang))
     } finally {
       setAdding(false)
     }
@@ -120,7 +121,7 @@ export function DirBrowser({ startPath, onAdded }: Props) {
 
       {loading ? (
         <span className="font-mono text-[13px] leading-5 text-muted-foreground">
-          loading…
+          {t('common_loading')}
         </span>
       ) : listError ? (
         // 不可读目录如实灰字 error（DESIGN.md §8：这是路况事实，不是告警——NAS 挂载权限拒绝

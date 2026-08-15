@@ -34,9 +34,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderBrowser(startPath: string, onAdded: () => void = vi.fn()) {
+function renderBrowser(startPath: string, onAdded: () => void = vi.fn(), lang: 'en' | 'zh' = 'en') {
   return render(
-    <I18nProvider>
+    <I18nProvider initialLang={lang}>
       <DirBrowser startPath={startPath} onAdded={onAdded} />
     </I18nProvider>,
   )
@@ -75,6 +75,15 @@ describe('DirBrowser：下钻 + 面包屑', () => {
     fireEvent.click(screen.getByText('media'))
     expect(await screen.findByText('tv')).toBeInTheDocument()
     expect(screen.getByText('movies')).toBeInTheDocument()
+  })
+
+  it('zh：不可读目录的中文原因来自 errorText 映射，不把英文技术串拼进中文前缀', async () => {
+    const fetchMock = mockFetchRouted([
+      { path: '/api/v2/fs/list', status: 400, body: { error: 'path is not readable (permission denied?)' } },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    renderBrowser('/mnt/locked', vi.fn(), 'zh')
+    expect(await screen.findByText('无法列出该目录：目录不可读（权限不足？）')).toBeInTheDocument()
   })
 
   it('不可读目录：灰字如实降级，不是红色告警', async () => {

@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { api } from '../api/client.js'
 import { AuthShell } from './AuthShell.js'
 import { AuthField } from './AuthField.js'
@@ -13,7 +14,7 @@ import { AuthField } from './AuthField.js'
 const MIN_PASSWORD_LEN = 10
 
 export function SetupWizard({ onDone }: { onDone: () => void }) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -29,7 +30,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
       const r = await api.authSetup(username, password)
       setApiKey(r.apiKey) // 一次性告知屏：唯一一次全显
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(localizeErrorValue(err, lang))
     } finally {
       setBusy(false)
     }

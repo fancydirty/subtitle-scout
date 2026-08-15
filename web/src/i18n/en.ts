@@ -18,6 +18,25 @@ export const en = {
   nav_settings: 'Settings',
   nav_logout: 'Log out',
 
+  // 通用 chrome（审计 P0-4）：Cancel/Save/Clear/loading 在四个破坏性确认框与五个加载态里
+  // 曾是字面量，中文界面因此出现英文按钮。这里统一收进词表。
+  common_cancel: 'Cancel',
+  common_save: 'Save',
+  common_clear: 'Clear',
+  common_confirm: 'Confirm',
+  common_loading: 'loading…',
+  common_offline: 'offline',
+
+  // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
+  a11y_side_nav: 'Side navigation',
+  a11y_breadcrumb: 'Breadcrumb',
+  a11y_dialog_close: 'Close',
+  a11y_skip_to_content: 'Skip to content',
+  a11y_loading_media_library: 'loading media library',
+  a11y_loading_media_detail: 'loading media detail',
+  a11y_loading_notifications: 'loading notifications',
+  topbar_loading: 'loading…',
+
   // Task ⑦ 占位页（Task ⑧⑩ 填肉后**只剩活动一个**）：说明"这页将来回答什么问题"。
   // **不描述还不存在的功能细节**——一句人话，等 Task ⑨ 填肉时这个键随之删除。
   placeholder_under_construction: 'Under construction',
@@ -189,6 +208,16 @@ export const en = {
   settings_error_prefix: "Couldn't load settings: ",
   settings_retry_label: 'Retry',
 
+  // ── Settings tab chrome（审计 P0-1/P0-3）───────────────────────────────
+  settings_tab_general: 'General',
+  settings_tab_providers: 'Providers',
+  settings_tab_media: 'Media',
+  settings_tab_security: 'Security',
+  settings_tab_advanced: 'Advanced',
+  settings_status_configured: '✓ Configured',
+  settings_status_unconfigured: '⚠ Not configured',
+  settings_status_locked: '🔒 Environment',
+
   // 行为区（BehaviorSection）——五项，逐项改动即时单键 PUT。
   settings_target_languages_label: 'Target subtitle language',
   settings_target_languages_description: 'The subtitle language to search for and download. Unset defaults to Chinese.',
@@ -209,8 +238,8 @@ export const en = {
 
   settings_trace_retention_label: 'Trace retention (days)',
   settings_trace_retention_note: 'Takes effect at the daily trace cleanup.',
-  settings_scan_interval_label: 'Scan interval (ms)',
-  settings_scan_interval_note: 'Takes effect on the next daemon tick.',
+  settings_scan_interval_label: 'Scan interval (minutes)',
+  settings_scan_interval_note: 'Takes effect on the next scan tick.',
 
   settings_ai_translate_label: 'AI subtitle translation',
   settings_ai_translate_note:
@@ -285,6 +314,7 @@ export const en = {
   login_submit: 'Log in',
   login_submitting: 'Signing in…',
   login_error_invalid: 'Incorrect username or password.',
+  login_error_throttled: 'Too many attempts — try again in a minute.',
   login_error_transport: "Can't reach the server.",
   login_forgot_prefix: 'Locked out? Reset from the CLI: ',
   // 鉴权门探测失败的连接错误屏。
@@ -396,6 +426,9 @@ export const en = {
   settings_engine_label: 'Engine',
   settings_engine_desc: 'Master switch for scanning, fetching and all automatic work.',
   settings_providers_title: 'Providers',
+  settings_provider_enable_label: 'Enable {name}',
+  settings_provider_no_api_key_note: 'No API key required — works out of the box',
+  settings_free_source_description: 'Chinese subtitle source',
   settings_provider_env_locked: 'Set by environment — locked',
   settings_provider_source_env: 'environment',
   settings_provider_source_db: 'database',
@@ -405,6 +438,16 @@ export const en = {
   settings_provider_cancel: 'Cancel',
   settings_provider_test: 'Test',
   settings_provider_last_test_ok: 'Last test passed',
+  // 密钥的人话标签（审计 P0-5）——设置页不再直接显示 env 变量名。
+  secret_tmdb_api_key: 'TMDB API key',
+  secret_assrt_token: 'ASSRT token',
+  secret_opensubtitles_api_key: 'OpenSubtitles API key',
+  secret_opensubtitles_username: 'OpenSubtitles username',
+  secret_opensubtitles_password: 'OpenSubtitles password',
+  secret_jimaku_api_key: 'Jimaku API key',
+  secret_translate_base_url: 'Base URL',
+  secret_translate_api_key: 'API key',
+  secret_translate_model: 'Model',
   settings_provider_last_test_fail: 'Last test failed',
   // Quota exhausted (settings/ProviderCard) — the answer to "why did assrt stop looking?".
   // Two channels (Carbon): the sentence says it in full, the hollow marker carries the shape.
@@ -428,6 +471,24 @@ export const en = {
   settings_zimuku_vision_clear_confirm_title: 'Clear vision fallback?',
   settings_zimuku_vision_clear_confirm_body: 'Template matching will still work. Vision LLM is only called when templates miss (rare).',
   settings_zimuku_vision_clear_action: 'Clear',
+
+  // AI 翻译卡（TranslateCard，审计 P0-2）——本卡曾整卡英文。
+  settings_translate_card_title: 'AI subtitle translation',
+  settings_translate_card_description: 'Auto-translate when no subtitle is found',
+  settings_translate_enable_label: 'Enable AI subtitle translation',
+  settings_translate_quota_note: 'Consumes LLM quota',
+  settings_translate_model_label: 'Model',
+  settings_translate_model_default: 'Follow default LLM',
+  settings_translate_model_dedicated: 'Dedicated model',
+  settings_translate_current_model_prefix: 'Current:',
+  settings_translate_shared_with_agent: 'shared with agent',
+  settings_translate_all_fields_required: 'All three fields are required',
+  settings_translate_badge_off: 'Off',
+  settings_translate_badge_enabled: '✓ Enabled',
+  settings_translate_badge_dedicated: '✓ Dedicated model',
+  settings_translate_badge_incomplete: '⚠ Incomplete',
+  settings_translate_dedicated_confirm_title: 'Switch to default model?',
+  settings_translate_dedicated_confirm_body: 'This clears the dedicated model configuration. Are you sure?',
 
   settings_system_rerun_wizard: 'Re-run setup wizard',
   settings_system_rerun_wizard_desc: 'Walk through bootstrap again. Steps configured via environment stay locked.',

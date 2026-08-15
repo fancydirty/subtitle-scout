@@ -20,6 +20,24 @@ export const zh = {
   nav_settings: '设置',
   nav_logout: '登出',
 
+  // 通用 chrome（审计 P0-4）：与 en.ts 同键。
+  common_cancel: '取消',
+  common_save: '保存',
+  common_clear: '清除',
+  common_confirm: '确认',
+  common_loading: '加载中…',
+  common_offline: '未连接',
+
+  // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
+  a11y_side_nav: '侧边导航',
+  a11y_breadcrumb: '面包屑',
+  a11y_dialog_close: '关闭',
+  a11y_skip_to_content: '跳到主要内容',
+  a11y_loading_media_library: '正在加载媒体库',
+  a11y_loading_media_detail: '正在加载媒体详情',
+  a11y_loading_notifications: '正在加载通知',
+  topbar_loading: '加载中…',
+
   // Task ⑦ 占位页（Task ⑧⑩ 填肉后**只剩活动一个**）。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
   placeholder_under_construction: '施工中',
 
@@ -142,6 +160,16 @@ export const zh = {
   settings_error_prefix: '无法加载设置：',
   settings_retry_label: '重试',
 
+  // ── Settings tab chrome（审计 P0-1/P0-3）───────────────────────────────
+  settings_tab_general: '通用',
+  settings_tab_providers: '字幕源',
+  settings_tab_media: '守备目录',
+  settings_tab_security: '安全',
+  settings_tab_advanced: '高级',
+  settings_status_configured: '✓ 已配置',
+  settings_status_unconfigured: '⚠ 未配置',
+  settings_status_locked: '🔒 环境变量',
+
   settings_target_languages_label: '目标字幕语言',
   settings_target_languages_description: '要搜索和下载的字幕语言。未设置时默认为中文。',
   settings_target_languages_save_label: '保存',
@@ -160,8 +188,8 @@ export const zh = {
 
   settings_trace_retention_label: '痕迹保留天数',
   settings_trace_retention_note: '每日痕迹清理时生效。',
-  settings_scan_interval_label: '扫描间隔（毫秒）',
-  settings_scan_interval_note: '下一个守护进程心跳生效。',
+  settings_scan_interval_label: '扫描间隔（分钟）',
+  settings_scan_interval_note: '保存后，下一轮扫描生效。',
 
   settings_ai_translate_label: 'AI 字幕翻译',
   settings_ai_translate_note:
@@ -229,6 +257,7 @@ export const zh = {
   login_submit: '登录',
   login_submitting: '登录中…',
   login_error_invalid: '用户名或密码不正确。',
+  login_error_throttled: '尝试次数过多，请一分钟后再试。',
   login_error_transport: '无法连接服务器。',
   login_forgot_prefix: '被锁在门外？用 CLI 重置：',
   auth_connection_error_heading: '无法连接服务器',
@@ -331,6 +360,9 @@ export const zh = {
   settings_engine_label: '发动机',
   settings_engine_desc: '扫描、抓取与一切自动工作的总开关。',
   settings_providers_title: '字幕源',
+  settings_provider_enable_label: '启用 {name}',
+  settings_provider_no_api_key_note: '无需 API key，开箱即用',
+  settings_free_source_description: '中文源',
   settings_provider_env_locked: '由环境变量设置——锁定',
   settings_provider_source_env: '环境',
   settings_provider_source_db: '数据库',
@@ -340,6 +372,16 @@ export const zh = {
   settings_provider_cancel: '取消',
   settings_provider_test: '测试',
   settings_provider_last_test_ok: '上次测试通过',
+  // 密钥的人话标签（审计 P0-5）——设置页不再直接显示 env 变量名。
+  secret_tmdb_api_key: 'TMDB API 密钥',
+  secret_assrt_token: 'ASSRT token',
+  secret_opensubtitles_api_key: 'OpenSubtitles API 密钥',
+  secret_opensubtitles_username: 'OpenSubtitles 用户名',
+  secret_opensubtitles_password: 'OpenSubtitles 密码',
+  secret_jimaku_api_key: 'Jimaku API 密钥',
+  secret_translate_base_url: '接口地址',
+  secret_translate_api_key: 'API 密钥',
+  secret_translate_model: '模型',
   settings_provider_last_test_fail: '上次测试失败',
   // 配额耗尽（设置页 ProviderCard）——"为什么 assrt 不找了"的答案。
   // 双通道（Carbon）：句子本身把话说全，空心标记承担形状差异，颜色只是第三重。
@@ -363,6 +405,24 @@ export const zh = {
   settings_zimuku_vision_clear_confirm_title: '清除视觉兜底配置？',
   settings_zimuku_vision_clear_confirm_body: '模板匹配依然有效。视觉 LLM 仅在模板未命中时调用（罕见情况）。',
   settings_zimuku_vision_clear_action: '清除',
+
+  // AI 翻译卡（TranslateCard，审计 P0-2）——本卡曾整卡英文。
+  settings_translate_card_title: 'AI 字幕翻译',
+  settings_translate_card_description: '找不到字幕时自动翻译',
+  settings_translate_enable_label: '启用 AI 字幕翻译',
+  settings_translate_quota_note: '会消耗 LLM 配额',
+  settings_translate_model_label: '模型',
+  settings_translate_model_default: '跟随默认 LLM',
+  settings_translate_model_dedicated: '专用模型',
+  settings_translate_current_model_prefix: '当前：',
+  settings_translate_shared_with_agent: '与 agent 共用',
+  settings_translate_all_fields_required: '三个字段都必须填写',
+  settings_translate_badge_off: '关闭',
+  settings_translate_badge_enabled: '✓ 已开启',
+  settings_translate_badge_dedicated: '✓ 专用模型',
+  settings_translate_badge_incomplete: '⚠ 未配完整',
+  settings_translate_dedicated_confirm_title: '切回默认模型？',
+  settings_translate_dedicated_confirm_body: '这会清除专用模型配置。确定吗？',
 
   settings_system_rerun_wizard: '重跑设置向导',
   settings_system_rerun_wizard_desc: '重新走一遍启动配置。环境变量配置的步骤保持锁定。',
