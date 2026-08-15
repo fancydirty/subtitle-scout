@@ -16,8 +16,11 @@ export interface Run {
 export class RunsRepo {
   constructor(private db: ScoutDb) {}
 
+  /** 新架构（subtitleScheduler 路径）没有 jobs 表行——job_id 落 NULL。NULL 对 FK 列永远
+   * 合法（better-sqlite3 连接的 foreign_keys 默认 ON，见 db.ts openDb 的 pragma 论证——
+   * 非空假 id 才会撞 FK）。旧路径（runFindSubtitleWorkerTask，jobs claim-dispatch）仍传数字 id。 */
   insert(params: {
-    jobId: number
+    jobId: number | null
     startedAt: number
     finishedAt: number
     decision: string

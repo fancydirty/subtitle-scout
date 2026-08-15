@@ -16,6 +16,8 @@ import type { FindSubtitleTask, FindSubtitleTargetFact } from '../agent/findSubt
 import { traceBus } from '../core/traceBus.js'
 import { clusterDueNow, clusterEarliestRetryAt } from './backoffCluster.js'
 import { recordFound } from './notificationsRepo.js'
+import type { RunsRepo } from './runsRepo.js'
+import { capDetail } from './findSubtitleWorkerTask.js'
 
 export interface SubtitleQueueItem {
   workId: string
@@ -278,6 +280,11 @@ function resolvePath(item: SubtitleQueueItem, itemId: string | null, installedPa
   return null
 }
 
+/** runs.detail 里一个文件的人话标签：剧集用季集号（s1e2，与 itemId 的拼法同族），电影用文件名。 */
+function runsLabelOf(f: SubtitleQueueItem['files'][number]): string {
+  return f.season != null && f.episode != null ? `s${f.season}e${f.episode}` : f.filename
+}
+
 /** 跑一个作品的字幕任务（复用现有 findSubtitleWorker）。
  *  worker = makeFindSubtitleWorker({ model, adapters, cacheRoot, tmdb }) 的返回值
  *  （runFindSubtitleTask），直接调用，返回 batch report。
@@ -296,6 +303,11 @@ export async function runSubtitleWorkDir(
   worker: (task: FindSubtitleTask) => Promise<import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport>,
   item: SubtitleQueueItem,
   targetLanguage: string,
+  /** runs 记账（可观测性，2026-08-15 接线）。此前整条 v3 字幕轨对 runs 表**零写入**——唯一写方
+   *  是旧 jobs claim-dispatch 路径（runFindSubtitleWorkerTask），而生产 jobs=0，路径已死；后端
+   *  /api/v2/runs 端点还活着却永远返回空数组。可选依赖（同 findSubtitleWorkerTask 的 `runs?`
+   *  惯例）：缺席时不抛错、照常排空 trace 缓冲（防同 runKey 残留随时间无界增长），只是不落账。 */
+  runs?: Pick<RunsRepo, 'insert'>,
 ): Promise<import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport | null> {
   const task = buildSubtitleTask(item, targetLanguage)
   const runKey = `job-subtitle:${item.workId}`
@@ -416,6 +428,26 @@ export async function runSubtitleWorkDir(
   // B-1：run 前 snapshot 清缓冲（防 stale 事件污染反编造门）
   traceBus.snapshot(runKey)
 
+  // runs 记账体（词表与 detail 格式沿用 findSubtitleWorkerTask.recordRun 的既有口径——
+  // dashboard 时间线的 decision 词表不因新路径扩词）。快照惰性求值 + 只拍一次：一次调用可能
+  // 记多行（installed/no_safe_match/retry_later/identity 各一行），它们描述的是同一次 agent 跑。
+  // 🔴 traceJson 必须先于可选链求值（同 findSubtitleWorkerTask 的复审修复）：留在 insert 实参
+  // 位置的话，runs 缺席时可选链连实参求值一起短路，快照永不排空。快照必须发生在反编造门
+  // 的 peek（下方）之后——snapshot 有清空副作用，提前调会抽干 peek 赖以判读的缓冲。
+  const startedAt = now
+  let traceJsonCache: string | null | undefined
+  const traceJsonForThisRun = (): string | null => {
+    if (traceJsonCache === undefined) {
+      const events = traceBus.snapshot(runKey)
+      traceJsonCache = events.length > 0 ? JSON.stringify(events) : null
+    }
+    return traceJsonCache
+  }
+  const recordRun = (decision: string, detail: string): void => {
+    const traceJson = traceJsonForThisRun()
+    runs?.insert({ jobId: null, startedAt, finishedAt: Date.now(), decision, detail: capDetail(detail), journalPath: null, traceJson })
+  }
+
   let report: import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport
   try {
     report = await worker(task)
@@ -425,6 +457,7 @@ export async function runSubtitleWorkDir(
     const reason = isTimeout ? 'timeout' : String(e).slice(0, 100)
     for (const f of item.files) bump(f, reason)
     console.error(`[subtitle-scheduler] ${item.title} ${isTimeout ? '超时' : '抛错'}: ${reason}`)
+    recordRun('error', `${item.title} ${isTimeout ? '超时' : '抛错'}: ${reason}`)
     return null
   }
 
@@ -495,6 +528,9 @@ export async function runSubtitleWorkDir(
   const IMMEDIATE_RECHECK = 0
   const markInstalled = db.prepare('UPDATE files SET sub_retry_streak = 0, recheck_after = ?, sub_recheck_at = ?, updated_at = ? WHERE path = ?')
 
+  // runs 记账的标签累计（与下面的库回写在同一循环里攒，不从 report 二次推导——
+  // 记的必须是真的入账了的那部分，resolvePath 反解不出的条目不进 runs 冒充）
+  const installedLabels: string[] = []
   const coveredPaths = new Set<string>()
   for (const inst of report.installed) {
     // 归属反解按 path（C15）：电影与剧集同轨，不再有"只认 /sNeM"的正则。
@@ -503,6 +539,7 @@ export async function runSubtitleWorkDir(
   }
   for (const f of item.files) {
     if (coveredPaths.has(f.path)) {
+      installedLabels.push(runsLabelOf(f))
       markInstalled.run(now2 + DAY_MS, IMMEDIATE_RECHECK, now2, f.path)
       // ── R-F3：通知流水（通知页的持久化数据源）────────────────────────────────
       // 写入点与 SSE `found` 事件**同一口径**（daemonV2 在 runSubtitleWorkDir 返回后按
@@ -537,9 +574,14 @@ export async function runSubtitleWorkDir(
   // 叙事与告警**，不再影响状态与计数——编造与真没找到都是"这一轮没拿到字幕"，
   // 都该计数+退避。旧实现让编造反而"不计数"，等于奖励撂挑子（违背 R9）。
   const noSafePaths = new Set<string>()
+  const noMatchLabels: string[] = []
   for (const nsm of report.no_safe_match) {
     const p = resolvePath(item, nsm.itemId)
-    if (p) noSafePaths.add(p)
+    if (p) {
+      noSafePaths.add(p)
+      const f = item.files.find(x => x.path === p)
+      if (f) noMatchLabels.push(`${runsLabelOf(f)}(${nsm.reason})`)
+    }
   }
   if (report.no_safe_match.length > 0) {
     const reason = hasSearchEvidence ? 'no-match' : 'fabricated-no-match'
@@ -554,11 +596,15 @@ export async function runSubtitleWorkDir(
   // retry_later：**源站拒绝回答**（限流/配额耗尽/5xx/key 被拒）。走 bump 的 `'unanswered'`
   // 档——退避照写（明天），但**不吃 sub_attempt 额度**，只攒 sub_retry_streak；连续满
   // RETRY_LATER_STREAK_CAP 轮才折算一次额度。论证见 bump 头注释与该常量的注释。
+  const retryLabels: string[] = []
   for (const rl of report.retry_later) {
     const p = resolvePath(item, rl.itemId)
     if (!p) continue
     const f = item.files.find(x => x.path === p)
-    if (f) bump(f, 'retry-later', 'unanswered')
+    if (f) {
+      retryLabels.push(runsLabelOf(f))
+      bump(f, 'retry-later', 'unanswered')
+    }
   }
 
   // B-2：无结局文件（不在任何桶）→ 回写退避，不能残留 needs=1 让它同轮被重选。
@@ -581,6 +627,34 @@ export async function runSubtitleWorkDir(
     // 补"已排下轮复核"：装盘与观察的衔接靠 sub_recheck_at 被拉到立即到点（见 markInstalled
     // 的论证）。不说这句的话，排障的人看到"等扫描确认"会以为要等 7 天——那正是本条修的缺陷。
     console.error(`[subtitle-scheduler] installed ${coveredCount}/${item.files.length} sidecars for ${item.title}（已排下轮复核，等扫描确认 / R24）`)
+  }
+
+  // ── runs 落账：按非空桶各记一行（词表沿用 dashboard 时间线口径，同
+  //    findSubtitleWorkerTask 的 recordRun 调用面——那里有每条格式的来历）。
+  if (installedLabels.length > 0) {
+    recordRun('installed', `${installedLabels.length} 集入账: ${installedLabels.join(', ')}`)
+  }
+  if (noMatchLabels.length > 0) {
+    // 零 search_source 证据时的判无在本路径不整桶挪去 retry（与旧路径的处置不同），
+    // 但 runs 上必须如实标注——审计的人看到"判无"前得先知道它可能是编造的。
+    const note = hasSearchEvidence ? '' : '（零 search_source 证据，疑编造）'
+    recordRun('no_safe_match', `${noMatchLabels.length} 集判无${note}: ${noMatchLabels.join('; ')}`)
+  }
+  if (retryLabels.length > 0) {
+    recordRun('retry_later', `${retryLabels.length} 集待重试: ${retryLabels.join(', ')}`)
+  }
+  // agent 识别结论单独一行（同旧路径：dashboard 时间线可见 agent 每轮识别出了什么/为什么识别不出）
+  if (report.identity) {
+    if (report.identity.outcome === 'identified') {
+      recordRun(
+        'identity',
+        `agent 识别结论：tmdb:${report.identity.tmdbId} (isTv=${report.identity.isTv}, ` +
+          `season=${report.identity.season}, episode=${report.identity.episode})；` +
+          `名称证据：${report.identity.nameEvidence}；结构证据：${report.identity.structureEvidence}`,
+      )
+    } else {
+      recordRun('identity_unidentified', `agent 未能识别：${report.identity.reason}`)
+    }
   }
   return report
 }

@@ -33,7 +33,7 @@ function mkArgs(over: Record<string, any> = {}) {
       bootTimeMs: 500,
       dbMaintenance: vi.fn(),
       sweepWriteProbes: vi.fn(() => 0),
-      runs: { pruneTraces: vi.fn(() => 0) },
+      runs: { pruneTraces: vi.fn(() => 0), insert: vi.fn() },
       traceRetentionDays: () => 30,
       preTick: async () => {},
       workPermitted: () => true,

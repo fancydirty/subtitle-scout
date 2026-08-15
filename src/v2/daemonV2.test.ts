@@ -12,6 +12,8 @@ import { PARSER_VERSION } from './scanner.js'
 // 用真实队列函数做断言，不在测试里复述工作台谓词——复述等于测试自己也维护一份实现，
 // 两份一漂移就是假绿（C27 这个 bug 的核心恰恰是"谓词组合起来构成卡死态"）。
 import { listSubtitleQueue, subtitleJobId, runSubtitleWorkDir, RETRY_LATER_STREAK_CAP } from './subtitleScheduler.js'
+import { RunsRepo } from './runsRepo.js'
+import { traceBus } from '../core/traceBus.js'
 // C21 用例 7b 端到端：用真实的抓源腿 locate 验"回填的产出真能被消费方读出来"，
 // 而不是只断言列被写上（列值断言在"写了个 {} "的实现下同样为真）。
 import { makeDbLocate } from '../cli/fetchSourceSub.js'
@@ -2714,6 +2716,124 @@ describe('ScoutDaemonV2 · 装盘→观察的衔接（worker 装完盘，下一�
     const queued = listSubtitleQueue(db, ['/media'], Date.now() + 30 * DAY)
       .flatMap(q => q.files.map(f => f.path))
     expect(queued).not.toContain(V)
+    db.close()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runSubtitleWorkDir · runs 记账（可观测性接线，2026-08-15）
+//
+// 背景（生产实测）：v3 字幕轨对 runs 表**零写入**——唯一写方是已死的 jobs claim-dispatch
+// 路径（runFindSubtitleWorkerTask，生产 jobs=0），而后端 /api/v2/runs 端点还活着、
+// dashboard 的决策史/trace 回放都指着这张表。每个作品跑完的"选了谁、为什么没找到"
+// 在生产上无处落账。这组锁的是：账真的落了、词表沿用旧路径口径、且不改变既有回写行为。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('runSubtitleWorkDir · runs 记账', () => {
+  const E1 = '/media/Show/S01E01.mkv'
+  const E2 = '/media/Show/S01E02.mkv'
+  const E3 = '/media/Show/S01E03.mkv'
+
+  function mkItem() {
+    return {
+      workId: 'tmdb:42', title: 'Show', originalTitle: null, year: null, overview: null,
+      chineseTitles: [], mediaType: 'tv',
+      files: [
+        { path: E1, filename: 'S01E01.mkv', season: 1, episode: 1, dir: '/media/Show', durationSec: 1440, embeddedLangs: null },
+        { path: E2, filename: 'S01E02.mkv', season: 1, episode: 2, dir: '/media/Show', durationSec: 1440, embeddedLangs: null },
+        { path: E3, filename: 'S01E03.mkv', season: 1, episode: 3, dir: '/media/Show', durationSec: 1440, embeddedLangs: null },
+      ],
+    }
+  }
+
+  function seedThree(db: ReturnType<typeof openDb>): void {
+    for (const p of [E1, E2, E3]) seedRow(db, p)
+  }
+
+  it('🔴 按非空桶各记一行（词表沿用、job_id=NULL、detail 带季集号与判词、编造判无如实标注）', async () => {
+    const db = openDb(':memory:')
+    seedThree(db)
+    const runs = new RunsRepo(db)
+    const report = {
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: '/media/Show/S01E01.zh-Hans.srt', installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: 'ok' }],
+      no_safe_match: [{ itemId: 'tmdb:42/s1e2', reason: '搜遍了没有' }],
+      retry_later: [{ itemId: 'tmdb:42/s1e3', reason: '429' }],
+      hardsub_assumed: [],
+      identity: { outcome: 'identified', tmdbId: '42', isTv: true, season: 1, episode: null, nameEvidence: '目录名吻合', structureEvidence: '季表吻合' },
+    }
+    await runSubtitleWorkDir(db, (async () => report) as any, mkItem() as any, 'zh', runs)
+
+    const rows = db.prepare('SELECT job_id, decision, detail, trace_json FROM runs ORDER BY id').all() as any[]
+    expect(rows.map(r => r.decision)).toEqual(['installed', 'no_safe_match', 'retry_later', 'identity'])
+    // 新路径没有 jobs 表行——job_id 落 NULL（非空假 id 会撞 FK）
+    expect(rows.every(r => r.job_id === null)).toBe(true)
+    expect(rows[0].detail).toContain('s1e1')
+    expect(rows[1].detail).toContain('s1e2')
+    expect(rows[1].detail).toContain('搜遍了没有')
+    // trace 里零 search_source（本用例没推事件）——判无不许冒充真判无
+    expect(rows[1].detail).toContain('疑编造')
+    expect(rows[2].detail).toContain('s1e3')
+    expect(rows[3].detail).toContain('tmdb:42')
+    // 没推 trace 事件 → trace_json 落 null（不存 '[]' 噪音，同 RunsRepo.insert 的注释约定）
+    expect(rows.every(r => r.trace_json === null)).toBe(true)
+    db.close()
+  })
+
+  it('🔴 worker 抛错 → error 行，失败轨照常回写（记账不许吞掉既有行为）', async () => {
+    const db = openDb(':memory:')
+    seedThree(db)
+    const runs = new RunsRepo(db)
+    await runSubtitleWorkDir(db, (async () => { throw new Error('boom') }) as any, mkItem() as any, 'zh', runs)
+
+    const rows = db.prepare('SELECT decision, detail FROM runs').all() as any[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].decision).toBe('error')
+    expect(rows[0].detail).toContain('boom')
+    // B-3 catch-all 不因 runs 接线而变：三个文件的退避都写上了
+    const backed = db.prepare('SELECT COUNT(*) c FROM files WHERE recheck_after IS NOT NULL').get() as { c: number }
+    expect(backed.c).toBe(3)
+    db.close()
+  })
+
+  it('🔴 runs 缺席 → 不抛错、库回写照常，trace 缓冲仍被排空（可选依赖的排空不落账语义）', async () => {
+    const db = openDb(':memory:')
+    seedThree(db)
+    const runKey = 'job-subtitle:tmdb:42'
+    const report = {
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: '/media/Show/S01E01.zh-Hans.srt', installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: 'ok' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    }
+    await runSubtitleWorkDir(db, async () => {
+      traceBus.publish({ runKey, seq: 1, tool: 'search_source', argsSummary: '{}', resultSummary: '', tookMs: 1, at: Date.now() })
+      return report as any
+    }, mkItem() as any, 'zh')   // ← 刻意不传第 5 参
+
+    expect((db.prepare('SELECT COUNT(*) c FROM runs').get() as { c: number }).c).toBe(0)
+    expect(traceBus.snapshot(runKey)).toEqual([])          // 排空了（防残留随 runKey 累积）
+    expect(recheckAtOf(db, E1)).toBe(0)                     // 装盘回写照常（立即复核哨兵）
+    db.close()
+  })
+
+  it('🔴 trace 事件挂到同一 run 的每一行（快照只拍一次；事后缓冲已空）', async () => {
+    const db = openDb(':memory:')
+    seedThree(db)
+    const runs = new RunsRepo(db)
+    const runKey = 'job-subtitle:tmdb:42'
+    const report = {
+      installed: [{ itemId: 'tmdb:42/s1e1', installedPath: '/media/Show/S01E01.zh-Hans.srt', installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: 'ok' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      identity: { outcome: 'identified', tmdbId: '42', isTv: true, season: 1, episode: null, nameEvidence: 'n', structureEvidence: 's' },
+    }
+    await runSubtitleWorkDir(db, async () => {
+      traceBus.publish({ runKey, seq: 1, tool: 'search_source', argsSummary: '{"queries":["Show"]}', resultSummary: '3 hits', tookMs: 5, at: Date.now() })
+      traceBus.publish({ runKey, seq: 2, tool: 'download_candidate', argsSummary: '{}', resultSummary: 'ok', tookMs: 9, at: Date.now() })
+      return report as any
+    }, mkItem() as any, 'zh', runs)
+
+    const rows = db.prepare('SELECT decision, trace_json FROM runs ORDER BY id').all() as any[]
+    expect(rows.map(r => r.decision)).toEqual(['installed', 'identity'])
+    expect(rows[0].trace_json).toBe(rows[1].trace_json)    // 同一次 agent 跑，同一份快照
+    expect(JSON.parse(rows[0].trace_json)).toHaveLength(2)
+    expect(traceBus.snapshot(runKey)).toEqual([])          // 拍完即排空
     db.close()
   })
 })

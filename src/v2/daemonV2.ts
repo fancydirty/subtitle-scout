@@ -16,6 +16,7 @@ import { toMediaFileRow, isScannable, PARSER_VERSION } from './scanner.js'
 import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, subtitleJobId, type SubtitleQueueItem } from './subtitleScheduler.js'
+import type { RunsRepo } from './runsRepo.js'
 import { judgeSubtitle, judgeTranslatable, type TranslatableDeps } from './subtitleJudge.js'
 import { tagsForLanguage } from '../agent/languages.js'
 import { findExternalSidecar, listSidecarLanguages } from '../files/sidecar.js'
@@ -333,9 +334,11 @@ export interface DaemonV2Deps {
   sweepWriteProbes?: () => number
   /** trace 快照保留天数（惰性读 settings，默认 30）。 */
   traceRetentionDays?: () => number
-  /** trace 修剪的执行体（RunsRepo）。runs 行本身保留（决策史不删），只把过保留期的
-   *  trace_json 置 NULL。与 traceRetentionDays 是一对：只有两者都注入才启用这一支。 */
-  runs?: { pruneTraces: (beforeMs: number) => number }
+  /** trace 修剪 + runs 记账的执行体（RunsRepo）。runs 行本身保留（决策史不删），只把过保留期的
+   *  trace_json 置 NULL——与 traceRetentionDays 是一对：只有两者都注入才启用修剪支。
+   *  2026-08-15 起 insert 也在_pick 里：字幕工作台每个作品跑完往 runs 落一行决策史
+   *  （runSubtitleWorkDir 的第 5 参），否则 v3 轨对 runs 表零写入、/api/v2/runs 恒空。 */
+  runs?: Pick<RunsRepo, 'pruneTraces' | 'insert'>
   /** 每拍最先跑（"照旧 DaemonDeps 形态"的措辞来源见本节开头的运维器官段落）：cmdWatch 接
    *  secrets_version watcher——wizard 把密钥
    *  落库后同进程热重建长命客户端，容器零重启。放在维护层而不是巡检里：巡检一天才一次，
@@ -873,7 +876,7 @@ export class ScoutDaemonV2 {
       const jobId = subtitleJobId(item.workId)
       this.inFlightStagingJobIds.add(jobId)
       try {
-        const report = await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage)
+        const report = await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage, this.deps.runs)
         // R-F10 found ①：**找到并装上了字幕**——这一条就是通知页的数据源，也是整条通道里
         // 用户唯一真正想要的那个信号（"找到了什么"）。
         //

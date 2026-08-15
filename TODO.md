@@ -1,6 +1,6 @@
 # Subtitle Scout 待办事项
 
-**更新日期**: 2026-07-26（路 A Phase 1 + 1b 完成，两轮子代理审计修完，识别评估 11/11）
+**更新日期**: 2026-08-15（Phase 2 完成，ingest 整条链已删）
 
 ---
 
@@ -35,14 +35,16 @@
 
 ## 📋 下一步
 
-**Phase 2: 删 rescue agent + 机械降级 + 清 parked 行**
-- [ ] 删 rescueWorker/rescueWorkerTask/rescueSkill/rescueWorker.tools + 测试 + daemon 调度
-- [ ] resolveToTmdb 不再写库当真相（评估：路 A 下 agent 已能纠错，机械降级的收益还有多少）
-- [ ] 清空 parked_paths 表（旧架构产物）
+**Phase 2 已完成** ✅
+- ✅ 删 rescue agent（commit `e889e2a`，2026-07-27）
+- ✅ resolveToTmdb 已不存在（代码里搜不到）
+- ✅ ingest 整条链已删（commit `10bd7c5`，2026-08-13，净 -4698 行）
+- ⏳ parked_paths 表还在（仍被 `cli/unidentifiedFindSubtitle.ts` 读写，属"保留待裁"的 handleWorkerTask 族，见 10bd7c5 的四张表评估）
 
-**审计遗留（低优先级，已记录未修）**
-- [ ] movie 分支缺端到端闭环测试（TV 有；movie 的 ingest 路径有 placeholder upsert 这个结构差异）
-- [ ] 可观测性：agent 纠错次数/拒写次数只能手写 SQL，无 dashboard 面板、无 CLI 查询
+**Phase 3: 可观测性与测试补全**
+- [x] runs 记账接线（2026-08-15，生产实测发现）：v3 字幕轨对 runs 表**零写入**——唯一写方是已死的 jobs claim-dispatch 路径，而 `/api/v2/runs` 端点还活着。已把 `RunsRepo.insert` 接进 `runSubtitleWorkDir`（按非空桶各记一行，词表沿用，trace_json 一次快照挂多行，job_id=NULL）。测试：daemonV2.test.ts「runSubtitleWorkDir · runs 记账」4 条。
+- [ ] runs 的前端消费：新前端四 tab（activity/notifications/media/settings）无任何页面读 runs——数据可经 `/api/v2/runs`（管理员 API key）curl，但活动页只有"正在跑/排队"，没有历史/trace 回放 UI。README 已改为如实描述。
+- [ ] subtitles 表处置待裁决：item_id 域指向 episodes/movies（commit 10bd7c5 已定性"结构上不可填"），新架构的覆盖事实在 files.sidecar_langs——这张表与 runs 的旧 join 口径已死。
 - [ ] identityEval 里那条 mtime 伪造的闭环测试是冗余的（真正load-bearing 的是生产条件锁），可合并
 - [ ] 回滚窄窗口：v24 后回滚→期间人工认领→滚回，那条人工认领会失去 source 保护（三步齐全才命中，已在 db.ts 注释标注）
 
@@ -59,8 +61,8 @@
 
 - **auto research**（战役 12 沉淀 + 本轮十轮验证）：fail-closed，FAIL 是诊断原料；模型会虚构失败解释，只信数据不信叙述；每轮=暴露→根因→修→复验。本轮的教训：**改 skill 措辞会挪动模型行为**，一个 case 修好可能让另一个退化，必须每轮全量复跑；措辞加三四轮还拦不住的，说明是机制问题，该改 schema/字段设计而不是继续加话。
 - **假测试的形状**：为了让测试通过而制造生产不存在的前提（伪造 mtime、手动插一条生产不可能存在的 parked 行）。判据：破坏实现的哪一行会让它红？想不出就是假的。
-- **`identityEval.live.test.ts` 是识别能力的回归锁**：模型升级/skill 改动后必跑（`IDENTITY_EVAL_LIVE=1 npx vitest run src/agent/identityEval.live.test.ts`）。它自带 ground truth 漂移检测，TMDB 数据变了会明确报出来，不会伪装成模型退化。
+- **识别能力回归锁的历史口径**：`identityEval.live.test.ts`（`IDENTITY_EVAL_LIVE=1` 开门跑，真模型+真 TMDB，自带 ground truth 漂移检测）曾承担此职，**该文件已随 agent-first 识别架构重构删除**。识别质量的现行守卫是 `src/agent/skills/identifyMediaSkill.test.ts` 的措辞锚点锁 + 离线 eval（`findSubtitleWorker.eval.test.ts`）；若重建 live 评估，沿用该方法论（fail-closed、全量复跑、漂移检测不伪装成模型退化）。
 
 ---
 
-**下次更新**: Phase 2 开工时
+**下次更新**: Phase 3 开工时

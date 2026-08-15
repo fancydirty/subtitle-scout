@@ -45,7 +45,7 @@ export interface WatchWiringArgs {
   dbMaintenance: () => void
   /** 已预绑定守备目录的写探针清扫闭包。 */
   sweepWriteProbes: () => number
-  runs: { pruneTraces: (beforeMs: number) => number }
+  runs: { pruneTraces: (beforeMs: number) => number; insert: import('../v2/runsRepo.js').RunsRepo['insert'] }
   traceRetentionDays: () => number
 
   // ── 切换时同样不许丢的（与 4 器官同一类伤害）──
