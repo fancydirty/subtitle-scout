@@ -204,10 +204,10 @@ describe('TriagePage 的雪藏保留（2026-08-13 裁决的机器可查载体）
       '④ 的写入面扫描器抓不到任何东西——遍历或 codeOf 坏了，那条墓碑锁正在假绿',
     ).toBeGreaterThan(0)
 
-    // ④读取面扫描器：用一个**确实还在**的 hook 当靶子（useWorkflowPending → AppShell）。
+    // ④读取面扫描器：用一个**确实还在**的 hook 当靶子（useMediaLibraryDetail → AppShell）。
     const pendingReaders = productionSources(WEB_SRC, ['.ts', '.tsx'])
       .filter((f) => !f.includes('/api/'))
-      .filter((f) => /useWorkflowPending\s*\(/.test(codeOf(f)))
+      .filter((f) => /useMediaLibraryDetail\s*\(/.test(codeOf(f)))
       .map((f) => relative(WEB_SRC, f))
     expect(pendingReaders,
       '④ 的读取面扫描器抓不到任何东西——那条墓碑锁正在假绿',

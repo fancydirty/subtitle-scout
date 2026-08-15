@@ -5,7 +5,7 @@ import { render, screen, fireEvent, cleanup, within } from '@testing-library/rea
 import { I18nProvider } from '../i18n/useT.js'
 import { ProviderCard } from './ProviderCard.js'
 import { TranslateCard } from './TranslateCard.js'
-import type { ProviderRowDTO, SettingsDTO, DeploySettingsDTO } from '../api/types.js'
+import type { ProviderRowDTO, SettingsDTO } from '../api/types.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
@@ -42,7 +42,6 @@ describe('TranslateCard 专用模型字段人话标签', () => {
           translate={translate}
           llm={llm}
           settings={{ ai_translate_enabled: 'true' } as SettingsDTO}
-          deploy={{ secrets: { TRANSLATE_API_KEY: { present: false, tail: '' } }, nonSecrets: {} } as DeploySettingsDTO}
           onUpdated={vi.fn()}
           reload={vi.fn()}
         />

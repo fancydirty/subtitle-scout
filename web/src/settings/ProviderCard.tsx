@@ -103,14 +103,6 @@ function ProviderSecretField({ secret, editing, draft, onDraft }: {
   return (
     <>
       <span className="text-[11px] leading-4">{secret.set ? secret.masked ?? '••••' : t('settings_provider_not_set')}</span>
-      {secret.set && (
-        <span className="text-[11px] leading-4 text-muted-foreground">
-          {secret.source === 'env' ? t('settings_provider_source_env') : t('settings_provider_source_db')}
-        </span>
-      )}
-      {secret.source === 'env' && (
-        <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_provider_env_locked')}</span>
-      )}
     </>
   )
 }
@@ -127,8 +119,8 @@ export function ProviderCard({ row, reload }: { row: ProviderRowDTO; reload: () 
   // 否则 allConfigured → configured；else unconfigured。env 优先于 configured 是有意的——
   // env 源卡片即使全 set 也不可编辑，显示 "configured" 会误导用户以为可管理。
   const allConfigured = row.secrets.length > 0 && row.secrets.every((s) => s.set)
-  const hasEnvSource = row.secrets.some((s) => s.source === 'env')
-  const status = hasEnvSource ? 'locked' : allConfigured ? 'configured' : 'unconfigured'
+  // 配置来源（env/db）是实现细节，不给人类看：配齐了就是已配置。
+  const status = allConfigured ? 'configured' : 'unconfigured'
 
   async function onSave() {
     setBusy(true); setError(null)

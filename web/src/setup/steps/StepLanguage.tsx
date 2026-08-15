@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
-import { localizeError, localizeErrorValue } from '../../lib/errorText.js'
+import { localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Input } from '../../components/ui/input.js'
 import { cn } from '../../lib/utils.js'

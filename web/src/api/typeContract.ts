@@ -107,8 +107,6 @@ export type C_RunHistoryDTO = Assert<Satisfies<BeApiV2.RunHistoryDTO, Fe.RunHist
 // `WorkflowPendingSeriesDTO` / `WorkflowPendingMovieDTO` 的对拍随两个接口本身于
 // 2026-08-13 删除（WorkflowPendingDTO 的 series[]/movies[]/parked 三字段零消费者，
 // 前后端同批清理）。这不是"漏写对拍"，是被对拍的类型两侧都已不存在。
-export type C_WorkflowFreshnessDTO = Assert<Satisfies<BeApiV2.WorkflowFreshnessDTO, Fe.WorkflowFreshnessDTO>>
-export type C_WorkflowPendingDTO = Assert<Satisfies<BeApiV2.WorkflowPendingDTO, Fe.WorkflowPendingDTO>>
 export type C_DispatchReceiptsDTO = Assert<Satisfies<BeApiV2.DispatchReceiptsDTO, Fe.DispatchReceiptsDTO>>
 export type C_WorkflowPassDTO = Assert<Satisfies<BeApiV2.WorkflowPassDTO, Fe.WorkflowPassDTO>>
 // 🔴 `WorkflowRunningWorkerDTO` / `WorkflowRecentRunDTO` / `WorkflowHeldJobDTO` /
@@ -122,8 +120,6 @@ export type C_WorkflowPassDTO = Assert<Satisfies<BeApiV2.WorkflowPassDTO, Fe.Wor
 //    有人必须来看一眼、并做出"跟着删"还是"标注为死类型"的决定，而不是静默漂移。
 export type C_RunTraceDTO = Assert<Satisfies<BeApiV2.RunTraceDTO, Fe.RunTraceDTO>>
 export type C_DormantTaskDTO = Assert<Satisfies<BeApiV2.DormantTaskDTO, Fe.DormantTaskDTO>>
-export type C_DeploySecretDTO = Assert<Satisfies<BeApiV2.DeploySecretDTO, Fe.DeploySecretDTO>>
-export type C_DeploySettingsDTO = Assert<Satisfies<BeApiV2.DeploySettingsDTO, Fe.DeploySettingsDTO>>
 export type C_SettingsDTO = Assert<Satisfies<BeApiV2.SettingsDTO, Fe.SettingsDTO>>
 /** 设置键白名单：前端手写了九个字面量，后端是 `typeof SETTINGS_KEYS[number]`。
  *  这一条**双向**断言（罕见的例外，理由充分）：SettingsDTO 是
@@ -272,7 +268,6 @@ export type C_MediaLibraryWorkDTO = Assert<Satisfies<BeMediaLibrary.MediaLibrary
 //  · `AuthStatusDTO` / `AuthSecurityDTO`
 //                                 —— server.ts 的 auth 端点**直接 res.json 字面量**，
 //                                    没有具名 interface。**发现但没修**，见报告。
-//  · `FsListDTO`                  —— `listMediaSubdirs` 的成功分支是内联返回类型，
 //                                    且它是个 union（成功 {dirs} / 失败 {error}）。
 //  · `PutSecretResultDTO`         —— 同 auth，端点内联字面量。
 //  · `WaveformPeaksResponse`      —— 端点内联字面量（波形 peaks）。

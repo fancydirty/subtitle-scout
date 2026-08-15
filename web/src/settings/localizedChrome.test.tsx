@@ -10,7 +10,7 @@ import { ProviderToggleCard } from './ProviderToggleCard.js'
 import { TranslateCard } from './TranslateCard.js'
 import { ZimukuVisionCard } from './ZimukuVisionCard.js'
 import { RemoveRootDialog } from './RemoveRootDialog.js'
-import type { ProviderRowDTO, SettingsDTO, DeploySettingsDTO } from '../api/types.js'
+import type { ProviderRowDTO, SettingsDTO } from '../api/types.js'
 import * as hooks from '../api/hooks.js'
 import { api } from '../api/client.js'
 
@@ -20,26 +20,24 @@ describe('SettingsCard 状态徽标', () => {
   it.each([
     ['configured', '✓ 已配置'],
     ['unconfigured', '⚠ 未配置'],
-    ['locked', '🔒 环境变量'],
   ] as const)('%s → zh 徽标', (status, label) => {
     render(<I18nProvider initialLang="zh"><SettingsCard title="X" status={status}>b</SettingsCard></I18nProvider>)
     expect(screen.getByText(label)).toBeInTheDocument()
   })
 })
 
-describe('SettingsTabsPage 五 tab chrome', () => {
+describe('SettingsTabsPage 四 tab chrome', () => {
   function mockHooks(roots: number) {
     vi.spyOn(hooks, 'useSettings').mockReturnValue({ data: { ai_translate_enabled: 'false' } as never, loading: false, error: null, reload: vi.fn() })
-    vi.spyOn(hooks, 'useDeploySettings').mockReturnValue({ data: null, loading: false, error: null, reload: vi.fn() })
     vi.spyOn(hooks, 'useRoots').mockReturnValue({ data: Array(roots).fill({ path: '/x' }), loading: false, error: null, reload: vi.fn() })
     vi.spyOn(hooks, 'useSetupProviders').mockReturnValue({ data: { providers: [] }, loading: false, error: null, reload: vi.fn() })
     vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({ data: null, loading: false, error: null, reload: vi.fn() })
   }
 
-  it('zh：五个 tab 与未配置徽标全中文，不出现旧英文 chrome', () => {
+  it('zh：四个 tab 与未配置徽标全中文，不出现旧英文 chrome', () => {
     mockHooks(0)
     render(<I18nProvider initialLang="zh"><SettingsTabsPage /></I18nProvider>)
-    for (const name of ['通用', '字幕源', '守备目录', '安全', '高级']) {
+    for (const name of ['通用', '字幕源', '媒体目录', '安全']) {
       expect(screen.getByRole('tab', { name: new RegExp(name) })).toBeInTheDocument()
     }
     expect(screen.getByText('⚠ 未配置')).toBeInTheDocument()
@@ -77,7 +75,6 @@ function renderTranslate(settings: SettingsDTO) {
         translate={TRANSLATE_ROW}
         llm={LLM_ROW}
         settings={settings}
-        deploy={{ secrets: { TRANSLATE_API_KEY: { present: false, tail: '' } }, nonSecrets: {} } as DeploySettingsDTO}
         onUpdated={vi.fn()}
         reload={vi.fn()}
       />

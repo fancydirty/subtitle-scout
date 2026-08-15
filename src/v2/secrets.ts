@@ -29,7 +29,19 @@ export interface ResolvedSecret {
   source: SecretSource
 }
 
-/** env（非空）> db > none。dbGet 只读 `secret:<name>` 的值（不存在返回 null）。 */
+/** 设置页唯一来源：只读 settings 表，不再看 env。
+ *  （2026-08-15 用户裁决：能设置页里配置的就不能走环境变量。）
+ *  保留 `resolveSecret` 仅供一次性 CLI 命令与旧测试使用。 */
+export function resolveSecretFromSettings(
+  name: SecretName,
+  dbGet: (name: SecretName) => string | null,
+): ResolvedSecret {
+  const dbValue = dbGet(name)
+  if (dbValue !== null && dbValue !== '') return { value: dbValue, source: 'db' }
+  return { value: null, source: 'none' }
+}
+
+/** env（非空）> db > none。仅无库的一次性命令使用；产品运行态见 resolveSecretFromSettings。 */
 export function resolveSecret(
   name: SecretName,
   env: NodeJS.ProcessEnv,
@@ -55,10 +67,19 @@ export interface ProviderFlagResolution {
   source: SecretSource
 }
 
+/** provider 开关：设置页唯一来源，只读 settings 表。 */
+export function resolveProviderFlagFromSettings(
+  flag: ProviderFlagName,
+  dbGet: (key: string) => string | null,
+): ProviderFlagResolution {
+  const dbValue = dbGet(`provider:${flag}`)
+  if (dbValue !== null) return { enabled: dbValue === 'true', source: 'db' }
+  return { enabled: false, source: 'none' }
+}
+
 /** provider 开关三级解析（spec §4.4）：env 显式设置（含 'false'）→ env 值；否则库
- *  `provider:<flag>`；都没有 → 关（与今天 env-only 缺省一致，fail-closed）。
- *  布尔钉死 `=== 'true'` 精确匹配：'1'/'TRUE'/脏值一律关（沿用 buildAdapters.ts 既有语义）。
- *  注意这与 engine_enabled 的 fail-open 相反——闸的性质不同：flag 默认关、engine 默认开。 */
+ *  `provider:<flag>`；都没有 → 关。仅一次性命令使用；产品运行态见
+ *  resolveProviderFlagFromSettings。 */
 export function resolveProviderFlag(
   flag: ProviderFlagName,
   env: NodeJS.ProcessEnv,
@@ -82,12 +103,12 @@ export interface AdapterConfigResolver {
 /** dbGet 读任意 settings 键（'secret:TMDB_API_KEY'、'provider:SUBHD_ENABLED' 都走它）——
  *  生产侧直接传 `settingsRepo.get.bind(settingsRepo)`，惰性读库，每次调用都是新鲜值。 */
 export function makeAdapterConfigResolver(
-  env: NodeJS.ProcessEnv,
+  _env: NodeJS.ProcessEnv,
   dbGet: (key: string) => string | null,
 ): AdapterConfigResolver {
   return {
-    secret: (name) => resolveSecret(name, env, (n) => dbGet(`secret:${n}`)),
-    flag: (flag) => resolveProviderFlag(flag, env, dbGet),
+    secret: (name) => resolveSecretFromSettings(name, (n) => dbGet(`secret:${n}`)),
+    flag: (flag) => resolveProviderFlagFromSettings(flag, dbGet),
   }
 }
 

@@ -305,7 +305,7 @@ describe('SettingsRepo · secret:* 键空间（spec A §4.1）', () => {
     expect(meta.find((m) => m.name === 'JIMAKU_API_KEY'))
       .toEqual({ name: 'JIMAKU_API_KEY', set: true, source: 'db', masked: 'jim••••123' })
     expect(meta.find((m) => m.name === 'TMDB_API_KEY'))
-      .toEqual({ name: 'TMDB_API_KEY', set: true, source: 'env', masked: 'env••••456' })
+      .toEqual({ name: 'TMDB_API_KEY', set: false, source: 'none', masked: null })
     expect(meta.find((m) => m.name === 'LLM_API_KEY'))
       .toEqual({ name: 'LLM_API_KEY', set: false, source: 'none', masked: null })
     expect(JSON.stringify(meta)).not.toContain('jimaku-plain-key-123')

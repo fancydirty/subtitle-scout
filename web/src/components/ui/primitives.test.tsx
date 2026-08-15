@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { AspectRatio } from './aspect-ratio.js'
 import { EmptyState } from './empty-state.js'
-import { Kbd } from './kbd.js'
 import { Section } from './section.js'
 import { Segmented } from './segmented.js'
 import { StatusDot } from './status-dot.js'
@@ -31,16 +30,6 @@ describe('自绘 primitive 的 role 契约', () => {
   it('StatusDot 传 label 时升级为 role=img（本仓三个调用点全走这条）', () => {
     render(<StatusDot variant="error" label="Failed" />)
     expect(screen.getByRole('img', { name: 'Failed' })).toBeInTheDocument()
-  })
-
-  it('Kbd 是 role=img 且可读名由按键组合拼出（jsdom 非苹果平台 → Control）', () => {
-    render(<Kbd keys="mod+k" />)
-    expect(screen.getByRole('img', { name: 'Control + K' })).toBeInTheDocument()
-  })
-
-  it('Kbd 单键也走同一条拼名路径', () => {
-    render(<Kbd keys="escape" />)
-    expect(screen.getByRole('img', { name: 'Escape' })).toBeInTheDocument()
   })
 
   it('Section 渲染子节点', () => {

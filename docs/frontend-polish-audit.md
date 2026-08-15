@@ -85,9 +85,27 @@ from the default visual language.
   wizard save/test paths, EngineBanner, and the three data pages.
 - Login now distinguishes 429 throttling from invalid credentials.
 
+## Round 2 — user-corrected direction (2026-08-15)
+
+The first pass still kept too much agent-facing chrome. The user decision is now
+the single standard: **Jellyfin/Jellyseerr/Plex logic for non-technical humans**.
+
+- Topbar technical readout (`watching /path · scanned … · files`) removed;
+  `workflow/pending` polling removed from the shell.
+- cmd-k page switcher removed entirely (it had no search capability).
+- Advanced/Deploy tab removed; env source labels, raw env keys, and deploy
+  readout removed from the UI. Configured is just configured.
+- Media folders are a plain Unix-style path input (`/Users/me/Movies`), not a
+  directory browser. Submit validates existence; a missing path shows
+  "directory does not exist" and keeps the input value.
+- Backend policy changed: settings page is the only source for settings,
+  provider credentials, provider flags, target languages, and media roots.
+  `makeAdapterConfigResolver` / setup status now ignore env. env helpers stay
+  only for one-shot CLI commands without a db.
+
 ## Verification
 
-- `cd web && npm test` — 87 files / 1003 tests green.
+- `cd web && npm test` — 82 files / 932 tests green.
 - `npm test` — 145 files / 3328 tests green (plus 3 skipped / 27 skipped).
 - `npm run check` — full repo typecheck green.
 - `cd web && npm run build` — production build green.

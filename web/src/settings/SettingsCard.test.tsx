@@ -23,11 +23,6 @@ describe('SettingsCard', () => {
     expect(screen.getByText('⚠ Not configured')).toBeInTheDocument()
   })
 
-  it('locked 状态显示灰色环境变量 badge', () => {
-    render(<I18nProvider initialLang="en"><SettingsCard title="X" status="locked">b</SettingsCard></I18nProvider>)
-    expect(screen.getByText('🔒 Environment')).toBeInTheDocument()
-  })
-
   it('无 status 不渲染 badge', () => {
     render(<I18nProvider initialLang="en"><SettingsCard title="X">b</SettingsCard></I18nProvider>)
     expect(screen.queryByText('✓ Configured')).not.toBeInTheDocument()

@@ -173,14 +173,14 @@ describe('ZimukuVisionCard', () => {
     })
   })
 
-  it('环境变量锁定时显示 "🔒 Environment" badge 且所有输入 disabled', async () => {
+  it('环境变量锁定时显示已配置 badge 且所有输入 disabled（不暴露 env）', async () => {
     renderCard(vi.fn(), [
       { name: 'ZIMUKU_VISION_MODEL', set: true, source: 'env', masked: null },
       { name: 'ZIMUKU_VISION_BASE_URL', set: true, source: 'env', masked: null },
       { name: 'ZIMUKU_VISION_API_KEY', set: true, source: 'env', masked: null },
     ])
     await waitFor(() => {
-      expect(screen.getByText('🔒 Environment')).toBeInTheDocument()
+      expect(screen.getByText('✓ Configured')).toBeInTheDocument()
       expect(screen.getByLabelText(/Model/i)).toBeDisabled()
       expect(screen.getByLabelText(/Base URL/i)).toBeDisabled()
       expect(screen.getByLabelText(/API Key/i)).toBeDisabled()

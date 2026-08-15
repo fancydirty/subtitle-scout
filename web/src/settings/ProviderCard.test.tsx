@@ -18,11 +18,11 @@ const TMDB: ProviderRowDTO = { id: 'tmdb', secrets: [{ name: 'TMDB_API_KEY' as a
 const ASSRT: ProviderRowDTO = { id: 'assrt', secrets: [{ name: 'ASSRT_TOKEN' as any, set: true, source: 'db', masked: 'ass••••123' }], lastTest: { ok: true, at: 1700000000000 }, quota: null }
 
 describe('ProviderCard', () => {
-  it('env 源：只读打码 + locked badge + 无 Edit', () => {
+  it('env 源：只读打码 + 已配置 badge + 无 Edit（不暴露 env）', () => {
     renderCard(TMDB)
     const card = within(screen.getByTestId('providers-tmdb'))
     expect(card.getByText('abc••••xyz')).toBeInTheDocument()
-    expect(card.getByText('🔒 Environment')).toBeInTheDocument()
+    expect(card.getByText('✓ Configured')).toBeInTheDocument()
     expect(card.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
   })
 

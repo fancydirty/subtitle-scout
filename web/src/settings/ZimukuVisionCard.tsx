@@ -64,7 +64,7 @@ export function ZimukuVisionCard({ reload }: Props) {
   const allEnv = secrets.length > 0 && secrets.every((s) => s.source === 'env')
 
   // 计算 status（SettingsCard 需要的枚举值）
-  const status = allEnv ? 'locked' : isConfigured ? 'configured' : 'unconfigured'
+  const status = isConfigured ? 'configured' : 'unconfigured'
 
   // 判断是否全部字段已填写（用于启用 Test 按钮）
   const allFilled = VISION_FIELDS.every((n) => {

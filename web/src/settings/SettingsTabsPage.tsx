@@ -1,10 +1,8 @@
-// web/src/settings/SettingsTabsPage.tsx：Settings 五 tab 容器（spec §2/§6）。
-// general/providers/media/security/advanced。providers badge n/8（绿全/黄部分/红全无），
-// media badge roots.length===0 时 ⚠ Not configured。默认 general tab。
-// 阶段 2：骨架 + badge；阶段 3：接入六区。
+// web/src/settings/SettingsTabsPage.tsx：设置页四 tab——通用 / 字幕源 / 媒体目录 / 安全。
+// Advanced/Deploy 已删除：env 与部署层不是人类设置页的内容。
 import { useState } from 'react'
 import type { SettingsDTO, ProviderRowDTO, SetupStatusDTO } from '../api/types.js'
-import { useSettings, useDeploySettings, useRoots, useSetupProviders, useSetupStatus } from '../api/hooks.js'
+import { useSettings, useRoots, useSetupProviders, useSetupStatus } from '../api/hooks.js'
 import { isContractViolation } from '../api/contract.js'
 import { useT } from '../i18n/useT.js'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs.js'
@@ -16,7 +14,6 @@ import { TranslateCard } from './TranslateCard.js'
 import { ZimukuVisionCard } from './ZimukuVisionCard.js'
 import { RootsManager } from './RootsManager.js'
 import { SecuritySection } from './SecuritySection.js'
-import { DeploySection } from './DeploySection.js'
 import { SystemSection } from './SystemSection.js'
 
 /** `setup/status` 的 `providers` 子树——**要么完整，要么根本没到**，没有第三种合法形态。
@@ -80,7 +77,6 @@ function readProviders(
 export function SettingsTabsPage() {
   const { t } = useT()
   const settings = useSettings()
-  const deploy = useDeploySettings()
   const roots = useRoots()
   const providers = useSetupProviders()
   const setupStatus = useSetupStatus()
@@ -128,11 +124,11 @@ export function SettingsTabsPage() {
           {mediaUnconfigured ? <Badge variant="warning" className="ml-1">{t('settings_status_unconfigured')}</Badge> : null}
         </TabsTrigger>
         <TabsTrigger value="security">{t('settings_tab_security')}</TabsTrigger>
-        <TabsTrigger value="advanced">{t('settings_tab_advanced')}</TabsTrigger>
       </TabsList>
 
       <TabsContent value="general" className="p-6 space-y-6">
         <BehaviorSection settings={settingsData} />
+        <SystemSection />
       </TabsContent>
       <TabsContent value="providers" className="p-6 space-y-6">
         {keyedRows.map((row) => (
@@ -143,7 +139,6 @@ export function SettingsTabsPage() {
                 translate={translateRow}
                 llm={llmRow}
                 settings={settingsData.data ?? ({} as SettingsDTO)}
-                deploy={deploy.data}
                 onUpdated={setUpdated}
                 reload={providers.reload}
               />
@@ -168,10 +163,6 @@ export function SettingsTabsPage() {
       </TabsContent>
       <TabsContent value="security" className="p-6 space-y-6">
         <SecuritySection />
-      </TabsContent>
-      <TabsContent value="advanced" className="p-6 space-y-6">
-        <DeploySection deploy={deploy} />
-        <SystemSection />
       </TabsContent>
     </Tabs>
   )

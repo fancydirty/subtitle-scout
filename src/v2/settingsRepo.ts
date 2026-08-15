@@ -1,7 +1,7 @@
 // src/v2/settingsRepo.ts
 import { isAbsolute, resolve, sep } from 'node:path'
 import type { ScoutDb } from './db.js'
-import { SECRET_NAMES, isSecretName, maskSecretValue, resolveSecret, type SecretName } from './secrets.js'
+import { SECRET_NAMES, isSecretName, maskSecretValue, resolveSecretFromSettings, type SecretName } from './secrets.js'
 
 /** 候选路径与既有守备目录是否重叠（父/子双向），命中则返回撞上的那个根。
  *
@@ -185,10 +185,11 @@ export class SettingsRepo {
     this.set('secrets_version', String(this.secretsVersion() + 1), now)
   }
 
-  /** 只回哪些已设置 + 打码预览 + source；永不回明文（Providers 区/setup status 的唯一读面）。 */
-  listSecretMeta(env: NodeJS.ProcessEnv): SecretMeta[] {
+  /** 只回哪些已设置 + 打码预览 + source；永不回明文（Providers 区/setup status 的唯一读面）。
+   *  source 恒为 db/none——设置页是唯一来源，不再读 env。 */
+  listSecretMeta(_env: NodeJS.ProcessEnv): SecretMeta[] {
     return SECRET_NAMES.map((name) => {
-      const r = resolveSecret(name, env, (n) => this.getSecret(n))
+      const r = resolveSecretFromSettings(name, (n) => this.getSecret(n))
       return {
         name,
         set: r.source !== 'none',

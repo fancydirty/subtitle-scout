@@ -32,7 +32,7 @@ export function ProviderToggleCard({ id, state, reload }: {
     <SettingsCard
       title={TOGGLE_NAME[id]}
       description={t(TOGGLE_DESC_KEY[id])}
-      status={state.enabled ? 'configured' : locked ? 'locked' : 'unconfigured'}
+      status={state.enabled ? 'configured' : 'unconfigured'}
       data-testid={`providers-${id}`}
     >
       <div className="flex flex-col gap-2">
@@ -44,7 +44,7 @@ export function ProviderToggleCard({ id, state, reload }: {
           </div>
         </div>
         {locked && (
-          <div className="text-xs text-muted-foreground">{t('settings_provider_env_locked')}</div>
+          <div className="text-xs text-muted-foreground">{t('settings_provider_readonly_note')}</div>
         )}
         {error && <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p>}
       </div>

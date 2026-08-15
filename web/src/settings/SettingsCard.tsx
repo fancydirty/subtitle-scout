@@ -7,18 +7,16 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../co
 import { Badge } from '../components/ui/badge.js'
 import { useT, type TKey } from '../i18n/useT.js'
 
-type Status = 'configured' | 'unconfigured' | 'locked'
+type Status = 'configured' | 'unconfigured'
 
 const STATUS_LABEL_KEY: Record<Status, TKey> = {
   configured: 'settings_status_configured',
   unconfigured: 'settings_status_unconfigured',
-  locked: 'settings_status_locked',
 }
 
 const STATUS_CLASS: Record<Status, string> = {
   configured: 'border-transparent bg-fn-green/15 text-fn-green',
   unconfigured: 'border-transparent bg-fn-amber/15 text-fn-amber',
-  locked: 'border-transparent bg-secondary text-muted-foreground',
 }
 
 interface Props {

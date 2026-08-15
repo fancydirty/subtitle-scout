@@ -1,41 +1,9 @@
-// web/src/shell/AppShell.tsx：新外壳组装——自绘壳（Task 28 卸 AstryxAppShell）+ Sidebar + Topbar
-// + CommandK + tab 路由分发。数据面只发一次 GET /api/v2/workflow/pending，顶栏新鲜度行用它
-// （后端契约：meta.roots/lastScanAt/files，见 api/types.ts 注释；响应里的 parked 随甄别角标
-// 一起雪藏，字段本身仍在）。
-//
-// 2026-08-07（spec §5）：Triage tab 本轮雪藏——这一层的 route.tab === 'triage' 分支与
-// TriagePage import 移除，侧栏也不再收 parked 角标。TriagePage 源码仍在 web/src/triage/ 下
-// （测试也全留着），将来重启用时把 import + 分支 + Sidebar 的 parked={workflow.data?.parked}
-// 三处加回即可。
-// 🟡 2026-08-13 更正：「雪藏」不等于「将来可能删」——它是**明确保留**的（且它是 verify
-//    族唯一的恢复载体：那族的恢复路径第 2 步就是"把 TriagePage 挂回本层"）。为什么留、
-//    什么时候才可以删（可证伪判据 + 机器载体）见 `web/src/triage/TriagePage.tsx` 头注释，
-//    那里是正本；本处不重抄。⚠️ 真挂回来时 `src/dashboard/triageShelved.orphan.test.ts`
-//    的②会当场变红——那是提醒去更新裁决，不是阻拦。
-//
-// ── 2026-08-12（Task ⑪）：旧页面下架，本层回到**四条光杆分支** ────────────────────
-// Task ⑦ 时这里有 5 个分支族（library 含二级路由 / workflow / settings + activity /
-// notifications / media）。旧的 library 与 workflow 分支渲染的组件已移入 `web/src/_legacy/`，
-// 连同它们的 import、二级路由数据协调（useLibrarySeriesDetail / useLibraryMovieDetail 两个
-// hook 调用与 Topbar 的 seriesDetail prop）在本次一并删除。
-//
-// 🔴 **hook 调用必须跟着分支一起删，不能只删 JSX**：那两个 hook 是 Shell 无条件调用的
-// （靠 id=null 时内部跳过请求），留着 = 每次渲染都白算一次 + 一个永远为 null 的 prop
-// 在 Topbar 里养着一段永不执行的面包屑分支。那正是"删 UI 留数据面"的病 A 形态，只不过
-// 方向反过来（这里是留了个没有 UI 的数据面）。
-//
-// 旧 hash（`#/library*` / `#/workflow`）不是失效而是被 route.ts 的 LEGACY_REDIRECTS
-// 改写到 `#/media` / `#/activity`——所以这里**没有** legacy 分支，也不该有：Tab 联合里
-// 已经没有那两个值，写了 TS 就报错。
-//
-// ⚠️ `useWorkflowPending` **保留**：它不是旧页面的数据源，而是顶栏新鲜度行
-// （meta.roots/lastScanAt/files）的唯一来源，与下架无关。
-import { useState } from 'react'
-import { useWorkflowPending, useMediaLibraryDetail } from '../api/hooks.js'
+// web/src/shell/AppShell.tsx：外壳——Sidebar + Topbar + 四个页面分支。
+// 顶栏只显示当前页；技术读数、⌘K 面板与 workflow/pending 轮询已删除。
+import { useMediaLibraryDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
-import { CommandK } from './CommandK.js'
 import { EngineBanner } from './EngineBanner.js'
 import { PageBoundary } from './PageBoundary.js'
 import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
@@ -49,8 +17,6 @@ import { useT } from '../i18n/useT.js'
 export function Shell() {
   const { t } = useT()
   const route = useShellRoute()
-  const workflow = useWorkflowPending()
-  const [isCmdKOpen, setCmdKOpen] = useState(false)
 
   // Task ⑧：媒体库详情（#/media/:workId）——mediaWorkId 为 null 时 hook 不发请求
   // （见 api/hooks.ts 注释），不在详情页时不会白白 404。
@@ -76,11 +42,7 @@ export function Shell() {
         <a href="#scout-app-main" className="skip-to-content">
           {t('a11y_skip_to_content')}
         </a>
-        <Topbar
-          tab={route.tab}
-          workflow={workflow}
-          onOpenCmdK={() => setCmdKOpen(true)}
-        />
+        <Topbar tab={route.tab} />
         <div className="flex flex-1 overflow-hidden">
           <Sidebar tab={route.tab} />
           {/* contentPadding 4 → p-4（Astryx --spacing-4=16px=Tailwind 4）。
@@ -136,7 +98,6 @@ export function Shell() {
           </main>
         </div>
       </div>
-      <CommandK isOpen={isCmdKOpen} onOpenChange={setCmdKOpen} />
     </EventsProvider>
   )
 }

@@ -12,7 +12,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
 import { App } from './App.js'
-import type { WorkflowPendingDTO } from './api/types.js'
 
 function requestPath(input: RequestInfo | URL): string {
   const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
@@ -31,9 +30,6 @@ function mockFetchRouted(handlers: { path: string; body: unknown; prefix?: boole
   })
 }
 
-const WORKFLOW: WorkflowPendingDTO = {
-  meta: { roots: ['/media'], lastScanAt: Date.now() - 2 * 60_000, files: 568 , lastVerifySweepAt: null, verifiedItems: 0, verifiableItems: 0},
-}
 /** Task ⑨ 活动页的健康快照。`current: null` = 没有任何工作台在跑（本冒烟测试不关心
  *  在跑态，只要页面能渲染出来）。workPermitted 给 true 免得状态条上多一行不许可提示
  *  干扰别的断言。 */
@@ -52,7 +48,6 @@ function standardHandlers() {
     // 鉴权 A2 Task 11：App 门先探 auth/status；已登录才渲染 Shell。外壳冒烟测试关注 Shell 内部，
     // 统一给一个"已初始化已登录"的 status，让门放行到 Shell。
     { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
-    { path: '/api/v2/workflow/pending', body: WORKFLOW },
     // 2026-08-13：`/api/v2/workflow/workers` 的 stub 已删——那个端点连同它唯一的消费方
     // （_legacy 活动页）一起没了，活外壳一次都不会打它。留着 stub 会让这份冒烟测试
     // 继续为一条不存在的端点背书。`passes` 保留：它仍是活端点。
@@ -138,32 +133,16 @@ describe('App 外壳冒烟', () => {
     await waitFor(() => expect(screen.queryByText('Under construction')).not.toBeInTheDocument())
   })
 
-  it('fetch 成功时顶栏渲染 mono 新鲜度行（watching/scanned/files 三段）', async () => {
-    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
-    render(<App />)
-
-    expect(
-      await screen.findByText('watching /media · scanned 2m ago · 568 files'),
-    ).toBeInTheDocument()
-    // 原本这里断言侧栏 Triage 项旁的甄别角标（parked=3）；角标随甄别页下架移除（spec §5）。
-  })
-
-  it('已登录但后端端点失败时外壳骨架仍在，不白屏——新鲜度行降级显示', async () => {
-    // 鉴权 A2 后：只给 auth/status（放行到 Shell），其余端点一律 404（mockFetchRouted 未列即 404）
-    // → workflow/pending 失败 → 新鲜度行降级 offline。验证"已登录时后端抖动不白屏"仍成立。
+  it('已登录但后端端点失败时外壳骨架仍在，不白屏', async () => {
     vi.stubGlobal('fetch', mockFetchRouted([
       { path: '/api/v2/auth/status', body: { initialized: true, authenticated: true } },
     ]))
     render(<App />)
 
-    // 外壳本身（四 tab 项）必须完整渲染，不能因为后端请求失败就整屏空白。
     expect(await screen.findByRole('link', { name: 'Activity' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Notifications' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Media' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
-    // 新鲜度行降级为冷静的 mono 灰字，不是报错弹窗。
-    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument())
-    // 原本这里还断言"无数据时不显示甄别角标"，角标随甄别页下架移除（spec §5）。
   })
 })
 
@@ -217,43 +196,6 @@ describe('App 鉴权门（A2 Task 11）', () => {
     healthy = true
     fireEvent.click(screen.getByRole('button', { name: /retry|重试/i }))
     expect(await screen.findByText('Create the admin account')).toBeInTheDocument()
-  })
-
-  it('⌘K：点击触发器打开，Escape 关闭', async () => {
-    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
-    render(<App />)
-    await screen.findByRole('link', { name: 'Activity' })
-
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByText('Go to…'))
-    const dialog = await screen.findByRole('dialog')
-    expect(dialog).toBeInTheDocument()
-    // 四个 tab 都是 bootstrap 结果，导航面板里应该能看到（跟侧栏重复渲染的同名文字互不冲突，
-    // getAllByText 至少命中一个即可）。
-    expect(screen.getAllByText('Notifications').length).toBeGreaterThan(0)
-
-    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-  })
-
-  it('⌘K：选中一项后跳转对应 tab 并关闭面板', async () => {
-    vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
-    render(<App />)
-    await screen.findByRole('link', { name: 'Activity' })
-
-    fireEvent.click(screen.getByText('Go to…'))
-    await screen.findByRole('dialog')
-
-    const items = screen.getAllByText('Settings')
-    // 最后一个是面板内的 CommandPaletteItem（第一个是侧栏项，是 <a>；CommandK 作为 Shell 的
-    // 最后一个子树渲染在 DOM 更靠后的位置）。
-    fireEvent.click(items[items.length - 1])
-
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(location.hash).toBe('#/settings')
-    // dashboard-F6：Settings 真页面落地——行为区标题是稳定、不重名的锚点。
-    await waitFor(() => expect(screen.getByText('Behavior')).toBeInTheDocument())
   })
 })
 

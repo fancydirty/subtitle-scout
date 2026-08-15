@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
 import type {
-  RunHistoryDTO, WorkflowPendingDTO,
+  RunHistoryDTO,
   WorkflowPassDTO, RunTraceDTO,
-  SettingsDTO, DeploySettingsDTO, MediaRootDTO,
+  SettingsDTO, MediaRootDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
   SetupStatusDTO,
@@ -75,63 +75,6 @@ export const RUNS_PAGE_SIZE = PAGE
 // 判据：parked_paths 的唯一写入者 src/v2/ingest.ts 本轮退役，表从此零写入者——
 // 留着读出面 = 给一张永远为空的表建界面。正本论证见 web/src/triage/TriagePage.tsx
 // 头注释的「2.5 parked 族的结局」段。
-
-/** dashboard-F2：外壳级数据面——顶栏新鲜度行 + 侧栏甄别角标共用这一份轮询，避免两处各发一次。
- *  轮询节奏与策略沿用 useLibrary（15s、后台不可见时暂停）：这行是"系统在跑"的唯一信号源，
- *  过期太久等于假装活着（DESIGN.md §0）。本地无 daemon 时 fetch 会失败——data 保持 null，
- *  调用方（Topbar/Sidebar）必须能优雅降级，不许因为这个请求失败就整屏空白。 */
-export function useWorkflowPending(): Async<WorkflowPendingDTO> {
-  const [data, setData] = useState<WorkflowPendingDTO | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const load = useCallback(async () => {
-    try {
-      const d = await api.workflowPending()
-      setData(d)
-      setError(null)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const reload = useCallback(() => {
-    setLoading(true)
-    void load()
-  }, [load])
-
-  useEffect(() => {
-    void load()
-    const start = () => {
-      if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)
-    }
-    const stop = () => {
-      if (timer.current != null) {
-        clearInterval(timer.current)
-        timer.current = null
-      }
-    }
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void load()
-        start()
-      } else {
-        stop()
-      }
-    }
-    if (document.visibilityState === 'visible') start()
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      stop()
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [load])
-
-  return { data, loading, error, reload }
-}
 
 /** dashboard-F4：中泳道 pass 记录——同 useLibrary/useWorkflowPending 的既有轮询节奏（15s、
  *  后台不可见时暂停）。limit 固定传入（Lanes.tsx 目前只用一个值，不做分页）。 */
@@ -223,34 +166,6 @@ export function useSettings(): Async<SettingsDTO> {
 
 /** dashboard-F6：部署层 env 脱敏只读展示——一次性（同 useSettings，deploy env 在运行期内不会
  *  变化，没有轮询的理由）。 */
-export function useDeploySettings(): Async<DeploySettingsDTO> {
-  const [data, setData] = useState<DeploySettingsDTO | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
-
-  useEffect(() => {
-    const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
-    api
-      .deploySettings(ctrl.signal)
-      .then((d) => setData(d))
-      .catch((e) => {
-        if (!ctrl.signal.aborted) setError(String(e))
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
-    return () => ctrl.abort()
-  }, [nonce])
-
-  return { data, loading, error, reload }
-}
-
-/** dashboard-F6：守备目录清单——一次性 + 手动 reload（同 useTriage：加根/删根成功后调用方自己
- *  reload，不轮询——守备目录改动同样是低频人工动作）。 */
 export function useRoots(): Async<MediaRootDTO[]> {
   const [data, setData] = useState<MediaRootDTO[] | null>(null)
   const [loading, setLoading] = useState(true)
@@ -474,7 +389,7 @@ export function useSetupProviders(): Async<ProvidersDTO> {
   useEffect(() => {
     void load()
     const start = () => {
-      // 守卫写法照抄既有轮询 hook（本文件 useLibrary/useWorkflowPending/useWorkflowPasses/
+      // 守卫写法照抄既有轮询 hook（本文件 useLibrary/useWorkflowPasses/
       // useSetupStatus 四处一模一样）：visibilitychange 连发或 effect 复跑时，
       // 没这道判断会叠出第二个 setInterval，旧句柄被覆盖后再也 clear 不掉——越切标签页轮询越快。
       if (timer.current == null) timer.current = setInterval(() => void load(), LIBRARY_POLL_MS)

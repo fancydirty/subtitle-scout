@@ -1,11 +1,10 @@
 // web/src/api/client.ts：v2 只读数据层客户端。DASHBOARD_TOKEN 存在时带 ?token=。
 import type {
   RunHistoryDTO,
-  WorkflowPendingDTO,
   SubtitleVerifyListDTO,
   SubtitleCompareDTO,
   WorkflowPassDTO, RunTraceDTO, RedispatchInput, RedispatchOutcomeDTO,
-  SettingsDTO, SettingsPatch, DeploySettingsDTO, MediaRootDTO, RemoveRootResultDTO, FsListDTO,
+  SettingsDTO, SettingsPatch, MediaRootDTO, RemoveRootResultDTO,
   AuthStatusDTO, AuthSecurityDTO,
   SetupStatusDTO, ProvidersDTO, PutSecretResultDTO, ValidateResultDTO, ValidateTarget, SecretName,
   ShiftedItemDTO, DormantTaskDTO,
@@ -200,8 +199,6 @@ export const api = {
   validateSetup: (target: ValidateTarget, credentials?: Partial<Record<SecretName, string>>) =>
     post<ValidateResultDTO>('/api/v2/setup/validate', credentials === undefined ? { target } : { target, credentials }),
   // dashboard-F2：顶栏新鲜度行 + 侧栏甄别角标共用同一份响应（meta + parked）。
-  workflowPending: (signal?: AbortSignal) =>
-    get<WorkflowPendingDTO>('/api/v2/workflow/pending', signal),
   // 对照图数据（2026-07-30）：单条，供检视面板画双轨时间轴。
   subtitleCompare: (itemId: string, signal?: AbortSignal) =>
     get<SubtitleCompareDTO>(`/api/v2/subtitle/compare?itemId=${encodeURIComponent(itemId)}`, signal),
@@ -241,14 +238,11 @@ export const api = {
   // 全量 settings，调用方直接拿它回写本地状态，不用再发一次 GET（同 src/dashboard/apiV2.ts
   // updateSettings 的既有约定）。
   updateSettings: (patch: SettingsPatch) => put<SettingsDTO>('/api/v2/settings', patch),
-  deploySettings: (signal?: AbortSignal) => get<DeploySettingsDTO>('/api/v2/settings/deploy', signal),
   roots: (signal?: AbortSignal) => get<MediaRootDTO[]>('/api/v2/settings/roots', signal),
   addRoot: (path: string) => post<{ ok: true }>('/api/v2/settings/roots', { path }),
   // DELETE 成功回执是级联清理计数（RemoveRootResultDTO）；404（非登记在册的守备目录）由
   // mutate() 的既有错误口径抛出，调用方（RemoveRootDialog）如实展示那句 error 文案。
   removeRoot: (path: string) => del<RemoveRootResultDTO>(`/api/v2/settings/roots?path=${encodeURIComponent(path)}`),
-  fsList: (path: string, signal?: AbortSignal) =>
-    get<FsListDTO>(`/api/v2/fs/list?path=${encodeURIComponent(path)}`, signal),
   // 鉴权 A2/A3：账号鉴权端点。status 是 App 门的探测源（任何态放行）；setup/login/logout 走
   // 会话 cookie（服务端 set-cookie，浏览器自动携带，无需前端存 token）；security/改密/重生成
   // 是 Settings Security 区用。

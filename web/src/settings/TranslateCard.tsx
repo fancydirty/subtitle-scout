@@ -13,7 +13,7 @@ import { Input } from '../components/ui/input.js'
 import { Segmented } from '../components/ui/segmented.js'
 import { Switch } from '../components/ui/switch.js'
 import { api } from '../api/client.js'
-import type { ProviderRowDTO, SettingsDTO, DeploySettingsDTO } from '../api/types.js'
+import type { ProviderRowDTO, SettingsDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
 import { localizeErrorValue } from '../lib/errorText.js'
 import { SettingsCard } from './SettingsCard.js'
@@ -23,7 +23,6 @@ interface Props {
   translate: ProviderRowDTO
   llm: ProviderRowDTO
   settings: SettingsDTO
-  deploy: DeploySettingsDTO | null
   onUpdated: (s: SettingsDTO) => void
   reload: () => void
 }
@@ -69,13 +68,11 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
   const incomplete = enabled && !allEnv && anySet && !isDedicated
   const badge = !enabled
     ? t('settings_translate_badge_off')
-    : allEnv
-      ? t('settings_status_locked')
-      : isDedicated
-        ? t('settings_translate_badge_dedicated')
-        : incomplete
-          ? t('settings_translate_badge_incomplete')
-          : t('settings_translate_badge_enabled')
+    : isDedicated
+      ? t('settings_translate_badge_dedicated')
+      : incomplete
+        ? t('settings_translate_badge_incomplete')
+        : t('settings_translate_badge_enabled')
 
   async function commitEnabled(value: boolean) {
     setBusy(true)

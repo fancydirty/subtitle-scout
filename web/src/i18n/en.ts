@@ -25,7 +25,6 @@ export const en = {
   common_clear: 'Clear',
   common_confirm: 'Confirm',
   common_loading: 'loading…',
-  common_offline: 'offline',
 
   // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
   a11y_side_nav: 'Side navigation',
@@ -35,7 +34,6 @@ export const en = {
   a11y_loading_media_library: 'loading media library',
   a11y_loading_media_detail: 'loading media detail',
   a11y_loading_notifications: 'loading notifications',
-  topbar_loading: 'loading…',
 
   // Task ⑦ 占位页（Task ⑧⑩ 填肉后**只剩活动一个**）：说明"这页将来回答什么问题"。
   // **不描述还不存在的功能细节**——一句人话，等 Task ⑨ 填肉时这个键随之删除。
@@ -50,10 +48,6 @@ export const en = {
   page_failed_retry: 'Reload this page',
 
   // ⌘K 命令面板：F2 只做 tab 导航，不做搜索。
-  cmdk_trigger: 'Go to…',
-  cmdk_label: 'Command palette',
-  cmdk_placeholder: 'Jump to a page…',
-  cmdk_empty: 'No matches',
 
   // Library tab：真正的空库态（F2 占位期借用过这两个键，F3 填肉后原样留作"库确实空"的事实）。
   library_empty_title: 'No library yet',
@@ -202,8 +196,7 @@ export const en = {
   // 那样有一个"真的空"的状态可以复用这段文案，四 tab 占位就此全部清空
   // （shell/PlaceholderTab.tsx 同步删除，见该文件退役时的 git 记录）。
   settings_behavior_heading: 'Behavior',
-  settings_deploy_heading: 'Deploy',
-  settings_roots_heading: 'Media roots',
+  settings_roots_heading: 'Media folders',
 
   settings_error_prefix: "Couldn't load settings: ",
   settings_retry_label: 'Retry',
@@ -211,17 +204,14 @@ export const en = {
   // ── Settings tab chrome（审计 P0-1/P0-3）───────────────────────────────
   settings_tab_general: 'General',
   settings_tab_providers: 'Providers',
-  settings_tab_media: 'Media',
+  settings_tab_media: 'Media folders',
   settings_tab_security: 'Security',
-  settings_tab_advanced: 'Advanced',
   settings_status_configured: '✓ Configured',
   settings_status_unconfigured: '⚠ Not configured',
-  settings_status_locked: '🔒 Environment',
 
   // 行为区（BehaviorSection）——五项，逐项改动即时单键 PUT。
   settings_target_languages_label: 'Target subtitle language',
   settings_target_languages_description: 'The subtitle language to search for and download. Unset defaults to Chinese.',
-  settings_target_languages_save_label: 'Save',
   // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
   settings_target_languages_restart_note:
     'Takes effect on the next library scan.',
@@ -241,38 +231,21 @@ export const en = {
   settings_scan_interval_label: 'Scan interval (minutes)',
   settings_scan_interval_note: 'Takes effect on the next scan tick.',
 
-  settings_ai_translate_label: 'AI subtitle translation',
-  settings_ai_translate_note:
-    'Default off. When on, the daemon auto-translates items no source could subtitle (burns TRANSLATE_* quota). Requires deploy-level TRANSLATE_BASE_URL/API_KEY/MODEL. Manual translate-item is unaffected.',
-  settings_translate_section_heading: 'AI translation (agent workspace)',
-  settings_translate_dormant_warning:
-    'Deploy gate missing — the switch is on but nothing will run. Add TRANSLATE_* to .env and recreate the container.',
-  settings_translate_view_workflow: 'View translation activity in Workflow →',
-  settings_translate_confirm_title: 'Enable AI translation?',
-  settings_translate_confirm_body_ready:
-    'The daemon will auto-translate items no provider could subtitle, continuously consuming TRANSLATE_* quota. Items blocked by the quality gate retry on a decaying ladder, and repeated identical failures park for manual review. Deploy gate: ready.',
-  settings_translate_confirm_body_missing:
-    'The daemon will auto-translate items no provider could subtitle, continuously consuming TRANSLATE_* quota. Deploy gate: MISSING — nothing will run until TRANSLATE_* is configured and the container recreated.',
-  settings_translate_confirm_action: 'Enable',
-
   settings_save_error_prefix: "Couldn't save: ",
 
   // 部署区（DeploySection，只读）——env 脱敏展示，零输入控件。
-  settings_deploy_readonly_note: 'deploy-level, read-only — edit via environment/compose',
-  settings_deploy_secrets_heading: 'Secrets',
-  settings_deploy_nonsecrets_heading: 'Other',
   // audit R4: MEDIA_ROOTS is a first-boot seed only; the live list lives in the media_roots table
-  settings_deploy_media_roots_seed_note: 'first-boot seed only — see the guarded directories below for what is live',
-  settings_deploy_error_prefix: "Couldn't load deploy info: ",
-  settings_deploy_present_word: 'configured',
-  settings_deploy_absent_word: 'not set',
 
   // 守备目录管理器（RootsManager）。
   settings_roots_error_prefix: "Couldn't load media roots: ",
   settings_roots_retry_label: 'Retry',
-  settings_roots_empty_hint: 'No media roots yet — browse below to add the first one.',
+  settings_roots_empty_hint: 'No media folders yet — enter a path below to add the first one.',
   settings_roots_remove_label: 'Remove',
-  settings_roots_add_button_label: 'Add a root',
+  settings_roots_add_button_label: 'Add folder',
+  settings_roots_add_path_label: 'Media folder path',
+  settings_roots_add_path_placeholder: '/Users/me/Movies',
+  settings_roots_add_error_prefix: "Couldn't add this directory: ",
+  settings_roots_add_success: 'Added — the next scan will pick it up automatically.',
   // 删根 AlertDialog——destructive 才用 AlertDialog（DESIGN.md §5），文案明示后果。
   settings_roots_remove_confirm_desc:
     'This clears every indexed row under this root — episodes, movies, subtitle records, and parked entries. Files on disk are not touched.',
@@ -282,13 +255,7 @@ export const en = {
   settings_roots_remove_error_prefix: "Couldn't remove this root: ",
 
   // 目录浏览器（DirBrowser）——加根流程。
-  settings_dirbrowser_description: 'Browse directories visible to the container and add the one you want scanned.',
-  settings_dirbrowser_add_button: 'Add this directory',
   // 后端 roots 已动态化——加根即刻生效于下一轮巡检，这句是真的（不是"假装即时生效"）。
-  settings_dirbrowser_add_success: 'Added — the next scan will pick it up automatically.',
-  settings_dirbrowser_add_error_prefix: "Couldn't add this directory: ",
-  settings_dirbrowser_empty: 'No subdirectories here.',
-  settings_dirbrowser_error_prefix: "Couldn't list this directory: ",
 
   // ── 鉴权 A2/A3（setup 向导 / 登录 / Security 区）。共享字段标签在此，各页复用。 ──
   auth_username_label: 'Username',
@@ -349,7 +316,7 @@ export const en = {
   // 端点自身 5xx / 网络断（spec §7）——与"凭据不对"分开的第四态，不回显原始异常串。
   wizard_test_unavailable: 'Test unavailable, retry',
   wizard_launch: 'Launch',
-  wizard_env_locked: 'Configured via environment',
+  wizard_env_locked: 'Already configured',
   wizard_retest: 'Re-test',
 
   wizard_step_language_title: 'Subtitle language',
@@ -401,7 +368,7 @@ export const en = {
   wizard_zimuku_captcha_ready: 'Captcha solver: ready (LLM configured)',
   wizard_zimuku_captcha_not_ready: 'Captcha solver needs the LLM from step 3.',
 
-  wizard_roots_skip_note: 'Library will stay empty until you add roots — you can do this later in Settings.',
+  wizard_roots_skip_note: 'Library will stay empty until you add a media folder — you can do this later in Settings.',
 
   wizard_launch_configured: 'Configured',
   wizard_launch_skipped: 'Skipped',
@@ -425,14 +392,11 @@ export const en = {
 
   settings_engine_label: 'Engine',
   settings_engine_desc: 'Master switch for scanning, fetching and all automatic work.',
-  settings_providers_title: 'Providers',
   settings_provider_enable_label: 'Enable {name}',
   settings_provider_no_api_key_note: 'No API key required — works out of the box',
   settings_free_source_description: 'Chinese subtitle source',
-  settings_provider_env_locked: 'Set by environment — locked',
-  settings_provider_source_env: 'environment',
-  settings_provider_source_db: 'database',
   settings_provider_not_set: 'Not set',
+  settings_provider_readonly_note: 'Read-only here',
   settings_provider_edit: 'Edit',
   settings_provider_save: 'Save',
   settings_provider_cancel: 'Cancel',
@@ -607,13 +571,6 @@ export const en = {
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',
   // ── 决策历史段（RunsHistory）——decision 词本身不翻译（技术状态词，见 settings_deploy_present_word 的裁决） ──
-  runs_section_title: 'Run history',
-  runs_empty: 'No runs recorded yet',
-  runs_error_prefix: 'Could not load run history: ',
-  runs_load_more: 'Load more',
-  runs_trace_loading: 'Loading trace…',
-  runs_trace_none: 'No trace snapshot for this run',
-  runs_ago: '{d} ago',
   // ── 🟡 实时通道掉线时的「读数已经不新鲜了」（诚实性，**不是排障提示**）────────
   // R-F9/R-F10 的裁决是排障类一律不推给用户，所以这两句里**不出现** SSE / 连接 /
   // 状态码 / 端点这类词——它们说的是"你看到的数字有多新"，与上面 wb_inspect_stale

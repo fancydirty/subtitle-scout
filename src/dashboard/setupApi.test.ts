@@ -42,13 +42,17 @@ describe('buildSetupStatus 推导矩阵（spec §4.4 / §3 决策 1）', () => {
     expect(s.engineEnabled).toBe(true)   // fail-open 缺省
   })
 
-  it('纯 env（现有部署形态）→ bootstrapComplete=true，source=env', () => {
+  it('设置页是唯一来源：env 不再生效，db 配齐才 bootstrapComplete', () => {
+    settings.setSecret('TMDB_API_KEY', 'db-tmdb-key-000', NOW)
+    settings.setSecret('LLM_BASE_URL', 'https://x/v1', NOW)
+    settings.setSecret('LLM_API_KEY', 'db-llm-key-000', NOW)
+    settings.setSecret('LLM_MODEL', 'deepseek-chat', NOW)
     const s = buildSetupStatus(makeDeps({
       TMDB_API_KEY: 'env-tmdb-key-000', LLM_BASE_URL: 'https://x/v1', LLM_API_KEY: 'env-llm-key-000', LLM_MODEL: 'deepseek-chat',
     }))
     expect(s.bootstrapComplete).toBe(true)
-    expect(s.tmdb.source).toBe('env')
-    expect(s.llm).toEqual({ satisfied: true, source: 'env', model: 'deepseek-chat' })
+    expect(s.tmdb.source).toBe('db')
+    expect(s.llm).toEqual({ satisfied: true, source: 'db', model: 'deepseek-chat' })
     expect(s.providers.zimuku.captchaReady).toBe(true)   // LLM 已通 → captchaReady
   })
 
@@ -63,13 +67,14 @@ describe('buildSetupStatus 推导矩阵（spec §4.4 / §3 决策 1）', () => {
     expect(s.llm.source).toBe('db')
   })
 
-  it('混合：TMDB env + LLM db → bootstrapComplete=true', () => {
+  it('env 与 db 同时存在：以 db 为准（设置页唯一来源）', () => {
+    settings.setSecret('TMDB_API_KEY', 'db-tmdb-999', NOW)
     settings.setSecret('LLM_BASE_URL', 'https://x/v1', NOW)
     settings.setSecret('LLM_API_KEY', 'k12345678', NOW)
     settings.setSecret('LLM_MODEL', 'm', NOW)
     const s = buildSetupStatus(makeDeps({ TMDB_API_KEY: 'env-tmdb-999' }))
     expect(s.bootstrapComplete).toBe(true)
-    expect(s.tmdb.source).toBe('env')
+    expect(s.tmdb.source).toBe('db')
     expect(s.llm.source).toBe('db')
   })
 
@@ -92,11 +97,11 @@ describe('buildSetupStatus 推导矩阵（spec §4.4 / §3 决策 1）', () => {
     expect(buildSetupStatus(makeDeps()).providers.opensubtitles.hasUsername).toBe(true)
   })
 
-  it('provider flags：库 provider:ZIMUKU_ENABLED=true → enabled/db；env 显式 false 压过库', () => {
+  it('provider flags：只读设置页；env 显式 false 不再压过库', () => {
     settings.set('provider:ZIMUKU_ENABLED', 'true', NOW)
-    expect(buildSetupStatus(makeDeps()).providers.zimuku.enabled).toBe(true)
+    expect(buildSetupStatus(makeDeps()).providers.zimuku).toMatchObject({ enabled: true, source: 'db' })
     expect(buildSetupStatus(makeDeps({ ZIMUKU_ENABLED: 'false' })).providers.zimuku)
-      .toMatchObject({ enabled: false, source: 'env' })
+      .toMatchObject({ enabled: true, source: 'db' })
   })
 
   it('engineEnabled：显式 false → false；脏值 → true（fail-open spec §4.6）', () => {

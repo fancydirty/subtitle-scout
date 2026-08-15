@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { api } from '../api/client.js'
-import type { ProviderRowDTO, SettingsDTO, DeploySettingsDTO } from '../api/types.js'
+import type { ProviderRowDTO, SettingsDTO } from '../api/types.js'
 import { TranslateCard } from './TranslateCard.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
@@ -17,13 +17,12 @@ const LLM_ROW: ProviderRowDTO = { id: 'llm', secrets: [
   { name: 'LLM_MODEL', set: true, source: 'db', masked: 'mimo-v2.5' },
 ], lastTest: null, quota: null }
 
-function renderCard(over: { translate?: Partial<ProviderRowDTO>; llm?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; deploy?: Partial<DeploySettingsDTO>; reload?: () => void } = {}) {
+function renderCard(over: { translate?: Partial<ProviderRowDTO>; llm?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; reload?: () => void } = {}) {
   const translate: ProviderRowDTO = { ...TRANSLATE_ROW, ...over.translate }
   const llm: ProviderRowDTO = { ...LLM_ROW, ...over.llm }
   const settings: SettingsDTO = { ai_translate_enabled: 'false', ...over.settings } as SettingsDTO
-  const deploy: DeploySettingsDTO = (over.deploy ?? { secrets: { TRANSLATE_API_KEY: { present: false, tail: '' } }, nonSecrets: {} }) as DeploySettingsDTO
   const reload = over.reload ?? vi.fn()
-  render(<I18nProvider initialLang="en"><TranslateCard translate={translate} llm={llm} settings={settings} deploy={deploy} onUpdated={vi.fn()} reload={reload} /></I18nProvider>)
+  render(<I18nProvider initialLang="en"><TranslateCard translate={translate} llm={llm} settings={settings} onUpdated={vi.fn()} reload={reload} /></I18nProvider>)
   return reload
 }
 
@@ -97,7 +96,7 @@ describe('TranslateCard', () => {
       { name: 'TRANSLATE_MODEL', set: true, source: 'env', masked: 'gp••••' },
     ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     const card = within(screen.getByTestId('providers-translate'))
-    expect(card.getByText('🔒 Environment')).toBeInTheDocument()
+    expect(card.getByText('✓ Dedicated model')).toBeInTheDocument()
     expect(card.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
   })
 
@@ -141,6 +140,6 @@ describe('TranslateCard', () => {
       { name: 'TRANSLATE_API_KEY', set: true, source: 'env', masked: 'sk••••' },
       { name: 'TRANSLATE_MODEL', set: true, source: 'env', masked: 'gp••••' },
     ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText('🔒 Environment')).toBeInTheDocument()
+    expect(screen.getByText('✓ Dedicated model')).toBeInTheDocument()
   })
 })

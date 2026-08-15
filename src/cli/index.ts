@@ -73,7 +73,7 @@ import { buildAdapters } from '../adapters/buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
-import { zeroRootsWarningLine, rootsMismatchWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, nestedRootSkipWarning, existingNestedRootsWarning } from './watchStartupWarnings.js'
+import { zeroRootsWarningLine, zeroSubtitleSourcesWarningLine, setupModeWarningLine, existingNestedRootsWarning } from './watchStartupWarnings.js'
 // 2026-08-13 清理：`import type { ReconcileAllResultDTO }` 已删除。它是 cmdReconcileAll 的
 // 返回类型，而 cmdReconcileAll 本身已随第 5.5 步（orchestrator 及其旧架构全删）消失——
 // 一个只为已删函数存在的类型 import。DTO 本体仍留在 apiV2.ts（web/src/api/client.ts 的
@@ -202,24 +202,12 @@ async function cmdWatch() {
   // ingestPass；handleWorkerTask 的 realign/find_subtitle 分支也各自在派发时重新调用它，
   // 不复用一份旧闭包捕获的数组（见各自分支的注释）。
   const settingsRepo = new SettingsRepo(db)
-  // F2（2026-08-08）：同上，先归一化存量非规范根，再 seed。
   settingsRepo.normalizeRoots()
-  // D7（2026-08-08）：同上，种子过嵌套闸门 + 绝对路径门，跳过的要让运维看见。
-  for (const r of settingsRepo.seedRootsFromEnv(process.env.MEDIA_ROOTS, Date.now()).rejected) {
-    console.warn(nestedRootSkipWarning(r))
-  }
   const currentRoots = (): string[] => settingsRepo.listRoots().map(r => r.path)
-  // D7 附加（2026-08-08）：存量嵌套根告警。放在 normalizeRoots + seed 之后——非规范形态
-  // 归一化前会因 '//' 拼接漏检（F1 同一漏洞面）。程序不擅自删用户的配置，只点名报出来。
   const nestedWarning = existingNestedRootsWarning(settingsRepo.detectNestedRoots())
   if (nestedWarning) console.warn(nestedWarning)
   if (currentRoots().length === 0) {
     console.log(zeroRootsWarningLine())
-  } else {
-    const envRoots = (process.env.MEDIA_ROOTS ?? '').split(',').map(s => s.trim()).filter(Boolean)
-    const dbRoots = currentRoots()
-    const warning = rootsMismatchWarningLine(envRoots, dbRoots)
-    if (warning) console.warn(warning)
   }
 
   // spec A §4.3：密钥解析器——env 优先、库兜底，dbGet 惰性读库（每 tick/每重建都是新鲜值）。
@@ -240,7 +228,7 @@ async function cmdWatch() {
   // watch 启动时刻的**冻结快照**，而 D5 的全部意义就是"设置页改完下一轮就生效、不用重启
   // 容器"。下一个人顺手用了这个现成的 `targetLanguages` 变量，就悄悄退回改造前的行为，
   // 且不会有任何测试变红——正是 D5 注释里点名要防的那种静默漂移。
-  const languagesNow = () => resolveTargetLanguages(process.env, settingsRepo.get('target_languages'))
+  const languagesNow = () => resolveTargetLanguages({}, settingsRepo.get('target_languages'))
 
   // provider 事件 → 日志（find-subtitle worker 用，v3 phase ⑦）：这条新链路没有旧管线的
   // 逐 job Journal（老管线的 journalStore/withJournal 已随 Wave 2D 一并删除），api_call 量大信号

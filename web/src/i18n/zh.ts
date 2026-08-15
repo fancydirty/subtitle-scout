@@ -26,7 +26,6 @@ export const zh = {
   common_clear: '清除',
   common_confirm: '确认',
   common_loading: '加载中…',
-  common_offline: '未连接',
 
   // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
   a11y_side_nav: '侧边导航',
@@ -36,7 +35,6 @@ export const zh = {
   a11y_loading_media_library: '正在加载媒体库',
   a11y_loading_media_detail: '正在加载媒体详情',
   a11y_loading_notifications: '正在加载通知',
-  topbar_loading: '加载中…',
 
   // Task ⑦ 占位页（Task ⑧⑩ 填肉后**只剩活动一个**）。中文取用户在 FRONTEND-SPEC §二 里的原话口径。
   placeholder_under_construction: '施工中',
@@ -46,10 +44,6 @@ export const zh = {
   page_failed_desc: '这一页里有内容没能显示出来。你的数据没有被改动，其他页面照常可用——可以重新加载这一页，或者从侧栏切到别的页面。',
   page_failed_retry: '重新加载这一页',
 
-  cmdk_trigger: '跳转',
-  cmdk_label: '命令面板',
-  cmdk_placeholder: '跳转到页面…',
-  cmdk_empty: '无匹配',
 
   library_empty_title: '媒体库暂无内容',
   library_empty_desc: '扫描媒体根目录后，剧集与电影会出现在这里。',
@@ -154,8 +148,7 @@ export const zh = {
 
 
   settings_behavior_heading: '行为',
-  settings_deploy_heading: '部署',
-  settings_roots_heading: '守备目录',
+  settings_roots_heading: '媒体目录',
 
   settings_error_prefix: '无法加载设置：',
   settings_retry_label: '重试',
@@ -163,16 +156,13 @@ export const zh = {
   // ── Settings tab chrome（审计 P0-1/P0-3）───────────────────────────────
   settings_tab_general: '通用',
   settings_tab_providers: '字幕源',
-  settings_tab_media: '守备目录',
+  settings_tab_media: '媒体目录',
   settings_tab_security: '安全',
-  settings_tab_advanced: '高级',
   settings_status_configured: '✓ 已配置',
   settings_status_unconfigured: '⚠ 未配置',
-  settings_status_locked: '🔒 环境变量',
 
   settings_target_languages_label: '目标字幕语言',
   settings_target_languages_description: '要搜索和下载的字幕语言。未设置时默认为中文。',
-  settings_target_languages_save_label: '保存',
   // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
   settings_target_languages_restart_note: '下一轮扫描生效。',
 
@@ -191,50 +181,27 @@ export const zh = {
   settings_scan_interval_label: '扫描间隔（分钟）',
   settings_scan_interval_note: '保存后，下一轮扫描生效。',
 
-  settings_ai_translate_label: 'AI 字幕翻译',
-  settings_ai_translate_note:
-    '默认关闭。开启后守护进程会对搜不到字幕的条目自动翻译（消耗 TRANSLATE_* 配额）。需部署层配 TRANSLATE_BASE_URL/API_KEY/MODEL。手动 translate-item 不受此开关影响。',
-  settings_translate_section_heading: 'AI 翻译（agent 工作台）',
-  settings_translate_dormant_warning:
-    '部署门缺失——开关已打开但不会运行任何翻译。请在 .env 配置 TRANSLATE_* 并重建容器。',
-  settings_translate_view_workflow: '到 Workflow 页查看翻译活动 →',
-  settings_translate_confirm_title: '开启 AI 翻译？',
-  settings_translate_confirm_body_ready:
-    '守护进程将对搜索穷尽无中字的条目自动调用 LLM 翻译，持续消耗 TRANSLATE_* 配额；质量闸拦下的条目按衰减梯重试，同签名反复失败会停车转人工。部署门：就绪。',
-  settings_translate_confirm_body_missing:
-    '守护进程将对搜索穷尽无中字的条目自动调用 LLM 翻译，持续消耗 TRANSLATE_* 配额。部署门：缺失——配好 TRANSLATE_* 并重建容器前不会有任何翻译运行。',
-  settings_translate_confirm_action: '开启',
-
   settings_save_error_prefix: '保存失败：',
 
-  settings_deploy_readonly_note: '部署层配置，只读——如需修改请编辑环境变量或 compose 文件',
-  settings_deploy_secrets_heading: '密钥',
-  settings_deploy_nonsecrets_heading: '其它',
   // 审计四轮 R4：MEDIA_ROOTS 只是首启种子，真正生效的是 media_roots 表（本页守备目录区）
-  settings_deploy_media_roots_seed_note: '仅首启种子 — 当前生效的守备目录见下方列表',
-  settings_deploy_error_prefix: '无法加载部署信息：',
   // 技术状态词——同 Workflow 区 decision 词表的口径永不翻译（DESIGN.md §3/§4：圆点+同色词，
   // 状态词是技术值不是正文）。
-  settings_deploy_present_word: en.settings_deploy_present_word,
-  settings_deploy_absent_word: en.settings_deploy_absent_word,
 
   settings_roots_error_prefix: '无法加载守备目录：',
   settings_roots_retry_label: '重试',
-  settings_roots_empty_hint: '尚无守备目录——请在下方浏览并添加第一个。',
+  settings_roots_empty_hint: '还没有媒体目录——在下面输入路径添加第一个。',
   settings_roots_remove_label: '删除',
-  settings_roots_add_button_label: '添加守备目录',
+  settings_roots_add_button_label: '添加媒体目录',
+  settings_roots_add_path_label: '媒体目录路径',
+  settings_roots_add_path_placeholder: '输入宿主机上的媒体目录绝对路径，例如 /Users/me/Movies',
+  settings_roots_add_error_prefix: '无法添加该目录：',
+  settings_roots_add_success: '已加入，下一轮扫描将自动摄取。',
   settings_roots_remove_confirm_desc: '这将清除该目录下的全部索引行——剧集、电影、字幕记录与停车行。磁盘上的文件不会被改动。',
   settings_roots_remove_result_title: '守备目录已删除',
   settings_roots_remove_failed_title: '删除失败',
   settings_roots_remove_close_label: '关闭',
   settings_roots_remove_error_prefix: '无法删除该守备目录：',
 
-  settings_dirbrowser_description: '浏览容器内可见的目录，选择要纳入扫描的那一个。',
-  settings_dirbrowser_add_button: '添加此目录',
-  settings_dirbrowser_add_success: '已加入，下一轮扫描将自动摄取。',
-  settings_dirbrowser_add_error_prefix: '无法添加该目录：',
-  settings_dirbrowser_empty: '这里没有子目录。',
-  settings_dirbrowser_error_prefix: '无法列出该目录：',
 
   // ── 鉴权 A2/A3（setup 向导 / 登录 / Security 区）。 ──
   auth_username_label: '用户名',
@@ -289,7 +256,7 @@ export const zh = {
   wizard_test_failed: '连接失败',
   wizard_test_unavailable: '测试服务不可用，请重试',
   wizard_launch: '启动',
-  wizard_env_locked: '已通过环境变量配置',
+  wizard_env_locked: '已配置',
   wizard_retest: '重新测试',
 
   wizard_step_language_title: '字幕语言',
@@ -341,7 +308,7 @@ export const zh = {
   wizard_zimuku_captcha_ready: '验证码求解：就绪（LLM 已配置）',
   wizard_zimuku_captcha_not_ready: '验证码求解需要第 3 步的 LLM。',
 
-  wizard_roots_skip_note: '添加守备目录前媒体库为空——之后可以在 Settings 里加。',
+  wizard_roots_skip_note: '添加媒体目录前媒体库为空——之后可以在设置里加。',
 
   wizard_launch_configured: '已配置',
   wizard_launch_skipped: '已跳过',
@@ -359,14 +326,11 @@ export const zh = {
 
   settings_engine_label: '发动机',
   settings_engine_desc: '扫描、抓取与一切自动工作的总开关。',
-  settings_providers_title: '字幕源',
   settings_provider_enable_label: '启用 {name}',
   settings_provider_no_api_key_note: '无需 API key，开箱即用',
   settings_free_source_description: '中文源',
-  settings_provider_env_locked: '由环境变量设置——锁定',
-  settings_provider_source_env: '环境',
-  settings_provider_source_db: '数据库',
   settings_provider_not_set: '未设置',
+  settings_provider_readonly_note: '此处不可修改',
   settings_provider_edit: '编辑',
   settings_provider_save: '保存',
   settings_provider_cancel: '取消',
@@ -539,13 +503,6 @@ export const zh = {
   wb_error_title: '没能加载队列',
   wb_retry: '重试',
   // ── 决策历史段（RunsHistory）——decision 词本身不翻译（技术状态词，同 en 侧裁决） ──
-  runs_section_title: '决策历史',
-  runs_empty: '还没有运行记录',
-  runs_error_prefix: '没能加载运行历史：',
-  runs_load_more: '加载更多',
-  runs_trace_loading: '正在加载痕迹…',
-  runs_trace_none: '这条运行没有痕迹快照',
-  runs_ago: '{d} 前',
   // ── 🟡 实时通道掉线时的「读数已经不新鲜了」（诚实性，**不是排障提示**）────────
   // 措辞纪律同 en 侧：不出现 SSE / 连接 / 状态码这类词。两句分开是因为用户能做的事不同
   // （retrying 自己会好；unavailable 是终态，只有刷新才可能变，所以必须明说刷新）。
