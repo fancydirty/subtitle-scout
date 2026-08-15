@@ -372,7 +372,7 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 - 活动页底部「决策历史」段：每次处理的一行人话摘要（选了谁、为什么没找到），点击一行展开该次 agent 运行的工具调用序列
 - 脚本/集成也可以走 API：`curl -H 'X-Api-Key: <key>' 'http://<主机>:8099/api/v2/runs?limit=50'`（单条 trace：`/api/v2/workflow/runs/<id>/trace`）
 
-**LLM/API 调用明细**：traceBus 收官快照落盘在 `runs.trace_json`（默认保留 30 天，超期自动修剪、行本身保留）。
+**LLM/API 调用明细**：traceBus 收官快照落盘在 `runs.trace_json`。运行记录保留一周（与通知页同窗，超期整行自动删除；`trace_retention_days` 可改窗口）。
 
 程序日志（`docker compose logs subtitle-scout` 或容器内 `/cache/logs/`）能看到 provider 报错/提示一类的关键事件，但不是完整调用记录。
 

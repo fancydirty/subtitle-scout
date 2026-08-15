@@ -334,10 +334,9 @@ export interface DaemonV2Deps {
   sweepWriteProbes?: () => number
   /** trace 快照保留天数（惰性读 settings，默认 30）。 */
   traceRetentionDays?: () => number
-  /** trace 修剪 + runs 记账的执行体（RunsRepo）。runs 行本身保留（决策史不删），只把过保留期的
-   *  trace_json 置 NULL——与 traceRetentionDays 是一对：只有两者都注入才启用修剪支。
-   *  2026-08-15 起 insert 也在_pick 里：字幕工作台每个作品跑完往 runs 落一行决策史
-   *  （runSubtitleWorkDir 的第 5 参），否则 v3 轨对 runs 表零写入、/api/v2/runs 恒空。 */
+  /** 历史清理的执行体（RunsRepo）。2026-08-15 用户裁决：runs 行保留一周（与通知页
+   *  同窗）、过期整行删除——见 pruneTraces 的实现注释。与 traceRetentionDays 是一对：
+   *  只有两者都注入才启用这一支。 */
   runs?: Pick<RunsRepo, 'pruneTraces' | 'insert'>
   /** 每拍最先跑（"照旧 DaemonDeps 形态"的措辞来源见本节开头的运维器官段落）：cmdWatch 接
    *  secrets_version watcher——wizard 把密钥
@@ -724,13 +723,16 @@ export class ScoutDaemonV2 {
       } catch (e) { this.deps.log(`warn: 写探针清扫失败（隔离）: ${String(e)}`) }
     }
 
-    // trace 修剪自带天级时间门：修剪不是热路径，每 5 分钟发一条全表 UPDATE 是白付 IO。
+    // 历史清理自带天级时间门：删除不是热路径，每 5 分钟发一条全表 DELETE 是白付 IO。
+    // 2026-08-15 用户裁决：runs 行保留一周（与通知页同窗），过期整行删除——此前
+    // "行保留、只清 trace_json"的口径已被取代。窗口天数仍读 trace_retention_days
+    // 设置（默认 30 → cli 接线处建议改 7，见 buildDaemonV2Deps 的默认值注释）。
     if (this.deps.runs && this.deps.traceRetentionDays && now - this.lastTracePruneAt >= TRACE_PRUNE_EVERY_MS) {
       try {
         const days = this.deps.traceRetentionDays()
         const pruned = this.deps.runs.pruneTraces(now - days * 86_400_000)
-        if (pruned > 0) this.deps.log(`trace 修剪: 清空了 ${pruned} 份超过 ${days} 天的快照`)
-      } catch (e) { this.deps.log(`warn: trace 修剪失败（隔离）: ${String(e)}`) }
+        if (pruned > 0) this.deps.log(`runs 历史清理: 删除了 ${pruned} 条超过 ${days} 天的运行记录`)
+      } catch (e) { this.deps.log(`warn: runs 历史清理失败（隔离）: ${String(e)}`) }
       // 时间门在**尝试之后**推进（不论成败）：失败也隔一天再试，避免坏库上每拍重试。
       this.lastTracePruneAt = now
     }

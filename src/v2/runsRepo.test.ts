@@ -38,25 +38,30 @@ describe('RunsRepo trace_json (痕迹通道 C 收官快照)', () => {
     expect(rows[0].trace_json).toBeNull()
   })
 
-  it('债务D5：pruneTraces 只把过期且非空的 trace_json 置 NULL，保留 runs 行本身', () => {
+  it('用户裁决(2026-08-15)：pruneTraces 过期行整行删除（与通知页同窗）；未过期与进行中的行不动', () => {
     const boundary = 1000
-    // 旧 + 有 trace_json → 会被修剪
+    // 旧 + 有 trace_json → 删
     runs.insert({ jobId, startedAt: 100, finishedAt: boundary - 1, decision: 'installed', detail: 'old traced', journalPath: null, traceJson: '[{"old":true}]' })
-    // 新 + 有 trace_json → 不修剪
+    // 新 + 有 trace_json → 留
     runs.insert({ jobId, startedAt: 100, finishedAt: boundary + 1, decision: 'installed', detail: 'new traced', journalPath: null, traceJson: '[{"new":true}]' })
-    // 旧 + trace_json 已 NULL → 不修剪（不重复计数）
+    // 旧 + trace_json 为 NULL → 同样删（整行过期，不是只清附件）
     runs.insert({ jobId, startedAt: 100, finishedAt: boundary - 1, decision: 'installed', detail: 'old pruned', journalPath: null, traceJson: null })
+    // 进行中（finished_at NULL）→ 留——删进行中的行等于销毁正在写的账。
+    // insert 的 finishedAt 类型是 number（行收尾才插），NULL 只能插入后 UPDATE 补上。
+    runs.insert({ jobId, startedAt: 100, finishedAt: 2000, decision: 'installed', detail: 'in flight', journalPath: null })
+    db.prepare('UPDATE runs SET finished_at = NULL WHERE detail = ?').run('in flight')
 
     const pruned = runs.pruneTraces(boundary)
-    expect(pruned).toBe(1)
+    expect(pruned).toBe(2)
 
     const rows = runs.getByJobId(jobId)
-    expect(rows).toHaveLength(3)
-    const oldTraced = rows.find(r => r.detail === 'old traced')!
+    expect(rows).toHaveLength(2)
     const newTraced = rows.find(r => r.detail === 'new traced')!
-    const oldPruned = rows.find(r => r.detail === 'old pruned')!
-    expect(oldTraced.trace_json).toBeNull()
+    const inFlight = rows.find(r => r.detail === 'in flight')!
     expect(newTraced.trace_json).toBe('[{"new":true}]')
-    expect(oldPruned.trace_json).toBeNull()
+    expect(inFlight.finished_at).toBeNull()
+    // 旧行（含无 trace 的）整体不在了
+    expect(rows.find(r => r.detail === 'old traced')).toBeUndefined()
+    expect(rows.find(r => r.detail === 'old pruned')).toBeUndefined()
   })
 })

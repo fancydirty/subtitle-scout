@@ -639,8 +639,9 @@ async function cmdWatch() {
       return swept
     },
     runs,
-    // 债务D5：trace 保留天数惰性读，默认 30 天（设置页改完下一轮巡检生效，不用重启容器）。
-    traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 30,
+    // 2026-08-15 用户裁决：runs 历史保留一周（与通知页同窗）——默认 7。
+    // trace_retention_days 设置仍可覆盖（改完下一轮维护拍生效，不用重启容器）。
+    traceRetentionDays: () => Number(settingsRepo.get('trace_retention_days')) || 7,
     // spec A §4.2/§4.7：preTick 每拍最先跑——secrets_version 变了在这里完成热重建
     // （整体换 clients.current），随后 satisfaction tracker 在"点火"那一刻记 engine live。
     preTick: async () => {

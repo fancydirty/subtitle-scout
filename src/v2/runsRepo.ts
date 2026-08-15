@@ -56,11 +56,13 @@ export class RunsRepo {
       .all(jobId) as Run[]
   }
 
-  /** 债务D5：trace 快照修剪——过保留期的 runs 行 trace_json 置 NULL（行本身保留：决策史是
-   *  一等事实不删，只丢直播回放的大 JSON）。返回修剪行数。 */
+  /** 用户裁决（2026-08-15）：runs 行保留一周、与通知页同窗，过期整行删除（含 trace_json）。
+   *  窗口共用 NOTIFICATION_RETENTION_MS——读窗与清理各写一份必然漂移（通知页 R-F3 的既有
+   *  论证同款）。此前"决策史不删、只修剪 trace_json"是开发期口径，已被本裁决取代。
+   *  按 finished_at 判过期；进行中（finished_at NULL）的行不删。返回删除行数。 */
   pruneTraces(beforeMs: number): number {
     return this.db.prepare(
-      `UPDATE runs SET trace_json = NULL WHERE finished_at < ? AND trace_json IS NOT NULL`
+      `DELETE FROM runs WHERE finished_at IS NOT NULL AND finished_at < ?`
     ).run(beforeMs).changes
   }
 }

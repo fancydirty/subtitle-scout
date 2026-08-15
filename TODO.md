@@ -44,6 +44,7 @@
 **Phase 3: 可观测性与测试补全（已完成）**
 - [x] runs 记账接线（2026-08-15，生产实测发现）：v3 字幕轨对 runs 表**零写入**——唯一写方是已死的 jobs claim-dispatch 路径，而 `/api/v2/runs` 端点还活着。已把 `RunsRepo.insert` 接进 `runSubtitleWorkDir`（按非空桶各记一行，词表沿用，trace_json 一次快照挂多行，job_id=NULL）。测试：daemonV2.test.ts「runSubtitleWorkDir · runs 记账」4 条。
 - [x] runs 的前端消费（2026-08-15）：活动页新增「决策历史」段（`web/src/workbench/RunsHistory.tsx`）——runs 行（decision 词不翻译 + 人话 detail + 相对时间）、点击惰性展开 trace 回放（`/api/v2/workflow/runs/:id/trace`，每行只取一次）、工作台级事件触发重拉、分页加载更多。README 已同步回真实描述（历史段在活动页，不再只说 curl）。
+- [x] runs 保留期裁决（2026-08-15 用户裁决：**最多一周，与通知页同窗**）：`RunsRepo.pruneTraces` 从“行保留、只清 trace_json”改为过期整行 DELETE（进行中的行不删）；cli 默认值 30→7，`trace_retention_days` 设置仍可覆盖。先前“决策史不删”是开发期口径，已废。
 - [x] subtitles 表处置（2026-08-15 评估裁决：**保留，不 DROP**）：3 处 INSERT 全在雪藏的 handleWorkerTask 族上（用户 2026-08-14 裁决「不删不接，等主链路 live test 没毛病再裁」），读方（verifySweep 族）同样雪藏。唯一活触碰点是 `settingsRepo.removeRoot` 的级联 DELETE——对 0 行表是无害 no-op。单方 DROP 等于替雪藏裁决做决定；处置与那族捆绑，等 live test 观察期结束后一起裁。
 - [x] identityEval mtime 冗余测试：**已随 identityEval.live.test.ts 文件删除而消失**（agent-first 架构重构），死待办划掉。
 - [x] 回滚窄窗口 v24：**已随 v27 认领退役失效**——identify_overrides 表（含 source 列）v27 已 DROP，db.ts 里那段三步齐全注释也已删；迁移链按 meta.schema_version 只进不退，"回滚到 v24-26 再滚回"的操作面不存在了。死待办划掉。
