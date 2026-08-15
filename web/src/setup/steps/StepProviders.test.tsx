@@ -160,7 +160,7 @@ describe('StepProviders', () => {
       },
     })
     const block = within(screen.getByTestId('provider-assrt'))
-    expect(block.getByText(/Configured via environment/)).toBeInTheDocument()
+    expect(block.getByText(/Already configured/)).toBeInTheDocument()
     expect(block.queryByLabelText('ASSRT token')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save & continue' })).toBeDisabled()
   })

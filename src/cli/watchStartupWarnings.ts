@@ -1,9 +1,9 @@
 // src/cli/watchStartupWarnings.ts：watch 启动告警的纯逻辑层（index.ts 顶层有 import-time 副作用，
 // 没法给它单独写单测——把纯逻辑抽出来是唯一能 TDD 覆盖这段文案的办法，同 dashboardTokenWarning.ts 先例）。
 
-/** 零守备目录告警（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）。 */
+/** 零媒体目录告警（media_roots 表为空）。设置页是唯一配置入口。 */
 export function zeroRootsWarningLine(): string {
-  return '[watch] no media roots configured（DB media_roots 为空，MEDIA_ROOTS 首启种子也为空）— subtitle writes are not root-restricted; 去 dashboard 加一个守备目录，或设 MEDIA_ROOTS 作首启种子'
+  return '[watch] no media folders configured — subtitle writes are not restricted; go to Settings and add a media folder'
 }
 
 /** 存量嵌套守备目录告警（D7 附加，2026-08-08）。

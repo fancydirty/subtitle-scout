@@ -33,12 +33,12 @@ describe('ProviderToggleCard', () => {
     await waitFor(() => expect(reload).toHaveBeenCalled())
   })
 
-  it('env 源 → Switch 禁用 + locked badge + 锁定注', () => {
+  it('env 源 → Switch 禁用 + 只读说明（不暴露 env）', () => {
     renderCard({ id: 'zimuku', state: { enabled: false, source: 'env' } })
     const card = within(screen.getByTestId('providers-zimuku'))
     expect(card.getByRole('switch')).toBeDisabled()
-    expect(card.getByText('🔒 Environment')).toBeInTheDocument()
-    expect(card.getByText('Set by environment — locked')).toBeInTheDocument()
+    expect(card.getByText('⚠ Not configured')).toBeInTheDocument()
+    expect(card.getByText('Read-only here')).toBeInTheDocument()
   })
 
   it('渲染中文源描述', () => {

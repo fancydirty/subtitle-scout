@@ -1,9 +1,18 @@
 // src/dashboard/auth.ts
-import { scryptSync, randomBytes, timingSafeEqual } from 'node:crypto'
+import { scryptSync, randomBytes, timingSafeEqual, createHash } from 'node:crypto'
 import type { SettingsRepo } from '../v2/settingsRepo.js'
+import type { ScoutDb } from '../v2/db.js'
 
 /** 鉴权战役 A1（spec 2026-07-17）：单管理员凭据的纯逻辑层——哈希/会话/限流/服务编排全在
- *  这里，server.ts 只做 HTTP 接线。零新依赖（node:crypto scrypt）。 */
+ *  这里，server.ts 只做 HTTP 接线。零新依赖（node:crypto scrypt）。
+ *
+ *  auth 重做（2026-08-15，用户裁决）：会话层从"settings 表 session: 键值行"迁到独立的
+ *  auth_sessions 表（db v40），三件事一起修：
+ *   ① 关浏览器/满 30 天掉线——滑动续期现在**重发 cookie**（server.ts 按 verify 的返回值
+ *      补 set-cookie，*arr 同款语义：活跃用户的 cookie 永远还有大半寿命）；
+ *   ② 绝对上限 90 天（OWASP 滑动+绝对组合）——旧结构会话可无限滑动永生；
+ *   ③ 库里只存 sha256(token)（settings 行存明文，库泄漏=全部会话可劫持）。
+ *  升级后所有已登录浏览器需重登一次（存量 session: 行不迁移，理由见 v40 迁移注释）。 */
 
 const SALT_BYTES = 16
 const KEY_BYTES = 64
@@ -36,57 +45,82 @@ export function verifyPassword(password: string, stored: string): boolean {
   return actual.length === expected.length && timingSafeEqual(actual, expected)
 }
 
-const SESSION_TTL_MS = 30 * 24 * 3600 * 1000
+/** 滑动窗口：30 天（verify 顺延 + cookie 重发同值）。绝对上限：90 天（从登录起算，无论
+ *  多活跃强制重登一次——用户裁决 B，2026-08-15）。两个常量刻意分开：绝对上限的存在
+ *  正是为了约束滑动的"永生"倾向，值必须大于滑动窗（否则绝对上限永远先到，滑动形同虚设），
+ *  tsc 不可能替我们守这个关系，写死在注释里。 */
+export const SESSION_IDLE_MS = 30 * 24 * 3600 * 1000
+export const SESSION_ABSOLUTE_MS = 90 * 24 * 3600 * 1000
 
-/** session cookie 后端仓：持久化到 settings 表（重启保持登录态）。滚动过期：
- *  verify 通过即续期 30 天。create 时顺带惰性清扫过期会话（防长期运行缓慢泄漏）。
- *  存储格式：settings 表 key=session:${token}, value=expiresAt（Unix 毫秒时间戳）。 */
+export interface VerifyOutcome {
+  ok: boolean
+  /** 滑动续期后仍在半衰期之前 → false；进入半衰期（剩余寿命 < 一半）→ true。
+   *  server.ts 拿到 true 时补发 set-cookie（同 token 顺延 Max-Age）——cookie 的
+   *  Max-Age 从签发起倒数，服务端单方面续期救不了客户端，这正是"天天用却在第 30 天
+   *  掉线"的根因（2026-08-15 浏览器实测定位）。*arr 的 SlidingExpiration 同款语义。 */
+  renewCookie: boolean
+}
+
+/** session 后端仓：auth_sessions 表（db v40）。滚动过期 + 绝对上限：
+ *  verify 通过即顺延 expires_at 30 天；created_at 超 90 天的行删除（绝对上限，强制重登）。
+ *  create 时顺带惰性清扫（防长期运行缓慢泄漏）。sid 只存 sha256——库泄漏不可逆推出 token。
+ *  迁移注：v40 起旧 settings 表 session: 行已清空；本类不再读写 settings。 */
 export class SessionStore {
-  constructor(private settings: SettingsRepo) {}
+  constructor(private db: ScoutDb) {}
 
-  /** 惰性清扫：删除所有已过期的会话。 */
+  private static hash(token: string): string {
+    return createHash('sha256').update(token).digest('hex')
+  }
+
+  /** 惰性清扫：滑动过期 + 绝对上限双条件删除。 */
   private sweep(now: number): void {
-    const sessions = this.settings.listByPrefix('session:')
-    for (const { key, value } of sessions) {
-      const exp = parseInt(value, 10)
-      if (isNaN(exp) || now > exp) {
-        this.settings.delete(key)
-      }
-    }
+    this.db.prepare('DELETE FROM auth_sessions WHERE expires_at < ? OR created_at < ?')
+      .run(now, now - SESSION_ABSOLUTE_MS)
   }
 
   create(now: number): string {
-    this.sweep(now) // 惰性清扫，防 settings 表无界增长
+    this.sweep(now)
     const token = randomBytes(32).toString('hex')
-    const expiresAt = now + SESSION_TTL_MS
-    this.settings.set(`session:${token}`, String(expiresAt), now)
+    this.db.prepare('INSERT INTO auth_sessions (sid_hash, created_at, last_seen, expires_at) VALUES (?, ?, ?, ?)')
+      .run(SessionStore.hash(token), now, now, now + SESSION_IDLE_MS)
     return token
   }
 
-  verify(token: string, now: number): boolean {
-    const key = `session:${token}`
-    const value = this.settings.get(key)
-    if (value === null) return false
-    const exp = parseInt(value, 10)
-    if (isNaN(exp) || now > exp) {
-      this.settings.delete(key)
-      return false
+  verify(token: string, now: number): VerifyOutcome {
+    const fail: VerifyOutcome = { ok: false, renewCookie: false }
+    const sidHash = SessionStore.hash(token)
+    const row = this.db.prepare('SELECT created_at, expires_at FROM auth_sessions WHERE sid_hash = ?')
+      .get(sidHash) as { created_at: number; expires_at: number } | undefined
+    if (!row) return fail
+    // 绝对上限：无论多活跃，登录起 90 天强制重登（先于滑动判定——绝对上限是硬顶）。
+    if (now > row.created_at + SESSION_ABSOLUTE_MS) {
+      this.db.prepare('DELETE FROM auth_sessions WHERE sid_hash = ?').run(sidHash)
+      return fail
     }
-    // 续期 30 天
-    this.settings.set(key, String(now + SESSION_TTL_MS), now)
-    return true
+    if (now > row.expires_at) {
+      this.db.prepare('DELETE FROM auth_sessions WHERE sid_hash = ?').run(sidHash)
+      return fail
+    }
+    // 滑动续期：expires_at 顺延 30 天。**续期前**旧窗口剩余寿命不足半衰期（15 天）时
+    // 告诉调用方重发 cookie——客户端的 Max-Age 只能靠 set-cookie 刷新（见 VerifyOutcome.renewCookie
+    // 注释）。半衰期阈值让重发频率与续期节奏同数量级：重发太频（每次请求）是白付响应头，
+    // 太懒（只剩一天才发）则中途关停一段时间就错过最后一次续期机会。
+    // 判据取**续期前**的 expires_at：第 20 天访问时旧窗口剩 10 天（< 15），触发重发；
+    // 续期后新窗口从第 20 天起又有 30 天，下次访问（假设第 21 天）剩 29 天不触发。
+    const needsRenew = row.expires_at - now < SESSION_IDLE_MS / 2
+    const newExpiry = now + SESSION_IDLE_MS
+    this.db.prepare('UPDATE auth_sessions SET last_seen = ?, expires_at = ? WHERE sid_hash = ?')
+      .run(now, newExpiry, sidHash)
+    return { ok: true, renewCookie: needsRenew }
   }
 
   revoke(token: string): void {
-    this.settings.delete(`session:${token}`)
+    this.db.prepare('DELETE FROM auth_sessions WHERE sid_hash = ?').run(SessionStore.hash(token))
   }
 
   /** 全员下线：清空所有会话（改密时用——凭据轮换必须让任何被盗会话立即失效）。 */
   clear(): void {
-    const sessions = this.settings.listByPrefix('session:')
-    for (const { key } of sessions) {
-      this.settings.delete(key)
-    }
+    this.db.prepare('DELETE FROM auth_sessions').run()
   }
 }
 
@@ -185,13 +219,20 @@ export type LoginResult = { ok: true; sessionToken: string } | { ok: false; stat
 export type ChangePasswordResult = { ok: true } | { ok: false; error: string }
 
 /** settings 三键之上的鉴权编排。会话/节流自带默认实例（server.ts 一个 AuthService 就是一套
- *  完整状态），测试可直接摸 .sessions 断言。 */
+ *  完整状态），测试可直接摸 .sessions 断言。
+ *  2026-08-15 auth 重做：SessionStore 改吃 db（auth_sessions 表）而非 settings；
+ *  登录失败落一行审计日志（带来源 IP——Bazarr 同款，限流只挡不记的时代结束）。
+ *  logFailure 可注入（默认 console.error），生产接 server 的 logger，测试收数组断言。 */
 export class AuthService {
   readonly sessions: SessionStore
   private throttle = new LoginThrottle()
 
-  constructor(private settings: SettingsRepo) {
-    this.sessions = new SessionStore(settings)
+  constructor(
+    private settings: SettingsRepo,
+    db: ScoutDb,
+    private logFailure: (msg: string) => void = (m) => console.error(m),
+  ) {
+    this.sessions = new SessionStore(db)
   }
 
   isInitialized(): boolean {
@@ -219,6 +260,7 @@ export class AuthService {
     const storedHash = this.settings.get(AUTH_KEYS.passwordHash)
     if (storedUser === null || storedHash === null) {
       this.throttle.recordFailure(remoteAddr, now)
+      this.logFailure(`[auth] login failed (not initialized) from ${remoteAddr}`)
       return { ok: false, status: 401, error: 'not initialized' }
     }
     // R6-2 修复：login 时序侧信道——此前 `username !== storedUser ||` 短路导致用户名错时
@@ -229,6 +271,8 @@ export class AuthService {
     const userOk = safeStrEqual(username, storedUser) // 常量时间比较
     if (!userOk || !passwordOk) {
       this.throttle.recordFailure(remoteAddr, now) // 只对失败计入（审计 #3）
+      // 审计日志：不记用户名/密码本体（可能是攻击者的注入素材），只记来源与结果。
+      this.logFailure(`[auth] login failed (bad credentials) from ${remoteAddr}`)
       return { ok: false, status: 401, error: 'invalid username or password' }
     }
     return { ok: true, sessionToken: this.sessions.create(now) }

@@ -10,7 +10,7 @@
 // actionVariant destructive→secondary 的相位切换走 Action className（buttonVariants 参数化）；
 // isActionLoading → disabled。⚠️ Radix Action 默认 click 即关：confirm→submitting 相位推进期间
 // 必须 e.preventDefault() 拦住默认关闭（结果态文本还在对话框里），done/error 相位才放默认关闭
-// （onOpenChange(false) → onClose）。Cancel 用字面量——i18n 表无此键，不为它加键（Task 26 铁规）。
+// （onOpenChange(false) → onClose）。Cancel 走 common_cancel（审计 P0-4）。
 import { useEffect, useRef, useState } from 'react'
 import {
   AlertDialog,
@@ -25,6 +25,7 @@ import {
 import { buttonVariants } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { removeRootConfirmTitle, removeRootResultLabel } from './text.js'
 
 interface Props {
@@ -68,7 +69,7 @@ export function RemoveRootDialog({ path, onClose, onRemoved }: Props) {
       onRemoved(target)  // R6：传递删除的路径给父级（取消防抖扫描）
     } catch (e) {
       if (pathRef.current !== target) return
-      setResultText(t('settings_roots_remove_error_prefix') + String(e))
+      setResultText(t('settings_roots_remove_error_prefix') + localizeErrorValue(e, lang))
       setPhase('error')
     }
   }
@@ -103,7 +104,7 @@ export function RemoveRootDialog({ path, onClose, onRemoved }: Props) {
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t('common_cancel')}</AlertDialogCancel>
           <AlertDialogAction
             className={buttonVariants({ variant: finished ? 'secondary' : 'destructive' })}
             disabled={phase === 'submitting'}

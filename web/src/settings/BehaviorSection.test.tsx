@@ -63,8 +63,8 @@ describe('BehaviorSection：null 值默认占位', () => {
 
     const traceDays = screen.getByRole('spinbutton', { name: 'Trace retention (days)' })
     expect(traceDays).toHaveAttribute('placeholder', '30')
-    const scanInterval = screen.getByRole('spinbutton', { name: 'Scan interval (ms)' })
-    expect(scanInterval).toHaveAttribute('placeholder', '900000')
+    const scanInterval = screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })
+    expect(scanInterval).toHaveAttribute('placeholder', '15')
 
     expect(
       screen.getAllByText('Takes effect on the next library scan.'),
@@ -76,7 +76,7 @@ describe('BehaviorSection：null 值默认占位', () => {
       screen.getByText('Takes effect at the daily trace cleanup.'),
     ).toBeInTheDocument()
     expect(
-      screen.getByText('Takes effect on the next daemon tick.'),
+      screen.getByText('Takes effect on the next scan tick.'),
     ).toBeInTheDocument()
   })
 
@@ -93,7 +93,7 @@ describe('BehaviorSection：null 值默认占位', () => {
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' }).textContent).toContain('Aggressive')
     expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeChecked()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toHaveValue(14)
-    expect(screen.getByRole('spinbutton', { name: 'Scan interval (ms)' })).toHaveValue(600000)
+    expect(screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })).toHaveValue(10)
   })
 
   it('ai_translate 行已迁至 TranslateSection（Wave 3），BehaviorSection 不再渲染该开关', () => {
@@ -140,6 +140,31 @@ describe('BehaviorSection：单键即时 PUT', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
     expect(JSON.parse(String(init.body))).toEqual({ exclude_extras: 'true' })
+  })
+
+  it('scan_interval 已设置值未改动时失焦不重复 PUT（换算后与存储值比较）', async () => {
+    const fetchMock = mockPut(200, { ...NULL_SETTINGS, scan_interval_ms: '600000' })
+    vi.stubGlobal('fetch', fetchMock)
+    renderSection(asyncOf({ ...NULL_SETTINGS, scan_interval_ms: '600000' }))
+
+    const input = screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })
+    expect(input).toHaveValue(10)
+    fireEvent.blur(input)
+    await waitFor(() => expect(fetchMock).not.toHaveBeenCalled())
+  })
+
+  it('scan_interval 按分钟显示、提交时换算成后端毫秒', async () => {
+    const fetchMock = mockPut(200, { ...NULL_SETTINGS, scan_interval_ms: '1200000' })
+    vi.stubGlobal('fetch', fetchMock)
+    renderSection(asyncOf(NULL_SETTINGS))
+
+    const input = screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })
+    fireEvent.change(input, { target: { value: '20' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({ scan_interval_ms: '1200000' })
   })
 
   it('trace_retention_days 回车提交单键 PUT', async () => {
@@ -217,7 +242,7 @@ describe('BehaviorSection：迁移锁', () => {
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' })).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeInTheDocument()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toBeInTheDocument()
-    expect(screen.getByRole('spinbutton', { name: 'Scan interval (ms)' })).toBeInTheDocument()
+    expect(screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })).toBeInTheDocument()
   })
 
   it('DOM 里不再有 astryx-* 类名', () => {

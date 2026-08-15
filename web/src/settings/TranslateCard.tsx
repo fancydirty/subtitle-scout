@@ -13,22 +13,23 @@ import { Input } from '../components/ui/input.js'
 import { Segmented } from '../components/ui/segmented.js'
 import { Switch } from '../components/ui/switch.js'
 import { api } from '../api/client.js'
-import type { ProviderRowDTO, SettingsDTO, DeploySettingsDTO } from '../api/types.js'
+import type { ProviderRowDTO, SettingsDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
+import { localizeErrorValue } from '../lib/errorText.js'
 import { SettingsCard } from './SettingsCard.js'
+import { SECRET_LABEL_KEY } from './secretLabels.js'
 
 interface Props {
   translate: ProviderRowDTO
   llm: ProviderRowDTO
   settings: SettingsDTO
-  deploy: DeploySettingsDTO | null
   onUpdated: (s: SettingsDTO) => void
   reload: () => void
 }
 
 const SEG_ITEMS = [
-  { value: 'default', label: 'Follow default LLM' },
-  { value: 'dedicated', label: 'Dedicated model' },
+  { value: 'default', labelKey: 'settings_translate_model_default' },
+  { value: 'dedicated', labelKey: 'settings_translate_model_dedicated' },
 ] as const
 
 const TRANSLATE_FIELDS = ['TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL'] as const
@@ -39,7 +40,7 @@ const PLACEHOLDERS: Record<string, string> = {
 }
 
 export function TranslateCard({ translate, llm, settings, onUpdated, reload }: Props) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [enabled, setEnabled] = useState(settings.ai_translate_enabled === 'true')
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [touched, setTouched] = useState<Record<string, boolean>>({})
@@ -66,14 +67,12 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
   const anySet = translate.secrets.some((s) => s.set)
   const incomplete = enabled && !allEnv && anySet && !isDedicated
   const badge = !enabled
-    ? 'Off'
-    : allEnv
-      ? '🔒 Environment'
-      : isDedicated
-        ? '✓ Dedicated model'
-        : incomplete
-          ? '⚠ Incomplete'
-          : '✓ Enabled'
+    ? t('settings_translate_badge_off')
+    : isDedicated
+      ? t('settings_translate_badge_dedicated')
+      : incomplete
+        ? t('settings_translate_badge_incomplete')
+        : t('settings_translate_badge_enabled')
 
   async function commitEnabled(value: boolean) {
     setBusy(true)
@@ -83,7 +82,7 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
       setEnabled(value)
       onUpdated(result)
     } catch (e) {
-      setError(t('settings_save_error_prefix') + String(e))
+      setError(t('settings_save_error_prefix') + localizeErrorValue(e, lang))
     } finally {
       setBusy(false)
     }
@@ -100,7 +99,7 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
       setTouched({})
       reload()
     } catch (e) {
-      setError(t('settings_save_error_prefix') + String(e))
+      setError(t('settings_save_error_prefix') + localizeErrorValue(e, lang))
     } finally {
       setBusy(false)
     }
@@ -115,7 +114,7 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
       reload()
       setConfirmOpen(false)
     } catch (e) {
-      setError(t('settings_save_error_prefix') + String(e))
+      setError(t('settings_save_error_prefix') + localizeErrorValue(e, lang))
     } finally {
       setBusy(false)
     }
@@ -131,38 +130,43 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
 
   const allFilled = TRANSLATE_FIELDS.every((n) => (drafts[n] ?? '').trim() !== '')
   const fieldError = (n: string) =>
-    touched[n] && (drafts[n] ?? '').trim() === '' ? 'All three fields are required' : null
+    touched[n] && (drafts[n] ?? '').trim() === '' ? t('settings_translate_all_fields_required') : null
 
   return (
     <SettingsCard
-      title="AI subtitle translation"
-      description="Auto-translate when no subtitle is found"
+      title={t('settings_translate_card_title')}
+      description={t('settings_translate_card_description')}
       data-testid="providers-translate"
     >
       <div className="absolute right-5 top-5 text-[11px] leading-4 text-muted-foreground">{badge}</div>
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <Switch
-            aria-label="AI subtitle translation"
+            aria-label={t('settings_translate_card_title')}
             checked={enabled}
             onCheckedChange={(c) => (c ? setEnabled(true) : void commitEnabled(false))}
             disabled={busy}
           />
           <span className="text-[13px] font-medium leading-5 text-foreground">
-            Enable AI subtitle translation
+            {t('settings_translate_enable_label')}
           </span>
         </div>
-        <span className="text-[11px] leading-4 text-muted-foreground">Consumes LLM quota</span>
+        <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_translate_quota_note')}</span>
         {error && <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p>}
 
         {enabled && (
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-medium leading-5 text-foreground">Model</span>
-              <Segmented items={SEG_ITEMS} value={seg} onChange={onSegChange} label="Translation model" />
+              <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_translate_model_label')}</span>
+              <Segmented
+                items={SEG_ITEMS.map((it) => ({ value: it.value, label: t(it.labelKey) }))}
+                value={seg}
+                onChange={onSegChange}
+                label={t('settings_translate_model_label')}
+              />
               {seg === 'default' && (
                 <span className="text-[11px] leading-4 text-muted-foreground">
-                  Current: {defaultModel} · shared with agent
+                  {t('settings_translate_current_model_prefix')} {defaultModel} · {t('settings_translate_shared_with_agent')}
                 </span>
               )}
             </div>
@@ -171,9 +175,9 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
               <div className="flex flex-col gap-1.5">
                 {TRANSLATE_FIELDS.map((name) => (
                   <div key={name} className="flex flex-col gap-1.5">
-                    <label className="text-[11px] leading-4 text-muted-foreground">{name} *</label>
+                    <label className="text-[11px] leading-4 text-muted-foreground">{t(SECRET_LABEL_KEY[name])} *</label>
                     <Input
-                      aria-label={name}
+                      aria-label={t(SECRET_LABEL_KEY[name])}
                       required
                       value={drafts[name] ?? ''}
                       placeholder={PLACEHOLDERS[name]}
@@ -186,14 +190,14 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
                   </div>
                 ))}
                 <div className="flex items-center gap-2">
-                  <Button size="sm" disabled={busy || !allFilled} onClick={() => void onSaveDedicated()}>Save</Button>
+                  <Button size="sm" disabled={busy || !allFilled} onClick={() => void onSaveDedicated()}>{t('common_save')}</Button>
                   <Button
                     size="sm"
                     variant="secondary"
                     disabled={busy}
                     onClick={() => void api.validateSetup('translate').then(reload)}
                   >
-                    Test
+                    {t('settings_provider_test')}
                   </Button>
                 </div>
               </div>
@@ -205,8 +209,8 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
                   const s = secretMap[name]
                   return (
                     <div key={name} className="flex flex-col gap-1.5">
-                      <label className="text-[11px] leading-4 text-muted-foreground">{name}</label>
-                      <Input aria-label={name} readOnly value={s?.masked ?? ''} />
+                      <label className="text-[11px] leading-4 text-muted-foreground">{t(SECRET_LABEL_KEY[name])}</label>
+                      <Input aria-label={t(SECRET_LABEL_KEY[name])} readOnly value={s?.masked ?? ''} />
                     </div>
                   )
                 })}
@@ -219,15 +223,15 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
       <AlertDialog open={confirmOpen} onOpenChange={(o) => { if (!o) setConfirmOpen(false) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Switch to default model?</AlertDialogTitle>
+            <AlertDialogTitle>{t('settings_translate_dedicated_confirm_title')}</AlertDialogTitle>
             <AlertDialogDescription>
-              This clears the dedicated model configuration. Are you sure?
+              {t('settings_translate_dedicated_confirm_body')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t('common_cancel')}</AlertDialogCancel>
             <AlertDialogAction onClick={(e) => { e.preventDefault(); void onClearDedicated() }}>
-              Confirm
+              {t('common_confirm')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

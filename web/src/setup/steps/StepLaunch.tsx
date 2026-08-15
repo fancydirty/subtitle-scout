@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
+import { localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Switch } from '../../components/ui/switch.js'
 import { StepFooter } from './ui.js'
@@ -11,7 +12,7 @@ import type { TKey } from '../../i18n/useT.js'
 import type { WizardStepProps } from './types.js'
 
 export function StepLaunch({ status, onBack, onComplete }: WizardStepProps) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [engineOn, setEngineOn] = useState(status.engineEnabled)
   const [launching, setLaunching] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -34,7 +35,7 @@ export function StepLaunch({ status, onBack, onComplete }: WizardStepProps) {
       await api.updateSettings({ engine_enabled: String(engineOn) })
       onComplete()
     } catch (e) {
-      setSaveError(String(e))
+      setSaveError(localizeErrorValue(e, lang))
       setLaunching(false)
     }
   }

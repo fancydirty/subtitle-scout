@@ -4,13 +4,14 @@
 import { useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
+import { localizeError, localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Input } from '../../components/ui/input.js'
 import { StatusDot, StepFooter } from './ui.js'
 import type { WizardStepProps } from './types.js'
 
 export function StepTmdb({ status, patchStatus, onAdvance, onBack }: WizardStepProps) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [value, setValue] = useState('')
   const [testing, setTesting] = useState(false)
   const [testedValue, setTestedValue] = useState<string | null>(null)
@@ -23,7 +24,7 @@ export function StepTmdb({ status, patchStatus, onAdvance, onBack }: WizardStepP
     try {
       const r = await api.validateSetup('tmdb', { TMDB_API_KEY: v })
       if (r.ok) setTestedValue(v)
-      else setFailMsg(r.error ?? r.detail ?? t('wizard_test_failed'))
+      else setFailMsg(localizeError(r.error ?? r.detail ?? t('wizard_test_failed'), lang))
     } catch (e) {
       // 端点自身挂了（5xx / 网络断）——不是"凭据不对"，文案必须区分开（spec §7）。
       // 不回显 String(e)：那会把 "Error: HTTP 500" 摆到用户脸上，且异常串来源不受我们控制。
@@ -39,7 +40,7 @@ export function StepTmdb({ status, patchStatus, onAdvance, onBack }: WizardStepP
     setFailMsg(null)
     try {
       const r = await api.validateSetup('tmdb')
-      if (!r.ok) setFailMsg(r.error ?? r.detail ?? t('wizard_test_failed'))
+      if (!r.ok) setFailMsg(localizeError(r.error ?? r.detail ?? t('wizard_test_failed'), lang))
     } catch (e) {
       void e
       setFailMsg(t('wizard_test_unavailable'))
@@ -58,7 +59,7 @@ export function StepTmdb({ status, patchStatus, onAdvance, onBack }: WizardStepP
       patchStatus({ tmdb: { satisfied: true, source: 'db', masked: null } })
       onAdvance()
     } catch (e) {
-      setFailMsg(String(e))
+      setFailMsg(localizeErrorValue(e, lang))
       setSaving(false)
     }
   }

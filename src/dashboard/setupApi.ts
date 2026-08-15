@@ -6,7 +6,7 @@
 
 import { generateText } from 'ai'
 import type { SettingsRepo } from '../v2/settingsRepo.js'
-import { isSecretName, maskSecretValue, resolveProviderFlag, resolveSecret, type SecretName, type SecretSource } from '../v2/secrets.js'
+import { isSecretName, maskSecretValue, resolveProviderFlagFromSettings, resolveSecretFromSettings, type SecretName, type SecretSource } from '../v2/secrets.js'
 import {
   checkAssrt, checkJimaku, checkLlm, checkOpenSubtitles, checkSubhd, checkTmdb, checkZimuku, withTimeout,
 } from '../cli/doctor.js'
@@ -84,9 +84,9 @@ function secretState(r: { value: string | null; source: SecretSource }, mask: (v
 }
 
 export function buildSetupStatus(deps: SetupDeps): SetupStatusDTO {
-  const { settingsRepo, env } = deps
+  const { settingsRepo, env: _env } = deps
   const dbGet = (key: string) => settingsRepo.get(key)
-  const sec = (name: SecretName) => resolveSecret(name, env, (n) => dbGet(`secret:${n}`))
+  const sec = (name: SecretName) => resolveSecretFromSettings(name, (n) => dbGet(`secret:${n}`))
   // 脱敏规则只有一份：从 secrets.ts 导入（Task 1 的 maskSecretValue，≥8 位取首尾 3 位，
   // <8 位整体 ••••）。不要在这里再写一遍——两份实现会各自漂移。
   const mask = maskSecretValue
@@ -103,8 +103,8 @@ export function buildSetupStatus(deps: SetupDeps): SetupStatusDTO {
   const osKey = sec('OPENSUBTITLES_API_KEY')
   const osUser = sec('OPENSUBTITLES_USERNAME')
   const osPass = sec('OPENSUBTITLES_PASSWORD')
-  const subhd = resolveProviderFlag('SUBHD_ENABLED', env, dbGet)
-  const zimuku = resolveProviderFlag('ZIMUKU_ENABLED', env, dbGet)
+  const subhd = resolveProviderFlagFromSettings('SUBHD_ENABLED', dbGet)
+  const zimuku = resolveProviderFlagFromSettings('ZIMUKU_ENABLED', dbGet)
 
   return {
     // spec §3 决策 1：推导式触发——TMDB + LLM 齐 = bootstrap 完成，无独立标志位。
@@ -328,7 +328,7 @@ function defaultProbe(
   const notConfigured: ReturnType<ValidateProbe> = Promise.resolve({ ok: true, skip: true, detail: 'not configured' })
   // credentials 优先，其次 env/db 已解析值——"先测后存"与"测已配的"共用一个解析口。
   const cred = (n: SecretName): string | null =>
-    creds[n] ?? resolveSecret(n, env, (x) => settingsRepo.get(`secret:${x}`)).value
+    creds[n] ?? resolveSecretFromSettings(n, (x) => settingsRepo.get(`secret:${x}`)).value
 
   switch (target) {
     case 'tmdb': {

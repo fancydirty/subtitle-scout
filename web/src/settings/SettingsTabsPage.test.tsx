@@ -8,7 +8,6 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 function mockHooks(over: { providers?: number; roots?: number } = {}) {
   vi.spyOn(hooks, 'useSettings').mockReturnValue({ data: { ai_translate_enabled: 'false' } as never, loading: false, error: null, reload: vi.fn() })
-  vi.spyOn(hooks, 'useDeploySettings').mockReturnValue({ data: null, loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useRoots').mockReturnValue({ data: Array(over.roots ?? 0).fill({ path: '/x' }), loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useSetupProviders').mockReturnValue({ data: { providers: [] }, loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({ data: null, loading: false, error: null, reload: vi.fn() })
@@ -19,14 +18,13 @@ function renderPage() {
 }
 
 describe('SettingsTabsPage', () => {
-  it('默认 general tab，渲染五个 tab 触发器', () => {
+  it('默认 general tab，渲染四个 tab 触发器', () => {
     mockHooks()
     renderPage()
     expect(screen.getByRole('tab', { name: /General/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tab', { name: /Providers/ })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /Media/ })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /Security/ })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /Advanced/ })).toBeInTheDocument()
   })
 
   it('tab 切换显示对应内容', () => {

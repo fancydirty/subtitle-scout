@@ -18,11 +18,11 @@ const TMDB: ProviderRowDTO = { id: 'tmdb', secrets: [{ name: 'TMDB_API_KEY' as a
 const ASSRT: ProviderRowDTO = { id: 'assrt', secrets: [{ name: 'ASSRT_TOKEN' as any, set: true, source: 'db', masked: 'ass••••123' }], lastTest: { ok: true, at: 1700000000000 }, quota: null }
 
 describe('ProviderCard', () => {
-  it('env 源：只读打码 + locked badge + 无 Edit', () => {
+  it('env 源：只读打码 + 已配置 badge + 无 Edit（不暴露 env）', () => {
     renderCard(TMDB)
     const card = within(screen.getByTestId('providers-tmdb'))
     expect(card.getByText('abc••••xyz')).toBeInTheDocument()
-    expect(card.getByText('🔒 Environment')).toBeInTheDocument()
+    expect(card.getByText('✓ Configured')).toBeInTheDocument()
     expect(card.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
   })
 
@@ -39,7 +39,7 @@ describe('ProviderCard', () => {
     renderCard(ASSRT, reload)
     const card = within(screen.getByTestId('providers-assrt'))
     fireEvent.click(card.getByRole('button', { name: 'Edit' }))
-    fireEvent.change(card.getByLabelText('ASSRT_TOKEN'), { target: { value: 'new-tok' } })
+    fireEvent.change(card.getByLabelText('ASSRT token'), { target: { value: 'new-tok' } })
     fireEvent.click(card.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(put).toHaveBeenCalledWith('ASSRT_TOKEN', 'new-tok'))
     await waitFor(() => expect(reload).toHaveBeenCalled())
@@ -83,7 +83,7 @@ describe('ProviderCard', () => {
     fireEvent.click(card.getByRole('button', { name: 'Edit' }))
     expect(card.queryByLabelText('LLM_BASE_URL')).not.toBeInTheDocument()
     expect(card.getByText('htt••••/v1')).toBeInTheDocument()
-    expect(card.getByLabelText('LLM_API_KEY')).toBeInTheDocument()
+    expect(card.getByLabelText('API key')).toBeInTheDocument()
   })
 
   it('保存失败 → 行内错误 + 编辑态保留', async () => {
@@ -91,7 +91,7 @@ describe('ProviderCard', () => {
     renderCard(ASSRT)
     const card = within(screen.getByTestId('providers-assrt'))
     fireEvent.click(card.getByRole('button', { name: 'Edit' }))
-    fireEvent.change(card.getByLabelText('ASSRT_TOKEN'), { target: { value: 'new-tok' } })
+    fireEvent.change(card.getByLabelText('ASSRT token'), { target: { value: 'new-tok' } })
     fireEvent.click(card.getByRole('button', { name: 'Save' }))
     expect(await card.findByText(/Couldn't save: /)).toBeInTheDocument()
     expect(card.getByRole('button', { name: 'Save' })).toBeInTheDocument()

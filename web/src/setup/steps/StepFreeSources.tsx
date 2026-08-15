@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
+import { localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Switch } from '../../components/ui/switch.js'
 import { StepFooter } from './ui.js'
@@ -14,7 +15,7 @@ import type { SetupStatusDTO } from '../../api/types.js'
 type Reach = 'checking' | 'ok' | 'fail'
 
 export function StepFreeSources({ status, patchStatus, onAdvance, onBack }: WizardStepProps) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const subhdLocked = status.providers.subhd.source === 'env'
   const zimukuLocked = status.providers.zimuku.source === 'env'
   // wizard 出厂 ON：只在"从没设过"（source none）时默认开；env/db 已有值用现值。
@@ -66,7 +67,7 @@ export function StepFreeSources({ status, patchStatus, onAdvance, onBack }: Wiza
       if (Object.keys(statusPatch).length > 0) patchStatus({ providers: { ...status.providers, ...statusPatch } })
       onAdvance()
     } catch (e) {
-      setSaveError(String(e))
+      setSaveError(localizeErrorValue(e, lang))
       setSaving(false)
     }
   }

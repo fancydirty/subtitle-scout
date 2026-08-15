@@ -25,29 +25,6 @@ export interface RunHistoryDTO {
 // 留着读出面 = 给一张永远为空的表建界面。正本论证见 web/src/triage/TriagePage.tsx
 // 头注释的「2.5 parked 族的结局」段。
 
-/** dashboard-F2：GET /api/v2/workflow/pending 响应体——与 src/dashboard/apiV2.ts 的
- *  WorkflowPendingDTO 一族保持一致。**唯一读取面是 shell/Topbar.tsx 的新鲜度行，只读
- *  `.meta`**。
- *
- *  2026-08-13：`series[]` / `movies[]` / `parked` 三字段连同
- *  `WorkflowPendingSeriesDTO` / `WorkflowPendingMovieDTO` 两个接口在前后端同批删除——
- *  三者零组件消费（旧读取面：甄别页 PendingBox/ExcludedBox 与旧 workflow 页，均已下架），
- *  而后端每 15 秒轮询要为它们白跑两条 GROUP BY + 一次 parked_paths 全表扫。
- *  正本论证见 `src/dashboard/apiV2.ts` 的 WorkflowPendingDTO 头注释。 */
-export interface WorkflowFreshnessDTO {
-  roots: string[]
-  lastScanAt: number | null
-  files: number
-  /** 字幕校验巡检上次运行时刻（2026-07-31）。null=从未跑过。 */
-  lastVerifySweepAt: number | null
-  /** 已出校验结论 / 该被校验的条目数。裸计数不是百分比。 */
-  verifiedItems: number
-  verifiableItems: number
-}
-export interface WorkflowPendingDTO {
-  meta: WorkflowFreshnessDTO
-}
-
 /** dashboard-F4：GET /api/v2/workflow/passes?limit=20 响应体——orchestrate 通行记录 + receipts，
  *  与 src/dashboard/apiV2.ts 的 WorkflowPassDTO 一族保持一致。 */
 export interface DispatchReceiptsDTO {
@@ -129,19 +106,6 @@ export type SettingsDTO = Record<SettingsKey, string | null> & { engineEnabled: 
  *  src/dashboard/apiV2.ts 的 updateSettings 输入形状一致（未列出的键不改动）。 */
 export type SettingsPatch = Partial<Record<SettingsKey, string>>
 
-/** dashboard-F6：GET /api/v2/settings/deploy 响应体——env 脱敏只读展示，与
- *  src/dashboard/apiV2.ts 的 DeploySettingsDTO 一致。key 集合刻意不在前端复刻后端
- *  DEPLOY_SECRET_KEYS/DEPLOY_NONSECRET_KEYS 那两个字面量元组——DeploySection 只是遍历
- *  Object.entries 逐行渲染，后端增删 env key 时前端不需要跟着改一份重复清单。 */
-export interface DeploySecretDTO {
-  present: boolean
-  tail: string
-}
-export interface DeploySettingsDTO {
-  secrets: Record<string, DeploySecretDTO>
-  nonSecrets: Record<string, string | null>
-}
-
 /** 鉴权 A2：GET /api/v2/auth/status 响应体——App 层鉴权门（useAuthStatus）据此三态分流：
  *  未初始化→SetupWizard、已初始化未登录→LoginPage、已登录→Shell。与 src/dashboard/server.ts
  *  的 auth/status 端点一致。 */
@@ -175,26 +139,10 @@ export interface RemoveRootResultDTO {
   parked: number
 }
 
-/** dashboard-F6：GET /api/v2/fs/list?path=… 成功响应体——与 src/dashboard/apiV2.ts 的
- *  listMediaSubdirs 成功分支一致（失败分支是 {error} 字符串，走 client.ts 既有的错误抛出口径，
- *  不建一个 union 类型）。 */
-export interface FsListDTO {
-  dirs: string[]
-}
-
-// ---- 2026-08-12（无活 UI 端点裁决）：/api/v2/library/series/:id 的响应体 DTO 已删除 ----
-// LibrarySeriesSummaryDTO / LibrarySeriesDetailDTO 随端点一并删除（后端 builder 长在
-// series/episodes 旧表，生产 0 行；前端 useLibrarySeriesDetail 在 Task ⑪ 后零调用）。
-//
-// ⚠️ 下面三个 DTO（LibraryCanonicalEpisodeDTO / LibraryOnDiskEpisodeDTO / LibrarySeasonDTO）
-// **刻意保留**：它们已不再由任何 HTTP 端点产出，但 `_legacy/library/episodeState.ts` 与
-// SeasonAccordion 仍在类型层引用它们（`_legacy/` 整体是被 tsc 与 vitest 覆盖的）。
-// 什么时候可以删：`web/src/_legacy/` 整体删除那天（设计文档 §2.2 的"跑满一个巡检周期后"），
-// 与这批 DTO 一起走，不需要单独裁决。
+/** 详情页重设计 item B：逐集简介 / 首播日 / 剧照路径（web 端自拼 stillUrl w300）。 */
 export interface LibraryCanonicalEpisodeDTO {
   episode: number
   title: string | null
-  /** 详情页重设计 item B：逐集简介 / 首播日 / 剧照路径（web 端自拼 stillUrl w300）。 */
   overview: string | null
   airDate: string | null
   stillPath: string | null

@@ -9,9 +9,9 @@ import { BootstrapWizard } from '../BootstrapWizard.js'
 import { StepRoots } from './StepRoots.js'
 import type { WizardStepDef, WizardStepProps } from './types.js'
 
-vi.mock('../../settings/DirBrowser.js', () => ({
-  DirBrowser: ({ startPath, onAdded }: { startPath: string; onAdded: () => void }) => (
-    <button data-testid="dir-add" data-startpath={startPath} onClick={onAdded}>add</button>
+vi.mock('../../settings/RootPathInput.js', () => ({
+  RootPathInput: ({ onAdded }: { onAdded: () => void }) => (
+    <button data-testid="dir-add" onClick={onAdded}>add</button>
   ),
 }))
 
@@ -48,7 +48,7 @@ describe('StepRoots', () => {
     const onAdvance = vi.fn()
     renderStep({ onAdvance })
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
-    expect(screen.getByText(/Library will stay empty until you add roots/)).toBeInTheDocument()
+    expect(screen.getByText(/Library will stay empty until you add a media folder/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Skip this step' }))
     expect(onAdvance).toHaveBeenCalledTimes(1)
   })
@@ -64,11 +64,6 @@ describe('StepRoots', () => {
   it('re-run 已有 2 个目录 → Continue 立即可用', () => {
     renderStep({ rerun: true, status: { ...BASE, roots: { count: 2 } } })
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
-  })
-
-  it('DirBrowser 契约：startPath 固定为 /（容器部署根目录即媒体所在层）', () => {
-    renderStep()
-    expect(screen.getByTestId('dir-add')).toHaveAttribute('data-startpath', '/')
   })
 
   // 壳级集成：外壳无 key 原地重渲，patchStatus 后 status 已含本次新增——计数若再叠加

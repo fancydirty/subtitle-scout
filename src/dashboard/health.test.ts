@@ -270,8 +270,10 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     // （开关开、凭据缺）在 workPermitted 上**同为 false**，而用户的下一步动作完全相反
     // （把开关打开 / 去 setup 页填 key）。两条用例的 engineEnabled/setupSatisfied 组合
     // 恰好相反，那正是前端指路所需的全部信息。合成一个字段的话这两条会变得不可区分。
-    new SettingsRepo(db).set('engine_enabled', 'false', NOW)
-    const { base } = await start()                      // env 默认满足 setup 闸
+    const settings = new SettingsRepo(db)
+    settings.set('engine_enabled', 'false', NOW)
+    for (const [k, v] of Object.entries(SETUP_OK_ENV)) settings.setSecret(k as any, v, NOW)
+    const { base } = await start({ env: {} })              // setup 闸来自设置页库
     const { body } = await getHealth(base)
     expect(body.engineEnabled).toBe(false)
     expect(body.setupSatisfied).toBe(true)

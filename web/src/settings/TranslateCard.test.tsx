@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { api } from '../api/client.js'
-import type { ProviderRowDTO, SettingsDTO, DeploySettingsDTO } from '../api/types.js'
+import type { ProviderRowDTO, SettingsDTO } from '../api/types.js'
 import { TranslateCard } from './TranslateCard.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
@@ -17,13 +17,12 @@ const LLM_ROW: ProviderRowDTO = { id: 'llm', secrets: [
   { name: 'LLM_MODEL', set: true, source: 'db', masked: 'mimo-v2.5' },
 ], lastTest: null, quota: null }
 
-function renderCard(over: { translate?: Partial<ProviderRowDTO>; llm?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; deploy?: Partial<DeploySettingsDTO>; reload?: () => void } = {}) {
+function renderCard(over: { translate?: Partial<ProviderRowDTO>; llm?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; reload?: () => void } = {}) {
   const translate: ProviderRowDTO = { ...TRANSLATE_ROW, ...over.translate }
   const llm: ProviderRowDTO = { ...LLM_ROW, ...over.llm }
   const settings: SettingsDTO = { ai_translate_enabled: 'false', ...over.settings } as SettingsDTO
-  const deploy: DeploySettingsDTO = (over.deploy ?? { secrets: { TRANSLATE_API_KEY: { present: false, tail: '' } }, nonSecrets: {} }) as DeploySettingsDTO
   const reload = over.reload ?? vi.fn()
-  render(<I18nProvider initialLang="en"><TranslateCard translate={translate} llm={llm} settings={settings} deploy={deploy} onUpdated={vi.fn()} reload={reload} /></I18nProvider>)
+  render(<I18nProvider initialLang="en"><TranslateCard translate={translate} llm={llm} settings={settings} onUpdated={vi.fn()} reload={reload} /></I18nProvider>)
   return reload
 }
 
@@ -47,17 +46,17 @@ describe('TranslateCard', () => {
   it('选专用模型渲染三个必填字段', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
-    expect(screen.getByLabelText('TRANSLATE_BASE_URL')).toHaveAttribute('required')
-    expect(screen.getByLabelText('TRANSLATE_API_KEY')).toHaveAttribute('required')
-    expect(screen.getByLabelText('TRANSLATE_MODEL')).toHaveAttribute('required')
+    expect(screen.getByLabelText('Base URL')).toHaveAttribute('required')
+    expect(screen.getByLabelText('API key')).toHaveAttribute('required')
+    expect(screen.getAllByLabelText('Model').find((el) => el.tagName === 'INPUT') as HTMLInputElement).toHaveAttribute('required')
   })
 
   it('三凭证任一为空 → 保存按钮 disabled（6 条用例合并：3 单空 + 3 双空）', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
-    const base = screen.getByLabelText('TRANSLATE_BASE_URL')
-    const key = screen.getByLabelText('TRANSLATE_API_KEY')
-    const model = screen.getByLabelText('TRANSLATE_MODEL')
+    const base = screen.getByLabelText('Base URL')
+    const key = screen.getByLabelText('API key')
+    const model = screen.getAllByLabelText('Model').find((el) => el.tagName === 'INPUT') as HTMLInputElement
     fireEvent.change(base, { target: { value: 'https://api.example.com/v1' } })
     fireEvent.change(key, { target: { value: 'sk-1' } })
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
@@ -70,9 +69,9 @@ describe('TranslateCard', () => {
     const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
-    fireEvent.change(screen.getByLabelText('TRANSLATE_BASE_URL'), { target: { value: 'https://api.example.com/v1' } })
-    fireEvent.change(screen.getByLabelText('TRANSLATE_API_KEY'), { target: { value: 'sk-1' } })
-    fireEvent.change(screen.getByLabelText('TRANSLATE_MODEL'), { target: { value: 'gpt-4o-mini' } })
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://api.example.com/v1' } })
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-1' } })
+    fireEvent.change(screen.getAllByLabelText('Model').find((el) => el.tagName === 'INPUT') as HTMLInputElement, { target: { value: 'gpt-4o-mini' } })
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(put).toHaveBeenCalledTimes(3))
@@ -81,7 +80,7 @@ describe('TranslateCard', () => {
   it('空字段失焦 → 行内错误 role=alert', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
-    const base = screen.getByLabelText('TRANSLATE_BASE_URL')
+    const base = screen.getByLabelText('Base URL')
     fireEvent.change(base, { target: { value: 'https://api.example.com/v1' } })
     fireEvent.blur(base)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -97,7 +96,7 @@ describe('TranslateCard', () => {
       { name: 'TRANSLATE_MODEL', set: true, source: 'env', masked: 'gp••••' },
     ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     const card = within(screen.getByTestId('providers-translate'))
-    expect(card.getByText('🔒 Environment')).toBeInTheDocument()
+    expect(card.getByText('✓ Dedicated model')).toBeInTheDocument()
     expect(card.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
   })
 
@@ -141,6 +140,6 @@ describe('TranslateCard', () => {
       { name: 'TRANSLATE_API_KEY', set: true, source: 'env', masked: 'sk••••' },
       { name: 'TRANSLATE_MODEL', set: true, source: 'env', masked: 'gp••••' },
     ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText('🔒 Environment')).toBeInTheDocument()
+    expect(screen.getByText('✓ Dedicated model')).toBeInTheDocument()
   })
 })

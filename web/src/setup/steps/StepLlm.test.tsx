@@ -98,7 +98,7 @@ describe('StepLlm', () => {
   it('env 已配 → 锁定绿态展示 model 名（非密），零输入', () => {
     const onAdvance = vi.fn()
     renderStep({ onAdvance, status: { ...BASE, llm: { satisfied: true, source: 'env', model: 'env-model' } } })
-    expect(screen.getByText(/Configured via environment/)).toBeInTheDocument()
+    expect(screen.getByText(/Already configured/)).toBeInTheDocument()
     expect(screen.getByText(/env-model/)).toBeInTheDocument()
     expect(screen.queryByLabelText('API key')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))

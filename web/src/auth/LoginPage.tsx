@@ -29,7 +29,14 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
       // 传输失败（fetch 在拿到响应前就 reject）是 TypeError；HTTP 错误（401/429…）是 errorMessage
       // 抛的 Error。据此分两类文案——401 恒作"用户名或密码不正确"（不泄露账号是否存在，虽单管理员
       // 无枚举风险，措辞仍取此为准）。保留 username、清空 password、聚焦密码框（调研强建议）。
-      setError(err instanceof TypeError ? t('login_error_transport') : t('login_error_invalid'))
+      const message = err instanceof Error ? err.message : String(err)
+      setError(
+        err instanceof TypeError
+          ? t('login_error_transport')
+          : message.includes('too many attempts')
+            ? t('login_error_throttled')
+            : t('login_error_invalid'),
+      )
       setPassword('')
       passwordRef.current?.focus()
     } finally {

@@ -169,7 +169,7 @@ describe('GET /api/v2/events（R-F10 全站单条 SSE 通道）', () => {
     })
 
     it('🔴 apiKey 通道同样放行（前端 EventSource 不能带自定义头，走 ?apikey=）', async () => {
-      const auth = new AuthService(new SettingsRepo(db))
+      const auth = new AuthService(new SettingsRepo(db), db)
       const r = auth.setup('admin', 'pw-long-enough-123', Date.now())
       expect(r.ok).toBe(true)
       const apiKey = (r as { ok: true; apiKey: string }).apiKey
@@ -181,7 +181,7 @@ describe('GET /api/v2/events（R-F10 全站单条 SSE 通道）', () => {
     })
 
     it('🔴 session cookie 通道同样放行', async () => {
-      const auth = new AuthService(new SettingsRepo(db))
+      const auth = new AuthService(new SettingsRepo(db), db)
       auth.setup('admin', 'pw-long-enough-123', Date.now())
       const token = auth.sessions.create(Date.now())
       const { base } = await start({})

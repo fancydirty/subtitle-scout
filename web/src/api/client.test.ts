@@ -28,7 +28,7 @@ describe('client.ts get() 失败时的错误消息', () => {
         ok: false, status: 400, json: async () => ({ error: 'path is not readable (permission denied?)' }),
       }) as unknown as Response),
     )
-    await expect(api.fsList('/mnt/locked')).rejects.toThrow('path is not readable (permission denied?)')
+    await expect(api.mediaLibrary()).rejects.toThrow('path is not readable (permission denied?)')
   })
 
   it('响应体不是 JSON（解析失败）时回落 "path → status"，不炸调用方', async () => {
@@ -38,7 +38,7 @@ describe('client.ts get() 失败时的错误消息', () => {
         ok: false, status: 500, json: async () => { throw new Error('not json') },
       }) as unknown as Response),
     )
-    await expect(api.fsList('/mnt/x')).rejects.toThrow('/api/v2/fs/list?path=%2Fmnt%2Fx → 500')
+    await expect(api.mediaLibrary()).rejects.toThrow('/api/v2/mediaLibrary → 500')
   })
 
   it('响应体是 JSON 但没有 error 字段时同样回落 "path → status"', async () => {
@@ -46,7 +46,7 @@ describe('client.ts get() 失败时的错误消息', () => {
       'fetch',
       vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ notError: 'x' }) }) as unknown as Response),
     )
-    await expect(api.fsList('/mnt/y')).rejects.toThrow('/api/v2/fs/list?path=%2Fmnt%2Fy → 404')
+    await expect(api.mediaLibrary()).rejects.toThrow('/api/v2/mediaLibrary → 404')
   })
 
   it('401 → 给"请重新登录"人话提示,而不是裸 path → 401 / unauthorized（鉴权 A2：token 时代退役）', async () => {

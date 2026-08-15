@@ -26,7 +26,7 @@ function mockFetch() {
             initialized: true,
             engineEnabled: true,
             providers: {
-              subhd: { enabled: false }, zimuku: { enabled: false },
+              subhd: { enabled: false }, zimuku: { enabled: false, captchaReady: false },
               opensubtitles: { enabled: false }, jimaku: { enabled: false },
             },
             secrets: {},

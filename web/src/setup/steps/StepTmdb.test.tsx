@@ -88,7 +88,7 @@ describe('StepTmdb', () => {
   it('env 已配 → 锁定绿态零输入，Continue 直接走', () => {
     const onAdvance = vi.fn()
     renderStep({ onAdvance, status: { ...BASE, tmdb: { satisfied: true, source: 'env', masked: 'abc••••xyz' } } })
-    expect(screen.getByText(/Configured via environment/)).toBeInTheDocument()
+    expect(screen.getByText(/Already configured/)).toBeInTheDocument()
     expect(screen.queryByLabelText('API key')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(onAdvance).toHaveBeenCalledTimes(1)

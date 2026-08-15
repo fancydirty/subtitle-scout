@@ -4,18 +4,21 @@ import { Badge } from './badge.js'
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from './dialog.js'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select.js'
 import { Skeleton } from './skeleton.js'
+import { I18nProvider } from '../../i18n/useT.js'
 import { openRadixSelect } from '../../testSupport/radix.js'
 
 describe('shadcn copy-in smoke', () => {
   it('dialog 打开后按 Escape 关闭', async () => {
     render(
-      <Dialog>
-        <DialogTrigger>open</DialogTrigger>
-        <DialogContent>
-          <DialogTitle className="sr-only">Run detail</DialogTitle>
-          body
-        </DialogContent>
-      </Dialog>,
+      <I18nProvider initialLang="en">
+        <Dialog>
+          <DialogTrigger>open</DialogTrigger>
+          <DialogContent>
+            <DialogTitle className="sr-only">Run detail</DialogTitle>
+            body
+          </DialogContent>
+        </Dialog>
+      </I18nProvider>,
     )
     fireEvent.click(screen.getByText('open'))
     expect(await screen.findByRole('dialog')).toBeInTheDocument()

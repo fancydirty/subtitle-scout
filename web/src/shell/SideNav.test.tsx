@@ -5,6 +5,7 @@
 // 2026-08-06 重设计：SideNavSection 已退役（扁平四条 + 图标），测试改为纯 wordmark + items。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
+import { I18nProvider } from '../i18n/useT.js'
 import { SideNav, SideNavHeading, SideNavItem } from './SideNav.js'
 
 afterEach(() => cleanup())
@@ -41,10 +42,12 @@ describe('SideNavItem（自绘导航项）', () => {
 describe('SideNav 骨架（自绘）', () => {
   it('nav 地标 + wordmark + 扁平条目（无分区）', () => {
     render(
-      <SideNav header={<SideNavHeading heading="subtitle-scout" />}>
-        <SideNavItem href="#/library" label="Library" selected />
-        <SideNavItem href="#/workflow" label="Workflow" />
-      </SideNav>,
+      <I18nProvider initialLang="en">
+        <SideNav header={<SideNavHeading heading="subtitle-scout" />}>
+          <SideNavItem href="#/library" label="Library" selected />
+          <SideNavItem href="#/workflow" label="Workflow" />
+        </SideNav>
+      </I18nProvider>,
     )
     expect(screen.getByRole('navigation', { name: 'Side navigation' })).toBeInTheDocument()
     expect(screen.getByText('subtitle-scout')).toBeInTheDocument()

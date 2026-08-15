@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
+import { localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Input } from '../../components/ui/input.js'
 import { cn } from '../../lib/utils.js'
@@ -23,7 +24,7 @@ const PRESETS = [
 const BCP47_SINGLE = /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/
 
 export function StepLanguage({ onAdvance }: WizardStepProps) {
-  const { t, setLang } = useT()
+  const { t, setLang, lang } = useT()
   const [selected, setSelected] = useState<string[]>([])
   const [custom, setCustom] = useState('')
   const [invalid, setInvalid] = useState(false)
@@ -37,7 +38,8 @@ export function StepLanguage({ onAdvance }: WizardStepProps) {
   }
 
   const toggle = (code: string) => {
-    apply(selected.includes(code) ? selected.filter((c) => c !== code) : [...selected, code])
+    // 单选：点击已选的不取消，点击其他的替换（有且只能有一个）
+    apply([code])
   }
 
   const addCustom = () => {
@@ -48,7 +50,8 @@ export function StepLanguage({ onAdvance }: WizardStepProps) {
     }
     setInvalid(false)
     setCustom('')
-    if (!selected.includes(code)) apply([...selected, code])
+    // 单选：添加自定义语言时替换当前选择
+    apply([code])
   }
 
   const onContinue = async () => {
@@ -58,7 +61,7 @@ export function StepLanguage({ onAdvance }: WizardStepProps) {
       await api.updateSettings({ target_languages: selected.join(',') })
       onAdvance()
     } catch (e) {
-      setSaveError(String(e))
+      setSaveError(localizeErrorValue(e, lang))
     } finally {
       setSaving(false)
     }

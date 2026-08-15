@@ -6,9 +6,9 @@ describe('watchStartupWarnings', () => {
   describe('zeroRootsWarningLine（零守备目录告警）', () => {
     it('返回固定文案（不含路径，因为 roots 为空）', () => {
       const line = zeroRootsWarningLine()
-      expect(line).toContain('[watch] no media roots configured')
-      expect(line).toContain('去 dashboard 加一个守备目录')
-      expect(line).toContain('或设 MEDIA_ROOTS 作首启种子')
+      expect(line).toContain('[watch] no media folders configured')
+      expect(line).toContain('go to Settings and add a media folder')
+      expect(line).toContain('go to Settings and add a media folder')
     })
   })
 

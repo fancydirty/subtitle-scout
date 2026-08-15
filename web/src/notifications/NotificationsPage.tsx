@@ -36,6 +36,7 @@ import { useNotifications } from '../api/hooks.js'
 import { useEventsStatus, useFoundEvent } from '../events/EventsProvider.js'
 import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
+import { localizeError } from '../lib/errorText.js'
 import { NewFoundBanner, LiveOffBanner } from './NewFoundBanner.js'
 import { NotificationRow } from './NotificationRow.js'
 import { bucketByDay, formatDayStamp, groupKey, type DayBucket } from './notifText.js'
@@ -70,8 +71,9 @@ function DaySection({ bucket }: { bucket: DayBucket }) {
 }
 
 function LoadingRows() {
+  const { t } = useT()
   return (
-    <div aria-busy="true" aria-label="loading notifications" className="notif-day-rows">
+    <div aria-busy="true" aria-label={t('a11y_loading_notifications')} className="notif-day-rows">
       {Array.from({ length: 6 }).map((_, i) => (
         <div className="notif-row notif-row-skel" key={i}>
           <div className="flex min-w-0 flex-1 flex-col gap-1.5">
@@ -86,7 +88,7 @@ function LoadingRows() {
 
 export function NotificationsPage() {
   const { data, loading, error, reload } = useNotifications()
-  const { t } = useT()
+  const { t, lang } = useT()
 
   // ── SSE：只做提示，不进列表 ────────────────────────────────────────────
   // useFoundEvent 给的是**最后一条** found 事件（四层 Context 的 EventSlot 语义）。
@@ -161,7 +163,7 @@ export function NotificationsPage() {
       <Section>
         <EmptyState
           title={t('notif_error_title')}
-          description={error}
+          description={localizeError(error, lang)}
           actions={
             <Button variant="secondary" onClick={reload}>
               {t('notif_retry')}

@@ -54,11 +54,11 @@ function renderManager(roots: Async<MediaRootDTO[]>) {
 }
 
 describe('RootsManager：根列表渲染', () => {
-  it('行 = path mono（title=全路径）+ type + 相对时间 + Remove 按钮', () => {
+  it('行 = 路径 + Remove 按钮，不显示内部字段', () => {
     renderManager(asyncOf(ROOTS))
     expect(screen.getByTitle('/media/tv')).toHaveTextContent('/media/tv')
-    expect(screen.getByText('local')).toBeInTheDocument()
-    expect(screen.getByText('added 3d ago')).toBeInTheDocument()
+    expect(screen.queryByText('local')).not.toBeInTheDocument()
+    expect(screen.queryByText('added 3d ago')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
   })
 })
@@ -133,15 +133,15 @@ describe('RootsManager：卸载清理防抖扫描', () => {
   // 要的那次扫描早跑完了。真正的坏后果在下一条用例里。
   it('加根后立刻卸载 → 2 秒后不再打 /api/v2/library/scan', async () => {
     const fetchMock = mockFetchRouted([
-      { path: '/api/v2/fs/list', body: { dirs: [] } },
       { path: '/api/v2/settings/roots', method: 'POST', body: { ok: true } },
       { path: '/api/v2/library/scan', method: 'POST', body: { ok: true } },
     ])
     vi.stubGlobal('fetch', fetchMock)
     const { unmount } = renderManager(asyncOf([]))
 
-    // 空态直接展开浏览器 → 点 Add 加根 → onAdded → debouncer.requestScan 武装定时器
-    fireEvent.click(screen.getByRole('button', { name: 'Add this directory' }))
+    // 输入路径 → 点 Add a root 加根 → onAdded → debouncer.requestScan 武装定时器
+    fireEvent.change(screen.getByRole('textbox', { name: 'Media folder path' }), { target: { value: '/data/media' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
     // 等加根**真正完成**（成功文案上屏 = onAdded 已回调 = 防抖定时器已武装），
     // 这才是缺陷描述的时序："用户加完守备目录立刻切到别的页"。
     expect(
@@ -161,23 +161,16 @@ describe('RootsManager：卸载清理防抖扫描', () => {
 })
 
 describe('RootsManager：加根入口', () => {
-  it('roots 为空时展示一句话引导并直接展开目录浏览器', async () => {
-    const fetchMock = mockFetchRouted([{ path: '/api/v2/fs/list', body: { dirs: ['media'] } }])
-    vi.stubGlobal('fetch', fetchMock)
+  it('roots 为空时展示一句话引导 + 路径输入框', () => {
     renderManager(asyncOf([]))
 
-    expect(screen.getByText('No media roots yet — browse below to add the first one.')).toBeInTheDocument()
-    expect(await screen.findByText('media')).toBeInTheDocument()
+    expect(screen.getByText('No media folders yet — enter a path below to add the first one.')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Media folder path' })).toBeInTheDocument()
   })
 
-  it('roots 非空时浏览器默认收起，点击 "Add a root" 才展开', async () => {
-    const fetchMock = mockFetchRouted([{ path: '/api/v2/fs/list', body: { dirs: [] } }])
-    vi.stubGlobal('fetch', fetchMock)
+  it('roots 非空时同样常驻路径输入框', () => {
     renderManager(asyncOf(ROOTS))
-
-    expect(screen.queryByText('No subdirectories here.')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Add a root' }))
-    expect(await screen.findByText('No subdirectories here.')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Media folder path' })).toBeInTheDocument()
   })
 })
 

@@ -4,13 +4,14 @@
 import { useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
+import { localizeError, localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Input } from '../../components/ui/input.js'
 import { StatusDot, StepFooter } from './ui.js'
 import type { WizardStepProps } from './types.js'
 
 export function StepLlm({ status, patchStatus, onAdvance, onBack }: WizardStepProps) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const [base, setBase] = useState('')
   const [key, setKey] = useState('')
   const [model, setModel] = useState('')
@@ -29,7 +30,7 @@ export function StepLlm({ status, patchStatus, onAdvance, onBack }: WizardStepPr
     try {
       const r = await api.validateSetup('llm', { LLM_BASE_URL: base, LLM_API_KEY: key, LLM_MODEL: model })
       if (r.ok) setTestedTriple(tripleKey)
-      else setFailMsg(r.error ?? r.detail ?? t('wizard_test_failed'))
+      else setFailMsg(localizeError(r.error ?? r.detail ?? t('wizard_test_failed'), lang))
     } catch (e) {
       // 同 Task 17：端点自身挂了 ≠ 凭据不对（spec §7），不回显异常串。
       void e
@@ -44,7 +45,7 @@ export function StepLlm({ status, patchStatus, onAdvance, onBack }: WizardStepPr
     setFailMsg(null)
     try {
       const r = await api.validateSetup('llm')
-      if (!r.ok) setFailMsg(r.error ?? r.detail ?? t('wizard_test_failed'))
+      if (!r.ok) setFailMsg(localizeError(r.error ?? r.detail ?? t('wizard_test_failed'), lang))
     } catch (e) {
       void e
       setFailMsg(t('wizard_test_unavailable'))
@@ -63,7 +64,7 @@ export function StepLlm({ status, patchStatus, onAdvance, onBack }: WizardStepPr
       patchStatus({ llm: { satisfied: true, source: 'db', model } })
       onAdvance()
     } catch (e) {
-      setFailMsg(String(e))
+      setFailMsg(localizeErrorValue(e, lang))
       setSaving(false)
     }
   }
