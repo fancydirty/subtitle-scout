@@ -50,7 +50,7 @@ export const en = {
   page_failed_retry: 'Reload this page',
 
   // ⌘K 命令面板：F2 只做 tab 导航，不做搜索。
-  cmdk_trigger: 'Find anything',
+  cmdk_trigger: 'Go to…',
   cmdk_label: 'Command palette',
   cmdk_placeholder: 'Jump to a page…',
   cmdk_empty: 'No matches',

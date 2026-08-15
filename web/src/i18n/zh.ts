@@ -46,7 +46,7 @@ export const zh = {
   page_failed_desc: '这一页里有内容没能显示出来。你的数据没有被改动，其他页面照常可用——可以重新加载这一页，或者从侧栏切到别的页面。',
   page_failed_retry: '重新加载这一页',
 
-  cmdk_trigger: '搜索',
+  cmdk_trigger: '跳转',
   cmdk_label: '命令面板',
   cmdk_placeholder: '跳转到页面…',
   cmdk_empty: '无匹配',

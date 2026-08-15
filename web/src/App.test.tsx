@@ -226,7 +226,7 @@ describe('App 鉴权门（A2 Task 11）', () => {
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('Find anything'))
+    fireEvent.click(screen.getByText('Go to…'))
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toBeInTheDocument()
     // 四个 tab 都是 bootstrap 结果，导航面板里应该能看到（跟侧栏重复渲染的同名文字互不冲突，
@@ -242,7 +242,7 @@ describe('App 鉴权门（A2 Task 11）', () => {
     render(<App />)
     await screen.findByRole('link', { name: 'Activity' })
 
-    fireEvent.click(screen.getByText('Find anything'))
+    fireEvent.click(screen.getByText('Go to…'))
     await screen.findByRole('dialog')
 
     const items = screen.getAllByText('Settings')

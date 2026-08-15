@@ -58,6 +58,10 @@ known set to Chinese while preserving the raw string for unknown errors and logs
 backend's 429 throttling response. A locked-out user was being told their password
 was wrong. The 429 path now has its own message.
 
+### P0-9 Command trigger overpromised search
+`Find anything` / `搜索` opened a four-item page switcher, not a search box.
+Trigger is now `Go to…` / `跳转`, matching what the panel can actually do.
+
 ### P1-0 Topbar freshness line
 `watching /Volumes/… · scanned 2m ago · 531 files` is intentionally technical
 (DESIGN.md §0/§7) and is not changed. The `offline` / `loading…` fallback words
