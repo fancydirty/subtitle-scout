@@ -353,7 +353,7 @@ describe('download_candidate zip entry selection (C-D1)', () => {
       adapters: [packAdapter()],
       stagingDir: sandboxDir,
       stagedFiles,
-      targetFilenames: ['Show.S01E01.mkv'],
+      targetFilenames: ['Show.mkv'],
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const out = await tool_.execute!(
