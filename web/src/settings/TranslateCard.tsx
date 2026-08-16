@@ -1,5 +1,6 @@
 // web/src/settings/TranslateCard.tsx：AI 翻译双层卡片（spec §4.2.6）。
-// 第一层 Switch（ai_translate_enabled）；第二层 Segmented（跟随默认/专用模型），仅开启时渲染。
+// 第一层 Switch（ai_translate_enabled）；打开和关闭都走 PUT，不能只改本地 state。
+// 第二层 Segmented（跟随默认/专用模型），仅开启时渲染。
 // 专用模型原子性：三凭证全填才可保存，任一空 disabled + 行内错误。切回跟随默认 = 清空三键
 // （PUT 空串 = DELETE），破坏性确认。徽标五态。env 源三凭证 → readOnly + 🔒 + 无保存。
 // isDedicated = Boolean(三凭证存在)，不新增 settings 键。
@@ -144,7 +145,7 @@ export function TranslateCard({ translate, llm, settings, onUpdated, reload }: P
           <Switch
             aria-label={t('settings_translate_card_title')}
             checked={enabled}
-            onCheckedChange={(c) => (c ? setEnabled(true) : void commitEnabled(false))}
+            onCheckedChange={(c) => void commitEnabled(c)}
             disabled={busy}
           />
           <span className="text-[13px] font-medium leading-5 text-foreground">

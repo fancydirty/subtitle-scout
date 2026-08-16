@@ -27,6 +27,25 @@ function renderCard(over: { translate?: Partial<ProviderRowDTO>; llm?: Partial<P
 }
 
 describe('TranslateCard', () => {
+  it('🔴 打开开关 → PUT ai_translate_enabled=true（不能只改本地 state）', async () => {
+    const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
+      ai_translate_enabled: 'true',
+    } as SettingsDTO)
+    renderCard()
+    fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith({ ai_translate_enabled: 'true' }))
+    expect(await screen.findByRole('radiogroup')).toBeInTheDocument()
+  })
+
+  it('🔴 关闭开关 → PUT ai_translate_enabled=false', async () => {
+    const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
+      ai_translate_enabled: 'false',
+    } as SettingsDTO)
+    renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
+    fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith({ ai_translate_enabled: 'false' }))
+  })
+
   it('功能关闭时第二层不在 DOM（用 queryByRole 断言 null）', () => {
     renderCard()
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
