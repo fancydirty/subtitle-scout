@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
+import { loadSevenZip } from '../files/sevenZip.js'
 import type { FetchAdapter } from '../adapters/fetchLib.js'
 import type { CandidateRef } from '../core/schemas.js'
 import { makeDownloadCandidateTool, makeInstallSubtitleTool, makeCheckEpisodeCodeSafetyTool, resolveTargetFilename } from './findSubtitleWorker.tools.js'
@@ -365,6 +366,91 @@ describe('download_candidate zip entry selection (C-D1)', () => {
       hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
     })
     expect(stagedFiles.size).toBe(0)
+  })
+
+  it('returns archiveEntries for a multi-entry 7z pack instead of throwing', async () => {
+    const sz = await loadSevenZip({ print() {}, printErr() {}, noExitRuntime: true })
+    sz.FS.writeFile('Show.S01E01.srt', '1\n00:00:01,000 --> 00:00:02,000\nep1\n')
+    sz.FS.writeFile('Show.S01E02.srt', '1\n00:00:01,000 --> 00:00:02,000\nep2\n')
+    sz.callMain(['a', '-t7z', 'pack.7z', 'Show.S01E01.srt', 'Show.S01E02.srt'])
+    const pack = Buffer.from(sz.FS.readFile('pack.7z'))
+    const fetchImpl = vi.fn(async () => new Response(pack, {
+      headers: { 'content-type': 'application/x-7z-compressed' },
+    }))
+    const stagedFiles = new Map<string, string>()
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [{
+        name: 'assrt',
+        enabled: () => true,
+        search: async () => [],
+        resolve: async () => ({ url: 'http://file0.assrt.net/pack.7z', filename: 'pack.7z' }),
+      }],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      targetFilenames: ['Show.S01E01.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({
+      archiveEntries: ['Show.S01E01.srt', 'Show.S01E02.srt'],
+      hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
+    })
+    expect(stagedFiles.size).toBe(0)
+  })
+
+  it('reuses the already-downloaded 7z on the archiveEntryName follow-up instead of minting again', async () => {
+    const sz = await loadSevenZip({ print() {}, printErr() {}, noExitRuntime: true })
+    sz.FS.writeFile('Show.S01E01.srt', '1\n00:00:01,000 --> 00:00:02,000\nep1\n')
+    sz.FS.writeFile('Show.S01E02.srt', '1\n00:00:01,000 --> 00:00:02,000\nep2\n')
+    sz.callMain(['a', '-t7z', 'pack.7z', 'Show.S01E01.srt', 'Show.S01E02.srt'])
+    const pack = Buffer.from(sz.FS.readFile('pack.7z'))
+    const fetchImpl = vi.fn(async () => new Response(pack))
+    const resolve = vi.fn(async () => ({ url: 'http://file0.assrt.net/pack.7z', filename: 'pack.7z' }))
+    const stagedFiles = new Map<string, string>()
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [{ name: 'assrt', enabled: () => true, search: async () => [], resolve }],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      targetFilenames: ['Show.S01E02.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const first = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(first).toMatchObject({ archiveEntries: ['Show.S01E01.srt', 'Show.S01E02.srt'] })
+    const second = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: 'Show.S01E02.srt' },
+      { toolCallId: 't2', messages: [] } as any,
+    ) as DownloadCandidateOutput
+    expect(second.stagedFileId).toBeTruthy()
+    expect(readFileSync(stagedFiles.get(second.stagedFileId)!, 'utf8')).toContain('ep2')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns {error} instead of throwing when the archive format cannot be unpacked', async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from('not-an-archive')))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [{
+        name: 'assrt',
+        enabled: () => true,
+        search: async () => [],
+        resolve: async () => ({ url: 'http://file0.assrt.net/pack.exe', filename: 'pack.exe' }),
+      }],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      targetFilenames: ['Show.S01E01.mkv'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'assrt:1', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(out).toEqual({ error: expect.stringMatching(/unsupported archive/i) })
   })
 
   it('archiveEntryName picks the exact entry out of a multi-file zip and stages it', async () => {

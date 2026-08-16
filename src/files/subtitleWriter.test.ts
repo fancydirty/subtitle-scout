@@ -3,8 +3,20 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync } fro
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
+import { loadSevenZip } from './sevenZip.js'
 import * as iconv from 'iconv-lite'
 import { writeSubtitle, type WriteSubtitleOutcome, type WriteSubtitleResult } from './subtitleWriter.js'
+
+async function makeSevenZip(files: Record<string, string>): Promise<Buffer> {
+  const sz = await loadSevenZip({ print() {}, printErr() {}, noExitRuntime: true })
+  const names = Object.keys(files)
+  for (const [name, body] of Object.entries(files)) {
+    sz.FS.writeFile(name.replaceAll('/', '_'), body)
+  }
+  const listed = names.map((n) => n.replaceAll('/', '_'))
+  sz.callMain(['a', '-t7z', 'pack.7z', ...listed])
+  return Buffer.from(sz.FS.readFile('pack.7z'))
+}
 
 const outDir = () => mkdtempSync(join(tmpdir(), 'subw-'))
 
@@ -180,6 +192,60 @@ describe('writeSubtitle', () => {
     expect(readdirSync(dir)).toEqual([])
   })
 
+  // Live Cassandra (subhd:Ew4rKh): the official Netflix 全6集 pack is a .7z, not a zip. v1 threw
+  // UnsupportedArchiveError and download_candidate never returned archiveEntries, so the agent
+  // retried the same download and finalized retry_later with the pack sitting unused.
+  it('returns needsSelection for a multi-entry 7z pack instead of throwing unsupported archive', async () => {
+    const artifact = await makeSevenZip({
+      'Show.S01E01.srt': '1\n00:00:01,000 --> 00:00:02,000\nep1\n',
+      'Show.S01E02.srt': '1\n00:00:01,000 --> 00:00:02,000\nep2\n',
+    })
+    const dir = outDir()
+    const r = await writeSubtitle({
+      artifact,
+      artifactFilename: '1750238057809.7z',
+      videoFilename: 'Show.S01E01.mkv',
+      langTag: 'zh-Hans',
+      outDir: dir,
+    })
+    expect(r).toEqual({ needsSelection: true, entries: ['Show.S01E01.srt', 'Show.S01E02.srt'] })
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  it('writes the selected entry out of a multi-entry 7z once selectFileName is given', async () => {
+    const artifact = await makeSevenZip({
+      'Show.S01E01.srt': '1\n00:00:01,000 --> 00:00:02,000\nep1\n',
+      'Show.S01E02.srt': '1\n00:00:01,000 --> 00:00:02,000\nep2\n',
+    })
+    const dir = outDir()
+    const r = await writeSubtitle({
+      artifact,
+      artifactFilename: 'pack.7z',
+      selectFileName: 'Show.S01E02.srt',
+      videoFilename: 'Show.S01E02.mkv',
+      langTag: 'zh-Hans',
+      outDir: dir,
+    })
+    if ('needsSelection' in r) throw new Error('expected a written result, not needsSelection')
+    expect(readFileSync(r.path, 'utf8')).toContain('ep2')
+    expect(r.path.endsWith('Show.S01E02.zh-Hans.srt')).toBe(true)
+  })
+
+  it('sniffs 7z magic when the filename has the wrong extension (CDN fallback labeled .srt)', async () => {
+    const artifact = await makeSevenZip({
+      'Show.S01E01.srt': '1\n00:00:01,000 --> 00:00:02,000\nep1\n',
+      'Show.S01E02.srt': '1\n00:00:01,000 --> 00:00:02,000\nep2\n',
+    })
+    const r = await writeSubtitle({
+      artifact,
+      artifactFilename: 'download.srt',
+      videoFilename: 'Show.S01E01.mkv',
+      langTag: 'zh-Hans',
+      outDir: outDir(),
+    })
+    expect(r).toEqual({ needsSelection: true, entries: ['Show.S01E01.srt', 'Show.S01E02.srt'] })
+  })
+
   // Selection-then-write follow-up: once the agent knows the entry list, selectFileName picks the
   // exact episode out of a multi-entry pack (not just the 2-entry wrong/right shape already covered
   // above) and it writes normally.
@@ -302,11 +368,11 @@ describe('writeSubtitle', () => {
     expect(r.alreadyExists).toBe(false)
   })
 
-  it('throws UnsupportedArchiveError for rar', async () => {
+  it('throws when a .rar artifact is not a valid archive', async () => {
     await expect(writeSubtitle({
       artifact: Buffer.from('Rar!\x1a\x07'), artifactFilename: 'pack.rar',
       videoFilename: 'Movie.mkv', langTag: 'zh-Hans', outDir: outDir(),
-    })).rejects.toThrow(/unsupported archive/i)
+    })).rejects.toThrow(/archive extract failed|unsupported archive/i)
   })
 
   afterEach(() => {

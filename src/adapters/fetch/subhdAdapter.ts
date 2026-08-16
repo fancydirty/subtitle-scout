@@ -7,9 +7,9 @@ import type { FetchAdapter } from '../fetchLib.js'
 const CHINESE_LANGUAGE_PREFIX = /^(zh|chi|zho|chs|cht|cn)/i
 
 /** 从 CDN 文件 url 派生带真实扩展名的文件名（`.../1782478768658.ass` → `1782478768658.ass`）。
- *  这个扩展名是 writeSubtitle 分派的权威依据：.ass/.srt/.ssa 裸存、.zip 解包、.rar/.7z 诚实抛
- *  UnsupportedArchiveError（"only zip in v1"）。不派生（无扩展名）时返回 undefined——绝不硬编一个
- *  错的兜底（否则 .rar 会被下载层兜成 download.srt，把压缩包二进制当字幕写成垃圾）。 */
+ *  这个扩展名是 writeSubtitle 分派的权威依据：.ass/.srt/.ssa 裸存、.zip/.7z/.rar 解包。
+ *  不派生（无扩展名）时返回 undefined——绝不硬编一个错的兜底（否则 .rar 会被下载层兜成
+ *  download.srt，把压缩包二进制当字幕写成垃圾）。writeSubtitle 还会按文件头 magic 再嗅探一次。 */
 function deriveFilename(url: string): string | undefined {
   try {
     const base = new URL(url).pathname.split('/').pop() ?? ''
@@ -31,7 +31,7 @@ function toCandidate(r: SubhdSearchResult): SubtitleCandidate {
     uploadDate: null,
     // subhd 详情页/搜索页不预先列出压缩包内文件清单（要解压才知道）——与 zimuku/opensubtitles
     // 同款空 fileList；下载产物可能是单文件 .ass/.srt 或压缩包 .rar/.7z/.zip（见 STRUCTURE.md），
-    // 由下载层按 CDN url 扩展名/内容分派。
+    // 由下载层按 CDN url 扩展名/内容分派（zip/7z/rar 均可解包）。
     fileList: [],
   }
 }

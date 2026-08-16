@@ -187,13 +187,33 @@ that target's video file, so the download is staged for the right video. Repeat 
 the same pack candidate can be downloaded from repeatedly, once per target you are filing.
 For a plain single-file candidate (empty fileList, or one entry) pass \`fileIndex: null\`.
 
-Some candidates have NO fileList but still turn out to be a zip with several subtitle files
-inside. In that case \`download_candidate\` stages nothing and instead returns
+Some candidates have NO fileList but still turn out to be a zip, 7z, or rar with several
+subtitle files inside. In that case \`download_candidate\` stages nothing and instead returns
 \`archiveEntries\` — the list of subtitle files inside the archive, as a fact for you to
 choose from. Read it exactly like a fileList: find the entry matching your current target,
 then call \`download_candidate\` again with \`archiveEntryName\` set to that exact entry name.
 The choice of which file inside an archive belongs to which target is YOURS, never the
-system's.
+system's. A 7z or rar pack is a NORMAL pack — not a download failure, not a reason to
+\`retry_later\`, and not something to re-search around.
+
+### archiveEntries is NOT an error and NOT a dead end — it is a mandatory second call
+
+When \`download_candidate\` returns \`archiveEntries\`, the candidate is still good and the
+download has already happened. Do NOT report that target \`retry_later\` / \`no_safe_match\`
+and do NOT abandon the pack. Immediately call \`download_candidate\` AGAIN with the SAME
+\`candidateId\`, the SAME \`videoFilename\`, and \`archiveEntryName\` set to the exact entry
+for that target. Only after that second call returns \`stagedFileId\` may you inspect and
+install it.
+
+Example for target \`Show.S01E01.mkv\`:
+- \`download_candidate(candidateId: "subhd:abc", videoFilename: "Show.S01E01.mkv")\`
+- response contains \`archiveEntries: ["Show.S01E01.srt", "Show.S01E02.srt"]\`
+- call \`download_candidate\` again with the same candidateId/videoFilename and \`archiveEntryName: "Show.S01E01.srt"\`
+- now you receive \`stagedFileId\`; inspect and install it.
+
+This second call is how you extract one episode from a season-pack zip/7z/rar. If the archive
+entry names do not reveal a safe match for your target, THAT is when the target is
+\`no_safe_match\`/retry — not before you have tried the second call.
 
 ### When the pack numbers episodes differently than your files do
 
@@ -344,7 +364,7 @@ location. \`install_subtitle\` will refuse anything outside this task's director
     descriptor: {
       name: 'find-subtitle-judgment',
       description:
-        `${identityVerification ? 'That the task carries no identity and Step 0 is to identify the media first via the separate identify-media document (read_doc), whose write_identified_media call returns the itemId used below; then ' : ''}how to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zips via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
+        `${identityVerification ? 'That the task carries no identity and Step 0 is to identify the media first via the separate identify-media document (read_doc), whose write_identified_media call returns the itemId used below; then ' : ''}how to harvest a batch task's whole target list (verify belonging and install per target, skip an unsure target without abandoning the pack, report one finalize with installed/no_safe_match/retry_later${hardsubMode === 'agent' ? '/hardsub_assumed' : ''} buckets keyed by verbatim itemIds), how to judge whether a downloaded candidate belongs to an exact video (metadata + structural inspection, never dialogue content, never a confidence score), how to extract each target's episode from the season packs / complete-series collections that ${name} subtitles usually come as (read the fileList, download by fileIndex per target, pick inside un-indexed zip/7z/rar archives via archiveEntries/archiveEntryName — including using a provided absolute episode number to locate an episode in packs numbered differently than your files), ${isChinese ? 'that Simplified and Traditional are equally good coverage' : `that only ${name} subtitles count as coverage`}${hardsubMode === 'agent' ? ', when a bracketed release-group tag plus exhausted search justifies judging hardsub_assumed instead of no_safe_match' : ''}, how to judge a provider:"local" candidate (a duplicate/replica sibling file's own existing subtitle) exactly like any other candidate — same structural check, no shortcut for being "already yours", no extra suspicion either, and the search→compare→install workflow.`,
     },
     content,
   }

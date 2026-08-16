@@ -87,6 +87,14 @@ describe('FIND_SUBTITLE_SKILL', () => {
     expect(c).toMatch(/choice of which file inside an archive .* is YOURS/i)
   })
 
+  it('teaches that 7z/rar season packs use the same archiveEntries workflow as zip, and are not a dead end', () => {
+    const c = FIND_SUBTITLE_SKILL.content
+    expect(c).toMatch(/7z/)
+    expect(c).toMatch(/\brar\b/i)
+    expect(c).toMatch(/mandatory second call/i)
+    expect(c).toMatch(/Do NOT report that target `retry_later`/i)
+  })
+
   // north star: the season-pack teaching must NOT smuggle in a scoring/gating vocabulary. Rather
   // than a brittle absence check (the skill legitimately PROHIBITS confidence scores), assert the
   // existing prohibition survives the rewrite and that no positive threshold/score guidance appears.

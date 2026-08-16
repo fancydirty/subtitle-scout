@@ -3,17 +3,18 @@ import { join, extname, basename, resolve, sep } from 'node:path'
 import AdmZip from 'adm-zip'
 import { writeAll } from './fsUtil.js'
 import { decodeToUtf8 } from './subtitleEncoding.js'
+import { extractSubtitleEntries } from './sevenZipExtract.js'
 
 const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa']
 
 export class UnsupportedArchiveError extends Error {
-  constructor(ext: string) { super(`unsupported archive format: ${ext} (only zip in v1)`) }
+  constructor(ext: string) { super(`unsupported archive format: ${ext} (zip/7z/rar only)`) }
 }
 
 export interface WriteSubtitleInput {
   artifact: Buffer
   artifactFilename: string
-  /** zip 包内要选的文件名（来自 ASSRT filelist[file_index].f）；非 zip 忽略 */
+  /** 压缩包内要选的文件名（来自 archiveEntries / ASSRT filelist）；非压缩包忽略 */
   selectFileName?: string
   videoFilename: string
   /** Any language/script tag used in the Jellyfin sidecar filename (`<video>.<langTag>.<ext>`) —
@@ -64,6 +65,44 @@ function extractEntryCapped(entry: AdmZip.IZipEntry): Buffer {
   return data
 }
 
+const ZIP_MAGIC = Buffer.from([0x50, 0x4b])
+const SEVEN_Z_MAGIC = Buffer.from([0x37, 0x7a, 0xbc, 0xaf])
+const RAR_MAGIC = Buffer.from('Rar!', 'ascii')
+
+/** Bytes win over the filename: subhd CDN URLs are authoritative (.7z), but the download
+ *  fallback used to label unknown bodies `download.srt` and write the archive as a sidecar. */
+export function sniffArchiveKind(bytes: Buffer): '.zip' | '.7z' | '.rar' | null {
+  if (bytes.length >= 4 && bytes.subarray(0, 4).equals(SEVEN_Z_MAGIC)) return '.7z'
+  if (bytes.length >= 4 && bytes.subarray(0, 4).equals(RAR_MAGIC)) return '.rar'
+  if (bytes.length >= 2 && bytes.subarray(0, 2).equals(ZIP_MAGIC)) return '.zip'
+  return null
+}
+
+function archiveKind(filename: string, bytes: Buffer): '.zip' | '.7z' | '.rar' | null {
+  return sniffArchiveKind(bytes) ?? (
+    extname(filename).toLowerCase() === '.zip' ||
+    extname(filename).toLowerCase() === '.7z' ||
+    extname(filename).toLowerCase() === '.rar'
+      ? extname(filename).toLowerCase() as '.zip' | '.7z' | '.rar'
+      : null
+  )
+}
+
+function pickFromNamedEntries(
+  entries: { name: string; data: Buffer }[],
+  selectFileName?: string,
+): ZipPick {
+  if (selectFileName) {
+    const chosen = entries.find(e => basename(e.name) === basename(selectFileName))
+    if (!chosen) throw new Error(`selected file not found in zip: ${selectFileName}`)
+    return { name: basename(chosen.name), data: chosen.data }
+  }
+  if (entries.length === 1) {
+    return { name: basename(entries[0].name), data: entries[0].data }
+  }
+  return { needsSelection: true, entries: entries.map(e => basename(e.name)) }
+}
+
 function pickFromZip(buf: Buffer, selectFileName?: string): ZipPick {
   const zip = new AdmZip(buf)
   const entries = zip.getEntries().filter(e =>
@@ -83,19 +122,27 @@ function pickFromZip(buf: Buffer, selectFileName?: string): ZipPick {
 }
 
 export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSubtitleOutcome> {
+  const kind = archiveKind(input.artifactFilename, input.artifact)
   const artifactExt = extname(input.artifactFilename).toLowerCase()
   let subtitleName: string
   let data: Buffer
 
-  if (artifactExt === '.zip') {
+  if (kind === '.zip') {
     const picked = pickFromZip(input.artifact, input.selectFileName)
+    if ('needsSelection' in picked) return picked
+    ;({ name: subtitleName, data } = picked)
+  } else if (kind === '.7z' || kind === '.rar') {
+    const picked = pickFromNamedEntries(
+      await extractSubtitleEntries(input.artifact),
+      input.selectFileName,
+    )
     if ('needsSelection' in picked) return picked
     ;({ name: subtitleName, data } = picked)
   } else if (SUBTITLE_EXTS.includes(artifactExt)) {
     subtitleName = input.artifactFilename
     data = input.artifact
   } else {
-    throw new UnsupportedArchiveError(artifactExt)
+    throw new UnsupportedArchiveError(artifactExt || '(none)')
   }
 
   // 编码归一化：非 UTF-8 转 UTF-8，记录原编码

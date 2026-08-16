@@ -169,7 +169,135 @@ function stagingLangTag(targetLanguage: string): string {
   return targetLanguage === 'zh' ? 'zh-Hans' : targetLanguage
 }
 
+type PackCache = Map<string, { bytes: Buffer; artifactFilename: string }>
+
+async function executeDownloadCandidate(
+  args: {
+    candidateId: string
+    fileIndex: number | null
+    videoFilename: string | null
+    itemId: string | null
+    archiveEntryName: string | null
+  },
+  deps: DownloadCandidateDeps,
+  packCache: PackCache,
+) {
+  const { candidateId, fileIndex, videoFilename, itemId, archiveEntryName } = args
+  const targets = deps.targetFilenames.map((f, i) => ({ videoFilename: f, itemId: deps.targetItemIds?.[i] }))
+  const resolved = resolveTarget(videoFilename, itemId, targets)
+  if ('error' in resolved) return resolved
+  const resolvedTarget = resolved.videoFilename
+
+  const parsed = parseCandidateKey(candidateId)
+  if (!parsed) {
+    return {
+      error:
+        `unrecognized candidate id: ${candidateId} — pass the candidate's \`id\` exactly as shown ` +
+        `by search_source/list_candidates/get_candidate (e.g. "assrt:667241")`,
+    }
+  }
+  const { provider, providerId } = parsed
+
+  // 重复源 P4：provider:'local' 是"该条目另一个文件已有的字幕"，不是真实网络适配器——
+  // providerId 直接编码字幕文件的绝对路径（mapper 侧 encodeURIComponent 写入，见
+  // findSubtitleWorkerTask.ts 的 buildLocalCandidates），这里解码后直接读盘，完全绕开
+  // runResolve/downloadDirect 的网络路径。同一份 writeSubtitle/inspectSubtitle 落盘纪律，
+  // 同一个 stagedFileId 机制——install_subtitle 完全不用知道这份字幕是网络下的还是本地复制的。
+  if (provider === 'local') {
+    const srcPath = decodeURIComponent(providerId)
+    if (deps.mediaRoot && !isUnderRoots(srcPath, [deps.mediaRoot])) {
+      return { error: `refusing to read local candidate outside sandboxed media root: ${srcPath}` }
+    }
+    // H3 对齐（read 侧）：isUnderRoots 是纯字符串前缀检查，从不解析链接——srcPath（或其某层
+    // 祖先）若是指向沙盒外的符号链接，上面会误判通过。读盘前做 realpath 复核（比 install 侧
+    // 更强：连文件本身的 symlink 一并解析），失败一律按"不通过"处理（宁停不猜）。
+    if (deps.mediaRoot) {
+      let realSrc: string
+      let realRoot: string
+      try {
+        realSrc = realpathSync(srcPath)
+        realRoot = realpathSync(deps.mediaRoot)
+      } catch (e) {
+        return { error: `local candidate file unreadable: ${srcPath} (${e instanceof Error ? e.message : String(e)})` }
+      }
+      if (!isUnderRoots(realSrc, [realRoot])) {
+        return {
+          error: `refusing to read local candidate: real path (${realSrc}) escapes the sandboxed ` +
+            `media root — possible symlink escape`,
+        }
+      }
+    }
+    let bytes: Buffer
+    try {
+      bytes = await readFile(srcPath)
+    } catch (e) {
+      return { error: `local candidate file unreadable: ${srcPath} (${e instanceof Error ? e.message : String(e)})` }
+    }
+    const stagedFileId = randomUUID()
+    const attemptDir = join(deps.stagingDir, stagedFileId)
+    const written = await writeSubtitle({
+      artifact: bytes, artifactFilename: basename(srcPath), videoFilename: resolvedTarget,
+      langTag: stagingLangTag(deps.targetLanguage ?? 'zh'), outDir: attemptDir,
+      selectFileName: archiveEntryName ?? undefined,
+    })
+    if ('needsSelection' in written) {
+      return {
+        archiveEntries: written.entries,
+        hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
+      }
+    }
+    const signals = inspectSubtitle(written.path)
+    deps.stagedFiles.set(stagedFileId, written.path)
+    return { stagedFileId, bytes: written.bytes, encoding: written.encoding, signals }
+  }
+
+  const cacheKey = `${candidateId}#${fileIndex ?? ''}`
+  let bytes: Buffer
+  let artifactFilename: string
+  const cached = packCache.get(cacheKey)
+  if (cached) {
+    bytes = cached.bytes
+    artifactFilename = cached.artifactFilename
+  } else {
+    const { url, filename, headers } = await runResolve({ provider, providerId, fileIndex }, deps.adapters)
+    const dl = await downloadDirect(url, { headers, fetchImpl: deps.fetchImpl })
+    // 文件名优先级:resolve 显式给的 → 下载响应 Content-Disposition(zimuku CDN 权威携带
+    // .srt/.zip 扩展名,决定 writeSubtitle 走解压还是裸文件)→ 按 content-type 兜底猜测。
+    // writeSubtitle also sniffs magic bytes, so a 7z labeled download.srt still unpacks.
+    artifactFilename = filename ?? dl.filename ?? (
+      dl.contentType?.includes('7z') ? 'download.7z' :
+      dl.contentType?.includes('rar') ? 'download.rar' :
+      dl.contentType?.includes('zip') ? 'download.zip' :
+      'download.srt'
+    )
+    bytes = dl.bytes
+    packCache.set(cacheKey, { bytes, artifactFilename })
+  }
+  const stagedFileId = randomUUID()
+  const attemptDir = join(deps.stagingDir, stagedFileId)
+  const written = await writeSubtitle({
+    artifact: bytes, artifactFilename, videoFilename: resolvedTarget,
+    langTag: stagingLangTag(deps.targetLanguage ?? 'zh'), outDir: attemptDir,
+    selectFileName: archiveEntryName ?? undefined,
+  })
+  if ('needsSelection' in written) {
+    return {
+      archiveEntries: written.entries,
+      hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
+    }
+  }
+  const signals = inspectSubtitle(written.path)
+  deps.stagedFiles.set(stagedFileId, written.path)
+  return { stagedFileId, bytes: written.bytes, encoding: written.encoding, signals }
+}
+
 export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
+  // Per-run cache: subhd mint is IP-rate-limited (~5-6 resolves then "已失效"). A season-pack
+  // 7z/zip is listed first (archiveEntries) then picked per episode — without this cache each
+  // follow-up re-mints and re-downloads the same bytes, which is exactly how Cassandra burned
+  // seven downloads of one 165KB .7z and still installed nothing.
+  const packCache = new Map<string, { bytes: Buffer; artifactFilename: string }>()
+
   return tool({
     description:
       'Resolve a candidate to a download URL, download it, unpack/decode it into your ' +
@@ -185,12 +313,13 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       'Use fileIndex to pull ONE file out of a season pack / collection BEFORE download: set it to ' +
       'the index of the entry in the candidate\'s fileList (seen via get_candidate) that names your ' +
       'target episode; pass fileIndex: null for a plain single-file candidate. ' +
-      'If the downloaded archive is a zip with more than one subtitle file inside (e.g. an ' +
+      'If the downloaded archive is a zip/7z/rar with more than one subtitle file inside (e.g. an ' +
       'un-indexed season pack), this call returns an `archiveEntries` list instead of staging ' +
       'anything — call again with archiveEntryName set to the exact entry name from that list to ' +
-      'pick which file INSIDE the zip to use (archiveEntryName picks an entry AFTER download, ' +
+      'pick which file INSIDE the archive to use (archiveEntryName picks an entry AFTER download, ' +
       'inside the unpacked archive — a different step from fileIndex, which picks the source file ' +
-      'before download). ' +
+      'before download). The archive bytes are kept for this run, so the follow-up call does not ' +
+      're-download. ' +
       'Does NOT install it — call install_subtitle once you decide it is a match.',
     inputSchema: z.object({
       // The agent only ever sees ONE identifier per candidate — candidateKey(c) = the composite
@@ -205,100 +334,19 @@ export function makeDownloadCandidateTool(deps: DownloadCandidateDeps) {
       // Disambiguates a videoFilename that collides across targets (basename shared by two-or-more
       // targets, e.g. cross-season batch) — see resolveTarget.
       itemId: nullableTolerant(z.string()),
-      // Which entry inside a multi-subtitle zip to pick (C-D1) — matched by exact basename in
-      // subtitleWriter's pickFromZip.
+      // Which entry inside a multi-subtitle zip/7z/rar to pick (C-D1) — matched by exact basename.
       archiveEntryName: nullableTolerant(z.string()),
     }),
     execute: async ({ candidateId, fileIndex, videoFilename, itemId, archiveEntryName }) => {
-      const targets = deps.targetFilenames.map((f, i) => ({ videoFilename: f, itemId: deps.targetItemIds?.[i] }))
-      const resolved = resolveTarget(videoFilename, itemId, targets)
-      if ('error' in resolved) return resolved
-      const resolvedTarget = resolved.videoFilename
-
-      const parsed = parseCandidateKey(candidateId)
-      if (!parsed) {
-        return {
-          error:
-            `unrecognized candidate id: ${candidateId} — pass the candidate's \`id\` exactly as shown ` +
-            `by search_source/list_candidates/get_candidate (e.g. "assrt:667241")`,
-        }
+      try {
+        return await executeDownloadCandidate(
+          { candidateId, fileIndex, videoFilename, itemId, archiveEntryName },
+          deps,
+          packCache,
+        )
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) }
       }
-      const { provider, providerId } = parsed
-
-      // 重复源 P4：provider:'local' 是"该条目另一个文件已有的字幕"，不是真实网络适配器——
-      // providerId 直接编码字幕文件的绝对路径（mapper 侧 encodeURIComponent 写入，见
-      // findSubtitleWorkerTask.ts 的 buildLocalCandidates），这里解码后直接读盘，完全绕开
-      // runResolve/downloadDirect 的网络路径。同一份 writeSubtitle/inspectSubtitle 落盘纪律，
-      // 同一个 stagedFileId 机制——install_subtitle 完全不用知道这份字幕是网络下的还是本地复制的。
-      if (provider === 'local') {
-        const srcPath = decodeURIComponent(providerId)
-        if (deps.mediaRoot && !isUnderRoots(srcPath, [deps.mediaRoot])) {
-          return { error: `refusing to read local candidate outside sandboxed media root: ${srcPath}` }
-        }
-        // H3 对齐（read 侧）：isUnderRoots 是纯字符串前缀检查，从不解析链接——srcPath（或其某层
-        // 祖先）若是指向沙盒外的符号链接，上面会误判通过。读盘前做 realpath 复核（比 install 侧
-        // 更强：连文件本身的 symlink 一并解析），失败一律按"不通过"处理（宁停不猜）。
-        if (deps.mediaRoot) {
-          let realSrc: string
-          let realRoot: string
-          try {
-            realSrc = realpathSync(srcPath)
-            realRoot = realpathSync(deps.mediaRoot)
-          } catch (e) {
-            return { error: `local candidate file unreadable: ${srcPath} (${e instanceof Error ? e.message : String(e)})` }
-          }
-          if (!isUnderRoots(realSrc, [realRoot])) {
-            return {
-              error: `refusing to read local candidate: real path (${realSrc}) escapes the sandboxed ` +
-                `media root — possible symlink escape`,
-            }
-          }
-        }
-        let bytes: Buffer
-        try {
-          bytes = await readFile(srcPath)
-        } catch (e) {
-          return { error: `local candidate file unreadable: ${srcPath} (${e instanceof Error ? e.message : String(e)})` }
-        }
-        const stagedFileId = randomUUID()
-        const attemptDir = join(deps.stagingDir, stagedFileId)
-        const written = await writeSubtitle({
-          artifact: bytes, artifactFilename: basename(srcPath), videoFilename: resolvedTarget,
-          langTag: stagingLangTag(deps.targetLanguage ?? 'zh'), outDir: attemptDir,
-          selectFileName: archiveEntryName ?? undefined,
-        })
-        if ('needsSelection' in written) {
-          return {
-            archiveEntries: written.entries,
-            hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
-          }
-        }
-        const signals = inspectSubtitle(written.path)
-        deps.stagedFiles.set(stagedFileId, written.path)
-        return { stagedFileId, bytes: written.bytes, encoding: written.encoding, signals }
-      }
-
-      const { url, filename, headers } = await runResolve({ provider, providerId, fileIndex }, deps.adapters)
-      const { bytes, contentType, filename: dlFilename } = await downloadDirect(url, { headers, fetchImpl: deps.fetchImpl })
-      // 文件名优先级:resolve 显式给的 → 下载响应 Content-Disposition(zimuku CDN 权威携带
-      // .srt/.zip 扩展名,决定 writeSubtitle 走解压还是裸文件)→ 按 content-type 兜底猜测。
-      const artifactFilename = filename ?? dlFilename ?? (contentType?.includes('zip') ? 'download.zip' : 'download.srt')
-      const stagedFileId = randomUUID()
-      const attemptDir = join(deps.stagingDir, stagedFileId)
-      const written = await writeSubtitle({
-        artifact: bytes, artifactFilename, videoFilename: resolvedTarget,
-        langTag: stagingLangTag(deps.targetLanguage ?? 'zh'), outDir: attemptDir,
-        selectFileName: archiveEntryName ?? undefined,
-      })
-      if ('needsSelection' in written) {
-        return {
-          archiveEntries: written.entries,
-          hint: 'multiple subtitle entries in this archive — call again with archiveEntryName to pick your episode',
-        }
-      }
-      const signals = inspectSubtitle(written.path)
-      deps.stagedFiles.set(stagedFileId, written.path)
-      return { stagedFileId, bytes: written.bytes, encoding: written.encoding, signals }
     },
   })
 }
