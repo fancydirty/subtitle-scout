@@ -14,5 +14,5 @@ docker run --rm \
   -e TMPDIR=/tmp/sandbox-scratch \
   -e SUBTITLE_SCOUT_CACHE_DIR=/tmp/sandbox-scratch/cache \
   node:22-slim \
-  sh -lc 'apt-get update -qq && apt-get install -y -qq python3 make g++ ffmpeg ca-certificates >/dev/null && npm rebuild better-sqlite3 && npx tsx src/cli/index.ts sandbox-library --profile "$0" --root /tmp/sandbox-scratch/lib --cache-dir /tmp/sandbox-scratch/cache' \
+  sh -lc 'apt-get update -qq && apt-get install -y -qq python3 make g++ ffmpeg ca-certificates >/dev/null && npm rebuild better-sqlite3 && npm install --no-save @esbuild/linux-arm64 && npx tsx src/cli/index.ts sandbox-library --profile "$0" --root /tmp/sandbox-scratch/lib --cache-dir /tmp/sandbox-scratch/cache' \
   "$PROFILE"
