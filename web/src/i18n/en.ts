@@ -8,6 +8,7 @@ export const en = {
   // **保留**——那两个路由还活着（只是不在侧栏里），Topbar 的面包屑仍按 route.tab 查 TABS…
   // 查不到时回落空串，但 #/library 的二级面包屑（剧名那条）还要用 nav_library。
   // 两个键随 Task ⑪ 删旧页面时一起走。
+  brand_name: 'Subtitle Scout',
   nav_activity: 'Activity',
   nav_notifications: 'Notifications',
   nav_media: 'Media',
@@ -567,7 +568,7 @@ export const en = {
   // 33 files were waiting in production, all inside the backoff window, and none of
   // them showed up. They show up now, each saying how long the wait is.
   wb_queue_retry_in: 'waiting to retry',
-  wb_queue_all_backoff: 'These are waiting to retry automatically',
+  wb_queue_all_backoff: 'These are waiting to retry',
   wb_loading: 'Loading…',
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',

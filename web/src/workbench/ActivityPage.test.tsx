@@ -688,7 +688,7 @@ describe('数据获取：刷新触发点与异常态', () => {
       expect(screen.queryByTestId('wb-queue-empty')).toBeNull()
       expect(screen.getByText(/Waiting · 1/)).toBeInTheDocument()
       const line = screen.getByTestId('wb-queue-all-backoff')
-      expect(line.textContent).toContain('waiting to retry automatically')
+      expect(line.textContent).toContain('waiting to retry')
     })
 
     it('卡片副行对等待中的项说「等待自动重试」，到点项没有这一段', async () => {
@@ -735,7 +735,7 @@ describe('数据获取：刷新触发点与异常态', () => {
       }
       renderPage()
       await ready()
-      expect(screen.getByTestId('wb-queue-all-backoff').textContent).toContain('waiting to retry automatically')
+      expect(screen.getByTestId('wb-queue-all-backoff').textContent).toContain('waiting to retry')
       expect(screen.getAllByTestId('wb-queue-card')).toHaveLength(1)
     })
   })

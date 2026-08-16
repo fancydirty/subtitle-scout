@@ -11,6 +11,7 @@ export const zh = {
   // ⚠️ nav_media 与 nav_library 的中文都是"媒体库"——**不是笔误**：新媒体库页（#/media）
   // 就是要取代旧海报墙（#/library）的位置，只是本 task 只建占位壳。两者不会同时出现在
   // 侧栏（TABS 里只有 media），所以用户看不到重名。nav_library 随 Task ⑪ 一起删。
+  brand_name: '字幕助手',
   nav_activity: '活动',
   nav_notifications: '通知',
   nav_media: '媒体库',
@@ -498,8 +499,8 @@ export const zh = {
   // 生产上 33 个文件在等、全在退避窗，此前它们一个都不显示。现在照常显示，
   // 只是各自说清楚"还要等多久"，队列整体取不到时再加一句总的。
   // 措辞纪律同 stale 那一族：不出现"退避/backoff/next_retry_at"这类内部词。
-  wb_queue_retry_in: '等待自动重试',
-  wb_queue_all_backoff: '这些正在等待自动重试',
+  wb_queue_retry_in: '等待重试',
+  wb_queue_all_backoff: '这些正在等待重试',
   wb_loading: '加载中…',
   wb_error_title: '没能加载队列',
   wb_retry: '重试',

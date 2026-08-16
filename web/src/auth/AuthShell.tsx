@@ -6,12 +6,14 @@
 // 不上背景图，就把那唯一一次衬线花在这里的 <h1>，作零交互成本的仪式感。落地：web-safe serif 栈
 // （Georgia），绝不引 webfont（自托管离线形态 + 无新依赖）。全站 serif 仅此 auth-shell__title 一处。
 import type { ReactNode } from 'react'
+import { useT } from '../i18n/useT.js'
 
 export function AuthShell({ heading, children }: { heading: string; children: ReactNode }) {
+  const { t } = useT()
   return (
     <div className="auth-shell">
       <div className="auth-shell__card">
-        <div className="auth-shell__wordmark">subtitle-scout</div>
+        <div className="auth-shell__wordmark">{t('brand_name')}</div>
         <h1 className="auth-shell__title">{heading}</h1>
         {children}
       </div>

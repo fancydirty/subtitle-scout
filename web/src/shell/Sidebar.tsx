@@ -49,7 +49,7 @@ export function Sidebar({ tab }: Props) {
 
   return (
     <SideNav
-      header={<SideNavHeading heading="subtitle-scout" />}
+      header={<SideNavHeading heading={t('brand_name')} />}
       footer={
         <Button variant="ghost" size="sm" onClick={logout}>
           {t('nav_logout')}
