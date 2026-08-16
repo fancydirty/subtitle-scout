@@ -159,9 +159,12 @@ describe('writeSubtitle', () => {
     expect(r.path.endsWith('Movie.zh-Hans.srt')).toBe(true)
   })
 
-  // 季包 zip 自动安全选择：视频季集号恰好只匹配包内一条字幕时直接取它；
-  // 匹配 0 条或 2 条都不猜，仍返回条目清单交给 agent。
-  it('multi-entry zip auto-selects the uniquely matching SxxExx entry and writes it', async () => {
+  // C-D1 fix (the audit finding this task addresses): a season-pack zip with MULTIPLE subtitle
+  // entries and no selectFileName used to have pickFromZip mechanically grab entries[0] — a season
+  // pack could only ever yield episode 1, no matter which episode the agent actually wanted, and the
+  // agent had no way to see what else was in the archive. Now the entry list comes back as a fact;
+  // nothing is written, and the caller must re-call with selectFileName to pick.
+  it('returns needsSelection with the entry list (writes nothing) when a zip has multiple subtitle entries and no selectFileName is given', async () => {
     const zip = new AdmZip()
     zip.addFile('Show.S01E01.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep1\n'))
     zip.addFile('Show.S01E02.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep2\n'))
@@ -170,23 +173,6 @@ describe('writeSubtitle', () => {
       artifact: zip.toBuffer(),
       artifactFilename: 'pack.zip',
       videoFilename: 'Show.S01E01.mkv',
-      langTag: 'zh-Hans',
-      outDir: dir,
-    })
-    if ('needsSelection' in r) throw new Error('expected auto-selected write')
-    expect(readFileSync(r.path, 'utf8')).toContain('ep1')
-    expect(r.path.endsWith('Show.S01E01.zh-Hans.srt')).toBe(true)
-  })
-
-  it('returns needsSelection when the video episode key is missing or ambiguous', async () => {
-    const zip = new AdmZip()
-    zip.addFile('Show.S01E01.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep1\n'))
-    zip.addFile('Show.S01E02.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\nep2\n'))
-    const dir = outDir()
-    const r = await writeSubtitle({
-      artifact: zip.toBuffer(),
-      artifactFilename: 'pack.zip',
-      videoFilename: 'Show.mkv',
       langTag: 'zh-Hans',
       outDir: dir,
     })

@@ -64,24 +64,7 @@ function extractEntryCapped(entry: AdmZip.IZipEntry): Buffer {
   return data
 }
 
-function episodeKey(name: string): string | null {
-  const m = name.match(/(?:s(\d{1,3})[ ._-]*e(\d{1,3})|(\d{1,3})x(\d{1,3}))/i)
-  if (!m) return null
-  const season = String(Number(m[1] ?? m[3])).padStart(2, '0')
-  const episode = String(Number(m[2] ?? m[4])).padStart(3, '0')
-  return `s${season}e${episode}`
-}
-
-/** 未索引季包内有多条字幕时：目标视频的季集号恰好只匹配其中一条才自动选，
- *  否则仍把条目清单交回调用方。绝不猜。 */
-function autoSelectByEpisode(entries: AdmZip.IZipEntry[], videoFilename: string): AdmZip.IZipEntry | null {
-  const target = episodeKey(videoFilename)
-  if (target === null) return null
-  const matches = entries.filter(e => episodeKey(basename(e.entryName)) === target)
-  return matches.length === 1 ? matches[0] : null
-}
-
-function pickFromZip(buf: Buffer, selectFileName?: string, videoFilename?: string): ZipPick {
+function pickFromZip(buf: Buffer, selectFileName?: string): ZipPick {
   const zip = new AdmZip(buf)
   const entries = zip.getEntries().filter(e =>
     !e.isDirectory &&
@@ -96,8 +79,6 @@ function pickFromZip(buf: Buffer, selectFileName?: string, videoFilename?: strin
   if (entries.length === 1) {
     return { name: basename(entries[0].entryName), data: extractEntryCapped(entries[0]) }
   }
-  const auto = videoFilename ? autoSelectByEpisode(entries, videoFilename) : null
-  if (auto) return { name: basename(auto.entryName), data: extractEntryCapped(auto) }
   return { needsSelection: true, entries: entries.map(e => basename(e.entryName)) }
 }
 
@@ -107,7 +88,7 @@ export async function writeSubtitle(input: WriteSubtitleInput): Promise<WriteSub
   let data: Buffer
 
   if (artifactExt === '.zip') {
-    const picked = pickFromZip(input.artifact, input.selectFileName, input.videoFilename)
+    const picked = pickFromZip(input.artifact, input.selectFileName)
     if ('needsSelection' in picked) return picked
     ;({ name: subtitleName, data } = picked)
   } else if (SUBTITLE_EXTS.includes(artifactExt)) {
