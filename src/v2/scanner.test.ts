@@ -72,6 +72,9 @@ describe('isScannable（静默跳过判据，spec-gap B1）', () => {
   it('过小（<10MB）→ 跳过', () => {
     expect(isScannable('/media/TV/Show/E01.mkv', 5 * 1024 * 1024).ok).toBe(false)
   })
+  it('0 字节占位视频可扫（假片库；R8 空快照会把整根跳过）', () => {
+    expect(isScannable('/media/TV/Show/S01E01.mkv', 0).ok).toBe(true)
+  })
 })
 
 describe('singleSeasonOf（唯一季推导，Jellyfin 对 Gachiakuta 的做法）', () => {
