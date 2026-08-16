@@ -89,7 +89,6 @@ export function SettingsTabsPage() {
   // providers tab：八卡片（spec §4.2 顺序 TMDB/LLM/AI翻译/ASSRT/OpenSubtitles/Jimaku/subhd/zimuku）
   const rows = providers.data?.providers ?? []
   const translateRow = rows.find((r) => r.id === 'translate')
-  const llmRow = rows.find((r) => r.id === 'llm')
   // "keyed 凭据卡" = 有自己凭据的字幕源。判据不能只看 `secrets.length > 0`：
   // zimuku 行现在带着三个 ZIMUKU_VISION_*（视觉兜底，见后端 PROVIDER_SECRETS 注释），
   // 但它本身是**开关型**源——下面已经用 ProviderToggleCard + ZimukuVisionCard 渲染过了。
@@ -104,7 +103,9 @@ export function SettingsTabsPage() {
   // badge n/8 实算（spec §2 已配置判据）
   const keyedConfigured = (r: ProviderRowDTO) => r.secrets.length > 0 && r.secrets.every((s) => s.set)
   const keyedCount = keyedRows.filter(keyedConfigured).length
-  const translateConfigured = settingsData.data?.ai_translate_enabled === 'true'
+  const translateConfigured =
+    settingsData.data?.ai_translate_enabled === 'true' &&
+    Boolean(translateRow && translateRow.secrets.every((s) => s.set))
   const subhdConfigured = setupProviders?.subhd.enabled ?? false
   const zimukuConfigured = setupProviders?.zimuku.enabled ?? false
   const configuredCount: number = keyedCount + (translateConfigured ? 1 : 0) + (subhdConfigured ? 1 : 0) + (zimukuConfigured ? 1 : 0)
@@ -134,10 +135,9 @@ export function SettingsTabsPage() {
         {keyedRows.map((row) => (
           <div key={row.id} className="space-y-6">
             <ProviderCard row={row} reload={providers.reload} />
-            {row.id === 'llm' && translateRow && llmRow && (
+            {row.id === 'llm' && translateRow && (
               <TranslateCard
                 translate={translateRow}
-                llm={llmRow}
                 settings={settingsData.data ?? ({} as SettingsDTO)}
                 onUpdated={setUpdated}
                 reload={providers.reload}

@@ -317,6 +317,8 @@ export function sanitizeCredentials(input: unknown): Partial<Record<SecretName, 
 }
 
 const VALIDATE_TIMEOUT_MS = 10_000
+/** 翻译专用模型常开 thinking（gpt-5.6-sol 等），10s 会把「能通」误判成不通。Save 走这条 probe。 */
+const TRANSLATE_VALIDATE_TIMEOUT_MS = 45_000
 
 /** 真实 probe 组（cmdDoctor 同款构造，逐字复刻 cli/index.ts:727-788 的探测形状）。 */
 function defaultProbe(
@@ -349,7 +351,7 @@ function defaultProbe(
       if (!baseUrl || !apiKey || !modelName) return () => notConfigured
       const model = makeModel({ baseUrl, apiKey, model: modelName })
       return () => checkLlm(async () =>
-        (await generateText({ model, prompt: '回复"ok"两个字母即可', maxOutputTokens: 1, abortSignal: AbortSignal.timeout(VALIDATE_TIMEOUT_MS) })).text)
+        (await generateText({ model, prompt: '回复"ok"两个字母即可', maxOutputTokens: 1, abortSignal: AbortSignal.timeout(TRANSLATE_VALIDATE_TIMEOUT_MS) })).text)
     }
     case 'assrt': {
       const token = cred('ASSRT_TOKEN')

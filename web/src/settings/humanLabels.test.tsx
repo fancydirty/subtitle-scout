@@ -33,21 +33,18 @@ describe('TranslateCard 专用模型字段人话标签', () => {
     { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
     { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },
   ], lastTest: null, quota: null }
-  const llm: ProviderRowDTO = { id: 'llm', secrets: [{ name: 'LLM_MODEL', set: true, source: 'db', masked: 'mimo-v2.5' }], lastTest: null, quota: null }
 
   it('zh：三个字段的可见标签与可及名都不再是 env 键', () => {
     render(
       <I18nProvider initialLang="zh">
         <TranslateCard
           translate={translate}
-          llm={llm}
           settings={{ ai_translate_enabled: 'true' } as SettingsDTO}
           onUpdated={vi.fn()}
           reload={vi.fn()}
         />
       </I18nProvider>,
     )
-    fireEvent.click(screen.getByRole('radio', { name: '专用模型' }))
     expect(screen.getByLabelText('接口地址')).toBeInTheDocument()
     expect(screen.getByLabelText('API 密钥')).toBeInTheDocument()
     expect(screen.getAllByLabelText('模型').length).toBeGreaterThan(0)

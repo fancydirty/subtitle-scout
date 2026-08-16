@@ -64,16 +64,12 @@ const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', secrets: [
   { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },
 ], lastTest: null, quota: null }
-const LLM_ROW: ProviderRowDTO = { id: 'llm', secrets: [
-  { name: 'LLM_MODEL', set: true, source: 'db', masked: 'mimo-v2.5' },
-], lastTest: null, quota: null }
 
 function renderTranslate(settings: SettingsDTO) {
   render(
     <I18nProvider initialLang="zh">
       <TranslateCard
         translate={TRANSLATE_ROW}
-        llm={LLM_ROW}
         settings={settings}
         onUpdated={vi.fn()}
         reload={vi.fn()}
@@ -91,11 +87,11 @@ describe('TranslateCard zh', () => {
     expect(screen.getByText('会消耗 LLM 配额')).toBeInTheDocument()
   })
 
-  it('开启后分段选项与当前模型行是中文', () => {
+  it('开启后直接是专用三凭证，没有跟随默认分段', () => {
     renderTranslate({ ai_translate_enabled: 'true' } as SettingsDTO)
-    expect(screen.getByRole('radio', { name: '跟随默认 LLM' })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: '专用模型' })).toBeInTheDocument()
-    expect(screen.getAllByText((_, el) => (el?.textContent ?? '').replace(/\s+/g, ' ').includes('当前： mimo-v2.5 · 与 agent 共用')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('radio', { name: '跟随默认 LLM' })).not.toBeInTheDocument()
+    expect(screen.getByText('自动翻译必须配置专用模型，不会使用默认 LLM。')).toBeInTheDocument()
+    expect(screen.getByLabelText('接口地址')).toBeInTheDocument()
   })
 })
 

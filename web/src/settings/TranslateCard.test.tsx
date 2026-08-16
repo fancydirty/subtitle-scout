@@ -13,17 +13,18 @@ const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', secrets: [
   { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },
 ], lastTest: null, quota: null }
 
-const LLM_ROW: ProviderRowDTO = { id: 'llm', secrets: [
-  { name: 'LLM_MODEL', set: true, source: 'db', masked: 'mimo-v2.5' },
-], lastTest: null, quota: null }
-
-function renderCard(over: { translate?: Partial<ProviderRowDTO>; llm?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; reload?: () => void } = {}) {
+function renderCard(over: { translate?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; reload?: () => void } = {}) {
   const translate: ProviderRowDTO = { ...TRANSLATE_ROW, ...over.translate }
-  const llm: ProviderRowDTO = { ...LLM_ROW, ...over.llm }
   const settings: SettingsDTO = { ai_translate_enabled: 'false', ...over.settings } as SettingsDTO
   const reload = over.reload ?? vi.fn()
-  render(<I18nProvider initialLang="en"><TranslateCard translate={translate} llm={llm} settings={settings} onUpdated={vi.fn()} reload={reload} /></I18nProvider>)
+  render(<I18nProvider initialLang="en"><TranslateCard translate={translate} settings={settings} onUpdated={vi.fn()} reload={reload} /></I18nProvider>)
   return reload
+}
+
+function fillDedicated() {
+  fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://api.example.com/v1' } })
+  fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-1' } })
+  fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-5.6-sol' } })
 }
 
 describe('TranslateCard', () => {
@@ -34,7 +35,6 @@ describe('TranslateCard', () => {
     renderCard()
     fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith({ ai_translate_enabled: 'true' }))
-    expect(await screen.findByRole('radiogroup')).toBeInTheDocument()
   })
 
   it('🔴 关闭开关 → PUT ai_translate_enabled=false', async () => {
@@ -46,59 +46,68 @@ describe('TranslateCard', () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith({ ai_translate_enabled: 'false' }))
   })
 
-  it('功能关闭时第二层不在 DOM（用 queryByRole 断言 null）', () => {
+  it('功能关闭时专用字段不在 DOM', () => {
     renderCard()
+    expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument()
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
   })
 
-  it('开启后渲染 Segmented，默认跟随默认（三凭证全无）', () => {
+  it('开启后没有「跟随默认 LLM」分段，直接渲染三个必填字段', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByRole('radiogroup')).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Follow default LLM' })).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('跟随默认显示当前默认 model 名（取自 LLM 卡片）', () => {
-    renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText(/mimo-v2.5/)).toBeInTheDocument()
-  })
-
-  it('选专用模型渲染三个必填字段', () => {
-    renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Follow default LLM' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Base URL')).toHaveAttribute('required')
     expect(screen.getByLabelText('API key')).toHaveAttribute('required')
-    expect(screen.getAllByLabelText('Model').find((el) => el.tagName === 'INPUT') as HTMLInputElement).toHaveAttribute('required')
+    expect(screen.getByLabelText('Model')).toHaveAttribute('required')
   })
 
-  it('三凭证任一为空 → 保存按钮 disabled（6 条用例合并：3 单空 + 3 双空）', () => {
+  it('三凭证任一为空 → 保存按钮 disabled', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
     const base = screen.getByLabelText('Base URL')
     const key = screen.getByLabelText('API key')
-    const model = screen.getAllByLabelText('Model').find((el) => el.tagName === 'INPUT') as HTMLInputElement
+    const model = screen.getByLabelText('Model')
     fireEvent.change(base, { target: { value: 'https://api.example.com/v1' } })
     fireEvent.change(key, { target: { value: 'sk-1' } })
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-    fireEvent.change(model, { target: { value: 'gpt-4o-mini' } })
+    fireEvent.change(model, { target: { value: 'gpt-5.6-sol' } })
     fireEvent.change(base, { target: { value: '' } })
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
-  it('三凭证全填 → 保存 enabled，PUT 三次', async () => {
+  it('🔴 三凭证全填 → Save 先 validateSetup(translate, drafts)，通了才 PUT 三次', async () => {
+    const validate = vi.spyOn(api, 'validateSetup').mockResolvedValue({ ok: true })
     const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
-    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://api.example.com/v1' } })
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-1' } })
-    fireEvent.change(screen.getAllByLabelText('Model').find((el) => el.tagName === 'INPUT') as HTMLInputElement, { target: { value: 'gpt-4o-mini' } })
+    fillDedicated()
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(put).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(validate).toHaveBeenCalledWith('translate', {
+      TRANSLATE_BASE_URL: 'https://api.example.com/v1',
+      TRANSLATE_API_KEY: 'sk-1',
+      TRANSLATE_MODEL: 'gpt-5.6-sol',
+    }))
+    expect(put).toHaveBeenCalledTimes(3)
+  })
+
+  it('🔴 validate 不通 → 不 PUT、行内 alert、三个输入框原值仍在（同守备目录）', async () => {
+    const validate = vi.spyOn(api, 'validateSetup').mockResolvedValue({
+      ok: false,
+      error: 'Invalid credentials — check the key and try again.',
+    })
+    const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
+    renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
+    fillDedicated()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    expect(validate).toHaveBeenCalled()
+    expect(put).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://api.example.com/v1')
+    expect(screen.getByLabelText('API key')).toHaveValue('sk-1')
+    expect(screen.getByLabelText('Model')).toHaveValue('gpt-5.6-sol')
   })
 
   it('空字段失焦 → 行内错误 role=alert', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    fireEvent.click(screen.getByRole('radio', { name: 'Dedicated model' }))
     const base = screen.getByLabelText('Base URL')
     fireEvent.change(base, { target: { value: 'https://api.example.com/v1' } })
     fireEvent.blur(base)
@@ -108,7 +117,7 @@ describe('TranslateCard', () => {
     expect(screen.getByRole('alert')).toBeInTheDocument()
   })
 
-  it('env 源三凭证 → 字段 readOnly + 🔒 徽标 + 无保存按钮', () => {
+  it('env 源三凭证 → 字段 readOnly + 无保存按钮', () => {
     renderCard({ translate: { secrets: [
       { name: 'TRANSLATE_BASE_URL', set: true, source: 'env', masked: 'htt••••/v1' },
       { name: 'TRANSLATE_API_KEY', set: true, source: 'env', masked: 'sk••••' },
@@ -117,47 +126,21 @@ describe('TranslateCard', () => {
     const card = within(screen.getByTestId('providers-translate'))
     expect(card.getByText('✓ Dedicated model')).toBeInTheDocument()
     expect(card.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(card.getByLabelText('Base URL')).toHaveAttribute('readOnly')
   })
 
-  it('从专用切回跟随默认 → 弹破坏性确认；取消则 Segmented 回弹专用', async () => {
-    renderCard({ translate: { secrets: [
-      { name: 'TRANSLATE_BASE_URL', set: true, source: 'db', masked: 'htt••••/v1' },
-      { name: 'TRANSLATE_API_KEY', set: true, source: 'db', masked: 'sk••••' },
-      { name: 'TRANSLATE_MODEL', set: true, source: 'db', masked: 'gp••••' },
-    ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByRole('radio', { name: 'Dedicated model' })).toHaveAttribute('aria-checked', 'true')
-    fireEvent.click(screen.getByRole('radio', { name: 'Follow default LLM' }))
-    expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
-    expect(screen.getByRole('radio', { name: 'Dedicated model' })).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('徽标五态：关闭/已启用/专用模型/配置不完整/环境变量', () => {
+  it('徽标：关闭 / 未配完整 / 专用模型（不再有「已开启=跟随默认」）', () => {
     renderCard()
     expect(screen.getByText('Off')).toBeInTheDocument()
     cleanup()
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText('✓ Enabled')).toBeInTheDocument()
+    expect(screen.getByText('⚠ Incomplete')).toBeInTheDocument()
+    expect(screen.queryByText('✓ Enabled')).not.toBeInTheDocument()
     cleanup()
     renderCard({ translate: { secrets: [
       { name: 'TRANSLATE_BASE_URL', set: true, source: 'db', masked: 'htt••••/v1' },
       { name: 'TRANSLATE_API_KEY', set: true, source: 'db', masked: 'sk••••' },
       { name: 'TRANSLATE_MODEL', set: true, source: 'db', masked: 'gp••••' },
-    ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText('✓ Dedicated model')).toBeInTheDocument()
-    cleanup()
-    renderCard({ translate: { secrets: [
-      { name: 'TRANSLATE_BASE_URL', set: true, source: 'db', masked: 'htt••••/v1' },
-      { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
-      { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },
-    ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText('⚠ Incomplete')).toBeInTheDocument()
-    cleanup()
-    renderCard({ translate: { secrets: [
-      { name: 'TRANSLATE_BASE_URL', set: true, source: 'env', masked: 'htt••••/v1' },
-      { name: 'TRANSLATE_API_KEY', set: true, source: 'env', masked: 'sk••••' },
-      { name: 'TRANSLATE_MODEL', set: true, source: 'env', masked: 'gp••••' },
     ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     expect(screen.getByText('✓ Dedicated model')).toBeInTheDocument()
   })
