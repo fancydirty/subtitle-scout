@@ -222,6 +222,13 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
     expect(src).toContain('buildDaemonV2Deps(')
   })
 
+  it('cmdWatch 组装的 find-subtitle worker 不许打开 librarySandbox', () => {
+    // sandbox-library 命令可以传 true；watch 那条 makeFindSubtitleWorker 不许。
+    const watchChunk = src.slice(src.indexOf('async function cmdWatch'), src.indexOf('async function cmdDoctor'))
+    expect(watchChunk).not.toMatch(/librarySandbox:\s*true/)
+    expect(src).toMatch(/makeFindSubtitleWorker\(\{ model: reasoningModel, adapters: realignAdapters, cacheRoot, tmdb \}\)/)
+  })
+
   it('🔴 cmdWatch 传的 translateEnabled 是**真实双门控**，不是硬编码的常量', () => {
     // 为什么这一条必须是源码断言：buildDaemonV2Deps 的那两条用例注入的是**测试自己写的**
     // 替身函数，`translateEnabled: () => false` 这种硬编码在它们眼里与真实双门控完全等价，

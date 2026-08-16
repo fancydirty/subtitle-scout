@@ -919,7 +919,12 @@ async function cmdRealignRollback(archiveDir: string) {
   }
 }
 
-const USAGE = 'usage: subtitle-scout watch | doctor | translate-item <videoPath> | realign-rollback <archiveDir> | auth reset'
+const USAGE = 'usage: subtitle-scout watch | doctor | sandbox-library | translate-item <videoPath> | realign-rollback <archiveDir> | auth reset'
+
+async function cmdSandboxLibrary(argv: string[]) {
+  const { runSandboxLibraryCommand } = await import('./sandboxLibrary/run.js')
+  process.exit(await runSandboxLibraryCommand(argv))
+}
 
 /** 鉴权 A4 Task 15：`subtitle-scout auth reset`——诚实找回密码。删管理员三键回到未初始化态，
  *  下次访问 dashboard 重进创建管理员向导。复用 cmdWatch 同一套 db 定位（SUBTITLE_SCOUT_CACHE_DIR）。 */
@@ -951,6 +956,7 @@ async function main() {
   if (cmd === 'watch') return cmdWatch()
   // 'reconcile-all' 已删（第 5.5 步，orchestrator 及其依赖的旧架构全删）
   if (cmd === 'doctor') return cmdDoctor()
+  if (cmd === 'sandbox-library') return cmdSandboxLibrary(process.argv.slice(3))
   if (cmd === 'translate-item' && positionals[1]) return cmdTranslateItem(positionals[1])
   if (cmd === 'realign-rollback' && positionals[1]) return cmdRealignRollback(positionals[1])
   if (cmd === 'auth' && positionals[1] === 'reset') return cmdAuthReset()
