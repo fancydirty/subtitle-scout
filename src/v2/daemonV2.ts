@@ -462,6 +462,13 @@ export class ScoutDaemonV2 {
     this.wakeIdle?.()
   }
 
+  /** One full inspection (scan → identify → judge → subtitles), ignoring the 24h watch gate.
+   *  Who writes: sandbox-library CLI only. Production watch keeps using run().
+   *  Must not copy runInspectionInner. */
+  async inspectOnce(signal: AbortSignal): Promise<void> {
+    await this.runInspection(signal)
+  }
+
   /** scanOnce 是否正在执行中。
    *
    *  顶替 `v2/ingest.ts` 导出的 `ingestLock.held`（模块级单例锁，随 ingest 一起退役）。
