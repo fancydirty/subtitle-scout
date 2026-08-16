@@ -544,6 +544,8 @@ export interface MediaLibraryMovieDTO {
   episodeState: EpisodeState
   fileCount: number
   subtitledFileCount: number
+  /** 磁盘文件名。零文件或一份以上时为 null（多份时文件名不是这一格能说清的事）。 */
+  filename: string | null
 }
 
 export interface MediaLibraryWorkDTO {

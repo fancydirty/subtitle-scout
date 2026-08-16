@@ -174,13 +174,11 @@ function fileHasEmbeddedChinese(embeddedLangs: string[] | null): boolean {
  *  调换，**测试都是 0 红**，因为 `skip_reason` 是**单值列**，两个守卫天然互斥，调换是空操作。
  *  真正会红的是把**返回值**互换（那是映射错了，不是顺序错了）。
  *
- *  顺带澄清一处**未声明的规格偏离**（审计 A-3）：设计文档 §4.3 给第 5 档定的判据是
- *  「embedded_langs 含目标语言」，而这里读的是 `skip_reason === 'embedded'`。
- *  **这是有意的，且比规格更对**：skip_reason 由 judge 在判定时按当时的 target_languages 算出，
- *  在 DTO 层拿 embedded_langs 重算等于把 R-F15 的语言判据复制第二份（换语言后两份会分叉）。
- *  代价是 judge 还没轮到重判的行会落 unjudged 而不是 embedded——那是诚实的"还没判"。
- *  ⚠️ 已知未覆盖：`embedded_langs` 有目标语言轨但 skip_reason 尚未写入时，
- *  dot 会给 blue 而 episodeState 给 unjudged，同一格两个控件口径不同。见债务清单。
+ *  skip_reason 由 judge 按当时的 target_languages 写入。needs 已经落成 0 时，
+ *  必须听 reason，不许拿 langs 重算（换语言后 origin-skip 与 embedded 命运相反）。
+ *  needs 仍是 NULL 时 judge 还没写过这一行——列表页蓝点用的已经是 langs，
+ *  详情若仍报 unjudged，同一份 chi 轨会一边「自带」一边「还没判定」。
+ *  故 NULL 这一支与 aggregateDot 共用 fileHasEmbeddedChinese，不是第二套语言表。
  *
  *  【第三段 unjudged 兜底在最后】
  *  它是"系统答不上来"，只有在前面所有判据都不成立时才成立——这正是兜底的定义。
@@ -244,11 +242,9 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
   }
   if (f.needs_subtitle === 1) return 'pending'
 
-  // 第 8 态兜底。走到这里的都是 sub_status IS NULL 且 needs_subtitle IS NULL 的行——
-  // judge 还没轮到它（谓词 `needs_subtitle IS NULL`）。新扫进来的文件、以及刚被 D17 回填 /
-  // 指纹重置清空判决的行，都会在这里停留一轮。
-  // 另外两条通往 unjudged 的路在上面各自就近说明：非 NULL 的未知 sub_status、
-  // 以及 needs=0 但 reason 缺失/不认识。
+  // 第 8 态。sub_status IS NULL 且 needs_subtitle IS NULL：judge 还没写 skip_reason。
+  // langs 已经证明有中文内嵌轨时，与列表页蓝点用同一份证据，不再把已知说成「还没判」。
+  if (fileHasEmbeddedChinese(parseEmbeddedLangs(f.embedded_langs))) return 'embedded'
   return 'unjudged'
 }
 
@@ -445,6 +441,8 @@ interface FileRow {
   work_id: string
   season: number | null
   episode: number | null
+  /** 详情电影格才 SELECT；列表查询没有这一列。 */
+  filename?: string
   sub_status: string | null
   embedded_langs: string | null
   /** NULL=judge 还没判（谓词 `needs_subtitle IS NULL`）/ 0=不需要 / 1=需要。
@@ -749,6 +747,8 @@ export interface MediaLibraryMovieDTO {
   episodeState: EpisodeState
   fileCount: number
   subtitledFileCount: number
+  /** 磁盘文件名。零文件或一份以上时为 null（多份时文件名不是这一格能说清的事）。 */
+  filename: string | null
 }
 
 export interface MediaLibraryDetailDTO {
@@ -801,7 +801,7 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
 
   const files = db
     .prepare(
-      `SELECT work_id, season, episode, sub_status, embedded_langs, needs_subtitle, skip_reason
+      `SELECT work_id, season, episode, filename, sub_status, embedded_langs, needs_subtitle, skip_reason
        FROM files WHERE work_id = ?`,
     )
     .all(workId) as FileRow[]
@@ -817,7 +817,12 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
 
   // 电影：没有季集网格，只有"有没有字幕"这一格（R-F2 同样按任一份算）。
   if (work.mediaType === 'movie') {
-    return { work, seasons: [], movie: aggregateDot(files), unplacedFileCount: 0 }
+    const agg = aggregateDot(files)
+    return {
+      work, seasons: [],
+      movie: { ...agg, filename: files.length === 1 ? (files[0]!.filename ?? null) : null },
+      unplacedFileCount: 0,
+    }
   }
 
   // 剧集：季集网格。season/episode 任一为 NULL 的文件进不了网格，单独计数

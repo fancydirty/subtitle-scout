@@ -48,12 +48,13 @@ function addFile(o: {
    *  显式传 null 会被悄悄改写成 1，第 8 态（unjudged）就永远造不出测试数据来。 */
   needsSubtitle?: number | null
   skipReason?: string | null
+  filename?: string
 }): void {
   db.prepare(
     `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, season, episode, sub_status, embedded_langs, needs_subtitle, skip_reason, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
-    o.path, '/d', 'f.mkv', 100, NOW, '/d', o.workId,
+    o.path, '/d', o.filename ?? 'f.mkv', 100, NOW, '/d', o.workId,
     o.season ?? null, o.episode ?? null, o.subStatus ?? null,
     o.embeddedLangs ? JSON.stringify(o.embeddedLangs) : null,
     o.needsSubtitle === undefined ? 1 : o.needsSubtitle,
@@ -723,6 +724,14 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       expect(stateOf({ subStatus: null, needsSubtitle: null })).toBe('unjudged')
     })
 
+    it("🔴 needs IS NULL 但 embedded_langs 已有中文轨 → embedded（与列表页蓝点同一份证据）", () => {
+      // 猎人克莱文形态：probe 写了 chi，judge 还没把 skip_reason 落库。
+      // 列表页 aggregateDot 已经据此画蓝点；详情若仍报 unjudged，同一部片子两个控件互相反驳。
+      // 这里读的就是 fileHasEmbeddedChinese 那一份，不是第二套语言表。
+      expect(stateOf({ subStatus: null, needsSubtitle: null, embeddedLangs: ['chi'] }))
+        .toBe('embedded')
+    })
+
     it("🔴 needs_subtitle=0 但 skip_reason 缺失（v40 之前的存量行）→ 'unjudged'，不许猜 ◇/◆", () => {
       // 生产实测：skip_reason 1192 行全 NULL。这批行 judge 判过（needs=0）但没留理由。
       // origin-skip 与 embedded 在换目标语言后命运完全相反，猜任何一个都是编造事实。
@@ -946,6 +955,19 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       expect(buildMediaLibraryDetail(db, 'tmdb:805')!.movie!.episodeState).toBe('translating')
     })
 
+    it('🔴 电影那一格带出磁盘文件名；needs NULL + chi → embedded（猎人克莱文形态）', () => {
+      addWork('tmdb:539972', { title: 'Kraven the Hunter', mediaType: 'movie' })
+      addFile({
+        path: '/m/Kraven the Hunter (2024).mkv', workId: 'tmdb:539972',
+        season: null, episode: null, subStatus: null, needsSubtitle: null,
+        embeddedLangs: ['chi'], filename: 'Kraven the Hunter (2024).mkv',
+      })
+      const m = buildMediaLibraryDetail(db, 'tmdb:539972')!.movie!
+      expect(m.filename).toBe('Kraven the Hunter (2024).mkv')
+      expect(m.episodeState).toBe('embedded')
+      expect(m.dot).toBe('blue')
+    })
+
     it('🔴 SubtitleDot 保持三态：八态落地不许改动 dot 的既有取值', () => {
       // 它被三个 DTO 共用（列表页海报卡是"底部渐变嵌进度条"不是点）。扩它会波及列表页。
       // 五个非 covered/embedded 的态在 dot 上必须全部塌缩成 'none'，一个都不许漏出去。
@@ -993,6 +1015,7 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
       expect(d.movie!.fileCount).toBe(0)
       expect(d.movie!.episodeState).toBe('absent')
       expect(d.movie!.dot).toBe('none')
+      expect(d.movie!.filename).toBeNull()
     })
 
     it('🔴 R-F2 电影也按任一份算：两份拷贝，一份有字幕 → 绿点', () => {

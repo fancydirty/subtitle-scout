@@ -17,7 +17,7 @@ import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, subtitleJobId, type SubtitleQueueItem } from './subtitleScheduler.js'
 import type { RunsRepo } from './runsRepo.js'
-import { judgeSubtitle, judgeTranslatable, type TranslatableDeps } from './subtitleJudge.js'
+import { judgePendingFiles } from './judgePending.js'
 import { tagsForLanguage } from '../agent/languages.js'
 import { findExternalSidecar, listSidecarLanguages } from '../files/sidecar.js'
 // R-F15：目标语言 → sidecar_langs 记账值域的换算（zh → {zh-Hans, zh-Hant}）。与换语言重判
@@ -45,7 +45,6 @@ import { refreshSeriesCatalog } from './tmdbCatalog.js'
 import type { ScoutEventInput } from '../core/scoutEvents.js'
 // 语言集合的唯一定义处（C31 末段 / 任务 G 收敛）：judge 的喂料与翻译流的语言门同源。
 import {
-  FETCHABLE_SOURCE_LANGS, EXTRACTABLE_SOURCE_LANGS,
   listNewTranslateCandidates, applyTranslateOutcome,
   type TranslateRunItemResult,
 } from './translateWorkerTask.js'
@@ -159,23 +158,6 @@ const R8_RETRY_BACKOFFS_MS = [1000, 3000]
  *  仅仅是延后到下一轮（那时两次读取都会看到删除后的稳定状态，走 ②）。既然没有"用户想
  *  删却永远删不掉"的结局，就不存在必须由用户绕过的场景，也就不需要开关。 */
 const R8_MIN_SURVIVAL_RATIO = 0.8
-
-/** R20 的 MVP 语言边界，喂给 judgeTranslatable（R21 + D9）。
- *
- *  两个集合**刻意不同**，这正是 R20 的裁决内容：
- *   · 外挂抓取仅 en —— OpenSubtitles 靠 imdb 命中；日语要等 F2 的 jimaku 落地（C6）
- *   · 内嵌轨抽取 en/ja 皆可 —— 抽轨是纯本地 ffmpeg 操作、零 provider 依赖，天然比抓取宽
- *
- *  定义已在第 4 步任务 G 里收敛到 `translateWorkerTask.ts`（C31 末段）。3-2 写这段时两处
- *  各有一份常量、注释里记着"第 4 步重接翻译时应把那个常量也拆成两个，届时两处收敛成一份"
- *  ——就是现在。这里只做引用组装，**不留第二份字面量**：语言映射分叉的那天没有任何测试会红，
- *  只是日漫又开始被判死（本仓已因"两份漂移实现"栽过多次，见 D7 的 findOverlappingRoot、
- *  C30 的两套字幕标签集）。 */
-const TRANSLATABLE_LANGS: TranslatableDeps = {
-  fetchableSourceLangs: FETCHABLE_SOURCE_LANGS,
-  extractableSourceLangs: EXTRACTABLE_SOURCE_LANGS,
-}
-
 
 export interface DaemonV2Deps {
   db: ScoutDb
@@ -600,6 +582,15 @@ export class ScoutDaemonV2 {
       await this.backfillSeasonCatalog()
     } catch (e) {
       this.deps.log(`warn: boot 应有集回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
+    }
+
+    // boot judge：embedded_langs 已在、needs 仍 NULL 的行不必等阶段 1 扫盘。
+    // 巡检把 judgeOnce 放在 scan+identify 之后；软路由上扫盘要数小时，详情会一直显示「还没判定」。
+    // 纯函数、不碰磁盘。独立 try/catch：挂了只是晚一轮，不许掀翻主循环。
+    try {
+      await this.judgeOnce()
+    } catch (e) {
+      this.deps.log(`warn: boot judge 失败（隔离，不阻塞巡检，下次启动或巡检阶段 2.5 重试）: ${String(e)}`)
     }
 
     while (!this.stopping) {
@@ -1045,92 +1036,18 @@ export class ScoutDaemonV2 {
   }
 
 
-  /** judge 阶段：对已识别但未判定的文件跑 judgeSubtitle（特典/国产/内嵌跳过）。
+  /** judge 阶段：语言事实已在库里就落 needs_subtitle（特典/国产/内嵌跳过）。
    *
-   *  **不探磁盘**（D8 / C27）：needs_subtitle 只表达"这资源原则上需要中文字幕"，判据是语言
-   *  事实（origin_lang / 内嵌轨）**与文件名事实**（机械特典标记，2026-08-13 用户裁决——
-   *  见 subtitleJudge.ts 的规则 0）。"磁盘上当前有没有外挂字幕"归 sub_status，由扫描独占写入
-   *  （R24），judge 一次 stat 都不该发——留着不仅是每轮白付 84 次 stat/文件（115 是 FUSE 挂载），
-   *  更会把同一个磁盘事实投影到两列上，造出 needs_subtitle=0 + sub_status=NULL 的永久卡死态
-   *  （见 subtitleJudge.ts 顶部对 C27 的完整论证）。
-   *
-   *  🔴 `filename` 必须真的喂进 judgeSubtitle：它是规则 0 的**唯一**判据，漏传会让特典
-   *  静默回到 needs=1（而所有语言相关用例照绿）。judgeOnce 的 SELECT 里本来就有这一列。 */
+   *  实现在 judgePending.ts——dashboard 换语言与 daemon 扫盘/boot/巡检共用同一份，
+   *  禁止在这里再抄 SQL。内嵌中文不需要 work_id：那是 ffprobe 事实，等识别 agent 是把
+   *  机械结论串到付费路径后面。 */
   private async judgeOnce(): Promise<void> {
-    const db = this.deps.db
-    const now = this.deps.now?.() ?? Date.now()
-    const rows = db.prepare(`
-      SELECT f.path, f.filename, f.embedded_langs, f.work_id, w.origin_lang
-      FROM files f LEFT JOIN works w ON f.work_id = w.id
-      WHERE f.work_id IS NOT NULL AND f.needs_subtitle IS NULL
-    `).all() as Array<{ path: string; filename: string; embedded_langs: string | null; work_id: string; origin_lang: string | null }>
-
-    if (rows.length === 0) return
-    // needs_subtitle 与 translatable 写在**同一条 UPDATE** 里（不是两条）。
-    // 分两条的话，进程在两条之间被杀（软路由掉电是本项目常态，见 db.ts 的 synchronous=FULL
-    // 论证）会留下"needs_subtitle 已判、translatable 还是 NULL"的行——而 judge 的谓词是
-    // `needs_subtitle IS NULL`，这一行从此**永不重判** → translatable 永久冻结在 NULL。
-    // C40 说 NULL 不判死（不会立刻出事），但它会永远停在"暂不可判"：满 7 次时既不移交翻译、
-    // 也不停牌，在字幕流里无限期打转。这正是 C12 → C35 → D17 → D18 那条"写了某列却没定谁
-    // 来读/何时写全"的血案的第五次形态。
-    //
-    // translatable 列按 PRAGMA 取交集动态拼（照 fingerprintResetColumns / backfill 的既有
-    // 口径）：硬编码进 SQL 会让本阶段在**没有该列的旧库**上抛 `no such column` → 整轮巡检
-    // 挂掉。生产上这形态真实存在（容器滚更时新代码可能先于迁移起来、或从旧备份恢复的库）。
-    //
-    // R-F15：skip_reason 走**同一套**动态拼列口径（v40 加的列，旧库上同样可能缺席），
-    // 并且与 needs_subtitle 写在**同一条 UPDATE** 里——理由与上面 translatable 那段逐字同源：
-    // 分两条时进程被杀会留下"判决已写、理由还是上一次目标语言口径"的行，而 judge 谓词是
-    // `needs_subtitle IS NULL` → 这一行从此永不重判 → skip_reason 永久冻结在错误的值上，
-    // 媒体库页据它显示 ◇/◆ 标记，用户看到的是**与事实相反**的标记且无从察觉。
-    const haveCols = (() => {
-      try {
-        return new Set((db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
-          .map((c) => c.name))
-      } catch { return new Set<string>() }
-    })()
-    const haveTranslatable = haveCols.has('translatable')
-    const haveSkipReason = haveCols.has('skip_reason')
-    const update = db.prepare(
-      `UPDATE files SET needs_subtitle = ?, updated_at = ?`
-      + (haveTranslatable ? `, translatable = ?` : '')
-      + (haveSkipReason ? `, skip_reason = ?` : '')
-      + ` WHERE path = ?`,
-    )
-    let judged = 0
-    // 分开计数（needs / skip）而不是只记总数：日志文案曾写成「judge: N 个文件判定需字幕」而 N
-    // 其实是**判定过的行数**——2026-08-10 live test 里 61 个文件全被报成"需字幕"，我据此误判
-    // judge 规则 2（已有内嵌中文轨 → 跳过）失效并停了引擎排查，实际规则完全正常（44 需 / 17 跳）。
-    // 与 probe 的 `ok=N`（统计"没抛异常"而非"写进去了"）是同一类缺陷：**日志把一个中间量说成
-    // 结论量**，读日志的人无从分辨。计数口径必须与文案逐字对应。
-    let needsCount = 0
-
-    for (const r of rows) {
-      let embedded: string[] | null = null
-      if (r.embedded_langs) { try { embedded = JSON.parse(r.embedded_langs) } catch { embedded = null } }
-
-      const input = { originLang: r.origin_lang, embeddedLangs: embedded, filename: r.filename }
-      const verdict = judgeSubtitle(input, { targetLanguages: [this.deps.targetLanguage] })
-      // R21：可救性与 needs_subtitle 同时判定。**无条件判**（连 needs=0 的行也判）——
-      // 若写成"needs=0 就跳过"，将来换片源把 needs 清成 NULL 重判时会留下一批 translatable
-      // 语义不明的行；而多判一次的成本是零（纯函数、不碰磁盘、判据都已在手上）。
-      const translatable = judgeTranslatable(input, TRANSLATABLE_LANGS)
-      // 参数按上面拼列的**同一顺序**组装（needs, now, [translatable], [skip_reason], path）。
-      // R-F15：verdict.reason 是 judgeSubtitle **已经算出来**的量，此前算完即丢——生产库
-      // 1026 个 needs_subtitle=0 的行分不出 origin-skip 与 embedded，媒体库页第三种标记 ◇
-      // 拿不到数据、排障也答不出"这些到底为什么被跳过"。存的是 reason **原值**，不做任何
-      // 二次归纳：字段名与真实含义必须逐字对应（今天已栽过三次"把中间量说成结论量"）。
-      const args: unknown[] = [verdict.needs ? 1 : 0, now]
-      if (haveTranslatable) args.push(translatable)
-      if (haveSkipReason) args.push(verdict.reason)
-      args.push(r.path)
-      update.run(...args)
-      judged++
-      if (verdict.needs) needsCount++
-    }
-    if (judged > 0) {
-      this.deps.log(`judge: 判定 ${judged} 个文件——${needsCount} 需字幕 / ${judged - needsCount} 跳过（特典、国产或已有内嵌中文轨）`)
-    }
+    judgePendingFiles({
+      db: this.deps.db,
+      targetLanguage: this.deps.targetLanguage,
+      now: this.deps.now?.() ?? Date.now(),
+      log: this.deps.log,
+    })
   }
 
   /** 阶段 2.6 停牌复查闸（D13 + D14 + D15 / 缺口 C35 + C41 + C36）。
@@ -1449,6 +1366,15 @@ export class ScoutDaemonV2 {
     // 就是让 deleteMissing 的 deeperPrefixes 与刚扫过的路径集对不上（D21 同一漏洞面）。
     const scanRoots = this.currentRoots()
     const resetCols = this.fingerprintResetColumns()
+
+    // 扫盘前先把已有语言事实的待判行写完。带外 scanOnce 不进巡检阶段 2.5，而软路由上
+    // walk 要数小时——内嵌中文是 probe 早就记下的事实，等走完整盘才判 = 详情页全程「还没判定」。
+    // 独立 try/catch：judge 挂了只是晚一轮，不许掀翻删除清理 / 指纹重置。
+    try {
+      await this.judgeOnce()
+    } catch (e) {
+      this.deps.log(`warn: scan 前 judge 失败（隔离，不阻断扫盘）: ${String(e)}`)
+    }
 
     // 清空子句拼进 upsert 的 DO UPDATE 而不是事后另发一条 UPDATE：一条语句 = 一个原子写。
     // 分两条的话，进程在两条之间被杀（软路由掉电是常态，见 db.ts 的 synchronous=FULL 论证）
@@ -1803,6 +1729,14 @@ export class ScoutDaemonV2 {
     this.detectSubtitles(toDetect, now, skippedRoots)
 
     await this.probeNewOrChanged(toProbe)
+
+    // 探针刚写下的 embedded_langs 当场判。换片源把 needs 清 NULL 之后如果还等阶段 2.5，
+    // 新片源自带中文轨的文件会在整轮巡检结束前一直显示「还没判定」。
+    try {
+      await this.judgeOnce()
+    } catch (e) {
+      this.deps.log(`warn: scan 后 judge 失败（隔离，不阻断扫盘）: ${String(e)}`)
+    }
   }
 
   /** R24 + D12：字幕存在性观察的两档调度。

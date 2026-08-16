@@ -214,13 +214,28 @@ describe('🔴 R-F15 · PUT target_languages 变更触发全库重判', () => {
   const judgedRow = (d: ScoutDb) =>
     d.prepare('SELECT needs_subtitle, skip_reason FROM files').get()
 
-  it('🔴 值真的变了 → 全库 needs_subtitle/skip_reason 清 NULL（下轮 judge 自然重判）', () => {
+  it('🔴 值真的变了 → 当场按新语言重判，不等下一轮巡检', () => {
     const d = openDb(':memory:')
     const repo = new SettingsRepo(d)
     repo.set('target_languages', 'zh', NOW)
     seedJudged(d, 0, 'origin-skip')
     expect(updateSettings(repo, { target_languages: 'en' }, NOW + 1).ok).toBe(true)
-    expect(judgedRow(d)).toEqual({ needs_subtitle: null, skip_reason: null })
+    // 身份已绑、无内嵌目标语言轨 → 新目标 en 下当场判 missing。
+    // 清 NULL 只是手段；承诺是这一次 PUT 结束时判决已经是新语言口径。
+    expect(judgedRow(d)).toEqual({ needs_subtitle: 1, skip_reason: 'missing' })
+  })
+
+  it('🔴 值真的变了 + 已有内嵌中文轨 → 当场 embedded（不需要 agent、不等巡检）', () => {
+    const d = openDb(':memory:')
+    const repo = new SettingsRepo(d)
+    repo.set('target_languages', 'en', NOW)
+    d.prepare(`INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at)
+               VALUES ('tmdb:1','Kraven','movie','en',1,1)`).run()
+    d.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id,
+                                  embedded_langs, needs_subtitle, skip_reason, updated_at)
+               VALUES ('/m/a.mkv','/m','a.mkv',1,1,'tmdb:1','["chi"]',1,'missing',1)`).run()
+    expect(updateSettings(repo, { target_languages: 'zh' }, NOW + 1).ok).toBe(true)
+    expect(judgedRow(d)).toEqual({ needs_subtitle: 0, skip_reason: 'embedded' })
   })
 
   it('🔴 幂等：PUT 同一个值 → 不触发重判（判决列原样保留）', () => {

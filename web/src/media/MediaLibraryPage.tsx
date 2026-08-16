@@ -116,16 +116,13 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
       </div>
       <div className="media-card-meta">
         <span className="block text-[13px] font-medium leading-5 text-foreground">{title}</span>
-        <span className="block font-mono text-[11px] leading-4 text-muted-foreground">
-          {/* mono 读数——同 Topbar 新鲜度行那套"技术性读数"的排印语言。
-              三个数字之间用 · 分隔，每个数字自带它的名字，不做无标签的 "3/12/24"
-              （那种写法一年后没人记得中间那个是什么）。 */}
-          {t('media_card_subtitled')} {subtitled}
-          {/* 🔴「自带 N」紧跟在「已配 N」后面（用户裁决③）：这两个数必须相邻，否则
-              「已配 0」单独出现时用户会以为这一部一集都看不了，而真相是 24 集都有内嵌轨。
-              embedded=null 时**整段不在场**——同 missing/unplaced 的"沉默即好消息"。 */}
-          {embedded !== null ? ` · ${t('media_card_embedded')} ${embedded}` : ''}
-          {' · '}{t('media_card_ondisk')} {onDisk}
+        <span className="media-card-stats" data-testid="media-card-stats">
+          {/* 每一段 nowrap：窄海报列上 · 必须跟着标签走，不许单独折成一行。 */}
+          <span className="media-card-stat">{t('media_card_subtitled')} {subtitled}</span>
+          {embedded !== null ? (
+            <span className="media-card-stat">· {t('media_card_embedded')} {embedded}</span>
+          ) : null}
+          <span className="media-card-stat">· {t('media_card_ondisk')} {onDisk}</span>
         </span>
         {/* 🟡-3 缺集数。**单独一行**而不是挤进上面那串：上面三个是"库里有什么"的读数，
             这一条是"还差什么"的**结论**，两者混排会让它淹没在数字堆里（而它恰恰是

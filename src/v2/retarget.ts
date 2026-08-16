@@ -11,9 +11,10 @@
 //
 // ── 清什么、不清什么（这是本模块唯一需要论证的事）────────────────────────────
 //  清 needs_subtitle + skip_reason：这两列是**基于目标语言算出来的判决**，语言一换，
-//    判据的前提就没了。judge 的谓词恰好是 `needs_subtitle IS NULL`，清成 NULL 就是"让下一轮
-//    巡检自然重判"的既有通路（同 D17 回填 embedded_langs 时打通重判通路的手法，逐字同源），
-//    不需要任何新的调度或标志位。两列**同一条 UPDATE**：分两条时进程被杀（软路由掉电是本项目
+//    判据的前提就没了。judge 的谓词恰好是 `needs_subtitle IS NULL`，清成 NULL 就是重判通路
+//    （同 D17 回填 embedded_langs）。**触发者必须当场 judge**（updateSettings 在同一事务里
+//    调 judgePendingFiles）——等下一轮巡检阶段 2.5 会让详情页在扫盘的数小时里显示「还没判定」。
+//    两列**同一条 UPDATE**：分两条时进程被杀（软路由掉电是本项目
 //    常态）会留下"判决已清、理由还是旧语言口径"的行，而它已不在 `needs_subtitle IS NULL` 之外
 //    ——下轮 judge 会重写两列，故此处的原子性要求弱于 judge 侧，但没有任何理由分两条。
 //
@@ -95,7 +96,7 @@ export function retargetForLanguageChange(
   if (!cols.has('needs_subtitle')) return { rejudged: 0, covered: 0, uncovered: 0 }
 
   return db.transaction((): RetargetResult => {
-    // ① 判决列清空 → 下一轮 judge 按新语言重算（谓词 `needs_subtitle IS NULL`）。
+    // ① 判决列清空 → 同一事务里的 judgePendingFiles 按新语言重算（谓词 `needs_subtitle IS NULL`）。
     //    skip_reason 与它同生共死：留着旧理由就是让媒体库页显示上一次语言口径下的 ◇/◆ 标记。
     const rejudged = db.prepare(
       `UPDATE files SET needs_subtitle = NULL, updated_at = ?`

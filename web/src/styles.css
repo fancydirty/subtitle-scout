@@ -1544,6 +1544,19 @@
   flex-direction: column;
   gap: 2px;
 }
+.media-card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.35em;
+  row-gap: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-muted-foreground);
+}
+.media-card-stat {
+  white-space: nowrap;
+}
 
 /* ---- 详情：头部海报缩略 ---- */
 .media-detail-poster {
@@ -1605,6 +1618,27 @@
 .media-ep-cell-wide {
   grid-column: 1 / -1;
   justify-content: flex-start;
+}
+.media-movie-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+}
+.media-movie-row[data-ondisk='false'] {
+  border-style: dashed;
+  background: transparent;
+}
+.media-movie-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
 }
 .media-ep-num {
   display: inline-flex;

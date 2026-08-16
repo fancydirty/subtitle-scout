@@ -383,18 +383,31 @@ describe('电影那一格（R-F5：电影没有季集）', () => {
   it('movie 非 null → 渲染电影块，走同一套染色语言', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: 1999, posterPath: null, mediaType: 'movie' },
-      movie: { dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1 },
+      movie: { dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1, filename: 'M.mkv' },
     })))
     const cell = screen.getByRole('listitem')
     expect(cell.querySelector('.media-ep-num')!.getAttribute('data-state')).toBe('covered')
     expect(cell.getAttribute('data-ondisk')).toBe('true')
   })
 
+  it('电影格露出文件名，不是空的拉宽集号格', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:539972', title: 'Kraven the Hunter', chineseTitle: '猎人克莱文',
+              year: 2024, posterPath: null, mediaType: 'movie' },
+      movie: {
+        dot: 'blue', episodeState: 'embedded', fileCount: 1, subtitledFileCount: 0,
+        filename: 'Kraven the Hunter (2024).mkv',
+      },
+    })))
+    expect(screen.getByText('Kraven the Hunter (2024).mkv')).toBeInTheDocument()
+    expect(screen.getByRole('listitem').className).not.toMatch(/media-ep-cell-wide/)
+  })
+
   it('**零文件的电影**（空壳 works 直达详情端点）→ absent + 虚线，不假设电影格必有文件', () => {
     // 后端注释点名证伪过"电影格恒有文件"：详情端点没有列表页那个 INNER JOIN。
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: null, posterPath: null, mediaType: 'movie' },
-      movie: { dot: 'none', episodeState: 'absent', fileCount: 0, subtitledFileCount: 0 },
+      movie: { dot: 'none', episodeState: 'absent', fileCount: 0, subtitledFileCount: 0, filename: null },
     })))
     const cell = screen.getByRole('listitem')
     expect(cell.getAttribute('data-ondisk')).toBe('false')

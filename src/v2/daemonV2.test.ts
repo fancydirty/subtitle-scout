@@ -290,13 +290,18 @@ describe('ScoutDaemonV2.scanOnce · 删除清理（C1 / R6 / R7）', () => {
     // seedFiles 播的行 parser_version 是 NULL（= 存量行的形状），第一轮扫描会对它做一次
     // 重解析，于是 work_dir/season/episode/parse_confidence/parser_version/updated_at
     // 这六列**必然**变。把它们排除掉不是"给新功能让路"，而是因为原用例真正守的是
-    // 另外那 20 多列：**这一行没有被删掉又插回来**（work_id 还在）、字幕/识别状态一列没动。
-    // 那部分一个字都没放松。
+    // 另外那 20 多列：**这一行没有被删掉又插回来**（work_id 还在）、字幕流状态一列没动。
+    //
+    // 2026-08-16：scanOnce 在扫盘前/探针后会把 needs NULL 的已识别行当场判完（语言事实
+    // 已在库里，不等巡检阶段 2.5）。seedFiles 的 needs/skip_reason 是 NULL，第一轮必然
+    // 写上判决——与 C48 追平 parser_version 同型，收进同一份「第一轮收敛、此后 no-op」。
     const PARSE_COLS = new Set(['work_dir', 'season', 'episode', 'parse_confidence',
-      'parser_version', 'updated_at'])
+      'parser_version', 'updated_at', 'needs_subtitle', 'skip_reason'])
     const omit = (r: Record<string, unknown>) =>
       Object.fromEntries(Object.entries(r).filter(([k]) => !PARSE_COLS.has(k)))
     expect(omit(after)).toEqual(omit(before as Record<string, unknown>))
+    expect(after.needs_subtitle).toBe(1)
+    expect(after.skip_reason).toBe('missing')
     // work_id 单独点名（存活证据）：为 null 就说明这行被删了又被 upsert 插回来
     expect(after.work_id).toBe('tmdb:/media/Show/E01.mkv')
 
@@ -1327,14 +1332,15 @@ describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
     const s = stateOf(db, P)
     // 逐列断言：这几列各自是一条独立的卡死通路。
     //  · sub_status='covered' 残留 → 字幕流谓词 `sub_status IS NULL` 永远看不见它 → 永不补字幕
-    //  · needs_subtitle=1/0 残留 → judge 谓词 `needs_subtitle IS NULL` 永不重判（C11 与 D17 同型：
+    //  · needs_subtitle=1/0 残留 → 新片源的语言事实永远轮不到（C11 与 D17 同型：
     //    我们下一行就把 embedded_langs 清成 NULL 了，清掉证据却留着据此做出的判决 = 判决永久冻结。
     //    真实伤害：旧 720p 自带中文内嵌轨 → needs_subtitle=0；换成无中文轨的 1080p 后仍是 0 → 永不补）
     //  · sub_attempt=3 残留 → 新片源自带 3 次失败额度，4 次就进停牌（本该有 7 次）
     //  · recheck_after 残留 → 未来时刻的退避把新文件挡在字幕工作台外
     //  · embedded_langs/duration_sec 残留 → 描述的是**上一个文件**的内容，是纯错误事实
     expect(s.sub_status).toBeNull()
-    expect(s.needs_subtitle).toBeNull()
+    // 旧判决在 upsert 里被清掉；探针默认返回 jpn → 当场重判 missing，不等阶段 2.5。
+    expect(s.needs_subtitle).toBe(1)
     expect(s.recheck_after).toBeNull()
     // work_id 保留（C11 明写"同路径通常仍是同作品"）：换片源不改身份，清了就是白烧一轮识别 LLM
     expect(s.work_id).toBe('tmdb:42')
@@ -1352,7 +1358,7 @@ describe('ScoutDaemonV2.scanOnce · C11 指纹变化状态重置', () => {
 
     const s = stateOf(db, P)
     expect(s.sub_status).toBeNull()
-    expect(s.needs_subtitle).toBeNull()
+    expect(s.needs_subtitle).toBe(1)
     expect(s.recheck_after).toBeNull()
     expect(s.work_id).toBe('tmdb:42')
     db.close()
@@ -2241,6 +2247,95 @@ describe('🔴 R-F15 缺口① · judge 把 verdict.reason 落进 files.skip_rea
   })
 })
 
+describe('ScoutDaemonV2.judgeOnce · 内嵌中文不需要识别 / agent', () => {
+  it('🔴 work_id 为空 + embedded chi → skip_reason=embedded（ffprobe 事实已够，agent 不出场）', async () => {
+    const db = openDb(':memory:')
+    const V = '/media/Movies/Kraven.mkv'
+    const dir = '/media/Movies'
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                   embedded_langs, needs_subtitle, updated_at)
+                VALUES (?,?,?,?,?,?,NULL,?,NULL,1000)`)
+      .run(V, dir, 'Kraven.mkv', BIG, 1000, dir, JSON.stringify(['chi']))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { targetLanguage: 'zh' }))
+    await (daemon as any).judgeOnce()
+    expect(skipReasonOf(db, V)).toBe('embedded')
+    expect(db.prepare('SELECT needs_subtitle, work_id FROM files WHERE path = ?').get(V))
+      .toEqual({ needs_subtitle: 0, work_id: null })
+    db.close()
+  })
+
+  it('🔴 work_id 为空 + 无内嵌目标语言 → 不写 missing（否则识别成国产片后 origin-skip 永远轮不到）', async () => {
+    const db = openDb(':memory:')
+    const V = '/media/Movies/国产.mkv'
+    const dir = '/media/Movies'
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id,
+                                   embedded_langs, needs_subtitle, updated_at)
+                VALUES (?,?,?,?,?,?,NULL,?,NULL,1000)`)
+      .run(V, dir, '国产.mkv', BIG, 1000, dir, JSON.stringify(['jpn']))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { targetLanguage: 'zh' }))
+    await (daemon as any).judgeOnce()
+    expect(db.prepare('SELECT needs_subtitle, skip_reason FROM files WHERE path = ?').get(V))
+      .toEqual({ needs_subtitle: null, skip_reason: null })
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2.scanOnce · 语言事实齐了当场判（不等阶段 2.5、不等 identify）', () => {
+  it('🔴 扫盘开始前就把已识别、langs 已在、needs NULL 的行判完', async () => {
+    // 猎人克莱文现场的另一半：requestScan / 换挂载触发的是 scanOnce，不是整轮巡检。
+    // 扫盘在软路由上要数小时；若等走完整盘才 judge，详情页全程「还没判定」。
+    const db = openDb(':memory:')
+    const V = '/media/Movies/Kraven.mkv'
+    seedForJudge(db, V, { originLang: 'en', embedded: ['chi'] })
+    let judgedBeforeWalk = false
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => {
+        judgedBeforeWalk = skipReasonOf(db, V) === 'embedded'
+        return [V]
+      },
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+    }))
+    await scan(daemon)
+    expect(judgedBeforeWalk).toBe(true)
+    expect(skipReasonOf(db, V)).toBe('embedded')
+    db.close()
+  })
+
+  it('🔴 未识别文件 probe 到内嵌中文 → 当场 embedded，identify 不出场', async () => {
+    const db = openDb(':memory:')
+    const P = '/media/Movies/Kraven.mkv'
+    const fs = fakeFsWithProbe(
+      { '/media': [P] },
+      { [P]: { mtimeMs: 1000, size: BIG } },
+      async () => [{ lang: 'chi', codec: 'subrip', isImageBased: false }],
+    )
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: ['/media'], ...fs.deps }))
+    await scan(daemon)
+    expect(skipReasonOf(db, P)).toBe('embedded')
+    expect(db.prepare('SELECT needs_subtitle, work_id FROM files WHERE path = ?').get(P))
+      .toEqual({ needs_subtitle: 0, work_id: null })
+    db.close()
+  })
+})
+
+describe('ScoutDaemonV2 · boot 立刻 judgeOnce（不等巡检扫盘）', () => {
+  it('🔴 巡检被闸住时，boot 仍把已识别且 langs 已在的行判完', async () => {
+    // 猎人克莱文现场：embedded_langs 早有 chi，needs_subtitle 全库 NULL，
+    // 巡检卡在阶段 1 扫盘，阶段 2.5 的 judgeOnce 永远轮不到。
+    // boot 必须自己跑一遍（纯函数、不碰磁盘），否则详情页会一直显示「还没判定」。
+    const db = openDb(':memory:')
+    const V = '/media/Movies/Kraven.mkv'
+    seedForJudge(db, V, { originLang: 'en', embedded: ['chi'] })
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(1_000_000_000_000))
+    const daemon = new ScoutDaemonV2(mkDeps(db, { roots: [], listVideoFiles: () => [] }))
+    await oneLoop(daemon)
+    expect(skipReasonOf(db, V)).toBe('embedded')
+    expect(needsSubtitleOf(db, V)).toBe(0)
+    db.close()
+  })
+})
+
 describe('🔴 R-F15 缺口② · 扫描记录全部外挂字幕语言（不只目标语言）', () => {
   const V = '/media/Show/E01.mkv'
 
@@ -2333,7 +2428,7 @@ describe('🔴 R-F15 缺口③ · 换目标语言 → 全库重判（不重新�
 
     expect(subStatusOf(db, V)).toBe('covered')     // 磁盘上那条 .en.srt 现在算覆盖了
     expect(db.prepare('SELECT needs_subtitle, skip_reason FROM files WHERE path = ?').get(V))
-      .toEqual({ needs_subtitle: null, skip_reason: null })   // 判决列清空 → 下轮 judge 重判
+      .toEqual({ needs_subtitle: null, skip_reason: null })   // retarget 只清列；当场重判是 updateSettings 的职责
     db.close()
   })
 

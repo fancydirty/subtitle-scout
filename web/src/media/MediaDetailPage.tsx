@@ -94,24 +94,28 @@ function SeasonBlock({ season }: { season: MediaLibrarySeasonDTO }) {
   )
 }
 
-/** 电影那一格。R-F5：电影没有季集，所以没有网格——但它仍然是**同一套染色语言**
- *  （同一个 EpisodeCell 渲染逻辑的一格版），不另造一套视觉。
+/** 电影那一格。R-F5：电影没有季集，所以没有网格。
  *  ⚠️ 后端注释点名：电影格**可能零文件**（空壳 works 直达详情端点），此时 episodeState
- *  是 'absent' —— 走虚线、不染色，与剧集的虚线格完全一致。 */
+ *  是 'absent' —— 走虚线、不染色，与剧集的虚线格完全一致。
+ *  有文件时露出磁盘文件名，不再复用拉满整行的集号格（那是给 E01 这种短标签用的）。 */
 function MovieBlock({ movie }: { movie: MediaLibraryMovieDTO }) {
   const { t } = useT()
+  const label = t(EPISODE_STATE_LABEL[movie.episodeState])
   return (
     <div className="flex flex-col gap-2">
       <h2 className="text-[13px] font-medium leading-5 text-foreground">{t('media_movie_heading')}</h2>
-      <div className="media-ep-grid" role="list">
+      <div role="list">
         <div
-          className="media-ep-cell media-ep-cell-wide"
+          className="media-movie-row"
           data-ondisk={movie.fileCount > 0 ? 'true' : 'false'}
           role="listitem"
-          aria-label={t(EPISODE_STATE_LABEL[movie.episodeState])}
+          aria-label={movie.filename ? `${movie.filename} ${label}` : label}
         >
+          {movie.filename ? (
+            <span className="media-movie-name">{movie.filename}</span>
+          ) : null}
           <span className="media-ep-num" data-state={movie.episodeState}>
-            {t(EPISODE_STATE_LABEL[movie.episodeState])}
+            {movie.filename ? null : label}
           </span>
           <EpisodeMark state={movie.episodeState} />
         </div>

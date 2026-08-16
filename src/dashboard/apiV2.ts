@@ -17,6 +17,7 @@ import { parseTargetLanguages } from '../cli/targetLanguages.js'
 // R-F15 缺口③：换目标语言 → 全库重判（清判决列 + 按 sidecar_langs 重导 sub_status）。
 // 实现放在 v2/ 而不是这里：它是库层语义（且要能被 daemon 侧测试直接调），dashboard 只是触发者。
 import { retargetForLanguageChange } from '../v2/retarget.js'
+import { judgePendingFiles } from '../v2/judgePending.js'
 
 // ---- 2026-08-13 死代码清理：本文件删掉的 6 个未消费 import ----
 //
@@ -312,7 +313,13 @@ export function updateSettings(
       !== parseTargetLanguages(nextTargets).join(',')
   settingsRepo.db.transaction(() => {
     for (const [key, value] of entries) settingsRepo.set(key, value as string, now)
-    if (targetsChanged) retargetForLanguageChange(settingsRepo.db, parseTargetLanguages(nextTargets), now)
+    if (targetsChanged) {
+      const langs = parseTargetLanguages(nextTargets)
+      retargetForLanguageChange(settingsRepo.db, langs, now)
+      // 清 NULL 只是手段。语言事实（origin / 内嵌轨）已经在库里，这一次 PUT 必须当场写出
+      // 新口径的判决——等「下一轮巡检阶段 2.5」会让详情页在扫盘的数小时里显示「还没判定」。
+      judgePendingFiles({ db: settingsRepo.db, targetLanguage: langs[0], now })
+    }
   })()
   return { ok: true, settings: buildSettings(settingsRepo) }
 }

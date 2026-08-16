@@ -69,7 +69,7 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
     })]))
     renderPage()
     const link = await screen.findByRole('link')
-    const line = within(link).getByText(new RegExp(en.media_card_subtitled))
+    const line = within(link).getByTestId('media-card-stats')
     expect(line.textContent).toContain(`${en.media_card_subtitled} 12`)
     expect(line.textContent).toContain(`${en.media_card_ondisk} 30`)
   })
@@ -223,11 +223,20 @@ describe('🔴 「已配」与「自带」在卡片上分列', () => {
     })]))
     renderPage()
     const link = await screen.findByRole('link')
-    const line = within(link).getByText(new RegExp(en.media_card_subtitled))
+    const line = within(link).getByTestId('media-card-stats')
     // 两个数在同一行、各自带名字。「已配 0」必须**照实说 0**，不许因为是 0 就藏起来——
     // 这一屏的全部价值就是让用户看出"这 5 集我们一份都没配"。
     expect(line.textContent).toContain(`${en.media_card_subtitled} 0`)
     expect(line.textContent).toContain(`${en.media_card_embedded} 5`)
+  })
+
+  it('🔴 每个读数段 nowrap，中间的 · 跟着标签走（窄海报列不许把 · 单独折成一行）', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({
+      subtitledEpisodeCount: 0, embeddedEpisodeCount: 1, onDiskEpisodeCount: 1, mediaType: 'movie',
+    })]))
+    renderPage()
+    const stats = await screen.findByTestId('media-card-stats')
+    expect(stats.querySelectorAll('.media-card-stat')).toHaveLength(3)
   })
 
   it('🔴 embedded=0 → 「自带」那一段整段不在场（沉默即好消息，同 missing 的既有口径）', async () => {
