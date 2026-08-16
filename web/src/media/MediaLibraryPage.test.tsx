@@ -184,19 +184,12 @@ describe('🔴-2 unplacedFileCount 真的被读了（变异恒 0 → 本组必�
 
 // ═══ R-F5 ════════════════════════════════════════════════════════════════════
 describe('R-F5 应有集：expected=0 的两种含义都不许显示 "N/0"', () => {
-  it('剧集 expected>0 → 显示"应有 N"那一段', async () => {
-    vi.stubGlobal('fetch', mockFetch([item({ expectedEpisodeCount: 62 })]))
-    renderPage()
-    const link = await screen.findByRole('link')
-    expect(within(link).getByText(new RegExp(`${en.media_card_expected} 62`))).toBeInTheDocument()
-  })
-
   it('剧集 expected=0（应有集缓存还没回填）→ **绝口不提应有集**，只报磁盘数', async () => {
     // "应有 0" 会让用户以为这部剧应该有 0 集——那是一个我们并不知道的数字。
     vi.stubGlobal('fetch', mockFetch([item({ expectedEpisodeCount: 0, onDiskEpisodeCount: 12 })]))
     renderPage()
     const link = await screen.findByRole('link')
-    expect(within(link).queryByText(new RegExp(en.media_card_expected))).toBeNull()
+    expect(within(link).queryByText(/expected episodes/)).toBeNull()
     expect(within(link).getByText(new RegExp(`${en.media_card_ondisk} 12`))).toBeInTheDocument()
   })
 
@@ -206,7 +199,7 @@ describe('R-F5 应有集：expected=0 的两种含义都不许显示 "N/0"', () 
     })]))
     renderPage()
     const link = await screen.findByRole('link')
-    expect(within(link).queryByText(new RegExp(en.media_card_expected))).toBeNull()
+    expect(within(link).queryByText(/expected episodes/)).toBeNull()
   })
 
   it('coverageParts 对 expected=0 给 null（调用方据此不渲染那一段）', () => {

@@ -464,11 +464,12 @@ export const en = {
   media_card_subtitled: 'subtitles downloaded',
   media_card_embedded: 'built-in subtitles',
   media_card_ondisk: 'local files',
-  media_card_expected: 'expected episodes',
+  
   // 🟡-3：缺集数（missingEpisodeCount 的第一个读取方）。
   // "missing N" 而不是 "N missing"：卡片上这一行要能被扫视，名字在前、数字在后，
   // 与同卡片上面那三段（`subtitled 12 · on disk 30`）的语序一致。
   media_card_missing: 'missing',
+  media_card_missing_unit: 'episodes',
   // 🔴 2026-08-13: files that could not be placed into a season/episode grid.
   media_card_unplaced: '{n} file(s) not in a season',
   media_empty_title: 'Nothing in the library yet',

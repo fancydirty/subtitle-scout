@@ -105,7 +105,7 @@ export function coverageParts(item: MediaLibraryItemDTO): {
 function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
   const { t } = useT()
   const title = item.chineseTitle ?? item.title
-  const { subtitled, embedded, onDisk, expected, missing, unplaced } = coverageParts(item)
+  const { subtitled, embedded, onDisk, missing, unplaced } = coverageParts(item)
 
   return (
     <a className="media-card" href={mediaItemHref(item.workId)} aria-label={title}>
@@ -126,14 +126,13 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
               embedded=null 时**整段不在场**——同 missing/unplaced 的"沉默即好消息"。 */}
           {embedded !== null ? ` · ${t('media_card_embedded')} ${embedded}` : ''}
           {' · '}{t('media_card_ondisk')} {onDisk}
-          {expected !== null ? ` · ${t('media_card_expected')} ${expected}` : ''}
         </span>
         {/* 🟡-3 缺集数。**单独一行**而不是挤进上面那串：上面三个是"库里有什么"的读数，
             这一条是"还差什么"的**结论**，两者混排会让它淹没在数字堆里（而它恰恰是
             用户在海报墙上扫视时唯一想找的东西）。missing===0 时整段不在场。 */}
         {missing !== null && (
           <span className="media-card-missing" data-testid="media-card-missing">
-            {t('media_card_missing')} {missing}
+            {t('media_card_missing')} {missing} {t('media_card_missing_unit')}
           </span>
         )}
         {/* 🔴 进不了季集网格的文件（2026-08-13）。**与 missing 分两行**：那一条说

@@ -399,10 +399,11 @@ export const zh = {
    *  系统没为它做过事。与「已配」（我们找来装上的）构成对照。 */
   media_card_embedded: '自带字幕',
   media_card_ondisk: '本地文件',
-  media_card_expected: '应有集数',
+  
   // 🟡-3：缺集数。「缺 12」——不写"集"字：电影恒 0（不渲染），剧集这一行紧挨着
   // 上面那三个同为集数的读数，量纲无歧义。
-  media_card_missing: '缺少',
+  media_card_missing: '还缺',
+  media_card_missing_unit: '集',
   // 🔴 2026-08-13：进不了季集网格的文件（特典居多）。措辞与详情页的
   // media_unplaced_prefix 同族但更短（卡片一行），且不提 season/episode 这类内部词。
   media_card_unplaced: '{n} 个文件没归入季集',
