@@ -464,7 +464,7 @@ export const en = {
   media_result_count_prefix: 'Titles',
   media_card_subtitled: 'subtitles downloaded',
   media_card_embedded: 'built-in subtitles',
-  media_card_ondisk: 'local files',
+  media_card_ondisk: 'local videos',
   
   // 🟡-3：缺集数（missingEpisodeCount 的第一个读取方）。
   // "missing N" 而不是 "N missing"：卡片上这一行要能被扫视，名字在前、数字在后，
