@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import type { LanguageModel } from 'ai'
@@ -10,7 +10,7 @@ import { makeFindSubtitleWorker } from '../../agent/findSubtitleWorker.js'
 import { tagsForLanguage } from '../../agent/languages.js'
 import { buildAdapters } from '../../adapters/buildAdapters.js'
 import { TmdbClient } from '../../adapters/providers/tmdb.js'
-import { findExternalSidecar } from '../../files/sidecar.js'
+import { findExternalSidecar, listSidecarLanguages, KNOWN_LANGUAGE_TAGS } from '../../files/sidecar.js'
 import { envOnlyAdapterConfig } from '../../v2/secrets.js'
 import { openDb, type ScoutDb } from '../../v2/db.js'
 import { SettingsRepo } from '../../v2/settingsRepo.js'
@@ -115,18 +115,16 @@ export function collectEntryFacts(
   }
 
   const tags = tagsForLanguage(targetLanguage)
-  const side = findExternalSidecar(abs, tags, existsSync)
-  const sidecarTags: string[] = []
-  let cueCount = 0
-  if (side) {
-    // Recover the tag from the filename stem.<tag>.ext
-    const base = basename(abs).replace(/\.[^.]+$/, '')
-    const sideBase = basename(side.path)
-    const m = sideBase.match(new RegExp(`^${escapeRegExp(base)}\\.(.+)\\.[^.]+$`))
-    if (m) sidecarTags.push(m[1])
-    else sidecarTags.push(...tags.filter(t => side.path.includes(`.${t}.`)))
-    cueCount = countSidecarCues(side.path)
-  }
+  // Spec §8: wrong-language installs must surface as FAIL-PIPE. Probe every on-disk
+  // sidecar language (not only tagsForLanguage(target)), then let evaluateFindCell decide.
+  const allLangs = listSidecarLanguages(abs, (dir) => readdirSync(dir)) ?? []
+  const sidecarTags = allLangs.filter((l) => l !== 'und')
+  const targetSide = findExternalSidecar(abs, tags, existsSync)
+  const anySide = targetSide
+    ?? (sidecarTags.length > 0
+      ? findExternalSidecar(abs, KNOWN_LANGUAGE_TAGS, existsSync)
+      : null)
+  const cueCount = anySide ? countSidecarCues(anySide.path) : 0
 
   return {
     path: abs,
@@ -141,9 +139,7 @@ export function collectEntryFacts(
   }
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
+
 
 function defaultCatalogPath(explicit?: string): string {
   if (explicit) return explicit
@@ -182,6 +178,8 @@ async function assembleLiveWorkers(cacheRoot: string, targetLanguage: 'zh' | 'en
       librarySandbox: true,
       tmdb: {
         search: (mt, q, y) => tmdb.search(mt, q, y),
+        // Intentional copy of cmdWatch's identifyDeps.getDetails enrichment in
+        // src/cli/index.ts (chinese titles + origin language). Keep in sync.
         getDetails: async (mt, id) => {
           const d = await tmdb.getDetails(mt, id)
           if (!d) return null

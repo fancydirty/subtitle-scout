@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync, closeSync, openSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -198,6 +198,51 @@ describe('countSubtitleWorkerRuns', () => {
     expect(map.get('/media/b.mkv')).toBe(1)
     expect(inner).toHaveBeenCalledTimes(1)
     expect(inner).toHaveBeenCalledWith(task)
+  })
+})
+
+describe('collectEntryFacts · wrong-language sidecar', () => {
+  it('feeds zh-Hans into sidecarTags for en target so evaluateFindCell is FAIL-PIPE', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sandbox-wrong-lang-'))
+    const video = join(root, 'Video.mkv')
+    closeSync(openSync(video, 'w'))
+    writeFileSync(join(root, 'Video.zh-Hans.srt'), twelveCueSrt())
+
+    const db = openDb(':memory:')
+    const now = Date.now()
+    db.prepare(
+      `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, updated_at)
+       VALUES (?, ?, 'Video.mkv', 0, ?, ?, 'tmdb:612399', 1, ?)`,
+    ).run(video, root, now, root, now)
+
+    const entry = {
+      id: 'wrong-lang',
+      profile: 'en-viewer' as const,
+      role: 'find' as const,
+      relPath: 'Video.mkv',
+      tmdbKind: 'movie' as const,
+      tmdbId: 612399,
+      year: 2019,
+      region: 'cn' as const,
+      format: 'movie' as const,
+      animation: true,
+      expectedOriginLang: 'zh',
+    }
+    const facts = collectEntryFacts(db, root, entry, 'en', new Map())
+    expect(facts.sidecarTags).toContain('zh-Hans')
+    expect(facts.cueCount).toBeGreaterThan(10)
+    expect(evaluateFindCell({
+      expectedTmdbId: 612399,
+      actualTmdbId: facts.actualTmdbId,
+      skipReason: facts.skipReason,
+      needsSubtitle: facts.needsSubtitle,
+      subStatus: facts.subStatus,
+      sidecarTags: facts.sidecarTags,
+      cueCount: facts.cueCount,
+      findSubtitleRuns: facts.findSubtitleRuns,
+      targetLanguage: 'en',
+    }).verdict).toBe('FAIL-PIPE')
+    db.close()
   })
 })
 
