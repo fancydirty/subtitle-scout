@@ -3,9 +3,12 @@ import { stepCountIs, type LanguageModel } from 'ai'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { makeRunTracer } from '../core/traceBus.js'
 import { languageName } from './languages.js'
-import { makeFindSubtitleSkill } from './skills/findSubtitleSkill.js'
+import { makeFindSubtitleSkill, FIND_SUBTITLE_SKILL } from './skills/findSubtitleSkill.js'
 import { systemPromptSkillIndex, makeReadDocTool } from './skills/registry.js'
 import { IDENTIFY_MEDIA_SKILL } from './skills/identifyMediaSkill.js'
+import { LIBRARY_SANDBOX_SKILL } from './skills/librarySandboxSkill.js'
+import { withLibrarySandboxPreamble } from './librarySandbox.js'
+import type { Skill } from './skills/types.js'
 import {
   makeFileResultSetStore, makeSearchSourceTool, makeListCandidatesTool, makeGetCandidateTool,
 } from './resultHandles.js'
@@ -58,6 +61,10 @@ export interface FindSubtitleWorkerDeps {
    *  的处置理由），不是本组"删旧表最后写入路径"这一件事能顺手带走的。识别落库在新架构里由
    *  agent/identifyWorker.ts + v2/identifyScheduler.ts 写 works/files 两张新表承担，与本模式无关。 */
   identifyOnly?: boolean
+  /** Library-sandbox test runs only: prepend the empty-placeholder worldview addendum and
+   *  unshift library-sandbox-test onto skillDocs. Default false — production stays dark.
+   *  Named librarySandbox (not sandbox) so path-isolation "sandbox" stays unambiguous. */
+  librarySandbox?: boolean
 }
 
 /** Glue-layer repair (2026-07-16): a worker run now covers a whole season-level (or
@@ -71,6 +78,67 @@ export const PER_TARGET_TIMEOUT_MS = 120_000
 export const BATCH_TIMEOUT_CAP_MS = 3_600_000
 const timeoutFor = (n: number) =>
   Math.min(BATCH_BASE_TIMEOUT_MS + PER_TARGET_TIMEOUT_MS * Math.max(0, n - 1), BATCH_TIMEOUT_CAP_MS)
+
+/** Pure assembler for find-subtitle system instructions + skill index.
+ *  Default (`librarySandbox` off) is byte-identical to the historical inline join — production
+ *  stays dark. When on: addendum prepended and library-sandbox-test unshifted onto skillDocs.
+ *  `tmdb` defaults true when identifyOnly is false so unit tests see a normal skill index;
+ *  the worker passes `deps.tmdb != null` explicitly. */
+export function findSubtitleSystemPrompt(opts: {
+  librarySandbox?: boolean
+  identifyOnly?: boolean
+  /** When identifyOnly is false: include identify-media in the index (default true). */
+  tmdb?: boolean
+  /** Per-task find-subtitle skill; defaults to canonical zh FIND_SUBTITLE_SKILL for tests. */
+  skill?: Skill
+}): { instructions: string; skillNames: string[]; skillDocs: Skill[] } {
+  const identifyOnly = !!opts.identifyOnly
+  const librarySandbox = !!opts.librarySandbox
+  const tmdb = opts.tmdb ?? !identifyOnly
+  const skill = opts.skill ?? FIND_SUBTITLE_SKILL
+
+  let skillDocs = identifyOnly
+    ? [IDENTIFY_MEDIA_SKILL]
+    : tmdb ? [skill, IDENTIFY_MEDIA_SKILL] : [skill]
+  if (librarySandbox) skillDocs = [LIBRARY_SANDBOX_SKILL, ...skillDocs]
+
+  const body = identifyOnly
+    ? [
+        'You are the media-identification worker for the target items of exactly ONE batch. You',
+        "have no knowledge of any other directory or media item outside this task's targets — do",
+        'not ask about or reference one.',
+        '',
+        'Your ONLY job is identification: establish what each target file actually is, verify it',
+        'with evidence, and report it in finalize. You do not handle subtitles in',
+        'any way — another pipeline picks up from the database after you.',
+        '',
+        'Available skill documents (call read_doc(name) to load the full text of one):',
+        systemPromptSkillIndex(skillDocs),
+      ].join('\n')
+    : [
+        'You are the find-subtitle worker for the target items of exactly ONE series/scope. You have',
+        "no knowledge of any other directory or media item outside this task's targets — do not ask",
+        'about or reference one.',
+        '',
+        // Post-audit fix (batch②, 2026-07-18): a cross-season batch can legitimately contain two
+        // targets with the exact same file name (e.g. "Season 1/01.mkv" and "Season 2/01.mkv") — a
+        // videoFilename alone can no longer tell download_candidate/install_subtitle which target
+        // you mean in that case. Mechanical, not a judgment call: if the target list below shows
+        // more than one target with the same file name, pass that target's itemId too.
+        "If more than one target below shares the exact same file name, download_candidate and",
+        "install_subtitle cannot tell them apart from videoFilename alone — pass that target's itemId",
+        '(shown on its line below) as well so the correct one is used.',
+        '',
+        'Available skill documents (call read_doc(name) to load the full text of one):',
+        systemPromptSkillIndex(skillDocs),
+      ].join('\n')
+
+  return {
+    instructions: withLibrarySandboxPreamble(body, librarySandbox),
+    skillNames: skillDocs.map(s => s.descriptor.name),
+    skillDocs,
+  }
+}
 
 /** Assembles one find-subtitle worker run. Every dependency (model, adapters, cacheRoot) is
  *  injected — this function has zero global state, so the caller (orchestrator in phase ⑤,
@@ -122,9 +190,13 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
     // 才进 read_doc 索引——工具不在时模型连文档名都看不到（零误触发纪律）。
     // 管线拆分（2026-07-28）：identifyOnly 模式反向应用同一纪律——只有识别文档，找字幕
     // playbook 整篇不进索引（模型连 'find-subtitle-judgment' 这个名字都看不到）。
-    const skillDocs = deps.identifyOnly
-      ? [IDENTIFY_MEDIA_SKILL]
-      : deps.tmdb != null ? [skill, IDENTIFY_MEDIA_SKILL] : [skill]
+    // librarySandbox：unshift library-sandbox-test (production stays dark unless flag on).
+    const { instructions, skillDocs } = findSubtitleSystemPrompt({
+      librarySandbox: deps.librarySandbox,
+      identifyOnly: deps.identifyOnly,
+      tmdb: deps.tmdb != null,
+      skill,
+    })
 
     // 第 7 步 C 组（2/2）：这里原有 write_identified_media 的整套接线——写库门
     // （writeIdentityCalled 追踪 + finalize 拒收"报了 identified 却没写库"）、
@@ -173,42 +245,11 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       ...(deps.identifyOnly ? {} : subtitleTools()),
     }
 
-    // Sandbox layer 2 (prompt/skill): this instructions string is the ENTIRE system prompt —
-    // no other directory name is ever mentioned anywhere in it. Batch (Task 6): the sandbox
-    // worldview widens from ONE media item to the target items of this ONE task — it must NOT
-    // widen any further than that (still no OTHER task/directory/series is ever nameable).
+    // Sandbox layer 2 (prompt/skill): instructions from findSubtitleSystemPrompt — the ENTIRE
+    // system prompt. Batch (Task 6): the sandbox worldview widens from ONE media item to the
+    // target items of this ONE task — it must NOT widen any further than that.
     // 管线拆分（2026-07-28）：identifyOnly 分支的措辞里没有任何字幕工具名（basename 冲突段
     // 讲的是 download_candidate/install_subtitle 的消歧，识别 worker 用不上也不许看见）。
-    const instructions = deps.identifyOnly
-      ? [
-          'You are the media-identification worker for the target items of exactly ONE batch. You',
-          "have no knowledge of any other directory or media item outside this task's targets — do",
-          'not ask about or reference one.',
-          '',
-          'Your ONLY job is identification: establish what each target file actually is, verify it',
-          'with evidence, and report it in finalize. You do not handle subtitles in',
-          'any way — another pipeline picks up from the database after you.',
-          '',
-          'Available skill documents (call read_doc(name) to load the full text of one):',
-          systemPromptSkillIndex(skillDocs),
-        ].join('\n')
-      : [
-          'You are the find-subtitle worker for the target items of exactly ONE series/scope. You have',
-          "no knowledge of any other directory or media item outside this task's targets — do not ask",
-          'about or reference one.',
-          '',
-          // Post-audit fix (batch②, 2026-07-18): a cross-season batch can legitimately contain two
-          // targets with the exact same file name (e.g. "Season 1/01.mkv" and "Season 2/01.mkv") — a
-          // videoFilename alone can no longer tell download_candidate/install_subtitle which target
-          // you mean in that case. Mechanical, not a judgment call: if the target list below shows
-          // more than one target with the same file name, pass that target's itemId too.
-          "If more than one target below shares the exact same file name, download_candidate and",
-          "install_subtitle cannot tell them apart from videoFilename alone — pass that target's itemId",
-          '(shown on its line below) as well so the correct one is used.',
-          '',
-          'Available skill documents (call read_doc(name) to load the full text of one):',
-          systemPromptSkillIndex(skillDocs),
-        ].join('\n')
 
     // Presented as FACT (a mechanical pre-cleaning output), not instruction — see
     // FindSubtitleTargetFact's own doc comment. List order is fact-list order, not an

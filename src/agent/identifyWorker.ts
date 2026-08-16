@@ -15,6 +15,7 @@ import { z } from 'zod'
 import { makeReasoningAgent } from './reasoningAgent.js'
 import { makeRunTracer } from '../core/traceBus.js'
 import { searchCandidates } from '../v2/identify.js'
+import { withLibrarySandboxPreamble } from './librarySandbox.js'
 // 2026-08-13 清理：`verifyEvidence` 与 `titleFromDir` 曾一并 import 进来，两个都零调用。
 // 这**不是**"双证据核验丢了"——那道门是活的，只是不在这一层：写库门在
 // `v2/identifyScheduler.ts:104` 的 writeIdentified 里（`verifyEvidence(...)` + 不过就
@@ -76,6 +77,10 @@ export interface IdentifyWorkerDeps {
    *  可选：scheduler 调用时注入（见 identifyScheduler.ts 的 writeIdentified 覆盖）。 */
   writeIdentified?: (input: WriteIdentifiedInput) => Promise<{ ok: true; written: number } | { ok: false; error: string }>
   stepCap?: number
+  /** Library-sandbox test runs only: prepend the empty-placeholder worldview addendum.
+   *  Default false — production prompts stay dark (no addendum, no skill). Optional so
+   *  existing constructors keep compiling. */
+  librarySandbox?: boolean
 }
 
 export interface WorkDirFacts {
@@ -103,6 +108,32 @@ export interface IdentifyReport {
   tmdbId: string | null
   title: string | null
   reason: string
+}
+
+/** Identification system prompt. Default (`librarySandbox=false`) is byte-identical to the
+ *  historical inline template — production stays dark. When true, the library-sandbox
+ *  addendum is prepended (identify has no read_doc / skill index). */
+export function identifySystemPrompt(librarySandbox = false): string {
+  return withLibrarySandboxPreamble(`You are the identification agent for a media library. Your job: determine which TMDB work a media directory belongs to.
+
+## Your task
+A directory contains media files. Determine the TMDB identity (movie or TV series), then bind ALL files in the directory to that identity.
+
+## Steps
+1. Look at the directory name and files. Extract a title candidate.
+2. Call search_tmdb with the candidate title. If the directory is under a TV/Anime root, search type=tv; under Movies/ root, type=movie. If unsure, try both.
+3. Call get_tmdb_details on the best candidate. VERIFY it matches: title (or Chinese title) must match the directory name, AND at least one of: year, media type, episode count. This is the two-evidence bar — never skip it.
+4. Call write_identified_media with the tmdbId and ALL files in the directory. For each file, use the season/episode from the task facts if present (confidence high), or determine them yourself (confidence low/none — e.g. "S2 - 07" means season 2 episode 7; bare numbers under a single Season directory belong to that season).
+5. Call finalize with the identity you confirmed.
+
+## CRITICAL
+You MUST call write_identified_media with ALL files before finalize. The system only records files that are bound via write_identified_media — calling search and details but NOT write_identified_media means NOTHING is recorded. A finalize without a write_identified_media call is a failed identification.
+
+## Rules
+- NEVER claim an identity without calling get_tmdb_details (two-evidence bar).
+- If a directory truly cannot be identified (no TMDB match), call finalize with tmdbId=null and reason explaining why.
+- Movies have no season/episode — set them null for movie files.
+- Bind ALL files, not just some.`, librarySandbox)
 }
 
 /** 跑一次识别：work_dir → TMDB 身份 + 批量绑定。返回报告。 */
@@ -166,26 +197,7 @@ export async function runIdentify(
         reason: z.string(),
       }),
     }),
-    instructions: `You are the identification agent for a media library. Your job: determine which TMDB work a media directory belongs to.
-
-## Your task
-A directory contains media files. Determine the TMDB identity (movie or TV series), then bind ALL files in the directory to that identity.
-
-## Steps
-1. Look at the directory name and files. Extract a title candidate.
-2. Call search_tmdb with the candidate title. If the directory is under a TV/Anime root, search type=tv; under Movies/ root, type=movie. If unsure, try both.
-3. Call get_tmdb_details on the best candidate. VERIFY it matches: title (or Chinese title) must match the directory name, AND at least one of: year, media type, episode count. This is the two-evidence bar — never skip it.
-4. Call write_identified_media with the tmdbId and ALL files in the directory. For each file, use the season/episode from the task facts if present (confidence high), or determine them yourself (confidence low/none — e.g. "S2 - 07" means season 2 episode 7; bare numbers under a single Season directory belong to that season).
-5. Call finalize with the identity you confirmed.
-
-## CRITICAL
-You MUST call write_identified_media with ALL files before finalize. The system only records files that are bound via write_identified_media — calling search and details but NOT write_identified_media means NOTHING is recorded. A finalize without a write_identified_media call is a failed identification.
-
-## Rules
-- NEVER claim an identity without calling get_tmdb_details (two-evidence bar).
-- If a directory truly cannot be identified (no TMDB match), call finalize with tmdbId=null and reason explaining why.
-- Movies have no season/episode — set them null for movie files.
-- Bind ALL files, not just some.`,
+    instructions: identifySystemPrompt(deps.librarySandbox ?? false),
     // 用户裁决：不设步数上限（stepCap=100000 等效无限——实际先撞 context 上限）。
     stopWhen: stepCountIs(deps.stepCap ?? 100000),
     reasoning: 'high',
