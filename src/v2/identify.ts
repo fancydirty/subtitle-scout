@@ -105,8 +105,11 @@ function normalize(s: string): string {
   // 命名变体归一（2026-08-08 实测踩中三类）：
   //  ×（U+00D7）→ x："D×D" 是 "DxD" 的粉丝写法
   //  leetspeak 数字 → 字母：PLUR1BUS → Pluribus（1→i）、M4TRIX → Matrix（4→a）
+  //  变音符号折叠：Amélie→Amelie、Shōgun→Shogun（目录名常无 diacritic）
   //  之后再删非字母数字（空格/标点/年份分隔符）
   return s.toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
     .replace(/×/g, 'x')
     .replace(/1/g, 'i').replace(/4/g, 'a').replace(/3/g, 'e')
     .replace(/0/g, 'o').replace(/5/g, 's').replace(/7/g, 't')

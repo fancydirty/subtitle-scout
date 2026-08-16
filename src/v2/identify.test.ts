@@ -96,6 +96,23 @@ describe('normalize 的 × 变体（D×D vs DxD）', () => {
   })
 })
 
+describe('verifyEvidence 的变音符号折叠（Amélie / Shōgun）', () => {
+  it('Amélie vs Amelie → 通过（目录名常无变音）', () => {
+    expect(verifyEvidence(
+      { id: 'tmdb:194', title: 'Amélie', originalTitle: 'Le Fabuleux Destin d\'Amélie Poulain', year: 2001, mediaType: 'movie' },
+      { dirName: 'Amelie (2001)', fileCount: 1, seasons: [], hasSeasonDirs: false },
+      'Amelie',
+    )).toEqual({ ok: true })
+  })
+  it('Shōgun vs Shogun → 通过', () => {
+    expect(verifyEvidence(
+      { id: 'tmdb:126308', title: 'Shōgun', originalTitle: 'Shōgun', year: 2024, mediaType: 'tv' },
+      { dirName: 'Shogun (2024)', fileCount: 1, seasons: [1], hasSeasonDirs: true },
+      'Shogun',
+    )).toEqual({ ok: true })
+  })
+})
+
 describe('verifyEvidence 的命名变体（模糊匹配）', () => {
   it('leetspeak：PLUR1BUS vs Pluribus → 通过', () => {
     expect(verifyEvidence(
