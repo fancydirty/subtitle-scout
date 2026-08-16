@@ -212,7 +212,7 @@ describe('collectEntryFacts · wrong-language sidecar', () => {
     const now = Date.now()
     db.prepare(
       `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, updated_at)
-       VALUES (?, ?, 'Video.mkv', 0, ?, ?, 'tmdb:612399', 1, ?)`,
+       VALUES (?, ?, 'Video.mkv', 0, ?, ?, 'tmdb:615453', 1, ?)`,
     ).run(video, root, now, root, now)
 
     const entry = {
@@ -221,7 +221,7 @@ describe('collectEntryFacts · wrong-language sidecar', () => {
       role: 'find' as const,
       relPath: 'Video.mkv',
       tmdbKind: 'movie' as const,
-      tmdbId: 612399,
+      tmdbId: 615453,
       year: 2019,
       region: 'cn' as const,
       format: 'movie' as const,
@@ -232,7 +232,7 @@ describe('collectEntryFacts · wrong-language sidecar', () => {
     expect(facts.sidecarTags).toContain('zh-Hans')
     expect(facts.cueCount).toBeGreaterThan(10)
     expect(evaluateFindCell({
-      expectedTmdbId: 612399,
+      expectedTmdbId: 615453,
       actualTmdbId: facts.actualTmdbId,
       skipReason: facts.skipReason,
       needsSubtitle: facts.needsSubtitle,

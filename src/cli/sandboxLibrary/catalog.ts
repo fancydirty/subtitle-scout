@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 
-export const CONTROL_NEZHA_TMDB = 612399
+export const CONTROL_NEZHA_TMDB = 615453
 export const CONTROL_MATRIX_TMDB = 603
 
 export type SandboxProfile = 'zh-viewer' | 'en-viewer'

@@ -28,7 +28,7 @@ describe('evaluateFindCell', () => {
 
   it('FAIL-PIPE when en-viewer installs Chinese', () => {
     expect(evaluateFindCell({
-      expectedTmdbId: 612399, actualTmdbId: 612399,
+      expectedTmdbId: 615453, actualTmdbId: 615453,
       skipReason: null, needsSubtitle: 1, subStatus: 'covered',
       sidecarTags: ['zh-Hans'], cueCount: 11, findSubtitleRuns: 1, targetLanguage: 'en',
     }).verdict).toBe('FAIL-PIPE')

@@ -31,7 +31,7 @@ describe('sandbox library catalog', () => {
     expect(coverageGaps(catalog)).toEqual([])
   })
 
-  it('Nezha (612399) and Matrix (603) appear in both profiles with opposite roles', () => {
+  it('Nezha (615453) and Matrix (603) appear in both profiles with opposite roles', () => {
     const catalog = loadCatalog(catalogPath)
     const nezha = catalog.entries.filter(e => e.tmdbId === CONTROL_NEZHA_TMDB)
     const matrix = catalog.entries.filter(e => e.tmdbId === CONTROL_MATRIX_TMDB)
