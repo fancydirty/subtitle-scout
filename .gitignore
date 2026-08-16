@@ -38,6 +38,7 @@ cache-local/
 
 # v3 live matrix runner scratch (OrbStack recipe cache mount)
 matrix-scratch/
+sandbox-scratch/
 .research/
 .claude/
 .omo/
