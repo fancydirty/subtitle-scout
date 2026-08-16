@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -11,6 +11,7 @@ import {
   sandboxCacheDir,
   sandboxDbPath,
   collectEntryFacts,
+  countSubtitleWorkerRuns,
 } from './run.js'
 import { openDb } from '../../v2/db.js'
 import { SettingsRepo } from '../../v2/settingsRepo.js'
@@ -178,6 +179,27 @@ async function runMechanicalProfile(profile: 'zh-viewer' | 'en-viewer') {
   db.close()
   return { results, runsByPath, root }
 }
+
+describe('countSubtitleWorkerRuns', () => {
+  it('increments per videoPath and forwards to the inner worker once', async () => {
+    const map = new Map<string, number>()
+    const inner = vi.fn(async (_task: FindSubtitleTask) => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null,
+    }))
+    const wrapped = countSubtitleWorkerRuns(inner as any, map)
+    const task = {
+      targets: [
+        { videoPath: '/media/a.mkv' },
+        { videoPath: '/media/b.mkv' },
+      ],
+    } as FindSubtitleTask
+    await wrapped(task)
+    expect(map.get('/media/a.mkv')).toBe(1)
+    expect(map.get('/media/b.mkv')).toBe(1)
+    expect(inner).toHaveBeenCalledTimes(1)
+    expect(inner).toHaveBeenCalledWith(task)
+  })
+})
 
 describe('sandboxCacheDir / missingLiveEnv', () => {
   it('sandboxCacheDir defaults under os.tmpdir, never homedir cache', () => {

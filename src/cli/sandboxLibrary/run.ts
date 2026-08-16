@@ -14,8 +14,10 @@ import { findExternalSidecar } from '../../files/sidecar.js'
 import { envOnlyAdapterConfig } from '../../v2/secrets.js'
 import { openDb, type ScoutDb } from '../../v2/db.js'
 import { SettingsRepo } from '../../v2/settingsRepo.js'
+import { RunsRepo } from '../../v2/runsRepo.js'
 import { ScoutDaemonV2 } from '../../v2/daemonV2.js'
 import type { IdentifySchedulerDeps } from '../../v2/identifyScheduler.js'
+import type { FindSubtitleTask, FindSubtitleBatchReport } from '../../agent/findSubtitleWorker.schemas.js'
 import {
   loadCatalog,
   type Catalog,
@@ -44,6 +46,20 @@ export function sandboxCacheDir(explicit?: string): string {
 
 export function sandboxDbPath(cacheDir: string): string {
   return join(cacheDir, 'scout.db')
+}
+
+/** Wrap a find-subtitle worker so each target videoPath increments `map` before dispatch.
+ *  Live CLI and stubs share this so skip-cell FAIL-SKIP can see real worker runs. */
+export function countSubtitleWorkerRuns(
+  worker: (task: FindSubtitleTask) => Promise<FindSubtitleBatchReport>,
+  map: Map<string, number>,
+): (task: FindSubtitleTask) => Promise<FindSubtitleBatchReport> {
+  return async (task) => {
+    for (const t of task.targets) {
+      map.set(t.videoPath, (map.get(t.videoPath) ?? 0) + 1)
+    }
+    return worker(task)
+  }
 }
 
 /** Live CLI gate: TMDB + LLM + at least one subtitle source. */
@@ -262,7 +278,8 @@ export async function runSandboxProfile(opts: {
       workPermitted: () => true,
       writableRoots: new Map([[opts.root, true]]),
       identify,
-      subtitleWorker,
+      subtitleWorker: countSubtitleWorkerRuns(subtitleWorker, runsByPath),
+      runs: new RunsRepo(db),
       now: () => Date.now(),
     } as any)
   }
