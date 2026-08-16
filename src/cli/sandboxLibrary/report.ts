@@ -39,6 +39,13 @@ export function evaluateFindCell(input: FindCellInput): CellResult {
     }
   }
 
+  if (input.skipReason === 'origin-skip') {
+    return {
+      verdict: 'FAIL-PIPE',
+      detail: 'origin-skip: find cell skipped',
+    }
+  }
+
   const allowed = new Set(tagsForLanguage(input.targetLanguage))
   const matching = input.sidecarTags.filter((t) => allowed.has(t))
 
@@ -46,6 +53,13 @@ export function evaluateFindCell(input: FindCellInput): CellResult {
     return {
       verdict: 'FAIL-PIPE',
       detail: `sidecar language ${input.sidecarTags.join(',')} not in tagsForLanguage(${input.targetLanguage})`,
+    }
+  }
+
+  if (input.needsSubtitle === 0 && matching.length === 0) {
+    return {
+      verdict: 'FAIL-PIPE',
+      detail: 'needsSubtitle 0: judge said this find cell needs no subs',
     }
   }
 

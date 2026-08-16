@@ -41,6 +41,36 @@ describe('evaluateFindCell', () => {
       sidecarTags: [], cueCount: 0, findSubtitleRuns: 1, targetLanguage: 'zh',
     }).verdict).toBe('FAIL-SOURCE')
   })
+
+  it('FAIL-PIPE when find cell was origin-skipped and has no sidecar', () => {
+    const result = evaluateFindCell({
+      expectedTmdbId: 603, actualTmdbId: 603,
+      skipReason: 'origin-skip', needsSubtitle: 0, subStatus: null,
+      sidecarTags: [], cueCount: 0, findSubtitleRuns: 0, targetLanguage: 'zh',
+    })
+    expect(result.verdict).toBe('FAIL-PIPE')
+    expect(result.detail.toLowerCase()).toMatch(/origin-skip|find cell skipped/)
+  })
+
+  it('FAIL-PIPE when find cell was origin-skipped even if leftover sidecar exists', () => {
+    const result = evaluateFindCell({
+      expectedTmdbId: 603, actualTmdbId: 603,
+      skipReason: 'origin-skip', needsSubtitle: 0, subStatus: 'covered',
+      sidecarTags: ['zh-Hans'], cueCount: 11, findSubtitleRuns: 0, targetLanguage: 'zh',
+    })
+    expect(result.verdict).toBe('FAIL-PIPE')
+    expect(result.detail.toLowerCase()).toMatch(/origin-skip|find cell skipped/)
+  })
+
+  it('FAIL-PIPE when judge said find cell needs no subtitle and sidecar is missing', () => {
+    const result = evaluateFindCell({
+      expectedTmdbId: 603, actualTmdbId: 603,
+      skipReason: null, needsSubtitle: 0, subStatus: null,
+      sidecarTags: [], cueCount: 0, findSubtitleRuns: 0, targetLanguage: 'zh',
+    })
+    expect(result.verdict).toBe('FAIL-PIPE')
+    expect(result.detail.toLowerCase()).toMatch(/needs no subs|needsSubtitle/)
+  })
 })
 
 describe('evaluateSkipCell', () => {

@@ -1,8 +1,9 @@
-import { mkdirSync, openSync, closeSync } from 'node:fs'
+import { mkdirSync, openSync, closeSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Catalog, SandboxProfile } from './catalog.js'
 
 export function materializeLibrary(catalog: Catalog, profile: SandboxProfile, root: string): string[] {
+  rmSync(root, { recursive: true, force: true })
   const out: string[] = []
   for (const e of catalog.entries.filter(x => x.profile === profile)) {
     const abs = join(root, e.relPath)
