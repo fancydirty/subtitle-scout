@@ -464,9 +464,18 @@ export class ScoutDaemonV2 {
 
   /** One full inspection (scan → identify → judge → subtitles), ignoring the 24h watch gate.
    *  Who writes: sandbox-library CLI only. Production watch keeps using run().
-   *  Must not copy runInspectionInner. */
+   *  Must not copy runInspectionInner.
+   *  Abort wires this.stopping the same way run() does — identify/subtitle loops break on
+   *  stopping, not on signal alone. */
   async inspectOnce(signal: AbortSignal): Promise<void> {
-    await this.runInspection(signal)
+    this.stopping = signal.aborted
+    const onAbort = () => { this.stopping = true }
+    signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      await this.runInspection(signal)
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+    }
   }
 
   /** scanOnce 是否正在执行中。
