@@ -1,3 +1,5 @@
+import type { Lang } from '../i18n/useT.js'
+
 // web/src/workbench/inspectFreshness.ts —— 活动页顶部状态条的**时间判决**。
 //
 // ══════════════════════════════════════════════════════════════════════════════
@@ -113,6 +115,18 @@ export function relAgo(deltaMs: number): string {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h`
   return `${Math.floor(h / 24)}d`
+}
+
+/** 给普通用户看的相对时间：中文用「8 小时前」，英文沿用短单位技术读数。 */
+export function relAgoLabel(deltaMs: number, lang: Lang): string {
+  const s = Math.max(0, Math.floor(deltaMs / 1000))
+  if (lang !== 'zh') return relAgo(s * 1000)
+  if (s < 60) return `${s} 秒前`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} 分钟前`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} 小时前`
+  return `${Math.floor(h / 24)} 天前`
 }
 
 /** 引擎为什么不干活——**三态**，对应 /health 那三个布尔的三种组合。

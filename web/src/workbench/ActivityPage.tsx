@@ -77,7 +77,7 @@ import { ACTIVITY_TABS, laneOf, workIdOf, type ActivityTab } from './workbenchRo
 // 前端只按当前 tab 取其中一条。事件流这侧只需要 laneOf（判 patrol / identify），
 // 不需要"事件 → tab"这层映射。
 // 函数本体保留在 workbenchRouting.ts（有测试、语义正确、导出可用），只是本页不 import 它。
-import { inspectFreshness, liveFreshness, relAgo, workPermission, type LiveFreshness } from './inspectFreshness.js'
+import { inspectFreshness, liveFreshness, relAgoLabel, workPermission, type LiveFreshness } from './inspectFreshness.js'
 import { RunCard, QueueCard, type WorkbenchCardFace } from './WorkbenchCards.js'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -203,7 +203,7 @@ function StatusBar({
   current: Current | null
   status: EventsStatus
 }) {
-  const { t } = useT()
+  const { t, lang } = useT()
   // 时钟只在挂载时取一次：这一行是"大约多久前"的粒度（分/时/天），
   // 每秒重算会让整个状态条每秒重渲染，而显示的字一分钟才变一次。
   const now = useMemo(() => Date.now(), [health])
@@ -220,8 +220,8 @@ function StatusBar({
   else if (fresh.phase === 'never') inspectLine = t('wb_inspect_never')
   else if (fresh.phase === 'running') inspectLine = t('wb_inspect_running')
   else if (fresh.phase === 'stale') {
-    inspectLine = `${t('wb_inspect_stale')}（${relAgo(fresh.msSinceStart ?? 0)}）`
-  } else inspectLine = `${t('wb_inspect_idle')} ${relAgo(fresh.msSinceStart ?? 0)}`
+    inspectLine = `${t('wb_inspect_stale')}（${relAgoLabel(fresh.msSinceStart ?? 0, lang)}）`
+  } else inspectLine = `${t('wb_inspect_idle')} ${relAgoLabel(fresh.msSinceStart ?? 0, lang)}`
 
   return (
     <div className="wb-statusbar" data-stale={fresh?.phase === 'stale' ? 'true' : 'false'}
