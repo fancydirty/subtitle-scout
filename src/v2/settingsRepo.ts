@@ -1,6 +1,7 @@
 // src/v2/settingsRepo.ts
 import { isAbsolute, resolve, sep } from 'node:path'
 import type { ScoutDb } from './db.js'
+import { toContainerPath } from '../files/hostrootPath.js'
 import { SECRET_NAMES, isSecretName, maskSecretValue, resolveSecretFromSettings, type SecretName } from './secrets.js'
 
 /** 候选路径与既有守备目录是否重叠（父/子双向），命中则返回撞上的那个根。
@@ -357,8 +358,9 @@ export class SettingsRepo {
         rejected.push({ path: root, reason: 'not-absolute' })
         continue
       }
-      const r = this.addRoot(root, now)
-      if (r.ok) seeded.push(root)
+      const container = toContainerPath(root)
+      const r = this.addRoot(container, now)
+      if (r.ok) seeded.push(container)
       else rejected.push({ path: root, reason: 'nested', conflict: r.conflict })
     }
     return { seeded, rejected }

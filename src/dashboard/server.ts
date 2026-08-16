@@ -1,13 +1,14 @@
 // src/dashboard/server.ts
 import { createServer, type Server } from 'node:http'
 import { readFileSync, existsSync, statSync } from 'node:fs'
-import { join, normalize, extname, resolve, sep } from 'node:path'
+import { join, normalize, extname, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { URL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
+import { toContainerPath, toHostPath } from '../files/hostrootPath.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 import {
@@ -304,7 +305,7 @@ export function buildRootHealth(
       lastCheckedAt === null || now - lastCheckedAt > ROOT_HEALTH_STALE_AFTER_MS
         ? null
         : r.last_error === null
-    return { path: r.path, ok, lastError: r.last_error, lastCheckedAt }
+    return { path: toHostPath(r.path), ok, lastError: r.last_error, lastCheckedAt }
   })
 }
 
@@ -775,7 +776,7 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           // resolve() 一次，与 add 侧口径对称。
           // 复审修复 1：removeRoot 自带存在性守卫——不是登记在册的守备目录返回 null（含现存根
           // 的父目录），这里映射成 404，绝不对非根路径跑级联清库。
-          const result = settingsRepo.removeRoot(resolve(path))
+          const result = settingsRepo.removeRoot(toContainerPath(path))
           if (!result) {
             res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
             res.end(JSON.stringify({ error: 'not a media root' }))

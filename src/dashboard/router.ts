@@ -7,6 +7,7 @@ import type {
 import type { MediaLibraryItemDTO, MediaLibraryDetailDTO } from './mediaLibraryApi.js'
 import type { ActivityDTO } from './activityApi.js'
 import type { MediaRoot } from '../v2/settingsRepo.js'
+import { toHostPath } from '../files/hostrootPath.js'
 import type { SetupStatusDTO, ProvidersDTO } from './setupApi.js'
 import type { ShiftedItemDTO } from './subtitleVerifyApi.js'
 
@@ -114,7 +115,9 @@ export function handleApiRoute(
   // body 解析/zod 校验，同 parked/claim 一样落在 server.ts 的独立 rawPath 分支。
   if (pathname === '/api/v2/settings') return { status: 200, json: deps.settings() }
   if (pathname === '/api/v2/settings/deploy') return { status: 200, json: deps.deploySettings() }
-  if (pathname === '/api/v2/settings/roots') return { status: 200, json: deps.roots() }
+  if (pathname === '/api/v2/settings/roots') {
+    return { status: 200, json: deps.roots().map((r) => ({ ...r, path: toHostPath(r.path) })) }
+  }
 
   if (pathname === '/api/v2/fs/list') {
     const path = req.query.path

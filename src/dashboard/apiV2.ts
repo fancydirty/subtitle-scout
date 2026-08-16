@@ -1,8 +1,8 @@
 // src/dashboard/apiV2.ts
 // v2 媒体库只读数据层：纯函数收 ScoutDb 返回 DTO（对照 api.ts 风格）。海报直接暴露 TMDB
 // poster_path，前端自行拼 CDN URL（image.tmdb.org，公开、免 key）——不再经服务端代理。
-import { resolve } from 'node:path'
 import { existsSync, readdirSync, statSync } from 'node:fs'
+import { toContainerPath } from '../files/hostrootPath.js'
 import { z } from 'zod'
 import type { ScoutDb } from '../v2/db.js'
 // `LibraryRepo`（值）随 buildWorkflowPending 的 series/movies/parked 三字段一并移除：
@@ -232,7 +232,7 @@ const isAbsoluteMediaPath = (p: string): boolean => p.startsWith('/') || /^[A-Za
  *  点目录浏览器时的正常路况，不是服务器故障，同样收敛成 ok:false，不许炸到 server.ts 变 500。 */
 export function listMediaSubdirs(rawPath: string): FsListResult {
   if (!isAbsoluteMediaPath(rawPath)) return { ok: false, error: 'path must be an absolute path' }
-  const resolved = resolve(rawPath)
+  const resolved = toContainerPath(rawPath)
   if (!existsSync(resolved)) return { ok: false, error: 'path does not exist' }
   try {
     const stat = statSync(resolved)
@@ -356,7 +356,7 @@ export function addMediaRoot(
   if (!isAbsoluteMediaPath(rawPath)) {
     return { ok: false, error: 'path must be an absolute path' }
   }
-  const resolved = resolve(rawPath)
+  const resolved = toContainerPath(rawPath)
   if (!existsSync(resolved)) {
     return { ok: false, error: 'path does not exist' }
   }
