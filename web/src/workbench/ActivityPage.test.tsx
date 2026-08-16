@@ -258,25 +258,21 @@ describe('🔴 R-F1：识别事件被剔出两个 tab，降级为顶部状态条
 // 巡检级/扫描级事件（无 workbench）
 // ═══════════════════════════════════════════════════════════════════════════
 describe('巡检级/扫描级事件（无 workbench 的 6 个 emit 点）', () => {
-  it('「巡检开始」出现在状态条，**不进任何 tab**', async () => {
+  it('巡检级事件不再把技术日志直接搬上界面，也不进 tab', async () => {
     renderPage()
     await ready()
     act(() => { bus().emit(ev({ type: 'activity', message: '巡检开始' })) })
-    await waitFor(() => {
-      expect(screen.getByTestId('wb-patrol-line').textContent).toContain('巡检开始')
-    })
+    expect(screen.queryByTestId('wb-patrol-line')).toBeNull()
     expect(screen.queryByTestId('wb-run-card')).toBeNull()
   })
 
-  it('扫描级 health（守备目录读取失败）同样进状态条，不进 tab、**也不丢**', async () => {
+  it('扫描级 health 日志也不直接上界面，不进 tab', async () => {
     renderPage()
     await ready()
     act(() => {
       bus().emit(ev({ type: 'health', message: '守备目录读取失败，本轮跳过（2 次）: /media' }))
     })
-    await waitFor(() => {
-      expect(screen.getByTestId('wb-patrol-line').textContent).toContain('守备目录读取失败')
-    })
+    expect(screen.queryByTestId('wb-patrol-line')).toBeNull()
     expect(screen.queryByTestId('wb-run-card')).toBeNull()
   })
 
@@ -539,13 +535,12 @@ describe('🔴 「第 i/n 个」只信 SSE，排队列表只信 /api/v2/activity
 // 状态条：两条债务的可见形态
 // ═══════════════════════════════════════════════════════════════════════════
 describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
-  it('🔴 idle 时说的是「上次巡检**开始于**」——不许说"完成于"（债务一）', async () => {
+  it('idle 时用普通用户语言说「上次自动检查」，不出现技术词 sweep', async () => {
     renderPage()
     await ready()
     expect(screen.getByTestId('wb-inspect-line').textContent).toContain(en.wb_inspect_idle)
-    // 英文文案里必须有 started、不许有 completed/finished
-    expect(en.wb_inspect_idle.toLowerCase()).toContain('started')
-    expect(en.wb_inspect_idle.toLowerCase()).not.toMatch(/complet|finish|ended/)
+    expect(en.wb_inspect_idle).toContain('Last automatic check')
+    expect(en.wb_inspect_idle.toLowerCase()).not.toContain('sweep')
   })
 
   it('🔴 空闲 + 太久没开新一轮 → 状态条报「引擎可能没在跑」（债务二：陈旧门报绿 48h）', async () => {
@@ -683,23 +678,20 @@ describe('数据获取：刷新触发点与异常态', () => {
      *  断言的仍是"这一行说出了正确的量级"，不是毫秒级精度。 */
     const IN_16H = () => Date.now() + 16 * HOUR + 60_000
 
-    it('全体退避 → 卡片在场、计数非 0、且**多一句**"最早 16h 后"', async () => {
+    it('全体等待自动重试 → 卡片在场、计数非 0、说明在等待，不暴露倒计时', async () => {
       activityBody = {
         subtitleQueue: [{ ...QUEUE_ITEM, dueNow: false, retryAfter: IN_16H() }],
         translateQueue: [],
       }
       renderPage()
       await ready()
-      // ① 空态那句话**不在场**——这是修复前后的分水岭
       expect(screen.queryByTestId('wb-queue-empty')).toBeNull()
-      // ② 计数说的是真话
-      expect(screen.getByText(/Queued · 1/)).toBeInTheDocument()
-      // ③ "都在等重试"那一行在场，且给得出时刻
+      expect(screen.getByText(/Waiting · 1/)).toBeInTheDocument()
       const line = screen.getByTestId('wb-queue-all-backoff')
-      expect(line.textContent).toContain('16h')
+      expect(line.textContent).toContain('waiting to retry automatically')
     })
 
-    it('🔴 卡片副行自己也说得出"16h 后重试"（整行不在场时用户仍看不出这一项在等）', async () => {
+    it('卡片副行对等待中的项说「等待自动重试」，到点项没有这一段', async () => {
       activityBody = {
         subtitleQueue: [{ ...QUEUE_ITEM, dueNow: false, retryAfter: IN_16H() }],
         translateQueue: [],
@@ -707,16 +699,15 @@ describe('数据获取：刷新触发点与异常态', () => {
       renderPage()
       await ready()
       const text = screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? ''
-      expect(text).toContain('16h')
-      // 阳性对照：到点的项**不许**挂这一段（否则它是恒真的装饰，不是判据）
+      expect(text).toContain('waiting to retry')
       cleanup()
       activityBody = { subtitleQueue: [QUEUE_ITEM], translateQueue: [] }
       renderPage()
       await ready()
-      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? '').not.toContain('16h')
+      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? '').not.toContain('waiting to retry')
     })
 
-    it('🔴 有一项到点 → **不说**"都在等重试"（正常推进的队列不许被说成停滞）', async () => {
+    it('有一项到点 → 不说整队都在等待（正常推进的队列不许被说成停滞）', async () => {
       activityBody = {
         subtitleQueue: [
           { ...QUEUE_ITEM, dueNow: false, retryAfter: IN_16H() },
@@ -727,26 +718,24 @@ describe('数据获取：刷新触发点与异常态', () => {
       renderPage()
       await ready()
       expect(screen.queryByTestId('wb-queue-all-backoff')).toBeNull()
-      // 但那一项自己那句"16h 后重试"仍在（逐项的事实不因整体判决而消失）
-      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? '').toContain('16h')
+      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? '').toContain('waiting to retry')
     })
 
-    it('🔴 队列真空 → 仍然是空态文案，且**不许**冒出那一行', async () => {
+    it('队列真空 → 仍然是空态文案，且不许冒出等待说明', async () => {
       activityBody = { subtitleQueue: [], translateQueue: [] }
       renderPage()
       await waitFor(() => expect(screen.getByTestId('wb-queue-empty')).toBeInTheDocument())
       expect(screen.queryByTestId('wb-queue-all-backoff')).toBeNull()
     })
 
-    it('🔴 全体退避但一个时刻都没给（老后端 / retryAfter 缺席）→ 整行不出现，不编时刻', async () => {
+    it('全体等待且后端没给时刻 → 仍说明正在等待自动重试', async () => {
       activityBody = {
         subtitleQueue: [{ ...QUEUE_ITEM, dueNow: false, retryAfter: null }],
         translateQueue: [],
       }
       renderPage()
       await ready()
-      expect(screen.queryByTestId('wb-queue-all-backoff')).toBeNull()
-      // 卡片仍然在场——"说不出等多久"不等于"不该显示它"
+      expect(screen.getByTestId('wb-queue-all-backoff').textContent).toContain('waiting to retry automatically')
       expect(screen.getAllByTestId('wb-queue-card')).toHaveLength(1)
     })
   })

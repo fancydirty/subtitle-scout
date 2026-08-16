@@ -461,10 +461,10 @@ export const en = {
   // 键前缀 `media_*` 与旧海报墙的 `library_*` **刻意分开**：两个页面并存到 Task ⑪，
   // 共用键会让"改文案时改到另一个页面"变成可能，而且旧键随旧页面一起删。
   media_result_count_prefix: 'Titles',
-  media_card_subtitled: 'subtitled',
-  media_card_embedded: 'built-in',
-  media_card_ondisk: 'on disk',
-  media_card_expected: 'expected',
+  media_card_subtitled: 'subtitles downloaded',
+  media_card_embedded: 'built-in subtitles',
+  media_card_ondisk: 'local files',
+  media_card_expected: 'expected episodes',
   // 🟡-3：缺集数（missingEpisodeCount 的第一个读取方）。
   // "missing N" 而不是 "N missing"：卡片上这一行要能被扫视，名字在前、数字在后，
   // 与同卡片上面那三段（`subtitled 12 · on disk 30`）的语序一致。
@@ -494,7 +494,7 @@ export const en = {
   // 八态文案（R-F12）。**逐态一句人话**——不是符号的名字（"对勾"），是那一格的事实。
   // ⚠️ unsolvable 刻意不写 "failed"/"gave up"：后端注释明写它**不是永久终态**，
   // 阶段 2.6 的复查闸每周放回一次。说"失败"是把停牌说成终局。
-  media_state_covered: 'Subtitled',
+  media_state_covered: 'Subtitle available',
   media_state_translating: 'Being translated',
   media_state_unsolvable: 'No source yet — will retry',
   media_state_origin_skip: 'Original language — no subtitles needed',
@@ -502,7 +502,7 @@ export const en = {
   media_state_extra: 'Extra — not subtitled by design',
   media_state_pending: 'Looking for subtitles',
   media_state_unjudged: 'Not judged yet',
-  media_state_absent: 'Not on disk',
+  media_state_absent: 'Not available locally',
 
   // ── Task ⑩ 通知页（#/notifications）─────────────────────────────────────
   // 键前缀 `notif_*`。R-F3：保留一周 / 倒序流水 / **不做已读状态**——所以这一族里
@@ -539,34 +539,34 @@ export const en = {
   // `lastInspectAt` 落的是巡检的**开始**时刻不是完成时刻（Task ⑤ 审计 🟡-3，后端未修），
   // 故 idle 那句必须说「started」/「开始于」——说「completed」就是在报一个我们不知道的事实。
   wb_statusbar_label: 'Engine status',
-  wb_inspect_unknown: 'Checking engine status…',
-  wb_inspect_never: 'No sweep has run yet',
-  wb_inspect_running: 'Sweep in progress',
+  wb_inspect_unknown: 'Checking status…',
+  wb_inspect_never: 'No automatic check has run yet',
+  wb_inspect_running: 'Automatic check in progress',
   // 「daemon 可能没在跑」——陈旧门（48h）覆盖不到容器挂掉这一档，见 inspectFreshness 债务二。
-  wb_inspect_stale: 'No sweep started recently — the engine may not be running',
-  wb_inspect_idle: 'Last sweep started',
+  wb_inspect_stale: 'The automatic check may not be running',
+  wb_inspect_idle: 'Last automatic check',
   // R-F1：识别降级到状态条，不占 tab。
-  wb_identify_running: 'Identifying',
+  wb_identify_running: 'Identifying media',
   // 引擎不许可的两态。分开是因为可执行动作不同（打开开关 vs 去填 key）。
   wb_engine_off: 'Engine is switched off — nothing will be processed',
   wb_setup_incomplete: 'Setup incomplete — add your TMDB and LLM credentials',
   wb_tablist_label: 'Workbenches',
   wb_tab_subtitle: 'Subtitles',
   wb_tab_translate: 'Translation',
-  wb_section_running: 'Running',
-  wb_section_queued: 'Queued',
-  wb_running_none: 'Nothing running on this workbench',
+  wb_section_running: 'Processing',
+  wb_section_queued: 'Waiting',
+  wb_running_none: 'No tasks are being processed right now',
   wb_running_now: 'Processing now',
-  wb_queue_none: 'Nothing queued',
+  wb_queue_none: 'No titles are waiting',
   wb_untitled: 'Untitled',
   wb_media_tv: 'Series',
   wb_media_movie: 'Movie',
-  wb_pending_files: 'pending',
+  wb_pending_files: 'need subtitles',
   // 🔴 Backoff window (2026-08-13). Fixes the "Queued · 0 / Nothing queued" lie:
   // 33 files were waiting in production, all inside the backoff window, and none of
   // them showed up. They show up now, each saying how long the wait is.
-  wb_queue_retry_in: 'retrying in {d}',
-  wb_queue_all_backoff: 'All of these are waiting to retry — the earliest in {d}',
+  wb_queue_retry_in: 'waiting to retry',
+  wb_queue_all_backoff: 'These are waiting to retry automatically',
   wb_loading: 'Loading…',
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',

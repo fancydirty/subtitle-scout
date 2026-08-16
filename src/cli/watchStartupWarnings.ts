@@ -61,23 +61,18 @@ export function rootsMismatchWarningLine(envRoots: string[], dbRoots: string[]):
   return `[watch] ⚠️ MEDIA_ROOTS env (${envRoots.join(',')}) 与当前生效的守备目录 (${dbRoots.join(',')}) 不一致——以 dashboard 设置页为准（env 仅首启种子）`
 }
 
-/** 零字幕源告警：所有找字幕任务都会落空（配置缺失的故障和真实的"没找到"在 UI 上不可区分）。 */
-export function zeroSubtitleSourcesWarningLine(env: {
-  ASSRT_TOKEN?: string
-  OPENSUBTITLES_API_KEY?: string
-  OPENSUBTITLES_USERNAME?: string
-  OPENSUBTITLES_PASSWORD?: string
-  ZIMUKU_ENABLED?: string
-  SUBHD_ENABLED?: string
-  JIMAKU_API_KEY?: string
-}): string | null {
-  const hasAssrt = !!env.ASSRT_TOKEN
-  const hasOpensubtitles = !!(env.OPENSUBTITLES_API_KEY && env.OPENSUBTITLES_USERNAME && env.OPENSUBTITLES_PASSWORD)
-  const hasZimuku = env.ZIMUKU_ENABLED === 'true'
-  const hasSubhd = env.SUBHD_ENABLED === 'true'
-  const hasJimaku = !!env.JIMAKU_API_KEY
-  if (hasAssrt || hasOpensubtitles || hasZimuku || hasSubhd || hasJimaku) return null
-  return '[watch] ⚠️ 没有任何字幕源可用——所有找字幕任务都会落空。请至少配置 ASSRT_TOKEN（或启用其他字幕源）'
+/** 零字幕源告警：所有找字幕任务都会落空。输入是**设置页解析后的配置事实**，不再读 env。 */
+export interface SubtitleSourceState {
+  assrt: boolean
+  opensubtitles: boolean
+  zimuku: boolean
+  subhd: boolean
+  jimaku: boolean
+}
+
+export function zeroSubtitleSourcesWarningLine(sources: SubtitleSourceState): string | null {
+  if (sources.assrt || sources.opensubtitles || sources.zimuku || sources.subhd || sources.jimaku) return null
+  return '[watch] ⚠️ 没有任何字幕源可用——所有找字幕任务都会落空。请到设置页配置至少一个字幕源'
 }
 
 /** setup 模式警告（spec A §4.7 步 2）：零 key 首启时 dashboard 已起、引擎闸全关，指路 wizard——

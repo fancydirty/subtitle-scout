@@ -45,43 +45,30 @@ describe('watchStartupWarnings', () => {
   })
 
   describe('zeroSubtitleSourcesWarningLine（零字幕源告警）', () => {
-    it('全源缺失 → 告警，文案含"没有任何字幕源可用"和 ASSRT_TOKEN 提示', () => {
-      const line = zeroSubtitleSourcesWarningLine({})
+    it('全源缺失 → 告警，文案指路设置页', () => {
+      const line = zeroSubtitleSourcesWarningLine({ assrt: false, opensubtitles: false, zimuku: false, subhd: false, jimaku: false })
       expect(line).toContain('[watch] ⚠️ 没有任何字幕源可用')
-      expect(line).toContain('请至少配置 ASSRT_TOKEN')
+      expect(line).toContain('请到设置页配置至少一个字幕源')
     })
 
     it('只配 ASSRT → 不告警', () => {
-      expect(zeroSubtitleSourcesWarningLine({ ASSRT_TOKEN: 'tok' })).toBeNull()
+      expect(zeroSubtitleSourcesWarningLine({ assrt: true, opensubtitles: false, zimuku: false, subhd: false, jimaku: false })).toBeNull()
     })
 
-    it('只配 OpenSubtitles 三件套 → 不告警', () => {
-      expect(zeroSubtitleSourcesWarningLine({
-        OPENSUBTITLES_API_KEY: 'key',
-        OPENSUBTITLES_USERNAME: 'user',
-        OPENSUBTITLES_PASSWORD: 'pass',
-      })).toBeNull()
-    })
-
-    it('OpenSubtitles 缺 username/password → 告警（三件套缺一不可）', () => {
-      const line = zeroSubtitleSourcesWarningLine({ OPENSUBTITLES_API_KEY: 'key' })
-      expect(line).toContain('⚠️')
+    it('只配 OpenSubtitles → 不告警', () => {
+      expect(zeroSubtitleSourcesWarningLine({ assrt: false, opensubtitles: true, zimuku: false, subhd: false, jimaku: false })).toBeNull()
     })
 
     it('只启用 zimuku → 不告警', () => {
-      expect(zeroSubtitleSourcesWarningLine({ ZIMUKU_ENABLED: 'true' })).toBeNull()
+      expect(zeroSubtitleSourcesWarningLine({ assrt: false, opensubtitles: false, zimuku: true, subhd: false, jimaku: false })).toBeNull()
     })
 
     it('只启用 subhd → 不告警', () => {
-      expect(zeroSubtitleSourcesWarningLine({ SUBHD_ENABLED: 'true' })).toBeNull()
+      expect(zeroSubtitleSourcesWarningLine({ assrt: false, opensubtitles: false, zimuku: false, subhd: true, jimaku: false })).toBeNull()
     })
 
     it('只配 jimaku → 不告警', () => {
-      expect(zeroSubtitleSourcesWarningLine({ JIMAKU_API_KEY: 'key' })).toBeNull()
-    })
-
-    it('多源同时配置 → 不告警', () => {
-      expect(zeroSubtitleSourcesWarningLine({ ASSRT_TOKEN: 'tok', JIMAKU_API_KEY: 'key' })).toBeNull()
+      expect(zeroSubtitleSourcesWarningLine({ assrt: false, opensubtitles: false, zimuku: false, subhd: false, jimaku: true })).toBeNull()
     })
   })
 

@@ -572,7 +572,16 @@ async function cmdWatch() {
   console.log(`subtitle-scout v2 watching (media roots: ${startupRoots.length > 0 ? startupRoots.join(', ') : '(none configured)'})`)
 
   // 零字幕源告警:所有找字幕任务都会落空(配置缺失的故障和真实的"没找到"在 UI 上不可区分)
-  const subtitleSourcesWarning = zeroSubtitleSourcesWarningLine(process.env)
+  const subtitleSourcesWarning = zeroSubtitleSourcesWarningLine({
+    assrt: settingsRepo.getSecret('ASSRT_TOKEN') !== null,
+    opensubtitles:
+      settingsRepo.getSecret('OPENSUBTITLES_API_KEY') !== null &&
+      settingsRepo.getSecret('OPENSUBTITLES_USERNAME') !== null &&
+      settingsRepo.getSecret('OPENSUBTITLES_PASSWORD') !== null,
+    zimuku: settingsRepo.get('provider:ZIMUKU_ENABLED') === 'true',
+    subhd: settingsRepo.get('provider:SUBHD_ENABLED') === 'true',
+    jimaku: settingsRepo.getSecret('JIMAKU_API_KEY') !== null,
+  })
   if (subtitleSourcesWarning) console.warn(subtitleSourcesWarning)
 
   // 第 2 步（C2 + C16 + D5）：容器入口跑 ScoutDaemonV2（每日巡检模型）。

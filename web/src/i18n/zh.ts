@@ -393,16 +393,16 @@ export const zh = {
 
   // ── Task ⑧ 媒体库页（#/media）────────────────────────────────────────────
   media_result_count_prefix: '作品',
-  media_card_subtitled: '已配',
+  media_card_subtitled: '已下载字幕',
   /** 🔴 2026-08-14 用户裁决③：内嵌轨与外挂字幕分列。「自带」而不是「内嵌」——
    *  用户不需要知道"内嵌轨"是什么技术概念，他要知道的是这几集**片源本来就带**、
    *  系统没为它做过事。与「已配」（我们找来装上的）构成对照。 */
-  media_card_embedded: '自带',
-  media_card_ondisk: '磁盘',
-  media_card_expected: '应有',
+  media_card_embedded: '自带字幕',
+  media_card_ondisk: '本地文件',
+  media_card_expected: '应有集数',
   // 🟡-3：缺集数。「缺 12」——不写"集"字：电影恒 0（不渲染），剧集这一行紧挨着
   // 上面那三个同为集数的读数，量纲无歧义。
-  media_card_missing: '缺',
+  media_card_missing: '缺少',
   // 🔴 2026-08-13：进不了季集网格的文件（特典居多）。措辞与详情页的
   // media_unplaced_prefix 同族但更短（卡片一行），且不提 season/episode 这类内部词。
   media_card_unplaced: '{n} 个文件没归入季集',
@@ -426,7 +426,7 @@ export const zh = {
   media_detail_no_seasons_desc: '磁盘上没有能归入季的文件，应有集目录也还没缓存。',
 
   // 八态文案（R-F12）。⚠️ unsolvable 不写"失败"——它不是永久终态，复查闸每周放回一次。
-  media_state_covered: '已配字幕',
+  media_state_covered: '已有字幕',
   media_state_translating: '正在翻译',
   media_state_unsolvable: '暂时没辙 · 还会再试',
   media_state_origin_skip: '原生就是目标语言 · 不需要字幕',
@@ -437,7 +437,7 @@ export const zh = {
   media_state_extra: '特典 · 不找字幕',
   media_state_pending: '正在找字幕',
   media_state_unjudged: '还没判定',
-  media_state_absent: '磁盘上没有',
+  media_state_absent: '本地没有',
 
   // ── Task ⑩ 通知页（#/notifications）─────────────────────────────────────
   // R-F3：保留一周 / 倒序流水 / **不做已读状态**——本族里没有"标记已读/未读"文案，
@@ -473,32 +473,32 @@ export const zh = {
   // ⚠️ 「上次巡检开始于」的「开始」二字是语义债务的执行，不是措辞偏好：
   // lastInspectAt 落的是开始时刻不是完成时刻，写「完成于」就是在报一个我们不知道的事实。
   wb_statusbar_label: '引擎状态',
-  wb_inspect_unknown: '正在获取引擎状态…',
-  wb_inspect_never: '还没跑过巡检',
-  wb_inspect_running: '正在巡检',
-  wb_inspect_stale: '很久没开始新一轮巡检了，引擎可能没在跑',
-  wb_inspect_idle: '上次巡检开始于',
-  wb_identify_running: '正在识别',
+  wb_inspect_unknown: '正在获取状态…',
+  wb_inspect_never: '还没有自动检查过',
+  wb_inspect_running: '正在自动检查',
+  wb_inspect_stale: '自动检查好像没有在运行',
+  wb_inspect_idle: '上次自动检查',
+  wb_identify_running: '正在识别媒体信息',
   wb_engine_off: '引擎开关是关的，什么都不会处理',
   wb_setup_incomplete: '还没配好，去把 TMDB 与 LLM 的凭据填上',
   wb_tablist_label: '工作台',
   wb_tab_subtitle: '字幕',
   wb_tab_translate: '翻译',
-  wb_section_running: '正在跑',
-  wb_section_queued: '已排队',
-  wb_running_none: '这个工作台现在没在跑什么',
+  wb_section_running: '正在处理',
+  wb_section_queued: '排队中',
+  wb_running_none: '当前没有正在处理的任务',
   wb_running_now: '正在处理',
-  wb_queue_none: '没有排队的作品',
+  wb_queue_none: '没有等待处理的任务',
   wb_untitled: '未命名',
   wb_media_tv: '剧集',
   wb_media_movie: '电影',
-  wb_pending_files: '集待处理',
+  wb_pending_files: '集需要字幕',
   // 🔴 退避窗（2026-08-13）。修的是「已排队 · 0 / 没有排队的作品」这句假话：
   // 生产上 33 个文件在等、全在退避窗，此前它们一个都不显示。现在照常显示，
   // 只是各自说清楚"还要等多久"，队列整体取不到时再加一句总的。
   // 措辞纪律同 stale 那一族：不出现"退避/backoff/next_retry_at"这类内部词。
-  wb_queue_retry_in: '{d} 后重试',
-  wb_queue_all_backoff: '这些都在等着重试，最早 {d} 后',
+  wb_queue_retry_in: '等待自动重试',
+  wb_queue_all_backoff: '这些正在等待自动重试',
   wb_loading: '加载中…',
   wb_error_title: '没能加载队列',
   wb_retry: '重试',
