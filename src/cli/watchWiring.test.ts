@@ -352,6 +352,18 @@ describe('buildDaemonV2Deps · R-F10 SSE 事件通道', () => {
   })
 })
 
+describe('cmdWatch 源码级接线 · POST /api/v2/library/inspect', () => {
+  const src = readFileSync('src/cli/index.ts', 'utf8')
+
+  it('🔴 cmdWatch 把 requestInspect 交给 startDashboard，且与 requestScan 共用 daemonHolder', () => {
+    // 漏接 = 端点永远 503「not configured」，界面上与「没跑 watch」无法区分。
+    // 源码断言：cmdWatch 太过程式，测它会把测试进程自己搞死（见本文件头）。
+    expect(src).toMatch(/requestInspect:\s*\(\)\s*=>/)
+    expect(src).toMatch(/startDashboard\(\{[\s\S]*requestInspect/)
+    expect(src).toMatch(/daemonHolder:\s*\{\s*current:\s*\{\s*requestScan:[\s\S]*requestInspect:/)
+  })
+})
+
 describe('cmdWatch 源码级接线 · R-F10 SSE 通道（一条总线两个消费方）', () => {
   const src = readFileSync('src/cli/index.ts', 'utf8')
 

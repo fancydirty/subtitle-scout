@@ -305,7 +305,10 @@ async function cmdWatch() {
   //  · 为什么不是 `daemon!` 非空断言——那会把"dashboard 起来了但 daemon 还没构造完的那几毫秒
   //    里恰好有人点了扫描"变成一次 TypeError 崩进 HTTP 处理器。holder 为 null 时如实返回
   //    false，端点据此答 503（"扫描触发器尚未就绪"），与它既有的"watch 没跑 → 503"同一档。
-  const daemonHolder: { current: { requestScan: () => void } | null } = { current: null }
+  const daemonHolder: { current: {
+    requestScan: () => void
+    requestInspect: () => 'queued' | 'already_running'
+  } | null } = { current: null }
 
   /** 三个调用点共用的"踢一脚扫描"。daemon 尚未就绪 → 返回 false（调用方答 503），
    *  不假装成功。 */
@@ -314,6 +317,12 @@ async function cmdWatch() {
     if (!d) return false
     d.requestScan()
     return true
+  }
+
+  const requestInspect = (): 'queued' | 'already_running' | 'not_ready' => {
+    const d = daemonHolder.current
+    if (!d) return 'not_ready'
+    return d.requestInspect()
   }
 
   const buildCurrent = async (): Promise<WatchClients> => {
@@ -505,6 +514,9 @@ async function cmdWatch() {
       // （毫秒级、不会抛、不阻塞），端点拿它区分"已排队"（200）与"daemon 还没就绪"（503）。
       // 旧实现要 catch 一个可能长达一整轮扫描的 promise，那个复杂度随 ingest 一起消失了。
       requestScan,
+      // 手动点火完整巡检（POST /api/v2/library/inspect）。与 requestScan 共用 daemonHolder：
+      // daemon 尚未 new 出来 → 'not_ready'，端点答 503。不复用 scan 路由。
+      requestInspect,
 
       // R-F10：SSE 通道的消费端（GET /api/v2/events）。与下方 daemon 的 emit 是同一个实例。
       events: scoutEvents,

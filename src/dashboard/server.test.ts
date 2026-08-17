@@ -118,6 +118,9 @@ async function start(
     cacheRoot?: string
     tmdbGetter?: () => FakeTmdb | null
     // reconcileAllGetter 已删（第 5.5 步）
+    // 完整巡检点火（POST /api/v2/library/inspect）。走 extra 而不是第 7 个位置参数，
+    // 免得把现有 `start(..., extra)` 调用的 extra 错位成 subtitleCompareDeps。
+    requestInspect?: () => 'queued' | 'already_running' | 'not_ready'
   },
 ): Promise<{ base: string }> {
   server = await startDashboard({
@@ -127,6 +130,7 @@ async function start(
     jobs,
     tmdb: extra?.tmdbGetter ?? (tmdb ? () => tmdb : undefined),
     requestScan,
+    requestInspect: extra?.requestInspect,
     subtitleWriteDeps,
     subtitleCompareDeps,
     cacheRoot: extra?.cacheRoot,
@@ -833,6 +837,62 @@ describe('startDashboard (v2)', () => {
           distWith('<!doctype html>'), 's3cret', undefined, undefined, undefined, () => { calls++; return true },
         )
         expect((await fetch(`${base}/api/v2/library/scan`, { method: 'POST' })).status).toBe(401)
+        expect(calls).toBe(0)
+      })
+    })
+
+    describe('POST /api/v2/library/inspect（手动点火完整巡检）', () => {
+      it('🔴 POST → 200 且 requestInspect 返回 queued', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, {
+          requestInspect: () => 'queued',
+        })
+        const res = await fetch(`${base}/api/v2/library/inspect?token=tok`, { method: 'POST' })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ ok: true })
+      })
+
+      it('already_running → 409', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, {
+          requestInspect: () => 'already_running',
+        })
+        const res = await fetch(`${base}/api/v2/library/inspect?token=tok`, { method: 'POST' })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toEqual({ error: 'already running' })
+      })
+
+      it('未注入 → 503', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 'tok')
+        const res = await fetch(`${base}/api/v2/library/inspect?token=tok`, { method: 'POST' })
+        expect(res.status).toBe(503)
+        expect(await res.json()).toEqual({ error: 'inspect trigger not configured (watch daemon not running)' })
+      })
+
+      it('not_ready → 503', async () => {
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, {
+          requestInspect: () => 'not_ready',
+        })
+        const res = await fetch(`${base}/api/v2/library/inspect?token=tok`, { method: 'POST' })
+        expect(res.status).toBe(503)
+        expect(await res.json()).toEqual({ error: 'inspect trigger not ready (daemon still starting up)' })
+      })
+
+      it('GET → 405', async () => {
+        let calls = 0
+        const { base } = await start(distWith('<!doctype html>'), 'tok', undefined, undefined, undefined, undefined, undefined, undefined, {
+          requestInspect: () => { calls++; return 'queued' },
+        })
+        const res = await fetch(`${base}/api/v2/library/inspect?token=tok`)
+        expect(res.status).toBe(405)
+        expect(await res.json()).toEqual({ error: 'method not allowed' })
+        expect(calls).toBe(0)
+      })
+
+      it('无凭据 → 401', async () => {
+        let calls = 0
+        const { base } = await start(distWith('<!doctype html>'), 's3cret', undefined, undefined, undefined, undefined, undefined, undefined, {
+          requestInspect: () => { calls++; return 'queued' },
+        })
+        expect((await fetch(`${base}/api/v2/library/inspect`, { method: 'POST' })).status).toBe(401)
         expect(calls).toBe(0)
       })
     })

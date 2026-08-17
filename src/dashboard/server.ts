@@ -137,6 +137,11 @@ export interface DashboardOpts {
    *  字段本身 undefined（纯只读测试场景 / 未接线）＝同 `false`，不强制 startDashboard 的
    *  调用方必须提供它。 */
   requestScan?: () => boolean
+  /** 手动点火完整巡检（`runInspection`），不是 scan-only。
+   *
+   *  返回三态而不是 requestScan 的 boolean：`already_running` 是独立的 409
+   *  （正在跑一轮巡检时再点不应假装 queued）。字段缺席 / `'not_ready'` 答 503。 */
+  requestInspect?: () => 'queued' | 'already_running' | 'not_ready'
   /** 字幕校验三端点（GET verify / POST correct / POST revert）的依赖注入口。
    *
    *  与 jobs/tmdb 那几个"缺席就 503"的可选依赖**不同**：这三个端点的默认实现
@@ -414,7 +419,7 @@ function serveStatic(distDir: string, pathname: string): { status: number; body:
 
 /** 启动只读监控 HTTP 端点。port=0 让内核分配（测试用）。 */
 export function startDashboard(opts: DashboardOpts): Promise<Server> {
-  const { db, port, host, token, distDir, env = process.env, jobs, tmdb, requestScan, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride, events, eventsHeartbeatMs } = opts
+  const { db, port, host, token, distDir, env = process.env, jobs, tmdb, requestScan, requestInspect, subtitleWriteDeps, subtitleCompareDeps, cacheRoot, setupDeps: setupDepsOverride, events, eventsHeartbeatMs } = opts
   const settingsRepo = new SettingsRepo(db)
   // spec A §4.4：setup 面依赖——默认接真实实现（cfg 的 dbGet 惰性读库，wizard 落库后下一次
   // status/validate 调用自然反映），测试经 opts.setupDeps 部分覆盖（同 subDeps 先例）。
@@ -831,6 +836,40 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         if (!requestScan()) {
           res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ error: 'scan trigger not ready (daemon still starting up)' }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ ok: true }))
+        return
+      }
+
+      // POST /api/v2/library/inspect：手动点火完整巡检（runInspection，含退避窗里的
+      // 字幕/翻译）。与 /library/scan 并列、不复用——scan 仍是 scan-only（加根防抖走那边）。
+      // requestInspect 可选依赖先例同 scan（watch 未接线或纯只读测试 → 503），method 门在前。
+      if (rawPath === '/api/v2/library/inspect') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        // 三道门：
+        //  · 字段缺席 = 没跑 watch（纯 dashboard / 只读测试）→ 503 configured；
+        //  · not_ready = 跑了 watch 但 daemon 还没构造完（同一 daemonHolder 窗口）→ 503 ready；
+        //  · already_running = 正在跑一轮巡检 → 409，不假装 queued。
+        if (!requestInspect) {
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'inspect trigger not configured (watch daemon not running)' }))
+          return
+        }
+        const outcome = requestInspect()
+        if (outcome === 'not_ready') {
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'inspect trigger not ready (daemon still starting up)' }))
+          return
+        }
+        if (outcome === 'already_running') {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'already running' }))
           return
         }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
