@@ -85,7 +85,7 @@
 data: { done: 0, total: fileCount, workId, backdropPath, chineseTitle }
 ```
 
-`fileCount` = 这次派给 worker 的文件数（字幕=`item.files.length`；翻译=该作品本轮候选文件数）。**不是** `subtitleQueue.length`。
+`fileCount` = 这次派给 worker 的文件数。字幕 = `item.files.length`。翻译 = **1**（`advanceTranslateOnce` 每次只跑一个文件；用「该作品还剩几集」当 total 会在巡检收工时停在 `1/6` 然后 `current` 被清空，是假进度）。翻译长会话的在场感靠 `lastStep` + log + 已用时，不靠条上的分母。
 
 每成功装盘一文件再发 progress：`done` 为本作品已装上的累计（1…N），`total` 不变。发送点：字幕在 `subtitleScheduler` `markInstalled` 成功回写之后（路径反解成功才算）；翻译在既有 installed 回写点。禁止用「作品在队列里的序号」冒充 `done`。
 
