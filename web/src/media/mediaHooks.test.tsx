@@ -11,7 +11,7 @@
 //     另外三个 tab 各白白 404 一次）；
 //  ③ **不轮询**（挂个 15s 定时器不会有任何测试变红，但它是真实的持续负载）。
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { renderHook, waitFor, cleanup, act } from '@testing-library/react'
+import { render, renderHook, waitFor, cleanup, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { useMediaLibrary, useMediaLibraryDetail } from '../api/hooks.js'
 import { EventsProvider } from '../events/EventsProvider.js'
@@ -154,7 +154,12 @@ class FakeES {
   emit(e: ScoutEvent) {
     for (const fn of this.listeners.get(e.type) ?? []) fn({ data: JSON.stringify(e) })
   }
+  /** 进程重启后的 hello 帧：换 bootId 才能把 lastSeenId 清零，否则 id 从 1 再起会被去重门丢掉。 */
+  hello(bootId: string) {
+    for (const fn of this.listeners.get('hello') ?? []) fn({ data: JSON.stringify({ bootId }) })
+  }
   open() { this.readyState = 1; this.onopen?.() }
+  fail(readyState: number) { this.readyState = readyState; this.onerror?.() }
 }
 
 function EventsWrap({ children }: { children: ReactNode }) {
@@ -296,6 +301,133 @@ describe('SSE current 从有变无后再拉（不看冻结的 health GET）', ()
     })
     await act(async () => { await Promise.resolve() })
     expect(urls.filter((u) => /\/api\/v2\/mediaLibrary$/.test(u.split('?')[0] ?? '')).length).toBe(before)
+  })
+
+  it('identify activity 不重拉；identify 之后无 workbench 的巡检才重拉', async () => {
+    seq = 0
+    const { urls } = probe([])
+    const { result } = renderHook(() => useMediaLibrary(), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    const libraryGets = () => urls.filter((u) => /\/api\/v2\/mediaLibrary$/.test(u.split('?')[0] ?? '')).length
+    const before = libraryGets()
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit(activity({ workbench: 'identify', message: '正在识别：A', title: 'A' }))
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(libraryGets(), 'identify 是当前态，不该当巡检清空去重拉').toBe(before)
+    act(() => {
+      FakeES.instances[0]!.emit(activity({ message: '巡检完成' }))
+    })
+    await waitFor(() => expect(libraryGets()).toBeGreaterThan(before))
+  })
+})
+
+const libraryListGets = (urls: string[]) =>
+  urls.filter((u) => /\/api\/v2\/mediaLibrary$/.test(u.split('?')[0] ?? '')).length
+
+/** 同一棵 EventsProvider 上先灌 Context，再挂 useMediaLibrary——模拟从活动页切到 #/media。 */
+function PresenceShell({ probe }: { probe: boolean }) {
+  return <EventsProvider>{probe ? <MediaLibraryProbe /> : null}</EventsProvider>
+}
+function MediaLibraryProbe() {
+  useMediaLibrary()
+  return null
+}
+
+describe('挂载时不把 Context 里已有的 last progress+patrol 当 live 清空', () => {
+  beforeEach(() => {
+    FakeES.instances = []
+    __resetEventsBusForTests()
+    vi.stubGlobal('EventSource', FakeES as unknown as typeof EventSource)
+  })
+  afterEach(() => { __resetEventsBusForTests() })
+
+  it('进页前 Context 已有 workbench progress + 巡检 activity → 只有首载 1 次 GET；之后新的清空才再拉', async () => {
+    const { urls } = probe([])
+    const view = render(<PresenceShell probe={false} />)
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit({
+        id: 10, at: Date.now(), type: 'progress',
+        message: 'p', workbench: 'subtitle', data: { done: 1, total: 6 },
+      })
+      FakeES.instances[0]!.emit({
+        id: 11, at: Date.now(), type: 'activity', message: '巡检完成',
+      })
+    })
+    expect(libraryListGets(urls)).toBe(0)
+
+    view.rerender(<PresenceShell probe={true} />)
+    await waitFor(() => expect(libraryListGets(urls)).toBeGreaterThanOrEqual(1))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await Promise.resolve() })
+    expect(libraryListGets(urls), '把进页前的 progress(有)+patrol(无) 重放成 live 清空 → 多打了一次 GET')
+      .toBe(1)
+
+    act(() => {
+      FakeES.instances[0]!.emit({
+        id: 20, at: Date.now(), type: 'activity',
+        message: '正在找字幕：B', title: 'B', workbench: 'subtitle',
+      })
+    })
+    act(() => {
+      FakeES.instances[0]!.emit({
+        id: 21, at: Date.now(), type: 'activity', message: '巡检完成',
+      })
+    })
+    await waitFor(() => expect(libraryListGets(urls)).toBe(2))
+  })
+})
+
+describe('SSE 恢复后 id 从 1 重数仍能重拉（bootId 换 epoch）', () => {
+  beforeEach(() => {
+    FakeES.instances = []
+    __resetEventsBusForTests()
+    vi.stubGlobal('EventSource', FakeES as unknown as typeof EventSource)
+  })
+  afterEach(() => { __resetEventsBusForTests() })
+
+  it('高 id found 之后 resume + hello 新 bootId → found id=1 再 GET', async () => {
+    const { urls } = probe([])
+    const { result } = renderHook(() => useMediaLibrary(), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.hello('boot-A')
+      FakeES.instances[0]!.emit({
+        id: 50, at: Date.now(), type: 'found',
+        message: 'Phantom：装上了 2 条字幕', title: 'Phantom',
+        workbench: 'subtitle', data: { installed: 2 },
+      })
+    })
+    await waitFor(() => expect(libraryListGets(urls)).toBeGreaterThanOrEqual(2))
+    const afterHighFound = libraryListGets(urls)
+
+    act(() => { FakeES.instances[0]!.fail(2) })
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(1))
+    const reconnected = FakeES.instances[FakeES.instances.length - 1]!
+    act(() => { reconnected.open() })
+    await waitFor(() =>
+      expect(libraryListGets(urls), 'resume 没有补拉').toBeGreaterThan(afterHighFound),
+    )
+    const afterResume = libraryListGets(urls)
+
+    act(() => {
+      reconnected.hello('boot-restart')
+      reconnected.emit({
+        id: 1, at: Date.now(), type: 'found',
+        message: 'Other：装上了 1 条字幕', title: 'Other',
+        workbench: 'subtitle', data: { installed: 1 },
+      })
+    })
+    await waitFor(() =>
+      expect(libraryListGets(urls), 'seenFoundId 没清零 → 重启后的 found id=1 被丢掉')
+        .toBeGreaterThan(afterResume),
+    )
   })
 })
 
