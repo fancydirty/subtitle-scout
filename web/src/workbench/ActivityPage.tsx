@@ -60,7 +60,7 @@ import { Button } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import { useActivity, useHealth } from '../api/hooks.js'
 import {
-  useActivityEvent, useProgressEvent, useEventsStatus,
+  useActivityEvent, useHealthEvent, useProgressEvent, useEventsStatus,
 } from '../events/EventsProvider.js'
 import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT } from '../i18n/useT.js'
@@ -206,6 +206,8 @@ function StatusBar({
   reloadHealth: () => void
 }) {
   const { t, lang } = useT()
+  const activity = useActivityEvent()
+  const healthEvent = useHealthEvent()
   // 时钟只在挂载时取一次：这一行是"大约多久前"的粒度（分/时/天），
   // 每秒重算会让整个状态条每秒重渲染，而显示的字一分钟才变一次。
   const now = useMemo(() => Date.now(), [health])
@@ -219,9 +221,11 @@ function StatusBar({
   const live = liveFreshness(status)
 
   const [pending, setPending] = useState(false)
+  const [roundLive, setRoundLive] = useState(false)
   const [runAlert, setRunAlert] = useState<string | null>(null)
   const inFlightRef = useRef(false)
   const wasRunning = useRef(false)
+  const appliedRoundId = useRef(0)
 
   useEffect(() => {
     const running = current != null
@@ -233,12 +237,32 @@ function StatusBar({
     wasRunning.current = running
   }, [current, reloadHealth])
 
+  const applyRound = useCallback((e: ScoutEvent | null) => {
+    if (!e || e.id <= appliedRoundId.current) return
+    const round = e.data?.inspectRound
+    if (round !== 'start' && round !== 'end') return
+    appliedRoundId.current = e.id
+    if (round === 'start') {
+      setRoundLive(true)
+      return
+    }
+    setRoundLive(false)
+    setPending(false)
+    inFlightRef.current = false
+    reloadHealth()
+  }, [reloadHealth])
+
+  useEffect(() => { applyRound(activity) }, [activity, applyRound])
+  useEffect(() => { applyRound(healthEvent) }, [healthEvent, applyRound])
+
   // idle：下次自动检查倒计时（不再渲染「上次自动检查开始于」）。
   // never / stale / running 四态原句保留；stale 仍用「…前」（死亡信号，不是倒计时）。
+  // roundLive / current 必须压过 never：inspectFreshness 在 lastInspectAt=null 时
+  // 先返回 never，冷启动第一轮工作台在跑也会被说成"还没检查过"。
   let inspectLine: string
   if (!fresh) inspectLine = t('wb_inspect_unknown')
+  else if (roundLive || current != null || fresh.phase === 'running') inspectLine = t('wb_inspect_running')
   else if (fresh.phase === 'never') inspectLine = t('wb_inspect_never')
-  else if (fresh.phase === 'running') inspectLine = t('wb_inspect_running')
   else if (fresh.phase === 'stale') {
     inspectLine = `${t('wb_inspect_stale')}（${relAgoLabel(fresh.msSinceStart ?? 0, lang)}）`
   } else {
@@ -262,7 +286,7 @@ function StatusBar({
     try {
       await api.triggerInspect()
       reloadHealth()
-      // 成功：pending / inFlight 留到 SSE current 变成 running。
+      // 成功：pending / inFlight 留到 inspectRound end 或 workbench current。
     } catch (e) {
       const msg = e instanceof Error ? e.message : ''
       setRunAlert(msg.includes('already running') ? t('wb_inspect_already') : t('wb_inspect_run_failed'))
@@ -284,7 +308,7 @@ function StatusBar({
           variant="outline"
           size="sm"
           data-testid="wb-inspect-now"
-          disabled={pending || fresh?.phase === 'running'}
+          disabled={pending || current != null || roundLive}
           onClick={() => { void onRunNow() }}
         >
           {t('wb_inspect_run')}

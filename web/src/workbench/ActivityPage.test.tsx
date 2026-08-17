@@ -709,6 +709,58 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
     })
   })
 
+  it('🔴 空巡检（无 workbench）跟 inspectRound：开始仍禁用，结束才解禁', async () => {
+    renderPage()
+    await ready()
+    const btn = screen.getByTestId('wb-inspect-now')
+    fireEvent.click(btn)
+    await waitFor(() => {
+      expect(fetchCalls.some((c) => c.url.includes('/api/v2/library/inspect'))).toBe(true)
+    })
+    expect(btn).toBeDisabled()
+
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '巡检开始',
+        data: { inspectRound: 'start' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-inspect-line').textContent).toContain(en.wb_inspect_running)
+    })
+    expect(btn).toBeDisabled()
+
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '巡检完成，歇着等明天',
+        data: { inspectRound: 'end' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-inspect-now')).not.toBeDisabled()
+    })
+  })
+
+  it('🔴 巡检失败（无 start / 无 workbench）也解禁，好在短退避里再点', async () => {
+    renderPage()
+    await ready()
+    fireEvent.click(screen.getByTestId('wb-inspect-now'))
+    await waitFor(() => {
+      expect(fetchCalls.some((c) => c.url.includes('/api/v2/library/inspect'))).toBe(true)
+    })
+    expect(screen.getByTestId('wb-inspect-now')).toBeDisabled()
+
+    act(() => {
+      bus().emit(ev({
+        type: 'health', message: '巡检失败，30 分钟后重试: boom',
+        data: { inspectRound: 'end' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-inspect-now')).not.toBeDisabled()
+    })
+  })
+
   it('200 之后再撞 409 不许把按钮解禁（同步 inFlight 闸）', async () => {
     let release!: () => void
     inspectHold = new Promise<void>((r) => { release = r })

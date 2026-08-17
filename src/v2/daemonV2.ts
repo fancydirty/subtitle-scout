@@ -651,19 +651,19 @@ export class ScoutDaemonV2 {
         if (permitted) {
           this.scanRequested = false
           this.deps.log(`巡检开始 (距上次 ${lastInspectAt === 0 ? '(冷启动)' : `${Math.round((now - lastInspectAt) / 3600000)}h`})`)
-          this.emit({ type: 'activity', message: '巡检开始' })
+          this.emit({ type: 'activity', message: '巡检开始', data: { inspectRound: 'start' } })
           try {
             this.skipBackoffThisInspect = true
             await this.runInspection(signal)
             this.writeLastInspectAt(now)
             this.inspectRetryAfter = 0
             this.deps.log('巡检完成，歇着等明天')
-            this.emit({ type: 'activity', message: '巡检完成，歇着等明天' })
+            this.emit({ type: 'activity', message: '巡检完成，歇着等明天', data: { inspectRound: 'end' } })
           } catch (e) {
             const backoff = this.deps.inspectFailureBackoffMs ?? INSPECT_FAILURE_BACKOFF_MS
             this.inspectRetryAfter = now + backoff
             this.deps.log(`巡检失败（隔离，时间闸不推进，${Math.round(backoff / 60000)}min 后重试）: ${String(e)}`)
-            this.emit({ type: 'health', message: `巡检失败，${Math.round(backoff / 60000)} 分钟后重试: ${String(e)}` })
+            this.emit({ type: 'health', message: `巡检失败，${Math.round(backoff / 60000)} 分钟后重试: ${String(e)}`, data: { inspectRound: 'end' } })
           } finally {
             this.skipBackoffThisInspect = false
           }
@@ -675,7 +675,7 @@ export class ScoutDaemonV2 {
         this.deps.log(`巡检开始 (距上次 ${lastInspectAt === 0 ? '(冷启动)' : `${Math.round((now - lastInspectAt) / 3600000)}h`})`)
         // R-F10 activity ①：巡检开始。用户视角的"系统在忙还是在歇"——日巡检模型下这是
         // 一天里最重要的那条状态变化（没有它，活动页在 23 小时里看起来与宕机无异）。
-        this.emit({ type: 'activity', message: '巡检开始' })
+        this.emit({ type: 'activity', message: '巡检开始', data: { inspectRound: 'start' } })
         // D4 ①：时间闸记的是巡检**开始**时刻（这个 now），不是跑完之后再取一次。
         // 用结束时刻的话真实周期 = 24h + 本轮耗时，逐轮漂移——大库在 115 FUSE 上真能跑 10h，
         // 周期就漂成 34h，几轮之后巡检时刻会跑到用户看电视的黄金时段去。
@@ -687,7 +687,7 @@ export class ScoutDaemonV2 {
           this.inspectRetryAfter = 0
           this.deps.log('巡检完成，歇着等明天')
           // R-F10 activity ②：巡检完成。与 ① 成对——活动页据此从"在忙"切回"歇着"。
-          this.emit({ type: 'activity', message: '巡检完成，歇着等明天' })
+          this.emit({ type: 'activity', message: '巡检完成，歇着等明天', data: { inspectRound: 'end' } })
         } catch (e) {
           // 失败走**独立的短退避**，与 24h 闸分账（见 INSPECT_FAILURE_BACKOFF_MS 的论证）：
           // 不推进时间闸，但也不许下一拍（5min 后）就重跑——巡检里有两条付费 LLM 工作台，
@@ -698,7 +698,7 @@ export class ScoutDaemonV2 {
           // R-F10 health ④：**整轮**巡检失败。这与反面清单里那些"（隔离，下轮重试）"的单文件
           // 错误不是一档——单文件抖动会自愈且不影响别的文件，而整轮失败意味着这一天什么都没做
           // （时间闸不推进，30min 后才重试）。用户视角就是"我的库可能有问题"，正是 health 的定义。
-          this.emit({ type: 'health', message: `巡检失败，${Math.round(backoff / 60000)} 分钟后重试: ${String(e)}` })
+          this.emit({ type: 'health', message: `巡检失败，${Math.round(backoff / 60000)} 分钟后重试: ${String(e)}`, data: { inspectRound: 'end' } })
         }
       }
 

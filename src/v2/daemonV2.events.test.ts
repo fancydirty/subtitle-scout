@@ -73,6 +73,8 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     expect(types()).toContain('activity')
     expect(got.some((e) => e.type === 'activity' && e.message.includes('巡检开始'))).toBe(true)
     expect(got.some((e) => e.type === 'activity' && e.message.includes('巡检完成'))).toBe(true)
+    expect(got.find((e) => e.message.includes('巡检开始'))?.data).toEqual({ inspectRound: 'start' })
+    expect(got.find((e) => e.message.includes('巡检完成'))?.data).toEqual({ inspectRound: 'end' })
     db.close()
   })
 
@@ -173,6 +175,8 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     const patrol = got.filter((e) => e.message.includes('巡检开始') || e.message.includes('巡检完成'))
     expect(patrol.length).toBeGreaterThan(0)
     expect(patrol.every((e) => e.workbench === undefined)).toBe(true)
+    expect(patrol.find((e) => e.message.includes('巡检开始'))?.data).toEqual({ inspectRound: 'start' })
+    expect(patrol.find((e) => e.message.includes('巡检完成'))?.data).toEqual({ inspectRound: 'end' })
     db.close()
   })
 
