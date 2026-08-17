@@ -6603,4 +6603,101 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
     expect(daemon.requestInspect()).toBe('queued')
     db.close()
   })
+
+  it('🔴 rootsProvider 抛错后 inspecting 必须回落，下次 requestInspect 仍是 queued', async () => {
+    // rootsSnapshot 赋值若在 inspecting=true 之后、try 之外，抛错会跳过 finally，
+    // inspecting 卡死 → 之后每一次 requestInspect 都误报 already_running。
+    const db = openDb(':memory:')
+    const now = 1_000_000_000_000
+    const logs: string[] = []
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      rootsProvider: () => { throw new Error('roots exploded') },
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+      now: () => now,
+      log: (m: string) => logs.push(m),
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(now))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    expect(daemon.requestInspect()).toBe('queued')
+    await vi.waitFor(() => {
+      expect(logs.some((l) => l.includes('巡检失败')), '失败巡检必须结算（主循环 catch），否则下面测的是时序不是回落').toBe(true)
+    })
+    expect(daemon.requestInspect(), 'settled 之后必须是空闲 queued，不能卡在 already_running').toBe('queued')
+
+    ctrl.abort()
+    await p
+    db.close()
+  })
+
+  it('🔴 workPermitted=false 时 requestInspect 不得吞掉待处理的 requestScan', async () => {
+    // requestScan 故意不看 workPermitted（wizard 加根也要立刻看见文件）。
+    // 点火被闸住时只该丢掉 inspect 标志，scan 标志必须留给下一圈。
+    const db = openDb(':memory:')
+    const now = 1_000_000_000_000
+    const identifySpy = vi.fn(async () => ({ tmdbId: null, title: null, reason: 'noop' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
+      identify: { db, runIdentify: identifySpy, worker: {} as any },
+      workPermitted: () => false,
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+      now: () => now,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(now))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    daemon.requestScan()
+    daemon.requestInspect()
+    await new Promise(r => setTimeout(r, 80))
+    ctrl.abort()
+    await p
+
+    expect(pathsInDb(db), '待处理的带外扫描必须落地——inspect 被闸住不能顺便把 scan 标志清掉').toEqual(['/media/Show/E01.mkv'])
+    expect(identifySpy, '巡检本身不许跑（workPermitted=false）').not.toHaveBeenCalled()
+    expect(lastInspectAt(db)).toBe(now)
+    db.close()
+  })
+
+  it('🔴 同一实例：手动点火之后的自然巡检不得再带 includeBackoff（C26 泄漏）', async () => {
+    const db = openDb(':memory:')
+    let clock = 1_000_000_000_000
+    seedBackoffSubtitle(db, clock)
+    const subtitleWorker = vi.fn(async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      ...backoffMedia(subtitleWorker),
+      // 周期缩到 1s：clock 往前挪一小步就够触发自然闸，16h 退避窗还在。
+      inspectEveryMs: 1_000,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+      now: () => clock,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(clock))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    daemon.requestInspect()
+    await vi.waitFor(() => { expect(subtitleWorker).toHaveBeenCalledTimes(1) })
+    expect((daemon as any).skipBackoffThisInspect, 'finally 必须清掉，否则下一轮自然巡检会带着 includeBackoff').toBe(false)
+    expect(pathsInDb(db)).toEqual([VIDEO])
+
+    clock += 1_001
+    await new Promise(r => setTimeout(r, 80))
+    ctrl.abort()
+    await p
+
+    expect(pathsInDb(db), '前提：第二轮扫描没把退避行删掉').toEqual([VIDEO])
+    expect(subtitleWorker, 'C26：同一实例的自然巡检仍须滤退避').toHaveBeenCalledTimes(1)
+    db.close()
+  })
 })

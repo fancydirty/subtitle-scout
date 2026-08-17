@@ -643,16 +643,17 @@ export class ScoutDaemonV2 {
       const everyMs = this.deps.inspectEveryMs ?? INSPECT_INTERVAL_MS
       const permitted = this.deps.workPermitted?.() ?? true
 
-      // 手动点火取件：必须在 24h 闸之前。闸关死 / 失败短退避都挡不住这次；
-      // 取件时连 scanRequested 一起清——本轮阶段 1 已经包含 scanOnce，不必再扫一遍。
+      // 手动点火取件：必须在 24h 闸之前。闸关死 / 失败短退避都挡不住这次。
+      // scanRequested 只在巡检真的开跑时清——workPermitted=false 只丢 inspect
+      // 标志，带外扫描（加根 / wizard）仍要留给下一圈。
       if (this.inspectRequested) {
         this.inspectRequested = false
-        this.scanRequested = false
         if (permitted) {
-          this.skipBackoffThisInspect = true
+          this.scanRequested = false
           this.deps.log(`巡检开始 (距上次 ${lastInspectAt === 0 ? '(冷启动)' : `${Math.round((now - lastInspectAt) / 3600000)}h`})`)
           this.emit({ type: 'activity', message: '巡检开始' })
           try {
+            this.skipBackoffThisInspect = true
             await this.runInspection(signal)
             this.writeLastInspectAt(now)
             this.inspectRetryAfter = 0
@@ -799,9 +800,10 @@ export class ScoutDaemonV2 {
   /** 一轮完整巡检：扫描 → 识别跑空 → judge → 字幕跑空。 */
   private async runInspection(signal: AbortSignal): Promise<void> {
     this.inspecting = true
-    // 本轮 roots 快照（见 rootsProvider 的论证）。finally 清掉，让巡检外的读取回到现取。
-    this.rootsSnapshot = this.deps.rootsProvider?.() ?? this.deps.roots
     try {
+      // 本轮 roots 快照（见 rootsProvider 的论证）。必须在 try 里：provider 抛错
+      // 也得走 finally，否则 inspecting 卡死，requestInspect 永远 already_running。
+      this.rootsSnapshot = this.deps.rootsProvider?.() ?? this.deps.roots
       await this.runInspectionInner(signal)
     } finally {
       this.rootsSnapshot = null
