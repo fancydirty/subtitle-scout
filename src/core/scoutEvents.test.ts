@@ -395,6 +395,27 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
       expect(snap?.lastStep).toBe('search_source')
     })
 
+    it('🔴 progress data 里的 workId/backdropPath/chineseTitle 覆盖；缺席才保留', () => {
+      const { bus, tick } = mkBus()
+      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle', data: { workId: 'tmdb:1' } })
+      tick(PROGRESS_THROTTLE_MS)
+      bus.publish({
+        type: 'progress', message: 'p', title: '甲', workbench: 'subtitle',
+        data: { done: 0, total: 6, workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: '中文' },
+      })
+      expect(bus.getCurrent()?.backdropPath).toBe('/bd.jpg')
+      expect(bus.getCurrent()?.chineseTitle).toBe('中文')
+    })
+
+    it('🔴 progress-only 无先前 activity 也从 data 写入 workId', () => {
+      const { bus } = mkBus()
+      bus.publish({
+        type: 'progress', message: 'p', title: '甲', workbench: 'subtitle',
+        data: { done: 0, total: 6, workId: 'tmdb:1' },
+      })
+      expect(bus.getCurrent()?.workId).toBe('tmdb:1')
+    })
+
     it('🔴 被节流折叠的 progress 仍更新 lastStep（快照在节流门前）', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'progress', message: '1', workbench: 'subtitle', data: { done: 0, total: 6, step: 'search_source' } })

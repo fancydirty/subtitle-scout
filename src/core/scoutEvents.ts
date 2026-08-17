@@ -280,10 +280,11 @@ export class ScoutEventBus {
           title: input.title ?? null,
           index: num(d?.done),
           total: num(d?.total),
-          // 身份字段只在同一个工作台的 progress 上保留：跨台保留就是拿甲剧的海报描述乙剧。
-          workId: sameKind ? (this.current?.workId ?? null) : null,
-          backdropPath: sameKind ? (this.current?.backdropPath ?? null) : null,
-          chineseTitle: sameKind ? (this.current?.chineseTitle ?? null) : null,
+          // 本条 data 有身份字段就覆盖（Task 2 会在 progress 上带这些键）；
+          // 缺席才保留上一条，且只在同一个工作台——跨台保留就是拿甲剧的海报描述乙剧。
+          workId: nonemptyString(d?.workId) ?? (sameKind ? (this.current?.workId ?? null) : null),
+          backdropPath: nonemptyString(d?.backdropPath) ?? (sameKind ? (this.current?.backdropPath ?? null) : null),
+          chineseTitle: nonemptyString(d?.chineseTitle) ?? (sameKind ? (this.current?.chineseTitle ?? null) : null),
           startedAt: sameKind ? (this.current?.startedAt ?? null) : null,
           lastStep: step ?? (sameKind ? (this.current?.lastStep ?? null) : null),
         }
