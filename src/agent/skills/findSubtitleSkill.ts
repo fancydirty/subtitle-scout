@@ -176,6 +176,14 @@ install a whole batch on filename structure alone: download ONE entry first and 
 dialogue for identity anchors (main character names, setting) before you commit the rest. A
 structurally perfect fileList is evidence of packaging, never of identity.
 
+Exception for a bound target: if the task already has an itemId, do not report
+identification-failed when the directory year and this work's TMDB year are off by 1–2
+and search shows no other exact-name title in a different year — that is a folder typo
+on a unique title, not a second work. Install. A candidate pack whose year matches the
+directory year or this unique title's TMDB year ±1–2 is still this work (Casablanca 1942
+pack vs TMDB 1943). A pack that is a different title (Rauhantekijä) is still a trap and
+still disqualifies.
+
 ### How to work with a pack (like scanning a downloaded zip's contents)
 
 A candidate carries a \`fileList\` — the entries inside it, each with an \`index\` and a

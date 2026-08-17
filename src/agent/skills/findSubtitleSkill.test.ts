@@ -229,6 +229,26 @@ describe('makeFindSubtitleSkill (target-language parameterization)', () => {
     // 身份不明时的验证动作:先下一份抽对白锚点再批量装
     expect(c).toMatch(/download ONE entry first|sample its\s+dialogue/i)
   })
+
+  // Bound-target exception (year-folder typo): directory year vs this work's TMDB year off by
+  // 1–2 is not identification-failed when the exact title is unique. Peacemaker 2020/2022 must
+  // NOT hide as a folder typo — uniqueness / different-title packs still disqualify.
+  it('已绑定 itemId 时，目录年 vs TMDB 年差 1–2 且同名无第二年 → 不要 identification-failed，要装字幕', () => {
+    const c = makeFindSubtitleSkill('zh').content
+    expect(c).toMatch(/itemId/)
+    expect(c).toMatch(/identification-failed/)
+    expect(c).toMatch(/1\s*[–-]\s*2|one or two years/i)
+    expect(c).toMatch(/folder typo|directory year/i)
+    expect(c).toMatch(/install/i)
+  })
+
+  it('年份文件夹笔误例外要求同名唯一；不同片名的包（Rauhantekijä）仍取消资格', () => {
+    const c = makeFindSubtitleSkill('zh').content
+    expect(c).toMatch(/unique/)
+    expect(c).toMatch(/exact title|exact-name|exact name/i)
+    expect(c).toMatch(/Rauhantekijä/)
+    expect(c).toMatch(/different title|still (a )?trap|still disqualif/i)
+  })
 })
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────
