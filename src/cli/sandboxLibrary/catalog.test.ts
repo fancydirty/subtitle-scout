@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   loadCatalog, coverageGaps, eraOf, CONTROL_NEZHA_TMDB, CONTROL_MATRIX_TMDB,
+  parseSandboxIds, filterCatalogByIds,
 } from './catalog.js'
 
 const catalogPath = join(dirname(fileURLToPath(import.meta.url)), '../../../fixtures/sandbox-libraries/catalog.json')
@@ -48,5 +49,21 @@ describe('sandbox library catalog', () => {
     for (const e of catalog.entries.filter(x => x.format === 'tv')) {
       expect(e.relPath).toMatch(/S01E01/i)
     }
+  })
+
+  it('parseSandboxIds: comma list, trim, reject blanks', () => {
+    expect(parseSandboxIds(undefined)).toBeUndefined()
+    expect(parseSandboxIds('casablanca,oppenheimer')).toEqual(['casablanca', 'oppenheimer'])
+    expect(parseSandboxIds(' casablanca , oppenheimer ')).toEqual(['casablanca', 'oppenheimer'])
+    expect(() => parseSandboxIds('casablanca,,x')).toThrow(/empty/i)
+  })
+
+  it('filterCatalogByIds keeps listed ids; unknown id throws', () => {
+    const catalog = loadCatalog(catalogPath)
+    const casablanca = catalog.entries.find(e => e.id === 'casablanca')
+    expect(casablanca?.relPath).toMatch(/\(1942\)/)
+    const filtered = filterCatalogByIds(catalog, ['casablanca', 'oppenheimer'])
+    expect(filtered.entries.map(e => e.id).sort()).toEqual(['casablanca', 'oppenheimer'])
+    expect(() => filterCatalogByIds(catalog, ['casablanca', 'not-a-seed'])).toThrow(/not-a-seed/)
   })
 })

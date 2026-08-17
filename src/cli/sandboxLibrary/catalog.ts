@@ -36,6 +36,24 @@ export function loadCatalog(path: string): Catalog {
   return raw
 }
 
+export function parseSandboxIds(raw?: string): string[] | undefined {
+  if (raw == null || raw.trim() === '') return undefined
+  const ids = raw.split(',').map(s => s.trim())
+  if (ids.some(id => id === '')) {
+    throw new Error('empty sandbox id in --ids list')
+  }
+  return ids
+}
+
+export function filterCatalogByIds(catalog: Catalog, ids: string[]): Catalog {
+  const unknown = ids.filter(id => !catalog.entries.some(e => e.id === id))
+  if (unknown.length > 0) {
+    throw new Error(`unknown sandbox catalog id(s): ${unknown.join(', ')}`)
+  }
+  const wanted = new Set(ids)
+  return { entries: catalog.entries.filter(e => wanted.has(e.id)) }
+}
+
 export function entriesFor(catalog: Catalog, profile: SandboxProfile, role?: SandboxRole): CatalogEntry[] {
   return catalog.entries.filter(e => e.profile === profile && (role == null || e.role === role))
 }

@@ -43,4 +43,12 @@ describe('OrbStack sandbox-library runner', () => {
     expect(script).not.toMatch(/\bnpm install\b/)
     expect(script).toMatch(/npx tsx src\/cli\/index\.ts sandbox-library/)
   })
+
+  it('forwards extra args after --profile "$0" so --ids can reach sandbox-library', () => {
+    const raw = readFileSync(scriptPath, 'utf8')
+    const script = withoutComments(raw)
+    expect(script).toMatch(/sandbox-library --profile "\$0"/)
+    expect(script).toMatch(/--profile "\$0".*"\$@"/)
+    expect(raw).toMatch(/--ids/)
+  })
 })

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync, closeSync, openSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync, closeSync, openSync, readFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadCatalog, CONTROL_MATRIX_TMDB, CONTROL_NEZHA_TMDB, type CatalogEntry } from './catalog.js'
+import { loadCatalog, CONTROL_MATRIX_TMDB, CONTROL_NEZHA_TMDB, filterCatalogByIds, type CatalogEntry } from './catalog.js'
 import { materializeLibrary } from './materialize.js'
 import { evaluateFindCell, evaluateSkipCell, countSidecarCues } from './report.js'
 import {
@@ -243,6 +243,34 @@ describe('collectEntryFacts · wrong-language sidecar', () => {
       targetLanguage: 'en',
     }).verdict).toBe('FAIL-PIPE')
     db.close()
+  })
+})
+
+describe('materializeLibrary with --ids filter', () => {
+  it('creates only casablanca and oppenheimer paths for zh-viewer', () => {
+    const catalog = loadCatalog(catalogPath)
+    const filtered = filterCatalogByIds(catalog, ['casablanca', 'oppenheimer'])
+    const root = mkdtempSync(join(tmpdir(), 'sandbox-ids-'))
+    materializeLibrary(filtered, 'zh-viewer', root)
+
+    const kept = filtered.entries.filter(e => e.profile === 'zh-viewer')
+    expect(kept.map(e => e.id).sort()).toEqual(['casablanca', 'oppenheimer'])
+    for (const entry of kept) {
+      expect(existsSync(join(root, entry.relPath))).toBe(true)
+    }
+
+    const other = catalog.entries.find(e => e.profile === 'zh-viewer' && e.id === 'matrix')
+    expect(other).toBeDefined()
+    expect(existsSync(join(root, other!.relPath))).toBe(false)
+  })
+})
+
+describe('sandbox-library --ids CLI wiring', () => {
+  it('parses --ids and filters catalog after loadCatalog', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'run.ts'), 'utf8')
+    expect(src).toMatch(/ids:\s*\{\s*type:\s*'string'\s*\}/)
+    expect(src).toMatch(/parseSandboxIds/)
+    expect(src).toMatch(/filterCatalogByIds/)
   })
 })
 

@@ -20,6 +20,8 @@ import type { IdentifySchedulerDeps } from '../../v2/identifyScheduler.js'
 import type { FindSubtitleTask, FindSubtitleBatchReport } from '../../agent/findSubtitleWorker.schemas.js'
 import {
   loadCatalog,
+  parseSandboxIds,
+  filterCatalogByIds,
   type Catalog,
   type CatalogEntry,
   type SandboxProfile,
@@ -323,6 +325,7 @@ export async function runSandboxLibraryCommand(argv: string[]): Promise<number> 
       root: { type: 'string' },
       catalog: { type: 'string' },
       'cache-dir': { type: 'string' },
+      ids: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -342,7 +345,16 @@ export async function runSandboxLibraryCommand(argv: string[]): Promise<number> 
   }
 
   const catalogPath = defaultCatalogPath(values.catalog as string | undefined)
-  const catalog = loadCatalog(catalogPath)
+  let catalog = loadCatalog(catalogPath)
+  const ids = parseSandboxIds(values.ids as string | undefined)
+  if (ids) {
+    try {
+      catalog = filterCatalogByIds(catalog, ids)
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : e)
+      return 2
+    }
+  }
   const profiles: SandboxProfile[] = profileArg === 'all'
     ? ['zh-viewer', 'en-viewer']
     : [profileArg as SandboxProfile]
