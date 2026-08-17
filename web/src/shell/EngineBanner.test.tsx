@@ -30,6 +30,7 @@ afterEach(() => {
 function health(engineEnabled: boolean, setupSatisfied: boolean): HealthDTO {
   return {
     lastInspectAt: null,
+    nextInspectAt: null,
     workPermitted: engineEnabled && setupSatisfied,
     engineEnabled,
     setupSatisfied,

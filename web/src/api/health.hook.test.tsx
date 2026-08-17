@@ -12,6 +12,7 @@ import type { HealthDTO } from './types.js'
 
 const HEALTH: HealthDTO = {
   lastInspectAt: 1_700_000_000_000,
+  nextInspectAt: 1_700_000_000_000 + 24 * 60 * 60 * 1000,
   workPermitted: false,
   engineEnabled: true,
   setupSatisfied: false,

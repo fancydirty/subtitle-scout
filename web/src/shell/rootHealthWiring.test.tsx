@@ -28,8 +28,10 @@ let roots: HealthRootDTO[] = []
 let unidentified: UnidentifiedHealthDTO = { dirCount: 0, dirs: [] }
 
 function healthBody(): HealthDTO {
+  const lastInspectAt = Date.now() - 60_000
   return {
-    lastInspectAt: Date.now() - 60_000,
+    lastInspectAt,
+    nextInspectAt: lastInspectAt + 24 * 60 * 60 * 1000,
     // 三个布尔取"一切许可"：本文件测的是 roots 那条链，不该被 banner 的文案干扰。
     workPermitted: true, engineEnabled: true, setupSatisfied: true,
     roots,

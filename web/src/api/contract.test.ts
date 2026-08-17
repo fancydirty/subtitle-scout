@@ -101,7 +101,7 @@ describe('ContractViolationError / isContractViolation', () => {
 // ② 六条声明各自的致命字段
 // ══════════════════════════════════════════════════════════════════════════════
 const HEALTH_OK = {
-  lastInspectAt: 1, workPermitted: true, engineEnabled: true, setupSatisfied: true,
+  lastInspectAt: 1, nextInspectAt: 1 + 24 * 60 * 60 * 1000, workPermitted: true, engineEnabled: true, setupSatisfied: true,
   roots: [{ path: '/media', ok: null, lastError: null, lastCheckedAt: null }],
   unidentified: { dirCount: 0, dirs: [] },
   current: null,

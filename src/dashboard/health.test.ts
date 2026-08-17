@@ -178,6 +178,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(status).toBe(200)
     // 冷启动 null**不是** 0：前端见 0 会显示成 1970-01-01（§3.5 附带实测发现点名的坑）。
     expect(body.lastInspectAt).toBeNull()
+    expect(body.nextInspectAt).toBeNull()
     expect(body.engineEnabled).toBe(true)   // fail-open 缺省
     expect(body.roots).toEqual([])
     expect(body.current).toBeNull()
@@ -188,6 +189,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     const { base } = await start()
     const { body } = await getHealth(base)
     expect(body.lastInspectAt).toBe(NOW)
+    expect(body.nextInspectAt).toBe(NOW + INSPECT_INTERVAL_MS)
   })
 
   it('lastInspectAt 脏值（非数字）→ null', async () => {
@@ -454,7 +456,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     const { base } = await start({ events: new ScoutEventBus() })
     const { body } = await getHealth(base)
     expect(Object.keys(body).sort()).toEqual(
-      ['current', 'engineEnabled', 'lastInspectAt', 'roots', 'setupSatisfied', 'stalledJobs',
+      ['current', 'engineEnabled', 'lastInspectAt', 'nextInspectAt', 'roots', 'setupSatisfied', 'stalledJobs',
        'unidentified', 'workPermitted'],
     )
     expect('queue' in body).toBe(false)

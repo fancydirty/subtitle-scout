@@ -221,6 +221,8 @@ export interface HealthRootDTO {
 /** GET /api/v2/health 的响应。 */
 export interface HealthDTO {
   lastInspectAt: number | null
+  /** 下次巡检预计时刻。`lastInspectAt` 为 null（冷启动）时为 null；否则 `lastInspectAt + INSPECT_INTERVAL_MS`。 */
+  nextInspectAt: number | null
   /**
    * **daemon 到底会不会干活**——判据与 daemon 的 `workPermitted` 逐字同源
    * （二者调用同一个 watchClients.workPermitted，不是两份实现）。
@@ -983,11 +985,13 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
         // 脏值（非数字）按"没有"处理，**不报一个 NaN 出去**：NaN 经 JSON.stringify 变
         // null，与"从没巡检过"撞车但过程不可见；显式判一次让两者走同一条诚实的 null。
         const lastInspectNum = inspectRow ? Number(inspectRow.value) : NaN
+        const lastInspectAt = Number.isFinite(lastInspectNum) ? lastInspectNum : null
         const rootRows = db
           .prepare('SELECT path, last_error, last_checked_at FROM media_roots ORDER BY path')
           .all() as Array<{ path: string; last_error: string | null; last_checked_at: number | null }>
         const body: HealthDTO = {
-          lastInspectAt: Number.isFinite(lastInspectNum) ? lastInspectNum : null,
+          lastInspectAt,
+          nextInspectAt: lastInspectAt === null ? null : lastInspectAt + INSPECT_INTERVAL_MS,
           // 三个布尔全部现取，且**判据只有一份**：workPermitted 就是 daemon 那个同名函数，
           // engineEnabled / setupSatisfied 是它的两个合取项各自单独摆出来（前端要能说出
           // 是"你把开关关了"还是"凭据没配好"——合成一个字段这两种就不可区分了）。

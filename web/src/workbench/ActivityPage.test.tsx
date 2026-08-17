@@ -51,8 +51,10 @@ const ev = (over: Partial<ScoutEvent> & Pick<ScoutEvent, 'type'>): ScoutEvent =>
   id: ++seq, at: Date.now(), message: 'm', ...over,
 })
 
+const lastInspectAtIdle = Date.now() - 3_600_000
 const HEALTH_IDLE = {
-  lastInspectAt: Date.now() - 3_600_000,
+  lastInspectAt: lastInspectAtIdle,
+  nextInspectAt: lastInspectAtIdle + 24 * 60 * 60 * 1000,
   workPermitted: true, engineEnabled: true, setupSatisfied: true,
   roots: [], unidentified: { dirCount: 0, dirs: [] },
   stalledJobs: { count: 0, overdueMs: null as number | null }, current: null,
@@ -544,7 +546,13 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
   })
 
   it('🔴 空闲 + 太久没开新一轮 → 状态条报「引擎可能没在跑」（债务二：陈旧门报绿 48h）', async () => {
-    healthBody = { ...HEALTH_IDLE, lastInspectAt: Date.now() - 3 * 24 * 3_600_000, current: null }
+    const lastInspectAt = Date.now() - 3 * 24 * 3_600_000
+    healthBody = {
+      ...HEALTH_IDLE,
+      lastInspectAt,
+      nextInspectAt: lastInspectAt + 24 * 60 * 60 * 1000,
+      current: null,
+    }
     renderPage()
     await ready()
     await waitFor(() => {
@@ -555,9 +563,11 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
   })
 
   it('⭐ 阳性对照：同样很旧但**有工作台在跑** → 报「正在巡检」，不报死', async () => {
+    const lastInspectAt = Date.now() - 3 * 24 * 3_600_000
     healthBody = {
       ...HEALTH_IDLE,
-      lastInspectAt: Date.now() - 3 * 24 * 3_600_000,
+      lastInspectAt,
+      nextInspectAt: lastInspectAt + 24 * 60 * 60 * 1000,
       current: { kind: 'subtitle', title: 'Big Library', index: 3, total: 400 },
     }
     renderPage()
@@ -569,7 +579,7 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
   })
 
   it('lastInspectAt 为 null → 冷启动文案，**绝不出现 1970**', async () => {
-    healthBody = { ...HEALTH_IDLE, lastInspectAt: null }
+    healthBody = { ...HEALTH_IDLE, lastInspectAt: null, nextInspectAt: null }
     renderPage()
     await ready()
     await waitFor(() => {

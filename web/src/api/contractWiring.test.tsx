@@ -31,7 +31,7 @@ function mockFetch(byPath: Record<string, unknown>) {
 }
 
 const HEALTH_OK = {
-  lastInspectAt: null, workPermitted: true, engineEnabled: true, setupSatisfied: true,
+  lastInspectAt: null, nextInspectAt: null, workPermitted: true, engineEnabled: true, setupSatisfied: true,
   roots: [], current: null,
 }
 
