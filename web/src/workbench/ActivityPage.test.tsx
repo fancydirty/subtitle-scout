@@ -741,6 +741,43 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
     })
   })
 
+  it('🔴 SSE 重连后 inspectRound 游标归零：重启后的小 id end 仍能解禁', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    const btn = screen.getByTestId('wb-inspect-now')
+    fireEvent.click(btn)
+    await waitFor(() => {
+      expect(fetchCalls.some((c) => c.url.includes('/api/v2/library/inspect'))).toBe(true)
+    })
+
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '巡检开始', id: 50,
+        data: { inspectRound: 'start' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-inspect-line').textContent).toContain(en.wb_inspect_running)
+    })
+    expect(btn).toBeDisabled()
+
+    act(() => { bus().fail(2) })
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(1))
+    const reconnected = FakeES.instances[FakeES.instances.length - 1]!
+    act(() => { reconnected.open() })
+
+    act(() => {
+      reconnected.emit(ev({
+        type: 'activity', message: '巡检完成，歇着等明天', id: 1,
+        data: { inspectRound: 'end' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-inspect-now')).not.toBeDisabled()
+    })
+  })
+
   it('🔴 巡检失败（无 start / 无 workbench）也解禁，好在短退避里再点', async () => {
     renderPage()
     await ready()

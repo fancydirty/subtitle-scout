@@ -255,6 +255,18 @@ function StatusBar({
   useEffect(() => { applyRound(activity) }, [activity, applyRound])
   useEffect(() => { applyRound(healthEvent) }, [healthEvent, applyRound])
 
+  // 进程重启后事件 id 从 1 再起。不归零的话重连后的 inspectRound end 会被
+  // `e.id <= appliedRoundId` 丢掉，空巡检的 Run now 卡死到刷新。
+  // 不在这里 reloadHealth：useCurrentState 的同一条边沿已经拉过，再拉会涨
+  // F-6 用例的 /health 计数。
+  const onRoundResume = useCallback(() => {
+    appliedRoundId.current = 0
+    setRoundLive(false)
+    setPending(false)
+    inFlightRef.current = false
+  }, [])
+  useResumeEdge(status, onRoundResume)
+
   // idle：下次自动检查倒计时（不再渲染「上次自动检查开始于」）。
   // never / stale / running 四态原句保留；stale 仍用「…前」（死亡信号，不是倒计时）。
   // roundLive / current 必须压过 never：inspectFreshness 在 lastInspectAt=null 时
