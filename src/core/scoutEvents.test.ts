@@ -416,6 +416,19 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
       expect(bus.getCurrent()?.workId).toBe('tmdb:1')
     })
 
+    it('🔴 progress 无 step 时保留 lastStep 与 startedAt', () => {
+      const { bus, tick, at } = mkBus()
+      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle', data: { workId: 'tmdb:1' } })
+      const started = at()
+      tick(PROGRESS_THROTTLE_MS)
+      bus.publish({ type: 'progress', message: 'p', title: '甲', workbench: 'subtitle', data: { done: 0, total: 6, step: 'search_source' } })
+      tick(PROGRESS_THROTTLE_MS)
+      bus.publish({ type: 'progress', message: 'p', title: '甲', workbench: 'subtitle', data: { done: 1, total: 6 } })
+      expect(bus.getCurrent()?.lastStep).toBe('search_source')
+      expect(bus.getCurrent()?.startedAt).toBe(started)
+      expect(bus.getCurrent()?.index).toBe(1)
+    })
+
     it('🔴 被节流折叠的 progress 仍更新 lastStep（快照在节流门前）', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'progress', message: '1', workbench: 'subtitle', data: { done: 0, total: 6, step: 'search_source' } })

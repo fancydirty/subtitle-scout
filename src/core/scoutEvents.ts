@@ -98,11 +98,12 @@ export interface ScoutCurrent {
   index: number | null
   /** 队列总长（progress 的 `data.total`）。 */
   total: number | null
-  /** 作品 id（activity `data.workId`）。空串 / 非字符串 → null，不做 Number() 强转。 */
+  /** 作品 id（activity / progress 的 `data.workId`）。本条有则覆盖，缺席且同工作台才保留。
+   *  空串 / 非字符串 → null，不做 Number() 强转。 */
   workId: string | null
-  /** 横版背景图路径（activity `data.backdropPath`）。 */
+  /** 横版背景图路径（activity / progress 的 `data.backdropPath`）。覆盖/保留口径同 workId。 */
   backdropPath: string | null
-  /** 中文标题（activity `data.chineseTitle`）。 */
+  /** 中文标题（activity / progress 的 `data.chineseTitle`）。覆盖/保留口径同 workId。 */
   chineseTitle: string | null
   /** 本作品开工时刻（activity 写入总线 `now()`）。progress 不改；progress-only 为 null。 */
   startedAt: number | null
